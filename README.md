@@ -11,14 +11,19 @@ Engineering workflow commands for Claude Code.
 
 ## Install
 
-```
-/plugin install github:Nharu/cc-cmds
+```bash
+# 1. 마켓플레이스 등록
+/plugin marketplace add Nharu/cc-cmds
+
+# 2. 플러그인 설치
+/plugin install cc-cmds@cc-cmds
 ```
 
-## Uninstall
+## Usage
 
 ```
-/plugin uninstall cc-cmds
+/cc-cmds:design <task>
+/cc-cmds:implement <design-doc-path>
 ```
 
 ## Update
@@ -27,13 +32,19 @@ Engineering workflow commands for Claude Code.
 /plugin update cc-cmds
 ```
 
+## Uninstall
+
+```
+/plugin uninstall cc-cmds
+```
+
 ## Manual Install
 
 플러그인을 사용할 수 없는 환경에서는 직접 복사하여 사용할 수 있습니다.
 
 ```bash
 git clone https://github.com/Nharu/cc-cmds.git
-cp -r cc-cmds/skills/* ~/.claude/skills/
+cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 ```
 
 ## License
