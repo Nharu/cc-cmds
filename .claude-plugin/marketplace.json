@@ -1,0 +1,14 @@
+{
+    "name": "cc-cmds",
+    "owner": {
+        "name": "Nano"
+    },
+    "plugins": [
+        {
+            "name": "cc-cmds",
+            "source": "./plugins/cc-cmds",
+            "description": "Engineering workflow commands for Claude Code",
+            "version": "1.0.0"
+        }
+    ]
+}
