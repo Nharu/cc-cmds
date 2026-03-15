@@ -11,6 +11,19 @@ Engineering workflow commands for Claude Code.
 | `/design:upgrade` | 팀원 모델 업그레이드 분석 |
 | `/implement` | 설계 문서 기반 구현 |
 
+## Prerequisites
+
+`/design`, `/design:review` 등 에이전트 팀 기반 커맨드를 사용하려면 아래 환경변수가 필요합니다.
+
+```json
+// ~/.claude/settings.json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
 ## Install
 
 ```bash
