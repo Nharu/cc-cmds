@@ -7,6 +7,8 @@ Engineering workflow commands for Claude Code.
 | Command | Description |
 |---------|-------------|
 | `/design` | 에이전트 팀을 활용한 기능 설계 토론 |
+| `/design:review` | 설계 문서 최종 리뷰 |
+| `/design:upgrade` | 팀원 모델 업그레이드 분석 |
 | `/implement` | 설계 문서 기반 구현 |
 
 ## Install
@@ -23,6 +25,8 @@ Engineering workflow commands for Claude Code.
 
 ```
 /cc-cmds:design <task>
+/cc-cmds:design:review <design-doc-path>
+/cc-cmds:design:upgrade
 /cc-cmds:implement <design-doc-path>
 ```
 
