@@ -35,11 +35,13 @@ Each round spawns a fresh review agent that independently reviews the document f
 2. The agent completes one review round and returns a summary including issue count and pending decisions.
 3. Read `docs/_temp/review_log.md` to cross-check the agent's report.
 4. **Pending decisions handling**: If the agent returned pending decisions, ask the user via AskUserQuestionTool (in Korean). Based on the user's answer:
-   - If a change is needed: apply the fix to the design document directly.
-   - If the user decides to keep as-is: record the item and rationale under the `## Acknowledged Items` section in `docs/_temp/review_log.md`. Future agents will read this section and skip these items.
-5. Exit condition: total rounds >= 2 AND issues in the last round = 0 (excluding pending decisions) → proceed to Phase 3.
+   - If the user makes a clear decision (change or keep as-is): apply the decision immediately.
+     - Change needed → apply the fix to the design document directly.
+     - Keep as-is → record the item and rationale under the `## Acknowledged Items` section in `docs/_temp/review_log.md`. Future agents will read this section and skip these items.
+   - **If the user asks follow-up questions, requests clarification, or wants deeper discussion**: Do NOT treat this as a decision. Answer the user's question thoroughly via AskUserQuestionTool, then ask again for their decision on the same pending item. Continue this dialogue loop until the user gives an explicit, unambiguous decision. Never infer or assume a decision from a question or discussion.
+5. Exit condition: **2 consecutive rounds** with 0 issues found → proceed to Phase 3. "0 issues found" means the reviewer discovered NO issues at all during the round — not that all found issues were auto-fixed. A round that finds 3 issues and fixes all 3 counts as "3 issues found", NOT "0 issues found". Auto-fixes must be verified by a subsequent clean round.
 6. If not met → go back to step 1 with a new agent.
-7. Safety limit: maximum 10 rounds. If reached, stop and report current status to the user in Korean.
+7. Safety limit: maximum 20 rounds. If reached, stop and report current status to the user in Korean.
 
 **Review agent prompt:**
 
@@ -72,10 +74,12 @@ After completing the review, append results to docs/_temp/review_log.md:
 
 Return a structured summary:
 - Round number
-- Total issues found
+- Total issues found (count ALL issues discovered, including those you auto-fixed)
 - Total issues fixed
 - Pending decisions (with full details for each)
 - Issue categories breakdown
+
+IMPORTANT: "Total issues found" must count every issue you discovered during review, regardless of whether you fixed it. Do NOT report 0 issues found just because all found issues were auto-fixed.
 ```
 
 **On loop exit:**
@@ -95,6 +99,7 @@ rm -rf docs/_temp/
 3. **Agent independence.** Each review agent reviews the document from scratch. Previous round results are only accessed via review_log.md.
 4. **Review log required.** Every round's results must be recorded in `docs/_temp/review_log.md`.
 5. **Respect acknowledged items.** Items the user has decided to keep as-is must not be re-reported in subsequent rounds.
+6. **Never decide for the user.** When the user responds to a pending decision with a follow-up question, a request for more context, or a discussion point, this is NOT a decision. Continue the conversation via AskUserQuestionTool until the user states an explicit decision. A decision is only confirmed when the user clearly says what to do (e.g., "A로 가자", "현재 유지", "변경해줘"). Questions like "그러면 ~는 어떻게 되나요?" or "~에 대해 좀 더 설명해줘" are continuation signals, not decisions.
 
 ## Begin
 
