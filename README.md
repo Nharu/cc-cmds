@@ -10,6 +10,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-review` | 설계 문서 최종 리뷰 |
 | `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 |
+| `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 |
 
 ## Prerequisites
 
@@ -41,6 +42,7 @@ Engineering workflow commands for Claude Code.
 /cc-cmds:design-review <design-doc-path>
 /cc-cmds:design-upgrade
 /cc-cmds:implement <design-doc-path>
+/cc-cmds:review [PR URL | PR number | branch | file path]
 ```
 
 ## Update
