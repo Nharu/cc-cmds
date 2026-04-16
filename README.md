@@ -6,14 +6,14 @@ Engineering workflow commands for Claude Code.
 
 | Command | Description |
 |---------|-------------|
-| `/design` | 에이전트 팀을 활용한 기능 설계 토론 |
-| `/design:review` | 설계 문서 최종 리뷰 |
-| `/design:upgrade` | 팀원 모델 업그레이드 분석 |
-| `/implement` | 설계 문서 기반 구현 |
+| `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 |
+| `/cc-cmds:design-review` | 설계 문서 최종 리뷰 |
+| `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 |
+| `/cc-cmds:implement` | 설계 문서 기반 구현 |
 
 ## Prerequisites
 
-`/design`, `/design:review` 등 에이전트 팀 기반 커맨드를 사용하려면 아래 환경변수가 필요합니다.
+`/cc-cmds:design`, `/cc-cmds:design-review` 등 에이전트 팀 기반 커맨드를 사용하려면 아래 환경변수가 필요합니다.
 
 ```json
 // ~/.claude/settings.json
@@ -38,8 +38,8 @@ Engineering workflow commands for Claude Code.
 
 ```
 /cc-cmds:design <task>
-/cc-cmds:design:review <design-doc-path>
-/cc-cmds:design:upgrade
+/cc-cmds:design-review <design-doc-path>
+/cc-cmds:design-upgrade
 /cc-cmds:implement <design-doc-path>
 ```
 
@@ -63,6 +63,8 @@ Engineering workflow commands for Claude Code.
 git clone https://github.com/Nharu/cc-cmds.git
 cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 ```
+
+**참고**: 이전 버전에서 업그레이드하는 경우, 위 명령어를 다시 실행하여 모든 skills가 올바르게 등록되도록 하세요.
 
 ## License
 
