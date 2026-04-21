@@ -1,6 +1,7 @@
 ---
 name: design-upgrade
 description: 팀원 모델 업그레이드 분석
+when_to_use: design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때
 disable-model-invocation: true
 ---
 

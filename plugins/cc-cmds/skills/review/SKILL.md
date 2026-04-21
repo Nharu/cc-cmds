@@ -1,6 +1,7 @@
 ---
 name: review
 description: 에이전트 팀을 활용한 다관점 코드 리뷰
+when_to_use: 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때
 disable-model-invocation: true
 ---
 
@@ -54,6 +55,8 @@ When `$ARGUMENTS` is empty, run auto-detect chain:
 1. `gh pr view --json number,title,url,state,isDraft,baseRefName,additions,deletions,changedFiles` → success: PR review
 2. Failure: `gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'` → `git diff {DEFAULT_BRANCH}...HEAD --stat` → if diff exists: local diff review
 3. No diff: AskUserQuestion to request review target
+
+**If target is a non-PR (local diff or file path)**, Read `${CLAUDE_SKILL_DIR}/references/03-non-pr-mode.md` to apply adaptations to Steps 2-5 (context package items 2/5, document header, checklist focus).
 
 #### 1b: Context collection
 
@@ -234,264 +237,26 @@ Branch on user response:
 
 ### Step 4: Parallel Review (English, team internal)
 
+**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the completion-signal contract and shared facilitator rules.
+
+**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 15-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
+
 - Create team with approved composition. Team naming conventions:
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
   - Step 6 re-creation: original team name + `-followup` (e.g., `review-pr42-followup`)
 - All team-internal discussion in English
-- NO code modifications allowed. Review only.
+- NO code modifications allowed. Review only
 - **The lead acts as a facilitator**, actively driving multi-round review
-
-#### Reviewer Context Package
-
-When assigning each reviewer, include the following in the initial message:
-
-1. **Completion signal instruction**: "When you send your result, start the message with `[COMPLETE]` if your review is finished, or `[IN PROGRESS]` if you need more time to analyze. If `[IN PROGRESS]`, briefly state what remains."
-2. **Review scope diff**: Full diff or role-filtered diff
-3. **Role-relevant changed file list**: Filtered by the lead based on Step 3 assigned scope + Round 0 results (if Scope Coordinator exists)
-4. **Role-specific review checklist** (with MCP search query guidance — see below)
-5. **Existing PR comments/review summary** + dedup instruction: "Do not report already-raised issues as new findings. If you confirm an existing issue, reference it as 'confirms existing review by @author' and add only additional analysis."
-6. **PR metadata** (CI status, draft status, linked issues) — omit for non-PR reviews
-7. **Fix suggestion rules**: critical/high = mandatory, medium = include when non-obvious, low = include only for non-obvious tech debt, nitpick = omit
-8. **Claude Context MCP usage guide**: Reference role-specific checklist MCP items
-9. **Context size management**: For large diffs, filter to role-relevant file diffs only. Include change stats summary + high-risk file diffs in initial message; point reviewers to MCP `search_code` for the rest. For many existing PR comments, send summary only.
-10. **Severity system definition**: Reviewers use 5 levels:
-    - `critical`: Immediately exploitable security vulnerability in production, data loss/leakage, complete core functionality block
-    - `high`: High probability of production incident or security issue, merge block recommended
-    - `medium`: Quality/performance degradation under real load, fix recommended before or after merge
-    - `low`: Minor code smell, future tech debt, style inconsistency
-    - `nitpick`: Pure cosmetic or marginal optimization
-11. **(Large PR, with Scope Coordinator)** **Round 0 analysis results**: This reviewer's focus areas, high-risk file list, priority check areas
-12. **Positive findings**: "If you find well-implemented patterns or noteworthy positive aspects, include them with a `[POSITIVE]` tag briefly."
-13. **(Optional) Lead's codebase exploration summary** from Step 2b — key dependencies, related test files, existing pattern summary. Include within context size limits.
-14. **Category tag list**: Choose from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`
-15. **Reporting format**: Findings must follow this structure:
-    ```
-    [severity] [category] file:line (or module/pattern) — issue description
-      Rationale: severity justification
-      Fix suggestion: fix direction (when applicable)
-    [POSITIVE] file:line — positive aspect (when applicable)
-    ```
-
-#### Role-specific review checklists
-
-**Security reviewer:**
-- Authentication/authorization: JWT validation, per-route auth guards, privilege escalation, IDOR
-- Input validation: SQL/NoSQL injection, XSS, path traversal, SSRF, command injection
-- Sensitive data: hardcoded secrets, PII logging, excessive API response fields
-- Cryptography: weak hashing, hardcoded IV/salt, insecure random
-- MCP usage: search with role-relevant keywords focused on changed files and related modules. Narrow scope by changed file paths if results are too broad.
-
-**Performance reviewer:**
-- DB/ORM: N+1 queries, unused eager loading, missing pagination, full table scans, missing transactions
-- Memory/resources: event listener leaks, unreleased timers, unclosed streams/connections, unbounded caches
-- Computation: O(n^2)+, unnecessary computation in hot paths, missing memoization
-- Concurrency/IO: sequential await (where Promise.all is possible), main thread blocking, missing connection pooling
-- MCP usage: search for DB call patterns, query builders, pagination keywords focused on changed areas. Narrow by file paths if too broad.
-
-**Code quality reviewer:**
-- Design: SRP, DRY violations, inappropriate coupling, over/under-abstraction
-- Error handling: swallowed exceptions, generic catch, unhandled async errors, inconsistent error formats
-- Readability: magic numbers/strings, complex conditionals, misleading names, long functions
-- Type safety (TypeScript): `any` types, unsafe type assertions, missing return types, unhandled nullable
-- Testing: missing test coverage for new logic, implementation-coupled tests, missing edge cases
-- MCP usage: search for usages of changed functions/classes, similar patterns, error formats focused on changed areas. Narrow if too broad.
-
-**Dynamic roles (applied as needed):**
-- DB/query expert: migration rollback safety, index impact, query plans
-- API contract reviewer: backward compatibility, breaking changes, versioning
-- Concurrency reviewer: race conditions, lock usage, idempotency
-- Logic reviewer: business logic correctness, branch condition completeness, edge case coverage, requirements-implementation alignment
-
-#### Review Protocol (minimum 2 rounds)
-
-1. **Round 1 — Independent Review**: Each reviewer reviews independently from their own perspective. Wait for ALL reviewers to submit `[COMPLETE]` findings. If a reviewer sends `[IN PROGRESS]`, reply with "Take your time and send your complete findings when ready" — do NOT move on.
-
-2. **Quality Gate**: Before cross-validation, verify each review meets minimum quality:
-    - Specific location references: `file:line` or `module/pattern` for architecture/pattern-level issues (no vague descriptions)
-    - Severity rationale included for each finding
-    - No duplication with existing PR comments
-    - Fix suggestions included where appropriate
-    - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and request re-check. Re-request until QG passes (within total round safety limit).
-
-3. **Cross-validation**: Send each reviewer's findings to other reviewers. Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own.
-
-4. **Round 2+ — Refinement**: Forward cross-validation feedback to original authors. Request severity revision, missed issue additions, and challenge responses. Repeat until convergence.
-
-5. **Convergence Check**: After each round, ask ALL reviewers: "Do you have any remaining findings to add or severity assessments to dispute? Reply with `[COMPLETE] No further input` or `[IN PROGRESS]` with your remaining concerns." Only proceed to Step 5 when ALL reviewers confirm `[COMPLETE]`.
-
-**When Scope Coordinator exists (large PR):**
-- **Round 0 (pre-analysis)**: Scope Coordinator classifies changed files by risk and assigns reviewer focus areas. Results included in reviewer context packages alongside Round 1 assignment.
-- **After Quality Gate**: Scope Coordinator performs coverage audit — identifies high-risk areas not yet reviewed and requests additional review from relevant reviewers.
-- **During cross-validation**: Scope Coordinator synthesizes findings from multiple reviewers to identify cross-cutting issues (inter-module interaction problems).
-- Scope Coordinator uses the same `[COMPLETE]`/`[IN PROGRESS]` signals and is included in Convergence Checks.
-
-#### Facilitator Rules
-
-- **Distinguish idle notifications from DMs**: Messages marked with `(idle)` are **system-generated summaries**, NOT teammate DMs. Even if an idle notification contains words like "completed" or "finished", it is NOT a `[COMPLETE]` signal. ONLY count a response as received when the teammate sends an actual DM via SendMessage that starts with `[COMPLETE]` or `[IN PROGRESS]`.
-- **Idle ≠ Done**: A teammate going idle is normal — it does NOT mean they are done. Teammates may go idle while still processing (e.g., during sequential-thinking). If a teammate goes idle without sending a DM, send them a follow-up asking for their status.
-- **Do NOT end review after the first response.** Even if all reviewers send `[COMPLETE]` in Round 1, you MUST proceed to cross-validation (Round 2) at minimum.
-- **Cross-pollinate findings**: When one reviewer finds an issue that impacts another reviewer's scope, forward it and ask for their assessment.
-- **Resolve severity disputes**: If reviewers disagree on severity, ask both to justify their rating before the lead makes a final call.
-- **Ensure completeness**: If a reviewer's findings seem unusually sparse for their scope, ask them to double-check specific areas before accepting.
-- **PR comment dedup (2-layer check)**: Reviewers receive existing PR comments as context for 1st-layer filtering. The lead performs 2nd-layer verification during cross-validation to catch missed duplicates. Both reviewers and lead share responsibility to minimize duplication.
-- **Round safety limit**: Step 4 review protocol is capped at **10 rounds maximum**. Upon reaching the limit, report current state to the user and ask whether to extend by 10 more rounds. Extensions can repeat indefinitely.
 
 ---
 
 ### Step 5: Result Synthesis & Documentation (Korean)
 
-The lead synthesizes all review results into a Korean document.
+**Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, and file naming/version conventions.
 
-#### Severity system (P0~P3)
-
-| Level | Icon | Meaning | Merge Impact |
-|-------|------|---------|--------------|
-| P0 | 🔴 | Immediate fix (security vulnerability, data corruption, complete feature block) | Merge blocked |
-| P1 | 🟠 | Fix recommended before merge | Merge block recommended |
-| P2 | 🟡 | Register as follow-up issue recommended | Mergeable |
-| P3 | 🟢 | Improvement suggestion (includes nitpick) | Optional |
-
-Internal 5-level → document 4-level mapping:
-- critical → P0
-- high → P1
-- medium → P2
-- low + nitpick → P3
-
-**Skip P0 section if empty** (applies to most PRs). Only show when applicable.
-**Skip "리뷰어 간 이견 사항" and "미검토 영역" sections if not applicable.**
-
-#### Merge recommendation rules
-
-- **P0 ≥ 1** → "머지 불가 (즉시 수정 필요)"
-- **P1 ≥ 1, P0 = 0** → "머지 전 수정 권장"
-- **P0 + P1 = 0** → "머지 가능"
-
-#### Category tags
-
-Findings use `[category]` tags from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`
-
-When CI has detected failures that a reviewer confirms, add `[CI-CONFIRMED]` tag to distinguish from independent findings.
-
-#### Finding merge rules
-
-When multiple reviewers raise issues at the same location:
-- **Same file/line issue**: Merge into one item, preserve each reviewer's perspective as sub-items
-- **Severity conflict**: Default to higher severity, unless the lead resolved the dispute in Step 4 — in that case, follow the resolution. Document both rationales.
-- **Independent perspective issues**: If same location but different nature (e.g., security vs performance), keep as separate items
-- **False positives**: Items agreed as false positive during cross-validation are excluded from the final document. Briefly mention in "리뷰어 간 이견 사항" section if needed.
-- **Positive findings**: Synthesize reviewers' `[POSITIVE]` items into the "긍정적 사항" section.
-
-#### Fix suggestion inclusion rules
-
-| Severity | Fix Suggestion |
-|----------|---------------|
-| P0 | Mandatory |
-| P1 | Mandatory |
-| P2 | Include when non-obvious |
-| P3 | Omit when obvious. Include for non-obvious tech debt (from `low` source) |
-
-"Non-obvious" criteria: 3+ equally valid approaches exist, fix impacts other modules, or domain knowledge is required.
-
-#### Document structure
-
-```markdown
-# 코드 리뷰 리포트
-
-## 개요
-
-- **PR**: #[number] — [title]
-- **URL**: [PR URL]
-- **리뷰 날짜**: YYYY-MM-DD
-- **PR 상태**: Open / Draft / Merged
-- **CI 상태**: ✅ 통과 / ⚠️ [failed check list] / ❌ 빌드 실패
-- **리뷰 대상**: [files/directories/commit range]
-- **변경 규모**: 파일 X개, +Y줄 / -Z줄
-- **리뷰 팀 구성**:
-    - [role] ([model]): [scope]
-    - ...
-- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
-
----
-
-## 핵심 요약
-
-[3-5 sentences: overall code quality assessment, most important findings, merge recommendation.
-Mention CI failure items if applicable.]
-
----
-
-## 🔴 P0 (즉시 수정 필수) ← skip section if none
-
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-    - **근거**: [severity justification]
-    - 💡 수정 제안: [specific fix direction or example code]
-    - 📎 관련 PR 코멘트: [@author의 기존 코멘트 참조] (if applicable)
-
-## 🟠 P1 (머지 전 수정 권장)
-
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-    - **근거**: [severity justification]
-    - 💡 수정 제안: [specific fix direction]
-    - 📎 관련 PR 코멘트: [if applicable]
-
-## 🟡 P2 (차후 이슈 등록 권장)
-
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-    - **근거**: [severity justification]
-    - 💡 수정 제안: [when non-obvious only]
-
-## 🟢 P3 (개선 제안)
-
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-
----
-
-## 리뷰어 간 이견 사항
-
-[severity disagreements, both rationales, final resolution]
-
----
-
-## 긍정적 사항
-
-- [well-implemented patterns, best practices, improvements over existing code]
-
----
-
-## 미검토 영역
-
-[intentionally excluded files or perspectives — transparently disclose blind spots]
-
----
-
-## 개정 이력
-
-[Updated when changes occur during Step 6 follow-up. Leave empty on initial creation.]
-
----
-
-## 철회된 항목
-
-[Findings invalidated by user context. Leave empty on initial creation.]
-```
-
-#### File saving
-
-Location: `docs/reviews/` (create with `mkdir -p docs/reviews/` if it does not exist)
-
-Naming conventions:
-- PR review: `review-pr{NUMBER}_{YYYY-MM-DD}.md` (e.g., `review-pr42_2026-03-26.md`)
-- Local diff: `review-{branch-name}_{YYYY-MM-DD}.md` (e.g., `review-feat-auth_2026-03-26.md`)
-- Re-review: `review-pr{NUMBER}_{YYYY-MM-DD}_v{N}.md` (e.g., `review-pr42_2026-03-26_v2.md`)
-    - If a previous review exists for the same PR, always increment `_v{N}`. Previous documents are preserved for review history tracking.
-    - Step 6 in-place edits apply only within the same review session. A separate session re-review creates a new version document.
-
-**Previous review detection**: On re-review, search `docs/reviews/` for `review-pr{NUMBER}_*.md` pattern, find the highest version number, and assign the next version. If no previous file exists, create without version suffix.
-
-**Re-review dedup**: For re-reviews (v2+), include previous review document findings as reference material in reviewer context. Mark unresolved issues as `persists from v{N-1}`. Resolved issues need no separate reporting.
+The lead synthesizes all review results into a Korean document under `docs/reviews/` following the template.
 
 ---
 
@@ -525,47 +290,11 @@ Team re-creation proposal format builds on Step 3's format with additional field
 
 #### Document update rules
 
-- Update `docs/reviews/` document immediately whenever findings change
-- Add entries to `## 개정 이력` section:
-    ```
-    ## 개정 이력
-    - YYYY-MM-DD: [change summary]
-    ```
-- Move findings invalidated by user context to `## 철회된 항목` section:
-    ```
-    ## 철회된 항목
-    - ~~[original finding]~~ — 철회 사유: [user-provided context]
-    ```
+Refer to `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md` "Document Update Rules (Step 6)" section for the 개정 이력 / 철회된 항목 update conventions.
 
 Repeat until user is satisfied.
 
----
-
-## Non-PR Mode Adaptation
-
-When reviewing non-PR targets (local diff, file paths):
-
-| Element | PR Mode | Non-PR Mode (local diff) |
-|---------|---------|--------------------------|
-| PR comment collection | `gh api` | Skip |
-| CI status check | `gh pr checks` | Skip |
-| Document header PR fields | Included | Replace with branch name + commit range |
-| Dedup instruction | Reference existing PR comments | N/A ("fully independent review") |
-| Finding PR comment field | Reference related comments | `N/A (로컬 diff 모드)` |
-| Reviewer checklist | Includes PR comment items | Focus on code-only analysis |
-
-**File path-based review** (reviewing specific files/directories without a diff):
-
-| Element | PR Mode | File Path Mode |
-|---------|---------|----------------|
-| Review target | PR diff | Full code of specified files/directories |
-| PR comments/CI | `gh` used | N/A |
-| Diff-based analysis | Focus on changed lines | Full code analysis (augment context with MCP `search_code`) |
-| Document header | PR info included | Show target file/directory paths |
-
-File path mode context package adaptations:
-- Item 2 "Review scope diff" → replace with "Full source code of target files". For large target files, send only core modules and guide reviewers to explore the rest via MCP `search_code` (same principle as item 9 context size management).
-- Item 5 "Existing PR comments" → replace with "N/A".
+**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure. If additional reviewer clarification is needed during Step 5 document writing, do so before cleanup. When Step 6 triggers team re-creation, always clean up the previous team before creating the next one.
 
 ---
 
@@ -584,13 +313,5 @@ File path mode context package adaptations:
     - Making team composition decisions for atypical or multi-domain PRs (Step 3)
     - Do NOT use for routine tasks (scope confirmation, simple follow-ups).
 - **CI failure routing**: When CI has failed checks, mention in Step 1c. Analyze failure type (test/lint/build/type check) and add "CI failure priority check area: [failed check name and related files]" as a separate item in the relevant reviewer's context package.
-- **Team cleanup required**: After Step 5 documentation is complete, before Step 6 begins, clean up the team. (If additional reviewer clarification is needed during Step 5 document writing, do so before cleanup.) Follow these steps IN ORDER — do NOT skip ahead:
-  1. Send `shutdown_request` to each teammate via `SendMessage` (type: "shutdown_request").
-  2. **WAIT for ALL teammates to confirm shutdown** (they respond with `shutdown_response` approve: true). Do NOT proceed to step 3 until every teammate has responded. If a teammate does not respond, retry the `shutdown_request` — **repeat up to 10 times**. **NEVER forcefully kill (`kill`) agent processes.**
-  3. **If a teammate still has not responded after 10 retries**, use `AskUserQuestion` to inform the user which teammate(s) failed to shut down and ask them to handle it manually. Do NOT proceed to TeamDelete until resolved.
-  4. Call `TeamDelete` to remove the team files and clean up resources. Only call this AFTER all teammates have confirmed shutdown or the user has handled unresponsive teammates.
-  5. **Verify process cleanup**: Run `ps aux | grep "team-name" | grep -v grep` to check for orphan agent processes. If any remain, **do NOT kill them** — use `AskUserQuestion` to inform the user of the remaining PIDs and ask them to terminate the processes.
-  - **Shutdown failure fallback**: If `TeamDelete` fails due to active teammates, **do NOT use `rm -rf` or `kill`**. Instead, use `AskUserQuestion` to inform the user of the failure and ask them to manually clean up (`~/.claude/teams/{team-name}` and `~/.claude/tasks/{team-name}`).
-  - When multiple teams are created during workflow (e.g., Step 6 follow-up), always clean up the previous team before creating the next one.
 
 Task: $ARGUMENTS

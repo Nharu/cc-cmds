@@ -1,6 +1,7 @@
 ---
 name: implement
 description: 설계 문서 기반 구현
+when_to_use: 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때
 disable-model-invocation: true
 ---
 

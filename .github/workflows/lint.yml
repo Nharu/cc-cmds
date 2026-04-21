@@ -1,0 +1,30 @@
+name: lint
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/cc-cmds/skills/**'
+      - 'scripts/**'
+      - 'README.md'
+      - 'Makefile'
+      - '.github/workflows/lint.yml'
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-and-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Control-Flow Invariants placement
+        run: make lint
+
+      - name: Verify README is up to date
+        run: |
+          make readme
+          if ! git diff --exit-code README.md; then
+            echo "README.md is stale — run 'make readme' locally and commit the result." >&2
+            exit 1
+          fi

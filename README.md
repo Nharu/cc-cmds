@@ -4,13 +4,17 @@ Engineering workflow commands for Claude Code.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 |
-| `/cc-cmds:design-review` | 설계 문서 최종 리뷰 |
-| `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 |
-| `/cc-cmds:implement` | 설계 문서 기반 구현 |
-| `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 |
+<!-- SKILLS_TABLE_START -->
+
+| Command | Description | When to use |
+|---------|-------------|-------------|
+| `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
+| `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
+| `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
+| `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
+| `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
+
+<!-- SKILLS_TABLE_END -->
 
 ## Prerequisites
 
