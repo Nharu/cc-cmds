@@ -4,7 +4,7 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 
 ## 15-item Context Package
 
-1. **Completion signal instruction**: Use the `[COMPLETE]` / `[IN PROGRESS]` contract from `_common/agent-team-protocol.md`. Adapted wording: *"When you send your result, start the message with `[COMPLETE]` if your review is finished, or `[IN PROGRESS]` if you need more time to analyze. If `[IN PROGRESS]`, briefly state what remains."*
+1. **Completion signal instruction**: Use the `[COMPLETE]` / `[IN PROGRESS]` contract from `_common/agent-team-protocol.md`. Include the **full** instruction block from that file verbatim (delivery channel + message format + self-check every turn + silence-check before stopping) — do NOT paraphrase it down to a one-liner, because the short form is the documented cause of Issue 2 (teammates emitting `[COMPLETE]` as session text instead of calling `SendMessage`). The block already uses self-referential "me (the team lead)" phrasing and does not require lead-name substitution before sending.
 2. **Review scope diff**: Full diff or role-filtered diff.
 3. **Role-relevant changed file list**: Filtered by the lead based on Step 3 assigned scope + Round 0 results (if Scope Coordinator exists).
 4. **Role-specific review checklist** (with MCP search query guidance — see "Role-specific checklists" below).
