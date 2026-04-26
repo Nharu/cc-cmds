@@ -3,6 +3,40 @@ name: review
 description: 에이전트 팀을 활용한 다관점 코드 리뷰
 when_to_use: 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때
 disable-model-invocation: true
+usage: "/cc-cmds:review [<target>] [<directive>]"
+options:
+    - name: "<target>"
+      kind: positional
+      required: false
+      summary: "리뷰 대상. 입력 형태에 따라 PR/브랜치/파일 모드로 자동 분기."
+      parse_note: |
+          숫자만 포함된 토큰(`42`)은 PR 번호, 하이픈·영문 포함 토큰(`42-fix-bug`)은 브랜치로 해석.
+          순수 숫자 + 브랜치 동시 존재 시 PR 번호 우선. 어느 형태에도 해당되지 않으면 `AskUserQuestion`으로 명확화.
+      variants:
+          - label: "PR URL"
+            example: "https://github.com/owner/repo/pull/42"
+            behavior: "PR 번호 추출 후 `gh pr view`로 메타데이터 수집"
+          - label: "PR 번호"
+            example: "42"
+            behavior: "숫자만일 때 PR 번호로 해석"
+          - label: "브랜치 이름"
+            example: "feat/auth-flow"
+            behavior: "하이픈·영문 포함 시 브랜치로 해석, `gh pr list --head`로 연관 PR 조회"
+          - label: "파일/디렉토리 경로"
+            example: "src/auth/"
+            behavior: "파일 리뷰 모드; `gh` 명령 사용 안 함"
+          - label: "혼합 (타겟 + 지시문)"
+            example: "PR #42 보안 중심으로"
+            behavior: |
+                타겟 추출 후 지시문을 팀 구성·컨텍스트 패키지·보고서에 전파.
+                **지시문은 깊이/커버리지에만 영향**; severity는 기술 기준으로 독립 평가.
+          - label: "(생략)"
+            behavior: "빈 입력 시 현재 브랜치/PR 자동 감지 체인 실행"
+    - name: "<directive>"
+      kind: positional
+      required: false
+      summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로").'
+      parse_note: "지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향."
 ---
 
 Conduct a multi-perspective code review using an agent team for the given task.
@@ -10,6 +44,8 @@ All team discussions and inter-agent communication should be in English to optim
 User-facing communication and saved documentation should be in Korean.
 
 ## Input
+
+> _Consistency Note: README의 user-facing 요약은 frontmatter `options[]`에서 자동 생성됨. 본 섹션은 runtime-agent 작동 규약이며, 변경 시 frontmatter도 함께 갱신._
 
 `$ARGUMENTS` can be: a PR URL (`https://github.com/.../pull/N`), a PR number, a branch name, a file/directory path, a mixed input (target + directive, e.g., "PR #42 보안 중심으로"), or empty (auto-detect from current branch). See Step 1a for detailed parsing logic.
 

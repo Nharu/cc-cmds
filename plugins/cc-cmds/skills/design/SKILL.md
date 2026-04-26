@@ -3,6 +3,12 @@ name: design
 description: 에이전트 팀을 활용한 기능 설계 토론 진행
 when_to_use: 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때
 disable-model-invocation: true
+usage: "/cc-cmds:design <task>"
+options:
+    - name: "<task>"
+      kind: positional
+      required: true
+      summary: "설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트)."
 ---
 
 Conduct a design discussion using an agent team for the given task.

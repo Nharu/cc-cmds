@@ -3,6 +3,18 @@ name: implement
 description: 설계 문서 기반 구현
 when_to_use: 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때
 disable-model-invocation: true
+usage: "/cc-cmds:implement <design-doc-path> [scope-directive]"
+options:
+    - name: "<design-doc-path>"
+      kind: positional
+      required: true
+      summary: "구현 대상 설계 문서 경로 (`.md`)."
+      parse_note: "`$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석. 이후 토큰은 scope directive로 전달."
+    - name: "[scope-directive]"
+      kind: positional
+      required: false
+      summary: '구현 범위를 좁히는 자유형 자연어 지시문 (예: `"Phase 2"`, `"PR #0"`).'
+      parse_note: "첫 `.md` 토큰 이후의 모든 내용. 단일 바깥쪽 쌍따옴표로 감싸져 있으면 그 쌍만 제거하고 안쪽 따옴표·구두점은 보존."
 ---
 
 Plan and then implement based on the provided design document.
@@ -14,6 +26,8 @@ Execute the workflow strictly in this order: **Step 0 → Step 1 → Step 2 → 
 You MUST NOT skip Step 2, including when: the doc looks small, the input has prepended headers, extra scope args are passed, or you feel ready to implement.
 
 ## Input Parsing
+
+> _Consistency Note: README의 user-facing 요약은 frontmatter `options[].parse_note`에서 자동 생성됨. 본 섹션은 runtime-agent 작동 규약이며, 변경 시 frontmatter도 함께 갱신._
 
 Arguments: $ARGUMENTS
 

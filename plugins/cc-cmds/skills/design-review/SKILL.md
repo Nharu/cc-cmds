@@ -3,6 +3,34 @@ name: design-review
 description: 설계 문서 최종 리뷰
 when_to_use: 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때
 disable-model-invocation: true
+usage: "/cc-cmds:design-review <design-doc-path> [--base] [--no-auto-decide-dominant]"
+options:
+    - name: "<design-doc-path>"
+      kind: positional
+      required: true
+      summary: "리뷰 대상 설계 문서 경로 (`.md`)"
+    - name: "--base"
+      kind: flag
+      default: "off"
+      summary: "기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT)"
+    - name: "--auto-decide-dominant"
+      kind: flag
+      noop: true
+      default: "(no-op alias — auto-decide는 기본 ON)"
+      summary: "명시적 opt-in 별칭. 현재 기본값이 이미 ON이라 실질 no-op; 역호환·명시성 목적으로 허용."
+    - name: "--no-auto-decide-dominant"
+      kind: flag
+      default: "off (즉, auto-decide 활성)"
+      safety: true
+      summary: "Decision Auto-Select Protocol(§8)을 세션 전체에서 비활성화"
+      safety_summary:
+          - "**기본 동작** — 별도 플래그 없이 auto-decide ON. Dominance Threshold(§8) 충족 시 `decision`-type 제안을 자동 선택하고 `[AUTO-DECIDED]`로 기록."
+          - "**Blackout** — B1–B10 카테고리(파괴적 작업, 사용자 특화 결정, B7/B8/B9 조건부 체크리스트 포함)는 항상 사용자에게 escalate."
+          - "**Revert** — 자동 결정된 항목은 `AUTO-NNN` 또는 `PROP-Rx-y` 참조로 언제든 되돌릴 수 있음 (§8.11)."
+          - "**Opt-out (invocation)** — `--no-auto-decide-dominant` 지정 시 전체 세션에서 비활성화, 세션 중간 재활성화는 불가."
+          - '**Opt-out (mid-session)** — 다이얼로그 프롬프트에서 "자동 선택 중단" 같은 자연어 트리거로도 비활성화 가능 (§8.10 regex, 이후 재활성 불가).'
+          - '**Outer-cycle continuation** — 자동 결정이 한 건이라도 발생한 outer iter는 ripple 검증을 위해 한 iter 더 실행됨. 사용자 체감: "왜 리뷰가 더 오래 걸리지?"'
+          - "**Persistence** — `AUTO_DECIDE_ENABLED`는 outer iter 간 `outer_log.md`로 복원(§8.12) — bash 변수 휘발성 대응."
 ---
 
 Perform a final review of the design document using a two-tier cycle (outer + inner).
@@ -598,6 +626,8 @@ If an Edit fails, follow the Step 13 Edit-failure handling procedure (retry with
    **GR#7 Amendment (§8.10)** — When invoked with `--auto-decide-dominant`, the main session MAY bypass user presentation for `decision`-type proposals that satisfy the Dominance Threshold (§8). This exception is narrowly scoped: it applies only to items that have never entered the dialogue loop. Any item the user has seen, is currently seeing, or has asked a follow-up about remains fully governed by the paragraph above. Auto-decided items MUST be logged per the Auto-Decide Audit Schema (see `references/04-file-schemas.md` + `references/01-auto-decide-protocol.md`) and are subject to user revert per §8.11.
 
 ## Options
+
+> _Consistency Note: README의 user-facing 옵션 표와 Safety 블록은 frontmatter `options[]`에서 자동 생성됨. 본 섹션은 runtime-agent가 읽는 작동 규약(예: `{BASE_MODE_CONSTRAINT}` 치환 블록)이며, frontmatter 변경 시 함께 갱신._
 
 ### --base
 
