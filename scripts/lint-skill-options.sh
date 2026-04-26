@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Lint SKILL.md frontmatter for the README options-rendering schema.
 #
-# Rules (see docs/readme-cli-docs.md §4):
-#   1  usage non-empty; options key present                          [Phase 1: warn]
-#   2  options: [] ⇒ notes required                                  [Phase 1: warn]
+# Rules:
+#   1  usage non-empty; options key present                          [fail]
+#   2  options: [] ⇒ notes required                                  [fail]
 #   3  Kind/field exclusivity matrix                                 [fail]
 #   4  safety: true ⇒ safety_summary length ≥ 4 + each non-empty     [fail]
 #   5  noop: true ⇒ safety absent/false                              [fail]
@@ -32,15 +32,10 @@ repo_root=$(cd "$script_dir/.." && pwd)
 source "$script_dir/_yq-preflight.sh"
 yq_preflight
 
-# Phase config — flip to "fail" to promote rules to failure mode (Phase 3).
-RULE1_MODE="${RULE1_MODE:-warn}"
-RULE2_MODE="${RULE2_MODE:-warn}"
-
 # ---------- Globals -----------------------------------------------------------
 
 fail_count=0
 warn_count=0
-migration_status=""   # space-separated "<skill>:migrated" / "<skill>:pending"
 
 # ---------- yq helpers --------------------------------------------------------
 
@@ -68,8 +63,6 @@ emit_warn() { printf '%s%s' "$1" "$SEP"; }
 
 lint_file() {
   local file="$1"
-  local skill_name
-  skill_name=$(basename "$(dirname "$file")")
 
   if [[ ! -f "$file" ]]; then
     echo "FAIL: $file — file not found" >&2
@@ -87,18 +80,10 @@ lint_file() {
   has_opts=$(has_key "$file" "options")
 
   if [[ -z "$usage" ]]; then
-    if [[ "$RULE1_MODE" == "fail" ]]; then
-      errors+="Rule 1: \`usage\` is missing or empty${SEP}"
-    else
-      warnings+="Rule 1 (warn): \`usage\` is missing or empty${SEP}"
-    fi
+    errors+="Rule 1: \`usage\` is missing or empty${SEP}"
   fi
   if [[ "$has_opts" != "true" ]]; then
-    if [[ "$RULE1_MODE" == "fail" ]]; then
-      errors+="Rule 1: \`options\` key is missing${SEP}"
-    else
-      warnings+="Rule 1 (warn): \`options\` key is missing${SEP}"
-    fi
+    errors+="Rule 1: \`options\` key is missing${SEP}"
   fi
 
   # Rule 2 — options: [] ⇒ notes required
@@ -108,11 +93,7 @@ lint_file() {
     notes=$(fm "$file" '.notes // ""')
     notes=$(trim "$notes")
     if [[ "$opts_len" == "0" && -z "$notes" ]]; then
-      if [[ "$RULE2_MODE" == "fail" ]]; then
-        errors+="Rule 2: \`options: []\` requires non-empty \`notes\`${SEP}"
-      else
-        warnings+="Rule 2 (warn): \`options: []\` requires non-empty \`notes\`${SEP}"
-      fi
+      errors+="Rule 2: \`options: []\` requires non-empty \`notes\`${SEP}"
     fi
   fi
 
@@ -245,13 +226,6 @@ lint_file() {
     done
   fi
 
-  # Track migration status
-  if [[ "$has_opts" == "true" ]]; then
-    migration_status+="$skill_name:migrated "
-  else
-    migration_status+="$skill_name:pending "
-  fi
-
   if [[ -z "$errors" && -z "$warnings" ]]; then
     echo "OK:   $file"
     return
@@ -298,36 +272,6 @@ fi
 for f in "${FILES[@]}"; do
   lint_file "$f"
 done
-
-# ---------- Phase migration summary -------------------------------------------
-
-if [[ $# -eq 0 ]]; then
-  total=0
-  migrated=0
-  pending_names=""
-  for entry in $migration_status; do
-    name="${entry%:*}"
-    status="${entry##*:}"
-    total=$((total + 1))
-    if [[ "$status" == "migrated" ]]; then
-      migrated=$((migrated + 1))
-    else
-      if [[ -n "$pending_names" ]]; then
-        pending_names+=", $name"
-      else
-        pending_names="$name"
-      fi
-    fi
-  done
-  if (( migrated < total )); then
-    echo "[lint-skill-options] warning: $migrated/$total skills migrated (options: key present)." >&2
-    if [[ -n "$pending_names" ]]; then
-      echo "  missing: $pending_names" >&2
-    fi
-  else
-    echo "[lint-skill-options] info: $migrated/$total skills migrated."
-  fi
-fi
 
 if (( fail_count > 0 )); then
   echo "lint-skill-options: $fail_count failure(s), $warn_count warning(s)" >&2
