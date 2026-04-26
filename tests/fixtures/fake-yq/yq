@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Fake kislyuk/yq (Python) — used to verify the preflight rejects it.
+echo "yq 3.2.2 (python)"

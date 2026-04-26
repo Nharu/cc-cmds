@@ -5,6 +5,7 @@ on:
     paths:
       - 'plugins/cc-cmds/skills/**'
       - 'scripts/**'
+      - 'tests/fixtures/**'
       - 'README.md'
       - 'Makefile'
       - '.github/workflows/lint.yml'
@@ -18,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install mikefarah/yq
+        uses: mikefarah/yq@v4
+
       - name: Lint Control-Flow Invariants placement
         run: make lint
 
@@ -28,3 +32,6 @@ jobs:
             echo "README.md is stale — run 'make readme' locally and commit the result." >&2
             exit 1
           fi
+
+      - name: Run tests
+        run: make test

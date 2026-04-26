@@ -46,10 +46,8 @@ Engineering workflow commands for Claude Code.
 /cc-cmds:design-review <design-doc-path>
 /cc-cmds:design-upgrade
 /cc-cmds:implement <design-doc-path>
-/cc-cmds:review [<target>] [<directive>]
+/cc-cmds:review [PR URL | PR number | branch | file path]
 ```
-
-각 커맨드의 옵션·입력 형태 세부는 아래 [Options](#options) 섹션 참조.
 
 ## Update
 
@@ -73,14 +71,6 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 ```
 
 **참고**: 이전 버전에서 업그레이드하는 경우, 위 명령어를 다시 실행하여 모든 skills가 올바르게 등록되도록 하세요.
-
-## Options
-
-<!-- SKILLS_OPTIONS_START -->
-
-<!-- SKILLS_OPTIONS: auto-populated from SKILL.md frontmatter once skills define `usage`/`options`. -->
-
-<!-- SKILLS_OPTIONS_END -->
 
 ## License
 
