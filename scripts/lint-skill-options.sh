@@ -7,8 +7,7 @@
 #   3  Kind/field exclusivity matrix                                 [fail]
 #   4  safety: true ⇒ safety_summary length ≥ 4 + each non-empty     [fail]
 #   5  noop: true ⇒ safety absent/false                              [fail]
-#   6  safety_summary[i] is single-line (no `\n`)                    [fail]
-#      block-scalar candidates with embedded `\n` and length > 80    [warn]
+#   6  safety_summary[i] is single-line (no `\n` after deserialize)  [fail]
 #   7  variants: label + behavior required; example missing → warn
 #      (label == "(생략)" exempt from example warn)                  [fail/warn]
 #   8  Within a skill: option `name` unique, variant `label` unique  [fail]
@@ -209,22 +208,6 @@ lint_file() {
         fi
       fi
 
-      # Rule 6b — block-scalar warn for summary / parse_note
-      local field
-      for field in summary parse_note; do
-        local has_f val
-        has_f=$(fm "$file" ".options[${i}] | has(\"$field\")")
-        if [[ "$has_f" == "true" ]]; then
-          val=$(fm "$file" ".options[${i}].$field // \"\"")
-          if [[ "$val" == *$'\n'* ]]; then
-            local val_len=${#val}
-            if (( val_len > 80 )); then
-              warnings+="Rule 6 (warn): option \`$oname\` \`$field\` contains newlines and exceeds 80 chars — use \`|\` or \`>-\` block scalar${SEP}"
-            fi
-          fi
-        fi
-      done
-
       # Rule 7 — variants
       if [[ "$has_variants" == "true" ]]; then
         local v_len vi
@@ -252,12 +235,6 @@ lint_file() {
           if [[ -z "$behavior_t" ]]; then
             errors+="Rule 7: option \`$oname\` variant[$vi] (\`$label\`) missing \`behavior\`${SEP}"
           fi
-          if [[ "$behavior" == *$'\n'* ]]; then
-            local bl=${#behavior}
-            if (( bl > 80 )); then
-              warnings+="Rule 6 (warn): option \`$oname\` variant[$vi].behavior contains newlines and exceeds 80 chars — use \`|\` or \`>-\` block scalar${SEP}"
-            fi
-          fi
           if [[ "$has_example" != "true" || -z "$example" ]]; then
             if [[ "$label" != "(생략)" ]]; then
               warnings+="Rule 7 (warn): option \`$oname\` variant \`$label\` missing \`example\`${SEP}"
@@ -266,16 +243,6 @@ lint_file() {
         done
       fi
     done
-
-    # Rule 6c — top-level notes block-scalar warn
-    local notes_v
-    notes_v=$(fm "$file" '.notes // ""')
-    if [[ "$notes_v" == *$'\n'* ]]; then
-      local nl=${#notes_v}
-      if (( nl > 80 )); then
-        warnings+="Rule 6 (warn): \`notes\` contains newlines and exceeds 80 chars — use \`|\` or \`>-\` block scalar${SEP}"
-      fi
-    fi
   fi
 
   # Track migration status
