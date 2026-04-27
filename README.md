@@ -11,6 +11,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
+| `/cc-cmds:design-review-lite` | 설계 문서 경량 사이클 리뷰 | 설계 문서를 간결한 반복 사이클로 빠르게 검증하고 싶을 때 (미묘한 termination invariant·동시성 검출률 약화 가능) |
 | `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
@@ -82,6 +83,7 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 - [/cc-cmds:design](#cc-cmdsdesign)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
 - [/cc-cmds:design-review](#cc-cmdsdesign-review)
+- [/cc-cmds:design-review-lite](#cc-cmdsdesign-review-lite)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:review](#cc-cmdsreview)
@@ -122,6 +124,15 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 - **Opt-out (mid-session)** — 다이얼로그 프롬프트에서 "자동 선택 중단" 같은 자연어 트리거로도 비활성화 가능 (§8.10 regex, 이후 재활성 불가).
 - **Outer-cycle continuation** — 자동 결정이 한 건이라도 발생한 outer iter는 ripple 검증을 위해 한 iter 더 실행됨. 사용자 체감: "왜 리뷰가 더 오래 걸리지?"
 - **Persistence** — `AUTO_DECIDE_ENABLED`는 outer iter 간 `outer_log.md`로 복원(§8.12) — bash 변수 휘발성 대응.
+
+### /cc-cmds:design-review-lite
+
+**Usage**: `/cc-cmds:design-review-lite <design-doc-path> [--base]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
+| `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
 
 ### /cc-cmds:design-upgrade
 
