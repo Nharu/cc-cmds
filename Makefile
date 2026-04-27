@@ -12,5 +12,6 @@ check: lint readme
 
 test:
 	bash scripts/test-lint-skill-options.sh
+	bash scripts/test-lint-skill-invariants.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
