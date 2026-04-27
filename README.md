@@ -15,6 +15,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
+| `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
 
 <!-- SKILLS_TABLE_END -->
 
@@ -87,6 +88,7 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:review](#cc-cmdsreview)
+- [/cc-cmds:review-lite](#cc-cmdsreview-lite)
 
 ### /cc-cmds:design
 
@@ -174,6 +176,14 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 제안
 > _Parsing (`<target>`): 숫자만 포함된 토큰(`42`)은 PR 번호, 하이픈·영문 포함 토큰(`42-fix-bug`)은 브랜치로 해석. 순수 숫자 + 브랜치 동시 존재 시 PR 번호 우선. 어느 형태에도 해당되지 않으면 `AskUserQuestion`으로 명확화._
 
 > _Parsing (`<directive>`): 지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향._
+
+### /cc-cmds:review-lite
+
+**Usage**: `/cc-cmds:review-lite [<target>]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
 
 <!-- SKILLS_OPTIONS_END -->
 
