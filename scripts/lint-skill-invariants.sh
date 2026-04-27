@@ -32,7 +32,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 
 # Skills that are exempt from rule (A) — tiny orchestration-only skills that
 # have no outer/inner termination loop and cannot silently mis-terminate.
-EXEMPT_SKILLS=("design-upgrade" "implement" "design" "review")
+EXEMPT_SKILLS=("design-upgrade" "implement" "design" "review" "design-lite")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

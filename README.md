@@ -9,6 +9,7 @@ Engineering workflow commands for Claude Code.
 | Command | Description | When to use |
 |---------|-------------|-------------|
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
+| `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
 | `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -79,6 +80,7 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 <!-- SKILLS_OPTIONS_START -->
 
 - [/cc-cmds:design](#cc-cmdsdesign)
+- [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
 - [/cc-cmds:design-review](#cc-cmdsdesign-review)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
@@ -87,6 +89,14 @@ cp -r cc-cmds/plugins/cc-cmds/skills/* ~/.claude/skills/
 ### /cc-cmds:design
 
 **Usage**: `/cc-cmds:design <task>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<task>` | (required) | 설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트). |
+
+### /cc-cmds:design-lite
+
+**Usage**: `/cc-cmds:design-lite <task>`
 
 | Option | Default | Summary |
 | --- | --- | --- |
