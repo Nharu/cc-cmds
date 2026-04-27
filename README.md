@@ -46,10 +46,13 @@ Engineering workflow commands for Claude Code.
 
 ```
 /cc-cmds:design <task>
+/cc-cmds:design-lite <task>
 /cc-cmds:design-review <design-doc-path>
+/cc-cmds:design-review-lite <design-doc-path>
 /cc-cmds:design-upgrade
 /cc-cmds:implement <design-doc-path>
 /cc-cmds:review [<target>] [<directive>]
+/cc-cmds:review-lite [<target>]
 ```
 
 각 커맨드의 옵션·입력 형태 세부는 아래 [Options](#options) 섹션 참조.
