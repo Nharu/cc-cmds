@@ -5,6 +5,31 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-30
+
+`/cc-cmds:design` 토론에서 발견된 surface-discipline escape path를 차단한다. lead가 Bound A/B/C 임계 미도달 상태에서 일부 unconverged 항목을 임의 surface, surface + 내부 결정의 split-surface 패턴, _"인터뷰 잠금 결정과 충돌"_ 같은 protocol 미정의 ad-hoc trigger 사용 — 세 escape를 binary Bound gate + same-path 룰로 구조적으로 차단한다. `_common/agent-team-protocol.md`를 Read하는 4개 TeamCreate 기반 스킬(`design`, `design-lite`, `review`, `review-lite`)에 자동 전파 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `_common/agent-team-protocol.md`: Facilitator Rules 섹션에 새 top-level bullet **Surface discipline — gate, priority, and split prohibition** 신설. (i) "Surfacing" 정의 명문화 — `AskUserQuestion` 호출 + decision-soliciting narration 양쪽 포함, file write / structured log / progress-only status는 surface 아님. (ii) Bound A/B/C 임계 도달 또는 explicit user instruction(직전·현재 turn + named target)만 escalation 허용. (iii) wall-clock elapsed time / lead confidence / lead opinion strength는 surface 시그널이 NEVER. 3 sub-clauses 동봉:
+    - **Stall priority before surface**: content-ful DM 부재 시 escalation 전 4 priority action(forward / re-scope / cross-validation / status-ping). `ip_count == 1` vacuous → "Take your time" passive (single courtesy pass), `ip_count >= 2` → active stall-handling. Stall-context forward / re-scope / cross-validation은 round당 teammate별 cap 3, round boundary에서 reset. Status-ping과 hard prompt는 cap-exempt.
+    - **No early surface on interview-locked conflicts**: unresponded item과 interview-locked decision 충돌은 정의된 escalation trigger가 아니며 Bound 임계 전 surface 불허. Bound 임계 도달 시 lock-conflict context를 `AskUserQuestion` body에 포함해 informed user override / reconfirmation 가능. explicit user instruction bypass는 lock-reopen instruction 없으면 locked-conflict item에 적용 안 됨.
+    - **Split-surface prohibition**: "single turn" = "single assistant response block." 한 turn은 (i) 내부 action만 또는 (ii) ALL unconverged items를 cover하는 단일 unified `AskUserQuestion` 둘 중 하나. 일부 surface + 일부 내부 결정 절대 금지 — unsurfaced item framing(decided / deferred / dropped / 'will handle later')도 영향 없음. 한 unconverged item이 Bound 임계 도달 시 모든 unconverged item이 same path. Multi-item batching은 single `AskUserQuestion` 내에서 허용·선호.
+
+### Changed
+
+- `_common/agent-team-protocol.md` `Surface disagreements` bullet: judgment-call authority 좁힘. 기존 단일 문장(2 sides argue → lead judgment call)을 two-clause로 교체 — (i) judgment-call은 동일 topic에 substantively conflicting position의 teammate 최소 2명이 substantive DM으로 응답해 conflict가 fully voiced일 때만 행사 가능 (응답 채널 명시: `via SendMessage`), (ii) fully voiced 안 된 항목에는 권한 미적용; additional rounds + stall-handling으로 처리 후 Bound 임계로 escalation.
+- `plugin.json`: `version: 1.4.0`.
+
+### Why
+
+원 incident 회고: lead의 _"인터뷰 잠금 결정과 충돌"_ 정당화는 protocol 미정의 ad-hoc escalation trigger였으며, soft-form lead-judgment("obvious", "wall-clock 길어졌으니")와 verbal split-surface escape("내부 결정해서 마무리하겠습니다") 양쪽이 wording-level rationalization으로 활용됨. binary Bound gate(structural) + same-path 룰이 핵심 차단을 제공하고, 추가 prose-level 봉쇄(wall-clock NEVER, framing enumeration, named-target bypass)로 verbal escape 차단. design 문서 §D7 결정에 따라 R4-R10 누적 wording 정밀화 12개 항목은 운영 텍스트 외(D8)에 보관 — 사용자 결정 #2(약한 정형화) + #8(compact-doc) 의도 회복 우선.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영. 4-skill TeamCreate 기반 (`design`, `design-lite`, `review`, `review-lite`)에 자동 전파.
+- `design-review` / `design-review-lite`는 `Agent()` 기반이라 본 보강의 직접 대상 아님 — 두 스킬은 GR#6/#7 + auto-decide protocol(`design-review` only)이 _"Never decide for the user"_ 핵심 원칙 인코딩 중. 동등 surface discipline 적용은 별도 GR amendment 필요 (본 보강 범위 외).
+
 ## [1.3.0] - 2026-04-27
 
 3개 lite 스킬을 추가하여 Pro 사용자가 토큰 한도 안에서 다관점 사이클을 돌릴 수 있도록 한다. 기존 5개 base 스킬은 byte-identical 유지(zero impact for OFF users) — Pro 사용자는 명시적으로 `-lite` 변형을 호출해 절감을 선택한다. 순수 additive 변경이며 호출 인터페이스는 그대로 유지된다 (`/plugin update cc-cmds`로 자동 적용).
