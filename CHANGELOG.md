@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-30
+
+`/review`·`/review-lite` skill의 Step 1b PR context-collection 코드 블록에 잠복하던 `gh` CLI v2.91.0 spec drift 3건을 수정한다. 결함의 영향은 두 갈래로 나뉘었다 — (i) **hard fail + cascading 취소**: `gh pr view --json reviewers` (필드 부재) / `gh pr diff --stat` (플래그 부재) 두 명령이 비-0 종료하면 같은 묶음 병렬 호출이 `Cancelled: parallel tool call errored`로 일괄 취소되어 PR 컨텍스트 수집 전체가 무너졌다. (ii) **silent fallback absorption**: `gh pr checks --json status,conclusion` (필드 부재) 호출은 기존 `2>/dev/null || echo "[]"` fallback이 에러를 흡수해 CI 체크 데이터가 항상 빈 배열로 반환됐고, 그 결과 Step 1c "highlight failed checks if any" 기능이 운영 시작 시점부터 비활성 상태로 잠복해 왔다. 본 패치로 세 명령을 현행 spec(`reviewRequests` + `latestReviews`, `gh pr view --json files`, `name,state,bucket`)에 맞게 교체하며, Step 1c CI 실패 highlight 기능을 운영 시작 이후 처음으로 활성화한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `/review` & `/review-lite` Step 1b — `gh pr view --json reviewers` (존재하지 않는 필드)를 `reviewRequests,latestReviews`로 교체. `reviewRequests` = 리뷰 요청자 목록(User/Team 응답을 `__typename` 분기로 모두 노출 필요), `latestReviews` = reviewer별 최신 review state 1건 스냅샷. 풀 review 히스토리는 동일 Step 1b의 `gh api --paginate ".../reviews"` 호출이 이미 수집 중이라 use-case로 분리(코멘트 인라인 힌트 추가).
+- `/review` & `/review-lite` Step 1b — `gh pr diff $PR_NUMBER --stat` (지원하지 않는 플래그)을 제거하고, 동일 endpoint를 두 번 호출하던 path-only(`gh pr view --json files --jq '[.files[].path]'`)와 함께 단일 호출 `gh pr view --json files --jq '[.files[] | {path,additions,deletions}]'`로 통합. 다운스트림 consumer는 `.[] | .path`로 경로 추출 가능 — 동작 동등 + API 호출 1회 절감.
+- `/review` & `/review-lite` Step 1b — `gh pr checks --json name,status,conclusion` (`status`/`conclusion` 필드 부재)을 `name,state,bucket`으로 교체. `bucket == "fail"`은 FAILURE/TIMED_OUT/ACTION_REQUIRED/STARTUP_FAILURE를 한 번에 잡는 빠른 필터, `state`는 Step 4 reviewer context package의 CI failure routing(security vs logic vs build)에 필요한 granularity 제공. 0-checks 케이스의 fallback 트리거 의미는 동일 유지.
+- `/review` SKILL.md Step 1c — large PR gate 본문에서 "or `--stat` output" 잔여 참조 제거 (`changedFiles` 메타데이터로 단일화). 인접 코멘트 `# Full diff (after large PR gate passes)` → `# Full diff`로 단순화하여 양 SKILL.md 자연 정렬.
+
+### Why
+
+silent fallback absorption은 `gh pr checks` 명령이 시작 시점부터 잘못된 필드로 호출되었음에도 fallback이 에러를 흡수해 **운영 시작 이후 한 번도 CI 체크 highlight가 동작한 적이 없었다**. 본 fix는 단순한 spec 교정이지만 결과적으로 Step 1c의 CI 실패 highlight 기능을 처음으로 활성화하는 효과를 가진다. 두 호출 통합(D5)은 사용자 결정으로 spec drift 픽스에 함께 묶었으며, 양 파일 동일 코멘트로 drift 위험을 추가 제거한다.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- `references/01~03`은 의미 기반 표기/git 명령이라 무영향, `make readme`도 frontmatter 기반이라 README diff 0.
+- 회귀 방지 가드는 사용자 결정에 따라 추가 안 함 (동종 결함 재발 시 별도 검토).
+
 ## [1.4.0] - 2026-04-30
 
 `/cc-cmds:design` 토론에서 발견된 surface-discipline escape path를 차단한다. lead가 Bound A/B/C 임계 미도달 상태에서 일부 unconverged 항목을 임의 surface, surface + 내부 결정의 split-surface 패턴, _"인터뷰 잠금 결정과 충돌"_ 같은 protocol 미정의 ad-hoc trigger 사용 — 세 escape를 binary Bound gate + same-path 룰로 구조적으로 차단한다. `_common/agent-team-protocol.md`를 Read하는 4개 TeamCreate 기반 스킬(`design`, `design-lite`, `review`, `review-lite`)에 자동 전파 (`/plugin update cc-cmds`로 자동 반영).
