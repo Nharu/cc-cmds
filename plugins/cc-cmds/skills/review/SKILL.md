@@ -102,18 +102,15 @@ When `$ARGUMENTS` is empty, run auto-detect chain:
 # Repository slug (used in subsequent gh api calls)
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 
-# PR metadata
+# PR metadata (latestReviews = current state snapshot per reviewer; full history via gh api .../reviews below)
 gh pr view $PR_NUMBER --json number,title,body,state,isDraft,labels,milestone,\
-  assignees,reviewers,headRefName,baseRefName,url,createdAt,\
+  assignees,reviewRequests,latestReviews,headRefName,baseRefName,url,createdAt,\
   additions,deletions,changedFiles
 
-# Changed file list
-gh pr view $PR_NUMBER --json files --jq '[.files[].path]'
+# Changed files with per-file statistics (path, additions, deletions; '.[] | .path' for path-only)
+gh pr view $PR_NUMBER --json files --jq '[.files[] | {path,additions,deletions}]'
 
-# Change statistics (fetch first to determine large PR gate)
-gh pr diff $PR_NUMBER --stat
-
-# Full diff (after large PR gate passes)
+# Full diff
 gh pr diff $PR_NUMBER
 # For scope narrowing (gh pr diff does not support path filters):
 # Extract baseRefName, headRefName from PR metadata, then:
@@ -140,7 +137,7 @@ gh pr view $PR_NUMBER --json comments \
   --jq '[.comments[] | {author: .author.login, body: .body, createdAt: .createdAt}]'
 
 # CI check status
-gh pr checks $PR_NUMBER --json name,status,conclusion 2>/dev/null || echo "[]"
+gh pr checks $PR_NUMBER --json name,state,bucket 2>/dev/null || echo "[]"
 ```
 
 **For local diff targets:**
@@ -161,7 +158,7 @@ Present to user (in Korean):
 - CI status (highlight failed checks if any)
 
 **Large PR gate** (>50 changed files):
-- Determine file count from PR metadata `changedFiles` field or `--stat` output
+- Determine file count from PR metadata `changedFiles` field
 - Inform user of the scale
 - Offer options: (a) proceed with full review, (b) focus on specific directory/module, (c) split review
 - Adjust team composition if scope is narrowed
