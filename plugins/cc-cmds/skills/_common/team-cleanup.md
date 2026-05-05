@@ -19,7 +19,7 @@ The 5-step procedure above MUST be idempotent so the facilitator-level `Cleanup-
 Step inventory (referenced below): **step 1** = send `shutdown_request`, **step 2** = wait for `shutdown_response` + retry, **step 3** = after 10 retries surface via `AskUserQuestion`, **step 4** = `TeamDelete`, **step 5** = `ps aux` verification.
 
 - **Pre-flight partial-state detection**: Before executing step 1, evaluate two signals via Bash and in-session state:
-    - **S1 — Directory presence**: `test -d ~/.claude/teams/{team-name}` (same shell used by step 5's `ps aux` check).
+    - **S1 — Directory presence**: `test -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{team-name}"` (same shell used by step 5's `ps aux` check).
     - **S2 — Session context activity**: the team was created via `TeamCreate` in this invocation AND at least one member has not yet received a `teammate_terminated` system notification.
 
     Branching based on the two signals:
@@ -42,7 +42,14 @@ These guards do NOT weaken the cleanup contract — every failure mode that indi
 
 ## Shutdown failure fallback
 
-If `TeamDelete` fails due to active teammates, **do NOT use `rm -rf` or `kill`**. Instead, use `AskUserQuestion` to inform the user of the failure and ask them to manually clean up (`~/.claude/teams/{team-name}` and `~/.claude/tasks/{team-name}`).
+If `TeamDelete` fails due to active teammates, **do NOT use `rm -rf` or `kill`**. Instead, before issuing `AskUserQuestion`, compute the actual cleanup paths by running the following Bash commands (substituting the real team name for `{team-name}`; if the team name contains spaces or special characters, assign it to a shell variable first):
+
+```bash
+echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{team-name}"
+echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tasks/{team-name}"
+```
+
+Capture each output line as the resolved path. Then use `AskUserQuestion` to inform the user of the failure and ask them to manually remove those directories — embedding the computed path strings verbatim in the message body.
 
 ## Multiple teams
 
