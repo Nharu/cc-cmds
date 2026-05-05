@@ -5,6 +5,32 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-05-06
+
+`CLAUDE_CONFIG_DIR` 환경변수로 default가 아닌 디렉토리(예: `~/.claude-foo`)에서 Claude Code를 운영할 때 발생하던 silent failure 3건을 수정한다. `/cc-cmds:design` Step 5 entry state-check가 `ls ~/.claude/teams/`로 활성 팀을 enumerate하여 false-negative로 cleanup이 누락되거나, `_common/team-cleanup.md`의 S1 directory presence check가 잘못된 경로에서 분기하거나, TeamDelete 실패 시 AskUserQuestion fallback 메시지가 잘못된 cleanup 경로를 안내해 사용자가 실제 디렉토리를 정리하지 못하던 결함을 모두 환경변수 인지 형태(`${CLAUDE_CONFIG_DIR:-$HOME/.claude}`)로 교체한다. 회귀 방지를 위해 신규 lint script(`lint-skill-paths.sh`) + 13개 fixture + test runner를 함께 추가하여 SKILL.md / `_common/*.md` / `<skill>/references/*.md` 전 영역에서 하드코딩 경로를 차단한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `/cc-cmds:design` Step 5 entry state-check — `~/.claude/teams/` 두 위치(prose noun-phrase + `ls` 실제 명령)를 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/`로 교체하고 path를 double-quoting하여 `$HOME`이나 `$CLAUDE_CONFIG_DIR`에 공백이 있어도 word splitting을 차단. 이전에는 `CLAUDE_CONFIG_DIR=~/.claude-foo` 환경에서 활성 팀을 검출하지 못해 cleanup이 누락됐다.
+- `_common/team-cleanup.md` S1 — `test -d ~/.claude/teams/{team-name}`을 `test -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{team-name}"`로 교체. 이전에는 directory presence 분기가 default 디렉토리만 검사해 non-default 환경에서 잘못된 분기로 진행됐다.
+- `_common/team-cleanup.md` shutdown failure fallback — 단일 prose 문장을 multi-line 형식으로 교체. Claude가 `echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{team-name}"` / `tasks/{team-name}` 두 명령을 먼저 실행해 fully-resolved absolute path를 stdout으로 받은 뒤, 그 출력 문자열을 AskUserQuestion 메시지 본문에 verbatim으로 삽입한다. 이전에는 추상 표기(`~/.claude/...`)를 그대로 안내해 non-default 환경 사용자가 실제 디렉토리 위치를 모른 채 잘못된 경로를 정리하려 했다.
+
+### Added
+
+- `scripts/lint-skill-paths.sh` — runtime SKILL.md / `_common/*.md` / `<skill>/references/*.md`에서 하드코딩 `.claude` 경로(5-alternation BANNED_RE: `~/`, `$HOME/`, `${HOME}/`, `/Users/<name>/`, `/home/<name>/`)를 차단하는 신규 lint. canonical `${CLAUDE_CONFIG_DIR:-$HOME/.claude...}` 및 braced `${CLAUDE_CONFIG_DIR:-${HOME}/.claude...}` 두 형식만 strip-pass로 whitelist하며, 단일 dash form(`${CLAUDE_CONFIG_DIR-...}`)과 tilde-fallback(`${CLAUDE_CONFIG_DIR:-~/.claude}`)은 emergent behavior로 자연스럽게 reject된다 (parameter substitution 내부에서 tilde expansion이 fire하지 않는 silent runtime bug 형태이므로 lint가 정책을 행동으로 강제).
+- `scripts/test-lint-skill-paths.sh` + `tests/fixtures/lint-skill-paths/` 13개 fixture (T-PATH-OK-{1,2,3} + T-PATH-FAIL-{1..10}). canonical / braced / multi-line code-fence pass anchor + tilde / `$HOME` / `${HOME}` / macOS / Linux / mixed-line / SKILL.md location / references-depth / tilde-fallback / single-dash 회귀 anchor를 각각 커버.
+- `Makefile` `lint:` 타겟에 `lint-skill-paths.sh` 추가 (`make check`에 transitively 포함). `test:` 타겟에 `test-lint-skill-paths.sh` 추가.
+
+### Why
+
+silent fallback의 3 hit는 모두 `~/.claude/...` 형태가 default 환경에서는 정상 동작하다 보니 dogfooding 단계에서 검출이 어려운 결함이었다. 사용자 인터뷰로 확정한 path-substitution 범위(runtime SKILL.md + `_common/`)에 한정해 패치했으며 README/CHANGELOG/`docs/`/기존 `tests/fixtures/`의 본문은 historical record / 사용자 대면 가이드 성격이라 의도적으로 제외했다. 신규 lint는 향후 동종 결함이 SKILL/references 안에서 silent하게 들어오는 path를 활성 차단한다.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- `CLAUDE_CONFIG_DIR`을 default(`~/.claude`)로 사용하는 환경에서는 동작 변화 없음. non-default 환경 사용자는 본 패치 이후 `/cc-cmds:design` 워크플로의 cleanup 분기와 `_common/team-cleanup.md`의 S1/shutdown-fallback이 올바른 디렉토리에서 동작한다.
+- README diff 0 (frontmatter 변경 없음). `make check`는 lint 3종 + readme parity 모두 통과.
+
 ## [1.4.1] - 2026-04-30
 
 `/review`·`/review-lite` skill의 Step 1b PR context-collection 코드 블록에 잠복하던 `gh` CLI v2.91.0 spec drift 3건을 수정한다. 결함의 영향은 두 갈래로 나뉘었다 — (i) **hard fail + cascading 취소**: `gh pr view --json reviewers` (필드 부재) / `gh pr diff --stat` (플래그 부재) 두 명령이 비-0 종료하면 같은 묶음 병렬 호출이 `Cancelled: parallel tool call errored`로 일괄 취소되어 PR 컨텍스트 수집 전체가 무너졌다. (ii) **silent fallback absorption**: `gh pr checks --json status,conclusion` (필드 부재) 호출은 기존 `2>/dev/null || echo "[]"` fallback이 에러를 흡수해 CI 체크 데이터가 항상 빈 배열로 반환됐고, 그 결과 Step 1c "highlight failed checks if any" 기능이 운영 시작 시점부터 비활성 상태로 잠복해 왔다. 본 패치로 세 명령을 현행 spec(`reviewRequests` + `latestReviews`, `gh pr view --json files`, `name,state,bucket`)에 맞게 교체하며, Step 1c CI 실패 highlight 기능을 운영 시작 이후 처음으로 활성화한다 (`/plugin update cc-cmds`로 자동 반영).
