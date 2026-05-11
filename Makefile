@@ -17,3 +17,4 @@ test:
 	bash scripts/test-lint-skill-paths.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
+	bash scripts/test-active-notify-lifecycle.sh
