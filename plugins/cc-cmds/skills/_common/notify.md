@@ -37,13 +37,15 @@ ARM → FIRE(s) → CANCEL/consume.
     `-group "cc-cmds-active-notify"` (single banner replaces previous;
     irrelevant in practice since the lifecycle is 1-shot, but kept for
     parity with the permission-test bypass path so banner surfaces share
-    visual identity in the single + bypass overlap window). Flag is
-    consumed atomically via `mv -n` before fire.
-  mode=repeat: `terminal-notifier` invoked WITHOUT `-group` — each fire
-    produces a separate banner (pile-up is intentional, dynamic-trust
-    anti-spam: user perceives spam → CANCEL). `fire_count` is incremented
-    and `last_fire_at` updated atomically via temp-write → mv rename; the
-    flag is preserved until explicit CANCEL.
+    visual identity in the single + bypass overlap window) and
+    `-execute ':'` (shell true-builtin no-op click target — see §4
+    invariant 2). Flag is consumed atomically via `mv -n` before fire.
+  mode=repeat: `terminal-notifier` invoked WITHOUT `-group` and with
+    `-execute ':'` — each fire produces a separate banner (pile-up is
+    intentional, dynamic-trust anti-spam: user perceives spam →
+    CANCEL). `fire_count` is incremented and `last_fire_at` updated
+    atomically via temp-write → mv rename; the flag is preserved until
+    explicit CANCEL.
 
 ## §3 Failure handling
   Failure handling differs across the two invocation surfaces.
@@ -95,8 +97,12 @@ ARM → FIRE(s) → CANCEL/consume.
      is wrapped in `2>/dev/null || true`. The caller does not inspect
      exit code, does not await OS-level delivery, does not retry on
      failure. Missed notification is acceptable; a halted workflow is
-     not. Click-through is unsupported (notification-only; `-execute`
-     option unused).
+     not. Click-through is intentionally functionless: the
+     `terminal-notifier -execute ':'` shell true-builtin no-op is
+     supplied so that macOS Notification Center's auto-attached action
+     button (which cannot be suppressed via terminal-notifier 2.0.0 CLI
+     flags) clicks through to nothing observable. The fundamental "no
+     button" path is tracked as a roadmap item (custom UN-API binary).
   3. **Invocation is strictly additive across both surfaces.** Two
      surfaces invoke `notify.sh`: the model invokes ARM and CANCEL via
      Bash tool calls, and the Stop hook invokes FIRE at turn end. Both

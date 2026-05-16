@@ -14,3 +14,4 @@ lines=$(wc -l < "$NOTIFIER_LOG" | tr -d ' ')
 grep -q -- '-group cc-cmds-active-notify' "$NOTIFIER_LOG" || { echo "FIRE: single-mode should use -group" >&2; exit 1; }
 grep -q -- '-title \[cc-cmds\] build' "$NOTIFIER_LOG" || { echo "FIRE: title missing" >&2; exit 1; }
 grep -q -- '-message 성공 (exit 0)' "$NOTIFIER_LOG" || { echo "FIRE: summary missing" >&2; exit 1; }
+grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "FIRE: -execute ':' no-op missing" >&2; exit 1; }

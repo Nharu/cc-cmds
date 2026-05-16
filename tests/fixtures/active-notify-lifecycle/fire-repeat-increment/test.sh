@@ -21,3 +21,4 @@ if grep -q -- '-group' "$NOTIFIER_LOG"; then
   exit 1
 fi
 grep -q -- '-title \[cc-cmds\] iter' "$NOTIFIER_LOG" || { echo "FIRE: title missing" >&2; exit 1; }
+grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "FIRE: -execute ':' no-op missing" >&2; exit 1; }

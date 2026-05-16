@@ -146,6 +146,7 @@ case "$subcommand" in
         -title "[cc-cmds] ${workflow}" \
         -message "${summary}" \
         -group "cc-cmds-active-notify" \
+        -execute ':' \
         2>/dev/null || true
       rm -f "$consuming"
     else
@@ -153,6 +154,7 @@ case "$subcommand" in
       terminal-notifier \
         -title "[cc-cmds] ${workflow}" \
         -message "${summary}" \
+        -execute ':' \
         2>/dev/null || true
     fi
     exit 0
