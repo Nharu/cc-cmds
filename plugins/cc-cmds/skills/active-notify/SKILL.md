@@ -1,8 +1,10 @@
 ---
 name: active-notify
-description: 사용자가 명시적으로 1인칭 알림 요청 어휘를 발화했을 때 그 작업의 완료 시점에 macOS 데스크탑 알림을 발송하는 model-invoked 헬퍼. 단발 모드("끝나면 알려줘")와 매-턴 반복 모드("매번 알려줘")의 두 lifecycle을 지원. 트리거 어휘 부재 시 호출 금지 — 모델 자체 판단으로 ARM 절대 금지.
+description: 사용자가 (a) 1인칭 알림 요청 어휘 ("끝나면 알려줘"/"매번 알려줘" 등) 또는 (b) 권한 테스트 어휘 ("알림 테스트"/"test alert"/"permission test" 등 — 알림 동사 + "테스트"/"test" 결합)를 발화했을 때 호출되는 macOS 데스크탑 알림 헬퍼. (a)는 작업 완료 시점에 ARM 후 fire (단발/반복 모드 lifecycle), (b)는 §7 inline bypass를 정해진 형식 그대로 호출하여 권한 다이얼로그 1회 트리거. 트리거 어휘 부재 시 호출 금지 — 모델 자체 판단으로 ARM/bypass 절대 금지.
 when_to_use: |
-    사용자가 1인칭 알림 요청 어휘를 명시적으로 발화한 직후 ARM. 발화에 매·마다·매번·각·반복·every·each 키워드가 1개라도 등장하면 repeat 모드 (매 turn 종료 시 fire), 부재 시 single 모드 (1회 fire 후 만료). ARM 직후 즉시 fire는 금지 — fire는 ARM과 별개의 task-completion rule 평가 (single 4-rule, repeat 3-rule)를 받으며, 같은 turn에 user-task tool call이 ≥1 발생해야 fire 가능 (notify.sh 자체 호출은 카운트 제외). 모델 자체 판단 ("이 작업이 길어 보이니 알림이 좋겠다", "사용자가 각 step별 진행을 보고 싶어할 듯") ARM은 절대 금지. **PERMISSION TEST 예외**: 사용자 발화에 "테스트"/"test" 키워드가 알림 어휘와 결합 ("알림 테스트", "test the alert") 시 ARM이 아닌 `Bash(terminal-notifier -message ... -title ... -group ...)` 직접 호출 — notify.sh 우회. canonical lexicon · worked example · 4-rule variant · anti-pattern · permission test bypass는 SKILL.md body 참조.
+    **사전 분기 — PERMISSION TEST 예외 (1순위)**: 사용자 발화가 "테스트"/"test" 키워드 + 알림 동사("알림"/"노티"/"notif"/"alert" 등)를 결합한 형태("알림 테스트", "노티 테스트 한 번", "test the alert", "permission test")이면 ARM 대신 §7 inline bypass의 multi-line shell expression을 **변경 없이 그대로** Bash로 호출. `-group 'cc-cmds-active-notify'` 토큰 보존 필수 (다른 group 이름·다른 message·다른 title로 자체 합성 금지). notify.sh 우회. 일반 1인칭 알림 발화로 오인 분기 금지.
+
+    **ARM 분기 (사전 분기 미해당 시)**: 사용자가 1인칭 알림 요청 어휘를 명시적으로 발화한 직후 ARM. 발화에 매·마다·매번·각·반복·every·each 키워드가 1개라도 등장하면 repeat 모드 (매 turn 종료 시 fire), 부재 시 single 모드 (1회 fire 후 만료). ARM 직후 즉시 fire는 금지 — fire는 ARM과 별개의 task-completion rule 평가 (single 4-rule, repeat 3-rule)를 받으며, 같은 turn에 user-task tool call이 ≥1 발생해야 fire 가능 (notify.sh 자체 호출은 카운트 제외). 모델 자체 판단 ("이 작업이 길어 보이니 알림이 좋겠다", "사용자가 각 step별 진행을 보고 싶어할 듯") ARM은 절대 금지. canonical lexicon · worked example · 4-rule variant · anti-pattern · permission test bypass는 SKILL.md body 참조.
 disable-model-invocation: false
 usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, 단발 모드는 1회 fire 후 만료, 반복 모드는 매 turn 종료 시 fire(CANCEL까지).)"
 options: []
@@ -18,23 +20,23 @@ notes: |
 
 Read `_common/notify.md` once per session to load the shared procedure
 (preconditions, fire copy synthesis, failure handling, Control-Flow
-Invariants). The sections below give the model-side calling convention
-and the lexicon / rule variants that drive ARM/FIRE decisions.
+Invariants). The model is responsible for ARM and CANCEL only — FIRE
+is dispatched by the plugin's Stop hook at every assistant-turn end.
+The plugin's PreToolUse hook self-approves the dispatcher's Bash
+invocations so the Bash permission dialog never surfaces.
 
 ## 1. Calling convention
 
-The dispatcher script is `active-notify/scripts/notify.sh` with three
-subcommands. The shell working directory does not matter — paths are
-absolute. All three are local-disk file ops and complete instantly.
+The model directly invokes two subcommands of
+`active-notify/scripts/notify.sh`. FIRE is **not model-callable** —
+the Stop hook (`hooks/active-notify-stop.sh`) owns FIRE dispatch at
+turn end. All paths are absolute; the shell working directory does
+not matter; both subcommands are local-disk file ops and complete
+instantly.
 
 ```bash
 # Arm a new notification cycle. mode argument is optional (default "single").
 bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat]
-
-# Fire — branches on the mode field stored in the state flag. Workflow is a
-# short English task identifier (≤30 chars, internal ID); summary is a
-# Korean 1-line user-facing message that the user actually reads in the banner.
-bash active-notify/scripts/notify.sh fire "<workflow>" "<summary>"
 
 # Cancel — mode-agnostic flag delete.
 bash active-notify/scripts/notify.sh cancel
@@ -46,23 +48,26 @@ task — e.g. "build", "design-review iteration"), optional `mode` third.
 Invalid mode values (anything other than `single`/`repeat`) silent
 normalize to `single`.
 
-Banner copy synthesis on `fire`:
-- `workflow` is a short English task identifier kept in English so log
-  pipelines and future tooling stay stable (examples: `build`, `test`,
-  `design-review`, `lint`).
-- `summary` is a Korean 1-line message because the banner body is read
-  by the user. Examples: `"성공 (exit 0)"`, `"테스트 3건 실패"`,
-  `"수렴 완료"`, `"파일 업데이트 완료"`, `"리뷰 마침"`,
-  `"컨텍스트 로드 완료"`.
-- Multi-stage turns (build → test → lint) report the terminal-stage
-  outcome rather than aggregate wording.
-- If the terminal stage is a Bash command with an exit code, compress
-  that exit-code result into one Korean sentence; if the terminal
-  stage is a Read/Edit/Grep tool (no exit code), describe turn
-  intent semantically.
-- Never empty. Minimum fallback is `"완료"`.
-- Consistent Korean wording helps the user judge spam frequency and
-  trigger CANCEL when appropriate.
+**FIRE is harness-driven.** At every assistant-turn end Claude Code
+invokes the registered Stop hook, which:
+
+1. Verifies session isolation via the hook stdin `session_id` field
+   (β safety-net: newest-flag fallback with file-based audit log at
+   `${flag_dir}/audit.log` — not stderr).
+2. Evaluates the task-completion rules (§4) by scanning the
+   transcript JSONL for user-task tool calls and the turn-terminal
+   tool block.
+3. Shells out to `notify.sh fire <workflow> <summary>` if the rules
+   pass, where `<workflow>` is the first non-cd token of the last
+   Bash command (fallback `task` for non-Bash terminal turns) and
+   `<summary>` is a binary derived from the last tool_result's
+   `is_error` field — `성공` (is_error=false), `실패` (is_error=true),
+   or `완료` (non-Bash terminal turn).
+
+The model **does not** participate in workflow/summary synthesis under
+v1.5.0. A v1.5.x roadmap introduces an opt-in marker
+(`<!--notify-summary: ... -->` in the response body) that the hook
+scrapes for richer banner copy.
 
 Banner title is always `[cc-cmds] ${workflow}` (English task ID) and
 body is `${summary}` (Korean user message).
@@ -112,9 +117,9 @@ like `"매번 알림 테스트"` route to the bypass path because the
 
 ## 3. ARM / FIRE / CANCEL semantics
 
-**ARM is always idempotent overwrite.** Each `notify.sh arm` invocation
-performs a `schema:2` fresh JSON write that replaces any prior flag.
-Consequences:
+**ARM is always idempotent overwrite (model-driven).** Each
+`notify.sh arm` invocation performs a `schema:2` fresh JSON write
+that replaces any prior flag. Consequences:
 - **Mode switch** (single ↔ repeat) — the new ARM discards the prior
   cycle's `fire_count` and `last_fire_at`.
 - **Re-ARM after CANCEL** — opens a new cycle from `fire_count: 0`.
@@ -125,113 +130,150 @@ Consequences:
   originates from the model (canonicalization drift is forgiving),
   while FIRE input originates from disk (treated as untrusted state).
 
-**FIRE branches on the stored `mode` field.** Single-mode consumes the
-flag (atomic `mv -n` rename to `*.consuming-$$`, then optional
-notifier call, then `rm`). Repeat-mode preserves the flag and
-performs an atomic `temp → mv` rename to bump `fire_count` and refresh
-`last_fire_at`.
+**FIRE is dispatcher behavior, triggered by the Stop hook.** The
+Stop hook evaluates §4 rules at turn end and shells out to
+`notify.sh fire <workflow> <summary>`. The dispatcher then branches
+on the stored `mode` field. Single-mode consumes the flag (atomic
+`mv -n` rename to `*.consuming-$$`, then optional notifier call,
+then `rm`). Repeat-mode preserves the flag and performs an atomic
+`temp → mv` rename to bump `fire_count` and refresh `last_fire_at`.
+The model **never** invokes FIRE directly; even an erroneous fire
+invocation would have its Bash dialog auto-approved by the
+PreToolUse hook but would still be redundant and is not a part of
+this contract.
 
-**CANCEL is mode-agnostic.** `rm -f flag`. No mode check. Lexicon
-covers both generic (`"알림 취소"`) and repeat-specific
+**CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode
+check. Lexicon covers both generic (`"알림 취소"`) and repeat-specific
 (`"반복 알림 그만"`) phrasings — same effect.
 
-## 4. Task-completion rules
+## 4. Task-completion rules (hook-evaluated)
 
-The model evaluates these rules at the **end of every assistant
-response block** (turn end) and decides whether to call
-`notify.sh fire` as the final action of that block.
+The Stop hook evaluates these rules at every turn end and invokes
+`notify.sh fire` if all conditions hold. The model does NOT
+evaluate these rules — they are documented here so the model-side
+ARM decision is informed and so the contract is transparent to
+humans reading SKILL.md.
 
-### Single mode (4-rule, all must hold)
+### Single mode (3 effective conditions, all must hold)
 
 1. ARM flag is alive and `mode=single`.
-2. The current response block has executed **≥1 user-task tool call
-   after the ARM** (Bash, Read, Edit, Grep, etc.). **`notify.sh arm`/
-   `fire`/`cancel` invocations do NOT count toward this rule.**
-3. No further actionable step is planned for this turn.
-4. The response block does NOT end with `AskUserQuestion`. Only
-   turn-terminal `AskUserQuestion` blocks fire; mid-turn
-   `AskUserQuestion` followed by further work is fine.
+2. The current turn's assistant block has executed ≥1 user-task
+   tool call from the 11-tool whitelist (Bash, Read, Edit, Write,
+   Grep, Glob, WebFetch, WebSearch, Task, MultiEdit, NotebookEdit)
+   that is NOT an `active-notify/scripts/notify.sh` invocation.
+   Meta-tools (TodoWrite, ExitPlanMode, AskUserQuestion) are
+   excluded — they signal planning or user-input suspension, not
+   task work.
+3. The turn-terminal tool block is NOT `AskUserQuestion`. (Stop
+   hook will not fire after an `AskUserQuestion` because the
+   harness suspends the turn waiting for user input — natural
+   belt-and-braces guard on top of the explicit check.)
 
-When all four hold, call `notify.sh fire` as the closing action of
-the same block, then yield.
+When all three hold, the hook shells `notify.sh fire`. The
+single-mode flag is consumed atomically inside the existing
+`notify.sh` fire branch (unchanged from v1.4.x semantics).
 
-### Repeat mode (3 effective rules)
+### Repeat mode (3 effective conditions)
 
-1. ARM flag is alive and `mode=repeat`.
-2. The current response block has executed **≥1 user-task tool call
-   after the ARM** (same exclusion rule as single).
-3. _(no plan-residue check — repeat is turn-end-based, not workflow-
-   completion-based)_
-4. The response block does NOT end with `AskUserQuestion`.
+Identical conditions 1–3, but condition 1 requires `mode=repeat`.
+Repeat-mode FIRE preserves the flag and increments `fire_count`;
+cycle terminates only on user-issued CANCEL.
 
-Rule 1 + 2 + 4 satisfied → fire once at turn end. `fire_count` is
-incremented; the flag is preserved for the next turn.
+### Helper-script exclusion (hook-side)
 
-### Helper-script exclusion (both modes — verbatim contract)
+Rule 2 is enforced by the hook's transcript-scan regex anchor:
 
-> Rule 2 ("≥1 user-task tool call this turn") refers to tool
-> invocations made on behalf of the user-asked task (Bash, Read,
-> Edit, Grep, etc.). **Calls to `active-notify/scripts/notify.sh`
-> (`arm`, `fire`, `cancel`) are excluded from this count.**
-> Without this exclusion, an ARM-only turn — where the user only
-> uttered the trigger lexicon and asked for no work — would
-> auto-fire because the ARM call itself is a Bash tool call. The
-> model-side rule evaluation is the primary guard; this
-> helper-exclusion is the secondary regression guard.
+```
+test("active-notify/scripts/notify\\.sh\\s+(arm|fire|cancel)\\b") | not
+```
+
+This excludes the model's own ARM/CANCEL invocations from the
+user-task count. Without this, an ARM-only turn would auto-fire
+because the ARM Bash call itself satisfies rule 2. The hook-side
+exclusion is the primary guard under v1.5.0; the legacy
+"model-side rule eval is the primary guard" wording from v1.4.x
+is retired.
+
+### Rule 3 (no plan residue) — structurally satisfied
+
+The legacy 4-rule single mode had an additional rule "no further
+actionable step is planned for this turn". This is structurally
+satisfied — the Stop hook fires only after the model has
+voluntarily ended the turn (no pending tool calls).
 
 ## 5. Worked examples
+
+All examples below describe FIRE as **hook-driven** — the model
+issues ARM/CANCEL, and the Stop hook decides whether to fire at
+turn end based on §4 conditions. `workflow`/`summary` shown are
+the hook's best-effort synthesis from the transcript.
 
 ### Single-mode examples
 
 **(s1) Single long Bash.** User: `"npm run build, ping me when done"`
-→ ARM single → Bash(build) → 5 minutes → exit 0 → 4-rule satisfied
-→ FIRE(`workflow="build"`, `summary="빌드 완료 (exit 0)"`) → flag
-consumed → yield.
+→ ARM single → Bash(build) → 5 minutes → exit 0 → turn end → Stop
+hook evaluates → fires (workflow="npm" via hook scrape,
+summary="성공" via is_error binary) → flag consumed → yield.
 
 **(s2) Multi-stage explicit chain.** User: `"Run build then test
 then lint, then ping"` → ARM single → Bash(build) → Bash(test) →
-Bash(lint) → all green → FIRE once at the terminal stage
-(`workflow="lint"`, `summary="성공 (exit 0)"`) → flag consumed →
-yield. **No mid-chain fires** — single is one-shot, and the summary
-reflects the terminal stage only. If the user wants a per-stage
-recap, the model narrates it in the assistant response body; the
-banner stays terminal-stage-only.
+Bash(lint) → all green → turn end → Stop hook evaluates → fires
+once at the terminal stage (workflow="npm"/last command's first
+non-cd token, summary="성공") → flag consumed → yield. **No
+mid-chain fires** — single is one-shot, and the hook always
+inspects only the last Bash tool_result for `is_error`. If the
+user wants a per-stage recap, the model narrates it in the
+assistant response body; the banner stays terminal-stage-only.
 
-**(s3) Mid-turn AskUserQuestion (rule 4 protects).** User: `"Build
+**(s3) Mid-turn AskUserQuestion (Rule 3 protects).** User: `"Build
 and ping"` → ARM single → Bash(build) → fail →
-AskUserQuestion(`"스택 트레이스 분석할까요?"`) → user attention
-returns immediately → **no fire** (rule 4 violated). User says
-`"예"` → analyze → fix → Bash(build retry) → green → FIRE → yield.
+AskUserQuestion(`"스택 트레이스 분석할까요?"`) → harness suspends
+the turn for user input → Stop hook does not fire this turn (Rule
+3 violated: turn-terminal tool is AskUserQuestion; the harness
+suspension also naturally guards this). User says `"예"` →
+analyze → fix → Bash(build retry) → green → turn end → Stop hook
+evaluates → fires → yield.
+
+**(s4) ARM-after-implicit-work, generic banner.** User: `"ok"` (no
+explicit task instruction, but model performs Bash diagnostics
+like `echo ...` voluntarily) → ARM previously issued → turn-end
+Stop hook scans the turn slice → work_calls=1 (the diagnostic
+Bash call; notify.sh self-call excluded) → conditions hold →
+fires (workflow="echo" via first non-cd token, summary="성공" via
+is_error binary). This is intentional — every model tool call
+counts as user-task work under v1.5.0's hook-side accounting,
+matching v1.4.x model-side semantics. If the user finds this
+spammy, they can CANCEL.
 
 ### Repeat-mode examples
 
 **(r-a) Multi-stage work turn.** ARM repeat → Bash(build) →
-Bash(test) → no AskUserQuestion → turn end → 3-rule satisfied → fire
-once (`workflow="test"`, `summary="테스트 통과 (exit 0)"`),
-`fire_count=1`. A turn with 5 Bash calls still fires only once — fire
-unit is the turn end.
+Bash(test) → no AskUserQuestion → turn end → Stop hook evaluates →
+fires once (workflow="npm", summary="성공"),
+`fire_count=1`. A turn with 5 Bash calls still fires only once —
+fire unit is the turn end.
 
-**(r-b) Empty turn — rule 2 protects.** Turn N: user says
-`"고마워"` → no user-task tool call → model evaluates the 3-rule and
-**does not call `notify.sh fire`** because rule 2 fails (primary
-contract: model-side rule eval). Even if the model erroneously
-called fire, the helper-exclusion would not let the fire itself
-satisfy rule 2 (backup contract). `fire_count` unchanged. **The
-model must not call fire reflexively at every turn boundary.**
+**(r-b) Empty turn — Rule 2 protects.** Turn N: user says
+`"고마워"` → no user-task tool call → turn end → Stop hook scans
+the turn slice → work_calls=0 → hook silent-exits without firing
+(Rule 2 fails). `fire_count` unchanged. The hook-side
+helper-exclusion regex (§4) ensures even if the model spuriously
+re-ARMs, that ARM call itself does not satisfy Rule 2.
 
 **(r-c) AskUserQuestion mid-cycle.** Test fail mid-turn →
-AskUserQuestion → rule 4 fails → no fire this turn. User answers
-`"예, 분석해줘"` → next turn analyzes / fixes / re-tests → no
-AskUserQuestion at end → fire (this cycle's first fire — the prior
+AskUserQuestion → harness suspends → Stop hook does not fire this
+turn (Rule 3). User answers `"예, 분석해줘"` → next turn analyzes
+/ fixes / re-tests → no AskUserQuestion at turn end → Stop hook
+evaluates → fires (this cycle's first fire — the prior
 AskUserQuestion turn was suppressed).
 
 **(r-d) Same-turn CANCEL.** Turn opens with ARM repeat → Bash(build)
 → user appends `"역시 알림 그만"` → CANCEL within the same turn →
-flag deleted → at turn end rule 1 fails → no fire. CANCEL is
-destructive-immediate.
+flag deleted → turn end → Stop hook finds no flag → silent
+no-op. CANCEL is destructive-immediate.
 
 **(r-e) Long cycle.** ARM repeat → 20 turns of code editing → each
-turn satisfies the 3-rule → 20 fires → user finally CANCELs.
+turn-end Stop hook fires once → 20 fires → user finally CANCELs.
 **No max-fire cap. No anti-spam guard. Termination relies entirely
 on user-issued CANCEL** — dynamic trust model.
 
@@ -278,7 +320,10 @@ fi
 ```
 
 Run this as a single `Bash(...)` call so stdout becomes one
-contiguous Korean message the model can echo back to the user.
+contiguous Korean message the model can echo back to the user. The
+plugin's PreToolUse hook recognizes this `terminal-notifier ...
+-group 'cc-cmds-active-notify'` argv shape and auto-approves the
+Bash invocation, so the user does not see a permission dialog.
 
 Design notes:
 - **PATH prepend is intentional** — Claude Code's Bash tool may

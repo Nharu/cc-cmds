@@ -18,7 +18,7 @@ subcommand="${1:-}"; shift || true
 flag_dir="${TMPDIR:-/tmp}/cc-cmds-active-notify"
 # Session ID — empirically PPID is stable across Bash tool calls (= claude process PID),
 # host-environment invariant — Bash tool subshells share claude process as parent across calls.
-session_id="${CLAUDE_SESSION_ID:-claude-pid-$PPID}"
+session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-claude-pid-$PPID}}"
 # Filesystem-safe sanitizer — strip everything outside [A-Za-z0-9_.-].
 safe_sid="${session_id//[^A-Za-z0-9_.-]/_}"
 flag_file="${flag_dir}/pending-${safe_sid}.flag"
@@ -47,6 +47,31 @@ case "$subcommand" in
     workflow="${1:-notify}"; summary="${2:-완료}"
     [[ -f "$flag_file" ]] || exit 0                     # no ARM → silent no-op
 
+    # === Acquire fire-branch lock (POSIX-atomic mkdir, no external dep) ===
+    # Covers schema/mode check + read-modify-write + mv. Prevents chain-reaction
+    # race where one process's corrupt-flag cleanup makes other processes see
+    # flag absent and silent-skip. Concurrent fires (β fallback / multi-session)
+    # are serialized here.
+    lockdir="${flag_file}.lockdir"
+    consuming=""; tmp=""
+    # Trap commands suffixed with `|| :` to swallow non-zero exits under
+    # set -euo pipefail (rmdir of already-released lock returns 1, which
+    # would propagate to shell exit code without this guard).
+    trap 'rmdir "$lockdir" 2>/dev/null || :; rm -f "${consuming:-}" "${tmp:-}" 2>/dev/null || :' EXIT
+    lock_wait=0
+    while ! mkdir "$lockdir" 2>/dev/null; do
+      sleep 0.001
+      lock_wait=$(( lock_wait + 1 ))
+      # 10s timeout — dogfood scope race is rare; longer wait suggests stuck lock.
+      # No force-clean: it caused chain-reaction by stealing another process's
+      # lock under contention. Silent skip is acceptable trade-off (notify may
+      # be lost in extreme contention, but never doubles or corrupts state).
+      [[ $lock_wait -gt 10000 ]] && exit 0
+    done
+
+    # Re-check flag presence after lock acquisition (predecessor may have consumed)
+    [[ -f "$flag_file" ]] || exit 0
+
     # Schema guard — strict equality (schema≠2 rejects both stale v1 and future v3+).
     # `|| true` is required: with `set -euo pipefail`, a no-match grep aborts
     # the command substitution before the cleanup branch is reached.
@@ -64,30 +89,23 @@ case "$subcommand" in
       rm -f "$flag_file"; exit 0
     fi
 
+    # === State mutation + mode-specific contracts (lock-protected) ===
+    # single-mode contract: mv -n ALWAYS consumes the flag (1-shot intent),
+    #                       even if terminal-notifier later missing (hint sentinel only).
+    # repeat-mode contract: terminal-notifier missing → preserve flag (no mutation)
+    #                       so subsequent turns can fire once binary is installed.
     if [[ "$flag_mode" == "single" ]]; then
-      # single-mode: atomic consume via mv -n (atomic within same filesystem).
+      # single-mode: atomic consume via mv -n (always mutate, regardless of binary presence)
       consuming="${flag_file}.consuming-$$"
-      trap 'rm -f "$consuming" 2>/dev/null' EXIT   # set BEFORE mv to close orphan window
       mv -n "$flag_file" "$consuming" 2>/dev/null || exit 0
-      [[ "$(uname -s)" == "Darwin" ]] || { rm -f "$consuming"; exit 0; }
-      if ! command -v terminal-notifier >/dev/null 2>&1; then
-        hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
-        [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
-        rm -f "$consuming"; exit 0
+    else  # repeat-mode: check binary BEFORE mutation to preserve flag if missing
+      if [[ "$(uname -s)" != "Darwin" ]]; then
+        exit 0   # preserve flag (non-macOS host)
       fi
-      terminal-notifier \
-        -title "[cc-cmds] ${workflow}" \
-        -message "${summary}" \
-        -group "cc-cmds-active-notify" \
-        2>/dev/null || true
-      rm -f "$consuming"
-
-    else  # repeat-mode: atomic update via temp→mv rename, flag preserved
-      [[ "$(uname -s)" == "Darwin" ]] || exit 0         # non-macOS: preserve flag, skip
       if ! command -v terminal-notifier >/dev/null 2>&1; then
         hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
         [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
-        exit 0                                           # preserve flag for next turn
+        exit 0   # preserve flag for next turn
       fi
       # Field-shape guard — strict-quantifier [0-9]+ rejects field-absent and
       # present-but-non-numeric corruption.
@@ -97,17 +115,41 @@ case "$subcommand" in
         printf '[cc-cmds] active-notify: cleared corrupt flag (fire_count/last_fire_at missing or malformed).\n' >&2
         rm -f "$flag_file"; exit 0
       fi
-      # Atomic state update: increment fire_count + set last_fire_at via temp→mv rename.
+      # Increment fire_count + set last_fire_at via temp→mv rename.
       fire_count=$(printf '%s' "$raw_count" | sed 's/.*:\([0-9][0-9]*\)/\1/')
       fire_count=$(( fire_count + 1 ))
       ts=$(date -u +%s)
       tmp="${flag_file}.tmp-$$"
-      trap 'rm -f "$tmp" 2>/dev/null' EXIT
       sed -E -e "s/\"fire_count\":[0-9]+/\"fire_count\":${fire_count}/" \
              -e "s/\"last_fire_at\":(null|[0-9]+)/\"last_fire_at\":${ts}/" \
              "$flag_file" > "$tmp"
       mv "$tmp" "$flag_file"
-      # No -group in repeat mode — each fire produces a separate banner (pile-up intentional).
+      tmp=""   # successfully renamed; not orphaned
+    fi
+
+    # === Release lock BEFORE terminal-notifier (minimize hold time) ===
+    rmdir "$lockdir" 2>/dev/null || :
+
+    # single-mode post-consume: terminal-notifier may still be missing (flag is already consumed)
+    if [[ "$flag_mode" == "single" ]]; then
+      if [[ "$(uname -s)" != "Darwin" ]]; then
+        rm -f "$consuming"
+        exit 0
+      fi
+      if ! command -v terminal-notifier >/dev/null 2>&1; then
+        hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
+        [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
+        rm -f "$consuming"
+        exit 0
+      fi
+      terminal-notifier \
+        -title "[cc-cmds] ${workflow}" \
+        -message "${summary}" \
+        -group "cc-cmds-active-notify" \
+        2>/dev/null || true
+      rm -f "$consuming"
+    else
+      # repeat-mode: binary availability already confirmed in lock, no -group (pile-up intentional)
       terminal-notifier \
         -title "[cc-cmds] ${workflow}" \
         -message "${summary}" \

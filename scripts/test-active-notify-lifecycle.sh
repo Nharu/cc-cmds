@@ -87,6 +87,10 @@ for fixture_dir in "${fixtures[@]}"; do
     set -e
     export TMPDIR="$tmpdir"
     export CLAUDE_SESSION_ID="$session_id"
+    # notify.sh L21 prefers CLAUDE_CODE_SESSION_ID — set it to the same value
+    # so any leakage from the outer shell does not override the fixture's
+    # deterministic session_id (fixture isolation guarantee).
+    export CLAUDE_CODE_SESSION_ID="$session_id"
     export NOTIFY_SH="$notify_sh"
     export FLAG_DIR="$flag_dir"
     export FLAG_FILE="$flag_file"

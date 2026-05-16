@@ -24,18 +24,15 @@ ARM → FIRE(s) → CANCEL/consume.
      # resume. Repeat is inherently multi-turn so preserve is the natural fit.
 
 ## §2 Notification fire
-  No `-execute` flag (notification-only; no click-through action).
-  Banner copy synthesis: `workflow` = short English task identifier
-    (≤30 chars, internal ID — kept in English for log/tooling stability),
-    `summary` = 1-line user-facing message in Korean (banner body is read by
-    the user; Korean per primary audience). Multi-stage turns prefer the
-    terminal-stage outcome (last build/test/lint result) over aggregate
-    wording. Non-Bash-terminal turns (Read/Edit/Grep) use a 1-line semantic
-    Korean summary of turn intent (e.g. "파일 업데이트 완료", "리뷰 마침",
-    "컨텍스트 로드 완료"); never empty (minimum "완료"). This synthesis
-    guidance is duplicated here intentionally — SKILL.md body may be
-    truncated after context compaction, while this fresh-read surface
-    persists.
+  Banner copy synthesis is the Stop hook's responsibility under v1.5.0.
+    The hook scrapes the transcript JSONL at turn end: `workflow` = first
+    non-cd token of the last Bash command (fallback `task` for non-Bash
+    terminal turns), `summary` = binary derived from the last tool_result's
+    `is_error` field (`성공` / `실패`) or `완료` for non-Bash terminal
+    turns. Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
+    Model-side copy synthesis no longer applies; future v1.5.x roadmap
+    introduces an opt-in `<!--notify-summary: ... -->` marker the hook
+    scrapes for richer copy.
   mode=single: `terminal-notifier` invoked with
     `-group "cc-cmds-active-notify"` (single banner replaces previous;
     irrelevant in practice since the lifecycle is 1-shot, but kept for
@@ -49,20 +46,27 @@ ARM → FIRE(s) → CANCEL/consume.
     flag is preserved until explicit CANCEL.
 
 ## §3 Failure handling
-  All `notify.sh` failures (ARM/FIRE/CANCEL paths) are silent skip with
-  respect to the user-visible response stream. `AskUserQuestion` is never
-  called. No user-addressed narration. No assistant response stream
-  logging. Stderr-only diagnostic hints follow two distinct dedup policies:
-  (a) terminal-notifier missing → sentinel-guarded once-per-TMPDIR-lifetime
-  via `${TMPDIR}/cc-cmds-notify-hint`; (b) corrupt-flag (schema/mode/
+  Failure handling differs across the two invocation surfaces.
+
+  **Model-side ARM/CANCEL** (Bash dispatch via `notify.sh arm` /
+  `notify.sh cancel`): silent skip with respect to the user-visible
+  response stream. `AskUserQuestion` is never called. No user-addressed
+  narration. No assistant response stream logging. Stderr-only diagnostic
+  hints follow two distinct dedup policies: (a) terminal-notifier missing
+  → sentinel-guarded once-per-TMPDIR-lifetime via
+  `${TMPDIR}/cc-cmds-notify-hint`; (b) corrupt-flag (schema/mode/
   field-shape mismatch) → once-per-corrupt-event, self-healed via
   `rm -f flag` so the trigger condition never repeats for the same flag
-  (no sentinel needed). Neither is ever surfaced to the user via
-  `AskUserQuestion` or assistant message. (active-notify is a
-  model-invocable helper, not a TeamCreate-based skill, so the
-  agent-team-protocol Surface Discipline rule does not apply directly;
-  the analogous "no failure surfaces user-visible" invariant is enforced
-  locally here.)
+  (no sentinel needed). Neither is ever surfaced to the user.
+
+  **Hook-side FIRE** (Stop hook shells out to `notify.sh fire`): any
+  internal hook error (missing `jq`, unset `CLAUDE_PLUGIN_ROOT`,
+  malformed transcript JSON, etc.) results in silent fail-open — the
+  hook exits 0 with empty stdout, deferring to the default permission
+  gate behavior. No stderr noise is surfaced to the user; the file-based
+  `${flag_dir}/audit.log` captures β safety-net selections for forensic
+  inspection. Once inside `notify.sh fire`, the same model-side stderr
+  hint policy applies for terminal-notifier-missing / corrupt-flag.
 
   Permission-test bypass path (model-direct `terminal-notifier` invocation
   per SKILL.md body §7) is governed by a separate user-narration contract
@@ -93,11 +97,17 @@ ARM → FIRE(s) → CANCEL/consume.
      failure. Missed notification is acceptable; a halted workflow is
      not. Click-through is unsupported (notification-only; `-execute`
      option unused).
-  3. **Model invocation is strictly additive.** Whether the model invokes
-     ARM, FIRE, or CANCEL, the procedure completes with success or
-     silent skip — never blocks or modifies the caller workflow. The
-     model never retries on failure. Single-mode FIRE consumes the flag
-     after one fire; repeat-mode FIRE preserves the flag and increments
-     `fire_count` per turn end, relying on user-issued CANCEL (no
-     anti-spam guard — dynamic-trust model). ARM and CANCEL are
-     local-disk file ops only and naturally non-blocking.
+  3. **Invocation is strictly additive across both surfaces.** Two
+     surfaces invoke `notify.sh`: the model invokes ARM and CANCEL via
+     Bash tool calls, and the Stop hook invokes FIRE at turn end. Both
+     surfaces' invocations complete with success or silent skip — they
+     never block or modify the caller workflow, and neither retries on
+     failure. Single-mode FIRE consumes the flag after one fire;
+     repeat-mode FIRE preserves the flag and increments `fire_count`
+     per turn end, relying on user-issued CANCEL (no anti-spam guard
+     — dynamic-trust model). ARM and CANCEL are local-disk file ops
+     only and naturally non-blocking. The permission-test bypass path
+     invokes `terminal-notifier` directly (not via `notify.sh`); the
+     same fire-and-forget contract applies, with user-visible Korean
+     guidance via combined-Bash stdout as a deliberate exception per
+     SKILL.md §7.
