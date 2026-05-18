@@ -79,7 +79,7 @@ dispatch_fire() {
     consuming="${flag_file}.consuming-$$"
     mv -n "$flag_file" "$consuming" 2>/dev/null || exit 0
   else
-    if [[ "$(uname -s)" != "Darwin" ]]; then
+    if [[ -z "${CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK:-}" ]] && [[ "$(uname -s)" != "Darwin" ]]; then
       exit 0   # preserve flag (non-macOS host)
     fi
     if ! command -v terminal-notifier >/dev/null 2>&1; then
@@ -108,7 +108,7 @@ dispatch_fire() {
   rmdir "$lockdir" 2>/dev/null || :
 
   if [[ "$flag_mode" == "single" ]]; then
-    if [[ "$(uname -s)" != "Darwin" ]]; then
+    if [[ -z "${CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK:-}" ]] && [[ "$(uname -s)" != "Darwin" ]]; then
       rm -f "$consuming"
       exit 0
     fi

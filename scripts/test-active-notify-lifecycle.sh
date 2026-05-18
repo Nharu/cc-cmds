@@ -101,6 +101,12 @@ for fixture_dir in "${fixtures[@]}"; do
     # (or the fixture-controlled empty PATH) governs `command -v terminal-notifier`
     # rather than the host's real /opt/homebrew/bin/terminal-notifier.
     export CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
+    # Bypass notify.sh's Darwin gate so fixtures targeting macOS-only fire
+    # paths (terminal-notifier invocation, missing-binary stderr hint, etc.)
+    # also exercise on Linux CI. Same escape-hatch style as the PATH prepend
+    # disable above; survives fixture env.sh PATH overrides because env vars
+    # propagate through `source env.sh`.
+    export CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK=1
     if [[ -f "$fixture_dir/env.sh" ]]; then
       # shellcheck disable=SC1090
       source "$fixture_dir/env.sh"
