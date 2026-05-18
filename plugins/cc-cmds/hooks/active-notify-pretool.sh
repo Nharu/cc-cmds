@@ -21,7 +21,7 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [[ -n "$cmd" ]] || exit 0   # non-Bash matcher slip → noop
 
-notify_re='active-notify/scripts/notify\.sh[[:space:]]+(arm|fire|cancel)\b'
+notify_re='active-notify/scripts/notify\.sh[[:space:]]+(arm|fire|fire-now|cancel)\b'
 bypass_re="terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]"
 
 is_notify=0; is_bypass=0

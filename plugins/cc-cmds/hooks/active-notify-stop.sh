@@ -96,41 +96,131 @@ work_calls=$(printf '%s' "$turn_slice" | jq -rs '
                 "WebFetch","WebSearch","Task","MultiEdit","NotebookEdit"]
              | index($n) != null)
     | select(.name != "Bash"
-             or (.input.command | test("active-notify/scripts/notify\\.sh\\s+(arm|fire|cancel)\\b") | not))
+             or (.input.command | test("active-notify/scripts/notify\\.sh\\s+(arm|fire|fire-now|cancel)\\b") | not))
   ] | length
 ')
-[[ "$work_calls" -ge 1 ]] || exit 0
+# === Marker + flag-field scrape (shared by Rule 2 + Rule 3 marker-conditioned bypass) ===
+# Marker is emitted by the model in assistant text blocks as a single-line HTML
+# comment: `<!--cc-active-notify workflow="..." summary="..." -->`. Hook scans
+# the turn slice for the LAST marker occurrence (multi-step turn bleed fence).
+# Bypass guard (Rule 2 + Rule 3, symmetric) requires three conditions:
+#   - flag.milestone non-empty (ARM-time specific milestone)
+#   - flag.mode != "repeat" (repeat lexicon never carries milestone)
+#   - marker_workflow non-empty (model signaled milestone-completion observation)
+# Fail-closed when marker absent: silent miss is recoverable, wrong banner is not.
+flag_milestone=$(jq -r '.milestone // empty' "$active_flag" 2>/dev/null || true)
+flag_mode=$(jq -r '.mode // empty' "$active_flag" 2>/dev/null || true)
 
-# Rule 3 (turn-terminal AskUserQuestion suppression — belt-and-braces)
+marker_text=$(printf '%s' "$turn_slice" | jq -rs '
+  [ .[]? | select(.message?.role? == "assistant")
+    | .message.content[]? | select(.type? == "text") | .text? ] | join("\n") // empty
+')
+marker_line=$(printf '%s' "$marker_text" \
+  | grep -oE '<!--cc-active-notify[[:space:]][^>]*-->' | tail -1 || true)
+marker_workflow=$(printf '%s' "$marker_line" \
+  | grep -oE 'workflow="[^"]*"' | sed 's/workflow="//; s/"$//' || true)
+marker_summary=$(printf '%s' "$marker_line" \
+  | grep -oE 'summary="[^"]*"' | sed 's/summary="//; s/"$//' || true)
+
+# Length cap + sanitize — workflow 120B / summary 360B byte caps. Hook runs
+# under LC_ALL=C where `cut -c`/`head -c` operate in bytes; explicit byte cap
+# + iconv `-c` (drops trailing partial multibyte) avoids UTF-8 mid-codepoint
+# truncation on Korean text. Strip control chars + backtick + `$` defense-
+# in-depth (notify.sh quotes args but a sanitization seam is cheap).
+truncate_utf8() {
+  local input="$1" max="$2" trimmed
+  if [[ $(printf '%s' "$input" | wc -c) -le "$max" ]]; then
+    printf '%s' "$input"
+    return
+  fi
+  trimmed=$(printf '%s' "$input" | head -c "$((max - 3))" \
+    | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null) || trimmed=""
+  [[ -z "$trimmed" ]] && trimmed=$(printf '%s' "$input" | head -c "$((max - 3))")
+  printf '%s…' "$trimmed"
+}
+marker_workflow=$(printf '%s' "$marker_workflow" | tr -d '`$\000-\037')
+marker_workflow=$(truncate_utf8 "$marker_workflow" 120)
+marker_summary=$(printf '%s' "$marker_summary" | tr -d '`$\000-\037')
+marker_summary=$(truncate_utf8 "$marker_summary" 360)
+
+marker_bypass=0
+[[ -n "$flag_milestone" && "$flag_mode" != "repeat" && -n "$marker_workflow" ]] && marker_bypass=1
+
+# Rule 2 (marker-conditioned bypass — covers BashOutput-only turn where
+# work_calls=0 because BashOutput isn't in the 11-tool whitelist). Bypass-
+# skip audit logged ONLY for partial fulfillment (milestone non-empty,
+# marker absent) to keep audit.log bounded for generic-ARM silent exits.
+if [[ "$work_calls" -lt 1 ]]; then
+  if [[ "$marker_bypass" -ne 1 ]]; then
+    if [[ -n "$flag_milestone" && "$flag_mode" != "repeat" ]]; then
+      printf '[%s] Rule 2 bypass skipped: milestone=%s, marker absent (fail-closed)\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$flag_milestone" \
+        >> "$flag_dir/audit.log" 2>/dev/null || true
+    fi
+    exit 0
+  fi
+fi
+
+# Rule 3 (turn-terminal AskUserQuestion suppression — belt-and-braces,
+# marker-conditioned bypass per §3.5). Same symmetric guard as Rule 2.
 last_tool=$(printf '%s' "$turn_slice" | jq -rs '
   [ .[] | select(.message.role == "assistant")
     | .message.content[]? | select(.type == "tool_use") | .name ] | last // empty
 ')
-[[ "$last_tool" == "AskUserQuestion" ]] && exit 0
+if [[ "$last_tool" == "AskUserQuestion" ]]; then
+  if [[ "$marker_bypass" -ne 1 ]]; then
+    if [[ -n "$flag_milestone" && "$flag_mode" != "repeat" ]]; then
+      printf '[%s] Rule 3 bypass skipped: milestone=%s, marker absent (fail-closed)\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$flag_milestone" \
+        >> "$flag_dir/audit.log" 2>/dev/null || true
+    fi
+    exit 0
+  fi
+fi
 
-# Best-effort summary synthesis: match the last Bash tool_use to its tool_result.
+# turn_slice fire-now dedup — if the model invoked `notify.sh fire-now` in
+# this turn, the banner is already dispatched and Stop hook MUST stay silent.
+# Detection is structural (tool_use path only, no false-positive from text
+# block quoting). No wall-clock heuristic — deterministic across long turns.
+model_fired_now=$(printf '%s' "$turn_slice" | jq -rs '
+  [ .[]? | select(.message?.role? == "assistant")
+    | .message.content[]?
+    | select(.type? == "tool_use" and .name? == "Bash")
+    | .input?.command?
+    | select(. != null and test("active-notify/scripts/notify\\.sh\\s+fire-now\\b"))
+  ] | length
+')
+[[ "$model_fired_now" -ge 1 ]] && exit 0
+
+# Summary fallback chain: marker_summary (model-declared) > Bash is_error
+# binary > "완료". Marker is authoritative when present so semantic content
+# (e.g., "build failed: type mismatch in lib.rs") survives into the banner.
 last_bash_id=$(printf '%s' "$turn_slice" | jq -rs '
   [ .[] | select(.message.role == "assistant")
     | .message.content[]?
     | select(.type == "tool_use" and .name == "Bash") | .id ] | last // empty
 ')
-summary="완료"   # default — non-Bash terminal turn
-if [[ -n "$last_bash_id" ]]; then
-  result=$(printf '%s' "$turn_slice" | jq -rs --arg id "$last_bash_id" '
-    [ .[] | select(.message.role == "user")
-      | .message.content[]?
-      | select(.type == "tool_result" and .tool_use_id == $id) ] | last
-  ')
-  if [[ "$result" != "null" && -n "$result" ]]; then
-    # is_error binary only — exit-code scrape removed to eliminate
-    # semantic-contradictory banners (e.g., "성공 (exit 5)" when stdout
-    # incidentally contained "exit N" substring). Banner copy stays
-    # coarse-grained but never lies about success/failure.
-    is_err=$(printf '%s' "$result" | jq -r '.is_error // false')
-    if [[ "$is_err" == "true" ]]; then
-      summary="실패"
-    else
-      summary="성공"
+if [[ -n "$marker_summary" ]]; then
+  summary="$marker_summary"
+else
+  summary="완료"   # default — non-Bash terminal turn
+  if [[ -n "$last_bash_id" ]]; then
+    result=$(printf '%s' "$turn_slice" | jq -rs --arg id "$last_bash_id" '
+      [ .[] | select(.message.role == "user")
+        | .message.content[]?
+        | select(.type == "tool_result" and .tool_use_id == $id) ] | last
+    ')
+    if [[ "$result" != "null" && -n "$result" ]]; then
+      # is_error binary only — exit-code scrape removed to eliminate
+      # semantic-contradictory banners (e.g., "성공 (exit 5)" when stdout
+      # incidentally contained "exit N" substring). Banner copy stays
+      # coarse-grained but never lies about success/failure.
+      is_err=$(printf '%s' "$result" | jq -r '.is_error // false')
+      if [[ "$is_err" == "true" ]]; then
+        summary="실패"
+      else
+        summary="성공"
+      fi
     fi
   fi
 fi
@@ -148,6 +238,8 @@ workflow=$(printf '%s' "$last_bash_cmd" | awk '{
   }
 }')
 workflow="${workflow:-task}"
+# Marker workflow override — authoritative when present (model-declared).
+[[ -n "$marker_workflow" ]] && workflow="$marker_workflow"
 
 # Env-prefix the fire call with the matched flag's session_id — under β
 # fallback (active_flag is a foreign-session flag), notify.sh's fallback
