@@ -24,15 +24,29 @@ ARM → FIRE(s) → CANCEL/consume.
      # resume. Repeat is inherently multi-turn so preserve is the natural fit.
 
 ## §2 Notification fire
-  Banner copy synthesis is the Stop hook's responsibility under v1.5.0.
-    The hook scrapes the transcript JSONL at turn end: `workflow` = first
-    non-cd token of the last Bash command (fallback `task` for non-Bash
-    terminal turns), `summary` = binary derived from the last tool_result's
-    `is_error` field (`성공` / `실패`) or `완료` for non-Bash terminal
-    turns. Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
-    Model-side copy synthesis no longer applies; future v1.5.x roadmap
-    introduces an opt-in `<!--notify-summary: ... -->` marker the hook
-    scrapes for richer copy.
+  Banner copy synthesis has a three-tier fallback chain under v1.5.0.
+    The Stop hook scrapes the assistant text blocks of the turn slice
+    for a marker `<!--cc-active-notify workflow="..." summary="..." -->`
+    (last occurrence wins, multi-step bleed fence; workflow ≤ 120 bytes,
+    summary ≤ 360 bytes, byte-cap for UTF-8 safety). Priority:
+      1. Marker `workflow` / `summary` when present (model-declared,
+         authoritative).
+      2. Bash fallback — `workflow` = first non-cd token of the last
+         Bash command, `summary` = binary from last tool_result's
+         `is_error` (`성공` / `실패`).
+      3. Generic fallback — `workflow` = `task`, `summary` = `완료`
+         for non-Bash terminal turns.
+    Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
+
+    Model-driven sub-turn fire via `notify.sh fire-now <workflow>
+    <summary>` is the model's only dispatch surface; it inherits the
+    same dispatcher (lockdir / schema / mode-aware mutation) and is
+    gated by ARM-time `--milestone` (empty → silent no-op + audit
+    log). Stop hook detects fire-now invocations in the turn slice
+    and dedups. Detailed bypass mechanics (Rule 2 / Rule 3 marker-
+    conditioned bypass with audit-log fail-closed) are documented in
+    active-notify SKILL.md §6.2 (positive companion bullet).
+
   mode=single: `terminal-notifier` invoked with
     `-group "cc-cmds-active-notify"` (single banner replaces previous;
     irrelevant in practice since the lifecycle is 1-shot, but kept for

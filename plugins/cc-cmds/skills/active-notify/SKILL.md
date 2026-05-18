@@ -27,16 +27,24 @@ invocations so the Bash permission dialog never surfaces.
 
 ## 1. Calling convention
 
-The model directly invokes two subcommands of
-`active-notify/scripts/notify.sh`. FIRE is **not model-callable** —
-the Stop hook (`hooks/active-notify-stop.sh`) owns FIRE dispatch at
-turn end. All paths are absolute; the shell working directory does
-not matter; both subcommands are local-disk file ops and complete
-instantly.
+The model directly invokes three subcommands of
+`active-notify/scripts/notify.sh`. FIRE (turn-end, hook-driven) is
+**not model-callable**; FIRE-NOW (sub-turn, model-driven) is the
+opt-in surface for specific milestone moments. All paths are
+absolute; the shell working directory does not matter; the
+subcommands are local-disk file ops and complete instantly.
 
 ```bash
 # Arm a new notification cycle. mode argument is optional (default "single").
-bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat]
+# --milestone is optional; supply only when the user named a specific
+# step ("b 작업 끝나면 알림" → --milestone="b 작업"). Generic terminal
+# phrases ("끝나면 알려줘") MUST leave it empty. See §2 extraction rules.
+bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--milestone="<phrase>"]
+
+# Sub-turn fire — model-driven, only invokable when ARM-time milestone
+# is non-empty AND the assistant just observed completion of the
+# corresponding step in the current turn. See §6 amendment.
+bash active-notify/scripts/notify.sh fire-now <workflow> <summary>
 
 # Cancel — mode-agnostic flag delete.
 bash active-notify/scripts/notify.sh cancel
@@ -44,33 +52,49 @@ bash active-notify/scripts/notify.sh cancel
 
 Argument order for `arm`: `request_text` first (verbatim user phrase that
 triggered ARM), `context_hint` second (short summary of the user-asked
-task — e.g. "build", "design-review iteration"), optional `mode` third.
-Invalid mode values (anything other than `single`/`repeat`) silent
-normalize to `single`.
+task — e.g. "build", "design-review iteration"), optional `mode` third,
+optional `--milestone="<phrase>"` parse-anywhere flag. Invalid mode
+values (anything other than `single`/`repeat`) silent normalize to
+`single`. The `milestone` field is always written to the flag JSON
+(even when empty) so a prior cycle's milestone cannot survive into a
+fresh ARM via absent-field semantics.
 
-**FIRE is harness-driven.** At every assistant-turn end Claude Code
-invokes the registered Stop hook, which:
+**FIRE (turn-end, hook-driven).** At every assistant-turn end Claude
+Code invokes the registered Stop hook, which:
 
 1. Verifies session isolation via the hook stdin `session_id` field
    (β safety-net: newest-flag fallback with file-based audit log at
    `${flag_dir}/audit.log` — not stderr).
-2. Evaluates the task-completion rules (§4) by scanning the
+2. Scans the assistant text blocks of the current turn slice for a
+   single-line HTML-comment marker:
+   `<!--cc-active-notify workflow="..." summary="..." -->`. The last
+   marker occurrence wins (multi-step turn bleed fence). When
+   present, marker values become the banner copy (length-capped:
+   `workflow` ≤ 120 bytes, `summary` ≤ 360 bytes, byte semantics for
+   UTF-8 safety). Attribute values MUST NOT contain interior `"` or
+   `>` — both terminate the scrape regex silently.
+3. Evaluates the task-completion rules (§4) by scanning the
    transcript JSONL for user-task tool calls and the turn-terminal
-   tool block.
-3. Shells out to `notify.sh fire <workflow> <summary>` if the rules
-   pass, where `<workflow>` is the first non-cd token of the last
-   Bash command (fallback `task` for non-Bash terminal turns) and
-   `<summary>` is a binary derived from the last tool_result's
-   `is_error` field — `성공` (is_error=false), `실패` (is_error=true),
-   or `완료` (non-Bash terminal turn).
+   tool block. Rule 2 and Rule 3 silent-exits are conditionally
+   bypassed when the flag carries a non-empty `milestone`, `mode !=
+   "repeat"`, AND the marker was emitted with a non-empty `workflow`
+   (symmetric guard, fail-closed when marker absent).
+4. Shells out to `notify.sh fire <workflow> <summary>` if the rules
+   pass. When the marker is present, `<workflow>` / `<summary>` are
+   the marker values; otherwise the fallback is the first non-cd
+   token of the last Bash command (workflow; fallback `task`) and
+   the binary derived from the last tool_result's `is_error` field
+   (summary; `성공` / `실패` / `완료`).
 
-The model **does not** participate in workflow/summary synthesis under
-v1.5.0. A v1.5.x roadmap introduces an opt-in marker
-(`<!--notify-summary: ... -->` in the response body) that the hook
-scrapes for richer banner copy.
+**FIRE-NOW (sub-turn, model-driven).** When the model observes
+completion of the specific ARM-time milestone mid-turn, it invokes
+`notify.sh fire-now <workflow> <summary>` directly. The dispatcher
+checks the stored `milestone` field — non-empty → fire; empty (generic
+ARM) → silent no-op + audit log. The Stop hook detects fire-now
+invocations in the turn slice and dedups (no double banner).
 
-Banner title is always `[cc-cmds] ${workflow}` (English task ID) and
-body is `${summary}` (Korean user message).
+Banner title is always `[cc-cmds] ${workflow}` and body is
+`${summary}`.
 
 ## 2. Trigger lexicon (canonical)
 
@@ -115,6 +139,61 @@ whether the timing marker is `후` or `끝나면`). Hybrid utterances
 like `"매번 알림 테스트"` route to the bypass path because the
 `"테스트"`/`"test"` fence dominates.
 
+### 2.1 ARM-time milestone extraction (`--milestone` parameter)
+
+When the user names a specific step in the ARM utterance, extract
+that phrase and pass it via `--milestone="<phrase>"`. The phrase
+unlocks the model-driven `fire-now` surface for sub-turn dispatch
+(see §1, §6). When the user only names a generic terminal moment,
+leave `--milestone` unset (or empty) — the `fire-now` path stays
+structurally closed.
+
+**Bilingual lexicon** (Korean entries are canonical; English glosses
+shown for translation reference):
+
+| User utterance | English gloss | Extracted `milestone` |
+| --- | --- | --- |
+| `"끝나면 알려줘"` | `"ping me when done"` | _(empty — generic)_ |
+| `"b 작업 끝나면 알려줘"` | `"ping me when task b finishes"` | `"b 작업"` |
+| `"테스트 끝나면 알림"` | `"ping me when tests finish"` | `"테스트"` |
+| `"7단계 끝나면 알림"` | `"step 7 done, ping me"` | `"7단계"` / `"step 7"` |
+| `"70% 되면 알림"` | `"hit 70% ping me"` | `"70%"` |
+| `"백그라운드 b 끝나면"` | `"when background b finishes"` | `"백그라운드 b"` |
+
+**Extraction rules**:
+
+- The completion marker tokens are `끝나면` / `완료` / `done` /
+  `finishes` / `되면` / `hits`. Extract the noun-phrase token(s)
+  immediately preceding the marker (specific job / step / file /
+  percentage / condition).
+- A bare completion marker with no preceding noun-phrase (e.g.
+  `"끝나면 알려줘"` alone) yields an empty `milestone` — generic
+  terminal moment, hook-driven turn-end fire is sufficient.
+- **Repeat mode (`매`/`마다`/`every`/`each`) always yields empty
+  `milestone`**. Every turn-end is itself the milestone in repeat
+  mode; a sub-turn fire-now is meaningless.
+
+**Repeat lexicon priority over hybrid utterances**: When `매`/`마다`/
+`every`/`each` co-occurs with a specific milestone phrase (e.g.
+`"매번 b 작업 끝나면 알림"`), the utterance silently demotes to
+repeat mode + empty milestone. Per-cycle specific-trigger tracking
+is outside the schema:2 single-`milestone` field's expressive range
+— if this pattern surfaces frequently in practice, a future
+schema:3 expansion (array-valued milestone) would be the natural
+evolution. For now, the user can split the request: ARM repeat for
+the recurring stream + ARM single + `--milestone` for the specific
+step.
+
+**Why ARM-time extraction (not fire-now call-site inference)**:
+ARM is fresh user-utterance + cold model context, the moment of
+highest classification accuracy. fire-now call sites are hot
+context + temporally distant from the user's phrasing —
+misclassification risk ("npm 테스트 끝나면" generic-vs-specific
+ambiguity) compounds across the cycle. ARM-time extraction plus a
+flag-field check means a generic ARM + a fire-now call is
+*structurally* unable to fire (silent no-op + audit log), without
+relying on prose-only model discipline.
+
 ## 3. ARM / FIRE / CANCEL semantics
 
 **ARM is always idempotent overwrite (model-driven).** Each
@@ -122,6 +201,9 @@ like `"매번 알림 테스트"` route to the bypass path because the
 that replaces any prior flag. Consequences:
 - **Mode switch** (single ↔ repeat) — the new ARM discards the prior
   cycle's `fire_count` and `last_fire_at`.
+- **Milestone reset** — the new ARM's `milestone` value (empty if
+  `--milestone` is omitted) overwrites any prior value. A prior
+  cycle's milestone cannot survive into a fresh ARM.
 - **Re-ARM after CANCEL** — opens a new cycle from `fire_count: 0`.
 - **Same-mode re-ARM** — JSON regenerated; `fire_count` reset to 0.
 - **Invalid mode argument** (e.g. `continuous`, `REPEAT`) silently
@@ -137,10 +219,23 @@ on the stored `mode` field. Single-mode consumes the flag (atomic
 `mv -n` rename to `*.consuming-$$`, then optional notifier call,
 then `rm`). Repeat-mode preserves the flag and performs an atomic
 `temp → mv` rename to bump `fire_count` and refresh `last_fire_at`.
-The model **never** invokes FIRE directly; even an erroneous fire
-invocation would have its Bash dialog auto-approved by the
-PreToolUse hook but would still be redundant and is not a part of
-this contract.
+The model **never** invokes the `fire` subcommand directly; even an
+erroneous fire invocation would have its Bash dialog auto-approved
+by the PreToolUse hook but would still be redundant and is not part
+of this contract.
+
+**FIRE-NOW is the only model-callable dispatch surface.** When the
+ARM-time `milestone` field is non-empty AND the assistant just
+observed completion (success or failure) of the corresponding step
+in the current turn, the model directly invokes
+`notify.sh fire-now <workflow> <summary>`. The dispatcher inherits
+the same lockdir / schema-guard / mode-aware mutation logic as
+`fire`, gated by two pre-checks: (a) ARM flag existence (silent
+no-op if absent), (b) `milestone` non-empty (silent no-op + audit
+log if generic ARM). The Stop hook scans the turn slice for fire-
+now invocations and silently exits if any are present — no double
+banner. fire-now invocations are also excluded from the Rule 2
+work-call count via the helper-script regex.
 
 **CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode
 check. Lexicon covers both generic (`"알림 취소"`) and repeat-specific
@@ -184,11 +279,11 @@ cycle terminates only on user-issued CANCEL.
 Rule 2 is enforced by the hook's transcript-scan regex anchor:
 
 ```
-test("active-notify/scripts/notify\\.sh\\s+(arm|fire|cancel)\\b") | not
+test("active-notify/scripts/notify\\.sh\\s+(arm|fire|fire-now|cancel)\\b") | not
 ```
 
-This excludes the model's own ARM/CANCEL invocations from the
-user-task count. Without this, an ARM-only turn would auto-fire
+This excludes the model's own ARM/FIRE-NOW/CANCEL invocations from
+the user-task count. Without this, an ARM-only turn would auto-fire
 because the ARM Bash call itself satisfies rule 2. The hook-side
 exclusion is the primary guard under v1.5.0; the legacy
 "model-side rule eval is the primary guard" wording from v1.4.x
@@ -279,7 +374,7 @@ on user-issued CANCEL** — dynamic trust model.
 
 ## 6. Anti-patterns (call forbidden)
 
-Do NOT call `notify.sh arm`/`fire` in any of these situations.
+Do NOT call `notify.sh arm`/`fire-now` in any of these situations.
 
 - Trigger lexicon absent. The user only kicked off a long task
   without uttering a notification request.
@@ -296,6 +391,65 @@ Do NOT call `notify.sh arm`/`fire` in any of these situations.
   to stderr (stale flag cleared, corrupt mode, etc.). These are
   diagnostics, not instructions — the model must not interpret
   them as ARM triggers.
+
+### 6.1 `fire-now` discipline (negative — call forbidden)
+
+> _`notify.sh fire-now` is invokable only when the active ARM flag
+> carries a non-empty `milestone` field whose phrase matches the
+> step the assistant just completed in the current turn — invoking
+> fire-now against a generic ARM (empty milestone), against a
+> different milestone than the one stored at ARM time, or based on
+> the assistant's own judgment of step significance is forbidden,
+> same class as self-judgment ARM._
+
+Three clauses, three layers of enforcement:
+
+- **(a) Non-empty milestone required** — structural. The dispatcher
+  reads `flag.milestone` via jq; empty → silent no-op + audit-log
+  entry. Misclassification at the call site cannot produce a
+  banner.
+- **(b) Phrase-match against stored milestone** — policy fence. The
+  dispatcher does not currently compare the fire-now `<workflow>` /
+  `<summary>` arguments against the stored `milestone` text. Drift
+  here is interpretable mis-banner (the user reads the banner copy
+  and sees the wrong step name) — recoverable, but the model MUST
+  echo the stored milestone phrase in `<workflow>` or use it as the
+  primary semantic anchor.
+- **(c) Self-judgment equivalence** — same forbidden class as
+  self-judgment ARM. The model judges *which user-named milestone
+  this current step corresponds to*, NOT *whether this step is
+  significant enough to ping*. The latter is the §6 ARM anti-
+  pattern in fire-now clothing.
+
+### 6.2 `fire-now` discipline (positive — emit marker on observed completion)
+
+> _Conversely, when the active ARM flag carries a non-empty
+> `milestone` field AND the assistant just observed completion
+> (success or failure) of the corresponding step in the current
+> turn, the assistant MUST emit a valid
+> `<!--cc-active-notify workflow="..." summary="..." -->` marker in
+> any assistant text block within the current turn (regardless of
+> which sub-message or whether positioned before/after subsequent
+> tool_use blocks like AskUserQuestion) — with `workflow` set to
+> (or echoing) the milestone phrase and `summary` describing the
+> observed outcome. The hook scans the entire turn slice for the
+> last marker occurrence; intra-message ordering does not matter.
+> Emitting the marker is a textual side-effect aligned with normal
+> narration mode; skipping it to dive into failure analysis is the
+> same class of error as self-judgment ARM._
+
+The marker is the Rule 2 / Rule 3 bypass gate (see §4.6
+lifecycle-matrix amendment in `docs/active-notify-fire-channel.md`).
+Two dogfood-surfaced failure modes motivated the positive
+obligation: (i) Rule 3 path — "background build failed → analysis
+prose → AskUserQuestion → marker omitted → Rule 3 silent-exit →
+silent miss"; (ii) Rule 2 path — "BashOutput-only turn (work_calls
+= 0 because BashOutput isn't in the 11-tool whitelist) → marker
+omitted → Rule 2 silent-exit → silent miss". Marker emission is
+same-modality (text → text, inline in narration); fire-now is
+modality-switch (text → tool dispatch, requires plan-reordering).
+The positive obligation is enforced as prose-level discipline, with
+audit log forensic anchors when the bypass guard fails closed.
 
 ## 7. Permission test bypass
 
