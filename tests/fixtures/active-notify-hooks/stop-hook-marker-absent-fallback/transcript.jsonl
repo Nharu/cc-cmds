@@ -1,0 +1,6 @@
+{"type":"user","sessionId":"test-marker-absent-fallback","message":{"role":"user","content":[{"type":"text","text":"빌드 끝나면 알려줘"}]}}
+{"type":"assistant","sessionId":"test-marker-absent-fallback","message":{"role":"assistant","content":[{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"bash /tmp/notify.sh arm \"빌드 끝나면 알려줘\" \"build\" single","description":"ARM"}}]}}
+{"type":"user","sessionId":"test-marker-absent-fallback","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a1","content":"","is_error":false}]}}
+{"type":"assistant","sessionId":"test-marker-absent-fallback","message":{"role":"assistant","content":[{"type":"tool_use","id":"a2","name":"Bash","input":{"command":"npm run build","description":"Build"}}]}}
+{"type":"user","sessionId":"test-marker-absent-fallback","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a2","content":"Build succeeded","is_error":false}]}}
+{"type":"assistant","sessionId":"test-marker-absent-fallback","message":{"role":"assistant","content":[{"type":"text","text":"빌드 완료. No marker emitted intentionally."}]}}

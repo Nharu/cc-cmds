@@ -1,0 +1,7 @@
+{"type":"user","sessionId":"test-dedup-after-fire-now-single","message":{"role":"user","content":[{"type":"text","text":"빌드 끝나면 알림"}]}}
+{"type":"assistant","sessionId":"test-dedup-after-fire-now-single","message":{"role":"assistant","content":[{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"bash plugins/cc-cmds/skills/active-notify/scripts/notify.sh arm \"빌드 끝나면 알림\" \"build\" single --milestone=\"빌드\"","description":"ARM"}}]}}
+{"type":"user","sessionId":"test-dedup-after-fire-now-single","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a1","content":"","is_error":false}]}}
+{"type":"assistant","sessionId":"test-dedup-after-fire-now-single","message":{"role":"assistant","content":[{"type":"tool_use","id":"a2","name":"Bash","input":{"command":"npm run build","description":"Build"}}]}}
+{"type":"user","sessionId":"test-dedup-after-fire-now-single","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a2","content":"Built","is_error":false}]}}
+{"type":"assistant","sessionId":"test-dedup-after-fire-now-single","message":{"role":"assistant","content":[{"type":"tool_use","id":"a3","name":"Bash","input":{"command":"bash plugins/cc-cmds/skills/active-notify/scripts/notify.sh fire-now \"빌드\" \"빌드 성공\"","description":"sub-turn fire"}}]}}
+{"type":"user","sessionId":"test-dedup-after-fire-now-single","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a3","content":"","is_error":false}]}}
