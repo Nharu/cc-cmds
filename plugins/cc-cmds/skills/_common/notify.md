@@ -11,9 +11,12 @@ ARM → FIRE(s) → CANCEL/consume.
      {single, repeat}) OR field-shape mismatch (repeat-mode fire_count /
      last_fire_at missing or non-numeric) → stderr hint + flag delete + exit 0.
      User re-arms naturally via the next first-person notification request.
-  3. `uname -s` ≠ Darwin → silent skip. Single-mode: consume flag (1-shot
+  3. Host OS ≠ Darwin → silent skip. Single-mode: consume flag (1-shot
      intent — cycle terminates even when notifier did not fire). Repeat-mode:
      preserve flag (user may retry from a Darwin host on a subsequent turn).
+     Implementation: `host_os="${CC_CMDS_NOTIFY_HOST_OS:-$(uname -s)}"` —
+     `CC_CMDS_NOTIFY_HOST_OS` is the test-injection seam (positive
+     injection: `=Darwin` or `=Linux`); default `uname -s` covers normal use.
   4. `terminal-notifier` missing → once-per-TMPDIR-lifetime stderr hint via
      `${TMPDIR}/cc-cmds-notify-hint` sentinel, then silent skip. Single-mode:
      consume flag (same 1-shot intent). Repeat-mode: preserve flag (user
@@ -92,7 +95,7 @@ ARM → FIRE(s) → CANCEL/consume.
 
 ## §4 Control-Flow Invariants
   1. **Preconditions fail-open.** ARM flag absent, corrupt-flag (schema≠2
-     strict equality / mode invalid / field-shape mismatch), `uname -s` ≠
+     strict equality / mode invalid / field-shape mismatch), Host OS ≠
      Darwin, and `terminal-notifier` missing all silent-skip.
      terminal-notifier-missing emits a once-per-TMPDIR-lifetime stderr
      install hint via the TMPDIR sentinel; the path never transitions to

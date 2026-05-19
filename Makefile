@@ -1,9 +1,10 @@
-.PHONY: lint readme check test
+.PHONY: lint readme check test test-active-notify
 
 lint:
 	bash scripts/lint-skill-invariants.sh
 	bash scripts/lint-skill-options.sh
 	bash scripts/lint-skill-paths.sh
+	bash scripts/lint-bash-portability.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
 	@test -x plugins/cc-cmds/hooks/active-notify-stop.sh
@@ -15,12 +16,15 @@ readme:
 check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 
-test:
+test: test-active-notify
 	bash scripts/test-lint-skill-options.sh
 	bash scripts/test-lint-skill-invariants.sh
 	bash scripts/test-lint-skill-paths.sh
+	bash scripts/test-lint-bash-portability.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
+
+test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
 	bash scripts/test-active-notify-stop-hook.sh
 	bash scripts/test-active-notify-pretool-hook.sh

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'plugins/cc-cmds/skills/**'
+      - 'plugins/cc-cmds/hooks/**'
       - 'scripts/**'
       - 'tests/fixtures/**'
       - 'README.md'
@@ -11,7 +12,7 @@ on:
       - '.github/workflows/lint.yml'
   push:
     branches:
-      - main
+      - master
 
 jobs:
   lint-and-readme:

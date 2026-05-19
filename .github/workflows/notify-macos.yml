@@ -1,0 +1,44 @@
+name: notify-macos
+
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'plugins/cc-cmds/skills/active-notify/**'
+      - 'plugins/cc-cmds/skills/_common/notify.md'
+      - 'plugins/cc-cmds/hooks/active-notify-*.sh'
+      - 'plugins/cc-cmds/hooks/hooks.json'
+      - 'scripts/test-active-notify-*.sh'
+      - 'scripts/lint-bash-portability.sh'
+      - 'scripts/test-lint-bash-portability.sh'
+      - 'tests/fixtures/active-notify-lifecycle/**'
+      - 'tests/fixtures/active-notify-hooks/**'
+      - 'tests/fixtures/lint-bash-portability/**'
+      - '.github/workflows/notify-macos.yml'
+      - 'Makefile'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  lint-and-test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mikefarah/yq
+        uses: mikefarah/yq@v4
+
+      - name: yq sanity check
+        run: yq --version
+
+      - name: Install terminal-notifier
+        run: brew install terminal-notifier
+        timeout-minutes: 3
+
+      - name: Run lint
+        run: make lint
+
+      - name: Run active-notify tests
+        run: make test-active-notify

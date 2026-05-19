@@ -13,6 +13,11 @@ if [[ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]]; then
   export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 fi
 
+# Host-OS injection seam — tests inject CC_CMDS_NOTIFY_HOST_OS to drive the
+# Darwin-vs-non-Darwin branches uniformly across CI legs (positive injection
+# rather than a negative-framed bypass). Default = uname -s for normal use.
+host_os="${CC_CMDS_NOTIFY_HOST_OS:-$(uname -s)}"
+
 subcommand="${1:-}"; shift || true
 
 flag_dir="${TMPDIR:-/tmp}/cc-cmds-active-notify"
@@ -79,7 +84,7 @@ dispatch_fire() {
     consuming="${flag_file}.consuming-$$"
     mv -n "$flag_file" "$consuming" 2>/dev/null || exit 0
   else
-    if [[ -z "${CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK:-}" ]] && [[ "$(uname -s)" != "Darwin" ]]; then
+    if [[ "$host_os" != "Darwin" ]]; then
       exit 0   # preserve flag (non-macOS host)
     fi
     if ! command -v terminal-notifier >/dev/null 2>&1; then
@@ -108,7 +113,7 @@ dispatch_fire() {
   rmdir "$lockdir" 2>/dev/null || :
 
   if [[ "$flag_mode" == "single" ]]; then
-    if [[ -z "${CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK:-}" ]] && [[ "$(uname -s)" != "Darwin" ]]; then
+    if [[ "$host_os" != "Darwin" ]]; then
       rm -f "$consuming"
       exit 0
     fi

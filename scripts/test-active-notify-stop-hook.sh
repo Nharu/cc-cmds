@@ -113,9 +113,10 @@ for fixture_dir in "${fixtures[@]}"; do
     # PATH prepend so it doesn't shadow the stub with system binary.
     export PATH="$stub_dir:$PATH"
     export CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
-    # Bypass notify.sh's Darwin gate so Stop-hook-driven fire reaches the
-    # terminal-notifier stub on Linux CI. macOS runtime behavior unaffected.
-    export CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK=1
+    # Positive host-OS injection so Stop-hook-driven fire takes the Darwin
+    # branch (terminal-notifier stub invocation) uniformly across both CI
+    # legs. macOS runtime behavior unaffected.
+    export CC_CMDS_NOTIFY_HOST_OS=Darwin
     bash "$test_sh"
   ); then
     passed=$((passed + 1))
