@@ -27,15 +27,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install mikefarah/yq
-        uses: mikefarah/yq@v4
+      - name: Install yq + terminal-notifier
+        # mikefarah/yq@v4 is a Docker container action and is unsupported
+        # on macOS runners, so install both yq and terminal-notifier via
+        # Homebrew. brew is preinstalled on macos-latest images.
+        run: brew install yq terminal-notifier
+        timeout-minutes: 3
 
       - name: yq sanity check
         run: yq --version
-
-      - name: Install terminal-notifier
-        run: brew install terminal-notifier
-        timeout-minutes: 3
 
       - name: Run lint
         run: make lint
