@@ -5,6 +5,43 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-05-21
+
+cc-cmds의 첫 model-invocable helper skill `active-notify`를 도입한다. 사용자가 자연어로 알림 발동을 요청하면 (`"끝나면 알려줘"`, `"매 작업마다 알려줘"`, `"시작할때랑 끝날때 알려줘"`) 모델이 ARM 상태를 TMPDIR JSON flag로 등록하고, 후속 sub-event 시점마다 모델이 직접 `notify.sh fire-now <workflow> <summary>`를 호출해 macOS `terminal-notifier`로 데스크탑 banner를 발화한다. plugin-level PreToolUse hook이 dispatcher Bash 호출을 session-persistent `applyPermissionRules`로 자동 승인하여 권한 다이얼로그 0건 불변식을 유지하며, ARM JSON schema:3 + `--count=N` flag로 single 모드 multi-sub-event 발화(`"시작할 때랑 끝날 때"` → `--count=2`)를 자연어 그대로 인코딩한다. macOS Notification Center가 banner에 자동 부착하던 "보기" 버튼이 click 시 부모 subshell focus를 가로채던 결함도 `-execute ':'` no-op click-target으로 차단한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `plugins/cc-cmds/skills/active-notify/` — `disable-model-invocation: false` model-invocable skill. 7-section SKILL.md (canonical lexicon, 단발/반복 분기, worked example, fire-now anti-pattern, PERMISSION TEST bypass + 3-clause 제외 절). `notify.sh arm/fire-now/cancel` 3-subcommand dispatcher: arm은 `--mode=single|repeat` + `--count=N` parse-anywhere flag로 ARM intent encode (default 1, 비정수·≤0·>16 → 1로 normalize). fire-now는 ARM 존재 + schema:3 strict-equality + mode/field-shape 가드 + mkdir lockdir 원자 mutation으로 banner 발화 (single armCount-aware: fire_count+1 < arm_count면 intermediate `sed -E` in-place 증가, == arm_count면 final `mv -n` consume; repeat는 temp→mv rename으로 fire_count 누적).
+- `plugins/cc-cmds/skills/_common/notify.md` — 4-section shared procedure (preconditions, fire copy synthesis, failure handling, control-flow invariants). SKILL.md가 normative reference로 가져와 단일 정의 보장.
+- `plugins/cc-cmds/hooks/hooks.json` + `active-notify-pretool.sh` — plugin-level PreToolUse hook. 모델의 `notify.sh arm/fire-now/cancel` Bash 호출 + `terminal-notifier -group cc-cmds-active-notify` bypass 호출을 `permissionDecision: "allow"` + `applyPermissionRules`로 session-persistent silent 승인. 권한 다이얼로그 0건 불변식.
+- `.github/workflows/notify-macos.yml` — macos-latest 러너 + brew yq + brew terminal-notifier로 active-notify 회귀 검증. path-filtered (active-notify 경로 변경 시에만 실행). escape-hatch `CC_CMDS_NOTIFY_SKIP_DARWIN_CHECK=1`로 Linux CI에서도 lifecycle/pretool fixture 실행 가능.
+- `scripts/lint-bash-portability.sh` + 8 fixture — BSD/GNU divergent idiom denylist (`date -j`, `tac`, `grep -P`, `sed -i` BSD form, `awk gensub` 등). `# lint-bash-portability: disable=<idiom>` 행-끝 주석으로 의도적 사용 suppress.
+- `scripts/lint-skill-description-budget.sh` — model-invocable skill frontmatter `description` + `when_to_use` combined char count 검증 (HARD ≤1536 = Claude Code listing truncation cap, WARN >1350, description 단독 ≤1024 = Agent Skills hard limit). Unicode codepoint 측정.
+- `scripts/test-active-notify-lifecycle.sh` + `scripts/test-active-notify-pretool-hook.sh` — 격리 TMPDIR + 결정적 CLAUDE_CODE_SESSION_ID + stub terminal-notifier 주입 driver. lifecycle 25 fixture + pretool 10 fixture (arm 분기, fire-now 5가지 — `count=1`/N-partial/N-N-completes-cycle/overflow-rejection/parallel-race + schema 마이그레이션 거부 + cancel + corrupt-mode/fields silent cleanup + no-flag silent no-op + repeat increment/multi + PERMISSION TEST bypass match 등).
+- `README.md` Prerequisites → "완료 알림 (선택)" — 1단계 `brew install terminal-notifier jq` → 2단계 자연어 발화 예시 (단발/반복) → 3단계 PreToolUse 권한 승인 안내.
+
+### Changed
+
+- `scripts/generate-readme.sh` — frontmatter `disable-model-invocation: false` skill을 README SKILLS_TABLE / SKILLS_OPTIONS에서 yq bracket notation + literal-`false` match로 자동 제외. model-invocable helper는 슬래시 커맨드로 직접 호출 surface가 아니므로 user-facing 목록에서 제거. yq `//` alternative operator는 `false` 값도 fallback으로 처리하므로 회피.
+- `scripts/lint-skill-invariants.sh` — `EXEMPT_SKILLS`에 `active-notify` 추가. model-invocable helper는 orchestration-only가 아니므로 Control-Flow Invariants 섹션 위치 규칙 면제.
+- `Makefile` `lint` / `test` 타겟 — lint-bash-portability + lint-skill-description-budget + test-active-notify-lifecycle + test-active-notify-pretool-hook wiring.
+
+### Fixed
+
+- macOS Notification Center가 terminal-notifier banner에 자동 부착하는 "보기" 액션 버튼이 click 시 부모 subshell focus를 가로채던 결함 — terminal-notifier 2.0.0 CLI가 버튼 자체 제거 기능을 노출하지 않으므로 `-execute ':'` (shell true-builtin no-op)를 click-action으로 지정해 functionless 통과시킨다. 버튼의 시각 잔존은 환경 제약이나 click-action 부재라는 의도된 contract 달성.
+- PERMISSION TEST 1순위 분기의 lexical 과적합 — "테스트/test + 알림 동사" 결합 발화에서 별도 작업 컨텍스트의 "테스트"(예: Android instrumentation test 진행 중 사용자의 알림 요청 발화)가 PERMISSION TEST bypass로 잘못 라우팅되던 gap을 3-clause 제외 절(별도 작업 컨텍스트 / noun-form "테스트" / ARM-eligible companion 발화 — ANY ONE 발현 시 bypass 금지)로 차단. "테스트 시작할때랑 끝날때 알림 줘" 같은 ambiguous 발화에서 ARM 라우팅 보존.
+
+### Why
+
+`/cc-cmds:design` 및 일반 long-running 작업 (Android instrumentation test, 배터리 polling, build 등) 도중 사용자가 1인칭 발화로 알림을 요청해도 모델이 일관되게 응답할 surface가 없어 매번 ad-hoc dispatch하던 결함을 구조화. 단일 dispatch surface로 단순화한 이유는 PR 작업 중 시도된 hybrid 메커니즘(Stop hook turn-end FIRE + marker scrape + Rule 2·3 bypass)이 (a) sub-turn semantic timing을 정확히 표현하기 어렵고 (turn 경계 이전 단계별 milestone 표현 불가), (b) marker emit 누락 시 fail-closed silent miss 회복 경로가 모델 자기-judgment에 의존하여 불안정, (c) Stop hook의 work-call counting + AskUserQuestion regex bypass가 모델 발화 패턴 변화에 brittle 했기 때문. 모델이 명시 sub-event 시점에 직접 fire-now subcommand를 호출하는 단순 모델이 동일 표현력을 더 적은 attack surface로 제공한다.
+
+### Post-install notes
+
+- 외부 사용자 조치 — macOS 사용자만: `brew install terminal-notifier jq` 1회 + Notification Center 권한 1회 승인. 그 외 platform은 silent no-op (notify.sh가 비-Darwin 호스트에서 dispatch 자체를 skip).
+- 첫 정식 release이므로 외부 사용자 ARM flag 잔류 0건 — schema migration 회로(`schema != "3"` strict-equality)는 dogfood 단계 잔여 flag 보호용 안전망.
+- `/plugin update cc-cmds`로 plugin-level hook(`hooks/hooks.json` + `active-notify-pretool.sh`) 자동 반영. Manual install 경로는 plugin-level hook과 비호환이라 README에서 안내 제거.
+- README diff 23 lines (Prerequisites 신규 subsection). `make check` lint 5종 + readme parity 통과.
+
 ## [1.4.2] - 2026-05-06
 
 `CLAUDE_CONFIG_DIR` 환경변수로 default가 아닌 디렉토리(예: `~/.claude-foo`)에서 Claude Code를 운영할 때 발생하던 silent failure 3건을 수정한다. `/cc-cmds:design` Step 5 entry state-check가 `ls ~/.claude/teams/`로 활성 팀을 enumerate하여 false-negative로 cleanup이 누락되거나, `_common/team-cleanup.md`의 S1 directory presence check가 잘못된 경로에서 분기하거나, TeamDelete 실패 시 AskUserQuestion fallback 메시지가 잘못된 cleanup 경로를 안내해 사용자가 실제 디렉토리를 정리하지 못하던 결함을 모두 환경변수 인지 형태(`${CLAUDE_CONFIG_DIR:-$HOME/.claude}`)로 교체한다. 회귀 방지를 위해 신규 lint script(`lint-skill-paths.sh`) + 13개 fixture + test runner를 함께 추가하여 SKILL.md / `_common/*.md` / `<skill>/references/*.md` 전 영역에서 하드코딩 경로를 차단한다 (`/plugin update cc-cmds`로 자동 반영).
