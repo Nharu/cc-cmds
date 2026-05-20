@@ -150,6 +150,16 @@ sorted_skill_paths=$(find "$skills_dir" -mindepth 2 -maxdepth 2 -name SKILL.md \
     skill_dir=$(dirname "$skill_md")
     skill_name=$(basename "$skill_dir")
     [[ "$skill_name" == "_common" ]] && continue
+    # Filter model-invocable helper skills (no slash-command surface, so no
+    # README row). yq bracket notation is required because dot-path parsing
+    # treats the hyphenated key as a subtraction expression. The yq `//`
+    # alternative operator is NOT used here: `//` triggers on both null AND
+    # false, so `false // true` would return `true` and silently bypass the
+    # filter. Explicit literal-`false` match handles all three cases
+    # correctly — missing key prints `null`, default-true prints `true`,
+    # explicit `false` prints `false` (the only filter trigger).
+    dmi=$(yq eval '.["disable-model-invocation"]' --front-matter=extract "$skill_md")
+    [[ "$dmi" == "false" ]] && continue
 
     name=$(frontmatter_field "$skill_md" "name")
     description=$(frontmatter_field "$skill_md" "description")
@@ -175,6 +185,8 @@ while IFS= read -r skill_md; do
   skill_dir=$(dirname "$skill_md")
   skill_name=$(basename "$skill_dir")
   [[ "$skill_name" == "_common" ]] && continue
+  dmi=$(yq eval '.["disable-model-invocation"]' --front-matter=extract "$skill_md")
+  [[ "$dmi" == "false" ]] && continue
 
   usage=$(frontmatter_field "$skill_md" "usage")
   has_opts=$(has_options_key "$skill_md")

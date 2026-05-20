@@ -1,0 +1,1 @@
+export CC_CMDS_NOTIFY_HOST_OS=Linux
