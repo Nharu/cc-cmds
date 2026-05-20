@@ -1,3 +1,0 @@
-{"type":"user","sessionId":"test-no-arm","message":{"role":"user","content":[{"type":"text","text":"빌드 한 번 돌려줘"}]}}
-{"type":"assistant","sessionId":"test-no-arm","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi","description":"diag"}}]}}
-{"type":"user","sessionId":"test-no-arm","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"hi","is_error":false}]}}

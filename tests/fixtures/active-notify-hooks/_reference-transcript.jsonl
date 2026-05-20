@@ -1,4 +1,0 @@
-{"type":"user","sessionId":"ref-session-uuid","message":{"role":"user","content":[{"type":"text","text":"빌드 끝나면 알려줘"}]}}
-{"type":"assistant","sessionId":"ref-session-uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"bash /abs/path/active-notify/scripts/notify.sh arm \"빌드 끝나면 알려줘\" \"build\" single","description":"ARM notification"}}]}}
-{"type":"assistant","sessionId":"ref-session-uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"npm run build","description":"Run build"}}]}}
-{"type":"user","sessionId":"ref-session-uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"build output...","is_error":false}]}}

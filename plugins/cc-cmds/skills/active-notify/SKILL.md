@@ -1,17 +1,23 @@
 ---
 name: active-notify
-description: 사용자가 (a) 1인칭 알림 요청 어휘 ("끝나면 알려줘"/"매번 알려줘" 등) 또는 (b) 권한 테스트 어휘 ("알림 테스트"/"test alert"/"permission test" 등 — 알림 동사 + "테스트"/"test" 결합)를 발화했을 때 호출되는 macOS 데스크탑 알림 헬퍼. (a)는 작업 완료 시점에 ARM 후 fire (단발/반복 모드 lifecycle), (b)는 §7 inline bypass를 정해진 형식 그대로 호출하여 권한 다이얼로그 1회 트리거. 트리거 어휘 부재 시 호출 금지 — 모델 자체 판단으로 ARM/bypass 절대 금지.
+description: 사용자가 (a) 1인칭 알림 요청 어휘 ("끝나면 알려줘"/"매번 알려줘"/"시작할 때랑 끝날 때 알림"), (b) 권한 테스트 어휘 ("알림 테스트"/"test alert"/"permission test"), 또는 (c) 취소 어휘 ("알림 취소"/"stop the alerts") 발화 시 호출되는 macOS 데스크탑 알림 헬퍼 (model-invoked, 슬래시 커맨드 없음). 어휘 부재 → 호출 금지·모델 자체 판단 ARM/bypass 절대 금지. 어휘 발현 → mode·armCount·sub-event ambiguity가 회피 사유 아님 — best-fit으로 ARM 후 sub-event 시점마다 fire-now 호출.
 when_to_use: |
-    **사전 분기 — PERMISSION TEST 예외 (1순위)**: 사용자 발화가 "테스트"/"test" 키워드 + 알림 동사("알림"/"노티"/"notif"/"alert" 등)를 결합한 형태("알림 테스트", "노티 테스트 한 번", "test the alert", "permission test")이면 ARM 대신 §7 inline bypass의 multi-line shell expression을 **변경 없이 그대로** Bash로 호출. `-group 'cc-cmds-active-notify'` 토큰 보존 필수 (다른 group 이름·다른 message·다른 title로 자체 합성 금지). notify.sh 우회. 일반 1인칭 알림 발화로 오인 분기 금지.
+    **PERMISSION TEST 제외 (1순위)**: "테스트"/"test" + 알림 동사 발화는 §7 inline bypass로 라우팅. 단, 3개 절 중 ANY ONE 발현 시 ARM 분기로 재라우팅: (a) 별도 작업 컨텍스트 (코드 수정·빌드·테스트 실행·polling 등 알림 외 작업이 발화에 포함) (b) noun-form "테스트"/"test" (Android instrumentation/unit/regression/npm test 등 알림이 아닌 별도 작업 대상) (c) ARM-eligible companion 발화 (시간 marker·작업 boundary·sub-event 지칭). 상세 절차·worked example은 body §2.
 
-    **ARM 분기 (사전 분기 미해당 시)**: 사용자가 1인칭 알림 요청 어휘를 명시적으로 발화한 직후 ARM. 발화에 매·마다·매번·각·반복·every·each 키워드가 1개라도 등장하면 repeat 모드 (매 turn 종료 시 fire), 부재 시 single 모드 (1회 fire 후 만료). ARM 직후 즉시 fire는 금지 — fire는 ARM과 별개의 task-completion rule 평가 (single 4-rule, repeat 3-rule)를 받으며, 같은 turn에 user-task tool call이 ≥1 발생해야 fire 가능 (notify.sh 자체 호출은 카운트 제외). 모델 자체 판단 ("이 작업이 길어 보이니 알림이 좋겠다", "사용자가 각 step별 진행을 보고 싶어할 듯") ARM은 절대 금지. canonical lexicon · worked example · 4-rule variant · anti-pattern · permission test bypass는 SKILL.md body 참조.
+    **ARM**: 1인칭 알림 요청 어휘 발화 직후 ARM. `매`/`마다`/`매번`/`각`/`반복`/`every`/`each` 키워드 발현 → repeat 모드 (CANCEL까지 매 turn fire-now). 부재 → single 모드. 복수 named sub-event ("시작할 때랑 끝날 때") → single + `--count=N` (best-fit 정수, ambiguity 시 ARM 강행).
+
+    **CANCEL**: "알림 취소"/"stop the alerts" 등 명시적 취소 어휘 → `notify.sh cancel` (mode-agnostic).
+
+    **Repeat per-turn fire-now self-check**: turn 종료 직전 ARM alive + 이번 turn에 user-task tool call ≥1 발생이면 fire-now가 빚져 있음 — 모델이 자체 호출.
+
+    armCount 추출 token-counting + tiebreak · fire-now 의무 prose · anti-pattern · 3-clause 전체 절차는 body §2/§4/§5/§6 참조.
 disable-model-invocation: false
-usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, 단발 모드는 1회 fire 후 만료, 반복 모드는 매 turn 종료 시 fire(CANCEL까지).)"
+usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, single 모드는 armCount회 fire-now 후 만료, repeat 모드는 매 turn 종료 시 fire-now 호출(CANCEL까지).)"
 options: []
 notes: |
-    cc-cmds 최초의 model-invoked 헬퍼이며 슬래시 커맨드 surface가 없다. 모델은 frontmatter
-    `description` + `when_to_use`로 호출 결정을 내리고, SKILL.md body의 ARM/FIRE/CANCEL contract +
-    canonical lexicon (단발·반복·취소)에 따라 모드를 선택한다. macOS 외 / `terminal-notifier`
+    cc-cmds 유일의 model-invoked 헬퍼이며 슬래시 커맨드 surface가 없다. 모델은 frontmatter
+    `description` + `when_to_use`로 호출 결정을 내리고, SKILL.md body의 ARM/FIRE-NOW/CANCEL
+    contract + canonical lexicon에 따라 모드와 armCount를 선택한다. macOS 외 / `terminal-notifier`
     미설치 환경은 silent no-op. 최초 사용 전 macOS 알림 권한 승인 필요 — "알림 테스트 한 번 해줘"
     발화로 권한 다이얼로그 트리거.
 ---
@@ -20,30 +26,26 @@ notes: |
 
 Read `_common/notify.md` once per session to load the shared procedure
 (preconditions, fire copy synthesis, failure handling, Control-Flow
-Invariants). The model is responsible for ARM and CANCEL only — FIRE
-is dispatched by the plugin's Stop hook at every assistant-turn end.
-The plugin's PreToolUse hook self-approves the dispatcher's Bash
-invocations so the Bash permission dialog never surfaces.
+Invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
+there is no turn-end auto-fire. The plugin's PreToolUse hook self-approves
+the dispatcher's Bash invocations so the Bash permission dialog never
+surfaces.
 
 ## 1. Calling convention
 
 The model directly invokes three subcommands of
-`active-notify/scripts/notify.sh`. FIRE (turn-end, hook-driven) is
-**not model-callable**; FIRE-NOW (sub-turn, model-driven) is the
-opt-in surface for specific milestone moments. All paths are
-absolute; the shell working directory does not matter; the
-subcommands are local-disk file ops and complete instantly.
+`active-notify/scripts/notify.sh`. All paths are absolute; the shell
+working directory does not matter; the subcommands are local-disk file
+ops and complete instantly.
 
 ```bash
 # Arm a new notification cycle. mode argument is optional (default "single").
-# --milestone is optional; supply only when the user named a specific
-# step ("b 작업 끝나면 알림" → --milestone="b 작업"). Generic terminal
-# phrases ("끝나면 알려줘") MUST leave it empty. See §2 extraction rules.
-bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--milestone="<phrase>"]
+# --count=N is optional parse-anywhere flag for single-mode multi-sub-event
+# ("시작할 때랑 끝날 때" → --count=2). default 1, normalize to 1 if not in [1..16].
+bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--count=N]
 
-# Sub-turn fire — model-driven, only invokable when ARM-time milestone
-# is non-empty AND the assistant just observed completion of the
-# corresponding step in the current turn. See §6 amendment.
+# Sub-turn fire — model-driven, the ONLY dispatch surface. Called at each
+# sub-event observation point (e.g. step completion, milestone boundary).
 bash active-notify/scripts/notify.sh fire-now <workflow> <summary>
 
 # Cancel — mode-agnostic flag delete.
@@ -53,413 +55,335 @@ bash active-notify/scripts/notify.sh cancel
 Argument order for `arm`: `request_text` first (verbatim user phrase that
 triggered ARM), `context_hint` second (short summary of the user-asked
 task — e.g. "build", "design-review iteration"), optional `mode` third,
-optional `--milestone="<phrase>"` parse-anywhere flag. Invalid mode
-values (anything other than `single`/`repeat`) silent normalize to
-`single`. The `milestone` field is always written to the flag JSON
-(even when empty) so a prior cycle's milestone cannot survive into a
-fresh ARM via absent-field semantics.
+optional `--count=N` parse-anywhere flag. Invalid mode values (anything
+other than `single`/`repeat`) silent-normalize to `single`. `--count=N`
+out-of-bounds inputs (non-integer, ≤0, >16) silent-normalize to 1 — same
+categorical pattern as mode normalization.
 
-**FIRE (turn-end, hook-driven).** At every assistant-turn end Claude
-Code invokes the registered Stop hook, which:
+Banner title is always `[cc-cmds] ${workflow}` and body is `${summary}`.
 
-1. Verifies session isolation via the hook stdin `session_id` field
-   (β safety-net: newest-flag fallback with file-based audit log at
-   `${flag_dir}/audit.log` — not stderr).
-2. Scans the assistant text blocks of the current turn slice for a
-   single-line HTML-comment marker:
-   `<!--cc-active-notify workflow="..." summary="..." -->`. The last
-   marker occurrence wins (multi-step turn bleed fence). When
-   present, marker values become the banner copy (length-capped:
-   `workflow` ≤ 120 bytes, `summary` ≤ 360 bytes, byte semantics for
-   UTF-8 safety). Attribute values MUST NOT contain interior `"` or
-   `>` — both terminate the scrape regex silently.
-3. Evaluates the task-completion rules (§4) by scanning the
-   transcript JSONL for user-task tool calls and the turn-terminal
-   tool block. Rule 2 and Rule 3 silent-exits are conditionally
-   bypassed when the flag carries a non-empty `milestone`, `mode !=
-   "repeat"`, AND the marker was emitted with a non-empty `workflow`
-   (symmetric guard, fail-closed when marker absent).
-4. Shells out to `notify.sh fire <workflow> <summary>` if the rules
-   pass. When the marker is present, `<workflow>` / `<summary>` are
-   the marker values; otherwise the fallback is the first non-cd
-   token of the last Bash command (workflow; fallback `task`) and
-   the binary derived from the last tool_result's `is_error` field
-   (summary; `성공` / `실패` / `완료`).
+### 1.1 Single vs repeat × armCount contract
 
-**FIRE-NOW (sub-turn, model-driven).** When the model observes
-completion of the specific ARM-time milestone mid-turn, it invokes
-`notify.sh fire-now <workflow> <summary>` directly. The dispatcher
-checks the stored `milestone` field — non-empty → fire; empty (generic
-ARM) → silent no-op + audit log. The Stop hook detects fire-now
-invocations in the turn slice and dedups (no double banner).
+| Mode + count | Fire-now behavior | Banner -group | Banner pile-up |
+| --- | --- | --- | --- |
+| `single --count=1` (default) | 1 fire-now → flag consumed | `-group "cc-cmds-active-notify"` | banner replaces previous |
+| `single --count=N (N>1)` | N fire-now (intermediate N-1 + final 1); final consumes | none | each sub-event banner persists |
+| `repeat (--count ignored)` | unbounded fire-now until CANCEL | none | intentional pile-up |
 
-Banner title is always `[cc-cmds] ${workflow}` and body is
-`${summary}`.
+`-group` decision is dispatcher-internal — the model never specifies it.
+For `single --count=N>1`, `-group` is intentionally omitted so each
+sub-event banner persists in Notification Center; this preserves the
+user's explicit "N distinct events" intent. Repeat mode never uses
+`-group` (dynamic-trust anti-spam: pile-up triggers user CANCEL).
 
 ## 2. Trigger lexicon (canonical)
 
-The model decides ARM/FIRE/CANCEL based on user phrasing. Only the
-canonical patterns below trigger; everything else is anti-pattern (see
-§6).
+The model decides ARM / fire-now / CANCEL based on user phrasing. Only
+the canonical patterns below trigger; everything else is anti-pattern
+(see §6).
 
-**ARM (single mode)** — first-person + imperative + notification noun
-+ action verb + (optional) timing marker. No `매`/`마다`/`매번`/`각`/
-`반복`/`every`/`each` keyword. Examples:
+### 2.0 PERMISSION TEST gatekeeper (3-clause exclusion)
+
+"테스트"/"test" + 알림 동사 발화는 기본적으로 §7 inline bypass로 라우팅
+된다. 단, 아래 3개 절 중 **ANY ONE** 발현 시 ARM 분기로 재라우팅된다
+(1순위 bypass 적용 금지):
+
+- **(a) 별도 작업 컨텍스트** — 발화에 알림 외의 다른 작업(코드 수정, 빌드,
+  테스트 실행, polling 등)이 명시되거나, 직전 turn까지의 진행 작업이 있음.
+- **(b) Noun-form "테스트"/"test"** — 단어가 알림이 아닌 별도 작업 대상을
+  가리키는 명사로 사용 (Android instrumentation test, unit test, regression
+  test, npm test 등). 동사형 "테스트하다" + 알림 자체 대상은 (b)에 해당 안 됨.
+- **(c) Companion ARM-eligible expression** — 1인칭 알림 요청 어휘가 동반
+  (시간 marker, 작업 boundary, sub-event 지칭).
+
+**Worked counter-example** — `"테스트 시작할때랑 끝날때 알림 줘"` (Issue #12 reproducer):
+
+- (b) ✓ "테스트" = 실행할 작업 (noun-form).
+- (c) ✓ "시작할때랑 끝날때" = 2개 sub-event boundary + "알림 줘" = ARM
+  request.
+- → ARM 분기 (single, `--count=2`). bypass 절대 금지.
+
+**Worked positive example** — `"알림 테스트 한 번"`:
+
+- (a) ✗ 별도 작업 없음.
+- (b) ✗ "테스트"가 "알림"에 직접 결합 (verb-form on 알림).
+- (c) ✗ ARM-eligible companion 없음.
+- → §7 inline bypass.
+
+### 2.1 ARM (single mode)
+
+First-person + imperative + notification noun + action verb + (optional)
+timing marker. No `매`/`마다`/`매번`/`각`/`반복`/`every`/`each` keyword.
+Examples:
+
 - 한국어: `"끝나면 알려줘"`, `"알림 줘"`, `"노티 한 번 쏴줘 끝나면"`,
-  `"이거 끝날 때 알림 보내줘"`
+  `"이거 끝날 때 알림 보내줘"`.
 - 영어: `"ping me when this finishes"`, `"let me know when done"`,
-  `"notify me when the build completes"`
+  `"notify me when the build completes"`.
 
-**ARM (repeat mode)** — same shape as ARM single PLUS at least one of
-`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`. Examples:
+### 2.2 ARM (repeat mode)
+
+Same shape as ARM single PLUS at least one of `매`/`마다`/`매번`/`각`/
+`반복`/`every`/`each`. Examples:
+
 - 한국어: `"매 커맨드 끝날 때마다 알려줘"`, `"각 단계마다 알림 줘"`,
-  `"매번 작업 끝나면 노티 줘"`
+  `"매번 작업 끝나면 노티 줘"`.
 - 영어: `"every time a command finishes ping me"`, `"each time a step
-  finishes, ping me"`
+  finishes, ping me"`.
 
-**CANCEL (mode-agnostic)** — explicit revocation. Examples:
-- 한국어: `"알림 취소"`, `"알림 그만"`, `"노티 그만"`,
-  `"알림 멈춰"`, `"반복 알림 그만"`
+### 2.3 CANCEL (mode-agnostic)
+
+Explicit revocation. Examples:
+
+- 한국어: `"알림 취소"`, `"알림 그만"`, `"노티 그만"`, `"알림 멈춰"`,
+  `"반복 알림 그만"`.
 - 영어: `"cancel notification"`, `"stop the alerts"`,
-  `"nevermind on the ping"`
+  `"nevermind on the ping"`.
 
-**PERMISSION TEST (special — bypass path, NOT an ARM lexicon)** — the
-word `"테스트"`/`"test"` combined with a notification verb fences ARM
-entirely. Examples that trigger the bypass:
-- 한국어: `"알림 테스트"`, `"노티 테스트"`, `"알림 테스트 한 번 해줘"`
-- 영어: `"test the alert"`, `"permission test"`
+### 2.4 armCount extraction (`--count=N`)
 
-The bypass invokes `terminal-notifier` directly via Bash (see §7) —
-**no `notify.sh arm` call**, **no state file mutation**.
+When the user names **multiple distinct sub-events** in a single ARM
+utterance, count them and pass via `--count=N`.
 
-**Disambiguator**: `"끝날 때"` is a single-mode timing marker;
-`"끝날 때마다"` switches to repeat because `마다` is present.
-`"매 커밋 후 알려"` → `매` keyword present → repeat (regardless of
-whether the timing marker is `후` or `끝나면`). Hybrid utterances
-like `"매번 알림 테스트"` route to the bypass path because the
-`"테스트"`/`"test"` fence dominates.
+**Token-counting rule**: scan the ARM utterance for explicitly named
+sub-event tokens (timing markers, boundary phrases, ordinal references)
+combined with an alert request. Count unique sub-events.
 
-### 2.1 ARM-time milestone extraction (`--milestone` parameter)
-
-When the user names a specific step in the ARM utterance, extract
-that phrase and pass it via `--milestone="<phrase>"`. The phrase
-unlocks the model-driven `fire-now` surface for sub-turn dispatch
-(see §1, §6). When the user only names a generic terminal moment,
-leave `--milestone` unset (or empty) — the `fire-now` path stays
-structurally closed.
-
-**Bilingual lexicon** (Korean entries are canonical; English glosses
-shown for translation reference):
-
-| User utterance | English gloss | Extracted `milestone` |
+| User utterance | Extracted `--count` | Notes |
 | --- | --- | --- |
-| `"끝나면 알려줘"` | `"ping me when done"` | _(empty — generic)_ |
-| `"b 작업 끝나면 알려줘"` | `"ping me when task b finishes"` | `"b 작업"` |
-| `"테스트 끝나면 알림"` | `"ping me when tests finish"` | `"테스트"` |
-| `"7단계 끝나면 알림"` | `"step 7 done, ping me"` | `"7단계"` / `"step 7"` |
-| `"70% 되면 알림"` | `"hit 70% ping me"` | `"70%"` |
-| `"백그라운드 b 끝나면"` | `"when background b finishes"` | `"백그라운드 b"` |
+| `"끝나면 알려줘"` | (default 1) | single terminal moment |
+| `"시작할 때랑 끝날 때 알림 줘"` | `--count=2` | 2 named sub-events |
+| `"단계별로 (3단계) 알림 줘"` | `--count=3` | explicit count |
+| `"매번 끝나면 알림"` | (default 1; mode=repeat) | repeat absorbs the recurrence |
 
-**Extraction rules**:
+**Tiebreak rules**:
 
-- The completion marker tokens are `끝나면` / `완료` / `done` /
-  `finishes` / `되면` / `hits`. Extract the noun-phrase token(s)
-  immediately preceding the marker (specific job / step / file /
-  percentage / condition).
-- A bare completion marker with no preceding noun-phrase (e.g.
-  `"끝나면 알려줘"` alone) yields an empty `milestone` — generic
-  terminal moment, hook-driven turn-end fire is sufficient.
-- **Repeat mode (`매`/`마다`/`every`/`each`) always yields empty
-  `milestone`**. Every turn-end is itself the milestone in repeat
-  mode; a sub-turn fire-now is meaningless.
+- Ambiguity between 2 and 3 → favor the lower count (under-fire is
+  recoverable; over-fire wastes user attention).
+- Vague enumeration ("몇 단계 끝날 때마다") with `매`/`마다` → demote to
+  repeat (count argument stored but ignored at runtime).
+- >16 explicit count → normalized to 1 by dispatcher (sanity cap).
 
-**Repeat lexicon priority over hybrid utterances**: When `매`/`마다`/
-`every`/`each` co-occurs with a specific milestone phrase (e.g.
-`"매번 b 작업 끝나면 알림"`), the utterance silently demotes to
-repeat mode + empty milestone. Per-cycle specific-trigger tracking
-is outside the schema:2 single-`milestone` field's expressive range
-— if this pattern surfaces frequently in practice, a future
-schema:3 expansion (array-valued milestone) would be the natural
-evolution. For now, the user can split the request: ARM repeat for
-the recurring stream + ARM single + `--milestone` for the specific
-step.
+**Why ARM-time extraction**: ARM is the moment of highest classification
+accuracy (fresh user utterance + cold model context). fire-now call
+sites are hot context + temporally distant — extracting at ARM time
+locks the intent before drift sets in.
 
-**Why ARM-time extraction (not fire-now call-site inference)**:
-ARM is fresh user-utterance + cold model context, the moment of
-highest classification accuracy. fire-now call sites are hot
-context + temporally distant from the user's phrasing —
-misclassification risk ("npm 테스트 끝나면" generic-vs-specific
-ambiguity) compounds across the cycle. ARM-time extraction plus a
-flag-field check means a generic ARM + a fire-now call is
-*structurally* unable to fire (silent no-op + audit log), without
-relying on prose-only model discipline.
+### 2.5 Disambiguator
 
-## 3. ARM / FIRE / CANCEL semantics
+- `"끝날 때"` → single timing marker.
+- `"끝날 때마다"` → repeat (because `마다` is present).
+- `"매 커밋 후 알려"` → `매` keyword → repeat (regardless of `후` or
+  `끝나면` marker).
+- Hybrid utterances like `"매번 알림 테스트"` — `매번` is ARM lexicon,
+  `알림 테스트` looks like PERMISSION TEST. Apply §2.0 3-clause: clause
+  (c) "ARM-eligible companion" is met (`매번` is repeat lexicon) → ARM
+  repeat. PERMISSION TEST routing requires absence of ARM companions.
 
-**ARM is always idempotent overwrite (model-driven).** Each
-`notify.sh arm` invocation performs a `schema:2` fresh JSON write
-that replaces any prior flag. Consequences:
-- **Mode switch** (single ↔ repeat) — the new ARM discards the prior
-  cycle's `fire_count` and `last_fire_at`.
-- **Milestone reset** — the new ARM's `milestone` value (empty if
-  `--milestone` is omitted) overwrites any prior value. A prior
-  cycle's milestone cannot survive into a fresh ARM.
+## 3. ARM / FIRE-NOW / CANCEL semantics
+
+**ARM is idempotent overwrite (model-driven).** Each `notify.sh arm`
+invocation performs a `schema:3` fresh JSON write that replaces any
+prior flag. Consequences:
+
+- **Mode switch** (single ↔ repeat) — new ARM discards prior cycle's
+  `fire_count` and `last_fire_at`.
+- **armCount reset** — new ARM's `--count=N` (default 1) overwrites any
+  prior `arm_count`. Storage shape is mode-uniform (both single and
+  repeat store the field verbatim); runtime semantics are mode-asymmetric
+  (single applies the cap, repeat ignores it).
 - **Re-ARM after CANCEL** — opens a new cycle from `fire_count: 0`.
 - **Same-mode re-ARM** — JSON regenerated; `fire_count` reset to 0.
 - **Invalid mode argument** (e.g. `continuous`, `REPEAT`) silently
-  normalizes to `single`. This ARM-side leniency is intentionally
-  asymmetric with the FIRE-side strict-reject policy: ARM input
-  originates from the model (canonicalization drift is forgiving),
-  while FIRE input originates from disk (treated as untrusted state).
+  normalizes to `single`. Symmetric: invalid `--count=N` silently
+  normalizes to 1.
+- **Stale schema self-heal** — first `fire-now` against a v1.x
+  (schema:1/schema:2) flag emits a stderr hint, removes the flag, and
+  exits 0. User re-arms naturally via the next ARM utterance.
 
-**FIRE is dispatcher behavior, triggered by the Stop hook.** The
-Stop hook evaluates §4 rules at turn end and shells out to
-`notify.sh fire <workflow> <summary>`. The dispatcher then branches
-on the stored `mode` field. Single-mode consumes the flag (atomic
-`mv -n` rename to `*.consuming-$$`, then optional notifier call,
-then `rm`). Repeat-mode preserves the flag and performs an atomic
-`temp → mv` rename to bump `fire_count` and refresh `last_fire_at`.
-The model **never** invokes the `fire` subcommand directly; even an
-erroneous fire invocation would have its Bash dialog auto-approved
-by the PreToolUse hook but would still be redundant and is not part
-of this contract.
+**Cross-turn ARM persistence (mental check)**: the flag survives turn
+boundaries. If a prior turn ARMed and the current turn has not CANCELed,
+the flag is still alive. fire-now obligations carry across turns.
 
-**FIRE-NOW is the only model-callable dispatch surface.** When the
-ARM-time `milestone` field is non-empty AND the assistant just
-observed completion (success or failure) of the corresponding step
-in the current turn, the model directly invokes
-`notify.sh fire-now <workflow> <summary>`. The dispatcher inherits
-the same lockdir / schema-guard / mode-aware mutation logic as
-`fire`, gated by two pre-checks: (a) ARM flag existence (silent
-no-op if absent), (b) `milestone` non-empty (silent no-op + audit
-log if generic ARM). The Stop hook scans the turn slice for fire-
-now invocations and silently exits if any are present — no double
-banner. fire-now invocations are also excluded from the Rule 2
-work-call count via the helper-script regex.
+**FIRE-NOW is the only dispatch surface (model-driven).** Whenever the
+model observes completion of a sub-event corresponding to the active
+ARM, it invokes `notify.sh fire-now <workflow> <summary>` directly.
 
-**CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode
-check. Lexicon covers both generic (`"알림 취소"`) and repeat-specific
+Dispatcher behavior:
+
+- **Schema strict check**: schema≠3 → stderr hint + flag rm + exit 0.
+- **Mode validity check**: mode ∉ {single, repeat} → stderr hint + flag
+  rm + exit 0.
+- **Single mode mutation**: read `fire_count` + `arm_count`. `fire_count
+  + 1` reaches `arm_count` → final fire (`mv -n` atomic consume). Else
+  intermediate fire (`sed -E` increment + `last_fire_at` update,
+  preserve flag).
+- **Repeat mode mutation**: increment `fire_count` + update
+  `last_fire_at` via `sed -E` rewrite, preserve flag. `arm_count`
+  ignored entirely.
+- **Banner**: `terminal-notifier -title "[cc-cmds] ${workflow}"
+  -message "${summary}" -execute ':'`. `-group "cc-cmds-active-notify"`
+  added only when single + `arm_count == 1` (banner replace semantics).
+
+**CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode check.
+Lexicon covers both generic (`"알림 취소"`) and repeat-specific
 (`"반복 알림 그만"`) phrasings — same effect.
 
-## 4. Task-completion rules (hook-evaluated)
+## 4. When to invoke fire-now (model decision criteria)
 
-The Stop hook evaluates these rules at every turn end and invokes
-`notify.sh fire` if all conditions hold. The model does NOT
-evaluate these rules — they are documented here so the model-side
-ARM decision is informed and so the contract is transparent to
-humans reading SKILL.md.
+The model evaluates these conditions at every observation point —
+turn-end is no longer the only fire site, but it remains the natural
+checkpoint.
 
-### Single mode (3 effective conditions, all must hold)
+### 4.1 Single mode (count=1, default)
 
-1. ARM flag is alive and `mode=single`.
-2. The current turn's assistant block has executed ≥1 user-task
-   tool call from the 11-tool whitelist (Bash, Read, Edit, Write,
-   Grep, Glob, WebFetch, WebSearch, Task, MultiEdit, NotebookEdit)
-   that is NOT an `active-notify/scripts/notify.sh` invocation.
-   Meta-tools (TodoWrite, ExitPlanMode, AskUserQuestion) are
-   excluded — they signal planning or user-input suspension, not
-   task work.
-3. The turn-terminal tool block is NOT `AskUserQuestion`. (Stop
-   hook will not fire after an `AskUserQuestion` because the
-   harness suspends the turn waiting for user input — natural
-   belt-and-braces guard on top of the explicit check.)
+Invoke `fire-now` exactly **once** when the named milestone completes.
+The dispatcher consumes the flag on first fire.
 
-When all three hold, the hook shells `notify.sh fire`. The
-single-mode flag is consumed atomically inside the existing
-`notify.sh` fire branch (unchanged from v1.4.x semantics).
+### 4.2 Single mode (count=N, N>1)
 
-### Repeat mode (3 effective conditions)
+Invoke `fire-now` at **each** named sub-event observation point. The
+dispatcher fires N times total — intermediate N-1 (flag preserved) +
+final 1 (flag consumed). Subsequent fire-now calls are silent no-op
+(flag absent).
 
-Identical conditions 1–3, but condition 1 requires `mode=repeat`.
-Repeat-mode FIRE preserves the flag and increments `fire_count`;
-cycle terminates only on user-issued CANCEL.
+### 4.3 Repeat mode
 
-### Helper-script exclusion (hook-side)
+Invoke `fire-now` at **every turn end** where:
 
-Rule 2 is enforced by the hook's transcript-scan regex anchor:
+1. ARM flag is alive (cross-turn persistence — survives until CANCEL).
+2. ≥1 user-task tool call was made this turn (Bash/Read/Edit/Write/Grep/
+   Glob/WebFetch/WebSearch/Task/MultiEdit/NotebookEdit). `notify.sh`
+   self-calls don't count.
 
-```
-test("active-notify/scripts/notify\\.sh\\s+(arm|fire|fire-now|cancel)\\b") | not
-```
+**Turn-end self-check**: ARM alive? user-task tool call ≥1 this turn?
+→ fire-now obligation. Skipping a borderline turn is the §6.2 anti-pattern.
 
-This excludes the model's own ARM/FIRE-NOW/CANCEL invocations from
-the user-task count. Without this, an ARM-only turn would auto-fire
-because the ARM Bash call itself satisfies rule 2. The hook-side
-exclusion is the primary guard under v1.5.0; the legacy
-"model-side rule eval is the primary guard" wording from v1.4.x
-is retired.
+### 4.4 Empty turn / AskUserQuestion-terminal turn
 
-### Rule 3 (no plan residue) — structurally satisfied
-
-The legacy 4-rule single mode had an additional rule "no further
-actionable step is planned for this turn". This is structurally
-satisfied — the Stop hook fires only after the model has
-voluntarily ended the turn (no pending tool calls).
+- Pure conversational turn (no user-task tools) → no fire-now needed.
+- Turn ending with `AskUserQuestion` → harness suspends turn; no
+  fire-now until the user reply turn (which will be a fresh observation
+  point).
 
 ## 5. Worked examples
 
-All examples below describe FIRE as **hook-driven** — the model
-issues ARM/CANCEL, and the Stop hook decides whether to fire at
-turn end based on §4 conditions. `workflow`/`summary` shown are
-the hook's best-effort synthesis from the transcript.
+### (s1) Single armCount=1 happy path
 
-### Single-mode examples
+User: `"npm run build, ping me when done"` → ARM single (default
+count=1) → Bash(build) → 5 minutes → exit 0 → model observes
+completion → `fire-now "npm" "성공"` → banner with `-group` → flag
+consumed → yield.
 
-**(s1) Single long Bash.** User: `"npm run build, ping me when done"`
-→ ARM single → Bash(build) → 5 minutes → exit 0 → turn end → Stop
-hook evaluates → fires (workflow="npm" via hook scrape,
-summary="성공" via is_error binary) → flag consumed → yield.
+### (s2) Issue #12 reproducer — single armCount=2 end-to-end
 
-**(s2) Multi-stage explicit chain.** User: `"Run build then test
-then lint, then ping"` → ARM single → Bash(build) → Bash(test) →
-Bash(lint) → all green → turn end → Stop hook evaluates → fires
-once at the terminal stage (workflow="npm"/last command's first
-non-cd token, summary="성공") → flag consumed → yield. **No
-mid-chain fires** — single is one-shot, and the hook always
-inspects only the last Bash tool_result for `is_error`. If the
-user wants a per-stage recap, the model narrates it in the
-assistant response body; the banner stays terminal-stage-only.
+User: `"테스트 시작할 때랑 끝날 때 알림 줘"`.
 
-**(s3) Mid-turn AskUserQuestion (Rule 3 protects).** User: `"Build
-and ping"` → ARM single → Bash(build) → fail →
-AskUserQuestion(`"스택 트레이스 분석할까요?"`) → harness suspends
-the turn for user input → Stop hook does not fire this turn (Rule
-3 violated: turn-terminal tool is AskUserQuestion; the harness
-suspension also naturally guards this). User says `"예"` →
-analyze → fix → Bash(build retry) → green → turn end → Stop hook
-evaluates → fires → yield.
+§2.0 routing:
 
-**(s4) ARM-after-implicit-work, generic banner.** User: `"ok"` (no
-explicit task instruction, but model performs Bash diagnostics
-like `echo ...` voluntarily) → ARM previously issued → turn-end
-Stop hook scans the turn slice → work_calls=1 (the diagnostic
-Bash call; notify.sh self-call excluded) → conditions hold →
-fires (workflow="echo" via first non-cd token, summary="성공" via
-is_error binary). This is intentional — every model tool call
-counts as user-task work under v1.5.0's hook-side accounting,
-matching v1.4.x model-side semantics. If the user finds this
-spammy, they can CANCEL.
+- (b) ✓ "테스트" = noun-form (작업 대상).
+- (c) ✓ "시작할 때랑 끝날 때 알림 줘" = ARM request with 2 sub-events.
+- → ARM 분기 (single, `--count=2`). NOT §7 bypass.
 
-### Repeat-mode examples
+§2.4 extraction: "시작할 때" + "끝날 때" = 2 named sub-events → `--count=2`.
 
-**(r-a) Multi-stage work turn.** ARM repeat → Bash(build) →
-Bash(test) → no AskUserQuestion → turn end → Stop hook evaluates →
-fires once (workflow="npm", summary="성공"),
-`fire_count=1`. A turn with 5 Bash calls still fires only once —
-fire unit is the turn end.
+Lifecycle:
 
-**(r-b) Empty turn — Rule 2 protects.** Turn N: user says
-`"고마워"` → no user-task tool call → turn end → Stop hook scans
-the turn slice → work_calls=0 → hook silent-exits without firing
-(Rule 2 fails). `fire_count` unchanged. The hook-side
-helper-exclusion regex (§4) ensures even if the model spuriously
-re-ARMs, that ARM call itself does not satisfy Rule 2.
+1. Model: `notify.sh arm "테스트 시작할때랑 끝날때 알림 줘" "test" single --count=2`.
+   Flag: `{"schema":3,...,"mode":"single","arm_count":2,"fire_count":0,...}`.
+2. Test execution begins. Model observes start.
+3. Model: `notify.sh fire-now "test" "시작"`. Dispatcher: intermediate
+   fire — `fire_count` 0→1, flag preserved, banner emitted (no `-group`
+   since armCount>1).
+4. Test execution completes. Model observes end.
+5. Model: `notify.sh fire-now "test" "완료"`. Dispatcher: final fire
+   — `fire_count` 1+1=2 ≥ `arm_count`=2 → `mv -n` consume, banner
+   emitted (no `-group`).
+6. Two banners persist in Notification Center.
 
-**(r-c) AskUserQuestion mid-cycle.** Test fail mid-turn →
-AskUserQuestion → harness suspends → Stop hook does not fire this
-turn (Rule 3). User answers `"예, 분석해줘"` → next turn analyzes
-/ fixes / re-tests → no AskUserQuestion at turn end → Stop hook
-evaluates → fires (this cycle's first fire — the prior
-AskUserQuestion turn was suppressed).
+### (s3) Repeat mode per-turn
 
-**(r-d) Same-turn CANCEL.** Turn opens with ARM repeat → Bash(build)
-→ user appends `"역시 알림 그만"` → CANCEL within the same turn →
-flag deleted → turn end → Stop hook finds no flag → silent
-no-op. CANCEL is destructive-immediate.
+User: `"매 단계마다 알림 줘"` → ARM repeat (count ignored).
 
-**(r-e) Long cycle.** ARM repeat → 20 turns of code editing → each
-turn-end Stop hook fires once → 20 fires → user finally CANCELs.
-**No max-fire cap. No anti-spam guard. Termination relies entirely
-on user-issued CANCEL** — dynamic trust model.
+Turn 1: Bash(build) → green → turn ends → model invokes `fire-now
+"build" "성공"` → fire_count=1.
 
-## 6. Anti-patterns (call forbidden)
+Turn 2: Bash(test) → green → turn ends → model invokes `fire-now
+"test" "성공"` → fire_count=2.
 
-Do NOT call `notify.sh arm`/`fire-now` in any of these situations.
+Turn 3: 사용자가 `"고마워"` 한 마디만 → no user-task tools → no
+fire-now (§4.4).
 
-- Trigger lexicon absent. The user only kicked off a long task
-  without uttering a notification request.
-- Model self-judgment such as `"this task looks long, a
-  notification would help"` or `"the user probably wants per-step
-  pings"`. **Absolutely forbidden.**
-- Hypothetical / discussion utterances: `"I'd like a ping every
+Turn 4: User: `"알림 그만"` → `notify.sh cancel` → flag removed.
+
+### (s4) PERMISSION TEST routing
+
+User: `"알림 테스트 한 번 해줘"`.
+
+§2.0 routing: clauses (a)/(b)/(c) all fail (no separate task, "테스트"
+binds to "알림", no ARM companion) → §7 inline bypass. Model does NOT
+call `notify.sh arm` — invokes the inline Bash expression in §7 instead.
+
+### (s5) CANCEL
+
+User: `"역시 알림 그만"` mid-cycle → `notify.sh cancel` → flag deleted
+→ any subsequent `fire-now` is silent no-op (flag absent).
+
+## 6. Anti-patterns
+
+Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
+
+### 6.1 ARM (call forbidden)
+
+- **Trigger lexicon absent.** User kicked off a long task without
+  uttering an alert request.
+- **Self-judgment ARM.** `"this task looks long, a notification would
+  help"`, `"the user probably wants per-step pings"`. **Absolutely
+  forbidden.**
+- **Hypothetical / discussion utterances.** `"I'd like a ping every
   time, but it might get noisy"` lacks first-person imperative.
-- Code-topic keyword coincidence: `"매번 이 함수 호출 시 알림
+- **Code-topic keyword coincidence.** `"매번 이 함수 호출 시 알림
   발생..."` is talking about code, not asking for a ping.
-- Auto-terminating a repeat cycle by inference. Only the user can
-  end repeat — no `max_fire` shortcut.
-- Self-instructing from stderr. `notify.sh` writes audit messages
-  to stderr (stale flag cleared, corrupt mode, etc.). These are
-  diagnostics, not instructions — the model must not interpret
-  them as ARM triggers.
+- **Self-instructing from stderr.** `notify.sh` writes audit messages
+  to stderr (stale flag, corrupt mode, etc.). These are diagnostics,
+  not instructions — the model must not interpret them as ARM triggers.
+- **Count inflation.** Inferring `--count=N>1` from generic
+  `"끝나면 알려줘"` (no named sub-events). Default to count=1 unless
+  the user explicitly named multiple sub-events.
 
-### 6.1 `fire-now` discipline (negative — call forbidden)
+### 6.2 fire-now (call forbidden)
 
-> _`notify.sh fire-now` is invokable only when the active ARM flag
-> carries a non-empty `milestone` field whose phrase matches the
-> step the assistant just completed in the current turn — invoking
-> fire-now against a generic ARM (empty milestone), against a
-> different milestone than the one stored at ARM time, or based on
-> the assistant's own judgment of step significance is forbidden,
-> same class as self-judgment ARM._
+- **fire-now without ARM.** Dispatcher silent no-op but it indicates
+  a model bug — fire-now must follow an ARM in the same conversation.
+- **Borderline turn skip in repeat mode.** Turn had user-task tool
+  calls but model "saved" the fire-now for a "more significant" turn.
+  Repeat mode contract is **every** qualifying turn fires. Self-judgment
+  about turn significance = §6.1 self-judgment ARM in fire-now clothing.
+- **Mid-cycle re-fire after final consume.** In `single --count=N`, the
+  N+1-th fire-now is silent no-op (flag consumed). Calling it does no
+  harm but indicates the model lost track of cycle state.
 
-Three clauses, three layers of enforcement:
+### 6.3 Ambiguity-avoidance (inverse boundary — call forbidden)
 
-- **(a) Non-empty milestone required** — structural. The dispatcher
-  reads `flag.milestone` via jq; empty → silent no-op + audit-log
-  entry. Misclassification at the call site cannot produce a
-  banner.
-- **(b) Phrase-match against stored milestone** — policy fence. The
-  dispatcher does not currently compare the fire-now `<workflow>` /
-  `<summary>` arguments against the stored `milestone` text. Drift
-  here is interpretable mis-banner (the user reads the banner copy
-  and sees the wrong step name) — recoverable, but the model MUST
-  echo the stored milestone phrase in `<workflow>` or use it as the
-  primary semantic anchor.
-- **(c) Self-judgment equivalence** — same forbidden class as
-  self-judgment ARM. The model judges *which user-named milestone
-  this current step corresponds to*, NOT *whether this step is
-  significant enough to ping*. The latter is the §6 ARM anti-
-  pattern in fire-now clothing.
+**Trigger 어휘가 발현된 발화에서 mode/armCount/sub-event 식별 ambiguity
+가 ARM 회피 사유가 될 수 없다.** 어휘가 명시적이면 best-fit mode +
+best-fit count로 ARM 후 관찰 가능한 sub-event 시점마다 fire-now 호출.
+Issue #12의 silent skip이 이 boundary의 negative anchor — 발화 명시성
+입증 후 model self-judgment로 회피하지 말 것.
 
-### 6.2 `fire-now` discipline (positive — emit marker on observed completion)
-
-> _Conversely, when the active ARM flag carries a non-empty
-> `milestone` field AND the assistant just observed completion
-> (success or failure) of the corresponding step in the current
-> turn, the assistant MUST emit a valid
-> `<!--cc-active-notify workflow="..." summary="..." -->` marker in
-> any assistant text block within the current turn (regardless of
-> which sub-message or whether positioned before/after subsequent
-> tool_use blocks like AskUserQuestion) — with `workflow` set to
-> (or echoing) the milestone phrase and `summary` describing the
-> observed outcome. The hook scans the entire turn slice for the
-> last marker occurrence; intra-message ordering does not matter.
-> Emitting the marker is a textual side-effect aligned with normal
-> narration mode; skipping it to dive into failure analysis is the
-> same class of error as self-judgment ARM._
-
-The marker is the Rule 2 / Rule 3 bypass gate (see §4.6
-lifecycle-matrix amendment in `docs/active-notify-fire-channel.md`).
-Two dogfood-surfaced failure modes motivated the positive
-obligation: (i) Rule 3 path — "background build failed → analysis
-prose → AskUserQuestion → marker omitted → Rule 3 silent-exit →
-silent miss"; (ii) Rule 2 path — "BashOutput-only turn (work_calls
-= 0 because BashOutput isn't in the 11-tool whitelist) → marker
-omitted → Rule 2 silent-exit → silent miss". Marker emission is
-same-modality (text → text, inline in narration); fire-now is
-modality-switch (text → tool dispatch, requires plan-reordering).
-The positive obligation is enforced as prose-level discipline, with
-audit log forensic anchors when the bypass guard fails closed.
+**Inverse boundary**: 본 규칙은 어휘 부재 시 ARM을 끌어오는 권한이
+아님 — 어휘 부재 시 ARM은 §6.1 self-judgment 위반. 어휘 gate는
+necessary AND sufficient — 양쪽 boundary 독립적.
 
 ## 7. Permission test bypass
 
 When the user utters a phrase combining `"테스트"`/`"test"` with a
-notification verb (e.g. `"알림 테스트 한 번 해줘"`,
-`"permission test"`, `"test the alert"`), do NOT call
-`notify.sh arm`. Instead, invoke `terminal-notifier` directly via a
-single combined Bash expression that performs precondition checks
-and either runs the notifier or reports a Korean fallback message
-to the user. Required form:
+notification verb AND none of §2.0's 3-clause exclusions apply (e.g.
+`"알림 테스트 한 번 해줘"`, `"permission test"`, `"test the alert"`),
+do NOT call `notify.sh arm`. Instead, invoke `terminal-notifier`
+directly via a single combined Bash expression that performs
+precondition checks and either runs the notifier or reports a Korean
+fallback message to the user. Required form:
 
 ```bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -473,39 +397,37 @@ else
 fi
 ```
 
-Run this as a single `Bash(...)` call so stdout becomes one
-contiguous Korean message the model can echo back to the user. The
-plugin's PreToolUse hook recognizes this `terminal-notifier ...
--group 'cc-cmds-active-notify'` argv shape and auto-approves the
-Bash invocation, so the user does not see a permission dialog.
+Run this as a single `Bash(...)` call so stdout becomes one contiguous
+Korean message the model can echo back to the user. The plugin's
+PreToolUse hook recognizes this `terminal-notifier ... -group
+'cc-cmds-active-notify'` argv shape and auto-approves the Bash
+invocation, so the user does not see a permission dialog.
 
 Design notes:
-- **PATH prepend is intentional** — Claude Code's Bash tool may
-  inherit a minimal `PATH` without `/opt/homebrew/bin` or
-  `/usr/local/bin`. The prepend matches `notify.sh`'s fire path so
-  binary discovery is consistent (avoids a false-negative
-  "not installed" report).
+
+- **PATH prepend is intentional** — Claude Code's Bash tool may inherit
+  a minimal `PATH` without `/opt/homebrew/bin` or `/usr/local/bin`. The
+  prepend matches `notify.sh`'s fire path so binary discovery is
+  consistent (avoids a false-negative "not installed" report).
 - **POSIX `[` form** — the bypass is an inline Bash-tool expression;
   no `#!/usr/bin/env bash` shebang to force Bash. `[` works under
   `sh`/`dash` too, avoiding a silent syntax error on hosts where
   Claude Code dispatches to a non-Bash shell.
 - **`{ terminal-notifier ... 2>/dev/null || true; }; echo` pattern**
-  mirrors the fire path — `terminal-notifier`'s exit code is
-  unreliable (especially under denied-permission state). The group
-  + `|| true` neutralizes the exit code, `2>/dev/null` swallows
-  stderr leak, and the `echo` runs unconditionally so the user
-  always receives the guidance line.
-- **`-group "cc-cmds-active-notify"`** — same group identifier as
-  the single-mode fire. Repeated bypass invocations replace each
-  other so banner noise stays bounded. A repeat-mode ARM cycle
-  is unaffected (repeat uses no `-group`, so the two visual
-  identities coexist).
-- **Bypass is NOT subject to §3's silent-skip contract.** The
-  bypass path's contract is the inverse: precondition fail →
-  user-visible Korean guidance via the combined-Bash stdout (first-
-  run UX immediate-feedback requirement). Future model-invocable
-  helpers should follow the same dichotomy — fire-path silent,
-  bypass-path narrated.
+  mirrors the fire path — `terminal-notifier`'s exit code is unreliable
+  (especially under denied-permission state). The group + `|| true`
+  neutralizes the exit code, `2>/dev/null` swallows stderr leak, and
+  the `echo` runs unconditionally so the user always receives the
+  guidance line.
+- **`-group "cc-cmds-active-notify"`** — same group identifier as the
+  single armCount=1 fire. Repeated bypass invocations replace each
+  other so banner noise stays bounded. A repeat-mode or single
+  armCount>1 ARM cycle is unaffected (those use no `-group`, so the
+  visual identities coexist).
+- **Bypass is NOT subject to §3's silent-skip contract.** The bypass
+  path's contract is the inverse: precondition fail → user-visible
+  Korean guidance via the combined-Bash stdout (first-run UX
+  immediate-feedback requirement).
 
-The bypass leaves the state flag untouched. Even when no prior ARM
-is active, the bypass invocation is safe and does not create one.
+The bypass leaves the state flag untouched. Even when no prior ARM is
+active, the bypass invocation is safe and does not create one.

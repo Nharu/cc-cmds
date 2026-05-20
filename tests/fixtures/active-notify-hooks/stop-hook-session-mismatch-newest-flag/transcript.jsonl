@@ -1,3 +1,0 @@
-{"type":"user","sessionId":"test-beta-current","message":{"role":"user","content":[{"type":"text","text":"빌드 한 번 돌려"}]}}
-{"type":"assistant","sessionId":"test-beta-current","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls","description":"List"}}]}}
-{"type":"user","sessionId":"test-beta-current","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"a b c","is_error":false}]}}

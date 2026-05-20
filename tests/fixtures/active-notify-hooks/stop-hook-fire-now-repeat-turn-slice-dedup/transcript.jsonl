@@ -1,7 +1,0 @@
-{"type":"user","sessionId":"test-fire-now-repeat-dedup","message":{"role":"user","content":[{"type":"text","text":"매번 알려줘"}]}}
-{"type":"assistant","sessionId":"test-fire-now-repeat-dedup","message":{"role":"assistant","content":[{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"bash plugins/cc-cmds/skills/active-notify/scripts/notify.sh arm \"매번 알려줘\" \"loop\" repeat","description":"ARM repeat"}}]}}
-{"type":"user","sessionId":"test-fire-now-repeat-dedup","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a1","content":"","is_error":false}]}}
-{"type":"assistant","sessionId":"test-fire-now-repeat-dedup","message":{"role":"assistant","content":[{"type":"tool_use","id":"a2","name":"Bash","input":{"command":"npm test","description":"Test"}}]}}
-{"type":"user","sessionId":"test-fire-now-repeat-dedup","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a2","content":"OK","is_error":false}]}}
-{"type":"assistant","sessionId":"test-fire-now-repeat-dedup","message":{"role":"assistant","content":[{"type":"tool_use","id":"a3","name":"Bash","input":{"command":"bash plugins/cc-cmds/skills/active-notify/scripts/notify.sh fire-now \"테스트\" \"통과\"","description":"sub-turn"}}]}}
-{"type":"user","sessionId":"test-fire-now-repeat-dedup","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a3","content":"","is_error":false}]}}
