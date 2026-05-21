@@ -38,15 +38,15 @@ Engineering workflow commands for Claude Code.
 
 ```bash
 brew install terminal-notifier
-brew install jq   # Stop hook 의존성
+brew install jq   # PreToolUse hook 의존성
 ```
 
 **2단계 — 자연어 요청**:
 
-- **단발 알림** — `"끝나면 알림 한 번 줘"`, `"ping me when this finishes"`. 다음 작업 완료 시 1회.
-- **반복 알림** — `"매 커맨드 끝날 때마다 알려줘"`, `"each time a step finishes, ping me"`. 매 turn 종료 시 발송, `"알림 취소"`로 중단할 때까지 (자동 횟수 제한 없음).
+- **단발 알림** — `"끝나면 알림 한 번 줘"`, `"ping me when this finishes"`. 사용자가 지정한 시점(작업 완료 등)에 모델이 알림을 1회 발송합니다. `"시작할 때랑 끝날 때 알려줘"`, `"start, midpoint, finish — ping each time"`처럼 여러 시점을 함께 지정하면 각 시점마다 발송합니다.
+- **반복 알림** — `"매 커맨드 끝날 때마다 알려줘"`, `"each time a step finishes, ping me"`. 모델이 매 turn 종료 직전 자체적으로 알림을 발송합니다 (`"알림 취소"`로 중단할 때까지). hook이 아닌 모델 판단 기반이라, 모델이 turn 끝의 호출을 놓치면 해당 turn 알림이 누락될 수 있습니다.
 
-**3단계 — 최초 macOS 권한 승인** (1단계 완료 후): 첫 알림 시 macOS 권한 다이얼로그가 표시됩니다. 미리 트리거하려면 `"알림 테스트 한 번 해줘"`로 발화하여 테스트 알림을 받고 **허용**을 클릭하세요. (Claude Code의 Bash 권한 다이얼로그는 PreToolUse hook이 자동 승인하므로 표시되지 않습니다 — macOS 알림 권한 다이얼로그만 1회 응답하면 됩니다.) 다이얼로그를 놓쳤다면 시스템 설정 → 알림 → terminal-notifier에서 수동 활성화. 권한 거부 후 복구는 셸에서 `terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group cc-cmds-active-notify -execute ':'` 직접 실행으로 재트리거 (스킬 bypass와 동일 형식이라 banner 외관이 일치).
+**3단계 — 최초 macOS 권한 승인** (1단계 완료 후): 첫 알림 시 macOS 권한 다이얼로그가 표시됩니다. 미리 트리거하려면 `"알림 테스트 한 번 해줘"`로 발화하여 테스트 알림을 받고 **허용**을 클릭하세요. (Claude Code의 Bash 권한 다이얼로그는 플러그인의 PreToolUse hook이 자동 승인하므로 표시되지 않습니다 — macOS 알림 권한 다이얼로그만 1회 응답하면 됩니다.) 다이얼로그를 놓쳤다면 시스템 설정 → 알림 → terminal-notifier에서 수동 활성화. 권한 거부 후 복구는 셸에서 `terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group cc-cmds-active-notify -execute ':'` 직접 실행으로 재트리거 (스킬 bypass와 동일 형식이라 banner 외관이 일치).
 
 terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활성화됩니다.
 
