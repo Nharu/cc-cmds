@@ -5,6 +5,28 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-05-21
+
+`active-notify` v1.5.0이 ARM 후 background task 완료를 처리하는 turn에서 dispatch 순서를 강제하지 않아, 모델이 결과 검증(`find`/`grep` over logs 등)을 `fire-now`보다 먼저 호출하면 사용자 allowlist에 없는 명령이 권한 다이얼로그를 띄워 turn이 정지하고 알림이 미발송되던 결함을 수정한다. 사용자는 키보드 앞을 떠나 알림을 기다리던 중이라 알림도 chat 응답도 없는 무한 hang으로 인식한다. 본 릴리스는 SKILL.md / `_common/notify.md` 프로즈만 보강(코드·hook·frontmatter 미수정)하여 task 완료를 인지한 turn에서 `fire-now`를 첫 도구 호출로 의무화한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `active-notify` SKILL.md에 "Fire-now ordering within the turn (fire-first mandate)" 절 신설. 활성 ARM이 대상으로 하는 milestone 완료를 관찰한 직후 모델의 다음 도구 호출은 무조건 `notify.sh fire-now`여야 한다. fire-now는 plugin의 PreToolUse hook이 자동 승인하므로 권한 다이얼로그를 일으키지 않는 유일한 호출이며, 모델은 사용자 allowlist를 예측할 수 없으므로 "권한 게이트 호출보다 먼저"가 아니라 "어떤 호출보다도 먼저"여야 실행 가능한 규칙이 된다. observation이 turn 시작 시점에 이미 context에 있는 경우(background task 완료로 인한 re-invoke)와 mid-turn에 드러나는 경우(foreground Bash inline 종료, BashOutput poll) 모두 적용된다. 실패한 task에서도 동일 순서 — 조사 욕구가 강한 함정 지점이지만 fire-now 먼저, 조사는 뒤.
+- "Defensive fire-now (when an ARM may be live)" 절 신설. long task 끝에 ARM 발화 기억이 context에서 사라졌더라도 ARM이 placed되지 않았다고 확실히 배제할 수 없다면 fire-now 먼저 호출한다. flag가 ground truth이며 dispatcher는 flag 부재 시 silent no-op이라 잘못된 호출은 무해하다. flag 파일을 Read해서 의문을 해소하지 말 것 — 그 Read 자체가 권한 게이트 호출이라 turn을 정지시킬 수 있다.
+- 새 worked example "Background-task completion — fire-first ordering" 추가. 안드로이드 빌드 background → 완료 → fire-now 첫 호출 → 그 다음 검증 패턴 시연. failed-build + mid-turn-observation variant 포함.
+- fire-now anti-pattern 정밀화 — "fire-now without ARM"을 "positively know no ARM was ever placed"로 재작성. ARM 기억 부재(uncertainty)와 ARM 부재 확실성(knowledge)을 구분하여, 전자는 defensive fire-now로 라우팅되고 후자만 금지된다. 추가 항목 "fire-now deferred behind another tool call" 신설 — 검증·점검 호출을 fire-now보다 앞 순서에 놓으면 권한 다이얼로그가 turn을 정지시켜 알림이 strand된다는 사례를 본문에 명시.
+- `_common/notify.md` "Notification fire" 절에 fire-first 문단 + copy 합성 보강. 검증 호출로 summary를 만들지 않고 이미 context에 있는 완료 신호(exit code, output tail)로 합성한다.
+
+### Why
+
+prose-only 보강만 적용한 이유: hook 기반 구조적 안전망(harness-driven turn-end fire 또는 권한 다이얼로그 이벤트를 정조준한 backstop)도 검토했으나, 모든 게이팅 옵션이 소음 대 복잡도 trade-off에서 만족스럽지 않았고 명시적으로 모델 판단에 위임된 결정에는 prose-only fence가 적절한 수단이라는 기존 방침을 따랐다. dogfood로 hang 재발 여부를 관찰한 뒤 hook 기반 backstop 도입 여부를 재검토할 예정. 환원 불가능한 잔여는 "모델이 task 완료를 처리하면서 fire-first/defensive-fire 규칙을 아예 떠올리지 않는 경우" — prose는 규칙을 명시할 수 있어도 모델이 그 규칙을 참조하도록 보장할 수 없는 갭이다.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- frontmatter 미수정 → README diff 0, lint 회귀 없음. `make check` lint 5종 + readme parity 통과.
+- 코드(`notify.sh`)·hook(`active-notify-pretool.sh`)·flag schema 미변경. v1.5.0과 wire 호환 (기존 ARM flag 그대로 동작).
+
 ## [1.5.0] - 2026-05-21
 
 cc-cmds의 첫 model-invocable helper skill `active-notify`를 도입한다. 사용자가 자연어로 알림 발동을 요청하면 (`"끝나면 알려줘"`, `"매 작업마다 알려줘"`, `"시작할때랑 끝날때 알려줘"`) 모델이 ARM 상태를 TMPDIR JSON flag로 등록하고, 후속 sub-event 시점마다 모델이 직접 `notify.sh fire-now <workflow> <summary>`를 호출해 macOS `terminal-notifier`로 데스크탑 banner를 발화한다. plugin-level PreToolUse hook이 dispatcher Bash 호출을 session-persistent `applyPermissionRules`로 자동 승인하여 권한 다이얼로그 0건 불변식을 유지하며, ARM JSON schema:3 + `--count=N` flag로 single 모드 multi-sub-event 발화(`"시작할 때랑 끝날 때"` → `--count=2`)를 자연어 그대로 인코딩한다. macOS Notification Center가 banner에 자동 부착하던 "보기" 버튼이 click 시 부모 subshell focus를 가로채던 결함도 `-execute ':'` no-op click-target으로 차단한다 (`/plugin update cc-cmds`로 자동 반영).
