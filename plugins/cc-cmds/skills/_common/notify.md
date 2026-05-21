@@ -38,9 +38,19 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
 
 ## §2 Notification fire
   fire-now is the **only** dispatch surface — model-driven, called at
-  each sub-event observation point. Banner copy is supplied verbatim
+  each sub-event observation point.
+  The moment the model observes an armed milestone complete, fire-now is
+  its next tool call — ahead of any verification, which could suspend
+  the turn on a permission dialog and strand the notification (SKILL.md
+  §4.5); when unsure an ARM is live, it fires regardless, since the
+  dispatcher silently no-ops an absent flag (SKILL.md §4.6).
+  Banner copy is supplied verbatim
   via the `<workflow>` and `<summary>` positional arguments — no
-  transcript scrape, no marker mechanism, no Bash-tool-result fallback.
+  transcript scrape, no marker mechanism, no Bash-tool-result
+  fallback, no fresh verification call — the summary is synthesized from
+  the completion signal already in the model's context (exit code,
+  output tail). A banner that fires beats a precise banner that never
+  fires.
 
     Banner title is `[cc-cmds] ${workflow}` and body is `${summary}`.
 

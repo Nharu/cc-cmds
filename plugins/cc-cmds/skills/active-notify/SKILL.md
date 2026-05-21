@@ -259,12 +259,104 @@ Invoke `fire-now` at **every turn end** where:
 **Turn-end self-check**: ARM alive? user-task tool call ≥1 this turn?
 → fire-now obligation. Skipping a borderline turn is the §6.2 anti-pattern.
 
+**Background-completion exception**: when the qualifying event is a
+background task that completed — re-invoking the model, or observed
+finished mid-turn — do not wait for turn end. §4.5 requires fire-now
+as the next tool call at the moment of observation, ahead of any
+verification. The "≥1
+user-task tool call" counter above is a heuristic for in-turn work; a
+completed background task is itself a qualifying event and fires
+regardless of that counter.
+
 ### 4.4 Empty turn / AskUserQuestion-terminal turn
 
 - Pure conversational turn (no user-task tools) → no fire-now needed.
 - Turn ending with `AskUserQuestion` → harness suspends turn; no
   fire-now until the user reply turn (which will be a fresh observation
   point).
+
+### 4.5 Fire-now ordering within the turn (fire-first mandate)
+
+§4.1–§4.3 decide *whether* a fire-now is owed; this subsection
+decides *when within the turn* the owed call runs.
+
+**The moment you observe that the milestone the active ARM targets has
+completed — its exit code and output are in your context —
+`notify.sh fire-now` MUST be your next tool call, before ANY other
+tool call. This holds however you observe the completion: when it is
+already in context as the turn opens (the typical background-task
+re-invoke — see (s6)), fire-now is the first call of the turn; when a
+call you make mid-turn surfaces it — a foreground `Bash` finishing
+inline, or a `BashOutput` poll showing a background task done —
+fire-now is the first call after that observation.**
+
+Rationale: `fire-now` is auto-approved by the plugin's PreToolUse hook
+— it raises no permission dialog and always runs. Any other call
+placed first may hit a permission dialog and suspend the turn before
+fire-now is reached, stranding the notification; the user, away from
+the keyboard, then perceives an infinite hang. You cannot know which
+calls the user has allowlisted, so the rule is unconditional — not
+"before permission-gated calls" but before *any* call. fire-now is an
+instant, fire-and-forget local-disk op; ordering it first costs
+nothing.
+
+**A failed task does not change the order.** A non-zero exit sharpens
+the urge to investigate first ("let me find out why it failed") —
+that urge is the §6.2 deferred-fire anti-pattern. fire-now first, the
+failure in the copy; investigate after.
+
+Mode- and count-agnostic. The trigger is a completed, unfired
+milestone — not the mode, the fire count, or turn position. It governs
+single final fires, single intermediate fires (§4.2 count=N), and
+repeat fires alike. For repeat mode it overrides §4.3's turn-end
+timing: a background completion that re-invokes the model fires first
+on that turn (the §4.3 Background-completion exception callout), and within an
+ordinary repeat turn the turn-end fire is hoisted ahead of any closing
+verification — once the turn's work is done and only result-checking
+remains, fire before that check. §4.3's "≥1 user-task tool call"
+counter is a fallback heuristic, not a gate on this hoist — when a
+milestone is observed complete the §4.5 trigger owns the timing even
+if that counter still reads zero at the fire moment. If the completion
+maps to one of several named sub-events and you are unsure which, that
+ambiguity is
+not grounds to defer — fire on the best-fit sub-event (§6.3's
+principle — ambiguity is not an avoidance reason — governs ordering
+too).
+
+Copy is subordinate to ordering: a banner that fires beats a perfect
+banner that never fires. Build `<summary>` from the completion signal
+already in context — never from a fresh verification call — using
+`"성공"` / `"실패 (exit N)"` when the exit code is known (the norm; a
+background shell's exit code is virtually always in hand) and `"완료"`
+when there is genuinely no pass/fail signal. In single count=1 the
+first fire-now CONSUMES the flag — that banner is final, so there is
+no "fire a placeholder now, fire a corrected one after verifying."
+Verification the user's task genuinely needs happens *after* fire-now.
+
+### 4.6 Defensive fire-now (when an ARM may be live)
+
+§4.5 assumes you know a fire is owed. The harder case is not knowing.
+On a long task — exactly what this skill serves — earlier conversation
+context, including the original ARM request, may no longer be in view;
+the state flag, however, lives on disk and outlives any such loss.
+
+**When a background task completes and you cannot positively rule out
+that a notification was requested for it earlier this conversation,
+fire-now first.** The dispatcher silently no-ops when no live flag
+exists, so an unnecessary call is free; a skipped call when an ARM was
+in fact live is the bug this skill exists to prevent. Bias hard toward
+firing: a false positive is one silent no-op, a false negative is a
+stranded user. Do not Read the flag file to resolve the doubt — that
+Read is itself a permission-gated call that can suspend the turn;
+fire-now IS the probe, dispatching if a flag is live and no-opping if
+not.
+
+This does not loosen §6.1. Defensive fire-now is *firing*, not
+*arming* — it never creates a notification cycle. A banner appears only
+if a flag exists, and a flag exists only because a real ARM call ran
+this session; the flag, not your memory, is ground truth. What stays
+forbidden is unchanged: arming on self-judgment (§6.1), and calling
+fire-now when you positively know no ARM was ever placed (§6.2).
 
 ## 5. Worked examples
 
@@ -329,6 +421,39 @@ call `notify.sh arm` — invokes the inline Bash expression in §7 instead.
 User: `"역시 알림 그만"` mid-cycle → `notify.sh cancel` → flag deleted
 → any subsequent `fire-now` is silent no-op (flag absent).
 
+### (s6) Background-task completion — fire-first ordering
+
+User: `"안드로이드 빌드 백그라운드로 돌려줘, 끝나면 알림 줘"` → ARM
+single (default count=1) → model launches the build as a background
+shell → turn ends (build still running → no fire-now yet).
+
+Later: the background build completes and the harness re-invokes the
+model in a fresh turn. The completion — exit code, output tail — is
+already in context; the ARM flag is still alive (§3).
+
+1. The model's FIRST tool call is `notify.sh fire-now "build" "성공"`
+   — `<summary>` taken from the exit code already in hand, NOT from a
+   fresh log scan.
+2. ONLY THEN does the model verify results (e.g. `find ... -name
+   'logcat-*.txt' | xargs grep ...`). If that call raises a permission
+   dialog and suspends the turn, the banner has already fired — the
+   user is not stranded.
+
+**Failed-build variant**: the build exits non-zero. Same ordering —
+`notify.sh fire-now "build" "실패 (exit 1)"` first, *then* investigate.
+Diagnosing the failure before notifying is the §6.2 deferred-fire
+anti-pattern.
+
+**Mid-turn-observation variant**: rather than a re-invoke, the model
+polls a running background build with `BashOutput` mid-turn and sees
+it finished. fire-now is the first call *after* that `BashOutput` — not
+deferred to turn end.
+
+**Anti-pattern**: verification `find`/`grep` first → permission dialog
+→ turn suspends → fire-now never reached → the user, waiting on a
+banner, perceives an infinite hang. See the §6.2 deferred-fire
+anti-pattern.
+
 ## 6. Anti-patterns
 
 Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
@@ -353,8 +478,14 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
 
 ### 6.2 fire-now (call forbidden)
 
-- **fire-now without ARM.** Dispatcher silent no-op but it indicates
-  a model bug — fire-now must follow an ARM in the same conversation.
+- **fire-now when no ARM was ever placed.** If you positively know no
+  notification was requested this conversation, calling fire-now is a
+  model bug — the dispatcher no-ops, but the call should not exist.
+  This forbids the *known*-no-ARM call only. Not remembering an ARM is
+  uncertainty, not knowledge — it routes to §4.6 (fire), not here.
+  Defensive fire-now under genuine uncertainty whether a live ARM
+  exists is therefore correct, not forbidden — the dispatcher's
+  no-op-on-absent-flag resolves it safely.
 - **Borderline turn skip in repeat mode.** Turn had user-task tool
   calls but model "saved" the fire-now for a "more significant" turn.
   Repeat mode contract is **every** qualifying turn fires. Self-judgment
@@ -362,6 +493,16 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
 - **Mid-cycle re-fire after final consume.** In `single --count=N`, the
   N+1-th fire-now is silent no-op (flag consumed). Calling it does no
   harm but indicates the model lost track of cycle state.
+- **fire-now deferred behind another tool call.** You have observed a
+  milestone under the active ARM complete, but you run a verification
+  or inspection call first — a `find`/`grep` over logs, a `Read`, an
+  `Edit`. That call can raise a permission dialog and suspend the turn
+  before fire-now runs; the banner never fires and the user, away from
+  the keyboard, perceives an infinite hang. fire-now is auto-approved
+  and never blocks — it MUST be the first tool call after you observe
+  the completion (§4.5). A failed task is the strongest form of this
+  trap: the urge to diagnose before notifying must yield — fire first,
+  investigate after.
 
 ### 6.3 Ambiguity-avoidance (inverse boundary — call forbidden)
 
