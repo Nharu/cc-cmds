@@ -63,6 +63,7 @@ This skill is the lightweight sibling of `design`. It trades depth for predictab
 - Notify the user in Korean: *"설계 문서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
 - **Before presenting results to the user, Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure to clean up the design team.
 - Present the results to the user in Korean.
+- **Unresolved Issue Walkthrough (base `design` Step 5) is disabled in lite.** Issues in the saved doc transfer directly to Step 5 (refinement) without per-issue walkthrough.
 
 ### Step 5: Plan Refinement with User (lead-only)
 

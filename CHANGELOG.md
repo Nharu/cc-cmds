@@ -5,6 +5,32 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-05-23
+
+`design` 스킬에 Step 4 직후 자동 진입하는 정식 Step 5 "Unresolved Issue Walkthrough"를 신설한다. 기존에는 Step 4(합의 종합·문서 저장·결과 발표) 종료 후 워크플로우가 사용자 응답을 기다리며 stale 상태가 되어, 사용자가 매번 *"확인할 미해결 이슈가 있나? 하나씩 보자"* 패턴을 수동 트리거해야 했다. 이 패턴을 정식 단계로 승격하여 저장된 설계 문서의 미해결 이슈를 사용자 입력 없이도 결정까지 진행한다. walkthrough의 책임은 후속 `/cc-cmds:design-review` 사이클(false-positive 제거·mechanical gap 검출·auto-decide)과 분리되어 *사용자 입력 없이는 해결 불가능한 항목* 에 한정된다. 기존 Step 5(Plan Refinement)는 Step 6으로 renumber되며, `design-lite`에서는 walkthrough가 비활성화되어 fast direction-setting 목적을 유지한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `design/SKILL.md`에 Step 5 Unresolved Issue Walkthrough 신설. 미해결 이슈를 4개 카테고리(UD Decision-needed / UC Clarification-needed / UA Alternative-to-evaluate / UR Risk-acknowledgment)로 분류하고, read-only + reproducible 자동 조사 후 `AskUserQuestion`으로 사용자 결정을 받는 하이브리드 처리 흐름을 정의한다. surface 여부는 *"fresh `/design-review`가 사용자 입력 없이 해결 가능한가"* 단일 필터 테스트로 design-review와 책임을 분리한다.
+- 5+1 상태 머신(대기/조사중/결정대기/해결/보류/제외)을 저장 문서의 인라인 `상태` 마커로 영속화. table form·sub-section form 양쪽 인코딩을 tolerate하며, ephemeral 상태(조사중/결정대기)는 turn 종료 시 checkpoint write로 다음 세션 복구를 보장한다.
+- `(깊이: N)` marker로 재귀 surface를 제한(깊이 3 구조적 불가), abort 시맨틱(full abort / single-issue skip), user-initiated 팀 spawn 흐름(`design-<slug>-refine-N` 공유 counter, Step 5·6 동일 시퀀스)을 포함한다.
+- `_common/agent-team-protocol.md` cleanup-anchor recovery 예시 목록에 design Step 5 진입·이슈 간 경계·Step 6 진입 3개 anchor 반영.
+
+### Changed
+
+- `design/SKILL.md` 기존 Step 5(Plan Refinement)를 Step 6으로 renumber. synthesis terminal 문구를 Step 5·6 편집 단계가 lead-driven Edit을 허용함을 명시하도록 확장하고, Step 6 state-check enumeration·refine-N 시작값 문구를 walkthrough-spawned team을 포함하도록 갱신.
+- `design-lite/SKILL.md` Step 4 끝에 walkthrough 비활성화 addendum 한 줄 추가 — lite는 미해결 이슈를 plan refinement에서 ad-hoc 처리하며 fast direction-setting 목적을 유지한다.
+
+### Why
+
+Step 4 종료 후 워크플로우가 stale 상태가 되어 사용자가 매번 walkthrough를 수동 트리거하던 마찰을 정식 단계로 구조화. design-review와 책임을 분리한 이유는, 사용자 가치 판단이 필요한 항목을 미해소로 남기면 design-review의 auto-decide가 사용자 의도와 다른 default를 silent하게 commit할 위험이 있기 때문이다.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- frontmatter 미수정 → README diff 0, lint 회귀 없음. `make check` lint 5종 + readme parity 통과.
+- 코드·hook·script·fixture 미변경 — SKILL.md / `_common` prose만 수정.
+
 ## [1.5.1] - 2026-05-21
 
 `active-notify` v1.5.0이 ARM 후 background task 완료를 처리하는 turn에서 dispatch 순서를 강제하지 않아, 모델이 결과 검증(`find`/`grep` over logs 등)을 `fire-now`보다 먼저 호출하면 사용자 allowlist에 없는 명령이 권한 다이얼로그를 띄워 turn이 정지하고 알림이 미발송되던 결함을 수정한다. 사용자는 키보드 앞을 떠나 알림을 기다리던 중이라 알림도 chat 응답도 없는 무한 hang으로 인식한다. 본 릴리스는 SKILL.md / `_common/notify.md` 프로즈만 보강(코드·hook·frontmatter 미수정)하여 task 완료를 인지한 turn에서 `fire-now`를 첫 도구 호출로 의무화한다 (`/plugin update cc-cmds`로 자동 반영).
