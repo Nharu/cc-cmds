@@ -30,9 +30,23 @@ TOKEN_BUDGET=4000
 WORDS_PER_TOKEN_RATIO=1.3   # tokens ≈ words × 1.3 (conservative over-estimate)
 INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 
-# Skills that are exempt from rule (A) — tiny orchestration-only skills that
-# have no outer/inner termination loop and cannot silently mis-terminate.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "design" "review" "design-lite" "review-lite")
+# Skills exempt from rule (A). Rule (A) targets skills whose termination
+# contract lives in in-session bash variables (e.g., design-review's
+# `consecutive_no_major` / `INNER_EXIT_REASON`) that post-conversation
+# compaction can summarize away, producing silent mis-termination. All other
+# skills recover termination state from elsewhere and are therefore exempt:
+#   - Multi-round agent-team skills (design / review / design-lite / review-lite
+#     / design-apply) — termination contract lives in `_common/team-cleanup.md`
+#     plus file-recovery slug bindings.
+#   - Single-pass verdict-emit skills (design-ingest) — loop state recovered
+#     from `## Verdict:` headers on disk; every invocation is fresh-context.
+#   - Linear authoring skills (design-system / design-prompt / design-upgrade)
+#     — no loop at all, no termination contract to lose.
+#   - IO orchestrators (active-notify / implement) — termination is a
+#     hook/tool-driven boundary, not a counter the model has to maintain.
+# In effect, the only non-exempt member is the `design-review ↔
+# design-review-lite` pair (which rule B additionally enforces via phrase sync).
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "design" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

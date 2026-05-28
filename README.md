@@ -9,9 +9,13 @@ Engineering workflow commands for Claude Code.
 | Command | Description | When to use |
 |---------|-------------|-------------|
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
+| `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
+| `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
+| `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
 | `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
 | `/cc-cmds:design-review-lite` | 설계 문서 경량 사이클 리뷰 | 설계 문서를 간결한 반복 사이클로 빠르게 검증하고 싶을 때 (미묘한 termination invariant·동시성 검출률 약화 가능) |
+| `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
 | `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
@@ -64,6 +68,16 @@ brew install jq   # PreToolUse hook 의존성
 
 terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활성화됩니다.
 
+### Claude Design 핸드오프 품질 리뷰 (선택)
+
+`/cc-cmds:design-ingest`의 단일 에이전트 리뷰 단계는 환경에 `web-design-guidelines` 스킬이 설치되어 있으면 UI/접근성/반응형 평가를 그 스킬로 보강합니다. 이 스킬은 vercel-labs `agent-skills` 리포의 **skills-CLI 개별 스킬**이며 Claude Code 마켓플레이스 플러그인이 아닙니다 — 따라서 cc-cmds `plugin.json`의 `dependencies`로는 표현이 불가능하고, 다음 명령으로 `~/.claude/skills/`에 직접 설치합니다.
+
+```bash
+npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines
+```
+
+부재 시 design-ingest는 자체 5축 기준(토큰-vs-DS 일치도, a11y 대비비 산술, 반응형/터치 영역 44px+, base 의도 충실도, 시각 품질)으로 fallback하며 리뷰는 중단되지 않습니다. terminal-notifier와 동일 doctrine — `plugin.json` `dependencies`로 표현 불가한 선택적 외부 의존성(skills-CLI 개별 스킬·brew 도구 등)은 graceful degradation + README 권장-설치-명령 패턴을 따릅니다.
+
 ## Install
 
 ```bash
@@ -106,9 +120,13 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 <!-- SKILLS_OPTIONS_START -->
 
 - [/cc-cmds:design](#cc-cmdsdesign)
+- [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
+- [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
+- [/cc-cmds:design-prompt](#cc-cmdsdesign-prompt)
 - [/cc-cmds:design-review](#cc-cmdsdesign-review)
 - [/cc-cmds:design-review-lite](#cc-cmdsdesign-review-lite)
+- [/cc-cmds:design-system](#cc-cmdsdesign-system)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:review](#cc-cmdsreview)
@@ -122,6 +140,22 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 | --- | --- | --- |
 | `<task>` | (required) | 설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트). |
 
+### /cc-cmds:design-apply
+
+**Usage**: `/cc-cmds:design-apply <handoff-extract-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<handoff-extract-path>` | (required) | design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·팀명 조립·cleanup 복구의 단일 앵커 |
+
+### /cc-cmds:design-ingest
+
+**Usage**: `/cc-cmds:design-ingest <handoff-dir-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<handoff-dir-path>` | (required) | 기능 핸드오프 디렉토리 (`docs/{slug}-fe/handoff`); incoming/ 하위 번들을 소비 |
+
 ### /cc-cmds:design-lite
 
 **Usage**: `/cc-cmds:design-lite <task>`
@@ -129,6 +163,14 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<task>` | (required) | 설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트). |
+
+### /cc-cmds:design-prompt
+
+**Usage**: `/cc-cmds:design-prompt <base-doc-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<base-doc-path>` | (required) | base 설계 문서 경로 (`docs/{slug}.md`); 본 스킬이 그 안에 CD 프롬프트 섹션을 in-place authoring |
 
 ### /cc-cmds:design-review
 
@@ -159,6 +201,14 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
 | `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
+
+### /cc-cmds:design-system
+
+**Usage**: `/cc-cmds:design-system [<intent>]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `[<intent>]` | _(optional)_ | DS 생성 의도/스코프 서술용 자유형 토큰 (생략 시 base 설계·코드베이스에서 추론) |
 
 ### /cc-cmds:design-upgrade
 
