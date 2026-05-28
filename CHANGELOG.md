@@ -5,6 +5,36 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-05-28
+
+`design` 스킬 Step 5 (Unresolved Issue Walkthrough)의 카테고리별 옵션 메뉴에 lead recommendation 메커니즘을 도입한다. 기존에는 각 미해결 이슈를 `AskUserQuestion`으로 surface할 때 카테고리별 옵션을 그대로 늘어놓아 사용자가 어느 옵션이 lead의 best-fit인지 알 수 없었고, 결정 부담만 떠안은 채 walkthrough가 "선택지를 나열하는 단계"로 퇴화했다. 본 릴리스는 `AskUserQuestion`의 네이티브 추천 contract와 design-review subfamily에 이미 정착된 한국어 `← 추천` convention을 통합하여, auto-investigation이 confident일 때만 추천 옵션을 position 1로 이동 + `← 추천` suffix 부착 + 근거를 옵션 `description`에 cite한다. 모든 카테고리(UD/UC/UA/UR)·모든 옵션(`보류`·`팀 토론 진행` 포함)이 추천 후보가 되며, UD/UA가 4-option cap을 초과하는 케이스(`K_pick ≥ 3`)는 conditional inclusion으로 branch (a) pin + worst-cascade drop / branch (b) hide + Other 채널 reachability로 분기 처리한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `design/SKILL.md`의 Step 5 walkthrough에 **Lead recommendation policy** 절(7개 sub-paragraph) 신설. 카테고리별 confident criterion(UC: grep 3–50 hits + ≥80% alignment + canonical-surface counter-example 부재 / UA: cost delta ≥2× + affected-file 단조성 OR hard blocker OR frozen-path overlap / UD: parallel-decision anchor + offered option alignment + "different case" rationale 부재 / UR: blast-radius·critical-path·cross-team-coupling 기반 4-way 분기) + NONE-good case forced `팀 토론 진행 ← 추천` + recommendation contract + description format (`<semantics> — 추천 근거: <evidence>` ≤140 chars ≤2 sentences with citation-token allowlist + opinion-phrase denylist) + UC sub-loop default SUPPRESS + dropped-confirm prompt structural carve-out (`확인` 라벨에 `← 추천` 미적용) + cap-handling conditional inclusion (branch a/b + worst-cascade + hide vs collapse fence + multi-session stateless) + mid-flight reclassification fallback (i)/(ii) + team-spawn two-layer approval 보존 + state-machine 무영향 fence를 포함한다.
+- 옵션 메뉴의 모든 옵션에 1-line `description` 부착. 추천 옵션은 `<semantics> — 추천 근거: <evidence>` 형식의 rationale, 비추천 옵션은 라벨별 static text를 사용한다.
+- 신규 normative subsection **Description requirements** 추가. 11-row 라벨별 static description 표(`수용`/`재설계`/`보류`/`팀 토론 진행`/`맞음`/`다르게 수정`/`더 논의`/`확인`/`그래도 유지`/UD concrete picks/UA option picks)를 single source of truth로 명시한다. 메뉴 decision branch 변경 시 본 표도 atomic 갱신 의무를 prose로 못 박았다. UD/UA concrete pick이 추천 옵션인 경우의 verb-stem 변환 규칙(`...합니다.` → `...확정` / `...구현`) 및 dropped-confirm prompt의 hybrid `근거:` prefix 형식(`<static semantics> — 근거: <false-positive evidence> (<path:line>)`)도 본 subsection에 포함된다.
+
+### Changed
+
+- `design/SKILL.md` L198 default ordering 규칙을 split-clause로 재작성. (i) escalation gradient(`direct-resolution → 보류 → 팀 토론 진행`)을 명시적으로 보존하고, (ii) recommendation override 조건을 같은 위치에 co-locate하며, (iii) UD/UA `K_pick ≥ 3` conditional inclusion exception을 cross-reference한다. UC initial menu / UR menu / UC sub-loop / UC dropped-confirm dialog의 escalation-gradient 적용 경계도 prose로 명시했다.
+- 기존 `Bias-toward-lead framing` paragraph(`lead never proactively recommends a team` 제약 포함)를 `Lead recommendation policy` 7-paragraph block으로 전면 재작성. 단일 ~800-word block의 scannability 문제를 해소하여 lead가 자신의 case에 해당하는 paragraph만 빠르게 locate 가능하게 한다.
+- L191 dropped-confirm prompt 라벨의 paren-내 설명(`확인 (entry REMOVED)`, `그래도 유지 (정상 UC 메뉴로 복귀)`)을 제거하고 description 형식(`근거:` prefix hybrid form)으로 이전한다. 라벨은 짧게 유지되고 의미는 description에서 명확하게 전달된다.
+- L187 surface step에 recommendation rendering check 한 줄 추가. `AskUserQuestion` 옵션 구성 시점에 `Lead recommendation policy` 적용을 명시했다.
+
+### Why
+
+사용자가 walkthrough 옵션 메뉴에서 어느 옵션이 lead의 best-fit인지 알 수 없어 결정 부담이 컸음. `AskUserQuestion`의 네이티브 추천 contract와 design-review subfamily에 이미 정착된 `← 추천` convention을 활용해 confident 시에만 명확한 추천 신호를 제공한다. confidence 기준을 데이터·사실 판별성으로 정의(lead 취향·의견 금지)하고 description에 citation token 의무화로 lead-taste recommendation을 차단. `K_pick ≥ 3` UD/UA 메뉴는 4-option cap 충돌을 conditional inclusion으로 해소하여 `보류`/`팀 토론 진행` collapse 없이 Other 채널 reachability를 보존한다.
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- frontmatter 미수정 → README diff 0, lint 회귀 없음. `make check` lint + readme parity 통과.
+- 코드·hook·script·fixture 미변경 — `design/SKILL.md` prose만 수정.
+- `design-lite/SKILL.md`에서 walkthrough explicitly disabled이므로 design-lite는 영향 없음.
+- cross-skill propagation 없음 — `← 추천` form은 design-review subfamily에 이미 정착되어 있어 design family 합류만으로 충분.
+- state machine·doc encoding·checkpoint format·team-spawn flow는 변경 없음. 추천은 `awaiting-decision` 시점의 display-layer concern으로 격리된다.
+
 ## [1.6.0] - 2026-05-23
 
 `design` 스킬에 Step 4 직후 자동 진입하는 정식 Step 5 "Unresolved Issue Walkthrough"를 신설한다. 기존에는 Step 4(합의 종합·문서 저장·결과 발표) 종료 후 워크플로우가 사용자 응답을 기다리며 stale 상태가 되어, 사용자가 매번 *"확인할 미해결 이슈가 있나? 하나씩 보자"* 패턴을 수동 트리거해야 했다. 이 패턴을 정식 단계로 승격하여 저장된 설계 문서의 미해결 이슈를 사용자 입력 없이도 결정까지 진행한다. walkthrough의 책임은 후속 `/cc-cmds:design-review` 사이클(false-positive 제거·mechanical gap 검출·auto-decide)과 분리되어 *사용자 입력 없이는 해결 불가능한 항목* 에 한정된다. 기존 Step 5(Plan Refinement)는 Step 6으로 renumber되며, `design-lite`에서는 walkthrough가 비활성화되어 fast direction-setting 목적을 유지한다 (`/plugin update cc-cmds`로 자동 반영).
