@@ -5,6 +5,37 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-05-29
+
+claude.ai/design (Claude Design) 외부 도구를 활용한 프론트엔드 작업을 위해 4개 신규 슬래시 스킬과 공유 prose 2종을 도입한다. 기존 `design → design-review → implement → review` 파이프라인은 markdown 설계 문서 기반 백엔드 흐름에는 완벽하지만, claude.ai/design은 cc-cmds가 직접 호출할 수 없는 외부 수동 도구이고 산출물(HTML 핸드오프 번들 + `:root` CSS 토큰)을 사람이 가져와 다음 단계로 넘겨야 하기 때문에 단절이 있었다. 본 릴리스는 `design-system`(DS 워크스페이스 2-phase + 가변 Q&A 페어 사전답변 + relay 루프), `design-prompt`(base 설계 문서 stable-anchor CD 프롬프트 섹션 in-place authoring + HANDOFF CONTRACT 포함 붙여넣기 블록 emit), `design-ingest`(균일 출력 레코드 기반 단일 에이전트 리뷰 + DS 동봉/var() 두 패턴 분기 + ACCEPT/REFINE 파일 복구 루프 + ITER_CAP), `design-apply`(agent-team 적용 설계 sibling, slug 복구로 cleanup-anchor 보장) 4개 스킬과 6개 실측으로 확정된 3-rung 하이브리드 파싱 계약을 구현한 `_common/handoff-contract.md`(emitter+parser 공유 frontmatter 스키마) + `_common/parse-handoff.md`(CONTRACT/BEST-EFFORT/AGENT 직독 3-rung 추출 메커니즘)를 도입한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `plugins/cc-cmds/skills/_common/handoff-contract.md` — emitter(`design-prompt` / `design-system` phase1)와 parser(`parse-handoff.md` Rung1) 공유 frontmatter 스키마 단일 정의 (`handoff_schema: 1`). `kind`/`primary`/`pages`/`tokens_file`/`theme_mode`/`stack` 필드를 정의하고 inner README discovery 규칙 + non-load-bearing cross-check doctrine을 prose로 못 박는다.
+- `plugins/cc-cmds/skills/_common/parse-handoff.md` — 3-rung 저하(Rung1 CONTRACT / Rung2 BEST-EFFORT / Rung3 AGENT 직독) 추출 메커니즘을 정의한다. MALFORMED는 구조 게이트만(README/HTML 부재) caller-agnostic으로 한정하고, 토큰 부재는 레코드의 `tokens_absent: true`로 caller가 의미 결정한다. 출력 레코드는 happy-path와 fallback이 동형이라 호출자가 rung 분기 없이 record content로 분기한다. token value 추출은 cross-cutting이라 항상 `:root` 블록의 wrapper-inclusive raw bytes로 수집된다.
+- `plugins/cc-cmds/skills/design-system/SKILL.md` — DS 워크스페이스 2-phase 스킬. phase1은 base 설계+코드베이스에서 DS 방향성 정보를 **가변 Q&A 페어(개수·순서 가변, 고정 카테고리 enumerate 금지)**로 추출해 사전답변에 포함하고 HANDOFF CONTRACT 블록을 quote하며 relay 루프 안내를 emit한다. phase2는 incoming/ 번들을 파서로 ingest해 `tokens.css`(authored-css 블록만 + wrapper 보존 + provenance 헤더 + theme 정렬 + dedup)·`tokens.md`·`components.md`·`manifest.json`을 생성한다. `tokens_absent` 또는 divergent 동일-theme 블록은 caller-level 차단으로 escalate.
+- `plugins/cc-cmds/skills/design-prompt/SKILL.md` — base 설계 문서 `docs/{slug}.md`에 `## Claude Design 프롬프트 + 컨텍스트` 섹션을 stable anchor로 in-place authoring(append·중복 금지)하고 파생 붙여넣기 블록 `docs/{slug}-fe/cd-prompt.paste.md`를 조립한다. 붙여넣기 블록은 HANDOFF CONTRACT + `tokens.css` byte-verbatim 인용 + 기능 의도 + 산출물 가이드라인 5블록 구조다. 재실행 시 DS manifest version 비교로 drift 경고를 emit한다.
+- `plugins/cc-cmds/skills/design-ingest/SKILL.md` — 번들 파싱 + 단일 에이전트 리뷰(5축: 토큰-vs-DS / a11y 대비비 / 반응형·터치 / base 의도 충실도 / 시각 품질) + ACCEPT/REFINE 파일 복구 루프. 균일 레코드 기반 (a) DS 동봉 drift-diff / (b) `var()` 참조-only 누락 검증 두 패턴 분기를 본문 앞부분 prose로 prominent하게 기술한다. 루프 상태는 `iter-NNN/review.md`의 `## Verdict:` 첫 줄 헤더 + 디렉토리 열거로 매 호출 fresh-context 복구. `ITER_CAP=3`은 soft cap으로 4회차 진입 시 `AskUserQuestion`으로 사용자에게 계속/강제-ACCEPT/중단 분기.
+- `plugins/cc-cmds/skills/design-apply/SKILL.md` — `design-lite` 패턴 모사 agent-team sibling. 입력 경로 `docs/{slug}-fe/handoff-extract.md`에서 `{slug}`를 파싱해 팀명 `design-apply-{slug}` 조립 + cleanup 복구 키로 사용한다. `_common/agent-team-protocol.md` + `_common/team-cleanup.md` 재사용. concrete-input bootstrap이라 greenfield 인터뷰 생략, 모호점만 narrow `AskUserQuestion`으로 보강.
+
+### Changed
+
+- `scripts/lint-skill-invariants.sh` — `EXEMPT_SKILLS` 배열에 신규 4스킬(`design-system`/`design-prompt`/`design-ingest`/`design-apply`) 추가. 33-34행 주석을 현재 멤버 전부 포괄하도록 재서술 (멀티라운드 agent-team / 단일-패스 verdict-emit / 선형 authoring / IO 오케스트레이터 모두 EXEMPT인 이유 명시; 실질적으로 non-exempt는 `design-review ↔ design-review-lite` 쌍뿐).
+- `README.md` — `make readme` 자동 재생성으로 신규 4스킬의 `## Commands` 표 행과 `## Options` 섹션이 frontmatter 기반으로 추가됨. `## Prerequisites`에 `### Claude Design 핸드오프 품질 리뷰 (선택)` 서브섹션 수동 추가 — `web-design-guidelines`가 vercel-labs `agent-skills` 리포의 skills-CLI 개별 스킬(CC 마켓플레이스 플러그인 아님)이라 `plugin.json` `dependencies`로 표현이 불가능함을 명시하고 정확한 설치 명령(`npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines`)을 제공한다.
+
+### Why
+
+claude.ai/design을 활용한 FE 작업을 cc-cmds 정규 파이프라인과 끊김 없이 연결한다. 6개 실측(원본 1 + 검증 5)으로 번들이 자유 형식임을 확인한 뒤 3-rung 하이브리드 파싱 계약을 도입했다 — 옵션 D frontmatter는 작동(4/4 확인)하지만 비-load-bearing(stale-safe cross-check), SAFE 앵커는 6/6 관찰됨(outer README + "Read X in full" + `project/` + HTML ≥1), 토큰 진실값은 항상 `:root`(주로 공유 `.css`)다. 단일 관찰을 frozen 계약으로 박지 않는 doctrine은 CD 방향성 폼 사전답변에도 적용해 가변 Q&A 페어로 추출한다. `web-design-guidelines`는 skills-CLI 개별 스킬이라 hard-dependency 표현이 불가능해 graceful degradation + README 권장-설치-명령으로 처리한다 (terminal-notifier 선례와 동일 doctrine).
+
+### Post-install notes
+
+- 외부 사용자 조치 불필요. `/plugin update cc-cmds`로 자동 반영.
+- `design-ingest`는 외부 `web-design-guidelines` 스킬이 있으면 리뷰 5축 평가를 그 스킬로 보강하고, 없으면 자체 5축 기준으로 fallback한다(graceful degradation, 리뷰 중단 없음). README "Prerequisites"에 정확한 설치 명령(`npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines`)을 명시한다.
+- DS 워크스페이스는 프로젝트 전역 `docs/design-system/` 단일이며 여러 기능에서 재사용한다.
+- `design-system` phase1은 base 설계 + 코드베이스에서 방향성 정보를 가변 Q&A 페어로 추출해 사전답변에 포함하고(고정 카테고리 enumerate 금지 — CD 폼 카테고리는 시간에 따라 변할 수 있음), CD가 사전답변 밖의 추가 질문을 던지면 사용자가 cc-cmds 세션에 그대로 전달해 답안을 받는 relay 루프를 안내한다.
+- `design-ingest`는 모든 외부 라운드를 별도 호출로 처리한다(suspend-resume). 외부 단계에서 세션이 끊겨도 디스크 아티팩트(`iter-NNN/`)만으로 재개 가능.
+- 신규 FE 스킬은 hook을 동반하지 않아 macOS-CI scope 확장 트리거(active-notify `.github/workflows/notify-macos.yml`)에 해당하지 않는다.
+
 ## [1.7.0] - 2026-05-28
 
 `design` 스킬 Step 5 (Unresolved Issue Walkthrough)의 카테고리별 옵션 메뉴에 lead recommendation 메커니즘을 도입한다. 기존에는 각 미해결 이슈를 `AskUserQuestion`으로 surface할 때 카테고리별 옵션을 그대로 늘어놓아 사용자가 어느 옵션이 lead의 best-fit인지 알 수 없었고, 결정 부담만 떠안은 채 walkthrough가 "선택지를 나열하는 단계"로 퇴화했다. 본 릴리스는 `AskUserQuestion`의 네이티브 추천 contract와 design-review subfamily에 이미 정착된 한국어 `← 추천` convention을 통합하여, auto-investigation이 confident일 때만 추천 옵션을 position 1로 이동 + `← 추천` suffix 부착 + 근거를 옵션 `description`에 cite한다. 모든 카테고리(UD/UC/UA/UR)·모든 옵션(`보류`·`팀 토론 진행` 포함)이 추천 후보가 되며, UD/UA가 4-option cap을 초과하는 케이스(`K_pick ≥ 3`)는 conditional inclusion으로 branch (a) pin + worst-cascade drop / branch (b) hide + Other 채널 reachability로 분기 처리한다 (`/plugin update cc-cmds`로 자동 반영).
