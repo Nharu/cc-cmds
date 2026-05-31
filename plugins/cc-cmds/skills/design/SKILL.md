@@ -15,6 +15,35 @@ Conduct a design discussion using an agent team for the given task.
 All team discussions and inter-agent communication should be in English to optimize token usage.
 User-facing communication (interviews, final presentation) and saved documentation should be in Korean.
 
+## Control-Flow Invariants
+
+These phase-transition rules govern turn-yielding and MUST stay near the top of
+this file. Post-compaction reattaches only the first ~5K tokens with priority;
+a summarized-away transition rule causes silent mis-transition — waiting for the
+user where the skill must auto-advance, or prompting where it must yield.
+
+### CFI-1 — Step 4 → Step 5 is automatic (no wait, no prompt)
+Whenever a design doc was saved, the lead MUST continue from Step 4's
+`synthesize → save → cleanup → present results` straight into Step 5 (Unresolved
+Issue Walkthrough) in the same turn, without yielding and without any user
+prompt. "Present the results" is NOT a turn-ending action: do not stop, do not
+wait for the user to ask. Step 5 entry is mandatory and unconditional.
+
+### CFI-2 — Step 6 entry: automatic arrival, then notice-and-yield
+(a) ARRIVAL (transition): reaching Step 6 (Plan Refinement) is automatic —
+    Step 5 → Step 6 needs no user prompt. Do not stop on the way in.
+(b) FIRST ACTION: once at Step 6, the lead emits ONE short Korean notice that
+    refinement is starting (inviting the user's input), then YIELDS the turn and
+    waits for the user to speak first. At Step 6 ENTRY do NOT call
+    AskUserQuestion to open the discussion or manufacture a refinement question
+    — no question tool, no options menu, no "무엇을 다듬을까요?" prompt; Step 6
+    opens as a plain yield.
+(c) SCOPE: this prohibition is the ENTRY moment ONLY; it does NOT restrict
+    AskUserQuestion elsewhere — the Step 6 state-check's slug-ambiguity prompt
+    (fires before the entry notice, during pre-entry cleanup) and Step 6's later
+    "propose a new team" approval path remain valid, as do all Step 4/Step 5
+    AskUserQuestion uses.
+
 ## Workflow
 
 ### Step 1: Requirements Interview & Codebase Exploration (Korean)
@@ -62,11 +91,11 @@ User-facing communication (interviews, final presentation) and saved documentati
 - Save the design document to the project's `docs/` directory. **File naming convention**: use `docs/{topic-slug}.md` where `{topic-slug}` matches the Step 3 team's topic slug exactly (e.g., Step 3 team `design-auth-flow` → saved doc `docs/auth-flow.md`). This filename-to-slug binding is the local state used by Step 5's entry state-check to recover the slug without relying on lead memory. **Interrupted-save case**: if the save itself was interrupted (partial write, permission error, etc.), the state-check cannot recover the slug from the filename. In this case the lead must either (a) recover the slug from the original task input or interview output that started the workflow (from in-session conversation history, including slash-command `$ARGUMENTS` if invoked that way), or (b) treat the workflow as ambiguous and prompt the user via `AskUserQuestion` before any cleanup action.
 - Notify the user in Korean: *"설계 문서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
 - **Before presenting results to the user, Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure to clean up the design team.
-- Present the results to the user in Korean.
+- Present the results to the user in Korean. Do NOT yield the turn here — the presentation and Step 5's entry are one continuous turn. Immediately continue into Step 5 below in this SAME turn, with no stop, no wait, and no user prompt. (CFI-1)
 
 ### Step 5: Unresolved Issue Walkthrough
 
-This step runs automatically and immediately after Step 4's atomic `save → cleanup → present` sequence completes. It is **mandatory** — there is no user prompt to enter it. Its purpose is to drive every unresolved issue in the saved design document to a decision **without waiting for an unprompted user request**, scoped strictly to *issues that cannot be resolved without user input*. Mechanical gaps, false positives, and auto-decidable items are NOT this step's responsibility — they belong to a subsequent `/cc-cmds:design-review` cycle. User-facing communication in this step is Korean; the normative prose below is English.
+This step runs automatically right after Step 4 (CFI-1). Its purpose is to drive every unresolved issue in the saved design document to a decision **without waiting for an unprompted user request**, scoped strictly to *issues that cannot be resolved without user input*. Mechanical gaps, false positives, and auto-decidable items are NOT this step's responsibility — they belong to a subsequent `/cc-cmds:design-review` cycle. User-facing communication in this step is Korean; the normative prose below is English.
 
 > "Walkthrough-spawned teams (Step 5) and refinement teams (Step 6) share the `design-<slug>-refine-N` namespace and the monotonic N counter, but differ in scope and lifetime: a walkthrough-spawned team is bounded to a single unresolved issue's decision debate (user-initiated when auto-investigation findings alone don't yield a clear decision) and dies at that issue's resolution; a refinement team handles a user-initiated multi-turn refinement and lives until the user is satisfied. They are not competing entry points — they are the same entry point (user-confirmed `TeamCreate` for a single bounded scope) invoked at two different lifecycle moments. The lead never extends a walkthrough-spawned team into a refinement team or vice versa — the `Cleanup → next spawn` contract is enforced unchanged."
 
@@ -74,16 +103,15 @@ Terminology: throughout this skill use **"walkthrough-spawned team"** (not "walk
 
 #### Trigger & Queue Initialization
 
-- Step 5 begins automatically the instant Step 4's `save → cleanup → present` sequence ends.
 - Parse the saved doc's `## 미해결 이슈 / 트레이드오프` section to initialize the issue queue. **Parse contract**: match the heading with the regex `^##\s+(?:[0-9]+\.\s+)?미해결\s+이슈(?:\s*/\s*트레이드오프)?\s*$` — an optional leading section number (`6. `, `10. `, any digit count) and an optional `/ 트레이드오프` suffix are both allowed. On **multi-match**, use the LAST match (synthesis is written top-down, so the deepest occurrence is canonical).
 - On **0-match**, surface via `AskUserQuestion` with three options: (a) **add the section and proceed** — the lead creates a `## 미해결 이슈` heading via doc Edit (sub-section form by default, per the encoding rules below), re-parses the doc to rebuild the queue; entries the user pre-added are processed as-is, and 0 entries cascade naturally into the 0-issue path; (b) **skip the walkthrough** and proceed to Step 6; (c) **abort** — the entire design workflow terminates and Step 6 is NOT entered.
-- **0 issues**: emit the Korean notice *"미해결 이슈가 없어 곧바로 플랜 리파인먼트 단계로 이동합니다."* and proceed directly to Step 6.
+- **0 issues**: emit the Korean notice *"미해결 이슈가 없어 곧바로 플랜 리파인먼트 단계로 이동합니다."* and proceed directly to Step 6. (CFI-2)
 - **1+ issues**: emit *"설계 문서에 미해결 이슈 N건이 확인되었습니다. 하나씩 검토하며 정리하겠습니다."* and enter the walkthrough proper.
 - **Depth-2 promotion on queue init**: any entry carrying both `상태: 보류` and a `(깊이: 2)` marker is auto-promoted to depth-1 — the lead Edits the doc to change `상태: 보류 → 상태: 대기` and `(깊이: 2) → (깊이: 1)` together (the `Parent` field is preserved as historical metadata), then appends it to the queue. Plain `상태: 보류` entries (no depth marker, or `(깊이: 1)`) are NOT promoted — those are deliberate user deferrals.
 - **Drop-uncertain promotion on queue init**: any `상태: 보류` entry whose `사유:` text contains the substring `drop 미확정` (produced by the abort-during-drop-prompt path below) is also promoted — change to `상태: 대기`, clear the `사유` field, append to the queue. This applies regardless of any depth marker, and re-surfaces issues whose drop confirmation was never completed.
 - **Queue order**: doc-order, top-to-bottom. Depth-1 items that surface mid-pass are appended to the *end* of the queue (not inserted right after the current issue) and are reached only after all pre-existing items are processed. No per-category priority ordering.
-- After the walkthrough finishes, emit *"미해결 이슈 워크스루를 종료했습니다. 이어서 플랜 리파인먼트를 시작하겠습니다."* and enter Step 6 automatically.
-- If the user aborts mid-walkthrough, batch-mark the remaining items `상태: 보류` (see Abort Semantics below) and move to Step 6.
+- After the walkthrough finishes, emit *"미해결 이슈 워크스루를 종료했습니다. 이어서 플랜 리파인먼트를 시작하겠습니다."* and enter Step 6 automatically. (CFI-2)
+- If the user aborts mid-walkthrough, batch-mark the remaining items `상태: 보류` (see Abort Semantics below) and move to Step 6. (CFI-2)
 
 #### Issue Sources & Categories
 
@@ -275,15 +303,15 @@ Every option in a per-category `AskUserQuestion` menu carries a 1-line `descript
 - Abort is detected by lead judgment (no regex matching). Examples:
     - Full abort: "그만", "중단", "이만 됐어", "리파인먼트로 넘어가자", "skip rest".
     - Single-issue skip: "이건 패스", "다음 이슈", "이건 나중에". On a skip, mark only the current issue `상태: 보류` + `사유: 사용자 per-issue skip, <skip date YYYY-MM-DD>` (distinguishable from the full-abort reason) and proceed to the next queue item. **Active team handling**: if a walkthrough-spawned team is active at skip time, perform the `_common/team-cleanup.md` 5-step shutdown before entering the next queue item — the same cleanup obligation as the full-abort path (cleanup-anchor doctrine).
-- On full abort, in ONE batched Edit mark all remaining `대기` / `조사중` / `결정대기` items `상태: 보류` + `사유: 사용자 조기 종료, <abort date YYYY-MM-DD, runtime-generated>`, then enter Step 6.
+- On full abort, in ONE batched Edit mark all remaining `대기` / `조사중` / `결정대기` items `상태: 보류` + `사유: 사용자 조기 종료, <abort date YYYY-MM-DD, runtime-generated>`, then enter Step 6. (CFI-2)
 - If a walkthrough-spawned team is active (spawned, cleanup not yet done) at abort time, clean it up via the `_common/team-cleanup.md` 5-step shutdown *before* the batch `보류` Edit. The issue in progress is included in the batch and marked `상태: 보류`.
 - If the user is viewing a UC dropped-confirmation prompt at abort time, the drop is auto-cancelled and that issue is kept in the doc, included in the batch as `상태: 보류` + `사유: 사용자 조기 종료 (drop 미확정, 재호출 시 재표면)`. No item is ever silently deleted without the user's explicit drop confirmation.
 
 ### Step 6: Plan Refinement with User
 
-**State check on entry**: If any team associated with this design workflow is still active (Step 3 original team, any prior walkthrough-spawned team (from Step 5), or any prior Step 6 refinement team), notify the user in Korean (*"이전 단계의 팀이 아직 살아있어 정리 후 리파인먼트를 시작하겠습니다."*), then execute cleanup now (Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` and follow the 5-step shutdown procedure) before any Step 5 activity. Detect active teams by enumerating `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/` via Bash with a slug-specific regex: `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/" 2>/dev/null | grep -E "^design-<slug>(-refine-[0-9]+)?$"`, where `<slug>` is recovered from the saved design document filename in `docs/` (the filename encodes the topic slug per Step 4's save convention — local file-system state, not memory). **Preferred slug recovery**: the lead remembers the exact filename it saved in Step 4 (not mere "most recent .md file" — that may be unrelated to the design workflow if the project is actively edited elsewhere). If the lead cannot recall the exact filename, fall back to matching against `docs/` modification times within a narrow window after Step 4, and if still ambiguous (multiple candidates), prompt the user via `AskUserQuestion` to confirm the target document. Never assume the most recently modified `docs/*.md` is the design doc without validation. This matches only the Step 3 original team name (`design-<slug>`) and all refinement teams (`design-<slug>-refine-N`) for the current workflow's topic, **without** cross-matching unrelated prior-session teams on other topics. Any matching directory that corresponds to a team created in this session is treated as active and requires cleanup. Under normal flow, all prior teams are already dead and this step proceeds with the lead only.
+**State check on entry**: If any team associated with this design workflow is still active (Step 3 original team, any prior walkthrough-spawned team (from Step 5), or any prior Step 6 refinement team), notify the user in Korean (*"이전 단계의 팀이 아직 살아있어 정리 후 리파인먼트를 시작하겠습니다."*), then execute cleanup now (Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` and follow the 5-step shutdown procedure) before any Step 6 activity. Detect active teams by enumerating `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/` via Bash with a slug-specific regex: `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/" 2>/dev/null | grep -E "^design-<slug>(-refine-[0-9]+)?$"`, where `<slug>` is recovered from the saved design document filename in `docs/` (the filename encodes the topic slug per Step 4's save convention — local file-system state, not memory). **Preferred slug recovery**: the lead remembers the exact filename it saved in Step 4 (not mere "most recent .md file" — that may be unrelated to the design workflow if the project is actively edited elsewhere). If the lead cannot recall the exact filename, fall back to matching against `docs/` modification times within a narrow window after Step 4, and if still ambiguous (multiple candidates), prompt the user via `AskUserQuestion` to confirm the target document. Never assume the most recently modified `docs/*.md` is the design doc without validation. This matches only the Step 3 original team name (`design-<slug>`) and all refinement teams (`design-<slug>-refine-N`) for the current workflow's topic, **without** cross-matching unrelated prior-session teams on other topics. Any matching directory that corresponds to a team created in this session is treated as active and requires cleanup. Under normal flow, all prior teams are already dead and this step proceeds with the lead only.
 
-- Discuss the design document with the user in Korean and refine the plan together.
+- On entering Step 6, emit ONE short Korean notice that the design document is ready for refinement and invite the user's input, then YIELD the turn and wait for the user's reply. At Step 6 ENTRY do NOT call `AskUserQuestion` to open the discussion or manufacture a refinement question (e.g. '무엇을 다듬을까요?'). Once the user replies, discuss the design document with them in Korean and refine the plan together. (CFI-2)
 - Lead-only by default: doc edits, user Q&A, and codebase re-exploration require no team.
 - If the user raises questions requiring deeper investigation that exceed lead-only capacity, verify no prior workflow team is still active (if one remains, notify in Korean: *"새 리파인먼트 팀을 만들기 전에 기존 팀을 먼저 정리하겠습니다."* and execute cleanup), then propose composing a **new** team for that specific investigation — mirror Step 2 (role/scope/model proposal → user approval → spawn). **Never reuse or restart any prior design team.**
 - Only create a new team if the user approves. Otherwise, continue refining in the current session.
