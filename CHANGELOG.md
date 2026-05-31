@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-05-31
+
+`design` 스킬에서 간헐적으로 발생하는 두 가지 제어 흐름 버그를 수정한다. (1) Step 4(synthesize → save → cleanup → present)가 끝난 뒤 같은 턴에서 Step 5(Unresolved Issue Walkthrough)로 자동 진입해야 하는데 간헐적으로 결과만 발표하고 멈추는 버그, (2) Step 6(Plan Refinement) 진입 시 간헐적으로 `AskUserQuestion`("무엇을 다듬을까요?")을 발화하는 버그 — 올바른 동작은 짧은 한국어 안내 후 턴을 양보하고 사용자 발화를 기다리는 것이다. 두 버그는 서로 다른 원인을 가져(이슈 1은 전환 규칙이 source가 아닌 destination에 위치 + "결과 발표"의 강한 턴-종료 prior, 이슈 2는 ~8,900 토큰 위치라 post-compaction 우선창 밖) 단일 처방으로 부족하므로, 상단 `## Control-Flow Invariants` 섹션 hoist(durable backstop) + 종료/진입 seam의 국소 강화(seam co-location)를 함께 적용한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `design/SKILL.md` frontmatter 직후에 `## Control-Flow Invariants` 섹션을 신설하고 CFI-1(Step 4 → Step 5 자동 진입: 양보·프롬프트 없음)·CFI-2(Step 6 진입: 자동 도달 후 안내-후-양보, ENTRY 시점 `AskUserQuestion` 금지 + SCOPE 한정) 두 불변식을 정규화한다. 정규 텍스트는 이 섹션에만 두고, 본문 언급은 모두 `(CFI-1)`/`(CFI-2)` 태그가 붙은 비정규 echo로 정리한다(정규 정의 단일화).
+- `design/SKILL.md` Step 4 종료 seam에 (E) 명령형을 co-locate한다 — "Present the results"가 턴-종료 동작이 아니며 같은 턴에서 Step 5로 즉시 이어짐을 발표 지점에서 능동적으로 못 박는다. Step 6 진입 seam은 안내+양보+ENTRY `AskUserQuestion` 금지("무엇을 다듬을까요?" 예시 포함)로 교체한다. Step 5 trigger 문단은 정규 위임 형태로 축약하고 중복 echo 1건을 제거한다. Step 5 → Step 6 무양보 전환을 단언하는 echo 4곳을 `(CFI-2)`로 태깅한다.
+- `design/SKILL.md` Step 6 state-check의 "before any Step 5 activity" 오타를 "before any Step 6 activity"로 바로잡는다 (cleanup은 refinement 활동 전에 끝나야 함).
+- `scripts/lint-skill-invariants.sh` `EXEMPT_SKILLS` 배열에서 `design`을 제거한다. 향후 CFI 헤딩이 4000 토큰 밖으로 밀리는 회귀를 `make lint`가 즉시 차단한다. 동반 주석(면제 목록·"only non-exempt member" 단언·rationale preamble)을 함께 갱신해 in-session 카운터가 없어도 phase-transition/turn-yield 불변식이 compaction에 취약한 스킬은 rule A 대상임을 반영한다.
+
+### Why
+
+이슈 1은 compaction이 주원인이 아니라(~1,147 토큰으로 우선창 안) 전환 규칙이 destination(Step 5 헤더)에 살고 "결과 발표"가 강한 턴-종료 prior라는 구조적 문제이므로, 명령형이 물리적으로 종료 seam에 co-locate되어야 양보 전에 발화된다. 이슈 2는 Step 6 규칙(~8,900 토큰)이 post-compaction 우선창 밖이라 압축 소실에 취약하므로 상단 정규 섹션이 durable backstop으로 필요하다. 따라서 상단 CFI 섹션 + seam 국소 강화를 함께 둔다. 기존 `design` exemption 근거는 termination 계약에는 타당했으나 이번 두 버그는 phase-transition/turn-yield 부류로 그 가정이 design에도 깨짐을 실증하므로 exemption을 제거한다.
+
 ## [1.8.1] - 2026-05-31
 
 `design` 스킬 Step 5 (Unresolved Issue Walkthrough)에서 미해결 이슈를 `AskUserQuestion`으로 surface할 때 한 호출에 여러 이슈가 묶여 나오는 동작이 관찰되어 이를 차단한다. `AskUserQuestion`은 호출당 최대 4개 질문과 질문당 최대 4개 옵션이라는 두 개의 독립적 4-slot 용량을 갖는데, Step 5는 후자(이슈 1건의 옵션 메뉴)만 사용하도록 설계되어 있었으나 이를 명시하는 fence가 없었다. Cap-handling 절의 "4-option cap" 서술이 두 축을 혼동시키는 원인으로 작용했다. 본 릴리스는 Per-issue Processing Flow 도입부에 "한 surface = 정확히 1이슈" 불변식을 명시하는 인라인 fence를 추가한다 (`/plugin update cc-cmds`로 자동 반영).
