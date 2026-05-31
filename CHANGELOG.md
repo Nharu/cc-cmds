@@ -5,6 +5,30 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-06-01
+
+여러 스킬에서 `AskUserQuestion`(AUQ) 호출 시 `InputValidationError`가 반복 발생하던 문제를 하드닝한다. 레포에서 AUQ를 호출하는 스킬 10개 중 `design`만 AUQ 하드 스키마(12자 header, 옵션 `description` 필수, 옵션 2~4개)에 하드닝돼 있었고, 나머지 스킬과 `design-review` 계열 reference는 옵션을 **bare label 문자열**로 제시하는 템플릿이 모델을 malformed 호출로 직접 유도했다. 근본 원인이 런타임이 아니라 작성된 템플릿(upstream)이므로, 공통 스펙 + 런타임 Read 참조 + 템플릿 in-place 교정 + lint 게이트의 4단 통제를 함께 적용한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- `plugins/cc-cmds/skills/_common/askuserquestion.md` 신설 — AUQ 구성 규약의 단일 진실원. 하드 스키마 제약, "질문 ≤4" vs "옵션 2~4"의 두 독립 축 구분, 툴이 자동 제공하는 "Other"로 인한 수동 `직접 지정`/`기타`/`직접 입력`/`Other` 옵션 금지, header ≤12 codepoint(NFC, 공백·`← 추천` 포함, NFD silent-overflow 함정) 규칙, 추천 표기 컨벤션(position 1 + label suffix `← [에이전트 ]추천`, 근거는 `description`에), bare-label DON'T→DO worked example(`# INVALID — do not copy` 마커로 구분), pre-call checklist, authoring rule을 담는다.
+- `scripts/lint-skill-auq-spec.sh` 신설 — 2-rule 구조. Rule 1(presence-check)은 `select:AskUserQuestion`을 로드하는 SKILL.md가 공통 스펙도 참조하는지 검증한다(naive `AskUserQuestion` grep이 아닌 `select:` 토큰 기준이라 opt-out 스킬 false positive 회피). Rule 2(denylist)는 SKILL.md·`references/*.md`에서 따옴표로 감싼 수동 Other-equivalent 옵션 라벨을 검출하며, `# lint-skill-auq-spec: disable=other-option` suppress 탈출구와 공통 스펙 파일 whole-file 제외를 둔다. `make lint`에 편입.
+- `scripts/test-lint-skill-auq-spec.sh` + `tests/fixtures/lint-skill-auq-spec/` 신설 — 두 규칙의 통과/실패 시나리오(R1-1~R1-4, R2-1~R2-6)를 `SKILLS_ROOT` override fixture로 회귀 검증한다. `make test`에 편입.
+
+### Changed
+
+- AUQ를 사용하는 10개 스킬(`implement`/`review`/`review-lite`/`design`/`design-lite`/`design-apply`/`design-ingest`/`design-system`/`design-review`/`design-review-lite`)의 deferred-tool 로딩 지점에 매 호출 전 공통 스펙 Read 참조를 co-locate한다. `design-review`는 `## Constraints` 섹션이 부재해 `## Begin` 앞에 새 섹션을 신설하고 canonical `ToolSearch("select:AskUserQuestion")` 로드를 추가한다(lint Rule 1 게이트 편입).
+- `design-review`·`design-review-lite`의 reference 템플릿과 inline 옵션 메뉴(안전 한계 프롬프트, inner-limit, ack-100 처리, decision-type)를 `label`+`description` 형태로 교정하고 고정 header chip(≤12 codepoint)을 명시한다. `review`의 Large PR gate inline 메뉴도 동형 교정한다.
+- 추천 표기를 화살표 패턴(`← [에이전트 ]추천`)으로 통일하되 출처 구분은 보존한다 — 리드/스킬 발 추천은 `← 추천`, 에이전트 발 추천은 `← 에이전트 추천`. `design`의 'native recommendation contract' 표현을 '문서화된 컨벤션'으로 정정해 교정된 reference와의 모순을 없앤다.
+
+### Removed
+
+- `design-review`의 reversion UI(2-step reversion, revert-failed 프롬프트)에서 수동 `직접 지정`·`직접 명세` 옵션을 제거한다. 툴이 자동 제공하는 "Other" free-text 채널이 동일 기능(사용자 free-text 입력 → `[USER-DIRECTED]` 기록)을 제공하므로 중복이며, 제거 시 옵션 수가 ≤4로 복귀한다.
+
+### Why
+
+#1(header overflow)과 #2(bare-label 옵션)는 의미론적 제약이라 brittle한 AUQ-block parser 없이는 grep-detectable하지 않다. 따라서 자동 회귀 가드는 grep-detectable한 수동 Other-equivalent denylist(#4)에만 두고, header≤12·description 존재는 공통 스펙의 authoring rule(문서화된 통제)과 template in-place 교정으로 다룬다 — 해석 가능한 판단에 brittle structural fence를 retrofit하지 않는 레포 자세와 일치하며, 남는 잔여 리스크는 의식적으로 수용한다. 1인 dogfood 단계에서 각 템플릿을 실제 invoke해 검증하는 test fixture는 비례 원칙상 과도하여 현 시점 비도입하고, 재발 빈도가 의미 있게 오르면 재검토한다.
+
 ## [1.8.3] - 2026-05-31
 
 동일 세션에서 `design` 스킬을 먼저 실행한 뒤 `design-review` 스킬을 실행하면 `design-review`의 `AskUserQuestion` 프롬프트에 `팀 토론 진행`·`보류` 같은 외래 옵션이 등장하는 버그를 수정한다. 이 옵션 어휘는 `design` 스킬 Step 5(Unresolved Issue Walkthrough)의 카테고리별 메뉴에만 존재하는데, `design-review`의 Decision 옵션 구성이 "agent Options 필드에서 동적 구성"으로 *열려* 있어 폐쇄 집합 선언이 없었던 것이 원인이다. 같은 세션의 `design` Step 5 처방이 컨텍스트에 잔류한 상태에서 그 열린 구성 지점에 외래 어휘가 유입됐다. 본 릴리스는 소비측(`design-review`) 단일 지점에 옵션 집합을 폐쇄하는 prose 펜스를 추가한다 (`/plugin update cc-cmds`로 자동 반영).
