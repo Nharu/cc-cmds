@@ -176,6 +176,8 @@ Do **not** create a separate sub-section (`## 워크스루 후속 항목`). All 
 
 #### Per-issue Processing Flow (hybrid)
 
+> **One issue per surface (invariant)**: each `AskUserQuestion` call in this step carries **exactly one issue** (one question). The tool's up-to-4-questions capacity is NEVER used to bundle multiple issues into a single call — the only 4-slot budget in play is the per-issue **option** menu (concrete picks + `보류` + `팀 토론 진행`). These are two distinct axes: *4 questions per call* vs. *4 options per question*; this step uses only the latter. Bundling multiple issues breaks every per-issue mechanism that assumes a single, loopable surface — auto-investigation, the `← 추천` recommendation, the UC `더 논의` follow-up loop, the dropped-confirm separate prompt, and mid-flight reclassification. The `4-option cap` discussed in **Cap-handling** below refers to options within one issue's menu, never to a count of issues.
+
 For each issue:
 
 1. **Auto-investigation (lead-only, read-only + reproducible)**:
