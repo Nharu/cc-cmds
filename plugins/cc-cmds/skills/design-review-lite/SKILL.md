@@ -434,7 +434,10 @@ Korean prompt template (when `pending_dialogue > 0`):
 어떻게 진행하시겠습니까?
 ```
 
-Options: `"A: 3 라운드 추가 진행 ← 추천"` / `"B: 이번 이터레이션 종료 후 새 이터레이션 시작"` / `"C: 외부 이터레이션 전체 종료"`.
+Options (header chip `처리 방식`; each option carries a `description`; the recommended option is marked with a `← 추천` label suffix):
+- label `"A: 3 라운드 추가 진행 ← 추천"` — description: 미완료 대화를 마저 처리한 뒤 계속 진행합니다.
+- label `"B: 이번 이터레이션 종료 후 새 이터레이션 시작"` — description: 현재 이터레이션을 닫고 새 이터레이션을 시작합니다.
+- label `"C: 외부 이터레이션 전체 종료"` — description: 외부 루프 전체를 종료하고 리뷰를 마칩니다.
 
 Korean prompt template (when `pending_dialogue == 0`):
 
@@ -446,7 +449,10 @@ Korean prompt template (when `pending_dialogue == 0`):
 어떻게 진행하시겠습니까?
 ```
 
-Options: `"A: 3 라운드 추가 진행"` / `"B: 이번 이터레이션 종료 후 새 이터레이션 시작 ← 추천"` / `"C: 외부 이터레이션 전체 종료"`.
+Options (header chip `처리 방식`; each option carries a `description`; the recommended option is marked with a `← 추천` label suffix):
+- label `"A: 3 라운드 추가 진행"` — description: 미완료 대화는 없으나 추가 라운드로 이번 이터레이션을 더 진행합니다.
+- label `"B: 이번 이터레이션 종료 후 새 이터레이션 시작 ← 추천"` — description: 미완료 대화가 없어 현재 이터레이션을 닫고 새 이터레이션으로 넘어갑니다.
+- label `"C: 외부 이터레이션 전체 종료"` — description: 외부 루프 전체를 종료하고 리뷰를 마칩니다.
 
 Option mapping to `INNER_EXIT_REASON`:
 
@@ -558,13 +564,10 @@ This deliberate wipe prevents "context poisoning" — the next iteration's fresh
 Count entries in `$OUTER_DIR/ack_items.md` (lines starting with `#### ACK-`):
 
 - **50 items**: advisory — append a one-line warning to the next iteration-transition summary: `⚠️ 인지됨 항목 {n}건 (50건 권고치 초과)`
-- **100 items**: hard — ask the user via AskUserQuestion with three options:
-
-| Label | Action |
-|---|---|
-| A: 요약 | Compress old ack entries into one-line-per-category summaries |
-| B: 보관 | Move entries from previous iterations to `$OUTER_DIR/ack_archive.md`, keep only current iter active |
-| C: 현재 유지 | Accept the prompt-length cost and do nothing |
+- **100 items**: hard — ask the user via AskUserQuestion (header chip `인지 항목`; each option carries a `description`):
+  - label `"A: 요약"` — description: Compress old ack entries into one-line-per-category summaries.
+  - label `"B: 보관"` — description: Move entries from previous iterations to `$OUTER_DIR/ack_archive.md`, keeping only the current iter active.
+  - label `"C: 현재 유지"` — description: Accept the prompt-length cost and do nothing.
 
 Only run this check when `outer_done == false` — when `outer_done == true`, cleanup is imminent so ack size no longer matters.
 
@@ -581,7 +584,7 @@ If `outer_iter >= 2 AND outer_done == false`, present the extension/terminate pr
 계속 진행하시겠습니까?
 ```
 
-AskUserQuestion options: `"2회 추가 진행"` / `"현재 상태로 종료"`. If the user chooses to terminate, break outer loop → Phase 3. If extended, raise the outer cap by 2 and continue.
+AskUserQuestion (header chip `안전 한계`; each option carries a `description`): label `"2회 추가 진행"` (description: 외부 이터레이션을 최대 2회 더 진행해 수렴을 시도합니다.) / label `"현재 상태로 종료"` (description: 추가 진행 없이 현재 상태로 리뷰를 종료합니다.). If the user chooses to terminate, break outer loop → Phase 3. If extended, raise the outer cap by 2 and continue.
 
 **Step 25 — Iteration transition summary + auto-advance** (only if `outer_done == false`):
 
@@ -724,7 +727,8 @@ Do not mention "batch" / "call" / "분할" / "AskUserQuestion" / "4개 한계" i
 ### For Decision type
 
 - Dynamically construct AskUserQuestion options from the agent's Options field (up to 4 options per question).
-- Include agent recommendation if present (append "(에이전트 추천)" to the label).
+- Every option MUST carry a `description` (one line summarizing what selecting it does); never present bare-label options.
+- Include the agent recommendation if present: per the documented recommendation convention, append `← 에이전트 추천` to the recommended option's label, place it at position 1, and put the rationale in that option's `description`.
 - If the proposal has more than 4 options, present the first 4 in the primary question and mention additional alternatives in the question text from the Agent note field — do NOT split one proposal's options across two questions.
 
 ### Other input
@@ -784,7 +788,7 @@ When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder li
 - All review agents use model `"sonnet"` (haiku and opus forbidden — lite quality floor).
 - **No Sequential Thinking MCP, no Claude Context MCP**: predictable token cost.
 - **Auto-decide protocol is fully disabled**: every `decision`-type proposal escalates to the user. There is no `--auto-decide-dominant` / `--no-auto-decide-dominant` flag.
-- **Deferred tool loading**: Before using AskUserQuestion (or any other deferred tool used by Agent infrastructure for review-agent spawning), you MUST first load it via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion" before any user prompt step.
+- **Deferred tool loading**: Before using AskUserQuestion (or any other deferred tool used by Agent infrastructure for review-agent spawning), you MUST first load it via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion" before any user prompt step. Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 ## Begin
 

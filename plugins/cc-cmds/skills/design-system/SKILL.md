@@ -170,6 +170,6 @@ This skill is linear in both phases. Phase auto-detection reads disk state on en
 - Token values are NEVER normalized. Preserve `oklch(...)`, `#rrggbb`, `rgb(...)`, `hsl(...)` exactly as Claude Design wrote them. Any color-space conversion belongs to `design-apply` at consumption time.
 - **No fixed-category enumeration in directional pre-answers.** The Q&A pair list is variable in count and order. Hardcoding a category list reproduces the stale-frozen-contract anti-pattern that `parse-handoff.md` already addresses for bundle structure.
 - `web-design-guidelines` is NOT invoked from this skill — it is `design-ingest`'s optional dependency, not the DS workspace's.
-- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it via `ToolSearch("select:AskUserQuestion")`. This skill assumes no other deferred tool beyond that.
+- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it via `ToolSearch("select:AskUserQuestion")`. This skill assumes no other deferred tool beyond that. Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Intent: $ARGUMENTS

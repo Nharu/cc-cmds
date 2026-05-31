@@ -74,10 +74,9 @@ AUTO-002 롤백
     - Construct a context-aware replacement that covers all downstream references introduced by subsequent edits.
     - Example: if `[자동결정] AUTO-002: "JWT" → "session"` was later referenced in another section by adding `JWT`, the semantic patch rewrites those added references to `session` as well.
     - On success, proceed to step 4 below.
-    - **On semantic patching failure**, append `- PROP-R{x}-{y} [REVERT-FAILED]: {reason}` (informational marker, no counts) to `review_log.md`, then offer a 3-option AskUserQuestion:
-      - **(i) 그대로 유지** — keep the auto-decide result and its downstream. `[AUTO-DECIDED]` remains in the escalate_applied count.
-      - **(ii) 사용자가 직접 명세** — user provides the desired final state as free text. Record as `[USER-DIRECTED]`. Per per-PROP-ID dedup, the original `[AUTO-DECIDED]` collapses out of the count.
-      - **(iii) 롤백 범위 확장** — cascade rollback including subsequent edits. List affected PROP-IDs for user confirmation. On execution, mark the original with `[REVERTED-BY-USER] cascade=true` and each cascade-affected PROP-ID with `[REVERTED-BY-USER] cascade-from=PROP-Rx-y`. All markers are informational (no counts changed) — the original `[AUTO-DECIDED]` count is preserved under per-PROP-ID dedup rules, yielding a false-high bias that is audit-friendly.
+    - **On semantic patching failure**, append `- PROP-R{x}-{y} [REVERT-FAILED]: {reason}` (informational marker, no counts) to `review_log.md`, then offer a 2-option AskUserQuestion (each option carries an explicit `description`). The auto-provided `Other` free-text choice already lets the user specify a desired final state as free text — recorded as `[USER-DIRECTED]`, and per per-PROP-ID dedup the original `[AUTO-DECIDED]` collapses out of the count — so no manual `직접 명세` option is added:
+      - label **(i) 그대로 유지** — description: keep the auto-decide result and its downstream. `[AUTO-DECIDED]` remains in the escalate_applied count.
+      - label **(iii) 롤백 범위 확장** — description: cascade rollback including subsequent edits. List affected PROP-IDs for user confirmation. On execution, mark the original with `[REVERTED-BY-USER] cascade=true` and each cascade-affected PROP-ID with `[REVERTED-BY-USER] cascade-from=PROP-Rx-y`. All markers are informational (no counts changed) — the original `[AUTO-DECIDED]` count is preserved under per-PROP-ID dedup rules, yielding a false-high bias that is audit-friendly.
 
 4. **On successful inverse Edit or semantic patch**: present a 2-step reversion UI:
 
@@ -90,7 +89,7 @@ PROP-R2-1 자동결정을 되돌립니다.
 대신 어떤 옵션을 적용하시겠습니까?
 ```
 
-   AskUserQuestion with the original option set (all options including the one just removed), plus a "직접 지정" free-form fallback. The user's choice is recorded as a subsequent `[USER-DIRECTED]` line (escalate_applied gets +1 naturally).
+   AskUserQuestion with the original option set (all options including the one just removed). The auto-provided `Other` free-text choice already covers a user-specified value, so no manual fallback option is added. The user's choice is recorded as a subsequent `[USER-DIRECTED]` line (escalate_applied gets +1 naturally).
 
 5. Append the 2-line (or 3-line with USER-DIRECTED) marker block to `review_log.md`:
 

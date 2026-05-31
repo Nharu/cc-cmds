@@ -52,6 +52,8 @@ Load the following deferred tools via `ToolSearch` before any other step. **Load
 
 Preferred single call: `ToolSearch("select:AskUserQuestion,EnterPlanMode,TaskCreate,TaskList,TaskUpdate,TaskGet")`. If split into multiple calls, `AskUserQuestion` MUST appear in the first call. `ExitPlanMode` is NOT pre-loaded — it is triggered by the user approval UI event, not an assistant tool call.
 
+**Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
+
 ---
 
 ### Step 1: Read Design Document

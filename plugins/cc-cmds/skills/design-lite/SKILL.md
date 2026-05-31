@@ -79,6 +79,6 @@ This skill is the lightweight sibling of `design`. It trades depth for predictab
 - **Sonnet pin**: every teammate uses model `"sonnet"`. Haiku is forbidden; opus upgrade is out of scope (use `/cc-cmds:design-upgrade` against a base `/cc-cmds:design` run instead).
 - **No Sequential Thinking MCP, no Claude Context MCP**: lite contract — predictable token cost.
 - **Agent Team required**: TeamCreate + SendMessage only. Do NOT substitute with isolated Agent sub-agents.
-- **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, you MUST first load them via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion", "select:TeamCreate", "select:SendMessage", and "select:TeamDelete" to load each tool. AskUserQuestion MUST be loaded before Step 1 (user interview).
+- **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, you MUST first load them via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion", "select:TeamCreate", "select:SendMessage", and "select:TeamDelete" to load each tool. AskUserQuestion MUST be loaded before Step 1 (user interview). Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Task: $ARGUMENTS
