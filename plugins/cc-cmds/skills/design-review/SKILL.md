@@ -556,6 +556,8 @@ The main session must self-judge each proposal before bothering the user. Defaul
 
 ## Approval UX
 
+**Closed option set (do not import options from other skills).** The `AskUserQuestion` option set in this skill is *closed* and exhaustively defined by the "For Proposal type" and "For Decision type" subsections below: Proposal type → exactly `승인` / `거부 (현재 유지)`; Decision type → exactly the options derived from the agent's `Options` field (plus an optional `(에이전트 추천)` tag). No other standing option may be added under any circumstance. In particular, when `design-review` runs in the same session after the `design` skill, that skill's walkthrough per-category structural slots — `팀 토론 진행`, `보류`, and any other option not derived from the two sources above — MUST NOT appear in any `design-review` prompt. `design-review` never spawns agent teams (review uses fresh isolated `Agent` sub-agents per the Constraints), so a `팀 토론 진행` option is categorically invalid here; deferral and further discussion are handled by the Processing Protocol's free-form Other-input + dialogue loop (Ground Rule #6/#7), never by a standing menu option.
+
 Present escalated proposals item-by-item via AskUserQuestion, batched up to 4 at a time. No "approve all" option — every escalated proposal requires individual review.
 
 ### Batch announcement (Korean, required when >4 items)
@@ -580,11 +582,11 @@ Do not mention "batch" / "call" / "분할" / "AskUserQuestion" / "4개 한계" i
 ### For Proposal type
 
 - Present the agent's concept together with the main session's concretized scope (affected locations and specific changes).
-- Options: "승인" (with description of what will be applied) and "거부 (현재 유지)" (with note that the item won't be re-reported).
+- Options (exhaustive — exactly these two, no others): "승인" (with description of what will be applied) and "거부 (현재 유지)" (with note that the item won't be re-reported).
 
 ### For Decision type
 
-- Dynamically construct AskUserQuestion options from the agent's Options field (up to 4 options per question).
+- Construct AskUserQuestion options *solely* from the agent's Options field (up to 4 options per question) — do NOT add any standing option not present in that field.
 - Include agent recommendation if present (append "(에이전트 추천)" to the label).
 - If the proposal has more than 4 options, present the first 4 in the primary question and mention additional alternatives in the question text from the Agent note field — do NOT split one proposal's options across two questions.
 

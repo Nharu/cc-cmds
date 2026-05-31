@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-05-31
+
+동일 세션에서 `design` 스킬을 먼저 실행한 뒤 `design-review` 스킬을 실행하면 `design-review`의 `AskUserQuestion` 프롬프트에 `팀 토론 진행`·`보류` 같은 외래 옵션이 등장하는 버그를 수정한다. 이 옵션 어휘는 `design` 스킬 Step 5(Unresolved Issue Walkthrough)의 카테고리별 메뉴에만 존재하는데, `design-review`의 Decision 옵션 구성이 "agent Options 필드에서 동적 구성"으로 *열려* 있어 폐쇄 집합 선언이 없었던 것이 원인이다. 같은 세션의 `design` Step 5 처방이 컨텍스트에 잔류한 상태에서 그 열린 구성 지점에 외래 어휘가 유입됐다. 본 릴리스는 소비측(`design-review`) 단일 지점에 옵션 집합을 폐쇄하는 prose 펜스를 추가한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `design-review/SKILL.md` `## Approval UX` 섹션 도입부에 **Closed option set** 펜스 문단을 추가한다. 옵션 집합은 닫혀 있으며 "For Proposal type"(`승인`/`거부 (현재 유지)` 정확히 2개)와 "For Decision type"(agent `Options` 필드 파생 + 선택적 `(에이전트 추천)` 태그)이 전부임을 명문화하고, 두 출처에서 파생되지 않은 상시 옵션(특히 `design` 워크스루의 `팀 토론 진행`·`보류`)의 유입을 금지한다. `design-review`는 팀을 만들지 않으므로(fresh 격리 `Agent` 서브에이전트 사용) `팀 토론 진행`은 범주적으로 무효이며, 보류·추가 논의는 Processing Protocol의 free-form Other-input + 대화 루프로 처리한다.
+- `design-review/SKILL.md` "For Proposal type"/"For Decision type" 두 하위 섹션을 "exhaustive — exactly these two" / "solely from the agent's Options field" 표현으로 못박아 열린 동적 구성 표면을 제거한다.
+
+### Why
+
+끌려온 `팀 토론`/`보류`는 plausible-but-wrong, 즉 위임된 판단의 interpretable 오판이므로 prose 펜스로 교정하고 hook/구조 강제는 두지 않는다(잔여 실패 모드 수용 원칙). 오염이 실제 관측된 곳은 `design-review` 단 하나이므로 모든 AskUserQuestion 스킬로 일반화하지 않고 소비측 단일 지점만 폐쇄한다 — `design-review`가 옵션 집합을 닫으면 이전에 무엇이 실행됐든 무관하게 면역이 되어 가장 robust한 단일 지점이며, 트리거인 `design` Step 5 어휘는 자기 맥락에서는 정상이고 CFI 불변식이 밀집한 민감 영역이라 비건드림이 안전하다. 다른 스킬 쌍에서 동일 오염이 재발하면 그때를 일반화 신호로 삼는다.
+
 ## [1.8.2] - 2026-05-31
 
 `design` 스킬에서 간헐적으로 발생하는 두 가지 제어 흐름 버그를 수정한다. (1) Step 4(synthesize → save → cleanup → present)가 끝난 뒤 같은 턴에서 Step 5(Unresolved Issue Walkthrough)로 자동 진입해야 하는데 간헐적으로 결과만 발표하고 멈추는 버그, (2) Step 6(Plan Refinement) 진입 시 간헐적으로 `AskUserQuestion`("무엇을 다듬을까요?")을 발화하는 버그 — 올바른 동작은 짧은 한국어 안내 후 턴을 양보하고 사용자 발화를 기다리는 것이다. 두 버그는 서로 다른 원인을 가져(이슈 1은 전환 규칙이 source가 아닌 destination에 위치 + "결과 발표"의 강한 턴-종료 prior, 이슈 2는 ~8,900 토큰 위치라 post-compaction 우선창 밖) 단일 처방으로 부족하므로, 상단 `## Control-Flow Invariants` 섹션 hoist(durable backstop) + 종료/진입 seam의 국소 강화(seam co-location)를 함께 적용한다 (`/plugin update cc-cmds`로 자동 반영).
