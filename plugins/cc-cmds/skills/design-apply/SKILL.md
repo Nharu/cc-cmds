@@ -122,6 +122,6 @@ This skill is an agent-team workflow (like `/cc-cmds:design` and `/cc-cmds:revie
 - Inter-agent communication must be in English.
 - User-facing communication and the saved document in Korean.
 - Agent Team required: `TeamCreate` + `SendMessage` only. Do NOT substitute with isolated `Agent()` sub-agents for the discussion. (The Step 1 codebase exploration can use `Agent()` for parallel searches; only the Step 3 design discussion is constrained to TeamCreate.)
-- **Deferred tool loading**: Before using `AskUserQuestion`, `TeamCreate`, `SendMessage`, or `TeamDelete`, you MUST load them via `ToolSearch`. Run `ToolSearch` with queries `select:AskUserQuestion`, `select:TeamCreate`, `select:SendMessage`, and `select:TeamDelete` to load each tool. `AskUserQuestion` MUST be loaded before Step 1 (the optional narrow interview).
+- **Deferred tool loading**: Before using `AskUserQuestion`, `TeamCreate`, `SendMessage`, or `TeamDelete`, you MUST load them via `ToolSearch`. Run `ToolSearch` with queries `select:AskUserQuestion`, `select:TeamCreate`, `select:SendMessage`, and `select:TeamDelete` to load each tool. `AskUserQuestion` MUST be loaded before Step 1 (the optional narrow interview). Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Handoff extract path: $ARGUMENTS

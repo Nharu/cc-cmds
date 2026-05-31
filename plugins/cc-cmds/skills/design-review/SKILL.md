@@ -489,13 +489,10 @@ This deliberate wipe prevents "context poisoning" — the next iteration's fresh
 Count entries in `$OUTER_DIR/ack_items.md` (lines starting with `#### ACK-`):
 
 - **50 items**: advisory — append a one-line warning to the next iteration-transition summary: `⚠️ 인지됨 항목 {n}건 (50건 권고치 초과)`
-- **100 items**: hard — ask the user via AskUserQuestion with three options:
-
-| Label | Action |
-|---|---|
-| A: 요약 | Compress old ack entries into one-line-per-category summaries |
-| B: 보관 | Move entries from previous iterations to `$OUTER_DIR/ack_archive.md`, keep only current iter active |
-| C: 현재 유지 | Accept the prompt-length cost and do nothing |
+- **100 items**: hard — ask the user via AskUserQuestion (header chip `인지 항목`; each option carries a `description`):
+  - label `"A: 요약"` — description: Compress old ack entries into one-line-per-category summaries.
+  - label `"B: 보관"` — description: Move entries from previous iterations to `$OUTER_DIR/ack_archive.md`, keeping only the current iter active.
+  - label `"C: 현재 유지"` — description: Accept the prompt-length cost and do nothing.
 
 Only run this check when `outer_done == false` — when `outer_done == true`, cleanup is imminent so ack size no longer matters.
 
@@ -503,7 +500,7 @@ Only run this check when `outer_done == false` — when `outer_done == true`, cl
 
 If `outer_iter >= 5 AND outer_done == false`, **Read `${CLAUDE_SKILL_DIR}/references/05-korean-ux-templates.md`** for the §3.9.4.a prompt template, then present the extension/terminate prompt:
 
-AskUserQuestion options: "5회 추가 진행" / "현재 상태로 종료". If the user chooses to terminate, break outer loop → Phase 3. If extended, raise the outer cap by 5 and continue.
+AskUserQuestion (header chip `안전 한계`; each option carries a `description`): label `"5회 추가 진행"` (description: 외부 이터레이션을 최대 5회 더 진행해 수렴을 시도합니다.) / label `"현재 상태로 종료"` (description: 추가 진행 없이 현재 상태로 리뷰를 종료합니다.). If the user chooses to terminate, break outer loop → Phase 3. If extended, raise the outer cap by 5 and continue.
 
 **Step 25 — Iteration transition summary + auto-advance** (only if `outer_done == false`):
 
@@ -556,7 +553,7 @@ The main session must self-judge each proposal before bothering the user. Defaul
 
 ## Approval UX
 
-**Closed option set (do not import options from other skills).** The `AskUserQuestion` option set in this skill is *closed* and exhaustively defined by the "For Proposal type" and "For Decision type" subsections below: Proposal type → exactly `승인` / `거부 (현재 유지)`; Decision type → exactly the options derived from the agent's `Options` field (plus an optional `(에이전트 추천)` tag). No other standing option may be added under any circumstance. In particular, when `design-review` runs in the same session after the `design` skill, that skill's walkthrough per-category structural slots — `팀 토론 진행`, `보류`, and any other option not derived from the two sources above — MUST NOT appear in any `design-review` prompt. `design-review` never spawns agent teams (review uses fresh isolated `Agent` sub-agents per the Constraints), so a `팀 토론 진행` option is categorically invalid here; deferral and further discussion are handled by the Processing Protocol's free-form Other-input + dialogue loop (Ground Rule #6/#7), never by a standing menu option.
+**Closed option set (do not import options from other skills).** The `AskUserQuestion` option set in this skill is *closed* and exhaustively defined by the "For Proposal type" and "For Decision type" subsections below: Proposal type → exactly `승인` / `거부 (현재 유지)`; Decision type → exactly the options derived from the agent's `Options` field (plus an optional `← 에이전트 추천` label suffix). No other standing option may be added under any circumstance. In particular, when `design-review` runs in the same session after the `design` skill, that skill's walkthrough per-category structural slots — `팀 토론 진행`, `보류`, and any other option not derived from the two sources above — MUST NOT appear in any `design-review` prompt. `design-review` never spawns agent teams (review uses fresh isolated `Agent` sub-agents per the Constraints), so a `팀 토론 진행` option is categorically invalid here; deferral and further discussion are handled by the Processing Protocol's free-form Other-input + dialogue loop (Ground Rule #6/#7), never by a standing menu option.
 
 Present escalated proposals item-by-item via AskUserQuestion, batched up to 4 at a time. No "approve all" option — every escalated proposal requires individual review.
 
@@ -587,7 +584,8 @@ Do not mention "batch" / "call" / "분할" / "AskUserQuestion" / "4개 한계" i
 ### For Decision type
 
 - Construct AskUserQuestion options *solely* from the agent's Options field (up to 4 options per question) — do NOT add any standing option not present in that field.
-- Include agent recommendation if present (append "(에이전트 추천)" to the label).
+- Every option MUST carry a `description` (one line summarizing what selecting it does); never present bare-label options.
+- Include the agent recommendation if present: per the documented recommendation convention, append `← 에이전트 추천` to the recommended option's label, place it at position 1, and put the rationale in that option's `description`.
 - If the proposal has more than 4 options, present the first 4 in the primary question and mention additional alternatives in the question text from the Agent note field — do NOT split one proposal's options across two questions.
 
 ### Other input
@@ -669,6 +667,10 @@ When auto-decide is active:
 Flag parsing is done together with `--base` in Phase 1 step 2 (all three flags are stripped from `ARGS_CLEAN`; presence is detected into `BASE_MODE` and `AUTO_DECIDE_INITIAL` booleans). `AUTO_DECIDE_INITIAL` defaults to `true`; `--no-auto-decide-dominant` flips it to `false`.
 
 **The flag is NOT propagated to review agents** — auto-decide is a main-session-only mechanism.
+
+## Constraints
+
+- **Deferred tool loading**: Before using AskUserQuestion, you MUST first load it via `ToolSearch("select:AskUserQuestion")` before any user prompt step. **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
 ## Begin
 

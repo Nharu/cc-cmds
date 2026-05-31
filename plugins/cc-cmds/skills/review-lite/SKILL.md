@@ -33,6 +33,8 @@ Load deferred tools via ToolSearch before any other step:
 - `ToolSearch("select:SendMessage")`
 - `ToolSearch("select:TeamDelete")`
 
+**Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
+
 ---
 
 ### Step 1: PR Detection & Scope Confirmation (Korean)

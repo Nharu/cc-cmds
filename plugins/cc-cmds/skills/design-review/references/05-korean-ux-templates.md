@@ -134,7 +134,9 @@ Emit at end of each inner iteration (before auto-advance). Budget line appears o
 계속 진행하시겠습니까?
 ```
 
-AskUserQuestion: `"5회 추가 진행"` / `"현재 상태로 종료"`
+AskUserQuestion (header chip `안전 한계`; each option carries a `description`):
+- label `"5회 추가 진행"` — description: 외부 이터레이션을 최대 5회 더 진행해 수렴을 시도합니다.
+- label `"현재 상태로 종료"` — description: 추가 진행 없이 현재까지 적용된 결과로 리뷰를 마칩니다.
 
 ### §3.9.4.b — Inner safety limit reached, `pending_dialogue > 0` (A recommended)
 
@@ -147,10 +149,10 @@ AskUserQuestion: `"5회 추가 진행"` / `"현재 상태로 종료"`
 어떻게 진행하시겠습니까?
 ```
 
-Options:
-- `"A: 10회 추가 진행 ← 추천 (미완료 대화 처리 후 계속)"`
-- `"B: 이번 이터레이션 종료 후 새 이터레이션 시작"`
-- `"C: 외부 이터레이션 전체 종료"`
+Options (header chip `처리 방식`; each option carries a `description`; the recommended option is marked with a `← 추천` label suffix and its rationale moved into `description`):
+- label `"A: 10회 추가 진행 ← 추천"` — description: 미완료 대화를 마저 처리한 뒤 계속 진행합니다.
+- label `"B: 이번 이터레이션 종료 후 새 이터레이션 시작"` — description: 현재 이터레이션을 닫고 새 이터레이션을 시작합니다.
+- label `"C: 외부 이터레이션 전체 종료"` — description: 외부 루프 전체를 종료하고 리뷰를 마칩니다.
 
 ### §3.9.4.c — Inner safety limit, `pending_dialogue == 0` (B recommended)
 
@@ -162,10 +164,10 @@ Options:
 어떻게 진행하시겠습니까?
 ```
 
-Options:
-- `"A: 10회 추가 진행"`
-- `"B: 이번 이터레이션 종료 후 새 이터레이션 시작 ← 추천"`
-- `"C: 외부 이터레이션 전체 종료"`
+Options (header chip `처리 방식`; each option carries a `description`; the recommended option is marked with a `← 추천` label suffix):
+- label `"A: 10회 추가 진행"` — description: 미완료 대화는 없으나 추가 라운드로 이번 이터레이션을 더 진행합니다.
+- label `"B: 이번 이터레이션 종료 후 새 이터레이션 시작 ← 추천"` — description: 미완료 대화가 없어 현재 이터레이션을 닫고 새 이터레이션으로 넘어갑니다.
+- label `"C: 외부 이터레이션 전체 종료"` — description: 외부 루프 전체를 종료하고 리뷰를 마칩니다.
 
 ### §3.9.4.d — Free-form abort request ("그만" etc.)
 
@@ -178,7 +180,10 @@ Options:
   • 이미 적용된 변경사항은 문서에 유지됩니다.
 ```
 
-Options: `"지금 즉시 종료"` / `"현재 라운드 완료 후 종료"` / `"계속 진행"`
+Options (header chip `중단 여부`; each option carries a `description`):
+- label `"지금 즉시 종료"` — description: 현재 라운드를 중단하고 즉시 리뷰를 종료합니다.
+- label `"현재 라운드 완료 후 종료"` — description: 진행 중인 라운드만 마친 뒤 종료합니다.
+- label `"계속 진행"` — description: 중단하지 않고 리뷰를 계속 진행합니다.
 
 ### §3.9.4.e — Final completion summary
 

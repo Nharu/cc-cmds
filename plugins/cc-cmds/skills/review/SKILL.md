@@ -59,6 +59,8 @@ Load deferred tools via ToolSearch before any other step:
 - `ToolSearch("select:SendMessage")`
 - `ToolSearch("select:TeamDelete")`
 
+**Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
+
 ---
 
 ### Step 1: PR Detection & Scope Confirmation (Korean)
@@ -160,7 +162,10 @@ Present to user (in Korean):
 **Large PR gate** (>50 changed files):
 - Determine file count from PR metadata `changedFiles` field
 - Inform user of the scale
-- Offer options: (a) proceed with full review, (b) focus on specific directory/module, (c) split review
+- Offer options via AskUserQuestion (header chip `리뷰 범위`; each option carries a `description`):
+  - label `"전체 리뷰 진행"` — description: Proceed with a full review of all changed files.
+  - label `"특정 경로만"` — description: Focus the review on a specific directory or module.
+  - label `"리뷰 분할"` — description: Split the review into multiple smaller passes.
 - Adjust team composition if scope is narrowed
 
 Proceed after user confirmation.

@@ -59,9 +59,9 @@ Substitute `{last_iter:03d}` with zero-padded 3-digit form.
 
 If `next_N > 3`, open `AskUserQuestion` with three options before doing any work:
 
-- (Recommended) "계속 진행" — proceed with this round normally; the cap is a soft cap and the user is overriding it.
-- "현재 상태로 ACCEPT 강제" — skip parsing/review, copy the most recent `iter-{last_iter}/handoff-extract.md` to the stable path, emit ACCEPT next-step. Suitable when the user has decided iteration has converged "enough".
-- "중단" — leave `incoming/` untouched and end.
+- label "계속 진행 ← 추천" (position 1) — description: proceed with this round normally; the cap is a soft cap and the user is overriding it.
+- label "현재 상태로 ACCEPT 강제" — description: skip parsing/review, copy the most recent `iter-{last_iter}/handoff-extract.md` to the stable path, emit ACCEPT next-step. Suitable when the user has decided iteration has converged "enough".
+- label "중단" — description: leave `incoming/` untouched and end.
 
 `ITER_CAP = 3` is the default. The user can always proceed past it; this prompt exists to break runaway loops.
 
@@ -215,6 +215,6 @@ This skill is a single-pass verdict emitter (the `review` family), and its loop 
 - `web-design-guidelines` is OPTIONAL. The skill must not hard-invoke it; absence triggers fallback to the local 5-axis criteria. Declared in README "Prerequisites" alongside `terminal-notifier` (the precedent for optional skills in cc-cmds).
 - The verdict computation is structural (count of `critical`/`major` findings ≥ 1 → REFINE), not the Agent's own ACCEPT/REFINE opinion. The Agent reports findings; the skill computes the verdict.
 - DS workspace files are read-only here; `design-ingest` never modifies `docs/design-system/`.
-- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it via `ToolSearch("select:AskUserQuestion")`. The skill assumes no other deferred tool beyond that.
+- **Deferred tool loading**: Before using `AskUserQuestion`, you MUST load it via `ToolSearch("select:AskUserQuestion")`. The skill assumes no other deferred tool beyond that. Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Handoff directory: $ARGUMENTS
