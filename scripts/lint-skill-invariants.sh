@@ -30,23 +30,30 @@ TOKEN_BUDGET=4000
 WORDS_PER_TOKEN_RATIO=1.3   # tokens ≈ words × 1.3 (conservative over-estimate)
 INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 
-# Skills exempt from rule (A). Rule (A) targets skills whose termination
-# contract lives in in-session bash variables (e.g., design-review's
-# `consecutive_no_major` / `INNER_EXIT_REASON`) that post-conversation
-# compaction can summarize away, producing silent mis-termination. All other
-# skills recover termination state from elsewhere and are therefore exempt:
-#   - Multi-round agent-team skills (design / review / design-lite / review-lite
+# Skills exempt from rule (A). Rule (A) targets skills whose control-flow
+# contract can be summarized away by post-conversation compaction, producing a
+# silent mis-step. Two contract kinds qualify a skill for rule (A): (1) a
+# termination contract held in in-session bash variables (e.g., design-review's
+# `consecutive_no_major` / `INNER_EXIT_REASON`); and (2) phase-transition /
+# turn-yield invariants that govern whether the skill auto-advances or yields
+# between steps (e.g., `design`'s Step 4 → Step 5 auto-entry and Step 6 entry
+# notice-and-yield) — these carry no in-session counter yet still mis-fire if a
+# transition rule drops out of the post-compaction priority window. Skills that
+# recover all control state from elsewhere are exempt:
+#   - Multi-round agent-team skills (review / design-lite / review-lite
 #     / design-apply) — termination contract lives in `_common/team-cleanup.md`
-#     plus file-recovery slug bindings.
+#     plus file-recovery slug bindings, and they declare no auto-advance /
+#     turn-yield contract that compaction could break.
 #   - Single-pass verdict-emit skills (design-ingest) — loop state recovered
 #     from `## Verdict:` headers on disk; every invocation is fresh-context.
 #   - Linear authoring skills (design-system / design-prompt / design-upgrade)
 #     — no loop at all, no termination contract to lose.
 #   - IO orchestrators (active-notify / implement) — termination is a
 #     hook/tool-driven boundary, not a counter the model has to maintain.
-# In effect, the only non-exempt member is the `design-review ↔
-# design-review-lite` pair (which rule B additionally enforces via phrase sync).
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "design" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
+# In effect, the non-exempt members are the `design-review ↔ design-review-lite`
+# pair (which rule B additionally enforces via phrase sync) plus `design` (whose
+# phase-transition invariants live in its top `## Control-Flow Invariants`).
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
