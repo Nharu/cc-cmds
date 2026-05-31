@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-05-31
+
+`design` 스킬 Step 5 (Unresolved Issue Walkthrough)에서 미해결 이슈를 `AskUserQuestion`으로 surface할 때 한 호출에 여러 이슈가 묶여 나오는 동작이 관찰되어 이를 차단한다. `AskUserQuestion`은 호출당 최대 4개 질문과 질문당 최대 4개 옵션이라는 두 개의 독립적 4-slot 용량을 갖는데, Step 5는 후자(이슈 1건의 옵션 메뉴)만 사용하도록 설계되어 있었으나 이를 명시하는 fence가 없었다. Cap-handling 절의 "4-option cap" 서술이 두 축을 혼동시키는 원인으로 작용했다. 본 릴리스는 Per-issue Processing Flow 도입부에 "한 surface = 정확히 1이슈" 불변식을 명시하는 인라인 fence를 추가한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `design/SKILL.md` Step 5 Per-issue Processing Flow 도입부에 one-issue-per-surface 불변식 인라인 fence 추가. 각 `AskUserQuestion` 호출이 정확히 1이슈(1질문)만 담으며, 최대 4질문 용량을 여러 이슈 묶음에 쓰지 않고 유일한 4-slot 예산은 이슈별 옵션 메뉴(concrete picks + `보류` + `팀 토론 진행`)임을 명시한다. *질문/호출* 축과 *옵션/질문* 축을 명시적으로 분리하고, 이슈를 묶으면 단일 loopable surface를 전제하는 per-issue 메커니즘(auto-investigation / `← 추천` recommendation / UC `더 논의` follow-up 루프 / dropped-confirm separate prompt / mid-flight reclassification)이 모두 깨짐을 근거로 기술한다. Cap-handling의 `4-option cap`이 이슈 수가 아니라 한 이슈 메뉴 내 옵션 수임을 못 박는다.
+
+### Why
+
+one-issue-per-surface는 Step 5 per-issue 상태머신의 load-bearing 불변식이지만 `For each issue:` 루프와 단수형 "Surface to the user (`AskUserQuestion`)"로만 암묵 표현되어 있었다. 모델이 `AskUserQuestion`의 4-질문 용량과 4-옵션 용량을 혼동해 이슈를 묶을 여지가 있었고, 이는 상태머신 전제를 깨는 구조적 위반이므로 명시 fence로 차단한다. design 스킬은 lint `EXEMPT_SKILLS` 멤버라 Control-Flow Invariants 섹션 신설 없이 point-of-use 인라인 fence로 처리한다.
+
 ## [1.8.0] - 2026-05-29
 
 claude.ai/design (Claude Design) 외부 도구를 활용한 프론트엔드 작업을 위해 4개 신규 슬래시 스킬과 공유 prose 2종을 도입한다. 기존 `design → design-review → implement → review` 파이프라인은 markdown 설계 문서 기반 백엔드 흐름에는 완벽하지만, claude.ai/design은 cc-cmds가 직접 호출할 수 없는 외부 수동 도구이고 산출물(HTML 핸드오프 번들 + `:root` CSS 토큰)을 사람이 가져와 다음 단계로 넘겨야 하기 때문에 단절이 있었다. 본 릴리스는 `design-system`(DS 워크스페이스 2-phase + 가변 Q&A 페어 사전답변 + relay 루프), `design-prompt`(base 설계 문서 stable-anchor CD 프롬프트 섹션 in-place authoring + HANDOFF CONTRACT 포함 붙여넣기 블록 emit), `design-ingest`(균일 출력 레코드 기반 단일 에이전트 리뷰 + DS 동봉/var() 두 패턴 분기 + ACCEPT/REFINE 파일 복구 루프 + ITER_CAP), `design-apply`(agent-team 적용 설계 sibling, slug 복구로 cleanup-anchor 보장) 4개 스킬과 6개 실측으로 확정된 3-rung 하이브리드 파싱 계약을 구현한 `_common/handoff-contract.md`(emitter+parser 공유 frontmatter 스키마) + `_common/parse-handoff.md`(CONTRACT/BEST-EFFORT/AGENT 직독 3-rung 추출 메커니즘)를 도입한다 (`/plugin update cc-cmds`로 자동 반영).
