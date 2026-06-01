@@ -18,6 +18,8 @@ inner_converged_cleanly() =
 
 `final_critical_or_major = |{p : p.severity (post-upgrade) ∈ {critical, major}}|`
 
+Advance ordering: there is no look-ahead spawn. Anti-fabrication: write a record only if round N's review Agent() actually returned.
+
 ```
 if INNER_EXIT_REASON == "safety-limit-outer-terminate": break
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer": outer_done = false

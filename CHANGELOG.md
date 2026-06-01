@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-06-01
+
+`design-review`와 `design-review-lite`의 inner review loop는 라운드 N+1의 입력이 라운드 N의 적용 출력인 직렬 의존 사슬을 갖는다. 그러나 실행 모델이 한 turn에서 여러 라운드·이터레이션의 리뷰 에이전트를 동시에 spawn하고, **아직 반환되지 않은** 에이전트 결과에 대해 disposition 로그·수렴 판정·`COUNT_APPLIED` 집계를 미리 날조하는 오작동이 관측됐다. 특히 날조된 `clean-convergence` + `COUNT_APPLIED == 0`은 outer 종료 판정에서 도달하지 않은 fixpoint로 전체 리뷰 사이클을 silent early-exit시킨다. 두 스킬의 `## Control-Flow Invariants` 최상단에 advance-ordering(직렬화)·observed-result(anti-fabrication, fail-closed) 불변식 2개를 추가해 하드닝한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- `design-review`/`design-review-lite` SKILL.md의 `## Control-Flow Invariants` intro 직후에 두 불변식 하위 섹션을 추가한다. (1) **Round/iteration advance ordering** — 라운드 경계에서는 라운드 N의 Edit가 디스크에 반영되기 전에 라운드 N+1의 review `Agent()`를 spawn하지 않으며, 이터레이션 경계에서는 iter K의 per-iteration summary가 끝나기 전에 iter K+1의 `INNER_TEMP_DIR`를 초기화하지 않는다(no look-ahead spawn). intra-round 활동(self-triage·batched Edits·AUQ fan-out 등)은 제약하지 않는다. (2) **Observed-result precondition** — 어떤 round-N audit 기록(disposition tag·`COUNT_APPLIED`·convergence verdict·outer_log)도 해당 라운드의 review Agent()가 실제로 반환·관측된 경우에만 작성 가능하며, 불확실하면 fail-closed로 re-spawn 후 작성한다. lite는 auto-decide 미보유라 `[AUTO-DECIDED]`·`escalate_applied`를 제외한 단순화 사본을 inline한다.
+- `scripts/lint-skill-invariants.sh`의 `REQUIRED_PHRASES`에 두 canonical 앵커(`no look-ahead spawn`, `Agent() actually returned`)를 추가해 base↔lite 양쪽 불변식 prose의 존재·동기화를 CI에서 강제한다. 회귀 fixture(`T-INV-OK-1`)에도 동일 앵커를 반영했다.
+
 ## [1.8.4] - 2026-06-01
 
 여러 스킬에서 `AskUserQuestion`(AUQ) 호출 시 `InputValidationError`가 반복 발생하던 문제를 하드닝한다. 레포에서 AUQ를 호출하는 스킬 10개 중 `design`만 AUQ 하드 스키마(12자 header, 옵션 `description` 필수, 옵션 2~4개)에 하드닝돼 있었고, 나머지 스킬과 `design-review` 계열 reference는 옵션을 **bare label 문자열**로 제시하는 템플릿이 모델을 malformed 호출로 직접 유도했다. 근본 원인이 런타임이 아니라 작성된 템플릿(upstream)이므로, 공통 스펙 + 런타임 Read 참조 + 템플릿 in-place 교정 + lint 게이트의 4단 통제를 함께 적용한다 (`/plugin update cc-cmds`로 자동 반영).
