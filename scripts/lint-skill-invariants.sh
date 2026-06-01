@@ -150,6 +150,8 @@ REQUIRED_PHRASES=(
   'INNER_EXIT_REASON == "clean-convergence"'
   'INNER_EXIT_REASON == "safety-limit-fresh-outer"'
   'INNER_EXIT_REASON == "safety-limit-outer-terminate"'
+  'no look-ahead spawn'
+  'Agent() actually returned'
 )
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.

@@ -54,6 +54,21 @@ Requirement consistency, internal coherence, feasibility, implementation order, 
 
 These formulas govern termination and classification. They MUST remain inline (not in `references/`) because SKILL.md has post-compaction re-attachment priority (first ~5K tokens) while `references/` reads may be summarized away. A summarized invariant yields silent mis-termination.
 
+#### Round/iteration advance ordering (no look-ahead spawn)
+
+The inner loop's correctness rests on a happens-before ordering between adjacent rounds and adjacent outer iterations — NOT on any turn count. It binds at exactly two boundaries and nowhere else:
+
+- **Round boundary**: the main session MUST NOT spawn round N+1's review `Agent()` until round N's resulting Edits are on disk. A review agent reads the document on spawn; if round N+1's agent spawns before round N's edits have landed, it reviews stale text and every proposal it returns is grounded in a document state that no longer exists.
+- **Iteration boundary**: the main session MUST NOT initialize iter K+1's `INNER_TEMP_DIR` (Step 7) until iter K's per-iteration summary work (Steps 17–21 — `COUNT_APPLIED`, ack extraction, table/log rows, and the `INNER_TEMP_DIR` wipe) has completed against the agent results actually observed in iter K.
+
+This ordering is scoped to the spawn/init boundary ONLY. It deliberately does NOT constrain intra-round activity: one round may issue many tool calls in a single turn (self-triage, reference Reads, batched auto-approve Edits, auto-decide, AskUserQuestion fan-out), and one round may span multiple turns (the dialogue loop on an escalated proposal runs across several turns, all still inside round N). The "batch independent edits in one message" practice stays fully valid for those intra-round Edits — but it does NOT apply across a round/iteration boundary, because round N+1's input IS round N's applied output and the rounds are therefore not independent units of work. The one forbidden move is forward progress across a boundary on unobserved upstream work: there is no look-ahead spawn — never spawn the next round's agent before this round's edits are on disk, and never open the next iteration before this iteration's summary work is done.
+
+#### Observed-result precondition (anti-fabrication — hard fail-closed gate)
+
+This precondition is independent of the ordering rule above and is NOT waivable under any time, batching, or economy pressure. The main session MUST NOT write any round-N record — disposition tag (`[APPROVED]` / `[MODIFIED]` / `[USER-DIRECTED]` / `[AUTO-DECIDED]` / `[AUTO-APPROVED]` / `[AUTO-REJECTED]` / `[REJECTED]`), `COUNT_APPLIED` / `escalate_applied` input, `INNER_EXIT_REASON == "clean-convergence"` (or any convergence verdict), convergence-table row, ack delta, or `## Outer Iteration N` outer_log entry — unless round N's review Agent() actually returned and that return was observed at some point during round N. The on-disk round-N proposals and round summary are the persisted PRODUCT of that observed return (carrying grounding across turns for deferred dispositions); they are NOT themselves the grounding, and neither may be authored by the main session to manufacture grounding.
+
+Decision procedure before writing any round-N record: "Did I actually spawn round N's agent and observe its return at some point during this round?" If you cannot affirm a real observed return — or you are uncertain — **fail closed**: do not record, do not count, do not declare convergence; instead spawn (or re-spawn) the agent, wait for its real return, then write. Re-spawn is the cheap safe direction (a redundant fresh review only costs tokens; a fabricated record corrupts termination). A convergence verdict or `COUNT_APPLIED` tally is a factual claim that specific agent work happened; writing one for a round whose agent never spawned or never returned is fabrication and is absolutely forbidden. (The deferred-disposition case is explicitly fine: round N's agent really returned and its proposals are on disk; finalizing those dispositions turns later after the user decides is grounded, not fabricated.)
+
 ### Inner convergence predicate (§3.11)
 
 ```
