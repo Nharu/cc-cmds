@@ -9,6 +9,7 @@ Engineering workflow commands for Claude Code.
 | Command | Description | When to use |
 |---------|-------------|-------------|
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
+| `/cc-cmds:design-analyze` | 에이전트 팀을 활용한 제3자 설계 문서 다관점 분석 (읽기 전용) | 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하고 분석 산출물(보고서/주석본/피드백)을 생성하고자 할 때 |
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
@@ -120,6 +121,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 <!-- SKILLS_OPTIONS_START -->
 
 - [/cc-cmds:design](#cc-cmdsdesign)
+- [/cc-cmds:design-analyze](#cc-cmdsdesign-analyze)
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
 - [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
@@ -139,6 +141,16 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<task>` | (required) | 설계 토론을 진행할 작업 주제 (자유형 한국어/영문 텍스트). |
+
+### /cc-cmds:design-analyze
+
+**Usage**: `/cc-cmds:design-analyze <design-doc-path> [--no-codebase] [--report-only]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 분석 대상 제3자 설계 문서 경로 (`.md`). 원본은 절대 수정하지 않음. |
+| `--no-codebase` | off (코드베이스 grounding 활성) | 코드베이스 교차검증 비활성화 — 문서 자체만으로 분석 (doc-only 모드). |
+| `--report-only` | off (산출물 대화형 선택) | Step 7 산출물 선택 대화만 건너뛰고 보고서만 생성. Step 6 워크스루(발견별 검토)는 그대로 유지 — 완전 비대화 아님(산출물 범위 한정 플래그). |
 
 ### /cc-cmds:design-apply
 
