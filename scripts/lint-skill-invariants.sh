@@ -51,8 +51,15 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #   - IO orchestrators (active-notify / implement) — termination is a
 #     hook/tool-driven boundary, not a counter the model has to maintain.
 # In effect, the non-exempt members are the `design-review ↔ design-review-lite`
-# pair (which rule B additionally enforces via phrase sync) plus `design` (whose
-# phase-transition invariants live in its top `## Control-Flow Invariants`).
+# pair (which rule B additionally enforces via phrase sync), `design` (whose
+# phase-transition invariants live in its top `## Control-Flow Invariants`), and
+# `design-analyze`. The last is a special case: its load-bearing invariant
+# (read-only source) is a *safety* invariant, not a control-flow/termination
+# contract, yet it borrows rule (A)'s first-5K position protection for the same
+# summarize-away reason — unlike the EXEMPT `review` (which mutates nothing it
+# could corrupt), `design-analyze` creates files while its source repo must stay
+# untouched, so a summarized-away read-only rule is a real silent-corruption
+# vector that first-5K placement guards against.
 EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).

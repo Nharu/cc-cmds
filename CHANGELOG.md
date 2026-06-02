@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-06-03
+
+타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하는 새 스킬 `design-analyze`를 추가한다. `review`의 에이전트 팀 다관점 엔진을 베이스로 하되 입력이 코드 diff가 아니라 산문 설계 문서이며, `design-review`식 외부/내부 수렴 루프 없이 **단일 패스**로 동작한다. 분석 결과는 사용자가 고른 산출물(분석 보고서·인라인 주석 사본·저자 피드백)로 cwd `docs/analysis/`에 생성되며, 원본 문서와 그 소스 repo 전체는 절대 수정하지 않는다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **`design-analyze` 스킬** (`/cc-cmds:design-analyze <design-doc-path> [--no-codebase] [--report-only]`): 9단계 워크플로우(Step 0–8) — 소스 감지·scope 확인 → 소스 repo grounding 셋업 → 분석 팀 동적 구성 → 병렬 다관점 분석(에이전트 팀) → 합성·분류 → 읽기 전용 발견 워크스루 → 산출물 선택·렌더 → 후속 토론. 발견은 공유 ID `A-NN`(단조·속성 무관) 정본 스키마로 관리되고, 설계 전용 severity(critical/major/minor)·`[foundational]` 플래그·premise-contradiction severity floor·verdict 래더(채택/조건부/보류/재설계)로 분류된다.
+- **읽기 전용 안전 불변(CFI 5종)**: 원본 문서·소스 repo는 어떤 Edit/Write의 대상도 되지 않으며(hard fail-closed), 모든 출력은 cwd `docs/analysis/`의 새 파일이다. 워크스루→산출물 귀결 순서·anti-fabrication·grounding 정직성·team-cleanup 앵커를 `## Control-Flow Invariants` 최상단에 인라인 배치해 압축 소실로 인한 silent corruption을 차단한다.
+- **코드베이스 grounding**: grounding ON이면 cwd가 아닌 **문서가 속한 소스 repo**(`git rev-parse --show-toplevel`)를 Claude Context MCP로 인덱싱하고, `review`와 동일한 재인덱싱 정책(상태 확인 후 missing/outdated만 재인덱싱)을 따른다. repo 부재·인덱싱 실패·`--no-codebase` 시 doc-only 모드로 graceful degrade하며 `doc-code-gap`·`path:line` 인용을 suppress하고 보고서 헤더에 `분석 모드: 문서 단독`을 스탬프한다.
+- **references/**: 분석가 컨텍스트 패키지(렌즈 풀·체크리스트·읽기 전용 프로토콜), 분석 보고서 템플릿(finding 정본 스키마·severity/카테고리/verdict gloss), 인라인 콜아웃 렌더 스펙, 저자 피드백 템플릿.
+- **lint**: `scripts/lint-skill-invariants.sh`의 EXEMPT 설명 주석에 design-analyze 비-exempt 근거(read-only는 control-flow가 아닌 safety 불변이나 동일 요약-소실 위험으로 first-5K position 보호를 차용; review는 mutation이 없어 면제되지만 design-analyze는 파일 생성+소스 미접촉이라 비면제)를 enumeration과 함께 반영했다. 실행 로직(EXEMPT_SKILLS 배열)은 불변이다.
+
 ## [1.8.5] - 2026-06-01
 
 `design-review`와 `design-review-lite`의 inner review loop는 라운드 N+1의 입력이 라운드 N의 적용 출력인 직렬 의존 사슬을 갖는다. 그러나 실행 모델이 한 turn에서 여러 라운드·이터레이션의 리뷰 에이전트를 동시에 spawn하고, **아직 반환되지 않은** 에이전트 결과에 대해 disposition 로그·수렴 판정·`COUNT_APPLIED` 집계를 미리 날조하는 오작동이 관측됐다. 특히 날조된 `clean-convergence` + `COUNT_APPLIED == 0`은 outer 종료 판정에서 도달하지 않은 fixpoint로 전체 리뷰 사이클을 silent early-exit시킨다. 두 스킬의 `## Control-Flow Invariants` 최상단에 advance-ordering(직렬화)·observed-result(anti-fabrication, fail-closed) 불변식 2개를 추가해 하드닝한다 (`/plugin update cc-cmds`로 자동 반영).
