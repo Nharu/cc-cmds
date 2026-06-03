@@ -186,12 +186,13 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 ### /cc-cmds:design-review
 
-**Usage**: `/cc-cmds:design-review <design-doc-path> [--base] [--no-auto-decide-dominant]`
+**Usage**: `/cc-cmds:design-review <design-doc-path> [--base] [--changes] [--no-auto-decide-dominant]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
 | `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
+| `--changes` | off | 이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능 |
 | `--auto-decide-dominant` | _(no-op alias — auto-decide는 기본 ON)_ | 명시적 opt-in 별칭. 현재 기본값이 이미 ON이라 실질 no-op; 역호환·명시성 목적으로 허용. |
 | `--no-auto-decide-dominant` | off (즉, auto-decide 활성) | Decision Auto-Select Protocol(§8)을 세션 전체에서 비활성화 |
 
@@ -207,12 +208,13 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 ### /cc-cmds:design-review-lite
 
-**Usage**: `/cc-cmds:design-review-lite <design-doc-path> [--base]`
+**Usage**: `/cc-cmds:design-review-lite <design-doc-path> [--base] [--changes]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
 | `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
+| `--changes` | off | 이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능 |
 
 ### /cc-cmds:design-system
 

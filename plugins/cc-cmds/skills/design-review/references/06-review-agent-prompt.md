@@ -1,6 +1,6 @@
 # Review Agent Prompt (§3.8)
 
-Agent prompt template for the inner-loop review agent. Consumed by Step 12 before spawning each fresh review agent. Before calling `Agent()`, substitute `{TEMP_DIR}` with the session's `INNER_TEMP_DIR` and `{BASE_MODE_CONSTRAINT}` either with the block from the `--base` Options section (when `BASE_MODE=true`) or with an empty line (when `BASE_MODE=false`).
+Agent prompt template for the inner-loop review agent. Consumed by Step 12 before spawning each fresh review agent. Before calling `Agent()`, substitute `{TEMP_DIR}` with the session's `INNER_TEMP_DIR`, `{USER_NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (when `BASE_MODE=true`) or an empty line, and `{CHANGES_MODE_CONSTRAINT}` with the `--changes` block (when `CHANGES_MODE=true`) or an empty line — each substituted independently at a single level (see Substitution contract).
 
 ## Prompt body
 
@@ -25,7 +25,11 @@ Then read the design document and review it against ALL of the following criteri
 5. Missing items — Look for gaps: error handling not specified, edge cases not covered, security considerations absent, migration plans missing, rollback strategies undefined.
 6. Contextual review — Based on the specific domain and nature of this design, check for additional concerns that matter in this context but are not covered by the above categories.
 
+{USER_NOTE}
+
 {BASE_MODE_CONSTRAINT}
+
+{CHANGES_MODE_CONSTRAINT}
 
 IMPORTANT: Do NOT modify the design document directly. For every issue found, create a proposal in the following format:
 
@@ -72,8 +76,12 @@ Return a structured summary:
 
 ## Substitution contract
 
+Each placeholder is substituted **independently at a single level** — there are no nested tokens. Body placement order, top to bottom, is `{USER_NOTE}` → `{BASE_MODE_CONSTRAINT}` → `{CHANGES_MODE_CONSTRAINT}` (one readability blank line between each), so the CHANGES block's "if a user-provided note appears above" holds. This is the same single-placeholder operation as `--base`, repeated three times independently.
+
 - `{TEMP_DIR}`: replace with the absolute path of `INNER_TEMP_DIR` (computed at Step 7).
+- `{USER_NOTE}` (mode-independent, always evaluated): when `USER_NOTE` is empty, substitute a single empty line; when non-empty, substitute the single line `USER-PROVIDED NOTE (focus/context for this review): <USER_NOTE>`.
 - `{BASE_MODE_CONSTRAINT}`: when `BASE_MODE=true`, substitute the BASE MODE CONSTRAINT block from the `--base` Options section (SKILL.md); when `BASE_MODE=false`, substitute with a single empty line so the prompt structure remains stable.
+- `{CHANGES_MODE_CONSTRAINT}`: when `CHANGES_MODE=true`, substitute the CHANGES MODE CONSTRAINT block from the `--changes` Options section (SKILL.md) verbatim (static — it contains no nested token; the change focus is already carried by `{USER_NOTE}` above); when `CHANGES_MODE=false`, substitute with a single empty line.
 
 ## Path context prepend
 
