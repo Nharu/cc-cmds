@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-06-04
+
+`design-review`와 `design-review-lite`에 "이미 리뷰된 문서에 수정이 발생했을 때 그 수정 사항의 정합성을 검증"하는 사용 패턴을 옵션화한 `--changes` 플래그를 추가한다. 지금까지는 매번 `design-review <doc> 수정 사항 관련 정합성 검증`처럼 자연어 의도를 덧붙여 호출해야 했던 흐름을 재현 가능한 플래그로 만든다. `--changes`는 기존 `--base`와 구조적으로 완전히 동형인 **프롬프트 주입 플래그**다 — git diff·스냅샷 같은 기계적 변경 식별 메커니즘은 도입하지 않고, 플래그가 켜지면 리뷰 에이전트 프롬프트에 `CHANGES MODE CONSTRAINT` 블록을 주입해 에이전트가 능동적으로 무엇이 바뀌었는지 판단한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **`--changes` 플래그** (`design-review`·`design-review-lite` 양쪽): 리뷰 초점을 변경분 + 그 파급 반경으로 좁히는 리다이렉트. 두 갈래로 검증한다 — (a) 파급 정합성(각 변경이 데이터 모델·API 계약·시퀀스 흐름·요구사항 추적·구현 순서 등 문서 나머지와 여전히 일치하는지), (b) 변경 자체의 재질의(변경됐다는 이유로 옳다고 가정하지 않고 타당성·완결성·실현가능성을 신규 설계 결정처럼 재검토). `--base`와 직교하며 조합 가능(`--base --changes`) — `--base`는 *허용되는 제안의 종류*를 제약하는 필터, `--changes`는 *리뷰의 초점/대상*을 바꾸는 리다이렉트다. 조합 시 reconcile 불릿이 `"If a BASE MODE CONSTRAINT also appears above…"` 문장으로 자체 활성화되어 base의 제안-종류 제약을 준수하므로 4-way 분기 로직이 불필요하다.
+- **사용자 참고 노트(범용 위치 인자)**: doc-path 뒤 trailing 자유텍스트를 `{USER_NOTE}` 블록으로 주입한다. `--changes` 유무와 무관하게 비어있지 않으면 항상 주입되며, `--changes`가 켜지면 "무엇이 바뀌었는지"의 권위 있는 변경 초점이 되고, 꺼져 있으면 일반 리뷰 참고/초점 컨텍스트로 전달된다. 추출은 `ARGS_CLEAN`에서 토큰 1(doc-path)을 비우고 나머지를 출력하는 무조건 실행으로, 노트가 없으면 빈 문자열이다.
+- **단일-레벨 치환 계약**: `{USER_NOTE}`/`{BASE_MODE_CONSTRAINT}`/`{CHANGES_MODE_CONSTRAINT}` 세 플레이스홀더를 각각 독립적으로 단일 레벨 치환한다(중첩 토큰 없음 — 모델이 2차 해소를 잊어 리터럴 토큰을 누출하는 drift 실패 모드 차단). 프롬프트 본문 배치 순서는 위에서부터 `{USER_NOTE}` → `{BASE_MODE_CONSTRAINT}` → `{CHANGES_MODE_CONSTRAINT}`(각 사이 빈 줄 1개)로, CHANGES 블록의 "if a user-provided note appears above"가 성립하도록 노트가 위에 온다. `outer_log.md` 헤더에 `CHANGES_MODE`·`USER_NOTE`를 무조건 기록해 `BASE_MODE`와 audit provenance 패리티를 맞춘다.
+
+### Why
+
+`--changes`는 신규 disposition 태그를 도입하지 않으므로 종료 수학(`COUNT_APPLIED`/`escalate_applied`/`inner_converged_cleanly()`)·Self-Triage·severity·auto-decide 펜스에 변경이 없다. auto-decide는 main-session 전용이고 리뷰 에이전트에 전파되지 않으므로 에이전트-프롬프트 주입인 `--changes`와 동일 레이어를 건드리지 않는다. inferred 모드(자유텍스트 노트 없이 `--changes`만)의 변경 탐지는 diff·스냅샷 없이 문서만 보고 휴리스틱하게 재구성하므로 본질적으로 부분적이며, 이는 수용된 설계 트레이드오프다 — 완화책은 자유텍스트 설명을 넘겨 hard focus signal로 격상하는 것이다.
+
 ## [1.9.0] - 2026-06-03
 
 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하는 새 스킬 `design-analyze`를 추가한다. `review`의 에이전트 팀 다관점 엔진을 베이스로 하되 입력이 코드 diff가 아니라 산문 설계 문서이며, `design-review`식 외부/내부 수렴 루프 없이 **단일 패스**로 동작한다. 분석 결과는 사용자가 고른 산출물(분석 보고서·인라인 주석 사본·저자 피드백)로 cwd `docs/analysis/`에 생성되며, 원본 문서와 그 소스 repo 전체는 절대 수정하지 않는다 (`/plugin update cc-cmds`로 자동 반영).
