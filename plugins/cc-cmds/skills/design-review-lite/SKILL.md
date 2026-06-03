@@ -3,7 +3,7 @@ name: design-review-lite
 description: 설계 문서 경량 사이클 리뷰
 when_to_use: 설계 문서를 간결한 반복 사이클로 빠르게 검증하고 싶을 때 (미묘한 termination invariant·동시성 검출률 약화 가능)
 disable-model-invocation: true
-usage: "/cc-cmds:design-review-lite <design-doc-path> [--base]"
+usage: "/cc-cmds:design-review-lite <design-doc-path> [--base] [--changes]"
 options:
     - name: "<design-doc-path>"
       kind: positional
@@ -13,6 +13,10 @@ options:
       kind: flag
       default: "off"
       summary: "기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT)"
+    - name: "--changes"
+      kind: flag
+      default: "off"
+      summary: "이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능"
 ---
 
 <!--
@@ -26,6 +30,7 @@ in the same change. Sync responsibility:
   - severity exit policy / 4-tier note                        → Phase 2 Step 14 note
   - Korean UX templates (§3.9.4.a/b/c, §3.9.2, §3.9.4.e)      → Phase 2 Step 16 / Step 24 / Step 25 / Phase 3
   - CFI advance-ordering + observed-result invariants         → Control-Flow Invariants top subsections
+  - Options blocks (### --base / ### --changes mode-constraint text) → ## Options section
 The phrase-presence rule in `scripts/lint-skill-invariants.sh` enforces sync
 on termination-contract phrases only (CI fail-fast). Other inlined content
 relies on human review.
@@ -163,14 +168,21 @@ COMMAND_NAME="design-review-lite-outer"
 
 # Strip --base from arguments
 ARGS_CLEAN=$(echo "$ARGUMENTS" | awk '{
-  for(i=1;i<=NF;i++) if($i!="--base") printf "%s%s", $i, (i<NF?" ":"")
+  for(i=1;i<=NF;i++) if($i!="--base" && $i!="--changes") printf "%s%s", $i, (i<NF?" ":"")
 }')
 
-# Detect --base
+# Detect --base / --changes
 BASE_MODE=false
+CHANGES_MODE=false
 for arg in $ARGUMENTS; do
   [ "$arg" = "--base" ] && BASE_MODE=true
+  [ "$arg" = "--changes" ] && CHANGES_MODE=true
 done
+
+# USER_NOTE extraction (trailing free-text after doc-path token 1; positional, not a flag).
+# Blank token 1 (doc-path) and print the rest. Always run; empty when no trailing note.
+# Injected as {USER_NOTE} regardless of --changes: change focus when --changes, general review context otherwise.
+USER_NOTE=$(echo "$ARGS_CLEAN" | awk '{$1=""; sub(/^ +/,""); print}')
 
 # REPO_NAME extraction (document stem → repo basename → cwd basename)
 REPO_NAME=$(echo "$ARGS_CLEAN" | awk '{print $1}' | xargs basename 2>/dev/null)
@@ -200,6 +212,8 @@ Session: ${OUTER_SESSION_ID}
 Document: $(echo "$ARGS_CLEAN" | awk '{print $1}')
 Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 BASE_MODE: ${BASE_MODE}
+CHANGES_MODE: ${CHANGES_MODE}
+USER_NOTE: ${USER_NOTE}
 -->
 EOF
 
@@ -318,7 +332,11 @@ Perform agent-based iterative review until severity saturation. Each round spawn
 
 **Step 12** — `inner_round += 1`. Spawn a review agent **with model `"sonnet"`** (lite contract — no haiku, no opus).
 
-**Substitution contract**: `{TEMP_DIR}` → actual `INNER_TEMP_DIR` value; `{BASE_MODE_CONSTRAINT}` → the `--base` BASE MODE CONSTRAINT block (when `BASE_MODE=true`) or a single empty line (when `BASE_MODE=false`).
+**Substitution contract** (each placeholder substituted independently at a single level — no nested tokens; body order top-to-bottom is `{USER_NOTE}` → `{BASE_MODE_CONSTRAINT}` → `{CHANGES_MODE_CONSTRAINT}` so the CHANGES block's "note appears above" holds):
+- `{TEMP_DIR}` → actual `INNER_TEMP_DIR` value.
+- `{USER_NOTE}` → when `USER_NOTE` is non-empty, the single line `USER-PROVIDED NOTE (focus/context for this review): <USER_NOTE>`; when empty, a single empty line. (Mode-independent, always evaluated.)
+- `{BASE_MODE_CONSTRAINT}` → the `--base` BASE MODE CONSTRAINT block (when `BASE_MODE=true`) or a single empty line (when `BASE_MODE=false`).
+- `{CHANGES_MODE_CONSTRAINT}` → the `--changes` CHANGES MODE CONSTRAINT block (when `CHANGES_MODE=true`, static — no nested token) or a single empty line (when `CHANGES_MODE=false`).
 
 Prepend this path-context block before the prompt body:
 
@@ -352,7 +370,11 @@ Then read the design document and review it against ALL of the following criteri
 5. Missing items — Look for gaps: error handling not specified, edge cases not covered, security considerations absent, migration plans missing, rollback strategies undefined.
 6. Contextual review — Based on the specific domain and nature of this design, check for additional concerns that matter in this context but are not covered by the above categories.
 
+{USER_NOTE}
+
 {BASE_MODE_CONSTRAINT}
+
+{CHANGES_MODE_CONSTRAINT}
 
 IMPORTANT: Do NOT modify the design document directly. For every issue found, create a proposal in the following format:
 
@@ -797,7 +819,23 @@ Verify consistency and completeness of the existing design content. Do NOT propo
 - DON'T propose: removing or reducing existing detailed design content.
 ```
 
-When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder line from the agent prompt.
+When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder line from the agent prompt. (LLM-equivalent to substituting a single empty line, as the Step 12 substitution contract phrases it.)
+
+### --changes
+
+Changes-consistency review mode. Orthogonal to `--base` and combinable with it (`--base --changes`): `--base` constrains the KIND of proposals allowed, `--changes` redirects the FOCUS/target of the review onto the modified material and its blast radius. When `$ARGUMENTS` contains `--changes`, substitute the following block for `{CHANGES_MODE_CONSTRAINT}` in the review agent prompt:
+
+```
+CHANGES MODE CONSTRAINT:
+This design document was already reviewed once; your job this round is to review the MODIFICATIONS made to it since then — for consistency with the rest of the document and for soundness in their own right. Actively judge what changed.
+- DO identify the changed material yourself: if a user-provided note appears above, treat it as the authoritative focus for what changed; otherwise infer the recently-modified or suspect sections from the document itself (newer or out-of-place phrasing, additions the surrounding sections have not caught up to, passages that now sit inconsistently against the rest).
+- DO verify ripple consistency: for each change, check that the rest of the document still agrees with it — data models, API contracts, sequence flows, requirement traces, and implementation order that reference or depend on the changed material must remain mutually consistent. Flag any section the change has left stale or contradictory.
+- DO re-question the changes themselves: do not assume a change is correct merely because it was made. Re-examine each change for soundness, completeness, and feasibility on its own terms, exactly as you would scrutinize a fresh design decision.
+- DON'T expend the round re-reviewing unchanged material the changes neither touch nor affect; concentrate effort on the changed material and its blast radius.
+- If a BASE MODE CONSTRAINT also appears above, it remains authoritative on the KIND of proposals you may emit: re-questioning a change must still respect it — surface inconsistencies, contradictions, and essential consistency supplements, but do NOT treat "re-questioning" as license to propose new task-level implementation detail or to remove/reduce existing detailed content. --base governs what kinds of findings are allowed; this block governs where you focus.
+```
+
+When `--changes` is not present, substitute the `{CHANGES_MODE_CONSTRAINT}` placeholder with a single empty line. The reconcile bullet self-activates via its `"If a BASE MODE CONSTRAINT also appears above…"` wording, so no 4-way branch logic is needed — it is naturally inert when no BASE block precedes it.
 
 ## Constraints
 

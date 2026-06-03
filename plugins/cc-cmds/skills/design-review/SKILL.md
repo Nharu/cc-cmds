@@ -3,7 +3,7 @@ name: design-review
 description: 설계 문서 최종 리뷰
 when_to_use: 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때
 disable-model-invocation: true
-usage: "/cc-cmds:design-review <design-doc-path> [--base] [--no-auto-decide-dominant]"
+usage: "/cc-cmds:design-review <design-doc-path> [--base] [--changes] [--no-auto-decide-dominant]"
 options:
     - name: "<design-doc-path>"
       kind: positional
@@ -13,6 +13,10 @@ options:
       kind: flag
       default: "off"
       summary: "기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT)"
+    - name: "--changes"
+      kind: flag
+      default: "off"
+      summary: "이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능"
     - name: "--auto-decide-dominant"
       kind: flag
       noop: true
@@ -194,7 +198,7 @@ COMMAND_NAME="design-review-outer"
 
 # 2. Strip flags from arguments
 ARGS_CLEAN=$(echo "$ARGUMENTS" | awk '{
-  for(i=1;i<=NF;i++) if($i!="--base" && $i!="--auto-decide-dominant" && $i!="--no-auto-decide-dominant") printf "%s%s", $i, (i<NF?" ":"")
+  for(i=1;i<=NF;i++) if($i!="--base" && $i!="--changes" && $i!="--auto-decide-dominant" && $i!="--no-auto-decide-dominant") printf "%s%s", $i, (i<NF?" ":"")
 }')
 
 # 3. Detect flags
@@ -202,12 +206,19 @@ ARGS_CLEAN=$(echo "$ARGUMENTS" | awk '{
 # --auto-decide-dominant remains accepted as an explicit opt-in (no-op when default is true)
 # for backward-compatible invocations and documentation clarity.
 BASE_MODE=false
+CHANGES_MODE=false
 AUTO_DECIDE_INITIAL=true
 for arg in $ARGUMENTS; do
   [ "$arg" = "--base" ] && BASE_MODE=true
+  [ "$arg" = "--changes" ] && CHANGES_MODE=true
   [ "$arg" = "--auto-decide-dominant" ] && AUTO_DECIDE_INITIAL=true
   [ "$arg" = "--no-auto-decide-dominant" ] && AUTO_DECIDE_INITIAL=false
 done
+
+# 3.5. USER_NOTE extraction (trailing free-text after doc-path token 1; positional, not a flag)
+# Blank token 1 (doc-path) and print the rest. Always run; empty when no trailing note.
+# Injected as {USER_NOTE} regardless of --changes: change focus when --changes, general review context otherwise.
+USER_NOTE=$(echo "$ARGS_CLEAN" | awk '{$1=""; sub(/^ +/,""); print}')
 
 # 4. REPO_NAME extraction (document stem → repo basename → cwd basename)
 REPO_NAME=$(echo "$ARGS_CLEAN" | awk '{print $1}' | xargs basename 2>/dev/null)
@@ -238,6 +249,8 @@ Document: $(echo "$ARGS_CLEAN" | awk '{print $1}')
 Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 AUTO_DECIDE_INITIAL: ${AUTO_DECIDE_INITIAL}
 BASE_MODE: ${BASE_MODE}
+CHANGES_MODE: ${CHANGES_MODE}
+USER_NOTE: ${USER_NOTE}
 -->
 EOF
 
@@ -350,7 +363,7 @@ Perform agent-based iterative review until severity saturation (§3.11). Each ro
 
 **Step 12** — `inner_round += 1`. Spawn a review agent.
 
-**Before spawning the review agent, Read `${CLAUDE_SKILL_DIR}/references/06-review-agent-prompt.md`** and substitute `{TEMP_DIR}` (= actual `INNER_TEMP_DIR`) and `{BASE_MODE_CONSTRAINT}` (the `--base` block when `BASE_MODE=true`, else empty) per the file's substitution contract, then prepend the path context block before calling `Agent()`.
+**Before spawning the review agent, Read `${CLAUDE_SKILL_DIR}/references/06-review-agent-prompt.md`** and substitute `{TEMP_DIR}` (= actual `INNER_TEMP_DIR`), `{USER_NOTE}` (the trailing note when non-empty, else empty), `{BASE_MODE_CONSTRAINT}` (the `--base` block when `BASE_MODE=true`, else empty), and `{CHANGES_MODE_CONSTRAINT}` (the `--changes` block when `CHANGES_MODE=true`, else empty) per the file's substitution contract, then prepend the path context block before calling `Agent()`.
 
 After the agent returns:
 
@@ -657,7 +670,23 @@ Verify consistency and completeness of the existing design content. Do NOT propo
 - DON'T propose: removing or reducing existing detailed design content.
 ```
 
-When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder line from the agent prompt.
+When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder line from the agent prompt. (LLM-equivalent to substituting a single empty line, as `06-review-agent-prompt.md`'s substitution contract phrases it; left unchanged as out of scope here.)
+
+### --changes
+
+Changes-consistency review mode. Orthogonal to `--base` and combinable with it (`--base --changes`): `--base` constrains the KIND of proposals allowed, `--changes` redirects the FOCUS/target of the review onto the modified material and its blast radius. When `$ARGUMENTS` contains `--changes`, substitute the following block for `{CHANGES_MODE_CONSTRAINT}` in the review agent prompt:
+
+```
+CHANGES MODE CONSTRAINT:
+This design document was already reviewed once; your job this round is to review the MODIFICATIONS made to it since then — for consistency with the rest of the document and for soundness in their own right. Actively judge what changed.
+- DO identify the changed material yourself: if a user-provided note appears above, treat it as the authoritative focus for what changed; otherwise infer the recently-modified or suspect sections from the document itself (newer or out-of-place phrasing, additions the surrounding sections have not caught up to, passages that now sit inconsistently against the rest).
+- DO verify ripple consistency: for each change, check that the rest of the document still agrees with it — data models, API contracts, sequence flows, requirement traces, and implementation order that reference or depend on the changed material must remain mutually consistent. Flag any section the change has left stale or contradictory.
+- DO re-question the changes themselves: do not assume a change is correct merely because it was made. Re-examine each change for soundness, completeness, and feasibility on its own terms, exactly as you would scrutinize a fresh design decision.
+- DON'T expend the round re-reviewing unchanged material the changes neither touch nor affect; concentrate effort on the changed material and its blast radius.
+- If a BASE MODE CONSTRAINT also appears above, it remains authoritative on the KIND of proposals you may emit: re-questioning a change must still respect it — surface inconsistencies, contradictions, and essential consistency supplements, but do NOT treat "re-questioning" as license to propose new task-level implementation detail or to remove/reduce existing detailed content. --base governs what kinds of findings are allowed; this block governs where you focus.
+```
+
+When `--changes` is not present, substitute the `{CHANGES_MODE_CONSTRAINT}` placeholder with a single empty line (per `06-review-agent-prompt.md`'s substitution contract). The reconcile bullet self-activates via its `"If a BASE MODE CONSTRAINT also appears above…"` wording, so no 4-way branch logic is needed — it is naturally inert when no BASE block precedes it.
 
 ### --auto-decide-dominant / --no-auto-decide-dominant
 
