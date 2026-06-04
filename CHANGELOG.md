@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] - 2026-06-04
+
+`AskUserQuestion`(AUQ) 호출이 간헐적으로 일으키는 "Invalid tool parameters" 에러의 96%는 모델이 도구 호출을 확정해 놓고 중첩 인자를 emit할 때 통째로 비워버리는 *빈-input 붕괴*(`tool_input == {}`, `questions` 누락)다. 1,544개 세션 로그 조사로 이 실패 모드를 확인하고, 공유 construction spec(`_common/askuserquestion.md`)에 짧은 authoring 가이드를 추가해 완화한다. 모든 스킬이 "every AUQ call"에 이 spec을 적용하므로 신규 단락이 자연히 전파된다 (`/plugin update cc-cmds`로 자동 반영).
+
+당초 PreToolUse 훅으로 빈 호출을 검증 전에 가로채 교정하려 했으나, 라이브 테스트에서 AUQ 스키마 검증이 어떤 훅 디스패치보다 먼저 실행되어 스키마-거부 호출은 훅에 도달하지 못함이 확인되었다. 호출-시점 인터셉트가 구조적으로 불가능하므로 반응형 훅 레버를 폐기하고 prose 단일 레버로 출하한다.
+
+### Changed
+
+- **`_common/askuserquestion.md` authoring 가이드 추가**: (a) intro의 scope 문장을 "construction-validity only"에서 "constructing and reliably emitting valid calls"로 넓혀 생성 slip로 호출이 비워지는 것을 피하는 것까지 포함한다. (b) `Two Axes` 섹션 끝에 단락 하나를 fold-in해 — 결정에 필요한 것 이상으로 호출을 키우지 말 것(옵션 padding 금지, 턴 절약 목적의 독립 질문 묶음 금지)과, 같은 호출이 3회 이상 재emit에도 계속 붕괴하면 그 질문을 번호 매긴 평문으로 전환해 자유 응답을 받는 best-effort 폴백을 안내한다. 크기-붕괴 인과는 측정되지 않은 가설이라 hedge로 명시하고, 폴백은 강제 수단이 없는(non-deterministic) 지시임을 caveat로 남긴다. 새 동작을 강제하지 않는 prompt/wording 조정이라 patch bump.
+
 ## [1.10.0] - 2026-06-04
 
 `design-review`와 `design-review-lite`에 "이미 리뷰된 문서에 수정이 발생했을 때 그 수정 사항의 정합성을 검증"하는 사용 패턴을 옵션화한 `--changes` 플래그를 추가한다. 지금까지는 매번 `design-review <doc> 수정 사항 관련 정합성 검증`처럼 자연어 의도를 덧붙여 호출해야 했던 흐름을 재현 가능한 플래그로 만든다. `--changes`는 기존 `--base`와 구조적으로 완전히 동형인 **프롬프트 주입 플래그**다 — git diff·스냅샷 같은 기계적 변경 식별 메커니즘은 도입하지 않고, 플래그가 켜지면 리뷰 에이전트 프롬프트에 `CHANGES MODE CONSTRAINT` 블록을 주입해 에이전트가 능동적으로 무엇이 바뀌었는지 판단한다 (`/plugin update cc-cmds`로 자동 반영).
