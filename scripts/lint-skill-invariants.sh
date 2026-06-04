@@ -46,8 +46,10 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     turn-yield contract that compaction could break.
 #   - Single-pass verdict-emit skills (design-ingest) — loop state recovered
 #     from `## Verdict:` headers on disk; every invocation is fresh-context.
-#   - Linear authoring skills (design-system / design-prompt / design-upgrade)
-#     — no loop at all, no termination contract to lose.
+#   - Linear authoring / single-pass second-opinion skills (design-system /
+#     design-prompt / design-upgrade / review-upgrade) — no loop at all, no
+#     termination contract to lose. review-upgrade is a single-pass, teamless,
+#     counterless second-opinion (same basis as design-upgrade).
 #   - IO orchestrators (active-notify / implement) — termination is a
 #     hook/tool-driven boundary, not a counter the model has to maintain.
 # In effect, the non-exempt members are the `design-review ↔ design-review-lite`
@@ -60,7 +62,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # could corrupt), `design-analyze` creates files while its source repo must stay
 # untouched, so a summarized-away read-only rule is a real silent-corruption
 # vector that first-5K placement guards against.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

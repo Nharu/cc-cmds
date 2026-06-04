@@ -262,7 +262,7 @@ Repeat until user is satisfied.
 
 - **No code modifications.** Review only.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
-- **Sonnet pin**: every reviewer uses model `"sonnet"`. Haiku is forbidden; opus is out of scope (use `/cc-cmds:review` if opus depth is required).
+- **Sonnet pin**: every reviewer uses model `"sonnet"`. Haiku is forbidden; opus is out of scope (use `/cc-cmds:review` if opus depth is required). Both of `/cc-cmds:review-upgrade`'s reinforcement axes are out of scope here — opus upgrade violates the sonnet pin, and reviewer add/split (and the Scope Coordinator add) mutates the fixed 2-member roster (run `/cc-cmds:review-upgrade` against a base `/cc-cmds:review` run instead).
 - **Agent Team required**: TeamCreate + SendMessage only. Do NOT substitute with isolated Agent sub-agents.
 - **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, you MUST first load them via ToolSearch. AskUserQuestion MUST be loaded before Step 1.
 - **No Claude Context MCP**: do NOT call `index_codebase`, `get_indexing_status`, or `search_code`. Use `grep` + `Read` only.
