@@ -17,7 +17,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
 | `/cc-cmds:design-review-lite` | 설계 문서 경량 사이클 리뷰 | 설계 문서를 간결한 반복 사이클로 빠르게 검증하고 싶을 때 (미묘한 termination invariant·동시성 검출률 약화 가능) |
 | `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
-| `/cc-cmds:design-upgrade` | 팀원 모델 업그레이드 분석 | design 스킬의 팀 구성 제안에서 haiku/sonnet으로 배정된 팀원 중 opus로 승격이 유의미한 역할이 있는지 검토할 때 |
+| `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
@@ -228,7 +228,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 **Usage**: `/cc-cmds:design-upgrade`
 
-_이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 제안이 현재 대화 컨텍스트에 있어야 동작한다. 독립 실행 시 결과가 불정확할 수 있다._
+_이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. 모델 승격과 역할 추가·분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다._
 
 ### /cc-cmds:implement
 
