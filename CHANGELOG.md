@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-06-04
+
+`/cc-cmds:design-upgrade`를 "모델 상향 단일 축" second-opinion에서 **모델·역할 두 축을 함께 추론하는 팀 구성 강화 분석**으로 확장한다. 기존 모델 승격(haiku/sonnet → opus)에 더해, 직전 `/design` 팀 구성에서 (a) 어떤 팀원도 소유하지 않은 누락 도메인을 메우는 신규 역할 추가, (b) 과부하된 광범위 역할 하나를 둘로 쪼개는 분할을 함께 짚어준다. 이름·zero-arg·`disable-model-invocation: true`·"직전 제안이 컨텍스트에 있어야 동작"하는 성격은 모두 보존하며, "강화가 유의미할 때만 제안, 그 외엔 유지 사유"라는 절제 원칙을 역할 축까지 대칭 확장한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Changed
+
+- **`design-upgrade` 두 축 확장**: SKILL.md 본문을 영문 프로즈·영문 헤딩(`Scope`/`Evaluation criteria`/`Output format`/`Cross-axis synthesis`/`Precondition`/`Fallback`)으로 재작성하고 frontmatter `description`·`when_to_use`·`notes`를 두 축 분석에 맞게 재프레이밍한다(사용자 대면 한국어 어휘 `현재 모델 → 권장 모델`·`변경 사유`/`유지 사유`·`기대 효과`·`역할 변경 불필요`·필드 라벨 `역할`/`탐색 범위`/`모델`은 유지). 모든 권장은 명시적 OPERATION 태그(`UPGRADE`/`ADD`/`SPLIT-REPLACE`)를 달아 `/design` Step 2 재제안 입력으로 모호함 없이 해석되게 한다 — `UPGRADE`는 기존 로스터 역할명을 lookup key(공백 제거 후 정확 일치, 흔들림은 malformed→재확인)로 쓰고 미변경 `탐색 범위`는 생략, `ADD`는 기존 로스터와 충돌하지 않는 신규 역할 1건, `SPLIT-REPLACE`는 부모→자식 둘 + `PARTITION` 무손실·무중복 계약. 기존 역할당 OPERATION 최대 1개 불변식과, 두 축이 같은 약점을 겨냥하면 더 강한 한쪽만 택하는 교차축 통합 추론을 포함한다.
+- **역할 갭 탐지 + HARD LIMIT**: 4단계 coverage diff(도메인 열거 → 커버리지 맵 → 미커버 플래그 → 절제 게이트)를 **단일 패스**로 수행하며 iterate-until 루프·종료 계약이 없어 invariants lint exemption을 유지한다. 경량 재탐색은 read-only(팀·쓰기·test/build·MCP 금지)로 제안/인터뷰가 언급한 surface와 인접 sibling에 한정하고, ≤12 read-only 연산·단일 grep >50 hit는 ADD엔 inconclusive(SPLIT 후보의 과부하 입력으로는 유효)·확증 전용(fishing 금지)의 HARD LIMIT를 둔다. 절제 게이트·분할 게이트는 각각 ALL 충족 조건으로 "변경 없음"을 기본값으로 bias한다.
+- **precondition 부재 시 3-path fallback 인코딩**: (1) 세션 로스터 붙여넣기 → 완전한 두 축 분석, (2) 저장된 설계 문서에서 역산 → 모델 배정 부재로 역할 축만 가능한 degraded 모드(교차축 화해를 N/A 처리), (3) 둘 다 없으면 한국어 안내 emit 후 종료(자동 `/design` 체이닝 안 함). 현재 커맨드가 이미 즉흥 제시하던 emergent 동작을 SKILL에 인코딩한다.
+- **design-lite 충돌 가드 + 단방향 sync-note**: `design-lite` 구성(고정 2×sonnet, opus 제외)으로 보이면 두 강화 축이 lite 계약과 충돌하므로 caveat 후 명시 확인에만 진행하며, `design-lite/SKILL.md`의 상호 참조 문구도 두 축 반영으로 갱신해 양방향 정합을 맞춘다. OPERATION 라벨·모델 별칭의 source-of-truth가 `design/SKILL.md` Step 2 필드 세트임을 명시하는 단방향 sync-note를 `design-upgrade`에만 추가한다(`design/SKILL.md` 미접촉).
+
+### Why
+
+확장의 핵심은 "이름·호출 방식·second-opinion 성격은 그대로 두고 분석 축만 하나 더 얹는다"이다. 역할 축을 강화 방향(추가·분할)으로만 한정하고 제거·병합·모델 하향을 범위 밖으로 둔 것은 `upgrade` 의미를 깨지 않기 위함이며, 절제 게이트를 통과 못 하면 "변경 불필요"가 정상 출력이 되도록 한 것은 기존 모델 축의 유지 사유 대칭을 그대로 잇기 위함이다. OPERATION 태그는 재제안 루프(분석을 컨텍스트에 되먹여 다시 팀 구성)의 입력을 기계적으로 재구성 가능하게 만드는 계약이지 자동 ingestion 경로가 아니다 — 적용은 사람/다음 turn 모델이 수행한다.
+
 ## [1.10.1] - 2026-06-04
 
 `AskUserQuestion`(AUQ) 호출이 간헐적으로 일으키는 "Invalid tool parameters" 에러의 96%는 모델이 도구 호출을 확정해 놓고 중첩 인자를 emit할 때 통째로 비워버리는 *빈-input 붕괴*(`tool_input == {}`, `questions` 누락)다. 1,544개 세션 로그 조사로 이 실패 모드를 확인하고, 공유 construction spec(`_common/askuserquestion.md`)에 짧은 authoring 가이드를 추가해 완화한다. 모든 스킬이 "every AUQ call"에 이 spec을 적용하므로 신규 단락이 자연히 전파된다 (`/plugin update cc-cmds`로 자동 반영).
