@@ -1,6 +1,6 @@
 # AskUserQuestion (Shared Construction Spec)
 
-Single source of truth for constructing **valid** `AskUserQuestion` (AUQ) calls across skills. Scope is **construction-validity only** — how to shape a call the validator accepts. *Whether* and *when* to ask (e.g. one-issue-per-call policy, no-question entry points) stays in each skill; do not infer ask/skip policy from this file.
+Single source of truth for constructing **valid** `AskUserQuestion` (AUQ) calls across skills. Scope is **constructing and reliably emitting valid calls** — how to shape a call the validator accepts. *Whether* and *when* to ask (e.g. one-issue-per-call policy, no-question entry points) stays in each skill; do not infer ask/skip policy from this file.
 
 ## Hard Schema Constraints
 
@@ -18,6 +18,8 @@ These are independent limits — do not conflate them:
 - **Axis B — options per question**: each question carries 2–4 options.
 
 A call with one question of three options is valid; so is four questions each with two options. "Too many choices" almost always means Axis B (>4 options on one question), not Axis A.
+
+**Keep calls lean, and fall back if they collapse.** Most AUQ rejections are _empty-input collapse_ — the call commits but emits no `questions` (`{}`), so the validator reports `questions` missing; re-emitting usually succeeds. As authoring hygiene, keep each call no larger than the decision needs: don't pad options to four, and don't batch independent questions into one call just to save a turn (≤4 genuinely interdependent is fine). A leaner argument is _plausibly_ less prone to the slip, though we don't have data that size causes it. On a collapse, re-emit the complete call. **Only if it still collapses after three or more re-emits** should you stop calling AskUserQuestion for that question and ask it as a numbered plain-text list for a free-text answer — nothing enforces this, but switching surfaces is the only way to break a repeat-collapse run.
 
 ## The Auto-Provided "Other"
 
