@@ -52,6 +52,56 @@ When multiple reviewers raise issues at the same location:
 
 "Non-obvious" criteria: 3+ equally valid approaches exist, fix impacts other modules, or domain knowledge is required.
 
+## Paste-Ready Comment Blockquote
+
+Each P0~P2 finding carries a self-contained, paste-ready GitHub comment directly below its analysis (근거 / 💡 수정 제안). The lead authors these during Step 5 synthesis — reviewers (Step 4) never pre-write them, since P-levels are only fixed after the internal 5-level → 4-level mapping. The user copies the blockquote and pastes it straight into a GitHub inline comment with no rewriting.
+
+**Skeleton** (list sub-bullet, 4-space indent; the label is plain text *outside* the blockquote, and the blockquote `>` holds *only the comment body*):
+
+```
+    💬 **붙여넣기용 코멘트**
+
+    > **P{N}: [자기완결적 한 문장 재진술, 마침표로 끝].**
+    >
+    > **[근거]**
+    > [정중체 근거 — 이슈 위치를 첫 언급에서 `파일:라인`으로 명시]
+    >
+    > **[제안]**
+    > [💡 수정 제안을 정중체로 재진술]
+```
+
+- **Label outside the blockquote**: the `💬 붙여넣기용 코멘트` label is a plain paragraph; the blockquote carries only the comment body. Copying just the blockquote pastes cleanly with no meta-label contamination (works for both raw-markdown copy and rendered-selection copy).
+- **Title = prose only** (no `파일:라인`); **location (`파일:라인`) goes in the first mention inside `[근거]`** → self-contained for both inline comments (line implicit) and general PR comments (path needed).
+- **Container = blockquote** (never a code fence — monospace rendering would destroy bold / inline-code formatting).
+- **Standalone reading**: the comment must read on its own, with no cross-reference such as "위 분석 참조".
+
+### Tone duality (분석 = 단정체 / 코멘트 = 정중체)
+
+The analysis body states facts assertively; the paste-ready comment is polite. Do not hedge a confirmed bug in the comment.
+
+- **Fact statements**: `~됩니다 / ~있습니다 / ~없습니다 / ~입니다` (no hedging — never `~인 것 같습니다` / `~일 수도 있습니다` for a confirmed bug).
+- **Requests / suggestions**: `~하시면 될 것 같습니다 / ~해주시면 좋겠습니다 / ~좋을 듯합니다` (`~해야 합니다` only when the P0 intent is to block merge; never `~하세요` / `~해라`).
+
+### Severity rules
+
+| Severity | Paste-ready comment | `[근거]` | `[제안]` |
+|----------|---------------------|---------|---------|
+| P0 | Blockquote | Required | Required |
+| P1 | Blockquote | Required | Required |
+| P2 | Blockquote | Required | Only when the analysis carries a `💡 수정 제안` |
+| P3 | Item line *is* the comment (no blockquote) | — | — |
+
+- P2 `[제안]` is gated on the presence of `💡 수정 제안` in the analysis (itself "non-obvious only" per Fix Suggestion Inclusion Rules) → the comment never invents a suggestion the analysis lacks.
+- **P3**: write the single item line itself in polite, self-contained form from the start (no separate blockquote / `[근거]` / `[제안]`). When copying a P3 line, **exclude the trailing `— {리뷰어명}` attribution** (it stays in the document for tracking but is not part of the comment). For P0~P2 the attribution lives on the header line outside the blockquote, so it is already excluded.
+
+### confirms-existing exception (dedup)
+
+When a finding only **confirms an existing PR comment** (it carries `📎 관련 PR 코멘트`), do NOT produce a duplicate paste-ready comment. Instead place a single plain-text note below the analysis — no blockquote, no `💬` label:
+
+> 이미 PR 코멘트 #N에서 제기된 사항입니다 — 해당 스레드에 동의하시거나 resolve 처리해주시면 될 것 같습니다.
+
+(If the thread reference is a URL, substitute `이미 [이 PR 코멘트](URL)에서 제기된 사항입니다`.) The absence of a blockquote on a confirms-existing finding is the signal for "nothing new to post" (P3 excepted — a P3 line is itself the comment). In the rare case a P3 line is itself confirms-existing, the dedup rule wins: do not post that line as a comment, leave only the confirms-existing plain note.
+
 ## Document Structure
 
 ```markdown
@@ -71,6 +121,8 @@ When multiple reviewers raise issues at the same location:
     - ...
 - **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
 
+각 P0·P1·P2 항목은 분석(근거/제안) 아래에 `💬 붙여넣기용 코멘트` 블록을 두어 GitHub 인라인 코멘트로 그대로 복사할 수 있게 했다(톤: 분석은 단정, 코멘트는 정중). P3는 항목 한 줄이 곧 코멘트다.
+
 ---
 
 ## 핵심 요약
@@ -87,6 +139,8 @@ Mention CI failure items if applicable.]
     - 💡 수정 제안: [specific fix direction or example code]
     - 📎 관련 PR 코멘트: [@author의 기존 코멘트 참조] (if applicable)
 
+    💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
+
 ## 🟠 P1 (머지 전 수정 권장)
 
 - **[category]** `파일:라인` 이슈 설명 — 리뷰어
@@ -94,16 +148,20 @@ Mention CI failure items if applicable.]
     - 💡 수정 제안: [specific fix direction]
     - 📎 관련 PR 코멘트: [if applicable]
 
+    💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (📎로 confirms-existing이면 블록쿼트 대신 평문 노트)
+
 ## 🟡 P2 (차후 이슈 등록 권장)
 
 - **[category]** `파일:라인` 이슈 설명 — 리뷰어
     - **근거**: [severity justification]
     - 💡 수정 제안: [when non-obvious only]
 
+    💬 붙여넣기용 코멘트 ← "Paste-Ready Comment Blockquote" 섹션 참조 (`[제안]`은 💡 수정 제안이 있을 때만; 📎로 confirms-existing이면 평문 노트)
+
 ## 🟢 P3 (개선 제안)
 
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
-- **[category]** `파일:라인` 이슈 설명 — 리뷰어
+- **[category]** `파일:라인` [정중체·자기완결 한 줄 — 그대로 붙여넣을 수 있는 개선 제안] — 리뷰어
+- **[category]** `파일:라인` [정중체·자기완결 한 줄 — 줄 끝 `— 리뷰어명`은 복사 시 제외] — 리뷰어
 
 ---
 

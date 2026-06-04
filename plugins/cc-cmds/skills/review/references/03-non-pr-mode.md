@@ -2,6 +2,8 @@
 
 When reviewing non-PR targets (local diff, file paths), adapt the context package and document header as below.
 
+**Paste-ready comments are still generated** in non-PR mode — the self-contained 정중체 blockquotes (see `02-review-report-template.md` "Paste-Ready Comment Blockquote") are portable to a future PR, a commit message, or an issue. The confirms-existing dedup exception does not apply here, since a fully independent review has no existing PR comments to defer to.
+
 ## Local diff mode
 
 | Element | PR Mode | Non-PR Mode (local diff) |

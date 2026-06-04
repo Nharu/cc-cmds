@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-06-04
+
+`/cc-cmds:review` 리포트가 각 발견 항목 아래에 **GitHub에 그대로 붙여넣을 수 있는 정중체 코멘트를 기본 산출**하도록 확장한다. 지금까지는 발견 항목을 단정체 분석(근거/제안)으로만 기술해, 사용자가 PR에 코멘트를 달려면 매번 손으로 정중체로 옮겨 적어야 했다. 이제 P0~P2 항목은 분석 바로 아래에 `💬 붙여넣기용 코멘트` 블록쿼트를, P3 항목은 항목 한 줄 자체를 정중체·자기완결로 작성해 복사-붙여넣기만으로 인라인 코멘트를 게시할 수 있다. 코멘트는 Step 5에서 리드가 단독 작성하며(리뷰어 산출 포맷·컨텍스트 패키지는 무변경), 적용 범위는 `review` 한정(`review-lite` 제외) (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **붙여넣기용 코멘트 기본 출력** (`review` Step 5): P0~P2 발견 항목마다 분석(근거/💡 수정 제안) 아래에 `💬 붙여넣기용 코멘트` 블록쿼트를 둔다. 라벨은 블록쿼트 밖 평문, 블록쿼트(`>`)에는 붙여넣을 본문(`> **P{N}: 재진술.**` + `> **[근거]**` + `> **[제안]**`)만 담아 사용자가 블록쿼트만 복사하면 메타 라벨 오염 없이 그대로 게시할 수 있다. 제목은 산문만, 이슈 위치(`파일:라인`)는 `[근거]` 첫 언급에 두어 인라인·일반 PR 코멘트 양쪽에서 자기완결이다. 심각도별로 P0/P1은 근거·제안 필수, P2는 근거 필수에 `[제안]`은 분석에 `💡 수정 제안`이 있을 때만(분석에 없는 제안을 코멘트가 창작하지 않도록 게이팅), P3는 블록쿼트 없이 항목 한 줄이 곧 코멘트(줄 끝 `— 리뷰어명` attribution은 복사 시 제외)다. 기존 PR 코멘트를 확인만 하는 항목(`📎 관련 PR 코멘트` 보유)은 중복 코멘트 대신 한 줄 평문 노트만 두며, 블록쿼트 부재가 "새로 게시할 코멘트 없음" 신호가 된다. 비-PR 모드(로컬 diff/파일 경로)에서도 코멘트는 그대로 생성되어 PR 개설·커밋 메시지·이슈 등 어디든 이식 가능하다.
+
+### Changed
+
+- **`review` 리포트 템플릿·Step 5 갱신**: `references/02-review-report-template.md`에 신규 "Paste-Ready Comment Blockquote" 섹션(골격·톤 이중성·심각도 표·dedup 예외)을 추가하고, Document Structure 코드블록의 P0/P1/P2 항목에 `💬 붙여넣기용 코멘트` 앵커, P3 예시를 정중체·자기완결로, 개요 `발견 요약` 아래에 코멘트 관례 설명 1줄을 고정한다. `SKILL.md` Step 5에는 코멘트 생성·톤 이중성(분석=단정체/코멘트=정중체)·dedup 예외·P3 한 줄 정중체 규칙 문단과 신규 섹션을 지목하는 템플릿 Read 라인을 추가한다. `references/03-non-pr-mode.md`에는 비-PR 모드의 이식형 코멘트 생성을 1줄 명시한다. 리뷰어 컨텍스트 패키지(`01-reviewer-context-package.md`)는 lead-only 작성 결정에 따라 무변경이다.
+
 ## [1.11.0] - 2026-06-04
 
 `/cc-cmds:design-upgrade`를 "모델 상향 단일 축" second-opinion에서 **모델·역할 두 축을 함께 추론하는 팀 구성 강화 분석**으로 확장한다. 기존 모델 승격(haiku/sonnet → opus)에 더해, 직전 `/design` 팀 구성에서 (a) 어떤 팀원도 소유하지 않은 누락 도메인을 메우는 신규 역할 추가, (b) 과부하된 광범위 역할 하나를 둘로 쪼개는 분할을 함께 짚어준다. 이름·zero-arg·`disable-model-invocation: true`·"직전 제안이 컨텍스트에 있어야 동작"하는 성격은 모두 보존하며, "강화가 유의미할 때만 제안, 그 외엔 유지 사유"라는 절제 원칙을 역할 축까지 대칭 확장한다 (`/plugin update cc-cmds`로 자동 반영).

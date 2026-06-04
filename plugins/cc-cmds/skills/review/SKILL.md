@@ -292,9 +292,18 @@ Branch on user response:
 
 ### Step 5: Result Synthesis & Documentation (Korean)
 
-**Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, and file naming/version conventions.
+**Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
 The lead synthesizes all review results into a Korean document under `docs/reviews/` following the template.
+
+#### Paste-ready comments (lead-authored)
+
+Below each P0~P2 finding's analysis (근거 / 💡 수정 제안), the lead writes a self-contained, paste-ready GitHub comment as a `💬 붙여넣기용 코멘트` blockquote, following the "Paste-Ready Comment Blockquote" section of `02-review-report-template.md`. The label sits outside the blockquote; the blockquote holds only the comment body so the user can copy it straight into a GitHub inline comment.
+
+- **Tone duality**: the analysis body is assertive (단정체); the comment is polite (정중체) — facts as `~됩니다 / ~입니다` (no hedging on a confirmed bug), requests as `~하시면 될 것 같습니다 / ~해주시면 좋겠습니다` (`~해야 합니다` only for P0 merge-block intent; never `~하세요`). The comment reads standalone, with no "위 분석 참조" cross-reference.
+- **P3 = the item line is the comment**: write each P3 line itself in polite, self-contained form from the start (no separate blockquote / `[근거]` / `[제안]`); the trailing `— {리뷰어명}` attribution is excluded when copied.
+- **dedup exception**: when a finding only confirms an existing PR comment (carries `📎 관련 PR 코멘트`), do NOT add a paste-ready blockquote — leave a single plain-text note (`이미 PR 코멘트 #N에서 제기된 사항입니다 …`) instead. The absence of a blockquote signals "nothing new to post".
+- **Non-PR mode**: comments are still generated (they are portable to a future PR, commit message, or issue); the dedup exception does not apply since there are no existing PR comments.
 
 ---
 
