@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-06-04
+
+`/cc-cmds:review` Step 3 리뷰어 구성을 분석하는 **모델·역할 두 축 second-opinion 스킬 `review-upgrade`를 신설**한다. `design-upgrade`가 `/design` Step 2를 분석하는 것과 정확히 대칭으로, 직전 `/review` Step 3 구성에서 (a) opus 강점이 유의미한 리뷰어의 opus 승격, (b) 누락된 리뷰 관점을 메우는 신규 리뷰어 추가, (c) 과부하 리뷰어 분할을 짚어준다. 이를 위해 `design-upgrade`가 인라인으로 보유하던 두 축 강화 로직을 repo 최초의 **파라미터화된 `_common` 코어**(`_common/team-upgrade-analysis.md`)로 추출하고, `design-upgrade`를 그 소비자로 리팩터(동작 동등)한 뒤 `review-upgrade`를 두 번째 소비자로 얹는다. 이름·zero-arg·`disable-model-invocation: true`·"직전 제안이 컨텍스트에 있어야 동작"하는 성격과 "강화가 유의미할 때만 제안, 그 외엔 유지 사유"라는 절제 원칙을 `design-upgrade`와 대칭으로 보존한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **`review-upgrade` 신규 스킬**: `/review` Step 3 리뷰어 구성을 모델·역할 두 축으로 분석하는 `disable-model-invocation: true` zero-arg second-opinion. 역할 축은 미커버 **리뷰 관점**(security/performance/code-quality/logic/error-handling/type-safety/testing/api-contract/concurrency/data-integrity)을 대상으로 하며, Step 3의 risk-indicator→reviewer 매핑(auth→security, DB→perf/DB, public-API→API-contract, external→security+integration, async→concurrency)을 커버리지 계약으로 화해해 ADD를 4조건 ALL 충족 시에만 발화한다(diff 신호 + 누구도 미소유 + 발화된 indicator로 미라우팅 + 기존 체크리스트 미흡수). 과부하 리뷰어 SPLIT은 정량 증거(파일수·diff 크기)로 게이팅하며 `PARTITION` 무손실·무중복 계약을 둔다. OPERATION 태그(UPGRADE/ADD/SPLIT-REPLACE[/ADD-Coordinator])는 `역할 | 모델 | 담당 범위` 순서로 emit해 `/review` 재제안 입력으로 모호함 없이 paste-back된다. precondition 부재 시 3-path fallback: (1) 세션 로스터 붙여넣기→완전 두 축(재투입=Step 3 재제안), (2) 저장 리뷰 리포트 역산→모델 UPGRADE·관점 ADD 복원하되 정량 SPLIT·ADD-Coordinator는 suppress(재투입=Step 6 팀 재생성, augmented 필드로 매핑), (3) 둘 다 없으면 한국어 안내 후 종료.
+- **`_common/team-upgrade-analysis.md` 파라미터화된 코어**: repo 최초의 파라미터화된 `_common` 파일. 축-불문 두 축 알고리즘(Scope·절제 원칙·4단계 역할-갭 탐지·HARD LIMIT·절제 게이트·분할 게이트·OPERATION 구조·기존-역할당 OPERATION 1개 불변식·교차축 synthesis·degraded-axis 처리)을 리터럴 `{PLACEHOLDER}` + 3-채널 주입 인터페이스(`## Bindings` 값 치환 / `## Operations Layer` 규칙 append seam / 주입 prose)로 담는다. 기존 self-contained `_common`과 달리 소비 스킬의 `## Bindings`로 placeholder를 resolve해야 구체 계약이 된다.
+
+### Changed
+
+- **`design-upgrade/SKILL.md` 코어 소비로 리팩터**: 인라인 두 축 로직을 코어 self-read + `## Bindings`(design 값)로 치환하고, 주입 prose(Precondition/design-lite 가드/sync-note/3-path Fallback)는 유지한다. frontmatter 불변(README row byte-동일) + 8개 결정 동작 동등. Path 2의 모델축 N/A 처리는 `{MODEL_AXIS_DEGRADES_UNDER}` 바인딩 경유로 코어 split gate·Cross-axis synthesis가 인지한다.
+- **`review-lite/SKILL.md` reciprocal 상호참조**: sonnet-pin Constraints bullet에 review-upgrade의 두 축이 review-lite에서 out of scope이며 base `/cc-cmds:review`에 대해 `/cc-cmds:review-upgrade`를 쓰라는 out-of-scope 명확화 1줄을 추가(redirect 아님, design-lite의 design-upgrade 상호참조 미러). frontmatter 불변→README row 불변.
+- **`scripts/lint-skill-invariants.sh` EXEMPT 확장**: `EXEMPT_SKILLS` 배열에 `review-upgrade`를 추가(single-pass·무팀·무카운터 second-opinion, design-upgrade와 동일 근거)하고 근거 doc-comment 인벤토리도 갱신한다(behavioral 무영향).
+
 ## [1.12.0] - 2026-06-04
 
 `/cc-cmds:review` 리포트가 각 발견 항목 아래에 **GitHub에 그대로 붙여넣을 수 있는 정중체 코멘트를 기본 산출**하도록 확장한다. 지금까지는 발견 항목을 단정체 분석(근거/제안)으로만 기술해, 사용자가 PR에 코멘트를 달려면 매번 손으로 정중체로 옮겨 적어야 했다. 이제 P0~P2 항목은 분석 바로 아래에 `💬 붙여넣기용 코멘트` 블록쿼트를, P3 항목은 항목 한 줄 자체를 정중체·자기완결로 작성해 복사-붙여넣기만으로 인라인 코멘트를 게시할 수 있다. 코멘트는 Step 5에서 리드가 단독 작성하며(리뷰어 산출 포맷·컨텍스트 패키지는 무변경), 적용 범위는 `review` 한정(`review-lite` 제외) (`/plugin update cc-cmds`로 자동 반영).
