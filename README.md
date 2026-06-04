@@ -21,6 +21,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
+| `/cc-cmds:review-upgrade` | 리뷰어 구성 강화 분석 (모델·역할 축) | 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때 |
 
 <!-- SKILLS_TABLE_END -->
 
@@ -133,6 +134,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:review](#cc-cmdsreview)
 - [/cc-cmds:review-lite](#cc-cmdsreview-lite)
+- [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
 
 ### /cc-cmds:design
 
@@ -272,6 +274,12 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
+
+### /cc-cmds:review-upgrade
+
+**Usage**: `/cc-cmds:review-upgrade`
+
+_이 커맨드는 별도 인자를 받지 않으며, 직전 `/review` Step 3 리뷰어 구성 제안이 현재 대화 컨텍스트에 있어야 동작한다. opus 승격, 누락 리뷰 관점 추가, 과부하 리뷰어 분할은 강화가 유의미할 때만 제안하며, 그 외에는 유지 사유를 제시한다. 독립 실행 시 결과가 불정확할 수 있다._
 
 <!-- SKILLS_OPTIONS_END -->
 
