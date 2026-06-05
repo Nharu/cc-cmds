@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-06-05
+
+`/cc-cmds:design` 스킬에 **재현 우선(reproduction-first) 매커니즘**을 얹는다. 이슈·버그 수정을 설계할 때 팀이 실제 현상을 재현해 확인하지 않고 코드만 읽어 근본 원인을 추측하는 경향을 막기 위해, 재현 가능한 이슈는 **먼저 재현 → 근본 원인 확정 → 그 위에서 수정 방향 토론**하도록 유도하는 위임된 판단 기반 품질 레이어다. 경직된 상태기계가 아니라 prose 가이드로 추가되며(CFI 아님), "재현할지·누가 할지"는 리드/에이전트 자율 판단에 맡긴다. 적용 범위는 `design` 단독이며 `design-lite`·나머지 패밀리는 범위 밖이다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **재현 우선 매커니즘** (`design` 한정): (1) 두 개의 재현 위치 — 리드 주도 Step 1 "execution by reproduction" 모드와 에이전트 주도 Step 3 Round 0(재현 그라운딩 패스, 최소 2라운드 미산입); (2) 단일 필터 테스트("과제가 기존 코드 오동작을 주장하며 그 오동작이 기존 앱/테스트 실행으로 관측 가능한가?")로 재현 시도 여부 게이팅; (3) 재현 시 4 데이터 포인트(`재현 절차`/`관측된 증상`/`근본 원인`/`재현 차단요인`) + 이진 `근거 등급`(`확인됨(재현·관측)`|`가설(추측)`) 방출; (4) 이슈·버그 과제 한정 문서 최상단 `## 재현·근본원인` 섹션(재실행 가능 recipe, `근거 등급` SOT); (5) 2단 폴백(Tier-1 사용자 협조 → Tier-2 가설 명시 + Step 4 UR 포인터 생성)으로 재현 실패를 Step 5 워크스루에서 의식적으로 surface.
+- **재현 카브아웃 (running ≠ modifying)** (`design` Constraints): "modification" = 워킹트리에 persist된 변경으로 정의해 수정 없는 앱/테스트 실행은 금지 대상이 아님을 명시(예외가 아니라 정의 — 기존 두 리터럴 "NO code modifications" 문자열은 그대로 보존). 모든 재현 아티팩트·로깅은 out-of-tree(`/tmp` sink·기존 verbosity)로 라우팅하고, 모든 팀-토론 경계에서 `git status --porcelain` == pre-workflow baseline을 단일 검증 게이트로 두며, findings가 producer를 떠나기 전 정리·검증을 강제하는 cleanup 경계와 env-vs-tree/lockfile 체크리스트를 포함한다.
+
+### Why
+
+재현 규칙을 CFI(turn-yield/auto-advance 전이 규칙)가 아니라 품질 규칙(body prose)으로 둔 것은, summarize away되더라도 silent mis-transition이 아니라 "추측으로 회귀"하는 품질 저하로만 나타나는 성격 때문이다. `근거 등급`을 `## 재현·근본원인` 섹션 한 곳에서만 계산(SOT)하고 다른 위치는 참조만 하게 한 것, UR 포인터가 `근거 등급`을 보유하지 않게 한 것은 Step 5 워크스루의 파싱·상태기계와의 충돌 및 등급 divergence를 막기 위함이다.
+
 ## [1.13.0] - 2026-06-04
 
 `/cc-cmds:review` Step 3 리뷰어 구성을 분석하는 **모델·역할 두 축 second-opinion 스킬 `review-upgrade`를 신설**한다. `design-upgrade`가 `/design` Step 2를 분석하는 것과 정확히 대칭으로, 직전 `/review` Step 3 구성에서 (a) opus 강점이 유의미한 리뷰어의 opus 승격, (b) 누락된 리뷰 관점을 메우는 신규 리뷰어 추가, (c) 과부하 리뷰어 분할을 짚어준다. 이를 위해 `design-upgrade`가 인라인으로 보유하던 두 축 강화 로직을 repo 최초의 **파라미터화된 `_common` 코어**(`_common/team-upgrade-analysis.md`)로 추출하고, `design-upgrade`를 그 소비자로 리팩터(동작 동등)한 뒤 `review-upgrade`를 두 번째 소비자로 얹는다. 이름·zero-arg·`disable-model-invocation: true`·"직전 제안이 컨텍스트에 있어야 동작"하는 성격과 "강화가 유의미할 때만 제안, 그 외엔 유지 사유"라는 절제 원칙을 `design-upgrade`와 대칭으로 보존한다 (`/plugin update cc-cmds`로 자동 반영).
