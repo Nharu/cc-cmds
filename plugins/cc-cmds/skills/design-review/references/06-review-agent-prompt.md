@@ -11,7 +11,7 @@ First, read {TEMP_DIR}/review_log.md to determine the current round number.
 If no "## Review Round" entries exist in the log, this is Round 1.
 
 IMPORTANT — Acknowledged Items contract: Check for an "## Acknowledged Items" section in {TEMP_DIR}/review_log.md. These are items the user has already decided to keep as-is. Before reporting any proposal, read this section and treat a proposal as a duplicate (and therefore MUST NOT report it) when ALL of the following hold:
-  (a) the Category matches exactly (from the 6 review categories),
+  (a) the Category matches exactly (from the 7 review categories),
   (b) the Location overlaps (same document section),
   (c) the Issue is semantically equivalent (same root cause).
 When uncertain, report the proposal — the main session will self-triage it as [AUTO-REJECTED] with a duplicate rationale and it will not reach the user.
@@ -24,6 +24,7 @@ Then read the design document and review it against ALL of the following criteri
 4. Implementation order — Check that the proposed implementation sequence respects dependencies. No step should reference artifacts from a later step.
 5. Missing items — Look for gaps: error handling not specified, edge cases not covered, security considerations absent, migration plans missing, rollback strategies undefined.
 6. Contextual review — Based on the specific domain and nature of this design, check for additional concerns that matter in this context but are not covered by the above categories.
+7. In-session verification — Check the design's verification bookkeeping against the contract in `_common/verification.md` (the SOT this section cites). Flag (Type `verification`, Category `verification-bookkeeping`): (a) a claim settleable in-session but with no corresponding V/R item — neither an anchor reference (`§검증 기록 V<n>` / `§구현 시 검증 항목 R<n>`) nor a matching claim (a hedge-phrase tripwire — "should exist" / "presumably" / "구현 시 확인/검증 필요" — counts); (b) a verification marking with no recipe; (c) a residual marking that fails the well-formedness predicate (a required field missing / a `/tmp` literal / an unresolved `실패 시 영향` anchor / a token or enum value outside the frozen vocabulary); (d) the saved document containing `**검증 등급**: 미검증` (full-line) or `[검증 등급: 미검증]` (inline tag). **Do NOT run any recipe or command — inspect the bookkeeping by reading only.** Detection is key-anchored full-line (`_common/verification.md` §3.4); the `미검증` absence proof is the single document-wide exception (both literal forms must be 0).
 
 {USER_NOTE}
 
@@ -34,9 +35,9 @@ Then read the design document and review it against ALL of the following criteri
 IMPORTANT: Do NOT modify the design document directly. For every issue found, create a proposal in the following format:
 
 ### PROP-R{round}-{number}
-- **Type**: [proposal | decision]
+- **Type**: [proposal | decision | verification]
 - **Severity**: [critical | major | minor | trivial]
-- **Category**: [requirement-consistency | internal-coherence | feasibility | implementation-order | missing-items | contextual]
+- **Category**: [requirement-consistency | internal-coherence | feasibility | implementation-order | missing-items | contextual | verification-bookkeeping]
 - **Location**: [section name or location in the design document]
 - **Issue**: [problem description]
 - **Concept**: [fix concept — what to change and why]
@@ -54,10 +55,12 @@ Severity assignment rules:
 - "When in doubt, assign one tier higher" — conservative bias, consistent with triage bias toward escalation.
 - `decision` type is by default at least **major** (user judgment needed = correctness-relevant).
 - doc-hygiene issues are **minor** or **trivial**.
+- `verification`-type (criterion 7) findings: recipe-absent / out-of-vocabulary token / criterion-7 (a) / (d) = **major**; other malformed residual fields = **minor**.
 
 Type guidance:
 - proposal: The fix direction is clear. Describe what should change and why.
 - decision: Multiple valid approaches exist and user judgment is needed. List up to 4 options with descriptions. If more alternatives exist, note them in Agent note.
+- verification: A verification-bookkeeping finding (criterion 7) — the main session checks and records it; the agent only flags it by reading. **Never run a recipe or command.**
 
 Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).
 
