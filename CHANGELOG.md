@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-06-08
+
+`design` 패밀리 산출물에 산재하던 **"구현 시 검증 필요" 이연(deferral)을 제거하는 세션 내 검증(in-session verification) 매커니즘**을 도입한다. 핵심 원칙은 — 검증 실패는 곧 설계 변경을 의미하므로, 세션 안에서 검증 가능한 클레임은 설계 세션에서 검증하고(검증 ledger에 기록), 진짜 구현 시점에만 판정 가능한 잔여 클레임만 구조화 인코딩으로 남겨 `implement`가 구현 시작 시점에 fail-fast로 소비한다. 검증 가능한 클레임을 구현까지 미루면 잘못된 설계 위에 구현이 쌓이는 문제를 차단하기 위함이다. 어휘·스키마·실행 메커니즘의 단일 SOT로 `_common/verification.md`를 신설하고, 방출자(`design`·`design-lite`)·검사자(`design-review`·`design-review-lite`)·소비자(`implement`)가 이를 인용한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **`_common/verification.md` 단일 SOT**: 5범주 클레임 분류 체계(정적 사실/실행 측정/외부 환경/행동 가설/미니 구현)와 (e) 라우팅의 α∧β 진입 조건, 중대성 사전 필터 + 단일 필터 테스트, 동결 검증 어휘(등급 5토큰·`잔여 사유` 4값·`실행 주의` 4클래스·`분류` 5범주·`검증 시점` enum), key-anchored 풀라인 탐지 문법(`미검증` 부재증명 예외 포함), 검증 ledger(`### V<n>`)·잔여 항목(`### R<n>`) 스키마, 격리 워크트리 메커니즘(`mktemp` + `--detach`, in-worktree 금지 잠금, final-run 규칙, 분리불가 리셋 라인), well-formedness predicate, 3-rung 드리프트 래더, 변환 무브를 contracts-only로 담는 어휘·계약의 단일 출처다.
+- **검증 ledger + 잔여 섹션** (`design`·`design-lite` 산출물): 수행된 검증을 `## 검증 기록`(`### V<n>`)에, 진짜 구현 시점 전용 잔여 클레임을 `## 구현 시 검증 항목`(`### R<n>`)에 기록한다. 두 섹션 모두 무번호 heading이라 미해결-이슈 walkthrough 파스 regex에 비매칭이고, 비어있으면 생략된다. 본문 클레임은 토큰 없는 anchor(`(§검증 기록 V<n>)` 등)로만 마킹해 재검증 시 stale-태그 발산을 차단한다.
+- **`implement` Step 1.5 write-deferred 검증 게이트**: 구현 시작 전 잔여 항목을 발견·분류(read-only, 터미널 토큰 멱등 스킵)하고, (c) 외부 probe·(e) 워크트리·예외 클래스 항목은 일괄 동의 게이트 후 실행하며, verdict는 메모리에 보유했다가 plan 승인 후 Step 3에서 정확히 2개 쓰기 표면(W1 등급 플립 + W2 기록 라인)을 스냅샷-diff 게이트로 일괄 기록한다. 반증/드리프트 verdict는 STOP + 한국어 보고 + 3옵션 AUQ로 surface하며 implement는 재설계하지 않고 사용자가 라우팅한다.
+- **`design-review` 검증 차원(criterion #7)**: 리뷰 에이전트가 검증 북키핑을 읽기만으로 검사(CHECK)하고 실행(RUN)은 메인 세션이 수행하는 구조. cat-1 자유 self-run / cat 2–4 폐쇄 3옵션 메뉴(`지금 검증 실행`/`잔여 항목으로 기록`/`거부 (현재 유지)`) / cat-5(워크트리) 재실행 금지로 라우팅하며, `## Verification Runs` 실행 메모로 (anchor, hash) 중복 제안을 차단한다. cat-1 self-run은 독립 카운터 `[VERIFY-RAN]`로 집계되어 외부 종료 술어에 한 항을 더해 fresh-agent ripple-verify를 보장한다(`escalate_applied` 합·itemize 렌더 무영향).
+- **검증 동결 리터럴 일관성 lint** (`scripts/lint-verification-literals.sh`): SOT의 동결 검증 어휘가 두 리뷰 사본(`references/06`·`design-review-lite`)으로 발췌·인라인되며 토큰 rename이 한쪽에만 반영되는 drift를 CI에서 차단한다. SOT 완전성(whole-file presence) + 공유 리터럴의 리뷰 에이전트 프롬프트 블록 영역 한정 검사(`lint-skill-invariants.sh` rule B 패턴 차용) + fixtures·test로 구성되며 `make lint`/`make test`에 배선된다.
+
+### Changed
+
+- **`design`/`design-lite` 방출자 확장**: Step 1 검증-우선 노트(싼 (a)/(b) 인라인 검증·검증 프로파일 플래그), Step 2 선택 검증 에이전트 역할(base), Step 3 Verification discipline 단락 + Quality Gate Verification addendum, Step 4 pre-save sweep(`미검증` 0건·anchor 미참조 검증가능 클레임 0건·2-커맨드 워크트리 게이트). `design-lite`는 cat 1–4 생존(cat-4 one-shot)·cat-5 드롭(`/cc-cmds:design` 리다이렉트)·실행 예산 6유닛(2/2/2, ≤2분/유닛, ≤12분 상한)으로 비용을 한정한다.
+- **재현 carve-out → 관측·검증 carve-out 일반화** (`design` Constraints): 기존 재현 carve-out을 "Observation & verification carve-out"으로 병합·일반화하고 "modification" 정의를 **세션 메인 워킹 트리에 지속되는 변경**으로 rescope한다. 단일 `git status --porcelain` 불변식을 **2-커맨드 경계 게이트**(porcelain + `git worktree list --porcelain` + `cc-design-exp-` prefix 0건)로 대체해, 격리 워크트리가 메인 porcelain에 비가시인 블라인드 스팟을 닫는다. 표면1(메인 트리: 재현 + 범주 a/b/c/d)·표면2(격리 워크트리 (e) 전용)로 스코프를 분리하며 기존 두 "NO code modifications" 리터럴은 그대로 보존한다.
+- **`implement` no-modify 규칙 정밀화**: "설계 문서 수정 금지" 리터럴을 유지하면서 W1/W2를 문서가 implement에 예약한 정확히 2개의 쓰기 표면으로 열거하고, 스냅샷-diff 게이트로 그 외 변경을 fail-loud 차단한다(`git diff` 금지 — untracked·dirty 문서에서의 오판·파괴 방지).
+- **`design-review`/`design-review-lite` 검사자 동기화**: 리뷰 criterion을 6→7로, PROP `Type`/`Category` enum에 `verification`/`verification-bookkeeping`을 추가하고, Self-Triage에 `Type: verification` 전용 분기·closed option set 제3 source·Disposition 처분 매핑을 넣는다. lite는 0-Read 아키텍처를 보존하며 문법을 인라인하고 재실행 예산 6을 `## Verification Runs` 라인 수에서 파일-복원한다. `references/04`에 `## Verification Runs` 스키마, `references/06`에 criterion #7 발췌(SOT provenance 포함)를 추가한다.
+
 ## [1.14.0] - 2026-06-05
 
 `/cc-cmds:design` 스킬에 **재현 우선(reproduction-first) 매커니즘**을 얹는다. 이슈·버그 수정을 설계할 때 팀이 실제 현상을 재현해 확인하지 않고 코드만 읽어 근본 원인을 추측하는 경향을 막기 위해, 재현 가능한 이슈는 **먼저 재현 → 근본 원인 확정 → 그 위에서 수정 방향 토론**하도록 유도하는 위임된 판단 기반 품질 레이어다. 경직된 상태기계가 아니라 prose 가이드로 추가되며(CFI 아님), "재현할지·누가 할지"는 리드/에이전트 자율 판단에 맡긴다. 적용 범위는 `design` 단독이며 `design-lite`·나머지 패밀리는 범위 밖이다 (`/plugin update cc-cmds`로 자동 반영).

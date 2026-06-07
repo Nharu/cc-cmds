@@ -21,9 +21,9 @@ Plan and then implement based on the provided design document.
 
 ## Workflow Contract
 
-Execute the workflow strictly in this order: **Step 0 → Step 1 → Step 2 → Step 3**.
+Execute the workflow strictly in this order: **Step 0 → Step 1 → Step 1.5 → Step 2 → Step 3**.
 
-You MUST NOT skip Step 2, including when: the doc looks small, the input has prepended headers, extra scope args are passed, or you feel ready to implement.
+You MUST NOT skip Step 2, including when: the doc looks small, the input has prepended headers, extra scope args are passed, or you feel ready to implement. Step 1.5 (the write-deferred verification gate) is conditional — it runs only when the document carries a `## 구현 시 검증 항목` section; its absence means no gate, but its presence makes it non-skippable before Step 2.
 
 ## Input Parsing
 
@@ -60,6 +60,18 @@ Preferred single call: `ToolSearch("select:AskUserQuestion,EnterPlanMode,TaskCre
 
 - Read the design document at the path parsed in "Input Parsing" thoroughly.
 - Identify all requirements, architecture decisions, file changes, and implementation steps defined in the document.
+- Note whether the document contains a `## 구현 시 검증 항목` section (the residual verification items). Its presence triggers Step 1.5; its absence means there is no verification gate.
+
+---
+
+### Step 1.5: Write-Deferred Verification Gate
+
+This gate runs BEFORE Step 2 (plan mode). It settles the design's residual verification items at the start of implementation, fail-fast, so implementation never builds on a refuted design. Its writes are **deferred to Step 3** (plan mode blocks Edits; see Step 2) — Step 1.5 executes recipes and holds verdicts in memory; the document flip happens only after plan approval. **Read `${CLAUDE_SKILL_DIR}/../_common/verification.md`** (the `## Residual-item contract`, the drift ladder §7, and the carve-out §6) before this step. If Step 1 found no `## 구현 시 검증 항목` section, skip directly to Step 2.
+
+- **1.5a — Discovery & classification (read-only)**: search for the `## 구현 시 검증 항목` heading. Absent → no gate; skip to Step 2. Enumerate `### R<n>` items; **skip any item already carrying a terminal token** (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) — idempotency on re-invocation. Partition by `검증 시점` (`구현 전` vs `구현 중(<phase>)`); collect each item's `분류` and `실행 주의` flags. **Scope-directive interaction**: `구현 전` items are gated unconditionally regardless of scope (design validity is global — even a partial implementation rests on a refuted design); a `구현 중` item whose phase is outside the scope is disclosed in the consent batch as "이번 범위 밖 — 미실행" with no `TaskCreate`, leaving its `구현 시 검증` token in place for a later invocation's idempotent 1.5a re-discovery.
+- **1.5b — Consent gate (layered; plan-mode semantics "research yes, side effects no" — the design session's consent does NOT carry into implement's pre-approval phase)**: (a)/(b)/(d) read-only-local recipes run without consent. **If any (c) external probe, (e) worktree, or `실행 주의`-flagged item is present, issue ONE batched `AskUserQuestion` before executing** — body *"구현 전 검증 N건 실행 — 외부 probe X건, 워크트리 재현 Y건[, 예외 클래스: …], 예상 소요 …"*, options `실행 / 해당 항목 건너뛰고 위험 수용 / 중단`. An exception-class recipe (flagged, or recognized during read) is **never auto-run**. The consent batch covers **all residual items** regardless of `검증 시점` (a `구현 중` item is disclosed as "phase <p>에서 실행 예정" — closing the gap where a mid-implementation (c)/(e)/execution-caution recipe would otherwise run un-consented); a recipe implement belatedly recognizes as exception-class mid-run gets its own AUQ **immediately before that recipe runs** (for a `구현 중` item, phase arrival is that moment — the recognition fallback). An unflagged recipe is killed at 10 min (or 3× the declared `예상 소요`, whichever is larger; a declared >10 min mandates the execution-caution flag → asked up front).
+- **1.5c — Execute, zero document writes**: run per the drift ladder; hold verdicts in memory; write nothing to the document. Capture **both baselines** (`git status --porcelain` + `git worktree list --porcelain`) on entering 1.5c, and gate after each worktree recipe + on exiting 1.5c (the implement-time tree may legitimately be dirty — the gate is "no new change vs. entry", not "clean").
+- **1.5d — Failure branch (pre-plan)**: a `반증됨(실패)` / `검증불가(드리프트)` verdict → STOP, report in Korean (주장 / 기대 vs 관측 / the flipped decision from `실패 시 영향`), then `AskUserQuestion` `설계 재수렴 ← 추천 / 위험 수용하고 계속 / 중단` (one surface per issue). On re-converge / abort, **no document write at all** — the verdict moves only as report text (loss-tolerant: the recipe re-runs, so a later session re-derives cheaply; writing a refutation token without approval is the forbidden side effect). implement NEVER redesigns — it only surfaces, and the user routes.
 
 ---
 
@@ -72,6 +84,7 @@ Preferred single call: `ToolSearch("select:AskUserQuestion,EnterPlanMode,TaskCre
 - Every requirement, decision, and file change in the design document must be covered in the plan. Do NOT omit or skip any item.
 - Cross-check the plan against the design document to ensure nothing is missing before presenting.
 - If a scope directive was parsed from `$ARGUMENTS`, include it as the first line of the plan: `Scope: <directive>` (verbatim, per the quoting rule in Input Parsing).
+- **Verdict table in the plan** (the checkpoint of the in-memory verdict window from Step 1.5): include the verbatim verdict table — R-id / current token / verdict-to-record / 1-line observation / waiver marker. Because plan mode blocks Edits, a pre-approval flip is mechanically impossible — this sequencing (execute in 1.5 → table in the plan → batched flip after approval, in Step 3) is the only working form.
 
 ---
 
@@ -79,6 +92,13 @@ Preferred single call: `ToolSearch("select:AskUserQuestion,EnterPlanMode,TaskCre
 
 "Before taking any action in Step 3, reverse-scan this `/implement` invocation's scope (defined below) and answer these three questions based on what you actually observe in the transcript (not what you remember): (1) Does an `EnterPlanMode` tool-call message exist within this invocation's scope? (2) Was the resulting plan visible to the user? (3) Did a user approval event via `ExitPlanMode` follow it within this invocation's scope? If any answer is 'no' — or if the scan is inconclusive — STOP and return to Step 2. Do not rely on memory alone; base each answer on observable evidence. **This invocation's scope** means the range from the user message that triggered this `/implement` slash-command through the current assistant turn, including all intervening user/assistant/tool messages; evidence from prior `/implement` invocations earlier in the conversation does NOT count."
 
+- **Step 3's first document-write action (after the reverse-scan guard passes, before any other edit): the batched flip write + diff gate.** (The reverse-scan guard retains its literal-first-action status; the flip is the first *edit* after the guard passes.) The write surface is **exactly 2 byte-enumerated forms**, both inside a `### R<n>` of `## 구현 시 검증 항목`:
+    - **W1**: substitute the value of the existing line `**검증 등급**: 구현 시 검증` → `**검증 등급**: <terminal token>` (no line creation/deletion).
+    - **W2**: append exactly 1 line right after the verification-grade line: `**구현 시 검증 기록**: <YYYY-MM-DD> — <관측>[; 치환: <old>→<new>[, …]][; 사용자 위험 수용]`.
+    - **diff gate** (snapshot-based, once after the batch): copy the pre-flip document to a temp snapshot (`SNAP=$(mktemp)` + `cp <doc> "$SNAP"`) → apply the batched W1/W2 → every content line (`±`; excluding the file headers `---`/`+++`) of `diff -U0 "$SNAP" <doc>` must match one of: `^-\*\*검증 등급\*\*: 구현 시 검증$` / `^\+\*\*검증 등급\*\*: (검증됨\(통과\)|반증됨\(실패\)|검증불가\(드리프트\))$` / `^\+\*\*구현 시 검증 기록\*\*: .*$`. Any other changed line → revert **only this batch's non-matching changes** against the snapshot + fail-loud. A `git diff` against HEAD is FORBIDDEN — it vacuous-passes on an untracked document and risks false-failing / destroying the user's uncommitted edits on a dirty document (the implement-time tree may legitimately be dirty — same premise as 1.5c).
+- **Drift ladder (3-rung + flake pre-classification)** (the contract is `_common/verification.md` §7): Rung 1 — verbatim execution; **an observation contradicting the expectation is a FAIL, not drift**. An external-category recipe's transient failure gets one retry, then Rung 3 (synthesize the `관측 시점` timestamp + `유효 조건`). Rung 2 — bounded re-derivation: **location identifiers only** (file path / line number / directory name), each substitution requiring mechanical evidence (a verbatim hit at the new location, or a rename visible via `git log --follow`); any change to claim text / predicate / expected result → Rung 3; **one adaptation pass only** (an adapted recipe that then fails to run → Rung 3). The substitution map (old→new) is recorded on the W2 line; the full adapted recipe stays in implement's plan/log (outside the document). Rung 3 — report-never-skip: `검증불가(드리프트)` + cause, the same failure surface as a refutation.
+- **`구현 중` items**: an explicit line in the Step 2 plan (at that phase's head) + a `TaskCreate` in Step 3 with `addBlocks` on every task that builds on the claim — the dependency graph is the enforcement of mid-implementation fail-fast. A mid-implementation flip write (W1/W2) passes the same snapshot-diff gate per-write (snapshot just before the flip → flip → check — time-invariant, identical application). **Mid-implementation failure semantics** (1.5d's pre-plan premise does not apply — this is post-approval, so write-deferral is unnecessary): record the flip (W1/W2 + gate) immediately, report in Korean + the same 3-option AUQ. On `설계 재수렴`, the dependent blocked tasks stay blocked while completed work is preserved and the design is routed to refinement; completed tasks are structurally claim-independent (the addBlocks graph blocks any claim-dependent task from running first) — state this in the report.
+- **No new deferred tools** (Bash + the AskUserQuestion already loaded in Step 0).
 - After the plan is approved, implement step by step.
 - Use Task management tools (TaskCreate, TaskUpdate, TaskList, TaskGet) actively to manage implementation steps. Define clear dependencies between tasks using `addBlocks`/`addBlockedBy` parameters in TaskUpdate to ensure systematic execution.
 - When code exploration is needed during implementation (e.g., checking module structures, finding usage patterns, understanding existing interfaces), delegate to subagents in parallel to keep the main context clean and save time.
@@ -95,4 +115,4 @@ Preferred single call: `ToolSearch("select:AskUserQuestion,EnterPlanMode,TaskCre
 
 - Do NOT deviate from the design document. If something seems wrong or unclear, ask the user instead of making assumptions.
 - All items in the design document must be reflected in the implementation plan.
-- Do NOT modify the design document.
+- Do NOT modify the design document. **Exception — the verification write surface**: the document reserves exactly two write forms for implement, both inside a `### R<n>` of `## 구현 시 검증 항목` — W1 (flip `**검증 등급**: 구현 시 검증` to a terminal token) and W2 (append one `**구현 시 검증 기록**:` line) — applied via the Step 3 batched flip + snapshot-diff gate. No other byte of the document may change. This keeps the literal "do not modify" rule and enumerates W1/W2 as the document's implement-reserved surface (sweep-proof by pattern, not trust).

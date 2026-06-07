@@ -109,13 +109,15 @@ if INNER_EXIT_REASON == "safety-limit-outer-terminate":
     break outer loop → Phase 3                      # user explicitly aborted
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer":
     outer_done = false                              # bypass convergence judgment
-elif INNER_EXIT_REASON == "clean-convergence" and COUNT_APPLIED == 0:
+elif INNER_EXIT_REASON == "clean-convergence" and COUNT_APPLIED == 0 and this_iter_verify_ran == 0:
     outer_done = true                               # fixpoint reached
 else:
     outer_done = false                              # COUNT_APPLIED > 0 → another iter
 ```
 
 **MIN_OUTER = 1**: even the first iteration may terminate if the fixpoint rule fires.
+
+**`this_iter_verify_ran` (criterion #7)**: the count of `[VERIFY-RAN]` cat-1 verification self-runs that mutated the ledger this iteration — an **independent counter** kept OUT of `COUNT_APPLIED` and every itemize render. It adds one term to the predicate so a cat-1 self-run iteration forces one more outer iteration (a fresh-agent ripple-verify). Sourced from the `- [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}` line in this iteration's `## Outer Iteration N` block (computed from `review_log.md` before the Step 21 wipe; mandatory every iter — 0 when none). See "## Verification dimension (criterion #7)".
 
 ### `COUNT_APPLIED` aggregation (lite simplified — auto-decide not present)
 
@@ -151,6 +153,8 @@ escalate_applied = count([APPROVED]) + count([MODIFIED]) + count([USER-DIRECTED]
 The `escalate_applied` column is reference-only (lite does not use this aggregation — see note above).
 
 **Informational marker** (not a disposition tag; never counted; may appear alongside a disposition tag): `[SEVERITY-UPGRADED]`.
+
+**Independent counter** (criterion #7; NOT a disposition tag, NOT in `COUNT_APPLIED`, NOT in any itemize render): `[VERIFY-RAN]` (Category `verification-bookkeeping`) — a cat-1 verification self-run that mutated the ledger. doc-change ✓ / escalate_applied ✗ / ack ✗ / outer-termination-guard ✓ (it adds the `this_iter_verify_ran == 0` term to the Step 22 predicate). The `지금 검증 실행` / `잔여 항목으로 기록` menu dispositions ARE `[APPROVED]`-class; `거부 (현재 유지)` is `[REJECTED]`-class. See "## Verification dimension (criterion #7)".
 
 ---
 
@@ -356,7 +360,7 @@ First, read {TEMP_DIR}/review_log.md to determine the current round number.
 If no "## Review Round" entries exist in the log, this is Round 1.
 
 IMPORTANT — Acknowledged Items contract: Check for an "## Acknowledged Items" section in {TEMP_DIR}/review_log.md. These are items the user has already decided to keep as-is. Before reporting any proposal, read this section and treat a proposal as a duplicate (and therefore MUST NOT report it) when ALL of the following hold:
-  (a) the Category matches exactly (from the 6 review categories),
+  (a) the Category matches exactly (from the 7 review categories),
   (b) the Location overlaps (same document section),
   (c) the Issue is semantically equivalent (same root cause).
 When uncertain, report the proposal — the main session will self-triage it as [AUTO-REJECTED] with a duplicate rationale and it will not reach the user.
@@ -369,6 +373,7 @@ Then read the design document and review it against ALL of the following criteri
 4. Implementation order — Check that the proposed implementation sequence respects dependencies. No step should reference artifacts from a later step.
 5. Missing items — Look for gaps: error handling not specified, edge cases not covered, security considerations absent, migration plans missing, rollback strategies undefined.
 6. Contextual review — Based on the specific domain and nature of this design, check for additional concerns that matter in this context but are not covered by the above categories.
+7. In-session verification — Check the design's verification bookkeeping against the contract in `_common/verification.md` (the SOT this prompt cites). Flag (Type `verification`, Category `verification-bookkeeping`): (a) a claim settleable in-session but with no corresponding V/R item — neither an anchor reference (`§검증 기록 V<n>` / `§구현 시 검증 항목 R<n>`) nor a matching claim (a hedge-phrase tripwire — "should exist" / "presumably" / "구현 시 확인/검증 필요" — counts); (b) a verification marking with no recipe; (c) a residual marking that fails the well-formedness predicate (a required field missing / a `/tmp` literal / an unresolved `실패 시 영향` anchor / a token or enum value outside the frozen vocabulary); (d) the saved document containing `**검증 등급**: 미검증` (full-line) or `[검증 등급: 미검증]` (inline tag). **Do NOT run any recipe or command — inspect the bookkeeping by reading only.** Detection is key-anchored full-line (`_common/verification.md` §3.4); the `미검증` absence proof is the single document-wide exception (both literal forms must be 0).
 
 {USER_NOTE}
 
@@ -379,9 +384,9 @@ Then read the design document and review it against ALL of the following criteri
 IMPORTANT: Do NOT modify the design document directly. For every issue found, create a proposal in the following format:
 
 ### PROP-R{round}-{number}
-- **Type**: [proposal | decision]
+- **Type**: [proposal | decision | verification]
 - **Severity**: [critical | major | minor | trivial]
-- **Category**: [requirement-consistency | internal-coherence | feasibility | implementation-order | missing-items | contextual]
+- **Category**: [requirement-consistency | internal-coherence | feasibility | implementation-order | missing-items | contextual | verification-bookkeeping]
 - **Location**: [section name or location in the design document]
 - **Issue**: [problem description]
 - **Concept**: [fix concept — what to change and why]
@@ -399,10 +404,12 @@ Severity assignment rules:
 - "When in doubt, assign one tier higher" — conservative bias, consistent with triage bias toward escalation.
 - decision type is by default at least major (user judgment needed = correctness-relevant).
 - doc-hygiene issues are minor or trivial.
+- verification-type (criterion 7) findings: recipe-absent / out-of-vocabulary token / criterion-7 (a) / (d) = major; other malformed residual fields = minor.
 
 Type guidance:
 - proposal: The fix direction is clear. Describe what should change and why.
 - decision: Multiple valid approaches exist and user judgment is needed. List up to 4 options with descriptions. If more alternatives exist, note them in Agent note.
+- verification: A verification-bookkeeping finding (criterion 7) — the main session checks and records it; the agent only flags it by reading. Never run a recipe or command.
 
 Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).
 
@@ -516,7 +523,7 @@ Parse `$INNER_TEMP_DIR/review_log.md` for `[REJECTED]` and `[AUTO-REJECTED]` lin
 
 **Dedup rule**: an ack is a duplicate of an existing entry in `$OUTER_DIR/ack_items.md` iff ALL three conditions hold:
 
-1. `Category` matches exactly (controlled vocabulary: one of the 6 review categories)
+1. `Category` matches exactly (controlled vocabulary: one of the 7 review categories)
 2. `Location` refers to the same section (case-insensitive, "Section 4.3" ≈ "4.3 Auth Flow")
 3. `Issue` describes the same root cause (main session semantic judgment)
 
@@ -553,6 +560,7 @@ Append to `$OUTER_DIR/outer_log.md`:
 - Inner rounds run: {n}
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
 - Partial iteration: {true|false}
+- [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}   ← computed from review_log.md BEFORE the Step 21 wipe; mandatory every iter (write 0 when none); Step 22's `this_iter_verify_ran` source
 
 ### Escalate Counter Breakdown
 
@@ -722,6 +730,8 @@ The main session must self-judge each proposal before bothering the user. Defaul
 - Type is `proposal` but the fix involves business judgment, API/data contract change, security/compliance trade-off, UX choice, or non-trivial scope.
 - You are uncertain — when in doubt, escalate. Self-triage should err on the side of escalation, never on the side of silently dropping a real concern.
 
+**`Type: verification` (criterion #7) — its own branch** (not proposal/decision): route by category per `_common/verification.md`. cat-1 (read-only) → **self-run + record** (no user prompt), counted by the independent `[VERIFY-RAN]` counter. cat 2–4 → **escalate to the closed 3-option verification menu** (`지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)`), subject to the lite re-run budget of 6 → on exhaustion a 2-option degrade. cat-5 (worktree) → 2-option menu (`잔여 항목으로 기록` / `거부 (현재 유지)`), never re-run. The main session never runs a recipe the agent reported running, and discards agent-reported execution results unconditionally. Full rules: "## Verification dimension (criterion #7)".
+
 **Severity upgrade authority**: during self-triage, if the main session discovers hidden risk, it MAY upgrade severity **unidirectionally** (trivial → minor → major → critical). Downgrades are forbidden. When upgrading, append an informational marker to `review_log.md`:
 
 ```
@@ -769,6 +779,11 @@ Do not mention "batch" / "call" / "분할" / "AskUserQuestion" / "4개 한계" i
 - Include the agent recommendation if present: per the documented recommendation convention, append `← 에이전트 추천` to the recommended option's label, place it at position 1, and put the rationale in that option's `description`.
 - If the proposal has more than 4 options, present the first 4 in the primary question and mention additional alternatives in the question text from the Agent note field — do NOT split one proposal's options across two questions.
 
+### For Verification type (criterion #7)
+
+- The closed menu is `지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)` for cat 2–4 (subject to the lite re-run budget of 6). For cat-5 (worktree), exception-class (`실행 주의`) recipes, or budget exhaustion, drop `지금 검증 실행` (2-option degrade) + a one-line Korean disclosure; when `예상 소요` >2 min, disclose the cost in the option `description`.
+- Every option carries a `description`; no manual Other/기타. cat-1 (read-only) findings are NOT menued — the main session self-runs and records them, counted via `[VERIFY-RAN]`.
+
 ### Other input
 
 The user may type free-form text instead of selecting an option. This is handled by the Processing Protocol below.
@@ -781,6 +796,7 @@ For each user response to a proposal prompt:
 
 - **"승인" selected** (or a Decision option selected): Apply the change to the design document using the concretized scope. Log as `[APPROVED]` in `review_log.md`.
 - **"거부 (현재 유지)" selected**: Record the item under `## Acknowledged Items` in `review_log.md`. Log as `[REJECTED]`. Future agents will skip this item.
+- **Verification menu (criterion #7)**: `지금 검증 실행` → execute per "## Verification dimension" + record (run-now write surface + `## Verification Runs` line), logged `[APPROVED]`-class (counted in `COUNT_APPLIED`); `잔여 항목으로 기록` → create an R-item (`잔여 사유: 검증 차단`, blocked reason `리뷰 시점 사용자 이연 — <YYYY-MM-DD>`), also `[APPROVED]`-class; `거부 (현재 유지)` → `[REJECTED]`-class. A cat-1 self-run (no menu) is logged via the independent `[VERIFY-RAN]` counter.
 - **Other input**: Main session interprets the input in context:
   - **Modification request** (e.g., "statusCode 말고 status_code로", "섹션 5.2는 빼줘"): Re-scope with the user's modification, apply the change. Log as `[MODIFIED]`.
   - **Question or discussion** (e.g., "기존 클라이언트 호환성은?"): Answer the question via AskUserQuestion, then re-ask the same proposal. Continue this dialogue loop until the user gives an explicit decision (Ground Rule #6).
@@ -791,6 +807,24 @@ For each user response to a proposal prompt:
 The main session applies approved changes (auto-approved and user-approved) directly using the Edit tool. The agent never modifies the design document. Since concepts may affect multiple locations, the main session identifies all affected locations during scope analysis and applies changes in batch.
 
 If an Edit fails, follow the Step 13 Edit-failure handling procedure (retry within round or defer to `pending_applies.md`).
+
+## Verification dimension (criterion #7)
+
+Detection has **full parity** with base (`design-review`); re-execution is **reduced**. The contract SOT is `${CLAUDE_SKILL_DIR}/../_common/verification.md` (this section and the inline grammar in the Step 12 prompt cite it).
+
+**CHECK is the review, RUN is the main session** (same structure as base): agents flag verification bookkeeping by reading only; the agent prompt forbids running any recipe, and the main session **unconditionally discards** any execution result an agent reports.
+
+**Main-session execution (reduced)**:
+
+- **cat-1 (read-only)**: self-run freely (per-attempt limits: `grep` >50 hits → inconclusive; named-file `Read` only); record the verdict; counted by the independent `[VERIFY-RAN]` counter.
+- **cat 2–4**: the same closed 3-option menu as base (`지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)`), subject to the **lite outer-session re-run budget of 6** (the unified lite constant). On budget exhaustion → 2-option degrade (`잔여 항목으로 기록` / `거부 (현재 유지)`) + a one-line Korean disclosure. per-run cap 2 min (lite-owned constant). An exception-class (`실행 주의`) recipe also degrades to 2 options.
+- **cat-5 (worktree)**: bookkeeping inspection only — never re-run.
+
+**Execution memo parity**: log each run to `$OUTER_DIR/outer_log.md`'s `## Verification Runs` section — `- <V anchor> | <recipe hash> | <verdict> | <ISO8601>` (V anchor = `### V<n>.` heading; recipe hash = `shasum` of the full `검증 절차` field; verdict = a terminal token) — with the same `(anchor, hash)` dedup as base (lite is also a fresh-agent structure, so it carries the same re-proposal fatigue vector; an existing `(anchor, hash)` → cite the recorded verdict + drop `지금 검증 실행`). **The re-run budget of 6 is file-restored from the `## Verification Runs` line count** (bash variables are volatile — the same restore doctrine as `AUTO_DECIDE_ENABLED`; the budget never depends on lead memory).
+
+**run-now / dirty-tree / drift ladder / pre-registration**: identical to base's "## Verification dimension" — the SOT's drift ladder and flake pre-classification are used verbatim (no review-local adaptation); run-now checks 0 new changes vs. a pre-execution `git status --porcelain` snapshot (verdict not recorded + fail-loud Korean on violation); a dirty tree gets a one-line disclosure + a `유효성 노트` on the ledger entry. An unmarked claim creates a new `### V<n>` (creating `## 검증 기록` at the canonical position if absent); R-flips are implement-only.
+
+**termination machine**: Type `verification` bypasses any decision classifier (execution is a real-world side effect). The `[VERIFY-RAN]` counter is kept out of `COUNT_APPLIED` and every itemize render and adds the `this_iter_verify_ran == 0` term to the Step 22 predicate (one more outer iteration for a fresh-agent ripple-verify). A cat-1 `반증됨(실패)` verdict is surfaced in Korean, never silently recorded. `잔여 항목으로 기록` lands as `잔여 사유: 검증 차단` + `리뷰 시점 사용자 이연 — <YYYY-MM-DD>`. **BASE MODE**: verification-bookkeeping fixes are in-scope even under `--base`; using a verification *result* as a vector for a new task-level design-substance proposal within the same finding remains forbidden.
 
 ## Ground Rules
 

@@ -105,6 +105,24 @@ Location: `${OUTER_DIR}/outer_log.md` — outer-persistent audit trail. See SKIL
 - `dominant_signal`: one-line rationale.
 - `reverted`: `false` or `"이터레이션 N에서 사용자 번복 → {replacement disposition}"`; append `semantic_patch: true` when semantic patching was used.
 
+### `## Verification Runs` subsection (criterion #7, run-now)
+
+Location: `${OUTER_DIR}/outer_log.md` — outer-persistent. Records main-session run-now verification executions so the same `(claim, recipe)` is not re-proposed across the fresh-agent outer loop (the 20× user-fatigue vector). One line per executed verification:
+
+```markdown
+## Verification Runs
+
+- ### V3. | a1b2c3d4 | 검증됨(통과) | 2026-06-08T10:15:22Z
+- ### V4. | e5f6a7b8 | 반증됨(실패) | 2026-06-08T10:18:40Z
+```
+
+- **claim anchor**: the `### V<n>.` heading (R-recipes are never executed in review, so there is no R anchor; a run-now that lands as a new V uses the generated V anchor).
+- **recipe hash**: `shasum` of the full `검증 절차` field value (the fenced block's contents when fenced, or the literal command lines).
+- **verdict**: a ledger terminal token (`검증됨(통과)` / `반증됨(실패)`).
+- **ISO8601**: execution timestamp.
+
+When an `(anchor, hash)` pair already exists, the main session cites the recorded verdict and drops `지금 검증 실행` from the menu. A modified recipe changes the hash → a legitimate re-proposal. The `## Verification Runs` line count also file-restores the lite re-run budget (lite only — bash variables are volatile, same doctrine as `AUTO_DECIDE_ENABLED` restore).
+
 ## `convergence_table.md` (§3.9.3 + §8.13.4)
 
 Location: `${OUTER_DIR}/convergence_table.md` — two tables, header rows only at init; rows appended per iter at Step 19.

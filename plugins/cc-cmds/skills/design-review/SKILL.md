@@ -107,13 +107,15 @@ if INNER_EXIT_REASON == "safety-limit-outer-terminate":
     break outer loop → Phase 3                      # user explicitly aborted
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer":
     outer_done = false                              # bypass convergence judgment
-elif INNER_EXIT_REASON == "clean-convergence" and COUNT_APPLIED == 0:
+elif INNER_EXIT_REASON == "clean-convergence" and COUNT_APPLIED == 0 and this_iter_verify_ran == 0:
     outer_done = true                               # fixpoint reached
 else:
     outer_done = false                              # COUNT_APPLIED > 0 → another iter
 ```
 
 **MIN_OUTER = 1**: even the first iteration may terminate if the fixpoint rule fires.
+
+**`this_iter_verify_ran` (criterion #7, F5 silent-termination guard)**: the count of `[VERIFY-RAN]` cat-1 self-runs that mutated the ledger **this iteration**. It is an **independent counter**, kept OUT of `COUNT_APPLIED` / `escalate_applied` and every itemize render — it adds exactly one term to the predicate above so an iteration that ran a cat-1 self-run forces one more outer iteration (a fresh-agent ripple-verify of the just-recorded verdict). Sourced from the dedicated `- [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}` line in this iteration's `## Outer Iteration N` block (computed from `review_log.md` before the Step 21 wipe; mandatory every iter — 0 is written when none, so Step 22 reads a value and never infers absence as 0). See "## Verification dimension (criterion #7)".
 
 ### `COUNT_APPLIED` aggregation (§3.3 Step 17 / §8.8 dedup)
 
@@ -156,9 +158,11 @@ escalate_applied = raw_count
 
 **Informational markers** (not disposition tags; never counted; may appear alongside a disposition tag): `[SEVERITY-UPGRADED]` (§3.11), `[REVERTED-BY-USER]` (§8.11; supports `cascade=true` and `cascade-from=PROP-Rx-y`), `[REVERT-FAILED]` (§8.11).
 
+**Independent counter** (criterion #7; NOT a disposition tag, NOT in `escalate_applied`/`COUNT_APPLIED`, NOT in any itemize render): `[VERIFY-RAN]` (Category `verification-bookkeeping`) — a cat-1 verification self-run that mutated the ledger. doc-change ✓ / escalate_applied ✗ / ack ✗ / outer-termination-guard ✓ (it adds the `this_iter_verify_ran == 0` term to the Step 22 predicate). The `지금 검증 실행` and `잔여 항목으로 기록` menu dispositions ARE `[APPROVED]`-class (counted in `COUNT_APPLIED`); `거부 (현재 유지)` is `[REJECTED]`-class (ack). See "## Verification dimension (criterion #7)".
+
 ### Decision-type classifier (§8 top-level gate)
 
-Only `decision`-type proposals are candidates for auto-decide. For each decision-type proposal after self-triage returns `escalate`, call `re_evaluate_decision` (details in `references/01-auto-decide-protocol.md`):
+Only `decision`-type proposals are candidates for auto-decide. `verification`-type proposals (criterion #7) bypass this classifier **structurally** — Type ≠ `decision`, so `re_evaluate_decision` is never called (auto-decide must never choose run-vs-defer; execution is a real-world side effect). For each decision-type proposal after self-triage returns `escalate`, call `re_evaluate_decision` (details in `references/01-auto-decide-protocol.md`):
 
 ```
 auto-decide fires iff ALL of the following hold:
@@ -375,6 +379,7 @@ After the agent returns:
   d. **Self-Triage** (main session): Classify each proposal into `auto-approve`, `auto-reject`, or `escalate` per the Self-Triage Protocol below.
   e. Apply auto-approved proposals directly via Edit. Log auto-rejected proposals to `## Acknowledged Items` (inline copy — the real outer-persistent extraction happens at Step 18). Both are recorded in `review_log.md` with `[AUTO-APPROVED]` / `[AUTO-REJECTED]` tags and a one-line rationale.
   f. **Auto-decide integration** (§8, conditional on `AUTO_DECIDE_ENABLED=true`): for each `decision`-type proposal, after self-triage decides "escalate", **Read `${CLAUDE_SKILL_DIR}/references/01-auto-decide-protocol.md` unconditionally** (recovery gate — post-compaction may have summarized away the eager-load), then call `re_evaluate_decision` (§8.4). If the verdict is `auto-pick`, record `[AUTO-DECIDED]` to `review_log.md`, apply the chosen option via Edit, and append an `AUTO-NNN` entry to the in-memory audit buffer for Step 20. If the verdict is `escalate`, fall through to the ask-user step. If `AUTO_DECIDE_ENABLED=false`, skip this hook entirely.
+  f-v. **Verification findings (criterion #7, Type `verification`)**: never auto-decided (the §8 classifier is bypassed structurally — Type ≠ `decision`). Route per the Self-Triage `Type: verification` branch — cat-1 (read-only) self-run + record (no user prompt, counted by the independent `[VERIFY-RAN]` counter); cat 2–4 → the closed 3-option verification menu; cat-5 (worktree) → 2-option degrade, never re-run. Executions are logged to `## Verification Runs`. **Never run a recipe an agent reported executing; discard agent-reported execution results unconditionally.** Full rules: "## Verification dimension (criterion #7)".
   g. **If escalated proposals remain**: Present only those to the user via AskUserQuestion (in Korean). See "Approval UX" below.
   h. Process user choices according to the "Processing Protocol" below. **Dialogue loop per Ground Rule #6**: if the user's response is a follow-up question or discussion rather than an explicit decision, continue the dialogue via AskUserQuestion until an explicit decision is given.
   i. Update the round entry in `$INNER_TEMP_DIR/review_log.md` with disposition tags.
@@ -425,7 +430,7 @@ Parse `$INNER_TEMP_DIR/review_log.md` for `[REJECTED]` and `[AUTO-REJECTED]` lin
 
 **Dedup rule** (§3.7): an ack is a duplicate of an existing entry in `$OUTER_DIR/ack_items.md` iff ALL three conditions hold:
 
-1. `Category` matches exactly (controlled vocabulary: one of the 6 review categories)
+1. `Category` matches exactly (controlled vocabulary: one of the 7 review categories)
 2. `Location` refers to the same section (case-insensitive, "Section 4.3" ≈ "4.3 Auth Flow")
 3. `Issue` describes the same root cause (main session semantic judgment)
 
@@ -460,6 +465,7 @@ Where:
 - Inner rounds run: {n}
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
 - Partial iteration: {true|false}
+- [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}   ← computed from review_log.md BEFORE the Step 21 wipe; mandatory every iter (write 0 when none); Step 22's `this_iter_verify_ran` source
 
 ### Escalate Counter Breakdown
 
@@ -510,7 +516,7 @@ This deliberate wipe prevents "context poisoning" — the next iteration's fresh
 
 #### Outer Exit Check (Step 22–25)
 
-**Step 22 — Outer termination judgment**: See Control-Flow Invariants for the decision tree.
+**Step 22 — Outer termination judgment**: See Control-Flow Invariants for the decision tree. The predicate's `this_iter_verify_ran` term is read from the `- [VERIFY-RAN] …` line written into this iteration's `## Outer Iteration N` block at Step 20 (the count is computed from `review_log.md` before the Step 21 wipe). A cat-1 self-run iteration thus forces one more outer iteration for a fresh-agent ripple-verify; `escalate_applied` itemize renders are unchanged.
 
 **Step 23 — Ack soft-limit check** (§3.7, only if `outer_done == false`):
 
@@ -567,6 +573,8 @@ The main session must self-judge each proposal before bothering the user. Defaul
 - Type is `proposal` but the fix involves business judgment, API/data contract change, security/compliance trade-off, UX choice, or non-trivial scope.
 - You are uncertain — when in doubt, escalate. Self-triage should err on the side of escalation, never on the side of silently dropping a real concern.
 
+**`Type: verification` (criterion #7) — its own branch** (not proposal/decision, so the existing three branches do not condition it): route by category per `_common/verification.md`. cat-1 (read-only) → **self-run + record** (no user prompt), counted by the independent `[VERIFY-RAN]` counter. cat 2–4 → **escalate to the closed 3-option verification menu** (`지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)`). cat-5 (worktree) → escalate to a 2-option menu (`잔여 항목으로 기록` / `거부 (현재 유지)`), `지금 검증 실행` omitted + a Korean reason line (worktree recipes are never re-run in review). The main session NEVER runs a recipe an agent reported running, and discards agent-reported execution results unconditionally. Full rules: "## Verification dimension (criterion #7)".
+
 **Severity upgrade authority** (§3.11): during self-triage, if the main session discovers hidden risk, it MAY upgrade severity **unidirectionally** (trivial → minor → major → critical). Downgrades are forbidden — agent's conservative assignment is preserved. When upgrading, append an informational marker to `review_log.md`:
 
 ```
@@ -581,7 +589,7 @@ The main session must self-judge each proposal before bothering the user. Defaul
 
 ## Approval UX
 
-**Closed option set (do not import options from other skills).** The `AskUserQuestion` option set in this skill is *closed* and exhaustively defined by the "For Proposal type" and "For Decision type" subsections below: Proposal type → exactly `승인` / `거부 (현재 유지)`; Decision type → exactly the options derived from the agent's `Options` field (plus an optional `← 에이전트 추천` label suffix). No other standing option may be added under any circumstance. In particular, when `design-review` runs in the same session after the `design` skill, that skill's walkthrough per-category structural slots — `팀 토론 진행`, `보류`, and any other option not derived from the two sources above — MUST NOT appear in any `design-review` prompt. `design-review` never spawns agent teams (review uses fresh isolated `Agent` sub-agents per the Constraints), so a `팀 토론 진행` option is categorically invalid here; deferral and further discussion are handled by the Processing Protocol's free-form Other-input + dialogue loop (Ground Rule #6/#7), never by a standing menu option.
+**Closed option set (do not import options from other skills).** The `AskUserQuestion` option set in this skill is *closed* and exhaustively defined by the "For Proposal type", "For Decision type", and "For Verification type" subsections below: Proposal type → exactly `승인` / `거부 (현재 유지)`; Decision type → exactly the options derived from the agent's `Options` field (plus an optional `← 에이전트 추천` label suffix); Verification type (criterion #7) → exactly `지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)` for cat 2–4, degrading to `잔여 항목으로 기록` / `거부 (현재 유지)` for cat-5 and exception-class recipes (`지금 검증 실행` omitted). This is the third sanctioned option source. No other standing option may be added under any circumstance. In particular, when `design-review` runs in the same session after the `design` skill, that skill's walkthrough per-category structural slots — `팀 토론 진행`, `보류`, and any other option not derived from the two sources above — MUST NOT appear in any `design-review` prompt. `design-review` never spawns agent teams (review uses fresh isolated `Agent` sub-agents per the Constraints), so a `팀 토론 진행` option is categorically invalid here; deferral and further discussion are handled by the Processing Protocol's free-form Other-input + dialogue loop (Ground Rule #6/#7), never by a standing menu option.
 
 Present escalated proposals item-by-item via AskUserQuestion, batched up to 4 at a time. No "approve all" option — every escalated proposal requires individual review.
 
@@ -616,6 +624,11 @@ Do not mention "batch" / "call" / "분할" / "AskUserQuestion" / "4개 한계" i
 - Include the agent recommendation if present: per the documented recommendation convention, append `← 에이전트 추천` to the recommended option's label, place it at position 1, and put the rationale in that option's `description`.
 - If the proposal has more than 4 options, present the first 4 in the primary question and mention additional alternatives in the question text from the Agent note field — do NOT split one proposal's options across two questions.
 
+### For Verification type (criterion #7)
+
+- Present the claim, its `분류` (category), and what running the recipe would observe. The menu is closed: `지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)` for cat 2–4. For cat-5 (worktree) and exception-class (`실행 주의`) recipes, drop `지금 검증 실행` (2-option degrade) and add a one-line Korean reason; when `예상 소요` >2 min, disclose the cost in the option `description`.
+- Every option carries a `description`; no manual Other/기타 (the auto-provided Other channel suffices — AUQ spec). cat-1 (read-only) findings are NOT menued — the main session self-runs and records them, counted via `[VERIFY-RAN]`.
+
 ### Other input
 
 The user may type free-form text instead of selecting an option. This is handled by the Processing Protocol below — including reversion intent (§8.11) and auto-decide opt-out (§8.12).
@@ -630,6 +643,7 @@ For each user response to a proposal prompt, the main session must first pre-che
 
 - **"승인" selected** (or a Decision option selected): Apply the change to the design document using the concretized scope. Log as `[APPROVED]` in `review_log.md`.
 - **"거부 (현재 유지)" selected**: Record the item under `## Acknowledged Items` in `review_log.md`. Log as `[REJECTED]`. Future agents will skip this item.
+- **Verification menu (criterion #7)**: `지금 검증 실행` → execute per "## Verification dimension" + record (run-now write surface + `## Verification Runs` line), logged `[APPROVED]`-class (counted in `COUNT_APPLIED`); `잔여 항목으로 기록` → create an R-item (`잔여 사유: 검증 차단`, blocked reason `리뷰 시점 사용자 이연 — <YYYY-MM-DD>`), also `[APPROVED]`-class; `거부 (현재 유지)` → `[REJECTED]`-class (ack). A cat-1 self-run (no menu) is logged via the independent `[VERIFY-RAN]` counter, never `[APPROVED]`.
 - **Other input** (not matching any pre-check above): Main session interprets the input in context:
   - **Modification request** (e.g., "statusCode 말고 status_code로", "섹션 5.2는 빼줘"): Re-scope with the user's modification, apply the change. Log as `[MODIFIED]`.
   - **Question or discussion** (e.g., "기존 클라이언트 호환성은?"): Answer the question via AskUserQuestion, then re-ask the same proposal. Continue this dialogue loop until the user gives an explicit decision (Ground Rule #6).
@@ -640,6 +654,27 @@ For each user response to a proposal prompt, the main session must first pre-che
 The main session applies approved changes (auto-approved, auto-decided, and user-approved) directly using the Edit tool. The agent never modifies the design document. Since concepts may affect multiple locations, the main session identifies all affected locations during scope analysis and applies changes in batch.
 
 If an Edit fails, follow the Step 13 Edit-failure handling procedure (retry within round or defer to `pending_applies.md`).
+
+## Verification dimension (criterion #7)
+
+**CHECK is the review, RUN is the main session.** Agents read→propose and may not Edit; execution is the same kind of side effect, and each round is a fresh agent (no execution dedup is possible — an agent allowed to run would re-run the same recipe up to 20× per outer loop). So agents flag verification bookkeeping by reading only; the **main session** runs anything that gets run. Two-sided no-execute: the agent prompt forbids running recipes/commands, AND the main session **unconditionally discards** any execution result an agent reports (anti-fabrication extension).
+
+**Main-session execution rules** (Type `verification`, Category `verification-bookkeeping`):
+
+- **cat-1 (read-only)**: self-run freely (same status as the walkthrough's auto-investigation), no user prompt; record the verdict.
+- **cat 2–4**: the closed 3-option menu (`지금 검증 실행` / `잔여 항목으로 기록` / `거부 (현재 유지)`) for user approval — the first two are `[APPROVED]`-class. An exception-class (`실행 주의`) recipe drops `지금 검증 실행` (2-option degrade + a Korean reason line); a `예상 소요` >2 min discloses the cost in the option `description`.
+- **cat-5 (worktree)**: NEVER re-run in review (base + lite); bookkeeping inspection only.
+- **per-run cap**: 2 min (this skill's owned constant — `_common` holds no budget/cap). Use the flake pre-classification + drift ladder of `_common/verification.md` verbatim (no review-local adaptation).
+
+**run-now write surface**: an unmarked claim → create a new `### V<n>` (+ attach the V-anchor reference to the body claim); re-verifying an existing V → update that V entry. Neither touches the R-section (R-flips are implement-only). A document with no `## 검증 기록` heading (all-residual / pre-mechanism docs) gets the section created at the canonical position (after `## 주요 결정사항과 근거`, before `## 미해결 이슈 / 트레이드오프`) before recording. For a criterion-(a) claim, the main session writes `검증 절차` + `기대 결과` per the pre-registration rule *before* executing. Run-now checks 0 new changes vs. a pre-execution `git status --porcelain` snapshot — on violation, the verdict is NOT recorded + a fail-loud Korean report (the abbreviated transplant of implement's 1.5c gate; cat-5 is forbidden and exception-class omitted, so the high-risk class is pre-blocked).
+
+**dirty-tree validity**: before re-running, `git status --porcelain`; if dirty, the menu body carries one Korean disclosure line (dirty file count + that a measurement-type result may reflect the uncommitted state), and a dirty-run verdict carries a `유효성 노트` on the ledger entry. No silent dirty run (disclose, don't downgrade — dirty is the normal review-time situation, so a blanket downgrade would gut re-verification).
+
+**session execution memo**: log each run to `$OUTER_DIR/outer_log.md`'s `## Verification Runs` section (schema: `references/04-file-schemas.md`) — `- <V anchor> | <recipe hash> | <verdict> | <ISO8601>`. When `(anchor, hash)` already exists, cite the recorded verdict and drop `지금 검증 실행` from the menu (cuts the outer loop's 20× re-proposal fatigue); a modified recipe changes the hash → a legitimate re-proposal.
+
+**termination machine**: Type `verification` bypasses §8 auto-decide structurally (execution is a real-world side effect, never auto-decided). A cat-1 self-run mutates the ledger without a user prompt, so it is counted by the **independent `[VERIFY-RAN]` counter** kept OUT of `escalate_applied` / `COUNT_APPLIED` and every itemize render (Step 20 breakdown / convergence_table columns / `references/05` summary are unmodified). It feeds one term to the Step 22 predicate (`this_iter_verify_ran == 0`), excluded from `extract_prior_signals` (anti-ratchet), is not an ack-extraction target, and emits no `### Auto-Decides` audit. A cat-1 `반증됨(실패)` verdict (a refuted design claim) is NEVER silently recorded — surface it in Korean (refutation evidence + the `영향 결정` flip); the next round's fresh agent then emits a normal decision-type finding.
+
+**`잔여 항목으로 기록`** lands as `잔여 사유: 검증 차단` + blocked reason `리뷰 시점 사용자 이연 — <YYYY-MM-DD>` (the third birth path in `_common/verification.md` §5.1) and creates an R-item — never an R-flip (those are implement-only).
 
 ## Ground Rules
 
@@ -669,6 +704,8 @@ Verify consistency and completeness of the existing design content. Do NOT propo
 - DON'T propose: adding new implementation details that don't currently exist (these belong to task-level design).
 - DON'T propose: removing or reducing existing detailed design content.
 ```
+
+**Verification carve-out (BASE MODE)**: verification-bookkeeping fixes (criterion #7) are in-scope even under `--base`; using a verification *result* as a vector for a new task-level design-substance proposal within the same finding remains forbidden.
 
 When `--base` is not present, remove the `{BASE_MODE_CONSTRAINT}` placeholder line from the agent prompt. (LLM-equivalent to substituting a single empty line, as `06-review-agent-prompt.md`'s substitution contract phrases it; left unchanged as out of scope here.)
 
