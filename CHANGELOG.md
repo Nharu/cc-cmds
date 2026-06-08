@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-06-08
+
+`design` 스킬 Step 4에 **synthesis fidelity pass(충실도 점검)**를 도입한다. 리드가 모든 토론을 압축해 문서를 작성하는 과정에서 발생하는 누락·왜곡·약화는 원본 컨텍스트 보유자(팀원)만 잡을 수 있고, 저장 직후 team-cleanup으로 컨텍스트가 소실되면 다운스트림 `design-review`가 원리적으로 감지하지 못한다. 따라서 cleanup 이전·pre-save sweep 직전의 살아있는 Step 3 팀으로만 가능한 고유 검사를 추가해 합성 충실도 결함 클래스를 메운다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Added
+
+- **`design` Step 4 synthesis fidelity pass**: 전체 초안 합성 직후·pre-save sweep 직전, 살아있는 Step 3 팀(전문 에이전트 포함)에게 전체 초안을 전달해 각자 **자기 기여만** 충실도 점검한다. 충실도는 2개 클래스 — 해석적(accounted-for: 채택 또는 근거있는 기각) / 전사적(`근거 등급`·`검증 등급` verdict의 byte-identical 또는 flag, grade/verdict one-way 전파를 처음으로 실제 강제). discrepancy는 `[COMPLETE]` body의 block(`omission`/`distortion`/`grade-distortion`/`decision-reopen`)으로 회신하고, 리드는 "수렴된 결정과 모순되는가" 단일 테스트로 라우팅한다 — NO는 즉시 Edit으로 canonical SOT에 복원, YES는 기존 1-cycle re-convergence 재사용. restore-never-re-grade(broadcast에 있는 값만 복원, read-only 점검은 새 grade earn 불가)로 전문가의 의견 laundering을 차단한다.
+- **무응답·가시성·제외 처리**: 무응답은 기존 `_common/agent-team-protocol.md`의 채널-liveness 머신(remediation_count/Bound A·ip_count/Bound B)을 재사용하되 H1/H2 가드(단일 정적 구간 no-delivery 추론 금지, 유효 DM 도착 시 Bound-A escalation 자동 취소)와 fidelity-scope Bound A/B 프롬프트 재서술을 더한다. clean pass는 문서·사용자 채널 모두 무흔적(on-entry 통지 제외)이며, Bound 옵션-(a) 제외는 문서 metadata 표기 대신 기여자당 1회 ephemeral emit으로만 공개("no silent caps"). 새 카운터·새 control-flow·새 `##` 헤딩 없음.
+- **`design-lite`**: fidelity pass는 lite에서 비활성(예산 모드) — disabled-note 한 줄 추가.
+
 ## [1.15.0] - 2026-06-08
 
 `design` 패밀리 산출물에 산재하던 **"구현 시 검증 필요" 이연(deferral)을 제거하는 세션 내 검증(in-session verification) 매커니즘**을 도입한다. 핵심 원칙은 — 검증 실패는 곧 설계 변경을 의미하므로, 세션 안에서 검증 가능한 클레임은 설계 세션에서 검증하고(검증 ledger에 기록), 진짜 구현 시점에만 판정 가능한 잔여 클레임만 구조화 인코딩으로 남겨 `implement`가 구현 시작 시점에 fail-fast로 소비한다. 검증 가능한 클레임을 구현까지 미루면 잘못된 설계 위에 구현이 쌓이는 문제를 차단하기 위함이다. 어휘·스키마·실행 메커니즘의 단일 SOT로 `_common/verification.md`를 신설하고, 방출자(`design`·`design-lite`)·검사자(`design-review`·`design-review-lite`)·소비자(`implement`)가 이를 인용한다 (`/plugin update cc-cmds`로 자동 반영).
