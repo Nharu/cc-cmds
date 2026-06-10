@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-06-09
+
+`design-review`가 inner-loop 리뷰 에이전트를 spawn할 때 리뷰 모델이 실행마다 비결정적으로 선택되던 문제를 고친다. 근본 원인은 상속 실패가 아니라 Step 12 spawn 지시가 underspecified라는 것 — `Agent()`에 `model`을 비우면 하네스 부모 상속이 건전하게 작동하지만, 스킬이 아무 지시도 없어 오케스트레이팅 메인루프가 일부 spawn에 `model` override를 임의 주입한다. 리뷰 모델을 **세션 모델 상속(inherit)**으로 고정해, 리뷰 깊이·비용이 사용자의 세션(=비용) 선택을 결정적으로 추적하도록 한다 (저비용 플랜 사용자에게 opus 하드핀은 매 실행 큰 초과비용이었다). 범위는 `design-review`만이며 `design-review-lite`(sonnet 하드핀)는 불변이다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **`design-review` Step 12 리뷰 에이전트 모델 비결정성**: 리뷰 에이전트 `Agent()` 호출이 `model` 파라미터를 **반드시 생략**하도록 omit+bind 지시를 추가한다. 생략 시 하네스 부모 상속이 세션 모델을 그대로 물려받아 세션 내 결정적이며, 세션 모델을 명시적 리터럴로 주입하는 것을 금지해(sonnet/haiku 메인루프가 자기 티어를 명시 주입하는) 역방향 drift를 차단한다. 이 bind는 prose로만 강제하며, 향후 리터럴 주입 재개 잔여 drift 리스크는 위임-판단-잔여 norm에 따라 명시 수용한다(상시 모니터링 hook 미설치).
+
+### Changed
+
+- **haiku 가시성 best-effort notice**: 세션 첫 리뷰 에이전트 spawn 직전, 메인 세션이 자기 세션 모델을 haiku로 판단하면 세션당 1회 한국어 prose 1줄을 emit해 "터미널 설계 게이트가 haiku로 실행 중 — 발견이 얕을 수 있음(sonnet/opus 세션 재실행 권장)"을 알린다. floor(동작 변경)가 아니라 정보 제공이며 self-ID 의존 best-effort라 미발화는 현상유지(benign)다. haiku는 명시 선택으로만 도달하므로 대상은 항상 cheapest를 의도 선택한 사용자다.
+- **`## Constraints` 상속 정책 1줄**: 리뷰 에이전트가 세션 모델을 상속한다는 정책을 Constraints에 재기술한다(`design-review-lite`의 sonnet 하드핀 constraint와 대칭 — full은 티어를 고정하지 않고 상속).
+
 ## [1.16.0] - 2026-06-08
 
 `design` 스킬 Step 4에 **synthesis fidelity pass(충실도 점검)**를 도입한다. 리드가 모든 토론을 압축해 문서를 작성하는 과정에서 발생하는 누락·왜곡·약화는 원본 컨텍스트 보유자(팀원)만 잡을 수 있고, 저장 직후 team-cleanup으로 컨텍스트가 소실되면 다운스트림 `design-review`가 원리적으로 감지하지 못한다. 따라서 cleanup 이전·pre-save sweep 직전의 살아있는 Step 3 팀으로만 가능한 고유 검사를 추가해 합성 충실도 결함 클래스를 메운다 (`/plugin update cc-cmds`로 자동 반영).
