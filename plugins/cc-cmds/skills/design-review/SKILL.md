@@ -365,7 +365,9 @@ The review agent prompt instructs it to read the `## Acknowledged Items` section
 
 Perform agent-based iterative review until severity saturation (§3.11). Each round spawns a **fresh** review agent that independently reviews the document from scratch.
 
-**Step 12** — `inner_round += 1`. Spawn a review agent.
+**Step 12** — `inner_round += 1`. Spawn a review agent. **The review agent's `Agent()` call MUST omit the `model` parameter** — the harness's parent inheritance then passes the orchestrating session model straight through, so the review model is deterministic within a session and tracks the user's cost choice. Do NOT inject the session model as an explicit literal: a sonnet/haiku main loop helpfully naming its own tier would create reverse drift. This bind is prose-enforced only; the residual drift risk of a future orchestrator resuming literal injection is an interpretable model misjudgment, explicitly accepted per the repo's delegated-judgment-residual norm (no always-on monitoring hook).
+
+**haiku 가시성 notice (best-effort, 세션당 1회)**: 세션의 첫 리뷰 에이전트 spawn 직전(즉 `outer_iter == 1` 그리고 `inner_round == 1`인 시점)에, 메인 세션이 자기 세션 모델을 haiku로 판단하면 한국어 prose 1줄을 emit한다 — 예: "⚠️ 터미널 설계 게이트가 haiku 모델로 실행 중입니다 — 발견이 얕을 수 있습니다. 더 깊은 리뷰가 필요하면 sonnet/opus 세션에서 재실행하세요." 이는 floor(동작 변경)가 아니라 정보 제공이며 모델 self-ID에 의존하는 best-effort다: 미발화는 현상유지(benign — 다운그레이드 경로 없음)다. haiku는 명시적 `/model haiku`·`--model haiku`·`ANTHROPIC_MODEL=haiku`로만 도달하므로, notice의 대상은 항상 세션 전체를 cheapest로 의도 선택한 사용자다.
 
 **Before spawning the review agent, Read `${CLAUDE_SKILL_DIR}/references/06-review-agent-prompt.md`** and substitute `{TEMP_DIR}` (= actual `INNER_TEMP_DIR`), `{USER_NOTE}` (the trailing note when non-empty, else empty), `{BASE_MODE_CONSTRAINT}` (the `--base` block when `BASE_MODE=true`, else empty), and `{CHANGES_MODE_CONSTRAINT}` (the `--changes` block when `CHANGES_MODE=true`, else empty) per the file's substitution contract, then prepend the path context block before calling `Agent()`.
 
@@ -752,6 +754,8 @@ Flag parsing is done together with `--base` in Phase 1 step 2 (all three flags a
 ## Constraints
 
 - **Deferred tool loading**: Before using AskUserQuestion, you MUST first load it via `ToolSearch("select:AskUserQuestion")` before any user prompt step. **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
+
+- **Review agent model (session inheritance)**: every inner-loop review agent inherits the orchestrating session model — the `Agent()` call omits the `model` parameter and never injects an explicit literal (see Step 12). This keeps the review model deterministic within a session and tracks the user's cost choice. It is the inverse of `design-review-lite`, which hard-pins `sonnet`: full design-review inherits the tier instead of fixing one.
 
 ## Begin
 
