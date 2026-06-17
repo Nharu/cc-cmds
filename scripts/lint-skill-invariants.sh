@@ -41,8 +41,10 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # transition rule drops out of the post-compaction priority window. Skills that
 # recover all control state from elsewhere are exempt:
 #   - Multi-round agent-team skills (review / design-lite / review-lite
-#     / design-apply) — termination contract lives in `_common/team-cleanup.md`
-#     plus file-recovery slug bindings, and they declare no auto-advance /
+#     / design-apply) — team members are nameless background tasks that
+#     self-terminate on return (no shutdown handshake to maintain); the only
+#     durable control state is the role↔agentId ledger, recovered from disk
+#     (the doc HTML-comment block), and they declare no auto-advance /
 #     turn-yield contract that compaction could break.
 #   - Single-pass verdict-emit skills (design-ingest) — loop state recovered
 #     from `## Verdict:` headers on disk; every invocation is fresh-context.

@@ -53,11 +53,10 @@ User-facing communication and saved documentation should be in Korean.
 
 ### Step 0: Tool Loading
 
-Load deferred tools via ToolSearch before any other step:
+Load deferred tools via ToolSearch before any other step (`Agent` is built-in — do not load it):
 - `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
-- `ToolSearch("select:TeamCreate")`
 - `ToolSearch("select:SendMessage")`
-- `ToolSearch("select:TeamDelete")`
+- `ToolSearch("select:TaskStop")`
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
@@ -275,18 +274,21 @@ Branch on user response:
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the completion-signal contract and shared facilitator rules.
+**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — their **return text is the result**. There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 15-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
-- Create team with approved composition. Team naming conventions:
+- **Derive the review slug** from the target (this names the review-report doc + keys the ledger; it is no longer a harness team name):
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
-  - Step 6 re-creation: original team name + `-followup` (e.g., `review-pr42-followup`)
-- All team-internal discussion in English
+- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v1 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary`, `state ∈ {running, done, aborted}`.
+- **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). Update the ledger on every state change.
+- All inter-reviewer discussion in English
 - NO code modifications allowed. Review only
-- **The lead acts as a facilitator**, actively driving multi-round review
+- **The lead acts as a facilitator**, actively driving the multi-round resume loop (produce → cross-review → convergence)
+- **Convergence (return collection)**: after cross-review, resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts verbatim) until every return says "no further input". Drive a **minimum of 2 rounds** (Round 1 = produce; Round 2+ = cross-review with peer findings quoted verbatim). This is a **full** review — no cost throttle; debate as long as convergence needs.
+- **Escalation** (per the protocol's failure phenotypes): **Case 1 — thin-return** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort), noting any exclusion in the report metadata. **Case 2 — never-returns** → `TaskStop` + fresh re-spawn (new `agentId`, update ledger); if the re-spawn also never returns → `AskUserQuestion`. **Case 3 — non-conforming return** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
 
 ---
 
@@ -294,7 +296,7 @@ Branch on user response:
 
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
-The lead synthesizes all review results into a Korean document under `docs/reviews/` following the template.
+The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v1 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
 
 #### Paste-ready comments (lead-authored)
 
@@ -330,10 +332,10 @@ Team re-creation proposal format builds on Step 3's format with additional field
 - **Re-creation reason**: blind spot, additional analysis needed, severity dispute, etc.
 - **Previous review coverage**: areas covered vs. uncovered in previous review
 - **Additional analysis scope**: specific targets and expected outcomes
-- Include previous review findings in the new team's context package
+- Include previous review findings in the new reviewers' context packages
 - Requires user approval
 
-**Always clean up the previous team before creating a new one.**
+**Leftover detection**: before re-spawning, re-read the ledger from disk and scan for residual `state=running` rows (a leftover signal — this replaces the removed team-directory filesystem scan). The previous reviewers self-terminated on return, so ledger hygiene before the next spawn is all that is needed: set returned rows to `done`, and `TaskStop` any genuinely-running leftover before marking it `aborted`. Re-spawn fresh nameless tasks and record their new `agentId`s in the ledger.
 
 #### Document update rules
 
@@ -341,7 +343,7 @@ Refer to `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md` "Document
 
 Repeat until user is satisfied.
 
-**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure. If additional reviewer clarification is needed during Step 5 document writing, do so before cleanup. When Step 6 triggers team re-creation, always clean up the previous team before creating the next one.
+**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it: normal completion = no-op (returned tasks already self-terminated), abort = `TaskStop` on any `agentId` whose ledger `state` is still `running`, then ledger hygiene (no `state=running` row survives). If additional reviewer clarification is needed during Step 5 document writing, do so first by resuming that reviewer's `agentId`. When Step 6 triggers re-spawn, apply ledger hygiene before the next spawn.
 
 ---
 
@@ -349,8 +351,8 @@ Repeat until user is satisfied.
 
 - **No code modifications.** Review only.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
-- **Agent Team required**: Steps involving team creation and inter-agent discussion MUST use TeamCreate and SendMessage tools. Do NOT substitute with Agent tool sub-agents. Real-time inter-agent discussion (debate, challenge, cross-validation) is only possible through Agent Teams, not isolated sub-agents.
-- **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, you MUST first load them via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion", "select:TeamCreate", "select:SendMessage", and "select:TeamDelete" to load each tool. These are deferred tools and will NOT work unless loaded first. AskUserQuestion MUST be loaded before Step 1 (scope confirmation with user).
+- **Nameless background sub-agents required**: reviewers MUST be spawned as nameless `Agent` background tasks (`subagent_type:"claude"`, `run_in_background:true`, no `name`) and driven through a **retained-context, lead-mediated resume loop** — resume each by `agentId` for cross-review and convergence. Do NOT collapse a round into an isolated one-shot `Agent()` (that throws away retained context and breaks cross-review). There is no `TeamCreate`/named-teammate model; the multi-round resume loop is what makes this a team.
+- **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch (`Agent` is built-in and needs no loading). Run `ToolSearch` with query "select:AskUserQuestion", "select:SendMessage", and "select:TaskStop" to load each tool. These are deferred tools and will NOT work unless loaded first. AskUserQuestion MUST be loaded before Step 1 (scope confirmation with user).
 - **Claude Context MCP required**: Actively use for codebase indexing and code search. Complete index creation/verification in Step 2 before team creation. Teammates have direct access to Claude Context MCP tools (`search_code`, etc.) and should search independently — the lead does not need to proxy searches.
 - **PR comment dedup required**: When existing PR comments/reviews exist, always provide them as context to reviewers. Filter or flag findings that duplicate existing comments.
 - **Fix suggestion inclusion**: Include fix direction when clear. This is judgment-based, not mandatory for all issues — decide based on issue type and complexity.

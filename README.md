@@ -27,16 +27,7 @@ Engineering workflow commands for Claude Code.
 
 ## Prerequisites
 
-`/cc-cmds:design`, `/cc-cmds:design-review` 등 에이전트 팀 기반 커맨드를 사용하려면 아래 환경변수가 필요합니다.
-
-```json
-// ~/.claude/settings.json
-{
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  }
-}
-```
+`/cc-cmds:design`, `/cc-cmds:design-review` 등 에이전트 팀 기반 커맨드는 **Claude Code 2.1.178 이상**이 필요합니다. 팀원은 nameless background task(`Agent` 도구)로 구동되므로 별도 환경변수 설정은 필요 없습니다(이전에 안내하던 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`는 더 이상 요구되지 않습니다).
 
 ### 완료 알림 (선택)
 
@@ -160,7 +151,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 | Option | Default | Summary |
 | --- | --- | --- |
-| `<handoff-extract-path>` | (required) | design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·팀명 조립·cleanup 복구의 단일 앵커 |
+| `<handoff-extract-path>` | (required) | design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·출력 경로·원장 키의 단일 앵커 |
 
 ### /cc-cmds:design-ingest
 

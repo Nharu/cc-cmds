@@ -8,7 +8,7 @@ options:
     - name: "<handoff-extract-path>"
       kind: positional
       required: true
-      summary: "design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·팀명 조립·cleanup 복구의 단일 앵커"
+      summary: "design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·출력 경로·원장 키의 단일 앵커"
 ---
 
 Author the implementation-detail design document `docs/{slug}-fe/impl-design.md` that bridges Claude Design's HTML prototype to actual code in the target stack. This is a **lightweight sibling of `/cc-cmds:design`** — it reuses the same agent-team protocol (`_common/agent-team-protocol.md`) and cleanup machinery (`_common/team-cleanup.md`) but skips the Step 1 greenfield interview because its inputs are concrete (the design-ingest extract + base design document + DS workspace + codebase).
@@ -20,9 +20,9 @@ All team discussion and inter-agent communication is in English to optimize toke
 ## Input parsing and slug recovery
 
 - Extract `{slug}` from `<handoff-extract-path>`. The path must match `docs/{slug}-fe/handoff-extract.md` exactly. On any other shape emit Korean error: *"입력 경로는 `docs/<slug>-fe/handoff-extract.md` 형식이어야 합니다."* and end.
-- The `{slug}` is the recovery anchor for two purposes:
-    - **Team naming**: the agent team is created as `design-apply-{slug}` (e.g., `design-apply-profile-settings`). This name is reconstructable from the input path on every invocation without any in-session memory — required by `_common/team-cleanup.md`'s lead-memory-free cleanup contract.
-    - **Output path**: `docs/{slug}-fe/impl-design.md` (fixed name; cleanup recovery uses the input-path slug, not this output, since the output may not exist yet on first invocation).
+- The `{slug}` serves two single-purpose roles, both reconstructable from the input path on every invocation without any in-session memory:
+    - **Output path**: `docs/{slug}-fe/impl-design.md` (fixed name).
+    - **Ledger key**: the slug locates that output doc, whose HTML-comment ledger holds the agentId roster used for resume and cleanup recovery (see `_common/agent-team-protocol.md`'s Role↔agentId ledger). agentId recovery comes from the ledger — there is no harness team name in this model.
 
 ## Step 1: Concrete-input context gathering (Korean)
 
@@ -45,24 +45,25 @@ Propose a 2-teammate team to the user, both `opus`. Typical roles:
 - **FE Integration Architect** (opus): owns codebase integration — component mapping, state management, routing, file layout. Reads existing components to find reuse opportunities.
 - **DS Fidelity Reviewer** (opus): owns token/component fidelity — verifies the impl-design respects the DS-copy vs `var()`-reference pattern detected by design-ingest, calls out divergence risk, audits state coverage and accessibility-from-DS-semantics carrying through.
 
-Adjust roles based on the feature's character (e.g., if the feature is data-heavy, replace one role with a Data Flow specialist). Only create the team after the user approves the composition.
+Adjust roles based on the feature's character (e.g., if the feature is data-heavy, replace one role with a Data Flow specialist). Only spawn the team after the user approves the composition.
 
 ## Step 3: Implementation-design discussion (English, internal)
 
-**Before assigning any team work, `Read ${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`.** Apply the completion-signal instruction and facilitator rules from that file throughout this step. When you assign work to each teammate via `SendMessage`, include the Teammate Rules block from `_common/agent-team-protocol.md` **verbatim in the assignment body** (the block-quoted teammate-facing instruction under the `## Teammate Rules` heading) — do NOT paraphrase to a one-liner.
+**Before assigning any team work, `Read ${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`.** Apply its spawn / completion-signal / resume / convergence / escalation rules throughout this step. When you spawn or resume a member, embed the **task-assignment header** from that file **verbatim at the top of the prompt** (the block-quoted self-contained header under the `## Task-assignment header` heading) — do NOT paraphrase to a one-liner.
 
-- Create the team with the approved composition. Team name: **`design-apply-{slug}`** (e.g., `design-apply-profile-settings`).
+- **Early ledger stub**: before the first spawn, create the output doc `docs/{slug}-fe/impl-design.md` as a stub — its H1 title plus the ledger HTML-comment block `<!-- cc-design-ledger v1 … -->` placed right after the H1 and before the first `##`, per `_common/agent-team-protocol.md`'s Role↔agentId ledger. Entry schema: `agentId | state | round | role/scope | thinReturns | last-return summary`, with `state ∈ {running, done, aborted}`. This ledger comment CO-EXISTS with the DS-manifest-version HTML comment added at Step 4 (both are HTML comments near the doc top; they do not conflict — keep both). Update the ledger on every state change; re-read it from disk before any resume; if it is missing or unparseable, fail closed via `AskUserQuestion` (never silent-skip).
+- Spawn each approved member as a nameless background task: `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. Record each returned `agentId` in the ledger immediately. The slug names the output path and ledger key only — there is no harness team name.
 - All inter-agent discussion in English.
 - **NO code modifications.** This is a design step that produces `impl-design.md` only.
-- Lead acts as facilitator, driving multi-round discussion.
+- Lead acts as facilitator, driving the multi-round resume-based discussion.
 
 ### Discussion protocol (minimum 2 full rounds)
 
-1. **Round 1 — Initial Proposals**: Assign each teammate their scope (FE Integration Architect → component mapping + state + routing + file layout proposal; DS Fidelity Reviewer → token/component usage rules + accessibility-preservation strategy + test strategy proposal). Wait for ALL teammates to submit `[COMPLETE]` proposals before proceeding. If a teammate sends `[IN PROGRESS]`, apply the facilitator counter / hard prompt rules from `_common/agent-team-protocol.md`.
-2. **Quality gate**: Verify each proposal references specific files/modules/patterns from the actual codebase (not generic advice) and includes concrete design decisions with rationale. Send shallow proposals back with specific deepening questions.
-3. **Round 2 — Cross-Review**: Send each teammate's proposal to the other for review. Identify gaps, risks, contradictions, and alternative approaches. Wait for `[COMPLETE]` from both.
-4. **Round 3+ — Refinement (as needed)**: Collect cross-review feedback and forward to the original authors. Repeat until convergence.
-5. **Convergence Check**: Use the convergence-check template from `_common/agent-team-protocol.md`. Only proceed to Step 4 when BOTH teammates confirm `[COMPLETE] No further input` via `SendMessage`.
+1. **Round 1 — Initial Proposals**: Spawn each member with their scope (FE Integration Architect → component mapping + state + routing + file layout proposal; DS Fidelity Reviewer → token/component usage rules + accessibility-preservation strategy + test strategy proposal). Each task's **return text IS its proposal** — collect all returns before proceeding. If a return is empty or substanceless, apply Case 1 (thin-return stall) escalation from `_common/agent-team-protocol.md`; if a member never returns, apply Case 2.
+2. **Quality gate**: Verify each proposal references specific files/modules/patterns from the actual codebase (not generic advice) and includes concrete design decisions with rationale. Resume any member whose proposal is shallow or off-contract (Case 3 re-assign once) with specific deepening questions.
+3. **Round 2 — Cross-Review**: Resume each member by `agentId`, re-injecting the peer's proposal **verbatim**. Identify gaps, risks, contradictions, and alternative approaches. Collect both returns.
+4. **Round 3+ — Refinement (as needed)**: Resume the original authors with the collected cross-review feedback re-injected verbatim. Repeat until convergence.
+5. **Convergence Check**: Resume each member once with a convergence prompt (re-inject current consensus + open conflicts). When every return says "no further input", the team has converged — proceed to Step 4.
 
 ### Decisions in scope
 
@@ -90,10 +91,10 @@ Adjust roles based on the feature's character (e.g., if the feature is data-heav
     - 주요 결정사항과 근거
     - 미해결 이슈 / 트레이드오프
     - 권장 구현 순서
-- Pin the DS manifest version at the top of the file via HTML comment: `<!-- DS manifest version (consumed by design-apply): <version> -->`. This is the version used during this design synthesis; `/cc-cmds:implement` reads it on next invocation to detect drift between design and implementation.
-- **Synthesis terminal**: All teammate clarifications must be completed before saving `impl-design.md`. Once the file is saved, the synthesis phase is over — no further teammate messages are permitted. The sequence **save → cleanup → presentation** is atomic. Do NOT save a partial document, send a teammate message, then save again; clarify before the first save.
+- Pin the DS manifest version at the top of the file via HTML comment: `<!-- DS manifest version (consumed by design-apply): <version> -->`. This is the version used during this design synthesis; `/cc-cmds:implement` reads it on next invocation to detect drift between design and implementation. This DS-version comment co-exists with the `cc-design-ledger` HTML comment created at Step 3 — both sit near the doc top and do not conflict; keep both.
+- **Synthesis terminal**: All teammate clarifications must be completed before saving `impl-design.md`. Once the file is saved, the synthesis phase is over — no further teammate resumes are permitted. The sequence **save → cleanup → presentation** is atomic. Do NOT save a partial document, resume a member, then save again; clarify before the first save.
 - Notify the user in Korean: *"적용 설계 문서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
-- **Before presenting results to the user, `Read ${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure to clean up the `design-apply-{slug}` team. The cleanup recovery anchor is the `{slug}` parsed from the input path in "Input parsing and slug recovery" above — `_common/team-cleanup.md`'s idempotency guards use this to safely no-op if cleanup already ran.
+- **Before presenting results to the user, `Read ${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply it. In Model B cleanup is inherently idempotent: normal completion is a **no-op** (every returned member has already self-terminated), abort calls `TaskStop` on any ledger `state=running` agentId, and **ledger hygiene** updates rows to `done`/`aborted` so no `state=running` row survives. Recover agentIds by re-reading the output doc's HTML-comment ledger from disk — not from any harness team name.
 - Present the results to the user in Korean.
 
 ## Step 5: Korean next-step emit
@@ -114,14 +115,14 @@ Do not block; the user decides. The team in Step 3 makes integration decisions a
 
 ## Lightweight-sibling rationale (no `## Control-Flow Invariants` heading needed)
 
-This skill is an agent-team workflow (like `/cc-cmds:design` and `/cc-cmds:review`). Its termination contract lives in `_common/team-cleanup.md` — the 5-step shutdown procedure with idempotency guards. There is no in-session bash-variable termination formula at the SKILL.md level, so the skill is EXEMPT from `lint-skill-invariants.sh` rule (A) on the same grounds as `design`, `design-lite`, `review`, and `review-lite` (all currently exempt). The slug-from-input-path recovery key makes this exemption safe across interrupted runs.
+This skill is an agent-team workflow (like `/cc-cmds:design` and `/cc-cmds:review`). Its termination contract lives in `_common/team-cleanup.md` — members self-terminate on return, so cleanup is an idempotent no-op / `TaskStop` / ledger-hygiene check (no shutdown handshake). There is no in-session bash-variable termination formula at the SKILL.md level, so the skill is EXEMPT from `lint-skill-invariants.sh` rule (A) on the same grounds as `design`, `design-lite`, `review`, and `review-lite` (all currently exempt). The output doc's HTML-comment ledger (re-read from disk) provides agentId recovery across interrupted runs.
 
 ## Constraints
 
 - NO code modifications outside the saved `docs/{slug}-fe/impl-design.md`. The team discusses and the lead writes the design document; no source code is touched.
 - Inter-agent communication must be in English.
 - User-facing communication and the saved document in Korean.
-- Agent Team required: `TeamCreate` + `SendMessage` only. Do NOT substitute with isolated `Agent()` sub-agents for the discussion. (The Step 1 codebase exploration can use `Agent()` for parallel searches; only the Step 3 design discussion is constrained to TeamCreate.)
-- **Deferred tool loading**: Before using `AskUserQuestion`, `TeamCreate`, `SendMessage`, or `TeamDelete`, you MUST load them via `ToolSearch`. Run `ToolSearch` with queries `select:AskUserQuestion`, `select:TeamCreate`, `select:SendMessage`, and `select:TeamDelete` to load each tool. `AskUserQuestion` MUST be loaded before Step 1 (the optional narrow interview). Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
+- **Nameless background-task team**: the Step 3 design discussion members ARE nameless `Agent` background sub-agents (`subagent_type: "claude"`, no `name`, `run_in_background: true`), resumed across rounds by `agentId`. The retained-context, multi-round cross-review/convergence resume loop is required — do NOT collapse it into one-shot isolated `Agent()` calls per round. (The Step 1 codebase exploration may also use `Agent()` for parallel searches.)
+- **Deferred tool loading**: Before using `AskUserQuestion`, `SendMessage`, or `TaskStop`, you MUST load them via `ToolSearch`. Run `ToolSearch` with queries `select:AskUserQuestion`, `select:SendMessage`, and `select:TaskStop` to load each tool. `Agent` is a built-in tool and needs no loading. `AskUserQuestion` MUST be loaded before Step 1 (the optional narrow interview). Before calling `AskUserQuestion`, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 
 Handoff extract path: $ARGUMENTS

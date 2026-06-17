@@ -4,7 +4,7 @@ When assigning each analyst (Step 4), include the following in the initial messa
 
 ## Context Package
 
-1. **Completion signal instruction**: Use the `[COMPLETE]` / `[IN PROGRESS]` contract from `_common/agent-team-protocol.md`. Include the **full** instruction block from that file verbatim (delivery channel + message format + self-check every turn + silence-check before stopping) — do NOT paraphrase to a one-liner. The block already uses self-referential "me (the team lead)" phrasing and needs no lead-name substitution.
+1. **Return contract instruction**: embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the prompt. Under Model B an analyst's **return text IS its result** — there is no separate delivery channel and no `[COMPLETE]`/`[IN PROGRESS]` prefix. The header tells the analyst to deliver its analysis as its final return text, begin that return with its role and round, and never return empty (return a partial result plus a one-line concrete blocker if it cannot proceed).
 2. **The source document**: full text of `<design-doc-path>` (or, for very large docs, the analyst's assigned section range + a TOC of the rest, pointing the analyst to ask for more).
 3. **Assigned lens**: the analyst's role from the Step 3 lens pool + its 범위 (see lens table in SKILL.md Step 3).
 4. **Lens-specific checklist** (see "Lens checklists" below), with MCP `search_code` guidance when grounded.
@@ -38,12 +38,14 @@ When assigning each analyst (Step 4), include the following in the initial messa
 
 **doc-vs-code grounding (문서-코드정합성, grounding ON only):** does the document's stated premise about the existing code match reality. 3 sub-modes of `doc-code-gap`: **직접 모순** (doc claims X, code shows not-X), **오독** (doc misreads existing code/behavior), **stale 가정** (doc's premise was true once but the code has since changed). Always cite both sides: the doc claim (`§anchor`) + the actual code (`path:line`).
 
-## Analysis Protocol (read-only, single pass)
+## Analysis Protocol (read-only, resumed across rounds)
 
-1. **Round 1 — Independent analysis**: each analyst analyzes from their lens. Wait for ALL to submit `[COMPLETE]`. On `[IN PROGRESS]`, reply "Take your time and send your complete analysis when ready" — do NOT move on.
-2. **Quality Gate**: before cross-validation, verify each analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). Re-request until QG passes (within the round safety limit).
-3. **Cross-validation**: send each analyst's findings to the others. Request: validate severity hints, identify gaps in overlapping areas, flag false positives, note findings that interact.
-4. **Convergence Check**: use the convergence template from `_common/agent-team-protocol.md`. Only proceed to Step 5 when ALL analysts confirm `[COMPLETE]`. This is a **single pass** — no external/internal convergence loop, no termination math.
+Each analyst is a nameless background task; the lead drives it across rounds by resuming its `agentId` and collecting its return text (see `_common/agent-team-protocol.md`).
+
+1. **Round 1 — Independent analysis**: each analyst analyzes from its lens and delivers the analysis as its return text. A returned analyst has self-terminated; collect its return — there is no `[COMPLETE]`/`[IN PROGRESS]` prefix to wait on.
+2. **Quality Gate**: before cross-validation, verify each returned analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). On a miss, resume that analyst (by `agentId`, re-injecting the gap) until QG passes (within the round safety limit).
+3. **Cross-validation**: resume each analyst, re-injecting the other analysts' findings **verbatim**. Request: validate severity hints, identify gaps in overlapping areas, flag false positives, note findings that interact.
+4. **Convergence Check**: convergence is by **return collection** (see `_common/agent-team-protocol.md`). Resume each analyst once with a convergence prompt (re-inject current consensus + open conflicts); the analysis has converged when every analyst's return says "no further input". Only then proceed to Step 5. Analysts are read-only single-pass per lens, but are still resumed for cross-review convergence — no termination math.
 
 ## Analysis-specific Facilitator Additions
 
@@ -52,8 +54,9 @@ Beyond the shared facilitator rules in `_common/agent-team-protocol.md`:
 - **Premise focus**: for refactoring docs, push analysts to test the document's *premise about the existing code* — that is the highest-value `doc-code-gap` signal.
 - **Round safety limit**: the Step 4 protocol is capped at **10 rounds**. On reaching the limit, report state to the user and ask whether to extend by 10 more.
 
-**When an Analysis Coordinator exists (large/multi-domain doc):**
+**Analysis Coordinator scope (large/multi-domain doc):**
+For a large or multi-domain doc, the lead may give one analyst an added coordinator scope in its task-assignment header (no named role, no separate channel — it is still a nameless background task delivering via its return text):
 - **Round 0**: classify document sections by risk and assign analyst focus areas; included in Round 1 packages.
 - **After Quality Gate**: coverage audit — identify high-risk sections not yet analyzed, request additional analysis.
 - **During cross-validation**: synthesize cross-section issues (inter-module/contract interactions individual analysts miss).
-- Uses the same `[COMPLETE]`/`[IN PROGRESS]` signals; included in Convergence Checks.
+- This analyst is resumed and its return collected like any other; included in the return-collection Convergence Check.
