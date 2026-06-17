@@ -655,6 +655,8 @@ For each user response to a proposal prompt, the main session must first pre-che
 
 The main session applies approved changes (auto-approved, auto-decided, and user-approved) directly using the Edit tool. The agent never modifies the design document. Since concepts may affect multiple locations, the main session identifies all affected locations during scope analysis and applies changes in batch.
 
+**V/R field-line form-preservation fence**: when an Edit touches a V/R verification field line (`_common/verification.md` §4/§5), preserve its canonical rendering — do NOT convert the line to a leading bullet (`- `) and do NOT add or remove the `**…**` bold; emit the CANON `**key**: value` form (bold key, no bullet, one space after the colon). This directly blocks the observed bulletization; criterion #7(e) is the defense-in-depth detection when the fence is missed.
+
 If an Edit fails, follow the Step 13 Edit-failure handling procedure (retry within round or defer to `pending_applies.md`).
 
 ## Verification dimension (criterion #7)

@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-06-17
+
+검증 V/R 항목 필드 라인의 markdown 렌더링(선행 불릿 `- ` 유무, `**…**` bold 유무)이 `_common/verification.md` 스키마에 미고정이어서, 손으로 작성된 설계 문서가 `**검증 등급**: …`·`- 검증 등급: …`·`- **잔여 사유**: …` 등 3가지 비호환 형태로 발산했다. 반면 `implement`의 W1 flip·snapshot-diff gate와 탐지 문법은 단일 형태(`**key**: value`)만 가정해, `design-review`가 well-formed로 판정한 잔여 항목이 `implement`에서 flip 불가가 되는 비호환이 있었다(#41에서 관측). 정규 형식 `**key**: value`(bold·비불릿·콜론 뒤 공백 1)를 SOT에 고정하고, 탐지·읽기는 4변형을 모두 흡수하는 관용 ERE로, `implement` flip gate는 비대칭(removed tolerant / added strict-canonical)으로 하드닝한다 (`/plugin update cc-cmds`로 자동 반영). [#44]
+
+### Fixed
+
+- **`implement` 잔여 항목 flip 비호환**: W1 flip의 lookup과 snapshot-diff gate의 removed-side regex가 bold·비불릿 단일 형태만 매치해, 불릿/bold없음으로 렌더된 legacy 잔여 항목을 flip하지 못하거나 gate가 false-fail했다. lookup·removed-side gate를 4변형을 모두 흡수하는 관용 balanced-bold ERE로 교체한다. added-side gate는 strict-canonical을 유지해 `implement`은 항상 정규 형식만 출력하며, 닿은 legacy 라인은 한 줄씩 정규 형식으로 수렴한다(미접촉 라인은 마이그레이션하지 않음).
+
+### Changed
+
+- **`_common/verification.md` (SOT)**: 정규 라인 형식 `**key**: value`(bold key·선행 불릿 없음·콜론 뒤 ASCII 공백 1)를 명문화하고, V/R 블록에 byte-for-byte 복제용 렌더링 예시 블록을 추가한다. 탐지 문법을 관용 balanced-bold ERE(`^(- )?(\*\*<key>\*\*|<key>): <value>$`, `grep -E`)로 교체하고 탐지=관용 / flip-gate=strict 비대칭을 명시한다. "enumeration ≠ rendering" 주석을 추가하고, well-formedness 술어에 "line 렌더링은 malformedness 축이 아님"을 명시한다.
+- **`implement`**: per-flagged-item non-empty-diff assertion을 추가해 조용한 no-op flip(빈 diff vacuous-pass)을 구조적으로 차단하고, 1.5a idempotency skip을 관용 idiom으로 교체하며, flip·gate에 perl 금지 및 `grep -E`/`sed -E` 사용을 명시한다.
+- **emitter (`design`·`design-lite`)**: V/R 필드 라인을 SOT의 CANON 예시에서 byte-for-byte 복제하도록 지시한다(자체 불릿/bold 스타일 선택 금지).
+- **checker (`design-review`·`design-review-lite`)**: fix를 Edit로 적용할 때 V/R 필드 라인의 정규 형식을 보존하는 form-preservation fence를 추가하고, 리뷰 criterion에 비정규 렌더링 경고(severity trivial, 이번 라운드 편집 라인 한정)를 추가한다.
+
 ## [1.17.0] - 2026-06-17
 
 CC 2.1.178이 `TeamCreate`/`TeamDelete`를 제거하고 세션당 단일 암묵 팀으로 전환하면서 동작 불가가 된 에이전트 팀 스킬군(`design`·`design-lite`·`design-analyze`·`design-apply`·`review`·`review-lite`)을 **Model B(nameless background task)**로 재작성한다. 팀원은 `Agent`(`subagent_type:"claude"`, name 없음) 백그라운드 task로 spawn되어 lead가 agentId로 라운드마다 resume 구동하고, 작업 완료 시 task가 자기-종료한다(정리 절차 불필요). task의 return text가 곧 결과 전달 채널이라, 기존 named 팀원의 `[COMPLETE]`/idle 완료신호 모호성과 종료 핸드셰이크가 구조적으로 소멸한다 (`/plugin update cc-cmds`로 자동 반영). [#41]

@@ -373,7 +373,7 @@ Then read the design document and review it against ALL of the following criteri
 4. Implementation order — Check that the proposed implementation sequence respects dependencies. No step should reference artifacts from a later step.
 5. Missing items — Look for gaps: error handling not specified, edge cases not covered, security considerations absent, migration plans missing, rollback strategies undefined.
 6. Contextual review — Based on the specific domain and nature of this design, check for additional concerns that matter in this context but are not covered by the above categories.
-7. In-session verification — Check the design's verification bookkeeping against the contract in `_common/verification.md` (the SOT this prompt cites). Flag (Type `verification`, Category `verification-bookkeeping`): (a) a claim settleable in-session but with no corresponding V/R item — neither an anchor reference (`§검증 기록 V<n>` / `§구현 시 검증 항목 R<n>`) nor a matching claim (a hedge-phrase tripwire — "should exist" / "presumably" / "구현 시 확인/검증 필요" — counts); (b) a verification marking with no recipe; (c) a residual marking that fails the well-formedness predicate (a required field missing / a `/tmp` literal / an unresolved `실패 시 영향` anchor / a token or enum value outside the frozen vocabulary); (d) the saved document containing `**검증 등급**: 미검증` (full-line) or `[검증 등급: 미검증]` (inline tag). **Do NOT run any recipe or command — inspect the bookkeeping by reading only.** Detection is key-anchored full-line (`_common/verification.md` §3.4); the `미검증` absence proof is the single document-wide exception (both literal forms must be 0).
+7. In-session verification — Check the design's verification bookkeeping against the contract in `_common/verification.md` (the SOT this prompt cites). Flag (Type `verification`, Category `verification-bookkeeping`): (a) a claim settleable in-session but with no corresponding V/R item — neither an anchor reference (`§검증 기록 V<n>` / `§구현 시 검증 항목 R<n>`) nor a matching claim (a hedge-phrase tripwire — "should exist" / "presumably" / "구현 시 확인/검증 필요" — counts); (b) a verification marking with no recipe; (c) a residual marking that fails the well-formedness predicate (a required field missing / a `/tmp` literal / an unresolved `실패 시 영향` anchor / a token or enum value outside the frozen vocabulary); (d) the saved document containing `**검증 등급**: 미검증` (full-line) or `[검증 등급: 미검증]` (inline tag); (e) a V/R verification field line edited **in the current review round** whose rendering is non-canonical — a leading bullet `- ` or missing/half `**…**` bold instead of the CANON `**key**: value` form (severity **trivial**; scope is the current round's edited lines ONLY — do NOT retro-flag pre-existing untouched lines, and do NOT route this through the §5.2 malformedness predicate, of which line rendering is explicitly not an axis). **Do NOT run any recipe or command — inspect the bookkeeping by reading only.** Detection is key-anchored full-line, tolerant to the bullet/bold axes (`_common/verification.md` §3.4); the `미검증` absence proof is the single document-wide exception (both literal forms must be 0).
 
 {USER_NOTE}
 
@@ -404,7 +404,7 @@ Severity assignment rules:
 - "When in doubt, assign one tier higher" — conservative bias, consistent with triage bias toward escalation.
 - decision type is by default at least major (user judgment needed = correctness-relevant).
 - doc-hygiene issues are minor or trivial.
-- verification-type (criterion 7) findings: recipe-absent / out-of-vocabulary token / criterion-7 (a) / (d) = major; other malformed residual fields = minor.
+- verification-type (criterion 7) findings: recipe-absent / out-of-vocabulary token / criterion-7 (a) / (d) = major; other malformed residual fields = minor; criterion-7 (e) (non-canonical V/R line rendering, current-round edits only) = trivial.
 
 Type guidance:
 - proposal: The fix direction is clear. Describe what should change and why.
@@ -805,6 +805,8 @@ For each user response to a proposal prompt:
 ## Application Mechanism
 
 The main session applies approved changes (auto-approved and user-approved) directly using the Edit tool. The agent never modifies the design document. Since concepts may affect multiple locations, the main session identifies all affected locations during scope analysis and applies changes in batch.
+
+**V/R field-line form-preservation fence**: when an Edit touches a V/R verification field line (`_common/verification.md` §4/§5), preserve its canonical rendering — do NOT convert the line to a leading bullet (`- `) and do NOT add or remove the `**…**` bold; emit the CANON `**key**: value` form (bold key, no bullet, one space after the colon). This directly blocks the observed bulletization; criterion #7(e) is the defense-in-depth detection when the fence is missed.
 
 If an Edit fails, follow the Step 13 Edit-failure handling procedure (retry within round or defer to `pending_applies.md`).
 
