@@ -66,7 +66,11 @@ The field key is the single literal **`검증 등급`** everywhere (no `상태` 
 | 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
 | 5 | `검증불가(드리프트)` | residual `### R<n>` flip | implement only (Rung 3) | W2 note line (drift cause) + failure-surface utterance |
 
+> **Enumeration ≠ rendering.** This table (and the §4/§5 field lists, and bulleted field/value enumerations such as §3.1) fixes *which* fields exist and *what bytes* each token is; it does NOT prescribe the markdown *line rendering*. The one normative line rendering is the CANON form **`**key**: value`** — bold key, no leading bullet `- `, exactly one ASCII space after the colon — shown as a verbatim example block in §4 and §5. A markdown bullet used to enumerate a field/value in this contract's prose is a documentation device, not a rendering template; do not copy the bullet (or drop the bold) into an emitted V/R field line.
+
 ### 3.1 `잔여 사유` — closed set of 4 values
+
+(These four are token *values*, enumerated as bullets for readability — not a line-rendering template; see the Enumeration ≠ rendering note in §3. The emitted field line is `**잔여 사유**: <value>` in CANON form.)
 
 - `구현 필요` — filter test NO; cannot be settled until an implementation artifact exists.
 - `검증 차단` — was executable but could not proceed for a concrete reason (environment access, credentials, external dependency, recursion depth, lost recipe, one-shot inconclusive, review-time user deferral).
@@ -81,13 +85,17 @@ The free-prose `차단 사유` is ALWAYS mandatory alongside — it is the audit
 
 ### 3.3 Terminal-token reuse
 
-An implement flip reuses the ledger terminals (`검증됨(통과)` / `반증됨(실패)`) verbatim. Provenance is guaranteed structurally — not by a token variant — by **section + mandatory note line**: implement's only write surface is the R-section, so an R-item's terminal token can only have been written by implement. **If an R-item carries a terminal token but the adjacent `구현 시 검증 기록:` line is absent, it is MALFORMED** (well-formedness predicate, enforced by design-review).
+An implement flip reuses the ledger terminals (`검증됨(통과)` / `반증됨(실패)`) verbatim. Provenance is guaranteed structurally — not by a token variant — by **section + mandatory note line**: implement's only write surface is the R-section, so an R-item's terminal token can only have been written by implement. **If an R-item carries a terminal token but the adjacent `**구현 시 검증 기록**:` line is absent, it is MALFORMED** (well-formedness predicate, enforced by design-review). This adjacency check carries no detection logic of its own — it rides the §3.4 grammar, so the note-line key `구현 시 검증 기록` is a member of that grammar's instantiated key set (a legacy bullet/no-bold note line therefore still satisfies adjacency and is not false-flagged).
 
 ### 3.4 Detection grammar (the only sanctioned idiom)
 
-All token detection is key-anchored full-line — `grep -F '**검증 등급**: <token>'` (likewise `**잔여 사유**: <value>`, etc.) — performed within the enumerated range of the owning section. A bare-token document-wide grep is forbidden (the heading substring `구현 시 검증` ⊂ `## 구현 시 검증 항목`, note-line key substrings, `분류 제외` ⊃ `제외` near-collisions, and prose mentions of a token would all defeat a single bare-token rule).
+All token detection is key-anchored full-line, **tolerant to the bullet and bold axes**, performed within the enumerated range of the owning section. The sanctioned idiom is the `grep -E` ERE `^(- )?(\*\*<key>\*\*|<key>): <value>$` — `(- )?` absorbs an optional leading bullet, and the balanced alternation `(\*\*<key>\*\*|<key>)` absorbs bold-vs-no-bold while **rejecting a half-bold impossible line** (`**검증 등급:`; a naive `(\*\*)?<key>(\*\*)?` would widen to match those). `grep -E` is POSIX ERE (BSD/GNU-portable, not on the `lint-bash-portability` denylist). The key stays anchored as a full line, so a bare-token document-wide grep is still forbidden (the heading substring `구현 시 검증` ⊂ `## 구현 시 검증 항목`, note-line key substrings, `분류 제외` ⊃ `제외` near-collisions, and prose mentions of a token would all defeat a single bare-token rule). Keys instantiated: `검증 등급`, `잔여 사유`, and the note-line key **`구현 시 검증 기록`** (the §3.3 adjacency check rides this grammar, so the note-line key MUST be a member — otherwise a legacy bullet/no-bold note line on a correctly-flipped item reads as false-malformed).
 
-**Single exception — absence proof of the save-forbidden token (`미검증`)**: it has no owning section, so its absence is proven with a key-anchored **document-wide** grep, and **both literal forms** must be 0: the full-line field form (`**검증 등급**: 미검증`) and the inline-tag form (`[검증 등급: 미검증]`). (Key-anchoring already blocks substring collisions, so document-wide is safe here; the inline form is the most probable leak path — a Step-3 proposal quotation bleeding into the body.)
+**`<value>` binding**: (i) section-internal key-presence detection uses the generic `<value>` arm as-is; (ii) the `미검증` document-wide absence proof pins `<value>` to the literal `미검증` (a generic arm would over-match arbitrary `검증 등급` lines and break the absence semantics). The W1 lookup / flip-gate value arms are pinned separately by `implement` (the un-flipped `구현 시 검증` value / the terminal-token set).
+
+**Detection-vs-flip-gate asymmetry**: detection/reading is tolerant (above) so legacy documents keep being detected and consumed; `implement`'s **added-side** flip gate is strict-canonical, emitting only `**key**: value`. The tolerant reader and the strict writer are deliberately asymmetric — reading admits all four renderings, writing produces exactly one (a touched legacy line converges to CANON on flip; untouched lines are never migrated).
+
+**Single exception — absence proof of the save-forbidden token (`미검증`)**: it has no owning section, so its absence is proven with a key-anchored **document-wide** match, and **both literal forms** must be 0: the full-line field form (the ERE above with `<value>`=`미검증`) and the inline-tag form `[검증 등급: 미검증]` (kept on `grep -F` — the bracket literal has no bullet/bold axis). (Key-anchoring already blocks substring collisions, so document-wide is safe here; the inline form is the most probable leak path — a Step-3 proposal quotation bleeding into the body.)
 
 V/R sections are **sub-section form only** (`### V<n>.` / `### R<n>.`).
 
@@ -119,6 +127,23 @@ An unnumbered heading, placed after `## 주요 결정사항과 근거` and befor
 - If no verification was performed, omit the whole section (parallel to the reproduction section's omission for feature tasks — the sweep guarantees "there were no verifiable claims", so absence is meaningful).
 - Propagation is one-way: the SOT is the ledger entry. `주요 결정사항과 근거` references it by anchor and does not restate tokens (no copy, no divergence).
 
+**CANON rendering — copy this byte-for-byte** (bold key, no leading bullet `- `, one ASCII space after the colon):
+
+```
+### V1. <claim title>
+**주장**: <one falsifiable sentence>
+**분류**: <5-category token>
+**검증 절차**: <inline commands or fenced script>
+**기대 결과**: <pre-registered predicate>
+**관측 결과**: <actual value / output excerpt>
+**관측 일시**: <YYYY-MM-DD>
+**검증 등급**: 검증됨(통과)
+**영향 결정**: §<anchor>
+tracked-source 무변경 확인
+```
+
+(Optional fields — `유효 조건` for cat = 외부 환경, `유효성 노트` on a dirty-tree re-run — render with the same `**key**: value` form.)
+
 ### 4.1 In-document claim marking convention (single definition)
 
 Body marking is a **token-free anchor reference** only — at the end of the claim sentence, `(§검증 기록 V<n>)` or `(§구현 시 검증 항목 R<n>)`. The inline `[검증 등급: …]` tag is **Step-3 inter-agent messages only** (a direct transplant of the `근거 등급` propagation pattern; forbidding a body token copy eliminates stale-tag divergence at re-verification time). Every "marking" predicate (sweep, QG, checker criterion, run-now) refers to the presence of this anchor reference.
@@ -137,6 +162,22 @@ An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` a
 - 0 items → omit the section; the consumer treats absence as "no gate".
 - The heading contains neither `미해결` nor `이슈`, so it can NEVER match the walkthrough parse regex (which requires the literal `미해결\s+이슈`) — under the LAST-match doctrine a non-matching heading is inert. `## 검증 기록` proves the same.
 
+**CANON rendering — copy this byte-for-byte** (bold key, no leading bullet `- `, one ASCII space after the colon). The save-time residual token `구현 시 검증` is the value of the `검증 등급` line — the line `implement`'s W1 flips:
+
+```
+### R1. <claim title>
+**주장**: <one falsifiable sentence>
+**분류**: <5-category token>
+**잔여 사유**: 구현 필요
+**차단 사유**: <free prose — always mandatory>
+**검증 레시피**: <inline commands or fenced script>
+**기대 결과**: <pre-registered predicate>
+**실패 시 영향**: <the decision that changes if this is refuted>
+**검증 등급**: 구현 시 검증
+```
+
+(Optional fields — `필요한 것` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
+
 ### 5.1 The three birth paths of a residual item
 
 Exactly three:
@@ -150,6 +191,8 @@ The ledger holds only performed-and-completed entries; a blocked attempt lives i
 ### 5.2 Well-formedness predicate
 
 An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
+
+**Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a design-review criterion #7(e) **trivial** style warning, scoped to the current review round's edited lines, never via this predicate.
 
 ---
 
