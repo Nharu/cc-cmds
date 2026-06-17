@@ -27,11 +27,10 @@ This skill is the lightweight sibling of `review`. It trades depth for predictab
 
 ### Step 0: Tool Loading
 
-Load deferred tools via ToolSearch before any other step:
+Load deferred tools via ToolSearch before any other step (`Agent` is built-in — do not load it):
 - `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
-- `ToolSearch("select:TeamCreate")`
 - `ToolSearch("select:SendMessage")`
-- `ToolSearch("select:TeamDelete")`
+- `ToolSearch("select:TaskStop")`
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
@@ -170,12 +169,12 @@ Announcement template (Korean):
 ```
 
 Branch on user response:
-- **Approve** → create team, proceed to Step 4
+- **Approve** → proceed to Step 4 (spawn the team)
 - **Reject/abort** → end review
 
 The split is structural (path-agnostic): the security reviewer covers any security-sensitive change regardless of file path or keyword pattern. There is no path-regex gate — `crypto/`, `signing/`, `jwt-validator.ts`, `csrf.ts`, `rate-limit/` etc. are all caught structurally by the dedicated security reviewer. There is also no `Scope Coordinator` role; the 2-member team self-divides scope, and any uncovered area is explicitly disclosed in the Step 5 report.
 
-Team naming conventions:
+**Review slug** (names the review-report doc + keys the ledger; it is no longer a harness team name):
 - PR review: `review-lite-pr{NUMBER}` (e.g., `review-lite-pr42`)
 - Local diff: `review-lite-{branch-name}` (e.g., `review-lite-feat-auth`)
 - File path: `review-lite-{short-slug}` (e.g., `review-lite-auth-module`)
@@ -184,21 +183,24 @@ Team naming conventions:
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the completion-signal contract and shared facilitator rules.
+**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — their **return text is the result**. There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 15-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
-- Create team with the announced 2-member composition.
+- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` (the Step 3 review slug) as: an H1 title, then a `<!-- cc-design-ledger v1 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary`, `state ∈ {running, done, aborted}`. **Re-read the ledger from disk before any resume**; if the block is missing or unparseable, **fail closed via `AskUserQuestion`** (never silent-skip).
+- **Spawn the fixed 2-member sonnet team** (Security reviewer + Code-quality/Logic reviewer, both pinned to model `"sonnet"`) as nameless background tasks: for each call `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package (a task does not share the lead's conversation). Record each returned `agentId` in the ledger immediately (`state=running`, round 1); update the ledger on every state change.
 - All team-internal discussion in English.
 - NO code modifications allowed. Review only.
-- **The lead acts as a facilitator** within the lite round cap.
+- **The lead acts as a facilitator** driving the resume loop within the lite round cap.
 
-#### Round structure (fixed)
+#### Round structure (fixed — round hard-cap = 2)
 
-1. **Round 1 — Initial Review**: each reviewer independently produces findings within their scope (per the role-specific checklist from `01-reviewer-context-package.md`). Wait for `[COMPLETE]` from BOTH reviewers.
-2. **Round 2 — Cross-Validation**: forward each reviewer's findings to the other reviewer for one cross-check pass (severity disagreements, missed cross-domain issues such as a security finding that also has performance implications, blind-spot disclosure). Wait for `[COMPLETE]` from BOTH reviewers.
+1. **Round 1 — Initial Review**: each reviewer independently produces findings within their scope (per the role-specific checklist from `01-reviewer-context-package.md`). A reviewer's **return text is its findings** — collect both returns before proceeding.
+2. **Round 2 — Cross-Validation**: resume each reviewer by its `agentId` (re-inject the task-assignment header + **quote the peer's findings verbatim** as Round-2 input) for one cross-check pass (severity disagreements, missed cross-domain issues such as a security finding that also has performance implications, blind-spot disclosure). Collect both returns. This convergence-by-return-collection resume IS the cross-validation; when both returns say "no further input" the team has converged.
 
-**No further rounds.** No follow-up or refinement team cycle. Total team-internal rounds = 2.
+**No further rounds.** No follow-up or refinement cycle. **Total team-internal rounds = 2** (Round 1 + Round 2) — this is lite's round hard-cap; each round is at most one resume per reviewer (the resume is the unit of lite's predictable cost — a resume-budget soft-cap under the round hard-cap).
+
+**Escalation** (per the protocol's failure phenotypes): **Case 1 — thin-return** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort), noting any exclusion in the report metadata. **Case 2 — never-returns** → `TaskStop` + fresh re-spawn (new `agentId`, update ledger); if the re-spawn also never returns → `AskUserQuestion`. **Case 3 — non-conforming return** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
 
 ---
 
@@ -225,7 +227,7 @@ For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs
 After saving the report:
 
 - Notify the user in Korean: *"리뷰 보고서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
-- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow the 5-step shutdown procedure.
+- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
 - Present the report summary to the user in Korean.
 - Emit the lite-redirect footer (single line, every invocation):
 
@@ -246,9 +248,9 @@ After presenting the review report, discuss with the user.
 - Severity re-assessment when user provides new context (e.g., "이 코드 경로는 내부 전용입니다")
 - Explanation of why a specific finding was not included
 
-#### No team re-creation
+#### No follow-up reviewer spawning
 
-Follow-up team spawning is **disabled in lite**. If the user requests comprehensive analysis of areas not covered, severity-dispute independent re-evaluation, multi-perspective architectural follow-up, or blind-spot deep-dive, do NOT spawn a new team. Instead emit in Korean: *"더 깊은 분석이 필요하면 `/cc-cmds:review` 를 사용해주세요."* and continue lead-only refinement of the existing report.
+Follow-up reviewer spawning is **disabled in lite**. If the user requests comprehensive analysis of areas not covered, severity-dispute independent re-evaluation, multi-perspective architectural follow-up, or blind-spot deep-dive, do NOT spawn new reviewer tasks (nameless background sub-agents). Instead emit in Korean: *"더 깊은 분석이 필요하면 `/cc-cmds:review` 를 사용해주세요."* and continue lead-only refinement of the existing report. Step 6 stays lead-only.
 
 #### Document update rules
 
@@ -263,8 +265,8 @@ Repeat until user is satisfied.
 - **No code modifications.** Review only.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
 - **Sonnet pin**: every reviewer uses model `"sonnet"`. Haiku is forbidden; opus is out of scope (use `/cc-cmds:review` if opus depth is required). Both of `/cc-cmds:review-upgrade`'s reinforcement axes are out of scope here — opus upgrade violates the sonnet pin, and reviewer add/split (and the Scope Coordinator add) mutates the fixed 2-member roster (run `/cc-cmds:review-upgrade` against a base `/cc-cmds:review` run instead).
-- **Agent Team required**: TeamCreate + SendMessage only. Do NOT substitute with isolated Agent sub-agents.
-- **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, you MUST first load them via ToolSearch. AskUserQuestion MUST be loaded before Step 1.
+- **Nameless background sub-agents**: reviewers ARE `Agent({ subagent_type: "claude", run_in_background: true })` sub-agents, resumed across rounds by `agentId` (`SendMessage` to the agentId). The **retained-context resume loop is required** — do NOT degrade to an isolated one-shot `Agent()` per round (a one-shot per round is not a team).
+- **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch (see Step 0; `Agent` is built-in — do not load it). AskUserQuestion MUST be loaded before Step 1.
 - **No Claude Context MCP**: do NOT call `index_codebase`, `get_indexing_status`, or `search_code`. Use `grep` + `Read` only.
 - **No Sequential Thinking MCP**: lite contract — predictable token cost.
 - **PR comment dedup required**: when existing PR comments/reviews exist, always provide them as context to reviewers. Filter or flag findings that duplicate existing comments.

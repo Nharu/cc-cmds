@@ -47,8 +47,8 @@ Only findings, severities, and grounding claims that an analysis agent **actuall
 ### CFI-4 — Grounding honesty
 In doc-only mode (source repo absent / inaccessible / `--no-codebase`), every artifact must state its doc-only scope, and doc-only inferences must NOT be presented as code-verified. `doc-code-gap` findings and `path:line` citations are suppressed in doc-only mode.
 
-### CFI-5 — team-cleanup anchor
-Before any Step 8 follow-up and before any team re-composition, the 5-step shutdown in `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` MUST run first (cleanup-anchor doctrine).
+### CFI-5 — Self-terminate hygiene before re-composition
+There is no shutdown to run — analysts that returned have already self-terminated. Before any Step 8 follow-up and before any team re-composition, the lead MUST (a) ensure no ledger `state=running` row survives (`TaskStop` any straggler, then ledger hygiene) and (b) re-read the ledger from disk before resuming. See `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
 
 ## Workflow
 
@@ -56,9 +56,10 @@ Before any Step 8 follow-up and before any team re-composition, the 5-step shutd
 
 Load deferred tools via ToolSearch before any other step:
 - `ToolSearch("select:AskUserQuestion")` — MUST load before Step 1
-- `ToolSearch("select:TeamCreate")`
 - `ToolSearch("select:SendMessage")`
-- `ToolSearch("select:TeamDelete")`
+- `ToolSearch("select:TaskStop")`
+
+(`Agent` is a built-in tool — no ToolSearch load needed.)
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file (header ≤12 codepoints, no manual Other option, `preview` single-select only) to every AskUserQuestion call in this skill.
 
@@ -180,15 +181,15 @@ Branch on user response: **Approve** → Step 4 / **Modification** → re-propos
 
 ### Step 4: Parallel Multi-Perspective Analysis (English, team internal)
 
-**Before assigning analysts, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the completion-signal contract and shared facilitator rules. Include the Teammate Rules block verbatim in each assignment body (do NOT paraphrase — the short form is the documented cause of teammates emitting `[COMPLETE]` as text instead of via SendMessage).
+**Before assigning analysts, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the completion-signal contract, the Role↔agentId ledger schema, and shared facilitator rules. Embed the **task-assignment header** from that file verbatim at the top of each spawn/resume prompt (do NOT paraphrase — it is the self-contained contract that tells the task to deliver its result as its final return text, with no separate channel or completion prefix).
 
 **Before building each analyst's context package, Read `${CLAUDE_SKILL_DIR}/references/01-analyst-context-package.md`** for the context package contents, lens-specific checklists, and the read-only analysis protocol (rounds, quality gate, cross-validation, convergence).
 
-- Create the team with the approved composition. Team naming: `analyze-{doc-slug}` (e.g. `analyze-refactoring`); Step 8 re-composition: original + `-followup`.
-- Each analyst analyzes the prose document from their lens, cross-checks against the indexed code (or operates doc-only), and participates in cross-validation/debate.
+- Spawn each analyst as a **nameless background task** with the approved composition: `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. The members ARE nameless `Agent` background sub-agents — but a one-shot isolated spawn per round is forbidden; the retained-context resume loop (resume by `agentId`, re-injecting load-bearing context each round) is what makes this a team. Record each returned `agentId` in the `"ledger"` key of `docs/analysis/.{doc-slug}.work.json` immediately (see the protocol's Role↔agentId ledger). The `{doc-slug}` still names the work.json.
+- Each analyst analyzes the prose document from their lens, cross-checks against the indexed code (or operates doc-only), and participates in cross-validation/debate. Analysts are read-only single-pass, but still resumed across rounds for cross-review convergence.
 - All team-internal discussion in English.
 - **NO modifications to the source document or source repo (CFI-1). Read-only analysis only.**
-- **The lead acts as facilitator**, actively driving the multi-round analysis. This is a single pass — no external/internal convergence loop.
+- **The lead acts as facilitator**, actively driving the multi-round analysis. Completion is by **return collection** (the return text IS the result): after cross-review, resume each analyst once with a convergence prompt (re-injecting current consensus + open conflicts) until every return says "no further input". Escalation per the protocol's failure phenotypes: Case 1 (thin-return — 1st re-scope+resume, 2nd consecutive → `AskUserQuestion`), Case 2 (never-returns → `TaskStop` + fresh re-spawn, new `agentId` to the ledger), Case 3 (non-conforming return → re-assign once, recurrence feeds Case 1). This is a single pass — no external/internal convergence loop.
 
 ---
 
@@ -213,6 +214,8 @@ Surface findings one at a time to the user and drive each to a disposition that 
 #### Walkthrough state (in-memory + scratch persist)
 
 Since the source is untouched, there is no doc-anchored state machine. State = the lead's in-memory **확정 발견 집합**. Working state persists to cwd `docs/analysis/.<slug>.work.json` (NEVER the source). This scratch file is deleted on normal completion (path-guarded `rm` restricted to `docs/analysis/.<slug>.work.json`) and survives ONLY on user abort (audit / manual reference — NOT an auto-resume mechanism; a re-invocation re-runs analysis from scratch). If cwd is a git repo, recommend gitignoring at least `.<slug>.work.json` (or `docs/analysis/`); the report/copy artifacts may be intended commit targets.
+
+The work.json also carries the durable Role↔agentId **`"ledger"`** key (created/updated alongside the work-state writes): an array of behavior-bearing entries `{ agentId, state, round, role, thinReturns, lastReturn }`, where `state ∈ {running, done, aborted}`. Re-read the ledger from disk before any resume phase (Step 8 follow-up); if the `"ledger"` key is missing or unparseable, **fail closed via `AskUserQuestion`** (never silent-skip). A residual `state: "running"` entry is the leftover-detection signal.
 
 **State machine** (2 non-terminal + 4 terminal, memory-anchored):
 ```
@@ -274,10 +277,10 @@ No manual Other (auto-provided). No `preview` (multiSelect).
 After presenting the rendered artifacts, discuss with the user.
 
 - **Lead direct handling** (no team): explain specific findings, re-check code via Claude Context MCP, re-assess severity on new user context, explain exclusions.
-- **Deep re-analysis** (team re-composition): when the user needs perspectives not covered, propose a `analyze-{slug}-followup` team (Step 3 format + re-creation reason + previous coverage + additional scope), require approval, include prior findings in the new package.
+- **Deep re-analysis** (team re-composition): when the user needs perspectives not covered, propose a fresh analyst team (Step 3 format + re-creation reason + previous coverage + additional scope), require approval, include prior findings in the new package. On approval, spawn fresh nameless background tasks (`Agent`, `subagent_type: "claude"`, `run_in_background: true`) and record their new `agentId`s in the work.json ledger.
 - **`추가조사`** during the walkthrough is lead read-only — it does NOT spawn a team (that would re-introduce a heavy lifecycle); deep work is this step only.
 
-**Before Step 8 follow-up handling AND before any team re-composition, Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and run the 5-step shutdown first (CFI-5). When follow-up triggers team re-composition, always clean up the previous team before creating the next.
+**Before Step 8 follow-up handling AND before any team re-composition, Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** (CFI-5). There is no shutdown to run — returned analysts already self-terminated; cleanup is no-op (normal) / `TaskStop` on any `state=running` straggler (abort) / ledger hygiene. Then re-read the ledger from disk before resuming. When follow-up triggers team re-composition, ensure no `state=running` row survives the previous round before spawning the next.
 
 Repeat until the user is satisfied.
 
@@ -287,8 +290,8 @@ Repeat until the user is satisfied.
 
 - **Read-only source (CFI-1).** No Edit/Write ever targets `<design-doc-path>` or its source repo. All outputs are new files under cwd `docs/analysis/`.
 - **Inter-agent communication in English.** User-facing communication and rendered artifacts in Korean.
-- **Agent Team required**: Step 4 multi-perspective analysis MUST use TeamCreate and SendMessage. Do NOT substitute Agent tool sub-agents — real-time cross-validation/debate is only possible through Agent Teams.
-- **Deferred tool loading**: Before using AskUserQuestion, TeamCreate, SendMessage, or TeamDelete, load them via ToolSearch in Step 0. AskUserQuestion MUST be loaded before Step 1.
+- **Nameless background-task team**: Step 4 multi-perspective analysis members ARE nameless `Agent` background sub-agents (`subagent_type: "claude"`, no `name`, `run_in_background: true`). Do NOT collapse this into one-shot isolated `Agent()` calls per round — the retained-context resume loop (`SendMessage` to each `agentId`, re-injecting load-bearing context) drives the cross-validation/debate. A task self-terminates when it returns; its return text IS the result.
+- **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, load them via ToolSearch in Step 0 (`Agent` is built-in). AskUserQuestion MUST be loaded before Step 1.
 - **Claude Context MCP**: When grounding is ON, index `CODE_ROOT` (the source repo, not cwd) in Step 2 before team creation. Analysts use `search_code` directly. doc-only mode skips indexing and suppresses code citations (CFI-4).
 - **Single pass**: no `design-review`-style external/internal convergence loop; no termination/COUNT_APPLIED math.
 - **Sequential Thinking MCP**: the lead may use it when synthesizing conflicting analyst findings (Step 5), handling complex follow-up (Step 8), or composing teams for atypical/multi-domain docs (Step 3). Not for routine tasks.
