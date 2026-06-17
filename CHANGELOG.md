@@ -5,6 +5,33 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-06-17
+
+CC 2.1.178이 `TeamCreate`/`TeamDelete`를 제거하고 세션당 단일 암묵 팀으로 전환하면서 동작 불가가 된 에이전트 팀 스킬군(`design`·`design-lite`·`design-analyze`·`design-apply`·`review`·`review-lite`)을 **Model B(nameless background task)**로 재작성한다. 팀원은 `Agent`(`subagent_type:"claude"`, name 없음) 백그라운드 task로 spawn되어 lead가 agentId로 라운드마다 resume 구동하고, 작업 완료 시 task가 자기-종료한다(정리 절차 불필요). task의 return text가 곧 결과 전달 채널이라, 기존 named 팀원의 `[COMPLETE]`/idle 완료신호 모호성과 종료 핸드셰이크가 구조적으로 소멸한다 (`/plugin update cc-cmds`로 자동 반영). [#41]
+
+### Why
+
+CC 2.1.178+에서 모델이 spawn할 수 있는 것은 background subagent뿐이고, named 팀원은 구조화 shutdown 프로토콜을 보낼 수 없어 **프로그램적으로 종료 불가** — 매 spawn마다 un-killable 좀비가 누적되고 사용자가 수동으로 정리해야 했다. 깨진 기능 복구(hotfix)지만 단순 패치가 아니라 새 메커니즘(컨텍스트 재주입·role↔agentId 원장·per-task 알림)을 도입하므로 MINOR로 bump한다. 슬래시 시그니처·옵션은 불변이다.
+
+### Changed
+
+- **`_common/agent-team-protocol.md` 재작성** (96→~55줄): named-teammate 완료신호/방어 머신(`[COMPLETE]`/`[IN PROGRESS]` 프리픽스·idle-vs-DM·hard prompt·`ip_count`/`remediation_count`·Bound A/B/C)을 들어내고 nameless task lifecycle + 라운드 오케스트레이션으로 교체한다. spawn(nameless `Agent`)·완료신호(return text)·다라운드(resume + 컨텍스트 재주입)·convergence(return 수집)·teardown(자기-종료, abort=`TaskStop`)·escalation·role↔agentId 원장·task-assignment 헤더로 구성.
+- **`_common/team-cleanup.md` → stub** (57→~10줄, 동일 경로): `shutdown_request`→`TeamDelete`→`ps aux` 절차 전체가 non-functional fiction이므로 stub으로 축소한다. 정상완료=무동작 / abort=running agentId `TaskStop` / 원장 hygiene.
+- **6개 SKILL.md Step 0 도구 로딩**: `TeamCreate`/`TeamDelete` 로드 제거 → Model B 도구셋(`AskUserQuestion`·`SendMessage`(agentId resume)·`TaskStop`(abort); `Agent`는 빌트인이라 로드 불요).
+- **escalation 재설계**: named A/B/C 레터링을 Model B 실패 표현형으로 교체 — Case 1 thin-return stall(카운터, 2연속→`AskUserQuestion`) / Case 2 never-returns(`TaskStop`+재spawn) / Case 3 non-conforming return(1회 재배정). 채널 위반(Bound A)·dispatch 실패(Bound C) bound는 트리거 불가능해 구조적 삭제.
+- **reference 패키지 2종**: `review/references/01-reviewer-context-package.md`·`design-analyze/references/01-analyst-context-package.md`의 `[COMPLETE]` 컨버전스·named coordinator를 return-text 기반으로 재작성.
+- **README Prerequisites**: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` 환경변수 요구를 제거하고 "Claude Code 2.1.178+ 필요"를 명시한다(Model B는 일반 `Agent` 도구만 사용하므로 실험 플래그 불요).
+- **`scripts/lint-skill-invariants.sh` EXEMPT rationale**: agent-team 스킬 면제 근거를 "termination contract in `team-cleanup.md`"에서 "자기-종료 + 디스크 복구 원장" 근거로 갱신(로직·`EXEMPT_SKILLS` 배열 불변).
+
+### Added
+
+- **role↔agentId 원장(durable ledger)**: roster-less 모델에서 compaction으로 agentId가 증발하는 것을 막기 위해 스킬별 기존 아티팩트에 co-locate한다 — design-family는 `docs/{slug}.md` 상단 HTML-comment 블록(`<!-- cc-design-ledger v1 ... -->`), design-analyze는 `.{slug}.work.json`의 `"ledger"` 키. behavior-bearing 스키마(agentId + 역할/스코프 + state + round + 최근 return 요약), resume phase 진입 시 디스크 재독, 누락·파싱불가 시 fail-closed `AskUserQuestion`. 잔존 `state=running` 행이 곧 leftover 감지 신호(삭제된 `teams/` scan 대체)다.
+- **컨텍스트 재주입**: resume 시 lead가 load-bearing 컨텍스트를 매번 재주입하고 peer 발견을 verbatim 인용한다(retained context를 load-bearing 데이터에 신뢰하지 않음).
+
+### Post-install notes
+
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` 환경변수는 더 이상 필요 없습니다(설정해 두어도 무해). Claude Code 2.1.178 이상에서 동작하며 구버전은 지원하지 않습니다.
+
 ## [1.16.1] - 2026-06-09
 
 `design-review`가 inner-loop 리뷰 에이전트를 spawn할 때 리뷰 모델이 실행마다 비결정적으로 선택되던 문제를 고친다. 근본 원인은 상속 실패가 아니라 Step 12 spawn 지시가 underspecified라는 것 — `Agent()`에 `model`을 비우면 하네스 부모 상속이 건전하게 작동하지만, 스킬이 아무 지시도 없어 오케스트레이팅 메인루프가 일부 spawn에 `model` override를 임의 주입한다. 리뷰 모델을 **세션 모델 상속(inherit)**으로 고정해, 리뷰 깊이·비용이 사용자의 세션(=비용) 선택을 결정적으로 추적하도록 한다 (저비용 플랜 사용자에게 opus 하드핀은 매 실행 큰 초과비용이었다). 범위는 `design-review`만이며 `design-review-lite`(sonnet 하드핀)는 불변이다 (`/plugin update cc-cmds`로 자동 반영).
