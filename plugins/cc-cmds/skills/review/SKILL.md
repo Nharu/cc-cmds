@@ -271,7 +271,7 @@ Branch on user response:
 
 **Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — their **return text is the result**. There is no `TeamCreate`/named-teammate/DM machinery.
 
-**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 15-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
+**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 16-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
 - **Derive the review slug** from the target (this names the review-report doc + keys the ledger; it is no longer a harness team name):
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)

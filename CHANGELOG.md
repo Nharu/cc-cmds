@@ -14,11 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`review`**: Step 2a를 "Source tree survey"로 재작성한다 — Claude Context MCP 인덱싱·`get_indexing_status`·`index_codebase`·poll lifecycle을 제거하고 `ls`/CLAUDE.md/.gitignore 확인 + skip-dir 목록 + `Glob`/`Read` 오리엔테이션으로 대체한다. 코드 재확인·grounding mandate·역할별 체크리스트의 검색 가이드를 grep/Read verb로 전환한다.
 - **`design-analyze`**: Step 2를 "Grounding Setup"으로 재작성하고(인덱싱·poll 제거, `grep`/`Glob`/`Read` 직접 grounding), CFI-4 degrade의 indexing-error arm을 inaccessible CODE_ROOT로 일반화한다. grounding ON/OFF 게이트(`--no-codebase`)·doc-only 동작은 불변이다.
 - **컨텍스트 패키지**: reviewer 패키지(15→16-item)와 analyst 패키지에 skip-glob 목록(`node_modules`·`.next`·`dist` 등)을 주입한다 — 팀원이 직접 grep할 때 vendored/generated 트리로 토큰 예산을 소진하는 것을 방지한다.
+- **lite 3종(`review-lite`·`design-lite`·`design-review-lite`)**: 두 MCP를 명시하던 죽은 금지문구(서버 제거 후 moot)를 제거한다. `_common/team-upgrade-analysis.md`의 generic "no MCP" fence는 특정 서버를 명명하지 않으므로(context7·figma 포함) 유지한다.
+- **`design-apply`**: Sequential Thinking·Claude Context MCP 허용 문구를 제거한다(context7 MCP 문구는 유지).
 
 ### Removed
 
-- **lite 3종(`review-lite`·`design-lite`·`design-review-lite`)**: 두 MCP를 명시하던 죽은 금지문구(서버 제거 후 moot)를 제거한다. `_common/team-upgrade-analysis.md`의 generic "no MCP" fence는 특정 서버를 명명하지 않으므로(context7·figma 포함) 유지한다.
-- **`design-apply`**: Sequential Thinking·Claude Context MCP 허용 문구를 제거한다(context7 MCP 문구는 유지).
+- **`claude-context`·`sequential-thinking` MCP**: 두 MCP 서버를 모든 스킬 surface에서 제거한다.
 
 ## [1.17.1] - 2026-06-17
 
