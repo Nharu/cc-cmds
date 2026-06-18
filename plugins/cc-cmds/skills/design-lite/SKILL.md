@@ -24,7 +24,7 @@ This skill is the lightweight sibling of `design`. It trades depth for predictab
 - Do NOT create a team yet. First, interview the user to understand requirements.
 - Ask deep, non-obvious questions covering all aspects of the task, including but not limited to: technical implementation, UI/UX, concerns, tradeoffs, scale, constraints, and integration points.
 - Avoid generic or superficial questions. Dig into specifics. **Interview length cap: none** — the interview is a 1:1 user↔lead text exchange, not a token-saving axis. Continue until critical aspects are sufficiently covered (matches base `design` behavior).
-- Explore the existing codebase as needed during the interview using `grep` and `Read` directly. **Do NOT use Claude Context MCP** (`index_codebase` / `search_code`) — lite skills avoid heavy MCP calls for predictable cost.
+- Explore the existing codebase as needed during the interview using `grep` and `Read` directly.
 - **Verification-first (lite)**: as load-bearing assumptions surface, settle the cheap ones in-session. **Read `${CLAUDE_SKILL_DIR}/../_common/verification.md`** (the SOT) for the claim taxonomy and the severity/filter tests. Lite scope: categories 1–4 survive (category 4 — behavioral hypothesis — is **one-shot**: a single `/tmp` script, ≤2 attempts per claim, no debugging → inconclusive → residual `검증 차단`); category 3 splits (local probes `--version`/`command -v`/env survive; network facts → residual with a recipe); **category 5 (mini-implementation) is dropped** — emit *"더 깊은 검증이 필요하면 `/cc-cmds:design`을 사용해주세요."* and encode it as a residual item (lossless deferral).
 - Iterate between interviewing and codebase exploration until coverage is sufficient, then confirm with the user before proceeding.
 
@@ -43,8 +43,6 @@ This skill is the lightweight sibling of `design`. It trades depth for predictab
 - All inter-agent discussion and reasoning should be conducted in English.
 - NO code modifications allowed. Design discussion only.
 - **The lead acts as a facilitator**, actively driving discussion within the round cap.
-- **Sequential Thinking MCP**: do NOT use. The lite skill avoids it for predictable cost.
-- **Claude Context MCP**: do NOT use (`search_code` is unavailable to teammates in this workflow). Teammates rely on `grep` + `Read` only.
 - **Verification execution budget (categories 2–4)**: **6 units, static 2/2/2 split** (teammate 2 + teammate 2 + lead pre-save sweep 2; self-tracked, reported in the member's return text). 1 unit = one recipe (≤2 attempts included), ≤2 min per unit; on exceed → kill + residual (`잔여 사유: 예산 소진`, the `차단 사유` distinguishing `예산 소진(시간)` from `예산 소진(횟수)`). A timed-out attempt still consumes an attempt. Worst case ≤6 units × 2 min = ≤12 min execution wall-clock. Category 1 (static facts) and local-probe category 3 are read-only, outside the budget (per-attempt limits only: `grep` >50 hits → inconclusive; named-file `Read` only). The `실행 주의` exception classes are structurally excluded in lite even within budget. No dedicated verification agent (the 2×sonnet roster is fixed) — the authors execute + the lead sweeps; "lite does not debug a verification."
 
 #### Discussion Protocol (2 rounds default; hard cap 3)
@@ -86,7 +84,6 @@ This skill is the lightweight sibling of `design`. It trades depth for predictab
 - NO code modifications. Design discussion only.
 - Inter-agent communication must be in English.
 - **Sonnet pin**: every teammate uses model `"sonnet"`. Haiku is forbidden; both of `/cc-cmds:design-upgrade`'s reinforcement axes are out of scope here — opus upgrade violates the sonnet pin, and role add/split mutates the fixed 2-member roster (run `/cc-cmds:design-upgrade` against a base `/cc-cmds:design` run instead).
-- **No Sequential Thinking MCP, no Claude Context MCP**: lite contract — predictable token cost.
 - **In-session verification (lite scope)**: categories 1–4 only (category 4 one-shot; category 5 dropped → residual + `/cc-cmds:design` redirect); execution budget 6 units (2/2/2), ≤2 min/unit, ≤12 min cap; the `실행 주의` exception classes are structurally excluded. Read `${CLAUDE_SKILL_DIR}/../_common/verification.md` for the contract (the fourth `_common` Read).
 - **Nameless background sub-agents**: team members ARE `Agent({ subagent_type: "claude", run_in_background: true })` sub-agents, resumed across rounds by `agentId` (`SendMessage` to the agentId). The **retained-context resume loop is required** — do NOT degrade to an isolated one-shot `Agent()` per round (a one-shot per round is not a team).
 - **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion", "select:SendMessage", and "select:TaskStop" to load each tool (`Agent` is built-in — do not load it). AskUserQuestion MUST be loaded before Step 1 (user interview). Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.

@@ -23,9 +23,9 @@ File path-based review (reviewing specific files/directories without a diff):
 |---------|---------|----------------|
 | Review target | PR diff | Full code of specified files/directories |
 | PR comments/CI | `gh` used | N/A |
-| Diff-based analysis | Focus on changed lines | Full code analysis (augment context with MCP `search_code`) |
+| Diff-based analysis | Focus on changed lines | Full code analysis (augment context with `grep`/`Read`) |
 | Document header | PR info included | Show target file/directory paths |
 
 File path mode context package adaptations (ref. `01-reviewer-context-package.md` 15-item list):
-- Item 2 "Review scope diff" → replace with "Full source code of target files". For large target files, send only core modules and guide reviewers to explore the rest via MCP `search_code` (same principle as item 9 context size management).
+- Item 2 "Review scope diff" → replace with "Full source code of target files". For large target files, send only core modules and guide reviewers to explore the rest via `grep`/`Read` (same principle as item 9 context size management).
 - Item 5 "Existing PR comments" → replace with "N/A".

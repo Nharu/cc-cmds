@@ -32,7 +32,7 @@ Unlike `/cc-cmds:design`, **do NOT run a greenfield requirements interview**. Th
 - Read `docs/{slug}.md` (the base design document — both the original base sections and the "Claude Design 프롬프트 + 컨텍스트" section authored by `/cc-cmds:design-prompt`).
 - Read `docs/design-system/{tokens.md, components.md, manifest.json}` (DS reference). Token semantics, component contracts, current DS version.
 - Read the archived bundle at `docs/{slug}-fe/handoff/iter-<latest>/bundle/` if needed for primary HTML + component JSX details — the parser-extracted summary is in `handoff-extract.md`, but the bundle is authoritative for visual/structural fidelity questions.
-- Explore the target codebase with `find` / `grep` (and Read) to identify existing component patterns, stack (React/Vue/web-components/etc.), routing approach, state management, file layout conventions, and test setup. Use Claude Context MCP for broad searches if the codebase is indexed; otherwise raw grep/find.
+- Explore the target codebase with `find` / `grep` (and Read) to identify existing component patterns, stack (React/Vue/web-components/etc.), routing approach, state management, file layout conventions, and test setup.
 
 If ambiguous points remain after this concrete-input gathering, use `AskUserQuestion` for **narrow, targeted interviews** — one or two questions per topic only. Do not enumerate categories or open the interview wide. The discriminator vs `/cc-cmds:design`: the input alone resolves most questions; only edge cases need user input.
 
@@ -80,8 +80,6 @@ Adjust roles based on the feature's character (e.g., if the feature is data-heav
 
 ### MCP usage
 
-- **Sequential Thinking MCP** is permitted but not required for this skill.
-- **Claude Context MCP** for broad codebase queries is permitted; lite-tier MCP restrictions do not apply (this skill is in the heavy-tier alongside `/design`).
 - **context7 MCP** for target-stack documentation lookups is appropriate when the team is making decisions about specific library APIs (e.g., React Router patterns, Zustand store shape).
 
 ## Step 4: Synthesis and documentation (Korean)

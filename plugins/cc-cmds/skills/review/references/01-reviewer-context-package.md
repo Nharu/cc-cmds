@@ -2,17 +2,17 @@
 
 When assigning each reviewer (Step 4), include the following in the initial message.
 
-## 15-item Context Package
+## 16-item Context Package
 
 1. **Return contract instruction**: Embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the reviewer's prompt (role / round / load-bearing inputs / return contract). The reviewer is a nameless background task: it delivers its findings as its **final return text** — there is no separate delivery channel, no completion prefix, no messaging tool to call. It begins its return with its role and round, and never returns empty (if it cannot proceed, it returns its partial result plus a one-line concrete blocker).
 2. **Review scope diff**: Full diff or role-filtered diff.
 3. **Role-relevant changed file list**: Filtered by the lead based on Step 3 assigned scope + Round 0 results (if a reviewer carries the scope-coordination role).
-4. **Role-specific review checklist** (with MCP search query guidance — see "Role-specific checklists" below).
+4. **Role-specific review checklist** (with grep/Read search guidance — see "Role-specific checklists" below).
 5. **Existing PR comments/review summary** + dedup instruction: *"Do not report already-raised issues as new findings. If you confirm an existing issue, reference it as 'confirms existing review by @author' and add only additional analysis."*
 6. **PR metadata** (CI status, draft status, linked issues) — omit for non-PR reviews.
 7. **Fix suggestion rules**: critical/high = mandatory, medium = include when non-obvious, low = include only for non-obvious tech debt, nitpick = omit.
-8. **Claude Context MCP usage guide**: Reference role-specific checklist MCP items.
-9. **Context size management**: For large diffs, filter to role-relevant file diffs only. Include change stats summary + high-risk file diffs in initial message; point reviewers to MCP `search_code` for the rest. For many existing PR comments, send summary only.
+8. **Search guidance**: Reference the role-specific checklist's grep/Read search items.
+9. **Context size management**: For large diffs, filter to role-relevant file diffs only. Include change stats summary + high-risk file diffs in initial message; point reviewers to `grep`/`Read` for the rest. For many existing PR comments, send summary only.
 10. **Severity system definition**: Reviewers use 5 levels:
     - `critical`: Immediately exploitable security vulnerability in production, data loss/leakage, complete core functionality block
     - `high`: High probability of production incident or security issue, merge block recommended
@@ -30,6 +30,7 @@ When assigning each reviewer (Step 4), include the following in the initial mess
       Fix suggestion: fix direction (when applicable)
     [POSITIVE] file:line — positive aspect (when applicable)
     ```
+16. **Skip-glob list (search hygiene)**: when grep-searching the codebase, skip `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target` to avoid spending token budget on vendored/generated trees.
 
 ## Role-specific Review Checklists
 
@@ -38,14 +39,14 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 - Input validation: SQL/NoSQL injection, XSS, path traversal, SSRF, command injection
 - Sensitive data: hardcoded secrets, PII logging, excessive API response fields
 - Cryptography: weak hashing, hardcoded IV/salt, insecure random
-- MCP usage: search with role-relevant keywords focused on changed files and related modules. Narrow scope by changed file paths if results are too broad.
+- Search (grep/Read): search with role-relevant keywords focused on changed files and related modules. Narrow scope by changed file paths if results are too broad.
 
 **Performance reviewer:**
 - DB/ORM: N+1 queries, unused eager loading, missing pagination, full table scans, missing transactions
 - Memory/resources: event listener leaks, unreleased timers, unclosed streams/connections, unbounded caches
 - Computation: O(n^2)+, unnecessary computation in hot paths, missing memoization
 - Concurrency/IO: sequential await (where `Promise.all` is possible), main thread blocking, missing connection pooling
-- MCP usage: search for DB call patterns, query builders, pagination keywords focused on changed areas. Narrow by file paths if too broad.
+- Search (grep/Read): search for DB call patterns, query builders, pagination keywords focused on changed areas. Narrow by file paths if too broad.
 
 **Code quality reviewer:**
 - Design: SRP, DRY violations, inappropriate coupling, over/under-abstraction
@@ -53,7 +54,7 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 - Readability: magic numbers/strings, complex conditionals, misleading names, long functions
 - Type safety (TypeScript): `any` types, unsafe type assertions, missing return types, unhandled nullable
 - Testing: missing test coverage for new logic, implementation-coupled tests, missing edge cases
-- MCP usage: search for usages of changed functions/classes, similar patterns, error formats focused on changed areas. Narrow if too broad.
+- Search (grep/Read): search for usages of changed functions/classes, similar patterns, error formats focused on changed areas. Narrow if too broad.
 
 **Dynamic roles (applied as needed):**
 - DB/query expert: migration rollback safety, index impact, query plans

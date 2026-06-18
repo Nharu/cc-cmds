@@ -183,19 +183,14 @@ Proceed after user confirmation.
 
 ---
 
-### Step 2: Codebase Indexing & Exploration
+### Step 2: Codebase Survey & Exploration
 
-#### 2a: Claude Context MCP indexing
+#### 2a: Source tree survey
 
-1. Check existing index via `get_indexing_status`
-2. If index missing or outdated:
-   a. Identify exclusion targets:
-      - Run `ls` at project root to survey structure
-      - Read CLAUDE.md and .gitignore for project-specific exclusions
-      - Common exclusions: `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target`
-   b. Call `index_codebase` with exclusion list
-   c. Poll `get_indexing_status` until status = "completed" — **never proceed before indexing completes**
-3. If index is current, proceed immediately
+1. Run `ls` at project root to survey structure.
+2. Read CLAUDE.md and .gitignore for project-specific conventions and skip targets.
+3. Note directories to skip when searching: `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target`.
+4. Use `Glob`/`Read` to orient on the changed files' neighbourhood before assigning reviewers.
 
 #### 2b: Codebase context exploration
 
@@ -316,7 +311,7 @@ After presenting the review report, discuss with the user.
 #### Lead direct handling (no team needed)
 
 - Detailed explanation of specific findings
-- Code section re-check (using Claude Context MCP)
+- Code section re-check (using `grep` + `Read`)
 - Severity re-assessment when user provides new context (e.g., "이 코드 경로는 내부 전용입니다")
 - Explanation of why a specific finding was not included
 
@@ -353,14 +348,9 @@ Repeat until user is satisfied.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
 - **Nameless background sub-agents required**: reviewers MUST be spawned as nameless `Agent` background tasks (`subagent_type:"claude"`, `run_in_background:true`, no `name`) and driven through a **retained-context, lead-mediated resume loop** — resume each by `agentId` for cross-review and convergence. Do NOT collapse a round into an isolated one-shot `Agent()` (that throws away retained context and breaks cross-review). There is no `TeamCreate`/named-teammate model; the multi-round resume loop is what makes this a team.
 - **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch (`Agent` is built-in and needs no loading). Run `ToolSearch` with query "select:AskUserQuestion", "select:SendMessage", and "select:TaskStop" to load each tool. These are deferred tools and will NOT work unless loaded first. AskUserQuestion MUST be loaded before Step 1 (scope confirmation with user).
-- **Claude Context MCP required**: Actively use for codebase indexing and code search. Complete index creation/verification in Step 2 before team creation. Teammates have direct access to Claude Context MCP tools (`search_code`, etc.) and should search independently — the lead does not need to proxy searches.
+- **Codebase grounding required**: Reviewers must ground findings in the source — use `grep`/`Glob`/`Read` to locate definitions, callers, and related modules independently. The lead surveys the source tree in Step 2 but does not proxy searches; each reviewer searches its own scope.
 - **PR comment dedup required**: When existing PR comments/reviews exist, always provide them as context to reviewers. Filter or flag findings that duplicate existing comments.
 - **Fix suggestion inclusion**: Include fix direction when clear. This is judgment-based, not mandatory for all issues — decide based on issue type and complexity.
-- **Sequential Thinking MCP**: The lead should use this when:
-    - Synthesizing conflicting findings from multiple reviewers (Step 5)
-    - Handling complex multi-step follow-up requests (Step 6)
-    - Making team composition decisions for atypical or multi-domain PRs (Step 3)
-    - Do NOT use for routine tasks (scope confirmation, simple follow-ups).
 - **CI failure routing**: When CI has failed checks, mention in Step 1c. Analyze failure type (test/lint/build/type check) and add "CI failure priority check area: [failed check name and related files]" as a separate item in the relevant reviewer's context package.
 
 Task: $ARGUMENTS
