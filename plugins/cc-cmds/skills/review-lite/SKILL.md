@@ -15,7 +15,7 @@ Conduct a lightweight code review using a fixed 2-member sonnet agent team for t
 All team discussions and inter-agent communication should be in English to optimize token usage.
 User-facing communication and saved documentation should be in Korean.
 
-This skill is the lightweight sibling of `review`. It trades depth for predictable token cost: a fixed 2-member sonnet team (Security reviewer + Code-quality/Logic reviewer) replaces the dynamic risk-indicator-driven composition, the discussion runs a single round + one cross-validation round (no follow-ups), Claude Context MCP and the Explore subagent are skipped, and the second-positional `<directive>` argument is dropped. Use `review` when subtle invariants — concurrency, authn bypass — or large-PR depth-driven scope splitting matter more than speed.
+This skill is the lightweight sibling of `review`. It trades depth for predictable token cost: a fixed 2-member sonnet team (Security reviewer + Code-quality/Logic reviewer) replaces the dynamic risk-indicator-driven composition, the discussion runs a single round + one cross-validation round (no follow-ups), the Explore subagent is skipped (the lead explores directly with `grep` + `Read`), and the second-positional `<directive>` argument is dropped. Use `review` when subtle invariants — concurrency, authn bypass — or large-PR depth-driven scope splitting matter more than speed.
 
 ## Input
 
@@ -140,7 +140,7 @@ Present to user (in Korean):
 
 ### Step 2: Codebase Exploration (lead-direct)
 
-**Claude Context MCP is not used in lite.** Do NOT call `index_codebase`, `get_indexing_status`, or `search_code`. The `Explore` subagent is also not used — the lead explores directly with `grep` + `Read`.
+The `Explore` subagent is not used in lite — the lead explores directly with `grep` + `Read`.
 
 Explore based on the changed file list:
 - Related modules and dependencies (callers, importers) — `grep -r` from project root, scoped to changed files' siblings.
@@ -185,7 +185,7 @@ The split is structural (path-agnostic): the security reviewer covers any securi
 
 **Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — their **return text is the result**. There is no `TeamCreate`/named-teammate/DM machinery.
 
-**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 15-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
+**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 16-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
 - **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` (the Step 3 review slug) as: an H1 title, then a `<!-- cc-design-ledger v1 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary`, `state ∈ {running, done, aborted}`. **Re-read the ledger from disk before any resume**; if the block is missing or unparseable, **fail closed via `AskUserQuestion`** (never silent-skip).
 - **Spawn the fixed 2-member sonnet team** (Security reviewer + Code-quality/Logic reviewer, both pinned to model `"sonnet"`) as nameless background tasks: for each call `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package (a task does not share the lead's conversation). Record each returned `agentId` in the ledger immediately (`state=running`, round 1); update the ledger on every state change.
@@ -244,7 +244,7 @@ After presenting the review report, discuss with the user.
 #### Lead direct handling (no team needed)
 
 - Detailed explanation of specific findings
-- Code section re-check (using `grep` + `Read` directly — Claude Context MCP is not used)
+- Code section re-check (using `grep` + `Read` directly)
 - Severity re-assessment when user provides new context (e.g., "이 코드 경로는 내부 전용입니다")
 - Explanation of why a specific finding was not included
 
@@ -267,8 +267,6 @@ Repeat until user is satisfied.
 - **Sonnet pin**: every reviewer uses model `"sonnet"`. Haiku is forbidden; opus is out of scope (use `/cc-cmds:review` if opus depth is required). Both of `/cc-cmds:review-upgrade`'s reinforcement axes are out of scope here — opus upgrade violates the sonnet pin, and reviewer add/split (and the Scope Coordinator add) mutates the fixed 2-member roster (run `/cc-cmds:review-upgrade` against a base `/cc-cmds:review` run instead).
 - **Nameless background sub-agents**: reviewers ARE `Agent({ subagent_type: "claude", run_in_background: true })` sub-agents, resumed across rounds by `agentId` (`SendMessage` to the agentId). The **retained-context resume loop is required** — do NOT degrade to an isolated one-shot `Agent()` per round (a one-shot per round is not a team).
 - **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch (see Step 0; `Agent` is built-in — do not load it). AskUserQuestion MUST be loaded before Step 1.
-- **No Claude Context MCP**: do NOT call `index_codebase`, `get_indexing_status`, or `search_code`. Use `grep` + `Read` only.
-- **No Sequential Thinking MCP**: lite contract — predictable token cost.
 - **PR comment dedup required**: when existing PR comments/reviews exist, always provide them as context to reviewers. Filter or flag findings that duplicate existing comments.
 - **Fix suggestion inclusion**: include fix direction when clear. Judgment-based — decide based on issue type and complexity.
 - **CI failure routing**: when CI has failed checks, mention them in Step 1c. Add "CI failure priority check area: [failed check name and related files]" to the relevant reviewer's context package — security-sensitive failures (auth, secrets) route to the security reviewer; logic/build/test failures route to the code-quality/logic reviewer.

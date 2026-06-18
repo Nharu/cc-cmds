@@ -876,7 +876,6 @@ When `--changes` is not present, substitute the `{CHANGES_MODE_CONSTRAINT}` plac
 ## Constraints
 
 - All review agents use model `"sonnet"` (haiku and opus forbidden — lite quality floor).
-- **No Sequential Thinking MCP, no Claude Context MCP**: predictable token cost.
 - **Auto-decide protocol is fully disabled**: every `decision`-type proposal escalates to the user. There is no `--auto-decide-dominant` / `--no-auto-decide-dominant` flag.
 - **Deferred tool loading**: Before using AskUserQuestion (or any other deferred tool used by Agent infrastructure for review-agent spawning), you MUST first load it via ToolSearch. Run `ToolSearch` with query "select:AskUserQuestion" before any user prompt step. Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md` and apply its hard constraints to every AskUserQuestion call in this skill.
 

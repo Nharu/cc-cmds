@@ -7,7 +7,7 @@ When assigning each analyst (Step 4), include the following in the initial messa
 1. **Return contract instruction**: embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the prompt. Under Model B an analyst's **return text IS its result** — there is no separate delivery channel and no `[COMPLETE]`/`[IN PROGRESS]` prefix. The header tells the analyst to deliver its analysis as its final return text, begin that return with its role and round, and never return empty (return a partial result plus a one-line concrete blocker if it cannot proceed).
 2. **The source document**: full text of `<design-doc-path>` (or, for very large docs, the analyst's assigned section range + a TOC of the rest, pointing the analyst to ask for more).
 3. **Assigned lens**: the analyst's role from the Step 3 lens pool + its 범위 (see lens table in SKILL.md Step 3).
-4. **Lens-specific checklist** (see "Lens checklists" below), with MCP `search_code` guidance when grounded.
+4. **Lens-specific checklist** (see "Lens checklists" below), with `grep`/`Read` guidance when grounded.
 5. **Analysis mode**: `grounding ON (CODE_ROOT=<abs path>)` or `doc-only`. In doc-only mode the analyst MUST NOT fabricate code citations and must scope claims to the document only (CFI-3, CFI-4).
 6. **Read-only mandate**: *"You are analyzing a third-party design document. NEVER edit the source document or anything in its source repo. Report findings only."*
 7. **Finding reporting format** (UPSTREAM fields of the canonical schema — see `02-analysis-report-template.md`):
@@ -21,6 +21,7 @@ When assigning each analyst (Step 4), include the following in the initial messa
 8. **Category tag list**: `architecture`, `feasibility`, `impl-cost`, `migration-safety`, `completeness`, `consistency`, `alternatives`, `doc-code-gap`, `scalability`, `security-design`, `data-integrity`, `api-contract`.
 9. **Positive findings**: *"If the design makes a notably sound or well-justified choice, note it with a `[POSITIVE]` tag briefly."*
 10. **(Optional) Lead's grounding exploration summary** from Step 2 — key modules the doc references, related code, conventions. Include within context-size limits.
+11. **(grounding ON only) Skip-glob list**: when grep-searching `CODE_ROOT`, skip `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target` to avoid spending token budget on vendored/generated trees.
 
 ## Lens checklists
 

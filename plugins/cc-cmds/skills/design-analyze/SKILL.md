@@ -90,7 +90,7 @@ cd "$DOC_DIR"
 CODE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 ```
 
-- If `CODE_ROOT` resolves and grounding is ON → Step 2 indexes it.
+- If `CODE_ROOT` resolves and grounding is ON → Step 2 grounds against it.
 - If `CODE_ROOT` is empty (not a repo) → AskUserQuestion fallback: (a) specify a code root path directly via the `Other` channel, (b) doc-only analysis, (c) abort.
 
 #### 1c: Scope confirmation (read-only assurance + artifact-timing pre-notice)
@@ -108,21 +108,18 @@ Proceed after user confirmation.
 
 ---
 
-### Step 2: Codebase Indexing & Grounding Setup
+### Step 2: Grounding Setup
 
 Skip entirely (→ doc-only mode) when grounding is OFF (`--no-codebase`, repo absent, or user chose doc-only).
 
-When grounding is ON and `CODE_ROOT` exists, index the **source repo** (`CODE_ROOT`, not cwd) via Claude Context MCP. **Re-indexing policy is identical to `review` Step 2a** — do NOT unconditionally re-index every run:
+When grounding is ON and `CODE_ROOT` exists, ground against the **source repo** (`CODE_ROOT`, not cwd) directly with `grep`/`Glob`/`Read`:
 
-1. Check existing index via `get_indexing_status` for `CODE_ROOT`. If current, reuse and proceed.
-2. If index missing or outdated:
-   a. Identify exclusion targets — survey `CODE_ROOT` structure (`ls`), read `CODE_ROOT`'s CLAUDE.md and .gitignore; common exclusions: `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target`.
-   b. Call `index_codebase` with the absolute `CODE_ROOT` path + exclusion list.
-   c. Poll `get_indexing_status` until status = "completed" — **never proceed before indexing completes**.
+1. Survey `CODE_ROOT` structure (`ls`), read `CODE_ROOT`'s CLAUDE.md and .gitignore.
+2. Note directories to skip when searching: `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target`.
 
-Analysts use `search_code` directly during Step 4.
+Analysts ground claims with `grep`/`Read` directly during Step 4.
 
-**Graceful degrade (CFI-4)**: repo absent / indexing error / user rejection → doc-only mode. Suppress `doc-code-gap` findings and `path:line` citations, emit a Korean notice, and stamp the report header `분석 모드: 문서 단독`. Propagate the doc-only marker to Step 4 analyst packages and Step 5 synthesis.
+**Graceful degrade (CFI-4)**: repo absent / inaccessible `CODE_ROOT` / user rejection → doc-only mode. Suppress `doc-code-gap` findings and `path:line` citations, emit a Korean notice, and stamp the report header `분석 모드: 문서 단독`. Propagate the doc-only marker to Step 4 analyst packages and Step 5 synthesis.
 
 ---
 
@@ -186,7 +183,7 @@ Branch on user response: **Approve** → Step 4 / **Modification** → re-propos
 **Before building each analyst's context package, Read `${CLAUDE_SKILL_DIR}/references/01-analyst-context-package.md`** for the context package contents, lens-specific checklists, and the read-only analysis protocol (rounds, quality gate, cross-validation, convergence).
 
 - Spawn each analyst as a **nameless background task** with the approved composition: `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. The members ARE nameless `Agent` background sub-agents — but a one-shot isolated spawn per round is forbidden; the retained-context resume loop (resume by `agentId`, re-injecting load-bearing context each round) is what makes this a team. Record each returned `agentId` in the `"ledger"` key of `docs/analysis/.{doc-slug}.work.json` immediately (see the protocol's Role↔agentId ledger). The `{doc-slug}` still names the work.json.
-- Each analyst analyzes the prose document from their lens, cross-checks against the indexed code (or operates doc-only), and participates in cross-validation/debate. Analysts are read-only single-pass, but still resumed across rounds for cross-review convergence.
+- Each analyst analyzes the prose document from their lens, cross-checks against the source code (or operates doc-only), and participates in cross-validation/debate. Analysts are read-only single-pass, but still resumed across rounds for cross-review convergence.
 - All team-internal discussion in English.
 - **NO modifications to the source document or source repo (CFI-1). Read-only analysis only.**
 - **The lead acts as facilitator**, actively driving the multi-round analysis. Completion is by **return collection** (the return text IS the result): after cross-review, resume each analyst once with a convergence prompt (re-injecting current consensus + open conflicts) until every return says "no further input". Escalation per the protocol's failure phenotypes: Case 1 (thin-return — 1st re-scope+resume, 2nd consecutive → `AskUserQuestion`), Case 2 (never-returns → `TaskStop` + fresh re-spawn, new `agentId` to the ledger), Case 3 (non-conforming return → re-assign once, recurrence feeds Case 1). This is a single pass — no external/internal convergence loop.
@@ -276,7 +273,7 @@ No manual Other (auto-provided). No `preview` (multiSelect).
 
 After presenting the rendered artifacts, discuss with the user.
 
-- **Lead direct handling** (no team): explain specific findings, re-check code via Claude Context MCP, re-assess severity on new user context, explain exclusions.
+- **Lead direct handling** (no team): explain specific findings, re-check code via `grep`/`Read`, re-assess severity on new user context, explain exclusions.
 - **Deep re-analysis** (team re-composition): when the user needs perspectives not covered, propose a fresh analyst team (Step 3 format + re-creation reason + previous coverage + additional scope), require approval, include prior findings in the new package. On approval, spawn fresh nameless background tasks (`Agent`, `subagent_type: "claude"`, `run_in_background: true`) and record their new `agentId`s in the work.json ledger.
 - **`추가조사`** during the walkthrough is lead read-only — it does NOT spawn a team (that would re-introduce a heavy lifecycle); deep work is this step only.
 
@@ -292,8 +289,7 @@ Repeat until the user is satisfied.
 - **Inter-agent communication in English.** User-facing communication and rendered artifacts in Korean.
 - **Nameless background-task team**: Step 4 multi-perspective analysis members ARE nameless `Agent` background sub-agents (`subagent_type: "claude"`, no `name`, `run_in_background: true`). Do NOT collapse this into one-shot isolated `Agent()` calls per round — the retained-context resume loop (`SendMessage` to each `agentId`, re-injecting load-bearing context) drives the cross-validation/debate. A task self-terminates when it returns; its return text IS the result.
 - **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, load them via ToolSearch in Step 0 (`Agent` is built-in). AskUserQuestion MUST be loaded before Step 1.
-- **Claude Context MCP**: When grounding is ON, index `CODE_ROOT` (the source repo, not cwd) in Step 2 before team creation. Analysts use `search_code` directly. doc-only mode skips indexing and suppresses code citations (CFI-4).
+- **Codebase grounding**: When grounding is ON, ground against `CODE_ROOT` (the source repo, not cwd) with `grep`/`Glob`/`Read` in Step 2 before team creation. Analysts ground claims directly. doc-only mode skips grounding and suppresses code citations (CFI-4).
 - **Single pass**: no `design-review`-style external/internal convergence loop; no termination/COUNT_APPLIED math.
-- **Sequential Thinking MCP**: the lead may use it when synthesizing conflicting analyst findings (Step 5), handling complex follow-up (Step 8), or composing teams for atypical/multi-domain docs (Step 3). Not for routine tasks.
 
 Task: $ARGUMENTS
