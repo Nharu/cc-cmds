@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-06-19
+
+`claude-context`·`sequential-thinking` 두 MCP가 사용자 도메인의 코드 검색/추론에서 grep/native 대비 효용이 없음이 선행 검증에서 확정되어(중형 레포 2.47×·초대형 3.85× 토큰 손해, recall uplift 0, sequential은 Opus native 추론으로 redundant), 두 MCP를 모든 스킬 surface에서 제거한다. `review`·`design-analyze`의 코드 grounding은 기능(팀원이 소스를 직접 탐색해 주장을 grounding)을 보존한 채 도구만 claude-context 인덱싱(index→poll lifecycle)에서 grep/Glob/Read 직접 탐색으로 교체한다. `context7`·`figma` MCP는 유지하며, 슬래시 커맨드 시그니처는 불변이다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Changed
+
+- **`review`**: Step 2a를 "Source tree survey"로 재작성한다 — Claude Context MCP 인덱싱·`get_indexing_status`·`index_codebase`·poll lifecycle을 제거하고 `ls`/CLAUDE.md/.gitignore 확인 + skip-dir 목록 + `Glob`/`Read` 오리엔테이션으로 대체한다. 코드 재확인·grounding mandate·역할별 체크리스트의 검색 가이드를 grep/Read verb로 전환한다.
+- **`design-analyze`**: Step 2를 "Grounding Setup"으로 재작성하고(인덱싱·poll 제거, `grep`/`Glob`/`Read` 직접 grounding), CFI-4 degrade의 indexing-error arm을 inaccessible CODE_ROOT로 일반화한다. grounding ON/OFF 게이트(`--no-codebase`)·doc-only 동작은 불변이다.
+- **컨텍스트 패키지**: reviewer 패키지(15→16-item)와 analyst 패키지에 skip-glob 목록(`node_modules`·`.next`·`dist` 등)을 주입한다 — 팀원이 직접 grep할 때 vendored/generated 트리로 토큰 예산을 소진하는 것을 방지한다.
+
+### Removed
+
+- **lite 3종(`review-lite`·`design-lite`·`design-review-lite`)**: 두 MCP를 명시하던 죽은 금지문구(서버 제거 후 moot)를 제거한다. `_common/team-upgrade-analysis.md`의 generic "no MCP" fence는 특정 서버를 명명하지 않으므로(context7·figma 포함) 유지한다.
+- **`design-apply`**: Sequential Thinking·Claude Context MCP 허용 문구를 제거한다(context7 MCP 문구는 유지).
+
 ## [1.17.1] - 2026-06-17
 
 검증 V/R 항목 필드 라인의 markdown 렌더링(선행 불릿 `- ` 유무, `**…**` bold 유무)이 `_common/verification.md` 스키마에 미고정이어서, 손으로 작성된 설계 문서가 `**검증 등급**: …`·`- 검증 등급: …`·`- **잔여 사유**: …` 등 3가지 비호환 형태로 발산했다. 반면 `implement`의 W1 flip·snapshot-diff gate와 탐지 문법은 단일 형태(`**key**: value`)만 가정해, `design-review`가 well-formed로 판정한 잔여 항목이 `implement`에서 flip 불가가 되는 비호환이 있었다(#41에서 관측). 정규 형식 `**key**: value`(bold·비불릿·콜론 뒤 공백 1)를 SOT에 고정하고, 탐지·읽기는 4변형을 모두 흡수하는 관용 ERE로, `implement` flip gate는 비대칭(removed tolerant / added strict-canonical)으로 하드닝한다 (`/plugin update cc-cmds`로 자동 반영). [#44]
