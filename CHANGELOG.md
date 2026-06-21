@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.3] - 2026-06-22
+
+`design-review`·`design-review-lite`의 detect-branch ASYNC 경로에 대한 코드 리뷰 v2 잔여 발견 4건을 반영한다. prose under-specification을 봉합하는 터치업으로 동작 의미는 불변이며, base↔lite 편집 라인은 character-identical을 유지한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **witness-absent respawn 절 self-contained화**: ASYNC stall death predicate의 respawn 절이 `reentry_count` 리셋만 명시하던 것을, `last_output_bytes`도 ∅로 리셋함을 명시해 죽은 spawn의 byte-count가 새 spawn으로 이월되는 여지를 제거한다.
+- **"Soft liveness signals" dangling term 봉합**: witness-absent bullet의 "Soft liveness signals"가 정의 없이 쓰이던 것을 정의 구절(`output_file` growth · early-wake notification)로 보강한다.
+- **ASYNC envelope 위치 힌트 보강**: ASYNC 마커 envelope 기술에 비-바인딩 "typically leading" 위치 힌트를 추가해 SYNC envelope-tail 앵커와의 대칭을 명확히 한다. 분류 게이트는 envelope containment 그대로이며 위치는 매치 조건이 아니다.
+- **malformed-async 종단 dead-end 봉합**: 마커는 emit됐으나 agentId·output_file 양쪽이 파싱 불가한 극히 드문 손상 케이스가 에이전트를 미정리·라운드 미기록으로 남기던 liveness dead-end를, 동일 `inner_round` respawn(stop할 agentId 없음 → failed spawn 취급)으로 봉합한다. 기존 first-round-N-witness-wins dedup이 untracked-zombie 이중 append를 처리하므로 안전하며, Neither 분기에는 일반화하지 않는다.
+
 ## [1.18.2] - 2026-06-21
 
 `design-review`·`design-review-lite`의 detect-branch 구현에 대한 코드 리뷰 발견 항목을 처리해 ASYNC 경로의 안전 임계 술어를 정량화·하드닝한다. 안전 임계 불변식의 정본 1부를 컴팩션 재부착 우선순위가 높은 Control-Flow Invariants 섹션에 두고 Step 12.detect는 정본을 가리키는 pointer만 유지하는 단일권위 원칙으로 정리한다 (`/plugin update cc-cmds`로 자동 반영).
