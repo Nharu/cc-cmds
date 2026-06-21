@@ -163,6 +163,7 @@ REQUIRED_PHRASES=(
   'INNER_EXIT_REASON == "safety-limit-outer-terminate"'
   'no look-ahead spawn'
   'Agent() actually returned'
+  'round-N summary line in review_log.md'
 )
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.
