@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1] - 2026-06-21
+
+`design-review`·`design-review-lite`의 inner 루프(Step 12)가 라운드 리뷰 에이전트의 완료를 비동기 통지(push)에만 의존해 대기하다가, 통지가 중복·누락·오라우팅될 때(다수 upstream 하네스 버그로 실증) 메인 세션이 완료를 관측하지 못한 채 무한 park 하는 liveness stall을 제거한다. 커밋된 Step 12는 spawn 방식(foreground/background)을 강제하지 않아, 실행 모델이 백그라운드로 처리하면 라운드 완료의 유일한 관측 채널이 드롭 가능한 통지가 됐다. detect-branch hybrid로 두 환경을 모두 커버한다 — 동기 반환이면 inline 소비, 비동기 launch면 통지를 무시하고 온디스크 witness로 능동 확인 (`/plugin update cc-cmds`로 자동 반영). [#47]
+
+### Fixed
+
+- **`design-review`·`design-review-lite` inner 루프 통지-드롭 stall**: Step 12에 detect-branch 분류를 추가한다. spawn tool result를 SYNC(`<usage>…duration_ms…</usage>` tail)·ASYNC(`output_file:`/`Async agent launched successfully.`)·Neither(소비 불가)로 양면 positive 분류해, SYNC는 inline 결과를 그대로 소비(비용 0)하고 ASYNC는 통지 대신 `review_log.md`의 `## Review Round N` 온디스크 witness로 완료를 능동 확인한다. witness 부재 시 기본 대기 유지 → bounded 소진 후 `TaskStop` + 동일 `inner_round` respawn, first-round-N-witness-wins dedup으로 좀비 중복 witness를 무해화한다. `run_in_background: false`는 요청으로만 전달하고 통지 채널 부재를 단정하지 않는다.
+- **anti-fabrication precondition 양 분기 재근거화**: Observed-result precondition을 SYNC(구조적 inline 관측)·ASYNC(에이전트 단독 작성 `## Review Round N` witness — 유일 anti-fab anchor)로 확장하고, fail-closed 사다리(통지 도착·`review_proposals.md` 존재·witness 부재 불인정)와 ASYNC no-look-ahead ordering을 명시한다. `scripts/lint-skill-invariants.sh`의 `REQUIRED_PHRASES`에 `round-N summary line in review_log.md`를 추가(8→9)해 base↔lite witness-gate 절 sync를 강제한다.
+
+### Why
+
+근본은 공유 채널(`agent-team-protocol`의 드롭 가능한 완료 통지)이고 6개 팀 기반 스킬이 모두 노출되나, `design-review`/-lite는 durable 온디스크 floor(`review_log.md` per-round witness)와 저렴한 stateless respawn을 보유해 국소 fix가 가능하다. 통지를 아예 조회하지 않으므로 드롭·중복·오라우팅이 구조적으로 무의미해진다. 나머지 팀 스킬 전반의 일반화는 별도 추적한다. [#49]
+
 ## [1.18.0] - 2026-06-19
 
 `claude-context`·`sequential-thinking` 두 MCP가 사용자 도메인의 코드 검색/추론에서 grep/native 대비 효용이 없음이 선행 검증에서 확정되어(중형 레포 2.47×·초대형 3.85× 토큰 손해, recall uplift 0, sequential은 Opus native 추론으로 redundant), 두 MCP를 모든 스킬 surface에서 제거한다. `review`·`design-analyze`의 코드 grounding은 기능(팀원이 소스를 직접 탐색해 주장을 grounding)을 보존한 채 도구만 claude-context 인덱싱(index→poll lifecycle)에서 grep/Glob/Read 직접 탐색으로 교체한다. `context7`·`figma` MCP는 유지하며, 슬래시 커맨드 시그니처는 불변이다 (`/plugin update cc-cmds`로 자동 반영).
