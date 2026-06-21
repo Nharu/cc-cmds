@@ -154,6 +154,8 @@ PAIRS=(
   "design-review|design-review-lite"
 )
 
+# MAINTENANCE: adding a phrase here requires a matching sentence in
+# tests/fixtures/lint-skill-invariants/T-INV-OK-1/design-review{,-lite}/SKILL.md
 REQUIRED_PHRASES=(
   'consecutive_no_major >= 2'
   'inner_converged_cleanly()'
@@ -163,6 +165,7 @@ REQUIRED_PHRASES=(
   'INNER_EXIT_REASON == "safety-limit-outer-terminate"'
   'no look-ahead spawn'
   'Agent() actually returned'
+  'round-N summary line in review_log.md'
 )
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.

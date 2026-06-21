@@ -20,6 +20,8 @@ inner_converged_cleanly() =
 
 Advance ordering: there is no look-ahead spawn. Anti-fabrication: write a record only if round N's review Agent() actually returned.
 
+- The agent appends a round-N summary line in review_log.md at the close of each review cycle.
+
 ```
 if INNER_EXIT_REASON == "safety-limit-outer-terminate": break
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer": outer_done = false

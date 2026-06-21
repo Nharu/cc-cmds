@@ -5,6 +5,42 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.3] - 2026-06-22
+
+`design-review`·`design-review-lite`의 detect-branch ASYNC 경로에 대한 코드 리뷰 v2 잔여 발견 4건을 반영한다. prose under-specification을 봉합하는 터치업으로 동작 의미는 불변이며, base↔lite 편집 라인은 character-identical을 유지한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **witness-absent respawn 절 self-contained화**: ASYNC stall death predicate의 respawn 절이 `reentry_count` 리셋만 명시하던 것을, `last_output_bytes`도 ∅로 리셋함을 명시해 죽은 spawn의 byte-count가 새 spawn으로 이월되는 여지를 제거한다.
+- **"Soft liveness signals" dangling term 봉합**: witness-absent bullet의 "Soft liveness signals"가 정의 없이 쓰이던 것을 정의 구절(`output_file` growth · early-wake notification)로 보강한다.
+- **ASYNC envelope 위치 힌트 보강**: ASYNC 마커 envelope 기술에 비-바인딩 "typically leading" 위치 힌트를 추가해 SYNC envelope-tail 앵커와의 대칭을 명확히 한다. 분류 게이트는 envelope containment 그대로이며 위치는 매치 조건이 아니다.
+- **malformed-async 종단 dead-end 봉합**: 마커는 emit됐으나 agentId·output_file 양쪽이 파싱 불가한 극히 드문 손상 케이스가 에이전트를 미정리·라운드 미기록으로 남기던 liveness dead-end를, 동일 `inner_round` respawn(stop할 agentId 없음 → failed spawn 취급)으로 봉합한다. 기존 first-round-N-witness-wins dedup이 untracked-zombie 이중 append를 처리하므로 안전하며, Neither 분기에는 일반화하지 않는다.
+
+## [1.18.2] - 2026-06-21
+
+`design-review`·`design-review-lite`의 detect-branch 구현에 대한 코드 리뷰 발견 항목을 처리해 ASYNC 경로의 안전 임계 술어를 정량화·하드닝한다. 안전 임계 불변식의 정본 1부를 컴팩션 재부착 우선순위가 높은 Control-Flow Invariants 섹션에 두고 Step 12.detect는 정본을 가리키는 pointer만 유지하는 단일권위 원칙으로 정리한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **witness-absent 사망 판정 정량화**: ASYNC 라운드 에이전트의 사망 선언을 `reentry_count`(K=3) AND `## Review Round N` witness 부재 AND output_file byte-count 불변(또는 부재) 3개 conjunct로 확정하고, re-entry 단위(한 turn yield-and-return 사이클)와 byte-count 판정 절차를 명문화한다. byte-stability conjunct 누락 금지 fence를 추가해 active-writer를 죽이는 경로(`review_proposals.md` torn-write)를 차단한다.
+- **분류기 envelope-anchoring + overlap 우선순위**: SYNC/ASYNC 마커(`<usage>…</usage>`·`output_file:`·`Async agent launched successfully.`)를 tool-result envelope 위치에서만 매칭하도록 강화해 에이전트 본문 토큰이 분류를 오염시키지 못하게 하고, 두 시그니처가 함께 나타나면 ASYNC 우선을 명시한다. CFI SYNC 정의에도 envelope-scoped AND-NOT 배제조건을 추가해 컴팩션 후 오분류를 차단한다.
+- **Neither 모순 제거 + malformed-async 분리**: Neither 분기(async 마커 부재)가 배제된 필드를 복구한다던 내부 모순을 제거(소비 불가 → 에러 표면화)하고, envelope 마커는 있으나 agentId/output_file 파싱이 불가한 경우를 별도 malformed-async 분기로 분리해 ASYNC floor 경로로 라우팅한다.
+- **단일권위-in-CFI 정리**: referent 없는 역사적 서술(TaskGet status-query·handle-binding mis-route) 제거, fail-closed 제목의 모호성 제거, N 자가도출 불변식과 라운드 경계 ordering을 CFI 단일권위로 통합하고 Step 12.detect는 cross-ref로 축소한다. `run_in_background: false` 문구를 hint 의미로 명확화한다(base 전용).
+- **CI 실패 해소**: `scripts/lint-skill-invariants.sh`의 `REQUIRED_PHRASES` 9번째 phrase에 대응하는 문장이 `T-INV-OK-1` 픽스처에 누락돼 `make test`가 실패하던 것을, 양 픽스처에 문장을 추가해 해소한다. phrase 추가 시 픽스처 동반 갱신 의무를 lint 주석으로 문서화한다.
+
+## [1.18.1] - 2026-06-21
+
+`design-review`·`design-review-lite`의 inner 루프(Step 12)가 라운드 리뷰 에이전트의 완료를 비동기 통지(push)에만 의존해 대기하다가, 통지가 중복·누락·오라우팅될 때(다수 upstream 하네스 버그로 실증) 메인 세션이 완료를 관측하지 못한 채 무한 park 하는 liveness stall을 제거한다. 커밋된 Step 12는 spawn 방식(foreground/background)을 강제하지 않아, 실행 모델이 백그라운드로 처리하면 라운드 완료의 유일한 관측 채널이 드롭 가능한 통지가 됐다. detect-branch hybrid로 두 환경을 모두 커버한다 — 동기 반환이면 inline 소비, 비동기 launch면 통지를 무시하고 온디스크 witness로 능동 확인 (`/plugin update cc-cmds`로 자동 반영). [#47]
+
+### Fixed
+
+- **`design-review`·`design-review-lite` inner 루프 통지-드롭 stall**: Step 12에 detect-branch 분류를 추가한다. spawn tool result를 SYNC(`<usage>…duration_ms…</usage>` tail)·ASYNC(`output_file:`/`Async agent launched successfully.`)·Neither(소비 불가)로 양면 positive 분류해, SYNC는 inline 결과를 그대로 소비(비용 0)하고 ASYNC는 통지 대신 `review_log.md`의 `## Review Round N` 온디스크 witness로 완료를 능동 확인한다. witness 부재 시 기본 대기 유지 → bounded 소진 후 `TaskStop` + 동일 `inner_round` respawn, first-round-N-witness-wins dedup으로 좀비 중복 witness를 무해화한다. `run_in_background: false`는 요청으로만 전달하고 통지 채널 부재를 단정하지 않는다.
+- **anti-fabrication precondition 양 분기 재근거화**: Observed-result precondition을 SYNC(구조적 inline 관측)·ASYNC(에이전트 단독 작성 `## Review Round N` witness — 유일 anti-fab anchor)로 확장하고, fail-closed 사다리(통지 도착·`review_proposals.md` 존재·witness 부재 불인정)와 ASYNC no-look-ahead ordering을 명시한다. `scripts/lint-skill-invariants.sh`의 `REQUIRED_PHRASES`에 `round-N summary line in review_log.md`를 추가(8→9)해 base↔lite witness-gate 절 sync를 강제한다.
+
+### Why
+
+근본은 공유 채널(`agent-team-protocol`의 드롭 가능한 완료 통지)이고 6개 팀 기반 스킬이 모두 노출되나, `design-review`/-lite는 durable 온디스크 floor(`review_log.md` per-round witness)와 저렴한 stateless respawn을 보유해 국소 fix가 가능하다. 통지를 아예 조회하지 않으므로 드롭·중복·오라우팅이 구조적으로 무의미해진다. 나머지 팀 스킬 전반의 일반화는 별도 추적한다. [#49]
+
 ## [1.18.0] - 2026-06-19
 
 `claude-context`·`sequential-thinking` 두 MCP가 사용자 도메인의 코드 검색/추론에서 grep/native 대비 효용이 없음이 선행 검증에서 확정되어(중형 레포 2.47×·초대형 3.85× 토큰 손해, recall uplift 0, sequential은 Opus native 추론으로 redundant), 두 MCP를 모든 스킬 surface에서 제거한다. `review`·`design-analyze`의 코드 grounding은 기능(팀원이 소스를 직접 탐색해 주장을 grounding)을 보존한 채 도구만 claude-context 인덱싱(index→poll lifecycle)에서 grep/Glob/Read 직접 탐색으로 교체한다. `context7`·`figma` MCP는 유지하며, 슬래시 커맨드 시그니처는 불변이다 (`/plugin update cc-cmds`로 자동 반영).
