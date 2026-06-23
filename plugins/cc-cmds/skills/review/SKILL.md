@@ -277,8 +277,9 @@ Branch on user response:
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
-- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v1 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary`, `state ∈ {running, done, aborted}`.
+- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v2 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary | scratchDir`, `state ∈ {running, done, aborted}` (`scratchDir` = the reviewer's out-of-tree witness dir, recorded at spawn, transient).
 - **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). Update the ledger on every state change.
+- **Witness scratch dir (parameters for `_common/agent-team-protocol.md`)**: before the first spawn, create `WITNESS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-team-witness-{slug}.XXXXXX")` and record it as each reviewer's `scratchDir` (same immediacy as `agentId`). Every Step-4 review round is witnessed (`{role-slug}.round-N.md`, sentinel/nonce per the protocol); a Step-6 follow-up **fresh** team gets its **own** nested `mktemp -d`. The witness dir is out-of-tree, leaving the two-command boundary gate untouched.
 - All inter-reviewer discussion in English
 - NO code modifications allowed. Review only
 - **The lead acts as a facilitator**, actively driving the multi-round resume loop (produce → cross-review → convergence)
@@ -291,7 +292,7 @@ Branch on user response:
 
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
-The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v1 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
+The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v2 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
 
 #### Paste-ready comments (lead-authored)
 
