@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.6] - 2026-06-24
+
+v1.18.5 PR(`fix/team-liveness-witness`)에 대한 v2 재리뷰 발견 8건(P0 0·P1 1·P2 1·P3 6)을 처리한다 — 1차 정합화 sweep이 놓친 cross-review/refinement 라운드의 잔여 구 완료-모델 verb와 공유 프로토콜의 표기 결함을 봉합한다. 반영 8건 / 보류 0건 / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
+
+### Fixed
+
+- **cross-review/refinement 라운드 잔여 sweep**: `design-apply`·`design-lite`의 Round-2 Cross-Review와 `design-apply`·`design`의 Refinement 라운드에 남아 있던 "Collect both returns"·구 수집 verb를, 라운드 witness를 `witness_present`로 확인한 뒤 읽는 어휘로 교체한다(P1·P3-1). base↔lite는 각 파일 roster idiom에 맞춰 단수(`it`)/복수(`them`)로 정합화한다.
+- **`agent-team-protocol.md` 표기 정합화**: sentinel·temp·완료 술어 시그니처의 라운드 키를 `{round/phase}`로 일반화하고(P3-4·P3-5), nonce 스코프 표현을 `per-(member, round/phase)`로 통일하며(P3-2), `:135` placeholder 글로스가 bare-digit `1`이 아닌 `round-N` 토큰을 명시하도록 정정해 완료 술어 키 비교 false-death를 차단한다(P2).
+- **`mv -n` 라벨 misnomer 정정**: stat-then-rename(TOCTOU)이라 first-writer 보장이 없으므로 "first-COMPLETE-wins" 라벨을 "any-winner-is-a-valid-completed-witness"로 교체한다(P3-6). `:34`·`:70`은 P3-2와 라인을 공유해 병합 after-text를 라인당 1회로 적용한다.
+- **ledger 참조 v2 정합**: `design-apply`의 소프트 참조 "Role↔agentId ledger"를 같은 파일 `:25`와 일치하도록 "Role↔agentId ledger v2"로 맞춘다(P3-3).
+
 ## [1.18.5] - 2026-06-24
 
 v1.18.4(witness 완료-신호 계약) PR에 대한 코드 리뷰 발견 13건을 처리한다 — lead 필수-Read 스킬 본문·레퍼런스 다수가 여전히 구 return-collection 완료 모델을 가르쳐 witness SOT와 정면 모순하던 머지 블로커(P1)와, 공유 프로토콜 내부의 명세 결함(P2/P3)을 봉합한다. 반영 11건 / 보류 2건([#54]·[#55]) / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
