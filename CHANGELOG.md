@@ -5,6 +5,22 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.5] - 2026-06-24
+
+v1.18.4(witness 완료-신호 계약) PR에 대한 코드 리뷰 발견 13건을 처리한다 — lead 필수-Read 스킬 본문·레퍼런스 다수가 여전히 구 return-collection 완료 모델을 가르쳐 witness SOT와 정면 모순하던 머지 블로커(P1)와, 공유 프로토콜 내부의 명세 결함(P2/P3)을 봉합한다. 반영 11건 / 보류 2건([#54]·[#55]) / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
+
+### Fixed
+
+- **스킬·레퍼런스 완료-신호 어휘를 witness 모델로 정합화**: 6개 팀 스킬 본문 + analyst/reviewer 컨텍스트 패키지에서 "return text IS the result/proposal/findings"·"collect X before proceeding"·"Convergence is by return collection"·"every return says 'no further input'" 등 구 모델 표현을, 결과는 멤버 witness가 전달하고 완료/수렴은 `witness_present`로만 확정한다는 어휘로 전면 재작성한다(단순 명사 치환이 아니라 모든 gate/순서 표현을 `witness_present`에 바인딩). `review/references`의 "collected via the background completion notification"(드롭 채널을 신뢰하라 지시)을 early-wake 힌트 강등으로 정정하고, 스킬 본문이 완료 lifecycle을 인라인 재서술하던 최고 심각도 사이트(`design-analyze`)는 SOT 포인터로 축약한다.
+- **sentinel·완료 술어 phase-form 일반화**: 정수-라운드 전용이던 sentinel 템플릿·temp 템플릿·task-assignment 헤더·완료 술어 3-conjunct를 단일 placeholder `{round/phase}`로 일반화해 phase witness(`{role-slug}.fidelity.md` 등)가 술어를 만족하도록 producer·consumer 양쪽을 정합화한다. 치환 선언에 `{role-slug}`·`{round/phase}`를 명시한다.
+- **완료 술어 conjunct-2 정직화**: sentinel 일치가 완료된 direct-write를 atomic publish와 구별하지 못함(on-disk 바이트 동일)을 명시하고, _완료된_ direct-write에 대한 fail-closure는 이 conjunct가 아니라 멤버의 temp+`mv -n` 쓰기 규율에 의존함을 분명히 한다.
+- **`mv -n` 안전성 출처 정정**: `mv -n`을 atomic no-clobber로 과대표현하던 것을, BSD/GNU 모두 stat-then-rename(TOCTOU)이라 동일 라운드 zombie-vs-respawn이 같은 타깃을 race할 수 있음을 인정하고, 안전성은 (1) 어느 rename이 이기든 same-nonce completed 산출물이 보이는 것 + (2) 어떤 temp도 self-delete되지 않고 teardown이 sweep하는 것의 2-part 보증임으로 재정의한다. "published path is immutable" 과대 서술도 "completeness·nonce-validity가 불변"으로 정정한다.
+- **잔여 명세 결함 봉합**: death 술어의 미바인딩 `b`를 `current_bytes`로 명시, dangling `§F` 참조를 "Role↔agentId ledger v2"로 해소, `aborted` 행이 재스캔되지 않아 late witness가 영구 미소비됨(보수적 under-claim)을 명문화, witness dir 서술 셀을 실행 경로(`${TMPDIR:-/tmp}`)와 일치시키고 종결 행 strip 문구를 "done and aborted alike"로 통일한다.
+
+### Why
+
+근본은 v1.18.4가 프로토콜 SOT를 witness 모델로 재작성하면서 6개 스킬·레퍼런스에 남아 있던 구 완료-모델 요약 서술을 함께 갱신하지 못해, 같은 lead가 Read하는 SOT와 스킬이 정면 모순한 것이다(통지 드롭 채널을 신뢰하라 지시하는 사이트 포함). 계약은 `agent-team-protocol.md` 단일 SOT에 두고 스킬은 인라인 재서술 대신 포인터를 두는 원칙으로 정합화해 6중 drift를 제거한다. 보류 2건(compaction이 death 카운터를 앞지르는 safe stall, death liveness의 미검증 harness 신호 의존)은 머지 블로커가 아니어서 별도 이슈로 추적한다.
+
 ## [1.18.4] - 2026-06-24
 
 팀 기반 6개 스킬(`design`·`design-lite`·`review`·`review-lite`·`design-analyze`·`design-apply`)의 공유 완료-신호 계약을 통지-드롭 stall·날조에 대해 하드닝한다. 라운드 완료와 라운드 산출물을 모두 드롭 가능한 비동기 통지 + ephemeral 반환 텍스트에만 의존하던 `_common/agent-team-protocol.md`를, 각 팀원이 산출물 전체를 통지와 무관한 durable witness 파일로 남기고 lead가 그 witness를 권위 SOT로 능동 확인·합성하는 구조로 재작성한다. #47의 `design-review` 국소 수정을 팀 토론 스킬 전반으로 일반화한다 (`/plugin update cc-cmds`로 자동 반영). [#49]
