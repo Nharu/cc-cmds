@@ -4,7 +4,7 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 
 ## 16-item Context Package
 
-1. **Return contract instruction**: Embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the reviewer's prompt (role / round / load-bearing inputs / return contract). The reviewer is a nameless background task: it delivers its findings as its **final return text** — there is no separate delivery channel, no completion prefix, no messaging tool to call. It begins its return with its role and round, and never returns empty (if it cannot proceed, it returns its partial result plus a one-line concrete blocker).
+1. **Return contract instruction**: Embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the reviewer's prompt (role / round / load-bearing inputs / witness contract). The reviewer is a nameless background task: it delivers its findings as its **durable witness file** (sentinel/nonce-terminated per the protocol) — the return text is only an early-wake hint, with no completion prefix and no messaging tool to call. It begins its return with its role and round, and never returns without publishing its witness (if it cannot proceed, it publishes a partial result plus a one-line concrete blocker).
 2. **Review scope diff**: Full diff or role-filtered diff.
 3. **Role-relevant changed file list**: Filtered by the lead based on Step 3 assigned scope + Round 0 results (if a reviewer carries the scope-coordination role).
 4. **Role-specific review checklist** (with grep/Read search guidance — see "Role-specific checklists" below).
@@ -64,9 +64,9 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 
 ## Review Protocol (minimum 2 rounds)
 
-Each round is a resume of the reviewer task by its `agentId`; each round's result is the reviewer's **return text** (collected via the background completion notification or as the resume tool result), not a DM. On every resume the lead re-injects the load-bearing context, quoting peer findings **verbatim**.
+Each round is a resume of the reviewer task by its `agentId`; each round's result is the reviewer's **durable witness file**, confirmed via `witness_present` and read directly — the background completion notification and the resume tool result are only early-wake hints (the very drop-prone channel this model refuses to trust), not the result, and not a DM. On every resume the lead re-injects the load-bearing context, quoting peer findings **verbatim**.
 
-1. **Round 1 — Independent Review**: Spawn each reviewer as a nameless background task with its context package. Each reviews independently from its own perspective and delivers its findings as its return text. Collect every reviewer's return before moving on. A reviewer that returns an empty or substanceless result is re-scoped and resumed once (per the protocol's Escalation rules), not skipped.
+1. **Round 1 — Independent Review**: Spawn each reviewer as a nameless background task with its context package. Each reviews independently from its own perspective and publishes its findings as its witness. Confirm every reviewer's round witness via `witness_present`, then read the witness — never the return — before moving on. A reviewer that publishes an empty or substanceless witness is re-scoped and resumed once (per the protocol's Escalation rules), not skipped.
 
 2. **Quality Gate**: Before cross-validation, verify each returned review meets minimum quality:
     - Specific location references: `file:line` or `module/pattern` for architecture/pattern-level issues (no vague descriptions)
@@ -75,19 +75,19 @@ Each round is a resume of the reviewer task by its `agentId`; each round's resul
     - Fix suggestions included where appropriate
     - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and resume the reviewer to re-check. Re-request (by resume) until QG passes (within total round safety limit).
 
-3. **Cross-validation**: Resume each reviewer by its `agentId`, re-injecting the other reviewers' findings verbatim. Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer delivers its cross-validation pass as its return text.
+3. **Cross-validation**: Resume each reviewer by its `agentId`, re-injecting the other reviewers' findings verbatim. Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer publishes its cross-validation pass as its witness.
 
-4. **Round 2+ — Refinement**: Resume original authors with cross-validation feedback (quoted verbatim). Request severity revision, missed issue additions, and challenge responses. Each round's result is the reviewer's return text. Repeat until convergence.
+4. **Round 2+ — Refinement**: Resume original authors with cross-validation feedback (quoted verbatim). Request severity revision, missed issue additions, and challenge responses. Each round's result is the reviewer's witness, confirmed via `witness_present`. Repeat until convergence.
 
-5. **Convergence**: Convergence is by **return collection** — see the **Convergence** section of `_common/agent-team-protocol.md`. Resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts); when every reviewer's return says "no further input", the review has converged. Only then proceed to Step 5.
+5. **Convergence**: Convergence is by **witness collection** — see the **Convergence** section of `_common/agent-team-protocol.md`. Resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts); when every reviewer's round witness is `witness_present` and its witness body says "no further input", the review has converged. Only then proceed to Step 5.
 
 **When a reviewer carries the scope-coordination role (large PR):**
 
-One reviewer may carry a "scope-coordination" role in its task-assignment header (its scope = coordinating the others' coverage). It is still a nameless background task and still delivers via return text — no named-team primitives, no DM channel, no completion prefix.
-- **Round 0 (pre-analysis)**: the coordinating reviewer classifies changed files by risk and assigns reviewer focus areas; its return is folded into the other reviewers' context packages alongside Round 1 assignment.
+One reviewer may carry a "scope-coordination" role in its task-assignment header (its scope = coordinating the others' coverage). It is still a nameless background task and still delivers via its witness — no named-team primitives, no DM channel, no completion prefix.
+- **Round 0 (pre-analysis)**: the coordinating reviewer classifies changed files by risk and assigns reviewer focus areas; its Round-0 witness is folded into the other reviewers' context packages alongside Round 1 assignment.
 - **After Quality Gate**: resume the coordinating reviewer for a coverage audit — it identifies high-risk areas not yet reviewed; the lead then resumes the relevant reviewers for additional review.
 - **During cross-validation**: resume the coordinating reviewer to synthesize findings across reviewers and identify cross-cutting issues (inter-module interaction problems).
-- The coordinating reviewer is resumed and converged by return collection like any other reviewer.
+- The coordinating reviewer is resumed and converged by witness collection like any other reviewer.
 
 ## Review-specific Facilitator Additions
 
