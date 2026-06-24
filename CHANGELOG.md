@@ -5,6 +5,48 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.6] - 2026-06-24
+
+v1.18.5 PR(`fix/team-liveness-witness`)에 대한 v2 재리뷰 발견 8건(P0 0·P1 1·P2 1·P3 6)을 처리한다 — 1차 정합화 sweep이 놓친 cross-review/refinement 라운드의 잔여 구 완료-모델 verb와 공유 프로토콜의 표기 결함을 봉합한다. 반영 8건 / 보류 0건 / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
+
+### Fixed
+
+- **cross-review/refinement 라운드 잔여 sweep**: `design-apply`·`design-lite`의 Round-2 Cross-Review와 `design-apply`·`design`의 Refinement 라운드에 남아 있던 "Collect both returns"·구 수집 verb를, 라운드 witness를 `witness_present`로 확인한 뒤 읽는 어휘로 교체한다(P1·P3-1). base↔lite는 각 파일 roster idiom에 맞춰 단수(`it`)/복수(`them`)로 정합화한다.
+- **`agent-team-protocol.md` 표기 정합화**: sentinel·temp·완료 술어 시그니처의 라운드 키를 `{round/phase}`로 일반화하고(P3-4·P3-5), nonce 스코프 표현을 `per-(member, round/phase)`로 통일하며(P3-2), `:135` placeholder 글로스가 bare-digit `1`이 아닌 `round-N` 토큰을 명시하도록 정정해 완료 술어 키 비교 false-death를 차단한다(P2).
+- **`mv -n` 라벨 misnomer 정정**: stat-then-rename(TOCTOU)이라 first-writer 보장이 없으므로 "first-COMPLETE-wins" 라벨을 "any-winner-is-a-valid-completed-witness"로 교체한다(P3-6). `:34`·`:70`은 P3-2와 라인을 공유해 병합 after-text를 라인당 1회로 적용한다.
+- **ledger 참조 v2 정합**: `design-apply`의 소프트 참조 "Role↔agentId ledger"를 같은 파일 `:25`와 일치하도록 "Role↔agentId ledger v2"로 맞춘다(P3-3).
+
+## [1.18.5] - 2026-06-24
+
+v1.18.4(witness 완료-신호 계약) PR에 대한 코드 리뷰 발견 13건을 처리한다 — lead 필수-Read 스킬 본문·레퍼런스 다수가 여전히 구 return-collection 완료 모델을 가르쳐 witness SOT와 정면 모순하던 머지 블로커(P1)와, 공유 프로토콜 내부의 명세 결함(P2/P3)을 봉합한다. 반영 11건 / 보류 2건([#54]·[#55]) / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
+
+### Fixed
+
+- **스킬·레퍼런스 완료-신호 어휘를 witness 모델로 정합화**: 6개 팀 스킬 본문 + analyst/reviewer 컨텍스트 패키지에서 "return text IS the result/proposal/findings"·"collect X before proceeding"·"Convergence is by return collection"·"every return says 'no further input'" 등 구 모델 표현을, 결과는 멤버 witness가 전달하고 완료/수렴은 `witness_present`로만 확정한다는 어휘로 전면 재작성한다(단순 명사 치환이 아니라 모든 gate/순서 표현을 `witness_present`에 바인딩). `review/references`의 "collected via the background completion notification"(드롭 채널을 신뢰하라 지시)을 early-wake 힌트 강등으로 정정하고, 스킬 본문이 완료 lifecycle을 인라인 재서술하던 최고 심각도 사이트(`design-analyze`)는 SOT 포인터로 축약한다.
+- **sentinel·완료 술어 phase-form 일반화**: 정수-라운드 전용이던 sentinel 템플릿·temp 템플릿·task-assignment 헤더·완료 술어 3-conjunct를 단일 placeholder `{round/phase}`로 일반화해 phase witness(`{role-slug}.fidelity.md` 등)가 술어를 만족하도록 producer·consumer 양쪽을 정합화한다. 치환 선언에 `{role-slug}`·`{round/phase}`를 명시한다.
+- **완료 술어 conjunct-2 정직화**: sentinel 일치가 완료된 direct-write를 atomic publish와 구별하지 못함(on-disk 바이트 동일)을 명시하고, _완료된_ direct-write에 대한 fail-closure는 이 conjunct가 아니라 멤버의 temp+`mv -n` 쓰기 규율에 의존함을 분명히 한다.
+- **`mv -n` 안전성 출처 정정**: `mv -n`을 atomic no-clobber로 과대표현하던 것을, BSD/GNU 모두 stat-then-rename(TOCTOU)이라 동일 라운드 zombie-vs-respawn이 같은 타깃을 race할 수 있음을 인정하고, 안전성은 (1) 어느 rename이 이기든 same-nonce completed 산출물이 보이는 것 + (2) 어떤 temp도 self-delete되지 않고 teardown이 sweep하는 것의 2-part 보증임으로 재정의한다. "published path is immutable" 과대 서술도 "completeness·nonce-validity가 불변"으로 정정한다.
+- **잔여 명세 결함 봉합**: death 술어의 미바인딩 `b`를 `current_bytes`로 명시, dangling `§F` 참조를 "Role↔agentId ledger v2"로 해소, `aborted` 행이 재스캔되지 않아 late witness가 영구 미소비됨(보수적 under-claim)을 명문화, witness dir 서술 셀을 실행 경로(`${TMPDIR:-/tmp}`)와 일치시키고 종결 행 strip 문구를 "done and aborted alike"로 통일한다.
+
+### Why
+
+근본은 v1.18.4가 프로토콜 SOT를 witness 모델로 재작성하면서 6개 스킬·레퍼런스에 남아 있던 구 완료-모델 요약 서술을 함께 갱신하지 못해, 같은 lead가 Read하는 SOT와 스킬이 정면 모순한 것이다(통지 드롭 채널을 신뢰하라 지시하는 사이트 포함). 계약은 `agent-team-protocol.md` 단일 SOT에 두고 스킬은 인라인 재서술 대신 포인터를 두는 원칙으로 정합화해 6중 drift를 제거한다. 보류 2건(compaction이 death 카운터를 앞지르는 safe stall, death liveness의 미검증 harness 신호 의존)은 머지 블로커가 아니어서 별도 이슈로 추적한다.
+
+## [1.18.4] - 2026-06-24
+
+팀 기반 6개 스킬(`design`·`design-lite`·`review`·`review-lite`·`design-analyze`·`design-apply`)의 공유 완료-신호 계약을 통지-드롭 stall·날조에 대해 하드닝한다. 라운드 완료와 라운드 산출물을 모두 드롭 가능한 비동기 통지 + ephemeral 반환 텍스트에만 의존하던 `_common/agent-team-protocol.md`를, 각 팀원이 산출물 전체를 통지와 무관한 durable witness 파일로 남기고 lead가 그 witness를 권위 SOT로 능동 확인·합성하는 구조로 재작성한다. #47의 `design-review` 국소 수정을 팀 토론 스킬 전반으로 일반화한다 (`/plugin update cc-cmds`로 자동 반영). [#49]
+
+### Fixed
+
+- **완료-신호 계약을 witness 기반으로 재작성**: `_common/agent-team-protocol.md`에 per-member-per-round durable witness 파일(out-of-tree `mktemp` scratch dir, 원자적 `mv -n` publish, 말미 sentinel + lead 주입 per-(member,round) CSPRNG nonce)을 신설한다. 완료는 통지가 아니라 3-conjunct 술어 `witness_present(member, N)`(파일 존재 ∧ 마지막 줄 == sentinel ∧ 파일명 N·nonce 일치)로만 확정하며, 통지·반환 텍스트는 early-wake 힌트로 강등한다. lead는 witness 미관측 멤버에 대해 합성·수렴 판정·ledger 기록을 절대 하지 않는다(fail-closed anti-fabrication).
+- **Reconcile 사다리 + cross-round happens-before 게이트**: respawn 전 witness floor-read 우선 확인, 3-conjunct 사망 술어(`reentry_count ≥ K=3` ∧ witness 부재 ∧ `output_file` byte-count 불변 — liveness는 원자 rename된 witness가 아니라 멤버 `output_file`을 읽는다), 동일 라운드 respawn(동일 path·nonce 재주입, 행 `agentId` 갱신·카운터 리셋), respawn 재사망 시 3옵션 `AskUserQuestion`을 명문화한다. 다라운드 주입은 확인→기록→그 다음에만 N+1 resume 순서를 하드-MUST로 강제하고, 부분 합성된 라운드의 누락 멤버는 N+1 verbatim 슬롯에 명시적 부재 주석을 담는다.
+- **Ledger v2 + per-row transient `scratchDir`**: ledger 마커를 `cc-design-ledger v2`로 bump하고 행 스키마에 per-row `scratchDir`을 추가한다(`design-analyze`는 `work.json` `"ledger"` 엔트리에 동일 추가). 모든 resume·compaction 재진입은 행의 `scratchDir`에서 witness dir을 유도하며(re-`mktemp` 금지, 부재 시 fail-closed), 정상 워크플로우 완료 시 종결 행(`done`·`aborted`) 전부에서 strip한다(`_common/team-cleanup.md`에 path-guarded `rm -rf` + per-row strip 추가). out-of-tree 배치로 two-command 경계 게이트를 자명하게 만족한다.
+- **6개 스킬 per-skill 파라미터**: 각 스킬 팀-spawn 지점에 `cc-team-witness-<slug>` witness dir `mktemp`·witnessed 라운드/단계를 명시한다. `design`은 fidelity(`{role-slug}.fidelity.md`)·walkthrough·refinement fresh-팀 단계를 명시적으로 witnessed로 지정하고, `design-analyze`는 in-tree `work.json`과 out-of-tree witness dir의 직교성을 명시한다. 계약은 `agent-team-protocol.md` 단일 SOT에 두고 6개 스킬은 파라미터만 공급하므로 신규 lint phrase·PAIR가 없다.
+
+### Why
+
+근본 원인은 6개 팀 기반 스킬이 공유하는 완료-신호 계약이 드롭 가능한 통지 + ephemeral 반환에만 의존하는 것이다. 통지가 드롭되면 lead가 무한 park 하거나 미관측 산출물을 합성(날조)한다. `design-review`는 durable on-disk floor(`review_log.md` per-round witness)를 이미 보유해 #47에서 국소 수정됐으나, 팀 토론 스킬은 팀원 라운드 산출물이 ephemeral 반환 텍스트뿐이라 per-round on-disk floor가 부재했다. universal witness가 그 floor를 모든 팀 스킬에 일반화한다.
+
 ## [1.18.3] - 2026-06-22
 
 `design-review`·`design-review-lite`의 detect-branch ASYNC 경로에 대한 코드 리뷰 v2 잔여 발견 4건을 반영한다. prose under-specification을 봉합하는 터치업으로 동작 의미는 불변이며, base↔lite 편집 라인은 character-identical을 유지한다 (`/plugin update cc-cmds`로 자동 반영).

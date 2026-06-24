@@ -269,7 +269,7 @@ Branch on user response:
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — their **return text is the result**. There is no `TeamCreate`/named-teammate/DM machinery.
+**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 16-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
@@ -277,13 +277,14 @@ Branch on user response:
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
-- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v1 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary`, `state ∈ {running, done, aborted}`.
+- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v2 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema per the protocol: `agentId | state | round | role/scope | thinReturns | last-return summary | scratchDir`, `state ∈ {running, done, aborted}` (`scratchDir` = the reviewer's out-of-tree witness dir, recorded at spawn, transient — stripped from terminal rows on normal completion, **done and aborted alike**).
 - **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). Update the ledger on every state change.
+- **Witness scratch dir (parameters for `_common/agent-team-protocol.md`)**: before the first spawn, create `WITNESS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-team-witness-{slug}.XXXXXX")` and record it as each reviewer's `scratchDir` (same immediacy as `agentId`). Every Step-4 review round is witnessed (`{role-slug}.round-N.md`, sentinel/nonce per the protocol); a Step-6 follow-up **fresh** team gets its **own** nested `mktemp -d`. The witness dir is out-of-tree, leaving the two-command boundary gate untouched.
 - All inter-reviewer discussion in English
 - NO code modifications allowed. Review only
 - **The lead acts as a facilitator**, actively driving the multi-round resume loop (produce → cross-review → convergence)
-- **Convergence (return collection)**: after cross-review, resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts verbatim) until every return says "no further input". Drive a **minimum of 2 rounds** (Round 1 = produce; Round 2+ = cross-review with peer findings quoted verbatim). This is a **full** review — no cost throttle; debate as long as convergence needs.
-- **Escalation** (per the protocol's failure phenotypes): **Case 1 — thin-return** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort), noting any exclusion in the report metadata. **Case 2 — never-returns** → `TaskStop` + fresh re-spawn (new `agentId`, update ledger); if the re-spawn also never returns → `AskUserQuestion`. **Case 3 — non-conforming return** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
+- **Convergence (witness collection)**: after cross-review, resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts verbatim); a reviewer's round is converged-and-collected only when its round witness is `witness_present` and the witness body says "no further input". Drive a **minimum of 2 rounds** (Round 1 = produce; Round 2+ = cross-review with peer findings quoted verbatim). This is a **full** review — no cost throttle; debate as long as convergence needs.
+- **Escalation** (per the protocol's reconcile ladder + failure phenotypes): **Case 1 — thin/empty witness** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort), noting any exclusion in the report metadata. **Case 2 — never-returns** → the 3-conjunct death predicate fires → `TaskStop` + **same-round respawn** (new `agentId`, reset `reentry_count`→0/`last_output_bytes`→∅, update ledger); if the respawn also dies → `AskUserQuestion`. **Case 3 — non-conforming witness** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
 
 ---
 
@@ -291,7 +292,7 @@ Branch on user response:
 
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
-The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v1 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
+The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v2 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
 
 #### Paste-ready comments (lead-authored)
 
