@@ -5,6 +5,41 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.1] - 2026-06-27
+
+v1.19.0(death 술어 tri-state liveness, #54·#55)에 대한 코드 리뷰 발견(P1 1·P2 2·P3 6)을 처리한다 — tri-state 술어에 babbling(witness 미발행 + transcript byte만 성장) 비종료 결함을 봉합하고, 배포 spec의 자기완결성·논리 완전성을 보강한다 (`/plugin update cc-cmds`로 자동 반영). [#54] [#55]
+
+### Fixed
+
+- **babbling-ALIVE 비종료 봉합**: witness를 발행하지 않으면서 transcript byte만 계속 키우는 멤버가 매 re-entry ALIVE로 읽혀 모든 카운터를 리셋, death도 ask도 발화하지 않고 무한 park하던 결함을 해소한다. 6번째 durable streak `growthStreak`(witness-부재 ALIVE 연속 카운트)를 추가해 `growthStreak ≥ G(=5)`에서 `AskUserQuestion`으로 에스컬레이션한다(성장은 긍정적 liveness 증거이므로 kill이 아니라 ask). `stallMark`는 5→6필드가 되며 다른 두 debounce streak과 동일한 durable·terminal-strip·respawn-리셋 규칙을 따른다.
+- **verdict 함수 total화**: `available ∧ current_bytes < lastBytes`(transcript 축소/새 generation)가 어느 분기에도 매칭되지 않던 공백을, ALIVE 조건을 `current_bytes ≠ lastBytes`로 일반화하고 append-only monotonicity를 명시해 메운다.
+- **K-독립 정당화 문구 정정**: "UNAVAILABLE 멤버는 reentryCount를 누적하지 못한다"는 과잉주장을, 누적분이 UNKNOWN을 관통해 이후 WEDGED와 결합할 수 있으나 kill엔 현재 verdict가 WEDGED여야 하므로 안전하다는 정확한 서술로 좁힌다.
+
+### Changed
+
+- **배포 spec 자기완결화**: `_common/agent-team-protocol.md`가 미배포 설계 문서의 내부 식별자(`R1`/`R3`)를 가리키던 두 절을, 튜닝 상수 `M = 5`(spawn-race tolerance ceiling)를 인라인하고 단일-Edit 원자성 전제를 본문에 직접 풀어쓰는 것으로 대체한다. stale heading `last_output_bytes` → `lastBytes`, ALIVE 분기 "persist atomically" 누락 보강, ∅↔vanished oscillation이 `outputFile` monotonicity상 도달 불가함을 방어적 주석으로 명시, never-returns "Reasonable bound"를 네 durable escalation 경로(WEDGED→death / vanished·∅·babbling→ask)의 합집합으로 재서술한다.
+
+## [1.19.0] - 2026-06-26
+
+agent-team reconcile-ladder death 술어를 tri-state liveness 판정(ALIVE/WEDGED/UNKNOWN)으로 재작성하고 재진입·baseline·escalation 카운터를 ledger v3 durable `stallMark`로 옮겨, liveness 신호 미가용 시 살아 있는 멤버를 false-kill하던 결함(#55)과 compaction이 재진입 카운터를 앞질러 무한 park하던 결함(#54)을 함께 해소한다. 6개 팀 스킬이 Read하는 `_common/agent-team-protocol.md` 단일 SOT를 갱신하고, 스킬 본문의 인라인 row schema·구 death-predicate 재서술을 protocol 포인터로 정합화한다 (`/plugin update cc-cmds`로 자동 반영). [#54] [#55]
+
+### Added
+
+- **tri-state liveness 판정 + ledger v3 durable `stallMark`**: death 술어를 boolean conjunct 3에서 `(가용성, current_bytes vs durable lastBytes)` 기반 tri-state(ALIVE/WEDGED/UNKNOWN)로 재작성한다. liveness 신호는 harness `output_file`의 byte-size를 content 미독으로 측정하고(`wc -c`, 가용성은 값이 아니라 exit status로 판정), ledger를 v2→v3로 bump해 row에 `outputFile`·`stallMark{reentryCount, lastBytes, lastBytesPathTag, unavailStreak, emptyStreak}` 컬럼을 추가한다. `stallMark`는 durable(compaction 생존)이라 카운터가 K에 누적 도달해 무한 park를 종료시키고, `lastBytesPathTag`가 respawn cross-file desync를 닫는다.
+
+### Changed
+
+- **미가용 → fail-toward-ask**: 구 `output_file absent → death` arm을 제거하고, 미가용 신호(nonzero exit)를 UNKNOWN으로 분기해 K와 독립인 debounce streak(`unavailStreak ≥ 2` / `emptyStreak ≥ M`)으로 `AskUserQuestion`에 에스컬레이션한다. Case-2 메뉴에 `②계속 대기`를 신설(3→4옵션)하고, 새 분기 규칙(`outputFile = ∅` spawn-race vs vanished 구분)을 도입한다. durability(compaction 생존)와 terminal-strip(커밋 누출 방지)을 직교 2축으로 분리하는 입장으로 "ledger는 카운터 의도적 제외" 입장을 의식적으로 수정한다.
+- **ledger v3 by-reference collapse**: `design`·`design-lite`·`review`·`review-lite`·`design-apply` SKILL.md의 inline row-schema 컬럼 열거를 protocol 단일 SOT 포인터로 collapse하고, `design-analyze`의 work.json `"ledger"`와 `team-cleanup`의 per-row strip을 v3(`outputFile`·`stallMark`)로 정합화한다. row schema가 protocol에 'defined once'가 되어 5중 inline 중복 drift 클래스를 영구 폐기한다.
+
+### Fixed
+
+- **팀 스킬 인라인 death-predicate 재서술 정합화**: `design`·`design-lite`·`review`·`review-lite`이 Case-2(never-returns) escalation에서 본 릴리즈가 제거한 구 `reentry_count`/`last_output_bytes`/3-conjunct death predicate를 인라인 재서술해 protocol SOT와 정면 모순하던 drift를, protocol reconcile ladder + failure phenotypes 포인터로 정합화한다(직전 v1.18.5 리뷰가 P1 머지 블로커로 지적한 drift 클래스의 재발 봉합). `design-analyze`(이미 generic 포인터, 구 어휘 0)와 `design-review`/`design-review-lite`(단일 async 리뷰어용 별개 self-contained CFI, 프로토콜 미참조)는 범위 밖이다.
+
+### Why
+
+reconcile-ladder death 술어가 liveness 신호 미가용을 death 투표로 처리(#55)하고 재진입 카운터를 lead-LOCAL ephemeral로 둬(#54) 살아 있는 멤버를 false-kill하거나 무한 park했다. 두 결함은 같은 술어 단락을 건드리므로 한 PR·한 설계로 묶었다. tri-state로 미가용을 abstain·ask로 만들고, 카운터·baseline을 같은 durable 클래스로 끌어올려 compaction을 살아남게 함으로써 종료성을 보장한다(fail-toward-ask).
+
 ## [1.18.6] - 2026-06-24
 
 v1.18.5 PR(`fix/team-liveness-witness`)에 대한 v2 재리뷰 발견 8건(P0 0·P1 1·P2 1·P3 6)을 처리한다 — 1차 정합화 sweep이 놓친 cross-review/refinement 라운드의 잔여 구 완료-모델 verb와 공유 프로토콜의 표기 결함을 봉합한다. 반영 8건 / 보류 0건 / 제외 0건 (`/plugin update cc-cmds`로 자동 반영). [#53]
