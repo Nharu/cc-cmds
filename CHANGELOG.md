@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.3] - 2026-07-08
+
+v1.19.2의 dispatch-완전성 게이트가 roster read-side(현재 팀 세대 scoping)는 명세했으나 그 판정이 의존하는 `epoch`·`witnessNonce`를 디스크에 쓰는 코드 경로가 없어 선언만 되고 동작하지 않던 결함(PR #60 2차 재리뷰)을 봉합한다 — 두 값 각각에 durable writer를 추가해 write-side를 완결한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **`witnessNonce` durable writer 추가**: 스키마·roster conjunct-3가 `witnessNonce`를 읽지만 기록하는 코드 경로가 없어 conjunct-3가 평가 불가였고 consume-branch stall이 재개방되던 결함을 해소한다. nonce는 dispatch 인증서가 아니라 conjunct-3 재유도 재료이므로 resume/spawn **전에** 기록(flip-losing compaction 견딤)하고, 새 nonce는 1차 fan-out(초기 spawn·round-advance·convergence)에서만 mint(code-path-keyed·round-blind)하며 모든 recovery dispatch(self-heal·double-resume·respawn)는 기록된 nonce를 reuse한다. `state=running` 행이 nonce 미보유 시 uniform fail-close.
+- **`epoch` write-side 완결**: (A) 멀티팀 스킬의 모든 spawn 지점(초기+fresh 팀 7곳: `design` ×3·`design-analyze` ×2·`review` ×2)이 `epoch := max(disk epoch, 0)+1`을 디스크 재유도(컨텍스트 카운터 금지)로 stamp하도록 추가한다 — 증가 도메인=aborted 포함 전체 행(monotone uniqueness), 선택 도메인=non-aborted. (B) 프로토콜의 write-side 증가를 "increments it"에서 `max(disk epoch)+1` 디스크 재유도로 고정해, 카운터를 잃은 compaction 후 충돌 epoch stamp를 차단한다.
+- **roster 3-way epoch precondition**: `max(epoch)` scoping 이전에 non-aborted 행의 epoch presence를 3분기 평가한다 — 균일 presence→`max(epoch)` 세대 scope, 균일 absence→epoch-agnostic 전체 non-aborted(단일팀/legacy의 pre-epoch 동작 보존), 부분 presence→fail-close(현재팀 epoch-부재 행이 조용히 drop되는 dispatch 구멍 차단).
+- **reconcile ladder 조건자 통일**: 잔존 `round < current`를 `round/phase ≠ P` 문자열-동등 비교로 교체(phase 토큰에 `<` 미정의).
+
 ## [1.19.2] - 2026-07-07
 
 멀티에이전트 팀 워크플로에서 라운드별 팀원 dispatch가 조용히 누락될 때 오지 않을 witness를 리드가 무한 대기하던 silent stall을 봉합한다 — `_common/agent-team-protocol.md`에 dispatch-완전성 게이트(roster-vs-round, pre-wait)를 신설해 참여자 집합을 디스크 ledger에서 durable하게 고정하고, round-flip을 dispatch 인증서로 삼아 wait 진입 전 로스터 전 행의 라운드 토큰을 대조한다 (`/plugin update cc-cmds`로 자동 반영). [#59]
