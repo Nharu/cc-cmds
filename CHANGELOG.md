@@ -5,7 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.19.1] - 2026-06-27
+## [1.19.2] - 2026-07-07
+
+멀티에이전트 팀 워크플로에서 라운드별 팀원 dispatch가 조용히 누락될 때 오지 않을 witness를 리드가 무한 대기하던 silent stall을 봉합한다 — `_common/agent-team-protocol.md`에 dispatch-완전성 게이트(roster-vs-round, pre-wait)를 신설해 참여자 집합을 디스크 ledger에서 durable하게 고정하고, round-flip을 dispatch 인증서로 삼아 wait 진입 전 로스터 전 행의 라운드 토큰을 대조한다 (`/plugin update cc-cmds`로 자동 반영). [#59]
+
+### Fixed
+
+- **라운드별 dispatch 누락 silent stall 봉합**: 기존 수렴 게이트(witness 도착 여부에만 의존)와 reconcile ladder(dispatch된 멤버의 byte-count에만 의존) 모두 참여자 집합이 이미 올바르다고 전제해, 리드의 in-context 기억에서 파생된 로스터가 compaction으로 유실되면 never-dispatched 멤버를 못 잡던 결함을 해소한다. `## Dispatch-completeness gate (roster-vs-round, pre-wait)`를 Convergence와 Reconcile ladder 사이에 신설 — 로스터는 매 진입 시 디스크 ledger에서 fresh 재파싱(`state ∈ {running, done}`, `aborted` 제외)하고, resume-먼저-flip 순서 하에서 `round/phase == P` 단독 predicate로 dispatch 완전성을 단언한다(state 연언 금지 — 정당히 수집된 `done@P` 행 오탐으로 인한 비종료 방지). 누락 감지 시 witness floor-read 후 consume 또는 기존 agentId로 resume(컨텍스트 보존, respawn 아님). 게이트는 reconcile-ladder 재진입 시퀀스의 첫 단계로 바인딩되어 모든 pre-wait 진입에서 실행된다.
+- **Case-1 제외 멤버 aborted 라우팅**: 일반 Case-1 "proceed without this member" 제외가 문서 메타데이터만 표시하고 ledger `state`를 안 건드려, 게이트 로스터가 `done@(P-1)` laggard로 오인해 의도적으로 제외한 멤버를 부활시키던 구멍을 닫는다 — 제외 시 `state=aborted`로 라우팅해 로스터에서 제거한다. fidelity-pass emit-only scoped skip은 멤버를 유지하는 별개 케이스로 로스터에 잔류·비-aborted를 유지한다.
+- **cross-round resume stallMark reset 일반화**: respawn 전용이던 `stallMark` reset을 모든 cross-round resume/flip으로 확장한다(`reentryCount`·세 debounce streak 0, `lastBytes:=∅`; `agentId`/`outputFile`는 유지). resume가 `outputFile`를 보존하므로 명시 `lastBytes:=∅` 없이는 첫 post-resume liveness read가 frozen 직전 라운드 byte-count에 false-WEDGE된다.
+
+
 
 v1.19.0(death 술어 tri-state liveness, #54·#55)에 대한 코드 리뷰 발견(P1 1·P2 2·P3 6)을 처리한다 — tri-state 술어에 babbling(witness 미발행 + transcript byte만 성장) 비종료 결함을 봉합하고, 배포 spec의 자기완결성·논리 완전성을 보강한다 (`/plugin update cc-cmds`로 자동 반영). [#54] [#55]
 
