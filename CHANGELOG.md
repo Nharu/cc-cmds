@@ -5,6 +5,40 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.4] - 2026-07-08
+
+v1.19.3의 dispatch-완전성 게이트 write-side가 프로토콜 SOT와 7개 multi-team spawn 지점은 갱신했으나 일부 소비 스킬의 inline echo가 stale하게 남은 propagation-incompleteness를 봉합한다(PR #60 3차 재리뷰). 프로토콜 SOT + P1-①이 끌어들이는 3개 single-team 스킬 + review에 대한 단일 전파 pass (`/plugin update cc-cmds`로 자동 반영). [#61]
+
+### Fixed
+
+- **single-team 스킬 `witnessNonce` 전파**: `design-lite`/`design-apply`/`review-lite`가 `witnessNonce` stamp와 nonce-absence fail-close 조건을 못 받아 그 3개 스킬에서 consume-branch stall이 잔존하던 결함(6개 팀 스킬 중 3개만 봉합)을 해소한다 — 세 spawn 레시피에 round-1 `witnessNonce` stamp(epoch는 single-team uniform-absence로 roster mode-(ii) epoch-agnostic가 커버)와 로컬 fail-close(nonce 부재·partial-epoch presence) 조건을 추가한다.
+- **Case-1 제외 echo `state=aborted` 라우팅**: `review`/`review-lite`의 inline Case-1 서술이 개정된 `state=aborted` 라우팅을 누락해, 리드가 그 레시피를 문자대로 따르면 제외 리뷰어가 non-aborted로 남아 roster에 부활하던 결함을, 두 echo를 프로토콜 SOT Escalation Case-1로 위임하는 by-reference 포인터로 축약해 봉합한다(append 대신 by-reference로 drift 클래스 제거).
+- **`witnessNonce` mint-vs-reuse를 disk predicate로**: nonce 판정을 in-context "code path"가 아니라 nonce 자신의 durable round-tag(compound 값 `<round/phase>:<hex>`)를 디스크에서 읽는 predicate로 재서술한다 — `P` dispatch 시 첫 `:`로 split해 tag≠P면 fresh mint, tag=P면 verbatim reuse. round-advance-dropped 멤버 freshness 복원과 interrupted-convergence witness 보호를 한 규칙으로 닫고, `round/phase` 컬럼(resume 후 기록돼 nonce보다 lag)을 tag로 오용하던 stall을 방지한다. recovery-reuse 절도 이 predicate에 맞춰 tag 한정.
+- **transient-strip 필드 수·가독성**: `review`(multi-team) strip 목록을 5필드, single-team 3개 스킬을 4필드(nonce 포함·epoch 제외)로 갱신하고, 프로토콜 fail-close 4조건을 짧은 목록으로 추출하며 zero-running 평가 순서·legacy-ledger graceful-ask 동작을 명료화한다.
+
+## [1.19.3] - 2026-07-08
+
+v1.19.2의 dispatch-완전성 게이트가 roster read-side(현재 팀 세대 scoping)는 명세했으나 그 판정이 의존하는 `epoch`·`witnessNonce`를 디스크에 쓰는 코드 경로가 없어 선언만 되고 동작하지 않던 결함(PR #60 2차 재리뷰)을 봉합한다 — 두 값 각각에 durable writer를 추가해 write-side를 완결한다 (`/plugin update cc-cmds`로 자동 반영).
+
+### Fixed
+
+- **`witnessNonce` durable writer 추가**: 스키마·roster conjunct-3가 `witnessNonce`를 읽지만 기록하는 코드 경로가 없어 conjunct-3가 평가 불가였고 consume-branch stall이 재개방되던 결함을 해소한다. nonce는 dispatch 인증서가 아니라 conjunct-3 재유도 재료이므로 resume/spawn **전에** 기록(flip-losing compaction 견딤)하고, 새 nonce는 1차 fan-out(초기 spawn·round-advance·convergence)에서만 mint(code-path-keyed·round-blind)하며 모든 recovery dispatch(self-heal·double-resume·respawn)는 기록된 nonce를 reuse한다. `state=running` 행이 nonce 미보유 시 uniform fail-close.
+- **`epoch` write-side 완결**: (A) 멀티팀 스킬의 모든 spawn 지점(초기+fresh 팀 7곳: `design` ×3·`design-analyze` ×2·`review` ×2)이 `epoch := max(disk epoch, 0)+1`을 디스크 재유도(컨텍스트 카운터 금지)로 stamp하도록 추가한다 — 증가 도메인=aborted 포함 전체 행(monotone uniqueness), 선택 도메인=non-aborted. (B) 프로토콜의 write-side 증가를 "increments it"에서 `max(disk epoch)+1` 디스크 재유도로 고정해, 카운터를 잃은 compaction 후 충돌 epoch stamp를 차단한다.
+- **roster 3-way epoch precondition**: `max(epoch)` scoping 이전에 non-aborted 행의 epoch presence를 3분기 평가한다 — 균일 presence→`max(epoch)` 세대 scope, 균일 absence→epoch-agnostic 전체 non-aborted(단일팀/legacy의 pre-epoch 동작 보존), 부분 presence→fail-close(현재팀 epoch-부재 행이 조용히 drop되는 dispatch 구멍 차단).
+- **reconcile ladder 조건자 통일**: 잔존 `round < current`를 `round/phase ≠ P` 문자열-동등 비교로 교체(phase 토큰에 `<` 미정의).
+
+## [1.19.2] - 2026-07-07
+
+멀티에이전트 팀 워크플로에서 라운드별 팀원 dispatch가 조용히 누락될 때 오지 않을 witness를 리드가 무한 대기하던 silent stall을 봉합한다 — `_common/agent-team-protocol.md`에 dispatch-완전성 게이트(roster-vs-round, pre-wait)를 신설해 참여자 집합을 디스크 ledger에서 durable하게 고정하고, round-flip을 dispatch 인증서로 삼아 wait 진입 전 로스터 전 행의 라운드 토큰을 대조한다 (`/plugin update cc-cmds`로 자동 반영). [#59]
+
+### Fixed
+
+- **라운드별 dispatch 누락 silent stall 봉합**: 기존 수렴 게이트(witness 도착 여부에만 의존)와 reconcile ladder(dispatch된 멤버의 byte-count에만 의존) 모두 참여자 집합이 이미 올바르다고 전제해, 리드의 in-context 기억에서 파생된 로스터가 compaction으로 유실되면 never-dispatched 멤버를 못 잡던 결함을 해소한다. `## Dispatch-completeness gate (roster-vs-round, pre-wait)`를 Convergence와 Reconcile ladder 사이에 신설 — 로스터는 매 진입 시 디스크 ledger에서 fresh 재파싱(`state ∈ {running, done}`, `aborted` 제외)하고, resume-먼저-flip 순서 하에서 `round/phase == P` 단독 predicate로 dispatch 완전성을 단언한다(state 연언 금지 — 정당히 수집된 `done@P` 행 오탐으로 인한 비종료 방지). 누락 감지 시 witness floor-read 후 consume 또는 기존 agentId로 resume(컨텍스트 보존, respawn 아님). 게이트는 reconcile-ladder 재진입 시퀀스의 첫 단계로 바인딩되어 모든 pre-wait 진입에서 실행된다.
+- **Case-1 제외 멤버 aborted 라우팅**: 일반 Case-1 "proceed without this member" 제외가 문서 메타데이터만 표시하고 ledger `state`를 안 건드려, 게이트 로스터가 `done@(P-1)` laggard로 오인해 의도적으로 제외한 멤버를 부활시키던 구멍을 닫는다 — 제외 시 `state=aborted`로 라우팅해 로스터에서 제거한다. fidelity-pass emit-only scoped skip은 멤버를 유지하는 별개 케이스로 로스터에 잔류·비-aborted를 유지한다.
+- **cross-round resume stallMark reset 일반화**: respawn 전용이던 `stallMark` reset을 모든 cross-round resume/flip으로 확장한다(`reentryCount`·세 debounce streak 0, `lastBytes:=∅`; `agentId`/`outputFile`는 유지). resume가 `outputFile`를 보존하므로 명시 `lastBytes:=∅` 없이는 첫 post-resume liveness read가 frozen 직전 라운드 byte-count에 false-WEDGE된다.
+- **게이트 roster를 현재 팀으로 스코핑**: 신설 dispatch-완전성 게이트의 roster가 `state ∈ {running, done}` 전 행이라 팀 한정자가 없어, 한 ledger를 공유하는 `design`의 순차 fresh 팀(Step-5 walkthrough·Step-6 refinement)과 `design-analyze` Step-8에서 이전 sub-team의 `done@<phase>` 행을 `≠P` laggard로 오인해 self-terminated 타-역할 agentId를 resume(escalation storm 또는 foreign-role fabrication)하던 회귀를 봉합한다. ledger v3 행에 per-row `epoch`(팀 세대 인덱스) 컬럼을 신설하고 roster를 `max(epoch)` 팀으로 한정하며, running·P-행이 0인 between-teams는 zero-running 규칙으로 empty-pass한다. happens-before `확인` roster에도 동일 적용하고 laggard 조건을 `round/phase ≠ P`로 통일한다.
+- **self-heal consume 분기 nonce durability**: flip 유실 compaction이 in-context nonce도 함께 유실시켜 `witness_present` conjunct-3 평가를 불가로 만들어 consume 분기가 대상 stall을 재개하던 결함을, ledger v3 행에 per-row `witnessNonce` 컬럼을 신설(`epoch`와 같은 마이그레이션)해 봉합한다. 두 컬럼 모두 running 중 durable·정상 완료 시 terminal-strip 규칙을 따른다.
+
 ## [1.19.1] - 2026-06-27
 
 v1.19.0(death 술어 tri-state liveness, #54·#55)에 대한 코드 리뷰 발견(P1 1·P2 2·P3 6)을 처리한다 — tri-state 술어에 babbling(witness 미발행 + transcript byte만 성장) 비종료 결함을 봉합하고, 배포 spec의 자기완결성·논리 완전성을 보강한다 (`/plugin update cc-cmds`로 자동 반영). [#54] [#55]
