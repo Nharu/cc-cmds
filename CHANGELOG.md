@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.4] - 2026-07-08
+
+v1.19.3의 dispatch-완전성 게이트 write-side가 프로토콜 SOT와 7개 multi-team spawn 지점은 갱신했으나 일부 소비 스킬의 inline echo가 stale하게 남은 propagation-incompleteness를 봉합한다(PR #60 3차 재리뷰). 프로토콜 SOT + P1-①이 끌어들이는 3개 single-team 스킬 + review에 대한 단일 전파 pass (`/plugin update cc-cmds`로 자동 반영). [#61]
+
+### Fixed
+
+- **single-team 스킬 `witnessNonce` 전파**: `design-lite`/`design-apply`/`review-lite`가 `witnessNonce` stamp와 nonce-absence fail-close 조건을 못 받아 그 3개 스킬에서 consume-branch stall이 잔존하던 결함(6개 팀 스킬 중 3개만 봉합)을 해소한다 — 세 spawn 레시피에 round-1 `witnessNonce` stamp(epoch는 single-team uniform-absence로 roster mode-(ii) epoch-agnostic가 커버)와 로컬 fail-close(nonce 부재·partial-epoch presence) 조건을 추가한다.
+- **Case-1 제외 echo `state=aborted` 라우팅**: `review`/`review-lite`의 inline Case-1 서술이 개정된 `state=aborted` 라우팅을 누락해, 리드가 그 레시피를 문자대로 따르면 제외 리뷰어가 non-aborted로 남아 roster에 부활하던 결함을, 두 echo를 프로토콜 SOT Escalation Case-1로 위임하는 by-reference 포인터로 축약해 봉합한다(append 대신 by-reference로 drift 클래스 제거).
+- **`witnessNonce` mint-vs-reuse를 disk predicate로**: nonce 판정을 in-context "code path"가 아니라 nonce 자신의 durable round-tag(compound 값 `<round/phase>:<hex>`)를 디스크에서 읽는 predicate로 재서술한다 — `P` dispatch 시 첫 `:`로 split해 tag≠P면 fresh mint, tag=P면 verbatim reuse. round-advance-dropped 멤버 freshness 복원과 interrupted-convergence witness 보호를 한 규칙으로 닫고, `round/phase` 컬럼(resume 후 기록돼 nonce보다 lag)을 tag로 오용하던 stall을 방지한다. recovery-reuse 절도 이 predicate에 맞춰 tag 한정.
+- **transient-strip 필드 수·가독성**: `review`(multi-team) strip 목록을 5필드, single-team 3개 스킬을 4필드(nonce 포함·epoch 제외)로 갱신하고, 프로토콜 fail-close 4조건을 짧은 목록으로 추출하며 zero-running 평가 순서·legacy-ledger graceful-ask 동작을 명료화한다.
+
 ## [1.19.3] - 2026-07-08
 
 v1.19.2의 dispatch-완전성 게이트가 roster read-side(현재 팀 세대 scoping)는 명세했으나 그 판정이 의존하는 `epoch`·`witnessNonce`를 디스크에 쓰는 코드 경로가 없어 선언만 되고 동작하지 않던 결함(PR #60 2차 재리뷰)을 봉합한다 — 두 값 각각에 durable writer를 추가해 write-side를 완결한다 (`/plugin update cc-cmds`로 자동 반영).
