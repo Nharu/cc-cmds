@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.5] - 2026-07-09
+
+`design-review`·`design-review-lite`의 인라인 ASYNC 리뷰 메커니즘이 정본 프로토콜이 이미 봉합한 두 결함을 lag하던 것을 하나의 하드닝 패스로 봉합한다. 리뷰 에이전트의 proposals 쓰기를 라운드-키드 atomic publish로, 인라인 ASYNC stall 술어를 축소 tri-state liveness로 포팅한다. 두 결함 모두 런타임 재현 불가한 잠재적 구조 결함(드문 하네스 fault·compaction 조건에서만 발현)이다. [#51][#57]
+
+### Fixed
+
+- **proposals torn-write 봉합 (round-keyed atomic publish)**: 리뷰 에이전트가 라운드마다 재사용되는 단일 `review_proposals.md`를 직접 덮어쓰던 것을, 같은 디렉토리 hidden temp에 완성 후 라운드-고유 경로 `review_proposals.r<N>.md`로 atomic rename 발행하도록 교체한다. 라운드-고유 파일명이 same-round torn-write(rename 원자성)와 cross-round 좀비 clobber(좀비는 자기 라운드 이름만 접촉)를 모두 구조적으로 제거한다. Step 8 시드(`echo "" >`)를 제거하고, 발행은 `## Review Round N` witness append 이전에 수행(witness-present ⟹ proposals 완결)한다.
+- **읽기측 fail-closed arm 신설**: 시드 제거로 파일이 발행됐을 때만 존재하므로, observed return(SYNC inline / ASYNC round-N witness) 이후 라운드 N proposals 파일이 absent면 0 proposals로 처리하지 않는다. witness의 `Proposals created:` 개수를 확인해 0이면 진짜 빈 리뷰이므로 0-제안 라운드로 기록하고 재기동하지 않아 종료하며, 0보다 크면 발행이 유실된 것이므로 재읽기·재기동한다. CFI fail-closed 절의 `review_proposals.md` 존재 항목도 라운드-키드 파일명이 라운드를 식별하나 존재만으로는 observed return을 증명 못 한다는 서술로 재정초한다.
+- **ASYNC stall 술어 tri-state 포팅**: 인라인 사망 술어의 3결함(`output_file absent→death` false-kill / lead-LOCAL ephemeral 카운터의 compaction 리셋 / babbling 비escalation)을 ALIVE/WEDGED/UNKNOWN tri-state로 교체한다. 사망은 `reentry_count≥K(3)` ∧ WEDGED ∧ round-N witness FINAL 재확인 부재의 3-conjunct로만 성립하고 성장은 항상 veto한다. `output_file absent`는 사망 표가 아니라 UNKNOWN(`unavail_streak`)으로 처리한다.
+- **durable stall-state 파일**: 모든 카운터+베이스라인을 `$INNER_TEMP_DIR/.async_stall.json` 한 파일에 whole-write·disk-re-derive-every-re-entry로 지속화해 "durable 카운터+ephemeral 베이스라인→무한 부활" 실패 모드를 구조적으로 제거한다. `schema` 필드는 strict-equality 마이그레이션 가드다.
+- **babbling/UNKNOWN escalation 배선**: 기존 inner safety-limit 3-option `AskUserQuestion`을 distinct 트리거로 재사용(신규 옵션·`INNER_EXIT_REASON` 없음)한다. 옵션 A(계속 대기) 선택 시 ask를 유발한 스트릭만 0으로 리셋해 ask-storm을 방지한다.
+- **reset (ii) output_file 기록 순서 고정**: same-round death→respawn 시 재기동 에이전트의 fresh `output_file`을 재기동 `Agent()` 봉투 캡처 이후(TaskStop 시점 아님) 기록하도록 명시해, per-re-entry 경로 reconcile이 죽은 런의 낡은 경로가 아니라 올바른 baseline과 대조하도록 한다.
+- **tri-state 판정 명료화**: 존재-0바이트 `output_file`은 available(warmup-ALIVE→byte-stable WEDGED)이며 UNKNOWN은 `stat` 실패(미생성/dangling)뿐이라는 범주 구분과, `.async_stall.json` 통째 쓰기가 단일 main-session writer·schema 가드 재초기화로 torn write에 안전한 이유를 산문에 명시한다. 리뷰 에이전트 프롬프트에 발견 0건이어도 라운드-키드 파일을 반드시 발행하라는 의무를 추가한다.
+- **parity lint 신설**: `scripts/lint-review-prompt-parity.sh`가 라운드-키드 발행을 양 프롬프트 surface에서 검사하고, read-site는 계약 read 문장 2개의 파일별 절대 존재 단언으로 검사한다(단일 whole-file grep은 세 발생 지점 중 하나만 남아도 통과하는 부분-회귀 맹점이라 교체). base↔lite 라운드-키드 개수 일치를 심층방어로, 0-발견 발행 clause를 양 프롬프트에 pin하고, 제거된 seed·overwrite 리터럴은 negative-grep한다(REQUIRED_PHRASES 사정권 밖). `make lint`/`make test` 배선 + fixture(각 단언을 실패 방향으로 구동하는 OK/FAIL). hoisted fail-closed arm 문장과 tri-state 사망 술어의 `the current classification is WEDGED` 연언을 REQUIRED_PHRASES에 pin한다.
+
 ## [1.19.4] - 2026-07-08
 
 v1.19.3의 dispatch-완전성 게이트 write-side가 프로토콜 SOT와 7개 multi-team spawn 지점은 갱신했으나 일부 소비 스킬의 inline echo가 stale하게 남은 propagation-incompleteness를 봉합한다(PR #60 3차 재리뷰). 프로토콜 SOT + P1-①이 끌어들이는 3개 single-team 스킬 + review에 대한 단일 전파 pass (`/plugin update cc-cmds`로 자동 반영). [#61]
