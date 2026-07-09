@@ -81,7 +81,7 @@ Decision procedure before writing any round-N record: "Did I actually spawn roun
 
 **ASYNC stall death predicate (witness-absent respawn).** Per ASYNC spawn maintain `reentry_count` (init 0 at each spawn) and `last_output_bytes` (the output_file byte-count from the previous re-entry, ∅ if never read). One re-entry = exactly one turn-yield-and-return cycle back to the witness-absent control point in Step 12.detect, regardless of trigger (notification early-wake, output_file mtime/size check, or any later turn). On each re-entry, in order: (1) floor-read review_log.md — if the round-N witness is now present ⇒ observed-return, stop counting; (2) else read the output_file byte-count `b` (absent ⇒ `b=∅`); (3) increment `reentry_count`; (4) evaluate the death predicate below using `b` against the existing `last_output_bytes`; (5) if not dead, set `last_output_bytes := b` and yield (emit one Korean line). **Declare the agent dead ⟺ ALL THREE conjuncts hold: `reentry_count ≥ K` (K=3) AND the round-N witness is still absent AND (the output_file is absent OR `b == last_output_bytes`, i.e. byte-count unchanged across the two most recent reads).** On death → TaskStop(agentId) → respawn in the SAME inner_round: `inner_round` is NOT incremented (the round is re-run) and `reentry_count` resets to 0 and `last_output_bytes` resets to ∅ for the new spawn (partial observations of the dead run are discarded). **Never declare death on `reentry_count ≥ K` alone** — dropping the byte-stability conjunct would let an actively-writing original be killed, re-opening the review_proposals.md torn-write hole; do not restate this predicate in any form that omits a conjunct.
 
-**fail-closed (hard gate — both SYNC and ASYNC branches)** — never counted as observation: (1) a notification arrival (may drop / duplicate / mis-route; it never enters the predicate), (2) the existence of `review_proposals.md` (overwritten at round start — it cannot prove which round authored it), (3) any record written while the round-N witness is absent. On-disk artifacts are the persisted PRODUCT of an observed return, never authored by the main session to manufacture grounding. **Re-spawn is the cheap safe direction** holds in both branches.
+**fail-closed (hard gate — both SYNC and ASYNC branches)** — never counted as observation: (1) a notification arrival (may drop / duplicate / mis-route; it never enters the predicate), (2) the existence of a round-keyed `review_proposals.r<N>.md` file — the filename identifies the round, but existence alone cannot prove an observed return (a partial write or a zombie write can create it); completion is proved solely by the round-N witness in `review_log.md`, (3) any record written while the round-N witness is absent. Conversely — a fail-closed READ arm, branch-neutral — **after an observed return** (a SYNC inline return OR the ASYNC round-N witness), if the round-N proposals file is absent, do NOT treat it as a review of zero proposals: fail closed (re-read, and respawn in the SAME inner_round if still absent). Because the Step 8 seed is gone, the round-keyed file exists only when the agent actually published it, so an absent file after an observed return is always a lost write, never an empty review. On-disk artifacts are the persisted PRODUCT of an observed return, never authored by the main session to manufacture grounding. **Re-spawn is the cheap safe direction** holds in both branches.
 
 **Sole anti-fabrication anchor (ASYNC).** There is no external completion cross-check, so the entire async anti-fabrication guarantee rests on one fact — **the `## Review Round N` round-summary header is authored ONLY by the spawned review agent** (it appends the header after completing its review). The main session's own `review_log.md` writes are disposition tags / informational markers and the `## Outer Iteration N` block — it never authors a `## Review Round N` header. If that sole-authorship breaks, the witness becomes forgeable.
 
@@ -309,7 +309,6 @@ mkdir -p "$INNER_TEMP_DIR"
 **Step 8–9 — Empty inner files**:
 
 ```bash
-echo "" > "$INNER_TEMP_DIR/review_proposals.md"
 cat > "$INNER_TEMP_DIR/pending_applies.md" <<'EOF'
 # Pending Applies
 
@@ -422,7 +421,7 @@ Type guidance:
 - decision: Multiple valid approaches exist and user judgment is needed. List up to 4 options with descriptions. If more alternatives exist, note them in Agent note.
 - verification: A verification-bookkeeping finding (criterion 7) — the main session checks and records it; the agent only flags it by reading. Never run a recipe or command.
 
-Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).
+Write this round's proposals to a hidden temp file co-located in the SAME directory as the publish target — `mktemp "{TEMP_DIR}/.review_proposals.XXXXXX"` — and, once the full round's content is written, atomically publish it by renaming to {TEMP_DIR}/review_proposals.r{round}.md (`mv -n`; the round-unique filename makes the flag immaterial — any single winner is complete). The temp MUST be inside {TEMP_DIR} so the rename stays on one filesystem and remains atomic (a cross-device rename degrades to copy+unlink and loses atomicity). Publish (rename) BEFORE appending the round summary to review_log.md below, so a present `## Review Round N` witness implies this round's proposals are already complete on disk. Do NOT write directly to the published path, and do NOT add any sentinel or nonce to the proposals file.
 
 After completing the review, append a round summary to {TEMP_DIR}/review_log.md:
   ## Review Round N
@@ -442,7 +441,7 @@ Return a structured summary:
 - **SYNC** ⟺ tool result carries a `<usage>…duration_ms…</usage>` tail — e.g. `<usage>input_tokens: 1200, duration_ms: 3450</usage>` — (positive evidence: `duration_ms` key present inside the `<usage>` block) AND has no `output_file:` / `Async agent launched successfully.` marker in the envelope. The inline result IS the observed return — proceed directly to (a)–(i) below with no agentId tracking, no on-disk read, no yield (reconcile 0, wait 0). This is identical to the committed synchronous behavior.
 - **ASYNC** ⟺ the tool-result ENVELOPE (its header/marker lines, typically the leading lines ahead of the agent body, NOT agent body text) contains `output_file:` or `Async agent launched successfully.`. Match these tokens in envelope position only — the same tokens inside agent body prose (this design corpus discusses them) never trigger classification, symmetric with SYNC's envelope-tail `<usage>` anchor. Capture agentId + output_file, confirm from on-disk witness:
     - async_observed_return(round N) ≡ agent-authored `## Review Round N` header in $INNER_TEMP_DIR/review_log.md (round-N keyed; M≠N never satisfies). N is the round index the review agent derives at spawn time by counting existing `## Review Round` headers (count + 1), equal to `inner_round` per the CFI ASYNC-enforcement ordering — see CFI; do not duplicate that invariant here.
-    - **witness present** → observed return. Read `$INNER_TEMP_DIR/review_proposals.md` and proceed to (a)–(i). An already-finished async costs 2 reads, 0 yield.
+    - **witness present** → observed return. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` and proceed to (a)–(i). An already-finished async costs 2 reads, 0 yield.
     - **witness absent** → default to waiting (NOT respawn). Apply the **ASYNC stall death predicate** defined in the Control-Flow Invariants section: maintain `reentry_count` / `last_output_bytes`, floor-read review_log.md once per re-entry, emit one Korean line per witness-absent yield, and respawn in the SAME inner_round only when all three CFI death conjuncts hold. Do NOT inline a second copy of the predicate here — CFI is the single authority (this block may be compacted; CFI is not). Soft liveness signals (`output_file` growth · early-wake notification) are acceleration hints, never a gate.
     - **first-round-N-witness-wins dedup**: if a respawned agent and a merely-slow original both append `## Review Round N`, the convergence parser adopts only the FIRST round-N witness and ignores later duplicate `## Review Round N` blocks (a double-count/correctness concern, not anti-fabrication — it keeps the predicate deterministic even when `TaskStop` fails to kill the zombie).
     - **malformed-async-suspected** (an envelope async marker IS present but agentId or output_file cannot be cleanly parsed) → still classify ASYNC: recover whatever agentId / output_file fragment is parseable and take the ASYNC floor path; if neither field is recoverable, surface the error, then respawn in the SAME inner_round (no agentId to stop — treat as a failed spawn).
@@ -454,8 +453,8 @@ Overlap/priority: SYNC's negative half is scoped to the envelope — SYNC requir
 
 After the agent returns:
 
-  a. The agent wrote proposals to `$INNER_TEMP_DIR/review_proposals.md` (overwriting at round start), appended a round summary to `$INNER_TEMP_DIR/review_log.md`, and returned a structured summary including proposal count.
-  b. Read `$INNER_TEMP_DIR/review_proposals.md` to get the current round's proposals.
+  a. The agent published this round's proposals by atomic rename to `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` (no seed file — the round-keyed file exists only if the agent wrote it), appended a round summary to `$INNER_TEMP_DIR/review_log.md`, and returned a structured summary including proposal count.
+  b. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` to get the current round's proposals.
   c. **For each proposal**, analyze its concept:
      - **Proposal type**: Use the Reference text as a hint to identify all affected locations. Concretize the fix (what exactly will change, where).
      - **Decision type**: Analyze the impact of each option so the user can make an informed choice.
@@ -534,7 +533,6 @@ Option mapping to `INNER_EXIT_REASON`:
 | C: 외부 이터레이션 전체 종료 | break inner loop; skip directly to Phase 3 cleanup | `safety-limit-outer-terminate` |
 
 **Option B invariant**: A stuck inner loop must never block outer progress. Ack + document state are preserved, so the next fresh agent can re-review. Outer exit check (Step 22) bypasses convergence judgment when `INNER_EXIT_REASON == "safety-limit-fresh-outer"` — always continue.
-
 If exit condition not met and not at safety limit → return to Step 12 with a new agent.
 
 ---

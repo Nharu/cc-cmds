@@ -62,7 +62,7 @@ Type guidance:
 - decision: Multiple valid approaches exist and user judgment is needed. List up to 4 options with descriptions. If more alternatives exist, note them in Agent note.
 - verification: A verification-bookkeeping finding (criterion 7) — the main session checks and records it; the agent only flags it by reading. **Never run a recipe or command.**
 
-Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).
+Write this round's proposals to a hidden temp file co-located in the SAME directory as the publish target — `mktemp "{TEMP_DIR}/.review_proposals.XXXXXX"` — and, once the full round's content is written, atomically publish it by renaming to {TEMP_DIR}/review_proposals.r{round}.md (`mv -n`; the round-unique filename makes the flag immaterial — any single winner is complete). The temp MUST be inside {TEMP_DIR} so the rename stays on one filesystem and remains atomic (a cross-device rename degrades to copy+unlink and loses atomicity). Publish (rename) BEFORE appending the round summary to review_log.md below, so a present `## Review Round N` witness implies this round's proposals are already complete on disk. Do NOT write directly to the published path, and do NOT add any sentinel or nonce to the proposals file.
 
 After completing the review, append a round summary to {TEMP_DIR}/review_log.md:
   ## Review Round N
