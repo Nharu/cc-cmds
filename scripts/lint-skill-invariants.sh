@@ -167,6 +167,7 @@ REQUIRED_PHRASES=(
   'Agent() actually returned'
   'round-N summary line in review_log.md'
   'round-N proposals file is absent'
+  'the current classification is WEDGED'
 )
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.

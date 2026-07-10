@@ -54,7 +54,18 @@ done
 # The round-keyed publish path in the agent-facing prompt template.
 PROMPT_KEYED='review_proposals.r{round}.md'
 # The round-keyed read path in the main-session Step 12 prose (shell render).
+# Used ONLY for the relative base==lite occurrence-count parity below (defence in
+# depth against asymmetric drift in NON-pinned narrative prose). Absolute presence
+# is pinned by the two contract-read sentences instead — a whole-file single grep
+# is structurally blind to a partial regression (only one of three sites reverting).
 READ_KEYED='review_proposals.r$inner_round.md'
+# The two contract-read sentences, pinned per file by absolute presence. Each is
+# truncated before the base `(a)–(j)` / lite `(a)–(i)` tail so one literal covers
+# both surfaces.
+READ_S1='**witness present** → observed return. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` and proceed to'
+READ_S2='b. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` to get the current round'\''s proposals.'
+# The zero-proposal publish clause, pinned in both prompt surfaces.
+CLAUSE='including when this round has zero proposals'
 # Removed literals — must NOT survive on any surface.
 SEED_LINE='echo "" > "$INNER_TEMP_DIR/review_proposals.md"'
 OVERWRITE_LINE='Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).'
@@ -95,6 +106,19 @@ assert_absent() {
   fi
 }
 
+# Relative base==lite occurrence-count parity of a literal (line-counted). Catches
+# an asymmetric drift in prose the absolute pins do not cover (e.g. the narrative
+# "published … to <round-keyed>" line dropping its key on ONE surface only).
+assert_count_equal() {
+  local literal="$1" file_a="$2" file_b="$3" label="$4" ca cb
+  ca=$(grep -Fc "$literal" "$file_a" || true)
+  cb=$(grep -Fc "$literal" "$file_b" || true)
+  if [[ "$ca" != "$cb" ]]; then
+    echo "FAIL: $label — base/lite occurrence-count mismatch ($ca vs $cb): $literal" >&2
+    fail=1
+  fi
+}
+
 base_prompt_block=$(extract_prompt_block "$BASE_PROMPT")
 lite_prompt_block=$(extract_prompt_block "$LITE_SKILL")
 
@@ -102,10 +126,18 @@ lite_prompt_block=$(extract_prompt_block "$LITE_SKILL")
 assert_present_in_text "$PROMPT_KEYED" "$base_prompt_block" "references/06-review-agent-prompt.md (prompt)"
 assert_present_in_text "$PROMPT_KEYED" "$lite_prompt_block" "design-review-lite/SKILL.md (inline prompt)"
 
-# (2) Positive — round-keyed read path present in BOTH SKILL.md main-session prose
-#     (the witness-present read + the item-b read both use this render).
-assert_present "$READ_KEYED" "$BASE_SKILL" "design-review/SKILL.md (read sites)"
-assert_present "$READ_KEYED" "$LITE_SKILL" "design-review-lite/SKILL.md (read sites)"
+# (1b) Positive — the zero-proposal publish clause present in BOTH prompt surfaces.
+assert_present_in_text "$CLAUSE" "$base_prompt_block" "references/06-review-agent-prompt.md (zero-proposal clause)"
+assert_present_in_text "$CLAUSE" "$lite_prompt_block" "design-review-lite/SKILL.md (zero-proposal clause)"
+
+# (2) Positive — the two contract-read sentences present per file (absolute), plus
+#     the round-keyed occurrence count symmetric across base/lite (relative). A
+#     single whole-file grep would pass even if two of the three read sites regress.
+assert_present "$READ_S1" "$BASE_SKILL" "design-review/SKILL.md (witness-present read)"
+assert_present "$READ_S1" "$LITE_SKILL" "design-review-lite/SKILL.md (witness-present read)"
+assert_present "$READ_S2" "$BASE_SKILL" "design-review/SKILL.md (item-b read)"
+assert_present "$READ_S2" "$LITE_SKILL" "design-review-lite/SKILL.md (item-b read)"
+assert_count_equal "$READ_KEYED" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite read-keyed count parity"
 
 # (3) Negative — the Step 8 seed line must be gone from BOTH SKILL.md.
 assert_absent "$SEED_LINE" "$BASE_SKILL" "design-review/SKILL.md (Step 8 seed)"

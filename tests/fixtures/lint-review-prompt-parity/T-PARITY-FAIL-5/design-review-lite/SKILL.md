@@ -14,5 +14,5 @@ Write this round's proposals to a hidden temp file co-located in {TEMP_DIR} — 
 ```
 
     - **witness present** → observed return. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` and proceed to (a)–(i). An already-finished async costs 2 reads, 0 yield.
-  a. The agent published this round's proposals by atomic rename to `$INNER_TEMP_DIR/review_proposals.r$inner_round.md`.
+  a. The agent published this round's proposals by atomic rename to the round-keyed proposals file.
   b. Read `$INNER_TEMP_DIR/review_proposals.r$inner_round.md` to get the current round's proposals.
