@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.6] - 2026-07-14
+
+PR #62 v2 재리뷰가 지적한 산문 오도 2건을 정정하고, parity lint의 lite-seed blind spot을 테스트하는 fixture를 추가한다. 셔핑된 v1.19.5 릴리즈 항목은 재작성하지 않고 그 위에 append하는 patch다. [#62]
+
+### Changed
+
+- **fail-closed N>0 자기서술을 non-progression으로 정정**: fail-closed READ arm의 N>0 갈래를 "상한 없음(unbounded)"이 아니라 non-progression으로 서술한다 — 재기동 에이전트가 완료 표시 개수로 라운드를 파생해 N+1을 발행하므로 원래 라운드 제안 파일이 영원히 복구되지 않고 매 재진입이 더 발산한다. 상한만 추가하면 무한 루프가 잘못된 라운드에서의 종료로 바뀔 뿐이라 로직 자체 수정은 라운드 파생 비멱등성과 결합해 별도 후속으로 연기한다. 코드 프로즈 한정 정정이며, CHANGELOG `[1.19.5]`는 이 arm을 "unbounded"로 서술한 적이 없어 정정 대상이 아니다.
+- **발행 프롬프트 clause 좁힘**: 리뷰 에이전트 프롬프트의 "the file's presence, not its content" 절을, 메인 세션 fail-closed read가 서로 다른 두 파일(제안 파일의 존재 vs `review_log.md` witness의 `Proposals created:` 개수)을 대상으로 함을 밝혀 좁힌다.
+
+### Fixed
+
+- **parity lint lite-seed fixture 추가**: lite 표면에만 Step-8 seed가 재도입되는 회귀를 실패 방향으로 독립 구동하는 `T-PARITY-FAIL-7`을 추가해, parity lint의 lite seed 단언이 미테스트로 남던 갭을 닫는다. lint 스크립트·harness는 편집하지 않는다(harness가 fixture 디렉터리를 자동발견).
+
 ## [1.19.5] - 2026-07-09
 
 `design-review`·`design-review-lite`의 인라인 ASYNC 리뷰 메커니즘이 정본 프로토콜이 이미 봉합한 두 결함을 lag하던 것을 하나의 하드닝 패스로 봉합한다. 리뷰 에이전트의 proposals 쓰기를 라운드-키드 atomic publish로, 인라인 ASYNC stall 술어를 축소 tri-state liveness로 포팅한다. 두 결함 모두 런타임 재현 불가한 잠재적 구조 결함(드문 하네스 fault·compaction 조건에서만 발현)이다. [#51][#57]
