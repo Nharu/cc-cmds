@@ -22,6 +22,10 @@ Advance ordering: there is no look-ahead spawn. Anti-fabrication: write a record
 
 - The agent appends a round-N summary line in review_log.md at the close of each review cycle.
 
+Fail-closed read arm: after an observed return, if the round-N proposals file is absent, re-read and respawn — never record zero proposals.
+
+Death predicate: declare the agent dead only when the current classification is WEDGED and the reentry count has reached its limit.
+
 ```
 if INNER_EXIT_REASON == "safety-limit-outer-terminate": break
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer": outer_done = false
