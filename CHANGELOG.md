@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-07-14
+
+`/implement`의 완료 판정이 소스-정확성 축(analyze/lint·구조 테스트·토큰 게이트)만 검증하고 렌더된 화면이 지정된 시각 기준(SOT)과 일치하는지는 검증하지 않아, 프로토타입 기준 작업에서 헤더 정렬·필드 지오메트리·placeholder·아이콘·간격 리듬 드리프트가 green 상태로 핸드오프되던 빈칸을, `/implement` 내부의 시각 정합 게이트로 메운다. 게이트는 사용자가 설계 문서에 남긴 `## 시각 정합 기준` 지정 마커를 읽어 활성화되고, 화면 단위 완료 직후 앱을 구동·캡처해 프로토타입과 비전 기반 7차원 체크리스트로 대조하며, 상한(화면당 3회) 있는 자동 수정 루프를 돈다. 잔여 드리프트는 설계 문서에 쓰지 않고 한국어 리포트 + 사용자 판단으로 넘기며 out-of-doc 사이드카에 기록한다. 본 기능은 **명시적 임시 조치**로, 이슈 #40의 미구현 `design-fidelity` 스킬이 이 축을 온전히 흡수하면 삭제된다(`/plugin update cc-cmds`로 자동 반영). [#70]
+
+### Added
+
+- **`/implement` 시각 정합 게이트 (임시 조치)**: 설계 문서에 사용자가 작성한 시각-SOT 지정 마커(`## 시각 정합 기준` — 프로토타입 경로 + 렌더 힌트 + 대상 화면)를 Step 1에서 감지하면, Step 1.6(read-only 레시피 발견)과 Step 3의 화면 단위 게이트 `G_i`가 활성화된다. 게이트는 (1) 자립 Chrome-headless 2-tier로 프로토타입을 렌더하고(시스템 Chrome DPR 고정 → `playwright screenshot` DPR1 폴백 → fail-open AUQ), (2) 타깃 앱을 레시피로 부팅·캡처해(부팅 1회·세션 재사용·도달 가능 종료 경로 best-effort teardown), (3) 고정 7차원 비전 체크리스트(레이아웃정렬·간격리듬·크기지오메트리·타이포구조·색채움·아이코노그래피·컴포넌트상태)로 대조한다. 발견된 드리프트는 근본원인 클래스(theme-token/component-default/screen-local)로 승격해 bounded 전수 스윕하고, 상한 있는 자동 수정 루프(task-held 카운터·fail-closed·2연속 비개선 시 조기 종료)를 돈다. implement는 DETECT·FIX만 하고 CLASSIFY·ADJUDICATE·ACCEPT는 하지 않으며(외부 프로토타입 대조는 self-adjudication이 아니라는 이슈 #40과의 명명된 예외), 잔여는 AskUserQuestion + out-of-doc 사이드카 `docs/visual-drift/`로 처리해 설계 문서에는 0바이트 쓴다. 오라클 절차 상세는 `implement/references/visual-fidelity-gate.md`에 분리했다.
+
 ## [1.19.6] - 2026-07-14
 
 PR #62 v2 재리뷰가 지적한 산문 오도 2건을 정정하고, parity lint의 lite-seed blind spot을 테스트하는 fixture를 추가한다. 셔핑된 v1.19.5 릴리즈 항목은 재작성하지 않고 그 위에 append하는 patch다. [#62]
