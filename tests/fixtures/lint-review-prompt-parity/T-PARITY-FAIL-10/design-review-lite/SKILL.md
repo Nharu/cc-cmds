@@ -29,3 +29,5 @@ async_observed_return: N is `inner_round`, injected into the agent's spawn promp
 
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
 - Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}
+
+Reused-prompt variants (lite): `async-slow` → downstream early-termination clause `비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨`. (The `lostwrite` variant clause is intentionally omitted on this surface — parity drift.)

@@ -7,7 +7,7 @@ description: T-PARITY-OK-1 fixture — lite
 
 ## Substitution contract
 
-- `{round}` → the current `inner_round` value (spawn-time round counter).
+- `{round}` :: the current `inner_round` value (drifted bullet lead — arrow dropped).
 
 ## Prompt body
 

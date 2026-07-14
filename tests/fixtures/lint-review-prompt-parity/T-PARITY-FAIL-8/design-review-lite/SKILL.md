@@ -14,7 +14,7 @@ description: T-PARITY-OK-1 fixture — lite
 ```
 You are a design document reviewer. Perform ONE independent round of review.
 
-This review is Round {round}. Use {round} as the round number everywhere below — the PROP-ID prefix, the published proposals filename, and the round-summary header.
+DRIFTED: derive the round number differently on lite only, by inspecting the log.
 
 Write this round's proposals to a hidden temp file co-located in {TEMP_DIR} — `mktemp "{TEMP_DIR}/.review_proposals.XXXXXX"` — then atomically publish by renaming to {TEMP_DIR}/review_proposals.r{round}.md (`mv -n`). Publish this round-keyed file unconditionally — including when this round has zero proposals.
 ```
