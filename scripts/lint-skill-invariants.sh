@@ -54,6 +54,11 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     counterless second-opinion (same basis as design-upgrade).
 #   - IO orchestrators (active-notify / implement) — termination is a
 #     hook/tool-driven boundary, not a counter the model has to maintain.
+#     implement's temporary visual-fidelity fix loop (issue #70, a removable
+#     stopgap) likewise holds its per-screen retry cap and verdict vector in
+#     the gate task (TaskGet-recovered) and fail-closes to stop-and-report —
+#     not a model-maintained counter; remove this clause when that loop leaves
+#     implement.
 # In effect, the non-exempt members are the `design-review ↔ design-review-lite`
 # pair (which rule B additionally enforces via phrase sync), `design` (whose
 # phase-transition invariants live in its top `## Control-Flow Invariants`), and
