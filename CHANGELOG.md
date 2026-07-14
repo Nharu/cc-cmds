@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.7] - 2026-07-14
+
+`design-review`·`design-review-lite`의 ASYNC 리뷰 경로에 얽힌 세 결함(#63/#65/#64)을 하나의 인과 사슬로 봉합한다. 라운드 번호 파생을 메인 세션 주입으로 멱등화하고, 그 위에서 같은-라운드 재생성에 상한을 씌우며, 재사용되는 에스컬레이션 프롬프트가 트리거별로 올바른 사유 문구를 노출하도록 정정한다. 세 결함 모두 런타임 재현 불가한 구조 결함(드문 하네스 정리 실패·지속적 발행 비준수·async-stall 임계 조건에서만 발현)이며 정적 판독으로 근본원인을 확정했다. [#63][#65][#64]
+
+### Fixed
+
+- **#63 라운드 번호 파생 멱등화 (주입)**: 리뷰 에이전트가 `## Review Round` 헤더 개수를 세어 라운드 번호를 자기파생하던 것을, 메인 세션이 스폰 프롬프트에 소문자 `{round}`(= `inner_round`)를 주입하는 방식으로 교체한다. 중복 헤더가 물리적으로 생겨도 어떤 actor도 그것을 읽어 라운드를 계산하지 않으므로 파생이 멱등해지고, 같은 라운드 재생성이 원래 라운드 N을 그대로 겨냥한다. CFI 순서 노트·anti-fabrication 앵커·`## Strategy`의 witness 파생 서술을 주입 사실로 재기술한다.
+- **#65 같은-라운드 재생성 상한**: fail-closed READ arm의 `N > 0`(발행 유실) 재생성에 별도 durable 카운터 `lostwrite_respawn_count`(상한 `K65 = 3`, death-gate `K`와 구별)를 도입해 check-then-act로 상한을 씌운다. 정확히 3회 복구 재생성 후에도 미복구면 사용자에게 에스컬레이션한다(기본 권장 B: 새 외부 이터레이션). reset (ii)를 'any same-round respawn'(전칭)으로 넓혀 복구 재생성이 원본의 낡은 stall 카운터를 상속하지 않게 하고, `.async_stall.json` 스키마에 필드를 추가하며 `schema` sentinel을 명시 리터럴로 고정해 구버전 파일이 strict-equality 불일치로 재초기화되도록 한다.
+- **#64 트리거별 에스컬레이션 사유 문구**: 20라운드 안전 한계용 3지 프롬프트를 async-stall·상한 에스컬레이션이 재사용하면서 "안전 한계 도달"이라는 실제 원인과 다른 사유를 노출하던 것을, `PROMPT_TRIGGER ∈ {inner-limit, async-slow, lostwrite}` 판별자로 사유 라인·하류 표시 문구를 분기하도록 정정한다(§3.9.4.f 단일 출처). 트리거를 `outer_log.md`에 durable하게 기록(Step 16 즉시-flush → Step 20 복원)해 컴팩션 후에도 하류 이터레이션 요약이 올바른 사유를 렌더링하게 하고, 부분-이터레이션 배너는 표-레벨 각주라 트리거-중립 절로 무조건 치환한다. 옵션 C 매핑 표의 오도성 흐름 문구를 Step 17–22 통과로 정정한다.
+- **lint·parity 하드닝**: `lint-review-prompt-parity.sh`에 라운드 주입 문구(양성)·제거된 자기파생 seed(음성)·`{round}` 치환 계약 bullet·`## Strategy` 주입 산문·`EXIT_TRIGGER` 구조 리터럴·트리거별 사유 변형(base↔lite 개수 일치)을 pin하고, `REQUIRED_PHRASES`에 5개 CFI 불변 문구를 추가한다(11→16). 한 표면만 파생 문구가 드리프트해도 CI가 잡도록 fixture(`T-PARITY-FAIL-8`~`10`, `T-PARITY-OK-1` 갱신)를 추가한다.
+
 ## [1.19.6] - 2026-07-14
 
 PR #62 v2 재리뷰가 지적한 산문 오도 2건을 정정하고, parity lint의 lite-seed blind spot을 테스트하는 fixture를 추가한다. 셔핑된 v1.19.5 릴리즈 항목은 재작성하지 않고 그 위에 append하는 patch다. [#62]
