@@ -86,17 +86,33 @@ SUBST_LITE='- `{round}` →'
 # Site-3 (async_observed_return, in `## Strategy` — outside the CFI window that
 # rule B in lint-skill-invariants.sh extracts), mirrored across both SKILLs.
 DERIV_CFI='injected into the agent'\''s spawn prompt as {round} by the main session'
-# --- #64 EXIT_TRIGGER durable-record structural literal. Lives at the Step 16
-# flush write-site and the Step 20 outer_log write-site, both outside the CFI
-# window and mirrored across surfaces — so rule B cannot pin it. ---
+# --- #64 EXIT_TRIGGER durable-record structural literal. The `- Inner exit trigger:`
+# key occurs 3× per surface: the anti-fabrication anchor prose (base 97 / lite 98),
+# the Step 16 flush write-site (base 456 / lite 554), and the Step 20 restore
+# write-site (base 509 / lite 607). All 3 sit outside the CFI window and are
+# mirrored across surfaces — rule B cannot pin them — so check (9) enforces the
+# base↔lite parity of that 3-count, and check (9b) pins the restore direction
+# marker so a symmetric drop of the Step 20 restore line cannot pass silently. ---
 EXIT_KEY='- Inner exit trigger:'
-# --- #64 per-trigger reason variants (async-slow / lostwrite). Downstream display
-# points reference the §3.9.4.f definition (no literal copy), so each distinctive
-# clause occurs exactly once per surface — whole-file count parity is therefore
-# exact. inner-limit keeps "안전 한계" (presence/count only; no negative pin). ---
+# Restore direction marker — present ONLY on the Step 20 restore line (exactly 1×
+# per surface). Pinned mechanism-agnostically (does NOT pin `grep`/`tail`), so it
+# survives the selector expression. ---
+RESTORE_MARKER='← restore from'
+# --- #64 per-trigger reason variant contract (ALL FOUR EXIT_TRIGGER values:
+# inner-limit / async-slow / lostwrite / trigger-neutral). The pin set derives from
+# this 4-variant contract, NOT from "whatever lite currently has" — a subset (the
+# regression that shipped 2-of-4 lite clauses and passed green) must fail. Each
+# variant's downstream early-termination clause has its single source in base
+# §3.9.4.f and is mirrored into lite. async-slow / lostwrite / inner-limit occur
+# exactly 1× per surface → count parity. trigger-neutral occurs 2× in base
+# references/05 (the L108 partial-iteration banner example + the L239 definition)
+# but 1× in lite → presence-only, count_equal deliberately dropped. Only
+# early-termination clauses are pinned (summary clauses ride the same bullet). ---
 BASE_TEMPLATES="$skills_root/design-review/references/05-korean-ux-templates.md"
 ASYNC_SLOW_CLAUSE='비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨'
 LOSTWRITE_CLAUSE='라운드 결과 파일이 반복 유실되어 조기 종료됨'
+INNER_LIMIT_CLAUSE='내부 라운드가 안전 한계로 조기 종료됨'
+NEUTRAL_CLAUSE='내부 라운드가 조기 종료됨'
 
 fail=0
 
@@ -200,10 +216,20 @@ assert_present "$EXIT_KEY" "$BASE_SKILL" "design-review/SKILL.md (Inner exit tri
 assert_present "$EXIT_KEY" "$LITE_SKILL" "design-review-lite/SKILL.md (Inner exit trigger key)"
 assert_count_equal "$EXIT_KEY" "$BASE_SKILL" "$LITE_SKILL" "Inner exit trigger key base↔lite count parity"
 
+# (9b) #64 EXIT_TRIGGER restore direction marker — present on the Step 20 restore
+#      line of BOTH SKILLs (exactly 1× each). Guards the check-(9) blind spot: a
+#      symmetric removal of the Step 20 restore line keeps the 3→2 count parity and
+#      presence true, so #64's durable-record restore could regress green. This
+#      marker pins the restore line itself; mechanism-agnostic (survives the
+#      grep -m1 → tail -1 selector change).
+assert_present "$RESTORE_MARKER" "$BASE_SKILL" "design-review/SKILL.md (Step 20 restore marker)"
+assert_present "$RESTORE_MARKER" "$LITE_SKILL" "design-review-lite/SKILL.md (Step 20 restore marker)"
+
 # (10) #64 per-trigger reason variants — base template (§3.9.4.f) ↔ lite Step-16 inline.
 #      LOCAL file guard (NOT the blanket skip at the top): a fixture without the
-#      template still exercises every check above. Downstream is reference-only, so
-#      each clause is a single occurrence per surface → whole-file count parity is exact.
+#      template still exercises every check above. All FOUR EXIT_TRIGGER variants are
+#      pinned so a subset regression (2-of-4) fails; each distinctive clause is a
+#      single occurrence per surface except trigger-neutral (2× in base — see below).
 if [[ -f "$BASE_TEMPLATES" ]]; then
   assert_present "$ASYNC_SLOW_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f async-slow variant)"
   assert_present "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow variant)"
@@ -211,6 +237,20 @@ if [[ -f "$BASE_TEMPLATES" ]]; then
   assert_present "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite variant)"
   assert_present "$LOSTWRITE_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite variant)"
   assert_count_equal "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite variant base↔lite count parity"
+  assert_present "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f inner-limit variant)"
+  assert_present "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (inner-limit variant)"
+  assert_count_equal "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "inner-limit variant base↔lite count parity"
+  # trigger-neutral: presence-only. The clause occurs 2× in base references/05 (the
+  # L108 banner example + the L239 definition) but 1× in lite, so count_equal would
+  # false-fail on the real tree — presence on both surfaces suffices for regression.
+  assert_present "$NEUTRAL_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f trigger-neutral variant)"
+  assert_present "$NEUTRAL_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral variant)"
+elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL"; then
+  # references/05 absent but lite still carries the async-slow variant clause → the
+  # per-trigger mechanism is live and only the base template moved/renamed, which the
+  # local -f guard would otherwise silently disable. Fail loud rather than skip.
+  echo "FAIL: review-prompt-parity — references/05 template absent but async-slow variant present on lite (base template moved/renamed?)" >&2
+  fail=1
 fi
 
 if (( fail == 0 )); then
