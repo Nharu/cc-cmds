@@ -506,7 +506,7 @@ Where:
 - Inner TEMP_DIR: {INNER_TEMP_DIR}
 - Inner rounds run: {n}
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
-- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` via `grep -m1 '^- Inner exit trigger:'` BEFORE the Step 21 wipe; write `n/a` when the line is absent (no escalation this iter); mandatory every iter (same convention as [VERIFY-RAN])
+- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` via `grep '^- Inner exit trigger:' | tail -1` (last-match — async-slow's default option-A continue leaves an earlier non-terminal flush in the log, so the loop-terminating escalation is always the final flush) BEFORE the Step 21 wipe; write `n/a` when the line is absent (no escalation this iter); mandatory every iter (same convention as [VERIFY-RAN])
 - Partial iteration: {true|false}
 - [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}   ← computed from review_log.md BEFORE the Step 21 wipe; mandatory every iter (write 0 when none); Step 22's `this_iter_verify_ran` source
 

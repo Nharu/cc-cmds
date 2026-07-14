@@ -536,10 +536,12 @@ Options (header chip `처리 방식`; each option carries a `description`; the r
 - label `"B: 이번 이터레이션 종료 후 새 이터레이션 시작 ← 추천"` — description: 미완료 대화가 없어 현재 이터레이션을 닫고 새 이터레이션으로 넘어갑니다.
 - label `"C: 외부 이터레이션 전체 종료"` — description: 외부 루프 전체를 종료하고 리뷰를 마칩니다.
 
-**Reused-prompt reason variants (`async-slow` / `lostwrite`)** — the same 3-option prompt is reused for two further triggers; only the reason line, context, option descriptions, and `← 추천` position change (the `"어떻게 진행하시겠습니까?"` tail, option count 3, the A/B/C → `INNER_EXIT_REASON` mapping below, and the header chip `처리 방식` are invariant). The `inner-limit` variant above keeps `안전 한계(6회)`; these two do NOT mention `6회` (they are round-scope-independent):
+**Reused-prompt reason variants + downstream clause source (all four EXIT_TRIGGER values: inner-limit / async-slow / lostwrite / trigger-neutral)** — the same 3-option prompt is reused for two further triggers; only the reason line, context, option descriptions, and `← 추천` position change (the `"어떻게 진행하시겠습니까?"` tail, option count 3, the A/B/C → `INNER_EXIT_REASON` mapping below, and the header chip `처리 방식` are invariant). The `inner-limit` variant above keeps `안전 한계(6회)`; these two do NOT mention `6회` (they are round-scope-independent):
 
 - **`async-slow`** (babbling `growth_streak ≥ G` OR persistent-UNKNOWN `unavail_streak ≥ U`): reason line `이터레이션 {N}의 비동기 리뷰어가 아직 완료 witness를 발행하지 못했습니다.`; recommendation **A: 계속 대기** (live-but-slow evidence; on A reset ONLY the triggering streak to 0 and return to the wait loop, the death gate `reentry_count` untouched); downstream early-termination clause `비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨`, summary clause `비동기 리뷰어 미완료로 미해소`.
 - **`lostwrite`** (`lostwrite_respawn_count ≥ K65` in the fail-closed READ arm): reason line `이터레이션 {N}의 라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.` (`{K65}` renders the actual retry count); recommendation **B: 새 외부 이터레이션 시작** (lost round not restorable in place; on A reset `lostwrite_respawn_count := 0`), A label `같은 라운드 재시도` (NOT the native `3 라운드 추가 진행`); downstream early-termination clause `라운드 결과 파일이 반복 유실되어 조기 종료됨`, summary clause `라운드 결과 파일 반복 유실로 미해소`.
+- **`inner-limit`** (native 6-round inner safety limit; the reason line / recommendation are in the native prompt block above — this bullet is the downstream-clause source only): downstream early-termination clause `내부 라운드가 안전 한계로 조기 종료됨`, summary clause `내부 안전 한계 도달 시점에 미해소`.
+- **trigger-neutral fallback** (`EXIT_TRIGGER == n/a` or absent — a `user-abort` / clean iteration, or a pre-bump `outer_log.md`): downstream early-termination clause `내부 라운드가 조기 종료됨`, summary clause `이터레이션 조기 종료 시점에 미해소`.
 
 Option mapping to `INNER_EXIT_REASON`:
 
@@ -604,7 +606,7 @@ Append to `$OUTER_DIR/outer_log.md`:
 - Inner TEMP_DIR: {INNER_TEMP_DIR}
 - Inner rounds run: {n}
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
-- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` via `grep -m1 '^- Inner exit trigger:'` BEFORE the Step 21 wipe; write `n/a` when the line is absent (no escalation this iter); mandatory every iter (same convention as [VERIFY-RAN])
+- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` via `grep '^- Inner exit trigger:' | tail -1` (last-match — async-slow's default option-A continue leaves an earlier non-terminal flush in the log, so the loop-terminating escalation is always the final flush) BEFORE the Step 21 wipe; write `n/a` when the line is absent (no escalation this iter); mandatory every iter (same convention as [VERIFY-RAN])
 - Partial iteration: {true|false}
 - [VERIFY-RAN] (별도 카운터, escalate 합 밖): {count}   ← computed from review_log.md BEFORE the Step 21 wipe; mandatory every iter (write 0 when none); Step 22's `this_iter_verify_ran` source
 
