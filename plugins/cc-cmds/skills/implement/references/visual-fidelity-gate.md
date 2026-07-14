@@ -2,7 +2,7 @@
 
 `implement/SKILL.md`의 `## 시각 정합 게이트` 섹션이 참조하는 오라클 상세. 임시 조치의 일부이며 #40 `design-fidelity` 착지 시 게이트 섹션과 함께 삭제된다(`rm` 1회). 게이트의 **로드-베어링 종료/루프-상한 계약은 SKILL.md에 inline**으로 남고, 본 파일은 캡처·렌더·대조의 절차 상세만 담는다.
 
-모든 inline Bash는 `scripts/lint-bash-portability.sh` denylist를 컨벤션상 준수한다(SKILL.md·references는 CI 스캔 대상 아니나 동일 규율 적용) — 플랫폼별로 갈리는 해시·파일 크기 조회·날짜 파싱·PCRE grep·in-place 편집·경로 정규화·역순 출력 관용구를 피한다. 이미지 크기는 `sips -g pixelWidth -g pixelHeight`로 읽는다(픽셀-diff 대리 해시는 사용자가 배제).
+모든 inline Bash는 `scripts/lint-bash-portability.sh` denylist를 컨벤션상 준수한다(SKILL.md·references는 CI 스캔 대상 아니나 동일 규율 적용) — 플랫폼별로 갈리는 해시·파일 크기 조회·날짜 파싱·PCRE grep·in-place 편집·경로 정규화·역순 출력 관용구를 피한다. 이미지 dims 확인은 **macOS 한정 best-effort**다: `command -v sips`가 있으면 `sips -g pixelWidth -g pixelHeight`로 읽고, 없으면(비-macOS) 이 확인만 skip한다 — dims 확인은 로드-베어링이 아니므로 게이트는 그대로 진행한다(픽셀-diff 대리 해시는 사용자가 배제).
 
 ## 1. 프로토타입 렌더 — 자립 Chrome-headless 2-tier
 
@@ -28,7 +28,7 @@
 
 - **Tier C — graceful degrade**: 둘 다 없으면 조용히 통과하지 않고 `AskUserQuestion`으로 라우팅한다(fail-open: 레시피 제공 / 이 화면 skip / 게이트 비활성). 조용한 self-disable 금지.
 
-렌더 후 `sips -g pixelWidth -g pixelHeight "<out.png>"`로 픽셀 dims를 확인해 의도한 뷰포트·DPR과 일치하는지 검증한다.
+렌더 후 `command -v sips`가 있으면 `sips -g pixelWidth -g pixelHeight "<out.png>"`로 픽셀 dims를 확인해 의도한 뷰포트·DPR과 일치하는지 검증한다(macOS 한정 best-effort — `sips` 부재 시 이 dims 검증은 skip하고 렌더 결과를 그대로 수용하며, command-not-found로 멈추지 않는다).
 
 ## 2. 앱 캡처 — 부팅 1회·세션 재사용
 
@@ -37,10 +37,10 @@
 - **부팅 1회**: 앱 부팅(cold 20–60s)은 게이트 최초 활성화(Step 3의 첫 `G_1`) 시 1회. 이후 화면·스윕은 live 앱에 navigate + screenshot만 한다. boot handle(pid/port/udid)은 out-of-tree 임시 디렉토리에 기록한다:
 
   ```
-  BOOTDIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-visual-fidelity-<slug>.XXXXXX")
+  BOOTDIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-visual-fidelity-{slug}.XXXXXX")
   ```
 
-- **teardown — 모든 종료 경로에서 발동**: 정상 종료뿐 아니라 fail-closed 조기 종료·사용자 `중단`·abort 시에도 boot handle로 앱·헤드리스 브라우저 프로세스를 종료한다(cold-boot 20–60s 프로세스가 orphan되지 않도록). fail-closed 기본 동작은 "teardown 후 보고"를 포함한다. prose-driven bash에서 trap 커버리지가 불가하면, orphan 프로세스를 아래 하드 한도로 bound된 **수용 잔여**로 문서화한다.
+- **teardown — 가능한 종료 경로에서 best-effort**: 정상 종료·fail-closed 조기 종료·사용자 `중단`·abort 등 도달 가능한 종료 지점에서 boot handle로 앱·헤드리스 브라우저 프로세스를 종료한다(cold-boot 20–60s 프로세스가 orphan되지 않도록). fail-closed 기본 동작은 "teardown 후 보고"를 포함한다. prose-driven bash에서 trap이 커버하지 못하는 경로(compaction·프로세스 급사 등)의 orphan은 아래 하드 한도로 bound된 **수용 잔여**다. compaction으로 boot handle의 랜덤 경로가 유실되면 재사용·teardown 모두 handle 재획득에 의존하며, 재획득 실패 시 fail-closed — 기록된 pid가 있으면 teardown을 시도한 뒤 stop-and-report하고, 두 번째 인스턴스를 무턱대고 cold-boot하지 않는다.
 - **하드 한도**: cold-boot 90s, 화면당 캡처 15s. 초과 시 실패로 간주(드리프트 아님) → fail-open AUQ.
 
 ## 3. 뷰포트/DPR/테마/폰트 매칭 (오탐 억제의 1순위 레버)
