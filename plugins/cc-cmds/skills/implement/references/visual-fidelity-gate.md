@@ -40,7 +40,7 @@
   BOOTDIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-visual-fidelity-{slug}.XXXXXX")
   ```
 
-- **teardown — 가능한 종료 경로에서 best-effort**: 정상 종료·fail-closed 조기 종료·사용자 `중단`·abort 등 도달 가능한 종료 지점에서 boot handle로 앱·헤드리스 브라우저 프로세스를 종료한다(cold-boot 20–60s 프로세스가 orphan되지 않도록). fail-closed 기본 동작은 "teardown 후 보고"를 포함한다. prose-driven bash에서 trap이 커버하지 못하는 경로(compaction·프로세스 급사 등)의 orphan은 아래 하드 한도로 bound된 **수용 잔여**다. compaction으로 boot handle의 랜덤 경로가 유실되면 재사용·teardown 모두 handle 재획득에 의존하며, 재획득 실패 시 fail-closed — 기록된 pid가 있으면 teardown을 시도한 뒤 stop-and-report하고, 두 번째 인스턴스를 무턱대고 cold-boot하지 않는다.
+- **teardown — 가능한 종료 경로에서 best-effort**: 정상 종료·fail-closed 조기 종료·사용자 `중단`·abort 등 도달 가능한 종료 지점에서 boot handle로 앱·헤드리스 브라우저 프로세스를 종료한다(cold-boot 20–60s 프로세스가 orphan되지 않도록). fail-closed 기본 동작은 "teardown 후 보고"를 포함한다. prose-driven bash에서 trap이 커버하지 못하는 경로(compaction·프로세스 급사 등)의 orphan은 **수용 잔여**다 — 하드 한도(cold-boot 90s·캡처 15s)는 implement의 **대기 시간**을 bound할 뿐 orphan **프로세스의 수명**은 bound하지 않으며, 잔존 프로세스는 사용자가 종료(kill)할 때까지 남는다. compaction으로 boot handle의 랜덤 경로가 유실되면 pid가 사는 유일한 장소인 `BOOTDIR`도 함께 유실되므로 재사용·teardown 모두 handle 재획득에 의존한다 — 재획득 실패 시 pid가 없어 teardown 대상 자체가 없으니 stop-and-report만 하고, 두 번째 인스턴스를 무턱대고 cold-boot하지 않는다.
 - **하드 한도**: cold-boot 90s, 화면당 캡처 15s. 초과 시 실패로 간주(드리프트 아님) → fail-open AUQ.
 
 ## 3. 뷰포트/DPR/테마/폰트 매칭 (오탐 억제의 1순위 레버)
