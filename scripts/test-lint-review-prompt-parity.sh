@@ -33,16 +33,41 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SKILLS_ROOT="$fixture" bash "$script_dir/lint-review-prompt-parity.sh" >/dev/null 2>&1
+  out=$(SKILLS_ROOT="$fixture" bash "$script_dir/lint-review-prompt-parity.sh" 2>&1)
   ec=$?
   set -e
 
-  if [[ "$ec" == "$want" ]]; then
+  ok=1
+  if [[ "$ec" != "$want" ]]; then
+    ok=0
+    echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
+  fi
+
+  # Intent check: every FAIL fixture must name the assertion it exists to guard.
+  # An exit-code-only pass lets a fixture 'exit 1 for the wrong reason' and
+  # silently stop guarding its target. EXPECT lines are substrings that MUST all
+  # appear in the lint's stderr.
+  if [[ "$want" == 1 ]]; then
+    expect_file="$fixture/EXPECT"
+    if [[ ! -f "$expect_file" ]]; then
+      echo "FAIL: $fixture_name — FAIL fixture missing EXPECT file (intent unpinned)" >&2
+      ok=0
+    else
+      while IFS= read -r sub; do
+        [[ -z "$sub" ]] && continue
+        if [[ "$out" != *"$sub"* ]]; then
+          echo "FAIL: $fixture_name — lint stderr missing expected assertion: $sub" >&2
+          ok=0
+        fi
+      done < "$expect_file"
+    fi
+  fi
+
+  if (( ok )); then
     passed=$((passed + 1))
     echo "PASS: $fixture_name (exit=$ec, expected=$want)"
   else
     failures=$((failures + 1))
-    echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
   fi
 done
 

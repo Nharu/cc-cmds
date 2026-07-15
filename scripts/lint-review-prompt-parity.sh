@@ -113,6 +113,11 @@ ASYNC_SLOW_CLAUSE='비동기 리뷰어가 완료 witness를 발행하지 못해 
 LOSTWRITE_CLAUSE='라운드 결과 파일이 반복 유실되어 조기 종료됨'
 INNER_LIMIT_CLAUSE='내부 라운드가 안전 한계로 조기 종료됨'
 NEUTRAL_CLAUSE='내부 라운드가 조기 종료됨'
+# trigger-neutral SUMMARY clause. Unlike NEUTRAL_CLAUSE (early-termination) which
+# also appears in the L108 partial-iteration banner, this rides ONLY the
+# definition line (base05 1× / lite 1×), so it anchors the definition and closes
+# the presence-only hole where deleting the definition leaves the banner green.
+NEUTRAL_SUMMARY='이터레이션 조기 종료 시점에 미해소'
 
 fail=0
 
@@ -159,6 +164,22 @@ assert_count_equal() {
   cb=$(grep -Fc -- "$literal" "$file_b" || true)
   if [[ "$ca" != "$cb" ]]; then
     echo "FAIL: $label — base/lite occurrence-count mismatch ($ca vs $cb): $literal" >&2
+    fail=1
+  fi
+}
+
+# Base↔lite content identity of a single anchored line (regex anchor, e.g.
+# '^- Inner exit trigger:'). Extracts the first matching line from each surface
+# and string-compares. Wording-agnostic: pins the mirrored line's whole content
+# (selector expression + any gate clause) without naming a literal. A one-surface
+# reword reds this; a symmetric deletion leaves both empty and is caught by the
+# presence marker instead (check 9b).
+assert_line_identical() {
+  local anchor="$1" file_a="$2" file_b="$3" label="$4" la lb
+  la=$(grep -m1 -E -- "$anchor" "$file_a" || true)
+  lb=$(grep -m1 -E -- "$anchor" "$file_b" || true)
+  if [[ "$la" != "$lb" ]]; then
+    echo "FAIL: $label — base/lite restore line content differs" >&2
     fail=1
   fi
 }
@@ -225,6 +246,13 @@ assert_count_equal "$EXIT_KEY" "$BASE_SKILL" "$LITE_SKILL" "Inner exit trigger k
 assert_present "$RESTORE_MARKER" "$BASE_SKILL" "design-review/SKILL.md (Step 20 restore marker)"
 assert_present "$RESTORE_MARKER" "$LITE_SKILL" "design-review-lite/SKILL.md (Step 20 restore marker)"
 
+# (9c) #64 EXIT_TRIGGER restore-line content identity — the Step 20 restore line
+#      is mirrored byte-identical across both SKILLs. Guards the (9b) blind spot:
+#      a one-surface reword (base lands, lite missed) keeps the marker present and
+#      the count parity intact, so (9b)+(9) both stay green. This pins the whole
+#      line content so an asymmetric edit of any part (selector, gate clause) reds.
+assert_line_identical '^- Inner exit trigger:' "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite Step 20 restore-line identity"
+
 # (10) #64 per-trigger reason variants — base template (§3.9.4.f) ↔ lite Step-16 inline.
 #      LOCAL file guard (NOT the blanket skip at the top): a fixture without the
 #      template still exercises every check above. All FOUR EXIT_TRIGGER variants are
@@ -245,11 +273,19 @@ if [[ -f "$BASE_TEMPLATES" ]]; then
   # false-fail on the real tree — presence on both surfaces suffices for regression.
   assert_present "$NEUTRAL_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f trigger-neutral variant)"
   assert_present "$NEUTRAL_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral variant)"
-elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL"; then
-  # references/05 absent but lite still carries the async-slow variant clause → the
-  # per-trigger mechanism is live and only the base template moved/renamed, which the
-  # local -f guard would otherwise silently disable. Fail loud rather than skip.
-  echo "FAIL: review-prompt-parity — references/05 template absent but async-slow variant present on lite (base template moved/renamed?)" >&2
+  assert_present "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "references/05 (trigger-neutral summary clause)"
+  assert_present "$NEUTRAL_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral summary clause)"
+  assert_count_equal "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "trigger-neutral summary clause base↔lite count parity"
+elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$LOSTWRITE_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$NEUTRAL_CLAUSE" "$LITE_SKILL"; then
+  # references/05 absent but lite still carries at least one per-trigger reason
+  # variant → the per-trigger mechanism is live and only the base template
+  # moved/renamed, which the local -f guard would otherwise silently disable.
+  # Keyed on ALL FOUR variants (not just async-slow) so rewording any single
+  # clause cannot re-open the silent-skip. Fail loud rather than skip.
+  echo "FAIL: review-prompt-parity — references/05 template absent but a per-trigger reason variant is still present on lite (base template moved/renamed?)" >&2
   fail=1
 fi
 

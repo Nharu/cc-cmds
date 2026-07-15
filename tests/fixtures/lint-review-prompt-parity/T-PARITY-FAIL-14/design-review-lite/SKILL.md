@@ -28,7 +28,7 @@ async_observed_return: N is `inner_round`, injected into the agent's spawn promp
 ## Outer Iteration N
 
 - Inner exit reason: {clean-convergence | safety-limit-fresh-outer | safety-limit-outer-terminate | user-abort}
-- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` (last-match)
+- Inner exit trigger: {inner-limit | async-slow | lostwrite | n/a}   ← restore from `$INNER_TEMP_DIR/review_log.md` (last-match; lite-only reword)
 
 ## Reused-prompt reason variants (all four EXIT_TRIGGER values)
 
