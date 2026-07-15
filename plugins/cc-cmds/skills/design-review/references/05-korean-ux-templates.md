@@ -231,8 +231,8 @@ This section is the single source of the per-trigger wording. The downstream per
 - Downstream summary clause: `비동기 리뷰어 미완료로 미해소`.
 
 **`lostwrite`** — `lostwrite_respawn_count ≥ K65` in the fail-closed READ arm:
-- Reason line: `이터레이션 {N}의 라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.` (`{K65}` renders the actual number of recovery respawns performed).
-- Recommendation: **B: 새 외부 이터레이션 시작** (the lost round is not restorable in place, so further retry is likely futile). On A, reset `lostwrite_respawn_count := 0` for a fresh budget. The A label is `같은 라운드 재시도` (NOT the native `10 라운드 추가 진행` / lite `3 라운드 추가 진행`).
+- Reason line: `이터레이션 {N}의 라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.` (`{K65}` renders the actual number of recovery respawns attempted).
+- Recommendation: **B: 새 외부 이터레이션 시작** (the lost round is not restorable in place, so further retry is likely futile). On A, reset `lostwrite_respawn_count := 0` for a fresh budget. The A label is `같은 라운드 재시도` (NOT the native `10회 추가 진행` / lite `3 라운드 추가 진행`).
 - Downstream early-termination clause: `라운드 결과 파일이 반복 유실되어 조기 종료됨`.
 - Downstream summary clause: `라운드 결과 파일 반복 유실로 미해소`.
 

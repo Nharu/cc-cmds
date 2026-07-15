@@ -53,13 +53,19 @@ for fixture in "$fixtures"/*/; do
       echo "FAIL: $fixture_name — FAIL fixture missing EXPECT file (intent unpinned)" >&2
       ok=0
     else
-      while IFS= read -r sub; do
+      checked=0
+      while IFS= read -r sub || [[ -n "$sub" ]]; do
         [[ -z "$sub" ]] && continue
+        checked=$((checked + 1))
         if [[ "$out" != *"$sub"* ]]; then
           echo "FAIL: $fixture_name — lint stderr missing expected assertion: $sub" >&2
           ok=0
         fi
       done < "$expect_file"
+      if (( checked == 0 )); then
+        echo "FAIL: $fixture_name — EXPECT file is empty (intent unpinned)" >&2
+        ok=0
+      fi
     fi
   fi
 

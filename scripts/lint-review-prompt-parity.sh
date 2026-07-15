@@ -106,8 +106,9 @@ RESTORE_MARKER='← restore from'
 # §3.9.4.f and is mirrored into lite. async-slow / lostwrite / inner-limit occur
 # exactly 1× per surface → count parity. trigger-neutral occurs 2× in base
 # references/05 (the L108 partial-iteration banner example + the L239 definition)
-# but 1× in lite → presence-only, count_equal deliberately dropped. Only
-# early-termination clauses are pinned (summary clauses ride the same bullet). ---
+# but 1× in lite → presence-only, count_equal deliberately dropped. Every
+# variant's summary clause is its own independent bullet, self-pinned separately
+# below — all four summary clauses are 1×/surface, so presence + count parity. ---
 BASE_TEMPLATES="$skills_root/design-review/references/05-korean-ux-templates.md"
 ASYNC_SLOW_CLAUSE='비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨'
 LOSTWRITE_CLAUSE='라운드 결과 파일이 반복 유실되어 조기 종료됨'
@@ -118,6 +119,16 @@ NEUTRAL_CLAUSE='내부 라운드가 조기 종료됨'
 # definition line (base05 1× / lite 1×), so it anchors the definition and closes
 # the presence-only hole where deleting the definition leaves the banner green.
 NEUTRAL_SUMMARY='이터레이션 조기 종료 시점에 미해소'
+# Per-trigger SUMMARY clauses for the other three variants. Each rides its own
+# independent `- Downstream summary clause:` bullet — all four occur 1×/surface,
+# so presence + count parity apply, same as the early-termination clauses.
+ASYNC_SLOW_SUMMARY='비동기 리뷰어 미완료로 미해소'
+LOSTWRITE_SUMMARY='라운드 결과 파일 반복 유실로 미해소'
+INNER_LIMIT_SUMMARY='내부 안전 한계 도달 시점에 미해소'
+# Mapping-table paraphrase that must NOT leak into references/05 (the single-source
+# per-trigger wording file). The canonical base A-label render is `10회 추가 진행`;
+# `10 라운드 추가 진행` is the SKILL.md mapping-table paraphrase and belongs there only.
+MAPPING_PARAPHRASE='10 라운드 추가 진행'
 
 fail=0
 
@@ -168,18 +179,19 @@ assert_count_equal() {
   fi
 }
 
-# Base↔lite content identity of a single anchored line (regex anchor, e.g.
-# '^- Inner exit trigger:'). Extracts the first matching line from each surface
-# and string-compares. Wording-agnostic: pins the mirrored line's whole content
-# (selector expression + any gate clause) without naming a literal. A one-surface
-# reword reds this; a symmetric deletion leaves both empty and is caught by the
-# presence marker instead (check 9b).
+# Base↔lite content identity of a single anchored line. `anchor` is a FIXED string
+# matched mid-line (grep -F), NOT a regex — it is compared literally. The anchor MUST be a stable mid-line
+# literal, not a `^`-anchored regex: a line-start anchor like `^-` silently no-ops
+# the moment the line is merely indented (both surfaces extract "" → la==lb=="" →
+# vacuous pass), and an anchor carrying ERE metacharacters (e.g. a `(`) would
+# hard-error under grep -E. The message is parameterized on `$label` so a caller
+# pinning a non-restore line reads correctly.
 assert_line_identical() {
   local anchor="$1" file_a="$2" file_b="$3" label="$4" la lb
-  la=$(grep -m1 -E -- "$anchor" "$file_a" || true)
-  lb=$(grep -m1 -E -- "$anchor" "$file_b" || true)
+  la=$(grep -m1 -F -- "$anchor" "$file_a" || true)
+  lb=$(grep -m1 -F -- "$anchor" "$file_b" || true)
   if [[ "$la" != "$lb" ]]; then
-    echo "FAIL: $label — base/lite restore line content differs" >&2
+    echo "FAIL: $label — base/lite line content differs" >&2
     fail=1
   fi
 }
@@ -251,7 +263,15 @@ assert_present "$RESTORE_MARKER" "$LITE_SKILL" "design-review-lite/SKILL.md (Ste
 #      a one-surface reword (base lands, lite missed) keeps the marker present and
 #      the count parity intact, so (9b)+(9) both stay green. This pins the whole
 #      line content so an asymmetric edit of any part (selector, gate clause) reds.
-assert_line_identical '^- Inner exit trigger:' "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite Step 20 restore-line identity"
+assert_line_identical "$RESTORE_MARKER" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite Step 20 restore-line identity"
+
+# (9d) K65 fail-closed recovery-cap paragraph identity — byte-identical mirror
+#      (base SKILL.md ↔ lite SKILL.md) that previously had zero parity pin. A
+#      one-surface reword (e.g. the "observed"→"attempted" honesty fix landing on
+#      base only) would otherwise ship green. Anchor on a stable mid-line literal
+#      present exactly 1× per surface (indentation-immune).
+K65_ANCHOR='lostwrite_respawn_count >= K65'
+assert_line_identical "$K65_ANCHOR" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite K65 fail-closed paragraph identity"
 
 # (10) #64 per-trigger reason variants — base template (§3.9.4.f) ↔ lite Step-16 inline.
 #      LOCAL file guard (NOT the blanket skip at the top): a fixture without the
@@ -262,12 +282,21 @@ if [[ -f "$BASE_TEMPLATES" ]]; then
   assert_present "$ASYNC_SLOW_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f async-slow variant)"
   assert_present "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow variant)"
   assert_count_equal "$ASYNC_SLOW_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow variant base↔lite count parity"
+  assert_present "$ASYNC_SLOW_SUMMARY" "$BASE_TEMPLATES" "references/05 (async-slow summary clause)"
+  assert_present "$ASYNC_SLOW_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow summary clause)"
+  assert_count_equal "$ASYNC_SLOW_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow summary clause base↔lite count parity"
   assert_present "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite variant)"
   assert_present "$LOSTWRITE_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite variant)"
   assert_count_equal "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite variant base↔lite count parity"
+  assert_present "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "references/05 (lostwrite summary clause)"
+  assert_present "$LOSTWRITE_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite summary clause)"
+  assert_count_equal "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite summary clause base↔lite count parity"
   assert_present "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f inner-limit variant)"
   assert_present "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (inner-limit variant)"
   assert_count_equal "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "inner-limit variant base↔lite count parity"
+  assert_present "$INNER_LIMIT_SUMMARY" "$BASE_TEMPLATES" "references/05 (inner-limit summary clause)"
+  assert_present "$INNER_LIMIT_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (inner-limit summary clause)"
+  assert_count_equal "$INNER_LIMIT_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "inner-limit summary clause base↔lite count parity"
   # trigger-neutral: presence-only. The clause occurs 2× in base references/05 (the
   # L108 banner example + the L239 definition) but 1× in lite, so count_equal would
   # false-fail on the real tree — presence on both surfaces suffices for regression.
@@ -276,16 +305,19 @@ if [[ -f "$BASE_TEMPLATES" ]]; then
   assert_present "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "references/05 (trigger-neutral summary clause)"
   assert_present "$NEUTRAL_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral summary clause)"
   assert_count_equal "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "trigger-neutral summary clause base↔lite count parity"
+  assert_absent "$MAPPING_PARAPHRASE" "$BASE_TEMPLATES" "references/05 (mapping-table paraphrase leaked into single-source wording file)"
 elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" \
   || grep -Fq -- "$LOSTWRITE_CLAUSE" "$LITE_SKILL" \
   || grep -Fq -- "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" \
-  || grep -Fq -- "$NEUTRAL_CLAUSE" "$LITE_SKILL"; then
+  || grep -Fq -- "$NEUTRAL_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$RESTORE_MARKER" "$LITE_SKILL"; then
   # references/05 absent but lite still carries at least one per-trigger reason
   # variant → the per-trigger mechanism is live and only the base template
   # moved/renamed, which the local -f guard would otherwise silently disable.
-  # Keyed on ALL FOUR variants (not just async-slow) so rewording any single
-  # clause cannot re-open the silent-skip. Fail loud rather than skip.
-  echo "FAIL: review-prompt-parity — references/05 template absent but a per-trigger reason variant is still present on lite (base template moved/renamed?)" >&2
+  # Keyed on ALL FOUR variants plus the Step 20 restore-line marker (a fifth,
+  # per-trigger-reword-immune sentinel) so rewording any single clause cannot
+  # re-open the silent-skip. Fail loud rather than skip.
+  echo "FAIL: review-prompt-parity — references/05 template absent but a per-trigger reason variant is still present on lite, or the Step 20 restore-line marker survives (base template moved/renamed?)" >&2
   fail=1
 fi
 

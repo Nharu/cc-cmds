@@ -11,7 +11,7 @@ description: T-PARITY-OK-1 fixture — base
 
 async_observed_return: N is `inner_round`, injected into the agent's spawn prompt as {round} by the main session (the agent does not derive it).
 
-K65 recovery cap: if `lostwrite_respawn_count >= K65`, do NOT respawn; the reason line renders {K65} as the actual observed respawn count.
+K65 recovery cap: if `lostwrite_respawn_count >= K65`, do NOT respawn; the reason line renders {K65} as the actual attempted respawn count.
 
 ## Outer Iteration N
 
