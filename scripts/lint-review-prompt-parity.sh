@@ -114,6 +114,16 @@ ASYNC_SLOW_CLAUSE='비동기 리뷰어가 완료 witness를 발행하지 못해 
 LOSTWRITE_CLAUSE='라운드 결과 파일이 반복 유실되어 조기 종료됨'
 INNER_LIMIT_CLAUSE='내부 라운드가 안전 한계로 조기 종료됨'
 NEUTRAL_CLAUSE='내부 라운드가 조기 종료됨'
+# Per-trigger REASON lines — the prompt-facing wording each variant renders. Single
+# source is references/05 §3.9.4.f, mirrored into the lite Step-16 inline block. The
+# clauses above pin only the downstream verdict/summary points; without a reason-line
+# pin a one-surface reword of the reason line ships green. Only async-slow and
+# lostwrite are pinnable by identity: their round-scope-independent substrings are
+# byte-identical across surfaces (1×/05, 1×/lite, 0×/base SKILL). inner-limit is
+# EXCLUDED — its reason line renders `안전 한계({inner_limit}회)` in the base template
+# vs `안전 한계(6회)` in lite (a round-scope render), so an identity pin false-fails.
+ASYNC_SLOW_REASON='비동기 리뷰어가 아직 완료 witness를 발행하지 못했습니다.'
+LOSTWRITE_REASON='라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.'
 # trigger-neutral SUMMARY clause. Unlike NEUTRAL_CLAUSE (early-termination) which
 # also appears in the L108 partial-iteration banner, this rides ONLY the
 # definition line (base05 1× / lite 1×), so it anchors the definition and closes
@@ -274,8 +284,10 @@ K65_ANCHOR='lostwrite_respawn_count >= K65'
 assert_line_identical "$K65_ANCHOR" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite K65 fail-closed paragraph identity"
 
 # (10) #64 per-trigger reason variants — base template (§3.9.4.f) ↔ lite Step-16 inline.
-#      LOCAL file guard (NOT the blanket skip at the top): a fixture without the
-#      template still exercises every check above. All FOUR EXIT_TRIGGER variants are
+#      LOCAL file guard (NOT the blanket skip at the top): checks (1)–(9d) run
+#      regardless, and 05-absence routes to the elif fail-differently branch below,
+#      never a benign skip — a tree that lost 05 but still carries the mechanism on
+#      lite can never pass (see the elif). All FOUR EXIT_TRIGGER variants are
 #      pinned so a subset regression (2-of-4) fails; each distinctive clause is a
 #      single occurrence per surface except trigger-neutral (2× in base — see below).
 if [[ -f "$BASE_TEMPLATES" ]]; then
@@ -288,6 +300,15 @@ if [[ -f "$BASE_TEMPLATES" ]]; then
   assert_present "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite variant)"
   assert_present "$LOSTWRITE_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite variant)"
   assert_count_equal "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite variant base↔lite count parity"
+  # Per-trigger REASON lines (async-slow / lostwrite only — see the ASYNC_SLOW_REASON
+  # comment for the inner-limit exclusion). Each rides §3.9.4.f (1×/05) and the lite
+  # Step-16 inline block (1×/lite), so presence on both surfaces + base↔lite count parity.
+  assert_present "$ASYNC_SLOW_REASON" "$BASE_TEMPLATES" "references/05 (§3.9.4.f async-slow reason line)"
+  assert_present "$ASYNC_SLOW_REASON" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow reason line)"
+  assert_count_equal "$ASYNC_SLOW_REASON" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow reason line base↔lite count parity"
+  assert_present "$LOSTWRITE_REASON" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite reason line)"
+  assert_present "$LOSTWRITE_REASON" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite reason line)"
+  assert_count_equal "$LOSTWRITE_REASON" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite reason line base↔lite count parity"
   assert_present "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "references/05 (lostwrite summary clause)"
   assert_present "$LOSTWRITE_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite summary clause)"
   assert_count_equal "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite summary clause base↔lite count parity"
@@ -311,12 +332,21 @@ elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" \
   || grep -Fq -- "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" \
   || grep -Fq -- "$NEUTRAL_CLAUSE" "$LITE_SKILL" \
   || grep -Fq -- "$RESTORE_MARKER" "$LITE_SKILL"; then
-  # references/05 absent but lite still carries at least one per-trigger reason
-  # variant → the per-trigger mechanism is live and only the base template
-  # moved/renamed, which the local -f guard would otherwise silently disable.
-  # Keyed on ALL FOUR variants plus the Step 20 restore-line marker (a fifth,
-  # per-trigger-reword-immune sentinel) so rewording any single clause cannot
-  # re-open the silent-skip. Fail loud rather than skip.
+  # references/05 absent but lite still carries the per-trigger mechanism → the
+  # base template moved/renamed while lite kept it, which the local -f guard would
+  # otherwise silently disable. Fail loud rather than skip.
+  #
+  # The Step 20 restore-line marker (the fifth alternative) is the sole load-bearing
+  # sentinel here, and its soundness is coupled to (9b): (9b) assert_present's the
+  # marker on lite UNCONDITIONALLY and accumulates without early-exit, so by the time
+  # control reaches this elif (⇒ 05 absent) lite either lacks the marker (⇒ (9b)
+  # already set fail=1) or has it (⇒ this fifth alternative fires) — either way
+  # fail=1, so a 05-absent-but-lite-present tree can never pass. The four clause
+  # alternatives cannot independently flip the exit code while (9b) stays
+  # unconditional; they are kept as defence-in-depth should (9b) ever be gated. They
+  # are NOT four independent reword guards — all four clause literals share the
+  # trailing `조기 종료됨` morpheme, so one reword of that shared morpheme misses all
+  # four at once; only the marker is reword-immune.
   echo "FAIL: review-prompt-parity — references/05 template absent but a per-trigger reason variant is still present on lite, or the Step 20 restore-line marker survives (base template moved/renamed?)" >&2
   fail=1
 fi
