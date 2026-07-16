@@ -5,16 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.19.7] - 2026-07-14
+## [1.20.1] - 2026-07-16
 
-`design-review`·`design-review-lite`의 ASYNC 리뷰 경로에 얽힌 세 결함(#63/#65/#64)을 하나의 인과 사슬로 봉합한다. 라운드 번호 파생을 메인 세션 주입으로 멱등화하고, 그 위에서 같은-라운드 재생성에 상한을 씌우며, 재사용되는 에스컬레이션 프롬프트가 트리거별로 올바른 사유 문구를 노출하도록 정정한다. 세 결함 모두 런타임 재현 불가한 구조 결함(드문 하네스 정리 실패·지속적 발행 비준수·async-stall 임계 조건에서만 발현)이며 정적 판독으로 근본원인을 확정했다. [#63][#65][#64]
+`design-review`·`design-review-lite`의 ASYNC 리뷰 경로에 얽힌 세 결함(#63/#65/#64)을 하나의 인과 사슬로 봉합한다. 라운드 번호 파생을 메인 세션 주입으로 멱등화하고, 그 위에서 같은-라운드 재생성에 상한을 씌우며, 재사용되는 에스컬레이션 프롬프트가 트리거별로 올바른 사유 문구를 노출하도록 정정한다. 세 결함 모두 런타임 재현 불가한 구조 결함(드문 하네스 정리 실패·지속적 발행 비준수·async-stall 임계 조건에서만 발현)이며 정적 판독으로 근본원인을 확정했다. 이후 1~4차 코드 리뷰 지적사항을 후속 커밋으로 반영했다(프롬프트 프로즈 정정·base↔lite 미러 무결성 lint·트리거별 사유 문구/reason 라인 parity pin·fixture 드라이버 의도 검증). [#63][#65][#64]
 
 ### Fixed
 
 - **#63 라운드 번호 파생 멱등화 (주입)**: 리뷰 에이전트가 `## Review Round` 헤더 개수를 세어 라운드 번호를 자기파생하던 것을, 메인 세션이 스폰 프롬프트에 소문자 `{round}`(= `inner_round`)를 주입하는 방식으로 교체한다. 중복 헤더가 물리적으로 생겨도 어떤 actor도 그것을 읽어 라운드를 계산하지 않으므로 파생이 멱등해지고, 같은 라운드 재생성이 원래 라운드 N을 그대로 겨냥한다. CFI 순서 노트·anti-fabrication 앵커·`## Strategy`의 witness 파생 서술을 주입 사실로 재기술한다.
 - **#65 같은-라운드 재생성 상한**: fail-closed READ arm의 `N > 0`(발행 유실) 재생성에 별도 durable 카운터 `lostwrite_respawn_count`(상한 `K65 = 3`, death-gate `K`와 구별)를 도입해 check-then-act로 상한을 씌운다. 정확히 3회 복구 재생성 후에도 미복구면 사용자에게 에스컬레이션한다(기본 권장 B: 새 외부 이터레이션). reset (ii)를 'any same-round respawn'(전칭)으로 넓혀 복구 재생성이 원본의 낡은 stall 카운터를 상속하지 않게 하고, `.async_stall.json` 스키마에 필드를 추가하며 `schema` sentinel을 명시 리터럴로 고정해 구버전 파일이 strict-equality 불일치로 재초기화되도록 한다.
 - **#64 트리거별 에스컬레이션 사유 문구**: 20라운드 안전 한계용 3지 프롬프트를 async-stall·상한 에스컬레이션이 재사용하면서 "안전 한계 도달"이라는 실제 원인과 다른 사유를 노출하던 것을, `PROMPT_TRIGGER ∈ {inner-limit, async-slow, lostwrite}` 판별자로 사유 라인·하류 표시 문구를 분기하도록 정정한다(§3.9.4.f 단일 출처). 트리거를 `outer_log.md`에 durable하게 기록(Step 16 즉시-flush → Step 20 복원)해 컴팩션 후에도 하류 이터레이션 요약이 올바른 사유를 렌더링하게 하고, 부분-이터레이션 배너는 표-레벨 각주라 트리거-중립 절로 무조건 치환한다. 옵션 C 매핑 표의 오도성 흐름 문구를 Step 17–22 통과로 정정한다.
-- **lint·parity 하드닝**: `lint-review-prompt-parity.sh`에 라운드 주입 문구(양성)·제거된 자기파생 seed(음성)·`{round}` 치환 계약 bullet·`## Strategy` 주입 산문·`EXIT_TRIGGER` 구조 리터럴·트리거별 사유 변형(base↔lite 개수 일치)을 pin하고, `REQUIRED_PHRASES`에 5개 CFI 불변 문구를 추가한다(11→16). 한 표면만 파생 문구가 드리프트해도 CI가 잡도록 fixture(`T-PARITY-FAIL-8`~`10`, `T-PARITY-OK-1` 갱신)를 추가한다.
+- **lint·parity 하드닝**: `lint-review-prompt-parity.sh`에 라운드 주입 문구(양성)·제거된 자기파생 seed(음성)·`{round}` 치환 계약 bullet·`## Strategy` 주입 산문·`EXIT_TRIGGER` 구조 리터럴·트리거별 사유 변형(early-termination·summary·reason 라인, base↔lite 개수 일치)·base↔lite 미러 무결성(복원 라인·K65 문단 내용 동일성)을 pin하고, `REQUIRED_PHRASES`에 5개 CFI 불변 문구를 추가한다(11→16). 한 표면만 파생 문구가 드리프트해도 CI가 잡도록 parity fixture를 20개(`T-PARITY-OK-1` + `FAIL-1`~`19`)로 확장하고, FAIL fixture별 EXPECT 의도 검증을 드라이버에 강제한다.
+
+## [1.20.0] - 2026-07-14
+
+`/implement`의 완료 판정이 소스-정확성 축(analyze/lint·구조 테스트·토큰 게이트)만 검증하고 렌더된 화면이 지정된 시각 기준(SOT)과 일치하는지는 검증하지 않아, 프로토타입 기준 작업에서 헤더 정렬·필드 지오메트리·placeholder·아이콘·간격 리듬 드리프트가 green 상태로 핸드오프되던 빈칸을, `/implement` 내부의 시각 정합 게이트로 메운다. 게이트는 사용자가 설계 문서에 남긴 `## 시각 정합 기준` 지정 마커를 읽어 활성화되고, 화면 단위 완료 직후 앱을 구동·캡처해 프로토타입과 비전 기반 7차원 체크리스트로 대조하며, 상한(화면당 3회) 있는 자동 수정 루프를 돈다. 잔여 드리프트는 설계 문서에 쓰지 않고 한국어 리포트 + 사용자 판단으로 넘기며 out-of-doc 사이드카에 기록한다. 본 기능은 **명시적 임시 조치**로, 이슈 #40의 미구현 `design-fidelity` 스킬이 이 축을 온전히 흡수하면 삭제된다(`/plugin update cc-cmds`로 자동 반영). [#70]
+
+### Added
+
+- **`/implement` 시각 정합 게이트 (임시 조치)**: 설계 문서에 사용자가 작성한 시각-SOT 지정 마커(`## 시각 정합 기준` — 프로토타입 경로 + 렌더 힌트 + 대상 화면)를 Step 1에서 감지하면, Step 1.6(read-only 레시피 발견)과 Step 3의 화면 단위 게이트 `G_i`가 활성화된다. 게이트는 (1) 자립 Chrome-headless 2-tier로 프로토타입을 렌더하고(시스템 Chrome DPR 고정 → `playwright screenshot` DPR1 폴백 → fail-open AUQ), (2) 타깃 앱을 레시피로 부팅·캡처해(부팅 1회·세션 재사용·도달 가능 종료 경로 best-effort teardown), (3) 고정 7차원 비전 체크리스트(레이아웃정렬·간격리듬·크기지오메트리·타이포구조·색채움·아이코노그래피·컴포넌트상태)로 대조한다. 발견된 드리프트는 근본원인 클래스(theme-token/component-default/screen-local)로 승격해 bounded 전수 스윕하고, 상한 있는 자동 수정 루프(task-held 카운터·fail-closed·2연속 비개선 시 조기 종료)를 돈다. implement는 DETECT·FIX만 하고 CLASSIFY·ADJUDICATE·ACCEPT는 하지 않으며(외부 프로토타입 대조는 self-adjudication이 아니라는 이슈 #40과의 명명된 예외), 잔여는 AskUserQuestion + out-of-doc 사이드카 `docs/visual-drift/`로 처리해 설계 문서에는 0바이트 쓴다. 오라클 절차 상세는 `implement/references/visual-fidelity-gate.md`에 분리했다.
 
 ## [1.19.6] - 2026-07-14
 
