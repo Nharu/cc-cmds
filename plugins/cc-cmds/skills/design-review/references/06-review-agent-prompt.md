@@ -1,14 +1,13 @@
 # Review Agent Prompt (§3.8)
 
-Agent prompt template for the inner-loop review agent. Consumed by Step 12 before spawning each fresh review agent. Before calling `Agent()`, substitute `{TEMP_DIR}` with the session's `INNER_TEMP_DIR`, `{USER_NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (when `BASE_MODE=true`) or an empty line, and `{CHANGES_MODE_CONSTRAINT}` with the `--changes` block (when `CHANGES_MODE=true`) or an empty line — each substituted independently at a single level (see Substitution contract).
+Agent prompt template for the inner-loop review agent. Consumed by Step 12 before spawning each fresh review agent. Before calling `Agent()`, substitute `{TEMP_DIR}` with the session's `INNER_TEMP_DIR`, `{round}` with the current `inner_round` value, `{USER_NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (when `BASE_MODE=true`) or an empty line, and `{CHANGES_MODE_CONSTRAINT}` with the `--changes` block (when `CHANGES_MODE=true`) or an empty line — each substituted independently at a single level (see Substitution contract).
 
 ## Prompt body
 
 ```
 You are a design document reviewer. Perform ONE independent round of review.
 
-First, read {TEMP_DIR}/review_log.md to determine the current round number.
-If no "## Review Round" entries exist in the log, this is Round 1.
+This review is Round {round}. Use {round} as the round number everywhere below — the PROP-ID prefix, the published proposals filename, and the round-summary header. The round number is supplied to you; do NOT derive it by reading or counting "## Review Round" entries in {TEMP_DIR}/review_log.md.
 
 IMPORTANT — Acknowledged Items contract: Check for an "## Acknowledged Items" section in {TEMP_DIR}/review_log.md. These are items the user has already decided to keep as-is. Before reporting any proposal, read this section and treat a proposal as a duplicate (and therefore MUST NOT report it) when ALL of the following hold:
   (a) the Category matches exactly (from the 7 review categories),
@@ -65,7 +64,7 @@ Type guidance:
 Write this round's proposals to a hidden temp file co-located in the SAME directory as the publish target — `mktemp "{TEMP_DIR}/.review_proposals.XXXXXX"` — and, once the full round's content is written, atomically publish it by renaming to {TEMP_DIR}/review_proposals.r{round}.md (`mv -n`; the round-unique filename makes the flag immaterial — any single winner is complete). Publish this round-keyed file unconditionally — including when this round has zero proposals (in that case publish a valid file whose body records zero proposals); the main-session fail-closed read keys on this file's *presence* (that the round-keyed proposals file exists), while the proposal count it acts on is read from a *different* file — the `Proposals created:` line of the `review_log.md` witness — so an empty review must still publish this file even though its own content is not what the read gates on. The temp MUST be inside {TEMP_DIR} so the rename stays on one filesystem and remains atomic (a cross-device rename degrades to copy+unlink and loses atomicity). Publish (rename) BEFORE appending the round summary to review_log.md below, so a present `## Review Round N` witness implies this round's proposals are already complete on disk. Do NOT write directly to the published path, and do NOT add any sentinel or nonce to the proposals file.
 
 After completing the review, append a round summary to {TEMP_DIR}/review_log.md:
-  ## Review Round N
+  ## Review Round {round}
   - Proposals created: X (categorized by criteria and severity)
   - Proposal details: [list each PROP-ID with Type, Severity, Category, and brief description]
 
@@ -82,6 +81,7 @@ Return a structured summary:
 Each placeholder is substituted **independently at a single level** — there are no nested tokens. Body placement order, top to bottom, is `{USER_NOTE}` → `{BASE_MODE_CONSTRAINT}` → `{CHANGES_MODE_CONSTRAINT}` (one readability blank line between each), so the CHANGES block's "if a user-provided note appears above" holds. This is the same single-placeholder operation as `--base`, repeated three times independently.
 
 - `{TEMP_DIR}`: replace with the absolute path of `INNER_TEMP_DIR` (computed at Step 7).
+- `{round}`: replace with the current `inner_round` value (spawn-time round counter; unchanged on same-round respawn). Inline scalar. (`{number}` is NOT substituted — it is agent-filled per proposal.)
 - `{USER_NOTE}` (mode-independent, always evaluated): when `USER_NOTE` is empty, substitute a single empty line; when non-empty, substitute the single line `USER-PROVIDED NOTE (focus/context for this review): <USER_NOTE>`.
 - `{BASE_MODE_CONSTRAINT}`: when `BASE_MODE=true`, substitute the BASE MODE CONSTRAINT block from the `--base` Options section (SKILL.md); when `BASE_MODE=false`, substitute with a single empty line so the prompt structure remains stable.
 - `{CHANGES_MODE_CONSTRAINT}`: when `CHANGES_MODE=true`, substitute the CHANGES MODE CONSTRAINT block from the `--changes` Options section (SKILL.md) verbatim (static — it contains no nested token; the change focus is already carried by `{USER_NOTE}` above); when `CHANGES_MODE=false`, substitute with a single empty line.

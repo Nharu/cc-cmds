@@ -26,6 +26,8 @@ Fail-closed read arm: after an observed return, if the round-N proposals file is
 
 Death predicate: declare the agent dead only when the current classification is WEDGED and the reentry count has reached its limit.
 
+Round injection: the round number is pinned by the main session at spawn as {round} = inner_round, so a same-round respawn re-publishes the same round — restoring the lost round-N file rather than diverging to N+1. A durable `lostwrite_respawn_count` bounds recovery: when it reaches `K65`, do NOT respawn — instead escalate to the user via the Step 16 3-option prompt under its lostwrite reason variant.
+
 ```
 if INNER_EXIT_REASON == "safety-limit-outer-terminate": break
 elif INNER_EXIT_REASON == "safety-limit-fresh-outer": outer_done = false

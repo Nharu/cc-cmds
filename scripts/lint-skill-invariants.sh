@@ -173,6 +173,11 @@ REQUIRED_PHRASES=(
   'round-N summary line in review_log.md'
   'round-N proposals file is absent'
   'the current classification is WEDGED'
+  'lostwrite_respawn_count'
+  '`K65`'
+  'restoring the lost round-N file rather than diverging to N+1'
+  'escalate to the user via the Step 16 3-option prompt under its'
+  'pinned by the main session at spawn as {round} = inner_round'
 )
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.

@@ -52,7 +52,7 @@ Emit at end of each inner iteration (before auto-advance). Budget line appears o
   에스컬레이션 거부 0건
   수정 적용         1건  → 사용자 수정 후 적용됨
   사용자 지시       0건
-  (대기 중 적용      2건  ⚠️ 내부 안전 한계 도달 시점에 미해소)  ← count>0 AND non clean-convergence 일 때만 노출
+  (대기 중 적용      2건  ⚠️ {EXIT_TRIGGER별 미해소 사유 · §3.9.4.f})  ← count>0 AND non clean-convergence 일 때만 노출; 미해소 사유는 EXIT_TRIGGER로 §3.9.4.f에서 선택(n/a·부재 시 트리거-중립)
   ─────────────────────────────────────
   에스컬레이션 적용 합계: 6건  [승인 3 + 수정 1 + 자동결정 2]
 
@@ -76,14 +76,14 @@ Emit at end of each inner iteration (before auto-advance). Budget line appears o
 ### Block visibility rules
 
 - `처리 결과 / 자동 결정` line: **omit entirely** when auto-decide is disabled for the session (via `--no-auto-decide-dominant` or mid-session opt-out).
-- `대기 중 적용` line: only when count > 0 AND the iteration is non-clean-convergence.
+- `대기 중 적용` line: only when count > 0 AND the iteration is non-clean-convergence. Its 미해소-reason clause is selected by `EXIT_TRIGGER` per §3.9.4.f (trigger-neutral fallback when `n/a` / absent) — never the hardcoded `안전 한계`, which is true only for the `inner-limit` trigger.
 - `자동 처리 내역`: always emitted (may have 0 items).
 - `자동 선택 내역`: only when auto-decide count > 0 this iter.
 
 ### Verdict line variants (always emitted)
 
 - Clean convergence / outer termination: `판정: ✅ 외부 수렴 완료 — 에스컬레이션 적용 0건 · 정상 수렴 확인 / 문서가 안정 상태에 도달했습니다.`
-- Escalate-zero but partial iteration (safety-limit-fresh-outer): `판정: ⚠️ 에스컬레이션 적용 0건이나 부분 이터레이션으로 수렴 미확인 / 내부 라운드가 안전 한계로 조기 종료됨 — 이터레이션 {N+1}에서 재검증합니다.`
+- Escalate-zero but partial iteration (safety-limit-fresh-outer): `판정: ⚠️ 에스컬레이션 적용 0건이나 부분 이터레이션으로 수렴 미확인 / {early-termination clause} — 이터레이션 {N+1}에서 재검증합니다.` — `{early-termination clause}` is selected by `EXIT_TRIGGER` per §3.9.4.f (trigger-neutral fallback when `n/a` / absent).
 - Continue: `판정: 계속 진행 → 이터레이션 {N+1} 시작 / (에스컬레이션 적용 {k}건 — 문서 변경 발생)`
 
 ### Header variant for opt-out active iterations
@@ -105,7 +105,7 @@ Emit at end of each inner iteration (before auto-advance). Budget line appears o
 | 2 ⚠️ |   20   |    2     |    1     |    3     |    2     |    0     |
 |  3   |   2    |    1     |    0     |    0     | **0** ✓  |    0     |
 
-⚠️ 부분 이터레이션 — 내부 안전 한계 도달로 조기 종료됨.
+⚠️ 부분 이터레이션 — 내부 라운드가 조기 종료됨.
 에스적용 수치가 실제보다 낮을 수 있습니다.
 
 ### 수렴 진단표
@@ -211,6 +211,32 @@ Options (header chip `중단 여부`; each option carries a `description`):
 ```
 
 Where `sum_escalate_applied = sum_approved + sum_modified + sum_directed + sum_auto_decided` (after per-PROP-ID dedup — reversion collapses `[AUTO-DECIDED]` into the subsequent `[USER-DIRECTED]`).
+
+### §3.9.4.f — Reused 3-option prompt: per-trigger reason variants
+
+The inner safety-limit 3-option prompt (§3.9.4.b/c) is reused verbatim for two further triggers — the ASYNC-stall escalation and the `lostwrite` recovery cap. Decompose it as `[reason line] + [context paragraph] + ["어떻게 진행하시겠습니까?"] + [3 options A/B/C]`. **Invariant across every trigger**: the `"어떻게 진행하시겠습니까?"` tail, the option count (3), the A/B/C → `INNER_EXIT_REASON` mapping (the Step 16 mapping table), and the header chip `처리 방식`. **Trigger-specific**: the reason line, the context paragraph, each option's `description`, and the `← 추천` position. The raise site sets `PROMPT_TRIGGER ∈ {inner-limit, async-slow, lostwrite}` to pick the variant.
+
+This section is the single source of the per-trigger wording. The downstream per-iteration display points — the verdict line (§3.9.2 above) and the summary comment (`대기 중 적용` line) — select their clause by `EXIT_TRIGGER` and cite this section; they do NOT copy the literals.
+
+**`inner-limit`** — native 20-round / lite 6-round inner safety limit (the only trigger for which "안전 한계 도달" is literally true):
+- Reason line: `이터레이션 {N}의 내부 라운드가 안전 한계({inner_limit}회)에 도달했습니다.` (§3.9.4.b/c, unchanged).
+- Recommendation: A when `pending_dialogue > 0`, else B.
+- Downstream early-termination clause (verdict line): `내부 라운드가 안전 한계로 조기 종료됨`.
+- Downstream summary clause (`대기 중 적용`): `내부 안전 한계 도달 시점에 미해소`.
+
+**`async-slow`** — babbling (`growth_streak ≥ G`) OR persistent-UNKNOWN (`unavail_streak ≥ U`):
+- Reason line: `이터레이션 {N}의 비동기 리뷰어가 아직 완료 witness를 발행하지 못했습니다.`
+- Recommendation: **A: 계속 대기** (growth / UNKNOWN are positive evidence of a live-but-slow reviewer). On A, reset ONLY the triggering streak to 0 (`growth_streak := 0` / `unavail_streak := 0`) and return to the wait loop; the death gate `reentry_count` is untouched.
+- Downstream early-termination clause: `비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨`.
+- Downstream summary clause: `비동기 리뷰어 미완료로 미해소`.
+
+**`lostwrite`** — `lostwrite_respawn_count ≥ K65` in the fail-closed READ arm:
+- Reason line: `이터레이션 {N}의 라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.` (`{K65}` renders the actual number of recovery respawns attempted).
+- Recommendation: **B: 새 외부 이터레이션 시작** (the lost round is not restorable in place, so further retry is likely futile). On A, reset `lostwrite_respawn_count := 0` for a fresh budget. The A label is `같은 라운드 재시도` (NOT the native `10회 추가 진행` / lite `3 라운드 추가 진행`).
+- Downstream early-termination clause: `라운드 결과 파일이 반복 유실되어 조기 종료됨`.
+- Downstream summary clause: `라운드 결과 파일 반복 유실로 미해소`.
+
+**Trigger-neutral fallback** — `EXIT_TRIGGER == n/a` or the line is absent (a `user-abort` / clean iteration, or a pre-bump `outer_log.md`): the downstream points render a clause that asserts no cause — early-termination clause `내부 라운드가 조기 종료됨`, summary clause `이터레이션 조기 종료 시점에 미해소`.
 
 ## Auto-advance / Status line rules (§3.9.5)
 

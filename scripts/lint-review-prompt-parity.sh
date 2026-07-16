@@ -70,6 +70,76 @@ CLAUSE='including when this round has zero proposals'
 SEED_LINE='echo "" > "$INNER_TEMP_DIR/review_proposals.md"'
 OVERWRITE_LINE='Write all proposals to {TEMP_DIR}/review_proposals.md (overwrite the file at the start of the round).'
 
+# --- #63 round-number injection parity (lowercase {round}) ---
+# Positive: the injection instruction, present in BOTH prompt surfaces.
+DERIV_NEW='Use {round} as the round number everywhere below'
+# Negatives: the removed self-derivation seed sentences. OLD2 is the FULL tail —
+# the surviving E1 prose still contains the `"## Review Round" entries` substring,
+# so a bare match would false-fail.
+DERIV_OLD1='to determine the current round number'
+DERIV_OLD2='"## Review Round" entries exist in the log, this is Round 1'
+# Substitution-contract {round} bullet landing proof. A bare `{round}` is vacuous
+# (it already occurs in the PROP-ID / publish path), so target the per-surface
+# bullet lead: base uses a colon, lite uses an arrow.
+SUBST_BASE='- `{round}`:'
+SUBST_LITE='- `{round}` →'
+# Site-3 (async_observed_return, in `## Strategy` — outside the CFI window that
+# rule B in lint-skill-invariants.sh extracts), mirrored across both SKILLs.
+DERIV_CFI='injected into the agent'\''s spawn prompt as {round} by the main session'
+# --- #64 EXIT_TRIGGER durable-record structural literal. The `- Inner exit trigger:`
+# key occurs 3× per surface: the anti-fabrication anchor prose (base 97 / lite 98),
+# the Step 16 flush write-site (base 456 / lite 554), and the Step 20 restore
+# write-site (base 509 / lite 607). All 3 sit outside the CFI window and are
+# mirrored across surfaces — rule B cannot pin them — so check (9) enforces the
+# base↔lite parity of that 3-count, and check (9b) pins the restore direction
+# marker so a symmetric drop of the Step 20 restore line cannot pass silently. ---
+EXIT_KEY='- Inner exit trigger:'
+# Restore direction marker — present ONLY on the Step 20 restore line (exactly 1×
+# per surface). Pinned mechanism-agnostically (does NOT pin `grep`/`tail`), so it
+# survives the selector expression. ---
+RESTORE_MARKER='← restore from'
+# --- #64 per-trigger reason variant contract (ALL FOUR EXIT_TRIGGER values:
+# inner-limit / async-slow / lostwrite / trigger-neutral). The pin set derives from
+# this 4-variant contract, NOT from "whatever lite currently has" — a subset (the
+# regression that shipped 2-of-4 lite clauses and passed green) must fail. Each
+# variant's downstream early-termination clause has its single source in base
+# §3.9.4.f and is mirrored into lite. async-slow / lostwrite / inner-limit occur
+# exactly 1× per surface → count parity. trigger-neutral occurs 2× in base
+# references/05 (the L108 partial-iteration banner example + the L239 definition)
+# but 1× in lite → presence-only, count_equal deliberately dropped. Every
+# variant's summary clause is its own independent bullet, self-pinned separately
+# below — all four summary clauses are 1×/surface, so presence + count parity. ---
+BASE_TEMPLATES="$skills_root/design-review/references/05-korean-ux-templates.md"
+ASYNC_SLOW_CLAUSE='비동기 리뷰어가 완료 witness를 발행하지 못해 조기 종료됨'
+LOSTWRITE_CLAUSE='라운드 결과 파일이 반복 유실되어 조기 종료됨'
+INNER_LIMIT_CLAUSE='내부 라운드가 안전 한계로 조기 종료됨'
+NEUTRAL_CLAUSE='내부 라운드가 조기 종료됨'
+# Per-trigger REASON lines — the prompt-facing wording each variant renders. Single
+# source is references/05 §3.9.4.f, mirrored into the lite Step-16 inline block. The
+# clauses above pin only the downstream verdict/summary points; without a reason-line
+# pin a one-surface reword of the reason line ships green. Only async-slow and
+# lostwrite are pinnable by identity: their round-scope-independent substrings are
+# byte-identical across surfaces (1×/05, 1×/lite, 0×/base SKILL). inner-limit is
+# EXCLUDED — its reason line renders `안전 한계({inner_limit}회)` in the base template
+# vs `안전 한계(6회)` in lite (a round-scope render), so an identity pin false-fails.
+ASYNC_SLOW_REASON='비동기 리뷰어가 아직 완료 witness를 발행하지 못했습니다.'
+LOSTWRITE_REASON='라운드 결과 파일이 완료 표시 후에도 반복 유실되었습니다 — 같은 라운드 재시도 {K65}회로도 복구되지 않았습니다.'
+# trigger-neutral SUMMARY clause. Unlike NEUTRAL_CLAUSE (early-termination) which
+# also appears in the L108 partial-iteration banner, this rides ONLY the
+# definition line (base05 1× / lite 1×), so it anchors the definition and closes
+# the presence-only hole where deleting the definition leaves the banner green.
+NEUTRAL_SUMMARY='이터레이션 조기 종료 시점에 미해소'
+# Per-trigger SUMMARY clauses for the other three variants. Each rides its own
+# independent `- Downstream summary clause:` bullet — all four occur 1×/surface,
+# so presence + count parity apply, same as the early-termination clauses.
+ASYNC_SLOW_SUMMARY='비동기 리뷰어 미완료로 미해소'
+LOSTWRITE_SUMMARY='라운드 결과 파일 반복 유실로 미해소'
+INNER_LIMIT_SUMMARY='내부 안전 한계 도달 시점에 미해소'
+# Mapping-table paraphrase that must NOT leak into references/05 (the single-source
+# per-trigger wording file). The canonical base A-label render is `10회 추가 진행`;
+# `10 라운드 추가 진행` is the SKILL.md mapping-table paraphrase and belongs there only.
+MAPPING_PARAPHRASE='10 라운드 추가 진행'
+
 fail=0
 
 # Extract a copy's inlined review-agent prompt block: from the reviewer sentinel
@@ -84,7 +154,7 @@ extract_prompt_block() {
 
 assert_present() {
   local literal="$1" file="$2" label="$3"
-  if ! grep -Fq "$literal" "$file"; then
+  if ! grep -Fq -- "$literal" "$file"; then
     echo "FAIL: $label — expected literal missing: $literal" >&2
     fail=1
   fi
@@ -100,7 +170,7 @@ assert_present_in_text() {
 
 assert_absent() {
   local literal="$1" file="$2" label="$3"
-  if grep -Fq "$literal" "$file"; then
+  if grep -Fq -- "$literal" "$file"; then
     echo "FAIL: $label — removed literal still present: $literal" >&2
     fail=1
   fi
@@ -111,10 +181,27 @@ assert_absent() {
 # "published … to <round-keyed>" line dropping its key on ONE surface only).
 assert_count_equal() {
   local literal="$1" file_a="$2" file_b="$3" label="$4" ca cb
-  ca=$(grep -Fc "$literal" "$file_a" || true)
-  cb=$(grep -Fc "$literal" "$file_b" || true)
+  ca=$(grep -Fc -- "$literal" "$file_a" || true)
+  cb=$(grep -Fc -- "$literal" "$file_b" || true)
   if [[ "$ca" != "$cb" ]]; then
     echo "FAIL: $label — base/lite occurrence-count mismatch ($ca vs $cb): $literal" >&2
+    fail=1
+  fi
+}
+
+# Base↔lite content identity of a single anchored line. `anchor` is a FIXED string
+# matched mid-line (grep -F), NOT a regex — it is compared literally. The anchor MUST be a stable mid-line
+# literal, not a `^`-anchored regex: a line-start anchor like `^-` silently no-ops
+# the moment the line is merely indented (both surfaces extract "" → la==lb=="" →
+# vacuous pass), and an anchor carrying ERE metacharacters (e.g. a `(`) would
+# hard-error under grep -E. The message is parameterized on `$label` so a caller
+# pinning a non-restore line reads correctly.
+assert_line_identical() {
+  local anchor="$1" file_a="$2" file_b="$3" label="$4" la lb
+  la=$(grep -m1 -F -- "$anchor" "$file_a" || true)
+  lb=$(grep -m1 -F -- "$anchor" "$file_b" || true)
+  if [[ "$la" != "$lb" ]]; then
+    echo "FAIL: $label — base/lite line content differs" >&2
     fail=1
   fi
 }
@@ -146,6 +233,123 @@ assert_absent "$SEED_LINE" "$LITE_SKILL" "design-review-lite/SKILL.md (Step 8 se
 # (4) Negative — the full-overwrite prompt sentence must be gone from BOTH surfaces.
 assert_absent "$OVERWRITE_LINE" "$BASE_PROMPT" "references/06-review-agent-prompt.md (overwrite sentence)"
 assert_absent "$OVERWRITE_LINE" "$LITE_SKILL" "design-review-lite/SKILL.md (overwrite sentence)"
+
+# (5) #63 injection — positive in both prompt blocks + base↔lite count parity.
+assert_present_in_text "$DERIV_NEW" "$base_prompt_block" "references/06-review-agent-prompt.md (round injection)"
+assert_present_in_text "$DERIV_NEW" "$lite_prompt_block" "design-review-lite/SKILL.md (round injection)"
+assert_count_equal "$DERIV_NEW" "$BASE_PROMPT" "$LITE_SKILL" "round-injection base↔lite count parity"
+
+# (6) #63 — the two removed self-derivation seeds gone from BOTH prompt surfaces.
+assert_absent "$DERIV_OLD1" "$BASE_PROMPT" "references/06-review-agent-prompt.md (self-derive seed 1)"
+assert_absent "$DERIV_OLD1" "$LITE_SKILL" "design-review-lite/SKILL.md (self-derive seed 1)"
+assert_absent "$DERIV_OLD2" "$BASE_PROMPT" "references/06-review-agent-prompt.md (self-derive seed 2)"
+assert_absent "$DERIV_OLD2" "$LITE_SKILL" "design-review-lite/SKILL.md (self-derive seed 2)"
+
+# (7) #63 — substitution-contract {round} bullet lands per surface (surface-specific lead).
+assert_present "$SUBST_BASE" "$BASE_PROMPT" "references/06-review-agent-prompt.md ({round} contract bullet)"
+assert_present "$SUBST_LITE" "$LITE_SKILL" "design-review-lite/SKILL.md ({round} contract bullet)"
+
+# (8) #63 site-3 (E8) — CFI-outside async_observed_return injection prose, both SKILLs + parity.
+assert_present "$DERIV_CFI" "$BASE_SKILL" "design-review/SKILL.md (async_observed_return injection)"
+assert_present "$DERIV_CFI" "$LITE_SKILL" "design-review-lite/SKILL.md (async_observed_return injection)"
+assert_count_equal "$DERIV_CFI" "$BASE_SKILL" "$LITE_SKILL" "async_observed_return injection base↔lite count parity"
+
+# (9) #64 EXIT_TRIGGER structural literal — Step 16 flush + Step 20 write-site, both SKILLs + parity.
+assert_present "$EXIT_KEY" "$BASE_SKILL" "design-review/SKILL.md (Inner exit trigger key)"
+assert_present "$EXIT_KEY" "$LITE_SKILL" "design-review-lite/SKILL.md (Inner exit trigger key)"
+assert_count_equal "$EXIT_KEY" "$BASE_SKILL" "$LITE_SKILL" "Inner exit trigger key base↔lite count parity"
+
+# (9b) #64 EXIT_TRIGGER restore direction marker — present on the Step 20 restore
+#      line of BOTH SKILLs (exactly 1× each). Guards the check-(9) blind spot: a
+#      symmetric removal of the Step 20 restore line keeps the 3→2 count parity and
+#      presence true, so #64's durable-record restore could regress green. This
+#      marker pins the restore line itself; mechanism-agnostic (survives the
+#      grep -m1 → tail -1 selector change).
+assert_present "$RESTORE_MARKER" "$BASE_SKILL" "design-review/SKILL.md (Step 20 restore marker)"
+assert_present "$RESTORE_MARKER" "$LITE_SKILL" "design-review-lite/SKILL.md (Step 20 restore marker)"
+
+# (9c) #64 EXIT_TRIGGER restore-line content identity — the Step 20 restore line
+#      is mirrored byte-identical across both SKILLs. Guards the (9b) blind spot:
+#      a one-surface reword (base lands, lite missed) keeps the marker present and
+#      the count parity intact, so (9b)+(9) both stay green. This pins the whole
+#      line content so an asymmetric edit of any part (selector, gate clause) reds.
+assert_line_identical "$RESTORE_MARKER" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite Step 20 restore-line identity"
+
+# (9d) K65 fail-closed recovery-cap paragraph identity — byte-identical mirror
+#      (base SKILL.md ↔ lite SKILL.md) that previously had zero parity pin. A
+#      one-surface reword (e.g. the "observed"→"attempted" honesty fix landing on
+#      base only) would otherwise ship green. Anchor on a stable mid-line literal
+#      present exactly 1× per surface (indentation-immune).
+K65_ANCHOR='lostwrite_respawn_count >= K65'
+assert_line_identical "$K65_ANCHOR" "$BASE_SKILL" "$LITE_SKILL" "design-review SKILL.md base↔lite K65 fail-closed paragraph identity"
+
+# (10) #64 per-trigger reason variants — base template (§3.9.4.f) ↔ lite Step-16 inline.
+#      LOCAL file guard (NOT the blanket skip at the top): checks (1)–(9d) run
+#      regardless, and 05-absence routes to the elif fail-differently branch below,
+#      never a benign skip — a tree that lost 05 but still carries the mechanism on
+#      lite can never pass (see the elif). All FOUR EXIT_TRIGGER variants are
+#      pinned so a subset regression (2-of-4) fails; each distinctive clause is a
+#      single occurrence per surface except trigger-neutral (2× in base — see below).
+if [[ -f "$BASE_TEMPLATES" ]]; then
+  assert_present "$ASYNC_SLOW_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f async-slow variant)"
+  assert_present "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow variant)"
+  assert_count_equal "$ASYNC_SLOW_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow variant base↔lite count parity"
+  assert_present "$ASYNC_SLOW_SUMMARY" "$BASE_TEMPLATES" "references/05 (async-slow summary clause)"
+  assert_present "$ASYNC_SLOW_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow summary clause)"
+  assert_count_equal "$ASYNC_SLOW_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow summary clause base↔lite count parity"
+  assert_present "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite variant)"
+  assert_present "$LOSTWRITE_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite variant)"
+  assert_count_equal "$LOSTWRITE_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite variant base↔lite count parity"
+  # Per-trigger REASON lines (async-slow / lostwrite only — see the ASYNC_SLOW_REASON
+  # comment for the inner-limit exclusion). Each rides §3.9.4.f (1×/05) and the lite
+  # Step-16 inline block (1×/lite), so presence on both surfaces + base↔lite count parity.
+  assert_present "$ASYNC_SLOW_REASON" "$BASE_TEMPLATES" "references/05 (§3.9.4.f async-slow reason line)"
+  assert_present "$ASYNC_SLOW_REASON" "$LITE_SKILL" "design-review-lite/SKILL.md (async-slow reason line)"
+  assert_count_equal "$ASYNC_SLOW_REASON" "$BASE_TEMPLATES" "$LITE_SKILL" "async-slow reason line base↔lite count parity"
+  assert_present "$LOSTWRITE_REASON" "$BASE_TEMPLATES" "references/05 (§3.9.4.f lostwrite reason line)"
+  assert_present "$LOSTWRITE_REASON" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite reason line)"
+  assert_count_equal "$LOSTWRITE_REASON" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite reason line base↔lite count parity"
+  assert_present "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "references/05 (lostwrite summary clause)"
+  assert_present "$LOSTWRITE_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (lostwrite summary clause)"
+  assert_count_equal "$LOSTWRITE_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "lostwrite summary clause base↔lite count parity"
+  assert_present "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f inner-limit variant)"
+  assert_present "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (inner-limit variant)"
+  assert_count_equal "$INNER_LIMIT_CLAUSE" "$BASE_TEMPLATES" "$LITE_SKILL" "inner-limit variant base↔lite count parity"
+  assert_present "$INNER_LIMIT_SUMMARY" "$BASE_TEMPLATES" "references/05 (inner-limit summary clause)"
+  assert_present "$INNER_LIMIT_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (inner-limit summary clause)"
+  assert_count_equal "$INNER_LIMIT_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "inner-limit summary clause base↔lite count parity"
+  # trigger-neutral: presence-only. The clause occurs 2× in base references/05 (the
+  # L108 banner example + the L239 definition) but 1× in lite, so count_equal would
+  # false-fail on the real tree — presence on both surfaces suffices for regression.
+  assert_present "$NEUTRAL_CLAUSE" "$BASE_TEMPLATES" "references/05 (§3.9.4.f trigger-neutral variant)"
+  assert_present "$NEUTRAL_CLAUSE" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral variant)"
+  assert_present "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "references/05 (trigger-neutral summary clause)"
+  assert_present "$NEUTRAL_SUMMARY" "$LITE_SKILL" "design-review-lite/SKILL.md (trigger-neutral summary clause)"
+  assert_count_equal "$NEUTRAL_SUMMARY" "$BASE_TEMPLATES" "$LITE_SKILL" "trigger-neutral summary clause base↔lite count parity"
+  assert_absent "$MAPPING_PARAPHRASE" "$BASE_TEMPLATES" "references/05 (mapping-table paraphrase leaked into single-source wording file)"
+elif grep -Fq -- "$ASYNC_SLOW_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$LOSTWRITE_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$INNER_LIMIT_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$NEUTRAL_CLAUSE" "$LITE_SKILL" \
+  || grep -Fq -- "$RESTORE_MARKER" "$LITE_SKILL"; then
+  # references/05 absent but lite still carries the per-trigger mechanism → the
+  # base template moved/renamed while lite kept it, which the local -f guard would
+  # otherwise silently disable. Fail loud rather than skip.
+  #
+  # The Step 20 restore-line marker (the fifth alternative) is the sole load-bearing
+  # sentinel here, and its soundness is coupled to (9b): (9b) assert_present's the
+  # marker on lite UNCONDITIONALLY and accumulates without early-exit, so by the time
+  # control reaches this elif (⇒ 05 absent) lite either lacks the marker (⇒ (9b)
+  # already set fail=1) or has it (⇒ this fifth alternative fires) — either way
+  # fail=1, so a 05-absent-but-lite-present tree can never pass. The four clause
+  # alternatives cannot independently flip the exit code while (9b) stays
+  # unconditional; they are kept as defence-in-depth should (9b) ever be gated. They
+  # are NOT four independent reword guards — all four clause literals share the
+  # trailing `조기 종료됨` morpheme, so one reword of that shared morpheme misses all
+  # four at once; only the marker is reword-immune.
+  echo "FAIL: review-prompt-parity — references/05 template absent but a per-trigger reason variant is still present on lite, or the Step 20 restore-line marker survives (base template moved/renamed?)" >&2
+  fail=1
+fi
 
 if (( fail == 0 )); then
   echo "OK:   review-prompt-parity — round-keyed publish/read present on both surfaces, seed + overwrite literals removed"
