@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.2] - 2026-07-20
+
+`cc-common` 공개 SOT 레포 PR #2 코드 리뷰에서 드러난 `_common` 공유 문서 결함 7건을 정정한다. 세 파일(`agent-team-protocol.md`·`askuserquestion.md`·`team-cleanup.md`)은 공개 레포로 byte-identical 미러되는 원본이라, 미러가 아니라 원본에서 고쳐 재시드로 전파한다. 기능 변경 없는 문서 정확성·정합성 정정이다.
+
+### Fixed
+
+- **부분-마감 참조 정정**: `agent-team-protocol.md`의 Case-2 부분-마감 참조가 실제 partial-close·`TaskStop` 경로인 option ③이 아니라 option ②를 가리키던 것을 ③으로 정정한다.
+- **witnessNonce 태그 분리 불변식 명시**: 복합 nonce `<round/phase>:<hex>`를 첫 `:`에서 분리하는 규칙이 잘 정의되도록, `{round/phase}` 토큰이 구분자 `:`를 포함하지 않는다(슬래시로 이은 `{round}/{phase}` 쌍)는 불변식을 한 문장으로 명시한다.
+- **codepoint 카운트·용어 정정**: `askuserquestion.md`의 header 길이 규정에서 `팀 토론 진행` 예시를 6에서 7로, 오버플로 예시 헤더를 16에서 17 codepoints로 정정하고, 스키마 제약의 "≤12 chars"를 "≤12 codepoints"로 통일한다.
+- **bare 이슈 참조 정규화**: `agent-team-protocol.md`의 bare `#55`·`#54`를 `Nharu/cc-cmds#55`·`Nharu/cc-cmds#54`로 정규화해, 공개 미러 레포에서 다른 레포 이슈로 오링크되지 않게 한다.
+- **co-located self-ref 경로 정정**: `agent-team-protocol.md`·`team-cleanup.md`의 형제 문서 상호 참조에서 `_common/` 접두사를 제거해, cc-cmds `_common/`·소비자 `_common/`·cc-common 루트 세 맥락 모두에서 형제 경로로 해석되게 한다.
+
 ## [1.20.1] - 2026-07-16
 
 `design-review`·`design-review-lite`의 ASYNC 리뷰 경로에 얽힌 세 결함(#63/#65/#64)을 하나의 인과 사슬로 봉합한다. 라운드 번호 파생을 메인 세션 주입으로 멱등화하고, 그 위에서 같은-라운드 재생성에 상한을 씌우며, 재사용되는 에스컬레이션 프롬프트가 트리거별로 올바른 사유 문구를 노출하도록 정정한다. 세 결함 모두 런타임 재현 불가한 구조 결함(드문 하네스 정리 실패·지속적 발행 비준수·async-stall 임계 조건에서만 발현)이며 정적 판독으로 근본원인을 확정했다. 이후 1~4차 코드 리뷰 지적사항을 후속 커밋으로 반영했다(프롬프트 프로즈 정정·base↔lite 미러 무결성 lint·트리거별 사유 문구/reason 라인 parity pin·fixture 드라이버 의도 검증). [#63][#65][#64]
