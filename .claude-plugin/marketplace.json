@@ -7,8 +7,7 @@
         {
             "name": "cc-cmds",
             "source": "./plugins/cc-cmds",
-            "description": "Engineering workflow commands for Claude Code",
-            "version": "1.1.0"
+            "description": "Engineering workflow commands for Claude Code"
         }
     ]
 }
