@@ -6,7 +6,7 @@ Single source of truth for constructing **valid** `AskUserQuestion` (AUQ) calls 
 
 Violating any of these yields `InputValidationError`:
 
-- `questions`: 1–4 entries. Each needs `question` (string), `header` (string, **≤12 chars**), `options` (2–4 entries), `multiSelect` (boolean) — all four required.
+- `questions`: 1–4 entries. Each needs `question` (string), `header` (string, **≤12 codepoints**), `options` (2–4 entries), `multiSelect` (boolean) — all four required.
 - Each option needs `label` (string) **and** `description` (string). `preview` is optional and **single-select only** (never on a `multiSelect: true` question).
 - The tool auto-appends an "Other" free-text choice. Do NOT add a manual one.
 
@@ -27,7 +27,7 @@ The tool always renders an "Other" choice that lets the user type free text. The
 
 ## Header Sizing (incl. Korean)
 
-The limit is **≤12 codepoints** (≈12 UTF-16 code units), not display columns. An NFC-composed Korean syllable is 1 codepoint, so `팀 토론 진행` = 6 (the space counts). **Spaces and decorations like `← 추천` count too.** NFD/decomposed jamo render identically but count per-jamo (`한` = 3 in NFD) — a silent-overflow trap where a header looks ≤12 yet is rejected. So: author headers in NFC and stay conservatively ≤12 codepoints. Keep the header a **short category tag** (e.g. `UD`, `처리 방식`, `안전 한계`), not the full topic sentence — put the full meaning in `question`.
+The limit is **≤12 codepoints** (≈12 UTF-16 code units), not display columns. An NFC-composed Korean syllable is 1 codepoint, so `팀 토론 진행` = 7 (the spaces count). **Spaces and decorations like `← 추천` count too.** NFD/decomposed jamo render identically but count per-jamo (`한` = 3 in NFD) — a silent-overflow trap where a header looks ≤12 yet is rejected. So: author headers in NFC and stay conservatively ≤12 codepoints. Keep the header a **short category tag** (e.g. `UD`, `처리 방식`, `안전 한계`), not the full topic sentence — put the full meaning in `question`.
 
 ## preview, multiSelect & Recommendation Rules
 
@@ -57,7 +57,7 @@ options:
 
 ```
 # INVALID — do not copy
-header: "외부 이터레이션 안전 한계 도달"        # 16 codepoints > 12
+header: "외부 이터레이션 안전 한계 도달"        # 17 codepoints > 12
 ```
 
 ```
