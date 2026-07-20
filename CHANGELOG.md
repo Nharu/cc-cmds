@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.3] - 2026-07-21
+
+`cc-common` 공개 SOT 레포 PR #2 v2 재리뷰에서 드러난 `_common/agent-team-protocol.md`의 자기모순 문장을 정정하고 규범화한다. 미러가 아니라 원본에서 고쳐 재시드로 전파한다. 기능 변경 없는 문서 정확성·정합성 정정이다.
+
+### Fixed
+
+- **witnessNonce round/phase 콜론-free 불변식 정정·규범화**: 복합 nonce `<round/phase>:<hex>`를 첫 `:`에서 분리하는 규칙의 근거가 `{round/phase}`를 "slash-joined `{round}/{phase}` pair"로 서술했으나, 같은 파일이 세 곳(nonce 스펙·완료 술어 conjunct-3·task-assignment 헤더)에서 `{round/phase}`를 `round-N`/phase명(슬래시 없는 단일 alternation)으로 정의해 자기모순이었다. "slash-joined pair" 오문을 제거하고 round 토큰=`round-N`·phase명=콜론-free identifier로 정확히 서술하며, 각 SKILL.md가 phase명을 콜론-free로 유지해야 한다는 제약을 규범(MUST)으로 승격해 첫-`:` 오파싱(mint-vs-reuse 분기 붕괴)을 원천 차단한다.
+
 ## [1.20.2] - 2026-07-20
 
 `cc-common` 공개 SOT 레포 PR #2 코드 리뷰에서 드러난 `_common` 공유 문서 결함 7건을 정정한다. 세 파일(`agent-team-protocol.md`·`askuserquestion.md`·`team-cleanup.md`)은 공개 레포로 byte-identical 미러되는 원본이라, 미러가 아니라 원본에서 고쳐 재시드로 전파한다. 기능 변경 없는 문서 정확성·정합성 정정이다.
