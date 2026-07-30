@@ -155,7 +155,7 @@ Body marking is a **token-free anchor reference** only — at the end of the cla
 An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` and before `## 권장 구현 순서` (the two new sections straddle the unresolved-issues section without touching its parse region). `implement` Reads this contract section wholesale, so it is self-contained here.
 
 - `### R<n>. <claim title>` sub-blocks only. Fields are the required + optional set of token #4. Optional-field definitions:
-    - `검증 시점` = `구현 전` (default) | `구현 중(<phase>)`.
+    - `검증 시점` = `구현 전` (default) | `구현 중(<phase>)` | `구현 후`. The first two are the consumer's gate partitions. **`구현 후`** marks a residual whose observation is obtainable only **after the design has landed and been used** — a usage-data recipe whose inputs are N real invocations or accumulated downstream artifacts, none of which exist while the design is being implemented. It is therefore **not a consumer gate**: the consumer discloses the item, leaves it at `구현 시 검증` for a later invocation to re-discover, and does **not** read the missing verdict as a drift (nothing failed — the observation window has not opened). Author it only when the recipe's inputs are genuinely post-landing; a claim settleable at implementation time is `구현 전` or `구현 중(<phase>)`.
     - `필요한 것` = the environment / credentials / data needed to clear the block (same meaning as the reproduction blocker field of the same name).
     - `관측 시점` = external-environment residuals only — the date of the external observation referenced when the recipe was authored (distinct from the ledger's `관측 일시`, which is the date a verification was performed); an input to implement's drift-ladder staleness/flake judgment.
     - `실행 주의` / `예상 소요` = per §3.2 / free-form duration estimate.
