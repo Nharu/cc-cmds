@@ -2,11 +2,11 @@
 
 Single source of truth for **out-of-document sidecar files** — the `docs/<kind>/{slug}.md` artifacts a skill writes *beside* a design document rather than into it. `## 1` owns the mechanics every sidecar shares regardless of payload (slug derivation, the provenance guard, atomic write, lifetime, versioning). `## 2` owns the block schema of the **re-convergence sidecar**, the artifact that carries an `implement`-time refutation across a session boundary to a `design` re-convergence.
 
-**Why a sidecar rather than an in-document section.** A design document has a one-writer-per-section invariant, and each writer's byte surface is enumerated so a sweep can prove no other byte moved. A second writer wanting durable state therefore cannot take a new in-document section without enlarging that surface — and an enumerated write surface is the machinery of a *permanent* ledger, not of every feature that needs to remember something. A sidecar keeps the document's surface unchanged, survives a full re-synthesis of the document (which today has no carry-forward for non-enumerated sections), and costs nothing in durability: `docs/` is gitignored in this repo, so an in-document write is no more permanent than a sidecar.
+**Why a sidecar rather than an in-document section.** A design document has a one-writer-per-section invariant, and each writer's byte surface is enumerated so a sweep can prove no other byte moved. A second writer wanting durable state therefore cannot take a new in-document section without enlarging that surface — and an enumerated write surface is the machinery of a *permanent* ledger, not of every feature that needs to remember something. A sidecar keeps the document's surface unchanged, is unaffected by any future re-synthesis of the document — a re-synthesis path would carry no obligation toward a section it does not enumerate, and today no such path exists — and costs nothing in durability: the sidecar sits in the same tree beside the document it belongs to, so it inherits exactly the document's own durability class. Whatever the owning repo grants the design document it grants the sidecar, and an in-document write therefore buys no permanence the sidecar lacks.
 
 **What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: paths, grammars, schemas, predicates, and write mechanics. It deliberately excludes *workflow prose* — when a writer decides to write, what it reports to the user, and how a reader routes what it finds all live in the owning SKILL.md. A skill that writes or reads a sidecar Reads this file; it never re-authors the grammar.
 
-**Consumption matrix.** `implement` Reads `## 1` + `## 2` at a verification failure branch, conditionally (writer of the re-convergence sidecar) — **not yet landed**. `design` Reads `## 1` + `## 2` at its re-convergence sidecar check (reader) — **not yet landed**. `implement`'s temporary visual-fidelity gate carries its own copy of the `## 1` mechanics inline and is **deliberately not retargeted** to cite this file: that section is scheduled for wholesale deletion, so rewriting a live path for zero permanent gain would only widen the blast radius. Two slug rules addressing two different directories, each internally deterministic, is a harmless duplicate for that section's remaining life.
+**Consumption matrix.** `implement` Reads `## 1` + `## 2` at a verification failure branch, conditionally (writer of the re-convergence sidecar) — **not yet landed**. `design` Reads `## 1` + `## 2` at its re-convergence sidecar check (reader) — **not yet landed**. `implement`'s temporary visual-fidelity gate carries a **partial** copy of the `## 1` mechanics inline — §1.1 slug, §1.2 guard, §1.3 in its same-directory / whole-file core only, §1.6 out-of-tree artifacts; **§1.4 lifetime and §1.5 version-and-migration have no counterpart there** — and is **deliberately not retargeted** to cite this file: that section carries its own removal checklist, so rewriting a live path inside it would widen the blast radius for no permanent gain. The two copies accordingly diverge on six axes, every one of them accepted as-is: (1) **slug rules** — two rules addressing two different directories, each internally deterministic; (2) **the provenance guard** — here it is defined over a named document key covering both derivation branches and is re-evaluated at the commit point (§1.2 with §1.3), there it is a check-then-act whose comparand is undefined on the non-repo branch; (3) **the write protocol** — both require a same-directory `mktemp` and a whole-file `mv`, but only this file adds the plain-`mv`-never-`mv -n` rule, the post-`mv` read-back, the compare-and-swap at the commit point with a bounded retry and a defined exhaustion disposition, and the stated basis for declining a lock; (4) **header grammar** — `owner=` there, `writer=`/`reader=` here; inert, because no predicate in this repo matches header field 2; (5) **the version token** — emitted and never read there, gated in both directions here; (6) **the header's trailing provenance clause** — repo-conditional there, repo-agnostic here. **This file is the newer and stronger of the two — a new sidecar is modelled on this file, never on the `implement` copy.**
 
 ---
 
@@ -14,13 +14,15 @@ Single source of truth for **out-of-document sidecar files** — the `docs/<kind
 
 ### 1.1 Path and slug derivation
 
-A sidecar lives at `<base>/docs/<kind>/{slug}.md`, where `<kind>` names the mechanism (`design-reconverge`, `visual-drift`, …) and `{slug}` identifies the design document the sidecar belongs to.
+A sidecar lives at `<base>/docs/<kind>/{slug}.md`, where `<kind>` names the mechanism (`design-reconverge`, …) and `{slug}` identifies the design document the sidecar belongs to.
 
 **Deriving `{slug}`.** Take the design document's path relative to the repo root, strip the `.md` extension, and replace every path separator `/` with `-`. So `docs/a/login.md` yields `docs-a-login`.
 
 **Resolving `<base>` and the relative path — keyed on the document's own location, never on the cwd.** Run `git rev-parse --show-toplevel` **from the design document's own directory**. If the document sits under the returned root, that root is `<base>` and the relative path is taken against it. If it does not — or if no repo root can be resolved at all — fall back to the document's absolute path with only the leading `/` removed, and `<base>` is the document's own directory. Keying on the document rather than the cwd makes the derivation deterministic even when the cwd is inside a repo but the document is outside it.
 
-**The slug is deterministic but NOT injective.** Because `/` folds to `-`, a literal `-` in one path can collide with a directory boundary in another: `docs/visual-drift.md` and `docs/visual/drift.md` both yield `docs-visual-drift`. **Collisions are not prevented by the slug — they are caught by the provenance guard of §1.2**, which compares the full relative path rather than the folded slug and therefore catches *every* collision regardless of how rare they are.
+**The document key.** For either branch this yields a single string: the repo-root-relative path when a root resolves and contains the document, otherwise the absolute path with only the leading `/` removed. That string is the **document key**. `owner-doc=` carries the document key verbatim, and both guards of §1.2 compare document keys — **never the folded slug, never a basename, never a suffix of either**. The key is defined on both branches, so the guard is a total function over every document this contract can address.
+
+**The slug is deterministic but NOT injective.** Because `/` folds to `-`, a literal `-` in one path can collide with a directory boundary in another: `docs/visual-drift.md` and `docs/visual/drift.md` both yield `docs-visual-drift`. **Collisions are not prevented by the slug — they are caught by the provenance guard of §1.2**, which compares the full document key rather than the folded slug and therefore catches *every* collision regardless of how rare they are.
 
 **No pointer is needed.** A reader re-derives the slug from the same rule and finds the file. Nothing in the design document references the sidecar.
 
@@ -29,47 +31,71 @@ A sidecar lives at `<base>/docs/<kind>/{slug}.md`, where `<kind>` names the mech
 Line 1 is a human-readable H1. Line 2 is the machine header, a single HTML comment:
 
 ```
-<!-- cc-<kind> v<N>; writer=<skill>; reader=<skill>; owner-doc=<repo-root-relative design document path>; NOT a design doc; not committed (docs/ gitignored) -->
+<!-- cc-<kind> v<N>; writer=<skill>; reader=<skill>; owner-doc=<document key>; NOT a design doc; mechanism-local, never staged by a skill -->
 ```
 
 `writer=` and `reader=` name the roles rather than a single `owner=`, because a sidecar whose writer and reader are different skills has two distinct byte surfaces (see §2.6).
 
+Both fields are required unconditionally. Where writer and reader are the same skill the two names are simply equal; the two-surface rationale above explains why the grammar has two slots, not when to emit them. **Neither field is ever matched by a predicate** — the provenance guard keys on `owner-doc=` (§1.2), the version check on the `cc-<kind> v<N>` token (§1.5), and the ownership partitions of §2.3 / §2.6 on roles a skill knows intrinsically. Header field 2 is advisory provenance for a human reader.
+
 **The guard is symmetric — a read guard and a write guard with the same predicate.**
 
-- **Read guard.** Before applying anything a sidecar says, compare its `owner-doc=` against the current design document's repo-root-relative path. On a mismatch the file belongs to a different document (a slug collision): **do not apply its content**, and treat the subject as un-processed so the owning mechanism re-runs. Never silent-skip.
-- **Write guard.** If the target file already exists, compare its `owner-doc=` the same way *before* writing. On a match the file is ours — proceed. On a mismatch, or when the `owner-doc=` field is **absent**, do not write: preserve the existing file, report the cause on the user-facing surface, and let the caller's own failure path take over.
+- **Read guard.** Before applying anything a sidecar says, compare its `owner-doc=` against the current design document's **document key** (§1.1). On a mismatch the file belongs to a different document (a slug collision): **do not apply its content**, and proceed **as if no sidecar existed for this document**, so the owning mechanism re-runs. Never silent-skip. This is deliberately not the `unprocessed(sidecar)` predicate of §2.7 — that predicate reads the blocks of a file this guard has just ruled out.
+- **Write guard.** If the target file already exists, proceed only when **both** hold: its `owner-doc=` matches the current document key, **and** its `cc-<kind> v<N>` token is strictly equal to the writer's own (§1.5). On an `owner-doc=` mismatch, on an **absent** `owner-doc=`, or on a version token that is not strictly equal, do not write: preserve the existing file, report the cause on the user-facing surface, and let the caller's own failure path take over. A version mismatch therefore takes the same disposition on the write path that §1.5 already gives the read path — never delete, never rewrite.
 
-**Absence is treated as mismatch.** A missing `owner-doc=` does not prove ownership, so it fails closed in both directions. This is the whole guard: it is what makes the non-injective slug safe.
+**Absence is treated as mismatch.** A missing `owner-doc=` does not prove ownership, so it fails closed in both directions. This is what makes the non-injective slug safe.
+
+**What the guard is not.** It establishes **cross-document** provenance. It is not a mutual-exclusion primitive and gives no protection between two writers of the *same* document — that hazard belongs to the compare-and-swap of §1.3, and the guard's own verdict is carried to the commit point by the same mechanism.
 
 ### 1.3 Atomic write
 
-Write the whole intended file content to a temp file **in the same directory as the target**, then rename:
+Write the whole intended file content to a temp file **in the same directory as the target**, then rename. Every write is a compare-and-swap: the bytes the content was built from must still be the file's bytes at the moment of the rename.
 
 ```
+# $SNAP — a copy of the bytes this attempt read. Bare mktemp, so it lands in
+# TMPDIR, out of tree. It does not exist if the target was absent.
+SNAP=$(mktemp); cp "$TARGET" "$SNAP" 2>/dev/null || rm -f "$SNAP"
 T=$(mktemp "$(dirname "$TARGET")/.$(basename "$TARGET").XXXXXX")
-# … build the complete content in "$T" …
+# … build the complete content in "$T" from "$SNAP" …
+if [ -e "$SNAP" ]; then
+  cmp -s "$SNAP" "$TARGET" || { rm -f "$T"; }   # differ, or target vanished → restart
+else
+  [ ! -e "$TARGET" ] || { rm -f "$T"; }          # appeared under us → restart
+fi
 mv "$T" "$TARGET"
 ```
 
-- **Same directory is mandatory.** A temp under `${TMPDIR:-/tmp}` may sit on another filesystem, where `rename(2)` is not atomic and `mv` degrades to copy-then-unlink.
-- **Plain `mv`, never `mv -n`.** The no-clobber form is correct for a witness file that must never be overwritten, and copying that idiom here is a silent data-loss bug: every write after the first would be skipped, so an accumulating sidecar would keep exactly its first block forever.
-- **No lock.** After the `mv`, read the file back and confirm the intended content landed; on a mismatch, retry once. The hazard class is what justifies this — a lock is warranted when the failure mode is an unbounded repeat, whereas here the worst case is one lost block. The read-back is load-bearing precisely because it converts a **silent** loss into a **detected** one, which is the entire basis for declining the lock. Omit it and two concurrent writers can drop a block with no error anywhere.
+- **The pre-write bytes.** These are the bytes the target holds at the compare-and-swap — equivalently, the bytes this attempt built its content from, since the swap commits only when the two are identical. **Absence is one of the states this term ranges over**: a snapshot taken of a file that did not exist matches only a target that still does not exist. Other sections cite this term rather than restating it.
+- **What the swap buys.** It re-runs no check. It makes every verdict already reached on those bytes — the provenance guard and the version token of §1.2 and §1.5, and any further read-time precondition a payload schema adds — **still true at the commit point**. A check-then-act guard becomes check-then-verify-then-act without the guard being restated, and any precondition added to the read path later inherits this for free.
+- **On a failed comparison**, discard this attempt's temp and restart the whole read-modify-write from a fresh read: a new read, a fresh re-derivation of anything keyed on the bytes, and a fresh build. Content built against the stale bytes is never reused. **At most 3 attempts**; on exhaustion do not write — preserve the existing file, report the cause on the user-facing surface, and let the caller's own failure path take over, exactly as a guard mismatch does (§1.2).
+- **Same directory is mandatory for `$T`.** A temp under `${TMPDIR:-/tmp}` may sit on another filesystem, where `rename(2)` is not atomic and `mv` degrades to copy-then-unlink. **`$SNAP` carries the opposite requirement and belongs out of tree**: it is never renamed onto the target, so it needs no filesystem affinity, and keeping it out of the tree keeps it out of `git status` and therefore out
+  of any boundary gate a caller runs.
+- **Where `docs/` is tracked.** The rules above keep the temps out of the way, but the sidecar
+  *itself* is an untracked file under `<base>/docs/`, so in an owning repo that tracks `docs/` it is
+  visible to `git status` and therefore to the two-command boundary gate of `_common/verification.md`
+  §6. A caller must not place a sidecar write inside a gate window. Today's only located write point
+  sits outside one; the reader's **close** write does not yet exist, and when it lands it must be
+  placed outside `design`'s team-discussion gate window.
+- **Plain `mv`, never `mv -n`.** The no-clobber form belongs to a witness file that must not be overwritten — and even there its safety is not atomic no-clobber, since `mv -n` is stat-then-rename on both BSD and GNU (`_common/agent-team-protocol.md` states this outright). Copying that idiom here is a silent data-loss bug for a different reason: every write after the first would be skipped, so an accumulating sidecar would keep exactly its first block forever.
+- **What `rename(2)` guarantees, and what it does not.** It is atomic with respect to concurrent readers: a reader sees either the old file or the new one, never a torn one, and a process that dies before the rename leaves the target untouched. It is **not** a durability barrier — this contract issues no `fsync`, so a host-level crash may lose a completed write. Do not carry the atomicity claim into contexts that need durability.
+- **No lock.** After the `mv`, read the file back and confirm the intended content landed; on a mismatch, restart under the same 3-attempt budget. The read-back catches a failed or partial `rename(2)` and the `mv -n` misuse above; it does **not** detect a concurrent writer, and no claim here rests on it doing so. A lock is declined for two reasons. First, **a compare-and-swap is unilaterally sound and a lock is not**: a participant that implements the swap detects and survives a participant that does not, whereas a participant that takes a lock gains nothing against one that does not — and this contract's writer and reader are separate skills, authored separately, so partial adoption is an expected state rather than an exception. Second, these files are user-local and never deleted by a skill, and nothing in this repo reaps an abandoned lock directory. A lock layered *on top* of the swap is harmless; the swap is the part this contract requires.
+- **Orphan temps.** A `$T` left behind by an interrupted attempt is harmless: it is a dotfile in the target's own directory, so it is missed by both the exact-path re-derivation of §1.1 and a `*.md` glob. The `rm -f` above targets **this attempt's own temp by name** — never a glob sweep of the directory, which would delete a concurrent writer's live temp.
 
 ### 1.4 Lifetime — never delete, never truncate, never `git add`
 
 - A skill **never deletes** a sidecar and never removes a block from one. State transitions happen in place; cleanup is the user's, by hand.
 - A skill **never truncates** an existing file to write a shorter one. Whole-file atomic write means *read, extend in memory, write the whole thing back* — not overwrite-from-empty.
-- A skill **never `git add`s** a sidecar. Under this repo's `.gitignore` these files are user-local by construction; staging one would defeat that.
+- A skill **never `git add`s** a sidecar. A sidecar is mechanism-local state, not a project artifact. Where the owning repo ignores `docs/` this holds automatically; where it tracks `docs/` this rule is the **only** thing keeping the sidecar out of the index — and the user's own `git add -A` is outside any skill's control, so the rule is a discipline, not a guarantee.
 
 ### 1.5 Version token and migration
 
 The header carries `cc-<kind> v<N>`. A reader matches it by **strict equality** against the version it understands. On a mismatch: skip the file, report it, and **do not delete or rewrite it**.
 
-**No automatic in-place migration.** Because `docs/` is gitignored, a botched migration has no `git` undo — the bytes are simply gone. Migration, if it is ever needed, is a deliberate user-driven step, never a side effect of a reader noticing an old version.
+**No automatic in-place migration.** A botched migration may have no `git` undo at all: where the owning repo ignores `docs/` the bytes are simply gone, and even where it tracks `docs/` a sidecar is typically uncommitted at the moment a reader would migrate it. Migration, if it is ever needed, is a deliberate user-driven step, never a side effect of a reader noticing an old version.
 
 ### 1.6 Artifacts stay out of tree; the sidecar carries the recipe
 
-Binary or bulky products of the mechanism (screenshots, captures, extracted corpora) go to an out-of-tree scratch directory such as `mktemp -d "${TMPDIR:-/tmp}/cc-<kind>-{slug}.XXXXXX"`, and the sidecar does **not** cite those paths — they are session-local and will not exist later. What the sidecar records instead is the **one-line reproducible recipe** plus durable pointers (a prototype path, a document anchor). The duty is to leave behind what regenerates the artifact, not the artifact.
+Binary or bulky products of the mechanism (screenshots, captures, extracted corpora) go to an out-of-tree scratch directory such as `mktemp -d "${TMPDIR:-/tmp}/cc-<kind>-{slug}.XXXXXX"`, and the sidecar does **not** cite those paths — they are session-local and will not exist later. What the sidecar records instead is the **reproducible recipe** — in whatever form the payload schema of the owning `<kind>` fixes (for the re-convergence sidecar, §2.5 fixes the fence, the info string, and the caps) — plus durable pointers (a prototype path, a document anchor). The duty is to leave behind what regenerates the artifact, not the artifact.
 
 ---
 
@@ -79,7 +105,7 @@ Carries a refuted or undecidable verification claim from an `implement` failure 
 
 ```
 # 설계 재수렴 요청 — {slug}
-<!-- cc-design-reconverge v1; writer=implement; reader=design; owner-doc=<repo-root-relative design document path>; NOT a design doc; not committed (docs/ gitignored) -->
+<!-- cc-design-reconverge v1; writer=implement; reader=design; owner-doc=<document key>; NOT a design doc; mechanism-local, never staged by a skill -->
 ```
 
 ### 2.1 Cycle blocks
@@ -191,7 +217,7 @@ Two byte-enumerated forms, partitioned by owner. "Pre-write bytes" means whateve
 - **On creation** — the absent pre-write state of §1.3 — the append emits, in this order: the H1 of §2, the machine header of §2, one complete `## 회차 1` block, and the terminator. Nothing else. This is the only place the contract assigns emission of the file header to a writer; the table constraint above governs every later append, where the file already exists.
 - **The added side is bound by position, not by count.** A count-only gate passes an edit that inserts a forged field line into an existing block's frozen tail while appending a legitimate block of its own: nothing is removed and exactly one heading is added. Position is the enforceable form of the frozen tail of §2.3, which is what §2.2's verbatim copies rest on. `at or after` is deliberate — the heading is itself an added line, so `after` alone would exclude it and make the gate unsatisfiable; `before the terminator` is equally deliberate, since a heading-only bound would admit lines appended past the terminator.
 - **`처리 기록` is exactly one per closed block, not at most one.** `at most one` admits zero, and a `처리됨` block with no `처리 기록` is malformed under §2.2 — the reader's own write form would be manufacturing the state the reader must reject on its next pass.
-- `sed -i ''` is forbidden — it is on this repo's bash-portability denylist, so this is lint-enforced rather than stylistic. Build the whole file and `mv` it (§1.3).
+- `sed -i ''` is forbidden. It sits on this repo's bash-portability denylist, but this file is markdown prose and `lint-bash-portability.sh` scans only `*.sh` files, so the rule is **manually disciplined** — the same posture `_common/parse-handoff.md` §10 already states for the same reason. The prohibition is load-bearing regardless of enforcement: an in-place edit is a partial write against a disk snapshot, so it bypasses both the whole-file discipline of §1.4 and the read-back of §1.3 — the two devices that stand in for the lock this contract declines. Build the whole file and `mv` it (§1.3).
 
 ### 2.7 Reader predicates
 

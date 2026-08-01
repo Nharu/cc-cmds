@@ -152,7 +152,7 @@ Body marking is a **token-free anchor reference** only — at the end of the cla
 
 ## 5. Residual-item contract — `## 구현 시 검증 항목`
 
-An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` and before `## 권장 구현 순서` (the two new sections straddle the unresolved-issues section without touching its parse region). `implement` Reads this contract section wholesale, so it is self-contained here.
+An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` and before `## 권장 구현 순서` (the two new sections straddle the unresolved-issues section without touching its parse region). `implement` Reads this contract section wholesale, so it is self-contained here. **A consumer never narrows an enum by omission**: a value its own routing prose does not name is an **unhandled** value, not an excluded one, and reaching one is a defect to surface — never a silent default into another bucket.
 
 - `### R<n>. <claim title>` sub-blocks only. Fields are the required + optional set of token #4. Optional-field definitions:
     - `검증 시점` = `구현 전` (default) | `구현 중(<phase>)` | `구현 후`. The first two are the consumer's gate partitions. **`구현 후`** marks a residual whose observation is obtainable only **after the design has landed and been used** — a usage-data recipe whose inputs are N real invocations or accumulated downstream artifacts, none of which exist while the design is being implemented. It is therefore **not a consumer gate**: the consumer discloses the item, leaves it at `구현 시 검증` for a later invocation to re-discover, and does **not** read the missing verdict as a drift (nothing failed — the observation window has not opened). Author it only when the recipe's inputs are genuinely post-landing; a claim settleable at implementation time is `구현 전` or `구현 중(<phase>)`.
