@@ -6,7 +6,10 @@
 # the section headings, and the detection-grammar markers) is defined ONCE in
 # the SOT `_common/verification.md` and excerpted/inlined into two review
 # copies (`design-review/references/06-review-agent-prompt.md` and
-# `design-review-lite/SKILL.md`). Semantic prose drift cannot be linted, but
+# `design-review-lite/SKILL.md`). One further live copy exists outside the
+# review pair: the routing prose of `implement/SKILL.md` partitions on the
+# verification-timing enum, so that one value is pinned there too (see (3)).
+# Semantic prose drift cannot be linted, but
 # the frozen byte-exact literals can — this script pins them so a rename in one
 # copy that is not mirrored to the others fails CI.
 #
@@ -42,6 +45,7 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 SOT="$skills_root/_common/verification.md"
 EXCERPT="$skills_root/design-review/references/06-review-agent-prompt.md"
 INLINE="$skills_root/design-review-lite/SKILL.md"
+CONSUMER="$skills_root/implement/SKILL.md"
 
 # SOT absent → mechanism not present in this tree → silent skip.
 if [[ ! -f "$SOT" ]]; then
@@ -73,9 +77,10 @@ SOT_LITERALS=(
   '외부 환경'
   '행동 가설'
   '미니 구현'
-  # verification-timing enum (2)
+  # verification-timing enum (3)
   '구현 전'
   '구현 중'
+  '구현 후'
   # field key + note-line key
   '검증 등급'
   '**구현 시 검증 기록**'
@@ -160,8 +165,25 @@ for lit in "${PROMPT_SHARED[@]}"; do
   assert_in_text "$lit" "$inline_block" "design-review-lite/SKILL.md (inline)"
 done
 
+# (3) Consumer sync — deliberately narrow. The verification-timing enum is the
+# only frozen vocabulary with a live inline copy outside the two review copies:
+# implement's 1.5a routing prose partitions on it. Pin ONLY the value this PR
+# adds — the rest of SOT_LITERALS (grades, residual reasons, execution-caution
+# classes, classification tokens) legitimately does not appear in that file, so
+# a whole-array check would fail on day one. Whole-file presence is the right
+# form here: extract_prompt_block() is keyed to the reviewer-prompt sentinel
+# and does not apply to a SKILL.md. A missing consumer file is a skip, not a
+# failure (the file's existence is a precondition of the skill, not of this
+# literal); a consumer that exists but has dropped the value is a FAIL — that
+# is the regression fence for the 1.5a three-way partition.
+consumer_checked=0
+if [[ -f "$CONSUMER" ]]; then
+  consumer_checked=1
+  assert_in_file '구현 후' "$CONSUMER" "implement/SKILL.md (consumer timing enum)"
+fi
+
 if (( fail == 0 )); then
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) all present"
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_checked} consumer (구현 후) all present"
 fi
 
 exit "$fail"
