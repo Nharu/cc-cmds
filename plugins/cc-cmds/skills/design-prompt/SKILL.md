@@ -11,11 +11,11 @@ options:
       summary: "base 설계 문서 경로 (`docs/{slug}.md`); 본 스킬이 그 안에 CD 프롬프트 섹션을 in-place authoring"
 ---
 
-Author the "Claude Design 프롬프트 + 컨텍스트" section inside the **base design document** — the single markdown at `docs/{slug}.md` that `/cc-cmds:design` first created and that this skill now extends to carry the Claude Design prompt as well. The base design document is the durable per-feature carrier: `/cc-cmds:design` writes the base sections, `/cc-cmds:design-prompt` adds the prompt section, and `/cc-cmds:design-review --base` audits the whole file as one for consistency.
+Author the "Claude Design 프롬프트 + 컨텍스트" section inside the **base design document** — the single markdown at `docs/{slug}.md` that `/cc-cmds:design` first created and that this skill now extends to carry the Claude Design prompt as well. The base design document is the durable per-feature carrier: `/cc-cmds:design` writes the base sections, `/cc-cmds:design-prompt` adds the prompt section, and `/cc-cmds:design-audit --base` audits the whole file as one for consistency.
 
 The skill also emits a derived paste block at `docs/{slug}-fe/cd-prompt.paste.md` — a self-contained file the user pastes into claude.ai/design. The base design document is the source of truth; the paste block is rebuilt from it on every invocation.
 
-The skill is **standalone and idempotent** — re-invocations replace the prompt section in place (no append, no duplication) and rebuild the paste block from the current base-document state. This survives `design-review --base` edits and user touch-ups between rounds.
+The skill is **standalone and idempotent** — re-invocations replace the prompt section in place (no append, no duplication) and rebuild the paste block from the current base-document state. This survives `design-audit --base` reconciliation edits and user touch-ups between invocations.
 
 User-facing strings are Korean; internal control prose is English.
 
@@ -33,16 +33,16 @@ The base design document `docs/{slug}.md` carries the Claude Design prompt as on
 
 - **Anchor heading**: `## Claude Design 프롬프트 + 컨텍스트` (exact string, no decoration, no version suffix).
 - Read the base design document.
-- If the anchor exists, replace **the section body** (everything between this heading and the next `^## ` heading or EOF). Do not append; do not duplicate; do not touch other sections — `design-review --base` and the user may have edited surrounding content between rounds and that must survive.
+- If the anchor exists, replace **the section body** (everything between this heading and the next `^## ` heading or EOF). Do not append; do not duplicate; do not touch other sections — `design-audit --base` and the user may have edited surrounding content between invocations and that must survive.
 - If the anchor does not exist, append the entire section at the end of the document.
 
 The section body contains three sub-blocks, separated by blank lines:
 
-1. **의도 (Korean prose)** — A re-interpretation of the base design's core direction in 2–4 paragraphs, written by the lead. This is the source of truth that `design-review --base` audits for consistency.
+1. **의도 (Korean prose)** — A re-interpretation of the base design's core direction in 2–4 paragraphs, written by the lead. This is the source of truth that `design-audit --base` audits for consistency.
 2. **DS 참조 (Korean prose with file path mentions)** — Cite which DS assets this feature depends on: `docs/design-system/tokens.md` for token semantics, `docs/design-system/components.md` for component contracts, and the DS `version` from `manifest.json`. Do NOT inline token values here; the paste block carries them. Include the DS manifest version inline as: *"기준 DS 버전: `<version>`."*
 3. **페이지 / 플로우 의도 (Korean prose)** — Which pages, flows, and interactions the feature requires. Page-level intent; not implementation detail.
 
-After the section is written/replaced, the base design document is the carrier of the prompt intent; `design-review --base` audits it as one document for intent and DS-reference consistency, never inspecting the paste block.
+After the section is written/replaced, the base design document is the carrier of the prompt intent; `design-audit --base` audits it as one document for intent and DS-reference consistency, never inspecting the paste block.
 
 ## Step 3: Assemble the paste block `docs/{slug}-fe/cd-prompt.paste.md`
 
@@ -106,7 +106,7 @@ If they differ:
 
 > "CD 프롬프트 섹션을 `docs/{slug}.md`에 in-place authoring하고 붙여넣기 블록을 `docs/{slug}-fe/cd-prompt.paste.md`에 작성했습니다.
 >
-> 다음 단계: `/cc-cmds:design-review --base docs/{slug}.md`로 base 설계 문서 전체 일관성을 검증하세요. 리뷰가 반영되면 `/cc-cmds:design-prompt`를 다시 실행해 붙여넣기 블록을 재조립한 뒤, `docs/{slug}-fe/cd-prompt.paste.md`를 claude.ai/design에 붙여넣어 실행하세요."
+> 다음 단계: `/cc-cmds:design-audit --base docs/{slug}.md`로 base 설계 문서 전체 일관성을 감사하세요(독립 리더 1라운드 후 정지). 감사 결과가 반영되면 `/cc-cmds:design-prompt`를 다시 실행해 붙여넣기 블록을 재조립한 뒤, `docs/{slug}-fe/cd-prompt.paste.md`를 claude.ai/design에 붙여넣어 실행하세요."
 
 Substitute `{slug}` with the actual slug.
 
@@ -114,7 +114,7 @@ Substitute `{slug}` with the actual slug.
 
 - The section anchor is `## Claude Design 프롬프트 + 컨텍스트`. Two re-runs from identical inputs produce identical section content (deterministic) and an identical paste block.
 - Re-runs **never append** under any condition. They replace the section body in place and overwrite the paste block.
-- The paste block is a **derived artifact**; the base design document section is the **source of truth**. `design-review --base` audits the base document; it never audits the paste block.
+- The paste block is a **derived artifact**; the base design document section is the **source of truth**. `design-audit --base` audits the base document; it never audits the paste block.
 
 ## EXEMPT rationale (no `## Control-Flow Invariants` heading)
 

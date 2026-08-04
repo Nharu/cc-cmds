@@ -2,7 +2,7 @@
 
 When assigning each reviewer (Step 4), include the following in the initial message.
 
-## 16-item Context Package
+## 17-item Context Package
 
 1. **Return contract instruction**: Embed the **task-assignment header** from `_common/agent-team-protocol.md` verbatim at the top of the reviewer's prompt (role / round / load-bearing inputs / witness contract). The reviewer is a nameless background task: it delivers its findings as its **durable witness file** (sentinel/nonce-terminated per the protocol) — the return text is only an early-wake hint, with no completion prefix and no messaging tool to call. It begins its return with its role and round, and never returns without publishing its witness (if it cannot proceed, it publishes a partial result plus a one-line concrete blocker).
 2. **Review scope diff**: Full diff or role-filtered diff.
@@ -22,7 +22,8 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 11. **(Large PR, with scope-coordination role)** **Round 0 analysis results**: This reviewer's focus areas, high-risk file list, priority check areas.
 12. **Positive findings**: *"If you find well-implemented patterns or noteworthy positive aspects, include them with a `[POSITIVE]` tag briefly."*
 13. **(Optional) Lead's codebase exploration summary** from Step 2b — key dependencies, related test files, existing pattern summary. Include within context size limits.
-14. **Category tag list**: Choose from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`.
+14. **Category tag list**: Choose from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`, `design-conformance`.
+    - **`design-conformance` is gated on item 17.** It is usable **only** when the design document of item 17 was actually supplied. Its grounding standard is a comparison against that document — with no document there is nothing to compare against, so the tag would be an unfounded label rather than a finding. When item 17 is omitted, drop `design-conformance` from the list handed to the reviewer; the other ten are unconditional.
 15. **Reporting format**: Findings must follow this structure:
     ```
     [severity] [category] file:line (or module/pattern) — issue description
@@ -31,6 +32,11 @@ When assigning each reviewer (Step 4), include the following in the initial mess
     [POSITIVE] file:line — positive aspect (when applicable)
     ```
 16. **Skip-glob list (search hygiene)**: when grep-searching the codebase, skip `node_modules, .next, build, dist, __pycache__, .git, coverage, .turbo, .cache, out, .vercel, .output, vendor, target` to avoid spending token budget on vendored/generated trees.
+17. **(Conditional) Design document + drift sidecar** — include only when the user supplied a design-document path as a review directive; **omit entirely otherwise**, and omit `design-conformance` from item 14 with it. Absence is the normal case, not a defect: a design document is user-local and typically untracked, so it does not exist in a clone. The channel this item opens therefore works when reviewing **your own** work and is structurally unavailable when reviewing someone else's PR — do not construct a fallback that guesses at a document.
+    - **What binds.** The **binding tier** is the conformance baseline: `## 합의된 아키텍처`, the decision sentences of `## 주요 결정사항과 근거`, entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`, `## 구현 시 검증 항목`, and a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`. A `design-conformance` finding is a divergence from **that** material.
+    - **`## 미해결 이슈` is NOT a baseline** — it is a list of known residuals, and it has two uses. Read it to **suppress duplicates**: an item already recorded there is known, so re-reporting it as a new finding is noise. Never raise the non-implementation of an unresolved item as a conformance violation; it is unresolved by design. And read it as a **pointer to where to look**: an entry saying two files carry copies of one rule with nothing coupling them is, for a reviewer, an instruction to diff those two files. Without this second use that check has to be carried in by hand every time, which is precisely the class of obligation that fails at the moment it is needed.
+    - **`## 권장 구현 순서` is for scope**, not conformance — use it to judge which stage the change under review belongs to, so a later stage's absence is not reported as a gap.
+    - **The drift sidecar** `docs/design-drift/{slug}.md`, when present, records divergences the implementer already declared. Read it under the `## 1` read guard of `_common/sidecar.md` (an `owner-doc=` mismatch or absence means the file belongs to another document — do not apply it). A divergence recorded there is **disclosed, not thereby justified**: judge it on the merits, and note that a `참고`-tier divergence needed no approval while a `구속`-tier one should carry `승인: 사용자 승인`. An undisclosed binding-tier divergence — one you find in the code with no matching block — is itself a finding.
 
 ## Role-specific Review Checklists
 
@@ -69,7 +75,7 @@ Each round is a resume of the reviewer task by its `agentId`; each round's resul
 1. **Round 1 — Independent Review**: Spawn each reviewer as a nameless background task with its context package. Each reviews independently from its own perspective and publishes its findings as its witness. Confirm every reviewer's round witness via `witness_present`, then read the witness — never the return — before moving on. A reviewer that publishes an empty or substanceless witness is re-scoped and resumed once (per the protocol's Escalation rules), not skipped.
 
 2. **Quality Gate**: Before cross-validation, verify each returned review meets minimum quality:
-    - Specific location references: `file:line` or `module/pattern` for architecture/pattern-level issues (no vague descriptions)
+    - Specific location references: `file:line` or `module/pattern` for architecture/pattern-level issues (no vague descriptions). A `design-conformance` finding carries **two** anchors — the source location as usual, **and** the design-document section it diverges from — because its claim is a mismatch between the two and a single anchor cannot state one.
     - Severity rationale included for each finding
     - No duplication with existing PR comments
     - Fix suggestions included where appropriate

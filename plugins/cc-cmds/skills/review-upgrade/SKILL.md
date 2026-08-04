@@ -57,7 +57,7 @@ The `/review` Scope Coordinator (a >50-file PR meta/orchestration role: Round 0 
 
 ## Role-axis mapping (review)
 
-The core's role axis here means **uncovered review perspective**, drawn from: security / performance / code-quality / logic / error-handling / type-safety / testing / api-contract / concurrency / data-integrity.
+The core's role axis here means **uncovered review perspective**, drawn from: security / performance / code-quality / logic / error-handling / type-safety / testing / api-contract / concurrency / data-integrity / design-conformance (the last only when a design document was supplied to the review — see the review context package's conditional 17th item).
 
 **Risk-indicator reconciliation rule (the heart of the restraint)**: Step 3's risk-indicator → reviewer mapping (auth→security, DB→perf/DB, public-API→API-contract, external→security+integration, async→concurrency) is Step 3's own coverage contract. An `ADD` fires only when ALL hold:
 

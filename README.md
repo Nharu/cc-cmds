@@ -11,11 +11,10 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
 | `/cc-cmds:design-analyze` | 에이전트 팀을 활용한 제3자 설계 문서 다관점 분석 (읽기 전용) | 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하고 분석 산출물(보고서/주석본/피드백)을 생성하고자 할 때 |
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
+| `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · design-apply의 impl-design.md · implement 직전) |
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
-| `/cc-cmds:design-review` | 설계 문서 최종 리뷰 | 작성된 설계 문서를 다중 반복 에이전트 리뷰(외부/내부 사이클)로 최종 검증·수렴시키고자 할 때 |
-| `/cc-cmds:design-review-lite` | 설계 문서 경량 사이클 리뷰 | 설계 문서를 간결한 반복 사이클로 빠르게 검증하고 싶을 때 (미묘한 termination invariant·동시성 검출률 약화 가능) |
 | `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -27,7 +26,7 @@ Engineering workflow commands for Claude Code.
 
 ## Prerequisites
 
-`/cc-cmds:design`, `/cc-cmds:design-review` 등 에이전트 팀 기반 커맨드는 **Claude Code 2.1.178 이상**이 필요합니다. 팀원은 nameless background task(`Agent` 도구)로 구동되므로 별도 환경변수 설정은 필요 없습니다(이전에 안내하던 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`는 더 이상 요구되지 않습니다).
+`/cc-cmds:design`, `/cc-cmds:design-audit` 등 에이전트 팀 기반 커맨드는 **Claude Code 2.1.178 이상**이 필요합니다. 팀원은 nameless background task(`Agent` 도구)로 구동되므로 별도 환경변수 설정은 필요 없습니다(이전에 안내하던 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`는 더 이상 요구되지 않습니다).
 
 ### 완료 알림 (선택)
 
@@ -86,8 +85,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 ```
 /cc-cmds:design <task>
 /cc-cmds:design-lite <task>
-/cc-cmds:design-review <design-doc-path>
-/cc-cmds:design-review-lite <design-doc-path>
+/cc-cmds:design-audit <design-doc-path> [<note>] [--base]
 /cc-cmds:design-upgrade
 /cc-cmds:implement <design-doc-path>
 /cc-cmds:review [<target>] [<directive>]
@@ -115,11 +113,10 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:design](#cc-cmdsdesign)
 - [/cc-cmds:design-analyze](#cc-cmdsdesign-analyze)
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
+- [/cc-cmds:design-audit](#cc-cmdsdesign-audit)
 - [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
 - [/cc-cmds:design-prompt](#cc-cmdsdesign-prompt)
-- [/cc-cmds:design-review](#cc-cmdsdesign-review)
-- [/cc-cmds:design-review-lite](#cc-cmdsdesign-review-lite)
 - [/cc-cmds:design-system](#cc-cmdsdesign-system)
 - [/cc-cmds:design-upgrade](#cc-cmdsdesign-upgrade)
 - [/cc-cmds:implement](#cc-cmdsimplement)
@@ -153,6 +150,16 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 | --- | --- | --- |
 | `<handoff-extract-path>` | (required) | design-ingest가 확정한 안정 사본 (`docs/{slug}-fe/handoff-extract.md`); 본 스킬이 slug 파싱·출력 경로·원장 키의 단일 앵커 |
 
+### /cc-cmds:design-audit
+
+**Usage**: `/cc-cmds:design-audit <design-doc-path> [<note>] [--base]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 감사 대상 설계 문서 경로 (`.md`). 첫 리더 spawn 직전의 sha256으로 동결되며, 감사가 끝날 때까지 어떤 바이트도 수정되지 않는다. |
+| `<note>` | _(optional)_ | 문서 경로 뒤 자유 텍스트. 전 리더에게 **축어로 동일하게** 주입되는 초점 메모 (리더별로 다르게 주면 보강 통계가 무의미해지므로 금지). |
+| `--base` | off | base 설계 문서 모드 — 기존 내용의 정합·완결만 감사하고 신규 구현 세부 제안을 금지한다. FE 파이프라인이 확장한 base 문서의 호출 형태. |
+
 ### /cc-cmds:design-ingest
 
 **Usage**: `/cc-cmds:design-ingest <handoff-dir-path>`
@@ -176,38 +183,6 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<base-doc-path>` | (required) | base 설계 문서 경로 (`docs/{slug}.md`); 본 스킬이 그 안에 CD 프롬프트 섹션을 in-place authoring |
-
-### /cc-cmds:design-review
-
-**Usage**: `/cc-cmds:design-review <design-doc-path> [--base] [--changes] [--no-auto-decide-dominant]`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
-| `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
-| `--changes` | off | 이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능 |
-| `--auto-decide-dominant` | _(no-op alias — auto-decide는 기본 ON)_ | 명시적 opt-in 별칭. 현재 기본값이 이미 ON이라 실질 no-op; 역호환·명시성 목적으로 허용. |
-| `--no-auto-decide-dominant` | off (즉, auto-decide 활성) | Decision Auto-Select Protocol(§8)을 세션 전체에서 비활성화 |
-
-**Safety** — Decision Auto-Select Protocol(§8)을 세션 전체에서 비활성화 (`--no-auto-decide-dominant`):
-
-- **기본 동작** — 별도 플래그 없이 auto-decide ON. Dominance Threshold(§8) 충족 시 `decision`-type 제안을 자동 선택하고 `[AUTO-DECIDED]`로 기록.
-- **Blackout** — B1–B10 카테고리(파괴적 작업, 사용자 특화 결정, B7/B8/B9 조건부 체크리스트 포함)는 항상 사용자에게 escalate.
-- **Revert** — 자동 결정된 항목은 `AUTO-NNN` 또는 `PROP-Rx-y` 참조로 언제든 되돌릴 수 있음 (§8.11).
-- **Opt-out (invocation)** — `--no-auto-decide-dominant` 지정 시 전체 세션에서 비활성화, 세션 중간 재활성화는 불가.
-- **Opt-out (mid-session)** — 다이얼로그 프롬프트에서 "자동 선택 중단" 같은 자연어 트리거로도 비활성화 가능 (§8.10 regex, 이후 재활성 불가).
-- **Outer-cycle continuation** — 자동 결정이 한 건이라도 발생한 outer iter는 ripple 검증을 위해 한 iter 더 실행됨. 사용자 체감: "왜 리뷰가 더 오래 걸리지?"
-- **Persistence** — `AUTO_DECIDE_ENABLED`는 outer iter 간 `outer_log.md`로 복원(§8.12) — bash 변수 휘발성 대응.
-
-### /cc-cmds:design-review-lite
-
-**Usage**: `/cc-cmds:design-review-lite <design-doc-path> [--base] [--changes]`
-
-| Option | Default | Summary |
-| --- | --- | --- |
-| `<design-doc-path>` | (required) | 리뷰 대상 설계 문서 경로 (`.md`) |
-| `--base` | off | 기존 내용 일관성만 검증; 신규 구현 세부 제안 금지 (BASE MODE CONSTRAINT) |
-| `--changes` | off | 이미 리뷰된 문서의 수정 사항으로 리뷰 초점 이동: 파급 정합성 + 변경 자체 재질의 (CHANGES MODE CONSTRAINT). `--base`와 직교·조합 가능 |
 
 ### /cc-cmds:design-system
 

@@ -13,7 +13,7 @@ options:
 
 Author the implementation-detail design document `docs/{slug}-fe/impl-design.md` that bridges Claude Design's HTML prototype to actual code in the target stack. This is a **lightweight sibling of `/cc-cmds:design`** — it reuses the same agent-team protocol (`_common/agent-team-protocol.md`) and cleanup machinery (`_common/team-cleanup.md`) but skips the Step 1 greenfield interview because its inputs are concrete (the design-ingest extract + base design document + DS workspace + codebase).
 
-The decisions in scope are component mapping (HTML prototype → codebase components), state management, routing, file layout, token/component usage rules (DS-copy vs `var()`-reference based on the pattern design-ingest detected), and test strategy. These are design judgments the downstream `/cc-cmds:implement` would refuse to make ("don't deviate from the design document") — so they belong here, in a markdown design output that `/cc-cmds:design-review` can then audit.
+The decisions in scope are component mapping (HTML prototype → codebase components), state management, routing, file layout, token/component usage rules (DS-copy vs `var()`-reference based on the pattern design-ingest detected), and test strategy. These are design judgments the downstream `/cc-cmds:implement` would refuse to make ("don't deviate from the design document") — so they belong here, in a markdown design output that `/cc-cmds:design-audit` can then audit.
 
 All team discussion and inter-agent communication is in English to optimize token usage. User-facing communication (proposal, presentation) and the saved `impl-design.md` are in Korean.
 
@@ -100,7 +100,7 @@ Adjust roles based on the feature's character (e.g., if the feature is data-heav
 
 > "적용 설계 작성 완료: `docs/{slug}-fe/impl-design.md` (기준 DS 버전: `<version>`).
 >
-> 다음 단계: `/cc-cmds:design-review docs/{slug}-fe/impl-design.md`로 구현 세부 사항을 검증한 뒤, `/cc-cmds:implement docs/{slug}-fe/impl-design.md`로 구현을 시작하세요."
+> 다음 단계: `/cc-cmds:design-audit docs/{slug}-fe/impl-design.md`로 구현 세부 사항을 감사한 뒤, `/cc-cmds:implement docs/{slug}-fe/impl-design.md`로 구현을 시작하세요."
 
 Substitute `{slug}` and `<version>` with actual values.
 
