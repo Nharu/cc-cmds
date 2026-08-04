@@ -28,7 +28,9 @@ Internal 5-level → document 4-level mapping:
 
 ## Category Tags
 
-Findings use `[category]` tags from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`.
+Findings use `[category]` tags from: `security`, `performance`, `code-quality`, `logic`, `error-handling`, `type-safety`, `testing`, `api-contract`, `concurrency`, `data-integrity`, `design-conformance`.
+
+`design-conformance` is available **only** when a design document was supplied to the review (context-package item 17). Without that document there is no baseline to compare against, so the tag is unusable rather than merely unused.
 
 When CI has detected failures that a reviewer confirms, add `[CI-CONFIRMED]` tag to distinguish from independent findings.
 
@@ -71,7 +73,7 @@ Each P0~P2 finding carries a self-contained, paste-ready GitHub comment directly
 ```
 
 - **Label outside the blockquote**: the `💬 붙여넣기용 코멘트` label is a plain paragraph; the blockquote carries only the comment body. Copying just the blockquote pastes cleanly with no meta-label contamination (works for both raw-markdown copy and rendered-selection copy).
-- **Title = prose only** (no `파일:라인`); **location (`파일:라인`) goes in the first mention inside `[근거]`** → self-contained for both inline comments (line implicit) and general PR comments (path needed).
+- **Title = prose only** (no `파일:라인`); **location (`파일:라인`) goes in the first mention inside `[근거]`** → self-contained for both inline comments (line implicit) and general PR comments (path needed). A `design-conformance` finding additionally names the **design-document section** it diverges from, in that same `[근거]` block and alongside the source location — its claim is a mismatch between two places, so one anchor cannot state it. Cite the section by heading and identifier, never by line number: the design document is user-local and its line numbers do not survive to the reader.
 - **Container = blockquote** (never a code fence — monospace rendering would destroy bold / inline-code formatting).
 - **Standalone reading**: the comment must read on its own, with no cross-reference such as "위 분석 참조".
 

@@ -6,7 +6,7 @@ Single source of truth for **out-of-document sidecar files** — the `docs/<kind
 
 **What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: paths, grammars, schemas, predicates, and write mechanics. It deliberately excludes *workflow prose* — when a writer decides to write, what it reports to the user, and how a reader routes what it finds all live in the owning SKILL.md. A skill that writes or reads a sidecar Reads this file; it never re-authors the grammar.
 
-**Consumption matrix.** `implement` Reads `## 1` + `## 2` at a verification failure branch, conditionally (writer of the re-convergence sidecar) — **not yet landed**. `design` Reads `## 1` + `## 2` at its re-convergence sidecar check (reader) — **not yet landed**. `implement`'s temporary visual-fidelity gate carries a **partial** copy of the `## 1` mechanics inline — §1.1 slug, §1.2 guard, §1.3 in its same-directory / whole-file core only, §1.6 out-of-tree artifacts; **§1.4 lifetime and §1.5 version-and-migration have no counterpart there** — and is **deliberately not retargeted** to cite this file: that section carries its own removal checklist, so replacing its inline mechanics with a citation would widen the blast radius for no permanent gain — correcting a path anchor inside it is a different and far smaller act, and is not what this declines. The two copies accordingly diverge on at least these six axes, every one of them accepted as-is: (1) **slug rules** — two rules addressing two different directories, each internally deterministic; (2) **the provenance guard** — here it is defined over a named document key covering both derivation branches and is re-evaluated at the commit point (§1.2 with §1.3), there it is a check-then-act whose comparand is undefined on the non-repo branch; (3) **the write protocol** — both require a same-directory `mktemp` and a whole-file `mv`, but only this file adds the plain-`mv`-never-`mv -n` rule, the post-`mv` read-back, the compare-and-swap at the commit point with a bounded retry and a defined exhaustion disposition, and the stated basis for declining a lock; (4) **header grammar** — `owner=` there, `writer=`/`reader=` here; inert, because no predicate in this repo matches header field 2; (5) **the version token** — emitted and never read there, gated in both directions here; (6) **the header's trailing provenance clause** — repo-conditional there, repo-agnostic here. **This file is the newer and stronger of the two — a new sidecar is modelled on this file, never on the `implement` copy.**
+**Consumption matrix.** `implement` Reads `## 1` + `## 2` at a verification failure branch, conditionally (writer of the re-convergence sidecar) — **not yet landed**. `design` Reads `## 1` + `## 2` at its re-convergence sidecar check (reader) — **not yet landed**. `design-audit` Reads `## 1` at Step 1, unconditionally, as both writer and reader of `<kind>=design-audit` (the audit report keyed to the document it audits) — **landed**; it is the first landed consumer, so `## 1` is live contract rather than anticipated contract from that point on. Its payload schema is not in this file: an audit report is a single-writer artifact whose block grammar the owning SKILL.md carries, and `## 1` alone is what it needs. `implement` also Reads `## 1` + `## 3` when it records a deviation from the design document (writer of the design-drift sidecar) — **landed**; and `review` Reads `## 1` + `## 3` when a design document is supplied to it, to ground a `design-conformance` finding (reader, never a writer) — **landed**. `implement`'s temporary visual-fidelity gate carries a **partial** copy of the `## 1` mechanics inline — §1.1 slug, §1.2 guard, §1.3 in its same-directory / whole-file core only, §1.6 out-of-tree artifacts; **§1.4 lifetime and §1.5 version-and-migration have no counterpart there** — and is **deliberately not retargeted** to cite this file: that section carries its own removal checklist, so replacing its inline mechanics with a citation would widen the blast radius for no permanent gain — correcting a path anchor inside it is a different and far smaller act, and is not what this declines. The two copies accordingly diverge on at least these six axes, every one of them accepted as-is: (1) **slug rules** — two rules addressing two different directories, each internally deterministic; (2) **the provenance guard** — here it is defined over a named document key covering both derivation branches and is re-evaluated at the commit point (§1.2 with §1.3), there it is a check-then-act whose comparand is undefined on the non-repo branch; (3) **the write protocol** — both require a same-directory `mktemp` and a whole-file `mv`, but only this file adds the plain-`mv`-never-`mv -n` rule, the post-`mv` read-back, the compare-and-swap at the commit point with a bounded retry and a defined exhaustion disposition, and the stated basis for declining a lock; (4) **header grammar** — `owner=` there, `writer=`/`reader=` here; inert, because no predicate in this repo matches header field 2; (5) **the version token** — emitted and never read there, gated in both directions here; (6) **the header's trailing provenance clause** — repo-conditional there, repo-agnostic here. **This file is the newer and stronger of the two — a new sidecar is modelled on this file, never on the `implement` copy.**
 
 ---
 
@@ -308,3 +308,56 @@ The key is therefore **nominal and deliberately unstable**, and the three mutati
 > **A sidecar field is warranted iff the fact it carries — as that fact held at `관측 일시` — cannot be recovered from disk at read time.**
 
 Tree state at observation time is unrecoverable — the tree keeps changing — so it is a field. The design document's **current** state is one grep away (§2.8), so it is **not** a field. What the document said at `관측 일시` is a different fact and is not recoverable at all, which is what warrants the verbatim copies of §2.2 (`주장`, `기대 결과`, `실패 시 영향`, `분류`, the `R<n>` heading); §2.3 already fixes their semantics — true at `관측 일시`, claiming nothing about now. The observation payload, the substitution map, and the recipe **as actually run** are unrecoverable, so they are fields. The recipe's text as the document carries it is **not** a field: it is current, recoverable, and in any case determined by field 15 together with field 16. Apply the test to any newly proposed field rather than re-litigating a rejected one: **a stored snapshot of another mutating file presented as that file's current state** is the shape this test exists to exclude.
+
+---
+
+## 3. The design-drift sidecar — `docs/design-drift/{slug}.md`
+
+Records where an implementation **knowingly diverged** from the design document it was built from, so an independent reviewer can see the divergence instead of having to rediscover it. Header:
+
+```
+# 설계 이탈 기록 — {slug}
+<!-- cc-design-drift v1; writer=implement; reader=review; owner-doc=<document key>; NOT a design doc; mechanism-local, never staged by a skill -->
+```
+
+**Why this is not `## 2` with different fields.** The re-convergence sidecar is a two-surface artifact — `implement` writes, `design` writes back a disposition — which is what forces its mutable-region/frozen-tail split and its close write form. This one has **one writer and a read-only reader**: `review` consumes the file to ground a `design-conformance` finding and never writes to it. Every block is therefore frozen from the instant it is appended, there is no `상태` field, no disposition, and no close form. Keeping the two payload schemas separate is what lets each stay this simple.
+
+**Self-scoring is not what this creates.** The implementer only *reports* the divergence; the judgment of whether it was acceptable belongs to a reviewer who did not write the code. A block is evidence, not a verdict — nothing in this schema lets the writer mark its own divergence approved-on-the-merits, and the one approval field records a **user's** approval, which the writer transports rather than issues.
+
+### 3.1 Deviation blocks
+
+Deviations accumulate over the life of an implementation, so blocks **accumulate in one file** — one file per design document. Each block is `## 이탈 <N>`, where `N` is `max(existing) + 1` re-derived from `$SNAP`, the snapshot §1.3 takes on this attempt, under the same rules and the same fence-aware tokenizer §2.1 uses. On the creation write the maximum is over the empty set and `N` is 1.
+
+### 3.2 Field schema — 8 fields, fixed order
+
+| # | Field | Required | Notes |
+| --- | --- | --- | --- |
+| 1 | `관측 일시` | always | ISO date; the reference point for every other field in the block |
+| 2 | `티어` | always | which binding tier the deviated-from material sat in, **at `관측 일시`** |
+| 3 | `대상 섹션` | always | the design document section identity that determined field 2 — a section heading, plus the decision or issue identifier where the section has them |
+| 4 | `설계 진술` | always | what the design said, **verbatim**, re-read from the document at write time and copied — never restated from context |
+| 5 | `구현 결과` | always | what was built instead |
+| 6 | `사유` | always | why the divergence was taken |
+| 7 | `승인` | always | see the closed vocabulary below |
+| 8 | `영향 범위` | always | the repo paths the divergence lands in, so a reviewer can scope its blast radius without inferring it |
+
+Field lines use the CANON rendering of `_common/verification.md`: bold key, no leading bullet, one ASCII space after the colon. A payload-bearing field is fenced per §2.5, whose fence and truncation rules apply here unchanged.
+
+**Every block is frozen from the instant it is appended.** No field has a mutable region and no reader writes to this file, so §2.3's frozen-tail invariant applies to the whole block rather than to a tail of it.
+
+### 3.3 Closed vocabularies
+
+| Field | Values |
+| --- | --- |
+| `티어` | `구속` \| `참고` |
+| `승인` | `사용자 승인` \| `불요(참고 티어)` |
+
+`승인` has exactly two values because the tier already decides which is admissible: a `구속`-tier deviation is only ever taken under explicit user approval, and a `참고`-tier deviation never needs one. A `구속`-tier block carrying `불요(참고 티어)` is therefore **malformed**, not merely unusual — it asserts a binding-tier divergence that nobody approved, which is the one combination this schema exists to make unwritable.
+
+### 3.4 Write form and its diff gate
+
+One write form: **append**. The writer emits a whole new `## 이탈 <N>` block with all 8 fields, through the compare-and-swap of §1.3. Its diff gate is the §2.6 append gate applied to this schema — **0 removed lines**, and every added line inside the new block. A write that removes or edits a line of an existing block fails the gate: `## 3` has no rewrite form, and `sed -i ''` is forbidden here for the same reason §2.6 forbids it.
+
+### 3.5 Reader predicate
+
+`review` reads the file only after the §1.2 read guard passes. A block is **groundable** iff it is well-formed under §3.2 and §3.3; a malformed block is surfaced to the user rather than consumed, never silently skipped. There is no unprocessed/processed distinction — the reader takes no disposition, so every groundable block is available on every read, and a reviewer that has already seen one is not a state this file tracks.

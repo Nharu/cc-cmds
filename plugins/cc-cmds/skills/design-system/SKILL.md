@@ -161,7 +161,7 @@ Phase-2 re-runs overwrite `tokens.css`, `tokens.md`, `components.md`, `manifest.
 
 ## EXEMPT rationale (no `## Control-Flow Invariants` heading needed)
 
-This skill is linear in both phases. Phase auto-detection reads disk state on entry; there is no in-session loop variable, no termination counter, no compaction-fragile contract. Phase 1 emits a file and ends; phase 2 reads the parser record, branches once on its content, writes the workspace, and ends. The skill therefore belongs to the majority of skills exempted from `lint-skill-invariants.sh` rule (A), which targets only the `design-review ↔ design-review-lite` pair's inline bash-variable termination contract.
+This skill is linear in both phases. Phase auto-detection reads disk state on entry; there is no in-session loop variable, no termination counter, no compaction-fragile contract. Phase 1 emits a file and ends; phase 2 reads the parser record, branches once on its content, writes the workspace, and ends. The skill therefore belongs to the majority of skills exempted from `lint-skill-invariants.sh` rule (A), which targets skills whose termination or phase-transition contract could be summarized away by post-conversation compaction. (Rule **(B)**, the separate phrase-sync rule, is the one that targets a registered base↔lite pair; it is dormant with no pair registered.)
 
 ## Constraints
 

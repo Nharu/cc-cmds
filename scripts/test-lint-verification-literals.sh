@@ -2,9 +2,9 @@
 # Test scripts/lint-verification-literals.sh against
 # tests/fixtures/lint-verification-literals/.
 #
-# Each fixture is a SKILLS_ROOT-shaped directory (containing _common/,
-# design-review/, design-review-lite/ as needed). Convention: fixture directory
-# name encodes the expected exit code.
+# Each fixture is a SKILLS_ROOT-shaped directory (containing _common/ and
+# implement/ as needed). Convention: fixture directory name encodes the
+# expected exit code.
 #   T-VERIF-OK-*   → expected exit 0
 #   T-VERIF-FAIL-* → expected exit 1
 #

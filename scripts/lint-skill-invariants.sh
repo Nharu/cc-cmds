@@ -33,8 +33,8 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # Skills exempt from rule (A). Rule (A) targets skills whose control-flow
 # contract can be summarized away by post-conversation compaction, producing a
 # silent mis-step. Two contract kinds qualify a skill for rule (A): (1) a
-# termination contract held in in-session bash variables (e.g., design-review's
-# `consecutive_no_major` / `INNER_EXIT_REASON`); and (2) phase-transition /
+# termination contract held in in-session bash variables (a convergence
+# predicate or an exit-reason enum the model must keep); and (2) phase-transition /
 # turn-yield invariants that govern whether the skill auto-advances or yields
 # between steps (e.g., `design`'s Step 4 → Step 5 auto-entry and Step 6 entry
 # notice-and-yield) — these carry no in-session counter yet still mis-fire if a
@@ -59,10 +59,16 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     fail-closed defaults — that is the termination guarantee, not the
 #     TaskGet-recovered cap/verdict state (which only restores it across
 #     compaction). Remove this clause when that loop leaves implement.
-# In effect, the non-exempt members are the `design-review ↔ design-review-lite`
-# pair (which rule B additionally enforces via phrase sync), `design` (whose
-# phase-transition invariants live in its top `## Control-Flow Invariants`), and
-# `design-analyze`. The last is a special case: its load-bearing invariant
+# In effect, the non-exempt members are `design` (whose phase-transition
+# invariants live in its top `## Control-Flow Invariants`), `design-audit`, and
+# `design-analyze`. `design-audit` is non-exempt for the
+# core reason: its termination state is NOT recoverable from the ledger, so it
+# does not qualify for the multi-round agent-team exemption above. A ledger
+# whose rows all read `done` at the fan-out phase is byte-identical whether the
+# correct next act is "reconcile once and stop" or "spawn another round", and
+# the model's default on a pile of findings is to keep reviewing — so a
+# summarized-away non-recursion rule silently restores the unbounded loop that
+# skill exists to replace. `design-analyze` is a special case: its load-bearing invariant
 # (read-only source) is a *safety* invariant, not a control-flow/termination
 # contract, yet it borrows rule (A)'s first-5K position protection for the same
 # summarize-away reason — unlike the EXEMPT `review` (which mutates nothing it
@@ -155,30 +161,18 @@ done
 # missing lite (e.g., during incremental rollout) silently skips the pair so
 # this script remains green for commit-by-commit work.
 
-PAIRS=(
-  "design-review|design-review-lite"
-)
+# DORMANT. The only pair this rule ever carried was the deleted
+# `design-review ↔ design-review-lite`, whose entire REQUIRED_PHRASES set was
+# that pair's loop-termination vocabulary and went with it. The machinery is
+# kept because it is the registration point for any future base↔lite pair that
+# duplicates a control-flow contract — but note that duplicating one is now the
+# thing this repo avoids, so an empty PAIRS is the expected steady state, not a
+# gap waiting to be filled. Registering a pair requires populating BOTH arrays.
+PAIRS=()
 
-# MAINTENANCE: adding a phrase here requires a matching sentence in
-# tests/fixtures/lint-skill-invariants/T-INV-OK-1/design-review{,-lite}/SKILL.md
-REQUIRED_PHRASES=(
-  'consecutive_no_major >= 2'
-  'inner_converged_cleanly()'
-  'severity (post-upgrade) ∈ {critical, major}'
-  'INNER_EXIT_REASON == "clean-convergence"'
-  'INNER_EXIT_REASON == "safety-limit-fresh-outer"'
-  'INNER_EXIT_REASON == "safety-limit-outer-terminate"'
-  'no look-ahead spawn'
-  'Agent() actually returned'
-  'round-N summary line in review_log.md'
-  'round-N proposals file is absent'
-  'the current classification is WEDGED'
-  'lostwrite_respawn_count'
-  '`K65`'
-  'restoring the lost round-N file rather than diverging to N+1'
-  'escalate to the user via the Step 16 3-option prompt under its'
-  'pinned by the main session at spawn as {round} = inner_round'
-)
+# MAINTENANCE: adding a phrase here requires a matching sentence in the
+# `## Control-Flow Invariants` body of BOTH members of every registered pair.
+REQUIRED_PHRASES=()
 
 # Extract the Control-Flow Invariants section body of a SKILL.md file.
 # Body = lines from the heading match through the next "^## " heading (exclusive)
@@ -193,7 +187,11 @@ extract_invariants_body() {
   ' "$file"
 }
 
-for pair in "${PAIRS[@]}"; do
+# `${PAIRS[@]+...}` rather than a bare `"${PAIRS[@]}"`: under `set -u`, bash 3.2
+# (the macOS system bash) treats an empty array expansion as an unbound variable
+# and aborts, while bash 5 on CI does not — so the bare form would pass CI and
+# fail locally.
+for pair in ${PAIRS[@]+"${PAIRS[@]}"}; do
   base_dir="${pair%%|*}"
   lite_dir="${pair##*|}"
   base_file="$skills_root/$base_dir/SKILL.md"
@@ -209,7 +207,7 @@ for pair in "${PAIRS[@]}"; do
   lite_body=$(extract_invariants_body "$lite_file")
 
   pair_failed=0
-  for phrase in "${REQUIRED_PHRASES[@]}"; do
+  for phrase in ${REQUIRED_PHRASES[@]+"${REQUIRED_PHRASES[@]}"}; do
     if [[ "$base_body" != *"$phrase"* ]]; then
       echo "FAIL: $base_file — phrase missing from Control-Flow Invariants: $phrase" >&2
       fail=1

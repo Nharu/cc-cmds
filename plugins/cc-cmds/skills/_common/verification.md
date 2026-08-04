@@ -1,12 +1,12 @@
 # In-Session Verification Contract (Shared SOT)
 
-Single source of truth for the in-session verification mechanism: the claim taxonomy, the frozen verdict/residual vocabulary, the verification ledger and residual-item schemas, recipe self-containment rules, the isolated-worktree mechanics, the well-formedness predicate, the drift ladder, and the transformation move. Both **emitters** (`design`, `design-lite`) and the **consumer** (`implement`) and the **checkers** (`design-review`, `design-review-lite`) cite this file.
+Single source of truth for the in-session verification mechanism: the claim taxonomy, the frozen verdict/residual vocabulary, the verification ledger and residual-item schemas, recipe self-containment rules, the isolated-worktree mechanics, the well-formedness predicate, the drift ladder, and the transformation move. Both **emitters** (`design`, `design-lite`), the **consumer** (`implement`), and the **checker** (`design-audit`) cite this file.
 
 **Posture.** Verification failure means the design must change. So a claim that can be settled *today* — against the current repo or environment, by reading, running unmodified tooling, or a throwaway experiment, with no production implementation present — is settled inside the design session and recorded in the verification ledger. Only claims that genuinely cannot be settled until implementation artifacts exist are encoded as residual items for the consumer to settle, fail-fast, at the start of implementation.
 
-**What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: vocabulary, schemas, predicates, and execution mechanics. It deliberately excludes *workflow prose* — the Quality-Gate / pre-save-sweep procedures, the consumer's gate flow and failure menus, and the lite budget / split / menu — each of which lives in the owning SKILL.md. Every excerpt or inline copy of this contract elsewhere MUST carry a provenance line naming this file; the frozen-literal lists are defined ONLY here and copies cite, never re-author, them.
+**What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: vocabulary, schemas, predicates, and execution mechanics. It deliberately excludes *workflow prose* — the Quality-Gate procedure, the pre-save sweep's **trigger point, scope and failure paths**, the consumer's gate flow and failure menus, and the lite budget / split / menu — each of which lives in the owning SKILL.md. The sweep's **pass predicate** is the single carve-out and lives here as §10: it is a predicate rather than a procedure, and it had drifted into two inline copies — exactly the shape this file exists to collapse. Every excerpt or inline copy of this contract elsewhere MUST carry a provenance line naming this file; the frozen-literal lists are defined ONLY here and copies cite, never re-author, them.
 
-**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-review` excerpts the detection grammar into `references/06-review-agent-prompt.md`. `design-review-lite` inlines the detection grammar (0-Read architecture). `implement` Reads it and uses the `## Residual-item contract` section.
+**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-audit` Reads §3.4 and §5.2 by reference from its deterministic-checks step and deliberately keeps no excerpt — an excerpt is a copy, and a copy is a parity obligation. `implement` Reads it and uses the `## Residual-item contract` section.
 
 ---
 
@@ -85,7 +85,7 @@ The free-prose `차단 사유` is ALWAYS mandatory alongside — it is the audit
 
 ### 3.3 Terminal-token reuse
 
-An implement flip reuses the ledger terminals (`검증됨(통과)` / `반증됨(실패)`) verbatim. Provenance is guaranteed structurally — not by a token variant — by **section + mandatory note line**: implement's only write surface is the R-section, so an R-item's terminal token can only have been written by implement. **If an R-item carries a terminal token but the adjacent `**구현 시 검증 기록**:` line is absent, it is MALFORMED** (well-formedness predicate, enforced by design-review). This adjacency check carries no detection logic of its own — it rides the §3.4 grammar, so the note-line key `구현 시 검증 기록` is a member of that grammar's instantiated key set (a legacy bullet/no-bold note line therefore still satisfies adjacency and is not false-flagged).
+An implement flip reuses the ledger terminals (`검증됨(통과)` / `반증됨(실패)`) verbatim. Provenance is guaranteed structurally — not by a token variant — by **section + mandatory note line**: implement's only write surface is the R-section, so an R-item's terminal token can only have been written by implement. **If an R-item carries a terminal token but the adjacent `**구현 시 검증 기록**:` line is absent, it is MALFORMED** (well-formedness predicate; enforced at save time by the emitters' pre-save sweep and afterwards by `design-audit`'s deterministic checks, which apply §5.2 by reference). This adjacency check carries no detection logic of its own — it rides the §3.4 grammar, so the note-line key `구현 시 검증 기록` is a member of that grammar's instantiated key set (a legacy bullet/no-bold note line therefore still satisfies adjacency and is not false-flagged).
 
 ### 3.4 Detection grammar (the only sanctioned idiom)
 
@@ -184,7 +184,7 @@ Exactly three:
 
 1. **filter NO** (never attempted) → `잔여 사유: 구현 필요`.
 2. **verification-attempt exit** → `잔여 사유: 검증 차단` (or a lite budget reason). The attempt is recorded in `차단 사유` as `attempted: <what ran>, blocked at: <where>`; it does NOT become a V-entry.
-3. **design-review `잔여 항목으로 기록` disposition** → `잔여 사유: 검증 차단` with the standard blocked-reason prose `리뷰 시점 사용자 이연 — <YYYY-MM-DD>`.
+3. **`design-audit` reconciliation routing to the `implement` pre-gate** → `잔여 사유: 검증 차단` with the standard blocked-reason prose `감사 시점 사용자 이연 — <YYYY-MM-DD>`. The audit's single reconciliation pass routes each unique defect to exactly one named owner, and this is the arm that lands in the residual encoding.
 
 The ledger holds only performed-and-completed entries; a blocked attempt lives in an R-item's `차단 사유`.
 
@@ -192,7 +192,7 @@ The ledger holds only performed-and-completed entries; a blocked attempt lives i
 
 An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
 
-**Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a design-review criterion #7(e) **trivial** style warning, scoped to the current review round's edited lines, never via this predicate.
+**Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a **trivial** style note by whatever pass is reading the document, scoped to lines that pass actually edited, never via this predicate and never as a retro-flag of untouched lines.
 
 ---
 
@@ -223,7 +223,7 @@ Today's rules, unweakened. ALLOWED additionally includes (c)'s WebFetch / extern
 
 ## 7. Drift ladder (3-rung + flake pre-classification)
 
-Consumed by `implement` (verbatim) and by `design-review` run-now (verbatim — no review-local adaptation).
+Consumed by `implement` (verbatim). Any other pass that re-runs a recorded recipe consumes it verbatim too — no pass-local adaptation.
 
 - **Rung 1 — verbatim execution**: run the recipe as recorded. **An observation that contradicts the expectation is NOT drift — it is a FAIL** (an environment change breaking an assumption is exactly the gate's reason to exist). A transient failure of an external-category recipe gets one retry, then Rung 3 (synthesize the `관측 시점` timestamp + `유효 조건`).
 - **Rung 2 — bounded re-derivation**: **location identifiers only** (file paths, line numbers, directory names) may be substituted, and each substitution needs mechanical evidence (a verbatim hit at the new location, or a rename visible via `git log --follow`). Any change to claim text / predicate / expected result → Rung 3. **One adaptation pass only** (an adapted recipe that then fails to run → Rung 3 — repeated adaptation is experiment re-derivation). The substitution map (old→new) is recorded on the W2 line; the full adapted recipe text stays in implement's plan/log (outside the document).
@@ -249,3 +249,20 @@ A recipe must be recordable as a self-contained inline recipe; if it cannot (too
 - **throwaway duty**: ship the recipe, not the code — `implement` re-derives from the recipe. The anti-creep tell "oh and here's the code, just use it" is implementation, not verification.
 - **pre-registration**: record a falsifiable `주장` + a pass/fail `기대 결과` **before** running — the artifact is verdict+evidence, not an artifact.
 - **verified ≠ correct**: a verdict is scoped to the claim's *exact wording*; cross-review challenges experiment representativeness.
+
+---
+
+## 10. Pre-save sweep pass conditions (shared predicate)
+
+The sweep *procedure* — when it fires, what it scopes over, and what happens on failure — lives in each owning SKILL.md, and the failure paths are deliberately divergent. What is **shared** is the pass predicate, defined once here so no copy can drift. `design` and `design-lite` both cite this section and neither restates the conditions.
+
+A sweep **PASSES** iff all four hold over the synthesis draft:
+
+1. **Save-forbidden token absent** — both literal forms of `미검증` are document-wide 0: the full-line field form (the §3.4 ERE with `<value>` pinned to the literal `미검증`) and the inline-tag form `[검증 등급: 미검증]` (`grep -F`). This is the absence-proof exception of §3.4.
+2. **Every verifiable load-bearing claim is anchored** — 0 verifiable load-bearing claims without a `(§검증 기록 V<n>)` or `(§구현 시 검증 항목 R<n>)` anchor reference (§4.1).
+3. **Residual encoding complete** — every `구현 시 검증` item is present in the `## 구현 시 검증 항목` residual encoding (§5).
+4. **Two-command boundary gate == baseline** (§6) — main `git status --porcelain` == the pre-workflow baseline, and `git worktree list --porcelain` shows 0 `cc-design-exp-` entries.
+
+Any condition failing makes the sweep **FAIL**, and the owning SKILL.md's failure path takes over from there — `design` allows at most one re-convergence cycle per failing claim before escalating; `design-lite` routes to its Round 3 and then to a 3-option escalation. Those paths are economically divergent by design and are **not** unified here.
+
+**Why this is the one carve-out from the file's contracts-only posture.** A pass predicate is a predicate, not a procedure: it is exactly the kind of thing this file exists to hold. It had drifted into two inline copies, which is the same structure this repo treats as a maintenance tax everywhere else — so collapsing it by reference removes the copy rather than adding a lint to keep two copies honest. **Do not add a coupling lint for this section**: with no second copy there is nothing to synchronize, and registering a new parity pair would reinstate the tax the collapse just removed.

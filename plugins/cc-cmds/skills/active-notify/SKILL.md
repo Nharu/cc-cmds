@@ -54,7 +54,7 @@ bash active-notify/scripts/notify.sh cancel
 
 Argument order for `arm`: `request_text` first (verbatim user phrase that
 triggered ARM), `context_hint` second (short summary of the user-asked
-task — e.g. "build", "design-review iteration"), optional `mode` third,
+task — e.g. "build", "design audit"), optional `mode` third,
 optional `--count=N` parse-anywhere flag. Invalid mode values (anything
 other than `single`/`repeat`) silent-normalize to `single`. `--count=N`
 out-of-bounds inputs (non-integer, ≤0, >16) silent-normalize to 1 — same

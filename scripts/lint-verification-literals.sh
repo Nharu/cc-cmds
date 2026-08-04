@@ -1,28 +1,23 @@
 #!/usr/bin/env bash
-# Lint the frozen in-session-verification literals across their copies.
+# Lint the frozen in-session-verification literals against the SOT and its one
+# live consumer copy.
 #
 # The verification vocabulary (grades, residual reasons, execution-caution
 # classes, classification tokens, the verification-timing enum, the field key,
 # the section headings, and the detection-grammar markers) is defined ONCE in
-# the SOT `_common/verification.md` and excerpted/inlined into two review
-# copies (`design-review/references/06-review-agent-prompt.md` and
-# `design-review-lite/SKILL.md`). One further live copy exists outside the
-# review pair: the routing prose of `implement/SKILL.md` partitions on the
-# verification-timing enum, so that value and the pinned value arm that detects
-# it are both pinned there too, region-scoped to the 1.5a bullet (see (3)).
-# Semantic prose drift cannot be linted, but
-# the frozen byte-exact literals can — this script pins them so a rename in one
-# copy that is not mirrored to the others fails CI.
+# the SOT `_common/verification.md`. Exactly one live inline copy exists: the
+# routing prose of `implement/SKILL.md` partitions on the verification-timing
+# enum, so that value and the pinned value arm that detects it are both pinned
+# there too, region-scoped to the 1.5a bullet (see (2)). Semantic prose drift
+# cannot be linted, but the frozen byte-exact literals can — this script pins
+# them so a rename that is not mirrored to the consumer fails CI.
 #
-# Models `scripts/lint-skill-invariants.sh` rule (B): a phrase-presence sync
-# check between copies. As in rule (B) — which extracts the
-# `## Control-Flow Invariants` section body and checks phrases within it — the
-# drift target (the two review copies) is checked region-scoped, not whole-file:
-# the criterion-#7 literals must appear inside each copy's inlined review-agent
-# prompt block (delimited by the reviewer sentinel line through the next code
-# fence), so a token surviving only in unrelated prose does not mask a deletion.
-# The SOT is NOT a sync target but the authority, so its completeness check is
-# whole-file ("is every frozen token defined somewhere in the SOT").
+# Region-scoping follows `scripts/lint-skill-invariants.sh` rule (B), which
+# extracts a named section body and checks phrases within it: a token surviving
+# only in unrelated prose elsewhere in the file must not mask a deletion from
+# the region that matters. The SOT is NOT a sync target but the authority, so
+# its completeness check is whole-file ("is every frozen token defined
+# somewhere in the SOT").
 #
 # Posture: if the SOT is absent (mechanism not yet rolled out / incremental
 # commit), the whole check is a silent skip so the script stays green; it
@@ -44,8 +39,6 @@ repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
 SOT="$skills_root/_common/verification.md"
-EXCERPT="$skills_root/design-review/references/06-review-agent-prompt.md"
-INLINE="$skills_root/design-review-lite/SKILL.md"
 CONSUMER="$skills_root/implement/SKILL.md"
 
 # SOT absent → mechanism not present in this tree → silent skip.
@@ -92,29 +85,7 @@ SOT_LITERALS=(
   '검증불가('
 )
 
-# (2) Criterion-#7 literals shared across the two review copies. Checked inside
-# each copy's review-agent prompt block (region-scoped, per rule (B)).
-PROMPT_SHARED=(
-  '미검증'
-  '검증 등급'
-  '§검증 기록'
-  '§구현 시 검증 항목'
-  '| verification]'
-  '| verification-bookkeeping]'
-)
-
 fail=0
-
-# Extract a copy's inlined review-agent prompt block: from the reviewer
-# sentinel line through the next code fence (exclusive). Mirrors rule (B)'s
-# section-body extraction.
-extract_prompt_block() {
-  awk '
-    /^```[[:space:]]*$/ { if (incap) exit }
-    /You are a design document reviewer\./ { incap = 1 }
-    incap { print }
-  ' "$1"
-}
 
 # assert_in_file <literal> <file> <label>
 assert_in_file() {
@@ -132,7 +103,7 @@ assert_in_file() {
 
 # assert_in_text <literal> <text> <label> [region]  (region-scoped presence)
 assert_in_text() {
-  local literal="$1" text="$2" label="$3" region="${4:-review-agent prompt block}"
+  local literal="$1" text="$2" label="$3" region="${4:-the checked region}"
   if [[ "$text" != *"$literal"* ]]; then
     echo "FAIL: $label — frozen literal missing from $region: $literal" >&2
     fail=1
@@ -144,37 +115,15 @@ for lit in "${SOT_LITERALS[@]}"; do
   assert_in_file "$lit" "$SOT" "_common/verification.md (SOT)"
 done
 
-# (2) Review-copy sync, region-scoped to the prompt block.
-if [[ ! -f "$EXCERPT" ]]; then
-  echo "FAIL: references/06-review-agent-prompt.md (excerpt) — file not found: $EXCERPT" >&2
-  fail=1
-  excerpt_block=""
-else
-  excerpt_block=$(extract_prompt_block "$EXCERPT")
-fi
-
-if [[ ! -f "$INLINE" ]]; then
-  echo "FAIL: design-review-lite/SKILL.md (inline) — file not found: $INLINE" >&2
-  fail=1
-  inline_block=""
-else
-  inline_block=$(extract_prompt_block "$INLINE")
-fi
-
-for lit in "${PROMPT_SHARED[@]}"; do
-  assert_in_text "$lit" "$excerpt_block" "references/06-review-agent-prompt.md (excerpt)"
-  assert_in_text "$lit" "$inline_block" "design-review-lite/SKILL.md (inline)"
-done
-
-# (3) Consumer sync — deliberately narrow. The verification-timing enum is the
-# only frozen vocabulary with a live inline copy outside the two review copies:
-# implement's 1.5a routing prose partitions on it. Pin ONLY what that partition
-# is made of — 14 of the 26 SOT_LITERALS (the residual reasons, the
-# execution-caution classes, the classification tokens, and the `## 검증 기록`
-# heading) legitimately do not appear in that file at all, so a whole-array
-# check would fail on day one. (The five grade tokens DO appear there; they are
-# out of scope here not because they are absent but because implement's copy of
-# them is pinned by the Step-3 flip-gate prose, not by the 1.5a partition.)
+# (2) Consumer sync — deliberately narrow. The verification-timing enum is the
+# only frozen vocabulary with a live inline copy outside the SOT: implement's
+# 1.5a routing prose partitions on it. Pin ONLY what that partition is made of —
+# 14 of the 26 SOT_LITERALS (the residual reasons, the execution-caution
+# classes, the classification tokens, and the `## 검증 기록` heading)
+# legitimately do not appear in that file at all, so a whole-array check would
+# fail on day one. (The five grade tokens DO appear there; they are out of scope
+# here not because they are absent but because implement's copy of them is
+# pinned by the Step-3 flip-gate prose, not by the 1.5a partition.)
 # Region-scoped like rule (B), NOT whole-file: the values also occur in the
 # 1.5b / Step-2 / Step-3 prose downstream, so a whole-file check stays green
 # even when the 1.5a partition itself has been reverted to its two-bucket form
@@ -242,7 +191,7 @@ if (( fail == 0 )); then
   else
     consumer_msg="0 consumer (implement/SKILL.md absent — skipped)"
   fi
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_msg} all present"
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${consumer_msg} all present"
 fi
 
 exit "$fail"
