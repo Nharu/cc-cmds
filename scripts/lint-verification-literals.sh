@@ -8,7 +8,8 @@
 # copies (`design-review/references/06-review-agent-prompt.md` and
 # `design-review-lite/SKILL.md`). One further live copy exists outside the
 # review pair: the routing prose of `implement/SKILL.md` partitions on the
-# verification-timing enum, so that one value is pinned there too (see (3)).
+# verification-timing enum, so that value and the pinned value arm that detects
+# it are both pinned there too, region-scoped to the 1.5a bullet (see (3)).
 # Semantic prose drift cannot be linted, but
 # the frozen byte-exact literals can — this script pins them so a rename in one
 # copy that is not mirrored to the others fails CI.
@@ -129,11 +130,11 @@ assert_in_file() {
   fi
 }
 
-# assert_in_text <literal> <text> <label>  (region-scoped presence)
+# assert_in_text <literal> <text> <label> [region]  (region-scoped presence)
 assert_in_text() {
-  local literal="$1" text="$2" label="$3"
+  local literal="$1" text="$2" label="$3" region="${4:-review-agent prompt block}"
   if [[ "$text" != *"$literal"* ]]; then
-    echo "FAIL: $label — frozen literal missing from review-agent prompt block: $literal" >&2
+    echo "FAIL: $label — frozen literal missing from $region: $literal" >&2
     fail=1
   fi
 }
@@ -170,20 +171,48 @@ done
 # implement's 1.5a routing prose partitions on it. Pin ONLY the value this PR
 # adds — the rest of SOT_LITERALS (grades, residual reasons, execution-caution
 # classes, classification tokens) legitimately does not appear in that file, so
-# a whole-array check would fail on day one. Whole-file presence is the right
-# form here: extract_prompt_block() is keyed to the reviewer-prompt sentinel
-# and does not apply to a SKILL.md. A missing consumer file is a skip, not a
-# failure (the file's existence is a precondition of the skill, not of this
-# literal); a consumer that exists but has dropped the value is a FAIL — that
-# is the regression fence for the 1.5a three-way partition.
+# a whole-array check would fail on day one. Region-scoped like rule (B), NOT
+# whole-file: the value also occurs in the 1.5b / Step-2 / Step-3 prose
+# downstream, so a whole-file check stays green even when the 1.5a partition
+# itself has been reverted to its two-bucket form — the exact regression this
+# fence exists to catch. The region is the 1.5a bullet, and two literals are
+# pinned inside it: the enum value, and the tail of the value arm that detects
+# it, so deleting the detection idiom while leaving the word in prose fails too.
+# A missing consumer file is a skip, not a failure (the file's existence is a
+# precondition of the skill, not of this literal); a consumer that exists but
+# has lost either literal from its 1.5a bullet is a FAIL — that is the
+# regression fence for the 1.5a three-way partition. A consumer that exists
+# with no 1.5a bullet at all is also a FAIL: the region the fence guards is
+# gone, so silence would no longer mean the partition is intact.
+CONSUMER_1_5A=(
+  '구현 후'
+  '검증 시점): 구현 후$'
+)
+
+# Extract implement's 1.5a bullet — the routing prose that partitions on the
+# verification-timing enum. It is a single bullet line, so the region is that
+# line. Mirrors rule (B)'s region scoping (see the header note).
+extract_1_5a_bullet() {
+  grep -m1 -e '^- \*\*1\.5a ' "$1" || true
+}
+
 consumer_checked=0
 if [[ -f "$CONSUMER" ]]; then
   consumer_checked=1
-  assert_in_file '구현 후' "$CONSUMER" "implement/SKILL.md (consumer timing enum)"
+  consumer_bullet=$(extract_1_5a_bullet "$CONSUMER")
+  if [[ -z "$consumer_bullet" ]]; then
+    echo "FAIL: implement/SKILL.md (consumer 1.5a bullet) — 1.5a bullet not found in $CONSUMER" >&2
+    fail=1
+  else
+    for lit in "${CONSUMER_1_5A[@]}"; do
+      assert_in_text "$lit" "$consumer_bullet" \
+        "implement/SKILL.md (consumer timing enum)" "the 1.5a bullet"
+    done
+  fi
 fi
 
 if (( fail == 0 )); then
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_checked} consumer (구현 후) all present"
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_checked} consumer (1.5a bullet) all present"
 fi
 
 exit "$fail"
