@@ -68,13 +68,16 @@ Banner title is always `[cc-cmds] ${workflow}` and body is `${summary}`.
 | --- | --- | --- | --- |
 | `single --count=1` (default) | 1 fire-now → flag consumed | `-group "cc-cmds-active-notify"` | banner replaces previous |
 | `single --count=N (N>1)` | N fire-now (intermediate N-1 + final 1); final consumes | none | each sub-event banner persists |
-| `repeat (--count ignored)` | unbounded fire-now until CANCEL | none | intentional pile-up |
+| `repeat (--count ignored)` | unbounded fire-now per observed event-class instance, until self-cancel or CANCEL | none | intentional pile-up |
 
 `-group` decision is dispatcher-internal — the model never specifies it.
 For `single --count=N>1`, `-group` is intentionally omitted so each
 sub-event banner persists in Notification Center; this preserves the
-user's explicit "N distinct events" intent. Repeat mode never uses
-`-group` (dynamic-trust anti-spam: pile-up triggers user CANCEL).
+user's explicit "N distinct events" intent. Event-scoped repeat mode
+never uses `-group` — each observed event instance gets its own
+persistent banner (per-commit, per-test-pass, etc.); pile-up is bounded
+by the model's own self-cancel when the event series ends, and user
+CANCEL remains a standing backstop.
 
 ## 2. Trigger lexicon (canonical)
 
@@ -121,64 +124,261 @@ Examples:
 - 영어: `"ping me when this finishes"`, `"let me know when done"`,
   `"notify me when the build completes"`.
 
-### 2.2 ARM (repeat mode)
+### 2.2 ARM (event-scoped repeat mode)
 
-Same shape as ARM single PLUS at least one of `매`/`마다`/`매번`/`각`/
-`반복`/`every`/`each`. Examples:
+Same shape as ARM single PLUS at least one recurrence quantifier of
+`매`/`마다`/`매번`/`각`/`반복`/`every`/`each` modifying a noun or event
+phrase (the "event class"). Examples:
 
-- 한국어: `"매 커맨드 끝날 때마다 알려줘"`, `"각 단계마다 알림 줘"`,
-  `"매번 작업 끝나면 노티 줘"`.
-- 영어: `"every time a command finishes ping me"`, `"each time a step
-  finishes, ping me"`.
+- 한국어: `"각 커밋마다 알림 줘"`, `"매 빌드 끝날 때마다 알려줘"`,
+  `"테스트 통과할 때마다 노티 줘"`.
+- 영어: `"ping me on every commit"`, `"each time a test passes, ping
+  me"`.
+
+The model captures the event class at ARM time (§2.4) — the noun or
+phrase the quantifier modifies, normalized to a short label (e.g.
+`"commit"`, `"test pass"`, `"deploy"`). At each observed instance of
+that class, the model invokes `notify.sh fire-now` (§4.3); when the
+work that produced the recurring events is done, the model self-cancels
+via `notify.sh cancel` (§4.6).
+
+**Event-class reliability spectrum.** Classes named in the user
+utterance differ in how precisely the model can pin down when an
+instance has occurred:
+
+- Tool-observable events the model itself dispatches (`git commit` via
+  Bash, `npm test` exit) are highest fidelity — completion is a literal
+  exit code in context.
+- Named semantic milestones (`"기능 완성"`, `"deploy"`) are mid-fidelity
+  — the model judges completion against the work it's doing, similar to
+  the milestone judgment a single ARM already makes.
+- Generic work-units (`"단계"`, bare `"매번"` without an event noun)
+  are lowest fidelity — the model has no salient instance boundary and
+  fire-now timing approaches the looser end of the spectrum.
+
+All three route to event-scoped repeat. The class reliability affects
+*fire-now timing precision*, not the ARM decision or the mode choice —
+ARM stays 100% lexical-gated (§6.1). For bare-noun utterances with no
+event class to capture, §2.9 routes through a clarifying cascade.
+
+Recurrence keywords absent → use single mode (§2.1) instead.
+
+Apparent recurrence that is actually an enumeration of named sub-events
+(`"lint 끝날 때, 빌드 끝날 때, 배포 완료 시 각각 알림"`) is NOT this
+mode — see §2.5 for the enumeration-first parse order that resolves it
+to `single --count=N`.
 
 ### 2.3 CANCEL (mode-agnostic)
 
-Explicit revocation. Examples:
+Two triggers, both calling `notify.sh cancel` — the dispatcher does not
+distinguish them.
+
+**Explicit user revocation.** Examples:
 
 - 한국어: `"알림 취소"`, `"알림 그만"`, `"노티 그만"`, `"알림 멈춰"`,
   `"반복 알림 그만"`.
 - 영어: `"cancel notification"`, `"stop the alerts"`,
   `"nevermind on the ping"`.
 
-### 2.4 armCount extraction (`--count=N`)
+**Model self-cancel (event-scoped repeat only).** When the model
+observes that the work generating the recurring events has finished and
+no further event-class instances are expected, it cancels the cycle
+itself — without waiting for the user. Self-cancel is asymmetric with
+ARM: ARM is forbidden on self-judgment (§6.1) because a false positive
+creates an unrequested obligation, while a self-cancel false positive
+costs at most one missed banner (recoverable — the user can re-ARM or
+re-request). The model may end a cycle on judgment; it may not start
+one. Ordering rule when the last instance is the cycle terminator:
+`notify.sh fire-now` for that final instance FIRST, then
+`notify.sh cancel` (§4.6, §6.4).
 
-When the user names **multiple distinct sub-events** in a single ARM
-utterance, count them and pass via `--count=N`.
+### 2.4 armCount + event-class extraction at ARM time
 
-**Token-counting rule**: scan the ARM utterance for explicitly named
-sub-event tokens (timing markers, boundary phrases, ordinal references)
-combined with an alert request. Count unique sub-events.
+Two parallel extractions, both performed when the ARM call is dispatched
+— the moment of highest classification accuracy (fresh user utterance,
+cold model context). fire-now call sites are hot context + temporally
+distant, so locking intent at ARM time prevents drift.
+
+**armCount (`--count=N`)** — applies to single mode with multiple named
+sub-events. Scan the ARM utterance for explicitly named sub-event
+tokens (timing markers, boundary phrases, ordinal references) combined
+with an alert request. Count unique sub-events.
 
 | User utterance | Extracted `--count` | Notes |
 | --- | --- | --- |
 | `"끝나면 알려줘"` | (default 1) | single terminal moment |
 | `"시작할 때랑 끝날 때 알림 줘"` | `--count=2` | 2 named sub-events |
 | `"단계별로 (3단계) 알림 줘"` | `--count=3` | explicit count |
-| `"매번 끝나면 알림"` | (default 1; mode=repeat) | repeat absorbs the recurrence |
+| `"각 커밋마다 알림"` | (n/a; mode=event-scoped repeat) | recurrence absorbed by event class |
 
 **Tiebreak rules**:
 
 - Ambiguity between 2 and 3 → favor the lower count (under-fire is
   recoverable; over-fire wastes user attention).
 - Vague enumeration ("몇 단계 끝날 때마다") with `매`/`마다` → demote to
-  repeat (count argument stored but ignored at runtime).
+  event-scoped repeat (count argument stored but ignored at runtime).
 - >16 explicit count → normalized to 1 by dispatcher (sanity cap).
 
-**Why ARM-time extraction**: ARM is the moment of highest classification
-accuracy (fresh user utterance + cold model context). fire-now call
-sites are hot context + temporally distant — extracting at ARM time
-locks the intent before drift sets in.
+**Event class (event-scoped repeat mode)** — when a recurrence
+quantifier (`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`) modifies a
+noun or event phrase, extract that noun phrase as a short class label
+and hold it in conversation context for the duration of the cycle. The
+class lives in the model's context, NOT in the flag JSON — the
+dispatcher is class-agnostic and the model never reads the flag back
+(§4.5 defensive fire-now forbids the read because a permission-gated
+Read can suspend the turn). The verbatim `request_text` argument
+already preserves an audit trail.
 
-### 2.5 Disambiguator
+| User utterance | Event class | Mode |
+| --- | --- | --- |
+| `"각 커밋마다 알림 줘"` | `commit` | event-scoped repeat |
+| `"테스트 통과할 때마다 알려줘"` | `test pass` | event-scoped repeat |
+| `"매 배포마다 알림"` | `deploy` | event-scoped repeat |
+| `"각 기능 완성마다 알림 줘"` | `feature completion` | event-scoped repeat (loose class — fire-timing precision degrades per §2.2 spectrum) |
 
-- `"끝날 때"` → single timing marker.
-- `"끝날 때마다"` → repeat (because `마다` is present).
-- `"매 커밋 후 알려"` → `매` keyword → repeat (regardless of `후` or
-  `끝나면` marker).
-- Hybrid utterances like `"매번 알림 테스트"` — `매번` is ARM lexicon,
-  `알림 테스트` looks like PERMISSION TEST. Apply §2.0 3-clause: clause
-  (c) "ARM-eligible companion" is met (`매번` is repeat lexicon) → ARM
-  repeat. PERMISSION TEST routing requires absence of ARM companions.
+**Bare-noun fallback (no event noun present, e.g. `"매번 알려줘"`)** —
+the recurrence quantifier is present but no event class is named.
+Route through §2.9's clarifying-question cascade.
+
+**Why ARM-time extraction (both)**: fire-now call sites have lost the
+freshness of the ARM utterance — extracting both armCount and event
+class at ARM time anchors the intent before any drift can occur.
+
+### 2.5 Disambiguator (enumeration-first parse order)
+
+Apply these gates in order — the first match wins. Concrete signals
+beat bare keywords.
+
+**Gate 1 — explicit enumeration.** Does the utterance explicitly
+enumerate **≥2 named sub-events** (timing markers connected by `,`/
+`랑`/`및`/`그리고`/`,`/`and`)? If yes → single mode with
+`--count=N`, N = count of enumerated items. `각`/`각각`/`each` in this
+context is a distributive quantifier over the enumerated finite list,
+NOT a repeat trigger.
+
+- `"시작할 때랑 끝날 때 알림 줘"` → single `--count=2`.
+- `"lint 끝날 때, 빌드 끝날 때, 배포 완료 시 각각 알림"` → single
+  `--count=3`. `각각` is distributive over the 3-item list.
+
+**Gate 2 — recurrence quantifier on a noun/event class.** Otherwise, if
+the utterance contains `매`/`마다`/`매번`/`각`/`반복`/`every`/`each`
+modifying a noun or event phrase → event-scoped repeat (§2.2). The
+noun is the event class.
+
+- `"끝날 때마다"` (no noun named — bare) → event-scoped repeat via §2.9
+  cascade.
+- `"매 커밋 후 알려"` → event-scoped repeat, class `commit`.
+- `"각 커밋마다 알림"` → event-scoped repeat, class `commit`.
+- `"매 단계마다 알림"` → event-scoped repeat, class `step` (loose
+  fire-timing per §2.2 spectrum).
+
+**Gate 3 — single terminal moment.** Otherwise → single `--count=1`.
+
+- `"끝날 때"`, `"끝나면 알려줘"` → single.
+
+**Hybrid utterances:**
+
+- `"매번 알림 테스트"` — `매번` is ARM lexicon, `알림 테스트` looks like
+  PERMISSION TEST. Apply §2.0 3-clause: clause (c) "ARM-eligible
+  companion" is met (`매번` is event-scoped repeat lexicon) → ARM
+  event-scoped repeat. PERMISSION TEST routing requires absence of ARM
+  companions.
+- `"5분마다 체크해서 끝나면 알려줘"` — two mechanisms composed. `5분마다
+  체크` is `/loop` polling (§2.6 — not active-notify's responsibility);
+  the alert request itself is `"끝나면 알려줘"`, a single milestone.
+  Route as single ARM, not event-scoped repeat.
+
+### 2.6 Clock-keyed timing → CC interval delegation
+
+When the user's alert request is keyed to **wall-clock cadence** — a
+recurring time interval (`"5분마다 알림 줘"`) or a one-shot future
+delay (`"30분 후 알림 줘"`) — do NOT call `notify.sh arm`. active-
+notify's ARM/fire-now lifecycle is event/turn-cued, not clock-cued, so
+arming on a clock-keyed request produces a stranded flag that will
+never fire.
+
+This is a **delegation**, not a refusal. Wall-clock cadence is the
+domain of Claude Code's interval mechanism — most representatively the
+built-in `/loop` skill (e.g. `/loop 5m …` re-invokes the model every 5
+minutes via the harness's `ScheduleWakeup` primitive). When the user
+asks for `"5분마다 알림 줘"`, route to whatever interval mechanism the
+environment provides (typically `/loop`); the model decides how each
+tick emits a banner. active-notify neither owns nor blocks this path.
+`/loop` is a built-in skill, not a harness primitive, so it may be
+absent in some environments — when it is unavailable, the model adapts
+with whatever interval-handling capability it has, including (as a
+last resort) telling the user the environment can't satisfy a clock-
+keyed alert.
+
+**Distinguish from progress markers.** A request keyed to *work
+progress* — `"작업이 70% 정도 끝나면"`, `"중간쯤 되면"` — is NOT clock-
+keyed. The model judges progress against the work it's doing, which is
+the same kind of milestone judgment a default single ARM already makes
+(see the README progress-marker note). These ARM normally.
+
+**Composite expressions** like `"5분마다 체크해서 끝나면 알려줘"` are
+already handled in §2.5: the alert itself is single-milestone (`"끝나면
+알려줘"`), only the *polling cadence* is clock-keyed. ARM single, let
+the polling be the model's own concern.
+
+**Anti-pattern reminder.** Do not substitute a turn-counting or
+work-step-counting proxy for a real time interval (see §6.1
+Clock-keyed ARM). Genuine time intervals belong to `/loop`.
+
+### 2.9 Bare-noun clarifying-question cascade
+
+Some utterances carry a recurrence quantifier but name no event noun
+(`"매번 알려줘"`, `"반복해서 알려줘"`). §6.3 still mandates ARM —
+recurrence lexicon is present — but there is no event class to capture.
+A fixed degenerate class would leave the cycle stuck at the lowest end
+of the §2.2 reliability spectrum. Resolve via a two-tier cascade.
+Both tiers ARM in the same turn as the utterance — there is no 2-turn
+durability gap where an obligation lives only in model memory.
+
+**Tier 1 — context inference.** If the surrounding work context
+implies a concrete event class as the obvious best-fit, ARM immediately
+with that class. Do NOT ask. Examples:
+
+- Mid multi-commit refactor + `"매번 알림 줘"` → class `commit`.
+- Inside a test loop + `"매번 알려줘"` → class `test pass`.
+- During deploy iteration + `"매번 알림"` → class `deploy`.
+
+This is NOT self-judgment ARM. ARM is already lexically gated by the
+recurrence keyword; the model only picks *which* event class best fits
+the user's words, the same way §2.4 picks armCount via best-fit when
+the count is ambiguous.
+
+**Tier 2 — immediate degenerate ARM + clarifying question.** If
+context yields no obvious class, the model in the SAME turn:
+
+1. ARMs immediately with a degenerate class label like
+   `"작업 단위 완료"` (`"work-unit completion"`). The flag exists from
+   this turn forward — no obligation is held in model memory.
+2. Emits one short clarifying question to the user (e.g.
+   `"무엇마다 알림을 드릴까요? 예: 커밋마다, 테스트 통과마다"`).
+3. On the user's next reply, if they name a concrete event noun, the
+   model **re-ARMs** with the refined class (idempotent overwrite per
+   §3 — overwrites the degenerate flag with no special mechanism).
+4. If the user declines to specify or stays ambiguous, the degenerate
+   ARM stays in place — tier 1 catches most cases, so degenerate
+   survivors are rare.
+
+**This is NOT §6.3 avoidance.** §6.3 forbids silent skip (refusing to
+ARM and doing nothing). Tier 2 ARMs that turn — the question only
+refines the class label, it does not gate the ARM itself.
+
+**Gate — do not over-ask.** The clarifying question fires only when
+BOTH conditions hold: (a) bare-noun utterance AND (b) no concrete
+class inferable from context. If the utterance names an event noun
+(`"각 커밋마다"`), never ask. If tier 1 best-fit succeeds, never ask.
+Asking otherwise is the §6.1 Clarifying-question over-ask anti-pattern.
+
+**Asymmetry with §2.4 armCount tiebreaks.** §2.4 favors best-fit
+without asking because either count produces a working cycle. Bare-
+noun without context produces a near-useless degenerate cycle — so
+the question is justified when the alternative is degenerate fallback,
+and ONLY then. The user is still at the keyboard at ARM time, so the
+one-round exchange is cheap.
 
 ## 3. ARM / FIRE-NOW / CANCEL semantics
 
@@ -202,12 +402,16 @@ prior flag. Consequences:
   exits 0. User re-arms naturally via the next ARM utterance.
 
 **Cross-turn ARM persistence (mental check)**: the flag survives turn
-boundaries. If a prior turn ARMed and the current turn has not CANCELed,
-the flag is still alive. fire-now obligations carry across turns.
+boundaries. If a prior turn ARMed and the current turn has not CANCELed
+(neither user-explicit nor model self-cancel), the flag is still alive.
+For event-scoped repeat the event class itself lives in the model's
+conversation context across these turns — the flag is class-agnostic.
 
-**FIRE-NOW is the only dispatch surface (model-driven).** Whenever the
-model observes completion of a sub-event corresponding to the active
-ARM, it invokes `notify.sh fire-now <workflow> <summary>` directly.
+**FIRE-NOW is the only dispatch surface (model-driven).** Single mode
+fires once per named milestone (count=1) or once per named sub-event
+(count=N). Event-scoped repeat fires once per observed instance of the
+armed event class — the model invokes `notify.sh fire-now <workflow>
+<summary>` whenever it observes a class instance has occurred.
 
 Dispatcher behavior:
 
@@ -218,22 +422,27 @@ Dispatcher behavior:
   + 1` reaches `arm_count` → final fire (`mv -n` atomic consume). Else
   intermediate fire (`sed -E` increment + `last_fire_at` update,
   preserve flag).
-- **Repeat mode mutation**: increment `fire_count` + update
+- **Event-scoped repeat mutation**: increment `fire_count` + update
   `last_fire_at` via `sed -E` rewrite, preserve flag. `arm_count`
-  ignored entirely.
+  ignored entirely. The dispatcher is class-agnostic — it does not see
+  the event class label, only that one more instance fired.
 - **Banner**: `terminal-notifier -title "[cc-cmds] ${workflow}"
   -message "${summary}" -execute ':'`. `-group "cc-cmds-active-notify"`
   added only when single + `arm_count == 1` (banner replace semantics).
 
 **CANCEL is mode-agnostic (model-driven).** `rm -f flag`. No mode check.
-Lexicon covers both generic (`"알림 취소"`) and repeat-specific
-(`"반복 알림 그만"`) phrasings — same effect.
+Three triggers (the dispatcher treats them identically):
+
+1. Explicit user revocation (§2.3 lexicon — `"알림 취소"` etc.).
+2. Model self-cancel at event-scoped repeat series end (§2.3 / §4.6 —
+   model observes the recurring work is done).
+3. Single mode armCount-consume (final fire's `mv -n` removes the
+   flag — no separate `cancel` call needed).
 
 ## 4. When to invoke fire-now (model decision criteria)
 
-The model evaluates these conditions at every observation point —
-turn-end is no longer the only fire site, but it remains the natural
-checkpoint.
+All firing is event-cued — there is no turn-end auto-fire. The model
+evaluates each observation point against the active ARM's mode.
 
 ### 4.1 Single mode (count=1, default)
 
@@ -247,35 +456,18 @@ dispatcher fires N times total — intermediate N-1 (flag preserved) +
 final 1 (flag consumed). Subsequent fire-now calls are silent no-op
 (flag absent).
 
-### 4.3 Repeat mode
+### 4.3 Event-scoped repeat mode
 
-Invoke `fire-now` at **every turn end** where:
+Invoke `fire-now` once per observed instance of the armed event class
+(§2.2 / §2.4). What counts as "observed" depends on class fidelity per
+§2.2 — tool-observable instances (a `git commit` exit) are
+self-announcing, named semantic milestones are judged against the work
+in progress, generic work-units are loosest. The dispatcher fires
+unbounded times, preserving the flag, until self-cancel (§4.6) or
+explicit user CANCEL. §4.4 fire-first ordering applies to each
+instance.
 
-1. ARM flag is alive (cross-turn persistence — survives until CANCEL).
-2. ≥1 user-task tool call was made this turn (Bash/Read/Edit/Write/Grep/
-   Glob/WebFetch/WebSearch/Task/MultiEdit/NotebookEdit). `notify.sh`
-   self-calls don't count.
-
-**Turn-end self-check**: ARM alive? user-task tool call ≥1 this turn?
-→ fire-now obligation. Skipping a borderline turn is the §6.2 anti-pattern.
-
-**Background-completion exception**: when the qualifying event is a
-background task that completed — re-invoking the model, or observed
-finished mid-turn — do not wait for turn end. §4.5 requires fire-now
-as the next tool call at the moment of observation, ahead of any
-verification. The "≥1
-user-task tool call" counter above is a heuristic for in-turn work; a
-completed background task is itself a qualifying event and fires
-regardless of that counter.
-
-### 4.4 Empty turn / AskUserQuestion-terminal turn
-
-- Pure conversational turn (no user-task tools) → no fire-now needed.
-- Turn ending with `AskUserQuestion` → harness suspends turn; no
-  fire-now until the user reply turn (which will be a fresh observation
-  point).
-
-### 4.5 Fire-now ordering within the turn (fire-first mandate)
+### 4.4 Fire-now ordering within the turn (fire-first mandate)
 
 §4.1–§4.3 decide *whether* a fire-now is owed; this subsection
 decides *when within the turn* the owed call runs.
@@ -306,22 +498,13 @@ that urge is the §6.2 deferred-fire anti-pattern. fire-now first, the
 failure in the copy; investigate after.
 
 Mode- and count-agnostic. The trigger is a completed, unfired
-milestone — not the mode, the fire count, or turn position. It governs
-single final fires, single intermediate fires (§4.2 count=N), and
-repeat fires alike. For repeat mode it overrides §4.3's turn-end
-timing: a background completion that re-invokes the model fires first
-on that turn (the §4.3 Background-completion exception callout), and within an
-ordinary repeat turn the turn-end fire is hoisted ahead of any closing
-verification — once the turn's work is done and only result-checking
-remains, fire before that check. §4.3's "≥1 user-task tool call"
-counter is a fallback heuristic, not a gate on this hoist — when a
-milestone is observed complete the §4.5 trigger owns the timing even
-if that counter still reads zero at the fire moment. If the completion
-maps to one of several named sub-events and you are unsure which, that
-ambiguity is
-not grounds to defer — fire on the best-fit sub-event (§6.3's
-principle — ambiguity is not an avoidance reason — governs ordering
-too).
+milestone or event-class instance — not the mode, the fire count, or
+turn position. It governs single final fires, single intermediate
+fires (§4.2 count=N), and event-scoped repeat instance fires alike. If
+the completion maps to one of several named sub-events and you are
+unsure which, that ambiguity is not grounds to defer — fire on the
+best-fit sub-event (§6.3's principle — ambiguity is not an avoidance
+reason — governs ordering too).
 
 Copy is subordinate to ordering: a banner that fires beats a perfect
 banner that never fires. Build `<summary>` from the completion signal
@@ -333,9 +516,9 @@ first fire-now CONSUMES the flag — that banner is final, so there is
 no "fire a placeholder now, fire a corrected one after verifying."
 Verification the user's task genuinely needs happens *after* fire-now.
 
-### 4.6 Defensive fire-now (when an ARM may be live)
+### 4.5 Defensive fire-now (when an ARM may be live)
 
-§4.5 assumes you know a fire is owed. The harder case is not knowing.
+§4.4 assumes you know a fire is owed. The harder case is not knowing.
 On a long task — exactly what this skill serves — earlier conversation
 context, including the original ARM request, may no longer be in view;
 the state flag, however, lives on disk and outlives any such loss.
@@ -357,6 +540,43 @@ if a flag exists, and a flag exists only because a real ARM call ran
 this session; the flag, not your memory, is ground truth. What stays
 forbidden is unchanged: arming on self-judgment (§6.1), and calling
 fire-now when you positively know no ARM was ever placed (§6.2).
+
+### 4.6 Self-cancel (event-scoped repeat only)
+
+When the work that produced the recurring events has finished and no
+further instances of the armed event class are expected, end the cycle
+yourself via `notify.sh cancel`. Self-cancel applies ONLY to event-
+scoped repeat — single mode terminates structurally (armCount consume),
+and a single ARM never has a "series" to end.
+
+**Positive criteria (when to self-cancel):**
+
+- A multi-commit refactor armed with `commit` class has produced its
+  final commit and the user's task is wrapping up.
+- A test loop armed with `test pass` class has reached green and the
+  user is moving on.
+- A deploy iteration armed with `deploy` class has succeeded for the
+  final environment.
+
+**Ordering rule.** If the cycle-terminating event is itself an
+instance of the armed class, fire-now FIRST for that final instance,
+THEN call `notify.sh cancel`. Order:
+
+```text
+notify.sh fire-now <workflow> <summary>   # final instance banner
+notify.sh cancel                          # close the cycle
+```
+
+The user sees the last banner and the cycle is closed. Reverse order
+loses the final banner (the post-cancel fire-now is a silent no-op).
+See §6.4 for the anti-pattern fence around self-cancel timing.
+
+**Asymmetry with ARM.** ARM is forbidden on self-judgment (§6.1)
+because a false-positive ARM creates an unrequested obligation —
+expensive, hard to recover from. A false-positive self-cancel costs
+at most one missed banner, which the user can recover by re-ARMing or
+re-stating the request. Cancel is safe-directional: the model may end
+on judgment; it may not start on judgment.
 
 ## 5. Worked examples
 
@@ -393,20 +613,95 @@ Lifecycle:
    emitted (no `-group`).
 6. Two banners persist in Notification Center.
 
-### (s3) Repeat mode per-turn
+### (s3) Event-scoped repeat — `각 커밋마다` end-to-end with self-cancel
 
-User: `"매 단계마다 알림 줘"` → ARM repeat (count ignored).
+User: `"이 리팩터링 진행하면서 각 커밋마다 알림 줘"` → §2.5 Gate 2:
+recurrence quantifier (`각`/`마다`) modifies event noun `커밋` → ARM
+event-scoped repeat, event class `commit`. The class lives in
+conversation context — the flag holds only `mode:"repeat"`.
 
-Turn 1: Bash(build) → green → turn ends → model invokes `fire-now
-"build" "성공"` → fire_count=1.
+Lifecycle:
 
-Turn 2: Bash(test) → green → turn ends → model invokes `fire-now
-"test" "성공"` → fire_count=2.
+1. Model: `notify.sh arm "각 커밋마다 알림 줘" "refactor" repeat`. Flag:
+   `{"schema":3,...,"mode":"repeat","arm_count":1,"fire_count":0,...}`.
+2. Model edits files, runs tests, then `git commit -m "..."` (exit 0,
+   sha `abc123`). The Bash exit is an observed `commit` instance.
+3. Model's NEXT tool call (§4.4 fire-first): `notify.sh fire-now
+   "commit" "abc123 완료"`. Banner emitted (no `-group` — pile-up
+   intentional), `fire_count` 0→1, flag preserved.
+4. Model continues — more edits, `git commit -m "..."` (sha `def456`).
+   Same pattern: `notify.sh fire-now "commit" "def456 완료"`,
+   `fire_count` 1→2.
+5. The refactor's final commit lands (sha `ghi789`, exit 0). Model
+   judges the work is done — no further commits expected.
+6. **Final-instance ordering (§4.6).** Model fires for the last
+   instance FIRST: `notify.sh fire-now "commit" "ghi789 완료 — 최종
+   커밋"`. `fire_count` 2→3, flag preserved.
+7. THEN model self-cancels: `notify.sh cancel`. Flag removed. The cycle
+   ends with the user seeing the last commit banner.
 
-Turn 3: 사용자가 `"고마워"` 한 마디만 → no user-task tools → no
-fire-now (§4.4).
+If the user had said `"알림 취소"` at step 4, that explicit CANCEL
+would have ended the cycle without self-cancel ever firing — both
+paths route to the same `notify.sh cancel`.
 
-Turn 4: User: `"알림 그만"` → `notify.sh cancel` → flag removed.
+### (s3b) Enumeration-defuse — `각각` as distributive quantifier
+
+User: `"lint 끝날 때, 빌드 끝날 때, 배포 완료 시 각각 끝나면 알려줘"`.
+
+§2.5 Gate 1: explicit enumeration of 3 named sub-events (`lint 끝날
+때`, `빌드 끝날 때`, `배포 완료 시`). `각각` is the distributive
+quantifier over the finite list, NOT a repeat trigger. → ARM single
+`--count=3`. Subsequent flow follows (s2) with 3 fires instead of 2.
+
+### (s3c) Loose event class — `각 기능 완성마다`
+
+User: `"각 기능 완성마다 알림 줘"`.
+
+§2.5 Gate 2: `각`/`마다` modifies `기능 완성` → ARM event-scoped repeat,
+event class `feature completion`. Per §2.2 spectrum this is a *named
+semantic milestone* class — not as crisp as `commit` (no exit code
+boundary), but the model judges completion against the work it's doing.
+fire-now timing is the model's call; firing on each feature it
+considers complete is correct. Self-cancel when the broader work
+scope wraps.
+
+### (s3d) Clock-keyed delegation — `5분마다`
+
+User: `"5분마다 알림 줘"`.
+
+§2.6: clock-keyed cadence. Model does NOT call `notify.sh arm`. Routes
+to Claude Code's interval mechanism — most representatively `/loop 5m
+…`. The model decides how each `/loop` tick emits a banner. active-
+notify is uninvolved.
+
+Contrast: `"5분마다 체크해서 끝나면 알려줘"` (§2.5 hybrid). The polling
+is `/loop`'s job, but the alert request itself is `"끝나면 알려줘"` —
+single ARM via active-notify, the polling separate.
+
+### (s3e) Bare-noun cascade — `매번 알려줘`
+
+**Tier 1 context-rich variant.** Mid-conversation the model is doing a
+multi-commit refactor. User says `"매번 알려줘"`. §2.9 tier 1: context
+implies `commit` as best-fit. Model: `notify.sh arm "매번 알려줘"
+"refactor" repeat` with class `commit` held in context, NO question
+asked. Subsequent flow = (s3).
+
+**Tier 2 cold-context variant.** Conversation just started; user opens
+with `"매번 알려줘"`. §2.9 tier 2: no class inferable from context.
+Same turn, model (a) ARMs immediately with degenerate class label:
+`notify.sh arm "매번 알려줘" "general" repeat`, then (b) emits one
+short reply to the user:
+
+> `"무엇마다 알림을 드릴까요? 예: 커밋마다, 테스트 통과마다, 배포마다."`
+
+User replies `"테스트 통과마다"`. Model **re-ARMs** with refined class
+`test pass` — `notify.sh arm "테스트 통과마다 알려줘" "test loop"
+repeat`. The re-ARM is an idempotent overwrite (§3) — no special
+mechanism.
+
+If the user instead replies `"아무거나 알아서"` or stays vague, the
+degenerate ARM stays in place. Tier 1 catches most real cases so
+degenerate survivors are rare.
 
 ### (s4) PERMISSION TEST routing
 
@@ -475,6 +770,23 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
 - **Count inflation.** Inferring `--count=N>1` from generic
   `"끝나면 알려줘"` (no named sub-events). Default to count=1 unless
   the user explicitly named multiple sub-events.
+- **Clock-keyed ARM.** Arming on wall-clock cadence — recurring
+  intervals (`"5분마다"`) or one-shot future delays (`"30분 후"`).
+  active-notify's lifecycle is event/turn-cued, not clock-cued; route
+  clock-keyed requests via §2.6 to `/loop` instead. Do NOT substitute
+  a turn-counting or step-counting proxy for a real time interval —
+  genuine time intervals belong to `/loop`. Progress markers
+  (`"70% 정도"`) are NOT clock-keyed and ARM normally.
+- **Event-class inflation.** Expanding the captured event class beyond
+  the noun the user actually named. `"커밋할 때마다"` is class
+  `commit`, NOT "any git operation"; `"테스트 통과할 때마다"` is
+  `test pass`, NOT "any test event". Stay literal to the user's noun
+  to keep fire-now timing crisp.
+- **Clarifying-question over-ask.** Per §2.9 the clarifying question
+  is for bare-noun + no-context only. Asking when the user named an
+  event noun (`"각 커밋마다"`) or when context unambiguously implies a
+  class (tier 1) is the over-ask anti-pattern. The asymmetry is:
+  ask only when the alternative is a degenerate fallback cycle.
 
 ### 6.2 fire-now (call forbidden)
 
@@ -482,14 +794,16 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
   notification was requested this conversation, calling fire-now is a
   model bug — the dispatcher no-ops, but the call should not exist.
   This forbids the *known*-no-ARM call only. Not remembering an ARM is
-  uncertainty, not knowledge — it routes to §4.6 (fire), not here.
-  Defensive fire-now under genuine uncertainty whether a live ARM
-  exists is therefore correct, not forbidden — the dispatcher's
-  no-op-on-absent-flag resolves it safely.
-- **Borderline turn skip in repeat mode.** Turn had user-task tool
-  calls but model "saved" the fire-now for a "more significant" turn.
-  Repeat mode contract is **every** qualifying turn fires. Self-judgment
-  about turn significance = §6.1 self-judgment ARM in fire-now clothing.
+  uncertainty, not knowledge — it routes to §4.5 (defensive fire-now),
+  not here. Defensive fire-now under genuine uncertainty whether a
+  live ARM exists is therefore correct, not forbidden — the
+  dispatcher's no-op-on-absent-flag resolves it safely.
+- **Instance-skip in event-scoped repeat.** You observed an instance of
+  the armed event class but judged it "too minor" or "not significant
+  enough" and skipped fire-now. Event-scoped repeat fires **every**
+  observed instance of the class until self-cancel or CANCEL. Self-
+  judgment about instance significance is §6.1 self-judgment ARM in
+  fire-now clothing.
 - **Mid-cycle re-fire after final consume.** In `single --count=N`, the
   N+1-th fire-now is silent no-op (flag consumed). Calling it does no
   harm but indicates the model lost track of cycle state.
@@ -500,21 +814,50 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
   before fire-now runs; the banner never fires and the user, away from
   the keyboard, perceives an infinite hang. fire-now is auto-approved
   and never blocks — it MUST be the first tool call after you observe
-  the completion (§4.5). A failed task is the strongest form of this
+  the completion (§4.4). A failed task is the strongest form of this
   trap: the urge to diagnose before notifying must yield — fire first,
   investigate after.
 
 ### 6.3 Ambiguity-avoidance (inverse boundary — call forbidden)
 
-**Trigger 어휘가 발현된 발화에서 mode/armCount/sub-event 식별 ambiguity
-가 ARM 회피 사유가 될 수 없다.** 어휘가 명시적이면 best-fit mode +
-best-fit count로 ARM 후 관찰 가능한 sub-event 시점마다 fire-now 호출.
-Issue #12의 silent skip이 이 boundary의 negative anchor — 발화 명시성
-입증 후 model self-judgment로 회피하지 말 것.
+**Trigger 어휘가 발현된 발화에서 mode/armCount/sub-event/event-class
+식별 ambiguity가 ARM 회피 사유가 될 수 없다.** 어휘가 명시적이면
+best-fit mode + best-fit count + best-fit event class로 ARM 후 관찰
+가능한 sub-event/event-class instance 시점마다 fire-now 호출. Issue
+#12의 silent skip이 이 boundary의 negative anchor — 발화 명시성 입증
+후 model self-judgment로 회피하지 말 것.
 
 **Inverse boundary**: 본 규칙은 어휘 부재 시 ARM을 끌어오는 권한이
 아님 — 어휘 부재 시 ARM은 §6.1 self-judgment 위반. 어휘 gate는
-necessary AND sufficient — 양쪽 boundary 독립적.
+necessary AND sufficient — 양쪽 boundary 독립적. bare-noun + 무맥락
+케이스는 §2.9 cascade가 tier 2 degenerate ARM + clarifying question으로
+즉시 ARM을 보존하며, 이는 회피가 아니라 ARM 실행 + 클래스 refine 단계
+이므로 §6.3 위반이 아니다.
+
+### 6.4 Self-cancel (event-scoped repeat only)
+
+Model-issued `notify.sh cancel` (self-cancel) is event-scoped repeat
+only. The following are anti-patterns.
+
+- **Single-mode self-cancel.** Single mode terminates structurally
+  (armCount consume) or via explicit user CANCEL. Self-cancelling a
+  single ARM cuts the cycle short and can drop a final or intermediate
+  fire.
+- **Mid-series self-cancel.** Cancelling before the series has
+  genuinely ended erases every still-expected event banner. Self-cancel
+  applies only when no further class instances are expected — a
+  temporary lull or work pause is not termination.
+- **Self-cancel in place of the final fire-now.** Calling `cancel`
+  without first firing for the series-terminating instance loses the
+  final banner (the post-cancel fire-now is a silent no-op). §4.6
+  ordering is unconditional: fire-now FIRST, cancel SECOND.
+
+Positive criteria for self-cancel — true series end, fire-first
+ordering — are defined in §4.6. Anchoring rationale: the asymmetry
+"end on judgment OK, start on judgment forbidden". A self-cancel
+false positive costs one missed banner (recoverable); an ARM false
+positive creates an unrequested obligation (hard to recover) — the
+two are not symmetric.
 
 ## 7. Permission test bypass
 
