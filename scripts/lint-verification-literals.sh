@@ -168,32 +168,57 @@ done
 
 # (3) Consumer sync — deliberately narrow. The verification-timing enum is the
 # only frozen vocabulary with a live inline copy outside the two review copies:
-# implement's 1.5a routing prose partitions on it. Pin ONLY the value this PR
-# adds — the rest of SOT_LITERALS (grades, residual reasons, execution-caution
-# classes, classification tokens) legitimately does not appear in that file, so
-# a whole-array check would fail on day one. Region-scoped like rule (B), NOT
-# whole-file: the value also occurs in the 1.5b / Step-2 / Step-3 prose
-# downstream, so a whole-file check stays green even when the 1.5a partition
-# itself has been reverted to its two-bucket form — the exact regression this
-# fence exists to catch. The region is the 1.5a bullet, and two literals are
-# pinned inside it: the enum value, and the tail of the value arm that detects
-# it, so deleting the detection idiom while leaving the word in prose fails too.
+# implement's 1.5a routing prose partitions on it. Pin ONLY what that partition
+# is made of — 14 of the 26 SOT_LITERALS (the residual reasons, the
+# execution-caution classes, the classification tokens, and the `## 검증 기록`
+# heading) legitimately do not appear in that file at all, so a whole-array
+# check would fail on day one. (The five grade tokens DO appear there; they are
+# out of scope here not because they are absent but because implement's copy of
+# them is pinned by the Step-3 flip-gate prose, not by the 1.5a partition.)
+# Region-scoped like rule (B), NOT whole-file: the values also occur in the
+# 1.5b / Step-2 / Step-3 prose downstream, so a whole-file check stays green
+# even when the 1.5a partition itself has been reverted to its two-bucket form
+# — the exact regression this fence exists to catch. The region is the 1.5a
+# bullet, and each pinned literal is independently deletable: no one of them is
+# a substring of another, so each can fail on its own.
 # A missing consumer file is a skip, not a failure (the file's existence is a
-# precondition of the skill, not of this literal); a consumer that exists but
-# has lost either literal from its 1.5a bullet is a FAIL — that is the
+# precondition of the skill, not of these literals); a consumer that exists but
+# has lost any one of them from its 1.5a bullet is a FAIL — that is the
 # regression fence for the 1.5a three-way partition. A consumer that exists
 # with no 1.5a bullet at all is also a FAIL: the region the fence guards is
 # gone, so silence would no longer mean the partition is intact.
 CONSUMER_1_5A=(
-  '구현 후'
+  # the three-bucket enumeration itself (no value arm is a superstring of this
+  # form, so the enumeration losing a value fails on its own)
+  '| `구현 후` —'
+  # Step 1 (presence): separates "no 검증 시점 line" from "unrecognized value"
+  '검증 시점): (.+)$'
+  # Step 2 (value): one arm per bucket — deleting any one arm fails alone
+  '검증 시점): 구현 전$'
+  '검증 시점): 구현 중\(.+\)$'
   '검증 시점): 구현 후$'
+  # gate entry is a positive selector on the save-time residual token; losing
+  # it means every unhandled 검증 등급 state falls into the gate by default
+  '검증 등급): 구현 시 검증$'
 )
 
 # Extract implement's 1.5a bullet — the routing prose that partitions on the
-# verification-timing enum. It is a single bullet line, so the region is that
-# line. Mirrors rule (B)'s region scoping (see the header note).
+# verification-timing enum. The region runs from the bullet's opening line
+# through everything that continues it, ending just before the next top-level
+# bullet, the next heading, or a blank line. It is one physical line today, but
+# reading the whole bullet rather than `grep -m1` means a pure reflow (same
+# bytes, wrapped over several lines) does not report every literal as missing —
+# a diagnostic that names deleted literals for an edit that deleted none.
+# Mirrors rule (B)'s section-body extraction.
 extract_1_5a_bullet() {
-  grep -m1 -e '^- \*\*1\.5a ' "$1" || true
+  awk '
+    incap {
+      if ($0 ~ /^- \*\*/ || $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) exit
+      print
+      next
+    }
+    /^- \*\*1\.5a / { incap = 1; print }
+  ' "$1"
 }
 
 consumer_checked=0
@@ -212,7 +237,12 @@ if [[ -f "$CONSUMER" ]]; then
 fi
 
 if (( fail == 0 )); then
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_checked} consumer (1.5a bullet) all present"
+  if (( consumer_checked == 1 )); then
+    consumer_msg="${#CONSUMER_1_5A[@]} consumer (1.5a bullet)"
+  else
+    consumer_msg="0 consumer (implement/SKILL.md absent — skipped)"
+  fi
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#PROMPT_SHARED[@]} review-copy (prompt-block) + ${consumer_msg} all present"
 fi
 
 exit "$fail"
