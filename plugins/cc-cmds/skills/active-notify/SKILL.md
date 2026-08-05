@@ -192,6 +192,15 @@ the canonical patterns below trigger; everything else is anti-pattern
   request.
 - → ARM 분기 (single, `--count=2`). bypass 절대 금지.
 
+**Worked hybrid example** — `"매번 알림 테스트"`:
+
+- `매번` is ARM lexicon; `알림 테스트` looks like PERMISSION TEST. This
+  section owns the routing, so it is resolved here rather than in the
+  disambiguator.
+- (c) ✓ ARM-eligible companion present (`매번` is recurrence lexicon).
+- → ARM branch, event-scoped repeat. Bypass routing requires the
+  **absence** of ARM companions; one clause is enough to lose it.
+
 **Worked positive example** — `"알림 테스트 한 번"`:
 
 - (a) ✗ 별도 작업 없음.
@@ -239,8 +248,13 @@ instance has occurred:
   — the model judges completion against the work it's doing, similar to
   the milestone judgment a single ARM already makes.
 - Generic work-units (`"단계"`, bare `"매번"` without an event noun)
-  are lowest fidelity — the model has no salient instance boundary and
-  fire-now timing approaches the looser end of the spectrum.
+  are lowest fidelity — the utterance supplies no observable instance
+  boundary at all. For exactly this band, **CFI-1's instance floor
+  defines one**: the end of a turn that contained at least one
+  user-task tool call counts as one instance. The floor is what keeps
+  this band from degenerating into a cycle that never fires, and it
+  applies to this band only — the two above it have real boundaries and
+  must not borrow it.
 
 All three route to event-scoped repeat. The class reliability affects
 *fire-now timing precision*, not the ARM decision or the mode choice —
@@ -271,12 +285,21 @@ observes that the work generating the recurring events has finished and
 no further event-class instances are expected, it cancels the cycle
 itself — without waiting for the user. Self-cancel is asymmetric with
 ARM: ARM is forbidden on self-judgment (§6.1) because a false positive
-creates an unrequested obligation, while a self-cancel false positive
-costs at most one missed banner (recoverable — the user can re-ARM or
-re-request). The model may end a cycle on judgment; it may not start
-one. Ordering rule when the last instance is the cycle terminator:
+creates an unrequested obligation. The model may end a cycle on
+judgment; it may not start one. The permitting conditions and the cost
+of getting it wrong are in §4.6 and CFI-4 — do not re-derive them here.
+Ordering rule when the last instance is the cycle terminator:
 `notify.sh fire-now` for that final instance FIRST, then
 `notify.sh cancel` (§4.6, §6.4).
+
+**When a scheduled job is also live, cancel BOTH.** An explicit
+revocation turns off everything that is running: delete the scheduled
+job (§2.6) *and*, if an ARM cycle is live, call `notify.sh cancel` too.
+**Never turn off one of them and report that it is cancelled** — the
+user then believes they are done while banners keep arriving. This
+state is one the design actively produces: §2.6's event-anchor offer
+invites the very user who made a clock request to open an event cycle,
+so both can be live at once from a single conversation.
 
 ### 2.4 armCount + event-class extraction at ARM time
 
@@ -335,44 +358,74 @@ class at ARM time anchors the intent before any drift can occur.
 Apply these gates in order — the first match wins. Concrete signals
 beat bare keywords.
 
-**Gate 1 — explicit enumeration.** Does the utterance explicitly
-enumerate **≥2 named sub-events** (timing markers connected by `,`/
-`랑`/`및`/`그리고`/`,`/`and`)? If yes → single mode with
-`--count=N`, N = count of enumerated items. `각`/`각각`/`each` in this
-context is a distributive quantifier over the enumerated finite list,
-NOT a repeat trigger.
+**Gate 0 — separate the clauses, then exclude wall-clock alerts.**
+
+*(A) Gate the ALERT clause only.* An utterance can carry a work clause
+and an alert clause. A work clause that happens to name an interval
+(`"5분마다 체크해서"`) is how the model does the work it was given; it
+is not an alert request, and this skill neither owns it nor routes it
+anywhere. In particular do **not** hand it to §2.6 — that section is a
+notification-only procedure whose emit step is fixed to a banner
+command, so a polling requirement arriving there finds no procedure
+that fits and, at worst, gets a scheduled banner in place of the
+polling that was actually asked for. The point of (A) is that a
+non-alert clause is not this cascade's business, not that some other
+section handles it.
+
+- `"5분마다 체크해서 끝나면 알려줘"` → the alert clause is `"끝나면
+  알려줘"`, a single terminal moment; it falls through to Gate 3 →
+  single `--count=1`. The polling stays with the model.
+
+*(B) Exclude wall-clock alert clauses.* If the ALERT clause itself is
+keyed to wall-clock time — a recurring cadence (`"5분마다 알림 줘"`) or
+a one-shot delay (`"30분 후 알림 줘"`) — do NOT ARM; route to §2.6
+(CFI-5). **Both branches are excluded, not just the recurring one.**
+
+**Gate 1 — explicit enumeration.** Does the alert clause enumerate **≥2
+named sub-events**? If yes → single mode with `--count=N`, N = the
+number of enumerated items. `각`/`각각`/`each` here is a distributive
+quantifier over a finite list, NOT a repeat trigger.
+
+Connectives seen in practice: `,`/`랑`/`이랑`/`와`/`과`/`하고`/`및`/
+`그리고`/`and`. **This list is illustrative, not closed** — decide by
+whether two or more named moments are being listed, not by whether the
+joining word appears above. A connective missing from the list is a gap
+in the list, not evidence of a single moment.
 
 - `"시작할 때랑 끝날 때 알림 줘"` → single `--count=2`.
+- `"시작할 때와 끝날 때 알림 줘"` → single `--count=2`.
 - `"lint 끝날 때, 빌드 끝날 때, 배포 완료 시 각각 알림"` → single
   `--count=3`. `각각` is distributive over the 3-item list.
 
-**Gate 2 — recurrence quantifier on a noun/event class.** Otherwise, if
-the utterance contains `매`/`마다`/`매번`/`각`/`반복`/`every`/`each`
-modifying a noun or event phrase → event-scoped repeat (§2.2). The
+**Gate 2a — recurrence quantifier modifying a NAMED noun or event
+phrase.** Otherwise, if `매`/`마다`/`매번`/`각`/`반복`/`every`/`each`
+modifies a noun or event phrase → event-scoped repeat (§2.2), and that
 noun is the event class.
 
-- `"끝날 때마다"` (no noun named — bare) → event-scoped repeat via §2.9
-  cascade.
 - `"매 커밋 후 알려"` → event-scoped repeat, class `commit`.
 - `"각 커밋마다 알림"` → event-scoped repeat, class `commit`.
-- `"매 단계마다 알림"` → event-scoped repeat, class `step` (loose
-  fire-timing per §2.2 spectrum).
+- `"매 단계마다 알림"` → event-scoped repeat, class `step` — a generic
+  work-unit class, so the CFI-1 instance floor supplies the boundary
+  the words do not.
 
-**Gate 3 — single terminal moment.** Otherwise → single `--count=1`.
+**Gate 2b — recurrence quantifier with NO noun to modify.** Otherwise,
+if the quantifier is present but names nothing (`"끝날 때마다"`,
+`"매번 알려줘"`) → event-scoped repeat via the §2.9 cascade, which
+resolves the class label. ARM still happens in this same turn; the
+cascade only refines what the class is called.
+
+**Gate 3 — no recurrence quantifier.** Otherwise → single `--count=1`.
 
 - `"끝날 때"`, `"끝나면 알려줘"` → single.
 
-**Hybrid utterances:**
-
-- `"매번 알림 테스트"` — `매번` is ARM lexicon, `알림 테스트` looks like
-  PERMISSION TEST. Apply §2.0 3-clause: clause (c) "ARM-eligible
-  companion" is met (`매번` is event-scoped repeat lexicon) → ARM
-  event-scoped repeat. PERMISSION TEST routing requires absence of ARM
-  companions.
-- `"5분마다 체크해서 끝나면 알려줘"` — two mechanisms composed. `5분마다
-  체크` is `/loop` polling (§2.6 — not active-notify's responsibility);
-  the alert request itself is `"끝나면 알려줘"`, a single milestone.
-  Route as single ARM, not event-scoped repeat.
+**The cascade is complete.** Every alert clause exits at exactly one
+gate: it is wall-clock keyed (Gate 0B) or it is not; if not, it
+enumerates two or more named moments (Gate 1) or it does not; if not,
+it carries a recurrence quantifier with a noun (Gate 2a), without one
+(Gate 2b), or not at all (Gate 3). There is no "none of the above"
+exit, and in particular no exit that quietly skips ARM — declining to
+ARM is Gate 0B's outcome alone, and that branch is a delegation that
+speaks, never a silent skip (§6.3).
 
 ### 2.6 Clock-keyed timing → scheduler delegation
 
@@ -596,6 +649,11 @@ context yields no obvious class, the model in the SAME turn:
 4. If the user declines to specify or stays ambiguous, the degenerate
    ARM stays in place — tier 1 catches most cases, so degenerate
    survivors are rare.
+5. A surviving degenerate class is not a dead cycle: it sits at the
+   bottom of the §2.2 spectrum, where CFI-1's instance floor supplies
+   the boundary the label lacks — the end of a turn carrying at least
+   one user-task tool call. That floor is why tier 2 can ARM first and
+   ask second without leaving the user with a cycle that never fires.
 
 **This is NOT §6.3 avoidance.** §6.3 forbids silent skip (refusing to
 ARM and doing nothing). Tier 2 ARMs that turn — the question only
@@ -608,11 +666,18 @@ class inferable from context. If the utterance names an event noun
 Asking otherwise is the §6.1 Clarifying-question over-ask anti-pattern.
 
 **Asymmetry with §2.4 armCount tiebreaks.** §2.4 favors best-fit
-without asking because either count produces a working cycle. Bare-
-noun without context produces a near-useless degenerate cycle — so
-the question is justified when the alternative is degenerate fallback,
-and ONLY then. The user is still at the keyboard at ARM time, so the
-one-round exchange is cheap.
+without asking because either count produces a working cycle. A
+bare-noun utterance with no context produces a much weaker cycle — so
+the question is justified when the alternative is the degenerate
+fallback, and ONLY then.
+
+What makes the exchange cheap is **not** that the user is present. They
+may well have walked away the moment they asked; that is the case this
+skill is built for. It is cheap because the ARM already happened in
+step 1 and the floor in step 5 keeps the cycle firing meanwhile, so an
+answer that never comes costs nothing. The question is an upgrade path,
+never a precondition — which is also why it is asked once and not
+repeated.
 
 ## 3. ARM / FIRE-NOW / CANCEL semantics
 
@@ -671,9 +736,21 @@ Three triggers (the dispatcher treats them identically):
 
 1. Explicit user revocation (§2.3 lexicon — `"알림 취소"` etc.).
 2. Model self-cancel at event-scoped repeat series end (§2.3 / §4.6 —
-   model observes the recurring work is done).
+   the model's own plan has no step left that would produce an
+   instance).
 3. Single mode armCount-consume (final fire's `mv -n` removes the
    flag — no separate `cancel` call needed).
+
+The dispatcher cannot distinguish 1 from 2 — both are the same `rm -f`,
+and it stores no event class to reason about. So the obligation to fire
+for a series-terminating instance BEFORE cancelling is the model's
+alone (CFI-4); nothing in the dispatcher will hold that banner for it.
+
+A fourth surface exists but is **not** a CANCEL trigger and does not
+appear above: `fire-oneshot` belongs to no cycle, so there is no flag
+for it to remove. Deleting a scheduled job (§2.6) likewise does not
+touch the flag — and that is precisely why an explicit revocation while
+both are live requires two separate actions (§2.3).
 
 ## 4. When to invoke fire-now (model decision criteria)
 
@@ -702,6 +779,24 @@ in progress, generic work-units are loosest. The dispatcher fires
 unbounded times, preserving the flag, until self-cancel (§4.6) or
 explicit user CANCEL. §4.4 fire-first ordering applies to each
 instance.
+
+**Instance floor for generic work-unit classes.** A class at the bottom
+of the §2.2 spectrum (`"단계"`, a degenerate `"작업 단위 완료"` label
+from the §2.9 cascade) gives the model no boundary to observe, so one
+is supplied: **the end of a turn that contained at least one user-task
+tool call counts as one instance.** This defines "instance" where the
+utterance defines none. It is not a turn-end auto-fire returning by
+another name, and it does **not** extend to precise classes — a turn in
+which no `commit` occurred owes no `commit` banner, floor or no floor.
+
+**A turn opened by an external scheduler is not an instance.** Such a
+turn — one executing a prompt written for a reservation rather than for
+this cycle's user task — does not count toward a generic work-unit
+class. The axis is *who opened the turn*, not which mechanism did it.
+Without this exclusion the three parts compose into a cycle that cannot
+end: a degenerate class fires on any turn with a tool call, a live
+reservation keeps opening such turns, and CFI-4 forbids self-cancel
+while instances are still arriving.
 
 ### 4.4 Fire-now ordering within the turn (fire-first mandate)
 
@@ -779,20 +874,34 @@ fire-now when you positively know no ARM was ever placed (§6.2).
 
 ### 4.6 Self-cancel (event-scoped repeat only)
 
-When the work that produced the recurring events has finished and no
-further instances of the armed event class are expected, end the cycle
-yourself via `notify.sh cancel`. Self-cancel applies ONLY to event-
-scoped repeat — single mode terminates structurally (armCount consume),
-and a single ARM never has a "series" to end.
+End the cycle yourself via `notify.sh cancel` when the conditions below
+hold. Self-cancel applies ONLY to event-scoped repeat — single mode
+terminates structurally (armCount consume), and a single ARM never has
+a "series" to end.
 
-**Positive criteria (when to self-cancel):**
+**Permitting conditions — judge the actor, not the future.** "No
+further instances are expected" is a prediction, and the model has no
+standing to make it about events it does not produce. Self-cancel is
+permitted only when **both** hold:
 
-- A multi-commit refactor armed with `commit` class has produced its
-  final commit and the user's task is wrapping up.
-- A test loop armed with `test pass` class has reached green and the
-  user is moving on.
-- A deploy iteration armed with `deploy` class has succeeded for the
-  final environment.
+- **(a) Every instance this cycle fired was the completion of something
+  the model itself dispatched.** A `git commit` the model ran, a test
+  suite the model invoked, a deploy the model drove.
+- **(b) The user's task finishes this turn, and no step remains in the
+  model's own plan that would produce another instance.**
+
+**If (a) fails, self-cancel is forbidden.** When the instances come
+from the user's own commits, a CI pipeline, or a deploy the model does
+not drive, the model cannot see the series at all — it only sees the
+part that happened to pass through its context. Leave the cycle to user
+CANCEL. This is the whole difference between ending a series you are
+writing and guessing at one you are only watching.
+
+Worked cases where both hold: a multi-commit refactor the model is
+performing has produced its final commit and the task is wrapping up; a
+test loop the model is running has reached green with nothing left to
+run; a deploy iteration the model is driving has succeeded for the last
+environment.
 
 **Ordering rule.** If the cycle-terminating event is itself an
 instance of the armed class, fire-now FIRST for that final instance,
@@ -807,12 +916,20 @@ The user sees the last banner and the cycle is closed. Reverse order
 loses the final banner (the post-cancel fire-now is a silent no-op).
 See §6.4 for the anti-pattern fence around self-cancel timing.
 
-**Asymmetry with ARM.** ARM is forbidden on self-judgment (§6.1)
-because a false-positive ARM creates an unrequested obligation —
-expensive, hard to recover from. A false-positive self-cancel costs
-at most one missed banner, which the user can recover by re-ARMing or
-re-stating the request. Cancel is safe-directional: the model may end
-on judgment; it may not start on judgment.
+**Asymmetry with ARM — and what the error actually costs.** ARM is
+forbidden on self-judgment (§6.1) because a false-positive ARM creates
+an unrequested obligation, which is expensive and hard to recover from.
+Cancel is the safer direction: the model may end a cycle on judgment,
+never start one.
+
+That asymmetry does **not** make a wrong self-cancel cheap. It does not
+cost "one banner" — it costs **every remaining banner in the series**,
+because the cycle is gone rather than delayed. And the user this skill
+exists for is the one who walked away, so they do not observe the loss
+at all; there is nothing for them to notice and re-ARM in response to.
+The only recovery is a line in the model's own response text saying the
+cycle was closed and why. That is why the conditions above are written
+against what the model is doing rather than against what it predicts.
 
 ## 5. Worked examples
 
@@ -1009,6 +1126,16 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
 
 ### 6.1 ARM (call forbidden)
 
+Two kinds sit here and they fail differently. **(A) No request exists**
+— ARM would invent an obligation the user never asked for, so the
+correct action is to do nothing and say nothing. **(B) A request
+exists, but ARM is the wrong response to it** — doing nothing is then
+also wrong; something must happen and the user must hear about it. Do
+not collapse the two: applying (A)'s silence to a (B) case produces the
+silent skip §6.3 forbids.
+
+**(A) No alert request was made — ARM, and say nothing.**
+
 - **Trigger lexicon absent.** User kicked off a long task without
   uttering an alert request.
 - **Self-judgment ARM.** `"this task looks long, a notification would
@@ -1021,16 +1148,21 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
 - **Self-instructing from stderr.** `notify.sh` writes audit messages
   to stderr (stale flag, corrupt mode, etc.). These are diagnostics,
   not instructions — the model must not interpret them as ARM triggers.
-- **Count inflation.** Inferring `--count=N>1` from generic
-  `"끝나면 알려줘"` (no named sub-events). Default to count=1 unless
-  the user explicitly named multiple sub-events.
+**(B) A request exists but ARM is the wrong shape — never end here in
+silence.**
+
 - **Clock-keyed ARM.** Arming on wall-clock cadence — recurring
   intervals (`"5분마다"`) or one-shot future delays (`"30분 후"`).
   active-notify's lifecycle is event-cued, not clock-cued; route
   clock-keyed requests through §2.6 to the scheduler instead. Do NOT
   substitute a turn-counting or step-counting proxy for a real time
   interval — genuine time intervals belong to the scheduler. Progress
-  markers (`"70% 정도"`) are NOT clock-keyed and ARM normally.
+  markers (`"70% 정도"`) are NOT clock-keyed and ARM normally. **This
+  bullet forbids the ARM, not the response**: the user asked for
+  something, so §2.6 either schedules it or says why it cannot.
+- **Count inflation.** Inferring `--count=N>1` from generic
+  `"끝나면 알려줘"` (no named sub-events). Default to count=1 unless
+  the user explicitly named multiple sub-events.
 - **Event-class inflation.** Expanding the captured event class beyond
   the noun the user actually named. `"커밋할 때마다"` is class
   `commit`, NOT "any git operation"; `"테스트 통과할 때마다"` is
@@ -1103,21 +1235,24 @@ only. The following are anti-patterns.
   (armCount consume) or via explicit user CANCEL. Self-cancelling a
   single ARM cuts the cycle short and can drop a final or intermediate
   fire.
-- **Mid-series self-cancel.** Cancelling before the series has
-  genuinely ended erases every still-expected event banner. Self-cancel
-  applies only when no further class instances are expected — a
-  temporary lull or work pause is not termination.
+- **Mid-series self-cancel.** Cancelling while the model's own plan
+  still contains a step that would produce an instance — §4.6
+  condition (b) unmet. A temporary lull or a work pause is not
+  termination.
+- **Self-cancel on a series the model does not produce.** §4.6
+  condition (a) unmet: the instances come from the user's own commits,
+  a CI pipeline, or a deploy the model does not drive. The model sees
+  only the fragment that passed through its context and cannot tell an
+  ended series from a quiet one. Leave it to user CANCEL.
 - **Self-cancel in place of the final fire-now.** Calling `cancel`
   without first firing for the series-terminating instance loses the
   final banner (the post-cancel fire-now is a silent no-op). §4.6
   ordering is unconditional: fire-now FIRST, cancel SECOND.
 
-Positive criteria for self-cancel — true series end, fire-first
-ordering — are defined in §4.6. Anchoring rationale: the asymmetry
-"end on judgment OK, start on judgment forbidden". A self-cancel
-false positive costs one missed banner (recoverable); an ARM false
-positive creates an unrequested obligation (hard to recover) — the
-two are not symmetric.
+These are the exact complement of §4.6's permitting conditions — each
+bullet is one condition failing — so the judgment is made once, there,
+and not re-derived here. The cost of getting it wrong is stated once as
+well, in §4.6.
 
 ## 7. Permission test bypass
 
@@ -1168,10 +1303,15 @@ Design notes:
   other so banner noise stays bounded. A repeat-mode or single
   armCount>1 ARM cycle is unaffected (those use no `-group`, so the
   visual identities coexist).
-- **Bypass is NOT subject to §3's silent-skip contract.** The bypass
-  path's contract is the inverse: precondition fail → user-visible
-  Korean guidance via the combined-Bash stdout (first-run UX
-  immediate-feedback requirement).
+- **The bypass does not inherit the dispatcher's silent-skip default.**
+  Everywhere else a precondition failure is invisible to the user: the
+  dispatcher exits 0, writes at most an stderr hint, and puts nothing
+  in the response stream. The bypass is the inverse — on a precondition
+  failure it emits user-visible Korean guidance through the
+  combined-Bash stdout. The reason is that this path exists to *be* a
+  first run: the user just asked for a test alert and is watching for
+  it, so silence here reads as a broken skill rather than a missing
+  binary.
 
 The bypass leaves the state flag untouched. Even when no prior ARM is
 active, the bypass invocation is safe and does not create one.
