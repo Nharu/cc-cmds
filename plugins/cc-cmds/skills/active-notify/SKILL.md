@@ -91,6 +91,13 @@ persistent banner (per-commit, per-test-pass, etc.); pile-up is bounded
 by the model's own self-cancel when the event series ends, and user
 CANCEL remains a standing backstop.
 
+**Scope of this table: ARM-cycle banners only.** `fire-oneshot` banners
+are not rows here and no line above governs them. The dividing line is
+not "does it go through the dispatcher" — `fire-oneshot` does — but
+"does it belong to an ARM cycle". It does not: it has no mode, no
+armCount, and no flag to consume, and it carries its own banner group
+precisely so it never lands in the group semantics described above.
+
 ## Control-Flow Invariants
 
 These five rules govern when a banner is owed, in what order it is
@@ -367,33 +374,181 @@ noun is the event class.
   the alert request itself is `"끝나면 알려줘"`, a single milestone.
   Route as single ARM, not event-scoped repeat.
 
-### 2.6 Clock-keyed timing → CC interval delegation
+### 2.6 Clock-keyed timing → scheduler delegation
 
 When the user's alert request is keyed to **wall-clock cadence** — a
-recurring time interval (`"5분마다 알림 줘"`) or a one-shot future
-delay (`"30분 후 알림 줘"`) — do NOT call `notify.sh arm`. active-
-notify's ARM/fire-now lifecycle is event/turn-cued, not clock-cued, so
-arming on a clock-keyed request produces a stranded flag that will
-never fire.
+recurring interval (`"5분마다 알림 줘"`) or a one-shot future delay
+(`"30분 후 알림 줘"`) — do NOT call `notify.sh arm` (CFI-5). The
+ARM/fire-now lifecycle is event-cued, and the dispatcher owns no timer,
+so arming a clock-keyed request produces a flag that will never fire.
 
-This is a **delegation**, not a refusal. Wall-clock cadence is the
-domain of Claude Code's interval mechanism — most representatively the
-built-in `/loop` skill (e.g. `/loop 5m …` re-invokes the model every 5
-minutes via the harness's `ScheduleWakeup` primitive). When the user
-asks for `"5분마다 알림 줘"`, route to whatever interval mechanism the
-environment provides (typically `/loop`); the model decides how each
-tick emits a banner. active-notify neither owns nor blocks this path.
-`/loop` is a built-in skill, not a harness primitive, so it may be
-absent in some environments — when it is unavailable, the model adapts
-with whatever interval-handling capability it has, including (as a
-last resort) telling the user the environment can't satisfy a clock-
-keyed alert.
+This is a **delegation, not a refusal**, and it takes all four steps
+below. Step 0 is not an optional pre-check — it is the only thing
+standing between this delegation and a new silent failure of its own.
+
+**Step 0 — precondition check, BEFORE scheduling.**
+
+```bash
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; [ "$(uname -s)" = Darwin ] && command -v terminal-notifier >/dev/null
+```
+
+If it fails, **do not schedule** — say what you cannot do (see the
+closing contract below). The dispatcher exits 0 in silence on a
+non-Darwin host and on a missing binary, so scheduling anyway buys a
+turn that opens half an hour later, produces nothing, and has no one
+present to notice. The interval-skill route this replaced caught the
+failure by accident — its t=0 banner was a de facto precondition check.
+The scheduler has no t=0 execution, so that safety net is gone and this
+check replaces it deliberately.
+
+Two notes on the command itself. The `PATH` prefix mirrors the one the
+dispatcher applies to itself — without it a host where the dispatcher
+*can* fire is falsely rejected here, and the guard meant to prevent a
+silent failure would instead invent a false refusal. And this command
+is **not** covered by the PreToolUse hook (`uname` and `command -v`
+match no hook pattern), so it goes through the normal permission gate;
+the exposure is small because it runs in the same turn the user just
+asked, when they are most likely still at the keyboard. The
+single-command restriction that governs the SCHEDULED prompt below does
+**not** apply to this one — it is never queued.
+
+**schedule — call the scheduler yourself.** Do not hand the user a
+command to run: someone who has walked away cannot tell an unrun
+command from a refusal. Both branches go to the scheduler; the interval
+SKILL route is gone entirely.
+
+- **one-shot delay** → `CronCreate` with `recurring: false` and a
+  5-field expression pinning minute, hour, day-of-month and month
+  (day-of-week `*`).
+- **recurring cadence** → `CronCreate` with `recurring: true` and an
+  interval expression (`*/5 * * * *`).
+
+The scheduled prompt must be **one command line** — no `&&`, no command
+substitution, no redirection. Compound prompts weaken the hook's
+auto-approval and widen the surface the creation classifier reviews.
+Keep the returned job ID: it is the only handle on the reservation, and
+the disclosure step promises the user you still have it.
+
+Three rules govern scheduling.
+
+- **The two-minute floor is a correctness rule, not a courtesy.** The
+  next-match search begins at the start of the NEXT minute, so the
+  minute in progress can never match. A one-shot expression pins
+  minute, hour, day and month, so one landing on the minute in progress
+  does not fail — it matches a year later. It validates, it reports
+  success, and it never fires. One minute is not enough: the clock
+  moves between computing the time and the call landing, and crossing a
+  single minute boundary strands it for a year. For a request under two
+  minutes, do NOT refuse — schedule at +2 minutes and say that is what
+  you did. The one exception is a user-named clock time less than two
+  minutes away: do not schedule it, **fire now**. Ninety seconds early
+  beats a year late.
+- **Never compute the date yourself.** Month rollover, DST, and
+  "tomorrow" near midnight are the failure points. Take all four fields
+  from a single call — `date -v+30M '+%-M %-H %-d %-m'` — and make
+  `CronCreate` your very next action, with no tool call and no output
+  in between. The margin the two-minute floor buys is exactly one
+  minute between reading the clock and the job landing; whatever you do
+  in between spends it.
+- **Minute selection.** If the target is relative or approximate and
+  the computed minute is `0` or `30`, add one minute. The reason is
+  structural — those two marks carry jitter and other minutes do not —
+  and not any particular magnitude, so put no figure in this text or in
+  what you tell the user. If the user named the exact time, leave it.
+
+**Availability probe — a different shape from a skill probe.** The cron
+tools are **deferred** tools: they appear in the deferred-tool name
+list rather than among the loaded schemas, and their schemas must be
+loaded with `ToolSearch` before the first call. A probe that inspects
+loaded schemas answers "absent" every single time and falls through to
+the fallback — a silent failure wearing a refusal's clothes. An
+interval SKILL being present in the skill list implies nothing about
+the cron tools; they are exposed by different paths.
+
+**emit — `notify.sh fire-oneshot <workflow> <summary>`.** It reads and
+writes no flag, takes no lock, and uses its own banner group, so a live
+ARM cycle is untouched and no completion banner is replaced.
+
+**disclose — four things, all required**: what you started, when it
+will sound, how to stop it, and how it ends by itself.
+
+- Give the firing time as a **concrete local clock time**, never the
+  user's relative phrase, and keep internals out — no cron expression,
+  no job ID.
+- **Stopping means deleting the scheduled job**, not `notify.sh cancel`.
+- How it ends differs by branch: the one-shot has no expiry and deletes
+  itself once it fires; the **seven-day expiry belongs to the recurring
+  branch only**. The reservation disappears when the session ends, and
+  that follows from how you called the scheduler rather than from the
+  environment — say it that way.
+- **Do not tell the recurring branch that the first alert arrives
+  immediately.** There is no t=0 execution; the first banner lands on
+  the first interval boundary. What fired immediately on the old route
+  was that skill's own prompt, not scheduler behavior.
+- **Quote no delay figures and do not write `"정확히"`.** Tolerance is a
+  runtime setting, and the numbers printed in tool documentation are
+  not what the code falls back to. If a bound is genuinely needed, the
+  only statically provable one is `min(period, 30 minutes)`.
+- **State the delivery condition once**: scheduled jobs fire while
+  Claude Code is running and between tasks, so a busy session delays
+  them.
+
+**Offer the event anchor in the same breath.** A clock cadence is
+usually a stand-in for a completion the user could name, and an
+event-anchored cycle carries none of the constraints above. Add one
+line — *"커밋마다 / 테스트 통과마다로 바꾸시면 이 스킬이 직접
+처리합니다"* — and proceed. **Deliver the delegation first and never
+hold the wake waiting for an answer**: a question thrown at an absent
+user is a silent failure with an extra step. This is the only path back
+from a clock request to an event-scoped cycle.
+
+**Fallback ladder — no rung ends in silence.** This branch is not
+hypothetical: the scheduler gate can be switched off by environment
+variable, and the tools were genuinely absent in some contexts. Every
+rung ends in a line the user can see.
+
+- **Scheduling cap exceeded** — show the list and ask; never delete
+  someone else's job to make room.
+- **Malformed expression** — recompute once, retry once.
+- **`durable` refused in a teammate context** — quietly drop to
+  session-scoped and retry once.
+- **Classifier or permission refusal** — do not retry with reworded text.
+- **Last rung** — say plainly that you cannot do it. Never fall back to
+  `notify.sh arm`; that strands a flag which cannot fire.
+
+`durable` is omitted by default, which makes the reservation
+session-scoped. That is a consequence of how you called the scheduler,
+not a property of the environment, and the disclosure says so. Pass
+`durable: true` only on an explicit request for persistence — and
+because such a request can be **quietly downgraded**, read the result's
+persistence sentence before disclosing and report **what the result
+says, not what you asked for**.
+
+**Only two paths reach no reservation**: a failed Step 0, and an absent
+scheduler. Neither may end at "did not schedule" — say what you could
+not do and why. Declining to ARM a request the skill cannot serve is
+not the ambiguity-avoidance §6.3 forbids; staying quiet about it is.
+
+**Recovering a lost job ID.** The disclosure promises the user you can
+stop it, yet the ID lives only in context and micro-compaction empties
+tool results wholesale, newest-first. If a cancel request arrives after
+the ID is gone, list the scheduled jobs and identify the target by its
+`fire-oneshot` prompt string. The listing tool shares the scheduler's
+gate, so in any session where scheduling succeeded it is there too.
+
+**`"알림 취소"` turns off everything that is live.** Delete the
+scheduled job, and if an ARM cycle is also live call `notify.sh cancel`
+as well. **Never turn off one of them and report that it is
+cancelled.** This state is not a hypothetical the design tolerates — it
+is one this section actively creates, because the event-anchor offer
+above invites the very user who made a clock request to open an event
+cycle. §2.3 owns the same utterance and carries the same obligation.
 
 **Distinguish from progress markers.** A request keyed to *work
-progress* — `"작업이 70% 정도 끝나면"`, `"중간쯤 되면"` — is NOT clock-
-keyed. The model judges progress against the work it's doing, which is
-the same kind of milestone judgment a default single ARM already makes
-(see the README progress-marker note). These ARM normally.
+progress* — `"작업이 70% 정도 끝나면"`, `"중간쯤 되면"` — is NOT
+clock-keyed and ARMs normally. Judge it by how much of the work is
+done, not by how much time has passed: it is the same milestone
+judgment a default single ARM already makes.
 
 **Composite expressions** like `"5분마다 체크해서 끝나면 알려줘"` are
 already handled in §2.5: the alert itself is single-milestone (`"끝나면
@@ -402,7 +557,7 @@ the polling be the model's own concern.
 
 **Anti-pattern reminder.** Do not substitute a turn-counting or
 work-step-counting proxy for a real time interval (see §6.1
-Clock-keyed ARM). Genuine time intervals belong to `/loop`.
+Clock-keyed ARM). Genuine time intervals belong to the scheduler.
 
 ### 2.9 Bare-noun clarifying-question cascade
 
@@ -750,14 +905,32 @@ scope wraps.
 
 User: `"5분마다 알림 줘"`.
 
-§2.6: clock-keyed cadence. Model does NOT call `notify.sh arm`. Routes
-to Claude Code's interval mechanism — most representatively `/loop 5m
-…`. The model decides how each `/loop` tick emits a banner. active-
-notify is uninvolved.
+§2.6: clock-keyed cadence. The model does NOT call `notify.sh arm`, and
+runs all four steps.
+
+1. **Step 0.** Runs the precondition check. Darwin, `terminal-notifier`
+   present → proceed. (Had it failed, the model would schedule nothing
+   and say so — never schedule and hope.)
+2. **schedule.** `CronCreate` with `recurring: true` and an interval
+   expression, its prompt a single `notify.sh fire-oneshot …` command
+   line. Keeps the returned job ID.
+3. **emit.** Each firing turn runs that one command; `fire-oneshot`
+   touches no flag and no lock, so any ARM cycle running alongside is
+   unaffected.
+4. **disclose.** *"5분 간격 알림을 예약했습니다. 첫 알림은 다음 5분
+   경계에 도착하고, 이후 5분마다 울립니다. 예약은 7일 뒤 만료되며 이
+   세션이 끝나면 사라집니다. 멈추시려면 말씀해 주세요 — 예약 작업을
+   삭제하겠습니다. 처리 중에는 조금 늦을 수 있습니다. 커밋마다 /
+   테스트 통과마다로 바꾸시면 이 스킬이 직접 처리합니다."* Then
+   proceeds — it does not wait for an answer.
+
+Note what the disclosure does NOT say: that the first alert arrives
+immediately (there is no t=0 execution), and any figure for the delay.
 
 Contrast: `"5분마다 체크해서 끝나면 알려줘"` (§2.5 hybrid). The polling
-is `/loop`'s job, but the alert request itself is `"끝나면 알려줘"` —
-single ARM via active-notify, the polling separate.
+cadence is the model's own concern, but the alert request itself is
+`"끝나면 알려줘"` — a single ARM via active-notify, with no delegation
+at all.
 
 ### (s3e) Bare-noun cascade — `매번 알려줘`
 
@@ -853,11 +1026,11 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
   the user explicitly named multiple sub-events.
 - **Clock-keyed ARM.** Arming on wall-clock cadence — recurring
   intervals (`"5분마다"`) or one-shot future delays (`"30분 후"`).
-  active-notify's lifecycle is event/turn-cued, not clock-cued; route
-  clock-keyed requests via §2.6 to `/loop` instead. Do NOT substitute
-  a turn-counting or step-counting proxy for a real time interval —
-  genuine time intervals belong to `/loop`. Progress markers
-  (`"70% 정도"`) are NOT clock-keyed and ARM normally.
+  active-notify's lifecycle is event-cued, not clock-cued; route
+  clock-keyed requests through §2.6 to the scheduler instead. Do NOT
+  substitute a turn-counting or step-counting proxy for a real time
+  interval — genuine time intervals belong to the scheduler. Progress
+  markers (`"70% 정도"`) are NOT clock-keyed and ARM normally.
 - **Event-class inflation.** Expanding the captured event class beyond
   the noun the user actually named. `"커밋할 때마다"` is class
   `commit`, NOT "any git operation"; `"테스트 통과할 때마다"` is
@@ -870,6 +1043,12 @@ Do NOT call `notify.sh arm` / `fire-now` in any of these situations.
   ask only when the alternative is a degenerate fallback cycle.
 
 ### 6.2 fire-now (call forbidden)
+
+These forbid `fire-now`, the ARM cycle's dispatch surface. None of them
+reach `fire-oneshot`, which belongs to no cycle: it is state-independent
+by construction, so "no ARM was ever placed" is its normal condition
+rather than a violation. The §2.6 delegation calls it with no ARM
+anywhere in the conversation and that is correct.
 
 - **fire-now when no ARM was ever placed.** If you positively know no
   notification was requested this conversation, calling fire-now is a

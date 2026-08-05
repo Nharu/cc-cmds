@@ -70,6 +70,15 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
     `fire_count` and update `last_fire_at` via temp-write → mv rename;
     final fire (fire_count + 1 == arm_count) atomically consumes via
     `mv -n`.
+  fire-oneshot (no mode — belongs to no cycle): terminal-notifier
+    invoked with `-group "cc-cmds-active-notify-tick"`. The distinct
+    group is load-bearing: same-group banners replace each other, so
+    reusing the cycle group would make each of these erase a completion
+    banner. No flag is read, written, or created and no lock is taken,
+    so the call is invisible to any cycle running alongside it. §1
+    guards 3 and 4 still apply (non-Darwin and missing binary both
+    silent-skip); guards 1 and 2 do not, because there is no flag that
+    could be absent or corrupt.
   mode=repeat: terminal-notifier invoked WITHOUT `-group` (intentional
     pile-up; dynamic-trust anti-spam — user perceives spam → CANCEL).
     `fire_count` is incremented and `last_fire_at` updated atomically
