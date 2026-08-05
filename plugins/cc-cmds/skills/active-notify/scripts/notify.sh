@@ -34,6 +34,40 @@ _json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+# Lock budgets, in loop iterations. They are deliberately different.
+#
+# Each iteration forks /bin/sleep, so an iteration costs ~4ms rather than the
+# 1ms the sleep argument suggests: the fire budget below is ~40 SECONDS of wall
+# clock, not the 10s an earlier comment claimed.
+#
+# `fire-now` can afford that wait — its whole job is the banner, and waiting
+# only delays it. `arm` and `cancel` run INLINE inside the model's turn, so a
+# stall there blocks everything queued behind it, which is the failure the
+# fire-first mandate exists to prevent. They therefore get a budget three
+# orders of magnitude smaller (~1s) and, on exhaustion, proceed WITHOUT the
+# lock: the race this lock closes is microseconds wide, while a flag the user
+# asked to delete surviving because a lock was busy keeps banners arriving
+# after a cancel.
+LOCK_BUDGET_FIRE=10000     # ~40s wall clock
+LOCK_BUDGET_INLINE=200     # ~1.0s wall clock
+
+# Acquire "$lockdir" via POSIX-atomic mkdir (no external dependency).
+# 0 = acquired, 1 = budget exhausted. Caller decides fail-closed vs fail-open,
+# and owns setting lock_held so the EXIT trap only releases a lock it holds —
+# an unconditional rmdir would steal the lock from a wedged holder on exactly
+# the fail-open path that did not acquire it.
+_acquire_lock() {
+  local budget="$1" waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    sleep 0.001
+    waited=$(( waited + 1 ))
+    if [[ $waited -gt $budget ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Shared dispatcher invoked by the `fire-now` case branch. Caller branch
 # owns the preamble: declaring consuming/tmp/lockdir in enclosing scope,
 # registering the EXIT trap, and running the ARM-existence pre-check
@@ -48,15 +82,11 @@ dispatch_fire() {
   # race where one process's corrupt-flag cleanup makes other processes see
   # flag absent and silent-skip. Concurrent fires (multi-session, parallel
   # fire-now calls for armCount>1 sub-events) are serialized here.
-  lock_wait=0
-  while ! mkdir "$lockdir" 2>/dev/null; do
-    sleep 0.001
-    lock_wait=$(( lock_wait + 1 ))
-    # 10s timeout — dogfood scope race is rare; longer wait suggests stuck lock.
-    # No force-clean: it caused chain-reaction by stealing another process's
-    # lock under contention. Silent skip is acceptable trade-off.
-    [[ $lock_wait -gt 10000 ]] && exit 0
-  done
+  # Fail-CLOSED on exhaustion: a fire that cannot serialize is skipped rather
+  # than raced. No force-clean — stealing another process's lock under
+  # contention caused a chain reaction.
+  _acquire_lock "$LOCK_BUDGET_FIRE" || exit 0
+  lock_held=1
 
   # Re-check flag presence after lock acquisition (predecessor may have consumed)
   [[ -f "$flag_file" ]] || exit 0
@@ -141,6 +171,7 @@ dispatch_fire() {
 
   # === Release lock BEFORE terminal-notifier (minimize hold time) ===
   rmdir "$lockdir" 2>/dev/null || :
+  lock_held=0
 
   # === terminal-notifier dispatch ===
   if [[ "$flag_mode" == "single" ]]; then
@@ -191,6 +222,13 @@ case "$subcommand" in
       arm_count=1
     fi
     mkdir -p "$flag_dir"
+    # Take the fire branch's lock. Without it a re-ARM landing mid-fire is
+    # undone: the fire branch reads the old flag, rewrites it, and `mv`s that
+    # copy back over the new one, silently restoring the mode the user just
+    # narrowed. `mkdir -p` above means the ENOENT case cannot arise here.
+    lockdir="${flag_file}.lockdir"; lock_held=0
+    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi' EXIT
+    if _acquire_lock "$LOCK_BUDGET_INLINE"; then lock_held=1; fi
     ts=$(date -u +%s)
     esc_req=$(_json_escape "$request_text")
     esc_ctx=$(_json_escape "$context_hint")
@@ -209,8 +247,8 @@ case "$subcommand" in
     # (not inside dispatch_fire) — `local` inside the function would put them
     # out of scope at trap-firing time. Trap commands suffix `|| :` to swallow
     # non-zero exits under `set -euo pipefail`.
-    consuming=""; tmp=""; lockdir="${flag_file}.lockdir"
-    trap 'rmdir "$lockdir" 2>/dev/null || :; rm -f "${consuming:-}" "${tmp:-}" 2>/dev/null || :' EXIT
+    consuming=""; tmp=""; lockdir="${flag_file}.lockdir"; lock_held=0
+    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi; rm -f "${consuming:-}" "${tmp:-}" 2>/dev/null || :' EXIT
     [[ -f "$flag_file" ]] || exit 0
     dispatch_fire "$workflow" "$summary"
     exit 0
@@ -241,6 +279,26 @@ case "$subcommand" in
     ;;
 
   cancel)
+    # Fast path. `mkdir "$lockdir"` fails with ENOENT when its PARENT is
+    # missing, and that parent is the flag DIRECTORY, not the flag file — a
+    # missing flag file alone still lets mkdir succeed. So ENOENT means exactly
+    # "this session never armed, or TMPDIR was swept". Without this check that
+    # case would spin the entire budget before failing open, turning the
+    # cheapest call in the skill into a one-second stall in the model's turn.
+    # There is also nothing to delete, so returning here loses nothing.
+    [[ -d "$flag_dir" ]] || exit 0
+
+    # Take the fire branch's lock. Without it, a cancel landing mid-fire is
+    # undone: the fire branch has already read the flag and its trailing `mv`
+    # writes the file back after the `rm`, so the flag reappears and the next
+    # fire-now dispatches a banner the user cancelled.
+    lockdir="${flag_file}.lockdir"; lock_held=0
+    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi' EXIT
+    if _acquire_lock "$LOCK_BUDGET_INLINE"; then lock_held=1; fi
+
+    # Fail-OPEN: delete even when the budget ran out. A surviving flag means
+    # the user asked to stop and keeps receiving banners; the residual window
+    # this leaves is microseconds wide and closes on the fire branch's own exit.
     rm -f "$flag_file"
     exit 0
     ;;
