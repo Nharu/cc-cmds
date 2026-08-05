@@ -33,8 +33,13 @@ inject_sid="${CC_CMDS_NOTIFY_INJECT_SID:-0}"
 
 if [[ "$inject_sid" == "1" && $is_notify -eq 1 ]]; then
   # γ-path: inject CLAUDE_CODE_SESSION_ID via updatedInput.command rewrite.
-  session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
-  new_cmd="CLAUDE_CODE_SESSION_ID=${session_id} ${cmd}"
+  # The value is shell-quoted with @sh. It is external input, and this is the
+  # one path in the plugin that rewrites a command it then reports as allowed —
+  # so an unquoted `;` or `$(…)` in the session id would append a command of
+  # its own choosing AND carry the auto-approval meant for notify.sh. Quoting
+  # is also what keeps a session id with spaces from splitting into an
+  # assignment plus a stray argument.
+  new_cmd=$(printf '%s' "$input" | jq -r '"CLAUDE_CODE_SESSION_ID=" + ((.session_id // "") | @sh) + " " + .tool_input.command')
   jq -nc --arg c "$new_cmd" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

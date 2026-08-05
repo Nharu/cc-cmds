@@ -916,6 +916,12 @@ The user sees the last banner and the cycle is closed. Reverse order
 loses the final banner (the post-cancel fire-now is a silent no-op).
 See §6.4 for the anti-pattern fence around self-cancel timing.
 
+**Issue the two as separate Bash calls — do not chain them with `&&`.**
+On the hook's session-id injection path the environment prefix binds to
+the first command of a compound line only, so a chained `cancel` runs
+against a different flag path than the `fire-now` that preceded it and
+silently fails to cancel anything. Two calls, in the order above.
+
 **Asymmetry with ARM — and what the error actually costs.** ARM is
 forbidden on self-judgment (§6.1) because a false-positive ARM creates
 an unrequested obligation, which is expensive and hard to recover from.

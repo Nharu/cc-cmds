@@ -24,7 +24,10 @@ fi
 inject_sid="${CC_CMDS_NOTIFY_INJECT_SID:-0}"
 if [[ "$inject_sid" == "1" ]]; then
   updated=$(jq -r '.hookSpecificOutput.updatedInput.command // empty' "$HOOK_STDOUT")
-  expected_prefix="CLAUDE_CODE_SESSION_ID=${session_id} "
+  # The hook shell-quotes the injected value with @sh; derive the expected
+  # form the same way rather than hardcoding it.
+  quoted_sid=$(jq -rn --arg s "$session_id" '$s | @sh')
+  expected_prefix="CLAUDE_CODE_SESSION_ID=${quoted_sid} "
   if [[ "$updated" != "${expected_prefix}${fire_now_cmd}" ]]; then
     echo "FAIL (γ): updatedInput.command does not match expected prefix" >&2
     echo "  expected: ${expected_prefix}${fire_now_cmd}" >&2
