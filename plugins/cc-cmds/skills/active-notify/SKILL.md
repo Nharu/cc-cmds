@@ -33,7 +33,7 @@ surfaces.
 
 ## 1. Calling convention
 
-The model directly invokes three subcommands of this skill's
+The model directly invokes four subcommands of this skill's
 `scripts/notify.sh`. **Invoke it by absolute path** — the skill
 directory's absolute path followed by `/scripts/notify.sh` — so the
 shell working directory does not matter. The examples below abbreviate
@@ -49,9 +49,16 @@ dialog. The subcommands are local-disk file ops and complete instantly.
 # ("시작할 때랑 끝날 때" → --count=2). default 1, normalize to 1 if not in [1..16].
 bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--count=N]
 
-# Sub-turn fire — model-driven, the ONLY dispatch surface. Called at each
-# sub-event observation point (e.g. step completion, milestone boundary).
+# Sub-turn fire — model-driven, the ONLY dispatch surface of an ARM cycle.
+# Called at each sub-event observation point (e.g. step completion,
+# milestone boundary).
 bash active-notify/scripts/notify.sh fire-now <workflow> <summary>
+
+# State-independent banner — belongs to NO ARM cycle. Reads and writes no
+# flag and takes no lock, so it cannot disturb a live cycle. Uses its own
+# banner group so it never replaces a cycle's completion banner. This is
+# what the §2.6 scheduler delegation emits.
+bash active-notify/scripts/notify.sh fire-oneshot <workflow> <summary>
 
 # Cancel — mode-agnostic flag delete.
 bash active-notify/scripts/notify.sh cancel
@@ -479,7 +486,9 @@ boundaries. If a prior turn ARMed and the current turn has not CANCELed
 For event-scoped repeat the event class itself lives in the model's
 conversation context across these turns — the flag is class-agnostic.
 
-**FIRE-NOW is the only dispatch surface (model-driven).** Single mode
+**FIRE-NOW is the only dispatch surface of an ARM cycle (model-driven).**
+`fire-oneshot` also emits a banner but belongs to no cycle — it touches
+neither the flag nor the lock, so nothing below applies to it. Single mode
 fires once per named milestone (count=1) or once per named sub-event
 (count=N). Event-scoped repeat fires once per observed instance of the
 armed event class — the model invokes `notify.sh fire-now <workflow>

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# notify.sh {arm|fire-now|cancel} [args]
-# arm       <request_text> <context_hint> [mode] [--count=N]   mode: "single"|"repeat" (default "single"); --count default 1, normalize to 1 if invalid or >16
-# fire-now  <workflow> <summary>                                model-driven dispatch — sub-event observation point
-# cancel                                                        deletes flag regardless of mode
+# notify.sh {arm|fire-now|fire-oneshot|cancel} [args]
+# arm           <request_text> <context_hint> [mode] [--count=N]   mode: "single"|"repeat" (default "single"); --count default 1, normalize to 1 if invalid or >16
+# fire-now      <workflow> <summary>                                model-driven dispatch — sub-event observation point
+# fire-oneshot  <workflow> <summary>                                state-independent banner — no flag, no lock, own banner group
+# cancel                                                            deletes flag regardless of mode
 set -euo pipefail
 # Prepend brew install paths so terminal-notifier is discoverable in fire branch
 # regardless of caller PATH (Apple Silicon /opt/homebrew/bin, Intel /usr/local/bin).
@@ -215,13 +216,37 @@ case "$subcommand" in
     exit 0
     ;;
 
+  fire-oneshot)
+    # State-independent banner. Reads no flag, writes no flag, takes no lock —
+    # a live ARM cycle is byte-identical across this call, so a caller that has
+    # no cycle (the scheduler delegation) cannot disturb one that does.
+    # Its own -group is load-bearing, not cosmetic: same-group banners REPLACE
+    # each other in Notification Center, so reusing the ARM cycle's group would
+    # make each of these erase the completion banner it is supposed to sit
+    # beside. The suffix group keeps the two streams independent.
+    workflow="${1:-notify}"; summary="${2:-알림}"
+    [[ "$host_os" == "Darwin" ]] || exit 0
+    if ! command -v terminal-notifier >/dev/null 2>&1; then
+      hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
+      [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
+      exit 0
+    fi
+    terminal-notifier \
+      -title "[cc-cmds] ${workflow}" \
+      -message "${summary}" \
+      -execute ':' \
+      -group "cc-cmds-active-notify-tick" \
+      2>/dev/null || true
+    exit 0
+    ;;
+
   cancel)
     rm -f "$flag_file"
     exit 0
     ;;
 
   *)
-    printf 'notify.sh: unknown subcommand "%s" (arm|fire-now|cancel)\n' "$subcommand" >&2
+    printf 'notify.sh: unknown subcommand "%s" (arm|fire-now|fire-oneshot|cancel)\n' "$subcommand" >&2
     exit 1
     ;;
 esac

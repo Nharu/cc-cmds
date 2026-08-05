@@ -37,8 +37,11 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      # cycles survive transient non-Darwin / missing-notifier states.
 
 ## §2 Notification fire
-  fire-now is the **only** dispatch surface — model-driven, called at
-  each sub-event observation point.
+  fire-now is the **only** dispatch surface of an ARM cycle —
+  model-driven, called at each sub-event observation point. The
+  state-independent `fire-oneshot` surface also emits a banner, but it
+  belongs to no cycle: it reads and writes no flag, takes no lock, and
+  uses its own banner group, so nothing in this section governs it.
   The moment the model observes an armed milestone complete, fire-now is
   its next tool call — ahead of any verification, which could suspend
   the turn on a permission dialog and strand the notification (SKILL.md
@@ -76,7 +79,8 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
     (mode-asymmetric semantics).
 
 ## §3 Failure handling
-  All notify.sh surfaces (`arm`, `fire-now`, `cancel`) are model-side
+  All notify.sh surfaces (`arm`, `fire-now`, `fire-oneshot`, `cancel`)
+  are model-side
   Bash dispatches. Silent skip with respect to the user-visible response
   stream is the default contract — `AskUserQuestion` is never called,
   no user-addressed narration, no assistant response stream logging.
@@ -130,9 +134,11 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      button (which cannot be suppressed via terminal-notifier 2.0.0 CLI
      flags) clicks through to nothing observable. The fundamental "no
      button" path is tracked as a roadmap item (custom UN-API binary).
-  3. **Single dispatch surface — model-driven, no Stop hook.** All
-     notify.sh invocations originate from the model: ARM, fire-now, and
-     CANCEL. There is no hook-driven turn-end auto-fire, and the
+  3. **Model-driven dispatch — no Stop hook.** All notify.sh
+     invocations originate from the model: ARM, fire-now, fire-oneshot,
+     and CANCEL. Of these only fire-now belongs to an ARM cycle;
+     fire-oneshot is state-independent and touches neither flag nor
+     lock. There is no hook-driven turn-end auto-fire, and the
      dispatcher owns no timer — nothing here fires on a clock, so a
      flag armed for a wall-clock request would simply never fire.
      fire-now is called at each sub-event observation point. Single
