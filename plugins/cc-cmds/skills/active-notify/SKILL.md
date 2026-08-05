@@ -2,17 +2,17 @@
 name: active-notify
 description: 사용자가 (a) 1인칭 알림 요청 어휘 ("끝나면 알려줘"/"매번 알려줘"/"시작할 때랑 끝날 때 알림"), (b) 권한 테스트 어휘 ("알림 테스트"/"test alert"/"permission test"), 또는 (c) 취소 어휘 ("알림 취소"/"stop the alerts") 발화 시 호출되는 macOS 데스크탑 알림 헬퍼 (model-invoked, 슬래시 커맨드 없음). 어휘 부재 → 호출 금지·모델 자체 판단 ARM/bypass 절대 금지. 어휘 발현 → mode·armCount·sub-event ambiguity가 회피 사유 아님 — best-fit으로 ARM 후 sub-event 시점마다 fire-now 호출.
 when_to_use: |
-    **PERMISSION TEST 제외 (1순위)**: "테스트"/"test" + 알림 동사 발화는 §7 inline bypass로 라우팅. 단, 3개 절 중 ANY ONE 발현 시 ARM 분기로 재라우팅: (a) 별도 작업 컨텍스트 (코드 수정·빌드·테스트 실행·polling 등 알림 외 작업이 발화에 포함) (b) noun-form "테스트"/"test" (Android instrumentation/unit/regression/npm test 등 알림이 아닌 별도 작업 대상) (c) ARM-eligible companion 발화 (시간 marker·작업 boundary·sub-event 지칭). 상세 절차·worked example은 body §2.
+    **PERMISSION TEST 제외 (1순위)**: "테스트"/"test" + 알림 동사 발화는 §7 inline bypass. 단 3개 절 중 ANY ONE 발현 시 ARM 분기로 재라우팅: (a) 별도 작업 컨텍스트 (b) noun-form "테스트"/"test" (c) ARM-eligible companion 발화. 상세는 body §2.0.
 
-    **ARM**: 1인칭 알림 요청 어휘 발화 직후 ARM. `매`/`마다`/`매번`/`각`/`반복`/`every`/`each` 키워드 발현 → repeat 모드 (CANCEL까지 매 turn fire-now). 부재 → single 모드. 복수 named sub-event ("시작할 때랑 끝날 때") → single + `--count=N` (best-fit 정수, ambiguity 시 ARM 강행).
+    **ARM · 모드 선택**: 1인칭 알림 요청 어휘 발화 직후 ARM. 열거된 named sub-event ≥2 → single + `--count=N`. 재발 한정사(`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`)가 **명사·이벤트구를 수식**할 때만 event-scoped repeat(그 명사가 이벤트 클래스). 부재 → single. **벽시계 요청은 ARM하지 않는다** — 반복 cadence("5분마다")도 일회성 지연("30분 후")도 body §2.6의 스케줄러 위임으로 보낸다.
 
-    **CANCEL**: "알림 취소"/"stop the alerts" 등 명시적 취소 어휘 → `notify.sh cancel` (mode-agnostic).
+    **발화 트리거**: 관측된 이벤트 클래스 인스턴스마다 `fire-now` 1회. **턴 종료 자동 발화는 없다.** 인스턴스 경계가 없는 제네릭 클래스에 한해 user-task 도구 호출이 1회 이상 있었던 턴의 종료를 인스턴스 1회로 본다(외부 스케줄러가 연 턴은 인스턴스가 아니다).
 
-    **Repeat per-turn fire-now self-check**: turn 종료 직전 ARM alive + 이번 turn에 user-task tool call ≥1 발생이면 fire-now가 빚져 있음 — 모델이 자체 호출.
+    **종료**: 사용자 CANCEL 어휘("알림 취소"/"stop the alerts") → `notify.sh cancel`. 또는 이벤트 계열이 끝나 더 나올 인스턴스가 없으면 모델이 self-cancel. **마지막 인스턴스가 종료 지점이면 그 인스턴스의 fire-now를 먼저 호출하고 그다음 cancel** — 뒤집으면 마지막 배너를 잃는다.
 
-    armCount 추출 token-counting + tiebreak · fire-now 의무 prose · anti-pattern · 3-clause 전체 절차는 body §2/§4/§5/§6 참조.
+    armCount 추출 · fire-first 의무 · self-cancel 판정 조건 · anti-pattern은 body §1.1/§2/§4/§6 참조.
 disable-model-invocation: false
-usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, single 모드는 armCount회 fire-now 후 만료, repeat 모드는 매 turn 종료 시 fire-now 호출(CANCEL까지).)"
+usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, single 모드는 armCount회 fire-now 후 만료, event-scoped repeat 모드는 관측된 인스턴스마다 fire-now 후 사용자 CANCEL 또는 모델 self-cancel로 종료.)"
 options: []
 notes: |
     cc-cmds 유일의 model-invoked 헬퍼이며 슬래시 커맨드 surface가 없다. 모델은 frontmatter
@@ -24,7 +24,7 @@ notes: |
 
 # active-notify
 
-Read `_common/notify.md` once per session to load the shared procedure
+Read `${CLAUDE_SKILL_DIR}/../_common/notify.md` once per session to load the shared procedure
 (preconditions, fire copy synthesis, failure handling, Control-Flow
 Invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
 there is no turn-end auto-fire. The plugin's PreToolUse hook self-approves
@@ -33,10 +33,15 @@ surfaces.
 
 ## 1. Calling convention
 
-The model directly invokes three subcommands of
-`active-notify/scripts/notify.sh`. All paths are absolute; the shell
-working directory does not matter; the subcommands are local-disk file
-ops and complete instantly.
+The model directly invokes three subcommands of this skill's
+`scripts/notify.sh`. **Invoke it by absolute path** — the skill
+directory's absolute path followed by `/scripts/notify.sh` — so the
+shell working directory does not matter. The examples below abbreviate
+that path to its final three segments,
+`active-notify/scripts/notify.sh`, which is also the exact substring
+the plugin's PreToolUse hook matches to self-approve the call; an
+invocation not containing it falls through to the Bash permission
+dialog. The subcommands are local-disk file ops and complete instantly.
 
 ```bash
 # Arm a new notification cycle. mode argument is optional (default "single").
@@ -78,6 +83,73 @@ never uses `-group` — each observed event instance gets its own
 persistent banner (per-commit, per-test-pass, etc.); pile-up is bounded
 by the model's own self-cancel when the event series ends, and user
 CANCEL remains a standing backstop.
+
+## Control-Flow Invariants
+
+These five rules govern when a banner is owed, in what order it is
+dispatched, and when a cycle ends. They are gathered here — after §1
+defines the calling convention and the mode vocabulary they reference,
+before the lexicon that routes into them — so that the whole termination
+contract is one contiguous block rather than five rules scattered across
+§2, §4 and §6. Each rule states its consequence, because an ordering
+sentence without its consequence reads as style and invites reordering.
+
+### CFI-1 — No turn-end auto-fire; the instance floor
+Firing is cued by **observed instances of the armed event class**, never
+by the turn boundary. There is no hook-driven and no model-driven
+turn-end auto-fire; a turn in which no instance occurred owes no
+banner. The one floor: for a **generic class with no observable
+instance boundary** (`"단계"`, a degenerate `"작업 단위 완료"` label from
+the §2.9 cascade), treat the end of a turn that contained **at least one
+user-task tool call** as one instance. This is a definition of
+"instance" for classes that lack one, not a reinstatement of turn-end
+firing — it does NOT apply to precise classes (`commit`, `test pass`),
+where a turn with no instance stays silent. **A turn opened by an
+external scheduler — one executing a prompt written for a scheduled job
+rather than for this cycle's user task — is not an instance of a generic
+work-unit class**, so a live scheduled job cannot keep a degenerate
+cycle alive forever.
+
+### CFI-2 — Fire-first within the turn
+The moment an owed instance is observed, `notify.sh fire-now` is the
+**next tool call** — ahead of any verification, formatting, or summary
+step. Anything placed in front of it can suspend the turn on a
+permission dialog and strand the banner, which is the exact failure the
+whole skill exists to prevent.
+
+### CFI-3 — Fire when unsure; never re-read the flag
+When it is unclear whether an ARM is live, **fire anyway**. The
+dispatcher silently no-ops an absent flag, so a spurious `fire-now`
+costs nothing, while a skipped one is invisible to an absent user. Do
+NOT read the flag file to decide — the flag is dispatcher-private
+state, and a read-then-decide detour reintroduces the race the lock
+closes.
+
+### CFI-4 — Self-cancel scope and ordering
+Self-cancel applies **only** to event-scoped repeat; single mode
+terminates structurally when armCount is consumed. It is permitted only
+when **both** hold: (a) every instance this cycle fired was the
+completion of something the model itself dispatched, and (b) the user's
+task finishes this turn with no step left in the model's own plan that
+would produce another instance. If (a) fails — the instances come from
+the user's own commits, a CI pipeline, a deploy the model does not
+drive — **self-cancel is forbidden** and the cycle waits for user
+CANCEL. **When the cycle-terminating event is itself an instance, call
+`fire-now` for it FIRST and `cancel` second**; the reverse order makes
+the final `fire-now` a no-op and loses that banner permanently. A
+false-positive self-cancel does not cost "one banner" — it costs
+**every remaining banner in the series**, and an absent user never
+observes the loss, so the recovery path is a line of disclosure in the
+model's response text, not a re-ARM the user cannot know to make.
+
+### CFI-5 — Clock-keyed requests are never ARMed
+A request keyed to wall-clock time — a recurring cadence (`"5분마다"`)
+or a one-shot delay (`"30분 후"`) — must NOT reach `notify.sh arm`. The
+ARM/fire-now lifecycle is event-cued, so arming on a clock-keyed
+request produces a flag that never fires. Route both branches to the
+scheduler delegation in §2.6, and never substitute a turn-counting or
+work-step-counting proxy for a real interval. Progress markers
+(`"70% 정도 끝나면"`) are **not** clock-keyed and ARM normally.
 
 ## 2. Trigger lexicon (canonical)
 
