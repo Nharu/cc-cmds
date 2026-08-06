@@ -1,2 +1,4 @@
-# One disclosure slot key was removed from the block. Exactly one pin fires.
-FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing: **라우팅 — 미해결 이슈**
+# One disclosure slot key was removed from inside the fences. The in-fence pin
+# and the declared-order assertion both fire.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the disclosure fences: **라우팅 — 미해결 이슈**
+FAIL: design-audit/references/04-disclosure-block.md — slot keys are not the declared set in the declared order, one per line

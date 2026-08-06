@@ -1,8 +1,6 @@
-# The constants block still exists but has been moved out of the
-# '## Control-Flow Invariants' body. Every constant's arity assertion still
-# passes — the lines are present exactly once — so only the CFI-body containment
-# arm fires, and it fires for all six. That asymmetry is the point of the
-# fixture: it isolates the containment arm from the arity arm.
+# The constants block still exists, exactly once each, but was moved out of the
+# CFI body. Only the containment arm fires — that asymmetry isolates it from the
+# arity arm, which FAIL-1 and FAIL-7 cover from the other side.
 FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: READER_COUNT = 3
 FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: ROUNDS_PER_READER = 1
 FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: OUTER_ITERATIONS = 0

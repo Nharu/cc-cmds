@@ -1,3 +1,2 @@
-# A loop-resurrection denylist token reappeared under the skill's references.
-# The denylist check is what proves the removed loop stayed removed.
+# A loop-resurrection denylist token reappeared under references/.
 FAIL: design-audit/references/01-reader-prompt.md — loop-machinery token present: outer_log.md

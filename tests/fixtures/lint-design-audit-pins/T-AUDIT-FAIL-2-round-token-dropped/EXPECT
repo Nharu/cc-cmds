@@ -1,2 +1,3 @@
-# The reader prompt's round/pass declaration was dropped. Exactly one pin fires.
+# The injected round/pass slot was deleted from the prompt body. A stateless
+# consumer matches on that line, so losing it disables the consumer silently.
 FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing: This review is Round {round} of pass {pass}.

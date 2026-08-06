@@ -1,0 +1,4 @@
+# A denylist token was moved out of the CFI-6 body into ordinary prose. Its count
+# is still exactly one, so a count-only rule stays green; only the position
+# binding catches it.
+FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: INNER_TEMP_DIR

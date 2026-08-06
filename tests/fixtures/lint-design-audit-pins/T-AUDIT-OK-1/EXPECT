@@ -1,5 +1,5 @@
-# The arity pin. This one line names the size of every pinned array, so removing
+# The arity pin. This one line names the size of every pinned group, so removing
 # any single literal from any of them changes a number here and turns this
 # fixture red. That is what gives each pinned literal independent coverage —
 # without it, a literal is covered only if some FAIL fixture happens to name it.
-OK:   design-audit pins — 6 constants (CFI body) + 10 reader-prompt + 16 disclosure + 10 denylist all intact
+OK:   design-audit pins — 6 constants (CFI body) + 4 reader-prompt + 1 measurement + 3 verdict tokens x2 regions + 6 reference + 14 disclosure (in-fence, ordered) + 10 denylist (in CFI-6) all intact
