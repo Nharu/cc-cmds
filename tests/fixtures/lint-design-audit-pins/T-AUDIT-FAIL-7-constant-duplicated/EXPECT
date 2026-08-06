@@ -1,4 +1,2 @@
-# A constant was restated outside the CFI block. The count arm is the only thing
-# that can see this, and before it was pinned this half was undefended: the
-# suite stayed green with the arity assertion deleted entirely.
+# A constant was restated outside the CFI block. Only the count arm sees this.
 FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT = 3' must appear on exactly 1 line, found 2

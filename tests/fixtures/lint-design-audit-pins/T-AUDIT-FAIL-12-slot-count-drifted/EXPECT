@@ -1,0 +1,4 @@
+# The declared slot-count integer drifted from the pinned array size. This is the
+# fence that makes the shortfall slot un-removable in silence — the count is the
+# thing that notices.
+FAIL: design-audit/references/04-disclosure-block.md — the declared slot count does not say 'exactly 15 slot lines', which is the number of slot keys pinned here

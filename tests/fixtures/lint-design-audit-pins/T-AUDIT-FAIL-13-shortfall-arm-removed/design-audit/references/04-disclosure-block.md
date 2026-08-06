@@ -15,6 +15,7 @@ with exactly 15 slot lines strictly between them.
 **고유 결함 수**: <n>
 **미보강 잔여 수**: <n>
 **라우팅 — 조정 패스 적용**: <n>
+**라우팅 — 미해결 이슈**: <n>
 **라우팅 — implement 사전 게이트**: <n>
 **라우팅 — design-conformance**: <n>
 **라우팅 — 기각**: <n>
@@ -29,5 +30,4 @@ with exactly 15 slot lines strictly between them.
 **(ii) Execution evidence.** The number of in-tree reader reports equals the `리뷰어 수` slot.
 
 **(ii-b) Declared shortfall.** A run short of readers is declared through the `결손 수`
-slot and the line after the block stating **결손 사유**, never absorbed by lowering the
 reviewer count to match.

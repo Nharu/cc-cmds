@@ -1,6 +1,6 @@
-# The whole repo-measurement clause was removed, so its region has no start
-# anchor. The region-scoped pins inside it must all fail — under the previous
-# whole-file pins the anchor table alone kept every one of them satisfied.
+# The measurement clause was removed, so its region has no start anchor and every
+# pin scoped to it fails — under whole-file pins the anchor table kept them all
+# satisfied.
 FAIL: design-audit/references/01-reader-prompt.md (measurement clause) — region start anchor missing: /^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY/
 FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the measurement clause: /\bMATCH\b/
 FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the measurement clause: /\bMISMATCH\b/

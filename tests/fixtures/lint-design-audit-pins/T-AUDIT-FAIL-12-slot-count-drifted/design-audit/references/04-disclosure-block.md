@@ -3,7 +3,7 @@
 ## Grammar
 
 The two fences are byte-exact literals appearing exactly once each, in this order,
-with exactly 15 slot lines strictly between them.
+with exactly 14 slot lines strictly between them.
 
 ## 잔여 공개
 
@@ -15,6 +15,7 @@ with exactly 15 slot lines strictly between them.
 **고유 결함 수**: <n>
 **미보강 잔여 수**: <n>
 **라우팅 — 조정 패스 적용**: <n>
+**라우팅 — 미해결 이슈**: <n>
 **라우팅 — implement 사전 게이트**: <n>
 **라우팅 — design-conformance**: <n>
 **라우팅 — 기각**: <n>

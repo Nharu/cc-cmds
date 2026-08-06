@@ -1,6 +1,3 @@
-# The MATCH verdict was removed from the anchor table only, leaving it present in
-# the measurement clause. Two things must hold for this to fail: the token is
-# matched with word boundaries (a substring pin is satisfied by MISMATCH), and
-# the two regions are pinned independently (a whole-file pin is satisfied by the
-# surviving region).
+# MATCH removed from the anchor table only. Needs word-boundary matching AND
+# independent region pins to fail.
 FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the anchor table: /\bMATCH\b/

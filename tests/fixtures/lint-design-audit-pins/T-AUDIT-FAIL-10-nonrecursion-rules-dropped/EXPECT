@@ -1,4 +1,2 @@
-# The non-recursion heading was deleted from a file that previously carried zero
-# positive pins. Before this pin existed the rules could be removed wholesale, or
-# every MUST NOT relaxed to may, with both lint and test staying green.
+# A rule deleted from a file that previously carried zero positive pins.
 FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing: ## Non-recursion rules (hard)

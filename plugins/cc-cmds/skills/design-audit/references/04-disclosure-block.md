@@ -26,12 +26,13 @@ Written into the audit report as a `## 잔여 공개` section.
 **하류 흡수 가정**: <one line — see below>
 **조정 패스 시작**: <ISO 8601 with offset>
 **조정 패스 종료**: <ISO 8601 with offset>
+**결손 수**: <n>
 <!-- /cc-design-audit-disclosure v1 end -->
 ```
 
 Rules (this is check (iv)):
 
-- The two HTML-comment fences are **byte-exact literals**, appear **exactly once each**, in this order, with **exactly 14 slot lines** strictly between them — in exactly this order, one per line, no blank lines, no extra keys, no missing keys.
+- The two HTML-comment fences are **byte-exact literals**, appear **exactly once each**, in this order, with **exactly 15 slot lines** strictly between them — in exactly this order, one per line, no blank lines, no extra keys, no missing keys.
 - Every slot line matches `^\*\*[^*]+\*\*: .+$` — the canonical field rendering of the shared verification contract: bold key, no leading bullet, exactly one ASCII space after the colon.
 - Value shapes: sha256 `^[0-9a-f]{64}$`; timestamps `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$`; counts `^[0-9]+$`.
 - The five routing lines are **fixed arity** — one line per named owner, always present, `0` when empty. Fixed arity is what makes per-owner routing machine-checkable instead of a free-form list, and it is also what makes triage collapse self-reporting: a `기각` of 0 beside a large `적용` is the signature of the failure mode this command was built to remove.
@@ -43,6 +44,8 @@ Rules (this is check (iv)):
 **(i) Hash binding.** `동결 문서 sha256` matches `^[0-9a-f]{64}$`, is byte-equal to the `frozen-sha256` recorded in the same report's `## 감사 개시` block (written before the first reader spawned and never rewritten), and the report's header `owner-doc=` equals the **document key** of the document under audit. *Blocks a block copied from another document's audit* — the copy carries the wrong document key and the wrong hash pair.
 
 **(ii) Execution evidence.** The number of in-tree reader reports equals the `리뷰어 수` slot, and that equals the `READER_COUNT` read **from SKILL.md's CFI-0 constants block** — never from this block and never from a spawn prompt. Every reader file carries the matching `owner-doc=` and a non-empty anchor table with at least one row. *Blocks a pre-written block with no readers actually run.*
+
+**(ii-b) Declared shortfall.** Where a reader produced no usable witness and the Case-1 recovery did not close the gap, the count of in-tree reader reports is legitimately **below** `READER_COUNT`. That case is declared, never absorbed: the `결손 수` slot carries the shortfall and the line immediately after the block states **결손 사유** in one sentence. A shortfall reported this way satisfies (ii); a shortfall that merely lowers `리뷰어 수` to match the reports does not, because it makes an audit run by fewer readers indistinguishable from one that was budgeted for fewer. **The slot count is itself the fence**: the block declares exactly 15 slot lines, so removing this arm's slot cannot be done quietly — the count assertion sees it. Without a pin, a relaxation and a deletion are textually indistinguishable a few months later.
 
 **(iii) Arithmetic invariants.**
 

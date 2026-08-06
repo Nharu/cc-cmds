@@ -264,6 +264,17 @@ DISCLOSURE_PINS=(
   '**하류 흡수 가정**'
   '**조정 패스 시작**'
   '**조정 패스 종료**'
+  '**결손 수**'
+)
+
+# The declared-shortfall arm and the integer that fences it. The arm exists so a
+# run short of readers is DECLARED rather than absorbed by lowering the reviewer
+# count to match; pinning it plus the slot-count integer means the arm cannot be
+# removed quietly — an unpinned relaxation is textually indistinguishable from a
+# deletion once the commit that made it has scrolled away.
+DISCLOSURE_ARM_PINS=(
+  '**결손 사유**'
+  '(ii-b) Declared shortfall.'
 )
 
 # The two fences are the region anchors, so `extract_between` pins them; a slot
@@ -285,6 +296,18 @@ if [[ "$observed_order" != "$expected_order" ]]; then
   fail=1
 fi
 
+for lit in "${DISCLOSURE_ARM_PINS[@]}"; do
+  assert_in_file "$lit" "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md'
+done
+
+# The slot-count integer stated in the prose must equal the pinned array's size.
+# Either half drifting from the other is what this catches: adding a slot without
+# updating the declared count, or relaxing the count without touching the block.
+if ! grep -Fq -- "exactly ${#DISCLOSURE_PINS[@]} slot lines" "$DISCLOSURE"; then
+  echo "FAIL: design-audit/references/04-disclosure-block.md — the declared slot count does not say 'exactly ${#DISCLOSURE_PINS[@]} slot lines', which is the number of slot keys pinned here" >&2
+  fail=1
+fi
+
 # ---------- negative fence — loop machinery must not reappear ----------------
 
 FORBIDDEN=(
@@ -298,6 +321,11 @@ FORBIDDEN=(
   'ack_items.md'
   'pending_applies.md'
   'INNER_TEMP_DIR'
+  # Scoped to this skill on purpose. The token also survives in a frozen pre-yq
+  # snapshot of a deleted skill under tests/fixtures/, which is outside CFI-6's
+  # reach ("anywhere under this skill") — registering it with a repo-wide
+  # scanner would turn that fixture red for carrying a fossil it exists to hold.
+  'convergence_table.md'
 )
 
 # The denylist body is a region so the token's POSITION is bound too. Counting
@@ -336,7 +364,7 @@ if (( fail == 0 )); then
   # reported here would be droppable without changing any output, so the OK
   # fixture could not detect its removal and the pin would have no independent
   # coverage. Adding a pin means adding it to an array, never as a loose call.
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PINS[@]} reader-prompt + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens x2 regions + ${#REFERENCE_PINS[@]} reference + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PINS[@]} reader-prompt + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens x2 regions + ${#REFERENCE_PINS[@]} reference + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

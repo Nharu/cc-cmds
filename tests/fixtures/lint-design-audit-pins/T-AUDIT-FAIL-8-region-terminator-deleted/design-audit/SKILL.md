@@ -29,7 +29,7 @@ One pass over the frozen document, then stop. There is no path back.
 
 ### CFI-6 — Forbidden imports (loop-resurrection denylist)
 
-None of the following may appear anywhere under this skill: `consecutive_no_major`, `COUNT_APPLIED`, `escalate_applied`, `INNER_EXIT_REASON`, `inner_round`, `outer_iter`, `outer_log.md`, `ack_items.md`, `pending_applies.md`, `INNER_TEMP_DIR`.
+None of the following may appear anywhere under this skill: `consecutive_no_major`, `COUNT_APPLIED`, `escalate_applied`, `INNER_EXIT_REASON`, `inner_round`, `outer_iter`, `outer_log.md`, `ack_items.md`, `pending_applies.md`, `INNER_TEMP_DIR`, `convergence_table.md`.
 
 
 Step 0 through Step 7, then stop.

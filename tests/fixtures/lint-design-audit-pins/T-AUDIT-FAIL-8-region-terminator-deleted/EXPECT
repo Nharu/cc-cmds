@@ -1,7 +1,5 @@
 # The region terminator was deleted. The region must fail loudly rather than
-# widen silently to end of file — a widened region still contains every pinned
-# literal, so a silently-widening extractor reports success while checking
-# nothing about position. Both regions anchored on that terminator report it.
+# widen silently to end of file; both regions anchored on it report.
 FAIL: design-audit/SKILL.md (CFI body) — region terminator literal missing after the start anchor: /^## Workflow[[:space:]]*$/
 FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: READER_COUNT = 3
 FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: ROUNDS_PER_READER = 1
@@ -20,3 +18,4 @@ FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6
 FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: ack_items.md
 FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: pending_applies.md
 FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: INNER_TEMP_DIR
+FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: convergence_table.md

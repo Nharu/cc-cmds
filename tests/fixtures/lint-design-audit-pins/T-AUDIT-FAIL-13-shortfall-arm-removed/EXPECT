@@ -1,0 +1,3 @@
+# The declared-shortfall arm was removed from the anti-vacuity checks. Without
+# the pin, this relaxation is textually indistinguishable from a deletion later.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing: **결손 사유**
