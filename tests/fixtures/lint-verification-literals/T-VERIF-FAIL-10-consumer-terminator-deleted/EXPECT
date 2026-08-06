@@ -1,0 +1,10 @@
+# The consumer region terminator was deleted, so the 1.5a region has no end
+# anchor. Same invariant as the SOT-side terminator fixture, on the other
+# extractor consumer.
+FAIL: implement/SKILL.md (consumer 1.5a bullet) — region terminator literal missing after the start anchor: /^- \*\*1\.5b /
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: | `구현 후` —
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): (.+)$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 전$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 중\(.+\)$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 후$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 등급): 구현 시 검증$

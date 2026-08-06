@@ -1,0 +1,9 @@
+# The whole 1.5a bullet was deleted, so the region has no start anchor and every
+# pin scoped to it fails.
+FAIL: implement/SKILL.md (consumer 1.5a bullet) — region start anchor missing: /^- \*\*1\.5a /
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: | `구현 후` —
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): (.+)$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 전$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 중\(.+\)$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 후$
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 등급): 구현 시 검증$

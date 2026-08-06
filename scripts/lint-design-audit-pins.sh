@@ -104,14 +104,17 @@ assert_re_in_text() {
   fi
 }
 
-# extract_between <start_ere> <end_ere> <file> <label>
-# Prints the lines strictly between the first line matching <start_ere> and the
-# first subsequent line matching <end_ere>. Both anchors are pinned: a missing
-# start, or an end that never occurs after the start, is a loud failure. It
-# replaces two same-named extractors that had drifted into different semantics
-# (one included its heading and kept scanning, the other did neither).
+# extract_between <start_ere> <end_ere> <file> <label> [include-start]
+# Prints the lines between the first line matching <start_ere> and the first
+# subsequent line matching <end_ere>. The start line is excluded unless the
+# fifth argument is `include-start`, which a single-line region needs. Both
+# anchors are pinned: a missing start, or an end that never occurs after the
+# start, is a loud failure. It replaces two same-named extractors that had
+# drifted into different semantics (one included its heading and kept scanning,
+# the other did neither) — so this body is kept byte-identical to the copy in
+# `lint-verification-literals.sh`, which is the whole point of collapsing them.
 extract_between() {
-  local start_ere="$1" end_ere="$2" file="$3" label="$4"
+  local start_ere="$1" end_ere="$2" file="$3" label="$4" mode="${5:-exclude-start}"
   if [[ ! -f "$file" ]]; then
     echo "FAIL: $label — file not found: $file" >&2
     fail=1
@@ -135,10 +138,11 @@ extract_between() {
     fail=1
     return 0
   fi
-  SC_START="$start_ere" SC_END="$end_ere" awk '
-    BEGIN { s = ENVIRON["SC_START"]; e = ENVIRON["SC_END"] }
+  SC_START="$start_ere" SC_END="$end_ere" SC_MODE="$mode" awk '
+    BEGIN { s = ENVIRON["SC_START"]; e = ENVIRON["SC_END"]
+            inc = (ENVIRON["SC_MODE"] == "include-start") }
     started && $0 ~ e { exit }
-    !started && $0 ~ s { started = 1; next }
+    !started && $0 ~ s { started = 1; if (inc) print; next }
     started { print }
   ' "$file"
 }

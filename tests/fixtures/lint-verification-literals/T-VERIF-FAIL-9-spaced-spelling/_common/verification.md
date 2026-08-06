@@ -37,3 +37,5 @@ Field key: 검증 등급.
 timing enum: 구현 전 / 구현 중(<phase>) / 구현 후
 
 note-line key: **구현 시 검증 기록**
+
+오기 예시: 검증불가 (드리프트)

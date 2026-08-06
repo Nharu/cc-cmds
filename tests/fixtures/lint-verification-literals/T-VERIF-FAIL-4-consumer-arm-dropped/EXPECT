@@ -1,0 +1,3 @@
+# One value arm of the three-bucket partition was deleted. Each arm fails alone —
+# none is a substring of another.
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): 구현 후$

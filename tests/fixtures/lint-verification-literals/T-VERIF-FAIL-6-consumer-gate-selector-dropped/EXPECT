@@ -1,0 +1,3 @@
+# The positive gate selector was removed. Losing it means every unhandled grade
+# state falls into the gate by default.
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 등급): 구현 시 검증$

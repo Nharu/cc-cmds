@@ -1,0 +1,5 @@
+# The grade token survives in prose but no longer in the vocabulary table that
+# defines it. A whole-file pin passes this; only the region scoping catches it.
+# This is the fixture that makes the region scoping load-bearing rather than
+# decorative.
+FAIL: _common/verification.md (SOT) — frozen literal missing from the frozen-vocabulary table: 구현 시 검증

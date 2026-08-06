@@ -1,0 +1,4 @@
+# The forbidden spaced spelling appeared. The spelling lock could not be written
+# as a positive pin — the head literal is a substring of the very token it
+# constrains — so it is a negative assertion, and this is what makes it fail.
+FAIL: _common/verification.md (SOT) — forbidden spelling present: 검증불가 (

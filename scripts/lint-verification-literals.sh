@@ -53,7 +53,10 @@ SOT_LITERALS=(
   '검증됨(통과)'
   '반증됨(실패)'
   '미검증'
-  '구현 시 검증'
+  # NOTE: `구현 시 검증` is NOT here — it is a substring of `**구현 시 검증 기록**`
+  # and of `## 구현 시 검증 항목`, so a whole-file pin on it can never fail alone.
+  # It is pinned region-scoped to the vocabulary table below, where no
+  # superstring occurs.
   '검증불가(드리프트)'
   # residual-reason closed set (4)
   '구현 필요'
@@ -81,8 +84,25 @@ SOT_LITERALS=(
   # section headings
   '## 검증 기록'
   '## 구현 시 검증 항목'
-  # spelling lock (drift-inventory head literal)
-  '검증불가('
+  # NOTE: the spelling lock is NOT a positive pin here — `검증불가(` is a
+  # substring of `검증불가(드리프트)`, so it is satisfied by the very token it is
+  # meant to constrain and can never fail on its own. What the lock actually
+  # asserts is the ABSENCE of the spaced spelling, and that is checked below as
+  # a negative assertion, which can fail independently.
+)
+
+# Region-scoped grade tokens — pinned where they are DEFINED, not wherever they
+# happen to occur. A whole-file pin on a token that is a substring of another
+# frozen literal is satisfied by the superstring and therefore has no
+# discriminating power of its own.
+GRADE_REGION_PINS=(
+  '구현 시 검증'
+)
+
+# Negative assertions. Each one can fail on its own, which is exactly what the
+# positive form of the same rule could not do.
+FORBIDDEN_SPELLINGS=(
+  '검증불가 ('
 )
 
 fail=0
@@ -110,9 +130,68 @@ assert_in_text() {
   fi
 }
 
+# extract_between <start_ere> <end_ere> <file> <label> [include-start]
+# Prints the lines between the first line matching <start_ere> and the first
+# subsequent line matching <end_ere>. The start line is excluded unless the
+# fifth argument is `include-start`, which a single-line region needs: a bullet
+# whose whole content is its own opening line has nothing strictly between the
+# anchors. BOTH ANCHORS ARE PINNED: a missing
+# start, or an end that never occurs after the start, is a loud failure rather
+# than a region that silently widens to end of file. A widened region still
+# contains every pinned literal, so the check would keep reporting success while
+# no longer checking anything about position.
+# The regexes travel through the environment, not through `awk -v`, which
+# processes escape sequences in the value and would turn a `\(` into a bare `(`.
+extract_between() {
+  local start_ere="$1" end_ere="$2" file="$3" label="$4" mode="${5:-exclude-start}"
+  if [[ ! -f "$file" ]]; then
+    echo "FAIL: $label — file not found: $file" >&2
+    fail=1
+    return 0
+  fi
+  if ! grep -Eq -- "$start_ere" "$file"; then
+    echo "FAIL: $label — region start anchor missing: /$start_ere/" >&2
+    fail=1
+    return 0
+  fi
+  if ! VL_START="$start_ere" VL_END="$end_ere" awk '
+        BEGIN { s = ENVIRON["VL_START"]; e = ENVIRON["VL_END"] }
+        !started && $0 ~ s { started = 1; next }
+        started && $0 ~ e  { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+      ' "$file"; then
+    echo "FAIL: $label — region terminator literal missing after the start anchor: /$end_ere/" >&2
+    fail=1
+    return 0
+  fi
+  VL_START="$start_ere" VL_END="$end_ere" VL_MODE="$mode" awk '
+    BEGIN { s = ENVIRON["VL_START"]; e = ENVIRON["VL_END"]
+            inc = (ENVIRON["VL_MODE"] == "include-start") }
+    started && $0 ~ e { exit }
+    !started && $0 ~ s { started = 1; if (inc) print; next }
+    started { print }
+  ' "$file"
+}
+
 # (1) SOT completeness.
 for lit in "${SOT_LITERALS[@]}"; do
   assert_in_file "$lit" "$SOT" "_common/verification.md (SOT)"
+done
+
+# (1a) Grade tokens, pinned inside the vocabulary table that defines them.
+grade_region=$(extract_between '^## 3\. Frozen vocabulary' '^### 3\.1 ' \
+                               "$SOT" '_common/verification.md (vocabulary table)')
+for lit in "${GRADE_REGION_PINS[@]}"; do
+  assert_in_text "$lit" "$grade_region" '_common/verification.md (SOT)' \
+    'the frozen-vocabulary table'
+done
+
+# (1b) Spelling lock, as the negative assertion it actually is.
+for bad in "${FORBIDDEN_SPELLINGS[@]}"; do
+  if grep -Fq "$bad" "$SOT"; then
+    echo "FAIL: _common/verification.md (SOT) — forbidden spelling present: $bad" >&2
+    fail=1
+  fi
 done
 
 # (2) Consumer sync — deliberately narrow. The verification-timing enum is the
@@ -159,39 +238,37 @@ CONSUMER_1_5A=(
 # bytes, wrapped over several lines) does not report every literal as missing —
 # a diagnostic that names deleted literals for an edit that deleted none.
 # Mirrors rule (B)'s section-body extraction.
-extract_1_5a_bullet() {
-  awk '
-    incap {
-      if ($0 ~ /^- \*\*/ || $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) exit
-      print
-      next
-    }
-    /^- \*\*1\.5a / { incap = 1; print }
-  ' "$1"
-}
-
-consumer_checked=0
-if [[ -f "$CONSUMER" ]]; then
-  consumer_checked=1
-  consumer_bullet=$(extract_1_5a_bullet "$CONSUMER")
-  if [[ -z "$consumer_bullet" ]]; then
-    echo "FAIL: implement/SKILL.md (consumer 1.5a bullet) — 1.5a bullet not found in $CONSUMER" >&2
-    fail=1
-  else
-    for lit in "${CONSUMER_1_5A[@]}"; do
-      assert_in_text "$lit" "$consumer_bullet" \
-        "implement/SKILL.md (consumer timing enum)" "the 1.5a bullet"
-    done
-  fi
+# The 1.5a bullet's region ends at the NEXT top-level bullet, named explicitly.
+# The previous extractor ended at "the next top-level bullet, OR any heading, OR
+# a blank line" — and the blank-line arm is the problem: a paragraph break
+# inserted inside the bullet truncates the region early, after which the pins
+# below its cut point read as deleted although nothing was deleted. Naming 1.5b
+# as the terminator also makes the terminator itself pinned: delete it and the
+# region does not silently swallow the rest of the file, it fails loudly.
+#
+# A consumer that is ABSENT is a FAIL, not a skip. Reporting OK for a fence
+# whose target is gone is the same shape of defect this file exists to pin: the
+# fence stops guarding and says nothing. `implement/SKILL.md` is a landed file
+# of this repo, so its absence is a defect rather than a normal state.
+if [[ ! -f "$CONSUMER" ]]; then
+  echo "FAIL: implement/SKILL.md (consumer) — file not found; the 1.5a fence has no target and cannot report OK" >&2
+  fail=1
+else
+  consumer_bullet=$(extract_between '^- \*\*1\.5a ' '^- \*\*1\.5b ' \
+                                    "$CONSUMER" 'implement/SKILL.md (consumer 1.5a bullet)' \
+                                    include-start)
+  for lit in "${CONSUMER_1_5A[@]}"; do
+    assert_in_text "$lit" "$consumer_bullet" \
+      "implement/SKILL.md (consumer timing enum)" "the 1.5a bullet"
+  done
 fi
 
 if (( fail == 0 )); then
-  if (( consumer_checked == 1 )); then
-    consumer_msg="${#CONSUMER_1_5A[@]} consumer (1.5a bullet)"
-  else
-    consumer_msg="0 consumer (implement/SKILL.md absent — skipped)"
-  fi
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${consumer_msg} all present"
+  # Every pinned literal belongs to a counted group and every group's size is
+  # named here, so dropping any one of them changes this line and the OK fixture
+  # detects it. A pin whose group size is not reported has no independent
+  # coverage.
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#GRADE_REGION_PINS[@]} SOT (vocabulary table) + ${#FORBIDDEN_SPELLINGS[@]} forbidden spelling + ${#CONSUMER_1_5A[@]} consumer (1.5a bullet) all present"
 fi
 
 exit "$fail"

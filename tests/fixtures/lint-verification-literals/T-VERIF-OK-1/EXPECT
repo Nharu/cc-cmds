@@ -1,0 +1,3 @@
+# The arity pin: every pinned group size is on this one line, so dropping any
+# single pinned literal changes a number here and turns this fixture red.
+OK:   verification frozen literals — 24 SOT (whole-file) + 1 SOT (vocabulary table) + 1 forbidden spelling + 6 consumer (1.5a bullet) all present
