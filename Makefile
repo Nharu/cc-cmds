@@ -8,6 +8,7 @@ lint:
 	bash scripts/lint-bash-portability.sh
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
+	bash scripts/lint-sidecar-schema.sh
 	bash scripts/lint-design-audit-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
@@ -28,6 +29,7 @@ test: test-active-notify
 	bash scripts/test-lint-bash-portability.sh
 	bash scripts/test-lint-skill-auq-spec.sh
 	bash scripts/test-lint-verification-literals.sh
+	bash scripts/test-lint-sidecar-schema.sh
 	bash scripts/test-lint-design-audit-pins.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
