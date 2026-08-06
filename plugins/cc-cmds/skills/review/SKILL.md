@@ -35,8 +35,21 @@ options:
     - name: "<directive>"
       kind: positional
       required: false
-      summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로").'
-      parse_note: "지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향."
+      summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로"). 설계 문서 경로를 넘기면 설계 정합 축이 열린다.'
+      parse_note: |
+          지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향.
+          지시문에 설계 문서 경로가 포함되면 그 문서가 리뷰어 컨텍스트에 실리고 `design-conformance` 태그가 사용 가능해진다.
+      variants:
+          - label: "관점 지시문"
+            example: "보안 중심으로"
+            behavior: "리뷰 팀 구성과 컨텍스트 가중치에 반영"
+          - label: "설계 문서 경로"
+            example: "docs/auth-flow.md 기준으로 설계 정합도 봐줘"
+            behavior: |
+                그 문서를 리뷰어 컨텍스트 패키지에 싣고 `design-conformance` 태그를 활성화한다.
+                **경로를 넘기지 않으면 그 축은 미사용이 아니라 사용 불가**다 — 대조 기준이 없기 때문이며,
+                설계 문서는 user-local이라 남의 PR을 리뷰할 때는 구조적으로 존재하지 않는다.
+                사이드카 역추적으로 문서를 추측하지 않는다.
 ---
 
 Conduct a multi-perspective code review using an agent team for the given task.

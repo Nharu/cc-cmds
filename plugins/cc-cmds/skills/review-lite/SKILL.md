@@ -220,7 +220,7 @@ Every review-lite report MUST include this section so the user is never silently
 - 보안 전담 리뷰어 분담: <files>
 - 코드 품질·로직 리뷰어 분담: <files>
 - 미커버 영역: <context window 한계로 분담 못 된 files; 없으면 "없음">
-- 관점 한계: 2인 로스터 고정 — 보안·코드 품질·로직 외 관점(성능·동시성·API 계약·설계 정합 등)은 전담 리뷰어가 없습니다. 해당 축이 중요하면 /cc-cmds:review 를 사용하세요.
+- 관점 한계: 2인 로스터 고정 — 보안·코드 품질·로직 외 관점(성능·동시성·API 계약 등)은 전담 리뷰어가 없습니다. 설계 정합은 성격이 다릅니다: 전담 리뷰어가 없어서가 아니라 설계 문서를 지시문으로 넘겨야만 열리는 축이라, 넘기지 않았다면 미커버가 아니라 사용 불가입니다. 해당 축이 중요하면 /cc-cmds:review 를 사용하세요.
 ```
 
 For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs that exceeded coverage during Round 1, list the uncovered files explicitly so the user can decide whether to re-run with `/cc-cmds:review` for full coverage.
