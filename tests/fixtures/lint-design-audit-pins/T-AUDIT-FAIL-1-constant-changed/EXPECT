@@ -1,0 +1,5 @@
+# A CFI-0 constant's value was changed. Both arms of the constants check must
+# fire: the exactly-one-line arity assertion (found 0) and the CFI-body
+# containment assertion. Only the changed constant may be reported.
+FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT = 3' must appear on exactly 1 line, found 0
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: READER_COUNT = 3

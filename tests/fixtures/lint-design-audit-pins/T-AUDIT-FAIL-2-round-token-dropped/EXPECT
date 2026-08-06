@@ -1,0 +1,2 @@
+# The reader prompt's round/pass declaration was dropped. Exactly one pin fires.
+FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing: This review is Round {round} of pass {pass}.

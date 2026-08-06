@@ -1,0 +1,5 @@
+# The arity pin. This one line names the size of every pinned array, so removing
+# any single literal from any of them changes a number here and turns this
+# fixture red. That is what gives each pinned literal independent coverage —
+# without it, a literal is covered only if some FAIL fixture happens to name it.
+OK:   design-audit pins — 6 constants (CFI body) + 10 reader-prompt + 16 disclosure + 10 denylist all intact

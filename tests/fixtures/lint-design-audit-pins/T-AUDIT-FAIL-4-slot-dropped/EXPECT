@@ -1,0 +1,2 @@
+# One disclosure slot key was removed from the block. Exactly one pin fires.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing: **라우팅 — 미해결 이슈**
