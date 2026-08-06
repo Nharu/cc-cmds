@@ -106,7 +106,7 @@ If they differ:
 
 > "CD 프롬프트 섹션을 `docs/{slug}.md`에 in-place authoring하고 붙여넣기 블록을 `docs/{slug}-fe/cd-prompt.paste.md`에 작성했습니다.
 >
-> 다음 단계: `/cc-cmds:design-audit --base docs/{slug}.md`로 base 설계 문서 전체 일관성을 감사하세요(독립 리더 1라운드 후 정지). 감사 결과가 반영되면 `/cc-cmds:design-prompt`를 다시 실행해 붙여넣기 블록을 재조립한 뒤, `docs/{slug}-fe/cd-prompt.paste.md`를 claude.ai/design에 붙여넣어 실행하세요."
+> `/cc-cmds:design-audit --base docs/{slug}.md`로 base 설계 문서 전체 일관성을 감사할 수 있습니다(독립 리더 1라운드 후 정지). 감사 결과가 반영되면 `/cc-cmds:design-prompt`를 다시 실행해 붙여넣기 블록을 재조립한 뒤, `docs/{slug}-fe/cd-prompt.paste.md`를 claude.ai/design에 붙여넣어 실행하세요."
 
 Substitute `{slug}` with the actual slug.
 

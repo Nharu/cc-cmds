@@ -100,7 +100,7 @@ Adjust roles based on the feature's character (e.g., if the feature is data-heav
 
 > "적용 설계 작성 완료: `docs/{slug}-fe/impl-design.md` (기준 DS 버전: `<version>`).
 >
-> 다음 단계: `/cc-cmds:design-audit docs/{slug}-fe/impl-design.md`로 구현 세부 사항을 감사한 뒤, `/cc-cmds:implement docs/{slug}-fe/impl-design.md`로 구현을 시작하세요."
+> `/cc-cmds:design-audit docs/{slug}-fe/impl-design.md`로 구현 세부 사항을 감사할 수 있고, `/cc-cmds:implement docs/{slug}-fe/impl-design.md`로 구현을 시작할 수 있습니다."
 
 Substitute `{slug}` and `<version>` with actual values.
 
