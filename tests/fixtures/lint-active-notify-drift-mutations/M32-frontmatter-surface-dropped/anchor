@@ -1,0 +1,1 @@
+  for pair in "$fm_tmp|$owner frontmatter" "$shared_path|$shared"; do

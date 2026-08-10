@@ -27,12 +27,22 @@
 # reporting it as an empty collection instead would hide the finding behind
 # exit 2.
 #
-# Each fixture's discriminating power is measured rather than assumed: eleven
-# single-point mutations of the lint are each run against the whole set, and
-# all eleven are killed, eight of them by exactly one fixture. Two fixtures
-# (FAIL-5, FAIL-8) kill nothing uniquely — they are the plain unwrapped base
-# case of their rule and are the shape a reader looks for first, so the overlap
-# is recorded here rather than removed.
+# Each fixture's discriminating power is measured rather than assumed, and the
+# measurement ships with it: `MUTATIONS.md` beside the fixtures states the rules
+# a row must satisfy, and every row lives under
+# `tests/fixtures/lint-active-notify-drift-mutations/` as an anchored literal
+# replacement with the set of fixtures it is expected to redden.
+# `scripts/test-lint-active-notify-drift-mutations.sh` applies them one at a
+# time against the whole set and requires each observed set to equal its
+# declared one.
+#
+# Re-derive the figures with that harness rather than reading them here. What
+# does not change with the next fixture addition is the shape of the claim: a
+# clean run says every LISTED mutation is killed. It does not say any fixture is
+# unpinned, and it does not say any property lacks coverage — those depend on
+# the list's scope, which is not in the list. Fixtures that kill nothing
+# uniquely are kept rather than removed: they are the plain base case of their
+# rule, the shape a reader looks for first.
 
 set -euo pipefail
 

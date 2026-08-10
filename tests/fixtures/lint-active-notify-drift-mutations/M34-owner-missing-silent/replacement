@@ -1,0 +1,3 @@
+  if [[ ! -f "$owner_path" ]]; then
+    continue
+  fi

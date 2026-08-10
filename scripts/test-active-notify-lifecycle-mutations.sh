@@ -97,8 +97,14 @@ observe_red() {
 run_mutation() {   # $1 = mutation dir, $2 = expected-red file
   local dir="$1" expected_file="$2" id anchor replacement expected observed
   id=$(basename "$dir")
-  anchor=$(cat "$dir/anchor")
-  replacement=$(cat "$dir/replacement" 2>/dev/null || true)
+  # Command substitution strips trailing newlines, and several anchors are whole
+  # lines whose newline is part of what the mutation removes. Dropping it turns
+  # a line deletion into a blank line inside a `\` continuation chain — a syntax
+  # error the mutation never intended, which `bash -n` then reports as a broken
+  # mutant. The sentinel byte is what keeps the newline; it has to be stripped
+  # at the assignment, because wrapping it in a helper reintroduces the problem.
+  anchor=$(cat "$dir/anchor"; printf 'x'); anchor="${anchor%x}"
+  replacement=$(cat "$dir/replacement"; printf 'x'); replacement="${replacement%x}"
   expected=$(grep -v '^#' "$expected_file" | grep -v '^$' | sort -u)
 
   if [[ -z "$expected" ]]; then

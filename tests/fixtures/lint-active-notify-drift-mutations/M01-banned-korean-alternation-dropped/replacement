@@ -1,0 +1,1 @@
+BANNED_RE='([Pp][Ee][Rr]|[Ee][Vv][Ee][Rr][Yy]|[Ee][Aa][Cc][Hh])[[:space:]-]+[Tt][Uu][Rr][Nn]|([Tt][Uu][Rr][Nn]|턴)[[:space:]]*마다'

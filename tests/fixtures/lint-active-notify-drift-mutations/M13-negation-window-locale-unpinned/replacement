@@ -1,0 +1,1 @@
+  local rest="$1" phrase="$2" head tail

@@ -40,8 +40,9 @@ test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
 	bash scripts/test-active-notify-pretool-hook.sh
 
-# Deliberately not a prerequisite of `test`: a full pass re-runs the lifecycle
-# suite once per declared mutation and costs minutes. Run it when notify.sh
-# changes.
+# Deliberately not prerequisites of `test`: a full pass re-runs the whole
+# fixture suite once per declared mutation. Run them when the file each one
+# mutates changes.
 test-active-notify-mutations:
 	bash scripts/test-active-notify-lifecycle-mutations.sh --self-check
+	bash scripts/test-lint-active-notify-drift-mutations.sh --self-check

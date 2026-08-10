@@ -74,22 +74,47 @@ OWNER_TABLE='_common/notify.md|active-notify/SKILL.md'
 
 # Rule (A) banned phrases. Spelling variants of the same retired contract, not
 # the two literals that happened to ship — those two caught 3 of 10 restatements.
-BANNED_RE='매[[:space:]]*(turn|턴)|(per|every|each)[[:space:]-]+turn|(turn|턴)[[:space:]]*마다'
+# Classes are spelled out per letter rather than folding only the first letter:
+# the first-letter form still misses an all-caps restatement, and per-letter
+# classes are the technique `normalize_citations` below already uses, for the
+# reason it already gives (a case-insensitive flag is GNU-only in sed).
+BANNED_RE='매[[:space:]]*([Tt][Uu][Rr][Nn]|턴)|([Pp][Ee][Rr]|[Ee][Vv][Ee][Rr][Yy]|[Ee][Aa][Cc][Hh])[[:space:]-]+[Tt][Uu][Rr][Nn]|([Tt][Uu][Rr][Nn]|턴)[[:space:]]*마다'
 # Handled separately because it is legitimate inside a negation (rule 5).
 CONDITIONAL_PHRASE='turn-end auto-fire'
 # POSIX-portable word boundaries rather than `\b`, which is unreliable in BSD
 # grep ERE and is a lint-bash-portability hazard. Whole words matter here: the
 # unanchored `[Nn]o` this replaces matched `now`, `notes`, `nothing`, `notified`
 # and `fire-now` — and `fire-now` is this file's central term.
-NEGATION_RE_BEFORE='(^|[^[:alnum:]])([Nn]o|[Nn]ot|[Nn]ever|[Nn]either|[Nn]or)([^[:alnum:]]|$)|없|않|아니|못'
-NEGATION_RE_AFTER='없|않|아니|못'
-NEGATION_WINDOW=48
+# The hyphen is excluded from the TRAILING boundary only, so `no-op` and
+# `no-brainer` stop counting as negators while `no longer` still does. The
+# leading boundary keeps it.
+NEGATION_RE_BEFORE='(^|[^[:alnum:]])([Nn]o|[Nn]ot|[Nn]ever|[Nn]either|[Nn]or)([^[:alnum:]-]|$)|없|않|아니|못'
+# Defined by reference, not by copying the literal, so the two cannot drift
+# apart — which is the class of defect this lint exists for. The Korean-only
+# form rejected correct English denials that put the phrase after the negator.
+# What stops an unrelated clause from licensing an assertion is the WINDOW, not
+# the language split.
+NEGATION_RE_AFTER="$NEGATION_RE_BEFORE"
+# BYTES, not characters — the window is measured under `local LC_ALL=C` so the
+# two CI runners cannot disagree. The two sides differ because the languages do:
+# an English negator precedes the phrase and is ASCII (1 byte per character),
+# while a Korean negative ending follows it at three bytes per syllable. 144
+# bytes is the same ~48 syllables of reach the leading side gets in characters.
+NEGATION_WINDOW_BEFORE=48
+NEGATION_WINDOW_AFTER=144
 # Shortest anchor that can falsify a renumbering. A one- or two-character anchor
 # matches almost any title by substring.
 ANCHOR_MIN_LEN=4
 # Rule (A) required phrase — the termination contract that replaced the retired
 # one must be named on each scanned surface.
 REQUIRED_PHRASE='self-cancel'
+# Judged as a regex on flattened text. Flattening alone is not enough: blocks are
+# joined with a space, so a token broken at its hyphen across a wrap flattens to
+# `self- cancel`, which still does not contain the literal. The optional
+# whitespace is what closes that, and the folded classes keep a sentence-cased
+# spelling from counting as absent. The literal above stays as the name printed
+# in the failure, so the message still says which token to add.
+REQUIRED_PHRASE_RE='[Ss]elf-[[:space:]]*[Cc]ancel'
 tab=$(printf '\t')
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -111,24 +136,35 @@ warn() {
   echo "WARN: $*" >&2
 }
 
-# True when every occurrence of CONDITIONAL_PHRASE in $1 carries a negator close
-# enough to be negating THAT phrase. English negators must precede it; Korean is
+# True when every occurrence of $2 in $1 carries a negator close enough to be
+# negating THAT phrase. English negators usually precede it; Korean is
 # verb-final, so its negative endings follow it. An unwindowed test lets a
 # negation belonging to an unrelated clause license the assertion.
-conditional_is_negated() {
-  local rest="$1" head tail
-  while [[ "$rest" == *"$CONDITIONAL_PHRASE"* ]]; do
-    head="${rest%%"$CONDITIONAL_PHRASE"*}"
-    tail="${rest#*"$CONDITIONAL_PHRASE"}"
-    if (( ${#head} > NEGATION_WINDOW )); then
-      head="${head: -NEGATION_WINDOW}"
+#
+# Takes the phrase as an argument because the banned family needs the same
+# exception: stating the retired contract in order to deny it is the correct
+# thing to write on these surfaces, and the family is six times larger than the
+# one literal, so without the exception the gate degrades the text it protects.
+phrase_is_negated() {
+  # `local LC_ALL=C` pins ${#s} and ${s:0:n} to BYTES. Without it the window is
+  # characters in a UTF-8 locale and bytes in C/POSIX, so the same text is
+  # judged differently on two CI runners — and the side that moves is Korean,
+  # three bytes per syllable, which is the text this window exists to protect.
+  # The assignment is scoped to this function; the caller's locale is untouched.
+  local LC_ALL=C
+  local rest="$1" phrase="$2" head tail
+  while [[ "$rest" == *"$phrase"* ]]; do
+    head="${rest%%"$phrase"*}"
+    tail="${rest#*"$phrase"}"
+    if (( ${#head} > NEGATION_WINDOW_BEFORE )); then
+      head="${head: -NEGATION_WINDOW_BEFORE}"
     fi
-    tail="${tail:0:NEGATION_WINDOW}"
+    tail="${tail:0:NEGATION_WINDOW_AFTER}"
     if ! printf '%s\n' "$head" | grep -qE "$NEGATION_RE_BEFORE" \
        && ! printf '%s\n' "$tail" | grep -qE "$NEGATION_RE_AFTER"; then
       return 1
     fi
-    rest="${rest#*"$CONDITIONAL_PHRASE"}"
+    rest="${rest#*"$phrase"}"
   done
   return 0
 }
@@ -201,15 +237,27 @@ while IFS='|' read -r shared owner; do
       [[ -n "$block_text" ]] || continue
       if printf '%s\n' "$block_text" | grep -qE "$BANNED_RE"; then
         hit=$(printf '%s\n' "$block_text" | grep -oE "$BANNED_RE" | head -1)
-        fail "$scan_label — block at line $block_start carries a retired contract phrase ('$hit')"
+        # Judged on the unfolded text so `$hit` keeps its original case in the
+        # message; it came from this same string, so the split is exact.
+        if ! phrase_is_negated "$block_text" "$hit"; then
+          fail "$scan_label — block at line $block_start carries a retired contract phrase ('$hit')"
+        fi
       fi
-      if [[ "$block_text" == *"$CONDITIONAL_PHRASE"* ]] \
-         && ! conditional_is_negated "$block_text"; then
-        fail "$scan_label — block at line $block_start states '$CONDITIONAL_PHRASE' without negating it"
+      # Case-folded copy: the conditional test is a bash glob, which cannot be
+      # made case-insensitive the way the regexes above are. ASCII-only fold, so
+      # Korean bytes (all >= 0x80) pass through untouched; `tr '[:upper:]'
+      # '[:lower:]'` is rejected because its multibyte behaviour on macOS is not
+      # dependable.
+      block_lc=$(printf '%s' "$block_text" | LC_ALL=C tr 'A-Z' 'a-z')
+      if [[ "$block_lc" == *"$CONDITIONAL_PHRASE"* ]] \
+         && ! phrase_is_negated "$block_lc" "$CONDITIONAL_PHRASE"; then
+        evidence=$(printf '%s\n' "$block_text" \
+          | grep -oiE ".{0,40}$CONDITIONAL_PHRASE.{0,40}" | head -1)
+        fail "$scan_label — block at line $block_start states '$CONDITIONAL_PHRASE' without negating it: ...$evidence..."
       fi
     done < <(blocks_of "$scan_file")
 
-    if ! grep -qF "$REQUIRED_PHRASE" "$scan_file"; then
+    if ! blocks_of "$scan_file" | grep -qE "$REQUIRED_PHRASE_RE"; then
       fail "$scan_label — required phrase '$REQUIRED_PHRASE' is absent; the termination contract is unnamed"
     fi
   done
@@ -249,6 +297,7 @@ DUPS
       anchor=$(printf '%s\n' "$citation" \
         | sed -E 's/^SKILL\.md[[:space:]]+§[0-9]+(\.[0-9]+)?[[:space:]]*//' \
         | sed -E 's/\. .*$//' \
+        | sed -E 's/(,|—|`|\|).*$//' \
         | sed -E 's/[[:space:]]*[.,;:]*$//')
 
       title=$(awk -F'\t' -v n="$num" '$1==n { print $2; exit }' "$headings_tmp")

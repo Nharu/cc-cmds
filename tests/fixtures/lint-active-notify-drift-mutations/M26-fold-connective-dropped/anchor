@@ -1,0 +1,1 @@
+    | sed -E 's/[Ss][Kk][Ii][Ll][Ll]\.[Mm][Dd][[:space:]]*(의|,)?[[:space:]]*(body|본문|section|절)?[[:space:]]*§/SKILL.md §/g' \

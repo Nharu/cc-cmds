@@ -1,0 +1,4 @@
+  if [[ ! -f "$owner_path" ]]; then
+    fail "$shared — declared owner not found: $owner"
+    continue
+  fi

@@ -1,0 +1,1 @@
+BANNED_RE='매[[:space:]]*(turn|턴)|(per|every|each)[[:space:]-]+turn|(turn|턴)[[:space:]]*마다'

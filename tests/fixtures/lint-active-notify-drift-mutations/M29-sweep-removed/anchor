@@ -1,0 +1,3 @@
+  if normalize_citations "$other" | grep -qE 'SKILL\.md[[:space:]]+§[0-9]'; then
+    fail "$other_rel — carries a 'SKILL.md §N' citation but declares no owning SKILL.md; add a row to OWNER_TABLE"
+  fi

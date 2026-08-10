@@ -1,0 +1,3 @@
+      block_lc="$block_text"
+      if [[ "$block_lc" == *"$CONDITIONAL_PHRASE"* ]] \
+         && ! phrase_is_negated "$block_lc" "$CONDITIONAL_PHRASE"; then

@@ -1,0 +1,1 @@
+the citation extractor stops bounding at `)` and `;`

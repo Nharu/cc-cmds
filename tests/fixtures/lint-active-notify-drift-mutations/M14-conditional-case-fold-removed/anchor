@@ -1,0 +1,3 @@
+      block_lc=$(printf '%s' "$block_text" | LC_ALL=C tr 'A-Z' 'a-z')
+      if [[ "$block_lc" == *"$CONDITIONAL_PHRASE"* ]] \
+         && ! phrase_is_negated "$block_lc" "$CONDITIONAL_PHRASE"; then

@@ -1,0 +1,4 @@
+      if [[ -z "$title" ]]; then
+        fail "$shared — citation '§$num' names no heading in $owner"
+        continue
+      fi
