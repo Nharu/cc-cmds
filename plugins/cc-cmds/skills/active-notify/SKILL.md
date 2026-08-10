@@ -27,9 +27,10 @@ notes: |
 Read `${CLAUDE_SKILL_DIR}/../_common/notify.md` once per session to load the shared procedure
 (preconditions, fire copy synthesis, failure handling, dispatcher
 invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
-there is no turn-end auto-fire. The plugin's PreToolUse hook self-approves
-the dispatcher's Bash invocations — each on a command line of its own — so
-the Bash permission dialog does not surface for them.
+there is no turn-end auto-fire. The plugin's PreToolUse hook
+self-approves the dispatcher's Bash invocations when they are written
+as §1 shows — each plain and on a command line of its own — so the
+Bash permission dialog does not surface for them.
 
 ## 1. Calling convention
 
@@ -40,12 +41,16 @@ shell working directory does not matter. The examples below abbreviate
 that path to its final three segments,
 `active-notify/scripts/notify.sh`. The plugin's PreToolUse hook
 self-approves the call only when the whole command line is one plain
-invocation of that path with one of its subcommands, written bare rather
-than quoted. Anything else falls through to the Bash permission dialog —
-chained with `;` or `&&`, piped, redirected, wrapped in a subshell or a
-substitution, or split across lines — including a compound line that
-contains a perfectly good call, so each invocation goes in a Bash call of
-its own (§4.6). The subcommands are local-disk file ops and complete
+invocation of that path — optionally preceded by the bare word `bash`
+and nothing else — with one of its subcommands, written bare rather
+than quoted, and **the path absolute** rather than the abbreviated
+three-segment form the examples show: a relative path, a `..` climb, a
+glob or a tilde is rejected even though it ends in those same segments.
+Anything else falls through to the Bash permission dialog — chained with
+`;` or `&&`, piped, redirected, wrapped in a subshell or a substitution,
+or split across lines — including a compound line that contains a
+perfectly good call, so each invocation goes in a Bash call of its own
+(§4.6). The subcommands are local-disk file ops and complete
 instantly.
 
 ```bash
@@ -136,7 +141,7 @@ When it is unclear whether an ARM is live, **fire anyway**. The
 dispatcher silently no-ops an absent flag, so a spurious `fire-now`
 costs nothing, while a skipped one is invisible to an absent user. Do
 NOT read the flag file to decide — the flag is dispatcher-private
-state, and a read-then-decide detour reintroduces the race the lock
+state, and a read-then-decide detour reintroduces a race the lock
 closes.
 
 ### CFI-4 — Self-cancel scope and ordering
@@ -180,7 +185,8 @@ the canonical patterns below trigger; everything else is anti-pattern
 - **(c) Companion ARM-eligible expression** — 1인칭 알림 요청 어휘가 동반
   (시간 marker, 작업 boundary, sub-event 지칭).
 
-**Worked counter-example** — `"테스트 시작할 때랑 끝날 때 알림 줘"` (Issue #12 reproducer):
+**Worked counter-example** — `"테스트 시작할 때랑 끝날 때 알림 줘"`
+(Issue #12 reproducer):
 
 - (b) ✓ "테스트" = 실행할 작업 (noun-form).
 - (c) ✓ "시작할 때랑 끝날 때" = 2개 sub-event boundary + "알림 줘" = ARM
@@ -379,16 +385,21 @@ a one-shot delay (`"30분 후 알림 줘"`) — do NOT ARM; route to §2.6
 (CFI-5). **Both branches are excluded, not just the recurring one.**
 
 **Gate 1 — explicit enumeration.** Does the alert clause enumerate **≥2
-named sub-events**? Before answering yes, take the enumerated items one
-at a time and ask of each: is this a **finite moment that passes once**,
-or a **class that recurs**? If even one item is a recurring class, the
-enumeration is not closed — do NOT apply Gate 1; send the utterance down
-to Gate 2a. If every item is a finite moment → single mode with
-`--count=N`, N = the number of enumerated items. The distributive
-reading of `각`/`각각`/`each` — a quantifier over a finite list, not a
-repeat trigger — holds **only when every item is a finite moment**;
-where it does not, the quantifier keeps its recurrence meaning and the
-parse belongs to Gate 2a.
+named sub-events**? Before answering yes, check whether a recurrence
+quantifier (`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`) appears
+anywhere in the alert clause. **If none does, the enumeration is finite
+by default — apply Gate 1**, even where an item names a noun that could
+recur: the user listed the occasions and asked for nothing beyond them,
+and routing such an utterance onward reaches no other gate. If a
+quantifier is present, take the enumerated items one at a time and ask
+of each: is this a **finite moment that passes once**, or a **class
+that recurs**? If even one item is a recurring class, the enumeration
+is not closed — do NOT apply Gate 1; send the utterance down to Gate
+2a. Otherwise → single mode with `--count=N`, N = the number of
+enumerated items. The distributive reading of `각`/`각각`/`each` — a
+quantifier over a finite list, not a repeat trigger — holds **only when
+every item is a finite moment**; where it does not, the quantifier
+keeps its recurrence meaning and the parse belongs to Gate 2a.
 
 Connectives seen in practice: `,`/`랑`/`이랑`/`와`/`과`/`하고`/`및`/
 `그리고`/`and`. **This list is illustrative, not closed** — decide by
@@ -401,16 +412,21 @@ in the list, not evidence of a single moment.
 - `"lint 끝날 때, 빌드 끝날 때, 배포 완료 시 각각 알림"` → single
   `--count=3`. `각각` is distributive over the 3-item list.
 - `"각 커밋마다, 각 배포마다 알림 줘"` → **not** Gate 1. Both items are
-  recurring classes, so the enumeration is not closed and it falls
-  through to Gate 2a.
+  recurring classes and a quantifier is present, so the enumeration is
+  not closed and it falls through to Gate 2a.
+- `"커밋할 때랑 배포할 때 알림 줘"` → single `--count=2`. Both nouns
+  name classes that could recur, but no quantifier appears anywhere, so
+  the enumeration is finite by default and Gate 1 applies.
 
 **Gate 2a — recurrence quantifier modifying a NAMED noun or event
 phrase.** Otherwise, if `매`/`마다`/`매번`/`각`/`반복`/`every`/`each`
 modifies a noun or event phrase → event-scoped repeat (§2.2), and that
 noun is the event class.
 
-**When more than one class is named, ARM one cycle whose class label is
-the union of them** (`commit or deploy`) — never one cycle per class.
+**When Gate 1 sent the utterance here, or when more than one class is
+named, ARM one cycle whose class label is the union of everything the
+user named by name** (`commit or deploy`, `start or commit`) — never
+one cycle per class.
 `arm` is an unconditional idempotent overwrite (§3), so a second ARM
 would erase the first with nothing said; and narrowing to a single
 representative class is the mirror image of §6.1's Event-class
@@ -428,6 +444,10 @@ fires once.
 - `"각 커밋마다 알림"` → event-scoped repeat, class `commit`.
 - `"각 커밋마다, 각 배포마다 알림 줘"` → event-scoped repeat, one cycle,
   class `commit or deploy`.
+- `"시작할 때랑 각 커밋마다 알림 줘"` → event-scoped repeat, one cycle,
+  class `start or commit`. Gate 1 sent it here because one item is a
+  recurring class; the finite moment joins the label as a member and
+  fires once.
 - `"매 단계마다 알림"` → event-scoped repeat, class `step` — a generic
   work-unit class, so the CFI-1 instance floor supplies the boundary
   the words do not.
@@ -444,9 +464,10 @@ cascade only refines what the class is called.
 
 **The cascade is complete.** Every alert clause exits at exactly one
 gate: it is wall-clock keyed (Gate 0B) or it is not; if not, it
-enumerates two or more named finite moments (Gate 1) or it does not; if
-not, it carries a recurrence quantifier with a noun (Gate 2a), without
-one (Gate 2b), or not at all (Gate 3). There is no "none of the above"
+enumerates two or more named sub-events that Gate 1's quantifier test
+leaves finite (Gate 1) or it does not; if not, it carries a recurrence
+quantifier with a noun (Gate 2a), without one (Gate 2b), or not at all
+(Gate 3). There is no "none of the above"
 exit, and in particular no exit that quietly skips ARM — declining to
 ARM is Gate 0B's outcome alone, and that branch is a delegation that
 speaks, never a silent skip (§6.3).
@@ -518,12 +539,14 @@ SKILL route is gone entirely.
   interval expression (`*/5 * * * *`).
 
 The scheduled prompt must be **one command line** — no `&&`, no command
-substitution, no redirection. The hook self-approves a single simple
-`notify.sh` invocation and nothing else, so a compound line does not
-match it at all: the firing turn then stops on a permission dialog that
-no one is present to answer. A compound line also widens the surface
-the creation classifier reviews, and the session-id injection binds to
-its first command only.
+substitution, no redirection, **and no line break**. The hook
+self-approves a single simple `notify.sh` invocation and nothing else,
+so a compound line does not match it at all: the firing turn then stops
+on a permission dialog that no one is present to answer. The matcher is
+anchored to the whole command line, so a second line makes it no longer
+lone and fails the same way and for the same reason (§4.6). A compound
+line also widens the surface the creation classifier reviews, and the
+session-id injection binds to its first command only.
 Keep the returned job ID: it is the only handle on the reservation, and
 the disclosure step promises the user you still have it.
 
@@ -610,11 +633,12 @@ variable, and the tools were genuinely absent in some contexts. Every
 rung ends in a line the user can see.
 
 - **Scheduling cap exceeded** — say first, in the same reply, that you
-  reserved nothing; then show the list and ask which job to free.
+  reserved nothing; then list the reservations with `CronList` (load
+  its schema with `ToolSearch` as above) and ask which job to free.
   Never delete someone else's job to make room, and never hold the turn
   waiting for the answer — a question is all this rung produces, and a
   question thrown at an absent user is a silent failure with an extra
-  step. If they name one, delete it then and retry.
+  step. If they name one, delete it with `CronDelete` and retry.
 - **Malformed expression** — recompute once, retry once.
 - **`durable` refused in a teammate context** — quietly drop to
   session-scoped and retry once.
@@ -630,22 +654,24 @@ because such a request can be **quietly downgraded**, read the result's
 persistence sentence before disclosing and report **what the result
 says, not what you asked for**.
 
-**Every path that reaches no reservation ends out loud** — a failed
-Step 0, an absent scheduler, and every rung of the ladder above,
-without exception. None of them may end at "did not schedule" — say
-what you could not do and why. Declining to ARM a request the skill
+**Every path that ends with no reservation ends out loud** — a failed
+Step 0, an absent scheduler, and every rung of the ladder above that
+stops there, without exception. (A rung that retries into a reservation
+is not such a path, and the `durable` downgrade is told to make its
+internal step quietly.) None of them may end at "did not schedule" —
+say what you could not do and why. Declining to ARM a request the skill
 cannot serve is not the ambiguity-avoidance §6.3 forbids; staying quiet
 about it is.
 
 **Recovering a lost job ID.** The disclosure promises the user you can
 stop it, yet the ID lives only in context and micro-compaction empties
 tool results wholesale, newest-first. If a cancel request arrives after
-the ID is gone, load the cron schemas with `ToolSearch` as above and list
-the reservations with `CronList`. Each row opens with the job's own id,
-untruncated — that id is what `CronDelete` takes, so recovery does not
-depend on your having kept anything. `CronList` and `CronDelete` share
-`CronCreate`'s gate, so in any session where scheduling succeeded they are
-there too.
+the ID is gone, load the cron schemas with `ToolSearch` as above and
+list the reservations with `CronList`. Each row opens with the job's own
+id, untruncated — that id is what `CronDelete` takes, so recovery does
+not depend on your having kept anything. `CronList` and `CronDelete`
+share `CronCreate`'s gate, so in any session where scheduling succeeded
+they are there too.
 
 **Pick the row by its schedule, not by its prompt.** The listing shows
 each prompt truncated, and what this section reserves is a `notify.sh`
@@ -656,20 +682,21 @@ marker as the key, and treat the surviving prompt prefix as a family
 filter only: it answers "is this one of ours", never "which one of
 ours".
 
-Two one-shots of this skill are identical for as far as the listing shows
-them, so if the schedule does not separate the candidates, **ask which
-one** and say why you are asking. That question is not politeness here —
-it is the only discriminator left. The rule against questions in this
-section is about a user who has walked away, and a user who just said
-`"알림 취소"` is at the keyboard by definition.
+Two one-shots of this skill are identical for as far as the listing
+shows them, so if the schedule does not separate the candidates, **ask
+which one** and say why you are asking. That question is not politeness
+here — it is the only discriminator left. The rule against questions in
+this section is about a user who has walked away, and a user who just
+said `"알림 취소"` is at the keyboard by definition.
 
 **`"알림 취소"` turns off everything that is live.** Delete the
 scheduled job with `CronDelete`, and if an ARM cycle is also live call
 `notify.sh cancel` as well. **Never turn off one of them and report
-that it is cancelled.** This state is not a hypothetical the design tolerates — it
-is one this section actively creates, because the event-anchor offer
-above invites the very user who made a clock request to open an event
-cycle. §2.3 owns the same utterance and carries the same obligation.
+that it is cancelled.** This state is not a hypothetical the design
+tolerates — it is one this section actively creates, because the
+event-anchor offer above invites the very user who made a clock request
+to open an event cycle. §2.3 owns the same utterance and carries the
+same obligation.
 
 **Distinguish from progress markers.** A request keyed to *work
 progress* — `"작업이 70% 정도 끝나면"`, `"중간쯤 되면"` — is NOT
@@ -731,9 +758,12 @@ context yields no obvious class, the model in the SAME turn:
    follow. The moment your own work produces a first concrete instance
    — a commit, a test run — **re-ARM with that class**, which ends the
    degeneracy without the user having answered. And if the task you
-   were given finishes with neither a reply nor an instance, the cycle
-   has nothing left to fire for: **self-cancel it there and say so in
-   your reply**. §4.6 (a) is satisfied by construction in this branch
+   were given finishes with neither a reply nor a concrete instance,
+   close the cycle there — but the end of that turn is itself an
+   instance under the CFI-1 floor whenever the turn carried a user-task
+   tool call, so **fire-now first, then `cancel`, then say so in your
+   reply** (§4.6's ordering rule). §4.6 (a) is satisfied by construction
+   in this branch
    — a degenerate cycle can only ever fire on the CFI-1 floor, and
    that floor counts your own turns.
 6. A surviving degenerate class is not a dead cycle: it sits at the
@@ -877,8 +907,8 @@ another name, and it does **not** extend to precise classes — a turn in
 which no `commit` occurred owes no `commit` banner, floor or no floor.
 
 **A turn opened by an external scheduler is not an instance.** Such a
-turn — one executing a prompt written for a scheduled job rather than for
-this cycle's user task — does not count toward a generic work-unit
+turn — one executing a prompt written for a scheduled job rather than
+for this cycle's user task — does not count toward a generic work-unit
 class. The axis is *who opened the turn*, not which mechanism did it.
 Without this exclusion the three parts compose into a cycle that cannot
 end: a degenerate class fires on any turn with a tool call, a live
@@ -1005,15 +1035,15 @@ See §6.4 for the anti-pattern fence around self-cancel timing.
 
 **Issue the two as separate Bash calls — do not chain them with `&&`.**
 A chained pair is not a lone invocation, so the hook does not approve it
-and the turn stops on a permission dialog — at the exact moment the cycle
-was closing, with the final banner still unsent and no one present to
-answer. Splitting them across two lines of one Bash call fails the same
-way and for the same reason: the matcher is anchored to the whole command
-line, and a second line makes it no longer lone. And were a chained pair
-to run, the session-id injection path binds its environment prefix to the
-first command only, so the chained `cancel` would read a different flag
-path than the `fire-now` before it and cancel nothing. Two calls, in the
-order above.
+and the turn stops on a permission dialog — at the exact moment the
+cycle was closing, with the final banner still unsent and no one present
+to answer. Splitting them across two lines of one Bash call fails the
+same way and for the same reason: the matcher is anchored to the whole
+command line, and a second line makes it no longer lone. And were a
+chained pair to run, the session-id injection path binds its environment
+prefix to the first command only, so the chained `cancel` would read a
+different flag path than the `fire-now` before it and cancel nothing.
+Two calls, in the order above.
 
 **Asymmetry with ARM — and what the error actually costs.** ARM is
 forbidden on self-judgment (§6.1) because a false-positive ARM creates
@@ -1111,10 +1141,11 @@ follows (s2) with 3 fires instead of 2.
 
 User: `"각 기능 완성마다 알림 줘"`.
 
-§2.5 Gate 2a: `각`/`마다` modifies `기능 완성` → ARM event-scoped repeat,
-event class `feature completion`. Per §2.2 spectrum this is a *named
-semantic milestone* class — not as crisp as `commit` (no exit code
-boundary), but the model judges completion against the work it's doing.
+§2.5 Gate 2a: `각`/`마다` modifies `기능 완성` → ARM event-scoped
+repeat, event class `feature completion`. Per §2.2 spectrum this is a
+*named semantic milestone* class — not as crisp as `commit` (no exit
+code boundary), but the model judges completion against the work it's
+doing.
 fire-now timing is the model's call; firing on each feature it
 considers complete is correct. Self-cancel when the broader work
 scope wraps.
@@ -1128,10 +1159,12 @@ runs all four steps.
 
 1. **Step 0.** Runs the precondition check. Darwin, `terminal-notifier`
    present → proceed. (Had it failed, the model would schedule nothing
-   and say so — never schedule and hope.)
+   and say so — never schedule and hope.) Loads the cron schemas with
+   `ToolSearch` before it reads the clock.
 2. **schedule.** `CronCreate` with `recurring: true` and an interval
-   expression, its prompt a single `notify.sh fire-oneshot …` command
-   line. Keeps the returned job ID.
+   expression, its prompt a single
+   `<skill dir absolute path>/scripts/notify.sh fire-oneshot …`
+   command line. Keeps the returned job ID.
 3. **emit.** Each firing turn runs that one command; `fire-oneshot`
    touches no flag and no lock, so any ARM cycle running alongside is
    unaffected.
@@ -1228,12 +1261,16 @@ anti-pattern.
 ## 6. Anti-patterns
 
 Each subsection fences a different failure: `arm` calls that must not
-happen, plus shape errors in the ones that must (§6.1); `fire-now`
-calls that must not happen (§6.2); ambiguity used as a reason not to
-act at all (§6.3); and self-cancel judgments that end a cycle wrongly
-(§6.4). Not every bullet below forbids a call — §6.1's second group
-constrains an ARM that does happen, §6.3 mandates ARM, and §6.4
-governs `cancel`.
+happen, plus requests an ARM is the wrong answer to and shape errors in
+the ARMs that do happen (§6.1); `fire-now` calls that must not happen,
+plus the obligations around the ones that must (§6.2); ambiguity used
+as a reason not to act at all (§6.3); and self-cancel judgments that
+end a cycle wrongly (§6.4). Not every bullet below forbids a call.
+§6.1's second group holds one ARM that must not happen — the
+clock-keyed one, which §2.6 answers instead — and three constraints on
+ARMs that do; §6.2 holds one forbidden call, two obligations (fire
+every observed instance; fire before any other tool call), and one call
+it calls harmless; §6.3 mandates ARM; §6.4 governs `cancel`.
 
 ### 6.1 ARM — when not to call, and how not to call it
 
@@ -1288,9 +1325,11 @@ shape; never end here in silence.**
 
 ### 6.2 fire-now (call forbidden)
 
-These forbid `fire-now`, the ARM cycle's dispatch surface. None of them
-reach `fire-oneshot`, which belongs to no cycle: it is state-independent
-by construction, so "no ARM was ever placed" is its normal condition
+These govern `fire-now`, the ARM cycle's dispatch surface — one call
+they forbid, and obligations around calls that must happen. None of
+them reach `fire-oneshot`, which belongs to no cycle: it is
+state-independent by construction, so "no ARM was ever placed" is its
+normal condition
 rather than a violation. The §2.6 delegation calls it with no ARM
 anywhere in the conversation and that is correct.
 
