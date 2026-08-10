@@ -241,7 +241,19 @@ The gate of §6 compares `git status --porcelain` against a baseline, so **every
 
 4. **`design-audit`'s own report writes** — the early report stub, the `## 결정론적 검사` write that opens the freeze window, and the in-tree copies of the reader reports. All three target the audit report the skill derives for the document under audit; none touches the audited document.
 
-**(v) Baseline order independence.** An exempt act is invisible to this gate by construction, so a baseline captured **before** it and one captured **after** it yield the same verdict. Callers may therefore place their capture on either side and need not re-capture across an exempt act. This is what makes two shipped orderings simultaneously correct — `design` capturing once and never re-capturing across its ledger updates, and `design-audit` capturing **after** its `## 결정론적 검사` write — and it is a property of the exemption, not an additional permission: a write that is not an exempt act above is order-dependent and must be outside the window.
+**(v) The exempting mechanism brackets its own act and corrects the baseline.** An exempt act is **not** invisible to this gate. `git status --porcelain` emits (state, path) pairs and carries no information about which act produced them, so **the gate cannot classify a delta as exempt even in principle** — and measurement bears this out: in a repo that tracks `docs/`, writing a ledger stub moves the baseline from `[]` to `[?? docs/topic.md]`, while an ordinary edit to a tracked source file produces the same shape of entry. An act-scoped exemption and a gate that cannot see acts are not reconcilable by asserting invisibility.
+
+**They are reconcilable by moving the work to the party that does know.** The mechanism performing an exempt act **brackets it**: capture porcelain immediately **before** the write, perform the act, capture immediately **after**, and **advance the baseline by exactly the observed delta** — asserting that every path in that delta is one this act itself just wrote. The gate stays a plain string comparison and never classifies anything; the enumeration above stays act-scoped because the party doing the correcting is the mechanism that owns the act and can name only the paths it just created.
+
+**A delta larger than the act's own writes is not a correction — it is a gate failure.** That single assertion is the whole of the safety argument: a foreign write landing between the two captures is precisely what it refuses to absorb.
+
+**Scope: inside a gate window only.** An unbounded obligation would tax exempt acts at call sites that have no gate at all. A mechanism whose exempt writes all fall outside every gate window owes nothing here and brackets nothing.
+
+**This does not restore order-independence, and callers must not read it that way.** With only exempt acts in play the two capture orders do agree — but a foreign tracked-file edit landing between them separates them, since the earlier capture sees it and the later one has already folded it into a new baseline. A caller therefore does not get to place its capture freely: it names that point **once**, in its own control-flow invariants, and does not name it twice.
+
+**Two alternatives are rejected, and the reasons are structural.** *Subtracting exempt items from the baseline* requires the gate to know which paths are exempt — that is the path list this subsection opens by rejecting. *Unconditionally re-capturing after every write* absorbs any other party's forbidden write that landed in between, converting the gate into a rubber stamp for whatever happened during the window.
+
+**On the second copy of this subsection.** A byte-identical copy exists in a design document, but `docs/` is gitignored in this repo and `git ls-files docs/` returns nothing — **this subsection ships in exactly one tracked file.** A coupling lint over the two is therefore not merely empty but **unconstructible**: a CI check cannot read a file that is not in the repository. §10's prohibition on adding a coupling lint holds here for the same underlying reason it holds there.
 
 ---
 
