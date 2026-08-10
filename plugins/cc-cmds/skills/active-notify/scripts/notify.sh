@@ -34,22 +34,36 @@ _json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-# Lock budgets, in loop iterations. They are deliberately different.
+# Lock budgets. Declared as wall-clock targets and converted to loop iterations
+# through the measured cost of one iteration, so the seconds stated here and the
+# iteration counts the loop actually spends cannot drift apart.
 #
-# Each iteration forks /bin/sleep, so an iteration costs ~4ms rather than the
-# 1ms the sleep argument suggests: the fire budget below is ~40 SECONDS of wall
-# clock, not the 10s an earlier comment claimed.
+# An iteration forks /bin/sleep, so it costs far more than the 1ms its argument
+# suggests — 4.9ms measured on the development host (200/500/1000/2000-iteration
+# runs converging from 6.2ms to 4.9ms). The cost is dominated by the fork rather
+# than the sleep, so it tracks host fork latency: the iteration counts are exact
+# everywhere, the wall-clock targets only on a host of comparable speed.
 #
-# `fire-now` can afford that wait — its whole job is the banner, and waiting
-# only delays it. `arm` and `cancel` run INLINE inside the model's turn, so a
-# stall there blocks everything queued behind it, which is the failure the
-# fire-first mandate exists to prevent. They therefore get a budget three
-# orders of magnitude smaller (~1s) and, on exhaustion, proceed WITHOUT the
-# lock: the race this lock closes is microseconds wide, while a flag the user
-# asked to delete surviving because a lock was busy keeps banners arriving
-# after a cancel.
-LOCK_BUDGET_FIRE=10000     # ~40s wall clock
-LOCK_BUDGET_INLINE=200     # ~1.0s wall clock
+# The two targets are deliberately different. `fire-now` can afford a long wait
+# — its whole job is the banner, and waiting only delays it. `arm` and `cancel`
+# run INLINE inside the model's turn, so a stall there blocks everything queued
+# behind it, which is the failure the fire-first mandate exists to prevent. They
+# therefore get a budget fifty times smaller and, on exhaustion, proceed WITHOUT
+# the lock. That trade is not symmetric between them. For `cancel` fail-open is
+# the safer side: a flag the user asked to delete surviving because a lock was
+# busy keeps banners arriving after the cancel. For `arm` the exposed side is
+# the reverse — a fire that holds the lock can go on to act on the cycle this
+# call just wrote — so `arm` additionally stages its write atomically (below),
+# which removes the torn-read half of that exposure but not the whole of it.
+#
+# The fire budget accepts an env override so a test can exercise budget exhaustion
+# without spending the real wall clock. The inline budget deliberately has no such
+# override: the fixture that bounds it is the only thing measuring the separation
+# between the two, and a shimmable inline budget would let that fixture pass while
+# measuring nothing. Nothing in normal operation sets either value.
+LOCK_ITER_COST_MS=5
+LOCK_BUDGET_FIRE="${CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE:-$(( 50000 / LOCK_ITER_COST_MS ))}"   # 50s target -> 10000 iterations
+LOCK_BUDGET_INLINE=$(( 1000 / LOCK_ITER_COST_MS ))                                       # 1.0s target -> 200 iterations
 
 # Acquire "$lockdir" via POSIX-atomic mkdir (no external dependency).
 # 0 = acquired, 1 = budget exhausted. Caller decides fail-closed vs fail-open,
@@ -226,8 +240,8 @@ case "$subcommand" in
     # undone: the fire branch reads the old flag, rewrites it, and `mv`s that
     # copy back over the new one, silently restoring the mode the user just
     # narrowed. `mkdir -p` above means the ENOENT case cannot arise here.
-    lockdir="${flag_file}.lockdir"; lock_held=0
-    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi' EXIT
+    lockdir="${flag_file}.lockdir"; lock_held=0; tmp=""
+    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi; rm -f "${tmp:-}" 2>/dev/null || :' EXIT
     if _acquire_lock "$LOCK_BUDGET_INLINE"; then lock_held=1; fi
     ts=$(date -u +%s)
     esc_req=$(_json_escape "$request_text")
@@ -236,8 +250,19 @@ case "$subcommand" in
     # Idempotent overwrite — schema:3 fresh write every ARM call. Compact JSON
     # (no whitespace after `:` or `,`) is the dispatcher's grep -oE field-read
     # assumption — hand-baked fixture flags MUST follow the same shape.
+    #
+    # Staged through a sibling tmp and `mv`d into place, the same discipline the
+    # fire branch uses. It matters on the fail-open path, where this write runs
+    # while a lock-holding fire reads the same file: writing in place leaves the
+    # flag zero-length for tens of microseconds, and a read landing in that gap
+    # finds no schema field and deletes the flag as stale. `mv` within one
+    # directory is atomic, so a concurrent reader sees the old flag or the new
+    # one and never neither.
+    tmp="${flag_file}.tmp-$$"
     printf '{"schema":3,"armed_at":%s,"session_id":"%s","request_text":"%s","context_hint":"%s","mode":"%s","arm_count":%s,"fire_count":0,"last_fire_at":null}\n' \
-      "$ts" "$esc_sid" "$esc_req" "$esc_ctx" "$notify_mode" "$arm_count" > "$flag_file"
+      "$ts" "$esc_sid" "$esc_req" "$esc_ctx" "$notify_mode" "$arm_count" > "$tmp"
+    mv "$tmp" "$flag_file"
+    tmp=""
     exit 0
     ;;
 
@@ -265,7 +290,12 @@ case "$subcommand" in
     workflow="${1:-notify}"; summary="${2:-알림}"
     [[ "$host_os" == "Darwin" ]] || exit 0
     if ! command -v terminal-notifier >/dev/null 2>&1; then
-      hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint"
+      # Own sentinel, not the ARM cycle's. This path runs from a scheduled tick
+      # with nobody watching, and its precondition check happened back when the
+      # job was queued; sharing the cycle's sentinel would let a tick that fails
+      # for this reason produce no output at all whenever any earlier call had
+      # already left one behind.
+      hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint-tick"
       [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
       exit 0
     fi
@@ -281,11 +311,15 @@ case "$subcommand" in
   cancel)
     # Fast path. `mkdir "$lockdir"` fails with ENOENT when its PARENT is
     # missing, and that parent is the flag DIRECTORY, not the flag file — a
-    # missing flag file alone still lets mkdir succeed. So ENOENT means exactly
-    # "this session never armed, or TMPDIR was swept". Without this check that
-    # case would spin the entire budget before failing open, turning the
-    # cheapest call in the skill into a one-second stall in the model's turn.
-    # There is also nothing to delete, so returning here loses nothing.
+    # missing flag file alone still lets mkdir succeed. That directory is shared
+    # by every session under one TMPDIR; only the flag FILE carries a session id.
+    # So its absence means "no session sharing this TMPDIR has ever armed, or
+    # TMPDIR was swept" — a weaker condition than "this session never armed",
+    # and once any session arms, this path stops firing for all of them. Without
+    # the check that case would spin the entire budget before failing open,
+    # turning the cheapest call in the skill into a one-second stall in the
+    # model's turn. There is also nothing to delete, so returning here loses
+    # nothing.
     [[ -d "$flag_dir" ]] || exit 0
 
     # Take the fire branch's lock. Without it, a cancel landing mid-fire is
