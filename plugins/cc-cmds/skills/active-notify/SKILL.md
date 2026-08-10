@@ -38,10 +38,15 @@ The model directly invokes four subcommands of this skill's
 directory's absolute path followed by `/scripts/notify.sh` — so the
 shell working directory does not matter. The examples below abbreviate
 that path to its final three segments,
-`active-notify/scripts/notify.sh`, which is also the exact substring
-the plugin's PreToolUse hook matches to self-approve the call; an
-invocation not containing it falls through to the Bash permission
-dialog. The subcommands are local-disk file ops and complete instantly.
+`active-notify/scripts/notify.sh`. The plugin's PreToolUse hook
+self-approves the call only when the whole command line is one plain
+invocation of that path with one of its subcommands, written bare rather
+than quoted. Anything else falls through to the Bash permission dialog —
+chained with `;` or `&&`, piped, redirected, wrapped in a subshell or a
+substitution, or split across lines — including a compound line that
+contains a perfectly good call, so each invocation goes in a Bash call of
+its own (§4.6). The subcommands are local-disk file ops and complete
+instantly.
 
 ```bash
 # Arm a new notification cycle. mode argument is optional (default "single").

@@ -4,6 +4,13 @@
 # (terminal-notifier -group cc-cmds-active-notify), suppressing the
 # Bash tool permission dialog.
 #
+# The notify.sh matcher is anchored to the entire command line. An allow
+# decision covers everything the Bash tool runs, so only a lone simple
+# invocation may match; anything chained, wrapped, substituted or redirected
+# falls through to the permission dialog. The terminal-notifier matcher is
+# deliberately not anchored — the documented permission-test form is a
+# multi-line shell block — so that branch still allows the whole line.
+#
 # Branches on CC_CMDS_NOTIFY_INJECT_SID env (default 0 = α path):
 #   0 → applyPermissionRules emit (session-persistent silent allow)
 #   1 → updatedInput.command rewrite with CLAUDE_CODE_SESSION_ID prepend
@@ -21,11 +28,11 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [[ -n "$cmd" ]] || exit 0   # non-Bash matcher slip → noop
 
-notify_re='active-notify/scripts/notify\.sh[[:space:]]+(arm|fire-now|fire-oneshot|cancel)\b'
+notify_re='^[[:blank:]]*(bash[[:blank:]]+)?[^[:space:];&|<>()`$]*active-notify/scripts/notify\.sh[[:blank:]]+(arm|fire-now|fire-oneshot|cancel)([[:blank:]]+[^[:cntrl:];&|<>`$]*)?$'
 bypass_re="terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]"
 
 is_notify=0; is_bypass=0
-printf '%s' "$cmd" | grep -qE "$notify_re" && is_notify=1
+[[ "$cmd" =~ $notify_re ]] && is_notify=1
 printf '%s' "$cmd" | grep -qE "$bypass_re" && is_bypass=1
 [[ $is_notify -eq 1 || $is_bypass -eq 1 ]] || exit 0   # not ours → default gate
 
