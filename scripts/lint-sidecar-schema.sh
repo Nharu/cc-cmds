@@ -85,11 +85,15 @@ if ! nsec=$(awk -v rel="$rel" '
     # Section boundaries — outside fences only.
     if (outside && line ~ /^## [0-9]+\. /) {
       cur = 0
-      if (match(line, /`docs\/[a-z][a-z-]*\/\{slug\}\.md`/)) {
+      if (match(line, /`(<base>\/)?docs\/[a-z][a-z-]*\/\{slug\}\.md`/)) {
         path = substr(line, RSTART + 1, RLENGTH - 2)
-        split(path, parts, "/")
+        # The kind is the LAST-BUT-ONE segment, so an optional `<base>/` prefix
+        # does not shift it. A fixed index would: the same heading with and
+        # without the prefix would name two different kinds, and the section
+        # would silently stop matching its own terminator.
+        np = split(path, parts, "/")
         nsec++
-        kind[nsec] = parts[2]
+        kind[nsec] = parts[np - 1]
         atline[nsec] = NR
         hasterm[nsec] = 0
         hashdr[nsec] = 0
@@ -148,7 +152,7 @@ fi
 # (2) Distinct-literal cross-check. Catches the mirror defect (1) cannot see:
 # a terminator literal for a kind that has no payload schema section — the
 # residue a removed schema leaves behind. DISTINCT set, never a count.
-declared_kinds=$(grep -oE '^## [0-9]+\. .*`docs/[a-z][a-z-]*/\{slug\}\.md`' "$SOT" \
+declared_kinds=$(grep -oE '^## [0-9]+\. .*`(<base>/)?docs/[a-z][a-z-]*/\{slug\}\.md`' "$SOT" \
   | grep -oE 'docs/[a-z][a-z-]*/' | sed -E 's|^docs/||; s|/$||' | sort -u)
 expected=$(printf '%s\n' "$declared_kinds" | sed -E 's|^|<!-- cc-|; s|$|: end -->|' | sort -u)
 actual=$(grep -oE '<!-- cc-[a-z][a-z-]*: end -->' "$SOT" | sort -u)
@@ -162,4 +166,23 @@ if [[ "$expected" != "$actual" ]]; then
   exit 1
 fi
 
-echo "OK:   sidecar payload schemas — $nsec of $nsec sections declare their own kind-bound terminator (scope: $rel only; design-audit's schema is out of reach)"
+# (3) Guard-order pin. §1.3 evaluates the version guard BEFORE the truncation
+# check, and that order is load-bearing: hoisting the truncation judgment ahead
+# of it misdiagnoses an intact foreign-version file as truncated, a disposition
+# §1.5 forbids. Nothing else in this repo reads that ordering, so before this pin
+# existed a "simplification" back to truncation-first was a free edit. Absence of
+# either anchor is a failure, not a skip — a pin that vanishes with its target
+# reports success while guarding nothing.
+gv_line=$(grep -nE '^[[:space:]]*\[ ! -e "\$SNAP" \] \|\| guard_version' "$SOT" | head -1 | cut -d: -f1)
+tc_line=$(grep -nE '^[[:space:]]*# Truncation check' "$SOT" | head -1 | cut -d: -f1)
+
+if [[ -z "$gv_line" || -z "$tc_line" ]]; then
+  echo "FAIL: $rel — guard-order anchors not found (version-guard call: ${gv_line:-missing}, truncation-check comment: ${tc_line:-missing})" >&2
+  exit 1
+fi
+if (( gv_line >= tc_line )); then
+  echo "FAIL: $rel — guard order inverted: the version guard (line $gv_line) must precede the truncation check (line $tc_line)" >&2
+  exit 1
+fi
+
+echo "OK:   sidecar payload schemas — $nsec of $nsec sections declare their own kind-bound terminator + guard order pinned (version $gv_line < truncation $tc_line) (scope: $rel only; design-audit's schema is out of reach)"

@@ -26,3 +26,12 @@ Header:
 ### 3.6 File terminator and creation emission order
 
 The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-drift: end -->`, emitted by every write form, the creation write included.
+
+### 1.3 Atomic write (fixture excerpt — the guard order is pinned)
+
+```
+  [ ! -e "$SNAP" ] || guard_version   "$SNAP" || { rm -f "$SNAP"; exit 1; }
+  # Truncation check — the INCOMING bytes. Must follow the version guard: an
+  # intact foreign-version file is foreign, never truncated.
+  [ ! -e "$SNAP" ] || intact_terminator "$SNAP" || { rm -f "$SNAP"; exit 1; }
+```

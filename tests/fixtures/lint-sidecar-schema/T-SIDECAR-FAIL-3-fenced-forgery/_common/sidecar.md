@@ -42,3 +42,12 @@ A finished file looks like this:
 ```
 
 Nothing outside that example fixes the sentinel as this schema's terminator.
+
+### 1.3 Atomic write (fixture excerpt — the guard order is pinned)
+
+```
+  [ ! -e "$SNAP" ] || guard_version   "$SNAP" || { rm -f "$SNAP"; exit 1; }
+  # Truncation check — the INCOMING bytes. Must follow the version guard: an
+  # intact foreign-version file is foreign, never truncated.
+  [ ! -e "$SNAP" ] || intact_terminator "$SNAP" || { rm -f "$SNAP"; exit 1; }
+```

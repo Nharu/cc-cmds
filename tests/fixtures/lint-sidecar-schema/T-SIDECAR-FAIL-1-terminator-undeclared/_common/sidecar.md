@@ -33,3 +33,12 @@ Header:
 One write form: **append**. The writer emits a whole new `## 이탈 <N>` block with
 all 8 fields through the compare-and-swap of §1.3. No terminator is fixed
 anywhere in this section.
+
+### 1.3 Atomic write (fixture excerpt — the guard order is pinned)
+
+```
+  [ ! -e "$SNAP" ] || guard_version   "$SNAP" || { rm -f "$SNAP"; exit 1; }
+  # Truncation check — the INCOMING bytes. Must follow the version guard: an
+  # intact foreign-version file is foreign, never truncated.
+  [ ! -e "$SNAP" ] || intact_terminator "$SNAP" || { rm -f "$SNAP"; exit 1; }
+```

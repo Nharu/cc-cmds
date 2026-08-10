@@ -7,9 +7,10 @@
 #   T-SIDECAR-OK-*   → expected exit 0
 #   T-SIDECAR-FAIL-* → expected exit 1
 #
-# The four FAIL fixtures are the four ways this pin is known to be defeatable:
+# The five FAIL fixtures are the five ways this pin is known to be defeatable:
 # an undeclared terminator (the pre-fix state), a crosswired one, one that is
-# only shown inside a fence, and a schema with no machine header. The pin's
+# only shown inside a fence, a schema with no machine header, and a §1.3 whose
+# truncation check has been hoisted ahead of the version guard. The pin's
 # discriminating power is exactly the set of fixtures here.
 #
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin

@@ -1,7 +1,10 @@
 # Sidecar File Contract (fixture)
 
-Fixture for `scripts/lint-sidecar-schema.sh`. Minimal by design: it carries the
-structure the pin reads and nothing else.
+Guard order inverted: §1.3 judges truncation before it reads the version token,
+so an intact file written by a foreign version is reported TRUNCATED — a
+disposition §1.5 forbids. Every terminator obligation is still satisfied, which
+is the point: the ordering is a separate property and needs its own fixture.
+Expected: exit 1, naming both line numbers.
 
 ## 1. Generic sidecar mechanics
 
@@ -35,8 +38,8 @@ The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-dr
 ### 1.3 Atomic write (fixture excerpt — the guard order is pinned)
 
 ```
-  [ ! -e "$SNAP" ] || guard_version   "$SNAP" || { rm -f "$SNAP"; exit 1; }
   # Truncation check — the INCOMING bytes. Must follow the version guard: an
   # intact foreign-version file is foreign, never truncated.
   [ ! -e "$SNAP" ] || intact_terminator "$SNAP" || { rm -f "$SNAP"; exit 1; }
+  [ ! -e "$SNAP" ] || guard_version   "$SNAP" || { rm -f "$SNAP"; exit 1; }
 ```
