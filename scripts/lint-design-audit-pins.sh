@@ -17,6 +17,22 @@
 #   still reports "all intact". Every pin below is therefore evaluated inside the
 #   region that must carry it, and a token that belongs in two regions is pinned
 #   twice — once per region — so each region is independently defended.
+#   The three heading pins are the one group with no region, because the section
+#   each names IS the region and the last of them has no following heading to
+#   terminate one; they are asserted as whole lines instead, which forbids the
+#   same failure (a name surviving in prose after its section is gone).
+#   This paragraph asserted the property before it held: three groups were still
+#   whole-file when it was written. Do not restate it without re-measuring —
+#   `grep -n assert_in_file` naming a pin array is the counterexample.
+#
+# TWO SCOPE LIMITS, STATED BECAUSE THE LABELS OVERSTATE THEM.
+#   (a) The negative fence's zero-occurrence sweep walks `design-audit/references`
+#       only. CFI-6 says "anywhere under this skill", and this sweep does not
+#       cover the rest of the tree — a loop-machinery token reintroduced under
+#       another skill's directory is outside what this file measures.
+#   (b) `count_lines` counts LINES containing the literal, not occurrences. Two
+#       copies on one physical line read as one, so the exactly-once rules below
+#       bound placement rather than multiplicity.
 #
 # THE REGION TERMINATOR IS ITSELF PINNED.
 #   `extract_between` fails loudly when its end anchor is absent after the start
@@ -94,6 +110,25 @@ assert_in_text() {
   fi
 }
 
+# assert_line_in_file <literal> <file> <label> — the literal must be a WHOLE
+# line, not a substring of one. This is the shape a section heading needs: a
+# heading quoted inside prose satisfies a substring pin while the section it
+# names is gone, which is the failure the heading pins exist to catch. It is
+# also the only available shape for the last section of a file, which has no
+# following heading to serve as a region terminator.
+assert_line_in_file() {
+  local literal="$1" file="$2" label="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "FAIL: $label — file not found: $file" >&2
+    fail=1
+    return
+  fi
+  if ! grep -Fxq -- "$literal" "$file"; then
+    echo "FAIL: $label — pinned heading is not present as a whole line: $literal" >&2
+    fail=1
+  fi
+}
+
 # assert_re_in_text <ere> <text> <label> <region> — for tokens that are
 # substrings of one another and cannot be pinned by substring.
 assert_re_in_text() {
@@ -134,21 +169,50 @@ for lit in "${CONSTANTS[@]}"; do
     "design-audit/SKILL.md (constants)" "the '## Control-Flow Invariants' body"
 done
 
-# ---------- (i)/(ii) reader prompt — whole-file pins ---------------------------
+# ---------- (i)/(ii) reader prompt — two regions, each pinned on its own -------
+#
+# These were whole-file until the region-scoping claim in this file's header was
+# measured against them and found false. The two regions are not interchangeable:
+# the preamble is instructions to the LEAD about how to render the prompt, and
+# the body is the text the READER receives. A byte that migrates from one to the
+# other has stopped doing its job while a whole-file pin still reports it intact.
 
-PROMPT_PINS=(
+PROMPT_PREAMBLE_PINS=(
+  # the byte-identity requirement that keeps reinforcement multiplicity
+  # meaningful. It binds the lead at substitution time, so it must sit ABOVE the
+  # prompt body — inside the body it would be an instruction to the reader about
+  # a rendering the reader does not perform.
+  'byte-identical'
+)
+
+PROMPT_BODY_PINS=(
   # (i) the injected round/pass token. A stateless hook matches on this line;
   # without the slot it has no match target and silently never fires.
   'This review is Round {round} of pass {pass}.'
   # the anchors a reader must cite when reporting a bookkeeping remainder
   '§검증 기록'
   '§구현 시 검증 항목'
-  # the byte-identity requirement that keeps reinforcement multiplicity meaningful
-  'byte-identical'
 )
 
-for lit in "${PROMPT_PINS[@]}"; do
-  assert_in_file "$lit" "$PROMPT" "design-audit/references/01-reader-prompt.md"
+if prompt_preamble=$(extract_between '^# Reader Prompt[[:space:]]*$' \
+                                     '^## Prompt body[[:space:]]*$' \
+                                     "$PROMPT" 'design-audit/references/01-reader-prompt.md (preamble)'); then :
+else fail=1
+fi
+if prompt_body=$(extract_between '^## Prompt body[[:space:]]*$' \
+                                 '^## 앵커 대조표[[:space:]]*$' \
+                                 "$PROMPT" 'design-audit/references/01-reader-prompt.md (prompt body)'); then :
+else fail=1
+fi
+
+for lit in "${PROMPT_PREAMBLE_PINS[@]}"; do
+  assert_in_text "$lit" "$prompt_preamble" \
+    'design-audit/references/01-reader-prompt.md' 'the lead-facing preamble'
+done
+
+for lit in "${PROMPT_BODY_PINS[@]}"; do
+  assert_in_text "$lit" "$prompt_body" \
+    'design-audit/references/01-reader-prompt.md' 'the prompt body'
 done
 
 # ---------- (ii) reader prompt — the two regions, pinned independently --------
@@ -168,7 +232,15 @@ if table_region=$(extract_between '^## 앵커 대조표[[:space:]]*$' \
 else fail=1
 fi
 
-VERDICT_TOKENS=('\bMATCH\b' '\bMISMATCH\b' '\bABSENT\b')
+# Spelled one per line like every other pinned array. Inline `(a b c)` reads as
+# an expression rather than a pin group, and a group whose members do not look
+# like pins is a group whose members get miscounted when the coverage figure is
+# taken by eye.
+VERDICT_TOKENS=(
+  '\bMATCH\b'
+  '\bMISMATCH\b'
+  '\bABSENT\b'
+)
 
 for ere in "${VERDICT_TOKENS[@]}"; do
   assert_re_in_text "$ere" "$measure_region" \
@@ -193,24 +265,49 @@ done
 # `make lint` and `make test` stayed green. The pinned bytes already exist; no
 # file is edited to satisfy this.
 
-REFERENCE_PINS=(
-  "02|run ONCE, outside the replication channel"
-  "02|By reference, never by copy."
-  "03|## Non-recursion rules (hard)"
-  "03|## Routing — five named owners, exactly one each"
-  "03|## Synthesis question (mandatory terminal act)"
-  "03|Never take a maximum across readers."
+# The three section headings, asserted as WHOLE LINES. A substring pin on a
+# heading is satisfied by any prose that quotes it, so the section could be
+# deleted and its name left behind in a sentence describing what used to be
+# there. Two of the three could have been region-scoped instead; the third opens
+# the last section of its file and has no following heading to terminate a
+# region, so the whole-line form is what makes the group uniform.
+REFERENCE_HEADINGS=(
+  '## Non-recursion rules (hard)'
+  '## Routing — five named owners, exactly one each'
+  '## Synthesis question (mandatory terminal act)'
 )
 
-for entry in "${REFERENCE_PINS[@]}"; do
+# The three prose sentences, scoped to the section that must carry each. Encoded
+# `<file-tag>|<region-start-ere>|<region-end-ere>|<mode>|<literal>`; `mode` is
+# `include-start` where the literal lives in the region's own opening line.
+REFERENCE_REGION_PINS=(
+  '02|^# Deterministic Checks |^## Checks[[:space:]]*$|include-start|run ONCE, outside the replication channel'
+  '02|^# Deterministic Checks |^## Checks[[:space:]]*$|exclude-start|By reference, never by copy.'
+  '03|^## Severity re-assignment |^## Routing — |exclude-start|Never take a maximum across readers.'
+)
+
+for lit in "${REFERENCE_HEADINGS[@]}"; do
+  assert_line_in_file "$lit" "$ADJUST" 'design-audit/references/03-adjustment-pass.md'
+done
+
+for entry in "${REFERENCE_REGION_PINS[@]}"; do
   which_file="${entry%%|*}"
-  lit="${entry#*|}"
+  rest="${entry#*|}"
+  region_start="${rest%%|*}"; rest="${rest#*|}"
+  region_end="${rest%%|*}";   rest="${rest#*|}"
+  region_mode="${rest%%|*}"
+  lit="${rest#*|}"
   case "$which_file" in
     02) target="$CHECKS"; label='design-audit/references/02-deterministic-checks.md' ;;
     03) target="$ADJUST"; label='design-audit/references/03-adjustment-pass.md' ;;
     *)  echo "FAIL: internal — unknown reference-pin file tag '$which_file'" >&2; fail=1; continue ;;
   esac
-  assert_in_file "$lit" "$target" "$label"
+  if region_body=$(extract_between "$region_start" "$region_end" \
+                                   "$target" "$label (region /$region_start/)" \
+                                   "$region_mode"); then :
+  else fail=1
+  fi
+  assert_in_text "$lit" "$region_body" "$label" "the region /$region_start/"
 done
 
 # ---------- (iv) disclosure block — slots pinned INSIDE the fences, in order --
@@ -264,8 +361,19 @@ if [[ "$observed_order" != "$expected_order" ]]; then
   fail=1
 fi
 
+# Scoped to the checks section that defines the arm. Whole-file was the wrong
+# shape for the same reason the slot keys are fenced: `(ii-b) Declared shortfall.`
+# relocated into the Korean-echo section or the honest-limit note is no longer a
+# check, and a whole-file pin cannot tell the two placements apart.
+if checks_section=$(extract_between '^## The four anti-vacuity checks[[:space:]]*$' \
+                                    '^## Honest limit[[:space:]]*$' \
+                                    "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (anti-vacuity checks)'); then :
+else fail=1
+fi
+
 for lit in "${DISCLOSURE_ARM_PINS[@]}"; do
-  assert_in_file "$lit" "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md'
+  assert_in_text "$lit" "$checks_section" \
+    'design-audit/references/04-disclosure-block.md' 'the anti-vacuity checks section'
 done
 
 # The slot-count integer stated in the prose must equal the pinned array's size.
@@ -334,7 +442,7 @@ if (( fail == 0 )); then
   # reported here would be droppable without changing any output, so the OK
   # fixture could not detect its removal and the pin would have no independent
   # coverage. Adding a pin means adding it to an array, never as a loose call.
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PINS[@]} reader-prompt + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens x2 regions + ${#REFERENCE_PINS[@]} reference + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm (in checks section) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

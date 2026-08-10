@@ -1,2 +1,2 @@
 # The injected round/pass slot was deleted from the prompt body.
-FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing: This review is Round {round} of pass {pass}.
+FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing from the prompt body: This review is Round {round} of pass {pass}.

@@ -95,8 +95,16 @@ SOT_LITERALS=(
 # happen to occur. A whole-file pin on a token that is a substring of another
 # frozen literal is satisfied by the superstring and therefore has no
 # discriminating power of its own.
+#
+# Scoping alone did NOT achieve that here, and the bare token was measured to
+# have exactly zero discriminating power even inside its own region: the
+# vocabulary table's row 1′ carries `**구현 시 검증 기록**`, which contains the
+# token, so deleting row 4 — the row that DEFINES it — left the pin satisfied by
+# a neighbouring row. What is pinned is therefore the defining table cell, with
+# its delimiters: no superstring in this region satisfies it, and only the row's
+# own deletion can.
 GRADE_REGION_PINS=(
-  '구현 시 검증'
+  '| `구현 시 검증` |'
 )
 
 # Negative assertions. Each one can fail on its own, which is exactly what the

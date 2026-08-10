@@ -1,2 +1,4 @@
 # A rule deleted from a file that previously carried zero positive pins.
-FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing: ## Non-recursion rules (hard)
+# The heading pins are whole-line assertions, so a name left behind in prose
+# after its section is gone does not satisfy them.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned heading is not present as a whole line: ## Non-recursion rules (hard)

@@ -32,3 +32,7 @@ with exactly 14 slot lines strictly between them.
 **(ii-b) Declared shortfall.** A run short of readers is declared through the `결손 수`
 slot and the line after the block stating **결손 사유**, never absorbed by lowering the
 reviewer count to match.
+
+## Honest limit
+
+The checks above bound vacuity, not correctness.

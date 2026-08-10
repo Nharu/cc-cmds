@@ -31,3 +31,7 @@ with exactly 15 slot lines strictly between them.
 
 **(ii-b) Declared shortfall.** A run short of readers is declared through the `결손 수`
 reviewer count to match.
+
+## Honest limit
+
+The checks above bound vacuity, not correctness.

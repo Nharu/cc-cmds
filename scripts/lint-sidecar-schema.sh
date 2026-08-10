@@ -112,8 +112,12 @@ if ! nsec=$(awk -v rel="$rel" '
           if (tok != want) cross[cur] = cross[cur] " " tok
         }
       }
-      # Machine header — fence-AGNOSTIC.
-      if (index(line, "cc-" kind[cur] " v") > 0) hashdr[cur] = 1
+      # Machine header — fence-AGNOSTIC (the headers are shown inside example
+      # fences), but ANCHORED TO THE LINE START. A substring test accepted any
+      # prose that merely mentions `cc-<kind> v2` — including a sentence saying
+      # the header is absent, or a counterexample — so the check could not
+      # distinguish a declared header from a discussion of one.
+      if (line ~ ("^<!-- cc-" kind[cur] " v[0-9]")) hashdr[cur] = 1
     }
   }
   END {
