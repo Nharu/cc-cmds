@@ -1,0 +1,5 @@
+# The header survives only as a sentence ABOUT a header. The substring form of
+# this predicate was satisfied by that sentence; the line-start anchor is what
+# distinguishes a declaration from a discussion of one.
+FAIL: _common/sidecar.md:25 — payload schema `design-drift` declares no machine header carrying `cc-design-drift v<N>`
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

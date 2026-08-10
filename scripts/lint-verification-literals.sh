@@ -132,6 +132,11 @@ assert_in_file() {
 # assert_in_text <literal> <text> <label> [region]  (region-scoped presence)
 assert_in_text() {
   local literal="$1" text="$2" label="$3" region="${4:-the checked region}"
+  if [[ "$text" == "$REGION_UNAVAILABLE" ]]; then
+    echo "FAIL: $label — region-unavailable ($region), so this pin was not evaluated: $literal" >&2
+    fail=1
+    return
+  fi
   if [[ "$text" != *"$literal"* ]]; then
     echo "FAIL: $label — frozen literal missing from $region: $literal" >&2
     fail=1
@@ -149,7 +154,7 @@ done
 # (1a) Grade tokens, pinned inside the vocabulary table that defines them.
 if grade_region=$(extract_between '^## 3\. Frozen vocabulary' '^### 3\.1 ' \
                                   "$SOT" '_common/verification.md (vocabulary table)'); then :
-else fail=1
+else fail=1; grade_region="$REGION_UNAVAILABLE"
 fi
 for lit in "${GRADE_REGION_PINS[@]}"; do
   assert_in_text "$lit" "$grade_region" '_common/verification.md (SOT)' \
@@ -227,7 +232,7 @@ else
   if consumer_bullet=$(extract_between '^- \*\*1\.5a ' '^- \*\*1\.5b ' \
                                        "$CONSUMER" 'implement/SKILL.md (consumer 1.5a bullet)' \
                                        include-start); then :
-  else fail=1
+  else fail=1; consumer_bullet="$REGION_UNAVAILABLE"
   fi
   for lit in "${CONSUMER_1_5A[@]}"; do
     assert_in_text "$lit" "$consumer_bullet" \

@@ -1,0 +1,7 @@
+# A RELOCATION, not a deletion: the declared-shortfall arm moved out of the
+# anti-vacuity checks into the Korean-echo section. The bytes are all still
+# present, so the whole-file form of this pin reported the arm intact while it
+# had stopped being a check. Both of its literals are named below, which is
+# what attributes the region scoping to this fixture rather than to a deletion.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the anti-vacuity checks section: **결손 사유**
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the anti-vacuity checks section: (ii-b) Declared shortfall.

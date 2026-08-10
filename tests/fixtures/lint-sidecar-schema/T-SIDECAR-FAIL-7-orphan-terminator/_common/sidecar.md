@@ -1,13 +1,16 @@
 # Sidecar File Contract (fixture)
 
-Crosswired: the second payload schema declares its own sentinel AND the other
-schema's. Its own terminator is present, so the terminator check is satisfied
-and only the crosswire assertion can fire — which is what isolates that
-assertion to this fixture. Expected: exit 1, naming the foreign terminator.
+A third schema was removed but its terminator literal was left behind in the
+generic section, where no payload schema owns it. The per-section check passes
+— every declared schema is complete — and only the distinct-literal cross-check
+sees the residue. Expected: exit 1.
 
 ## 1. Generic sidecar mechanics
 
-Generic wiring. Not a payload schema.
+Generic wiring. This section names no `docs/<kind>/{slug}.md` artifact path, so
+it is not a payload schema and the pin must not demand a terminator of it.
+
+Leftover from a schema that was removed: `<!-- cc-visual-drift: end -->`.
 
 ## 2. The re-convergence sidecar — `docs/design-reconverge/{slug}.md`
 
@@ -32,8 +35,6 @@ Header:
 ### 3.6 File terminator and creation emission order
 
 The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-drift: end -->`, emitted by every write form, the creation write included.
-
-A migration note left behind names the other schema's sentinel `<!-- cc-design-reconverge: end -->` in this section, which is the crosswire.
 
 ### 1.3 Atomic write (fixture excerpt — the guard order is pinned)
 

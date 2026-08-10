@@ -20,6 +20,23 @@
 # every pinned group's size; dropping any single pinned literal changes a number
 # on that line and turns the fixture red.
 
+# THREE PRECONDITIONS make the declaration binding rather than decorative.
+#   (P1) `EXPECT` must declare at least one line. An empty or all-comment EXPECT
+#        satisfies every substring test vacuously and silently reduces the
+#        fixture to the exit-code check this mechanism exists to replace.
+#   (P2) A FAIL fixture must declare at least one `FAIL:` line. The count
+#        equality already forces this wherever the lint emits such a line, so on
+#        today's lints the precondition is redundant — it is stated anyway,
+#        because it is what makes the fixture's claim explicit and it fails
+#        loudly against a lint that signals failure by exit code alone.
+#   (P3) Every `OK:` or `SKIP:` line the lint emits must be covered by an EXPECT
+#        declaration. The count equality bounds the FAIL side only, so without
+#        this an EXPECT can be WEAKENED rather than emptied into passing: drop
+#        the arity summary from an OK fixture and what remains still holds while
+#        every pinned literal quietly loses its independent coverage. `SKIP:` is
+#        admitted alongside `OK:` because a skip is a summary line too, and an
+#        OK-only rule would falsely reject the skip fixtures.
+#
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +76,10 @@ for fixture in "$fixtures"/*/; do
     problems+=("exit=$ec, expected=$want")
   fi
 
+  # Every EXPECT line must appear in the output.
+  declared_lines=0
   expected_fail_lines=0
+  declarations=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     trimmed="${line#"${line%%[![:space:]]*}"}"
     if [[ -z "$trimmed" ]]; then
@@ -68,6 +88,8 @@ for fixture in "$fixtures"/*/; do
     if [[ "$trimmed" == '#'* ]]; then
       continue
     fi
+    declared_lines=$((declared_lines + 1))
+    declarations+=("$trimmed")
     if [[ "$trimmed" == FAIL:* ]]; then
       expected_fail_lines=$((expected_fail_lines + 1))
     fi
@@ -75,6 +97,35 @@ for fixture in "$fixtures"/*/; do
       problems+=("missing expected diagnostic: $trimmed")
     fi
   done < "$expect_file"
+
+  # (P1) an EXPECT that declares nothing asserts nothing.
+  if (( declared_lines == 0 )); then
+    problems+=("EXPECT declares no lines; a fixture must state what it proves")
+  fi
+
+  # (P2) a FAIL fixture must name at least one diagnostic.
+  if [[ "$want" == 1 && "$expected_fail_lines" == 0 ]]; then
+    problems+=("EXPECT declares no FAIL: line for a FAIL fixture")
+  fi
+
+  # (P3) no summary line may go undeclared.
+  while IFS= read -r out_line; do
+    case "$out_line" in
+      OK:*|SKIP:*) ;;
+      *) continue ;;
+    esac
+    covered=0
+    for decl in ${declarations+"${declarations[@]}"}; do
+      if [[ "$out_line" == *"$decl"* ]]; then
+        covered=1
+        break
+      fi
+    done
+    if (( covered == 0 )); then
+      problems+=("undeclared summary line: $out_line")
+    fi
+  done <<< "$output"
+
 
   actual_fail_lines=$(printf '%s\n' "$output" | grep -c '^FAIL:' || true)
   if [[ "$actual_fail_lines" != "$expected_fail_lines" ]]; then

@@ -44,6 +44,24 @@
 # and were then re-synchronized by hand under a comment claiming they were
 # byte-identical — which they were not, by three lines and two prefixes. One
 # definition removes the claim along with the thing it was claiming about.
+
+# Sentinel a caller assigns to its region variable on the failure path:
+#
+#   if region=$(extract_between …); then :
+#   else fail=1; region="$REGION_UNAVAILABLE"
+#   fi
+#
+# The downstream assertions still run — see call contract (2) — but a caller that
+# left the region as the empty string made every one of them report "literal
+# missing", naming innocent literals that are sitting in the file untouched. The
+# reader then goes looking for a deletion that never happened while the real
+# defect, one broken anchor, scrolls past in the first line. The sentinel lets
+# those assertions say what is actually true: the region could not be read, so
+# the pin was not evaluated. The diagnostic COUNT is unchanged — one line per
+# pin either way — which is what keeps each pin's fixture attribution intact.
+# The control bytes make the value unforgeable by any real region content.
+REGION_UNAVAILABLE=$'\001cc-region-unavailable\001'
+
 extract_between() {
   local start_ere="$1" end_ere="$2" file="$3" label="$4" mode="${5:-exclude-start}"
   if [[ ! -f "$file" ]]; then

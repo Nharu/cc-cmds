@@ -1,0 +1,4 @@
+# The second schema declares its terminator but no machine header, so a reader
+# has no version token to gate on.
+FAIL: _common/sidecar.md:24 — payload schema `design-drift` declares no machine header carrying `cc-design-drift v<N>`
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

@@ -104,6 +104,11 @@ assert_in_file() {
 # assert_in_text <literal> <text> <label> <region>
 assert_in_text() {
   local literal="$1" text="$2" label="$3" region="$4"
+  if [[ "$text" == "$REGION_UNAVAILABLE" ]]; then
+    echo "FAIL: $label — region-unavailable ($region), so this pin was not evaluated: $literal" >&2
+    fail=1
+    return
+  fi
   if [[ "$text" != *"$literal"* ]]; then
     echo "FAIL: $label — pinned literal missing from $region: $literal" >&2
     fail=1
@@ -133,6 +138,11 @@ assert_line_in_file() {
 # substrings of one another and cannot be pinned by substring.
 assert_re_in_text() {
   local ere="$1" text="$2" label="$3" region="$4"
+  if [[ "$text" == "$REGION_UNAVAILABLE" ]]; then
+    echo "FAIL: $label — region-unavailable ($region), so this pin was not evaluated: /$ere/" >&2
+    fail=1
+    return
+  fi
   if ! printf '%s\n' "$text" | grep -Eq -- "$ere"; then
     echo "FAIL: $label — pinned token missing from $region: /$ere/" >&2
     fail=1
@@ -156,7 +166,7 @@ CONSTANTS=(
 if invariants_body=$(extract_between '^## Control-Flow Invariants[[:space:]]*$' \
                                      '^## Workflow[[:space:]]*$' \
                                      "$SKILL" 'design-audit/SKILL.md (CFI body)'); then :
-else fail=1
+else fail=1; invariants_body="$REGION_UNAVAILABLE"
 fi
 
 for lit in "${CONSTANTS[@]}"; do
@@ -197,12 +207,12 @@ PROMPT_BODY_PINS=(
 if prompt_preamble=$(extract_between '^# Reader Prompt[[:space:]]*$' \
                                      '^## Prompt body[[:space:]]*$' \
                                      "$PROMPT" 'design-audit/references/01-reader-prompt.md (preamble)'); then :
-else fail=1
+else fail=1; prompt_preamble="$REGION_UNAVAILABLE"
 fi
 if prompt_body=$(extract_between '^## Prompt body[[:space:]]*$' \
                                  '^## 앵커 대조표[[:space:]]*$' \
                                  "$PROMPT" 'design-audit/references/01-reader-prompt.md (prompt body)'); then :
-else fail=1
+else fail=1; prompt_body="$REGION_UNAVAILABLE"
 fi
 
 for lit in "${PROMPT_PREAMBLE_PINS[@]}"; do
@@ -224,12 +234,12 @@ done
 if measure_region=$(extract_between '^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY' \
                                     '^## 앵커 대조표[[:space:]]*$' \
                                     "$PROMPT" 'design-audit/references/01-reader-prompt.md (measurement clause)'); then :
-else fail=1
+else fail=1; measure_region="$REGION_UNAVAILABLE"
 fi
 if table_region=$(extract_between '^## 앵커 대조표[[:space:]]*$' \
                                   '^### F-\{role-slug\}-<n>' \
                                   "$PROMPT" 'design-audit/references/01-reader-prompt.md (anchor table)'); then :
-else fail=1
+else fail=1; table_region="$REGION_UNAVAILABLE"
 fi
 
 # Spelled one per line like every other pinned array. Inline `(a b c)` reads as
@@ -305,7 +315,7 @@ for entry in "${REFERENCE_REGION_PINS[@]}"; do
   if region_body=$(extract_between "$region_start" "$region_end" \
                                    "$target" "$label (region /$region_start/)" \
                                    "$region_mode"); then :
-  else fail=1
+  else fail=1; region_body="$REGION_UNAVAILABLE"
   fi
   assert_in_text "$lit" "$region_body" "$label" "the region /$region_start/"
 done
@@ -345,7 +355,7 @@ DISCLOSURE_ARM_PINS=(
 if slot_region=$(extract_between '^<!-- cc-design-audit-disclosure v1 begin -->[[:space:]]*$' \
                                  '^<!-- /cc-design-audit-disclosure v1 end -->[[:space:]]*$' \
                                  "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (slot block)'); then :
-else fail=1
+else fail=1; slot_region="$REGION_UNAVAILABLE"
 fi
 
 for lit in "${DISCLOSURE_PINS[@]}"; do
@@ -354,11 +364,16 @@ for lit in "${DISCLOSURE_PINS[@]}"; do
 done
 
 # Order is part of the grammar the block declares, so it is checked, not assumed.
-observed_order=$(printf '%s\n' "$slot_region" | grep -oE '^\*\*[^*]+\*\*' || true)
-expected_order=$(printf '%s\n' "${DISCLOSURE_PINS[@]}")
-if [[ "$observed_order" != "$expected_order" ]]; then
-  echo "FAIL: design-audit/references/04-disclosure-block.md — slot keys are not the declared set in the declared order, one per line" >&2
+if [[ "$slot_region" == "$REGION_UNAVAILABLE" ]]; then
+  echo "FAIL: design-audit/references/04-disclosure-block.md — region-unavailable (the disclosure fences), so slot order was not evaluated" >&2
   fail=1
+else
+  observed_order=$(printf '%s\n' "$slot_region" | grep -oE '^\*\*[^*]+\*\*' || true)
+  expected_order=$(printf '%s\n' "${DISCLOSURE_PINS[@]}")
+  if [[ "$observed_order" != "$expected_order" ]]; then
+    echo "FAIL: design-audit/references/04-disclosure-block.md — slot keys are not the declared set in the declared order, one per line" >&2
+    fail=1
+  fi
 fi
 
 # Scoped to the checks section that defines the arm. Whole-file was the wrong
@@ -368,7 +383,7 @@ fi
 if checks_section=$(extract_between '^## The four anti-vacuity checks[[:space:]]*$' \
                                     '^## Honest limit[[:space:]]*$' \
                                     "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (anti-vacuity checks)'); then :
-else fail=1
+else fail=1; checks_section="$REGION_UNAVAILABLE"
 fi
 
 for lit in "${DISCLOSURE_ARM_PINS[@]}"; do
@@ -409,7 +424,7 @@ FORBIDDEN=(
 # the whole denylist into ordinary prose and a count-only rule stays green.
 if denylist_body=$(extract_between '^### CFI-6 ' '^## Workflow[[:space:]]*$' \
                                    "$SKILL" 'design-audit/SKILL.md (CFI-6 denylist)'); then :
-else fail=1
+else fail=1; denylist_body="$REGION_UNAVAILABLE"
 fi
 
 for lit in "${FORBIDDEN[@]}"; do

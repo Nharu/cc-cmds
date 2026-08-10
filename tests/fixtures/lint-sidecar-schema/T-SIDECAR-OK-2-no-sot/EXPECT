@@ -1,0 +1,4 @@
+# Contract file absent — the mechanism is not present in this tree, so the whole
+# check skips silently. The absolute root is omitted on purpose: a fixture must
+# not assert the path it happens to live at.
+SKIP: _common/sidecar.md not found under

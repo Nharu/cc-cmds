@@ -1,0 +1,4 @@
+# No H2 names an artifact path. Without this fixture the empty-set case is
+# unexercised, and a pin that iterates only over what it found reports success
+# over nothing.
+FAIL: _common/sidecar.md — no payload schema section found (expected an H2 naming `docs/<kind>/{slug}.md`)

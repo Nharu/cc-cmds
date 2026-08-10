@@ -177,8 +177,13 @@ fi
 # existed a "simplification" back to truncation-first was a free edit. Absence of
 # either anchor is a failure, not a skip — a pin that vanishes with its target
 # reports success while guarding nothing.
-gv_line=$(grep -nE '^[[:space:]]*\[ ! -e "\$SNAP" \] \|\| guard_version' "$SOT" | head -1 | cut -d: -f1)
-tc_line=$(grep -nE '^[[:space:]]*# Truncation check' "$SOT" | head -1 | cut -d: -f1)
+# `|| true` is load-bearing, not defensive noise: under `set -euo pipefail` a
+# no-match `grep` fails the whole pipeline and kills the script AT THE
+# ASSIGNMENT, so the absent-anchor arm below could never run and the missing pin
+# reported itself as a silent exit 1 with no diagnostic at all. The fixture that
+# deletes both anchors is what surfaced it.
+gv_line=$(grep -nE '^[[:space:]]*\[ ! -e "\$SNAP" \] \|\| guard_version' "$SOT" | head -1 | cut -d: -f1 || true)
+tc_line=$(grep -nE '^[[:space:]]*# Truncation check' "$SOT" | head -1 | cut -d: -f1 || true)
 
 if [[ -z "$gv_line" || -z "$tc_line" ]]; then
   echo "FAIL: $rel — guard-order anchors not found (version-guard call: ${gv_line:-missing}, truncation-check comment: ${tc_line:-missing})" >&2

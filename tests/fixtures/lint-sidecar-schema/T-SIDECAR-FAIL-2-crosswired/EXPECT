@@ -1,0 +1,5 @@
+# The second schema declares its own sentinel AND the other schema's. Its own
+# terminator being present is what isolates the crosswire assertion to this
+# fixture: no other diagnostic can fire for it.
+FAIL: _common/sidecar.md:24 — payload schema `design-drift` declares a foreign terminator outside a fence: <!-- cc-design-reconverge: end -->
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

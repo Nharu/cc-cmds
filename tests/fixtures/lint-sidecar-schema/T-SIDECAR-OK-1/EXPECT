@@ -1,0 +1,3 @@
+# The arity line: it names the section count and both guard-order line numbers,
+# so a change to either turns this fixture red.
+OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 38 < truncation 39) (scope: _common/sidecar.md only; design-audit's schema is out of reach)

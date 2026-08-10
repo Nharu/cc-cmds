@@ -1,0 +1,4 @@
+# A removed schema left its terminator literal behind. Every declared schema is
+# complete, so the per-section check passes and only the distinct-literal
+# cross-check can see the residue.
+FAIL: _common/sidecar.md — the set of terminator literals present does not equal the set of payload schema kinds

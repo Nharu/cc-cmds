@@ -1,0 +1,5 @@
+# The pre-fix state: the second payload schema fixes no file terminator, which
+# is what made an empty terminator value contract-conforming and let the
+# carry-forward rule strip a required field line.
+FAIL: _common/sidecar.md:23 — payload schema `design-drift` declares no file terminator; expected the literal `<!-- cc-design-drift: end -->` outside a fence
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered
