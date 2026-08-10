@@ -104,48 +104,8 @@ assert_re_in_text() {
   fi
 }
 
-# extract_between <start_ere> <end_ere> <file> <label> [include-start]
-# Prints the lines between the first line matching <start_ere> and the first
-# subsequent line matching <end_ere>. The start line is excluded unless the
-# fifth argument is `include-start`, which a single-line region needs. Both
-# anchors are pinned: a missing start, or an end that never occurs after the
-# start, is a loud failure. It replaces two same-named extractors that had
-# drifted into different semantics (one included its heading and kept scanning,
-# the other did neither) — so this body is kept byte-identical to the copy in
-# `lint-verification-literals.sh`, which is the whole point of collapsing them.
-extract_between() {
-  local start_ere="$1" end_ere="$2" file="$3" label="$4" mode="${5:-exclude-start}"
-  if [[ ! -f "$file" ]]; then
-    echo "FAIL: $label — file not found: $file" >&2
-    fail=1
-    return 0
-  fi
-  if ! grep -Eq -- "$start_ere" "$file"; then
-    echo "FAIL: $label — region start anchor missing: /$start_ere/" >&2
-    fail=1
-    return 0
-  fi
-  # The regexes travel through the environment, not through `awk -v`: `-v`
-  # processes escape sequences in the value, so a `\(` in the pattern would
-  # reach awk as a bare `(` and open an unterminated group.
-  if ! SC_START="$start_ere" SC_END="$end_ere" awk '
-        BEGIN { s = ENVIRON["SC_START"]; e = ENVIRON["SC_END"] }
-        !started && $0 ~ s { started = 1; next }
-        started && $0 ~ e  { found = 1; exit }
-        END { exit(found ? 0 : 1) }
-      ' "$file"; then
-    echo "FAIL: $label — region terminator literal missing after the start anchor: /$end_ere/" >&2
-    fail=1
-    return 0
-  fi
-  SC_START="$start_ere" SC_END="$end_ere" SC_MODE="$mode" awk '
-    BEGIN { s = ENVIRON["SC_START"]; e = ENVIRON["SC_END"]
-            inc = (ENVIRON["SC_MODE"] == "include-start") }
-    started && $0 ~ e { exit }
-    !started && $0 ~ s { started = 1; if (inc) print; next }
-    started { print }
-  ' "$file"
-}
+# shellcheck source=./_extract-between.sh
+source "$script_dir/_extract-between.sh"
 
 # ---------- (iii) fixed constants — SKILL.md, exactly once, inside the CFI body
 
@@ -158,9 +118,11 @@ CONSTANTS=(
   'PASS_TOKEN = fanout'
 )
 
-invariants_body=$(extract_between '^## Control-Flow Invariants[[:space:]]*$' \
-                                  '^## Workflow[[:space:]]*$' \
-                                  "$SKILL" 'design-audit/SKILL.md (CFI body)')
+if invariants_body=$(extract_between '^## Control-Flow Invariants[[:space:]]*$' \
+                                     '^## Workflow[[:space:]]*$' \
+                                     "$SKILL" 'design-audit/SKILL.md (CFI body)'); then :
+else fail=1
+fi
 
 for lit in "${CONSTANTS[@]}"; do
   n=$(count_lines "$lit" "$SKILL")
@@ -195,12 +157,16 @@ done
 # anchor verdicts. Pinning them whole-file lets either region be deleted whole
 # while the other keeps the pin satisfied, so each region is checked on its own.
 
-measure_region=$(extract_between '^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY' \
-                                 '^## 앵커 대조표[[:space:]]*$' \
-                                 "$PROMPT" 'design-audit/references/01-reader-prompt.md (measurement clause)')
-table_region=$(extract_between '^## 앵커 대조표[[:space:]]*$' \
-                               '^### F-\{role-slug\}-<n>' \
-                               "$PROMPT" 'design-audit/references/01-reader-prompt.md (anchor table)')
+if measure_region=$(extract_between '^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY' \
+                                    '^## 앵커 대조표[[:space:]]*$' \
+                                    "$PROMPT" 'design-audit/references/01-reader-prompt.md (measurement clause)'); then :
+else fail=1
+fi
+if table_region=$(extract_between '^## 앵커 대조표[[:space:]]*$' \
+                                  '^### F-\{role-slug\}-<n>' \
+                                  "$PROMPT" 'design-audit/references/01-reader-prompt.md (anchor table)'); then :
+else fail=1
+fi
 
 VERDICT_TOKENS=('\bMATCH\b' '\bMISMATCH\b' '\bABSENT\b')
 
@@ -279,9 +245,11 @@ DISCLOSURE_ARM_PINS=(
 
 # The two fences are the region anchors, so `extract_between` pins them; a slot
 # key that survives only in prose outside the fences no longer satisfies its pin.
-slot_region=$(extract_between '^<!-- cc-design-audit-disclosure v1 begin -->[[:space:]]*$' \
-                              '^<!-- /cc-design-audit-disclosure v1 end -->[[:space:]]*$' \
-                              "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (slot block)')
+if slot_region=$(extract_between '^<!-- cc-design-audit-disclosure v1 begin -->[[:space:]]*$' \
+                                 '^<!-- /cc-design-audit-disclosure v1 end -->[[:space:]]*$' \
+                                 "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (slot block)'); then :
+else fail=1
+fi
 
 for lit in "${DISCLOSURE_PINS[@]}"; do
   assert_in_text "$lit" "$slot_region" \
@@ -331,8 +299,10 @@ FORBIDDEN=(
 # The denylist body is a region so the token's POSITION is bound too. Counting
 # alone fixes how many times a token appears and says nothing about where: move
 # the whole denylist into ordinary prose and a count-only rule stays green.
-denylist_body=$(extract_between '^### CFI-6 ' '^## Workflow[[:space:]]*$' \
-                                "$SKILL" 'design-audit/SKILL.md (CFI-6 denylist)')
+if denylist_body=$(extract_between '^### CFI-6 ' '^## Workflow[[:space:]]*$' \
+                                   "$SKILL" 'design-audit/SKILL.md (CFI-6 denylist)'); then :
+else fail=1
+fi
 
 for lit in "${FORBIDDEN[@]}"; do
   # Exactly one line in SKILL.md: its own denylist entry. 0 means the denylist

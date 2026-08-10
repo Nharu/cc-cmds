@@ -130,48 +130,8 @@ assert_in_text() {
   fi
 }
 
-# extract_between <start_ere> <end_ere> <file> <label> [include-start]
-# Prints the lines between the first line matching <start_ere> and the first
-# subsequent line matching <end_ere>. The start line is excluded unless the
-# fifth argument is `include-start`, which a single-line region needs: a bullet
-# whose whole content is its own opening line has nothing strictly between the
-# anchors. BOTH ANCHORS ARE PINNED: a missing
-# start, or an end that never occurs after the start, is a loud failure rather
-# than a region that silently widens to end of file. A widened region still
-# contains every pinned literal, so the check would keep reporting success while
-# no longer checking anything about position.
-# The regexes travel through the environment, not through `awk -v`, which
-# processes escape sequences in the value and would turn a `\(` into a bare `(`.
-extract_between() {
-  local start_ere="$1" end_ere="$2" file="$3" label="$4" mode="${5:-exclude-start}"
-  if [[ ! -f "$file" ]]; then
-    echo "FAIL: $label — file not found: $file" >&2
-    fail=1
-    return 0
-  fi
-  if ! grep -Eq -- "$start_ere" "$file"; then
-    echo "FAIL: $label — region start anchor missing: /$start_ere/" >&2
-    fail=1
-    return 0
-  fi
-  if ! VL_START="$start_ere" VL_END="$end_ere" awk '
-        BEGIN { s = ENVIRON["VL_START"]; e = ENVIRON["VL_END"] }
-        !started && $0 ~ s { started = 1; next }
-        started && $0 ~ e  { found = 1; exit }
-        END { exit(found ? 0 : 1) }
-      ' "$file"; then
-    echo "FAIL: $label — region terminator literal missing after the start anchor: /$end_ere/" >&2
-    fail=1
-    return 0
-  fi
-  VL_START="$start_ere" VL_END="$end_ere" VL_MODE="$mode" awk '
-    BEGIN { s = ENVIRON["VL_START"]; e = ENVIRON["VL_END"]
-            inc = (ENVIRON["VL_MODE"] == "include-start") }
-    started && $0 ~ e { exit }
-    !started && $0 ~ s { started = 1; if (inc) print; next }
-    started { print }
-  ' "$file"
-}
+# shellcheck source=./_extract-between.sh
+source "$script_dir/_extract-between.sh"
 
 # (1) SOT completeness.
 for lit in "${SOT_LITERALS[@]}"; do
@@ -179,8 +139,10 @@ for lit in "${SOT_LITERALS[@]}"; do
 done
 
 # (1a) Grade tokens, pinned inside the vocabulary table that defines them.
-grade_region=$(extract_between '^## 3\. Frozen vocabulary' '^### 3\.1 ' \
-                               "$SOT" '_common/verification.md (vocabulary table)')
+if grade_region=$(extract_between '^## 3\. Frozen vocabulary' '^### 3\.1 ' \
+                                  "$SOT" '_common/verification.md (vocabulary table)'); then :
+else fail=1
+fi
 for lit in "${GRADE_REGION_PINS[@]}"; do
   assert_in_text "$lit" "$grade_region" '_common/verification.md (SOT)' \
     'the frozen-vocabulary table'
@@ -254,9 +216,11 @@ if [[ ! -f "$CONSUMER" ]]; then
   echo "FAIL: implement/SKILL.md (consumer) — file not found; the 1.5a fence has no target and cannot report OK" >&2
   fail=1
 else
-  consumer_bullet=$(extract_between '^- \*\*1\.5a ' '^- \*\*1\.5b ' \
-                                    "$CONSUMER" 'implement/SKILL.md (consumer 1.5a bullet)' \
-                                    include-start)
+  if consumer_bullet=$(extract_between '^- \*\*1\.5a ' '^- \*\*1\.5b ' \
+                                       "$CONSUMER" 'implement/SKILL.md (consumer 1.5a bullet)' \
+                                       include-start); then :
+  else fail=1
+  fi
   for lit in "${CONSUMER_1_5A[@]}"; do
     assert_in_text "$lit" "$consumer_bullet" \
       "implement/SKILL.md (consumer timing enum)" "the 1.5a bullet"
