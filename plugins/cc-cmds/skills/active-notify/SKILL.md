@@ -2,15 +2,15 @@
 name: active-notify
 description: 사용자가 (a) 1인칭 알림 요청 어휘 ("끝나면 알려줘"/"매번 알려줘"/"시작할 때랑 끝날 때 알림"), (b) 권한 테스트 어휘 ("알림 테스트"/"test alert"/"permission test"), 또는 (c) 취소 어휘 ("알림 취소"/"stop the alerts") 발화 시 호출되는 macOS 데스크탑 알림 헬퍼 (model-invoked, 슬래시 커맨드 없음). 어휘 부재 → 호출 금지·모델 자체 판단 ARM/bypass 절대 금지. 어휘 발현 → mode·armCount·sub-event ambiguity가 회피 사유 아님 — best-fit으로 ARM 후 sub-event 시점마다 fire-now 호출.
 when_to_use: |
-    **PERMISSION TEST 제외 (1순위)**: "테스트"/"test" + 알림 동사 발화는 §7 inline bypass. 단 3개 절 중 ANY ONE 발현 시 ARM 분기로 재라우팅: (a) 별도 작업 컨텍스트 (b) noun-form "테스트"/"test" (c) ARM-eligible companion 발화. 상세는 body §2.0.
+    **PERMISSION TEST 제외 (1순위)**: "테스트"/"test" + 알림 동사 → §7 inline bypass. 단 3절 중 ANY ONE 발현 시 ARM으로 재라우팅: (a) 별도 작업 컨텍스트 (b) noun-form (c) ARM-eligible companion. 상세는 body §2.0.
 
-    **ARM · 모드 선택**: 1인칭 알림 요청 어휘 발화 직후 ARM. 열거된 named sub-event ≥2 → single + `--count=N`. 재발 한정사(`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`)가 **명사·이벤트구를 수식**할 때만 event-scoped repeat(그 명사가 이벤트 클래스). 부재 → single. **벽시계 요청은 ARM하지 않는다** — 반복 cadence("5분마다")도 일회성 지연("30분 후")도 body §2.6의 스케줄러 위임으로 보낸다.
+    **ARM · 모드 선택**: 1인칭 알림 요청 어휘 발화 직후 ARM. 열거된 named sub-event ≥2 → single + `--count=N` — 단 재발 한정사(`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`)+반복 클래스 항목이면 아래 repeat으로. 열거가 아니고 한정사가 있으면 event-scoped repeat. **repeat 라벨**은 한정사가 수식하는 명사(없으면 body §2.9), 명명된 것 전부의 합집합으로 한 사이클. 부재 → single. **벽시계 요청은 ARM하지 않는다** — 반복 cadence("5분마다")도 일회성 지연("30분 후")도 body §2.6의 스케줄러 위임으로 보낸다.
 
     **발화 트리거**: 관측된 이벤트 클래스 인스턴스마다 `fire-now` 1회. **턴 종료 자동 발화는 없다.** 인스턴스 경계가 없는 제네릭 클래스에 한해 user-task 도구 호출이 1회 이상 있었던 턴의 종료를 인스턴스 1회로 본다(외부 스케줄러가 연 턴은 인스턴스가 아니다).
 
     **종료**: 사용자 CANCEL 어휘("알림 취소"/"stop the alerts") → `notify.sh cancel`. 또는 이벤트 계열이 끝나 더 나올 인스턴스가 없으면 모델이 self-cancel. **마지막 인스턴스가 종료 지점이면 그 인스턴스의 fire-now를 먼저 호출하고 그다음 cancel** — 뒤집으면 마지막 배너를 잃는다.
 
-    armCount 추출 · fire-first 의무 · self-cancel 판정 조건 · anti-pattern은 body §1.1/§2/§4/§6 참조.
+    armCount · fire-first · self-cancel 판정 · anti-pattern은 body §1.1/§2/§4/§6.
 disable-model-invocation: false
 usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, single 모드는 armCount회 fire-now 후 만료, event-scoped repeat 모드는 관측된 인스턴스마다 fire-now 후 사용자 CANCEL 또는 모델 self-cancel로 종료.)"
 options: []
