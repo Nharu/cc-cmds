@@ -16,7 +16,16 @@ set -euo pipefail
 # Shim the FIRE budget only. If the two budgets were ever unified, this shim
 # would also shrink the inline path and the assertion below would stop meaning
 # anything — so the fixture asserts the shim did not reach it.
-export CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE=100000
+#
+# The value has a floor and a ceiling and both were measured against a
+# budgets-unified mutation. Below roughly the inline budget the fixture passes
+# while measuring nothing: at 5 the unified path finishes inside the elapsed
+# bound and the mutation survives. Far above it the fixture measures the right
+# thing and never reports — at 4000 the unified run takes about 42 s here, so
+# the shipped 100000 extrapolates to something on the order of a thousand
+# seconds and does not finish inside the job timeout at all. 4000 sits between
+# the two: it discriminates, and it costs the suite well under a minute.
+export CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE=4000
 
 bash "$NOTIFY_SH" arm "커밋마다 알림" "refactor" "repeat"
 [[ -f "$FLAG_FILE" ]] || { echo "ARM: flag missing" >&2; exit 1; }

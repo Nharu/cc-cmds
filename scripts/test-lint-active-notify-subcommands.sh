@@ -7,16 +7,20 @@
 # name encodes the expected exit code.
 #   T-SUBCMD-OK-*   → expected exit 0
 #   T-SUBCMD-FAIL-* → expected exit 1
+#   T-SUBCMD-ERR-*  → expected exit 2
 #
 # FAIL-2 is the one worth naming: its alternation lists exactly the right set of
 # subcommands in the wrong order. A rule that compared sets rather than
 # sequences would pass it, and the ordering is what makes the alternation a
 # faithful mirror of the dispatcher rather than a coincidence of membership.
 #
-# Exit code 2 (dispatcher or declared surface missing, or the case block no
-# longer readable) is not covered by a fixture: every fixture ships a readable
-# dispatcher and all four surfaces on purpose, since a fixture missing one would
-# test the guard by removing the thing every other assertion depends on.
+# Exit 2 has two halves and they are not fixtured the same way. The MISSING-FILE
+# half is deliberately left uncovered: a fixture that omits the dispatcher or a
+# surface would test the guard by removing the thing every other assertion in
+# the tree depends on. The UNREADABLE-CASE-BLOCK half needs no such removal —
+# every T-SUBCMD-ERR-* fixture ships a readable file and all four surfaces, and
+# breaks only the SHAPE the extractor reads. That half is where the silent-green
+# escapes were, so that is the half carrying regression pressure.
 
 set -euo pipefail
 
@@ -32,6 +36,7 @@ for fixture in "$fixtures"/*/; do
   case "$fixture_name" in
     T-SUBCMD-OK-*)   want=0 ;;
     T-SUBCMD-FAIL-*) want=1 ;;
+    T-SUBCMD-ERR-*)  want=2 ;;
     *)
       echo "test-lint-active-notify-subcommands: fixture '$fixture_name' has unrecognized prefix" >&2
       failures=$((failures + 1))

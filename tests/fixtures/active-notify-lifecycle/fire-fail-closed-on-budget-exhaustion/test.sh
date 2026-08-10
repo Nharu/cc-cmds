@@ -27,8 +27,7 @@ before="${TMPDIR}/flag.before"
 cp "$FLAG_FILE" "$before"
 
 start=$(date +%s)
-bash "$NOTIFY_SH" fire-now "build" "성공"
-rc=$?
+if bash "$NOTIFY_SH" fire-now "build" "성공"; then rc=0; else rc=$?; fi
 end=$(date +%s)
 
 [[ "$rc" == "0" ]] || { echo "fire-now must exit 0 even when it skips" >&2; exit 1; }

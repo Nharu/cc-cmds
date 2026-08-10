@@ -60,11 +60,22 @@
 # Env override:
 #   PLUGIN_ROOT=<dir> bash scripts/lint-active-notify-subcommands.sh   # fixtures
 #
+# The eight checks are not two per surface. Measured per surface: rule 1 runs
+# once per file (4), rule 2 fires on `notify.sh` twice and on the hook once (3),
+# rule 3 fires on `SKILL.md` once (1). `_common/notify.md` contributes zero
+# enumeration sites and is protected by rule 1 alone. One of the eight cannot
+# fail — `notify.sh`'s own rule-1 check, since the file is both a scanned surface
+# and the source the names come from. The tidy-up that would make the count
+# honest is to drop `notify.sh` from the allowlist, and it is refused here: that
+# would take its two real rule-2 checks with it.
+#
 # Exit codes:
 #   0 — all checks passed
 #   1 — at least one violation found
 #   2 — the dispatcher or a declared surface was not found, or the case block
-#       stopped being readable
+#       stopped being readable. The second half is decided by SHAPE, not by the
+#       extracted set being empty — see the guard below for why emptiness is the
+#       wrong test.
 
 set -euo pipefail
 
@@ -101,16 +112,32 @@ fi
 # branch, not a subcommand.
 subcommands=$(awk '
   /^case "\$subcommand" in$/ { inblock = 1; next }
-  inblock && /^esac$/        { exit }
+  inblock && /^esac$/        { closed = 1; exit }
   inblock && /^  [a-z][a-z-]*\)$/ {
     line = $0
     sub(/^  /, "", line); sub(/\)$/, "", line)
     print line
+    next
   }
+  inblock && /^[[:space:]]*[a-z][a-z0-9|_-]*\)/ { print "@@UNRECOGNIZED-ARM " $0 }
+  END { if (inblock && !closed) print "@@UNTERMINATED" }
 ' "$dispatcher_path")
 
 if [[ -z "$subcommands" ]]; then
   echo "lint-active-notify-subcommands: the case block shape changed — no subcommands read from $dispatcher_path" >&2
+  exit 2
+fi
+
+# The empty set is not the shape check. A `case` block whose arms the strict
+# reader above does not recognize — a new arm at four-space indent, a
+# multi-pattern arm, an `esac` the reader never reaches — still yields a
+# non-empty list, so an emptiness test reports success while having seen part of
+# its input. Worse, a multi-pattern arm produces a list the RULES then act on,
+# and the resulting message blames the surfaces: following it literally deletes
+# a live subcommand from the hook's regex.
+if printf '%s\n' "$subcommands" | grep -q '^@@'; then
+  printf '%s\n' "$subcommands" | grep '^@@' >&2
+  echo "lint-active-notify-subcommands: the case block shape changed — read only part of it in $dispatcher_path" >&2
   exit 2
 fi
 
@@ -137,10 +164,20 @@ while IFS= read -r rel; do
   # to no ARM cycle. Those are not enumerations of the dispatcher and must not
   # be flagged; requiring the lowercase form somewhere in the file is what keeps
   # rule 1 off them.
+  #
+  # The name must appear as a WHOLE WORD. A substring test judges a surface to
+  # cover `arm` on the strength of the word `alarm` and `cancel` on the strength
+  # of `cancellation`, which is not a hypothetical: the shared document carries
+  # no enumeration site at all, so rule 1 is the whole of its protection. The
+  # boundary is written as `[^a-z-]` rather than `\b` for two independent
+  # reasons — `\b` is not portable between BSD and GNU grep, and `\b` treats the
+  # hyphen as a boundary, which would let `fire-now` be satisfied from inside
+  # `fire-oneshot`. The class excludes digits from the boundary, so `arm2` would
+  # count; no such spelling exists and the widening is accepted knowingly.
   checks=$((checks + 1))
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    if ! grep -qiF -- "$name" "$target"; then
+    if ! grep -qiE -- "(^|[^a-z-])${name}([^a-z-]|\$)" "$target"; then
       fail "$rel — subcommand '$name' is never named; the dispatcher declares it"
     fi
   done <<NAMES
@@ -153,6 +190,16 @@ NAMES
   # contain the subcommand names, compares it to the dispatcher set and fails
   # forever — and the obvious way to "fix" that is to loosen the hook regex,
   # which is the exact opposite of what the security fix in this release did.
+  #
+  # So the extractor stays strict and the INPUT is normalized instead, on a
+  # scratch stream that is never written back: backticks and asterisks are
+  # stripped because this repo writes alternations as `` (`cancel`|`arm`) `` by
+  # convention, and spaces around `|` are closed up because `(cancel | arm)` is
+  # the same claim. `_` is deliberately NOT stripped — it is an emphasis marker
+  # but also appears mid-identifier throughout the scanned shell files, and
+  # stripping it manufactures tokens that never existed. Cost worth knowing: a
+  # finding below prints the NORMALIZED group, so a reader debugging one is
+  # looking at a string that does not appear verbatim in the file.
   while IFS= read -r group; do
     [[ -n "$group" ]] || continue
     inner="${group:1:${#group}-2}"
@@ -161,13 +208,14 @@ NAMES
     if [[ "$(printf '%s' "$inner" | tr '|' ' ')" != "$sot_ordered" ]]; then
       fail "$rel — alternation '$group' does not equal the dispatcher set '($(printf '%s' "$sot_ordered" | tr ' ' '|'))'"
     fi
-  done < <(grep -oE '[({][a-z][a-z|-]*[)}]' "$target" | sort -u)
+  done < <(sed -e 's/[`*]//g' -e 's/[[:space:]]*|[[:space:]]*/|/g' "$target" \
+             | grep -oE '[({][a-z][a-z|-]*[)}]' | sort -u)
 
   # Rule 3 — cardinality.
   while IFS= read -r claim; do
     [[ -n "$claim" ]] || continue
     checks=$((checks + 1))
-    word=$(printf '%s' "$claim" | awk '{print $1}')
+    word=$(printf '%s' "$claim" | awk '{print tolower($1)}')
     case "$word" in
       one) n=1 ;; two) n=2 ;; three) n=3 ;; four) n=4 ;; five) n=5 ;;
       six) n=6 ;; seven) n=7 ;; eight) n=8 ;; nine) n=9 ;; ten) n=10 ;;
