@@ -25,8 +25,8 @@ notes: |
 # active-notify
 
 Read `${CLAUDE_SKILL_DIR}/../_common/notify.md` once per session to load the shared procedure
-(preconditions, fire copy synthesis, failure handling, Control-Flow
-Invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
+(preconditions, fire copy synthesis, failure handling, dispatcher
+invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
 there is no turn-end auto-fire. The plugin's PreToolUse hook self-approves
 the dispatcher's Bash invocations — each on a command line of its own — so
 the Bash permission dialog does not surface for them.
