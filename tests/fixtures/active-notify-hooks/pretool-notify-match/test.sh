@@ -58,11 +58,15 @@ if [[ "$inject_sid" == "1" ]]; then
     exit 1
   fi
 else
-  # α-path: applyPermissionRules must be present (session-persistent allow)
-  rules=$(jq -r '.hookSpecificOutput.applyPermissionRules // empty | if type == "array" then join("|") else . end' "$HOOK_STDOUT")
-  if [[ "$rules" != *"notify.sh"* ]]; then
-    echo "FAIL (α): applyPermissionRules missing notify.sh pattern" >&2
-    echo "  got: $rules" >&2
+  # α-path: applyPermissionRules must be ABSENT on the notify leg. The allow
+  # covers this call only. A session-persistent rule would have to be a wildcard
+  # pattern, and the widest variable part it can carry here spans the whole path
+  # prefix — so any rule broad enough to cover this call also covers the command
+  # words the hook's content check rejects, undoing that check from the second
+  # call of the session onward.
+  if jq -e '.hookSpecificOutput.applyPermissionRules' "$HOOK_STDOUT" >/dev/null 2>&1; then
+    echo "FAIL (α): the notify leg must emit no applyPermissionRules" >&2
+    cat "$HOOK_STDOUT" >&2
     exit 1
   fi
   # α-path: updatedInput must be ABSENT

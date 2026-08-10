@@ -6,12 +6,23 @@
 # a privilege escalation with the session as its blast radius. Each case below
 # is a shape that was auto-approved before the matcher was anchored.
 #
-# The two multi-line cases are load-bearing and not redundant with each other.
-# The one WITHOUT a metacharacter is what separates the correct fix from the
-# wrong one: a pattern that anchors the whole line but keeps `[[:space:]]` as
-# its separator still matches it, because `[[:space:]]` includes the newline in
-# bash's ERE. Only `[[:blank:]]` excludes it. Delete that case and a regression
-# to the wrong separator ships green.
+# Two axes are pinned here and they are killed by different characters in the
+# pattern, so neither group of cases substitutes for the other.
+#
+# SEPARATOR axis — the tail separator must be `[[:blank:]]`, not `[[:space:]]`,
+# or a second line is read as more arguments. Both "injection on the second
+# line" cases exercise it; they are duplicates of each other, and the file used
+# to claim otherwise.
+#
+# PATH-SEGMENT axis — the path segment's negation class must be `[:space:]`,
+# not `[:blank:]`, or the segment swallows a newline and the FIRST line becomes
+# an approved command word. This is the axis nothing pinned before. It needs the
+# injected word on the first line AND no whitespace on it: swapping the class
+# leaves every other case in this file green.
+#
+# CONTENT axis — the command word must be the installed dispatcher, so a
+# relative path, a `..` climb, a tilde or a glob is rejected even though each
+# ends in the literal the pattern looks for.
 set -euo pipefail
 
 base='bash /abs/active-notify/scripts/notify.sh cancel'
@@ -28,8 +39,14 @@ cases=(
 touch /tmp/cc-should-never-run"
   "${base}
 echo second-line"
+  "bash /tmp/cc-should-never-run
+/abs/active-notify/scripts/notify.sh cancel"
   'bash /abs/active-notify/scripts/notify.sh arm-bogus'
   'bash /abs/active-notify/scripts/notify.sh fire-now-bogus'
+  'bash ../../../active-notify/scripts/notify.sh cancel'
+  'bash /abs/../../etc/active-notify/scripts/notify.sh cancel'
+  'bash /tmp/*/active-notify/scripts/notify.sh cancel'
+  'bash ~/x/active-notify/scripts/notify.sh cancel'
 )
 
 labels=(
@@ -40,10 +57,15 @@ labels=(
   'redirected suffix'
   'and-chained prefix'
   'subshell wrapper'
-  'multi-line, second line has a metacharacter'
-  'multi-line, second line is plain (pins the blank-vs-space separator)'
+  'multi-line, injection on the second line (separator axis)'
+  'multi-line, injection on the second line, no metacharacter (separator axis)'
+  'multi-line, injection on the FIRST line, no whitespace (pins the path-segment negation class)'
   'unknown subcommand arm-bogus'
   'unknown subcommand fire-now-bogus'
+  'relative command word'
+  'absolute command word that climbs out with ..'
+  'command word containing a glob the shell would expand'
+  'tilde-prefixed command word'
 )
 
 failures=0

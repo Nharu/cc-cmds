@@ -59,4 +59,29 @@ if [[ "$updated" != *"$notify_cmd" ]]; then
   exit 1
 fi
 
+# A session id that is not a string. `@sh` quotes each element of an array
+# separately, so without the `tostring` one assignment becomes an assignment plus
+# a stray word, and that word lands in command position. It is quoted, so it ends
+# as "command not found" rather than execution — the harm is a lost notification
+# carrying an allow, not code execution, and executing the line would therefore
+# not discriminate. Nothing below runs anything; the sentinel name is inert.
+#
+# The assertion derives the expected value the same way the hook must. The obvious
+# form — comparing against "CLAUDE_CODE_SESSION_ID="*" ${notify_cmd}" — passes
+# with the `tostring` removed, because the glob's `*` spans the stray word and the
+# line still ends with the call.
+nonstring_json=$(jq -nc --arg c "$notify_cmd" \
+  '{tool_input:{command:$c}, session_id:["a","; touch nonstring-sentinel"]}')
+
+printf '%s' "$nonstring_json" | "$PRETOOL_HOOK_SH" > "$HOOK_STDOUT" 2> "$HOOK_STDERR"
+
+updated_ns=$(jq -r '.hookSpecificOutput.updatedInput.command // empty' "$HOOK_STDOUT")
+expected_ns=$(jq -rn '"CLAUDE_CODE_SESSION_ID=" + ((["a","; touch nonstring-sentinel"]) | tostring | @sh)')
+if [[ "$updated_ns" != "${expected_ns} ${notify_cmd}" ]]; then
+  echo "FAIL (γ): a non-string session id did not reduce to a single shell word" >&2
+  echo "  expected: ${expected_ns} ${notify_cmd}" >&2
+  echo "  got:      $updated_ns" >&2
+  exit 1
+fi
+
 exit 0
