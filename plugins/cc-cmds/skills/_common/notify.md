@@ -25,10 +25,11 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      `CC_CMDS_NOTIFY_HOST_OS` is the test-injection seam (positive
      injection: `=Darwin` or `=Linux`); default `uname -s` covers normal
      use.
-  4. `terminal-notifier` missing → once-per-TMPDIR-lifetime stderr hint
-     via `${TMPDIR}/cc-cmds-notify-hint` sentinel, then silent skip.
-     fire-oneshot uses its own sentinel so a scheduled tick cannot be
-     silenced by a hint an earlier cycle already emitted.
+  4. `terminal-notifier` missing → stderr hint, then silent skip. On the
+     cycle path the hint is once per TMPDIR lifetime, guarded by
+     `${TMPDIR}/cc-cmds-notify-hint`. fire-oneshot carries no sentinel
+     and emits on every scheduled tick: the tick runs with nobody
+     watching, so that line is the only trace it can leave.
      Same fire-position-aware flag-handling as guard 3 (final fire
      consumes; intermediate / repeat preserve).
      # Rationale: single's consume-on-skip asymmetry for final fire is
@@ -79,8 +80,8 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
     banner. No flag is read, written, or created and no lock is taken,
     so the call is invisible to any cycle running alongside it. §1
     guards 3 and 4 still apply (non-Darwin and missing binary both
-    silent-skip), guard 4 against fire-oneshot's own sentinel rather
-    than the cycle's; guards 1 and 2 do not, because there is no flag
+    silent-skip), guard 4 without a sentinel so no earlier hint can
+    silence a tick; guards 1 and 2 do not, because there is no flag
     that could be absent or corrupt.
   mode=repeat: terminal-notifier invoked WITHOUT `-group` (intentional
     pile-up; dynamic-trust anti-spam — user perceives spam → CANCEL).
@@ -99,10 +100,10 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
 
   Stderr-only diagnostic hints follow two distinct dedup policies:
 
-  - **terminal-notifier missing** → sentinel-guarded once-per-TMPDIR-
-    lifetime via `${TMPDIR}/cc-cmds-notify-hint`. fire-oneshot uses its
-    own sentinel so a scheduled tick cannot be silenced by a hint an
-    earlier cycle already emitted.
+  - **terminal-notifier missing** → on the cycle path, sentinel-guarded
+    once-per-TMPDIR-lifetime via `${TMPDIR}/cc-cmds-notify-hint`.
+    fire-oneshot has no sentinel and emits on every tick, so a scheduled
+    tick is never silenced by a hint an earlier call already emitted.
   - **Corrupt-flag** (schema/mode/field-shape mismatch) → once-per-
     corrupt-event, self-healed via `rm -f flag` so the trigger condition
     never repeats for the same flag (no sentinel needed). Four mutually
@@ -124,8 +125,9 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
   1. **Preconditions fail-open.** ARM flag absent, corrupt-flag
      (schema≠3 strict equality / mode invalid / mode-specific field-
      shape mismatch), Host OS ≠ Darwin, and `terminal-notifier` missing
-     all silent-skip. terminal-notifier-missing emits a once-per-TMPDIR-
-     lifetime stderr install hint via the TMPDIR sentinel; the path
+     all silent-skip. terminal-notifier-missing emits a stderr install
+     hint — once per TMPDIR lifetime on the cycle path, guarded by the
+     TMPDIR sentinel, and unguarded on every scheduled tick; the path
      never transitions to silent failure. Corrupt-flag emits an stderr
      audit hint + flag `rm` + exit 0 (auto-cleanup; self-heals on the
      first hit so no sentinel is needed). The schema check is strict
