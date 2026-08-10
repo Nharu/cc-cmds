@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify
+.PHONY: lint readme check test test-active-notify test-active-notify-mutations
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -39,3 +39,9 @@ test: test-active-notify
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
 	bash scripts/test-active-notify-pretool-hook.sh
+
+# Deliberately not a prerequisite of `test`: a full pass re-runs the lifecycle
+# suite once per declared mutation and costs minutes. Run it when notify.sh
+# changes.
+test-active-notify-mutations:
+	bash scripts/test-active-notify-lifecycle-mutations.sh --self-check

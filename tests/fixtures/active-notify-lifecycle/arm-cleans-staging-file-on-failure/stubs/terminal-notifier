@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Same stub the driver auto-provides. Repeated here because a fixture-provided
+# `stubs/` directory replaces the auto-stub wholesale, and this fixture needs
+# its own `mv`.
+log="${NOTIFIER_LOG:-/dev/null}"
+{ printf '%s\n' "$*"; } >>"$log" 2>/dev/null || true
+exit 0

@@ -1,0 +1,6 @@
+# This mutation shares a line with the one above it, which is why both are
+# declared. An author meaning to revert the staging-file cleanup can drop the
+# ownership gate instead — same line, plausible slip — and the two produce
+# DIFFERENT red sets. A harness whose declared verdict were a count would accept
+# either as the other and report a pin that was never exercised.
+arm-fail-open-keeps-holders-lock

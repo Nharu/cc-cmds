@@ -1,0 +1,3 @@
+      hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint-tick"
+      [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
+      exit 0

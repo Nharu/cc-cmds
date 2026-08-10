@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Induced-failure `mv`. With CC_FIXTURE_MV_FAIL set, every mv fails; otherwise
+# it is a pass-through. This is what makes the EXIT trap's cleanup half
+# reachable: the happy path clears the staging file itself before exiting, so a
+# fixture that only arms normally never executes the trap's cleanup at all.
+if [[ -n "${CC_FIXTURE_MV_FAIL:-}" ]]; then
+  echo "stub mv: induced failure" >&2
+  exit 1
+fi
+exec /bin/mv "$@"

@@ -39,8 +39,10 @@ _json_escape() {
 # iteration counts the loop actually spends cannot drift apart.
 #
 # An iteration forks /bin/sleep, so it costs far more than the 1ms its argument
-# suggests — 4.9ms measured on the development host (200/500/1000/2000-iteration
-# runs converging from 6.2ms to 4.9ms). The cost is dominated by the fork rather
+# suggests — 4.9ms measured unloaded on the development host, 5.9-6.1ms measured
+# on the same host under load average ~125 (200/500/1000/2000-iteration runs, all
+# four within 0.2ms of each other). The fire budget's real ceiling therefore moves
+# with load, roughly 49s to 61s here. The cost is dominated by the fork rather
 # than the sleep, so it tracks host fork latency: the iteration counts are exact
 # everywhere, the wall-clock targets only on a host of comparable speed.
 #
@@ -62,8 +64,16 @@ _json_escape() {
 # between the two, and a shimmable inline budget would let that fixture pass while
 # measuring nothing. Nothing in normal operation sets either value.
 LOCK_ITER_COST_MS=5
-LOCK_BUDGET_FIRE="${CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE:-$(( 50000 / LOCK_ITER_COST_MS ))}"   # 50s target -> 10000 iterations
+LOCK_BUDGET_FIRE="${CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE:-$(( 50000 / LOCK_ITER_COST_MS ))}"   # 10000 iterations; 50s only at the assumed cost
 LOCK_BUDGET_INLINE=$(( 1000 / LOCK_ITER_COST_MS ))                                       # 1.0s target -> 200 iterations
+# Validate before first use. A non-integer LOCK_ITER_COST_MS makes both
+# derivations fail without stopping the script under `set -e`, leaving the
+# names UNSET; the first use then takes `set -u`, which bash 3.2.57 reports
+# through an exit status of 0 -- `arm` returns success having written no flag.
+# `:-` is required here: the failed assignment leaves the name unset rather
+# than empty, so a bare expansion would take that same `set -u` exit.
+[[ "${LOCK_BUDGET_FIRE:-}" =~ ^[1-9][0-9]*$ ]] || LOCK_BUDGET_FIRE=10000
+[[ "${LOCK_BUDGET_INLINE:-}" =~ ^[1-9][0-9]*$ ]] || LOCK_BUDGET_INLINE=200
 
 # Acquire "$lockdir" via POSIX-atomic mkdir (no external dependency).
 # 0 = acquired, 1 = budget exhausted. Caller decides fail-closed vs fail-open,
@@ -94,8 +104,10 @@ dispatch_fire() {
   # === Acquire fire-branch lock (POSIX-atomic mkdir, no external dep) ===
   # Covers schema/mode check + read-modify-write + mv. Prevents chain-reaction
   # race where one process's corrupt-flag cleanup makes other processes see
-  # flag absent and silent-skip. Concurrent fires (multi-session, parallel
-  # fire-now calls for armCount>1 sub-events) are serialized here.
+  # flag absent and silent-skip. Concurrent fires WITHIN ONE SESSION (parallel
+  # fire-now calls for armCount>1 sub-events) are serialized here. Two sessions
+  # never contend for this lock: it is named after the flag FILE, and only that
+  # file carries a session id.
   # Fail-CLOSED on exhaustion: a fire that cannot serialize is skipped rather
   # than raced. No force-clean — stealing another process's lock under
   # contention caused a chain reaction.
@@ -290,13 +302,13 @@ case "$subcommand" in
     workflow="${1:-notify}"; summary="${2:-알림}"
     [[ "$host_os" == "Darwin" ]] || exit 0
     if ! command -v terminal-notifier >/dev/null 2>&1; then
-      # Own sentinel, not the ARM cycle's. This path runs from a scheduled tick
-      # with nobody watching, and its precondition check happened back when the
-      # job was queued; sharing the cycle's sentinel would let a tick that fails
-      # for this reason produce no output at all whenever any earlier call had
-      # already left one behind.
-      hint="${TMPDIR:-/tmp}/cc-cmds-notify-hint-tick"
-      [[ -f "$hint" ]] || { printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2; touch "$hint"; }
+      # No sentinel on this path. It runs from a scheduled tick with nobody
+      # watching and its precondition check happened back when the job was
+      # queued, so this line is the only trace the tick can leave. Any sentinel
+      # silences it: the cycle's would silence every tick after some earlier
+      # call had left one behind, and its own would silence every tick after
+      # the first. Scheduled ticks are rare, so there is nothing to rate-limit.
+      printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2
       exit 0
     fi
     terminal-notifier \
@@ -331,8 +343,10 @@ case "$subcommand" in
     if _acquire_lock "$LOCK_BUDGET_INLINE"; then lock_held=1; fi
 
     # Fail-OPEN: delete even when the budget ran out. A surviving flag means
-    # the user asked to stop and keeps receiving banners; the residual window
-    # this leaves is microseconds wide and closes on the fire branch's own exit.
+    # the user asked to stop and keeps receiving banners. The residual window
+    # this leaves is not microseconds: it runs until the lock holder's own next
+    # write, and a wedged holder never makes one. It closes on the fire branch's
+    # own exit.
     rm -f "$flag_file"
     exit 0
     ;;

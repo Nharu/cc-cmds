@@ -7,10 +7,10 @@
 # unconditional `rmdir` in the EXIT trap would hand a wedged holder's lock to
 # whoever asks next.
 #
-# The write itself is staged and renamed, so a reader that catches this moment
-# sees the old flag or the new one and never a zero-length file. Asserted here
-# by requiring the flag to be complete after the call and no staging file to
-# survive it.
+# The write itself is staged and renamed. That property is NOT what this fixture
+# measures: both assertions below run after the call has returned, so an in-place
+# rewrite satisfies them identically. `arm-write-is-atomic` measures it, by
+# sampling the flag from another process while the write is still in flight.
 set -euo pipefail
 
 bash "$NOTIFY_SH" arm "커밋마다 알림" "refactor" "repeat"

@@ -1,0 +1,2 @@
+      printf '[cc-cmds] install terminal-notifier for desktop notifications\n' >&2
+      exit 0

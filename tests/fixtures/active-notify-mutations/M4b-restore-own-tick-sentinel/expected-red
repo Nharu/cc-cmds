@@ -1,0 +1,5 @@
+# The sentinel this path used to carry. It is a separate mutation from the one
+# above because it fails differently — the cycle's sentinel silences a tick that
+# runs after any earlier call left one behind, its own silences every tick after
+# the first — and the fixture needs both assertions to catch both.
+fire-oneshot-tick-sentinel-is-separate

@@ -1,0 +1,1 @@
+    trap 'if [[ "${lock_held:-0}" == "1" ]]; then rmdir "$lockdir" 2>/dev/null || :; fi; rm -f "${tmp:-}" 2>/dev/null || :' EXIT
