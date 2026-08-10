@@ -48,7 +48,7 @@ Only findings, severities, and grounding claims that an analysis agent **actuall
 In doc-only mode (source repo absent / inaccessible / `--no-codebase`), every artifact must state its doc-only scope, and doc-only inferences must NOT be presented as code-verified. `doc-code-gap` findings and `path:line` citations are suppressed in doc-only mode.
 
 ### CFI-5 — Self-terminate hygiene before re-composition
-There is no shutdown to run — analysts that returned have already self-terminated. Before any Step 8 follow-up and before any team re-composition, the lead MUST (a) ensure no ledger `state=running` row survives (`TaskStop` any straggler, then ledger hygiene) and (b) re-read the ledger from disk before resuming. See `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`.
+There is no shutdown to run — analysts that returned have already self-terminated. Before any Step 8 follow-up and before any team re-composition, the lead MUST (a) apply the **mid-workflow phase-boundary arm** of `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` so no ledger `state=running` row survives (`TaskStop` any straggler, then ledger hygiene) — **never the completion arm**, since both continuations need the transient fields it would take away — and (b) re-read the ledger from disk before dispatching. **The two continuations are not the same dispatch**: a Step 8 follow-up **resumes** the existing rows by `agentId`, while a re-composition **spawns a fresh team** and therefore takes a new `epoch` per the protocol's Spawn section rather than re-using these rows. Calling both "resuming" is what let the re-composition path inherit a resume's assumptions.
 
 ## Workflow
 

@@ -154,7 +154,7 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 
 **Read `${CLAUDE_SKILL_DIR}/references/04-disclosure-block.md`.**
 
-Compose the disclosure block, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip plus `rm -rf "$WITNESS_DIR"`. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
+Compose the disclosure block, run the four anti-vacuity self-checks, write the report, echo the block in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply its **workflow-completion arm** — the terminal strip plus `rm -rf "$WITNESS_DIR"`. This is the one call site in this skill that takes it, and naming it is required rather than decorative: the arm is identified by the acts it performs only to a reader who already knows the two arms apart, and the same two acts spelled out without the label read equally as an ad-hoc instruction. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
 
 ### (There is no Step 8.)
 
