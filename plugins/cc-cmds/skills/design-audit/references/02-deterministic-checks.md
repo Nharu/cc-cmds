@@ -16,16 +16,20 @@ Consumed by Step 2, in the main session, before the readers spawn.
 6. **Enum-value vocabulary.** Every enum-valued field carries a value inside its frozen set. An out-of-vocabulary value is a finding, never a silent default into another bucket.
 7. **Dangling section references.** A `§` reference naming a section the document does not contain.
 
-8. **Coherence-pass stamp.** Read the `<!-- cc-design-frozen … -->` stamp beside the document's ledger block, once. **The arm depends on which caller produced the document, and all three are enumerated so neither branch is left to inference:**
-    - **`design`** — the stamp MUST be present and MUST read `coherence-pass=done`. Absent or malformed is a finding: the document reached the audit without the pass that is supposed to precede it.
-    - **`design-apply`** — **해당 없음.** That pipeline has no coherence pass at all, so there is nothing for a stamp to attest and its absence is the normal state.
-    - **`design-prompt`** — **해당 없음**, for the same reason.
+8. **Coherence-pass stamp.** Read the `<!-- cc-design-frozen … -->` stamp beside the document's ledger block, once. **The arms are keyed on what the stamp SAYS, never on which skill produced the document:**
+    - **present, reading `coherence-pass=done`** — satisfied.
+    - **present, reading anything else, or malformed** — a finding. A stamp that exists and does not say `done` is the pipeline reporting its own skip.
+    - **absent** — a finding, worded as *"no coherence-pass stamp"* and never as *"the pass was skipped"*. Those are two different claims and the bytes do not separate them: a pipeline that has no coherence pass and a pipeline that has one and skipped it leave an identical document. Report the absence, say that the cause is not decidable from the document, and let the reconciliation pass route it. Do not resolve it by inferring a producer.
 
-    Enumerating the two no-op arms is the point. Left unstated, the check has to guess: treat the absence as normal and it passes vacuously on a `design` document that genuinely skipped the pass, or treat it as a defect and it fail-closes on every `design-apply` and `design-prompt` run, blocking the audit itself. Neither behavior is recoverable from the check's own text, which is why the arms are written out rather than derived.
+    **Keying on the producer is not merely under-specified — it is unreachable.** No byte of a produced document records which skill produced it: the stamp itself carries no producer field, and the caller identity exists only in the session that is gone by audit time. An arm selected by producer identity can therefore never be selected, so the previous form of this check **could not fail on any input** — every document passed it vacuously, including the ones it was written to catch.
+
+    **One of those arms was also simply wrong.** It granted `design-prompt` a *해당 없음* on the ground that the skill has no coherence pass. That skill produces no document of its own — it writes a section INTO `design`'s document, and its path rule hard-gates it against creating a separate artifact. The document a `--base` audit reads is therefore the one `design` produced and was required to stamp, and the arm instructed the check to ignore a mandatory stamp on exactly that document.
+
+    **The residual is stated rather than papered over.** Keying on the value makes the check reachable and correct about what it can see, and it does not recover the one thing the bytes never carried: a document from a pipeline that legitimately has no coherence pass still draws the absent-arm finding. That finding is honest — it says the stamp is missing and that the reason is undecidable here — but it is a finding, and a caller with such a pipeline will see it on every run.
 
 ## Output
 
-Write the result into the audit report as a `## 결정론적 검사` section. Each entry uses the same unique-defect shape the reconciliation pass consumes, so Step 5 can merge these with the reader findings without a translation step:
+Write the result into the audit report as a `## 결정론적 검사` section. **This is a write to the report, so it carries the report's terminator duty** — stated here by reference rather than restated, because this file's own opening rule is that a copy is a parity obligation: SKILL.md fixes the sentinel and requires every write to the report to re-emit it as the last non-empty line, and a second spelling of that sentinel here would be one more place to forget when it changes. Each entry uses the same unique-defect shape the reconciliation pass consumes, so Step 5 can merge these with the reader findings without a translation step:
 
 ```
 ### D-<n>

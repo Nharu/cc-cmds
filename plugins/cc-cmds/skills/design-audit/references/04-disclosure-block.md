@@ -43,14 +43,21 @@ Rules (this is check (iv)):
 
 **(i) Hash binding.** `동결 문서 sha256` matches `^[0-9a-f]{64}$`, is byte-equal to the `frozen-sha256` recorded in the same report's `## 감사 개시` block (written before the first reader spawned and never rewritten), and the report's header `owner-doc=` equals the **document key** of the document under audit. *Blocks a block copied from another document's audit* — the copy carries the wrong document key and the wrong hash pair.
 
-**(ii) Execution evidence.** The number of in-tree reader reports equals the `리뷰어 수` slot, and that equals the `READER_COUNT` read **from SKILL.md's CFI-0 constants block** — never from this block and never from a spawn prompt. Every reader file carries the matching `owner-doc=` and a non-empty anchor table with at least one row. *Blocks a pre-written block with no readers actually run.*
+**(ii) Execution evidence.** The number of in-tree reader reports equals the `리뷰어 수` slot **minus** the `결손 수` slot, and `리뷰어 수` equals the `READER_COUNT` read **from SKILL.md's CFI-0 constants block** — never from this block and never from a spawn prompt. Every reader file carries the matching `owner-doc=` and a non-empty anchor table with at least one row. *Blocks a pre-written block with no readers actually run.*
 
-**(ii-b) Declared shortfall.** Where a reader produced no usable witness and the Case-1 recovery did not close the gap, the count of in-tree reader reports is legitimately **below** `READER_COUNT`. That case is declared, never absorbed: the `결손 수` slot carries the shortfall and the line immediately after the block states **결손 사유** in one sentence. A shortfall reported this way satisfies (ii); a shortfall that merely lowers `리뷰어 수` to match the reports does not, because it makes an audit run by fewer readers indistinguishable from one that was budgeted for fewer. **The slot count is itself the fence**: the block declares exactly 15 slot lines, so removing this arm's slot cannot be done quietly — the count assertion sees it. Without a pin, a relaxation and a deletion are textually indistinguishable a few months later.
+**`결손 수` is bounded here, in the same check that reads it.** Two constraints, and they ship together with the rescale in (iii):
+
+- `0 ≤ 결손 수 ≤ 리뷰어 수`
+- `결손 수 > 0` implies the declared-shortfall line described in (ii-b) exists
+
+Without them the rescale is a **relaxation handle**: `결손 수` appears in no other check, so a value invented to make the arithmetic work would satisfy every invariant it touches, and `결손 수 = 리뷰어 수` would reduce (iii)'s raw-findings floor to zero — the all-zeros hole (iii) exists to close, re-opened through the slot added to close a different one. The bound belongs in this check rather than in (iii) because this is where `리뷰어 수` is bound to `READER_COUNT`; a copy of that binding in (iii) would be a second place to keep in sync.
+
+**(ii-b) Declared shortfall.** Where a reader produced no usable witness and the Case-1 recovery did not close the gap, the count of in-tree reader reports is legitimately **below** `READER_COUNT`. That case is declared, never absorbed: the `결손 수` slot carries the shortfall and the line immediately after the block states **결손 사유** in one sentence. A shortfall reported this way satisfies (ii); a shortfall that merely lowers `리뷰어 수` to match the reports does not, because it makes an audit run by fewer readers indistinguishable from one that was budgeted for fewer. **The arithmetic that bounds `결손 수` lives in (ii)**, next to the `READER_COUNT` binding it depends on; the defect this arm had was never that no fail-loud exit existed, but that the arm (ii-b) added was self-invalidated by (iii)'s unrescaled floor. **The slot count is itself the fence**: the block declares exactly 15 slot lines, so removing this arm's slot cannot be done quietly — the count assertion sees it. Without a pin, a relaxation and a deletion are textually indistinguishable a few months later.
 
 **(iii) Arithmetic invariants.**
 
 - `원시 ≥ 고유 ≥ 미보강 ≥ 0`
-- `원시 ≥ 리뷰어 수`
+- `원시 ≥ 리뷰어 수 − 결손 수` — the readers that actually ran. Unrescaled, this line and (ii-b) contradicted each other: (ii-b) forbids lowering `리뷰어 수` to match a short run, and this floor grows with `리뷰어 수` regardless of how many readers produced a witness, so a declared shortfall could reach a state with no exit — the block is the only way out of the audit and this invariant admits no relaxation. Reachable rather than universal: it needs a nearly clean document and a shortfall in the same run.
 - `고유 ≥ 1` whenever `원시 ≥ 1`
 - the five routing lines sum to `고유 결함 수` — every unique defect routed exactly once
 - `동결 시각 ≤ 조정 패스 시작 ≤ 조정 패스 종료`
