@@ -14,9 +14,25 @@
 # weakened back to an existence check and the drift this lint was written for
 # is undetectable again.
 #
-# Exit-code 2 (no scannable files) is not covered by a fixture — every fixture
-# ships both surfaces, so the empty-collection branch is tested by prevention,
-# and a fixture without them would be rejected by this runner's `case`.
+# Fixtures added after the first four carry a descriptive suffix after the
+# index (`T-ANDRIFT-FAIL-9-banned-wrapped`), the majority convention elsewhere
+# under `tests/fixtures/`. The original four stay un-suffixed on purpose —
+# renaming them would churn history for no functional gain — and the `case`
+# below accepts both shapes.
+#
+# Exit-code 2 (no scannable files) is not covered by a fixture, but the reason
+# is no longer "every fixture ships both surfaces": `T-ANDRIFT-FAIL-12-shared-
+# file-missing` deliberately omits the shared file. That fixture pins the
+# precedence — a declared-but-absent shared file is a violation (exit 1), and
+# reporting it as an empty collection instead would hide the finding behind
+# exit 2.
+#
+# Each fixture's discriminating power is measured rather than assumed: eleven
+# single-point mutations of the lint are each run against the whole set, and
+# all eleven are killed, eight of them by exactly one fixture. Two fixtures
+# (FAIL-5, FAIL-8) kill nothing uniquely — they are the plain unwrapped base
+# case of their rule and are the shape a reader looks for first, so the overlap
+# is recorded here rather than removed.
 
 set -euo pipefail
 
