@@ -120,14 +120,9 @@ turn-end auto-fire; a turn in which no instance occurred owes no
 banner. The one floor: for a **generic class with no observable
 instance boundary** (`"단계"`, a degenerate `"작업 단위 완료"` label from
 the §2.9 cascade), treat the end of a turn that contained **at least one
-user-task tool call** as one instance. This is a definition of
-"instance" for classes that lack one, not a reinstatement of turn-end
-firing — it does NOT apply to precise classes (`commit`, `test pass`),
-where a turn with no instance stays silent. **A turn opened by an
-external scheduler — one executing a prompt written for a scheduled job
-rather than for this cycle's user task — is not an instance of a generic
-work-unit class**, so a live scheduled job cannot keep a degenerate
-cycle alive forever.
+user-task tool call** as one instance. **A turn opened by an external
+scheduler is not one of those**; the axis is *who opened the turn*, not
+which mechanism did it.
 
 ### CFI-2 — Fire-first within the turn
 The moment an owed instance is observed, `notify.sh fire-now` is the
@@ -150,16 +145,11 @@ terminates structurally when armCount is consumed. It is permitted only
 when **both** hold: (a) every instance this cycle fired was the
 completion of something the model itself dispatched, and (b) the user's
 task finishes this turn with no step left in the model's own plan that
-would produce another instance. If (a) fails — the instances come from
-the user's own commits, a CI pipeline, a deploy the model does not
-drive — **self-cancel is forbidden** and the cycle waits for user
-CANCEL. **When the cycle-terminating event is itself an instance, call
-`fire-now` for it FIRST and `cancel` second**; the reverse order makes
-the final `fire-now` a no-op and loses that banner permanently. A
-false-positive self-cancel does not cost "one banner" — it costs
-**every remaining banner in the series**, and an absent user never
-observes the loss, so the recovery path is a line of disclosure in the
-model's response text, not a re-ARM the user cannot know to make.
+would produce another instance. If (a) fails, **self-cancel is
+forbidden** and the cycle waits for user CANCEL. **When the
+cycle-terminating event is itself an instance, call `fire-now` for it
+FIRST and `cancel` second**; the reverse order makes the final
+`fire-now` a no-op and loses that banner permanently.
 
 ### CFI-5 — Clock-keyed requests are never ARMed
 A request keyed to wall-clock time — a recurring cadence (`"5분마다"`)
@@ -292,7 +282,7 @@ itself — without waiting for the user. Self-cancel is asymmetric with
 ARM: ARM is forbidden on self-judgment (§6.1) because a false positive
 creates an unrequested obligation. The model may end a cycle on
 judgment; it may not start one. The permitting conditions and the cost
-of getting it wrong are in §4.6 and CFI-4 — do not re-derive them here.
+of getting it wrong are both in §4.6 — do not re-derive them here.
 Ordering rule when the last instance is the cycle terminator:
 `notify.sh fire-now` for that final instance FIRST, then
 `notify.sh cancel` (§4.6, §6.4).
@@ -1372,9 +1362,12 @@ only. The following are anti-patterns.
   ordering rule governs whenever the cycle-terminating event is itself
   an instance of the armed class: fire-now FIRST, cancel SECOND.
 
-These are the exact complement of §4.6's permitting conditions — each
-bullet is one condition failing — so the judgment is made once, there,
-and not re-derived here. The cost of getting it wrong is stated once as
+Two of these are §4.6's permitting conditions failing — a mid-series
+cancel is (b) unmet, and a series the model does not produce is (a)
+unmet — so that judgment is made once, there, and not re-derived here.
+The other two fail differently: single-mode self-cancel breaches the
+scope limit, and cancelling ahead of the final fire-now breaches the
+ordering rule. The cost of getting it wrong is stated once as
 well, in §4.6.
 
 ## 7. Permission test bypass
