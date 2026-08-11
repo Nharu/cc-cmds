@@ -76,6 +76,10 @@ So this state has **no valid block**. It is not written, not declared, and not p
 
 The four checks fence the block's **structure**. The **truth** of the recorded integers cannot be checked: a lead that runs the readers and then writes plausible-but-wrong numbers passes all four. This is the deliberate split — garbage output is fenced structurally, interpretable misjudgment is left to prose. Do not add a fifth check that pretends otherwise, and do not delete this paragraph to make the mechanism look stronger than it is.
 
+## Writing the block
+
+The block is written into the audit report, so this write carries the report's terminator duty — **by reference**: SKILL.md fixes the sentinel and requires every write to the report to re-emit it as the last non-empty line. Restating the sentinel here would create a second place to keep in sync, and the block already has enough byte-exact literals to keep.
+
 ## Korean echo
 
 After writing the block, echo it to the user in Korean with the routing lines rendered as a short list and the two timestamps rendered as an elapsed duration, followed by the next-step line and the terminal statement of Step 7.
