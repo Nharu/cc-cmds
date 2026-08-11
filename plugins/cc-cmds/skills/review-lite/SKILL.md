@@ -228,7 +228,7 @@ For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs
 After saving the report:
 
 - Notify the user in Korean: *"리뷰 보고서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
-- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply its **mid-workflow phase-boundary arm** — Step 6 follows, so this is not workflow completion and nothing is stripped or removed here. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
+- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply its **workflow-completion arm** — Step 6 follows, but Step 6 is lead-only discussion and resumes no reviewer, so **this call site is the last point at which the team exists**. The arm turns on whether anything after it resumes this team, and nothing does. The witness directory is removed and the four transient fields are stripped from every terminal row here; deferring them to a step that never comes is what left a UID-derived temp hash, a session path, an absolute checkout path and a random token in the committed document. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
 - Present the report summary to the user in Korean.
 - Emit the lite-redirect footer (single line, every invocation):
 
