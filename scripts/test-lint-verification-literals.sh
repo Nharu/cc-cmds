@@ -30,12 +30,22 @@
 #        because it is what makes the fixture's claim explicit and it fails
 #        loudly against a lint that signals failure by exit code alone.
 #   (P3) Every `OK:` or `SKIP:` line the lint emits must be covered by an EXPECT
-#        declaration. The count equality bounds the FAIL side only, so without
-#        this an EXPECT can be WEAKENED rather than emptied into passing: drop
-#        the arity summary from an OK fixture and what remains still holds while
-#        every pinned literal quietly loses its independent coverage. `SKIP:` is
-#        admitted alongside `OK:` because a skip is a summary line too, and an
-#        OK-only rule would falsely reject the skip fixtures.
+#        declaration, and **the comparison is keyed on the line kind**:
+#          * `OK:`   — the declaration must equal the emitted line WHOLE.
+#          * `SKIP:` — substring, deliberately.
+#        The count equality bounds the FAIL side only, so without (P3) an EXPECT
+#        can be WEAKENED rather than emptied into passing. The whole-line half is
+#        what makes that weakening unreachable: under a substring rule a
+#        declaration could be shortened to a prefix — in the limit to the bare
+#        literal `OK:` — and the arity summary would still be "covered" while
+#        pinning nothing, after which a pinned literal can be dropped from its
+#        array and a shipped section deleted with it, whole suite green.
+#        **The `SKIP:` exception is not a convenience.** A skip summary names the
+#        absolute path it searched, which varies with the run, so no EXPECT can
+#        reproduce it as a whole line; a blanket whole-line rule turns exactly
+#        the two skip fixtures red and nothing else (measured 12/1 and 10/1).
+#        Both halves are required: whole-line alone breaks the skips, substring
+#        alone is the hole.
 #
 set -euo pipefail
 
@@ -108,25 +118,32 @@ for fixture in "$fixtures"/*/; do
     problems+=("EXPECT declares no FAIL: line for a FAIL fixture")
   fi
 
-  # (P3) no summary line may go undeclared.
+  # (P3) no summary line may go undeclared, matched per line kind.
+  #
+  # The match is an `if`, never `[[ … ]] && { … }`: under `set -euo pipefail` an
+  # AND-list whose test fails is the loop body's last command, and its non-zero
+  # status aborts the driver mid-sweep — silently turning "no fixture failed"
+  # into "the sweep stopped early". The `if` form has no such status to leak.
   while IFS= read -r out_line; do
     case "$out_line" in
-      OK:*|SKIP:*) ;;
-      *) continue ;;
+      OK:*)   match_kind=whole ;;
+      SKIP:*) match_kind=substring ;;
+      *)      continue ;;
     esac
     covered=0
     for decl in ${declarations+"${declarations[@]}"}; do
-      if [[ "$out_line" == *"$decl"* ]]; then
+      if [[ "$match_kind" == whole && "$out_line" == "$decl" ]] \
+         || [[ "$match_kind" == substring && "$out_line" == *"$decl"* ]]; then
         covered=1
         break
       fi
     done
     if (( covered == 0 )); then
-      problems+=("undeclared summary line: $out_line")
+      problems+=("undeclared summary line ($match_kind match): $out_line")
     fi
   done <<< "$output"
 
-
+  # ...and nothing else may have failed.
   actual_fail_lines=$(printf '%s\n' "$output" | grep -c '^FAIL:' || true)
   if [[ "$actual_fail_lines" != "$expected_fail_lines" ]]; then
     problems+=("FAIL-line count $actual_fail_lines, expected $expected_fail_lines")
