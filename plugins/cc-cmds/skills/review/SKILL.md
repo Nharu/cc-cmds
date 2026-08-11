@@ -305,6 +305,8 @@ Branch on user response:
 
 ### Step 5: Result Synthesis & Documentation (Korean)
 
+**Before writing any citation into the report, Read `${CLAUDE_SKILL_DIR}/../_common/verification.md` §11 (citation convention)** and apply it to every citation this report emits — including ones lifted verbatim out of a reviewer witness. Three parts, all required: the document qualifier, the verbatim heading, and a line anchor with its observation date. **A bare `D4` / `R7` / `V9` is not a reference**: label namespaces are per-document and uncoordinated, so a bare number lands on a real-but-unrelated item in the wrong document as readily as on the right one — and that failure is indistinguishable from a correct citation, because the reader opens it, finds a genuine decision, fixes the wrong thing and reports success. A citation received from a reviewer is **resolved against the target document before it is repeated**; a witness citation is in scope precisely because the witness is discarded while the report outlives it.
+
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
 The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.

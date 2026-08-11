@@ -6,7 +6,7 @@ Single source of truth for the in-session verification mechanism: the claim taxo
 
 **What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: vocabulary, schemas, predicates, and execution mechanics. It deliberately excludes *workflow prose* — the Quality-Gate procedure, the pre-save sweep's **trigger point, scope and failure paths**, the consumer's gate flow and failure menus, and the lite budget / split / menu — each of which lives in the owning SKILL.md. The sweep's **pass predicate** is the single carve-out and lives here as §10: it is a predicate rather than a procedure, and it had drifted into two inline copies — exactly the shape this file exists to collapse. Every excerpt or inline copy of this contract elsewhere MUST carry a provenance line naming this file; the frozen-literal lists are defined ONLY here and copies cite, never re-author, them.
 
-**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-audit` Reads §3.4 and §5.2 by reference from its deterministic-checks step and deliberately keeps no excerpt — an excerpt is a copy, and a copy is a parity obligation. `implement` Reads it and uses the `## Residual-item contract` section.
+**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-audit` Reads §3.4 and §5.2 by reference from its deterministic-checks step and deliberately keeps no excerpt — an excerpt is a copy, and a copy is a parity obligation. `implement` Reads it and uses the `## Residual-item contract` section. `review` and `review-lite` Read **§11 only** — the citation convention — because they publish reports whose citations point into documents they do not own.
 
 ---
 
@@ -320,3 +320,24 @@ A sweep **PASSES** iff all four hold over the synthesis draft:
 Any condition failing makes the sweep **FAIL**, and the owning SKILL.md's failure path takes over from there — `design` allows at most one re-convergence cycle per failing claim before escalating; `design-lite` routes to its Round 3 and then to a 3-option escalation. Those paths are economically divergent by design and are **not** unified here.
 
 **Why this is the one carve-out from the file's contracts-only posture.** A pass predicate is a predicate, not a procedure: it is exactly the kind of thing this file exists to hold. It had drifted into two inline copies, which is the same structure this repo treats as a maintenance tax everywhere else — so collapsing it by reference removes the copy rather than adding a lint to keep two copies honest. **Do not add a coupling lint for this section**: with no second copy there is nothing to synchronize, and registering a new parity pair would reinstate the tax the collapse just removed.
+
+---
+
+## 11. Citation convention (reports and witnesses included)
+
+A tree that carries several documents on one subject — a design document, a pass plan, a review report — has **one label namespace per document and no coordination between them**. A bare `D4` or `R7` or `V9` is therefore not a reference; it is a reference *within a document the reader has to guess*. Measured across two documents in this tree: **38 decision labels in common**, and of the twelve bare `D<n>` citations, **eight resolve to a real but unrelated decision in the wrong document**.
+
+**That failure mode is worse than a dangling reference, and the difference is what this section is for.** A dangling anchor is caught the first time someone follows it. A bare number that lands on a real-but-wrong item is **indistinguishable from a correct citation**: grep finds it, the reader opens it, the text is a genuine decision, and the reader then fixes the wrong thing and reports success. Nothing in the process notices.
+
+**A citation has three parts, all required.**
+
+1. **A document qualifier.** The path of the document being cited, never omitted and never abbreviated to a single letter. A one-letter shorthand is itself a per-document namespace, so it recreates the collision one level up.
+2. **The verbatim heading.** The label alone does not carry the citation — the heading does. A wrong number under the right heading is caught on sight; a wrong number alone is not.
+3. **A line anchor with its observation date**, written `(:<n>, <YYYY-MM-DD> observed)`. **A line number is a coordinate, not an identifier.** Documents shift non-uniformly, so a stale line number is expected and is not a defect; what makes it usable is the date that says when it was true.
+
+**Two obligations that apply to the citing party rather than the cited text.**
+
+- **Resolve before propagating.** A citation received from a review, a witness, or another agent is not repeated until its existence **and uniqueness** have been checked in the target document. Passing one along unchecked is how a wrong anchor reaches an agent prompt, and an agent cannot check what it was told is already checked.
+- **When the verbatim text is not unique, say so.** If the same wording appears at several lines, the citation cannot be re-anchored by wording later — record that fact in the citation itself rather than leaving the next reader to discover it.
+
+**Scope: this section covers report and witness citations too, and that is the half that is easy to skip.** A witness is read by exactly one party and then discarded, which makes its citations feel private — but a finding lifted out of a witness carries its citation with it into a report that outlives the witness by months. Of the citation failures measured in one round of this repo's own use, **six of nine were on report surfaces**, which is why the two report-publishing skills read this section.
