@@ -1,16 +1,19 @@
 # Sidecar File Contract (fixture)
 
-The second schema declares no machine header — it only *mentions* one, in a
-sentence saying the header is absent. A substring predicate is satisfied by that
-sentence; only the line-start anchor tells a declaration from a discussion of
-one. Expected: exit 1.
+Everything is correct AND a payload-schema-shaped heading sits inside a fenced
+example block. This must pass: the example is a picture of a declaration, not
+one. It is an OK fixture on purpose — the property being covered is that the
+lint does NOT false-fail, and only a passing input can carry that. A FAIL
+fixture cannot: the per-section check exits before the cross-check runs, so a
+file that is already failing never reaches the half being tested.
+Expected: exit 0.
 
 ## 1. Generic sidecar mechanics
 
 Generic wiring. This section names no `docs/<kind>/{slug}.md` artifact path, so
 it is not a payload schema and the pin must not demand a terminator of it.
 
-## 2. The re-convergence sidecar — `docs/design-reconverge/{slug}.md`
+## 2. The re-convergence sidecar — `<base>/docs/design-reconverge/{slug}.md`
 
 Header:
 
@@ -22,11 +25,25 @@ Header:
 
 - **File terminator.** The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-reconverge: end -->`, emitted by every write form, the creation write included.
 
-## 3. The design-drift sidecar — `docs/design-drift/{slug}.md`
+A future kind would be declared like this:
 
-This section has no header block yet. When one is written it will read
-`<!-- cc-design-drift v2; writer=implement; reader=review -->`, but nothing here
-declares it.
+```
+## 4. The visual-drift sidecar — `<base>/docs/visual-drift/{slug}.md`
+```
+
+And its terminator would be shown, never declared, like this:
+
+```
+<!-- cc-visual-drift: end -->
+```
+
+## 3. The design-drift sidecar — `<base>/docs/design-drift/{slug}.md`
+
+Header:
+
+```
+<!-- cc-design-drift v2; writer=implement; reader=review; owner-doc=<document key>; NOT a design doc; mechanism-local, never staged by a skill -->
+```
 
 ### 3.6 File terminator and creation emission order
 

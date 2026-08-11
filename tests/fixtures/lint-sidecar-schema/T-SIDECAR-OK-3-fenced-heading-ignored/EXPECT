@@ -1,0 +1,8 @@
+# An OK fixture carrying a fenced example heading AND a fenced example
+# terminator. Its job is to prove the lint does NOT false-fail on them, and
+# only a passing input can carry that property.
+# It also covers the two fence filters of the distinct-literal cross-check,
+# which no FAIL fixture can reach: the per-section check exits before the
+# cross-check runs, so a file that is already failing never gets there.
+# Removing either filter turns this fixture red.
+OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 55 < truncation 56) (scope: _common/sidecar.md only; design-audit's schema is out of reach)

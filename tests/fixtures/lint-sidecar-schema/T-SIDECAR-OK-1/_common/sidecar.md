@@ -8,7 +8,7 @@ structure the pin reads and nothing else.
 Generic wiring. This section names no `docs/<kind>/{slug}.md` artifact path, so
 it is not a payload schema and the pin must not demand a terminator of it.
 
-## 2. The re-convergence sidecar — `docs/design-reconverge/{slug}.md`
+## 2. The re-convergence sidecar — `<base>/docs/design-reconverge/{slug}.md`
 
 Header:
 
@@ -20,7 +20,7 @@ Header:
 
 - **File terminator.** The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-reconverge: end -->`, emitted by every write form, the creation write included.
 
-## 3. The design-drift sidecar — `docs/design-drift/{slug}.md`
+## 3. The design-drift sidecar — `<base>/docs/design-drift/{slug}.md`
 
 Header:
 
