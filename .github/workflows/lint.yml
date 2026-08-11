@@ -14,9 +14,24 @@ on:
     branches:
       - master
 
+# One run per ref. A push onto a branch that already has a run in flight cancels
+# it: the older run is measuring bytes that no longer exist, and on this repo a
+# single run is minutes of wall clock, so leaving both alive doubles the cost to
+# report a result nobody will read. `master` is excluded from cancellation —
+# there each push is a distinct state whose result is a record, not a preview.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   lint-and-readme:
     runs-on: ubuntu-latest
+    # A hung step otherwise holds a runner for the platform default of six hours.
+    # The measured floor is dominated by one lint whose cost is spawn-bound, so
+    # the ceiling is set well above the observed runtime rather than tight to it:
+    # a timeout that trips on a slow runner is a flaky gate, and a flaky gate is
+    # worse than a slow one.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
