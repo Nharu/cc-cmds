@@ -32,10 +32,6 @@ Every unique defect goes to exactly one owner. The five counts must sum to the u
 
 ## Synthesis question (mandatory terminal act)
 
-The pass may NOT close by dispositioning items one at a time. Its final act is to ask, once, in writing, and answer in the report:
-
-> 이 발견들이 **함께** 함의하는 요구사항이 있는가?
-
-Different readers' items can compose into a new requirement that appears in no single report.
+Its final act is to ask, once, in writing.
 
 <!-- cc-design-audit-reference: end -->

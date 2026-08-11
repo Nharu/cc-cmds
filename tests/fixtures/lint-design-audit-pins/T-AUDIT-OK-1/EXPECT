@@ -1,3 +1,3 @@
 # The arity pin: every pinned group size is named on this one line, so dropping
 # any single pinned literal changes a number here and turns this fixture red.
-OK:   design-audit pins — 6 constants (CFI body) + 1 reader-prompt preamble + 3 reader-prompt body + 1 measurement + 3 verdict tokens (each checked in 2 regions) + 3 reference headings (whole-line) + 3 reference prose (region-scoped) + 15 disclosure (in-fence, ordered) + 2 shortfall arm (in checks section) + 11 denylist (in CFI-6) all intact
+OK:   design-audit pins — 6 constants (CFI body) + 1 reader-prompt preamble + 3 reader-prompt body + 1 measurement + 3 verdict tokens (each checked in 2 regions) + 3 reference headings (whole-line) + 1 file-end sentinel + 3 reference sections (content + span floor) + 3 reference prose (region-scoped) + 15 disclosure (in-fence, ordered) + 2 shortfall arm (in checks section) + 11 denylist (in CFI-6) all intact

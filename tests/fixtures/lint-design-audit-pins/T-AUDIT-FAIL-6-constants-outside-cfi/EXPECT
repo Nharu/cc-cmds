@@ -1,8 +1,8 @@
 # The constants block was moved out of the CFI body, exactly once each. Only the
 # containment arm fires, which isolates it from the arity arm.
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: READER_COUNT = 3
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: ROUNDS_PER_READER = 1
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: OUTER_ITERATIONS = 0
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: ADJUSTMENT_PASSES = 1
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: ROUND_TOKEN = 1
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: PASS_TOKEN = fanout
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): READER_COUNT = 3
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): ROUNDS_PER_READER = 1
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): OUTER_ITERATIONS = 0
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): ADJUSTMENT_PASSES = 1
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): ROUND_TOKEN = 1
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): PASS_TOKEN = fanout

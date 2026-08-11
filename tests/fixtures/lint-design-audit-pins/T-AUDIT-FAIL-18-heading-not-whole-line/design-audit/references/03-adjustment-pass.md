@@ -1,6 +1,6 @@
 # Reconciliation Pass (fixture)
 
-## Non-recursion rules (hard)
+The section formerly titled ## Non-recursion rules (hard) was folded into the routing table.
 
 - **No `Agent()` call.** Spawning anything here is the first step back toward the loop this command replaced.
 - **No re-opening a dispositioned finding.**

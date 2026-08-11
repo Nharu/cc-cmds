@@ -3,4 +3,4 @@
 # dropped from the dispatch entirely — without turning the suite red.
 # The by-reference rule is what keeps the deterministic checks from growing a
 # second copy of the verification contract.
-FAIL: design-audit/references/02-deterministic-checks.md — pinned literal missing from the region /^# Deterministic Checks /: By reference, never by copy.
+FAIL: design-audit/references/02-deterministic-checks.md — pinned literal missing from the region /^# Deterministic Checks / (comments do not count): By reference, never by copy.

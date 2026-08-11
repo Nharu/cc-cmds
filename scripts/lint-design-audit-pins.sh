@@ -17,13 +17,18 @@
 #   still reports "all intact". Every pin below is therefore evaluated inside the
 #   region that must carry it, and a token that belongs in two regions is pinned
 #   twice — once per region — so each region is independently defended.
-#   The three heading pins are the one group with no region, because the section
-#   each names IS the region and the last of them has no following heading to
-#   terminate one; they are asserted as whole lines instead, which forbids the
-#   same failure (a name surviving in prose after its section is gone).
+#   The three heading pins are whole-line rather than region-scoped, and that is
+#   now a choice rather than a necessity: each heading also opens a region below,
+#   terminated for the last one by the file-end sentinel this release added. The
+#   whole-line form is kept because it catches a different edit — a heading
+#   surviving as part of a longer sentence — which no region pin can see.
 #   This paragraph asserted the property before it held: three groups were still
 #   whole-file when it was written. Do not restate it without re-measuring —
 #   `grep -n assert_in_file` naming a pin array is the counterexample.
+#
+# COMMENTS ARE NOT CONTENT. Every assertion below reads through
+#   `strip_html_comments`; the single exception is the file-end sentinel, which
+#   is a comment by construction. See that helper for what this closes.
 #
 # TWO SCOPE LIMITS, STATED BECAUSE THE LABELS OVERSTATE THEM.
 #   (a) The negative fence's zero-occurrence sweep walks `design-audit/references`
@@ -76,7 +81,54 @@ fail=0
 
 # ---------- helpers -----------------------------------------------------------
 
-# count_lines <literal> <file> — number of lines containing the fixed literal.
+# strip_html_comments — read stdin, write it back with every `<!-- … -->` span
+# blanked, multi-line spans included. LINE COUNT IS PRESERVED: a commented line
+# becomes empty rather than disappearing, so a span floor still counts what a
+# reader would see and a diagnostic still points at the right place.
+#
+# WHY EVERY PIN IN THIS FILE READS THROUGH IT. A pin asserts that a byte is
+# present, and an editor removing a section usually comments it out rather than
+# deleting it. Those two acts are byte-different and reader-identical, so a pin
+# over raw bytes reports the shipped contract intact while the shipped contract
+# is gone. Measured before this landed: wrapping the whole of
+# `03-adjustment-pass.md`'s body in a comment — and wrapping the ENTIRETY of
+# `04-disclosure-block.md` — both left this lint at exit 0, `all intact`.
+# Deletion was caught; commenting was not.
+#
+# It is NOT in the shared extractor. That library serves callers whose regions
+# legitimately contain commented example blocks, and stripping there would
+# change every one of them. The blindness belongs to this file's assertions.
+strip_html_comments() {
+  awk '
+    {
+      line = $0
+      out = ""
+      while (1) {
+        if (incmt) {
+          p = index(line, "-->")
+          if (p == 0) { line = ""; break }
+          incmt = 0
+          line = substr(line, p + 3)
+          continue
+        }
+        p = index(line, "<!--")
+        if (p == 0) { out = out line; line = "" ; break }
+        out = out substr(line, 1, p - 1)
+        line = substr(line, p + 4)
+        incmt = 1
+      }
+      print out
+    }
+  '
+}
+
+# substantive_lines <text> — non-blank lines remaining after comment stripping.
+substantive_lines() {
+  printf '%s\n' "$1" | strip_html_comments | grep -cE '[^[:space:]]' || true
+}
+
+# count_lines <literal> <file> — number of lines containing the fixed literal,
+# comments excluded.
 # Never trips `set -e`: grep's no-match exit 1 is absorbed.
 count_lines() {
   local literal="$1" file="$2"
@@ -84,7 +136,7 @@ count_lines() {
     echo 0
     return
   fi
-  grep -Fc -- "$literal" "$file" 2>/dev/null || true
+  strip_html_comments < "$file" | grep -Fc -- "$literal" 2>/dev/null || true
 }
 
 # assert_in_file <literal> <file> <label>
@@ -95,8 +147,8 @@ assert_in_file() {
     fail=1
     return
   fi
-  if ! grep -Fq -- "$literal" "$file"; then
-    echo "FAIL: $label — pinned literal missing: $literal" >&2
+  if ! strip_html_comments < "$file" | grep -Fq -- "$literal"; then
+    echo "FAIL: $label — pinned literal missing (comments do not count): $literal" >&2
     fail=1
   fi
 }
@@ -109,8 +161,8 @@ assert_in_text() {
     fail=1
     return
   fi
-  if [[ "$text" != *"$literal"* ]]; then
-    echo "FAIL: $label — pinned literal missing from $region: $literal" >&2
+  if ! printf '%s\n' "$text" | strip_html_comments | grep -Fq -- "$literal"; then
+    echo "FAIL: $label — pinned literal missing from $region (comments do not count): $literal" >&2
     fail=1
   fi
 }
@@ -128,8 +180,27 @@ assert_line_in_file() {
     fail=1
     return
   fi
+  if ! strip_html_comments < "$file" | grep -Fxq -- "$literal"; then
+    echo "FAIL: $label — pinned heading is not present as a whole line outside a comment: $literal" >&2
+    fail=1
+  fi
+}
+
+# assert_raw_line_in_file <literal> <file> <label> — whole-line, WITHOUT comment
+# stripping. Exactly one pin needs this and it is the file-end sentinel, which
+# is an HTML comment by construction: it must not render as visible content, so
+# the blanket "comments do not count" rule would erase the very line it is
+# asserting. Do not reach for this anywhere else — for every other pin, being
+# invisible to a reader is precisely the failure being tested for.
+assert_raw_line_in_file() {
+  local literal="$1" file="$2" label="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "FAIL: $label — file not found: $file" >&2
+    fail=1
+    return
+  fi
   if ! grep -Fxq -- "$literal" "$file"; then
-    echo "FAIL: $label — pinned heading is not present as a whole line: $literal" >&2
+    echo "FAIL: $label — file-end sentinel missing as a whole line: $literal" >&2
     fail=1
   fi
 }
@@ -143,8 +214,8 @@ assert_re_in_text() {
     fail=1
     return
   fi
-  if ! printf '%s\n' "$text" | grep -Eq -- "$ere"; then
-    echo "FAIL: $label — pinned token missing from $region: /$ere/" >&2
+  if ! printf '%s\n' "$text" | strip_html_comments | grep -Eq -- "$ere"; then
+    echo "FAIL: $label — pinned token missing from $region (comments do not count): /$ere/" >&2
     fail=1
   fi
 }
@@ -272,19 +343,51 @@ done
 #
 # Without these, the non-recursion rules, the routing table and the synthesis
 # question could all be deleted — or every MUST NOT relaxed to may — and both
-# `make lint` and `make test` stayed green. The pinned bytes already exist; no
-# file is edited to satisfy this.
+# `make lint` and `make test` stayed green.
+#
+# ONE FILE IS EDITED TO SATISFY THIS, deliberately, and the earlier claim that
+# none was is retired with it: `03-adjustment-pass.md` gained a file-end
+# sentinel. Its last section had no following heading, so it had no region
+# terminator, and without one neither a content pin nor a span floor can be
+# scoped to it — the section would keep the weakest pin in the file precisely
+# because it is last. The sentinel is itself pinned below, so deleting it to
+# "clean up" fails rather than silently re-opening that hole.
 
 # The three section headings, asserted as WHOLE LINES. A substring pin on a
 # heading is satisfied by any prose that quotes it, so the section could be
 # deleted and its name left behind in a sentence describing what used to be
-# there. Two of the three could have been region-scoped instead; the third opens
-# the last section of its file and has no following heading to terminate a
-# region, so the whole-line form is what makes the group uniform.
+# there. **The whole-line form is not redundant with the section pins below** —
+# it is what fails when the heading survives only as part of a longer line, and
+# that property had zero fixture coverage until this release added one.
 REFERENCE_HEADINGS=(
   '## Non-recursion rules (hard)'
   '## Routing — five named owners, exactly one each'
   '## Synthesis question (mandatory terminal act)'
+)
+
+# The file-end sentinel that gives the last section a region terminator.
+REFERENCE_SENTINEL='<!-- cc-design-audit-reference: end -->'
+
+# Section pins: each heading opens a region that must still CONTAIN something.
+# `<file-tag>|<heading-ere>|<region-end-ere>|<span-floor>|<content-literal>`
+#
+# TWO ASSERTIONS PER SECTION, because they fail on different edits.
+#   * the content literal catches a body rewritten around the heading;
+#   * the span floor catches the ordinary careless edit — heading kept, the
+#     paragraphs under it deleted — which a content pin alone can miss if the
+#     one pinned sentence happens to survive.
+# Neither is the clever attack. The clever attacks (comment-wrapping, quoting a
+# heading in prose) are closed by `strip_html_comments` and by the whole-line
+# heading pins. These two close the boring one, which is the likelier one.
+#
+# THE FLOOR IS A FLOOR, NOT A MEASUREMENT. It is set below the section's current
+# substantive-line count so ordinary editing does not trip it; lowering a floor
+# is therefore a deliberate relaxation and shows up as such in a diff, which is
+# the same reason the disclosure block pins its slot-count integer.
+REFERENCE_SECTION_PINS=(
+  '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|4|Spawning anything here is the first step back toward the loop'
+  '03|^## Routing — five named owners, exactly one each$|^## Synthesis question |9|The five counts must sum to the unique-defect count'
+  '03|^## Synthesis question \(mandatory terminal act\)$|^<!-- cc-design-audit-reference: end -->$|3|Its final act is to ask, once, in writing'
 )
 
 # The three prose sentences, scoped to the section that must carry each. Encoded
@@ -298,6 +401,38 @@ REFERENCE_REGION_PINS=(
 
 for lit in "${REFERENCE_HEADINGS[@]}"; do
   assert_line_in_file "$lit" "$ADJUST" 'design-audit/references/03-adjustment-pass.md'
+done
+
+assert_raw_line_in_file "$REFERENCE_SENTINEL" "$ADJUST" \
+  'design-audit/references/03-adjustment-pass.md (file-end sentinel)'
+
+for entry in "${REFERENCE_SECTION_PINS[@]}"; do
+  which_file="${entry%%|*}"
+  rest="${entry#*|}"
+  sec_start="${rest%%|*}"; rest="${rest#*|}"
+  sec_end="${rest%%|*}";   rest="${rest#*|}"
+  sec_floor="${rest%%|*}"
+  sec_lit="${rest#*|}"
+  case "$which_file" in
+    02) target="$CHECKS"; label='design-audit/references/02-deterministic-checks.md' ;;
+    03) target="$ADJUST"; label='design-audit/references/03-adjustment-pass.md' ;;
+    *)  echo "FAIL: internal — unknown section-pin file tag '$which_file'" >&2; fail=1; continue ;;
+  esac
+  if sec_body=$(extract_between "$sec_start" "$sec_end" \
+                                "$target" "$label (section /$sec_start/)"); then :
+  else fail=1; sec_body="$REGION_UNAVAILABLE"
+  fi
+  assert_in_text "$sec_lit" "$sec_body" "$label" "the section /$sec_start/"
+  if [[ "$sec_body" == "$REGION_UNAVAILABLE" ]]; then
+    echo "FAIL: $label — region-unavailable (/$sec_start/), so its span floor was not evaluated" >&2
+    fail=1
+  else
+    n=$(substantive_lines "$sec_body")
+    if (( n < sec_floor )); then
+      echo "FAIL: $label — section /$sec_start/ has $n substantive line(s), below its declared floor of $sec_floor; a heading kept over an emptied body is the edit this catches" >&2
+      fail=1
+    fi
+  fi
 done
 
 for entry in "${REFERENCE_REGION_PINS[@]}"; do
@@ -368,7 +503,7 @@ if [[ "$slot_region" == "$REGION_UNAVAILABLE" ]]; then
   echo "FAIL: design-audit/references/04-disclosure-block.md — region-unavailable (the disclosure fences), so slot order was not evaluated" >&2
   fail=1
 else
-  observed_order=$(printf '%s\n' "$slot_region" | grep -oE '^\*\*[^*]+\*\*' || true)
+  observed_order=$(printf '%s\n' "$slot_region" | strip_html_comments | grep -oE '^\*\*[^*]+\*\*' || true)
   expected_order=$(printf '%s\n' "${DISCLOSURE_PINS[@]}")
   if [[ "$observed_order" != "$expected_order" ]]; then
     echo "FAIL: design-audit/references/04-disclosure-block.md — slot keys are not the declared set in the declared order, one per line" >&2
@@ -394,7 +529,7 @@ done
 # The slot-count integer stated in the prose must equal the pinned array's size.
 # Either half drifting from the other is what this catches: adding a slot without
 # updating the declared count, or relaxing the count without touching the block.
-if ! grep -Fq -- "exactly ${#DISCLOSURE_PINS[@]} slot lines" "$DISCLOSURE"; then
+if ! strip_html_comments < "$DISCLOSURE" | grep -Fq -- "exactly ${#DISCLOSURE_PINS[@]} slot lines"; then
   echo "FAIL: design-audit/references/04-disclosure-block.md — the declared slot count does not say 'exactly ${#DISCLOSURE_PINS[@]} slot lines', which is the number of slot keys pinned here" >&2
   fail=1
 fi
@@ -443,7 +578,7 @@ done
 if [[ -d "$skills_root/design-audit/references" ]]; then
   while IFS= read -r ref; do
     for lit in "${FORBIDDEN[@]}"; do
-      if grep -Fq -- "$lit" "$ref"; then
+      if strip_html_comments < "$ref" | grep -Fq -- "$lit"; then
         echo "FAIL: ${ref#"$skills_root/"} — loop-machinery token present: $lit" >&2
         fail=1
       fi
@@ -457,7 +592,7 @@ if (( fail == 0 )); then
   # reported here would be droppable without changing any output, so the OK
   # fixture could not detect its removal and the pin would have no independent
   # coverage. Adding a pin means adding it to an array, never as a loose call.
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm (in checks section) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + 1 file-end sentinel + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floor) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm (in checks section) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

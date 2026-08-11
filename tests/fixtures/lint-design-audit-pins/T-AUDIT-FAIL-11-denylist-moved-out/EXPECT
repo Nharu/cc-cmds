@@ -1,2 +1,2 @@
 # A denylist token moved out of the CFI-6 body; its count is still one.
-FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body: convergence_table.md
+FAIL: design-audit/SKILL.md (denylist) — pinned literal missing from the CFI-6 denylist body (comments do not count): convergence_table.md

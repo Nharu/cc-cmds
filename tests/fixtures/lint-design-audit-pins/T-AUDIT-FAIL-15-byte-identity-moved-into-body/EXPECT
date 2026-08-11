@@ -4,4 +4,4 @@
 # split load-bearing rather than cosmetic — the requirement binds the lead at
 # substitution time, and inside the body it instructs a reader who performs no
 # substitution.
-FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing from the lead-facing preamble: byte-identical
+FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing from the lead-facing preamble (comments do not count): byte-identical

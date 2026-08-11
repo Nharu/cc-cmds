@@ -1,3 +1,3 @@
 # A CFI-0 constant value was changed: arity arm + CFI-body containment arm.
 FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT = 3' must appear on exactly 1 line, found 0
-FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body: READER_COUNT = 3
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): READER_COUNT = 3
