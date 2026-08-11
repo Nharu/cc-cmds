@@ -47,10 +47,14 @@ Rules (this is check (iv)):
 
 **`결손 수` is bounded here, in the same check that reads it.** Two constraints, and they ship together with the rescale in (iii):
 
-- `0 ≤ 결손 수 ≤ 리뷰어 수`
+- `0 ≤ 결손 수 < 리뷰어 수` — **strict**, and the strictness is the whole of the total-shortfall exit below
 - `결손 수 > 0` implies the declared-shortfall line described in (ii-b) exists
 
-Without them the rescale is a **relaxation handle**: `결손 수` appears in no other check, so a value invented to make the arithmetic work would satisfy every invariant it touches, and `결손 수 = 리뷰어 수` would reduce (iii)'s raw-findings floor to zero — the all-zeros hole (iii) exists to close, re-opened through the slot added to close a different one. The bound belongs in this check rather than in (iii) because this is where `리뷰어 수` is bound to `READER_COUNT`; a copy of that binding in (iii) would be a second place to keep in sync.
+Without them the rescale is a **relaxation handle**: `결손 수` appears in no other check, so a value invented to make the arithmetic work would satisfy every invariant it touches. The bound belongs in this check rather than in (iii) because this is where `리뷰어 수` is bound to `READER_COUNT`; a copy of that binding in (iii) would be a second place to keep in sync.
+
+**(ii-c) Total shortfall is not a shortfall — it is an audit that did not happen.** `결손 수 == 리뷰어 수` means **no reader produced a usable witness**. Measured on the pre-fix text: a block reading `리뷰어 수 = 결손 수 = 3` with every other integer 0 satisfied **all four** anti-vacuity checks — the rescaled floor `원시 ≥ 리뷰어 수 − 결손 수` collapses to `원시 ≥ 0`, `고유 ≥ 1 whenever 원시 ≥ 1` is vacuous, the routing lines sum to 0 = `고유`, and the timestamps order fine. The block then asserts, structurally validly, that nothing was audited.
+
+So this state has **no valid block**. It is not written, not declared, and not passed: the run **aborts and reports**, and the disclosure block is not the exit. The reason it needs saying rather than following from (ii-b) is that (ii-b) reads as a general licence to declare any shortfall, and a total one is the single value where declaring it produces an artifact that certifies its own emptiness. The upper bound above is strict for exactly this reason — the invariant and this paragraph are one rule stated twice, and the bound is what a checker evaluates.
 
 **(ii-b) Declared shortfall.** Where a reader produced no usable witness and the Case-1 recovery did not close the gap, the count of in-tree reader reports is legitimately **below** `READER_COUNT`. That case is declared, never absorbed: the `결손 수` slot carries the shortfall and the line immediately after the block states **결손 사유** in one sentence. A shortfall reported this way satisfies (ii); a shortfall that merely lowers `리뷰어 수` to match the reports does not, because it makes an audit run by fewer readers indistinguishable from one that was budgeted for fewer. **The arithmetic that bounds `결손 수` lives in (ii)**, next to the `READER_COUNT` binding it depends on; the defect this arm had was never that no fail-loud exit existed, but that the arm (ii-b) added was self-invalidated by (iii)'s unrescaled floor. **The slot count is itself the fence**: the block declares exactly 15 slot lines, so removing this arm's slot cannot be done quietly — the count assertion sees it. Without a pin, a relaxation and a deletion are textually indistinguishable a few months later.
 
@@ -62,7 +66,9 @@ Without them the rescale is a **relaxation handle**: `결손 수` appears in no 
 - the five routing lines sum to `고유 결함 수` — every unique defect routed exactly once
 - `동결 시각 ≤ 조정 패스 시작 ≤ 조정 패스 종료`
 
-*Blocks an all-zeros block.* **Known conservative bias, stated rather than hidden**: a run in which a reader genuinely found nothing trips `원시 ≥ 리뷰어 수`. The disposition is to **fail loud and surface**, not to relax the invariant — a run where a reader found nothing is precisely the run a human should look at, and weakening a pinned invariant to accommodate it re-opens the all-zeros hole.
+*Blocks an all-zeros block* — **but only together with (ii)'s bound.** This paragraph is written against the RESCALED floor and must be re-read whenever that floor changes: it previously quoted `원시 ≥ 리뷰어 수`, the pre-rescale form, and in that state it was the only text standing between the reader and a fully vacuous block. A stale rationale beside a live invariant is worse than no rationale, because it reads as confirmation.
+
+**Known conservative bias, stated rather than hidden**: a run in which every reader that ran genuinely found nothing trips `원시 ≥ 리뷰어 수 − 결손 수`. The disposition is to **fail loud and surface**, not to relax the invariant — a run where a reader found nothing is precisely the run a human should look at, and weakening a pinned invariant to accommodate it re-opens the all-zeros hole. **The bias is bounded by (ii)'s strict upper bound**: it can only ever fire on a run that had at least one reader, because a run with none is not a block to check but an abort.
 
 **(iv) Slot grammar.** As specified above: fences, count, order, key set, per-key value shape.
 
