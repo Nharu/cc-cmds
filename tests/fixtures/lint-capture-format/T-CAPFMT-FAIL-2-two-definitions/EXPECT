@@ -1,0 +1,3 @@
+# Two definition sites. Both lines are individually correct, which is why a
+# per-line check cannot see this and the count assertion can.
+FAIL: the capture format must be spelled at exactly 1 site, found 2 — a second spelling is a second thing to update, which is the state this pin exists to forbid

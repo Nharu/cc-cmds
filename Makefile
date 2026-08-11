@@ -11,6 +11,7 @@ lint:
 	bash scripts/lint-sidecar-schema.sh
 	bash scripts/lint-design-audit-pins.sh
 	bash scripts/lint-extractor-call-contract.sh
+	bash scripts/lint-capture-format.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
@@ -33,6 +34,7 @@ test: test-active-notify
 	bash scripts/test-lint-sidecar-schema.sh
 	bash scripts/test-lint-design-audit-pins.sh
 	bash scripts/test-lint-extractor-call-contract.sh
+	bash scripts/test-lint-capture-format.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
 

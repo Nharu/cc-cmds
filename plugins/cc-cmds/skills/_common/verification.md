@@ -211,7 +211,19 @@ A single, generalized definition (it subsumes and replaces the earlier reproduct
 - **Definition rescope**: a *modification* is a change that persists in the **session's main working tree** (in git vocabulary an experiment worktree is also a "working tree", so a merge without rescoping would self-contradict).
 - **FORBIDDEN rescope**: editing a tracked source file **in the main working tree** — forbidden even transiently, even if it will be reverted.
 - **Two-command boundary gate** (the "single verifiable invariant" advertisement is retired — scope is per-surface). At every team-discussion boundary check both, in this order:
-    1. main tree `git status --porcelain` == the pre-workflow baseline;
+    1. main tree **capture format** == the pre-workflow baseline;
+
+    **THE CAPTURE FORMAT IS DEFINED HERE, ONCE, AND NOWHERE ELSE RESTATES IT.**
+
+    ```
+    git status --porcelain --untracked-files=all
+    ```
+
+    `--untracked-files=all` is not a refinement, it is what makes the gate's own obligations satisfiable. The bare `git status --porcelain` **folds an untracked directory into a single entry**: creating `docs/auth-flow.md` in a repo that does not track `docs/` emits `?? docs/`, and creating a second file inside emits **nothing new at all**. Two consequences, and each on its own would be enough:
+    - The §6.3 (v) bracket requires asserting that *every path in the observed delta is one this act just wrote*. Under the folded form the delta names `docs/`, a directory the act did not write, so the assertion is **unsatisfiable in principle** the moment an exempt act creates a directory.
+    - A foreign write into a directory that is already folded produces **delta 0**, so the plain equality gate passes over it. The gate is blind to exactly the writes it exists to catch.
+
+    **Every other site refers to "the capture format" and does not respell it.** A format spelled in fifteen places is a format that gets updated in nine of them; the one measurement that matters here is that a partial update be *detectable*, and it is detectable only while there is one spelling to compare against. `scripts/lint-capture-format.sh` enforces that. The one admitted exception is a sentence that contrasts the two forms, which necessarily contains both;
     2. `git worktree list --porcelain` == the pre-workflow baseline (porcelain does not see records inside `.git/worktrees/` — the F1 blind spot), plus a belt-and-braces assertion of 0 entries with the `cc-design-exp-` prefix (proves mechanism-owned cleanup even when a baseline string is lost to compaction, and **never condemns the user's own pre-existing worktrees**).
 
 ### 6.1 Surface 1 — main working tree (reproduction + categories a/b/c/d)
@@ -229,21 +241,27 @@ Today's rules, unweakened. ALLOWED additionally includes (c)'s WebFetch / extern
 
 ### 6.3 Exempt acts — in-tree writes the gate cannot be routed around
 
-The gate of §6 compares `git status --porcelain` against a baseline, so **every** in-tree write a mechanism performs inside a gate window fails it. Some of those writes cannot be placed outside a window at all: `design` creates its ledger stub at spawn time and updates it on **every** state change, while the gate fires at **every** team-discussion boundary — there is no window-free placement, so avoidance is unavailable and the exemption is *forced* rather than merely convenient. This subsection enumerates what is exempt.
+The gate of §6 compares the **capture format** against a baseline, so **every** in-tree write a mechanism performs inside a gate window fails it. Some of those writes cannot be placed outside a window at all: `design` creates its ledger stub at spawn time and updates it on **every** state change, while the gate fires at **every** team-discussion boundary — there is no window-free placement, so avoidance is unavailable and the exemption is *forced* rather than merely convenient. This subsection enumerates what is exempt.
 
 **The enumeration is by act, not by path.** A path list exempts whatever happens to land at the named path and goes stale the instant a slug rule changes; an act is owned by the mechanism that performs it and cannot be inherited by a file that merely shares a directory. Nothing here weakens §6's FORBIDDEN: every exempt act writes a **mechanism-owned artifact**, never a tracked source file.
 
 1. **Writing the ledger of the document this invocation is itself authoring** — the at-spawn stub and every subsequent state-change update. **"Itself authoring" is bound by derivation**: the document whose path this invocation *derives* from its own inputs by its own path rule, never a document that merely carries a ledger block. Without that binding this clause absorbs clause 3 — whose target is a document *supplied to* the invocation rather than derived by it — and the enumeration silently degrades back into the path form the paragraph above rejects.
 
-2. **Writing a sidecar under `<base>/docs/<kind>/` through the compare-and-swap of `_common/sidecar.md` §1.3 — together with the same-directory `$T` that write creates.** §1.3 places `$T` in the target's own directory by requirement, so where the owning repo tracks `docs/` an orphan `$T` from an interrupted attempt is an untracked entry under `<base>/docs/` exactly as the sidecar itself is, and `git status --porcelain` is this gate's first command. Exempting the sidecar without its `$T` would leave the gate failing on the debris of the write it just permitted. `$SNAP` is out of tree by §1.3 and needs no exemption.
+2. **Writing a sidecar under `<base>/docs/<kind>/` through the compare-and-swap of `_common/sidecar.md` §1.3 — together with the same-directory `$T` that write creates.** §1.3 places `$T` in the target's own directory by requirement, so where the owning repo tracks `docs/` an orphan `$T` from an interrupted attempt is an untracked entry under `<base>/docs/` exactly as the sidecar itself is, and the **capture format** is this gate's first command. Exempting the sidecar without its `$T` would leave the gate failing on the debris of the write it just permitted. `$SNAP` is out of tree by §1.3 and needs no exemption.
 
 3. **Carrying an entry into the `## 미해결 이슈 / 트레이드오프` section of a design document supplied to this invocation.** The target here is *arbitrary* — it is whatever document the caller handed in, not one this invocation derived — which is why clause 1 must be derivation-bound and why this clause cannot be folded into it. The exemption covers the carry itself and nothing else in that document: a write to any other section is outside this clause and the gate sees it.
 
 4. **`design-audit`'s own report writes** — the early report stub, the `## 결정론적 검사` write that opens the freeze window, and the in-tree copies of the reader reports. All three target the audit report the skill derives for the document under audit; none touches the audited document.
 
-**(v) The exempting mechanism brackets its own act and corrects the baseline.** An exempt act is **not** invisible to this gate. `git status --porcelain` emits (state, path) pairs and carries no information about which act produced them, so **the gate cannot classify a delta as exempt even in principle** — and measurement bears this out: in a repo that tracks `docs/`, writing a ledger stub moves the baseline from `[]` to `[?? docs/topic.md]`, while an ordinary edit to a tracked source file produces the same shape of entry. An act-scoped exemption and a gate that cannot see acts are not reconcilable by asserting invisibility.
+**(v) The exempting mechanism brackets its own act and corrects the baseline.** An exempt act is **not** invisible to this gate. The **capture format** emits (state, path) pairs and carries no information about which act produced them, so **the gate cannot classify a delta as exempt even in principle** — and measurement bears this out: in a repo that tracks `docs/`, writing a ledger stub moves the baseline from `[]` to `[?? docs/topic.md]`, while an ordinary edit to a tracked source file produces the same shape of entry. An act-scoped exemption and a gate that cannot see acts are not reconcilable by asserting invisibility.
 
-**They are reconcilable by moving the work to the party that does know.** The mechanism performing an exempt act **brackets it**: capture porcelain immediately **before** the write, perform the act, capture immediately **after**, and **advance the baseline by exactly the observed delta** — asserting that every path in that delta is one this act itself just wrote. The gate stays a plain string comparison and never classifies anything; the enumeration above stays act-scoped because the party doing the correcting is the mechanism that owns the act and can name only the paths it just created.
+**They are reconcilable by moving the work to the party that does know.** The mechanism performing an exempt act **brackets it**: capture the **capture format** immediately **before** the write, perform the act, capture immediately **after**, and **advance the baseline by exactly the observed delta** — asserting that every path in that delta is one this act itself just wrote. The gate stays a plain string comparison and never classifies anything; the enumeration above stays act-scoped because the party doing the correcting is the mechanism that owns the act and can name only the paths it just created.
+
+**Three states, and the third is why the format is fixed rather than left to the caller.** Read the delta as follows, and read the predicate as *"the act yields an entry **under the capture format**"* — not the bare *"the act yields an entry"*, which is **true under both spellings** and therefore restores exactly the ambiguity this branch removes.
+
+1. **The delta names the paths the act wrote** — advance the baseline by it. This is the normal case.
+2. **The delta is larger** — a foreign write landed inside the bracket. Gate failure, below.
+3. **The act wrote into a directory the baseline already folds, or created one.** Under bare `git status --porcelain` this yields either *nothing* (the directory was already listed, so the second file inside it changes no line) or `?? <dir>/` — a path the act did not write. Neither can satisfy the assertion in (1): the first has no delta to advance by while a write demonstrably happened, and the second names a directory. **Under the capture format both collapse into case 1**, because the entry is the file. This state is not an edge — it is what an exempt act that creates `<base>/docs/<kind>/` does on its first run, which is every mechanism's first run.
 
 **A delta larger than the act's own writes is not a correction — it is a gate failure.** That single assertion is the whole of the safety argument: a foreign write landing between the two captures is precisely what it refuses to absorb.
 
@@ -297,7 +315,7 @@ A sweep **PASSES** iff all four hold over the synthesis draft:
 1. **Save-forbidden token absent** — both literal forms of `미검증` are document-wide 0: the full-line field form (the §3.4 ERE with `<value>` pinned to the literal `미검증`) and the inline-tag form `[검증 등급: 미검증]` (`grep -F`). This is the absence-proof exception of §3.4.
 2. **Every verifiable load-bearing claim is anchored** — 0 verifiable load-bearing claims without a `(§검증 기록 V<n>)` or `(§구현 시 검증 항목 R<n>)` anchor reference (§4.1).
 3. **Residual encoding complete** — every `구현 시 검증` item is present in the `## 구현 시 검증 항목` residual encoding (§5).
-4. **Two-command boundary gate == baseline** (§6) — main `git status --porcelain` == the pre-workflow baseline, and `git worktree list --porcelain` shows 0 `cc-design-exp-` entries.
+4. **Two-command boundary gate == baseline** (§6) — main **capture format** == the pre-workflow baseline, and `git worktree list --porcelain` shows 0 `cc-design-exp-` entries.
 
 Any condition failing makes the sweep **FAIL**, and the owning SKILL.md's failure path takes over from there — `design` allows at most one re-convergence cycle per failing claim before escalating; `design-lite` routes to its Round 3 and then to a 3-option escalation. Those paths are economically divergent by design and are **not** unified here.
 
