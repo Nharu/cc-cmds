@@ -156,10 +156,36 @@ fi
 # (2) Distinct-literal cross-check. Catches the mirror defect (1) cannot see:
 # a terminator literal for a kind that has no payload schema section — the
 # residue a removed schema leaves behind. DISTINCT set, never a count.
-declared_kinds=$(grep -oE '^## [0-9]+\. .*`(<base>/)?docs/[a-z][a-z-]*/\{slug\}\.md`' "$SOT" \
+#
+# BOTH STEPS USE ONE NOTION OF "A SECTION", and they did not before. Step (1)
+# runs a fence state machine and treats a heading inside a fence as example
+# text; step (2) grepped the raw file and treated the same line as a real
+# declaration. One lint, two answers to "what is a section" — and the asymmetry
+# was not merely untidy: a legitimate fenced example heading in the contract
+# produced a **hard failure** naming a payload schema that does not exist, and
+# the same blindness masked a mutant that step (1) would otherwise have caught.
+# `unfenced` below is the shared answer.
+unfenced=$(awk '
+  {
+    stripped = $0
+    sub(/^[ \t]+/, "", stripped)
+    nb = 0
+    while (substr(stripped, nb + 1, 1) == "`") nb++
+    fenceline = 0
+    if (nb >= 3) {
+      if (infence == 0) { infence = 1; fencelen = nb; fenceline = 1 }
+      else if (nb >= fencelen) { infence = 0; fencelen = 0; fenceline = 1 }
+    }
+    if (infence == 0 && fenceline == 0) print; else print ""
+  }
+' "$SOT")
+
+declared_kinds=$(printf '%s\n' "$unfenced" | grep -oE '^## [0-9]+\. .*`(<base>/)?docs/[a-z][a-z-]*/\{slug\}\.md`' \
   | grep -oE 'docs/[a-z][a-z-]*/' | sed -E 's|^docs/||; s|/$||' | sort -u)
 expected=$(printf '%s\n' "$declared_kinds" | sed -E 's|^|<!-- cc-|; s|$|: end -->|' | sort -u)
-actual=$(grep -oE '<!-- cc-[a-z][a-z-]*: end -->' "$SOT" | sort -u)
+# The terminator side reads unfenced text too, for the same reason: a sentinel
+# shown inside an example block is a picture of a terminator, not one.
+actual=$(printf '%s\n' "$unfenced" | grep -oE '<!-- cc-[a-z][a-z-]*: end -->' | sort -u)
 
 if [[ "$expected" != "$actual" ]]; then
   echo "FAIL: $rel — the set of terminator literals present does not equal the set of payload schema kinds" >&2
