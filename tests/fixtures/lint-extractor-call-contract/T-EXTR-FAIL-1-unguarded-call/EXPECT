@@ -1,0 +1,4 @@
+# One bare assignment. This is the whole of what the lint checks, and it is
+# checked at the call site rather than at any consequence — which is why it
+# covers a call site added tomorrow, and why fixtures could not.
+FAIL: consumer.sh:7 — extract_between call site is not guarded by `if` on its own line; a bare assignment aborts the script at that line under `set -euo pipefail` and loses every later diagnostic
