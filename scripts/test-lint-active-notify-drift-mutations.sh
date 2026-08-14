@@ -109,7 +109,11 @@ run_mutation() {   # $1 = mutation dir, $2 = expected-red file
   replacement=$(cat "$dir/replacement"; printf 'x'); replacement="${replacement%x}"
   # One parse, shared with the counter below via the same helper. `$2` lets the
   # self-check controls feed a vector that is not the row's own file.
-  if [[ "$expected_file" == "$dir/expected-red" ]]; then
+  if mutation_row_is_degenerate "$dir" && [[ "$expected_file" == "$dir/expected-red" ]]; then
+    # A degenerate row is still applied and run — the declaration is falsifiable,
+    # and an unrun one would be a way to silence a row that actually fails.
+    expected=""
+  elif [[ "$expected_file" == "$dir/expected-red" ]]; then
     expected=$(mutation_row_declared_vector "$dir" | sort -u)
   else
     expected=$(grep -v '^#' "$expected_file" | grep -v '^$' | sort -u)
@@ -165,6 +169,7 @@ while IFS= read -r d; do mutations+=("$d"); done \
   < <(find "$manifest_root" -mindepth 1 -maxdepth 1 -type d | sort)
 [[ ${#mutations[@]} -gt 0 ]] || { echo "FAIL: no mutations declared under $manifest_root" >&2; exit 2; }
 
+fixture_total=$(printf '%s\n' "$all_fixtures" | grep -c .)
 passed=0
 failures=0
 # Naming the failing rows in the summary is what makes a one-off
@@ -187,9 +192,19 @@ for d in "${mutations[@]}"; do
     # Count off the SAME parse the comparator used. Reading the file again with
     # a different line rule is how this number moves without anything else
     # moving — and it is silent, because both the row and the run still pass.
-    row_vector=$(mutation_row_declared_vector "$d")
-    if [[ "$(mutation_row_declared_vector "$d" | grep -c . || true)" == "1" ]]; then
-      sole_hits+=("$row_vector")
+    # Rows that discriminate nothing are excluded from the published figure.
+    # A degenerate row reddens nothing by declaration; an all-fixture-red row
+    # separates no fixture from any other. Counting either lets a figure that
+    # advertises discriminating power improve while no fixture gained a pin —
+    # the exact shape of a pin-free count quietly getting better.
+    if ! mutation_row_is_degenerate "$d"; then
+      row_vector=$(mutation_row_declared_vector "$d")
+      row_n=$(mutation_row_declared_vector "$d" | grep -c . || true)
+      if [[ "$row_n" == "$fixture_total" ]]; then
+        :
+      elif [[ "$row_n" == "1" ]]; then
+        sole_hits+=("$row_vector")
+      fi
     fi
   else
     failures=$((failures + 1))

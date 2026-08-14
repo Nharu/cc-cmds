@@ -77,6 +77,16 @@ mutation_pre_measurement_check() {   # $1 = manifest dir, $2 = fixture root, $3 
   return 0
 }
 
+# True when the row declares that it reddens NOTHING. The declaration is
+# out-of-band — a separate FILE, not a value inside the vector file — because an
+# in-band sentinel would put a new value in the same namespace as fixture names:
+# every reader would have to special-case it, and a reader that forgot would read
+# it AS a fixture name. That is a live defect in this tree, reproduced on purpose.
+#
+# Out-of-band, the two claims are not expressible in one file: no string a typo
+# can produce inside a vector file means "reddens nothing".
+mutation_row_is_degenerate() { [[ -f "$1/reddens-nothing" ]]; }
+
 mutation_row_schema_check() {
   local dir="$1" id
   id=$(basename "$dir")
@@ -89,16 +99,44 @@ mutation_row_schema_check() {
     fi
   done
 
+  # Three-phase: exactly one of the two declaration files must be present.
+  #
+  # All three failure branches exit 2 — a CONFIGURATION error, not a pin failure.
+  # This is a BEHAVIOUR CHANGE, not preservation: the path it replaces counted a
+  # row with a missing or empty declaration as a failing row and ended at 1. That
+  # collapse is what a later job must not inherit, because 2 is what separates
+  # "this corpus is malformed" from "a mutation escaped".
+  local has_red=0 has_none=0
+  [[ -f "$dir/expected-red"    ]] && has_red=1
+  [[ -f "$dir/reddens-nothing" ]] && has_none=1
+
+  if (( has_red == 1 && has_none == 1 )); then
+    echo "SCHEMA: $id — declares both an expected-red set and reddens-nothing; a row cannot claim both" >&2
+    return 2
+  fi
+  if (( has_red == 0 && has_none == 0 )); then
+    echo "SCHEMA: $id — declares neither an expected-red set nor reddens-nothing" >&2
+    return 2
+  fi
+
+  if (( has_none == 1 )); then
+    # A degenerate row stays FALSIFIABLE: it is still applied and run, and its
+    # observed red set must come back empty. The file must carry the measurement
+    # and the reasoning — an empty one collapses "declares nothing" back into
+    # "declares that it reddens nothing", which is the very distinction this
+    # policy exists to create.
+    if [[ ! -s "$dir/reddens-nothing" ]]; then
+      echo "SCHEMA: $id — 'reddens-nothing' is empty; it must carry the measurement and the reason" >&2
+      return 2
+    fi
+    return 0
+  fi
+
   # `expected-red` carries the declared per-fixture vector. Comment lines are a
   # documented feature of the format, so anything that reads this file must
   # strip them with the same rule the vector parser uses — a reader that counts
   # raw lines instead reports a different number than the parser and the
   # disagreement is silent.
-  if [[ ! -f "$dir/expected-red" ]]; then
-    echo "SCHEMA: $id — required file 'expected-red' is missing" >&2
-    return 2
-  fi
-
   local declared
   declared=$(mutation_row_declared_vector "$dir")
   if [[ -z "$declared" ]]; then

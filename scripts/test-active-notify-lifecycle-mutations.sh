@@ -119,7 +119,11 @@ run_mutation() {   # $1 = mutation dir, $2 = expected-red file
   replacement=$(cat "$dir/replacement"; printf 'x'); replacement="${replacement%x}"
   # One parse, shared with every other reader via the same helper. `$2` lets the
   # self-check controls feed a vector that is not the row's own file.
-  if [[ "$expected_file" == "$dir/expected-red" ]]; then
+  if mutation_row_is_degenerate "$dir" && [[ "$expected_file" == "$dir/expected-red" ]]; then
+    # A degenerate row is still applied and run — the declaration is falsifiable,
+    # and an unrun one would be a way to silence a row that actually fails.
+    expected=""
+  elif [[ "$expected_file" == "$dir/expected-red" ]]; then
     expected=$(mutation_row_declared_vector "$dir" | sort -u)
   else
     expected=$(grep -v '^#' "$expected_file" | grep -v '^$' | sort -u)
