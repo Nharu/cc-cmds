@@ -10,25 +10,9 @@
 #                  recording it as one is how a suite certifies coverage it does
 #                  not have.
 #
-# Four clauses, in the order that matters:
-#
-#   (a) unique anchor. Enforced, not assumed — a stale recipe fails loudly here
-#       rather than mutating the wrong site or nothing.
-#   (b) `bash -n`, unconditionally and never as the malformed-mutant check. It
-#       is free and it catches mutants that break the parse, but a quote shifted
-#       one character leaves the file syntactically valid while destroying
-#       tokenization, so it is a cheap pre-filter and nothing more.
-#   (c) complete application. The replacement is verified to have changed the
-#       file.
-#   (d) the declared per-fixture vector. This is the mutant-validity check, and
-#       it has to be per-fixture rather than a count: two mutations that share a
-#       line here produce one red each and DIFFERENT reds, so a count accepts
-#       either as the other and reports a pin that was never exercised.
-#
-# (d) only has force when the vector is pre-registered from the property the
-# mutation was meant to exercise. A vector written from the observed result
-# always matches and certifies whatever happened. If a run disagrees with its
-# vector, the mutation is what gets investigated — not the vector.
+# The four clauses, the reading rules, what is deliberately not caught, and the
+# row schema all live in tests/mutation-harness/ — the canonical home. This file
+# calls that schema check and cites that prose; it does not restate either.
 #
 # The red set is read as the complement of the driver's own per-fixture PASS
 # lines and is then reconciled against the driver's `N failed` tally. Grepping
@@ -53,6 +37,10 @@ manifest_root="$repo_root/tests/fixtures/active-notify-mutations"
 lifecycle_root="$repo_root/tests/fixtures/active-notify-lifecycle"
 notify_sh="$repo_root/plugins/cc-cmds/skills/active-notify/scripts/notify.sh"
 driver="$script_dir/test-active-notify-lifecycle.sh"
+harness_home="$repo_root/tests/mutation-harness"
+
+# shellcheck source=../tests/mutation-harness/schema-check.sh
+. "$harness_home/schema-check.sh"
 
 self_check=0
 [[ "${1:-}" == "--self-check" ]] && self_check=1
@@ -131,11 +119,6 @@ run_mutation() {   # $1 = mutation dir, $2 = expected-red file
   replacement=$(cat "$dir/replacement"; printf 'x'); replacement="${replacement%x}"
   expected=$(grep -v '^#' "$expected_file" | grep -v '^$' | sort -u)
 
-  if [[ -z "$expected" ]]; then
-    echo "FAIL: $id — expected-red is empty; every mutation must declare a required red" >&2
-    return 1
-  fi
-
   restore
   # (a) unique anchor + (c) complete application, both enforced by the helper.
   if ! ANCHOR="$anchor" REPLACEMENT="$replacement" python3 - "$target" <<'PY'
@@ -184,11 +167,20 @@ while IFS= read -r d; do mutations+=("$d"); done \
 
 passed=0
 failures=0
+# Naming the failing rows in the summary is what makes a one-off
+# reproducible-only-sometimes result attributable. A count alone tells a
+# later reader that something moved and nothing about what, which is the
+# same shape as a negative result whose cause was never established.
+declare -a failed_rows=()
 for d in "${mutations[@]}"; do
+  # Schema before pins: a malformed corpus is a configuration error, and running
+  # it anyway would report pin verdicts about rows that are not rows.
+  mutation_row_schema_check "$d" || exit 2
   if run_mutation "$d" "$d/expected-red"; then
     passed=$((passed + 1))
   else
     failures=$((failures + 1))
+    failed_rows+=("$(basename "$d")")
   fi
 done
 
@@ -215,6 +207,7 @@ if [[ "$tracked_hash_before" != "$tracked_hash_after" ]]; then
 fi
 
 echo "test-active-notify-lifecycle-mutations: $passed passed, $failures failed"
+(( failures > 0 )) && echo "  failing row(s): ${failed_rows[*]:-<self-check>}"
 echo "  tracked dispatcher unchanged (sha256 ${tracked_hash_before:0:12})"
 if (( failures > 0 )); then
   exit 1

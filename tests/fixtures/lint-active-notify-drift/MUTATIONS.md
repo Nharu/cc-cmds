@@ -11,70 +11,26 @@ This is documentation beside a runnable harness. It is **not** a gate, it is not
 wired into `make lint` or `make test`, and it does not cover the class of defect
 where a statement is false from the moment it is written.
 
-## Recording a row
+## 조항·읽기 규칙 — 정본은 여기가 아니다
 
-Each row is one single-point literal replacement. A row is admissible only with
-all four of these, and the ordering below is the ordering that matters:
+행이 갖춰야 할 네 조항, 문법 검사의 양상, 깨끗한 실행이 licence하는 것과 하지 않는
+것, 그리고 잡히지 않는 양쪽 퇴화 끝의 공시는 **`tests/mutation-harness/README.md`**
+가 갖는다. 이 파일은 그것을 **인용**하고 다시 쓰지 않는다 — 조항을 코퍼스마다 다시
+쓰는 것이 이 하네스 계열이 이미 한 번 겪은 발산의 형태다.
 
-1. **Unique anchor** — `count(old) == 1` against the lint at the recorded
-   revision. Catches an anchor that silently hits several sites and reddens
-   neighbours. It fails loudly and early, while the author's intent is still
-   visible.
-2. **Well-formedness, unconditional** — the mutant passes `bash -n` before the
-   driver runs, and the check is **not triggered by anything**. Two measured
-   malformed mutants sit on opposite sides of any plausible trigger: one
-   reddened every fixture in its suite, reading as the strongest possible pin
-   while inflating every killer set it touched; another reddened a third of its
-   suite, reading as an ordinary partial kill. A "reddens everything ⇒ presume
-   malformed" rule catches the first and misses the second, and the second is
-   the one that looks normal. `bash -n` is a cheap pre-filter and nothing more —
-   a quote shifted one character leaves the file syntactically valid while
-   destroying tokenization.
-3. **Complete application** — the replacement is verified to have changed the
-   file, and the driver's **stdout and stderr** are both accounted for. A
-   harness reading one stream reports the conclusion this axis exists to
-   produce, with full confidence and no exit code.
-4. **Same-tree provenance, as a per-fixture vector** — the row declares the set
-   of fixtures it reddens, not a count, and the vector is compared against a run
-   of the same fixture set. A count accepts a mutation slip as the mutation it
-   was meant to be: two edits that share a line can each redden exactly one
-   fixture and redden *different* ones. Detection rule for a mixed-tree row:
-   **the same mutation, in two runs, reddens different fixtures while the
-   mutated file's bytes are identical.** Clauses 1–3 all pass on such a row.
+이 파일이 갖는 것은 **이 코퍼스 고유의 것**뿐이다: 아래 공시와 측정, 그리고 행 목록
+(`tests/fixtures/lint-active-notify-drift-mutations/`).
 
-Clause 4 is the mutant-validity check, and it only has force when the vector is
-written from the property the mutation was meant to exercise, **before** the
-run. A vector written from the observation always matches and certifies whatever
-happened. When a run disagrees with its vector, the mutation and the fixtures
-are what get investigated — never the vector. Seven rows here came back with an
-empty red set on their first run; the response was four new fixtures and two
-rewritten ones, not seven edited vectors.
+## 이 코퍼스의 공시
 
-Two of those six fixture changes are worth naming, because both were fixtures
-that passed for a reason other than the one they advertised:
+첫 실행에서 일곱 행이 빈 적색 집합으로 돌아왔다. 대응은 벡터 일곱 개를 고치는 것이
+아니라 픽스처 넷을 새로 만들고 둘을 다시 쓰는 것이었다 — 벡터를 관측에서 쓰면 언제나
+맞아떨어지고 무엇이든 승인한다. 다시 쓴 둘은 광고한 것과 다른 이유로 통과하고 있었다:
 
-- the decoy fixture used `fire-now` as its near-negator, which the *trailing*
-  word boundary already blocks (a `w` follows the `no`), so it said nothing
-  about the leading boundary it was written for;
-- the citation fixture listed its shapes in one unbounded run, and the extractor
-  merged them into a single citation whose anchor resolved from the first shape
-  alone — four of the five shapes were never tested.
-
-## What a clean run licenses
-
-A clean run licenses **"every mutation listed here is killed."** It does not
-license "this fixture is unpinned", and it does not license "this property has
-no coverage." Those need the list's scope, which is not in the list: a mutation
-list is scoped to whatever its author was testing, so for every property outside
-that scope the run returns "no mutation reddens this fixture" — byte-identical
-to a measured absence of coverage.
-
-Stated as a shape: **"X pins Y" is mechanically falsifiable; "Y is fully pinned"
-is not.** Every headline figure is a coverage floor over an authored list.
-
-**Operational tripwire**, kept as a prompt rather than as a check: a killer set
-equal to the whole fixture set, or a sole-kill count that rises after an
-unrelated edit, is a question the author answers before the row is recorded.
+- 한 픽스처는 근접 부정어로 `fire-now`를 썼는데 그것은 **후행** 경계가 이미 막고 있어
+  (뒤에 `w`가 온다) 자기가 겨냥한 **선행** 경계에 대해 아무 말도 하지 않았다.
+- 다른 하나는 다섯 형태를 경계 없는 한 줄기에 늘어놓아 추출기가 하나로 합치는 바람에
+  넷이 시험되지 않았다.
 
 ## Re-deriving the figures
 

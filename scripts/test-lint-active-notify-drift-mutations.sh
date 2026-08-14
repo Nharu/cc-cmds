@@ -8,8 +8,9 @@
 #   description  — required. One line: which property the mutation reverts.
 #   expected-red — required, non-empty. One fixture name per line.
 #
-# See MUTATIONS.md beside the fixtures for the four clauses this enforces, what
-# a clean run does and does not license, and the reading rule for the list.
+# The four clauses, the reading rules, what is deliberately not caught, and the
+# row schema all live in tests/mutation-harness/ — the canonical home. This file
+# calls that schema check and cites that prose; it does not restate either.
 #
 # The red set is read as the complement of the driver's own per-fixture PASS
 # lines and reconciled against its `N failed` tally. A `FAIL:`-prefix grep does
@@ -31,6 +32,10 @@ manifest_root="$repo_root/tests/fixtures/lint-active-notify-drift-mutations"
 fixtures_root="$repo_root/tests/fixtures/lint-active-notify-drift"
 lint="$script_dir/lint-active-notify-drift.sh"
 driver="$script_dir/test-lint-active-notify-drift.sh"
+harness_home="$repo_root/tests/mutation-harness"
+
+# shellcheck source=../tests/mutation-harness/schema-check.sh
+. "$harness_home/schema-check.sh"
 
 self_check=0
 [[ "${1:-}" == "--self-check" ]] && self_check=1
@@ -104,11 +109,6 @@ run_mutation() {   # $1 = mutation dir, $2 = expected-red file
   replacement=$(cat "$dir/replacement"; printf 'x'); replacement="${replacement%x}"
   expected=$(grep -v '^#' "$expected_file" | grep -v '^$' | sort -u)
 
-  if [[ -z "$expected" ]]; then
-    echo "FAIL: $id — expected-red is empty; a mutation nothing kills is not a pin" >&2
-    return 1
-  fi
-
   restore
   if ! ANCHOR="$anchor" REPLACEMENT="$replacement" python3 - "$target" <<'PY'
 import os, sys
@@ -156,8 +156,16 @@ while IFS= read -r d; do mutations+=("$d"); done \
 
 passed=0
 failures=0
+# Naming the failing rows in the summary is what makes a one-off
+# reproducible-only-sometimes result attributable. A count alone tells a
+# later reader that something moved and nothing about what, which is the
+# same shape as a negative result whose cause was never established.
+declare -a failed_rows=()
 declare -a sole_hits=()
 for d in "${mutations[@]}"; do
+  # Schema before pins: a malformed corpus is a configuration error, and running
+  # it anyway would report pin verdicts about rows that are not rows.
+  mutation_row_schema_check "$d" || exit 2
   if run_mutation "$d" "$d/expected-red"; then
     passed=$((passed + 1))
     if [[ "$(grep -cv '^$' "$d/expected-red")" == "1" ]]; then
@@ -165,6 +173,7 @@ for d in "${mutations[@]}"; do
     fi
   else
     failures=$((failures + 1))
+    failed_rows+=("$(basename "$d")")
   fi
 done
 
@@ -191,6 +200,7 @@ fi
 fixture_count=$(printf '%s\n' "$all_fixtures" | grep -c .)
 sole_count=$(printf '%s\n' "${sole_hits[@]:-}" | sort -u | grep -c . || true)
 echo "test-lint-active-notify-drift-mutations: $passed passed, $failures failed"
+(( failures > 0 )) && echo "  failing row(s): ${failed_rows[*]:-<self-check>}"
 echo "  ${#mutations[@]} mutation(s) over $fixture_count fixture(s); $sole_count fixture(s) are the sole killer of at least one"
 echo "  tracked lint unchanged (sha256 ${tracked_hash_before:0:12})"
 
