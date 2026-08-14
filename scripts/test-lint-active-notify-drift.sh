@@ -50,6 +50,18 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-active-notify-drift"
 
+# Which lint to exercise. This is an INPUT to the driver, and `SKILLS_ROOT` is
+# not a substitute for it: that variable points at the surfaces the lint SCANS,
+# so it can move the fixture tree but not the script under test. A mutation
+# harness needs to point the suite at a scratch copy of the lint without writing
+# the tracked file, and only this seam does that.
+lint_sh="${CC_CMDS_DRIFT_LINT_UNDER_TEST:-$script_dir/lint-active-notify-drift.sh}"
+
+if [[ ! -f "$lint_sh" ]]; then
+  echo "FAIL: lint not found: $lint_sh" >&2
+  exit 2
+fi
+
 failures=0
 passed=0
 
@@ -66,7 +78,7 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SKILLS_ROOT="$fixture" bash "$script_dir/lint-active-notify-drift.sh" >/dev/null 2>&1
+  SKILLS_ROOT="$fixture" bash "$lint_sh" >/dev/null 2>&1
   ec=$?
   set -e
 

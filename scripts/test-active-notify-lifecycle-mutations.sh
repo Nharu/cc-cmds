@@ -61,11 +61,35 @@ for p in "$manifest_root" "$lifecycle_root" "$notify_sh" "$driver"; do
   [[ -e "$p" ]] || { echo "FAIL: missing $p" >&2; exit 2; }
 done
 
+# The tracked dispatcher is never written. Earlier revisions of this harness
+# mutated it in place and restored it from a snapshot taken at startup, which is
+# indistinguishable from working correctly right up until someone edits that
+# file while the harness runs: the restore silently discards their edit, `git
+# status` comes back clean, and the harness reports a full green. Instead the
+# tracked file is copied once into an immutable snapshot, every mutation is
+# applied to a separate scratch copy, and the driver is pointed at that copy
+# through its input seam.
+#
+# `chmod a-w` on the snapshot is what makes "immutable" more than a comment: a
+# future edit that reaches for the nearest path must fail loudly rather than
+# corrupt the reference the whole run compares against.
 work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
 pristine="$work/notify.pristine.sh"
 cp "$notify_sh" "$pristine"
-restore() { cp "$pristine" "$notify_sh"; }
-trap 'restore; rm -rf "$work"' EXIT
+chmod a-w "$pristine"
+
+target="$work/notify.under-test.sh"        # the mutated copy the driver runs
+export CC_CMDS_DISPATCHER_UNDER_TEST="$target"
+restore() { cp "$pristine" "$target"; chmod u+wx "$target"; }
+
+# Hash the tracked file at both ends. This is the assertion that the isolation
+# actually held — a harness that silently reverted to in-place mutation would
+# still pass every vector while destroying a concurrent edit, and only this
+# check separates the two.
+hash_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+tracked_hash_before=$(hash_of "$notify_sh")
 
 # All fixture names, mechanically enumerated. The red set is this minus the
 # fixtures the driver reported as passing, so it cannot pick up anything that is
@@ -114,7 +138,7 @@ run_mutation() {   # $1 = mutation dir, $2 = expected-red file
 
   restore
   # (a) unique anchor + (c) complete application, both enforced by the helper.
-  if ! ANCHOR="$anchor" REPLACEMENT="$replacement" python3 - "$notify_sh" <<'PY'
+  if ! ANCHOR="$anchor" REPLACEMENT="$replacement" python3 - "$target" <<'PY'
 import os, sys
 path = sys.argv[1]
 anchor, replacement = os.environ["ANCHOR"], os.environ["REPLACEMENT"]
@@ -134,7 +158,7 @@ PY
 
   # (b) cheap pre-filter, run and reported unconditionally.
   local syntax=OK
-  bash -n "$notify_sh" 2>/dev/null || syntax=BROKEN
+  bash -n "$target" 2>/dev/null || syntax=BROKEN
 
   observed=$(observe_red) || { echo "FAIL: $id — harness aborted" >&2; return 1; }
   observed=$(printf '%s\n' "$observed" | grep -v '^$' | sort -u || true)
@@ -182,7 +206,16 @@ if (( self_check == 1 )); then
   fi
 fi
 
+tracked_hash_after=$(hash_of "$notify_sh")
+if [[ "$tracked_hash_before" != "$tracked_hash_after" ]]; then
+  echo "FAIL: the tracked dispatcher changed while the harness ran — isolation did not hold" >&2
+  echo "  before: $tracked_hash_before" >&2
+  echo "  after:  $tracked_hash_after" >&2
+  exit 2
+fi
+
 echo "test-active-notify-lifecycle-mutations: $passed passed, $failures failed"
+echo "  tracked dispatcher unchanged (sha256 ${tracked_hash_before:0:12})"
 if (( failures > 0 )); then
   exit 1
 fi
