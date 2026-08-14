@@ -66,14 +66,36 @@ _json_escape() {
 LOCK_ITER_COST_MS=5
 LOCK_BUDGET_FIRE="${CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE:-$(( 50000 / LOCK_ITER_COST_MS ))}"   # 10000 iterations; 50s only at the assumed cost
 LOCK_BUDGET_INLINE=$(( 1000 / LOCK_ITER_COST_MS ))                                       # 1.0s target -> 200 iterations
-# Validate before first use. A non-integer LOCK_ITER_COST_MS makes both
-# derivations fail without stopping the script under `set -e`, leaving the
-# names UNSET; the first use then takes `set -u`, which bash 3.2.57 reports
-# through an exit status of 0 -- `arm` returns success having written no flag.
+# Validate before first use. Without this, a non-integer LOCK_ITER_COST_MS turns
+# into a silent success, and it takes THREE conditions together -- naming fewer
+# makes the blast radius look wider than it is:
+#
+#   1. the arithmetic failure leaves both names UNSET (not empty), and it does
+#      not stop the script;
+#   2. the first USE of an unset name aborts under `set -u` -- the abort is
+#      `set -u`'s, not `set -e`'s;
+#   3. an EXIT trap is already installed by then, and its trailing `|| :`
+#      supplies the status. On bash 3.2.57, the macOS system bash, that lands as
+#      exit 0; on 5.3.15 the same input exits 1.
+#
+# Measured: guard removed, trap present -> 3.2.57 exits 0 with no flag written
+# while 5.3.15 exits 1. Guard removed AND trap removed -> both exit 1. So the
+# trap is load-bearing, not incidental.
+#
+# What this guard does NOT close: the trap goes on masking later aborts the same
+# way. Any `set -u` abort raised after it is installed still surfaces as exit 0
+# on that shell.
+#
 # `:-` is required here: the failed assignment leaves the name unset rather
 # than empty, so a bare expansion would take that same `set -u` exit.
-[[ "${LOCK_BUDGET_FIRE:-}" =~ ^[1-9][0-9]*$ ]] || LOCK_BUDGET_FIRE=10000
-[[ "${LOCK_BUDGET_INLINE:-}" =~ ^[1-9][0-9]*$ ]] || LOCK_BUDGET_INLINE=200
+# The fallback says so on stderr. A guard that repairs the value in silence
+# leaves the constant broken and every later run looking normal, so the one
+# person who can fix it never learns there is anything to fix.
+_budget_fallback_note() {
+  printf '[cc-cmds] notify.sh: LOCK_ITER_COST_MS is not a usable integer; %s fell back to %s\n' "$1" "$2" >&2
+}
+[[ "${LOCK_BUDGET_FIRE:-}" =~ ^[1-9][0-9]*$ ]] || { LOCK_BUDGET_FIRE=10000; _budget_fallback_note LOCK_BUDGET_FIRE 10000; }
+[[ "${LOCK_BUDGET_INLINE:-}" =~ ^[1-9][0-9]*$ ]] || { LOCK_BUDGET_INLINE=200; _budget_fallback_note LOCK_BUDGET_INLINE 200; }
 
 # Acquire "$lockdir" via POSIX-atomic mkdir (no external dependency).
 # 0 = acquired, 1 = budget exhausted. Caller decides fail-closed vs fail-open,

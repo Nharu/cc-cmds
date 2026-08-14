@@ -17,15 +17,46 @@ set -euo pipefail
 # would also shrink the inline path and the assertion below would stop meaning
 # anything — so the fixture asserts the shim did not reach it.
 #
-# The value has a floor and a ceiling and both were measured against a
-# budgets-unified mutation. Below roughly the inline budget the fixture passes
-# while measuring nothing: at 5 the unified path finishes inside the elapsed
-# bound and the mutation survives. Far above it the fixture measures the right
-# thing and never reports — at 4000 the unified run takes about 42 s here, so
-# the shipped 100000 extrapolates to something on the order of a thousand
-# seconds and does not finish inside the job timeout at all. 4000 sits between
-# the two: it discriminates, and it costs the suite well under a minute.
-export CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE=4000
+# The shim is MEASURED, not fixed. A fixed value has no defensible justification
+# here: below roughly the inline budget the fixture passes while measuring
+# nothing, and far above it the fixture measures the right thing but never
+# finishes inside a CI job. Both edges move with the host's per-iteration cost,
+# so the value is derived from that cost rather than written down.
+#
+# Builtins only. The macOS system bash is 3.2.57, which has no EPOCHREALTIME, so
+# `SECONDS` is the clock and its resolution is one second. The loop answers that
+# by GROWING THE SAMPLE until the elapsed time is big enough to divide — the
+# resolution floor makes it sample more, never misjudge — and if the host outruns
+# even the sample ceiling it stops loudly rather than dividing by a zero it
+# quietly rounded.
+calibrate_iter_ms() {
+  local n=200 elapsed i
+  while (( n <= 12800 )); do
+    SECONDS=0
+    for (( i = 0; i < n; i++ )); do sleep 0.001; done
+    elapsed=$SECONDS
+    if (( elapsed >= 3 )); then
+      echo $(( elapsed * 1000 / n ))
+      return 0
+    fi
+    n=$(( n * 2 ))
+  done
+  echo "calibration: this host ran $n lock iterations in under 3s — the sample ceiling was outrun, so no per-iteration cost can be derived" >&2
+  return 1
+}
+
+iter_ms=$(calibrate_iter_ms) || exit 1
+(( iter_ms > 0 )) || { echo "calibration produced ${iter_ms}ms per iteration" >&2; exit 1; }
+
+# The separated inline path is 200 iterations. The bound has to sit clearly above
+# that and clearly below what a unified path would cost, and the seam has to put
+# the unified path clearly above the bound — all three derived from the one
+# measured cost, so a faster or slower host moves them together.
+inline_s=$(( 200 * iter_ms / 1000 ))
+bound_s=$(( inline_s * 4 ))
+(( bound_s < 5 )) && bound_s=5
+seam=$(( 3 * bound_s * 1000 / iter_ms ))
+export CC_CMDS_NOTIFY_LOCK_BUDGET_FIRE="$seam"
 
 bash "$NOTIFY_SH" arm "커밋마다 알림" "refactor" "repeat"
 [[ -f "$FLAG_FILE" ]] || { echo "ARM: flag missing" >&2; exit 1; }
@@ -33,13 +64,12 @@ bash "$NOTIFY_SH" arm "커밋마다 알림" "refactor" "repeat"
 lockdir="${FLAG_FILE}.lockdir"
 mkdir "$lockdir" || { echo "fixture could not take the lock" >&2; exit 1; }
 
-start=$(date +%s)
+SECONDS=0
 bash "$NOTIFY_SH" cancel
-end=$(date +%s)
-elapsed=$(( end - start ))
+elapsed=$SECONDS
 
-if (( elapsed >= 10 )); then
-  echo "cancel took ${elapsed}s — the inline budget is not bounded separately from the fire budget" >&2
+if (( elapsed >= bound_s )); then
+  echo "cancel took ${elapsed}s against a derived bound of ${bound_s}s (${iter_ms}ms/iteration, seam ${seam}) — the inline budget is not bounded separately from the fire budget" >&2
   exit 1
 fi
 

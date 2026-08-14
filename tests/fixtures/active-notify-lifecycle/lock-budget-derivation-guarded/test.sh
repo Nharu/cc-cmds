@@ -2,13 +2,19 @@
 # A cost constant that is not a valid bash integer cannot take the dispatcher
 # down silently.
 #
-# The two lock budgets are derived arithmetically from that constant. A
-# non-integer value makes both derivations fail without stopping the script
-# under `set -e`, which leaves the names UNSET rather than empty; the first use
-# then takes `set -u`, and bash 3.2.57 — the system bash on macOS — reports that
-# through an exit status of 0. The whole dispatcher then returns success having
-# written no flag and printed nothing, which is the worst available shape: the
-# user is told the notification is armed and no banner ever arrives.
+# The two lock budgets are derived arithmetically from that constant, and a
+# non-integer value turns into a silent success only when THREE conditions hold
+# together — the arithmetic failure leaves both names UNSET without stopping the
+# script; the first USE of an unset name aborts under `set -u` (that abort is
+# `set -u`'s, not `set -e`'s); and an EXIT trap installed before then supplies
+# the status through its trailing `|| :`. On bash 3.2.57, the macOS system bash,
+# that lands as exit 0; on 5.3.15 the same input exits 1, and with the trap
+# removed both shells exit 1. The dispatcher then returns success having written
+# no flag and printed nothing, which is the worst available shape: the user is
+# told the notification is armed and no banner ever arrives.
+#
+# The third condition is what bounds the blast radius, so naming only the first
+# two would describe a wider failure than the one that exists.
 #
 # The constant is source rather than env, deliberately, because the fixture that
 # bounds the inline budget is the only thing measuring the separation between
@@ -29,12 +35,20 @@ grep -q '^LOCK_ITER_COST_MS=4\.9$' "$scratch" || {
 }
 
 rc=0
-bash "$scratch" arm "빌드 끝나면 알림" "build" "single" 2>/dev/null || rc=$?
+err=$(bash "$scratch" arm "빌드 끝나면 알림" "build" "single" 2>&1 1>/dev/null) || rc=$?
 
 [[ -f "$FLAG_FILE" ]] || {
   echo "arm wrote no flag when the cost constant was unusable (exit $rc) — the derived budgets are not validated before first use" >&2
   exit 1
 }
+# The fallback must SAY so. Repairing the value in silence leaves the broken
+# constant in place with every later run looking normal.
+echo "$err" | grep -q 'LOCK_ITER_COST_MS is not a usable integer' || {
+  echo "the guard fell back without saying anything on stderr" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+}
+
 grep -q '"mode":"single"' "$FLAG_FILE" || {
   echo "the flag written under the fallback budget is not the requested cycle" >&2
   cat "$FLAG_FILE" >&2
