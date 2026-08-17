@@ -134,6 +134,42 @@ if require_region '<!-- RITEM-EMIT-BEGIN -->' '<!-- RITEM-EMIT-END -->' "$SKILL"
   fi
 fi
 
+# ---- the six --dry-run suppression sites ------------------------------------
+#
+# Bound by NAME, not by count. A count-only pin is satisfied by five-for-five, so
+# half the list can go unimplemented and still verify. Two of these six were
+# declared in the frontmatter and never suppressed in the execution path, and a
+# third appeared in neither list.
+#
+# DECLARED EXCEPTION to the "a pin cross-checks its consumer" rule that the other
+# pins in this file follow: the consumer of the suppression list is this command's
+# own execution path, so there is no external artifact to compare against. Writing
+# the exception down here is what stops the next audit from re-raising it as the
+# same defect.
+
+if require_region '<!-- DRYRUN-SUPPRESS-BEGIN -->' '<!-- DRYRUN-SUPPRESS-END -->' "$SKILL" 'dry-run suppression'; then
+  suppress=$(region_body '<!-- DRYRUN-SUPPRESS-BEGIN -->' '<!-- DRYRUN-SUPPRESS-END -->' "$SKILL")
+  SUPPRESS_SITES=(
+    '이슈 생성'
+    '라벨 생성'
+    '이슈 자동 만료'
+    '기존 이슈 코멘트'
+    '산출물 저작'
+    '판정 원장 기록'
+  )
+  for lit in "${SUPPRESS_SITES[@]}"; do
+    if ! printf '%s\n' "$suppress" | grep -Fq -- "$lit"; then
+      echo "FAIL: review-remediate/SKILL.md — suppression site missing from the execution-semantics list: $lit" >&2
+      fail=1
+    fi
+  done
+  # The frontmatter quotes this list; it must not re-declare a shorter one.
+  if ! grep -Fq -- '위 여섯 자리를 전부 건너뛴다' "$SKILL"; then
+    echo "FAIL: review-remediate/SKILL.md — the Safety declaration must quote the execution-semantics list, not restate a shorter one" >&2
+    fail=1
+  fi
+fi
+
 # ---- consumer cross-check (repo-fixed path; absence is a failure) ------------
 #
 # Pinned to the repository path rather than to SKILLS_ROOT on purpose: a fixture
@@ -275,8 +311,16 @@ if require_region '<!-- VOCAB-BEGIN -->' '<!-- VOCAB-END -->' "$SKILL" 'vocabula
       echo "FAIL: review-remediate/SKILL.md — C must be written as a superset of B (B ∪ …)" >&2
       fail=1
     fi
-    extra=$(printf '%s\n' "$c_line" | grep -oF '·' | wc -l | tr -d ' ')
-    if [[ "$extra" -lt 1 ]]; then
+    # `grep` exits 1 when it matches nothing, which under `set -euo pipefail`
+    # ends the whole script — and the branch below is precisely the one that
+    # fires when there is nothing to match. So the check could never report:
+    # the script died first, the runner saw only an exit code, and the fixture
+    # that targets this case was reported as passing for the wrong reason.
+    # Every adjacent site here is already guarded; this was the only one that
+    # was not. Protecting the pipe is half the repair — the branch it killed
+    # has to come back with it, or the guard is restored around dead code.
+    extra=$(printf '%s\n' "$c_line" | grep -oF '·' | wc -l | tr -d ' ' || true)
+    if [[ "${extra:-0}" -lt 1 ]]; then
       echo "FAIL: review-remediate/SKILL.md — C \\ B is empty; the section guard becomes identically false" >&2
       fail=1
     fi
