@@ -145,15 +145,29 @@ assert_in_text() {
 
 # shellcheck source=./_extract-between.sh
 source "$script_dir/_extract-between.sh"
+# Comments are not content here either. An editor removing a contract usually
+# comments it out, and both forms below read through the strip: whole-file pins
+# run against a blanked copy, and every region-scoped pin EXTRACTS from that
+# copy rather than stripping what the extractor returned. The order matters and
+# is not a preference — `extract_between` drops the start line, so a `<!--`
+# opened above a region's start anchor never reaches a stripper that runs on the
+# output, and the region reads as ordinary prose while sitting inside a comment.
+# Measured before this landed: wrapping the whole of `_common/verification.md`
+# in one comment left this lint at exit 0 with an `OK:` line byte-identical to
+# the unwrapped one. Neither anchor pair here is itself a comment, so neither
+# site takes the forced exception that two sites in the pin lint do.
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
+SOT_VISIBLE=$(stripped_copy "$SOT")
 
 # (1) SOT completeness.
 for lit in "${SOT_LITERALS[@]}"; do
-  assert_in_file "$lit" "$SOT" "_common/verification.md (SOT)"
+  assert_in_file "$lit" "$SOT_VISIBLE" "_common/verification.md (SOT)"
 done
 
 # (1a) Grade tokens, pinned inside the vocabulary table that defines them.
 if grade_region=$(extract_between '^## 3\. Frozen vocabulary' '^### 3\.1 ' \
-                                  "$SOT" '_common/verification.md (vocabulary table)'); then :
+                                  "$SOT_VISIBLE" '_common/verification.md (vocabulary table)'); then :
 else fail=1; grade_region="$REGION_UNAVAILABLE"
 fi
 for lit in "${GRADE_REGION_PINS[@]}"; do
@@ -163,7 +177,7 @@ done
 
 # (1b) Spelling lock, as the negative assertion it actually is.
 for bad in "${FORBIDDEN_SPELLINGS[@]}"; do
-  if grep -Fq "$bad" "$SOT"; then
+  if grep -Fq "$bad" "$SOT_VISIBLE"; then
     echo "FAIL: _common/verification.md (SOT) — forbidden spelling present: $bad" >&2
     fail=1
   fi
@@ -230,7 +244,7 @@ if [[ ! -f "$CONSUMER" ]]; then
   fail=1
 else
   if consumer_bullet=$(extract_between '^- \*\*1\.5a ' '^- \*\*1\.5b ' \
-                                       "$CONSUMER" 'implement/SKILL.md (consumer 1.5a bullet)' \
+                                       "$(stripped_copy "$CONSUMER")" 'implement/SKILL.md (consumer 1.5a bullet)' \
                                        include-start); then :
   else fail=1; consumer_bullet="$REGION_UNAVAILABLE"
   fi

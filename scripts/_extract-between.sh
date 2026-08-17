@@ -54,8 +54,12 @@
 #         * (1) is checked mechanically by `scripts/lint-extractor-call-contract.sh`,
 #           which reads the call-site shape rather than any consequence and so
 #           covers every site uniformly, present and future. Fixtures did not:
-#           removing one site's guard was caught at 5 of 11 sites, and the four
-#           most recently added sites had coverage 0/4.
+#           removing one site's guard was caught at 5 of the 11 sites that
+#           existed when that was measured (2026-08-11), and the four most
+#           recently added sites had coverage 0/4. The population has moved
+#           since — the lint reports the live count on its own success line, and
+#           that is the number to read; the figures here are dated on purpose so
+#           a later reader does not mistake them for current.
 #         * (2) and (3) have NO mechanical check. A guarded call site that omits
 #           the sentinel passes that lint and then names innocent literals; a
 #           guarded call site that hides its assertions inside the `then` arm
@@ -88,7 +92,10 @@
 # reader then goes looking for a deletion that never happened while the real
 # defect, one broken anchor, scrolls past in the first line. The sentinel lets
 # those assertions say what is actually true: the region could not be read, so
-# the pin was not evaluated. The diagnostic COUNT is unchanged — one line per
+# the pin was not evaluated. That is a misattribution rather than an escape —
+# the run still fails — but the two states have to be worded apart, and a
+# consumer's diagnostic for the sentinel arm therefore says "region unavailable,
+# so this pin was not evaluated" and never "pinned literal missing". The diagnostic COUNT is unchanged — one line per
 # pin either way — which is what keeps each pin's fixture attribution intact.
 # The control bytes make the value unforgeable by any real region content.
 REGION_UNAVAILABLE=$'\001cc-region-unavailable\001'

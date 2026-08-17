@@ -26,9 +26,21 @@
 #   whole-file when it was written. Do not restate it without re-measuring —
 #   `grep -n assert_in_file` naming a pin array is the counterexample.
 #
-# COMMENTS ARE NOT CONTENT. Every assertion below reads through
-#   `strip_html_comments`; the single exception is the file-end sentinel, which
-#   is a comment by construction. See that helper for what this closes.
+# COMMENTS ARE NOT CONTENT, AND THE STRIP HAS TO HAPPEN BEFORE THE CUT.
+#   Whole-file assertions (`count_lines`, `assert_in_file`, `assert_line_in_file`)
+#   read through `strip_html_comments` and are sound as they stand. Region-scoped
+#   assertions are NOT made comment-aware by that, and an earlier form of this
+#   paragraph claimed they were: `extract_between` excludes the start line by
+#   construction, so a `<!--` opened above a region's start anchor is cut away
+#   before any stripper sees it, and the region reads as ordinary prose while
+#   sitting inside a comment. Every region-scoped call site below therefore
+#   extracts from a comment-blanked COPY of the file — see
+#   `scripts/_strip-html-comments.sh`. Two anchor pairs cannot: the disclosure
+#   block's fences and the reference file-end sentinel are themselves HTML
+#   comments, so a blanked copy leaves them nothing to match. Those read the raw
+#   file, are named at their own call sites by the raw path they pass, and stay
+#   comment-blind. The one assertion that must never strip is the file-end
+#   sentinel pin, which is a comment by construction.
 #
 # TWO SCOPE LIMITS, STATED BECAUSE THE LABELS OVERSTATE THEM.
 #   (a) The negative fence's zero-occurrence sweep walks `design-audit/references`
@@ -81,46 +93,16 @@ fail=0
 
 # ---------- helpers -----------------------------------------------------------
 
-# strip_html_comments — read stdin, write it back with every `<!-- … -->` span
-# blanked, multi-line spans included. LINE COUNT IS PRESERVED: a commented line
-# becomes empty rather than disappearing, so a span floor still counts what a
-# reader would see and a diagnostic still points at the right place.
-#
-# WHY EVERY PIN IN THIS FILE READS THROUGH IT. A pin asserts that a byte is
-# present, and an editor removing a section usually comments it out rather than
-# deleting it. Those two acts are byte-different and reader-identical, so a pin
-# over raw bytes reports the shipped contract intact while the shipped contract
-# is gone. Measured before this landed: wrapping the whole of
-# `03-adjustment-pass.md`'s body in a comment — and wrapping the ENTIRETY of
-# `04-disclosure-block.md` — both left this lint at exit 0, `all intact`.
-# Deletion was caught; commenting was not.
-#
-# It is NOT in the shared extractor. That library serves callers whose regions
-# legitimately contain commented example blocks, and stripping there would
-# change every one of them. The blindness belongs to this file's assertions.
-strip_html_comments() {
-  awk '
-    {
-      line = $0
-      out = ""
-      while (1) {
-        if (incmt) {
-          p = index(line, "-->")
-          if (p == 0) { line = ""; break }
-          incmt = 0
-          line = substr(line, p + 3)
-          continue
-        }
-        p = index(line, "<!--")
-        if (p == 0) { out = out line; line = "" ; break }
-        out = out substr(line, 1, p - 1)
-        line = substr(line, p + 4)
-        incmt = 1
-      }
-      print out
-    }
-  '
-}
+# `strip_html_comments` and `stripped_copy` come from the shared helper. They
+# were defined here, which is what confined the fix to whole-file assertions:
+# a stripper that lives beside the assertions can only ever run after the region
+# has been cut, and the cut is where the comment state is lost. Measured before
+# the strip existed at all: wrapping the whole of `03-adjustment-pass.md`'s body
+# in a comment — and wrapping the ENTIRETY of `04-disclosure-block.md` — both
+# left this lint at exit 0, `all intact`. Deletion was caught; commenting was
+# not.
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
 
 # substantive_lines <text> — non-blank lines remaining after comment stripping.
 substantive_lines() {
@@ -236,7 +218,7 @@ CONSTANTS=(
 
 if invariants_body=$(extract_between '^## Control-Flow Invariants[[:space:]]*$' \
                                      '^## Workflow[[:space:]]*$' \
-                                     "$SKILL" 'design-audit/SKILL.md (CFI body)'); then :
+                                     "$(stripped_copy "$SKILL")" 'design-audit/SKILL.md (CFI body)'); then :
 else fail=1; invariants_body="$REGION_UNAVAILABLE"
 fi
 
@@ -277,12 +259,12 @@ PROMPT_BODY_PINS=(
 
 if prompt_preamble=$(extract_between '^# Reader Prompt[[:space:]]*$' \
                                      '^## Prompt body[[:space:]]*$' \
-                                     "$PROMPT" 'design-audit/references/01-reader-prompt.md (preamble)'); then :
+                                     "$(stripped_copy "$PROMPT")" 'design-audit/references/01-reader-prompt.md (preamble)'); then :
 else fail=1; prompt_preamble="$REGION_UNAVAILABLE"
 fi
 if prompt_body=$(extract_between '^## Prompt body[[:space:]]*$' \
                                  '^## 앵커 대조표[[:space:]]*$' \
-                                 "$PROMPT" 'design-audit/references/01-reader-prompt.md (prompt body)'); then :
+                                 "$(stripped_copy "$PROMPT")" 'design-audit/references/01-reader-prompt.md (prompt body)'); then :
 else fail=1; prompt_body="$REGION_UNAVAILABLE"
 fi
 
@@ -304,12 +286,12 @@ done
 
 if measure_region=$(extract_between '^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY' \
                                     '^## 앵커 대조표[[:space:]]*$' \
-                                    "$PROMPT" 'design-audit/references/01-reader-prompt.md (measurement clause)'); then :
+                                    "$(stripped_copy "$PROMPT")" 'design-audit/references/01-reader-prompt.md (measurement clause)'); then :
 else fail=1; measure_region="$REGION_UNAVAILABLE"
 fi
 if table_region=$(extract_between '^## 앵커 대조표[[:space:]]*$' \
                                   '^### F-\{role-slug\}-<n>' \
-                                  "$PROMPT" 'design-audit/references/01-reader-prompt.md (anchor table)'); then :
+                                  "$(stripped_copy "$PROMPT")" 'design-audit/references/01-reader-prompt.md (anchor table)'); then :
 else fail=1; table_region="$REGION_UNAVAILABLE"
 fi
 
@@ -418,8 +400,18 @@ for entry in "${REFERENCE_SECTION_PINS[@]}"; do
     03) target="$ADJUST"; label='design-audit/references/03-adjustment-pass.md' ;;
     *)  echo "FAIL: internal — unknown section-pin file tag '$which_file'" >&2; fail=1; continue ;;
   esac
+  # One of these three sections is terminated by the file-end sentinel, which is
+  # an HTML comment. A blanked copy leaves that anchor with nothing to match, so
+  # that entry — and only that entry — reads the raw file and stays
+  # comment-blind. The opt-out is derived from the anchors rather than kept as a
+  # hand-maintained list, so an entry added later cannot forget to declare
+  # itself, and the other two entries of this same loop keep the strip.
+  case "$sec_start$sec_end" in
+    *'<!--'*) sec_src="$target" ;;
+    *)        sec_src=$(stripped_copy "$target") ;;
+  esac
   if sec_body=$(extract_between "$sec_start" "$sec_end" \
-                                "$target" "$label (section /$sec_start/)"); then :
+                                "$sec_src" "$label (section /$sec_start/)"); then :
   else fail=1; sec_body="$REGION_UNAVAILABLE"
   fi
   assert_in_text "$sec_lit" "$sec_body" "$label" "the section /$sec_start/"
@@ -447,8 +439,12 @@ for entry in "${REFERENCE_REGION_PINS[@]}"; do
     03) target="$ADJUST"; label='design-audit/references/03-adjustment-pass.md' ;;
     *)  echo "FAIL: internal — unknown reference-pin file tag '$which_file'" >&2; fail=1; continue ;;
   esac
+  case "$region_start$region_end" in
+    *'<!--'*) region_src="$target" ;;
+    *)        region_src=$(stripped_copy "$target") ;;
+  esac
   if region_body=$(extract_between "$region_start" "$region_end" \
-                                   "$target" "$label (region /$region_start/)" \
+                                   "$region_src" "$label (region /$region_start/)" \
                                    "$region_mode"); then :
   else fail=1; region_body="$REGION_UNAVAILABLE"
   fi
@@ -487,6 +483,14 @@ DISCLOSURE_ARM_PINS=(
 
 # The two fences are the region anchors, so `extract_between` pins them; a slot
 # key that survives only in prose outside the fences no longer satisfies its pin.
+#
+# FORCED EXCEPTION — this reads the RAW file, not a comment-blanked copy, and it
+# is one of the two anchor pairs in this repo that cannot be pre-stripped: both
+# of its anchors are HTML comments, so a blanked copy has nothing left to match
+# and the region becomes unavailable on a clean tree. Removing the exception
+# turns a green tree red, which is what makes it forced rather than chosen. The cost is stated
+# rather than hidden: this region stays comment-blind, so commenting out the
+# slot block is not what this pin catches — deleting or reordering it is.
 if slot_region=$(extract_between '^<!-- cc-design-audit-disclosure v1 begin -->[[:space:]]*$' \
                                  '^<!-- /cc-design-audit-disclosure v1 end -->[[:space:]]*$' \
                                  "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (slot block)'); then :
@@ -517,7 +521,7 @@ fi
 # check, and a whole-file pin cannot tell the two placements apart.
 if checks_section=$(extract_between '^## The four anti-vacuity checks[[:space:]]*$' \
                                     '^## Honest limit[[:space:]]*$' \
-                                    "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (anti-vacuity checks)'); then :
+                                    "$(stripped_copy "$DISCLOSURE")" 'design-audit/references/04-disclosure-block.md (anti-vacuity checks)'); then :
 else fail=1; checks_section="$REGION_UNAVAILABLE"
 fi
 
@@ -558,7 +562,7 @@ FORBIDDEN=(
 # alone fixes how many times a token appears and says nothing about where: move
 # the whole denylist into ordinary prose and a count-only rule stays green.
 if denylist_body=$(extract_between '^### CFI-6 ' '^## Workflow[[:space:]]*$' \
-                                   "$SKILL" 'design-audit/SKILL.md (CFI-6 denylist)'); then :
+                                   "$(stripped_copy "$SKILL")" 'design-audit/SKILL.md (CFI-6 denylist)'); then :
 else fail=1; denylist_body="$REGION_UNAVAILABLE"
 fi
 
