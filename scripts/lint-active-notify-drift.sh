@@ -79,8 +79,31 @@ OWNER_TABLE='_common/notify.md|active-notify/SKILL.md'
 # classes are the technique `normalize_citations` below already uses, for the
 # reason it already gives (a case-insensitive flag is GNU-only in sed).
 BANNED_RE='매[[:space:]]*([Tt][Uu][Rr][Nn]|턴)|([Pp][Ee][Rr]|[Ee][Vv][Ee][Rr][Yy]|[Ee][Aa][Cc][Hh])[[:space:]-]+[Tt][Uu][Rr][Nn]|([Tt][Uu][Rr][Nn]|턴)[[:space:]]*마다'
+# What a green run on this rule does and does not mean. The frontmatter states
+# SIX contracts in the negative, enumerated here so the number has a referent
+# that travels with this header:
+#
+#   1. no invocation without the request lexicon;
+#   2. never ARM or bypass on the model's own judgement;
+#   3. wall-clock requests are not ARMed;
+#   4. there is no turn-end auto-fire;
+#   5. a turn opened by an external scheduler is not an instance;
+#   6. there is no slash-command surface.
+#
+# THIS CHECK COVERS NUMBER 4, AND ONLY NUMBER 4. Its green does not mean the
+# always-loaded contract is pinned — it means the tracked phrasings were not
+# asserted without being negated. A reader who concludes anything wider is wrong
+# about five of the six.
+#
 # Handled separately because it is legitimate inside a negation (rule 5).
+#
+# A FAMILY, and bilingual. The single English literal covered none of the actual
+# contract: the surfaces state it in Korean too, and that spelling appeared in
+# neither this list nor the banned family, so no window setting could ever reach
+# it — the gap was structural, not a tuning problem. Spacing and hyphenation vary
+# across the surfaces, so the family matches on those rather than on one spelling.
 CONDITIONAL_PHRASE='turn-end auto-fire'
+CONDITIONAL_RE='turn[- ]?end[[:space:]]*auto[- ]?fire|턴[[:space:]]*종료[[:space:]]*자동[[:space:]]*발화'
 # POSIX-portable word boundaries rather than `\b`, which is unreliable in BSD
 # grep ERE and is a lint-bash-portability hazard. Whole words matter here: the
 # unanchored `[Nn]o` this replaces matched `now`, `notes`, `nothing`, `notified`
@@ -145,6 +168,32 @@ warn() {
 # exception: stating the retired contract in order to deny it is the correct
 # thing to write on these surfaces, and the family is six times larger than the
 # one literal, so without the exception the gate degrades the text it protects.
+#
+# The reach is the CLAUSE BOUNDARY INTERSECTED WITH THE WINDOW, not one or the
+# other. Replacing the window with clause boundaries alone breaks a long
+# single-clause block — everything in it stays in reach of everything else, which
+# is the saturation this rule exists to stop. Keeping only the window lets a
+# negator from the neighbouring sentence license the assertion. Taking the
+# smaller of the two is what closes both directions at once.
+# Clause terminators, as an ALTERNATION rather than a bracket class: this runs
+# under `LC_ALL=C`, where `[,—]` would enrol each of the em dash's three bytes as
+# an independent member and could cut at a stray byte inside other multibyte text.
+#
+# The set is CLAUSE terminators, not sentence terminators. A comma is the one
+# that matters most here — the surfaces state the contract as
+# "... turn-end auto-fire, and the dispatcher owns no timer", so a sentence-level
+# cut leaves the neighbouring clause's negator in reach and licenses the very
+# assertion this rule exists to catch.
+_CLAUSE_SEP='(\.|;|!|\?|,|—)'
+
+_clause_before() {   # text after the LAST clause terminator (whole string if none)
+  printf '%s' "$1" | sed -E "s/^.*${_CLAUSE_SEP}//"
+}
+_clause_after() {    # text up to the FIRST clause terminator (whole string if none)
+  printf '%s' "$1" | sed -E "s/${_CLAUSE_SEP}.*\$/\1/"
+}
+
+
 phrase_is_negated() {
   # `local LC_ALL=C` pins ${#s} and ${s:0:n} to BYTES. Without it the window is
   # characters in a UTF-8 locale and bytes in C/POSIX, so the same text is
@@ -156,6 +205,8 @@ phrase_is_negated() {
   while [[ "$rest" == *"$phrase"* ]]; do
     head="${rest%%"$phrase"*}"
     tail="${rest#*"$phrase"}"
+    head=$(_clause_before "$head")
+    tail=$(_clause_after "$tail")
     if (( ${#head} > NEGATION_WINDOW_BEFORE )); then
       head="${head: -NEGATION_WINDOW_BEFORE}"
     fi
@@ -249,12 +300,15 @@ while IFS='|' read -r shared owner; do
       # '[:lower:]'` is rejected because its multibyte behaviour on macOS is not
       # dependable.
       block_lc=$(printf '%s' "$block_text" | LC_ALL=C tr 'A-Z' 'a-z')
-      if [[ "$block_lc" == *"$CONDITIONAL_PHRASE"* ]] \
-         && ! phrase_is_negated "$block_lc" "$CONDITIONAL_PHRASE"; then
-        evidence=$(printf '%s\n' "$block_text" \
-          | grep -oiE ".{0,40}$CONDITIONAL_PHRASE.{0,40}" | head -1)
-        fail "$scan_label — block at line $block_start states '$CONDITIONAL_PHRASE' without negating it: ...$evidence..."
-      fi
+      while IFS= read -r cond_hit; do
+        [[ -n "$cond_hit" ]] || continue
+        if ! phrase_is_negated "$block_lc" "$cond_hit"; then
+          evidence=$(printf '%s\n' "$block_text" \
+            | grep -oiE ".{0,40}$cond_hit.{0,40}" | head -1)
+          fail "$scan_label — block at line $block_start states '$cond_hit' without negating it: ...$evidence..."
+          break
+        fi
+      done < <(printf '%s\n' "$block_lc" | grep -oE "$CONDITIONAL_RE" | sort -u)
     done < <(blocks_of "$scan_file")
 
     if ! blocks_of "$scan_file" | grep -qE "$REQUIRED_PHRASE_RE"; then

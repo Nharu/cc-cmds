@@ -1,0 +1,1 @@
+CONDITIONAL_RE='turn[- ]?end[[:space:]]*auto[- ]?fire|턴[[:space:]]*종료[[:space:]]*자동[[:space:]]*발화'

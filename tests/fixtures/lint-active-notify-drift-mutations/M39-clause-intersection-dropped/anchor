@@ -1,0 +1,2 @@
+    head=$(_clause_before "$head")
+    tail=$(_clause_after "$tail")

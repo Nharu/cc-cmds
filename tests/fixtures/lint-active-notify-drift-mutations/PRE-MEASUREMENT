@@ -6,6 +6,6 @@
 #
 # 불일치 시 할 일: 벡터를 현재 집합에 대해 **다시 도출**하고 이 블록을 갱신한다.
 # 관측에 맞춰 벡터를 고쳐 쓰는 것은 금지된다.
-fixture-set-content-sha256: 1c852a44cc90a8bafb850725b5f938e2e78bef2d6be258a15c29223e76b9cb4b
-fixture-count: 35
-recorded: 2026-08-14
+fixture-set-content-sha256: 0c09a0b4a5e37825bf6a6d9ea4e6bd3685242a302157ae7c9a89ee27bfbd60a5
+fixture-count: 39
+recorded: 2026-08-14 (조건부 규칙 수정으로 픽스처 셋 추가·재도출)

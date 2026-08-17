@@ -43,6 +43,12 @@
 # the list's scope, which is not in the list. Fixtures that kill nothing
 # uniquely are kept rather than removed: they are the plain base case of their
 # rule, the shape a reader looks for first.
+#
+# This file does NOT compute the sole-kill figure and never has. An earlier
+# revision of this header wrote a maintenance rule about that number as though
+# it governed here — a rule this file cannot apply to a quantity it does not
+# calculate. Where that rule should finally live is not settled; recording that
+# it has no basis here is what stops it being re-derived from this header.
 
 set -euo pipefail
 
