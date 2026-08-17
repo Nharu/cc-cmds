@@ -9,14 +9,25 @@ on:
       - 'plugins/cc-cmds/hooks/hooks.json'
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-active-notify-*.sh'
-      # The two drivers this job actually runs, named rather than globbed. The
-      # glob also selected the mutation harnesses, which no step here invokes —
-      # a path filter that wakes a job for a file the job never reads spends CI
-      # and teaches the next reader that the job covers something it does not.
+      # Named rather than globbed. The glob used to select the mutation
+      # harnesses while no step invoked them — a path filter that wakes a job
+      # for a file the job never reads spends CI and teaches the next reader
+      # that the job covers something it does not. The harnesses now have a
+      # job of their own below, so they are named here too, alongside their
+      # corpora: a mutation row is a claim about the fixture set it was
+      # declared against, and editing either without the other is exactly what
+      # the pre-measurement block exists to catch.
       - 'scripts/test-lint-active-notify-drift.sh'
       - 'scripts/test-lint-active-notify-subcommands.sh'
+      - 'scripts/test-active-notify-*-mutations.sh'
+      - 'scripts/test-lint-active-notify-*-mutations.sh'
+      - 'tests/mutation-harness/**'
       - 'tests/fixtures/lint-active-notify-drift/**'
       - 'tests/fixtures/lint-active-notify-subcommands/**'
+      - 'tests/fixtures/active-notify-mutations/**'
+      - 'tests/fixtures/active-notify-hooks-mutations/**'
+      - 'tests/fixtures/lint-active-notify-drift-mutations/**'
+      - 'tests/fixtures/lint-active-notify-subcommands-mutations/**'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
@@ -60,3 +71,28 @@ jobs:
         run: |
           bash scripts/test-lint-active-notify-drift.sh
           bash scripts/test-lint-active-notify-subcommands.sh
+
+  mutation-harnesses-macos:
+    runs-on: macos-latest
+    # Its own job, not a step of the one above. A full pass re-runs each fixture
+    # suite once per declared mutation, so this is minutes of wall-clock where
+    # the other job is seconds — folding it in would make every lint change wait
+    # on it. Separate also means a red here names the harnesses rather than
+    # showing up as "the notify job failed".
+    #
+    # This is the step whose absence the corpora were written against: the rows
+    # existed, the harnesses existed, and no CI job called any of them, so a
+    # declared vector could go stale for as long as nobody ran `make` locally.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq + terminal-notifier
+        run: brew install yq terminal-notifier
+        timeout-minutes: 3
+
+      - name: Run mutation harnesses
+        # --self-check on each: the run must also prove the comparison it uses
+        # can reject a wrong vector, and reject it FROM the comparison rather
+        # than from something incidental.
+        run: make test-active-notify-mutations
