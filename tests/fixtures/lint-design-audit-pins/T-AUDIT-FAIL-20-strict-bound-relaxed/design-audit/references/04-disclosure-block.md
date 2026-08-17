@@ -33,7 +33,7 @@ with exactly 15 slot lines strictly between them.
 slot and the line after the block stating **결손 사유**, never absorbed by lowering the
 reviewer count to match.
 
-**`결손 수` is bounded in the same check that reads it**: `0 ≤ 결손 수 < 리뷰어 수` — strict,
+**`결손 수` is bounded in the same check that reads it**: `0 ≤ 결손 수 ≤ 리뷰어 수` — strict,
 and the strictness is the whole of the total-shortfall exit below.
 
 **(ii-c) Total shortfall is not a shortfall — it is an audit that did not happen.**

@@ -168,25 +168,6 @@ assert_line_in_file() {
   fi
 }
 
-# assert_raw_line_in_file <literal> <file> <label> — whole-line, WITHOUT comment
-# stripping. Exactly one pin needs this and it is the file-end sentinel, which
-# is an HTML comment by construction: it must not render as visible content, so
-# the blanket "comments do not count" rule would erase the very line it is
-# asserting. Do not reach for this anywhere else — for every other pin, being
-# invisible to a reader is precisely the failure being tested for.
-assert_raw_line_in_file() {
-  local literal="$1" file="$2" label="$3"
-  if [[ ! -f "$file" ]]; then
-    echo "FAIL: $label — file not found: $file" >&2
-    fail=1
-    return
-  fi
-  if ! grep -Fxq -- "$literal" "$file"; then
-    echo "FAIL: $label — file-end sentinel missing as a whole line: $literal" >&2
-    fail=1
-  fi
-}
-
 # assert_re_in_text <ere> <text> <label> <region> — for tokens that are
 # substrings of one another and cannot be pinned by substring.
 assert_re_in_text() {
@@ -222,10 +203,25 @@ if invariants_body=$(extract_between '^## Control-Flow Invariants[[:space:]]*$' 
 else fail=1; invariants_body="$REGION_UNAVAILABLE"
 fi
 
+# Pinning the VALUE is not enough, and the gap was measured: adding a second,
+# contradicting `READER_COUNT = 5` — in SKILL.md itself or anywhere under
+# `references/` — left this lint at exit 0, because the pinned literal
+# `READER_COUNT = 3` still occurred exactly once and the new line matched no pin.
+# The binding that has to hold is that each constant is ASSIGNED in exactly one
+# place, so the key is fenced as well as the value. The fence is on assignment
+# form rather than on the bare key: `READER_COUNT` is legitimately referred to by
+# name in the reference files, and a zero-occurrence rule on the name would turn
+# a clean tree red for citing the constant it depends on.
 for lit in "${CONSTANTS[@]}"; do
+  key="${lit%% = *}"
   n=$(count_lines "$lit" "$SKILL")
   if [[ "$n" != "1" ]]; then
     echo "FAIL: design-audit/SKILL.md (constants) — '$lit' must appear on exactly 1 line, found $n" >&2
+    fail=1
+  fi
+  a=$(strip_html_comments < "$SKILL" | grep -cE -- "$key[[:space:]]*=" || true)
+  if [[ "$a" != "1" ]]; then
+    echo "FAIL: design-audit/SKILL.md (constants) — '$key' must be assigned on exactly 1 line, found $a; a second assignment contradicts the pinned value without disturbing its pin" >&2
     fail=1
   fi
   assert_in_text "$lit" "$invariants_body" \
@@ -347,8 +343,14 @@ REFERENCE_HEADINGS=(
   '## Synthesis question (mandatory terminal act)'
 )
 
-# The file-end sentinel that gives the last section a region terminator.
-REFERENCE_SENTINEL='<!-- cc-design-audit-reference: end -->'
+# The file-end sentinel that gives the last section a region terminator is NOT
+# pinned by an assertion of its own. It is already enforced, and more strictly,
+# as the region-end anchor of the third section pin below: `extract_between`
+# fails loudly when its end anchor is absent after the start anchor, so deleting
+# the sentinel line turns this lint red through that entry. A second assertion on
+# the same bytes was a duplicate, and it was the one exception to the rule the
+# success line depends on — that every pinned literal belongs to a counted array
+# whose size is reported. Removing it makes that rule true without exception.
 
 # Section pins: each heading opens a region that must still CONTAIN something.
 # `<file-tag>|<heading-ere>|<region-end-ere>|<span-floor>|<content-literal>`
@@ -362,13 +364,27 @@ REFERENCE_SENTINEL='<!-- cc-design-audit-reference: end -->'
 # heading in prose) are closed by `strip_html_comments` and by the whole-line
 # heading pins. These two close the boring one, which is the likelier one.
 #
-# THE FLOOR IS A FLOOR, NOT A MEASUREMENT. It is set below the section's current
-# substantive-line count so ordinary editing does not trip it; lowering a floor
-# is therefore a deliberate relaxation and shows up as such in a diff, which is
-# the same reason the disclosure block pins its slot-count integer.
+# THE FLOOR IS A FLOOR, NOT A MEASUREMENT, and two of these three were shipped as
+# measurements. Set below the section's current substantive-line count so ordinary
+# editing does not trip it; lowering a floor is then a deliberate relaxation and
+# shows up as such in a diff, the same reason the disclosure block pins its
+# slot-count integer. Two floors were shipped EQUAL to the count, which makes them
+# equalities downward: merging two of three non-recursion bullets, or dropping one
+# routing row, turned the lint red with a diagnostic saying the body had been
+# emptied — a false diagnostic, and one the next editor reads as a reason to lower
+# the floor, which is the relaxation this design exists to prevent. Worse, the two
+# with zero slack were the two likeliest to be edited.
+#
+# The measured count is recorded beside each floor so the slack is auditable
+# rather than re-derivable only by re-running the pipeline. Measured 2026-08-17:
+# 4 / 9 / 5 substantive lines. Re-measure before changing a floor; do not assume
+# these numbers are current.
 REFERENCE_SECTION_PINS=(
-  '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|4|Spawning anything here is the first step back toward the loop'
-  '03|^## Routing — five named owners, exactly one each$|^## Synthesis question |9|The five counts must sum to the unique-defect count'
+  # floor 3 (measured 4)
+  '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|3|Spawning anything here is the first step back toward the loop'
+  # floor 7 (measured 9)
+  '03|^## Routing — five named owners, exactly one each$|^## Synthesis question |7|The five counts must sum to the unique-defect count'
+  # floor 3 (measured 5)
   '03|^## Synthesis question \(mandatory terminal act\)$|^<!-- cc-design-audit-reference: end -->$|3|Its final act is to ask, once, in writing'
 )
 
@@ -384,9 +400,6 @@ REFERENCE_REGION_PINS=(
 for lit in "${REFERENCE_HEADINGS[@]}"; do
   assert_line_in_file "$lit" "$ADJUST" 'design-audit/references/03-adjustment-pass.md'
 done
-
-assert_raw_line_in_file "$REFERENCE_SENTINEL" "$ADJUST" \
-  'design-audit/references/03-adjustment-pass.md (file-end sentinel)'
 
 for entry in "${REFERENCE_SECTION_PINS[@]}"; do
   which_file="${entry%%|*}"
@@ -471,6 +484,25 @@ DISCLOSURE_PINS=(
   '**결손 수**'
 )
 
+# The block's arithmetic, pinned where it is NORMATIVE. Four mutants — one of
+# them a single-character revert of the strict bound — were measured to survive
+# fully green, because the delta's headline predicate and the whole of the
+# total-shortfall arm had no machine backstop at all. Each literal here is long
+# enough to occur exactly once inside the checks section: the bare floor
+# `원시 ≥ 리뷰어 수 − 결손 수` appears on three lines of that section, so a
+# substring pin on it is satisfied by a restatement and can never fail alone.
+DISCLOSURE_ARITH_PINS=(
+  # the strict upper bound — `<` reverted to `≤` is one character and re-opens
+  # the state the arm below exists to reject
+  '0 ≤ 결손 수 < 리뷰어 수'
+  # the total-shortfall arm: its label, its predicate, and the exit it names
+  '(ii-c) Total shortfall is not a shortfall'
+  '결손 수 == 리뷰어 수'
+  'the run **aborts and reports**, and the disclosure block is not the exit'
+  # the rescaled floor, in the normative bullet rather than either restatement
+  '`원시 ≥ 리뷰어 수 − 결손 수` — the readers that actually ran'
+)
+
 # The declared-shortfall arm and the integer that fences it. The arm exists so a
 # run short of readers is DECLARED rather than absorbed by lowering the reviewer
 # count to match; pinning it plus the slot-count integer means the arm cannot be
@@ -525,7 +557,7 @@ if checks_section=$(extract_between '^## The four anti-vacuity checks[[:space:]]
 else fail=1; checks_section="$REGION_UNAVAILABLE"
 fi
 
-for lit in "${DISCLOSURE_ARM_PINS[@]}"; do
+for lit in "${DISCLOSURE_ARM_PINS[@]}" "${DISCLOSURE_ARITH_PINS[@]}"; do
   assert_in_text "$lit" "$checks_section" \
     'design-audit/references/04-disclosure-block.md' 'the anti-vacuity checks section'
 done
@@ -533,10 +565,20 @@ done
 # The slot-count integer stated in the prose must equal the pinned array's size.
 # Either half drifting from the other is what this catches: adding a slot without
 # updating the declared count, or relaxing the count without touching the block.
-if ! strip_html_comments < "$DISCLOSURE" | grep -Fq -- "exactly ${#DISCLOSURE_PINS[@]} slot lines"; then
-  echo "FAIL: design-audit/references/04-disclosure-block.md — the declared slot count does not say 'exactly ${#DISCLOSURE_PINS[@]} slot lines', which is the number of slot keys pinned here" >&2
-  fail=1
+#
+# SCOPED TO THE GRAMMAR SECTION, which is where the rule is normative. Whole-file
+# was the wrong shape and was measured so: the same phrase also appears in a
+# passing mention further down, so the two copies vouched for each other and the
+# normative rule could be changed alone with the lint still reporting all intact.
+# This assertion is the only thing binding that prose integer to the array size,
+# and a check satisfied by a descriptive aside is not binding it.
+if grammar_section=$(extract_between '^## Grammar[[:space:]]*$' \
+                                     '^## The four anti-vacuity checks[[:space:]]*$' \
+                                     "$(stripped_copy "$DISCLOSURE")" 'design-audit/references/04-disclosure-block.md (block grammar)'); then :
+else fail=1; grammar_section="$REGION_UNAVAILABLE"
 fi
+assert_in_text "exactly ${#DISCLOSURE_PINS[@]} slot lines" "$grammar_section" \
+  'design-audit/references/04-disclosure-block.md (declared slot count)' 'the block-grammar section'
 
 # ---------- negative fence — loop machinery must not reappear ----------------
 
@@ -587,6 +629,16 @@ if [[ -d "$skills_root/design-audit/references" ]]; then
         fail=1
       fi
     done
+    # Same sweep, second rule: a constant may be cited by name here but never
+    # assigned. An assignment under `references/` is a second definition site for
+    # a value SKILL.md owns, and the exactly-once rule above cannot see it.
+    for lit in "${CONSTANTS[@]}"; do
+      key="${lit%% = *}"
+      if strip_html_comments < "$ref" | grep -qE -- "$key[[:space:]]*="; then
+        echo "FAIL: ${ref#"$skills_root/"} — constant '$key' is assigned outside SKILL.md; the constants block is the only definition site" >&2
+        fail=1
+      fi
+    done
   done < <(find "$skills_root/design-audit/references" -type f -name '*.md' | sort)
 fi
 
@@ -596,7 +648,16 @@ if (( fail == 0 )); then
   # reported here would be droppable without changing any output, so the OK
   # fixture could not detect its removal and the pin would have no independent
   # coverage. Adding a pin means adding it to an array, never as a loose call.
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + 1 file-end sentinel + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floor) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm (in checks section) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  # The span floors are reported by VALUE, not just counted. An array size cannot
+  # see a floor being lowered — the array still has three entries — so a floor was
+  # relaxable with the whole suite green. Printing the values puts every floor,
+  # and every floor added later, under the OK fixture's whole-line pin in one line.
+  floors=""
+  for entry in "${REFERENCE_SECTION_PINS[@]}"; do
+    rest="${entry#*|}"; rest="${rest#*|}"; rest="${rest#*|}"
+    floors="${floors:+$floors/}${rest%%|*}"
+  done
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body, value + sole assignment) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floors $floors) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#DISCLOSURE_ARITH_PINS[@]} block arithmetic (in checks section) + 1 declared slot count (in block grammar) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

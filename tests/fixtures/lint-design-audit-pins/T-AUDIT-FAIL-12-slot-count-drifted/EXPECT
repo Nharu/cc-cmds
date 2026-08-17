@@ -1,4 +1,6 @@
 # The declared slot-count integer drifted from the pinned array size. This is the
 # fence that makes the shortfall slot un-removable in silence — the count is the
-# thing that notices.
-FAIL: design-audit/references/04-disclosure-block.md — the declared slot count does not say 'exactly 15 slot lines', which is the number of slot keys pinned here
+# thing that notices. The assertion is scoped to the block-grammar section that
+# owns the rule: whole-file, a passing mention of the same phrase elsewhere in
+# the file satisfied it and the normative rule could drift alone.
+FAIL: design-audit/references/04-disclosure-block.md (declared slot count) — pinned literal missing from the block-grammar section (comments do not count): exactly 15 slot lines
