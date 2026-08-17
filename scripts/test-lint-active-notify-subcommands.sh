@@ -28,6 +28,10 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-active-notify-subcommands"
 
+# Which lint to exercise. An INPUT, so a mutation harness can point the suite
+# at a scratch copy instead of writing the tracked file.
+lint_sh="${CC_CMDS_SUBCMD_LINT_UNDER_TEST:-$script_dir/lint-active-notify-subcommands.sh}"
+
 failures=0
 passed=0
 
@@ -46,7 +50,7 @@ for fixture in "$fixtures"/*/; do
 
   set +e
   PLUGIN_ROOT="${fixture}plugins/cc-cmds" \
-    bash "$script_dir/lint-active-notify-subcommands.sh" >/dev/null 2>&1
+    bash "$lint_sh" >/dev/null 2>&1
   ec=$?
   set -e
 

@@ -9,7 +9,12 @@ on:
       - 'plugins/cc-cmds/hooks/hooks.json'
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-active-notify-*.sh'
-      - 'scripts/test-lint-active-notify-*.sh'
+      # The two drivers this job actually runs, named rather than globbed. The
+      # glob also selected the mutation harnesses, which no step here invokes —
+      # a path filter that wakes a job for a file the job never reads spends CI
+      # and teaches the next reader that the job covers something it does not.
+      - 'scripts/test-lint-active-notify-drift.sh'
+      - 'scripts/test-lint-active-notify-subcommands.sh'
       - 'tests/fixtures/lint-active-notify-drift/**'
       - 'tests/fixtures/lint-active-notify-subcommands/**'
       - 'scripts/lint-bash-portability.sh'

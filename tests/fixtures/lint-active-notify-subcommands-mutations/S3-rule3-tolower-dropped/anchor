@@ -1,0 +1,1 @@
+    word=$(printf '%s' "$claim" | awk '{print tolower($1)}')

@@ -69,6 +69,10 @@
 # honest is to drop `notify.sh` from the allowlist, and it is refused here: that
 # would take its two real rule-2 checks with it.
 #
+# Nothing keeps this decomposition accurate. It is a hand count of where the
+# rules fire today, and adding an enumeration site to any scanned surface moves
+# it without anything reporting the change. Re-derive it rather than trusting it.
+#
 # Exit codes:
 #   0 — all checks passed
 #   1 — at least one violation found
@@ -110,16 +114,48 @@ fi
 # --- SOT extraction -----------------------------------------------------
 # The `*)` catch-all is excluded by the `[a-z]` anchor: it is the unknown-input
 # branch, not a subcommand.
+# POSITIONAL extraction, not an allowlist. An allowlist reads the arms it
+# recognizes and is BLIND to the rest: an arm spelled in any other way is
+# silently dropped, the dispatcher is then judged to declare fewer subcommands
+# than it has, and the rules below blame the SURFACES for the difference.
+# Following that message literally deletes a live subcommand from the hook's
+# regex — the lint would talk a maintainer into a security regression.
+#
+# So the reader tracks DEPTH and treats every arm position at the dispatcher's
+# own level as an arm, whatever it is spelled like. A plain lowercase name is a
+# subcommand, `*` is the catch-all, and anything else is reported rather than
+# skipped. The default is inverted: unrecognized means loud, not invisible.
 subcommands=$(awk '
-  /^case "\$subcommand" in$/ { inblock = 1; next }
-  inblock && /^esac$/        { closed = 1; exit }
-  inblock && /^  [a-z][a-z-]*\)$/ {
-    line = $0
-    sub(/^  /, "", line); sub(/\)$/, "", line)
-    print line
+  # `case ... in` opens a level; `esac` closes one. The nested case inside `arm`
+  # (its --count flag parser) therefore sits at depth 2 and its arms are not read
+  # as subcommands — depth is what separates them, not a spelling exception.
+  /^[[:space:]]*case[[:space:]].*[[:space:]]in[[:space:]]*$/ {
+    depth++
+    if (depth == 1 && $0 ~ /^case "\$subcommand" in$/) { inblock = 1 }
     next
   }
-  inblock && /^[[:space:]]*[a-z][a-z0-9|_-]*\)/ { print "@@UNRECOGNIZED-ARM " $0 }
+  /^[[:space:]]*esac[[:space:]]*$/ {
+    if (inblock && depth == 1) { closed = 1; exit }
+    depth--
+    next
+  }
+  # An arm position at the dispatcher level: a pattern that starts the line and
+  # ends at `)`, with no shell metacharacter in it. The exclusions are what keep
+  # `ts=$(date -u +%s)` and friends from reading as arms.
+  #
+  # `|` is deliberately NOT excluded. A multi-pattern arm is exactly the form
+  # that must be SEEN and then reported — excluding it puts the arm back in the
+  # blind spot, the dispatcher is judged to declare one fewer subcommand, and the
+  # rules blame the surfaces for a name the dispatcher still accepts.
+  inblock && depth == 1 && /^[[:space:]]*[^;&(){}=$#[:space:]][^;&(){}=$]*\)/ {
+    line = $0
+    sub(/^[[:space:]]*/, "", line)
+    sub(/\).*$/, "", line)
+    if (line == "*") next                      # catch-all, not a subcommand
+    if (line ~ /^[a-z][a-z-]*$/) { print line; next }
+    print "@@UNRECOGNIZED-ARM " $0
+    next
+  }
   END { if (inblock && !closed) print "@@UNTERMINATED" }
 ' "$dispatcher_path")
 
@@ -158,22 +194,42 @@ while IFS= read -r rel; do
     exit 2
   fi
 
-  # Rule 1 — coverage. Case-insensitive: an all-uppercase spelling names the
-  # lifecycle phase rather than the subcommand, and several sites legitimately
-  # write `ARM / FIRE-NOW / CANCEL` while omitting `fire-oneshot`, which belongs
-  # to no ARM cycle. Those are not enumerations of the dispatcher and must not
-  # be flagged; requiring the lowercase form somewhere in the file is what keeps
-  # rule 1 off them.
+  # Rule 1 — coverage, case-INSENSITIVE. Several sites legitimately write
+  # `ARM / FIRE-NOW / CANCEL` for the lifecycle phase while omitting
+  # `fire-oneshot`, which belongs to no ARM cycle. Those are not enumerations of
+  # the dispatcher and must not be flagged, and folding case is what keeps rule 1
+  # off them.
+  #
+  # An earlier revision of this comment said the opposite — that rule 1 requires
+  # the lowercase form somewhere in the file. It does not, and a fixture in this
+  # suite proves it: an uppercase-only surface passes. Keeping the false version
+  # would tell the next reader that a file naming only the phases is a violation,
+  # which is the reading this check exists to prevent.
   #
   # The name must appear as a WHOLE WORD. A substring test judges a surface to
   # cover `arm` on the strength of the word `alarm` and `cancel` on the strength
   # of `cancellation`, which is not a hypothetical: the shared document carries
   # no enumeration site at all, so rule 1 is the whole of its protection. The
-  # boundary is written as `[^a-z-]` rather than `\b` for two independent
-  # reasons — `\b` is not portable between BSD and GNU grep, and `\b` treats the
-  # hyphen as a boundary, which would let `fire-now` be satisfied from inside
-  # `fire-oneshot`. The class excludes digits from the boundary, so `arm2` would
-  # count; no such spelling exists and the widening is accepted knowingly.
+  # boundary is written as `[^a-z-]` rather than `\b`, and the reason runs the
+  # OPPOSITE way to what an earlier revision of this comment claimed. Both of
+  # those claims are false and were measured to be: `\b` is supported by both
+  # the BSD and GNU greps this repo's CI uses, and `\b` does not match `fire-now`
+  # inside `fire-oneshot`.
+  #
+  # The real mechanism: `\b` treats a hyphen as a word boundary, so a subcommand
+  # that appears as the TRAILING SEGMENT of a longer hyphenated word satisfies it.
+  # `self-cancel` and `post-cancel` would both count as naming `cancel`, and
+  # `self-cancel` is live on these surfaces — the check would report coverage the
+  # file does not have. `[^a-z-]` excludes the hyphen, so a trailing segment does
+  # not satisfy it.
+  #
+  # It is NOT the prefix form. `cancel-worker` fails under both spellings, so an
+  # editor who goes looking for a prefix case finds nothing, concludes the reason
+  # is wrong, and reverts the boundary. A boundary choice with no reason invites
+  # a revert; one with a WRONG reason invites it sooner.
+  #
+  # The class excludes digits from the boundary, so `arm2` would count; no such
+  # spelling exists and the widening is accepted knowingly.
   checks=$((checks + 1))
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue

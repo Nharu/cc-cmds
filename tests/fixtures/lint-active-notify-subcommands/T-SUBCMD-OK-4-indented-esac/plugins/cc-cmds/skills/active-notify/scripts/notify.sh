@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # notify.sh {arm|fire-now|cancel} [args]
 #
-# The block has no `esac` at all, so the reader reaches end of file with the
-# block still open. An emptiness test sees nothing wrong — every arm was
-# collected on the way — but the reader cannot tell whether anything followed
-# the last arm it read.
+# The block's `esac` is indented. Bash accepts that, so the reader must too —
+# treating it as an unterminated block was a false positive.
 set -euo pipefail
 subcommand="${1:-}"; shift || true
 
@@ -25,3 +23,4 @@ case "$subcommand" in
     printf 'notify.sh: unknown subcommand "%s" (arm|fire-now|cancel)\n' "$subcommand" >&2
     exit 1
     ;;
+  esac
