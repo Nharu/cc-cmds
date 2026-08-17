@@ -146,25 +146,40 @@ if ! nsec=$(awk -v rel="$rel" '
       printf("FAIL: %s — %d of %d payload schema sections covered\n", rel, covered, nsec) > "/dev/stderr"
       exit 1
     }
+    # The kind set is emitted, not just the count, so step (2) can CONSUME it
+    # instead of re-deriving one. Line 1 is the count; every later line is a kind.
     printf("%d\n", nsec)
+    for (i = 1; i <= nsec; i++) printf("%s\n", kind[i])
     exit 0
   }
 ' "$SOT"); then
   exit 1
 fi
+stage1_kinds=$(printf '%s\n' "$nsec" | tail -n +2 | sort -u)
+nsec=$(printf '%s\n' "$nsec" | head -1)
 
 # (2) Distinct-literal cross-check. Catches the mirror defect (1) cannot see:
 # a terminator literal for a kind that has no payload schema section — the
 # residue a removed schema leaves behind. DISTINCT set, never a count.
 #
-# BOTH STEPS USE ONE NOTION OF "A SECTION", and they did not before. Step (1)
-# runs a fence state machine and treats a heading inside a fence as example
-# text; step (2) grepped the raw file and treated the same line as a real
-# declaration. One lint, two answers to "what is a section" — and the asymmetry
-# was not merely untidy: a legitimate fenced example heading in the contract
-# produced a **hard failure** naming a payload schema that does not exist, and
-# the same blindness masked a mutant that step (1) would otherwise have caught.
-# `unfenced` below is the shared answer.
+# BOTH STEPS USE ONE NOTION OF "A SECTION" AND ONE NOTION OF "A KIND", and the
+# claim used to be true of only the first. Step (1) runs a fence state machine
+# and treats a heading inside a fence as example text; step (2) grepped the raw
+# file and treated the same line as a real declaration. One lint, two answers to
+# "what is a section" — and the asymmetry was not merely untidy: a legitimate
+# fenced example heading in the contract produced a **hard failure** naming a
+# payload schema that does not exist, and the same blindness masked a mutant that
+# step (1) would otherwise have caught. `unfenced` below is the shared answer for
+# fence state.
+#
+# KIND EXTRACTION WAS THE HALF THIS COMMENT OVERCLAIMED. Step (1) takes one kind
+# per heading — the last-but-one segment of the `{slug}.md` path it matched —
+# while step (2) took EVERY `docs/<kind>/` occurrence on the same heading. A
+# heading that names a second path, a previous location in parentheses say, made
+# step (2) demand a terminator for a kind step (1) never opened a section for,
+# and the run hard-failed naming a payload schema that does not exist. Step (2)
+# now consumes step (1)'s set rather than deriving its own; step (1) is the
+# authority because it is the half that actually builds the sections.
 unfenced=$(awk '
   {
     stripped = $0
@@ -180,9 +195,7 @@ unfenced=$(awk '
   }
 ' "$SOT")
 
-declared_kinds=$(printf '%s\n' "$unfenced" | grep -oE '^## [0-9]+\. .*`(<base>/)?docs/[a-z][a-z-]*/\{slug\}\.md`' \
-  | grep -oE 'docs/[a-z][a-z-]*/' | sed -E 's|^docs/||; s|/$||' | sort -u)
-expected=$(printf '%s\n' "$declared_kinds" | sed -E 's|^|<!-- cc-|; s|$|: end -->|' | sort -u)
+expected=$(printf '%s\n' "$stage1_kinds" | sed -E 's|^|<!-- cc-|; s|$|: end -->|' | sort -u)
 # The terminator side reads unfenced text too, for the same reason: a sentinel
 # shown inside an example block is a picture of a terminator, not one.
 actual=$(printf '%s\n' "$unfenced" | grep -oE '<!-- cc-[a-z][a-z-]*: end -->' | sort -u)

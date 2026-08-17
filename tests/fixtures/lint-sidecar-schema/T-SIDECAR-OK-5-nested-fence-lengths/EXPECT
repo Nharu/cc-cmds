@@ -1,0 +1,8 @@
+# A three-backtick block nested inside a FOUR-backtick fence, with a payload
+# schema heading between the inner pair. The variable-length fence rule — an
+# opener is 3+ backticks, a closer is at least as long as the opener it closes —
+# had zero coverage in both oracles: replacing it with an unconditional close
+# left the suite and the real tree green. Under that mutant the inner three
+# backticks close the outer fence, the example heading becomes live text, and a
+# section is opened for a payload schema that does not exist.
+OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 38 < truncation 39) (scope: _common/sidecar.md only; design-audit's schema is out of reach)
