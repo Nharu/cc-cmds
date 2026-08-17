@@ -197,12 +197,15 @@ done
 # (2) Consumer sync — deliberately narrow. The verification-timing enum is the
 # only frozen vocabulary with a live inline copy outside the SOT: implement's
 # 1.5a routing prose partitions on it. Pin ONLY what that partition is made of —
-# 14 of the 26 SOT_LITERALS (the residual reasons, the execution-caution
+# 12 of the 24 SOT_LITERALS (the residual reasons, the execution-caution
 # classes, the classification tokens, and the `## 검증 기록` heading)
 # legitimately do not appear in that file at all, so a whole-array check would
 # fail on day one. (The five grade tokens DO appear there; they are out of scope
 # here not because they are absent but because implement's copy of them is
-# pinned by the Step-3 flip-gate prose, not by the 1.5a partition.)
+# pinned by the Step-3 flip-gate prose, not by the 1.5a partition.) The two
+# figures above are counts of an array this file declares, so read them off the
+# success line rather than from this comment — the prose said 26 while the array
+# held 24, which is the drift this script exists to prevent, inside this script.
 # Region-scoped like rule (B), NOT whole-file: the values also occur in the
 # 1.5b / Step-2 / Step-3 prose downstream, so a whole-file check stays green
 # even when the 1.5a partition itself has been reverted to its two-bucket form
