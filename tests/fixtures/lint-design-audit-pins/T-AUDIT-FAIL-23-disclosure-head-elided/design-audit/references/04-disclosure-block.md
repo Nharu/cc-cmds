@@ -1,11 +1,13 @@
+<!--
 # Residual Disclosure Block
 
 Consumed by Step 7. Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).
 
+-->
 ## Grammar
 
 The two fences are byte-exact literals appearing exactly once each, in this order,
-with exactly 14 slot lines strictly between them.
+with exactly 15 slot lines strictly between them.
 
 ## 잔여 공개
 

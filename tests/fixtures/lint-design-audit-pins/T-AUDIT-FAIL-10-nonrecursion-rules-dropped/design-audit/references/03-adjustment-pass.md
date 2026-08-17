@@ -13,7 +13,14 @@ Identical findings from different readers collapse to one.
 
 ## Severity re-assignment (single labeller, one pass)
 
-One labeller re-assigns severity across the merged set. Never take a maximum across readers.
+One labeller re-assigns severity across the merged set.
+
+- **critical** — semantic violation or structural invariant breakage.
+- **major** — implementation misbehavior or clear structural mismatch.
+- **minor** — readability and audit convenience.
+- **trivial** — typos and trivial word choice.
+
+**Never take a maximum across readers.** Per-reader severity labels are not comparable.
 
 ## Routing — five named owners, exactly one each
 

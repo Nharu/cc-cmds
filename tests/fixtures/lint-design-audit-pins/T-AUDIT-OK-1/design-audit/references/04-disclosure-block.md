@@ -1,5 +1,7 @@
 # Residual Disclosure Block
 
+Consumed by Step 7. Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).
+
 ## Grammar
 
 The two fences are byte-exact literals appearing exactly once each, in this order,
@@ -44,6 +46,8 @@ the run **aborts and reports**, and the disclosure block is not the exit.
 **(iii) Arithmetic invariants.**
 
 - `원시 ≥ 리뷰어 수 − 결손 수` — the readers that actually ran.
+
+*Blocks an all-zeros block* — **but only together with (ii)'s bound.**
 
 ## Honest limit
 

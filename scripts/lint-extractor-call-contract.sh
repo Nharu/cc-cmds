@@ -9,7 +9,7 @@
 # call sites grew 57% and guard-regression coverage did not grow at all.
 #
 # A shape lint is uniform where fixtures are incidental. It reads the call site
-# rather than the consequence, so it covers all 13 identically and covers every
+# rather than the consequence, so it covers all 14 identically and covers every
 # call site added after it, which is the half fixtures can never do.
 #
 # THE POPULATION IS PINNED, not merely printed. Three sentences of this header
@@ -80,7 +80,7 @@ SELF='lint-extractor-call-contract.sh'
 
 # The live call-site count. Asserted only for the real tree: a fixture root holds
 # whatever its case needs, and its own EXPECT pins that number.
-EXPECTED_SITES=13
+EXPECTED_SITES=14
 
 # An assignment from a command substitution, in any of the three spellings the
 # shell treats alike. `var=`, `local var=`, `declare var=`, `readonly var=`.

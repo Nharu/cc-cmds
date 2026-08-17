@@ -1,0 +1,7 @@
+# The disclosure file head commented out — its title and the sentence fixing that
+# composing the block is the ONLY exit from the invocation. Nothing bounded the
+# head of that file: the fences bound the slot block, so both lines could be
+# removed together with the lint at exit 0.
+FAIL: design-audit/references/04-disclosure-block.md (file head) — region start anchor missing: /^# Residual Disclosure Block[[:space:]]*$/
+FAIL: design-audit/references/04-disclosure-block.md — region-unavailable (the file head), so this pin was not evaluated: # Residual Disclosure Block
+FAIL: design-audit/references/04-disclosure-block.md — region-unavailable (the file head), so this pin was not evaluated: Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).

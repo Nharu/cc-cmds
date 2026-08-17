@@ -381,7 +381,19 @@ REFERENCE_HEADINGS=(
 # 4 / 9 / 5 / 3 substantive lines (the fourth entry landed later, with the
 # total-shortfall abort section). Re-measure before changing a floor; do not
 # assume these numbers are current.
+#
+# TWO MORE NAMED SECTIONS JOINED THIS ARRAY LATE, and the reason is the measured
+# one: both were deletable whole with this lint at exit 0. The disclosure file's
+# opening — its title and the sentence fixing that composing the block is the
+# ONLY way out of the invocation — is not inside any region the fences bound, so
+# nothing reached it; and the adjustment pass's severity section had a
+# region-scoped prose pin but no heading pin and no floor, so the heading could
+# go with the body. Both regions are self-consistent under a naive whole-file
+# comment wrap, because the disclosure file's own `-->` closes the wrapper, which
+# is why the comment strip alone does not cover them.
 REFERENCE_SECTION_PINS=(
+  # floor 5 (measured 7)
+  '03|^## Severity re-assignment |^## Routing — |5|Per-reader severity labels are not comparable'
   # floor 3 (measured 4)
   '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|3|Spawning anything here is the first step back toward the loop'
   # floor 7 (measured 9)
@@ -496,6 +508,15 @@ DISCLOSURE_PINS=(
 # enough to occur exactly once inside the checks section: the bare floor
 # `원시 ≥ 리뷰어 수 − 결손 수` appears on three lines of that section, so a
 # substring pin on it is satisfied by a restatement and can never fail alone.
+# The disclosure file's opening: its title and the sentence that makes composing
+# this block the only exit. Pinned as a region because the fences bound the slot
+# block and nothing bounded the head of the file, so the title and the invariant
+# could be deleted together at exit 0.
+DISCLOSURE_HEAD_PINS=(
+  '# Residual Disclosure Block'
+  'Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).'
+)
+
 DISCLOSURE_ARITH_PINS=(
   # the strict upper bound — `<` reverted to `≤` is one character and re-opens
   # the state the arm below exists to reject
@@ -506,6 +527,11 @@ DISCLOSURE_ARITH_PINS=(
   'the run **aborts and reports**, and the disclosure block is not the exit'
   # the rescaled floor, in the normative bullet rather than either restatement
   '`원시 ≥ 리뷰어 수 − 결손 수` — the readers that actually ran'
+  # the third of the delta's three arithmetic edits: the rationale that binds the
+  # all-zeros claim to the bound in (ii). Reverting all three left the success
+  # line byte-identical, so the edits recorded as fixing the arithmetic were
+  # caught by no fence at all.
+  '*Blocks an all-zeros block* — **but only together with (ii)'"'"'s bound.**'
 )
 
 # The declared-shortfall arm and the integer that fences it. The arm exists so a
@@ -561,6 +587,17 @@ if checks_section=$(extract_between '^## The four anti-vacuity checks[[:space:]]
                                     "$(stripped_copy "$DISCLOSURE")" 'design-audit/references/04-disclosure-block.md (anti-vacuity checks)'); then :
 else fail=1; checks_section="$REGION_UNAVAILABLE"
 fi
+
+if disclosure_head=$(extract_between '^# Residual Disclosure Block[[:space:]]*$' \
+                                    '^## Grammar[[:space:]]*$' \
+                                    "$(stripped_copy "$DISCLOSURE")" 'design-audit/references/04-disclosure-block.md (file head)' \
+                                    include-start); then :
+else fail=1; disclosure_head="$REGION_UNAVAILABLE"
+fi
+for lit in "${DISCLOSURE_HEAD_PINS[@]}"; do
+  assert_in_text "$lit" "$disclosure_head" \
+    'design-audit/references/04-disclosure-block.md' 'the file head'
+done
 
 for lit in "${DISCLOSURE_ARM_PINS[@]}" "${DISCLOSURE_ARITH_PINS[@]}"; do
   assert_in_text "$lit" "$checks_section" \
@@ -662,7 +699,7 @@ if (( fail == 0 )); then
     rest="${entry#*|}"; rest="${rest#*|}"; rest="${rest#*|}"
     floors="${floors:+$floors/}${rest%%|*}"
   done
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body, value + sole assignment) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floors $floors) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#DISCLOSURE_ARITH_PINS[@]} block arithmetic (in checks section) + 1 declared slot count (in block grammar) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body, value + sole assignment) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floors $floors) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_HEAD_PINS[@]} disclosure head + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#DISCLOSURE_ARITH_PINS[@]} block arithmetic (in checks section) + 1 declared slot count (in block grammar) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

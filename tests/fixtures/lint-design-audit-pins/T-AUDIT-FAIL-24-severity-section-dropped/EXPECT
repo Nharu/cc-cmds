@@ -1,0 +1,8 @@
+# The severity re-assignment section deleted whole. It carried a region-scoped
+# prose pin but no heading pin and no span floor, so the heading went with the
+# body and nothing noticed.
+FAIL: design-audit/references/03-adjustment-pass.md (section /^## Severity re-assignment /) — region start anchor missing: /^## Severity re-assignment /
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the section /^## Severity re-assignment /), so this pin was not evaluated: Per-reader severity labels are not comparable
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (/^## Severity re-assignment /), so its span floor was not evaluated
+FAIL: design-audit/references/03-adjustment-pass.md (region /^## Severity re-assignment /) — region start anchor missing: /^## Severity re-assignment /
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the region /^## Severity re-assignment /), so this pin was not evaluated: Never take a maximum across readers.
