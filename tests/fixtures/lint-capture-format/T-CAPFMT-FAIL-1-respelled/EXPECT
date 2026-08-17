@@ -2,3 +2,4 @@
 # makes a partial update possible at all — and it is exactly what nine of the
 # nine existing lint scripts could not see.
 FAIL: _common/verification.md:9 — the capture format is respelled here instead of referred to by name; one site defines it and every other site says "the capture format" (a discussion of the retired spelling must mark it with the word `bare`)
+FAIL: capture format — found 0 marked discussion(s) of the retired spelling, the pinned population is 1; the marker is a one-word bypass and adding one has to be a deliberate edit to this file

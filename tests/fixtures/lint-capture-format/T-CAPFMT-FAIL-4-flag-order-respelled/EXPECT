@@ -1,0 +1,5 @@
+# A semantically identical respelling with the flags in the other order. Under
+# the substring form this was neither a definition, nor a reference, nor a
+# violation — it was nothing at all, while the short `-uall` variant WAS caught.
+# The coverage boundary was a by-product of substring choice, not a decision.
+FAIL: the capture format must be spelled at exactly 1 site, found 2 — a second spelling is a second thing to update, which is the state this pin exists to forbid

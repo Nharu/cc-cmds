@@ -1,0 +1,4 @@
+# The canonical spelling and the retired one on the SAME line. The definition
+# branch used to `continue` past the whole line, so one line carried both and
+# the retired spelling got a full amnesty from the canonical one beside it.
+FAIL: _common/verification.md:6 — the capture format is respelled here instead of referred to by name; one site defines it and every other site says "the capture format" (a discussion of the retired spelling must mark it with the word `bare`)

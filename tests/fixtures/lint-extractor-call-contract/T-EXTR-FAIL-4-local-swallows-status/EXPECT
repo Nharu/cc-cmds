@@ -1,0 +1,4 @@
+# `local` supplies the assignment exit status, so a failing extraction is
+# swallowed silently rather than aborting the script. Same contract item,
+# different mechanism, and the diagnostic has to say which one it is.
+FAIL: consumer.sh:10 — extract_between call site is not guarded; the declaration builtin supplies the assignment's exit status, so a failing extraction is swallowed silently and the region variable holds the empty string

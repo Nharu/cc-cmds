@@ -1,0 +1,3 @@
+# Not an assignment at all: the result is piped. Neither guarded nor unguarded by
+# this contract, so it must be reported rather than passed over.
+FAIL: consumer.sh:7 — unrecognized `extract_between` form; this lint could not classify it as guarded, unguarded, or prose, and an unclassified occurrence is not a covered one
