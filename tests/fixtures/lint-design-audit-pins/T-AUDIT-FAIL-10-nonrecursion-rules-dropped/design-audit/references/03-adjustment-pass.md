@@ -37,4 +37,14 @@ The pass may NOT close by dispositioning items one at a time. Its final act is t
 
 Different readers' items can compose into a new requirement that appears in no single report.
 
+## Total-shortfall abort (evaluated at the end of this pass, before the block is composed)
+
+`결손 수 == 리뷰어 수` means no reader produced a usable witness. Evaluate it as the last act of
+this pass: abort and report, and do not compose the disclosure block.
+
+The condition is stated where the checks are defined; nothing evaluated it, because the step that
+would is this one and this file is what this step reads.
+
+This adds a second terminal exit to a pass whose invariant was that it had one: it is not a routing outcome, it is a refusal to produce the artifact.
+
 <!-- cc-design-audit-reference: end -->

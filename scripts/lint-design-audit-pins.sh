@@ -341,6 +341,7 @@ REFERENCE_HEADINGS=(
   '## Non-recursion rules (hard)'
   '## Routing — five named owners, exactly one each'
   '## Synthesis question (mandatory terminal act)'
+  '## Total-shortfall abort (evaluated at the end of this pass, before the block is composed)'
 )
 
 # The file-end sentinel that gives the last section a region terminator is NOT
@@ -377,15 +378,19 @@ REFERENCE_HEADINGS=(
 #
 # The measured count is recorded beside each floor so the slack is auditable
 # rather than re-derivable only by re-running the pipeline. Measured 2026-08-17:
-# 4 / 9 / 5 substantive lines. Re-measure before changing a floor; do not assume
-# these numbers are current.
+# 4 / 9 / 5 / 3 substantive lines (the fourth entry landed later, with the
+# total-shortfall abort section). Re-measure before changing a floor; do not
+# assume these numbers are current.
 REFERENCE_SECTION_PINS=(
   # floor 3 (measured 4)
   '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|3|Spawning anything here is the first step back toward the loop'
   # floor 7 (measured 9)
   '03|^## Routing — five named owners, exactly one each$|^## Synthesis question |7|The five counts must sum to the unique-defect count'
   # floor 3 (measured 5)
-  '03|^## Synthesis question \(mandatory terminal act\)$|^<!-- cc-design-audit-reference: end -->$|3|Its final act is to ask, once, in writing'
+  '03|^## Synthesis question \(mandatory terminal act\)$|^## Total-shortfall abort |3|Its final act is to ask, once, in writing'
+  # floor 2 (measured 3). This section is what gives the arithmetic condition an
+  # actor; the sentinel terminates it because it is now the file's last section.
+  '03|^## Total-shortfall abort |^<!-- cc-design-audit-reference: end -->$|2|it is not a routing outcome, it is a refusal to produce the artifact'
 )
 
 # The three prose sentences, scoped to the section that must carry each. Encoded

@@ -70,7 +70,7 @@ So this state has **no valid block**. It is not written, not declared, and not p
 
 **Known conservative bias, stated rather than hidden**: a run in which every reader that ran genuinely found nothing trips `원시 ≥ 리뷰어 수 − 결손 수`. The disposition is to **fail loud and surface**, not to relax the invariant — a run where a reader found nothing is precisely the run a human should look at, and weakening a pinned invariant to accommodate it re-opens the all-zeros hole. **The bias is bounded by (ii)'s strict upper bound**: it can only ever fire on a run that had at least one reader, because a run with none is not a block to check but an abort.
 
-**(iv) Slot grammar.** As specified above: fences, count, order, key set, per-key value shape.
+**(iv) Slot grammar.** As specified above: fences, count, order, key set, per-key value shape — **and the one content requirement the grammar carries**: `하류 흡수 가정` must be non-empty, must name the two downstream absorbers, and must state that the rate is unmeasured. That requirement is enumerated here rather than left upstream because **this definition is what a runner applies**: with only the shape rules restated, the block's single prose slot passed the anti-vacuity checks on an arbitrary single character, and the one slot that exists to keep a load-bearing assumption re-stated on every run was the one slot nothing checked.
 
 ## Honest limit
 
