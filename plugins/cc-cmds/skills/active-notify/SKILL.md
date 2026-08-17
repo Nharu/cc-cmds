@@ -43,9 +43,11 @@ that path to its final three segments,
 self-approves the call only when the whole command line is one plain
 invocation of that path — optionally preceded by the bare word `bash`
 and nothing else — with one of its subcommands, written bare rather
-than quoted, and **the path absolute** rather than the abbreviated
-three-segment form the examples show: a relative path, a `..` climb, a
-glob or a tilde is rejected even though it ends in those same segments.
+than quoted, and **the path absolute**, as the examples below now write
+it: a relative path, a `..` climb, a glob or a tilde is rejected even
+though it ends in those same segments. `/absolute/path/to/` there stands
+for the installed skill directory; what is load-bearing is the leading
+slash, not those words.
 Anything else falls through to the Bash permission dialog — chained with
 `;` or `&&`, piped, redirected, wrapped in a subshell or a substitution,
 or split across lines — including a compound line that contains a
@@ -57,21 +59,21 @@ instantly.
 # Arm a new notification cycle. mode argument is optional (default "single").
 # --count=N is optional parse-anywhere flag for single-mode multi-sub-event
 # ("시작할 때랑 끝날 때" → --count=2). default 1, normalize to 1 if not in [1..16].
-bash active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--count=N]
+bash /absolute/path/to/active-notify/scripts/notify.sh arm "<request_text>" "<context_hint>" [single|repeat] [--count=N]
 
 # Event-instance fire — model-driven, the ONLY dispatch surface of an
 # ARM cycle. Called at each observed instance of the armed event class
 # (a named sub-event in single --count=N, a class instance in repeat).
-bash active-notify/scripts/notify.sh fire-now <workflow> <summary>
+bash /absolute/path/to/active-notify/scripts/notify.sh fire-now <workflow> <summary>
 
 # State-independent banner — belongs to NO ARM cycle. Reads and writes no
 # flag and takes no lock, so it cannot disturb a live cycle. Uses its own
 # banner group so it never replaces a cycle's completion banner. This is
 # what the §2.6 scheduler delegation emits.
-bash active-notify/scripts/notify.sh fire-oneshot <workflow> <summary>
+bash /absolute/path/to/active-notify/scripts/notify.sh fire-oneshot <workflow> <summary>
 
 # Cancel — mode-agnostic flag delete.
-bash active-notify/scripts/notify.sh cancel
+bash /absolute/path/to/active-notify/scripts/notify.sh cancel
 ```
 
 Argument order for `arm`: `request_text` first (verbatim user phrase that
@@ -390,7 +392,11 @@ quantifier (`매`/`마다`/`매번`/`각`/`반복`/`every`/`each`) appears
 anywhere in the alert clause. **If none does, the enumeration is finite
 by default — apply Gate 1**, even where an item names a noun that could
 recur: the user listed the occasions and asked for nothing beyond them,
-and routing such an utterance onward reaches no other gate. If a
+and every gate downstream of this one keys on a recurrence quantifier,
+so an utterance carrying none cannot be caught by any of them. That
+dependency is why this guard is stated here rather than left implicit —
+widening a downstream gate to fire without a quantifier removes the
+ground this default stands on. If a
 quantifier is present, take the enumerated items one at a time and ask
 of each: is this a **finite moment that passes once**, or a **class
 that recurs**? If even one item is a recurring class, the enumeration
