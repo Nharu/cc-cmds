@@ -4,7 +4,10 @@ Model-invoked best-effort macOS notification helper.
 Single (mode=single) or event-scoped repeat (mode=repeat) lifecycle.
 ARM → FIRE-NOW(s) → CANCEL/consume.
 
-## §1 Preconditions (guard chain — all checked before fire)
+## §1 Preconditions (guard chain)
+  All four run before a fire on the cycle path. `fire-oneshot` belongs to
+  no cycle and runs guards 3 and 4 only (§2) — guards 1 and 2 have no
+  flag to look at.
   1. ARM flag absent → silent no-op (fire-now without prior ARM blocked).
   2. Corrupt-flag cleanup: schema≠3 strict equality (stale v1.x schema:1
      or schema:2 OR any future schema≥4 — clean break, no mid-version
@@ -14,7 +17,9 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      `last_fire_at` missing or malformed) → stderr hint + flag delete +
      exit 0. User re-arms naturally via the next first-person notification
      request.
-  3. Host OS ≠ Darwin → silent skip. Single armCount=1 / single final
+  3. Host OS ≠ Darwin → silent skip. The flag handling below is the
+     cycle path only; on `fire-oneshot` the guard skips and stops there.
+     Single armCount=1 / single final
      fire (intermediate threshold reached): consume flag (1-shot intent —
      cycle terminates even when notifier did not fire). Single
      intermediate fire (armCount>1, fire_count < arm_count): preserve
@@ -30,8 +35,9 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      `${TMPDIR}/cc-cmds-notify-hint`. fire-oneshot carries no sentinel
      and emits on every scheduled tick: the tick runs with nobody
      watching, so that line is the only trace it can leave.
-     Same fire-position-aware flag-handling as guard 3 (final fire
-     consumes; intermediate / repeat preserve).
+     Same fire-position-aware flag-handling as guard 3, and with the
+     same cycle-path limit (final fire consumes; intermediate / repeat
+     preserve; `fire-oneshot` touches no flag).
      # Rationale: single's consume-on-skip asymmetry for final fire is
      # intentional — "ARM → one final FIRE → cycle ends" is the lifecycle
      # contract. On setup error the user notices via missing banner and
@@ -125,10 +131,14 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
   1. **Preconditions fail-open.** ARM flag absent, corrupt-flag
      (schema≠3 strict equality / mode invalid / mode-specific field-
      shape mismatch), Host OS ≠ Darwin, and `terminal-notifier` missing
-     all silent-skip. terminal-notifier-missing emits a stderr install
+     all silent-skip on the surfaces each guard governs — the first two
+     are cycle-path guards and do not run on `fire-oneshot` (§1). terminal-notifier-missing emits a stderr install
      hint — once per TMPDIR lifetime on the cycle path, guarded by the
-     TMPDIR sentinel, and unguarded on every scheduled tick; the path
-     never transitions to silent failure. Corrupt-flag emits an stderr
+     TMPDIR sentinel, and unguarded on every scheduled tick. The failure
+     is announced, not announced every time: after the first hint the
+     cycle path is silent for the rest of that TMPDIR lifetime, which is
+     what the sentinel is for. The scheduled tick is the path with no
+     such window. Corrupt-flag emits an stderr
      audit hint + flag `rm` + exit 0 (auto-cleanup; self-heals on the
      first hit so no sentinel is needed). The schema check is strict
      equality — stale `schema:1`/`schema:2` and future `schema:4+` flags

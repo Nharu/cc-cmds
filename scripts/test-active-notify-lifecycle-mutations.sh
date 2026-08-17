@@ -149,7 +149,11 @@ PY
     return 1
   fi
 
-  # (b) cheap pre-filter, run and reported unconditionally.
+  # (b) syntax check, run and reported unconditionally. Calling it a filter
+  # is what this comment used to do and it is the wrong noun: nothing is
+  # filtered on the result. The row runs either way and BROKEN is printed
+  # beside its verdict, because a mutant that will not parse is a fact about
+  # the row, not a reason to drop it from the count.
   local syntax=OK
   bash -n "$target" 2>/dev/null || syntax=BROKEN
 
