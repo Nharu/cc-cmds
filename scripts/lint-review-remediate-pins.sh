@@ -112,17 +112,65 @@ fi
 
 # ---- (ii) the narrowed 검증 시점 enum ----------------------------------------
 
+# The emitted value must carry a non-empty parenthesised phase. A bare `구현 중`
+# clears the consumer's presence check, matches no value arm, and lands as an
+# out-of-vocabulary value — which leaves this producer with no residual that
+# gates at all. Pinning the positive declaration (rather than forbidding the bare
+# substring) keeps the region free to *discuss* the bare form in prose.
 if require_region '<!-- RITEM-EMIT-BEGIN -->' '<!-- RITEM-EMIT-END -->' "$SKILL" 'R-item emit'; then
   ritem=$(region_body '<!-- RITEM-EMIT-BEGIN -->' '<!-- RITEM-EMIT-END -->' "$SKILL")
-  for lit in '구현 중' '구현 후'; do
+  for lit in '`구현 중(<착지>)` / `구현 후`만' '구현 후'; do
     if ! printf '%s\n' "$ritem" | grep -Fq -- "$lit"; then
-      echo "FAIL: review-remediate/SKILL.md — R-item emit region must name the permitted enum value: $lit" >&2
+      echo "FAIL: review-remediate/SKILL.md — R-item emit region must declare the parenthesised enum verbatim: $lit" >&2
       fail=1
     fi
   done
-  if ! printf '%s\n' "$ritem" | grep -Fq -- '기본값'; then
-    echo "FAIL: review-remediate/SKILL.md — R-item emit region must state why the omitted-field default is refused" >&2
+  # The refusal is pinned to the literal it refuses. A paraphrase ("the default")
+  # is not checkable — the previous form of this check required exactly that
+  # paraphrase, so the value being refused never had to appear at all.
+  if ! printf '%s\n' "$ritem" | grep -Fq -- '`구현 전`을 거부한다'; then
+    echo "FAIL: review-remediate/SKILL.md — R-item emit region must refuse the default value by naming it verbatim" >&2
     fail=1
+  fi
+fi
+
+# ---- consumer cross-check (repo-fixed path; absence is a failure) ------------
+#
+# Pinned to the repository path rather than to SKILLS_ROOT on purpose: a fixture
+# tree does not carry the consumer, and resolving against the fixture would turn
+# every fixture run into a silent skip — which is the very failure mode this
+# check exists to close.
+
+CONSUMER="$repo_root/plugins/cc-cmds/skills/implement/SKILL.md"
+if [[ ! -f "$CONSUMER" ]]; then
+  echo "FAIL: consumer not found at ${CONSUMER#"$repo_root/"} — the cross-check cannot hold and must not pass silently" >&2
+  fail=1
+else
+  # (1) The consumer's value arm requires a non-empty parenthesised phase. If it
+  #     ever loosens to a bare form this producer's narrowing is over-strict; if
+  #     it disappears the narrowing is aimed at nothing.
+  if ! grep -Fq -- '구현 중\(.+\)' "$CONSUMER"; then
+    echo "FAIL: ${CONSUMER#"$repo_root/"} — consumer no longer pins a parenthesised 구현 중 value arm; the producer's narrowing is aimed at nothing" >&2
+    fail=1
+  fi
+  # (2) Heading tiers: the consumer's enumeration must be CONTAINED IN the
+  #     producer's heading set — one direction, not set equality. Four producer
+  #     headings are deliberately outside both consumer enumerations (the
+  #     consumer assigns them no tier), so equality yields four false failures
+  #     and invites deleting healthy sections to satisfy the lint.
+  if [[ -f "$TEMPLATE" ]]; then
+    missing=$(
+      awk '/^    - \*\*Binding\*\*/,/^    - `## 권장 구현 순서` is reference/' "$CONSUMER" \
+        | grep -oE '`## [^`]+`' | tr -d '`' | sort -u \
+        | while IFS= read -r h; do
+            grep -Fqx -- "$h" "$TEMPLATE" || printf '%s\n' "$h"
+          done
+    )
+    if [[ -n "$missing" ]]; then
+      echo "FAIL: consumer tier enumeration is not contained in the producer heading set; missing from the template:" >&2
+      printf '  %s\n' $missing >&2
+      fail=1
+    fi
   fi
 fi
 
