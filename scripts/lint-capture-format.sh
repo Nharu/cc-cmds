@@ -21,6 +21,15 @@
 # from context. A reader who removes the word to tidy the prose turns the
 # sentence into a violation, which is the correct direction to fail.
 #
+# COMMENTS ARE NOT CONTENT, AND THIS LINT HAS TO STRIP FOR ITSELF. Every file is
+# read through a comment-blanked copy. The shared fix that gave the region-scoped
+# pin linters their pre-stripped input does not reach here, because this lint
+# never calls the region extractor — it reads whole files — so nothing about that
+# fix changes a byte of what this script sees. Landing the extractor fix and
+# reporting the elision class closed would therefore have been wrong, and green.
+# Line count is preserved by the blanker, so the line numbers in the diagnostics
+# below still point into the original file.
+#
 # Usage:
 #   bash scripts/lint-capture-format.sh
 #   SKILLS_ROOT=<dir> bash scripts/lint-capture-format.sh   # fixture test
@@ -33,6 +42,8 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 skills_root="${skills_root%/}"
 
@@ -51,6 +62,7 @@ marked=0
 
 while IFS= read -r f; do
   rel="${f#"$skills_root/"}"
+  visible=$(stripped_copy "$f")
   while IFS=: read -r n line; do
     if [[ "$line" == *"$FORMAT"* ]]; then
       defs=$((defs + 1))
@@ -64,8 +76,8 @@ while IFS= read -r f; do
     fi
     echo "FAIL: $rel:$n — the capture format is respelled here instead of referred to by name; one site defines it and every other site says \"the capture format\" (a discussion of the retired spelling must mark it with the word \`bare\`)" >&2
     fail=1
-  done < <(grep -nF -- "$BARE" "$f" || true)
-  refs=$((refs + $(grep -cF -- 'capture format' "$f" 2>/dev/null || true)))
+  done < <(grep -nF -- "$BARE" "$visible" || true)
+  refs=$((refs + $(grep -cF -- 'capture format' "$visible" 2>/dev/null || true)))
 done < <(find "$skills_root" -type f -name '*.md' | sort)
 
 if (( defs != 1 )); then
