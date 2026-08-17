@@ -41,6 +41,17 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 SOT="$skills_root/_common/verification.md"
 CONSUMER="$skills_root/implement/SKILL.md"
 
+# The `상태` key is the one key in the tree whose producer authorizes two
+# renderings, and §3.4 of the SOT obliges every consumer of it to declare which
+# ones it reads. Two consumers carry that declaration. Neither was pinned:
+# deleting BOTH declarations left this lint's `OK:` line byte-identical at exit
+# 0, which is the shape this file exists to prevent — prose landed in the
+# consumers and no script opened them. Encoded `<path>|<label>|<literal>`.
+STATE_RENDERING_DECLS=(
+  'implement/SKILL.md|implement (상태 rendering declaration)|**Reading `상태` — both renderings, and absence is never a default.**'
+  'review/references/01-reviewer-context-package.md|review reviewer-context (상태 rendering declaration)|**Which `상태` renderings this consumer reads — declared, because the key has two and the shared contract requires every consumer of it to say.**'
+)
+
 # SOT absent → mechanism not present in this tree → silent skip.
 if [[ ! -f "$SOT" ]]; then
   echo "SKIP: _common/verification.md not found under $skills_root — verification mechanism not present"
@@ -254,12 +265,23 @@ else
   done
 fi
 
+# (3) The two `상태` rendering declarations. A missing consumer FILE is a failure
+# here for the same reason the 1.5a fence treats it as one: these are landed
+# files of this repo, and a fence reporting OK for a target that is gone is the
+# defect this script pins against.
+for entry in "${STATE_RENDERING_DECLS[@]}"; do
+  decl_path="${entry%%|*}"; rest="${entry#*|}"
+  decl_label="${rest%%|*}"
+  decl_lit="${rest#*|}"
+  assert_in_file "$decl_lit" "$(stripped_copy "$skills_root/$decl_path")" "$decl_label"
+done
+
 if (( fail == 0 )); then
   # Every pinned literal belongs to a counted group and every group's size is
   # named here, so dropping any one of them changes this line and the OK fixture
   # detects it. A pin whose group size is not reported has no independent
   # coverage.
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#GRADE_REGION_PINS[@]} SOT (vocabulary table) + ${#FORBIDDEN_SPELLINGS[@]} forbidden spelling + ${#CONSUMER_1_5A[@]} consumer (1.5a bullet) all present"
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#GRADE_REGION_PINS[@]} SOT (vocabulary table) + ${#FORBIDDEN_SPELLINGS[@]} forbidden spelling + ${#CONSUMER_1_5A[@]} consumer (1.5a bullet) + ${#STATE_RENDERING_DECLS[@]} 상태 rendering declarations all present"
 fi
 
 exit "$fail"

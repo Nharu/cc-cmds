@@ -89,7 +89,7 @@ UNTRACKED_RE='(--untracked-files=all|-uall)'
 # REAL tree would be a way to relax these pins from outside this script, so its
 # presence there is itself a failure.
 EXPECTED_REFS=18
-EXPECTED_MARKED=2
+EXPECTED_MARKED=3
 POPULATION_DECL="$skills_root/POPULATION"
 
 if [[ ! -d "$skills_root" ]]; then

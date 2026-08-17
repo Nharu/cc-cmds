@@ -2,3 +2,4 @@
 # target has vanished reporting success is the same shape of defect this file
 # exists to pin, so it is now a failure.
 FAIL: implement/SKILL.md (consumer) — file not found; the 1.5a fence has no target and cannot report OK
+FAIL: implement (상태 rendering declaration) — file not found:
