@@ -35,6 +35,7 @@ test: test-active-notify
 	bash scripts/test-lint-design-audit-pins.sh
 	bash scripts/test-lint-extractor-call-contract.sh
 	bash scripts/test-lint-capture-format.sh
+	bash scripts/test-expect-contract.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
 

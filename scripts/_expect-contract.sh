@@ -38,6 +38,17 @@
 #        The `SKIP:` exception is not a convenience: a skip summary names the
 #        absolute path it searched, which varies with the run, so no EXPECT can
 #        state it whole.
+#   (P4) A `FAIL:` declaration must carry a label and a message, written as
+#        `FAIL: <label> — <message>`. (P3) closed the weakening hole on the two
+#        summary kinds and left it open on the kind where the diagnostic content
+#        actually lives: replacing every `FAIL:` declaration in a suite with the
+#        bare literal `FAIL:` was measured to leave that suite fully green, so a
+#        fixture could go on claiming to prove something while asserting only
+#        that the lint failed somehow. The em dash is what makes the requirement
+#        more than "non-empty" — it forces the declaration to name WHICH check
+#        fired, which is the half a substring match cannot supply on its own.
+#        This hole predates the delta that added (P3); what that delta did was
+#        close the `OK:` half of a two-sided opening, and this closes the other.
 #
 # WHY ONE DEFINITION. This block existed five times. Asserting that the five
 # copies agree is the pattern this repository has already recorded as failed —
@@ -61,7 +72,7 @@
 judge_fixture() {
   local fixture_name="$1" expect_file="$2" want="$3" ec="$4" output="$5"
   local line trimmed out_line decl match_kind covered
-  local declared_lines expected_fail_lines actual_fail_lines
+  local declared_lines expected_fail_lines actual_fail_lines label
   local -a problems declarations
 
     problems=()
@@ -101,6 +112,18 @@ judge_fixture() {
     if [[ "$want" == 1 && "$expected_fail_lines" == 0 ]]; then
       problems+=("EXPECT declares no FAIL: line for a FAIL fixture")
     fi
+
+    # (P4) a FAIL declaration must say WHICH check fired, not merely that one did.
+    for decl in ${declarations+"${declarations[@]}"}; do
+      case "$decl" in
+        FAIL:*) ;;
+        *) continue ;;
+      esac
+      label="${decl#FAIL:}"
+      if [[ "$label" != *' — '* || -z "${label%% — *}" || -z "${label##* — }" ]]; then
+        problems+=("FAIL declaration is weaker than the contract allows; write it as 'FAIL: <label> — <message>' so it names which check fired: $decl")
+      fi
+    done
 
     # (P3) no summary line may go undeclared, matched per line kind.
     #
