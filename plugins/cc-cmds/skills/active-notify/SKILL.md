@@ -8,9 +8,9 @@ when_to_use: |
 
     **발화 트리거**: 관측된 이벤트 클래스 인스턴스마다 `fire-now` 1회. **턴 종료 자동 발화는 없다.** 인스턴스 경계가 없는 제네릭 클래스에 한해 user-task 도구 호출이 1회 이상 있었던 턴의 종료를 인스턴스 1회로 본다(외부 스케줄러가 연 턴은 인스턴스가 아니다).
 
-    **종료**: 사용자 CANCEL 어휘("알림 취소"/"stop the alerts") → `notify.sh cancel`. 또는 이벤트 계열이 끝나 더 나올 인스턴스가 없으면 모델이 self-cancel. **마지막 인스턴스가 종료 지점이면 그 인스턴스의 fire-now를 먼저 호출하고 그다음 cancel** — 뒤집으면 마지막 배너를 잃는다.
+    **종료**: 사용자 CANCEL 어휘 → `notify.sh cancel`. **self-cancel은 repeat 전용**, 그리고 **전 인스턴스가 모델이 디스패치한 것의 완료**일 때만 허가 — 아니면 금지하고 CANCEL 대기. **마지막 인스턴스가 종료 지점이면 그 인스턴스의 fire-now를 먼저 호출하고 그다음 cancel** — 뒤집으면 마지막 배너를 잃는다.
 
-    armCount · fire-first · self-cancel 판정 · anti-pattern은 body §1.1/§2/§4/§6.
+    armCount · fire-first · self-cancel · anti-pattern은 body §1.1/§2/§4/§6.
 disable-model-invocation: false
 usage: "(자동 호출 — 슬래시 커맨드 없음. 사용자가 1인칭 알림 요청 어휘 발화 후 모델이 ARM, single 모드는 armCount회 fire-now 후 만료, event-scoped repeat 모드는 관측된 인스턴스마다 fire-now 후 사용자 CANCEL 또는 모델 self-cancel로 종료.)"
 options: []

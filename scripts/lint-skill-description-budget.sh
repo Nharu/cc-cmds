@@ -88,7 +88,13 @@ lint_file() {
     return
   fi
 
-  echo "OK:   $file — description=$desc_len, when_to_use=$wtu_len, combined=$combined (cap=$HARD_COMBINED)"
+  # Both lines, always. Printing the cap alone reads as 200-odd characters of
+  # room when the headroom target is the number that actually binds, and the
+  # next contributor spends a margin they were never shown. The warn line is
+  # printed even when it is not exceeded, because that is exactly the case in
+  # which a reader forms the wrong idea of how much is left.
+  echo "OK:   $file — description=$desc_len, when_to_use=$wtu_len, combined=$combined (warn=$WARN_COMBINED, cap=$HARD_COMBINED)"
+  echo "      headroom: $(( WARN_COMBINED - combined )) to the warn line, $(( HARD_COMBINED - combined )) to the cap"
 }
 
 if [[ $# -eq 0 ]]; then
