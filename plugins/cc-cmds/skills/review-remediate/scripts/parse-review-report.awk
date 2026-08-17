@@ -223,6 +223,11 @@ sev < 0 { next }
     close_group()
     close_subtree()
     sub_line = FNR
+    # 플래그의 수명은 파일이 아니라 서브트리다. emit_find는 섹션 최상위에서도
+    # 이것을 세우는데 close_subtree는 sub_line==0이면 지우기 전에 반환하므로,
+    # 여기서 리셋하지 않으면 최상위 발견이 세운 플래그가 다음 서브트리로 넘어가
+    # 규칙 3이 발화하지 않고 그 서브헤딩 발견이 흔적 없이 사라진다.
+    sub_found = 0
     next
 }
 
