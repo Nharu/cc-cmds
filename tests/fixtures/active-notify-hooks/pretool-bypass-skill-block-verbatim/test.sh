@@ -19,8 +19,7 @@
 # line and this fixture does not claim otherwise.
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "$PRETOOL_HOOK_SH")/../../.." && pwd)
-skill_md="$repo_root/plugins/cc-cmds/skills/active-notify/SKILL.md"
+skill_md="$REPO_ROOT/plugins/cc-cmds/skills/active-notify/SKILL.md"
 if [[ ! -f "$skill_md" ]]; then
   echo "FAIL: SKILL.md not found at $skill_md" >&2
   exit 1

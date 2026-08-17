@@ -1,0 +1,7 @@
+  jq -nc '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "active-notify self-approve"
+    }
+  }'

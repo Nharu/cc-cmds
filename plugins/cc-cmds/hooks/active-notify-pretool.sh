@@ -51,15 +51,32 @@ if [[ "$cmd" =~ $notify_re ]]; then
     /*) ;;
     *) is_notify=0 ;;
   esac
+  # `*"/.."` is not among these: the capture group always ends in the literal
+  # `notify.sh`, so a path ENDING in `/..` cannot reach this test. Carrying an
+  # unreachable branch reads as coverage that is not there.
   case "$notify_path" in
-    *"/../"*|*"/..") is_notify=0 ;;
+    *"/../"*) is_notify=0 ;;
     *"*"*|*"?"*|*"["*) is_notify=0 ;;
   esac
 fi
 # grep, not [[ =~ ]]: bypass_re is deliberately unanchored and its '.*' must not
 # cross a newline. bash's ERE lets '.' match a newline, so [[ =~ ]] would pair a
-# terminal-notifier on one line with a -group on another. A here-string keeps
-# grep's line semantics without putting a producer in a pipeline under pipefail.
+# terminal-notifier on one line with a -group on another.
+#
+# The here-string also keeps a producer out of a pipeline under `pipefail`, and
+# that IS load-bearing — measured, after an earlier attempt failed to induce it
+# and wrongly reported the two forms as indistinguishable.
+#
+# The earlier attempt used a single-line input, where `grep -q` must read to the
+# end of the line and no early exit occurs. With the match on the FIRST line of a
+# multi-line command and a large tail, `grep -q` exits at once, the producer
+# takes SIGPIPE, and `pipefail` fails the pipeline: the bypass is not recognized
+# and a documented permission-test form silently falls to the dialog. Measured
+# here — 8 KB: both forms allow 10/10; 70 KB and 96 KB: here-string 10/10,
+# pipeline 0/10. The boundary brackets the 64 KB pipe buffer.
+#
+# A negative from an instrument that has not shown a positive is not a result.
+# The fixture beside this suite pins the large-input case.
 grep -qE "$bypass_re" <<<"$cmd" && is_bypass=1
 [[ $is_notify -eq 1 || $is_bypass -eq 1 ]] || exit 0   # not ours → default gate
 
@@ -87,13 +104,34 @@ fi
 
 # α-path (or bypass match): allow, and for the notify branch allow THIS CALL ONLY.
 #
-# The notify branch emits no applyPermissionRules. A session-persistent rule has
-# to be a wildcard pattern, and the only variable part such a pattern can have
-# here is a `*` spanning the whole path prefix — so nothing in it can anchor the
-# installed plugin's root, and any rule broad enough to cover the approved call
-# also covers a command word this file's content check above rejects. The rule
-# would therefore undo that check from the second call of a session onward. The
-# hook is bound to every Bash call anyway, so it re-decides each one.
+# The notify branch emits no applyPermissionRules.
+#
+# WHAT IS MEASURED, and all that is: this branch decides each call at the hook
+# boundary, and it is bound to every Bash call, so it re-decides every one. The
+# matcher requires the command word written bare; a permission rule pattern is
+# matched by the engine under its own rules, and the two do not share a
+# quoting requirement.
+#
+# WHAT IS NOT: how the set a rule matches relates to the set this matcher
+# accepts. NEITHER DIRECTION OF THAT CONTAINMENT HAS BEEN MEASURED, and this
+# comment does not state one. An earlier version did — it said any rule broad
+# enough to cover the approved call also covers a word the content check above
+# rejects — and that sentence was written in a settled voice on no measurement.
+# A statement about a safeguard does not have to be false to do damage; being
+# confident without grounds is enough, because its function is to tell the next
+# auditor there is nothing here to look at.
+#
+# WHAT WOULD SETTLE IT: run the permission engine against a recorded rule and a
+# corpus of command lines this matcher accepts and rejects, and compare the two
+# sets. Nothing short of driving the engine decides it — reading either pattern
+# is not evidence about the other, because the reading of the matcher's own
+# semantics is not settled either.
+#
+# STANDING FENCE: do not write the relationship into this file. This branch has
+# already carried one such sentence, and the next editor who reasons about the
+# two patterns will be tempted to record the conclusion rather than the
+# measurement. If the measurement above is ever taken, it belongs with its
+# recorded inputs, not as an adjective here.
 #
 # The bypass branch keeps its rule. That branch already allows the whole command
 # line for the call in front of it, so the rule adds no reach it does not already

@@ -1,0 +1,1 @@
+printf %s "$cmd" | grep -qE "$bypass_re" && is_bypass=1

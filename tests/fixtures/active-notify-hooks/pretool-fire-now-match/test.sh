@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Verify: PreToolUse hook matches notify.sh fire-now Bash commands and
-# emits permissionDecision=allow + applyPermissionRules (α-path) or
+# emits permissionDecision=allow with NO applyPermissionRules (α-path) or an
 # updatedInput rewrite (γ-path). Positive regression for v2 fire-now subcommand.
+#
+# The α clause said "+ applyPermissionRules" until the branch stopped emitting
+# one. The sentence was accurate the day it was written, which is why proofreading
+# for falsehoods does not find this class — only re-reading the prose above an
+# assertion you just inverted does.
 set -euo pipefail
 
 fire_now_cmd='bash /abs/active-notify/scripts/notify.sh fire-now "build" "성공"'

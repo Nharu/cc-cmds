@@ -3,7 +3,11 @@
 # emits the appropriate JSON for α and γ paths.
 #
 # α-path (CC_CMDS_NOTIFY_INJECT_SID=0, default):
-#   permissionDecision=allow + applyPermissionRules emit
+#   permissionDecision=allow, and NO applyPermissionRules — the notify branch
+#   decides one call at a time. This line read "applyPermissionRules emit" and
+#   was true when it was written; the branch below it stopped emitting the rule
+#   and the header stayed. The assertions were rewritten in the same change, so
+#   nothing was red and nothing pointed here.
 # γ-path (CC_CMDS_NOTIFY_INJECT_SID=1):
 #   permissionDecision=allow + updatedInput.command rewrite with sid prefix
 #   + applyPermissionRules ABSENT

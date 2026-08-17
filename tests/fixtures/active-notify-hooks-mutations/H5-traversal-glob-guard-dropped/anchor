@@ -1,0 +1,4 @@
+  case "$notify_path" in
+    *"/../"*) is_notify=0 ;;
+    *"*"*|*"?"*|*"["*) is_notify=0 ;;
+  esac

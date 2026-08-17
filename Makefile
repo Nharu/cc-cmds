@@ -47,3 +47,4 @@ test-active-notify-mutations:
 	bash scripts/test-active-notify-lifecycle-mutations.sh --self-check
 	bash scripts/test-lint-active-notify-drift-mutations.sh --self-check
 	bash scripts/test-lint-active-notify-subcommands-mutations.sh --self-check
+	bash scripts/test-active-notify-hooks-mutations.sh --self-check

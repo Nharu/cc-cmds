@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify: PreToolUse hook matches notify.sh fire-oneshot Bash commands on both
-# the α (applyPermissionRules) and γ (updatedInput rewrite) paths.
+# the α (allow, no rule emitted) and γ (updatedInput rewrite) paths. The α label
+# read "applyPermissionRules" from before that branch stopped emitting one.
 #
 # Without the notify_re token this subcommand falls through to the Bash
 # permission dialog, which strands every scheduler-delegated banner behind a

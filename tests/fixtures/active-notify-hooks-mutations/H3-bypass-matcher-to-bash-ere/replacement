@@ -1,0 +1,1 @@
+[[ "$cmd" =~ $bypass_re ]] && is_bypass=1

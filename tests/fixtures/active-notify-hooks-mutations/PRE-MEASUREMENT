@@ -1,0 +1,5 @@
+# 사전 측정 블록. 조항과 읽기 규칙은 tests/mutation-harness/가 갖고 이 파일은 인용한다.
+# 값은 리비전이 아니라 내용 해시다.
+fixture-set-content-sha256: 0e6d325f6263c9157b437ad27714563766a7000d076bdcc490d8abb540eecb38
+fixture-count: 12
+recorded: 2026-08-17
