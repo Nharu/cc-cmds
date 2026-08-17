@@ -2,7 +2,7 @@
 # Test driver for plugins/cc-cmds/hooks/active-notify-pretool.sh.
 #
 # Fixture contract (tests/fixtures/active-notify-hooks/pretool-*/):
-#   test.sh — required. Available env vars: PRETOOL_HOOK_SH, HOOK_STDOUT,
+#   test.sh — required. Available env vars: PRETOOL_HOOK_SH, REPO_ROOT, HOOK_STDOUT,
 #             HOOK_STDERR, CC_CMDS_NOTIFY_INJECT_SID (driver env-loops 0,1).
 #
 # Driver runs each fixture twice — once with CC_CMDS_NOTIFY_INJECT_SID=0
@@ -13,7 +13,9 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures_root="$repo_root/tests/fixtures/active-notify-hooks"
-pretool_hook_sh="$repo_root/plugins/cc-cmds/hooks/active-notify-pretool.sh"
+# Which hook to exercise. An INPUT, so a mutation harness can point the suite at
+# a scratch copy instead of writing the tracked file.
+pretool_hook_sh="${CC_CMDS_PRETOOL_HOOK_UNDER_TEST:-$repo_root/plugins/cc-cmds/hooks/active-notify-pretool.sh}"
 
 if [[ ! -x "$pretool_hook_sh" ]]; then
   echo "FAIL: pretool hook not executable: $pretool_hook_sh" >&2
@@ -57,6 +59,11 @@ for fixture_dir in "${fixtures[@]}"; do
       set -e
       export TMPDIR="$tmpdir"
       export PRETOOL_HOOK_SH="$pretool_hook_sh"
+      # The repo root is exported rather than left for a fixture to walk up to
+      # from the hook. The hook path is the thing under test — a mutation harness
+      # points it at a scratch copy — so deriving any other path from it makes
+      # every fixture that does so fail for a reason unrelated to what it asserts.
+      export REPO_ROOT="$repo_root"
       export HOOK_STDOUT="$hook_stdout"
       export HOOK_STDERR="$hook_stderr"
       export CC_CMDS_NOTIFY_INJECT_SID="$inject_sid"

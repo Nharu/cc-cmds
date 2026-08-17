@@ -1,0 +1,2 @@
+[[ "${LOCK_BUDGET_FIRE:-}" =~ ^[1-9][0-9]*$ ]] || { LOCK_BUDGET_FIRE=10000; _budget_fallback_note LOCK_BUDGET_FIRE 10000; }
+[[ "${LOCK_BUDGET_INLINE:-}" =~ ^[1-9][0-9]*$ ]] || { LOCK_BUDGET_INLINE=200; _budget_fallback_note LOCK_BUDGET_INLINE 200; }

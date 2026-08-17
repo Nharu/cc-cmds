@@ -1,0 +1,3 @@
+  if [[ ! -f "$shared_path" ]]; then
+    continue
+  fi

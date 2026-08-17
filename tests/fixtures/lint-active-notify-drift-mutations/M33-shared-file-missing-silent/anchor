@@ -1,0 +1,4 @@
+  if [[ ! -f "$shared_path" ]]; then
+    fail "$shared — declared in OWNER_TABLE but not found at $shared_path"
+    continue
+  fi

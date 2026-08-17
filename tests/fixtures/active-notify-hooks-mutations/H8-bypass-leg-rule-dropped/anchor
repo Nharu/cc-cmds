@@ -1,0 +1,8 @@
+  jq -nc --arg r "Bash(terminal-notifier *-group *cc-cmds-active-notify*)" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "active-notify self-approve",
+      applyPermissionRules: [$r]
+    }
+  }'

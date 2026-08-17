@@ -1,0 +1,1 @@
+if (buf == "") { start = NR; buf = line } else { buf = buf line }

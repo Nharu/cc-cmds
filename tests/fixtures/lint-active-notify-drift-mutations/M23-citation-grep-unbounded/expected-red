@@ -1,0 +1,15 @@
+T-ANDRIFT-OK-1
+T-ANDRIFT-OK-10-korean-negation-in-window
+T-ANDRIFT-OK-11-korean-conditional-denied
+T-ANDRIFT-OK-2
+T-ANDRIFT-OK-3-anchor-case
+T-ANDRIFT-OK-4-negation-wrapped
+T-ANDRIFT-OK-5-korean-negation
+T-ANDRIFT-OK-6-post-negation-english
+T-ANDRIFT-OK-7-banned-negated-korean
+T-ANDRIFT-OK-8-citation-unbounded
+T-ANDRIFT-OK-9-required-phrase-rewrapped
+# 예측 정정(2026-08-17): 새 FAIL-* 픽스처는 이 변이로 붉지 않는다. 그 픽스처들은
+# 이미 exit 1을 기대하므로 위반이 하나 더 생겨도 판정이 바뀌지 않는다 — 인용 규칙
+# 변이로 뒤집히는 것은 OK-* 픽스처뿐이다. 처음 예측은 「본문을 물려받았으니 함께
+# 붉는다」였고 관측이 그것을 반증했다.

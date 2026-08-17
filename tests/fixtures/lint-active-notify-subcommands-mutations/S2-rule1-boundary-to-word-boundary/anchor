@@ -1,0 +1,1 @@
+grep -qiE -- "(^|[^a-z-])${name}([^a-z-]|\$)" "$target"

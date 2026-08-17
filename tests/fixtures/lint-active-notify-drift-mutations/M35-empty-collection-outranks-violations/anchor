@@ -1,0 +1,9 @@
+if (( violations > 0 )); then
+  echo "lint-active-notify-drift: ${violations} violation(s)" >&2
+  exit 1
+fi
+
+if (( scanned == 0 )); then
+  echo "lint-active-notify-drift: no scannable files found" >&2
+  exit 2
+fi

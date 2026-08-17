@@ -1,0 +1,1 @@
+rule 1 boundary becomes a word boundary, so a trailing segment counts as coverage

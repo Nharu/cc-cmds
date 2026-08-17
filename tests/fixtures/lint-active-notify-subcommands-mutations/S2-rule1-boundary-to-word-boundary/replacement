@@ -1,0 +1,1 @@
+grep -qiE -- "\\b${name}\\b" "$target"

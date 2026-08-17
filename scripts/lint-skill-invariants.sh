@@ -52,16 +52,24 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     design-prompt / design-upgrade / review-upgrade) — no loop at all, no
 #     termination contract to lose. review-upgrade is a single-pass, teamless,
 #     counterless second-opinion (same basis as design-upgrade).
-#   - IO orchestrators (active-notify / implement) — termination is a
-#     hook/tool-driven boundary, not a counter the model has to maintain.
+#   - IO orchestrator (implement) — termination is a hook/tool-driven
+#     boundary, not a counter the model has to maintain.
 #     implement's temporary visual-fidelity fix loop (issue #70, a removable
 #     stopgap) terminates by a hard per-screen cap (3 auto-fixes) plus
 #     fail-closed defaults — that is the termination guarantee, not the
 #     TaskGet-recovered cap/verdict state (which only restores it across
 #     compaction). Remove this clause when that loop leaves implement.
+# `active-notify` held that same IO-orchestrator exemption and no longer does.
+# The rationale was that its termination is a hook/tool-driven boundary rather
+# than something the model maintains; event-scoped repeat's model self-cancel
+# made that false. A repeat cycle now ends on a judgment the model has to keep
+# — the event series is over, and the terminating instance's fire-now goes
+# BEFORE the cancel — which is precisely a termination contract that
+# compaction can summarize away, leaving either a cycle that never ends or one
+# that silently drops its final banner.
 # In effect, the non-exempt members are `design` (whose phase-transition
-# invariants live in its top `## Control-Flow Invariants`), `design-audit`, and
-# `design-analyze`. `design-audit` is non-exempt for the
+# invariants live in its top `## Control-Flow Invariants`), `design-audit`,
+# `design-analyze`, and `active-notify`. `design-audit` is non-exempt for the
 # core reason: its termination state is NOT recoverable from the ledger, so it
 # does not qualify for the multi-round agent-team exemption above. A ledger
 # whose rows all read `done` at the fan-out phase is byte-identical whether the
@@ -75,7 +83,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # could corrupt), `design-analyze` creates files while its source repo must stay
 # untouched, so a summarized-away read-only rule is a real silent-corruption
 # vector that first-5K placement guards against.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
+EXEMPT_SKILLS=("design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)

@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify
+.PHONY: lint readme check test test-active-notify test-active-notify-mutations
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -9,6 +9,8 @@ lint:
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
+	bash scripts/lint-active-notify-drift.sh
+	bash scripts/lint-active-notify-subcommands.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
@@ -22,6 +24,7 @@ check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 
 test: test-active-notify
+	bash scripts/test-mutation-harness-schema.sh
 	bash scripts/test-lint-skill-options.sh
 	bash scripts/test-lint-skill-invariants.sh
 	bash scripts/test-lint-skill-paths.sh
@@ -29,9 +32,20 @@ test: test-active-notify
 	bash scripts/test-lint-skill-auq-spec.sh
 	bash scripts/test-lint-verification-literals.sh
 	bash scripts/test-lint-design-audit-pins.sh
+	bash scripts/test-lint-active-notify-drift.sh
+	bash scripts/test-lint-active-notify-subcommands.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
 
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
 	bash scripts/test-active-notify-pretool-hook.sh
+
+# Deliberately not prerequisites of `test`: a full pass re-runs the whole
+# fixture suite once per declared mutation. Run them when the file each one
+# mutates changes.
+test-active-notify-mutations:
+	bash scripts/test-active-notify-lifecycle-mutations.sh --self-check
+	bash scripts/test-lint-active-notify-drift-mutations.sh --self-check
+	bash scripts/test-lint-active-notify-subcommands-mutations.sh --self-check
+	bash scripts/test-active-notify-hooks-mutations.sh --self-check

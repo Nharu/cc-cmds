@@ -1,0 +1,5 @@
+    tmp="${flag_file}.tmp-$$"
+    printf '{"schema":3,"armed_at":%s,"session_id":"%s","request_text":"%s","context_hint":"%s","mode":"%s","arm_count":%s,"fire_count":0,"last_fire_at":null}\n' \
+      "$ts" "$esc_sid" "$esc_req" "$esc_ctx" "$notify_mode" "$arm_count" > "$tmp"
+    mv "$tmp" "$flag_file"
+    tmp=""

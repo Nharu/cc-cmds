@@ -1,0 +1,1 @@
+NEGATION_RE_BEFORE='(^|[^[:alnum:]])([Nn]o|[Nn]ot|[Nn]ever|[Nn]either|[Nn]or)([^[:alnum:]-]|$)'

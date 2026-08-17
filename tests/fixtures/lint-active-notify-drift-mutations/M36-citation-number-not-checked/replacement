@@ -1,0 +1,3 @@
+      if [[ -z "$title" ]]; then
+        continue
+      fi

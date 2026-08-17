@@ -1,0 +1,2 @@
+#   2. the first USE of an unset name aborts under `set -u` -- the abort is
+#      `set -u`'s, not `set -e`'s;

@@ -1,0 +1,8 @@
+  jq -nc --arg r "Bash(* active-notify/scripts/notify.sh *)" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "active-notify self-approve",
+      applyPermissionRules: [$r]
+    }
+  }'

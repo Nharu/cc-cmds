@@ -18,7 +18,15 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures_root="$repo_root/tests/fixtures/active-notify-lifecycle"
-notify_sh="$repo_root/plugins/cc-cmds/skills/active-notify/scripts/notify.sh"
+
+# Which dispatcher to exercise. This is an INPUT to the driver, and it is a
+# different name from the `NOTIFY_SH` exported to fixtures below on purpose:
+# that one is an OUTPUT, written by this driver on every run, so setting it from
+# outside changes nothing — a caller who tried would see the suite pass against
+# the tracked file while believing it ran against their copy. A mutation harness
+# needs to point the suite at a scratch copy without writing the tracked file,
+# and this is the seam that lets it.
+notify_sh="${CC_CMDS_DISPATCHER_UNDER_TEST:-$repo_root/plugins/cc-cmds/skills/active-notify/scripts/notify.sh}"
 
 if [[ ! -x "$notify_sh" ]]; then
   echo "FAIL: notify.sh not executable: $notify_sh" >&2

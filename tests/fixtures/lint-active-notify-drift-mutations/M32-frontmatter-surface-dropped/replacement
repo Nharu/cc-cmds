@@ -1,0 +1,1 @@
+  for pair in "$shared_path|$shared"; do

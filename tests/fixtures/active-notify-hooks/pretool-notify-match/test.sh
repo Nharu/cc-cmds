@@ -3,7 +3,11 @@
 # emits the appropriate JSON for α and γ paths.
 #
 # α-path (CC_CMDS_NOTIFY_INJECT_SID=0, default):
-#   permissionDecision=allow + applyPermissionRules emit
+#   permissionDecision=allow, and NO applyPermissionRules — the notify branch
+#   decides one call at a time. This line read "applyPermissionRules emit" and
+#   was true when it was written; the branch below it stopped emitting the rule
+#   and the header stayed. The assertions were rewritten in the same change, so
+#   nothing was red and nothing pointed here.
 # γ-path (CC_CMDS_NOTIFY_INJECT_SID=1):
 #   permissionDecision=allow + updatedInput.command rewrite with sid prefix
 #   + applyPermissionRules ABSENT
@@ -34,7 +38,10 @@ inject_sid="${CC_CMDS_NOTIFY_INJECT_SID:-0}"
 if [[ "$inject_sid" == "1" ]]; then
   # γ-path: updatedInput.command must start with CLAUDE_CODE_SESSION_ID prefix
   updated=$(jq -r '.hookSpecificOutput.updatedInput.command // empty' "$HOOK_STDOUT")
-  expected_prefix="CLAUDE_CODE_SESSION_ID=${session_id} "
+  # The hook shell-quotes the injected value with @sh; derive the expected
+  # form the same way rather than hardcoding it.
+  quoted_sid=$(jq -rn --arg s "$session_id" '$s | @sh')
+  expected_prefix="CLAUDE_CODE_SESSION_ID=${quoted_sid} "
   if [[ "$updated" != "${expected_prefix}${arm_cmd}" ]]; then
     echo "FAIL (γ): updatedInput.command does not match expected prefix" >&2
     echo "  expected: ${expected_prefix}${arm_cmd}" >&2
@@ -55,11 +62,15 @@ if [[ "$inject_sid" == "1" ]]; then
     exit 1
   fi
 else
-  # α-path: applyPermissionRules must be present (session-persistent allow)
-  rules=$(jq -r '.hookSpecificOutput.applyPermissionRules // empty | if type == "array" then join("|") else . end' "$HOOK_STDOUT")
-  if [[ "$rules" != *"notify.sh"* ]]; then
-    echo "FAIL (α): applyPermissionRules missing notify.sh pattern" >&2
-    echo "  got: $rules" >&2
+  # α-path: applyPermissionRules must be ABSENT on the notify leg. The allow
+  # covers this call only. A session-persistent rule would have to be a wildcard
+  # pattern, and the widest variable part it can carry here spans the whole path
+  # prefix — so any rule broad enough to cover this call also covers the command
+  # words the hook's content check rejects, undoing that check from the second
+  # call of the session onward.
+  if jq -e '.hookSpecificOutput.applyPermissionRules' "$HOOK_STDOUT" >/dev/null 2>&1; then
+    echo "FAIL (α): the notify leg must emit no applyPermissionRules" >&2
+    cat "$HOOK_STDOUT" >&2
     exit 1
   fi
   # α-path: updatedInput must be ABSENT

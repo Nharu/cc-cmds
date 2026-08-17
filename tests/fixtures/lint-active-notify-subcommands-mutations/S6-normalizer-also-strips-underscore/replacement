@@ -1,0 +1,1 @@
+  done < <(sed -e 's/[`*_]//g' -e 's/[[:space:]]*|[[:space:]]*/|/g' "$target" \

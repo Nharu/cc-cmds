@@ -1,0 +1,3 @@
+        if ! phrase_is_negated "$block_text" "$hit"; then
+          fail "$scan_label — block at line $block_start carries a retired contract phrase ('$hit')"
+        fi

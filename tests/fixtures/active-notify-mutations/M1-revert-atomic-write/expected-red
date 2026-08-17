@@ -1,0 +1,7 @@
+# The staged write reverted to an in-place one. Two fixtures redden and that is
+# not a defect in either: the atomicity fixture sees the torn reads, and the
+# staging-file fixture reddens because with no `mv` on the path its induced
+# failure never fires. Declared here so the second red is a recorded property
+# rather than a surprise a later reader has to re-derive.
+arm-cleans-staging-file-on-failure
+arm-write-is-atomic
