@@ -24,6 +24,7 @@ check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 
 test: test-active-notify
+	bash scripts/test-mutation-harness-schema.sh
 	bash scripts/test-lint-skill-options.sh
 	bash scripts/test-lint-skill-invariants.sh
 	bash scripts/test-lint-skill-paths.sh

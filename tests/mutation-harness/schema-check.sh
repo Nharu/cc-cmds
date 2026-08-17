@@ -32,11 +32,24 @@ mutation_row_declared_vector() {
 # while a row's vector collapses, and that case is measured, not hypothetical.
 mutation_fixture_set_hash() {
   local root="$1" prefix="${2:-}"
+  # LC_ALL=C on every sort in this function, and the reason is not style. `sort`
+  # collates by locale: C compares bytes, so `SKILL.md` precedes `scripts/…`
+  # because `S` is 0x53 and `s` is 0x73, while a UTF-8 locale folds case and
+  # orders them the other way. Fixture trees hold both, so the same tree hashes
+  # to two values depending on who runs it, and the check then reports a
+  # fixture-set change that did not happen.
+  #
+  # This was found by CI on the first run of the job that calls these harnesses,
+  # and the shape of the near-miss is worth keeping: three of the four corpora
+  # agreed across locales anyway, because their names happen to collate the same
+  # either way. An instrument that agrees by coincidence on most of its inputs
+  # reads exactly like one that is correct.
+  LC_ALL=C
   find "$root" -mindepth 1 -maxdepth 1 -type d -name "${prefix}*" -exec basename {} \; \
-    | sort \
+    | LC_ALL=C sort \
     | while IFS= read -r d; do
         printf '%s\n' "$d"
-        find "$root/$d" -type f | sort | while IFS= read -r f; do
+        find "$root/$d" -type f | LC_ALL=C sort | while IFS= read -r f; do
           printf '%s  ' "${f#"$root/"}"; shasum -a 256 "$f" | cut -d' ' -f1
         done
       done \
