@@ -1,3 +1,10 @@
 # The arity line: it names the section count and both guard-order line numbers,
 # so a change to either turns this fixture red.
-OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 38 < truncation 39) (scope: _common/sidecar.md only; design-audit's schema is out of reach)
+#
+# This fixture carries one terminator literal TWICE, deliberately, because the
+# shipped contract does. Every OK fixture used to carry each terminator exactly
+# once, so the rule that the cross-check compares a DISTINCT set rather than a
+# count had zero coverage: dropping the de-duplication left the suite fully
+# green and turned the real tree red — a mutant that survives the fixtures and
+# dies on the original, which means the fixtures did not represent it.
+OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 39 < truncation 40) (scope: _common/sidecar.md only; design-audit's schema is out of reach)

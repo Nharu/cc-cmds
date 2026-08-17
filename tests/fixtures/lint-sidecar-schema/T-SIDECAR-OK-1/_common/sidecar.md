@@ -19,6 +19,7 @@ Header:
 ### 2.5 Verbatim observation payloads
 
 - **File terminator.** The last **non-empty** line of the file is the fixed sentinel `<!-- cc-design-reconverge: end -->`, emitted by every write form, the creation write included.
+  Where the pre-write bytes already carry `<!-- cc-design-reconverge: end -->` it is byte-identical before and after, so it never reaches a diff gate.
 
 ## 3. The design-drift sidecar — `<base>/docs/design-drift/{slug}.md`
 
