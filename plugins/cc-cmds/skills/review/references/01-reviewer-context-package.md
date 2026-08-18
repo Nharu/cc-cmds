@@ -68,7 +68,7 @@ When assigning each reviewer (Step 4), include the following in the initial mess
 - Concurrency reviewer: race conditions, lock usage, idempotency
 - Logic reviewer: business logic correctness, branch condition completeness, edge case coverage, requirements-implementation alignment
 
-## Review Protocol (minimum 2 rounds)
+## Review Protocol (rounds per the shared Round budget)
 
 Each round is a resume of the reviewer task by its `agentId`; each round's result is the reviewer's **durable witness file**, confirmed via `witness_present` and read directly — the background completion notification and the resume tool result are only early-wake hints (the very drop-prone channel this model refuses to trust), not the result, and not a DM. On every resume the lead re-injects the load-bearing context, quoting peer findings **verbatim**.
 
@@ -79,7 +79,7 @@ Each round is a resume of the reviewer task by its `agentId`; each round's resul
     - Severity rationale included for each finding
     - No duplication with existing PR comments
     - Fix suggestions included where appropriate
-    - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and resume the reviewer to re-check. Re-request (by resume) until QG passes (within total round safety limit).
+    - **Checklist coverage check**: Judge by whether the reviewer actually checked checklist items, not by finding count. "Checked but no issues found" is normal (clean code). If findings are listed without any mention of checklist items, judge as insufficient and resume the reviewer to re-check. Re-request (by resume) until QG passes (within the round budget — see **Round budget** below).
 
 3. **Cross-validation**: Resume each reviewer by its `agentId`, re-injecting the other reviewers' findings verbatim. Explicitly request: validate severity assessments, identify missed issues in overlapping areas, flag false positives, and note findings that interact with their own. The reviewer publishes its cross-validation pass as its witness.
 
@@ -102,4 +102,4 @@ Beyond the shared facilitator rules in `_common/agent-team-protocol.md`, review 
 - **Resolve severity disputes**: If reviewers disagree on severity, ask both to justify their rating before the lead makes a final call.
 - **Ensure completeness**: If a reviewer's findings seem unusually sparse for their scope, ask them to double-check specific areas before accepting.
 - **PR comment dedup (2-layer check)**: Reviewers receive existing PR comments as context for 1st-layer filtering. The lead performs 2nd-layer verification during cross-validation to catch missed duplicates. Both reviewers and lead share responsibility to minimize duplication.
-- **Round safety limit**: Step 4 review protocol is capped at **10 rounds maximum**. Upon reaching the limit, report current state to the user and ask whether to extend by 10 more rounds. Extensions can repeat indefinitely.
+- **Round budget**: how many rounds this protocol drives is defined once in `_common/agent-team-protocol.md`'s `### Round budget` — the default, the ceiling, and the two entry paths that open a third round. There is no extension path: reaching the ceiling surfaces the impasse to the user rather than buying more rounds.
