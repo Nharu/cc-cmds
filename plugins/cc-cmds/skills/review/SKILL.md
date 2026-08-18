@@ -212,6 +212,22 @@ Propose team composition based on PR characteristics and codebase exploration re
 
 **How many reviewers**: bounded by `_common/agent-team-protocol.md`'s `### Team size budget`. Read the ceiling **and its coordinator-class carve-out** there — this step states no number of its own, so the budget cannot drift into two values.
 
+#### Small-work gate (evaluated once on entering this step)
+
+A small, single-concern change does not need a full review team. Evaluate this before composing, against the scope **Step 1c confirmed** — never the raw target, since a "특정 경로만" / "리뷰 분할" narrowing is exactly the case where the two differ most.
+
+**Gate input — measure the narrowed scope, and read it per mode.** Step 1a's three target types keep their change size in different places, and the local-diff mode has no `gh` metadata at all:
+
+- **PR mode** — take the per-file `{path,additions,deletions}` array already collected in 1b, drop the entries Step 1c excluded, and sum `additions + deletions` over what remains. The file count is the length of that same filtered array — do **not** reuse the unfiltered `changedFiles`, which is the pre-narrowing number.
+- **Local diff mode** (empty `$ARGUMENTS`) — the source is the same `git diff {DEFAULT_BRANCH}...HEAD` the auto-detect chain established; aggregate it with `git diff {DEFAULT_BRANCH}...HEAD --numstat`, apply the Step-1c path filter to the rows, and sum the added and deleted columns.
+- **File path mode** — there is no diff input, so there is no change size to measure. **Declare that the gate does not apply** and compose normally; do not substitute an estimate.
+
+**Risk indicators outrank the size row.** If any indicator in the next subsection fires — auth/authorization, DB schema or query, public API surface, external service integration, async/concurrency — compose for that risk no matter how small the diff is, and this gate does not narrow the team. Size is the one signal here that could otherwise quietly overrule a risk signal, and a security-relevant change is very often a small patch.
+
+**When it fires**: no risk indicator fired **and** the narrowed scope is inside the small-patch threshold of the type table below. Compose from that row instead of a larger default row, and state the narrowing in one line of the Korean proposal so the user sees it rather than discovering a thinner team.
+
+**Floor.** This gate selects among the composed rows below, every one of which carries at least two reviewers, so it cannot yield an empty roster — and an empty roster would not be a saving anyway but a hard stop, since the report stub is created at spawn time and every resume path fail-closes on a missing or unparseable ledger. That floor belongs to the roster contract in `_common/agent-team-protocol.md`, alongside the team-size ceiling; do not write a second floor rule into this gate.
+
 #### PR characteristic analysis → risk indicators
 
 - Auth/authorization logic changes → security reviewer needed
