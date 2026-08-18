@@ -53,7 +53,15 @@ These six lines are the **only** place any of these values appears in this skill
 
 ### CFI-1 — Freeze (the mechanism, not hygiene)
 
-The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the `git worktree list --porcelain` baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
+The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the worktree baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
+
+**The worktree comparison is scoped, not whole-output.** `git worktree list --porcelain` is a repository-global command: run from any worktree it emits every worktree of the shared repository, each with its own `HEAD <sha>` line. Comparing that output wholesale makes a commit in an unrelated sibling worktree — one no reader measured — fail the close, which is neither what the gate detects nor something the audit can outlast (the window spans the whole fan-out). The baseline is therefore recorded and re-checked as **three scoped assertions**, all of which must hold:
+
+1. the **set of worktree paths** (`git worktree list --porcelain | grep '^worktree '`) equals the baseline — catches a worktree created or removed during the window;
+2. this audit's **own worktree entry** (its `worktree`/`HEAD`/`branch` lines) equals the baseline — catches a HEAD move under the tree the readers actually measured;
+3. the count of entries carrying the `cc-design-exp-` prefix is **0** — the mechanism-owned leak the gate exists to detect.
+
+A sibling worktree's `HEAD` moving is deliberately **not** a mismatch. It changes no byte of the reviewed text (`FROZEN_SHA256` covers that directly) and no byte of `CODE_ROOT`, so the induced-defect rate the freeze protects stays zero. This scoping is local to this skill pending a single definition across the shared gate's consumers — Nharu/cc-cmds#159.
 
 This is load-bearing, not tidiness. The audit's reproduction rate stays below 1 only while the induced-defect rate is zero, and that rate becomes positive the instant any byte of the reviewed text changes between reviews. Reader witnesses are written out-of-tree precisely so the boundary baselines stay untouched; the in-tree reader-report copies are written **after** the window closes.
 
