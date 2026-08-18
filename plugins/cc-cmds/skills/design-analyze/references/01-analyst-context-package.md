@@ -53,7 +53,7 @@ Each analyst is a nameless background task; the lead drives it across rounds by 
 Beyond the shared facilitator rules in `_common/agent-team-protocol.md`:
 - **Resolve severity disputes**: if analysts disagree, ask each to justify before the lead's Step 5 final call ("higher severity wins" unless resolved).
 - **Premise focus**: for refactoring docs, push analysts to test the document's *premise about the existing code* — that is the highest-value `doc-code-gap` signal.
-- **Round budget**: how many rounds the Step 4 protocol drives is defined once in `_common/agent-team-protocol.md`'s `### Round budget`. On reaching the hard cap, report state to the user — there is no extend-by-N path.
+- **Round budget**: how many rounds the Step 4 protocol drives is defined once in `_common/agent-team-protocol.md`'s `### Round budget`. On reaching that section's ceiling, report state to the user — there is no extend-by-N path.
 
 **Analysis Coordinator scope (large/multi-domain doc):**
 For a large or multi-domain doc, the lead may give one analyst an added coordinator scope in its task-assignment header (no named role, no separate channel — it is still a nameless background task delivering via its witness):

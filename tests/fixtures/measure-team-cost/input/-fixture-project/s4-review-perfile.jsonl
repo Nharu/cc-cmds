@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running /cc-cmds:review on PR 42."}]}}
+{"type":"user","toolUseResult":{"stdout":"[{\"path\":\"src/auth.ts\",\"additions\":12,\"deletions\":3},{\"path\":\"src/session.ts\",\"additions\":4,\"deletions\":1}]"}}
+{"type":"user","toolUseResult":{"stdout":"- 188888888888888 | done | round-2 | logic (sonnet) | 0 | ok | 1\n- 299999999999999 | done | round-2 | quality (sonnet) | 0 | ok | 1"}}
+{"type":"user","toolUseResult":{"stdout":"no further input.\n<!-- cc-witness: logic round-2 complete 3c11 -->"}}
