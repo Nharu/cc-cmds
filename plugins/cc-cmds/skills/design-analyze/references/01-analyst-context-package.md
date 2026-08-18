@@ -44,7 +44,7 @@ When assigning each analyst (Step 4), include the following in the initial messa
 Each analyst is a nameless background task; the lead drives it across rounds by resuming its `agentId` and collecting its round witness via `witness_present` — never its return text (see `_common/agent-team-protocol.md`).
 
 1. **Round 1 — Independent analysis**: each analyst analyzes from its lens and publishes the analysis as its witness. A returned analyst has self-terminated; confirm its round witness via `witness_present` and read the witness (never the return) — there is no `[COMPLETE]`/`[IN PROGRESS]` prefix to wait on.
-2. **Quality Gate**: before cross-validation, verify each returned analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). On a miss, resume that analyst (by `agentId`, re-injecting the gap) until QG passes (within the round safety limit).
+2. **Quality Gate**: before cross-validation, verify each returned analysis has: specific doc anchors (`§x.y "heading"`) for every finding; when grounded, `path:line` for code claims; severity rationale; checklist coverage (judge by whether items were actually checked, not by finding count — "checked, no issue" is valid). On a miss, resume that analyst (by `agentId`, re-injecting the gap) until QG passes (within the round budget — see **Round budget** below).
 3. **Cross-validation**: resume each analyst, re-injecting the other analysts' findings **verbatim**. Request: validate severity hints, identify gaps in overlapping areas, flag false positives, note findings that interact.
 4. **Convergence Check**: convergence is by **witness collection** (see `_common/agent-team-protocol.md`). Resume each analyst once with a convergence prompt (re-inject current consensus + open conflicts); the analysis has converged when every analyst's round witness is `witness_present` and its witness body says "no further input". Only then proceed to Step 5. Analysts are read-only single-pass per lens, but are still resumed for cross-review convergence — no termination math.
 
@@ -53,7 +53,7 @@ Each analyst is a nameless background task; the lead drives it across rounds by 
 Beyond the shared facilitator rules in `_common/agent-team-protocol.md`:
 - **Resolve severity disputes**: if analysts disagree, ask each to justify before the lead's Step 5 final call ("higher severity wins" unless resolved).
 - **Premise focus**: for refactoring docs, push analysts to test the document's *premise about the existing code* — that is the highest-value `doc-code-gap` signal.
-- **Round safety limit**: the Step 4 protocol is capped at **10 rounds**. On reaching the limit, report state to the user and ask whether to extend by 10 more.
+- **Round budget**: how many rounds the Step 4 protocol drives is defined once in `_common/agent-team-protocol.md`'s `### Round budget`. On reaching the hard cap, report state to the user — there is no extend-by-N path.
 
 **Analysis Coordinator scope (large/multi-domain doc):**
 For a large or multi-domain doc, the lead may give one analyst an added coordinator scope in its task-assignment header (no named role, no separate channel — it is still a nameless background task delivering via its witness):
