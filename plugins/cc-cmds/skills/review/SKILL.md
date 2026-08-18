@@ -210,6 +210,8 @@ This exploration output is the key input for Step 3 team composition.
 
 Propose team composition based on PR characteristics and codebase exploration results.
 
+**How many reviewers**: bounded by `_common/agent-team-protocol.md`'s `### Team size budget`. Read the ceiling **and its coordinator-class carve-out** there — this step states no number of its own, so the budget cannot drift into two values.
+
 #### PR characteristic analysis → risk indicators
 
 - Auth/authorization logic changes → security reviewer needed
@@ -235,7 +237,7 @@ The table above is the **default composition**. Roles can be added/changed based
 
 #### Large PR additional strategy
 
-When >50 files are in review scope (after Step 1c narrowing), consider adding a **Scope Coordinator** role. The coordinator operates as a persistent participant:
+When >50 files are in review scope (after Step 1c narrowing), consider adding a **Scope Coordinator** role. It is meta/orchestration rather than a domain perspective, so it is **not counted** against the ceiling — the coordinator-class carve-out in `_common/agent-team-protocol.md`'s `### Team size budget`. The coordinator operates as a persistent participant:
 
 - **Round 0 (pre-analysis)**: Classify changed files by risk level and assign focus areas to each reviewer
 - **Per-round coverage audit**: After each round's results, identify high-risk areas not yet reviewed and request additional review from relevant reviewers
