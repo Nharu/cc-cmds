@@ -223,8 +223,11 @@ nsec=$(printf '%s\n' "$nsec" | head -1)
 # a terminator literal for a kind that has no payload schema section — the
 # residue a removed schema leaves behind. DISTINCT set, never a count.
 #
-# BOTH STEPS USE ONE NOTION OF "A SECTION" AND ONE NOTION OF "A KIND", and the
-# claim used to be true of only the first. Step (1) runs a fence state machine
+# BOTH STEPS USE ONE NOTION OF "A KIND". They do NOT share one notion of "a
+# section", and an earlier form of this comment claimed both. What is shared is
+# the kind half — step (2) consumes step (1)'s set rather than deriving its own.
+# The fence state machine is still two byte-different copies, one per step, and
+# saying otherwise names a property this file does not have. Step (1) runs a fence state machine
 # and treats a heading inside a fence as example text; step (2) grepped the raw
 # file and treated the same line as a real declaration. One lint, two answers to
 # "what is a section" — and the asymmetry was not merely untidy: a legitimate
