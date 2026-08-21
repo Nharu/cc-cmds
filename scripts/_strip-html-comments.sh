@@ -103,14 +103,43 @@ strip_html_comments() {
 # an empty stand-in would turn "file missing" into "anchor missing", which is a
 # worse diagnostic for the same failure.
 stripped_copy() {
-  local file="$1" out
+  local file="$1" key out src
   if [[ ! -f "$file" ]]; then
     printf '%s\n' "$file"
     return 0
   fi
-  out="$CC_STRIP_DIR/$(printf '%s' "$file" | tr '/' '%')"
-  if [[ ! -f "$out" ]]; then
-    strip_html_comments < "$file" > "$out"
+
+  # THE CACHE KEY IS FIXED-LENGTH, and it was not. Spelling the key as the full
+  # path with separators substituted made the file name grow with the checkout
+  # root: past roughly 118 bytes of root the name exceeds NAME_MAX, the write
+  # fails, and every consumer then greps a file that does not exist — producing
+  # false content-deletion diagnostics that name innocent literals. Reproduced
+  # directly. A checksum of the path is constant width, and the basename is kept
+  # only so a human looking in the scratch directory can tell the files apart.
+  key=$(printf '%s' "$file" | cksum | awk '{print $1}')
+  out="$CC_STRIP_DIR/${key}-$(basename "$file")"
+  src="$out.src"
+
+  # A checksum can collide, and a collision would silently hand back another
+  # file's contents — the one failure mode worse than the one just fixed. The
+  # source path is recorded beside the copy and verified on every cache hit, so
+  # a collision fails loudly instead.
+  if [[ -f "$out" && -f "$src" ]]; then
+    if [[ "$(cat "$src")" == "$file" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    echo "FAIL: strip cache key collision between '$(cat "$src")' and '$file'; the blanked copy would have been the wrong file's" >&2
+    return 1
   fi
+
+  # THE WRITE IS CHECKED. An unchecked redirection that fails leaves the caller
+  # holding a path to nothing, and the diagnostics that follow blame the content
+  # rather than the write.
+  if ! strip_html_comments < "$file" > "$out"; then
+    echo "FAIL: could not write the comment-blanked copy of '$file' to '$out'" >&2
+    return 1
+  fi
+  printf '%s' "$file" > "$src"
   printf '%s\n' "$out"
 }
