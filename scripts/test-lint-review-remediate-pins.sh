@@ -84,6 +84,71 @@ else
   fi
 fi
 
+# ---- guard self-checks ------------------------------------------------------
+#
+# Red paths for the two guards whose subject is the lint's OWN source rather than
+# a skill tree. A fixture is a `review-remediate/` directory, so nothing a fixture
+# contains can reach the lint's literal pin arrays or its control flow — for these
+# two the only possible red path is a mutated copy of the lint itself.
+#
+# This is not optional decoration. The one real subsumption this repo ever had was
+# removed by the enum narrowing in this same change, so without these the
+# subsumption guard would ship green with nothing to catch **and nothing that
+# could ever catch it** — the blind-guard shape this whole harness exists to
+# refuse.
+#
+# The copy lands beside the original so the lint's `repo_root` still resolves;
+# a trap removes it even if the runner is interrupted.
+
+selfcheck_copy="$script_dir/.tmp-guard-selfcheck.sh"
+trap 'rm -f "$selfcheck_copy"' EXIT
+
+guard_selfcheck() {
+  local label="$1" anchor="$2" injected="$3" expect="$4"
+  ANCHOR="$anchor" INJECTED="$injected" LC_ALL=C awk '
+    { print }
+    index($0, ENVIRON["ANCHOR"]) == 1 && !done { print ENVIRON["INJECTED"]; done = 1 }
+  ' "$script_dir/lint-review-remediate-pins.sh" > "$selfcheck_copy"
+
+  if ! grep -Fq -- "$injected" "$selfcheck_copy"; then
+    echo "FAIL: 가드 자가 검사 '$label' — 주입 앵커가 더 이상 맞지 않는다: $anchor" >&2
+    failures=$((failures + 1))
+    return
+  fi
+
+  set +e
+  local out ec
+  out=$(bash "$selfcheck_copy" 2>&1 </dev/null)
+  ec=$?
+  set -e
+
+  if [[ "$ec" == "0" ]]; then
+    echo "FAIL: 가드 자가 검사 '$label' — 주입했는데 종료 0이다; 가드가 발화하지 않았다" >&2
+    failures=$((failures + 1))
+  elif ! printf '%s\n' "$out" | grep -Eq -- "$expect"; then
+    echo "FAIL: 가드 자가 검사 '$label' — 기대한 진단이 출력에 없다: $expect" >&2
+    failures=$((failures + 1))
+  else
+    passed=$((passed + 1))
+    echo "PASS: 가드 자가 검사 '$label'"
+  fi
+}
+
+# Subsumption: a shorter reason token that every longer one contains. The
+# diagnostic must name BOTH literals and the list they belong to — a bare
+# "subsumption found" would leave the reader to re-derive which pair in which of
+# the eight lists.
+guard_selfcheck 'subsumption' 'REASONS=(' "  '보류 불가'" \
+  "^FAIL: pin list REASONS — '보류 불가' is a substring of '보류 불가\(.*\)'"
+
+# Abort: an unchecked non-zero exit must name the line that ended the run. It
+# exits 1 exactly like a pin failure, so the marker string is the whole of the
+# distinction.
+guard_selfcheck 'abort marker' 'fail=0' 'grep -q ZZZ-GUARD-SELFCHECK /dev/null' \
+  '^ABORT: .* ended at line [0-9]+ with exit [0-9]+'
+
+rm -f "$selfcheck_copy"
+
 for fixture in "$fixtures"/*/; do
   fixture_name=$(basename "$fixture")
   case "$fixture_name" in
