@@ -56,9 +56,18 @@
 # under a comment claiming they were byte-identical, which they were not, by
 # three lines and two prefixes. The invariant is therefore not "the copies match"
 # but "there are no copies": what does not exist cannot drift. The unit matters
-# too — the span the five drivers share is 82 lines, not the 18 of the
+# too — the span the five drivers share is 78 lines (77 contiguous plus one),
+# not the 82 of the extracted function body and not the 18 of the
 # weakening-prevention arm alone, and extracting only the arm would satisfy the
 # words "fix it once" while leaving the fix five deep.
+#
+# WHAT (P4) REQUIRES OF THE LINTS THEMSELVES, stated because it is an obligation
+# and was not written down anywhere. (P4) constrains the EXPECT *declaration*,
+# and a declaration has to be a substring of the emitted line — so in practice
+# every lint that this contract judges must emit its failures as
+# `FAIL: <label> — <message>` with an em dash and non-space text on both sides.
+# All five do today; the rule is recorded here so the sixth is not written
+# against a format nobody stated.
 #
 # Usage:
 #   source scripts/_expect-contract.sh
@@ -72,7 +81,7 @@
 judge_fixture() {
   local fixture_name="$1" expect_file="$2" want="$3" ec="$4" output="$5"
   local line trimmed out_line decl match_kind covered
-  local declared_lines expected_fail_lines actual_fail_lines label
+  local declared_lines expected_fail_lines actual_fail_lines label lhs rhs
   local -a problems declarations
 
     problems=()
@@ -120,7 +129,16 @@ judge_fixture() {
         *) continue ;;
       esac
       label="${decl#FAIL:}"
-      if [[ "$label" != *' — '* || -z "${label%% — *}" || -z "${label##* — }" ]]; then
+      # `-z` is the wrong test here and was measured wrong: the prefix strip
+      # removes `FAIL:` and leaves whatever spacing followed it, so
+      # `FAIL:  — msg` (two spaces) hands this clause a one-space left side,
+      # which is non-empty and passes. The right question is whether the side
+      # holds any non-space character at all.
+      lhs="${label%% — *}"
+      rhs="${label##* — }"
+      if [[ "$label" != *' — '* ]] \
+         || [[ ! "$lhs" =~ [^[:space:]] ]] \
+         || [[ ! "$rhs" =~ [^[:space:]] ]]; then
         problems+=("FAIL declaration is weaker than the contract allows; write it as 'FAIL: <label> — <message>' so it names which check fired: $decl")
       fi
     done
@@ -132,6 +150,13 @@ judge_fixture() {
     # status aborts the driver mid-sweep — silently turning "no fixture failed"
     # into "the sweep stopped early". The `if` form has no such status to leak.
     while IFS= read -r out_line; do
+      # The EXPECT side is trimmed before it is compared, and the output side
+      # was not. That asymmetry let three shapes through: an indented `OK:` and
+      # an indented `SKIP:` fell to the `*)` arm and escaped this clause
+      # entirely, and an indented `FAIL:` escaped the count clause below, whose
+      # `grep` is line-anchored. Normalising here makes the two sides symmetric
+      # rather than adding a second rule to remember.
+      out_line="${out_line#"${out_line%%[![:space:]]*}"}"
       case "$out_line" in
         OK:*)   match_kind=whole ;;
         SKIP:*) match_kind=substring ;;
@@ -151,7 +176,12 @@ judge_fixture() {
     done <<< "$output"
 
     # ...and nothing else may have failed.
-    actual_fail_lines=$(printf '%s\n' "$output" | grep -c '^FAIL:' || true)
+    # Counted over the SAME normalisation the clause above applies, for the same
+    # reason: a line-anchored `grep` cannot see an indented diagnostic, and a
+    # lint that indents one would have it counted as absent while the reader
+    # sees it.
+    actual_fail_lines=$(printf '%s\n' "$output" \
+      | sed -E 's/^[[:space:]]+//' | grep -c '^FAIL:' || true)
     if [[ "$actual_fail_lines" != "$expected_fail_lines" ]]; then
       problems+=("FAIL-line count $actual_fail_lines, expected $expected_fail_lines")
     fi
