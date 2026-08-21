@@ -1,6 +1,6 @@
 # Residual Disclosure Block
 
-Consumed by Step 7. Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).
+Consumed by Step 7. **There are two terminal exits and this block is one of them.** Composing it and passing its four checks is the ordinary exit (CFI-5); the other is the total-shortfall abort, which does not write a block at all — see `(ii-c)` below and the section that gives it an actor in `03-adjustment-pass.md`. Saying "the only way out" was true before that abort had an actor and false after, and it was pinned in that state alongside the sentence that contradicts it, so no corrected document could satisfy the pin set.
 
 **Why a fixed budget plus disclosure, instead of a coverage target.** A coverage target derived from a per-reader detection probability was tried and failed: the detection model is statistically rejected for this population, and the defect-pool profile likelihood is unbounded above, so whether a coverage target was met is not decidable even with unbounded budget. That is not a specification. A fixed budget with mandatory disclosure is decidable — it hands each residual to a **named downstream owner** instead of hiding it behind a number, adds **zero** raw items to the single-pass reconciliation load, and costs a constant few minutes regardless of `READER_COUNT`.
 

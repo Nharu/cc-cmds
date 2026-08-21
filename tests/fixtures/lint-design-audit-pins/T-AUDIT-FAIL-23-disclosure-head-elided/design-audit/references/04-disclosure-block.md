@@ -1,7 +1,7 @@
 <!--
 # Residual Disclosure Block
 
-Consumed by Step 7. Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).
+Consumed by Step 7. **There are two terminal exits and this block is one of them.** Composing it and passing its four checks is the ordinary exit (CFI-5); the other is the total-shortfall abort, which writes no block at all.
 
 -->
 ## Grammar

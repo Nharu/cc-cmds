@@ -514,7 +514,12 @@ DISCLOSURE_PINS=(
 # could be deleted together at exit 0.
 DISCLOSURE_HEAD_PINS=(
   '# Residual Disclosure Block'
-  'Composing this block and passing its four checks is the **only** way out of the invocation (CFI-5).'
+  # Pinned as the SHAPE of the claim rather than the retired absolute. The delta
+  # pinned "the only way out" and, nine lines down, pinned the sentence that
+  # denies it — both on `+` lines — so the pin set was unsatisfiable by any
+  # corrected document. What must not silently return is the singular claim, so
+  # what is pinned is the sentence that names two.
+  '**There are two terminal exits and this block is one of them.**'
 )
 
 DISCLOSURE_ARITH_PINS=(

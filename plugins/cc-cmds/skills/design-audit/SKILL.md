@@ -65,7 +65,7 @@ Exactly `READER_COUNT` readers. **The permitted dispatches are a closed enumerat
 
 ### CFI-3 — One reconciliation pass, then HARD STOP
 
-The reconciliation pass consumes the collected report set exactly once. It **MUST NOT** call `Agent()`, **MUST NOT** re-open a dispositioned finding, and **MUST NOT** treat its own edits as new input. The invocation's only exit is Step 7. There is no Step 8, no outer iteration, and no "one more round" — a further audit is a **new invocation against a new sha256**, which is why the freeze-violation branch emits a re-invocation command line and stops instead of looping internally.
+The reconciliation pass consumes the collected report set exactly once. It **MUST NOT** call `Agent()`, **MUST NOT** re-open a dispositioned finding, and **MUST NOT** treat its own edits as new input. The invocation's ordinary exit is Step 7, and there is exactly one other — the total-shortfall abort, which ends the run without a disclosure block. Both are terminal; neither is a loop back. There is no Step 8, no outer iteration, and no "one more round" — a further audit is a **new invocation against a new sha256**, which is why the freeze-violation branch emits a re-invocation command line and stops instead of looping internally.
 
 The hard stop forbids **re-review**, not editing. Once the stop is reached the document is an ordinary edit target again; each post-stop edit carries the marker `**미리뷰(스톱 이후 추가)**` so the next cycle can find it.
 
@@ -79,7 +79,7 @@ No finding, anchor verdict, count, or slot value may be recorded unless it came 
 
 ### CFI-5 — Disclosure is a precondition of stopping
 
-Step 7 cannot complete without a disclosure block that passes all four anti-vacuity checks. Boundedness is enforced by this gate, not by prose: the stop is the only exit and the gate is the only way through it.
+Step 7 cannot complete without a disclosure block that passes all four anti-vacuity checks. Boundedness is enforced by this gate, not by prose: the stop is the ordinary exit and the gate is the only way through it. The one other terminal exit is the total-shortfall abort, which refuses to produce the artifact rather than passing through the gate — a consumer keying on the block's presence sees its absence, which is the correct signal.
 
 ### CFI-6 — Forbidden imports (loop-resurrection denylist)
 
