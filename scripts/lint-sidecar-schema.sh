@@ -48,6 +48,20 @@ set -euo pipefail
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# COMMENTS ARE NOT CONTENT. Every markdown file this lint reads is read through a
+# comment-blanked copy. Wrapping a section in OUT-OF-LINE comment markers leaves
+# the heading bytes intact, so a matcher anchored on the heading fires exactly as
+# before while a reader sees nothing there — measured on this lint at exit 0 with
+# a success line byte-identical to the unwrapped run. Commenting the heading line
+# ITSELF turns the run red, but that is a parse failure rather than detection and
+# it is not the shape an editor produces when removing a section.
+#
+# The strip is not sufficient on its own and is not offered as such: a roster
+# built over a comment-blind derivation is defeated exactly as a count is,
+# because an elided member still contributes itself to the observed set. The
+# declaration and the derivation are two obligations, not one.
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
 repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
@@ -60,6 +74,24 @@ if [[ ! -f "$SOT" ]]; then
 fi
 
 rel="${SOT#"$skills_root/"}"
+# THE STRIP HERE IS SELECTIVE, and it has to be. The literals this lint pins —
+# the file terminator and the machine header — ARE HTML comments by
+# construction, so a blanket blanking erases the very bytes being asserted and
+# turns a clean tree red. What must become comment-aware is SECTION RECOGNITION:
+# wrapping a payload schema section in out-of-line comment markers leaves the
+# heading bytes intact, the heading matcher fires as before, and the run was
+# measured at exit 0 with a success line byte-identical to the unwrapped one.
+#
+# So both files are handed to awk: the blanked copy first, read into `vis` by
+# line number, then the raw file. A heading whose blanked counterpart is empty
+# is a heading a reader cannot see, and it opens no section. Everything else
+# keeps reading the raw bytes.
+#
+# This alone does not close the class and is not offered as if it did. With the
+# section gone, `nsec` falls with `covered` and the self-relative coverage
+# comparison still holds — the absolute population floor that closes that is a
+# separate obligation, and it can only be observed once this strip exists.
+SOT_VISIBLE=$(stripped_copy "$SOT")
 
 # (1) Per-section structural check, fence-aware.
 #
@@ -67,8 +99,11 @@ rel="${SOT#"$skills_root/"}"
 # `docs/<kind>/{slug}.md`. `## 1` (generic mechanics) names no path and is
 # therefore not a payload schema — the pin must not demand a terminator of it.
 if ! nsec=$(awk -v rel="$rel" '
+  NR == FNR { vis[FNR] = $0; next }
   {
     line = $0
+    # A line whose blanked counterpart holds nothing is inside a comment.
+    hidden = (vis[FNR] !~ /[^ \t]/ && line ~ /[^ \t]/)
     # Fence state machine. Fences are variable-length (§2.5): an opener is 3+
     # backticks, and a closer is at least as long as the opener it closes.
     stripped = line
@@ -83,7 +118,7 @@ if ! nsec=$(awk -v rel="$rel" '
     outside = (infence == 0 && fenceline == 0)
 
     # Section boundaries — outside fences only.
-    if (outside && line ~ /^## [0-9]+\. /) {
+    if (outside && !hidden && line ~ /^## [0-9]+\. /) {
       cur = 0
       if (match(line, /`(<base>\/)?docs\/[a-z][a-z-]*\/\{slug\}\.md`/)) {
         path = substr(line, RSTART + 1, RLENGTH - 2)
@@ -94,7 +129,10 @@ if ! nsec=$(awk -v rel="$rel" '
         np = split(path, parts, "/")
         nsec++
         kind[nsec] = parts[np - 1]
-        atline[nsec] = NR
+        # FNR, not NR: two files are handed to this awk (the blanked copy, then
+        # the raw one), so NR is cumulative across both and would report every
+        # line number offset by the length of the first file.
+        atline[nsec] = FNR
         hasterm[nsec] = 0
         hashdr[nsec] = 0
         cross[nsec] = ""
@@ -152,7 +190,7 @@ if ! nsec=$(awk -v rel="$rel" '
     for (i = 1; i <= nsec; i++) printf("%s\n", kind[i])
     exit 0
   }
-' "$SOT"); then
+' "$SOT_VISIBLE" "$SOT"); then
   exit 1
 fi
 stage1_kinds=$(printf '%s\n' "$nsec" | tail -n +2 | sort -u)
@@ -181,8 +219,10 @@ nsec=$(printf '%s\n' "$nsec" | head -1)
 # now consumes step (1)'s set rather than deriving its own; step (1) is the
 # authority because it is the half that actually builds the sections.
 unfenced=$(awk '
+  NR == FNR { vis[FNR] = $0; next }
   {
     stripped = $0
+    hidden = (vis[FNR] !~ /[^ \t]/ && $0 ~ /[^ \t]/)
     sub(/^[ \t]+/, "", stripped)
     nb = 0
     while (substr(stripped, nb + 1, 1) == "`") nb++
@@ -191,9 +231,9 @@ unfenced=$(awk '
       if (infence == 0) { infence = 1; fencelen = nb; fenceline = 1 }
       else if (nb >= fencelen) { infence = 0; fencelen = 0; fenceline = 1 }
     }
-    if (infence == 0 && fenceline == 0) print; else print ""
+    if (infence == 0 && fenceline == 0 && !hidden) print; else print ""
   }
-' "$SOT")
+' "$SOT_VISIBLE" "$SOT")
 
 expected=$(printf '%s\n' "$stage1_kinds" | sed -E 's|^|<!-- cc-|; s|$|: end -->|' | sort -u)
 # The terminator side reads unfenced text too, for the same reason: a sentinel
