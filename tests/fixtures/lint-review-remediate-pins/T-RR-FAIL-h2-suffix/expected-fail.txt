@@ -1,0 +1,1 @@
+suffixed H2 present; the consumer decides tier by exact section identity

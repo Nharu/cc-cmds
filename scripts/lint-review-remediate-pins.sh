@@ -38,6 +38,35 @@
 
 set -euo pipefail
 
+# ---- abort guard -------------------------------------------------------------
+#
+# This does not *catch* an abort — `set -e` still ends the run. What it adds is
+# that the abort says WHICH LINE ended it and with what code. Without that line
+# an unchecked non-zero exit leaves exit 1 and no stdout, which is byte-identical
+# to a legitimate pin failure; the reader then "fixes" a pin that never ran. That
+# is not hypothetical — a single unguarded pipeline in this file did exactly it,
+# and the fixture aimed at the branch it killed was reported as passing.
+#
+# The distinguishing load is carried by the ABORT: marker string, NOT by a
+# distinct exit code. Moving it to a code would change what every FAIL fixture
+# exits with, and the runner's expectations rest on that staying 1.
+#
+# It covers the whole file rather than an enumerated set of pipelines, so a
+# pipeline added later is covered on the day it is added.
+#
+# `set -E` is deliberately NOT set: with errtrace, command-substitution subshells
+# inherit the trap and the same abort prints twice.
+lint_abort_line=0
+lint_abort_code=0
+trap 'lint_abort_code=$?; lint_abort_line=$LINENO' ERR
+lint_abort_report() {
+  if (( lint_abort_line != 0 )); then
+    printf 'ABORT: %s ended at line %s with exit %s before the pins finished — an unchecked non-zero exit, not a pin failure\n' \
+      "${BASH_SOURCE[0]##*/}" "$lint_abort_line" "$lint_abort_code" >&2
+  fi
+}
+trap lint_abort_report EXIT
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
@@ -51,6 +80,12 @@ if [[ ! -f "$SKILL" ]]; then
 fi
 
 fail=0
+
+# Checks that did NOT run, by name. A pass message that lists only what passed
+# reads as full coverage even when a guard was skipped for want of its input, so
+# the OK line carries this ledger too — a guard that speaks only when it fails is
+# silent at exactly the two moments its input went missing.
+NOT_RUN=()
 
 # Body of a named marker region, exclusive of the marker lines themselves.
 region_body() {
@@ -78,6 +113,7 @@ require_region() {
   if [[ "$nb" != "1" || "$ne" != "1" ]]; then
     echo "FAIL: ${file#"$skills_root/"} — $label marker region must appear exactly once (begin=$nb end=$ne)" >&2
     fail=1
+    NOT_RUN+=("$label compartment body")
     return 1
   fi
   return 0
@@ -147,16 +183,16 @@ fi
 # the exception down here is what stops the next audit from re-raising it as the
 # same defect.
 
+SUPPRESS_SITES=(
+  '이슈 생성'
+  '라벨 생성'
+  '이슈 자동 만료'
+  '기존 이슈 코멘트'
+  '산출물 저작'
+  '판정 원장 기록'
+)
 if require_region '<!-- DRYRUN-SUPPRESS-BEGIN -->' '<!-- DRYRUN-SUPPRESS-END -->' "$SKILL" 'dry-run suppression'; then
   suppress=$(region_body '<!-- DRYRUN-SUPPRESS-BEGIN -->' '<!-- DRYRUN-SUPPRESS-END -->' "$SKILL")
-  SUPPRESS_SITES=(
-    '이슈 생성'
-    '라벨 생성'
-    '이슈 자동 만료'
-    '기존 이슈 코멘트'
-    '산출물 저작'
-    '판정 원장 기록'
-  )
   for lit in "${SUPPRESS_SITES[@]}"; do
     if ! printf '%s\n' "$suppress" | grep -Fq -- "$lit"; then
       echo "FAIL: review-remediate/SKILL.md — suppression site missing from the execution-semantics list: $lit" >&2
@@ -224,25 +260,27 @@ else
         fail=1
       fi
     fi
+  else
+    NOT_RUN+=("tier containment (no output template)")
   fi
 fi
 
 # ---- (iii) the output H2 set -------------------------------------------------
 
+H2=(
+  '## 개요'
+  '## 재현·근본원인'
+  '## 합의된 아키텍처'
+  '## 주요 결정사항과 근거'
+  '## 검증 기록'
+  '## 미해결 이슈 / 트레이드오프'
+  '## 구현 시 검증 항목'
+  '## 판정 원장'
+  '## 이월 이슈'
+  '## 권장 구현 순서'
+  '## 잔여 공개'
+)
 if [[ -f "$TEMPLATE" ]]; then
-  H2=(
-    '## 개요'
-    '## 재현·근본원인'
-    '## 합의된 아키텍처'
-    '## 주요 결정사항과 근거'
-    '## 검증 기록'
-    '## 미해결 이슈 / 트레이드오프'
-    '## 구현 시 검증 항목'
-    '## 판정 원장'
-    '## 이월 이슈'
-    '## 권장 구현 순서'
-    '## 잔여 공개'
-  )
   for lit in "${H2[@]}"; do
     if ! grep -Fqx -- "$lit" "$TEMPLATE"; then
       echo "FAIL: review-remediate/references/output-template.md — H2 pin missing (bare exact line): $lit" >&2
@@ -284,14 +322,17 @@ if [[ -d "$skills_root/review-remediate/references" ]]; then
       fi
     done
   done < <(find "$skills_root/review-remediate/references" -type f -name '*.md' | sort)
+else
+  NOT_RUN+=("references sweep (no references directory)")
 fi
 
 # ---- (v) spawn-zero fence ----------------------------------------------------
 
+SPAWN_LITERALS=('Agent(' 'subagent_type' 'SendMessage')
 if require_region '<!-- SPAWN-DENY-BEGIN -->' '<!-- SPAWN-DENY-END -->' "$SKILL" 'spawn denylist'; then
   decl=$(region_body '<!-- SPAWN-DENY-BEGIN -->' '<!-- SPAWN-DENY-END -->' "$SKILL")
   outside=$(region_outside '<!-- SPAWN-DENY-BEGIN -->' '<!-- SPAWN-DENY-END -->' "$SKILL")
-  for lit in 'Agent(' 'subagent_type' 'SendMessage'; do
+  for lit in "${SPAWN_LITERALS[@]}"; do
     if ! printf '%s\n' "$decl" | grep -Fq -- "$lit"; then
       echo "FAIL: review-remediate/SKILL.md — spawn-deny region must name the counted literal: $lit" >&2
       fail=1
@@ -374,7 +415,42 @@ if require_region '<!-- ROUTING-BEGIN -->' '<!-- ROUTING-END -->' "$SKILL" 'rout
     fail=1
   fi
 fi
-for lit in 'remote get-url' '.git/config'; do
+# Invocation pin — the command line the two awk scripts are run with, and the
+# two literals whose loss is what the pin exists to prevent. This compartment was
+# declared with no check claiming it; the derived marker-region ledger below is
+# what surfaced that, and this is the check it was missing.
+INVOCATION_PINS=(
+  'LC_ALL=C awk -f parse-review-report.awk'
+  'LC_ALL=C awk -f row-key.awk'
+  # Both failure modes, named. The loud one is self-announcing; the silent one is
+  # not, and a reader who sees no error concludes the locale was fine. Dropping
+  # the silent arm is the loss this pin refuses.
+  '정규식이 컴파일되지 않거나(요란)'
+  '발견이 전량 사라진다(조용)'
+  # The join operand. Written as records rather than FIND records, the arm
+  # describes an equality that never holds, and following the prose stops every
+  # healthy run. It has drifted back to the wrong operand once already.
+  '테이프 **FIND** 레코드 수 ≠ 발행된 키 수'
+)
+if require_region '<!-- INVOCATION-PIN-BEGIN -->' '<!-- INVOCATION-PIN-END -->' "$SKILL" 'invocation pin'; then
+  invocation=$(region_body '<!-- INVOCATION-PIN-BEGIN -->' '<!-- INVOCATION-PIN-END -->' "$SKILL")
+  for lit in "${INVOCATION_PINS[@]}"; do
+    if ! printf '%s\n' "$invocation" | grep -Fq -- "$lit"; then
+      echo "FAIL: review-remediate/SKILL.md — invocation-pin compartment must carry the literal: $lit" >&2
+      fail=1
+    fi
+  done
+fi
+# The byte-mode discipline is per-command, never exported: an exported locale is
+# lost by any subshell that resets the environment, and the loss is the silent
+# failure mode above.
+if grep -Eq '^[[:space:]]*export[[:space:]]+LC_ALL' "$SKILL"; then
+  echo "FAIL: review-remediate/SKILL.md — LC_ALL is exported; the byte-mode pin requires it on the command line" >&2
+  fail=1
+fi
+
+ROUTING_SIGNALS=('remote get-url' '.git/config')
+for lit in "${ROUTING_SIGNALS[@]}"; do
   if grep -Fq -- "$lit" "$SKILL"; then
     echo "FAIL: review-remediate/SKILL.md — second routing signal present: $lit" >&2
     fail=1
@@ -396,8 +472,105 @@ for lit in "${REASONS[@]}"; do
   fi
 done
 
+# ---- subsumption guard -------------------------------------------------------
+#
+# Within one pin list, no element may be a substring of another. A subsumed
+# element can never fail on its own: every occurrence of the shorter literal is
+# already an occurrence of the longer one, so deleting the shorter pin's subject
+# from the skill still satisfies the shorter pin. The pin looks present and
+# checks nothing.
+#
+# It does not merely refuse the subsumption — it names BOTH literals and the list
+# they belong to. Seven lists go through one loop, so a bare "subsumption found"
+# would leave the reader to re-derive which pair in which list.
+#
+# The two inline `for lit in …` lists were promoted to named arrays for this
+# guard. That promotion is the point: the one real subsumption this file ever had
+# lived in an inline list, not in a named array, so a guard that only walked the
+# named arrays would have been green while sitting next to the defect. That
+# particular pair is gone — narrowing the emitted enum to a single value removed
+# the longer of the two literals — so the guard ships with nothing to catch here
+# and stands for the next list instead.
+subsumption_check() {
+  local list_name="$1"
+  shift
+  local -a items=("$@")
+  local i j
+  for ((i = 0; i < ${#items[@]}; i++)); do
+    for ((j = 0; j < ${#items[@]}; j++)); do
+      if (( i != j )) && [[ "${items[j]}" == *"${items[i]}"* ]]; then
+        echo "FAIL: pin list $list_name — '${items[i]}' is a substring of '${items[j]}'; the shorter literal can never fail on its own" >&2
+        fail=1
+      fi
+    done
+  done
+}
+
+# ---- derived ledger: marker regions -----------------------------------------
+#
+# The set of compartments is DERIVED from both sides rather than written out
+# here: the skill's declared `<!-- X-BEGIN -->` markers, and the regions this
+# file actually passes to require_region. An enumeration would go stale the day
+# a compartment is added on one side only, and would go stale silently — the
+# hard-coded fence count in the pass line below had already drifted from 5 to 7
+# without any check noticing.
+#
+# An empty derived set is treated as a failure, not as "no compartments". An
+# empty set here means the derivation stopped matching, and that is "unknown",
+# not "none" — reading it as none is what makes a broken derivation print a
+# clean pass.
+#
+# Known limit, stated rather than hidden: the checked-side derivation greps this
+# script itself, and nothing guards that self-reference. The empty-set failure
+# above is the whole of the mitigation.
+LINT_SELF="${BASH_SOURCE[0]}"
+declared_regions=$(grep -oE '<!-- [A-Z0-9-]+-BEGIN -->' "$SKILL" | LC_ALL=C awk '{print $2}' | LC_ALL=C sort -u || true)
+checked_regions=$(grep -oE "require_region '<!-- [A-Z0-9-]+-BEGIN -->'" "$LINT_SELF" | LC_ALL=C awk '{print $3}' | LC_ALL=C sort -u || true)
+
+if [[ -z "$declared_regions" || -z "$checked_regions" ]]; then
+  echo "FAIL: marker-region ledger derived an empty set — an empty set is 'unknown', not 'none'" >&2
+  echo "      declared side: $SKILL" >&2
+  echo "      checked side:  $LINT_SELF" >&2
+  fail=1
+else
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    echo "FAIL: compartment $r is declared in the skill but no check claims it" >&2
+    fail=1
+  done < <(LC_ALL=C comm -23 <(printf '%s\n' "$declared_regions") <(printf '%s\n' "$checked_regions"))
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    echo "FAIL: compartment $r is checked here but the skill declares no such marker" >&2
+    fail=1
+  done < <(LC_ALL=C comm -13 <(printf '%s\n' "$declared_regions") <(printf '%s\n' "$checked_regions"))
+fi
+
+subsumption_check CONSTANTS       "${CONSTANTS[@]}"
+subsumption_check INVOCATION_PINS "${INVOCATION_PINS[@]}"
+subsumption_check SUPPRESS_SITES "${SUPPRESS_SITES[@]}"
+subsumption_check H2             "${H2[@]}"
+subsumption_check FORBIDDEN      "${FORBIDDEN[@]}"
+subsumption_check SPAWN_LITERALS "${SPAWN_LITERALS[@]}"
+subsumption_check ROUTING_SIGNALS "${ROUTING_SIGNALS[@]}"
+subsumption_check REASONS        "${REASONS[@]}"
+
+if (( ${#NOT_RUN[@]} == 0 )); then
+  not_run_txt='none'
+else
+  not_run_txt=$(printf '%s; ' "${NOT_RUN[@]}")
+  not_run_txt=${not_run_txt%'; '}
+fi
+
 if (( fail == 0 )); then
-  echo "OK:   review-remediate pins — ${#CONSTANTS[@]} constants + ${#H2[@]} H2 + ${#FORBIDDEN[@]} denylist + ${#REASONS[@]} reason tokens + 5 compartment fences all intact"
+  n_fences=$(printf '%s\n' "$checked_regions" | LC_ALL=C awk 'NF{n++} END{print n+0}')
+  echo "OK:   review-remediate pins — ${#CONSTANTS[@]} constants + ${#H2[@]} H2 + ${#FORBIDDEN[@]} denylist + ${#REASONS[@]} reason tokens + $n_fences compartment fences intact; not run: $not_run_txt"
+elif (( ${#NOT_RUN[@]} > 0 )); then
+  # The ledger is emitted on the failure path too, and that is where it is
+  # reachable: a compartment body is skipped only when its marker check already
+  # failed, so on a green run this list is empty by construction. Without this
+  # line the skipped bodies would be reported nowhere at all — and a skipped
+  # check's subject is unknown, not clean.
+  echo "NOT RUN: $not_run_txt" >&2
 fi
 
 exit "$fail"

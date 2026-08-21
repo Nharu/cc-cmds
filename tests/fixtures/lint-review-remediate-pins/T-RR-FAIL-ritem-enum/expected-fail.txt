@@ -1,0 +1,1 @@
+R-item emit region must declare the closed enum verbatim: `구현 후`만

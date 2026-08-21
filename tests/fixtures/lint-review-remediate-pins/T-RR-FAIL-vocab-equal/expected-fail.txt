@@ -1,0 +1,1 @@
+C \ B is empty; the section guard becomes identically false
