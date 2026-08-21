@@ -421,6 +421,33 @@ REFERENCE_REGION_PINS=(
   '03|^## Severity re-assignment |^## Routing — |exclude-start|Never take a maximum across readers.'
 )
 
+# ---------- declared-duplicate parity — the two owners of one constraint -------
+#
+# One constraint is written into TWO reference files on purpose: the file that
+# DEFINES the check, and the file the routing actor actually reads. A constraint
+# that lives only beside its check binds nobody, because the step performing the
+# routing never opens that file — so the duplication is deliberate and stated as
+# such in both places.
+#
+# A declared duplicate carries a parity obligation, and this one had no fence.
+# What must stay in parity is the CONSTRAINT, not the paragraph: each file wraps
+# it in its own framing, and that framing is supposed to differ. So the shared
+# core is pinned in both files, byte for byte, and the wrappers are free.
+#
+# The two blocks below are the byte-identical spans of the two copies as they
+# stand. Splitting the core into two pins rather than one is not cosmetic: the
+# first carries the routing verdict and the second carries the arithmetic, and a
+# drift confined to either half fails on its own.
+PARITY_PINS=(
+  ' to `## 미해결 이슈`, never to `기각`, and the reason is arithmetic rather than taste.** A known residual that recurs on every run of a documented call shape is exactly what that owner is for. Sending it to `기각` instead would put a **permanent floor of one** under the rejection count'
+  'pass leans on a zero rejection count beside a large applied count as its triage-collapse signal, so a floor of one is a detector that can no longer reach its own alarm state. The routing lines are fixed-arity precisely so that collapse shows up without extra instrumentation; a finding that fills one of them unconditionally spends that instrumentation on itself.'
+)
+
+for lit in "${PARITY_PINS[@]}"; do
+  assert_in_file "$lit" "$CHECKS" 'design-audit/references/02-deterministic-checks.md (declared-duplicate parity)'
+  assert_in_file "$lit" "$ADJUST" 'design-audit/references/03-adjustment-pass.md (declared-duplicate parity)'
+done
+
 for lit in "${REFERENCE_HEADINGS[@]}"; do
   assert_line_in_file "$lit" "$ADJUST" 'design-audit/references/03-adjustment-pass.md'
 done
@@ -728,7 +755,7 @@ if (( fail == 0 )); then
     rest="${entry#*|}"; rest="${rest#*|}"; rest="${rest#*|}"
     floors="${floors:+$floors/}${rest%%|*}"
   done
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body, value + sole assignment) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floors $floors) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_HEAD_PINS[@]} disclosure head + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#DISCLOSURE_ARITH_PINS[@]} block arithmetic (in checks section) + 1 declared slot count (in block grammar) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body, value + sole assignment) + ${#PROMPT_PREAMBLE_PINS[@]} reader-prompt preamble + ${#PROMPT_BODY_PINS[@]} reader-prompt body + ${#MEASURE_PINS[@]} measurement + ${#VERDICT_TOKENS[@]} verdict tokens (each checked in 2 regions) + ${#REFERENCE_HEADINGS[@]} reference headings (whole-line) + ${#PARITY_PINS[@]} declared-duplicate parity (both owners) + ${#REFERENCE_SECTION_PINS[@]} reference sections (content + span floors $floors) + ${#REFERENCE_REGION_PINS[@]} reference prose (region-scoped) + ${#DISCLOSURE_HEAD_PINS[@]} disclosure head + ${#DISCLOSURE_PINS[@]} disclosure (in-fence, ordered) + ${#DISCLOSURE_ARM_PINS[@]} shortfall arm + ${#DISCLOSURE_ARITH_PINS[@]} block arithmetic (in checks section) + 1 declared slot count (in block grammar) + ${#FORBIDDEN[@]} denylist (in CFI-6) all intact"
 fi
 
 exit "$fail"

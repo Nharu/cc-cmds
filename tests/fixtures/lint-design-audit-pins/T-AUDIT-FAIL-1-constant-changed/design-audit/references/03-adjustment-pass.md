@@ -56,3 +56,5 @@ would is this one and this file is what this step reads.
 This adds a second terminal exit to a pass whose invariant was that it had one: it is not a routing outcome, it is a refusal to produce the artifact.
 
 <!-- cc-design-audit-reference: end -->
+
+**A deterministic finding of the absent coherence-pass stamp routes to `## 미해결 이슈`, never to `기각`, and the reason is arithmetic rather than taste.** A known residual that recurs on every run of a documented call shape is exactly what that owner is for. Sending it to `기각` instead would put a **permanent floor of one** under the rejection count — and the pass leans on a zero rejection count beside a large applied count as its triage-collapse signal, so a floor of one is a detector that can no longer reach its own alarm state. The routing lines are fixed-arity precisely so that collapse shows up without extra instrumentation; a finding that fills one of them unconditionally spends that instrumentation on itself.
