@@ -35,6 +35,26 @@
 #   themselves. Landing the extractor fix and reporting the class closed would
 #   therefore be wrong, and it would be green.
 #
+#   WHICH LINTS MAY STRIP AT ALL — the direction of the assertion decides, and
+#   getting this backwards is a live way to open an escape while believing you
+#   closed one.
+#     * A lint asserting PRESENCE ("this contract still says X") must strip.
+#       Without it, a section commented out reads as present and the lint reports
+#       the thing it guards intact while the thing it guards is gone.
+#     * A lint asserting ABSENCE ("no skill tells a user to touch this path")
+#       must NOT strip. Blanking can only ever remove evidence of a violation, so
+#       stripping hands every banned string a hiding place. Measured directly: a
+#       banned path inside an HTML comment is caught today and stops being caught
+#       the moment that lint is given a blanked copy. And the file the model
+#       reads includes the comments, so a violation there is a real violation.
+#     * The sidecar schema lint is neither, and shows why the rule is stated by
+#       assertion direction rather than by lint: the literals it pins ARE
+#       comments, so it strips for SECTION RECOGNITION and reads raw for
+#       everything else.
+#   A measurement that wraps a region holding none of the thing under test is
+#   vacuous and must not be read as "defeated" — that is how this rule was
+#   nearly written the wrong way round.
+#
 # LINE COUNT IS PRESERVED. A commented line becomes empty rather than
 # disappearing, so a span floor still counts what a reader would see and a
 # diagnostic still points at the right place.
