@@ -377,10 +377,17 @@ REFERENCE_HEADINGS=(
 # with zero slack were the two likeliest to be edited.
 #
 # The measured count is recorded beside each floor so the slack is auditable
-# rather than re-derivable only by re-running the pipeline. Measured 2026-08-17:
-# 4 / 9 / 5 / 3 substantive lines (the fourth entry landed later, with the
-# total-shortfall abort section). Re-measure before changing a floor; do not
-# assume these numbers are current.
+# rather than re-derivable only by re-running the pipeline.
+#
+# THE UNIT IS THE HEADING-EXCLUDED SPAN, and saying so is load-bearing. The
+# extractor drops the start line, so the span this floor compares against does
+# not include the heading — while counting the section as a reader would, with
+# its heading, gives a number one higher. Both are true counts of different
+# populations, so a re-measurer who picks the wrong one lands on a value that
+# looks right and confirms a comment that is wrong. One of these figures was off
+# for exactly that reason and another had simply gone stale.
+#
+# Re-measured 2026-08-21, heading excluded: 6 / 4 / 10 / 5 / 3.
 #
 # TWO MORE NAMED SECTIONS JOINED THIS ARRAY LATE, and the reason is the measured
 # one: both were deletable whole with this lint at exit 0. The disclosure file's
@@ -392,15 +399,15 @@ REFERENCE_HEADINGS=(
 # comment wrap, because the disclosure file's own `-->` closes the wrapper, which
 # is why the comment strip alone does not cover them.
 REFERENCE_SECTION_PINS=(
-  # floor 5 (measured 7)
+  # floor 5 (measured 6, heading excluded)
   '03|^## Severity re-assignment |^## Routing — |5|Per-reader severity labels are not comparable'
-  # floor 3 (measured 4)
+  # floor 3 (measured 4, heading excluded)
   '03|^## Non-recursion rules \(hard\)$|^## Dedup and reinforcement|3|Spawning anything here is the first step back toward the loop'
-  # floor 7 (measured 9)
+  # floor 7 (measured 10, heading excluded)
   '03|^## Routing — five named owners, exactly one each$|^## Synthesis question |7|The five counts must sum to the unique-defect count'
-  # floor 3 (measured 5)
+  # floor 3 (measured 5, heading excluded)
   '03|^## Synthesis question \(mandatory terminal act\)$|^## Total-shortfall abort |3|Its final act is to ask, once, in writing'
-  # floor 2 (measured 3). This section is what gives the arithmetic condition an
+  # floor 2 (measured 3, heading excluded). This section is what gives the arithmetic condition an
   # actor; the sentinel terminates it because it is now the file's last section.
   '03|^## Total-shortfall abort |^<!-- cc-design-audit-reference: end -->$|2|it is not a routing outcome, it is a refusal to produce the artifact'
 )
@@ -556,9 +563,26 @@ DISCLOSURE_ARM_PINS=(
 # is one of the two anchor pairs in this repo that cannot be pre-stripped: both
 # of its anchors are HTML comments, so a blanked copy has nothing left to match
 # and the region becomes unavailable on a clean tree. Removing the exception
-# turns a green tree red, which is what makes it forced rather than chosen. The cost is stated
-# rather than hidden: this region stays comment-blind, so commenting out the
-# slot block is not what this pin catches — deleting or reordering it is.
+# turns a green tree red, which is what makes it forced rather than chosen.
+#
+# THE COST THIS COMMENT USED TO STATE WAS FALSE. It said commenting out the slot
+# block is not what this pin catches. It is: measured three times, that edit ends
+# at exit 1 with sixteen FAIL lines. The reason is the mechanism below, and the
+# reason the claim survived is that nobody re-ran it after the assertion helpers
+# gained their own strip.
+#
+# THE REAL SAFETY MECHANISM, written down because it was load-bearing and
+# unrecorded: **every assertion helper strips again, independently.** The region
+# handed to them comes from the raw file here, and each of `assert_in_text`,
+# `assert_re_in_text`, `assert_in_file`, `assert_line_in_file`, `count_lines` and
+# `substantive_lines` blanks comments in its own body before deciding. So a
+# region extracted raw is still judged on what a reader can see.
+#
+# That redundancy also explains a measurement anyone repeating this work will
+# hit: removing any ONE of the strip sites in this file leaves a sibling site
+# covering the same bytes, so nine of the twenty-one cannot be killed by any
+# single-site mutant. That is mutual redundancy, not missing coverage, and it
+# should not be read as a gap to close.
 if slot_region=$(extract_between '^<!-- cc-design-audit-disclosure v1 begin -->[[:space:]]*$' \
                                  '^<!-- /cc-design-audit-disclosure v1 end -->[[:space:]]*$' \
                                  "$DISCLOSURE" 'design-audit/references/04-disclosure-block.md (slot block)'); then :

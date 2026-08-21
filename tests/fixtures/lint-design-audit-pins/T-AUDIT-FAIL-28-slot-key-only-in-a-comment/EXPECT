@@ -1,0 +1,4 @@
+# A disclosure slot key present only inside an HTML comment. The slot is absent
+# for every reader and the ordered key set must notice.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the disclosure fences (comments do not count): **결손 수**
+FAIL: design-audit/references/04-disclosure-block.md — slot keys are not the declared set in the declared order, one per line

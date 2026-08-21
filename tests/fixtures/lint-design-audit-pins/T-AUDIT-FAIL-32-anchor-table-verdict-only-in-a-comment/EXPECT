@@ -1,0 +1,5 @@
+# A verdict token surviving only inside an HTML comment within the anchor
+# table — the second of the two regions that must carry it independently.
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the anchor table (comments do not count): /\bMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the anchor table (comments do not count): /\bMISMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the anchor table (comments do not count): /\bABSENT\b/

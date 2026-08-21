@@ -1,0 +1,3 @@
+# An arithmetic literal of the anti-vacuity checks surviving only inside an
+# HTML comment.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the anti-vacuity checks section (comments do not count): (ii-c) Total shortfall is not a shortfall

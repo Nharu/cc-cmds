@@ -1,0 +1,9 @@
+# A pinned section heading that exists only inside an HTML comment. The section
+# it names is gone from the reader's file while the bytes remain.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned heading is not present as a whole line outside a comment: ## Synthesis question (mandatory terminal act)
+FAIL: design-audit/references/03-adjustment-pass.md (section /^## Routing — five named owners, exactly one each$/) — region terminator literal missing after the start anchor: /^## Synthesis question /
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the section /^## Routing — five named owners, exactly one each$/), so this pin was not evaluated: The five counts must sum to the unique-defect count
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (/^## Routing — five named owners, exactly one each$/), so its span floor was not evaluated
+FAIL: design-audit/references/03-adjustment-pass.md (section /^## Synthesis question \(mandatory terminal act\)$/) — region start anchor missing: /^## Synthesis question \(mandatory terminal act\)$/
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the section /^## Synthesis question \(mandatory terminal act\)$/), so this pin was not evaluated: Its final act is to ask, once, in writing
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (/^## Synthesis question \(mandatory terminal act\)$/), so its span floor was not evaluated
