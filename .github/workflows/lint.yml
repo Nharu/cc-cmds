@@ -43,15 +43,24 @@ jobs:
     # a timeout that trips on a slow runner is a flaky gate, and a flaky gate is
     # worse than a slow one.
     #
-    # DO NOT READ END-TO-END WALL CLOCK AS THIS JOB'S COST. Two heads were
-    # compared with `gh run view --json jobs` and again under a controlled
-    # same-machine run: the reported end-to-end time fell while the dominant
-    # lint's own cost ROSE, because runner variance is larger than the change
-    # and the two numbers measure different things. That lint's bytes did not
-    # move in this range — what moved is the corpus it walks, which this range
-    # grew — so a falling end-to-end figure here is not an improvement and must
-    # not be quoted as one. Measure the dominant lint directly, on one machine,
-    # if the question is cost.
+    # THE DOMINANT LINT IS `scripts/lint-bash-portability.sh`, named here because
+    # every sentence around it used to say "the dominant lint" and never which.
+    # Its order of dominance is settled by independent measurement; its SIZE is
+    # not quotable, and that distinction is the point of the paragraph below.
+    #
+    # DO NOT READ END-TO-END WALL CLOCK AS THIS JOB'S COST. Independent runs over
+    # an UNCHANGED script and an UNCHANGED corpus came out at 247s, 290s, over
+    # 400s, and 148s. Those four are the whole of the evidence and they are given
+    # with their spread rather than as an average, because the spread is the
+    # finding: variance is larger than any change this repository has made to the
+    # corpus, so a falling end-to-end figure is not an improvement and must not
+    # be quoted as one. Attach a run ID when adding a figure here — the numbers
+    # above were taken without one, which is why they cannot be re-derived and
+    # can only be re-measured.
+    #
+    # The ceiling below is 2.18x the worst of those four, and this round's
+    # measured spread is exactly the risk that ratio was chosen against. Do not
+    # tighten it toward the mean.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
