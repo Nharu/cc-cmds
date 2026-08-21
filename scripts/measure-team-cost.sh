@@ -54,8 +54,15 @@ project_scope="${PROJECT_SCOPE:-}"
 
 while (( $# > 0 )); do
   case "$1" in
-    --transcripts) transcript_root="${2:-}"; shift 2 ;;
-    --project)     project_scope="${2:-}"; shift 2 ;;
+    # `shift 2` on a flag with no value fails under `set -e` and exits 1, which
+    # is this script's "measured nothing" code rather than its usage code. Guard
+    # the arity so a typo is reported as usage (2) instead of masquerading.
+    --transcripts)
+      [[ $# -ge 2 ]] || { echo "measure-team-cost: --transcripts needs a value" >&2; exit 2; }
+      transcript_root="$2"; shift 2 ;;
+    --project)
+      [[ $# -ge 2 ]] || { echo "measure-team-cost: --project needs a value" >&2; exit 2; }
+      project_scope="$2"; shift 2 ;;
     -h|--help)
       grep -E '^# ' "$0" | cut -c3-
       exit 0
@@ -101,7 +108,32 @@ fi
 # residuals: a skipped round 3 whose witness named a command is a wording
 # problem and is fixable, while one that named nothing is the residual accepted
 # without a mechanism.
-COMMAND_RE='(^|[^a-zA-Z0-9_-])(git|grep|rg|sed|awk|find|make|npm|npx|yarn|pnpm|node|python3?|bash|sh|shasum|openssl|jq|curl|gh|cargo|go|swift|flutter|dart|xcrun|test -f|wc)([[:space:]]+-{0,2}[a-zA-Z0-9]|[[:space:]]+[a-zA-Z0-9./_-]+)'
+#
+# Precision-first, two tiers plus a code-span pass:
+#   TIER 1 — tokens that are not ordinary English words. A bare mention is
+#            enough; requiring an operand here loses real positives such as
+#            "we ran git bisect on it".
+#   TIER 2 — homographs (`find`, `make`, `go`, `node`, `test`). These need a
+#            shell-shaped operand, or every sentence containing the English
+#            word scores as a command.
+#   SPAN   — anything the author wrapped in backticks. A code span is an
+#            explicit citation, so it passes regardless of tier.
+#
+# Tier 1 stays deliberately loose. Tightening it would filter one false
+# positive of the "jq is required" shape at the cost of three true positives,
+# and this column feeds a human judgment call rather than a gate.
+COMMAND_TIER1='(^|[^a-zA-Z0-9_./-])(git|grep|ggrep|rg|sed|awk|jq|npm|npx|yarn|pnpm|xcrun|shasum|openssl|curl|gh|cargo|flutter|dart|pytest|eslint|tsc|melos|simctl)([^a-zA-Z0-9_-]|$)'
+COMMAND_TIER2='(^|[^a-zA-Z0-9_./-])(find|make|go|node|test|wc|sh|bash|python3?|swift|diff|cat|ls)[[:space:]]+(-{1,2}[a-zA-Z0-9][a-zA-Z0-9-]*|[a-zA-Z0-9._/-]+)([[:space:]]|$)'
+COMMAND_SPAN='`[^`]*(git|grep|sed|awk|jq|npm|npx|make|find|node|go|test|wc|bash|sh|python|swift|flutter|dart|curl|gh|shasum|openssl)[^`]*`'
+
+# names_command <text> — the three arms OR'd. Kept as a function so the arms
+# stay separately readable and separately tunable.
+names_command() {
+  printf '%s\n' "$1" | grep -qE "$COMMAND_TIER1" && return 0
+  printf '%s\n' "$1" | grep -qE "$COMMAND_TIER2" && return 0
+  printf '%s\n' "$1" | grep -qE "$COMMAND_SPAN" && return 0
+  return 1
+}
 
 # flatten <file> — every string value in every JSON record, one record per line.
 # Schema-agnostic on purpose: the transcript's envelope shape is not this
@@ -109,72 +141,156 @@ COMMAND_RE='(^|[^a-zA-Z0-9_-])(git|grep|rg|sed|awk|find|make|npm|npx|yarn|pnpm|n
 # Embedded newlines are collapsed so one record stays one line: a witness
 # sentinel and the body it terminates live in the same string, and letting that
 # string break across lines would separate every sentinel from its own body.
+READ_ERROR_SENTINEL='CC_MEASURE_READ_ERROR'
+
 flatten() {
-  jq -R -r 'fromjson? | [.. | strings] | join(" ") | gsub("\n"; " ")' "$1" 2>/dev/null || true
+  local out
+  if [[ ! -r "$1" ]] || ! out=$(jq -R -r 'fromjson? | [.. | strings] | join(" ") | gsub("\n"; " ")' "$1" 2>/dev/null); then
+    # An unreadable transcript is not an empty one. Returning "" here would
+    # make every column read as a measured zero, which is the shape of the
+    # fabrication this script exists to avoid.
+    printf '%s\n' "$READ_ERROR_SENTINEL"
+    return
+  fi
+  printf '%s\n' "$out"
 }
 
 emit_na() { printf 'NA'; }
 
-printf 'session\tskill\troster_size\tmax_round\tround3_fired\tr3_witness_cmd\tr2_final_witness_cmd\tnarrowed_additions\tnarrowed_deletions\tnarrowed_files\tscope_source\n'
+# Column note — `gate_input_*` is the review gate's INPUT, not its verdict, and
+# `scope_source` says which reading produced it. Only `per-file` reflects a
+# Step-1c narrowing; a `pr-summary` row carries the PRE-narrowing number and
+# must not be read as the gate's effective scope. The columns were once named
+# `narrowed_*`, which asserted something the `pr-summary` path cannot deliver.
+printf 'session\tskill\troster_size\tmax_round\tround3_fired\tr3_witness_cmd\tr2_final_witness_cmd\tgate_input_additions\tgate_input_deletions\tgate_input_files\tscope_source\n'
+
+# ---------- pass 1: nonce → session attribution -------------------------------
+#
+# Witness bodies do not live in the main transcript. Measured over the real
+# corpus, more than 94% of sentinel-bearing files sit under `subagents/`, and a
+# main-transcript-only read reaches roughly 5.7% of the nonce-bearing
+# transcripts. Joining on the nonce inverts that loss rather than trimming it.
+#
+# **The key is a SET, not a single value.** A session mints a fresh nonce per
+# member per round, so harvesting one nonce per session and joining on it would
+# silently drop every round carrying a different value — reproducing the same
+# ~94% loss under a name that looks repaired. A nonce resolving to more than
+# one main transcript is left UNATTRIBUTED rather than resolved to the first
+# match: guessing would double-count that witness into two populations.
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-measure.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
+
+# nonces_of <flattened-text> — every nonce the text mentions, deduplicated.
+# Sentinels carry one explicitly; dispatch prompts often carry the bare hex or
+# the round-tagged compound form without a sentinel.
+nonces_of() {
+  {
+    printf '%s\n' "$1" | grep -oE 'cc-witness: [^ ]+ [^ ]+ complete [0-9a-f]+' | awk '{print $NF}'
+    printf '%s\n' "$1" | grep -oE 'round-[0-9]+:[0-9a-f]+' | sed 's/.*://'
+    printf '%s\n' "$1" | grep -oE '[0-9a-f]{16}'
+  } 2>/dev/null | sort -u || true
+}
+
+while IFS= read -r m; do
+  [[ -f "$m" ]] || continue
+  s=$(basename "$m" .jsonl)
+  b=$(flatten "$m")
+  printf '%s\n' "$b" > "$WORK/main.$s.txt"
+  nonces_of "$b" | while IFS= read -r nz; do
+    [[ -n "$nz" ]] && printf '%s\t%s\n' "$nz" "$s"
+  done
+done < <(find "$scope_dir" -maxdepth 1 -name '*.jsonl' | sort) | sort -u > "$WORK/nonce-map.tsv"
+
+# Keep only nonces owned by exactly one session. Collisions become NA.
+awk -F'\t' '{c[$1]++; s[$1]=$2} END {for (n in c) if (c[n] == 1) print n "\t" s[n]}' \
+  "$WORK/nonce-map.tsv" > "$WORK/nonce-owner.tsv"
+
+# Harvest every subagent witness line, keyed by the nonce its sentinel declares.
+: > "$WORK/sub-witness.tsv"
+while IFS= read -r sub; do
+  [[ -f "$sub" ]] || continue
+  flatten "$sub" | grep -F 'cc-witness:' | while IFS= read -r wl; do
+    nz=$(printf '%s\n' "$wl" | grep -oE 'cc-witness: [^ ]+ [^ ]+ complete [0-9a-f]+' | awk '{print $NF}' | head -1)
+    [[ -n "$nz" ]] || continue
+    printf '%s\t%s\n' "$nz" "$wl"
+  done
+done < <(find "$scope_dir/subagents" -name '*.jsonl' 2>/dev/null | sort) >> "$WORK/sub-witness.tsv"
+
+# ---------- pass 2: one row per session ---------------------------------------
 
 while IFS= read -r main; do
   [[ -f "$main" ]] || continue
   session=$(basename "$main" .jsonl)
+  bundle=$(cat "$WORK/main.$session.txt")
 
-  # Read the main transcript only. Witness bodies land here anyway — the
-  # protocol makes the witness file, not the return text, authoritative, so the
-  # lead Reads every witness and the body arrives as a tool result in this
-  # session's own records. The sibling `subagents/` directory is flat and
-  # carries no session attribution, so folding it in would smear one session's
-  # witnesses across every session in the scope.
-  bundle=$(flatten "$main")
+  # An unreadable transcript is stamped, not measured. Every column says so.
+  if printf '%s\n' "$bundle" | grep -Fq -- "$READ_ERROR_SENTINEL"; then
+    printf '%s\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tREAD-ERROR\n' "$session"
+    continue
+  fi
 
+  # Longest name first AND a right anchor. ERE alternation is left-biased, so
+  # `design` alone would win against `cc-cmds:design-lite` and every lite
+  # session would be filed under the base skill — a mislabel that survives
+  # every other check in this row.
   skill=$(printf '%s\n' "$bundle" \
-    | grep -oE 'cc-cmds:(design|design-lite|design-apply|design-analyze|design-audit|review|review-lite)' \
-    | head -1 | sed 's/^cc-cmds://' || true)
+    | grep -oE 'cc-cmds:(design-analyze|design-apply|design-audit|design-ingest|design-lite|design-prompt|design-system|design-upgrade|review-lite|review-upgrade|design|review)([^a-z-]|$)' \
+    | head -1 | sed -e 's/^cc-cmds://' -e 's/[^a-z-]*$//' || true)
   [[ -n "$skill" ]] || skill=NA
 
-  # Ledger rows: `<agentId> | <state> | <round/phase> | ...`
+  # Ledger rows: `<agentId> | <state> | <round/phase> | ...` for the document
+  # ledger, plus `design-analyze`'s `work.json` shape, whose rows are JSON
+  # objects rather than pipe-delimited text. Without the second branch that
+  # skill reports an empty roster and prices its own saving at zero.
   rows=$(printf '%s\n' "$bundle" \
     | grep -oE '[0-9a-f]{6,} \| (running|done|aborted) \| [^|]+' || true)
+  json_rows=$(printf '%s\n' "$bundle" \
+    | grep -oE '"agentId"[[:space:]]*:[[:space:]]*"[0-9a-f]{6,}"' || true)
 
-  roster_size=0
+  # NA floor: an absent ledger is "not measured", never "measured zero". A
+  # numeric 0 here is indistinguishable from a real single-agent run, and it is
+  # the same confident-zero this script exists to stop emitting.
+  roster_size=$(emit_na)
   if [[ -n "$rows" ]]; then
     roster_size=$(printf '%s\n' "$rows" | awk '{print $1}' | sort -u | grep -c '' || true)
+  elif [[ -n "$json_rows" ]]; then
+    roster_size=$(printf '%s\n' "$json_rows" | grep -oE '[0-9a-f]{6,}' | sort -u | grep -c '' || true)
   fi
 
-  max_round=0
-  round_tokens=$(printf '%s\n' "$rows" | grep -oE 'round-[0-9]+' | grep -oE '[0-9]+' || true)
+  max_round=$(emit_na)
+  round3_fired=$(emit_na)
+  round_tokens=$(printf '%s\n' "$bundle" | grep -oE 'round-[0-9]+' | grep -oE '[0-9]+' || true)
   if [[ -n "$round_tokens" ]]; then
     max_round=$(printf '%s\n' "$round_tokens" | sort -n | tail -1)
+    round3_fired=0
+    (( max_round >= 3 )) && round3_fired=1
   fi
 
-  round3_fired=0
-  (( max_round >= 3 )) && round3_fired=1
+  # Witness pool = this session's own sentinel lines PLUS every subagent
+  # witness whose nonce resolves uniquely to this session (pass 1).
+  own_nonces=$(awk -F'\t' -v s="$session" '$2 == s {print $1}' "$WORK/nonce-owner.tsv" || true)
+  sub_lines=""
+  if [[ -n "$own_nonces" ]]; then
+    sub_lines=$(awk -F'\t' 'NR == FNR { own[$0] = 1; next } ($1 in own) { print $2 }' \
+      <(printf '%s\n' "$own_nonces") "$WORK/sub-witness.tsv" || true)
+  fi
+  witness_lines=$( { printf '%s\n' "$bundle" | grep -F 'cc-witness:' || true
+                     printf '%s\n' "$sub_lines"; } | grep -F 'cc-witness:' || true)
 
-  # Witness bodies, keyed by the round the sentinel itself declares.
   r3_witness_cmd=$(emit_na)
   r2_final_witness_cmd=$(emit_na)
-  witness_lines=$(printf '%s\n' "$bundle" | grep -F 'cc-witness:' || true)
   if [[ -n "$witness_lines" ]]; then
     r3_bodies=$(printf '%s\n' "$witness_lines" | grep -E 'cc-witness: [^ ]+ round-3 ' || true)
     if [[ -n "$r3_bodies" ]]; then
-      if printf '%s\n' "$r3_bodies" | grep -qE "$COMMAND_RE"; then
-        r3_witness_cmd=1
-      else
-        r3_witness_cmd=0
-      fi
+      if names_command "$r3_bodies"; then r3_witness_cmd=1; else r3_witness_cmd=0; fi
     fi
     # The round-2 witnesses matter only when the discussion stopped there: that
     # is the skipped-round-3 population trigger 2 has to separate.
-    if (( round3_fired == 0 )); then
+    if [[ "$round3_fired" == "0" ]]; then
       r2_bodies=$(printf '%s\n' "$witness_lines" | grep -E 'cc-witness: [^ ]+ round-2 ' || true)
       if [[ -n "$r2_bodies" ]]; then
-        if printf '%s\n' "$r2_bodies" | grep -qE "$COMMAND_RE"; then
-          r2_final_witness_cmd=1
-        else
-          r2_final_witness_cmd=0
-        fi
+        if names_command "$r2_bodies"; then r2_final_witness_cmd=1; else r2_final_witness_cmd=0; fi
       fi
     fi
   fi
@@ -200,10 +316,23 @@ EOF
       files=$(printf '%s' "$summary" | grep -oE '"changedFiles":[0-9]+' | grep -oE '[0-9]+')
       scope_source=pr-summary
     elif [[ -n "$numstat" ]]; then
+      # The pattern uses a LITERAL tab, not the ERE escape `\t`. BSD grep
+      # accepts `\t` there and GNU grep warns "stray \ before t" and matches
+      # nothing — and the only CI leg that runs this file is the GNU one. The
+      # `END` block is guarded so a no-match input yields NA instead of the
+      # confident `0 0 0` that used to be stamped `scope_source=numstat`.
       read -r adds dels files <<EOF
-$(printf '%s\n' "$numstat" | grep -oE '[0-9]+\t[0-9]+\t[^ ]+' | awk -F'\t' '{A+=$1; D+=$2; N++} END {printf "%d %d %d", A, D, N}')
+$(printf '%s\n' "$numstat" | grep -oE '[0-9]+	[0-9]+	[^ ]+' \
+  | awk -F'\t' '{A+=$1; D+=$2; N++} END {if (N > 0) printf "%d %d %d", A, D, N; else printf "NA NA NA"}')
 EOF
-      scope_source=numstat
+      if [[ "$adds" == "NA" ]]; then
+        # Self-contradiction: the source was present but nothing parsed out of
+        # it. Say which reading failed rather than leaving a confident label on
+        # values it did not produce.
+        scope_source=numstat-unreadable
+      else
+        scope_source=numstat
+      fi
     fi
   fi
 
