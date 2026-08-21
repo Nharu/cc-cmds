@@ -7,7 +7,7 @@
 #
 #   (i)   the fixed-constants block. The nesting invariant is what the numeric
 #         budget clause demands be *machine-checkable*; prose is not grepped.
-#   (ii)  the emitted `검증 시점` enum, narrowed by this producer to two values.
+#   (ii)  the emitted `검증 시점` enum, narrowed by this producer to a single value.
 #         Omitting the field defaults to a value that gates unconditionally, so
 #         a dropped pin turns a semantic slip into a repo-wide block downstream.
 #   (iii) the output H2 set. The consumer decides binding tier by exact section
@@ -112,19 +112,19 @@ fi
 
 # ---- (ii) the narrowed 검증 시점 enum ----------------------------------------
 
-# The emitted value must carry a non-empty parenthesised phase. A bare `구현 중`
-# clears the consumer's presence check, matches no value arm, and lands as an
-# out-of-vocabulary value — which leaves this producer with no residual that
-# gates at all. Pinning the positive declaration (rather than forbidding the bare
-# substring) keeps the region free to *discuss* the bare form in prose.
+# Narrowed to `구현 후` alone. The only deterministic phase label this producer
+# holds is a file path, so an item emitted as `구현 중(<착지>)` matches the
+# consumer's value arm yet belongs to no phase — disclosed as out-of-scope on
+# every invocation, never executed, and never surfaced as malformed either.
+# Pinning the positive declaration (rather than forbidding the withdrawn form)
+# keeps the region free to *discuss* why the second value went away, which is
+# the entire rationale for the narrowing.
 if require_region '<!-- RITEM-EMIT-BEGIN -->' '<!-- RITEM-EMIT-END -->' "$SKILL" 'R-item emit'; then
   ritem=$(region_body '<!-- RITEM-EMIT-BEGIN -->' '<!-- RITEM-EMIT-END -->' "$SKILL")
-  for lit in '`구현 중(<착지>)` / `구현 후`만' '구현 후'; do
-    if ! printf '%s\n' "$ritem" | grep -Fq -- "$lit"; then
-      echo "FAIL: review-remediate/SKILL.md — R-item emit region must declare the parenthesised enum verbatim: $lit" >&2
-      fail=1
-    fi
-  done
+  if ! printf '%s\n' "$ritem" | grep -Fq -- '`구현 후`만'; then
+    echo "FAIL: review-remediate/SKILL.md — R-item emit region must declare the closed enum verbatim: \`구현 후\`만" >&2
+    fail=1
+  fi
   # The refusal is pinned to the literal it refuses. A paraphrase ("the default")
   # is not checkable — the previous form of this check required exactly that
   # paraphrase, so the value being refused never had to appear at all.
