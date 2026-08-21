@@ -1,0 +1,6 @@
+# The `상태` roster for this fixture tree, in the shape the lint's real-tree
+# array uses: <relpath>|<role>. Only files that reference the key belong here —
+# a fixture's `_common/verification.md` is a trimmed stub that does not.
+implement/SKILL.md|consumer
+review/references/01-reviewer-context-package.md|consumer
+design/SKILL.md|producer

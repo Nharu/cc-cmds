@@ -37,6 +37,12 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
+# Normalize a trailing slash away. Every other use joins with an explicit `/`
+# and tolerates a doubled one; the roster discovery below strips this value as
+# a path PREFIX, and there a trailing slash silently leaves every discovered
+# path absolute, so nothing matches the roster and the fence reports arrivals
+# for the whole tree.
+skills_root="${skills_root%/}"
 
 SOT="$skills_root/_common/verification.md"
 CONSUMER="$skills_root/implement/SKILL.md"
@@ -50,6 +56,27 @@ CONSUMER="$skills_root/implement/SKILL.md"
 STATE_RENDERING_DECLS=(
   'implement/SKILL.md|implement (상태 rendering declaration)|**Reading `상태` — both renderings, and absence is never a default.**'
   'review/references/01-reviewer-context-package.md|review reviewer-context (상태 rendering declaration)|**Which `상태` renderings this consumer reads — declared, because the key has two and the shared contract requires every consumer of it to say.**'
+)
+
+# The population check (3) is drawn from. Check (3) pins the two declarations it
+# is handed; nothing in this file asked whether a THIRD consumer had landed, and
+# one was landed as a demonstration — undeclared, and the `OK:` line came back
+# byte-identical at exit 0. A roster alone would not have caught it either: the
+# roster has to be compared against what the tree actually holds, in BOTH
+# directions, because an arrival and a departure are different edits and a
+# rename is both at once.
+#
+# The key is spelled here once, in the code-formatted form every file that
+# refers to it uses. Discovery reads stripped copies: commenting a file's
+# mentions out is the cheapest way to leave a consumer in place while removing
+# the evidence that it is one.
+STATE_KEY_SPELLING='`상태`'
+STATE_KEY_ROSTER_REAL=(
+  '_common/verification.md|contract'
+  '_common/sidecar.md|producer'
+  'design/SKILL.md|producer'
+  'implement/SKILL.md|consumer'
+  'review/references/01-reviewer-context-package.md|consumer'
 )
 
 # SOT absent → mechanism not present in this tree → silent skip.
@@ -197,10 +224,13 @@ done
 # (2) Consumer sync — deliberately narrow. The verification-timing enum is the
 # only frozen vocabulary with a live inline copy outside the SOT: implement's
 # 1.5a routing prose partitions on it. Pin ONLY what that partition is made of —
-# 12 of the 24 SOT_LITERALS (the residual reasons, the execution-caution
-# classes, the classification tokens, and the `## 검증 기록` heading)
-# legitimately do not appear in that file at all, so a whole-array check would
-# fail on day one. (The five grade tokens DO appear there; they are out of scope
+# 13 of the 24 SOT_LITERALS (the 4 residual reasons, the 4 execution-caution
+# classes, and the 5 classification tokens) legitimately do not appear in that
+# file at all, so a whole-array check would fail on day one. The count and the
+# enumeration were both wrong before: the number read 12, and the enumeration
+# also named the `## 검증 기록` heading, which is present in that file. Both
+# halves are re-derived by looping the array through `grep -Fq` against the
+# consumer, not by arithmetic on the previous sentence. (The five grade tokens DO appear there; they are out of scope
 # here not because they are absent but because implement's copy of them is
 # pinned by the Step-3 flip-gate prose, not by the 1.5a partition.) The two
 # figures above are counts of an array this file declares, so read them off the
@@ -279,12 +309,79 @@ for entry in "${STATE_RENDERING_DECLS[@]}"; do
   assert_in_file "$decl_lit" "$(stripped_copy "$skills_root/$decl_path")" "$decl_label"
 done
 
+# (3b) Roster <-> tree, both directions.
+#
+# The roster's source is decided by comparing roots, not by testing whether the
+# env override is set: pointing SKILLS_ROOT at the real tree would otherwise
+# hand a fixture-shaped lookup to the real population. On the real tree the
+# roster is the array above, hand-written and not derived from the files it
+# checks. A fixture tree declares its own in a `STATE_ROSTER` file at its root
+# (one `<relpath>|<role>` per line, the same shape) — the extension keeps it out
+# of the `*.md` discovery below. A tree that declares nothing FAILS rather than
+# passing: a fence with an empty roster is satisfied by every tree.
+state_roster=()
+if [[ "$skills_root" == "$repo_root/plugins/cc-cmds/skills" ]]; then
+  state_roster=("${STATE_KEY_ROSTER_REAL[@]}")
+elif [[ -f "$skills_root/STATE_ROSTER" ]]; then
+  while IFS= read -r roster_line; do
+    [[ -n "$roster_line" ]] || continue
+    case "$roster_line" in \#*) continue ;; esac
+    state_roster+=("$roster_line")
+  done < "$skills_root/STATE_ROSTER"
+else
+  echo "FAIL: 상태 roster — no roster for this tree: $skills_root declares no STATE_ROSTER and is not the real skills root" >&2
+  fail=1
+fi
+
+state_declared=$'\n'
+for entry in "${state_roster[@]+"${state_roster[@]}"}"; do
+  state_declared="${state_declared}${entry%%|*}"$'\n'
+done
+
+state_observed=$'\n'
+while IFS= read -r md_file; do
+  if grep -Fq "$STATE_KEY_SPELLING" "$(stripped_copy "$md_file")"; then
+    state_observed="${state_observed}${md_file#"$skills_root/"}"$'\n'
+  fi
+done < <(find "$skills_root" -type f -name '*.md' | sort)
+
+# Arrival: a file references the key and no roster row accounts for it. This is
+# the direction the demonstration defeated.
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  case "$state_declared" in
+    *$'\n'"$rel"$'\n'*) ;;
+    *)
+      echo "FAIL: 상태 roster — undeclared file references the key: $rel; add it to the roster with its role, and if it is a consumer give it a rendering declaration" >&2
+      fail=1
+      ;;
+  esac
+done <<< "$state_observed"
+
+# Departure: a roster row's file is present but no longer references the key —
+# a rename or a silent removal. Restricted to the roles check (3) does NOT
+# cover: for a consumer the declaration pin above already fires on exactly this
+# edit, and a second assertion that cannot fail on its own would be the same
+# defect class this file is here to pin.
+for entry in "${state_roster[@]+"${state_roster[@]}"}"; do
+  rel="${entry%%|*}"; role="${entry#*|}"
+  case "$role" in consumer) continue ;; esac
+  [[ -f "$skills_root/$rel" ]] || continue
+  case "$state_observed" in
+    *$'\n'"$rel"$'\n'*) ;;
+    *)
+      echo "FAIL: 상태 roster — declared $role no longer references the key: $rel; the roster is stale or the key was renamed" >&2
+      fail=1
+      ;;
+  esac
+done
+
 if (( fail == 0 )); then
   # Every pinned literal belongs to a counted group and every group's size is
   # named here, so dropping any one of them changes this line and the OK fixture
   # detects it. A pin whose group size is not reported has no independent
   # coverage.
-  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#GRADE_REGION_PINS[@]} SOT (vocabulary table) + ${#FORBIDDEN_SPELLINGS[@]} forbidden spelling + ${#CONSUMER_1_5A[@]} consumer (1.5a bullet) + ${#STATE_RENDERING_DECLS[@]} 상태 rendering declarations all present"
+  echo "OK:   verification frozen literals — ${#SOT_LITERALS[@]} SOT (whole-file) + ${#GRADE_REGION_PINS[@]} SOT (vocabulary table) + ${#FORBIDDEN_SPELLINGS[@]} forbidden spelling + ${#CONSUMER_1_5A[@]} consumer (1.5a bullet) + ${#STATE_RENDERING_DECLS[@]} 상태 rendering declarations + ${#state_roster[@]} 상태 roster entries all present"
 fi
 
 exit "$fail"
