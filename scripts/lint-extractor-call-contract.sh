@@ -94,9 +94,29 @@ HELPER='_extract-between.sh'
 # itself without anyone noticing.
 SELF='lint-extractor-call-contract.sh'
 
-# The live call-site count. Asserted only for the real tree: a fixture root holds
-# whatever its case needs, and its own EXPECT pins that number.
+# The live populations, asserted rather than printed.
+#
+# THE `SCRIPTS_ROOT` GUARD WAS THE HOLE. Gating the assertion on "is this the
+# real tree" meant every fixture invocation — which sets `SCRIPTS_ROOT` by
+# definition — skipped it, so deleting the assertion outright left six fixtures
+# and the real tree green. A fence nothing can exercise is not a fence. A fixture
+# root declares its own populations in a file beside the tree it lints, exactly
+# as the capture-format lint already does, and the override is fenced in the
+# other direction too: a declaration file next to the REAL tree would be a way
+# to relax these pins from outside this script, so its presence there fails.
+#
+# TWO NUMBERS ARE PINNED AND TWO ARE NOT, deliberately. `sites` and the count of
+# files that actually CONTAIN a call site are gated, because both were measured
+# to move without any gate noticing — adding a file with no call sites at all
+# moved the reported file count while the run stayed at exit 0. `guarded` and the
+# unrecognized count are printed and not gated, because the judgment path already
+# implies them: a non-zero unrecognized count sets `fail`, and `guarded` differs
+# from `sites` only when something already failed. An equivalence check over a
+# number the verdict already forces cannot fail, and a check that cannot fail is
+# the same defect class this file exists to remove.
 EXPECTED_SITES=14
+EXPECTED_SITE_FILES=2
+POPULATION_DECL="$scripts_root/POPULATION"
 
 # An assignment from a command substitution, in any of the three spellings the
 # shell treats alike. `var=`, `local var=`, `declare var=`, `readonly var=`.
@@ -114,10 +134,20 @@ OPENER="(${DECL}[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(\"?\\$\\([[:space:]]*|\`[[
 # shape from `if true; then v=$(…)`, which ends with `then` and never matches.
 IFHEAD='(^[[:space:]]*|[;&|{}][[:space:]]*)if[[:space:]]+$'
 
+if [[ -f "$POPULATION_DECL" ]]; then
+  if [[ -z "${SCRIPTS_ROOT:-}" ]]; then
+    echo "FAIL: a population declaration sits beside the real scripts tree; these pins are meant to be changed in this script, not overridden from the tree they measure" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$POPULATION_DECL"
+fi
+
 fail=0
 sites=0
 guarded=0
 files=0
+site_files=0
 
 # classify <relpath> <lineno> <before> <after>
 #   before — the line's text from its start up to this occurrence, exclusive
@@ -180,6 +210,7 @@ while IFS= read -r f; do
   esac
   files=$((files + 1))
   rel="${f#"$scripts_root/"}"
+  sites_before=$sites
   while IFS=: read -r n line; do
     body="${line#"${line%%[![:space:]]*}"}"
     # Comment lines are prose about the contract, not uses of it — otherwise the
@@ -206,10 +237,17 @@ while IFS= read -r f; do
       classify "$rel" "$n" "$before" "$rest"
     done
   done < <(grep -nF -- 'extract_between' "$f" || true)
+  if (( sites > sites_before )); then
+    site_files=$((site_files + 1))
+  fi
 done < <(find "$scripts_root" -type f \( -name '*.sh' -o -name '*.bash' \) | sort)
 
-if [[ -z "${SCRIPTS_ROOT:-}" ]] && (( sites != EXPECTED_SITES )); then
+if (( sites != EXPECTED_SITES )); then
   echo "FAIL: extractor call contract — found $sites call site(s), the pinned population is $EXPECTED_SITES; update EXPECTED_SITES together with this header's prose, which is the only place the contract's coverage claim is stated" >&2
+  fail=1
+fi
+if (( site_files != EXPECTED_SITE_FILES )); then
+  echo "FAIL: extractor call contract — call sites live in $site_files file(s), the pinned population is $EXPECTED_SITE_FILES; a file that carries no call site must not move a reported number" >&2
   fail=1
 fi
 
@@ -218,7 +256,7 @@ if (( fail == 0 )); then
     echo "SKIP: no extract_between call sites under $scripts_root"
     exit 0
   fi
-  echo "OK:   extractor call contract — $sites call site(s) across $files file(s), $guarded guarded by \`if\` as the tested condition, 0 unrecognized (item (1) only; the sentinel assignment of item (2) is prose-enforced)"
+  echo "OK:   extractor call contract — $sites call site(s) in $site_files of $files file(s), $guarded guarded by \`if\` as the tested condition, 0 unrecognized (item (1) only; the sentinel assignment of item (2) is prose-enforced)"
 fi
 
 exit "$fail"
