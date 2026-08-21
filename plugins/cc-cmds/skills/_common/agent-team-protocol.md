@@ -83,19 +83,32 @@ A one-shot isolated `Agent()` per round is forbidden — the retained-context, m
 
 ### Round budget
 
-The single source of truth for how many discussion rounds a team drives. Consuming skills point here instead of restating a number; a skill that deliberately carries a **different** value states an explicit carve-out sentence naming this section, so the divergence is legible as intent rather than drift.
+The single source of truth for how many discussion rounds a team drives. Consuming skills point here instead of restating a number. A skill that deliberately diverges states an explicit carve-out sentence naming this section, so the divergence is legible as intent rather than drift — and a carve-out may diverge in any of **three** ways:
+
+- a different **value** (a skill keeps its own cap, as the lite family does);
+- a different **trigger** (an entry path this section does not carry);
+- a different **counting rule** (a pass the skill declares outside the ceiling, as a reproduction grounding round is).
+
+The third kind is the one this sentence originally failed to admit. It was already shipped, so without it a correct carve-out read as drift.
+
+**How rounds are counted.** A round is a dispatch that publishes a witness. **A step that resumes the roster and collects witnesses is a round whether or not it is labelled one** — without this rule the step numbers in a consuming skill and the round numbers here drift into two conventions, and a narrowed Round-3 trigger written against one of them is escapable through the other.
 
 - **Default = 2 rounds.** Round 1 produces, Round 2 cross-reviews. This is where the measured value sits: across the judged sample, Round 2 changed the outcome in the large majority of sessions.
 - **Hard cap = 3 rounds.** No team drives a fourth discussion round. Needing more is a signal to surface the impasse to the user, not to keep spending.
+- **From Round 2 on, every round carries its own closing declaration — there is no separate convergence round.** The resume that opens the round also requires each member to end its witness with exactly one of: `no further input`, or a **named measurement it has not yet run** that would settle a contested peer claim. Collecting those declarations *is* the convergence check. Writing this as "the last round carries it" would be unexecutable — whether a third round opens is knowable only after reading the second round's witnesses, so the dispatch could never know it was the last.
 - **Round 3 is a condition, not a schedule.** It opens on exactly two entry paths, and on neither of them does the lead adjudicate emptiness from a member's prose:
-    1. **A member names a concrete, actionable measurement it has not yet run** that would settle a contested peer claim. Only the member knows whether it holds such a measurement, so the member states it — the lead does not infer it. A text-vs-text re-review with no new measurement is a ratification ritual and does **not** open Round 3.
+    1. **A member names a concrete, actionable measurement it has not yet run** that would settle a contested peer claim — which is exactly the second arm of the closing declaration above, so this path is read off a field the lead already collects rather than judged separately. Only the member knows whether it holds such a measurement, so the member states it and the lead does not infer it. A text-vs-text re-review with no new measurement is a ratification ritual and does **not** open Round 3.
     2. **The lead's pre-save sweep produced a refuting verdict.** A sweep refutation is itself the product of an executed measurement rather than a re-review, so it satisfies the narrowing's intent while giving the refutation somewhere to go. Without this path a refutation found by the sweep would fall straight through to `AskUserQuestion` or be dropped silently, and a draft with refuting evidence against it could still be saved.
 
-The narrowing moves the judgment to where the knowledge is: the lead no longer grades whether a member's stated blocker is substantive, and the member instead reports whether it is holding an executable measurement.
+The narrowing moves the judgment to where the knowledge is: the lead no longer grades whether a member's stated blocker is substantive, and the member instead reports whether it is holding an executable measurement. Folding the declaration into the round is what makes entry path 1 free — the lead reads one field it already collects instead of judging convergence and the trigger separately.
+
+**What folding costs.** A peer criticism raised *during* the final round does not get back to its target inside that round. The boundary is already in this section rather than unbounded: a text-vs-text disagreement does not earn a round at all, a disagreement settled by measurement opens Round 3 through the declaration just written, and anything that is neither yet still blocks hits the hard cap and surfaces to the user.
 
 ## Convergence
 
-Convergence is by **witness collection**, not live polling. After cross-review, resume each member once with a convergence prompt (re-inject current consensus + open conflicts); a member's round is converged-and-collected only when its round witness is `witness_present`. Batch the resume *sends*; keep one large resume per member per round and stay inside `### Round budget` (each member's ledger flip is still its own separate single-row Edit after that member's resume — see the dispatch↔flip atomicity rules). The convergence resume is itself a fan-out: the dispatch-completeness gate runs before collecting, so a member dropped from the convergence resume cannot be silently read as converged.
+Convergence is by **witness collection**, not live polling — and it is **not a dispatch of its own**. From Round 2 on it rides that round's closing declaration (`### Round budget`): the resume that opens the round already re-injects the current consensus and the open conflicts, and requires the declaration in the witness. A member's round is converged-and-collected only when its round witness is `witness_present` **and carries that declaration**; the team is converged when every roster member's does. Batch the resume *sends*; keep one large resume per member per round and stay inside `### Round budget` (each member's ledger flip is still its own separate single-row Edit after that member's resume — see the dispatch↔flip atomicity rules).
+
+**The dispatch-completeness gate still runs before collecting.** Folding removed a dispatch, not the gate — the round's own fan-out is now the one the gate protects, and a member dropped from it would otherwise be read as converged on a witness that never arrives. That is the same hole the separate convergence resume had, relocated rather than closed by the fold.
 
 ## Dispatch-completeness gate (roster-vs-round, pre-wait)
 
