@@ -1,0 +1,4 @@
+# The substitution IS in the `if` condition position, and that is not enough:
+# the declaration builtin supplies the assignment exit status, so a failing
+# extraction takes the THEN branch with the region variable empty.
+FAIL: consumer.sh:8 — extract_between call site is the `if` condition in form only; the declaration builtin supplies the exit status the `if` tests, so a failing extraction takes the THEN branch with the region variable empty

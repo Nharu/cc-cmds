@@ -1,4 +1,4 @@
 # The substitution sits inside an `if` but is not what the `if` tests. A prefix
 # test certified this shape as guarded and raised the site count — an active
 # false assertion about a line it had read.
-FAIL: consumer.sh:6 — unrecognized `extract_between` form; this lint could not classify it as guarded, unguarded, or prose, and an unclassified occurrence is not a covered one
+FAIL: consumer.sh:6 — extract_between call site is a bare assignment inside a compound statement's body; a bare assignment aborts the script at that line under `set -euo pipefail` and loses every later diagnostic, and sharing a line with a guarded call does not guard it

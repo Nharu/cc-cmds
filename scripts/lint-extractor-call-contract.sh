@@ -9,8 +9,9 @@
 # call sites grew 57% and guard-regression coverage did not grow at all.
 #
 # A shape lint is uniform where fixtures are incidental. It reads the call site
-# rather than the consequence, so it covers all 14 identically and covers every
-# call site added after it, which is the half fixtures can never do.
+# rather than the consequence, so it covers every occurrence identically and
+# covers every call site added after it,
+# which is the half fixtures can never do.
 #
 # THE POPULATION IS PINNED, not merely printed. Three sentences of this header
 # used to say "eleven" while the runtime said 12, and a reader cannot tell that
@@ -19,22 +20,37 @@
 # drift fails instead of persisting. Adding or removing a call site is therefore
 # a two-line change on purpose.
 #
-# EVERY OCCURRENCE IS CLASSIFIED, and the fourth bucket is the point. Matching
-# only one spelling of the call is what let two forms escape: `=$( extract_between`
-# with a space, and `r="$(extract_between …)"` with quotes around the
-# substitution — the second was measured to PASS while not being counted as a
-# call site at all, so an unguarded call was neither flagged nor tallied. Notation
-# is not forbidden here, because all three spellings are identical to the shell
-# and a lint that bans one says "unprotected" about code that is fine. What is
-# forbidden is silence: every non-comment occurrence lands in exactly one of
-# guarded / unguarded / deliberately-excluded / UNRECOGNIZED, and the last one
+# EVERY OCCURRENCE IS CLASSIFIED, and the unit is the OCCURRENCE, not the line.
+# The enumerator used to emit one record per line and every classifier was
+# anchored at the line start, so only the FIRST `extract_between` on a line was
+# ever classified. The control group is decisive: the same two calls on TWO
+# lines fail, on ONE line pass with `1 call site(s), 1 guarded, 0 unrecognized`,
+# and the difference is a single newline. Appending an unguarded call to the end
+# of an already-guarded line left the count unmoved and the run at exit 0 — the
+# fifteenth call site did not appear in the tally at all, and `0 unrecognized`
+# was an active false claim about a line this lint had read. `…; fi; b=$(…)` is
+# ordinary shell, not self-sabotage, which is why this was a merge blocker.
+#
+# Notation is not forbidden here, because all three spellings are identical to
+# the shell and a lint that bans one says "unprotected" about code that is fine.
+# What is forbidden is silence: every non-comment occurrence lands in exactly one
+# of guarded / unguarded / deliberately-excluded / UNRECOGNIZED, and the last one
 # fails loudly. A silent fourth category is the real defect.
 #
-# THE GUARD PREDICATE ASKS WHETHER THE SUBSTITUTION IS THE `if`'s CONDITION, not
-# whether the line starts with `if`. A prefix test certified
-# `if true; then v=$(extract_between …); fi` as guarded and raised the count —
-# an active false assertion about a line it had read, which is worse than the
-# escapes above: those hide a site, this one vouches for it.
+# THE GUARD PREDICATE IS RE-EXPRESSED OVER THE TEXT BEFORE EACH OCCURRENCE, and
+# over the text after it where the shell puts the deciding token there. Three
+# certifications were false:
+#   * a prefix test called `if true; then v=$(extract_between …); fi` guarded;
+#   * `if local v=$(extract_between …); then` was called guarded although the
+#     declaration builtin supplies the assignment's exit status and swallows the
+#     substitution's, so the `if` tests the builtin and not the extraction;
+#   * `if v=$(extract_between …) || true; then` was called guarded because the
+#     predicate stopped at the first `=` and never saw the `|| true`.
+# The last one needs the text AFTER the occurrence, so this lint reads both
+# sides. **Declared limit**: the after-side rule looks for `||` or `&&` before
+# the condition's `then`, and an anchor argument containing `||` would trip it.
+# There are none in this tree (measured 0), and a false positive here is a loud
+# FAIL rather than a silent pass.
 #
 # WHAT IT DOES NOT COVER, stated because the gap is load-bearing.
 #   * Contract item (2), the sentinel assignment on the failure path, has no
@@ -84,20 +100,86 @@ EXPECTED_SITES=14
 
 # An assignment from a command substitution, in any of the three spellings the
 # shell treats alike. `var=`, `local var=`, `declare var=`, `readonly var=`.
-ASSIGN='((local|declare|readonly|typeset)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*='
-SUBST='("?\$\([[:space:]]*|`[[:space:]]*)extract_between'
-CALL="${ASSIGN}${SUBST}"
+# An assignment from a command substitution, in any of the three spellings the
+# shell treats alike, anchored at the END of the text preceding an occurrence.
+DECL='(local|declare|readonly|typeset)'
+OPENER="(${DECL}[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(\"?\\$\\([[:space:]]*|\`[[:space:]]*)$"
+# What may sit between the line start and that opener for the substitution to be
+# the `if`'s own condition: the `if` keyword and nothing else.
+# The `if` must be the statement this assignment belongs to, which means the
+# text before the assignment ENDS with `if ` and what precedes that `if` is a
+# statement boundary. Anchoring the whole head to `^ *if +$` was too strict in
+# one direction — a second guarded call after a completed `fi;` on the same line
+# read as unguarded — and the boundary class is what separates that legitimate
+# shape from `if true; then v=$(…)`, which ends with `then` and never matches.
+IFHEAD='(^[[:space:]]*|[;&|{}][[:space:]]*)if[[:space:]]+$'
 
 fail=0
 sites=0
 guarded=0
 files=0
 
+# classify <relpath> <lineno> <before> <after>
+#   before — the line's text from its start up to this occurrence, exclusive
+#   after  — the line's text following this occurrence
+classify() {
+  local rel="$1" n="$2" before="$3" after="$4" head opener
+
+  if [[ ! "$before" =~ $OPENER ]]; then
+    sites=$((sites + 1)); fail=1
+    echo "FAIL: $rel:$n — unrecognized \`extract_between\` form; this lint could not classify it as guarded, unguarded, or prose, and an unclassified occurrence is not a covered one" >&2
+    return
+  fi
+
+  sites=$((sites + 1))
+  opener="${BASH_REMATCH[0]}"
+  head="${before%"$opener"}"
+
+  if [[ ! "$head" =~ $IFHEAD ]]; then
+    # An `if` earlier on the line does not make this occurrence its condition,
+    # and the two cases read differently to a contributor: `if true; then v=$(…)`
+    # is a substitution in the wrong position, while `…; fi; v=$(…)` is an
+    # ordinary bare assignment that merely shares a line with a finished `if`.
+    # `then` is what separates them.
+    case "$head" in
+      *then*)
+        echo "FAIL: $rel:$n — extract_between call site is a bare assignment inside a compound statement's body; a bare assignment aborts the script at that line under \`set -euo pipefail\` and loses every later diagnostic, and sharing a line with a guarded call does not guard it" >&2 ;;
+      *if*)
+        echo "FAIL: $rel:$n — extract_between call site sits inside an \`if\` but is not its condition, so a non-zero return is not caught; the substitution must be what the \`if\` tests" >&2 ;;
+      *)
+        case "$opener" in
+          local\ *|declare\ *|readonly\ *|typeset\ *)
+            echo "FAIL: $rel:$n — extract_between call site is not guarded; the declaration builtin supplies the assignment's exit status, so a failing extraction is swallowed silently and the region variable holds the empty string" >&2 ;;
+          *)
+            echo "FAIL: $rel:$n — extract_between call site is not guarded by \`if\`; a bare assignment aborts the script at that line under \`set -euo pipefail\` and loses every later diagnostic" >&2 ;;
+        esac ;;
+    esac
+    fail=1
+    return
+  fi
+
+  # Inside the `if`'s condition position. Two things still disqualify it.
+  case "$opener" in
+    local\ *|declare\ *|readonly\ *|typeset\ *)
+      fail=1
+      echo "FAIL: $rel:$n — extract_between call site is the \`if\` condition in form only; the declaration builtin supplies the exit status the \`if\` tests, so a failing extraction takes the THEN branch with the region variable empty" >&2
+      return ;;
+  esac
+  case "${after%%then*}" in
+    *'||'*|*'&&'*)
+      fail=1
+      echo "FAIL: $rel:$n — extract_between call site is joined to the \`if\` condition by \`||\` or \`&&\`, so the condition can hold when the extraction failed; the substitution must be the whole condition" >&2
+      return ;;
+  esac
+  guarded=$((guarded + 1))
+}
+
 while IFS= read -r f; do
   case "$(basename "$f")" in
     "$HELPER"|"$SELF") continue ;;
   esac
   files=$((files + 1))
+  rel="${f#"$scripts_root/"}"
   while IFS=: read -r n line; do
     body="${line#"${line%%[![:space:]]*}"}"
     # Comment lines are prose about the contract, not uses of it — otherwise the
@@ -112,38 +194,17 @@ while IFS= read -r f; do
       extract_between'('*|source*|.[[:space:]]*) continue ;;
     esac
 
-    if [[ "$body" =~ ^$CALL ]]; then
-      # A bare call site: an assignment that is not the condition of anything.
-      sites=$((sites + 1))
-      case "$body" in
-        local\ *|declare\ *|readonly\ *)
-          echo "FAIL: ${f#"$scripts_root/"}:$n — extract_between call site is not guarded; the declaration builtin supplies the assignment's exit status, so a failing extraction is swallowed silently and the region variable holds the empty string" >&2 ;;
-        *)
-          echo "FAIL: ${f#"$scripts_root/"}:$n — extract_between call site is not guarded by \`if\`; a bare assignment aborts the script at that line under \`set -euo pipefail\` and loses every later diagnostic" >&2 ;;
-      esac
-      fail=1
-      continue
-    fi
-
-    if [[ "$body" =~ ^if[[:space:]]+$CALL ]]; then
-      # Guarded only if the substitution is the `if`'s CONDITION. `if true; then
-      # v=$(…)` matches the prefix and guards nothing.
-      prefix="${body%%=*}"
-      case "$prefix" in
-        *';'*|*'&&'*|*'||'*)
-          sites=$((sites + 1)); fail=1
-          echo "FAIL: ${f#"$scripts_root/"}:$n — extract_between call site sits inside an \`if\` but is not its condition, so a non-zero return is not caught; the substitution must be what the \`if\` tests" >&2 ;;
-        *)
-          sites=$((sites + 1)); guarded=$((guarded + 1)) ;;
-      esac
-      continue
-    fi
-
-    # Anything else that mentions the helper outside a comment is a form this
-    # lint does not recognize. Reporting it is the whole point: silence here is
-    # indistinguishable from coverage.
-    sites=$((sites + 1)); fail=1
-    echo "FAIL: ${f#"$scripts_root/"}:$n — unrecognized \`extract_between\` form; this lint could not classify it as guarded, unguarded, or prose, and an unclassified occurrence is not a covered one" >&2
+    # Occurrence-wise. `consumed` carries everything already walked past, so
+    # `before` is always measured from the start of the line rather than from
+    # the previous occurrence.
+    consumed=""
+    rest="$body"
+    while [[ "$rest" == *extract_between* ]]; do
+      before="$consumed${rest%%extract_between*}"
+      rest="${rest#*extract_between}"
+      consumed="${before}extract_between"
+      classify "$rel" "$n" "$before" "$rest"
+    done
   done < <(grep -nF -- 'extract_between' "$f" || true)
 done < <(find "$scripts_root" -type f \( -name '*.sh' -o -name '*.bash' \) | sort)
 

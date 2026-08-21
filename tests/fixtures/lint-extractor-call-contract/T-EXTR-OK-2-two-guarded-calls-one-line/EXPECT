@@ -1,0 +1,8 @@
+# Two calls on ONE line, both guarded, each by its own `if`. The occurrence-wise
+# classifier must count BOTH and call both guarded — a fix that only made the
+# second visible as a failure would be wrong about the count, and one that
+# refused the second because an `if` had already closed on that line would be
+# wrong about the verdict. An earlier draft of this fixture claimed one line and
+# used two, which is the shape where a case passes its own coverage test while
+# testing something else.
+OK:   extractor call contract — 2 call site(s) across 1 file(s), 2 guarded by `if` as the tested condition, 0 unrecognized (item (1) only; the sentinel assignment of item (2) is prose-enforced)
