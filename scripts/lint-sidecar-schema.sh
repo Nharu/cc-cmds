@@ -194,6 +194,29 @@ if ! nsec=$(awk -v rel="$rel" '
   exit 1
 fi
 stage1_kinds=$(printf '%s\n' "$nsec" | tail -n +2 | sort -u)
+
+# THE ABSOLUTE POPULATION, declared here and nowhere else.
+#
+# The coverage comparison below asks whether every section it found is covered,
+# and both operands are derived from the same variable input: delete a payload
+# schema section and `covered` falls with `nsec`, so `OK: 1 of 1 sections` comes
+# out at exit 0 for a document that lost half its schemas. The only absolute
+# floor was `nsec == 0`. Demonstrated with the comment-strip fix already applied,
+# which is why this is a separate obligation rather than part of that one — it is
+# the residual that SURVIVES the class fix.
+#
+# The set is asserted, not the count: a count admits a rename and a swap, and the
+# set does not. It is a hand-written literal, because deriving it from the file
+# this lint measures is the dependence that makes every one of these fences
+# defeatable.
+EXPECTED_KINDS='design-drift design-reconverge'
+observed_kinds=$(printf '%s\n' "$stage1_kinds" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')
+if [[ "$observed_kinds" != "$EXPECTED_KINDS" ]]; then
+  echo "FAIL: $rel — the payload schema kinds present are not the declared set" >&2
+  echo "  declared: $EXPECTED_KINDS" >&2
+  echo "  present:  $observed_kinds" >&2
+  exit 1
+fi
 nsec=$(printf '%s\n' "$nsec" | head -1)
 
 # (2) Distinct-literal cross-check. Catches the mirror defect (1) cannot see:

@@ -1,0 +1,10 @@
+# A payload schema section deleted outright. The coverage comparison derives both
+# of its operands from the same variable input, so deleting a section lowers the
+# covered count and the section count together and `1 of 1 sections` comes out at
+# exit 0 — the only absolute floor was "zero sections". This survives the
+# comment-strip fix, which is why it is a separate obligation: the class fix is
+# necessary and not sufficient. The set is asserted rather than the count,
+# because a count admits a rename and a swap.
+FAIL: _common/sidecar.md — the payload schema kinds present are not the declared set
+  declared: design-drift design-reconverge
+  present:  design-reconverge

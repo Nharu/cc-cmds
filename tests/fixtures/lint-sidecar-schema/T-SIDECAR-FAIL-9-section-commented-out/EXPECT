@@ -1,11 +1,3 @@
-# A payload schema section wrapped in OUT-OF-LINE comment markers. The heading
-# bytes stay intact, so a heading matcher anchored on them fires exactly as
-# before while a reader sees nothing there — this tree used to exit 0 with a
-# success line byte-identical to the unwrapped run. Commenting the heading line
-# itself turns the run red, but that is a parse failure rather than detection.
-FAIL: _common/sidecar.md — the set of terminator literals present does not equal the set of payload schema kinds
-  expected (one per payload schema section):
-    <!-- cc-design-drift: end -->
-  present in file:
-    <!-- cc-design-drift: end -->
-    <!-- cc-design-reconverge: end -->
+FAIL: _common/sidecar.md — the payload schema kinds present are not the declared set
+  declared: design-drift design-reconverge
+  present:  design-drift
