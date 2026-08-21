@@ -11,7 +11,7 @@ notes: |
 
 Analyze the reviewer team composition proposed in the preceding `/review` Step 3 output and produce a second opinion along **two axes** — model and role — recommending only *reinforcing* changes.
 
-**Read `${CLAUDE_SKILL_DIR}/../_common/team-upgrade-analysis.md`** for the axis-agnostic engine: the two-axis Scope, restraint principle, role-gap detection + HARD LIMIT, restraint/split gates, OPERATION output format and integrity rules, the per-existing-role invariant, the degraded-axis handling, and the Cross-axis synthesis. Resolve every `{PLACEHOLDER}` in that core against the `## Bindings` below. The `## Operations Layer`, role-axis mapping, SPLIT-axis degradation, Precondition, review-lite conflict guard, schema-drift sync-note, and 3-path Fallback that follow are this skill's injected layers.
+**Read `${CLAUDE_SKILL_DIR}/../_common/team-upgrade-analysis.md`** for the axis-agnostic engine: the two-axis Scope, restraint principle, role-gap detection + HARD LIMIT, the per-OPERATION gates (restraint / split / remove / merge), OPERATION output format and integrity rules, the per-existing-role invariant, the degraded-axis handling, and the Cross-axis synthesis. Resolve every `{PLACEHOLDER}` in that core against the `## Bindings` below. The `## Operations Layer`, role-axis mapping, SPLIT-axis degradation, Precondition, review-lite conflict guard, schema-drift sync-note, and 3-path Fallback that follow are this skill's injected layers.
 
 ## Bindings
 
@@ -30,7 +30,7 @@ Analyze the reviewer team composition proposed in the preceding `/review` Step 3
 | `{SAVED_DOC_LOCATION}` | `docs/reviews/<report>.md` |
 | `{REFEED_TARGET}` | live / Path-1 → `/review` Step 3 re-proposal (prospective); Path-2 → `/review` Step 6 team re-creation (retrospective) |
 
-Note the column order differs from design-upgrade: Step 3's schema places **모델 before 담당 범위**. `역할` / `모델` are shared tokens; `담당 범위` substitutes design's `탐색 범위`. The full-triple OPERATIONs (ADD, SPLIT-REPLACE) emit in `역할 / 모델 / 담당 범위` order for paste-back parity; UPGRADE omits scope, so order is unaffected.
+Note the column order differs from design-upgrade: Step 3's schema places **모델 before 담당 범위**. `역할` / `모델` are shared tokens; `담당 범위` substitutes design's `탐색 범위`. Every OPERATION that emits a full role triple does so in `역할 / 모델 / 담당 범위` order for paste-back parity; the ones that omit scope (they name a role rather than describe one) are unaffected by the order rule. Which OPERATIONs fall on which side is the core's to say — read it there rather than trusting a list here.
 
 ## Operations Layer
 
@@ -47,13 +47,16 @@ The `/review` Scope Coordinator (a >50-file PR meta/orchestration role: Round 0 
 
 **Invariant interaction**: ADD-Coordinator mints a brand-new role → exempt from the per-existing-role invariant, combines freely. Carryover guard: (a) the new coordinator name must not collide with any existing roster role, (b) gate condition (2) already enforces at most one coordinator per proposal.
 
-**Coordinator-targeting OPERATION rules**: `UPGRADE`-Coordinator is **valid** (an existing sonnet coordinator → opus; cross-cutting synthesis is exactly an opus strength) — this needs no separate op, the shared `UPGRADE` targets the coordinator role. ADD-Coordinator (when absent) and UPGRADE-Coordinator (when present) are mutually exclusive by precondition, so the per-existing-role invariant stays cleanly satisfied.
+**Coordinator-targeting OPERATION rules**: `UPGRADE`-Coordinator is **valid** (an existing sonnet coordinator → opus; cross-cutting synthesis is exactly an opus strength) — this needs no separate op, the shared `UPGRADE` targets the coordinator role. ADD-Coordinator (when absent) and UPGRADE-Coordinator (when present) are mutually exclusive by precondition, so the per-existing-role invariant stays cleanly satisfied. `REMOVE`-Coordinator is **deliberately left valid**: a coordinator is the role most easily added for a scope that later narrows, so it is exactly where the ratchet has to be able to release — a removal still has to clear the core's remove gate, including the coverage-succession field naming who picks the orchestration up.
 
 **Path-2 suppress**: gate condition (1)'s Step 1c-narrowed effective scope is not preserved in the saved report (the report `## 개요` holds only the raw `변경 규모: 파일 X개`, not the post-1c effective scope). Therefore **ADD-Coordinator is not emitted on Path-2 (suppressed)** — same Path-2 quantitative-signal absence as the SPLIT degradation below. Falling back to raw `변경 규모` risks misjudging the effective scope, so it is not adopted (honesty first; state the caveat).
 
 ### Forbidden-set append
 
-- `SPLIT-REPLACE`-Coordinator is **forbidden** (splitting a unified cross-cutting synthesis role constructively violates clean cleavage). This appends to the core's forbidden-set (role removal / merge / model downgrade).
+- `SPLIT-REPLACE`-Coordinator is **forbidden** (splitting a unified cross-cutting synthesis role constructively violates clean cleavage).
+- `MERGE`-Coordinator is **forbidden** — folding the coordinator into a domain reviewer destroys the same unified cross-cutting synthesis that the split ban protects, only from the other side. The split ban alone stopped this while the core had no merge; it does not any more, so the ban is written out rather than inferred.
+
+Both entries append to the core's forbidden-set; read that set in the core rather than restating it here.
 
 ## Role-axis mapping (review)
 
@@ -72,13 +75,13 @@ Because those checklists are broad, the restraint gate's distinct-expertise bar 
 
 ## SPLIT-axis degradation (review Path-2)
 
-The SPLIT overload evidence (quantitative per-file statistics) is in context only on live / Path-1. **On Path-2 (saved-report reverse-engineering), per-file diff statistics are absent → quantitative SPLIT gating degrades to N/A (suppressed)** — the mirror image of design's model-axis N/A. Concretely, this is the core's "consuming skill MAY declare the SPLIT comparison term N/A" hook: on Path-2 the core split gate's step 4 and the Cross-axis synthesis treat the **SPLIT comparison term** as N/A and fall through to the UPGRADE-parent alone (exactly symmetric to proceeding on the role axis alone when the model term is N/A). So on Path-2 only `ADD` (perspective gap) + `UPGRADE` (model) fire; `SPLIT-REPLACE` and `ADD-Coordinator` are not emitted, and the caveat is stated. (Model-axis N/A is the core binding `{MODEL_AXIS_DEGRADES_UNDER}` — `never` for review; SPLIT-axis N/A is this injected instruction — both availability degradations reach the same core gate/synthesis sites through their own channel.)
+The SPLIT overload evidence (quantitative per-file statistics) is in context only on live / Path-1. **On Path-2 (saved-report reverse-engineering), per-file diff statistics are absent → quantitative SPLIT gating degrades to N/A (suppressed)** — the mirror image of design's model-axis N/A. Concretely, this is the core's "consuming skill MAY declare the SPLIT comparison term N/A" hook: on Path-2 the core split gate's step 4 and the Cross-axis synthesis treat the **SPLIT comparison term** as N/A and fall through to the UPGRADE-parent alone (exactly symmetric to proceeding on the role axis alone when the model term is N/A). So on Path-2 only `ADD` (perspective gap) + `UPGRADE` (model) fire; `SPLIT-REPLACE` and `ADD-Coordinator` are not emitted, and the caveat is stated. **`REMOVE` and `MERGE` degrade the same way and for the same reason**: the remove gate's "this domain is thin for *this* unit of work" and the merge gate's inverse-cleavage condition both rest on the per-file quantitative signal that Path-2 does not carry. The saved report does preserve the roster, so their lookup keys exist — but a lookup key is not evidence, and proposing a seat's deletion from a roster listing alone is exactly the cost-shaped reasoning the core bans. Suppressed, with the caveat stated. (Model-axis N/A is the core binding `{MODEL_AXIS_DEGRADES_UNDER}` — `never` for review; SPLIT-axis N/A is this injected instruction — both availability degradations reach the same core gate/synthesis sites through their own channel.)
 
 ## Precondition
 
 This skill requires the preceding `/review` Step 3 reviewer composition to be in context. It is a `disable-model-invocation: true` second-opinion skill and does NOT auto-chain `/review`.
 
-**review-lite conflict guard**: if the in-context proposal looks like a `/review-lite` composition (fixed 2×sonnet — a dedicated security reviewer + a code-quality/logic reviewer; opus excluded; no Scope Coordinator; a single Y/N gate), both reinforcement axes conflict with the lite contract — UPGRADE→opus violates the sonnet pin, and ADD/SPLIT/ADD-Coordinator mutate the fixed 2-member roster (ADD-Coordinator also contradicts "no Scope Coordinator"). Emit a Korean caveat and proceed only on explicit user confirmation; otherwise recommend `/cc-cmds:review`. (Consistent with the cross-reference in `review-lite/SKILL.md`.)
+**review-lite conflict guard**: if the in-context proposal looks like a `/review-lite` composition (fixed 2×sonnet — a dedicated security reviewer + a code-quality/logic reviewer; opus excluded; no Scope Coordinator; a single Y/N gate), both axes conflict with the lite contract — UPGRADE→opus violates the sonnet pin, and every role-axis OPERATION mutates a roster the lite skill fixes by design, shrinking it no less than growing it (ADD-Coordinator also contradicts "no Scope Coordinator"). Emit a Korean caveat and proceed only on explicit user confirmation; otherwise recommend `/cc-cmds:review`. (Consistent with the cross-reference in `review-lite/SKILL.md`.)
 
 **Schema-drift sync note**: the source of truth is `/review` Step 3's reviewer-composition field set (`역할 | 모델 | 담당 범위` — Korean table). If Step 3 changes that field set, manually sync this skill's OPERATION Korean labels and model aliases. Because this skill's labels are **verbatim-equal** to the Step 3 table headers (design-upgrade's are a conceptual translation of English prose), the drift coupling is tighter — a header rename in Step 3 breaks the verbatim match directly. Do NOT touch `review/SKILL.md`. The residual risk of a missed sync is accepted without a lint (single-direction, one (consumer, source-step) pair).
 
@@ -88,12 +91,12 @@ When the precondition is not met, follow a 3-path fallback. The re-feed target i
 
 - **Path 1 — session roster paste** (full two-axis): the user pastes the Step 3 `역할 | 모델 | 담당 범위` table → full two-axis analysis. This path uniquely still holds Step 3's `위험 신호` directly, the freshest reconciliation input. **재투입 대상**: `/review` Step 3 re-proposal (prospective).
 
-- **Path 2 — reverse-engineer from a saved review report** (model + perspective-ADD axes complete; quantitative SPLIT / Coordinator degraded): unlike design, `docs/reviews/<report>.md` `## 개요`'s `리뷰 팀 구성` preserves all three axes as `역할 ([모델]): [담당 범위]` → the **model axis (UPGRADE) is fully restored**, and the perspective-gap `ADD` is restorable subject to the caveats below. But **the per-file quantitative signal is absent, so quantitative SPLIT and ADD-Coordinator gating degrade to N/A / suppressed** (see SPLIT-axis degradation above; symmetric to design Path-2's model-axis N/A). Caveats to state:
+- **Path 2 — reverse-engineer from a saved review report** (model + perspective-ADD axes complete; every quantitatively-gated OPERATION degraded): unlike design, `docs/reviews/<report>.md` `## 개요`'s `리뷰 팀 구성` preserves all three axes as `역할 ([모델]): [담당 범위]` → the **model axis (UPGRADE) is fully restored**, and the perspective-gap `ADD` is restorable subject to the caveats below. But **the per-file quantitative signal is absent, so quantitative SPLIT and ADD-Coordinator gating degrade to N/A / suppressed** (see SPLIT-axis degradation above; symmetric to design Path-2's model-axis N/A). Caveats to state:
     - (i) This is an AS-RUN roster (generated from the approved Step 3, possibly modified at Step 6 — retrospective), so it is followup-team information, not a live proposal.
     - (ii) Step 3's `위험 신호` is not preserved → reconcile `ADD` from the report's `## 미검토 영역` (direct ADD input, but a **conditional section — may be omitted when not applicable**) + finding `[category]` tags + bounded diff re-read. When `## 미검토 영역` is absent, re-derive ADD from the secondary inputs (`[category]` tags + bounded re-read) alone; ADD input confidence is lower in that case, so "fully restored" holds **only when `## 미검토 영역` exists**.
     - (iii) On multiple report versions, use the highest version.
-    - (iv) **Quantitative SPLIT and ADD-Coordinator suppressed** — Path-2 output is limited to UPGRADE + ADD (perspective gap).
-  - **재투입 대상**: `/review` Step 6 team re-creation (retrospective). Step 6 requires augmented fields (Re-creation reason / Previous review coverage / Additional analysis scope) + an approval cycle, not the Step 3 form, so there is no slot a `역할 | 모델 | 담당 범위` OPERATION drops into verbatim. Map the Path-2 output instead: the OPERATION roster delta (UPGRADE / ADD [/ ADD-Coordinator and SPLIT-REPLACE are suppressed on Path-2]) → Step 6 **Additional analysis scope** (plus the re-created roster); each ADD's rationale → Step 6 **Previous review coverage** (covered vs uncovered, citing the report's `## 미검토 영역`); **Re-creation reason** is supplied separately by the user / next-turn model (the emit does not force it). This keeps "paste back without ambiguity" aligned with Step 6's input schema.
+    - (iv) **Every OPERATION resting on the per-file quantitative signal is suppressed** — quantitative SPLIT, ADD-Coordinator, and both reducing operations (see SPLIT-axis degradation above). Path-2 output is limited to UPGRADE + ADD (perspective gap).
+  - **재투입 대상**: `/review` Step 6 team re-creation (retrospective). Step 6 requires augmented fields (Re-creation reason / Previous review coverage / Additional analysis scope) + an approval cycle, not the Step 3 form, so there is no slot a `역할 | 모델 | 담당 범위` OPERATION drops into verbatim. Map the Path-2 output instead: the OPERATION roster delta that Path-2 can actually produce (per caveat (iv) above) → Step 6 **Additional analysis scope** (plus the re-created roster); each ADD's rationale → Step 6 **Previous review coverage** (covered vs uncovered, citing the report's `## 미검토 영역`); **Re-creation reason** is supplied separately by the user / next-turn model (the emit does not force it). This keeps "paste back without ambiguity" aligned with Step 6's input schema.
 
 - **Path 3 — start a new `/review`**: when neither is available, two-axis analysis is impossible — emit a Korean notice (e.g., *"분석할 리뷰어 구성이 없습니다. 먼저 `/cc-cmds:review`를 실행해 Step 3 리뷰어 구성을 받은 뒤 다시 호출하세요."*) and stop.
 
@@ -112,6 +115,12 @@ Emit full-triple OPERATIONs in `역할 / 모델 / 담당 범위` order (paste-ba
 - 현재 모델 → 권장 모델: sonnet → opus
 - 변경 사유: 멀티 서비스 인증 위임 경로의 크로스 도메인 추론이 opus 강점에 정합
 - 기대 효과: 미묘한 authn bypass 검출률 향상
+
+[REMOVE]
+- 역할: 동시성 리뷰어
+- 커버리지 승계: 로직 리뷰어 (동시성 관점을 담당 범위에 포함)
+- 근거: Step 3가 async 지표로 발화시켰으나 좁혀진 범위의 async 변경은 기존 헬퍼 호출부 2줄뿐이라 전담 관점이 낼 판단이 없음
+- 기대 효과: 판단이 없는 좌석을 비워 라운드2 교차검증의 신호 대 잡음비 개선
 
 역할/모델 변경 불필요 (해당 시): 나머지 리뷰어는 현재 구성 유지 — 근거: ...
 ```

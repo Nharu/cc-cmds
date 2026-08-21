@@ -191,7 +191,7 @@ The split is structural (path-agnostic): the security reviewer covers any securi
 - **Spawn the fixed 2-member sonnet team** (Security reviewer + Code-quality/Logic reviewer, both pinned to model `"sonnet"`) as nameless background tasks: for each call `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package (a task does not share the lead's conversation). Record each returned `agentId` in the ledger immediately (`state=running`, round 1). **Stamp the round-1 `witnessNonce`** on every one of its rows in the same at-spawn recording window as `agentId`/`scratchDir`, per the protocol Spawn section — no `epoch` stamp, since a single-team skill is uniform-`epoch`-absence handled by the roster's mode-(ii) epoch-agnostic path. Update the ledger on every state change.
 - All team-internal discussion in English.
 - NO code modifications allowed. Review only.
-- **The lead acts as a facilitator** driving the resume loop within the lite round cap.
+- **The lead acts as a facilitator** driving the resume loop within lite's own round cap — the deliberate carve-out recorded under **Round structure** below.
 
 #### Round structure (fixed — round hard-cap = 2)
 
@@ -199,6 +199,8 @@ The split is structural (path-agnostic): the security reviewer covers any securi
 2. **Round 2 — Cross-Validation**: resume each reviewer by its `agentId` (re-inject the task-assignment header + **quote the peer's findings verbatim** as Round-2 input) for one cross-check pass (severity disagreements, missed cross-domain issues such as a security finding that also has performance implications, blind-spot disclosure). Confirm both round-2 witnesses via `witness_present` and read them. This convergence-by-witness-collection resume IS the cross-validation; when both witnesses are `witness_present` and their bodies say "no further input" the team has converged.
 
 **No further rounds.** No follow-up or refinement cycle. **Total team-internal rounds = 2** (Round 1 + Round 2) — this is lite's round hard-cap; each round is at most one resume per reviewer (the resume is the unit of lite's predictable cost — a resume-budget soft-cap under the round hard-cap).
+
+**Deliberate carve-out from the shared Round budget.** The lite family keeps its own hard cap of 2 rather than adopting the cap in `_common/agent-team-protocol.md`'s `### Round budget`, because predictable token cost is the reason this skill exists and the shared cap would raise its round allowance — this divergence is intent, not drift.
 
 **Escalation** (per the protocol's reconcile ladder + failure phenotypes): **Case 1 — thin/empty witness** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort); route an excluded reviewer through the protocol's Case-1 terminal disposition (`_common/agent-team-protocol.md` §Escalation Case 1 — the SOT for the ledger `state=aborted` stamp and the report-metadata exclusion mark) rather than re-specifying it here. **Case 2 — never-returns** → the protocol's reconcile-ladder death verdict fires → `TaskStop` + **same-round respawn** (new `agentId`, with the ledger row's `agentId` / `outputFile` updated and its `stallMark` reset per the protocol); if the respawn also dies → `AskUserQuestion`. **Case 3 — non-conforming witness** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
 

@@ -9,7 +9,7 @@ This file is **parameterized** — it contains literal `{PLACEHOLDER}` tokens th
 A consuming skill specializes this core through exactly three channels:
 
 1. **`## Bindings`** (value substitution) — the consuming skill resolves every `{PLACEHOLDER}` token below to a concrete *value* (labels, field order, anchor objects, source-step, model-axis availability flag, re-feed target, etc.). Pure value resolution, no rule changes.
-2. **`## Operations Layer`** (rule append seam) — the consuming skill MAY (a) declare additional OPERATION classes that carry their own gate, and (b) append to this core's forbidden-set. This is prose-rule append, not token substitution. **Open for extension**: a consuming skill may define an additional OPERATION class provided it is reinforcement-direction, declares its own gate, and respects the per-existing-role invariant below; and it may append entries to this core's forbidden-set.
+2. **`## Operations Layer`** (rule append seam) — the consuming skill MAY (a) declare additional OPERATION classes that carry their own gate, and (b) append to this core's forbidden-set. This is prose-rule append, not token substitution. **Open for extension**: a consuming skill may define an additional OPERATION class provided it **declares its own gate**, respects the per-existing-role invariant below, and does not weaken this core's forbidden-set; and it may append entries to that forbidden-set. Restraint is carried by the gate, not by the direction of the change — a class that shrinks a roster is admissible on exactly the same terms as one that grows it.
 3. **Injected prose sections** — `frontmatter`, the Fallback section, the lite-guard paragraph, and the schema-drift sync-note are authored entirely per-skill in the consuming SKILL.md and are NOT part of this core.
 
 ## Placeholders (resolved by the consuming skill's `## Bindings`)
@@ -29,18 +29,22 @@ A consuming skill specializes this core through exactly three channels:
 
 ---
 
-Analyze the team composition proposed in the preceding `{SOURCE_STEP}` output and produce a second opinion along **two axes** — model and role — recommending only *reinforcing* changes. Restraint is the default on both axes.
+Analyze the team composition proposed in the preceding `{SOURCE_STEP}` output and produce a second opinion along **two axes** — model and role — recommending only changes that pass an explicit gate. Restraint is the default on both axes.
 
 ## Scope
 
-Two analysis axes, reinforcement-direction only:
+Two analysis axes. Every OPERATION earns its place by clearing its own gate; **which direction it moves the roster in is not what makes it admissible**, because a ratchet that can only grow a team cannot enforce a ceiling and cannot undo an over-staffing that a later reading makes obvious.
 
 - **Model axis**: among teammates assigned `haiku`/`sonnet`, identify those where opus's strengths — complex reasoning, cross-domain analysis, deep code analysis — would make a meaningful difference, and propose promotion to opus.
-- **Role axis**: (a) **ADD** a new role for an in-scope domain that no current teammate owns, or (b) **SPLIT-REPLACE** one overloaded broad role into two.
+- **Role axis**: (a) **ADD** a new role for an in-scope domain that no current teammate owns, (b) **SPLIT-REPLACE** one overloaded broad role into two, (c) **REMOVE** a role whose domain no longer needs a dedicated seat, or (d) **MERGE** two roles whose domains are not separable enough to justify two seats.
 
-**Out of scope — never propose**: role removal, role merge, model downgrade. (A consuming skill's `## Operations Layer` may append further forbidden entries.)
+**Out of scope — never propose**: model downgrade; any OPERATION that leaves a domain in scope with no owner; and any `REMOVE` / `MERGE` argued from cost, token budget, or headcount alone. (A consuming skill's `## Operations Layer` may append further forbidden entries.)
 
-**Restraint principle (most important)**: just as model promotion is proposed only when it makes a meaningful difference, role ADD/SPLIT is proposed only when needed — not always. "변경 불필요" is the default and a normal output on both axes; mirror the model-axis retain-rationale symmetry onto the role axis.
+**The cost-reason ban is the load-bearing half of the reversal.** `REMOVE` and `MERGE` exist so a roster can come back down when a seat is genuinely not doing work, not so a caller can buy a cheaper run. A proposal whose stated rationale is the budget, the token spend, or the headcount itself is rejected on that ground alone, however plausible its arithmetic — this is what keeps a savings pass from eating review quality.
+
+**`REMOVE` / `MERGE` are pre-spawn only.** Both operate on a *proposed* composition, before any member is spawned. After spawn there is no ledger state that means "this member's findings live on inside another row": `state ∈ {running, done, aborted}` and reusing `aborted` would emit a false absence annotation for work that really happened. A post-spawn reduction is therefore not available here.
+
+**Restraint principle (most important)**: just as model promotion is proposed only when it makes a meaningful difference, a role OPERATION — in either direction — is proposed only when its gate is met, not by default. "변경 불필요" is the normal output on both axes; mirror the model-axis retain-rationale symmetry onto the role axis.
 
 ## Evaluation criteria
 
@@ -62,8 +66,9 @@ Lightweight re-exploration (read-only; no team, no writes, no test/build, no MCP
 1. A specific uncovered domain that no role owns (cite path / requirement).
 2. ≥1 consequential, non-mechanical decision living in that domain.
 3. Distinct expertise an existing role would not naturally produce within its scope.
+4. **Budget pairing** — if the `ADD` would push the roster past the ceiling in `agent-team-protocol.md`'s `### Team size budget`, it must ship paired with a `REMOVE` or a `MERGE` in the same emit. Without this the ceiling and the new operations stay unrelated edits: the roster becomes reversible in principle and never actually reverses. The condition is scoped to **domain-perspective** roles, matching the budget's own count — a role the budget does not count cannot exceed it and so has nothing to pair with.
 
-If any fails → no new role. Expanding an existing role's scope (absorption) is out of scope, so a confirmed gap is handled as a **new role**, not a scope edit.
+If any fails → no new role. A confirmed gap is handled as a **new role**, not by widening an existing role's scope: widening is an ungated `ADD` wearing a scope edit's clothes. (`MERGE` also collapses scopes, but it is a separate OPERATION with its own gate below and is never a route to covering a gap.)
 
 ### Split gate (ALL required)
 
@@ -71,6 +76,23 @@ If any fails → no new role. Expanding an existing role's scope (absorption) is
 2. Depth contention — one teammate would starve one side.
 3. Clean cleavage — no shared core forcing constant cross-talk.
 4. Cross-axis reconciliation — explicitly compare SPLIT (two sonnets, parallel focus, +coordination cost, +1 headcount) vs UPGRADE (one opus spanning both, single synthesis preserved), then pick one.
+
+### Remove gate (ALL required)
+
+1. The role's domain is **in scope but demonstrably thin** for this particular unit of work — cite what the domain amounts to here (files touched, requirement text), not a general impression.
+2. **Coverage is preserved**: after the removal, every in-scope domain still has an owner. A `REMOVE` that orphans a domain is the forbidden case, not a restrained one.
+3. The rationale stands **without** appealing to cost, token budget, or headcount (the ban above).
+
+If any fails → no removal. Silence is the default: an unnecessary seat costs a run's tokens and is recovered next session, while a missing seat costs a missed defect and is not recovered — so the gate is deliberately harder to pass in this direction than the reading of a roster usually suggests.
+
+### Merge gate (ALL required)
+
+1. Two roles whose `{SCOPE_LABEL}`s are **not separably deep** for this unit of work — the inverse of the split gate's cleavage condition, argued on the same evidence.
+2. `PARTITION` holds in reverse: the merged role's scope is exactly the union of the two, with nothing dropped.
+3. One teammate can carry the union without starving either side (the inverse of split's depth contention).
+4. The rationale stands **without** appealing to cost, token budget, or headcount.
+
+If any fails → no merge. A `MERGE` and a `SPLIT-REPLACE` must never target the same roles in one emit; if both read as valid, the evidence is ambiguous and the answer is "변경 불필요".
 
 ### Degraded-axis handling
 
@@ -97,7 +119,7 @@ Omit `{SCOPE_LABEL}` — only the model cell changes, so restating the unchanged
 - 근거 (the uncovered domain)
 - 기대 효과
 
-The new `역할` name must not collide with any existing roster role name — a collision means this is a scope-expansion attempt on an existing role, which is out of scope (fails the restraint gate). Symmetric with UPGRADE's lookup-key integrity.
+The new `역할` name must not collide with any existing roster role name — a collision means this is not a new role at all but a scope edit on an existing one, which the restraint gate rejects. If the intent really was to reshape existing scopes, say so with `MERGE` or `SPLIT-REPLACE` and clear that operation's gate. Symmetric with UPGRADE's lookup-key integrity.
 
 ### `SPLIT-REPLACE` (overloaded parent role → two children, parent removed)
 
@@ -106,15 +128,33 @@ The new `역할` name must not collide with any existing roster role name — a 
 - 근거 (overload evidence)
 - 기대 효과
 
-A SPLIT-REPLACE making the parent role name disappear is NOT the forbidden "removal" — it is a reinforcing 1→2 split. Tag it `SPLIT-REPLACE`, not `REMOVE`, so the re-proposal does not misread it as a downgrade.
+A SPLIT-REPLACE making the parent role name disappear is NOT a `REMOVE` — the parent's whole scope stays covered by the two children. The two operations now coexist and the re-proposal reads them differently (`REMOVE` gives up a seat and its rationale must show coverage survives elsewhere; `SPLIT-REPLACE` preserves coverage by construction), so tag it `SPLIT-REPLACE`.
+
+### `REMOVE` (drop a role whose domain no longer needs its own seat)
+
+- `역할` — must match an existing roster role name (lookup key), compared exactly after trimming leading/trailing whitespace; any other drift is malformed → re-confirm with the user.
+- `커버리지 승계` — which remaining role(s) own that domain after the removal. This field is mandatory and is where remove-gate condition 2 is discharged; an emit without it is malformed.
+- 근거 (why the domain is thin for this unit of work — never cost, tokens, or headcount)
+- 기대 효과
+
+Omit `{SCOPE_LABEL}` — the role is leaving, so restating its scope is noise. (Scope is omitted, so the field-order rule does not apply to REMOVE.)
+
+### `MERGE` (two roles → one, both parents replaced)
+
+- The merged role: a full role triple in the order `{FIELD_ORDER}`
+- `PARTITION: parentA.{SCOPE_LABEL} ⊎ parentB.{SCOPE_LABEL} = merged.{SCOPE_LABEL} (no overlap, no loss)` — the split gate's partition contract read in reverse
+- 근거 (why the two domains are not separably deep here — never cost, tokens, or headcount)
+- 기대 효과
+
+The merged `역할` name may reuse one parent's name or introduce a new one; if it introduces a new one it must not collide with a third existing role.
 
 ### Invariant — at most one OPERATION per existing role
 
-A single parent role must not carry both `UPGRADE` and `SPLIT-REPLACE`. If both seem valid, pick the stronger one and state the tradeoff. `ADD` does not touch existing roles, so it combines freely. (A consuming skill's `## Operations Layer` OPERATION class that mints a brand-new role is likewise exempt from this per-existing-role invariant.)
+A single existing role must not carry more than one of `UPGRADE` / `SPLIT-REPLACE` / `REMOVE` / `MERGE`. If two seem valid, pick the stronger one and state the tradeoff — and note that some pairs are not a judgment call but a contradiction (`REMOVE` with `UPGRADE` on the same role; `MERGE` with `SPLIT-REPLACE` on the same role), which means the evidence is ambiguous and the answer is "변경 불필요". `ADD` does not touch existing roles, so it combines freely — including with the `REMOVE` / `MERGE` it may be required to pair with under restraint-gate condition 4. (A consuming skill's `## Operations Layer` OPERATION class that mints a brand-new role is likewise exempt from this per-existing-role invariant.)
 
 ### Shared Korean emit vocabulary
 
-`현재 모델 → 권장 모델` · `변경 사유` / `유지 사유` · `기대 효과` · `역할 변경 불필요` / `모델 변경 불필요` · `근거`. Model-value aliases `opus` / `sonnet` / `haiku` are shared verbatim. The skill body text and headings are English; only these emit fields and user-facing notices are Korean.
+`현재 모델 → 권장 모델` · `변경 사유` / `유지 사유` · `기대 효과` · `역할 변경 불필요` / `모델 변경 불필요` · `근거` · `커버리지 승계` (REMOVE only). Model-value aliases `opus` / `sonnet` / `haiku` are shared verbatim. The skill body text and headings are English; only these emit fields and user-facing notices are Korean.
 
 ## Cross-axis synthesis
 

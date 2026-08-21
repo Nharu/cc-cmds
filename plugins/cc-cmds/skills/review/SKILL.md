@@ -210,6 +210,24 @@ This exploration output is the key input for Step 3 team composition.
 
 Propose team composition based on PR characteristics and codebase exploration results.
 
+**How many reviewers**: bounded by `_common/agent-team-protocol.md`'s `### Team size budget`. Read the ceiling **and its coordinator-class carve-out** there — this step states no number of its own, so the budget cannot drift into two values.
+
+#### Small-work gate (evaluated once on entering this step)
+
+A small, single-concern change does not need a full review team. Evaluate this before composing, against the scope **Step 1c confirmed** — never the raw target, since a "특정 경로만" / "리뷰 분할" narrowing is exactly the case where the two differ most.
+
+**Gate input — measure the narrowed scope, and read it per mode.** Step 1a's three target types keep their change size in different places, and the local-diff mode has no `gh` metadata at all:
+
+- **PR mode** — take the per-file `{path,additions,deletions}` array already collected in 1b, drop the entries Step 1c excluded, and sum `additions + deletions` over what remains. The file count is the length of that same filtered array — do **not** reuse the unfiltered `changedFiles`, which is the pre-narrowing number.
+- **Local diff mode** (empty `$ARGUMENTS`) — the source is the same `git diff {DEFAULT_BRANCH}...HEAD` the auto-detect chain established; aggregate it with `git diff {DEFAULT_BRANCH}...HEAD --numstat`, apply the Step-1c path filter to the rows, and sum the added and deleted columns.
+- **File path mode** — there is no diff input, so there is no change size to measure. **Declare that the gate does not apply** and compose normally; do not substitute an estimate.
+
+**Risk indicators outrank the size row.** If any indicator in the next subsection fires — auth/authorization, DB schema or query, public API surface, external service integration, async/concurrency — compose for that risk no matter how small the diff is, and this gate does not narrow the team. Size is the one signal here that could otherwise quietly overrule a risk signal, and a security-relevant change is very often a small patch.
+
+**When it fires**: no risk indicator fired **and** the narrowed scope is inside the small-patch threshold of the type table below. Compose from that row instead of a larger default row, and state the narrowing in one line of the Korean proposal so the user sees it rather than discovering a thinner team.
+
+**Floor.** This gate selects among the composed rows below, every one of which carries at least two reviewers, so it cannot yield an empty roster — and an empty roster would not be a saving anyway but a hard stop, since the report stub is created at spawn time and every resume path fail-closes on a missing or unparseable ledger. That floor belongs to the roster contract in `_common/agent-team-protocol.md`, alongside the team-size ceiling; do not write a second floor rule into this gate.
+
 #### PR characteristic analysis → risk indicators
 
 - Auth/authorization logic changes → security reviewer needed
@@ -235,7 +253,7 @@ The table above is the **default composition**. Roles can be added/changed based
 
 #### Large PR additional strategy
 
-When >50 files are in review scope (after Step 1c narrowing), consider adding a **Scope Coordinator** role. The coordinator operates as a persistent participant:
+When >50 files are in review scope (after Step 1c narrowing), consider adding a **Scope Coordinator** role. It is meta/orchestration rather than a domain perspective, so it is **not counted** against the ceiling — the coordinator-class carve-out in `_common/agent-team-protocol.md`'s `### Team size budget`. The coordinator operates as a persistent participant:
 
 - **Round 0 (pre-analysis)**: Classify changed files by risk level and assign focus areas to each reviewer
 - **Per-round coverage audit**: After each round's results, identify high-risk areas not yet reviewed and request additional review from relevant reviewers
@@ -285,7 +303,7 @@ Branch on user response:
 - All inter-reviewer discussion in English
 - NO code modifications allowed. Review only
 - **The lead acts as a facilitator**, actively driving the multi-round resume loop (produce → cross-review → convergence)
-- **Convergence (witness collection)**: after cross-review, resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts verbatim); a reviewer's round is converged-and-collected only when its round witness is `witness_present` and the witness body says "no further input". Drive a **minimum of 2 rounds** (Round 1 = produce; Round 2+ = cross-review with peer findings quoted verbatim). This is a **full** review — no cost throttle; debate as long as convergence needs.
+- **Convergence (witness collection)**: after cross-review, resume each reviewer once with a convergence prompt (re-inject current consensus + open conflicts verbatim); a reviewer's round is converged-and-collected only when its round witness is `witness_present` and the witness body says "no further input". Round count follows `_common/agent-team-protocol.md`'s `### Round budget` (Round 1 = produce; Round 2+ = cross-review with peer findings quoted verbatim). This is a **full** review — what separates it from `review-lite` is roster breadth and review scope, not a larger round allowance.
 - **Escalation** (per the protocol's reconcile ladder + failure phenotypes): **Case 1 — thin/empty witness** (counter) → re-scope + resume once; 2nd consecutive → `AskUserQuestion` (proceed without this reviewer / re-scope once more / abort); route an excluded reviewer through the protocol's Case-1 terminal disposition (`_common/agent-team-protocol.md` §Escalation Case 1 — the SOT for the ledger `state=aborted` stamp and the report-metadata exclusion mark) rather than re-specifying it here. **Case 2 — never-returns** → the protocol's reconcile-ladder death verdict fires → `TaskStop` + **same-round respawn** (new `agentId`, with the ledger row's `agentId` / `outputFile` updated and its `stallMark` reset per the protocol); if the respawn also dies → `AskUserQuestion`. **Case 3 — non-conforming witness** (routing rule) → re-assign once; a recurrence feeds the Case 1 counter.
 
 ---
