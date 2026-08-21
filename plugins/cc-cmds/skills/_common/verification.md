@@ -234,7 +234,7 @@ Consumed by `implement` (verbatim). Any other pass that re-runs a recorded recip
 
 ## 8. Transformation move (in-session-unverifiable → R-item)
 
-Input = a blocked-exit record (or a never-attempted filter-NO claim). Output = an R-item per the §5 schema, inheriting fields and assigned a `잔여 사유`. `design` and `design-lite` perform the identical move; the *trigger point* is owned by each SKILL.md's gate prose (it is economically divergent). The three birth paths of §5.1 are the only ways an R-item comes into being.
+Input = a blocked-exit record (or a never-attempted filter-NO claim). Output = an R-item per the §5 schema, inheriting fields and assigned a `잔여 사유`. `design` and `design-lite` perform the identical move; the *trigger point* is owned by each SKILL.md's gate prose (it is economically divergent). The birth paths of §5.1 are the only ways an R-item comes into being.
 
 ---
 
