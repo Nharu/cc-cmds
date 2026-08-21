@@ -195,17 +195,34 @@ else
   #     consumer assigns them no tier), so equality yields four false failures
   #     and invites deleting healthy sections to satisfy the lint.
   if [[ -f "$TEMPLATE" ]]; then
-    missing=$(
+    # The pipeline is guarded AND its result is asserted non-empty. Guarding
+    # alone converts a loud abort into a silent pass: `grep` exits 1 when the
+    # consumer's anchors stop matching, and an empty extraction makes `missing`
+    # empty, which reads as "nothing missing" — the strongest possible pass
+    # produced by the check having no input at all. Both halves land together;
+    # with only the guard, the whole suite goes green and none of this file's
+    # predicates fire.
+    consumer_headings=$(
       awk '/^    - \*\*Binding\*\*/,/^    - `## 권장 구현 순서` is reference/' "$CONSUMER" \
-        | grep -oE '`## [^`]+`' | tr -d '`' | sort -u \
-        | while IFS= read -r h; do
-            grep -Fqx -- "$h" "$TEMPLATE" || printf '%s\n' "$h"
-          done
+        | grep -oE '`## [^`]+`' | tr -d '`' | sort -u || true
     )
-    if [[ -n "$missing" ]]; then
-      echo "FAIL: consumer tier enumeration is not contained in the producer heading set; missing from the template:" >&2
-      printf '  %s\n' $missing >&2
+    if [[ -z "$consumer_headings" ]]; then
+      echo "FAIL: ${CONSUMER#"$repo_root/"} — tier-enumeration extraction produced an empty list; the range anchors no longer match" >&2
+      echo "      anchors: '    - **Binding**' … '    - \`## 권장 구현 순서\` is reference'" >&2
       fail=1
+    else
+      missing=$(
+        while IFS= read -r h; do
+          grep -Fqx -- "$h" "$TEMPLATE" || printf '%s\n' "$h"
+        done <<< "$consumer_headings"
+      )
+      if [[ -n "$missing" ]]; then
+        echo "FAIL: consumer tier enumeration is not contained in the producer heading set; missing from the template:" >&2
+        # Quoted read loop — an unquoted expansion word-splits a heading that
+        # contains spaces, printing one heading as several lines.
+        while IFS= read -r h; do printf '  %s\n' "$h" >&2; done <<< "$missing"
+        fail=1
+      fi
     fi
   fi
 fi
@@ -319,7 +336,16 @@ if require_region '<!-- VOCAB-BEGIN -->' '<!-- VOCAB-END -->' "$SKILL" 'vocabula
     # Every adjacent site here is already guarded; this was the only one that
     # was not. Protecting the pipe is half the repair — the branch it killed
     # has to come back with it, or the guard is restored around dead code.
-    extra=$(printf '%s\n' "$c_line" | grep -oF '·' | wc -l | tr -d ' ' || true)
+    # Count ELEMENTS, not separators, and scope to the brace body first.
+    # A separator count conflates the two cases it has to tell apart: a
+    # one-element complement and an empty one both yield zero separators, so
+    # the one-element form — a legitimate proper superset — is rejected while
+    # the empty form is the only thing this branch exists to catch. Lowering the
+    # threshold instead would accept the empty form; the predicate itself is
+    # what is wrong, so this is a correction and not a restoration.
+    c_body=${c_line#*\{}
+    c_body=${c_body%\}*}
+    extra=$(printf '%s\n' "$c_body" | tr '·' '\n' | LC_ALL=C awk 'NF{n++} END{print n+0}')
     if [[ "${extra:-0}" -lt 1 ]]; then
       echo "FAIL: review-remediate/SKILL.md — C \\ B is empty; the section guard becomes identically false" >&2
       fail=1
