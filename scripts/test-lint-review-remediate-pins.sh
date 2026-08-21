@@ -166,5 +166,13 @@ if (( passed + failures == 0 )); then
   exit 1
 fi
 
+# The summary must agree with the exit code. Baseline drift fails the suite
+# without failing any fixture, so a bare "N passed, 0 failed" would be the last
+# line of a run that exits 1 — and the last line is what a CI log tail shows.
+if (( baseline_drift > 0 )); then
+  echo "test-lint-review-remediate-pins: $passed passed, $failures failed — 베이스라인 대조가 실패해 스위트는 실패입니다" >&2
+  exit 1
+fi
+
 echo "test-lint-review-remediate-pins: $passed passed, $failures failed"
-exit $(( failures > 0 || baseline_drift > 0 ? 1 : 0 ))
+exit $(( failures > 0 ? 1 : 0 ))

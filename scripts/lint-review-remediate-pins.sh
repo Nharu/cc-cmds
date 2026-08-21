@@ -81,11 +81,26 @@ fi
 
 fail=0
 
+# The output template's absence is decided ONCE, here, and both dependent blocks
+# read that decision. Two sites used to decide it independently and took opposite
+# postures — the H2 block failed loudly, the tier cross-check skipped in silence —
+# so the same missing file was fatal or invisible depending on which check you
+# happened to be reading. One posture, stated once: absent is a failure, and the
+# checks it disables are named in the not-run ledger rather than disappearing.
+TEMPLATE_PRESENT=1
+
 # Checks that did NOT run, by name. A pass message that lists only what passed
 # reads as full coverage even when a guard was skipped for want of its input, so
 # the OK line carries this ledger too — a guard that speaks only when it fails is
 # silent at exactly the two moments its input went missing.
 NOT_RUN=()
+
+if [[ ! -f "$TEMPLATE" ]]; then
+  echo "FAIL: review-remediate/references/output-template.md missing — the H2 set has no pinned home and the tier cross-check has no producer side" >&2
+  fail=1
+  TEMPLATE_PRESENT=0
+  NOT_RUN+=("H2 set" "suffixed-H2" "tier containment")
+fi
 
 # Body of a named marker region, exclusive of the marker lines themselves.
 region_body() {
@@ -230,7 +245,7 @@ else
   #     headings are deliberately outside both consumer enumerations (the
   #     consumer assigns them no tier), so equality yields four false failures
   #     and invites deleting healthy sections to satisfy the lint.
-  if [[ -f "$TEMPLATE" ]]; then
+  if (( TEMPLATE_PRESENT )); then
     # The pipeline is guarded AND its result is asserted non-empty. Guarding
     # alone converts a loud abort into a silent pass: `grep` exits 1 when the
     # consumer's anchors stop matching, and an empty extraction makes `missing`
@@ -260,8 +275,6 @@ else
         fail=1
       fi
     fi
-  else
-    NOT_RUN+=("tier containment (no output template)")
   fi
 fi
 
@@ -280,7 +293,7 @@ H2=(
   '## 권장 구현 순서'
   '## 잔여 공개'
 )
-if [[ -f "$TEMPLATE" ]]; then
+if (( TEMPLATE_PRESENT )); then
   for lit in "${H2[@]}"; do
     if ! grep -Fqx -- "$lit" "$TEMPLATE"; then
       echo "FAIL: review-remediate/references/output-template.md — H2 pin missing (bare exact line): $lit" >&2
@@ -292,9 +305,6 @@ if [[ -f "$TEMPLATE" ]]; then
     echo "FAIL: review-remediate/references/output-template.md — suffixed H2 present; the consumer decides tier by exact section identity" >&2
     fail=1
   fi
-else
-  echo "FAIL: review-remediate/references/output-template.md missing — the H2 set has no pinned home" >&2
-  fail=1
 fi
 
 # ---- (iv) loop-machinery denylist -------------------------------------------
