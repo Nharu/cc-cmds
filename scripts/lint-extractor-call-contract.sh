@@ -134,8 +134,11 @@ OPENER="(${DECL}[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(\"?\\$\\([[:space:]]*|\`[[
 # shape from `if true; then v=$(…)`, which ends with `then` and never matches.
 IFHEAD='(^[[:space:]]*|[;&|{}][[:space:]]*)if[[:space:]]+$'
 
+# The guard compares roots rather than testing whether an environment variable
+# is set: pointing that variable at the real tree defeated the sibling lint's
+# copy of this fence, and the same shape would defeat this one.
 if [[ -f "$POPULATION_DECL" ]]; then
-  if [[ -z "${SCRIPTS_ROOT:-}" ]]; then
+  if [[ "$scripts_root" == "$script_dir" ]]; then
     echo "FAIL: a population declaration sits beside the real scripts tree; these pins are meant to be changed in this script, not overridden from the tree they measure" >&2
     exit 1
   fi

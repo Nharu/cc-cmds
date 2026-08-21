@@ -97,8 +97,15 @@ if [[ ! -d "$skills_root" ]]; then
   exit 0
 fi
 
+# THE GUARD COMPARES ROOTS, not whether an environment variable happens to be
+# set. Testing `-z "$SKILLS_ROOT"` used the variable as a proxy for "is this the
+# real tree", and pointing that variable AT the real tree defeated it: with a
+# declaration file dropped beside the shipped skills and the variable set to
+# their own path, all eighteen by-name references were destroyed and the run
+# still exited 0. The question the guard has to ask is which directory it is
+# measuring, so it asks that.
 if [[ -f "$POPULATION_DECL" ]]; then
-  if [[ -z "${SKILLS_ROOT:-}" ]]; then
+  if [[ "$skills_root" == "$repo_root/plugins/cc-cmds/skills" ]]; then
     echo "FAIL: a population declaration sits beside the real skills tree; these pins are meant to be changed in this script, not overridden from the tree they measure" >&2
     exit 1
   fi
@@ -149,7 +156,11 @@ while IFS= read -r f; do
   # `grep -c` prints 0 and exits 1 on no match, so the exit status is absorbed
   # rather than replaced — an `|| echo 0` appends a second line and the addition
   # below then fails with a syntax error the success line never mentions.
-  count=$(grep -cF -- 'capture format' "$visible" 2>/dev/null || true)
+  # Occurrences, not lines — the success line calls these "reference(s)", an
+  # occurrence noun, and this counted lines. The same file declares that rule
+  # for the definition count twenty-nine lines above; the two numbers now answer
+  # the question their names ask.
+  count=$(grep -oF -- 'capture format' "$visible" 2>/dev/null | grep -c . || true)
   refs=$((refs + ${count:-0}))
 done < <(find "$skills_root" -type f -name '*.md' | sort)
 
