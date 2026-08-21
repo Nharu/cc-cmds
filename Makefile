@@ -9,6 +9,7 @@ lint:
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
+	bash scripts/lint-review-remediate-pins.sh
 	bash scripts/lint-team-budget-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
@@ -30,6 +31,7 @@ test: test-active-notify
 	bash scripts/test-lint-skill-auq-spec.sh
 	bash scripts/test-lint-verification-literals.sh
 	bash scripts/test-lint-design-audit-pins.sh
+	bash scripts/test-lint-review-remediate-pins.sh
 	bash scripts/test-lint-team-budget-pins.sh
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh

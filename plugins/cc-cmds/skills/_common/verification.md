@@ -6,7 +6,7 @@ Single source of truth for the in-session verification mechanism: the claim taxo
 
 **What this file owns vs. what each SKILL.md owns.** This file is *contracts-only*: vocabulary, schemas, predicates, and execution mechanics. It deliberately excludes *workflow prose* — the Quality-Gate procedure, the pre-save sweep's **trigger point, scope and failure paths**, the consumer's gate flow and failure menus, and the lite budget / split / menu — each of which lives in the owning SKILL.md. The sweep's **pass predicate** is the single carve-out and lives here as §10: it is a predicate rather than a procedure, and it had drifted into two inline copies — exactly the shape this file exists to collapse. Every excerpt or inline copy of this contract elsewhere MUST carry a provenance line naming this file; the frozen-literal lists are defined ONLY here and copies cite, never re-author, them.
 
-**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-audit` Reads §3.4 and §5.2 by reference from its deterministic-checks step and deliberately keeps no excerpt — an excerpt is a copy, and a copy is a parity obligation. `implement` Reads it and uses the `## Residual-item contract` section.
+**Consumption matrix.** `design` Reads this file in full. `design-lite` Reads it in full (its fourth `_common` Read). `design-audit` Reads §3.4 and §5.2 by reference from its deterministic-checks step and deliberately keeps no excerpt — an excerpt is a copy, and a copy is a parity obligation. `implement` Reads it and uses the `## Residual-item contract` section. `review-remediate` Reads §3.1, §4, and §5 by section name from its authoring step (a scoped Read, not a full one, matching `implement`'s form) — it authors `### V<n>` records for its `반증` arm and `### R<n>` items for the mitigations it writes, and never performs a flip.
 
 ---
 
@@ -58,12 +58,12 @@ The field key is the single literal **`검증 등급`** everywhere (no `상태` 
 
 | # | Token (exact bytes) | Where it appears | Written by | Required companion fields |
 | --- | --- | --- | --- | --- |
-| 1 | `검증됨(통과)` | ledger `### V<n>` | design-session verifier / review main session (run-now) | `주장` `분류` `검증 절차` `기대 결과` `관측 결과` `관측 일시` `영향 결정` (all required) + tree-hygiene note (cat = 외부 환경: optional `유효 조건`; dirty-run: mandatory `유효성 노트`) |
+| 1 | `검증됨(통과)` | ledger `### V<n>` | design-session verifier / review main session (run-now) / `review-remediate` (the `반증` arm's mandatory code-observation record) | `주장` `분류` `검증 절차` `기대 결과` `관측 결과` `관측 일시` `영향 결정` (all required) + tree-hygiene note (cat = 외부 환경: optional `유효 조건`; dirty-run: mandatory `유효성 노트`) |
 | 1′ | `검증됨(통과)` | residual `### R<n>` flip | implement only (W1) | mandatory W2 note line `**구현 시 검증 기록**: <YYYY-MM-DD> — <observation>[; 치환: <old>→<new>[, …]][; 사용자 위험 수용]` |
-| 2 | `반증됨(실패)` | ledger `### V<n>` | design-session verifier / review main session (run-now) | same as #1; `영향 결정` cites the decision **changed** by the refutation (preserved as refutation evidence) |
+| 2 | `반증됨(실패)` | ledger `### V<n>` | design-session verifier / review main session (run-now) / `review-remediate` (the `반증` arm's mandatory code-observation record) | same as #1; `영향 결정` cites the decision **changed** by the refutation (preserved as refutation evidence) |
 | 2′ | `반증됨(실패)` | residual `### R<n>` flip | implement only (W1) | W2 note line + failure-surface utterance |
 | 3 | `미검증` | Step-3 inter-agent messages only | teammate / lead | none — **MUST NOT appear in a saved document** (sweep pass condition: both the full-line and inline-tag literal forms are document-wide grep 0; the absence-proof exception of the detection grammar in §3.4) |
-| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
+| 4 | `구현 시 검증` | at `### R<n>` creation (the only save-time residual token) | design/design-lite lead (via the transformation move) / review main session (`잔여 항목으로 기록` disposition) / `review-remediate` (claims about the mitigation it authored) | `주장` `분류` `잔여 사유` `차단 사유` `검증 레시피` `기대 결과` `실패 시 영향`; optional: `필요한 것` `검증 시점` `실행 주의` `예상 소요` `관측 시점` |
 | 5 | `검증불가(드리프트)` | residual `### R<n>` flip | implement only (Rung 3) | W2 note line (drift cause) + failure-surface utterance |
 
 > **Enumeration ≠ rendering.** This table (and the §4/§5 field lists, and bulleted field/value enumerations such as §3.1) fixes *which* fields exist and *what bytes* each token is; it does NOT prescribe the markdown *line rendering*. The one normative line rendering is the CANON form **`**key**: value`** — bold key, no leading bullet `- `, exactly one ASCII space after the colon — shown as a verbatim example block in §4 and §5. A markdown bullet used to enumerate a field/value in this contract's prose is a documentation device, not a rendering template; do not copy the bullet (or drop the bold) into an emitted V/R field line.
@@ -178,13 +178,14 @@ An unnumbered heading, placed after `## 미해결 이슈 / 트레이드오프` a
 
 (Optional fields — `필요한 것` / `검증 시점` / `실행 주의` / `예상 소요` / `관측 시점` — render with the same `**key**: value` form. On flip, `implement` rewrites the `검증 등급` line to a terminal token and appends `**구현 시 검증 기록**: …` directly after it.)
 
-### 5.1 The three birth paths of a residual item
+### 5.1 The four birth paths of a residual item
 
-Exactly three:
+Exactly four:
 
 1. **filter NO** (never attempted) → `잔여 사유: 구현 필요`.
 2. **verification-attempt exit** → `잔여 사유: 검증 차단` (or a lite budget reason). The attempt is recorded in `차단 사유` as `attempted: <what ran>, blocked at: <where>`; it does NOT become a V-entry.
 3. **`design-audit` reconciliation routing to the `implement` pre-gate** → `잔여 사유: 검증 차단` with the standard blocked-reason prose `감사 시점 사용자 이연 — <YYYY-MM-DD>`. The audit's single reconciliation pass routes each unique defect to exactly one named owner, and this is the arm that lands in the residual encoding.
+4. **`review-remediate` authoring a mitigation** → `잔여 사유: 구현 필요`. The command's `반영` arm authors a mitigation spec that `implement` will apply; a claim about *that authored mitigation* cannot be settled while the mitigation is only a specification. Its domain is disjoint from paths 1–3, which are about the design under discussion rather than about a remediation the consumer has not yet applied. The command's own `검증 시점` enum is narrowed to `구현 후` alone. The only deterministic phase label it holds is the mitigation spec's `착지` field, and that value is a **file path** — while the consumer partitions `구현 중(<phase>)` by phase name. An item whose phase is a path therefore belongs to no phase: it is disclosed as out-of-scope on every invocation and never executes, and because it does match the value arm it is never surfaced as malformed either — syntactically legal, semantically dead. **On this one path the authoring condition above is read differently**: this producer prints `구현 후` even on a claim that implementation-time execution could settle, and this contract accepts that one imprecise line as the price of a residual that can still be settled later. It never authors `구현 전`, whose claim would have no truth value before the fix exists.
 
 The ledger holds only performed-and-completed entries; a blocked attempt lives in an R-item's `차단 사유`.
 
@@ -233,7 +234,7 @@ Consumed by `implement` (verbatim). Any other pass that re-runs a recorded recip
 
 ## 8. Transformation move (in-session-unverifiable → R-item)
 
-Input = a blocked-exit record (or a never-attempted filter-NO claim). Output = an R-item per the §5 schema, inheriting fields and assigned a `잔여 사유`. `design` and `design-lite` perform the identical move; the *trigger point* is owned by each SKILL.md's gate prose (it is economically divergent). The three birth paths of §5.1 are the only ways an R-item comes into being.
+Input = a blocked-exit record (or a never-attempted filter-NO claim). Output = an R-item per the §5 schema, inheriting fields and assigned a `잔여 사유`. `design` and `design-lite` perform the identical move; the *trigger point* is owned by each SKILL.md's gate prose (it is economically divergent). The birth paths of §5.1 are the only ways an R-item comes into being.
 
 ---
 

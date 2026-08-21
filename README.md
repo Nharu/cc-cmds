@@ -20,6 +20,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
 | `/cc-cmds:review` | 에이전트 팀을 활용한 다관점 코드 리뷰 | 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때 |
 | `/cc-cmds:review-lite` | 2인 팀을 활용한 경량 코드 리뷰 | 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능) |
+| `/cc-cmds:review-remediate` | 리뷰 리포트를 1회 소비해 발견별 처분을 확정하고 완화 설계까지 저작 (재리뷰 없음) | 리뷰 리포트가 이미 나와 있고 그 발견들을 무엇을 고치고 무엇을 미루고 무엇을 반박할지 확정한 뒤 implement에 인계하고자 할 때 (review 종단 이후 · implement 직전). 새 리뷰를 받으려면 review·review-lite를, 기존 리뷰에 2차 의견을 얹으려면 review-upgrade를 쓴다. |
 | `/cc-cmds:review-upgrade` | 리뷰어 구성 강화 분석 (모델·역할 축) | 직전 `/review` Step 3 리뷰어 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 누락된 리뷰 관점을 메울 신규 리뷰어 추가가 필요한지, 또는 과부하 리뷰어 분할이 필요한지 second-opinion으로 검토할 때 |
 
 <!-- SKILLS_TABLE_END -->
@@ -122,6 +123,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:implement](#cc-cmdsimplement)
 - [/cc-cmds:review](#cc-cmdsreview)
 - [/cc-cmds:review-lite](#cc-cmdsreview-lite)
+- [/cc-cmds:review-remediate](#cc-cmdsreview-remediate)
 - [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
 
 ### /cc-cmds:design
@@ -240,6 +242,26 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
+
+### /cc-cmds:review-remediate
+
+**Usage**: `/cc-cmds:review-remediate <target> [<directive>] [--dry-run]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<target>` | (required) | 리뷰 리포트 경로(첫 `.md` 토큰) 또는 PR 지시자(순수 숫자·`#N`·PR URL). PR 지시자면 `docs/reviews/`에서 앵커된 글롭 세 형태로 탐색해 최고 버전을 고른다. 현재 브랜치 자동 감지는 하지 않는다. |
+| `<directive>` | _(optional)_ | 리포트 경로 뒤 자유 텍스트. 처분의 초점 메모로만 쓰이며 처분 arm을 지정하지 못한다 — arm 오버라이드는 배치 확인의 자유 텍스트 채널이 소유한다. |
+| `--dry-run` | off (실제 쓰기 수행) | 처분 판정과 미리보기까지만 수행하고 본문 실행 시맨틱이 이름으로 고정한 쓰기 여섯 자리를 전부 건너뛴다. 게이트 평가는 그대로 하므로 미리보기가 실물과 어긋나지 않는다. |
+
+**Safety** — 처분 판정과 미리보기까지만 수행하고 본문 실행 시맨틱이 이름으로 고정한 쓰기 여섯 자리를 전부 건너뛴다. 게이트 평가는 그대로 하므로 미리보기가 실물과 어긋나지 않는다. (`--dry-run`):
+
+- `--dry-run` 없이 실행하면 **공개 GitHub 트래커에 이슈를 생성**한다. 이슈 생성은 번호 소비와 상호 참조 흔적 때문에 되돌릴 수 없다.
+- 대상 레포에 백로그 라벨이 없으면 **그 라벨을 생성**한다 — 라벨 생성도 그 레포에 대한 쓰기다.
+- 이 커맨드가 만든 라벨 스코프 이슈 중 30일간 손대지 않은 것을 **자동 종료**한다 (사용자가 직접 만든 이슈는 어떤 경로로도 건드리지 않는다).
+- 중복 검사가 기존 이슈에 매칭되면 **그 이슈에 코멘트를 추가**한다 — 공개 트래커 쓰기이고 알림을 발생시킨다.
+- `docs/remediation/{slug}.md` 산출물을 저작한다.
+- 그 산출물의 `## 판정 원장`에 이번 사이클의 처분을 기록한다.
+- `--dry-run`은 처분 판정과 미리보기까지만 하고 **위 여섯 자리를 전부 건너뛴다**. **게이트 평가는 한다** — 하지 않으면 미리보기가 실물과 달라진다. 이 목록의 출처는 본문의 실행 시맨틱이며 여기는 그것을 인용한다.
 
 ### /cc-cmds:review-upgrade
 
