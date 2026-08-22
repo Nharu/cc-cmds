@@ -1,0 +1,4 @@
+^OK:   team budget pins — 7 pin(s) checked, 10 skipped, fence clean
+^WARN: lever 01 (team size budget) — anchor absent, 4 pin(s) not checked
+^WARN: lever 01 (REMOVE operation) — anchor absent, 4 pin(s) not checked
+^WARN: lever 01 (MERGE operation) — anchor absent, 2 pin(s) not checked

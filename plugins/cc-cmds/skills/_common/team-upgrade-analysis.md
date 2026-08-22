@@ -66,7 +66,7 @@ Lightweight re-exploration (read-only; no team, no writes, no test/build, no MCP
 1. A specific uncovered domain that no role owns (cite path / requirement).
 2. ≥1 consequential, non-mechanical decision living in that domain.
 3. Distinct expertise an existing role would not naturally produce within its scope.
-4. **Budget pairing** — if the `ADD` would push the roster past the ceiling in `agent-team-protocol.md`'s `### Team size budget`, it must ship paired with a `REMOVE` or a `MERGE` in the same emit. Without this the ceiling and the new operations stay unrelated edits: the roster becomes reversible in principle and never actually reverses. The condition is scoped to **domain-perspective** roles, matching the budget's own count — a role the budget does not count cannot exceed it and so has nothing to pair with.
+4. **Budget pairing** — if the `ADD` would push the roster past the ceiling in `agent-team-protocol.md`'s `### Team size budget`, it must ship paired with a `REMOVE` or a `MERGE` in the same emit. Without this the ceiling and the new operations stay unrelated edits: the roster becomes reversible in principle and never actually reverses. **Both halves of the pairing are scoped to domain-perspective roles, and that follows from the carve-out's own symmetry rather than from a second rule.** The carve-out states one direction — a role the budget does not count cannot exceed the ceiling, so it has nothing to pair with. The converse holds for the same reason: a role that cannot raise the count cannot lower it either, so it cannot *discharge* a pairing. Writing only the first direction is what left the second open, and an uncounted role could then be produced to pay for a counted one.
 
 If any fails → no new role. A confirmed gap is handled as a **new role**, not by widening an existing role's scope: widening is an ungated `ADD` wearing a scope edit's clothes. (`MERGE` also collapses scopes, but it is a separate OPERATION with its own gate below and is never a route to covering a gap.)
 
@@ -81,16 +81,21 @@ If any fails → no new role. A confirmed gap is handled as a **new role**, not 
 
 1. The role's domain is **in scope but demonstrably thin** for this particular unit of work — cite what the domain amounts to here (files touched, requirement text), not a general impression.
 2. **Coverage is preserved**: after the removal, every in-scope domain still has an owner. A `REMOVE` that orphans a domain is the forbidden case, not a restrained one.
-3. The rationale stands **without** appealing to cost, token budget, or headcount (the ban above).
+3. **The successor's scope actually widens to say so.** Naming an inheritor is not the same as giving it the domain: state the receiving role's amended `{SCOPE_LABEL}`, exactly as a `MERGE` states its partition. Without this, "somebody else owns it now" is asserted rather than written down, and the domain goes unread while all three conditions read green.
+4. **The successor can carry it** — the same capacity question a `MERGE` asks, asked here because a removal loads a neighbour just as a merge does. A successor already at depth is not a successor.
+5. The rationale stands **without** appealing to cost, token budget, or headcount (the ban above).
 
 If any fails → no removal. Silence is the default: an unnecessary seat costs a run's tokens and is recovered next session, while a missing seat costs a missed defect and is not recovered — so the gate is deliberately harder to pass in this direction than the reading of a roster usually suggests.
+
+**Why conditions 3 and 4 exist.** `REMOVE` was written as `MERGE` minus its two protective conditions, leaving only the nominal "every domain still has an owner". That admits a counterexample: hand a thin domain to a neighbour, widen nothing, ask nothing about capacity — three conditions green and the domain read by no one. The two operations load a roster the same way, so they carry the same guards.
 
 ### Merge gate (ALL required)
 
 1. Two roles whose `{SCOPE_LABEL}`s are **not separably deep** for this unit of work — the inverse of the split gate's cleavage condition, argued on the same evidence.
 2. `PARTITION` holds in reverse: the merged role's scope is exactly the union of the two, with nothing dropped.
 3. One teammate can carry the union without starving either side (the inverse of split's depth contention).
-4. The rationale stands **without** appealing to cost, token budget, or headcount.
+4. **Cross-axis reconciliation** — explicitly compare `MERGE` (one teammate spanning both scopes, one seat freed, +risk of starving a side) against `UPGRADE` (both seats kept, the weaker one promoted), then pick one. This is the split gate's step 4 read in reverse, and it was lost when the split gate was inverted into this one: "one opus spanning both" *is* the merged role with a seat left in place, so the two are near substitutes and the choice has to be made rather than assumed.
+5. The rationale stands **without** appealing to cost, token budget, or headcount.
 
 If any fails → no merge. A `MERGE` and a `SPLIT-REPLACE` must never target the same roles in one emit; if both read as valid, the evidence is ambiguous and the answer is "변경 불필요".
 

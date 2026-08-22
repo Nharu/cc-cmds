@@ -1,7 +1,11 @@
-session	skill	roster_size	max_round	round3_fired	r3_witness_cmd	r2_final_witness_cmd	narrowed_additions	narrowed_deletions	narrowed_files	scope_source
+session	skill	roster_size	max_round	round3_fired	r3_witness_cmd	r2_final_witness_cmd	gate_input_additions	gate_input_deletions	gate_input_files	scope_source
 s1-round3-cmd	design	3	3	1	1	NA	NA	NA	NA	NA
+s10-numstat-unreadable	review	1	2	0	NA	0	NA	NA	NA	numstat-unreadable
 s2-round2-nocmd	design-lite	2	2	0	NA	0	NA	NA	NA	NA
 s3-round2-cmd	design-lite	2	2	0	NA	1	NA	NA	NA	NA
 s4-review-perfile	review	2	2	0	NA	0	16	4	2	per-file
 s5-review-summary	review	1	2	0	NA	0	210	64	18	pr-summary
-s6-no-team	NA	0	0	0	NA	NA	NA	NA	NA	NA
+s6-no-team	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA
+s7-numstat	review	1	2	0	NA	0	16	4	2	numstat
+s8-design-analyze-workjson	design-analyze	2	2	0	NA	0	NA	NA	NA	NA
+s9-homograph-prose	design-lite	1	2	0	NA	0	NA	NA	NA	NA

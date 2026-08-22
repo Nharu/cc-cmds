@@ -1,0 +1,2 @@
+^OK:   team budget pins — 12 pin(s) checked, 4 skipped, fence clean
+^WARN: lever 04 (round budget) — anchor absent, 4 pin(s) not checked

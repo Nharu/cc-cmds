@@ -1,0 +1,2 @@
+^FAIL: agent-team-protocol.md (### Round budget)
+must occur exactly once in its section, found 0: **Hard cap = 3 rounds.**

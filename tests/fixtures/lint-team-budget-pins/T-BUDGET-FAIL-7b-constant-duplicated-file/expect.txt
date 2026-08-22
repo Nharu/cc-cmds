@@ -1,0 +1,2 @@
+^FAIL: review/SKILL.md (small-work gate)
+must occur exactly once, found 2: **Risk indicators outrank the size row.**

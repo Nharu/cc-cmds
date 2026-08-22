@@ -1,0 +1,3 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running /cc-cmds:design-lite for the retry policy."}]}}
+{"type":"user","toolUseResult":{"stdout":"- 7eeeeeeeeeeeeee | done | round-2 | proposer (sonnet) | 0 | ok | 1"}}
+{"type":"user","toolUseResult":{"stdout":"no further input — we should find a way to make sure the team can go over this again later, but nothing here needs a test.\n<!-- cc-witness: proposer round-2 complete 8a55 -->"}}

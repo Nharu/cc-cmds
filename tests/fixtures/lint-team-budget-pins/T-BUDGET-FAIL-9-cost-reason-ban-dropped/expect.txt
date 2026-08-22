@@ -1,0 +1,2 @@
+^FAIL: team-upgrade-analysis.md
+found 0: **The cost-reason ban is the load-bearing half of the reversal.**

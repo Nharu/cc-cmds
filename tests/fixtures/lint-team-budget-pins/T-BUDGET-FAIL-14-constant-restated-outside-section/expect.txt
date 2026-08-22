@@ -1,0 +1,2 @@
+^FAIL: agent-team-protocol.md (### Round budget)
+restated outside its section

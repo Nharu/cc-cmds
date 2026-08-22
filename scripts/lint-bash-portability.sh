@@ -56,6 +56,12 @@ PATTERNS=(
   '\breadlink[[:space:]]+-f\b|readlink -f|GNU-only; portable canonical path via `cd "$(dirname "$f")" && pwd -P`'
   '\bls[[:space:]]+-G\b|ls -G|BSD color flag; for portability drop coloring or branch by OS'
   '\bls[[:space:]]+--color\b|ls --color|GNU color flag; same advice as ls -G'
+  # The divergence here is silent in the worse direction: BSD grep accepts `\t`
+  # inside an ERE and matches a tab, while GNU grep warns "stray \ before t" on
+  # stderr and matches NOTHING. A script developed on macOS therefore passes
+  # locally and returns empty on the Linux CI leg, where an unguarded awk END
+  # can turn that empty match into a confident zero.
+  '\bgrep[[:space:]]+-[a-zA-Z]*E[a-zA-Z]*[[:space:]].*\\t|grep -E with backslash-t|GNU grep treats a backslash-t inside an ERE as a stray escape (warns, matches nothing) while BSD matches a tab; put a literal tab in the pattern instead'
 )
 # Quoted-literal idioms that need substring (not word-boundary) matching.
 LITERAL_PATTERNS=(
