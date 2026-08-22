@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running /cc-cmds:review on PR 77."}]}}
+{"type":"user","toolUseResult":{"stdout":"{\"additions\":210,\"deletions\":64,\"changedFiles\":18}"}}
+{"type":"user","toolUseResult":{"stdout":"- 3aaaaaaaaaaaaaa | done | round-2 | logic (sonnet) | 0 | ok | 1"}}
+{"type":"user","toolUseResult":{"stdout":"no further input.\n<!-- cc-witness: logic round-2 complete 5d22 -->"}}

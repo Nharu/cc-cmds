@@ -1,0 +1,3 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running /cc-cmds:design-lite for the retry policy."}]}}
+{"type":"user","toolUseResult":{"stdout":"- d44444444444444 | done | round-2 | proposer (sonnet) | 0 | ok | 1\n- e55555555555555 | done | round-2 | reviewer (sonnet) | 0 | ok | 1"}}
+{"type":"user","toolUseResult":{"stdout":"no further input — I think the design reads fine as written.\n<!-- cc-witness: reviewer round-2 complete 91bc -->"}}

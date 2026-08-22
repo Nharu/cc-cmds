@@ -127,6 +127,8 @@ Analysts ground claims with `grep`/`Read` directly during Step 4.
 
 Propose a team based on two composition signals: (i) the document's own structure (TOC/heading + keyword scan) and (ii) grounding code exploration.
 
+**How many lenses**: bounded by `_common/agent-team-protocol.md`'s `### Team size budget`. Read the ceiling **and its coordinator-class carve-out** there — this step states no number of its own, so the budget cannot drift into two values.
+
 **Default lens pool** (design-doc analog of security/perf/quality):
 
 | Lens | 한글 | 범위 |
@@ -148,7 +150,9 @@ Propose a team based on two composition signals: (i) the document's own structur
 - API·계약 → +api-contract
 - 성능·스케일 주장 → +scalability
 - 코드 다수 인용 (grounding ON) → doc-vs-code grounding (필수)
-- 대형·다중도메인 (>~15 섹션) → +Analysis Coordinator (persistent, analog of review's Scope Coordinator)
+- 대형·다중도메인 (>~15 섹션) → +Analysis Coordinator (persistent, analog of review's Scope Coordinator). 이 역할은 도메인 관점이 아니라 조율 역할이므로 **팀 상한 셈에 들어가지 않는다** — `_common/agent-team-protocol.md`의 `### Team size budget` 코디네이터 부류 카브아웃.
+
+**트리거가 상한을 넘길 때의 우선순위** (이 스킬에만 필요하다 — 위 트리거들은 서로 다른 렌즈를 동시에 발화시킬 수 있고, 최악의 조합은 8역할이라 기계적으로 상한을 초과 요구한다): `필수` 표시된 렌즈는 양보하지 않고, `+` 계열이 **나열 역순으로** 하나씩 빠져 로스터가 상한 안에 들어올 때까지 양보한다. 결정론적이므로 같은 문서에 대해 같은 로스터가 나온다. Analysis Coordinator는 셈 밖이라 이 양보의 대상이 아니다. 양보한 렌즈가 있으면 제안에 그 사실과 이유를 한 줄로 적는다 — 조용히 줄이지 않는다.
 
 **Model**: not fixed — propose per run with rationale (review Step 3 convention). opus → architecture/alternatives (multi-step reasoning); sonnet → feasibility/migration/consistency/grounding; haiku → mechanical completeness sweep of short docs. Bump one tier up for large/foundational docs.
 
