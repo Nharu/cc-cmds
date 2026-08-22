@@ -1,0 +1,5 @@
+# Two by-name references on ONE line. The count is named "reference(s)" — an
+# occurrence noun — and was taken with a line-wise grep, so two references
+# sharing a line read as one and the number answered a different question than
+# its name. The same file declares that rule for the definition count.
+FAIL: capture format — found 3 by-name reference(s), the pinned population is 1; this count was printed and asserted against nothing, so the by-name references could be destroyed wholesale with the run still green

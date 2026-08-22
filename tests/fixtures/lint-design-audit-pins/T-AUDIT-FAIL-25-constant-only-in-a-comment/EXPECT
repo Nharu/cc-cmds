@@ -1,0 +1,5 @@
+# A control-flow constant that exists only inside an HTML comment. A reader sees
+# no constant; a raw grep sees one, and the pin must read the reader's file.
+FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT = 3' must appear on exactly 1 line, found 0
+FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT' must be assigned on exactly 1 line, found 0; a second assignment contradicts the pinned value without disturbing its pin
+FAIL: design-audit/SKILL.md (constants) — pinned literal missing from the '## Control-Flow Invariants' body (comments do not count): READER_COUNT = 3

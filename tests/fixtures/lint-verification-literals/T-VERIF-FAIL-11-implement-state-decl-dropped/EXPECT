@@ -1,0 +1,5 @@
+# One consumer's 상태-rendering declaration removed. The shared contract obliges
+# every consumer of that key to declare which of the two renderings it reads, and
+# nothing read the consumers: deleting BOTH declarations left this lint's OK line
+# byte-identical at exit 0.
+FAIL: implement (상태 rendering declaration) — frozen literal missing: **Reading `상태` — both renderings, and absence is never a default.**

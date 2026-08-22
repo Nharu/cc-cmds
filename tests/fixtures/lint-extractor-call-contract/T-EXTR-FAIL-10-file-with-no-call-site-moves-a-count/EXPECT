@@ -1,0 +1,4 @@
+# A scanned file carrying no call site must not move a reported number. The
+# file count used to rise with such a file while the run stayed at exit 0, so
+# the number in the success line answered a different question than its name.
+FAIL: extractor call contract — call sites live in 1 file(s), the pinned population is 2; a file that carries no call site must not move a reported number

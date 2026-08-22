@@ -1,0 +1,3 @@
+# The Step-1 presence lookup was removed. Without it the consumer cannot separate
+# "no line" from "unrecognized value" and silently buckets the latter.
+FAIL: implement/SKILL.md (consumer timing enum) — frozen literal missing from the 1.5a bullet: 검증 시점): (.+)$

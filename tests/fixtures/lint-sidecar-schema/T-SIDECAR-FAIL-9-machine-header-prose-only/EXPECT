@@ -1,0 +1,8 @@
+# The header survives only as a sentence ABOUT a header. The substring form of
+# this predicate was satisfied by that sentence; the line-start anchor is what
+# distinguishes a declaration from a discussion of one.
+# The prose now carries the `<!--` opener on purpose: without it this fixture
+# exercised only the comment-opener requirement and the LINE-START anchor had
+# coverage 0 — dropping the `^` left the suite 11/11 green.
+FAIL: _common/sidecar.md:25 — payload schema `design-drift` declares no machine header carrying `cc-design-drift v<N>`
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

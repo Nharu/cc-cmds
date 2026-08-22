@@ -1,0 +1,9 @@
+# The file that defines the capture format, wrapped whole in one HTML comment.
+# The contract is invisible to any reader and byte-present to any raw grep, so
+# before this lint stripped for itself the count came out at one definition site
+# and the run exited 0 — a fence reporting the thing it guards intact while the
+# thing it guards is gone. Deleting the file was already caught; commenting it
+# out was not, and the two edits are indistinguishable to a reader.
+FAIL: the capture format must be spelled at exactly 1 site, found 0 — a second spelling is a second thing to update, which is the state this pin exists to forbid
+FAIL: capture format — found 0 by-name reference(s), the pinned population is 1; this count was printed and asserted against nothing, so the by-name references could be destroyed wholesale with the run still green
+FAIL: capture format — found 0 marked discussion(s) of the retired spelling, the pinned population is 1; the marker is a one-word bypass and adding one has to be a deliberate edit to this file

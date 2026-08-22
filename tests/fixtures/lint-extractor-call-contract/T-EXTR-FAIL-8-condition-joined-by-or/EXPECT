@@ -1,0 +1,4 @@
+# The substitution is joined to the condition by `|| true`, so the condition
+# holds even when the extraction failed. The guard predicate stopped at the
+# first `=` and never saw it.
+FAIL: consumer.sh:8 — extract_between call site is joined to the `if` condition by `||` or `&&`, so the condition can hold when the extraction failed; the substitution must be the whole condition

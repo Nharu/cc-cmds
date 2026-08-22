@@ -8,7 +8,10 @@ lint:
 	bash scripts/lint-bash-portability.sh
 	bash scripts/lint-skill-auq-spec.sh
 	bash scripts/lint-verification-literals.sh
+	bash scripts/lint-sidecar-schema.sh
 	bash scripts/lint-design-audit-pins.sh
+	bash scripts/lint-extractor-call-contract.sh
+	bash scripts/lint-capture-format.sh
 	bash scripts/lint-team-budget-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
@@ -28,8 +31,15 @@ test: test-active-notify
 	bash scripts/test-lint-skill-paths.sh
 	bash scripts/test-lint-bash-portability.sh
 	bash scripts/test-lint-skill-auq-spec.sh
+	# The unit driver runs BEFORE the five suites it underwrites: when the
+	# shared judgment breaks, failing there first puts the first red line at
+	# the cause instead of at five consequences.
+	bash scripts/test-expect-contract.sh
 	bash scripts/test-lint-verification-literals.sh
+	bash scripts/test-lint-sidecar-schema.sh
 	bash scripts/test-lint-design-audit-pins.sh
+	bash scripts/test-lint-extractor-call-contract.sh
+	bash scripts/test-lint-capture-format.sh
 	bash scripts/test-lint-team-budget-pins.sh
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh

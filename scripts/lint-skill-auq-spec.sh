@@ -43,6 +43,20 @@ SUPPRESS='lint-skill-auq-spec: disable=other-option'
 DENY=('"직접 지정"' '"기타"' '"직접 입력"' '"Other"')
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# COMMENTS ARE NOT CONTENT. Every markdown file this lint reads is read through a
+# comment-blanked copy. Wrapping a section in OUT-OF-LINE comment markers leaves
+# the heading bytes intact, so a matcher anchored on the heading fires exactly as
+# before while a reader sees nothing there — measured on this lint at exit 0 with
+# a success line byte-identical to the unwrapped run. Commenting the heading line
+# ITSELF turns the run red, but that is a parse failure rather than detection and
+# it is not the shape an editor produces when removing a section.
+#
+# The strip is not sufficient on its own and is not offered as such: a roster
+# built over a comment-blind derivation is defeated exactly as a count is,
+# because an elided member still contributes itself to the observed set. The
+# declaration and the derivation are two obligations, not one.
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
 repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
@@ -73,8 +87,9 @@ fail=0
 # so opt-out skills that merely mention the tool name are not falsely flagged.
 
 for file in ${SKILL_FILES[@]+"${SKILL_FILES[@]}"}; do
-  if grep -qF "$SELECT_TOKEN" "$file"; then
-    if grep -qF "$SPEC_REF" "$file"; then
+  visible=$(stripped_copy "$file")
+  if grep -qF "$SELECT_TOKEN" "$visible"; then
+    if grep -qF "$SPEC_REF" "$visible"; then
       echo "OK:   $file — loads AUQ and references the construction spec"
     else
       echo "FAIL: $file — loads '$SELECT_TOKEN' but does not reference '$SPEC_REF'" >&2
@@ -99,9 +114,16 @@ scan_denylist() {
   fi
   local line_no=0
   local line token
-  while IFS= read -r line || [[ -n "$line" ]]; do
+  # Two streams, one per line, and the split is deliberate. CONTENT is read from
+  # the blanked copy, because a banned label a reader cannot see is not a label
+  # this lint should be flagging. The SUPPRESSION marker is read from the raw
+  # line, because a lint directive belongs in a comment — that is where the
+  # convention puts it, and blanking it would turn a legitimate suppression into
+  # a false failure on prose that is doing exactly what the diagnostic asks.
+  visible_file=$(stripped_copy "$file")
+  while IFS= read -r raw_line <&3 && IFS= read -r line <&4; do
     line_no=$((line_no + 1))
-    case "$line" in
+    case "$raw_line" in
       *"$SUPPRESS"*) continue ;;
     esac
     for token in "${DENY[@]}"; do
@@ -112,7 +134,7 @@ scan_denylist() {
           ;;
       esac
     done
-  done < "$file"
+  done 3< "$file" 4< "$visible_file"
 }
 
 for file in ${SKILL_FILES[@]+"${SKILL_FILES[@]}"} ${REF_FILES[@]+"${REF_FILES[@]}"}; do

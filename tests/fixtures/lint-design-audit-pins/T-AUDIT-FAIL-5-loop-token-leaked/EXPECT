@@ -1,0 +1,2 @@
+# A loop-resurrection denylist token reappeared under references/.
+FAIL: design-audit/references/01-reader-prompt.md — loop-machinery token present: outer_log.md

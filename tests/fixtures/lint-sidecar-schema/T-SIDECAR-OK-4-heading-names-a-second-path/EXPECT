@@ -1,0 +1,7 @@
+# A heading that legitimately names a second `docs/<kind>/` path — a previous
+# location in parentheses. Step (1) opens one section for it, taking the kind
+# from the path it matched; step (2) used to re-derive kinds by grepping every
+# `docs/<kind>/` on the same line and then demanded a terminator for a kind no
+# section exists for, hard-failing on a payload schema that does not exist.
+# Step (2) now consumes step (1)'s set, so the two halves cannot disagree.
+OK:   sidecar payload schemas — 2 of 2 sections declare their own kind-bound terminator + guard order pinned (version 38 < truncation 39) (scope: _common/sidecar.md only; design-audit's schema is out of reach)

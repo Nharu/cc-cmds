@@ -1,0 +1,6 @@
+# The sibling arm. Until this fixture the reference-pin dispatch had cases for
+# two files and exercised only one, so the 02 arm could have been broken — or
+# dropped from the dispatch entirely — without turning the suite red.
+# The by-reference rule is what keeps the deterministic checks from growing a
+# second copy of the verification contract.
+FAIL: design-audit/references/02-deterministic-checks.md — pinned literal missing from the region /^# Deterministic Checks / (comments do not count): By reference, never by copy.

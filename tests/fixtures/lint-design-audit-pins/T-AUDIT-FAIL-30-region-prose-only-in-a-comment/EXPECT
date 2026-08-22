@@ -1,0 +1,3 @@
+# A region-scoped prose pin surviving only inside an HTML comment.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing from the section /^## Severity re-assignment / (comments do not count): Per-reader severity labels are not comparable
+FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing from the region /^## Severity re-assignment / (comments do not count): Never take a maximum across readers.

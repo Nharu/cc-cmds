@@ -1,0 +1,7 @@
+# A RELOCATION, not a deletion: the byte-identity requirement is still in the
+# file, moved out of the lead-facing preamble into the prompt body. A whole-file
+# pin passes this unchanged. This is the fixture that makes the preamble/body
+# split load-bearing rather than cosmetic — the requirement binds the lead at
+# substitution time, and inside the body it instructs a reader who performs no
+# substitution.
+FAIL: design-audit/references/01-reader-prompt.md — pinned literal missing from the lead-facing preamble (comments do not count): byte-identical

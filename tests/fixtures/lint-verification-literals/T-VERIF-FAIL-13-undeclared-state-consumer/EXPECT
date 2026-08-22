@@ -1,0 +1,5 @@
+# A third consumer landed with no rendering declaration. This is the edit that
+# was demonstrated against the previous form of check (3): the two declarations
+# it was handed were both intact, so the OK line came back byte-identical at
+# exit 0 while a file nothing had opened was reading the key.
+FAIL: 상태 roster — undeclared file references the key: plan/SKILL.md; add it to the roster with its role, and if it is a consumer give it a rendering declaration

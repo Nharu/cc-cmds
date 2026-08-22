@@ -1,0 +1,5 @@
+# A section whose entire body sits inside an HTML comment. The heading stands,
+# the span floor must see an empty section, and the content pin must not be
+# satisfied by bytes no reader can see.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing from the section /^## Routing — five named owners, exactly one each$/ (comments do not count): The five counts must sum to the unique-defect count
+FAIL: design-audit/references/03-adjustment-pass.md — section /^## Routing — five named owners, exactly one each$/ has 0 substantive line(s), below its declared floor of 7; a heading kept over an emptied body is the edit this catches

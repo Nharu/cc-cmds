@@ -1,0 +1,5 @@
+# A pinned verdict token surviving only inside an HTML comment within the
+# measurement clause. The region-scoped regex pin must not be satisfied by it.
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the measurement clause (comments do not count): /\bMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the measurement clause (comments do not count): /\bMISMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — pinned token missing from the measurement clause (comments do not count): /\bABSENT\b/

@@ -1,0 +1,6 @@
+# SOT absent — the mechanism is not present in this tree, so the whole check
+# skips silently. Distinct from an absent CONSUMER, which is a failure: the SOT
+# is what defines the literals, the consumer is what the fence guards.
+# The absolute root is omitted from the declaration on purpose: a fixture must
+# not assert the path it happens to live at.
+SKIP: _common/verification.md not found under

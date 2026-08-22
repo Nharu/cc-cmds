@@ -1,0 +1,8 @@
+# A payload-schema-shaped heading inside a fenced example block, plus a real
+# missing terminator. The two must not be confused: a fence-blind reader counts
+# the example as a section and reports a kind that does not exist, which is both
+# a false hard failure and a mask over the real one.
+# This is the fixture for the heading fence recognition, which had coverage 0 —
+# removing `outside &&` from the section-boundary test left the suite 11/11.
+FAIL: _common/sidecar.md:33 — payload schema `design-drift` declares no file terminator; expected the literal `<!-- cc-design-drift: end -->` outside a fence
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

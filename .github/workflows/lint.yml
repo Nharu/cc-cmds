@@ -2,9 +2,20 @@ name: lint
 
 on:
   pull_request:
+    # The version SOT files are IN this list, and their absence was the defect:
+    # two of the assertions this workflow runs protect a single version SOT, and
+    # the filter named `plugins/cc-cmds/skills/**` and `plugins/cc-cmds/hooks/**`
+    # individually rather than `plugins/cc-cmds/**`, so it matched neither
+    # `plugin.json` nor `marketplace.json` nor `CHANGELOG.md`. A release-only PR —
+    # one that touches exactly those files and nothing else — ran no lint at all,
+    # and no required check noticed, which is the one PR shape where the version
+    # assertions are the whole of what CI has to say.
     paths:
       - 'plugins/cc-cmds/skills/**'
       - 'plugins/cc-cmds/hooks/**'
+      - 'plugins/cc-cmds/.claude-plugin/plugin.json'
+      - '.claude-plugin/marketplace.json'
+      - 'CHANGELOG.md'
       - 'scripts/**'
       - 'tests/fixtures/**'
       - 'README.md'
@@ -14,9 +25,43 @@ on:
     branches:
       - master
 
+# One run per ref. A push onto a branch that already has a run in flight cancels
+# it: the older run is measuring bytes that no longer exist, and on this repo a
+# single run is minutes of wall clock, so leaving both alive doubles the cost to
+# report a result nobody will read. `master` is excluded from cancellation —
+# there each push is a distinct state whose result is a record, not a preview.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   lint-and-readme:
     runs-on: ubuntu-latest
+    # A hung step otherwise holds a runner for the platform default of six hours.
+    # The measured floor is dominated by one lint whose cost is spawn-bound, so
+    # the ceiling is set well above the observed runtime rather than tight to it:
+    # a timeout that trips on a slow runner is a flaky gate, and a flaky gate is
+    # worse than a slow one.
+    #
+    # THE DOMINANT LINT IS `scripts/lint-bash-portability.sh`, named here because
+    # every sentence around it used to say "the dominant lint" and never which.
+    # Its order of dominance is settled by independent measurement; its SIZE is
+    # not quotable, and that distinction is the point of the paragraph below.
+    #
+    # DO NOT READ END-TO-END WALL CLOCK AS THIS JOB'S COST. Independent runs over
+    # an UNCHANGED script and an UNCHANGED corpus came out at 247s, 290s, over
+    # 400s, and 148s. Those four are the whole of the evidence and they are given
+    # with their spread rather than as an average, because the spread is the
+    # finding: variance is larger than any change this repository has made to the
+    # corpus, so a falling end-to-end figure is not an improvement and must not
+    # be quoted as one. Attach a run ID when adding a figure here — the numbers
+    # above were taken without one, which is why they cannot be re-derived and
+    # can only be re-measured.
+    #
+    # The ceiling below is 2.18x the worst of those four, and this round's
+    # measured spread is exactly the risk that ratio was chosen against. Do not
+    # tighten it toward the mean.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

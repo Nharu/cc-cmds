@@ -1,0 +1,4 @@
+# Fence forgery: the sentinel is only *shown* inside an example block, never
+# declared. A fence-blind pin passes this.
+FAIL: _common/sidecar.md:24 — payload schema `design-drift` declares no file terminator; expected the literal `<!-- cc-design-drift: end -->` outside a fence
+FAIL: _common/sidecar.md — 1 of 2 payload schema sections covered

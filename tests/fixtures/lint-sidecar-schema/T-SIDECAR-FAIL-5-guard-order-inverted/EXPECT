@@ -1,0 +1,4 @@
+# Truncation is judged before the version token is read, so an intact foreign-
+# version file would be reported TRUNCATED. Every terminator obligation still
+# holds, which is why the ordering needs a fixture of its own.
+FAIL: _common/sidecar.md — guard order inverted: the version guard (line 44) must precede the truncation check (line 41)

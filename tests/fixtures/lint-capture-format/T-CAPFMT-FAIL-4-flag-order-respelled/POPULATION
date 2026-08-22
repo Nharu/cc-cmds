@@ -1,0 +1,5 @@
+# This fixture's own populations. The real tree has no such file — the pins in
+# the lint apply there — and a declaration beside the real tree is a failure, so
+# this override cannot be used to relax the shipped pins.
+EXPECTED_REFS=1
+EXPECTED_MARKED=1

@@ -1,0 +1,5 @@
+# The other direction. A roster row's file is still present but no longer
+# references the key, which is what a rename looks like from the roster's side.
+# The arrival check cannot see this — it only reads files that DO reference the
+# key — so a one-directional fence passes here.
+FAIL: 상태 roster — declared producer no longer references the key: design/SKILL.md; the roster is stale or the key was renamed

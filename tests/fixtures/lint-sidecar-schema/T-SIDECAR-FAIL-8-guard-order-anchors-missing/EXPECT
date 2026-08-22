@@ -1,0 +1,5 @@
+# Both guard-order anchors are gone. Absence must be a failure, not a skip: a
+# pin that goes quiet when its target vanishes reports success while guarding
+# nothing. This fixture also caught the pin dying at its own grep under
+# `pipefail` before it could reach this arm.
+FAIL: _common/sidecar.md — guard-order anchors not found (version-guard call: missing, truncation-check comment: missing)

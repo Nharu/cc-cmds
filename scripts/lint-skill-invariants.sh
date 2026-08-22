@@ -79,6 +79,20 @@ EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "re
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# COMMENTS ARE NOT CONTENT. Every markdown file this lint reads is read through a
+# comment-blanked copy. Wrapping a section in OUT-OF-LINE comment markers leaves
+# the heading bytes intact, so a matcher anchored on the heading fires exactly as
+# before while a reader sees nothing there — measured on this lint at exit 0 with
+# a success line byte-identical to the unwrapped run. Commenting the heading line
+# ITSELF turns the run red, but that is a parse failure rather than detection and
+# it is not the shape an editor produces when removing a section.
+#
+# The strip is not sufficient on its own and is not offered as such: a roster
+# built over a comment-blind derivation is defeated exactly as a count is,
+# because an elided member still contributes itself to the observed set. The
+# declaration and the derivation are two obligations, not one.
+# shellcheck source=./_strip-html-comments.sh
+source "$script_dir/_strip-html-comments.sh"
 repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
@@ -125,11 +139,12 @@ for file in "${FILES[@]}"; do
   fi
 
   # Count words and approximate tokens
-  word_count=$(wc -w < "$file" | tr -d ' ')
+  visible=$(stripped_copy "$file")
+  word_count=$(wc -w < "$visible" | tr -d ' ')
   approx_tokens=$(awk -v w="$word_count" -v r="$WORDS_PER_TOKEN_RATIO" 'BEGIN{printf "%.0f", w*r}')
 
   # Find the first line of the invariant heading; if none, fail immediately
-  heading_line=$(grep -n -E "$INVARIANT_HEADING" "$file" | head -1 | cut -d: -f1 || true)
+  heading_line=$(grep -n -E "$INVARIANT_HEADING" "$visible" | head -1 | cut -d: -f1 || true)
 
   if [[ -z "$heading_line" ]]; then
     echo "FAIL: $file — missing '## Control-Flow Invariants' heading (approx ${approx_tokens} tokens total)" >&2

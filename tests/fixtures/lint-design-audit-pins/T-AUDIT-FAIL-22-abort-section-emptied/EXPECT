@@ -1,0 +1,7 @@
+# The heading of the total-shortfall abort section kept over an emptied body.
+# That section is what gives an arithmetic condition an actor — the condition was
+# stated correctly beside the checks and evaluated by nobody, and the next round
+# inherits an unimplemented rule as though it were implemented. Emptying it
+# restores exactly that state, so the span floor has to see it.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned literal missing from the section /^## Total-shortfall abort / (comments do not count): it is not a routing outcome, it is a refusal to produce the artifact
+FAIL: design-audit/references/03-adjustment-pass.md — section /^## Total-shortfall abort / has 0 substantive line(s), below its declared floor of 2; a heading kept over an emptied body is the edit this catches

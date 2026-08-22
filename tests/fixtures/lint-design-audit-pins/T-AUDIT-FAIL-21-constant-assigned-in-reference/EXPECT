@@ -1,0 +1,8 @@
+# A constant assigned a contradicting value in a reference file. The value pin
+# cannot see it — `READER_COUNT = 3` still occurs exactly once in SKILL.md — and
+# neither can the denylist sweep, which looks for loop-machinery tokens. What
+# catches it is the rule that each constant has exactly one assignment site.
+# Citing the constant BY NAME in a reference file stays legal, because the
+# reference files legitimately depend on it and a zero-occurrence rule on the
+# name would turn a clean tree red.
+FAIL: design-audit/references/02-deterministic-checks.md — constant 'READER_COUNT' is assigned outside SKILL.md; the constants block is the only definition site

@@ -1,0 +1,7 @@
+# The ordinary careless edit: the heading is kept and the paragraphs under it
+# are gone. No cleverness, no comment wrapping — and the content pin alone can
+# miss it whenever the one pinned sentence happens to survive, which is exactly
+# what this fixture arranges. The span floor is what fails.
+# Without this fixture the span assertion would ship at coverage 0, which is the
+# defect class the commit that added it exists to close.
+FAIL: design-audit/references/03-adjustment-pass.md — section /^## Synthesis question \(mandatory terminal act\)$/ has 1 substantive line(s), below its declared floor of 3; a heading kept over an emptied body is the edit this catches

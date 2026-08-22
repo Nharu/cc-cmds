@@ -1,0 +1,5 @@
+# The declared site population does not match what the tree holds. This
+# assertion used to be gated on "is this the real tree", which every fixture
+# invocation fails by definition, so deleting it outright left six fixtures and
+# the real tree green — a fence nothing could exercise.
+FAIL: extractor call contract — found 1 call site(s), the pinned population is 99; update EXPECTED_SITES together with this header's prose, which is the only place the contract's coverage claim is stated

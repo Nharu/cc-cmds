@@ -208,6 +208,8 @@ The split is structural (path-agnostic): the security reviewer covers any securi
 
 ### Step 5: Result Synthesis & Documentation (Korean)
 
+**Before writing any citation into the report, Read `${CLAUDE_SKILL_DIR}/../_common/verification.md` §11 (citation convention)** and apply it to every citation this report emits — including ones lifted verbatim out of a reviewer witness. Three parts, all required: the document qualifier, the verbatim heading, and a line anchor with its observation date. **A bare `D4` / `R7` / `V9` is not a reference**: label namespaces are per-document and uncoordinated, so a bare number lands on a real-but-unrelated item in the wrong document as readily as on the right one — and that failure is indistinguishable from a correct citation, because the reader opens it, finds a genuine decision, fixes the wrong thing and reports success. A citation received from a reviewer is **resolved against the target document before it is repeated**; a witness citation is in scope precisely because the witness is discarded while the report outlives it.
+
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, and file naming/version conventions.
 
 The lead synthesizes all review results into a Korean document under `docs/reviews/` following the template. Report length is unconstrained (length is not a lite-savings axis); structure is the floor — P0~P3 severity tags and the structured finding list MUST be preserved.
@@ -222,7 +224,7 @@ Every review-lite report MUST include this section so the user is never silently
 - 보안 전담 리뷰어 분담: <files>
 - 코드 품질·로직 리뷰어 분담: <files>
 - 미커버 영역: <context window 한계로 분담 못 된 files; 없으면 "없음">
-- 관점 한계: 2인 로스터 고정 — 보안·코드 품질·로직 외 관점(성능·동시성·API 계약·설계 정합 등)은 전담 리뷰어가 없습니다. 해당 축이 중요하면 /cc-cmds:review 를 사용하세요.
+- 관점 한계: 2인 로스터 고정 — 보안·코드 품질·로직 외 관점(성능·동시성·API 계약 등)은 전담 리뷰어가 없습니다. 설계 정합은 성격이 다릅니다: 전담 리뷰어가 없어서가 아니라 설계 문서를 지시문으로 넘겨야만 열리는 축이라, 넘기지 않았다면 미커버가 아니라 사용 불가입니다. 해당 축이 중요하면 /cc-cmds:review 를 사용하세요.
 ```
 
 For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs that exceeded coverage during Round 1, list the uncovered files explicitly so the user can decide whether to re-run with `/cc-cmds:review` for full coverage.
@@ -230,7 +232,7 @@ For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs
 After saving the report:
 
 - Notify the user in Korean: *"리뷰 보고서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
-- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
+- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply its **workflow-completion arm** — Step 6 follows, but Step 6 is lead-only discussion and resumes no reviewer, so **this call site is the last point at which the team exists**. The arm turns on whether anything after it resumes this team, and nothing does. The witness directory is removed and the four transient fields are stripped from every terminal row here; deferring them to a step that never comes is what left a UID-derived temp hash, a session path, an absolute checkout path and a random token in the committed document. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
 - Present the report summary to the user in Korean.
 - Emit the lite-redirect footer (single line, every invocation):
 

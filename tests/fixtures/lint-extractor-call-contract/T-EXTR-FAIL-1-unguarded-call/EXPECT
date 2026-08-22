@@ -1,0 +1,3 @@
+# One bare assignment. Checked at the call site rather than at any
+# consequence, which is why it covers a call site added tomorrow.
+FAIL: consumer.sh:7 — extract_between call site is not guarded by `if`; a bare assignment aborts the script at that line under `set -euo pipefail` and loses every later diagnostic

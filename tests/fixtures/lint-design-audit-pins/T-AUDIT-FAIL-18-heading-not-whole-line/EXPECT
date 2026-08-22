@@ -1,0 +1,10 @@
+# The heading survives only as part of a longer sentence. A substring pin is
+# satisfied by that sentence; the whole-line form is not.
+# This property had ZERO coverage before: weakening `grep -Fxq` to `-Fq` left all
+# seventeen fixtures green. The count equality below is what gives it coverage —
+# the whole-line diagnostic is one of the declared lines, so losing it changes
+# the count and turns this fixture red.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned heading is not present as a whole line outside a comment: ## Non-recursion rules (hard)
+FAIL: design-audit/references/03-adjustment-pass.md (section /^## Non-recursion rules \(hard\)$/) — region start anchor missing: /^## Non-recursion rules \(hard\)$/
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the section /^## Non-recursion rules \(hard\)$/), so this pin was not evaluated: Spawning anything here is the first step back toward the loop
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (/^## Non-recursion rules \(hard\)$/), so its span floor was not evaluated

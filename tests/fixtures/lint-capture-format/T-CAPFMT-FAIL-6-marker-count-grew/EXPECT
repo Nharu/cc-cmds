@@ -1,0 +1,5 @@
+# A new `bare`-marked occurrence — and one that INSTRUCTS the reader to run the
+# retired form rather than discussing it. The marker is purely lexical and
+# cannot tell those apart, so only its count can: adding one is now a deliberate
+# edit rather than a silent, unbounded bypass.
+FAIL: capture format — found 2 marked discussion(s) of the retired spelling, the pinned population is 1; the marker is a one-word bypass and adding one has to be a deliberate edit to this file

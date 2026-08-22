@@ -1,0 +1,7 @@
+# A rule deleted from a file that previously carried zero positive pins.
+# The heading pins are whole-line assertions, so a name left behind in prose
+# after its section is gone does not satisfy them.
+FAIL: design-audit/references/03-adjustment-pass.md — pinned heading is not present as a whole line outside a comment: ## Non-recursion rules (hard)
+FAIL: design-audit/references/03-adjustment-pass.md (section /^## Non-recursion rules \(hard\)$/) — region start anchor missing: /^## Non-recursion rules \(hard\)$/
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (the section /^## Non-recursion rules \(hard\)$/), so this pin was not evaluated: Spawning anything here is the first step back toward the loop
+FAIL: design-audit/references/03-adjustment-pass.md — region-unavailable (/^## Non-recursion rules \(hard\)$/), so its span floor was not evaluated

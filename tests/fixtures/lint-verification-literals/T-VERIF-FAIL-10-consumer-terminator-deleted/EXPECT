@@ -1,0 +1,14 @@
+# The consumer region terminator was deleted, so the 1.5a region has no end
+# anchor. Same invariant as the SOT-side terminator fixture, on the other
+# extractor consumer.
+# The pins that depended on the unreadable region now report
+# region-unavailable instead of naming a literal that is still present in
+# the fixture. The diagnostic count is unchanged, so this fixture keeps its
+# attribution for every pin listed below.
+FAIL: implement/SKILL.md (consumer 1.5a bullet) — region terminator literal missing after the start anchor: /^- \*\*1\.5b /
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: | `구현 후` —
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: 검증 시점): (.+)$
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: 검증 시점): 구현 전$
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: 검증 시점): 구현 중\(.+\)$
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: 검증 시점): 구현 후$
+FAIL: implement/SKILL.md (consumer timing enum) — region-unavailable (the 1.5a bullet), so this pin was not evaluated: 검증 등급): 구현 시 검증$

@@ -1,0 +1,7 @@
+# The vocabulary table region terminator was deleted. The region must fail loudly
+# rather than widen to end of file — a widened region contains the pinned token
+# anyway, so a silently-widening extractor reports success while the region
+# scoping it was doing has quietly stopped. The pin that depended on the region
+# says so, instead of naming a literal that is still present in the fixture.
+FAIL: _common/verification.md (vocabulary table) — region terminator literal missing after the start anchor: /^### 3\.1 /
+FAIL: _common/verification.md (SOT) — region-unavailable (the frozen-vocabulary table), so this pin was not evaluated: | `구현 시 검증` |

@@ -1,0 +1,8 @@
+# The other direction, and the one the debt was actually owed on. A RETIRED
+# claim — loop machinery this command replaced, and a contradicting constant
+# assignment — is kept inside an HTML comment as history rather than as
+# instruction. With the strip it is correctly invisible and the tree is clean;
+# remove a strip from the negative fence or the assignment sweep and this
+# fixture turns red. A FAIL fixture cannot cover that direction, because there
+# the absence of the strip makes the run PASS.
+OK:   design-audit pins — 6 constants (CFI body, value + sole assignment) + 1 reader-prompt preamble + 3 reader-prompt body + 1 measurement + 3 verdict tokens (each checked in 2 regions) + 4 reference headings (whole-line) + 2 declared-duplicate parity (both owners) + 5 reference sections (content + span floors 5/3/7/3/2) + 3 reference prose (region-scoped) + 2 disclosure head + 15 disclosure (in-fence, ordered) + 2 shortfall arm + 6 block arithmetic (in checks section) + 1 declared slot count (in block grammar) + 11 denylist (in CFI-6) all intact

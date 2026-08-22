@@ -1,0 +1,5 @@
+# The 1.5a bullet reflowed across several lines WITH a paragraph break inside it.
+# Same bytes, no deletion. The previous extractor ended the region at the first
+# blank line, so it reported every literal below the break as missing — a
+# diagnostic naming deleted literals for an edit that deleted none.
+OK:   verification frozen literals — 24 SOT (whole-file) + 1 SOT (vocabulary table) + 1 forbidden spelling + 6 consumer (1.5a bullet) + 2 상태 rendering declarations + 2 상태 roster entries all present

@@ -1,0 +1,5 @@
+# Two calls on ONE line, the second unguarded. The same two calls on two lines
+# were caught; on one line the enumerator emitted a single record and every
+# classifier was anchored at the line start, so the second call was neither
+# counted nor checked and `0 unrecognized` was an active false claim.
+FAIL: consumer.sh:9 — extract_between call site is a bare assignment inside a compound statement's body; a bare assignment aborts the script at that line under `set -euo pipefail` and loses every later diagnostic, and sharing a line with a guarded call does not guard it

@@ -1,0 +1,16 @@
+# A region commented out with the opener placed ABOVE its start anchor. This is
+# the shape that survived: `extract_between` excludes the start line, so the
+# `<!--` is cut away from the returned text and a stripper running on that text
+# never enters comment state. Before the pins read from a pre-stripped copy of
+# the file, this fixture's tree reported `all intact` at exit 0.
+FAIL: design-audit/references/01-reader-prompt.md (preamble) — region terminator literal missing after the start anchor: /^## Prompt body[[:space:]]*$/
+FAIL: design-audit/references/01-reader-prompt.md (prompt body) — region start anchor missing: /^## Prompt body[[:space:]]*$/
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the lead-facing preamble), so this pin was not evaluated: byte-identical
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the prompt body), so this pin was not evaluated: This review is Round {round} of pass {pass}.
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the prompt body), so this pin was not evaluated: §검증 기록
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the prompt body), so this pin was not evaluated: §구현 시 검증 항목
+FAIL: design-audit/references/01-reader-prompt.md (measurement clause) — region start anchor missing: /^REPO GROUND-TRUTH MEASUREMENT \(MANDATORY/
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the measurement clause), so this pin was not evaluated: /\bMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the measurement clause), so this pin was not evaluated: /\bMISMATCH\b/
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the measurement clause), so this pin was not evaluated: /\bABSENT\b/
+FAIL: design-audit/references/01-reader-prompt.md — region-unavailable (the measurement clause), so this pin was not evaluated: required but created by no step

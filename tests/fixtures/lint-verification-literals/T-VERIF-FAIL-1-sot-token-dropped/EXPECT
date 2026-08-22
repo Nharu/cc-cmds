@@ -1,0 +1,2 @@
+# One frozen residual-reason token was removed from the SOT.
+FAIL: _common/verification.md (SOT) — frozen literal missing: 분류 제외

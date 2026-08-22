@@ -1,0 +1,5 @@
+# Every by-name reference renamed away. The count was printed on the success
+# line and asserted against nothing, so the property the whole lint exists for
+# — one spelling, everyone else refers to it by name — could be destroyed
+# wholesale with the run still green.
+FAIL: capture format — found 0 by-name reference(s), the pinned population is 1; this count was printed and asserted against nothing, so the by-name references could be destroyed wholesale with the run still green

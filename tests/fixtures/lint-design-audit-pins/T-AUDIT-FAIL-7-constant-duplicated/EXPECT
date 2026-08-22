@@ -1,0 +1,6 @@
+# A constant was restated outside the CFI block. Two arms see it: the
+# exactly-one-line rule on the pinned value, and the exactly-one-assignment rule
+# on its key. The second exists because a restatement with a DIFFERENT value
+# leaves the first arm satisfied.
+FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT = 3' must appear on exactly 1 line, found 2
+FAIL: design-audit/SKILL.md (constants) — 'READER_COUNT' must be assigned on exactly 1 line, found 2; a second assignment contradicts the pinned value without disturbing its pin

@@ -35,8 +35,21 @@ options:
     - name: "<directive>"
       kind: positional
       required: false
-      summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로").'
-      parse_note: "지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향."
+      summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로"). 설계 문서 경로를 넘기면 설계 정합 축이 열린다.'
+      parse_note: |
+          지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향.
+          지시문에 설계 문서 경로가 포함되면 그 문서가 리뷰어 컨텍스트에 실리고 `design-conformance` 태그가 사용 가능해진다.
+      variants:
+          - label: "관점 지시문"
+            example: "보안 중심으로"
+            behavior: "리뷰 팀 구성과 컨텍스트 가중치에 반영"
+          - label: "설계 문서 경로"
+            example: "docs/auth-flow.md 기준으로 설계 정합도 봐줘"
+            behavior: |
+                그 문서를 리뷰어 컨텍스트 패키지에 싣고 `design-conformance` 태그를 활성화한다.
+                **경로를 넘기지 않으면 그 축은 미사용이 아니라 사용 불가**다 — 대조 기준이 없기 때문이며,
+                설계 문서는 user-local이라 남의 PR을 리뷰할 때는 구조적으로 존재하지 않는다.
+                사이드카 역추적으로 문서를 추측하지 않는다.
 ---
 
 Conduct a multi-perspective code review using an agent team for the given task.
@@ -297,7 +310,7 @@ Branch on user response:
   - PR review: `review-pr{NUMBER}` (e.g., `review-pr42`)
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
-- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v3 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema is defined once in the protocol's Role↔agentId ledger v3 (`state ∈ {running, done, aborted}`; the transient per-row `scratchDir` / `outputFile` / `stallMark` / `witnessNonce` are stripped from terminal rows on normal completion, **done and aborted alike**, while `epoch` is retained on every path; `scratchDir` = the reviewer's out-of-tree witness dir, recorded at spawn).
+- **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v3 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema is defined once in the protocol's Role↔agentId ledger v3 (`state ∈ {running, done, aborted}`; the transient per-row `scratchDir` / `outputFile` / `stallMark` / `witnessNonce` are stripped from terminal rows on normal completion, **and this skill performs that strip**: the pre-Step-6 call site takes the workflow-completion arm, because nothing after that point resumes this team — Step 6 spawns a fresh team under a new generation index. This parenthesis previously said the opposite and told the reader to expect the four fields in the committed artifact; it went stale when that call site moved and it was the only detector on a surface no lint reads, so a reader who believed it would have seen a residual and called it normal.
 - **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). **Stamp `epoch`** (`max(disk epoch, 0)+1`, re-derived from the on-disk `docs/reviews/{slug}.md` ledger — never an in-context counter; this Step-4 review team is the first team → `epoch 1`) **and the round-1 `witnessNonce`** on every one of its rows in the same at-spawn recording window as `agentId`/`scratchDir`, per the protocol Spawn section. Update the ledger on every state change.
 - **Witness scratch dir (parameters for `_common/agent-team-protocol.md`)**: before the first spawn, create `WITNESS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-team-witness-{slug}.XXXXXX")` and record it as each reviewer's `scratchDir` (same immediacy as `agentId`). Every Step-4 review round is witnessed (`{role-slug}.round-N.md`, sentinel/nonce per the protocol); a Step-6 follow-up **fresh** team gets its **own** nested `mktemp -d`. The witness dir is out-of-tree, leaving the two-command boundary gate untouched.
 - All inter-reviewer discussion in English
@@ -309,6 +322,8 @@ Branch on user response:
 ---
 
 ### Step 5: Result Synthesis & Documentation (Korean)
+
+**Before writing any citation into the report, Read `${CLAUDE_SKILL_DIR}/../_common/verification.md` §11 (citation convention)** and apply it to every citation this report emits — including ones lifted verbatim out of a reviewer witness. Three parts, all required: the document qualifier, the verbatim heading, and a line anchor with its observation date. **A bare `D4` / `R7` / `V9` is not a reference**: label namespaces are per-document and uncoordinated, so a bare number lands on a real-but-unrelated item in the wrong document as readily as on the right one — and that failure is indistinguishable from a correct citation, because the reader opens it, finds a genuine decision, fixes the wrong thing and reports success. A citation received from a reviewer is **resolved against the target document before it is repeated**; a witness citation is in scope precisely because the witness is discarded while the report outlives it.
 
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
@@ -359,7 +374,9 @@ Refer to `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md` "Document
 
 Repeat until user is satisfied.
 
-**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it: normal completion = no-op (returned tasks already self-terminated), abort = `TaskStop` on any `agentId` whose ledger `state` is still `running`, then ledger hygiene (no `state=running` row survives). If additional reviewer clarification is needed during Step 5 document writing, do so first by resuming that reviewer's `agentId`. When Step 6 triggers re-spawn, apply ledger hygiene before the next spawn.
+**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow its **workflow-completion arm**: `TaskStop` on any `agentId` whose ledger `state` is still `running`, ledger hygiene (no `state=running` row survives), the per-row strip of the transient fields over every terminal row, and removal of the witness directory. **The deciding fact for this call site: nothing after this point resumes this team.** Step 6 spawns a **fresh team under a new generation index** rather than resuming these rows, so nothing downstream reads their `scratchDir`, `outputFile`, `stallMark` or `witnessNonce`.
+
+**This call site used to take the mid-workflow arm, and its justification was false against this file's own text.** That arm preserves the transient fields because a later phase may resume the rows — but the later phase here does not resume them, so the fields were never stripped by anything: a macOS TMPDIR hash (UID-derived), a session path, an absolute checkout path, and a random token survived into the committed document on every ordinary run of this command. Of the five skills carrying this call, this was the only one still on the discarded axis. If additional reviewer clarification is needed during Step 5 document writing, do so first by resuming that reviewer's `agentId`. When Step 6 triggers re-spawn, apply ledger hygiene before the next spawn.
 
 ---
 

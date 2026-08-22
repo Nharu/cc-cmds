@@ -1,0 +1,3 @@
+FAIL: _common/sidecar.md — the payload schema kinds present are not the declared set
+  declared: design-drift design-reconverge
+  present:  design-drift

@@ -1,0 +1,3 @@
+# Quotes around the substitution. Identical to the shell, invisible to a matcher
+# that anchors on `=$(`.
+FAIL: consumer.sh:7 — extract_between call site is not guarded by `if`; a bare assignment aborts the script at that line under `set -euo pipefail` and loses every later diagnostic

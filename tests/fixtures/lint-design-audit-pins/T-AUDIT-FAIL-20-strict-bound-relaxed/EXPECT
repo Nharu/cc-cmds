@@ -1,0 +1,6 @@
+# One character: the strict upper bound on the shortfall count reverted from `<`
+# to `≤`. That single byte re-admits the state the total-shortfall arm rejects —
+# a block declaring that every reader failed, which passes every other check
+# while asserting that nothing was audited. Four mutants of this cluster,
+# including this one, previously survived fully green.
+FAIL: design-audit/references/04-disclosure-block.md — pinned literal missing from the anti-vacuity checks section (comments do not count): 0 ≤ 결손 수 < 리뷰어 수
