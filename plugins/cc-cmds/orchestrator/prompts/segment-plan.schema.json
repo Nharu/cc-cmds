@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "declared_files": { "type": "array", "items": { "type": "string" } },
+          "depends_on": { "type": "array", "items": { "type": "string" } },
+          "carries_residual_items": { "type": "boolean" },
+          "is_release_segment": { "type": "boolean" },
+          "weak_attribution": { "type": "boolean" },
+          "rationale": { "type": "string" }
+        },
+        "required": ["id", "declared_files", "depends_on", "carries_residual_items", "is_release_segment", "weak_attribution", "rationale"],
+        "additionalProperties": false
+      }
+    },
+    "waves": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment_ids": { "type": "array", "items": { "type": "string" } },
+          "mode": { "type": "string", "enum": ["parallel", "serial"] },
+          "serial_reason": { "type": "string" }
+        },
+        "required": ["segment_ids", "mode", "serial_reason"],
+        "additionalProperties": false
+      }
+    },
+    "segmentation": { "type": "string", "enum": ["ok", "low-confidence"] },
+    "author_grouping_adopted": { "type": "boolean" },
+    "notes": { "type": "string" }
+  },
+  "required": ["segments", "waves", "segmentation", "author_grouping_adopted", "notes"],
+  "additionalProperties": false
+}

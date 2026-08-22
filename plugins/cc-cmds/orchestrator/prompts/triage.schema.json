@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding_id": { "type": "string" },
+          "identity_path": { "type": "string" },
+          "identity_category": { "type": "string" },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "severity_conflict": { "type": "boolean" },
+          "severity_rejected_alternative": { "type": "string" },
+          "severity_rationales": { "type": "string" },
+          "lane": { "type": "string", "enum": ["fast", "slow", "reconcile", "accept"] },
+          "lane_rationale": { "type": "string" },
+          "root_cause_payload": { "type": "string" }
+        },
+        "required": ["finding_id", "identity_path", "identity_category", "severity", "severity_conflict", "severity_rejected_alternative", "severity_rationales", "lane", "lane_rationale", "root_cause_payload"],
+        "additionalProperties": false
+      }
+    },
+    "p0_count": { "type": "integer" },
+    "p1_count": { "type": "integer" },
+    "stop_predicate_met": { "type": "boolean" }
+  },
+  "required": ["findings", "p0_count", "p1_count", "stop_predicate_met"],
+  "additionalProperties": false
+}

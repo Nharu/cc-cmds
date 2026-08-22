@@ -36,6 +36,7 @@ test: test-active-notify
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
+	bash plugins/cc-cmds/orchestrator/test-run.sh
 
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
