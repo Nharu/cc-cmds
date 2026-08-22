@@ -1,0 +1,2 @@
+^FAIL: agent-team-protocol.md (### Round budget)
+found 0: **A member names a concrete, actionable measurement it has not yet run**

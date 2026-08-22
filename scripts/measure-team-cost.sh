@@ -123,7 +123,12 @@ fi
 # positive of the "jq is required" shape at the cost of three true positives,
 # and this column feeds a human judgment call rather than a gate.
 COMMAND_TIER1='(^|[^a-zA-Z0-9_./-])(git|grep|ggrep|rg|sed|awk|jq|npm|npx|yarn|pnpm|xcrun|shasum|openssl|curl|gh|cargo|flutter|dart|pytest|eslint|tsc|melos|simctl)([^a-zA-Z0-9_-]|$)'
-COMMAND_TIER2='(^|[^a-zA-Z0-9_./-])(find|make|go|node|test|wc|sh|bash|python3?|swift|diff|cat|ls)[[:space:]]+(-{1,2}[a-zA-Z0-9][a-zA-Z0-9-]*|[a-zA-Z0-9._/-]+)([[:space:]]|$)'
+# A "shell-shaped operand" is a FLAG or a PATH-shaped token — not any word.
+# `find a way`, `make sure`, `go over` are ordinary English and must score
+# zero; accepting a bare word here readmits every sentence containing the verb.
+# A homograph with a plain-word operand (`make bench`) is reachable through the
+# code-span arm instead, which is how members actually cite a command.
+COMMAND_TIER2='(^|[^a-zA-Z0-9_./-])(find|make|go|node|test|wc|sh|bash|python3?|swift|diff|cat|ls)[[:space:]]+(-{1,2}[a-zA-Z0-9][a-zA-Z0-9-]*|[a-zA-Z0-9._-]*[./][a-zA-Z0-9._/-]*)([[:space:]]|$)'
 COMMAND_SPAN='`[^`]*(git|grep|sed|awk|jq|npm|npx|make|find|node|go|test|wc|bash|sh|python|swift|flutter|dart|curl|gh|shasum|openssl)[^`]*`'
 
 # names_command <text> — the three arms OR'd. Kept as a function so the arms

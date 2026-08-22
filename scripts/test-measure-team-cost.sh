@@ -35,7 +35,7 @@ fail() { failures=$((failures + 1)); echo "FAIL: $1" >&2; }
 tmp=$(mktemp)
 if bash "$measure" --transcripts "$fixtures/input" --project -fixture-project > "$tmp" 2>/dev/null; then
   if diff -u "$golden" "$tmp" >/dev/null; then
-    pass "golden match (6 synthetic sessions)"
+    pass "golden match (10 synthetic sessions)"
   else
     fail "golden diff"
     diff -u "$golden" "$tmp" >&2 || true
@@ -44,6 +44,47 @@ else
   fail "measure-team-cost exited non-zero on the fixture set"
 fi
 rm -f "$tmp"
+
+# ---- scope_source labels are a closed set -----------------------------------
+#
+# The label is what a reader trusts when deciding whether a row reflects a
+# narrowed scope. A typo or an unlisted value would be read as a real source,
+# so the set is asserted rather than left to the golden diff alone.
+LABELS=$(cut -f11 "$golden" | tail -n +2 | sort -u | tr '\n' ' ')
+EXPECTED_LABELS='NA READ-ERROR numstat numstat-unreadable per-file pr-summary '
+observed_subset=1
+for l in $LABELS; do
+  case " $EXPECTED_LABELS " in *" $l "*) ;; *) observed_subset=0 ;; esac
+done
+if (( observed_subset == 1 )); then
+  pass "scope_source labels are all in the declared set"
+else
+  fail "scope_source has an undeclared label: $LABELS"
+fi
+
+# ---- an unreadable transcript is stamped, never measured as empty -----------
+#
+# Built at test time rather than committed: git does not carry a 0000 mode, and
+# a fixture that is readable after checkout would assert nothing.
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/cc-measure-test.XXXXXX")
+cp -R "$fixtures/input" "$tmpdir/input"
+printf '{"type":"assistant"}\n' > "$tmpdir/input/-fixture-project/s99-unreadable.jsonl"
+chmod 000 "$tmpdir/input/-fixture-project/s99-unreadable.jsonl"
+if [[ -r "$tmpdir/input/-fixture-project/s99-unreadable.jsonl" ]]; then
+  # Running as root (or on a filesystem ignoring the mode): the premise of the
+  # case does not hold, so say so instead of asserting something else.
+  echo "SKIP: unreadable-transcript case (the file is still readable here)"
+else
+  row=$(bash "$measure" --transcripts "$tmpdir/input" --project -fixture-project 2>/dev/null \
+    | grep '^s99-unreadable' || true)
+  if [[ "$row" == *"READ-ERROR"* ]] && [[ "$row" != *"	0	"* ]]; then
+    pass "unreadable transcript is stamped READ-ERROR, not measured as zero"
+  else
+    fail "unreadable transcript row was not stamped: ${row:-<no row>}"
+  fi
+fi
+chmod 644 "$tmpdir/input/-fixture-project/s99-unreadable.jsonl" 2>/dev/null || true
+rm -rf "$tmpdir"
 
 # ---- no transcript root → usage error, never a silent real-home default -----
 

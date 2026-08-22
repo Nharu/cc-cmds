@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running /cc-cmds:review on the local diff."}]}}
+{"type":"user","toolUseResult":{"stdout":"git diff master...HEAD --numstat\n12\t3\tsrc/auth.ts\n4\t1\tsrc/session.ts"}}
+{"type":"user","toolUseResult":{"stdout":"- 4bbbbbbbbbbbbbb | done | round-2 | logic (sonnet) | 0 | ok | 1"}}
+{"type":"user","toolUseResult":{"stdout":"no further input.\n<!-- cc-witness: logic round-2 complete 6e33 -->"}}

@@ -1,0 +1,2 @@
+^FAIL: review-lite/SKILL.md (#### Round structure
+the carve-out sentence must name the shared '### Round budget'

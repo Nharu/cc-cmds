@@ -1,0 +1,2 @@
+^FAIL: agent-team-protocol.md (### Team size budget)
+found 0: **5 roles**

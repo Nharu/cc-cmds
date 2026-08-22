@@ -1,0 +1,2 @@
+^FAIL: team-upgrade-analysis.md (REMOVE heading)
+found 0: ### `REMOVE` (drop a role whose domain no longer needs its own seat)
