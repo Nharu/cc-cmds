@@ -204,7 +204,17 @@ A single, generalized definition (it subsumes and replaces the earlier reproduct
 - **FORBIDDEN rescope**: editing a tracked source file **in the main working tree** — forbidden even transiently, even if it will be reverted.
 - **Two-command boundary gate** (the "single verifiable invariant" advertisement is retired — scope is per-surface). At every team-discussion boundary check both, in this order:
     1. main tree `git status --porcelain` == the pre-workflow baseline;
-    2. `git worktree list --porcelain` == the pre-workflow baseline (porcelain does not see records inside `.git/worktrees/` — the F1 blind spot), plus a belt-and-braces assertion of 0 entries with the `cc-design-exp-` prefix (proves mechanism-owned cleanup even when a baseline string is lost to compaction, and **never condemns the user's own pre-existing worktrees**).
+    2. `git worktree list --porcelain` == the pre-workflow baseline **modulo the caller's declared exception pattern** (porcelain does not see records inside `.git/worktrees/` — the F1 blind spot), plus a belt-and-braces assertion of 0 entries with the `cc-design-exp-` prefix (proves mechanism-owned cleanup even when a baseline string is lost to compaction, and **never condemns the user's own pre-existing worktrees**).
+
+**The declared exception pattern of assertion 2.** A caller that legitimately creates and removes worktrees while a gated window is open declares, **before the window opens**, a single path-substring pattern naming the worktrees it owns. Assertion 2 then compares the worktree path set with the entries matching that pattern removed from *both* sides. **The default is the empty pattern**, under which the comparison is the whole-set equality it has always been — so a caller that declares nothing is byte-unchanged, and every consumer shipping today is such a caller.
+
+The exception is bounded by three things, and it is not safe without all three:
+
+- **It is declared, not inferred.** A pattern chosen after an unexpected worktree appears would excuse exactly the change the gate exists to catch.
+- **It never reaches assertion 1 or the `cc-design-exp-` count.** A declared pattern excuses a *worktree list* entry and nothing else: tree contents still have to match, and the mechanism-owned prefix still has to be absent. Those are different failure modes with different owners.
+- **The declaring caller owes a teardown guard**, and that guard — not the pattern — is what keeps the exception from being a hole. Matching the pattern must never by itself authorize removing a worktree; the caller removes a path only when its own durable record shows that path was created *by this run*, with the pattern as a second, independent condition. A pattern alone would let a hand-made lookalike be torn down.
+
+This parameterization is what lets the gate's own promise — that it **never condemns the user's own pre-existing worktrees** — extend to a caller whose normal operation transforms the worktree set, without weakening it for anyone else.
 
 ### 6.1 Surface 1 — main working tree (reproduction + categories a/b/c/d)
 
