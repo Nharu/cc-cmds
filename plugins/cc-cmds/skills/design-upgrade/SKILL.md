@@ -30,7 +30,16 @@ Analyze the team composition proposed in the preceding `/design` Step 2 output a
 | `{SAVED_DOC_LOCATION}` | `docs/<slug>.md` |
 | `{REFEED_TARGET}` | `/design` Step 2 re-proposal (same target on every path) |
 
-This skill declares no `## Operations Layer` — it uses the core's OPERATION set and forbidden-set unchanged, whatever that set currently contains. The set is deliberately **not** re-enumerated here: a copy of it would go stale the next time the core gains or loses an operation.
+This skill uses the core's OPERATION set unchanged, whatever that set currently contains. The set is deliberately **not** re-enumerated here: a copy of it would go stale the next time the core gains or loses an operation.
+
+## Operations Layer
+
+No additional OPERATION class. One **forbidden-set append**, because the core's forbidden-set carries no coordinator clause and inheriting it unchanged would leave the design side with no coordinator rule at all:
+
+- `SPLIT-REPLACE`-Coordinator is **forbidden** — splitting a unified cross-cutting synthesis role constructively violates clean cleavage.
+- `MERGE`-Coordinator is **forbidden** — folding the coordinator into a domain role destroys that same unified synthesis from the other side.
+
+`REMOVE`-Coordinator stays **deliberately valid**: a coordinator is the role most easily added for a scope that later narrows, so it is exactly where the ratchet has to be able to release. A removal still clears the core's remove gate, including the successor's widened scope and its capacity.
 
 ## Precondition
 

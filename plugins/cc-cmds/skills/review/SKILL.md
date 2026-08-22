@@ -226,7 +226,7 @@ A small, single-concern change does not need a full review team. Evaluate this b
 
 **When it fires**: no risk indicator fired **and** the narrowed scope is inside the small-patch threshold of the type table below. Compose from that row instead of a larger default row, and state the narrowing in one line of the Korean proposal so the user sees it rather than discovering a thinner team.
 
-**Floor.** This gate selects among the composed rows below, every one of which carries at least two reviewers, so it cannot yield an empty roster — and an empty roster would not be a saving anyway but a hard stop, since the report stub is created at spawn time and every resume path fail-closes on a missing or unparseable ledger. That floor belongs to the roster contract in `_common/agent-team-protocol.md`, alongside the team-size ceiling; do not write a second floor rule into this gate.
+**Floor.** This gate selects among the composed rows below, every one of which carries at least two reviewers, so it cannot yield an empty roster — and an empty roster would not be a saving anyway but a hard stop, since the report stub is created at spawn time and every resume path fail-closes on a missing or unparseable ledger. **The floor is structural in the table itself and is delegated nowhere.** Do not add one to `### Team size budget` either: that section is deliberately a ceiling with no floor, so an upward delegation has nothing to land on — which is what made the delegation this sentence used to carry a category error rather than a missing pointer.
 
 #### PR characteristic analysis → risk indicators
 
