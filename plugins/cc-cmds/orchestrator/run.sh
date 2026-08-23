@@ -303,27 +303,39 @@ account_has_headroom() { return 1; }   # trivial resolver: no alternate account
 NOTIFY_ADAPTER=""
 
 notify_probe() {
-  # The driver has no tool inventory, so the push adapter is reachable only by
-  # dispatching a stage whose ENTIRE delegated purpose is the notification and
-  # whose payload the driver wrote. A working stage that also notifies is
+  # The driver has no tool inventory, so a push adapter would be reachable only
+  # by dispatching a stage whose ENTIRE delegated purpose is the notification
+  # and whose payload the driver wrote. A working stage that also notifies is
   # forbidden without exception.
-  if [ -n "$CLI_BIN" ] && [ -x "$CLI_BIN" ]; then
-    NOTIFY_ADAPTER="push-stage"
-  else
-    NOTIFY_ADAPTER="none"
-  fi
-  log "알림 어댑터: $NOTIFY_ADAPTER"
+  #
+  # THAT ADAPTER IS NOT SEATED, and the reason is recorded rather than deferred:
+  # the shared operating rules forbid a spawned agent from deciding whether a
+  # banner reaches the user, and a notification-only stage is a spawned agent.
+  # The seat is real and a future in-process implementation drops into it; what
+  # is NOT claimed is that the current run can wake a sleeping user.
+  #
+  # The consequence is stated plainly so nothing downstream assumes otherwise:
+  # **the push path may not reach a sleeping user at all.** That is survivable
+  # only because delivery confirmation was never in this seat's contract — the
+  # morning report is the source of truth, and every notify_send below writes
+  # there FIRST and treats the banner as a courtesy.
+  NOTIFY_ADAPTER="report-only"
+  log "알림 어댑터: $NOTIFY_ADAPTER (푸시 좌석 미착석 — 아침 보고서가 진실의 출처)"
 }
 
 notify_send() {
+  # Report FIRST, banner second — including for the immediate-call events. The
+  # ordering is the contract, not a convenience: this seat provides no delivery
+  # confirmation, so a banner that is written before the report can be the only
+  # record of an event nobody ever saw.
+  #
   # fail-open, always: a missed banner is acceptable, a halted workflow is not.
   local title="$1" body="$2"
   report_append "알림" "$title — $body"
-  [ "$NOTIFY_ADAPTER" = "push-stage" ] || return 0
-  local prompt
-  prompt="이 스테이지의 유일한 위임 목적은 알림 1회 전달이다. 다음 payload를 그대로 PushNotification 으로 보내고 종료하라. 제목: ${title} / 본문: ${body}"
-  "$CLI_BIN" -p "$prompt" --output-format json --strict-mcp-config >/dev/null 2>&1 || \
-    warn "알림 전달 실패 — 진행은 계속합니다 (fail-open)"
+  case "$NOTIFY_ADAPTER" in
+    report-only|none) return 0 ;;
+  esac
+  warn "알림 어댑터 '$NOTIFY_ADAPTER' 가 배선돼 있지 않습니다 — 보고서에만 남기고 계속합니다"
   return 0
 }
 
