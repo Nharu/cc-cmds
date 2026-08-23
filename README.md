@@ -8,6 +8,7 @@ Engineering workflow commands for Claude Code.
 
 | Command | Description | When to use |
 |---------|-------------|-------------|
+| `/cc-cmds:autopilot` | 설계 문서 하나를 밤사이 무인으로 완주시키는 자율 파이프라인의 킥오프와 아침 보고 | 사용자가 작성이 끝난 설계 문서를 자리를 비운 동안 감사·구현·리뷰·머지까지 자동으로 진행시키고 싶을 때, 또는 그렇게 돌린 런의 아침 보고를 받을 때 |
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
 | `/cc-cmds:design-analyze` | 에이전트 팀을 활용한 제3자 설계 문서 다관점 분석 (읽기 전용) | 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하고 분석 산출물(보고서/주석본/피드백)을 생성하고자 할 때 |
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
@@ -114,6 +115,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 
 <!-- SKILLS_OPTIONS_START -->
 
+- [/cc-cmds:autopilot](#cc-cmdsautopilot)
 - [/cc-cmds:design](#cc-cmdsdesign)
 - [/cc-cmds:design-analyze](#cc-cmdsdesign-analyze)
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
@@ -131,6 +133,17 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:review-lite](#cc-cmdsreview-lite)
 - [/cc-cmds:review-unattended](#cc-cmdsreview-unattended)
 - [/cc-cmds:review-upgrade](#cc-cmdsreview-upgrade)
+
+### /cc-cmds:autopilot
+
+**Usage**: `/cc-cmds:autopilot <design-doc-path> [--report]`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<design-doc-path>` | (required) | 자율 실행 대상 설계 문서 경로 (`.md`). 킥오프와 아침 보고 양쪽에서 런을 식별하는 키다. |
+| `--report` | off (킥오프 모드 — 인터뷰 후 드라이버 기동) | 아침 보고 모드. 그 문서의 가장 최근 런 원장과 보고서를 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다. |
+
+> _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석. 경로는 문서 자신의 위치에서 절대 경로로 정규화해 드라이버에 넘긴다._
 
 ### /cc-cmds:design
 
