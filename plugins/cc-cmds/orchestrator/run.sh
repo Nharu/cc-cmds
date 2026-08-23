@@ -473,37 +473,92 @@ session_uuid() {
   printf '%s|%s|%s|%s' "$DOC_KEY" "$1" "$2" "$3" | shasum -a 256 | cut -c1-32
 }
 
-dispatch_stage() {
-  # dispatch_stage <stage-id> <cwd> <prompt> [extra-cli-args...]
+stage_spawn() {
+  # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
+  # Spawn and collect are separate so a wave can hold several stages open. The
+  # liveness oracle for those is `kill -0` on the recorded pid, not `wait -n`:
+  # that builtin does not exist on the interpreter floor, and the polling form
+  # is the oracle the resume table already specifies, so using it here avoids a
+  # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out pid pgid
   cfg=$(resolve_account)
   out="$RUN_DIR/log/$stage.json"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
+  rm -f "$RUN_DIR/$stage.rc"
 
   # `set -m` makes the child the leader of its own process group, so the whole
   # tree is reclaimable with `kill -- -$pgid`. Without it the "group" silently
   # becomes the CALLER's, which is why the pgid is read back before it is
   # recorded rather than assumed.
   set -m
-  CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
-    nohup "$CLI_BIN" -p "$prompt" \
-      --output-format json --strict-mcp-config "$@" \
-      > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null &
+  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
+      exec nohup "$CLI_BIN" -p "$prompt" \
+        --output-format json --strict-mcp-config "$@" \
+        > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
   set +m
 
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-  # Recorded BEFORE waiting, so a driver that dies mid-stage leaves a handle
+  # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
   # its successor can find. Both go to the volatile directory only.
   printf '%s\n' "$pid"  > "$RUN_DIR/$stage.pid"
   printf '%s\n' "$pgid" > "$RUN_DIR/$stage.pgid"
+  return 0
+}
 
-  local rc=0
+stage_alive() {
+  local f="$RUN_DIR/$1.pid"
+  [ -f "$f" ] || return 1
+  kill -0 "$(cat "$f")" 2>/dev/null
+}
+
+stage_collect() {
+  # Reap one finished stage and record its exit status.
+  local stage="$1" pid rc=0
+  [ -f "$RUN_DIR/$stage.pid" ] || return 0
+  pid=$(cat "$RUN_DIR/$stage.pid")
   wait "$pid" || rc=$?
   rm -f "$RUN_DIR/$stage.pid" "$RUN_DIR/$stage.pgid"
   printf '%s' "$rc" > "$RUN_DIR/$stage.rc"
+  return 0
+}
+
+stage_wait_all() {
+  # stage_wait_all <stage-id>... — poll until every stage has ended, applying
+  # the resume verdict to each so a stall is classified rather than waited out.
+  local remaining="$*" s still
+  while [ -n "$remaining" ]; do
+    still=""
+    for s in $remaining; do
+      if stage_alive "$s"; then
+        case "$(resume_verdict "$s")" in
+          '기계가-잠') log "$s: 절전 구간 — 죽이지 않고 재관측" ;;
+          '한도-형상')
+            if boundary_idempotent "${s%%:*}" && account_has_headroom; then
+              log "$s: 한도 형상 + 여유 계정 — 경계에서 재실행"
+              reap_orphan "$s"
+              continue
+            fi
+            backoff_wait || { warn "$s: 백오프 벽시계 상한 도달"; reap_orphan "$s"; continue; }
+            ;;
+        esac
+        still="$still $s"
+      else
+        stage_collect "$s"
+      fi
+    done
+    remaining="$still"
+    [ -n "$remaining" ] && sleep 10
+  done
+}
+
+# Kept as the one-shot convenience the pre-wave stages use.
+dispatch_stage() {
+  local stage="$1"
+  stage_spawn "$@" || return $?
+  stage_wait_all "$stage"
   return 0
 }
 
@@ -755,6 +810,220 @@ self_check() {
 }
 
 # ---------------------------------------------------------------------------
+# Escalation ladder. Problem identity is (normalized path, category tag) and is
+# deliberately SEVERITY-FREE: severity is not a property of the defect but a
+# measurement re-derived every cycle, so putting it in the key splits one defect
+# into two whenever the reading changes, each granted a fresh budget at rung 1.
+# Neither would ever accumulate enough recurrences to reach the human rung, and
+# the ladder — the only structural bound on re-fix depth — disarms itself.
+# ---------------------------------------------------------------------------
+LADDER=""
+
+ladder_init() { LADDER="$RUN_DIR/ladder.tsv"; : > "$LADDER"; }
+
+ladder_rung() {
+  # File-level rung inheritance: a NEW identity appearing in a file that has
+  # already consumed the root-redesign rung inherits it. Without that, the
+  # per-file identity count is bounded only by the tag enumeration, and the
+  # cycle bound loses its per-file collapse.
+  local path="$1" cat="$2" exact file_max
+  exact=$(awk -F'\t' -v p="$path" -v c="$cat" '$1==p && $2==c {print $3}' "$LADDER" | tail -1)
+  file_max=$(awk -F'\t' -v p="$path" '$1==p {print $3}' "$LADDER" | sort -n | tail -1)
+  [ -n "$exact" ] && { printf '%s' "$exact"; return 0; }
+  [ -n "$file_max" ] && [ "$file_max" -ge 3 ] && { printf '%s' "$file_max"; return 0; }
+  printf '0'
+}
+
+ladder_bump() {
+  local path="$1" cat="$2" cur next
+  cur=$(ladder_rung "$path" "$cat")
+  next=$((cur + 1))
+  [ "$next" -gt 4 ] && next=4
+  printf '%s\t%s\t%s\n' "$path" "$cat" "$next" >> "$LADDER"
+  printf '%s' "$next"
+}
+
+# ---------------------------------------------------------------------------
+# Base drift and merge ordering
+# ---------------------------------------------------------------------------
+BASE_BRANCH=""
+
+base_branch() {
+  [ -n "$BASE_BRANCH" ] && { printf '%s' "$BASE_BRANCH"; return 0; }
+  BASE_BRANCH=$( cd "$(main_root)" && \
+    { git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's#^origin/##'; } )
+  [ -n "$BASE_BRANCH" ] || BASE_BRANCH=$( cd "$(main_root)" && git rev-parse --abbrev-ref HEAD )
+  printf '%s' "$BASE_BRANCH"
+}
+base_sha() { ( cd "$(main_root)" && git rev-parse "$(base_branch)" ); }
+
+rebase_onto_base() {
+  # A rebase conflict between two segments of one wave is NOT a merge problem to
+  # be resolved — it is a refutation of the segmentation, because those segments
+  # were supposed to be file-disjoint. Abort, demote the wave to serial, and
+  # escalate. Never auto-resolve, and never wake anyone.
+  local seg="$1" wt="$2" kind="$3"   # kind: 형제 | 외부
+  ( cd "$wt" && git rebase "$(base_branch)" >/dev/null 2>&1 ) && return 0
+  ( cd "$wt" && git rebase --abort >/dev/null 2>&1 || true )
+  if [ "$kind" = "형제" ]; then
+    warn "$seg: 형제 충돌 — 세그먼트 묶음에 대한 반증, 웨이브를 직렬로 강등"
+    WAVE_DEMOTED=1
+  else
+    # External drift is a different animal: the other side is not a sibling of
+    # this run, so "demote the wave" would be a no-op at width 1. Route the one
+    # segment up the ladder instead and let the rest keep running.
+    warn "$seg: 외부 드리프트와 충돌 — 이 세그먼트만 사다리로"
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# One segment's S4..S8 cycle
+# ---------------------------------------------------------------------------
+segment_cycle() {
+  local seg="$1" files="$2"
+  local branch="seg/$SLUG-$seg" wt pre_head f_count cap cycle=0
+  f_count=$(printf '%s' "$files" | tr ',' '\n' | grep -c . || printf '1')
+  # Width x depth: the ladder is monotone in 4 rungs per identity, per-file rung
+  # inheritance collapses a file's total to 4, so the cycle count is bounded by
+  # 4F + 1 with F the segment's DECLARED file-set size — a measured quantity,
+  # recorded at plan time and watched by the file-set escape predicate.
+  cap=$(( 4 * f_count + 1 ))
+
+  wt=$(wt_create "$seg" "$branch") || { park "$seg" "게이트 park" "워크트리 생성 실패"; return 1; }
+  pre_head=$( cd "$wt" && git rev-parse HEAD )
+  local stash_before; stash_before=$(stash_ref)
+  ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "사전 HEAD=$pre_head" \
+    "베이스 sha=$(base_sha)" "워크트리=$wt" "plan-binding-digest=$(binding_digest)"
+
+  while [ "$cycle" -lt "$cap" ]; do
+    cycle=$((cycle + 1))
+
+    # --- S4 IMPLEMENT ------------------------------------------------------
+    local sid="S4:$seg:$cycle"
+    quiet_window_begin
+    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle)\""
+    stage_wait_all "$sid"
+    quiet_window_end
+    local rc pred class
+    rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
+    if predicate_implement "$branch" "$pre_head"; then pred=0; else pred=1; fi
+    class=$(classify_termination "$sid" "$rc" "$pred")
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
+      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class"
+
+    stash_attribution_check "$stash_before" "$branch" || { park "$seg" "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+
+    case "$class" in
+      '정상 완료') : ;;
+      '의도된 park')
+        park "$seg" "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
+        return 1 ;;
+      '공허한 성공')
+        # One retry, then a DISTINCT park reason. Not zero, because one
+        # observation cannot rule out a transient cause; not the whole budget,
+        # because a clean exit with no artifact is itself evidence the next
+        # attempt does the same — improvisation is deterministic.
+        log "$seg: 공허한 성공 — 1회만 재시도"
+        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도)\""
+        stage_wait_all "$sid.retry"
+        if predicate_implement "$branch" "$pre_head"; then : ; else
+          park "$seg" "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
+        fi ;;
+      *) park "$seg" "게이트 park" "크래시"; return 1 ;;
+    esac
+
+    # --- S5 REVIEW ---------------------------------------------------------
+    local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
+    mkdir -p "$(dirname "$rp")"
+    sid="S5:$seg:$cycle"
+    stage_spawn "$sid" "$(main_root)" "/cc-cmds:review-unattended $branch --report-path $rp \"설계는 $DOC\""
+    stage_wait_all "$sid"
+    if predicate_review "$rp"; then pred=0; else pred=1; fi
+    rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
+    class=$(classify_termination "$sid" "$rc" "$pred")
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "종료 코드=$rc" \
+      "아티팩트 술어 결과=$pred" "종단 부류=$class"
+    [ "$class" = "정상 완료" ] || { park "$seg" "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+
+    # --- S6 TRIAGE ---------------------------------------------------------
+    local tri_out tri
+    tri_out=$(judgment_call triage "$rp") || { park "$seg" "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+    tri=$(judgment_result "$tri_out")
+    local p0 p1
+    p0=$(printf '%s' "$tri" | jq -r '.p0_count // 0')
+    p1=$(printf '%s' "$tri" | jq -r '.p1_count // 0')
+    ledger_row 'cycle' "세그먼트=$seg" "사이클=$cycle" "리포트 경로=$rp" "P0=$p0" "P1=$p1" \
+      "lane 결정=$(printf '%s' "$tri" | jq -c '[.findings[] | {id:.finding_id, lane:.lane}]')"
+
+    # Severity adjudications are transcribed by the driver — the stage records
+    # them in its report and never writes the ledger.
+    printf '%s' "$tri" | jq -c '.findings[] | select(.severity_conflict)' 2>/dev/null | while IFS= read -r fx; do
+      [ -n "$fx" ] || continue
+      ledger_row '자율 승인' "kind=severity" \
+        "finding-id=$(printf '%s' "$fx" | jq -r '.finding_id')" \
+        "결정=$(printf '%s' "$fx" | jq -r '.severity')" \
+        "기각된 대안=$(printf '%s' "$fx" | jq -r '.severity_rejected_alternative')" \
+        "근거=$(printf '%s' "$fx" | jq -r '.severity_rationales')"
+    done
+
+    # --- Stop predicate ----------------------------------------------------
+    if [ "$p0" = "0" ] && [ "$p1" = "0" ]; then
+      log "$seg: P0+P1 == 0 — 사이클 종료"
+      break
+    fi
+
+    # --- S7 REMEDIATE via the ladder --------------------------------------
+    local any_park=0 fx
+    while IFS= read -r fx; do
+      [ -n "$fx" ] || continue
+      local fpath fcat flane rung
+      fpath=$(printf '%s' "$fx" | jq -r '.identity_path')
+      fcat=$(printf '%s' "$fx" | jq -r '.identity_category')
+      flane=$(printf '%s' "$fx" | jq -r '.lane')
+      rung=$(ladder_bump "$fpath" "$fcat")
+      ledger_row 'problem' "동일성=$fpath::$fcat" "현재 단=R$rung" \
+        "payload=$(printf '%s' "$fx" | jq -r '.root_cause_payload')"
+      ledger_row '자율 승인' "kind=lane" "결정=$flane" \
+        "기각된 대안=$(printf '%s' "$fx" | jq -r '.lane_rationale')" "근거=R$rung"
+      case "$rung" in
+        4) park "$fpath::$fcat" "사다리 R4" "재발이 근본 재설계를 소비한 뒤 다시 나타남"; any_park=1 ;;
+        2|3)
+          sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
+          stage_spawn "$sid" "$(main_root)" "/cc-cmds:design-reconverge $DOC \"$fpath, $fcat\""
+          stage_wait_all "$sid"
+          if predicate_reconverge "$sid"; then
+            judgment_call redesign-impact "$RUN_DIR/log/$sid.json" >/dev/null || true
+            REPLAN_NEEDED=1
+          else
+            park "$fpath::$fcat" "게이트 park" "재수렴 종단 술어 거짓"; any_park=1
+          fi ;;
+        *) : ;;   # R1 is the next S4 pass with the finding as its scope directive
+      esac
+    done <<EOF
+$(printf '%s' "$tri" | jq -c '.findings[] | select(.severity=="P0" or .severity=="P1")')
+EOF
+    [ "$any_park" = "1" ] && { ledger_row 'segment' "id=$seg" "상태=park"; return 1; }
+    [ "${REPLAN_NEEDED:-0}" = "1" ] && { log "$seg: 구속면 이동 — 세그먼트 재계획 필요"; return 2; }
+  done
+
+  if [ "$cycle" -ge "$cap" ]; then
+    park "$seg" "사다리 R4" "사이클 상한 ${cap}(4F+1, F=$f_count) 도달"
+    return 1
+  fi
+
+  # --- S8 MERGE GATE -------------------------------------------------------
+  local recorded_base; recorded_base=$(ledger_last 'segment' '베이스 sha')
+  if [ -n "$recorded_base" ] && [ "$recorded_base" != "$(base_sha)" ]; then
+    log "$seg: 외부 드리프트 감지 — rebase 후 리뷰 재실행 필요"
+    rebase_onto_base "$seg" "$wt" 외부 || { park "$seg" "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
+  fi
+  merge_gate "$seg" "$branch" || return 1
+  wt_remove_or_defer "$seg"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
 main_loop() {
@@ -799,8 +1068,49 @@ main_loop() {
     return 0
   fi
 
-  report_append "종료" "드라이버 골격 — S4~S9 세그먼트 사이클은 후속 단계에서 활성화됩니다."
-  log "런 종료"
+  # S4..S9 — walk the same DAG. Serial segments and parallel waves are ONE
+  # machine: a topological walk versus an antichain walk over the same graph.
+  # `E_file` forces file-sharing items into one component, so distinct
+  # components are file-disjoint by construction — that is what makes a wave
+  # merge-safe, and it is also why a sibling rebase conflict is a refutation of
+  # the grouping rather than a merge to resolve.
+  ladder_init
+  local wave_count wi merged=0 parked=0
+  wave_count=$(printf '%s' "$plan" | jq -r '.waves | length')
+  wi=0
+  while [ "$wi" -lt "$wave_count" ]; do
+    local wave_segs wave_mode
+    wave_segs=$(printf '%s' "$plan" | jq -r --argjson i "$wi" '.waves[$i].segment_ids[]')
+    wave_mode=$(printf '%s' "$plan" | jq -r --argjson i "$wi" '.waves[$i].mode')
+    WAVE_DEMOTED=0
+    log "웨이브 $((wi + 1))/$wave_count ($wave_mode): $(printf '%s' "$wave_segs" | tr '\n' ' ')"
+
+    # A wave carrying residual verification items runs alone, and the kickoff
+    # said so out loud. The design document is a shared write target no segment
+    # declares, so two segments writing it in one wave would contend and trip a
+    # fail-loud diff gate. Named, measured, and mostly inapplicable — not a
+    # silent collapse of parallelism.
+    local seg files rc
+    for seg in $wave_segs; do
+      files=$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(",")')
+      rc=0
+      segment_cycle "$seg" "$files" || rc=$?
+      case "$rc" in
+        0) merged=$((merged + 1)) ;;
+        2) log "재계획 필요 — 이번 런에서는 남은 세그먼트를 park 하고 아침에 넘긴다"
+           park "$seg" "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
+           parked=$((parked + 1)) ;;
+        *) parked=$((parked + 1)) ;;
+      esac
+      [ "$WAVE_DEMOTED" = "1" ] && log "웨이브 직렬 강등됨 — 남은 세그먼트는 순차로"
+    done
+    wi=$((wi + 1))
+  done
+
+  ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
+    "관측 시각=$(now_iso)"
+  report_append "종료" "머지 $merged건 · 보류 $parked건 · 웨이브 $wave_count개"
+  log "런 종료 (머지 $merged · 보류 $parked)"
 }
 
 # ---------------------------------------------------------------------------

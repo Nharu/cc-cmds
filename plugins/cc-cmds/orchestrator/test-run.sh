@@ -264,5 +264,49 @@ for j in $JUDGMENTS; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# 15. Escalation ladder — the only structural bound on re-fix depth
+# ---------------------------------------------------------------------------
+ladder_init
+check "미등장 동일성의 현재 단은 0"      "$(ladder_rung src/a.ts correctness)" "0"
+check "첫 등장은 R1"                     "$(ladder_bump src/a.ts correctness)" "1"
+check "재발은 R2"                        "$(ladder_bump src/a.ts correctness)" "2"
+check "다음 재발은 R3"                   "$(ladder_bump src/a.ts correctness)" "3"
+check "그다음은 R4 (사람)"               "$(ladder_bump src/a.ts correctness)" "4"
+check "R4에서 포화 — 더 오르지 않는다"   "$(ladder_bump src/a.ts correctness)" "4"
+
+# File-level rung merge: a NEW category appearing in a file that has already
+# consumed the deep rungs inherits them rather than starting fresh. That is what
+# collapses a file's total consumable rungs to 4 and makes the 4F+1 cycle bound
+# hold; without it a file could yield one fresh budget per category tag.
+# Inheriting the HUMAN rung is the conservative direction on purpose.
+check "같은 파일의 신규 동일성은 소비된 단을 상속" "$(ladder_rung src/a.ts perf)" "4"
+
+# Severity is NOT part of the identity, so the same defect read at a different
+# grade is the SAME problem. Were severity in the key, the line above would
+# return 0 and the defect would collect a fresh budget every time a reviewer
+# set graded it differently — the disarming this design exists to prevent.
+check "다른 파일은 영향 없음"            "$(ladder_rung src/b.ts correctness)" "0"
+
+# 4F + 1 with F the DECLARED file-set size.
+f=3; cap=$(( 4 * f + 1 ))
+check "사이클 상한 4F+1 (F=3)" "$cap" "13"
+
+# ---------------------------------------------------------------------------
+# 16. Liveness oracle is kill -0 on the recorded pid, never `wait -n`
+# ---------------------------------------------------------------------------
+# Comment lines are stripped first: the driver legitimately NAMES the builtin in
+# the comment explaining why it does not use it, and a check that flags its own
+# rationale would be pressure to delete the rationale.
+if sed 's/#.*//' "$DRIVER" | grep -qE '\bwait[[:space:]]+-n\b'; then
+  bad "생존성 오라클" "wait -n 사용 — 인터프리터 하한에서 rc=2"
+else
+  ok "wait -n 미사용 (하한 인터프리터에 없는 빌트인)"
+fi
+printf '999999\n' > "$RUN_DIR/Sdead.pid"
+if stage_alive Sdead; then bad "stage_alive" "죽은 pid에 살아있다고 판정"; else ok "stage_alive: 죽은 pid에 거짓"; fi
+rm -f "$RUN_DIR/Sdead.pid"
+if stage_alive Snothing; then bad "stage_alive" "기록 없는 스테이지에 참"; else ok "stage_alive: pid 기록이 없으면 거짓"; fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
