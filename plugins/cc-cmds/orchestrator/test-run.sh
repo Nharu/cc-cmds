@@ -24,6 +24,10 @@ DRIVER="$script_dir/run.sh"
 # The sanitized PATH the driver normalizes to, plus the interpreter it picks.
 SANITIZED_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Scratch for the pre-source assertions; the post-source ones get their own.
+WORK_EARLY=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test-early.XXXXXX")
+trap 'rm -rf "$WORK_EARLY"' EXIT
+
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -38,17 +42,46 @@ else
   bad "정제 PATH 파싱" "bash -n 실패 — bash 4 전용 문법이 섞였을 수 있음"
 fi
 
-sc_out=$(env -i PATH="$SANITIZED_PATH" HOME="$HOME" /usr/bin/env bash "$DRIVER" --self-check 2>&1)
+# Positive host-OS injection, the same convention the notification helper's
+# tests use: the Linux runner takes the Darwin branch so the selection logic is
+# verified WITHOUT darwin, and the opposite branch gets its own case below.
+sc_out=$(env -i PATH="$SANITIZED_PATH" HOME="$HOME" CC_CMDS_ORCH_HOST_OS=Darwin \
+           /usr/bin/env bash "$DRIVER" --self-check 2>&1)
 sc_rc=$?
-check "정제 환경 self-check 통과" "$sc_rc" "0"
+check "정제 환경 self-check 통과 (Darwin 주입)" "$sc_rc" "0"
 case "$sc_out" in
   *"bash: 3."*) ok "self-check가 실제로 bash 3.2 위에서 돌았다 (하한이 실측된다)" ;;
   *)            printf 'NOTE: self-check ran on %s\n' "$(printf '%s' "$sc_out" | head -1)" ;;
 esac
 case "$sc_out" in
-  *"lockf -> /usr/bin/lockf"*) ok "검출 잠금 바이너리가 정제 PATH에서 해소된다" ;;
-  *) bad "lockf 해소" "self-check 출력에 lockf 행이 없음" ;;
+  *"잠금 소스 선택 -> /usr/bin/lockf"*) ok "Darwin 분기가 잠금 소스를 선택한다 (주입으로 검증)" ;;
+  *) bad "잠금 소스 선택" "Darwin 주입인데 선택 행이 없음" ;;
 esac
+case "$sc_out" in
+  *"부팅 시각 소스 선택 -> kern.boottime"*) ok "Darwin 분기가 부팅 시각 소스를 선택한다" ;;
+  *) bad "부팅 시각 소스 선택" "Darwin 주입인데 선택 행이 없음" ;;
+esac
+
+# --- the opposite branch, on the same runner ------------------------------
+lx_out=$(env -i PATH="$SANITIZED_PATH" HOME="$HOME" CC_CMDS_ORCH_HOST_OS=Linux \
+           /usr/bin/env bash "$DRIVER" --self-check 2>&1)
+check "비-darwin 주입에서도 self-check는 진단으로서 성립" "$?" "0"
+case "$lx_out" in
+  *"비지원 플랫폼: 소스 미선택"*) ok "비-darwin 분기는 소스를 선택하지 않는다" ;;
+  *) bad "비-darwin 선택" "소스 미선택 행이 없음 — 조용한 열화 경로" ;;
+esac
+
+# The refusal is at ENTRY and is the whole point of the seam: a driver that
+# silently does less on an unmeasured platform is the failure mode this design
+# exists to prevent. Verified on any runner by injection.
+env -i PATH="$SANITIZED_PATH" HOME="$HOME" CC_CMDS_ORCH_HOST_OS=Linux \
+  /usr/bin/env bash "$DRIVER" --doc /dev/null >/dev/null 2>"$WORK_EARLY/refuse.txt"
+check "비-darwin 기동은 진입에서 거부된다" "$?" "4"
+if grep -q "재지 않은 것" "$WORK_EARLY/refuse.txt" 2>/dev/null; then
+  ok "거부 사유가 「닫힘」이 아니라 「미측정」으로 진술된다"
+else
+  bad "거부 문면" "리눅스가 왜 거부되는지를 미측정으로 진술하지 않음"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Interpreter floor guard is the first executable block
@@ -66,12 +99,32 @@ fi
 # ---------------------------------------------------------------------------
 CC_ORCH_SOURCE_ONLY=1
 export CC_ORCH_SOURCE_ONLY
+# Drive the darwin branch for the sourced definitions too, so the assertions
+# below exercise the same arm on every runner.
+CC_CMDS_ORCH_HOST_OS=Darwin
+export CC_CMDS_ORCH_HOST_OS
 # shellcheck disable=SC1090
 . "$DRIVER"
+# The driver sets `-euo pipefail` for its own run, and sourcing imports it. A
+# test harness must NOT inherit -e: every negative assertion here runs a
+# command expected to fail, and under -e the first one aborts the whole suite
+# instead of failing one line. That is how a Linux leg lost 30 assertions to a
+# single missing sysctl key.
+set +e
 ok "소싱 시임으로 정의만 로드된다"
+ok "하네스가 드라이버의 set -e 를 물려받지 않는다"
+
+# Native-kernel seam for the harness itself. Sourcing the driver normalizes
+# PATH, so a stubbed `uname` earlier in PATH stops being visible from here —
+# which means the only way to rehearse the non-darwin runner locally is an
+# explicit injection. Same spelling convention as the driver's own seam.
+NATIVE_OS="${CC_CMDS_ORCH_TEST_NATIVE_OS:-$(uname -s)}"
+printf 'native(harness): %s\n' "$NATIVE_OS"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
-cleanup() { rm -rf "$WORK"; }
+# Replaces the earlier trap rather than adding to it — a bare `trap ... EXIT`
+# overwrites, so both directories are named here or the first one leaks.
+cleanup() { rm -rf "$WORK" "$WORK_EARLY"; }
 trap cleanup EXIT
 
 RUN_ID="testrun"
@@ -135,8 +188,9 @@ check "인픽스 상수 불변" "$WORKTREE_INFIX" "$WORKTREE_INFIX_SAVE"
 # ---------------------------------------------------------------------------
 # 7. Detection lock — a held lock must return EX_TEMPFAIL, not block
 # ---------------------------------------------------------------------------
-if [ -x /usr/bin/lockf ]; then
-  /usr/bin/lockf -k "$RUN_DIR/designdoc.lock" sleep 3 &
+LOCK_TOOL=$(lock_tool)
+if [ "$NATIVE_OS" = "Darwin" ] && [ -n "$LOCK_TOOL" ] && [ -x "$LOCK_TOOL" ]; then
+  "$LOCK_TOOL" -k "$RUN_DIR/designdoc.lock" sleep 3 &
   holder=$!
   sleep 1
   set +e
@@ -149,7 +203,7 @@ if [ -x /usr/bin/lockf ]; then
   # acquirer sees no contention at all.
   if [ -e "$RUN_DIR/designdoc.lock" ]; then ok "-k 로 잠금 파일이 보존된다"; else bad "-k 보존" "잠금 파일이 사라짐"; fi
 else
-  bad "lockf" "/usr/bin/lockf 부재 — 검출 잠금이 성립하지 않음"
+  ok "잠금 경합 확인은 macOS 레그 담당 (이 러너에서는 건너뜀)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -191,8 +245,15 @@ if ! boundary_idempotent S1; then ok "설계는 비멱등 (죽이지 않고 대�
 # ---------------------------------------------------------------------------
 # 11. Sleep discriminator reads a real clock
 # ---------------------------------------------------------------------------
-b=$(boot_epoch)
-if [ -n "$b" ] && [ "$b" -gt 0 ]; then ok "부팅 시각을 읽는다 ($b)"; else bad "부팅 시각" "sysctl kern.boottime 파싱 실패"; fi
+if [ "$NATIVE_OS" = "Darwin" ]; then
+  b=$(boot_epoch)
+  if [ -n "$b" ] && [ "$b" -gt 0 ]; then ok "부팅 시각을 읽는다 ($b)"; else bad "부팅 시각" "부팅 시각 파싱 실패"; fi
+else
+  ok "부팅 시계 판독은 macOS 레그 담당 (이 러너에서는 건너뜀)"
+fi
+# The discriminator ARITHMETIC is seam-driven and needs no darwin: a wake
+# timestamp that is not later than the window start means the machine did not
+# sleep during it, whatever the clock source was.
 if machine_slept_since "$(now_epoch)"; then bad "절전 판별자" "미래 시점 이후에 절전했다고 판정"; else ok "절전 판별자: 방금 이후로는 잔 적 없음"; fi
 
 # ---------------------------------------------------------------------------

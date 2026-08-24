@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify
+.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -41,3 +41,15 @@ test: test-active-notify
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
 	bash scripts/test-active-notify-pretool-hook.sh
+
+test-orchestrator:
+	bash plugins/cc-cmds/orchestrator/test-run.sh
+
+# The darwin leg. Both suites are host-OS-seamed: the ubuntu leg drives their
+# Darwin branches by injection and covers all the selection logic, so what this
+# target adds is only the handful of claims that need a real darwin kernel —
+# process-group reparenting, advisory-lock contention, the boot clock across a
+# sleep, and terminal-notifier delivery. Naming it for the platform rather than
+# for one skill is what keeps a future darwin-dependent suite from having to
+# re-wire the workflow to be seen.
+test-darwin: test-active-notify test-orchestrator

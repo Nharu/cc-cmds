@@ -3,6 +3,7 @@ name: notify-macos
 on:
   pull_request:
     paths: &notify_macos_paths
+      - 'plugins/cc-cmds/orchestrator/**'
       - 'plugins/cc-cmds/skills/active-notify/**'
       - 'plugins/cc-cmds/skills/_common/notify.md'
       - 'plugins/cc-cmds/hooks/active-notify-*.sh'
@@ -40,5 +41,9 @@ jobs:
       - name: Run lint
         run: make lint
 
-      - name: Run active-notify tests
-        run: make test-active-notify
+      - name: Run darwin-only tests
+        # The orchestrator's darwin-only claims live here and NOWHERE else:
+        # reparenting under `set -m`, contention on the advisory lock, and the
+        # boot clock across a sleep. Everything else about the driver is
+        # seam-driven and is covered by the ubuntu leg through injection.
+        run: make test-darwin

@@ -68,6 +68,12 @@ fi
 PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
+# Host-OS injection seam — tests inject CC_CMDS_ORCH_HOST_OS to drive the
+# Darwin-vs-non-Darwin branches uniformly across CI legs (positive injection
+# rather than a negative-framed skip). Default = uname -s for normal use.
+# Same spelling convention as the notification helper's seam, deliberately.
+ORCH_HOST_OS="${CC_CMDS_ORCH_HOST_OS:-$(uname -s)}"
+
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -108,6 +114,55 @@ die()  { printf '%s [run][stop] %s\n' "$(now_iso)" "$*" >&2; exit 1; }
 
 now_iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 now_epoch() { date -u +%s; }
+
+# ---------------------------------------------------------------------------
+# Platform contract — darwin only, expressed as a seam rather than as a skip.
+#
+# Every environment measurement this driver rests on was taken on darwin: the
+# advisory lock, the process-group behaviour of `set -m`, the boot-time source,
+# and the very notion of a machine sleeping. Nothing was measured on Linux, so
+# a portability layer today would import a bundle of environment claims about a
+# second platform that nobody has checked — which is precisely the defect class
+# the environment-measurement step exists to prevent.
+#
+# The refusal is at ENTRY, not a degraded path. A driver that silently does
+# less is the failure mode this whole design is built to prevent, and a run
+# that lost its detachment or its lock while reporting success would be exactly
+# that.
+#
+# What the seam buys is that "darwin only" costs no coverage. Selection logic —
+# which lock, which clock, which resume row, and the refusal itself — is driven
+# by the seam and is therefore verifiable on any runner by injection. Only the
+# claims that need a real kernel (reparenting under `set -m`, contention on the
+# lock, a boot clock across a sleep) require the darwin leg.
+#
+# Linux is NOT closed; it is unmeasured. Opening it means re-running the
+# environment-measurement step there and recording observations matching the
+# darwin ones — until then, the non-darwin arm of this seam stays a refusal.
+# ---------------------------------------------------------------------------
+platform_supported() { [ "$ORCH_HOST_OS" = "Darwin" ]; }
+
+platform_refuse() {
+  cat >&2 <<EOF
+run.sh: 이 드라이버는 darwin 전용입니다 (관측된 호스트: ${ORCH_HOST_OS}).
+
+리눅스 지원은 닫힌 것이 아니라 **재지 않은 것**입니다. 이 드라이버가 기대는
+환경 사실 — 권고 잠금의 경합 거동, \`set -m\`의 프로세스 그룹 재부모화,
+부팅 시각 소스, 절전이라는 개념 자체 — 은 전부 darwin에서만 실측됐습니다.
+잰 적 없는 플랫폼에서 조용히 덜 동작하는 것보다 진입에서 거부하는 편이 낫습니다.
+
+여는 조건: 그 플랫폼에서 환경 실측 선행 단계를 다시 돌리고 대응 관측을 남길 것.
+테스트는 CC_CMDS_ORCH_HOST_OS 로 분기를 주입해 어느 러너에서도 검증합니다.
+EOF
+  return 4
+}
+
+# Source selection is seam-driven, so it is exercised under injection on any
+# runner. Whether the selected binary EXISTS is a separate question, and it is
+# one only the darwin leg can answer.
+lock_tool()  { platform_supported && printf '/usr/bin/lockf' || printf ''; }
+boot_source() { platform_supported && printf 'kern.boottime' || printf ''; }
+wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 
 # ---------------------------------------------------------------------------
 # Path and slug derivation (sidecar.md §1.1), keyed on the DOCUMENT's own
@@ -373,8 +428,10 @@ park() {
 # silent lost update.
 # ---------------------------------------------------------------------------
 with_doc_lock() {
-  local rc=0
-  /usr/bin/lockf -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
+  local rc=0 tool
+  tool=$(lock_tool)
+  [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was
     # wrong". Blocking here would serialize two read-modify-writes that were
@@ -584,10 +641,15 @@ reap_orphan() {
 # across a sleep; the wake timestamp records that it happened.
 # ---------------------------------------------------------------------------
 sysctl_sec() {
-  sysctl -n "$1" 2>/dev/null | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
+  # No key selected (non-darwin) means no reading, not a reading of zero. The
+  # pipeline is guarded so a missing key cannot abort a caller running under
+  # `set -e`.
+  [ -n "$1" ] || return 0
+  { sysctl -n "$1" 2>/dev/null || true; } \
+    | awk -F'[ ,]+' '{for(i=1;i<=NF;i++) if($i=="sec"){print $(i+2); exit}}'
 }
-boot_epoch() { sysctl_sec kern.boottime; }
-wake_epoch() { sysctl_sec kern.waketime; }
+boot_epoch() { sysctl_sec "$(boot_source)"; }
+wake_epoch() { sysctl_sec "$(wake_source)"; }
 
 machine_slept_since() {
   local since="$1" w
@@ -785,26 +847,66 @@ judgment_result() { jq -c '.structured_output' "$1"; }
 # Self-check — the mode the test harness and a sanitized-PATH CI leg run.
 # ---------------------------------------------------------------------------
 self_check() {
-  local fails=0
+  # Two classes of fact, checked in two different ways.
+  #
+  #   A — seam-driven selection. Verifiable on ANY runner by injecting
+  #       CC_CMDS_ORCH_HOST_OS, because what is being checked is which source
+  #       the driver picks and whether the refusal fires, not whether the picked
+  #       binary exists here.
+  #   B — claims that need a real darwin kernel. Checked only when running
+  #       NATIVELY on darwin; elsewhere they are reported as the macOS leg's
+  #       job rather than silently passing or noisily failing.
+  local fails=0 native
+  native=$(uname -s)
   printf 'bash: %s\n' "$BASH_VERSION"
   printf 'PATH: %s\n' "$PATH"
-  for t in git awk sed grep shasum ps sysctl date; do
+  printf 'host: seam=%s native=%s\n' "$ORCH_HOST_OS" "$native"
+
+  # --- platform-independent tooling ---------------------------------------
+  for t in git awk sed grep shasum ps date; do
     if command -v "$t" >/dev/null 2>&1; then printf 'ok   %s -> %s\n' "$t" "$(command -v "$t")"
     else printf 'FAIL %s missing\n' "$t"; fails=$((fails + 1)); fi
   done
-  if [ -x /usr/bin/lockf ]; then printf 'ok   lockf -> /usr/bin/lockf\n'
-  else printf 'FAIL lockf missing (detection lock unavailable)\n'; fails=$((fails + 1)); fi
-  # The denylist row for this binary exists because a detach path built on it
-  # does not run on the target platform. Probing for its ABSENCE is the one
-  # legitimate mention, so both arms carry the same-line escape rather than
-  # weakening the row.
-  if command -v setsid >/dev/null 2>&1; then printf 'note setsid present (unused; nohup + set -m is the contract)\n'  # lint-bash-portability: disable=setsid
-  else printf 'ok   setsid absent as expected on darwin\n'; fi  # lint-bash-portability: disable=setsid
-  local b w
-  b=$(boot_epoch); w=$(wake_epoch)
-  if [ -n "$b" ]; then printf 'ok   kern.boottime -> %s\n' "$b"; else printf 'FAIL kern.boottime unreadable\n'; fails=$((fails + 1)); fi
-  printf 'ok   kern.waketime -> %s\n' "${w:-unset}"
+
+  # --- A: selection and refusal -------------------------------------------
+  if platform_supported; then
+    printf 'ok   플랫폼 지원 분기 선택 (darwin)\n'
+    if [ -n "$(lock_tool)" ]; then printf 'ok   잠금 소스 선택 -> %s\n' "$(lock_tool)"
+    else printf 'FAIL 지원 플랫폼인데 잠금 소스가 선택되지 않음\n'; fails=$((fails + 1)); fi
+    if [ -n "$(boot_source)" ]; then printf 'ok   부팅 시각 소스 선택 -> %s\n' "$(boot_source)"
+    else printf 'FAIL 지원 플랫폼인데 부팅 시각 소스가 선택되지 않음\n'; fails=$((fails + 1)); fi
+  else
+    if [ -z "$(lock_tool)" ] && [ -z "$(boot_source)" ]; then
+      printf 'ok   비지원 플랫폼: 소스 미선택 (진입에서 거부됨)\n'
+    else
+      printf 'FAIL 비지원 플랫폼인데 소스가 선택됨 — 조용한 열화 경로\n'; fails=$((fails + 1))
+    fi
+  fi
   printf 'ok   cutpoint index 머지 -> %s\n' "$(cutpoint_index 머지)"
+
+  # --- B: darwin-only claims ----------------------------------------------
+  # BOTH conditions, and the conjunction is the point: class B validates the
+  # source the seam SELECTED, so under a non-darwin injection there is no
+  # selected source to validate and running these would check something the
+  # driver would never reach.
+  if [ "$native" = "Darwin" ] && platform_supported; then
+    local tool b w
+    tool=$(lock_tool)
+    if [ -n "$tool" ] && [ -x "$tool" ]; then printf 'ok   잠금 바이너리 실재 -> %s\n' "$tool"
+    else printf 'FAIL 선택된 잠금 바이너리 부재 (검출 잠금이 성립하지 않음)\n'; fails=$((fails + 1)); fi
+    # The denylist row for this binary exists because a detach path built on it
+    # does not run on the target platform. Probing for its ABSENCE is the one
+    # legitimate mention, so both arms carry the same-line escape rather than
+    # weakening the row.
+    if command -v setsid >/dev/null 2>&1; then printf 'note setsid present (unused; nohup + set -m is the contract)\n'  # lint-bash-portability: disable=setsid
+    else printf 'ok   setsid absent as expected on darwin\n'; fi  # lint-bash-portability: disable=setsid
+    b=$(boot_epoch); w=$(wake_epoch)
+    if [ -n "$b" ]; then printf 'ok   부팅 시각 판독 -> %s\n' "$b"; else printf 'FAIL 부팅 시각 판독 실패\n'; fails=$((fails + 1)); fi
+    printf 'ok   wake 시각 판독 -> %s\n' "${w:-unset}"
+  else
+    printf 'note darwin 전용 확인(잠금 경합·프로세스 그룹 회수·부팅 시계)은 macOS 레그 담당\n'
+  fi
+
   if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
   printf 'self-check: %s FAIL\n' "$fails"; return 1
 }
@@ -1137,6 +1239,13 @@ while [ $# -gt 0 ]; do
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
+
+# Entry-time platform gate. It sits BEFORE any argument is honoured and before
+# any state is touched, because the point of refusing is that nothing partial
+# happens. `--self-check` is deliberately upstream of this line: it is the
+# diagnostic that reports which branch the seam picked, so it has to run on the
+# arm that is being refused.
+platform_supported || platform_refuse || exit $?
 
 [ -n "$DOC" ] || { echo "run.sh: --doc <abs-path> is required" >&2; exit 2; }
 [ -f "$DOC" ] || { echo "run.sh: design document not found: $DOC" >&2; exit 2; }
