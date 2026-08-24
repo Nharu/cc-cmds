@@ -12,6 +12,15 @@
 # breaks silently on the other. This lint is the floor coverage; the macOS
 # CI runner is the ceiling.
 #
+# Second axis — the interpreter itself. The shebang does not pin a version:
+# `#!/usr/bin/env bash` resolves to 5.x on an interactive PATH and to macOS's
+# stock **3.2.57** under a sanitized one (`PATH=/usr/bin:/bin`). A bash-4-only
+# builtin therefore behaves worse than a divergent flag — the coreutils rows
+# above die in `make lint`, but `wait -n` / `declare -A` / `mapfile` pass lint,
+# pass every hand-run test, and die only in the detached run. The rows tagged
+# `bash4 *` below close that gap; `setsid` is here for the same reason (the
+# binary is simply absent on darwin, though the syscall is not).
+#
 # Usage:
 #   bash scripts/lint-bash-portability.sh                  # lint default file set
 #   bash scripts/lint-bash-portability.sh path/to/file.sh  # lint specific files
@@ -56,6 +65,14 @@ PATTERNS=(
   '\breadlink[[:space:]]+-f\b|readlink -f|GNU-only; portable canonical path via `cd "$(dirname "$f")" && pwd -P`'
   '\bls[[:space:]]+-G\b|ls -G|BSD color flag; for portability drop coloring or branch by OS'
   '\bls[[:space:]]+--color\b|ls --color|GNU color flag; same advice as ls -G'
+  '\bsetsid\b|setsid|Linux-only binary, absent on darwin; detach with nohup (SIGHUP immunity) and own the process tree with per-stage `set -m`'
+  '\bwait[[:space:]]+-n\b|bash4 wait -n|bash 4+ only (rc=2 on 3.2); poll recorded child pids with `kill -0` instead'
+  '\bdeclare[[:space:]]+-A\b|bash4 assoc-array|bash 4+ only (rc=2 on 3.2); use parallel indexed arrays or a key=value line store'
+  '\blocal[[:space:]]+-A\b|bash4 assoc-array|bash 4+ only; same advice as declare -A'
+  '\bmapfile\b|bash4 mapfile|bash 4+ builtin, absent on 3.2 (rc=127); use `while IFS= read -r` appending to an indexed array'
+  '\breadarray\b|bash4 mapfile|bash 4+ alias of mapfile, absent on 3.2; same replacement'
+  '\$\{[A-Za-z_][A-Za-z0-9_]*\^\^?\}|bash4 case-expansion|bash 4+ case conversion; use `tr [:lower:] [:upper:]`'
+  '\$\{[A-Za-z_][A-Za-z0-9_]*,,?\}|bash4 case-expansion|bash 4+ case conversion; use `tr [:upper:] [:lower:]`'
 )
 # Quoted-literal idioms that need substring (not word-boundary) matching.
 LITERAL_PATTERNS=(
@@ -75,6 +92,8 @@ collect_default_files() {
       && find "$repo_root/plugins/cc-cmds/hooks" -maxdepth 1 -name "*.sh"
     [[ -d "$repo_root/scripts" ]] \
       && find "$repo_root/scripts" -maxdepth 1 -name "*.sh"
+    [[ -d "$repo_root/plugins/cc-cmds/orchestrator" ]] \
+      && find "$repo_root/plugins/cc-cmds/orchestrator" -maxdepth 1 -name "*.sh"
   } | sort
 }
 

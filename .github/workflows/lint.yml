@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'plugins/cc-cmds/skills/**'
+      - 'plugins/cc-cmds/orchestrator/**'
       - 'plugins/cc-cmds/hooks/**'
       - 'scripts/**'
       - 'tests/fixtures/**'
