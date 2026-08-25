@@ -832,17 +832,129 @@ with_doc_lock() {
 # ---------------------------------------------------------------------------
 main_root() { dirname "$(cd "$DOC_DIR" && git rev-parse --path-format=absolute --git-common-dir)"; }
 
+# ---------------------------------------------------------------------------
+# The repo SET. `main_root()` above derives ONE repository from where the design
+# document happens to sit; a run may span several, and the set is DECLARED and
+# VERIFIED rather than derived. The grounds are not planner capability, they are
+# three facts: a design document contains no absolute path, the single inference
+# available is the very convention this replaces, and a worktree-vs-repository
+# confusion is invisible to inference while being present in this tree today.
+#
+# Every lookup below is keyed by ALIAS, and the alias is what survives a
+# re-plan: slugs and paths are attributes of a target, the alias is its name.
+#
+# With no manifest the set is a singleton and the home alias resolves through
+# `main_root()`. That is the legacy single-repo run, and it is the ONLY case
+# where an undeclared repository is tolerated — under a manifest, a segment
+# naming a repository the manifest does not declare gets no worktree at all.
+# ---------------------------------------------------------------------------
+home_alias() {
+  local a
+  [ -n "$MANIFEST" ] || { printf '.'; return 0; }
+  for a in $(target_aliases); do
+    [ "$(target_field "$a" '홈')" = "예" ] && { printf '%s' "$a"; return 0; }
+  done
+  target_aliases | head -1
+}
+
+alias_root() {
+  local a="$1" wt
+  { [ -z "$MANIFEST" ] || [ "$a" = "." ]; } && { main_root; return 0; }
+  wt=$(target_field "$a" '메인 워크트리')
+  [ -n "$wt" ] || return 1
+  dirname "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)"
+}
+
+# The `-R` argument. Deriving it from the origin URL is the fallback, not the
+# contract: under a manifest the slug is declared, and `gh` inheriting the cwd
+# is the defect this replaces — measured, `-R B` from inside repo A returns B's
+# pull requests while the same call without it returns A's.
+alias_slug() {
+  local a="$1" s root
+  if [ -n "$MANIFEST" ] && [ "$a" != "." ]; then
+    s=$(target_field "$a" '원격 슬러그')
+    [ -n "$s" ] && { printf '%s' "$s"; return 0; }
+  fi
+  root=$(alias_root "$a") || return 1
+  ( cd "$root" && git config --get remote.origin.url 2>/dev/null ) \
+    | sed -E 's#^git@[^:]*:##; s#^https?://[^/]*/##; s#\.git$##'
+}
+
+alias_for_slug() {
+  local want="$1" a
+  [ -n "$want" ] || { home_alias; return 0; }
+  for a in $(target_aliases); do
+    [ "$(target_field "$a" '원격 슬러그')" = "$want" ] && { printf '%s' "$a"; return 0; }
+  done
+  return 1
+}
+
+# The declared repository of a planned segment. Shell-built plans carry the
+# declaration's `**레포**` slug; planner-built plans leave it empty and inherit
+# the home alias, which is what keeps a single-repo run byte-identical to before.
+plan_repo() {
+  awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$RUN_DIR/plan.tsv" 2>/dev/null \
+    | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+seg_alias() {
+  local slug
+  slug=$(plan_repo "$1")
+  [ -n "$slug" ] || { home_alias; return 0; }
+  [ -n "$MANIFEST" ] || { home_alias; return 0; }
+  alias_for_slug "$slug"
+}
+
+seg_root() { alias_root "$(seg_alias "$1")"; }
+seg_slug() { alias_slug "$(seg_alias "$1")"; }
+
+# Every `gh` call goes through here, and it does two things the bare calls did
+# not. It passes `-R`, which beats cwd inheritance (measured: from inside repo A,
+# `-R B` returns B's pull requests and the same call without it returns A's), and
+# it CAPTURES stderr instead of sending it to /dev/null. The old form turned a
+# not-a-repository error into an empty pull-request number, so the driver parked
+# with "PR을 찾지 못함" and the actual cause was gone.
+GH_STDERR=""
+gh_q() {
+  local slug="$1"; shift
+  local errf out rc
+  errf="${RUN_DIR:-${TMPDIR:-/tmp}}/gh.err"
+  out=$(gh -R "$slug" "$@" 2>"$errf"); rc=$?
+  GH_STDERR=$(cat "$errf" 2>/dev/null || printf '')
+  [ -z "$GH_STDERR" ] || warn "gh -R $slug $*: $GH_STDERR"
+  printf '%s' "$out"
+  return "$rc"
+}
+
 wt_path() {
   local seg="$1" root repo
-  root=$(main_root); repo=$(basename "$root")
+  root=$(seg_root "$seg") || return 1
+  repo=$(basename "$root")
   printf '%s/%s%s%s-%s' "$(dirname "$root")" "$repo" "$WORKTREE_INFIX" "$SLUG" "$seg"
 }
 
-stash_ref() { git -c core.pager=cat rev-parse --verify refs/stash 2>/dev/null || printf 'none'; }
+# Explicit cwd, always. Run from a non-repository directory `git rev-parse`
+# fails and this returned `none` BOTH times, so the before/after comparison
+# matched and the attribution guard passed VACUOUSLY — the guard reported
+# success in exactly the situation it exists to catch.
+stash_ref() {
+  local root="$1"
+  ( cd "$root" 2>/dev/null && git -c core.pager=cat rev-parse --verify refs/stash 2>/dev/null ) \
+    || printf 'none'
+}
 
 wt_create() {
-  local seg="$1" branch="$2" p base
-  p=$(wt_path "$seg")
+  local seg="$1" branch="$2" p base al
+  al=$(seg_alias "$seg") || al=""
+  # Refusing an undeclared alias is what makes the declared set mean anything.
+  # Without it the failure shows up as a QUIET WORKTREE LEAK: a tree created
+  # under some other repository's parent, never recorded against a target, and
+  # therefore never torn down.
+  [ -n "$al" ] || {
+    warn "$seg: 매니페스트에 선언되지 않은 레포 '$(plan_repo "$seg")' — 워크트리를 만들지 않는다"
+    return 1
+  }
+  p=$(wt_path "$seg") || return 1
   [ -d "$p" ] && { printf '%s' "$p"; return 0; }
   # Branch from the RESOLVED BASE, never from the literal `HEAD`.
   #
@@ -851,27 +963,35 @@ wt_create() {
   # deliberately does not fast-forward that tree, the tip does not move for the
   # whole run. Fixing only the fetch and the ref resolution would still leave
   # segment k+1 branching from a commit without k's merge in it.
-  base_fetch
-  base=$(base_sha) || { warn "베이스 sha 해소 실패 — 워크트리를 만들지 않는다"; return 1; }
-  ( cd "$(main_root)" && git worktree add -b "$branch" "$p" "$base" >/dev/null 2>&1 ) \
-    || ( cd "$(main_root)" && git worktree add "$p" "$branch" >/dev/null 2>&1 ) \
+  base_fetch "$al"
+  base=$(base_sha "$al") || { warn "베이스 sha 해소 실패 — 워크트리를 만들지 않는다"; return 1; }
+  local root; root=$(alias_root "$al")
+  ( cd "$root" && git worktree add -b "$branch" "$p" "$base" >/dev/null 2>&1 ) \
+    || ( cd "$root" && git worktree add "$p" "$branch" >/dev/null 2>&1 ) \
     || { warn "워크트리 생성 실패: $p"; return 1; }
   printf '%s' "$p"
 }
 
 wt_remove() {
-  # TWO conditions, both required. (1) is the substantive guarantee; (2) is
-  # defence in depth against a corrupted ledger. A hand-made lookalike passes
-  # (2) and is caught by (1). Never --force: the tree may hold the only copy of
-  # an uncommitted change.
-  local seg="$1" p recorded
-  p=$(wt_path "$seg")
+  # THREE conditions, all required. (1) is the substantive guarantee; (2) is
+  # defence in depth against a corrupted ledger; (3) is the failure mode that
+  # only exists at N>1 — a ledger row written for a DIFFERENT alias passes the
+  # first two, because both of them are properties of the string rather than of
+  # the repository it belongs to. Never --force: the tree may hold the only
+  # copy of an uncommitted change.
+  local seg="$1" p recorded root
+  p=$(wt_path "$seg") || { warn "철거 거부 — 세그먼트의 레포를 해소할 수 없습니다: $seg"; return 1; }
   recorded=$(grep -E "^- \`segment\`" "$LEDGER" 2>/dev/null | grep -F "id=$seg" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | tail -1)
   if [ -z "$recorded" ] || [ "$recorded" != "$p" ]; then
     warn "철거 거부 — 이 런의 원장에 생성 시점 값으로 없습니다: $p"; return 1
   fi
   case "$p" in *"$WORKTREE_INFIX"*) : ;; *) warn "철거 거부 — 예약 인픽스 부재: $p"; return 1 ;; esac
-  ( cd "$(main_root)" && git worktree remove "$p" >/dev/null 2>&1 && git worktree prune >/dev/null 2>&1 ) \
+  root=$(seg_root "$seg") || { warn "철거 거부 — 레포 루트 해소 실패: $seg"; return 1; }
+  case "$p" in
+    "$(dirname "$root")"/*) : ;;
+    *) warn "철거 거부 — 해당 별칭의 레포 루트 아래가 아닙니다: $p"; return 1 ;;
+  esac
+  ( cd "$root" && git worktree remove "$p" >/dev/null 2>&1 && git worktree prune >/dev/null 2>&1 ) \
     || { warn "철거 실패(보고만, 강제 삭제하지 않음): $p"; return 1; }
   return 0
 }
@@ -880,11 +1000,11 @@ stash_attribution_check() {
   # An absent refs/stash is a normal "no stash" value, not a violation — this
   # repository has carried one since before the pipeline existed, so a
   # "there must be no stash" check would fail on day one, forever.
-  local before="$1" seg_branch="$2" after
-  after=$(stash_ref)
+  local before="$1" seg_branch="$2" root="$3" after
+  after=$(stash_ref "$root")
   [ "$before" = "$after" ] && return 0
   local top
-  top=$(git stash list 2>/dev/null | head -1)
+  top=$( cd "$root" 2>/dev/null && git stash list 2>/dev/null | head -1 )
   case "$top" in
     *"on $seg_branch:"*) warn "세그먼트 브랜치에 귀속된 stash 항목 — 위반"; return 1 ;;
     *" on "*)            log "제3자 stash 활동 기록만 하고 계속: $top"; return 0 ;;
@@ -1128,15 +1248,21 @@ predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
   # that answered in prose and moved on makes no commit, so the ladder is false
   # and the driver never consults the stage's self-report.
-  local branch="$1" pre_head="$2" root
-  root=$(main_root)
+  # The root and the slug are the SEGMENT's, not the run's. Evaluating this in
+  # the home repository at N>1 asks git about a branch that was never created
+  # there, so every segment outside the home repo fails the ladder and parks as
+  # a hollow success — a correct implementation reported as having produced
+  # nothing.
+  local branch="$1" pre_head="$2" seg="$3" root slug
+  root=$(seg_root "$seg") || return 1
+  slug=$(seg_slug "$seg")
   ( cd "$root" || exit 1
     git rev-parse --verify "$branch" >/dev/null 2>&1 || exit 1
     [ "$(git rev-parse "$branch")" != "$pre_head" ] || exit 1
     authorized push || exit 0
     git rev-parse --verify "refs/remotes/origin/$branch" >/dev/null 2>&1 || exit 1
     authorized PR || exit 0
-    [ -n "$(gh pr list --head "$branch" --json number --jq '.[0].number' 2>/dev/null)" ] || exit 1
+    [ -n "$(gh_q "$slug" pr list --head "$branch" --json number --jq '.[0].number')" ] || exit 1
   )
 }
 
@@ -1296,42 +1422,49 @@ boundary_idempotent() {
 # Merge gate (S8).
 # ---------------------------------------------------------------------------
 merge_gate() {
-  local seg="$1" branch="$2" pr
+  local seg="$1" branch="$2" pr slug al
+  al=$(seg_alias "$seg") || al=""
+  [ -n "$al" ] || { park "$seg" "게이트 park" "세그먼트의 레포가 매니페스트에 선언되지 않음"; return 1; }
+  slug=$(alias_slug "$al")
   if ! authorized 머지; then
-    park "$seg" "인가 한도" "권한 절단점이 머지를 인가하지 않음" "gh pr merge $branch"
+    park "$seg" "인가 한도" "권한 절단점이 머지를 인가하지 않음" "gh -R $slug pr merge $branch"
     return 1
   fi
-  pr=$(gh pr list --head "$branch" --json number --jq '.[0].number' 2>/dev/null || printf '')
-  [ -n "$pr" ] || { park "$seg" "게이트 park" "PR을 찾지 못함" "gh pr list --head $branch"; return 1; }
+  pr=$(gh_q "$slug" pr list --head "$branch" --json number --jq '.[0].number' || printf '')
+  [ -n "$pr" ] || {
+    park "$seg" "게이트 park" "PR을 찾지 못함${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr list --head $branch"
+    return 1
+  }
 
   # A merge grant does NOT come with an --admin exception. A driver blocked by
   # branch protection that issued itself that exception would be widening the
   # authorization silently.
   local required_rows
-  required_rows=$(gh pr checks "$pr" --required 2>/dev/null | grep -c . || printf '0')
+  required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || printf '0')
   if [ "$required_rows" = "0" ]; then
-    if ! gh pr checks "$pr" >/dev/null 2>&1; then
+    if ! gh_q "$slug" pr checks "$pr" >/dev/null; then
       # Interactively this branch enumerates the failed non-required checks and
       # asks. Unattended the answer never comes, so it IS the park branch.
-      park "$seg" "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh pr merge $pr"
+      park "$seg" "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh -R $slug pr merge $pr"
       return 1
     fi
-  elif ! gh pr checks "$pr" --required >/dev/null 2>&1; then
-    park "$seg" "게이트 park" "필수 체크 실패" "gh pr checks $pr --required"
+  elif ! gh_q "$slug" pr checks "$pr" --required >/dev/null; then
+    park "$seg" "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
     return 1
   fi
 
   local head_sha
-  head_sha=$(gh pr view "$pr" --json headRefOid --jq '.headRefOid' 2>/dev/null || printf '')
-  gh pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null 2>&1 || {
-    park "$seg" "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음" "gh pr merge $pr"
+  head_sha=$(gh_q "$slug" pr view "$pr" --json headRefOid --jq '.headRefOid' || printf '')
+  gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
+    park "$seg" "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
     return 1
   }
   # Refresh immediately after the server-side merge so the next segment's
   # `wt_create` branches from a base that actually contains this merge. Without
   # this the sequential-base premise is false from the very first merge.
-  base_fetch
-  ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" "베이스 sha=$(base_sha)"
+  base_fetch "$al"
+  ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
+    "레포=$slug" "베이스 sha=$(base_sha "$al")"
   return 0
 }
 
@@ -1484,18 +1617,30 @@ ladder_bump() {
 # ---------------------------------------------------------------------------
 BASE_BRANCH=""
 
+# Per-alias, and cached per alias on disk rather than in one global — a shell
+# without associative arrays is the floor here, and a single global would hand
+# the second repository the first one's base branch.
 base_branch() {
-  [ -n "$BASE_BRANCH" ] && { printf '%s' "$BASE_BRANCH"; return 0; }
-  BASE_BRANCH=$( cd "$(main_root)" && \
-    { git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's#^origin/##'; } )
-  [ -n "$BASE_BRANCH" ] || BASE_BRANCH=$( cd "$(main_root)" && git rev-parse --abbrev-ref HEAD )
-  printf '%s' "$BASE_BRANCH"
+  local al="${1:-$(home_alias)}" root f b
+  if [ -n "$MANIFEST" ] && [ "$al" != "." ]; then
+    b=$(target_field "$al" '베이스 브랜치')
+    [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+  fi
+  f="${RUN_DIR:-}/base-branch.$al"
+  [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] && { cat "$f"; return 0; }
+  [ -n "$BASE_BRANCH" ] && [ -z "${RUN_DIR:-}" ] && { printf '%s' "$BASE_BRANCH"; return 0; }
+  root=$(alias_root "$al") || return 1
+  b=$( cd "$root" && { git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's#^origin/##'; } )
+  [ -n "$b" ] || b=$( cd "$root" && git rev-parse --abbrev-ref HEAD )
+  BASE_BRANCH="$b"
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] && printf '%s' "$b" > "$f"
+  printf '%s' "$b"
 }
 
 # Refresh the remote-tracking refs. This does NOT touch the working tree — it
 # reads the remote and moves `refs/remotes/origin/*` only — so it is compatible
 # with the decision never to fast-forward the tree a human is working in.
-base_fetch() { ( cd "$(main_root)" && git fetch --quiet origin 2>/dev/null ) || true; }
+base_fetch() { local al="${1:-$(home_alias)}"; ( cd "$(alias_root "$al")" && git fetch --quiet origin 2>/dev/null ) || true; }
 
 # Resolve from the REMOTE-TRACKING ref, not the stripped local name.
 #
@@ -1507,15 +1652,18 @@ base_fetch() { ( cd "$(main_root)" && git fetch --quiet origin 2>/dev/null ) || 
 # the same root: external-drift detection compares against this value and would
 # never fire, and the apply worktree pins a merge commit that exists only on the
 # remote.
-base_sha() { ( cd "$(main_root)" && git rev-parse "refs/remotes/origin/$(base_branch)" ); }
+base_sha() {
+  local al="${1:-$(home_alias)}"
+  ( cd "$(alias_root "$al")" && git rev-parse "refs/remotes/origin/$(base_branch "$al")" )
+}
 
 rebase_onto_base() {
   # A rebase conflict between two segments of one wave is NOT a merge problem to
   # be resolved — it is a refutation of the segmentation, because those segments
   # were supposed to be file-disjoint. Abort, demote the wave to serial, and
   # escalate. Never auto-resolve, and never wake anyone.
-  local seg="$1" wt="$2" kind="$3"   # kind: 형제 | 외부
-  ( cd "$wt" && git rebase "$(base_branch)" >/dev/null 2>&1 ) && return 0
+  local seg="$1" wt="$2" kind="$3" al="${4:-}"   # kind: 형제 | 외부
+  ( cd "$wt" && git rebase "$(base_branch "${al:-$(seg_alias "$seg")}")" >/dev/null 2>&1 ) && return 0
   ( cd "$wt" && git rebase --abort >/dev/null 2>&1 || true )
   if [ "$kind" = "형제" ]; then
     warn "$seg: 형제 충돌 — 세그먼트 묶음에 대한 반증, 웨이브를 직렬로 강등"
@@ -1534,7 +1682,13 @@ rebase_onto_base() {
 # ---------------------------------------------------------------------------
 segment_cycle() {
   local seg="$1" files="$2"
-  local branch="seg/$SLUG-$seg" wt pre_head f_count cap cycle=0
+  local branch="seg/$SLUG-$seg" wt pre_head f_count cap cycle=0 al seg_repo
+  # Resolved ONCE, at the top, and threaded through everything below. Every
+  # git and `gh` call in this cycle belongs to this segment's repository, not
+  # to whichever one the document happened to live in.
+  al=$(seg_alias "$seg") || al=""
+  [ -n "$al" ] || { park "$seg" "게이트 park" "선언되지 않은 레포: $(plan_repo "$seg")"; return 1; }
+  seg_repo=$(alias_root "$al")
   f_count=$(printf '%s' "$files" | tr ',' '\n' | grep -c . || printf '1')
   # Width x depth: the ladder is monotone in 4 rungs per identity, per-file rung
   # inheritance collapses a file's total to 4, so the cycle count is bounded by
@@ -1544,9 +1698,10 @@ segment_cycle() {
 
   wt=$(wt_create "$seg" "$branch") || { park "$seg" "게이트 park" "워크트리 생성 실패"; return 1; }
   pre_head=$( cd "$wt" && git rev-parse HEAD )
-  local stash_before; stash_before=$(stash_ref)
+  local stash_before; stash_before=$(stash_ref "$seg_repo")
   ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "사전 HEAD=$pre_head" \
-    "베이스 sha=$(base_sha)" "워크트리=$wt" "plan-binding-digest=$(binding_digest)"
+    "레포=$(alias_slug "$al")" "베이스 sha=$(base_sha "$al")" "워크트리=$wt" \
+    "plan-binding-digest=$(binding_digest)"
 
   while [ "$cycle" -lt "$cap" ]; do
     cycle=$((cycle + 1))
@@ -1559,12 +1714,12 @@ segment_cycle() {
     quiet_window_end
     local rc pred class
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
-    if predicate_implement "$branch" "$pre_head"; then pred=0; else pred=1; fi
+    if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class"
 
-    stash_attribution_check "$stash_before" "$branch" || { park "$seg" "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+    stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
     case "$class" in
       '정상 완료') : ;;
@@ -1579,7 +1734,7 @@ segment_cycle() {
         log "$seg: 공허한 성공 — 1회만 재시도"
         stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도)\""
         stage_wait_all "$sid.retry"
-        if predicate_implement "$branch" "$pre_head"; then : ; else
+        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
         fi ;;
       *) park "$seg" "게이트 park" "크래시"; return 1 ;;
@@ -1589,7 +1744,7 @@ segment_cycle() {
     local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
     mkdir -p "$(dirname "$rp")"
     sid="S5:$seg:$cycle"
-    stage_spawn "$sid" "$(main_root)" "/cc-cmds:review-unattended $branch --report-path $rp \"설계는 $DOC\""
+    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp \"설계는 $DOC\""
     stage_wait_all "$sid"
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
@@ -1642,7 +1797,7 @@ segment_cycle() {
         4) park "$fpath::$fcat" "사다리 R4" "재발이 근본 재설계를 소비한 뒤 다시 나타남"; any_park=1 ;;
         2|3)
           sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
-          stage_spawn "$sid" "$(main_root)" "/cc-cmds:design-reconverge $DOC \"$fpath, $fcat\""
+          stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $DOC \"$fpath, $fcat\""
           stage_wait_all "$sid"
           if predicate_reconverge "$sid"; then
             judgment_call redesign-impact "$RUN_DIR/log/$sid.json" >/dev/null || true
@@ -1666,9 +1821,9 @@ EOF
 
   # --- S8 MERGE GATE -------------------------------------------------------
   local recorded_base; recorded_base=$(ledger_last 'segment' '베이스 sha')
-  if [ -n "$recorded_base" ] && [ "$recorded_base" != "$(base_sha)" ]; then
+  if [ -n "$recorded_base" ] && [ "$recorded_base" != "$(base_sha "$al")" ]; then
     log "$seg: 외부 드리프트 감지 — rebase 후 리뷰 재실행 필요"
-    rebase_onto_base "$seg" "$wt" 외부 || { park "$seg" "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
+    rebase_onto_base "$seg" "$wt" 외부 "$al" || { park "$seg" "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
   fi
   merge_gate "$seg" "$branch" || return 1
   wt_remove_or_defer "$seg"
@@ -1688,7 +1843,7 @@ main_loop() {
   # never overlaps a sibling worktree creation on the first pass; only a
   # RE-audit can, and the quiet window covers that.
   quiet_window_begin
-  dispatch_stage S2 "$(main_root)" "/cc-cmds:design-audit-unattended $DOC"
+  dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC"
   quiet_window_end
   local rc2 pred2 class2
   rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
@@ -1741,6 +1896,7 @@ main_loop() {
       park "$seg" "게이트 park" "선행 슬라이스가 완료되지 않음: $deps"
       parked=$((parked + 1)); continue
     fi
+    cross_repo_deps "$seg" "$deps"
     rc=0
     segment_cycle "$seg" "$files" || rc=$?
     case "$rc" in
@@ -1756,6 +1912,27 @@ main_loop() {
     "관측 시각=$(now_iso)"
   report_append "종료" "머지 ${merged}건 · 보류 ${parked}건 · 슬라이스 ${total}개"
   log "런 종료 (머지 $merged · 보류 $parked)"
+}
+
+# Stacking happens only INSIDE one repository. A segment whose predecessor lives
+# in another repo cannot branch from that predecessor's merge — there is no such
+# commit in its repository — so the dependency buys ORDER and nothing more. The
+# distinction is invisible in the plan (both are just `선행`) and it is the most
+# likely place a first multi-repo run diverges from what the author pictured, so
+# it is recorded rather than assumed understood.
+cross_repo_deps() {
+  local seg="$1" deps="$2" mine d other
+  case "$deps" in ''|'없음') return 0 ;; esac
+  mine=$(seg_alias "$seg") || return 0
+  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
+    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$d" ] || continue
+    other=$(seg_alias "$d") || continue
+    [ "$other" = "$mine" ] && continue
+    ledger_row 'segment' "id=$seg" "상태=선행 순서만" "선행=$d" \
+      "관측=레포가 달라 쌓기가 아니라 순서만 보장된다 ($other -> $mine)"
+  done
+  return 0
 }
 
 # `선행` is satisfied when every named slice is in this run's done list. The

@@ -299,7 +299,7 @@ check "원장은 append 전용" "$((after - before))" "1"
 # 머지는 서버에서 일어나므로 로컬 브랜치 ref는 전진하지 않는다. 베이스를 벗겨 낸
 # 로컬 이름에서 해소하면 k+1이 k의 머지 없는 커밋에서 분기하고, 겹치는 선언 파일이
 # 순차 편집이 아니라 동시 편집이 된다.
-if grep -qE 'refs/remotes/origin/\$\(base_branch\)' "$DRIVER"; then
+if grep -qE 'refs/remotes/origin/\$\(base_branch( "\$[a-z_]+")?\)' "$DRIVER"; then
   ok "base_sha 가 원격 추적 ref에서 해소된다"
 else
   bad "base_sha" "벗겨 낸 로컬 이름에서 해소 — 로컬 ref는 전진하지 않는다"
@@ -715,7 +715,136 @@ if [ -f "$SELF_DOC" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 18. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
+# 18. 다중 레포 실행 — 별칭이 대상 집합의 키다
+# ---------------------------------------------------------------------------
+# N=1 에서 통과하는 것으로는 아무것도 말하지 못한다. 이 절의 모든 단언은 대상이
+# **둘**인 매니페스트 위에서 돌고, 잡는 실패는 「두 번째 레포가 첫 번째 레포의
+# 값을 물려받는다」 부류다.
+MR_DIR="$WORK/multirepo"; mkdir -p "$MR_DIR"
+MR_A="$MR_DIR/alpha"; MR_B="$MR_DIR/beta"
+for d in "$MR_A" "$MR_B"; do
+  mkdir -p "$d"
+  ( cd "$d" && git init -q . && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+done
+# Canonicalize. `git rev-parse --path-format=absolute` resolves symlinks, and on
+# this platform TMPDIR is one (/var -> /private/var), so the declared value and
+# the resolved value differ by a prefix that has nothing to do with the code.
+MR_A=$(cd "$MR_A" && pwd -P); MR_B=$(cd "$MR_B" && pwd -P)
+MR_DIR=$(cd "$MR_DIR" && pwd -P)
+MR_CG_A=$(cd "$MR_A" && git rev-parse --path-format=absolute --git-common-dir)
+MR_CG_B=$(cd "$MR_B" && git rev-parse --path-format=absolute --git-common-dir)
+MR_MF="$MR_DIR/plan.md"
+{
+  printf '# m\n<!-- cc-run-manifest v1; run-id=mr; anchor-key=k -->\n\n'
+  printf '## 대상\n'
+  printf -- '- `target` | 별칭=fe | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/alpha | 절단점=머지 | 말단 행위 상한=없음\n' "$MR_A" "$MR_CG_A"
+  printf -- '- `target` | 별칭=be | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=trunk | 홈=아니오 | 원격 슬러그=o/beta | 절단점=PR | 말단 행위 상한=3\n' "$MR_B" "$MR_CG_B"
+} > "$MR_MF"
+MANIFEST="$MR_MF"
+
+check "홈 별칭은 홈=예 인 행이다" "$(home_alias)" "fe"
+check "별칭 → 레포 루트 (홈)"     "$(alias_root fe)" "$MR_A"
+check "별칭 → 레포 루트 (비홈)"   "$(alias_root be)" "$MR_B"
+check "별칭 → 원격 슬러그"        "$(alias_slug be)" "o/beta"
+check "슬러그 → 별칭"             "$(alias_for_slug o/beta)" "be"
+if alias_for_slug o/gamma >/dev/null 2>&1; then
+  bad "미선언 슬러그" "선언되지 않은 슬러그가 별칭으로 해소됐다"
+else
+  ok "선언되지 않은 슬러그는 별칭으로 해소되지 않는다"
+fi
+# 베이스 브랜치는 선언값을 쓰고 레포마다 다르다 — 전역 하나면 둘째 레포가
+# 첫째의 값을 물려받는다.
+check "베이스 브랜치는 별칭별 선언값 (홈)"   "$(base_branch fe)" "main"
+check "베이스 브랜치는 별칭별 선언값 (비홈)" "$(base_branch be)" "trunk"
+
+# 계획 행의 `레포` 가 세그먼트의 별칭을 정한다. 백틱은 선언 렌더링의 일부다.
+printf 'segA\t`o/alpha`\ta.txt\t없음\nsegB\t`o/beta`\tb.txt\t슬라이스 segA\nsegX\t`o/gamma`\tx.txt\t없음\nsegN\t\tn.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+check "세그먼트 별칭 (홈 레포)"    "$(seg_alias segA)" "fe"
+check "세그먼트 별칭 (다른 레포)"  "$(seg_alias segB)" "be"
+check "레포 미선언 세그먼트는 빈 별칭" "$(seg_alias segX 2>/dev/null)" ""
+check "레포 열이 빈 계획은 홈으로"  "$(seg_alias segN)" "fe"
+check "세그먼트 루트가 레포를 따라간다" "$(seg_root segB)" "$MR_B"
+check "세그먼트 슬러그가 레포를 따라간다" "$(seg_slug segB)" "o/beta"
+
+# 워크트리 경로가 레포마다 갈린다 — 한 부모 밑에 같은 이름으로 겹치면 두 레포의
+# 세그먼트가 서로의 트리를 가져간다.
+SLUG_SAVE="$SLUG"; SLUG="mr"
+if [ "$(wt_path segA)" != "$(wt_path segB)" ]; then
+  ok "워크트리 경로가 레포마다 갈린다"
+else
+  bad "워크트리 경로" "두 레포의 세그먼트가 같은 경로를 받는다"
+fi
+case "$(wt_path segB)" in
+  "$MR_DIR"/beta*) ok "비홈 세그먼트의 워크트리가 그 레포 옆에 선다" ;;
+  *) bad "워크트리 경로" "비홈 세그먼트가 홈 레포 옆에 놓였다: $(wt_path segB)" ;;
+esac
+# 미선언 별칭에는 워크트리를 만들지 않는다. 이 거부가 없으면 실패가 조용한
+# 워크트리 누출로 나타난다 — 어떤 대상에도 귀속되지 않아 철거되지도 않는다.
+if wt_create segX seg/mr-segX >/dev/null 2>&1; then
+  bad "미선언 별칭" "선언되지 않은 레포에 워크트리를 만들었다"
+else
+  ok "미선언 별칭에는 워크트리를 만들지 않는다"
+fi
+
+# 철거 가드 셋째 조건 — 다른 별칭에 대해 쓰인 원장 행은 앞의 둘을 통과한다.
+MR_LEDGER_SAVE="$LEDGER"; LEDGER="$MR_DIR/ledger.md"; : > "$LEDGER"
+FOREIGN="$MR_DIR/beta$WORKTREE_INFIX$SLUG-segA"
+printf -- '- `segment` | id=segA | 워크트리=%s\n' "$FOREIGN" >> "$LEDGER"
+if wt_remove segA 2>/dev/null; then
+  bad "철거 가드 (3)" "다른 별칭의 레포 루트 아래 경로를 철거했다"
+else
+  ok "철거 거부: 해당 별칭의 레포 루트 아래가 아님"
+fi
+LEDGER="$MR_LEDGER_SAVE"
+SLUG="$SLUG_SAVE"
+rm -f "$RUN_DIR/plan.tsv"
+
+# stash 는 명시적 cwd 로 읽는다. 비레포 cwd 에서 전후가 모두 `none` 이면
+# 가드가 공허하게 통과한다 — 정확히 잡아야 할 상황에서 성공을 보고한다.
+check "stash_ref 는 대상 레포에서 읽는다" "$(stash_ref "$MR_A")" "none"
+check "stash_ref 는 비레포 경로에서 none" "$(stash_ref "$MR_DIR/nope")" "none"
+if sed -n '/^stash_ref()/,/^}/p' "$DRIVER" | grep -q 'cd "\$root"'; then
+  ok "stash_ref 가 명시적 cwd 를 쓴다"
+else
+  bad "stash_ref" "상속 cwd 로 읽는다 — 비레포에서 가드가 공허하게 통과한다"
+fi
+if sed -n '/^stash_attribution_check()/,/^}/p' "$DRIVER" | grep -q 'cd "\$root"'; then
+  ok "귀속 검사가 명시적 cwd 를 쓴다"
+else
+  bad "귀속 검사" "상속 cwd 로 stash 목록을 읽는다"
+fi
+
+# 모든 `gh` 호출이 `-R` 을 지나가는가. 주석은 먼저 걷어낸다 — 드라이버가 옛 형태를
+# 설명하는 주석을 정당하게 담고, 자기 근거를 적발하는 검사는 근거를 지우라는 압력이 된다.
+BARE_GH=$(sed 's/#.*//' "$DRIVER" | grep -nE '(^|[^_[:alnum:]])gh[[:space:]]+(pr|api|issue|repo)\b' | grep -v 'gh -R' || true)
+if [ -z "$BARE_GH" ]; then
+  ok "모든 gh 호출이 -R 을 지나간다"
+else
+  bad "gh -R" "cwd 상속 호출이 남았다: $(printf '%s' "$BARE_GH" | head -3 | tr '\n' ' ')"
+fi
+if sed -n '/^gh_q()/,/^}/p' "$DRIVER" | grep -q '2>"\$errf"'; then
+  ok "gh_q 가 stderr 를 캡처한다"
+else
+  bad "gh_q" "stderr 를 버린다 — 비레포 오류가 빈 PR 번호로 삼켜진다"
+fi
+if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -q 'GH_STDERR'; then
+  ok "머지 게이트의 park 사유가 캡처한 stderr 를 싣는다"
+else
+  bad "merge_gate" "원인을 버리고 park 한다"
+fi
+# 술어는 세그먼트의 레포에서 평가돼야 한다. 홈에서 평가하면 홈이 아닌 레포의
+# 모든 세그먼트가 만들어진 적 없는 브랜치를 조회당해 공허한 성공으로 떨어진다.
+if sed -n '/^predicate_implement()/,/^}/p' "$DRIVER" | grep -q 'seg_root'; then
+  ok "구현 술어가 세그먼트의 레포에서 평가된다"
+else
+  bad "predicate_implement" "홈 레포에서 평가된다 — N>1 에서 전부 공허한 성공"
+fi
+
+MANIFEST=""
+
+# ---------------------------------------------------------------------------
+# 19. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
 # ---------------------------------------------------------------------------
 # 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
 #   - 백오프만 고친 트리: 누산기가 자라 상한에 도달하고, 가드가 없으므로 그
