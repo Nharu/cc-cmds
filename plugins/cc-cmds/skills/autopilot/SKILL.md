@@ -81,6 +81,8 @@ Four questions, and none of them has a safe default this skill may pick for the 
 커밋 → 브랜치 → push → PR → 머지 → 배포 → 머지 후 후속 착수
 ```
 
+**The ladder above is the DISPLAY form; the grant stores the TOKEN.** Six of the seven are the same string in both forms, and the seventh is not — the last rung displays as `머지 후 후속 착수` and stores as `머지후착수`. Write the **token** into `권한 절단점`, never the spaced display text. This is not a style note: a grant carrying the display form matched no token, the index lookup answered "unknown", and every act was denied while nothing reported why — the most permissive grant authorized nothing. `scripts/lint-cutpoint-vocabulary.sh` now derives this ladder from the driver's own vocabulary, so the two forms cannot drift apart again.
+
 At or below the chosen point the run acts on its own; the first act above it sends that segment to the blocked queue **without asking**, because there is nobody to ask. Two consequences must be stated out loud when the user picks `머지` or above:
 
 - **`머지` does not carry an `--admin` exception.** A run blocked by branch protection parks. A driver that granted itself that exception because it "was authorized to merge" would be widening the grant silently.

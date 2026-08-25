@@ -138,7 +138,28 @@ DOC_KEY="docs/x.md"; SLUG="docs-x"
 # ---------------------------------------------------------------------------
 check "절단점 인덱스 커밋" "$(cutpoint_index 커밋)" "1"
 check "절단점 인덱스 머지" "$(cutpoint_index 머지)" "5"
-check "절단점 인덱스 미지의 값" "$(cutpoint_index 없는것)" "0"
+
+# 미인식 토큰은 조용한 0이 아니라 실패다. 0을 돌려주면 authorized()가 그것을
+# 「인가 없음」으로 읽어 조용히 전부 거부하고, 오타 하나가 밤 전체의 산출을
+# 착지시키지 못한 채 아무 원인도 보고하지 않는다.
+if cutpoint_index 없는것 >/dev/null 2>&1; then
+  bad "미인식 절단점" "0을 돌려주고 성공했다 — 조용한 거부 경로가 살아 있다"
+else
+  ok "미인식 절단점 토큰은 실패로 신호된다 (조용한 0 아님)"
+fi
+
+# 표시 문면과 저장 토큰은 다른 문자열이고, 그 차이가 실제로 출하 결함이었다 —
+# 사람이 읽는 사다리는 `머지 후 후속 착수`인데 저장 토큰은 `머지후착수`라
+# 표시 문면으로 쓰인 인가가 아무것도 인가하지 못했다.
+check "표시 문면 -> 토큰"        "$(cutpoint_token '머지 후 후속 착수')" "머지후착수"
+check "토큰 -> 표시 문면"        "$(cutpoint_display 머지후착수)"        "머지 후 후속 착수"
+check "표시 문면도 색인된다"     "$(cutpoint_index '머지 후 후속 착수')" "7"
+check "저장 토큰도 색인된다"     "$(cutpoint_index 머지후착수)"          "7"
+if cutpoint_display 없는것 >/dev/null 2>&1; then
+  bad "표시 매핑" "어휘 밖 토큰에 표시 문면을 돌려줬다"
+else
+  ok "표시 매핑은 어휘 밖 토큰을 거부한다"
+fi
 
 grant_field() { printf 'PR'; }          # stub the grant read: cutpoint = PR
 if authorized 커밋 && authorized PR && ! authorized 머지 && ! authorized 배포; then
@@ -265,6 +286,29 @@ before=$(grep -c . "$LEDGER")
 ledger_row 'cost' "누적 usd=0.42"
 after=$(grep -c . "$LEDGER")
 check "원장은 append 전용" "$((after - before))" "1"
+
+# ---------------------------------------------------------------------------
+# 12b. 순차 베이스 — 세그먼트 k+1이 k의 머지를 담은 베이스에서 갈라지는가
+# ---------------------------------------------------------------------------
+# 머지는 서버에서 일어나므로 로컬 브랜치 ref는 전진하지 않는다. 베이스를 벗겨 낸
+# 로컬 이름에서 해소하면 k+1이 k의 머지 없는 커밋에서 분기하고, 겹치는 선언 파일이
+# 순차 편집이 아니라 동시 편집이 된다.
+if grep -qE 'refs/remotes/origin/\$\(base_branch\)' "$DRIVER"; then
+  ok "base_sha 가 원격 추적 ref에서 해소된다"
+else
+  bad "base_sha" "벗겨 낸 로컬 이름에서 해소 — 로컬 ref는 전진하지 않는다"
+fi
+if grep -qE '^base_fetch\(\)' "$DRIVER"; then ok "base_fetch 가 존재한다"; else bad "base_fetch" "정의 없음"; fi
+if sed 's/#.*//' "$DRIVER" | grep -qE 'git worktree add -b "\$branch" "\$p" HEAD'; then
+  bad "wt_create" "리터럴 HEAD에서 분기 — 메인 팁은 런 내내 움직이지 않는다"
+else
+  ok "wt_create 가 리터럴 HEAD에서 분기하지 않는다"
+fi
+if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -q 'base_fetch'; then
+  ok "머지 직후 base_fetch 가 돈다"
+else
+  bad "merge_gate" "머지 뒤 refresh 없음 — 다음 세그먼트가 낡은 베이스에서 갈라진다"
+fi
 
 # ---------------------------------------------------------------------------
 # 13. Binding-surface digest — invariant to the implementation arm's writes,

@@ -57,6 +57,8 @@ Field lines use the CANON rendering of `_common/verification.md`: bold key, no l
 커밋 → 브랜치 → push → PR → 머지 → 배포 → 머지 후 후속 착수
 ```
 
+**Display form above, stored token in the field.** Field 3 carries the **token**, and for six of the seven rungs the two strings are identical — the exception is the last, which displays as `머지 후 후속 착수` and stores as `머지후착수`. A grant written from the display text matches no token, and the consequence is not a parse warning: the index lookup reports "unknown", `authorized()` denies every act, and the run produces a night of blocked terminal acts with nothing naming the cause. Unrecognized tokens are therefore a **hard stop** rather than a silent zero, and `scripts/lint-cutpoint-vocabulary.sh` derives this ladder from the driver's vocabulary so the rendering here cannot drift from the values it describes.
+
 The interview takes **one** cutpoint. Everything at or below it is autonomous; the first act above it sends its segment to the blocked queue — it does **not** ask, because there is nobody to ask. Two consequences are part of this contract rather than implementation detail:
 
 - **`머지` does not carry an `--admin` exception.** A run blocked by branch protection parks. A driver that granted itself the exception because it "was authorized to merge" would be widening the grant silently, which is exactly what §1 exists to prevent.

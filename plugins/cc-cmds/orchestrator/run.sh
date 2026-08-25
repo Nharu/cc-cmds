@@ -275,20 +275,69 @@ EOF
 
 # The ordered permission cutpoint. Index comparison decides autonomy.
 readonly CUTPOINTS="커밋 브랜치 push PR 머지 배포 머지후착수"
+
+# Display form vs stored token. These are NOT the same string and the difference
+# is load-bearing: the human-facing ladder reads `머지 후 후속 착수` with spaces
+# while the stored token is `머지후착수`. A grant written from the display form
+# therefore matched nothing, `cutpoint_index` answered 0, and `authorized()`
+# silently denied EVERY act — the most permissive grant authorized nothing.
+# The mapping is explicit so the two forms can never drift apart again.
+cutpoint_display() {
+  case "$1" in
+    커밋)       printf '커밋' ;;
+    브랜치)     printf '브랜치' ;;
+    push)       printf 'push' ;;
+    PR)         printf 'PR' ;;
+    머지)       printf '머지' ;;
+    배포)       printf '배포' ;;
+    머지후착수) printf '머지 후 후속 착수' ;;
+    *)          return 1 ;;
+  esac
+}
+
+# Accepts either form and returns the stored token; non-zero on anything else.
+cutpoint_token() {
+  local want="$1" c
+  for c in $CUTPOINTS; do
+    [ "$c" = "$want" ] && { printf '%s' "$c"; return 0; }
+    [ "$(cutpoint_display "$c")" = "$want" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# `0` is no longer a sentinel for "unknown" — an unrecognized cutpoint is a HARD
+# ERROR, not a silent denial. A typo in a grant used to cost the whole night's
+# output while reporting nothing; now it stops at the point of the typo.
+#
+# The error is signalled by the RETURN STATUS, not by calling `die` here. This
+# function is always invoked inside `$( )`, and `exit` from a command
+# substitution kills only that subshell — the caller would carry on with an
+# empty string and fall straight back into the silent denial this replaces.
+# Callers turn the non-zero status into the hard stop.
 cutpoint_index() {
-  local want="$1" i=0 c
+  local want="$1" tok i=0 c
+  tok=$(cutpoint_token "$want") || {
+    warn "미인식 절단점 토큰: '${want}' — 허용 토큰: ${CUTPOINTS}"
+    return 1
+  }
   for c in $CUTPOINTS; do
     i=$((i + 1))
-    [ "$c" = "$want" ] && { printf '%s' "$i"; return 0; }
+    [ "$c" = "$tok" ] && { printf '%s' "$i"; return 0; }
   done
-  printf '0'
+  return 1
 }
 authorized() {
   # authorized <act> — true when the act is at or below the granted cutpoint.
-  local act_i grant_i
-  act_i=$(cutpoint_index "$1")
-  grant_i=$(cutpoint_index "$(grant_field "$RUN_ID" '권한 절단점')")
-  [ "$act_i" -ne 0 ] && [ "$grant_i" -ne 0 ] && [ "$act_i" -le "$grant_i" ]
+  # Both lookups hard-stop on an unrecognized token rather than returning 0, so
+  # this comparison never runs on a silently-denied value. `die` sits HERE, in
+  # the parent shell, because that is the only place it can actually stop the
+  # run — see the note on `cutpoint_index`.
+  local act_i grant_i granted
+  act_i=$(cutpoint_index "$1") || die "인가 판정 불가 — 행위 토큰 '$1'이 절단점 어휘에 없다"
+  granted=$(grant_field "$RUN_ID" '권한 절단점')
+  grant_i=$(cutpoint_index "$granted") \
+    || die "인가 판정 불가 — 인가 기록의 절단점 '${granted}'이 어휘에 없다 (표시 문면과 저장 토큰을 확인할 것)"
+  [ "$act_i" -le "$grant_i" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -458,10 +507,19 @@ wt_path() {
 stash_ref() { git -c core.pager=cat rev-parse --verify refs/stash 2>/dev/null || printf 'none'; }
 
 wt_create() {
-  local seg="$1" branch="$2" p
+  local seg="$1" branch="$2" p base
   p=$(wt_path "$seg")
   [ -d "$p" ] && { printf '%s' "$p"; return 0; }
-  ( cd "$(main_root)" && git worktree add -b "$branch" "$p" HEAD >/dev/null 2>&1 ) \
+  # Branch from the RESOLVED BASE, never from the literal `HEAD`.
+  #
+  # This is the actual branch point and not a consequence of the two fixes
+  # above: `HEAD` is the main worktree's checkout tip, and since this driver
+  # deliberately does not fast-forward that tree, the tip does not move for the
+  # whole run. Fixing only the fetch and the ref resolution would still leave
+  # segment k+1 branching from a commit without k's merge in it.
+  base_fetch
+  base=$(base_sha) || { warn "베이스 sha 해소 실패 — 워크트리를 만들지 않는다"; return 1; }
+  ( cd "$(main_root)" && git worktree add -b "$branch" "$p" "$base" >/dev/null 2>&1 ) \
     || ( cd "$(main_root)" && git worktree add "$p" "$branch" >/dev/null 2>&1 ) \
     || { warn "워크트리 생성 실패: $p"; return 1; }
   printf '%s' "$p"
@@ -797,7 +855,11 @@ merge_gate() {
     park "$seg" "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음" "gh pr merge $pr"
     return 1
   }
-  ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr"
+  # Refresh immediately after the server-side merge so the next segment's
+  # `wt_create` branches from a base that actually contains this merge. Without
+  # this the sequential-base premise is false from the very first merge.
+  base_fetch
+  ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" "베이스 sha=$(base_sha)"
   return 0
 }
 
@@ -957,7 +1019,23 @@ base_branch() {
   [ -n "$BASE_BRANCH" ] || BASE_BRANCH=$( cd "$(main_root)" && git rev-parse --abbrev-ref HEAD )
   printf '%s' "$BASE_BRANCH"
 }
-base_sha() { ( cd "$(main_root)" && git rev-parse "$(base_branch)" ); }
+
+# Refresh the remote-tracking refs. This does NOT touch the working tree — it
+# reads the remote and moves `refs/remotes/origin/*` only — so it is compatible
+# with the decision never to fast-forward the tree a human is working in.
+base_fetch() { ( cd "$(main_root)" && git fetch --quiet origin 2>/dev/null ) || true; }
+
+# Resolve from the REMOTE-TRACKING ref, not the stripped local name.
+#
+# This is the sequential-base premise, and without it the premise is false. The
+# merges happen on the server (`gh pr merge`), so a local branch ref never
+# advances; segment k+1 would then branch from a base that does not contain k's
+# merge and the overlapping declared files become CONCURRENT edits — exactly the
+# case the design excludes by assuming sequentiality. Two more things break from
+# the same root: external-drift detection compares against this value and would
+# never fire, and the apply worktree pins a merge commit that exists only on the
+# remote.
+base_sha() { ( cd "$(main_root)" && git rev-parse "refs/remotes/origin/$(base_branch)" ); }
 
 rebase_onto_base() {
   # A rebase conflict between two segments of one wave is NOT a merge problem to
