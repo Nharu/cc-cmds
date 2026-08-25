@@ -1011,6 +1011,17 @@ MANIFEST=""; DOC="$AP_DOC_SAVE"; LEDGER="$AP_LEDGER_SAVE"; BASE="$AP_BASE_SAVE";
 grant_field() { printf 'PR'; }          # 이후 절을 위해 원래 스텁으로 되돌린다
 rm -f "$RUN_DIR/plan.tsv"
 
+# 킥오프 판정은 드라이버가 아니라 스킬이 쓰지만 프롬프트와 스키마는 여기 산다.
+# 짝이 깨지면 1막이 계약 없이 판정하게 되고, 그 판정 위에 매니페스트가 동결된다.
+for pair in entry-plan; do
+  if [ -f "$script_dir/prompts/$pair.md" ]; then ok "킥오프 프롬프트 존재: $pair"; else bad "프롬프트" "$pair.md 없음"; fi
+  if jq empty "$script_dir/prompts/$pair.schema.json" 2>/dev/null; then
+    ok "킥오프 스키마가 유효한 JSON: $pair"
+  else
+    bad "스키마" "$pair.schema.json 가 유효한 JSON 이 아님"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 20. 종료 불변식 — 스코프와 원인을 지명하지 못하는 park 은 버그다
 # ---------------------------------------------------------------------------
