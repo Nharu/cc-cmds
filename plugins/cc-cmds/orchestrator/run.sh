@@ -1414,7 +1414,11 @@ human_reconcile() {
 boundary_idempotent() {
   case "$1" in
     S2|S4|S5|S8) return 0 ;;   # audit / implement / review / merge
-    *)           return 1 ;;   # design and re-convergence are NOT
+    # S9 is NEVER added here, and the reason is not that it happens to be
+    # missing today. An apply is irreversible; "safe to kill at a boundary"
+    # would license the driver to interrupt it, and a half-applied state is
+    # exactly the outcome this whole stage is built to avoid.
+    *)           return 1 ;;   # design, re-convergence and apply are NOT
   esac
 }
 
@@ -1463,10 +1467,173 @@ merge_gate() {
   # `wt_create` branches from a base that actually contains this merge. Without
   # this the sequential-base premise is false from the very first merge.
   base_fetch "$al"
+  # The apply worktree pins THIS merge, so the sha is captured here where it is
+  # unambiguous rather than re-derived later from a base tip that a concurrent
+  # merge may already have moved.
+  MERGE_COMMIT=$(gh_q "$slug" pr view "$pr" --json mergeCommit --jq '.mergeCommit.oid' || printf '')
+  [ -n "$MERGE_COMMIT" ] || MERGE_COMMIT=$(base_sha "$al")
   ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
-    "레포=$slug" "베이스 sha=$(base_sha "$al")"
+    "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")"
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# S9 APPLY — the driver runs it, and that is the whole design of this stage.
+#
+# Unforgeability is a property of the EXECUTOR, not of the command. A stage that
+# improvises can run the probe and then report whatever it likes; there must be
+# no improvising surface anywhere near an irreversible act. So S9 is not a model
+# dispatch — it is `sh -c` under the driver, with the command copied verbatim
+# from a declaration a human approved.
+#
+# `terraform plan -detailed-exitcode` is the shape this is built around, and its
+# exit 2 means OPPOSITE things before and after an apply — "changes pending"
+# beforehand, "changes still pending" afterwards. So BOTH sides are probed and
+# the four outcomes map one-to-one onto four dispositions:
+#
+#   pre = 0            nothing to do; skip the apply entirely
+#   pre = 1            the probe itself failed; refuse before touching anything
+#   pre = 2 → post = 0 converged; this is the only success
+#   pre = 2 → post = 2 changes still pending after an apply ran — 적용 불명
+#
+# The pre-probe is also the "did it even start" discriminator the retry rules
+# needed. There are no retries here: an apply is a terminal act, and a second
+# attempt after an unknown outcome is not a retry, it is a second apply.
+# ---------------------------------------------------------------------------
+MERGE_COMMIT=""
+
+# Declaration first, manifest second. The per-slice declaration is the more
+# specific statement, and a run that has one is a run whose author already
+# answered this question per slice.
+apply_field() {
+  local seg="$1" key="$2" v id
+  if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then
+    for id in $(slice_ids "$DOC" 2>/dev/null); do
+      [ "$id" = "$seg" ] || continue
+      v=$(slice_field "$DOC" "$id" "$key"); [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+    done
+  fi
+  [ -n "$MANIFEST" ] || return 0
+  case "$key" in
+    '적용 명령') manifest_field '요소' '적용 지점' ;;
+    '적용 주체') manifest_field '요소' '적용 주체' ;;
+    '폭발 반경') printf '레포' ;;
+    *)           printf '' ;;
+  esac
+}
+
+# Backticks are the declaration's rendering, not part of the command.
+apply_unquote() { printf '%s' "$1" | sed 's/^`//; s/`$//'; }
+
+apply_probe_cmd() {
+  local seg="$1" v
+  v=$(apply_field "$seg" '적용 프로브')
+  [ -n "$v" ] || { [ -n "$MANIFEST" ] && v=$(manifest_field '요소' '적용 프로브'); }
+  apply_unquote "$v"
+}
+
+# The apply runs in its OWN worktree pinned to the merge commit, never in the
+# segment worktree: that tree holds the pre-merge branch, and applying from it
+# would apply something the merge gate never approved.
+apply_worktree() {
+  local seg="$1" root p
+  root=$(seg_root "$seg") || return 1
+  p="$(dirname "$root")/$(basename "$root")${WORKTREE_INFIX}${SLUG}-${seg}-apply"
+  printf '%s' "$p"
+}
+
+apply_probe() {
+  # Echoes nothing; the CALLER reads the exit status, which is the whole point
+  # of `-detailed-exitcode`. Swallowing it into a string would put a parser
+  # between the tool and the decision.
+  local wt="$1" cmd="$2"
+  ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
+}
+
+apply_stage() {
+  local seg="$1" cmd actor radius wt root pre post rc
+  cmd=$(apply_unquote "$(apply_field "$seg" '적용 명령')")
+  [ -n "$cmd" ] && [ "$cmd" != "(없음)" ] || return 0     # no apply declared
+
+  actor=$(apply_field "$seg" '적용 주체')
+  radius=$(apply_field "$seg" '폭발 반경'); [ -n "$radius" ] || radius='레포'
+
+  # A handover, not a degradation. The pipeline finished at merge and the
+  # command travels to the morning report as an opaque string — reporting a
+  # command is not performing it, so no new authorization vocabulary is needed.
+  if [ "$actor" != "파이프라인" ]; then
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=적용 주체가 사람 — 인계"
+    report_append "적용 인계" "$seg — 사람이 실행할 명령: $cmd"
+    return 0
+  fi
+
+  if ! authorized 배포; then
+    park "$seg" "인가 한도" "권한 절단점이 배포를 인가하지 않음 — 명령은 보고서로 인계" "$cmd"
+    report_append "적용 인계" "$seg — 미인가로 실행하지 않음, 사람이 실행할 명령: $cmd"
+    return 0
+  fi
+
+  [ -n "$MERGE_COMMIT" ] || { park "$seg" "게이트 park" "머지 커밋을 고정할 수 없어 apply 를 시작하지 않는다"; return 1; }
+  root=$(seg_root "$seg") || return 1
+  wt=$(apply_worktree "$seg") || return 1
+  if [ ! -d "$wt" ]; then
+    ( cd "$root" && git worktree add --detach "$wt" "$MERGE_COMMIT" >/dev/null 2>&1 ) \
+      || { park "$seg" "게이트 park" "apply 워크트리를 머지 커밋에 고정하지 못했다: $MERGE_COMMIT"; return 1; }
+  fi
+  ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
+
+  local probe; probe=$(apply_probe_cmd "$seg")
+  if [ -z "$probe" ]; then
+    park "$seg" "게이트 park" "적용 프로브가 없어 필요 여부를 판정할 수 없다 — apply 를 실행하지 않는다"
+    return 1
+  fi
+
+  apply_probe "$wt" "$probe"; pre=$?
+  case "$pre" in
+    0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+         "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
+       apply_teardown "$seg" "$wt"
+       return 0 ;;
+    2) : ;;
+    *) # Anything that is not "no changes" or "changes pending" is the probe
+       # itself failing. Refuse BEFORE touching anything: an apply whose need
+       # could not be established is an apply with no evidence behind it.
+       park "$seg" "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
+       return 1 ;;
+  esac
+
+  log "$seg: S9 apply 실행 (재시도 없음) — $cmd"
+  ( cd "$wt" && sh -c "$cmd" ) >"$RUN_DIR/log/S9-$seg.out" 2>"$RUN_DIR/log/S9-$seg.err"; rc=$?
+
+  apply_probe "$wt" "$probe"; post=$?
+  if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
+    apply_teardown "$seg" "$wt"
+    return 0
+  fi
+
+  # 적용 불명. The state the next irreversible act would transform cannot be
+  # judged, so the stop is the DECLARED blast radius — and the worktree stays.
+  # A normal teardown here would delete the only reproduction of a half-applied
+  # state, which is the one artifact a person will need in the morning.
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
+    "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 2 → 사후 $post"
+  park "$seg" "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
+  report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
+  APPLY_PARKED_RADIUS="$radius"
+  return 1
+}
+
+# Only a CONVERGED apply gives its worktree back. Failure keeps it.
+apply_teardown() {
+  local seg="$1" wt="$2" root
+  root=$(seg_root "$seg") || return 0
+  ( cd "$root" && git worktree remove "$wt" >/dev/null 2>&1 && git worktree prune >/dev/null 2>&1 ) || true
+}
+
+APPLY_PARKED_RADIUS=""
 
 # ---------------------------------------------------------------------------
 # Judgment calls. Wired, stubbed. Each is a single foreground `-p` with a fixed
@@ -1826,6 +1993,13 @@ EOF
     rebase_onto_base "$seg" "$wt" 외부 "$al" || { park "$seg" "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
   fi
   merge_gate "$seg" "$branch" || return 1
+
+  # --- S9 APPLY ------------------------------------------------------------
+  # Runs only when the segment declares one. It consumes NO ladder rung: an
+  # apply failure is not a defect recurring, it is a terminal act that did not
+  # complete, and feeding it to the ladder would spend rungs meant for defects.
+  apply_stage "$seg" || return 3
+
   wt_remove_or_defer "$seg"
   return 0
 }
@@ -1890,6 +2064,10 @@ main_loop() {
   total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
   while IFS="$(printf '\t')" read -r seg repo files deps; do
     [ -n "$seg" ] || continue
+    if in_halted_radius "$seg"; then
+      park "$seg" "게이트 park" "앞선 적용 불명의 폭발 반경 안 — 디스패치하지 않는다"
+      parked=$((parked + 1)); continue
+    fi
     # Dependency guard on a serial traversal. A serial walk of a topological
     # order IS a complete DAG implementation — layers are not parallelism.
     if ! deps_satisfied "$deps"; then
@@ -1904,6 +2082,12 @@ main_loop() {
       2) log "재계획 필요 — 남은 세그먼트를 park 하고 아침에 넘긴다"
          park "$seg" "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
          parked=$((parked + 1)) ;;
+      3) # An apply of unknown outcome. The stop is the DECLARED radius and
+         # nothing wider — widening it would turn one unjudgeable state into a
+         # night that produced nothing, and narrowing it would let later
+         # segments build on a state nobody can describe.
+         radius_park "$seg" "$APPLY_PARKED_RADIUS"
+         parked=$((parked + 1)) ;;
       *) parked=$((parked + 1)) ;;
     esac
   done < "$RUN_DIR/plan.tsv"
@@ -1912,6 +2096,39 @@ main_loop() {
     "관측 시각=$(now_iso)"
   report_append "종료" "머지 ${merged}건 · 보류 ${parked}건 · 슬라이스 ${total}개"
   log "런 종료 (머지 $merged · 보류 $parked)"
+}
+
+# Record the radius an unknown apply outcome stops, and hold it so the walk can
+# refuse the segments inside it. The radius is DECLARED — the driver cannot
+# verify that it is the right one, which is exactly why it is a field a human
+# fills rather than something inferred here.
+RUN_HALTED=0
+radius_park() {
+  local seg="$1" radius="$2" d
+  case "$radius" in
+    '런')
+      RUN_HALTED=1
+      log "적용 불명 — 폭발 반경 '런', 이후 디스패치 중단" ;;
+    '레포')
+      seg_alias "$seg" > "$RUN_DIR/halted-repo.txt" 2>/dev/null || : > "$RUN_DIR/halted-repo.txt"
+      log "적용 불명 — 폭발 반경 '레포', 같은 레포의 남은 세그먼트를 park" ;;
+    *)
+      printf '%s\n' "$radius" | tr ',' '\n' | while IFS= read -r d; do
+        d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$d" ] && printf '%s\n' "$d" >> "$RUN_DIR/halted-segments.txt"
+      done
+      log "적용 불명 — 폭발 반경 '$radius'" ;;
+  esac
+}
+
+# Is this segment inside a radius an earlier apply stopped?
+in_halted_radius() {
+  local seg="$1" hr
+  [ "$RUN_HALTED" = "1" ] && return 0
+  grep -qxF "$seg" "$RUN_DIR/halted-segments.txt" 2>/dev/null && return 0
+  hr=$(cat "$RUN_DIR/halted-repo.txt" 2>/dev/null || printf '')
+  [ -n "$hr" ] && [ "$hr" = "$(seg_alias "$seg" 2>/dev/null)" ] && return 0
+  return 1
 }
 
 # Stacking happens only INSIDE one repository. A segment whose predecessor lives
@@ -1929,8 +2146,8 @@ cross_repo_deps() {
     [ -n "$d" ] || continue
     other=$(seg_alias "$d") || continue
     [ "$other" = "$mine" ] && continue
-    ledger_row 'segment' "id=$seg" "상태=선행 순서만" "선행=$d" \
-      "관측=레포가 달라 쌓기가 아니라 순서만 보장된다 ($other -> $mine)"
+    log "$seg: 선행 $d 는 레포가 달라 쌓기가 아니라 순서만 보장된다 ($other -> $mine)"
+    report_append "레포 간 선행" "$seg ← $d — 레포가 달라 커밋을 쌓지 않고 순서만 보장한다"
   done
   return 0
 }

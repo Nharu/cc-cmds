@@ -844,7 +844,175 @@ fi
 MANIFEST=""
 
 # ---------------------------------------------------------------------------
-# 19. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
+# 19. S9 apply — 네 처분이 두 프로브에서 갈린다
+# ---------------------------------------------------------------------------
+# exit 2 는 apply 전후로 반대를 뜻하므로(전=변경 대기, 후=여전히 대기) 양쪽을
+# 재고, 네 조합이 네 처분에 1:1 로 대응하는지 본다. 여기서 잡는 실패는
+# 「실행했는데 결과를 모른다」가 조용히 성공으로 읽히는 것이다.
+AP_DIR="$WORK/apply"; mkdir -p "$AP_DIR"
+AP_REPO="$AP_DIR/repo"
+mkdir -p "$AP_REPO"
+( cd "$AP_REPO" && git init -q . && git config user.email t@t && git config user.name t \
+    && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+AP_REPO=$(cd "$AP_REPO" && pwd -P); AP_DIR=$(cd "$AP_DIR" && pwd -P)
+AP_CG=$(cd "$AP_REPO" && git rev-parse --path-format=absolute --git-common-dir)
+AP_SHA=$(cd "$AP_REPO" && git rev-parse HEAD)
+AP_ST="$AP_DIR/state"; AP_CNT="$AP_DIR/ran"
+
+ap_manifest() {   # ap_manifest <적용명령> <적용주체>
+  {
+    printf '# a\n<!-- cc-run-manifest v1; run-id=ap; anchor-key=k -->\n\n'
+    printf '## 대상\n'
+    printf -- '- `target` | 별칭=only | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/repo | 절단점=배포 | 말단 행위 상한=없음\n\n' "$AP_REPO" "$AP_CG"
+    printf '## 요소\n**적용 지점**: %s\n**적용 프로브**: %s\n**적용 주체**: %s\n' \
+      "$1" "sh -c 'exit \$(cat $AP_ST)'" "$2"
+  } > "$AP_DIR/plan.md"
+  MANIFEST="$AP_DIR/plan.md"
+}
+
+AP_DOC_SAVE="${DOC:-}"; DOC=""
+AP_LEDGER_SAVE="$LEDGER"; LEDGER="$AP_DIR/ledger.md"
+AP_BASE_SAVE="$BASE"; BASE="$AP_DIR/base"; mkdir -p "$BASE/docs"
+AP_SLUG_SAVE="$SLUG"; SLUG="ap"
+printf 'segA\t`o/repo`\ta.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+grant_field() { printf '배포'; }        # 이 절에서만 배포까지 인가
+MERGE_COMMIT="$AP_SHA"
+
+# (0) 선언이 없으면 스테이지 자체가 없다 — 빈 명령에 대해 아무 일도 하지 않는다.
+ap_manifest "(없음)" "파이프라인"
+: > "$LEDGER"; : > "$AP_CNT"
+if apply_stage segA && [ ! -s "$AP_CNT" ] && [ ! -s "$LEDGER" ]; then
+  ok "적용 선언이 없으면 S9 는 아무것도 하지 않는다"
+else
+  bad "S9 부재" "선언이 없는데 스테이지가 돌았다"
+fi
+
+# (1) 적용 주체가 사람 — 인계다. 명령은 축자로 보고되고 실행되지 않는다.
+ap_manifest "touch $AP_DIR/SHOULD_NOT_EXIST" "사람"
+: > "$LEDGER"; printf '2\n' > "$AP_ST"
+apply_stage segA
+if [ ! -e "$AP_DIR/SHOULD_NOT_EXIST" ]; then
+  ok "적용 주체가 사람이면 파이프라인은 명령을 실행하지 않는다"
+else
+  bad "인계" "사람 인계인데 드라이버가 실행했다"
+fi
+if grep -q '적용 인계' "$(report_path)" 2>/dev/null; then
+  ok "인계 명령이 아침 보고서에 축자로 실린다"
+else
+  bad "인계" "보고서에 인계가 없다"
+fi
+
+# (2) 사전 프로브 0 — 적용할 변경이 없으므로 명령을 아예 돌리지 않는다.
+ap_manifest "sh -c 'echo x >> $AP_CNT'" "파이프라인"
+: > "$LEDGER"; : > "$AP_CNT"; printf '0\n' > "$AP_ST"
+if apply_stage segA && [ ! -s "$AP_CNT" ]; then
+  ok "사전 프로브 0: apply 를 건너뛴다"
+else
+  bad "사전 0" "변경이 없는데 apply 를 실행했다"
+fi
+
+# (3) 사전 프로브 1 — 프로브 자체의 실패다. 아무것도 건드리기 전에 거부한다.
+: > "$LEDGER"; : > "$AP_CNT"; printf '1\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "사전 1" "프로브가 실패했는데 성공을 돌려줬다"
+else
+  ok "사전 프로브 1: 거부한다"
+fi
+if [ ! -s "$AP_CNT" ]; then
+  ok "사전 프로브 1: 아무것도 건드리기 전에 거부한다"
+else
+  bad "사전 1" "프로브 실패인데 apply 가 실행됐다"
+fi
+
+# (4) 사전 2 → 사후 0 — 수렴. 유일한 성공이다.
+ap_manifest "sh -c 'echo x >> $AP_CNT; echo 0 > $AP_ST'" "파이프라인"
+: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
+  ok "사전 2 → 사후 0: 수렴, apply 1회 실행"
+else
+  bad "수렴" "사전 2 → 사후 0 이 성공으로 판정되지 않았다"
+fi
+if grep -q '종단 부류=정상 완료' "$LEDGER"; then
+  ok "수렴이 정상 완료로 기록된다"
+else
+  bad "수렴 기록" "정상 완료 행이 없다"
+fi
+
+# (5) 사전 2 → 사후 2 — 적용 불명. 재시도 0회, 워크트리 보존, 사람 대조 표시.
+ap_manifest "sh -c 'echo x >> $AP_CNT'" "파이프라인"
+: > "$LEDGER"; : > "$AP_CNT"; printf '2\n' > "$AP_ST"
+if apply_stage segA; then
+  bad "적용 불명" "사후에도 변경이 남았는데 성공을 돌려줬다"
+else
+  ok "사전 2 → 사후 2: 적용 불명으로 실패를 돌려준다"
+fi
+check "적용 불명에도 재시도는 0회 (apply 1회 실행)" "$(grep -c . "$AP_CNT")" "1"
+if grep -q '종단 부류=적용 불명' "$LEDGER"; then
+  ok "적용 불명이 자기 종단 부류로 기록된다"
+else
+  bad "적용 불명" "게이트 park 아래 묻혔다 — 가장 무거운 결과가 가장 흔한 토큰을 쓴다"
+fi
+AP_WT="$(apply_worktree segA)"
+if [ -d "$AP_WT" ]; then
+  ok "실패한 apply 의 워크트리는 보존된다"
+else
+  bad "워크트리 보존" "절반 적용된 상태의 유일한 재현본을 지웠다"
+fi
+if grep -q '사람 대조 필요' "$(report_path)" 2>/dev/null; then
+  ok "적용 불명이 아침 보고서에 사람 대조 필요로 표시된다"
+else
+  bad "보고서" "적용 불명이 표시되지 않았다"
+fi
+check "park 이 선언된 폭발 반경을 싣는다" \
+  "$(grep -c "폭발 반경 '레포'" "$LEDGER")" "1"
+
+# (6) 반경 판정 — 런은 전부 멈추고, 레포는 같은 레포만, 슬라이스 목록은 그 셋만.
+RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"
+radius_park segA '레포'
+if in_halted_radius segA; then ok "반경 레포: 같은 레포의 세그먼트가 반경 안"; else bad "반경 레포" "반경 안인데 아니라고 판정"; fi
+rm -f "$RUN_DIR/halted-repo.txt"
+radius_park segA '슬라이스 segC, 슬라이스 segD'
+if in_halted_radius segC && in_halted_radius segD; then
+  ok "반경 슬라이스 목록: 지명된 것만 반경 안"
+else
+  bad "반경 목록" "지명된 슬라이스가 반경 안으로 읽히지 않는다"
+fi
+if in_halted_radius segE; then bad "반경 목록" "지명되지 않은 것까지 멈췄다"; else ok "지명되지 않은 슬라이스는 계속 돈다"; fi
+rm -f "$RUN_DIR/halted-segments.txt"
+radius_park segA '런'
+if in_halted_radius segZ; then ok "반경 런: 이후 전부 디스패치 중단"; else bad "반경 런" "런 반경인데 계속 돈다"; fi
+RUN_HALTED=0
+
+# (7) S9 는 경계 멱등이 아니다 — 되돌릴 수 없는 행위에 kill 허가를 주지 않는다.
+if boundary_idempotent S9; then
+  bad "S9 멱등성" "apply 가 경계 멱등 허용목록에 들어갔다"
+else
+  ok "S9 는 경계 멱등 허용목록에 없다"
+fi
+if kill_permitted "S9:segA:1"; then
+  bad "S9 kill" "apply 스테이지에 kill 이 허용됐다"
+else
+  ok "apply 스테이지에는 kill 이 허용되지 않는다"
+fi
+# (8) 사다리 단을 소비하지 않는다. 소비하면 결함용 단이 말단 행위 실패로 닳는다.
+if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep -q 'ladder_bump'; then
+  bad "사다리" "apply 실패가 사다리 단을 소비한다"
+else
+  ok "apply 는 사다리 단을 소비하지 않는다"
+fi
+# (9) 실행자가 드라이버여야 한다 — 즉흥하는 스테이지는 프로브를 돌리고 아무 말이나 할 수 있다.
+if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep -q 'stage_spawn\|dispatch_stage'; then
+  bad "실행자" "apply 를 모델에 디스패치한다 — 날조 가능한 표면"
+else
+  ok "apply 는 드라이버가 직접 실행한다"
+fi
+
+MANIFEST=""; DOC="$AP_DOC_SAVE"; LEDGER="$AP_LEDGER_SAVE"; BASE="$AP_BASE_SAVE"; SLUG="$AP_SLUG_SAVE"
+grant_field() { printf 'PR'; }          # 이후 절을 위해 원래 스텁으로 되돌린다
+rm -f "$RUN_DIR/plan.tsv"
+
+# ---------------------------------------------------------------------------
+# 20. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
 # ---------------------------------------------------------------------------
 # 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
 #   - 백오프만 고친 트리: 누산기가 자라 상한에 도달하고, 가드가 없으므로 그

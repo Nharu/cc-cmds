@@ -272,9 +272,19 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 | --- | --- |
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
-| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` |
-| `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `park` |
+| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` |
+| `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
+
+**`적용 불명` is its own termination class and not a kind of crash.** A crash is
+an execution that did not complete; this one completed and left a state nobody
+can describe. Folding it into `크래시` would say the wrong thing to the person
+reading the morning report, and folding it into `게이트 park` would file the
+heaviest outcome a run can produce under its most common token — the same defect
+this contract already indicts elsewhere. `적용 준비` is likewise separate from
+`실행중`: it names a worktree pinned to a merge commit, which is the artifact a
+person needs when an apply's outcome is unknown, and a state that says only
+"running" does not tell them it exists.
 
 **Severity adjudication and parking are not new kinds.** A severity tie-break is a `자율 승인` row with `kind=severity`; a park is a `blocked` row with a `사유`. Reusing the two existing series with a required discriminator is what keeps the count at nine while still making each case findable.
 
