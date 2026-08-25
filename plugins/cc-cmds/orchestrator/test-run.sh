@@ -126,8 +126,35 @@ printf 'native(harness): %s\n' "$NATIVE_OS"
 # and the resulting failure names the assertion rather than the cause. These
 # three lines are what turned "a manifest was rejected" into "this runner's
 # locale was C and its awk lost the Korean heading".
-printf 'locale(driver): LC_CTYPE=%s LC_COLLATE=%s 선택=%s\n' \
-  "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_UTF8_LOCALE:-없음}"
+printf 'locale(driver): LC_CTYPE=%s LC_COLLATE=%s %s=%s (locale -a 후보 %s개)\n' \
+  "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_LOCALE_SOURCE:-미해결}" \
+  "${ORCH_UTF8_LOCALE:-없음}" "$(locale -a 2>/dev/null | grep -c . || printf 0)"
+# UTF-8 이 어느 경로로도 서지 않았다면 그 자체가 발견이다. 이 하네스가 도는
+# 호스트에서 한국어 어휘 비교가 성립하지 않는다는 뜻이고, 아래 프로브가 그것을
+# 확인한다 — 선택이 조용히 아무것도 하지 않은 경우와 통한 경우를 가르려고
+# 출처를 함께 찍는다.
+if [ -n "${ORCH_UTF8_LOCALE:-}" ]; then
+  ok "UTF-8 LC_CTYPE 이 선다 (${ORCH_LOCALE_SOURCE})"
+else
+  bad "로케일" "UTF-8 LC_CTYPE 이 선택으로도 상속으로도 서지 않았다"
+fi
+# 이 하네스는 소싱 전에 이미 pipefail 을 켜므로, 여기서 「선택」이 나온다는 것은
+# 드라이버의 로케일 탐색이 pipefail 아래에서도 발화한다는 뜻이다. `grep -q` 는
+# 첫 매치에서 종료해 왼쪽에 SIGPIPE 를 남기고, pipefail 은 그 파이프라인을
+# 실패로 보고한다 — 답이 「예」일 때 정확히 조건이 거짓이 된다.
+if [ "${ORCH_LOCALE_SOURCE:-}" = "선택" ]; then
+  ok "로케일 탐색이 pipefail 아래에서 발화한다"
+else
+  bad "로케일 탐색" "pipefail 아래에서 탐색이 조용히 비었다 (출처=${ORCH_LOCALE_SOURCE:-미해결}) — 상속이 가려 주고 있을 뿐이다"
+fi
+# 조기 종료 읽기가 남아 있으면 같은 함정이 다시 생긴다. 파일을 읽는 `grep -q` 는
+# 파이프라인이 아니므로 대상이 아니고, 걸러야 할 것은 파이프의 오른쪽이다.
+EARLY=$(sed 's/#.*//' "$DRIVER" | grep -nE '\| *(head -|grep -[A-Za-z]*q)' || true)
+if [ -z "$EARLY" ]; then
+  ok "파이프 오른쪽에 조기 종료 읽기가 없다"
+else
+  bad "pipefail 함정" "$(printf '%s' "$EARLY" | head -3 | tr '\n' ' ')"
+fi
 printf 'awk(harness): %s\n' "$(awk --version 2>&1 | head -1 || printf unknown)"
 if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep -q hit \
    && [ "$(printf '한글\n' | awk -v k=한글 '$0==k{print "hit"}')" = "hit" ]; then

@@ -88,12 +88,38 @@ export PATH
 # `LC_ALL` is cleared first because it overrides both. The UTF-8 locale is
 # CHOSEN from what the host actually has rather than pinned: a name the host does
 # not carry falls back to C silently, which is the very state being escaped.
+# `LC_ALL` first, and on the measured runner this line was the whole of the fix:
+# that host already had `LC_CTYPE=en_US.UTF-8` and an `LC_ALL` overriding it.
 unset LC_ALL
 ORCH_UTF8_LOCALE=""
+ORCH_LOCALE_SOURCE=""
+# `locale -a` is read ONCE into a variable, and the match below does not use
+# `grep -q`. Under `set -o pipefail` a `-q` grep exits on its first match, the
+# writer on the left takes SIGPIPE, and the PIPELINE reports failure even though
+# the match succeeded — so the `if` is false exactly when the answer is yes.
+# Measured: standalone the driver selected `en_US.UTF-8`; sourced into a harness
+# that had already turned on `pipefail` the same loop selected nothing, and the
+# fallback below quietly covered for it.
+_locales=$(locale -a 2>/dev/null || printf '')
 for _loc in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
-  if locale -a 2>/dev/null | grep -qxF "$_loc"; then ORCH_UTF8_LOCALE="$_loc"; break; fi
+  if printf '%s\n' "$_locales" | grep -xF "$_loc" >/dev/null; then
+    ORCH_UTF8_LOCALE="$_loc"; ORCH_LOCALE_SOURCE="선택"
+    break
+  fi
 done
-unset _loc
+unset _loc _locales
+if [ -z "$ORCH_UTF8_LOCALE" ]; then
+  # Nothing offered by `locale -a`. That happened on a real runner whose
+  # `LC_CTYPE` was nevertheless a UTF-8 locale, so an inherited value that
+  # already ends in UTF-8 is accepted rather than overwritten with a name the
+  # host may not carry. Recorded as INHERITED so the two cases stay
+  # distinguishable in the diagnostic — a selection that silently did nothing
+  # reads identically to one that worked.
+  case "${LC_CTYPE:-${LANG:-}}" in
+    *UTF-8|*utf-8|*UTF8|*utf8)
+      ORCH_UTF8_LOCALE="${LC_CTYPE:-$LANG}"; ORCH_LOCALE_SOURCE="상속" ;;
+  esac
+fi
 if [ -n "$ORCH_UTF8_LOCALE" ]; then
   LANG="$ORCH_UTF8_LOCALE"
   LC_CTYPE="$ORCH_UTF8_LOCALE"
@@ -363,7 +389,7 @@ check_manifest() {
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
-  printf '%s' "$dl" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
     || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
 
   # 9 — an apply with no probe is refused at kickoff.
@@ -931,7 +957,7 @@ home_alias() {
   for a in $(target_aliases); do
     [ "$(target_field "$a" '홈')" = "예" ] && { printf '%s' "$a"; return 0; }
   done
-  target_aliases | head -1
+  target_aliases | sed -n '1p'
 }
 
 alias_root() {
@@ -1083,7 +1109,7 @@ stash_attribution_check() {
   after=$(stash_ref "$root")
   [ "$before" = "$after" ] && return 0
   local top
-  top=$( cd "$root" 2>/dev/null && git stash list 2>/dev/null | head -1 )
+  top=$( cd "$root" 2>/dev/null && git stash list 2>/dev/null | sed -n '1p' )
   case "$top" in
     *"on $seg_branch:"*) warn "세그먼트 브랜치에 귀속된 stash 항목 — 위반"; return 1 ;;
     *" on "*)            log "제3자 stash 활동 기록만 하고 계속: $top"; return 0 ;;
@@ -1145,7 +1171,7 @@ transcript_path() {
   cachef="$RUN_DIR/$stage.transcript"
   if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
   uuid=$(session_uuid "$stage")
-  p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | head -1)
+  p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
   printf '%s' "$p"
@@ -1886,12 +1912,14 @@ self_check() {
   native=$(uname -s)
   printf 'bash: %s\n' "$BASH_VERSION"
   printf 'PATH: %s\n' "$PATH"
-  printf 'locale: LC_CTYPE=%s LC_COLLATE=%s (선택=%s)\n' "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_UTF8_LOCALE:-없음}"
-  printf 'awk: %s\n' "$(awk --version 2>&1 | head -1 || awk -W version 2>&1 | head -1 || printf 'unknown')"
+  printf 'locale: LC_CTYPE=%s LC_COLLATE=%s (%s=%s, locale -a 후보 %s개)\n' \
+    "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_LOCALE_SOURCE:-미해결}" \
+    "${ORCH_UTF8_LOCALE:-없음}" "$(locale -a 2>/dev/null | grep -c . || printf 0)"
+  printf 'awk: %s\n' "$(awk --version 2>&1 | sed -n '1p' || printf 'unknown')"
   # The reason this is printed rather than merely set: the failure it guards
   # against is silent non-matching, so the only way a reader learns which
   # interpreter and locale a run actually got is to see them.
-  if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep -q hit; then
+  if [ -n "$(printf '한글\n' | awk '/^한글$/{print "hit"}')" ]; then
     printf 'ok   awk 멀티바이트 정규식 일치\n'
   else
     printf 'FAIL awk 가 멀티바이트 정규식을 일치시키지 못함 — 한국어 어휘 비교가 조용히 실패한다\n'
@@ -2206,7 +2234,7 @@ segment_cycle() {
     if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class"
+      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -2379,7 +2407,7 @@ main_loop() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class2"
+    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
