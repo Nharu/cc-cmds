@@ -192,6 +192,9 @@ DOC=""; DOC_DIR=""; DOC_KEY=""; SLUG=""; BASE=""; RUN_ID=""; RUN_DIR=""
 LEDGER=""; GRANT=""; REPORT=""
 
 derive_paths() {
+  # Document-derived paths. Retained for the degenerate case — a run that names
+  # only a document — and for the ONE path the shared contract deliberately
+  # keeps document-keyed: the audit sidecar an artifact predicate reads.
   DOC_DIR=$(cd "$(dirname "$DOC")" && pwd)
   local top
   top=$(cd "$DOC_DIR" && git rev-parse --show-toplevel 2>/dev/null || true)
@@ -209,6 +212,144 @@ derive_paths() {
   SLUG=$(printf '%s' "${DOC_KEY%.md}" | tr '/' '-')
   GRANT="$BASE/docs/pipeline-grant/$SLUG.md"
   LEDGER="$BASE/docs/pipeline-run/$SLUG.md"
+}
+
+# ---------------------------------------------------------------------------
+# Manifest — the run's own contract, and the thing a run is ABOUT
+#
+# Everything below used to be derived from a design document, which is why a run
+# that starts from a pull request or from a bare intent could not start at all:
+# the identifier, the authorization path, the ledger, the report and every
+# remediation target had nothing to derive from. The manifest supplies them, and
+# a document becomes one optional element inside it.
+# ---------------------------------------------------------------------------
+MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
+
+manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
+
+manifest_hdr_field() {
+  manifest_header | sed -n "s/.*[; ]$1=\([^;]*\).*/\1/p" | sed 's/[[:space:]]*$//'
+}
+
+manifest_field() {
+  # manifest_field <section> <key> — CANON rendering inside one `## <section>`.
+  awk -v want="## $1" -v key="$2" '
+    $0 == want { inb=1; next }
+    inb && /^## / { exit }
+    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
+  ' "$MANIFEST"
+}
+
+manifest_targets() { grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true; }
+
+target_field() {
+  # target_field <alias> <key>
+  manifest_targets | while IFS= read -r row; do
+    case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
+    printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
+    break
+  done
+}
+
+target_aliases() {
+  manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
+}
+
+canonical_targets() { manifest_targets | sed 's/[[:space:]]\{1,\}/ /g' | sort; }
+
+plan_fence_bytes() {
+  awk '/^## 실행 계획/{inb=1; next} inb && /^## /{exit}
+       inb && /^```/{f=!f; if(f) next; else exit} inb && f {print}' "$MANIFEST"
+}
+
+# The conjunction. Order matters: the ownership proof comes before anything that
+# would act on the file's contents.
+check_manifest() {
+  [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
+
+  # 1 — kind token, strict equality.
+  grep -q 'cc-run-manifest v1' "$MANIFEST" || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
+
+  # 10 — ownership proof, FAIL-CLOSED, and before the tie-break.
+  # This kind is about a RUN, not a document, so `owner-doc=` cannot be the
+  # proof: a run may have no document at all. The pair below replaces it, and
+  # replacing the proof is not the same as dropping it.
+  local h_run h_anchor
+  h_run=$(manifest_hdr_field 'run-id'); h_anchor=$(manifest_hdr_field 'anchor-key')
+  [ -n "$h_run" ]    || die "매니페스트 헤더에 run-id= 이 없습니다 — fail-closed"
+  [ -n "$h_anchor" ] || die "매니페스트 헤더에 anchor-key= 가 없습니다 — fail-closed"
+  [ "$h_run" = "$(manifest_field '런 정체' '런 id')" ] \
+    || die "헤더 run-id= 와 본문 「런 id」가 다릅니다"
+  [ "$h_anchor" = "$(manifest_field '런 정체' '앵커 키')" ] \
+    || die "헤더 anchor-key= 와 본문 「앵커 키」가 다릅니다"
+  RUN_ID="$h_run"; ANCHOR_KEY="$h_anchor"
+  ANCHOR_KIND=$(manifest_field '런 정체' '앵커 종류')
+
+  # 2 — exactly one authorization block. No append form exists, so a second is
+  # not residue from a normal path; it is tampering.
+  local n
+  n=$(grep -cE '^## 인가$' "$MANIFEST" || true)
+  [ "$n" = "1" ] || die "매니페스트에 「## 인가」 절이 ${n}개 — 정확히 하나여야 합니다"
+
+  # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
+  local ow
+  ow=$(manifest_hdr_field 'origin-worktree')
+  if [ -n "$ow" ] && [ "$ow" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
+    die "매니페스트 origin-worktree= 가 현재 워크트리와 다릅니다: $ow"
+  fi
+
+  # 4 — target preflight. A declared repo set with no verification leaves the
+  # silent-`.` fallback alive, so this is a hard stop BEFORE the driver starts.
+  local a wt cg
+  for a in $(target_aliases); do
+    wt=$(target_field "$a" '메인 워크트리')
+    cg=$(target_field "$a" '공통 git 디렉터리')
+    [ -d "$wt" ] || die "대상 '$a' 의 메인 워크트리가 없습니다: $wt"
+    [ "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$cg" ] \
+      || die "대상 '$a' 의 공통 git 디렉터리가 선언값과 다릅니다: $cg"
+    # 7 — every cutpoint token is in the vocabulary.
+    cutpoint_index "$(target_field "$a" '절단점')" >/dev/null \
+      || die "대상 '$a' 의 절단점 토큰이 어휘에 없습니다"
+  done
+
+  # 5·6 — the two digests that are computed, recorded, AND compared. Without
+  # this the fields ship in the state the binding-surface digest was in.
+  [ "$(canonical_targets | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '대상' '대상 맵 다이제스트')" ] \
+    || die "대상 맵 다이제스트가 대상 행과 일치하지 않습니다"
+  [ "$(plan_fence_bytes | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '실행 계획' '계획 다이제스트')" ] \
+    || die "계획 다이제스트가 실행 계획 펜스 바이트와 일치하지 않습니다"
+
+  # 8 — absolute deadline. `없음` is refused: a comment saying "required" means
+  # nothing while a validator accepts the absent value.
+  local dl
+  dl=$(manifest_field '인가' '벽시계 마감')
+  [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
+  printf '%s' "$dl" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
+
+  # 9 — an apply with no probe is refused at kickoff.
+  if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
+    [ -n "$(manifest_field '요소' '적용 지점')" ] || die "적용 주체가 파이프라인인데 적용 지점이 없습니다"
+    [ -n "$(manifest_field '요소' '적용 프로브')" ] || die "적용 주체가 파이프라인인데 적용 프로브가 없습니다"
+  fi
+
+  log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+# Manifest-derived paths. `BASE` from the declared worktree, everything else
+# from the run id — which is what closes the aliasing of two runs of one
+# document onto one ledger, one report, one worktree path and one session uuid.
+derive_paths_from_manifest() {
+  BASE=$(manifest_hdr_field 'origin-worktree')
+  [ -n "$BASE" ] || BASE=$(git rev-parse --show-toplevel)
+  BASE=$(dirname "$(cd "$BASE" && git rev-parse --path-format=absolute --git-common-dir)")
+  GRANT="$BASE/docs/pipeline-grant/$RUN_ID.md"
+  LEDGER="$BASE/docs/pipeline-run/$RUN_ID.md"
+  DOC=$(manifest_field '요소' '설계 문서')
+  case "$DOC" in ''|'(없음)') DOC=""; DOC_KEY="$ANCHOR_KEY"; DOC_DIR="$BASE" ;;
+    *) DOC="$BASE/$DOC"; DOC_KEY=$(manifest_field '요소' '설계 문서'); DOC_DIR=$(dirname "$DOC") ;;
+  esac
+  SLUG="$RUN_ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -1468,6 +1609,7 @@ fi
 DETACH=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --manifest)   MANIFEST="$2"; shift 2 ;;
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
     --detach)     DETACH=1; shift ;;
@@ -1483,12 +1625,24 @@ done
 # arm that is being refused.
 platform_supported || platform_refuse || exit $?
 
-[ -n "$DOC" ] || { echo "run.sh: --doc <abs-path> is required" >&2; exit 2; }
-[ -f "$DOC" ] || { echo "run.sh: design document not found: $DOC" >&2; exit 2; }
-
-derive_paths
-[ -n "$RUN_ID" ] || RUN_ID=$(grant_blocks | tail -1)
-[ -n "$RUN_ID" ] || { echo "run.sh: --run-id is required when the grant has no block" >&2; exit 2; }
+# A run is about a MANIFEST. `--doc` remains accepted as the degenerate case —
+# one document, one target — because absorbing it costs one branch here and
+# keeps a document-only invocation working without a second schema anywhere
+# else. What is no longer true is that a document is REQUIRED: a run anchored on
+# a pull request, a branch, or a bare intent has no document to name.
+if [ -n "$MANIFEST" ]; then
+  [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
+  check_manifest
+  derive_paths_from_manifest
+elif [ -n "$DOC" ]; then
+  [ -f "$DOC" ] || { echo "run.sh: design document not found: $DOC" >&2; exit 2; }
+  derive_paths
+  [ -n "$RUN_ID" ] || RUN_ID=$(grant_blocks | tail -1)
+  [ -n "$RUN_ID" ] || { echo "run.sh: --run-id is required when the grant has no block" >&2; exit 2; }
+else
+  echo "run.sh: --manifest <abs-path> (or --doc <abs-path> for the degenerate case) is required" >&2
+  exit 2
+fi
 
 rundir_init
 
@@ -1498,7 +1652,11 @@ if [ "$DETACH" = "1" ]; then
   # restart. The right invariant is `driver lifetime >= stage lifetime`, and it
   # is bought by detaching the driver once rather than each stage N times.
   set -m
-  nohup "$0" --doc "$DOC" --run-id "$RUN_ID" >> "$LOG_FILE" 2>&1 < /dev/null &
+  if [ -n "$MANIFEST" ]; then
+    nohup "$0" --manifest "$MANIFEST" >> "$LOG_FILE" 2>&1 < /dev/null &
+  else
+    nohup "$0" --doc "$DOC" --run-id "$RUN_ID" >> "$LOG_FILE" 2>&1 < /dev/null &
+  fi
   printf '%s\n' "$!" > "$RUN_DIR/driver.pid"
   ps -o pgid= -p "$!" 2>/dev/null | tr -d ' ' > "$RUN_DIR/driver.pgid"
   set +m

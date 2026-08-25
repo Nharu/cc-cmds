@@ -49,6 +49,13 @@ Both fields are required unconditionally. Where writer and reader are the same s
 
 **Absence is treated as mismatch.** A missing `owner-doc=` does not prove ownership, so it fails closed in both directions. This is what makes the non-injective slug safe.
 
+**A kind whose subject is not a document proves ownership with a different pair.** The guard above is stated in terms of the document key because every kind defined here is *about* a document. A kind that is about a **run** has no document to key on — a run may start from a pull request, a branch, or a bare intent — and applying this guard unchanged would classify every such file as a forgery. Such a kind therefore declares its own proof pair in its payload schema and carries it in the same machine header, and the guard reads that pair instead. Two properties are **not** relaxed:
+
+- **The proof is still fail-closed.** A missing or mismatched proof field takes the same disposition as a missing `owner-doc=`: do not apply, do not write, surface it. What changes is *which* fields constitute the proof, never whether one is required. `origin-worktree=`'s fail-open tie-break stays a tie-break — it is sound only *between* files that have already proven ownership, so a schema that dropped the proof and kept the tie-break would have inverted the order.
+- **`owner-doc=` remains required wherever a document exists.** A run that does happen to carry a design document still records it, so a reader looking for that document's runs can find them; the field simply stops being the *proof*. Where there is no document the field is written as the explicit absence marker rather than omitted, so "no document" and "field forgotten" stay distinguishable.
+
+The run manifest is today's only such kind, and `_common/pipeline-sidecar.md` fixes its pair.
+
 **`origin-worktree=` — optional, and its absence rule is deliberately the opposite of `owner-doc=`'s.** Because `<base>` is the main worktree root (§1.1) while the document key is taken against the document's own worktree root, two *different* linked worktrees holding a document at the *same* repo-relative path now derive the same `<base>` **and** the same document key, so the guard above cannot separate them. The optional field carries `git rev-parse --show-toplevel` run from the document's own directory — a value §1.1 already computes, so this adds no new derivation.
 
 - **Writers** emit it whenever that value is available.

@@ -455,6 +455,114 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 16c. 매니페스트 계약 — 계산되고 기록되고 **비교되는가**
+# ---------------------------------------------------------------------------
+# 이 절이 잡는 실패는 「필드가 없다」가 아니라 「필드가 있는데 아무도 대조하지
+# 않는다」이며, 그것이 이 파이프라인에서 반복해 나온 부류다.
+MF_DIR="$WORK/manifest"; mkdir -p "$MF_DIR"
+MF="$MF_DIR/plan.md"
+HERE=$(git rev-parse --show-toplevel)
+CG=$(cd "$HERE" && git rev-parse --path-format=absolute --git-common-dir)
+
+write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override]
+  local out="$1" tdig="${2:-}" pdig="${3:-}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$HERE | 공통 git 디렉터리=$CG | 베이스 브랜치=master | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
+  local plan='{ "steps": ["audit", "implement"] }'
+  [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  [ -n "$pdig" ] || pdig=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
+  {
+    printf '# 파이프라인 런 매니페스트 — 20260825-deadbeef\n'
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20260825-deadbeef;\n'
+    printf '     anchor-kind=repo; anchor-key=Nharu/cc-cmds;\n'
+    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$HERE"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-08-25T00:00:00Z\n**런 id**: 20260825-deadbeef\n'
+    printf '**앵커 종류**: repo\n**앵커 키**: Nharu/cc-cmds\n**사용자 확인 문면**: 돌려라\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$tdig" "$trow"
+    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+    printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 진행\n' "$pdig"
+    printf '```json\n%s\n```\n\n' "$plan"
+    printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
+    printf '**벽시계 마감**: 2026-08-26T09:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**사다리 가용 단 수**: 2\n**미선언 상황 처분**: park\n'
+  } > "$out"
+}
+
+MANIFEST="$MF"; write_manifest "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "정상 매니페스트가 열 연언을 통과한다"
+else
+  bad "매니페스트 검사" "정상 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+
+# 앵커가 문서가 아니어도 성립해야 한다 — 그것이 이 변경의 요점이다.
+check "앵커 종류가 문서가 아니어도 읽힌다" "$(manifest_field '런 정체' '앵커 종류')" "repo"
+check "대상 별칭 조회"                     "$(target_field home '원격 슬러그')"      "Nharu/cc-cmds"
+check "대상별 절단점 조회"                 "$(target_field home '절단점')"           "머지"
+
+# 5·6 — 다이제스트가 실제로 비교되는가. 이것이 없으면 필드는 장식이다.
+write_manifest "$MF" "0000000000000000000000000000000000000000000000000000000000000000"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "대상 맵 다이제스트" "틀린 다이제스트를 통과시켰다 — 기록만 되고 비교되지 않는다"
+else
+  ok "대상 맵 다이제스트 불일치가 거부된다"
+fi
+write_manifest "$MF" "" "1111111111111111111111111111111111111111111111111111111111111111"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "계획 다이제스트" "틀린 다이제스트를 통과시켰다"
+else
+  ok "계획 다이제스트 불일치가 거부된다"
+fi
+
+# 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
+write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "소유 증명" "run-id= 없이 통과했다 — fail-closed 가 아니다"
+else
+  ok "run-id= 부재는 fail-closed"
+fi
+write_manifest "$MF"; sed 's/^\*\*런 id\*\*: .*/**런 id**: 다른값/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "소유 증명" "헤더와 본문의 런 id 가 달라도 통과했다"
+else
+  ok "헤더와 본문의 런 id 불일치가 거부된다"
+fi
+
+# 8 — 「없음」을 받는 검증자가 있으면 필수성은 성립하지 않는다.
+write_manifest "$MF"; sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 없음/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "벽시계 마감" "「없음」을 받아들였다 — 최외곽 상한이 성립하지 않는다"
+else
+  ok "벽시계 마감의 「없음」이 거부된다"
+fi
+
+# 2 — append 형식이 없으므로 둘째 인가 블록은 잔재가 아니라 변조다.
+write_manifest "$MF"; printf '\n## 인가\n**런 최대 절단점**: 배포\n' >> "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "인가 블록" "둘째 인가 블록을 통과시켰다 — 더 넓은 인가가 조용히 들어온다"
+else
+  ok "둘째 인가 블록이 거부된다"
+fi
+
+# 4 — 검증 없는 레포 집합 선언은 조용한 폴백을 살려 둔다.
+write_manifest "$MF"; sed "s|메인 워크트리=$HERE|메인 워크트리=/없는/경로|" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "대상 프리플라이트" "실재하지 않는 워크트리를 통과시켰다"
+else
+  ok "대상 프리플라이트가 실재하지 않는 워크트리를 거부한다"
+fi
+
+# 7 — 미인식 절단점은 조용한 0이 아니라 하드 오류다.
+write_manifest "$MF"; sed 's/절단점=머지 |/절단점=없는토큰 |/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "절단점 토큰" "어휘 밖 토큰을 통과시켰다"
+else
+  ok "대상 행의 어휘 밖 절단점이 거부된다"
+fi
+
+MANIFEST=""
+
+# ---------------------------------------------------------------------------
 # 17. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
 # ---------------------------------------------------------------------------
 # 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
