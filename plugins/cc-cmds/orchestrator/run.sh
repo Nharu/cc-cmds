@@ -92,11 +92,25 @@ readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
 # ladder terminates whichever way the envelope turns out to behave.
 readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
 # Consecutive silent polls before a live stage is classed as the limit shape.
-# The VALUE is a residual verification item — the distribution of how long a
-# normal resume stays quiet has never been measured — so this is a placeholder
-# with the mechanism it parameterises already correct. What is NOT provisional
-# is that the count must be greater than one.
-readonly STALL_SILENT_POLLS=3
+#
+# Measured (90,584 inter-entry gaps across 40 transcripts): p50 1.4s, p90 26s,
+# p95 46s, p99 366s, max 3581s. The tail is heavy and the two populations —
+# healthy-but-quiet and actually-stalled — OVERLAP, so no count separates them.
+# The corpus is also the wrong population by construction: those are interactive
+# sessions where a long gap is human think-time, which makes the tail an upper
+# bound on the headless case rather than a measurement of it. One headless
+# observation sat silent for 45s while healthy.
+#
+# So this is a cheap early filter, NOT a classifier, and it is affordable to be
+# wrong: a misclassified healthy stage does not get killed, it gets backed off —
+# the driver waits in escalating intervals and still collects the stage when it
+# finishes. A signal is only sent at the backoff cap, and never at all to a
+# stage that is not boundary-idempotent.
+#
+# 6 × the 10s poll = 60s, covering ~96% of that inflated corpus. The real bound
+# on a stage that grows without producing is the wall-clock deadline and the run
+# cycle budget, not this number.
+readonly STALL_SILENT_POLLS=6
 readonly WORKTREE_INFIX="-run-"          # reserved; also the boundary gate's exception pattern
 readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
 
@@ -590,8 +604,38 @@ wt_remove_or_defer() {
 # driver cannot reclaim a tree it does not own.
 # ---------------------------------------------------------------------------
 session_uuid() {
-  # Derived, never stored: owner-doc | segment | stage | attempt.
-  printf '%s|%s|%s|%s' "$DOC_KEY" "$1" "$2" "$3" | shasum -a 256 | cut -c1-32
+  # session_uuid <stage-id> [attempt] — derived, never stored.
+  #
+  # Shaped as a real UUID because `--session-id` rejects anything else: a bare
+  # 32-hex digest is refused with "Must be a valid UUID" (measured). Shaping the
+  # digest keeps the value derivable — which is the whole point, since nothing
+  # records it and the transcript has to be findable again from the stage id
+  # alone.
+  local h
+  h=$(printf '%s|%s|%s' "$DOC_KEY" "$1" "${2:-1}" | shasum -a 256 | cut -c1-32)
+  printf '%s-%s-%s-%s-%s' "${h:0:8}" "${h:8:4}" "${h:12:4}" "${h:16:4}" "${h:20:12}"
+}
+
+# The progress oracle's file. The session transcript GROWS while a stage runs;
+# the `--output-format json` envelope does not — it is written once, at exit.
+# Polling the envelope therefore reported "silent" for every healthy stage from
+# its very first poll, which is what refuted the consecutive-poll item: no count
+# can separate a normal resume from a stall when the signal never moves at all.
+transcript_path() {
+  # The assignments are on separate lines ON PURPOSE. `local a="$1" b="$a"` is a
+  # trap: the builtin's words are all expanded before `local` runs, so `$a` is
+  # read from the OUTER scope — unset here, which under `set -u` aborts the
+  # function. It aborted quietly through a caller's `|| printf ''`, and the
+  # visible symptom was that every healthy stage looked permanently silent.
+  local stage="$1"
+  local cachef uuid p
+  cachef="$RUN_DIR/$stage.transcript"
+  if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
+  uuid=$(session_uuid "$stage")
+  p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | head -1)
+  [ -n "$p" ] || return 1
+  printf '%s\n' "$p" > "$cachef"
+  printf '%s' "$p"
 }
 
 stage_spawn() {
@@ -613,9 +657,14 @@ stage_spawn() {
   # tree is reclaimable with `kill -- -$pgid`. Without it the "group" silently
   # becomes the CALLER's, which is why the pgid is read back before it is
   # recorded rather than assumed.
+  # `--session-id` is passed so the transcript is FINDABLE — that file is the
+  # progress oracle, and without a caller-chosen id there is no way to locate
+  # it. The value is derived rather than stored, so a restarted driver
+  # re-derives the same one.
   set -m
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       exec nohup "$CLI_BIN" -p "$prompt" \
+        --session-id "$(session_uuid "$stage")" \
         --output-format json --strict-mcp-config "$@" \
         > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
@@ -826,9 +875,25 @@ resume_verdict() {
   # the mark to be per-stage too: consecutive silence cannot be counted for one
   # stage against a mark another stage moved.
   local tr mt age markf silf sil
-  tr="$RUN_DIR/log/$stage.json"
+  # The TRANSCRIPT, not the result envelope. What this buys and what it does
+  # not: transcript bytes separate "running" from "stalled", but they cannot
+  # separate "slow but progressing" from "growing without producing" — the
+  # shared team protocol hangs an ask rather than a kill on this same signal for
+  # exactly that reason. The orchestrator's backstop against the second case is
+  # not the oracle but the wall-clock deadline and the run cycle budget.
+  tr=$(transcript_path "$stage" 2>/dev/null || printf '')
+  # An absent transcript early in a stage is normal — the file appears a few
+  # seconds in. An absent transcript on a stage that has been alive for a while
+  # is the oracle failing to locate its own signal, which reads exactly like a
+  # stall and is how a wiring bug once made every healthy stage look stuck. Say
+  # it once rather than letting it masquerade.
+  if [ -z "$tr" ] && [ $(( $(now_epoch) - started )) -gt 60 ] \
+     && [ ! -f "$RUN_DIR/$stage.notranscript" ]; then
+    : > "$RUN_DIR/$stage.notranscript"
+    warn "$stage: 60초가 지나도 트랜스크립트를 찾지 못했다 — 진행성 오라클이 신호를 잃었을 수 있다"
+  fi
   markf="$RUN_DIR/$stage.mark"; silf="$RUN_DIR/$stage.silent"
-  mt=$( [ -f "$tr" ] && wc -c < "$tr" | tr -d ' ' || printf '0' )
+  mt=$( [ -n "$tr" ] && [ -f "$tr" ] && wc -c < "$tr" | tr -d ' ' || printf '0' )
   age=$(( $(now_epoch) - started ))
 
   if [ "$mt" != "$(cat "$markf" 2>/dev/null || printf 'x')" ]; then

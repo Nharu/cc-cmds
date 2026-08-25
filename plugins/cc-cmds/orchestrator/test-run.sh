@@ -414,6 +414,47 @@ rm -f "$RUN_DIR/Sdead.pid"
 if stage_alive Snothing; then bad "stage_alive" "기록 없는 스테이지에 참"; else ok "stage_alive: pid 기록이 없으면 거짓"; fi
 
 # ---------------------------------------------------------------------------
+# 16b. 진행성 오라클 — 폴하는 파일이 스테이지가 도는 동안 실제로 자라는가
+# ---------------------------------------------------------------------------
+# 결과 envelope 은 종료 시 한 번에 쓰이므로 그것을 폴하면 살아 있는 스테이지가
+# 첫 폴부터 언제나 침묵으로 읽힌다 — 어떤 N도 그것을 고치지 못한다.
+if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep -q 'transcript_path'; then
+  ok "진행성 오라클이 트랜스크립트를 폴한다"
+else
+  bad "진행성 오라클" "결과 envelope 을 폴한다 — 도는 내내 0바이트라 신호가 없다"
+fi
+if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep -qE 'log/\$stage\.json'; then
+  bad "진행성 오라클" "여전히 출력 JSON 크기를 읽는다"
+else
+  ok "출력 JSON 크기를 진행성 신호로 쓰지 않는다"
+fi
+# 트랜스크립트를 찾으려면 호출자가 고른 세션 id 가 넘어가야 한다. 함수만 있고
+# 호출부가 없으면 파일을 찾을 수도 없다 — 이번 반증의 직접 원인이 그것이었다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep -q -- '--session-id'; then
+  ok "stage_spawn 이 --session-id 를 넘긴다"
+else
+  bad "session-id" "session_uuid 가 정의만 되고 호출부가 없다"
+fi
+# `--session-id` 는 유효한 UUID 를 요구한다 (맨 32-hex 는 거부됨, 실측).
+uu=$(DOC_KEY=x session_uuid "S4:seg:1")
+if printf '%s' "$uu" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  ok "session_uuid 가 UUID 형태를 낸다 ($uu)"
+else
+  bad "session_uuid" "UUID 형태가 아니다: $uu"
+fi
+check "session_uuid 는 결정적이다" "$(DOC_KEY=x session_uuid 'S4:seg:1')" "$uu"
+if [ "$(DOC_KEY=y session_uuid 'S4:seg:1')" != "$uu" ]; then
+  ok "앵커가 다르면 다른 세션 id"
+else
+  bad "session_uuid" "앵커가 달라도 같은 id — 두 런이 한 트랜스크립트로 별칭된다"
+fi
+if [ "$STALL_SILENT_POLLS" -gt 1 ]; then
+  ok "침묵 상한이 1보다 크다 ($STALL_SILENT_POLLS)"
+else
+  bad "침묵 상한" "단일 폴로는 조용한 스테이지와 정체를 가르지 못한다"
+fi
+
+# ---------------------------------------------------------------------------
 # 17. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
 # ---------------------------------------------------------------------------
 # 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
