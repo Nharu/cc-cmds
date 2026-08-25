@@ -80,6 +80,15 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 readonly STAGE_IDS="S0 S1 S2 S3 S4 S5 S6 S7 S8 S9"
+# Rungs per identity. Two caps carry weight on this number — the per-segment
+# cycle budget `K*F + 1` and the run-level budget that sums it — and they used to
+# be unrelated literals sitting in two functions. Naming it once is what makes
+# "the same value" true rather than merely intended.
+readonly LADDER_RUNGS=4
+# Generations. A re-plan is allowed to happen; a run that keeps re-planning is a
+# run that never lands anything, and the second generation is where that becomes
+# visible rather than the tenth.
+readonly GENERATION_MAX=2
 readonly HOLLOW_SUCCESS_RETRIES=1        # one retry, then a distinct park reason
 readonly CRASH_RETRIES=3
 readonly BACKOFF_START_SECONDS=60
@@ -374,13 +383,23 @@ derive_paths_from_manifest() {
 # audit's reconciliation edits are not filtered out, so they DO move it — and
 # that is the intent, because those edits invalidate the plan.
 # ---------------------------------------------------------------------------
+# NORMALIZED before hashing. Unnormalized, this digest moved on whitespace alone,
+# which disqualified it as a comparison predicate — a re-convergence that only
+# re-wrapped a paragraph would read as a moved binding surface. The three
+# normalizations below were measured against five cases: the three no-op edits
+# stay invariant, a binding-tier edit still moves it (with a non-empty diff, so
+# the invariance is not vacuous), and a moved section still moves it.
 binding_digest() {
   awk '
     /^## / { insec = ($0 ~ /^## 구현 시 검증 항목[[:space:]]*$/) ? 1 : 0 }
     insec && /^(- )?(\*\*검증 등급\*\*|검증 등급): / { next }
     insec && /^(- )?(\*\*구현 시 검증 기록\*\*|구현 시 검증 기록): / { next }
     { print }
-  ' "$DOC" | shasum -a 256 | cut -d' ' -f1
+  ' "$DOC" \
+    | tr -d '\r' \
+    | sed 's/[[:space:]]*$//' \
+    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }' \
+    | shasum -a 256 | cut -d' ' -f1
 }
 
 whole_digest() { shasum -a 256 "$DOC" | cut -d' ' -f1; }
@@ -797,11 +816,39 @@ report_append() {
 # ---------------------------------------------------------------------------
 # Blocked queue. Nothing here wakes anyone.
 # ---------------------------------------------------------------------------
+# The falsifiability clause, made mechanical. Every park NAMES its scope and its
+# cause, and a park that cannot name both is not a decision — it is a bug. So an
+# unrecognised value is a hard error rather than a quiet default: these arguments
+# are literals written by this driver, which makes a bad one a code defect a test
+# catches, never a runtime input.
+#
+#   act  — a terminal act is blocked (unauthorized, a failed check, a protection
+#          rule, an act budget). Stops THAT ACT and nothing else; the segment's
+#          artifacts survive and it is reported as 완성-미착지.
+#   cone — a premise downstream work stands on has been refuted (no artifact, a
+#          crash, an invalid review, the cycle budget, a file-set escape, an
+#          identity's park rung). Stops what depends on that premise; siblings
+#          not derived from it keep running.
+#   run  — the run cannot judge the state a later irreversible act would
+#          transform, or its own anchor is invalid (audit failure, plan failure,
+#          an apply of unknown outcome). Stops the DECLARED blast radius.
+#
+# The anti-rule is what makes this bite: A BLOCKED ACT NEVER ESCALATES to a cone
+# or a run stop, and the absence of an answer is not a cause. Without it one
+# cutpoint typo parks every segment and the night produces nothing; with it every
+# segment reaches PR and N blocked merges pile up in the morning report next to
+# the commands that finish them.
+readonly PARK_SCOPES="act cone run"
+readonly PARK_CAUSES="막힘 무효화 불명"
+
 park() {
-  local target="$1" reason="$2" observed="$3" recmd="${4:-(없음)}"
-  ledger_row 'blocked' "대상=$target" "사유=$reason" "관측=$observed" "재개 명령=$recmd"
-  report_append "보류" "$target — $reason — $observed"
-  log "park: $target ($reason)"
+  local target="$1" scope="$2" cause="$3" reason="$4" observed="$5" recmd="${6:-(없음)}"
+  case " $PARK_SCOPES " in *" $scope "*) : ;; *) die "park 스코프를 지명하지 못했다: '$scope' (대상 $target)" ;; esac
+  case " $PARK_CAUSES " in *" $cause "*) : ;; *) die "park 원인을 지명하지 못했다: '$cause' (대상 $target)" ;; esac
+  ledger_row 'blocked' "대상=$target" "스코프=$scope" "원인=$cause" \
+    "사유=$reason" "관측=$observed" "재개 명령=$recmd"
+  report_append "보류" "$target — [$scope/$cause] $reason — $observed"
+  log "park: $target ($scope/$cause · $reason)"
 }
 
 # ---------------------------------------------------------------------------
@@ -893,8 +940,10 @@ alias_for_slug() {
 # declaration's `**레포**` slug; planner-built plans leave it empty and inherit
 # the home alias, which is what keeps a single-repo run byte-identical to before.
 plan_repo() {
-  awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$RUN_DIR/plan.tsv" 2>/dev/null \
-    | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+  local v
+  v=$(awk -F'\t' -v s="$1" '$1 == s { print $2; exit }' "$RUN_DIR/plan.tsv" 2>/dev/null \
+    | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  plan_uncell "$v"
 }
 
 seg_alias() {
@@ -1168,7 +1217,7 @@ stage_wait_all() {
               # move that can leave the outside world half-changed with nobody
               # able to say how.
               warn "$s: 백오프 벽시계 상한 — 비멱등 스테이지라 어떤 신호도 보내지 않는다"
-              park "$s" "외부 상태 불확정" "정체 상한 초과, 스테이지는 계속 돌게 두었다"
+              park "$s" act 불명 "외부 상태 불확정" "정체 상한 초과, 스테이지는 계속 돌게 두었다"
               human_reconcile "$s"
             fi
             continue
@@ -1407,7 +1456,8 @@ kill_permitted() { boundary_idempotent "${1%%:*}"; }
 # Surfaced in the morning report, and durable in the ledger, because the state
 # it names is one only a human can settle.
 human_reconcile() {
-  ledger_row 'blocked' "대상=$1" "사유=외부 상태 불확정" "관측=사람 대조 필요" "재개 명령=(없음)"
+  ledger_row 'blocked' "대상=$1" "스코프=act" "원인=불명" \
+    "사유=외부 상태 불확정" "관측=사람 대조 필요" "재개 명령=(없음)"
   report_append "사람 대조 필요" "$1 — 정체 상한을 넘겼고 신호를 보내지 않았다. 외부 상태를 사람이 확인해야 한다"
 }
 
@@ -1428,16 +1478,16 @@ boundary_idempotent() {
 merge_gate() {
   local seg="$1" branch="$2" pr slug al
   al=$(seg_alias "$seg") || al=""
-  [ -n "$al" ] || { park "$seg" "게이트 park" "세그먼트의 레포가 매니페스트에 선언되지 않음"; return 1; }
+  [ -n "$al" ] || { park "$seg" cone 무효화 "게이트 park" "세그먼트의 레포가 매니페스트에 선언되지 않음"; return 1; }
   slug=$(alias_slug "$al")
   if ! authorized 머지; then
-    park "$seg" "인가 한도" "권한 절단점이 머지를 인가하지 않음" "gh -R $slug pr merge $branch"
-    return 1
+    park "$seg" act 막힘 "인가 한도" "권한 절단점이 머지를 인가하지 않음" "gh -R $slug pr merge $branch"
+    return 2
   fi
   pr=$(gh_q "$slug" pr list --head "$branch" --json number --jq '.[0].number' || printf '')
   [ -n "$pr" ] || {
-    park "$seg" "게이트 park" "PR을 찾지 못함${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr list --head $branch"
-    return 1
+    park "$seg" act 막힘 "게이트 park" "PR을 찾지 못함${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr list --head $branch"
+    return 2
   }
 
   # A merge grant does NOT come with an --admin exception. A driver blocked by
@@ -1449,19 +1499,19 @@ merge_gate() {
     if ! gh_q "$slug" pr checks "$pr" >/dev/null; then
       # Interactively this branch enumerates the failed non-required checks and
       # asks. Unattended the answer never comes, so it IS the park branch.
-      park "$seg" "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh -R $slug pr merge $pr"
-      return 1
+      park "$seg" act 막힘 "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh -R $slug pr merge $pr"
+      return 2
     fi
   elif ! gh_q "$slug" pr checks "$pr" --required >/dev/null; then
-    park "$seg" "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
-    return 1
+    park "$seg" act 막힘 "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
+    return 2
   fi
 
   local head_sha
   head_sha=$(gh_q "$slug" pr view "$pr" --json headRefOid --jq '.headRefOid' || printf '')
   gh_q "$slug" pr merge "$pr" --merge --match-head-commit "$head_sha" --delete-branch >/dev/null || {
-    park "$seg" "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
-    return 1
+    park "$seg" act 막힘 "게이트 park" "머지 실패(보호 규칙 가능성) — --admin 은 사용하지 않음${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr merge $pr"
+    return 2
   }
   # Refresh immediately after the server-side merge so the next segment's
   # `wt_create` branches from a base that actually contains this merge. Without
@@ -1475,6 +1525,113 @@ merge_gate() {
   ledger_row 'segment' "id=$seg" "상태=머지됨" "브랜치=$branch" "PR=$pr" \
     "레포=$slug" "머지 커밋=$MERGE_COMMIT" "베이스 sha=$(base_sha "$al")"
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# The four run-level caps. Each of them answers "when does this night end?" for a
+# different reason, and each records what it stopped.
+# ---------------------------------------------------------------------------
+
+# 1 — WALL-CLOCK DEADLINE. A dispatch gate and NEVER a kill signal: a stage in
+# flight runs to completion and is classified normally, because killing it would
+# manufacture exactly the ambiguous half-done state the rest of this driver
+# exists to avoid. But no merge happens after the deadline either — `merge_gate`
+# is executed inline by the driver rather than spawned, so "stages in flight
+# finish" does not cover it, and a merge landing an hour after the deadline is a
+# terminal act nobody authorized for that hour.
+deadline_epoch() {
+  local dl
+  [ -n "$MANIFEST" ] || { printf ''; return 0; }
+  dl=$(manifest_field '인가' '벽시계 마감')
+  [ -n "$dl" ] && [ "$dl" != "없음" ] || { printf ''; return 0; }
+  # BSD `date -j` is the parse form, and it is correct here rather than merely
+  # convenient: this driver refuses to start on any non-darwin host at entry, so
+  # the portable shim would be dead code guarding a branch that cannot run.
+  date -j -f '%Y-%m-%dT%H:%M:%SZ' "${dl%%+*}" '+%s' 2>/dev/null || printf ''  # lint-bash-portability: disable=date -j
+}
+
+past_deadline() {
+  local d; d=$(deadline_epoch)
+  [ -n "$d" ] || return 1
+  [ "$(now_epoch)" -ge "$d" ]
+}
+
+# 2 — RUN CYCLE BUDGET, the sum of the per-segment budgets. Both use LADDER_RUNGS
+# so the two cannot drift apart; they used to be unrelated literals in two
+# functions, which is how "the same K" became a comment rather than a fact.
+segment_cap() { local f="$1"; [ "$f" -ge 1 ] || f=1; printf '%s' $(( LADDER_RUNGS * f + 1 )); }
+
+run_cycle_budget() {
+  local total=0 seg repo files deps n
+  while IFS="$(printf '\t')" read -r seg repo files deps; do
+    [ -n "$seg" ] || continue
+    n=$(printf '%s' "$(plan_uncell "$files")" | tr ',' '\n' | grep -c . || printf '1')
+    total=$(( total + $(segment_cap "$n") ))
+  done < "$RUN_DIR/plan.tsv"
+  printf '%s' "$total"
+}
+
+RUN_CYCLES=0
+RUN_CYCLE_BUDGET=0
+run_cycles_spend() { RUN_CYCLES=$(( RUN_CYCLES + ${1:-1} )); printf '%s' "$RUN_CYCLES"; }
+
+# 3 — GENERATIONS. A re-plan is allowed; a run that keeps re-planning never lands
+# anything, and this is where that stops being invisible. The `세대` field was a
+# hardcoded 1, so the row said "generation" while measuring nothing.
+generation_now() { cat "$RUN_DIR/generation" 2>/dev/null || printf '1'; }
+generation_bump() {
+  local g; g=$(( $(generation_now) + 1 ))
+  printf '%s' "$g" > "$RUN_DIR/generation"
+  printf '%s' "$g"
+}
+
+# 4 — FILE-SET ESCAPE. Two arms, not one. Inside a repository an escape refutes
+# the premise the plan rests on, which is a CONE stop. ACROSS repositories it is
+# something else entirely: a stage reached into a repository nobody authorized
+# for it, so the run stops and the reach itself is recorded as an authorization
+# event. The old "wave sibling" arm is gone — overlapping declared files are the
+# designed normal now, and keeping that arm would park CORRECT plans.
+#
+# The cross-repository arm is judged on THIS RUN's other segment worktrees, not
+# on anyone's main worktree. A main worktree is where a person works, and
+# attributing their edits to a stage would park a whole run on someone else's
+# afternoon — a false positive with the most expensive possible consequence. A
+# sibling segment worktree has no such ambiguity: this run created it, and
+# nothing but this run's stages should ever be writing there.
+fileset_escape() {
+  # fileset_escape <seg> <declared-csv> <worktree>
+  local seg="$1" declared="$2" wt="$3" actual esc="" f cross=0 other op
+  for other in $(cat "$RUN_DIR/started.txt" 2>/dev/null); do
+    [ "$other" = "$seg" ] && continue
+    op=$(wt_path "$other" 2>/dev/null) || continue
+    [ -d "$op" ] || continue
+    [ -n "$( cd "$op" && git status --porcelain 2>/dev/null )" ] && { cross=1; esc="$esc [$other]$op"; }
+  done
+  actual=$( cd "$wt" && git diff --name-only HEAD 2>/dev/null; cd "$wt" && git diff --name-only --cached 2>/dev/null )
+  [ -n "$actual" ] || { [ "$cross" = "1" ] || return 0; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case ",$(printf '%s' "$declared" | tr -d ' '),"  in
+      *",$(printf '%s' "$f" | tr -d ' '),"*) continue ;;
+    esac
+    esc="$esc $f"
+  done <<EOF
+$(printf '%s\n' "$actual" | sort -u)
+EOF
+  [ -n "$esc" ] || return 0
+  # Both sets are written out. A row that names only the escape leaves the
+  # reader unable to tell an over-narrow declaration from a stage that wandered.
+  ledger_row 'segment' "id=$seg" "상태=park" \
+    "선언 파일 집합=$declared" "실제 편집 집합=$(printf '%s' "$actual" | tr '\n' ',' | sed 's/,$//')" \
+    "이탈=$(printf '%s' "$esc" | sed 's/^ //')"
+  if [ "$cross" = "1" ]; then
+    ledger_row '자율 승인' "kind=citation" "결정=레포 간 파일 집합 이탈로 런 정지" \
+      "기각된 대안=세그먼트만 park" "근거=인가되지 않은 레포에 손이 닿았다"
+    park "$seg" run 무효화 "게이트 park" "레포 간 파일 집합 이탈: $(printf '%s' "$esc" | sed 's/^ //')"
+  else
+    park "$seg" cone 무효화 "게이트 park" "선언 밖 파일 편집: $(printf '%s' "$esc" | sed 's/^ //')"
+  fi
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1569,24 +1726,24 @@ apply_stage() {
   fi
 
   if ! authorized 배포; then
-    park "$seg" "인가 한도" "권한 절단점이 배포를 인가하지 않음 — 명령은 보고서로 인계" "$cmd"
+    park "$seg" act 막힘 "인가 한도" "권한 절단점이 배포를 인가하지 않음 — 명령은 보고서로 인계" "$cmd"
     report_append "적용 인계" "$seg — 미인가로 실행하지 않음, 사람이 실행할 명령: $cmd"
     return 0
   fi
 
-  [ -n "$MERGE_COMMIT" ] || { park "$seg" "게이트 park" "머지 커밋을 고정할 수 없어 apply 를 시작하지 않는다"; return 1; }
+  [ -n "$MERGE_COMMIT" ] || { park "$seg" act 막힘 "게이트 park" "머지 커밋을 고정할 수 없어 apply 를 시작하지 않는다"; return 2; }
   root=$(seg_root "$seg") || return 1
   wt=$(apply_worktree "$seg") || return 1
   if [ ! -d "$wt" ]; then
     ( cd "$root" && git worktree add --detach "$wt" "$MERGE_COMMIT" >/dev/null 2>&1 ) \
-      || { park "$seg" "게이트 park" "apply 워크트리를 머지 커밋에 고정하지 못했다: $MERGE_COMMIT"; return 1; }
+      || { park "$seg" act 막힘 "게이트 park" "apply 워크트리를 머지 커밋에 고정하지 못했다: $MERGE_COMMIT"; return 2; }
   fi
   ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
 
   local probe; probe=$(apply_probe_cmd "$seg")
   if [ -z "$probe" ]; then
-    park "$seg" "게이트 park" "적용 프로브가 없어 필요 여부를 판정할 수 없다 — apply 를 실행하지 않는다"
-    return 1
+    park "$seg" act 막힘 "게이트 park" "적용 프로브가 없어 필요 여부를 판정할 수 없다 — apply 를 실행하지 않는다"
+    return 2
   fi
 
   apply_probe "$wt" "$probe"; pre=$?
@@ -1599,8 +1756,8 @@ apply_stage() {
     *) # Anything that is not "no changes" or "changes pending" is the probe
        # itself failing. Refuse BEFORE touching anything: an apply whose need
        # could not be established is an apply with no evidence behind it.
-       park "$seg" "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
-       return 1 ;;
+       park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre) — 아무것도 건드리기 전에 거부한다" "$cmd"
+       return 2 ;;
   esac
 
   log "$seg: S9 apply 실행 (재시도 없음) — $cmd"
@@ -1620,7 +1777,7 @@ apply_stage() {
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 2 → 사후 $post"
-  park "$seg" "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
+  park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
   APPLY_PARKED_RADIUS="$radius"
   return 1
@@ -1755,6 +1912,32 @@ self_check() {
 # ---------------------------------------------------------------------------
 LADDER=""
 
+# The manifest declares how many rungs this run may climb (4 or 2). It is NOT a
+# clamp. A clamp would silently rewrite a rung-4 transition into a rung-2 one, so
+# the shipped `case "$rung" in 4) park` arm becomes unreachable and the TERMINAL
+# rung disarms itself — the ladder would then have no end at all. What the
+# declaration does instead is make a transition into a rung outside the available
+# set park immediately, with its own reason.
+ladder_available() {
+  local n
+  [ -n "$MANIFEST" ] && n=$(manifest_field '인가' '사다리 가용 단 수')
+  case "${n:-}" in
+    2) printf '2' ;;
+    4|'') printf '%s' "$LADDER_RUNGS" ;;
+    *) printf '%s' "$LADDER_RUNGS" ;;
+  esac
+}
+
+# Problem identity carries the REPOSITORY. Without it two repositories that share
+# a path — and they do, `plugins/cc-cmds/...` is the same string in every clone —
+# collapse into one identity, so a defect in one spends the other's rungs and the
+# ladder reaches its terminal rung for a file nobody touched twice.
+identity_of() {
+  local seg="$1" path="$2" cat="$3" slug
+  slug=$(seg_slug "$seg" 2>/dev/null); [ -n "$slug" ] || slug='(레포 미상)'
+  printf '%s::%s::%s' "$slug" "$path" "$cat"
+}
+
 ladder_init() { LADDER="$RUN_DIR/ladder.tsv"; : > "$LADDER"; }
 
 ladder_rung() {
@@ -1770,11 +1953,16 @@ ladder_rung() {
   printf '0'
 }
 
+# Returns the next rung, or 99 when that rung is not in the available set. The
+# caller parks on 99 with its own reason — clamping here is the failure mode
+# described above.
 ladder_bump() {
-  local path="$1" cat="$2" cur next
+  local path="$1" cat="$2" cur next avail
   cur=$(ladder_rung "$path" "$cat")
   next=$((cur + 1))
-  [ "$next" -gt 4 ] && next=4
+  avail=$(ladder_available)
+  [ "$next" -gt "$LADDER_RUNGS" ] && next="$LADDER_RUNGS"
+  if [ "$next" -gt "$avail" ]; then printf '99'; return 0; fi
   printf '%s\t%s\t%s\n' "$path" "$cat" "$next" >> "$LADDER"
   printf '%s' "$next"
 }
@@ -1854,29 +2042,46 @@ segment_cycle() {
   # git and `gh` call in this cycle belongs to this segment's repository, not
   # to whichever one the document happened to live in.
   al=$(seg_alias "$seg") || al=""
-  [ -n "$al" ] || { park "$seg" "게이트 park" "선언되지 않은 레포: $(plan_repo "$seg")"; return 1; }
+  [ -n "$al" ] || { park "$seg" cone 무효화 "게이트 park" "선언되지 않은 레포: $(plan_repo "$seg")"; return 1; }
   seg_repo=$(alias_root "$al")
+  files=$(plan_uncell "$files")
   f_count=$(printf '%s' "$files" | tr ',' '\n' | grep -c . || printf '1')
-  # Width x depth: the ladder is monotone in 4 rungs per identity, per-file rung
-  # inheritance collapses a file's total to 4, so the cycle count is bounded by
-  # 4F + 1 with F the segment's DECLARED file-set size — a measured quantity,
-  # recorded at plan time and watched by the file-set escape predicate.
-  cap=$(( 4 * f_count + 1 ))
+  # Width x depth: the ladder is monotone in LADDER_RUNGS rungs per identity and
+  # per-file rung inheritance collapses a file's total to that same number, so
+  # the cycle count is bounded by K*F + 1 with F the segment's DECLARED file-set
+  # size — a measured quantity, recorded at plan time and watched by the file-set
+  # escape predicate. The run-level budget sums this same function.
+  cap=$(segment_cap "$f_count")
+  printf '%s\n' "$seg" >> "$RUN_DIR/started.txt"
 
-  wt=$(wt_create "$seg" "$branch") || { park "$seg" "게이트 park" "워크트리 생성 실패"; return 1; }
+  wt=$(wt_create "$seg" "$branch") || { park "$seg" cone 무효화 "게이트 park" "워크트리 생성 실패"; return 1; }
   pre_head=$( cd "$wt" && git rev-parse HEAD )
   local stash_before; stash_before=$(stash_ref "$seg_repo")
+  local plan_digest; plan_digest=$(binding_digest)
   ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "사전 HEAD=$pre_head" \
     "레포=$(alias_slug "$al")" "베이스 sha=$(base_sha "$al")" "워크트리=$wt" \
-    "plan-binding-digest=$(binding_digest)"
+    "plan-binding-digest=$plan_digest"
 
   while [ "$cycle" -lt "$cap" ]; do
     cycle=$((cycle + 1))
+    # Loop head, one of the two places the deadline is read. A gate, not a kill:
+    # nothing in flight is touched, the next dispatch simply does not happen.
+    if past_deadline; then
+      park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 다음 사이클을 디스패치하지 않는다"
+      return 1
+    fi
+    if [ "$(run_cycles_spend 1)" -gt "$RUN_CYCLE_BUDGET" ]; then
+      park "$seg" cone 무효화 "예산·벽시계" "런 사이클 예산 ${RUN_CYCLE_BUDGET} 소진"
+      return 1
+    fi
 
     # --- S4 IMPLEMENT ------------------------------------------------------
     local sid="S4:$seg:$cycle"
     quiet_window_begin
-    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle)\""
+    # `declared_files` travels ON the dispatch line. The set bounds the cycle
+    # budget and the escape check judges against it, so a stage that never sees
+    # it is being measured against a contract it was not told.
+    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
     stage_wait_all "$sid"
     quiet_window_end
     local rc pred class
@@ -1886,12 +2091,13 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class"
 
-    stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
+    fileset_escape "$seg" "$files" "$wt" || return 1
+    stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
 
     case "$class" in
       '정상 완료') : ;;
       '의도된 park')
-        park "$seg" "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
+        park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
         return 1 ;;
       '공허한 성공')
         # One retry, then a DISTINCT park reason. Not zero, because one
@@ -1899,12 +2105,12 @@ segment_cycle() {
         # because a clean exit with no artifact is itself evidence the next
         # attempt does the same — improvisation is deterministic.
         log "$seg: 공허한 성공 — 1회만 재시도"
-        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도)\""
+        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
+          park "$seg" cone 무효화 "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
         fi ;;
-      *) park "$seg" "게이트 park" "크래시"; return 1 ;;
+      *) park "$seg" cone 무효화 "게이트 park" "크래시"; return 1 ;;
     esac
 
     # --- S5 REVIEW ---------------------------------------------------------
@@ -1918,11 +2124,11 @@ segment_cycle() {
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "종단 부류=$class"
-    [ "$class" = "정상 완료" ] || { park "$seg" "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+    [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
 
     # --- S6 TRIAGE ---------------------------------------------------------
     local tri_out tri
-    tri_out=$(judgment_call triage "$rp") || { park "$seg" "게이트 park" "트리아지 판단 호출 실패"; return 1; }
+    tri_out=$(judgment_call triage "$rp") || { park "$seg" cone 무효화 "게이트 park" "트리아지 판단 호출 실패"; return 1; }
     tri=$(judgment_result "$tri_out")
     local p0 p1
     p0=$(printf '%s' "$tri" | jq -r '.p0_count // 0')
@@ -1951,26 +2157,34 @@ segment_cycle() {
     local any_park=0 fx
     while IFS= read -r fx; do
       [ -n "$fx" ] || continue
-      local fpath fcat flane rung
+      local fpath fcat flane rung fid
       fpath=$(printf '%s' "$fx" | jq -r '.identity_path')
       fcat=$(printf '%s' "$fx" | jq -r '.identity_category')
       flane=$(printf '%s' "$fx" | jq -r '.lane')
+      fid=$(identity_of "$seg" "$fpath" "$fcat")
       rung=$(ladder_bump "$fpath" "$fcat")
-      ledger_row 'problem' "동일성=$fpath::$fcat" "현재 단=R$rung" \
+      ledger_row 'problem' "동일성=$fid" "현재 단=R$rung" \
         "payload=$(printf '%s' "$fx" | jq -r '.root_cause_payload')"
       ledger_row '자율 승인' "kind=lane" "결정=$flane" \
         "기각된 대안=$(printf '%s' "$fx" | jq -r '.lane_rationale')" "근거=R$rung"
       case "$rung" in
-        4) park "$fpath::$fcat" "사다리 R4" "재발이 근본 재설계를 소비한 뒤 다시 나타남"; any_park=1 ;;
+        99) park "$fid" cone 무효화 "사다리 단 부재" \
+              "다음 단이 이 런의 가용 집합($(ladder_available)단) 밖 — 클램프하지 않고 여기서 멈춘다"
+            any_park=1 ;;
+        4) park "$fid" cone 무효화 "사다리 R4" "재발이 근본 재설계를 소비한 뒤 다시 나타남"; any_park=1 ;;
         2|3)
           sid="S1':$seg:$cycle:$(printf '%s' "$fpath" | tr '/' '-')"
           stage_spawn "$sid" "$(alias_root "$(home_alias)")" "/cc-cmds:design-reconverge $DOC \"$fpath, $fcat\""
           stage_wait_all "$sid"
           if predicate_reconverge "$sid"; then
+            # The impact payload is an AUDIT record now, not a control signal.
+            # What decides whether the plan is stale is a MEASUREMENT of the
+            # document, not the model's self-report about it: a self-report
+            # cannot be checked against what actually changed, and the field
+            # that carried it had no reader at all.
             judgment_call redesign-impact "$RUN_DIR/log/$sid.json" >/dev/null || true
-            REPLAN_NEEDED=1
           else
-            park "$fpath::$fcat" "게이트 park" "재수렴 종단 술어 거짓"; any_park=1
+            park "$fid" cone 무효화 "게이트 park" "재수렴 종단 술어 거짓"; any_park=1
           fi ;;
         *) : ;;   # R1 is the next S4 pass with the finding as its scope directive
       esac
@@ -1978,11 +2192,19 @@ segment_cycle() {
 $(printf '%s' "$tri" | jq -c '.findings[] | select(.severity=="P0" or .severity=="P1")')
 EOF
     [ "$any_park" = "1" ] && { ledger_row 'segment' "id=$seg" "상태=park"; return 1; }
-    [ "${REPLAN_NEEDED:-0}" = "1" ] && { log "$seg: 구속면 이동 — 세그먼트 재계획 필요"; return 2; }
+    # Digest comparison, in the place the latch used to be. The old global was
+    # set unconditionally and never cleared, so ONE re-convergence anywhere
+    # parked every later segment for the rest of the run — it failed safe, but
+    # it failed on every run that reached this line.
+    local now_digest; now_digest=$(binding_digest)
+    if [ -n "$plan_digest" ] && [ "$now_digest" != "$plan_digest" ]; then
+      log "$seg: 구속면 다이제스트 이동 ($plan_digest -> $now_digest) — 재계획 필요"
+      return 2
+    fi
   done
 
   if [ "$cycle" -ge "$cap" ]; then
-    park "$seg" "사다리 R4" "사이클 상한 ${cap}(4F+1, F=$f_count) 도달"
+    park "$seg" cone 무효화 "사이클 예산 소진" "사이클 상한 ${cap}(${LADDER_RUNGS}F+1, F=$f_count) 도달"
     return 1
   fi
 
@@ -1990,15 +2212,31 @@ EOF
   local recorded_base; recorded_base=$(ledger_last 'segment' '베이스 sha')
   if [ -n "$recorded_base" ] && [ "$recorded_base" != "$(base_sha "$al")" ]; then
     log "$seg: 외부 드리프트 감지 — rebase 후 리뷰 재실행 필요"
-    rebase_onto_base "$seg" "$wt" 외부 "$al" || { park "$seg" "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
+    rebase_onto_base "$seg" "$wt" 외부 "$al" || { park "$seg" cone 무효화 "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
   fi
-  merge_gate "$seg" "$branch" || return 1
+  if past_deadline; then
+    park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
+      "gh -R $(seg_slug "$seg") pr merge $branch"
+    return 4
+  fi
+  local mrc=0; merge_gate "$seg" "$branch" || mrc=$?
+  # 2 is the ACT arm: the merge is blocked, everything the segment produced
+  # survives, and the run keeps going. Collapsing it into 1 is the eight-site
+  # defect this slice exists to fix — one cutpoint typo used to park every
+  # segment even though each had reached PR.
+  [ "$mrc" = "2" ] && return 4
+  [ "$mrc" = "0" ] || return 1
 
   # --- S9 APPLY ------------------------------------------------------------
   # Runs only when the segment declares one. It consumes NO ladder rung: an
   # apply failure is not a defect recurring, it is a terminal act that did not
   # complete, and feeding it to the ladder would spend rungs meant for defects.
-  apply_stage "$seg" || return 3
+  local arc=0; apply_stage "$seg" || arc=$?
+  # 2 is the ACT arm here too — refused before touching anything, so nothing is
+  # in an unknown state and no radius is stopped. 1 is 적용 불명, the only RUN
+  # scope this driver reaches from a segment.
+  [ "$arc" = "2" ] && return 4
+  [ "$arc" = "0" ] || return 3
 
   wt_remove_or_defer "$seg"
   return 0
@@ -2027,8 +2265,8 @@ main_loop() {
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | head -1)" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
-    '의도된 park') park "S2" "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
-    *) park "S2" "게이트 park" "종단 부류 $class2"; return 0 ;;
+    '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
+    *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
 
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.
@@ -2060,18 +2298,27 @@ main_loop() {
   # branch produced it; that is what lets the declaration bypass the planner
   # without forking the execution path.
   ladder_init
-  local merged=0 parked=0 total=0 seg files rc
+  local merged=0 parked=0 landed=0 total=0 seg files rc
   total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
+  RUN_CYCLE_BUDGET=$(run_cycle_budget)
+  ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
+    "런 사이클 예산=$RUN_CYCLE_BUDGET" "세대 상한=$GENERATION_MAX" \
+    "벽시계 마감=$( [ -n "$MANIFEST" ] && manifest_field '인가' '벽시계 마감' || printf '(없음)' )"
   while IFS="$(printf '\t')" read -r seg repo files deps; do
     [ -n "$seg" ] || continue
+    # The other of the two loop heads that read the deadline.
+    if past_deadline; then
+      park "$seg" cone 무효화 "예산·벽시계" "벽시계 마감 경과 — 디스패치하지 않는다"
+      parked=$((parked + 1)); continue
+    fi
     if in_halted_radius "$seg"; then
-      park "$seg" "게이트 park" "앞선 적용 불명의 폭발 반경 안 — 디스패치하지 않는다"
+      park "$seg" cone 무효화 "게이트 park" "앞선 적용 불명의 폭발 반경 안 — 디스패치하지 않는다"
       parked=$((parked + 1)); continue
     fi
     # Dependency guard on a serial traversal. A serial walk of a topological
     # order IS a complete DAG implementation — layers are not parallelism.
     if ! deps_satisfied "$deps"; then
-      park "$seg" "게이트 park" "선행 슬라이스가 완료되지 않음: $deps"
+      park "$seg" cone 무효화 "게이트 park" "선행 슬라이스가 완료되지 않음: $deps"
       parked=$((parked + 1)); continue
     fi
     cross_repo_deps "$seg" "$deps"
@@ -2079,8 +2326,16 @@ main_loop() {
     segment_cycle "$seg" "$files" || rc=$?
     case "$rc" in
       0) merged=$((merged + 1)); printf '%s\n' "$seg" >> "$RUN_DIR/done.txt" ;;
-      2) log "재계획 필요 — 남은 세그먼트를 park 하고 아침에 넘긴다"
-         park "$seg" "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
+      2) local g; g=$(generation_bump)
+         ledger_row 'generation' "세대=$g" "전체 sha256=$(whole_digest)" "사유=구속면 다이제스트 이동"
+         if [ "$g" -gt "$GENERATION_MAX" ]; then
+           log "세대 상한 $GENERATION_MAX 초과 — 런을 멈추고 아침 배치로 넘긴다"
+           park "$seg" run 무효화 "예산·벽시계" "세대 상한 ${GENERATION_MAX} 초과 — 재계획을 반복하지 않는다"
+           RUN_HALTED=1
+         else
+           log "재계획 필요(세대 $g) — 남은 세그먼트를 park 하고 아침에 넘긴다"
+           park "$seg" run 무효화 "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
+         fi
          parked=$((parked + 1)) ;;
       3) # An apply of unknown outcome. The stop is the DECLARED radius and
          # nothing wider — widening it would turn one unjudgeable state into a
@@ -2088,14 +2343,21 @@ main_loop() {
          # segments build on a state nobody can describe.
          radius_park "$seg" "$APPLY_PARKED_RADIUS"
          parked=$((parked + 1)) ;;
+      4) # 완성-미착지. A terminal act was blocked and NOTHING else was. The
+         # segment's branch, commits, review and pull request all survive, and
+         # the morning report carries the command that finishes it. This arm is
+         # the whole point of the anti-rule: without it these became segment
+         # parks and a single cutpoint typo emptied the night.
+         landed=$((landed + 1))
+         report_append "완성-미착지" "$seg — 산출물은 전부 보존됐고 말단 행위 하나만 막혔다" ;;
       *) parked=$((parked + 1)) ;;
     esac
   done < "$RUN_DIR/plan.tsv"
 
   ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
     "관측 시각=$(now_iso)"
-  report_append "종료" "머지 ${merged}건 · 보류 ${parked}건 · 슬라이스 ${total}개"
-  log "런 종료 (머지 $merged · 보류 $parked)"
+  report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · 보류 ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
+  log "런 종료 (머지 $merged · 완성-미착지 $landed · 보류 $parked)"
 }
 
 # Record the radius an unknown apply outcome stops, and hold it so the walk can
@@ -2139,7 +2401,7 @@ in_halted_radius() {
 # it is recorded rather than assumed understood.
 cross_repo_deps() {
   local seg="$1" deps="$2" mine d other
-  case "$deps" in ''|'없음') return 0 ;; esac
+  case "$deps" in ''|'-'|'없음') return 0 ;; esac
   mine=$(seg_alias "$seg") || return 0
   printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
     d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
@@ -2152,12 +2414,16 @@ cross_repo_deps() {
   return 0
 }
 
+# An empty plan cell is written as `-`; see the note at the writer.
+plan_cell() { local v="$1"; [ -n "$v" ] && printf '%s' "$v" || printf '-'; }
+plan_uncell() { local v="$1"; [ "$v" = "-" ] && printf '' || printf '%s' "$v"; }
+
 # `선행` is satisfied when every named slice is in this run's done list. The
 # literal `없음` is a POSITIVE statement of independence; a missing line is not,
 # which is why the field is required rather than optional.
 deps_satisfied() {
   local deps="$1" d
-  case "$deps" in ''|'없음') return 0 ;; esac
+  case "$deps" in ''|'-'|'없음') return 0 ;; esac
   # The trailing newline is required, not cosmetic: `read` returns non-zero on a
   # final line that has none, so the loop body never runs for the LAST item and
   # a one-element `선행` list is satisfied vacuously — every dependency guard
@@ -2178,17 +2444,22 @@ plan_from_declaration() {
   # truncated or misnumbered — worth stopping for rather than guessing which
   # number was meant.
   if [ -n "$declared" ] && [ "$declared" != "$derived" ]; then
-    park "S3" "게이트 park" "슬라이스 수 체크섬 불일치: 선언 ${declared} vs 파생 ${derived}"
+    park "S3" run 무효화 "게이트 park" "슬라이스 수 체크섬 불일치: 선언 ${declared} vs 파생 ${derived}"
     return 1
   fi
-  ledger_row 'generation' "세대=1" "전체 sha256=$(whole_digest)" \
+  ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
   : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
   for id in $(slice_ids "$doc"); do
+    # `-` for an absent value, never an empty column. Tab is an IFS WHITESPACE
+    # character, so `IFS=tab read a b c d` collapses a run of tabs and every
+    # field after an empty one shifts left by one — the declared files would be
+    # read as the repo and the dependencies as the files. Measured: a two-file
+    # segment came back with F=1 and its budget silently halved.
     printf '%s\t%s\t%s\t%s\n' "$id" \
-      "$(slice_field "$doc" "$id" '레포')" \
-      "$(slice_field "$doc" "$id" '선언 파일')" \
-      "$(slice_field "$doc" "$id" '선행')" >> "$RUN_DIR/plan.tsv"
+      "$(plan_cell "$(slice_field "$doc" "$id" '레포')")" \
+      "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
+      "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$id" "상태=계획됨" \
       "선언 파일 집합=$(slice_field "$doc" "$id" '선언 파일')" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
@@ -2203,7 +2474,7 @@ plan_from_declaration() {
 plan_via_planner() {
   local doc="$1" plan_out plan seg_mode adopted seg
   if ! plan_out=$(judgment_call segment-plan "$doc"); then
-    park "S3" "게이트 park" "세그먼트 계획 판단 호출 실패"
+    park "S3" run 무효화 "게이트 park" "세그먼트 계획 판단 호출 실패"
     return 1
   fi
   plan=$(judgment_result "$plan_out")
@@ -2213,7 +2484,7 @@ plan_via_planner() {
   # failure, while the adoption flag is already a required boolean in the
   # shipped schema and refused an adversarial prose instruction to lie.
   if [ "${SLICING_GATED:-0}" = "1" ] && [ "$adopted" != "true" ]; then
-    park "S3" "게이트 park" "선언은 있으나 필드가 불완전하고 계획기가 그것을 채택하지 않았다 (author_grouping_adopted=$adopted)"
+    park "S3" run 무효화 "게이트 park" "선언은 있으나 필드가 불완전하고 계획기가 그것을 채택하지 않았다 (author_grouping_adopted=$adopted)"
     return 1
   fi
   if [ "${SLICING_GATED:-0}" = "1" ]; then
@@ -2225,13 +2496,13 @@ plan_via_planner() {
     report_append "탐지기 불일치" "선언 필드는 불완전한데 계획기가 채택했다 — 계획기 판정을 따르고 기록한다"
   fi
   seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
-  ledger_row 'generation' "세대=1" "전체 sha256=$(whole_digest)" \
+  ledger_row 'generation' "세대=$(generation_now)" "전체 sha256=$(whole_digest)" \
     "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
   : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
   for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
-    printf '%s\t%s\t%s\t%s\n' "$seg" "" \
-      "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')" \
-      "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')" >> "$RUN_DIR/plan.tsv"
+    printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
+      "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
+      "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"

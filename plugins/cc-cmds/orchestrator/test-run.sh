@@ -759,7 +759,7 @@ check "베이스 브랜치는 별칭별 선언값 (홈)"   "$(base_branch fe)" "
 check "베이스 브랜치는 별칭별 선언값 (비홈)" "$(base_branch be)" "trunk"
 
 # 계획 행의 `레포` 가 세그먼트의 별칭을 정한다. 백틱은 선언 렌더링의 일부다.
-printf 'segA\t`o/alpha`\ta.txt\t없음\nsegB\t`o/beta`\tb.txt\t슬라이스 segA\nsegX\t`o/gamma`\tx.txt\t없음\nsegN\t\tn.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+printf 'segA\t`o/alpha`\ta.txt\t없음\nsegB\t`o/beta`\tb.txt\t슬라이스 segA\nsegX\t`o/gamma`\tx.txt\t없음\nsegN\t-\tn.txt\t없음\n' > "$RUN_DIR/plan.tsv"
 check "세그먼트 별칭 (홈 레포)"    "$(seg_alias segA)" "fe"
 check "세그먼트 별칭 (다른 레포)"  "$(seg_alias segB)" "be"
 check "레포 미선언 세그먼트는 빈 별칭" "$(seg_alias segX 2>/dev/null)" ""
@@ -1010,6 +1010,205 @@ fi
 MANIFEST=""; DOC="$AP_DOC_SAVE"; LEDGER="$AP_LEDGER_SAVE"; BASE="$AP_BASE_SAVE"; SLUG="$AP_SLUG_SAVE"
 grant_field() { printf 'PR'; }          # 이후 절을 위해 원래 스텁으로 되돌린다
 rm -f "$RUN_DIR/plan.tsv"
+
+# ---------------------------------------------------------------------------
+# 20. 종료 불변식 — 스코프와 원인을 지명하지 못하는 park 은 버그다
+# ---------------------------------------------------------------------------
+TI_DIR="$WORK/term"; mkdir -p "$TI_DIR"
+TI_LEDGER_SAVE="$LEDGER"; LEDGER="$TI_DIR/ledger.md"; : > "$LEDGER"
+TI_BASE_SAVE="$BASE"; BASE="$TI_DIR/base"; mkdir -p "$BASE/docs"
+
+# 모든 park 호출부가 어휘 안의 스코프·원인을 싣는가. 주석은 먼저 걷어낸다.
+UNSCOPED=$(sed 's/#.*//' "$DRIVER" | grep -nE '(^|[^_a-z])park "' \
+  | grep -vE 'park "[^"]*" (act|cone|run) (막힘|무효화|불명) ' | grep -v radius_park || true)
+if [ -z "$UNSCOPED" ]; then
+  ok "모든 park 호출부가 스코프와 원인을 지명한다"
+else
+  bad "park 스코프" "지명하지 않은 호출부: $(printf '%s' "$UNSCOPED" | head -3 | tr '\n' ' ')"
+fi
+# 어휘 밖 값은 조용한 기본값이 아니라 하드 오류다.
+if ( park t 없는스코프 막힘 r o ) >/dev/null 2>&1; then
+  bad "park 어휘" "어휘 밖 스코프를 받아들였다"
+else
+  ok "어휘 밖 스코프는 하드 오류다"
+fi
+if ( park t act 없는원인 r o ) >/dev/null 2>&1; then
+  bad "park 어휘" "어휘 밖 원인을 받아들였다"
+else
+  ok "어휘 밖 원인은 하드 오류다"
+fi
+: > "$LEDGER"
+park tgt act 막힘 "인가 한도" "관측문" "재호출"
+if grep -q '스코프=act' "$LEDGER" && grep -q '원인=막힘' "$LEDGER"; then
+  ok "원장 blocked 행이 스코프와 원인을 싣는다"
+else
+  bad "원장" "blocked 행에 스코프·원인이 없다"
+fi
+
+# 기소된 여덟 — 말단 행위가 막히면 세그먼트를 버리지 않는다. merge_gate 의
+# ACT 팔은 1(=CONE) 이 아니라 2 를 돌려주고, segment_cycle 이 그것을
+# 완성-미착지(4)로 옮긴다.
+if [ "$(sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -c '^    return 2$')" -ge 3 ]; then
+  ok "머지 게이트의 막힌 행위가 ACT 팔로 빠진다"
+else
+  bad "ACT 팔" "머지 실패가 여전히 세그먼트를 버린다 — 절단점 오타 하나가 밤 전체를 비운다"
+fi
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q 'return 4'; then
+  ok "완성-미착지가 자기 반환 코드를 가진다"
+else
+  bad "완성-미착지" "막힌 말단 행위가 park 과 구별되지 않는다"
+fi
+if sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep -q '완성-미착지'; then
+  ok "아침 보고서가 완성-미착지를 따로 센다"
+else
+  bad "보고서" "완성-미착지가 보류에 섞인다"
+fi
+
+# 사이클 상한은 자기 사유를 쓴다 — 가장 흔한 park 이 가장 드문 사유로
+# 분류되면 원장이 사다리가 소진됐다고 말하는데 사다리는 시작도 안 했다.
+if grep -q '"사이클 예산 소진"' "$DRIVER"; then
+  ok "사이클 상한이 사이클 예산 소진으로 라벨링된다"
+else
+  bad "오라벨" "사이클 상한이 여전히 사다리 R4 로 기록된다"
+fi
+if sed -n '/^  if \[ "\$cycle" -ge "\$cap" \]/,/^  fi$/p' "$DRIVER" | grep -q '사다리 R4'; then
+  bad "오라벨" "사이클 상한 자리에 사다리 R4 가 남았다"
+else
+  ok "사이클 상한 자리에 사다리 R4 라벨이 없다"
+fi
+
+# K 를 상수로 명명했는가. 두 상한이 같은 값을 참조해야 하는데 예전에는
+# 서로 무관한 리터럴 둘이었다.
+check "동일성당 단 수가 상수다" "$LADDER_RUNGS" "4"
+check "세그먼트 상한 = K*F+1 (F=3)" "$(segment_cap 3)" "13"
+check "세그먼트 상한 = K*F+1 (F=1)" "$(segment_cap 1)" "5"
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -qE 'cap=\$\(\( *4 \*'; then
+  bad "K" "세그먼트 상한이 리터럴 4 를 쓴다 — 두 상한이 갈라진다"
+else
+  ok "세그먼트 상한이 상수를 참조한다"
+fi
+printf 'a\t-\tx.txt,y.txt\t없음\nb\t-\tz.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+check "런 사이클 예산은 세그먼트 예산의 합" "$(run_cycle_budget)" "14"
+# 빈 칸을 그대로 쓰면 안 되는 이유의 회귀. 탭은 IFS 공백 문자라 연속 탭이
+# 접히고, 빈 칸 뒤의 모든 필드가 한 칸씩 밀린다 — 선언 파일이 레포로, 선행이
+# 파일로 읽혀 예산이 조용히 절반이 된다.
+printf 'a\t\tx.txt,y.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+if [ "$(run_cycle_budget)" = "9" ]; then
+  bad "빈 칸" "빈 레포 칸이 필드를 밀지 않았다 — 이 단언이 낡았거나 픽스처가 틀렸다"
+else
+  ok "빈 칸은 필드를 밀어 버린다 (그래서 쓰는 쪽이 - 를 넣는다)"
+fi
+if sed -n '/^plan_from_declaration()/,/^}/p' "$DRIVER" | grep -q 'plan_cell' \
+   && sed -n '/^plan_via_planner()/,/^}/p' "$DRIVER" | grep -q 'plan_cell'; then
+  ok "두 계획 생성기가 모두 빈 칸을 - 로 쓴다"
+else
+  bad "빈 칸" "한쪽 생성기가 빈 칸을 그대로 쓴다"
+fi
+rm -f "$RUN_DIR/plan.tsv"
+
+# 문제 동일성에 레포 성분이 있는가. 없으면 같은 경로를 가진 두 레포가 한
+# 동일성으로 무너져 한쪽 결함이 다른 쪽 단을 소비한다.
+printf 'segA\t`o/alpha`\ta.txt\t없음\n' > "$RUN_DIR/plan.tsv"
+MANIFEST="$MR_MF"
+check "동일성이 레포를 싣는다" "$(identity_of segA src/x.ts logic)" "o/alpha::src/x.ts::logic"
+MANIFEST=""
+rm -f "$RUN_DIR/plan.tsv"
+
+# 사다리 가용 단은 매니페스트에서 읽고, 클램프가 아니라 park 이다.
+LADDER_SAVE="$LADDER"; LADDER="$TI_DIR/ladder.tsv"; : > "$LADDER"
+check "가용 단 기본값" "$(ladder_available)" "4"
+check "첫 등장은 R1" "$(ladder_bump p logic)" "1"
+check "재발은 R2"   "$(ladder_bump p logic)" "2"
+: > "$LADDER"
+ap_manifest_rungs() {
+  { printf '# r\n<!-- cc-run-manifest v1 -->\n\n## 인가\n**사다리 가용 단 수**: 2\n'; } > "$TI_DIR/plan.md"
+  MANIFEST="$TI_DIR/plan.md"
+}
+ap_manifest_rungs
+check "가용 단을 매니페스트에서 읽는다" "$(ladder_available)" "2"
+check "가용 집합 안: R1" "$(ladder_bump p logic)" "1"
+check "가용 집합 안: R2" "$(ladder_bump p logic)" "2"
+check "가용 집합 밖으로의 전이는 클램프가 아니라 신호" "$(ladder_bump p logic)" "99"
+if sed -n '/^ladder_bump()/,/^}/p' "$DRIVER" | grep -q 'printf .99'; then
+  ok "가용 집합 밖은 park 신호로 나온다 (클램프하면 종단 단이 무장 해제된다)"
+else
+  bad "사다리" "가용 단을 클램프한다 — 출하된 종단 단 분기에 영영 도달하지 못한다"
+fi
+MANIFEST=""; LADDER="$LADDER_SAVE"
+
+# 세대 상한.
+rm -f "$RUN_DIR/generation"
+check "첫 세대는 1" "$(generation_now)" "1"
+check "재계획이 세대를 올린다" "$(generation_bump)" "2"
+check "상한을 넘는 세대가 관측된다" "$(generation_bump)" "3"
+if [ "$(generation_now)" -gt "$GENERATION_MAX" ]; then
+  ok "세대 상한 초과가 판정 가능하다 ($GENERATION_MAX)"
+else
+  bad "세대 상한" "상한을 넘겨도 판정되지 않는다"
+fi
+rm -f "$RUN_DIR/generation"
+if grep -q '"세대=1"' "$DRIVER"; then
+  bad "세대" "하드코딩된 세대=1 이 남았다 — 행이 세대를 말하면서 아무것도 재지 않는다"
+else
+  ok "세대 행이 실제 세대를 싣는다"
+fi
+
+# 벽시계 마감은 디스패치 게이트이지 kill 신호가 아니다.
+if sed -n '/^past_deadline()/,/^}/p' "$DRIVER" | grep -qE 'kill|reap_orphan'; then
+  bad "마감" "마감이 kill 신호로 쓰인다 — 비행 중 스테이지를 죽이면 모호한 반쯤 상태가 생긴다"
+else
+  ok "마감은 kill 신호가 아니다"
+fi
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -B8 'merge_gate "\$seg"' | grep -q 'past_deadline'; then
+  ok "마감 이후에는 머지하지 않는다 (인라인 실행이라 「비행 중 완주」에 덮이지 않는다)"
+else
+  bad "마감" "마감 뒤에도 머지가 난다"
+fi
+
+# REPLAN_NEEDED latch 제거 + 다이제스트 비교 배선.
+if grep -q 'REPLAN_NEEDED' "$DRIVER"; then
+  bad "latch" "latch 하는 REPLAN_NEEDED 가 남았다 — 한 번 서면 이후 전 세그먼트를 park 한다"
+else
+  ok "latch 하는 REPLAN_NEEDED 가 제거됐다"
+fi
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q 'plan_digest'; then
+  ok "재계획 판정이 다이제스트 측정에 키잉된다"
+else
+  bad "재계획" "모델 자기 보고에 키잉된다"
+fi
+# 정규화가 실제로 걸렸는가 — 공백에 흔들리면 비교 술어로 부적격이다.
+TI_DOC_SAVE="${DOC:-}"; DOC="$TI_DIR/d.md"
+printf '# t\n\n\n본문\n' > "$DOC"; TI_D1=$(binding_digest)
+printf '# t\r\n\n\n\n본문   \r\n' > "$DOC"; TI_D2=$(binding_digest)
+check "정규화: CRLF·후행 공백·빈 줄 런에 불변" "$TI_D2" "$TI_D1"
+printf '# t\n\n\n본문 다름\n' > "$DOC"; TI_D3=$(binding_digest)
+if [ "$TI_D3" != "$TI_D1" ]; then
+  ok "정규화가 실제 변경까지 지우지는 않는다"
+else
+  bad "정규화" "내용이 달라도 같은 다이제스트 — 술어가 공허하다"
+fi
+DOC="$TI_DOC_SAVE"
+
+# 파일 집합 이탈 — 양쪽 집합을 다 적어야 과소 선언과 배회를 구별할 수 있다.
+if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep -q '실제 편집 집합'; then
+  ok "이탈 행이 선언 집합과 실제 집합을 모두 적는다"
+else
+  bad "이탈 행" "이탈만 적어 과소 선언과 배회를 구별할 수 없다"
+fi
+if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep -q '형제'; then
+  bad "이탈 팔" "웨이브 형제 팔이 남았다 — 겹치는 선언 파일은 이제 설계된 정상이라 올바른 계획을 park 한다"
+else
+  ok "웨이브 형제 팔이 없다 (2분기)"
+fi
+
+# declared_files 가 디스패치 줄에 실린다.
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q '선언 파일: \$files'; then
+  ok "declared_files 가 디스패치 줄에 실린다"
+else
+  bad "디스패치" "스테이지가 자기가 대조당할 계약을 듣지 못한다"
+fi
+
+LEDGER="$TI_LEDGER_SAVE"; BASE="$TI_BASE_SAVE"
 
 # ---------------------------------------------------------------------------
 # 20. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다

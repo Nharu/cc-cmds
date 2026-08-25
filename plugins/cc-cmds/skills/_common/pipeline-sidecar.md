@@ -260,7 +260,7 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
-| `blocked` | `대상` · `사유` · `관측` · `재개 명령` |
+| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명) · `사유` · `관측` · `재개 명령` |
 
 **`실행 버전` belongs to `stage-result`, not to `segment`.** The session uuid is derived from `owner-doc|구간|단계|시도`, so `시도` must be durable — otherwise a reboot re-derives a uuid already bound to a different transcript. Attaching the field to the per-stage row is what makes that durable at the right granularity.
 
@@ -271,10 +271,32 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 | Field | Values |
 | --- | --- |
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` |
-| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
+| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
+| `blocked.스코프` | `act` \| `cone` \| `run` |
+| `blocked.원인` | `막힘` \| `무효화` \| `불명` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
+
+**Every park names a scope and a cause, and one that cannot is a bug rather than
+a decision.** `act` means a terminal act is blocked and NOTHING else stops — the
+segment's artifacts survive and it is reported as 완성-미착지. `cone` means a
+premise downstream work stands on has been refuted, so what depends on it stops
+and its siblings do not. `run` means the run cannot judge the state a later
+irreversible act would transform, or its own anchor is invalid; it stops the
+declared blast radius. The anti-rule these exist to enforce: **a blocked act
+never escalates to a cone or a run stop, and the absence of an answer is not a
+cause.** Without it one cutpoint typo parks every segment and the night produces
+nothing; with it every segment reaches its pull request and the blocked terminal
+acts pile up in the morning report next to the commands that finish them.
+
+**`사이클 예산 소진` is separate from `사다리 R4` because they are different
+events.** The cycle cap is the most common park a long run produces and the
+ladder's terminal rung is among the rarest; filing the first under the second
+makes the ledger say the ladder ran out when it never started. `사다리 단 부재`
+is a third thing again — a transition into a rung this run's authorization does
+not make available. It is a park and not a clamp: clamping the rung would make
+the terminal-rung branch unreachable and disarm the ladder's only end.
 
 **`적용 불명` is its own termination class and not a kind of crash.** A crash is
 an execution that did not complete; this one completed and left a state nobody

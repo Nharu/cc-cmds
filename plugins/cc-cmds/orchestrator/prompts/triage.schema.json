@@ -8,7 +8,7 @@
         "properties": {
           "finding_id": { "type": "string" },
           "identity_path": { "type": "string" },
-          "identity_category": { "type": "string" },
+          "identity_category": { "type": "string", "enum": ["security", "performance", "code-quality", "logic", "error-handling", "type-safety", "testing", "api-contract", "concurrency", "data-integrity", "design-conformance"] },
           "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
           "severity_conflict": { "type": "boolean" },
           "severity_rejected_alternative": { "type": "string" },
