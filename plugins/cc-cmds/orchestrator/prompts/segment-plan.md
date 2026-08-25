@@ -31,7 +31,7 @@ Two consequences follow:
 
 ## Two composition rules that are not heuristics
 
-- **Residual verification items go in ONE segment, and that segment runs alone in its antichain.** The design document is a shared write target that no segment declares: the implementation arm's two reserved write forms touch it, so two segments in one wave would contend and trip a fail-loud diff gate. Assign every in-scope residual item to a single segment. If that is impossible because the items genuinely straddle file-disjoint components, mark the wave `serial`.
+- **Residual verification items go in ONE segment.** The design document is a shared write target that no segment declares: the implementation arm's two reserved write forms touch it, so two segments writing it would contend and trip a fail-loud diff gate. Assign every in-scope residual item to a single segment. Segments run one after another, so a single owner is all this needs — there is no scheduling decision to make here and no wave to mark.
 - **A segment that declares `SKILL.md` also declares `README.md`.** That file is generated from skill frontmatter and gated for staleness, so the sharing is real but invisible in the prose — it is the blind spot the file-set rule cannot see on its own. The trigger is creation as well as edit, so a brand-new skill file is covered too.
 
 ## Item count is not segment count

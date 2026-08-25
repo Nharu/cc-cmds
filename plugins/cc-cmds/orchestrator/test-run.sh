@@ -386,17 +386,18 @@ check "다음 재발은 R3"                   "$(ladder_bump src/a.ts correctnes
 check "그다음은 R4 (사람)"               "$(ladder_bump src/a.ts correctness)" "4"
 check "R4에서 포화 — 더 오르지 않는다"   "$(ladder_bump src/a.ts correctness)" "4"
 
-# File-level rung merge: a NEW category appearing in a file that has already
-# consumed the deep rungs inherits them rather than starting fresh. That is what
-# collapses a file's total consumable rungs to 4 and makes the 4F+1 cycle bound
-# hold; without it a file could yield one fresh budget per category tag.
-# Inheriting the HUMAN rung is the conservative direction on purpose.
-check "같은 파일의 신규 동일성은 소비된 단을 상속" "$(ladder_rung src/a.ts perf)" "4"
+# 파일 단위 단 상속은 없다. 있던 시절에도 실제 도착 순서에서 0회 발화했고 —
+# 한 파일의 동일성들은 그 파일의 최댓값이 아직 1일 때 전부 도입된다 — 사이클
+# 상한이 파일 단위 붕괴에서 온다는 잘못된 모델을 독자에게 심었다. 상한은 각
+# 동일성이 자기 단을 오르는 데서 온다.
+check "같은 파일의 새 카테고리는 자기 단부터" "$(ladder_rung src/a.ts perf)" "0"
 
 # Severity is NOT part of the identity, so the same defect read at a different
-# grade is the SAME problem. Were severity in the key, the line above would
-# return 0 and the defect would collect a fresh budget every time a reviewer
-# set graded it differently — the disarming this design exists to prevent.
+# grade is the SAME problem. Were severity in the key, the line below would
+# return 0 for a defect that HAS climbed, and it would collect a fresh budget
+# every time a reviewer set graded it differently — the disarming this design
+# exists to prevent.
+check "동일성은 심각도를 담지 않는다"     "$(ladder_rung src/a.ts correctness)" "4"
 check "다른 파일은 영향 없음"            "$(ladder_rung src/b.ts correctness)" "0"
 
 # 4F + 1 with F the DECLARED file-set size.
@@ -1309,6 +1310,70 @@ fi
 # die loudly rather than silently observing nothing.
 unset -f reap_orphan
 RUN_DIR="$RUN_DIR_SAVE"; LEDGER="$LEDGER_SAVE"; BASE="$BASE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 21. 장식 삭제와 미배선 탐지기
+# ---------------------------------------------------------------------------
+# 이 절이 지키는 것은 「지금 깨끗하다」가 아니라 「다시 더러워지면 실패한다」다.
+for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mode predicate_design; do
+  if grep -q "$gone" "$DRIVER"; then
+    bad "장식 삭제" "$gone 이 남았다"
+  else
+    ok "삭제됨: $gone"
+  fi
+done
+if sed 's/#.*//' "$DRIVER" | grep -q '형제'; then
+  bad "웨이브 어휘" "형제 팔이 남았다 — 도달 불가한 분기이고 그 플래그는 참이 될 수 없다"
+else
+  ok "형제 충돌 팔이 삭제됐다 (병렬 웨이브가 없으므로 도달 불가였다)"
+fi
+if grep -q '"mode"\|serial_reason' "$script_dir/prompts/segment-plan.schema.json"; then
+  bad "스키마 어휘" "계획기가 계약상 웨이브 어휘를 방출해야 하는 상태로 남았다"
+else
+  ok "계획기 스키마에서 웨이브 어휘가 사라졌다"
+fi
+if grep -qi 'antichain' "$script_dir/prompts/segment-plan.md"; then
+  bad "계획기 프롬프트" "antichain 스케줄링 문면이 남았다"
+else
+  ok "계획기 프롬프트에서 antichain 문면이 사라졌다"
+fi
+# 규칙의 실질은 살아 있어야 한다 — 삭제가 규칙까지 가져가면 설계 문서가 두
+# 세그먼트의 공유 쓰기 대상이 되어 diff 게이트가 터진다.
+if grep -q '잔여\|residual' "$script_dir/prompts/segment-plan.md"; then
+  ok "잔여 항목을 한 세그먼트에 모으는 규칙은 존치한다"
+else
+  bad "계획기 프롬프트" "웨이브 어휘와 함께 규칙의 실질까지 사라졌다"
+fi
+
+# 탐지기 — 자기 자신에 대해 통과해야 하고, 결함을 심으면 실패해야 한다.
+SC_OUT="$WORK/selfcheck.out"
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-check > "$SC_OUT" 2>&1
+if grep -q '선언된 것에 전부 독자·호출부·비교자가 있다' "$SC_OUT"; then
+  ok "미배선 탐지기가 이 드라이버에 대해 통과한다"
+else
+  bad "탐지기" "$(grep '^FAIL' "$SC_OUT" | head -3 | tr '\n' ' ')"
+fi
+if grep -q '조건부 배선 예외' "$SC_OUT"; then
+  ok "예외 등재 목록의 상태가 원장에 남는다 (비어 있어도 그 사실이 보인다)"
+else
+  bad "탐지기" "예외 목록이 보이지 않는다 — 아무도 못 보는 예외는 검사가 안 도는 것과 구별되지 않는다"
+fi
+# 결함을 심고 실제로 잡히는지 — 이 확인이 없으면 위 통과가 공허할 수 있다.
+SC_DIRTY="$WORK/dirty-driver.sh"
+sed 's/^readonly LADDER_RUNGS=4$/readonly LADDER_RUNGS=4\nreadonly NOBODY_READS_THIS=1/' "$DRIVER" > "$SC_DIRTY"
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$SC_DIRTY" --self-check > "$SC_OUT" 2>&1
+if grep -q 'NOBODY_READS_THIS' "$SC_OUT"; then
+  ok "독자 없는 상수를 심으면 탐지기가 잡는다"
+else
+  bad "탐지기" "독자 없는 상수를 놓쳤다 — 통과가 공허하다"
+fi
+sed 's/^ladder_init() {/nobody_calls_this() { :; }\nladder_init() {/' "$DRIVER" > "$SC_DIRTY"
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$SC_DIRTY" --self-check > "$SC_OUT" 2>&1
+if grep -q 'nobody_calls_this' "$SC_OUT"; then
+  ok "호출부 0 인 함수를 심으면 탐지기가 잡는다"
+else
+  bad "탐지기" "호출부 0 인 함수를 놓쳤다 — 이번 반증의 직접 원인이 그 부류였다"
+fi
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

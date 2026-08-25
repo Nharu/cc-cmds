@@ -79,7 +79,6 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-readonly STAGE_IDS="S0 S1 S2 S3 S4 S5 S6 S7 S8 S9"
 # Rungs per identity. Two caps carry weight on this number — the per-segment
 # cycle budget `K*F + 1` and the run-level budget that sums it — and they used to
 # be unrelated literals sitting in two functions. Naming it once is what makes
@@ -89,8 +88,6 @@ readonly LADDER_RUNGS=4
 # run that never lands anything, and the second generation is where that becomes
 # visible rather than the tenth.
 readonly GENERATION_MAX=2
-readonly HOLLOW_SUCCESS_RETRIES=1        # one retry, then a distinct park reason
-readonly CRASH_RETRIES=3
 readonly BACKOFF_START_SECONDS=60
 readonly BACKOFF_FACTOR=2
 readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
@@ -126,7 +123,6 @@ readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
 # Terminal literals. These are fixed bytes inside skill text, which is what
 # makes them safe as wire format — unlike the next-step lines those skills also
 # emit, which are model-authored prose.
-readonly LIT_DESIGN_FREEZE='설계 문서를 동결했습니다. 이후 이 세션에서는 문서를 수정하지 않습니다.'
 readonly LIT_AUDIT_TERMINAL='이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.'
 readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.'
 
@@ -853,9 +849,9 @@ park() {
 
 # ---------------------------------------------------------------------------
 # Design-document lock. Advisory and DETECTING, not preventing: correctness
-# still rests on the composition rule that at most one segment per wave carries
-# residual verification items. What this buys is a loud failure instead of a
-# silent lost update.
+# still rests on the composition rule that puts every residual verification item
+# in ONE segment. What this buys is a loud failure instead of a silent lost
+# update.
 # ---------------------------------------------------------------------------
 with_doc_lock() {
   local rc=0 tool
@@ -1123,7 +1119,9 @@ transcript_path() {
 
 stage_spawn() {
   # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
-  # Spawn and collect are separate so a wave can hold several stages open. The
+  # Spawn and collect are separate so the driver can hold a stage open while it
+  # does something else with it — the stall path polls a live stage rather than
+  # blocking on it. The
   # liveness oracle for those is `kill -0` on the recorded pid, not `wait -n`:
   # that builtin does not exist on the interpreter floor, and the polling form
   # is the oracle the resume table already specifies, so using it here avoids a
@@ -1233,7 +1231,7 @@ stage_wait_all() {
   done
 }
 
-# Kept as the one-shot convenience the pre-wave stages use.
+# Spawn-and-wait in one call, for the stages that have nothing to overlap with.
 dispatch_stage() {
   local stage="$1"
   stage_spawn "$@" || return $?
@@ -1288,7 +1286,6 @@ machine_slept_since() {
 # artifact the stage authors is not. For a stage whose only output is a
 # document, no un-fabricable predicate exists.
 # ---------------------------------------------------------------------------
-predicate_design()      { grep -qF "$LIT_DESIGN_FREEZE" "$RUN_DIR/log/$1.err" 2>/dev/null || grep -qF "$LIT_DESIGN_FREEZE" "$RUN_DIR/log/$1.json" 2>/dev/null; }
 predicate_audit()       { grep -qF "$LIT_AUDIT_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null && ls "$BASE/docs/design-audit/$SLUG".reader-*.md >/dev/null 2>&1; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null; }
@@ -1805,6 +1802,10 @@ judgment_call() {
   # judgment_call <name> <input-file>  — prompt and schema are found by
   # convention: <name>.md and <name>.schema.json beside this script.
   local name="$1" input="$2"
+  case " $JUDGMENTS " in
+    *" $name "*) : ;;
+    *) warn "판단 호출 이름이 어휘 밖: $name"; return 1 ;;
+  esac
   local prompt="$PROMPT_DIR/$name.md" schema="$PROMPT_DIR/$name.schema.json"
   local out="$RUN_DIR/log/judge-$name.json"
 
@@ -1898,6 +1899,63 @@ self_check() {
     printf 'note darwin 전용 확인(잠금 경합·프로세스 그룹 회수·부팅 시계)은 macOS 레그 담당\n'
   fi
 
+  # --- C: declared but not wired ------------------------------------------
+  # This driver has produced the same defect over and over: a thing is declared,
+  # recorded, even computed — and nothing reads it. A constant with no reader, a
+  # digest with no comparator, a function with no call site. Each looked like a
+  # working mechanism in review and each did nothing at runtime, and the ones
+  # that mattered were invisible precisely because they looked wired.
+  #
+  # It lives here rather than in a lint script of its own on purpose: a new
+  # script would have to be registered in the Makefile to ever run, and an
+  # unregistered lint IS this defect wearing the detector's clothes. The test
+  # harness already runs `--self-check` under a sanitized interpreter, so this
+  # costs zero new wiring.
+  #
+  # Conditionally-wired items are exempt by EXPLICIT registration, never by the
+  # checker's silence, and the fact that the exemption list is non-empty is
+  # itself recorded — an exemption nobody can see is indistinguishable from a
+  # check that does not run.
+  local unwired=0 self_file exempt name body
+  self_file="${BASH_SOURCE[0]}"
+  # Registered exemptions. Empty is the goal state; a non-empty list is reported.
+  exempt=""
+  body=$(sed 's/#.*//' "$self_file")
+
+  for name in $(grep -oE '^readonly [A-Z_][A-Z0-9_]*' "$self_file" | awk '{print $2}'); do
+    case " $exempt " in *" $name "*) continue ;; esac
+    if [ "$(printf '%s\n' "$body" | grep -vE '^readonly '"$name"'=' | grep -cE '(^|[^A-Za-z0-9_])'"$name"'([^A-Za-z0-9_]|$)')" -lt 1 ]; then
+      printf 'FAIL 선언됐으나 독자 없음 (상수): %s\n' "$name"; unwired=$((unwired + 1))
+    fi
+  done
+
+  for name in $(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$self_file" | tr -d '()'); do
+    case " $exempt " in *" $name "*) continue ;; esac
+    # Call sites are occurrences outside the definition line. `main` never has
+    # one by construction, so the file's own entry point is the one shape this
+    # cannot judge and it is registered rather than special-cased silently.
+    if [ "$(printf '%s\n' "$body" | grep -cE '(^|[^A-Za-z0-9_])'"$name"'([^A-Za-z0-9_(]|$)')" -lt 1 ]; then
+      printf 'FAIL 정의됐으나 호출부 0 (함수): %s\n' "$name"; unwired=$((unwired + 1))
+    fi
+  done
+
+  # A digest that is computed and never compared is the same defect in its most
+  # expensive form: it reports a measurement nobody acts on.
+  for name in $(grep -oE '^[a-z_][a-z0-9_]*_digest\(\)' "$self_file" | tr -d '()'); do
+    case " $exempt " in *" $name "*) continue ;; esac
+    if [ "$(printf '%s\n' "$body" | grep -cE '(=|\[ )"?\$\('"$name"'|'"$name"'.*(!=|=)')" -lt 1 ]; then
+      printf 'FAIL 계산되나 비교자 없음 (다이제스트): %s\n' "$name"; unwired=$((unwired + 1))
+    fi
+  done
+
+  if [ -n "$exempt" ]; then
+    printf 'note 조건부 배선 예외 등재:%s\n' "$exempt"
+  else
+    printf 'ok   조건부 배선 예외 없음 (등재 목록 비어 있음)\n'
+  fi
+  if [ "$unwired" = "0" ]; then printf 'ok   선언된 것에 전부 독자·호출부·비교자가 있다\n'
+  else fails=$((fails + unwired)); fi
+
   if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
   printf 'self-check: %s FAIL\n' "$fails"; return 1
 }
@@ -1940,16 +1998,20 @@ identity_of() {
 
 ladder_init() { LADDER="$RUN_DIR/ladder.tsv"; : > "$LADDER"; }
 
+# The rung this identity has already consumed, or 0.
+#
+# There used to be a file-level inheritance arm here — a new identity in a file
+# that had already consumed the root-redesign rung would inherit it. It was
+# measured against the arrival order that actually occurs and fired ZERO times:
+# the identities of one file are all introduced while that file's maximum is
+# still 1, so the threshold it guarded is never reached. Worse than useless, it
+# told a reader the cycle bound came from a per-file collapse when the bound
+# comes from each identity climbing its own rungs. The cap is unchanged by its
+# removal, because the cap never depended on it.
 ladder_rung() {
-  # File-level rung inheritance: a NEW identity appearing in a file that has
-  # already consumed the root-redesign rung inherits it. Without that, the
-  # per-file identity count is bounded only by the tag enumeration, and the
-  # cycle bound loses its per-file collapse.
-  local path="$1" cat="$2" exact file_max
+  local path="$1" cat="$2" exact
   exact=$(awk -F'\t' -v p="$path" -v c="$cat" '$1==p && $2==c {print $3}' "$LADDER" | tail -1)
-  file_max=$(awk -F'\t' -v p="$path" '$1==p {print $3}' "$LADDER" | sort -n | tail -1)
   [ -n "$exact" ] && { printf '%s' "$exact"; return 0; }
-  [ -n "$file_max" ] && [ "$file_max" -ge 3 ] && { printf '%s' "$file_max"; return 0; }
   printf '0'
 }
 
@@ -2012,23 +2074,18 @@ base_sha() {
   ( cd "$(alias_root "$al")" && git rev-parse "refs/remotes/origin/$(base_branch "$al")" )
 }
 
+# Rebase onto the segment's own base after external drift. There is exactly one
+# kind of conflict left to handle: SOMEONE ELSE moved the base. The sibling arm
+# that used to sit here answered a conflict between two segments of one parallel
+# wave, and there are no parallel waves — `segment_cycle` has one call site and no
+# `&`, so that arm was unreachable and the flag it set could never be read true.
 rebase_onto_base() {
-  # A rebase conflict between two segments of one wave is NOT a merge problem to
-  # be resolved — it is a refutation of the segmentation, because those segments
-  # were supposed to be file-disjoint. Abort, demote the wave to serial, and
-  # escalate. Never auto-resolve, and never wake anyone.
-  local seg="$1" wt="$2" kind="$3" al="${4:-}"   # kind: 형제 | 외부
+  local seg="$1" wt="$2" al="${3:-}"
   ( cd "$wt" && git rebase "$(base_branch "${al:-$(seg_alias "$seg")}")" >/dev/null 2>&1 ) && return 0
   ( cd "$wt" && git rebase --abort >/dev/null 2>&1 || true )
-  if [ "$kind" = "형제" ]; then
-    warn "$seg: 형제 충돌 — 세그먼트 묶음에 대한 반증, 웨이브를 직렬로 강등"
-    WAVE_DEMOTED=1
-  else
-    # External drift is a different animal: the other side is not a sibling of
-    # this run, so "demote the wave" would be a no-op at width 1. Route the one
-    # segment up the ladder instead and let the rest keep running.
-    warn "$seg: 외부 드리프트와 충돌 — 이 세그먼트만 사다리로"
-  fi
+  # Never auto-resolve and never wake anyone: route this one segment up the
+  # ladder and let the rest of the run keep going.
+  warn "$seg: 외부 드리프트와 충돌 — 이 세그먼트만 사다리로"
   return 1
 }
 
@@ -2081,6 +2138,15 @@ segment_cycle() {
     # `declared_files` travels ON the dispatch line. The set bounds the cycle
     # budget and the escape check judges against it, so a stage that never sees
     # it is being measured against a contract it was not told.
+    # Under the document lock. The implementation arm's two reserved write
+    # forms touch the design document, and the lock is DETECTING rather than
+    # preventing — a busy lock means the plan was wrong, so it refuses instead
+    # of queueing two read-modify-writes that were each composed against
+    # pre-conflict bytes.
+    with_doc_lock true || {
+      park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
+      return 1
+    }
     stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
     stage_wait_all "$sid"
     quiet_window_end
@@ -2212,7 +2278,7 @@ EOF
   local recorded_base; recorded_base=$(ledger_last 'segment' '베이스 sha')
   if [ -n "$recorded_base" ] && [ "$recorded_base" != "$(base_sha "$al")" ]; then
     log "$seg: 외부 드리프트 감지 — rebase 후 리뷰 재실행 필요"
-    rebase_onto_base "$seg" "$wt" 외부 "$al" || { park "$seg" cone 무효화 "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
+    rebase_onto_base "$seg" "$wt" "$al" || { park "$seg" cone 무효화 "게이트 park" "외부 드리프트 rebase 충돌"; return 1; }
   fi
   if past_deadline; then
     park "$seg" act 막힘 "예산·벽시계" "벽시계 마감 경과 — 머지하지 않는다. 세그먼트는 완성-미착지" \
@@ -2251,7 +2317,7 @@ main_loop() {
     "전체 sha256=$(shasum -a 256 "$DOC" | cut -d' ' -f1)" "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
 
-  # S2 AUDIT — headless, one pass. Runs before any wave, so the freeze window
+  # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
   # never overlaps a sibling worktree creation on the first pass; only a
   # RE-audit can, and the quiet window covers that.
   quiet_window_begin
