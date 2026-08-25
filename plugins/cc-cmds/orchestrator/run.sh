@@ -91,6 +91,12 @@ readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
 # bound. Adopting the cap up front covers both branches of that item, so the
 # ladder terminates whichever way the envelope turns out to behave.
 readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
+# Consecutive silent polls before a live stage is classed as the limit shape.
+# The VALUE is a residual verification item — the distribution of how long a
+# normal resume stays quiet has never been measured — so this is a placeholder
+# with the mechanism it parameterises already correct. What is NOT provisional
+# is that the count must be greater than one.
+readonly STALL_SILENT_POLLS=3
 readonly WORKTREE_INFIX="-run-"          # reserved; also the boundary gate's exception pattern
 readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
 
@@ -649,19 +655,45 @@ stage_wait_all() {
     for s in $remaining; do
       if stage_alive "$s"; then
         case "$(resume_verdict "$s")" in
+          '진행중')    backoff_reset "$s" ;;
+          '침묵중')    : ;;   # quiet, not yet stalled — no decision to make
           '기계가-잠') log "$s: 절전 구간 — 죽이지 않고 재관측" ;;
           '한도-형상')
-            if boundary_idempotent "${s%%:*}" && account_has_headroom; then
+            # BOTH kill paths carry the guard, and that is the whole point.
+            #
+            # The allowlist alone protects only the first branch. The second
+            # one — the backoff cap — reaches `reap_orphan` without consulting
+            # anything, and `reap_orphan` kills a process group on the strength
+            # of a COMMENT ("`implement` is re-invocation idempotent"), which is
+            # a comment and not a check. Guarding one branch and shipping is
+            # strictly worse than shipping neither: today the backoff bug
+            # accidentally protects a long apply, and repairing the backoff
+            # alone would hand a live SIGKILL to the first stage that goes
+            # quiet for a few minutes.
+            if kill_permitted "$s" && account_has_headroom; then
               log "$s: 한도 형상 + 여유 계정 — 경계에서 재실행"
-              reap_orphan "$s"
+              reap_orphan "$s"; backoff_reset "$s"
               continue
             fi
-            backoff_wait || { warn "$s: 백오프 벽시계 상한 도달"; reap_orphan "$s"; continue; }
+            if backoff_wait "$s"; then still="$still $s"; continue; fi
+            if kill_permitted "$s"; then
+              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수 후 경계에서 재실행"
+              reap_orphan "$s"; backoff_reset "$s"
+            else
+              # No signal, at all. The stage keeps running; the run stops
+              # depending on it and says so. Sending anything here is the one
+              # move that can leave the outside world half-changed with nobody
+              # able to say how.
+              warn "$s: 백오프 벽시계 상한 — 비멱등 스테이지라 어떤 신호도 보내지 않는다"
+              park "$s" "외부 상태 불확정" "정체 상한 초과, 스테이지는 계속 돌게 두었다"
+              human_reconcile "$s"
+            fi
+            continue
             ;;
         esac
         still="$still $s"
       else
-        stage_collect "$s"
+        stage_collect "$s"; backoff_reset "$s"
       fi
     done
     remaining="$still"
@@ -786,12 +818,35 @@ resume_verdict() {
   pid=$(cat "$RUN_DIR/$stage.pid")
   if ! kill -0 "$pid" 2>/dev/null; then printf '사망'; return 0; fi
 
-  local tr mt age
+  # Progress mark and silence counter are PER STAGE, held on disk.
+  #
+  # A single shared global was latent under serial traversal and an outright
+  # misclassification bug the moment two stages overlap — stage B's byte count
+  # would read as "progress" for stage A. Making the counter per-stage requires
+  # the mark to be per-stage too: consecutive silence cannot be counted for one
+  # stage against a mark another stage moved.
+  local tr mt age markf silf sil
   tr="$RUN_DIR/log/$stage.json"
+  markf="$RUN_DIR/$stage.mark"; silf="$RUN_DIR/$stage.silent"
   mt=$( [ -f "$tr" ] && wc -c < "$tr" | tr -d ' ' || printf '0' )
   age=$(( $(now_epoch) - started ))
-  if [ "$mt" != "${LAST_PROGRESS_MARK:-x}" ]; then LAST_PROGRESS_MARK="$mt"; printf '진행중'; return 0; fi
+
+  if [ "$mt" != "$(cat "$markf" 2>/dev/null || printf 'x')" ]; then
+    printf '%s\n' "$mt" > "$markf"; printf '0' > "$silf"
+    printf '진행중'; return 0
+  fi
   if machine_slept_since "$(( $(now_epoch) - age ))"; then printf '기계가-잠'; return 0; fi
+
+  # N CONSECUTIVE silent polls, not one.
+  #
+  # A single comparison classified any stage that had not written for ten
+  # seconds as the limit-exhaustion shape. A `terraform apply` waiting on cloud
+  # provisioning is quiet for minutes, so it landed in that classification not
+  # as a race but as the DEFAULT, every time, within ten seconds. Requiring a
+  # run of silences is what separates "quiet" from "stalled".
+  sil=$(cat "$silf" 2>/dev/null || printf '0')
+  sil=$((sil + 1)); printf '%s' "$sil" > "$silf"
+  if [ "$sil" -lt "$STALL_SILENT_POLLS" ]; then printf '침묵중'; return 0; fi
   printf '한도-형상'
 }
 
@@ -801,16 +856,54 @@ resume_verdict() {
 # overnight, and the rotation removes most of the incentive anyway.
 # ---------------------------------------------------------------------------
 backoff_wait() {
-  local elapsed=0 sleep_s="$BACKOFF_START_SECONDS"
-  while [ "$elapsed" -lt "$BACKOFF_WALLCLOCK_CAP_SECONDS" ]; do
-    log "한도 대기 ${sleep_s}s (누적 ${elapsed}s / 상한 ${BACKOFF_WALLCLOCK_CAP_SECONDS}s)"
-    sleep "$sleep_s"
-    elapsed=$((elapsed + sleep_s))
-    sleep_s=$((sleep_s * BACKOFF_FACTOR))
-    [ "$sleep_s" -gt "$BACKOFF_MAX_SLEEP_SECONDS" ] && sleep_s="$BACKOFF_MAX_SLEEP_SECONDS"
-    return 0   # one interval per call; the caller re-observes between sleeps
-  done
-  return 1     # cap reached -> park
+  # backoff_wait <stage-id> — sleep one interval, non-zero when the cap is hit.
+  #
+  # The accumulator is CALLER-OWNED and per-stage, held in the volatile run
+  # directory. The previous shape declared `local elapsed=0` on every call and
+  # returned unconditionally from inside its own loop, so the accumulator was
+  # discarded before it could ever grow and the cap was unreachable: the driver
+  # polled at the starting interval forever. **A wait whose accumulator resets
+  # is not a wait, it is a hang.**
+  #
+  # `sleep_s` has to persist for the same reason `elapsed` does, and this is
+  # the part that is easy to miss. Fixing only `elapsed` leaves the interval
+  # pinned at its starting value, so reaching a six-hour cap takes 360 polls —
+  # turning one intended kill decision into 360 of them.
+  local stage="$1" f elapsed sleep_s
+  f="$RUN_DIR/$stage.backoff"
+  if [ -f "$f" ]; then
+    read -r elapsed sleep_s < "$f"
+  else
+    elapsed=0; sleep_s="$BACKOFF_START_SECONDS"
+  fi
+  [ "$elapsed" -ge "$BACKOFF_WALLCLOCK_CAP_SECONDS" ] && return 1
+
+  log "$stage: 한도 대기 ${sleep_s}s (누적 ${elapsed}s / 상한 ${BACKOFF_WALLCLOCK_CAP_SECONDS}s)"
+  sleep "$sleep_s"
+  elapsed=$((elapsed + sleep_s))
+  sleep_s=$((sleep_s * BACKOFF_FACTOR))
+  [ "$sleep_s" -gt "$BACKOFF_MAX_SLEEP_SECONDS" ] && sleep_s="$BACKOFF_MAX_SLEEP_SECONDS"
+  printf '%s %s\n' "$elapsed" "$sleep_s" > "$f"
+
+  [ "$elapsed" -ge "$BACKOFF_WALLCLOCK_CAP_SECONDS" ] && return 1
+  return 0
+}
+
+backoff_reset() { rm -f "$RUN_DIR/$1.backoff"; }
+
+# The single predicate every signalling path must consult.
+#
+# It exists as its own name rather than as a repeated `boundary_idempotent`
+# call because the two kill paths were written by different concerns and
+# neither author had a reason to look at the other. A named guard is what makes
+# "did you check?" answerable by grep.
+kill_permitted() { boundary_idempotent "${1%%:*}"; }
+
+# Surfaced in the morning report, and durable in the ledger, because the state
+# it names is one only a human can settle.
+human_reconcile() {
+  ledger_row 'blocked' "대상=$1" "사유=외부 상태 불확정" "관측=사람 대조 필요" "재개 명령=(없음)"
+  report_append "사람 대조 필요" "$1 — 정체 상한을 넘겼고 신호를 보내지 않았다. 외부 상태를 사람이 확인해야 한다"
 }
 
 boundary_idempotent() {

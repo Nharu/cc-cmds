@@ -122,7 +122,7 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 | Field | Values |
 | --- | --- |
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` |
-| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` |
+| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |

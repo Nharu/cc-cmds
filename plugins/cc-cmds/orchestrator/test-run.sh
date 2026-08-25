@@ -413,5 +413,94 @@ if stage_alive Sdead; then bad "stage_alive" "죽은 pid에 살아있다고 판�
 rm -f "$RUN_DIR/Sdead.pid"
 if stage_alive Snothing; then bad "stage_alive" "기록 없는 스테이지에 참"; else ok "stage_alive: pid 기록이 없으면 거짓"; fi
 
+# ---------------------------------------------------------------------------
+# 17. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
+# ---------------------------------------------------------------------------
+# 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
+#   - 백오프만 고친 트리: 누산기가 자라 상한에 도달하고, 가드가 없으므로 그
+#     경로가 비멱등 스테이지에 신호를 보낸다 → 아래 「신호 0회」가 실패한다.
+#   - 가드만 넣은 트리: 누산기가 매 호출 버려져 상한이 도달 불가라 정체 경로가
+#     끝나지 않는다 → 이 테스트는 작성조차 되지 않는다(도달 가능한 상한이 없다).
+#
+# S9를 이름으로 요구하지 않는 것은 의도다. 이 테스트는 결합을 지는 슬라이스에
+# 실리고 S9는 나중에 오므로, S9를 지명하면 자기 슬라이스에서 실행 불가가 되어
+# 강제가 그 창에서 사라진다. 요구하는 것은 「비멱등으로 분류된 스테이지」다.
+ACC_DIR="$WORK/acceptance"; mkdir -p "$ACC_DIR"
+RUN_DIR_SAVE="$RUN_DIR"; RUN_DIR="$ACC_DIR"; mkdir -p "$RUN_DIR/log"
+LEDGER_SAVE="$LEDGER"; LEDGER="$ACC_DIR/ledger.md"; : > "$LEDGER"
+BASE_SAVE="$BASE"; BASE="$ACC_DIR/base"; mkdir -p "$BASE/docs"
+
+# 비멱등 스테이지를 하나 고른다 — 이름이 아니라 술어로.
+NONIDEM=""
+for cand in S1 S3 S6 S7 S9; do
+  if ! boundary_idempotent "$cand"; then NONIDEM="$cand"; break; fi
+done
+if [ -n "$NONIDEM" ]; then
+  ok "비멱등으로 분류된 스테이지가 존재한다 ($NONIDEM)"
+else
+  bad "인수 테스트 전제" "비멱등 스테이지가 하나도 없다 — 결합을 시험할 대상이 없음"
+fi
+
+# (1) 누산기가 지속돼 상한이 실제로 도달 가능한가. 도달 불가면 정체 경로가
+#     끝나지 않아 이 테스트 자체가 성립하지 않는다.
+ACC_STAGE="acc-$NONIDEM"
+printf '%s %s\n' "$BACKOFF_WALLCLOCK_CAP_SECONDS" "1" > "$RUN_DIR/$ACC_STAGE.backoff"
+if backoff_wait "$ACC_STAGE"; then
+  bad "백오프 상한" "누산기가 상한을 넘겼는데도 계속 대기했다 — 상한 도달 불가"
+else
+  ok "백오프 누산기가 지속되고 상한이 도달 가능하다"
+fi
+printf '0 1\n' > "$RUN_DIR/$ACC_STAGE.backoff"
+backoff_wait "$ACC_STAGE" >/dev/null 2>&1
+read -r acc_e acc_s < "$RUN_DIR/$ACC_STAGE.backoff"
+if [ "$acc_e" -gt 0 ] && [ "$acc_s" -gt 1 ]; then
+  ok "누산기와 간격이 둘 다 호출을 가로질러 지속된다 (elapsed=$acc_e sleep=$acc_s)"
+else
+  bad "누산기 지속" "elapsed=$acc_e sleep=$acc_s — 둘 다 자라야 한다"
+fi
+
+# (2) 그 상한에 도달했을 때, 비멱등 스테이지에는 어떤 신호도 가지 않는가.
+#     reap_orphan 을 감시 스텁으로 갈아 끼워 호출 자체를 관측한다.
+REAPED=""
+reap_orphan() { REAPED="$REAPED $1"; }
+printf '99999\n' > "$RUN_DIR/$ACC_STAGE.pid"     # 살아있지 않은 pid (신호는 어차피 안 감)
+if kill_permitted "$ACC_STAGE"; then
+  bad "kill 가드" "비멱등 스테이지에 kill 이 허용됐다"
+else
+  ok "kill 가드가 비멱등 스테이지를 거부한다"
+fi
+if [ -z "$REAPED" ]; then
+  ok "정체 상한 경로에서 비멱등 스테이지에 신호 0회"
+else
+  bad "신호 0회" "reap_orphan 이 호출됐다:$REAPED"
+fi
+
+# (3) 그러면 무엇을 하는가 — park 하고 사람 대조를 표시한다.
+human_reconcile "$ACC_STAGE"
+if grep -q '사유=외부 상태 불확정' "$LEDGER"; then
+  ok "원장에 외부 상태 불확정으로 park 된다"
+else
+  bad "park 사유" "원장에 외부 상태 불확정 행이 없다"
+fi
+if grep -q '사람 대조 필요' "$(report_path)" 2>/dev/null; then
+  ok "아침 보고서에 사람 대조 필요가 표시된다"
+else
+  bad "보고서 표시" "사람 대조 필요가 보고서에 없다"
+fi
+
+# (4) 대조군 — 경계 멱등 스테이지에는 같은 경로가 kill 을 허용해야 한다.
+if kill_permitted "S4"; then
+  ok "대조군: 경계 멱등 스테이지에는 kill 이 허용된다"
+else
+  bad "kill 가드" "경계 멱등 스테이지까지 막았다 — 가드가 과도하다"
+fi
+
+# `unset -f` REMOVES the watcher rather than restoring the driver's definition —
+# bash has no function shadowing, so the original is gone for the rest of this
+# process. That is why this block sits last: a later assertion calling it would
+# die loudly rather than silently observing nothing.
+unset -f reap_orphan
+RUN_DIR="$RUN_DIR_SAVE"; LEDGER="$LEDGER_SAVE"; BASE="$BASE_SAVE"
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
