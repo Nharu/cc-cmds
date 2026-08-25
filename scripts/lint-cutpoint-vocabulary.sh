@@ -60,24 +60,36 @@ if [[ -z "$tokens" ]]; then
   exit 1
 fi
 
-# Display arms, rendered as `<token>\t<display>` lines. The arm body is a single
+# Display arms, rendered as `<token>|<display>` lines. The arm body is a single
 # `printf '<display>'`, which is what makes this extractable without evaluating
 # the script.
-arms=$(awk '
-  /^cutpoint_display\(\)/ { inf=1; next }
-  inf && /^}/             { inf=0 }
-  inf && /^[[:space:]]*[^*[:space:]][^)]*)[[:space:]]*printf/ {
-    line=$0
-    sub(/^[[:space:]]*/, "", line)
-    tok=line; sub(/\).*/, "", tok)
-    disp=line; sub(/^[^)]*\)[[:space:]]*printf[[:space:]]*./, "", disp); sub(/.[[:space:]]*;;.*/, "", disp)
-    print tok "\t" disp
-  }
-' "$DRIVER")
+#
+# NO awk, and that is deliberate. The first version of this extraction did the
+# field work in awk, passed on two local awk builds, and failed on the macOS CI
+# runner in a way that reported every Korean token as having five arms — the two
+# ASCII ones were fine. Whatever that build does with multibyte values, this
+# check is not worth betting on it: the tokens it protects are Korean by nature,
+# so the extraction must not depend on an interpreter's multibyte handling.
+# `sed` sees only byte patterns here and the comparisons below are shell string
+# equality, which is byte equality.
+#
+# The old pattern also carried an unescaped `)` inside an awk ERE, which POSIX
+# leaves undefined — a second reason not to keep it.
+#
+# `|` rather than a tab because BSD `sed` does not expand `\t` in a replacement.
+# Neither a cutpoint token nor a display form contains `|`.
+arms=$(sed -n '/^cutpoint_display() {/,/^}/p' "$DRIVER" \
+  | sed -n -E "s/^[[:space:]]*([^)*]+)\)[[:space:]]*printf '([^']*)'[[:space:]]*;;[[:space:]]*$/\1|\2/p")
 
 # --- Rule 1: every token has exactly one arm -------------------------------
 for t in $tokens; do
-  n=$(printf '%s\n' "$arms" | awk -F'\t' -v t="$t" '$1==t{c++} END{print c+0}')
+  n=0
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    [[ "${row%%|*}" == "$t" ]] && n=$((n + 1))
+  done <<EOF
+$arms
+EOF
   if [[ "$n" != "1" ]]; then
     echo "FAIL: 토큰 '$t' 의 cutpoint_display arm 이 ${n}개 (기대 1개)" >&2
     fail=1
@@ -85,8 +97,9 @@ for t in $tokens; do
 done
 
 # --- Rule 2: every arm names a real token ----------------------------------
-while IFS=$'\t' read -r tok disp; do
-  [[ -n "$tok" ]] || continue
+while IFS= read -r row; do
+  [[ -n "$row" ]] || continue
+  tok="${row%%|*}"
   found=0
   for t in $tokens; do [[ "$t" == "$tok" ]] && found=1; done
   if [[ "$found" != "1" ]]; then
@@ -100,7 +113,13 @@ EOF
 # --- Derive the expected ladder --------------------------------------------
 ladder=""
 for t in $tokens; do
-  d=$(printf '%s\n' "$arms" | awk -F'\t' -v t="$t" '$1==t{print $2; exit}')
+  d=""
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    if [[ "${row%%|*}" == "$t" ]]; then d="${row#*|}"; break; fi
+  done <<EOF
+$arms
+EOF
   [[ -n "$d" ]] || d="$t"
   if [[ -z "$ladder" ]]; then ladder="$d"; else ladder="$ladder → $d"; fi
 done
@@ -124,5 +143,6 @@ if [[ "$fail" != "0" ]]; then
   exit 1
 fi
 
-echo "OK:   cutpoint vocabulary — 토큰 $(printf '%s\n' $tokens | grep -c .)개, 소비자 문서 ${checked}건, 사다리 유도 일치"
+ntok=0; for t in $tokens; do ntok=$((ntok + 1)); done
+echo "OK:   cutpoint vocabulary — 토큰 ${ntok}개, 소비자 문서 ${checked}건, 사다리 유도 일치"
 exit 0
