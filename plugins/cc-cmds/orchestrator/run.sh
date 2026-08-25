@@ -253,7 +253,13 @@ wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 # Path and slug derivation (sidecar.md §1.1), keyed on the DOCUMENT's own
 # location and never on the cwd.
 # ---------------------------------------------------------------------------
-DOC=""; DOC_DIR=""; DOC_KEY=""; SLUG=""; BASE=""; RUN_ID=""; RUN_DIR=""
+# SLUG is RUN identity — worktree paths, segment branch names, review report
+# names. DOC_SLUG is DOCUMENT identity, and it exists because exactly one path
+# the shared contract owns stays document-keyed: the audit sidecar the artifact
+# predicate reads. One variable carrying both meanings is unsatisfiable — the
+# document entry set it document-derived and the manifest entry set it to the
+# run id, so whichever value went in, the other consumer read the wrong path.
+DOC=""; DOC_DIR=""; DOC_KEY=""; SLUG=""; DOC_SLUG=""; BASE=""; RUN_ID=""; RUN_DIR=""
 LEDGER=""; GRANT=""; REPORT=""
 
 derive_paths() {
@@ -275,6 +281,7 @@ derive_paths() {
     BASE="$DOC_DIR"
   fi
   SLUG=$(printf '%s' "${DOC_KEY%.md}" | tr '/' '-')
+  DOC_SLUG="$SLUG"
   GRANT="$BASE/docs/pipeline-grant/$SLUG.md"
   LEDGER="$BASE/docs/pipeline-run/$SLUG.md"
 }
@@ -415,6 +422,14 @@ derive_paths_from_manifest() {
     *) DOC="$BASE/$DOC"; DOC_KEY=$(manifest_field '요소' '설계 문서'); DOC_DIR=$(dirname "$DOC") ;;
   esac
   SLUG="$RUN_ID"
+  # Document identity, derived by the SAME rule the document entry uses, so the
+  # audit sidecar resolves to one location no matter which entry started the
+  # run. Empty when the run names no document — the audit stage has nothing to
+  # read then, and its predicate refuses rather than globbing a bare directory.
+  case "$DOC_KEY" in
+    ''|'(없음)') DOC_SLUG="" ;;
+    *)           DOC_SLUG=$(printf '%s' "${DOC_KEY%.md}" | tr '/' '-') ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1203,7 +1218,17 @@ stage_spawn() {
   # it. The value is derived rather than stored, so a restarted driver
   # re-derives the same one.
   set -m
+  # The run id and the two sidecar paths are HANDED to the stage rather than
+  # left for it to re-derive. Every unattended arm re-derived them from the
+  # design document's key, which resolves only when the run was started from a
+  # document — a manifest run put the grant at the run id and the arm looked at
+  # the document slug, so the two never met and no arm could reach the file it
+  # needs to write a halt record. Handing the values down removes the derivation
+  # instead of duplicating it; the arms keep their re-derivation as the fallback
+  # for a driver that predates these variables.
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
+      CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
+      CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
       exec nohup "$CLI_BIN" -p "$prompt" \
         --session-id "$(session_uuid "$stage")" \
         --output-format json --strict-mcp-config "$@" \
@@ -1346,7 +1371,7 @@ machine_slept_since() {
 # artifact the stage authors is not. For a stage whose only output is a
 # document, no un-fabricable predicate exists.
 # ---------------------------------------------------------------------------
-predicate_audit()       { grep -qF "$LIT_AUDIT_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null && ls "$BASE/docs/design-audit/$SLUG".reader-*.md >/dev/null 2>&1; }
+predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null && ls "$BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null; }
 
