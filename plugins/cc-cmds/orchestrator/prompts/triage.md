@@ -14,7 +14,7 @@ The shipped rule carries an exception — the default is overridden where a lead
 
 ## Problem identity is `(normalized file path, category tag)` — deliberately severity-free
 
-Set `identity_path` and `identity_category`. The category tag comes from the review's closed 11-value enumeration, which carries no severity token.
+Set `identity_path` and `identity_category`. The category tag comes from the review's closed 11-value enumeration, which carries no severity token, and the schema now enforces that set rather than accepting any string. A free-form key meant identities NEVER collided, so no rung was ever climbed and re-convergence never fired — every recurrence of one design defect collected a local patch of its own for the whole budget. That is not a difference in the termination bound (the cycle cap holds it either way); it is the difference between a working ladder and an ornament. If a finding does not fit one of the eleven, pick the closest and say why in `root_cause_payload` — do not invent a twelfth.
 
 **Severity is not part of identity, and the reason is structural.** The escalation ladder consumes recurrences to climb rungs and stops at the human rung; that is the only structural bound on how many times one defect is re-fixed. Severity is not a property of the defect — it is a **measurement re-derived every cycle** by a different reviewer set. Put a measurement in the key and one defect read P1 in cycle 1 and P2 in cycle 2 becomes **two problems**, each granted a fresh budget at rung 1, neither ever accumulating enough recurrences to reach the top. The ladder disarms itself and the loop spins on one defect all night.
 

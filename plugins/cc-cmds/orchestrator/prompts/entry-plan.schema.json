@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "properties": {
+    "anchor_kind": { "type": "string", "enum": ["doc", "repo", "pr", "branch", "intent"] },
+    "anchor_key": { "type": "string" },
+    "entry_skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply"] },
+    "entry_rationale": { "type": "string" },
+    "design_required": { "type": "boolean" },
+    "design_rationale": { "type": "string" },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "alias": { "type": "string" },
+          "remote_slug": { "type": "string" },
+          "home": { "type": "boolean" },
+          "why": { "type": "string" }
+        },
+        "required": ["alias", "remote_slug", "home", "why"],
+        "additionalProperties": false
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply"] },
+          "summary": { "type": "string" },
+          "depends_on": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["id", "skill", "summary", "depends_on"],
+        "additionalProperties": false
+      }
+    },
+    "unresolved": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" }
+  },
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "targets", "steps", "unresolved", "notes"],
+  "additionalProperties": false
+}

@@ -18,23 +18,10 @@
         "additionalProperties": false
       }
     },
-    "waves": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "segment_ids": { "type": "array", "items": { "type": "string" } },
-          "mode": { "type": "string", "enum": ["parallel", "serial"] },
-          "serial_reason": { "type": "string" }
-        },
-        "required": ["segment_ids", "mode", "serial_reason"],
-        "additionalProperties": false
-      }
-    },
     "segmentation": { "type": "string", "enum": ["ok", "low-confidence"] },
     "author_grouping_adopted": { "type": "boolean" },
     "notes": { "type": "string" }
   },
-  "required": ["segments", "waves", "segmentation", "author_grouping_adopted", "notes"],
+  "required": ["segments", "segmentation", "author_grouping_adopted", "notes"],
   "additionalProperties": false
 }
