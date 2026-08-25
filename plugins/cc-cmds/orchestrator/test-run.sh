@@ -1417,5 +1417,81 @@ else
   bad "탐지기" "호출부 0 인 함수를 놓쳤다 — 이번 반증의 직접 원인이 그 부류였다"
 fi
 
+# ---------------------------------------------------------------------------
+# N. Run identity vs document identity — the two must not share one variable
+#
+# A manifest run set SLUG to the run id and a document run set it to the
+# document key, while ONE consumer (the audit artifact predicate) needs the
+# document key in both. Whichever value went in, the other consumer read a path
+# that does not exist: the manifest run's audit predicate globbed
+# `docs/design-audit/<run-id>.reader-*.md`, always missed, and every run died at
+# its first stage as a hollow success. These assertions pin the split.
+# ---------------------------------------------------------------------------
+MFD="$MF_DIR/plan-doc.md"
+write_manifest "$MFD"
+# Same fixture, but naming a document — the arm that must yield a DOC_SLUG.
+sed 's#^\*\*설계 문서\*\*: (없음)$#**설계 문서**: docs/some/design-note.md#' "$MFD" > "$MFD.tmp" && mv "$MFD.tmp" "$MFD"
+
+MANIFEST="$MFD"; RUN_ID="20260825-deadbeef"
+derive_paths_from_manifest
+check "매니페스트 진입: SLUG 는 런 정체다" "$SLUG" "20260825-deadbeef"
+check "매니페스트 진입: DOC_SLUG 는 문서 정체다" "$DOC_SLUG" "docs-some-design-note"
+if [ "$SLUG" != "$DOC_SLUG" ]; then
+  ok "두 정체가 실제로 다른 값을 갖는다 (한 변수였다면 불가능하다)"
+else
+  bad "정체 분리" "SLUG 와 DOC_SLUG 가 같다 — 분리가 이름뿐이다"
+fi
+
+# The DISCRIMINATING assertion: a manifest run whose audit really did publish
+# its reader reports. The reports land at the DOCUMENT slug, because the shared
+# sidecar contract keys that one path on the document. Reading them at the run
+# id — what the single-variable version did — misses every time, and the miss is
+# classified as a hollow success, which is a run-scope park at the first stage.
+# A negative-only test cannot see this: with no reports on disk BOTH versions
+# return false, so the assertion passes while the bug is fully present.
+RUN_DIR_SAVE="${RUN_DIR:-}"; BASE_SAVE="$BASE"
+MANIFEST="$MFD"; RUN_ID="20260825-deadbeef"
+derive_paths_from_manifest
+BASE="$WORK/audit-base"
+RUN_DIR="$WORK/audit-pred"; mkdir -p "$RUN_DIR/log" "$BASE/docs/design-audit"
+printf '%s\n' "$LIT_AUDIT_TERMINAL" > "$RUN_DIR/log/S2.json"
+: > "$BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+if predicate_audit S2; then
+  ok "감사 산출물이 문서 슬러그에 있으면 매니페스트 런의 술어가 통과한다"
+else
+  bad "감사 술어" "문서 슬러그의 리더 리포트를 찾지 못했다 — 런 id 로 보고 있다"
+fi
+# And the same run must NOT pass by looking at the run id.
+: > "$BASE/docs/design-audit/$RUN_ID.reader-1.md"
+rm -f "$BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+if predicate_audit S2; then
+  bad "감사 술어" "런 id 경로의 파일로 통과했다 — 문서 파생이 아니다"
+else
+  ok "런 id 경로에만 산출물이 있으면 통과하지 않는다"
+fi
+
+MANIFEST="$MF"; RUN_ID="20260825-deadbeef"
+derive_paths_from_manifest
+check "문서 없는 런은 DOC_SLUG 가 비어 있다" "$DOC_SLUG" ""
+BASE="$WORK/audit-base"
+if predicate_audit S2; then
+  bad "감사 술어" "DOC_SLUG 가 빈데도 통과했다 — 빈 슬러그로 디렉터리를 글로빙한 것이다"
+else
+  ok "DOC_SLUG 가 비면 감사 술어는 통과하지 않는다"
+fi
+RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
+
+# The driver hands the run id and both sidecar paths down to every stage. The
+# arms re-derived them from the document key, which resolves only for a run
+# started from a document, so a manifest run's arm could not reach the grant it
+# must read to write a halt record.
+for v in CC_PIPELINE_RUN_ID CC_PIPELINE_GRANT CC_PIPELINE_LEDGER CC_PIPELINE_RUN_DIR; do
+  if grep -q "$v=" "$DRIVER"; then
+    ok "스테이지에 $v 를 넘긴다"
+  else
+    bad "환경 전달" "$v 가 스테이지로 넘어가지 않는다"
+  fi
+done
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

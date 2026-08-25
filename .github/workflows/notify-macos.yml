@@ -24,7 +24,14 @@ on:
 jobs:
   lint-and-test-macos:
     runs-on: macos-latest
-    timeout-minutes: 10
+    # `make lint` alone has been taking 7-8.5 minutes on this runner against the
+    # old 10-minute ceiling — 70-85% of the budget spent before the tests start,
+    # so ordinary runner variance cancelled the job with every step reporting
+    # success. One lint dominates: lint-bash-portability is 206s of the 242s the
+    # whole suite takes locally. Raising the ceiling stops a green run from
+    # reading as a failure; making that lint cheaper is separate work and is not
+    # what this number is standing in for.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
