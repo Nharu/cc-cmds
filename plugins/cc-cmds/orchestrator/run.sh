@@ -386,6 +386,179 @@ binding_digest() {
 whole_digest() { shasum -a 256 "$DOC" | cut -d' ' -f1; }
 
 # ---------------------------------------------------------------------------
+# Workflow declaration — `## 구현 슬라이싱`
+#
+# The heading is not new: it is already a trigger of the planner's author-
+# grouping rule and it already exists in the corpus. What was missing was
+# FIELDS, and the measured consequence of that absence was stark — two
+# documents differing by exactly one heading line produced 1 segment and 10.
+#
+# The declaration is parsed by the SHELL, not judged by the model. The planner
+# was observed recognising an author grouping and then overriding it on safety
+# grounds, so a field-complete declaration bypasses the planning dispatch
+# entirely; only the paths that still rely on judgement carry a gate.
+#
+# ONE SCANNER, TWO CONSUMERS. Existence and body extraction must come from the
+# same pass. Deciding existence with a bare grep and extracting the body with a
+# fence-aware pass puts a document that merely EXPLAINS the grammar into
+# "exists: true, body: empty" — which routes to the ungoverned branch and parks
+# a document that never declared a slicing at all. The files that will carry
+# this explanation include this driver's own contract docs, so it is not
+# hypothetical.
+# ---------------------------------------------------------------------------
+
+# Emit the document with every fenced span blanked out, preserving line numbers.
+#
+# Three rules, and each of them is load-bearing:
+#   1. lines inside a fence are invisible to the parse — HEADINGS AND FIELD
+#      LINES ALIKE. Skipping only headings leaves "exists but empty".
+#   2. a fence closes per CommonMark: same character, at least as long, and no
+#      info string. So ``` does not close a ```` span, and ```text does not
+#      close a ``` span. A parser that toggles on every fence marker falls out
+#      of the span at a nested one — and the line that lands in that window is
+#      the user's verbatim free text, the least trustworthy content in the
+#      system and the only place an unauthorised heading could appear.
+#   3. an UNCLOSED fence is a hard error, never a silent demotion. Everything
+#      after it would read as "inside", so a declaration would quietly become
+#      an ungoverned document — the exact failure this grammar exists to close.
+defenced() {
+  awk '
+    function fence_char(l,   c) { c = substr(l, 1, 1); return (c == "`" || c == "~") ? c : "" }
+    function fence_len(l, c,   n) { n = 0; while (substr(l, n + 1, 1) == c) n++; return n }
+    {
+      line = $0
+      probe = line; sub(/^[ \t]+/, "", probe)
+      ch = fence_char(probe)
+      if (ch != "") {
+        n = fence_len(probe, ch)
+        if (n >= 3) {
+          info = substr(probe, n + 1); gsub(/[ \t]/, "", info)
+          if (!inf) { inf = 1; fch = ch; flen = n; print ""; next }
+          else if (ch == fch && n >= flen && info == "") { inf = 0; print ""; next }
+        }
+      }
+      if (inf) { print "" } else { print line }
+    }
+  ' "$1"
+}
+
+# Unclosed-fence detection is its OWN pass, not a status smuggled out of the
+# scanner. A pipeline's exit status is the rightmost command's, so an `awk`
+# that exited 3 behind a `grep` reports grep's status and the hard error is
+# silently downgraded to "no declaration" — which is precisely the quiet
+# demotion this rule exists to prevent. Measured: it downgraded on the first
+# try.
+fence_unclosed() {
+  awk '
+    function fence_char(l,   c) { c = substr(l, 1, 1); return (c == "`" || c == "~") ? c : "" }
+    function fence_len(l, c,   n) { n = 0; while (substr(l, n + 1, 1) == c) n++; return n }
+    {
+      probe = $0; sub(/^[ \t]+/, "", probe)
+      ch = fence_char(probe)
+      if (ch == "") next
+      n = fence_len(probe, ch); if (n < 3) next
+      info = substr(probe, n + 1); gsub(/[ \t]/, "", info)
+      if (!inf) { inf = 1; fch = ch; flen = n }
+      else if (ch == fch && n >= flen && info == "") { inf = 0 }
+    }
+    END { exit (inf ? 0 : 1) }
+  ' "$1"
+}
+
+# Existence, via the same scanner.
+slicing_present() {
+  local doc="$1" n
+  fence_unclosed "$doc" && return 3
+  n=$(defenced "$doc" | grep -cE '^## 구현 슬라이싱$' || true)
+  [ "$n" -le 1 ] || return 2   # ambiguous: two declarations, hard error
+  [ "$n" = "1" ]
+}
+
+# Body of the declaration, via the same scanner.
+slicing_body() {
+  defenced "$1" | awk '/^## 구현 슬라이싱$/{inb=1; next} inb && /^## /{exit} inb {print}'
+}
+
+slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za-z0-9]*\).*/\1/p'; }
+
+slice_field() {
+  # slice_field <doc> <id> <key>
+  slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
+    index($0, id) == 1 { inb = 1; next }
+    inb && /^### /     { exit }
+    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
+  '
+}
+
+# `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
+# blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
+# A mismatch means the declaration was truncated or misnumbered, which is worth
+# stopping for.
+slicing_pr_count() {
+  local doc="$1" id c n=0
+  for id in $(slice_ids "$doc"); do
+    c=$(cutpoint_index "$(slice_field "$doc" "$id" '절단점')" 2>/dev/null) || continue
+    [ "$c" -ge "$(cutpoint_index PR)" ] && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# Field completeness. Six are required of every block; three more are required
+# only when the block declares an apply.
+#
+# The required-ness of the apply trio keys on the APPLY DECLARATION, not on the
+# cutpoint. Keying it on the cutpoint put `적용 주체: 사람` — whose own meaning
+# is "the pipeline stops at merge and hands the command to a person" — outside
+# its own domain, so the handover the grammar exists to express became
+# inexpressible. The two axes answer different questions: the cutpoint says how
+# far the PIPELINE may go, the apply command says whether this slice HAS an
+# apply at all.
+slicing_fields_ok() {
+  local doc="$1" id v f
+  for id in $(slice_ids "$doc"); do
+    for f in 스킬 레포 '선언 파일' 선행 절단점; do
+      [ -n "$(slice_field "$doc" "$id" "$f")" ] || { warn "슬라이스 $id: 필수 필드 '$f' 없음"; return 1; }
+    done
+    cutpoint_index "$(slice_field "$doc" "$id" '절단점')" >/dev/null \
+      || { warn "슬라이스 $id: 절단점 토큰이 어휘에 없음"; return 1; }
+    v=$(slice_field "$doc" "$id" '적용 명령')
+    if [ -n "$v" ]; then
+      [ -n "$(slice_field "$doc" "$id" '적용 주체')" ] || { warn "슬라이스 $id: 적용 명령이 있는데 적용 주체가 없음"; return 1; }
+      [ "$(slice_field "$doc" "$id" '적용 주체')" != "파이프라인" ] \
+        || [ -n "$(slice_field "$doc" "$id" '폭발 반경')" ] \
+        || { warn "슬라이스 $id: 적용 주체가 파이프라인인데 폭발 반경이 없음"; return 1; }
+    fi
+    # The composition rule the planner used to own and the shell must now
+    # enforce: README is generated from skill frontmatter and gated for
+    # staleness, so the sharing is real but invisible in prose.
+    case "$(slice_field "$doc" "$id" '선언 파일')" in
+      *SKILL.md*) case "$(slice_field "$doc" "$id" '선언 파일')" in
+                    *README.md*) : ;;
+                    *) warn "슬라이스 $id: SKILL.md 를 선언하면서 README.md 를 선언하지 않음"; return 1 ;;
+                  esac ;;
+    esac
+  done
+  return 0
+}
+
+# The three branches.
+#   미통치   — no declaration. Today's path: dispatch the planner, no gate.
+#   선언통치 — declaration complete. The shell builds the plan and the planner
+#              is NOT dispatched, so there is no judgement to gate.
+#   선언불완전 — a real author-grouping signal that is mechanically incomplete.
+#              Dispatch the planner and park on a false adoption flag.
+slicing_branch() {
+  local doc="$1" rc
+  slicing_present "$doc"; rc=$?
+  case "$rc" in
+    3) die "선언 파스: 닫히지 않은 펜스 — 이후 전부가 「안」으로 읽혀 선언이 조용히 강등된다" ;;
+    2) die "선언 파스: 펜스 밖 「## 구현 슬라이싱」 매치가 둘 이상 — 모호한 문서를 조용히 하나로 고르지 않는다" ;;
+    1) printf '미통치'; return 0 ;;
+  esac
+  if slicing_fields_ok "$doc"; then printf '선언통치'; else printf '선언불완전'; fi
+}
+
+# ---------------------------------------------------------------------------
 # Grant. The driver is READ-ONLY here, by construction and not by discipline:
 # an all-night process with no write path to its own authorization cannot widen
 # it however it fails.
@@ -1529,68 +1702,149 @@ main_loop() {
     *) park "S2" "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
 
-  # S3 SEGMENT-PLAN — one judgment call per design generation.
-  local plan_out plan seg_mode
-  if plan_out=$(judgment_call segment-plan "$DOC"); then
-    plan=$(judgment_result "$plan_out")
-    seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
-    ledger_row 'generation' "세대=1" "전체 sha256=$(shasum -a 256 "$DOC" | cut -d' ' -f1)" \
-      "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
-    local seg
-    for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
-      ledger_row 'segment' "id=$seg" "상태=계획됨" \
-        "선언 파일 집합=$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')" \
-        "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
-    done
-  else
-    park "S3" "게이트 park" "세그먼트 계획 판단 호출 실패"
-    return 0
-  fi
+  # S3 SEGMENT-PLAN — routed by the three-branch predicate.
+  #
+  # A field-complete declaration means the SHELL builds the plan and the planner
+  # is never dispatched: there is no judgement, so there is nothing to gate. The
+  # gate exists only on the branch that still relies on one.
+  local branch
+  branch=$(slicing_branch "$DOC")
+  log "선언 분기: $branch"
+  case "$branch" in
+    '선언통치')
+      plan_from_declaration "$DOC"
+      report_append "계획" "선언된 슬라이싱을 축자로 채택 — 계획기 미디스패치"
+      ;;
+    '선언불완전')
+      # A real author-grouping signal that is mechanically incomplete. Dispatch
+      # the planner, and park on a false adoption flag rather than proceeding.
+      SLICING_GATED=1
+      plan_via_planner "$DOC" || return 0
+      ;;
+    *)
+      plan_via_planner "$DOC" || return 0
+      ;;
+  esac
 
-  # S4..S9 — walk the same DAG. Serial segments and parallel waves are ONE
-  # machine: a topological walk versus an antichain walk over the same graph.
-  # `E_file` forces file-sharing items into one component, so distinct
-  # components are file-disjoint by construction — that is what makes a wave
-  # merge-safe, and it is also why a sibling rebase conflict is a refutation of
-  # the grouping rather than a merge to resolve.
+  # S4..S9 — a topological walk over the declared dependency graph. Both plan
+  # builders emit the SAME shell-readable form, so this loop does not care which
+  # branch produced it; that is what lets the declaration bypass the planner
+  # without forking the execution path.
   ladder_init
-  local wave_count wi merged=0 parked=0
-  wave_count=$(printf '%s' "$plan" | jq -r '.waves | length')
-  wi=0
-  while [ "$wi" -lt "$wave_count" ]; do
-    local wave_segs wave_mode
-    wave_segs=$(printf '%s' "$plan" | jq -r --argjson i "$wi" '.waves[$i].segment_ids[]')
-    wave_mode=$(printf '%s' "$plan" | jq -r --argjson i "$wi" '.waves[$i].mode')
-    WAVE_DEMOTED=0
-    log "웨이브 $((wi + 1))/$wave_count ($wave_mode): $(printf '%s' "$wave_segs" | tr '\n' ' ')"
-
-    # A wave carrying residual verification items runs alone, and the kickoff
-    # said so out loud. The design document is a shared write target no segment
-    # declares, so two segments writing it in one wave would contend and trip a
-    # fail-loud diff gate. Named, measured, and mostly inapplicable — not a
-    # silent collapse of parallelism.
-    local seg files rc
-    for seg in $wave_segs; do
-      files=$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(",")')
-      rc=0
-      segment_cycle "$seg" "$files" || rc=$?
-      case "$rc" in
-        0) merged=$((merged + 1)) ;;
-        2) log "재계획 필요 — 이번 런에서는 남은 세그먼트를 park 하고 아침에 넘긴다"
-           park "$seg" "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
-           parked=$((parked + 1)) ;;
-        *) parked=$((parked + 1)) ;;
-      esac
-      [ "$WAVE_DEMOTED" = "1" ] && log "웨이브 직렬 강등됨 — 남은 세그먼트는 순차로"
-    done
-    wi=$((wi + 1))
-  done
+  local merged=0 parked=0 total=0 seg files rc
+  total=$(grep -c . "$RUN_DIR/plan.tsv" 2>/dev/null || printf '0')
+  while IFS="$(printf '\t')" read -r seg repo files deps; do
+    [ -n "$seg" ] || continue
+    # Dependency guard on a serial traversal. A serial walk of a topological
+    # order IS a complete DAG implementation — layers are not parallelism.
+    if ! deps_satisfied "$deps"; then
+      park "$seg" "게이트 park" "선행 슬라이스가 완료되지 않음: $deps"
+      parked=$((parked + 1)); continue
+    fi
+    rc=0
+    segment_cycle "$seg" "$files" || rc=$?
+    case "$rc" in
+      0) merged=$((merged + 1)); printf '%s\n' "$seg" >> "$RUN_DIR/done.txt" ;;
+      2) log "재계획 필요 — 남은 세그먼트를 park 하고 아침에 넘긴다"
+         park "$seg" "자동 채택 미달" "재수렴이 구속면을 움직여 세그먼트 계획이 낡음"
+         parked=$((parked + 1)) ;;
+      *) parked=$((parked + 1)) ;;
+    esac
+  done < "$RUN_DIR/plan.tsv"
 
   ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
     "관측 시각=$(now_iso)"
-  report_append "종료" "머지 $merged건 · 보류 $parked건 · 웨이브 $wave_count개"
+  report_append "종료" "머지 ${merged}건 · 보류 ${parked}건 · 슬라이스 ${total}개"
   log "런 종료 (머지 $merged · 보류 $parked)"
 }
+
+# `선행` is satisfied when every named slice is in this run's done list. The
+# literal `없음` is a POSITIVE statement of independence; a missing line is not,
+# which is why the field is required rather than optional.
+deps_satisfied() {
+  local deps="$1" d
+  case "$deps" in ''|'없음') return 0 ;; esac
+  # The trailing newline is required, not cosmetic: `read` returns non-zero on a
+  # final line that has none, so the loop body never runs for the LAST item and
+  # a one-element `선행` list is satisfied vacuously — every dependency guard
+  # passes and the topological walk degenerates into arbitrary order.
+  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
+    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$d" ] || continue
+    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || exit 1
+  done
+}
+
+# Shell-built plan from the declaration. No model in this path at all.
+plan_from_declaration() {
+  local doc="$1" declared derived id
+  declared=$(slicing_body "$doc" | sed -n 's/^\*\*슬라이스 수\*\*: //p')
+  derived=$(slicing_pr_count "$doc")
+  # `슬라이스 수` is a checksum, so a mismatch means the declaration was
+  # truncated or misnumbered — worth stopping for rather than guessing which
+  # number was meant.
+  if [ -n "$declared" ] && [ "$declared" != "$derived" ]; then
+    park "S3" "게이트 park" "슬라이스 수 체크섬 불일치: 선언 ${declared} vs 파생 ${derived}"
+    return 1
+  fi
+  ledger_row 'generation' "세대=1" "전체 sha256=$(whole_digest)" \
+    "세그먼트 계획=$(slice_ids "$doc" | tr '\n' ',' | sed 's/,$//')" "segmentation=선언"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  for id in $(slice_ids "$doc"); do
+    printf '%s\t%s\t%s\t%s\n' "$id" \
+      "$(slice_field "$doc" "$id" '레포')" \
+      "$(slice_field "$doc" "$id" '선언 파일')" \
+      "$(slice_field "$doc" "$id" '선행')" >> "$RUN_DIR/plan.tsv"
+    ledger_row 'segment' "id=$id" "상태=계획됨" \
+      "선언 파일 집합=$(slice_field "$doc" "$id" '선언 파일')" \
+      "레포=$(slice_field "$doc" "$id" '레포')" \
+      "선행=$(slice_field "$doc" "$id" '선행')" \
+      "절단점=$(slice_field "$doc" "$id" '절단점')" \
+      "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")"
+  done
+  return 0
+}
+
+# Planner-built plan. This is the only path where the adoption flag has a job.
+plan_via_planner() {
+  local doc="$1" plan_out plan seg_mode adopted seg
+  if ! plan_out=$(judgment_call segment-plan "$doc"); then
+    park "S3" "게이트 park" "세그먼트 계획 판단 호출 실패"
+    return 1
+  fi
+  plan=$(judgment_result "$plan_out")
+  adopted=$(printf '%s' "$plan" | jq -r '.author_grouping_adopted // false')
+  # THE GATE. It keys on the adoption flag, never on `segmentation` — that field
+  # reported `ok` twice during a total-loss run, so it is uncorrelated with
+  # failure, while the adoption flag is already a required boolean in the
+  # shipped schema and refused an adversarial prose instruction to lie.
+  if [ "${SLICING_GATED:-0}" = "1" ] && [ "$adopted" != "true" ]; then
+    park "S3" "게이트 park" "선언은 있으나 필드가 불완전하고 계획기가 그것을 채택하지 않았다 (author_grouping_adopted=$adopted)"
+    return 1
+  fi
+  if [ "${SLICING_GATED:-0}" = "1" ]; then
+    # Adopted despite the incomplete fields: the two detectors disagree. Not a
+    # silent proceed — it is recorded as an autonomous decision so the morning
+    # audit sees which detector won and on what.
+    ledger_row '자율 승인' "kind=citation" "결정=계획기의 채택을 수용" \
+      "기각된 대안=선언 불완전을 이유로 park" "근거=author_grouping_adopted=true"
+    report_append "탐지기 불일치" "선언 필드는 불완전한데 계획기가 채택했다 — 계획기 판정을 따르고 기록한다"
+  fi
+  seg_mode=$(printf '%s' "$plan" | jq -r '.segmentation // "low-confidence"')
+  ledger_row 'generation' "세대=1" "전체 sha256=$(whole_digest)" \
+    "세그먼트 계획=$(printf '%s' "$plan" | jq -c '.segments | map(.id)')" "segmentation=$seg_mode"
+  : > "$RUN_DIR/plan.tsv"; : > "$RUN_DIR/done.txt"
+  for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
+    printf '%s\t%s\t%s\t%s\n' "$seg" "" \
+      "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')" \
+      "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')" >> "$RUN_DIR/plan.tsv"
+    ledger_row 'segment' "id=$seg" "상태=계획됨" \
+      "선언 파일 집합=$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')" \
+      "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
+  done
+  return 0
+}
+
 
 # ---------------------------------------------------------------------------
 # Entry

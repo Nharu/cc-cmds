@@ -5,10 +5,9 @@
     "moved_sections": { "type": "array", "items": { "type": "string" } },
     "reaudit_required": { "type": "boolean" },
     "reaudit_rationale": { "type": "string" },
-    "replan_required": { "type": "boolean" },
     "reconcile_backlog_applied": { "type": "array", "items": { "type": "string" } },
     "residual_out_of_scope": { "type": "array", "items": { "type": "string" } }
   },
-  "required": ["binding_surface_moved", "moved_sections", "reaudit_required", "reaudit_rationale", "replan_required", "reconcile_backlog_applied", "residual_out_of_scope"],
+  "required": ["binding_surface_moved", "moved_sections", "reaudit_required", "reaudit_rationale", "reconcile_backlog_applied", "residual_out_of_scope"],
   "additionalProperties": false
 }

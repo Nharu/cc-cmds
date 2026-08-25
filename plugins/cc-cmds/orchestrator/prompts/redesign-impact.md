@@ -4,15 +4,16 @@ You are judging what a completed re-convergence changed, so the driver knows whe
 
 A design document is two things at once — a faithful record of a discussion and an instruction set an implementation consumes — and those two jobs do not agree byte for byte. The partition is keyed to **which section a sentence sits in**, never to what the sentence says:
 
-- **Binding** — `## 합의된 아키텍처`; the *decision* sentences of `## 주요 결정사항과 근거`; entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`; `## 구현 시 검증 항목`; a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`.
+- **Binding** — `## 합의된 아키텍처`; the *decision* sentences of `## 주요 결정사항과 근거`; entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`; `## 구현 시 검증 항목`; `## 구현 슬라이싱`; a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`.
 - **Reference** — the rationale prose of `## 주요 결정사항과 근거`; unresolved trade-off entries; `## 권장 구현 순서`; examples and illustrations anywhere; completed verification-record entries.
 
 Set `binding_surface_moved` from that partition alone, and name the sections in `moved_sections`. A rewritten rationale paragraph under an unchanged decision has **not** moved the binding surface. A changed decision sentence has, even if it is one line.
 
-## Two outputs that are not the same question
+## `reaudit_required` is a higher bar than the moved surface
 
-- **`replan_required`** — whether the segment plan has to be rebuilt. The plan was derived from the binding surface, so this follows `binding_surface_moved` in almost every case. Say so plainly rather than hedging.
-- **`reaudit_required`** — whether the document needs another audit pass before implementation resumes. This is a **higher bar**: an audit is a full fan-out, and re-running one for a scoped repair that touched a single decision buys little. Require it when the change is broad enough that the previous audit's conclusions no longer describe the document — a new architectural component, a reversed decision that other sections depend on, a new verification item.
+Whether the document needs another audit pass before implementation resumes is **not** the same question as whether the binding surface moved. An audit is a full fan-out, and re-running one for a scoped repair that touched a single decision buys little. Require it when the change is broad enough that the previous audit's conclusions no longer describe the document — a new architectural component, a reversed decision that other sections depend on, a new verification item.
+
+**You are not asked whether the plan should be rebuilt.** That decision is the driver's and it is made by measuring the document, not by reading your judgment of it — a self-report cannot be audited against what actually changed, and a field nobody reads is worse than no field, because it looks like a control signal while controlling nothing.
 
 ## Reconcile backlog
 

@@ -217,7 +217,13 @@ if [ "$NATIVE_OS" = "Darwin" ] && [ -n "$LOCK_TOOL" ] && [ -x "$LOCK_TOOL" ]; th
   set +e
   with_doc_lock true
   lock_rc=$?
-  set -e 2>/dev/null || true
+  # Restore `+e`, never `-e`. This block wraps ONE call in `set +e`, and the
+  # obvious-looking `set -e` afterwards silently re-armed the option the harness
+  # spent its header explaining it must not have — on the darwin leg only, so
+  # ubuntu stayed green. It went unnoticed while every later negative assertion
+  # happened to sit inside an `if`; the first bare `f; rc=$?` after it ended the
+  # suite mid-file with the function's own return code and no summary line.
+  set +e
   check "잠긴 문서에 대해 즉시 EX_TEMPFAIL" "$lock_rc" "75"
   wait "$holder" 2>/dev/null
   # -k is required: without it lockf removes the lock file on exit and the next
@@ -563,7 +569,153 @@ fi
 MANIFEST=""
 
 # ---------------------------------------------------------------------------
-# 17. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
+# 17. 워크플로 선언 파스 — 펜스 역학 넷과 3분기 술어
+# ---------------------------------------------------------------------------
+# 네 역학은 각각 「정답을 구성으로 아는」 픽스처로 잰다. 코퍼스 대조는 두 구현이
+# 서로 맞는지만 말해 주지 둘 다 틀린 경우를 가르지 못하므로, 정답을 만들어 두고
+# 파서에게 묻는 쪽이 이 항목이 요구하는 판정이다.
+SLI="$WORK/slicing"; mkdir -p "$SLI"
+
+# (a) ~~~ 펜스 — 백틱과 섞이지 않는다. 안의 표제는 보이지 않아야 한다.
+cat > "$SLI/tilde.md" <<'FIXA'
+# t
+~~~
+## 구현 슬라이싱
+~~~
+## 구현 슬라이싱
+
+**슬라이스 수**: 1
+
+### 슬라이스 A
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `a.txt`
+**선행**: 없음
+**절단점**: 머지
+FIXA
+slicing_present "$SLI/tilde.md"; rc=$?
+check "(a) ~~~ 펜스 안의 표제는 파스에 들어가지 않는다" "$rc" "0"
+check "(a) 펜스 밖 표제 하나만 남는다" "$(defenced "$SLI/tilde.md" | grep -cxF '## 구현 슬라이싱')" "1"
+
+# (b) 백틱 넷 이상 — 안에 중첩된 ``` 는 닫지 못한다. 이 설계 문서 자신의 형태다.
+cat > "$SLI/nested.md" <<'FIXB'
+# n
+````markdown
+## 구현 슬라이싱
+
+```text
+## 구현 슬라이싱
+```
+````
+## 구현 슬라이싱
+
+**슬라이스 수**: 1
+
+### 슬라이스 A
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `a.txt`
+**선행**: 없음
+**절단점**: 머지
+FIXB
+check "(b) 중첩 펜스에서 파서가 「밖」으로 빠지지 않는다" \
+  "$(defenced "$SLI/nested.md" | grep -cxF '## 구현 슬라이싱')" "1"
+slicing_present "$SLI/nested.md"; rc=$?
+check "(b) 백틱4+ 문서의 존재 판정" "$rc" "0"
+
+# (c) 들여쓴 펜스 — 여는 줄이 들여써져도 같은 span 이다.
+cat > "$SLI/indent.md" <<'FIXC'
+# i
+
+- 목록 안:
+
+    ```
+    ## 구현 슬라이싱
+    ```
+
+## 구현 슬라이싱
+
+**슬라이스 수**: 1
+
+### 슬라이스 A
+
+**스킬**: implement
+**레포**: `o/r`
+**선언 파일**: `a.txt`
+**선행**: 없음
+**절단점**: 머지
+FIXC
+check "(c) 들여쓴 펜스 안의 표제도 보이지 않는다" \
+  "$(defenced "$SLI/indent.md" | grep -cxF '## 구현 슬라이싱')" "1"
+
+# (d) 닫히지 않은 펜스 — 조용한 강등이 아니라 하드 오류(rc=3)다. 이후 전부가
+#     「안」으로 읽히므로 선언한 문서가 통치되지 않은 것으로 취급된다.
+cat > "$SLI/unclosed.md" <<'FIXD'
+# u
+```
+## 구현 슬라이싱
+FIXD
+slicing_present "$SLI/unclosed.md"; rc=$?
+check "(d) 닫히지 않은 펜스는 하드 오류로 판정된다" "$rc" "3"
+if fence_unclosed "$SLI/nested.md"; then
+  bad "(d) 대조군" "닫힌 문서를 닫히지 않았다고 판정했다"
+else
+  ok "(d) 대조군: 닫힌 문서는 하드 오류가 아니다"
+fi
+
+# 모호 — 펜스 밖 매치 둘. last-wins 로 조용히 하나를 고르지 않는다.
+printf '## 구현 슬라이싱\n\n## 구현 슬라이싱\n' > "$SLI/dup.md"
+slicing_present "$SLI/dup.md"; rc=$?
+check "펜스 밖 매치 둘은 모호 오류다" "$rc" "2"
+
+# 꼬리 텍스트가 붙은 표제는 선언이 아니다 — 전체줄 정확 일치.
+printf '## 구현 슬라이싱 (단일 레포 먼저)\n' > "$SLI/tail.md"
+slicing_present "$SLI/tail.md"; rc=$?
+check "꼬리 텍스트가 붙은 표제는 선언으로 읽지 않는다" "$rc" "1"
+
+# 3분기 술어.
+check "부재 → 미통치" "$(slicing_branch "$SLI/tail.md")" "미통치"
+check "필드 완전 → 선언통치" "$(slicing_branch "$SLI/tilde.md")" "선언통치"
+sed 's/^\*\*레포\*\*: .*$//' "$SLI/tilde.md" > "$SLI/incomplete.md"
+check "필드 불완전 → 선언불완전" "$(slicing_branch "$SLI/incomplete.md" 2>/dev/null)" "선언불완전"
+
+# 필드 접근과 합성 규칙.
+check "필드 조회" "$(slice_field "$SLI/tilde.md" A '레포')" '`o/r`'
+check "슬라이스 id 열거" "$(slice_ids "$SLI/tilde.md" | tr '\n' ' ')" "A "
+check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
+sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
+check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"
+sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`, `README.md`|' "$SLI/tilde.md" > "$SLI/skillreadme.md"
+check "SKILL.md + README.md 는 통과한다" "$(slicing_branch "$SLI/skillreadme.md")" "선언통치"
+
+# 커밋 절단점 슬라이스는 체크섬에 세지 않는다.
+sed 's/^\*\*절단점\*\*: 머지$/**절단점**: 커밋/' "$SLI/tilde.md" > "$SLI/commitonly.md"
+check "커밋 절단점은 PR 이상 블록 수에 들어가지 않는다" "$(slicing_pr_count "$SLI/commitonly.md")" "0"
+
+# `선행`의 `없음` 은 독립성의 적극적 진술이다.
+DONE_SAVE="$RUN_DIR/done.txt"; : > "$DONE_SAVE"
+if deps_satisfied '없음'; then ok "선행 없음 은 즉시 만족된다"; else bad "선행" "없음 이 거부됐다"; fi
+if deps_satisfied '슬라이스 A'; then
+  bad "선행" "완료되지 않은 선행이 만족으로 판정됐다"
+else
+  ok "완료되지 않은 선행은 만족되지 않는다"
+fi
+printf 'A\n' > "$DONE_SAVE"
+if deps_satisfied '슬라이스 A'; then ok "완료된 선행은 만족된다"; else bad "선행" "완료된 선행이 거부됐다"; fi
+rm -f "$DONE_SAVE"
+
+# 실물 설계 문서 — 이 변경 자신의 선언이 자기 파서를 통과해야 한다.
+SELF_DOC="$repo_root/docs/autopilot-generalization.md"
+if [ -f "$SELF_DOC" ]; then
+  check "실물 문서: 분기" "$(slicing_branch "$SELF_DOC")" "선언통치"
+  check "실물 문서: 체크섬 일치" \
+    "$(slicing_body "$SELF_DOC" | sed -n 's/^\*\*슬라이스 수\*\*: //p')" "$(slicing_pr_count "$SELF_DOC")"
+fi
+
+# ---------------------------------------------------------------------------
+# 18. 인수 테스트 — 백오프 수정과 kill 가드는 하나의 변경이다
 # ---------------------------------------------------------------------------
 # 이 테스트는 **반쪽 트리에서 통과할 수 없다.**
 #   - 백오프만 고친 트리: 누산기가 자라 상한에 도달하고, 가드가 없으므로 그
