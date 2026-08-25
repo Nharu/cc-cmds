@@ -121,6 +121,21 @@ ok "하네스가 드라이버의 set -e 를 물려받지 않는다"
 NATIVE_OS="${CC_CMDS_ORCH_TEST_NATIVE_OS:-$(uname -s)}"
 printf 'native(harness): %s\n' "$NATIVE_OS"
 
+# Environment facts, printed unconditionally and early. A runner whose awk
+# mishandles multibyte text does not announce itself — it just stops matching,
+# and the resulting failure names the assertion rather than the cause. These
+# three lines are what turned "a manifest was rejected" into "this runner's
+# locale was C and its awk lost the Korean heading".
+printf 'locale(driver): LC_CTYPE=%s LC_COLLATE=%s 선택=%s\n' \
+  "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_UTF8_LOCALE:-없음}"
+printf 'awk(harness): %s\n' "$(awk --version 2>&1 | head -1 || printf unknown)"
+if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep -q hit \
+   && [ "$(printf '한글\n' | awk -v k=한글 '$0==k{print "hit"}')" = "hit" ]; then
+  ok "러너의 awk 가 멀티바이트 정규식과 -v 대입을 모두 처리한다"
+else
+  bad "awk 멀티바이트" "이 러너에서 한국어 어휘 비교가 조용히 실패한다 — 아래 실패들의 원인일 수 있다"
+fi
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test.XXXXXX")
 # Replaces the earlier trap rather than adding to it — a bare `trap ... EXIT`
 # overwrites, so both directories are named here or the first one leaks.

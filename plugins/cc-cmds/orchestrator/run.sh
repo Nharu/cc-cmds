@@ -68,6 +68,40 @@ fi
 PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
+# Normalize the LOCALE for the same reason, and split it across two categories
+# rather than setting one value, because the two categories want opposite things.
+#
+#   LC_CTYPE  — must be UTF-8. Every vocabulary this driver compares is Korean:
+#               park reasons, ledger keys, manifest field names, cutpoint tokens.
+#               A detached run inherits no LANG at all, and an interpreter that
+#               classifies those bytes as invalid characters does not fail
+#               loudly — it fails by not matching, which is this driver's worst
+#               failure shape. Measured on a CI runner: a `case` arm lookup
+#               reported five arms for every Korean token and one for each ASCII
+#               token, and a heading regex stopped matching its own heading.
+#   LC_COLLATE — must be C. The target-map digest sorts rows and then hashes
+#               them, and a locale-dependent sort makes that digest depend on
+#               who computed it. The kickoff computes it interactively and the
+#               driver compares it detached, so a collation difference between
+#               those two environments would reject a manifest nobody tampered with.
+#
+# `LC_ALL` is cleared first because it overrides both. The UTF-8 locale is
+# CHOSEN from what the host actually has rather than pinned: a name the host does
+# not carry falls back to C silently, which is the very state being escaped.
+unset LC_ALL
+ORCH_UTF8_LOCALE=""
+for _loc in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
+  if locale -a 2>/dev/null | grep -qxF "$_loc"; then ORCH_UTF8_LOCALE="$_loc"; break; fi
+done
+unset _loc
+if [ -n "$ORCH_UTF8_LOCALE" ]; then
+  LANG="$ORCH_UTF8_LOCALE"
+  LC_CTYPE="$ORCH_UTF8_LOCALE"
+  export LANG LC_CTYPE
+fi
+LC_COLLATE="C"
+export LC_COLLATE
+
 # Host-OS injection seam — tests inject CC_CMDS_ORCH_HOST_OS to drive the
 # Darwin-vs-non-Darwin branches uniformly across CI legs (positive injection
 # rather than a negative-framed skip). Default = uname -s for normal use.
@@ -1852,6 +1886,23 @@ self_check() {
   native=$(uname -s)
   printf 'bash: %s\n' "$BASH_VERSION"
   printf 'PATH: %s\n' "$PATH"
+  printf 'locale: LC_CTYPE=%s LC_COLLATE=%s (선택=%s)\n' "${LC_CTYPE:-unset}" "${LC_COLLATE:-unset}" "${ORCH_UTF8_LOCALE:-없음}"
+  printf 'awk: %s\n' "$(awk --version 2>&1 | head -1 || awk -W version 2>&1 | head -1 || printf 'unknown')"
+  # The reason this is printed rather than merely set: the failure it guards
+  # against is silent non-matching, so the only way a reader learns which
+  # interpreter and locale a run actually got is to see them.
+  if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep -q hit; then
+    printf 'ok   awk 멀티바이트 정규식 일치\n'
+  else
+    printf 'FAIL awk 가 멀티바이트 정규식을 일치시키지 못함 — 한국어 어휘 비교가 조용히 실패한다\n'
+    fails=$((fails + 1))
+  fi
+  if [ "$(printf '한글\n' | awk -v k=한글 '$0==k{print "hit"}')" = "hit" ]; then
+    printf 'ok   awk 멀티바이트 -v 대입 일치\n'
+  else
+    printf 'FAIL awk 가 멀티바이트 -v 대입을 잃는다 — 필드 조회가 조용히 빈 값을 낸다\n'
+    fails=$((fails + 1))
+  fi
   printf 'host: seam=%s native=%s\n' "$ORCH_HOST_OS" "$native"
 
   # --- platform-independent tooling ---------------------------------------
