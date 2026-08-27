@@ -59,10 +59,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-CLI_BIN="${CC_CLAUDE_BIN:-}"
-[ -n "$CLI_BIN" ] || CLI_BIN=$(command -v claude 2>/dev/null || true)
-[ -n "$CLI_BIN" ] || { printf 'stage-wrapper: CLI 바이너리를 찾지 못했습니다\n' >&2; exit 127; }
-
 # Every one of these is a hard stop rather than a warning, and the reason is the
 # hollow success above: a stage launched without settings runs UNGATED and
 # reports success, so a missing value here must stop the launch instead of
@@ -75,6 +71,24 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 [ -n "$SESSION_ID" ] || [ -n "$RESUME" ] \
   || { printf 'stage-wrapper: --session-id 또는 --resume 이 필요합니다 — 트랜스크립트가 진행 오라클이고, 호출자가 고른 id 없이는 찾을 방법이 없습니다\n' >&2; exit 2; }
 [ $# -ge 1 ]          || { printf 'stage-wrapper: -- 뒤에 CLI 인자가 필요합니다\n' >&2; exit 2; }
+# The mode belongs HERE and not at the dispatch below. Validated late, an
+# unknown mode was reported as "binary not found" on a machine with no CLI —
+# the same masking the resolution order above exists to remove.
+case "$MODE" in
+  A|B) : ;;
+  *) printf 'stage-wrapper: 알 수 없는 모드: %s (A|B)\n' "$MODE" >&2; exit 2 ;;
+esac
+[ "$MODE" = "B" ] && [ -z "$FIFO" ] \
+  && { printf 'stage-wrapper: Mode B 는 --fifo 가 필요합니다\n' >&2; exit 2; }
+
+# The CLI is resolved AFTER the arguments are validated. Resolving first meant a
+# machine with no `claude` on PATH reported "binary not found" for an invocation
+# whose real defect was a missing `--settings` — the environment lookup masked
+# the contract violation, and the contract violation is the one that silently
+# produces an ungated stage.
+CLI_BIN="${CC_CLAUDE_BIN:-}"
+[ -n "$CLI_BIN" ] || CLI_BIN=$(command -v claude 2>/dev/null || true)
+[ -n "$CLI_BIN" ] || { printf 'stage-wrapper: CLI 바이너리를 찾지 못했습니다\n' >&2; exit 127; }
 
 # `--resume` CONTINUES a turn rather than restarting one, and the two are not
 # interchangeable: a stage that stopped to ask has already done its work up to
@@ -107,7 +121,6 @@ case "$MODE" in
     exec "$CLI_BIN" --output-format stream-json --verbose "$@" < /dev/null
     ;;
   B)
-    [ -n "$FIFO" ] || { printf 'stage-wrapper: Mode B 는 --fifo 가 필요합니다\n' >&2; exit 2; }
     [ -p "$FIFO" ] || mkfifo "$FIFO" || { printf 'stage-wrapper: FIFO 를 만들지 못했습니다: %s\n' "$FIFO" >&2; exit 2; }
     # NOT `exec`. Mode B has no observed self-exit path — closing the write end
     # leaves the stage alive twenty seconds later — so a killer has to remain in
@@ -126,6 +139,4 @@ case "$MODE" in
     kill -0 "$cli_pid" 2>/dev/null && kill -TERM "$cli_pid" 2>/dev/null
     exit "$rc"
     ;;
-  *)
-    printf 'stage-wrapper: 알 수 없는 모드: %s (A|B)\n' "$MODE" >&2; exit 2 ;;
 esac

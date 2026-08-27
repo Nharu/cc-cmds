@@ -32,6 +32,26 @@ RUN_DIR="$WORK/run"; mkdir -p "$RUN_DIR/settings"
 LEDGER="$WORK/ledger.md"; GRANT="$WORK/grant.md"
 : > "$LEDGER"; : > "$GRANT"
 
+# `grep -q` on the right of a pipe exits as soon as it matches, which kills the
+# writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
+# failure even though the match was found. GNU sed makes it loud ("couldn't
+# flush stdout: Broken pipe") and BSD sed usually does not, so this failed only
+# on the Linux leg and only once a scanned function grew long enough for the
+# race to be real.
+#
+# `grep -c` has the same truth value and consumes its input to the end, so the
+# writer never sees a closed pipe. The count goes to /dev/null; only the exit
+# status is wanted.
+grep_all_q() {
+  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
+  # when its output is being discarded, which reintroduces the very SIGPIPE this
+  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
+  # 141 while `n=$(grep -c …)` returns 0.
+  local n
+  n=$(grep -c "$@" || true)
+  [ "${n:-0}" != "0" ]
+}
+
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -174,13 +194,13 @@ check "빈 입력도 거부로 답한다" "$dec" "deny"
 # ---------------------------------------------------------------------------
 # 6. The two precedents that are NOT inherited
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$HOOK" | grep -q 'applyPermissionRules'; then
+if grep -vE '^[[:space:]]*#' "$HOOK" | grep_all_q 'applyPermissionRules'; then
   bad "세션 지속 허용" "applyPermissionRules 가 있다 — 한 번의 허용이 세션 내내 게이트를 우회시킨다"
 else
   ok "applyPermissionRules 를 쓰지 않는다 (판정은 물어본 그 호출에 한정된다)"
 fi
 
-if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'command -v jq[^|]*\|\|[[:space:]]*exit 0'; then
+if grep -vE '^[[:space:]]*#' "$HOOK" | grep_all_q -E 'command -v jq[^|]*\|\|[[:space:]]*exit 0'; then
   bad "조용한 fail-open" "jq 부재를 exit 0 으로 넘긴다"
 else
   ok "jq 부재를 조용히 넘기지 않는다"
@@ -236,7 +256,7 @@ case "$wout" in *"-- 뒤에 CLI 인자"*) ok "래퍼: CLI 인자 없이 띄우�
 # `--include-partial-messages` must stay off: it multiplies stream volume for a
 # stage nobody is watching character by character, and the terminal
 # classification is read off the `result` line either way.
-if grep -vE '^[[:space:]]*#' "$WRAP" | grep -q 'include-partial-messages'; then
+if grep -vE '^[[:space:]]*#' "$WRAP" | grep_all_q 'include-partial-messages'; then
   bad "스트림 볼륨" "--include-partial-messages 를 싣는다"
 else
   ok "래퍼: --include-partial-messages 를 싣지 않는다"

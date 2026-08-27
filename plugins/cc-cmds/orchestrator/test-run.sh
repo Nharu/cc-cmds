@@ -28,6 +28,26 @@ SANITIZED_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 WORK_EARLY=$(mktemp -d "${TMPDIR:-/tmp}/cc-orch-test-early.XXXXXX")
 trap 'rm -rf "$WORK_EARLY"' EXIT
 
+# `grep -q` on the right of a pipe exits as soon as it matches, which kills the
+# writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
+# failure even though the match was found. GNU sed makes it loud ("couldn't
+# flush stdout: Broken pipe") and BSD sed usually does not, so this failed only
+# on the Linux leg and only once a scanned function grew long enough for the
+# race to be real.
+#
+# `grep -c` has the same truth value and consumes its input to the end, so the
+# writer never sees a closed pipe. The count goes to /dev/null; only the exit
+# status is wanted.
+grep_all_q() {
+  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
+  # when its output is being discarded, which reintroduces the very SIGPIPE this
+  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
+  # 141 while `n=$(grep -c …)` returns 0.
+  local n
+  n=$(grep -c "$@" || true)
+  [ "${n:-0}" != "0" ]
+}
+
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -51,7 +71,7 @@ sc_rc=$?
 check "정제 환경 self-check 통과 (Darwin 주입)" "$sc_rc" "0"
 case "$sc_out" in
   *"bash: 3."*) ok "self-check가 실제로 bash 3.2 위에서 돌았다 (하한이 실측된다)" ;;
-  *)            printf 'NOTE: self-check ran on %s\n' "$(printf '%s' "$sc_out" | head -1)" ;;
+  *)            printf 'NOTE: self-check ran on %s\n' "$(printf '%s' "$sc_out" | awk 'NR<=1')" ;;
 esac
 case "$sc_out" in
   *"잠금 소스 선택 -> /usr/bin/lockf"*) ok "Darwin 분기가 잠금 소스를 선택한다 (주입으로 검증)" ;;
@@ -86,8 +106,8 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Interpreter floor guard is the first executable block
 # ---------------------------------------------------------------------------
-first_exec=$(grep -nE '^[^#[:space:]]' "$DRIVER" | head -1 | cut -d: -f1)
-guard_line=$(grep -n 'BASH_VERSINFO+set' "$DRIVER" | head -1 | cut -d: -f1)
+first_exec=$(grep -nE '^[^#[:space:]]' "$DRIVER" | awk 'NR<=1' | cut -d: -f1)
+guard_line=$(grep -n 'BASH_VERSINFO+set' "$DRIVER" | awk 'NR<=1' | cut -d: -f1)
 if [ -n "$guard_line" ] && [ "$guard_line" = "$first_exec" ]; then
   ok "인터프리터 하한 가드가 첫 실행 블록이다"
 else
@@ -153,10 +173,10 @@ EARLY=$(sed 's/#.*//' "$DRIVER" | grep -nE '\| *(head -|grep -[A-Za-z]*q)' || tr
 if [ -z "$EARLY" ]; then
   ok "파이프 오른쪽에 조기 종료 읽기가 없다"
 else
-  bad "pipefail 함정" "$(printf '%s' "$EARLY" | head -3 | tr '\n' ' ')"
+  bad "pipefail 함정" "$(printf '%s' "$EARLY" | awk 'NR<=3' | tr '\n' ' ')"
 fi
-printf 'awk(harness): %s\n' "$(awk --version 2>&1 | head -1 || printf unknown)"
-if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep -q hit \
+printf 'awk(harness): %s\n' "$(awk --version 2>&1 | awk 'NR<=1' || printf unknown)"
+if printf '한글\n' | awk '/^한글$/{print "hit"}' | grep_all_q hit \
    && [ "$(printf '한글\n' | awk -v k=한글 '$0==k{print "hit"}')" = "hit" ]; then
   ok "러너의 awk 가 멀티바이트 정규식과 -v 대입을 모두 처리한다"
 else
@@ -364,12 +384,12 @@ else
   bad "base_sha" "벗겨 낸 로컬 이름에서 해소 — 로컬 ref는 전진하지 않는다"
 fi
 if grep -qE '^base_fetch\(\)' "$DRIVER"; then ok "base_fetch 가 존재한다"; else bad "base_fetch" "정의 없음"; fi
-if sed 's/#.*//' "$DRIVER" | grep -qE 'git worktree add -b "\$branch" "\$p" HEAD'; then
+if sed 's/#.*//' "$DRIVER" | grep_all_q -E 'git worktree add -b "\$branch" "\$p" HEAD'; then
   bad "wt_create" "리터럴 HEAD에서 분기 — 메인 팁은 런 내내 움직이지 않는다"
 else
   ok "wt_create 가 리터럴 HEAD에서 분기하지 않는다"
 fi
-if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -q 'base_fetch'; then
+if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep_all_q 'base_fetch'; then
   ok "머지 직후 base_fetch 가 돈다"
 else
   bad "merge_gate" "머지 뒤 refresh 없음 — 다음 세그먼트가 낡은 베이스에서 갈라진다"
@@ -469,7 +489,7 @@ check "사이클 상한 4F+1 (F=3)" "$cap" "13"
 # Comment lines are stripped first: the driver legitimately NAMES the builtin in
 # the comment explaining why it does not use it, and a check that flags its own
 # rationale would be pressure to delete the rationale.
-if sed 's/#.*//' "$DRIVER" | grep -qE '\bwait[[:space:]]+-n\b'; then
+if sed 's/#.*//' "$DRIVER" | grep_all_q -E '\bwait[[:space:]]+-n\b'; then
   bad "생존성 오라클" "wait -n 사용 — 인터프리터 하한에서 rc=2"
 else
   ok "wait -n 미사용 (하한 인터프리터에 없는 빌트인)"
@@ -484,26 +504,26 @@ if stage_alive Snothing; then bad "stage_alive" "기록 없는 스테이지에 �
 # ---------------------------------------------------------------------------
 # 결과 envelope 은 종료 시 한 번에 쓰이므로 그것을 폴하면 살아 있는 스테이지가
 # 첫 폴부터 언제나 침묵으로 읽힌다 — 어떤 N도 그것을 고치지 못한다.
-if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep -q 'transcript_path'; then
+if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep_all_q 'transcript_path'; then
   ok "진행성 오라클이 트랜스크립트를 폴한다"
 else
   bad "진행성 오라클" "결과 envelope 을 폴한다 — 도는 내내 0바이트라 신호가 없다"
 fi
-if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep -qE 'log/\$stage\.json'; then
+if sed -n '/^resume_verdict()/,/^}/p' "$DRIVER" | grep_all_q -E 'log/\$stage\.json'; then
   bad "진행성 오라클" "여전히 출력 JSON 크기를 읽는다"
 else
   ok "출력 JSON 크기를 진행성 신호로 쓰지 않는다"
 fi
 # 트랜스크립트를 찾으려면 호출자가 고른 세션 id 가 넘어가야 한다. 함수만 있고
 # 호출부가 없으면 파일을 찾을 수도 없다 — 이번 반증의 직접 원인이 그것이었다.
-if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep -q -- '--session-id'; then
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -- '--session-id'; then
   ok "stage_spawn 이 --session-id 를 넘긴다"
 else
   bad "session-id" "session_uuid 가 정의만 되고 호출부가 없다"
 fi
 # `--session-id` 는 유효한 UUID 를 요구한다 (맨 32-hex 는 거부됨, 실측).
 uu=$(DOC_KEY=x session_uuid "S4:seg:1")
-if printf '%s' "$uu" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+if printf '%s' "$uu" | grep_all_q -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
   ok "session_uuid 가 UUID 형태를 낸다 ($uu)"
 else
   bad "session_uuid" "UUID 형태가 아니다: $uu"
@@ -898,12 +918,12 @@ rm -f "$RUN_DIR/plan.tsv"
 # 가드가 공허하게 통과한다 — 정확히 잡아야 할 상황에서 성공을 보고한다.
 check "stash_ref 는 대상 레포에서 읽는다" "$(stash_ref "$MR_A")" "none"
 check "stash_ref 는 비레포 경로에서 none" "$(stash_ref "$MR_DIR/nope")" "none"
-if sed -n '/^stash_ref()/,/^}/p' "$DRIVER" | grep -q 'cd "\$root"'; then
+if sed -n '/^stash_ref()/,/^}/p' "$DRIVER" | grep_all_q 'cd "\$root"'; then
   ok "stash_ref 가 명시적 cwd 를 쓴다"
 else
   bad "stash_ref" "상속 cwd 로 읽는다 — 비레포에서 가드가 공허하게 통과한다"
 fi
-if sed -n '/^stash_attribution_check()/,/^}/p' "$DRIVER" | grep -q 'cd "\$root"'; then
+if sed -n '/^stash_attribution_check()/,/^}/p' "$DRIVER" | grep_all_q 'cd "\$root"'; then
   ok "귀속 검사가 명시적 cwd 를 쓴다"
 else
   bad "귀속 검사" "상속 cwd 로 stash 목록을 읽는다"
@@ -915,21 +935,21 @@ BARE_GH=$(sed 's/#.*//' "$DRIVER" | grep -nE '(^|[^_[:alnum:]])gh[[:space:]]+(pr
 if [ -z "$BARE_GH" ]; then
   ok "모든 gh 호출이 -R 을 지나간다"
 else
-  bad "gh -R" "cwd 상속 호출이 남았다: $(printf '%s' "$BARE_GH" | head -3 | tr '\n' ' ')"
+  bad "gh -R" "cwd 상속 호출이 남았다: $(printf '%s' "$BARE_GH" | awk 'NR<=3' | tr '\n' ' ')"
 fi
-if sed -n '/^gh_q()/,/^}/p' "$DRIVER" | grep -q '2>"\$errf"'; then
+if sed -n '/^gh_q()/,/^}/p' "$DRIVER" | grep_all_q '2>"\$errf"'; then
   ok "gh_q 가 stderr 를 캡처한다"
 else
   bad "gh_q" "stderr 를 버린다 — 비레포 오류가 빈 PR 번호로 삼켜진다"
 fi
-if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -q 'GH_STDERR'; then
+if sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep_all_q 'GH_STDERR'; then
   ok "머지 게이트의 park 사유가 캡처한 stderr 를 싣는다"
 else
   bad "merge_gate" "원인을 버리고 park 한다"
 fi
 # 술어는 세그먼트의 레포에서 평가돼야 한다. 홈에서 평가하면 홈이 아닌 레포의
 # 모든 세그먼트가 만들어진 적 없는 브랜치를 조회당해 공허한 성공으로 떨어진다.
-if sed -n '/^predicate_implement()/,/^}/p' "$DRIVER" | grep -q 'seg_root'; then
+if sed -n '/^predicate_implement()/,/^}/p' "$DRIVER" | grep_all_q 'seg_root'; then
   ok "구현 술어가 세그먼트의 레포에서 평가된다"
 else
   bad "predicate_implement" "홈 레포에서 평가된다 — N>1 에서 전부 공허한 성공"
@@ -1089,13 +1109,13 @@ else
   ok "apply 스테이지에는 kill 이 허용되지 않는다"
 fi
 # (8) 사다리 단을 소비하지 않는다. 소비하면 결함용 단이 말단 행위 실패로 닳는다.
-if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep -q 'ladder_bump'; then
+if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep_all_q 'ladder_bump'; then
   bad "사다리" "apply 실패가 사다리 단을 소비한다"
 else
   ok "apply 는 사다리 단을 소비하지 않는다"
 fi
 # (9) 실행자가 드라이버여야 한다 — 즉흥하는 스테이지는 프로브를 돌리고 아무 말이나 할 수 있다.
-if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep -q 'stage_spawn\|dispatch_stage'; then
+if sed -n '/^apply_stage()/,/^}/p' "$DRIVER" | grep_all_q 'stage_spawn\|dispatch_stage'; then
   bad "실행자" "apply 를 모델에 디스패치한다 — 날조 가능한 표면"
 else
   ok "apply 는 드라이버가 직접 실행한다"
@@ -1129,7 +1149,7 @@ UNSCOPED=$(sed 's/#.*//' "$DRIVER" | grep -nE '(^|[^_a-z])park "' \
 if [ -z "$UNSCOPED" ]; then
   ok "모든 park 호출부가 스코프와 원인을 지명한다"
 else
-  bad "park 스코프" "지명하지 않은 호출부: $(printf '%s' "$UNSCOPED" | head -3 | tr '\n' ' ')"
+  bad "park 스코프" "지명하지 않은 호출부: $(printf '%s' "$UNSCOPED" | awk 'NR<=3' | tr '\n' ' ')"
 fi
 # 어휘 밖 값은 조용한 기본값이 아니라 하드 오류다.
 if ( park t 없는스코프 막힘 r o ) >/dev/null 2>&1; then
@@ -1158,12 +1178,12 @@ if [ "$(sed -n '/^merge_gate()/,/^}/p' "$DRIVER" | grep -c '^    return 2$')" -g
 else
   bad "ACT 팔" "머지 실패가 여전히 세그먼트를 버린다 — 절단점 오타 하나가 밤 전체를 비운다"
 fi
-if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q 'return 4'; then
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q 'return 4'; then
   ok "완성-미착지가 자기 반환 코드를 가진다"
 else
   bad "완성-미착지" "막힌 말단 행위가 park 과 구별되지 않는다"
 fi
-if sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep -q '완성-미착지'; then
+if sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep_all_q '완성-미착지'; then
   ok "아침 보고서가 완성-미착지를 따로 센다"
 else
   bad "보고서" "완성-미착지가 보류에 섞인다"
@@ -1176,7 +1196,7 @@ if grep -q '"사이클 예산 소진"' "$DRIVER"; then
 else
   bad "오라벨" "사이클 상한이 여전히 사다리 R4 로 기록된다"
 fi
-if sed -n '/^  if \[ "\$cycle" -ge "\$cap" \]/,/^  fi$/p' "$DRIVER" | grep -q '사다리 R4'; then
+if sed -n '/^  if \[ "\$cycle" -ge "\$cap" \]/,/^  fi$/p' "$DRIVER" | grep_all_q '사다리 R4'; then
   bad "오라벨" "사이클 상한 자리에 사다리 R4 가 남았다"
 else
   ok "사이클 상한 자리에 사다리 R4 라벨이 없다"
@@ -1187,7 +1207,7 @@ fi
 check "동일성당 단 수가 상수다" "$LADDER_RUNGS" "4"
 check "세그먼트 상한 = K*F+1 (F=3)" "$(segment_cap 3)" "13"
 check "세그먼트 상한 = K*F+1 (F=1)" "$(segment_cap 1)" "5"
-if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -qE 'cap=\$\(\( *4 \*'; then
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q -E 'cap=\$\(\( *4 \*'; then
   bad "K" "세그먼트 상한이 리터럴 4 를 쓴다 — 두 상한이 갈라진다"
 else
   ok "세그먼트 상한이 상수를 참조한다"
@@ -1203,8 +1223,8 @@ if [ "$(run_cycle_budget)" = "9" ]; then
 else
   ok "빈 칸은 필드를 밀어 버린다 (그래서 쓰는 쪽이 - 를 넣는다)"
 fi
-if sed -n '/^plan_from_declaration()/,/^}/p' "$DRIVER" | grep -q 'plan_cell' \
-   && sed -n '/^plan_via_planner()/,/^}/p' "$DRIVER" | grep -q 'plan_cell'; then
+if sed -n '/^plan_from_declaration()/,/^}/p' "$DRIVER" | grep_all_q 'plan_cell' \
+   && sed -n '/^plan_via_planner()/,/^}/p' "$DRIVER" | grep_all_q 'plan_cell'; then
   ok "두 계획 생성기가 모두 빈 칸을 - 로 쓴다"
 else
   bad "빈 칸" "한쪽 생성기가 빈 칸을 그대로 쓴다"
@@ -1234,7 +1254,7 @@ check "가용 단을 매니페스트에서 읽는다" "$(ladder_available)" "2"
 check "가용 집합 안: R1" "$(ladder_bump p logic)" "1"
 check "가용 집합 안: R2" "$(ladder_bump p logic)" "2"
 check "가용 집합 밖으로의 전이는 클램프가 아니라 신호" "$(ladder_bump p logic)" "99"
-if sed -n '/^ladder_bump()/,/^}/p' "$DRIVER" | grep -q 'printf .99'; then
+if sed -n '/^ladder_bump()/,/^}/p' "$DRIVER" | grep_all_q 'printf .99'; then
   ok "가용 집합 밖은 park 신호로 나온다 (클램프하면 종단 단이 무장 해제된다)"
 else
   bad "사다리" "가용 단을 클램프한다 — 출하된 종단 단 분기에 영영 도달하지 못한다"
@@ -1259,12 +1279,12 @@ else
 fi
 
 # 벽시계 마감은 디스패치 게이트이지 kill 신호가 아니다.
-if sed -n '/^past_deadline()/,/^}/p' "$DRIVER" | grep -qE 'kill|reap_orphan'; then
+if sed -n '/^past_deadline()/,/^}/p' "$DRIVER" | grep_all_q -E 'kill|reap_orphan'; then
   bad "마감" "마감이 kill 신호로 쓰인다 — 비행 중 스테이지를 죽이면 모호한 반쯤 상태가 생긴다"
 else
   ok "마감은 kill 신호가 아니다"
 fi
-if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -B8 'merge_gate "\$seg"' | grep -q 'past_deadline'; then
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -B8 'merge_gate "\$seg"' | grep_all_q 'past_deadline'; then
   ok "마감 이후에는 머지하지 않는다 (인라인 실행이라 「비행 중 완주」에 덮이지 않는다)"
 else
   bad "마감" "마감 뒤에도 머지가 난다"
@@ -1276,7 +1296,7 @@ if grep -q 'REPLAN_NEEDED' "$DRIVER"; then
 else
   ok "latch 하는 REPLAN_NEEDED 가 제거됐다"
 fi
-if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q 'plan_digest'; then
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q 'plan_digest'; then
   ok "재계획 판정이 다이제스트 측정에 키잉된다"
 else
   bad "재계획" "모델 자기 보고에 키잉된다"
@@ -1295,19 +1315,19 @@ fi
 DOC="$TI_DOC_SAVE"
 
 # 파일 집합 이탈 — 양쪽 집합을 다 적어야 과소 선언과 배회를 구별할 수 있다.
-if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep -q '실제 편집 집합'; then
+if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep_all_q '실제 편집 집합'; then
   ok "이탈 행이 선언 집합과 실제 집합을 모두 적는다"
 else
   bad "이탈 행" "이탈만 적어 과소 선언과 배회를 구별할 수 없다"
 fi
-if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep -q '형제'; then
+if sed -n '/^fileset_escape()/,/^}/p' "$DRIVER" | grep_all_q '형제'; then
   bad "이탈 팔" "웨이브 형제 팔이 남았다 — 겹치는 선언 파일은 이제 설계된 정상이라 올바른 계획을 park 한다"
 else
   ok "웨이브 형제 팔이 없다 (2분기)"
 fi
 
 # declared_files 가 디스패치 줄에 실린다.
-if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -q '선언 파일: \$files'; then
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q '선언 파일: \$files'; then
   ok "declared_files 가 디스패치 줄에 실린다"
 else
   bad "디스패치" "스테이지가 자기가 대조당할 계약을 듣지 못한다"
@@ -1415,7 +1435,7 @@ for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mod
     ok "삭제됨: $gone"
   fi
 done
-if sed 's/#.*//' "$DRIVER" | grep -q '형제'; then
+if sed 's/#.*//' "$DRIVER" | grep_all_q '형제'; then
   bad "웨이브 어휘" "형제 팔이 남았다 — 도달 불가한 분기이고 그 플래그는 참이 될 수 없다"
 else
   ok "형제 충돌 팔이 삭제됐다 (병렬 웨이브가 없으므로 도달 불가였다)"
@@ -1444,7 +1464,7 @@ env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-che
 if grep -q '선언된 것에 전부 독자·호출부·비교자가 있다' "$SC_OUT"; then
   ok "미배선 탐지기가 이 드라이버에 대해 통과한다"
 else
-  bad "탐지기" "$(grep '^FAIL' "$SC_OUT" | head -3 | tr '\n' ' ')"
+  bad "탐지기" "$(grep '^FAIL' "$SC_OUT" | awk 'NR<=3' | tr '\n' ' ')"
 fi
 if grep -q '조건부 배선 예외' "$SC_OUT"; then
   ok "예외 등재 목록의 상태가 원장에 남는다 (비어 있어도 그 사실이 보인다)"

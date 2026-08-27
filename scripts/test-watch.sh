@@ -26,6 +26,26 @@ WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-watch-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
+# `grep -q` on the right of a pipe exits as soon as it matches, which kills the
+# writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
+# failure even though the match was found. GNU sed makes it loud ("couldn't
+# flush stdout: Broken pipe") and BSD sed usually does not, so this failed only
+# on the Linux leg and only once a scanned function grew long enough for the
+# race to be real.
+#
+# `grep -c` has the same truth value and consumes its input to the end, so the
+# writer never sees a closed pipe. The count goes to /dev/null; only the exit
+# status is wanted.
+grep_all_q() {
+  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
+  # when its output is being discarded, which reintroduces the very SIGPIPE this
+  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
+  # 141 while `n=$(grep -c …)` returns 0.
+  local n
+  n=$(grep -c "$@" || true)
+  [ "${n:-0}" != "0" ]
+}
+
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -122,13 +142,13 @@ esac
 # ---------------------------------------------------------------------------
 # 5. It decides nothing and resumes nothing
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$WATCH" | grep -qE '\bclaude\b|run\.sh|gate\.sh'; then
+if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
   bad "재개 금지" "감시 스크립트가 무언가를 기동한다 — 두 번째 의사결정자가 생긴다"
 else
   ok "아무것도 기동하지 않는다 (자동 워치독이 아니다)"
 fi
 
-if grep -vE '^[[:space:]]*#' "$WATCH" | grep -q 'wait -n'; then
+if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q 'wait -n'; then
   bad "라이브니스 오라클" "wait -n 은 인터프리터 하한에 없고, 재부착된 스테이지는 이 셸의 자식이 아니다"
 else
   ok "라이브니스는 kill -0 과 시작 시각 지문으로 본다"

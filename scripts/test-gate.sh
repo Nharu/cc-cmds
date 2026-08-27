@@ -35,6 +35,26 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 export XDG_STATE_HOME="$WORK/state"
 
+# `grep -q` on the right of a pipe exits as soon as it matches, which kills the
+# writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
+# failure even though the match was found. GNU sed makes it loud ("couldn't
+# flush stdout: Broken pipe") and BSD sed usually does not, so this failed only
+# on the Linux leg and only once a scanned function grew long enough for the
+# race to be real.
+#
+# `grep -c` has the same truth value and consumes its input to the end, so the
+# writer never sees a closed pipe. The count goes to /dev/null; only the exit
+# status is wanted.
+grep_all_q() {
+  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
+  # when its output is being discarded, which reintroduces the very SIGPIPE this
+  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
+  # 141 while `n=$(grep -c …)` returns 0.
+  local n
+  n=$(grep -c "$@" || true)
+  [ "${n:-0}" != "0" ]
+}
+
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
@@ -70,14 +90,28 @@ gate() {
 # count. The driver's suite already refuses this shape; the gate is the busier
 # file and had six of them.
 # ---------------------------------------------------------------------------
+# The TEST files are scanned too. This class first bit the harness rather than
+# the driver: an assertion of the form `sed … | grep -q …` reported a match as a
+# miss on the Linux leg only, once the function it scanned grew long enough for
+# the race to be real. A checker that exempts itself is the shape it exists to
+# refuse.
 for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
-         "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; do
+         "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
+         "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
+         "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
+         "$repo_root/scripts/test-gate.sh" \
+         "$repo_root/scripts/test-watch.sh" \
+         "$repo_root/scripts/test-snapshot.sh" \
+         "$repo_root/scripts/test-orchestrator-pretool-hook.sh"; do
   [ -f "$f" ] || continue
-  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q)' || true)
+  # `grep -c … >/dev/null` belongs in the pattern as well: BSD grep
+  # short-circuits when its output is discarded, so that spelling is the same
+  # early-exiting read wearing a different name.
+  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
   if [ -z "$early" ]; then
     ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
   else
-    bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | head -3 | tr '\n' ' ')"
+    bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
   fi
 done
 
@@ -262,10 +296,10 @@ if grep -q '^- `대상 추가`' "$LEDGER"; then
 else
   bad "대상 추가" "층 1 행위가 통과했는데 기록이 없다"
 fi
-if grep '^- `대상 추가`' "$LEDGER" | grep -q '층=1'; then
+if grep '^- `대상 추가`' "$LEDGER" | grep_all_q '층=1'; then
   ok "커밋 등급은 층 1 로 기록된다"
 else
-  bad "층 판정" "$(grep '^- `대상 추가`' "$LEDGER" | head -1)"
+  bad "층 판정" "$(grep '^- `대상 추가`' "$LEDGER" | awk 'NR<=1')"
 fi
 
 gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
@@ -576,15 +610,15 @@ if grep -q '^- `리뷰 의무`' "$LEDGER"; then
 else
   bad "리뷰 의무" "미뤄진 리뷰가 아무 기록도 남기지 않았다 — 미룬 것과 없앤 것이 구별되지 않는다"
 fi
-if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '상태=미이행'; then
+if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '상태=미이행'; then
   ok "발행 시점의 상태는 미이행이다"
 else
-  bad "의무 상태" "$(grep '^- `리뷰 의무`' "$LEDGER" | head -1)"
+  bad "의무 상태" "$(grep '^- `리뷰 의무`' "$LEDGER" | awk 'NR<=1')"
 fi
-if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '생성 등급=외부상태변경'; then
+if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '생성 등급=외부상태변경'; then
   ok "생성 등급을 함께 싣는다 (나중의 면제 판정이 읽는 값이다)"
 else
-  bad "생성 등급" "$(grep '^- `리뷰 의무`' "$LEDGER" | head -1)"
+  bad "생성 등급" "$(grep '^- `리뷰 의무`' "$LEDGER" | awk 'NR<=1')"
 fi
 
 n_before=$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)
@@ -599,7 +633,7 @@ check "같은 세그먼트에 의무를 중복 발행하지 않는다" "$(grep -
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 \
      --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
-if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '세그먼트=SEP2'; then
+if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '세그먼트=SEP2'; then
   bad "기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
 else
   ok "기본 정책에서는 의무를 만들지 않는다"
