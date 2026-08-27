@@ -43,6 +43,7 @@ test: test-active-notify
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
 	bash scripts/test-snapshot.sh
+	bash scripts/test-orchestrator-pretool-hook.sh
 
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
@@ -52,6 +53,7 @@ test-orchestrator:
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
 	bash scripts/test-snapshot.sh
+	bash scripts/test-orchestrator-pretool-hook.sh
 
 # The darwin leg. Both suites are host-OS-seamed: the ubuntu leg drives their
 # Darwin branches by injection and covers all the selection logic, so what this

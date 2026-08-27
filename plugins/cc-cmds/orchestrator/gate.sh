@@ -35,11 +35,16 @@
 # Exit codes:
 #   0  performed (or, for the dry-run verbs, answered)
 #   1  hard stop — malformed invocation, unreadable ledger, failed precondition
+#      Past the checks, the ACT's own status passes through, so a non-zero code
+#      here can also be the act's. A refusal always carries a `gate:` line on
+#      stderr and produces no output from the act; that, not the number, is what
+#      separates the two.
 #   2  vocabulary error — a token outside a closed set
 #   3  rule refusal — a catalog rule said no
 #   4  stale snapshot digest — the router judged against state that has moved
 #   5  approval issued — the act is outside pre-authorization and irreversible
 #   6  grade self-declaration mismatch — the claimed grade is not the graded one
+#   7  enforcement surface moved — a file the boundary rests on was edited
 #
 # Usage:
 #   gate.sh snapshot --manifest <path> [--render]
@@ -70,12 +75,19 @@ CC_ORCH_SOURCE_ONLY=1
 export CC_ORCH_SOURCE_ONLY
 # shellcheck source=/dev/null
 . "$GATE_DIR/run.sh"
+# The capability half of the boundary. Sourced rather than re-implemented: the
+# gate is the one process that holds the write-scoped credential, and the code
+# that decides which credential a child gets has to be the same code in both
+# directions or the separation is decorative.
+# shellcheck source=/dev/null
+. "$GATE_DIR/credentials.sh"
 
 readonly GATE_EXIT_VOCAB=2
 readonly GATE_EXIT_RULE=3
 readonly GATE_EXIT_STALE=4
 readonly GATE_EXIT_APPROVAL=5
 readonly GATE_EXIT_GRADE=6
+readonly GATE_EXIT_SURFACE=7
 
 readonly GATE_ROW_MAX=1024
 
@@ -489,6 +501,114 @@ gate_render_snapshot() {
 }
 
 # ---------------------------------------------------------------------------
+# Run settings — one file per stage kind, written by the gate, injected by the
+# wrapper.
+#
+# This file is the premise of three separate decisions and had no producing step
+# in any of them; two of those decisions also disagreed about its shape, one
+# calling for a single shared file and the other for a `design`-specific variant.
+# It is settled here: a DIRECTORY under the run directory with one file per stage
+# kind, the common gate hook in every variant, and the network-fetch denial in
+# the `design` variant only.
+#
+# The whole directory is an enforcement surface, not one file inside it — the
+# digest set the gate re-derives on every hook consultation takes the directory
+# as its element, because adding a variant must not be a way to escape the
+# comparison.
+# ---------------------------------------------------------------------------
+readonly STAGE_KINDS="design implement review audit reconverge generic"
+
+gate_settings_dir() { printf '%s/settings' "$RUN_DIR"; }
+
+gate_settings_file() {
+  # gate_settings_file <stage-kind>
+  local k="$1"
+  case " $STAGE_KINDS " in
+    *" $k "*) : ;;
+    *) k="generic" ;;
+  esac
+  printf '%s/%s.json' "$(gate_settings_dir)" "$k"
+}
+
+gate_write_settings() {
+  # Writes every variant. Called at run start and idempotent — a re-run after a
+  # session cut must find the same bytes, because those bytes are in the
+  # enforcement-surface digest set and a regenerated-but-different file would
+  # read as tampering.
+  local dir hook k f deny_extra
+  dir=$(gate_settings_dir)
+  mkdir -p "$dir"
+  hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
+  [ -f "$hook" ] || die "게이트 훅 스크립트가 없습니다: $hook"
+
+  for k in $STAGE_KINDS; do
+    f=$(gate_settings_file "$k")
+    # `design` alone loses the network-fetch tools. The per-stage spend cap that
+    # motivates it cannot be enforced by the argv0 grading table at all — a
+    # `WebFetch` call has no argv0 and never reaches the gate — so the only
+    # enforcement point available is the settings file the wrapper injects.
+    deny_extra=""
+    [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
+    cat > "$f" <<JSON
+{
+  "permissions": { "deny": [ ${deny_extra}"Bash(sudo:*)" ] },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '$hook' --run-dir '$RUN_DIR' --gate '$GATE_DIR/gate.sh' --ledger '$LEDGER' --grant '$GRANT'"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+  done
+  printf '%s\n' "$(gate_surface_digest)" > "$RUN_DIR/surface-digest"
+  log "런 설정 생성: $dir (강제 표면 기준선 기록)"
+}
+
+gate_surface_check() {
+  # Compared on every act, not only at run start. The four surfaces the hook
+  # cannot deny a write to get after-the-fact detection only, and after-the-fact
+  # is still before the NEXT act — which is the difference between one act
+  # slipping through and the rest of the night doing so.
+  local base now
+  base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+  [ -n "$base" ] || return 0
+  now=$(gate_surface_digest)
+  [ "$now" = "$base" ] && return 0
+  warn "강제 표면이 런 개시 이후 바뀌었습니다 (기준선 ${base}, 현재 ${now}) — 설정·룰·훅·프로젝트 설정 중 하나가 편집됐습니다"
+  return "$GATE_EXIT_SURFACE"
+}
+
+gate_surface_digest() {
+  # The extension is re-derived on every call rather than listed once: the
+  # fourth element is "the project-scope settings of every worktree the manifest
+  # and the target-addition rows name", and targets are added at RUNTIME. A
+  # fixed file list would stop covering a target the moment one was added, and
+  # would not report that it had stopped.
+  local a wt
+  {
+    find "$(gate_settings_dir)" -type f 2>/dev/null | sort
+    find "$(gate_rules_dir)" -type f 2>/dev/null | sort
+    printf '%s\n' "$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
+    for a in $(target_aliases); do
+      wt=$(target_field "$a" '메인 워크트리')
+      [ -n "$wt" ] || continue
+      printf '%s\n' "$wt/.claude/settings.json"
+    done
+  } | while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        printf '%s  %s\n' "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$f"
+      done | shasum -a 256 | cut -d' ' -f1
+}
+
+# ---------------------------------------------------------------------------
 # Verb dispatch
 # ---------------------------------------------------------------------------
 gate_usage() {
@@ -523,6 +643,11 @@ gate_main() {
   check_manifest
   derive_paths_from_manifest
   rundir_init
+  # Run start is "the settings directory does not exist yet". Regenerating on
+  # every invocation would rewrite files that are themselves in the digest set,
+  # and a surface that changes because the gate touched it is a surface whose
+  # comparison means nothing.
+  [ -d "$(gate_settings_dir)" ] || gate_write_settings
 
   case "$verb" in
     snapshot)
@@ -610,10 +735,85 @@ gate_verb_act() {
     return 0
   fi
 
+  gate_surface_check || exit $?
+
   gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
     "절단점=$cutpoint" "축2=$graded" "근거=$rationale"
   log "게이트 통과 — $verb $cutpoint ($alias)"
-  return 0
+
+  # ---- and now PERFORM it -------------------------------------------------
+  #
+  # Recording without performing is what the first cut of this file did, and it
+  # makes the whole layer unreachable: layer 1 denies every bash line that is
+  # not this script, so if this script does not run the line, nothing runs at
+  # all. The row is written BEFORE the act, deliberately — a row with no act is
+  # an over-report a person can see in the morning, and an act with no row is
+  # the thing this design exists to prevent.
+  local rc=0
+  case "$verb" in
+    exec)
+      # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
+      # here fails at the API rather than at a string match.
+      gate_run_readonly "$@" || rc=$?
+      ;;
+    act)
+      case "$kind" in
+        skill) gate_launch_stage "$segment" "$@" || rc=$? ;;
+        *)     gate_run_readonly "$@" || rc=$? ;;
+      esac
+      ;;
+  esac
+  # The act's own status passes through, the way `env` and `nice` pass one
+  # through. A gate REFUSAL is 2..7 and always arrives with a `gate:` line on
+  # stderr and no output from the act, so the two are told apart by what came
+  # with the code rather than by the code alone — which is the honest reading,
+  # since an act is free to exit 3 for its own reasons and no remapping can
+  # both preserve its status and reserve a band.
+  #
+  # A failure gets a SECOND row. The first is written before the act so that a
+  # crash mid-act still leaves a record; adding the outcome to that row would
+  # mean holding it until the act returned, which is the property being bought
+  # by writing early.
+  if [ "$rc" != "0" ]; then
+    warn "행위가 실패했습니다 (rc=$rc) — 행은 이미 원장에 있습니다"
+    gate_append '자율 승인' "kind=$kind" "결정=결과" "대상=$alias" "세그먼트=$segment" \
+      "절단점=$cutpoint" "축2=$graded" "근거=rc=$rc"
+  fi
+  return "$rc"
+}
+
+gate_run_readonly() {
+  # Runs the act under the READ-scoped credential. A `gh pr merge` spelled here
+  # then fails at the GitHub API rather than at a string match, and that failure
+  # is unforgeable — which is the property no string matcher can have. Acts that
+  # genuinely need the write-scoped credential do not come through this door;
+  # they are performed by the gate's own verbs.
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    export "$line"
+  done <<CREDS
+$(cred_readonly_env 2>/dev/null || true)
+CREDS
+  "$@"
+}
+
+gate_launch_stage() {
+  # gate_launch_stage <segment> <stage-kind> <cli args...>
+  #
+  # The wrapper's only legitimate caller, stated in one place. It is an argv
+  # laundering tool for whoever holds an allow-list entry, so the set of callers
+  # is a design commitment rather than an accident — and this is it.
+  local seg="$1" kind="$2"; shift 2
+  local wrapper="$GATE_DIR/stage-wrapper.sh"
+  [ -f "$wrapper" ] || { warn "스테이지 래퍼가 없습니다: $wrapper"; return 127; }
+  local plugin_dir
+  plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
+  /bin/sh "$wrapper" \
+    --settings "$(gate_settings_file "$kind")" \
+    --plugin-dir "$plugin_dir" \
+    --session-id "$(session_uuid "$seg")" \
+    -- "$@"
 }
 
 gate_close() {

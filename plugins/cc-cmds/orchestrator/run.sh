@@ -56,6 +56,12 @@ fi
 # in the user's interactive rc, so a non-interactive `bash -c claude` resolves
 # to something else entirely (`cc` resolves to the C compiler); the driver must
 # hold an absolute path and call it directly.
+# This file's own directory. Defined here rather than beside its first consumer
+# because two consumers now sit hundreds of lines apart, and a path variable
+# defined after its first use is set to the empty string on that path — which
+# resolves to the filesystem root and fails somewhere else entirely.
+ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -1209,6 +1215,26 @@ stage_spawn() {
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
   rm -f "$RUN_DIR/$stage.rc"
 
+  # The settings variant is chosen by stage KIND, and an unrecognized stage id
+  # falls to `generic` rather than to "no settings" — the whole point of the
+  # wrapper's hard stop is that there is no such thing as a stage launched
+  # without them.
+  local plugin_dir stage_settings kind
+  plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
+  case "$stage" in
+    *design-audit*|*audit*) kind=audit ;;
+    *reconverge*)           kind=reconverge ;;
+    *design*)               kind=design ;;
+    *implement*)            kind=implement ;;
+    *review*)               kind=review ;;
+    *)                      kind=generic ;;
+  esac
+  stage_settings="$RUN_DIR/settings/$kind.json"
+  if [ ! -f "$stage_settings" ]; then
+    warn "스테이지 설정이 없습니다: $stage_settings — 게이트가 런 개시 시 만듭니다"
+    return 78
+  fi
+
   # `set -m` makes the child the leader of its own process group, so the whole
   # tree is reclaimable with `kill -- -$pgid`. Without it the "group" silently
   # becomes the CALLER's, which is why the pgid is read back before it is
@@ -1226,12 +1252,25 @@ stage_spawn() {
   # needs to write a halt record. Handing the values down removes the derivation
   # instead of duplicating it; the arms keep their re-derivation as the fallback
   # for a driver that predates these variables.
+  # `--plugin-dir` and `--settings` are what close the measured hole: without the
+  # first, a slash command resolves to nothing and the stage still exits 0 with
+  # `subtype: "success"` and `num_turns: 0`, so the driver reads a hollow success
+  # and parks for "no artifact" while the real cause goes unrecorded. Without the
+  # second, the stage's hook coverage is not conditional but unconditionally
+  # zero. The two hook sources COMPOSE rather than overwrite — measured — so
+  # passing both keeps the plugin's existing hooks alive.
+  #
+  # The wrapper is what carries them, and it is the same wrapper the gate uses
+  # for a skill act; a second spawn shape here would be a second place for the
+  # injection to go missing.
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
-      exec nohup "$CLI_BIN" -p "$prompt" \
+      exec nohup /bin/sh "$ORCH_DIR/stage-wrapper.sh" \
+        --settings "$stage_settings" \
+        --plugin-dir "$plugin_dir" \
         --session-id "$(session_uuid "$stage")" \
-        --output-format json --strict-mcp-config "$@" \
+        -- -p "$prompt" "$@" \
         > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
   set +m
@@ -1879,7 +1918,7 @@ APPLY_PARKED_RADIUS=""
 # prompt file and a `--json-schema` return contract; the schema is what makes
 # the return machine-readable without parsing prose.
 # ---------------------------------------------------------------------------
-PROMPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prompts"
+PROMPT_DIR="$ORCH_DIR/prompts"
 
 readonly JUDGMENTS="segment-plan triage redesign-impact"
 

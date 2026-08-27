@@ -66,7 +66,16 @@ mkdir -p "$REPO"
   && git config user.email t@example.invalid \
   && git config user.name  T \
   && mkdir -p docs/pipeline-run docs/pipeline-grant \
-  && echo one > a.txt && git add -A && git commit -qm one ) >/dev/null 2>&1
+  && echo one > a.txt && git add -A && git commit -qm one \
+  && echo base > base.txt && git add -A && git commit -qm base ) >/dev/null 2>&1
+
+# A real bare remote, so `git push` is an act that actually runs rather than a
+# string the gate merely approves. The gate PERFORMS what it passes, so a
+# fixture whose acts all fail cannot tell an approval from a refusal.
+REMOTE="$WORK/remote.git"
+( git init -q --bare "$REMOTE" \
+  && cd "$REPO" && git remote add origin "$REMOTE" \
+  && git branch -M main && git push -q origin main ) >/dev/null 2>&1
 
 WT=$(cd "$REPO" && git rev-parse --show-toplevel)
 CG=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)
@@ -124,6 +133,53 @@ fi
 
 n_total=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .obligations_total)
 check "빈 원장의 의무 총수가 0 하나로 나온다" "$n_total" "0"
+
+# ---------------------------------------------------------------------------
+# 1b. The run settings the gate generates
+#
+# These files decide whether a stage has any hook coverage at all, and they are
+# GENERATED — so nothing in the tree is reviewed when they are wrong. They
+# shipped once as syntactically invalid JSON while every test here still passed,
+# because no assertion had ever opened one.
+# ---------------------------------------------------------------------------
+SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
+if [ -d "$SETTINGS_DIR" ]; then
+  ok "게이트가 런 개시에 설정 디렉터리를 만든다"
+else
+  bad "설정 생성" "$SETTINGS_DIR 가 없다 — 래퍼가 하드 스톱하므로 이 런은 스테이지를 하나도 띄우지 못한다"
+fi
+
+bad_json=0; n_variants=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  n_variants=$((n_variants + 1))
+  jq -e . "$f" >/dev/null 2>&1 || { bad_json=$((bad_json + 1)); printf '      깨진 파일: %s\n' "$f" >&2; }
+done
+check "모든 변종이 유효한 JSON 이다" "$bad_json" "0"
+if [ "$n_variants" -ge 2 ]; then
+  ok "스테이지 종류마다 변종이 하나씩 생긴다 (${n_variants}종)"
+else
+  bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
+fi
+
+hook_cmd=$(jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' "$SETTINGS_DIR/generic.json" 2>/dev/null)
+case "$hook_cmd" in
+  *gate-pretool.sh*--run-dir*--gate*)
+    ok "훅 명령줄이 런 디렉터리와 게이트 경로를 파일에 박아 넣는다" ;;
+  *)
+    bad "훅 명령줄" "'$hook_cmd' — 환경에서 읽는 형태라면 스테이지가 env 하나로 훅을 끌 수 있다" ;;
+esac
+
+d_design=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/design.json" 2>/dev/null)
+d_review=$(jq -r '.permissions.deny | join(",")' "$SETTINGS_DIR/review.json" 2>/dev/null)
+case "$d_design" in
+  *WebFetch*) ok "design 변종만 네트워크 취득 도구를 불허한다" ;;
+  *) bad "design 변종" "'$d_design' — 이 상한은 등급표로는 강제할 수 없어 여기가 유일한 지점이다" ;;
+esac
+case "$d_review" in
+  *WebFetch*) bad "변종 구분" "review 변종까지 네트워크를 막았다 — design 전용 제약이 아니다" ;;
+  *) ok "다른 변종은 그 제약을 받지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
@@ -208,13 +264,15 @@ check "사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다" 
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
      --snapshot-digest "$H" --rationale x -- mkdir -p "$WORK/scratch"
 check "워크트리 쓰기는 사전 인가 목록을 요구하지 않는다" "$rc" "0"
+[ -d "$WORK/scratch" ] && ok "게이트는 통과시킨 행위를 실제로 수행한다" \
+                       || bad "수행" "통과했는데 디렉터리가 생기지 않았다 — 기록만 하고 수행하지 않으면 층 1 아래에서는 아무것도 실행되지 않는다"
 
 # ---------------------------------------------------------------------------
 # 6. Snapshot binding — a stale digest is a loud re-read
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
-     --rationale x -- git commit -m x
+     --rationale x -- touch "$WORK/touched"
 check "낡은 스냅숏 다이제스트는 거부된다" "$rc" "4"
 
 gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 -- git commit -m x
@@ -225,15 +283,15 @@ check "plan 은 스냅숏 다이제스트 없이도 답한다 (건드리는 것�
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$H" --rationale x -- git commit -m x
+     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
 check "축2 자기선언이 등급과 다르면 거부된다" "$rc" "6"
 
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-     --snapshot-digest "$H" --rationale x -- git commit -m x
+     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
 check "선언이 등급과 같으면 통과한다" "$rc" "0"
 
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 파일쓰기 \
-     --snapshot-digest "$H" --rationale x -- git commit -m x
+     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
 check "어휘 밖 축2 토큰은 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
@@ -258,9 +316,15 @@ check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
 printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head0" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+# Judged by the ABSENCE of the rule's refusal line rather than by the exit code:
+# past the checks the gate performs the act, and `gh pr merge` in a fixture with
+# no GitHub behind it fails for reasons that have nothing to do with the rule.
+passes_review() {
+  case "$msg" in *"리뷰-후-머지:"*) return 1 ;; *) return 0 ;; esac
+}
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
-check "무이동 등급은 통과한다" "$rc" "0"
+if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이동 등급" "$msg"; fi
 
 # 동일 트리 — amend rewrites the commit and leaves the tree byte-identical.
 ( cd "$WT" && git commit -q --amend -m "one (amended)" ) >/dev/null 2>&1
@@ -268,7 +332,7 @@ head_amend=$(cd "$WT" && git rev-parse HEAD)
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
-check "동일 트리 등급(amend)은 통과한다" "$rc" "0"
+if passes_review; then ok "동일 트리 등급(amend)은 통과한다"; else bad "동일 트리 등급" "$msg"; fi
 if [ "$head_amend" = "$head0" ]; then
   bad "동일 트리 전제" "amend 가 커밋 sha 를 바꾸지 않았다 — 이 절이 공허하다"
 else
@@ -333,7 +397,11 @@ check "인가-자기확장-금지 는 「끔」을 무시한다" "$rc" "3"
 # staleness grade now passes.
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
-check "리뷰-후-머지 는 「끔」을 따른다 (스위치가 장식이 아니다)" "$rc" "0"
+if passes_review; then
+  ok "리뷰-후-머지 는 「끔」을 따른다 (스위치가 장식이 아니다)"
+else
+  bad "룰 스위치" "「끔」인데 여전히 거부한다: $msg"
+fi
 
 # ---------------------------------------------------------------------------
 # 10. The ledger the gate writes — chained, capped, and its own rows
