@@ -177,13 +177,16 @@ check "Bash 도 편집도 아닌 도구는 대상이 아니다" "$dec" "allow"
 # 5. Fail-closed where the sibling hook fails open
 # ---------------------------------------------------------------------------
 mkdir -p "$WORK/emptybin"
-out=$(printf '%s' "$(bash_json 'ls')" \
-        | PATH="$WORK/emptybin" CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 \
-          /bin/bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE" 2>/dev/null)
+# Fed from a FILE, not a pipe. These two branches deny BEFORE reading stdin, so
+# a writing pipe meets a closed reader and reports a write error — which is the
+# same early-exit shape this suite refuses elsewhere.
+bash_json 'ls' > "$WORK/in.json"
+out=$(PATH="$WORK/emptybin" CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 \
+        /bin/bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATE" < "$WORK/in.json" 2>/dev/null)
 dec=$(printf '%s' "$out" | grep -o '"permissionDecision":"[a-z]*"' | sed 's/.*:"//;s/"//')
 check "jq 가 없으면 허용이 아니라 거부다" "$dec" "deny"
 
-out=$(printf '%s' "$(bash_json 'ls')" | bash "$HOOK" --gate "$GATE" 2>/dev/null)
+out=$(bash "$HOOK" --gate "$GATE" < "$WORK/in.json" 2>/dev/null)
 dec=$(printf '%s' "$out" | grep -o '"permissionDecision":"[a-z]*"' | sed 's/.*:"//;s/"//')
 check "런 디렉터리 없이 설치되면 아무것도 인가하지 않는다" "$dec" "deny"
 
@@ -226,7 +229,7 @@ fi
 # name.
 # ---------------------------------------------------------------------------
 WRAP="$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh"
-wrun() { wout=$(/bin/sh "$WRAP" "$@" 2>&1); }
+wrun() { wout=$(bash "$WRAP" "$@" 2>&1); }
 mkdir -p "$WORK/plug"; : > "$WORK/s.json"
 
 wrun --plugin-dir "$WORK/plug" --session-id x -- -p x
@@ -252,6 +255,30 @@ case "$wout" in *"알 수 없는 모드"*) ok "래퍼: 어휘 밖 모드는 거�
 wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x
 case "$wout" in *"-- 뒤에 CLI 인자"*) ok "래퍼: CLI 인자 없이 띄우지 않는다" ;;
   *) bad "래퍼 argv 필수" "$wout" ;; esac
+
+# The wrapper declares `#!/usr/bin/env bash` and uses `set -o pipefail`. Naming
+# an interpreter on the command line OVERRIDES the shebang, so launching it with
+# `/bin/sh` kills it at its second line on any distribution whose `/bin/sh` is
+# dash — and takes every stage launch with it. macOS hides this completely
+# because its `/bin/sh` is bash.
+for caller in "$repo_root/plugins/cc-cmds/orchestrator/run.sh" \
+              "$repo_root/plugins/cc-cmds/orchestrator/gate.sh"; do
+  if sed 's/#.*//' "$caller" | grep_all_q -F '/bin/sh "$ORCH_DIR/stage-wrapper.sh"'; then
+    bad "래퍼 호출 인터프리터" "$(basename "$caller") 가 /bin/sh 로 래퍼를 띄운다"
+  elif sed 's/#.*//' "$caller" | grep_all_q -E '/bin/sh "\$wrapper"'; then
+    bad "래퍼 호출 인터프리터" "$(basename "$caller") 가 /bin/sh 로 래퍼를 띄운다"
+  else
+    ok "래퍼: $(basename "$caller") 가 bash 로 띄운다 (셰방보다 명령줄 인터프리터가 이긴다)"
+  fi
+done
+
+# The rule checkers ARE `/bin/sh` scripts by design and must stay POSIX, so the
+# gate launching them that way is correct rather than an oversight.
+if sed 's/#.*//' "$GATE" | grep_all_q -F '/bin/sh "$checker"'; then
+  ok "룰 검사기는 /bin/sh 로 띄운다 (설계상 POSIX)"
+else
+  bad "검사기 호출" "검사기 호출 형태가 바뀌었다 — POSIX 전제가 유지되는지 확인 필요"
+fi
 
 # `--include-partial-messages` must stay off: it multiplies stream volume for a
 # stage nobody is watching character by character, and the terminal

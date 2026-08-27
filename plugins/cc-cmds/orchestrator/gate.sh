@@ -1062,7 +1062,12 @@ gate_launch_stage() {
   [ -f "$wrapper" ] || { warn "스테이지 래퍼가 없습니다: $wrapper"; return 127; }
   local plugin_dir
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  /bin/sh "$wrapper" \
+  # `bash`, not `/bin/sh`. The wrapper declares `#!/usr/bin/env bash` and uses
+  # `set -o pipefail`, and naming an interpreter on the command line OVERRIDES
+  # the shebang — so on a distribution whose `/bin/sh` is dash the wrapper died
+  # at its second line with "Illegal option -o pipefail", taking every stage
+  # launch with it. macOS hid this because its `/bin/sh` is bash.
+  bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     --session-id "$(session_uuid "$seg")" \

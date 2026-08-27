@@ -1315,7 +1315,7 @@ stage_spawn() {
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
-      exec nohup /bin/sh "$ORCH_DIR/stage-wrapper.sh" \
+      exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
         --session-id "$(session_uuid "$stage")" \
