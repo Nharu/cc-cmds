@@ -130,7 +130,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 ### Step 5: Freeze verification, dedup, evidence
 
-1. **Re-hash and re-compare both baselines.** A mismatch is fail-closed: report in Korean what changed, then `AskUserQuestion` with `재감사(새 동결로 재실행) ← 추천` — which emits the exact re-invocation command line and **stops** — or `중단`. There is deliberately no "continue anyway" option: that is the seam through which a positive induced-defect rate re-enters.
+1. `등급 2` **Re-hash and re-compare both baselines.** A mismatch is fail-closed: report in Korean what changed, then `AskUserQuestion` with `재감사(새 동결로 재실행) ← 추천` — which emits the exact re-invocation command line and **stops** — or `중단`. There is deliberately no "continue anyway" option: that is the seam through which a positive induced-defect rate re-enters.
 2. **Dedup into unique defects** (identity = same anchor or section AND same root cause) and record each defect's **reinforcement multiplicity** — how many readers independently raised it. Merge the Step-2 deterministic findings in: they count toward `원시` and `고유` and are **excluded from `미보강`** by definition, since reinforcement is not a meaningful notion for a saturated channel. That exclusion is what keeps the `원시 ≥ 고유 ≥ 미보강` invariant sound.
 3. **Copy each collected reader report in-tree** to `<base>/docs/design-audit/{slug}.reader-<k>.md`, each carrying the same `owner-doc=` machine header, **after** the freeze verdict. These are the durable artifacts anti-vacuity check (ii) counts; the out-of-tree witness stays where the protocol put it.
 

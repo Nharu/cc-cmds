@@ -47,6 +47,29 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 **`재호출 명령` is recorded and never executed** — not by this skill, not by anything downstream.
 
+### Per-grade disposition
+
+The base skill marks each of its ask points with a judgment grade
+(`${CLAUDE_SKILL_DIR}/../_common/judgment-grade.md`). This arm's disposition is
+per grade, not one blanket rule — a blanket rule is what made the inversion
+undecidable, because "it would have asked" says nothing about whether an answer
+was choosable.
+
+- **`등급 0`** — no disposition is needed. An already-written rule fully
+  determines the answer, so there was never a question at this point.
+- **`등급 1`** — adopt the recommended option, write a `자율 승인` row carrying
+  `등급`, `기준` (the authored standard that chose it) and `되돌리는 법` (the
+  concrete command or edit that undoes it), and continue. A choice for which no
+  `되돌리는 법` can be produced is **not** grade 1 whatever its mark says: the
+  field is a condition, not documentation of one.
+- **`등급 2`** — write the halt record above and stop. This is the branch that
+  keeps "leave most of it to the orchestrator" from becoming "the orchestrator
+  waived the check you asked for".
+
+The grades are a marking, not a proof. Nothing here checks that a point marked
+`등급 1` deserved it; `scripts/lint-judgment-grade.sh` counts marks and matches
+dispositions, and says so.
+
 ## Control-Flow Invariants
 
 **CFI-U1 — There is no human-question surface.** `AskUserQuestion` and `EnterPlanMode` are absent from the Step 0 roster and from every step below. Reaching a point that needs one is a **halt**, never an improvised answer and never a silent default. This holds for `_common/agent-team-protocol.md` too: wherever its reconcile ladder terminates in `AskUserQuestion`, **this arm resolves that terminus to `park`** — write the halt record and stop. The protocol file itself is not forked and not edited; this sentence is the substitution rule.

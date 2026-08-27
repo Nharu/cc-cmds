@@ -45,4 +45,6 @@ The pass may NOT close by dispositioning items one at a time. Its final act is t
 
 > 이 발견들이 **함께** 함의하는 요구사항이 있는가?
 
+The synthesis question's own answer is never adopted as a routing decision on its own authority: composing findings into a new requirement changes what the run is trying to do, which is `등급 2` under `_common/judgment-grade.md` and therefore escalated rather than adopted.
+
 Different readers' items are individually local fixes but can compose into a new requirement that appears in **no single report** — only the reconciling side sees the composition. If the answer yields a candidate requirement, surface it with at most **one** `AskUserQuestion` (adopt as a requirement / record in the unresolved-issues section / reject). Without this step that class of finding arrives after the hard stop, which is to say it arrives unowned.

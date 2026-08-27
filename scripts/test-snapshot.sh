@@ -237,5 +237,42 @@ else
   bad "손상 계수" "깨진 행을 넣었는데 손상 수가 '$after' 이다"
 fi
 
+# ---------------------------------------------------------------------------
+# 7. The chain is what covers the ledger
+#
+# The ledger is deliberately NOT in the enforcement-surface digest: it grows on
+# every act, written by the same call that would compare it, so a digest over it
+# refuses every act after the first. The chain covers it instead, and covers it
+# better — it tells a splice, a deletion and a reordering apart from an ordinary
+# append, which a whole-file digest cannot.
+# ---------------------------------------------------------------------------
+CHAIN="$WORK/chain.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$CHAIN"
+: > "$CHAIN"
+RUN_ID="R1"
+# `gate_append` serializes through a lock file under RUN_DIR, and with RUN_DIR
+# empty the lock path is unwritable — which used to lose every row silently.
+RUN_DIR="$WORK/rundir"; mkdir -p "$RUN_DIR"
+gate_append 'cost' "누적 usd=1"
+gate_append 'cost' "누적 usd=2"
+gate_append 'cost' "누적 usd=3"
+if gate_chain_verify >/dev/null 2>&1; then
+  ok "게이트가 쓴 행들의 체인이 무결로 검증된다"
+else
+  bad "체인 검증" "자기가 쓴 원장을 끊긴 것으로 읽는다"
+fi
+
+# Deleting a middle row leaves the line count wrong by one and every field
+# intact — the shape no row-grammar check can see.
+sed '2d' "$CHAIN" > "$CHAIN.cut" && mv "$CHAIN.cut" "$CHAIN"
+if gate_chain_verify >/dev/null 2>&1; then
+  bad "삭제 탐지" "가운데 행을 지웠는데 체인이 무결이라고 한다"
+else
+  ok "가운데 행 삭제가 체인에서 드러난다"
+fi
+
+LEDGER="$LEDGER_SAVE"
+
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

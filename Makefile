@@ -13,6 +13,7 @@ lint:
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-ledger-row-length.sh
+	bash scripts/lint-judgment-grade.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
@@ -37,6 +38,7 @@ test: test-active-notify
 	bash scripts/test-lint-unattended-surfaces.sh
 	bash scripts/test-lint-cutpoint-vocabulary.sh
 	bash scripts/test-lint-ledger-row-length.sh
+	bash scripts/test-lint-judgment-grade.sh
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
@@ -44,6 +46,7 @@ test: test-active-notify
 	bash scripts/test-gate.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
+	bash scripts/test-watch.sh
 
 test-active-notify:
 	bash scripts/test-active-notify-lifecycle.sh
@@ -54,6 +57,7 @@ test-orchestrator:
 	bash scripts/test-gate.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
+	bash scripts/test-watch.sh
 
 # The darwin leg. Both suites are host-OS-seamed: the ubuntu leg drives their
 # Darwin branches by injection and covers all the selection logic, so what this

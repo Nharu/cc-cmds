@@ -195,5 +195,52 @@ else
   ok "플러그인 hooks.json 에 등록하지 않는다 (런 설정으로만 도달한다)"
 fi
 
+# ---------------------------------------------------------------------------
+# 7. The wrapper's hard stops — the other half of layer 1
+#
+# The hook only reaches a stage that was launched WITH the settings, so the
+# wrapper's refusals are what make the hook's coverage non-optional. Every one
+# of these is a hard stop rather than a warning, and the reason is the measured
+# failure mode: a stage launched without settings runs ungated and reports
+# success, so degrading here would re-introduce the exact bug under a nicer
+# name.
+# ---------------------------------------------------------------------------
+WRAP="$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh"
+wrun() { wout=$(/bin/sh "$WRAP" "$@" 2>&1); }
+mkdir -p "$WORK/plug"; : > "$WORK/s.json"
+
+wrun --plugin-dir "$WORK/plug" --session-id x -- -p x
+case "$wout" in *"--settings 는 필수"*) ok "래퍼: 설정 없이 스테이지를 띄우지 않는다" ;;
+  *) bad "래퍼 설정 필수" "$wout" ;; esac
+
+wrun --settings "$WORK/s.json" --session-id x -- -p x
+case "$wout" in *"--plugin-dir 는 필수"*) ok "래퍼: 플러그인 디렉터리 없이 띄우지 않는다" ;;
+  *) bad "래퍼 플러그인 필수" "$wout" ;; esac
+
+wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" -- -p x
+case "$wout" in *"--session-id 또는 --resume"*) ok "래퍼: 세션 식별 없이 띄우지 않는다" ;;
+  *) bad "래퍼 세션 필수" "$wout" ;; esac
+
+wrun --settings "$WORK/absent.json" --plugin-dir "$WORK/plug" --session-id x -- -p x
+case "$wout" in *"설정 파일이 없습니다"*) ok "래퍼: 존재하지 않는 설정은 하드 스톱" ;;
+  *) bad "래퍼 설정 존재" "$wout" ;; esac
+
+wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x --mode Z -- -p x
+case "$wout" in *"알 수 없는 모드"*) ok "래퍼: 어휘 밖 모드는 거부" ;;
+  *) bad "래퍼 모드 어휘" "$wout" ;; esac
+
+wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x
+case "$wout" in *"-- 뒤에 CLI 인자"*) ok "래퍼: CLI 인자 없이 띄우지 않는다" ;;
+  *) bad "래퍼 argv 필수" "$wout" ;; esac
+
+# `--include-partial-messages` must stay off: it multiplies stream volume for a
+# stage nobody is watching character by character, and the terminal
+# classification is read off the `result` line either way.
+if grep -vE '^[[:space:]]*#' "$WRAP" | grep -q 'include-partial-messages'; then
+  bad "스트림 볼륨" "--include-partial-messages 를 싣는다"
+else
+  ok "래퍼: --include-partial-messages 를 싣지 않는다"
+fi
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

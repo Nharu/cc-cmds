@@ -233,6 +233,23 @@ sed '$d' "$RUN_DIR/halt/Sx.md" > "$RUN_DIR/halt/Sy.md"
 if halt_record_present Sy; then bad "잘린 중단 기록" "종결자 없는 기록을 halt로 읽음"; else ok "종결자 없는 중단 기록은 halt가 아니다"; fi
 check "잘린 기록의 종단 부류" "$(classify_termination Sy 0 1)" "공허한 성공"
 
+# The sixth class. A stage that REACHED a decision point and declined to decide
+# for the user is not a stage that attempted nothing — and until this class
+# existed the two were byte-identical to the driver: exit 0, no artifact, no
+# halt record. The correct refusal was classified hollow, retried once, and
+# parked for "no artifact" with the real cause recorded nowhere.
+mkdir -p "$RUN_DIR/log"
+printf '%s\n' '{"type":"tool_use","name":"ToolSearch","input":{"query":"select:AskUserQuestion"}}' \
+  > "$RUN_DIR/log/Sz.json"
+check "종단: 산출물 없는 정지" "$(classify_termination Sz 0 1)" "산출물 없는 정지"
+
+# The distinction is the ndjson trace and nothing else — same exit code, same
+# absent artifact, same absent halt record.
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}' \
+  > "$RUN_DIR/log/Sw.json"
+check "흔적이 없으면 여전히 공허한 성공" "$(classify_termination Sw 0 1)" "공허한 성공"
+if decision_point_reached Snone; then bad "결정 지점 탐지기" "ndjson 이 없는데 참을 냈다"; else ok "결정 지점 탐지기는 ndjson 이 없으면 거짓"; fi
+
 # ---------------------------------------------------------------------------
 # 6. Worktree teardown guard — BOTH conditions required
 # ---------------------------------------------------------------------------

@@ -617,6 +617,23 @@ slicing_fields_ok() {
     done
     cutpoint_index "$(slice_field "$doc" "$id" '절단점')" >/dev/null \
       || { warn "슬라이스 $id: 절단점 토큰이 어휘에 없음"; return 1; }
+    # `리뷰 정책` is OPTIONAL and defaults to `선리뷰후머지`. The cutpoint says
+    # how far a slice may go and cannot say when review happens, which is a
+    # different axis entirely — a slice may be authorized to merge and still owe
+    # its review afterwards.
+    v=$(slice_field "$doc" "$id" '리뷰 정책')
+    case "$v" in
+      ''|선리뷰후머지|선머지후리뷰|리뷰없음) : ;;
+      *) warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1 ;;
+    esac
+    # `리뷰없음` is expressible only against a matching pre-authorization entry,
+    # which is what stops a router from choosing it for itself. `선머지후리뷰`
+    # does not remove the obligation, it defers it — the gate leaves a
+    # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
+    if [ "$v" = "리뷰없음" ]; then
+      [ -n "${MANIFEST:-}" ] && grep -q '`사전 인가`' "$MANIFEST" 2>/dev/null \
+        || { warn "슬라이스 $id: 리뷰없음 은 대응하는 사전 인가 항목이 있을 때만 표현 가능"; return 1; }
+    fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
       [ -n "$(slice_field "$doc" "$id" '적용 주체')" ] || { warn "슬라이스 $id: 적용 명령이 있는데 적용 주체가 없음"; return 1; }
@@ -1449,13 +1466,69 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+stage_session_id() {
+  # The id the HARNESS assigned, read back from the stage's own stream, with the
+  # derived value as the fallback. This is what makes the implementation/review
+  # separation rule mean anything: while ids are DERIVED from
+  # `run|doc|stage|attempt` they differ by construction, so comparing them is a
+  # tautology that passes on every run — including the ones the rule exists to
+  # catch.
+  local stage="$1" out="$RUN_DIR/log/$stage.json" sid=""
+  if [ -f "$out" ]; then
+    # `sed -n … ; q` rather than `| head -1`: under `pipefail` an early-exiting
+    # reader on the right of a pipe kills the writer with SIGPIPE and the whole
+    # pipeline reports failure. The driver has been bitten by that shape before,
+    # and its own self-test refuses it.
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+  fi
+  [ -n "$sid" ] || sid=$(session_uuid "$stage")
+  printf '%s' "$sid"
+}
+
+stage_parent_id() {
+  # The session that spawned it. A FORK inherits its parent, which is what stops
+  # a forked session from reviewing its own work by taking a fresh id.
+  printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CC_PIPELINE_PARENT_SESSION:-미상}}"
+}
+
 classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
   local stage="$1" exit_rc="$2" pred_rc="$3"
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
   if [ "$exit_rc" = "0" ] && [ "$pred_rc" = "0" ]; then printf '정상 완료'; return 0; fi
+  # A stage that REACHED a decision point and declined to decide for the user is
+  # not a stage that attempted nothing, and until this class existed the two
+  # were indistinguishable — exit 0, no artifact, no halt record. The measured
+  # behaviour is that the correct refusal was punished exactly like a failure:
+  # classified hollow, retried once, parked for "no artifact", with the real
+  # cause recorded nowhere. Its disposition is a pending approval on that point,
+  # never a retry.
+  if [ "$exit_rc" = "0" ] && decision_point_reached "$stage"; then
+    printf '산출물 없는 정지'; return 0
+  fi
   if [ "$exit_rc" = "0" ]; then printf '공허한 성공'; return 0; fi
   printf '크래시'
+}
+
+decision_point_reached() {
+  # The stage's own ndjson is the evidence. Two traces count, and both are
+  # things a stage does only when it has arrived somewhere it cannot proceed
+  # from: a ToolSearch naming the question tool, or the tool named in a tool_use
+  # the harness could not satisfy.
+  #
+  # The same signal has a second use the design calls out: a ToolSearch naming
+  # `AskUserQuestion` with NO halt record is high-precision evidence that the
+  # stage improvised instead. That branch lands as `정상 완료` and is otherwise
+  # unobservable, so the detector is worth having even where it does not change
+  # the classification.
+  # Split, not combined: `local a="$1" b="$a"` expands every word BEFORE the
+  # builtin assigns any of them, so `$a` is still unset there. It only appeared
+  # to work because the sole caller happened to have a local of the same name in
+  # scope, and bash's dynamic scoping made it visible.
+  local stage="$1"
+  local out="$RUN_DIR/log/$stage.json"
+  [ -f "$out" ] || return 1
+  grep -q 'AskUserQuestion' "$out" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -2298,7 +2371,8 @@ segment_cycle() {
     if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class"
+      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -2471,7 +2545,8 @@ main_loop() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class2"
+    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;

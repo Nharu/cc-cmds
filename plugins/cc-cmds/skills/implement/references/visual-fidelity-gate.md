@@ -26,7 +26,7 @@
     "file://<abs>/page.html" "<out.png>"
   ```
 
-- **Tier C — graceful degrade**: 둘 다 없으면 조용히 통과하지 않고 `AskUserQuestion`으로 라우팅한다(fail-open: 레시피 제공 / 이 화면 skip / 게이트 비활성). 조용한 self-disable 금지.
+- `등급 2` **Tier C — graceful degrade**: 둘 다 없으면 조용히 통과하지 않고 `AskUserQuestion`으로 라우팅한다(fail-open: 레시피 제공 / 이 화면 skip / 게이트 비활성). 조용한 self-disable 금지.
 
 렌더 후 `command -v sips`가 있으면 `sips -g pixelWidth -g pixelHeight "<out.png>"`로 픽셀 dims를 확인해 의도한 뷰포트·DPR과 일치하는지 검증한다(macOS 한정 best-effort — `sips` 부재 시 이 dims 검증은 skip하고 렌더 결과를 그대로 수용하며, command-not-found로 멈추지 않는다).
 

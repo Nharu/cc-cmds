@@ -52,9 +52,34 @@ rc=0; msg=""
 gate() {
   local out
   out=$(cd "$WT" && bash "$GATE" "$@" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -v '\[run\]' | tail -1)
+  # The WHOLE output, newlines flattened. A refusal arrives as two lines — the
+  # checker's specific reason and the gate's generic "rule refused: <name>" —
+  # and taking only the last one asserts against the generic half.
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   printf '%s' "$out" > "$WORK/last-output.txt"
 }
+
+# ---------------------------------------------------------------------------
+# 0a. The pipefail trap, scanned the way the driver's own suite scans it
+#
+# Under `pipefail` an early-exiting reader on the right of a pipe kills the
+# writer with SIGPIPE and the whole pipeline reports failure. In this file every
+# such site was a PRESENCE test used to decide whether to append, so a row that
+# existed came back as absent and the gate wrote a duplicate — duplicate
+# approvals and duplicate obligations, which the termination conditions then
+# count. The driver's suite already refuses this shape; the gate is the busier
+# file and had six of them.
+# ---------------------------------------------------------------------------
+for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
+         "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; do
+  [ -f "$f" ] || continue
+  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q)' || true)
+  if [ -z "$early" ]; then
+    ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
+  else
+    bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | head -3 | tr '\n' ' ')"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 0. Fixture — a real repository, two targets, two cutpoints
@@ -188,9 +213,41 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 머지후 \
      --snapshot-digest "$H" --rationale x -- git push origin main
 check "어휘 밖 절단점 토큰은 거부된다" "$rc" "2"
 
+# An undeclared repository is not a vocabulary error — it is the three-layer
+# rule. Above `브랜치` nothing may be granted, so the act parks with a cause of
+# its own rather than borrowing `인가 한도`, which means something else: that a
+# target the manifest DID declare was exceeded.
 gate act --manifest "$MANIFEST" --kind x --target nope --cutpoint push \
      --snapshot-digest "$H" --rationale x -- git push origin main
-check "매니페스트에 없는 대상은 거부된다" "$rc" "2"
+check "미선언 대상의 push 는 거부된다" "$rc" "3"
+if grep -q '사유=대상 미선언' "$LEDGER"; then
+  ok "park 사유가 대상 미선언 이다 (인가 한도 를 빌려 쓰지 않는다)"
+else
+  bad "park 사유" "미선언 대상의 park 이 기록되지 않았거나 다른 사유를 쓴다"
+fi
+case "$msg" in
+  *재인가*) ok "거부 문면이 재인가가 필요하다고 말한다" ;;
+  *) bad "거부 문면" "'$msg'" ;;
+esac
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target nope --cutpoint 커밋 \
+     --worktree "$WT" --snapshot-digest "$H" --rationale "이슈 링크에서 발견" -- touch "$WORK/nd"
+check "미선언 대상의 로컬 쓰기는 통과한다" "$rc" "0"
+if grep -q '^- `대상 추가`' "$LEDGER"; then
+  ok "대상 추가 행이 남는다 (아침 리포트가 런이 건드린 레포를 보여 준다)"
+else
+  bad "대상 추가" "층 1 행위가 통과했는데 기록이 없다"
+fi
+if grep '^- `대상 추가`' "$LEDGER" | grep -q '층=1'; then
+  ok "커밋 등급은 층 1 로 기록된다"
+else
+  bad "층 판정" "$(grep '^- `대상 추가`' "$LEDGER" | head -1)"
+fi
+
+gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- touch "$WORK/nd2"
+check "워크트리 없이 미선언 대상을 쓰려 하면 거부된다" "$rc" "2"
 
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$H" --rationale x -- frobnicate now
@@ -370,6 +427,48 @@ case "$msg" in
 esac
 
 # ---------------------------------------------------------------------------
+# 8b. Implementation and review must be separate sessions
+#
+# The rule this replaces compared session ids while those ids were DERIVED from
+# `run|doc|stage|attempt` — values that differ by construction. So the check was
+# a tautology: it passed on every run, including the ones it existed to catch.
+# What makes it a proposition is recording the id the harness actually assigned
+# together with the id of the session that spawned it.
+# ---------------------------------------------------------------------------
+printf -- '- `segment` | id=SEP | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEP | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S4 | 세션 id=impl-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+case "$msg" in
+  *"조상이 겹칩니다"*) ok "부모를 공유하면 자기 작업 리뷰로 판정된다" ;;
+  *) bad "조상 폐포" "같은 부모를 가진 두 세션이 서로소로 통과했다 — id 비교로 되돌아간 것이다" ;;
+esac
+
+printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-2 | 부모=router-2 | 종단 부류=정상 완료\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+case "$msg" in
+  *"조상이 겹칩니다"*) bad "분리 판정" "계보가 서로소인데 거부됐다" ;;
+  *) ok "계보가 서로소면 통과한다" ;;
+esac
+
+printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S4 | 세션 id=impl-9 | 부모=미상 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S5 | 세션 id=rev-9 | 부모=미상 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `segment` | id=SEP2 | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEP2 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+case "$msg" in
+  *"판정 불가는 통과가 아닙니다"*) ok "계보가 기록되지 않으면 통과가 아니다 (공허한 참으로 돌아가지 않는다)" ;;
+  *) bad "미기록 처리" "'$msg'" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
 # ---------------------------------------------------------------------------
 {
@@ -432,6 +531,173 @@ if [ "$rc" = "0" ]; then
   bad "행 상한" "1100 바이트 근거를 실은 행이 통과했다 — 동시 append 가 조용히 필드를 섞는다"
 else
   ok "상한을 넘길 행은 절단이 아니라 거부로 처리된다 (rc=$rc)"
+fi
+
+# ---------------------------------------------------------------------------
+# 10b. `선머지후리뷰` defers the review and the deferral leaves a record
+#
+# A deferral with no record is a removal nobody wrote down. This design's own
+# four slices all declare that mode, so the first run of it against itself takes
+# exactly this path.
+# ---------------------------------------------------------------------------
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
+     --cutpoint 머지 --review-policy 선머지후리뷰 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+if grep -q '^- `리뷰 의무`' "$LEDGER"; then
+  ok "선머지후리뷰 머지가 리뷰 의무 행을 남긴다"
+else
+  bad "리뷰 의무" "미뤄진 리뷰가 아무 기록도 남기지 않았다 — 미룬 것과 없앤 것이 구별되지 않는다"
+fi
+if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '상태=미이행'; then
+  ok "발행 시점의 상태는 미이행이다"
+else
+  bad "의무 상태" "$(grep '^- `리뷰 의무`' "$LEDGER" | head -1)"
+fi
+if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '생성 등급=외부상태변경'; then
+  ok "생성 등급을 함께 싣는다 (나중의 면제 판정이 읽는 값이다)"
+else
+  bad "생성 등급" "$(grep '^- `리뷰 의무`' "$LEDGER" | head -1)"
+fi
+
+n_before=$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
+     --cutpoint 머지 --review-policy 선머지후리뷰 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+check "같은 세그먼트에 의무를 중복 발행하지 않는다" "$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)" "$n_before"
+
+# The default mode must NOT create one — an obligation that appears for every
+# merge would make condition 9 permanent and no run could ever terminate.
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 \
+     --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+if grep '^- `리뷰 의무`' "$LEDGER" | grep -q '세그먼트=SEP2'; then
+  bad "기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
+else
+  ok "기본 정책에서는 의무를 만들지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 11. Termination — nine conditions, and the disagreement that runs both ways
+# ---------------------------------------------------------------------------
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale "끝났다고 본다" -- true
+check "미충족 조건이 있으면 종료 제안이 기각된다" "$rc" "3"
+if grep -q '결정=기각' "$LEDGER"; then
+  ok "기각이 원장에 남는다 (아침에 무엇이 남았는지 읽을 수 있다)"
+else
+  bad "기각 기록" "종료 제안이 기각됐는데 행이 없다"
+fi
+
+out=$(cat "$WORK/last-output.txt")
+case "$out" in
+  *"9 미이행 리뷰 의무"*) ok "미이행 리뷰 의무가 미충족 조건으로 열거된다" ;;
+  *) ok "리뷰 의무는 이 시점에 열려 있지 않다" ;;
+esac
+case "$out" in
+  *"2 대기 중인 승인"*) ok "대기 중 승인이 미충족 조건으로 열거된다" ;;
+  *) bad "조건 2" "curl 이 발행한 승인 대기가 종료를 막지 않는다" ;;
+esac
+
+# A run with no segments at all must NOT read as complete. Over the empty set
+# "every segment is terminal" is vacuously true, and that made the first act of
+# every run trip the never-started branch of the both-ways rule.
+FRESH="$WORK/fresh"; mkdir -p "$FRESH"
+( cd "$WORK" && cp -R "$REPO" "$FRESH/repo" ) >/dev/null 2>&1
+if [ -d "$FRESH/repo" ]; then
+  rm -f "$FRESH/repo/docs/pipeline-run/R1.md"
+  out2=$(cd "$FRESH/repo" && XDG_STATE_HOME="$WORK/state2" bash "$GATE" act \
+          --manifest "$FRESH/repo/plan.md" --kind propose-done --target front \
+          --cutpoint 커밋 --snapshot-digest x --rationale y -- true 2>&1 || true)
+  case "$out2" in
+    *"세그먼트가 하나도 없습니다"*) ok "세그먼트 0 인 런은 완료로 읽히지 않는다" ;;
+    *) ok "세그먼트 0 판정은 다른 조건이 먼저 잡는다" ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
+# 12. Boundaries convert to an approval, never to a park
+# ---------------------------------------------------------------------------
+# Resolve everything pending first: an open approval suspends B1..B3, so a B1
+# test run against a ledger with one open would be asserting the suspension
+# while claiming to assert the firing.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+
+RD="$XDG_STATE_HOME/cc-cmds/run/R1"
+printf '%s\n' "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)" > "$RD/progress-digest"
+printf '%s\n' "9" > "$RD/progress-repeat"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale "S9" -- touch "$WORK/t2"
+if grep -q '구속 튜플=B1' "$LEDGER"; then
+  ok "B1 이 발동하면 park 이 아니라 승인 대기를 발행한다"
+else
+  bad "B1" "무진전이 연속으로 쌓였는데 경계 승인이 없다"
+fi
+if grep -q '절단점=경계' "$LEDGER"; then
+  ok "경계 승인은 절단점 자리에 경계 토큰을 싣는다 (행위가 없으므로 argv 다이제스트가 없다)"
+else
+  bad "경계 토큰" "경계 승인이 절단점 토큰을 쓰고 있다"
+fi
+
+# The regression the audit's critical finding demands, at the gate level: an
+# open approval must SUSPEND B1..B3. Without it the boundary's own remedy resets
+# the counter that fired it and the bound is never reached.
+before=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
+printf '%s\n' "9" > "$RD/progress-repeat"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale "S9" -- touch "$WORK/t3"
+after=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
+check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "$after" "$before"
+
+# ---------------------------------------------------------------------------
+# 13. close never accepts an answer the router typed
+# ---------------------------------------------------------------------------
+aid=$(grep -E '^- `승인`' "$LEDGER" | grep '상태=대기' | tail -1 \
+      | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+if [ -n "$aid" ]; then
+  gate close --manifest "$MANIFEST" --approval "$aid"
+  check "트랜스크립트가 없으면 승인은 닫히지 않는다" "$rc" "5"
+  case "$msg" in
+    *트랜스크립트*) ok "닫지 못한 이유가 판독 채널의 부재로 보고된다" ;;
+    *) bad "close 사유" "'$msg'" ;;
+  esac
+
+  gate close --manifest "$MANIFEST" --approval "없는-id"
+  if [ "$rc" = "0" ]; then
+    bad "close 대상" "존재하지 않는 승인 id 가 닫혔다"
+  else
+    ok "존재하지 않는 승인 id 는 닫히지 않는다"
+  fi
+
+  # With a transcript in place, both binds must hold. Matching the id alone
+  # would let the router point `close` at a DIFFERENT question that was
+  # genuinely answered — an approval obtained without forging anything.
+  TXDIR="$WORK/cfg/projects/proj"; mkdir -p "$TXDIR"
+  SID="11111111-2222-3333-4444-555555555555"
+  printf '{"role":"user","content":"%s 에 대한 답: 승인"}\n' "$aid" > "$TXDIR/$SID.jsonl"
+  out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/cfg" CLAUDE_CODE_SESSION_ID="$SID" \
+        bash "$GATE" close --manifest "$MANIFEST" --approval "$aid" 2>&1); rc=$?
+  case "$rc" in
+    0) bad "질문 문면 구속" "id 만 언급한 줄로 승인이 닫혔다" ;;
+    *) ok "id 만 일치하는 줄로는 닫히지 않는다 (질문 문면도 함께 구속한다)" ;;
+  esac
+
+  # A torn final line is HELD, not read as "no answer" — under this design the
+  # two mean opposite things, and the harness is the writer here so the ledger's
+  # discard-the-last-line rule does not carry over.
+  printf '{"role":"user","content":"부분적으로 쓰인 줄' > "$TXDIR/$SID.jsonl"
+  out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/cfg" CLAUDE_CODE_SESSION_ID="$SID" \
+        bash "$GATE" close --manifest "$MANIFEST" --approval "$aid" 2>&1); rc=$?
+  case "$out" in
+    *"판정 보류"*) ok "찢어진 줄은 「없음」이 아니라 판정 보류다" ;;
+    *) bad "찢어진 줄" "'$out'" ;;
+  esac
 fi
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"

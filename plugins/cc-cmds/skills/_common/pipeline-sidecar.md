@@ -266,7 +266,7 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at eleven
+### 3.2 The row series is closed at twelve
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
@@ -280,17 +280,24 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명) · `사유` · `관측` · `재개 명령` |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
+| `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 
 **`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
 
 **`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
 
 **`질문 문면` and `답변 문면` are fenced or sidecar'd, not inlined.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not.
+
+**`대상 추가` records a repository the run reached that the manifest did not name, and it is a RECORD rather than a grant.** The distinction is the whole of it. A declared target already has a cutpoint the manifest gave it, and an approval there opens one act inside that grant; an undeclared repository has no cutpoint to open, so a row that conferred one would move the seat of authorization from the manifest to a file the run writes. That is the property the split-writer rule exists to hold, and it does not depend on whether the row could be forged.
+
+So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clone, fetch, read, run that repository's tests — already reachable with arbitrary bash, so refusing it buys nothing and recording it buys the morning report. Layer 1 is local commits and branches, capped at `브랜치`, and the cap is **hardcoded rather than inherited or chosen**: nothing above `브랜치` leaves the machine, so no approval is needed and the split-writer rule is untouched. A layer-1 row is admissible only after the same preflight a manifest target gets — the main worktree exists and the common git directory matches — because stash attribution is per-REPOSITORY rather than per-worktree, and this very tree already has two working trees sharing one `.git` and one `refs/stash`.
+
+`push` and above take neither path. They park with the cause `대상 미선언`, and the resume command is the re-kickoff that writes a successor manifest.
 
 **`리뷰 의무` exists because `선머지후리뷰` defers an obligation rather than removing one.** Its `생성 등급` is the axis-2 grade of the act that created it, which is the field the run's termination conditions read — an obligation created by an act graded at or below `워크트리 쓰기` is excusable when its segment parks, and one created above that is not.
 
@@ -304,16 +311,28 @@ The count moved from nine to eleven when the gate acquired two records the exist
 
 | Field | Values |
 | --- | --- |
-| `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` |
+| `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` \| `verification-residual` \| `audit-composition` \| `unresolved-issue` \| `refinement` \| `roster-degradation` \| `stage-retry` \| `target-expansion` |
+| `자율 승인.등급` | `0` \| `1` \| `2` |
 | `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
-| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
+| `대상 추가.층` | `0` \| `1` |
+| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` |
-| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` |
+| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
+
+**`산출물 없는 정지` is the sixth terminal class, and it exists because a stage that correctly refused to decide for the user was punished exactly like one that produced nothing.** Measured: a headless stage reaching a point where it must ask has no `AskUserQuestion` — it read the document, failed a `ToolSearch`, chose none of the options, and left the file byte-identical. It did not improvise. But the driver saw exit 0, no artifact and no halt record, called it `공허한 성공`, retried once and parked for "no artifact".
+
+Its definition is the four-part conjunction: **exit code 0, artifact predicate false, no halt record, and a trace in that stage's ndjson of reaching a decision point the skill directed it to.** The last clause is what separates it from `공허한 성공` — not "attempted nothing" but "arrived and did not decide". Its disposition is not a retry: the point is promoted to a pending approval, and that promotion is the recorded skip the unattended `design` step-6 default calls for.
+
+**The scope of that measurement is n=1, one point, one model — no general law is claimed.** And the limit carries weight in the unreassuring direction: the inverted unattended default rests on stages being conservative, and the one point actually tested was the case where a refusal was *most* likely.
+
+**The other branch is worse because it is invisible.** A stage that improvises and produces output lands as `정상 완료`, since the audit and review predicates are forgeable — this contract says so itself. So the morning report's heading is `기록된 자율 결정` rather than "every autonomous decision": measured, the latter is false. One branch is mispunished and the other is not observed at all.
+
+**One control partially recovers the second branch.** In Mode A the router owns the stage's ndjson, so a `ToolSearch` naming `AskUserQuestion` with no halt record is a high-precision signal that the stage improvised. It does not fix anything; it turns an unobservable failure into an observable one.
 
 **Every park names a scope and a cause, and one that cannot is a bug rather than
 a decision.** `act` means a terminal act is blocked and NOTHING else stops — the
@@ -349,6 +368,12 @@ person needs when an apply's outcome is unknown, and a state that says only
 
 **An approval and a review obligation are new kinds, and the test that separates them from the paragraph above is lifecycle.** A severity tie-break and a park are each *finished* the moment they are written — the row records a thing that happened. An approval is issued, waits an unbounded time, and then resolves or goes stale; a deferred review obligation is created at a merge and discharged much later or not at all. A kind whose rows advance through states cannot be a discriminator on a kind whose rows do not, because the reader of the existing kind takes every row as terminal. That is why these two extend the definition and the earlier two did not.
 
+**`되돌리는 법` is the field that makes the report readable rather than merely complete.** A report enumerating fifty autonomous decisions a person cannot act on is a log, not a report. "Only the important ones reach me" is bearable exactly when the unimportant ones are **cheap to undo in the morning** — and that is a property of the record, not of the decision. So the field carries a concrete command or edit, not a claim.
+
+It also replaces an unfalsifiable judgment with a producible artifact. The router does not assert that an act is reversible; it produces the thing that reverses it, and failing to produce one is itself the escalation trigger. A false undo command is a lie a person catches in the morning; a false reversibility judgment leaves no trace at all.
+
+**`등급` and `기준` come from the judgment-grade contract** (`_common/judgment-grade.md`). `기준` names the authored standard that chose the option — "the model was confident" is not one, because the point of the field is that a later reader can check it. Grade 0 writes no row at all: a rule that fully determines the answer produced no decision to record.
+
 **`kind=severity` requires `finding-id` for a reason that is not bookkeeping.** The shipped review rule defaults to the higher severity *unless the lead resolved the dispute*, and unattended there is no observable event that makes "the lead resolved it" true or false. So the exception counts as fired **only** where a `자율 승인` row records the decision, the rejected alternative, both rationales, and the finding it applies to; with no such row the rule's default branch applies. This enforces the rule's own third sentence rather than overriding it, and the interactive path is unchanged.
 
 ### 3.4 Write form and its diff gate
@@ -372,7 +397,7 @@ The report lives at `<base>/docs/pipeline-run/{runId}.md` — the same `<kind>` 
 - **Writer**: the driver. **Created as a stub by `autopilot` at kickoff**, so the file exists even if the run dies mid-way.
 - **It must be durable independently of any banner**, because the notification seat's contract does not include delivery confirmation. The report is the source of truth; the banner is a courtesy. Every event writes the report **first** and attempts the banner second — the immediate-notification events included — since a seat with no delivery confirmation can otherwise leave a banner as the only record of something nobody saw.
 - **No push adapter is seated today, and that is a stated limitation rather than a pending task.** The driver has no tool inventory, so a push surface would have to be reached by dispatching a stage — and a spawned stage is barred from deciding whether a banner reaches the user. The seat's three operations stay defined so an in-process implementation can drop in, but until one does, **the run may not reach a sleeping user at all**. Nothing downstream may assume it does; the morning report is the whole of the guarantee.
-- **It enumerates every decision the run made autonomously** — all `자율 승인` rows grouped by `kind` with decision, rejected alternative and rationale carried verbatim; every fix the ladder auto-adopted; every parked item with its `사유`; and each stage's `종단 부류`.
+- **It enumerates every autonomous decision the run RECORDED** — the heading is `기록된 자율 결정`, and the qualifier is measured rather than modest: a stage that improvises and produces output lands as `정상 완료` and writes no row, so a heading promising "every" decision would be false — all `자율 승인` rows grouped by `kind` with decision, rejected alternative and rationale carried verbatim; every fix the ladder auto-adopted; every parked item with its `사유`; and each stage's `종단 부류`.
 
 **The limit is stated with the control.** The report is itself authored by the run, so it is powerless against a run that improvises a decision **and also** omits it from its own report. The conjunction being rarer than either part is the whole of this control's value — it is not a gate, and **the real protection against an irreversible autonomous act remains the permission cutpoint of §2.3.**
 
