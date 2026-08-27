@@ -25,7 +25,12 @@
 #      structured output and halt records; the driver transcribes.
 #
 # Usage:
-#   run.sh --doc <abs-path> [--run-id <id>] [--detach]
+#   run.sh --doc <abs-path> [--run-id <id>]
+#
+# THERE IS NO `--detach`. The run is driven by the main session's model — the
+# router — and detaching would put the deciding turn somewhere nobody can see.
+# Visible progress and an interruptible terminal are the reason for that shape,
+# and a detach flag is the one thing that would silently undo it.
 #   run.sh --self-check
 #
 # Exit codes:
@@ -335,9 +340,25 @@ target_aliases() {
 
 canonical_targets() { manifest_targets | sed 's/[[:space:]]\{1,\}/ /g' | sort; }
 
-plan_fence_bytes() {
-  awk '/^## 실행 계획/{inb=1; next} inb && /^## /{exit}
-       inb && /^```/{f=!f; if(f) next; else exit} inb && f {print}' "$MANIFEST"
+binding_set_bytes() {
+  # The frozen set, canonically serialized. NOT the plan — the router decides
+  # the step graph one act at a time now, so a frozen plan would be a value that
+  # is recorded and never compared, which is the exact defect class this
+  # contract exists to remove.
+  {
+    printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
+    manifest_clauses | sed 's/^/clause\t/'
+    canonical_targets | sed 's/^/target\t/'
+    grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
+    grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
+  } | sort
+}
+
+manifest_clauses() {
+  # The termination point decomposed into checkable clauses, frozen at kickoff.
+  # A run is measured against these, so they are part of what may not move.
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
 }
 
 # The conjunction. Order matters: the ownership proof comes before anything that
@@ -394,8 +415,19 @@ check_manifest() {
   # this the fields ship in the state the binding-surface digest was in.
   [ "$(canonical_targets | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '대상' '대상 맵 다이제스트')" ] \
     || die "대상 맵 다이제스트가 대상 행과 일치하지 않습니다"
-  [ "$(plan_fence_bytes | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '실행 계획' '계획 다이제스트')" ] \
-    || die "계획 다이제스트가 실행 계획 펜스 바이트와 일치하지 않습니다"
+  # `구속 다이제스트` is optional ONLY while a manifest written before this field
+  # existed can still be read; when present it is compared, and a present-but-
+  # wrong value is a hard stop. An absent one is reported rather than passed
+  # over in silence, because "not checked" and "checked and fine" must not look
+  # the same in the log.
+  local bd
+  bd=$(manifest_field '인가' '구속 다이제스트')
+  if [ -n "$bd" ]; then
+    [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·마감 중 하나가 움직였습니다"
+  else
+    warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
+  fi
 
   # 8 — absolute deadline. `없음` is refused: a comment saying "required" means
   # nothing while a validator accepts the absent value.
@@ -2132,11 +2164,21 @@ self_check() {
   # checker's silence, and the fact that the exemption list is non-empty is
   # itself recorded — an exemption nobody can see is indistinguishable from a
   # check that does not run.
-  local unwired=0 self_file exempt name body
+  local unwired=0 self_file exempt name body sib
   self_file="${BASH_SOURCE[0]}"
   # Registered exemptions. Empty is the goal state; a non-empty list is reported.
   exempt=""
+  # The scan covers this file AND the siblings that SOURCE it. Once the policy
+  # gate moved into its own file, a function's only call site could legitimately
+  # live there — and a checker that reads one file would report it as dead and
+  # invite its deletion. Widening the scan is more honest than an exemption
+  # list: those functions are wired, just not from here.
   body=$(sed 's/#.*//' "$self_file")
+  for sib in "$(dirname "$self_file")/gate.sh"; do
+    [ -f "$sib" ] || continue
+    body="$body
+$(sed 's/#.*//' "$sib")"
+  done
 
   for name in $(grep -oE '^readonly [A-Z_][A-Z0-9_]*' "$self_file" | awk '{print $2}'); do
     case " $exempt " in *" $name "*) continue ;; esac
@@ -2809,13 +2851,11 @@ if [ "${CC_ORCH_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
-DETACH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest)   MANIFEST="$2"; shift 2 ;;
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
-    --detach)     DETACH=1; shift ;;
     --self-check) self_check; exit $? ;;
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -2848,24 +2888,6 @@ else
 fi
 
 rundir_init
-
-if [ "$DETACH" = "1" ]; then
-  # The driver detaches exactly ONCE — itself. Stages stay in the foreground so
-  # the driver owns their process groups and can reclaim the whole tree on
-  # restart. The right invariant is `driver lifetime >= stage lifetime`, and it
-  # is bought by detaching the driver once rather than each stage N times.
-  set -m
-  if [ -n "$MANIFEST" ]; then
-    nohup "$0" --manifest "$MANIFEST" >> "$LOG_FILE" 2>&1 < /dev/null &
-  else
-    nohup "$0" --doc "$DOC" --run-id "$RUN_ID" >> "$LOG_FILE" 2>&1 < /dev/null &
-  fi
-  printf '%s\n' "$!" > "$RUN_DIR/driver.pid"
-  ps -o pgid= -p "$!" 2>/dev/null | tr -d ' ' > "$RUN_DIR/driver.pgid"
-  set +m
-  echo "driver detached: pid=$(cat "$RUN_DIR/driver.pid") log=$LOG_FILE"
-  exit 0
-fi
 
 check_grant
 ledger_init

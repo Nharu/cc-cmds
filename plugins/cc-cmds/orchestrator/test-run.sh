@@ -535,7 +535,8 @@ write_manifest() {   # write_manifest <출력> [대상맵다이제스트override
   local trow="- \`target\` | 별칭=home | 메인 워크트리=$HERE | 공통 git 디렉터리=$CG | 베이스 브랜치=master | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
   local plan='{ "steps": ["audit", "implement"] }'
   [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-  [ -n "$pdig" ] || pdig=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
+  # An empty third argument means "omit the binding digest"; a non-empty one is
+  # written verbatim so a WRONG value can be exercised.
   {
     printf '# 파이프라인 런 매니페스트 — 20260825-deadbeef\n'
     printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20260825-deadbeef;\n'
@@ -546,11 +547,13 @@ write_manifest() {   # write_manifest <출력> [대상맵다이제스트override
     printf '**앵커 종류**: repo\n**앵커 키**: Nharu/cc-cmds\n**사용자 확인 문면**: 돌려라\n\n'
     printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$tdig" "$trow"
     printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
-    printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 진행\n' "$pdig"
+    printf '## 실행 계획\n**승인 문면**: 진행\n'
     printf '```json\n%s\n```\n\n' "$plan"
     printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
     printf '**벽시계 마감**: 2026-08-26T09:00:00Z\n**시각 정합 마커**: 없음\n'
     printf '**사다리 가용 단 수**: 2\n**미선언 상황 처분**: park\n'
+    [ -n "$pdig" ] && printf '**구속 다이제스트**: %s\n' "$pdig"
+    printf -- '- `종료 절` | id=C1 | 문면=네 슬라이스가 전부 머지됐다\n'
   } > "$out"
 }
 
@@ -573,12 +576,43 @@ if ( check_manifest ) >/dev/null 2>&1; then
 else
   ok "대상 맵 다이제스트 불일치가 거부된다"
 fi
+# The plan digest is GONE, and its absence is the point: the router decides the
+# step graph one act at a time, so a frozen plan would be recorded and never
+# compared — the defect class this contract exists to remove, arriving as a
+# leftover. What replaces it freezes the goal and the constraints.
+if grep -q '계획 다이제스트' "$DRIVER"; then
+  bad "계획 다이제스트 제거" "드라이버가 아직 계획 다이제스트를 읽는다"
+else
+  ok "계획 다이제스트가 사라졌다 (얼릴 계획이 더는 없다)"
+fi
+
 write_manifest "$MF" "" "1111111111111111111111111111111111111111111111111111111111111111"
 if ( check_manifest ) >/dev/null 2>&1; then
-  bad "계획 다이제스트" "틀린 다이제스트를 통과시켰다"
+  bad "구속 다이제스트" "틀린 다이제스트를 통과시켰다"
 else
-  ok "계획 다이제스트 불일치가 거부된다"
+  ok "구속 다이제스트 불일치가 거부된다"
 fi
+
+# Present-and-correct must pass, or the assertion above is satisfied by a field
+# that always fails.
+MANIFEST="$MF"
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "올바른 구속 다이제스트는 통과한다"
+else
+  bad "구속 다이제스트" "맞는 값인데 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+
+# A goal edit must move it — otherwise the digest is over something that cannot
+# change and the check is vacuous.
+bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+sed 's/\*\*종료 지점\*\*: 전부 머지/**종료 지점**: 하나만 머지/' "$MF" > "$MF.g" && mv "$MF.g" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_before" ]; then
+  bad "구속 집합 감도" "종료 지점을 바꿨는데 다이제스트가 그대로다"
+else
+  ok "종료 지점이 바뀌면 구속 다이제스트가 움직인다"
+fi
+write_manifest "$MF"
 
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
@@ -1509,6 +1543,20 @@ for v in CC_PIPELINE_RUN_ID CC_PIPELINE_GRANT CC_PIPELINE_LEDGER CC_PIPELINE_RUN
     bad "환경 전달" "$v 가 스테이지로 넘어가지 않는다"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# The detach path is gone, and its absence is asserted rather than assumed.
+#
+# The run is driven by the main session's model now. Detaching would move the
+# deciding turn somewhere nobody can see, which is the one thing that silently
+# undoes the reason for this shape — so a re-introduced flag has to fail a test
+# rather than merely contradict a comment.
+# ---------------------------------------------------------------------------
+if grep -qE '(^[^#]*--detach\)|DETACH=)' "$DRIVER"; then
+  bad "detach 제거" "--detach 가 다시 들어왔다 — 판단하는 턴이 보이지 않는 곳으로 간다"
+else
+  ok "detach 경로가 없다 (라우터가 이 세션이므로 떼어 낼 것이 없다)"
+fi
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

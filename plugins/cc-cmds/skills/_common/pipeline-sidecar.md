@@ -131,13 +131,13 @@ once per run rather than on every append.
 **적용 주체**: 파이프라인 | 사람 | (해당 없음)
 
 ## 실행 계획
-**계획 다이제스트**: <아래 펜스 바이트에 대한 sha256>
 **승인 문면**: <단계 그래프를 승인한 발화, 축자>
 ```json
 { …승인된 entry-plan 객체… }
 ```
 
 ## 인가
+**구속 다이제스트**: <아래 「얼리는 집합」에 대한 sha256>
 **런 최대 절단점**: <token>
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
@@ -146,6 +146,20 @@ once per run rather than on every append.
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
 ````
+
+**The manifest freezes the GOAL AND THE CONSTRAINTS, not the plan.** The plan
+digest is gone, and its absence is the point rather than an omission: the step
+graph is now decided one act at a time by a router reading a snapshot, so a
+frozen plan would be a value nothing compares against — the defect class this
+whole contract exists to remove, arriving as a leftover.
+
+What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
+point together with its decomposition into checkable clauses, the targets and
+their per-target cutpoints, the rule-catalog settings, the list of predicted
+irreversible acts, and the optional deadline. The gate compares that digest at
+entry. `대상 맵 다이제스트` stays as well — it is the narrower check over the
+target rows alone, and keeping both means a target-row edit is named as such
+rather than reported as "something in the frozen set moved".
 
 **The `사전 인가` rows are the list an irreversible act is checked against**, and
 they are rows rather than a field because the set is open and each entry carries
@@ -188,7 +202,10 @@ never compared.
    leaves the silent-`.`-fallback alive. A mismatch is a **hard stop before the
    driver starts**, not a park.
 5. **Target-map digest** matches the canonical serialization of the target rows.
-6. **Plan digest** matches the bytes of the `## 실행 계획` fence.
+6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
+   target rows, rule settings, pre-authorization rows, deadline. The PLAN is not
+   in it: the router decides the step graph one act at a time, so a frozen plan
+   would be recorded and never compared.
 7. **Every cutpoint token** is in `CUTPOINTS` — an unrecognized token is a hard
    error, never a silent zero.
 8. **`벽시계 마감` parses as an absolute timestamp.** `없음` is refused: a field

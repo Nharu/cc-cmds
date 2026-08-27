@@ -136,7 +136,30 @@ PD=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
   printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
 } > "$MANIFEST"
 
+# The binding digest is computed FROM the finished manifest and appended after.
+# The frozen set is goal + clauses + targets + rule settings + pre-authorization
+# + deadline, and the digest field is not itself in that set — so appending it
+# does not move the value it records.
+refresh_bd() {
+  # Recompute and rewrite the field. A test that edits the frozen set is
+  # standing in for a kickoff, and a kickoff writes the digest — leaving a stale
+  # one would make every later assertion fail for the same uninformative reason.
+  local bd
+  grep -v '^\*\*구속 다이제스트\*\*:' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+  bd=$(cd "$WT" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$MANIFEST"'"
+    binding_set_bytes | shasum -a 256 | cut -d" " -f1')
+  printf '**구속 다이제스트**: %s\n' "$bd" >> "$MANIFEST"
+}
+refresh_bd
+
 gate snapshot --manifest "$MANIFEST"
+check "구속 다이제스트가 있는 매니페스트가 통과한다" "$rc" "0"
+case "$msg" in
+  *"구속 다이제스트가 없습니다"*) bad "구속 다이제스트" "필드를 넣었는데 없다고 한다" ;;
+  *) ok "구속 다이제스트를 실제로 대조한다" ;;
+esac
 check "픽스처 매니페스트가 검사를 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
@@ -475,6 +498,10 @@ esac
   printf '\n## 룰 설정\n'
   printf '**절단점-준수**: 끔\n**사전-인가-대조**: 끔\n**인가-자기확장-금지**: 끔\n**리뷰-후-머지**: 끔\n'
 } >> "$MANIFEST"
+# Rule settings ARE in the frozen set, so this edit legitimately moves the
+# digest — which is the mechanism working. A kickoff would rewrite it; the
+# fixture does the same.
+refresh_bd
 # The digests cover the target rows and the plan fence, not this section, so the
 # manifest still validates — which is the point: turning a rule off is a normal,
 # well-formed edit, and that is exactly why three of them may not honour it.
