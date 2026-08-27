@@ -144,7 +144,21 @@ once per run rather than on every append.
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
+- `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
 ````
+
+**The `사전 인가` rows are the list an irreversible act is checked against**, and
+they are rows rather than a field because the set is open and each entry carries
+its own reason. `형태` is an argv **prefix** — `gh pr`, `git push`, `terraform
+apply` — matched against the first two words of the act, so a row grants a
+family of acts rather than one spelling. An external-state act with no matching
+row is **not refused**: it issues an approval and waits. The distinction is the
+point. Nobody being awake to ask is not the same fact as the answer being no,
+and a run that conflates them either stops all night or acts on a grant nobody
+gave.
+
+An act at or below `워크트리쓰기` needs no row at all — the list exists for the
+acts whose effects outlive the run directory.
 
 **The example above is fenced with FOUR backticks** because it contains
 three-backtick fences of its own. Any document that explains this grammar has
@@ -246,31 +260,54 @@ Block 0 is `## 계획 <run-id>` — the plan record written when the run starts.
 
 Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row carries the fence's info string instead of the inline value.
 
-### 3.2 The row series is closed at nine
+### 3.1a Row length has a hard cap
+
+**A row is at most 1024 bytes including its newline.** Above that, concurrent appends interleave: two independent measurements put the last clean size at exactly 1024, with corruption beginning at 1025 and line counts staying correct while field values splice. That is the shape no row-grammar regex and no `wc -l` can detect, which is why the cap is a lint rather than a convention.
+
+Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
+
+### 3.2 The row series is closed at eleven
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
+
+The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
 
 | `계열` | Fields |
 | --- | --- |
 | `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
 | `segment` | `id` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` |
-| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `종단 부류` |
+| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명) · `사유` · `관측` · `재개 명령` |
+| `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
+| `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
+
+**`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
+
+**`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
+
+**`질문 문면` and `답변 문면` are fenced or sidecar'd, not inlined.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not.
+
+**`리뷰 의무` exists because `선머지후리뷰` defers an obligation rather than removing one.** Its `생성 등급` is the axis-2 grade of the act that created it, which is the field the run's termination conditions read — an obligation created by an act graded at or below `워크트리 쓰기` is excusable when its segment parks, and one created above that is not.
 
 **`실행 버전` belongs to `stage-result`, not to `segment`.** The session uuid is derived from `owner-doc|구간|단계|시도`, so `시도` must be durable — otherwise a reboot re-derives a uuid already bound to a different transcript. Attaching the field to the per-stage row is what makes that durable at the right granularity.
 
 **`stage-result` is what removes the last edge into stage-owned ledger writes.** Its every field is observable by the driver from outside the stage: an exit code it waited on, artifacts it can stat, a digest it can compute. Nothing here requires the stage to report anything.
+
+**`세션 id` and `부모` are the ancestry record, and without them the implementation-review separation rule is vacuous.** That rule asks whether a review stage's session is disjoint from the implementation's. While session ids are *derived* from `owner-doc|구간|단계|시도` they differ by construction, so the comparison is a tautology and passes on every run including the ones it exists to catch. Recording the id the harness actually assigned, plus the id of the session that spawned it, turns the rule into a real ancestry-closure check — and a fork inherits its parent, so a forked session cannot review its own work by taking a new id.
 
 ### 3.3 Closed vocabularies
 
 | Field | Values |
 | --- | --- |
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` |
+| `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` |
+| `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
+| `리뷰 의무.상태` | `미이행` \| `이행` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` |
@@ -308,13 +345,25 @@ this contract already indicts elsewhere. `적용 준비` is likewise separate fr
 person needs when an apply's outcome is unknown, and a state that says only
 "running" does not tell them it exists.
 
-**Severity adjudication and parking are not new kinds.** A severity tie-break is a `자율 승인` row with `kind=severity`; a park is a `blocked` row with a `사유`. Reusing the two existing series with a required discriminator is what keeps the count at nine while still making each case findable.
+**Severity adjudication and parking are not new kinds.** A severity tie-break is a `자율 승인` row with `kind=severity`; a park is a `blocked` row with a `사유`. Reusing the two existing series with a required discriminator is what keeps those two cases out of the count while still making each findable.
+
+**An approval and a review obligation are new kinds, and the test that separates them from the paragraph above is lifecycle.** A severity tie-break and a park are each *finished* the moment they are written — the row records a thing that happened. An approval is issued, waits an unbounded time, and then resolves or goes stale; a deferred review obligation is created at a merge and discharged much later or not at all. A kind whose rows advance through states cannot be a discriminator on a kind whose rows do not, because the reader of the existing kind takes every row as terminal. That is why these two extend the definition and the earlier two did not.
 
 **`kind=severity` requires `finding-id` for a reason that is not bookkeeping.** The shipped review rule defaults to the higher severity *unless the lead resolved the dispute*, and unattended there is no observable event that makes "the lead resolved it" true or false. So the exception counts as fired **only** where a `자율 승인` row records the decision, the rejected alternative, both rationales, and the finding it applies to; with no such row the rule's default branch applies. This enforces the rule's own third sentence rather than overriding it, and the interactive path is unchanged.
 
 ### 3.4 Write form and its diff gate
 
 One write form: **append** — a new row, or a new `## 실행 <run-id>` block. Gate: **0 removed lines**. `segment.상태` advancing is expressed as a **new `segment` row** for the same `id`, not as an edit; readers take the last row for an `id` as current. This keeps a single append gate for the whole schema and leaves the run's history intact for the morning audit.
+
+### 3.4a The chain, and why it is not only about forgery
+
+Every row carries `prev=<64 hex>` — the sha256 of the preceding row's bytes. The first row of a block chains to the block heading.
+
+It was proposed as anti-forgery: a run that writes its own ledger can otherwise rewrite what it recorded, and a chain makes that visible. But the same field settles a defect nobody expected it to. §3.1a's interleaving corrupts rows in a way that **no row-grammar check can see** — the line count stays right and the field values splice — and a splice is, to the chain, indistinguishable from a rewrite. So one mechanism detects both, and deletion and reordering with them.
+
+**Why that matters more than tidiness.** A spliced row can satisfy a termination condition that the true rows do not, and the run then stops reporting success on a state that never existed. Corruption here does not merely lose information; it **manufactures a false completion**. Serializing writes with an advisory lock keeps interleaving rare; the chain is what makes the rare case detectable rather than silent.
+
+**Single writer is a property of components, not of processes.** The driver's comment says the ledger has one writer, and that is true of the *component*: one function appends. It is not true of the *processes* — each gate invocation is a separate shell, so two acts in flight are two writers against one file. The lock is therefore mandatory rather than defensive, and the chain is what catches the window the lock does not cover.
 
 ### 3.5 The morning report is a ledger-referenced companion
 
