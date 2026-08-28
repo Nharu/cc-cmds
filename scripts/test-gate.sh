@@ -178,13 +178,46 @@ refresh_bd() {
   # Recompute and rewrite the field. A test that edits the frozen set is
   # standing in for a kickoff, and a kickoff writes the digest — leaving a stale
   # one would make every later assertion fail for the same uninformative reason.
-  local bd
+  local bd bd_err line inserted
   grep -v '^\*\*구속 다이제스트\*\*:' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+  bd_err="$WORK/bd.err"
   bd=$(cd "$WT" && bash -c '
     CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
     MANIFEST="'"$MANIFEST"'"
-    binding_set_bytes | shasum -a 256 | cut -d" " -f1')
-  printf '**구속 다이제스트**: %s\n' "$bd" >> "$MANIFEST"
+    binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>"$bd_err")
+  # A broken fixture is not a test failure, so it exits rather than counting.
+  # An empty digest still produces a well-formed line — `**구속 다이제스트**: `
+  # with nothing after it — which every later assertion then reports as "the
+  # field is absent", naming the symptom instead of the cause.
+  if [ -z "$bd" ]; then
+    printf 'refresh_bd: 구속 다이제스트 계산이 빈 값을 냈다\n' >&2
+    sed 's/^/  bd stderr: /' "$bd_err" >&2
+    exit 1
+  fi
+
+  # Inserted INSIDE `## 인가`, not appended to the file. `manifest_field` is
+  # section-scoped and stops at the next `## `, so a digest appended after a
+  # later section is read as absent — which is how a present-and-correct field
+  # came back as "no binding digest" once another section was added below it.
+  #
+  # The insertion is a read loop rather than `awk`/`sed`: the heading it keys on
+  # is Korean, and both an `awk` string equality and a BSD/GNU `a\` append have
+  # to be trusted across two platforms to place one line. A `[ "$line" = … ]`
+  # test is shell string equality, which is byte comparison everywhere.
+  : > "$MANIFEST.bd"
+  inserted=
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$MANIFEST.bd"
+    if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
+      printf '**구속 다이제스트**: %s\n' "$bd" >> "$MANIFEST.bd"
+      inserted=1
+    fi
+  done < "$MANIFEST"
+  if [ -z "$inserted" ]; then
+    printf 'refresh_bd: 매니페스트에 「## 인가」 절이 없어 다이제스트를 넣을 자리가 없다\n' >&2
+    exit 1
+  fi
+  mv "$MANIFEST.bd" "$MANIFEST"
 }
 refresh_bd
 
@@ -637,6 +670,61 @@ if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '세그먼트=SEP2'; then
   bad "기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
 else
   ok "기본 정책에서는 의무를 만들지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 10c. A dry run writes nothing, and a stage dispatch is gradeable
+#
+# All three of these were found by the FIRST act of the first real run, and they
+# composed into "the router cannot dispatch any stage at all":
+#   - `plan` issued a real approval row, so asking "would this pass?" mutated
+#     the run the question was about — and an open approval suspends B1..B3 and
+#     blocks termination condition 2, so the question stalled the asker.
+#   - a stage dispatch's argv begins with a STAGE KIND, not a command, so the
+#     argv0 table graded every dispatch `등급 미상`.
+#   - `등급 미상` fell through to the pre-authorization rule's external-state
+#     arm, turning every dispatch into a pending approval.
+# ---------------------------------------------------------------------------
+n_before=$(grep -c '^- `승인`' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 -- curl https://example.invalid
+check "plan 이 사전 인가 밖을 승인 대기로 답한다" "$rc" "5"
+check "그러면서 원장에는 아무것도 쓰지 않는다" "$(grep -c '^- `승인`' "$LEDGER" || true)" "$n_before"
+case "$msg" in
+  *"발행하지 않았습니다"*) ok "dry-run 임을 문면이 말한다" ;;
+  *) bad "dry-run 문면" "'$msg'" ;;
+esac
+
+gate grade --manifest "$MANIFEST" -- review
+case "$msg" in
+  *"축2=등급 미상"*) ok "스테이지 종류를 등급표에 물으면 미상이다 (그것이 명령이 아니므로)" ;;
+  *) bad "스테이지 종류 등급" "'$msg'" ;;
+esac
+
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "그럼에도 스킬 디스패치는 통과한다 (argv0 표에 묻지 않는다)" "$rc" "0"
+case "$msg" in
+  *"축2=워크트리쓰기"*) ok "스킬 디스패치는 워크트리 쓰기로 등급된다" ;;
+  *) bad "스킬 등급" "'$msg'" ;;
+esac
+
+# The gate must HAND the CLI path down. run.sh resolves the binary and only then
+# pins PATH to the sanitized set, so a child that re-resolves searches a PATH the
+# CLI is not on — every stage launch died with "binary not found" two seconds
+# after the binary had been found.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'CC_CLAUDE_BIN="$CLI_BIN"'; then
+  ok "게이트가 래퍼에 CLI 경로를 넘긴다 (정제된 PATH 에서 다시 찾지 않는다)"
+else
+  bad "CLI 전달" "래퍼가 정제된 PATH 로 바이너리를 다시 찾게 된다"
+fi
+
+# The fall-through that made the composition fatal is now an explicit arm, and
+# `등급 미상` carries the only space in the axis-2 vocabulary — unquoted it
+# splits the `case` pattern into two words and breaks the whole checker file.
+if grep -q '"등급 미상")' "$repo_root/plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh"; then
+  ok "미상 등급이 명시적 팔이고 인용돼 있다"
+else
+  bad "미상 처분" "흘러내림으로 처리되거나 인용되지 않았다"
 fi
 
 # ---------------------------------------------------------------------------

@@ -172,4 +172,10 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
   allow "$(jstr 'gate: 게이트 호출')"
 fi
 
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 같은 명령을 이렇게 다시 부르세요 — ${GATE} exec --manifest <매니페스트> --target <대상> --cutpoint <절단점> --surface <축2> --snapshot-digest <해시> --rationale <근거> -- ${cmd}")"
+# The re-invocation line must be one the stage can actually TYPE. The earlier
+# form handed back six angle-bracket placeholders, four of which the stage had
+# no way to fill — so a stage that read the message carefully still could not
+# comply, and the correct behaviour (stop and report) was indistinguishable from
+# a stage that produced nothing. Every value below is either baked in here at
+# install time or reachable from the stage's own environment.
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 다음 두 줄을 그대로 쓰세요 — 첫 줄이 지금 시점의 스냅숏 해시를 받아 옵니다. H=\$(${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H) && ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest \"\$H\" --rationale <왜 이 명령이 필요한가> -- ${cmd}")"

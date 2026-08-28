@@ -140,6 +140,43 @@ case "$out3" in
 esac
 
 # ---------------------------------------------------------------------------
+# 4b. A running stage must be VISIBLE, or the detector cries wolf
+#
+# The stall arm is "ledger idle AND nothing alive AND nothing waiting". A stage
+# writes no ledger rows WHILE it runs, so if the watcher cannot see the stage,
+# every long stage looks exactly like a router that stopped. Measured on the
+# first real run: the watcher reported "스테이지 0개" while a review stage was
+# 350 lines into its output, and would have recorded a false stall.
+#
+# A false alarm is worse than no alarm, because it teaches its reader to ignore
+# the true one.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+sleep 1 &
+live_pid=$!
+printf '%s\n' "$live_pid" > "$RD/S1.pid"
+out=$(run --stall 0)
+case "$out" in
+  *"라이브니스 침묵"*) bad "살아 있는 스테이지" "스테이지가 도는데 정체로 판정했다" ;;
+  *) ok "pid 기록이 있는 살아 있는 스테이지는 정체 판정을 막는다" ;;
+esac
+case "$out" in
+  *"스테이지 1개"*) ok "하트비트가 살아 있는 스테이지를 센다" ;;
+  *) bad "스테이지 계수" "'$out'" ;;
+esac
+wait "$live_pid" 2>/dev/null
+
+# And the gate must write that record — the watcher can only count what exists.
+GATE_SH="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+if grep -vE '^[[:space:]]*#' "$GATE_SH" | grep -c 'RUN_DIR/$seg.pid' >/dev/null 2>&1 \
+   && [ "$(grep -vE '^[[:space:]]*#' "$GATE_SH" | grep -c 'RUN_DIR/\$seg\.pid' || true)" != "0" ]; then
+  ok "게이트가 스테이지 pid 를 기록한다 (감시자가 셀 수 있는 것만 센다)"
+else
+  bad "pid 기록" "게이트가 스테이지를 띄우면서 pid 파일을 쓰지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. It decides nothing and resumes nothing
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then

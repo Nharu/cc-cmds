@@ -41,6 +41,16 @@
 # Usage:
 #   watch.sh --run-dir <dir> --ledger <path> [--interval <sec>] [--stall <sec>]
 #   watch.sh --run-dir <dir> --ledger <path> --once      # one pass, no loop
+#   watch.sh … --notify                                  # also raise a banner
+#
+# `--notify` exists because THIS PROCESS IS THE ONLY ONE THAT CAN CARRY THE
+# NEWS. The condition it reports is "the router stopped", and a router that has
+# stopped cannot report it — the loud line above goes to a terminal that may no
+# longer exist. The driver left this seat empty for a stated reason: the shared
+# operating rules forbid a SPAWNED AGENT from deciding whether a banner reaches
+# the user, and a notification-only stage would be one. A shell script is not an
+# agent, and this one outlives the session by design (it is orphaned to init).
+# So it is the one mechanism that satisfies both constraints at once.
 #
 # Exit codes:
 #   0  a pass completed (or the loop was terminated)
@@ -52,7 +62,7 @@ set -uo pipefail
 LC_TIME=C
 export LC_TIME
 
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -60,6 +70,7 @@ while [ $# -gt 0 ]; do
     --interval) INTERVAL="$2"; shift 2 ;;
     --stall)    STALL="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
+    --notify)   NOTIFY=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -141,6 +152,18 @@ nonterminal_segments() {
   printf '%s' "$n"
 }
 
+banner() {
+  # Best-effort, and every failure is swallowed on purpose: a watcher that dies
+  # because a notifier is missing removes the only signal the user had left.
+  [ "$NOTIFY" = "1" ] || return 0
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  command -v terminal-notifier >/dev/null 2>&1 || return 0
+  { terminal-notifier -title "[cc-cmds] 자율 런" -message "$1" \
+      -group 'cc-cmds-autopilot-watch' -execute ':' 2>/dev/null || true; }
+  return 0
+}
+
 announce() {
   # Loud, on the terminal, once per condition. The whole point of this script is
   # that a person looking at the terminal in the morning learns something a
@@ -174,6 +197,7 @@ pass() {
      && ! grep -q '사유=라이브니스 침묵' "$LEDGER" 2>/dev/null; then
     announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
              "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
+    banner "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요"
     record_blocked "라이브니스 침묵" "메인 세션에서 이어서 진행하도록 지시"
     return 0
   fi
@@ -183,6 +207,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-waiting"
     announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
              "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
+    banner "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건"
     return 0
   fi
 

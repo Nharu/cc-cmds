@@ -1218,10 +1218,17 @@ session_uuid() {
   # Shaped as a real UUID because `--session-id` rejects anything else: a bare
   # 32-hex digest is refused with "Must be a valid UUID" (measured). Shaping the
   # digest keeps the value derivable — which is the whole point, since nothing
-  # records it and the transcript has to be findable again from the stage id
-  # alone.
+  # records it and the transcript has to be findable again from the run id and
+  # the stage id alone.
+  #
+  # The RUN_ID term is load-bearing and its absence was a measured failure, not
+  # a theoretical one: without it every run of one document derives the SAME
+  # uuid, so the second run dies at its first stage with "Session ID ... is
+  # already in use" and the driver stops before doing anything. The run id is
+  # therefore the first term of the derivation, ahead of the document key, the
+  # stage id and the attempt.
   local h
-  h=$(printf '%s|%s|%s' "$DOC_KEY" "$1" "${2:-1}" | shasum -a 256 | cut -c1-32)
+  h=$(printf '%s|%s|%s|%s' "$RUN_ID" "$DOC_KEY" "$1" "${2:-1}" | shasum -a 256 | cut -c1-32)
   printf '%s-%s-%s-%s-%s' "${h:0:8}" "${h:8:4}" "${h:12:4}" "${h:16:4}" "${h:20:12}"
 }
 
