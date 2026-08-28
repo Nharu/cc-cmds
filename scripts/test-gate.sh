@@ -178,20 +178,46 @@ refresh_bd() {
   # Recompute and rewrite the field. A test that edits the frozen set is
   # standing in for a kickoff, and a kickoff writes the digest — leaving a stale
   # one would make every later assertion fail for the same uninformative reason.
-  local bd
+  local bd bd_err line inserted
   grep -v '^\*\*구속 다이제스트\*\*:' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+  bd_err="$WORK/bd.err"
   bd=$(cd "$WT" && bash -c '
     CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
     MANIFEST="'"$MANIFEST"'"
-    binding_set_bytes | shasum -a 256 | cut -d" " -f1')
+    binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>"$bd_err")
+  # A broken fixture is not a test failure, so it exits rather than counting.
+  # An empty digest still produces a well-formed line — `**구속 다이제스트**: `
+  # with nothing after it — which every later assertion then reports as "the
+  # field is absent", naming the symptom instead of the cause.
+  if [ -z "$bd" ]; then
+    printf 'refresh_bd: 구속 다이제스트 계산이 빈 값을 냈다\n' >&2
+    sed 's/^/  bd stderr: /' "$bd_err" >&2
+    exit 1
+  fi
+
   # Inserted INSIDE `## 인가`, not appended to the file. `manifest_field` is
   # section-scoped and stops at the next `## `, so a digest appended after a
   # later section is read as absent — which is how a present-and-correct field
   # came back as "no binding digest" once another section was added below it.
-  awk -v bd="$bd" '
-    { print }
-    $0 == "## 인가" && !done { print "**구속 다이제스트**: " bd; done = 1 }
-  ' "$MANIFEST" > "$MANIFEST.bd" && mv "$MANIFEST.bd" "$MANIFEST"
+  #
+  # The insertion is a read loop rather than `awk`/`sed`: the heading it keys on
+  # is Korean, and both an `awk` string equality and a BSD/GNU `a\` append have
+  # to be trusted across two platforms to place one line. A `[ "$line" = … ]`
+  # test is shell string equality, which is byte comparison everywhere.
+  : > "$MANIFEST.bd"
+  inserted=
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$MANIFEST.bd"
+    if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
+      printf '**구속 다이제스트**: %s\n' "$bd" >> "$MANIFEST.bd"
+      inserted=1
+    fi
+  done < "$MANIFEST"
+  if [ -z "$inserted" ]; then
+    printf 'refresh_bd: 매니페스트에 「## 인가」 절이 없어 다이제스트를 넣을 자리가 없다\n' >&2
+    exit 1
+  fi
+  mv "$MANIFEST.bd" "$MANIFEST"
 }
 refresh_bd
 
