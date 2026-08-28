@@ -166,6 +166,21 @@ surface_of_argv0() {
       printf '워크트리쓰기' ;;
     curl|wget|ssh|scp|rsync|terraform|kubectl|aws|gcloud|docker)
       printf '외부상태변경' ;;
+    # Database clients. A schema migration is a standard step BEFORE a deploy,
+    # not an exotic one, and with no row here every one of them fell to `등급
+    # 미상` — which refuses. All three ways out were closed at once: `--surface`
+    # is a checked claim and any claim mismatches an unknown grade; the basename
+    # normalization makes the absolute-path spelling identical; and wrapping in
+    # `bash -c` passes while recording a DDL against a database as a worktree
+    # write, which is the laundering this table exists to refuse.
+    #
+    # Graded `외부상태변경` even though these clients can also read. The grade is
+    # taken from argv0 alone, so a read-only `SELECT` cannot be told apart from a
+    # migration here — and of the two ways to be wrong, requiring a
+    # pre-authorization row for a read costs a line in the manifest, while
+    # letting a migration through as a read costs the database.
+    mysql|mysqladmin|mysqldump|psql|pg_dump|pg_restore|createdb|dropdb|sqlite3|mongo|mongosh|redis-cli)
+      printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
 }
@@ -673,7 +688,7 @@ gate_write_settings() {
   # session cut must find the same bytes, because those bytes are in the
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
-  local dir hook k f deny_extra plugin_dir extra_dirs
+  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws
   dir=$(gate_settings_dir)
   mkdir -p "$dir"
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
@@ -707,11 +722,35 @@ gate_write_settings() {
   #
   # Every path is derived, so the bytes stay identical across a re-run — which
   # they must, since this file is in the enforcement-surface digest set.
+  #
+  # A DOCUMENT THAT DEFERS TO ANOTHER DOCUMENT. Design documents routinely name
+  # a second one as the source of truth for part of their content — a task
+  # design and an applied design as separate files is the normal shape — and
+  # that second file is a sibling or a parent, not a child. For a document
+  # INSIDE a repository the grant already reaches it, because `DOC_BASE` is the
+  # repository root. For one outside every repository `DOC_BASE` collapses onto
+  # the document's own folder, and the grant was exactly that folder.
+  #
+  # So the containing WORKSPACE is granted in that case, and only that case: for
+  # a document that belongs to no repository, its workspace is its parent
+  # directory. This is read-only and it is the same widening the in-repo branch
+  # already has. The failure it removes is the quiet one — the stage has
+  # something to read, so it does not stop; it produces output measured against
+  # half a specification and nothing in the artifact says which half.
+  #
+  # `$DOC` and not `$DOC_DIR` in the guard: a run with NO document still sets
+  # `DOC_DIR` and `DOC_BASE` to the run's base, so testing their equality alone
+  # would widen the grant to the base's parent on every documentless run — a
+  # directory nothing in the run has any business reading.
+  doc_ws=""
+  if [ -n "${DOC:-}" ] && [ "${DOC_BASE:-}" = "${DOC_DIR:-}" ]; then
+    doc_ws=$(dirname "$DOC_DIR")
+  fi
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
-      "${DOC_DIR:-}" "${DOC_BASE:-}" \
+      "${DOC_DIR:-}" "${DOC_BASE:-}" "$doc_ws" \
     | sed '/^$/d' | sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
 
   for k in $STAGE_KINDS; do
@@ -1101,7 +1140,11 @@ gate_verb_act() {
     fi
   fi
   if [ "$graded" = "등급 미상" ]; then
-    warn "축2 등급 미상 — 등급표에 없는 argv0 는 읽기로 떨어지지 않습니다: $1"
+    # The message names WHICH repair, because two different things arrive here:
+    # a tool the table has never listed (widen the table), and a recognized tool
+    # in a form the sub-table could not parse (respell the command). Without the
+    # distinction the router sees one refusal and has no way to tell which.
+    warn "축2 등급 미상 — 등급표에 없는 argv0 는 읽기로 떨어지지 않습니다: $1 (그 도구가 표에 오른 적이 없다면 표를 넓혀야 하고, 표에 있는 도구인데 형태를 못 읽은 것이라면 하위 명령이 보이도록 다시 쓰세요)"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
 
@@ -1576,7 +1619,7 @@ gate_record_stage_outcome() {
   # implementation-review separation rule reads ancestry from; with no rows that
   # rule returns early and passes vacuously on every run it exists to catch.
   local alias="$1" seg="$2" kind="$3" attempt="$4" rc="$5" before="$6"
-  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage
+  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
@@ -1603,9 +1646,33 @@ gate_record_stage_outcome() {
     if [ "${denials:-0}" != "0" ]; then klass='산출물 없는 정지'; else klass='공허한 성공'; fi
   fi
 
-  gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
-    "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
-    "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
+  # `plan_sha256`, and only for the implement arm. That arm is split into two
+  # processes and process B enters ONLY when this field is on the row — its
+  # admission predicate says so and forbids re-deriving a plan instead. Nothing
+  # wrote the field, so every dispatch resolved as process A, emitted the plan
+  # again and stopped. The tree stayed clean, which is correct for process A, so
+  # "A finished" and "B will never come" were indistinguishable from outside.
+  #
+  # Taken from the stage's own emitted object first, because that is the digest
+  # the admission predicate compares against; the plan FILE is the fallback, and
+  # it is a fact the gate can compute rather than one the stage reports.
+  psha=""
+  if [ "$kind" = "implement" ]; then
+    psha=$(printf '%s' "$res" | jq -r '(.result // empty) | fromjson? | .plan_sha256 // empty' 2>/dev/null || true)
+    [ -n "$psha" ] || psha=$(printf '%s' "$res" | jq -r '.plan_sha256 // empty' 2>/dev/null || true)
+    if [ -z "$psha" ] && [ -f "$RUN_DIR/implement-$seg.plan.md" ]; then
+      psha=$(shasum -a 256 "$RUN_DIR/implement-$seg.plan.md" | cut -d' ' -f1)
+    fi
+  fi
+  if [ -n "$psha" ]; then
+    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+      "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
+      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "plan_sha256=$psha" "종단 부류=$klass"
+  else
+    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+      "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
+      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
+  fi
 
   # The cost row ACCUMULATES, because that is the shape its only reader wants:
   # the boundary compares one number against the declared ceiling rather than

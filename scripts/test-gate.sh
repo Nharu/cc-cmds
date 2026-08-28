@@ -1291,6 +1291,42 @@ case "$row" in
   *) bad "종단 부류" "$row" ;;
 esac
 
+# `plan_sha256` — the implement arm splits into two processes and process B
+# enters ONLY when this field is on the row; its admission predicate says so and
+# forbids re-deriving a plan instead. Nothing wrote it, so every dispatch
+# resolved as process A, emitted the plan again and stopped — with a clean tree,
+# which is correct for process A, so "A finished" and "B will never come" were
+# indistinguishable.
+plan_probe() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log"
+    printf "%s" "$2" > "$RUN_DIR/implement-SI.plan.md"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1,\"session_id\":\"sid-i\"}\n" \
+      > "$RUN_DIR/log/SI.json"
+    nb=$(gate_rows "자율 승인" | gate_count)
+    gate_record_stage_outcome cc-cmds SI "$1" 1 0 "$nb" >/dev/null 2>&1
+  ' _ "$1" "$2"
+}
+plan_probe implement "착지 계획 본문"
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+want=$(printf '%s' "착지 계획 본문" | shasum -a 256 | cut -d' ' -f1)
+case "$row" in
+  *"plan_sha256=$want"*) ok "구현 스테이지의 행이 계획 다이제스트를 싣는다 (프로세스 B 의 입장 토큰)" ;;
+  *) bad "plan_sha256" "$row" ;;
+esac
+# And only the implement arm — a review stage has no plan and no process B.
+plan_probe review "리뷰에는 계획이 없다"
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"plan_sha256="*) bad "plan_sha256" "리뷰 스테이지 행에 계획 다이제스트가 붙었다: $row" ;;
+  *) ok "리뷰 스테이지 행에는 붙지 않는다" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # 14e. exit 7 tells a STAGE what to do, because only the router can do the
 # prescribed thing
@@ -1328,6 +1364,21 @@ if [ "$rc" = "7" ]; then
   check "같은 조건을 반복 기록하지 않는다" "$n_twice" "$n_after"
 else
   bad "표면 이동" "종료 코드 $rc — 표면을 움직였는데 7 이 아니다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14f. A documentless run does not get its base's PARENT
+#
+# The workspace widening is for a document that belongs to no repository. A run
+# with no document sets both document variables to the run's base, so a guard
+# on their equality alone opens a directory nothing in the run reads.
+# ---------------------------------------------------------------------------
+parent_of_wt=$(dirname "$WT")
+if jq -e --arg d "$parent_of_wt" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  bad "작업 공간 확장" "문서 없는 런인데 베이스의 부모가 열렸다: $parent_of_wt"
+else
+  ok "문서 없는 런은 베이스의 부모를 열지 않는다"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1369,6 +1420,29 @@ graded_as '읽기'         '명시된 메서드가 필드를 이긴다'     -- g
 # Deliberate, and it stays deliberate: `auth` reads and rewrites the credential
 # the whole separation rests on.
 graded_as '등급 미상'    'gh auth 는 의도된 거부로 남는다'   -- gh auth switch --user x
+
+# A schema migration is a standard step BEFORE a deploy, and with no row for the
+# client every one of them fell to `등급 미상`, which refuses. All three ways out
+# were closed at once — `--surface` is a checked claim that any claim mismatches,
+# the basename normalization makes the absolute path identical, and `bash -c`
+# passes while recording a DDL against a database as a worktree write.
+graded_as '외부상태변경' 'mysql 이 외부 상태 변경으로 등급된다'  -- mysql -e "SELECT 1"
+graded_as '외부상태변경' 'psql 도 같다'                          -- psql -c "SELECT 1"
+graded_as '외부상태변경' '경로로 부른 클라이언트도 같다'         -- /opt/homebrew/opt/mysql-client@8.0/bin/mysql -e x
+# Read-only spellings grade the same, and that is the deliberate side to be
+# wrong on: the grade comes from argv0 alone, so a SELECT cannot be told from a
+# migration here — requiring a pre-authorization row for a read costs a line,
+# letting a migration through as a read costs the database.
+graded_as '외부상태변경' '읽기 전용 조회도 같은 등급이다'        -- mysql --defaults-extra-file=f db -e "SELECT 1"
+
+# The refusal names WHICH repair, because two different things arrive there.
+# `plan` and not `grade`: the repair sentence lives on the acting path, which is
+# where a router that got refused actually is.
+gate plan --manifest "$MANIFEST" --kind x --target infra --segment SW --cutpoint 커밋 -- some-unlisted-tool --flag
+case "$msg" in
+  *"표를 넓혀야"*) ok "미상 거부가 표를 넓히라는 쪽과 다시 쓰라는 쪽을 구별해 말한다" ;;
+  *) bad "미상 문면" "'"'"'$msg'"'"'" ;;
+esac
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
