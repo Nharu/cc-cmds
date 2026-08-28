@@ -319,5 +319,55 @@ else
   ok "래퍼: --include-partial-messages 를 싣지 않는다"
 fi
 
+# ---------------------------------------------------------------------------
+# N. THE DENY MESSAGE MUST NAME A SHAPE THIS ALLOW-LIST ACCEPTS
+#
+# It did not. The message prescribed `H=$(<gate> snapshot …) && <gate> exec …`,
+# whose first token is `H=$(<gate>` — so the hook denied the exact command it
+# had just asked for, and a stage that read the message carefully and complied
+# was refused with the same boilerplate it was already holding. Measured: a
+# review stage tried it twice, combined and split, and stopped without writing
+# its report.
+#
+# Every command the message prescribes is extracted from the message ITSELF and
+# fed back through the hook, so the two cannot drift apart again.
+# ---------------------------------------------------------------------------
+decide "$(bash_json 'ls -la')"
+reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+
+# The old shape must not come back.
+case "$reason" in
+  *'H=$('*) bad "거부 문면 형태" "명령 치환을 지시한다 — 이 훅이 거부하는 형태다" ;;
+  *)        ok "거부 문면이 명령 치환을 지시하지 않는다" ;;
+esac
+
+# Every gate-path occurrence in the message is the start of a command it is
+# telling the stage to run. Each must be allowed.
+n_shapes=0; n_denied=0
+for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.*//'); do
+  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" | tr '\n' ' ')
+  n_shapes=$((n_shapes + 1))
+  decide "$(bash_json "$cand")"
+  [ "$dec" = "allow" ] || n_denied=$((n_denied + 1))
+done
+if [ "$n_shapes" -ge 2 ]; then
+  ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
+else
+  bad "거부 문면 형태" "게이트로 시작하는 명령이 ${n_shapes}개뿐이다 — 스냅숏과 exec 둘이 필요하다"
+fi
+check "그 명령들이 전부 이 훅을 통과한다" "$n_denied" "0"
+
+# The first line pipes into jq, and a pipe is fine — what is matched is the
+# FIRST token. Asserted directly so nobody "fixes" the matcher into scanning the
+# whole line and quietly breaks the shape the message hands out.
+decide "$(bash_json "$GATE snapshot --manifest /tmp/m.md | jq -r .H")"
+check "파이프가 붙어도 첫 토큰이 게이트면 통과한다" "$dec" "allow"
+
+# And the laundering shapes stay denied.
+decide "$(bash_json "H=\$($GATE snapshot --manifest /tmp/m.md)")"
+check "명령 치환으로 감싼 게이트는 여전히 거부된다" "$dec" "deny"
+decide "$(bash_json "echo x; $GATE snapshot --manifest /tmp/m.md")"
+check "앞에 다른 명령을 붙인 형태도 거부된다" "$dec" "deny"
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

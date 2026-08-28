@@ -172,10 +172,23 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
   allow "$(jstr 'gate: 게이트 호출')"
 fi
 
-# The re-invocation line must be one the stage can actually TYPE. The earlier
-# form handed back six angle-bracket placeholders, four of which the stage had
-# no way to fill — so a stage that read the message carefully still could not
-# comply, and the correct behaviour (stop and report) was indistinguishable from
-# a stage that produced nothing. Every value below is either baked in here at
-# install time or reachable from the stage's own environment.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 다음 두 줄을 그대로 쓰세요 — 첫 줄이 지금 시점의 스냅숏 해시를 받아 옵니다. H=\$(${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H) && ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest \"\$H\" --rationale <왜 이 명령이 필요한가> -- ${cmd}")"
+# The re-invocation line must be one the stage can actually TYPE — and one this
+# hook actually ALLOWS. The earlier form failed the second half: it prescribed
+# `H=$(<gate> snapshot …) && <gate> exec …`, whose first token is `H=$(<gate>`
+# and therefore matches nothing above. So the hook denied the exact command it
+# had just asked for, and a stage that read the message carefully and complied
+# was refused with the same boilerplate it was already holding. Measured: a
+# review stage tried the suggested form twice — combined with `&&`, then split
+# across two lines — was denied both times, and stopped without writing its
+# report rather than emit a `P0 0건 | P1 0건` summary having read nothing.
+#
+# TWO SEPARATE COMMANDS, then. Each one's first token is the gate path, which is
+# the single shape this allow-list has. The alternative — teaching the matcher
+# to see through a leading assignment and a command substitution — would put a
+# second, weaker shell parser in the allow-list, and an escaping bug in an
+# allow-list fails OPEN. A pipe is fine and the first line uses one: what is
+# matched is the first token, and `jq` sits on the right of it.
+#
+# The snapshot hash is not baked in because it moves on every ledger write; the
+# stage reads it from line 1 and types it into line 2.
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"

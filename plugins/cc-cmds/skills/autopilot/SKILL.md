@@ -76,7 +76,10 @@ The judgment **proposed** repositories; it did not decide them. Present the list
 
 - the main worktree root, and its common git directory (`git rev-parse --path-format=absolute --git-common-dir`),
 - the base branch,
-- the remote slug (`<owner>/<name>`).
+- the remote slug (`<owner>/<name>`),
+- and, **when the work belongs to a branch that is checked out in a linked worktree, that worktree** — recorded as `실행 워크트리` on the target row.
+
+**That last one is not a convenience.** The main worktree is where the sidecar goes, so that N linked worktrees of one repository converge on one location; but the act has to run where the branch actually is, and for a `pr` or `branch` anchor those are never the same directory, because git refuses to check one branch out twice. Find it with `git worktree list` and record it. Omit the field when the repository has only one worktree — the driver falls back to the main one. Get this wrong and nothing announces it: the stage starts, the files are readable, and it reads a different version of them.
 
 **A target that does not verify is a hard stop, not a warning.** The driver preflights the same values and refuses to start; discovering that here, with the user present, costs a sentence, and discovering it at 3am costs the night.
 
@@ -235,6 +238,8 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | 5 | approval issued | the act is outside pre-authorization — see below |
 | 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
+
+**Exit 7 is the router's alone, and a stage that receives it can only stop.** The condition is outside a stage by definition — the surfaces are the run's settings, the rule catalog, the hook and the project settings — and it cannot even look at them, because looking needs the Bash that was just refused. It has no re-baseline available either: that would be the bound moving its own boundary. So the gate now tells a stage in as many words to stop rather than retry, and records a run-scope `blocked` row so the condition is visible as run state instead of as a stage's wasted turns. Measured before that: five stages, four of which retried into the same refusal 3, 9, 12 and 15 times and produced nothing. **The run does not recover — re-baselining is not offered.** Start a new run.
 
 Past the checks, the act's own exit status passes through. A refusal always arrives with a `gate:` line and no output from the act — that, not the number, is what separates them.
 

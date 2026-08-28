@@ -562,6 +562,32 @@ if [ "$uu_r1" != "$uu_r2" ]; then
 else
   bad "session_uuid" "런 id 가 달라도 같은 id — 같은 문서의 두 번째 런이 첫 스테이지에서 죽는다"
 fi
+# 시도 항이 실제로 값을 가른다. 스테이지가 결과를 남기기 전에 죽으면 그 세션 id 는
+# 점유된 채 남고, 시도 항이 늘 같은 값이면 같은 세그먼트의 재시도가 CLI 에서
+# 「already in use」로 즉사한다 — 게이트를 통과하고 원장에 행을 남긴 뒤에.
+uu_a1=$(RUN_ID=r1 DOC_KEY=x session_uuid 'S4:seg:1' 1)
+uu_a2=$(RUN_ID=r1 DOC_KEY=x session_uuid 'S4:seg:1' 2)
+if [ "$uu_a1" != "$uu_a2" ]; then
+  ok "시도 번호가 다르면 다른 세션 id"
+else
+  bad "session_uuid" "시도가 달라도 같은 id — 죽은 스테이지가 세그먼트를 영구 점유한다"
+fi
+
+# 설계 문서가 어느 레포에도 속하지 않는 배치는 공용 계약이 정의하는 경우이지
+# 남용이 아니다. 그때 문서 키는 레포 상대 경로가 아니라 절대 경로에서 앞의
+# 구분자만 뗀 값이고, `$BASE/$키` 로 합치면 존재하지 않는 경로가 나온다.
+if sed -n '/^derive_paths_from_manifest()/,/^}/p' "$DRIVER" | grep_all_q -F 'elif [ -f "/$DOC" ];'; then
+  ok "레포 밖 문서 키를 절대 경로로도 해소한다"
+else
+  bad "문서 경로" "레포 상대 조합 하나뿐이라 레포 밖 문서가 영영 없는 파일이 된다"
+fi
+# 감사 사이드카는 문서 옆에 놓이므로 런의 베이스가 아니라 문서의 베이스로 찾는다.
+if grep_all_q -F '"$DOC_BASE/docs/design-audit/$DOC_SLUG"' "$DRIVER"; then
+  ok "감사 술어가 문서의 베이스를 본다"
+else
+  bad "감사 술어" "런의 베이스를 봐서 문서 옆에 있는 산출물을 없다고 답한다"
+fi
+
 if [ "$STALL_SILENT_POLLS" -gt 1 ]; then
   ok "침묵 상한이 1보다 크다 ($STALL_SILENT_POLLS)"
 else
@@ -1551,22 +1577,34 @@ fi
 RUN_DIR_SAVE="${RUN_DIR:-}"; BASE_SAVE="$BASE"
 MANIFEST="$MFD"; RUN_ID="20260825-deadbeef"
 derive_paths_from_manifest
-BASE="$WORK/audit-base"
-RUN_DIR="$WORK/audit-pred"; mkdir -p "$RUN_DIR/log" "$BASE/docs/design-audit"
+# 산출물은 문서의 베이스 아래에 놓는다. 런의 베이스와 문서의 베이스는 문서가 어느
+# 레포에도 속하지 않을 때 서로 다른 디렉터리이고, 사이드카는 문서 옆에 놓인다.
+BASE="$WORK/audit-run-base"; DOC_BASE="$WORK/audit-doc-base"
+RUN_DIR="$WORK/audit-pred"
+mkdir -p "$RUN_DIR/log" "$BASE/docs/design-audit" "$DOC_BASE/docs/design-audit"
 printf '%s\n' "$LIT_AUDIT_TERMINAL" > "$RUN_DIR/log/S2.json"
-: > "$BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+: > "$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
 if predicate_audit S2; then
   ok "감사 산출물이 문서 슬러그에 있으면 매니페스트 런의 술어가 통과한다"
 else
   bad "감사 술어" "문서 슬러그의 리더 리포트를 찾지 못했다 — 런 id 로 보고 있다"
 fi
 # And the same run must NOT pass by looking at the run id.
-: > "$BASE/docs/design-audit/$RUN_ID.reader-1.md"
-rm -f "$BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+: > "$DOC_BASE/docs/design-audit/$RUN_ID.reader-1.md"
+rm -f "$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
 if predicate_audit S2; then
   bad "감사 술어" "런 id 경로의 파일로 통과했다 — 문서 파생이 아니다"
 else
   ok "런 id 경로에만 산출물이 있으면 통과하지 않는다"
+fi
+# 그리고 런의 베이스 아래에만 있으면 통과하지 않는다 — 레포 밖 문서에서는 이 둘이
+# 갈리고, 런의 베이스를 보면 문서 옆에 있는 산출물을 없다고 답한다.
+rm -f "$DOC_BASE/docs/design-audit/$RUN_ID.reader-1.md"
+: > "$BASE/docs/design-audit/$DOC_SLUG.reader-1.md"
+if predicate_audit S2; then
+  bad "감사 술어" "런의 베이스로 통과했다 — 문서의 베이스를 보지 않는다"
+else
+  ok "런의 베이스에만 산출물이 있으면 통과하지 않는다 (사이드카는 문서 옆에 있다)"
 fi
 
 MANIFEST="$MF"; RUN_ID="20260825-deadbeef"
