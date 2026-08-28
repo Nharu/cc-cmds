@@ -256,6 +256,36 @@ wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x
 case "$wout" in *"-- 뒤에 CLI 인자"*) ok "래퍼: CLI 인자 없이 띄우지 않는다" ;;
   *) bad "래퍼 argv 필수" "$wout" ;; esac
 
+# The stage must be HANDED what the hook will demand of it. Layer 1 routes every
+# Bash line, Write and Edit through the gate, and the gate's argv needs a
+# manifest path, a target and a snapshot digest. Measured: an implementation
+# stage was blocked fourteen times, edited nothing, left the tree byte-identical
+# and exited 0 with `subtype: success` — it could not even write a halt record,
+# because that path derives its location from the run id and reading the run id
+# needs the Bash the hook had just refused.
+for v in CC_PIPELINE_MANIFEST CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
+         CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_LEDGER CC_PIPELINE_GRANT; do
+  if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F "$v="; then
+    ok "게이트가 스테이지에 $v 를 넘긴다"
+  else
+    bad "스테이지 환경" "$v 가 스테이지에 도달하지 않는다 — 훅이 요구하는 값을 채울 수 없다"
+  fi
+done
+
+# The refusal has to be a line the stage can TYPE. Angle-bracket placeholders it
+# cannot fill make the correct behaviour (stop and report) indistinguishable
+# from a stage that produced nothing.
+decide "$(bash_json 'git status')"
+reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason" in
+  *'$CC_PIPELINE_MANIFEST'*) ok "거부 문면이 스테이지가 가진 변수를 쓴다" ;;
+  *) bad "재호출 형태" "스테이지가 채울 수 없는 자리표시자를 준다: $reason" ;;
+esac
+case "$reason" in
+  *'snapshot --manifest'*) ok "거부 문면이 해시를 받아 오는 줄을 함께 준다 (해시는 얼려 줄 수 없다)" ;;
+  *) bad "스냅숏 해시" "$reason" ;;
+esac
+
 # The wrapper declares `#!/usr/bin/env bash` and uses `set -o pipefail`. Naming
 # an interpreter on the command line OVERRIDES the shebang, so launching it with
 # `/bin/sh` kills it at its second line on any distribution whose `/bin/sh` is

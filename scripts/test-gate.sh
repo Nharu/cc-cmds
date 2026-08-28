@@ -682,6 +682,16 @@ case "$msg" in
   *) bad "스킬 등급" "'$msg'" ;;
 esac
 
+# The gate must HAND the CLI path down. run.sh resolves the binary and only then
+# pins PATH to the sanitized set, so a child that re-resolves searches a PATH the
+# CLI is not on — every stage launch died with "binary not found" two seconds
+# after the binary had been found.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'CC_CLAUDE_BIN="$CLI_BIN"'; then
+  ok "게이트가 래퍼에 CLI 경로를 넘긴다 (정제된 PATH 에서 다시 찾지 않는다)"
+else
+  bad "CLI 전달" "래퍼가 정제된 PATH 로 바이너리를 다시 찾게 된다"
+fi
+
 # The fall-through that made the composition fatal is now an explicit arm, and
 # `등급 미상` carries the only space in the axis-2 vocabulary — unquoted it
 # splits the `case` pattern into two words and breaks the whole checker file.

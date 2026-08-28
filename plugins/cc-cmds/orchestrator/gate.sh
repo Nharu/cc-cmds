@@ -902,7 +902,7 @@ gate_verb_act() {
       ;;
     act)
       case "$kind" in
-        skill) gate_launch_stage "$segment" "$@" || rc=$? ;;
+        skill) gate_launch_stage "$alias" "$segment" "$@" || rc=$? ;;
         *)     gate_run_readonly "$@" || rc=$? ;;
       esac
       ;;
@@ -1076,12 +1076,12 @@ CREDS
 }
 
 gate_launch_stage() {
-  # gate_launch_stage <segment> <stage-kind> <cli args...>
+  # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
   # The wrapper's only legitimate caller, stated in one place. It is an argv
   # laundering tool for whoever holds an allow-list entry, so the set of callers
   # is a design commitment rather than an accident — and this is it.
-  local seg="$1" kind="$2"; shift 2
+  local alias="$1" seg="$2" kind="$3"; shift 3
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "스테이지 래퍼가 없습니다: $wrapper"; return 127; }
   local plugin_dir
@@ -1091,11 +1091,74 @@ gate_launch_stage() {
   # the shebang — so on a distribution whose `/bin/sh` is dash the wrapper died
   # at its second line with "Illegal option -o pipefail", taking every stage
   # launch with it. macOS hid this because its `/bin/sh` is bash.
+  #
+  # `CC_CLAUDE_BIN` is HANDED DOWN rather than re-resolved. run.sh resolves the
+  # binary and only then pins PATH to the sanitized set, so a child that looks
+  # it up again searches a PATH the CLI is not on — and the wrapper's hard stop
+  # then reports "binary not found" for a run whose binary was found two
+  # seconds earlier. Every stage launch failed that way, with the gate's own
+  # sanitization as the cause.
+  [ -n "${CLI_BIN:-}" ] || { warn "게이트가 CLI 바이너리를 해소하지 못했습니다"; return 127; }
+
+  # The pid file is what makes a running stage VISIBLE to the liveness watcher.
+  # Without it the watcher counts zero live stages, and its stall arm — "ledger
+  # idle AND nothing alive AND nothing waiting" — becomes true during any long
+  # stage, because a stage writes no ledger rows WHILE it runs. So the detector
+  # built to catch a router that stopped would instead cry wolf on a healthy
+  # run, which is worse than not having it: a false alarm teaches its reader to
+  # ignore the true one.
+  #
+  # The start-time fingerprint goes beside it. `RUN_DIR` survives a reboot by
+  # design, so a bare pid can name an unrelated live process afterwards.
+  # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT.
+  #
+  # Layer 1 routes every Bash line, Write and Edit through the gate, and the
+  # gate's argv needs a manifest path, a target, a cutpoint and a snapshot
+  # digest. A stage that has none of them cannot comply and cannot even write a
+  # halt record — the halt path derives its own location from the run id, and
+  # reading the run id needs Bash, which the hook has just refused. Measured:
+  # an implementation stage was blocked fourteen times, edited nothing, left the
+  # tree byte-identical, and exited 0 with `subtype: success`.
+  #
+  # The values were never missing. The hook command string written two functions
+  # above carries the run directory, the ledger and the grant as literal paths —
+  # they were in hand at install time and simply not given to the stage.
+  #
+  # The digest is deliberately NOT among them: it moves on every ledger write,
+  # so a value frozen into the environment would be stale by the stage's first
+  # act. The stage reads it with `gate.sh snapshot`, which the hook's allow-list
+  # already permits — that is what makes handing down the manifest path enough.
+  local rc=0
+  CC_CLAUDE_BIN="$CLI_BIN" \
+  CC_PIPELINE_RUN_ID="$RUN_ID" \
+  CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+  CC_PIPELINE_MANIFEST="$MANIFEST" \
+  CC_PIPELINE_LEDGER="$LEDGER" \
+  CC_PIPELINE_GRANT="$GRANT" \
+  CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
+  CC_PIPELINE_TARGET="$alias" \
+  CC_PIPELINE_SEGMENT="$seg" \
+  CC_PIPELINE_STAGE_ID="$seg" \
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     --session-id "$(session_uuid "$seg")" \
-    -- "$@"
+    -- "$@" &
+  local spid=$!
+  printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
+  # `LC_TIME=C` on the WRITE side too. The watcher pins it on the read side, and
+  # a fingerprint is only a fingerprint if both sides format it the same way —
+  # under a Korean LC_TIME this line yields `2026년 8월 28일 …`, the comparison
+  # never matches, and the watcher silently skips every stage while reporting
+  # "0 live". That failure is invisible: it does not error, it under-counts.
+  LC_TIME=C ps -o lstart= -p "$spid" 2>/dev/null \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$seg.start"
+  wait "$spid" || rc=$?
+  # Removed on exit, so "no record implies no process" stays true — a stale
+  # record and a stale process must die together or pid reuse makes the watcher
+  # report a stage that is not there.
+  rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start"
+  return "$rc"
 }
 
 gate_session_lineage() {
