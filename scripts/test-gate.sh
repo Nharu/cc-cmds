@@ -850,6 +850,24 @@ else
   bad "CLI 전달" "래퍼가 정제된 PATH 로 바이너리를 다시 찾게 된다"
 fi
 
+# A fan-out stage does not fit under the default background ceiling. Measured: a
+# dispatched audit stage was killed at exactly 600s, reported `subtype: success`
+# and exit 0, and published nothing — its readers were alive with open zero-byte
+# temp files, killed in the moment before their atomic publish.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS='; then
+  ok "게이트가 스테이지에 배경 대기 천장을 넘긴다"
+else
+  bad "대기 천장" "팬아웃 스테이지가 기본 천장에서 발행 직전에 죽는다"
+fi
+# Finite, not `0`. Forever is the one value that costs the run its only signal:
+# the watcher counts a live pid as a healthy stage, so a hung stage reads as a
+# heartbeat and the run sits until a person comes back.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -E 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="\$\{[A-Z_]+:-[1-9][0-9]+\}"'; then
+  ok "그 천장은 유한하다 (무한 대기는 정체 신호를 없앤다)"
+else
+  bad "대기 천장" "천장이 유한한 기본값을 갖지 않는다"
+fi
+
 # The fall-through that made the composition fatal is now an explicit arm, and
 # `등급 미상` carries the only space in the axis-2 vocabulary — unquoted it
 # splits the `case` pattern into two words and breaks the whole checker file.

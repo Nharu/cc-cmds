@@ -1376,7 +1376,22 @@ gate_launch_stage() {
   # so a value frozen into the environment would be stale by the stage's first
   # act. The stage reads it with `gate.sh snapshot`, which the hook's allow-list
   # already permits — that is what makes handing down the manifest path enough.
+  #
+  # THE BACKGROUND WAIT CEILING, because a fan-out stage does not fit under the
+  # default one. Measured: a dispatched audit stage was killed at exactly 600s
+  # with "Background tasks still running after 600s; terminating", reported
+  # `subtype: success` and exit 0, and published nothing — its three readers were
+  # alive and each had an open zero-byte temp file, so they were killed in the
+  # moment before their atomic publish. The same document with the ceiling raised
+  # completed, with readers publishing at 22 and 26 minutes.
+  #
+  # Raised to an hour rather than removed. `0` waits forever, and forever is the
+  # one value that costs the run its only signal: the watcher counts a live pid
+  # as a healthy stage, so a hung stage reads as a heartbeat and the run sits
+  # until the person comes back. A finite ceiling still kills, and a kill is
+  # classified. The environment can raise it for a host that needs more.
   local rc=0
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \
