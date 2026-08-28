@@ -559,6 +559,104 @@ case "$msg" in
 esac
 
 # ---------------------------------------------------------------------------
+# 8b. The router's own writer for `segment` and `cycle`
+#
+# Both rows used to be written only by the fixed-graph loop, which the router
+# path never enters. The consequence was not a missing convenience: the merge
+# rule reads a `cycle` row and refused EVERY merge for want of one, and
+# termination condition 1 counts `segment` rows and could never hold — so the
+# run also had no ending it could propose. Both failures look like the mechanism
+# working, which is why they survived until a run tried to finish.
+# ---------------------------------------------------------------------------
+head_b=$(cd "$WT" && git rev-parse HEAD)
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+check "리뷰 기록 없는 세그먼트의 머지는 아직 거부된다" "$rc" "3"
+
+# The vocabulary is checked, and the check is what makes the row readable later.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 상태=진행중 워크트리="$WT"
+check "어휘 밖 세그먼트 상태는 거부된다" "$rc" "2"
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 상태=실행중
+check "워크트리 없는 세그먼트 행은 거부된다" "$rc" "2"
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
+check "세그먼트 행이 기록된다" "$rc" "0"
+n=$(grep -c '^- `segment` | id=SW ' "$LEDGER" || true)
+check "그 행이 원장에 있다" "$n" "1"
+
+# The `cycle` row's four required fields are the four the merge rule reads. A
+# row missing one of them does not fail here under the old path either — it
+# fails inside the rule, reported as a review with no HEAD, which sends the
+# reader to the review instead of to the row this run wrote.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 사이클=1 P0=0 P1=0
+check "리뷰 HEAD 없는 사이클 행은 거부된다" "$rc" "2"
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+check "사이클 행이 기록된다" "$rc" "0"
+
+# End to end: the same merge that was refused for want of a review record is now
+# judged by the record instead of by its absence.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
+     -- gh pr merge 1
+case "$msg" in
+  *"리뷰-후-머지:"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
+  *) ok "게이트가 쓴 세그먼트·사이클 행으로 머지가 통과한다" ;;
+esac
+
+# The bookkeeping act is graded `읽기`: what it performs is the row, and the row
+# reaches nothing a credential or a cutpoint could widen.
+case "$(grep '^- `자율 승인` | kind=cycle ' "$LEDGER" | tail -1)" in
+  *"축2=읽기"*) ok "장부 행위는 읽기로 등급된다" ;;
+  *) bad "장부 등급" "$(grep '^- `자율 승인` | kind=cycle ' "$LEDGER" | tail -1)" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 8c. Every act records WHICH credential it ran under
+#
+# With neither pipeline credential provisioned the gate fell through to whatever
+# the calling environment held — on a developer machine a full-scope `gh` login
+# — and said nothing, so the layer the separation exists to provide was absent
+# while every surface reported normal operation. The fallback stays; being
+# silent about it does not.
+# ---------------------------------------------------------------------------
+case "$(grep '^- `자율 승인` | kind=segment ' "$LEDGER" | tail -1)" in
+  *"자격=분리"*|*"자격=주변"*) ok "행마다 어느 자격으로 돌았는지가 남는다" ;;
+  *) bad "자격 기록" "자율 승인 행에 「자격」 필드가 없다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 8d. The act runs in the TARGET's worktree
+#
+# `--target` is a parameter of both acting verbs and every target row carries an
+# absolute worktree, but nothing carried that value to the act's working
+# directory — so a manifest could declare nine targets and only the home one
+# could receive an act. Asserted from a SUBDIRECTORY, because that is the only
+# cwd where "the act moved" and "the act stayed" produce different output.
+# ---------------------------------------------------------------------------
+mkdir -p "$WT/sub"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+out=$(cd "$WT/sub" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+case "$out" in
+  *base.txt*) ok "행위가 대상 워크트리에서 실행된다 (호출자의 cwd 가 아니라)" ;;
+  *) bad "대상 워크트리" "'"'"'$out'"'"'" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
 # ---------------------------------------------------------------------------
 {
@@ -848,6 +946,108 @@ if [ -n "$aid" ]; then
     *) bad "찢어진 줄" "'$out'" ;;
   esac
 fi
+
+# ---------------------------------------------------------------------------
+# 14. A pending approval can be VOIDED, not only granted
+#
+# Before this there was one recording path, so an approval had two possible
+# ends: granted, or pending forever. Pending is not inert — it counts against
+# termination condition 2 and suspends the stagnation boundaries — so a single
+# approval nobody wants to grant stalls the rest of the run. Voiding REMOVES a
+# blocker, which is why it keeps the same transcript binding instead of becoming
+# a router-writable escape.
+# ---------------------------------------------------------------------------
+vaid=$(grep -E '^- `승인`' "$LEDGER" | grep '상태=대기' | tail -1 \
+       | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
+if [ -n "$vaid" ]; then
+  vq=$(grep -E '^- `승인`' "$LEDGER" | grep -F "승인 id=$vaid " | tail -1 \
+       | tr '|' '\n' | sed -n 's/^ *질문 문면=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  VDIR="$WORK/vcfg/projects/proj"; mkdir -p "$VDIR"
+  VSID="99999999-8888-7777-6666-555555555555"
+  printf '{"role":"user","content":"%s / %s → 이 질문은 잘못 발행됐습니다"}\n' "$vaid" "$vq" \
+    > "$VDIR/$VSID.jsonl"
+
+  out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/vcfg" CLAUDE_CODE_SESSION_ID="$VSID" \
+        bash "$GATE" close --manifest "$MANIFEST" --approval "$vaid" --void 2>&1); rc=$?
+  check "무효화는 트랜스크립트 한 줄로 성립한다" "$rc" "0"
+  case "$(grep -E '^- `승인`' "$LEDGER" | grep -F "승인 id=$vaid " | tail -1)" in
+    *"상태=무효"*) ok "무효 상태가 원장에 남는다 (승인과 구별된다)" ;;
+    *) bad "무효 기록" "$(grep -E '^- `승인`' "$LEDGER" | grep -F "승인 id=$vaid " | tail -1)" ;;
+  esac
+  n=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null \
+      | jq '.pending_approvals | length')
+  check "무효화된 승인은 더 이상 대기로 세지 않는다" "$n" "0"
+
+  # Already resolved is already resolved — a second close of any form is a
+  # refusal, so an approval cannot be re-opened by asking again.
+  out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/vcfg" CLAUDE_CODE_SESSION_ID="$VSID" \
+        bash "$GATE" close --manifest "$MANIFEST" --approval "$vaid" 2>&1); rc=$?
+  if [ "$rc" = "0" ]; then
+    bad "재해소" "무효화된 승인이 다시 닫혔다"
+  else
+    ok "무효화된 승인은 다시 닫히지 않는다"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 14b. The credential report runs at RUN OPEN, where it was never called
+#
+# `cred_check`'s own comment says a run whose cutpoint reaches `머지` should
+# learn at kickoff and not at 3am. Nothing called it, so nothing ever did.
+# ---------------------------------------------------------------------------
+freshstate="$WORK/state-fresh"
+out=$(cd "$WT" && XDG_STATE_HOME="$freshstate" bash "$GATE" snapshot --manifest "$MANIFEST" 2>&1 >/dev/null)
+case "$out" in
+  *"자격"*) ok "런 개시에 자격 상태가 보고된다" ;;
+  *) bad "자격 개시 보고" "'"'"'$out'"'"'" ;;
+esac
+# And only at run open — the settings directory already exists on every later
+# invocation, so a keychain lookup does not run once per act.
+out=$(cd "$WT" && XDG_STATE_HOME="$freshstate" bash "$GATE" snapshot --manifest "$MANIFEST" 2>&1 >/dev/null)
+case "$out" in
+  *"자격이 갖춰지지"*) bad "자격 개시 보고" "런 개시가 아닌 호출에서도 보고했다" ;;
+  *) ok "그 뒤의 호출에서는 다시 보고하지 않는다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 15. The grading table reads the ACT, not the spelling
+#
+# Three defects met here and left no spelling that reached `gh` at all: the
+# sanitized PATH made the bare name unresolvable, the table read argv0 verbatim
+# so the absolute path graded `등급 미상`, and `gh api` — the only spelling that
+# submits several inline comments as one review — was refused outright.
+# ---------------------------------------------------------------------------
+graded_as() {
+  # graded_as <expected> <label> -- <argv...>
+  local want="$1" label="$2"; shift 3
+  gate grade --manifest "$MANIFEST" -- "$@"
+  case "$msg" in
+    *"축2=$want"*) ok "$label" ;;
+    *) bad "$label" "want 축2=$want, got '$msg'" ;;
+  esac
+}
+
+graded_as '외부상태변경' '경로로 부른 gh 도 맨 이름과 같게 등급된다' -- /opt/homebrew/bin/gh pr merge 1
+graded_as '외부상태변경' '경로로 부른 terraform 도 같다'            -- /usr/local/bin/terraform apply
+graded_as '읽기'         '경로로 부른 git 읽기도 같다'              -- /usr/bin/git status
+
+# git's global options sit BEFORE the subcommand, and `-C <path>` is the only
+# spelling that names another worktree. Reading `$2` blindly graded it unknown.
+graded_as '워크트리쓰기' 'git -C 의 하위 명령을 찾아낸다'   -- git -C /tmp commit -m x
+graded_as '외부상태변경' 'git -c 의 하위 명령도 찾아낸다'   -- git -c user.name=x push
+graded_as '읽기'         '값이 붙은 전역 옵션도 건너뛴다'   -- git --git-dir=/tmp/.git log
+# An unrecognized global stops the scan as UNKNOWN rather than guessing whether
+# it eats the next word — guessing wrong grades a `push` by the wrong token.
+graded_as '등급 미상'    '모르는 전역 옵션은 추측하지 않는다' -- git --not-a-real-global push
+
+graded_as '읽기'         'gh api 의 기본은 GET 이라 읽기다'  -- gh api repos/o/r/pulls/1/reviews
+graded_as '외부상태변경' '명시된 POST 는 외부 상태 변경이다' -- gh api --method POST repos/o/r/pulls/1/reviews
+graded_as '외부상태변경' '-X 붙임꼴도 읽는다'                -- gh api -XPATCH repos/o/r/pulls/1
+graded_as '외부상태변경' '필드가 붙으면 gh 자신처럼 POST 로 본다' -- gh api repos/o/r/pulls/1/reviews -f event=COMMENT
+graded_as '읽기'         '명시된 메서드가 필드를 이긴다'     -- gh api -X GET repos/o/r/pulls -f per_page=1
+# Deliberate, and it stays deliberate: `auth` reads and rewrites the credential
+# the whole separation rests on.
+graded_as '등급 미상'    'gh auth 는 의도된 거부로 남는다'   -- gh auth switch --user x
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

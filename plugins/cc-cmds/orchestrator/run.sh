@@ -76,7 +76,19 @@ fi
 # was started from an interactive shell or from a detached one. /sbin and
 # /usr/sbin are included because `sysctl` — the sleep discriminator's only
 # input — lives there.
-PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+#
+# The system prefixes go FIRST and the inherited PATH is kept behind them. The
+# first half is the normalization: `git`, `sed`, `shasum` and `sysctl` resolve
+# to the system copy no matter who started the run. The second half is what an
+# earlier form dropped, and dropping it cost more than it bought — the tools the
+# ACTS name are not system tools. `gh` and `terraform` live under the Homebrew
+# prefix on macOS and under /usr/local/bin on most Linux hosts, so a run whose
+# cutpoint reached `PR` could not perform a single terminal act: the gate passed
+# it, the rules passed it, and the shell then reported `gh: command not found`
+# with rc=127 AFTER the pass row was already in the ledger. Spelling the
+# absolute path was not a way out either, because the grading table read argv0
+# verbatim and answered `등급 미상` for it.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
 export PATH
 
 # Normalize the LOCALE for the same reason, and split it across two categories
@@ -394,7 +406,12 @@ check_manifest() {
   local ow
   ow=$(manifest_hdr_field 'origin-worktree')
   if [ -n "$ow" ] && [ "$ow" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
-    die "매니페스트 origin-worktree= 가 현재 워크트리와 다릅니다: $ow"
+    # The repair belongs in the message. A router that wants to act in another
+    # declared target does NOT move here — it stays in the home worktree and
+    # names the target with `--target`, which the gate now carries through to
+    # the act's working directory. Without that sentence the obvious reading of
+    # this stop is "cd there first", which is the one move that cannot work.
+    die "매니페스트 origin-worktree= 가 현재 워크트리와 다릅니다: $ow — 다른 대상에서 행위하려면 여기로 이동하지 말고 홈 워크트리에서 --target 으로 지목하세요"
   fi
 
   # 4 — target preflight. A declared repo set with no verification leaves the

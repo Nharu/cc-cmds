@@ -297,16 +297,22 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명) · `사유` · `관측` · `재개 명령` |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 
+**`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A `cycle` row is refused without `사이클`, `P0`, `P1` and `리뷰 HEAD`, which are exactly the four that rule reads.
+
+**`자격` records which credential each act actually ran under.** With neither pipeline credential provisioned the gate falls through to the ambient one — on a developer machine a full-scope login — and the fallback is kept, because refusing would stop every host that has not provisioned one. What is not kept is the silence: `주변` on the row is how the morning tells a run that had the separation from one that only appeared to.
+
 **`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
 
 **`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
+
+**A pending approval has two ends, not one.** `무효` is reachable through the same transcript binding as `승인`, and it exists because the alternative to granting was pending forever: a pending row counts against termination condition 2 and suspends the stagnation boundaries, so one approval nobody wants to grant stalls the rest of the run. Voiding **removes a blocker**, so it is not the conservative direction and does not get a looser gate — it keeps the requirement that a human line naming both the id and the question text appear in the harness-written transcript. What it buys is the ability to answer *this should not have been asked* without also granting the act.
 
 **`질문 문면` and `답변 문면` are fenced or sidecar'd, not inlined.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not.
 
@@ -331,6 +337,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` \| `verification-residual` \| `audit-composition` \| `unresolved-issue` \| `refinement` \| `roster-degradation` \| `stage-retry` \| `target-expansion` |
 | `자율 승인.등급` | `0` \| `1` \| `2` |
 | `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` |
+| `자율 승인.자격` | `분리` \| `주변` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
 | `대상 추가.층` | `0` \| `1` |
