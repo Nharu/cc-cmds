@@ -304,10 +304,21 @@ gate_count() {
 }
 
 gate_chain_tip() {
-  # The digest of the ledger's last non-empty line, or of the run block heading
-  # when no row has been written yet.
+  # The digest of the ledger's last ROW, or of the run block heading when no row
+  # has been written yet.
+  #
+  # Rows and not lines, and the difference was not cosmetic. The ledger file is
+  # also the morning report, so prose lands in it between rows — the kickoff's
+  # stub alone puts two lines there before any act. Hashing the last LINE made
+  # the first row point at the stub's identifying line while the verifier, which
+  # walks rows, started from the heading, so an UNTOUCHED ledger read as broken
+  # at row 1 on every run.
+  #
+  # A permanently broken chain is worse than no chain: a real splice then looks
+  # exactly like a normal kickoff, and a reader who sees `끊김` every morning
+  # learns to skip the one field that would have told them.
   local last
-  last=$( { grep -v '^[[:space:]]*$' "$LEDGER" 2>/dev/null || true; } | tail -1)
+  last=$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ -n "$last" ] || last="## 실행 $RUN_ID"
   printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
 }
@@ -609,7 +620,16 @@ gate_render_snapshot() {
   printf '목표      : %s\n' "$(manifest_field '인가' '종료 지점')"
   printf '진전 해시 : %s\n' "$(gate_progress_digest)"
   printf '원장 손상 : %s\n' "$(gate_ledger_damage)"
-  printf '해시 체인 : %s\n' "$(gate_chain_verify >/dev/null 2>&1 && printf '무결' || printf '끊김')"
+  # The break's ROW NUMBER reaches the reader. `gate_chain_verify` has always
+  # reported it, and every caller threw it away into `2>&1` — so the render said
+  # `끊김` and gave the morning nowhere to look.
+  local chain_out
+  chain_out=$(gate_chain_verify 2>&1 >/dev/null || true)
+  if [ -z "$chain_out" ]; then
+    printf '해시 체인 : 무결\n'
+  else
+    printf '해시 체인 : 끊김 — %s\n' "$chain_out"
+  fi
   printf '대상      :\n'
   for a in $(target_aliases); do
     printf '  %-12s %-24s 절단점 %s\n' "$a" \

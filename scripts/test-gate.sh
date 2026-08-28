@@ -249,6 +249,18 @@ fi
 n_total=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .obligations_total)
 check "빈 원장의 의무 총수가 0 하나로 나온다" "$n_total" "0"
 
+# From here the ledger carries the KICKOFF STUB, because that is the file a real
+# run's first act writes into: the ledger and the morning report are one file,
+# and the skill's Step 7 puts an H1 and an identifying line there before the
+# router takes its first turn. Seeding it makes every chain assertion below run
+# against the shape a run actually has — which is the shape that used to read as
+# broken at row 1 on every single run.
+mkdir -p "$(dirname "$LEDGER")"
+{
+  printf '# 파이프라인 런 보고서 — R1\n\n'
+  printf '런 id R1 · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n'
+} > "$LEDGER"
+
 # ---------------------------------------------------------------------------
 # 1b. The run settings the gate generates
 #
@@ -334,6 +346,28 @@ if grep '^- `대상 추가`' "$LEDGER" | grep_all_q '층=1'; then
 else
   bad "층 판정" "$(grep '^- `대상 추가`' "$LEDGER" | awk 'NR<=1')"
 fi
+
+# The chain anchors on the last ROW, not the last LINE. Hashing the last line
+# made the first row point at the stub's identifying line while the verifier —
+# which walks rows — started from the run heading, so an untouched ledger broke
+# at row 1 every time. A chain that is always broken is worse than none: a real
+# splice then looks exactly like a normal kickoff, and a reader who sees `끊김`
+# every morning stops reading the field.
+ci=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .chain_intact)
+check "스텁 산문이 앞에 있어도 체인은 무결이다" "$ci" "true"
+
+# And when it IS broken the render says WHERE. Every caller used to throw the
+# row number into `2>&1`, so the morning was told `끊김` and given nowhere to
+# look.
+cp "$LEDGER" "$WORK/ledger.bak"
+printf -- '- `자율 승인` | kind=x | 결정=act | 대상=front | prev=%s\n' \
+  "0000000000000000000000000000000000000000000000000000000000000000" >> "$LEDGER"
+out=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null)
+case "$out" in
+  *"해시 체인 : 끊김 —"*) ok "끊긴 자리의 행 번호가 렌더에 도달한다" ;;
+  *) bad "체인 진단" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
+esac
+cp "$WORK/ledger.bak" "$LEDGER"
 
 gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
      --snapshot-digest "$H" --rationale x -- touch "$WORK/nd2"
