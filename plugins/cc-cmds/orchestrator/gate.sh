@@ -771,11 +771,26 @@ gate_verb_act() {
   # already uses, where a value the writer supplies is compared against one the
   # reader derives instead of being trusted.
   local graded
-  if [ "$kind" = "propose-done" ]; then
-    graded="읽기"
-  else
-    graded=$(surface_of_argv0 "$1" "${2:-}")
-  fi
+  case "$kind" in
+    propose-done)
+      graded="읽기" ;;
+    skill)
+      # A stage dispatch's argv does NOT begin with a command: its first token
+      # is the STAGE KIND that selects a settings variant, and the wrapper is
+      # what eventually runs a binary. Feeding that token to the argv0 table
+      # asked a question the table cannot answer, so every stage dispatch graded
+      # `등급 미상` and fell into the pre-authorization rule's external-state
+      # arm — which made dispatching any stage impossible.
+      #
+      # The grade is `워크트리쓰기`, and it is not a guess: the stage runs under
+      # the read-scoped credential and inside a settings file that denies what
+      # this run does not authorize, so what it can reach on its own is the
+      # tree. Anything it does ABOVE that grade goes back through this gate as
+      # its own act and is graded there.
+      graded="워크트리쓰기" ;;
+    *)
+      graded=$(surface_of_argv0 "$1" "${2:-}") ;;
+  esac
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     if [ "$surface" != "$graded" ]; then
@@ -810,6 +825,15 @@ gate_verb_act() {
 
   local rules_rc=0
   gate_run_rules "$cutpoint" "$alias" "$segment" "$argv" || rules_rc=$?
+  if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ] && [ "$verb" = "plan" ]; then
+    # A DRY RUN NEVER WRITES. `plan` answers "would this pass, and if not which
+    # rule refuses it" — issuing an approval to answer that mutates the run the
+    # question was about. Worse than untidy: an open approval suspends B1..B3
+    # and blocks termination condition 2, so asking the question would stall the
+    # run that asked it. The exit code still carries the answer.
+    warn "plan(dry-run): 이 행위는 사전 인가 밖이라 승인 대기가 필요합니다 — 발행하지 않았습니다"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
   if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ]; then
     # A rule asking for an approval and the gate not WRITING one is the same
     # hole as recording without performing, in the other direction: the run
