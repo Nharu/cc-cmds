@@ -1,0 +1,1 @@
+- `등급 1` `등급 2` **failure branch**: `AskUserQuestion` `재수렴 ← 추천` / `중단`

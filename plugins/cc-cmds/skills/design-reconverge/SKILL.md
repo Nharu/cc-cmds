@@ -35,6 +35,29 @@ It also gives the re-convergence carrier a reader. `_common/sidecar.md` `## 2` h
 
 Read `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4 for the schema. Path: `${RUN_DIR}/halt/<stage-id>.md`, `RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. `<run-id>` is re-derived from `<base>/docs/pipeline-grant/{slug}.md`. **Prefer the driver-exported `CC_PIPELINE_RUN_ID`** (with `RUN_DIR` from `CC_PIPELINE_RUN_DIR`); the re-derivation below is the fallback for a driver older than those variables, and it resolves only for a run started from a document — a manifest run keys its grant on the run id instead. `<stage-id>` comes from the driver-exported `CC_PIPELINE_STAGE_ID`, defaulting to this skill's name. Write it atomically (`sidecar.md` §1.3), record the question and every option **verbatim**, then take no further step and end the turn. **Never write a pipeline sidecar** — the driver is their sole writer.
 
+### Per-grade disposition
+
+The base skill marks each of its ask points with a judgment grade
+(`${CLAUDE_SKILL_DIR}/../_common/judgment-grade.md`). This arm's disposition is
+per grade, not one blanket rule — a blanket rule is what made the inversion
+undecidable, because "it would have asked" says nothing about whether an answer
+was choosable.
+
+- **`등급 0`** — no disposition is needed. An already-written rule fully
+  determines the answer, so there was never a question at this point.
+- **`등급 1`** — adopt the recommended option, write a `자율 승인` row carrying
+  `등급`, `기준` (the authored standard that chose it) and `되돌리는 법` (the
+  concrete command or edit that undoes it), and continue. A choice for which no
+  `되돌리는 법` can be produced is **not** grade 1 whatever its mark says: the
+  field is a condition, not documentation of one.
+- **`등급 2`** — write the halt record above and stop. This is the branch that
+  keeps "leave most of it to the orchestrator" from becoming "the orchestrator
+  waived the check you asked for".
+
+The grades are a marking, not a proof. Nothing here checks that a point marked
+`등급 1` deserved it; `scripts/lint-judgment-grade.sh` counts marks and matches
+dispositions, and says so.
+
 ## Control-Flow Invariants
 
 These rules govern termination and MUST stay near the top of this file. Post-compaction reattaches only the first ~5K tokens with priority, and the model's default behaviour when handed a design defect is to keep improving the design — so a summarized-away rule here does not degrade quality, it **removes the stop**.

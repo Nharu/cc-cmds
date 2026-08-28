@@ -1,0 +1,1 @@
+- `등급 2` **failure branch**: then `AskUserQuestion` `설계 재수렴 ← 추천` / `중단`

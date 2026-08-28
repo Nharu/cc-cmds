@@ -1,7 +1,7 @@
 ---
 name: autopilot
-description: 의도나 대상 하나를 받아 밤사이 무인으로 완주시키는 자율 파이프라인의 킥오프와 아침 보고
-when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 의도를 자리를 비운 동안 설계·감사·구현·리뷰·머지·적용까지 자동으로 진행시키고 싶을 때, 또는 그렇게 돌린 런의 아침 보고를 받을 때
+description: 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고
+when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널에서 보이고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
 disable-model-invocation: true
 usage: "/cc-cmds:autopilot <의도 또는 대상> [--report]"
 options:
@@ -14,7 +14,7 @@ options:
       kind: flag
       default: "off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동)"
       summary: "아침 보고 모드. 그 런의 매니페스트·원장·보고서를 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다."
-notes: "인가 기록과 런 매니페스트를 쓸 수 있는 유일한 주체다. 드라이버는 두 파일에 어떤 경로로도 쓰지 않는다 — 밤새 도는 프로세스에 쓰기 권한이 없으면 그 프로세스의 어떤 버그도 자기 권한을 넓힐 수 없다."
+notes: "인가 기록과 런 매니페스트를 쓸 수 있는 유일한 주체다. 게이트도 스테이지도 두 파일에 어떤 경로로도 쓰지 않는다 — 밤새 도는 것에 쓰기 권한이 없으면 그것의 어떤 버그도 자기 권한을 넓힐 수 없다. 순서는 이 세션의 모델이 매 원장 쓰기마다 정하고, 그 결정이 무엇을 해도 되는지는 게이트가 판정한다."
 ---
 
 Kick off an unattended pipeline run over an intent or a target, or render the morning report of one that already ran.
@@ -25,7 +25,7 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 **Act 1 — a person is here.** Intent, entry judgment, target declaration and verification, the plan, its approval, and — if the plan needs a design document that does not exist — writing it, inline, right now.
 
-**Act 2 — nobody is here.** Freeze the manifest, detach, run to completion.
+**Act 2 — the person may leave.** Freeze the manifest, start the watcher, and enter the router loop. Nobody has to stay, but the terminal keeps showing what happens, and an approval waits for them rather than guessing.
 
 **The design step is in Act 1 because of a tool, not because of taste.** `design` interviews through `AskUserQuestion`, and that tool is **absent from every headless process**. A design stage dispatched into the night does not degrade into a worse design — it cannot ask at all, and whatever it emits is anchored to nothing. Anyone who reads this as a preference will eventually try to "just let it run", so it is written here as what it is: a constraint.
 
@@ -35,7 +35,11 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 **CFI-2 — One block per run, frozen at append.** Re-authorizing is a **new run with a new `<run-id>`**, never an edit to an existing block. There is no field with a mutable region and no close form. The manifest's `plan.md` is **creation-only**: it is frozen whole and has no append form at all.
 
-**CFI-3 — The kickoff ends when the driver is launched.** This skill does not supervise the run, does not poll it, and does not stay resident. The morning report is a **separate invocation** (`--report`). A kickoff that waits around is a model-owned loop wearing a shell driver's clothes, and it fails in exactly the way the driver exists to prevent.
+**CFI-3 — This session IS the router, and it does not detach.** The run is not handed to a background driver that decides things out of sight; the model reading these words takes the turns, and the terminal shows the run happening. What that buys is the whole reason for the shape: progress is visible while it happens, and the person can interrupt.
+
+What the router may NOT do is decide from memory. Its input is the snapshot and nothing else — see Act 2b. The session is compacted repeatedly over a long run, so a router that leaned on conversation history would have its input silently rewritten, and every claim about reproducibility would go with it.
+
+The morning report stays a **separate invocation** (`--report`), because a run that spans days is read from disk rather than from a scrollback.
 
 **CFI-4 — `arm` here, `cancel` there.** The notification lifecycle is split across two owners because a single owner would have to break one rule or the other. `arm` may not be started on a model's own judgment — it needs a user utterance, and this is the only place one exists. `cancel` is named in the spawned-agent prohibition, so no stage may do it; **the driver executes it.** Ask for the arming; never infer it.
 
@@ -137,16 +141,20 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 ---
 
-## Act 2 — freeze, launch, and leave
+## Act 2 — freeze, then start routing
 
 ### Step 6: Write the manifest and the authorization record
 
 Assign `<run-id>`: a short, collision-free identifier for this run. It, not the document, is what every path below is derived from — which is what stops two runs of one document from aliasing onto one ledger, one report, one worktree path and one session id.
 
-**The manifest** at `<base>/docs/pipeline-run/<run-id>.plan.md`, written **whole, once** (creation-only; there is no append form). Its shape is `## 2b.1` of `pipeline-sidecar.md` — follow that section byte-for-byte rather than the sketch of it you remember. Two digests are computed here and **compared by the driver at entry**, so they are not decoration:
+**The manifest** at `<base>/docs/pipeline-run/<run-id>.plan.md`, written **whole, once** (creation-only; there is no append form). Its shape is `## 2b.1` of `pipeline-sidecar.md` — follow that section byte-for-byte rather than the sketch of it you remember.
+
+**It freezes the goal and the constraints, not the plan.** There is no plan digest, and the absence is deliberate: the router decides the step graph one act at a time from a snapshot, so a frozen plan would be a value that is recorded and never compared — the exact defect this contract exists to remove, arriving as a leftover.
+
+Two digests are computed here and **compared at entry**, so they are not decoration:
 
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
-- `계획 다이제스트` — sha256 over the bytes inside the `## 실행 계획` fence.
+- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
 
 **The example in that contract is fenced with four backticks because it contains three-backtick fences of its own.** Any document that explains this grammar has the same shape, which is why the parser reading it skips fenced spans and survives nesting — and why you must not "simplify" the nesting when you copy it.
 
@@ -171,15 +179,96 @@ Assign `<run-id>`: a short, collision-free identifier for this run. It, not the 
 
 **`권한 절단점` in the grant is the run's maximum**, a derived audit value. The value that authorizes an act is the one in that target's row, and the driver reads it there.
 
-### Step 7: Stub the report, launch, and stop
+### Step 7: Stub the report, start the watcher, enter the loop
 
 1. **Create the morning-report stub** at `<base>/docs/pipeline-run/<run-id>.md` — an H1 and the run's identifying line. The stub exists so that a run which dies halfway still leaves a file where the user looks.
-2. **Launch the driver, detached**:
+2. **Start the liveness watcher in the background**:
    ```
-   bash <plugin root>/orchestrator/run.sh --manifest <매니페스트 절대경로> --detach
+   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> &
    ```
-   The driver detaches exactly once — itself — and runs its stages in the foreground so it owns their process groups and can reclaim the whole tree on restart. Do not background the stages, and do not wrap this in a supervisor of your own.
-3. **Report to the user in Korean and stop** (CFI-3): the run id, each target and its cutpoint, the deadline, where the report will be, and how to read it (`/cc-cmds:autopilot <run-id> --report`).
+   It resumes nothing and decides nothing. Its whole job is to make one failure visible — **the router quietly stopping** — which is otherwise indistinguishable from a quiet terminal. It also emits a positive heartbeat, because a watcher that only speaks on failure cannot be told apart from a watcher that died.
+3. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
+4. **Enter the router loop of Act 2b.** Do not stop here.
+
+---
+
+## Act 2b — the router loop
+
+The router decides **what happens next**. The gate decides **whether it may**. Those two jobs used to live in the same `case` arms of a shell driver, so neither could move without the other; splitting them is the point of this design, and this act is the half that judges.
+
+### The loop, and its only input
+
+```
+snapshot  →  decide  →  gate call  →  (repeat)
+```
+
+1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
+2. **Decide one next act.**
+3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
+4. **Read the exit code and go back to 1.**
+
+**Every acting call carries `--snapshot-digest <H>`, copied from the snapshot just read.** This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
+
+### The verbs
+
+| Verb | What it does |
+| --- | --- |
+| `snapshot` | emit the whole input as one JSON object |
+| `grade` | dry run — what are this argv's two grades? changes nothing |
+| `plan` | dry run — would this act pass, and if not which rule refuses it |
+| `act` | check, record, perform a pipeline act |
+| `exec` | check, record, perform one bash line |
+| `close` | resolve a pending approval from the harness-written transcript |
+
+**Use `grade` and `plan` rather than finding out by doing.** They write no row and cost no budget. Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation.
+
+### Reading the exit codes
+
+| Code | Meaning | What the router does |
+| --- | --- | --- |
+| 0 | performed | continue |
+| 2 | vocabulary error | fix the argv — a token was outside a closed set |
+| 3 | a rule refused | read which one; the refusal names the repair |
+| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one |
+| 5 | approval issued | the act is outside pre-authorization — see below |
+| 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
+| 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
+
+Past the checks, the act's own exit status passes through. A refusal always arrives with a `gate:` line and no output from the act — that, not the number, is what separates them.
+
+### When an approval is pending
+
+Exit 5 means the run has asked and cannot answer itself. **Ask the user in this terminal** — this session has `AskUserQuestion` and a headless stage does not, which is the whole reason the router lives here. Then call `gate.sh close --approval <id>`.
+
+`close` reads the **harness-written transcript**, not the router's prose. A router that could type its own answer would be issuing approvals to itself and the record would be indistinguishable from one a person gave. If the transcript cannot be read, `close` refuses; that refusal is the mechanism working.
+
+**While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
+
+### Judgment, not just acts
+
+Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
+
+### Proposing that the run is done
+
+`act --kind propose-done` carries the goal digest, the termination point decomposed into checkable clauses each with **evidence**, and the residual. **Evidence is a ledger reference or an observable artifact, never prose** — a proposal citing prose is the exact shape of "the check passes and the property fails", while one citing a merge commit is confirmed in the morning with one command.
+
+The disagreement runs both ways, and only one direction is obvious:
+
+- The gate can **refuse** a proposal, naming the unmet conditions. A re-proposal against the same unmet set is rejected at the parser.
+- The gate can also **end** the run. When every condition holds and the router reaches for something else, it must name a specific admissible next obligation — an open obligation's identity, a non-terminal segment, or a clause marked unmet. Failing to name one, the run terminates as satisfied. Without this the gate could only block termination, never cause it, and the router alone would decide when the night ends.
+- **A goal can be unreachable.** The router may propose done with a clause marked impossible and its evidence; the gate accepts that on a reduced condition set.
+
+### Dispatching a stage
+
+A stage is `act --kind skill`, and the gate launches it through the wrapper. Never assemble a CLI command line in the router: `"$CLI_BIN" "$@"` is an argv laundering tool for anyone holding an allow-list entry, and the wrapper's only legitimate caller is the gate.
+
+Three conditions must **all** hold before a segment is dispatchable, and reading only the first is how a router concludes it may go: **dependency** (no predecessor unfinished), **capacity** (concurrent model streams within the cap, taken from each skill's declared value rather than estimated), and **exclusion** (no live stage already holding an exclusive resource — the experiment-worktree prefix, which counts repo-wide, and one live stage per output document path).
+
+### Resuming after a break
+
+Five ways a run is cut, and all five resume: the terminal closes, Ctrl+C, the token limit, the network drops, a reboot. **Resume by resuming this session and saying so.** The router then does what it always does — read the snapshot and continue. There is no separate resume protocol, because the router holds no state that a snapshot does not.
+
+A stage that was mid-flight when the session died is **re-attached, not re-run**: `--resume` continues its turn rather than restarting it. And a re-attached stage is not this shell's child, so `wait` would report a clean exit for a process it never reaped — liveness is `kill -0` on the recorded pid together with its start-time fingerprint, never `wait`.
 
 ---
 
@@ -206,7 +295,9 @@ Cover, in this order:
 - **Never edit a design document from this skill.** Writing one through `design` in Act 1 is a different act with a human in it; editing an existing one from here is not.
 - **Never infer the arming** (CFI-4). No user utterance, no `arm`.
 - **Never run a `재호출 명령`** recorded by a halted stage. It is recorded precisely because re-running it would retry a condition whose cause is still present.
-- **Do not supervise the run** (CFI-3). Launch and stop.
+- **The router's input is the snapshot** (CFI-3). Never act on a remembered decision, a remembered obligation, or a previous turn's plan.
+- **Never assemble a stage command line in the router.** A stage is `act --kind skill`; the gate calls the wrapper.
+- **Never answer a pending approval on the user's behalf.** `close` reads the transcript, and typing the answer defeats the only thing that makes the record auditable.
 - **`--admin` is never authorized here**, whatever cutpoint the user picks.
 
 Task: $ARGUMENTS

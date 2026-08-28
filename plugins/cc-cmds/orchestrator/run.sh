@@ -25,7 +25,12 @@
 #      structured output and halt records; the driver transcribes.
 #
 # Usage:
-#   run.sh --doc <abs-path> [--run-id <id>] [--detach]
+#   run.sh --doc <abs-path> [--run-id <id>]
+#
+# THERE IS NO `--detach`. The run is driven by the main session's model — the
+# router — and detaching would put the deciding turn somewhere nobody can see.
+# Visible progress and an interruptible terminal are the reason for that shape,
+# and a detach flag is the one thing that would silently undo it.
 #   run.sh --self-check
 #
 # Exit codes:
@@ -56,6 +61,12 @@ fi
 # in the user's interactive rc, so a non-interactive `bash -c claude` resolves
 # to something else entirely (`cc` resolves to the C compiler); the driver must
 # hold an absolute path and call it directly.
+# This file's own directory. Defined here rather than beside its first consumer
+# because two consumers now sit hundreds of lines apart, and a path variable
+# defined after its first use is set to the empty string on that path — which
+# resolves to the filesystem root and fails somewhere else entirely.
+ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -329,9 +340,25 @@ target_aliases() {
 
 canonical_targets() { manifest_targets | sed 's/[[:space:]]\{1,\}/ /g' | sort; }
 
-plan_fence_bytes() {
-  awk '/^## 실행 계획/{inb=1; next} inb && /^## /{exit}
-       inb && /^```/{f=!f; if(f) next; else exit} inb && f {print}' "$MANIFEST"
+binding_set_bytes() {
+  # The frozen set, canonically serialized. NOT the plan — the router decides
+  # the step graph one act at a time now, so a frozen plan would be a value that
+  # is recorded and never compared, which is the exact defect class this
+  # contract exists to remove.
+  {
+    printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
+    manifest_clauses | sed 's/^/clause\t/'
+    canonical_targets | sed 's/^/target\t/'
+    grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
+    grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
+  } | sort
+}
+
+manifest_clauses() {
+  # The termination point decomposed into checkable clauses, frozen at kickoff.
+  # A run is measured against these, so they are part of what may not move.
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
 }
 
 # The conjunction. Order matters: the ownership proof comes before anything that
@@ -388,8 +415,19 @@ check_manifest() {
   # this the fields ship in the state the binding-surface digest was in.
   [ "$(canonical_targets | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '대상' '대상 맵 다이제스트')" ] \
     || die "대상 맵 다이제스트가 대상 행과 일치하지 않습니다"
-  [ "$(plan_fence_bytes | shasum -a 256 | cut -d' ' -f1)" = "$(manifest_field '실행 계획' '계획 다이제스트')" ] \
-    || die "계획 다이제스트가 실행 계획 펜스 바이트와 일치하지 않습니다"
+  # `구속 다이제스트` is optional ONLY while a manifest written before this field
+  # existed can still be read; when present it is compared, and a present-but-
+  # wrong value is a hard stop. An absent one is reported rather than passed
+  # over in silence, because "not checked" and "checked and fine" must not look
+  # the same in the log.
+  local bd
+  bd=$(manifest_field '인가' '구속 다이제스트')
+  if [ -n "$bd" ]; then
+    [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·마감 중 하나가 움직였습니다"
+  else
+    warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
+  fi
 
   # 8 — absolute deadline. `없음` is refused: a comment saying "required" means
   # nothing while a validator accepts the absent value.
@@ -611,6 +649,23 @@ slicing_fields_ok() {
     done
     cutpoint_index "$(slice_field "$doc" "$id" '절단점')" >/dev/null \
       || { warn "슬라이스 $id: 절단점 토큰이 어휘에 없음"; return 1; }
+    # `리뷰 정책` is OPTIONAL and defaults to `선리뷰후머지`. The cutpoint says
+    # how far a slice may go and cannot say when review happens, which is a
+    # different axis entirely — a slice may be authorized to merge and still owe
+    # its review afterwards.
+    v=$(slice_field "$doc" "$id" '리뷰 정책')
+    case "$v" in
+      ''|선리뷰후머지|선머지후리뷰|리뷰없음) : ;;
+      *) warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1 ;;
+    esac
+    # `리뷰없음` is expressible only against a matching pre-authorization entry,
+    # which is what stops a router from choosing it for itself. `선머지후리뷰`
+    # does not remove the obligation, it defers it — the gate leaves a
+    # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
+    if [ "$v" = "리뷰없음" ]; then
+      [ -n "${MANIFEST:-}" ] && grep -q '`사전 인가`' "$MANIFEST" 2>/dev/null \
+        || { warn "슬라이스 $id: 리뷰없음 은 대응하는 사전 인가 항목이 있을 때만 표현 가능"; return 1; }
+    fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
       [ -n "$(slice_field "$doc" "$id" '적용 주체')" ] || { warn "슬라이스 $id: 적용 명령이 있는데 적용 주체가 없음"; return 1; }
@@ -1209,6 +1264,26 @@ stage_spawn() {
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
   rm -f "$RUN_DIR/$stage.rc"
 
+  # The settings variant is chosen by stage KIND, and an unrecognized stage id
+  # falls to `generic` rather than to "no settings" — the whole point of the
+  # wrapper's hard stop is that there is no such thing as a stage launched
+  # without them.
+  local plugin_dir stage_settings kind
+  plugin_dir=$(cd "$ORCH_DIR/.." && pwd)
+  case "$stage" in
+    *design-audit*|*audit*) kind=audit ;;
+    *reconverge*)           kind=reconverge ;;
+    *design*)               kind=design ;;
+    *implement*)            kind=implement ;;
+    *review*)               kind=review ;;
+    *)                      kind=generic ;;
+  esac
+  stage_settings="$RUN_DIR/settings/$kind.json"
+  if [ ! -f "$stage_settings" ]; then
+    warn "스테이지 설정이 없습니다: $stage_settings — 게이트가 런 개시 시 만듭니다"
+    return 78
+  fi
+
   # `set -m` makes the child the leader of its own process group, so the whole
   # tree is reclaimable with `kill -- -$pgid`. Without it the "group" silently
   # becomes the CALLER's, which is why the pgid is read back before it is
@@ -1226,12 +1301,25 @@ stage_spawn() {
   # needs to write a halt record. Handing the values down removes the derivation
   # instead of duplicating it; the arms keep their re-derivation as the fallback
   # for a driver that predates these variables.
+  # `--plugin-dir` and `--settings` are what close the measured hole: without the
+  # first, a slash command resolves to nothing and the stage still exits 0 with
+  # `subtype: "success"` and `num_turns: 0`, so the driver reads a hollow success
+  # and parks for "no artifact" while the real cause goes unrecorded. Without the
+  # second, the stage's hook coverage is not conditional but unconditionally
+  # zero. The two hook sources COMPOSE rather than overwrite — measured — so
+  # passing both keeps the plugin's existing hooks alive.
+  #
+  # The wrapper is what carries them, and it is the same wrapper the gate uses
+  # for a skill act; a second spawn shape here would be a second place for the
+  # injection to go missing.
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
-      exec nohup "$CLI_BIN" -p "$prompt" \
+      exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
+        --settings "$stage_settings" \
+        --plugin-dir "$plugin_dir" \
         --session-id "$(session_uuid "$stage")" \
-        --output-format json --strict-mcp-config "$@" \
+        -- -p "$prompt" "$@" \
         > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
   set +m
@@ -1410,13 +1498,69 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+stage_session_id() {
+  # The id the HARNESS assigned, read back from the stage's own stream, with the
+  # derived value as the fallback. This is what makes the implementation/review
+  # separation rule mean anything: while ids are DERIVED from
+  # `run|doc|stage|attempt` they differ by construction, so comparing them is a
+  # tautology that passes on every run — including the ones the rule exists to
+  # catch.
+  local stage="$1" out="$RUN_DIR/log/$stage.json" sid=""
+  if [ -f "$out" ]; then
+    # `sed -n … ; q` rather than `| head -1`: under `pipefail` an early-exiting
+    # reader on the right of a pipe kills the writer with SIGPIPE and the whole
+    # pipeline reports failure. The driver has been bitten by that shape before,
+    # and its own self-test refuses it.
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+  fi
+  [ -n "$sid" ] || sid=$(session_uuid "$stage")
+  printf '%s' "$sid"
+}
+
+stage_parent_id() {
+  # The session that spawned it. A FORK inherits its parent, which is what stops
+  # a forked session from reviewing its own work by taking a fresh id.
+  printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CC_PIPELINE_PARENT_SESSION:-미상}}"
+}
+
 classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
   local stage="$1" exit_rc="$2" pred_rc="$3"
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
   if [ "$exit_rc" = "0" ] && [ "$pred_rc" = "0" ]; then printf '정상 완료'; return 0; fi
+  # A stage that REACHED a decision point and declined to decide for the user is
+  # not a stage that attempted nothing, and until this class existed the two
+  # were indistinguishable — exit 0, no artifact, no halt record. The measured
+  # behaviour is that the correct refusal was punished exactly like a failure:
+  # classified hollow, retried once, parked for "no artifact", with the real
+  # cause recorded nowhere. Its disposition is a pending approval on that point,
+  # never a retry.
+  if [ "$exit_rc" = "0" ] && decision_point_reached "$stage"; then
+    printf '산출물 없는 정지'; return 0
+  fi
   if [ "$exit_rc" = "0" ]; then printf '공허한 성공'; return 0; fi
   printf '크래시'
+}
+
+decision_point_reached() {
+  # The stage's own ndjson is the evidence. Two traces count, and both are
+  # things a stage does only when it has arrived somewhere it cannot proceed
+  # from: a ToolSearch naming the question tool, or the tool named in a tool_use
+  # the harness could not satisfy.
+  #
+  # The same signal has a second use the design calls out: a ToolSearch naming
+  # `AskUserQuestion` with NO halt record is high-precision evidence that the
+  # stage improvised instead. That branch lands as `정상 완료` and is otherwise
+  # unobservable, so the detector is worth having even where it does not change
+  # the classification.
+  # Split, not combined: `local a="$1" b="$a"` expands every word BEFORE the
+  # builtin assigns any of them, so `$a` is still unset there. It only appeared
+  # to work because the sole caller happened to have a local of the same name in
+  # scope, and bash's dynamic scoping made it visible.
+  local stage="$1"
+  local out="$RUN_DIR/log/$stage.json"
+  [ -f "$out" ] || return 1
+  grep -q 'AskUserQuestion' "$out" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -1879,7 +2023,7 @@ APPLY_PARKED_RADIUS=""
 # prompt file and a `--json-schema` return contract; the schema is what makes
 # the return machine-readable without parsing prose.
 # ---------------------------------------------------------------------------
-PROMPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prompts"
+PROMPT_DIR="$ORCH_DIR/prompts"
 
 readonly JUDGMENTS="segment-plan triage redesign-impact"
 
@@ -2020,11 +2164,21 @@ self_check() {
   # checker's silence, and the fact that the exemption list is non-empty is
   # itself recorded — an exemption nobody can see is indistinguishable from a
   # check that does not run.
-  local unwired=0 self_file exempt name body
+  local unwired=0 self_file exempt name body sib
   self_file="${BASH_SOURCE[0]}"
   # Registered exemptions. Empty is the goal state; a non-empty list is reported.
   exempt=""
+  # The scan covers this file AND the siblings that SOURCE it. Once the policy
+  # gate moved into its own file, a function's only call site could legitimately
+  # live there — and a checker that reads one file would report it as dead and
+  # invite its deletion. Widening the scan is more honest than an exemption
+  # list: those functions are wired, just not from here.
   body=$(sed 's/#.*//' "$self_file")
+  for sib in "$(dirname "$self_file")/gate.sh"; do
+    [ -f "$sib" ] || continue
+    body="$body
+$(sed 's/#.*//' "$sib")"
+  done
 
   for name in $(grep -oE '^readonly [A-Z_][A-Z0-9_]*' "$self_file" | awk '{print $2}'); do
     case " $exempt " in *" $name "*) continue ;; esac
@@ -2259,7 +2413,8 @@ segment_cycle() {
     if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class"
+      "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -2432,7 +2587,8 @@ main_loop() {
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" "종단 부류=$class2"
+    "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
@@ -2695,13 +2851,11 @@ if [ "${CC_ORCH_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
-DETACH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest)   MANIFEST="$2"; shift 2 ;;
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
-    --detach)     DETACH=1; shift ;;
     --self-check) self_check; exit $? ;;
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -2734,24 +2888,6 @@ else
 fi
 
 rundir_init
-
-if [ "$DETACH" = "1" ]; then
-  # The driver detaches exactly ONCE — itself. Stages stay in the foreground so
-  # the driver owns their process groups and can reclaim the whole tree on
-  # restart. The right invariant is `driver lifetime >= stage lifetime`, and it
-  # is bought by detaching the driver once rather than each stage N times.
-  set -m
-  if [ -n "$MANIFEST" ]; then
-    nohup "$0" --manifest "$MANIFEST" >> "$LOG_FILE" 2>&1 < /dev/null &
-  else
-    nohup "$0" --doc "$DOC" --run-id "$RUN_ID" >> "$LOG_FILE" 2>&1 < /dev/null &
-  fi
-  printf '%s\n' "$!" > "$RUN_DIR/driver.pid"
-  ps -o pgid= -p "$!" 2>/dev/null | tr -d ' ' > "$RUN_DIR/driver.pgid"
-  set +m
-  echo "driver detached: pid=$(cat "$RUN_DIR/driver.pid") log=$LOG_FILE"
-  exit 0
-fi
 
 check_grant
 ledger_init

@@ -87,13 +87,13 @@ Parse `$ARGUMENTS`:
     - Step 3: prioritize directive in team composition (e.g., "보안 중심" → elevate security reviewer model or add extra security focus)
     - Step 4: add "User directive: [directive]" to reviewer context package. Directive influences review depth and coverage; severity is assessed independently on technical criteria.
     - Step 5: add "Review focus: [directive]" field to report overview
-- **Ambiguous input** → clarify with AskUserQuestion
+- `등급 2` **Ambiguous input** → clarify with AskUserQuestion
 
 When `$ARGUMENTS` is empty, run auto-detect chain:
 
 1. `gh pr view --json number,title,url,state,isDraft,baseRefName,additions,deletions,changedFiles` → success: PR review
 2. Failure: `gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'` → `git diff {DEFAULT_BRANCH}...HEAD --stat` → if diff exists: local diff review
-3. No diff: AskUserQuestion to request review target
+3. `등급 2` No diff: AskUserQuestion to request review target
 
 **If target is a non-PR (local diff or file path)**, Read `${CLAUDE_SKILL_DIR}/references/03-non-pr-mode.md` to apply adaptations to Steps 2-5 (context package items 2/5, document header, checklist focus).
 
@@ -163,7 +163,7 @@ Present to user (in Korean):
 **Large PR gate** (>50 changed files):
 - Determine file count from PR metadata `changedFiles` field
 - Inform user of the scale
-- Offer options via AskUserQuestion (header chip `리뷰 범위`; each option carries a `description`):
+- `등급 2` Offer options via AskUserQuestion (header chip `리뷰 범위`; each option carries a `description`):
   - label `"전체 리뷰 진행"` — description: Proceed with a full review of all changed files.
   - label `"특정 경로만"` — description: Focus the review on a specific directory or module.
   - label `"리뷰 분할"` — description: Split the review into multiple smaller passes.
@@ -176,7 +176,7 @@ Proceed after user confirmation.
 | Case | Handling |
 |------|----------|
 | Draft PR | Proceed with review, mark draft status in report header |
-| Closed/Merged PR | AskUserQuestion to confirm whether to continue |
+| Closed/Merged PR | `등급 2` AskUserQuestion to confirm whether to continue |
 | Multiple PRs on same branch | List all, let user choose |
 | Fork PR | `gh pr view` handles normally |
 | No GitHub remote | Skip all gh commands, switch to local diff mode |
