@@ -673,11 +673,46 @@ gate_write_settings() {
   # session cut must find the same bytes, because those bytes are in the
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
-  local dir hook k f deny_extra
+  local dir hook k f deny_extra plugin_dir extra_dirs
   dir=$(gate_settings_dir)
   mkdir -p "$dir"
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
   [ -f "$hook" ] || die "게이트 훅 스크립트가 없습니다: $hook"
+
+  # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS.
+  #
+  # Every skill here opens by Reading several `_common/*` files, and those live
+  # in the plugin cache — outside the working directory, so outside what the
+  # ambient configuration permits. Measured: a review stage ran seven turns,
+  # collected five `Read` denials under the plugin directory, reported that it
+  # had stopped before its first step, and exited 0 with no artifact. It
+  # explicitly declined to reach the same bytes with `cat`, on the ground that
+  # doing so would defeat a permission decision rather than satisfy it — which
+  # is the right call and is exactly why the permission has to be granted here.
+  #
+  # The run's own files are listed for the same reason: the manifest, ledger and
+  # grant live under the HOME worktree, so a stage acting in any other target
+  # cannot reach them from its own directory.
+  #
+  # The DESIGN DOCUMENT's directory is listed separately from the run's base
+  # because in a polyrepo workspace it is in neither — the repositories are
+  # siblings under one directory and the documents describing work across them
+  # belong to none of them. A stage measured against a document it cannot read
+  # produces nothing and reports success.
+  #
+  # Read is deliberately NOT added to the hook matcher below. That matcher is
+  # default-deny, so adding Read there would deny every read instead of
+  # recording it; what a denied read costs is a ledger row, and the price of
+  # buying that row with this hook is the whole read surface.
+  #
+  # Every path is derived, so the bytes stay identical across a re-run — which
+  # they must, since this file is in the enforcement-surface digest set.
+  plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
+  extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      "$plugin_dir" "$RUN_DIR" "$BASE" \
+      "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
+      "${DOC_DIR:-}" "${DOC_BASE:-}" \
+    | sed '/^$/d' | sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
 
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
@@ -689,7 +724,10 @@ gate_write_settings() {
     [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
     cat > "$f" <<JSON
 {
-  "permissions": { "deny": [ ${deny_extra}"Bash(sudo:*)" ] },
+  "permissions": {
+    "deny": [ ${deny_extra}"Bash(sudo:*)" ],
+    "additionalDirectories": [ ${extra_dirs} ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -741,6 +779,33 @@ gate_surface_check() {
   now=$(gate_surface_digest)
   [ "$now" = "$base" ] && return 0
   warn "강제 표면이 런 개시 이후 바뀌었습니다 (기준선 ${base}, 현재 ${now}) — 설정·룰·훅·프로젝트 설정 중 하나가 편집됐습니다"
+
+  # THE DISPOSITION FOR THIS CODE IS THE ROUTER'S AND ONLY THE ROUTER'S: stop
+  # and tell the user. A stage cannot do either half. The cause is outside it by
+  # definition — the surfaces are the run's settings, the rule catalog, the hook
+  # and the project settings, none of which a stage touched and none of which it
+  # can inspect, because looking needs Bash and Bash is what was just refused.
+  # Re-baselining would be a stage moving the boundary that binds it.
+  #
+  # So a stage has retry or give up, and neither is the prescribed disposition.
+  # Measured on one run: five stages, four of them retried into the same refusal
+  # 3, 9, 12 and 15 times and produced no finding; the fifth stopped, and what
+  # separated it from the other four was its own judgment rather than anything
+  # the contract said. That is what this branch converts into an instruction.
+  #
+  # A prose fence and not a structural one, deliberately: the stage READ the old
+  # message and retried, so the failure is an interpretable misjudgment on a
+  # message that described a condition without prescribing an action. What it
+  # gets now is an action, plus a run-scope `blocked` row so the run's state is
+  # observable to the router and to the morning instead of living in the count
+  # of a stage's wasted turns.
+  if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then
+    gate_has_row 'blocked' '사유=강제 표면 이동' \
+      || gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
+           "사유=강제 표면 이동" "관측=$(now_iso)" \
+           "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
+    warn "이 조건은 이 런에서 해소되지 않습니다 — 재시도하지 마세요. 지금 중단하고, 무엇을 하려다 막혔는지 반환문에 적고 돌아가세요. 남은 호출도 같은 거부를 받습니다."
+  fi
   return "$GATE_EXIT_SURFACE"
 }
 
@@ -840,6 +905,16 @@ gate_main() {
       warn "파이프라인 자격이 갖춰지지 않았습니다 — 이 런의 행위는 주변 자격으로 돕니다 (원장의 「자격」 필드에 매 행 남습니다)"
       cred_check >&2 || true
     fi
+    # The `run` row, written once, here. It had no writer at all, so a ledger
+    # opened without one carried no statement of what the run was — the report
+    # path, the document and its digest, and the enforcement-surface baseline
+    # all lived in memory or in a file beside the ledger rather than in it. This
+    # is also the row that makes the chain's first anchor a row rather than the
+    # stub's prose.
+    gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
+      "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
+      "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
+      "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
   fi
 
   case "$verb" in
@@ -943,6 +1018,24 @@ gate_record_row() {
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
+    problem)
+      # The row every open obligation is derived from. With no writer,
+      # `gate_open_obligations` read an empty set and termination condition 3 —
+      # "obligations are empty or excused" — held vacuously on every run, while
+      # the narrow excuse rule beside it could never be reached at all.
+      #
+      # `동일성` is the key those readers group by, and `생성 등급` is what the
+      # excuse rule reads, so both are required: a row missing either produces an
+      # obligation that can never be closed and never be excused.
+      for k in '동일성' '현재 단' '생성 등급'; do
+        if [ -z "$(gate_field_of "$k" "$@")" ]; then
+          warn "problem 행에 「${k}」가 필요합니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+      gate_append 'problem' "세그먼트=$seg" "$@"
+      log "문제 기록 — $seg"
+      ;;
   esac
   return 0
 }
@@ -978,7 +1071,7 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle)
+    segment|cycle|problem)
       # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
       # and what it performs is the ledger row the gate would write anyway. It
       # reaches nothing outside the ledger, so it grades `읽기`.
@@ -1032,7 +1125,19 @@ gate_verb_act() {
     # Where the act runs. A declared target names its own worktree and the act
     # belongs there; an undeclared one has no row to read, so the act stays in
     # the caller's directory and is bounded by the layers above instead.
-    GATE_ACT_CWD=$(target_field "$alias" '메인 워크트리')
+    #
+    # `실행 워크트리` FIRST, main worktree as the default. One field could not
+    # carry both duties: the sidecar path has to converge on the main worktree
+    # so that N linked worktrees of one repository do not split the state a
+    # single writer owns, while the act has to run where the branch actually is.
+    # For a pr or branch anchor those are never the same directory — git refuses
+    # to check a branch out twice — so a stage woke on the main worktree's
+    # branch every time, read files that were real and were the wrong version,
+    # and nothing mechanical noticed.
+    GATE_ACT_CWD=$(target_field "$alias" '실행 워크트리')
+    case "$GATE_ACT_CWD" in
+      ''|'(없음)') GATE_ACT_CWD=$(target_field "$alias" '메인 워크트리') ;;
+    esac
     export GATE_ACT_CWD
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
@@ -1126,7 +1231,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle) gate_record_row "$kind" "$segment" "$@"; return $? ;;
+    segment|cycle|problem) gate_record_row "$kind" "$segment" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)
@@ -1390,6 +1495,40 @@ gate_launch_stage() {
   # as a healthy stage, so a hung stage reads as a heartbeat and the run sits
   # until the person comes back. A finite ceiling still kills, and a kill is
   # classified. The environment can raise it for a host that needs more.
+  #
+  # THE ATTEMPT NUMBER, derived rather than passed. The session id is a function
+  # of run, segment and attempt, and the caller was leaving the attempt at its
+  # default — so the id was a function of run and segment alone. A stage that
+  # died before producing anything had already taken that id, and every retry of
+  # the same segment was refused by the CLI with "Session ID ... is already in
+  # use". Dying is not an exotic path: the contract itself lists the terminal
+  # closing, Ctrl+C, the token limit, the network dropping and a reboot, and all
+  # five are written as "retry".
+  #
+  # The failure was worse than a refusal because it happened AFTER the gate
+  # passed and after the row was appended — so the ledger showed the segment
+  # attempted twice with nothing to show for either, and the cause lived in one
+  # line of the CLI's stdout.
+  #
+  # Derived from the ledger and NOT taken as argv: the gate has already appended
+  # this dispatch's own `자율 승인` row by the time it gets here, so counting the
+  # skill dispatches for this segment IS the attempt number. Adding an
+  # `--attempt` flag instead would let a router re-type the number it used last
+  # time, which reproduces the collision through the one surface that is
+  # supposed to prevent it.
+  local attempt
+  attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
+             | { grep -cF "세그먼트=$seg " || true; } )
+  [ "${attempt:-0}" -ge 1 ] || attempt=1
+
+  # The stage's stream goes to a FILE rather than through a `tee`. A tee would
+  # make `$!` the tee's pid, and the pid is what the watcher uses to tell a
+  # working stage from a stopped router — so the visible stream would be bought
+  # with the liveness record. The outcome is read back below and reported.
+  mkdir -p "$RUN_DIR/log"
+  local n_rows_before
+  n_rows_before=$(gate_rows '자율 승인' | gate_count)
+
   local rc=0
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
@@ -1405,8 +1544,8 @@ gate_launch_stage() {
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
-    --session-id "$(session_uuid "$seg")" \
-    -- "$@" &
+    --session-id "$(session_uuid "$seg" "$attempt")" \
+    -- "$@" > "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err" < /dev/null &
   local spid=$!
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
   # `LC_TIME=C` on the WRITE side too. The watcher pins it on the read side, and
@@ -1421,7 +1560,65 @@ gate_launch_stage() {
   # record and a stale process must die together or pid reuse makes the watcher
   # report a stage that is not there.
   rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start"
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before"
   return "$rc"
+}
+
+gate_record_stage_outcome() {
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <rows-before>
+  #
+  # Two of the five row kinds that had no writer at all. Their absence was not
+  # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
+  # boundary read an empty set, took its fail-open guard, and could never fire
+  # however low the declared ceiling was — the guard treats a missing value as
+  # temporary and with no writer the absence is permanent. `stage-result` is
+  # what the morning report counts terminal classes from, and what the
+  # implementation-review separation rule reads ancestry from; with no rows that
+  # rule returns early and passes vacuously on every run it exists to catch.
+  local alias="$1" seg="$2" kind="$3" attempt="$4" rc="$5" before="$6"
+  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage
+
+  res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
+  cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
+  subtype=$(printf '%s' "$res" | jq -r '.subtype // empty'        2>/dev/null || true)
+  sid=$(printf '%s' "$res"     | jq -r '.session_id // empty'     2>/dev/null || true)
+
+  # The terminal class, from what the GATE can observe and nothing more. A stage
+  # that performed a gated act left rows; one that left none either never got
+  # started or arrived somewhere it would not pass. `permission_denials` is the
+  # trace that separates those two — the contract asks for exactly that
+  # discriminator, "a trace of reaching a decision point", and a denial is one.
+  #
+  # `의도된 park` and `적용 불명` are NOT among the values written here, and the
+  # omission is deliberate: both are claims about the stage's own intent and are
+  # read from its halt record, which the halt contract owns. Guessing them from
+  # outside would put a value in the ledger that nothing verified.
+  after=$(gate_rows '자율 승인' | gate_count)
+  if [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ]; then
+    klass='크래시'
+  elif [ "${after:-0}" -gt "${before:-0}" ]; then
+    klass='정상 완료'
+  else
+    denials=$( { grep -c 'permission_denials' "$out" 2>/dev/null || true; } | tail -1)
+    if [ "${denials:-0}" != "0" ]; then klass='산출물 없는 정지'; else klass='공허한 성공'; fi
+  fi
+
+  gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+    "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
+    "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
+
+  # The cost row ACCUMULATES, because that is the shape its only reader wants:
+  # the boundary compares one number against the declared ceiling rather than
+  # summing the file on every act.
+  if [ -n "$cost" ]; then
+    prev=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
+           | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    total=$(awk -v a="${prev:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    n_stage=$(gate_rows 'stage-result' | gate_count)
+    gate_append 'cost' "누적 usd=$total" "스테이지 수=${n_stage:-1}" "관측 시각=$(now_iso)"
+  fi
+
+  log "스테이지 종단 — $seg ($kind) $klass rc=$rc${cost:+ · ${cost} USD}"
 }
 
 gate_session_lineage() {

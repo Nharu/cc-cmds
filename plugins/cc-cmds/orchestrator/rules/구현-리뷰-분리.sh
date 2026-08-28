@@ -16,8 +16,12 @@ field() { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:spac
 rows=$(grep -E '^- `stage-result`' "$GATE_LEDGER" 2>/dev/null | grep -F "세그먼트=$GATE_SEGMENT " || true)
 [ -n "$rows" ] || exit 0
 
-impl_row=$(printf '%s\n' "$rows" | grep -F '스테이지=S4' | tail -1)
-rev_row=$(printf '%s\n' "$rows" | grep -F '스테이지=S5' | tail -1)
+# 종류 로 먼저 고르고 S4/S5 로 물러선다. 스테이지 번호는 고정 그래프의 것이라
+# 라우터가 디스패치한 행에는 없고, 번호로만 고르면 이 룰이 라우터 경로에서 언제나
+# 빈 집합을 읽어 조용히 통과한다 — 이 룰이 없애려고 다시 쓰인 바로 그 상태다.
+pick() { printf '%s\n' "$rows" | grep -F "종류=$1" | tail -1; }
+impl_row=$(pick implement); [ -n "$impl_row" ] || impl_row=$(printf '%s\n' "$rows" | grep -F '스테이지=S4' | tail -1)
+rev_row=$(pick review);     [ -n "$rev_row" ]  || rev_row=$(printf '%s\n' "$rows" | grep -F '스테이지=S5' | tail -1)
 [ -n "$impl_row" ] && [ -n "$rev_row" ] || exit 0
 
 impl_sid=$(field "$impl_row" '세션 id'); impl_par=$(field "$impl_row" '부모')

@@ -416,13 +416,31 @@ check_manifest() {
 
   # 4 — target preflight. A declared repo set with no verification leaves the
   # silent-`.` fallback alive, so this is a hard stop BEFORE the driver starts.
-  local a wt cg
+  local a wt cg ewt
   for a in $(target_aliases); do
     wt=$(target_field "$a" '메인 워크트리')
     cg=$(target_field "$a" '공통 git 디렉터리')
     [ -d "$wt" ] || die "대상 '$a' 의 메인 워크트리가 없습니다: $wt"
     [ "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$cg" ] \
       || die "대상 '$a' 의 공통 git 디렉터리가 선언값과 다릅니다: $cg"
+    # The EXECUTION worktree, when the row declares one. It is optional and
+    # defaults to the main worktree, so a single-worktree repository declares
+    # nothing; it exists because the two duties that field used to carry pull in
+    # opposite directions. The sidecar path must converge on the MAIN worktree
+    # so that N linked worktrees of one repository do not split the state a
+    # single writer owns — and the act must run where the branch actually IS,
+    # which for a pr or branch anchor is never the main worktree, because git
+    # refuses to check a branch out twice.
+    #
+    # Verified against the SAME common git directory: an execution worktree in a
+    # different repository would be a second target wearing the first one's
+    # cutpoint.
+    ewt=$(target_field "$a" '실행 워크트리')
+    if [ -n "$ewt" ] && [ "$ewt" != "(없음)" ]; then
+      [ -d "$ewt" ] || die "대상 '$a' 의 실행 워크트리가 없습니다: $ewt"
+      [ "$(cd "$ewt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$cg" ] \
+        || die "대상 '$a' 의 실행 워크트리가 같은 레포가 아닙니다: $ewt"
+    fi
     # 7 — every cutpoint token is in the vocabulary.
     cutpoint_index "$(target_field "$a" '절단점')" >/dev/null \
       || die "대상 '$a' 의 절단점 토큰이 어휘에 없습니다"
@@ -473,9 +491,44 @@ derive_paths_from_manifest() {
   GRANT="$BASE/docs/pipeline-grant/$RUN_ID.md"
   LEDGER="$BASE/docs/pipeline-run/$RUN_ID.md"
   DOC=$(manifest_field '요소' '설계 문서')
+  # The document key has TWO branches and only one of them is repo-relative.
+  # The shared contract defines it as the path relative to the document's own
+  # repository root when one contains it, and otherwise as the ABSOLUTE path
+  # with the leading separator removed — which is the normal shape in a polyrepo
+  # workspace, where the repositories are siblings and the documents describing
+  # work across them belong to none of them. Composing `$BASE/$key` on both
+  # branches produced a path like `<repo>/Users/…/docs/x.md`, which exists
+  # nowhere, and the digest was then taken of a file that was not there.
+  #
+  # Existence is the discriminator because the key itself carries no marker: the
+  # two branches are textually indistinguishable. The repo-relative reading is
+  # tried first since it is the primary branch, and the composed form is kept on
+  # total failure so the error names a path rather than an empty string.
   case "$DOC" in ''|'(없음)') DOC=""; DOC_KEY="$ANCHOR_KEY"; DOC_DIR="$BASE" ;;
-    *) DOC="$BASE/$DOC"; DOC_KEY=$(manifest_field '요소' '설계 문서'); DOC_DIR=$(dirname "$DOC") ;;
+    *) DOC_KEY=$(manifest_field '요소' '설계 문서')
+       if [ -f "$BASE/$DOC" ]; then DOC="$BASE/$DOC"
+       elif [ -f "/$DOC" ];   then DOC="/$DOC"
+       else DOC="$BASE/$DOC"
+       fi
+       DOC_DIR=$(dirname "$DOC") ;;
   esac
+  # The document's OWN base, by the same rule the shared contract uses to place
+  # a sidecar: its repository's main worktree root when a root contains it, and
+  # its own directory otherwise. The audit sidecar resolves against this and not
+  # against the run's `BASE` — for an out-of-repo document those are different
+  # directories, and the predicate was reporting artifacts absent while they sat
+  # beside the document.
+  DOC_BASE="$BASE"
+  if [ -n "$DOC" ]; then
+    local _droot=""
+    _droot=$( { cd "$DOC_DIR" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; } || true)
+    DOC_BASE="$DOC_DIR"
+    if [ -n "$_droot" ]; then
+      case "$DOC" in
+        "$_droot"/*) DOC_BASE=$(dirname "$(cd "$_droot" && git rev-parse --path-format=absolute --git-common-dir)") ;;
+      esac
+    fi
+  fi
   SLUG="$RUN_ID"
   # Document identity, derived by the SAME rule the document entry uses, so the
   # audit sidecar resolves to one location no matter which entry started the
@@ -1483,7 +1536,10 @@ machine_slept_since() {
 # artifact the stage authors is not. For a stage whose only output is a
 # document, no un-fabricable predicate exists.
 # ---------------------------------------------------------------------------
-predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null && ls "$BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
+# `DOC_BASE` and not `BASE`: the audit sidecar sits beside the DOCUMENT, and for
+# a document outside every repository those two directories differ. Reading the
+# run's base reported absence for artifacts that were present.
+predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$RUN_DIR/log/$1.json" 2>/dev/null; }
 

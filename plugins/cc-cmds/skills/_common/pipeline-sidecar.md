@@ -121,6 +121,7 @@ once per run rather than on every append.
 - `target` | 별칭=<alias> | 메인 워크트리=<abs> | 공통 git 디렉터리=<abs>
             | 베이스 브랜치=<name> | 홈=예|아니오
             | 원격 슬러그=<owner>/<name> | 절단점=<token> | 말단 행위 상한=없음|<int>
+            [ | 실행 워크트리=<abs> ]
 
 ## 요소
 **설계 문서**: <document key> | (없음)
@@ -161,6 +162,10 @@ entry. `대상 맵 다이제스트` stays as well — it is the narrower check o
 target rows alone, and keeping both means a target-row edit is named as such
 rather than reported as "something in the frozen set moved".
 
+**`실행 워크트리` is optional and exists because one field could not carry two duties.** `메인 워크트리` is pinned to the main worktree so that N linked worktrees of one repository converge on one sidecar location — that is what keeps the state a single writer owns from splitting N ways. But the act has to run where the branch actually **is**, and for a `pr` or `branch` anchor that is never the main worktree, because git refuses to check one branch out twice. With only the first field, a stage woke on the main worktree's branch every time: it started normally, the files were readable, and what it read was a different version. Nothing mechanical noticed — the one observation that caught it was a stage comparing its own HEAD against the branch name in its instructions, which is goodwill rather than a check.
+
+So the sidecar path reads `메인 워크트리` and the act's working directory reads `실행 워크트리`, falling back to the main worktree when the row declares none. A declared execution worktree is verified against the **same** common git directory: one in another repository would be a second target wearing the first one's cutpoint.
+
 **The `사전 인가` rows are the list an irreversible act is checked against**, and
 they are rows rather than a field because the set is open and each entry carries
 its own reason. `형태` is an argv **prefix** — `gh pr`, `git push`, `terraform
@@ -198,9 +203,10 @@ never compared.
    (absent is fail-open — it discriminates between files that have *already*
    proven ownership).
 4. **Target preflight** — every target row's main worktree exists and its common
-   git dir matches the declared value. A declared repo set with no verification
-   leaves the silent-`.`-fallback alive. A mismatch is a **hard stop before the
-   driver starts**, not a park.
+   git dir matches the declared value, and where the row declares an `실행
+   워크트리` that directory exists and reports the **same** common git dir. A
+   declared repo set with no verification leaves the silent-`.`-fallback alive.
+   A mismatch is a **hard stop before the driver starts**, not a park.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
    target rows, rule settings, pre-authorization rows, deadline. The PLAN is not
@@ -294,7 +300,7 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
 | `segment` | `id` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` |
-| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
+| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `finding-id`(required iff `kind=severity`) |
@@ -303,6 +309,14 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
+
+**Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
+
+They are written from three different places, because the three have different knowledge. `run` is written once at run open, by the gate. `stage-result` and `cost` are written by the gate when a stage terminates, from the stage's **own** terminal result line — its cost, its subtype, its session id — so nothing here depends on a stage reporting anything about itself. `problem` is an `act` kind like `segment` and `cycle`: recognising that a finding is the same finding as last cycle's is a judgment, and the router is where judgment lives.
+
+**`generation` is deliberately still unwritten.** Nothing reads it. A writer for it would put a value in the ledger that is recorded and never compared, which is the exact defect class this contract exists to remove — so the writer arrives with the reader or not at all.
+
+**The terminal class the gate writes is a strict subset, and the omission is deliberate.** From outside a stage it can distinguish `크래시` (a non-zero status, or a subtype that is not success), `정상 완료` (the stage performed at least one gated act), `산출물 없는 정지` and `공허한 성공` — the last two separated by whether the stage's own transcript carries a `permission_denials` entry, which is precisely the "trace of reaching a decision point" this contract asks for. `의도된 park` and `적용 불명` are **not** written from here: both are claims about the stage's intent, they are read from its halt record, and guessing them from outside would put an unverified value in the ledger.
 
 **`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A `cycle` row is refused without `사이클`, `P0`, `P1` and `리뷰 HEAD`, which are exactly the four that rule reads.
 

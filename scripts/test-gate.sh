@@ -240,11 +240,29 @@ else
   bad "스냅숏 JSON" "jq 가 파싱하지 못했다 — 라우터의 유일한 선언 입력이 깨졌다"
 fi
 
-# The ledger does not exist yet, which is the NORMAL state at a run's first act.
-# `grep` answers a missing file with exit 2, `pipefail` promotes it, and `set -e`
-# used to kill the whole snapshot at exactly the moment a router needs it most.
-[ ! -f "$LEDGER" ] && ok "원장이 아직 없는 상태에서 스냅숏이 답한다" \
-                   || bad "픽스처 전제" "원장이 이미 있다 — 이 절의 전제가 무너졌다"
+# The ledger does not exist when a run's first gate call starts, which is the
+# NORMAL state. `grep` answers a missing file with exit 2, `pipefail` promotes
+# it, and `set -e` used to kill the whole snapshot at exactly the moment a
+# router needs it most. The first call now also OPENS the ledger with the run
+# row, so the property is asserted where it actually lives: the first
+# invocation, against a state directory and a ledger that do not exist yet.
+freshst="$WORK/state-first"; rm -f "$LEDGER"
+out=$(cd "$WT" && XDG_STATE_HOME="$freshst" bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null); rc=$?
+check "원장이 없는 상태에서 첫 호출이 답한다" "$rc" "0"
+if printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+  ok "그 답이 유효한 JSON 이다"
+else
+  bad "첫 호출" "JSON 이 아니다: $out"
+fi
+# And the first call is what opens the ledger. `run` had no writer at all, so a
+# ledger carried no statement of what the run was.
+n=$(grep -c '^- `run` ' "$LEDGER" 2>/dev/null || true)
+check "첫 호출이 run 행 하나로 원장을 연다" "${n:-0}" "1"
+case "$(grep '^- `run` ' "$LEDGER" 2>/dev/null | tail -1)" in
+  *"보고서=$LEDGER"*) ok "run 행이 보고서 경로를 싣는다" ;;
+  *) bad "run 행" "$(grep '^- `run` ' "$LEDGER" 2>/dev/null | tail -1)" ;;
+esac
+rm -f "$LEDGER"
 
 n_total=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .obligations_total)
 check "빈 원장의 의무 총수가 0 하나로 나온다" "$n_total" "0"
@@ -287,6 +305,55 @@ if [ "$n_variants" -ge 2 ]; then
   ok "스테이지 종류마다 변종이 하나씩 생긴다 (${n_variants}종)"
 else
   bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
+fi
+
+# THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS. Every skill here
+# opens by Reading several `_common/*` files, and those live in the plugin cache
+# — outside the working directory, so outside what the ambient configuration
+# permits. Measured: a review stage ran seven turns, collected five `Read`
+# denials under the plugin directory, reported that it had stopped before its
+# first step, and exited 0 with no artifact.
+missing_dirs=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  n=$(jq -r '.permissions.additionalDirectories // [] | length' "$f" 2>/dev/null)
+  [ "${n:-0}" -ge 1 ] || missing_dirs=$((missing_dirs + 1))
+done
+check "모든 변종이 읽을 수 있는 디렉터리를 선언한다" "$missing_dirs" "0"
+
+plug=$(cd "$(dirname "$repo_root/plugins/cc-cmds/orchestrator")" && pwd)
+if jq -e --arg d "$plug" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "플러그인 디렉터리가 그 목록에 있다 (스킬이 첫 단계에서 읽는 곳이다)"
+else
+  bad "플러그인 읽기" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
+fi
+# The run's own files live under the HOME worktree, so a stage acting in any
+# other target cannot reach the manifest, the ledger or the grant from its own
+# directory.
+if jq -e --arg d "$WT" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "런의 베이스도 그 목록에 있다 (매니페스트·원장·인가 기록이 거기 있다)"
+else
+  bad "런 파일 읽기" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
+fi
+
+# The attempt term of the session id is DERIVED, not passed as argv. Without it
+# a stage that died before producing anything kept its session id and every
+# retry of that segment was refused by the CLI with "already in use" — after the
+# gate had passed and after the row was appended, so the ledger showed two
+# attempts and no output. Taking it as argv instead would let a router re-type
+# the number it used last time, reproducing the collision through the surface
+# meant to prevent it.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'session_uuid "$seg" "$attempt"'; then
+  ok "스테이지 세션 id 에 시도 번호가 실린다"
+else
+  bad "시도 번호" "죽은 스테이지가 세션 id 를 점유해 같은 세그먼트를 재시도할 수 없다"
+fi
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F "gate_rows '자율 승인'"; then
+  ok "그 번호를 원장에서 유도한다 (라우터가 적어 넣지 않는다)"
+else
+  bad "시도 유도" "시도 번호의 출처가 원장이 아니다"
 fi
 
 hook_cmd=$(jq -r '.hooks.PreToolUse[0].hooks[0].command // empty' "$SETTINGS_DIR/generic.json" 2>/dev/null)
@@ -1060,6 +1127,208 @@ case "$out" in
   *"자격이 갖춰지지"*) bad "자격 개시 보고" "런 개시가 아닌 호출에서도 보고했다" ;;
   *) ok "그 뒤의 호출에서는 다시 보고하지 않는다" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 14c. The act runs in the EXECUTION worktree when the row declares one
+#
+# One field could not carry both duties. The sidecar path has to converge on the
+# MAIN worktree so that N linked worktrees of one repository do not split the
+# state a single writer owns; the act has to run where the branch actually is.
+# For a pr or branch anchor those are never the same directory — git refuses to
+# check a branch out twice — so a stage woke on the main worktree's branch every
+# time. The symptom is silent: the stage starts, the files are readable, and
+# what it reads is a different version.
+# ---------------------------------------------------------------------------
+LINKED="$WORK/linked"
+( cd "$WT" && git worktree add -q -b linkedbr "$LINKED" ) >/dev/null 2>&1
+if [ -d "$LINKED" ]; then
+  ( cd "$LINKED" && echo linked > only-here.txt && git add -A && git commit -qm linked ) >/dev/null 2>&1
+
+  # A read loop and not `sed`: the target row is FULL of `|` separators, so every
+  # delimiter a substitution could pick already appears in the pattern. Shell
+  # string equality has no delimiter at all.
+  set_exec_wt() {
+    local want="$1" line out="$MANIFEST.ew"
+    : > "$out"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '- `target`'*별칭=infra*)
+          case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
+          [ -z "$want" ] || line="$line | 실행 워크트리=$want"
+          ;;
+      esac
+      printf '%s\n' "$line" >> "$out"
+    done < "$MANIFEST"
+    mv "$out" "$MANIFEST"
+    # The row moved, so both digests move — a kickoff would rewrite them and the
+    # fixture does the same.
+    local newtd
+    newtd=$(cd "$WT" && bash -c '
+      CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+      MANIFEST="'"$MANIFEST"'"
+      canonical_targets | shasum -a 256 | cut -d" " -f1')
+    : > "$out"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $newtd" ;;
+      esac
+      printf '%s\n' "$line" >> "$out"
+    done < "$MANIFEST"
+    mv "$out" "$MANIFEST"
+    refresh_bd
+  }
+
+  set_exec_wt "$LINKED"
+  H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+  case "$out" in
+    *only-here.txt*) ok "행위가 실행 워크트리에서 실행된다 (메인 워크트리가 아니라)" ;;
+    *) bad "실행 워크트리" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+  esac
+
+  # A declared execution worktree in ANOTHER repository is refused — that would
+  # be a second target wearing the first one's cutpoint.
+  OTHER="$WORK/other"; ( git init -q "$OTHER" ) >/dev/null 2>&1
+  set_exec_wt "$OTHER"
+  out=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>&1); rc=$?
+  if [ "$rc" = "0" ]; then
+    bad "실행 워크트리 검사" "다른 레포를 실행 워크트리로 선언했는데 통과했다"
+  else
+    ok "다른 레포를 실행 워크트리로 선언하면 하드 스톱이다"
+  fi
+
+  # Absent is the default, and the default is the main worktree.
+  set_exec_wt ""
+  H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+  case "$out" in
+    *base.txt*) ok "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" ;;
+    *) bad "실행 워크트리 기본값" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+  esac
+else
+  bad "픽스처 전제" "링크된 워크트리를 만들지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14d. The five row kinds that had no writer
+#
+# Five of the twelve declared series were written by nothing, and each one made
+# a check that reads it answer the same thing forever: the cost boundary read an
+# empty set and took its fail-open guard, so it could not fire however low the
+# ceiling; open obligations were always zero, so termination condition 3 held
+# vacuously; and terminal classes could not be counted at all. `generation` is
+# deliberately still unwritten — nothing reads it, so a writer would put a value
+# in the ledger that is recorded and never compared, which is the defect class
+# this contract exists to remove.
+# ---------------------------------------------------------------------------
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind problem --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 동일성=x/y.sh:널포인터 현재\ 단=1
+check "생성 등급 없는 problem 행은 거부된다" "$rc" "2"
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind problem --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x \
+     -- "동일성=x/y.sh:널포인터" "현재 단=1" "생성 등급=외부상태변경"
+check "problem 행이 기록된다" "$rc" "0"
+n=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .obligations_total)
+check "그 행이 미해결 의무로 세어진다 (조건 3 이 더는 공허하지 않다)" "$n" "1"
+
+# `stage-result` and `cost` are written from the stage's OWN terminal result
+# line, so they are exercised through the seam with a synthetic log rather than
+# by launching a CLI the fixture does not have.
+outcome_probe() {
+  # outcome_probe <rc> <subtype> <cost> <extra-log-line>
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log"
+    { printf "%s\n" "$4"
+      printf "{\"type\":\"result\",\"subtype\":\"%s\",\"total_cost_usd\":%s,\"session_id\":\"sid-probe\"}\n" "$2" "$3"
+    } > "$RUN_DIR/log/SP.json"
+    nb=$(gate_rows "자율 승인" | gate_count)
+    gate_record_stage_outcome infra SP review 1 "$1" "$nb" >/dev/null 2>&1
+  ' _ "$1" "$2" "$3" "${4:-}"
+}
+
+outcome_probe 0 success 1.25 ''
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"종단 부류=공허한 성공"*) ok "행을 남기지 않고 성공한 스테이지는 공허한 성공이다" ;;
+  *) bad "종단 부류" "$row" ;;
+esac
+case "$row" in
+  *"세션 id=sid-probe"*) ok "stage-result 가 세션 계보를 싣는다 (구현-리뷰 분리 룰의 입력이다)" ;;
+  *) bad "세션 계보" "$row" ;;
+esac
+crow=$(grep '^- `cost` ' "$LEDGER" | tail -1)
+case "$crow" in
+  *"누적 usd=1.2500"*) ok "비용이 누적된다 (B4 경계의 유일한 입력이다)" ;;
+  *) bad "비용 누적" "$crow" ;;
+esac
+
+outcome_probe 0 success 0.75 '{"permission_denials":[{"tool_name":"Read"}]}'
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"종단 부류=산출물 없는 정지"*) ok "거부 흔적이 있으면 공허한 성공과 구별된다" ;;
+  *) bad "종단 부류" "$row" ;;
+esac
+crow=$(grep '^- `cost` ' "$LEDGER" | tail -1)
+case "$crow" in
+  *"누적 usd=2.0000"*) ok "두 번째 스테이지의 비용이 앞의 값에 더해진다" ;;
+  *) bad "비용 누적" "$crow" ;;
+esac
+
+outcome_probe 1 error 0.10 ''
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"종단 부류=크래시"*) ok "0 이 아닌 종료 코드는 크래시다" ;;
+  *) bad "종단 부류" "$row" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 14e. exit 7 tells a STAGE what to do, because only the router can do the
+# prescribed thing
+#
+# The disposition is "stop and tell the user", and a stage can do neither half:
+# the cause is outside it by definition, and looking needs the Bash that was
+# just refused. Measured on one run — five stages, four retried into the same
+# refusal 3, 9, 12 and 15 times, and the fifth stopped because of its own
+# judgment rather than anything the contract said.
+# ---------------------------------------------------------------------------
+STATE7="$WORK/state-surface"
+H=$(cd "$WT" && XDG_STATE_HOME="$STATE7" bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+# Editing a settings file IS moving the surface — that file is one of the four.
+printf '\n' >> "$STATE7/cc-cmds/run/R1/settings/generic.json"
+n_before=$(grep -c '^- `blocked` ' "$LEDGER" 2>/dev/null || true)
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE7" CC_PIPELINE_SEGMENT=SP CC_PIPELINE_TARGET=infra \
+      bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SP --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1); rc=$?
+if [ "$rc" = "7" ]; then
+  ok "표면이 움직이면 종료 코드 7 이다"
+  case "$out" in
+    *"재시도하지 마세요"*) ok "스테이지에게 재시도가 아니라 중단을 지시한다" ;;
+    *) bad "exit 7 문면" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+  esac
+  n_after=$(grep -c '^- `blocked` ' "$LEDGER" 2>/dev/null || true)
+  if [ "${n_after:-0}" -gt "${n_before:-0}" ]; then
+    ok "런 스코프 blocked 행이 남는다 (스테이지의 낭비된 턴 수 말고 상태로 보인다)"
+  else
+    bad "표면 이동 기록" "blocked 행이 늘지 않았다"
+  fi
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE7" CC_PIPELINE_SEGMENT=SP CC_PIPELINE_TARGET=infra \
+        bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SP --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1) || true
+  n_twice=$(grep -c '^- `blocked` ' "$LEDGER" 2>/dev/null || true)
+  check "같은 조건을 반복 기록하지 않는다" "$n_twice" "$n_after"
+else
+  bad "표면 이동" "종료 코드 $rc — 표면을 움직였는데 7 이 아니다"
+fi
 
 # ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
