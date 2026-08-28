@@ -515,6 +515,24 @@ else
   ok "출력 JSON 크기를 진행성 신호로 쓰지 않는다"
 fi
 # 트랜스크립트를 찾으려면 호출자가 고른 세션 id 가 넘어가야 한다. 함수만 있고
+# PATH 정규화는 시스템 접두사를 앞에 두는 것이지 나머지를 버리는 것이 아니다.
+# 버렸을 때의 대가가 측정됐다 — Homebrew 접두사에 사는 gh·terraform 이 해소되지
+# 않아, 절단점이 PR 이상인 런이 말단 행위를 하나도 수행하지 못했다. 게이트도 룰도
+# 통과시킨 뒤 셸이 rc=127 로 죽었고, 통과 행은 이미 원장에 있었다.
+fakebin="/opt/cc-cmds-test-prefix/bin"
+# `/bin` stays in the seed PATH because that is where `bash` itself lives on the
+# hosts this runs on — a seed without it makes the probe fail to launch and the
+# assertion then reports an empty PATH instead of the property under test.
+newpath=$(PATH="/usr/bin:/bin:$fakebin" bash -c 'CC_ORCH_SOURCE_ONLY=1 . "'"$DRIVER"'" >/dev/null 2>&1; printf %s "$PATH"')
+case "$newpath" in
+  /usr/bin:/bin:/usr/sbin:/sbin:*) ok "시스템 접두사가 PATH 앞에 온다 (정규화가 남아 있다)" ;;
+  *) bad "PATH 정규화" "시스템 접두사가 앞이 아니다: $newpath" ;;
+esac
+case "$newpath" in
+  *"$fakebin"*) ok "물려받은 PATH 가 뒤에 남는다 (행위가 부르는 도구는 시스템 도구가 아니다)" ;;
+  *) bad "PATH 절단" "사용자 설치 접두사가 사라졌다: $newpath" ;;
+esac
+
 # 호출부가 없으면 파일을 찾을 수도 없다 — 이번 반증의 직접 원인이 그것이었다.
 if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -- '--session-id'; then
   ok "stage_spawn 이 --session-id 를 넘긴다"

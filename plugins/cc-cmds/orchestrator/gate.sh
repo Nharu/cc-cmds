@@ -57,7 +57,14 @@
 #   gate.sh exec     --manifest <path> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --surface <token>
 #                    --snapshot-digest <hex> --rationale <text> -- <argv...>
-#   gate.sh close    --manifest <path> --approval <id>
+#   gate.sh close    --manifest <path> --approval <id> [--void]
+#
+# Two `act` kinds take FIELDS rather than a command after `--`, because what
+# they perform is the ledger row itself:
+#   gate.sh act --kind segment --target <alias> --segment <id> ... \\
+#               -- 상태=<계획됨|실행중|리뷰중|머지됨|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
+#   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
+#               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
 #
 # Compatibility: bash 3.2 (macOS stock under the sanitized PATH) — no
 # associative arrays, no mapfile, no `wait -n`, no case-modification expansions.
@@ -134,27 +141,25 @@ surface_index() {
 # The grading table. An argv0 with no row gets `등급 미상` and NEVER `읽기` —
 # reading an unknown thing as the safest value is the characteristic failure of
 # this class of table.
+#
+# argv0 is reduced to its BASENAME before the lookup. The table lists bare
+# names, and a command spelled with a path — `/opt/homebrew/bin/gh pr merge` —
+# matched no arm and came back `등급 미상`, which is a refusal. That closed the
+# absolute-path spelling at the same time as the sanitized PATH closed the bare
+# one, leaving no spelling that reached `gh` at all.
+#
+# Normalizing does not weaken the grade. What this table measures is EFFECT
+# SURFACE, not identity: an unexpected binary named `gh` grades `외부상태변경`,
+# which is the stricter side, and a grade that depends on how a caller happened
+# to spell the path is not a property of the act.
 surface_of_argv0() {
-  case "$1" in
+  local cmd="${1##*/}"
+  shift
+  case "$cmd" in
     cat|ls|find|grep|rg|head|tail|wc|stat|file|diff|which|command)
       printf '읽기' ;;
-    git)
-      case "$2" in
-        status|log|show|diff|rev-parse|rev-list|merge-base|branch|worktree|config|blame|cat-file|ls-files)
-          printf '읽기' ;;
-        add|commit|checkout|switch|restore|rebase|merge|cherry-pick|stash|apply|am|reset|tag)
-          printf '워크트리쓰기' ;;
-        push|fetch|pull|clone|remote)
-          printf '외부상태변경' ;;
-        *) printf '등급 미상' ;;
-      esac ;;
-    gh)
-      case "$2" in
-        api) printf '등급 미상' ;;
-        pr|issue|release|repo|workflow|run) printf '외부상태변경' ;;
-        auth) printf '등급 미상' ;;
-        *) printf '등급 미상' ;;
-      esac ;;
+    git) surface_of_git "$@" ;;
+    gh)  surface_of_gh "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
     mkdir|touch|cp|mv|rm|sed|tee|install)
@@ -162,6 +167,92 @@ surface_of_argv0() {
     curl|wget|ssh|scp|rsync|terraform|kubectl|aws|gcloud|docker)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_git() {
+  # git's GLOBAL options come BEFORE the subcommand, so `git -C <path> commit`
+  # puts `-C` in the slot the table reads and the whole act graded `등급 미상`.
+  #
+  # Only the globals git actually defines are skipped, and an UNRECOGNIZED dash
+  # option ends the scan as unknown rather than guessing whether it consumes the
+  # next word. Guessing wrong would shift the subcommand out of view and grade a
+  # `push` by whatever word landed in its place — a wrong grade is worse here
+  # than no grade, because `등급 미상` refuses and a wrong grade performs.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ $# -ge 2 ] || { printf '등급 미상'; return 0; }
+        shift 2 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
+        shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        shift ;;
+      -*) printf '등급 미상'; return 0 ;;
+      *)  break ;;
+    esac
+  done
+  case "${1:-}" in
+    status|log|show|diff|rev-parse|rev-list|merge-base|branch|worktree|config|blame|cat-file|ls-files)
+      printf '읽기' ;;
+    add|commit|checkout|switch|restore|rebase|merge|cherry-pick|stash|apply|am|reset|tag)
+      printf '워크트리쓰기' ;;
+    push|fetch|pull|clone|remote)
+      printf '외부상태변경' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_gh() {
+  case "${1:-}" in
+    api) surface_of_gh_api "$@" ;;
+    pr|issue|release|repo|workflow|run) printf '외부상태변경' ;;
+    # `auth` is a DELIBERATE refusal, not a gap in the table. It reads and
+    # rewrites the credential the whole separation rests on, so an act that
+    # reached it would be editing the thing that limits it.
+    auth) printf '등급 미상' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_gh_api() {
+  # `gh api` is graded by the HTTP METHOD it will send, not by the word `api`.
+  # Grading the subcommand made a read of a pull request's review threads
+  # indistinguishable from a merge and refused both — which took away the only
+  # spelling that submits several inline comments as ONE review
+  # (`POST …/pulls/{n}/reviews`; `gh pr review` carries no comments array), and
+  # every read of a value `gh pr view --json` does not expose along with it.
+  shift
+  local m="" body=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -X|--method)
+        [ $# -ge 2 ] || break
+        m="$2"; shift 2 ;;
+      --method=*) m="${1#--method=}"; shift ;;
+      -X*)        m="${1#-X}"; shift ;;
+      -f|-F|--field|--raw-field|--input)
+        body=1
+        [ $# -ge 2 ] || break
+        shift 2 ;;
+      -f*|-F*)    body=1; shift ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
+        [ $# -ge 2 ] || break
+        shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  # An explicit method wins. Otherwise a field or an input body is exactly what
+  # makes gh itself switch from GET to POST, so the table reads the same signal
+  # the tool does rather than a second, divergent one.
+  if [ -z "$m" ]; then
+    if [ "$body" = "1" ]; then m=POST; else m=GET; fi
+  fi
+  case "$m" in
+    GET|get|HEAD|head) printf '읽기' ;;
+    *) printf '외부상태변경' ;;
   esac
 }
 
@@ -685,7 +776,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy=""
+  local approval="" render=0 worktree="" review_policy="" void=0
   MANIFEST=""
 
   while [ $# -gt 0 ]; do
@@ -702,6 +793,7 @@ gate_main() {
       --worktree)        worktree="$2"; shift 2 ;;
       --review-policy)   review_policy="$2"; shift 2 ;;
       --render)          render=1; shift ;;
+      --void)            void=1; shift ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -715,7 +807,20 @@ gate_main() {
   # every invocation would rewrite files that are themselves in the digest set,
   # and a surface that changes because the gate touched it is a surface whose
   # comparison means nothing.
-  [ -d "$(gate_settings_dir)" ] || gate_write_settings
+  if [ ! -d "$(gate_settings_dir)" ]; then
+    gate_write_settings
+    # Run open is the one moment this belongs — the comment on `cred_check`
+    # already says a run whose cutpoint reaches `머지` should learn at kickoff
+    # and not at 3am, and until now nothing called it, so nothing ever did. It
+    # warns and does not refuse: no host has provisioned these yet, and a stop
+    # here would end every run before its first act. What it removes is the
+    # silence, which is what made an unseparated run indistinguishable from a
+    # separated one at every surface.
+    if ! cred_check >/dev/null 2>&1; then
+      warn "파이프라인 자격이 갖춰지지 않았습니다 — 이 런의 행위는 주변 자격으로 돕니다 (원장의 「자격」 필드에 매 행 남습니다)"
+      cred_check >&2 || true
+    fi
+  fi
 
   case "$verb" in
     snapshot)
@@ -724,7 +829,7 @@ gate_main() {
     grade)
       [ $# -ge 1 ] || { printf 'gate: grade 는 -- 뒤에 argv 가 필요합니다\n' >&2; exit 2; }
       local g
-      g=$(surface_of_argv0 "$1" "${2:-}")
+      g=$(surface_of_argv0 "$@")
       printf '축2=%s\n' "$g"
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
@@ -736,11 +841,90 @@ gate_main() {
       ;;
     close)
       [ -n "$approval" ] || { printf 'gate: close 는 --approval 이 필요합니다\n' >&2; exit 2; }
-      gate_close "$approval"
+      gate_close "$approval" "$void"
       ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
   esac
+}
+
+gate_field_of() {
+  # gate_field_of <key> <키=값>... — the value of the LAST field with that key.
+  local key="$1"; shift
+  local f out=""
+  for f in "$@"; do
+    case "$f" in
+      "$key"=*) out="${f#"$key"=}" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+gate_record_row() {
+  # gate_record_row <segment|cycle> <segment-id> <키=값>...
+  #
+  # The router's writer for the two row kinds the fixed graph used to own. This
+  # is not bookkeeping polish. With no writer on this path `리뷰-후-머지` refuses
+  # EVERY merge — not because a review is missing but because the row it reads
+  # can never exist, so no argv, no ordering and no preparatory act satisfies it
+  # — and termination condition 1 can never hold, so the run has no ending it is
+  # able to propose. Both failures read as the mechanism working, which is why
+  # the absence stayed invisible until a run tried to finish.
+  local kind="$1" seg="$2"; shift 2
+  local f k
+
+  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+    warn "$kind 행에는 --segment 가 필요합니다"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  [ $# -ge 1 ] || { warn "$kind 행에 필드가 하나도 없습니다"; return "$GATE_EXIT_VOCAB"; }
+  for f in "$@"; do
+    case "$f" in
+      *=*) : ;;
+      *) warn "$kind 행의 필드는 「키=값」이어야 합니다: $f"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+  done
+
+  case "$kind" in
+    segment)
+      local st wt
+      st=$(gate_field_of '상태' "$@")
+      wt=$(gate_field_of '워크트리' "$@")
+      # `적용 준비` is quoted because it is the one state carrying a space, and
+      # an unquoted arm would split it into two patterns that match neither.
+      case "$st" in
+        계획됨|실행중|리뷰중|머지됨|park|'적용 준비') : ;;
+        *) warn "segment 행의 「상태」가 어휘 밖입니다: ${st:-없음} — 계획됨 실행중 리뷰중 머지됨 「적용 준비」 park"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # `리뷰-후-머지` resolves the branch's current HEAD by entering this value,
+      # so a segment row without it turns a merge refusal into one that names a
+      # missing worktree instead of the review — the wrong repair at 3am.
+      [ -n "$wt" ] || { warn "segment 행에 「워크트리」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      gate_append 'segment' "id=$seg" "$@"
+      log "세그먼트 기록 — $seg ($st)"
+      ;;
+    cycle)
+      # The four the merge rule actually reads. A cycle row missing any of them
+      # does not fail at write time under the old path either — it fails later,
+      # inside the rule, as "the review record has no HEAD", which reads as a
+      # broken review rather than as a row this run wrote incompletely.
+      for k in '사이클' 'P0' 'P1' '리뷰 HEAD'; do
+        if [ -z "$(gate_field_of "$k" "$@")" ]; then
+          # `${k}` and not `$k`: the closing bracket that follows is multibyte,
+          # and bash reads its first byte as part of the variable NAME — the
+          # lookup then fails as an unbound variable under `set -u`, turning a
+          # vocabulary refusal into a bare exit 1 with no message a reader can
+          # act on. Measured here, not imagined.
+          warn "cycle 행에 「${k}」가 필요합니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      done
+      gate_append 'cycle' "세그먼트=$seg" "$@"
+      log "리뷰 사이클 기록 — $seg"
+      ;;
+  esac
+  return 0
 }
 
 gate_verb_act() {
@@ -774,6 +958,11 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
+    segment|cycle)
+      # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
+      # and what it performs is the ledger row the gate would write anyway. It
+      # reaches nothing outside the ledger, so it grades `읽기`.
+      graded="읽기" ;;
     skill)
       # A stage dispatch's argv does NOT begin with a command: its first token
       # is the STAGE KIND that selects a settings variant, and the wrapper is
@@ -789,7 +978,7 @@ gate_verb_act() {
       # its own act and is graded there.
       graded="워크트리쓰기" ;;
     *)
-      graded=$(surface_of_argv0 "$1" "${2:-}") ;;
+      graded=$(surface_of_argv0 "$@") ;;
   esac
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
@@ -820,6 +1009,11 @@ gate_verb_act() {
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     gate_export_cutpoints "$alias" "$cutpoint" || exit $?
+    # Where the act runs. A declared target names its own worktree and the act
+    # belongs there; an undeclared one has no row to read, so the act stays in
+    # the caller's directory and is bounded by the layers above instead.
+    GATE_ACT_CWD=$(target_field "$alias" '메인 워크트리')
+    export GATE_ACT_CWD
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
 
@@ -878,8 +1072,25 @@ gate_verb_act() {
 
   gate_boundaries
 
+  # Which credential the act will actually run under, recorded on every act.
+  # With neither pipeline credential provisioned the gate used to fall through
+  # to whatever the calling environment already held — on a developer machine a
+  # full-scope `gh` login — and say nothing, so the layer the separation exists
+  # to provide was absent while every surface reported normal operation. The
+  # fallback stays (refusing would stop every host that has not provisioned one
+  # yet), but it is no longer silent: it is one field in the morning's report.
+  local credmode='분리'
+  if ! cred_readonly_env >/dev/null 2>&1; then
+    credmode='주변'
+    # Loud only above `읽기`. A bookkeeping act reaches nothing a credential
+    # could widen, and a warning on every row teaches the reader to skip the
+    # line that matters.
+    [ "$graded" = "읽기" ] || \
+      warn "파이프라인 자격이 없어 주변 자격으로 실행합니다 — 이 행위에는 자격 분리가 걸려 있지 않습니다"
+  fi
+
   gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
-    "절단점=$cutpoint" "축2=$graded" "근거=$rationale"
+    "절단점=$cutpoint" "축2=$graded" "자격=$credmode" "근거=$rationale"
   log "게이트 통과 — $verb $cutpoint ($alias)"
 
   # ---- and now PERFORM it -------------------------------------------------
@@ -894,6 +1105,9 @@ gate_verb_act() {
   gate_issue_review_obligation "$segment" "$cutpoint" "$graded" "$review_policy"
 
   [ "$kind" = "propose-done" ] && return 0
+  case "$kind" in
+    segment|cycle) gate_record_row "$kind" "$segment" "$@"; return $? ;;
+  esac
   case "$verb" in
     exec)
       # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
@@ -1065,14 +1279,28 @@ gate_run_readonly() {
   # is unforgeable — which is the property no string matcher can have. Acts that
   # genuinely need the write-scoped credential do not come through this door;
   # they are performed by the gate's own verbs.
-  local line
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    export "$line"
-  done <<CREDS
+  #
+  # The act runs in the TARGET's worktree, and the whole body is a subshell so
+  # that neither the credential exports nor the `cd` outlive the act. `--target`
+  # is a parameter of both acting verbs and every target row carries an absolute
+  # `메인 워크트리`, but nothing used to carry that value to the act's working
+  # directory — so a manifest could declare nine targets and only the home one
+  # could receive an act. The two spellings a router reached for instead were
+  # both refused: calling from the target's own directory trips the manifest's
+  # origin-worktree pin, and `git -C <path>` was ungradeable.
+  local line dir="${GATE_ACT_CWD:-}"
+  (
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      export "$line"
+    done <<CREDS
 $(cred_readonly_env 2>/dev/null || true)
 CREDS
-  "$@"
+    if [ -n "$dir" ]; then
+      cd "$dir" || { printf 'gate: 대상 워크트리로 이동하지 못했습니다: %s\n' "$dir" >&2; exit 1; }
+    fi
+    "$@"
+  )
 }
 
 gate_launch_stage() {
@@ -1199,7 +1427,19 @@ gate_close() {
   # transcript directory — which is the run settings' job, not this script's.
   # This verb's contract is the narrow one it can actually keep: it never
   # accepts an answer that did not come out of that file.
-  local id="$1" row state q tx ans f
+  #
+  # Two outcomes, and both need the same transcript line. `--void` records
+  # `무효` — the question should not have been asked — instead of `승인`. Before
+  # it there was exactly one recording path, so a pending approval had two
+  # possible ends: granted, or pending forever. Pending is not inert; it counts
+  # against termination condition 2 and suspends the stagnation boundaries, so
+  # one approval nobody wants to grant stalls the rest of the run.
+  #
+  # Voiding is NOT the conservative direction — it REMOVES a blocker — so it
+  # keeps the transcript binding rather than becoming a router-writable escape.
+  # What it buys a person is the ability to answer "this should not have been
+  # asked" without also granting the act.
+  local id="$1" void="${2:-0}" row state q tx ans f
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -1246,6 +1486,12 @@ gate_close() {
     exit "$GATE_EXIT_APPROVAL"
   fi
 
+  if [ "$void" = "1" ]; then
+    gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
+      "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"
+    log "승인 무효 — $id (행위는 수행되지 않습니다)"
+    return 0
+  fi
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)"
   log "승인 해소 — $id"

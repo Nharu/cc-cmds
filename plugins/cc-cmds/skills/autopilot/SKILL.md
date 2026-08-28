@@ -218,7 +218,9 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `plan` | dry run — would this act pass, and if not which rule refuses it |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
-| `close` | resolve a pending approval from the harness-written transcript |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked) |
+
+**Two `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. `act --kind segment … -- 상태=<…> 워크트리=<path>` advances a segment, and `act --kind cycle … -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'` records a review. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
 
 **Use `grade` and `plan` rather than finding out by doing.** They write no row and cost no budget. Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation.
 
@@ -241,6 +243,8 @@ Past the checks, the act's own exit status passes through. A refusal always arri
 Exit 5 means the run has asked and cannot answer itself. **Ask the user in this terminal** — this session has `AskUserQuestion` and a headless stage does not, which is the whole reason the router lives here. Then call `gate.sh close --approval <id>`.
 
 `close` reads the **harness-written transcript**, not the router's prose. A router that could type its own answer would be issuing approvals to itself and the record would be indistinguishable from one a person gave. If the transcript cannot be read, `close` refuses; that refusal is the mechanism working.
+
+**An approval the run should never have asked for is voided, not granted.** `gate.sh close --approval <id> --void` records `무효` and the act does not happen. It needs the same transcript line as an approval — voiding removes a blocker rather than adding one, so it gets no looser gate — and what it buys the person is a way to say *this should not have been asked* without granting the act to get the run moving again.
 
 **While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
 
