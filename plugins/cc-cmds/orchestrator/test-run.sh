@@ -534,6 +534,16 @@ if [ "$(DOC_KEY=y session_uuid 'S4:seg:1')" != "$uu" ]; then
 else
   bad "session_uuid" "앵커가 달라도 같은 id — 두 런이 한 트랜스크립트로 별칭된다"
 fi
+# 같은 문서를 두 번 도는 것은 예외가 아니라 정상이다 — 리메디에이션 런은 앞선
+# 런과 같은 문서를 다시 잡는다. 런 id 가 유도에서 빠지면 두 번째 런의 첫 스테이지가
+# "Session ID ... is already in use" 로 즉사한다.
+uu_r1=$(RUN_ID=r1 DOC_KEY=x session_uuid 'S4:seg:1')
+uu_r2=$(RUN_ID=r2 DOC_KEY=x session_uuid 'S4:seg:1')
+if [ "$uu_r1" != "$uu_r2" ]; then
+  ok "런 id 가 다르면 다른 세션 id"
+else
+  bad "session_uuid" "런 id 가 달라도 같은 id — 같은 문서의 두 번째 런이 첫 스테이지에서 죽는다"
+fi
 if [ "$STALL_SILENT_POLLS" -gt 1 ]; then
   ok "침묵 상한이 1보다 크다 ($STALL_SILENT_POLLS)"
 else
