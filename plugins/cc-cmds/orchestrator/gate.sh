@@ -1486,8 +1486,34 @@ gate_launch_stage() {
   local alias="$1" seg="$2" kind="$3"; shift 3
   local wrapper="$GATE_DIR/stage-wrapper.sh"
   [ -f "$wrapper" ] || { warn "스테이지 래퍼가 없습니다: $wrapper"; return 127; }
-  local plugin_dir
-  plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
+
+  # RE-ATTACH, NOT RE-RUN. The contract already says a stage cut mid-flight is
+  # continued rather than restarted, and the wrapper already accepts `--resume`
+  # — nothing carried the router's intent to it, so the only recovery available
+  # was a full re-run. Measured: a review stage died to a machine sleep after
+  # 1h53m and 51.84 USD with all five reviewers' output on disk and only the
+  # synthesis missing; re-running would have paid for the whole thing again.
+  #
+  # The session id is CHECKED against this run's own ledger, not taken on trust.
+  # A resume is an instruction to continue somebody's transcript, so an
+  # unchecked value would let one segment continue another segment's — or
+  # another run's — session. It must appear as the `세션 id` of a `stage-result`
+  # row for THIS segment.
+  #
+  # Validated HERE, before the CLI binary is resolved. Resolving first makes
+  # "the binary is missing" mask "the argv is wrong", which is the same defect
+  # the wrapper already had and had fixed: a host without the CLI answered 127
+  # to a bad resume id and the refusal never named the real fault.
+  if [ -n "${GATE_RESUME:-}" ]; then
+    local known
+    known=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+             | { grep -cF "세션 id=$GATE_RESUME " || true; } )
+    if [ "${known:-0}" = "0" ]; then
+      warn "재개 대상 세션이 이 세그먼트의 원장 기록에 없습니다: $GATE_RESUME"
+      return "$GATE_EXIT_VOCAB"
+    fi
+  fi
+
   # `bash`, not `/bin/sh`. The wrapper declares `#!/usr/bin/env bash` and uses
   # `set -o pipefail`, and naming an interpreter on the command line OVERRIDES
   # the shebang — so on a distribution whose `/bin/sh` is dash the wrapper died
@@ -1574,34 +1600,15 @@ gate_launch_stage() {
   # make `$!` the tee's pid, and the pid is what the watcher uses to tell a
   # working stage from a stopped router — so the visible stream would be bought
   # with the liveness record. The outcome is read back below and reported.
-  mkdir -p "$RUN_DIR/log"
-
-  # RE-ATTACH, NOT RE-RUN. The contract already says a stage cut mid-flight is
-  # continued rather than restarted, and the wrapper already accepts `--resume`
-  # — nothing carried the router's intent to it, so the only recovery available
-  # was a full re-run. Measured: a review stage died to a machine sleep after
-  # 1h53m and 51.84 USD with all five reviewers' output on disk and only the
-  # synthesis missing; re-running would have paid for the whole thing again.
-  #
-  # The session id is CHECKED against this run's own ledger, not taken on trust.
-  # A resume is an instruction to continue somebody's transcript, so an
-  # unchecked value would let one segment continue another segment's — or
-  # another run's — session. It must appear as the `세션 id` of a `stage-result`
-  # row for THIS segment.
   local id_flag
   if [ -n "${GATE_RESUME:-}" ]; then
-    local known
-    known=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
-             | { grep -cF "세션 id=$GATE_RESUME " || true; } )
-    if [ "${known:-0}" = "0" ]; then
-      warn "재개 대상 세션이 이 세그먼트의 원장 기록에 없습니다: $GATE_RESUME"
-      return "$GATE_EXIT_VOCAB"
-    fi
     id_flag="--resume $GATE_RESUME"
     log "스테이지 재부착 — $seg ← 세션 $GATE_RESUME"
   else
     id_flag="--session-id $(session_uuid "$seg" "$attempt")"
   fi
+
+  mkdir -p "$RUN_DIR/log"
 
   local n_rows_before
   n_rows_before=$(gate_rows '자율 승인' | gate_count)

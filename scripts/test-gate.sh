@@ -1426,6 +1426,17 @@ fi
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
      --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x --resume "남의-세션-id" -- review x
+# The validation must sit BEFORE the CLI binary is resolved. Resolving first
+# makes "the binary is missing" mask "the argv is wrong" — the same defect the
+# wrapper already had and had fixed, and it came back here: on a host without
+# the CLI a bad resume id answered 127 and the refusal never named the fault.
+ord_resume=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n '재개 대상 세션이' | sed 's/:.*//' | tail -1)
+ord_cli=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'CLI 바이너리를 해소하지' | sed 's/:.*//' | tail -1)
+if [ -n "$ord_resume" ] && [ -n "$ord_cli" ] && [ "$ord_resume" -lt "$ord_cli" ]; then
+  ok "재개 인자 검증이 CLI 해소보다 먼저 온다"
+else
+  bad "검증 순서" "재개 검증 $ord_resume · CLI 해소 $ord_cli — 바이너리 부재가 인자 오류를 가린다"
+fi
 check "원장에 없는 세션 id 로는 재개하지 못한다" "$rc" "2"
 case "$msg" in
   *"원장 기록에 없습니다"*) ok "거부가 그 이유를 말한다" ;;
