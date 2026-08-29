@@ -1444,6 +1444,64 @@ case "$msg" in
 esac
 
 # ---------------------------------------------------------------------------
+# 14h. The launch path is actually ENTERED, with a stub CLI
+#
+# Every assertion above stops at `gate_launch_stage`'s argument checks, because
+# the fixture has no CLI binary and the function returns 127 before doing
+# anything. That left the whole body — the plugin root, the id flag, the log
+# capture, the pid file, the terminal rows — with no coverage at all, and an
+# edit that moved one block silently deleted the `plugin_dir` assignment while
+# leaving `--plugin-dir "$plugin_dir"` behind. Under `set -u` that killed every
+# stage dispatch, and the suite stayed green.
+#
+# The stub is a CLI-shaped script: it prints one stream-json result line and
+# exits. What is under test is the gate's launch path, not the CLI.
+# ---------------------------------------------------------------------------
+STUB="$WORK/stub-cli"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+# A CLI-shaped stub. Records the argv it was handed, then emits one result line.
+printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"session_id":"stub-session","num_turns":1}\n'
+exit 0
+STUBEOF
+chmod +x "$STUB"
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv.txt" \
+      bash "$GATE" act --manifest "$MANIFEST" --kind skill --target infra --segment SL \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "스텁 CLI 로 스테이지 기동이 끝까지 간다" "$rc" "0"
+case "$out" in
+  *"unbound variable"*|*"바인딩 해제"*)
+    bad "기동 경로" "unbound variable: $(printf '%s' "$out" | tr '\n' ' ')" ;;
+  *) ok "기동 경로에 미정의 변수가 없다" ;;
+esac
+# The plugin root actually reaches the wrapper, and it is the directory that
+# contains the skills — not the orchestrator directory.
+if [ -f "$WORK/stub-argv.txt" ]; then
+  ok "스텁이 실제로 실행됐다 (argv 를 남겼다)"
+else
+  bad "기동 경로" "스텁이 실행되지 않았다 — 래퍼 앞에서 끝났다"
+fi
+# And the terminal rows the launch path is responsible for are there.
+case "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" in
+  *"세그먼트=SL"*) ok "기동이 끝나면 stage-result 행이 남는다" ;;
+  *) bad "종단 기록" "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" ;;
+esac
+case "$(grep '^- `자율 승인` | kind=skill ' "$LEDGER" | tail -1)" in
+  *"세그먼트=SL"*) ok "디스패치 자체도 원장에 남는다" ;;
+  *) bad "디스패치 기록" "$(grep '^- `자율 승인` | kind=skill ' "$LEDGER" | tail -1)" ;;
+esac
+# The pid file is removed on exit, so "no record implies no process" holds.
+if [ -f "$(dirname "$SETTINGS_DIR")/SL.pid" ]; then
+  bad "pid 정리" "스테이지가 끝났는데 pid 기록이 남아 있다"
+else
+  ok "스테이지가 끝나면 pid 기록이 지워진다"
+fi
+
+# ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
 #
 # Three defects met here and left no spelling that reached `gh` at all: the
