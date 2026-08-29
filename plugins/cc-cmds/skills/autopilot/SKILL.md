@@ -224,6 +224,14 @@ snapshot  →  decide  →  gate call  →  (repeat)
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
 
+**THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
+
+That includes the moments that feel like natural checkpoints: a stage just finished, a review came back with findings, the next step is large or expensive, the previous act failed. None of those is a question. **A router that asks at one of them stops the run**, and the stop is invisible — the ledger is well-formed, the last row is a normal one, nothing refused anything. It is not even distinguishable from a run waiting on an approval, because *that* state leaves a `승인` row and this one leaves nothing at all. Unattended, nobody answers and the night is spent.
+
+Measured: a review stage completed and produced its report; the router recorded the cycle row and then asked the user whether to continue. No rule had refused, no approval was pending, no vocabulary error had occurred, and every value the next decision needed was in the snapshot it had just read.
+
+**Where a decision is genuinely yours to make rather than to act on, the answer is the judgment grades below — not a question.** Grade 0 you take, grade 1 you take and record, grade 2 you escalate, and escalation means issuing an approval through the gate so the stop is a row rather than a silence.
+
 **Every acting call carries `--snapshot-digest <H>`, copied from the snapshot just read.** This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
 
 ### The verbs
@@ -324,6 +332,7 @@ Cover, in this order:
 - **Never run a `재호출 명령`** recorded by a halted stage. It is recorded precisely because re-running it would retry a condition whose cause is still present.
 - **The router's input is the snapshot** (CFI-3). Never act on a remembered decision, a remembered obligation, or a previous turn's plan.
 - **Never assemble a stage command line in the router.** A stage is `act --kind skill`; the gate calls the wrapper.
+- **Never stop the loop to ask.** Exit 5 is the only question in Act 2b; a stage finishing, a review returning findings, or an act failing are not questions. The stop leaves no row, so it cannot be told apart from a healthy run — see Act 2b.
 - **Never answer a pending approval on the user's behalf.** `close` reads the transcript, and typing the answer defeats the only thing that makes the record auditable.
 - **`--admin` is never authorized here**, whatever cutpoint the user picks.
 
