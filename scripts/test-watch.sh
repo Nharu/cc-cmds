@@ -277,5 +277,49 @@ fi
 n=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
 check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
 
+# ---------------------------------------------------------------------------
+# A STAGE ENDED AND THE ROUTER DID NOT ACT — the sharp arm.
+#
+# The dispatch form itself cannot be checked: measured, the environment a
+# harness-tracked background command sees and the environment a foreground one
+# sees are byte-identical, so the gate has nothing to test at dispatch time.
+# What can be observed is the consequence — a stage's terminal row as the last
+# row in the ledger, for longer than a router that was woken would take.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+# The FIRST pass, not the second: with the threshold at zero this arm fires
+# immediately, and the second pass is suppressed by the announce-once guard.
+out=$(run --stall 99999 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) ok "스테이지 종단 뒤 라우터 무응답을 잡는다" ;;
+  *) bad "종단 후 무응답" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+if grep -q '스테이지 종단 후 라우터 무응답' "$RD/stall" 2>/dev/null; then
+  ok "그 관측이 파일에 남는다"
+else
+  bad "종단 후 무응답" "stall 파일에 관측이 없다"
+fi
+
+# A row after the stage's terminal row means the router DID act — no alarm.
+fresh
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
+out=$(run --stall 99999 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "종단 후 무응답" "라우터가 이어서 행위했는데 경보가 났다" ;;
+  *) ok "라우터가 이어서 행위했으면 경보가 나지 않는다" ;;
+esac
+
+# And a terminated run does not raise it — that is not a stranded router.
+fresh
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+printf '2026-08-30T00:00:00Z 종단\n' > "$RD/done"
+out=$(run --stall 99999 --after-stage 0 2>&1 || true)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "종단 후 무응답" "종단한 런에서 경보가 났다" ;;
+  *) ok "종단한 런에서는 나지 않는다" ;;
+esac
+
 printf '\ntest-watch: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
