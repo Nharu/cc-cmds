@@ -59,6 +59,10 @@
 #                    --snapshot-digest <hex> --rationale <text> -- <argv...>
 #   gate.sh close    --manifest <path> --approval <id> [--void]
 #
+# `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
+# was cut mid-flight instead of running it again. The id must appear on a
+# `stage-result` row for that segment in this run's ledger.
+#
 # Two `act` kinds take FIELDS rather than a command after `--`, because what
 # they perform is the ledger row itself:
 #   gate.sh act --kind segment --target <alias> --segment <id> ... \\
@@ -901,6 +905,7 @@ gate_main() {
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
   local approval="" render=0 worktree="" review_policy="" void=0
+  GATE_RESUME=""; export GATE_RESUME
   MANIFEST=""
 
   while [ $# -gt 0 ]; do
@@ -918,6 +923,7 @@ gate_main() {
       --review-policy)   review_policy="$2"; shift 2 ;;
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
+      --resume)          GATE_RESUME="$2"; shift 2 ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -1569,6 +1575,34 @@ gate_launch_stage() {
   # working stage from a stopped router — so the visible stream would be bought
   # with the liveness record. The outcome is read back below and reported.
   mkdir -p "$RUN_DIR/log"
+
+  # RE-ATTACH, NOT RE-RUN. The contract already says a stage cut mid-flight is
+  # continued rather than restarted, and the wrapper already accepts `--resume`
+  # — nothing carried the router's intent to it, so the only recovery available
+  # was a full re-run. Measured: a review stage died to a machine sleep after
+  # 1h53m and 51.84 USD with all five reviewers' output on disk and only the
+  # synthesis missing; re-running would have paid for the whole thing again.
+  #
+  # The session id is CHECKED against this run's own ledger, not taken on trust.
+  # A resume is an instruction to continue somebody's transcript, so an
+  # unchecked value would let one segment continue another segment's — or
+  # another run's — session. It must appear as the `세션 id` of a `stage-result`
+  # row for THIS segment.
+  local id_flag
+  if [ -n "${GATE_RESUME:-}" ]; then
+    local known
+    known=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+             | { grep -cF "세션 id=$GATE_RESUME " || true; } )
+    if [ "${known:-0}" = "0" ]; then
+      warn "재개 대상 세션이 이 세그먼트의 원장 기록에 없습니다: $GATE_RESUME"
+      return "$GATE_EXIT_VOCAB"
+    fi
+    id_flag="--resume $GATE_RESUME"
+    log "스테이지 재부착 — $seg ← 세션 $GATE_RESUME"
+  else
+    id_flag="--session-id $(session_uuid "$seg" "$attempt")"
+  fi
+
   local n_rows_before
   n_rows_before=$(gate_rows '자율 승인' | gate_count)
 
@@ -1587,7 +1621,7 @@ gate_launch_stage() {
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
-    --session-id "$(session_uuid "$seg" "$attempt")" \
+    $id_flag \
     -- "$@" > "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err" < /dev/null &
   local spid=$!
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
@@ -1619,7 +1653,7 @@ gate_record_stage_outcome() {
   # implementation-review separation rule reads ancestry from; with no rows that
   # rule returns early and passes vacuously on every run it exists to catch.
   local alias="$1" seg="$2" kind="$3" attempt="$4" rc="$5" before="$6"
-  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha
+  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha iserr
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
@@ -1637,7 +1671,12 @@ gate_record_stage_outcome() {
   # read from its halt record, which the halt contract owns. Guessing them from
   # outside would put a value in the ledger that nothing verified.
   after=$(gate_rows '자율 승인' | gate_count)
-  if [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ]; then
+  # `is_error` is read as well as the status and the subtype. Measured: a stage
+  # that slept mid-response returned `subtype: success` WITH `is_error: true`,
+  # and only the non-zero status caught it — the same object with a zero status
+  # would have been classified as a normal completion.
+  iserr=$(printf '%s' "$res" | jq -r '.is_error // false' 2>/dev/null || true)
+  if [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
   elif [ "${after:-0}" -gt "${before:-0}" ]; then
     klass='정상 완료'

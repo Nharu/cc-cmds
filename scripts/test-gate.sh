@@ -1284,6 +1284,31 @@ case "$crow" in
   *) bad "비용 누적" "$crow" ;;
 esac
 
+# `is_error` is read as well as the status and the subtype. Measured: a stage
+# that slept mid-response returned `subtype: success` WITH `is_error: true`, and
+# only the non-zero status caught it — the same object with a zero status would
+# have been classified as a normal completion.
+outcome_probe_err() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"total_cost_usd\":9,\"session_id\":\"sid-slept\"}\n" \
+      > "$RUN_DIR/log/SP.json"
+    nb=$(gate_rows "자율 승인" | gate_count)
+    gate_record_stage_outcome infra SP review 1 0 "$nb" >/dev/null 2>&1
+  '
+}
+outcome_probe_err
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"종단 부류=크래시"*) ok "종료 코드가 0 이어도 is_error 면 크래시다" ;;
+  *) bad "종단 부류" "$row" ;;
+esac
+
 outcome_probe 1 error 0.10 ''
 row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
 case "$row" in
@@ -1380,6 +1405,32 @@ if jq -e --arg d "$parent_of_wt" '.permissions.additionalDirectories | index($d)
 else
   ok "문서 없는 런은 베이스의 부모를 열지 않는다"
 fi
+
+# ---------------------------------------------------------------------------
+# 14g. A cut stage is RE-ATTACHED, not re-run — and the id is checked
+#
+# The contract already said so and the wrapper already accepted `--resume`;
+# nothing carried the router's intent to it, so the only recovery was a full
+# re-run. Measured: a review stage died to a machine sleep after 1h53m and 51.84
+# USD with every reviewer's output on disk and only the synthesis missing.
+#
+# The id is checked against this run's own ledger. A resume is an instruction to
+# continue somebody's transcript, so an unchecked value would let one segment
+# continue another segment's — or another run's — session.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $GATE_RESUME"'; then
+  ok "게이트가 래퍼에 --resume 을 넘길 수 있다"
+else
+  bad "재개 경로" "라우터가 끊긴 스테이지를 이어붙일 수단이 없다"
+fi
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x --resume "남의-세션-id" -- review x
+check "원장에 없는 세션 id 로는 재개하지 못한다" "$rc" "2"
+case "$msg" in
+  *"원장 기록에 없습니다"*) ok "거부가 그 이유를 말한다" ;;
+  *) bad "재개 거부 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
