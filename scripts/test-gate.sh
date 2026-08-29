@@ -1540,6 +1540,78 @@ esac
 rm -f "$RD_G/done"
 
 # ---------------------------------------------------------------------------
+# 14j. The grant reaches every declared worktree, and digest tools are readable
+#
+# `실행 워크트리` was wired to the act's cwd and not to the stage's readable set,
+# so a stage woke in a worktree it could not read. And no other target's main
+# worktree was in the set either — only the home one. Separately, the digest
+# tools were absent, which deadlocked the implement arm: process B may enter
+# only after comparing the plan's digest, and computing it was refused.
+# ---------------------------------------------------------------------------
+graded_as '읽기' 'shasum 이 읽기로 등급된다'   -- shasum -a 256 /tmp/x
+graded_as '읽기' 'sha256sum 도 같다'           -- sha256sum /tmp/x
+# `openssl` stays out on purpose — it computes digests AND opens sockets.
+graded_as '등급 미상' 'openssl 은 들어오지 않는다' -- openssl dgst -sha256 /tmp/x
+
+set_exec_wt "$LINKED" >/dev/null 2>&1 || true
+rm -rf "$SETTINGS_DIR"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
+if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "실행 워크트리가 스테이지의 읽기 집합에 들어간다"
+else
+  bad "실행 워크트리 인가" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
+fi
+if jq -e --arg d "$WT" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "선언된 대상의 메인 워크트리도 들어간다"
+else
+  bad "대상 워크트리 인가" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
+fi
+set_exec_wt "" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# 14k. The deadline is a dispatch gate, and it is read
+#
+# It was frozen into the binding digest and compared at entry, and then nothing
+# read it — the field appears nowhere in this file and the driver's own helper
+# is only called from the loop the router never enters. Measured: a run past its
+# deadline had `plan --kind skill` answer "통과 예상".
+# ---------------------------------------------------------------------------
+past_dl() {
+  local line out="$MANIFEST.dl"
+  : > "$out"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '**벽시계 마감**: '*) line="**벽시계 마감**: $1" ;;
+    esac
+    printf '%s\n' "$line" >> "$out"
+  done < "$MANIFEST"
+  mv "$out" "$MANIFEST"
+  refresh_bd
+}
+past_dl '2020-01-01T00:00:00Z'
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
+case "$msg" in
+  *"마감이 지났습니다"*) ok "거부가 마감을 이유로 든다" ;;
+  *) bad "마감 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+esac
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
+check "마감 뒤 머지도 거부된다" "$rc" "3"
+# But recording and closing still work — a deadline that stopped everything
+# would strand the run instead of ending it.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$H" --rationale x -- 상태=park 워크트리="$WT"
+check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
+past_dl '2030-01-01T00:00:00Z'
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
 #
 # Three defects met here and left no spelling that reached `gh` at all: the

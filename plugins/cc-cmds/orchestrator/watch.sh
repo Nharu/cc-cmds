@@ -175,11 +175,20 @@ announce() {
 }
 
 record_blocked() {
-  # watch.sh is not the ledger's writer in the general case — the gate is. This
-  # one row is the exception the design names, and it is scoped `run` because
-  # what it reports is a property of the run rather than of any act.
-  printf -- '- `blocked` | 대상=- | 스코프=run | 원인=불명 | 사유=%s | 관측=%s | 재개 명령=%s\n' \
-    "$1" "$(now_iso)" "$2" >> "$LEDGER"
+  # THE LEDGER HAS ONE WRITER AND IT IS NOT THIS PROCESS. The row this used to
+  # append carried no `prev=`, took no lock, and passed no row-length check —
+  # and the two sides of the chain then disagreed about it: the verifier skips a
+  # row with no `prev=` without advancing its running value, while the writer's
+  # tip hashes the ledger's last ROW including that one. So a run whose watcher
+  # fired once read as "chain broken" from the next row onward, forever. That is
+  # the same permanent-break value #219 already measured: a real splice and a
+  # normal run look identical.
+  #
+  # So the observation is written HERE, as a file, and the gate transcribes it
+  # into a properly chained row on its next invocation. If the router never
+  # calls the gate again — which is the very condition this detector reports —
+  # the file is still on disk for the render and for the morning.
+  printf '%s\t%s\t%s\n' "$(now_iso)" "$1" "$2" >> "$RUN_DIR/stall"
 }
 
 pass() {
@@ -194,6 +203,7 @@ pass() {
   # the very idleness being measured, so the watcher would alternate between
   # firing and heartbeating forever.
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
+     && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && ! grep -q '사유=라이브니스 침묵' "$LEDGER" 2>/dev/null; then
     announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
              "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"

@@ -197,11 +197,13 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 1. **Create the morning-report stub** at `<base>/docs/pipeline-run/<run-id>.md` — an H1 and the run's identifying line. The stub exists so that a run which dies halfway still leaves a file where the user looks.
 2. **Start the liveness watcher in the background**:
    ```
-   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> &
+   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --notify &
    ```
    It resumes nothing and decides nothing. Its whole job is to make one failure visible — **the router quietly stopping** — which is otherwise indistinguishable from a quiet terminal. It also emits a positive heartbeat, because a watcher that only speaks on failure cannot be told apart from a watcher that died.
 
    **It stops itself.** The gate writes a `done` file into the run directory when the run terminates, and the watcher exits on seeing it — or on the run directory going away. Nothing else reaps it: the gate ends a run without touching it and Act 3 is forbidden from starting or writing anything, so before this the loop outlived every run it watched. Measured on one machine: seven watchers from seven runs, the oldest a day and four hours.
+
+   **`--notify` is not optional here.** The banner code exists and the flag was never passed, so it was dead text: the one condition this process reports — the router stopped — is the condition in which nothing else can report it, and its stdout is closed the moment the launching call returns. A detector whose output reaches nobody is not a detector. This is also the one seat where raising a banner is allowed at all: a spawned agent may not, and a shell script that outlives the session is not an agent.
 
    **The heartbeat goes to a file, not only to stdout.** This is launched in the background by a tool call that then returns, so its stdout is closed and anything printed there reaches nobody. `watch.heartbeat` in the run directory is rewritten every pass, and its mtime is what makes the watcher's own liveness measurable.
 3. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.

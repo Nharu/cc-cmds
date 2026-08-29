@@ -162,6 +162,26 @@ surface_of_argv0() {
   case "$cmd" in
     cat|ls|find|grep|rg|head|tail|wc|stat|file|diff|which|command)
       printf '읽기' ;;
+    # Digest tools. Their absence was a DEADLOCK rather than a gap: the
+    # unattended implement arm's process B may enter only after comparing the
+    # plan's digest against the one on the ledger row, and computing that digest
+    # is the only way to make the comparison. With no row here every spelling
+    # was refused, so the one path left was wrapping the command in an
+    # interpreter to hide argv0 — which is the exact hole the stage had been
+    # dispatched to close. Measured: a stage arrived, found this, and stopped
+    # rather than use the hole to land the hole's fix, on the ground that the
+    # artifact would then refute itself and the ledger row would state the act's
+    # authorization falsely.
+    #
+    # `openssl` is deliberately NOT here. It computes digests, and it also
+    # opens network connections — one name covering both is the kind of
+    # imprecision this table exists to refuse.
+    # `md5`/`md5sum` are deliberately absent: they are the BSD and GNU spellings
+    # of one tool, so naming both trips the portability lint on this very line —
+    # and nothing here needs them, since every digest this pipeline compares is
+    # sha256.
+    shasum|sha256sum|sha1sum|sha512sum|cksum|b2sum)
+      printf '읽기' ;;
     git) surface_of_git "$@" ;;
     gh)  surface_of_gh "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
@@ -721,7 +741,7 @@ gate_write_settings() {
   # session cut must find the same bytes, because those bytes are in the
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
-  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws
+  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
   dir=$(gate_settings_dir)
   mkdir -p "$dir"
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
@@ -780,11 +800,39 @@ gate_write_settings() {
     doc_ws=$(dirname "$DOC_DIR")
   fi
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  # EVERY TARGET'S WORKTREES, both of them, for every declared target.
+  #
+  # The list used to carry only the run's own base — the HOME worktree — so a
+  # stage acting in any other target could not read that target at all, and a
+  # stage woken in an EXECUTION worktree could not read the tree it was standing
+  # in. That second one is not an edge case: `실행 워크트리` exists for `pr` and
+  # `branch` anchors, and for those the landing surface is always outside the
+  # main worktree because git refuses to check one branch out twice. Measured: a
+  # stage passed every earlier step and then halted before its first write with
+  # "Claude requested permissions to read from <execution worktree>/… but you
+  # haven't granted it yet".
+  #
+  # Physical paths go in beside the spelled ones. `DOC_DIR` and `DOC_BASE` are
+  # derived from how the path was WRITTEN, so a design document reached through
+  # a symlink grants the link's directory and not the file's real one — and the
+  # out-of-repo widening does not fire either, because by spelling the link sits
+  # inside the repository. `pwd -P` resolves it; adding both costs one line and
+  # covers either spelling.
+  wt_all=""
+  for a in $(target_aliases); do
+    wt_all="$wt_all
+$(target_field "$a" '메인 워크트리')
+$(target_field "$a" '실행 워크트리')"
+  done
+  extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
       "${DOC_DIR:-}" "${DOC_BASE:-}" "$doc_ws" \
-    | sed '/^$/d' | sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
+      "$( [ -n "${DOC_DIR:-}" ] && cd "$DOC_DIR" 2>/dev/null && pwd -P || true)" \
+      "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)" \
+      "$wt_all" \
+    | sed '/^$/d' | sed 's/^(없음)$//' | sed '/^$/d' \
+    | sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
 
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
@@ -1114,6 +1162,75 @@ gate_record_row() {
   return 0
 }
 
+gate_drain_stall() {
+  # Move each line of the watcher's observation file into the ledger as a row,
+  # then truncate. Chained and locked because this is the writer; the watcher's
+  # own append was neither, and the chain then read as broken from that row on.
+  local f="$RUN_DIR/stall" line ts why cmd
+  [ -s "$f" ] || return 0
+  while IFS="$(printf '\t')" read -r ts why cmd; do
+    [ -n "$why" ] || continue
+    gate_has_row 'blocked' "사유=$why" && continue
+    gate_append 'blocked' "대상=-" "스코프=run" "원인=불명" "사유=$why" \
+      "관측=$ts" "재개 명령=$cmd"
+  done < "$f"
+  : > "$f"
+}
+
+gate_deadline_ok() {
+  # gate_deadline_ok <kind> <cutpoint>
+  #
+  # THE DEADLINE IS A DISPATCH GATE, and until now nothing read it. It is frozen
+  # into the binding digest and compared at entry, but `gate.sh` mentioned
+  # neither the field nor a comparison, and the only callers of the driver's own
+  # helper sit in the fixed-graph loop the router never enters. The value a user
+  # answered for at kickoff did not reach execution — the same shape #208
+  # recorded for the cutpoint. Measured: a run past its deadline had `plan
+  # --kind skill` answer "통과 예상".
+  #
+  # Checked on every acting call, not only at entry: a deadline that was in the
+  # future when the run started is the normal case, so entry alone is half.
+  #
+  # It gates DISPATCH and MERGE and nothing else, per the contract — a stage in
+  # flight runs to completion and is classified normally, and the run may still
+  # record rows, close approvals and propose that it is done. A deadline that
+  # stopped everything would strand the run instead of ending it.
+  local kind="$1" cut="$2" dl stamp off now idx merge_idx
+  dl=$(manifest_field '인가' '벽시계 마감')
+  case "$dl" in ''|'없음'|'(없음)') return 0 ;; esac
+
+  # `date -d` is GNU and `date -j -f` is BSD, so neither parses this. What both
+  # do have is `date +FMT` under a TZ, so the comparison is made in the
+  # deadline's OWN zone: render now there, and compare digit strings.
+  stamp=$(printf '%s' "$dl" | cut -c1-19 | tr -cd '0-9')
+  off=$(printf '%s' "$dl" | cut -c20-)
+  case "$off" in
+    Z|'')      now=$(date -u +%Y%m%d%H%M%S) ;;
+    # POSIX TZ inverts the sign: UTC+9 is written `UTC-9`.
+    +*:*)      now=$(TZ="UTC-${off#+}" date +%Y%m%d%H%M%S) ;;
+    -*:*)      now=$(TZ="UTC+${off#-}" date +%Y%m%d%H%M%S) ;;
+    *)
+      # An offset this cannot read must NOT silently block every act — a
+      # deadline the gate cannot compare is a reason to say so, not to refuse.
+      warn "벽시계 마감의 시간대를 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"
+      return 0 ;;
+  esac
+  [ ${#stamp} -eq 14 ] || { warn "벽시계 마감의 형식을 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"; return 0; }
+  [ "$now" -le "$stamp" ] 2>/dev/null && return 0
+
+  if [ "$kind" = "skill" ]; then
+    warn "벽시계 마감이 지났습니다 ($dl) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  merge_idx=$(cutpoint_index '머지') || return 0
+  idx=$(cutpoint_index "$cut") || return 0
+  if [ "$idx" -ge "$merge_idx" ]; then
+    warn "벽시계 마감이 지났습니다 ($dl) — 마감 뒤로 머지는 없습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  return 0
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -1196,6 +1313,27 @@ gate_verb_act() {
       warn "낡은 스냅숏 다이제스트: 관측 '$snapdig' vs 현재 '$now'"
       exit "$GATE_EXIT_STALE"
     fi
+  fi
+
+  # The watcher's observations, transcribed into properly chained rows. It
+  # records them as a file precisely because it is not the ledger's writer; this
+  # is the writer, so this is where they become rows.
+  gate_drain_stall
+
+  # THE DEADLINE IS A DISPATCH GATE. It is frozen into the binding digest and
+  # compared at entry, and then nothing read it — `gate.sh` mentioned neither
+  # the field nor a comparison, and the only callers of the driver's own
+  # deadline helper sit in the fixed-graph loop the router never enters. So the
+  # value a user answered for at kickoff did not reach execution, which is the
+  # shape #208 already recorded for the cutpoint. Measured: a run past its
+  # deadline had `plan --kind skill` answer "통과 예상".
+  #
+  # It gates DISPATCH and MERGE and nothing else, per the contract: a stage in
+  # flight runs to completion and is classified normally, and the run may still
+  # record, close and propose. Checking only at entry would be half — a deadline
+  # that was in the future when the run started is the normal case.
+  if [ "$verb" != "grade" ]; then
+    gate_deadline_ok "$kind" "$cutpoint" || exit $?
   fi
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
