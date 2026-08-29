@@ -1612,6 +1612,65 @@ gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutp
 check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
+# 14l. The authorization list can grow, and only through the gate
+#
+# It used to be written once and never again, so a directory kickoff could not
+# know about — a segment's own worktree, a repository added at layer 1 — was
+# unreachable for the life of the run, and the only exit was to end the run.
+# Measured: a run produced its review and then could not remediate, because the
+# only writable tree in its list was the live plugin checkout.
+#
+# What keeps the surface comparison meaningful is not that it never moves, but
+# that it moves only through THIS writer and leaves a row. Both halves are
+# asserted here — the growth, and the refusal to repair somebody else's edit.
+# ---------------------------------------------------------------------------
+RD_L=$(dirname "$SETTINGS_DIR")
+n_before=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")
+n_rows_before=$(grep -c '^- `대상 추가` ' "$LEDGER" 2>/dev/null || true)
+
+# Declaring an execution worktree is a change to what the settings derive FROM.
+set_exec_wt "$LINKED"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
+n_after=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")
+if [ "${n_after:-0}" -gt "${n_before:-0}" ]; then
+  ok "유도의 입력이 움직이면 인가 목록이 자란다"
+else
+  bad "인가 목록 재유도" "$n_before → $n_after"
+fi
+if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "새로 선언된 워크트리가 그 안에 있다"
+else
+  bad "인가 목록 재유도" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
+fi
+n_rows_after=$(grep -c '^- `대상 추가` ' "$LEDGER" 2>/dev/null || true)
+if [ "${n_rows_after:-0}" -gt "${n_rows_before:-0}" ]; then
+  ok "그 확장이 원장에 행으로 남는다 (조용히 넓히지 않는다)"
+else
+  bad "확장 기록" "행이 늘지 않았다"
+fi
+# The baseline moved with it, so the next act does not read as tampering.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SR --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$H" --rationale x -- 상태=park 워크트리="$WT"
+check "확장 뒤의 행위가 표면 이동으로 읽히지 않는다" "$rc" "0"
+# And a second call changes nothing — the derivation is a function, so it is
+# stable when its inputs are.
+d1=$(cat "$RD_L/surface-digest")
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
+check "입력이 그대로면 다시 쓰지 않는다" "$(cat "$RD_L/surface-digest")" "$d1"
+
+# THE OTHER HALF: an edit this writer did not make is still exit 7. The
+# re-derivation must not repair it — repairing would erase the evidence the
+# surface check reads, which is the whole detection.
+printf '\n' >> "$SETTINGS_DIR/generic.json"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SR \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1); rc=$?
+check "남이 고친 표면은 여전히 종료 코드 7 이다" "$rc" "7"
+set_exec_wt ""
+
+# ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
 #
 # Three defects met here and left no spelling that reached `gh` at all: the

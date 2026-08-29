@@ -724,7 +724,13 @@ gate_mtime() {
 # ---------------------------------------------------------------------------
 readonly STAGE_KINDS="design implement review audit reconverge generic"
 
-gate_settings_dir() { printf '%s/settings' "$RUN_DIR"; }
+gate_settings_dir() {
+  # The override exists for ONE caller: the re-derivation probe, which needs to
+  # render the settings somewhere harmless to compare them against what is on
+  # disk. Rendering them in place to find out whether they changed would move
+  # the very surface it is asking about.
+  printf '%s' "${CC_GATE_SETTINGS_OVERRIDE:-$RUN_DIR/settings}"
+}
 
 gate_settings_file() {
   # gate_settings_file <stage-kind>
@@ -864,8 +870,54 @@ $(target_field "$a" '실행 워크트리')"
 }
 JSON
   done
-  printf '%s\n' "$(gate_surface_digest)" > "$RUN_DIR/surface-digest"
-  log "런 설정 생성: $dir (강제 표면 기준선 기록)"
+  # NOT under the probe. The probe renders these files somewhere harmless to
+  # find out whether they changed, and its digest is taken over that other
+  # directory — writing it here would replace the real baseline with a value
+  # that describes a temporary path, and every act afterwards would read as a
+  # moved surface.
+  if [ -z "${CC_GATE_SETTINGS_OVERRIDE:-}" ]; then
+    printf '%s\n' "$(gate_surface_digest)" > "$RUN_DIR/surface-digest"
+    log "런 설정 생성: $dir (강제 표면 기준선 기록)"
+  fi
+}
+
+gate_resettle_settings() {
+  # Re-derive the stage settings and, when they differ, rewrite + re-baseline +
+  # record. This is what lets a run reach a directory kickoff could not know
+  # about — a segment's own worktree, a repository the run added at layer 1 —
+  # without either freezing the run or making the surface comparison hollow.
+  #
+  # The derivation is a pure function of the manifest and the ledger, so the
+  # bytes move only when one of those moved, and both are themselves recorded.
+  # An edit by anything that is not this function still lands as exit 7, which
+  # is the property the digest exists for.
+  local before after tmpdir base
+  before=$(gate_surface_digest)
+
+  # ONLY FROM A KNOWN-GOOD BASELINE. If the surface has already moved, this is
+  # not the place to decide about it — `gate_surface_check` owns that verdict,
+  # and rewriting here would erase the very evidence it reads. Without this
+  # guard the re-derivation silently repairs and re-baselines an edit made by
+  # anything at all, which is exactly the detection the digest exists for.
+  base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+  [ -n "$base" ] && [ "$before" = "$base" ] || return 0
+
+  tmpdir="$(gate_settings_dir).probe.$$"
+  rm -rf "$tmpdir"
+  ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
+    gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; return 0; }
+  if diff -r -q "$tmpdir" "$(gate_settings_dir)" >/dev/null 2>&1; then
+    rm -rf "$tmpdir"; return 0
+  fi
+  rm -rf "$tmpdir"
+
+  gate_write_settings >/dev/null 2>&1 || return 0
+  after=$(gate_surface_digest)
+  printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
+  gate_append '대상 추가' "별칭=-" "원격 슬러그=-" \
+    "메인 워크트리=-" "공통 git 디렉터리=-" "베이스 브랜치=-" "층=0" \
+    "발견 경로=인가 디렉터리 재유도 (${before} → ${after})" "기록 시각=$(now_iso)"
+  log "인가 디렉터리를 다시 유도했습니다 — 강제 표면 기준선을 갱신하고 원장에 남겼습니다"
 }
 
 gate_chain_verify() {
@@ -1010,10 +1062,29 @@ gate_main() {
   check_manifest
   derive_paths_from_manifest
   rundir_init
-  # Run start is "the settings directory does not exist yet". Regenerating on
-  # every invocation would rewrite files that are themselves in the digest set,
-  # and a surface that changes because the gate touched it is a surface whose
-  # comparison means nothing.
+  # Run start is "the settings directory does not exist yet".
+  #
+  # AND the settings are RE-DERIVED afterwards, whenever what they are derived
+  # FROM has moved. The earlier form wrote them once and never again, on the
+  # ground that a surface which changes because the gate touched it is a surface
+  # whose comparison means nothing. That ground is real but the remedy was too
+  # wide: it also froze the list of directories a stage may read, and kickoff
+  # happens BEFORE segmentation — so a segment's own worktree is, by
+  # construction, a directory the authorization list cannot contain. Measured: a
+  # run produced its review and then could not remediate, because the only
+  # writable tree in its list was the live plugin checkout; it ended with the
+  # goal marked unreachable for want of a directory rather than for want of work.
+  #
+  # What keeps the comparison meaningful is not that the surface never moves —
+  # it is that it moves only through THIS writer and leaves a row when it does.
+  # An edit by anything else still lands as exit 7. So the derivation is a pure
+  # function of the manifest and the ledger's `대상 추가` rows, both of which are
+  # themselves recorded; when it yields different bytes the gate rewrites,
+  # re-baselines, and appends a row naming what widened.
+  #
+  # The widening is bounded by construction: every directory it can add is a
+  # worktree of a target the run already acts in. Nothing here grants a cutpoint,
+  # and the cutpoint is what governs whatever leaves the machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
     # Run open is the one moment this belongs — the comment on `cred_check`
@@ -1037,6 +1108,8 @@ gate_main() {
       "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
       "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+  else
+    gate_resettle_settings
   fi
 
   case "$verb" in
