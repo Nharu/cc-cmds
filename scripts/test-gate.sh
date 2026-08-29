@@ -628,23 +628,48 @@ esac
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=SEP | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
 printf -- '- `cycle` | 세그먼트=SEP | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+# THE DISPATCHER IS NOT AN ANCESTOR IN THE SENSE THIS RULE MEANS. The router
+# launches both stages and the gate records it as `부모` on both rows, so the
+# two closures met at the router on EVERY run a router drove and this rule
+# refused every merge — naming an id that was neither stage. What it is for is
+# authorship: did the reviewing session see the work being made. A shared
+# dispatcher does not imply that; the stages share no output.
 printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S4 | 세션 id=impl-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
 case "$msg" in
-  *"조상이 겹칩니다"*) ok "부모를 공유하면 자기 작업 리뷰로 판정된다" ;;
-  *) bad "조상 폐포" "같은 부모를 가진 두 세션이 서로소로 통과했다 — id 비교로 되돌아간 것이다" ;;
+  *"조상이 겹칩니다"*) bad "디스패처 판정" "라우터를 공유했다는 이유로 거부됐다 — 라우터가 돌린 모든 런의 머지가 막힌다" ;;
+  *) ok "디스패처를 공유하는 것은 자기 작업 리뷰가 아니다" ;;
 esac
 
-printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-2 | 부모=router-2 | 종단 부류=정상 완료\n' >> "$LEDGER"
+# THE FORK CASE, which is what the closure exists for and is untouched: the
+# reviewing session is a fork of the implementing one, so its parent IS the
+# other side's own session id. A parent that names a stage names an author.
+printf -- '- `stage-result` | 세그먼트=SEPF | 스테이지=S4 | 세션 id=impl-f | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SEPF | 스테이지=S5 | 세션 id=rev-f | 부모=impl-f | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `segment` | id=SEPF | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEPF | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
-gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPF --cutpoint 머지 \
      --snapshot-digest "$H" --rationale x -- gh pr merge 1
 case "$msg" in
-  *"조상이 겹칩니다"*) bad "분리 판정" "계보가 서로소인데 거부됐다" ;;
-  *) ok "계보가 서로소면 통과한다" ;;
+  *"조상이 겹칩니다"*) ok "구현 세션의 포크가 리뷰하면 거부된다 (폐포가 존재하는 이유)" ;;
+  *) bad "포크 판정" "포크가 자기 작업을 리뷰했는데 통과했다" ;;
+esac
+
+# And the direct case — one session on both sides.
+printf -- '- `stage-result` | 세그먼트=SEPD | 스테이지=S4 | 세션 id=same-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SEPD | 스테이지=S5 | 세션 id=same-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
+printf -- '- `segment` | id=SEPD | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEPD | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPD --cutpoint 머지 \
+     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+case "$msg" in
+  *"조상이 겹칩니다"*) ok "한 세션이 양쪽이면 거부된다" ;;
+  *) bad "직접 판정" "같은 세션이 자기 작업을 리뷰했는데 통과했다" ;;
 esac
 
 printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S4 | 세션 id=impl-9 | 부모=미상 | 종단 부류=정상 완료\n' >> "$LEDGER"
