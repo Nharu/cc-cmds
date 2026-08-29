@@ -92,9 +92,13 @@ These six lines are the **only** place any of these values appears in this skill
 
 ### CFI-1 — Freeze (the mechanism, not hygiene)
 
-The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the `git worktree list --porcelain` baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
+The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the worktree baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
 
-**Declare `-run-` as the boundary gate's exception pattern before the window opens.** The pipeline's segment worktrees carry that reserved infix, and `git worktree list` is repository-global: without the declaration a sibling segment's worktree creation fails this audit for something it did not do and cannot see. The declaration excuses a *worktree list* entry only — the `git status --porcelain` baseline and the `cc-design-exp-` zero-count assertion are untouched by it.
+**The worktree half is the gate's three scoped assertions, not a whole-output equality** — 2a (path set), 2b (this audit's own entry), 2c (`cc-design-exp-` count is 0), exactly as `${CLAUDE_SKILL_DIR}/../_common/verification.md` §6 defines them, and identically to the interactive arm's CFI-1. Do not re-derive them here.
+
+**This arm is where the false positive costs the most.** The window spans the whole fan-out, and a mismatch here is a **halt with an automatic re-audit count of zero** — so a sibling worktree's commit, which changes no byte of the reviewed text (`FROZEN_SHA256` covers that directly) and no byte of `CODE_ROOT`, would end an unattended audit for the night over a tree no reader measured. It is deliberately not a mismatch.
+
+**Declare `-run-` as assertion 2a's exception pattern before the window opens.** The pipeline's segment worktrees carry that reserved infix, so without the declaration a sibling segment's worktree *creation* fails 2a for something this audit did not do and cannot see. The declaration excuses a *worktree path-set* entry only — the `git status --porcelain` baseline, 2b, and the `cc-design-exp-` zero-count are untouched by it.
 
 This is load-bearing, not tidiness. The audit's reproduction rate stays below 1 only while the induced-defect rate is zero, and that rate becomes positive the instant any byte of the reviewed text changes between reviews.
 
@@ -171,7 +175,7 @@ Apply the protocol's `witness_present` completion predicate, its reconcile ladde
 
 ### Step 5: Freeze verification, dedup, evidence
 
-1. **Re-hash and re-compare both baselines** (the worktree comparison modulo the declared `-run-` exception). **A mismatch is a halt, and the automatic re-audit count is zero.** Write the halt record with `분류: freeze-mismatch`, naming **which** of the three assertions diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — in `재호출 명령` — the exact re-invocation command line. Then stop.
+1. **Re-hash and re-compare both baselines** — the worktree half as the gate's **2a/2b/2c**, with 2a taken modulo the declared `-run-` exception. A sibling worktree's `HEAD` move is not a mismatch. **A mismatch is a halt, and the automatic re-audit count is zero.** Write the halt record with `분류: freeze-mismatch`, naming **which** assertion diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — in `재호출 명령` — the exact re-invocation command line. Then stop.
 
    **Why no automatic re-audit.** What the freeze contract calls for after a mismatch is a fresh invocation against a *new* freeze, and that requires a judgment that the tree has settled. The only evidence for that judgment is the baseline, which has just been proven broken. A driver that re-invokes anyway turns a single pass into a bounded-only-by-budget loop, and does so exactly when the tree is *demonstrably* in motion. The judgment is a human's; the command line is recorded so they can make it in the morning. There is deliberately no "continue anyway" path — that is the seam through which a positive induced-defect rate re-enters.
 
