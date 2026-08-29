@@ -111,6 +111,8 @@ Present the judgment's step graph as the plan, in Korean, and take an approval. 
 
 **If `design_required` is true, the design is written now, in this conversation — and YOU CANNOT INVOKE IT.** `design` carries `disable-model-invocation`, so the Skill tool refuses it and the refusal forbids reproducing the workflow by other means. That is deliberate: `design` is reserved for explicit user invocation. So the handoff is explicit rather than implied.
 
+**Tell them, in the same breath, that `design` will end by pointing at `/cc-cmds:design-audit` — and that they should not follow it.** That skill's handoff does not know it was called from here, and the audit is already a stage in the graph they just approved. Following it runs the audit twice, once by hand and once as the stage; *not* returning here is worse — the manifest, the grant and the ledger are all still unwritten, so a kickoff abandoned at that line leaves nothing on disk and cannot be told apart from one that never started.
+
 Ask the user to run `/cc-cmds:design <anchor>` themselves, and say why in one line — the design step interviews, and the tool that interviews is absent from every headless process, so it belongs to the act with a human in it. **Then wait.** When they come back, resume this kickoff, take the path of the document `design` froze, record its whole-file `sha256`, and continue from Step 5 with that document as the run's `doc` element. Do not re-run Act 1 from the top; the targets and the entry judgment already hold.
 
 Do not plan to "let the run design it" — see the two-acts note above. If the user does not want to run it now, the honest move is to stop: a run whose first stage cannot ask questions and has no document to implement produces nothing but a park.
