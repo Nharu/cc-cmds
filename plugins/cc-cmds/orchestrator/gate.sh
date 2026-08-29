@@ -655,6 +655,35 @@ gate_render_snapshot() {
       "$(target_field "$a" '원격 슬러그')" "$(target_field "$a" '절단점')"
   done
   printf '미해결 의무: %s건\n' "$(gate_open_obligations | gate_count)"
+
+  # LIVENESS, because "is this still going?" had no cheap answer. The heartbeat
+  # a watcher prints goes to a stdout that its launching tool call already
+  # closed, so it reaches nobody; the render did not carry a live-stage count,
+  # a ledger age, or the run's own terminal state. Answering it needed the row
+  # grammar and a manual pid comparison.
+  local n_live now_s led_s hb_s done_line
+  n_live=$( { ls "$RUN_DIR"/*.pid 2>/dev/null || true; } | gate_count)
+  now_s=$(date -u +%s)
+  led_s=$(gate_mtime "$LEDGER")
+  hb_s=$(gate_mtime "$RUN_DIR/watch.heartbeat")
+  printf '살아 있는 스테이지: %s개\n' "$n_live"
+  if [ -n "$led_s" ]; then printf '원장 갱신 : %s초 전\n' "$((now_s - led_s))"
+  else                     printf '원장 갱신 : (없음)\n'; fi
+  if [ -n "$hb_s" ]; then printf '감시자    : %s초 전 하트비트\n' "$((now_s - hb_s))"
+  else                    printf '감시자    : 하트비트 없음 (안 돌거나 옛 판입니다)\n'; fi
+  done_line=$(cat "$RUN_DIR/done" 2>/dev/null || true)
+  if [ -n "$done_line" ]; then printf '런 상태   : 종단 — %s\n' "$done_line"
+  else                         printf '런 상태   : 진행 중\n'; fi
+  printf '스테이지 스트림: %s/log/<세그먼트>.json\n' "$RUN_DIR"
+}
+
+gate_mtime() {
+  # gate_mtime <path> — epoch seconds, or empty. `stat` diverges between BSD and
+  # GNU on the very flag this needs, so neither spelling is used: `find -newer`
+  # against a probe would need a probe, and `ls` output is locale-shaped. `date
+  # -r` is present on both and takes the file directly.
+  [ -f "$1" ] || return 0
+  date -u -r "$1" +%s 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -1237,6 +1266,12 @@ gate_verb_act() {
       exit "$GATE_EXIT_RULE"
     fi
     log "종료 조건 아홉이 전부 성립합니다"
+    # The run's END, recorded as a FILE in the run directory. The ledger already
+    # carries the row, but a row is not a thing another process can test cheaply
+    # — and two processes need to: the liveness watcher, whose loop had no exit
+    # condition and therefore outlived every run it watched, and a person asking
+    # "is this still going?" without knowing the row grammar.
+    printf '%s 종단 — 종료 조건 아홉 성립 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
   elif [ -z "$unmet" ]; then
     if ! gate_names_next_obligation "$rationale"; then
       warn "종료 조건이 전부 성립하는데 다음 의무를 지목하지 못했습니다 — 런은 충족으로 종료합니다"
@@ -1672,6 +1707,13 @@ gate_record_stage_outcome() {
   local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha iserr
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
+  # A launch that never STARTED is reported as such. With no result line the
+  # classification falls to `크래시`, which is the right bucket — the dispatch
+  # did fail — but it reads as "the stage ran and died", and a reader then looks
+  # for the stage's own fault. Measured: an unbound variable in the launch path
+  # left `종단 부류=크래시 rc=1` in the ledger with no pid file and no process
+  # ever created, and the diagnosis went to the stage first.
+  [ -n "$res" ] || warn "스테이지 프로세스가 시작되지 않았습니다 ($seg) — 종단 result 줄이 없습니다. 스테이지가 아니라 기동 경로를 보세요"
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
   subtype=$(printf '%s' "$res" | jq -r '.subtype // empty'        2>/dev/null || true)
   sid=$(printf '%s' "$res"     | jq -r '.session_id // empty'     2>/dev/null || true)

@@ -197,5 +197,56 @@ else
   bad "LC_TIME" "ps -o lstart= 비교가 로케일에 좌우된다"
 fi
 
+# ---------------------------------------------------------------------------
+# The watcher STOPS. Its loop had no exit condition and nothing else reaped it —
+# the gate ends a run without touching it, and the report renderer is forbidden
+# from starting or writing anything. Measured on one machine: seven watchers
+# from seven runs, ages from 18 seconds to 1 day 4 hours, with no way to tell a
+# live run's watcher from a finished run's.
+# ---------------------------------------------------------------------------
+WD="$WORK/stopdir"; mkdir -p "$WD"
+LG2="$WORK/stopledger.md"; printf '# x\n' > "$LG2"
+printf '2026-08-29T00:00:00Z 종단 — 종료 조건 아홉 성립\n' > "$WD/done"
+out=$(bash "$WATCH" --run-dir "$WD" --ledger "$LG2" --interval 1 2>&1); rc=$?
+check "종단 표시가 있으면 감시자가 스스로 끝난다" "$rc" "0"
+case "$out" in
+  *"감시를 멈춥니다"*) ok "멈추는 이유를 말한다" ;;
+  *) bad "종단 안내" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# The run directory going away is the other end. A watcher for a run whose
+# directory was removed has nothing left to read.
+WD2="$WORK/gonedir"; mkdir -p "$WD2"; rmdir "$WD2"
+out=$(bash "$WATCH" --run-dir "$WD2" --ledger "$LG2" --interval 1 2>&1); rc=$?
+check "런 디렉터리가 사라져도 끝난다" "$rc" "0"
+
+# The heartbeat goes to a FILE. This process is launched into the background by
+# a tool call that then returns, so its stdout is closed and every heartbeat
+# printed there reaches nobody — the property "a live watcher's silence differs
+# from a dead one's" was stated and then not obtainable.
+WD3="$WORK/hbdir"; mkdir -p "$WD3"
+LG3="$WORK/hbledger.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG3"
+bash "$WATCH" --run-dir "$WD3" --ledger "$LG3" --once >/dev/null 2>&1
+if [ -f "$WD3/watch.heartbeat" ]; then
+  ok "하트비트가 파일로 남는다 (닫힌 표준출력이 아니라)"
+else
+  bad "하트비트" "watch.heartbeat 가 생기지 않았다"
+fi
+case "$(cat "$WD3/watch.heartbeat" 2>/dev/null)" in
+  *"스테이지"*) ok "그 파일이 관측값을 싣는다" ;;
+  *) bad "하트비트 내용" "$(cat "$WD3/watch.heartbeat" 2>/dev/null)" ;;
+esac
+# Rewritten every pass even when nothing moved — which is exactly what
+# `watch.state` cannot do, since that file only moves when the ledger's size does.
+sleep 1
+bash "$WATCH" --run-dir "$WD3" --ledger "$LG3" --once >/dev/null 2>&1
+hb2=$(date -u -r "$WD3/watch.heartbeat" +%s 2>/dev/null)
+st2=$(date -u -r "$WD3/watch.state" +%s 2>/dev/null || printf '')
+if [ -n "$hb2" ]; then
+  ok "원장이 그대로여도 하트비트는 다시 쓰인다"
+else
+  bad "하트비트 갱신" "mtime 을 읽지 못했다"
+fi
+
 printf '\ntest-watch: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

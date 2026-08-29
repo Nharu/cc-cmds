@@ -213,9 +213,34 @@ pass() {
 
   # Positive heartbeat. Says the watcher is alive, which is what makes its
   # silence mean something.
+  #
+  # Written to a FILE as well as to stdout, and the file is what carries the
+  # claim. This process is launched into the background by a tool call that then
+  # returns, so its stdout is closed and every heartbeat printed there reaches
+  # nobody — the property "a live watcher's silence differs from a dead one's"
+  # was stated and then not obtainable. The file's own mtime is what makes the
+  # watcher's liveness measurable, and it is rewritten every pass even when
+  # nothing changed, which is exactly the case `watch.state` cannot cover: that
+  # file only moves when the ledger's size moves.
+  printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개\n' \
+    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" > "$RUN_DIR/watch.heartbeat"
   printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
   return 0
+}
+
+run_is_over() {
+  # The two ways this watcher's job ends. Neither is a judgment it makes — one
+  # is a fact the gate records, the other is the run's own directory going away.
+  #
+  # Without them the loop had no exit at all and nothing else reaped it: the
+  # gate ends a run without touching the watcher, and the report renderer is
+  # forbidden from starting or writing anything. Measured on one machine: seven
+  # watchers from seven different runs, ages from 18 seconds to 1 day 4 hours,
+  # with no way to tell a live run's watcher from a finished run's.
+  [ -f "$RUN_DIR/done" ] && return 0
+  [ -d "$RUN_DIR" ] || return 0
+  return 1
 }
 
 if [ "$ONCE" = "1" ]; then
@@ -224,6 +249,12 @@ if [ "$ONCE" = "1" ]; then
 fi
 
 while :; do
+  if run_is_over; then
+    if [ -f "$RUN_DIR/done" ]; then
+      announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
+    fi
+    exit 0
+  fi
   pass
   sleep "$INTERVAL"
 done

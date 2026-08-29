@@ -1502,6 +1502,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 14i. The render answers "is this still going?"
+#
+# It did not. The heartbeat a watcher prints goes to a stdout its launching tool
+# call already closed, so it reaches nobody; the render carried no live-stage
+# count, no ledger age, and no terminal state. Answering the question needed the
+# row grammar and a manual pid comparison.
+# ---------------------------------------------------------------------------
+rend=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null)
+for want in '살아 있는 스테이지' '원장 갱신' '감시자' '런 상태' '스테이지 스트림'; do
+  case "$rend" in
+    *"$want"*) ok "렌더가 「${want}」을 낸다" ;;
+    *) bad "렌더 라이브니스" "「${want}」이 없다" ;;
+  esac
+done
+case "$rend" in
+  *"런 상태   : 진행 중"*) ok "종단 표시가 없으면 진행 중이라고 답한다" ;;
+  *) bad "런 상태" "$(printf '%s' "$rend" | grep '런 상태' || true)" ;;
+esac
+
+# The run's END is a FILE, because a ledger row is not a thing another process
+# can test cheaply — and two need to: the watcher, whose loop had no exit
+# condition, and a person who does not know the row grammar.
+RD_G=$(dirname "$SETTINGS_DIR")
+rm -f "$RD_G/done"
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '> "$RUN_DIR/done"'; then
+  ok "게이트가 종단 표시 파일을 쓴다"
+else
+  bad "종단 표시" "런이 끝나도 디스크에 표시가 남지 않는다"
+fi
+printf '%s 종단 — 시험\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RD_G/done"
+rend=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null)
+case "$rend" in
+  *"런 상태   : 종단"*) ok "종단 표시가 있으면 렌더가 그렇게 답한다" ;;
+  *) bad "런 상태" "$(printf '%s' "$rend" | grep '런 상태' || true)" ;;
+esac
+rm -f "$RD_G/done"
+
+# ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
 #
 # Three defects met here and left no spelling that reached `gh` at all: the
