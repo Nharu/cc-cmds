@@ -66,6 +66,8 @@ Load deferred tools via ToolSearch before any other step:
 ### Step 1: Read the contracts, then judge the entry
 
 1. Parse `$ARGUMENTS`. `--report` selects the reporting mode — **if present, jump to Act 3.** Everything else is the intent, read whole.
+
+    **The argument is an INTENT, never a question to answer.** A kickoff phrased as a question — "이거 개선이 가능할까?" — is still a kickoff, and there is no branch in this skill that reads it as conversation and ends there. Measured: one arrived that way and the lead investigated the code, interviewed with the question tool, wrote a design document alone, and stopped — no entry judgment, no target verification, no plan approval, no interview, no manifest, no grant, no watcher, no router loop. **The run did not exist**, and the deviation surfaced only because the user asked why the procedure had not run. If the intent is a question, answer it *by performing Act 1* — the interview is where the question gets asked back properly.
 2. **Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1` and `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md`** (the whole of it — `## 2b` is the manifest contract this skill authors).
 3. **Read `<plugin root>/orchestrator/prompts/entry-plan.md`** and produce the judgment it describes, satisfying `entry-plan.schema.json`. Check your own output against that schema before using it — required keys present, every enum value in range — with `jq`, not by eye.
 4. If the judgment names a `doc` anchor, read that document and record its whole-file `sha256` (`shasum -a 256`).
@@ -107,7 +109,15 @@ Record the answer in the manifest's `시각 정합 마커` field.
 
 Present the judgment's step graph as the plan, in Korean, and take an approval. Read out every `unresolved` entry and settle each one — CFI-6.
 
-**If `design_required` is true, write the design now, inline, in this conversation.** Invoke the `design` skill on the confirmed anchor and let it interview the user; when it freezes a document, that document becomes the run's `doc` element and its `sha256` is recorded. Do not plan to "let the run design it" — see the two-acts note above. If the user does not want to do that now, the honest move is to stop: a run whose first stage cannot ask questions and has no document to implement produces nothing but a park.
+**If `design_required` is true, the design is written now, in this conversation — and YOU CANNOT INVOKE IT.** `design` carries `disable-model-invocation`, so the Skill tool refuses it and the refusal forbids reproducing the workflow by other means. That is deliberate: `design` is reserved for explicit user invocation. So the handoff is explicit rather than implied.
+
+Ask the user to run `/cc-cmds:design <anchor>` themselves, and say why in one line — the design step interviews, and the tool that interviews is absent from every headless process, so it belongs to the act with a human in it. **Then wait.** When they come back, resume this kickoff, take the path of the document `design` froze, record its whole-file `sha256`, and continue from Step 5 with that document as the run's `doc` element. Do not re-run Act 1 from the top; the targets and the entry judgment already hold.
+
+Do not plan to "let the run design it" — see the two-acts note above. If the user does not want to run it now, the honest move is to stop: a run whose first stage cannot ask questions and has no document to implement produces nothing but a park.
+
+**Before presenting, check the graph against the cutpoints — the gate will.** Where any target's cutpoint reaches `머지`, two rules fire at the merge that the graph must already satisfy: a review record covering the branch's current HEAD with P0·P1 at zero, and a review session whose ancestry is disjoint from the implementation's. A graph that runs `implement` and then merges is **not executable**, and the schema accepts it, so nothing else catches this — the user approves a plan that cannot run and the mismatch surfaces at the merge, in the middle of the night. Add the review step, and say out loud that it is a separate stage rather than a phase of the implement one.
+
+**Present what each step will actually DO, not just its name.** A one-line-per-step graph reads far shallower than the work is: a `review` step is a multi-round agent team with a reconciliation pass, an `implement` step is two processes split across a plan-emission gate. Approving "S1 review" is not the same as approving that. One clause per step is enough — the point is that the person refusing has seen the shape.
 
 **The approval utterance is captured verbatim.** It approves the STEP GRAPH, which is not the same thing as granting authority — that is Step 5. Collapsing the two promotes plan approval into permission approval silently, so the manifest carries them as two separate fields.
 
@@ -190,6 +200,10 @@ Two digests are computed here and **compared at entry**, so they are not decorat
    bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> &
    ```
    It resumes nothing and decides nothing. Its whole job is to make one failure visible — **the router quietly stopping** — which is otherwise indistinguishable from a quiet terminal. It also emits a positive heartbeat, because a watcher that only speaks on failure cannot be told apart from a watcher that died.
+
+   **It stops itself.** The gate writes a `done` file into the run directory when the run terminates, and the watcher exits on seeing it — or on the run directory going away. Nothing else reaps it: the gate ends a run without touching it and Act 3 is forbidden from starting or writing anything, so before this the loop outlived every run it watched. Measured on one machine: seven watchers from seven runs, the oldest a day and four hours.
+
+   **The heartbeat goes to a file, not only to stdout.** This is launched in the background by a tool call that then returns, so its stdout is closed and anything printed there reaches nobody. `watch.heartbeat` in the run directory is rewritten every pass, and its mtime is what makes the watcher's own liveness measurable.
 3. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
 4. **Enter the router loop of Act 2b.** Do not stop here.
 
@@ -205,7 +219,7 @@ The router decides **what happens next**. The gate decides **whether it may**. T
 snapshot  →  decide  →  gate call  →  (repeat)
 ```
 
-1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
+1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
 2. **Decide one next act.**
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
@@ -270,6 +284,10 @@ The disagreement runs both ways, and only one direction is obvious:
 ### Dispatching a stage
 
 A stage is `act --kind skill`, and the gate launches it through the wrapper. Never assemble a CLI command line in the router: `"$CLI_BIN" "$@"` is an argv laundering tool for anyone holding an allow-list entry, and the wrapper's only legitimate caller is the gate.
+
+**Dispatch it as a HARNESS-TRACKED background command, never with a bare `&`.** A stage call blocks for as long as the stage runs — the background ceiling alone allows an hour — and no foreground tool timeout reaches that. Detaching it with `&` and ending the turn produces a process nothing is waiting on: the stage finishes, writes its rows, and **nobody is told**. Measured: a stage completed normally at 08:58 with `종단 부류=정상 완료` in the ledger, and the run sat untouched until a person resumed the session ten hours later. Use the mechanism that re-invokes you on completion; that notification is the only thing that makes the next turn happen.
+
+**The stage's stream is at `<run-dir>/log/<segment>.json`**, and its stderr beside it. That is where a stage's own account of itself lives when you need it.
 
 Three conditions must **all** hold before a segment is dispatchable, and reading only the first is how a router concludes it may go: **dependency** (no predecessor unfinished), **capacity** (concurrent model streams within the cap, taken from each skill's declared value rather than estimated), and **exclusion** (no live stage already holding an exclusive resource — the experiment-worktree prefix, which counts repo-wide, and one live stage per output document path).
 

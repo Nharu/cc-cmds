@@ -42,6 +42,8 @@ Mark exactly one target `home` when you can tell which one the work is anchored 
 
 `steps` is the plan, in the order it would run, each step naming its skill and what it depends on. Keep it at the granularity a person can read and refuse — the segment-level plan is built later by a different judgment, and duplicating it here produces two plans that disagree.
 
+**A graph that reaches a merge must contain a review step, and the schema will not tell you that.** Two rules fire at the merge: one wants a review record covering the branch's current HEAD with P0·P1 at zero, the other wants the reviewing session's ancestry disjoint from the implementing one's. So `implement` followed directly by `apply` — which this schema happily accepts — is a plan that cannot execute, and the person approving it finds out at the merge rather than here. Put the review in, as its own step depending on the implementation, whenever the work is meant to land.
+
 ## `unresolved` is not a weakness, it is the deliverable of a doubt
 
 Anything you could not settle goes here as a question a person can answer in one sentence. This list is read out loud to them before anything is frozen. An empty `unresolved` on a request that genuinely underdetermines the plan is the worst output you can produce: it converts a question that costs ten seconds now into a night that produces nothing.

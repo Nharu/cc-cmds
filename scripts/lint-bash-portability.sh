@@ -75,6 +75,14 @@ PATTERNS=(
   '\$\{[A-Za-z_][A-Za-z0-9_]*,,?\}|bash4 case-expansion|bash 4+ case conversion; use `tr [:upper:] [:lower:]`'
 )
 # Quoted-literal idioms that need substring (not word-boundary) matching.
+# Patterns that must be matched under the C locale, because what they are about
+# is BYTES rather than characters. Kept in their own table so the locale pin is
+# scoped to them: under a UTF-8 locale a Korean bracket is `[:punct:]` and the
+# rule below would not fire at all.
+C_LOCALE_PATTERNS=(
+  '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]|var-then-multibyte|bash reads the first byte of the following multibyte character as part of the VARIABLE NAME, so the lookup fails as unbound under set -u; brace it — ${var} — whenever a non-ASCII character follows'
+)
+
 LITERAL_PATTERNS=(
   "sed -i ''|sed -i ''|BSD-only single-quoted backup-extension argument; portable: write to tmp + mv, or branch by OS"
   "awk 'gensub(|awk gensub|GNU awk only; portable: use match() + substr() composition"
@@ -166,6 +174,27 @@ for file in "${FILES[@]}"; do
 
       if printf '%s' "$code_part" | grep -qE "$regex"; then
         # Check same-line disable comment.
+        if printf '%s' "$comment_part" \
+            | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+          continue
+        fi
+        echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
+        echo "       advice: ${advice}" >&2
+        echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
+        file_violations=$((file_violations + 1))
+      fi
+    done
+
+    # C-locale byte idioms. The locale is pinned HERE rather than for the whole
+    # run: what these match is a byte range, and a UTF-8 locale classifies the
+    # very characters at issue as ordinary punctuation.
+    for row in "${C_LOCALE_PATTERNS[@]}"; do
+      regex="${row%%|*}"
+      rest="${row#*|}"
+      idiom_id="${rest%%|*}"
+      advice="${rest#*|}"
+
+      if printf '%s' "$code_part" | LC_ALL=C grep -qE "$regex"; then
         if printf '%s' "$comment_part" \
             | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
           continue
