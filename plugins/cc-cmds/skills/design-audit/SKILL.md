@@ -53,7 +53,11 @@ These six lines are the **only** place any of these values appears in this skill
 
 ### CFI-1 — Freeze (the mechanism, not hygiene)
 
-The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the `git worktree list --porcelain` baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
+The freeze window opens at the last pre-spawn write of Step 1 and closes when the last reader witness is collected. Inside it, no `Edit`/`Write` may target the document and nothing may change in the tree. Three artifacts are recorded at the open — `FROZEN_SHA256`, the `git status --porcelain` baseline, and the worktree baseline (the two-command boundary gate of `${CLAUDE_SKILL_DIR}/../_common/verification.md`) — and all three are re-checked at the close.
+
+**The worktree half is the gate's three scoped assertions, not a whole-output equality** — 2a (path set), 2b (this audit's own entry), 2c (`cc-design-exp-` count is 0), exactly as `${CLAUDE_SKILL_DIR}/../_common/verification.md` §6 defines them. Do not re-derive them here; that divergence is what made this gate mean three different things in three skills.
+
+Why it matters more here than anywhere else: the window spans the **whole fan-out**, so a repository-global comparison has the longest possible exposure to a sibling worktree committing. A sibling's `HEAD` moving is deliberately not a mismatch, and for this skill the reason is direct — `FROZEN_SHA256` covers the reviewed text itself, so the induced-defect rate the freeze protects stays zero no matter what a tree no reader measured does.
 
 This is load-bearing, not tidiness. The audit's reproduction rate stays below 1 only while the induced-defect rate is zero, and that rate becomes positive the instant any byte of the reviewed text changes between reviews. Reader witnesses are written out-of-tree precisely so the boundary baselines stay untouched; the in-tree reader-report copies are written **after** the window closes.
 
