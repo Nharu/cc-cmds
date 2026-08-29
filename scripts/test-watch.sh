@@ -84,10 +84,10 @@ fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 run --stall 0 >/dev/null
 out=$(run --stall 0)
-if grep -q '사유=라이브니스 침묵' "$LG"; then
-  ok "정체를 blocked 행으로 기록한다"
+if grep -q '라이브니스 침묵' "$RD/stall" 2>/dev/null; then
+  ok "정체를 런 디렉터리의 관측 파일로 기록한다 (원장이 아니라)"
 else
-  bad "정체 기록" "행이 없다"
+  bad "정체 기록" "stall 파일에 관측이 없다"
 fi
 n_blocked=$(grep -c '라이브니스 침묵' "$LG" || true)
 run --stall 0 >/dev/null
@@ -247,6 +247,35 @@ if [ -n "$hb2" ]; then
 else
   bad "하트비트 갱신" "mtime 을 읽지 못했다"
 fi
+
+# ---------------------------------------------------------------------------
+# The watcher does NOT write the ledger. Its row carried no `prev=`, took no
+# lock and passed no length check, and the two sides of the chain then
+# disagreed about it — the verifier skips a row with no `prev=` without
+# advancing its running value while the writer's tip hashes the last ROW
+# including that one. A run whose watcher fired once read as broken from the
+# next row onward, forever.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F '>> "$LEDGER"'; then
+  bad "단일 기록자" "감시자가 여전히 원장에 직접 쓴다"
+else
+  ok "감시자가 원장에 직접 쓰지 않는다"
+fi
+
+WD4="$WORK/stalldir"; mkdir -p "$WD4"
+LG4="$WORK/stallledger.md"
+printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG4"
+# Two passes, because the idle clock is the watcher's own: the first records the
+# size it saw and reports zero, the second measures against it.
+bash "$WATCH" --run-dir "$WD4" --ledger "$LG4" --once --stall 0 >/dev/null 2>&1
+bash "$WATCH" --run-dir "$WD4" --ledger "$LG4" --once --stall 0 >/dev/null 2>&1
+if [ -f "$WD4/stall" ]; then
+  ok "정체 관측이 런 디렉터리의 파일로 남는다"
+else
+  bad "정체 기록" "stall 파일이 생기지 않았다"
+fi
+n=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
+check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
 
 printf '\ntest-watch: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
