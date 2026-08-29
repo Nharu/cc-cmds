@@ -37,12 +37,42 @@ for v in "$impl_sid" "$impl_par" "$rev_sid" "$rev_par"; do
   }
 done
 
-# The ancestor closure of each side is {id, parent}. Two sessions are separate
-# only when those sets do not meet: sharing a parent means one fork reviewed
-# what its sibling wrote from the same context, and being each other's parent is
-# the direct case.
+# THE DISPATCHER IS NOT AN ANCESTOR IN THE SENSE THIS RULE MEANS.
+#
+# The router dispatches both stages, and the gate records the router as `부모`
+# on both rows. So the two closures met at the router on every run a router
+# drove, and this rule refused EVERY merge — the id it named was neither stage
+# but the thing that launched them. Measured: a segment completed review, plan,
+# implementation and re-review with P0 and P1 at zero, and the merge was refused
+# naming the router's own session.
+#
+# What the rule is for is authorship: did the reviewing session see the work
+# being made. A shared dispatcher does not imply that — the two stages share no
+# output and each reads the tree independently.
+#
+# The discriminator needs no new field. In this design the author of an
+# implementation is a STAGE, and a stage's own session id is on its row. So a
+# common parent that is NEITHER side's session id never authored anything
+# recorded; it is the dispatcher. A parent that IS the other side's session id
+# is the fork case this rule exists for, and that comparison is untouched below.
+#
+# Residual, stated rather than hidden: a router that authored an implementation
+# itself — through `exec` rather than through a stage — is not covered, and was
+# not covered before either. Nothing records the router as an author.
+dispatcher=""
+if [ -n "$impl_par" ] && [ "$impl_par" = "$rev_par" ] \
+   && [ "$impl_par" != "$impl_sid" ] && [ "$impl_par" != "$rev_sid" ]; then
+  dispatcher="$impl_par"
+fi
+
+# The ancestor closure of each side is {id, parent} minus the dispatcher. Two
+# sessions are separate only when those sets do not meet: sharing a parent that
+# authored means one fork reviewed what its sibling wrote from the same context,
+# and being each other's parent is the direct case.
 for a in "$impl_sid" "$impl_par"; do
+  if [ -n "$dispatcher" ] && [ "$a" = "$dispatcher" ]; then continue; fi
   for b in "$rev_sid" "$rev_par"; do
+    if [ -n "$dispatcher" ] && [ "$b" = "$dispatcher" ]; then continue; fi
     if [ "$a" = "$b" ]; then
       echo "구현-리뷰-분리: 리뷰 세션과 구현 세션의 조상이 겹칩니다 ($a) — 자기 작업을 리뷰한 것입니다" >&2
       exit 1
