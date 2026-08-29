@@ -1284,11 +1284,72 @@ case "$crow" in
   *) bad "비용 누적" "$crow" ;;
 esac
 
+# `is_error` is read as well as the status and the subtype. Measured: a stage
+# that slept mid-response returned `subtype: success` WITH `is_error: true`, and
+# only the non-zero status caught it — the same object with a zero status would
+# have been classified as a normal completion.
+outcome_probe_err() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"total_cost_usd\":9,\"session_id\":\"sid-slept\"}\n" \
+      > "$RUN_DIR/log/SP.json"
+    nb=$(gate_rows "자율 승인" | gate_count)
+    gate_record_stage_outcome infra SP review 1 0 "$nb" >/dev/null 2>&1
+  '
+}
+outcome_probe_err
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"종단 부류=크래시"*) ok "종료 코드가 0 이어도 is_error 면 크래시다" ;;
+  *) bad "종단 부류" "$row" ;;
+esac
+
 outcome_probe 1 error 0.10 ''
 row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
 case "$row" in
   *"종단 부류=크래시"*) ok "0 이 아닌 종료 코드는 크래시다" ;;
   *) bad "종단 부류" "$row" ;;
+esac
+
+# `plan_sha256` — the implement arm splits into two processes and process B
+# enters ONLY when this field is on the row; its admission predicate says so and
+# forbids re-deriving a plan instead. Nothing wrote it, so every dispatch
+# resolved as process A, emitted the plan again and stopped — with a clean tree,
+# which is correct for process A, so "A finished" and "B will never come" were
+# indistinguishable.
+plan_probe() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"
+    MANIFEST="'"$MANIFEST"'"
+    check_manifest >/dev/null 2>&1
+    derive_paths_from_manifest
+    rundir_init 2>/dev/null || true
+    mkdir -p "$RUN_DIR/log"
+    printf "%s" "$2" > "$RUN_DIR/implement-SI.plan.md"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1,\"session_id\":\"sid-i\"}\n" \
+      > "$RUN_DIR/log/SI.json"
+    nb=$(gate_rows "자율 승인" | gate_count)
+    gate_record_stage_outcome cc-cmds SI "$1" 1 0 "$nb" >/dev/null 2>&1
+  ' _ "$1" "$2"
+}
+plan_probe implement "착지 계획 본문"
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+want=$(printf '%s' "착지 계획 본문" | shasum -a 256 | cut -d' ' -f1)
+case "$row" in
+  *"plan_sha256=$want"*) ok "구현 스테이지의 행이 계획 다이제스트를 싣는다 (프로세스 B 의 입장 토큰)" ;;
+  *) bad "plan_sha256" "$row" ;;
+esac
+# And only the implement arm — a review stage has no plan and no process B.
+plan_probe review "리뷰에는 계획이 없다"
+row=$(grep '^- `stage-result` ' "$LEDGER" | tail -1)
+case "$row" in
+  *"plan_sha256="*) bad "plan_sha256" "리뷰 스테이지 행에 계획 다이제스트가 붙었다: $row" ;;
+  *) ok "리뷰 스테이지 행에는 붙지 않는다" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -1331,6 +1392,58 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 14f. A documentless run does not get its base's PARENT
+#
+# The workspace widening is for a document that belongs to no repository. A run
+# with no document sets both document variables to the run's base, so a guard
+# on their equality alone opens a directory nothing in the run reads.
+# ---------------------------------------------------------------------------
+parent_of_wt=$(dirname "$WT")
+if jq -e --arg d "$parent_of_wt" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  bad "작업 공간 확장" "문서 없는 런인데 베이스의 부모가 열렸다: $parent_of_wt"
+else
+  ok "문서 없는 런은 베이스의 부모를 열지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14g. A cut stage is RE-ATTACHED, not re-run — and the id is checked
+#
+# The contract already said so and the wrapper already accepted `--resume`;
+# nothing carried the router's intent to it, so the only recovery was a full
+# re-run. Measured: a review stage died to a machine sleep after 1h53m and 51.84
+# USD with every reviewer's output on disk and only the synthesis missing.
+#
+# The id is checked against this run's own ledger. A resume is an instruction to
+# continue somebody's transcript, so an unchecked value would let one segment
+# continue another segment's — or another run's — session.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $GATE_RESUME"'; then
+  ok "게이트가 래퍼에 --resume 을 넘길 수 있다"
+else
+  bad "재개 경로" "라우터가 끊긴 스테이지를 이어붙일 수단이 없다"
+fi
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x --resume "남의-세션-id" -- review x
+# The validation must sit BEFORE the CLI binary is resolved. Resolving first
+# makes "the binary is missing" mask "the argv is wrong" — the same defect the
+# wrapper already had and had fixed, and it came back here: on a host without
+# the CLI a bad resume id answered 127 and the refusal never named the fault.
+ord_resume=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n '재개 대상 세션이' | sed 's/:.*//' | tail -1)
+ord_cli=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'CLI 바이너리를 해소하지' | sed 's/:.*//' | tail -1)
+if [ -n "$ord_resume" ] && [ -n "$ord_cli" ] && [ "$ord_resume" -lt "$ord_cli" ]; then
+  ok "재개 인자 검증이 CLI 해소보다 먼저 온다"
+else
+  bad "검증 순서" "재개 검증 $ord_resume · CLI 해소 $ord_cli — 바이너리 부재가 인자 오류를 가린다"
+fi
+check "원장에 없는 세션 id 로는 재개하지 못한다" "$rc" "2"
+case "$msg" in
+  *"원장 기록에 없습니다"*) ok "거부가 그 이유를 말한다" ;;
+  *) bad "재개 거부 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
 #
 # Three defects met here and left no spelling that reached `gh` at all: the
@@ -1369,6 +1482,29 @@ graded_as '읽기'         '명시된 메서드가 필드를 이긴다'     -- g
 # Deliberate, and it stays deliberate: `auth` reads and rewrites the credential
 # the whole separation rests on.
 graded_as '등급 미상'    'gh auth 는 의도된 거부로 남는다'   -- gh auth switch --user x
+
+# A schema migration is a standard step BEFORE a deploy, and with no row for the
+# client every one of them fell to `등급 미상`, which refuses. All three ways out
+# were closed at once — `--surface` is a checked claim that any claim mismatches,
+# the basename normalization makes the absolute path identical, and `bash -c`
+# passes while recording a DDL against a database as a worktree write.
+graded_as '외부상태변경' 'mysql 이 외부 상태 변경으로 등급된다'  -- mysql -e "SELECT 1"
+graded_as '외부상태변경' 'psql 도 같다'                          -- psql -c "SELECT 1"
+graded_as '외부상태변경' '경로로 부른 클라이언트도 같다'         -- /opt/homebrew/opt/mysql-client@8.0/bin/mysql -e x
+# Read-only spellings grade the same, and that is the deliberate side to be
+# wrong on: the grade comes from argv0 alone, so a SELECT cannot be told from a
+# migration here — requiring a pre-authorization row for a read costs a line,
+# letting a migration through as a read costs the database.
+graded_as '외부상태변경' '읽기 전용 조회도 같은 등급이다'        -- mysql --defaults-extra-file=f db -e "SELECT 1"
+
+# The refusal names WHICH repair, because two different things arrive there.
+# `plan` and not `grade`: the repair sentence lives on the acting path, which is
+# where a router that got refused actually is.
+gate plan --manifest "$MANIFEST" --kind x --target infra --segment SW --cutpoint 커밋 -- some-unlisted-tool --flag
+case "$msg" in
+  *"표를 넓혀야"*) ok "미상 거부가 표를 넓히라는 쪽과 다시 쓰라는 쪽을 구별해 말한다" ;;
+  *) bad "미상 문면" "'"'"'$msg'"'"'" ;;
+esac
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
