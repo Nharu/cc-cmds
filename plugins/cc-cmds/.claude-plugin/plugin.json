@@ -1,7 +1,7 @@
 {
     "name": "cc-cmds",
     "description": "Engineering workflow commands for Claude Code",
-    "version": "2.4.2",
+    "version": "2.4.3",
     "author": { "name": "Nano" },
     "keywords": [
         "design",
