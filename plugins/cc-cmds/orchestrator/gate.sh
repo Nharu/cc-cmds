@@ -1528,6 +1528,15 @@ gate_launch_stage() {
   # sanitization as the cause.
   [ -n "${CLI_BIN:-}" ] || { warn "게이트가 CLI 바이너리를 해소하지 못했습니다"; return 127; }
 
+  # The plugin root the wrapper injects, so the stage's slash commands resolve.
+  # This assignment was deleted by an edit that moved the block above it and
+  # took a line with it; `--plugin-dir "$plugin_dir"` stayed, so under `set -u`
+  # every stage dispatch died on an unbound variable. Nothing caught it because
+  # no test ran this function past its argument checks — the fixture has no CLI,
+  # so the launch path was never entered. The stub below now enters it.
+  local plugin_dir
+  plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
+
   # The pid file is what makes a running stage VISIBLE to the liveness watcher.
   # Without it the watcher counts zero live stages, and its stall arm — "ledger
   # idle AND nothing alive AND nothing waiting" — becomes true during any long
