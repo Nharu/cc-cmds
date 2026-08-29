@@ -62,13 +62,14 @@ set -uo pipefail
 LC_TIME=C
 export LC_TIME
 
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0; AFTER_STAGE=120
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
     --ledger)   LEDGER="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --stall)    STALL="$2"; shift 2 ;;
+    --after-stage) AFTER_STAGE="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
     --notify)   NOTIFY=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -197,6 +198,35 @@ pass() {
   live=$(live_stages)
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
+
+  # A STAGE ENDED AND THE ROUTER DID NOT ACT. This is a far sharper condition
+  # than generic idleness, and it is the symptom of the one failure the dispatch
+  # form causes: a stage launched without a wake path finishes, writes its rows,
+  # and nobody is told.
+  #
+  # It is here because the form ITSELF cannot be checked. Measured: the
+  # environment a harness-tracked background command sees and the environment a
+  # foreground one sees are byte-identical — zero differing lines — so the gate
+  # has nothing to test at dispatch time. The requirement can only be stated in
+  # prose, and prose was violated again within four hours of being written.
+  #
+  # The generic stall arm below cannot cover it either: its threshold is twenty
+  # minutes and it only starts counting once the stage is gone, so the run sits
+  # silent for that long after an already-long stage. This arm keys on the last
+  # ledger ROW being a stage's terminal row, which is true for exactly as long
+  # as the router has not acted since — so a properly woken router clears it in
+  # seconds and a stranded one is named in two minutes.
+  if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
+     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
+             | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
+     && ! grep -q '스테이지 종단 후 라우터 무응답' "$RUN_DIR/stall" 2>/dev/null; then
+    announce "스테이지가 끝났는데 라우터가 ${age}초 동안 아무것도 하지 않았습니다" \
+             "그 스테이지를 깨울 통지가 없는 형태로 띄웠을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
+    banner "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)"
+    record_blocked "스테이지 종단 후 라우터 무응답" "메인 세션에서 이어서 진행하도록 지시"
+    return 0
+  fi
 
   # Announce a condition ONCE. Re-announcing on every pass turns the loud line
   # into noise, and the row it writes would itself grow the ledger — which resets
