@@ -132,6 +132,32 @@ case "$tool" in
       deny "$(jstr 'gate: 원장의 기록자는 게이트뿐입니다 — 행을 남기려면 gate.sh act 또는 gate.sh exec 를 쓰세요')"
     [ -n "$GRANT" ] && [ "$p" = "$GRANT" ] && \
       deny "$(jstr 'gate: 인가 기록은 킥오프만 씁니다 — 런 중에는 읽기 전용입니다')"
+    # THE USER-SCOPE CONFIG DIRECTORY IS RESOLVED, NOT ASSUMED. The literal
+    # `*/.claude/...` arms below cover a default installation and the
+    # project-scope `.claude/` of any repository, but `CLAUDE_CONFIG_DIR`
+    # relocates the USER-scope one — and on a machine where it points at, say,
+    # `~/.claude-cc`, the glob stops matching and the deny silently becomes an
+    # allow. That file holds `hooks` and `permissions`: it is the very
+    # installation channel these arms exist to close. The failure signature is
+    # invisibility — the patterns read correctly, and the protection is present
+    # on the reviewer's default machine and absent on the one the pipeline runs
+    # on. Relocating the config directory is supported usage, not an exotic
+    # setup.
+    #
+    # Checked before the case rather than as more arms in it, because an arm
+    # built from an empty variable would degrade into a pattern that matches
+    # something else (`/settings.json`) instead of matching nothing.
+    cfg="${CLAUDE_CONFIG_DIR:-}"
+    [ -n "$cfg" ] || cfg="${HOME:-}${HOME:+/.claude}"
+    cfg="${cfg%/}"
+    if [ -n "$cfg" ]; then
+      case "$p" in
+        "$cfg"/settings.json|"$cfg"/settings.local.json)
+          deny "$(jstr 'gate: 사용자 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
+        "$cfg"/projects/*)
+          deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
+      esac
+    fi
     case "$p" in
       */.claude/settings.json|*/.claude/settings.local.json)
         deny "$(jstr 'gate: 프로젝트 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;

@@ -240,11 +240,24 @@ in.
 | Today (document-derived) | After (manifest-derived) |
 | --- | --- |
 | `SLUG` = document filename | **Deleted from the identity notion.** The one exception is the audit sidecar path the artifact predicate reads: the shared contract fixes that to the **document key**, so it does not move to the run id. That is the boundary between run-derived state and document-derived state |
-| `BASE`·`GRANT`·`LEDGER` from `derive_paths()` | **Manifest-derived.** `BASE` from `origin-worktree=`; `GRANT`·`LEDGER` from the run id. Without these three the path derivation cannot produce anything at all when there is no document |
+| `BASE`·`GRANT`·`LEDGER` from `derive_paths()` | **Manifest-derived.** `BASE` is derived **from** `origin-worktree=` — it is not equal to it: the driver asks that directory for its common git directory and takes the **parent**, which is the repository's main worktree root. In an ordinary checkout the two are the same string; **in a linked worktree they are not.** `GRANT`·`LEDGER` from the run id, under that `BASE`. Without these three the path derivation cannot produce anything at all when there is no document |
 | run key = document key | **`런 id`** = `<UTC date>-<8 hex>`. The primary key; ledger, report, worktree paths and branch names all derive from it |
 | finding key = document path | **`앵커 키`**, with the domain fixed by `앵커 종류`: `doc` → document key, `repo` → `<owner>/<name>`, `pr` → `<owner>/<name>#<n>`, `branch` → `<owner>/<name>@<branch>`, `intent` → first 12 of the intent text's sha256 |
 | `session_uuid` = `owner-doc\|구간\|단계\|시도` | **`런 id\|구간\|단계\|시도`.** Without a run term, two runs of one document aliased onto the same uuid — and therefore onto the same transcript |
 | worktree·branch = slug-derived | run-id-derived, which is what finally makes the teardown guard's claimed depth hold |
+
+**The kickoff must fold `BASE` the same way the driver does, and the row above is
+the only place that is written down.** Read as an equality it says
+`BASE = origin-worktree`, and a kickoff that follows it puts the authorization
+record, the report stub and the watcher's `--ledger` argument in the document's
+own worktree while the gate writes the ledger under the main one. Measured: a
+stage ran forty minutes and added 41 rows to the gate's ledger while all three
+kickoff artifacts sat in another worktree, empty or untouched. Both sets exist
+and both are well-formed, so nothing reports the split — and it only appears
+when the document lives in a linked worktree, so a test on an ordinary checkout
+cannot reproduce it. `§1.1` of `sidecar.md` explains **why** the fold exists
+(N linked worktrees must converge on one location so single-writer state does
+not fan out); this row is where it must not be lost.
 
 **Per-target cutpoints and terminal-act caps live in the target rows.** A single
 totally-ordered scalar cannot say "apply for infra, stop at PR for the

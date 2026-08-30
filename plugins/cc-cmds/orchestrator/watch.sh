@@ -92,13 +92,27 @@ ledger_idle_seconds() {
   # The watcher owns the clock rather than the filesystem: it remembers the last
   # size it saw and when it first saw it, which also makes `--once` work across
   # invocations instead of always reporting zero.
-  local size prev_size prev_at now
+  # THE LEDGER PATH IS PART OF THE STATE, on line 3, because the state file's
+  # own path is derived from `--run-dir` alone. Without it a watcher restarted
+  # against a DIFFERENT ledger inherits the previous one's accumulated idleness
+  # and can fire a stall on its first pass — measured: the first watcher was
+  # pointed at a stub that never grew, and the replacement, started with the
+  # real ledger, armed immediately even though that ledger had been written 27
+  # seconds earlier. The observation it produced becomes an irreversible
+  # run-scope row, so the cost of getting this wrong is not a stray warning.
+  #
+  # Line 3 rather than line 1 so a state file written before this field existed
+  # reads as an empty path, mismatches, and resets. A reset reports zero idle
+  # seconds, which is the safe direction: it can delay a true stall by one
+  # interval, never invent one.
+  local size prev_size prev_at prev_ledger now
   size=$(ledger_size "$LEDGER")
   now=$(now_epoch)
   prev_size=$(sed -n '1p' "$RUN_DIR/watch.state" 2>/dev/null || true)
   prev_at=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
-  if [ -z "$prev_size" ] || [ "$size" != "$prev_size" ]; then
-    printf '%s\n%s\n' "$size" "$now" > "$RUN_DIR/watch.state"
+  prev_ledger=$(sed -n '3p' "$RUN_DIR/watch.state" 2>/dev/null || true)
+  if [ -z "$prev_size" ] || [ "$size" != "$prev_size" ] || [ "$prev_ledger" != "$LEDGER" ]; then
+    printf '%s\n%s\n%s\n' "$size" "$now" "$LEDGER" > "$RUN_DIR/watch.state"
     printf '0'
     return 0
   fi

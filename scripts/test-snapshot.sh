@@ -77,6 +77,24 @@ PD=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
   printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
 } > "$FIX_MANIFEST"
 
+# The gate reads the authorization record on every invocation, so the fixture
+# carries one. `owner-doc` mirrors the manifest header — this is a documentless
+# `repo`-anchored run — and the run maximum matches the single target.
+cat > "$WT/docs/pipeline-grant/R1.md" <<GRANTEOF
+# 파이프라인 인가 기록 — R1
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 R1
+**인가 일시**: 2026-01-01T00:00:00Z
+**종료 지점**: 픽스처가 끝나면
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 테스트 픽스처
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $WT/docs/pipeline-run/R1.md
+GRANTEOF
+
 : > "$FIX_LEDGER"
 
 # ---------------------------------------------------------------------------
