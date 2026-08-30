@@ -101,7 +101,13 @@ Ask with `AskUserQuestion` (header chip `시각 정합`):
 
 Record the answer in the manifest's `시각 정합 마커` field.
 
-**Residual verification items.** Count the `### R<n>` entries under `## 구현 시 검증 항목` whose grade is the save-time residual token. Tell the user how many there are and which will run unattended — an external probe, a worktree recipe, or an execution-caution item **cannot** get consent overnight, so a pre-implementation one of those will stop the run. This is a notice, not a question; it goes into the report either way.
+**Residual verification items — and the access they need, TAKEN not just announced.** Count the `### R<n>` entries under `## 구현 시 검증 항목` whose grade is the save-time residual token. Tell the user how many there are and which will run unattended: an external probe, a worktree recipe, or an execution-caution item **cannot** get consent overnight, so a pre-implementation one of those will stop the run.
+
+Then — for each item that would stop it — **read what that item's own recipe says it needs, and ask the user for it here.** Every residual item already writes down its requirement; nothing in Act 1 used to collect it, so the person was told "this will stop the run" and then allowed to leave without being asked the one thing that would prevent it. Take the credential, the profile name, the tunnel, the endpoint — whatever the recipe names — verbatim, and record it against that `R<n>`. Where the answer is "that item does not need to run", record that too: it is the cheapest possible resolution and it is invisible to every later stage.
+
+This is the difference the measurement showed. A run stopped at 04:32 on three pre-implementation items. In the morning: one needed a secret this machine's profiles already reached, one needed a database this machine already had a key for — both settled in minutes, both passing — and the third turned out not to be exercisable at all, its premise already refuted elsewhere in the same document. Two answers and one deletion, none of them longer than a sentence, and a whole night spent to discover that a stage had to succeed and be billed first.
+
+**Announce the residual items even when none of them blocks** — that part is a notice and goes into the report either way. The questions above are only for the ones that would stop the run.
 
 **Cross-repository stacking.** If more than one target was confirmed, say this out loud: **segments in different repositories cannot stack on each other's commits.** A dependency between them buys ordering and nothing more, because there is no commit in repository B that contains repository A's merge. It is the most likely place a first multi-repo run diverges from what the user pictured, and it costs one sentence here.
 
@@ -129,6 +135,10 @@ None of these has a safe default this skill may pick for the user.
 
 **5a — Termination point.** What does "done" mean for this run? Free-form; it goes into the manifest verbatim and into the morning report. This is what the run is measured against.
 
+**When the graph puts an audit before the work, say that the audit can move this out of reach — before taking the answer.** An audit routes its findings to owners, and one of those owners is the design document's `## 미해결 이슈` bucket, which means *a person has to answer this*. Unattended there is nobody, so a single audit can make the termination point being frozen right now unreachable, and it is the **second** step that does it. Measured: a termination point of "all three slices landed" was frozen with a 09:00 deadline; the audit ran first, completed normally, produced 29 unique defects, and routed 15 of them into that bucket — taking the document from 5 open items to 20. From that moment the run could not proceed, and it stopped and waited, which is correct behaviour. What was wrong is that this was foreseeable at kickoff and nobody said it.
+
+An audited-first graph is the *normal* path for a run that starts from a design document, so this is not an edge case. Offer the user the choice explicitly: freeze a termination point that stops at the audit's output, or keep the further one and accept that the morning may show it unmet for a reason that is the mechanism working.
+
 **5b — The permission cutpoint, one per target (ordered, exactly one each).** Present the ladder and take one value for each confirmed target:
 
 ```
@@ -148,6 +158,8 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 **5e — Wall-clock deadline.** An absolute ISO8601 timestamp, and it is **required** — `없음` is refused by the driver's own manifest check. It is a dispatch gate and never a kill signal: a stage in flight runs to completion and is classified normally, and no merge happens after it. Offer a default of the next morning and let the user move it.
 
+The deadline rests on the same assumption 5a just qualified: the user picks a time believing the implementation happens overnight. If an audit stands first in the graph, what exists at that hour may be the audit's output and nothing else. Say so while they choose the time, not afterwards.
+
 **5f — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
 
 **5g — Morning notification.** Ask whether to arm a morning banner. **Ask — never infer** (CFI-4). On an affirmative, invoke the `active-notify` skill and `arm` it; on anything else, arm nothing and say that the report on disk is the only channel.
@@ -161,6 +173,16 @@ At or below the chosen point the run acts on its own; the first act above it sen
 ### Step 6: Write the manifest and the authorization record
 
 Assign `<run-id>`: a short, collision-free identifier for this run. It, not the document, is what every path below is derived from — which is what stops two runs of one document from aliasing onto one ledger, one report, one worktree path and one session id.
+
+**Resolve `<base>` first, the way the driver does, and never assume it equals the worktree you are standing in.** From the home target's worktree, take the **parent of the common git directory**:
+
+```
+BASE=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+```
+
+In an ordinary checkout that is the same string as `git rev-parse --show-toplevel`. **In a linked worktree it is not** — it is the repository's main worktree root, which is the whole point: N linked worktrees of one repository must converge on one location, or state that has a single writer fans out with the worktrees while every copy carries identical headers.
+
+`origin-worktree=` in the manifest header is a *different* value — the document's own worktree root, which the manifest check compares against the current one. Do not reuse it as `<base>`. Writing all four paths below under `origin-worktree` puts the authorization record, the report stub and the watcher's `--ledger` argument in one worktree while the gate writes the ledger in another; both sets are well-formed, so nothing reports it. Measured: a stage ran 40 minutes and grew the gate's ledger by 41 rows while the watcher was measuring a stub that never changed and the authorization record sat where the gate never looks. It reproduces only when the document is in a linked worktree, so an ordinary checkout will not show it.
 
 **The manifest** at `<base>/docs/pipeline-run/<run-id>.plan.md`, written **whole, once** (creation-only; there is no append form). Its shape is `## 2b.1` of `pipeline-sidecar.md` — follow that section byte-for-byte rather than the sketch of it you remember.
 
@@ -293,9 +315,29 @@ The disagreement runs both ways, and only one direction is obvious:
 - The gate can also **end** the run. When every condition holds and the router reaches for something else, it must name a specific admissible next obligation — an open obligation's identity, a non-terminal segment, or a clause marked unmet. Failing to name one, the run terminates as satisfied. Without this the gate could only block termination, never cause it, and the router alone would decide when the night ends.
 - **A goal can be unreachable.** The router may propose done with a clause marked impossible and its evidence; the gate accepts that on a reduced condition set.
 
+**A run the PERSON decided to end is that same path, and it is the only way to record their decision.** When the user says to stop short of the termination point, propose done with the unmet clauses marked impossible and the user's own utterance as the evidence for each. Do not reach for `problem` to record the stopping: that row **creates an open obligation**, which is condition 3's input, so writing it makes the run harder to end — the act of recording the stop would worsen the thing being recorded.
+
+This matters because of what `done` is for. `런 상태` in the snapshot is derived from the run directory's `done` file and from nothing else, so a run nobody proposed done for renders `진행 중` forever — indistinguishable from one that died quietly, and the watcher never self-stops either, so it becomes a zombie of its own. Measured: a run whose stages had all terminated, with zero pending approvals, zero open obligations, an intact hash chain and one terminal segment — quiet and whole in every respect except that a person had decided to end it — went on rendering as in-flight because there was no row saying so. The decision existed only in a conversation, and a conversation is not on disk.
+
 ### Dispatching a stage
 
 A stage is `act --kind skill`, and the gate launches it through the wrapper. Never assemble a CLI command line in the router: `"$CLI_BIN" "$@"` is an argv laundering tool for anyone holding an allow-list entry, and the wrapper's only legitimate caller is the gate.
+
+**What goes after `--` is exactly this, and getting it wrong costs money without saying so:**
+
+```
+gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id> \
+  --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  -- -p "/cc-cmds:<스킬>-unattended <인자…>"
+```
+
+Three parts, and each one has a measured failure:
+
+- **`-p` is required.** The wrapper passes everything after `--` to the CLI, so without `-p` the prompt is never delivered. Omitting it while passing a bare skill name produced `산출물 없는 정지 rc=0 · 0.809852 USD` — the model woke with an **empty first user message**, read a file, asked "what should I do?", and terminated as a success. Omitting it while passing a quoted slash command instead fails loudly (`stage-wrapper: -- 뒤에 CLI 인자가 필요합니다`, `크래시 rc=2`), which is the better of the two.
+- **The prompt is a slash command**, leading `/` included.
+- **It must be the `-unattended` variant.** The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, so a headless stage naming them resolves nothing at all.
+
+The first form is the dangerous one precisely because it is green: exit 0, cost charged, no output. Neither the gate nor the wrapper can catch it — a prompt is a string, and any string is a valid one.
 
 **Dispatch it as a HARNESS-TRACKED background command, never with a bare `&`.** A stage call blocks for as long as the stage runs — the background ceiling alone allows an hour — and no foreground tool timeout reaches that. Detaching it with `&` and ending the turn produces a process nothing is waiting on: the stage finishes, writes its rows, and **nobody is told**. Measured: a stage completed normally at 08:58 with `종단 부류=정상 완료` in the ledger, and the run sat untouched until a person resumed the session ten hours later. Use the mechanism that re-invokes you on completion; that notification is the only thing that makes the next turn happen.
 

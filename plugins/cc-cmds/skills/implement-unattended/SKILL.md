@@ -132,6 +132,16 @@ Deriving the phase from durable state rather than from an input flag is what mak
 Runs BEFORE Step 2, fail-fast, so implementation never builds on a refuted design. Its writes are deferred to Step 3. **Read `${CLAUDE_SKILL_DIR}/../_common/verification.md`** (the residual-item contract, the drift ladder §7, the carve-out §6) before this step.
 
 - **1.5a — Discovery & classification (read-only)**: identical to the base skill. Enumerate `### R<n>`; skip items already carrying a terminal token via `^(- )?(\*\*검증 등급\*\*|검증 등급): (검증됨\(통과\)|반증됨\(실패\)|검증불가\(드리프트\))$` (`grep -E`, never perl). Select gate items positively with `^(- )?(\*\*검증 등급\*\*|검증 등급): 구현 시 검증$`. Every other remaining state is a **document defect** — surface it in the emitted plan, run no recipe, flip no token. Partition by `검증 시점` with the same two-step lookup (presence, then value); a missing field means `구현 전`, an out-of-vocabulary value is a defect and is consumed by nothing.
+
+    **CHECK ALL FIVE AXES AND REPORT ALL OF THEM, in one pass, before halting on any.** The axes are independent and every one of them is decided from the document's bytes alone:
+
+    1. the eight required fields are present on each `### R<n>`;
+    2. `분류` is one of the five contract values;
+    3. `잔여 사유` is one of the four;
+    4. `검증 등급` is a save-time token;
+    5. `검증 시점` is `구현 전` / `구현 중(<phase>)` / `구현 후` — **absence is not a violation** (it reads as `구현 전`), but report which items rely on that default, because that default is what puts a (c) or (e) item behind a gate nobody can open unattended.
+
+    Reporting only the axis that happened to be hit first makes a document cost **one run per axis**, and each run is a full one: fixing an axis moves the document's `sha256`, the manifest freezes that value and is creation-only, so every axis costs a new run id, a new manifest, a new authorization record and a new watcher. Measured: two runs for two axes, after a third had already been discarded. The halts themselves were right — the document really was unconsumable both times — so the cost bought no information that a single pass could not have produced.
 - **1.5b — Consent is unobtainable, so category decides.** There is no consent surface here, and the design session's consent does not carry into this process.
     - **(a)/(b)/(d) read-only-local recipes run** as they do interactively.
     - **A (c) external probe, an (e) worktree recipe, or an `실행 주의`-flagged item is never auto-run.** Its disposition depends on when it was due:

@@ -165,6 +165,35 @@ check "룰 카탈로그 쓰기는 거부된다" "$dec" "deny"
 decide "$(write_json "$HOOK")"
 check "훅 스크립트 자신에 대한 쓰기는 거부된다" "$dec" "deny"
 
+# The user-scope config directory is relocatable, and the literal `.claude`
+# globs stop matching when it moves. The protection was present on a default
+# install and absent on a relocated one, which is the shape that survives review.
+cfgdir="$WORK/.claude-cc"
+decide_cfg() {
+  out=$(printf '%s' "$1" | CLAUDE_CONFIG_DIR="$cfgdir" bash "$HOOK" --run-dir "$RUN_DIR" \
+          --gate "$GATE" --ledger "$LEDGER" --grant "$GRANT" 2>/dev/null)
+  dec=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
+}
+
+decide_cfg "$(write_json "$cfgdir/settings.json")"
+check "재배치된 사용자 스코프 설정 쓰기도 거부된다" "$dec" "deny"
+
+decide_cfg "$(write_json "$cfgdir/settings.local.json")"
+check "재배치된 사용자 스코프 로컬 설정 쓰기도 거부된다" "$dec" "deny"
+
+decide_cfg "$(write_json "$cfgdir/projects/abc/session.jsonl")"
+check "재배치된 트랜스크립트 쓰기도 거부된다" "$dec" "deny"
+
+# Not vacuous: the arms are anchored at the resolved directory, so a sibling
+# whose name merely starts with it stays writable.
+decide_cfg "$(write_json "${cfgdir}-other/settings.json")"
+check "이름이 접두로만 겹치는 이웃 디렉터리는 여전히 허용된다" "$dec" "allow"
+
+# And relocating must not remove the default coverage: with the variable set to
+# somewhere else, a project-scope `.claude` is still refused.
+decide_cfg "$(write_json "/some/repo/.claude/settings.json")"
+check "재배치 상태에서도 프로젝트 스코프 설정은 거부된다" "$dec" "deny"
+
 # The denial set must not be vacuous in the other direction: this pipeline's job
 # is editing repositories, so an ordinary source file has to stay writable.
 decide "$(write_json "/some/repo/src/main.ts")"

@@ -142,6 +142,25 @@ MANIFEST="$WT/plan.md"
 LEDGER="$WT/docs/pipeline-run/R1.md"
 GRANT="$WT/docs/pipeline-grant/R1.md"
 
+# The authorization record is part of the fixture now, because the gate reads it
+# on every invocation. `owner-doc` mirrors the manifest header's `(없음)` — this
+# is a documentless `repo`-anchored run — and the run maximum is the higher of
+# the two target cutpoints.
+cat > "$GRANT" <<GRANTEOF
+# 파이프라인 인가 기록 — R1
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 R1
+**인가 일시**: 2026-08-30T00:00:00Z
+**종료 지점**: 픽스처
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 픽스처 인가
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $WT/docs/pipeline-run/R1.md
+GRANTEOF
+
 # Two targets on purpose. One run maximum of `배포` with a `PR` target is the
 # only shape in which #208's defect is observable at all.
 row_pr="- \`target\` | 별칭=front | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/front | 절단점=PR | 말단 행위 상한=없음"
@@ -1448,6 +1467,12 @@ if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $GATE_RESUME"'; 
 else
   bad "재개 경로" "라우터가 끊긴 스테이지를 이어붙일 수단이 없다"
 fi
+# The segment row comes first, because a dispatch into a segment that has none
+# is now refused before the argv is looked at — and the fault under test here is
+# the argv. Without this the assertion would pass for the wrong reason.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SNOSUCH --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
      --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x --resume "남의-세션-id" -- review x
@@ -1492,6 +1517,9 @@ exit 0
 STUBEOF
 chmod +x "$STUB"
 
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv.txt" \
       bash "$GATE" act --manifest "$MANIFEST" --kind skill --target infra --segment SL \
@@ -1757,6 +1785,160 @@ case "$msg" in
   *"표를 넓혀야"*) ok "미상 거부가 표를 넓히라는 쪽과 다시 쓰라는 쪽을 구별해 말한다" ;;
   *) bad "미상 문면" "'"'"'$msg'"'"'" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 15/16. Late sections run against their OWN state home.
+#
+# Section 14e deliberately moves the enforcement surface and never puts it back,
+# and the tail sections that follow it use `grade` and `plan`, neither of which
+# reaches the surface check. Anything below that uses `act` therefore inherits a
+# moved surface and gets exit 7 for reasons that have nothing to do with what it
+# is testing. A fresh state home gives these sections their own baseline while
+# keeping the same ledger.
+# ---------------------------------------------------------------------------
+STATE_LATE="$WORK/state-late"
+gateL() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H; }
+
+# ---------------------------------------------------------------------------
+# 15. A stage may not be dispatched into a segment with no `segment` row
+#
+# The progress vector is built from those rows, so a run that skips them has a
+# vector that cannot move and a stagnation boundary that fires on a healthy
+# stage — with a question text that names none of it.
+# ---------------------------------------------------------------------------
+gateL act --manifest "$MANIFEST" --kind skill --target infra --segment SROWLESS --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x -- review "/cc-cmds:review-unattended x"
+check "segment 행 없는 세그먼트로는 스테이지를 띄우지 못한다" "$rc" "3"
+case "$msg" in
+  *"segment 행이 없습니다"*) ok "거부가 빠진 행을 이유로 든다" ;;
+  *) bad "행 없음 문면" "$msg" ;;
+esac
+# Not vacuous in the other direction: with the row present the same dispatch
+# gets past this check.
+gateL act --manifest "$MANIFEST" --kind segment --target infra --segment SROWLESS --cutpoint 커밋 \
+     --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT"
+check "그 행을 쓰면 기록은 통과한다" "$rc" "0"
+gateL plan --manifest "$MANIFEST" --kind skill --target infra --segment SROWLESS --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$(HL)" -- review
+check "행이 있으면 같은 디스패치가 이 검사를 넘는다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 16. Termination condition 5 has a resolution path, and one block that has none
+#
+# Counting raw rows made it a one-way latch: a ledger row is never deleted, so a
+# single run-scope block — a watcher false positive included — took the run's
+# ability to propose done away for good.
+# ---------------------------------------------------------------------------
+# Condition 5 is read through the propose-done refusal, which is where it
+# actually reaches a person: the rejection prints every unmet condition.
+cond5_named() {
+  gateL act --manifest "$MANIFEST" --kind propose-done --target infra --segment SROWLESS \
+       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 절=x 근거=y
+  # Matched on the REASON, not on "condition 5 is unmet". Section 14e leaves a
+  # permanent `원인=무효화` run-scope block in this same ledger, so the coarse
+  # form is true forever and would assert nothing.
+  case "$msg" in *"미해소입니다 (라이브니스 침묵)"*) printf 'yes' ;; *) printf 'no' ;; esac
+}
+gateL exec --manifest "$MANIFEST" --target infra --segment SROWLESS --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale seed -- true
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=불명 | 사유=라이브니스 침묵 | 관측=t | 재개 명령=- | prev=seed\n' >> "$LEDGER"
+
+# The resolution row needs its evidence, and it may not invent a block.
+gateL act --manifest "$MANIFEST" --kind blocked --target infra --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 스코프=run 사유="라이브니스 침묵" 원인=해소
+check "근거 없는 해소 행은 거부된다" "$rc" "2"
+gateL act --manifest "$MANIFEST" --kind blocked --target infra --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 스코프=run 사유="없던 막힘" 원인=해소 근거=z
+check "없는 막힘은 해소할 수 없다" "$rc" "2"
+gateL act --manifest "$MANIFEST" --kind blocked --target infra --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 스코프=run 사유="라이브니스 침묵" 원인=불명 근거=z
+check "라우터는 막힘을 새로 만들 수 없다" "$rc" "2"
+
+check "해소 전에는 종료 제안이 조건 5 를 이유로 든다" "$(cond5_named)" "yes"
+gateL act --manifest "$MANIFEST" --kind blocked --target infra --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+     -- 스코프=run 사유="라이브니스 침묵" 원인=해소 근거="스테이지가 27초 전에 원장을 키웠다"
+check "근거를 실은 해소 행은 통과한다" "$rc" "0"
+check "해소 뒤 그 사유는 더 이상 조건 5 에 오르지 않는다" "$(cond5_named)" "no"
+# And the run still cannot propose done, because 14e's invalidation block stands
+# — which is the point: one reason resolving must not clear another. Called
+# directly rather than through `$(...)`, or `msg` would be the subshell's.
+gateL act --manifest "$MANIFEST" --kind propose-done --target infra --segment SROWLESS \
+     --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 절=x 근거=y
+case "$msg" in
+  *"해소 불가입니다 (강제 표면 이동)"*) ok "해소 불가인 막힘은 그대로 남는다" ;;
+  *) bad "무효화 잔존" "$msg" ;;
+esac
+
+# An invalidation block is terminal: clearing it would be the run re-authorizing
+# itself past the boundary that had just refused it. Section 14e already left
+# one in this ledger, so nothing needs seeding here.
+gateL act --manifest "$MANIFEST" --kind blocked --target infra --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+     -- 스코프=run 사유="강제 표면 이동" 원인=해소 근거=z
+check "무효화 막힘은 해소되지 않는다" "$rc" "3"
+case "$msg" in
+  *"해소할 수 없습니다"*) ok "거부가 무효화를 이유로 든다" ;;
+  *) bad "무효화 문면" "$msg" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 17. The authorization record is READ, on the router path
+#
+# `check_grant` lives on the fixed graph and the router never enters it, so a
+# run could execute with a grant that was absent, foreign, or disagreed with the
+# manifest, and nothing looked. Measured: a stage declaring cutpoint `배포` ran
+# 40 minutes while the file did not exist at the derived path; it appeared 9
+# hours 42 minutes later.
+# ---------------------------------------------------------------------------
+GBAK="$WORK/grant.bak"; cp "$GRANT" "$GBAK"
+
+mv "$GRANT" "$WORK/grant.away"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "인가 기록이 없으면 어떤 동사도 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"인가 기록이 없습니다"*) ok "거부가 부재를 이유로 든다" ;;
+  *) bad "인가 부재 문면" "$msg" ;;
+esac
+cp "$GBAK" "$GRANT"
+
+# A foreign block: one document folds all of its runs onto one grant path, so
+# run N+1 meets a block it did not write.
+printf '\n## 인가 R-OTHER\n**권한 절단점**: 배포\n' >> "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "외래 인가 블록이 있으면 선다" "$rc" "3"
+case "$msg" in
+  *"외래 인가 블록"*) ok "거부가 외래 블록을 지목한다" ;;
+  *) bad "외래 블록 문면" "$msg" ;;
+esac
+cp "$GBAK" "$GRANT"
+
+# The run maximum is cross-checked against the per-target values that actually
+# authorize acts. Without this the two disagree silently for a whole night.
+sed 's/^\*\*권한 절단점\*\*: 배포$/**권한 절단점**: 커밋/' "$GBAK" > "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "대상 절단점이 런 최대치를 넘으면 선다" "$rc" "3"
+case "$msg" in
+  *"런 최대치"*) ok "거부가 어느 대상이 넘었는지 말한다" ;;
+  *) bad "최대치 문면" "$msg" ;;
+esac
+
+# owner-doc must agree with the manifest, and absence is a mismatch.
+sed 's/owner-doc=(없음)/owner-doc=docs-something-else/' "$GBAK" > "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "owner-doc 이 매니페스트와 다르면 선다" "$rc" "3"
+sed 's/ owner-doc=(없음);//' "$GBAK" > "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "owner-doc 이 아예 없으면 선다 (부재는 불일치다)" "$rc" "3"
+
+cp "$GBAK" "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

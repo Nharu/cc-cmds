@@ -220,6 +220,44 @@ WD2="$WORK/gonedir"; mkdir -p "$WD2"; rmdir "$WD2"
 out=$(bash "$WATCH" --run-dir "$WD2" --ledger "$LG2" --interval 1 2>&1); rc=$?
 check "런 디렉터리가 사라져도 끝난다" "$rc" "0"
 
+# The idle state is keyed by the LEDGER as well as the run directory. Its file
+# path comes from `--run-dir` alone, so without the ledger recorded inside it a
+# watcher restarted against a different ledger inherits the previous one's
+# accumulated idleness and can arm a stall on its first pass — and that
+# observation becomes an irreversible run-scope row.
+# THE TWO LEDGERS ARE THE SAME SIZE ON PURPOSE. Idleness is measured by size,
+# so two files of different lengths would reset the counter on the size check
+# alone and the ledger-identity check would never be exercised. Equal size and
+# different path is the only shape that isolates it — and it is also the real
+# case, since the stub a misdirected watcher measures is a sibling of the file
+# it should have been reading.
+WD5="$WORK/keydir"; mkdir -p "$WD5"
+LG5a="$WORK/stub.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG5a"
+LG5b="$WORK/real.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG5b"
+
+# A non-zero threshold, because a reset reports zero idle seconds and `0 >= 0`
+# would arm anyway — which would make the reset invisible to this assertion.
+bash "$WATCH" --run-dir "$WD5" --ledger "$LG5a" --once --stall 1 >/dev/null 2>&1
+sleep 2
+bash "$WATCH" --run-dir "$WD5" --ledger "$LG5a" --once --stall 1 >/dev/null 2>&1
+if [ -f "$WD5/stall" ]; then
+  ok "같은 원장에서 임계를 넘기면 정지가 발화한다 (기준선 확인)"
+else
+  bad "정지 기준선" "같은 원장 두 번에도 stall 이 생기지 않았다"
+fi
+
+# Now the same run directory and the same size, but a DIFFERENT ledger. The
+# accumulated idleness belongs to the other file, so this pass must reset.
+rm -f "$WD5/stall"
+bash "$WATCH" --run-dir "$WD5" --ledger "$LG5b" --once --stall 1 >/dev/null 2>&1
+if [ -f "$WD5/stall" ]; then
+  bad "원장 교체" "다른 원장으로 바꿨는데 앞 원장의 누적 유휴를 물려받아 즉시 정지했다"
+else
+  ok "원장을 바꾸면 유휴가 초기화된다 (앞 원장의 누적을 물려받지 않는다)"
+fi
+check "상태 파일이 어느 원장을 재고 있었는지 싣는다" \
+  "$(sed -n '3p' "$WD5/watch.state" 2>/dev/null)" "$LG5b"
+
 # The heartbeat goes to a FILE. This process is launched into the background by
 # a tool call that then returns, so its stdout is closed and every heartbeat
 # printed there reaches nobody — the property "a live watcher's silence differs

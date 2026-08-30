@@ -940,6 +940,97 @@ gate_chain_verify() {
   return 1
 }
 
+gate_grant_field() {
+  # gate_grant_field <필드명> — the CANON rendering inside this run's block.
+  #
+  # sed and shell string equality, not awk. A Korean key fed to `awk`'s regex
+  # engine is the exact construction this repository already had to rewrite once
+  # after it failed on the macOS leg of CI and nowhere else.
+  sed -n "/^## 인가 ${RUN_ID}\$/,/^## /p" "$GRANT" 2>/dev/null \
+    | sed -n "s/^\\*\\*${1}\\*\\*: //p" | sed 's/[[:space:]]*$//' | sed -n '1p'
+}
+
+gate_check_grant() {
+  # THE ROUTER PATH READ THE AUTHORIZATION RECORD NOWHERE, and this is where it
+  # starts. `check_grant` lives on the fixed graph, which the router never
+  # enters — the router only ever calls the gate's verbs — so a run could
+  # execute with a grant that was absent, corrupt, or belonged to another run,
+  # and nothing looked. Measured: a stage declaring cutpoint `배포` was launched
+  # and ran 40 minutes while the file did not exist at the path the gate
+  # derives; it appeared 9 hours 42 minutes later.
+  #
+  # The four fields the grant carries were being recorded and never compared,
+  # which is precisely the defect class this contract exists to delete. And the
+  # protection everyone relied on — "the driver has no write path to the grant,
+  # so it cannot widen its own authority" — is true and worthless on its own: a
+  # document nobody reads cannot be widened because it does not bind.
+  local blocks b found=0 foreign="" gmax gi a tc ti gowner mowner
+  if [ ! -f "$GRANT" ]; then
+    warn "인가 기록이 없습니다: $GRANT — 킥오프가 먼저 돌아야 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  blocks=$(grep -E '^## 인가 ' "$GRANT" 2>/dev/null | sed -E 's/^## 인가 //' | sed 's/[[:space:]]*$//' || true)
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    if [ "$b" = "$RUN_ID" ]; then found=1; else foreign="${foreign}${b} "; fi
+  done <<EOF
+$blocks
+EOF
+  if [ -n "$foreign" ]; then
+    # One document folds every one of its runs onto one grant path, so run N+1
+    # meets a block it did not write. Inheriting an earlier run's merge
+    # permission is the failure here that is both invisible and irreversible.
+    warn "외래 인가 블록이 있습니다: ${foreign}— 사람이 확인해야 합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$found" != "1" ]; then
+    warn "이 런($RUN_ID)의 인가 블록이 인가 기록에 없습니다: $GRANT"
+    return "$GATE_EXIT_RULE"
+  fi
+
+  # Ownership proof. Where the manifest names a document the grant must name the
+  # same one; where it does not, the grant must carry the explicit absence
+  # marker rather than omit the field — so "no document" stays distinguishable
+  # from "field forgotten", which is what makes absence fail closed.
+  mowner=$(manifest_hdr_field 'owner-doc')
+  gowner=$(sed -n '2p' "$GRANT" | sed -n 's/.*owner-doc=\([^;]*\).*/\1/p' | sed 's/[[:space:]]*$//')
+  if [ -z "$gowner" ]; then
+    warn "인가 기록에 owner-doc= 이 없습니다 — fail-closed"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$gowner" != "$mowner" ]; then
+    warn "인가 기록의 owner-doc= 이 매니페스트와 다릅니다: '$gowner' vs '$mowner'"
+    return "$GATE_EXIT_RULE"
+  fi
+
+  # The run maximum, cross-checked against the per-target values that actually
+  # authorize acts. The grant's own field is a derived audit value and nothing
+  # reads it to authorize anything — so without this comparison the two could
+  # disagree for a whole night and the disagreement would be the one thing a
+  # person could have caught by looking.
+  gmax=$(gate_grant_field '권한 절단점')
+  if [ -z "$gmax" ]; then
+    warn "인가 기록에 「권한 절단점」이 없습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  gi=$(cutpoint_index "$gmax")
+  if [ -z "$gi" ]; then
+    warn "인가 기록의 「권한 절단점」이 어휘 밖입니다: $gmax"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  for a in $(target_aliases); do
+    tc=$(target_field "$a" '절단점')
+    [ -n "$tc" ] || continue
+    ti=$(cutpoint_index "$tc")
+    [ -n "$ti" ] || continue
+    if [ "$ti" -gt "$gi" ] 2>/dev/null; then
+      warn "대상 ${a} 의 절단점($tc)이 인가 기록의 런 최대치($gmax)를 넘습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  done
+  return 0
+}
+
 gate_surface_check() {
   # Compared on every act, not only at run start. The four surfaces the hook
   # cannot deny a write to get after-the-fact detection only, and after-the-fact
@@ -971,18 +1062,35 @@ gate_surface_check() {
   # gets now is an action, plus a run-scope `blocked` row so the run's state is
   # observable to the router and to the morning instead of living in the count
   # of a stage's wasted turns.
+  # THE ROW IS WRITTEN WHOEVER IS CALLING, and it used to be written only for a
+  # stage. The router is the one caller whose refusal nobody else can report:
+  # when it takes this exit the ledger got no row at all, so the snapshot went
+  # on rendering `진행 중` with zero live stages and zero open obligations —
+  # byte-identical to a healthy run waiting for its next act, while in fact
+  # every further act would take the same refusal. Measured: a run died here at
+  # 113 rows and $33.36 and kept rendering as in-flight.
+  #
+  # The resume line is the only place a person is told what to do next, so
+  # dropping it exactly when the router — the one that would have carried it to
+  # them — is the caller inverted its purpose.
+  gate_has_row 'blocked' '사유=강제 표면 이동' \
+    || gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
+         "사유=강제 표면 이동" "관측=$(now_iso)" \
+         "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then
-    gate_has_row 'blocked' '사유=강제 표면 이동' \
-      || gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
-           "사유=강제 표면 이동" "관측=$(now_iso)" \
-           "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
     warn "이 조건은 이 런에서 해소되지 않습니다 — 재시도하지 마세요. 지금 중단하고, 무엇을 하려다 막혔는지 반환문에 적고 돌아가세요. 남은 호출도 같은 거부를 받습니다."
+  else
+    warn "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않습니다. 재시도하지 말고, 무엇이 표면을 움직였는지와 함께 사용자에게 알리고 새 런으로 다시 킥오프하세요."
   fi
   return "$GATE_EXIT_SURFACE"
 }
 
-# TWO OF THE SIX SURFACES ARE DELIBERATELY NOT IN THIS DIGEST, and the reason is
-# the same defect that the progress vector was rebuilt to remove.
+# FOUR OF THE SIX SURFACES ARE DELIBERATELY NOT IN THIS DIGEST, for two
+# different reasons. Two of them move on their own, which is the same defect the
+# progress vector was rebuilt to remove; the other two — the rule catalog and
+# the hook — are shared installation paths whose legitimate redeployment is
+# indistinguishable here from tampering, and they are covered by layer 1
+# instead (see `gate_surface_digest`).
 #
 # The **ledger** legitimately grows on every act — written by this very function's
 # caller. Comparing a digest over it at each act means the gate's own write moves
@@ -997,20 +1105,36 @@ gate_surface_check() {
 # layer rather than two — layer 2 does not reach it at all, because a local file
 # write is not an operation any credential governs.
 #
-# So this covers the four that do not move on their own. A design sentence that
-# counts six surfaces is describing what must be protected; this is which
-# mechanism protects each.
+# So this covers the two that neither move on their own nor are shared with the
+# installation: the run's own settings directory and each target's project
+# settings. A design sentence that counts six surfaces is describing what must
+# be protected; this is which mechanism protects each, and for four of the six
+# that mechanism is layer 1 alone.
 gate_surface_digest() {
   # The extension is re-derived on every call rather than listed once: the
-  # fourth element is "the project-scope settings of every worktree the manifest
+  # second element is "the project-scope settings of every worktree the manifest
   # and the target-addition rows name", and targets are added at RUNTIME. A
   # fixed file list would stop covering a target the moment one was added, and
   # would not report that it had stopped.
+  #
+  # THE INSTALLED PLUGIN'S OWN FILES ARE NOT IN HERE, and that is the whole
+  # reason this digest stopped ending runs for doing nothing wrong. The rule
+  # catalog and the hook are shared installation paths, not per-run copies, so
+  # a digest over them cannot tell "a stage edited the boundary it stands in"
+  # from "the operator deployed a new version" — and the second is ordinary
+  # operation. Measured: two runs were executing stages on this machine while a
+  # rule file needed fixing; deploying killed both, and not deploying kept every
+  # router-driven run's merge refused.
+  #
+  # What covers them instead is layer 1: the hook denies Write/Edit to
+  # `*/orchestrator/rules/*` and to its own directory outright, so a stage
+  # cannot reach either through the edit tools at all. Dropping them here takes
+  # those two surfaces from two layers to one rather than to zero — the same
+  # trade this file already states in as many words for the transcript
+  # directory, and stated here for the same reason: so the count is honest.
   local a wt
   {
     find "$(gate_settings_dir)" -type f 2>/dev/null | sort
-    find "$(gate_rules_dir)" -type f 2>/dev/null | sort
-    printf '%s\n' "$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
     for a in $(target_aliases); do
       wt=$(target_field "$a" '메인 워크트리')
       [ -n "$wt" ] || continue
@@ -1061,6 +1185,7 @@ gate_main() {
   [ -n "$MANIFEST" ] || { printf 'gate: --manifest 가 필요합니다\n' >&2; exit 2; }
   check_manifest
   derive_paths_from_manifest
+  gate_check_grant || exit $?
   rundir_init
   # Run start is "the settings directory does not exist yet".
   #
@@ -1163,7 +1288,10 @@ gate_record_row() {
   local kind="$1" seg="$2"; shift 2
   local f k
 
-  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+  # `blocked` is the exception, and it has to be: the row it resolves is
+  # run-scope, so demanding a segment would make the one kind that describes the
+  # WHOLE run unwritable without naming a part of it.
+  if [ "$kind" != "blocked" ] && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "$kind 행에는 --segment 가 필요합니다"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -1230,6 +1358,39 @@ gate_record_row() {
       done
       gate_append 'problem' "세그먼트=$seg" "$@"
       log "문제 기록 — $seg"
+      ;;
+    blocked)
+      # THE ROUTER MAY RESOLVE A RUN-SCOPE BLOCK, AND MAY NOT CREATE ONE. Blocks
+      # are raised by the gate itself — the surface check and the watcher's
+      # transcription — so a router that could write an arbitrary one would be
+      # inventing the very state that governs whether the run may end. What it
+      # gets is the other half, which nothing had: the disposition of a stall
+      # observation is the router's job, and until now that job had no verb.
+      local why cause prior
+      why=$(gate_field_of '사유' "$@")
+      cause=$(gate_field_of '원인' "$@")
+      [ -n "$why" ] || { warn "blocked 행에 「사유」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      [ -n "$(gate_field_of '근거' "$@")" ] \
+        || { warn "blocked 행에 「근거」가 필요합니다 — 무엇을 보고 해소로 판정했는지가 아침에 남는 전부입니다"; return "$GATE_EXIT_VOCAB"; }
+      if [ "$cause" != "해소" ]; then
+        warn "blocked 행의 「원인」은 「해소」여야 합니다 — 막힘을 만드는 것은 게이트의 몫입니다 (관측: ${cause:-없음})"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      prior=$( { gate_rows 'blocked' | grep -F '스코프=run' | grep -F "사유=$why " || true; } | tail -1)
+      if [ -z "$prior" ]; then
+        warn "해소할 런 스코프 blocked 행이 없습니다: ${why}"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      case "$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *원인=//p' | sed 's/[[:space:]]*$//' | tail -1)" in
+        무효화)
+          # The enforcement-surface block. Its own resume line says this run's
+          # baseline is never retaken, so clearing it here would be the run
+          # re-authorizing itself past the boundary that refused it.
+          warn "이 막힘은 해소할 수 없습니다 (원인=무효화): ${why} — 새 런으로 다시 킥오프하세요"
+          return "$GATE_EXIT_RULE" ;;
+      esac
+      gate_append 'blocked' "대상=-" "스코프=run" "$@"
+      log "런 스코프 막힘 해소 — $why"
       ;;
   esac
   return 0
@@ -1335,7 +1496,7 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle|problem)
+    segment|cycle|problem|blocked)
       # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
       # and what it performs is the ledger row the gate would write anyway. It
       # reaches nothing outside the ledger, so it grades `읽기`.
@@ -1461,6 +1622,33 @@ gate_verb_act() {
 
   gate_surface_check || exit $?
 
+  # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
+  #
+  # The progress vector is built from the goal digest, the target rows, the
+  # `segment` rows and the open obligations — and from nothing a running stage
+  # emits. So a run whose segments were never written has a vector that cannot
+  # move: the stagnation boundary counts three identical digests and issues an
+  # approval while a stage is working normally, and its question text says only
+  # that the progress hash has not changed. Reading that line, "the router
+  # stopped", "the stage is slow" and "nobody wrote the row" are the same
+  # sentence. Measured: an audit stage worked 16 minutes, produced its report
+  # and three independent witnesses, terminated as `정상 완료` — and the
+  # boundary fired in the middle of it, with 38 `자율 승인` rows in the ledger
+  # and not one of them an input to the vector.
+  #
+  # The kickoff already says to write these rows. That is prose, and prose is
+  # what the omission got past; the same omission also silently costs the run
+  # termination condition 1, which counts `segment` rows, so a run that skips
+  # them cannot merge anything and cannot propose it is done — a debt taken on
+  # here and presented much later wearing a different face.
+  if [ "$kind" = "skill" ] && [ "$verb" = "act" ]; then
+    if [ -z "$(gate_segment_field "$segment" '상태')" ]; then
+      warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
+      warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+
   # The nine conditions are evaluated on EVERY act, not only on a done proposal.
   # A gate that can refuse a proposal but never cause one leaves the router
   # alone deciding when the night ends — so when every condition holds and the
@@ -1526,7 +1714,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle|problem) gate_record_row "$kind" "$segment" "$@"; return $? ;;
+    segment|cycle|problem|blocked) gate_record_row "$kind" "$segment" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)
@@ -2159,8 +2347,37 @@ gate_done_conditions() {
   [ "$n" = "0" ] || printf '4 원장 손상 행이 %s건입니다\n' "$n"
 
   # 5 — run-scope blocks resolved or enumerated
-  n=$(gate_rows 'blocked' | grep -c '스코프=run' || true)
-  [ "$n" = "0" ] || printf '5 런 스코프 blocked 행이 %s건입니다\n' "$n"
+  #
+  # LAST ROW PER `사유` WINS, the way conditions 2 and 9 already read approvals
+  # and review obligations. Counting raw rows made this a one-way latch: a
+  # ledger row is never deleted, so a single run-scope block — including one the
+  # watcher raised on a false positive — took the run's ability to propose done
+  # away permanently. The comment above promised "resolved or enumerated" and
+  # the code implemented neither.
+  #
+  # Measured: an audit stage completed normally, the watcher observed a stall
+  # that had not happened, the gate transcribed it, and the run then satisfied
+  # the other eight conditions and was refused on this one with no verb in
+  # existence that could clear it.
+  #
+  # `원인=무효화` is deliberately NOT resolvable. That is the enforcement-surface
+  # block, whose own resume line says this run's baseline is never retaken — a
+  # run that could clear it would be re-authorizing itself past the boundary
+  # that had just refused it.
+  local reason last cause
+  gate_rows 'blocked' | grep -F '스코프=run' | tr '|' '\n' \
+    | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | sort -u \
+    | while IFS= read -r reason; do
+        [ -n "$reason" ] || continue
+        last=$( { gate_rows 'blocked' | grep -F '스코프=run' | grep -F "사유=$reason " || true; } | tail -1)
+        cause=$(printf '%s' "$last" | tr '|' '\n' | sed -n 's/^ *원인=//p' | sed 's/[[:space:]]*$//' | tail -1)
+        [ "$cause" = "해소" ] && continue
+        if [ "$cause" = "무효화" ]; then
+          printf '5 런 스코프 blocked 가 해소 불가입니다 (%s) — 이 런은 끝났습니다\n' "$reason"
+        else
+          printf '5 런 스코프 blocked 가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요\n' "$reason"
+        fi
+      done
 
   # 6 — terminal-act cap
   gate_terminal_cap_ok || printf '6 말단 행위 상한을 넘었습니다\n'
