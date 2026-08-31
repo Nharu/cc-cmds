@@ -168,6 +168,7 @@ cat > "$GRANT" <<GRANTEOF
 **종료 지점**: 픽스처
 **권한 절단점**: 배포
 **말단 행위 상한**: 없음
+**직렬 웨이브 고지**: 해당 없음
 **시각 정합 마커**: 없음
 **사용자 확인 문면**: 픽스처 인가
 **설계 문서 전체 sha256**: (해당 없음)
@@ -2003,6 +2004,97 @@ if [ -x /usr/bin/lockf ]; then
   check "체인이 끊긴 곳이 없다" "$broken" "0"
 else
   ok "잠금 도구가 없는 호스트라 직렬화 단언을 건너뛴다 (드라이버가 진입에서 거부하는 플랫폼)"
+fi
+
+# ---------------------------------------------------------------------------
+# 19. The nine grant fields are checked for presence
+#
+# The block is frozen at append and has no rewrite form, so a field omitted is
+# omitted for the life of the run. Nothing compared the set, and the kickoff
+# template, this fixture and every hand-written grant had all dropped the same
+# one.
+# ---------------------------------------------------------------------------
+GBAK2="$WORK/grant.bak2"; cp "$GRANT" "$GBAK2"
+grep -v '직렬 웨이브 고지' "$GBAK2" > "$GRANT"
+gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
+check "아홉 필드 중 하나가 빠지면 선다" "$rc" "3"
+case "$msg" in
+  *"직렬 웨이브 고지"*) ok "거부가 빠진 필드를 이름으로 지목한다" ;;
+  *) bad "필드 문면" "$msg" ;;
+esac
+cp "$GBAK2" "$GRANT"
+
+# ---------------------------------------------------------------------------
+# 20. A resolved approval opens the act; a voided one closes it
+#
+# Nothing consumed the resolution, so `close` moved the row to `승인` and the
+# next attempt at the same act took the same exit 5 — a loop that never closed.
+# ---------------------------------------------------------------------------
+# `aws s3` is outside the fixture's pre-authorization rows, so it issues one.
+gateL act --manifest "$MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
+     --surface 외부상태변경 --snapshot-digest "$(HL)" --rationale x -- aws s3 ls
+check "사전 인가 밖 행위는 승인을 발행한다" "$rc" "5"
+ap=$( { grep -F '`승인`' "$LEDGER" | grep -F '상태=대기' || true; } | tail -1 \
+      | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+if [ -n "$ap" ]; then ok "승인 id 가 원장에 남는다"; else bad "승인 id" "대기 행을 찾지 못했다"; fi
+
+# Resolve it by hand — `close` reads a transcript this fixture has no way to
+# produce, and what is under test is the CONSUMER of the resolved row.
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$LEDGER"
+gateL plan --manifest "$MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
+     --surface 외부상태변경 -- aws s3 ls
+check "해소된 승인이 같은 행위를 연다" "$rc" "0"
+
+# And a voided one refuses rather than re-asking.
+printf -- '- `승인` | 승인 id=%s | 상태=무효 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$LEDGER"
+gateL plan --manifest "$MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
+     --surface 외부상태변경 -- aws s3 ls
+check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
+
+# ---------------------------------------------------------------------------
+# 21. A live stage suppresses the stagnation boundary
+#
+# The vector cannot move while a stage works — it is manifest-derived plus
+# segment rows plus obligations plus cycles, and a working stage writes none of
+# those. So every stage making four gate calls issued B1 against itself, and the
+# resulting open approval suspended B1..B3 for the rest of the night.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'if [ "$(gate_live_stages)" != "0" ]; then'; then
+  ok "B1 이 살아 있는 스테이지가 있으면 판정을 건너뛴다"
+else
+  bad "B1 억제" "정상 스테이지 위에서 경계가 계속 발화한다"
+fi
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F "gate_rows 'cycle'"; then
+  ok "진전 벡터가 cycle 행을 본다"
+else
+  bad "진전 벡터" "리뷰 사이클이 진전으로 세어지지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 22. A done proposal is not judged by the deadline's merge arm
+#
+# It has no act behind it, so `--cutpoint` carries no meaning there — yet the
+# deadline read it and refused, leaving a past-deadline run unable to record
+# that it had ended.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '[ "$kind" = "propose-done" ] && return 0'; then
+  ok "마감 게이트가 종료 제안을 면제한다"
+else
+  bad "마감 면제" "마감이 지난 런이 종료를 기록할 수 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 23. The settings directory is serialized for readers and writers alike
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'gate_settings_lock "$lk" || return 0'; then
+  ok "재유도가 락 안에서 돈다"
+else
+  bad "재유도 락" "병렬 스테이지가 기준선을 서로 되돌린다"
+fi
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'out=$(gate_surface_digest_raw)'; then
+  ok "표면 다이제스트도 같은 락을 잡는다 (반쯤 쓰인 디렉터리를 해싱하지 않는다)"
+else
+  bad "다이제스트 락" "읽는 쪽이 잠기지 않아 쓰기 도중을 해싱한다"
 fi
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"

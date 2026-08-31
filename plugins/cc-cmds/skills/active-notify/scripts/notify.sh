@@ -39,6 +39,32 @@ _json_escape() {
 # ([[ -f "$flag_file" ]]). Inside this function only `workflow`/`summary`
 # are `local` — trap-target variables MUST stay in branch scope so the EXIT
 # trap can clean them up on any exit path.
+dispatch_notifier() {
+  # THE FAILURE IS REPORTED, and it used to be swallowed twice over — stderr to
+  # /dev/null and the status to `|| true`. The asymmetry was the trap: the
+  # "binary missing" branch above prints a hint, so a caller learned about that
+  # failure and about no other. A dispatch that ran and was refused looked
+  # exactly like one that worked, and the model reporting to the user read the
+  # silence as success and said the notification had been sent.
+  #
+  # Measured: `Could not request notification permission: Notifications are not
+  # allowed for this application`, exit 3, four times in a row, with nothing
+  # reaching the caller. The cause was outside this repository — an upgraded
+  # Homebrew bundle that Launch Services had not registered — but the diagnosis
+  # took three wrong guesses precisely because the message existed and was
+  # being discarded.
+  #
+  # Still non-fatal: a failed banner must not fail the caller's work. What
+  # changes is only that it says so.
+  local err rc=0
+  err=$(terminal-notifier "$@" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '[cc-cmds] 알림 배너 발사 실패 (rc=%s): %s\n' "$rc" "${err:-무출력}" >&2
+    return "$rc"
+  fi
+  return 0
+}
+
 dispatch_fire() {
   local workflow="$1" summary="$2"
 
@@ -161,14 +187,13 @@ dispatch_fire() {
     # banner replace semantics for visual parity with §7 bypass. armCount > 1
     # omits -group so each sub-event banner persists in Notification Center.
     [[ "$arm_count" -eq 1 ]] && notifier_args+=( -group "cc-cmds-active-notify" )
-    terminal-notifier "${notifier_args[@]}" 2>/dev/null || true
+    dispatch_notifier "${notifier_args[@]}" || true
   else
     # repeat — never -group (intentional pile-up; dynamic-trust anti-spam).
-    terminal-notifier \
+    dispatch_notifier \
       -title "[cc-cmds] ${workflow}" \
       -message "${summary}" \
-      -execute ':' \
-      2>/dev/null || true
+      -execute ':' || true
   fi
 }
 
