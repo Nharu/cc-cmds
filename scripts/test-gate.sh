@@ -79,6 +79,19 @@ gate() {
   printf '%s' "$out" > "$WORK/last-output.txt"
 }
 
+# A FRESH snapshot digest per acting call. The digest now includes the ledger's
+# own state, so it moves on every append — which is what makes exit 4 able to
+# fire at all. Capturing it once and reusing it across several acts is exactly
+# the stale-router pattern the check exists to refuse, and tests that did so
+# were passing only because the digest could not move.
+HH()  { cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H; }
+HH7() { cd "$WT" && XDG_STATE_HOME="$STATE7" bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H; }
+# The PROGRESS digest, which is a different value from the snapshot's H and must
+# stay so — B1 watches this one, and seeding B1's state file with H made the
+# boundary compare two unrelated values and reset instead of firing.
+PD() { cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null \
+       | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
+
 # ---------------------------------------------------------------------------
 # 0a. The pipefail trap, scanned the way the driver's own suite scans it
 #
@@ -398,7 +411,7 @@ esac
 # 2. Vocabulary — closed sets refuse by status, never by `die`
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 머지후 \
-     --snapshot-digest "$H" --rationale x -- git push origin main
+     --snapshot-digest "$(HH)" --rationale x -- git push origin main
 check "어휘 밖 절단점 토큰은 거부된다" "$rc" "2"
 
 # An undeclared repository is not a vocabulary error — it is the three-layer
@@ -406,7 +419,7 @@ check "어휘 밖 절단점 토큰은 거부된다" "$rc" "2"
 # its own rather than borrowing `인가 한도`, which means something else: that a
 # target the manifest DID declare was exceeded.
 gate act --manifest "$MANIFEST" --kind x --target nope --cutpoint push \
-     --snapshot-digest "$H" --rationale x -- git push origin main
+     --snapshot-digest "$(HH)" --rationale x -- git push origin main
 check "미선언 대상의 push 는 거부된다" "$rc" "3"
 if grep -q '사유=대상 미선언' "$LEDGER"; then
   ok "park 사유가 대상 미선언 이다 (인가 한도 를 빌려 쓰지 않는다)"
@@ -418,9 +431,8 @@ case "$msg" in
   *) bad "거부 문면" "'$msg'" ;;
 esac
 
-H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind x --target nope --cutpoint 커밋 \
-     --worktree "$WT" --snapshot-digest "$H" --rationale "이슈 링크에서 발견" -- touch "$WORK/nd"
+     --worktree "$WT" --snapshot-digest "$(HH)" --rationale "이슈 링크에서 발견" -- touch "$WORK/nd"
 check "미선언 대상의 로컬 쓰기는 통과한다" "$rc" "0"
 if grep -q '^- `대상 추가`' "$LEDGER"; then
   ok "대상 추가 행이 남는다 (아침 리포트가 런이 건드린 레포를 보여 준다)"
@@ -456,11 +468,11 @@ esac
 cp "$WORK/ledger.bak" "$LEDGER"
 
 gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- touch "$WORK/nd2"
+     --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/nd2"
 check "워크트리 없이 미선언 대상을 쓰려 하면 거부된다" "$rc" "2"
 
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- frobnicate now
+     --snapshot-digest "$(HH)" --rationale x -- frobnicate now
 check "등급표에 없는 argv0 는 읽기로 떨어지지 않는다" "$rc" "2"
 
 gate grade --manifest "$MANIFEST" -- frobnicate
@@ -477,12 +489,12 @@ check "읽기 등급이 읽기로 나온다" "$msg" "축2=읽기"
 # 3. Cutpoint adjudication is PER TARGET (#208 regression)
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind push --target front --cutpoint push \
-     --snapshot-digest "$H" --rationale x -- git push origin main
+     --snapshot-digest "$(HH)" --rationale x -- git push origin main
 check "절단점 이하의 행위는 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target front --segment S1 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "절단점 PR 인 대상에 머지는 거부된다" "$rc" "3"
 case "$msg" in
   *"절단점-준수"*) ok "거부 사유가 절단점으로 보고된다 (가장 근본적인 이유가 이긴다)" ;;
@@ -493,7 +505,7 @@ esac
 # rule instead — which is the proof that the refusal above was the TARGET's
 # cutpoint and not the run maximum.
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S1 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 case "$msg" in
   *"절단점-준수"*) bad "대상별 절단점" "배포 인가된 대상까지 절단점에서 막혔다" ;;
   *) ok "런 최대치가 아니라 대상 행의 값이 판정한다 (#208 회귀)" ;;
@@ -503,7 +515,7 @@ esac
 # 4. Self-widening is refused at every cutpoint
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S1 --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1 --admin
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin
 check "--admin 은 배포 인가에서도 거부된다" "$rc" "3"
 case "$msg" in
   *"--admin"*) ok "거부 사유가 관리자 우회를 지목한다" ;;
@@ -511,11 +523,11 @@ case "$msg" in
 esac
 
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- tee "$GRANT"
+     --snapshot-digest "$(HH)" --rationale x -- tee "$GRANT"
 check "인가 기록에 쓰려는 행위는 거부된다" "$rc" "3"
 
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- cat "$GRANT"
+     --snapshot-digest "$(HH)" --rationale x -- cat "$GRANT"
 case "$rc" in
   3) bad "인가 기록 읽기" "읽기까지 막혔다 — 드라이버는 이 파일을 읽어야 한다" ;;
   *) ok "인가 기록 읽기는 막지 않는다" ;;
@@ -525,11 +537,11 @@ esac
 # 5. Pre-authorization: outside the list is an APPROVAL, not a refusal
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- curl https://example.invalid
+     --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
 check "사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다" "$rc" "5"
 
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- mkdir -p "$WORK/scratch"
+     --snapshot-digest "$(HH)" --rationale x -- mkdir -p "$WORK/scratch"
 check "워크트리 쓰기는 사전 인가 목록을 요구하지 않는다" "$rc" "0"
 [ -d "$WORK/scratch" ] && ok "게이트는 통과시킨 행위를 실제로 수행한다" \
                        || bad "수행" "통과했는데 디렉터리가 생기지 않았다 — 기록만 하고 수행하지 않으면 층 1 아래에서는 아무것도 실행되지 않는다"
@@ -550,15 +562,15 @@ check "plan 은 스냅숏 다이제스트 없이도 답한다 (건드리는 것�
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
+     --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/touched"
 check "축2 자기선언이 등급과 다르면 거부된다" "$rc" "6"
 
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
+     --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/touched"
 check "선언이 등급과 같으면 통과한다" "$rc" "0"
 
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 파일쓰기 \
-     --snapshot-digest "$H" --rationale x -- touch "$WORK/touched"
+     --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/touched"
 check "어휘 밖 축2 토큰은 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
@@ -569,7 +581,7 @@ head0=$(cd "$WT" && git rev-parse HEAD)
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SNONE --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 기록이 없는 머지는 거부된다" "$rc" "3"
 
 {
@@ -578,7 +590,7 @@ check "리뷰 기록이 없는 머지는 거부된다" "$rc" "3"
 } >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
 printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head0" >> "$LEDGER"
@@ -590,7 +602,7 @@ passes_review() {
   case "$msg" in *"리뷰-후-머지:"*) return 1 ;; *) return 0 ;; esac
 }
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이동 등급" "$msg"; fi
 
 # 동일 트리 — amend rewrites the commit and leaves the tree byte-identical.
@@ -598,7 +610,7 @@ if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이�
 head_amend=$(cd "$WT" && git rev-parse HEAD)
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if passes_review; then ok "동일 트리 등급(amend)은 통과한다"; else bad "동일 트리 등급" "$msg"; fi
 if [ "$head_amend" = "$head0" ]; then
   bad "동일 트리 전제" "amend 가 커밋 sha 를 바꾸지 않았다 — 이 절이 공허하다"
@@ -614,7 +626,7 @@ printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head_
 ( cd "$WT" && echo two > b.txt && git add -A && git commit -qm two ) >/dev/null 2>&1
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 이후 커밋이 추가되면 거부된다" "$rc" "3"
 case "$msg" in
   *"커밋이 추가"*) ok "낡음 등급이 「추가 커밋」으로 보고된다" ;;
@@ -629,7 +641,7 @@ esac
   && echo x > c.txt && git add c.txt && git commit -qm sideline ) >/dev/null 2>&1
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 HEAD 가 조상이 아니면 거부된다" "$rc" "3"
 case "$msg" in
   *"조상이 아닙니다"*) ok "낡음 등급이 「무관/베이스 이동」으로 보고된다" ;;
@@ -657,7 +669,7 @@ printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S4 | 세션 id=imp
 printf -- '- `stage-result` | 세그먼트=SEP | 스테이지=S5 | 세션 id=rev-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 case "$msg" in
   *"조상이 겹칩니다"*) bad "디스패처 판정" "라우터를 공유했다는 이유로 거부됐다 — 라우터가 돌린 모든 런의 머지가 막힌다" ;;
   *) ok "디스패처를 공유하는 것은 자기 작업 리뷰가 아니다" ;;
@@ -672,7 +684,7 @@ printf -- '- `segment` | id=SEPF | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEPF | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPF --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 case "$msg" in
   *"조상이 겹칩니다"*) ok "구현 세션의 포크가 리뷰하면 거부된다 (폐포가 존재하는 이유)" ;;
   *) bad "포크 판정" "포크가 자기 작업을 리뷰했는데 통과했다" ;;
@@ -685,7 +697,7 @@ printf -- '- `segment` | id=SEPD | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEPD | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPD --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 case "$msg" in
   *"조상이 겹칩니다"*) ok "한 세션이 양쪽이면 거부된다" ;;
   *) bad "직접 판정" "같은 세션이 자기 작업을 리뷰했는데 통과했다" ;;
@@ -697,7 +709,7 @@ printf -- '- `segment` | id=SEP2 | 상태=구현완료 | 커밋=%s | 워크트�
 printf -- '- `cycle` | 세그먼트=SEP2 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 case "$msg" in
   *"판정 불가는 통과가 아닙니다"*) ok "계보가 기록되지 않으면 통과가 아니다 (공허한 참으로 돌아가지 않는다)" ;;
   *) bad "미기록 처리" "'$msg'" ;;
@@ -717,23 +729,23 @@ head_b=$(cd "$WT" && git rev-parse HEAD)
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 기록 없는 세그먼트의 머지는 아직 거부된다" "$rc" "3"
 
 # The vocabulary is checked, and the check is what makes the row readable later.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 상태=진행중 워크트리="$WT"
+     --snapshot-digest "$(HH)" --rationale x -- 상태=진행중 워크트리="$WT"
 check "어휘 밖 세그먼트 상태는 거부된다" "$rc" "2"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 상태=실행중
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중
 check "워크트리 없는 세그먼트 행은 거부된다" "$rc" "2"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT"
 check "세그먼트 행이 기록된다" "$rc" "0"
 n=$(grep -c '^- `segment` | id=SW ' "$LEDGER" || true)
 check "그 행이 원장에 있다" "$n" "1"
@@ -744,12 +756,12 @@ check "그 행이 원장에 있다" "$n" "1"
 # reader to the review instead of to the row this run wrote.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 사이클=1 P0=0 P1=0
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0
 check "리뷰 HEAD 없는 사이클 행은 거부된다" "$rc" "2"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
 check "사이클 행이 기록된다" "$rc" "0"
 
 # End to end: the same merge that was refused for want of a review record is now
@@ -795,7 +807,7 @@ esac
 mkdir -p "$WT/sub"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 out=$(cd "$WT/sub" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
 case "$out" in
   *base.txt*) ok "행위가 대상 워크트리에서 실행된다 (호출자의 cwd 가 아니라)" ;;
   *) bad "대상 워크트리" "'"'"'$out'"'"'" ;;
@@ -817,22 +829,22 @@ refresh_bd
 # well-formed edit, and that is exactly why three of them may not honour it.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target front --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "절단점-준수 는 「끔」을 무시한다" "$rc" "3"
 
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- curl https://example.invalid
+     --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
 check "사전-인가-대조 는 「끔」을 무시한다" "$rc" "5"
 
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 배포 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1 --admin
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin
 check "인가-자기확장-금지 는 「끔」을 무시한다" "$rc" "3"
 
 # 리뷰-후-머지 IS disableable, and this is the assertion that proves the switch
 # is real rather than decorative — the same act refused in section 8 by the
 # staleness grade now passes.
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if passes_review; then
   ok "리뷰-후-머지 는 「끔」을 따른다 (스위치가 장식이 아니다)"
 else
@@ -863,7 +875,7 @@ check "게이트가 쓴 행 중 상한을 넘는 것이 없다" "$over" "0"
 # as a well-formed row carrying wrong values.
 long=$(printf 'x%.0s' $(seq 1 1100))
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale "$long" -- git commit -m x
+     --snapshot-digest "$(HH)" --rationale "$long" -- git commit -m x
 if [ "$rc" = "0" ]; then
   bad "행 상한" "1100 바이트 근거를 실은 행이 통과했다 — 동시 append 가 조용히 필드를 섞는다"
 else
@@ -880,7 +892,7 @@ fi
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
      --cutpoint 머지 --review-policy 선머지후리뷰 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if grep -q '^- `리뷰 의무`' "$LEDGER"; then
   ok "선머지후리뷰 머지가 리뷰 의무 행을 남긴다"
 else
@@ -901,14 +913,14 @@ n_before=$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
      --cutpoint 머지 --review-policy 선머지후리뷰 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "같은 세그먼트에 의무를 중복 발행하지 않는다" "$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)" "$n_before"
 
 # The default mode must NOT create one — an obligation that appears for every
 # merge would make condition 9 permanent and no run could ever terminate.
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 \
      --cutpoint 머지 \
-     --snapshot-digest "$H" --rationale x -- gh pr merge 1
+     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '세그먼트=SEP2'; then
   bad "기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
 else
@@ -993,7 +1005,7 @@ fi
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale "끝났다고 본다" -- true
+     --snapshot-digest "$(HH)" --rationale "끝났다고 본다" -- true
 check "미충족 조건이 있으면 종료 제안이 기각된다" "$rc" "3"
 if grep -q '결정=기각' "$LEDGER"; then
   ok "기각이 원장에 남는다 (아침에 무엇이 남았는지 읽을 수 있다)"
@@ -1038,11 +1050,11 @@ for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -
 done
 
 RD="$XDG_STATE_HOME/cc-cmds/run/R1"
-printf '%s\n' "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)" > "$RD/progress-digest"
+printf '%s\n' "$(PD)" > "$RD/progress-digest"
 printf '%s\n' "9" > "$RD/progress-repeat"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale "S9" -- touch "$WORK/t2"
+     --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t2"
 if grep -q '구속 튜플=B1' "$LEDGER"; then
   ok "B1 이 발동하면 park 이 아니라 승인 대기를 발행한다"
 else
@@ -1061,7 +1073,7 @@ before=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
 printf '%s\n' "9" > "$RD/progress-repeat"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale "S9" -- touch "$WORK/t3"
+     --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t3"
 after=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
 check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "$after" "$before"
 
@@ -1225,7 +1237,7 @@ if [ -d "$LINKED" ]; then
   set_exec_wt "$LINKED"
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
   case "$out" in
     *only-here.txt*) ok "행위가 실행 워크트리에서 실행된다 (메인 워크트리가 아니라)" ;;
     *) bad "실행 워크트리" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -1246,7 +1258,7 @@ if [ -d "$LINKED" ]; then
   set_exec_wt ""
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1)
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
   case "$out" in
     *base.txt*) ok "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" ;;
     *) bad "실행 워크트리 기본값" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
@@ -1269,12 +1281,12 @@ fi
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind problem --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 동일성=x/y.sh:널포인터 현재\ 단=1
+     --snapshot-digest "$(HH)" --rationale x -- 동일성=x/y.sh:널포인터 현재\ 단=1
 check "생성 등급 없는 problem 행은 거부된다" "$rc" "2"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind problem --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x \
+     --snapshot-digest "$(HH)" --rationale x \
      -- "동일성=x/y.sh:널포인터" "현재 단=1" "생성 등급=외부상태변경"
 check "problem 행이 기록된다" "$rc" "0"
 n=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .obligations_total)
@@ -1413,7 +1425,7 @@ printf '\n' >> "$STATE7/cc-cmds/run/R1/settings/generic.json"
 n_before=$(grep -c '^- `blocked` ' "$LEDGER" 2>/dev/null || true)
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE7" CC_PIPELINE_SEGMENT=SP CC_PIPELINE_TARGET=infra \
       bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SP --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1); rc=$?
+      --surface 읽기 --snapshot-digest "$(HH7)" --rationale x -- ls 2>&1); rc=$?
 if [ "$rc" = "7" ]; then
   ok "표면이 움직이면 종료 코드 7 이다"
   case "$out" in
@@ -1428,7 +1440,7 @@ if [ "$rc" = "7" ]; then
   fi
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE7" CC_PIPELINE_SEGMENT=SP CC_PIPELINE_TARGET=infra \
         bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SP --cutpoint 커밋 \
-        --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1) || true
+        --surface 읽기 --snapshot-digest "$(HH7)" --rationale x -- ls 2>&1) || true
   n_twice=$(grep -c '^- `blocked` ' "$LEDGER" 2>/dev/null || true)
   check "같은 조건을 반복 기록하지 않는다" "$n_twice" "$n_after"
 else
@@ -1472,10 +1484,10 @@ fi
 # the argv. Without this the assertion would pass for the wrong reason.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SNOSUCH --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
-     --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x --resume "남의-세션-id" -- review x
+     --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x --resume "남의-세션-id" -- review x
 # The validation must sit BEFORE the CLI binary is resolved. Resolving first
 # makes "the binary is missing" mask "the argv is wrong" — the same defect the
 # wrapper already had and had fixed, and it came back here: on a host without
@@ -1519,11 +1531,11 @@ chmod +x "$STUB"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
-     --snapshot-digest "$H" --rationale x -- 상태=실행중 워크트리="$WT"
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv.txt" \
       bash "$GATE" act --manifest "$MANIFEST" --kind skill --target infra --segment SL \
-      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$H" --rationale x \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
       -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
 check "스텁 CLI 로 스테이지 기동이 끝까지 간다" "$rc" "0"
 case "$out" in
@@ -1657,7 +1669,7 @@ check "마감 뒤 머지도 거부된다" "$rc" "3"
 # would strand the run instead of ending it.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
-     --surface 읽기 --snapshot-digest "$H" --rationale x -- 상태=park 워크트리="$WT"
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT"
 check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
 past_dl '2030-01-01T00:00:00Z'
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
@@ -1705,7 +1717,7 @@ fi
 # The baseline moved with it, so the next act does not read as tampering.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SR --cutpoint 커밋 \
-     --surface 읽기 --snapshot-digest "$H" --rationale x -- 상태=park 워크트리="$WT"
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT"
 check "확장 뒤의 행위가 표면 이동으로 읽히지 않는다" "$rc" "0"
 # And a second call changes nothing — the derivation is a function, so it is
 # stable when its inputs are.
@@ -1719,7 +1731,7 @@ check "입력이 그대로면 다시 쓰지 않는다" "$(cat "$RD_L/surface-dig
 printf '\n' >> "$SETTINGS_DIR/generic.json"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SR \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$H" --rationale x -- ls 2>&1); rc=$?
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1); rc=$?
 check "남이 고친 표면은 여전히 종료 코드 7 이다" "$rc" "7"
 set_exec_wt ""
 
@@ -1939,6 +1951,48 @@ check "owner-doc 이 아예 없으면 선다 (부재는 불일치다)" "$rc" "3"
 cp "$GBAK" "$GRANT"
 gateL grade --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
 check "온전한 인가 기록에서는 통과한다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 18. Concurrent appends do not chain to the same parent
+#
+# `gate_append` used to read the chain tip OUTSIDE the lock, so two writers read
+# the same tip and both emitted rows carrying the same `prev`. The verifier then
+# reported a break for a ledger nobody had touched — measured on a 227-row
+# ledger where rows 85 and 86 shared a parent, both present and well-formed.
+#
+# A false break is worse than no chain: a real splice looks exactly like the
+# noise a reader has learned to skip.
+# ---------------------------------------------------------------------------
+CONC="$WORK/conc"; mkdir -p "$CONC"
+CLEDGER="$CONC/ledger.md"; : > "$CLEDGER"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$CLEDGER"; RUN_DIR="$CONC"; RUN_ID="RC"
+  for i in 1 2 3 4 5 6 7 8; do
+    gate_append '자율 승인' "kind=" "결정=exec" "근거=동시-$i" >/dev/null 2>&1 &
+  done
+  wait
+) >/dev/null 2>&1
+
+rows=$(grep -c '^- `' "$CLEDGER" 2>/dev/null || true)
+check "여덟 개의 동시 append 가 모두 남는다" "${rows:-0}" "8"
+
+# The real assertion: every `prev` is distinct. Two rows sharing a parent is the
+# defect, and it is visible without walking the chain.
+uniq_prev=$(sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p' "$CLEDGER" | sort -u | grep -c . || true)
+check "여덟 행의 prev 가 서로 다르다 (같은 부모에 체인하지 않는다)" "${uniq_prev:-0}" "8"
+
+# And the chain actually verifies: each row's prev is the digest of the row
+# before it, with the first pointing at the run heading.
+broken=0; expect=$(printf '%s' "## 실행 RC" | shasum -a 256 | cut -d' ' -f1)
+while IFS= read -r row; do
+  got=$(printf '%s' "$row" | sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p')
+  [ "$got" = "$expect" ] || broken=$(( broken + 1 ))
+  expect=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
+done < <(grep '^- `' "$CLEDGER")
+check "체인이 끊긴 곳이 없다" "$broken" "0"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

@@ -131,6 +131,12 @@ set +e
 ok "소싱 시임으로 게이트 정의만 로드된다"
 
 digest() { gate_progress_digest; }
+# The snapshot's `H` is NOT the progress digest, and the two must not be
+# conflated again. The stagnation boundary needs a value blind to ordinary
+# ledger appends; `--snapshot-digest` needs one that moves with them, or a
+# router carrying a remembered value passes a check that was supposed to catch
+# exactly that. One value cannot be both.
+snapdigest() { gate_snapshot_digest; }
 
 d0=$(digest)
 case "$d0" in
@@ -231,8 +237,28 @@ else
   bad "스냅숏 JSON" "행이 쌓이자 파싱이 깨졌다"
 fi
 
-check "스냅숏의 H 가 직접 잰 진전 다이제스트와 같다" \
-  "$(jq -r .H "$WORK/s1.json")" "$(digest)"
+check "스냅숏의 H 가 직접 잰 스냅숏 다이제스트와 같다" \
+  "$(jq -r .H "$WORK/s1.json")" "$(snapdigest)"
+
+# And it is NOT the progress digest — the separation is the fix, so assert it
+# rather than leaving the two free to converge again.
+if [ "$(snapdigest)" = "$(digest)" ]; then
+  bad "다이제스트 분리" "스냅숏 다이제스트와 진전 다이제스트가 같은 값이다"
+else
+  ok "스냅숏 다이제스트와 진전 다이제스트가 서로 다른 값이다"
+fi
+
+# The one that matters: appending an ordinary row must move the snapshot digest
+# (so exit 4 can fire) and must NOT move the progress digest (so the stagnation
+# boundary is not reset by the gate's own writes).
+sd_before=$(snapdigest); pd_before=$(digest)
+printf -- '- `자율 승인` | kind= | 결정=exec | 근거=x | prev=z\n' >> "$FIX_LEDGER"
+if [ "$(snapdigest)" != "$sd_before" ]; then
+  ok "원장이 자라면 스냅숏 다이제스트가 움직인다"
+else
+  bad "스냅숏 다이제스트" "행을 붙였는데 값이 그대로다 — 낡은 다이제스트가 통과한다"
+fi
+check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest)" "$pd_before"
 
 n_ob=$(jq -r '.obligations_total' "$WORK/s1.json")
 check "의무 총수가 중복 제거된 값으로 보고된다" "$n_ob" "1"

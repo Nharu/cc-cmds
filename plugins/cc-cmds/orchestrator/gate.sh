@@ -367,26 +367,52 @@ gate_append() {
   #
   # The writer hashes what it INTENDED to write, not a re-read of the file — a
   # chain built from a re-read certifies whatever landed, including a splice.
+  # THE CHAIN TIP IS READ INSIDE THE LOCK, and it used to be read outside it.
+  # This is a read-then-act whose critical section excluded the value that makes
+  # the row correct: two concurrent appends read the same tip and both wrote
+  # rows carrying the same `prev`, so the verifier reported a break for a ledger
+  # nobody had touched. Measured on a 227-row ledger written by one stage going
+  # through the gate for each of its Bash calls — rows 85 and 86 chained to the
+  # same parent, both present and well-formed, and the run was told it had been
+  # spliced.
+  #
+  # A false break is worse than no chain: a real splice then looks exactly like
+  # the noise a reader has learned to skip.
   local series="$1"; shift
-  local prev line f
-  prev=$(gate_chain_tip)
-  line="- \`$series\`"
-  for f in "$@"; do line="$line | $f"; done
-  line="$line | prev=$prev"
+  local body f
+  body="- \`$series\`"
+  for f in "$@"; do body="$body | $f"; done
 
+  # The length check runs on the body plus a 64-character stand-in, because
+  # `prev` is a sha256 in every case and its width is therefore known before the
+  # value is. Deferring the whole check into the lock would put a `die` inside
+  # the critical section.
   local n
-  n=$(printf '%s\n' "$line" | wc -c | tr -d ' ')
+  n=$(printf '%s | prev=%s\n' "$body" "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
   if [ "$n" -gt "$GATE_ROW_MAX" ]; then
     die "원장 행이 상한을 넘습니다 (${n} > ${GATE_ROW_MAX} 바이트) — 긴 값은 사이드카로 빼야 합니다: ${series}"
   fi
 
+  # The tip logic is inlined rather than calling `gate_chain_tip`, because the
+  # locked command is `/bin/sh` and cannot see this shell's functions. The row
+  # prefix is passed as a positional argument so the backtick in it is never
+  # parsed by either shell.
   local tool rc=0
   tool=$(lock_tool)
   if [ -n "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
-      /bin/sh -c 'printf "%s\n" "$1" >> "$2"' _ "$line" "$LEDGER" || rc=$?
+      /bin/sh -c '
+        last=$(grep "$3" "$2" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last="$4"
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" || rc=$?
   else
-    printf '%s\n' "$line" >> "$LEDGER" || rc=$?
+    # No lock tool means no concurrency to serialize, so the same sequence is
+    # correct here — it is the interleaving that the lock removes, not the order.
+    local prev
+    prev=$(gate_chain_tip)
+    printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
   fi
   # A LOST ROW IS NOT A WARNING. The whole design forbids an act with no row, so
   # an append that fails — an unwritable lock path, a full disk, a bad ledger
@@ -431,6 +457,33 @@ gate_progress_vector() {
 
 gate_progress_digest() {
   gate_progress_vector | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_snapshot_digest() {
+  # TWO DIGESTS, BECAUSE ONE VALUE CANNOT HAVE BOTH PROPERTIES.
+  #
+  # The stagnation boundary needs a value that moves only on PROGRESS — that is
+  # `gate_progress_digest`, and every ledger append must be invisible to it or
+  # the gate's own writes would reset the counter that watches for the gate not
+  # writing.
+  #
+  # `--snapshot-digest` needs the opposite. It exists to catch a router acting
+  # on state that has moved, explicitly including a compacted router carrying a
+  # remembered value instead of re-reading. With the progress vector as its
+  # source it could not do that: the vector is manifest-derived plus segment
+  # rows plus obligations, so it is constant across long stretches of a run —
+  # measured, two runs against different manifests, one with a 3-row ledger and
+  # one with 227, produced the byte-identical value. Exit 4 could not fire, and
+  # the check passed while the premise it protected was false.
+  #
+  # So this one is the vector PLUS the ledger's observable state. The tip alone
+  # would do, since it is the hash of the last row; the count is carried with it
+  # so a revert to an earlier length is not mistaken for no change at all.
+  local n
+  n=$( { grep -c '^- `' "$LEDGER" 2>/dev/null || true; } | tr -d ' ')
+  { gate_progress_vector
+    printf 'ledger=%s|%s\n' "${n:-0}" "$(gate_chain_tip)"
+  } | shasum -a 256 | cut -d' ' -f1
 }
 
 gate_segment_field() {
@@ -632,7 +685,7 @@ gate_snapshot() {
 
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
-  printf '  "H": "%s"\n' "$(gate_progress_digest)"
+  printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
   printf '}\n'
 }
 
@@ -658,6 +711,7 @@ gate_render_snapshot() {
   local a
   printf '목표      : %s\n' "$(manifest_field '인가' '종료 지점')"
   printf '진전 해시 : %s\n' "$(gate_progress_digest)"
+  printf '스냅숏 해시: %s\n' "$(gate_snapshot_digest)"
   printf '원장 손상 : %s\n' "$(gate_ledger_damage)"
   # The break's ROW NUMBER reaches the reader. `gate_chain_verify` has always
   # reported it, and every caller threw it away into `2>&1` — so the render said
@@ -1483,6 +1537,30 @@ gate_verb_act() {
 
   # Vocabulary first, and by return status rather than `die` — see surface_index.
   cutpoint_index "$cutpoint" >/dev/null || exit "$GATE_EXIT_VOCAB"
+
+  # Snapshot binding, and it sits HERE — after the state-independent argument
+  # and vocabulary checks, and before anything that writes. Under parallel
+  # segments a background stage can land a row between the router reading the
+  # snapshot and calling here; the main session also compacts, and a compacted
+  # router carrying a remembered digest is a correctness failure that is
+  # otherwise invisible. Exit 4 turns both into a loud re-read.
+  #
+  # It used to sit further down, after target resolution — which registers an
+  # undeclared target by APPENDING a `대상 추가` row. The digest was therefore
+  # compared against a ledger the gate itself had just changed, so an act that
+  # registered a target could never satisfy its own binding. That was invisible
+  # while the digest ignored the ledger; making the digest honest made the
+  # ordering matter. A check on observed state has to run before the observer
+  # mutates that state.
+  if [ "$verb" != "plan" ]; then
+    [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest 가 필요합니다\n' >&2; exit 2; }
+    local now
+    now=$(gate_snapshot_digest)
+    if [ "$snapdig" != "$now" ]; then
+      warn "낡은 스냅숏 다이제스트: 관측 '$snapdig' vs 현재 '$now'"
+      exit "$GATE_EXIT_STALE"
+    fi
+  fi
   case " $(target_aliases | tr '\n' ' ') " in
     *" $alias "*) : ;;
     *) gate_undeclared_target "$alias" "$cutpoint" "$worktree" || exit $? ;;
@@ -1532,21 +1610,6 @@ gate_verb_act() {
     # distinction the router sees one refusal and has no way to tell which.
     warn "축2 등급 미상 — 등급표에 없는 argv0 는 읽기로 떨어지지 않습니다: $1 (그 도구가 표에 오른 적이 없다면 표를 넓혀야 하고, 표에 있는 도구인데 형태를 못 읽은 것이라면 하위 명령이 보이도록 다시 쓰세요)"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
-  fi
-
-  # Snapshot binding. Under parallel segments a background stage can land a row
-  # between the router reading the snapshot and calling here; the main session
-  # also compacts, and a compacted router carrying a remembered digest is a
-  # correctness failure that is otherwise invisible. Exit 4 turns both into a
-  # loud re-read.
-  if [ "$verb" != "plan" ]; then
-    [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest 가 필요합니다\n' >&2; exit 2; }
-    local now
-    now=$(gate_progress_digest)
-    if [ "$snapdig" != "$now" ]; then
-      warn "낡은 스냅숏 다이제스트: 관측 '$snapdig' vs 현재 '$now'"
-      exit "$GATE_EXIT_STALE"
-    fi
   fi
 
   # The watcher's observations, transcribed into properly chained rows. It
