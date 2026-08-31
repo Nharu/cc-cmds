@@ -1979,20 +1979,31 @@ CLEDGER="$CONC/ledger.md"; : > "$CLEDGER"
 rows=$(grep -c '^- `' "$CLEDGER" 2>/dev/null || true)
 check "여덟 개의 동시 append 가 모두 남는다" "${rows:-0}" "8"
 
-# The real assertion: every `prev` is distinct. Two rows sharing a parent is the
-# defect, and it is visible without walking the chain.
-uniq_prev=$(sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p' "$CLEDGER" | sort -u | grep -c . || true)
-check "여덟 행의 prev 가 서로 다르다 (같은 부모에 체인하지 않는다)" "${uniq_prev:-0}" "8"
+# SERIALIZATION IS ASSERTED ONLY WHERE THERE IS A LOCK TOOL, and that is not a
+# convenience skip. The driver declares itself darwin-only and refuses to start
+# elsewhere, naming advisory-lock contention as one of the environment facts it
+# has measured on darwin and nowhere else. `lock_tool` is empty off darwin, so
+# `gate_append` takes its unlocked branch — the ordering this test pins is a
+# property of the locked path, and claiming it on a host with no lock would be
+# asserting a guarantee the contract does not make.
+if [ -x /usr/bin/lockf ]; then
+  # Every `prev` distinct. Two rows sharing a parent is the defect, and it is
+  # visible without walking the chain.
+  uniq_prev=$(sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p' "$CLEDGER" | sort -u | grep -c . || true)
+  check "여덟 행의 prev 가 서로 다르다 (같은 부모에 체인하지 않는다)" "${uniq_prev:-0}" "8"
 
-# And the chain actually verifies: each row's prev is the digest of the row
-# before it, with the first pointing at the run heading.
-broken=0; expect=$(printf '%s' "## 실행 RC" | shasum -a 256 | cut -d' ' -f1)
-while IFS= read -r row; do
-  got=$(printf '%s' "$row" | sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p')
-  [ "$got" = "$expect" ] || broken=$(( broken + 1 ))
-  expect=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
-done < <(grep '^- `' "$CLEDGER")
-check "체인이 끊긴 곳이 없다" "$broken" "0"
+  # And the chain actually verifies: each row's prev is the digest of the row
+  # before it, with the first pointing at the run heading.
+  broken=0; expect=$(printf '%s' "## 실행 RC" | shasum -a 256 | cut -d' ' -f1)
+  while IFS= read -r row; do
+    got=$(printf '%s' "$row" | sed -n 's/.*| prev=\([0-9a-f]*\).*/\1/p')
+    [ "$got" = "$expect" ] || broken=$(( broken + 1 ))
+    expect=$(printf '%s' "$row" | shasum -a 256 | cut -d' ' -f1)
+  done < <(grep '^- `' "$CLEDGER")
+  check "체인이 끊긴 곳이 없다" "$broken" "0"
+else
+  ok "잠금 도구가 없는 호스트라 직렬화 단언을 건너뛴다 (드라이버가 진입에서 거부하는 플랫폼)"
+fi
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
