@@ -2097,5 +2097,125 @@ else
   bad "다이제스트 락" "읽는 쪽이 잠기지 않아 쓰기 도중을 해싱한다"
 fi
 
+# ---------------------------------------------------------------------------
+# 24. terraform is graded by its SUBCOMMAND
+#
+# The name alone graded `외부상태변경`, so `terraform plan` — which the pipeline
+# contract classifies as a read — issued an approval every time and an
+# unattended stage could never look at infrastructure state.
+# ---------------------------------------------------------------------------
+graded_as '읽기'         'terraform plan 은 읽기다'              -- terraform plan
+graded_as '읽기'         'show 도 읽기다'                        -- terraform show
+graded_as '읽기'         '-chdir 이 앞에 와도 하위 명령을 본다'  -- terraform -chdir=/x plan
+graded_as '외부상태변경' 'apply 는 외부 상태 변경이다'           -- terraform apply
+graded_as '외부상태변경' 'destroy 도 같다'                       -- terraform destroy
+graded_as '읽기'         'state list 는 읽기다'                  -- terraform state list
+graded_as '외부상태변경' 'state rm 은 상태를 바꾼다'             -- terraform state rm x
+graded_as '워크트리쓰기' 'fmt 는 파일을 고친다'                  -- terraform fmt
+graded_as '읽기'         'fmt -check 는 고치지 않는다'           -- terraform fmt -check
+
+# ---------------------------------------------------------------------------
+# 25. Termination condition 10 — the authorized clauses are read
+#
+# The nine measured the ledger's shape and never the thing the user authorized
+# the run against, so a run with clauses unsettled ended as `충족`. The fixture
+# manifest above carries no `종료 절` rows, which means the condition never
+# fires there — so this section uses a manifest that has them.
+# ---------------------------------------------------------------------------
+CM="$WORK/clause-plan.md"
+sed 's/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: 배포/' "$MANIFEST" > "$CM"
+printf -- '- `종료 절` | id=K1 | 문면=첫째 절\n- `종료 절` | id=K2 | 문면=둘째 절\n' >> "$CM"
+# The binding digest no longer matches, and that is itself the check working —
+# so it is removed rather than recomputed, which the driver reports and allows.
+sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CM" && rm -f "$CM.bak"
+
+gateC() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$WORK/state-clause" bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+HC() { cd "$WT" && XDG_STATE_HOME="$WORK/state-clause" bash "$GATE" snapshot --manifest "$CM" 2>/dev/null | jq -r .H; }
+
+gateC act --manifest "$CM" --kind propose-done --target infra --segment SW --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HC)" --rationale x -- 절=x 근거=y
+check "정산되지 않은 종료 절이 있으면 종료 제안이 기각된다" "$rc" "3"
+case "$msg" in
+  *"종료 절 K1"*) ok "기각이 어느 절인지 지목한다" ;;
+  *) bad "절 문면" "$msg" ;;
+esac
+# The rejection ROW must stay inside the ledger's cap however many conditions
+# are unmet — joining them all made a run with enough segments unable to record
+# its own rejection at all.
+rejlen=$( { grep -F '결정=기각' "$LEDGER" || true; } | tail -1 | wc -c | tr -d ' ')
+if [ "${rejlen:-0}" -gt 0 ] && [ "${rejlen:-0}" -le 1024 ]; then
+  ok "기각 행이 원장 상한 안에 든다 (${rejlen}바이트)"
+else
+  bad "기각 행 길이" "${rejlen}바이트"
+fi
+
+# The clause row is checked before it is accepted.
+gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- id=K9 상태=충족 근거=z
+check "매니페스트에 없는 절은 정산할 수 없다" "$rc" "2"
+gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- id=K1 상태=충족
+check "근거 없는 절 정산은 거부된다" "$rc" "2"
+gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- id=K1 상태=아마도 근거=z
+check "어휘 밖 절 상태는 거부된다" "$rc" "2"
+
+gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- id=K1 상태=충족 근거="원장 12행"
+check "근거를 실은 절 정산은 통과한다" "$rc" "0"
+gateC act --manifest "$CM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- id=K2 상태=불가능 근거="인가 목록 밖"
+check "불가능으로도 정산할 수 있다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 26. Grade-1 judgments have a writer
+# ---------------------------------------------------------------------------
+gateC act --manifest "$CM" --kind judgment --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- 등급=1 기준=판단등급 근거=z
+check "되돌리는 법이 없는 판단 행은 거부된다" "$rc" "2"
+gateC act --manifest "$CM" --kind judgment --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x -- 등급=0 기준=판단등급 "되돌리는 법=x" 근거=z
+check "등급 0 은 판단 행으로 기록하지 않는다" "$rc" "2"
+gateC act --manifest "$CM" --kind judgment --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HC)" --rationale x \
+      -- 등급=1 기준=판단등급 "되돌리는 법=git revert abc123" 근거="리뷰 스테이지를 하나로 합쳤다"
+check "등급 1 판단이 기록된다" "$rc" "0"
+if grep -q 'kind=judgment' "$LEDGER"; then
+  ok "판단 행이 원장에 남는다 (아침에 되돌릴 수 있는 근거가 생긴다)"
+else
+  bad "판단 행" "원장에 kind=judgment 가 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 27. `완료` is a terminal segment state
+#
+# A stage that produced its output and had nothing to merge could only be
+# recorded as a merge that did not happen or a blockage that was a success.
+# ---------------------------------------------------------------------------
+gateL act --manifest "$MANIFEST" --kind segment --target infra --segment SDONE --cutpoint 커밋 \
+     --snapshot-digest "$(HL)" --rationale x -- 상태=완료 워크트리="$WT"
+check "완료 상태가 어휘에 있다" "$rc" "0"
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'TERMINAL_SEGMENT_STATES="머지됨 완료 park"'; then
+  ok "완료가 종단 집합에 든다 (종료 조건 1 이 이 세그먼트를 막지 않는다)"
+else
+  bad "종단 집합" "완료가 종단으로 인정되지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 28. The prose escape in the next-obligation check is gone
+#
+# Its own comment says prose does not count, and its last line accepted any
+# rationale containing one Korean word.
+# ---------------------------------------------------------------------------
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'case "$why" in *미충족*) return 0 ;; esac'; then
+  bad "산문 통과" "근거에 단어 하나만 있으면 통과하는 경로가 남아 있다"
+else
+  ok "근거 문자열만으로 다음 의무를 지목했다고 인정하지 않는다"
+fi
+
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
