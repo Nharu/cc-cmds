@@ -66,7 +66,7 @@
 # Two `act` kinds take FIELDS rather than a command after `--`, because what
 # they perform is the ledger row itself:
 #   gate.sh act --kind segment --target <alias> --segment <id> ... \\
-#               -- 상태=<계획됨|실행중|리뷰중|머지됨|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
+#               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
 #
@@ -156,6 +156,46 @@ surface_index() {
 # SURFACE, not identity: an unexpected binary named `gh` grades `외부상태변경`,
 # which is the stricter side, and a grade that depends on how a caller happened
 # to spell the path is not a property of the act.
+surface_of_terraform() {
+  # `terraform` was graded by its NAME alone, so `plan` — which the pipeline
+  # contract explicitly classifies as a read — issued an approval every time.
+  # Unattended there is nobody to answer one, so a stage that needed to look at
+  # infrastructure state simply could not, and the run lost the investigation
+  # rather than the change.
+  #
+  # Same shape as `git` and `gh`: the subcommand decides. Global options are
+  # skipped so `terraform -chdir=x plan` grades like `terraform plan`, and an
+  # unrecognized dash option yields `등급 미상` rather than a guess.
+  # No `shift` here — the caller has already dropped argv0, so `$1` is the
+  # subcommand. Shifting again ate it and every `terraform <anything>` graded as
+  # the empty case.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -chdir=*|-help|-version|--help|--version) shift ;;
+      -*) printf '등급 미상'; return 0 ;;
+      *) break ;;
+    esac
+  done
+  case "${1:-}" in
+    plan|show|output|providers|version|validate|fmt|graph|state)
+      # `state` without a subcommand lists; `state rm|mv` mutates and is caught
+      # by the arm below.
+      case "${1:-}" in
+        state)
+          case "${2:-}" in
+            list|show|pull|'') printf '읽기' ;;
+            *) printf '외부상태변경' ;;
+          esac ;;
+        fmt)
+          # `fmt` rewrites files in place unless asked only to check.
+          case " $* " in *" -check "*|*" --check "*) printf '읽기' ;; *) printf '워크트리쓰기' ;; esac ;;
+        *) printf '읽기' ;;
+      esac ;;
+    '') printf '읽기' ;;
+    *) printf '외부상태변경' ;;
+  esac
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -188,7 +228,9 @@ surface_of_argv0() {
       printf '워크트리쓰기' ;;
     mkdir|touch|cp|mv|rm|sed|tee|install)
       printf '워크트리쓰기' ;;
-    curl|wget|ssh|scp|rsync|terraform|kubectl|aws|gcloud|docker)
+    terraform)
+      surface_of_terraform "$@" ;;
+    curl|wget|ssh|scp|rsync|kubectl|aws|gcloud|docker)
       printf '외부상태변경' ;;
     # Database clients. A schema migration is a standard step BEFORE a deploy,
     # not an exotic one, and with no row here every one of them fell to `등급
@@ -1421,7 +1463,8 @@ gate_record_row() {
   # `blocked` is the exception, and it has to be: the row it resolves is
   # run-scope, so demanding a segment would make the one kind that describes the
   # WHOLE run unwritable without naming a part of it.
-  if [ "$kind" != "blocked" ] && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
+  if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
+     && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "$kind 행에는 --segment 가 필요합니다"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -1441,8 +1484,8 @@ gate_record_row() {
       # `적용 준비` is quoted because it is the one state carrying a space, and
       # an unquoted arm would split it into two patterns that match neither.
       case "$st" in
-        계획됨|실행중|리뷰중|머지됨|park|'적용 준비') : ;;
-        *) warn "segment 행의 「상태」가 어휘 밖입니다: ${st:-없음} — 계획됨 실행중 리뷰중 머지됨 「적용 준비」 park"
+        계획됨|실행중|리뷰중|머지됨|완료|park|'적용 준비') : ;;
+        *) warn "segment 행의 「상태」가 어휘 밖입니다: ${st:-없음} — 계획됨 실행중 리뷰중 머지됨 완료 「적용 준비」 park"
            return "$GATE_EXIT_VOCAB" ;;
       esac
       # `리뷰-후-머지` resolves the branch's current HEAD by entering this value,
@@ -1488,6 +1531,53 @@ gate_record_row() {
       done
       gate_append 'problem' "세그먼트=$seg" "$@"
       log "문제 기록 — $seg"
+      ;;
+    clause)
+      # SETTLING ONE AUTHORIZED TERMINATION CLAUSE. The manifest holds the
+      # question and this row holds the answer, so condition 10 can be decided
+      # from the ledger rather than from a rationale's wording.
+      local cid cst
+      cid=$(gate_field_of 'id' "$@")
+      cst=$(gate_field_of '상태' "$@")
+      [ -n "$cid" ] || { warn "종료 절 행에 「id」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      case " $(gate_clause_ids | tr '\n' ' ') " in
+        *" $cid "*) : ;;
+        *) warn "매니페스트에 없는 종료 절입니다: ${cid}"; return "$GATE_EXIT_VOCAB" ;;
+      esac
+      case "$cst" in
+        충족|불가능) : ;;
+        *) warn "종료 절 행의 「상태」는 충족 또는 불가능이어야 합니다 (관측: ${cst:-없음})"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # Evidence is a ledger reference or an observable artifact, never prose —
+      # a clause settled by assertion is the same hollow value the whole
+      # contract exists to remove.
+      [ -n "$(gate_field_of '근거' "$@")" ] \
+        || { warn "종료 절 행에 「근거」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      gate_append '종료 절' "$@"
+      log "종료 절 정산 — $cid ($cst)"
+      ;;
+    judgment)
+      # GRADE 1, WHICH HAD NO WRITER. The contract and the kickoff both say a
+      # grade-1 judgment is adopted together with a row carrying `등급`·`기준`·
+      # `되돌리는 법`, and the gate had no entry point for one: the three places
+      # that append `자율 승인` are all the gate judging an ACT, `등급=` appears
+      # once and is hard-coded to 0, and `되돌리는 법=` once with a fixed value.
+      # So the autonomous decisions a night is made of left no trace, and the
+      # morning report's whole premise — that they are cheap to undo because
+      # they are written down — had nothing to stand on.
+      local jk
+      for jk in '등급' '기준' '되돌리는 법' '근거'; do
+        [ -n "$(gate_field_of "${jk}" "$@")" ] \
+          || { warn "판단 행에 「${jk}」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      done
+      case "$(gate_field_of '등급' "$@")" in
+        1) : ;;
+        *) warn "판단 행은 등급 1 만 기록합니다 — 0 은 기록이 필요 없고 2 는 승인으로 올립니다"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" "$@"
+      log "판단 등급 1 기록"
       ;;
     blocked)
       # THE ROUTER MAY RESOLVE A RUN-SCOPE BLOCK, AND MAY NOT CREATE ONE. Blocks
@@ -1658,7 +1748,7 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle|problem|blocked)
+    segment|cycle|problem|blocked|clause|judgment)
       # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
       # and what it performs is the ledger row the gate would write anyway. It
       # reaches nothing outside the ledger, so it grades `읽기`.
@@ -1846,10 +1936,28 @@ gate_verb_act() {
     fi
     if [ -n "$unmet" ]; then
       warn "종료 제안 기각 — 미충족 조건:"
+      case "$unmet" in
+        *"종료 절"*) warn "미정산 절은 act --kind clause 로 근거를 남기거나 불가능으로 표시하세요" ;;
+      esac
       printf '%s\n' "$unmet" >&2
+      # THE ROW CARRIES A SUMMARY, NOT THE WHOLE LIST. Joining every unmet
+      # condition made this field grow with the run — one unmet segment per
+      # non-terminal segment, one per unsettled clause — and the row has a
+      # 1024-byte cap, so a run with enough of them could not record its own
+      # rejection: the append died and the router got exit 1 with no row at all.
+      # Measured at 1228 bytes with nine segments in flight.
+      #
+      # The full text is already on stderr immediately above, which is where a
+      # reader looks; what the row needs is enough to say what happened and how
+      # many, bounded by construction.
+      local unmet_n unmet_ids
+      unmet_n=$(printf '%s\n' "$unmet" | grep -c . || true)
+      unmet_ids=$(printf '%s\n' "$unmet" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' \
+                  | sort -un | tr '\n' ',' | sed 's/,$//')
       gate_append '자율 승인' "kind=$kind" "결정=기각" "대상=$alias" "세그먼트=$segment" \
         "절단점=$cutpoint" "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
-        "되돌리는 법=해당 없음(거부)" "근거=$(printf '%s' "$unmet" | tr '\n' ';')"
+        "되돌리는 법=해당 없음(거부)" \
+        "근거=미충족 ${unmet_n}건 · 조건 ${unmet_ids:-미상}"
       exit "$GATE_EXIT_RULE"
     fi
     log "종료 조건 아홉이 전부 성립합니다"
@@ -1902,7 +2010,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle|problem|blocked) gate_record_row "$kind" "$segment" "$@"; return $? ;;
+    segment|cycle|problem|blocked|clause|judgment) gate_record_row "$kind" "$segment" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)
@@ -2059,8 +2167,46 @@ gate_names_next_obligation() {
     case " $TERMINAL_SEGMENT_STATES " in *" $st "*) continue ;; esac
     case "$why" in *"$sid"*) return 0 ;; esac
   done
-  case "$why" in *미충족*) return 0 ;; esac
+  # A termination clause, named by its id and actually marked unmet. The arm
+  # here used to accept any rationale CONTAINING the word `미충족` — no clause
+  # id, no check that anything was unmet — which is the prose path the comment
+  # above denies, sitting on the function's own last line. It meant the only
+  # thing standing between a run and an early "satisfied" ending was whether the
+  # router happened to use one Korean word.
+  for o in $(gate_unmet_clause_ids); do
+    case "$why" in *"$o"*) return 0 ;; esac
+  done
   return 1
+}
+
+gate_clause_ids() {
+  # The termination point, decomposed at kickoff into checkable rows. The gate
+  # never read these at all — `종료 절` appears zero times in it — so the nine
+  # conditions measured the ledger's shape and never the thing the user actually
+  # authorized the run against.
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null \
+    | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//'
+}
+
+gate_clause_settled() {
+  # A clause is settled when a `종료 절` row in the LEDGER names it — written by
+  # the router through `act --kind clause` with its evidence, or marked
+  # impossible. The manifest holds the question; the ledger holds the answer.
+  # The value is CAPTURED, not piped into `grep -q`: an early-exiting reader on
+  # the right of a pipe kills the writer with SIGPIPE, and under `pipefail` the
+  # whole pipeline then reports failure even though the match was found. This
+  # file's own scanner catches that shape, and it caught this one.
+  local last
+  last=$( { gate_rows '종료 절' | grep -F "id=$1 " || true; } | tail -1)
+  [ -n "$last" ]
+}
+
+gate_unmet_clause_ids() {
+  local cid
+  for cid in $(gate_clause_ids); do
+    [ -n "$cid" ] || continue
+    gate_clause_settled "$cid" || printf '%s\n' "$cid"
+  done
 }
 
 gate_issue_review_obligation() {
@@ -2383,6 +2529,32 @@ gate_record_stage_outcome() {
       psha=$(shasum -a 256 "$RUN_DIR/implement-$seg.plan.md" | cut -d' ' -f1)
     fi
   fi
+  # THE DOCUMENT'S HASH AT EACH STAGE TERMINATION. The kickoff freezes one, the
+  # audit is contractually required to EDIT the document (its reconciliation
+  # pass is where findings land, and the largest routing bucket is "apply"), and
+  # the implement stage compares against the frozen value — so audit followed by
+  # implement in one run halts on freeze-mismatch every time. That is the basic
+  # shape of the pipeline blocking itself.
+  #
+  # The gate is the only writer here, the row is chained like any other, and the
+  # value is measured rather than supplied by the stage. What it does NOT decide
+  # is whether post-audit bytes should be re-audited before implementation —
+  # that question is open (#307) and this row is what makes it answerable, since
+  # until now nothing recorded that the bytes had moved at all.
+  local dkey dcur
+  dkey=$(manifest_field '요소' '설계 문서')
+  case "$dkey" in
+    ''|'(없음)') : ;;
+    *)
+      dcur=$( { [ -f "$BASE/$dkey" ] && shasum -a 256 "$BASE/$dkey"; } 2>/dev/null | cut -d' ' -f1)
+      [ -n "$dcur" ] || dcur=$( { [ -f "/$dkey" ] && shasum -a 256 "/$dkey"; } 2>/dev/null | cut -d' ' -f1)
+      if [ -n "$dcur" ]; then
+        gate_has_row '문서 해시' "스테이지=$seg 이후 sha256=$dcur" \
+          || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
+               "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
+      fi ;;
+  esac
+
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -2526,7 +2698,14 @@ gate_close() {
 # that declines to propose while every condition holds must name a specific,
 # admissible next obligation — and failing to name one ends the run.
 # ---------------------------------------------------------------------------
-readonly TERMINAL_SEGMENT_STATES="머지됨 park"
+# `완료` is the third terminal state, and its absence forced every honest
+# router into a false statement. A stage that produced its output and had
+# nothing to merge — an audit, a review, a census — could only be recorded as
+# `머지됨` (claiming a merge that did not happen) or `park` (recording a success
+# as a blockage, which the morning report then cannot tell from a real one). And
+# termination condition 1 demands every segment reach a terminal state, so
+# declining to choose left the run unable to end at all.
+readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park"
 
 gate_done_conditions() {
   # Prints one line per UNMET condition, numbered. Empty output means all nine
@@ -2611,6 +2790,23 @@ gate_done_conditions() {
 
   # 8 — report file exists
   [ -f "$BASE/docs/pipeline-run/$RUN_ID.md" ] || printf '8 리포트 파일이 없습니다\n'
+
+  # 10 — every authorized termination clause is settled.
+  #
+  # The other nine measure the ledger's SHAPE — segments terminal, approvals
+  # closed, no damage, no live stage. None of them measures the thing the user
+  # actually authorized the run against, so a run with five of six clauses
+  # unsettled passed all nine and ended as `충족`. The clauses were frozen into
+  # the binding digest at kickoff and then read by nothing: `종료 절` appeared
+  # zero times in this file.
+  for sid in $(gate_unmet_clause_ids); do
+    [ -n "$sid" ] || continue
+    # TERSE ON PURPOSE. Every unmet line is joined into the rejection row's
+    # `근거` field, and that row has a 1024-byte cap — a verbose condition with
+    # several clauses overflowed it and turned a rule refusal into a `die`. The
+    # repair instruction belongs beside the refusal, not inside the row.
+    printf '10 종료 절 %s 미정산\n' "$sid"
+  done
 
   # 9 — no unfulfilled review obligation. Condition 3 does not subsume this:
   # 3 narrows when an EXISTING obligation is excused, and 9 holds the ones
