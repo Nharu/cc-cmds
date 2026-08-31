@@ -22,9 +22,10 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
+. "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-watch-test.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+trap 'fx_reap; rm -rf "$WORK"' EXIT
 
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
@@ -153,9 +154,13 @@ esac
 # ---------------------------------------------------------------------------
 fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
-sleep 1 &
-live_pid=$!
-printf '%s\n' "$live_pid" > "$RD/S1.pid"
+# The shared fixture, not a hand-rolled pid file: a pid file ALONE is not a
+# stage to the predicate, which needs the `.start` sibling the gate's spawner
+# leaves beside it and the fingerprint inside it to match. Writing that recipe
+# a second time here is exactly the per-suite drift run-fixture.sh exists to
+# prevent, and a fixture that drifts fails for reasons unrelated to its claim.
+FX_RUN_DIR="$RD"; FX_PIDS=""
+fx_stage_live S1
 out=$(run --stall 0)
 case "$out" in
   *"라이브니스 침묵"*) bad "살아 있는 스테이지" "스테이지가 도는데 정체로 판정했다" ;;
@@ -165,7 +170,7 @@ case "$out" in
   *"스테이지 1개"*) ok "하트비트가 살아 있는 스테이지를 센다" ;;
   *) bad "스테이지 계수" "'$out'" ;;
 esac
-wait "$live_pid" 2>/dev/null
+fx_reap
 
 # And the gate must write that record — the watcher can only count what exists.
 GATE_SH="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"

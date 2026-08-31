@@ -2235,6 +2235,19 @@ fi
 . "$repo_root/scripts/run-fixture.sh"
 # shellcheck source=/dev/null
 . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+
+# This section drives the gate directly, and the suite's normal execution
+# context is INSIDE a pipeline stage — which exports this whole group. The gate
+# branches on `CC_PIPELINE_STAGE_ID` at entry (a stage session is kept out of
+# the lineage so it cannot answer the approvals gating itself), so an inherited
+# value makes every call below take that branch, `session-lineage` is never
+# written, and the assertions that read it fail for a reason unrelated to what
+# they assert. Clear the group so the section starts from a known state; the
+# stage sub-case sets what it needs and unsets it again.
+unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_PARENT_SESSION
 trap 'fx_reap; rm -rf "$WORK"' EXIT
 
 # --- the predicate itself, against all three pid states at once -------------
@@ -2246,6 +2259,25 @@ n=$(cc_live_stages "$FX_RUN_DIR")
 check "cc_live_stages 가 살아 있는 하나만 센다 (죽은 pid·재사용 pid 제외)" "$n" "1"
 n=$( { ls "$FX_RUN_DIR"/*.pid 2>/dev/null || true; } | grep -c . || true)
 check "그 픽스처의 pid 파일은 셋이다 (파일 수와 프로세스 수가 다르다)" "$n" "3"
+
+# The glob has no namespace of its own, so what separates a stage from anything
+# else that parks a pid here is the sibling its spawner leaves. The watcher's
+# own `watch.pid` has none. A LIVE pid is written on purpose: a dead one is
+# filtered by `kill -0` first, and the assertion would then pass whether or not
+# the sibling test existed.
+printf '%s' "$$" > "$FX_RUN_DIR/watch.pid"
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "형제 없는 산 pid 는 스테이지로 세지 않는다 (워처의 watch.pid)" "$n" "1"
+rm -f "$FX_RUN_DIR/watch.pid"
+
+# The counterpart, which pins the option that was rejected: the driver's stage
+# spawn writes `.pgid` and never `.start`, so raising `.start` alone to a
+# necessary condition would silently drop every stage the driver started.
+printf '%s' "$$" > "$FX_RUN_DIR/D.pid"
+printf '%s' "$$" > "$FX_RUN_DIR/D.pgid"
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "pgid 형제만 있는 드라이버 모양 스테이지는 센다" "$n" "2"
+rm -f "$FX_RUN_DIR/D.pid" "$FX_RUN_DIR/D.pgid"
 
 fx_approval AP-1 대기
 fx_approval AP-2 대기

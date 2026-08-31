@@ -43,6 +43,16 @@ cc_live_stages() {
   export LC_TIME
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
+    # A pid file is a STAGE only if it carries the sibling one of the two
+    # spawners leaves beside it: the gate writes `<seg>.start`, the driver
+    # writes `<stage>.pgid`. The glob itself has no namespace, and this
+    # directory holds pids that are not stages — the watcher's `watch.pid` is
+    # one — so without this the count answers a different question than its
+    # name, and the run's termination condition, which has no resolving verb,
+    # would never come true while a watcher ran. `.start` alone is NOT the
+    # test: the driver's spawn does not write it, so requiring it would
+    # silently undercount every stage the driver started.
+    [ -f "${f%.pid}.start" ] || [ -f "${f%.pid}.pgid" ] || continue
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     kill -0 "$pid" 2>/dev/null || continue

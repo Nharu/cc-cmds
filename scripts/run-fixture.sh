@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# lint-bash-portability: self-skip
 # run-fixture.sh — shared fixture primitives for the run-state test suites.
 #
 # WHY A SHARED FILE. Four suites need the same three things: a run directory
