@@ -60,6 +60,22 @@ ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 
+# DEFINED HERE, not beside its later uses. Three call sites sit ~130 lines
+# above where this function used to be declared, so the shell reached them
+# first and reported `graded_as: command not found` — the three assertions
+# never ran, and a missing command is not a failed assertion, so the suite
+# stayed green while covering nothing. A function used before its definition
+# is the one shape a passing test count cannot reveal.
+graded_as() {
+  # graded_as <expected> <label> -- <argv...>
+  local want="$1" label="$2"; shift 3
+  gate grade --manifest "$MANIFEST" -- "$@"
+  case "$msg" in
+    *"축2=$want"*) ok "$label" ;;
+    *) bad "$label" "want 축2=$want, got '$msg'" ;;
+  esac
+}
+
 # `gate` runs the CLI and leaves the code in `rc` and the last non-log line in
 # `msg`. The driver's own log lines go to stderr and are filtered out so an
 # assertion on the refusal text does not match the banner above it.
@@ -1744,16 +1760,6 @@ set_exec_wt ""
 # so the absolute path graded `등급 미상`, and `gh api` — the only spelling that
 # submits several inline comments as one review — was refused outright.
 # ---------------------------------------------------------------------------
-graded_as() {
-  # graded_as <expected> <label> -- <argv...>
-  local want="$1" label="$2"; shift 3
-  gate grade --manifest "$MANIFEST" -- "$@"
-  case "$msg" in
-    *"축2=$want"*) ok "$label" ;;
-    *) bad "$label" "want 축2=$want, got '$msg'" ;;
-  esac
-}
-
 graded_as '외부상태변경' '경로로 부른 gh 도 맨 이름과 같게 등급된다' -- /opt/homebrew/bin/gh pr merge 1
 graded_as '외부상태변경' '경로로 부른 terraform 도 같다'            -- /usr/local/bin/terraform apply
 graded_as '읽기'         '경로로 부른 git 읽기도 같다'              -- /usr/bin/git status
@@ -2216,6 +2222,183 @@ if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'case "$why" in *미충족*
 else
   ok "근거 문자열만으로 다음 의무를 지목했다고 인정하지 않는다"
 fi
+
+# ---------------------------------------------------------------------------
+# Slice C — one liveness predicate, the run handles, and the stall dedupe key
+#
+# The three properties here were each a measured defect rather than a worry:
+# a render that counted pid FILES, a run whose termination was blocked forever
+# by a reused pid (condition 7 has no resolving verb), and a second stall that
+# never reached the ledger because the dedupe key matched the whole file.
+# ---------------------------------------------------------------------------
+# shellcheck source=/dev/null
+. "$repo_root/scripts/run-fixture.sh"
+# shellcheck source=/dev/null
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+trap 'fx_reap; rm -rf "$WORK"' EXIT
+
+# --- the predicate itself, against all three pid states at once -------------
+fx_mkrun "LIVENESS"
+fx_stage_live   A
+fx_stage_dead   B
+fx_stage_reused C
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "cc_live_stages 가 살아 있는 하나만 센다 (죽은 pid·재사용 pid 제외)" "$n" "1"
+n=$( { ls "$FX_RUN_DIR"/*.pid 2>/dev/null || true; } | grep -c . || true)
+check "그 픽스처의 pid 파일은 셋이다 (파일 수와 프로세스 수가 다르다)" "$n" "3"
+
+fx_approval AP-1 대기
+fx_approval AP-2 대기
+fx_approval AP-1 승인
+n=$(cc_open_approvals "$FX_LEDGER")
+check "cc_open_approvals 가 id 별 마지막 행으로 접는다" "$n" "1"
+
+fx_segment SX 계획됨
+fx_segment SY 머지됨
+fx_segment SX park
+n=$(cc_nonterminal_segments "$FX_LEDGER")
+check "cc_nonterminal_segments 도 마지막 행으로 접는다" "$n" "0"
+n=$(cc_segment_count "$FX_LEDGER")
+check "cc_segment_count 가 고유 세그먼트를 센다 (공집합 가드의 입력)" "$n" "2"
+
+fx_blocked "정지 A" 불명
+fx_blocked "정지 B" 불명
+fx_blocked "정지 A" 해소
+n=$(cc_unresolved_blocked "$FX_LEDGER" | grep -c . || true)
+check "cc_unresolved_blocked 가 해소된 사유를 빼고 센다" "$n" "1"
+msg=$(cc_unresolved_blocked "$FX_LEDGER" | cut -f2-)
+check "남은 것이 해소되지 않은 쪽이다" "$msg" "정지 B"
+fx_reap
+
+# --- the handles the gate publishes on every entry --------------------------
+#
+# A FRESH RUN, not R1. The assertions below drive real `act`s, and R1's
+# enforcement-surface baseline has moved several times by this point in the
+# suite — earlier tests rewrite the grant and the manifest on purpose. An act
+# against it exits 7 before it ever reaches the condition being asserted, which
+# is the boundary working rather than a defect. Only the run id changes: the
+# manifest's two digests cover the goal, the clauses, the targets, the rule
+# settings, the pre-authorizations and the deadline — not the id.
+sed 's/R1/R2/g' "$MANIFEST" > "$WT/plan2.md"
+sed 's/R1/R2/g' "$GBAK" > "$WT/docs/pipeline-grant/R2.md"
+MANIFEST="$WT/plan2.md"
+LEDGER="$WT/docs/pipeline-run/R2.md"
+GRANT="$WT/docs/pipeline-grant/R2.md"
+RD="$XDG_STATE_HOME/cc-cmds/run/R2"
+CLAUDE_CODE_SESSION_ID=sess-alpha
+export CLAUDE_CODE_SESSION_ID
+gate snapshot --manifest "$MANIFEST"
+check "핸들을 쓰는 동사가 통과한다" "$rc" "0"
+check "ledger-path 가 원장 절대경로를 담는다" "$(cat "$RD/ledger-path" 2>/dev/null || true)" "$LEDGER"
+
+# Lineage used to be recorded only inside `gate_transcript_files`, which only
+# `close` reaches — so a run that never opened an approval had none at all.
+# The file accumulates every session id this run has had, so the assertion is
+# on THIS id's occurrences rather than on the file's length.
+n=$(grep -cxF 'sess-alpha' "$RD/session-lineage" 2>/dev/null || true)
+check "승인 없는 동사에서도 계보가 생긴다" "$n" "1"
+gate snapshot --manifest "$MANIFEST"
+n=$(grep -cxF 'sess-alpha' "$RD/session-lineage" 2>/dev/null || true)
+check "같은 세션 id 로 다시 불러도 계보에 한 번만 남는다" "$n" "1"
+
+# R1, measured. Every id in the lineage is an id allowed to ANSWER an approval,
+# because that is the set `gate_transcript_files` searches. Stages reach the
+# gate too — the pre-tool hook routes their Bash, Write and Edit through it — so
+# an unguarded promotion would let a stage answer the approvals gating itself.
+CC_PIPELINE_STAGE_ID=SC
+export CC_PIPELINE_STAGE_ID
+CLAUDE_CODE_SESSION_ID=sess-stage
+gate snapshot --manifest "$MANIFEST"
+n=$(grep -cxF 'sess-stage' "$RD/session-lineage" 2>/dev/null || true)
+check "스테이지 세션은 계보에 들어가지 않는다 (자기 승인 경로가 열리지 않는다)" "$n" "0"
+n=$(grep -cxF 'R2' "$XDG_STATE_HOME/cc-cmds/session/sess-stage" 2>/dev/null || true)
+check "그래도 순방향 색인에는 들어간다 (표시용이지 승인 채널이 아니다)" "$n" "1"
+unset CC_PIPELINE_STAGE_ID
+CLAUDE_CODE_SESSION_ID=sess-alpha
+export CLAUDE_CODE_SESSION_ID
+
+# The FORWARD index. It is a list because one session can hold several runs;
+# the dedupe is what keeps repeated entries from growing it without bound.
+SIDX="$XDG_STATE_HOME/cc-cmds/session/sess-alpha"
+check "순방향 색인이 이 런을 담는다" "$(cat "$SIDX" 2>/dev/null || true)" "R2"
+n=$(grep -c . "$SIDX" 2>/dev/null || true)
+check "같은 런을 두 번 봐도 색인은 한 줄이다" "$n" "1"
+printf '%s\n' "R-OTHER" >> "$SIDX"
+gate snapshot --manifest "$MANIFEST"
+n=$(grep -c . "$SIDX" 2>/dev/null || true)
+check "한 세션에 런이 둘이면 두 줄로 남는다 (덮어쓰기가 아니다)" "$n" "2"
+sed '/^R-OTHER$/d' "$SIDX" > "$SIDX.tmp" && mv "$SIDX.tmp" "$SIDX"
+
+# Every `act` carries a snapshot digest, and the snapshot moves whenever a row
+# lands — so it is re-read immediately before each one rather than reused.
+snapH() {
+  ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
+    | sed -n 's/.*"H": "\([0-9a-f]*\)".*/\1/p' | tail -1
+}
+
+# --- termination condition 7 reads the same predicate -----------------------
+FX_RUN_DIR="$RD"; FX_PIDS=""
+fx_stage_dead D1
+gate act --manifest "$MANIFEST" --kind propose-done --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 미충족 조건 열거"
+case "$msg" in
+  *"7 살아 있는 스테이지"*) bad "조건 7" "죽은 pid 를 살아 있다고 셌다" ;;
+  *"미충족 조건"*) ok "조건 7 이 죽은 pid 를 세지 않는다" ;;
+  *) bad "조건 7" "조건 열거에 닿지 못했다: $msg" ;;
+esac
+fx_stage_reused D2
+gate act --manifest "$MANIFEST" --kind propose-done --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 미충족 조건 열거"
+case "$msg" in
+  *"7 살아 있는 스테이지"*) bad "조건 7" "재사용 pid 를 살아 있다고 셌다 — 종료를 영구히 막는 경로다" ;;
+  *"미충족 조건"*) ok "조건 7 이 재사용 pid 를 세지 않는다" ;;
+  *) bad "조건 7" "조건 열거에 닿지 못했다: $msg" ;;
+esac
+fx_stage_live D3
+gate act --manifest "$MANIFEST" --kind propose-done --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 미충족 조건 열거"
+case "$msg" in
+  *"7 살아 있는 스테이지가 1개입니다"*) ok "조건 7 이 실제로 살아 있는 스테이지는 센다" ;;
+  *) bad "조건 7" "살아 있는 스테이지를 놓쳤다: $msg" ;;
+esac
+fx_reap
+rm -f "$RD"/D1.pid "$RD"/D1.start "$RD"/D2.pid "$RD"/D2.start "$RD"/D3.pid "$RD"/D3.start
+
+# --- gate_drain_stall: four, and the fourth is the one that was missing -----
+#
+# Draining happens in the `act` path, not on `snapshot` — the transcription is
+# the ledger writer's job and `snapshot` writes nothing. So each step here
+# drives a real act.
+TAB=$(printf '\t')
+drain_act() {
+  gate act --manifest "$MANIFEST" --kind segment --target infra --segment SDR \
+    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT"
+}
+printf '2026-08-31T00:00:00Z%s정체 사유 X%s재개 명령 X\n' "$TAB" "$TAB" > "$RD/stall"
+drain_act
+n=$(grep -cF '원인=불명 | 사유=정체 사유 X' "$LEDGER" || true)
+check "정지 관측이 blocked 행으로 전사된다" "$n" "1"
+n=$(wc -c < "$RD/stall" | tr -d ' ')
+check "전사 뒤 관측 파일이 비워진다" "$n" "0"
+printf '2026-08-31T00:01:00Z%s정체 사유 X%s재개 명령 X\n' "$TAB" "$TAB" > "$RD/stall"
+drain_act
+n=$(grep -cF '원인=불명 | 사유=정체 사유 X' "$LEDGER" || true)
+check "미해소인 같은 사유는 두 번 전사되지 않는다" "$n" "1"
+# THE FOURTH. A person resolves the block, the same condition recurs, and the
+# recurrence has to reach the ledger — otherwise the morning report cannot tell
+# "it stalled once and was cleared" from "it is still stalling".
+gate act --manifest "$MANIFEST" --kind blocked --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" --rationale "픽스처" \
+  -- "원인=해소" "사유=정체 사유 X" "근거=픽스처가 해소로 판정했다"
+check "해소 행이 통과한다" "$rc" "0"
+printf '2026-08-31T00:02:00Z%s정체 사유 X%s재개 명령 X\n' "$TAB" "$TAB" > "$RD/stall"
+drain_act
+n=$(grep -cF '원인=불명 | 사유=정체 사유 X' "$LEDGER" || true)
+check "해소 뒤 같은 사유가 다시 멈추면 그 관측이 다시 전사된다" "$n" "2"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

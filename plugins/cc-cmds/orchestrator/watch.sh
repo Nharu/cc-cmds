@@ -59,8 +59,18 @@
 # Compatibility: bash 3.2 — no associative arrays, no mapfile, no `wait -n`.
 
 set -uo pipefail
+# Script-scope `LC_TIME` stays. What the shared predicates require is that THEY
+# do not depend on a caller's locale, and they fix it inside themselves; this
+# line serves the other time handling in this file and removing it is not
+# something the decision asks for.
 LC_TIME=C
 export LC_TIME
+
+# Sourced ONCE at startup, deliberately not inside the loop: a plugin edit
+# landing mid-run must not change the predicate a watcher is already using.
+WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+# shellcheck source=/dev/null
+. "$WATCH_DIR/liveness.sh"
 
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0; AFTER_STAGE=120
 while [ $# -gt 0 ]; do
@@ -81,7 +91,12 @@ done
 now_epoch() { date +%s; }
 now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-ledger_size() { wc -c < "$1" 2>/dev/null | tr -d ' ' || printf '0'; }
+# Delegated for the same reason the three predicates below are: the status line
+# has to measure the SAME quantity this watcher does, and two spellings of
+# "how big is the ledger" is how they stop agreeing. The `:-0` keeps this
+# function's own contract — callers here do arithmetic on the result, and the
+# shared function answers empty for a file that is not there.
+ledger_size() { local n; n=$(cc_ledger_size "$1"); printf '%s' "${n:-0}"; }
 
 ledger_idle_seconds() {
   # SIZE, not mtime. `stat` takes a different flag on each platform, and the
@@ -119,53 +134,17 @@ ledger_idle_seconds() {
   printf '%s' $(( now - prev_at ))
 }
 
-proc_fingerprint() {
-  # pid + start time. The pair, not the pid — see the header.
-  ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
-}
+# These three were the reference implementations; the predicate moved to
+# `liveness.sh` and they became its callers. The behaviour is unchanged — what
+# changed is that the gate's render and its termination conditions now compute
+# the same numbers this watcher does, instead of three implementations that
+# agreed until they did not.
 
-live_stages() {
-  local f pid rec now n=0
-  for f in "$RUN_DIR"/*.pid; do
-    [ -f "$f" ] || continue
-    pid=$(cat "$f" 2>/dev/null)
-    [ -n "$pid" ] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    rec=$(cat "${f%.pid}.start" 2>/dev/null || true)
-    if [ -n "$rec" ]; then
-      now=$(proc_fingerprint "$pid")
-      # A recorded start time that no longer matches means the pid was reused.
-      # Counting it would report a stage that is not there.
-      [ "$rec" = "$now" ] || continue
-    fi
-    n=$((n + 1))
-  done
-  printf '%s' "$n"
-}
+live_stages() { cc_live_stages "$RUN_DIR"; }
 
-open_approvals() {
-  local id st n=0
-  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
-               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
-    [ -n "$id" ] || continue
-    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "승인 id=$id " || true; } | tail -1 \
-          | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    [ "$st" = "대기" ] && n=$((n + 1))
-  done
-  printf '%s' "$n"
-}
+open_approvals() { cc_open_approvals "$LEDGER"; }
 
-nonterminal_segments() {
-  local sid st n=0
-  for sid in $( { grep -E '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
-                | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
-    [ -n "$sid" ] || continue
-    st=$( { grep -E '^- `segment`' "$LEDGER" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1 \
-          | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    case "$st" in 머지됨|park) ;; *) n=$((n + 1)) ;; esac
-  done
-  printf '%s' "$n"
-}
+nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
 
 banner() {
   # Best-effort, and every failure is swallowed on purpose: a watcher that dies
