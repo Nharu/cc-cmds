@@ -206,11 +206,14 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 **종료 지점**: <5a 답변>
 **권한 절단점**: <이 런의 최대 절단점 토큰 — 대상별 값은 매니페스트가 소유한다>
 **말단 행위 상한**: 없음 | <정수>
+**직렬 웨이브 고지**: 수행 | 해당 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사용자 확인 문면**: <사용자 발화 축자>
 **설계 문서 전체 sha256**: <hex> | (해당 없음)
 **보고서**: <base>/docs/pipeline-run/<run-id>.md
 ```
+
+**Nine fields, in that order, and the gate now refuses a block that is missing any of them.** The contract fixes the count and gives this block no rewrite form — it is frozen at append, and re-authorizing is a new run rather than an edit — so a field omitted here is omitted for the life of the run. This template carried eight for a while, dropping `직렬 웨이브 고지`, and nothing on the reading side compared the set. `직렬 웨이브 고지` records that the user was told the residual-item wave runs serially; write `해당 없음` when there was no such wave.
 
 **`사용자 확인 문면` is verbatim, and it is the only field a human can audit a forged grant against.** Do not paraphrase it, do not tidy it, do not translate it. It is **not** the same field as the manifest's `승인 문면`: that one approved the step graph, this one grants authority.
 
@@ -219,7 +222,8 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 ### Step 7: Stub the report, start the watcher, enter the loop
 
 1. **Create the morning-report stub** at `<base>/docs/pipeline-run/<run-id>.md` — an H1 and the run's identifying line. The stub exists so that a run which dies halfway still leaves a file where the user looks.
-2. **Start the liveness watcher in the background**:
+2. **Take the first snapshot, THEN start the watcher.** The run directory is created by the router's first gate call, and the watcher treats a missing directory as "the run went away" and exits — silently, with status 0. Started in the order this list used to give, it was gone before the run began: measured, watcher up at 03:18:0x and the directory created at 03:18:36, with the launching call reporting success. One `gate.sh snapshot --manifest <매니페스트>` first makes the directory exist; the watcher also waits out a short startup window now, but the ordering is what makes that window unnecessary.
+3. **Start the liveness watcher in the background**:
    ```
    bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --notify &
    ```
@@ -230,8 +234,8 @@ Two digests are computed here and **compared at entry**, so they are not decorat
    **`--notify` is not optional here.** The banner code exists and the flag was never passed, so it was dead text: the one condition this process reports — the router stopped — is the condition in which nothing else can report it, and its stdout is closed the moment the launching call returns. A detector whose output reaches nobody is not a detector. This is also the one seat where raising a banner is allowed at all: a spawned agent may not, and a shell script that outlives the session is not an agent.
 
    **The heartbeat goes to a file, not only to stdout.** This is launched in the background by a tool call that then returns, so its stdout is closed and anything printed there reaches nobody. `watch.heartbeat` in the run directory is rewritten every pass, and its mtime is what makes the watcher's own liveness measurable.
-3. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
-4. **Enter the router loop of Act 2b.** Do not stop here.
+4. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
+5. **Enter the router loop of Act 2b.** Do not stop here.
 
 ---
 
@@ -328,10 +332,14 @@ A stage is `act --kind skill`, and the gate launches it through the wrapper. Nev
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id> \
   --cutpoint <token> --surface <token> --snapshot-digest <H> \
-  -- -p "/cc-cmds:<스킬>-unattended <인자…>"
+  -- <스테이지 종류> -p "/cc-cmds:<스킬>-unattended <인자…>"
 ```
 
-Three parts, and each one has a measured failure:
+**The first token after `--` is the STAGE KIND, and it is consumed before the CLI ever sees the rest.** `act --kind skill` calls the launcher as `<alias> <segment> <stage-kind> <cli args…>`, so a form that starts with `-p` hands `-p` over as the kind. The vocabulary check then falls back to `generic`, meaning the stage runs under settings that are not its own, and `-p` is gone from what reaches the wrapper. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`, and it selects the settings variant rather than the skill.
+
+An earlier version of this section omitted that token — so the text written to prevent a silent-green dispatch was itself instructing one.
+
+Four parts, and each one has a measured failure:
 
 - **`-p` is required.** The wrapper passes everything after `--` to the CLI, so without `-p` the prompt is never delivered. Omitting it while passing a bare skill name produced `산출물 없는 정지 rc=0 · 0.809852 USD` — the model woke with an **empty first user message**, read a file, asked "what should I do?", and terminated as a success. Omitting it while passing a quoted slash command instead fails loudly (`stage-wrapper: -- 뒤에 CLI 인자가 필요합니다`, `크래시 rc=2`), which is the better of the two.
 - **The prompt is a slash command**, leading `/` included.

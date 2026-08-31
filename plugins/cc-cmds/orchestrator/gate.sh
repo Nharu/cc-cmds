@@ -452,6 +452,19 @@ gate_progress_vector() {
         printf 'segment=%s|%s|%s\n' "$sid" \
           "$(gate_segment_field "$sid" '상태')" "$(gate_segment_field "$sid" '커밋')"
       done
+  # `cycle` rows are progress and were missing. A review completing, a
+  # remediation landing, a re-review coming back clean — each writes one, and
+  # none of them moved this vector, so a run could record a review, push a
+  # branch and merge a pull request while the boundary counted it as motionless.
+  # They are safe to include for the same reason segment rows are: the gate does
+  # not write one on every act, only when a cycle is actually recorded.
+  gate_rows 'cycle' \
+    | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u \
+    | while IFS= read -r cseg; do
+        [ -n "$cseg" ] || continue
+        printf 'cycle=%s|%s\n' "$cseg" \
+          "$( { gate_rows 'cycle' | grep -F "세그먼트=$cseg " || true; } | gate_count)"
+      done
   gate_open_obligations | sort
 }
 
@@ -945,8 +958,14 @@ gate_resettle_settings() {
   # bytes move only when one of those moved, and both are themselves recorded.
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
-  local before after tmpdir base
-  before=$(gate_surface_digest)
+  local before after tmpdir base lk="${RUN_DIR:-}/settings.lock"
+  [ -n "${RUN_DIR:-}" ] || return 0
+  # The WHOLE sequence is inside the lock — read, compare, rewrite, re-measure,
+  # re-baseline. Guarding only the write would leave the guard below reading a
+  # baseline another process is about to replace, which is the same read-then-act
+  # with the lock on the wrong half.
+  gate_settings_lock "$lk" || return 0
+  before=$(gate_surface_digest_raw)
 
   # ONLY FROM A KNOWN-GOOD BASELINE. If the surface has already moved, this is
   # not the place to decide about it — `gate_surface_check` owns that verdict,
@@ -954,23 +973,26 @@ gate_resettle_settings() {
   # guard the re-derivation silently repairs and re-baselines an edit made by
   # anything at all, which is exactly the detection the digest exists for.
   base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
-  [ -n "$base" ] && [ "$before" = "$base" ] || return 0
+  if [ -z "$base" ] || [ "$before" != "$base" ]; then
+    gate_settings_unlock "$lk"; return 0
+  fi
 
   tmpdir="$(gate_settings_dir).probe.$$"
   rm -rf "$tmpdir"
   ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
-    gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; return 0; }
+    gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0; }
   if diff -r -q "$tmpdir" "$(gate_settings_dir)" >/dev/null 2>&1; then
-    rm -rf "$tmpdir"; return 0
+    rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0
   fi
   rm -rf "$tmpdir"
 
-  gate_write_settings >/dev/null 2>&1 || return 0
-  after=$(gate_surface_digest)
+  gate_write_settings >/dev/null 2>&1 || { gate_settings_unlock "$lk"; return 0; }
+  after=$(gate_surface_digest_raw)
   printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
   gate_append '대상 추가' "별칭=-" "원격 슬러그=-" \
     "메인 워크트리=-" "공통 git 디렉터리=-" "베이스 브랜치=-" "층=0" \
     "발견 경로=인가 디렉터리 재유도 (${before} → ${after})" "기록 시각=$(now_iso)"
+  gate_settings_unlock "$lk"
   log "인가 디렉터리를 다시 유도했습니다 — 강제 표면 기준선을 갱신하고 원장에 남겼습니다"
 }
 
@@ -1062,6 +1084,23 @@ EOF
   # reads it to authorize anything — so without this comparison the two could
   # disagree for a whole night and the disagreement would be the one thing a
   # person could have caught by looking.
+  # THE NINE FIELDS ARE CHECKED FOR PRESENCE, because until now exactly one of
+  # them was ever read. The contract fixes the block at nine fields in a fixed
+  # order and gives it no rewrite form — a block appended with a field missing
+  # is frozen that way, and re-authorizing is a NEW run rather than an edit. So
+  # a check that runs after the block is written cannot repair it; what it can
+  # do is refuse to run on it, which is the only remaining moment the omission
+  # is cheap. Measured: the kickoff's own template emitted eight, dropping
+  # `직렬 웨이브 고지`, and nothing anywhere noticed.
+  local gf
+  for gf in '인가 일시' '종료 지점' '권한 절단점' '말단 행위 상한' '직렬 웨이브 고지' \
+            '시각 정합 마커' '사용자 확인 문면' '설계 문서 전체 sha256' '보고서'; do
+    if [ -z "$(gate_grant_field "${gf}")" ]; then
+      warn "인가 기록에 「${gf}」가 없습니다 — 계약은 아홉 필드를 전부 요구하며 이 블록에는 재작성 형태가 없습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  done
+
   gmax=$(gate_grant_field '권한 절단점')
   if [ -z "$gmax" ]; then
     warn "인가 기록에 「권한 절단점」이 없습니다"
@@ -1164,7 +1203,44 @@ gate_surface_check() {
 # settings. A design sentence that counts six surfaces is describing what must
 # be protected; this is which mechanism protects each, and for four of the six
 # that mechanism is layer 1 alone.
+gate_settings_lock() {
+  # A mutex over the settings directory, held by BOTH the readers and the
+  # writer. `mkdir` because it is atomic on every filesystem this runs on and
+  # needs no external tool — `lockf` is darwin-only here, and this hazard is not.
+  #
+  # Locking only the writer would not be enough: `gate_write_settings` truncates
+  # each file in place (`cat > "$f"`), so a concurrent digest walks a directory
+  # that is half old and half new and gets a value that matches neither side.
+  # That is what turned two parallel stages into a pair of re-derivations
+  # undoing each other — measured as A→B then B→A in one run's ledger, with no
+  # directory actually added and the run invalidated inside twelve minutes.
+  local lockdir="$1" waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    waited=$(( waited + 1 ))
+    # Give up rather than hang. A caller that could not take the lock returns
+    # its previous answer, which is the safe direction: the digest is compared
+    # against a baseline, and a stale-but-consistent value refuses rather than
+    # permits.
+    [ "$waited" -gt 200 ] && return 1
+    sleep 0.05
+  done
+  return 0
+}
+
+gate_settings_unlock() { rmdir "$1" 2>/dev/null || true; }
+
 gate_surface_digest() {
+  local lk="${RUN_DIR:-}/settings.lock" out
+  if [ -n "${RUN_DIR:-}" ] && gate_settings_lock "$lk"; then
+    out=$(gate_surface_digest_raw)
+    gate_settings_unlock "$lk"
+    printf '%s' "$out"
+  else
+    gate_surface_digest_raw
+  fi
+}
+
+gate_surface_digest_raw() {
   # The extension is re-derived on every call rather than listed once: the
   # second element is "the project-scope settings of every worktree the manifest
   # and the target-addition rows name", and targets are added at RUNTIME. A
@@ -1510,6 +1586,14 @@ gate_deadline_ok() {
     warn "벽시계 마감이 지났습니다 ($dl) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
     return "$GATE_EXIT_RULE"
   fi
+  # A DONE PROPOSAL HAS NO ACT BEHIND IT, so the merge arm below must not judge
+  # it. `--cutpoint` is required of every acting call and carries no meaning
+  # here — there is nothing for it to authorize — yet the deadline read it and
+  # refused the proposal as if it were a merge. The consequence is the worst
+  # available one: a run past its deadline could not record that it had ended,
+  # so no `done` file was written, the snapshot rendered it in flight forever,
+  # and the watcher never reaped itself.
+  [ "$kind" = "propose-done" ] && return 0
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
@@ -1657,6 +1741,24 @@ gate_verb_act() {
 
   local rules_rc=0
   gate_run_rules "$cutpoint" "$alias" "$segment" "$argv" || rules_rc=$?
+  # THE RESOLUTION IS READ BEFORE THE DRY-RUN ARM. `plan` answers "would this
+  # act pass", and once the approval is answered the honest answer is yes — an
+  # arm that reported "still needs an approval" would be describing a state that
+  # no longer exists, and it is the arm a router consults before acting.
+  if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ]; then
+    local ap_id ap_st
+    ap_id=$(gate_act_approval_id "$alias" "$argv")
+    ap_st=$(gate_approval_state "$ap_id")
+    case "$ap_st" in
+      승인)
+        log "승인 $ap_id 이 해소되어 이 행위를 엽니다"
+        rules_rc=0 ;;
+      무효)
+        warn "승인 $ap_id 이 무효로 닫혔습니다 — 이 행위는 수행하지 않습니다"
+        exit "$GATE_EXIT_RULE" ;;
+    esac
+  fi
+
   if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ] && [ "$verb" = "plan" ]; then
     # A DRY RUN NEVER WRITES. `plan` answers "would this pass, and if not which
     # rule refuses it" — issuing an approval to answer that mutates the run the
@@ -1667,11 +1769,12 @@ gate_verb_act() {
     exit "$GATE_EXIT_APPROVAL"
   fi
   if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ]; then
-    # A rule asking for an approval and the gate not WRITING one is the same
-    # hole as recording without performing, in the other direction: the run
-    # stops, nothing says why, and the termination conditions never see the
-    # thing that is blocking them. The row is the approval — issuing it is not
-    # bookkeeping after the fact.
+    # Nothing above resolved it, so the act is genuinely blocked. A rule asking
+    # for an approval and the gate not WRITING one is the same hole as recording
+    # without performing, in the other direction: the run stops, nothing says
+    # why, and the termination conditions never see the thing that is blocking
+    # them. The row is the approval — issuing it is not bookkeeping after the
+    # fact.
     gate_issue_act_approval "$alias" "$segment" "$cutpoint" "$graded" "$argv"
     exit "$GATE_EXIT_APPROVAL"
   fi
@@ -1719,6 +1822,28 @@ gate_verb_act() {
   local unmet
   unmet=$(gate_done_conditions)
   if [ "$kind" = "propose-done" ]; then
+    # AN INVALIDATED RUN MUST STILL BE ABLE TO SAY IT ENDED. Condition 5 counts
+    # a run-scope `blocked` row whose cause is `무효화` as permanently unmet —
+    # deliberately, because clearing it would be the run re-authorizing itself
+    # past the boundary that refused it. But the consequence was that such a run
+    # could never write `done`: the snapshot rendered it `진행 중` forever, the
+    # watcher's own exit condition never held, and a person had to kill three
+    # processes by hand.
+    #
+    # The run is over either way. What changes here is only whether that fact
+    # reaches disk. So when the invalidation is the ONLY thing left unmet, the
+    # proposal is accepted and the `done` file records the run as invalidated
+    # rather than as satisfied — the two must not read alike in the morning.
+    local unmet_other
+    unmet_other=$(printf '%s' "$unmet" | grep -v '해소 불가입니다' || true)
+    if [ -n "$unmet" ] && [ -z "$unmet_other" ]; then
+      warn "런이 무효화된 채로 종료를 기록합니다 — 충족이 아니라 무효로 남습니다"
+      gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
+        "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
+        "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
+      printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      return 0
+    fi
     if [ -n "$unmet" ]; then
       warn "종료 제안 기각 — 미충족 조건:"
       printf '%s\n' "$unmet" >&2
@@ -1876,6 +2001,23 @@ gate_undeclared_target() {
   return 0
 }
 
+gate_act_approval_id() {
+  # gate_act_approval_id <alias> <argv>
+  #
+  # Factored out because TWO places must agree on it: the one that issues the
+  # approval and the one that asks whether it has since been answered. They were
+  # one expression in one place, so nothing could ask.
+  printf 'A-%s' "$(printf '%s|%s|%s' "$RUN_ID" "$1" \
+    "$(printf '%s' "$2" | shasum -a 256 | cut -d' ' -f1)" | shasum -a 256 | cut -c1-8)"
+}
+
+gate_approval_state() {
+  # The LAST row for this id wins, the way the termination conditions already
+  # read approvals and review obligations.
+  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1
+}
+
 gate_issue_act_approval() {
   # gate_issue_act_approval <alias> <segment> <cutpoint> <grade> <argv>
   #
@@ -1885,7 +2027,7 @@ gate_issue_act_approval() {
   # produces one pending approval instead of a queue of duplicates.
   local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head
   ad=$(printf '%s' "$argv" | shasum -a 256 | cut -d' ' -f1)
-  id="A-$(printf '%s|%s|%s' "$RUN_ID" "$alias" "$ad" | shasum -a 256 | cut -c1-8)"
+  id=$(gate_act_approval_id "$alias" "$argv")
   gate_has_row '승인' "승인 id=$id " && return 0
   base=$(target_field "$alias" '베이스 브랜치')
   head=$(cd "$(target_field "$alias" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
@@ -2217,8 +2359,26 @@ gate_record_stage_outcome() {
   # it is a fact the gate can compute rather than one the stage reports.
   psha=""
   if [ "$kind" = "implement" ]; then
+    # FOUR PATHS, and the two that matter are the last two — the first two ask
+    # for JSON the stage does not emit. What a process-A stage actually writes
+    # is PROSE: a `## 프로세스 A 완료 — 계획 방출` section carrying
+    # `**plan_sha256**: <hex>` and a `**계획**:` path. Measured: a stage
+    # completed normally, emitted its plan and stated the digest, and the row
+    # still had no field — so process B could not enter and every dispatch
+    # re-ran as process A.
     psha=$(printf '%s' "$res" | jq -r '(.result // empty) | fromjson? | .plan_sha256 // empty' 2>/dev/null || true)
     [ -n "$psha" ] || psha=$(printf '%s' "$res" | jq -r '.plan_sha256 // empty' 2>/dev/null || true)
+    # The stage's own terminal text. `[0-9a-f]\{64\}` rather than a looser
+    # match so a sentence mentioning the field cannot be mistaken for a value.
+    if [ -z "$psha" ]; then
+      psha=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null \
+             | sed -n 's/.*plan_sha256[^0-9a-f]*\([0-9a-f]\{64\}\).*/\1/p' | sed -n '1p')
+    fi
+    # And the plan file, at the name the stage actually uses — `<segment>.plan.md`
+    # in the run directory, not `implement-<segment>.plan.md`.
+    if [ -z "$psha" ] && [ -f "$RUN_DIR/$seg.plan.md" ]; then
+      psha=$(shasum -a 256 "$RUN_DIR/$seg.plan.md" | cut -d' ' -f1)
+    fi
     if [ -z "$psha" ] && [ -f "$RUN_DIR/implement-$seg.plan.md" ]; then
       psha=$(shasum -a 256 "$RUN_DIR/implement-$seg.plan.md" | cut -d' ' -f1)
     fi
@@ -2553,7 +2713,25 @@ gate_boundaries() {
 }
 
 gate_b1_stagnation() {
+  # A RUN WITH A LIVE STAGE IS NOT STALLED, and without this the boundary fires
+  # on every healthy run. The vector is manifest-derived plus segment rows plus
+  # obligations plus cycles; a stage doing its work writes none of those, so the
+  # digest is constant for as long as it runs — by construction, not by
+  # accident. Any stage making four gate calls therefore issued B1 against
+  # itself.
+  #
+  # And the false positive did not end there: an open approval suspends B1, B2
+  # and B3, so one of these a few minutes into the first stage switched off
+  # stagnation detection for the rest of the night. The three boundaries were
+  # spent before they could do the thing they exist for.
+  #
+  # This is a suppression rather than a reset: the counter is left alone so that
+  # a run which really does stop after its stages end still reaches the
+  # threshold on the following judgements.
   local h prev n
+  if [ "$(gate_live_stages)" != "0" ]; then
+    return 0
+  fi
   h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/progress-repeat" 2>/dev/null || printf '0')

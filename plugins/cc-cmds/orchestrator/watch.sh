@@ -256,6 +256,22 @@ pass() {
     return 0
   fi
 
+  # AN APPROVAL REACHES THE USER THE MOMENT IT IS ISSUED, whatever else is
+  # running. The condition below wants every segment settled first, which is
+  # structurally false at the instant an approval is written — the segment that
+  # triggered it is by definition still live. So the one event that exists to
+  # summon a person produced no signal on any channel, and the run waited all
+  # night for someone who had not been told.
+  #
+  # Keyed by the count so a second, distinct approval announces again rather
+  # than being swallowed by the first one's marker.
+  if [ "$pend" -gt 0 ] && [ ! -f "$RUN_DIR/watch.announced-pending.$pend" ]; then
+    : > "$RUN_DIR/watch.announced-pending.$pend"
+    announce "승인 대기 ${pend}건 — 런이 답을 기다립니다" \
+             "세션으로 돌아가 답하면 그 자리에서 이어집니다"
+    banner "승인 대기 ${pend}건 — 답을 기다립니다"
+  fi
+
   if [ "$live" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
      && [ ! -f "$RUN_DIR/watch.announced-waiting" ]; then
     : > "$RUN_DIR/watch.announced-waiting"
@@ -293,7 +309,28 @@ run_is_over() {
   # watchers from seven different runs, ages from 18 seconds to 1 day 4 hours,
   # with no way to tell a live run's watcher from a finished run's.
   [ -f "$RUN_DIR/done" ] && return 0
-  [ -d "$RUN_DIR" ] || return 0
+  # "NOT YET CREATED" IS NOT "WENT AWAY", and treating them alike made the
+  # watcher exit at once, quietly, on the very ordering the kickoff prescribes:
+  # it says to start the watcher before entering the router loop, and the run
+  # directory is created by the router's FIRST gate call. Measured — watcher up
+  # at 03:18:0x, directory created at 03:18:36, and the run then ran with no
+  # watcher at all while the launching call had reported success.
+  #
+  # So absence only ends the loop once the directory has been seen at least
+  # once. Until then it is a wait, and the wait is bounded so a watcher pointed
+  # at a path that never appears does not linger forever.
+  if [ -d "$RUN_DIR" ]; then
+    RUN_DIR_SEEN=1
+    return 1
+  fi
+  if [ "${RUN_DIR_SEEN:-0}" = "1" ]; then
+    return 0
+  fi
+  STARTUP_WAIT=$(( ${STARTUP_WAIT:-0} + 1 ))
+  if [ "$STARTUP_WAIT" -gt "${STARTUP_MAX:-60}" ]; then
+    printf '%s [watch] 런 디렉터리가 끝내 생기지 않았습니다: %s\n' "$(now_iso)" "$RUN_DIR" >&2
+    return 0
+  fi
   return 1
 }
 
