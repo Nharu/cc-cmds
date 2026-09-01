@@ -2340,7 +2340,7 @@ gate_autoadopt_ok() {
   # means here. Placed before both arms so a manifest declaration cannot admit
   # one either — the two guards then agree instead of contradicting.
   if judgment_class_forbidden "$cls"; then
-    warn "자동 채택 불성립 — 「$cls」 는 미리 채택할 수 없는 판단 부류입니다 (위험을 사용자에게 넘기는 결정)"
+    warn "자동 채택 불성립 — 「${cls}」 는 미리 채택할 수 없는 판단 부류입니다 (위험을 사용자에게 넘기는 결정)"
     warn "이 판단은 거절되지 않고 승인으로 올라갑니다 — 기록은 허용이고 무인 채택만 금지입니다"
     return 1
   fi
