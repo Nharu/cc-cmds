@@ -2761,14 +2761,10 @@ gate_close() {
 # that declines to propose while every condition holds must name a specific,
 # admissible next obligation — and failing to name one ends the run.
 # ---------------------------------------------------------------------------
-# `완료` is the third terminal state, and its absence forced every honest
-# router into a false statement. A stage that produced its output and had
-# nothing to merge — an audit, a review, a census — could only be recorded as
-# `머지됨` (claiming a merge that did not happen) or `park` (recording a success
-# as a blockage, which the morning report then cannot tell from a real one). And
-# termination condition 1 demands every segment reach a terminal state, so
-# declining to choose left the run unable to end at all.
-readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park"
+# `TERMINAL_SEGMENT_STATES` — the enumeration and the reasoning behind its third
+# element live in `liveness.sh`, sourced above. It is not re-declared here: the
+# status line reads the same set through the same file, and a copy is how the
+# render and this check came to disagree about the same segment.
 
 gate_done_conditions() {
   # Prints one line per UNMET condition, numbered. Empty output means all nine

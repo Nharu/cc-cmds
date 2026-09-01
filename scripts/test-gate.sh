@@ -30,6 +30,7 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -2205,10 +2206,20 @@ fi
 gateL act --manifest "$MANIFEST" --kind segment --target infra --segment SDONE --cutpoint 커밋 \
      --snapshot-digest "$(HL)" --rationale x -- 상태=완료 워크트리="$WT"
 check "완료 상태가 어휘에 있다" "$rc" "0"
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'TERMINAL_SEGMENT_STATES="머지됨 완료 park"'; then
+# The enumeration moved to `liveness.sh` so the status line and the termination
+# check read one value. This assertion follows the value: asserting against the
+# gate would now pass only if the copy came back.
+if grep -vE '^[[:space:]]*#' "$LIVENESS" | grep_all_q -F 'TERMINAL_SEGMENT_STATES="머지됨 완료 park"'; then
   ok "완료가 종단 집합에 든다 (종료 조건 1 이 이 세그먼트를 막지 않는다)"
 else
   bad "종단 집합" "완료가 종단으로 인정되지 않는다"
+fi
+# And the copy must not return. A second assignment is the only way the two
+# readers can diverge again, and it would not fail any count-based assertion.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'TERMINAL_SEGMENT_STATES='; then
+  bad "종단 집합 사본" "gate.sh 가 열거를 다시 대입한다"
+else
+  ok "gate.sh 는 열거를 대입하지 않고 참조만 한다"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2272,12 +2283,37 @@ rm -f "$FX_RUN_DIR/watch.pid"
 
 # The counterpart, which pins the option that was rejected: the driver's stage
 # spawn writes `.pgid` and never `.start`, so raising `.start` alone to a
-# necessary condition would silently drop every stage the driver started.
-printf '%s' "$$" > "$FX_RUN_DIR/D.pid"
-printf '%s' "$$" > "$FX_RUN_DIR/D.pgid"
+# necessary condition would silently drop every stage the driver started. The
+# pgid is now what VERIFIES this stage's identity, so the fixture records the
+# real one and the pass is earned rather than inherited from a bare `kill -0`.
+fx_stage_driver_live D
 n=$(cc_live_stages "$FX_RUN_DIR")
 check "pgid 형제만 있는 드라이버 모양 스테이지는 센다" "$n" "2"
 rm -f "$FX_RUN_DIR/D.pid" "$FX_RUN_DIR/D.pgid"
+
+# The driver path's own pid-reuse case, which had no fixture and therefore no
+# assertion. Until the identity check was split in three this shape fell
+# through to `kill -0` and counted — the very hole the gate-spawned path had
+# already closed.
+fx_stage_driver_reused E
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "pgid 가 어긋난 드라이버 모양 스테이지는 세지 않는다" "$n" "1"
+rm -f "$FX_RUN_DIR/E.pid" "$FX_RUN_DIR/E.pgid"
+
+# Sibling present, identity unverifiable — its own case rather than a pass.
+fx_stage_unverifiable F
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "형제는 있으나 신원을 확인할 수 없는 스테이지는 세지 않는다" "$n" "1"
+rm -f "$FX_RUN_DIR/F.pid" "$FX_RUN_DIR/F.start"
+
+# The identity layer itself. Deleting it makes the three counts above pass for
+# the wrong reason, so a count is not what can catch that regression.
+if grep -vE '^[[:space:]]*#' "$LIVENESS" | grep_all_q -F 'cc_proc_pgid() {' \
+   && grep -vE '^[[:space:]]*#' "$LIVENESS" | grep_all_q -F 'now=$(cc_proc_pgid "$pid")'; then
+  ok "liveness.sh 가 cc_proc_pgid 를 정의하고 신원 확인이 그것을 부른다"
+else
+  bad "pgid 신원" "드라이버 경로의 신원 확인 층이 없다"
+fi
 
 fx_approval AP-1 대기
 fx_approval AP-2 대기
@@ -2292,6 +2328,16 @@ n=$(cc_nonterminal_segments "$FX_LEDGER")
 check "cc_nonterminal_segments 도 마지막 행으로 접는다" "$n" "0"
 n=$(cc_segment_count "$FX_LEDGER")
 check "cc_segment_count 가 고유 세그먼트를 센다 (공집합 가드의 입력)" "$n" "2"
+
+# `완료` is the third terminal state and this predicate used to carry its own
+# two-element enumeration. A 완료 segment is what separates "reads the shared
+# constant" from "happens to agree on the other two": counted as in flight, a
+# finished run can never end.
+fx_segment SZ 완료
+n=$(cc_nonterminal_segments "$FX_LEDGER")
+check "완료 세그먼트도 종단으로 접는다 (게이트와 같은 열거)" "$n" "0"
+n=$(cc_segment_count "$FX_LEDGER")
+check "그 완료 픽스처가 실제로 심겼다" "$n" "3"
 
 fx_blocked "정지 A" 불명
 fx_blocked "정지 B" 불명

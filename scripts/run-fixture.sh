@@ -57,7 +57,9 @@ fx_approval() {
 }
 
 fx_segment() {
-  # fx_segment <id> <상태> — a segment row. Terminal states are 머지됨 and park.
+  # fx_segment <id> <상태> — a segment row. The terminal states are 머지됨, 완료
+  # and park; `TERMINAL_SEGMENT_STATES` in liveness.sh is the authority for that
+  # enumeration and this comment is not a second copy of it.
   fx_row 'segment' "id=$1" "상태=$2" "워크트리=$FX_RUN_DIR"
 }
 
@@ -114,6 +116,61 @@ fx_stage_reused() {
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   printf '%s' "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/$seg.start"
+  FX_LAST_PID="$pid"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_LAST_PID FX_PIDS
+}
+
+# HOW THE DRIVER'S SHAPE DIFFERS. The gate's spawn writes `<seg>.start`; the
+# driver's writes `<stage>.pgid` and never a start time. A fixture that knows
+# only the gate's shape therefore cannot produce the driver path's pid-reuse
+# case at all — which is exactly the case a bare `kill -0` gets wrong.
+
+fx_stage_driver_live() {
+  # fx_stage_driver_live <segment> — a running stage in the DRIVER's shape: a
+  # `.pgid` holding the pid's real process group, and no `.start`.
+  #
+  # The group is read back from the process rather than assumed, for the same
+  # reason the driver reads it back: a background job's group is the caller's
+  # unless job control gave it its own, so a written-in assumption would make
+  # this fixture pass against a predicate that compares nothing.
+  local seg="$1" pid
+  sleep 120 &
+  pid=$!
+  printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
+  ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' > "$FX_RUN_DIR/$seg.pgid"
+  FX_LAST_PID="$pid"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_LAST_PID FX_PIDS
+}
+
+fx_stage_driver_reused() {
+  # fx_stage_driver_reused <segment> — a LIVE pid in the driver's shape whose
+  # recorded process group does not match. Group 1 is init's, and nothing this
+  # fixture starts can be in it, so the mismatch is guaranteed rather than
+  # merely likely.
+  local seg="$1" pid
+  sleep 120 &
+  pid=$!
+  printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
+  printf '%s\n' "1" > "$FX_RUN_DIR/$seg.pgid"
+  FX_LAST_PID="$pid"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_LAST_PID FX_PIDS
+}
+
+fx_stage_unverifiable() {
+  # fx_stage_unverifiable <segment> — a LIVE pid whose sibling carries no
+  # identity: a zero-byte `.start`, and no `.pgid` at all.
+  #
+  # Reachable, not contrived. The gate creates the file by redirection before
+  # `ps` writes into it, so a stage observed inside that window has the sibling
+  # the glob filter demands and nothing to compare against.
+  local seg="$1" pid
+  sleep 120 &
+  pid=$!
+  printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
+  : > "$FX_RUN_DIR/$seg.start"
   FX_LAST_PID="$pid"
   FX_PIDS="${FX_PIDS:-}$pid "
   export FX_LAST_PID FX_PIDS

@@ -56,9 +56,26 @@ cc_live_stages() {
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     kill -0 "$pid" 2>/dev/null || continue
+    # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave different
+    # handles — the gate a start-time fingerprint, the driver a process group —
+    # so this asks whichever one is present. Skipping the check when the gate's
+    # handle is absent is what left the driver's stages on a bare `kill -0`,
+    # which is the pid-reuse hole this file exists to close.
     rec=$(cat "${f%.pid}.start" 2>/dev/null || true)
     if [ -n "$rec" ]; then
       now=$(cc_proc_fingerprint "$pid")
+      [ "$rec" = "$now" ] || continue
+    else
+      # SIBLING PRESENT, IDENTITY UNVERIFIABLE — its own case, not a pass.
+      # An empty `.start` is reachable: the gate's redirection creates the file
+      # before `ps` writes into it. An empty or unreadable `.pgid` is reachable
+      # the same way. Not counting is the safe direction: the run's termination
+      # condition has no resolving verb, so an over-count ends the run's ability
+      # to finish permanently, while an under-count costs one render.
+      rec=$( { cat "${f%.pid}.pgid" 2>/dev/null || true; } | tr -d '[:space:]')
+      [ -n "$rec" ] || continue
+      now=$(cc_proc_pgid "$pid")
+      [ -n "$now" ] || continue
       [ "$rec" = "$now" ] || continue
     fi
     n=$((n + 1))
@@ -70,6 +87,15 @@ cc_proc_fingerprint() {
   # cc_proc_fingerprint <pid> — the pid's start time, whitespace-normalised.
   # The pair (pid, start time) is the identity; the pid alone is not.
   ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+}
+
+cc_proc_pgid() {
+  # cc_proc_pgid <pid> — the pid's process group id, or empty.
+  # The driver's spawn records this beside the pid instead of a start time, so
+  # it is the only identity handle that path leaves behind. A process's group
+  # cannot change after exec, which is what makes the pair (pid, pgid) an
+  # identity in the same sense (pid, start time) is.
+  ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
 cc_open_approvals() {
@@ -88,9 +114,32 @@ cc_open_approvals() {
   printf '%s' "$n"
 }
 
+# `완료` is the third terminal state, and its absence forced every honest
+# router into a false statement. A stage that produced its output and had
+# nothing to merge — an audit, a review, a census — could only be recorded as
+# `머지됨` (claiming a merge that did not happen) or `park` (recording a success
+# as a blockage, which the morning report then cannot tell from a real one). And
+# the termination condition demands every segment reach a terminal state, so
+# declining to choose left the run unable to end at all.
+#
+# THE ENUMERATION LIVES HERE, once. It used to be declared beside the gate's
+# termination check while this file carried a two-element copy in a `case`, so
+# the same segment was terminal to one reader and in flight to the other.
+#
+# `readonly` under a guard, because this file is sourced by more than one
+# consumer and a second `source` in one shell would otherwise abort with
+# "readonly variable". The guard admits the canonical value and overwrites any
+# other, so a caller cannot pre-seed a different terminal set.
+case " ${TERMINAL_SEGMENT_STATES:-} " in
+  " 머지됨 완료 park ") ;;
+  *) readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park" ;;
+esac
+
 cc_nonterminal_segments() {
   # cc_nonterminal_segments <ledger> — count of segments not in a terminal state.
-  # The terminal set is `머지됨` and `park`; everything else is in flight.
+  # `TERMINAL_SEGMENT_STATES` above is the enumeration; everything else is in
+  # flight. The membership test is the gate's, verbatim, because a second
+  # spelling of it is how the two readers diverged in the first place.
   local ledger="$1" sid st n=0
   [ -n "$ledger" ] || { printf '0'; return 0; }
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
@@ -98,7 +147,10 @@ cc_nonterminal_segments() {
     [ -n "$sid" ] || continue
     st=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    case "$st" in 머지됨|park) ;; *) n=$((n + 1)) ;; esac
+    case " $TERMINAL_SEGMENT_STATES " in
+      *" $st "*) ;;
+      *) n=$((n + 1)) ;;
+    esac
   done
   printf '%s' "$n"
 }
