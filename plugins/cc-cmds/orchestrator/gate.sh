@@ -97,6 +97,12 @@ export CC_ORCH_SOURCE_ONLY
 # directions or the separation is decorative.
 # shellcheck source=/dev/null
 . "$GATE_DIR/credentials.sh"
+# The read-only predicates about a run's state. Sourced for the same reason
+# `credentials.sh` is: three consumers used to answer "is this run still going?"
+# with three implementations, and the render's answer disagreed with the
+# termination condition's on the same run. One file, one rule.
+# shellcheck source=/dev/null
+. "$GATE_DIR/liveness.sh"
 
 readonly GATE_EXIT_VOCAB=2
 readonly GATE_EXIT_RULE=3
@@ -908,7 +914,10 @@ gate_render_snapshot() {
   # a ledger age, or the run's own terminal state. Answering it needed the row
   # grammar and a manual pid comparison.
   local n_live now_s led_s hb_s done_line
-  n_live=$( { ls "$RUN_DIR"/*.pid 2>/dev/null || true; } | gate_count)
+  # Counting pid FILES reported stages that were not there: measured 21 files
+  # against 5 live processes, and a render claiming "진행 중" for a run whose
+  # recorded pid was dead. The shared predicate tests the process.
+  n_live=$(cc_live_stages "$RUN_DIR")
   now_s=$(date -u +%s)
   led_s=$(gate_mtime "$LEDGER")
   hb_s=$(gate_mtime "$RUN_DIR/watch.heartbeat")
@@ -1476,6 +1485,51 @@ gate_main() {
   derive_paths_from_manifest
   gate_check_grant || exit $?
   rundir_init
+
+  # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
+  # open. A run that was cut and resumed still has to be findable, and the run
+  # open block below runs once per run — putting these inside it would leave a
+  # resumed run without the files that make it addressable.
+  #
+  # `ledger-path` exists because the ledger's location is derived from the
+  # manifest's `origin-worktree`, and the things that need to read the ledger —
+  # a status line, anything outside the driver — do not know the manifest. The
+  # gate does. Idempotent overwrite.
+  printf '%s\n' "$LEDGER" > "$RUN_DIR/ledger-path"
+
+  # The FORWARD index: session id → run ids. `session-lineage` runs the other
+  # way (run → its session ids) and answering "which run belongs to this
+  # session?" from it means scanning every run directory. One session can hold
+  # several runs, so this is a LIST — one run id per line, appended, deduped.
+  # Entries for runs whose directory is gone are left alone: the reader filters
+  # with `[ -d ]`, and pruning would add a write to a path that has none.
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
+    grep -qxF "$RUN_ID" \
+      "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID" 2>/dev/null \
+      || printf '%s\n' "$RUN_ID" \
+           >> "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID"
+  fi
+
+  # Lineage is recorded here rather than only where it is consumed. Its one
+  # caller was `gate_transcript_files`, which is reached only by `close` — so a
+  # run that never opened an approval had no lineage at all, and a `--resume`
+  # across that gap left the earlier session id unrecorded for good.
+  #
+  # THE GUARD IS THE POINT, not a precaution. Lineage is what
+  # `gate_transcript_files` searches to find the transcript an approval was
+  # answered in, so every id in it is an id allowed to ANSWER. Promoting the
+  # call to the entry point without this test would enrol every stage: stages
+  # reach the gate too — the pre-tool hook routes each of their Bash, Write and
+  # Edit through it — and each carries its own session id. The run's approvals
+  # would then be answerable from inside the very stages they gate, which is the
+  # self-approval path the separation exists to keep shut.
+  #
+  # `CC_PIPELINE_STAGE_ID` is exported to stage children by the driver and to
+  # nothing else, so its presence is the router/stage distinction rather than a
+  # heuristic.
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || gate_session_lineage >/dev/null
+
   # Run start is "the settings directory does not exist yet".
   #
   # AND the settings are RE-DERIVED afterwards, whenever what they are derived
@@ -1789,7 +1843,16 @@ gate_drain_stall() {
   [ -s "$f" ] || return 0
   while IFS="$(printf '\t')" read -r ts why cmd; do
     [ -n "$why" ] || continue
-    gate_has_row 'blocked' "사유=$why" && continue
+    # THE KEY IS "THIS 사유 IS CURRENTLY UNRESOLVED", not "this 사유 appears
+    # anywhere in the ledger". Substring-matching the whole ledger meant the
+    # second stall of a run never landed — including one that came after a
+    # person had written the resolving row — and the observation file is
+    # truncated below, so that observation vanished with nothing recording it.
+    # The morning report and termination condition 5 then could not tell "it
+    # stalled once and was resolved" from "it is still stalling".
+    if [ "$( { cc_unresolved_blocked "$LEDGER" | cut -f2- | grep -cxF "$why" || true; } )" != "0" ]; then
+      continue
+    fi
     gate_append 'blocked' "대상=-" "스코프=run" "원인=불명" "사유=$why" \
       "관측=$ts" "재개 명령=$cmd"
   done < "$f"
@@ -2863,14 +2926,10 @@ gate_close() {
 # that declines to propose while every condition holds must name a specific,
 # admissible next obligation — and failing to name one ends the run.
 # ---------------------------------------------------------------------------
-# `완료` is the third terminal state, and its absence forced every honest
-# router into a false statement. A stage that produced its output and had
-# nothing to merge — an audit, a review, a census — could only be recorded as
-# `머지됨` (claiming a merge that did not happen) or `park` (recording a success
-# as a blockage, which the morning report then cannot tell from a real one). And
-# termination condition 1 demands every segment reach a terminal state, so
-# declining to choose left the run unable to end at all.
-readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park"
+# `TERMINAL_SEGMENT_STATES` — the enumeration and the reasoning behind its third
+# element live in `liveness.sh`, sourced above. It is not re-declared here: the
+# status line reads the same set through the same file, and a copy is how the
+# render and this check came to disagree about the same segment.
 
 gate_done_conditions() {
   # Prints one line per UNMET condition, numbered. Empty output means all nine
@@ -2931,14 +2990,14 @@ gate_done_conditions() {
   # block, whose own resume line says this run's baseline is never retaken — a
   # run that could clear it would be re-authorizing itself past the boundary
   # that had just refused it.
-  local reason last cause
-  gate_rows 'blocked' | grep -F '스코프=run' | tr '|' '\n' \
-    | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | sort -u \
-    | while IFS= read -r reason; do
+  # The fold itself lives in `liveness.sh` so that this condition and the status
+  # line read one rule rather than two copies of it. What stays here is the
+  # RENDERING: these two sentences are the only place a person is told how to
+  # clear the block, so they are not the shared function's business.
+  local reason cause
+  cc_unresolved_blocked "$LEDGER" \
+    | while IFS="$(printf '\t')" read -r cause reason; do
         [ -n "$reason" ] || continue
-        last=$( { gate_rows 'blocked' | grep -F '스코프=run' | grep -F "사유=$reason " || true; } | tail -1)
-        cause=$(printf '%s' "$last" | tr '|' '\n' | sed -n 's/^ *원인=//p' | sed 's/[[:space:]]*$//' | tail -1)
-        [ "$cause" = "해소" ] && continue
         if [ "$cause" = "무효화" ]; then
           printf '5 런 스코프 blocked 가 해소 불가입니다 (%s) — 이 런은 끝났습니다\n' "$reason"
         else
@@ -3031,17 +3090,12 @@ gate_terminal_cap_ok() {
 }
 
 gate_live_stages() {
-  # `kill -0` on recorded pids, never `wait -n` — that builtin does not exist on
-  # the interpreter floor, and a re-attached stage is not this shell's child so
-  # `wait` would report a clean exit for a process it never reaped.
-  local f pid n=0
-  for f in "$RUN_DIR"/*.pid; do
-    [ -f "$f" ] || continue
-    pid=$(cat "$f" 2>/dev/null)
-    [ -n "$pid" ] || continue
-    kill -0 "$pid" 2>/dev/null && n=$((n + 1))
-  done
-  printf '%s' "$n"
+  # Delegated. This is termination condition 7's only input, and condition 7 has
+  # no resolving verb — so a pid that had been reused blocked the run's end
+  # PERMANENTLY, since pid files are removed only when a stage exits normally.
+  # `kill -0` alone cannot see that; the shared predicate compares the recorded
+  # start-time fingerprint too.
+  cc_live_stages "$RUN_DIR"
 }
 
 # ---------------------------------------------------------------------------

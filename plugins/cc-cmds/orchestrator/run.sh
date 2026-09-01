@@ -1402,8 +1402,19 @@ stage_spawn() {
   set +m
 
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  # The gate's spawn leaves a start-time fingerprint and the shared liveness
+  # predicate compares it whenever one is present; the driver left only the
+  # group, which `set -m` makes equal to the pid, so on its own it asks whether
+  # the pid's current holder leads a group rather than whether it is the process
+  # we started. Written BEFORE the pid so a fingerprint left by an earlier stage
+  # of the same name is never the one sitting beside a fresh pid — `stage_collect`
+  # and `reap_orphan` remove the pid and the group and leave this file behind,
+  # and a `*.pid` glob cannot see it once the pid file is gone. `.pgid` keeps the
+  # one job only it can do: the group reclaim in `reap_orphan`.
+  { LC_TIME=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$stage.start"
   # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
-  # its successor can find. Both go to the volatile directory only.
+  # its successor can find. All three go to the volatile directory only.
   printf '%s\n' "$pid"  > "$RUN_DIR/$stage.pid"
   printf '%s\n' "$pgid" > "$RUN_DIR/$stage.pgid"
   return 0
