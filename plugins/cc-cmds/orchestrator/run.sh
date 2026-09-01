@@ -373,6 +373,44 @@ manifest_clauses() {
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
 }
 
+# ---------------------------------------------------------------------------
+# The judgment-class vocabulary — eight values, closed, two of them named and
+# forbidden.
+#
+# It is NOT `자율 승인.kind`. That field has never carried a classification: its
+# declared eleven tokens appear zero times in the artifacts, roughly nine rows in
+# ten leave it empty, and what does land there is the ACT KIND. A value moved
+# onto a polluted field inherits the pollution — arm (a) of the auto-adoption
+# floor asks "did the manifest declare this class in advance", so a field that
+# also carries the act kind lets one manifest line reading `종류=skill`
+# auto-adopt every stage dispatch there is. The ledger is append-only, so the
+# rows already written can never be repaired; a NEW field starts with zero
+# legacy rows, which is what lets a lint assert the closed set without an
+# exception.
+#
+# THE TWO FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# stop the decision from being made — it forces whoever records it to borrow a
+# permitted token, and that is the leak. Named and forbidden, the leak arrives
+# as a refusal instead.
+#
+# It lives HERE and not in gate.sh because it has two consumers that cannot
+# share a copy: `check_manifest` below runs on the driver's own path as well as
+# inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
+# sources this file for its definitions, so one declaration reaches both — the
+# same arrangement `CUTPOINTS` already has, and for the same reason.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
+
+judgment_class_ok() {
+  case " $JUDGMENT_CLASSES " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+judgment_class_forbidden() {
+  case " $JUDGMENT_CLASSES_FORBIDDEN " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 # The conjunction. Order matters: the ownership proof comes before anything that
 # would act on the file's contents.
 check_manifest() {
@@ -494,6 +532,28 @@ check_manifest() {
     [ -n "$(manifest_field '요소' '적용 지점')" ] || die "적용 주체가 파이프라인인데 적용 지점이 없습니다"
     [ -n "$(manifest_field '요소' '적용 프로브')" ] || die "적용 주체가 파이프라인인데 적용 프로브가 없습니다"
   fi
+
+  # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
+  #
+  # Deciding mechanically, at the moment a judgment is made, whether it hands
+  # risk to the user is impossible: the only inputs available — the option
+  # labels and the question text — are authored by the party the check would
+  # bind. At freeze time it is entirely mechanical, because the manifest is
+  # written while a person is present and has no append form afterwards. That
+  # asymmetry is the whole safety argument for arm (a) of the auto-adoption
+  # floor, so the check belongs here and rests on no runtime self-declaration.
+  local aline acls
+  while IFS= read -r aline; do
+    case "$aline" in '- `자동 채택`'*) ;; *) continue ;; esac
+    acls=$(printf '%s' "$aline" | tr '|' '\n' | sed -n 's/^ *판단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$acls" ] || die "「자동 채택」 행에 「판단 부류」가 없습니다: $aline"
+    if ! judgment_class_ok "$acls"; then
+      die "「자동 채택」 행의 판단 부류가 어휘 밖입니다: $acls — 허용: $JUDGMENT_CLASSES"
+    fi
+    if judgment_class_forbidden "$acls"; then
+      die "「자동 채택」으로 선언할 수 없는 판단 부류입니다: $acls — 위험을 사용자에게 넘기는 결정은 미리 채택하지 않습니다"
+    fi
+  done < "$MANIFEST"
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }

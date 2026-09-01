@@ -279,7 +279,22 @@ Measured: a review stage completed and produced its report; the router recorded 
 | `exec` | check, record, perform one bash line |
 | `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked) |
 
-**Two `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. `act --kind segment … -- 상태=<…> 워크트리=<path>` advances a segment, and `act --kind cycle … -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'` records a review. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
+**Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
+
+```
+act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>'
+act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'
+act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
+act --kind judgment   -- 등급=1 '판단 부류=<여덟 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
+act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
+act --kind blocked    -- 스코프=run  원인=해소 사유=<선행 막힘의 사유> 근거=<…>
+act --kind blocked    -- 스코프=cone 원인=막힘 사유=<…> 근거=<…> '앵커 세그먼트=<id>' ['의존 세그먼트=<CSV>']
+act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
+```
+
+**Write `선행` on the `segment` row at PLANNING time, not later.** It is the cone's declared axis, and it is the only axis that sees a dependency *before* the predecessor merges — segments branch from the resolved base rather than from each other, so ancestry only says "that one already landed", and the moment a cone typically stands up is before that. Two floors follow from that and both are refusals at write time: the field is **monotone** (a later row may add and may not remove), and **absence is not `없음`** (in a repository with two or more segments, a row without the field is refused; `없음` is accepted as a positive statement of independence). `선언 파일 집합` is likewise carried at planning time — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all.
+
+**A cone is the one `blocked` scope you may create; run scope you may only resolve.** A cone holds what stands on a refuted premise and lets its siblings keep running, which is what an open question needs. Declare `의존 세그먼트` or leave it out — the gate derives the cone either way and refuses a declaration that is a **proper subset** (exit 6). Widening passes.
 
 **Use `grade` and `plan` rather than finding out by doing.** They write no row and cost no budget. Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation.
 
@@ -311,7 +326,13 @@ Exit 5 means the run has asked and cannot answer itself. **Ask the user in this 
 
 ### Judgment, not just acts
 
-Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
+Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`·`판단 부류`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
+
+**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second.
+
+**The floor is a union.** Either arm admits: the manifest declared this `판단 부류` in a `자동 채택` row, **or** `되돌리는 법` is a runnable command whose argv0 grades at or below `워크트리쓰기`. Prose fails the second arm — it grades `등급 미상` — and that is the point of the field: produce the thing that reverses the decision rather than assert that one exists.
+
+**A run may END with questions still open.** They do not count against termination condition 2, because a question's answer is an input to work that has not started and a successor run can consume it. What records them is the `done` file's third class, `종단 — 질의 잔여 N건 · 승인 <id>…`. A clause blocked on one is settled with `상태=보류` whose `근거` names that open approval id — which is a different disposition from `불가능`: impossible ends the clause, on hold hands it to the next run.
 
 ### Proposing that the run is done
 
