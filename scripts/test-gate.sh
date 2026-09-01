@@ -31,6 +31,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -2411,6 +2412,17 @@ n=$(cc_live_stages "$FX_RUN_DIR")
 check "형제는 있으나 신원을 확인할 수 없는 스테이지는 세지 않는다" "$n" "1"
 rm -f "$FX_RUN_DIR/F.pid" "$FX_RUN_DIR/F.start"
 
+# Production's actual shape, which no fixture made before: `set -m` gives the
+# driver's child its own group, so the recorded group IS the pid and a pure
+# string compare against it matches whoever holds that pid next. The fingerprint
+# is what makes the reuse visible, and the driver now records one.
+fx_stage_driver_reused_leader G
+check "드라이버 재사용 픽스처가 프로덕션 모양(pgid == pid)을 만든다" \
+  "$(cat "$FX_RUN_DIR/G.pgid")" "$FX_LAST_PID"
+n=$(cc_live_stages "$FX_RUN_DIR")
+check "pgid 가 pid 와 같아도 지문이 어긋난 드라이버 모양 스테이지는 세지 않는다" "$n" "1"
+rm -f "$FX_RUN_DIR/G.pid" "$FX_RUN_DIR/G.pgid" "$FX_RUN_DIR/G.start"
+
 # The identity layer itself. Deleting it makes the three counts above pass for
 # the wrong reason, so a count is not what can catch that regression.
 if grep -vE '^[[:space:]]*#' "$LIVENESS" | grep_all_q -F 'cc_proc_pgid() {' \
@@ -2418,6 +2430,14 @@ if grep -vE '^[[:space:]]*#' "$LIVENESS" | grep_all_q -F 'cc_proc_pgid() {' \
   ok "liveness.sh 가 cc_proc_pgid 를 정의하고 신원 확인이 그것을 부른다"
 else
   bad "pgid 신원" "드라이버 경로의 신원 확인 층이 없다"
+fi
+
+# The two counts above only read a `.start` the FIXTURE wrote, so they stay
+# green if the driver's spawn stops writing one. This pins the writing side.
+if grep -vE '^[[:space:]]*#' "$RUNSH" | grep_all_q -F '> "$RUN_DIR/$stage.start"'; then
+  ok "스테이지 스폰이 시작 시각 지문을 기록한다"
+else
+  bad "스폰 지문" "드라이버 스폰이 .start 를 쓰지 않는다"
 fi
 
 fx_approval AP-1 대기

@@ -43,35 +43,43 @@ cc_live_stages() {
   export LC_TIME
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
-    # A pid file is a STAGE only if it carries the sibling one of the two
-    # spawners leaves beside it: the gate writes `<seg>.start`, the driver
-    # writes `<stage>.pgid`. The glob itself has no namespace, and this
+    # A pid file is a STAGE only if it carries a sibling one of the two spawners
+    # leaves beside it: both write `<name>.start`, and the driver writes
+    # `<stage>.pgid` on top of that. The glob itself has no namespace, and this
     # directory holds pids that are not stages — the watcher's `watch.pid` is
     # one — so without this the count answers a different question than its
     # name, and the run's termination condition, which has no resolving verb,
-    # would never come true while a watcher ran. `.start` alone is NOT the
-    # test: the driver's spawn does not write it, so requiring it would
-    # silently undercount every stage the driver started.
+    # would never come true while a watcher ran. `.start` alone is NOT the test,
+    # and the reason is no longer that the driver declines to write one: a run
+    # directory laid down before the driver started recording fingerprints
+    # carries only `.pgid`, so requiring `.start` would silently undercount
+    # every stage in it.
     [ -f "${f%.pid}.start" ] || [ -f "${f%.pid}.pgid" ] || continue
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     kill -0 "$pid" 2>/dev/null || continue
-    # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave different
-    # handles — the gate a start-time fingerprint, the driver a process group —
-    # so this asks whichever one is present. Skipping the check when the gate's
-    # handle is absent is what left the driver's stages on a bare `kill -0`,
-    # which is the pid-reuse hole this file exists to close.
+    # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave the SAME
+    # handle — a start-time fingerprint — so this asks for it first, and its
+    # absence now means an older run directory rather than a different spawner.
+    # Skipping the check whenever that handle was missing is what left the
+    # driver's stages on a bare `kill -0`, which is the pid-reuse hole this
+    # file exists to close.
     rec=$(cat "${f%.pid}.start" 2>/dev/null || true)
     if [ -n "$rec" ]; then
       now=$(cc_proc_fingerprint "$pid")
       [ "$rec" = "$now" ] || continue
     else
-      # SIBLING PRESENT, IDENTITY UNVERIFIABLE — its own case, not a pass.
-      # An empty `.start` is reachable: the gate's redirection creates the file
-      # before `ps` writes into it. An empty or unreadable `.pgid` is reachable
-      # the same way. Not counting is the safe direction: the run's termination
-      # condition has no resolving verb, so an over-count ends the run's ability
-      # to finish permanently, while an under-count costs one render.
+      # NOTHING TO COMPARE AGAINST — its own case, not a pass. That is what
+      # this branch originally meant, and it means it again now that both
+      # spawners record a fingerprint. An empty `.start` is reachable: either
+      # spawner's redirection creates the file before `ps` writes into it. A
+      # missing one means a run directory a driver laid down before it recorded
+      # fingerprints at all, and the `.pgid` compare below is the FALLBACK for
+      # exactly those directories — not the driver's regular path. An empty or
+      # unreadable `.pgid` is reachable the same way. Not counting is the safe
+      # direction: the run's termination condition has no resolving verb, so an
+      # over-count ends the run's ability to finish permanently, while an
+      # under-count costs one render.
       rec=$( { cat "${f%.pid}.pgid" 2>/dev/null || true; } | tr -d '[:space:]')
       [ -n "$rec" ] || continue
       now=$(cc_proc_pgid "$pid")
@@ -91,10 +99,13 @@ cc_proc_fingerprint() {
 
 cc_proc_pgid() {
   # cc_proc_pgid <pid> — the pid's process group id, or empty.
-  # The driver's spawn records this beside the pid instead of a start time, so
-  # it is the only identity handle that path leaves behind. A process's group
-  # cannot change after exec, which is what makes the pair (pid, pgid) an
-  # identity in the same sense (pid, start time) is.
+  # THIS IS A FALLBACK, NOT AN IDENTITY. The driver now records a start-time
+  # fingerprint beside the pid as well, so the only records that reach here are
+  # the ones written before it did. What the compare still filters out is a
+  # stale record with no live group leader behind it; what it cannot filter out
+  # is pid reuse, because the driver spawns under job control and the child then
+  # leads its own group — the recorded value IS the pid, so anything that holds
+  # that pid next matches as long as it leads a group of its own.
   ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 

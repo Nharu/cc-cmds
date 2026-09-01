@@ -121,10 +121,15 @@ fx_stage_reused() {
   export FX_LAST_PID FX_PIDS
 }
 
-# HOW THE DRIVER'S SHAPE DIFFERS. The gate's spawn writes `<seg>.start`; the
-# driver's writes `<stage>.pgid` and never a start time. A fixture that knows
-# only the gate's shape therefore cannot produce the driver path's pid-reuse
-# case at all — which is exactly the case a bare `kill -0` gets wrong.
+# HOW THE DRIVER'S SHAPE DIFFERS. The driver writes a `<stage>.pgid` on top of
+# the `<name>.start` both spawns leave, and job control makes that group equal
+# to the pid. So the difference is not "no start time" but "one more handle,
+# and it is derived from the pid". The two fixtures below omit the start time
+# on purpose: that is the shape of a run directory a driver laid down before it
+# recorded fingerprints, which is what the `.pgid` compare is a fallback for.
+# Neither reproduces production's relationship — one inherits this suite's group
+# and the other pins 1, both INDEPENDENT of the pid — so for that shape see
+# `fx_stage_driver_reused_leader`.
 
 fx_stage_driver_live() {
   # fx_stage_driver_live <segment> — a running stage in the DRIVER's shape: a
@@ -171,6 +176,37 @@ fx_stage_unverifiable() {
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   : > "$FX_RUN_DIR/$seg.start"
+  FX_LAST_PID="$pid"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_LAST_PID FX_PIDS
+}
+
+fx_stage_driver_reused_leader() {
+  # fx_stage_driver_reused_leader <segment> — the shape the driver actually
+  # writes, for a REUSED pid: a live pid that leads its own process group, so
+  # the recorded group matches on a pure string compare, beside a start-time
+  # fingerprint that does not.
+  #
+  # Job control is scoped to the single spawn because that is what makes
+  # `pgid == pid`, and `pgid == pid` is the whole point: the other driver-shaped
+  # fixtures keep the group INDEPENDENT of the pid — one inherits this suite's
+  # group, the other pins 1 — and independent data proves only that a comparison
+  # happens. Production's value is derived from the pid, so only this shape can
+  # show the comparison losing its discriminating power.
+  #
+  # It must be restored immediately: a section-wide setting would give every
+  # later fixture its own group and take it out of the driver's group reclaim,
+  # and the suite itself normally runs AS a driver-spawned stage. The child's
+  # group is fixed at fork, so restoring does not move it. `FX_PIDS` still
+  # carries the pid — a group of its own is exactly what a group kill misses.
+  local seg="$1" pid
+  set -m
+  sleep 120 &
+  pid=$!
+  set +m
+  printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
+  ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' > "$FX_RUN_DIR/$seg.pgid"
+  printf '%s' "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/$seg.start"
   FX_LAST_PID="$pid"
   FX_PIDS="${FX_PIDS:-}$pid "
   export FX_LAST_PID FX_PIDS
