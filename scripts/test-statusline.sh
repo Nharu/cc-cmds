@@ -22,7 +22,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 SL="$repo_root/plugins/cc-cmds/orchestrator/statusline.sh"
 APPLY="$repo_root/plugins/cc-cmds/orchestrator/apply-statusline.sh"
-PLUGIN_DIR="$repo_root/plugins/cc-cmds"
+LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 . "$repo_root/scripts/run-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-statusline-test.XXXXXX")
@@ -30,6 +30,17 @@ XDG_STATE_HOME="$WORK/state"
 export XDG_STATE_HOME
 mkdir -p "$XDG_STATE_HOME"
 trap 'fx_reap; chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+
+# THE APPLY CASES INSTALL FROM A COPY, NOT FROM THIS CHECKOUT. `--plugin-dir`
+# now parks on a linked git worktree, and this suite is run from one about as
+# often as from a clone — pointing the apply at its own tree would make every
+# case below pass or park depending on where somebody happened to check the
+# repository out. The copy is made here rather than carried in the repository so
+# it cannot drift from the files it is a copy of.
+APLUG="$WORK/plugin"
+mkdir -p "$APLUG/orchestrator"
+cp "$SL" "$LIVENESS" "$APLUG/orchestrator/"
+chmod +x "$APLUG/orchestrator/statusline.sh"
 
 passed=0; failed=0; skipped=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -41,7 +52,30 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 
 # The "no run" line. Byte-identical to every degraded path's output, which is
 # the property cases 10-13 exist to hold in place.
-FALLBACK="[cc🎨] ${PWD##*/}"
+#
+# READ FROM THE INSTALL TARGET, NOT TRANSCRIBED. The claim is that installing
+# this design is invisible to a session with no run, which is a claim about the
+# command the apply is pinned to replace — so a constant typed out here proves
+# nothing about it and is exactly how the colour escapes went missing while
+# every case stayed green. Once this design's own wrapper is installed there,
+# the original survives as that wrapper's `||` branch and is recovered the same
+# way the apply recovers it.
+#
+# A machine with no such file has no referent for the claim at all. There the
+# reference degrades to the script's own no-run output, which still holds the
+# other half of what these cases are for — that every degraded path lands on the
+# SAME bytes — and the byte-identity half is reported as skipped rather than
+# passing on a tautology.
+REF_SETTINGS="${CC_SL_REF_SETTINGS:-$HOME/.claude-cc/settings.json}"
+ref_cmd=$(jq -r '.statusLine.command // ""' "$REF_SETTINGS" 2>/dev/null || true)
+case "$ref_cmd" in "[ -x "*) ref_cmd=${ref_cmd#*" || "} ;; esac
+if [ -n "$ref_cmd" ]; then
+  FALLBACK=$(sh -c "$ref_cmd" 2>/dev/null)
+  ok "폴백 기준을 설치 대상의 명령에서 읽어 실행했다 — 손으로 옮겨 적은 사본이 아니다"
+else
+  FALLBACK=$(bash "$SL" </dev/null)
+  skip "폴백이 설치 대상의 출력과 바이트 동일" "$REF_SETTINGS 에서 기준 명령을 읽을 수 없다"
+fi
 
 sl() { fx_statusline_stdin "$1" | bash "$SL"; }
 
@@ -297,8 +331,8 @@ if [ -x "$SL" ]; then ok "statusline.sh 에 실행 비트가 있다 (설치되�
 else bad "statusline.sh 실행 비트" "가드가 영구히 거짓이 된다"; fi
 
 mkdir -p "$WORK/absent"
-f1_cmd="[ -x $SL ] && exec bash $SL || printf 'PRE-APPLY-LITERAL'"
-f2_cmd="[ -x $WORK/absent/orchestrator/statusline.sh ] && exec bash $WORK/absent/orchestrator/statusline.sh || printf 'PRE-APPLY-LITERAL'"
+f1_cmd="[ -x \"$SL\" ] && exec bash \"$SL\" || printf 'PRE-APPLY-LITERAL'"
+f2_cmd="[ -x \"$WORK/absent/orchestrator/statusline.sh\" ] && exec bash \"$WORK/absent/orchestrator/statusline.sh\" || printf 'PRE-APPLY-LITERAL'"
 check "F1 플러그인 경로가 실행 가능하면 그 스크립트가 불린다" \
   "$(fx_statusline_stdin sess-live | sh -c "$f1_cmd")" "$(sl sess-live)"
 check "F2 플러그인 경로 부재 — 적용 전 리터럴과 바이트 동일" \
@@ -323,40 +357,40 @@ digest_of() { jq -S -c '.statusLine' "$1" | shasum -a 256 | cut -d' ' -f1; }
 S1F="$WORK/settings-normal.json"; mk_settings "$S1F"
 EXPECT1=$(digest_of "$S1F")
 
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "적용 사전 프로브 — 옛 값이면 2(진행)" "$?" "2"
 
-out=$(bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" 2>&1)
+out=$(bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" 2>&1)
 check "적용 — 종료 코드 0" "$?" "0"
 has "적용 — 백업 포인터를 표준출력으로 낸다" "$out" "백업:"
 has "적용 — 변경 탐지용 전체 다이제스트를 함께 낸다" "$out" "적용 후 전체 sha256:"
 check "적용 — 무관한 키가 보존된다" "$(jq -r '.theme + "/" + .model' "$S1F")" "dark/opus"
 check "적용 — 키 수가 늘지 않는다" "$(jq -r '[keys[]] | length' "$S1F")" "4"
 has "적용 — 설치된 명령이 방어적 가드다" \
-  "$(jq -r '.statusLine.command' "$S1F")" "[ -x $PLUGIN_DIR/orchestrator/statusline.sh ]"
+  "$(jq -r '.statusLine.command' "$S1F")" "[ -x \"$APLUG/orchestrator/statusline.sh\" ]"
 has "적용 — 사용자의 기존 명령이 폴백으로 남는다" \
   "$(jq -r '.statusLine.command' "$S1F")" "|| printf 'PRE-APPLY-LITERAL'"
 has "적용 — exec bash 이지 exec <경로> 가 아니다" \
-  "$(jq -r '.statusLine.command' "$S1F")" "exec bash $PLUGIN_DIR/orchestrator/statusline.sh"
+  "$(jq -r '.statusLine.command' "$S1F")" "exec bash \"$APLUG/orchestrator/statusline.sh\""
 n=$(ls "$WORK"/settings-normal.json.pre-statusline-* 2>/dev/null | grep -c . || true)
 check "적용 — 대상 파일 옆에 기존 명명 관례로 백업이 남는다" "$n" "1"
 
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "적용 사후 프로브 — 같은 인자로 0(수렴)" "$?" "0"
 
 # The subobject digest is what makes this survive a neighbour's edit; a
 # whole-file hash would have parked here.
 jq '.newUnrelatedKey = "drifted"' "$S1F" > "$S1F.tmp" && mv "$S1F.tmp" "$S1F"
-bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "프로브 — 무관한 키 표류에 걸리지 않는다" "$?" "0"
 
 # Applying twice must not nest the wrapper inside its own fallback.
-bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --apply --settings "$S1F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 n=$(jq -r '.statusLine.command' "$S1F" | grep -c 'exec bash' || true)
 check "적용은 멱등이다 — 두 번 적용해도 래퍼가 겹치지 않는다" "$n" "1"
 
 S3F="$WORK/settings-third.json"; mk_settings "$S3F" "printf 'SOMEBODY-ELSE'"
-bash "$APPLY" --probe --settings "$S3F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S3F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "프로브 — 제삼자가 손댄 값이면 1(park)" "$?" "1"
 
 # ---------------------------------------------------------------------------
@@ -369,21 +403,98 @@ bash "$APPLY" --apply --settings "$S4F" --plugin-dir "" --expect "$E4" >/dev/nul
 check "--plugin-dir 이 비면 쓰기 전에 park 한다" "$?" "1"
 bash "$APPLY" --apply --settings "$S4F" --plugin-dir "relative/path" --expect "$E4" >/dev/null 2>&1
 check "--plugin-dir 이 절대경로가 아니면 쓰기 전에 park 한다" "$?" "1"
-bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$PLUGIN_DIR" >/dev/null 2>&1
+bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$APLUG" >/dev/null 2>&1
 check "--expect 는 생략할 수 없다" "$?" "1"
 check "park 한 세 경우 모두 파일을 건드리지 않았다" "$(shasum -a 256 "$S4F" | cut -d' ' -f1)" "$B4"
+
+# ---------------------------------------------------------------------------
+# The absolute paths that are still wrong.
+#
+# Every case here was measured landing as `apply rc=0` AND `post-probe rc=0` —
+# the driver's only success condition — while the installed command rendered the
+# fallback forever. None of them can be caught after the write: the verify run
+# feeds a session id with no index, so the script's own "no run" output and the
+# fallback are the same bytes and the five conditions pass on either branch.
+# ---------------------------------------------------------------------------
+S7F="$WORK/settings-path.json"; mk_settings "$S7F"
+E7=$(digest_of "$S7F"); B7=$(shasum -a 256 "$S7F" | cut -d' ' -f1)
+
+bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/does-not-exist" --expect "$E7" >/dev/null 2>&1
+check "절대경로이나 존재하지 않는 트리 — 쓰기 전에 park 한다" "$?" "1"
+
+mkdir -p "$WORK/partial-plugin/orchestrator"
+bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/partial-plugin" --expect "$E7" >/dev/null 2>&1
+check "statusline.sh 만 없는 부분 체크아웃 — 쓰기 전에 park 한다" "$?" "1"
+
+mkdir -p "$WORK/nobit/orchestrator"
+cp "$SL" "$WORK/nobit/orchestrator/statusline.sh"
+chmod -x "$WORK/nobit/orchestrator/statusline.sh"
+bash "$APPLY" --apply --settings "$S7F" --plugin-dir "$WORK/nobit" --expect "$E7" >/dev/null 2>&1
+check "파일은 있으나 실행 비트가 없음 — 쓰기 전에 park 한다" "$?" "1"
+
+check "경로 성질로 park 한 세 경우 모두 파일을 건드리지 않았다" \
+  "$(shasum -a 256 "$S7F" | cut -d' ' -f1)" "$B7"
+
+# The throwaway worktree — the one shape that passes all three checks above and
+# is gone seconds later. Its sibling assertion matters as much: an ordinary
+# checkout must NOT park, and the two differ only in how git answers about them.
+if command -v git >/dev/null 2>&1; then
+  WT_MAIN="$WORK/wt-main"
+  mkdir -p "$WT_MAIN/orchestrator"
+  cp "$SL" "$LIVENESS" "$WT_MAIN/orchestrator/"
+  chmod +x "$WT_MAIN/orchestrator/statusline.sh"
+  (
+    cd "$WT_MAIN" || exit 1
+    git init -q .
+    git add -A
+    git -c user.email=fixture@example.invalid -c user.name=fixture commit -q -m fixture
+    git worktree add -q --detach "$WORK/wt-linked" HEAD
+  ) >/dev/null 2>&1
+  if [ -x "$WORK/wt-linked/orchestrator/statusline.sh" ]; then
+    S8F="$WORK/settings-wt.json"; mk_settings "$S8F"; E8=$(digest_of "$S8F")
+    B8=$(shasum -a 256 "$S8F" | cut -d' ' -f1)
+    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WORK/wt-linked" --expect "$E8" >/dev/null 2>&1
+    check "임시 워크트리를 가리키는 --plugin-dir — 쓰기 전에 park 한다" "$?" "1"
+    check "워크트리로 park — 파일을 건드리지 않았다" \
+      "$(shasum -a 256 "$S8F" | cut -d' ' -f1)" "$B8"
+    # A subdirectory of an ordinary checkout, which is the shape `--plugin-dir`
+    # always has: git answers its common dir RELATIVE there, so a compare that
+    # skipped normalising would park here and never install anything.
+    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_MAIN" --expect "$E8" >/dev/null 2>&1
+    check "같은 저장소의 본 체크아웃은 park 하지 않는다" "$?" "0"
+  else
+    skip "임시 워크트리 park" "git worktree 를 만들 수 없다"
+  fi
+else
+  skip "임시 워크트리 park" "git 이 없다"
+fi
+
+# The space that made the installed `[` fail with too many arguments. Comparing
+# against the live render rather than against "not the fallback literal" is what
+# makes this prove the guard was TRUE — the two branches are otherwise only
+# distinguishable by which script produced the bytes.
+SPACED="$WORK/plugin with space"
+mkdir -p "$SPACED/orchestrator"
+cp "$SL" "$LIVENESS" "$SPACED/orchestrator/"
+chmod +x "$SPACED/orchestrator/statusline.sh"
+S9F="$WORK/settings-spaced.json"; mk_settings "$S9F"; E9=$(digest_of "$S9F")
+bash "$APPLY" --apply --settings "$S9F" --plugin-dir "$SPACED" --expect "$E9" >/dev/null 2>&1
+check "공백이 든 절대경로 — 적용이 성공한다" "$?" "0"
+check "공백이 든 절대경로 — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
+  "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$S9F")")" \
+  "$(sl sess-live)"
 
 # The interpreter is named absolutely: a PATH with nothing on it cannot resolve
 # `bash` either, and a 127 from the lookup would look like the script's own
 # verdict while proving nothing about it.
 mkdir -p "$WORK/nojq"
-PATH="$WORK/nojq" /bin/bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$PLUGIN_DIR" --expect "$E4" >/dev/null 2>&1
+PATH="$WORK/nojq" /bin/bash "$APPLY" --apply --settings "$S4F" --plugin-dir "$APLUG" --expect "$E4" >/dev/null 2>&1
 check "jq 부재 — 실패하고 아무것도 쓰지 않는다" "$?" "1"
 check "jq 부재 — 파일이 그대로다" "$(shasum -a 256 "$S4F" | cut -d' ' -f1)" "$B4"
 
 S5F="$WORK/settings-broken.json"; printf '{ this is not json' > "$S5F"
 B5=$(shasum -a 256 "$S5F" | cut -d' ' -f1)
-bash "$APPLY" --apply --settings "$S5F" --plugin-dir "$PLUGIN_DIR" --expect "$E4" >/dev/null 2>&1
+bash "$APPLY" --apply --settings "$S5F" --plugin-dir "$APLUG" --expect "$E4" >/dev/null 2>&1
 check "깨진 JSON — 쓰기 전에 중단한다" "$?" "1"
 check "깨진 JSON — 파일이 그대로다" "$(shasum -a 256 "$S5F" | cut -d' ' -f1)" "$B5"
 n=$(ls "$WORK"/settings-broken.json.pre-statusline-* 2>/dev/null | grep -c . || true)
@@ -424,12 +535,12 @@ done
 # The settings file that does not exist yet
 # ---------------------------------------------------------------------------
 S6F="$WORK/nested/settings-new.json"
-bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "대상 파일 부재 — 사전 프로브는 2(진행)" "$?" "2"
-bash "$APPLY" --apply --settings "$S6F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --apply --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "대상 파일 부재 — 최소 파일을 만든다" "$?" "0"
 check "새로 만든 파일은 키 하나뿐이다" "$(jq -r '[keys[]] | join(",")' "$S6F")" "statusLine"
-bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$PLUGIN_DIR" --expect "$EXPECT1" >/dev/null 2>&1
+bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "새로 만든 뒤 사후 프로브 — 0(수렴)" "$?" "0"
 
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"

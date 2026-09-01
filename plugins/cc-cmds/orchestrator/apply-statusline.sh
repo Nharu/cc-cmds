@@ -19,10 +19,19 @@
 # that worktree is removed the moment the apply converges — so resolving the
 # path from `$BASH_SOURCE` would bake in an absolute path that exists for a few
 # more seconds. `--plugin-dir` must name the long-lived checkout the user's
-# session actually loads, and an empty or relative value parks BEFORE any write:
-# expanded empty, the installed guard becomes permanently false, the verify run
+# session actually loads, and a value that fails to name one parks BEFORE any
+# write: whenever the installed guard is permanently false, the verify run
 # exercises only the fallback branch and passes all five conditions, and the
 # pipeline records a dead status line as a success.
+#
+# WELL-FORMED IS NOT THE SAME AS ALIVE, and the difference is the whole reason
+# the checks below are four and not one. Empty and relative are the shapes a
+# typo makes. The shapes that actually reached a green apply were all
+# well-formed absolute paths: a directory that does not exist, a partial
+# checkout without this file, a file shipped without its executable bit, a
+# throwaway worktree, and a path holding a space that the installed `[` then
+# choked on. Every one of them ends as `rc=0` twice over, because nothing
+# downstream can tell the guard's two branches apart.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 #
@@ -76,6 +85,37 @@ command -v jq >/dev/null 2>&1 || die "jq 가 없습니다 — 아무것도 쓰�
 
 SL_PATH="$PLUGIN_DIR/orchestrator/statusline.sh"
 
+# The same test the installed command will make, made HERE where failing it can
+# still stop the write. Downstream nothing can: the verify run feeds a session
+# id with no index, so the script answers "no run" and the fallback answers the
+# same bytes, and the five conditions pass either way.
+[ -x "$SL_PATH" ] \
+  || die "$SL_PATH 이 실행 가능한 파일이 아닙니다 — 설치되는 가드가 영구히 거짓이 됩니다"
+
+# THE ONE BAD PATH THAT PASSES EVERY OTHER CHECK is the tree the apply is
+# running in. It exists, it holds the script, the bit is set — and it is removed
+# the moment the apply converges, so the guard is true exactly once and false
+# for the rest of the machine's life. A linked worktree is what a `--git-dir`
+# differing from its `--git-common-dir` means.
+#
+# BOTH ARE RESOLVED TO ABSOLUTE FIRST. Measured: from a subdirectory of an
+# ordinary checkout git answers `--git-dir` absolute and `--git-common-dir`
+# relative to the current directory, and `--plugin-dir` names a subdirectory by
+# construction — so a plain string compare calls every ordinary checkout a
+# worktree and parks every legitimate apply.
+#
+# Not being a git repository is the normal case for an installed plugin and is
+# allowed; so is having no `git` at all. This check exists to reject one
+# specific known-doomed tree, not to demand provenance.
+SL_WT=$( cd "$PLUGIN_DIR" 2>/dev/null || exit 0
+         gd=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+         cm=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+         gd=$(cd "$gd" 2>/dev/null && pwd) || exit 0
+         cm=$(cd "$cm" 2>/dev/null && pwd) || exit 0
+         [ "$gd" = "$cm" ] || printf '%s' "$gd" )
+[ -z "$SL_WT" ] \
+  || die "--plugin-dir 이 임시 워크트리를 가리킵니다 ($SL_WT) — 이 트리는 곧 사라지고 설치되는 가드는 그때부터 영구히 거짓입니다"
+
 sl_desired_command() {
   # sl_desired_command <current-command> — the command line to install.
   #
@@ -88,8 +128,17 @@ sl_desired_command() {
   # `exec bash <path>`, never `exec <path>`: the latter depends on the shebang,
   # and a script whose shebang is broken then produces neither output nor
   # fallback — the exact shape this whole defensive form exists to prevent.
+  #
+  # THE PATH IS QUOTED INSIDE THE INSTALLED STRING. Unquoted, a plugin directory
+  # holding a space makes `[` see too many arguments and fail, which is
+  # indistinguishable from "the script is not there": every render silently
+  # takes the fallback and the apply still lands as a success. The quotes are
+  # part of `prefix`, so the `case` below keeps matching what is actually
+  # installed and the double apply stays idempotent — a settings file carrying
+  # the older unquoted wrapper matches neither this prefix nor `--expect`, so
+  # the probe parks on it instead of nesting a second wrapper inside the first.
   local cur="$1" prefix fallback
-  prefix="[ -x $SL_PATH ] && exec bash $SL_PATH || "
+  prefix="[ -x \"$SL_PATH\" ] && exec bash \"$SL_PATH\" || "
   case "$cur" in
     "$prefix"*) fallback=${cur#"$prefix"} ;;
     *)          fallback=$cur ;;

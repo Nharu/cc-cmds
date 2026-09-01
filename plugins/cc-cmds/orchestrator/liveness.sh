@@ -23,8 +23,15 @@
 CC_LIVENESS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 export CC_LIVENESS_DIR
 
-cc_live_stages() {
-  # cc_live_stages <run-dir> — count of stages actually running.
+cc_stage_is_live() {
+  # cc_stage_is_live <run-dir> <segment> — succeeds when that segment's recorded
+  # pid is still the process the run started.
+  #
+  # ONE STAGE AT A TIME, so that a consumer needing the answer about a single
+  # segment — which name belongs beside a "running" glyph — can have it without
+  # growing a judgement of its own. `cc_live_stages` below is this function in a
+  # loop, and that is the whole relationship between them: the census and the
+  # label cannot disagree because there is nothing for them to disagree about.
   #
   # `kill -0` on recorded pids, never `wait -n`: that builtin does not exist on
   # the interpreter floor, and a re-attached stage is not this shell's child so
@@ -33,60 +40,74 @@ cc_live_stages() {
   # The `.start` fingerprint is what separates "still running" from "that pid
   # belongs to something else now". A run directory deliberately survives a
   # reboot, so a recorded pid can come back pointing at an unrelated process.
-  local run_dir="$1" f pid rec now n=0
-  [ -n "$run_dir" ] || { printf '0'; return 0; }
+  local run_dir="$1" seg="$2" f pid rec now
+  [ -n "$run_dir" ] && [ -n "$seg" ] || return 1
+  f="$run_dir/$seg.pid"
+  [ -f "$f" ] || return 1
   # LC_TIME is fixed HERE rather than at script scope. These functions are
   # sourced by four different consumers; if the fingerprint's shape depended on
   # the sourcing script's locale, two of them would compare different strings
   # for the same process and disagree about whether it is alive.
   local LC_TIME=C
   export LC_TIME
+  # A pid file is a STAGE only if it carries a sibling one of the two spawners
+  # leaves beside it: both write `<name>.start`, and the driver writes
+  # `<stage>.pgid` on top of that. The glob its callers walk has no namespace,
+  # and a run directory holds pids that are not stages — the watcher's
+  # `watch.pid` is one — so without this the count answers a different question
+  # than its name, and the run's termination condition, which has no resolving
+  # verb, would never come true while a watcher ran. `.start` alone is NOT the
+  # test, and the reason is no longer that the driver declines to write one: a
+  # run directory laid down before the driver started recording fingerprints
+  # carries only `.pgid`, so requiring `.start` would silently undercount every
+  # stage in it.
+  [ -f "$run_dir/$seg.start" ] || [ -f "$run_dir/$seg.pgid" ] || return 1
+  pid=$(cat "$f" 2>/dev/null)
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave the SAME
+  # handle — a start-time fingerprint — so this asks for it first, and its
+  # absence now means an older run directory rather than a different spawner.
+  # Skipping the check whenever that handle was missing is what left the
+  # driver's stages on a bare `kill -0`, which is the pid-reuse hole this
+  # file exists to close.
+  rec=$(cat "$run_dir/$seg.start" 2>/dev/null || true)
+  if [ -n "$rec" ]; then
+    now=$(cc_proc_fingerprint "$pid")
+    [ "$rec" = "$now" ] || return 1
+    return 0
+  fi
+  # NOTHING TO COMPARE AGAINST — its own case, not a pass. That is what this
+  # branch originally meant, and it means it again now that both spawners
+  # record a fingerprint. An empty `.start` is reachable: either spawner's
+  # redirection creates the file before `ps` writes into it. A missing one means
+  # a run directory a driver laid down before it recorded fingerprints at all,
+  # and the `.pgid` compare below is the FALLBACK for exactly those directories
+  # — not the driver's regular path. An empty or unreadable `.pgid` is reachable
+  # the same way. Not counting is the safe direction: the run's termination
+  # condition has no resolving verb, so an over-count ends the run's ability to
+  # finish permanently, while an under-count costs one render.
+  rec=$( { cat "$run_dir/$seg.pgid" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ -n "$rec" ] || return 1
+  now=$(cc_proc_pgid "$pid")
+  [ -n "$now" ] || return 1
+  [ "$rec" = "$now" ] || return 1
+  return 0
+}
+
+cc_live_stages() {
+  # cc_live_stages <run-dir> — count of stages actually running.
+  #
+  # The census, not the judgement: every decision about a single pid lives in
+  # `cc_stage_is_live` above. The `if` is not stylistic — a bare `&&` here
+  # returns non-zero on the last iteration when that stage is dead, and this
+  # file is sourced by consumers running under `set -e`.
+  local run_dir="$1" f seg n=0
+  [ -n "$run_dir" ] || { printf '0'; return 0; }
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
-    # A pid file is a STAGE only if it carries a sibling one of the two spawners
-    # leaves beside it: both write `<name>.start`, and the driver writes
-    # `<stage>.pgid` on top of that. The glob itself has no namespace, and this
-    # directory holds pids that are not stages — the watcher's `watch.pid` is
-    # one — so without this the count answers a different question than its
-    # name, and the run's termination condition, which has no resolving verb,
-    # would never come true while a watcher ran. `.start` alone is NOT the test,
-    # and the reason is no longer that the driver declines to write one: a run
-    # directory laid down before the driver started recording fingerprints
-    # carries only `.pgid`, so requiring `.start` would silently undercount
-    # every stage in it.
-    [ -f "${f%.pid}.start" ] || [ -f "${f%.pid}.pgid" ] || continue
-    pid=$(cat "$f" 2>/dev/null)
-    [ -n "$pid" ] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave the SAME
-    # handle — a start-time fingerprint — so this asks for it first, and its
-    # absence now means an older run directory rather than a different spawner.
-    # Skipping the check whenever that handle was missing is what left the
-    # driver's stages on a bare `kill -0`, which is the pid-reuse hole this
-    # file exists to close.
-    rec=$(cat "${f%.pid}.start" 2>/dev/null || true)
-    if [ -n "$rec" ]; then
-      now=$(cc_proc_fingerprint "$pid")
-      [ "$rec" = "$now" ] || continue
-    else
-      # NOTHING TO COMPARE AGAINST — its own case, not a pass. That is what
-      # this branch originally meant, and it means it again now that both
-      # spawners record a fingerprint. An empty `.start` is reachable: either
-      # spawner's redirection creates the file before `ps` writes into it. A
-      # missing one means a run directory a driver laid down before it recorded
-      # fingerprints at all, and the `.pgid` compare below is the FALLBACK for
-      # exactly those directories — not the driver's regular path. An empty or
-      # unreadable `.pgid` is reachable the same way. Not counting is the safe
-      # direction: the run's termination condition has no resolving verb, so an
-      # over-count ends the run's ability to finish permanently, while an
-      # under-count costs one render.
-      rec=$( { cat "${f%.pid}.pgid" 2>/dev/null || true; } | tr -d '[:space:]')
-      [ -n "$rec" ] || continue
-      now=$(cc_proc_pgid "$pid")
-      [ -n "$now" ] || continue
-      [ "$rec" = "$now" ] || continue
-    fi
-    n=$((n + 1))
+    seg=${f##*/}; seg=${seg%.pid}
+    if cc_stage_is_live "$run_dir" "$seg"; then n=$((n + 1)); fi
   done
   printf '%s' "$n"
 }

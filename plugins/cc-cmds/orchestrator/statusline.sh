@@ -30,10 +30,19 @@ set -uo pipefail
 # has something to say — and every degraded path lands on the same shape rather
 # than on a second, subtly different one that a reader would have to learn.
 #
+# THE FORMAT STRING IS COPIED FROM THE COMMAND THIS REPLACES, escapes included.
+# The colour is not decoration: the wrapper the apply installs keeps that
+# original command as its `||` fallback, so a version of this line without the
+# escapes gives "nothing to say" two different renderings — the second shape the
+# paragraph above exists to prevent, reintroduced by the very function meant to
+# prevent it. The suite reads the reference out of the install target and runs
+# it rather than transcribing the bytes, because a transcription is how the
+# escapes went missing here while every case stayed green.
+#
 # No trailing newline: the command this replaces ends its format string at `%s`,
 # and the apply path asserts byte-identity against that output.
 emit_fallback() {
-  printf '[cc🎨] %s' "${PWD##*/}"
+  printf '\033[36m[cc🎨]\033[0m %s' "${PWD##*/}"
 }
 
 CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
@@ -70,19 +79,26 @@ age_phrase() {
 
 newest_stage_pid() {
   # newest_stage_pid <run-dir> — echoes "<segment> <pid>" for the most recently
-  # recorded stage, or nothing.
+  # recorded stage that is STILL RUNNING, or nothing.
   #
-  # THIS IS A LABEL, NOT A LIVENESS JUDGEMENT, and the distinction is the reason
-  # it is allowed to exist here. `cc_live_stages` has already answered whether
-  # anything is running; all this picks is which name to show beside the glyph.
-  # Re-deriving "which of these pids is alive" would be a second copy of the
-  # predicate this design exists to have one of.
+  # A LABEL IS STILL A CLAIM. Picking on mtime alone was defended as "only a
+  # name, not a judgement", but a name beside a spinning glyph reads as "this
+  # one is running" to the person at 3am, and mtime picks the wrong one in the
+  # ordinary case: the stage that just ENDED owns the newest pid file. `date -r`
+  # also has one-second resolution, so ties are common and the glob order — not
+  # the clock — decided them.
+  #
+  # Filtering here adds no second copy of the predicate. `cc_stage_is_live` is
+  # what `cc_live_stages` counts with, asked about one pid instead of all of
+  # them, so the name on the line and the count behind it come from one
+  # implementation rather than two that agree today.
   local run_dir="$1" f seg t best_t=-1 best=""
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
     seg=${f##*/}; seg=${seg%.pid}
     # `watch.pid` shares the glob and is not a stage.
     [ "$seg" = "watch" ] && continue
+    cc_stage_is_live "$run_dir" "$seg" || continue
     t=$(cc_mtime "$f"); [ -n "$t" ] || t=0
     if [ "$t" -gt "$best_t" ]; then best_t=$t; best=$seg; fi
   done
@@ -211,6 +227,11 @@ case "$best_state" in
       line="⟳ ${best_rid} ${seg}"
       kind=$(stage_kind "$best_ledger" "$seg")
       elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+      # THE PID IS ALREADY IDENTITY-CHECKED by the time it reaches here, and
+      # that is what makes this number meaningful: measured on an unfiltered
+      # pid, `ps` answers empty for a dead one and — after a reuse — the elapsed
+      # time of an unrelated process, which is worse than no slot at all.
+      #
       # Elapsed comes from `ps`, never from `started-at` or `.start`. The former
       # is rewritten on every gate call and is not the run's start time; the
       # latter is a formatted date string that no portable arithmetic accepts —

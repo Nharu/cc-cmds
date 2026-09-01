@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# One fixture, four consumers, one number.
+# One fixture, four consumers, one answer.
 #
 # WHY THIS SUITE EXISTS SEPARATELY. Each consumer's own suite isolates it, and
 # four isolated suites can all be green while the four answers disagree — that
@@ -75,14 +75,24 @@ read_watcher() {
 }
 
 read_statusline() {
-  # The status line does not print a count; it prints a shape. `스테이지 0` and
-  # the running row are the two sides of "is anything up", so what this reads
-  # back is the boolean the shape carries.
-  local sid="$1" out
+  # The status line does not print a count — it prints ONE NAME, the segment it
+  # sets beside the glyph, so the observable to read back is that name and the
+  # question to ask of it is whether it belongs to a stage the predicate counts.
+  #
+  # Folding the output to `0` / `1+` and comparing against a literal was worse
+  # than weak, it was green on the wrong answer: a row naming a segment whose
+  # process had died still started with the glyph, so it folded to `1+` and
+  # passed. Reading the name is what makes this consumer's reading say the same
+  # thing as the other three instead of merely not contradicting them.
+  local sid="$1" out rest
   out=$(fx_statusline_stdin "$sid" | bash "$SL")
   case "$out" in
     *"스테이지 0"*) printf '0' ;;
-    "⟳"*)          printf '1+' ;;
+    "⟳"*)
+      rest=${out#⟳ }        # the glyph
+      rest=${rest#* }       # the run id
+      printf '%s' "${rest%% *}"
+      ;;
     *)             printf 'other:%s' "$out" ;;
   esac
 }
@@ -107,7 +117,10 @@ n=$(read_shared "$RD_A")
 check "A 공용 술어 — 셋 중 하나만 살아 있다" "$n" "1"
 check "A 종료 조건 7 이 같은 수를 본다" "$(read_condition7 "$RD_A")" "$n"
 check "A 워처가 같은 수를 본다" "$(read_watcher "$RD_A" "$LG_A")" "$n"
-check "A 상태줄이 같은 수를 본다" "$(read_statusline sess-a)" "1+"
+# The other three answer with a number; this one answers with the name it is
+# about to show a person. Naming S2 or S3 here would be the same disagreement
+# the numbers are checked for, wearing a different type.
+check "A 상태줄이 도는 중으로 싣는 이름이 그 살아 있는 하나다" "$(read_statusline sess-a)" "S1"
 
 # ---------------------------------------------------------------------------
 # Fixture B — the same directory minus the live stage. Every consumer must flip
