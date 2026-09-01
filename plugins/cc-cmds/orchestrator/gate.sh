@@ -408,7 +408,7 @@ surface_of_git() {
     worktree) surface_of_git_worktree "$@" ;;
     branch)   surface_of_git_branch "$@" ;;
     config)   surface_of_git_config "$@" ;;
-    add|commit|checkout|switch|restore|rebase|merge|cherry-pick|stash|apply|am|reset|tag)
+    add|commit|checkout|switch|restore|rebase|merge|cherry-pick|revert|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
     remote)   surface_of_git_remote "$@" ;;
     push|fetch|pull|clone)
@@ -2134,6 +2134,52 @@ gate_autoadopt_ok() {
   return 1
 }
 
+gate_judgment_fields_ok() {
+  # gate_judgment_fields_ok <키=값>... — the vocabulary floor for a judgment
+  # row. Its caller runs it BEFORE the auto-adoption floor, not after.
+  #
+  # ORDER IS THE POINT. The floor is consulted on every grade-1 judgment, and a
+  # row missing a required field fails it for the wrong reason — arm (a) has no
+  # class to match and arm (b) has no undo command to grade — so a MALFORMED row
+  # came back as "a person has to answer this", exit 5, with an approval written
+  # for a question nobody asked. The most fundamental reason that holds must
+  # win, and a missing field is more fundamental than an unmet floor.
+  #
+  # THE TWO NEW FIELDS ARE REQUIRED AT GRADE 1 AND NOWHERE ELSE. `판단 부류` has
+  # exactly one consumer — arm (a) of that floor — and the floor runs only when
+  # the grade is 1; `되돌리는 법` is read by arm (b) and by the morning's account
+  # of what can be undone. A grade-2 judgment reaches neither, because it goes to
+  # a person. Demanding them there would make ESCALATING a decision harder than
+  # adopting one, which is the wrong polarity, and it would strand a router
+  # mid-run for a field neither of its escalations can use.
+  local jk jcls jgrade
+  jgrade=$(gate_field_of '등급' "$@")
+  for jk in '등급' '기준' '근거'; do
+    [ -n "$(gate_field_of "${jk}" "$@")" ] \
+      || { warn "판단 행에 「${jk}」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+  done
+  # The grade vocabulary itself is NOT decided here — `gate_record_row` owns it,
+  # and it is the one place that knows what each grade does next. What this
+  # function reads the grade for is which fields the row must carry.
+  [ "$jgrade" = "1" ] || return 0
+  for jk in '되돌리는 법' '판단 부류'; do
+    [ -n "$(gate_field_of "${jk}" "$@")" ] \
+      || { warn "판단 행에 「${jk}」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+  done
+  # `판단 부류` and NOT `자율 승인.kind`. That field has never carried a
+  # classification — its declared tokens appear zero times in the artifacts and
+  # what does land there is the act kind — and the ledger is append-only, so the
+  # rows already written can never be repaired. Arm (a) asks whether the manifest
+  # declared this class in advance; on a field that also carries the act kind,
+  # one manifest line would pre-adopt every stage dispatch there is.
+  jcls=$(gate_field_of '판단 부류' "$@")
+  if ! judgment_class_ok "$jcls"; then
+    warn "판단 행의 「판단 부류」가 어휘 밖입니다: $jcls — 허용: $JUDGMENT_CLASSES"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  return 0
+}
+
 gate_record_row() {
   # gate_record_row <kind> <segment-id> <target-alias> <키=값>...
   #
@@ -2315,23 +2361,12 @@ gate_record_row() {
       # So the autonomous decisions a night is made of left no trace, and the
       # morning report's whole premise — that they are cheap to undo because
       # they are written down — had nothing to stand on.
-      local jk jcls jgrade
-      for jk in '등급' '기준' '되돌리는 법' '근거' '판단 부류'; do
-        [ -n "$(gate_field_of "${jk}" "$@")" ] \
-          || { warn "판단 행에 「${jk}」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
-      done
-      # `판단 부류` and NOT `자율 승인.kind`. That field has never carried a
-      # classification — its declared tokens appear zero times in the artifacts
-      # and what does land there is the act kind — and the ledger is append-only,
-      # so the rows already written can never be repaired. Arm (a) of the
-      # auto-adoption floor asks whether the manifest declared this class in
-      # advance; on a field that also carries the act kind, one manifest line
-      # would pre-adopt every stage dispatch there is.
+      # The field floor is per grade and lives in one place, because the acting
+      # path has to apply it BEFORE the auto-adoption floor reads those same
+      # fields — see `gate_judgment_fields_ok`.
+      local jcls jgrade
+      gate_judgment_fields_ok "$@" || return "$GATE_EXIT_VOCAB"
       jcls=$(gate_field_of '판단 부류' "$@")
-      if ! judgment_class_ok "$jcls"; then
-        warn "판단 행의 「판단 부류」가 어휘 밖입니다: $jcls — 허용: $JUDGMENT_CLASSES"
-        return "$GATE_EXIT_VOCAB"
-      fi
       jgrade=$(gate_field_of '등급' "$@")
       case "$jgrade" in
         1) : ;;
@@ -2682,6 +2717,13 @@ gate_verb_act() {
   GATE_REVERT=""
   GATE_REVERT_SURFACE=""
   if [ "$kind" = "judgment" ]; then
+    # THE ROW IS WELL-FORMED BEFORE THE FLOOR IS ASKED ABOUT IT. Otherwise a
+    # judgment missing a required field fails the floor for want of the very
+    # field it is missing, and the refusal that reaches the router is exit 5 —
+    # "a person must answer this" — for what is actually a typo. Worse, the
+    # approval gets WRITTEN, so the run then carries an open question nobody
+    # asked and termination waits on it.
+    gate_judgment_fields_ok "$@" || exit "$GATE_EXIT_VOCAB"
     GATE_JUDGMENT_CLASS=$(gate_field_of '판단 부류' "$@")
     GATE_REVERT=$(gate_field_of '되돌리는 법' "$@")
     GATE_REVERT_SURFACE=$(gate_revert_surface "$GATE_REVERT")
@@ -2790,6 +2832,30 @@ gate_verb_act() {
       warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
       exit "$GATE_EXIT_RULE"
     fi
+
+    # ORDER, AND THE SECOND CONSUMER OF `선행`.
+    #
+    # With only the cone's declared axis reading it, declaring narrowly would be
+    # free: a segment that names no predecessor simply stays out of the cone, and
+    # staying out is the direction that pays. The field costs something only when
+    # its two consumers pull in opposite directions, and this is the other one —
+    # a predecessor that has not LANDED is not a base this segment can be
+    # dispatched onto, because the work it depends on is not in any tree yet.
+    #
+    # `머지됨` and `완료` only. `park` is terminal and did NOT land, so a
+    # dependent dispatched over a parked predecessor is precisely the ordering
+    # failure the declaration exists to prevent.
+    local dep dst
+    for dep in $(gate_deps_of "$segment"); do
+      [ -n "$dep" ] || continue
+      dst=$(gate_segment_field "$dep" '상태')
+      case "$dst" in
+        머지됨|완료) : ;;
+        *) warn "선행 세그먼트 ${dep} 이 아직 착지하지 않았습니다 (상태=${dst:-없음}) — 이 세그먼트는 그 위에서 갈라져야 합니다"
+           warn "선행이 머지됨·완료가 된 뒤에 다시 디스패치하거나, 의존이 없다면 segment 행의 「선행」을 다시 적으세요"
+           exit "$GATE_EXIT_RULE" ;;
+      esac
+    done
   fi
 
   # The nine conditions are evaluated on EVERY act, not only on a done proposal.
