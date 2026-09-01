@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# Test the liveness watcher's three arms.
+# Test the liveness watcher's five arms.
 #
 # The watcher exists for one failure the rest of the system cannot see: the
 # router quietly stopping. Nothing crashes, no rule refuses, and a terminal that
@@ -8,12 +8,20 @@
 # noticing hours later. Everything asserted here is about making that visible
 # WITHOUT making it a decision: the watcher resumes nothing.
 #
-# The three arms are not variations of one condition:
+# The arms are not variations of one condition:
+#   run ended        — every segment terminal and nothing waiting. Derived from
+#                      the ledger rather than from a `done` file, because almost
+#                      no run reaches the path that writes one
+#   stage ended,
+#   router silent    — the sharp case: a terminal stage row as the last row
 #   stalled          — nothing happening and nothing waiting
+#   approval open    — the one event that exists to summon a person
 #   finished-for-now — every segment waiting or terminal; the run is done until
 #                      a person touches it, which is different from stuck
-#   heartbeat        — alive. Without it, silence from a dead watcher and
-#                      silence from a healthy run are the same observation.
+#
+# And under all of them, the heartbeat: alive. Without it, silence from a dead
+# watcher and silence from a healthy run are the same observation — which is why
+# NO arm may return before reaching it.
 #
 # Usage: bash scripts/test-watch.sh
 
@@ -47,10 +55,41 @@ grep_all_q() {
   [ "${n:-0}" != "0" ]
 }
 
-passed=0; failed=0
+passed=0; failed=0; skipped=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
+skip() { skipped=$((skipped + 1)); printf 'SKIP: %s — %s\n' "$1" "${2:-}"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+
+# ---------------------------------------------------------------------------
+# The notifier stub.
+#
+# EVERY BANNER ASSERTION DEPENDS ON THE PATH OPT-OUT. `banner()` prepends the
+# two Homebrew directories to PATH before resolving `terminal-notifier`, so a
+# stub placed first on PATH is shadowed by whatever is really installed — and
+# then the assertions here would either exercise the real binary or silently
+# observe nothing. The watcher honours CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND for
+# exactly this reason, and the other two notifier call sites already did.
+#
+# The stub records its argv; that is the whole interface these tests need, since
+# what is being asserted is which `-group` value each run passes.
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/bin"
+NOTIFY_LOG="$WORK/notifier.log"; : > "$NOTIFY_LOG"
+cat > "$WORK/bin/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$WORK/bin/terminal-notifier"
+PATH="$WORK/bin:$PATH"
+CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
+CC_TEST_NOTIFY_LOG="$NOTIFY_LOG"
+export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
+
+# `banner()` returns early off Darwin, so the banner cases have nothing to
+# observe on the Linux leg. They are SKIPPED rather than passed there: counting
+# an unreachable path as a pass is how a platform-specific hole stays invisible.
+is_darwin() { [ "$(uname -s)" = "Darwin" ]; }
 
 n=0
 fresh() {
@@ -236,9 +275,15 @@ check "런 디렉터리가 사라져도 끝난다" "$rc" "0"
 # different path is the only shape that isolates it — and it is also the real
 # case, since the stub a misdirected watcher measures is a sibling of the file
 # it should have been reading.
+# The segment row is what makes the stall arm reachable at all: the arm requires
+# a non-terminal segment, because a run that finished normally has none and
+# would otherwise be told its router had stranded it. Both ledgers carry it, so
+# they stay the same length.
 WD5="$WORK/keydir"; mkdir -p "$WD5"
-LG5a="$WORK/stub.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG5a"
-LG5b="$WORK/real.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG5b"
+LG5a="$WORK/stub.md"
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `run` | run-id=R1 | prev=x\n' > "$LG5a"
+LG5b="$WORK/real.md"
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `run` | run-id=R1 | prev=x\n' > "$LG5b"
 
 # A non-zero threshold, because a reset reports zero idle seconds and `0 >= 0`
 # would arm anyway — which would make the reset invisible to this assertion.
@@ -307,7 +352,7 @@ fi
 
 WD4="$WORK/stalldir"; mkdir -p "$WD4"
 LG4="$WORK/stallledger.md"
-printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG4"
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `run` | run-id=R1 | prev=x\n' > "$LG4"
 # Two passes, because the idle clock is the watcher's own: the first records the
 # size it saw and reports zero, the second measures against it.
 bash "$WATCH" --run-dir "$WD4" --ledger "$LG4" --once --stall 0 >/dev/null 2>&1
@@ -320,6 +365,32 @@ fi
 n=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
 check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
 
+# THE ZERO-SEGMENT WINDOW, which every run passes through and which no arm could
+# report a death inside. The kickoff makes the ledger a stub and starts the
+# watcher; the first `segment` row appears only when the router calls
+# `act --kind segment`, at least two model turns later, and `snapshot` appends
+# nothing in between. A router that dies in that window leaves the ledger a stub
+# — and on a stub `nonterm` is 0, which silenced BOTH `record_blocked` arms at
+# once while every other arm wanted a row that cannot exist yet. The watcher
+# would heartbeat all night and say nothing.
+#
+# So the guard asks "is there work left in this run", not "is there a
+# non-terminal segment row": a run that has not opened a segment has all of its
+# work left. The threshold is 0 and this is a SINGLE pass, because the stall arm
+# fires immediately at that threshold and its once-guard suppresses the second.
+fresh
+printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
+out=$(run --stall 0)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) ok "세그먼트 행이 없는 원장에서도 정지가 발화한다" ;;
+  *) bad "세그먼트 0개 정지" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+if [ -f "$RD/stall" ]; then
+  ok "첫 세그먼트 행 이전에 죽은 런의 관측이 파일로 남는다"
+else
+  bad "세그먼트 0개 정지" "stall 파일이 생기지 않았다"
+fi
+
 # ---------------------------------------------------------------------------
 # A STAGE ENDED AND THE ROUTER DID NOT ACT — the sharp arm.
 #
@@ -329,8 +400,13 @@ check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
 # What can be observed is the consequence — a stage's terminal row as the last
 # row in the ledger, for longer than a router that was woken would take.
 # ---------------------------------------------------------------------------
+# The segment row comes FIRST and stays non-terminal on purpose. The arm keys on
+# the LAST row being a stage's terminal row, so putting it after would defeat the
+# fixture; and it has to be there at all because a run whose segments are all
+# terminal is a finished run, not a stranded one.
 fresh
-printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 # The FIRST pass, not the second: with the threshold at zero this arm fires
 # immediately, and the second pass is suppressed by the announce-once guard.
 out=$(run --stall 99999 --after-stage 0)
@@ -346,7 +422,8 @@ fi
 
 # A row after the stage's terminal row means the router DID act — no alarm.
 fresh
-printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
 out=$(run --stall 99999 --after-stage 0)
 case "$out" in
@@ -356,7 +433,8 @@ esac
 
 # And a terminated run does not raise it — that is not a stranded router.
 fresh
-printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' > "$LG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 printf '2026-08-30T00:00:00Z 종단\n' > "$RD/done"
 out=$(run --stall 99999 --after-stage 0 2>&1 || true)
 case "$out" in
@@ -364,5 +442,191 @@ case "$out" in
   *) ok "종단한 런에서는 나지 않는다" ;;
 esac
 
-printf '\ntest-watch: %d passed, %d failed\n' "$passed" "$failed"
+# ---------------------------------------------------------------------------
+# It stays alive across passes.
+#
+# Every other case here drives `--once`, which cannot observe the one property
+# the loop is for: that the watcher keeps going. A watcher that dies on its
+# second pass passes every single-pass assertion above and then reports nothing
+# for the rest of the night — and its silence is indistinguishable from a
+# healthy run's.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1 &
+wpid=$!
+sleep 1
+hb_a=$(date -u -r "$RD/watch.heartbeat" +%s 2>/dev/null || printf '')
+sleep 2
+hb_b=$(date -u -r "$RD/watch.heartbeat" +%s 2>/dev/null || printf '')
+if [ -f "$RD/watch.pid" ] && [ "$(cat "$RD/watch.pid" 2>/dev/null)" = "$wpid" ]; then
+  ok "감시자가 자기 pid 를 런 디렉터리에 남긴다"
+else
+  bad "watch.pid" "got '$(cat "$RD/watch.pid" 2>/dev/null)', want '$wpid'"
+fi
+kill "$wpid" 2>/dev/null || true
+wait "$wpid" 2>/dev/null || true
+if [ -n "$hb_a" ] && [ -n "$hb_b" ] && [ "$hb_b" -gt "$hb_a" ] 2>/dev/null; then
+  ok "루프가 여러 pass 에 걸쳐 하트비트를 계속 전진시킨다"
+else
+  bad "생존 스모크" "hb_a='$hb_a' hb_b='$hb_b'"
+fi
+# The pid file must not be counted as a stage — the run's termination condition
+# has no resolving verb, so a watcher that counted itself would take the run's
+# ability to finish away for as long as it ran.
+check "그 pid 파일은 스테이지로 세지 않는다" \
+  "$(sed -n 's/.*스테이지 \([0-9][0-9]*\)개.*/\1/p' "$RD/watch.heartbeat" 2>/dev/null)" "0"
+
+# ---------------------------------------------------------------------------
+# NO ARM RETURNS BEFORE THE HEARTBEAT.
+#
+# Each arm used to `return 0` on firing. A condition that keeps re-arming
+# therefore stopped the heartbeat for good — and a stale heartbeat is precisely
+# the shape of a dead watcher, so the failure this whole script exists to make
+# visible was hidden by the script's own alarm.
+# ---------------------------------------------------------------------------
+# The FIRST pass, as in the case above: a fresh state file reports zero idle
+# seconds and `0 >= 0` arms immediately, while a second pass would be suppressed
+# by the announce-once guard and observe nothing.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+out=$(run --stall 0)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) ok "정지 arm 이 발화한다 (기준선)" ;;
+  *) bad "정지 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"[watch] 살아 있음"*) ok "정지 arm 이 발화한 pass 도 하트비트까지 도달한다" ;;
+  *) bad "정지 arm 하트비트" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+out=$(run)
+case "$out" in
+  *"사람이 손대기 전까지 끝난 것"*) ok "대기 종료 arm 이 발화한다 (기준선)" ;;
+  *) bad "대기 종료 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"[watch] 살아 있음"*) ok "대기 종료 arm 이 발화한 pass 도 하트비트까지 도달한다" ;;
+  *) bad "대기 종료 arm 하트비트" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# `--once` judges termination too.
+#
+# The loop path checks for termination before it ever calls a pass, and `--once`
+# skips that check entirely — so the one invocation form a person or a status
+# line would use to ask "is this over?" was the one form that could not answer.
+# Deriving termination inside the pass closes it, and the derivation does not
+# need a `done` file: 2 of 39 run directories had one.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+out=$(run)
+case "$out" in
+  *"런이 종단했습니다"*) ok "--once 한 번으로 유도 종단을 판정한다 (done 파일 없이)" ;;
+  *) bad "--once 종단 검사" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+out=$(run)
+case "$out" in
+  *"런이 종단했습니다"*) bad "종단 재안내" "같은 종단을 매 패스마다 반복한다" ;;
+  *) ok "종단은 한 번만 안내한다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# The approval arm is keyed by the ID SET, not by the count.
+#
+# An approval is the one event that exists to summon a person, and the count
+# key lost it in the case that matters most: two approvals opening while one
+# closes leaves the count unchanged, so the new one announced to nobody and the
+# run waited all night for someone who had not been told.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+out=$(run)
+case "$out" in
+  *"승인 대기"*) bad "arm A" "열린 승인이 없는데 알렸다" ;;
+  *) ok "열린 승인이 없으면 알리지 않는다" ;;
+esac
+printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+out=$(run)
+case "$out" in
+  *"승인 대기 1건"*) ok "승인이 열린 pass 에 알린다" ;;
+  *) bad "arm A" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# Resolved and reopened under the same id: still silent. The id file is the
+# marker, so an id announced once never announces again.
+printf -- '- `승인` | 승인 id=A1 | 상태=승인\n' >> "$LG"
+run >/dev/null
+printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+out=$(run)
+case "$out" in
+  *"승인 대기"*) bad "arm A 재발화" "해소된 뒤 같은 id 가 다시 열렸는데 또 알렸다" ;;
+  *) ok "같은 id 로는 다시 알리지 않는다" ;;
+esac
+check "알린 승인 id 가 한 줄로 남는다" \
+  "$(grep -c . "$RD/watch.announced-approvals" 2>/dev/null || true)" "1"
+
+# A second, DISTINCT id announces — which is the case the count key could not
+# separate from the first one.
+printf -- '- `승인` | 승인 id=A2 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+out=$(run)
+case "$out" in
+  *"승인 대기"*) ok "다른 id 가 열리면 다시 알린다" ;;
+  *) bad "arm A 신규 id" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# The terminal arm says it on BOTH channels.
+#
+# The old `done` branch only called `announce()`, and its output goes to a
+# stdout that is closed the moment the launching call returns. A run that ended
+# overnight therefore ended in silence on every channel a sleeping person has.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+out=$(run --notify)
+case "$out" in
+  *"런이 종단했습니다"*) ok "arm B 가 유도 종단을 크게 말한다" ;;
+  *) bad "arm B" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+if is_darwin; then
+  if grep -q '런이 종단했습니다' "$NOTIFY_LOG" 2>/dev/null; then
+    ok "arm B 가 배너도 함께 올린다 (announce 만이 아니라)"
+  else
+    bad "arm B 배너" "$(tr '\n' ' ' < "$NOTIFY_LOG" 2>/dev/null)"
+  fi
+else
+  skip "arm B 배너" "banner() 는 Darwin 에서만 동작한다"
+fi
+
+# ---------------------------------------------------------------------------
+# The banner group is per run.
+#
+# `terminal-notifier` treats a group as a slot and replaces whatever occupies
+# it, so a constant group made two concurrent runs erase each other's banners —
+# and the erased one's condition then reached nobody at all.
+# ---------------------------------------------------------------------------
+if is_darwin; then
+  : > "$NOTIFY_LOG"
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+  run --notify >/dev/null
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+  run --notify >/dev/null
+  check "두 런이 각각 배너를 올린다" \
+    "$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)" "2"
+  check "그 두 배너의 -group 값이 서로 다르다" \
+    "$(sed -n 's/.*-group \([^ ]*\).*/\1/p' "$NOTIFY_LOG" | sort -u | grep -c . || true)" "2"
+else
+  skip "런별 배너 그룹" "banner() 는 Darwin 에서만 동작한다"
+  skip "런별 배너 그룹 (호출 수)" "banner() 는 Darwin 에서만 동작한다"
+fi
+
+printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
