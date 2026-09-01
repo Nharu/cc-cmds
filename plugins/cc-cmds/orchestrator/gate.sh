@@ -63,12 +63,17 @@
 # was cut mid-flight instead of running it again. The id must appear on a
 # `stage-result` row for that segment in this run's ledger.
 #
-# Two `act` kinds take FIELDS rather than a command after `--`, because what
+# Three `act` kinds take FIELDS rather than a command after `--`, because what
 # they perform is the ledger row itself:
 #   gate.sh act --kind segment --target <alias> --segment <id> ... \\
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
+#   gate.sh act --kind obligation --target <alias> ... \\
+#               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
+# `obligation` takes no `--segment`: it reads one from the row it closes, so the
+# obligation cannot be fulfilled into a segment other than the one it was issued
+# for.
 #
 # Compatibility: bash 3.2 (macOS stock under the sanitized PATH) — no
 # associative arrays, no mapfile, no `wait -n`, no case-modification expansions.
@@ -282,14 +287,118 @@ surface_of_git() {
     esac
   done
   case "${1:-}" in
-    status|log|show|diff|rev-parse|rev-list|merge-base|branch|worktree|config|blame|cat-file|ls-files)
+    status|log|show|diff|rev-parse|rev-list|merge-base|blame|cat-file|ls-files)
       printf '읽기' ;;
+    # Three subcommands whose NAME says nothing about their effect, and all three
+    # sat on the read arm above: `git worktree add` creates a working tree,
+    # `git branch -D` deletes a ref, and `git config --global` rewrites the
+    # user's own configuration under $HOME — each recorded as a read. Two things
+    # broke at once. The reversibility floor read `git config --global <k> <v>`
+    # as a costless undo, so an act could be auto-adopted on the strength of a
+    # rollback that edits $HOME. And a worktree creation declared honestly as
+    # `워크트리쓰기` came back exit 6 while the same act declared `읽기` ran, so
+    # the only spelling that worked was the false one.
+    #
+    # None of the three shifts. The caller already dropped argv0 and the
+    # global-option loop above has ended, so `$1` is still the subcommand and
+    # `$2` onward are its arguments — the reading `surface_of_terraform` records
+    # for `state`.
+    worktree) surface_of_git_worktree "$@" ;;
+    branch)   surface_of_git_branch "$@" ;;
+    config)   surface_of_git_config "$@" ;;
     add|commit|checkout|switch|restore|rebase|merge|cherry-pick|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
     push|fetch|pull|clone|remote)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
+}
+
+surface_of_git_worktree() {
+  # `git worktree list` is what the verification contract's boundary gate runs
+  # before and after every recipe, so it has to stay a read. Everything else
+  # here adds, removes, relocates or locks a working tree.
+  case "${2:-}" in
+    list|'') printf '읽기' ;;
+    add|remove|move|prune|repair|lock|unlock) printf '워크트리쓰기' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_git_branch() {
+  # Listing by default; creating, deleting, renaming, copying or repointing an
+  # upstream writes a ref.
+  #
+  # The option scan exists for ONE reason: `--contains`, `--merged`, `--sort`
+  # and their kin take the NEXT WORD as their value, and a value left in place
+  # looks like a positional branch name — which would grade `git branch
+  # --contains HEAD`, a pure query, as a branch creation. `--color` is on the
+  # valueless side on purpose: git spells it `--color[=<when>]`, so eating the
+  # next word there would make `git branch --color newbr` read as a query, which
+  # is the same mistake with its sign flipped.
+  local a skip=1 want=0
+  for a in "$@"; do
+    # The first word is `branch` itself — this function is handed the whole
+    # subcommand argv and does not shift.
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    if [ "$want" = 1 ]; then want=0; continue; fi
+    case "$a" in
+      -d|-D|--delete|-m|-M|--move|-c|-C|--copy|-u|--set-upstream-to|--set-upstream-to=*|--unset-upstream|--edit-description|-f|--force)
+        printf '워크트리쓰기'; return 0 ;;
+      --contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format)
+        want=1 ;;
+      -a|--all|-r|--remotes|-v|-vv|--verbose|-q|--quiet|-l|--list|--show-current)
+        : ;;
+      -i|--ignore-case|--omit-empty|--no-abbrev|--no-color|--column|--no-column|--track|--no-track|--color)
+        : ;;
+      --contains=*|--no-contains=*|--merged=*|--no-merged=*|--points-at=*|--sort=*|--format=*|--abbrev=*|--column=*|--color=*)
+        : ;;
+      -*) printf '등급 미상'; return 0 ;;
+      # Options accounted for and a word left over: it is a branch NAME, and
+      # naming one here creates it.
+      *) printf '워크트리쓰기'; return 0 ;;
+    esac
+  done
+  # A value-taking option with nothing after it is malformed, and this table
+  # refuses rather than guesses.
+  [ "$want" = 1 ] && { printf '등급 미상'; return 0; }
+  printf '읽기'
+}
+
+surface_of_git_config() {
+  # Two axes multiply here — the OPERATION (query or write) and the SCOPE (in
+  # the tree or outside it) — so no single list decides the grade.
+  #
+  # A `git config` not spelled as an explicit query grades as a write, and that
+  # over-grade is deliberate. This table sees argv alone, so `git config
+  # --global user.name` (a query) and `git config --global user.name x` (a
+  # write) differ by one word, and deciding on word COUNT would hang the whole
+  # grade on details like whether `-f` consumed the next one. Of the two ways to
+  # be wrong, demanding authorization for a query costs a line in the manifest,
+  # while letting a rewrite of $HOME through as a read is the hole this repair
+  # exists to close. A query spelled with `--get` still grades exactly `읽기`,
+  # so the form the pipeline actually runs loses nothing.
+  local a skip=1 want=0 scope='' query=0
+  for a in "$@"; do
+    # The first word is `config` itself.
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    if [ "$want" = 1 ]; then want=0; continue; fi
+    case "$a" in
+      --get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|-l|--list)
+        query=1 ;;
+      --global|--system)  scope='트리밖쓰기' ;;
+      --file|-f)          scope='트리밖쓰기'; want=1 ;;
+      --file=*)           scope='트리밖쓰기' ;;
+      --local|--worktree) : ;;
+      -*) printf '등급 미상'; return 0 ;;
+      # A key or a value. Neither decides anything on its own — the options
+      # above already did.
+      *) : ;;
+    esac
+  done
+  [ "$want" = 1 ] && { printf '등급 미상'; return 0; }
+  [ "$query" = 1 ] && { printf '읽기'; return 0; }
+  printf '%s' "${scope:-워크트리쓰기}"
 }
 
 surface_of_gh() {
@@ -553,6 +662,14 @@ gate_segment_field() {
   gate_rows 'segment' \
     | grep -F "id=$sid " | tail -1 \
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+gate_row_field() {
+  # gate_row_field <row-text> <key> — the last value with that key in ONE row.
+  # `gate_field_of` reads an argv field LIST; carrying a value forward needs a
+  # field of a row already written, and the two are not interchangeable.
+  local row="$1" key="$2"
+  printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
 gate_open_obligations() {
@@ -1516,8 +1633,12 @@ gate_record_row() {
 
   # `blocked` is the exception, and it has to be: the row it resolves is
   # run-scope, so demanding a segment would make the one kind that describes the
-  # WHOLE run unwritable without naming a part of it.
+  # WHOLE run unwritable without naming a part of it. `obligation` is exempt for
+  # the opposite reason — it HAS a segment and reads it from the row it closes,
+  # so asking the router to name one again only creates a way for the two to
+  # disagree.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
+     && [ "$kind" != "obligation" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "$kind 행에는 --segment 가 필요합니다"
     return "$GATE_EXIT_VOCAB"
@@ -1666,6 +1787,50 @@ gate_record_row() {
       gate_append 'blocked' "대상=-" "스코프=run" "$@"
       log "런 스코프 막힘 해소 — $why"
       ;;
+    obligation)
+      # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
+      # in exactly one place and always as `상태=미이행`, nothing in the tree
+      # wrote `상태=이행`, and the router's row-writing kinds did not include the
+      # series — so the condition held against every run that ever deferred a
+      # review, and no such run could propose that it was done. Condition 3's
+      # excusal is for a different series and does not reach this one. The
+      # refusal read as the mechanism working, which is why it survived until a
+      # run tried to finish.
+      #
+      # Fulfilling is an APPEND, not an edit: the reader takes the LAST row per
+      # obligation id, so the issuing row stays where it is and the morning can
+      # still see both when the review was deferred and when it landed.
+      local oid oprior ost
+      oid=$(gate_field_of '의무 id' "$@")
+      [ -n "$oid" ] || { warn "의무 행에 「의무 id」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
+      # Evidence, on the same terms the `blocked` arm already demands it. An
+      # obligation closed on the router's say-so is a review that did not happen
+      # and left a row saying it did — which is worse than leaving it open,
+      # because the open one is at least visible in the morning.
+      [ -n "$(gate_field_of '근거' "$@")" ] \
+        || { warn "의무 행에 「근거」가 필요합니다 — 무엇을 보고 이행으로 판정했는지가 아침에 남는 전부입니다"; return "$GATE_EXIT_VOCAB"; }
+      oprior=$( { gate_rows '리뷰 의무' | grep -F "의무 id=$oid " || true; } | tail -1)
+      if [ -z "$oprior" ]; then
+        warn "이행할 리뷰 의무 행이 없습니다: ${oid}"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      ost=$(gate_row_field "$oprior" '상태')
+      if [ "$ost" != "미이행" ]; then
+        warn "이미 닫힌 리뷰 의무입니다: ${oid} (상태=${ost:-없음})"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # The carried fields come from the row being closed and never from argv.
+      # `세그먼트` is what ties the fulfillment to the merge it belongs to, and
+      # `생성 등급` is the value the excusal rule reads later — a router that
+      # could restate either could also restate it wrongly.
+      gate_append '리뷰 의무' "$@" "상태=이행" \
+        "세그먼트=$(gate_row_field "$oprior" '세그먼트')" \
+        "머지 커밋=$(gate_row_field "$oprior" '머지 커밋')" \
+        "생성 등급=$(gate_row_field "$oprior" '생성 등급')" \
+        "발행 시각=$(gate_row_field "$oprior" '발행 시각')" \
+        "이행 시각=$(now_iso)"
+      log "리뷰 의무 이행 $oid"
+      ;;
   esac
   return 0
 }
@@ -1811,7 +1976,7 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle|problem|blocked|clause|judgment)
+    segment|cycle|problem|blocked|clause|judgment|obligation)
       # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
       # and what it performs is the ledger row the gate would write anyway. It
       # reaches nothing outside the ledger, so it grades `읽기`.
@@ -2073,7 +2238,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment) gate_record_row "$kind" "$segment" "$@"; return $? ;;
+    segment|cycle|problem|blocked|clause|judgment|obligation) gate_record_row "$kind" "$segment" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)

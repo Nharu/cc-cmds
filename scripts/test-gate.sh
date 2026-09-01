@@ -2235,6 +2235,111 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 29. A review obligation can be moved to `이행`, and only against evidence
+#
+# Section 10b issues one and nothing in the tree could close it: `리뷰 의무` was
+# written in a single place, always as `상태=미이행`, and the router's row-writing
+# kinds did not include the series. Termination condition 9 therefore held
+# against every run that ever deferred a review — the state this pipeline aims
+# at was unreachable, and the refusal read as the mechanism working.
+# ---------------------------------------------------------------------------
+ROID=$( { grep '^- `리뷰 의무`' "$LEDGER" || true; } | grep -F '세그먼트=SEP ' | tail -1 \
+        | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+if [ -n "$ROID" ]; then
+  ok "10b 이 발행한 의무 id 를 원장에서 읽는다 ($ROID)"
+else
+  bad "의무 id" "선머지후리뷰 머지가 남긴 리뷰 의무 행을 찾지 못했다"
+fi
+
+gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- "의무 id=$ROID"
+check "근거 없는 이행은 거부된다 (주장만으로 리뷰를 닫지 않는다)" "$rc" "2"
+
+gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- "의무 id=RO-00000000" 근거=z
+check "존재하지 않는 의무는 닫을 수 없다" "$rc" "2"
+
+gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "의무 id=$ROID" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다"
+check "근거를 실은 이행은 통과한다" "$rc" "0"
+
+roall=$( { grep '^- `리뷰 의무`' "$LEDGER" || true; } | grep -F "의무 id=$ROID " || true)
+lastro=$(printf '%s' "$roall" | tail -1)
+case "$lastro" in
+  *"상태=이행"*) ok "그 의무의 마지막 행이 이행이다" ;;
+  *) bad "이행 상태" "$lastro" ;;
+esac
+case "$lastro" in
+  *"이행 시각=-"*) bad "이행 시각" "이행인데 시각 자리가 그대로 비어 있다" ;;
+  *"이행 시각="*)  ok "발행 때 비워 둔 이행 시각이 채워진다" ;;
+  *) bad "이행 시각" "$lastro" ;;
+esac
+case "$lastro" in
+  *"세그먼트=SEP "*) ok "세그먼트를 선행 행에서 옮겨 싣는다 (argv 가 정하지 않는다)" ;;
+  *) bad "세그먼트 승계" "$lastro" ;;
+esac
+# The issuing row must SURVIVE: closing is an append, so the morning can still
+# read when the review was deferred as well as when it landed.
+case "$roall" in
+  *"상태=미이행"*) ok "발행 시점의 미이행 행이 지워지지 않고 남는다 (편집이 아니라 append)" ;;
+  *) bad "append 형태" "발행 행이 사라졌다 — 원장이 append 전용이라는 계약이 깨진다" ;;
+esac
+
+gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "의무 id=$ROID" 근거="두 번째 시도"
+check "이미 닫힌 의무를 다시 닫지 않는다" "$rc" "2"
+
+# THE POINT OF THE SECTION. Condition 9 was permanent; with the only obligation
+# this run issued now fulfilled, it must be gone from the enumeration. Section 11
+# measures the same string while the obligation is still open and is left alone —
+# there it is correct for the condition to be listed.
+gateL act --manifest "$MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale "끝났다고 본다" -- true
+case "$msg" in
+  *"9 미이행 리뷰 의무"*) bad "조건 9" "의무를 닫았는데 여전히 미충족으로 열거된다" ;;
+  *) ok "이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 30. git is graded by its SUBCOMMAND, not by the word `git`
+#
+# `worktree`, `branch` and `config` all sat on the read arm, so creating a
+# working tree, deleting a ref and rewriting $HOME's own configuration each
+# graded `읽기`. Two things followed: the reversibility floor accepted "put the
+# setting back in the morning" as a cheap undo, and an act that declared its
+# worktree creation honestly came back exit 6 while the same act declared as a
+# read ran — so the only spelling that worked was the false one.
+# ---------------------------------------------------------------------------
+graded_as '읽기'         'git worktree list 는 읽기다'             -- git worktree list
+graded_as '워크트리쓰기' 'git worktree add 는 워크트리를 만든다'   -- git worktree add /tmp/wt HEAD
+graded_as '워크트리쓰기' 'git worktree remove 도 같다'             -- git worktree remove /tmp/wt
+graded_as '읽기'         'git branch 는 목록 조회다'               -- git branch
+graded_as '읽기'         '--show-current 도 조회다'                -- git branch --show-current
+graded_as '읽기'         '값 있는 조회 옵션이 위치 인자로 보이지 않는다' -- git branch --contains HEAD
+graded_as '워크트리쓰기' 'git branch -D 는 ref 를 지운다'          -- git branch -D topic
+graded_as '워크트리쓰기' '이름을 주면 브랜치를 만든다'             -- git branch newbr
+graded_as '읽기'         'git config --get 은 조회다'              -- git config --get user.name
+graded_as '읽기'         '--global 이어도 --get 은 조회다'         -- git config --global --get user.name
+graded_as '워크트리쓰기' '로컬 config 쓰기는 트리 안이다'          -- git config user.name x
+graded_as '트리밖쓰기'   'git config --global 은 홈을 고친다'      -- git config --global user.name x
+
+# The grade table alone does not cover what was observed: the refusal arrived as
+# an exit 6 on the ACT path, so the repair has to be measured there too.
+NEWWT="$WORK/honest-wt"
+gateL exec --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(HL)" --rationale "정직하게 선언하고 워크트리를 만든다" \
+      -- git worktree add --detach "$NEWWT" HEAD
+check "정직하게 선언한 워크트리 생성이 exit 6 으로 거절되지 않는다" "$rc" "0"
+if [ -e "$NEWWT" ]; then
+  ok "선언대로 워크트리가 실제로 만들어진다"
+else
+  bad "워크트리 생성" "통과했는데 경로가 없다: $msg"
+fi
+# Leave the fixture repository's worktree set as it was found.
+( cd "$WT" && git worktree remove --force "$NEWWT" && git worktree prune ) >/dev/null 2>&1 || true
+
 # Slice C — one liveness predicate, the run handles, and the stall dedupe key
 #
 # The three properties here were each a measured defect rather than a worry:
