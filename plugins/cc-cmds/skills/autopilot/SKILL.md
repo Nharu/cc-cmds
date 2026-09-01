@@ -225,7 +225,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 2. **Take the first snapshot, THEN start the watcher.** The run directory is created by the router's first gate call, and the watcher treats a missing directory as "the run went away" and exits — silently, with status 0. Started in the order this list used to give, it was gone before the run began: measured, watcher up at 03:18:0x and the directory created at 03:18:36, with the launching call reporting success. One `gate.sh snapshot --manifest <매니페스트>` first makes the directory exist; the watcher also waits out a short startup window now, but the ordering is what makes that window unnecessary.
 3. **Start the liveness watcher in the background**:
    ```
-   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --notify &
+   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --notify --stall 1200 --interval 60 > <RUN_DIR>/watch.log 2>&1 < /dev/null &
    ```
    It resumes nothing and decides nothing. Its whole job is to make one failure visible — **the router quietly stopping** — which is otherwise indistinguishable from a quiet terminal. It also emits a positive heartbeat, because a watcher that only speaks on failure cannot be told apart from a watcher that died.
 
@@ -234,6 +234,10 @@ Two digests are computed here and **compared at entry**, so they are not decorat
    **`--notify` is not optional here.** The banner code exists and the flag was never passed, so it was dead text: the one condition this process reports — the router stopped — is the condition in which nothing else can report it, and its stdout is closed the moment the launching call returns. A detector whose output reaches nobody is not a detector. This is also the one seat where raising a banner is allowed at all: a spawned agent may not, and a shell script that outlives the session is not an agent.
 
    **The heartbeat goes to a file, not only to stdout.** This is launched in the background by a tool call that then returns, so its stdout is closed and anything printed there reaches nobody. `watch.heartbeat` in the run directory is rewritten every pass, and its mtime is what makes the watcher's own liveness measurable.
+
+   **`--stall 1200` and `--interval 60` are not attempts to change anything.** Both are already the script's defaults, and they are pinned here because the status line has to decide whether a heartbeat is fresh, and a threshold it cannot read from a contract is a threshold it invents. They are also deliberately NOT matched to the status line's own 180-second staleness mark: that mark is a render that clears itself on the next tick, while the stall arm writes a ledger row that only a person's resolving row takes back. Two different costs deserve two different thresholds.
+
+   **The redirection is new, and discoverability is its whole justification.** The harness keys a background task's output on an internal task id, which cannot be walked back to a run directory — so the watcher's loud line landed somewhere nobody could find from the one place a person actually looks in the morning, which is the run directory. `< /dev/null` goes with it so the process cannot be stopped waiting on a terminal that is no longer there.
 4. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
 5. **Enter the router loop of Act 2b.** Do not stop here.
 
