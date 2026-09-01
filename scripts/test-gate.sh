@@ -2338,6 +2338,39 @@ if [ -e "$NEWWT" ]; then
 else
   bad "워크트리 생성" "통과했는데 경로가 없다: $msg"
 fi
+# ---------------------------------------------------------------------------
+# 31. Three holes in the grading table, and each one cost a stage its night
+#
+# A command with no row falls to `등급 미상`, and that refuses. The stage is
+# then left with three moves — break whatever rule sent it there, hide argv0
+# behind an interpreter so the act launders into `워크트리쓰기`, or stop. The
+# second is the worst of the three: it passes, and the ledger records something
+# other than what happened, so the morning report's account of what left the
+# machine is quietly false.
+# ---------------------------------------------------------------------------
+graded_as '읽기'         'git remote 는 로컬 설정을 나열한다'      -- git remote
+graded_as '읽기'         'git remote -v 도 나열이다'               -- git remote -v
+graded_as '워크트리쓰기' 'git remote add 는 로컬 설정을 쓴다'      -- git remote add o https://x/y
+graded_as '워크트리쓰기' 'git remote set-url 도 같다'              -- git remote set-url o https://x/y
+graded_as '외부상태변경' 'git remote update 는 원격에 닿는다'      -- git remote update
+graded_as '외부상태변경' 'git remote prune 도 같다'                -- git remote prune o
+graded_as '등급 미상'    '모르는 remote 하위 명령은 추측하지 않는다' -- git remote frobnicate
+
+# `lockf` carries no grade of its own — it wraps. A fixed grade here would be
+# the laundering the table exists to refuse, so the wrapped command decides.
+graded_as '워크트리쓰기' 'lockf 가 감싼 워크트리 쓰기는 그 등급이다' -- lockf -k -t 0 /tmp/l.lock git commit -m x
+graded_as '읽기'         'lockf 가 감싼 읽기도 그 등급이다'          -- lockf -k -t 0 /tmp/l.lock git status
+graded_as '외부상태변경' 'lockf 는 외부 행위를 워크트리 쓰기로 세탁하지 않는다' -- lockf -k -t 0 /tmp/l.lock curl https://x
+graded_as '워크트리쓰기' '감쌀 명령이 없는 lockf 는 잠금 파일을 만든다' -- lockf -k /tmp/l.lock
+graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'           -- /usr/bin/lockf -k -t 0 /tmp/l.lock git status
+
+# Browser automation. Unlike git and terraform there is no read-only arm to
+# carve out — argv says which page to open, and opening any page is a network
+# act.
+graded_as '외부상태변경' 'playwright-cli 는 외부 상태 변경이다'    -- playwright-cli open https://x
+graded_as '외부상태변경' 'chromedriver 도 같다'                    -- chromedriver --port=4444
+graded_as '외부상태변경' '경로로 부른 브라우저 도구도 같다'        -- /opt/homebrew/bin/playwright open https://x
+
 # Leave the fixture repository's worktree set as it was found.
 ( cd "$WT" && git worktree remove --force "$NEWWT" && git worktree prune ) >/dev/null 2>&1 || true
 
