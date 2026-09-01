@@ -92,17 +92,38 @@ SL_PATH="$PLUGIN_DIR/orchestrator/statusline.sh"
 [ -x "$SL_PATH" ] \
   || die "$SL_PATH 이 실행 가능한 파일이 아닙니다 — 설치되는 가드가 영구히 거짓이 됩니다"
 
+# AND THE SAME TEST AGAIN, THROUGH THE SHELL THAT WILL RE-EVALUATE IT. What gets
+# written is a string, and the harness hands that string to `sh -c` on every
+# render — so the double quotes around the path stop a space and nothing else. A
+# `$`, a backtick or a `"` inside the path is expanded at that second evaluation,
+# the guard is false forever, and the apply still lands rc=0 because the verify
+# run cannot tell the guard's two branches apart.
+#
+# The question asked here is not "which characters are dangerous" but "is the
+# guard that is about to be installed actually true", which is the same question
+# the render will ask and therefore covers the shapes nobody has enumerated yet.
+sh -c "[ -x \"$SL_PATH\" ]" 2>/dev/null \
+  || die "설치될 가드가 그대로 평가되지 않습니다 ($SL_PATH) — 경로의 문자가 재평가에서 해석되어 가드가 영구히 거짓이 됩니다"
+
 # THE ONE BAD PATH THAT PASSES EVERY OTHER CHECK is the tree the apply is
 # running in. It exists, it holds the script, the bit is set — and it is removed
 # the moment the apply converges, so the guard is true exactly once and false
 # for the rest of the machine's life. A linked worktree is what a `--git-dir`
 # differing from its `--git-common-dir` means.
 #
-# BOTH ARE RESOLVED TO ABSOLUTE FIRST. Measured: from a subdirectory of an
-# ordinary checkout git answers `--git-dir` absolute and `--git-common-dir`
-# relative to the current directory, and `--plugin-dir` names a subdirectory by
-# construction — so a plain string compare calls every ordinary checkout a
-# worktree and parks every legitimate apply.
+# BOTH ARE RESOLVED TO A PHYSICAL ABSOLUTE PATH FIRST. Measured: from a
+# subdirectory of an ordinary checkout git answers `--git-dir` absolute and
+# `--git-common-dir` relative to the current directory, and `--plugin-dir` names
+# a subdirectory by construction — so a plain string compare calls every
+# ordinary checkout a worktree and parks every legitimate apply.
+#
+# PHYSICAL, and that is the second half of the same defect. Git's absolute
+# answer is the one `getcwd` gives, with every symlink already resolved, while a
+# logical `pwd` keeps whatever symlink the caller walked in through — so one
+# directory comes back as two strings and the compare parks again. On this
+# platform `/tmp` and `/var` are exactly that symlink, which makes an ordinary
+# checkout under either of them park for a reason that has nothing to do with
+# worktrees.
 #
 # Not being a git repository is the normal case for an installed plugin and is
 # allowed; so is having no `git` at all. This check exists to reject one
@@ -110,8 +131,8 @@ SL_PATH="$PLUGIN_DIR/orchestrator/statusline.sh"
 SL_WT=$( cd "$PLUGIN_DIR" 2>/dev/null || exit 0
          gd=$(git rev-parse --git-dir 2>/dev/null) || exit 0
          cm=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
-         gd=$(cd "$gd" 2>/dev/null && pwd) || exit 0
-         cm=$(cd "$cm" 2>/dev/null && pwd) || exit 0
+         gd=$(cd "$gd" 2>/dev/null && pwd -P) || exit 0
+         cm=$(cd "$cm" 2>/dev/null && pwd -P) || exit 0
          [ "$gd" = "$cm" ] || printf '%s' "$gd" )
 [ -z "$SL_WT" ] \
   || die "--plugin-dir 이 임시 워크트리를 가리킵니다 ($SL_WT) — 이 트리는 곧 사라지고 설치되는 가드는 그때부터 영구히 거짓입니다"

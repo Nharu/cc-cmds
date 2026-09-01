@@ -110,6 +110,15 @@ fx_segment S1 실행중
 fx_stage_live S1
 fx_stage_dead S2
 fx_stage_reused S3
+# THE LIVE STAGE IS DELIBERATELY THE OLDEST. The status line picks the newest
+# pid file among the stages the predicate counts, and the three files above are
+# written inside one epoch second — `date -r` has no finer resolution, so all
+# three tie and the strict `>` leaves the FIRST glob entry standing. That entry
+# is `S1`, which is the right answer arrived at by glob order rather than by the
+# filter, and the assertion below therefore passes just as well with the filter
+# deleted. Ageing the live one puts the dead stage and the reused pid strictly
+# ahead of it, so an unfiltered pick names one of THEM and the assertion fails.
+fx_age_file "$FX_RUN_DIR/S1.pid" 5
 fx_heartbeat 0 5
 RD_A="$FX_RUN_DIR"; LG_A="$FX_LEDGER"
 

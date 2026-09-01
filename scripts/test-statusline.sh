@@ -53,28 +53,39 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 # The "no run" line. Byte-identical to every degraded path's output, which is
 # the property cases 10-13 exist to hold in place.
 #
-# READ FROM THE INSTALL TARGET, NOT TRANSCRIBED. The claim is that installing
-# this design is invisible to a session with no run, which is a claim about the
-# command the apply is pinned to replace — so a constant typed out here proves
-# nothing about it and is exactly how the colour escapes went missing while
-# every case stayed green. Once this design's own wrapper is installed there,
-# the original survives as that wrapper's `||` branch and is recovered the same
-# way the apply recovers it.
+# THE REFERENCE IS IN THE REPOSITORY, and it is executed on every run. Taken
+# only from the install target it is absent on the CI runner, where the
+# reference then degrades to the script's OWN no-run output and every case below
+# compares the script against itself — a tautology that passes green on exactly
+# the defect these cases exist to catch. Measured: the ANSI escapes stripped
+# from `emit_fallback` fail six cases against a real reference and zero against
+# the degraded one.
 #
-# A machine with no such file has no referent for the claim at all. There the
-# reference degrades to the script's own no-run output, which still holds the
-# other half of what these cases are for — that every degraded path lands on the
-# SAME bytes — and the byte-identity half is reported as skipped rather than
-# passing on a tautology.
+# A constant typed inline here is what let the escapes go missing before; a
+# committed file whose only content is the command is not that, because changing
+# it is a diff somebody has to justify. What guards it against drifting away
+# from the machine it describes is the case laid on top of it, just below.
+REF_CMD_FIXTURE="$repo_root/scripts/statusline-pre-apply-command.sh"
+FALLBACK=$(bash "$REF_CMD_FIXTURE" </dev/null)
+check "폴백이 적용 전 명령의 출력과 바이트 동일" "$(bash "$SL" </dev/null)" "$FALLBACK"
+
+# The same comparison against what is ACTUALLY installed, wherever there is
+# something installed to read. On top of the reference above rather than in
+# place of it: this is the reading that would notice the fixture drifting, and
+# it is the one that cannot run on CI.
+#
+# `</dev/null` IS NOT OPTIONAL. Reading the session JSON off stdin is what a
+# status line command normally does — this repository's own begins with `cat` —
+# so a reference command that inherits this suite's stdin waits for an EOF that
+# never arrives, and the whole run hangs with no diagnostic printed.
 REF_SETTINGS="${CC_SL_REF_SETTINGS:-$HOME/.claude-cc/settings.json}"
 ref_cmd=$(jq -r '.statusLine.command // ""' "$REF_SETTINGS" 2>/dev/null || true)
 case "$ref_cmd" in "[ -x "*) ref_cmd=${ref_cmd#*" || "} ;; esac
 if [ -n "$ref_cmd" ]; then
-  FALLBACK=$(sh -c "$ref_cmd" 2>/dev/null)
-  ok "폴백 기준을 설치 대상의 명령에서 읽어 실행했다 — 손으로 옮겨 적은 사본이 아니다"
+  check "설치 대상의 적용 전 명령도 같은 바이트를 낸다" \
+    "$(sh -c "$ref_cmd" </dev/null 2>/dev/null)" "$FALLBACK"
 else
-  FALLBACK=$(bash "$SL" </dev/null)
-  skip "폴백이 설치 대상의 출력과 바이트 동일" "$REF_SETTINGS 에서 기준 명령을 읽을 수 없다"
+  skip "설치 대상의 적용 전 명령과 대조" "$REF_SETTINGS 에서 기준 명령을 읽을 수 없다"
 fi
 
 sl() { fx_statusline_stdin "$1" | bash "$SL"; }
@@ -439,29 +450,42 @@ check "경로 성질로 park 한 세 경우 모두 파일을 건드리지 않았
 # is gone seconds later. Its sibling assertion matters as much: an ordinary
 # checkout must NOT park, and the two differ only in how git answers about them.
 if command -v git >/dev/null 2>&1; then
-  WT_MAIN="$WORK/wt-main"
-  mkdir -p "$WT_MAIN/orchestrator"
-  cp "$SL" "$LIVENESS" "$WT_MAIN/orchestrator/"
-  chmod +x "$WT_MAIN/orchestrator/statusline.sh"
+  # EVERY PATH BELOW REACHES THE CHECKOUT THROUGH A SYMLINK, and the plugin
+  # directory is a SUBDIRECTORY of it. Together those two are the shape
+  # `--plugin-dir` actually has, and the only shape in which the two git answers
+  # differ as strings while naming one directory: git answers `--git-dir`
+  # physically absolute and `--git-common-dir` relative, so resolving the second
+  # one logically keeps the symlink the caller walked in through.
+  #
+  # Built at the checkout ROOT instead, this fixture proves nothing — there git
+  # answers both relative to the same place, and the assertion passes whether
+  # the compare normalises physically, logically, or not at all. That is how it
+  # stayed green over a compare that parked every ordinary checkout reached
+  # through `/tmp` or `/var`, which on this platform is all of them.
+  mkdir -p "$WORK/wt-real"
+  ln -s "$WORK/wt-real" "$WORK/wt-via"
+  WT_MAIN="$WORK/wt-via/main"
+  WT_MAIN_PLUG="$WT_MAIN/plugins/cc-cmds"
+  mkdir -p "$WT_MAIN_PLUG/orchestrator"
+  cp "$SL" "$LIVENESS" "$WT_MAIN_PLUG/orchestrator/"
+  chmod +x "$WT_MAIN_PLUG/orchestrator/statusline.sh"
   (
     cd "$WT_MAIN" || exit 1
     git init -q .
     git add -A
     git -c user.email=fixture@example.invalid -c user.name=fixture commit -q -m fixture
-    git worktree add -q --detach "$WORK/wt-linked" HEAD
+    git worktree add -q --detach "$WORK/wt-via/linked" HEAD
   ) >/dev/null 2>&1
-  if [ -x "$WORK/wt-linked/orchestrator/statusline.sh" ]; then
+  WT_LINKED_PLUG="$WORK/wt-via/linked/plugins/cc-cmds"
+  if [ -x "$WT_LINKED_PLUG/orchestrator/statusline.sh" ]; then
     S8F="$WORK/settings-wt.json"; mk_settings "$S8F"; E8=$(digest_of "$S8F")
     B8=$(shasum -a 256 "$S8F" | cut -d' ' -f1)
-    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WORK/wt-linked" --expect "$E8" >/dev/null 2>&1
+    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_LINKED_PLUG" --expect "$E8" >/dev/null 2>&1
     check "임시 워크트리를 가리키는 --plugin-dir — 쓰기 전에 park 한다" "$?" "1"
     check "워크트리로 park — 파일을 건드리지 않았다" \
       "$(shasum -a 256 "$S8F" | cut -d' ' -f1)" "$B8"
-    # A subdirectory of an ordinary checkout, which is the shape `--plugin-dir`
-    # always has: git answers its common dir RELATIVE there, so a compare that
-    # skipped normalising would park here and never install anything.
-    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_MAIN" --expect "$E8" >/dev/null 2>&1
-    check "같은 저장소의 본 체크아웃은 park 하지 않는다" "$?" "0"
+    bash "$APPLY" --apply --settings "$S8F" --plugin-dir "$WT_MAIN_PLUG" --expect "$E8" >/dev/null 2>&1
+    check "심링크를 경유한 본 체크아웃의 하위 디렉터리는 park 하지 않는다" "$?" "0"
   else
     skip "임시 워크트리 park" "git worktree 를 만들 수 없다"
   fi
