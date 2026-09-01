@@ -235,6 +235,21 @@ surface_of_argv0() {
       printf '읽기' ;;
     git) surface_of_git "$@" ;;
     gh)  surface_of_gh "$@" ;;
+    # `lockf` WRAPS another command, so it carries no grade of its own. Three
+    # unattended skills make the document lock a MUST — every write to a design
+    # document goes through `lockf -k -t 0 <lockfile> <command>` — and with no
+    # row here that mandated spelling fell to `등급 미상`, which refuses. A stage
+    # was then left with three moves: break its own skill's MUST and write
+    # unlocked, hide argv0 behind an interpreter and launder the act, or stop.
+    # One stopped, classified `gate-unanswerable`, which is the honest move and
+    # also a night spent.
+    #
+    # A FIXED grade would be the laundering this table refuses — `lockf … curl …`
+    # would record a network act as whatever constant this row named. So the
+    # grade is the WRAPPED command's, exactly as `git` and `gh` delegate to
+    # their subcommand. The digest-tool comment above records the first instance
+    # of this shape; this is the second.
+    lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
     mkdir|touch|cp|mv|rm|sed|tee|install)
@@ -242,6 +257,20 @@ surface_of_argv0() {
     terraform)
       surface_of_terraform "$@" ;;
     curl|wget|ssh|scp|rsync|kubectl|aws|gcloud|docker)
+      printf '외부상태변경' ;;
+    # Browser automation. With no row here every spelling fell to `등급 미상`,
+    # which refuses — so a stage that needed a browser either spent the night in
+    # an approval nobody was awake to answer, or reached it through `bash -c`
+    # and passed while the ledger recorded a network session as a worktree
+    # write. The second is worse than the first: the morning report reads axis 2
+    # to say what left the machine, so the laundered spelling makes the audit
+    # trail quietly false rather than merely stuck.
+    #
+    # Graded `외부상태변경` unconditionally, and NOT split by subcommand the way
+    # `git` and `terraform` are. Those two have subcommands whose names decide
+    # the effect; a browser driver's argv says which page to open, and opening
+    # any page is already a network act. There is no read-only arm to carve out.
+    playwright|playwright-cli|chromedriver|geckodriver|puppeteer|selenium)
       printf '외부상태변경' ;;
     # Database clients. A schema migration is a standard step BEFORE a deploy,
     # not an exotic one, and with no row here every one of them fell to `등급
@@ -260,6 +289,33 @@ surface_of_argv0() {
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
+}
+
+surface_of_lockf() {
+  # surface_of_lockf lockf [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
+  #
+  # Skip lockf's own options and its lockfile operand, then grade what is left.
+  # `-t` takes a value; `-k` and `-s` do not. The lockfile is the first
+  # non-option word and is never itself the command.
+  #
+  # A lock with nothing after it locks and exits — that is a worktree write (it
+  # creates the lockfile) and there is no wrapped command to defer to.
+  local seen_file=0
+  shift                                   # drop `lockf` itself
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -t) shift 2 || return 0 ;;
+      -t*) shift ;;
+      -k|-s|-n) shift ;;
+      -*) printf '등급 미상'; return 0 ;;
+      *)
+        if [ "$seen_file" = 0 ]; then seen_file=1; shift; continue; fi
+        surface_of_argv0 "$@"
+        return 0 ;;
+    esac
+  done
+  [ "$seen_file" = 1 ] && { printf '워크트리쓰기'; return 0; }
+  printf '등급 미상'
 }
 
 surface_of_git() {
@@ -308,9 +364,29 @@ surface_of_git() {
     config)   surface_of_git_config "$@" ;;
     add|commit|checkout|switch|restore|rebase|merge|cherry-pick|stash|apply|am|reset|tag)
       printf '워크트리쓰기' ;;
-    push|fetch|pull|clone|remote)
+    remote)   surface_of_git_remote "$@" ;;
+    push|fetch|pull|clone)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
+  esac
+}
+
+surface_of_git_remote() {
+  # `git remote` and `git remote -v` list what local config already records —
+  # no packet leaves the machine. Lumping them with `push`/`fetch` made reading
+  # the remote configuration issue an approval, and unattended there is nobody
+  # to answer it, so a stage could not even see the state it was about to act
+  # on. The same repair was already made for `terraform`, whose comment records
+  # the identical reasoning; this row is that repair reaching `git remote`.
+  case "${2:-}" in
+    ''|-v|--verbose)                                   printf '읽기' ;;
+    add|remove|rm|rename|set-url|set-head|set-branches) printf '워크트리쓰기' ;;
+    # `show` and `update` and `prune` contact the remote. `show -n` does not,
+    # but grading on a flag that may sit anywhere in argv is the kind of
+    # precision this table refuses to fake — the safe direction is the wider
+    # grade, which costs a manifest line rather than a false audit trail.
+    show|update|prune)                                  printf '외부상태변경' ;;
+    *)                                                  printf '등급 미상' ;;
   esac
 }
 
