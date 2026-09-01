@@ -363,6 +363,21 @@ binding_set_bytes() {
     canonical_targets | sed 's/^/target\t/'
     grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
     grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    # THE `자동 채택` ROWS ARE IN THE FROZEN SET, and they were not. Arm (a) of
+    # the auto-adoption floor states its safety as four reasons, and the third —
+    # "the binding digest covers it" — was false: of the six things serialized
+    # here only `사전 인가` was row-shaped, so a row added to `## 인가` moved
+    # nothing. One ordinary `워크트리쓰기` act could append a class to the
+    # pre-adopted list and the comparison below would still pass, after which
+    # every judgment of that class is adopted with no person and no
+    # reversibility requirement.
+    #
+    # Scanned over the WHOLE file rather than the `## 인가` section, which is
+    # deliberately wider than the section arm (a) honours: a row planted outside
+    # that section is not honoured AND still moves the digest, so both spellings
+    # of the tampering are visible. A manifest carrying no such row contributes
+    # zero bytes, so this does not make an in-flight run non-conforming.
+    grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -371,6 +386,22 @@ manifest_clauses() {
   # The termination point decomposed into checkable clauses, frozen at kickoff.
   # A run is measured against these, so they are part of what may not move.
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
+}
+
+manifest_autoadopt_rows() {
+  # The `자동 채택` rows INSIDE `## 인가`, and nowhere else.
+  #
+  # Arm (a)'s safety rests on "`## 인가` is exactly one" (rule 2 below), and a
+  # whole-file scan does not inherit that guarantee: a row anywhere in the
+  # document was honoured, so the uniqueness proof protected a section the
+  # consumer was not reading. Confining both consumers — this floor's arm (a)
+  # and rule 11's freeze-time check — to that one section is what makes the
+  # guarantee load-bearing rather than decorative.
+  awk '
+    $0 == "## 인가" { inb = 1; next }
+    inb && /^## / { exit }
+    inb && index($0, "- `자동 채택`") == 1 { print }
+  ' "$MANIFEST" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -538,13 +569,27 @@ check_manifest() {
   # Deciding mechanically, at the moment a judgment is made, whether it hands
   # risk to the user is impossible: the only inputs available — the option
   # labels and the question text — are authored by the party the check would
-  # bind. At freeze time it is entirely mechanical, because the manifest is
+  # bind. At freeze time it is much closer to mechanical, because the manifest is
   # written while a person is present and has no append form afterwards. That
-  # asymmetry is the whole safety argument for arm (a) of the auto-adoption
-  # floor, so the check belongs here and rests on no runtime self-declaration.
+  # asymmetry is the larger half of the safety argument for arm (a) of the
+  # auto-adoption floor, so the check belongs here and rests on no runtime
+  # self-declaration.
+  #
+  # It is not the WHOLE argument, and saying so is the repair. "No append form"
+  # describes the kickoff writer, not the file: nothing stops a `워크트리쓰기`
+  # act from appending a line, and this check re-runs on every gate entry rather
+  # than only at kickoff, so a planted row would be re-inspected and — for the
+  # six permitted classes — passed. What actually holds the line is the binding
+  # digest now covering these rows, plus `인가-자기확장-금지` refusing a write to
+  # the manifest at all.
+  #
+  # Scanned through `manifest_autoadopt_rows`, so "exactly one `## 인가`" and
+  # "the rows this floor honours" are statements about the same bytes.
   local aline acls
   while IFS= read -r aline; do
-    case "$aline" in '- `자동 채택`'*) ;; *) continue ;; esac
+    # A manifest with no such row feeds this loop one empty line, which is the
+    # normal case and not a row missing a field.
+    [ -n "$aline" ] || continue
     acls=$(printf '%s' "$aline" | tr '|' '\n' | sed -n 's/^ *판단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
     [ -n "$acls" ] || die "「자동 채택」 행에 「판단 부류」가 없습니다: $aline"
     if ! judgment_class_ok "$acls"; then
@@ -553,7 +598,9 @@ check_manifest() {
     if judgment_class_forbidden "$acls"; then
       die "「자동 채택」으로 선언할 수 없는 판단 부류입니다: $acls — 위험을 사용자에게 넘기는 결정은 미리 채택하지 않습니다"
     fi
-  done < "$MANIFEST"
+  done <<EOF
+$(manifest_autoadopt_rows)
+EOF
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }

@@ -158,8 +158,19 @@ whole contract exists to remove, arriving as a leftover.
 What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
-irreversible acts, and the optional deadline. The gate compares that digest at
-entry. `대상 맵 다이제스트` stays as well — it is the narrower check over the
+irreversible acts, **the `자동 채택` rows**, and the optional deadline. The gate
+compares that digest at entry.
+
+The `자동 채택` rows are in that list because they were not, and the omission was
+load-bearing. They are the one other row shape a run could reach that decides
+whether a judgment is taken without a person, and only `사전 인가` was
+serialized — so appending an auto-adoption class left the digest unmoved while
+the code claimed the digest covered it. Serialization is over the whole file
+rather than over `## 인가` alone, which is deliberately wider than the section
+the floor honours: a row planted outside that section is not honoured **and**
+still moves the digest, so both spellings of the tampering are visible. A
+manifest with no such row contributes nothing, so this is not a tightening that
+makes an in-flight run non-conforming. `대상 맵 다이제스트` stays as well — it is the narrower check over the
 target rows alone, and keeping both means a target-row edit is named as such
 rather than reported as "something in the frozen set moved".
 
@@ -189,18 +200,42 @@ acts whose effects outlive the run directory.
 **The `자동 채택` rows are the other pre-declaration, and they name a JUDGMENT
 CLASS rather than an argv shape.** A judgment carrying a class one of these rows
 declares clears the auto-adoption floor's first arm and is taken without asking.
-The safety argument is entirely that **a run cannot write this input**: the
-manifest has no append form, `## 인가` must be exactly one section, the binding
-digest covers these rows, and `인가-자기확장-금지` cannot be switched off. So the
-declaration happens once, in front of a person.
+The safety argument is that **a run cannot write this input**, and it rests on
+three things that are each true rather than on a list that reads well:
+
+1. **`## 인가` is exactly one section, and the floor reads only that section.**
+   Both consumers — the floor's first arm and the freeze-time class check —
+   scan that one section, so the uniqueness guarantee protects the bytes that
+   are actually honoured. A whole-file scan did not inherit it.
+2. **The binding digest serializes these rows** (see above), so appending one
+   moves the digest and the manifest check refuses at the next gate entry.
+3. **The gate refuses an act that writes the manifest at all**, at any cutpoint,
+   the same way it refuses a write to the authorization record. The manifest now
+   carries the same kind of value the grant does, so it gets the same guard.
+
+What is **not** claimed: "the manifest has no append form" describes the kickoff
+writer, not the file. Nothing about the format prevents a line being appended —
+what prevents it is (3), and what catches it if (3) is bypassed is (2). And both
+sides of the digest comparison are read from the same file, so there is no
+anchor outside it: a coordinated rewrite of the row and the digest field is
+detected by nothing here. That residual is real and is stated rather than
+covered by a fourth reason.
 
 `판단 부류` is checked against the closed eight at freeze time, and the two that
 hand risk to the user — `팀-구성` and `시각-면제` — are a **hard stop** here.
 Deciding mechanically at the moment a judgment is made whether it hands risk to
 the user is impossible, because the only inputs available (the option labels and
 the question text) are authored by the party the check would bind. At freeze time
-it is entirely mechanical. That asymmetry is why the check lives here and rests
-on nothing the run declares about itself at runtime.
+it is far closer to mechanical, because the manifest is written while a person is
+present. That asymmetry is why the check lives here.
+
+**The forbidden pair is refused at runtime as well**, and the freeze-time check
+is not the whole defence. It guards the first arm only; the second arm branches
+on the undo command's grade, so a forbidden class arriving with a runnable undo
+was adopted at runtime while declaring the same class in the manifest was a hard
+stop. The floor now rejects both forbidden classes before either arm, and the
+disposition is **escalation** rather than refusal — recording a judgment of that
+class stays permitted, and only pre-adopting it is forbidden.
 
 `심각도 상한` is a **convenience filter over a label the audit supplied, not a
 floor.** The floor is the union; a document-producing stage has no unforgeable
@@ -346,9 +381,9 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
-| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트`(scope `cone`) · `관측` · `재개 명령` |
+| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |

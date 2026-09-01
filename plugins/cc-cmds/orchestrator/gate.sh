@@ -113,6 +113,16 @@ readonly GATE_EXIT_SURFACE=7
 
 readonly GATE_ROW_MAX=1024
 
+# The cone row's segment list, bounded like every other free-length value on a
+# row. Its neighbours on that row are three Korean free-text fields clipped at
+# 400 bytes each, so the budget left for a list is small — and the list is the
+# one field that grows with the SIZE OF THE NIGHT, which is exactly when the
+# mechanism is needed. The same defect was measured once already on the
+# termination-rejection row at 1228 bytes with nine segments in flight and fixed
+# there by writing a bounded summary; this is that prescription applied to the
+# field that inherited the shape.
+readonly GATE_CONE_LIST_MAX=200
+
 # ---------------------------------------------------------------------------
 # The park-scope vocabulary, on the gate side.
 #
@@ -141,10 +151,45 @@ gate_check_scope() {
 gate_clip() {
   # gate_clip <text> <max-bytes> — clipped values SAY they were clipped. A
   # silent truncation reads in the morning as the whole answer.
+  #
+  # MEASURED AND CUT IN THE SAME UNIT, AND THE MARKER IS INSIDE THE BUDGET.
+  # `wc -c` counts BYTES while `cut -c` counts CHARACTERS on this host —
+  # measured, `cut -c1-3` over Korean returns three characters, nine bytes — so
+  # a 400-byte budget returned up to ~1200 bytes and the marker was appended on
+  # top of that. The function that exists to keep rows under `GATE_ROW_MAX`
+  # broke it: a judgment approval whose question ran past ~133 Korean characters
+  # could not be ISSUED, and `gate_close` could not RECORD an answer of ordinary
+  # length, so the answer a person gave never reached the one durable copy of it.
+  # The marker was also stamped on values that were never cut, because the
+  # length test and the cut disagreed about what they were counting.
+  #
+  # The cut is BYTE-EXACT rather than merely re-budgeted. GNU coreutils
+  # implements `-c` as `-b`, so on that side the same call already lands inside a
+  # UTF-8 sequence and writes invalid bytes into the ledger — widening the budget
+  # would move the defect from a loud refusal to silent corruption when the
+  # platform changes. The trailing partial sequence is dropped by reading the
+  # last lead byte's announced length: a cut is mid-character exactly when the
+  # bytes present are fewer than that length. Everything runs under `LC_ALL=C`,
+  # where `awk`'s `length` and `substr` are the byte operations this needs.
   local s="$1" n="$2" len
   len=$(printf '%s' "$s" | wc -c | tr -d ' ')
   if [ "${len:-0}" -le "$n" ]; then printf '%s' "$s"; return 0; fi
-  printf '%s…(잘림)' "$(printf '%s' "$s" | cut -c1-"$n")"
+  printf '%s' "$s" | LC_ALL=C awk -v n="$n" '
+    BEGIN { marker = "…(잘림)"; keep = n - length(marker); if (keep < 0) keep = 0 }
+    {
+      t = substr($0, 1, keep); m = length(t)
+      for (i = 0; i < 4 && m - i >= 1; i++) {
+        c = substr(t, m - i, 1)
+        if (c < "\200") break
+        if (c >= "\300") {
+          k = (c < "\340") ? 2 : ((c < "\360") ? 3 : 4)
+          if (i + 1 != k) t = substr(t, 1, m - i - 1)
+          break
+        }
+      }
+      printf "%s%s", t, marker
+    }
+  '
 }
 
 gate_row_safe() {
@@ -658,12 +703,50 @@ gate_append() {
   # A false break is worse than no chain: a real splice then looks exactly like
   # the noise a reader has learned to skip.
   local series="$1"; shift
-  local body f
+  local body f k v
+
+  # EVERY FIELD VALUE IS MADE ROW-SAFE HERE, NOT AT THE CALL SITES.
+  #
+  # `|` separates fields and a newline ends the row, so a value carrying either
+  # SPLICES the grammar. `gate_row_safe` performs exactly this transform but is
+  # applied to a hand-picked few fields, and the values the ROUTER supplies —
+  # `사유`, `근거`, `선행`, `선언 파일 집합`, `의존 세그먼트`, `재개 명령` —
+  # went in raw. Korean review prose contains pipes routinely.
+  #
+  # What made that more than untidy is that the write-time checks and the
+  # readers had DIFFERENT FIELD VIEWS. A check reads the argv list through
+  # `gate_field_of`, one element per field; every reader splits the row TEXT on
+  # `|`. A pipe inside one argv element is invisible to the first and is a new
+  # field to the second, so `사유=… | 스코프=run` passed the cone check as
+  # `cone` and then enumerated as an unresolved run-scope block in termination
+  # condition 5. The same splice reaches `gate_segment_ids`, whose greedy `id=`
+  # extraction takes the LAST match and therefore changes which segment a row is
+  # about.
+  #
+  # Normalizing before the body is assembled collapses the two views into one:
+  # after this loop no field value can contain a separator, so reading the argv
+  # and reading the row give the same answer by construction — and no writer
+  # added later can forget. A value that legitimately needs a pipe uses the
+  # contract's other answer (a fence plus its info string); the one value in this
+  # file that used `|` as an internal separator now spells it `/`.
+  # Rotated through the positional parameters rather than collected into an
+  # array: the interpreter floor is bash 3.2 and the argument list is the one
+  # ordered container available without one.
+  local n_args=$# i=0
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+    esac
+    set -- "$@" "$f"
+  done
 
   # THE SCOPE CHECK SITS HERE AND NOT AT THE CALL SITES. Cone rows are appended
   # through this function rather than through `park()`, and the four literal
   # spellings already in this file plus every one added later are covered in one
-  # place by putting the check where the row is actually written.
+  # place by putting the check where the row is actually written. It runs AFTER
+  # the normalization above so that what it reads is what the row will say.
   if [ "$series" = "blocked" ]; then
     local scope=""
     for f in "$@"; do
@@ -1813,15 +1896,42 @@ gate_segment_tip() {
   printf '%s' "$out"
 }
 
+gate_dep_tokens() {
+  # gate_dep_tokens <선행 값> — the dependency ids as whitespace-separated
+  # tokens. THE ONE NORMALIZATION, used by the reader and by the write-time
+  # floor alike.
+  #
+  # Two defects lived in having two of them. The reader split on comma AND
+  # whitespace while the monotonicity floor DELETED whitespace and split on
+  # comma only, so `선행=SA SB` — an ordinary prose spacing that flows in
+  # verbatim from the design document's slice declaration, which `slice_field`
+  # does not normalize — became the single token `SASB` to the floor. Restating
+  # the same value then failed the floor, and since a repository with two
+  # segments must carry `선행` on every row, that segment could not write a
+  # second row at all: not a widening, not a state advance, nothing. The refusal
+  # blamed a removal that had not happened.
+  #
+  # And `없음` was matched against the WHOLE value rather than per token, so
+  # `없음,S1` kept `없음` as a dependency id. Nothing lands a segment named
+  # `없음`, so the landing check refused that segment forever — and the
+  # monotonicity floor refused the correction, because dropping `없음` is a
+  # removal. That state is reached by FOLLOWING the instructions: the router is
+  # told the field may be added to and not subtracted from, and a router holding
+  # `없음` that acquires a dependency does exactly this.
+  local t out=""
+  for t in $(printf '%s' "$1" | tr ',' ' '); do
+    case "$t" in ''|'없음'|'(없음)') continue ;; esac
+    out="$out $t"
+  done
+  printf '%s' "${out# }"
+}
+
 gate_deps_of() {
   # gate_deps_of <segment> — the `선행` of that segment's last row, as
   # whitespace-separated ids. `없음` yields the empty set, which is also what an
   # absent field yields — the two are told apart at WRITE time, because that is
   # the only moment at which the difference exists.
-  local v
-  v=$(gate_segment_field "$1" '선행')
-  case "$v" in ''|'없음'|'(없음)') return 0 ;; esac
-  printf '%s' "$v" | tr ',' ' '
+  gate_dep_tokens "$(gate_segment_field "$1" '선행')"
 }
 
 gate_ancestor_of() {
@@ -1902,7 +2012,34 @@ gate_cone_edge() {
   # failure would arrive as the same number.
   cgm=$(gate_segment_common_git "$m" || true)
   cgs=$(gate_segment_common_git "$s" || true)
-  if [ -n "$cgm" ] && [ -n "$cgs" ] && [ "$cgm" != "$cgs" ]; then
+  if [ -n "$cgm" ] && [ -n "$cgs" ]; then
+    if [ "$cgm" != "$cgs" ]; then return 1; fi
+  else
+    # ONE SIDE'S REPOSITORY COULD NOT BE READ, and that is settled HERE rather
+    # than left to the ancestry probe below.
+    #
+    # The guard used to require both values to be non-empty, so an unreadable
+    # one made it false and control fell through to `gate_ancestor_of` — which
+    # returns 2 for the same reason — and the fail-closed arm then accepted the
+    # edge. The effect was not one extra segment: a single member whose worktree
+    # had been cleaned up (or whose path went stale across a `--resume`) emitted
+    # an edge to EVERY candidate, including candidates in other repositories, so
+    # the cone became the whole run. That is precisely the run stop a cone exists
+    # instead of, and the residual this design accepted is STRUCTURAL
+    # under-parking — not unbounded over-parking caused by a fault.
+    #
+    # The disposition splits by WHICH side is unreadable, because fail-closed is
+    # a statement about the candidate:
+    #   - the CANDIDATE is unmeasurable → it stays in the cone. Nothing can be
+    #     shown about it, and holding one segment is the conservative direction.
+    #   - the MEMBER is unmeasurable → no edge. The pair cannot even be placed in
+    #     one repository, so "candidate stands on member" is not a question git
+    #     was asked and answered; answering it yes for every candidate everywhere
+    #     is the failure above. The candidate is still reachable through any
+    #     other member that CAN be measured.
+    # Either way the fact that it could not be measured is recorded.
+    gate_record_undecidable "$m" "$s"
+    if [ -z "$cgs" ]; then return 0; fi
     return 1
   fi
 
@@ -2015,7 +2152,31 @@ gate_record_cone() {
     return "$GATE_EXIT_VOCAB"
   fi
 
+  # THE FULL LIST GOES SOMEWHERE THE ROW CANNOT HOLD IT. `gate_append` dies over
+  # 1024 bytes, and this row carries three Korean free-text fields whose own
+  # clip budget is 400 bytes EACH — so the list is the field that has to be
+  # bounded, and the morning still needs the whole of it. stderr is where the
+  # reader is already looking; the run directory is where a later process can
+  # find it.
+  local nderived
+  nderived=$(printf '%s' "$derived" | tr ',' '\n' | gate_count)
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    printf '%s\n' "$derived" > "$RUN_DIR/cone.$anchor" 2>/dev/null || true
+  fi
+
   declared=$(gate_field_of '의존 세그먼트' "$@")
+  # LENGTH IS JUDGED BEFORE THE SUPERSET, because the two refusals send the
+  # reader to different repairs and the length one is the more fundamental: a
+  # declaration that cannot be written is not a declaration whose CONTENT is
+  # worth reporting on. Refused here rather than inside the writer, whose `die`
+  # prescribes "move long values to a sidecar" — something no caller of this
+  # verb can do, since declaring the field and omitting it write the same bytes.
+  if [ -n "$declared" ] \
+     && [ "$(printf '%s' "$declared" | wc -c | tr -d ' ')" -gt "$GATE_CONE_LIST_MAX" ]; then
+    warn "선언된 「의존 세그먼트」가 ${GATE_CONE_LIST_MAX} 바이트를 넘습니다 — 원장 행 상한(${GATE_ROW_MAX}) 안에 들어가지 않습니다"
+    warn "선언을 생략하면 게이트가 유도한 목록을 경계 있는 형태로 기록하고 전체는 ${RUN_DIR:-<런 디렉터리>}/cone.${anchor} 에 둡니다"
+    return "$GATE_EXIT_VOCAB"
+  fi
   if [ -n "$declared" ]; then
     # SUPERSET ONLY. Widening passes and narrowing does not, so the lie that
     # would pay — leaving a dependent out so it keeps running on a premise that
@@ -2027,22 +2188,44 @@ gate_record_cone() {
       warn "선언된 「의존 세그먼트」가 유도 결과의 진부분집합입니다 — 빠진 것:${missing}"
       return "$GATE_EXIT_GRADE"
     fi
-    gate_append 'blocked' "대상=$alias" "$@" || return $?
+    gate_append 'blocked' "대상=$alias" "$@" "의존 세그먼트 수=$nderived" || return $?
   else
-    gate_append 'blocked' "대상=$alias" "$@" "의존 세그먼트=$derived" || return $?
+    gate_append 'blocked' "대상=$alias" "$@" "의존 세그먼트 수=$nderived" \
+      "의존 세그먼트=$(gate_row_safe "$derived" "$GATE_CONE_LIST_MAX")" || return $?
   fi
-  log "의존 원뿔 기록 — 앵커 $anchor · 유도 $derived"
+  printf 'gate: 원뿔 전체 목록 (앵커 %s · %s개): %s\n' "$anchor" "$nderived" "$derived" >&2
+  log "의존 원뿔 기록 — 앵커 $anchor · $nderived 개"
 }
 
 # ---------------------------------------------------------------------------
 # Judgment approvals — the path grade 2's own refusal used to promise.
 # ---------------------------------------------------------------------------
+gate_judgment_question() {
+  # gate_judgment_question <기준> <근거> — the question text, canonically.
+  #
+  # ONE PLACE, because the approval's identity and the text a person reads must
+  # be derived from the same bytes. They were not: the id hashed `기준` alone
+  # while the row carried `기준 — 근거`, so two judgments sharing a short,
+  # writer-authored standard were ONE approval however different the rest of the
+  # question was.
+  gate_row_safe "${1:-미상} — ${2:-근거 없음}" 400
+}
+
 gate_judgment_approval_id() {
-  # gate_judgment_approval_id <segment> <기준>
+  # gate_judgment_approval_id <segment> <질문 문면>
   #
   # Derived from the JUDGMENT rather than from an act, so the same judgment
   # submitted twice yields one approval instead of a queue of duplicates. The
   # act variant hashes an argv, and a judgment has none.
+  #
+  # IT HASHES THE WHOLE QUESTION AND NOT JUST `기준`. A judgment approval has no
+  # binding tuple — a question's answer is durable, so there is no tree to
+  # re-derive freshness against — which means identity is the ONLY thing
+  # separating one answered question from the next. Keyed on `기준`, a short
+  # free-text field the submitting side writes, a later judgment that merely
+  # reused the phrase inherited the earlier `승인` and was adopted without ever
+  # meeting the auto-adoption floor and without anyone reading it. Hashing the
+  # text a person actually saw makes the id and the answer inseparable.
   printf 'J-%s' "$(printf '%s|%s|%s' "$RUN_ID" "$1" \
     "$(printf '%s' "$2" | shasum -a 256 | cut -d' ' -f1)" | shasum -a 256 | cut -c1-8)"
 }
@@ -2060,9 +2243,14 @@ gate_issue_judgment_approval() {
   # own recommendation through `act --kind judgment`; whether that becomes a
   # question is decided here.
   local alias="$1" seg="$2" std="$3" why="$4" id q
-  id=$(gate_judgment_approval_id "$seg" "$std")
-  q=$(gate_row_safe "${std:-미상} — ${why:-근거 없음}" 400)
-  if gate_has_row '승인' "승인 id=$id "; then
+  q=$(gate_judgment_question "$std" "$why")
+  id=$(gate_judgment_approval_id "$seg" "$q")
+  # `대기` AND NOT MERE PRESENCE. `gate_has_row` matches a CLOSED approval too,
+  # so re-submitting the same judgment after it was answered found the answered
+  # row, returned quietly, and left the caller to resolve against a decision
+  # nobody re-made. Narrowing to the pending state is what lets a question that
+  # comes back re-open as a question instead of being silently satisfied.
+  if [ "$(gate_approval_state "$id")" = "대기" ]; then
     log "판단 승인 $id 이 이미 열려 있습니다 — 같은 판단은 승인 하나로 모입니다"
     return 0
   fi
@@ -2086,6 +2274,38 @@ gate_revert_surface() {
   surface_of_argv0 $1
 }
 
+gate_manifest_write_guard() {
+  # gate_manifest_write_guard <graded-surface> <argv...>
+  #
+  # THE MANIFEST BECAME AN AUTHORIZATION RECORD AND DID NOT GET THE GUARD ONE
+  # HAS. `## 인가` now carries `자동 채택` rows, and one more of those means every
+  # judgment of that class is adopted with no person and no reversibility
+  # requirement — the same KIND of value the grant holds. The grant has a
+  # structural guard (`인가-자기확장-금지` refuses any act that writes it); the
+  # manifest had none, in this file or in the rule catalog, so an ordinary
+  # `워크트리쓰기` act could append to its own pre-adoption list.
+  #
+  # The rule catalog is the natural home for this and is not reachable: it is an
+  # enforcement surface, and a run editing the surface that binds it is the move
+  # every other branch here refuses. So the guard lives on the gate's own path,
+  # which is the layer this run may change.
+  #
+  # Shaped exactly like the grant arm it mirrors: any non-read act naming the
+  # manifest is refused, whatever the cutpoint. Cutpoints say how far an act may
+  # go; this act would change the answer.
+  local graded="$1"; shift
+  [ -n "${MANIFEST:-}" ] || return 0
+  case "$graded" in 읽기) return 0 ;; esac
+  local a
+  for a in "$@"; do
+    [ "$a" = "$MANIFEST" ] || continue
+    warn "매니페스트에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $MANIFEST"
+    warn "「## 인가」의 자동 채택 행은 사람이 지켜보는 자리에서만 선언됩니다 — 런이 자기 사전 채택 목록을 늘리는 것은 인가의 자기확장입니다"
+    return "$GATE_EXIT_RULE"
+  done
+  return 0
+}
+
 gate_autoadopt_ok() {
   # gate_autoadopt_ok <판단 부류> <되돌리는 법> — 0 adopt, non-zero escalate.
   #
@@ -2103,19 +2323,51 @@ gate_autoadopt_ok() {
   local cls="$1" revert="$2" line mcls
   case "$cls" in '') return 1 ;; esac
 
-  # Arm (a) — declared in advance. A run cannot write this input: the manifest
-  # has no append form, `## 인가` must be exactly one, the binding digest covers
-  # it, and `인가-자기확장-금지` cannot be switched off. That, and only that, is
-  # the safety argument for pre-adoption.
+  # THE FORBIDDEN CLASSES FALL OUT BEFORE EITHER ARM.
+  #
+  # `judgment_class_forbidden` had exactly one caller — `check_manifest`'s rule
+  # 11 — and that one guards arm (a) only. Arm (b) branches on the argv0 grade
+  # of the undo command and nothing else, so `판단 부류=시각-면제` with
+  # `되돌리는 법=git checkout -- tests/visual/` was ADOPTED at runtime while
+  # declaring the same class in the manifest is a hard stop. The whole mechanical
+  # defence of "a decision that hands risk to the user" sat at freeze time, and
+  # the runtime path walked around it.
+  #
+  # The disposition is ESCALATION and not row refusal. Recording a judgment of a
+  # forbidden class is allowed by the contract; what is forbidden is adopting one
+  # without a person. Returning non-zero routes to
+  # `gate_issue_judgment_approval`, and that is what "a person decides this"
+  # means here. Placed before both arms so a manifest declaration cannot admit
+  # one either — the two guards then agree instead of contradicting.
+  if judgment_class_forbidden "$cls"; then
+    warn "자동 채택 불성립 — 「$cls」 는 미리 채택할 수 없는 판단 부류입니다 (위험을 사용자에게 넘기는 결정)"
+    warn "이 판단은 거절되지 않고 승인으로 올라갑니다 — 기록은 허용이고 무인 채택만 금지입니다"
+    return 1
+  fi
+
+  # Arm (a) — declared in advance. What makes this input one a run cannot forge
+  # is now stated as what it IS rather than as four claims two of which were
+  # false. It holds on three legs: `## 인가` must be exactly one section and this
+  # scan reads only that section; the binding digest serializes these rows, so
+  # appending one moves the digest and `check_manifest` refuses at the next gate
+  # entry; and `gate_manifest_write_guard` refuses an act that writes the
+  # manifest at all.
+  #
+  # The residual is stated rather than papered over: the manifest has no
+  # ROLLBACK-proof anchor outside itself — both sides of the digest comparison
+  # are read from the same file — so the guarantee is that a write is refused and,
+  # failing that, detected at the next act. It is not that a write is impossible.
   if [ -f "$MANIFEST" ]; then
     while IFS= read -r line; do
-      case "$line" in '- `자동 채택`'*) ;; *) continue ;; esac
+      [ -n "$line" ] || continue
       mcls=$(printf '%s' "$line" | tr '|' '\n' | sed -n 's/^ *판단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
       if [ "$mcls" = "$cls" ]; then
         log "자동 채택 — 팔 (a) 사전 선언 ($cls)"
         return 0
       fi
-    done < "$MANIFEST"
+    done <<EOF
+$(manifest_autoadopt_rows)
+EOF
   fi
 
   # Arm (b) — reversible. The undo command's first token goes through the same
@@ -2259,17 +2511,40 @@ gate_record_row() {
       # the lie that pays is retroactive — narrowing `선행` AFTER the predecessor
       # parks takes this segment out of the cone. A later row may ADD and may not
       # REMOVE, which is the same polarity every other check here uses.
+      # BOTH SIDES THROUGH ONE NORMALIZATION. Comparing a whitespace-stripped
+      # haystack against comma-split needles made the floor reject values its
+      # own reader accepts, and matched `없음` only as a whole value — see
+      # `gate_dep_tokens` for what each of those cost.
+      local cur_deps
+      cur_deps=$(gate_dep_tokens "$deps")
       if [ -n "$prior" ]; then
-        prev_deps=$(gate_row_field "$prior" '선행')
-        case "$prev_deps" in ''|'없음'|'(없음)') prev_deps="" ;; esac
-        for d in $(printf '%s' "$prev_deps" | tr ',' ' '); do
-          case ",$(printf '%s' "$deps" | tr -d ' ')," in
-            *",$d,"*) ;;
+        prev_deps=$(gate_dep_tokens "$(gate_row_field "$prior" '선행')")
+        for d in $prev_deps; do
+          case " $cur_deps " in
+            *" $d "*) ;;
             *) warn "「선행」은 세그먼트마다 단조롭습니다 — 앞선 행의 '$d' 가 이번 행에 없습니다 (더할 수는 있어도 뺄 수 없습니다)"
                return "$GATE_EXIT_VOCAB" ;;
           esac
         done
       fi
+
+      # EVERY TOKEN NAMES A SEGMENT THIS LEDGER KNOWS, checked at write time.
+      # `선행` is monotone, so a token that resolves to nothing is not a typo the
+      # next row can correct: it is permanently required and permanently
+      # un-landable, and the failure surfaces much later as "the predecessor has
+      # not landed (상태=없음)", which sends the reader to look for a segment
+      # rather than at the spelling. Refusing here lets the message say the true
+      # thing — there is no such segment — at the moment it is cheap.
+      local known
+      known=" $(gate_segment_ids | tr '\n' ' ') $seg "
+      for d in $cur_deps; do
+        case "$known" in
+          *" $d "*) ;;
+          *) warn "「선행」이 지목한 세그먼트가 원장에 없습니다: '$d' — 그런 세그먼트는 착지할 수 없고 「선행」은 단조로우므로 이 행을 쓰면 되돌릴 수 없습니다"
+             warn "선행 세그먼트의 segment 행을 먼저 쓰거나, 의존이 없다면 「선행=없음」이라고 적으세요"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+      done
 
       gate_append 'segment' "id=$seg" "$@"
       log "세그먼트 기록 — $seg ($st)"
@@ -2332,15 +2607,44 @@ gate_record_row() {
           # evidence has to BE that outstanding question — an open approval
           # whose cutpoint is the literal `판단`, found in the ledger rather than
           # asserted in the wording.
-          local cev jid cev_ok=0
+          local cev jid cev_ok=0 cev_id="" other last_other
           cev=$(gate_field_of '근거' "$@")
           for jid in $(gate_pending_approval_ids 판단); do
-            case "$cev" in *"$jid"*) cev_ok=1 ;; esac
+            case "$cev" in *"$jid"*) cev_ok=1; cev_id="$jid" ;; esac
           done
           if [ "$cev_ok" != "1" ]; then
             warn "「보류」인 종료 절의 「근거」는 열려 있는 절단점=판단 승인 id 를 지목해야 합니다 (관측: ${cev:-없음})"
             return "$GATE_EXIT_VOCAB"
-          fi ;;
+          fi
+          # ONE QUESTION HOLDS ONE CLAUSE.
+          #
+          # Condition 10 is the only one of the ten that measures what the USER
+          # authorized the run against, and `보류` settles a clause for it — so
+          # with no constraint here a single grade-2 judgment, submitted once,
+          # could be cited by every clause in the manifest and the run would
+          # propose `done` with nothing actually settled. The morning would read
+          # a run that ended with one open question, which is a state the design
+          # deliberately permits, while none of the authorized clauses had been
+          # met.
+          #
+          # Distinctness is the floor rather than "the question must name the
+          # clause": the gate can verify that two clauses do not lean on one
+          # answer, and it cannot verify that a free-text question is ABOUT a
+          # clause. What it refuses is the amplification — one answer excusing
+          # many obligations — which is the whole of the failure.
+          for other in $(gate_clause_ids); do
+            [ -n "$other" ] || continue
+            [ "$other" = "$cid" ] && continue
+            last_other=$( { gate_rows '종료 절' | grep -F "id=$other " || true; } | tail -1)
+            [ -n "$last_other" ] || continue
+            [ "$(gate_row_field "$last_other" '상태')" = "보류" ] || continue
+            case "$(gate_row_field "$last_other" '근거')" in
+              *"$cev_id"*)
+                warn "승인 ${cev_id} 은 이미 종료 절 ${other} 을 보류시키고 있습니다 — 답 하나가 여러 절을 정산할 수 없습니다"
+                warn "이 절을 보류하려면 이 절에 대한 물음을 따로 올리세요 (조건 10 은 사용자가 인가한 것을 재는 유일한 조건입니다)"
+                return "$GATE_EXIT_VOCAB" ;;
+            esac
+          done ;;
         *) warn "종료 절 행의 「상태」는 충족·불가능·보류 중 하나여야 합니다 (관측: ${cst:-없음})"
            return "$GATE_EXIT_VOCAB" ;;
       esac
@@ -2382,7 +2686,13 @@ gate_record_row() {
         *) warn "판단 행은 등급 1 과 2 만 받습니다 — 0 은 기록이 필요 없습니다 (관측: ${jgrade:-없음})"
            return "$GATE_EXIT_VOCAB" ;;
       esac
-      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" "$@"
+      # `해소 승인` NAMES THE ANSWER THAT OPENED THIS ADOPTION, and `-` says the
+      # floor admitted it on its own. Without the field there is no way to ask
+      # whether an answer has already been spent, and a judgment approval has no
+      # binding tuple to expire — so one answered question opened every later
+      # judgment that hashed to the same id.
+      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" \
+        "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
       log "판단 등급 1 기록 — 부류 $jcls"
       ;;
     blocked)
@@ -2705,6 +3015,8 @@ gate_verb_act() {
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
 
+  gate_manifest_write_guard "$graded" "$@" || exit $?
+
   # WHAT THE AUTO-ADOPTION RULE READS. A rule checker is a separate `/bin/sh`
   # process and cannot call this file's functions, so the gate resolves the
   # vocabulary and hands over values — the same division `절단점-준수` already
@@ -2716,6 +3028,9 @@ gate_verb_act() {
   GATE_JUDGMENT_CLASS=""
   GATE_REVERT=""
   GATE_REVERT_SURFACE=""
+  # Set only when an ANSWERED approval is what opened this act, so the row can
+  # say which one and a second use of the same answer is refusable.
+  GATE_RESOLVED_APPROVAL=""
   if [ "$kind" = "judgment" ]; then
     # THE ROW IS WELL-FORMED BEFORE THE FLOOR IS ASKED ABOUT IT. Otherwise a
     # judgment missing a required field fails the floor for want of the very
@@ -2754,15 +3069,28 @@ gate_verb_act() {
       # tuple describing a tree the question has nothing to do with — and the
       # same judgment resubmitted would then produce a second approval instead
       # of finding the first.
-      ap_id=$(gate_judgment_approval_id "$segment" "$(gate_field_of '기준' "$@")")
+      ap_id=$(gate_judgment_approval_id "$segment" \
+              "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
     else
       ap_id=$(gate_act_approval_id "$alias" "$argv")
     fi
     ap_st=$(gate_approval_state "$ap_id")
     case "$ap_st" in
       승인)
-        log "승인 $ap_id 이 해소되어 이 행위를 엽니다"
-        rules_rc=0 ;;
+        # AN ANSWER IS SPENT ONCE. A judgment approval carries no binding tuple,
+        # so nothing about it goes stale — `gate_approval_state` returns `승인`
+        # for that id for the rest of the run, and the arm below turned every
+        # later judgment resolving to the same id into an adoption that never
+        # met the floor. Recording which approval opened which adoption is what
+        # makes "already used" a question the ledger can answer.
+        if [ "$kind" = "judgment" ] && gate_has_row '자율 승인' "해소 승인=$ap_id "; then
+          warn "승인 $ap_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
+          warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
+        else
+          log "승인 $ap_id 이 해소되어 이 행위를 엽니다"
+          GATE_RESOLVED_APPROVAL="$ap_id"
+          rules_rc=0
+        fi ;;
       무효)
         warn "승인 $ap_id 이 무효로 닫혔습니다 — 이 행위는 수행하지 않습니다"
         exit "$GATE_EXIT_RULE" ;;
@@ -2927,14 +3255,22 @@ gate_verb_act() {
     # recorded in the `done` file beside `무효화`, which already sits there for
     # the same structural reason, and the morning tells the three apart at a
     # glance.
-    local qids qn
+    local qids qn held
     qids=$(gate_pending_approval_ids 판단 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     qn=$(gate_pending_approval_ids 판단 | gate_count)
+    # THE HELD CLAUSES ARE NAMED. `보류` settles condition 10, so a clause on
+    # hold leaves no trace in the unmet list — and a run that answered every
+    # authorized clause and one that deferred all of them behind questions would
+    # otherwise write the same terminal line. This is the residual class the
+    # design put in this file rather than in an eleventh condition, so it has to
+    # carry what is actually outstanding.
+    held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     if [ -n "$qids" ]; then
-      printf '%s 종단 — 질의 잔여 %s건 · 승인 %s · 근거 %s\n' \
-        "$(now_iso)" "$qn" "$qids" "$rationale" > "$RUN_DIR/done"
+      printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s\n' \
+        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
     else
-      printf '%s 종단 — 종료 조건 성립 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      printf '%s 종단 — 종료 조건 성립%s · 근거 %s\n' \
+        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
     fi
   elif [ -z "$unmet" ]; then
     if ! gate_names_next_obligation "$rationale"; then
@@ -3109,7 +3445,7 @@ gate_issue_act_approval() {
   base=$(target_field "$alias" '베이스 브랜치')
   head=$(cd "$(target_field "$alias" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
-    "행위 다이제스트=$ad" "구속 튜플=$alias|$base|${head:0:12}|$grade" \
+    "행위 다이제스트=$ad" "구속 튜플=$alias/$base/${head:0:12}/$grade" \
     "막는 세그먼트=$seg" "질문 문면=사전 인가 밖 행위를 수행할까요" \
     "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
   warn "승인 대기 발행 $id — $alias / $cut / $grade"
@@ -3165,9 +3501,36 @@ gate_clause_settled() {
   # the right of a pipe kills the writer with SIGPIPE, and under `pipefail` the
   # whole pipeline then reports failure even though the match was found. This
   # file's own scanner catches that shape, and it caught this one.
+  #
+  # `보류` COUNTS AS SETTLED HERE, DELIBERATELY, and the reason is worth stating
+  # because the opposite reading is the obvious one. A condition exists to
+  # REFUSE a proposal, and an open question must not refuse one — that refusal
+  # is the defect this slice removes, and it is why no eleventh condition was
+  # created. What keeps `보류` from being a free pass is not this function: it is
+  # the write-time floor (the evidence must be an OPEN `절단점=판단` approval,
+  # and no two clauses may lean on the same one) plus the `done` file recording
+  # every held clause with the question holding it. The state's disposition is
+  # visible; it is not silent the way `충족` would be.
   local last
   last=$( { gate_rows '종료 절' | grep -F "id=$1 " || true; } | tail -1)
   [ -n "$last" ]
+}
+
+gate_held_clause_ids() {
+  # Clauses whose LAST row is `보류`, with the approval each is waiting on.
+  # These settle condition 10 and are therefore invisible to `gate_done_conditions`
+  # — which is exactly why the `done` file has to name them, or a run that
+  # settled nothing and a run that settled everything write the same ending.
+  local cid last jid
+  for cid in $(gate_clause_ids); do
+    [ -n "$cid" ] || continue
+    last=$( { gate_rows '종료 절' | grep -F "id=$cid " || true; } | tail -1)
+    [ -n "$last" ] || continue
+    [ "$(gate_row_field "$last" '상태')" = "보류" ] || continue
+    jid=$(printf '%s' "$(gate_row_field "$last" '근거')" \
+          | sed -n 's/.*\(J-[0-9a-f]\{8\}\).*/\1/p' | sed -n '1p')
+    printf '%s(%s)\n' "$cid" "${jid:-승인 미상}"
+  done
 }
 
 gate_unmet_clause_ids() {
@@ -3583,18 +3946,36 @@ gate_absorb_emitted_judgment() {
   local alias="$1" seg="$2" res="$3" txt cls grade std revert why
   txt=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null || true)
   [ -n "$txt" ] || return 0
-  cls=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 부류\*\*: *\([^ *`]*\).*/\1/p' | sed -n '1p')
-  [ -n "$cls" ] || return 0
 
+  # EVERY MARKER IS READ BEFORE ANY OF THEM DECIDES. The class used to gate the
+  # rest, so a return here meant "no judgment was emitted" AND "a judgment was
+  # emitted without a class" — and the second is the shape a stage naturally
+  # produces, because the three-grade marking convention names `기준` and
+  # `되돌리는 법` and has never required a class at all. That judgment vanished:
+  # no row, no approval, no warning, while the stage had already ACTED on the
+  # decision inside its own turn. It is the exact opposite disposition from a
+  # class that is present but out of vocabulary, which escalates.
+  cls=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 부류\*\*: *\([^ *`]*\).*/\1/p' | sed -n '1p')
   grade=$(printf '%s' "$txt"  | sed -n 's/.*\*\*판단 등급\*\*: *\([0-9]\).*/\1/p' | sed -n '1p')
   std=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p')
   revert=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p')
   why=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p')
 
+  # No marker of ANY kind — the stage recorded no decision, which is the common
+  # case and the only one that may return quietly.
+  if [ -z "$cls" ] && [ -z "$grade" ] && [ -z "$std" ] && [ -z "$revert" ] && [ -z "$why" ]; then
+    return 0
+  fi
+
   # Grade 0 records nothing by contract — an already-written rule fully
   # determined the answer, so there was no decision to record.
   case "${grade:-}" in 0) return 0 ;; esac
 
+  if [ -z "$cls" ]; then
+    warn "스테이지가 판단을 방출했으나 「판단 부류」가 없습니다 — 행을 쓰지 않고 승인을 발행합니다"
+    gate_issue_judgment_approval "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}"
+    return 0
+  fi
   if ! judgment_class_ok "$cls"; then
     warn "스테이지가 방출한 「판단 부류」가 어휘 밖입니다: $cls — 행을 쓰지 않고 승인을 발행합니다"
     gate_issue_judgment_approval "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}"
@@ -3727,10 +4108,35 @@ gate_close() {
   #
   # Act approvals keep the literal, so no existing reader and no existing
   # assertion changes.
+  # THE ANSWER IS EXTRACTED FROM THE TRANSPORT FRAME, NOT SHIPPED WITH IT.
+  #
+  # `$ans` is the matched transcript LINE, and a harness transcript line is a
+  # JSON object whose `message.content` sits behind `uuid`, `parentUuid`,
+  # `sessionId` and `timestamp` and is itself an array of blocks. Recording the
+  # line verbatim put four hundred bytes of scaffolding in the field the
+  # contract calls the run's only durable copy of the answer, with the answer
+  # itself beyond the clip. Unlike the clip-unit defect this fired on every real
+  # transcript, and the fixture missed it because a hand-written one-line object
+  # puts the answer near the front.
+  #
+  # The raw line is the FALLBACK rather than the primary: a line that is not
+  # JSON, or is JSON of a shape this does not know, still yields the bytes it
+  # has. The transcript binding is untouched — the id and the question text must
+  # already have been found on this line before extraction runs.
   cutp=$(gate_row_field "$row" '절단점')
   abody='트랜스크립트 판독'
   if [ "$cutp" = "판단" ]; then
-    abody=$(gate_row_safe "$ans" 400)
+    local extracted
+    extracted=$(printf '%s' "$ans" | jq -r '
+      (.message.content? // .content?) as $c
+      | if $c == null then empty
+        elif ($c | type) == "string" then $c
+        elif ($c | type) == "array" then
+          [ $c[] | if (type == "object") then (.text // empty) else tostring end ] | join(" ")
+        else ($c | tostring) end
+    ' 2>/dev/null || true)
+    [ -n "$extracted" ] || extracted="$ans"
+    abody=$(gate_row_safe "$extracted" 400)
   fi
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
@@ -3975,8 +4381,22 @@ readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
 
 gate_boundaries() {
+  # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
+  # three of its four call sites got one; this was the fourth, so `want` was
+  # empty, the narrowing was skipped entirely, and a `절단점=판단` approval
+  # counted here.
+  #
+  # Before questions could stay open past the night, every approval class that
+  # could be open also counted toward termination condition 2, so the B1..B3
+  # suspension was tied to the run's ability to end. Making a run able to end
+  # with an open question cut that tie and left the suspension unbounded: one
+  # grade-2 judgment at 22:10, with nobody awake to answer it — the premise of
+  # this whole slice — switched off stagnation detection, obligation backlog and
+  # the 40-act budget until the wall-clock deadline. The reason recorded for the
+  # suspension ("waiting, not stalled") is false for this class specifically,
+  # because the design promises the run keeps going alongside the question.
   local pending
-  pending=$(gate_pending_approval_ids | gate_count)
+  pending=$(gate_pending_approval_ids act | gate_count)
 
   if [ "$pending" = "0" ]; then
     gate_b1_stagnation
@@ -4081,7 +4501,7 @@ gate_issue_boundary_approval() {
   id="${name}-$(printf '%s' "$RUN_ID$name$(gate_progress_digest)" | shasum -a 256 | cut -c1-8)"
   gate_has_row '승인' "승인 id=$id " && return 0
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
-    "행위 다이제스트=-" "구속 튜플=$name|$(gate_progress_digest)" "막는 세그먼트=-" \
+    "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \
     "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
   warn "경계 $name 발동 — 승인 대기 $id: $q"
 }

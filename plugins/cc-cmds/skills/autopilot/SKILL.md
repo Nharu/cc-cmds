@@ -191,7 +191,7 @@ In an ordinary checkout that is the same string as `git rev-parse --show-topleve
 Two digests are computed here and **compared at entry**, so they are not decoration:
 
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
-- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
+- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
 
 **The example in that contract is fenced with four backticks because it contains three-backtick fences of its own.** Any document that explains this grammar has the same shape, which is why the parser reading it skips fenced spans and survives nesting — and why you must not "simplify" the nesting when you copy it.
 
@@ -331,6 +331,10 @@ Not every decision is an act. For those, the question is **"may I choose this wi
 **You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second.
 
 **The floor is a union.** Either arm admits: the manifest declared this `판단 부류` in a `자동 채택` row, **or** `되돌리는 법` is a runnable command whose argv0 grades at or below `워크트리쓰기`. Prose fails the second arm — it grades `등급 미상` — and that is the point of the field: produce the thing that reverses the decision rather than assert that one exists.
+
+**Two classes are outside the union entirely.** `팀-구성` and `시각-면제` hand risk to the user, so neither arm admits them: the floor rejects them before it looks at the manifest or at the undo command. What follows is an **approval**, not a refusal — recording a judgment of that class is permitted and only adopting it unattended is not. Declaring either in a `자동 채택` row is a hard stop when the manifest is frozen, and the runtime rejection is what makes the two agree instead of contradicting.
+
+**What makes arm (a)'s input unforgeable** is three things, and it is worth knowing which: `## 인가` is exactly one section and the floor reads only that section; the `자동 채택` rows are inside `구속 다이제스트`, so appending one moves the digest and the next gate entry refuses; and the gate refuses any act that writes the manifest, at any cutpoint. The residual is that both sides of the digest comparison live in the same file, so a rewrite that moves the row **and** the digest field together is detected by nothing — which is why the write guard, not the digest, is the load-bearing half.
 
 **A run may END with questions still open.** They do not count against termination condition 2, because a question's answer is an input to work that has not started and a successor run can consume it. What records them is the `done` file's third class, `종단 — 질의 잔여 N건 · 승인 <id>…`. A clause blocked on one is settled with `상태=보류` whose `근거` names that open approval id — which is a different disposition from `불가능`: impossible ends the clause, on hold hands it to the next run.
 

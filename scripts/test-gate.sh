@@ -2772,10 +2772,34 @@ sed -e 's/run-id=R1;/run-id=R2;/' -e 's/^\*\*런 id\*\*: R1$/**런 id**: R2/' "$
 # The binding digest no longer matches, and that is the check working — so it is
 # dropped rather than recomputed, which the driver reports and allows.
 sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$NM" && rm -f "$NM.bak"
-# `## 인가` is the last section, so appending lands inside it. One pre-declared
-# judgment class — this is arm (a)'s only input, and a run cannot write it.
-printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 상한=없음 | 심각도 상한=minor | 사유=문서 신선도 판정은 되돌릴 대상이 없다\n' >> "$NM"
-printf -- '- `종료 절` | id=K1 | 문면=첫째 절\n' >> "$NM"
+# ROWS GO INSIDE `## 인가`, AND APPENDING TO THE FILE DOES NOT PUT THEM THERE.
+#
+# This suite adds a `## 룰 설정` section below `## 인가` earlier on, so `>>` lands
+# a row in THAT section — and the auto-adoption floor honours only rows inside
+# `## 인가`, because that is the section the "exactly one" guarantee is about. A
+# row anywhere else is not a declaration the floor reads; treating it as one is
+# the hole being closed, so the fixture must place the row the way a kickoff
+# does rather than wherever the file happens to end.
+nm_add_auth_row() {
+  local line="$1" out="$NM.ins" l inserted=
+  : > "$out"
+  while IFS= read -r l || [ -n "$l" ]; do
+    printf '%s\n' "$l" >> "$out"
+    if [ -z "$inserted" ] && [ "$l" = "## 인가" ]; then
+      printf '%s\n' "$line" >> "$out"
+      inserted=1
+    fi
+  done < "$NM"
+  if [ -z "$inserted" ]; then
+    printf 'nm_add_auth_row: 매니페스트에 「## 인가」 절이 없다\n' >&2
+    exit 1
+  fi
+  mv "$out" "$NM"
+}
+# One pre-declared judgment class — this is arm (a)'s only input, and a run
+# cannot write it.
+nm_add_auth_row '- `자동 채택` | 판단 부류=문서-신선도 | 상한=없음 | 심각도 상한=minor | 사유=문서 신선도 판정은 되돌릴 대상이 없다'
+nm_add_auth_row '- `종료 절` | id=K1 | 문면=첫째 절'
 sed 's/R1/R2/g' "$GRANT" > "$WT/docs/pipeline-grant/R2.md"
 LEDGER2="$WT/docs/pipeline-run/R2.md"
 {
@@ -2978,6 +3002,22 @@ if [ "${n:-0}" -ge 1 ]; then
 else
   bad "판정 불가 기록" "원뿔 안에 남기면서 왜 재지 못했는지는 남기지 않았다"
 fi
+# FAIL-CLOSED IS ABOUT THE CANDIDATE, AND IT DOES NOT UNIVERSALIZE.
+#
+# The two exclusions above are asserted on `cone1` only, and nothing re-checked
+# them once `SG` existed — so a member whose repository cannot be read emitting
+# an edge to EVERY candidate, across repository boundaries included, was
+# invisible to this suite while the run's cone quietly became a run stop. What
+# the accepted residual authorizes is structural under-parking, never unbounded
+# over-parking caused by a fault.
+case ",$cone5," in
+  *,SC,*) bad "판정 불가 확산" "워크트리가 사라진 멤버가 무관한 베이스의 C 를 원뿔로 끌어들였다: $cone5" ;;
+  *) ok "판정 불가 멤버가 무관한 세그먼트를 끌어들이지 않는다" ;;
+esac
+case ",$cone5," in
+  *,SX,*) bad "판정 불가 확산" "판정 불가 멤버가 다른 레포의 세그먼트까지 원뿔에 넣었다: $cone5" ;;
+  *) ok "판정 불가 멤버가 레포 경계를 넘지 않는다 (원뿔이 런 정지가 되지 않는다)" ;;
+esac
 
 # --- 31f. A file-set escape raises its own cone ----------------------------
 #
@@ -2991,6 +3031,31 @@ cone6=$(cone_of SA "파일 집합 이탈")
 case ",$cone6," in
   *,SE,*) ok "파일 집합 이탈이 원뿔을 낸다 (선언 밖 파일을 건드린 세그먼트가 전제 반증의 앵커가 된다)" ;;
   *) bad "파일 집합 이탈" "$cone6" ;;
+esac
+# Re-checked here as well: `SG` is still a member and still unmeasurable, so a
+# cone raised for a different reason must stay just as bounded.
+case ",$cone6," in
+  *,SC,*) bad "판정 불가 확산" "이탈 원뿔에서도 무관한 C 가 끌려들어왔다: $cone6" ;;
+  *) ok "이탈 원뿔에서도 무관한 세그먼트는 밖에 남는다" ;;
+esac
+case ",$cone6," in
+  *,SX,*) bad "판정 불가 확산" "이탈 원뿔이 다른 레포의 세그먼트를 포함했다: $cone6" ;;
+  *) ok "이탈 원뿔도 레포 경계를 넘지 않는다" ;;
+esac
+# THE CONE ROW IS BOUNDED BY CONSTRUCTION. The list grows with the size of the
+# night, which is exactly when the mechanism is needed, and it sat on a row with
+# a 1024-byte cap beside three Korean free-text fields — so `gate_append` would
+# `die` and the cone would not be recorded at all.
+crow=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F '앵커 세그먼트=SA ' | tail -1)
+n=$(printf '%s' "$crow" | wc -c | tr -d ' ')
+if [ "${n:-0}" -gt 0 ] && [ "${n:-0}" -le 1024 ]; then
+  ok "원뿔 행이 원장 행 상한 안에 있다 (${n} 바이트)"
+else
+  bad "원뿔 행 상한" "원뿔 행이 ${n} 바이트다"
+fi
+case "$crow" in
+  *"의존 세그먼트 수="*) ok "원뿔 행이 경계 있는 개수 필드를 함께 싣는다" ;;
+  *) bad "의존 세그먼트 수" "$crow" ;;
 esac
 
 # --- 31g. The router's declaration is checked, and only one way -------------
@@ -3248,6 +3313,369 @@ if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
   ok "린트 — 여덟 값 밖의 판단 부류는 실패한다"
+fi
+
+# --- 31q. The auto-adoption floor's safety argument, made true ---------------
+#
+# The code stated arm (a)'s safety as four reasons and two of them were false:
+# the binding digest did not serialize `자동 채택` rows, and the rule named as
+# the structural guard never received the manifest path. One ordinary
+# `워크트리쓰기` act could therefore append a class to the run's own
+# pre-adoption list, and nothing moved.
+
+# THE DIGEST ACTUALLY COVERS THE ROW. Asserted against the R1 fixture manifest
+# rather than the cone one, because the cone manifest deliberately drops its
+# binding digest — that is the only manifest here whose frozen set is compared.
+BDM="$WORK/autoadopt-binding.md"
+cp "$MANIFEST" "$BDM"
+gate snapshot --manifest "$BDM"
+check "픽스처 매니페스트의 사본이 얼린 집합 대조를 통과한다" "$rc" "0"
+printf -- '- `자동 채택` | 판단 부류=감사-발견 | 상한=없음 | 심각도 상한=minor | 사유=런이 스스로 덧붙였다\n' >> "$BDM"
+gate snapshot --manifest "$BDM"
+if [ "$rc" = "0" ]; then
+  bad "구속 다이제스트" "자동 채택 행을 덧붙였는데 대조가 통과했다 — 런이 자기 사전 채택 목록을 늘릴 수 있다"
+else
+  ok "자동 채택 행을 덧붙이면 구속 다이제스트 대조가 거절한다"
+fi
+case "$msg" in
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*) ok "거절이 얼린 집합이 움직였음을 지목한다" ;;
+  *) bad "구속 다이제스트 문면" "$msg" ;;
+esac
+
+# THE FLOOR HONOURS ONLY `## 인가`. "Exactly one authorization section" is the
+# uniqueness guarantee arm (a) leans on, and a whole-file scan does not inherit
+# it — a row planted in any other section was honoured, so the guarantee
+# protected bytes the consumer was not reading. This suite's own fixture had the
+# row outside `## 인가` for exactly that reason.
+OM="$WORK/outside-auth.md"
+cp "$NM" "$OM"
+printf -- '- `자동 채택` | 판단 부류=감사-발견 | 상한=없음 | 심각도 상한=minor | 사유=인가 절 밖에 심는다\n' >> "$OM"
+gateN act --manifest "$OM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$OM" 2>/dev/null | jq -r .H)" \
+      --rationale x \
+      -- 등급=1 "판단 부류=감사-발견" 기준="인가 절 밖의 선언이 통하는가" \
+         "되돌리는 법=아침에 다시 본다" 근거="산문 되돌리기라 팔 b 는 막힌다"
+check "「## 인가」 밖에 심은 자동 채택 행은 팔 (a) 를 열지 못한다" "$rc" "5"
+
+# AND THE WRITE PATH IS REFUSED, which is the guarantee the digest cannot give:
+# both sides of that comparison are read from the same file, so detection is
+# what the digest buys and prevention has to come from somewhere else.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x -- tee "$NM"
+check "매니페스트에 쓰려는 행위는 절단점과 무관하게 거절된다" "$rc" "3"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "거절이 인가의 자기확장임을 지목한다" ;;
+  *) bad "매니페스트 쓰기 가드" "$msg" ;;
+esac
+
+# --- 31r. The forbidden classes are refused at RUNTIME too ------------------
+#
+# `judgment_class_forbidden` had one caller — the freeze-time check — and that
+# one guards arm (a). Arm (b) branched on the undo command's grade alone, so a
+# class that is a hard stop in the manifest was adopted at runtime by producing
+# a runnable undo.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=시각-면제" 기준="스크린샷 회귀를 이번 런에서 면제할지" \
+         "되돌리는 법=git checkout -- tests/visual/" 근거="비용이 크다"
+check "금지 부류는 실행 가능한 되돌리기로도 채택되지 않는다 (팔 b 가 금지를 본다)" "$rc" "5"
+case "$msg" in
+  *"미리 채택할 수 없는 판단 부류"*) ok "거절이 위험을 사용자에게 넘기는 결정임을 지목한다" ;;
+  *) bad "금지 부류 런타임" "$msg" ;;
+esac
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=팀-구성" 기준="팀을 몇으로 꾸릴지" \
+         "되돌리는 법=git revert HEAD" 근거="비용이 크다"
+check "다른 금지 부류도 같은 처분을 받는다" "$rc" "5"
+if { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -F '판단 부류=시각-면제' | grep_all_q -F '결정=채택'; then
+  bad "금지 부류" "시각-면제 판단이 채택 행으로 기록됐다"
+else
+  ok "금지 부류의 채택 행은 원장에 없다 (기록은 허용이고 무인 채택만 금지다)"
+fi
+
+# --- 31s. `gate_clip` measures and cuts in the SAME unit --------------------
+#
+# `wc -c` counts bytes and `cut -c` counts characters here, so a 400-byte budget
+# returned up to ~1200 bytes and the marker went on top of that. Both ends of a
+# question's lifecycle died on the row cap: the approval could not be ISSUED,
+# and a human answer of ordinary length could not be RECORDED.
+LONGSTD=$(awk 'BEGIN{ s=""; for (i = 0; i < 40; i++) s = s "판단 기준이 길어지는 한국어 문장 "; printf "%s", s }')
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 "기준=$LONGSTD" "근거=$LONGSTD"
+check "상한 너머 길이의 한국어 판단도 승인을 연다" "$rc" "5"
+longrow=$(last_judgment_approval)
+n=$(printf '%s' "$longrow" | wc -c | tr -d ' ')
+if [ "${n:-0}" -gt 0 ] && [ "${n:-0}" -le 1024 ]; then
+  ok "그 승인 행이 원장 행 상한 안에 있다 (${n} 바이트)"
+else
+  bad "행 상한" "판단 승인 행이 ${n} 바이트다 — 클립이 상한을 지키지 못했다"
+fi
+case "$longrow" in
+  *"(잘림)"*) ok "잘린 값이 잘렸다고 말한다" ;;
+  *) bad "잘림 표시" "무음 절단은 아침에 답 전체로 읽힌다: $longrow" ;;
+esac
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="짧은 기준" 근거="짧은 근거"
+case "$(last_judgment_approval)" in
+  *"(잘림)"*) bad "잘림 표시" "자르지 않은 값에 잘림 도장이 찍혔다" ;;
+  *) ok "자르지 않은 값에는 잘림 표시가 붙지 않는다" ;;
+esac
+
+# --- 31t. A `|` in a field value cannot splice the row ----------------------
+#
+# The write-time checks read the argv LIST and every reader splits the row TEXT,
+# so a pipe inside one argv element was invisible to the first and a new field
+# to the second. `사유=… | 스코프=run` passed the cone check as `cone` and then
+# enumerated as an unresolved run-scope block in termination condition 5.
+n_run_before=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '스코프=run' || true)
+cone_of SA "리뷰 P0 | 스코프=run | P1 미해소" >/dev/null
+n_run_after=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '스코프=run' || true)
+check "필드 값 안의 파이프가 새 필드를 만들지 못한다" "$n_run_after" "$n_run_before"
+case "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" in
+  *"리뷰 P0 / 스코프=run / P1 미해소"*) ok "파이프가 행 문법을 쪼개지 않도록 쓰기 시점에 정규화된다" ;;
+  *) bad "필드 소독" "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" ;;
+esac
+
+# --- 31u. `선행` — one normalization for the reader and the floor -----------
+#
+# The reader split on comma AND whitespace; the floor deleted whitespace and
+# split on comma only. So `선행=SA SB` — the spacing a design document's slice
+# declaration produces, copied through `slice_field` without normalization —
+# became one token to the floor, restating the same value failed monotonicity,
+# and that segment could not write a second row of any kind.
+seg_row SW1 "$CONE_C" 상태=실행중 선행=없음
+check "공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다" "$rc" "0"
+seg_row SW2 "$CONE_D" 상태=실행중 "선행=SA SW1"
+check "공백으로 구분한 「선행」이 받아들여진다" "$rc" "0"
+seg_row SW2 "$CONE_D" 상태=실행중 "선행=SA SW1"
+check "같은 값을 그대로 다시 적어도 단조성에 걸리지 않는다" "$rc" "0"
+seg_row SW2 "$CONE_D" 상태=실행중 "선행=SA,SW1"
+check "쉼표 스펠링과 공백 스펠링이 같은 집합으로 읽힌다" "$rc" "0"
+seg_row SW2 "$CONE_D" 상태=실행중 선행=SA
+check "정규화를 통일해도 좁히기는 여전히 거절된다 (극성이 뒤집히지 않았다)" "$rc" "2"
+# `없음` FALLS PER TOKEN. Mixed with a real id it used to survive as a
+# dependency nothing can land, and monotonicity then refused the correction —
+# a state reached by FOLLOWING the instruction that the field may be added to.
+seg_row SW3 "$CONE_E" 상태=실행중 "선행=없음,SA"
+check "「없음」과 실제 id 가 섞인 「선행」도 기록된다" "$rc" "0"
+seg_row SW3 "$CONE_E" 상태=실행중 선행=SA
+check "「없음」은 토큰 단위로 떨어지므로 교정이 가능하다 (영구 잠금이 아니다)" "$rc" "0"
+seg_row SW4 "$CONE_F" 상태=실행중 선행=SZZZ
+check "원장에 없는 세그먼트를 지목한 「선행」은 쓰기 시점에 거절된다" "$rc" "2"
+case "$msg" in
+  *"원장에 없습니다"*) ok "거절이 그런 세그먼트가 없다고 말한다 (나중의 착지 실패가 아니다)" ;;
+  *) bad "선행 id 대조" "$msg" ;;
+esac
+
+# --- 31v. An over-long declared cone is refused by LENGTH -------------------
+LONGDEP=$(awk 'BEGIN{ s="SEG0000"; for (i = 1; i < 60; i++) s = s ",SEG" i; printf "%s", s }')
+gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HN)" --rationale x \
+      -- 스코프=cone 원인=막힘 "앵커 세그먼트=SA" "의존 세그먼트=$LONGDEP" 사유=x 근거=z "재개 명령=-"
+check "상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다" "$rc" "2"
+case "$msg" in
+  *"바이트를 넘습니다"*) ok "거절이 길이를 지목한다 (writer 안에서 죽지 않는다)" ;;
+  *) bad "의존 세그먼트 길이" "$msg" ;;
+esac
+
+# --- 31w. A judgment approval's identity is the whole question --------------
+#
+# The id hashed `기준` alone while the row carried `기준 — 근거`, and a judgment
+# approval has no binding tuple, so nothing about it ever goes stale. Two
+# judgments sharing a short, writer-authored standard were one approval, and one
+# answer then opened every later judgment that resolved to it.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="같은 기준" 근거="첫째 근거"
+id1=$(row_field "$(last_judgment_approval)" '승인 id')
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="같은 기준" 근거="둘째 근거"
+id2=$(row_field "$(last_judgment_approval)" '승인 id')
+if [ -n "$id1" ] && [ -n "$id2" ] && [ "$id1" != "$id2" ]; then
+  ok "승인 id 는 질문 문면 전체에서 유도된다 (기준만 같은 다른 질문은 다른 승인이다)"
+else
+  bad "승인 정체성" "기준만 같으면 한 승인으로 접힌다: '$id1' / '$id2'"
+fi
+
+# AN ANSWER IS SPENT ONCE.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="일회성 기준" 근거="일회성 근거"
+oid=$(row_field "$(last_judgment_approval)" '승인 id')
+oq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$oid " | tail -1)" '질문 문면')
+OSID="14141414-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$oid" "$oq" > "$NTX/$OSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$OSID" bash "$GATE" close --manifest "$NM" --approval "$oid" 2>&1); rc=$?
+check "일회성 검사를 위한 판단 승인이 닫힌다" "$rc" "0"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=감사-발견" 기준="일회성 기준" "되돌리는 법=아침에 다시 본다" 근거="일회성 근거"
+check "해소된 승인이 그 판단을 연다" "$rc" "0"
+case "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" in
+  *"해소 승인=$oid"*) ok "채택 행이 어느 답이 그것을 열었는지 남긴다" ;;
+  *) bad "해소 승인" "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" ;;
+esac
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=감사-발견" 기준="일회성 기준" "되돌리는 법=아침에 다시 본다" 근거="일회성 근거"
+check "같은 답이 두 번째 판단까지 열지는 않는다" "$rc" "5"
+case "$msg" in
+  *"이미 한 번 채택에 쓰였습니다"*) ok "거절이 답 하나는 판단 하나를 연다고 말한다" ;;
+  *) bad "일회성 소비" "$msg" ;;
+esac
+
+# --- 31x. `close` records the ANSWER, not the transport frame ---------------
+#
+# `$ans` is the matched transcript LINE, and a harness line puts `message.content`
+# behind `uuid`, `parentUuid`, `sessionId` and `timestamp` as an array of blocks.
+# Recorded verbatim, the field the contract calls the run's only durable copy of
+# the answer held four hundred bytes of scaffolding. The old fixture missed it
+# because a hand-written one-line object puts the answer near the front.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="실물 트랜스크립트 모양에서도 답이 실리는가" 근거="프레임이 아니라 답이 남아야 한다"
+rid=$(row_field "$(last_judgment_approval)" '승인 id')
+rq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$rid " | tail -1)" '질문 문면')
+RANS="셋으로 나누고 합성만 하나로 둔다"
+RSID="15151515-3434-5656-7878-909090909090"
+printf '{"parentUuid":"11111111-2222-3333-4444-555555555555","sessionId":"%s","timestamp":"2026-09-01T00:00:00Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"%s / %s → %s"}]},"uuid":"66666666-7777-8888-9999-000000000000"}\n' \
+  "$RSID" "$rid" "$rq" "$RANS" > "$NTX/$RSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$RSID" bash "$GATE" close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
+check "실물 모양의 트랜스크립트 줄로도 승인이 닫힌다" "$rc" "0"
+rrow=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$rid " | tail -1)
+case "$rrow" in
+  *"$RANS"*) ok "답변 문면에 사람의 답이 실린다" ;;
+  *) bad "답 추출" "$rrow" ;;
+esac
+case "$rrow" in
+  *parentUuid*|*sessionId*) bad "답 추출" "전송 프레임이 답변 문면에 실렸다: $rrow" ;;
+  *) ok "전송 프레임의 JSON 스캐폴딩은 답변 문면에 실리지 않는다" ;;
+esac
+
+# --- 31y. One question holds ONE clause -------------------------------------
+#
+# Condition 10 is the only one of the ten that measures what the USER authorized
+# the run against, and `보류` settles it — so one grade-2 judgment cited by every
+# clause would let the run end with nothing actually settled while the morning
+# read it as a run that ended with one open question.
+nm_add_auth_row '- `종료 절` | id=K2 | 문면=둘째 절'
+nm_add_auth_row '- `종료 절` | id=K3 | 문면=셋째 절'
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="둘째 절을 이번 런에서 정산할지" 근거="사람이 정해야 한다"
+jid2=$(row_field "$(last_judgment_approval)" '승인 id')
+gateN act --manifest "$NM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HN)" --rationale x -- id=K2 상태=보류 "근거=열린 판단 승인 $jid2"
+check "둘째 절은 자기 물음에 대해 보류로 정산된다" "$rc" "0"
+gateN act --manifest "$NM" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HN)" --rationale x -- id=K3 상태=보류 "근거=열린 판단 승인 $jid2"
+check "이미 다른 절을 보류시킨 승인은 셋째 절을 정산하지 못한다" "$rc" "2"
+case "$msg" in
+  *"이미 종료 절"*) ok "거절이 답 하나가 여러 절을 정산할 수 없음을 지목한다" ;;
+  *) bad "보류 중복" "$msg" ;;
+esac
+
+# --- 31z. A judgment a STAGE emitted, in both directions --------------------
+#
+# 31o asserts only that a judgment which FAILS the union writes no row, and that
+# assertion holds when the absorber does not run at all — deleting the call
+# leaves the count at zero on both sides. The adopting direction is what makes
+# the pair sensitive to the function's existence.
+JSTUB2="$WORK/judgment-stub-adopt"
+cat > "$JSTUB2" <<'JSTUB2EOF'
+#!/usr/bin/env bash
+cat <<'RES2EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-2","num_turns":1,"result":"**판단 부류**: 문서-신선도 **판단 등급**: 1 **판단 되돌리는 법**: 아침에 문서를 다시 읽는다 **판단 기준**: 문서가 최신인가 **판단 근거**: 앵커 해시가 그대로다"}
+RES2EOF
+exit 0
+JSTUB2EOF
+chmod +x "$JSTUB2"
+seg_row SJ2 "$CONE_C" 상태=실행중 선행=없음
+check "채택 실험용 세그먼트 행이 기록된다" "$rc" "0"
+n_emit_before2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB2" \
+  bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment SJ2 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+  -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+n_emit_after2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
+if [ "${n_emit_after2:-0}" -gt "${n_emit_before2:-0}" ]; then
+  ok "합집합을 통과한 방출 판단은 출처=스테이지 방출 행을 만든다 (흡수기를 지우면 이 단언이 실패한다)"
+else
+  bad "방출 채택" "합집합을 통과한 방출 판단이 아무 행도 남기지 않았다"
+fi
+
+# A MARKER WITH NO CLASS IS ESCALATED, NOT DROPPED. The class used to gate the
+# rest of the parse, so "no judgment was emitted" and "a judgment was emitted
+# without a class" shared one silent return — and the second is the shape a
+# stage naturally produces, because the marking convention names `기준` and
+# `되돌리는 법` and has never required a class. That judgment vanished with no
+# row, no approval and no warning, while the stage had already acted on it.
+JSTUB3="$WORK/judgment-stub-noclass"
+cat > "$JSTUB3" <<'JSTUB3EOF'
+#!/usr/bin/env bash
+cat <<'RES3EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-3","num_turns":1,"result":"**판단 등급**: 2 **판단 기준**: 부류를 적지 않은 방출 판단 **판단 근거**: 마킹 규약은 부류를 요구하지 않는다"}
+RES3EOF
+exit 0
+JSTUB3EOF
+chmod +x "$JSTUB3"
+seg_row SJ3 "$CONE_C" 상태=실행중 선행=없음
+check "부류 없는 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+napp_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' || true)
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB3" \
+  bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment SJ3 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+  -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+napp_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' || true)
+if [ "${napp_after:-0}" -gt "${napp_before:-0}" ]; then
+  ok "부류 없는 방출 판단은 조용히 버려지지 않고 승인으로 올라간다"
+else
+  bad "방출 fail-open" "부류가 없다는 이유로 방출된 판단이 행도 승인도 경고도 없이 사라졌다"
+fi
+
+# --- 31aa. A question does not switch the boundaries off --------------------
+#
+# `gate_pending_approval_ids` gained a narrowing argument and three of its four
+# call sites got one. `gate_boundaries` was the fourth, so a `절단점=판단`
+# approval counted there — and since this design deliberately lets a run END
+# with a question open, the suspension it produced had nothing to close it. One
+# grade-2 judgment at 22:10, with nobody awake, switched off stagnation
+# detection, the obligation backlog and the 40-act budget until the wall clock.
+#
+# LAST IN THIS SECTION on purpose: firing B1 issues an ACT approval, which then
+# legitimately suspends the boundaries for anything that follows.
+b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
+npend_judgment=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+                 | jq -r '.pending_approvals[].id' | grep -c '^J-' || true)
+npend_act=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+            | jq -r '.pending_approvals[].id' | grep -cv '^J-' || true)
+if [ "${npend_judgment:-0}" -ge 1 ]; then
+  ok "이 시점에 열린 판단 승인이 있다 (경계 단언의 전제)"
+else
+  bad "경계 픽스처" "열린 판단 승인이 없어 이 단언이 공허하다"
+fi
+if [ "${npend_act:-0}" = "0" ]; then
+  ok "열린 행위 승인은 없다 (유예가 걸린다면 그것은 판단 승인 때문이다)"
+else
+  bad "경계 픽스처" "행위 승인이 ${npend_act}건 열려 있어 유예의 원인을 가릴 수 없다"
+fi
+i=0
+while [ "$i" -lt 6 ]; do
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(HN)" --rationale "정체 경계 확인" -- ls "$CONE_A"
+  i=$((i + 1))
+done
+b1_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
+if [ "${b1_after:-0}" -gt "${b1_before:-0}" ]; then
+  ok "판단 승인이 열려 있어도 정체 경계는 살아 있다 (B1~B3 이 밤새 꺼지지 않는다)"
+else
+  bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다"
 fi
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
