@@ -270,11 +270,23 @@ pass() {
   # as the router has not acted since — so a properly woken router clears it in
   # seconds and a stranded one is named in two minutes.
   #
-  # `nonterm >= 1` IS PART OF THE CONDITION, not a refinement of it. A run that
+  # THE LEDGER GUARD IS PART OF THE CONDITION, not a refinement of it. A run that
   # finished normally ends with a `stage-result` row as its last row and no live
   # stage — the exact shape this arm keys on — so without it every clean finish
   # was told the router had stranded it, and the `blocked` row that produced
   # then blocked the run's own termination condition.
+  #
+  # It asks "IS THERE WORK LEFT IN THIS RUN", which is not the same question as
+  # "is there a non-terminal segment row", and the difference is a window every
+  # run passes through. The kickoff makes the ledger a stub and starts the
+  # watcher; the first `segment` row appears only when the router calls
+  # `act --kind segment`, at least two model turns later, and `snapshot` appends
+  # nothing in between. A router that dies in there leaves the ledger a stub, on
+  # which `nonterm` is 0 — so the bare count silenced both `record_blocked` arms
+  # at once while every other arm wanted a row that cannot exist yet, and the
+  # watcher heartbeated all night without a word. A run that has not opened a
+  # segment has ALL of its work left, and a clean finish always has `n_seg >= 1`,
+  # so the disjunct restores the detection without reviving the false positive.
   #
   # The once-guard is a DEDICATED MARKER rather than a grep of `stall`, because
   # the gate empties `stall` on every act: the guard came back to life, the arm
@@ -282,7 +294,7 @@ pass() {
   # stopped for good. `record_blocked` still writes `stall`; that file is the
   # observation, not the guard.
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && [ "$nonterm" -ge 1 ] \
+     && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -310,9 +322,15 @@ pass() {
   #
   # The `stall` file grep stays: it is not redundant with the ledger test but the
   # other half of it, suppressing a repeat within the same drain window.
+  #
+  # The `nonterm`/`n_seg` disjunct is the arm above's, verbatim and for the same
+  # reason: both arms call `record_blocked`, so a run dying before its first
+  # `segment` row would otherwise be reported by neither. This one is the arm
+  # that used to cover that window — before the guard existed it fired after
+  # 1200 seconds — so leaving it out here is the regression itself.
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
-     && [ "$nonterm" -ge 1 ] \
+     && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && [ "${silent:-0}" = "0" ]; then
     announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \

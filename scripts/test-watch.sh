@@ -365,6 +365,32 @@ fi
 n=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
 check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
 
+# THE ZERO-SEGMENT WINDOW, which every run passes through and which no arm could
+# report a death inside. The kickoff makes the ledger a stub and starts the
+# watcher; the first `segment` row appears only when the router calls
+# `act --kind segment`, at least two model turns later, and `snapshot` appends
+# nothing in between. A router that dies in that window leaves the ledger a stub
+# — and on a stub `nonterm` is 0, which silenced BOTH `record_blocked` arms at
+# once while every other arm wanted a row that cannot exist yet. The watcher
+# would heartbeat all night and say nothing.
+#
+# So the guard asks "is there work left in this run", not "is there a
+# non-terminal segment row": a run that has not opened a segment has all of its
+# work left. The threshold is 0 and this is a SINGLE pass, because the stall arm
+# fires immediately at that threshold and its once-guard suppresses the second.
+fresh
+printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
+out=$(run --stall 0)
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) ok "세그먼트 행이 없는 원장에서도 정지가 발화한다" ;;
+  *) bad "세그먼트 0개 정지" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+if [ -f "$RD/stall" ]; then
+  ok "첫 세그먼트 행 이전에 죽은 런의 관측이 파일로 남는다"
+else
+  bad "세그먼트 0개 정지" "stall 파일이 생기지 않았다"
+fi
+
 # ---------------------------------------------------------------------------
 # A STAGE ENDED AND THE ROUTER DID NOT ACT — the sharp arm.
 #
