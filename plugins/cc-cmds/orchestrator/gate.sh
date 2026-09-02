@@ -111,6 +111,14 @@ readonly GATE_EXIT_APPROVAL=5
 readonly GATE_EXIT_GRADE=6
 readonly GATE_EXIT_SURFACE=7
 
+# AN INTERNAL SIGNAL AND NOT AN EXIT CODE. `gate_issue_judgment_approval`
+# returns it to say "this question already has an answer, so nothing was
+# issued" — a state its callers must route rather than propagate, because the
+# two of them route it in opposite directions. Kept out of the exit range on
+# purpose: a value that escaped to the shell would tell the router a code the
+# contract never defined.
+readonly GATE_APPROVAL_ANSWERED=9
+
 readonly GATE_ROW_MAX=1024
 
 # The cone row's segment list, bounded like every other free-length value on a
@@ -2330,15 +2338,35 @@ gate_issue_judgment_approval() {
   local alias="$1" seg="$2" std="$3" why="$4" id q
   q=$(gate_judgment_question "$std" "$why")
   id=$(gate_judgment_approval_id "$seg" "$q")
-  # `대기` AND NOT MERE PRESENCE. `gate_has_row` matches a CLOSED approval too,
-  # so re-submitting the same judgment after it was answered found the answered
-  # row, returned quietly, and left the caller to resolve against a decision
-  # nobody re-made. Narrowing to the pending state is what lets a question that
-  # comes back re-open as a question instead of being silently satisfied.
-  if [ "$(gate_approval_state "$id")" = "대기" ]; then
-    log "판단 승인 $id 이 이미 열려 있습니다 — 같은 판단은 승인 하나로 모입니다"
-    return 0
-  fi
+  # THE STATE DECIDES, AND THE FOUR STATES DECIDE DIFFERENTLY. Narrowing to
+  # `대기` alone was half the repair: it stopped an answered approval from
+  # silently satisfying a re-submission, but everything that was not `대기` then
+  # fell through to the append below and RE-OPENED the same id as `대기` again.
+  # So an approval a person had closed came back as an open question — the exact
+  # loop the id derivation exists to prevent, reached from the other side. A
+  # closed approval must not be re-opened by anyone resubmitting the judgment;
+  # only a genuinely different question, which hashes to a different id, may open
+  # one.
+  local st
+  st=$(gate_approval_state "$id")
+  case "$st" in
+    대기)
+      log "판단 승인 $id 이 이미 열려 있습니다 — 같은 판단은 승인 하나로 모입니다"
+      return 0 ;;
+    무효|거부)
+      # A CLOSED-NEGATIVE APPROVAL IS AN ANSWER TOO. Re-issuing here would ask
+      # the person the same question they already declined, every night, off one
+      # refusal they already gave.
+      warn "판단 승인 $id 은 이미 '$st' 로 닫혔습니다 — 같은 물음을 다시 열지 않습니다"
+      warn "그 판단이 여전히 필요하다면 기준과 근거를 달리한 새 물음으로 올리세요"
+      return "$GATE_EXIT_RULE" ;;
+    승인)
+      # There is an answer on file. Whether it may open THIS judgment depends on
+      # whether it has been spent, and that is the caller's question rather than
+      # this function's — issuing is what this function does, and here there is
+      # nothing to issue.
+      return "$GATE_APPROVAL_ANSWERED" ;;
+  esac
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
     "행위 다이제스트=-" "구속 튜플=-" "막는 세그먼트=${seg:--}" \
     "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
@@ -2723,15 +2751,31 @@ gate_record_row() {
           # evidence has to BE that outstanding question — an open approval
           # whose cutpoint is the literal `판단`, found in the ledger rather than
           # asserted in the wording.
-          local cev jid cev_ok=0 cev_id="" other last_other
+          #
+          # THE WHOLE SET, AND NOT THE LAST MATCH. The collection loop below used
+          # to overwrite one variable on every hit, so a rationale naming two
+          # approvals was checked against one of them — the last — and the other
+          # could hold a second clause with nothing objecting. The extraction is
+          # a function now because the `done` file's reporter has to derive its
+          # answer from the same bytes; two expressions over one field is how the
+          # gate came to check an id the morning never saw and report one the gate
+          # never measured.
+          local cev jid ojid cev_ids other last_other other_ids
           cev=$(gate_field_of '근거' "$@")
-          for jid in $(gate_pending_approval_ids 판단); do
-            case "$cev" in *"$jid"*) cev_ok=1; cev_id="$jid" ;; esac
-          done
-          if [ "$cev_ok" != "1" ]; then
+          cev_ids=$(gate_clause_evidence_ids "$cev")
+          if [ -z "$cev_ids" ]; then
             warn "「보류」인 종료 절의 「근거」는 열려 있는 절단점=판단 승인 id 를 지목해야 합니다 (관측: ${cev:-없음})"
             return "$GATE_EXIT_VOCAB"
           fi
+          # EVERY named id must be open, not merely one of them. A rationale that
+          # names an answered approval beside an open one would otherwise settle
+          # the clause on the strength of the open one while telling the morning
+          # it waits on both.
+          for jid in $cev_ids; do
+            gate_judgment_approval_open "$jid" && continue
+            warn "「보류」인 종료 절의 근거가 지목한 ${jid} 은 열려 있는 절단점=판단 승인이 아닙니다"
+            return "$GATE_EXIT_VOCAB"
+          done
           # ONE QUESTION HOLDS ONE CLAUSE.
           #
           # Condition 10 is the only one of the ten that measures what the USER
@@ -2754,12 +2798,15 @@ gate_record_row() {
             last_other=$( { gate_rows '종료 절' | grep -F "id=$other " || true; } | tail -1)
             [ -n "$last_other" ] || continue
             [ "$(gate_row_field "$last_other" '상태')" = "보류" ] || continue
-            case "$(gate_row_field "$last_other" '근거')" in
-              *"$cev_id"*)
-                warn "승인 ${cev_id} 은 이미 종료 절 ${other} 을 보류시키고 있습니다 — 답 하나가 여러 절을 정산할 수 없습니다"
+            other_ids=$(gate_clause_evidence_ids "$(gate_row_field "$last_other" '근거')")
+            for jid in $cev_ids; do
+              for ojid in $other_ids; do
+                [ "$jid" = "$ojid" ] || continue
+                warn "승인 ${jid} 은 이미 종료 절 ${other} 을 보류시키고 있습니다 — 답 하나가 여러 절을 정산할 수 없습니다"
                 warn "이 절을 보류하려면 이 절에 대한 물음을 따로 올리세요 (조건 10 은 사용자가 인가한 것을 재는 유일한 조건입니다)"
-                return "$GATE_EXIT_VOCAB" ;;
-            esac
+                return "$GATE_EXIT_VOCAB"
+              done
+            done
           done ;;
         *) warn "종료 절 행의 「상태」는 충족·불가능·보류 중 하나여야 합니다 (관측: ${cst:-없음})"
            return "$GATE_EXIT_VOCAB" ;;
@@ -2796,9 +2843,36 @@ gate_record_row() {
           # existed anywhere in the tree, so the one grade whose entire
           # definition is "a person decides this" had nowhere to go but a
           # vocabulary error.
-          gate_issue_judgment_approval "$alias" "$seg" \
-            "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")"
-          return "$GATE_EXIT_APPROVAL" ;;
+          #
+          # AND THE PATH BACK, WHICH IS WHAT WAS MISSING. Raising the question
+          # was only half a lifecycle: a grade-2 judgment never reaches the
+          # resolution block on the acting path (that block runs only when the
+          # auto-adoption floor escalated, and the floor is consulted for grade 1
+          # alone), so once the person answered there was no arm that noticed.
+          # Every re-submission came back here and asked again. Reading the
+          # state BEFORE issuing is what turns an answer into an adoption.
+          local jq_id jq_st jq_rc=0
+          jq_id=$(gate_judgment_approval_id "$seg" \
+                  "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
+          jq_st=$(gate_approval_state "$jq_id")
+          if [ "$jq_st" = "승인" ]; then
+            # ONE ANSWER OPENS ONE JUDGMENT, the same floor the acting path
+            # applies. A judgment approval carries no binding tuple, so nothing
+            # about it expires — without this the first answer would adopt every
+            # later judgment that hashed to the same id.
+            if gate_has_row '자율 승인' "해소 승인=$jq_id "; then
+              warn "승인 $jq_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
+              warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
+              return "$GATE_EXIT_RULE"
+            fi
+            log "승인 $jq_id 이 해소되어 이 판단을 채택으로 엽니다"
+            GATE_RESOLVED_APPROVAL="$jq_id"
+          else
+            gate_issue_judgment_approval "$alias" "$seg" \
+              "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || jq_rc=$?
+            [ "$jq_rc" = "0" ] || return "$jq_rc"
+            return "$GATE_EXIT_APPROVAL"
+          fi ;;
         *) warn "판단 행은 등급 1 과 2 만 받습니다 — 0 은 기록이 필요 없습니다 (관측: ${jgrade:-없음})"
            return "$GATE_EXIT_VOCAB" ;;
       esac
@@ -2809,7 +2883,15 @@ gate_record_row() {
       # judgment that hashed to the same id.
       gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=${seg:--}" \
         "해소 승인=${GATE_RESOLVED_APPROVAL:--}" "$@"
-      log "판단 등급 1 기록 — 부류 $jcls"
+      # The grade is read from the row rather than hard-coded: a grade-2 judgment
+      # whose question has been answered lands here too, and a line claiming
+      # grade 1 for it would misdescribe the one event the morning most needs to
+      # tell apart — an adoption the floor admitted on its own from one a person
+      # opened.
+      # `부류` may legitimately be empty here: it is required at grade 1 alone,
+      # because its only consumer is the auto-adoption floor and a grade-2
+      # judgment never reaches that floor — it reaches a person.
+      log "판단 등급 $jgrade 기록 — 부류 ${jcls:-없음}"
       ;;
     blocked)
       # THE ROUTER MAY RESOLVE A RUN-SCOPE BLOCK, AND MAY NOT CREATE ONE. Blocks
@@ -3211,6 +3293,14 @@ gate_verb_act() {
         if [ "$kind" = "judgment" ] && gate_has_row '자율 승인' "해소 승인=$ap_id "; then
           warn "승인 $ap_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
           warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
+        elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias"; then
+          # THE TUPLE IS WHAT MAKES AN ACT APPROVAL EXPIRE. A question's answer
+          # is durable and carries no tuple; an act's answer was given about a
+          # tree, and this arm is the only place that says so. `rules_rc` is left
+          # at `GATE_EXIT_APPROVAL` on purpose so the issuing path below
+          # supersedes the stale row with a fresh question.
+          warn "승인 $ap_id 은 답을 받은 뒤 트리가 움직였습니다 — 그 답으로 이 행위를 열지 않습니다"
+          warn "같은 argv 라도 다른 트리 위의 행위이므로 승인을 다시 발행합니다"
         else
           log "승인 $ap_id 이 해소되어 이 행위를 엽니다"
           GATE_RESOLVED_APPROVAL="$ap_id"
@@ -3252,9 +3342,18 @@ gate_verb_act() {
       # recorded, which is what keeps a judgment from being adopted merely
       # because somebody submitted it — the union floor is the whole of the
       # admission, and a row written first would BE the adoption.
+      # Reaching here with an ANSWERED approval means the resolution block above
+      # found it spent — an unspent answer would have cleared `rules_rc` and this
+      # branch would not run. So there is nothing to issue and nothing to adopt:
+      # the judgment needs a question of its own.
+      local iss_rc=0
       gate_issue_judgment_approval "$alias" "$segment" \
-        "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")"
-      exit "$GATE_EXIT_APPROVAL"
+        "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || iss_rc=$?
+      case "$iss_rc" in
+        0) exit "$GATE_EXIT_APPROVAL" ;;
+        "$GATE_APPROVAL_ANSWERED") exit "$GATE_EXIT_RULE" ;;
+        *) exit "$iss_rc" ;;
+      esac
     fi
     gate_issue_act_approval "$alias" "$segment" "$cutpoint" "$graded" "$argv"
     exit "$GATE_EXIT_APPROVAL"
@@ -3565,6 +3664,67 @@ gate_approval_state() {
     | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1
 }
 
+gate_approval_field() {
+  # gate_approval_field <승인 id> <키> — the last value that key ever carried on
+  # a row for this approval.
+  #
+  # NOT "the last row's value", which is what `gate_approval_state` wants and
+  # this does not: `close` appends a resolution row carrying only the id, the
+  # state, the question, the answer and the time, so a reader that looked at the
+  # last row for `구속 튜플` found nothing on every answered approval — that is,
+  # on exactly the approvals whose tuple anyone would want to check.
+  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } \
+    | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+gate_act_tuple_head() {
+  # gate_act_tuple_head <승인 id> — the head fragment frozen into an act
+  # approval's binding tuple, or nothing when the tuple holds none.
+  #
+  # The tuple is `<별칭>/<베이스 브랜치>/<head 앞자리>/<축2 등급>`, and a base
+  # branch may itself contain `/`. So the fragment is taken by dropping the LAST
+  # component and then taking the last of what remains — cutting at the second
+  # `/` would read `feat` out of `feat/x` and compare a branch name against a
+  # sha for the rest of the run.
+  local t rest
+  t=$(gate_approval_field "$1" '구속 튜플')
+  # `-` (a question) and `B1` (a boundary) are tuples with no tree in them.
+  case "$t" in */*/*/*) : ;; *) return 0 ;; esac
+  rest=${t%/*}
+  printf '%s' "${rest##*/}"
+}
+
+gate_act_approval_fresh() {
+  # gate_act_approval_fresh <승인 id> <별칭> — 0 when the tree this approval was
+  # answered against is still the tree in front of us.
+  #
+  # THE BINDING TUPLE FINALLY HAS A READER. It was written at issue time and read
+  # by nothing anywhere in the tree, so the property stated beside it — an act
+  # approval's answer is valid only against the tree it named, which is the whole
+  # reason it carries shas and a question does not — was a sentence rather than a
+  # check. An answer given at 22:00 opened the same argv at 04:00 across every
+  # commit that had landed in between.
+  #
+  # It compares the head fragment ALONE. The alias is the lookup key, the base
+  # branch is not what the act is about, and the axis-2 grade is re-derived on
+  # every entry anyway. The comparison takes the CURRENT head's first bytes to
+  # the stored fragment's length, because the fragment is stored clipped.
+  #
+  # UNMEASURABLE READS AS FRESH, deliberately. This exists to catch a tree that
+  # MOVED; a tuple with no head in it, or a worktree whose HEAD cannot be read
+  # now, is not a moved tree, and re-opening an approval over it would ask a
+  # person a question the second asking cannot answer any better.
+  local frag cur
+  frag=$(gate_act_tuple_head "$1")
+  [ -n "$frag" ] || return 0
+  cur=$(cd "$(target_field "$2" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  [ -n "$cur" ] || {
+    warn "승인 $1 의 구속 튜플을 대조할 HEAD 를 읽지 못했습니다 — 움직인 트리가 아니므로 신선한 것으로 봅니다"
+    return 0
+  }
+  [ "$frag" = "${cur:0:${#frag}}" ]
+}
+
 gate_issue_act_approval() {
   # gate_issue_act_approval <alias> <segment> <cutpoint> <grade> <argv>
   #
@@ -3572,10 +3732,25 @@ gate_issue_act_approval() {
   # act-shaped, so staleness is re-derived against the tree it named. The id is
   # derived from the act rather than random, so the same blocked act asked twice
   # produces one pending approval instead of a queue of duplicates.
-  local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head
+  local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head st
   ad=$(printf '%s' "$argv" | shasum -a 256 | cut -d' ' -f1)
   id=$(gate_act_approval_id "$alias" "$argv")
-  gate_has_row '승인' "승인 id=$id " && return 0
+  # PRESENCE WAS THE WRONG GUARD ONCE THE TUPLE GOT A READER. The id is derived
+  # from the alias and the argv and holds no sha, so an approval that has gone
+  # stale keeps its id — and a presence check then refused to issue the very
+  # re-approval the staleness finding asks for, leaving the act exiting 5 with
+  # nothing pending for anyone to answer. What each state does:
+  #   대기  one open approval per act, which is the original property
+  #   승인  reached only when the caller found the tuple stale, so SUPERSEDE it
+  #         by appending a fresh `대기` row under the same id — the id names the
+  #         act and the row sequence tells the morning what happened to it
+  #   그 외 `거부`/`무효` are terminal and the caller exits before arriving here
+  st=$(gate_approval_state "$id")
+  case "$st" in
+    대기) return 0 ;;
+    ''|승인) : ;;
+    *) return 0 ;;
+  esac
   base=$(target_field "$alias" '베이스 브랜치')
   head=$(cd "$(target_field "$alias" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
@@ -3627,6 +3802,34 @@ gate_clause_ids() {
     | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//'
 }
 
+gate_clause_evidence_ids() {
+  # gate_clause_evidence_ids <근거> — every `J-<8자리 16진>` the rationale names,
+  # one per line, deduplicated.
+  #
+  # ONE EXTRACTION FOR THE CHECK AND FOR THE REPORT, which is the whole reason
+  # this exists as a function. The write-time floor looped over pending approvals
+  # and kept the LAST match, while the `done` file's reporter ran a different
+  # expression that took the FIRST — so the set the gate refused duplicates over
+  # and the set the morning was told about were two different values read out of
+  # one field, and neither of them was the whole set.
+  #
+  # It reads the TEXT rather than intersecting with the pending list, because the
+  # reporter must still name an approval that has since been answered. Requiring
+  # the ids to be open is a separate question, asked by the write-time floor
+  # alone.
+  { printf '%s' "${1:-}" | tr -c '0-9A-Za-z-' '\n' \
+      | grep -E '^J-[0-9a-f]{8}$' || true; } | sort -u
+}
+
+gate_judgment_approval_open() {
+  # gate_judgment_approval_open <승인 id> — 0 when that id is an OPEN
+  # `절단점=판단` approval, which is what `보류` evidence has to be.
+  case " $(gate_pending_approval_ids 판단 | tr '\n' ' ') " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
 gate_clause_settled() {
   # A clause is settled when a `종료 절` row in the LEDGER names it — written by
   # the router through `act --kind clause` with its evidence, or marked
@@ -3645,25 +3848,48 @@ gate_clause_settled() {
   # and no two clauses may lean on the same one) plus the `done` file recording
   # every held clause with the question holding it. The state's disposition is
   # visible; it is not silent the way `충족` would be.
-  local last
+  #
+  # AND `보류` STOPS COUNTING THE MOMENT THE ANSWER ARRIVES. The state means "a
+  # person's answer is outstanding"; once it is not, the clause is back to being
+  # unsettled and the router has to re-settle it as `충족` or `불가능` with the
+  # answer in hand. Without this arm the disposition was permanent: one question
+  # answered at 23:00 left the clause reading "on hold" for the rest of the run
+  # and into the morning report, which is the opposite of what the contract says
+  # `보류` hands to the successor.
+  local last jid ids
   last=$( { gate_rows '종료 절' | grep -F "id=$1 " || true; } | tail -1)
-  [ -n "$last" ]
+  [ -n "$last" ] || return 1
+  if [ "$(gate_row_field "$last" '상태')" = "보류" ]; then
+    ids=$(gate_clause_evidence_ids "$(gate_row_field "$last" '근거')")
+    # No id at all is not "nothing to check" — the write-time floor refuses such
+    # a row, so one here means the field was lost, and unsettled is the safe read.
+    [ -n "$ids" ] || return 1
+    for jid in $ids; do
+      [ "$(gate_approval_state "$jid")" = "대기" ] || return 1
+    done
+  fi
+  return 0
 }
 
 gate_held_clause_ids() {
-  # Clauses whose LAST row is `보류`, with the approval each is waiting on.
+  # Clauses whose LAST row is `보류`, with the approvals each is waiting on.
   # These settle condition 10 and are therefore invisible to `gate_done_conditions`
   # — which is exactly why the `done` file has to name them, or a run that
   # settled nothing and a run that settled everything write the same ending.
-  local cid last jid
+  #
+  # ALL of them, from the same extraction the write-time floor uses. A clause may
+  # legitimately name more than one approval, and reporting the first while the
+  # floor checked the last meant the morning could read an id the gate had never
+  # measured anything about.
+  local cid last jids
   for cid in $(gate_clause_ids); do
     [ -n "$cid" ] || continue
     last=$( { gate_rows '종료 절' | grep -F "id=$cid " || true; } | tail -1)
     [ -n "$last" ] || continue
     [ "$(gate_row_field "$last" '상태')" = "보류" ] || continue
-    jid=$(printf '%s' "$(gate_row_field "$last" '근거')" \
-          | sed -n 's/.*\(J-[0-9a-f]\{8\}\).*/\1/p' | sed -n '1p')
-    printf '%s(%s)\n' "$cid" "${jid:-승인 미상}"
+    jids=$(gate_clause_evidence_ids "$(gate_row_field "$last" '근거')" \
+           | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    printf '%s(%s)\n' "$cid" "${jids:-승인 미상}"
   done
 }
 

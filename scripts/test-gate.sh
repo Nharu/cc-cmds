@@ -4030,6 +4030,313 @@ check "긍정 답변은 그대로 승인으로 닫힌다" "$rc" "0"
 pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '상태')
 check "긍정 답변의 상태는 승인이다 (스캔이 과잉으로 잡지 않는다)" "$pst" "승인"
 
+# --- 31aj. An answered approval is CONSUMED, a closed one is never re-opened -
+#
+# Issuing the question was half a lifecycle. A grade-2 judgment never reaches the
+# resolution block on the acting path — that block runs only when the
+# auto-adoption floor escalated, and the floor is consulted for grade 1 alone —
+# so once the person answered, nothing on that path noticed. Every resubmission
+# was raised as a question again, and the issuing path appended a fresh
+# `상태=대기` row under the SAME id, so an approval a person had closed came back
+# open. 31w reads exit codes on this path and never the state, so a new pending
+# row leaves it green.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="닫힌 승인이 재제출로 다시 열리는가" 근거="수명주기의 나머지 절반"
+check "재제출 실험용 판단이 승인으로 올라간다" "$rc" "5"
+cjid=$(row_field "$(last_judgment_approval)" '승인 id')
+cjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$cjid " | tail -1)" '질문 문면')
+CJSID="19191919-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$cjid" "$cjq" > "$NTX/$CJSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$CJSID" bash "$GATE" close --manifest "$NM" --approval "$cjid" 2>&1); rc=$?
+check "재제출 실험용 승인이 승인으로 닫힌다" "$rc" "0"
+cj_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                  | grep -F "승인 id=$cjid " | grep -cF '상태=대기' || true)
+# RESUBMITTING THE SAME JUDGMENT IS HOW THE ANSWER IS CONSUMED, and before this
+# there was no arm for it anywhere on the grade-2 path.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="닫힌 승인이 재제출로 다시 열리는가" 근거="수명주기의 나머지 절반"
+check "답이 온 등급 2 판단은 재제출로 채택된다" "$rc" "0"
+case "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" in
+  *"해소 승인=$cjid"*) ok "등급 2 채택 행이 어느 답이 그것을 열었는지 남긴다" ;;
+  *) bad "등급 2 채택" "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" ;;
+esac
+# THE STATE IS READ, NOT THE EXIT CODE. A resubmission that nonetheless appended
+# a second `상태=대기` row would leave every exit code right and hand the morning
+# a question that had already been answered.
+cj_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                 | grep -F "승인 id=$cjid " | grep -cF '상태=대기' || true)
+check "재제출이 그 승인을 다시 대기로 열지 않는다" "${cj_wait_after:-0}" "${cj_wait_before:-0}"
+check "그 승인의 마지막 상태는 승인 그대로다" \
+      "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$cjid " | tail -1)" '상태')" \
+      "승인"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="닫힌 승인이 재제출로 다시 열리는가" 근거="수명주기의 나머지 절반"
+check "소진된 답은 같은 등급 2 판단을 두 번 열지 않는다" "$rc" "3"
+case "$msg" in
+  *"이미 한 번 채택에 쓰였습니다"*) ok "그 거절이 답 하나는 판단 하나를 연다고 말한다" ;;
+  *) bad "등급 2 일회성 소비" "$msg" ;;
+esac
+# A CLOSED-NEGATIVE APPROVAL IS AN ANSWER TOO, and both spellings of it. `무효`
+# and `거부` are neither `대기` nor `승인`, so before the state split they fell
+# straight through to the append and re-opened the question the person had just
+# closed.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="애초에 묻지 말았어야 할 물음" 근거="무효 처분의 재제출을 잰다"
+check "무효 실험용 판단이 승인으로 올라간다" "$rc" "5"
+vjid=$(row_field "$(last_judgment_approval)" '승인 id')
+vjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$vjid " | tail -1)" '질문 문면')
+VJSID="20202020-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$vjid" "$vjq" > "$NTX/$VJSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$VJSID" bash "$GATE" close --manifest "$NM" --approval "$vjid" --void 2>&1); rc=$?
+check "무효 실험용 승인이 무효로 닫힌다" "$rc" "0"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="애초에 묻지 말았어야 할 물음" 근거="무효 처분의 재제출을 잰다"
+check "무효로 닫힌 승인의 재제출은 거절된다" "$rc" "3"
+check "그 재제출이 승인을 다시 대기로 열지 않는다" \
+      "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$vjid " | tail -1)" '상태')" \
+      "무효"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="물었고 답이 아니오인 물음" 근거="거부 처분의 재제출을 잰다"
+check "거부 실험용 판단이 승인으로 올라간다" "$rc" "5"
+xjid=$(row_field "$(last_judgment_approval)" '승인 id')
+xjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$xjid " | tail -1)" '질문 문면')
+XJSID="21212121-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 아니오, 하지 마라"}\n' "$xjid" "$xjq" > "$NTX/$XJSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$XJSID" bash "$GATE" close --manifest "$NM" --approval "$xjid" --reject 2>&1); rc=$?
+check "거부 실험용 승인이 거부로 닫힌다" "$rc" "0"
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="물었고 답이 아니오인 물음" 근거="거부 처분의 재제출을 잰다"
+check "거부로 닫힌 승인의 등급 2 재제출도 거절된다" "$rc" "3"
+check "그 재제출도 승인을 다시 대기로 열지 않는다" \
+      "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$xjid " | tail -1)" '상태')" \
+      "거부"
+
+# --- 31ak. An act approval EXPIRES when the tree it named moves -------------
+#
+# `구속 튜플` was written at issue time and read by NOTHING in the tree, so the
+# property stated beside it — an act approval's answer is valid only against the
+# tree it named, which is the entire reason it carries shas where a question
+# carries `-` — was a sentence and not a check. An answer given at 22:00 opened
+# the same argv at 04:00 across every commit that had landed in between. Every
+# tuple assertion before this one observed the STRING.
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+check "구속 튜플 실험용 행위가 승인을 발행한다" "$rc" "5"
+tup_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
+tup_id=$(row_field "$tup_row" '승인 id')
+tup_head=$(row_field "$tup_row" '구속 튜플')
+tup_head=${tup_head%/*}
+tup_head=${tup_head##*/}
+head_before=$(cd "$WT" && git rev-parse HEAD)
+# THE FIXTURE PROVES IT REACHES THE COMPARISON. The freshness check reads an
+# unmeasurable tuple as fresh, so a fixture whose tuple held no head fragment
+# would pass every assertion below without the compared branch ever running.
+if [ -n "$tup_head" ] && [ "$tup_head" = "${head_before:0:${#tup_head}}" ]; then
+  ok "구속 튜플이 발행 시점 HEAD 의 앞자리를 담는다 (대조가 공허하지 않다)"
+else
+  bad "구속 튜플" "튜플의 head 조각 '$tup_head' 가 발행 시점 HEAD '$head_before' 와 맞지 않는다"
+fi
+TUPSID="22222222-3434-5656-7878-909090909090"
+tup_q=$(row_field "$tup_row" '질문 문면')
+printf '{"role":"user","content":"%s / %s → 승인"}\n' "$tup_id" "$tup_q" > "$NTX/$TUPSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$TUPSID" bash "$GATE" close --manifest "$NM" --approval "$tup_id" 2>&1); rc=$?
+check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
+# `plan` RATHER THAN `act` for the two freshness probes: the resolution is read
+# before the dry-run arm on purpose, so `plan` reports the verdict without
+# performing anything — and this argv reaches outside the machine.
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
+      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
+( cd "$WT" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
+      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
+case "$msg" in
+  *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
+  *) bad "구속 튜플 대조" "$msg" ;;
+esac
+# AND THE RE-ISSUE ACTUALLY LANDS. A staleness finding with no new pending row
+# leaves the act exiting 5 forever with nothing for anyone to answer, which is
+# worse than the stale grant it replaced.
+tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                   | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
+tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                  | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
+if [ "${tup_wait_after:-0}" -gt "${tup_wait_before:-0}" ]; then
+  ok "같은 id 아래 새 대기 행이 붙는다 (승인이 갱신되지 폐기되지 않는다)"
+else
+  bad "승인 재발행" "대기 행이 늘지 않았다: $tup_wait_before → $tup_wait_after"
+fi
+# THE FIXTURE PUTS THE TREE BACK. `--soft` and not `--hard`: the commit above is
+# empty, so the index and the working tree already match the target and a hard
+# reset would only be a chance to discard something another subsection left.
+( cd "$WT" && git reset -q --soft "$head_before" )
+check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$head_before"
+
+# --- 31al. The `done` file names every held clause and every question -------
+#
+# `gate_held_clause_ids` had ZERO coverage: nothing in this suite ever opened the
+# `done` file, so deleting the function whole left the suite green. It is also
+# where three defects met — the write-time floor kept the LAST matching approval
+# while the reporter took the FIRST, so the set the gate refused duplicates over
+# and the set the morning was told about were different values read out of one
+# field; and a clause held on TWO questions could report only one of them.
+#
+# A THIRD ISOLATED RUN, because reading that file needs a proposal that PASSES,
+# and the cone run above has two dozen non-terminal segments by design. The id is
+# guarded the way this section guards its own.
+DONE_RUN_ID=R4
+if [ "$DONE_RUN_ID" = "$CONE_RUN_ID" ] || [ "$DONE_RUN_ID" = "$prev_run_id" ]; then
+  printf '31al: 종료 픽스처의 런 id 가 앞선 절과 겹친다 (%s)\n' "$DONE_RUN_ID" >&2
+  exit 1
+fi
+NM4="$WORK/done-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$DONE_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $DONE_RUN_ID/" "$NM" > "$NM4"
+DONE_GRANT="$WT/docs/pipeline-grant/$DONE_RUN_ID.md"
+sed "s/$CONE_RUN_ID/$DONE_RUN_ID/g" "$CONE_GRANT" > "$DONE_GRANT"
+LEDGER4="$WT/docs/pipeline-run/$DONE_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$DONE_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$DONE_RUN_ID"
+} > "$LEDGER4"
+DONE_DIR="$STATE_CONE/cc-cmds/run/$DONE_RUN_ID"
+gate4() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+H4() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM4" 2>/dev/null | jq -r .H; }
+last_j4() { { grep -F '`승인`' "$LEDGER4" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1; }
+j4_open() {
+  # j4_open <기준> <근거> — raise one grade-2 judgment and print the approval id
+  # the gate opened for it.
+  gate4 act --manifest "$NM4" --kind judgment --target infra --segment SN1 --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H4)" --rationale x -- 등급=2 기준="$1" 근거="$2"
+  row_field "$(last_j4)" '승인 id'
+}
+gate4 act --manifest "$NM4" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "종료 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+ja=$(j4_open "첫째 절을 이번 런에서 정산할지" "사람이 정해야 한다")
+jb=$(j4_open "둘째 절을 이번 런에서 정산할지" "역시 사람이 정해야 한다")
+jc=$(j4_open "셋째 절의 앞쪽 물음" "한 절이 두 물음을 걸칠 수 있다")
+jd=$(j4_open "셋째 절의 뒤쪽 물음" "그 둘 다 보고되어야 한다")
+if [ -n "$ja" ] && [ -n "$jb" ] && [ -n "$jc" ] && [ -n "$jd" ] \
+   && [ "$ja" != "$jb" ] && [ "$jc" != "$jd" ]; then
+  ok "종료 픽스처가 서로 다른 판단 승인 넷을 연다"
+else
+  bad "종료 픽스처" "판단 승인 id 가 비었거나 겹친다: $ja / $jb / $jc / $jd"
+fi
+gate4 act --manifest "$NM4" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H4)" --rationale x -- id=K1 상태=보류 "근거=열린 판단 승인 $ja"
+check "첫째 절이 자기 물음에 대해 보류로 정산된다" "$rc" "0"
+# TWO IDS IN ONE `근거`, AND THE FIRST OF THEM IS TAKEN. The old floor looped over
+# the pending approvals and overwrote one variable on every hit, so it compared
+# the LAST match against the other clauses — and this row, whose first id already
+# holds K1, was accepted.
+gate4 act --manifest "$NM4" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H4)" --rationale x -- id=K2 상태=보류 "근거=열린 판단 승인 $ja 와 $jb"
+check "이미 다른 절을 보류시킨 id 가 근거에 섞여 있으면 거절된다" "$rc" "2"
+case "$msg" in
+  *"이미 종료 절"*) ok "거절이 집합 안의 어느 id 가 겹쳤는지 지목한다" ;;
+  *) bad "보류 집합 대조" "$msg" ;;
+esac
+gate4 act --manifest "$NM4" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H4)" --rationale x -- id=K2 상태=보류 "근거=열린 판단 승인 $jb"
+check "겹치지 않는 물음으로는 둘째 절이 보류로 정산된다" "$rc" "0"
+gate4 act --manifest "$NM4" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(H4)" --rationale x -- id=K3 상태=보류 "근거=열린 판단 승인 $jc 와 $jd"
+check "한 절이 두 물음에 걸쳐 보류로 정산된다" "$rc" "0"
+gate4 act --manifest "$NM4" --kind segment --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=완료 선행=없음
+check "종료 픽스처의 세그먼트가 종단 상태로 옮겨간다" "$rc" "0"
+# THE BOUNDARY MAY HAVE FIRED ALONG THE WAY. The vector moves on segment rows and
+# nothing else here writes one, so a run of bookkeeping acts legitimately trips
+# B1 — and its approval is an ACT approval, which condition 2 counts. Draining is
+# what the fixture owes the proposal, not something the proposal should tolerate.
+D4SID="23232323-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM4" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER4" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$aid" "$aq" >> "$NTX/$D4SID.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$D4SID" bash "$GATE" close --manifest "$NM4" --approval "$aid" 2>&1); rc=$?
+  check "종료 픽스처의 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
+rm -f "$DONE_DIR/done"
+gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 절 셋이 전부 정산되었다"
+check "조건이 전부 성립하면 종료 제안이 통과한다" "$rc" "0"
+if [ -f "$DONE_DIR/done" ]; then
+  ok "종료 제안이 done 파일을 남긴다"
+else
+  bad "done 파일" "$DONE_DIR/done 이 없다 — 뒤따르는 단언이 전부 공허하다"
+fi
+done_line=$(cat "$DONE_DIR/done" 2>/dev/null || true)
+case "$done_line" in
+  *"질의 잔여 4건"*) ok "종단 줄이 열린 물음의 수를 싣는다" ;;
+  *) bad "질의 잔여" "$done_line" ;;
+esac
+case "$done_line" in
+  *"보류 절 "*) ok "종단 줄이 보류 절 항목을 싣는다" ;;
+  *) bad "보류 절 보고" "$done_line" ;;
+esac
+held_k1=$(printf '%s' "$done_line" | sed -n 's/.*K1(\([^)]*\)).*/\1/p')
+held_k2=$(printf '%s' "$done_line" | sed -n 's/.*K2(\([^)]*\)).*/\1/p')
+held_k3=$(printf '%s' "$done_line" | sed -n 's/.*K3(\([^)]*\)).*/\1/p')
+check "첫째 절을 붙든 승인 id 가 축자로 실린다" "$held_k1" "$ja"
+check "둘째 절을 붙든 승인 id 가 축자로 실린다" "$held_k2" "$jb"
+# THE WIDENED FORMAT, WHICH IS THE POINT OF THE THIRD CLAUSE. The old reporter
+# took `sed -n '1p'` off the rationale, so a clause waiting on two answers named
+# one and the morning had no way to know the other existed.
+if [ -n "$held_k3" ]; then
+  case " $held_k3 " in
+    *" $jc "*) ok "두 물음에 걸친 절이 앞쪽 승인을 싣는다" ;;
+    *) bad "다중 승인 보고" "$held_k3 에 $jc 가 없다" ;;
+  esac
+  case " $held_k3 " in
+    *" $jd "*) ok "두 물음에 걸친 절이 뒤쪽 승인도 싣는다" ;;
+    *) bad "다중 승인 보고" "$held_k3 에 $jd 가 없다" ;;
+  esac
+else
+  bad "다중 승인 보고" "종단 줄에 K3(…) 항목이 없다: $done_line"
+fi
+# `보류` STOPS COUNTING THE MOMENT THE ANSWER ARRIVES. The state means a person's
+# answer is outstanding; once it is not, the clause is unsettled again and the
+# router has to re-settle it with the answer in hand. Without that arm the
+# disposition was permanent — one question answered at 23:00 left the clause
+# reading "on hold" into the morning report.
+K1SID="24242424-3434-5656-7878-909090909090"
+k1q=$(row_field "$( { grep -F '`승인`' "$LEDGER4" || true; } | grep -F "승인 id=$ja " | tail -1)" '질문 문면')
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$ja" "$k1q" > "$NTX/$K1SID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$K1SID" bash "$GATE" close --manifest "$NM4" --approval "$ja" 2>&1); rc=$?
+check "첫째 절을 붙들던 물음이 닫힌다" "$rc" "0"
+gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "답이 온 뒤 다시 제안한다"
+check "답이 온 절이 미정산으로 돌아와 종료 제안이 기각된다" "$rc" "3"
+case "$msg" in
+  *"10 종료 절 K1 미정산"*) ok "그 절이 미충족 조건으로 다시 열거된다" ;;
+  *) bad "보류 재정산" "$msg" ;;
+esac
+
 # --- 31aa. A question does not switch the boundaries off --------------------
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four
