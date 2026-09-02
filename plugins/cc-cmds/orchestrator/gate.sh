@@ -2341,6 +2341,24 @@ gate_judgment_approval_id() {
     "$(printf '%s' "$2" | shasum -a 256 | cut -d' ' -f1)" | shasum -a 256 | cut -c1-8)"
 }
 
+gate_judgment_approval_disposition() {
+  # gate_judgment_approval_disposition <rc> — the issuer's three returns turned
+  # into a disposition a caller can act on.
+  #
+  # THE POINT IS THAT THE SIGNAL STOPS HERE. `GATE_APPROVAL_ANSWERED` is an
+  # internal value; the comment beside its declaration says a copy escaping to
+  # the shell would tell the router a code the contract never defined, and three
+  # callers reached the issuer without translating anything at all. Naming the
+  # translation once means a new caller has somewhere to go other than dropping
+  # the value.
+  case "$1" in
+    0) printf '발행' ;;
+    "$GATE_APPROVAL_ANSWERED") printf '답있음' ;;
+    "$GATE_EXIT_RULE") printf '닫힘' ;;
+    *) printf '미상' ;;
+  esac
+}
+
 gate_issue_judgment_approval() {
   # gate_issue_judgment_approval <alias> <segment> <기준> <근거>
   #
@@ -2356,6 +2374,13 @@ gate_issue_judgment_approval() {
   local alias="$1" seg="$2" std="$3" why="$4" id q
   q=$(gate_judgment_question "$std" "$why")
   id=$(gate_judgment_approval_id "$seg" "$q")
+  # THE ID GOES OUT WITH THE RETURN VALUE. Every one of the three returns below
+  # tells a caller WHAT happened and none of them tells it WHICH approval it
+  # happened to, so a caller that wants to record the outcome has no id to name
+  # and cannot re-derive one — the derivation needs the question text this
+  # function built. Exported the way `GATE_ACT_CWD` and `GATE_SURFACE` already
+  # are.
+  GATE_LAST_JUDGMENT_APPROVAL_ID="$id"; export GATE_LAST_JUDGMENT_APPROVAL_ID
   # THE STATE DECIDES, AND THE FOUR STATES DECIDE DIFFERENTLY. Narrowing to
   # `대기` alone was half the repair: it stopped an answered approval from
   # silently satisfying a re-submission, but everything that was not `대기` then
@@ -2985,8 +3010,15 @@ gate_record_row() {
           else
             gate_issue_judgment_approval "$alias" "$seg" \
               "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || jq_rc=$?
-            [ "$jq_rc" = "0" ] || return "$jq_rc"
-            return "$GATE_EXIT_APPROVAL"
+            # THROUGH THE TRANSLATION, not around it. Propagating the raw value
+            # sent the router exit 9 for an answered-but-spent approval, which
+            # is the one code the contract does not define. `이미 닫힌 물음` and
+            # `이미 쓰인 답` are both refusals of this submission, so both leave
+            # as the rule refusal the router already knows.
+            case "$(gate_judgment_approval_disposition "$jq_rc")" in
+              발행) return "$GATE_EXIT_APPROVAL" ;;
+              *) return "$GATE_EXIT_RULE" ;;
+            esac
           fi ;;
         *) warn "판단 행은 등급 1 과 2 만 받습니다 — 0 은 기록이 필요 없습니다 (관측: ${jgrade:-없음})"
            return "$GATE_EXIT_VOCAB" ;;
@@ -3464,9 +3496,9 @@ gate_verb_act() {
       local iss_rc=0
       gate_issue_judgment_approval "$alias" "$segment" \
         "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || iss_rc=$?
-      case "$iss_rc" in
-        0) exit "$GATE_EXIT_APPROVAL" ;;
-        "$GATE_APPROVAL_ANSWERED") exit "$GATE_EXIT_RULE" ;;
+      case "$(gate_judgment_approval_disposition "$iss_rc")" in
+        발행) exit "$GATE_EXIT_APPROVAL" ;;
+        답있음|닫힘) exit "$GATE_EXIT_RULE" ;;
         *) exit "$iss_rc" ;;
       esac
     fi
@@ -4405,6 +4437,49 @@ gate_record_stage_outcome() {
   log "스테이지 종단 — $seg ($kind) $klass rc=$rc${cost:+ · ${cost} USD}"
 }
 
+gate_absorb_issue() {
+  # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> — issue the approval
+  # an emitted judgment needs and dispose of every one of the issuer's three
+  # returns. ALWAYS returns 0.
+  #
+  # The absorber runs in the middle of recording a stage result, and this file
+  # inherits `set -euo pipefail` from the driver it sources. So an unhandled
+  # non-zero here does not "fall through": it kills the gate part way through
+  # writing the result row, or — where it is returned rather than run bare — it
+  # reaches the router as exit 9, which is a value the contract never defined.
+  # Both were reachable from all three call sites, and all three simply dropped
+  # the value and returned 0.
+  #
+  # A SILENT `return 0` IS NOT ONE OF THE DISPOSITIONS. The stage has already
+  # acted on the decision inside its own turn; if the gate writes neither a row
+  # nor an approval nor a warning, the judgment exists only in a terminal
+  # message nobody will read again.
+  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" rc=0
+  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" || rc=$?
+  case "$(gate_judgment_approval_disposition "$rc")" in
+    발행) ;;
+    답있음)
+      # An answer is on file for exactly this question, so the answer opens this
+      # judgment — the same disposition the acting path reaches through
+      # `GATE_RESOLVED_APPROVAL`. The row names the approval it spent, which is
+      # what makes a second use of one answer refusable.
+      gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
+        "판단 부류=-" "등급=-" \
+        "기준=$(gate_row_safe "$std" 150)" "되돌리는 법=-" \
+        "근거=$(gate_row_safe "$why" 150)" \
+        "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"
+      log "스테이지가 방출한 판단에 이미 답이 있어 그 답으로 엽니다 — $ctx (승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+      ;;
+    닫힘)
+      warn "스테이지가 방출한 판단의 물음은 이미 닫혀 있습니다 — 같은 물음을 다시 열지 않았습니다 ($ctx, 승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+      ;;
+    *)
+      warn "스테이지가 방출한 판단의 승인 발행이 알 수 없는 값으로 끝났습니다 ($ctx, rc=$rc) — 채택하지 않고 넘어갑니다"
+      ;;
+  esac
+  return 0
+}
+
 gate_absorb_emitted_judgment() {
   # gate_absorb_emitted_judgment <alias> <segment> <result-line>
   #
@@ -4448,17 +4523,17 @@ gate_absorb_emitted_judgment() {
 
   if [ -z "$cls" ]; then
     warn "스테이지가 판단을 방출했으나 「판단 부류」가 없습니다 — 행을 쓰지 않고 승인을 발행합니다"
-    gate_issue_judgment_approval "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음"
     return 0
   fi
   if ! judgment_class_ok "$cls"; then
     warn "스테이지가 방출한 「판단 부류」가 어휘 밖입니다: $cls — 행을 쓰지 않고 승인을 발행합니다"
-    gate_issue_judgment_approval "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls"
     return 0
   fi
   if [ "${grade:-2}" = "2" ] || ! gate_autoadopt_ok "$cls" "$revert"; then
     warn "스테이지가 방출한 판단이 자동 채택의 합집합을 통과하지 못했습니다 ($cls) — 행을 쓰지 않고 승인을 발행합니다"
-    gate_issue_judgment_approval "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls"
     return 0
   fi
   gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \

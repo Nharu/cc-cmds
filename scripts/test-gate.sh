@@ -4532,6 +4532,104 @@ case "$msg" in
   *) ok "매니페스트와 무관한 경로를 쓰는 행위에는 가드가 발화하지 않는다" ;;
 esac
 
+# --- 31ap. The absorber disposes of the issuer's return, all three of them --
+#
+# Every emission fixture before this one feeds the parser input it can read, and
+# every one of them lands on the issuer's `발행` arm. The other two returns —
+# `이미 닫힌 물음` and `이미 답이 있음` — were reachable from all three call
+# sites in the absorber, and all three dropped the value on the floor. Dropping
+# is not benign here: this file inherits `set -euo pipefail` from the driver it
+# sources, so a bare non-zero kills the gate part way through recording a stage
+# result, after the row is written and before the run learns the stage ended.
+#
+# The stub's class is wrapped in backticks, which is how a stage naturally
+# writes one — and the parser excludes backticks, so `판단 부류` comes out empty
+# and the first of the three call sites is the one that runs.
+JSTUB4="$WORK/judgment-stub-torn"
+cat > "$JSTUB4" <<'JSTUB4EOF'
+#!/usr/bin/env bash
+cat <<'RES4EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-4","num_turns":1,"result":"**판단 부류**: `시각-면제` **판단 등급**: 2 **판단 기준**: 형식이 깨진 방출을 어떻게 처분하는지 **판단 근거**: 부류가 백틱에 싸여 있다"}
+RES4EOF
+exit 0
+JSTUB4EOF
+chmod +x "$JSTUB4"
+emit_torn() {
+  # emit_torn <세그먼트> <스텁> — record one stage result from the given stub and
+  # leave the gate's whole output in `$out` and its status in `$rc`.
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" \
+        bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+}
+seg_row SJ4 "$CONE_C" 상태=실행중 선행=없음
+check "형식 깨진 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+emit_torn SJ4 "$JSTUB4"; torn_rc1=$rc
+tj=$(row_field "$(last_judgment_approval)" '승인 id')
+if [ -n "$tj" ]; then ok "부류를 읽지 못한 방출이 승인을 연다 ($tj)"; else bad "형식 깨진 방출" "승인이 열리지 않았다: $out"; fi
+tjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$tj " | tail -1)" '질문 문면')
+TJSID="34343434-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 이 물음은 잘못 발행됐습니다"}\n' "$tj" "$tjq" > "$NTX/$TJSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$TJSID" bash "$GATE" close --manifest "$NM" --approval "$tj" --void 2>&1); rc=$?
+check "그 물음을 무효로 닫는다" "$rc" "0"
+# THE SAME JUDGMENT, EMITTED AGAIN AGAINST A CLOSED QUESTION. The issuer refuses
+# to re-open it, and before the disposition existed that refusal came back as a
+# bare non-zero in the middle of the recording function.
+emit_torn SJ4 "$JSTUB4"
+check "닫힌 물음을 다시 방출해도 게이트는 앞서와 같은 값으로 끝난다" "$rc" "$torn_rc1"
+case "$out" in
+  *"스테이지 종단"*) ok "기록 함수가 끝까지 도달한다 (흡수기에서 죽지 않는다)" ;;
+  *) bad "흡수기 탈출" "스테이지 종단 줄이 없다 — 기록 도중 게이트가 죽었다: $out" ;;
+esac
+case "$out" in
+  *"이미 닫혀 있습니다"*) ok "다시 열지 않았다는 사실이 문면으로 남는다 (조용한 통과가 아니다)" ;;
+  *) bad "닫힌 물음 처분" "$out" ;;
+esac
+# AND THE ANSWERED RETURN, which is the other value that used to escape. The
+# question is closed as a GRANT this time, so the issuer reports an answer on
+# file and the absorber has to record that the emitted judgment consumed it.
+JSTUB5="$WORK/judgment-stub-answered"
+cat > "$JSTUB5" <<'JSTUB5EOF'
+#!/usr/bin/env bash
+cat <<'RES5EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-5","num_turns":1,"result":"**판단 부류**: `시각-면제` **판단 등급**: 2 **판단 기준**: 답이 이미 있는 방출을 어떻게 처분하는지 **판단 근거**: 사람이 먼저 답했다"}
+RES5EOF
+exit 0
+JSTUB5EOF
+chmod +x "$JSTUB5"
+seg_row SJ5 "$CONE_C" 상태=실행중 선행=없음
+check "답있음 실험용 세그먼트 행이 기록된다" "$rc" "0"
+emit_torn SJ5 "$JSTUB5"
+aj=$(row_field "$(last_judgment_approval)" '승인 id')
+ajq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aj " | tail -1)" '질문 문면')
+AJSID="33333333-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$aj" "$ajq" > "$NTX/$AJSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$AJSID" bash "$GATE" close --manifest "$NM" --approval "$aj" 2>&1); rc=$?
+check "방출된 판단의 물음이 승인으로 닫힌다" "$rc" "0"
+emit_torn SJ5 "$JSTUB5"
+case "$out" in
+  *"스테이지 종단"*) ok "답이 있는 물음을 다시 방출해도 기록 함수가 끝까지 도달한다" ;;
+  *) bad "흡수기 탈출" "$out" ;;
+esac
+if { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -qF "해소 승인=$aj"; then
+  ok "그 답으로 열렸다는 사실이 원장에 남고 어느 승인을 썼는지 지목한다"
+else
+  bad "답있음 처분" "해소 승인=$aj 를 지목하는 자율 승인 행이 없다"
+fi
+# THE ADOPTING PATH IS UNCHANGED. Three dispositions is three ways to break the
+# one that was already working.
+n_emit_before5=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
+seg_row SJ6 "$CONE_C" 상태=실행중 선행=없음
+emit_torn SJ6 "$JSTUB2"
+n_emit_after5=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
+if [ "${n_emit_after5:-0}" -gt "${n_emit_before5:-0}" ]; then
+  ok "합집합을 통과하는 정상 방출은 여전히 채택 행을 만든다"
+else
+  bad "정상 방출 회귀" "채택 행이 늘지 않았다: $n_emit_before5 → $n_emit_after5"
+fi
+
 # --- 31aa. A question does not switch the boundaries off --------------------
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four
