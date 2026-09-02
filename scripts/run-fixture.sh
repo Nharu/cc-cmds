@@ -221,3 +221,87 @@ fx_reap() {
   done
   FX_PIDS=""
 }
+
+# --------------------------------------------------------------------------
+# Clocks, handles and the session index — what a status line reads
+# --------------------------------------------------------------------------
+
+fx_age_file() {
+  # fx_age_file <path> <seconds-ago> — move a file's mtime into the past.
+  #
+  # `perl`, and not `touch -t`, because computing the stamp `touch` wants means
+  # formatting an epoch — and that is the one operation where the two date
+  # implementations take incompatible flags. `utime` takes the number directly.
+  perl -e 'my ($f, $s) = @ARGV; my $t = time() - $s; utime $t, $t, $f or die "utime: $!";' \
+    "$1" "$2"
+}
+
+fx_ledger_path() {
+  # fx_ledger_path — the pointer the gate leaves so a reader outside the driver
+  # can find the ledger. Its location is derived from the manifest, which
+  # nothing but the gate knows, so without this file the status line can reach
+  # the run directory and still not read a single row.
+  printf '%s\n' "$FX_LEDGER" > "$FX_RUN_DIR/ledger-path"
+}
+
+fx_session_index() {
+  # fx_session_index <session-id> <run-id>... — the forward index, in the
+  # gate's own shape: one run id per line, appended, deduped. It is a LIST
+  # because one session holds several runs across a night, and the tie-break the
+  # status line applies only means anything over a list.
+  local sid="$1"; shift
+  local dir="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
+  mkdir -p "$dir"
+  local rid
+  for rid in "$@"; do
+    grep -qxF "$rid" "$dir/$sid" 2>/dev/null || printf '%s\n' "$rid" >> "$dir/$sid"
+  done
+}
+
+fx_heartbeat() {
+  # fx_heartbeat <heartbeat-age-sec> <growth-age-sec> — the watcher's heartbeat,
+  # in slice B's field order.
+  #
+  # THE TWO AGES ARE INDEPENDENT ON PURPOSE. The file's own mtime says whether
+  # the WATCHER is alive; the `마지막성장` field says when the LEDGER last moved.
+  # A healthy watcher beating every minute over a ledger that has not grown in
+  # an hour is the exact shape the stall mark exists to catch, and a fixture
+  # that tied the two together could not produce it.
+  local hb_age="$1" grew_age="$2" grew
+  grew=$(( $(date -u +%s) - grew_age ))
+  printf '%s 원장 %s초 전 갱신 · 스테이지 0개 · 대기 승인 0건 · 비종단 세그먼트 1개 · 원장크기=1 · 마지막성장=%s\n' \
+    "픽스처" "$grew_age" "$grew" > "$FX_RUN_DIR/watch.heartbeat"
+  [ "$hb_age" -eq 0 ] || fx_age_file "$FX_RUN_DIR/watch.heartbeat" "$hb_age"
+}
+
+fx_watch_pid() {
+  # fx_watch_pid <live|dead> — the watcher's own pid handle. Without it "has not
+  # come up yet" and "died" are the same observation.
+  local kind="$1" pid
+  if [ "$kind" = "live" ]; then
+    sleep 120 &
+    pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "
+    export FX_PIDS
+  else
+    sleep 0 &
+    pid=$!
+    wait "$pid" 2>/dev/null || true
+  fi
+  printf '%s\n' "$pid" > "$FX_RUN_DIR/watch.pid"
+}
+
+fx_done() {
+  # fx_done — the `done` file, with the ISO stamp the propose-done path writes.
+  # It is a SHORTCUT for the terminal predicate, not its definition: 2 of 39
+  # observed run directories had one.
+  printf '%s\n' "종단 — 픽스처" > "$FX_RUN_DIR/done"
+}
+
+fx_statusline_stdin() {
+  # fx_statusline_stdin <session-id> [cwd] — the one-line JSON the harness feeds
+  # a status line command, carrying the five fields it documents.
+  local sid="$1" cwd="${2:-$PWD}"
+  printf '{"session_id":"%s","transcript_path":"/dev/null","cwd":"%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"id":"fixture","display_name":"fixture"}}' \
+    "$sid" "$cwd" "$cwd" "$cwd"
+}
