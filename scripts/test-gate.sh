@@ -3963,6 +3963,73 @@ else
   bad "픽스처 복구" "깨뜨린 HEAD 를 되돌리지 못했다"
 fi
 
+# --- 31ai. `close` reads the POLARITY of the answer, not just its presence --
+#
+# The recording path held one literal — `상태=승인` — and nothing anywhere read
+# what the person actually wrote, so a transcript line saying no closed the
+# approval as a grant. Every refusal on the unattended adoption surface
+# converges on this one channel, so a channel that emits a constant leaves the
+# floors above it deciding nothing. There is no negative-answer fixture anywhere
+# else in this suite.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="이 발견을 이번 런에서 고칠지" 근거="비용이 크다"
+check "부정 답변 실험용 판단이 승인으로 올라간다" "$rc" "5"
+nid=$(row_field "$(last_judgment_approval)" '승인 id')
+nq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '질문 문면')
+if [ -n "$nid" ]; then ok "부정 답변 실험용 판단 승인 id 를 원장에서 읽는다 ($nid)"; else bad "부정 답변 픽스처" "대기 행이 없다"; fi
+NEGSID="17171717-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 아니오, 다음 런에서 본다"}\n' "$nid" "$nq" > "$NTX/$NEGSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" 2>&1); rc=$?
+check "부정으로 읽히는 답은 승인으로 닫히지 않는다" "$rc" "3"
+case "$out" in
+  *"부정으로 읽힙니다"*) ok "거절이 무엇이 매치했는지와 어느 처분을 고를지 말한다" ;;
+  *) bad "부정 스캔" "$out" ;;
+esac
+# THE STATE IS READ, NOT THE EXIT CODE. A refusal that nonetheless appended a
+# `상태=승인` row would leave the exit code right and the ledger wrong, and the
+# ledger is the only thing the morning reads.
+nst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '상태')
+check "거절된 close 는 그 승인의 상태를 대기 그대로 둔다" "$nst" "대기"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" --void --reject 2>&1); rc=$?
+check "--void 와 --reject 를 함께 주면 거절된다 (서로 다른 처분이다)" "$rc" "2"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" --reject 2>&1); rc=$?
+check "같은 트랜스크립트 줄이 --reject 로는 닫힌다" "$rc" "0"
+nst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '상태')
+check "거부로 닫힌 처분이 원장에 남는다" "$nst" "거부"
+# A REJECTION IS AN ANSWER, AND WITHOUT AN ARM FOR IT IT READS AS SILENCE.
+# `거부` is neither `대기` nor `승인`, so control falls out of the resolution
+# block and reaches the issuing path — which re-opens the very question that was
+# just answered no, every morning, off one answer already given.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=감사-발견" 기준="이 발견을 이번 런에서 고칠지" \
+         "되돌리는 법=아침에 다시 본다" 근거="비용이 크다"
+check "거부로 닫힌 승인은 그 판단을 열지 않는다" "$rc" "3"
+case "$msg" in
+  *"거부로 닫혔습니다"*) ok "거절이 승인이 거부되었음을 지목한다 (승인이 재발행되지 않는다)" ;;
+  *) bad "거부 소비" "$msg" ;;
+esac
+# THE SCAN DOES NOT OVER-MATCH. A positive answer on the same path still closes
+# as `승인`, which is what makes the assertions above measure polarity rather
+# than merely record that `close` can refuse.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="이 정정을 이번 런에서 반영할지" 근거="변경이 작다"
+check "긍정 답변 실험용 판단이 승인으로 올라간다" "$rc" "5"
+pid_ok=$(row_field "$(last_judgment_approval)" '승인 id')
+pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '질문 문면')
+POSSID="18181818-3434-5656-7878-909090909090"
+printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$pid_ok" "$pq" > "$NTX/$POSSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$POSSID" bash "$GATE" close --manifest "$NM" --approval "$pid_ok" 2>&1); rc=$?
+check "긍정 답변은 그대로 승인으로 닫힌다" "$rc" "0"
+pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '상태')
+check "긍정 답변의 상태는 승인이다 (스캔이 과잉으로 잡지 않는다)" "$pst" "승인"
+
 # --- 31aa. A question does not switch the boundaries off --------------------
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four

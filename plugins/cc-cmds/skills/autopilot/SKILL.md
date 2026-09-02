@@ -277,7 +277,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 | `plan` | dry run — would this act pass, and if not which rule refuses it |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
-| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked) |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no) |
 
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
 
@@ -320,7 +320,11 @@ Exit 5 means the run has asked and cannot answer itself. **Ask the user in this 
 
 `close` reads the **harness-written transcript**, not the router's prose. A router that could type its own answer would be issuing approvals to itself and the record would be indistinguishable from one a person gave. If the transcript cannot be read, `close` refuses; that refusal is the mechanism working.
 
+**`close` has three dispositions and they are not interchangeable.** Bare `close` records `승인` — asked and granted. `close --void` records `무효` — the question should not have been asked. `close --reject` records `거부` — it was asked, and the answer is no. All three need the same transcript line, and `--void` and `--reject` together are refused, because they are different claims about the same approval rather than two strengths of one claim.
+
 **An approval the run should never have asked for is voided, not granted.** `gate.sh close --approval <id> --void` records `무효` and the act does not happen. It needs the same transcript line as an approval — voiding removes a blocker rather than adding one, so it gets no looser gate — and what it buys the person is a way to say *this should not have been asked* without granting the act to get the run moving again.
+
+**A `절단점=판단` approval whose answer reads as "no" cannot be closed as `승인`.** The gate scans the extracted answer bytes for a negative — `아니오`, `아니요`, `거부`, `거절`, `하지 마`, `하지마`, `no`, `nope`, `reject`, `don't` — and refuses the grant, naming what matched and asking for `--reject` or `--void` instead. The scan does not run on act approvals: their `답변 문면` is a fixed literal, so there is nothing extracted to read, and their refusal is the closer naming a flag. `거부` is terminal the way `무효` is — resubmitting the same act against a rejected approval is refused rather than re-asked.
 
 **While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
 

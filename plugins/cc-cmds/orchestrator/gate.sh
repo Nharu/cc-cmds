@@ -57,7 +57,7 @@
 #   gate.sh exec     --manifest <path> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --surface <token>
 #                    --snapshot-digest <hex> --rationale <text> -- <argv...>
-#   gate.sh close    --manifest <path> --approval <id> [--void]
+#   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
 # was cut mid-flight instead of running it again. The id must appear on a
@@ -1677,7 +1677,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy="" void=0
+  local approval="" render=0 worktree="" review_policy="" void=0 reject=0
   GATE_RESUME=""; export GATE_RESUME
   MANIFEST=""
 
@@ -1696,6 +1696,7 @@ gate_main() {
       --review-policy)   review_policy="$2"; shift 2 ;;
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
+      --reject)          reject=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -1837,7 +1838,15 @@ gate_main() {
       ;;
     close)
       [ -n "$approval" ] || { printf 'gate: close 는 --approval 이 필요합니다\n' >&2; exit 2; }
-      gate_close "$approval" "$void"
+      # The two refusing dispositions are different CLAIMS about the same
+      # approval — one says the question should not have been asked, the other
+      # that it was asked and the answer is no. Taking both would leave the
+      # row's state decided by whichever branch runs first, so the pair is
+      # refused rather than ranked.
+      if [ "$void" = "1" ] && [ "$reject" = "1" ]; then
+        printf 'gate: --void 와 --reject 는 서로 다른 처분입니다 — 하나만 고르세요\n' >&2; exit 2
+      fi
+      gate_close "$approval" "$void" "$reject"
       ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
@@ -3210,6 +3219,15 @@ gate_verb_act() {
       무효)
         warn "승인 $ap_id 이 무효로 닫혔습니다 — 이 행위는 수행하지 않습니다"
         exit "$GATE_EXIT_RULE" ;;
+      거부)
+        # A REFUSAL IS AN ANSWER, AND WITHOUT THIS ARM IT READS AS SILENCE.
+        # `거부` is neither `대기` nor `승인`, so control fell out of this
+        # `case` and reached the issuing path below — which re-opened the very
+        # question that had just been answered no. The person would have got
+        # the same question again the next morning, and every morning after,
+        # off one answer they already gave.
+        warn "승인 $ap_id 은 거부로 닫혔습니다 — 이 행위는 수행하지 않습니다"
+        exit "$GATE_EXIT_RULE" ;;
     esac
   fi
 
@@ -4138,6 +4156,34 @@ gate_transcript_files() {
   done
 }
 
+gate_negative_answer_hit() {
+  # gate_negative_answer_hit <답 바이트> — prints the negative term the answer
+  # matched, or nothing at all.
+  #
+  # THE VOCABULARY LIVES HERE AND IN NO OTHER PLACE. Spread across the call
+  # sites it would drift, and a scan that is thorough in one caller and thin in
+  # another reads as one floor while behaving as two.
+  #
+  # The two halves are matched differently because the languages differ. Korean
+  # has no word boundary a scan can rest on, so its terms are matched as plain
+  # substrings. The Latin terms are matched against a copy whose punctuation
+  # and multibyte bytes have become spaces and which is space-padded on both
+  # ends, so `no` cannot fire on `note`, `known` or `nothing` — the bare
+  # substring would have made this scan useless in the other direction, which
+  # for a check standing between an answer and a recorded approval is worse
+  # than the constant it replaces.
+  local ans="$1" lower flat t
+  lower=$(printf '%s' "$ans" | tr 'A-Z' 'a-z')
+  for t in 아니오 아니요 거부 거절 '하지 마' 하지마; do
+    case "$lower" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
+  done
+  flat=" $(printf '%s' "$lower" | tr -c "a-z0-9'" ' ') "
+  for t in no nope reject "don't"; do
+    case "$flat" in *" $t "*) printf '%s' "$t"; return 0 ;; esac
+  done
+  return 0
+}
+
 gate_close() {
   # Resolving an approval reads the HARNESS-WRITTEN transcript rather than the
   # router's prose, so the entity that asks is not the entity that records. The
@@ -4150,18 +4196,27 @@ gate_close() {
   # This verb's contract is the narrow one it can actually keep: it never
   # accepts an answer that did not come out of that file.
   #
-  # Two outcomes, and both need the same transcript line. `--void` records
-  # `무효` — the question should not have been asked — instead of `승인`. Before
-  # it there was exactly one recording path, so a pending approval had two
-  # possible ends: granted, or pending forever. Pending is not inert; it counts
-  # against termination condition 2 and suspends the stagnation boundaries, so
-  # one approval nobody wants to grant stalls the rest of the run.
+  # Three outcomes, and every one of them needs the same transcript line.
+  # `--void` records `무효` — the question should not have been asked — and
+  # `--reject` records `거부` — it was asked, and the answer is no. Before them
+  # there was exactly one recording path, so a pending approval had two possible
+  # ends: granted, or pending forever. Pending is not inert; it counts against
+  # termination condition 2 and suspends the stagnation boundaries, so one
+  # approval nobody wants to grant stalls the rest of the run.
   #
   # Voiding is NOT the conservative direction — it REMOVES a blocker — so it
   # keeps the transcript binding rather than becoming a router-writable escape.
   # What it buys a person is the ability to answer "this should not have been
   # asked" without also granting the act.
-  local id="$1" void="${2:-0}" row state q tx ans f cutp abody
+  #
+  # `거부` IS THE OUTCOME A PERSON'S OWN WORDS CAN REACH, and until it existed
+  # they could not reach one. `무효` and `승인` are both dispositions the router
+  # selects; the recording path held the single literal `상태=승인` and read
+  # nothing about the answer's polarity, so an answer of "no" written into the
+  # transcript was recorded as a grant. Every refusal on the unattended
+  # adoption surface converges on this channel, so a channel that emits a
+  # constant leaves the floors above it deciding nothing.
+  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -4254,6 +4309,38 @@ gate_close() {
     [ -n "$extracted" ] || extracted="$ans"
     abody=$(gate_row_safe "$extracted" 400)
   fi
+
+  # THE POLARITY IS READ BEFORE `승인` IS WRITTEN.
+  #
+  # A scan over natural language is a heuristic and will sometimes be wrong;
+  # recording a constant is not a heuristic and was always wrong in one
+  # direction. The refusal is the conservative side of the heuristic's error —
+  # it never grants against the words, it only asks the closer to say which
+  # refusal they mean.
+  #
+  # LIMITED TO `절단점=판단`, and the limit is not caution but availability. A
+  # question's answer is prose, and the bytes extracted above ARE that prose.
+  # An act approval's answer is binary and its `답변 문면` is a fixed literal,
+  # so there is nothing extracted to scan — the only text on hand is `$ans`,
+  # the whole transport frame, whose ids, paths and timestamps would make a
+  # substring scan mostly noise. An act approval is refused by the closer
+  # naming `--void` or `--reject`.
+  if [ "$cutp" = "판단" ] && [ "$reject" = "0" ]; then
+    hit=$(gate_negative_answer_hit "$abody")
+    if [ -n "$hit" ]; then
+      warn "이 답은 부정으로 읽힙니다 (매치: ${hit}) — ${id} 을 승인으로 닫지 않습니다"
+      warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
+      exit "$GATE_EXIT_RULE"
+    fi
+  fi
+
+  if [ "$reject" = "1" ]; then
+    gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
+      "답변 문면=$abody" "해소 시각=$(now_iso)"
+    log "승인 거부 — $id (물었고 답이 아니오입니다)"
+    return 0
+  fi
+
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   log "승인 해소 — $id"
