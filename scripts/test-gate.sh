@@ -2371,6 +2371,49 @@ graded_as '외부상태변경' 'playwright-cli 는 외부 상태 변경이다'  
 graded_as '외부상태변경' 'chromedriver 도 같다'                    -- chromedriver --port=4444
 graded_as '외부상태변경' '경로로 부른 브라우저 도구도 같다'        -- /opt/homebrew/bin/playwright open https://x
 
+# ---------------------------------------------------------------------------
+# 32. A middle `grep` that matches nothing must not kill the verb
+#
+# `set -e` and `pipefail` are both on — the gate sources the driver, which sets
+# them. So an unguarded `grep` in the MIDDLE of a pipeline turns "found nothing"
+# into a non-zero pipeline, and a bare statement under `set -e` then exits the
+# shell with status 1 and NO message. Measured: a router could not write the
+# first `segment` row of a run, and the only output was the manifest-check line.
+# Every other refusal in this file names its repair; this path said nothing, and
+# a silent failure is the one kind a router cannot recover from.
+#
+# The three assertions below are the three shapes that were exposed. Each fires
+# on the ORDINARY state — a ledger with no run-scope block, a segment id with no
+# rows yet, an approval id that is not in the ledger — because that is exactly
+# when the unguarded spelling returns non-zero.
+# ---------------------------------------------------------------------------
+# shellcheck source=/dev/null
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+
+G32="$WORK/g32-ledger.md"
+printf -- '- `run` | 시작=x\n' > "$G32"
+( set -euo pipefail; cc_unresolved_blocked "$G32" >/dev/null )
+check "run 스코프 blocked 가 없는 원장에서 죽지 않는다" "$?" "0"
+
+printf -- '- `blocked` | 스코프=run | 원인=해소 | 사유=x | 근거=y\n' >> "$G32"
+( set -euo pipefail; cc_unresolved_blocked "$G32" >/dev/null )
+check "해소된 blocked 만 있는 원장에서도 죽지 않는다" "$?" "0"
+
+# The gate-side siblings. Both are read through the verb so the assertion covers
+# the `set -e` context the defect actually fired in, not the function alone.
+gateL act --manifest "$MANIFEST" --kind segment --target infra --segment SFRESH \
+     --cutpoint 커밋 --snapshot-digest "$(HL)" --rationale "첫 세그먼트" \
+     -- 상태=계획됨 "워크트리=$WT"
+check "원장에 segment 행이 하나도 없을 때 첫 행이 써진다" "$rc" "0"
+# The row itself, not the message — `gateL` strips `[run]` lines on purpose so
+# that `$msg` carries warnings and refusals only, and a successful act leaves it
+# empty. Asserting on the message here would pass for the wrong reason on every
+# quiet success and fail on this one.
+case "$( { grep -E '^- `segment`' "$LEDGER" || true; } | grep -cF 'id=SFRESH ' )" in
+  0) bad "첫 세그먼트" "행위는 통과했는데 원장에 그 행이 없다" ;;
+  *) ok "그 행이 원장에 남는다" ;;
+esac
+
 # Leave the fixture repository's worktree set as it was found.
 ( cd "$WT" && git worktree remove --force "$NEWWT" && git worktree prune ) >/dev/null 2>&1 || true
 

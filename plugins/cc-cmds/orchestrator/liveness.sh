@@ -192,7 +192,15 @@ cc_unresolved_blocked() {
   # 5 and the status line read the same rule instead of two copies of it.
   local ledger="$1" reason last cause
   [ -n "$ledger" ] || return 0
-  { grep -E '^- `blocked`' "$ledger" 2>/dev/null || true; } | grep -F '스코프=run' | tr '|' '\n' \
+  # EVERY grep in this pipeline needs its own guard, not just the first. A middle
+  # `grep` that matches nothing exits 1, `pipefail` promotes that to the whole
+  # pipeline, and the caller runs this as a BARE statement under `set -e` — so a
+  # ledger with no run-scope block at all, which is the ordinary case, killed the
+  # gate's verb with status 1 and NO message. Every other refusal in this file
+  # carries a sentence naming the repair; this path was the one that said nothing,
+  # and a silent failure is the only kind a router cannot recover from.
+  { grep -E '^- `blocked`' "$ledger" 2>/dev/null || true; } \
+    | { grep -F '스코프=run' || true; } | tr '|' '\n' \
     | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | sort -u \
     | while IFS= read -r reason; do
         [ -n "$reason" ] || continue

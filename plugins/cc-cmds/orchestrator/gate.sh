@@ -735,8 +735,12 @@ gate_snapshot_digest() {
 gate_segment_field() {
   # Last row for this segment id wins — the append-only advance of contract 3.4.
   local sid="$1" key="$2"
+  # The `grep` is guarded for the same reason as `cc_unresolved_blocked`: asking
+  # for a segment id that has no rows yet is ordinary — the router does it on the
+  # first act of every run — and an unguarded middle `grep` turns that into a
+  # `pipefail` non-zero which `set -e` reads as a fatal, message-less failure.
   gate_rows 'segment' \
-    | grep -F "id=$sid " | tail -1 \
+    | { grep -F "id=$sid " || true; } | tail -1 \
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
@@ -955,7 +959,7 @@ gate_pending_approvals_json() {
     first=0
     printf '    {"id": "%s", "blocks": "%s"}' \
       "$(gate_json_escape "$id")" \
-      "$(gate_json_escape "$(gate_rows '승인' | grep -F "승인 id=$id " | tail -1 \
+      "$(gate_json_escape "$(gate_rows '승인' | { grep -F "승인 id=$id " || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)")"
   done
   [ "$first" = "1" ] || printf '\n'
