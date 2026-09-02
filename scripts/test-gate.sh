@@ -2766,9 +2766,40 @@ check "해소 뒤 같은 사유가 다시 멈추면 그 관측이 다시 전사�
 # "ancestor" and a cone assertion would pass whatever the derivation did. The run
 # id is what splits the ledger, so this section carries its own manifest, grant
 # and ledger.
+#
+# AND IT DERIVES THAT ID RATHER THAN ASSUMING IT. A section added above this one
+# took the id this one used to hardcode, after which `sed … "$GRANT" > …` named
+# one path on both sides: the shell truncated the authorization record before
+# `sed` could read it, the grant went to zero bytes, and every call below died on
+# a missing authorization block. So the inherited id is READ from the manifest
+# and asserted to differ from this section's own. A fresh hardcoded constant
+# would only move the collision to whichever id the next section upstream takes,
+# and it would be just as quiet when it arrived.
 # ---------------------------------------------------------------------------
+# The pipeline environment group, cleared AGAIN. The section above clears it for
+# its own reasons and this one needs the same thing for the same reason — a stage
+# session is deliberately kept out of the lineage, so an inherited
+# `CC_PIPELINE_STAGE_ID` makes every call below take that branch. Leaning on the
+# previous section having done it is the shape this repair exists to remove.
+unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_PARENT_SESSION
+
+CONE_RUN_ID=R3
+prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$MANIFEST" | tail -1)
+# A BROKEN FIXTURE EXITS RATHER THAN ASSERTING — the idiom `nm_add_auth_row` and
+# `refresh_bd` already use. This guard is the detector for the defect above: an
+# overlap that was silent becomes an audible stop naming both ids.
+if [ -z "$prev_run_id" ] || [ "$prev_run_id" = "$CONE_RUN_ID" ]; then
+  printf '31: 앞 절의 런 id 를 매니페스트에서 읽지 못했거나 이 절의 id 와 겹친다 (읽은 값 %s, 이 절 %s)\n' \
+    "${prev_run_id:-(없음)}" "$CONE_RUN_ID" >&2
+  exit 1
+fi
+
 NM="$WORK/cone-plan.md"
-sed -e 's/run-id=R1;/run-id=R2;/' -e 's/^\*\*런 id\*\*: R1$/**런 id**: R2/' "$MANIFEST" > "$NM"
+sed -e "s/run-id=$prev_run_id;/run-id=$CONE_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $prev_run_id\$/**런 id**: $CONE_RUN_ID/" "$MANIFEST" > "$NM"
 # The binding digest no longer matches, and that is the check working — so it is
 # dropped rather than recomputed, which the driver reports and allows.
 sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$NM" && rm -f "$NM.bak"
@@ -2800,11 +2831,18 @@ nm_add_auth_row() {
 # cannot write it.
 nm_add_auth_row '- `자동 채택` | 판단 부류=문서-신선도 | 상한=없음 | 심각도 상한=minor | 사유=문서 신선도 판정은 되돌릴 대상이 없다'
 nm_add_auth_row '- `종료 절` | id=K1 | 문면=첫째 절'
-sed 's/R1/R2/g' "$GRANT" > "$WT/docs/pipeline-grant/R2.md"
-LEDGER2="$WT/docs/pipeline-run/R2.md"
+# A BLANKET substitution is right here and an anchored one is right above. The
+# grant carries the id in its title, in its `## 인가` heading and inside the
+# `**보고서**:` path, all three of which must move together, and it holds no hex
+# digest for a loose match to corrupt. What made this line dangerous was never
+# the pattern — it was reading and writing one path, which the guard above now
+# makes unreachable.
+CONE_GRANT="$WT/docs/pipeline-grant/$CONE_RUN_ID.md"
+sed "s/$prev_run_id/$CONE_RUN_ID/g" "$GRANT" > "$CONE_GRANT"
+LEDGER2="$WT/docs/pipeline-run/$CONE_RUN_ID.md"
 {
-  printf '# 파이프라인 런 보고서 — R2\n\n'
-  printf '런 id R2 · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n'
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
 } > "$LEDGER2"
 
 # HELPERS FIRST, BEFORE ANY CALL. A helper defined below its first use dies as
@@ -3430,9 +3468,18 @@ esac
 # so a pipe inside one argv element was invisible to the first and a new field
 # to the second. `사유=… | 스코프=run` passed the cone check as `cone` and then
 # enumerated as an unresolved run-scope block in termination condition 5.
-n_run_before=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '스코프=run' || true)
+#
+# COUNTED AS A FIELD RATHER THAN AS A SUBSTRING. Sanitizing rewrites `|` to `/`
+# and deletes nothing, so `스코프=run` still appears inside the value — which is
+# what the assertion below deliberately requires. A bare `grep -cF '스코프=run'`
+# therefore counts the CHARACTERS showing up rather than a field being created,
+# and rises by one even when the sanitizer works perfectly. Wrapping the pattern
+# in the row's own separators is what makes it measure a field: `스코프` is not
+# the last field, so a real one is surrounded by pipes, while the sanitized value
+# reads `/ 스코프=run /` and does not match.
+n_run_before=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '| 스코프=run |' || true)
 cone_of SA "리뷰 P0 | 스코프=run | P1 미해소" >/dev/null
-n_run_after=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '스코프=run' || true)
+n_run_after=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '| 스코프=run |' || true)
 check "필드 값 안의 파이프가 새 필드를 만들지 못한다" "$n_run_after" "$n_run_before"
 case "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" in
   *"리뷰 P0 / 스코프=run / P1 미해소"*) ok "파이프가 행 문법을 쪼개지 않도록 쓰기 시점에 정규화된다" ;;
@@ -3650,6 +3697,33 @@ fi
 #
 # LAST IN THIS SECTION on purpose: firing B1 issues an ACT approval, which then
 # legitimately suspends the boundaries for anything that follows.
+#
+# BOTH PREMISES ARE ESTABLISHED HERE RATHER THAN INHERITED. They used to be read
+# off whatever the subsections above happened to leave, and nothing above was
+# writing them on purpose — the escalations there open ACT approvals as a side
+# effect, which is the one state that makes the conclusion below unreadable.
+#
+# `열린 행위 승인은 없다` is not decoration, it is the ATTRIBUTION condition:
+# with an act approval open the boundary is legitimately suspended, B1 never
+# fires, and the verdict at the end of this subsection names the wrong culprit —
+# it reports that a judgment approval disarmed B1. Weakening the assertion would
+# only make that misattribution quiet, so the fixture opens the question it needs
+# and drains the act approvals instead. The drain also turns the ordering that
+# the note above carried in prose into actual plumbing: a subsection added later
+# that leaves an act approval open gets drained with the rest.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="경계 단언의 전제로 열어 두는 물음" 근거="이 절은 열린 판단 승인 하나를 필요로 한다"
+check "경계 단언의 전제인 판단 승인이 열린다" "$rc" "5"
+DRAINSID="16161616-3434-5656-7878-909090909090"
+for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$aid" "$aq" >> "$NTX/$DRAINSID.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$DRAINSID" bash "$GATE" close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
+  check "경계 전제를 세우려 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
+done
 b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
 npend_judgment=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
                  | jq -r '.pending_approvals[].id' | grep -c '^J-' || true)

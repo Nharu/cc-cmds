@@ -2711,6 +2711,15 @@ gate_record_row() {
       # cone itself and refuses a declaration that is narrower.
       local why cause prior scope
       scope=$(gate_field_of '스코프' "$@")
+      # AN ABSENT SCOPE MEANS `run`, and that default is compatibility rather
+      # than convenience. Before the cone existed the resolution form carried no
+      # scope at all — `act --kind blocked -- 원인=해소 사유=… 근거=…` — because
+      # `run` was the only thing a router could resolve, and the arm wrote the
+      # field itself. Making the field required turned every existing caller of
+      # that form into an exit 2, which is the same shape as the two open issues
+      # about a newly required field invalidating runs already in flight. The
+      # vocabulary check still runs; it just runs on a value that is filled in.
+      [ -n "$scope" ] || scope=run
       why=$(gate_field_of '사유' "$@")
       cause=$(gate_field_of '원인' "$@")
       gate_check_scope "$scope" || return "$GATE_EXIT_VOCAB"
