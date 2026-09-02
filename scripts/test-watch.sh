@@ -90,10 +90,44 @@ CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
 CC_TEST_NOTIFY_LOG="$NOTIFY_LOG"
 export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
 
-# `banner()` returns early off Darwin, so the banner cases have nothing to
-# observe on the Linux leg. They are SKIPPED rather than passed there: counting
-# an unreachable path as a pass is how a platform-specific hole stays invisible.
-is_darwin() { [ "$(uname -s)" = "Darwin" ]; }
+# The host check is SEAMED, so every leg can drive the Darwin branch. Skipping
+# these on the other leg counted an unreachable path as a pass, which is how a
+# platform-specific hole stays invisible; the seam is what makes the assertions
+# reachable everywhere instead.
+#
+# The variable is attached at each call site rather than exported for the file.
+# A file-wide export is inherited by every case that follows it, silently, which
+# is the shape a later reader cannot see — and for a shell function a prefix
+# assignment does NOT scope to the call, so it has to prefix the real command.
+
+# The emitter launches the notifier DETACHED and never asks its exit status — a
+# banner sits on the critical path of an act and may not be able to block one. So
+# a stub's write can land after the watcher process has already exited, and every
+# assertion about the log has to wait for it rather than read once.
+#
+# Bounded, and the assertion itself stays a boolean: this waits for a COUNT to be
+# reached and never compares elapsed seconds against anything.
+notify_settle() {
+  # notify_settle <expected-line-count>
+  local want="$1" i=0 n
+  while [ "$i" -lt 60 ]; do
+    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
+}
+
+notify_lines() { grep -c . "$NOTIFY_LOG" 2>/dev/null || true; }
+
+# The stub logs `$*`, so argv arrives space-joined and a title carrying a space
+# cannot be pulled out with a `[^ ]*` capture — the fixed-string form asks the
+# question directly instead.
+has_title()   { grep -cF -- "-title $1 -message" "$NOTIFY_LOG" 2>/dev/null || true; }
+has_group()   { grep -cF -- "-group $1 " "$NOTIFY_LOG" 2>/dev/null || true; }
+n_sound()     { grep -cF -- '-sound default' "$NOTIFY_LOG" 2>/dev/null || true; }
+groups_uniq() { sed -n 's/.*-group \([^ ]*\).*/\1/p' "$NOTIFY_LOG" | sort -u | grep -c . || true; }
 
 case_n=0
 fresh() {
@@ -124,6 +158,11 @@ fresh() {
   printf '%s\n' 1577836800 > "$RD/started-at"
 }
 run() { bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
+# The same pass with the host seam pinned, for the cases that assert on banner
+# arguments. `--notify` is gone: the run-level kill switch is the only toggle,
+# and a second parsing site is what let a user believe they had switched the
+# banners off while every one of them kept arriving.
+runb() { CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
 
 seed_idle() {
   # seed_idle <초> <run 인자…> — hand the watcher an idle ledger.
@@ -260,7 +299,15 @@ fi
 # ---------------------------------------------------------------------------
 # 5. It decides nothing and resumes nothing
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
+# The emitter is SOURCED, not launched, and its filename ends in `run.sh` — so
+# the substring test below reads that source line as the driver. The claim being
+# made is "this process starts nothing", so the scan drops that exact line and
+# keeps every other one, rather than loosening the pattern until it also stops
+# catching the file it exists to catch. The exclusion is a WHOLE-LINE match:
+# `bash "$WATCH_DIR/notify-run.sh"` would still be scanned and still fail.
+if grep -vE '^[[:space:]]*#' "$WATCH" \
+   | grep -vxF '. "$WATCH_DIR/notify-run.sh"' \
+   | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
   bad "재개 금지" "감시 스크립트가 무언가를 기동한다 — 두 번째 의사결정자가 생긴다"
 else
   ok "아무것도 기동하지 않는다 (자동 워치독이 아니다)"
@@ -851,20 +898,18 @@ esac
 fresh
 : > "$NOTIFY_LOG"
 printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
-out=$(run --notify)
+out=$(runb)
 case "$out" in
   *"런이 종단했습니다"*) ok "arm B 가 유도 종단을 크게 말한다" ;;
   *) bad "arm B" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
-if is_darwin; then
-  if grep -q '런이 종단했습니다' "$NOTIFY_LOG" 2>/dev/null; then
-    ok "arm B 가 배너도 함께 올린다 (announce 만이 아니라)"
-  else
-    bad "arm B 배너" "$(tr '\n' ' ' < "$NOTIFY_LOG" 2>/dev/null)"
-  fi
+notify_settle 1
+if grep -q '런이 종단했습니다' "$NOTIFY_LOG" 2>/dev/null; then
+  ok "arm B 가 배너도 함께 올린다 (announce 만이 아니라)"
 else
-  skip "arm B 배너" "banner() 는 Darwin 에서만 동작한다"
+  bad "arm B 배너" "$(tr '\n' ' ' < "$NOTIFY_LOG" 2>/dev/null)"
 fi
+check "종단 배너는 상태 슬롯의 제목을 쓴다" "$(has_title '[cc-cmds] 자율 런')" "1"
 
 # ---------------------------------------------------------------------------
 # The banner group is per run.
@@ -873,22 +918,315 @@ fi
 # it, so a constant group made two concurrent runs erase each other's banners —
 # and the erased one's condition then reached nobody at all.
 # ---------------------------------------------------------------------------
-if is_darwin; then
+: > "$NOTIFY_LOG"
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runb >/dev/null
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runb >/dev/null
+notify_settle 2
+check "두 런이 각각 배너를 올린다" "$(notify_lines)" "2"
+check "그 두 배너의 -group 값이 서로 다르다" \
+  "$(sed -n 's/.*-group \([^ ]*\).*/\1/p' "$NOTIFY_LOG" | sort -u | grep -c . || true)" "2"
+
+# ---------------------------------------------------------------------------
+# Fixtures for the arms below.
+#
+# `cc_unresolved_blocked` matches `사유=<reason> ` WITH a trailing space, so the
+# reason may never be the row's last field — the trailing `관측=`/`prev=` fields
+# are load-bearing here rather than decorative.
+# ---------------------------------------------------------------------------
+blocked_row() {
+  # blocked_row <원인> <사유>
+  printf -- '- `blocked` | 대상=- | 스코프=run | 원인=%s | 사유=%s | 관측=2026-09-03T00:00:00Z | prev=x\n' \
+    "$1" "$2" >> "$LG"
+}
+approval_row() {
+  printf -- '- `승인` | 승인 id=%s | 상태=대기 | 막는 세그먼트=S1\n' "$1" >> "$LG"
+}
+# The kill switch is attached to the REAL command, never to the function and
+# never file-wide. A prefix assignment on a bash function call outlives the call,
+# so every case after it would inherit the value with nothing on screen to say so.
+runk() {
+  # runk <killswitch-value> [args...]
+  local v="$1"; shift
+  CC_CMDS_AUTOPILOT_NOTIFY="$v" CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# The kill switch turns off BANNERS and leaves everything else alone.
+#
+# Its scope reaches the five call sites this file already had, not only the arms
+# added with it. The local `--notify` flag and its guard came down at the same
+# time, so the switch is the single gate — and without this assertion an
+# implementation that routed only the NEW banners through the emitter, leaving
+# the old five on their own path, would pass every other case here.
+#
+# The off tokens are driven ONE BY ONE rather than sampled. A wide off set that
+# is only asserted in prose is a set nobody has actually tested.
+# ---------------------------------------------------------------------------
+for offv in 0 off OFF oFf false FALSE fAlSe no NO; do
+  fresh
   : > "$NOTIFY_LOG"
-  fresh
   printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
-  run --notify >/dev/null
-  fresh
-  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
-  run --notify >/dev/null
-  check "두 런이 각각 배너를 올린다" \
-    "$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)" "2"
-  check "그 두 배너의 -group 값이 서로 다르다" \
-    "$(sed -n 's/.*-group \([^ ]*\).*/\1/p' "$NOTIFY_LOG" | sort -u | grep -c . || true)" "2"
+  out=$(runk "$offv")
+  sleep 0.2
+  check "킬스위치 '$offv' 이 배너를 끈다" "$(notify_lines)" "0"
+  case "$out" in
+    *"런이 종단했습니다"*) ok "킬스위치 '$offv' 에서도 터미널의 큰 소리 줄은 그대로다" ;;
+    *) bad "킬스위치 '$offv' 큰 소리 줄" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+  esac
+  if [ -f "$RD/watch.heartbeat" ]; then
+    ok "킬스위치 '$offv' 에서도 하트비트 파일은 그대로다"
+  else
+    bad "킬스위치 '$offv' 하트비트" "watch.heartbeat 가 없다"
+  fi
+done
+
+# Two negative controls: a value that must read as ON, and a value that looks
+# like an attempt to switch off but is not in the set. The second must still be
+# ON — and must say so, because a silent acceptance is how a person ends up
+# believing the banners are off while every one of them keeps arriving.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+runk 1 >/dev/null
+notify_settle 1
+check "'1' 은 켬으로 읽는다" "$(notify_lines)" "1"
+
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+out=$(runk disabled)
+notify_settle 1
+check "목록에 없는 값은 켬으로 읽는다" "$(notify_lines)" "1"
+case "$out" in
+  *"알아보지 못했습니다"*) ok "끄려는 시도로 보이는 미인식 값에 경고한다" ;;
+  *) bad "근미스 경고" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# One token chooses THREE axes, and the assertion looks at all three together.
+#
+# Splitting them is what opens a combination per call site — a "손 필요" notice
+# landing in the replace slot arrives with well-formed arguments and silently
+# erases another summons. Driving each token and reading title, group and sound
+# from the same log line is what makes that combination unreachable.
+# ---------------------------------------------------------------------------
+# `answer` — an open approval. One banner PER ID, into its own group, with sound.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+approval_row A1
+runb >/dev/null
+notify_settle 1
+check "answer — 제목" "$(has_title '[cc-cmds] 답 필요')" "1"
+check "answer — 그룹이 승인 id 별이다" "$(has_group "cc-cmds-autopilot-$(basename "$RD")-A1")" "1"
+check "answer — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
+
+# `hands` — a resolvable run-scope anchor, keyed by its reason.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 사람대기 "적용 판정 불가"
+runb >/dev/null
+notify_settle 1
+check "hands — 제목" "$(has_title '[cc-cmds] 손 필요')" "1"
+check "hands — 그룹이 항목 키를 싣는다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")-run-적용-판정-불가")" "1"
+check "hands — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
+
+# `status-hands` — the fourth combination, and the one the three-token shape
+# could not express: an invalidated run takes the run-level replace slot while
+# keeping the title that says a person is needed. The gate refuses to resolve
+# this cause, so it is not something anyone can put their hands on directly.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 무효화 "강제 표면 이동"
+runb >/dev/null
+notify_settle 1
+check "status-hands — 제목은 손 필요" "$(has_title '[cc-cmds] 손 필요')" "1"
+check "status-hands — 그룹은 런 단위 상태 슬롯" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "1"
+check "status-hands — 대체 버킷이라 소리가 없다" "$(n_sound)" "0"
+
+# The address must be UNIQUE per waiting item, or the morning cannot tell what is
+# still waiting from what was answered hours ago. N distinct approvals, N
+# distinct groups.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+approval_row A1; approval_row A2; approval_row A3
+runb >/dev/null
+notify_settle 3
+check "서로 다른 승인 셋이 서로를 지우지 않는다" "$(groups_uniq)" "3"
+
+# THE RUN ID COMES FIRST IN EVERY GROUP KEY. Two runs parking the same segment id
+# is the case that revives the measured regression — an id that is not run-unique
+# makes two runs write one key and erase each other's summons.
+: > "$NOTIFY_LOG"
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 사람대기 "세그먼트 S1 보류"
+runb >/dev/null
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 사람대기 "세그먼트 S1 보류"
+runb >/dev/null
+notify_settle 2
+check "같은 세그먼트를 세운 두 런이 서로의 손 필요 배너를 지우지 않는다" "$(groups_uniq)" "2"
+
+# ---------------------------------------------------------------------------
+# The stacking cap — exactly 8, exactly 9, and above.
+#
+# The ninth and everything after it collapse into ONE slot carrying a count, and
+# that slot must not be the status slot: sharing it would make the overflow
+# notice and the router-silence notice erase each other.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+for i in 1 2 3 4 5 6 7 8; do approval_row "A$i"; done
+runb >/dev/null
+notify_settle 8
+check "정확히 8건까지는 개별로 남는다" "$(groups_uniq)" "8"
+check "8건에서는 넘침 자리가 열리지 않는다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")-대기")" "0"
+
+approval_row A9
+runb >/dev/null
+notify_settle 9
+check "아홉째는 넘침 자리로 모인다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")-대기")" "1"
+check "그 자리는 상태 슬롯과 다른 자리다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "0"
+check "넘침 자리 제목은 답 필요다" "$(has_title '[cc-cmds] 답 필요')" "9"
+
+approval_row A10
+approval_row A11
+runb >/dev/null
+notify_settle 11
+check "그 위로는 자리를 늘리지 않고 같은 자리에 모인다" "$(groups_uniq)" "9"
+
+# ---------------------------------------------------------------------------
+# The anchored arm must not react to conditions this process itself authored.
+#
+# Both the after-stage arm and the silence arm write their observation one line
+# after raising a banner, and the gate transcribes those with the cause `불명` —
+# the only place it writes that value. Keying on the cause is what excludes them
+# structurally; a list of reason strings would go stale, silently, on the next
+# arm added here.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 불명 "라이브니스 침묵"
+runb >/dev/null
+sleep 0.2
+check "감시자가 저작한 조건(원인=불명)에는 정박 배너가 나가지 않는다" "$(notify_lines)" "0"
+
+# 「해소 가능」과 「해소됨」은 다르다 — the first raises a banner and the second does
+# not. This is the negative case the obvious implementation fails and every other
+# scenario passes.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 사람대기 "적용 판정 불가"
+blocked_row 해소 "적용 판정 불가"
+runb >/dev/null
+sleep 0.2
+check "이미 해소된 막힘에는 정박 배너가 나가지 않는다" "$(notify_lines)" "0"
+
+# Once per condition, and the neighbour's marker is not touched. The second half
+# is what the existing once-guard assertions in this file never check, and it is
+# the likelier defect: an arm that reuses a neighbour's marker dies quietly in
+# every run where the neighbour fired first.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 사람대기 "적용 판정 불가"
+runb >/dev/null
+runb >/dev/null
+notify_settle 1
+check "정박 arm 은 같은 조건에 한 번만 발화한다" "$(notify_lines)" "1"
+if [ -f "$RD/watch.announced-stall-적용-판정-불가" ]; then
+  ok "정박 arm 이 자기 마커를 남긴다"
 else
-  skip "런별 배너 그룹" "banner() 는 Darwin 에서만 동작한다"
-  skip "런별 배너 그룹 (호출 수)" "banner() 는 Darwin 에서만 동작한다"
+  bad "정박 마커" "$(ls "$RD" | tr '\n' ' ')"
 fi
+if [ -f "$RD/watch.announced-terminal" ] || [ -f "$RD/watch.announced-loop-exit" ]; then
+  bad "이웃 마커" "정박 arm 이 이웃 arm 의 마커를 건드렸다"
+else
+  ok "이웃 arm 의 마커는 건드려지지 않았다"
+fi
+
+# ---------------------------------------------------------------------------
+# The loop-exit banner and the pass-side terminal arm are one PAIR, driven in
+# both directions.
+#
+# The pass-side arm keys on the shared run-state predicate, which requires zero
+# unresolved run-scope blocks — so an invalidated run never returns `종단` and
+# that arm is silent for it forever. The loop-exit arm is that run's only
+# channel, and it must stay quiet on a run that ended cleanly.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf '2026-09-03T00:00:00Z 종단 — 종료 조건 아홉 성립\n' > "$RD/done"
+CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1
+sleep 0.3
+if [ -f "$RD/watch.announced-loop-exit" ]; then
+  bad "루프 종료 배너" "정상 종료한 런에서 새 배너가 발화했다"
+else
+  ok "정상 종료한 런에서는 루프 종료 배너가 침묵한다"
+fi
+
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 무효화 "강제 표면 이동"
+printf '2026-09-03T00:00:00Z 종단 — 무효화\n' > "$RD/done"
+CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1
+notify_settle 1
+if [ -f "$RD/watch.announced-loop-exit" ]; then
+  ok "미해소 막힘이 있는 채 종단 표시가 찍힌 런에서는 새 배너가 발화한다"
+else
+  bad "루프 종료 배너" "무효화로 끝난 런에서 발화하지 않았다"
+fi
+check "두 마커의 이름이 실제로 다르다" \
+  "$( { [ -f "$RD/watch.announced-terminal" ] && printf 'shared'; } || printf 'distinct')" "distinct"
+
+# ---------------------------------------------------------------------------
+# The emitter records its own state ONCE, into this process's own file — never
+# by appending to the report. This seat holds no lock and the gate does, so two
+# unlocked appends to one file interleave and what breaks is the ledger row
+# beside the prose.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+runb >/dev/null
+runb >/dev/null
+check "감시자가 자기 파일에 배너 상태를 한 번만 남긴다" \
+  "$(grep -c . "$RD/notify.state" 2>/dev/null || true)" "1"
+check "그 기록이 원장을 건드리지 않는다" \
+  "$(grep -c '배너 좌석' "$LG" 2>/dev/null || true)" "0"
+
+# ---------------------------------------------------------------------------
+# The marker handshake works ACROSS processes, which is a different property
+# from "an arm does not touch its neighbour's marker inside one pass". The
+# double-firing failure this design describes rests on this direction.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+approval_row A1
+printf 'A1\n' > "$RD/watch.announced-approvals"
+runb >/dev/null
+sleep 0.2
+check "게이트가 이미 알린 승인 id 를 감시자가 존중한다" "$(notify_lines)" "0"
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
