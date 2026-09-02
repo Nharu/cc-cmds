@@ -2412,9 +2412,13 @@ check "해소된 blocked 만 있는 원장에서도 죽지 않는다" "$?" "0"
 
 # The gate-side siblings. Both are read through the verb so the assertion covers
 # the `set -e` context the defect actually fired in, not the function alone.
+# `선행=없음` is carried because the declaration axis treats an ABSENT field and
+# `없음` as different things: absent is an omission, `없음` is an affirmative
+# claim of independence. A fixture with other segments in the ledger must say
+# which one it means, and this row means the second.
 gateL act --manifest "$MANIFEST" --kind segment --target infra --segment SFRESH \
      --cutpoint 커밋 --snapshot-digest "$(HL)" --rationale "첫 세그먼트" \
-     -- 상태=계획됨 "워크트리=$WT"
+     -- 상태=계획됨 "워크트리=$WT" 선행=없음
 check "원장에 segment 행이 하나도 없을 때 첫 행이 써진다" "$rc" "0"
 # The row itself, not the message — `gateL` strips `[run]` lines on purpose so
 # that `$msg` carries warnings and refusals only, and a successful act leaves it
