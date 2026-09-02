@@ -40,6 +40,7 @@
 #
 # Usage:
 #   watch.sh --run-dir <dir> --ledger <path> [--interval <sec>] [--stall <sec>]
+#                                            [--after-stage <sec>] [--run-open <sec>]
 #   watch.sh --run-dir <dir> --ledger <path> --once      # one pass, no loop
 #   watch.sh … --notify                                  # also raise a banner
 #
@@ -72,7 +73,12 @@ WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # shellcheck source=/dev/null
 . "$WATCH_DIR/liveness.sh"
 
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0; AFTER_STAGE=120
+# `RUN_OPEN` is the run-age arm's threshold, and it sits between the other two on
+# purpose: the window it names is bounded below by how long a healthy router
+# takes to open its first segment — the contract says the first `segment` row is
+# at least two model turns after the run opens — and above by `STALL`, which is
+# what used to be the only thing covering it.
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0; AFTER_STAGE=120; RUN_OPEN=300
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -80,6 +86,7 @@ while [ $# -gt 0 ]; do
     --interval) INTERVAL="$2"; shift 2 ;;
     --stall)    STALL="$2"; shift 2 ;;
     --after-stage) AFTER_STAGE="$2"; shift 2 ;;
+    --run-open) RUN_OPEN="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
     --notify)   NOTIFY=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -170,6 +177,96 @@ open_approval_ids() {
 
 nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
 
+iso_to_epoch() {
+  # `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty when it does not parse.
+  #
+  # NEITHER `date -d` NOR `date -j -f` MAY BE USED. The first is GNU, the second
+  # BSD, and the portability lint denies both — the same wall the gate's deadline
+  # check hit, which it got around by comparing digit strings because it only
+  # needed an ordering. This caller needs a DIFFERENCE against a threshold in
+  # seconds, and no digit-string compare yields one, so the conversion is done in
+  # the shell.
+  #
+  # The arithmetic is the standard civil-to-days one. Every intermediate stays
+  # non-negative for years at or after 1970, which is what lets `$(( ))`'s
+  # truncating division stand in for floor. `10#` on every field because `08` and
+  # `09` are invalid octal and would abort the expansion.
+  local s="$1" digits y m d hh mm ss era yoe doy doe days
+  digits=$(printf '%s' "$s" | tr -cd '0-9')
+  [ ${#digits} -ge 14 ] || return 0
+  y=$((10#$(printf '%s' "$digits" | cut -c1-4)))
+  m=$((10#$(printf '%s' "$digits" | cut -c5-6)))
+  d=$((10#$(printf '%s' "$digits" | cut -c7-8)))
+  hh=$((10#$(printf '%s' "$digits" | cut -c9-10)))
+  mm=$((10#$(printf '%s' "$digits" | cut -c11-12)))
+  ss=$((10#$(printf '%s' "$digits" | cut -c13-14)))
+  [ "$y" -ge 1970 ] || return 0
+  [ "$m" -ge 1 ] && [ "$m" -le 12 ] || return 0
+  [ "$d" -ge 1 ] && [ "$d" -le 31 ] || return 0
+  # March-based year: January and February belong to the preceding one, which is
+  # what removes the leap day from the middle of the count.
+  if [ "$m" -le 2 ]; then y=$((y - 1)); fi
+  era=$((y / 400))
+  yoe=$((y - era * 400))
+  if [ "$m" -gt 2 ]; then
+    doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 ))
+  else
+    doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 ))
+  fi
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  days=$(( era * 146097 + doe - 719468 ))
+  printf '%s' $(( days * 86400 + hh * 3600 + mm * 60 + ss ))
+}
+
+run_open_seconds() {
+  # Seconds since the gate opened this run, read from the `run` row's own
+  # `시작=` stamp — or empty when there is no such row or its stamp does not
+  # parse.
+  #
+  # THE ROW'S STAMP, NOT A CLOCK THIS PROCESS KEEPS. A watcher restarted
+  # mid-run remembers nothing, and an elapsed count that restarted with it would
+  # push the arm below out by the whole restart — which is the window that arm
+  # exists to shorten.
+  #
+  # Empty means "cannot judge", and the caller treats it as such rather than as
+  # zero. That direction can only delay a report; the other one invents them.
+  local at ep
+  [ -n "$LEDGER" ] || return 0
+  at=$( { grep -E '^- `run`' "$LEDGER" 2>/dev/null || true; } | tail -1 \
+        | tr '|' '\n' | sed -n 's/^ *시작=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  [ -n "$at" ] || return 0
+  ep=$(iso_to_epoch "$at")
+  [ -n "$ep" ] || return 0
+  printf '%s' $(( $(now_epoch) - ep ))
+}
+
+gate_idle_seconds() {
+  # Seconds since the gate was last entered — or empty when there is no such
+  # record or it does not hold an epoch.
+  #
+  # WHY THE GATE AND NOT THE LEDGER. A ledger that has not grown is not a router
+  # that has not worked, and the gap between those two is wide precisely where
+  # the arm below looks: before the first segment the router writes the
+  # manifest, records the grant, stubs the morning report, spawns this watcher
+  # and reads skill contracts, and none of that appends a row.
+  #
+  # `started-at` is rewritten by `rundir_init` on EVERY gate entry, before the
+  # verb is dispatched, so it moves for a `snapshot` and a `--render` too — the
+  # calls that leave the ledger's size exactly where it was. That makes it a
+  # strictly finer activity signal than the size this file already measures, not
+  # a second spelling of it.
+  #
+  # Empty means "cannot judge", the same direction `run_open_seconds` takes. A
+  # run directory the gate never made carries no such file, and reading its
+  # absence as "nobody has called the gate" would accuse a router on the
+  # strength of a file nobody wrote.
+  local at
+  [ -n "$RUN_DIR" ] || return 0
+  at=$(sed -n '1p' "$RUN_DIR/started-at" 2>/dev/null || true)
+  case "${at:-}" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' $(( $(now_epoch) - at ))
+}
+
 banner() {
   # Best-effort, and every failure is swallowed on purpose: a watcher that dies
   # because a notifier is missing removes the only signal the user had left.
@@ -227,7 +324,7 @@ pass() {
   # `watch.heartbeat` entirely — and a stale heartbeat is exactly how a dead
   # watcher looks. Each arm carries its own once-marker, so two firing in one
   # pass is harmless and reaching the bottom every time is the point.
-  local age live pend nonterm size grew silent id newly
+  local age live pend nonterm run_age gate_idle size grew silent id newly
   # The watcher's own pid, so a person (and the status line) can tell a live
   # watcher from a finished run's. The directory is NOT created here: the
   # watcher legitimately runs in the window before the router's first gate call
@@ -276,17 +373,23 @@ pass() {
   # was told the router had stranded it, and the `blocked` row that produced
   # then blocked the run's own termination condition.
   #
-  # It asks "IS THERE WORK LEFT IN THIS RUN", which is not the same question as
-  # "is there a non-terminal segment row", and the difference is a window every
-  # run passes through. The kickoff makes the ledger a stub and starts the
-  # watcher; the first `segment` row appears only when the router calls
-  # `act --kind segment`, at least two model turns later, and `snapshot` appends
-  # nothing in between. A router that dies in there leaves the ledger a stub, on
-  # which `nonterm` is 0 — so the bare count silenced both `record_blocked` arms
-  # at once while every other arm wanted a row that cannot exist yet, and the
-  # watcher heartbeated all night without a word. A run that has not opened a
-  # segment has ALL of its work left, and a clean finish always has `n_seg >= 1`,
-  # so the disjunct restores the detection without reviving the false positive.
+  # THE NON-TERMINAL SEGMENT COUNT IS THE WHOLE TEST HERE, and a disjunct on "no
+  # segment row yet" was attached to it and has been taken back out. The
+  # last-row guard above already excludes the window that disjunct was for. That
+  # window is the one between the run opening and its first segment: the
+  # kickoff's report stub carries ZERO ledger rows, the gate appends the `run`
+  # row on its first call, and the first `segment` row appears only when the
+  # router calls `act --kind segment`, at least two model turns later. A
+  # `stage-result` or `cost` row is written only after a STAGE has run, and a
+  # stage runs inside a segment — so in that window the last-row guard cannot be
+  # satisfied by anything, and the disjunct could not change this arm's verdict
+  # on any ledger the gate writes. It read as though taking it out would bring a
+  # bug back, and it was unreachable.
+  #
+  # THAT WINDOW IS COVERED BELOW, NOT HERE. The stall arm keeps the same
+  # disjunct and does reach it, at `STALL`; the run-age arm between them names
+  # it earlier and on its own key. This arm keys on a stage having ENDED, and in
+  # that window no stage ever started.
   #
   # The once-guard is a DEDICATED MARKER rather than a grep of `stall`, because
   # the gate empties `stall` on every act: the guard came back to life, the arm
@@ -294,7 +397,7 @@ pass() {
   # stopped for good. `record_blocked` still writes `stall`; that file is the
   # observation, not the guard.
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
+     && [ "$nonterm" -ge 1 ] \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -304,6 +407,66 @@ pass() {
              "그 스테이지를 깨울 통지가 없는 형태로 띄웠을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
     banner "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)"
     record_blocked "스테이지 종단 후 라우터 무응답" "메인 세션에서 이어서 진행하도록 지시"
+  fi
+
+  # THE RUN OPENED AND NO SEGMENT EVER DID. Its own arm, keyed on the age of the
+  # `run` row, because that window has no other clock: with no segment row there
+  # is no stage to be alive, no approval to be open, and no terminal stage row
+  # for the arm above to key on. Grafting the case onto that arm is what produced
+  # a disjunct its own last-row guard made unreachable, and the window was then
+  # left to the stall arm's twenty minutes.
+  #
+  # THE TWO IDLE CONJUNCTS ARE PART OF THE CONDITION, not refinements. The
+  # router writes `자율 승인` rows before it opens the first segment, so "no
+  # segment yet" on its own accuses a router that is working. Adding "and the
+  # ledger has not grown for `AFTER_STAGE`" asks the sharper question: nothing
+  # running, nothing waiting, nothing written, and still no segment.
+  #
+  # AND THAT IS STILL NOT SHARP ENOUGH, which is what the gate conjunct is for.
+  # Measured on a healthy run: the run 333 seconds old, the ledger unchanged for
+  # 300, no segment row, no live stage and no open approval — every other
+  # conjunct here satisfied — and that router opened its first segment normally
+  # 21 minutes and 32 seconds later. It was not idle in that window; it was
+  # writing the manifest and the grant, stubbing the report, starting this
+  # watcher and reading skill contracts, none of which appends a row.
+  #
+  # RAISING `RUN_OPEN` PAST IT IS NOT THE ANSWER. The observed healthy silence
+  # is longer than `STALL`, so a threshold above it would take this arm's reason
+  # for existing — saying it sooner than the general stall arm does — away.
+  # Asking the gate instead separates "the ledger did not grow" from "nobody
+  # called the gate", and only the second is the failure this arm reports.
+  #
+  # Both idle tests keep `AFTER_STAGE`: they are two readings of one quantity —
+  # how long the run has been silent — and giving them separate thresholds would
+  # make "silent" mean two things in one condition.
+  #
+  # IT DOES NOT DISPLACE THE STALL ARM. That arm keeps the zero-segment window
+  # under its own reason, so a run parked here records two observations — this
+  # one at `RUN_OPEN` and the general one at `STALL`. Both are true and each
+  # names a different thing; suppressing the second would be this arm deciding
+  # what the more general detector may say.
+  #
+  # A NORMALLY TERMINATED RUN CANNOT REACH IT: a clean finish has at least one
+  # segment row, so the segment count alone excludes it, and the `done` guard
+  # excludes it a second time.
+  #
+  # The once-guard is a dedicated marker for the same reason the arm above's is:
+  # the gate empties `stall` on every act, so a guard that read that file would
+  # come back to life and this arm would re-fire every pass.
+  run_age=$(run_open_seconds)
+  gate_idle=$(gate_idle_seconds)
+  if [ "$live" = "0" ] && [ "$pend" = "0" ] \
+     && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
+     && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
+     && [ "$age" -ge "$AFTER_STAGE" ] \
+     && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
+     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
+    : > "$RUN_DIR/watch.announced-run-open"
+    announce "런이 열린 지 ${run_age}초인데 세그먼트가 하나도 열리지 않았습니다" \
+             "라우터가 첫 세그먼트를 열기 전에 멈췄을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
+    banner "런이 열린 뒤 ${run_age}초 동안 세그먼트가 열리지 않았습니다"
+    record_blocked "세그먼트 미개시" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
   # Announce a condition ONCE. Re-announcing on every pass turns the loud line
@@ -323,11 +486,18 @@ pass() {
   # The `stall` file grep stays: it is not redundant with the ledger test but the
   # other half of it, suppressing a repeat within the same drain window.
   #
-  # The `nonterm`/`n_seg` disjunct is the arm above's, verbatim and for the same
-  # reason: both arms call `record_blocked`, so a run dying before its first
-  # `segment` row would otherwise be reported by neither. This one is the arm
-  # that used to cover that window — before the guard existed it fired after
-  # 1200 seconds — so leaving it out here is the regression itself.
+  # THE `nonterm`/`n_seg` DISJUNCT LIVES HERE AND ONLY HERE. This is the arm
+  # that can reach the zero-segment window: it carries no last-row guard, so a
+  # ledger whose only row is `run` still gets judged, and on a bare `nonterm >= 1`
+  # it would fall silent — a run that died before opening its first segment
+  # would then be reported by no arm at all. The after-stage arm above states
+  # the same test in prose and cannot reach it, which is why the copy there came
+  # back out.
+  #
+  # WHAT COVERING IT HERE COSTS IS TIME: this arm's threshold is `STALL`, twenty
+  # minutes. The run-age arm above is what makes the same window audible
+  # earlier; it does not replace this one, and the two record different reasons
+  # on purpose.
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$STALL" ] \
      && { [ "$nonterm" -ge 1 ] || [ "$(cc_segment_count "$LEDGER")" = "0" ]; } \
