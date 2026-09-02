@@ -432,13 +432,36 @@ manifest_autoadopt_rows() {
 readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
 readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
 
+# THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
+# hole rather than narrowing it. Both used to be a space-padded substring test
+# over the vocabulary string, so a value carrying a space matched whenever the
+# tokens it named happened to be ADJACENT in that string. The vocabulary ends
+# `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
+# the vocabulary; the forbidden string is `팀-구성 시각-면제`, which does not
+# contain it, so the same value was also not forbidden. One value passed the
+# permission check and escaped the prohibition at once, and `팀-구성` — a class
+# named precisely so that recording it arrives as a refusal — went through.
+#
+# Whichever question a caller asks first, a multi-token value is now refused:
+# outside the vocabulary here, forbidden there. Neither answer depends on the
+# other being consulted.
 judgment_class_ok() {
-  case " $JUDGMENT_CLASSES " in *" $1 "*) return 0 ;; esac
+  local t
+  for t in $JUDGMENT_CLASSES; do
+    if [ "$t" = "$1" ]; then return 0; fi
+  done
   return 1
 }
 
 judgment_class_forbidden() {
-  case " $JUDGMENT_CLASSES_FORBIDDEN " in *" $1 "*) return 0 ;; esac
+  local t
+  # A value carrying whitespace cannot name one class, so it is refused here
+  # rather than falling through to the token loop — a caller that asks only this
+  # question must not be where the hole reopens.
+  case "$1" in *[[:space:]]*) return 0 ;; esac
+  for t in $JUDGMENT_CLASSES_FORBIDDEN; do
+    if [ "$t" = "$1" ]; then return 0; fi
+  done
   return 1
 }
 

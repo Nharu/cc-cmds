@@ -22,11 +22,18 @@
 # either from the vocabulary would restore the leak silently, and rule 1 is what
 # makes that a failing build.
 #
-# What counts as a literal: the captured value must consist only of Hangul,
-# ASCII letters, digits and hyphens. That skips the three metasyntactic shapes
-# the tree actually contains — a shell expansion (`판단 부류=$cls`), a schema
-# placeholder (`판단 부류=<여덟 값 중 하나>`) and a parser's own pattern
-# (`s/^ *판단 부류=//p`) — without a suppression list that would go stale.
+# What counts as a literal: the three metasyntactic shapes the tree actually
+# contains are recognised by shape and skipped — a shell expansion
+# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`) and a
+# parser's own pattern (`s/^ *판단 부류=//p`) — and everything else made of
+# Hangul, ASCII letters, digits, hyphens AND SPACES is a value claim.
+#
+# Spaces are inside that set deliberately. A value carrying a space is the shape
+# this lint most needs to see: the driver's vocabulary check accepted one
+# whenever the tokens it named sat next to each other in the vocabulary string,
+# so `스테이지-재시도 팀-구성` read as permitted while also missing the
+# forbidden list. Skipping space-carrying values as metasyntax made the lint
+# blind to exactly that.
 #
 # Residual, stated rather than hidden: a file carrying the `self-skip` marker on
 # its second line is not scanned at all, and `scripts/test-gate.sh` carries one
@@ -109,8 +116,19 @@ while IFS= read -r f; do
         | sed -n 's/.*판단 부류=\([^"'"'"'`|)]*\).*/\1/p' \
         | sed 's/[[:space:]]*$//')
     [[ -n "$v" ]] || continue
-    # Metasyntax, not a claim about a value.
-    printf '%s' "$v" | grep -qE '^[가-힣A-Za-z0-9-]+$' || continue
+    # Metasyntax, not a claim about a value. Recognised by SHAPE rather than by
+    # "contains only Hangul, letters, digits and hyphens", because that older
+    # test also skipped every value carrying a space — and a space is exactly
+    # what a multi-token value carries. The driver's vocabulary check used to
+    # accept such a value whenever the tokens it named were adjacent in the
+    # vocabulary string, so the one shape this lint most needs to catch was the
+    # one shape it silently walked past.
+    case "$v" in
+      '$'*) continue ;;   # a shell expansion
+      '<'*) continue ;;   # a schema placeholder
+      */*)  continue ;;   # a parser's own sed pattern
+    esac
+    printf '%s' "$v" | grep -qE '^[가-힣A-Za-z0-9 -]+$' || continue
     hits=$((hits + 1))
     if ! in_vocab "$v"; then
       echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
