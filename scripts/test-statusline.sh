@@ -50,6 +50,16 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; 
 has()  { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "'$2' 에 '$3' 없음" ;; esac; }
 hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" ;; esac; }
 
+# TWO RENDERS TAKEN A MOMENT APART ARE NOT ONE OBSERVATION. A case that compares
+# one render against another is asking which script produced the bytes, but the
+# line carries two slots no script owns: the elapsed a live stage gets from
+# `ps -o etime=` and the ledger age computed against a wall clock, both at
+# one-second resolution. A second boundary falling between the two command
+# substitutions turns one fact into two strings — measured as a red suite in
+# roughly one run of seven, at three different cases. Stripping the slots from
+# BOTH sides costs those assertions nothing, because neither slot names a script.
+strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'; }
+
 # The "no run" line. Byte-identical to every degraded path's output, which is
 # the property cases 10-13 exist to hold in place.
 #
@@ -278,7 +288,7 @@ fx_heartbeat 0 5
 fx_session_index sess-14-a run-14
 fx_session_index sess-14-b run-14
 check "14 --resume 으로 갈린 세션 id 둘이 같은 런으로 해소된다" \
-  "$(sl sess-14-a)" "$(sl sess-14-b)"
+  "$(sl sess-14-a | strip_clock)" "$(sl sess-14-b | strip_clock)"
 
 fx_mkrun run-15-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
 fx_mkrun run-15-live; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
@@ -345,7 +355,8 @@ mkdir -p "$WORK/absent"
 f1_cmd="[ -x \"$SL\" ] && exec bash \"$SL\" || printf 'PRE-APPLY-LITERAL'"
 f2_cmd="[ -x \"$WORK/absent/orchestrator/statusline.sh\" ] && exec bash \"$WORK/absent/orchestrator/statusline.sh\" || printf 'PRE-APPLY-LITERAL'"
 check "F1 플러그인 경로가 실행 가능하면 그 스크립트가 불린다" \
-  "$(fx_statusline_stdin sess-live | sh -c "$f1_cmd")" "$(sl sess-live)"
+  "$(fx_statusline_stdin sess-live | sh -c "$f1_cmd" | strip_clock)" \
+  "$(sl sess-live | strip_clock)"
 check "F2 플러그인 경로 부재 — 적용 전 리터럴과 바이트 동일" \
   "$(fx_statusline_stdin sess-live | sh -c "$f2_cmd")" "PRE-APPLY-LITERAL"
 
@@ -505,8 +516,64 @@ S9F="$WORK/settings-spaced.json"; mk_settings "$S9F"; E9=$(digest_of "$S9F")
 bash "$APPLY" --apply --settings "$S9F" --plugin-dir "$SPACED" --expect "$E9" >/dev/null 2>&1
 check "공백이 든 절대경로 — 적용이 성공한다" "$?" "0"
 check "공백이 든 절대경로 — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
-  "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$S9F")")" \
-  "$(sl sess-live)"
+  "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$S9F")" | strip_clock)" \
+  "$(sl sess-live | strip_clock)"
+
+# ---------------------------------------------------------------------------
+# The absolute paths the installed guard cannot survive being re-evaluated over.
+#
+# What lands in the settings file is a STRING, and the harness hands that string
+# to `sh -c` on every render — so the double quotes around the path stop a space
+# and nothing else. A `$`, a backtick or a `"` inside it is expanded at that
+# second evaluation, the guard is false forever, and the apply still lands rc=0
+# because the verify run cannot tell the guard's two branches apart: the session
+# id it feeds has no index, so the script's own "no run" output and the fallback
+# are the same bytes.
+#
+# BOTH DIRECTIONS OR NEITHER. A check written as "reject these characters"
+# instead of as "the guard about to be installed is true" parks ordinary applies
+# too, and that failure is not hypothetical — it is what parked every legitimate
+# checkout the last time this pair was one-sided. A backslash and a newline come
+# through the second evaluation untouched, so they must still install, and what
+# they install must still call the script; the two blocks below are one case.
+# ---------------------------------------------------------------------------
+SREF="$WORK/settings-reeval.json"; mk_settings "$SREF"
+EREF=$(digest_of "$SREF"); BREF=$(shasum -a 256 "$SREF" | cut -d' ' -f1)
+
+mkdir -p "$WORK/reeval"
+for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`'; do
+  bad_plug="$WORK/reeval/$bad_name"
+  mkdir -p "$bad_plug/orchestrator"
+  cp "$SL" "$LIVENESS" "$bad_plug/orchestrator/"
+  chmod +x "$bad_plug/orchestrator/statusline.sh"
+  bash "$APPLY" --apply --settings "$SREF" --plugin-dir "$bad_plug" --expect "$EREF" >/dev/null 2>&1
+  check "재평가에서 해석되는 문자가 든 절대경로 ($bad_name) — 쓰기 전에 park 한다" "$?" "1"
+done
+check "재평가로 park 한 세 경우 모두 파일을 건드리지 않았다" \
+  "$(shasum -a 256 "$SREF" | cut -d' ' -f1)" "$BREF"
+
+reeval_ok_case() {
+  # reeval_ok_case <tag> <label> <plugin-dir> — a path whose characters survive
+  # the render's second evaluation. Two assertions, because the apply landing
+  # rc=0 is not evidence that the guard was true: the fallback branch also exits
+  # 0 and passes all five verify conditions. Comparing the installed command's
+  # render against the live one is what separates the branches.
+  local tag="$1" label="$2" dir="$3" sf ef
+  mkdir -p "$dir/orchestrator"
+  cp "$SL" "$LIVENESS" "$dir/orchestrator/"
+  chmod +x "$dir/orchestrator/statusline.sh"
+  sf="$WORK/settings-reeval-$tag.json"; mk_settings "$sf"; ef=$(digest_of "$sf")
+  bash "$APPLY" --apply --settings "$sf" --plugin-dir "$dir" --expect "$ef" >/dev/null 2>&1
+  check "$label — 적용이 성공한다" "$?" "0"
+  check "$label — 설치된 명령이 폴백이 아니라 그 스크립트를 부른다" \
+    "$(fx_statusline_stdin sess-live | sh -c "$(jq -r '.statusLine.command' "$sf")" | strip_clock)" \
+    "$(sl sess-live | strip_clock)"
+}
+
+# `$(printf ...)` is how the newline gets into the name at all — a literal one
+# cannot be written into the word list above without ending it.
+reeval_ok_case bs "백슬래시가 든 절대경로" "$WORK/reeval/plug\\back"
+reeval_ok_case nl "개행이 든 절대경로" "$(printf '%s/reeval/plug\nnewline' "$WORK")"
 
 # The interpreter is named absolutely: a PATH with nothing on it cannot resolve
 # `bash` either, and a 127 from the lookup would look like the script's own
