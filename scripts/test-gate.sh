@@ -4613,7 +4613,8 @@ case "$out" in
   *"스테이지 종단"*) ok "답이 있는 물음을 다시 방출해도 기록 함수가 끝까지 도달한다" ;;
   *) bad "흡수기 탈출" "$out" ;;
 esac
-if { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -qF "해소 승인=$aj"; then
+_aj_rows=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$aj" || true; } )
+if [ -n "$_aj_rows" ]; then
   ok "그 답으로 열렸다는 사실이 원장에 남고 어느 승인을 썼는지 지목한다"
 else
   bad "답있음 처분" "해소 승인=$aj 를 지목하는 자율 승인 행이 없다"
