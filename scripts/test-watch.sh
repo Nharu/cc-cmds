@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
-# Test the liveness watcher's five arms.
+# Test the liveness watcher's six arms.
 #
 # The watcher exists for one failure the rest of the system cannot see: the
 # router quietly stopping. Nothing crashes, no rule refuses, and a terminal that
@@ -14,6 +14,10 @@
 #                      no run reaches the path that writes one
 #   stage ended,
 #   router silent    — the sharp case: a terminal stage row as the last row
+#   run opened,
+#   no segment       — the window between the run opening and its first segment.
+#                      The sharp arm above cannot see it: its key is a stage
+#                      having ended, and in this window none ever started
 #   stalled          — nothing happening and nothing waiting
 #   approval open    — the one event that exists to summon a person
 #   finished-for-now — every segment waiting or terminal; the run is done until
@@ -91,13 +95,25 @@ export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
 # an unreachable path as a pass is how a platform-specific hole stays invisible.
 is_darwin() { [ "$(uname -s)" = "Darwin" ]; }
 
-n=0
+case_n=0
 fresh() {
   # A new run directory and ledger per case — the watcher keeps state on disk on
   # purpose (that is what makes `--once` meaningful across invocations), so
   # sharing one directory would leak a case into the next.
-  n=$((n + 1))
-  RD="$WORK/run$n"; LG="$WORK/ledger$n.md"
+  #
+  # THE COUNTER IS NAMED, and the assertion below is why. It used to be `n`, and
+  # a case further down assigned to a bare `n` of its own — no `local`, since it
+  # was at file scope — which reset this counter to zero. Every `fresh` after it
+  # handed back a directory an earlier case had already run in, complete with
+  # that case's `stall` file and `watch.announced-*` markers, and the negative
+  # assertions in those cases could then pass on the leftovers instead of on
+  # what they claim to measure. The rename is the fix; this check is what keeps
+  # it fixed, because the failure is silent and every test still passes under it.
+  case_n=$((case_n + 1))
+  RD="$WORK/run$case_n"; LG="$WORK/ledger$case_n.md"
+  if [ -e "$RD" ]; then
+    bad "케이스 격리" "run$case_n 이 이미 있다 — 앞 케이스의 디렉터리를 물려받는다"
+  fi
   mkdir -p "$RD"; : > "$LG"
 }
 run() { bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
@@ -362,22 +378,26 @@ if [ -f "$WD4/stall" ]; then
 else
   bad "정체 기록" "stall 파일이 생기지 않았다"
 fi
-n=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
-check "그 관측이 원장을 건드리지 않는다" "${n:-0}" "0"
+n_ledger_blocked=$(grep -c 'blocked' "$LG4" 2>/dev/null || true)
+check "그 관측이 원장을 건드리지 않는다" "${n_ledger_blocked:-0}" "0"
 
 # THE ZERO-SEGMENT WINDOW, which every run passes through and which no arm could
-# report a death inside. The kickoff makes the ledger a stub and starts the
-# watcher; the first `segment` row appears only when the router calls
-# `act --kind segment`, at least two model turns later, and `snapshot` appends
-# nothing in between. A router that dies in that window leaves the ledger a stub
-# — and on a stub `nonterm` is 0, which silenced BOTH `record_blocked` arms at
-# once while every other arm wanted a row that cannot exist yet. The watcher
-# would heartbeat all night and say nothing.
+# report a death inside. The kickoff's report stub carries zero ledger rows, the
+# gate appends the `run` row on its first call, and the first `segment` row
+# appears only when the router calls `act --kind segment`, at least two model
+# turns later. A router that dies in there leaves a ledger on which `nonterm` is
+# 0, and on a bare `nonterm >= 1` this arm fell silent while every other arm
+# wanted a row that cannot exist yet — the watcher would heartbeat all night and
+# say nothing.
 #
-# So the guard asks "is there work left in this run", not "is there a
-# non-terminal segment row": a run that has not opened a segment has all of its
-# work left. The threshold is 0 and this is a SINGLE pass, because the stall arm
-# fires immediately at that threshold and its once-guard suppresses the second.
+# THIS ARM IS THE ONE THAT COVERS IT, and it is the only `record_blocked` arm
+# that can: the after-stage arm's last-row guard is unsatisfiable in that window,
+# since a `stage-result` or `cost` row means a stage ran and a stage runs inside
+# a segment. So the disjunct belongs here alone. What it costs is this arm's
+# threshold — twenty minutes — which is what the run-age arm below shortens.
+#
+# The threshold is 0 and this is a SINGLE pass, because the stall arm fires
+# immediately at that threshold and its once-guard suppresses the second.
 fresh
 printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
 out=$(run --stall 0)
@@ -441,6 +461,161 @@ case "$out" in
   *"스테이지가 끝났는데"*) bad "종단 후 무응답" "종단한 런에서 경보가 났다" ;;
   *) ok "종단한 런에서는 나지 않는다" ;;
 esac
+
+# AND IT STAYS SILENT WHERE NO SEGMENT WAS EVER OPENED.
+#
+# This is the one ledger shape on which a "no segment row yet" disjunct in that
+# arm changes its answer: zero `segment` rows, so both `nonterm` and the segment
+# count are 0, and a terminal stage row LAST, so the arm's own guard is
+# satisfied. No ledger the gate writes has it — a `stage-result` row means a
+# stage ran, which means a segment was opened — which is exactly why the
+# disjunct was unreachable there while reading as though removing it would bring
+# a bug back. This case is the only assertion that can tell the two apart.
+#
+# THE `run` ROW CARRIES NO `시작=` HERE, and that is what keeps the run-age arm
+# out of this case rather than a large `--run-open`: no stamp means that arm
+# cannot judge and stays silent, whatever the threshold. A threshold big enough
+# to hold back a fixed old stamp does not exist — the gap only grows — and the
+# run-age arm writes the same `stall` file, so the second assertion below would
+# then have been measuring the wrong arm.
+fresh
+printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=- | 종단 부류=정상 완료 | prev=y\n' >> "$LG"
+printf -- '- `cost` | 세그먼트=- | prev=z\n' >> "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "무응답 arm" "세그먼트를 연 적 없는 원장에서 발화했다" ;;
+  *) ok "세그먼트 행이 없는 원장에서 무응답 arm 은 침묵한다" ;;
+esac
+if [ -f "$RD/stall" ]; then
+  bad "무응답 arm" "발화하지 않아야 할 창에서 관측 파일을 남겼다"
+else
+  ok "그 창에서 관측 파일도 남기지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# THE RUN OPENED AND NO SEGMENT DID — the sixth arm.
+#
+# With the disjunct back out, the arm above cannot see that window and the stall
+# arm covers it alone, at twenty minutes. This arm names it earlier on a key of
+# its own: the age of the `run` row. The row's own `시작=` stamp rather than an
+# elapsed count the watcher keeps, so a watcher restarted mid-run measures the
+# same age the first one would have instead of starting the clock over.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) ok "run 행이 오래됐고 세그먼트가 없으면 발화한다" ;;
+  *) bad "run 나이 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+if grep -q '세그먼트 미개시' "$RD/stall" 2>/dev/null; then
+  ok "그 관측이 런 디렉터리의 파일로 남는다"
+else
+  bad "run 나이 arm" "stall 파일에 관측이 없다"
+fi
+
+# The once-guard has to be a DEDICATED MARKER, not a grep of `stall`: the gate
+# empties that file on every act, so a guard reading it comes back to life and
+# the arm re-fires every pass for the rest of the night.
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm 재발화" "매 pass 마다 다시 알린다" ;;
+  *) ok "같은 조건을 다시 알리지 않는다" ;;
+esac
+check "그 관측도 한 번만 남는다" "$(grep -c '세그먼트 미개시' "$RD/stall" || true)" "1"
+
+# The threshold is a threshold. A run that opened seconds ago has not failed to
+# open a segment — it has not had time to. This is also the case that reads a
+# REAL timestamp through the ISO-to-epoch conversion: a parser that answered a
+# wrong epoch would arm right here.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=%s | prev=x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "막 열린 런을 세그먼트 미개시로 판정했다" ;;
+  *) ok "임계 이전에는 발화하지 않는다" ;;
+esac
+
+# AND THE CONVERSION IS PINNED FROM BOTH SIDES. The case just above only shows
+# the arm staying quiet, which a parser answering an epoch too far in the FUTURE
+# would produce just as well — a negative age is below every threshold, so that
+# whole direction passes unmeasured. Firing on a stamp taken moments ago and
+# reading the age the announcement carries closes it: an epoch wrong by a day
+# arrives here as ±86400.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=%s | prev=x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 0)
+age_said=$(printf '%s' "$out" | sed -n 's/.*런이 열린 지 \([0-9-][0-9]*\)초.*/\1/p' | tail -1)
+if [ -n "$age_said" ] && [ "$age_said" -ge 0 ] 2>/dev/null && [ "$age_said" -le 60 ] 2>/dev/null; then
+  ok "ISO 시각을 epoch 으로 옮긴 나이가 실제 경과와 맞는다 (${age_said}초)"
+else
+  bad "run 행 나이 환산" "got '$age_said', want 0..60"
+fi
+
+# No stamp to read is "cannot judge", not "zero seconds old". Silence can only
+# delay the report to the stall arm's margin; the other direction invents one
+# for every ledger written before that field existed.
+fresh
+printf -- '- `run` | run-id=R1 | prev=x\n' > "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 0)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "시각 없는 run 행을 나이 0 으로 읽었다" ;;
+  *) ok "run 행에 시각이 없으면 판정하지 않는다" ;;
+esac
+
+# A NORMALLY TERMINATED RUN CANNOT REACH IT. A clean finish has at least one
+# segment row, so the segment count alone excludes it. The terminal
+# announcement in the same pass is what shows the fixture is a finished run
+# rather than a ledger too empty to trigger anything.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' >> "$LG"
+out=$(run --stall 99999 --after-stage 0 --run-open 0)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "정상 종단한 런에서 발화했다" ;;
+  *) ok "정상 종단한 런에서는 발화하지 않는다" ;;
+esac
+case "$out" in
+  *"런이 종단했습니다"*) ok "그 pass 가 실제로 종단으로 판정된 pass 다" ;;
+  *) bad "run 나이 arm 음성 대조" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# And a run carrying a `done` file is excluded a second time.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '2026-08-30T00:00:00Z 종단\n' > "$RD/done"
+out=$(run --stall 99999 --after-stage 0 --run-open 0 2>&1 || true)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "종단 표시가 있는 런에서 발화했다" ;;
+  *) ok "종단 표시가 있으면 발화하지 않는다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# THE SIXTH ARM DOES NOT MASK THE OTHER FIVE.
+#
+# No arm returns before the heartbeat, so adding one cannot swallow a pass — but
+# that is a property to measure rather than assume, and this arm sits between
+# two that fire on the very same ledger. One pass with both thresholds met must
+# produce both announcements, leave both observations under their own reasons,
+# and still reach the heartbeat.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+out=$(run --stall 0 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) ok "그 pass 에서 run 나이 arm 이 발화한다" ;;
+  *) bad "동시 발화" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*) ok "같은 pass 에서 정지 arm 도 발화한다 (뒤 arm 이 가려지지 않는다)" ;;
+  *) bad "동시 발화" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"[watch] 살아 있음"*) ok "두 arm 이 발화한 pass 도 하트비트까지 도달한다" ;;
+  *) bad "동시 발화 하트비트" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+check "두 arm 이 각자의 사유로 관측을 남긴다" "$(grep -c . "$RD/stall" || true)" "2"
 
 # ---------------------------------------------------------------------------
 # It stays alive across passes.
