@@ -3281,7 +3281,11 @@ check "열린 절단점=판단 승인 id 를 지목하면 보류로 정산된다
 jq_q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" '질문 문면')
 NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
 NSID="12121212-3434-5656-7878-909090909090"
-ANSWER="리뷰 스테이지는 셋으로 나누고 합성만 하나로 둔다"
+# The answer opens with an affirmation because closing as `승인` now requires one
+# — a judgment answer carrying neither polarity leaves the approval `대기`. What
+# this fixture measures is that the answer BYTES reach the row, and they do
+# either way.
+ANSWER="네, 리뷰 스테이지는 셋으로 나누고 합성만 하나로 둔다"
 printf '{"role":"user","content":"%s / %s → %s"}\n' "$jid" "$jq_q" "$ANSWER" > "$NTX/$NSID.jsonl"
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NSID" bash "$GATE" close --manifest "$NM" --approval "$jid" 2>&1); rc=$?
@@ -3643,7 +3647,7 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
       -- 등급=2 기준="실물 트랜스크립트 모양에서도 답이 실리는가" 근거="프레임이 아니라 답이 남아야 한다"
 rid=$(row_field "$(last_judgment_approval)" '승인 id')
 rq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$rid " | tail -1)" '질문 문면')
-RANS="셋으로 나누고 합성만 하나로 둔다"
+RANS="네, 셋으로 나누고 합성만 하나로 둔다"
 RSID="15151515-3434-5656-7878-909090909090"
 printf '{"parentUuid":"11111111-2222-3333-4444-555555555555","sessionId":"%s","timestamp":"2026-09-01T00:00:00Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"%s / %s → %s"}]},"uuid":"66666666-7777-8888-9999-000000000000"}\n' \
   "$RSID" "$rid" "$rq" "$RANS" > "$NTX/$RSID.jsonl"
@@ -4386,6 +4390,146 @@ check "답이 온 절이 미정산으로 돌아와 종료 제안이 기각된다
 case "$msg" in
   *"10 종료 절 K1 미정산"*) ok "그 절이 미충족 조건으로 다시 열거된다" ;;
   *) bad "보류 재정산" "$msg" ;;
+esac
+
+# --- 31am. A miss in the polarity scan is `극성 미상`, not consent -----------
+#
+# 31ai showed the scan fires on `아니오`. What it could not show is what the
+# vocabulary does NOT know, and it knew six standalone Korean words — none of
+# the forms the language actually negates with. Korean negates by ending
+# (`-지 않다`, `-지 말다`) and by the adverbs `안` and `못`, so `승인하지
+# 않습니다` and `반대합니다` were both recorded as grants.
+#
+# The second half is the disposition of a MISS. With only a negative scan,
+# silence read as consent and every refusal phrased in an unknown word became an
+# approval. Requiring an affirmative term moves the cost of an unknown word onto
+# a question that stays open — which this design survives, since a `대기`
+# judgment approval is carried to the next cycle — instead of onto an approval
+# nobody gave.
+polarity_probe() {
+  # polarity_probe <세션 uuid> <기준> <답 문면> — open one grade-2 judgment,
+  # answer it with the given text, and leave `close`'s status in `$rc` and the
+  # approval's state afterwards in `$pst`. Each probe opens its OWN approval so
+  # one verdict cannot carry into the next, and each takes a different `기준` so
+  # the issuing path does not see a question it has already opened.
+  local sid="$1" std="$2" answer="$3" pid pq prev
+  # THE ID MUST BE A NEW ONE. `last_judgment_approval` reads the newest pending
+  # row, so an act that failed to open anything leaves the PREVIOUS probe's id
+  # in hand and every assertion below then measures the wrong approval while
+  # looking green.
+  prev=$(row_field "$(last_judgment_approval)" '승인 id')
+  gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=2 기준="$std" 근거="극성 판독 실험"
+  pid=$(row_field "$(last_judgment_approval)" '승인 id')
+  if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
+    bad "극성 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
+    pst=""; rc=99; return 0
+  fi
+  pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
+  printf '{"role":"user","content":"%s / %s → %s"}\n' "$pid" "$pq" "$answer" > "$NTX/$sid.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$sid" bash "$GATE" close --manifest "$NM" --approval "$pid" 2>&1); rc=$?
+  pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+}
+polarity_probe "25252525-3434-5656-7878-909090909090" "어미로 부정한 답을 읽는지" "승인하지 않습니다"
+check "어미 -지 않다 로 부정한 답은 승인으로 닫히지 않는다" "$rc" "3"
+check "그 승인의 상태는 대기 그대로다" "$pst" "대기"
+# THREE TERMS, THREE SEPARATE ARMS OF THE VOCABULARY. An ending, a noun and an
+# adverb are matched by different entries, so one of them dying leaves the other
+# two green and the floor half gone.
+polarity_probe "26262626-3434-5656-7878-909090909090" "낱말로 반대한 답을 읽는지" "반대합니다"
+check "반대합니다 는 승인으로 닫히지 않는다" "$rc" "3"
+polarity_probe "27272727-3434-5656-7878-909090909090" "부사로 부정한 답을 읽는지" "그건 안 됩니다"
+check "부사 안 으로 부정한 답은 승인으로 닫히지 않는다" "$rc" "3"
+# THE MISS ITSELF, and this is the only place it is measured. Neither polarity
+# is present, so there is nothing on the line that can be read as consent.
+polarity_probe "28282828-3434-5656-7878-909090909090" "극성이 없는 답을 어떻게 처분하는지" "확인했습니다"
+check "긍정도 부정도 없는 답은 승인으로 닫히지 않는다" "$rc" "5"
+check "극성 미상으로 남은 승인의 상태는 대기다" "$pst" "대기"
+
+# --- 31an. The question is not scanned as if it were the answer -------------
+#
+# `close` selects the transcript line by requiring the approval id AND the
+# question text on it, so the question is inside the scanned bytes by
+# construction. A judgment question is the router's own `<기준> — <근거>`, so a
+# standard reading "이 발견을 이번 사이클에서 거절할지" put `거절` in front of the
+# polarity scan and that approval could not be closed as a grant no matter what
+# the person wrote. It is the opposite error from 31am, and the two share a
+# floor: both scans read the answer with the question removed, because a scan
+# target that splits is two floors again.
+polarity_probe "30303030-3434-5656-7878-909090909090" "이 발견을 이번 사이클에서 거절할지" "그렇게 하라"
+check "기준에 부정어가 든 물음도 긍정 답으로 닫힌다" "$rc" "0"
+check "그 승인의 상태는 승인이다" "$pst" "승인"
+# AND REMOVING THE QUESTION DID NOT KILL THE NEGATIVE SCAN. Same shape of
+# question, opposite answer.
+polarity_probe "31313131-3434-5656-7878-909090909090" "이 정정을 이번 사이클에서 거절할지" "아니오, 다음 런에서 본다"
+check "같은 모양의 물음에 부정으로 답하면 여전히 승인으로 닫히지 않는다" "$rc" "3"
+check "그 승인의 상태는 대기 그대로다" "$pst" "대기"
+# NO ANSWER IS NOT A NEGATIVE ANSWER. The person repeated the question and wrote
+# nothing else, so removing it leaves no bytes to read a polarity out of. The
+# frame carries the id in a field of its own, which is how the binding still
+# holds while the content is the question alone.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="사람이 물음을 되풀이만 했을 때" 근거="답과 물음은 다른 것이다"
+eid=$(row_field "$(last_judgment_approval)" '승인 id')
+eq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$eid " | tail -1)" '질문 문면')
+ECHOSID="32323232-3434-5656-7878-909090909090"
+printf '{"role":"user","toolUseResult":"승인 id=%s","content":"%s"}\n' "$eid" "$eq" > "$NTX/$ECHOSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$ECHOSID" bash "$GATE" close --manifest "$NM" --approval "$eid" 2>&1); rc=$?
+check "물음을 되풀이하기만 한 줄은 승인으로도 거부로도 닫히지 않는다" "$rc" "5"
+est=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$eid " | tail -1)" '상태')
+check "답을 분리할 수 없는 줄은 상태를 대기로 둔다" "$est" "대기"
+case "$out" in
+  *"남는 답이 없습니다"*) ok "거절 문면이 답이 없는 것과 답이 부정인 것을 가른다" ;;
+  *) bad "물음 제거 후 잔여" "$out" ;;
+esac
+
+# --- 31ao. The manifest guard measures the FILE through three arms ----------
+#
+# 31ac closed the two spellings it named and left the shape underneath: the test
+# was the manifest's basename appearing somewhere in some argv element, so any
+# spelling that reaches the file without spelling that basename passed. Measured
+# on this tree, `bash -c 'printf x >> …/cone-plan.m?'` appended to the manifest
+# and the gate returned 0, and so did the same command reading the path out of
+# the environment. The glob is the sharpest of the three: it needs no variable,
+# no string assembly and no symlink — the same directory and the same stem,
+# spelled literally, one character short.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> ${NM%?}?"
+check "글로브로 한 글자 바꾼 철자도 매니페스트 쓰기로 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c 'printf x >> "$CC_PIPELINE_MANIFEST"'
+check "경로를 환경변수에서 읽는 쓰기도 거절된다" "$rc" "3"
+# THE ALIAS SYMLINK IS THE ONE CASE ONLY THE PATH-IDENTITY ARM CAN REACH: it
+# shares neither the basename nor the directory spelling with the file it opens,
+# so both of the other arms look straight past it.
+ln -s "$NM" "$WORK/aliased-plan.md"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n 1p "$WORK/aliased-plan.md"
+check "매니페스트를 가리키는 다른 이름의 심링크도 거절된다" "$rc" "3"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "별칭 철자도 인가의 자기확장으로 지목된다" ;;
+  *) bad "별칭 심링크 가드" "$msg" ;;
+esac
+# AND THE UPPER BOUND. Three arms is three more ways to be wrong in the other
+# direction, so the reading path and an unrelated file are both measured.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- grep -c "" "$NM"
+check "같은 경로를 읽기만 하는 행위는 세 팔을 더한 뒤에도 통과한다" "$rc" "0"
+printf 'x\n' > "$WORK/unrelated.txt"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- sed -n 1p "$WORK/unrelated.txt"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) bad "가드 상한" "무관한 파일에 가드가 발화했다: $msg" ;;
+  *) ok "매니페스트와 무관한 경로를 쓰는 행위에는 가드가 발화하지 않는다" ;;
 esac
 
 # --- 31aa. A question does not switch the boundaries off --------------------

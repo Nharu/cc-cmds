@@ -1725,6 +1725,13 @@ gate_main() {
   # manifest whose directory is absent is a hard stop one line later anyway, so
   # keeping the original value costs nothing and removes a way to disarm the
   # guard by pointing it somewhere unreachable.
+  #
+  # LOGICAL, not physical, and deliberately so. `MANIFEST` is also the value the
+  # digest path reads, the value the refusal messages print and the value a
+  # caller sees echoed back, so resolving symlinks here would rewrite the path
+  # every caller spelled into one they never used. Symlink identity belongs to
+  # the comparison that needs it: `gate_manifest_write_guard` resolves both
+  # sides physically at the point of comparison and leaves this value alone.
   if [ -d "$(dirname "$MANIFEST")" ]; then
     MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
   fi
@@ -2398,6 +2405,41 @@ gate_revert_surface() {
   surface_of_argv0 $1
 }
 
+gate_physical_path() {
+  # gate_physical_path <경로> — the path with its directory resolved through
+  # `pwd -P` and a symlinked final component followed, so that two spellings of
+  # one file compare equal.
+  #
+  # `readlink -f` would do this in one call and is the spelling that differs
+  # between the BSD and GNU builds, so the walk is written out. Bounded at eight
+  # hops: a symlink cycle is a filesystem a caller can build, and an unbounded
+  # follow would hang the gate rather than refuse anything.
+  local p="$1" d b link n=0
+  d=$(dirname "$p"); b=$(basename "$p")
+  [ -d "$d" ] || { printf '%s' "$p"; return 0; }
+  p="$(cd "$d" && pwd -P)/$b"
+  while [ -L "$p" ] && [ "$n" -lt 8 ]; do
+    link=$(readlink "$p" 2>/dev/null) || break
+    [ -n "$link" ] || break
+    case "$link" in
+      /*) p="$link" ;;
+      *) p="$(dirname "$p")/$link" ;;
+    esac
+    d=$(dirname "$p"); b=$(basename "$p")
+    [ -d "$d" ] || break
+    p="$(cd "$d" && pwd -P)/$b"
+    n=$((n + 1))
+  done
+  printf '%s' "$p"
+}
+
+gate_manifest_write_refuse() {
+  # The refusal text, in one place because three arms reach it. Two arms with
+  # their own wording would read as two different rules to whoever hits them.
+  warn "매니페스트에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $MANIFEST"
+  warn "「## 인가」의 자동 채택 행은 사람이 지켜보는 자리에서만 선언됩니다 — 런이 자기 사전 채택 목록을 늘리는 것은 인가의 자기확장입니다"
+}
+
 gate_manifest_write_guard() {
   # gate_manifest_write_guard <graded-surface> <argv...>
   #
@@ -2436,13 +2478,75 @@ gate_manifest_write_guard() {
   local graded="$1"; shift
   [ -n "${MANIFEST:-}" ] || return 0
   case "$graded" in 읽기) return 0 ;; esac
-  local a mbase
+  local a mbase mdir mdirp mreal adir areal joined argv0
   mbase=$(basename "$MANIFEST")
   [ -n "$mbase" ] || return 0
+  mdir=$(dirname "$MANIFEST")
+  # BOTH SPELLINGS OF THE DIRECTORY, because arm 2 matches the caller's own
+  # bytes and the caller may have written either one. `MANIFEST` is normalized
+  # logically, so on a host where the temp or state root is itself a symlink the
+  # physical spelling is a different string that names the same directory.
+  mdirp="$mdir"
+  if [ -d "$mdir" ]; then mdirp="$(cd "$mdir" && pwd -P)"; fi
+
+  # ARM 2 — AN INTERPRETER HIDES THE PATH OPERAND, SO THE WHOLE COMMAND LINE IS
+  # THE OPERAND. `bash -c` takes a program, not arguments: there is no element to
+  # resolve and no way to tell which bytes of it will become a filename. So the
+  # test here is containment over the joined argv, and it is deliberately wider
+  # than the one below — the manifest's DIRECTORY counts, not only its basename.
+  #
+  # The directory is what closes the glob spelling. `…/X.plan.m?` shares no
+  # basename with `X.plan.md`, but it names the same directory verbatim, because
+  # a glob that is going to reach the file has to say where the file is. The
+  # environment variable names are here for the same reason one step earlier:
+  # `printf x >> "$CC_PIPELINE_MANIFEST"` never spells the path at all.
+  argv0=${1##*/}
+  case "$argv0" in
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs)
+      joined=$(printf '%s ' "$@")
+      case "$joined" in *"$mbase"*|*CC_PIPELINE_MANIFEST*|*MANIFEST*)
+        gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
+      esac
+      case "$mdir" in
+        ''|'/'|'.') ;;
+        *) case "$joined" in *"$mdir"*|*"$mdirp"*)
+             gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
+           esac ;;
+      esac
+      ;;
+  esac
+
+  # ARM 3 — PATH IDENTITY, RESOLVED PHYSICALLY ON BOTH SIDES. An element shaped
+  # like a path is resolved the same way the manifest is and compared as a file
+  # rather than as a string, so a symlinked directory in the path — or an alias
+  # symlink pointing AT the manifest under some other name — is the manifest
+  # here. The alias case is the one no other arm can reach: it shares neither
+  # basename nor directory with the file it writes.
+  #
+  # Both sides are resolved in this function rather than trusting the value
+  # normalized at argument-parse time. A comparison where only one side followed
+  # symlinks is a comparison of spellings again, which is what all of this is
+  # for.
+  mreal=$(gate_physical_path "$MANIFEST")
+  for a in "$@"; do
+    case "$a" in */*) ;; *) continue ;; esac
+    adir=$(dirname "$a")
+    [ -d "$adir" ] || continue
+    areal=$(gate_physical_path "$a")
+    [ "$areal" = "$mreal" ] || continue
+    gate_manifest_write_refuse
+    return "$GATE_EXIT_RULE"
+  done
+
+  # THE BASENAME CONTAINMENT SCAN STAYS, BEHIND THE TWO ARMS ABOVE. It is the
+  # only one of the three that catches a manifest name carried by an element
+  # that is not shaped like a path at all, and it is what refuses `tee` on the
+  # ordinary spelling today. Its cost is refusing acts that merely mention a
+  # file of that name elsewhere in the tree, which is a false positive this
+  # keeps rather than trade for the coverage.
   for a in "$@"; do
     case "$a" in *"$mbase"*) ;; *) continue ;; esac
-    warn "매니페스트에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $MANIFEST"
-    warn "「## 인가」의 자동 채택 행은 사람이 지켜보는 자리에서만 선언됩니다 — 런이 자기 사전 채택 목록을 늘리는 것은 인가의 자기확장입니다"
+    gate_manifest_write_refuse
     return "$GATE_EXIT_RULE"
   done
   return 0
@@ -4409,16 +4513,79 @@ gate_negative_answer_hit() {
   # substring would have made this scan useless in the other direction, which
   # for a check standing between an answer and a recorded approval is worse
   # than the constant it replaces.
+  #
+  # THE KOREAN HALF CARRIES THE PRODUCTIVE FORMS AND NOT ONLY THE STANDALONE
+  # WORDS. Korean negates mainly by ending — `-지 않다`, `-지 말다` — and by the
+  # adverbs `안` and `못`; a list of standalone refusals therefore knew none of
+  # the ordinary ways to say no, and `승인하지 않습니다` or `반대합니다` closed as
+  # grants. The ending terms are spelled without their trailing verb (`지 않`) so
+  # one term covers every conjugation of it.
   local ans="$1" lower flat t
   lower=$(printf '%s' "$ans" | tr 'A-Z' 'a-z')
-  for t in 아니오 아니요 거부 거절 '하지 마' 하지마; do
+  # THE ADVERB TERMS ARE SPELLED SEVERAL WAYS BECAUSE KOREAN CONJUGATION CHANGES
+  # THE STEM SYLLABLE ITSELF AND NOT ONLY WHAT FOLLOWS IT. `안 되` does not occur
+  # in `안 됩니다` at all — the stem `되` has become `됩` — so one dictionary-form
+  # spelling would know the form nobody writes and miss the form everybody does.
+  # The ending terms above need no such spread: `않` and `말` survive their own
+  # conjugations.
+  for t in 아니오 아니요 거부 거절 '하지 마' 하지마 '지 않' '지 말' \
+           '안 되' '안 됩' '안 돼' '못 하' '못 합' '못 해' '못 한' 반대 불가; do
     case "$lower" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
   done
   flat=" $(printf '%s' "$lower" | tr -c "a-z0-9'" ' ') "
-  for t in no nope reject "don't"; do
+  for t in no nope reject "don't" not negative decline disagree nah; do
     case "$flat" in *" $t "*) printf '%s' "$t"; return 0 ;; esac
   done
   return 0
+}
+
+gate_positive_answer_hit() {
+  # gate_positive_answer_hit <답 바이트> — prints the affirmative term the answer
+  # matched, or nothing at all.
+  #
+  # A MISS IS `극성 미상`, NOT AN AFFIRMATION. With only the negative scan in
+  # place, silence read as consent: an answer carrying none of its terms closed
+  # as `승인`, so every refusal phrased in a word the vocabulary happens not to
+  # know became a grant. Requiring an affirmative term instead moves the cost of
+  # an unknown word onto a question that stays open — which the run survives,
+  # since a `대기` judgment approval is carried to the next cycle — rather than
+  # onto an approval nobody gave, which nothing downstream can undo.
+  #
+  # Matched in the same two ways as the negative half and for the same reasons:
+  # Korean as plain substrings, Latin against the space-padded flattened copy.
+  local ans="$1" lower flat t
+  lower=$(printf '%s' "$ans" | tr 'A-Z' 'a-z')
+  for t in 네 예 좋 승인 채택 진행 그렇게 해주세요; do
+    case "$lower" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
+  done
+  flat=" $(printf '%s' "$lower" | tr -c "a-z0-9'" ' ') "
+  for t in yes ok okay approve agreed "go ahead"; do
+    case "$flat" in *" $t "*) printf '%s' "$t"; return 0 ;; esac
+  done
+  return 0
+}
+
+gate_strip_question() {
+  # gate_strip_question <바이트> <질문 문면> — the bytes with every verbatim
+  # occurrence of the question removed.
+  #
+  # Written as a prefix/suffix trimming loop rather than `${v//"$q"/}` so the
+  # substitution stays inside what the portability lint accepts, and so removal
+  # is literal: the question text is arbitrary prose and would otherwise be read
+  # as a pattern.
+  local body="$1" q="$2" out='' head
+  [ -n "$q" ] || { printf '%s' "$body"; return 0; }
+  while :; do
+    case "$body" in
+      *"$q"*)
+        head=${body%%"$q"*}
+        out="$out$head"
+        body=${body#*"$q"}
+        ;;
+      *) out="$out$body"; break ;;
+    esac
+  done
+  printf '%s' "$out"
 }
 
 gate_close() {
@@ -4453,7 +4620,7 @@ gate_close() {
   # transcript was recorded as a grant. Every refusal on the unattended
   # adoption surface converges on this channel, so a channel that emits a
   # constant leaves the floors above it deciding nothing.
-  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit
+  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit scanbody phit
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -4562,12 +4729,41 @@ gate_close() {
   # the whole transport frame, whose ids, paths and timestamps would make a
   # substring scan mostly noise. An act approval is refused by the closer
   # naming `--void` or `--reject`.
+  #
+  # THE QUESTION IS NOT PART OF THE ANSWER, AND IT IS ALWAYS IN THESE BYTES.
+  # The transcript line was selected by requiring the approval id AND the
+  # question text on it, so whenever the binding holds the question text is
+  # inside `$abody` by construction. A judgment question is built from the
+  # router's own `<기준> — <근거>`, so a standard reading "이 발견을 이번
+  # 사이클에서 거절할지" put `거절` into the scanned bytes and the approval could
+  # not be closed as a grant whatever the person wrote. Removing the question
+  # first is the mirror of widening the vocabulary: one error grants against the
+  # words, the other refuses regardless of them, and both scans must look at the
+  # same bytes or the floor is two floors again.
+  #
+  # `$abody` ITSELF IS NOT TOUCHED. It is what goes into `답변 문면`, which the
+  # contract calls the run's only durable copy of the answer; the split is
+  # between what is scanned and what is recorded.
   if [ "$cutp" = "판단" ] && [ "$reject" = "0" ]; then
-    hit=$(gate_negative_answer_hit "$abody")
+    scanbody=$(gate_strip_question "$abody" "$q")
+    # Whitespace-only remainder means the line held the question and nothing
+    # else — a person echoing the question is not an answer, and "no answer" and
+    # "an answer that is no" are different states.
+    if [ -z "$(printf '%s' "$scanbody" | tr -d '[:space:]')" ]; then
+      warn "이 줄에서 질문 문면을 빼면 남는 답이 없습니다 — ${id} 을 승인으로도 거부로도 닫지 않고 대기로 둡니다"
+      exit "$GATE_EXIT_APPROVAL"
+    fi
+    hit=$(gate_negative_answer_hit "$scanbody")
     if [ -n "$hit" ]; then
       warn "이 답은 부정으로 읽힙니다 (매치: ${hit}) — ${id} 을 승인으로 닫지 않습니다"
       warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
       exit "$GATE_EXIT_RULE"
+    fi
+    phit=$(gate_positive_answer_hit "$scanbody")
+    if [ -z "$phit" ]; then
+      warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
+      warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
+      exit "$GATE_EXIT_APPROVAL"
     fi
   fi
 
