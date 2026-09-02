@@ -1057,6 +1057,80 @@ ledger_init() {
 # through one door and not the other is a row the morning can only half read.
 readonly RUN_ROW_MAX=1024
 
+# The per-field budget for a value with no bound of its own. Small enough that a
+# row carrying one of them still has room for its digest, its worktree path and
+# the sidecar pointer appended after the clip.
+readonly RUN_FIELD_MAX=300
+
+run_clip() {
+  # run_clip <text> <max-bytes> — clipped values SAY they were clipped.
+  #
+  # A COPY OF `gate_clip`, AND THE COPY CARRIES AN OBLIGATION. The two writers
+  # append to one ledger that one set of readers parses, exactly as the field
+  # normalization below does, so a change made on one side and not the other
+  # splits them silently. Measured and cut in BYTES: `wc -c` counts bytes while
+  # `cut -c` counts characters here, so a character-wise cut returns up to three
+  # times the budget over Korean text, and a byte-wise one lands inside a UTF-8
+  # sequence. The trailing partial sequence is dropped by reading the last lead
+  # byte's announced length.
+  local s="$1" n="$2" len
+  len=$(printf '%s' "$s" | wc -c | tr -d ' ')
+  if [ "${len:-0}" -le "$n" ]; then printf '%s' "$s"; return 0; fi
+  printf '%s' "$s" | LC_ALL=C awk -v n="$n" '
+    BEGIN { marker = "…(잘림)"; keep = n - length(marker); if (keep < 0) keep = 0 }
+    {
+      t = substr($0, 1, keep); m = length(t)
+      for (i = 0; i < 4 && m - i >= 1; i++) {
+        c = substr(t, m - i, 1)
+        if (c < "\200") break
+        if (c >= "\300") {
+          k = (c < "\340") ? 2 : ((c < "\360") ? 3 : 4)
+          if (i + 1 != k) t = substr(t, 1, m - i - 1)
+          break
+        }
+      }
+      printf "%s%s", t, marker
+    }
+  '
+}
+
+run_row_safe() {
+  # run_row_safe <text> <max-bytes> — one row-safe field value, bounded.
+  # The counterpart of `gate_row_safe`, and marked on both sides for the same
+  # reason `run_clip` is.
+  run_clip "$(printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ')" "$2"
+}
+
+declared_field_for_row() {
+  # declared_field_for_row <세그먼트 id> <선언 파일 집합> — the row value for a
+  # field that has no bound of its own, with the whole of it kept beside the run.
+  #
+  # THE CALLER IS THE ONLY PARTY THAT CAN DO THIS. `ledger_row`'s cap is a `die`,
+  # and its message tells the reader to move long values out — which nobody
+  # downstream can do, because by the time the writer is looking at the row the
+  # row is already assembled and the caller is gone. A kickoff that declares
+  # twenty paths is an ordinary declaration, and Korean paths run three bytes to
+  # the character, so the cap is reachable at kickoff — where hitting it ends the
+  # whole unattended run at its first row. The gate answered the same problem the
+  # same way for its dependency cone, so this is that shape rather than a new
+  # one.
+  local id="$1" v="$2" n side
+  n=$(printf '%s' "$v" | wc -c | tr -d ' ')
+  if [ "${n:-0}" -le "$RUN_FIELD_MAX" ]; then printf '%s' "$v"; return 0; fi
+  side="${RUN_DIR:-}/declared.$id"
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    printf '%s\n' "$v" > "$side" 2>/dev/null || true
+  fi
+  # A SIDECAR FAILURE MUST NOT END THE RUN — that is the very shape being removed
+  # here — so the clip stands on its own and the path is named only once the file
+  # is actually there.
+  if [ -f "$side" ]; then
+    printf '%s (전체: %s)' "$(run_row_safe "$v" "$RUN_FIELD_MAX")" "$side"
+  else
+    run_row_safe "$v" "$RUN_FIELD_MAX"
+  fi
+}
+
 ledger_row() {
   # ledger_row <계열> <field=value> ...
   #
@@ -1085,7 +1159,7 @@ ledger_row() {
   # what fits.
   local series="$1"; shift
   local line="- \`$series\`"
-  local f k v n
+  local f k v n longest lmax fl
   for f in "$@"; do
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
@@ -1096,7 +1170,19 @@ ledger_row() {
   n=$(printf '%s | prev=%s\n' "$line" \
         "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
   if [ "$n" -gt "$RUN_ROW_MAX" ]; then
-    die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트) — 긴 값은 리포트로 빼야 합니다: ${series}"
+    # THE BACKSTOP NAMES THE FIELD AND THE PARTY THAT CAN FIX IT. It stays a
+    # `die` on purpose — `ledger_row` is called from nearly every path including
+    # `park` itself, so parking from here opens a recursion — but "긴 값은
+    # 리포트로 빼야 합니다" prescribed an action with no actor: by the time the
+    # writer sees the row the caller that assembled it is gone. Callers whose
+    # fields are genuinely unbounded bound them before they get here, the way
+    # `declared_field_for_row` does.
+    longest=""; lmax=0
+    for f in "$@"; do
+      fl=$(printf '%s' "$f" | wc -c | tr -d ' ')
+      if [ "${fl:-0}" -gt "$lmax" ]; then lmax="$fl"; longest="${f%%=*}"; fi
+    done
+    die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트, 계열 ${series}) — 가장 긴 필드는 「${longest:-미상}」(${lmax} 바이트)입니다. 이 자리에서는 줄일 수 없으므로 이 행을 만드는 호출부가 전체 값을 런 디렉터리 아래 사이드카로 빼고 행에는 경계 있는 형태만 실어야 합니다"
   fi
   printf '%s\n' "$line" >> "$LEDGER"
 }
@@ -3160,7 +3246,7 @@ plan_from_declaration() {
       "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$id" "상태=계획됨" \
-      "선언 파일 집합=$(slice_field "$doc" "$id" '선언 파일')" \
+      "선언 파일 집합=$(declared_field_for_row "$id" "$(slice_field "$doc" "$id" '선언 파일')")" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
       "선행=$(slice_field "$doc" "$id" '선행')" \
       "절단점=$(slice_field "$doc" "$id" '절단점')" \
@@ -3203,7 +3289,7 @@ plan_via_planner() {
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
-      "선언 파일 집합=$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')" \
+      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0

@@ -1666,6 +1666,67 @@ check "거부된 행은 원장에 남지 않는다" "$(grep -cF 'id=SL' "$LEDGER
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
+# 22a. 킥오프의 경계 없는 필드는 사이드카로 빠지고 행은 상한 안에 든다
+#
+# 앞 절의 마지막 단언은 이미 상한을 넘긴 값을 밀어 넣고 거절되는지만 본다. 그것은
+# 바닥이 있다는 사실을 재지 여유를 재지 않는다. 그런데 이 상한은 `die` 이고
+# `die` 는 `exit 1` 이라, 선언 파일이 스무 개인 평범한 킥오프 하나가 무인 런
+# 전체를 첫 행에서 끝냈다 — 한글 경로는 글자당 세 바이트라 그 수는 멀리 있지
+# 않다. 게이트는 같은 상한을 도입할 때 목록을 런 디렉터리로 빼는 탈출구를 함께
+# 두었고, 이쪽은 바닥만 복제하고 그 탈출구를 복제하지 않았다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"; RUN_DIR_SAVE="${RUN_DIR:-}"
+LEDGER="$WORK/ledger-headroom.md"; : > "$LEDGER"
+RUN_DIR="$WORK/rundir-headroom"; mkdir -p "$RUN_DIR"
+DECL=""; i=1
+while [ "$i" -le 20 ]; do
+  DECL="${DECL:+$DECL, }plugins/cc-cmds/오케스트레이터/구현-파일-$i.sh"
+  i=$((i + 1))
+done
+DECLN=$(printf '%s' "$DECL" | wc -c | tr -d ' ')
+if [ "${DECLN:-0}" -gt "$RUN_ROW_MAX" ]; then
+  ok "선언 목록 자체가 행 상한보다 길다 ($DECLN 바이트 — 여유를 재는 전제다)"
+else
+  bad "여유 전제" "선언 목록이 $DECLN 바이트뿐이라 이 절이 아무것도 재지 못한다"
+fi
+( ledger_row 'segment' "id=SH" "상태=계획됨" \
+    "선언 파일 집합=$(declared_field_for_row SH "$DECL")" \
+    "레포=cc-cmds" "선행=없음" "절단점=커밋" \
+    "plan-binding-digest=0000000000000000000000000000000000000000000000000000000000000000" \
+    "워크트리=$WORK/wt-SH" ) >/dev/null 2>&1
+check "선언 파일이 스무 개인 킥오프 행은 드라이버를 죽이지 않는다" "$?" "0"
+ROWLEN=$( { grep -F 'id=SH ' "$LEDGER" || true; } | wc -c | tr -d ' ')
+if [ "${ROWLEN:-0}" -gt 0 ] && [ "${ROWLEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행은 원장 행 상한 안에 든다 ($ROWLEN 바이트)"
+else
+  bad "행 길이" "$ROWLEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+if [ -f "$RUN_DIR/declared.SH" ] && grep -qF "$DECL" "$RUN_DIR/declared.SH"; then
+  ok "전체 목록이 런 디렉터리에 축자로 남는다"
+else
+  bad "사이드카" "$RUN_DIR/declared.SH 에 전체 목록이 없다"
+fi
+case "$( { grep -F 'id=SH ' "$LEDGER" || true; } )" in
+  *"declared.SH"*) ok "행이 전체 목록이 있는 자리를 지목한다" ;;
+  *) bad "사이드카 지목" "$( { grep -F 'id=SH ' "$LEDGER" || true; } )" ;;
+esac
+# 사이드카를 쓸 수 없을 때 킥오프가 죽으면 고치려는 것과 같은 형상이 된다.
+RUN_DIR="$WORK/rundir-absent"
+( ledger_row 'segment' "id=SH2" "상태=계획됨" \
+    "선언 파일 집합=$(declared_field_for_row SH2 "$DECL")" ) >/dev/null 2>&1
+check "런 디렉터리가 없어도 킥오프 행은 써진다" "$?" "0"
+# 그리고 바닥 자체는 백스톱으로 남는다 — 경계를 거치지 않고 들어온 값은 여전히
+# 거절되고, 거절 문면은 어느 필드가 넘쳤는지 이름으로 지목한다.
+RUN_DIR="$RUN_DIR_SAVE"
+LONGV2=$(printf '%1100s' '' | tr ' ' 'x')
+LONGOUT=$( { ledger_row 'segment' "id=SL2" "사유=$LONGV2"; } 2>&1 || true)
+case "$LONGOUT" in
+  *"가장 긴 필드는 「사유」"*) ok "상한 거절이 어느 필드가 넘쳤는지 지목한다" ;;
+  *) bad "상한 문면" "$LONGOUT" ;;
+esac
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
 # 23. `선행` 판독기는 하나이고, 게이트의 것과 같은 어휘를 쓴다
 #
 # 이 필드의 판독기가 두 파일에 넷 있었고 어느 둘도 일치하지 않았다. 이쪽 셋은
