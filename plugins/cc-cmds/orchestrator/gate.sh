@@ -1961,9 +1961,22 @@ gate_ancestor_of() {
   # be this design's single unconditional fail-open. What the accepted residual
   # authorizes is STRUCTURAL under-parking, never under-parking caused by a
   # fault.
+  #
+  # AND IT IS A PROPER ANCESTOR — an equal tip is NOT an edge. `git merge-base
+  # --is-ancestor X X` is true, which is the right answer to the question git was
+  # asked and the wrong answer to the question this function asks. What the
+  # ancestry axis trades on is "that member has already merged, so the candidate
+  # stands on its commits"; a member whose tip IS the candidate's tip has
+  # contributed no commit the candidate could stand on, so the implication is
+  # simply absent. Left in, every segment sitting on one worktree answered
+  # "ancestor" for every other, and a cone anchored on any one of them swallowed
+  # the whole group. A genuine dependency between two such segments is still
+  # seen: the declared axis is evaluated before this one and reads it straight
+  # off `선행`.
   local tipa tipb wtb rc=0
   tipa=$(gate_segment_tip "$1") || return 2
   tipb=$(gate_segment_tip "$2") || return 2
+  [ "$tipa" != "$tipb" ] || return 1
   wtb=$(gate_segment_worktree "$2")
   [ -d "$wtb" ] || return 2
   ( cd "$wtb" && git merge-base --is-ancestor "$tipa" "$tipb" ) >/dev/null 2>&1 || rc=$?
@@ -2001,7 +2014,18 @@ gate_fileset_escape() {
   # field is carried even though nothing about the cone's ancestry axis needs
   # it. A segment that declared nothing is silent here — a claim nobody made
   # cannot be violated.
-  local decl base wt f p covered
+  #
+  # NEITHER SIDE OF THE COMPARISON IS WORD-SPLIT, because a path is not a word
+  # and a declared prefix is not one either. `for f in $(git diff --name-only)`
+  # tore `docs/설계 노트.md` into two fragments, neither of which any declaration
+  # covers, so a segment that stayed strictly inside what it declared raised a
+  # cone against itself — and the identical splitting on the declaration side
+  # tore a prefix containing a space into two prefixes that cover nothing, which
+  # fails the other way and lets a real escape through. `core.quotePath=false` is
+  # the other half of the same repair: without it git renders every non-ASCII
+  # byte as a `\nnn` escape inside double quotes, so a Korean path is compared in
+  # a spelling it never has on disk and can never match its own prefix.
+  local decl base wt f p covered decls
   decl=$(gate_segment_field "$1" '선언 파일 집합')
   case "$decl" in ''|'없음'|'(없음)') return 0 ;; esac
   base=$(gate_segment_field "$1" '베이스 sha')
@@ -2009,18 +2033,46 @@ gate_fileset_escape() {
   wt=$(gate_segment_worktree "$1")
   [ -n "$wt" ] || return 0
   [ -d "$wt" ] || return 0
-  for f in $( { cd "$wt" 2>/dev/null && git diff --name-only "$base" HEAD 2>/dev/null; } || true); do
-    covered=0
-    for p in $(printf '%s' "$decl" | tr ',' ' '); do
-      case "$f" in "$p"|"$p"*) covered=1 ;; esac
+  decls=$(printf '%s' "$decl" | tr ',' '\n' \
+          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' || true)
+  # The loop sits on the right of a pipe and therefore in a subshell. That is
+  # harmless here and only here: this function reports on STDOUT and keeps no
+  # state across iterations, so nothing it computes has to outlive the subshell.
+  { cd "$wt" 2>/dev/null \
+    && git -c core.quotePath=false diff -z --name-only "$base" HEAD 2>/dev/null || true; } \
+  | while IFS= read -r -d '' f; do
+      [ -n "$f" ] || continue
+      covered=0
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        case "$f" in "$p"|"$p"*) covered=1 ;; esac
+      done <<DECL
+$decls
+DECL
+      [ "$covered" = "1" ] || printf '%s\n' "$f"
     done
-    [ "$covered" = "1" ] || printf '%s\n' "$f"
-  done
 }
 
 gate_cone_edge() {
   # gate_cone_edge <member> <candidate> — does <candidate> stand on <member>?
   local m="$1" s="$2" cgm cgs d rc=0
+  # THE DECLARED AXIS IS ANSWERED FIRST, BEFORE ANYTHING READS A REPOSITORY.
+  #
+  # It is pure ledger data — no worktree, no git, no object database — so putting
+  # it behind the repository probe made it pay for a measurement it does not use,
+  # and it lost twice for that. A dependency declared ACROSS repositories was
+  # answered by the cross-repository arm below and disappeared from the cone,
+  # even though `선행` naming a member is the router stating the dependency on
+  # purpose and is the only axis that sees one before the predecessor merges. And
+  # when a member's worktree could not be read, the pair was written down as
+  # unmeasurable while the declaration sitting right there answered it exactly.
+  #
+  # Nothing below is weakened by the move: the arms it precedes all answer "does
+  # git place these two", and a declaration is not a claim about git.
+  for d in $(gate_deps_of "$s"); do
+    if [ "$d" = "$m" ]; then return 0; fi
+  done
+
   # A CROSS-REPOSITORY PAIR IS SETTLED WITHOUT ASKING GIT. Commits do not stack
   # across repositories, so such an edge orders work rather than placing it in
   # the cone. Splitting it off first is also what leaves `--is-ancestor`'s 128
@@ -2059,12 +2111,6 @@ gate_cone_edge() {
     return 1
   fi
 
-  # The declared axis — the only one that sees a dependency before the
-  # predecessor merges, which is this design's main case.
-  for d in $(gate_deps_of "$s"); do
-    if [ "$d" = "$m" ]; then return 0; fi
-  done
-
   # The ancestor axis — declaration-independent, so it catches stacking nobody
   # wrote down and rebases that pulled a segment in late.
   gate_ancestor_of "$m" "$s" || rc=$?
@@ -2099,13 +2145,27 @@ gate_cone_members() {
   local anchor="$1" members grew sid m ident idents
   members=" $anchor "
 
-  idents=$( { gate_rows 'problem' | grep -F "세그먼트=$anchor " || true; } \
+  # THE FIELD TERMINATOR IS PART OF THE MATCH. A trailing space alone ends the
+  # value only when the next character is the separator, so `동일성=로그인 실패 `
+  # also matched `동일성=로그인 실패 재현 불가` and pulled a different defect's
+  # segments into this cone. `gate_append` writes ` | ` between every pair of
+  # fields and always appends `prev=` last, so no field a caller supplies is ever
+  # the final one and the pipe is always there to anchor against.
+  idents=$( { gate_rows 'problem' | grep -F "세그먼트=$anchor |" || true; } \
             | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' | sort -u)
   while IFS= read -r ident; do
     [ -n "$ident" ] || continue
-    for sid in $( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } \
+    for sid in $( { gate_rows 'problem' | grep -F "동일성=$ident |" || true; } \
                   | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
-      case "$members" in *" $sid "*) ;; *) members="$members$sid " ;; esac
+      case "$members" in *" $sid "*) continue ;; esac
+      # THE SAME TERMINAL FILTER THE OTHER THREE AXES CARRY. This seed loop was
+      # the one that did not, so a segment already landed or abandoned was pulled
+      # back in on a shared defect identity and held work that had nothing left
+      # to wait for. Seeding widens the cone by design; widening it with segments
+      # that are finished is not that design, it is the filter being missing from
+      # one of four places.
+      gate_segment_terminal "$sid" && continue
+      members="$members$sid "
     done
   done <<EOF
 $idents

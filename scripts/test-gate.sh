@@ -3755,6 +3755,214 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       -- grep -c "" "$NM"
 check "같은 경로를 읽기만 하는 행위는 통과한다 (오탐이 아니다)" "$rc" "0"
 
+# --- 31ad. The declared axis answers BEFORE anything reads a repository -----
+#
+# `선행` is pure ledger data and no repository probe can inform it, yet it was
+# evaluated after that probe — so two ordinary declarations were thrown away. A
+# dependency naming a segment in ANOTHER repository was settled by the
+# cross-repository arm and disappeared from the cone, and a dependency on a
+# member whose worktree had been cleaned up was written down as unmeasurable
+# while the declaration on the row answered it exactly.
+#
+# `SG`'s worktree was removed back in 31e and stays removed, which is what makes
+# the second case reachable from here without a second teardown.
+CONE_H="$WORK/cone-h"
+# ITS OWN COMMIT, NOT BARE `main`. A segment whose tip IS the shared base is an
+# ancestor of every other segment in the repository, so the moment it joined a
+# cone it would drag the whole ledger in and every exclusion below would fail for
+# a reason that has nothing to do with what is being measured.
+( cd "$REPO" && git worktree add -q -b coneH "$CONE_H" main \
+  && cd "$CONE_H" && echo h1 > h1.txt && git add -A && git commit -qm h1 ) >/dev/null 2>&1
+seg_row SH "$CONE_H" 상태=실행중 선행=SG
+check "워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다" "$rc" "0"
+seg_row SY "$REPO2" 상태=실행중 선행=SA
+check "다른 레포에서 선행을 적은 세그먼트 행이 기록된다" "$rc" "0"
+cone7=$(cone_of SA "선언 축이 레포 경계와 판독 불가보다 먼저 답한다")
+case ",$cone7," in
+  *,SY,*) ok "레포를 건너는 선행이 원뿔에 든다 (선언은 git 에 대한 주장이 아니다)" ;;
+  *) bad "선언 축 우선" "레포를 건너는 선행이 원뿔에서 사라졌다: $cone7" ;;
+esac
+case ",$cone7," in
+  *,SH,*) ok "멤버의 워크트리를 읽지 못해도 선언 축이 그 세그먼트를 원뿔에 넣는다" ;;
+  *) bad "선언 축 우선" "판독 불가 멤버를 선행으로 적은 세그먼트가 원뿔 밖으로 떨어졌다: $cone7" ;;
+esac
+# AND THE MOVE DOES NOT UNIVERSALIZE. `SX` sits in that same second repository
+# and declares nobody, so this is what says whether the cone started crossing
+# repositories for some reason OTHER than the declaration.
+case ",$cone7," in
+  *,SX,*) bad "선언 축 우선" "선언이 없는 다른 레포 세그먼트까지 원뿔에 들어왔다: $cone7" ;;
+  *) ok "선언이 없는 다른 레포 세그먼트는 여전히 원뿔 밖이다" ;;
+esac
+
+# --- 31ae. Two segments on ONE tip are not each other's ancestors -----------
+#
+# `git merge-base --is-ancestor X X` is true, which answers the question git was
+# asked and not the one the ancestry axis asks. That axis trades on "the member
+# has already merged, so the candidate stands on its commits"; a member whose tip
+# IS the candidate's tip contributed no such commit. Left in, every segment
+# sharing a worktree answered "ancestor" for every other and a cone anchored on
+# any one of them swallowed the group — which is the ordinary shape here, since
+# a repository's segments are dispatched against one worktree until one lands.
+CONE_P="$WORK/cone-p"
+( cd "$REPO" && git worktree add -q -b coneP "$CONE_P" main \
+  && cd "$CONE_P" && echo p1 > p1.txt && git add -A && git commit -qm p1 ) >/dev/null 2>&1
+seg_row SP1 "$CONE_P" 상태=실행중 선행=없음
+check "한 워크트리에 얹힌 첫 세그먼트 행이 기록된다" "$rc" "0"
+seg_row SP2 "$CONE_P" 상태=실행중 선행=없음
+check "같은 워크트리에 얹힌 둘째 세그먼트 행이 기록된다" "$rc" "0"
+seg_row SP3 "$CONE_P" 상태=실행중 선행=SP1
+check "같은 워크트리에서 첫째를 선행으로 적은 셋째 행이 기록된다" "$rc" "0"
+cone8=$(cone_of SP1 "같은 팁 위의 형제들")
+case ",$cone8," in
+  *,SP2,*) bad "진조상" "팁이 같다는 이유만으로 형제가 원뿔에 들어왔다: $cone8" ;;
+  *) ok "팁이 같은 형제는 원뿔에 들지 않는다 (커밋을 하나도 보태지 않은 멤버는 조상이 아니다)" ;;
+esac
+# THE GUARD DOES NOT TAKE THE DECLARED AXIS WITH IT. `SP3` sits on the same tip
+# as `SP1` and names it, so an implementation that closed the equal-tip hole by
+# refusing same-tip pairs outright would lose a dependency the router stated.
+case ",$cone8," in
+  *,SP3,*) ok "선언된 진짜 의존은 그대로 원뿔에 든다 (가드가 선언 축을 함께 죽이지 않았다)" ;;
+  *) bad "진조상" "같은 팁 위에 선언된 의존이 사라졌다: $cone8" ;;
+esac
+
+# --- 31af. A path with a space and a Korean path survive the escape check ---
+#
+# `for f in $(git diff --name-only)` tore `docs/설계 노트.md` into two fragments,
+# and the identical splitting on the declaration side tore `설계 문서/` into two
+# prefixes that cover nothing. The two fail in OPPOSITE directions — the first
+# invents an escape a segment did not commit, the second hides one it did — so
+# both are asserted. The existing fixture (`src/e1.txt`, ASCII and no space)
+# cannot tell either apart from correct behaviour.
+CONE_Q="$WORK/cone-q"
+( cd "$REPO" && git worktree add -q -b coneQ "$CONE_Q" main \
+  && cd "$CONE_Q" && mkdir -p docs '설계 문서' \
+  && echo q1 > 'docs/설계 노트.md' && echo q2 > '설계 문서/개요.md' \
+  && git add -A && git commit -qm q1 ) >/dev/null 2>&1
+seg_row SQ "$CONE_Q" 상태=실행중 선행=없음 "베이스 sha=$base_main" "선언 파일 집합=docs/, 설계 문서/"
+check "공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다" "$rc" "0"
+CONE_R="$WORK/cone-r"
+( cd "$REPO" && git worktree add -q -b coneR "$CONE_R" main \
+  && cd "$CONE_R" && mkdir -p 보고서 \
+  && echo r1 > '보고서/요약.md' && git add -A && git commit -qm r1 ) >/dev/null 2>&1
+seg_row SR "$CONE_R" 상태=실행중 선행=없음 "베이스 sha=$base_main" "선언 파일 집합=docs/"
+check "선언 밖 한글 경로를 바꾼 세그먼트 행이 기록된다" "$rc" "0"
+cone9=$(cone_of SA "파일 집합 판정의 경로 처리")
+case ",$cone9," in
+  *,SQ,*) bad "파일 집합 이탈" "선언 안에 머문 세그먼트가 이탈로 잡혔다: $cone9" ;;
+  *) ok "공백·한글이 든 경로가 선언 안에 있으면 이탈이 아니다" ;;
+esac
+case ",$cone9," in
+  *,SR,*) ok "선언 밖 한글 경로는 여전히 이탈로 잡힌다 (판정을 통째로 끈 것이 아니다)" ;;
+  *) bad "파일 집합 이탈" "선언 밖 경로를 바꾼 세그먼트가 이탈로 잡히지 않았다: $cone9" ;;
+esac
+
+# --- 31ag. The defect-identity seed filters terminal states, and matches the
+#           WHOLE field value ------------------------------------------------
+#
+# THE WHOLE TERM WAS UNCOVERED. No fixture in this section wrote a `problem` row,
+# so the identity loop could be deleted outright and the suite stayed green —
+# which is how both defects below survived. The seed loop was the only one of the
+# cone's four axes carrying no terminal filter, so a segment already merged was
+# pulled back in on a shared defect identity and held work with nothing left to
+# wait for. And both of its greps ended at a trailing space, which ends a value
+# only when the separator follows — so `동일성=로그인 실패` also matched
+# `동일성=로그인 실패 재현 불가` and welded two different defects into one cone.
+CONE_T="$WORK/cone-t"
+( cd "$REPO" && git worktree add -q -b coneT "$CONE_T" main \
+  && cd "$CONE_T" && echo t1 > t1.txt && git add -A && git commit -qm t1 ) >/dev/null 2>&1
+# ONE WORKTREE FOR ALL FOUR, which the proper-ancestor guard above is what makes
+# safe: sharing a tip is no longer an edge, so anything that lands in this cone
+# lands through the identity seed and nothing else.
+seg_row ST1 "$CONE_T" 상태=실행중 선행=없음
+check "동일성 씨앗의 앵커 세그먼트 행이 기록된다" "$rc" "0"
+seg_row ST2 "$CONE_T" 상태=실행중 선행=없음
+check "같은 결함을 공유하는 세그먼트 행이 기록된다" "$rc" "0"
+seg_row ST3 "$CONE_T" 상태=머지됨 선행=없음
+check "이미 머지된 세그먼트 행이 기록된다" "$rc" "0"
+seg_row ST4 "$CONE_T" 상태=실행중 선행=없음
+check "접두만 같은 다른 결함의 세그먼트 행이 기록된다" "$rc" "0"
+gateN act --manifest "$NM" --kind problem --target infra --segment ST1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- "동일성=로그인 실패" "현재 단=1" "생성 등급=읽기"
+check "앵커의 문제 행이 기록된다" "$rc" "0"
+gateN act --manifest "$NM" --kind problem --target infra --segment ST2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- "동일성=로그인 실패" "현재 단=1" "생성 등급=읽기"
+check "같은 동일성의 문제 행이 기록된다" "$rc" "0"
+gateN act --manifest "$NM" --kind problem --target infra --segment ST3 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- "동일성=로그인 실패" "현재 단=1" "생성 등급=읽기"
+check "종결 상태 세그먼트의 문제 행이 기록된다" "$rc" "0"
+gateN act --manifest "$NM" --kind problem --target infra --segment ST4 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- "동일성=로그인 실패 재현 불가" "현재 단=1" "생성 등급=읽기"
+check "접두만 같은 동일성의 문제 행이 기록된다" "$rc" "0"
+cone10=$(cone_of ST1 "같은 결함 동일성을 공유한다")
+case ",$cone10," in
+  *,ST2,*) ok "같은 결함 동일성의 세그먼트가 원뿔에 든다 (씨앗 항이 살아 있다)" ;;
+  *) bad "동일성 씨앗" "같은 동일성의 세그먼트가 원뿔에 들지 않았다: $cone10" ;;
+esac
+case ",$cone10," in
+  *,ST3,*) bad "동일성 씨앗" "이미 머지된 세그먼트가 동일성으로 다시 끌려들어왔다: $cone10" ;;
+  *) ok "종결 상태 세그먼트는 동일성 씨앗으로도 원뿔에 들지 않는다" ;;
+esac
+case ",$cone10," in
+  *,ST4,*) bad "동일성 접두 오매치" "동일성이 접두만 같은 다른 결함이 원뿔에 들어왔다: $cone10" ;;
+  *) ok "동일성 대조가 필드 종료 구분자까지 본다 (접두가 같은 다른 값은 걸리지 않는다)" ;;
+esac
+
+# --- 31ah. The ancestry probe's undecidable answer is actually REACHED -------
+#
+# 31e removes a worktree, which settles the pair inside `gate_cone_edge`'s
+# repository arm — `gate_ancestor_of` is never called there, so its undecidable
+# branch sat unexecuted while the suite read as though it covered it. Reaching it
+# needs a worktree that IS readable as a repository and whose tip nonetheless
+# cannot be resolved, so this breaks `HEAD` and leaves everything else intact.
+#
+# `선행=없음` IS LOAD-BEARING. The declared axis now answers before any
+# repository is read, so a candidate carrying `선행` would return from that loop
+# and never reach the probe — and the assertion would pass without executing the
+# branch it is named after.
+#
+# LAST OF THE NEW SUBSECTIONS, and it puts the fixture back. A member whose tip
+# cannot be read makes every candidate in its repository undecidable and
+# therefore a member, so leaving the condition standing would turn every cone
+# derived after this point into the whole ledger.
+CONE_I="$WORK/cone-i"
+( cd "$REPO" && git worktree add -q -b coneI "$CONE_I" main \
+  && cd "$CONE_I" && echo i1 > i1.txt && git add -A && git commit -qm i1 ) >/dev/null 2>&1
+seg_row SI "$CONE_I" 상태=실행중 선행=없음
+check "곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다" "$rc" "0"
+gitdirI=$(cd "$CONE_I" && git rev-parse --absolute-git-dir)
+head_orig=$(cat "$gitdirI/HEAD")
+printf 'ref: refs/heads/no-such-branch-here\n' > "$gitdirI/HEAD"
+# THE BRANCH IS PINNED BEFORE IT IS ASSERTED ON. Both failure modes leave the
+# same `판정 불가` row behind, so the row alone cannot say which arm produced it —
+# this pair of probes is what makes the subsection about the arm it names.
+if ( cd "$CONE_I" && git rev-parse --path-format=absolute --git-common-dir ) >/dev/null 2>&1 \
+   && ! ( cd "$CONE_I" && git rev-parse HEAD ) >/dev/null 2>&1; then
+  ok "픽스처가 겨냥한 분기에 실제로 닿는다 — 레포는 읽히고 팁만 재지 못한다"
+else
+  bad "픽스처 겨냥" "레포 판독 분기와 팁 판독 분기 중 엉뚱한 쪽에 걸린다"
+fi
+cone11=$(cone_of SA "팁을 잴 수 없는 세그먼트가 있다")
+case ",$cone11," in
+  *,SI,*) ok "팁을 재지 못한 세그먼트는 원뿔 안에 남는다 (조상 축의 판정 불가도 fail-closed 다)" ;;
+  *) bad "조상 판정 불가" "팁을 재지 못한 세그먼트가 원뿔 밖으로 떨어졌다: $cone11" ;;
+esac
+n=$( { grep -F '`blocked`' "$LEDGER2" || true; } | grep -cF '조상 관계 판정 불가 SA→SI' || true)
+if [ "${n:-0}" -ge 1 ]; then
+  ok "무엇을 재지 못했는지가 두 세그먼트를 지목한 행으로 남는다"
+else
+  bad "판정 불가 기록" "SA→SI 를 재지 못한 사실이 원장에 없다"
+fi
+printf '%s\n' "$head_orig" > "$gitdirI/HEAD"
+if ( cd "$CONE_I" && git rev-parse HEAD ) >/dev/null 2>&1; then
+  ok "픽스처가 만든 조건을 되돌린다 (뒤따르는 절이 이 세그먼트를 다시 잴 수 있다)"
+else
+  bad "픽스처 복구" "깨뜨린 HEAD 를 되돌리지 못했다"
+fi
+
 # --- 31aa. A question does not switch the boundaries off --------------------
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four
