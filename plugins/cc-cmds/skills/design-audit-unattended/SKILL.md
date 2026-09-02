@@ -58,7 +58,12 @@ was choosable.
   `등급`, `기준` (the authored standard that chose it) and `되돌리는 법` (the
   concrete command or edit that undoes it), and continue. A choice for which no
   `되돌리는 법` can be produced is **not** grade 1 whatever its mark says: the
-  field is a condition, not documentation of one.
+  field is a condition, not documentation of one. **A stage holds no gate verb,
+  so it does not write that row itself** — it emits the five markers of
+  `judgment-grade.md` §`Emission form` in its terminal message, and the gate
+  absorbs them through the same auto-adoption floor an `act --kind judgment`
+  meets. Emitting is not adopting: a judgment that does not clear the floor
+  becomes an approval instead of a row.
 - **`등급 2`** — write the halt record above and stop. This is the branch that
   keeps "leave most of it to the orchestrator" from becoming "the orchestrator
   waived the check you asked for".

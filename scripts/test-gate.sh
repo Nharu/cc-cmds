@@ -3356,6 +3356,48 @@ if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   ok "린트 — 여덟 값 밖의 판단 부류는 실패한다"
 fi
+# THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
+# The gate parses five markers out of a stage's terminal message and absorbs the
+# judgment through the auto-adoption floor — and no stage skill defined those
+# five spellings, so a stage had no way to know what to write. This is not a
+# coverage gap in the absorber: deleting it turns 31o and 31z red. The tests were
+# there and the producer was not.
+rm -f "$LR/plugins/bad.md"
+LRC="$LR/plugins/cc-cmds/skills/_common"
+mkdir -p "$LRC"
+cat > "$LRC/judgment-grade.md" <<'EOF'
+| marker | required |
+| --- | --- |
+| `**판단 부류**:` | always |
+| `**판단 등급**:` | always |
+| `**판단 기준**:` | always |
+| `**판단 되돌리는 법**:` | at grade 1 |
+| `**판단 근거**:` | always |
+EOF
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 다섯 방출 마커가 전부 정의돼 있으면 통과한다"
+else
+  bad "린트" "다섯 마커가 다 있는데 실패했다"
+fi
+grep -vF '**판단 되돌리는 법**:' "$LRC/judgment-grade.md" > "$LRC/judgment-grade.md.tmp" \
+  && mv "$LRC/judgment-grade.md.tmp" "$LRC/judgment-grade.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  bad "린트" "마커 하나가 빠졌는데 통과했다 — 배선이 끊겨도 조용하다"
+else
+  ok "린트 — 마커 하나가 빠지면 실패한다"
+fi
+# And the real tree actually carries them. The fixture above tests the lint; this
+# tests the thing the lint is about, and the two fail for different reasons.
+REALC="$repo_root/plugins/cc-cmds/skills/_common"
+miss=""
+for m in '**판단 부류**:' '**판단 등급**:' '**판단 기준**:' '**판단 되돌리는 법**:' '**판단 근거**:'; do
+  grep -rqF -- "$m" "$REALC" 2>/dev/null || miss="$miss $m"
+done
+if [ -z "$miss" ]; then
+  ok "실제 트리의 _common 이 다섯 방출 마커를 축자로 정의한다"
+else
+  bad "방출 형식 정의" "정의되지 않은 마커:$miss"
+fi
 
 # --- 31q. The auto-adoption floor's safety argument, made true ---------------
 #
@@ -3574,11 +3616,20 @@ esac
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=1 "판단 부류=감사-발견" 기준="일회성 기준" "되돌리는 법=아침에 다시 본다" 근거="일회성 근거"
-check "같은 답이 두 번째 판단까지 열지는 않는다" "$rc" "5"
+# 5 가 아니라 3 이다. 옛 처분은 「승인 대기를 발행했다」였는데, 그 발행이 곧 닫힌
+# 승인을 같은 id 아래 다시 `대기` 로 여는 것이었다 — 사람이 답한 물음이 아침에 다시
+# 열린 물음으로 돌아오는 경로다. 소진된 답에 대해 발행할 것은 없고, 그 판단이
+# 여전히 필요하다면 기준과 근거가 다른 새 물음이어야 한다.
+check "같은 답이 두 번째 판단까지 열지는 않는다" "$rc" "3"
 case "$msg" in
   *"이미 한 번 채택에 쓰였습니다"*) ok "거절이 답 하나는 판단 하나를 연다고 말한다" ;;
   *) bad "일회성 소비" "$msg" ;;
 esac
+# 그리고 그 거절이 승인을 다시 열지 않았음을 상태로 잰다 — 종료 코드만 보면 발행이
+# 일어났는지 알 수 없고, 그 발행이 이 항목이 닫는 결함이다.
+check "소진된 답의 재제출이 그 승인을 다시 대기로 열지 않는다" \
+      "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$oid " | tail -1)" '상태')" \
+      "승인"
 
 # --- 31x. `close` records the ANSWER, not the transport frame ---------------
 #
