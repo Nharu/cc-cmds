@@ -1810,6 +1810,24 @@ if grep_all_q -F '보류 절 K1(J-aaaa1111) K2(J-bbbb2222)' < "$RES_REPORT"; the
 else
   bad "종료 잔여" "$(cat "$RES_REPORT" 2>/dev/null || printf '(리포트 없음)')"
 fi
+# 순회 꼬리와 EXIT 경로가 둘 다 이 보고를 부른다. 정상으로 끝난 런에서는 두 경로가
+# 겹치므로, 겹침이 아침에 같은 잔여를 두 줄로 만들지 않는지가 두 경로를 둔 값을
+# 결정한다.
+report_run_residual
+res_n=$( { grep -cF '종단 — 질의 잔여 2건' "$RES_REPORT" || true; } )
+if [ "${res_n:-0}" = "1" ]; then
+  ok "겹쳐 불려도 종단 줄은 리포트에 한 번만 실린다"
+else
+  bad "종료 잔여" "종단 줄이 ${res_n}회 실렸다 — 두 경로가 같은 줄을 두 번 쓴다"
+fi
+# 그 두 경로 중 하나가 EXIT 경로다. 순회 꼬리 하나만 있던 동안은 die·신호·예산으로
+# 끝난 런이 `done` 파일을 쓰고도 아침 리포트에는 한 글자도 넘기지 못했다 — 무언가
+# 잘못된 밤에만 잔여가 사라졌다.
+if grep -qF "trap 'report_run_residual || true' EXIT" "$DRIVER"; then
+  ok "드라이버가 종료 잔여 보고를 EXIT 경로에 건다"
+else
+  bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
+fi
 RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
 # 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
 # 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두

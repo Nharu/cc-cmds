@@ -2485,16 +2485,37 @@ gate_manifest_write_guard() {
   # manifest is refused, whatever the cutpoint. Cutpoints say how far an act may
   # go; this act would change the answer.
   #
-  # THE COMPARISON IS BY BASENAME AND BY CONTAINMENT, NOT BY WHOLE-ELEMENT
-  # EQUALITY. Equality on argv elements had two ways out and both were reachable
-  # by ordinary spellings. A different spelling of the same absolute path — an
-  # extra `/./`, a relative path — is a different string; that half is closed by
-  # normalizing `MANIFEST` at argument-parse time. The other half is not a path
-  # problem at all: `bash -c 'printf x >> <경로>'` puts the path INSIDE an argv
-  # element, so no element equals the manifest and the loop ran to the end while
-  # the redirection wrote the file. Looking for the basename anywhere in any
-  # element catches both, and it catches the interpreter wrapping that the
-  # `bash`→`워크트리쓰기` row would otherwise let through the axis-2 check.
+  # THREE ARMS, EACH CLOSING A SPELLING THE OTHERS CANNOT SEE. Equality on argv
+  # elements had two ways out and both were reachable by ordinary spellings. A
+  # different spelling of the same absolute path — an extra `/./`, a relative
+  # path — is a different string; that half is closed by normalizing `MANIFEST`
+  # at argument-parse time and by resolving both sides physically in arm 3. The
+  # other half is not a path problem at all: `bash -c 'printf x >> <경로>'` puts
+  # the path INSIDE an argv element, so no element equals the manifest and the
+  # loop ran to the end while the redirection wrote the file.
+  #
+  # What each arm actually measures — spelled out because the sentence that stood
+  # here claimed the basename scan by itself caught interpreter wrapping, and
+  # measurement showed it caught only the one spelling that writes the path
+  # verbatim. That claim was read as a check by someone auditing this guard, who
+  # closed a finding on it and had to withdraw the closure:
+  #   arm 2  an interpreter's WHOLE command line, against the basename, the
+  #          manifest's directory in both spellings, and the two variable names.
+  #          The directory is what catches `…/X.plan.m?`, a glob that shares no
+  #          basename with the file it will open but has to say where it lives.
+  #   arm 3  physical path identity for elements shaped like a path. It is the
+  #          only arm that sees an alias symlink, which shares neither basename
+  #          nor directory with the file it writes.
+  #   last   basename containment, for an element not shaped like a path at all.
+  #          This is what refuses `tee …/X.plan.md` today.
+  #
+  # AND WHAT REMAINS OPEN, in the same breath. Arm 2 fires on an argv0 in the
+  # interpreter list, so an interpreter outside that list, reaching the file
+  # through a constructed string, is not seen here. The basename scan refuses
+  # acts that merely mention a file of that name elsewhere in the tree — a false
+  # positive kept on purpose rather than traded for the coverage. And none of the
+  # three anchors a rollback: a write that gets past all of them is caught at the
+  # next entry, where the binding digest is compared against the frozen set.
   #
   # The false positives this admits are reads that merely MENTION the file, and
   # the read arm above has already returned for those. What is left is an act
@@ -3233,6 +3254,33 @@ gate_deadline_ok() {
   return 0
 }
 
+gate_act_worktree() {
+  # gate_act_worktree <별칭> — the directory this target's acts actually run in.
+  #
+  # `실행 워크트리` FIRST, the main worktree as the fallback. One field could not
+  # carry both duties: the sidecar path has to converge on the main worktree so
+  # that N linked worktrees of one repository do not split the state a single
+  # writer owns, while the act has to run where the branch actually is. For a pr
+  # or branch anchor those are never the same directory — git refuses to check a
+  # branch out twice.
+  #
+  # ONE RESOLUTION FOR THREE READERS, and that is the whole reason this is a
+  # function. Each of the three read the field itself, and they disagreed: the
+  # act ran in the execution worktree while its approval's binding tuple was
+  # frozen against the MAIN worktree's head and compared against that same head
+  # later. So an answer given at 22:00 stayed "fresh" through a night of commits
+  # landing in the tree the act was actually run in, and a sibling segment moving
+  # the main worktree expired approvals about a tree that had not moved. Freezing
+  # and comparing must resolve identically or every approval already issued goes
+  # stale at once and a person is asked the same question all over again.
+  local wt
+  wt=$(target_field "$1" '실행 워크트리')
+  case "$wt" in
+    ''|'(없음)') wt=$(target_field "$1" '메인 워크트리') ;;
+  esac
+  printf '%s' "$wt"
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -3351,20 +3399,11 @@ gate_verb_act() {
     gate_export_cutpoints "$alias" "$cutpoint" || exit $?
     # Where the act runs. A declared target names its own worktree and the act
     # belongs there; an undeclared one has no row to read, so the act stays in
-    # the caller's directory and is bounded by the layers above instead.
-    #
-    # `실행 워크트리` FIRST, main worktree as the default. One field could not
-    # carry both duties: the sidecar path has to converge on the main worktree
-    # so that N linked worktrees of one repository do not split the state a
-    # single writer owns, while the act has to run where the branch actually is.
-    # For a pr or branch anchor those are never the same directory — git refuses
-    # to check a branch out twice — so a stage woke on the main worktree's
-    # branch every time, read files that were real and were the wrong version,
-    # and nothing mechanical noticed.
-    GATE_ACT_CWD=$(target_field "$alias" '실행 워크트리')
-    case "$GATE_ACT_CWD" in
-      ''|'(없음)') GATE_ACT_CWD=$(target_field "$alias" '메인 워크트리') ;;
-    esac
+    # the caller's directory and is bounded by the layers above instead. The
+    # resolution itself lives in gate_act_worktree, which the approval's freeze
+    # and staleness comparison call too — a stage woke on the main worktree's
+    # branch every time until this was resolved in one place.
+    GATE_ACT_CWD=$(gate_act_worktree "$alias")
     export GATE_ACT_CWD
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
@@ -3861,10 +3900,14 @@ gate_act_approval_fresh() {
   # MOVED; a tuple with no head in it, or a worktree whose HEAD cannot be read
   # now, is not a moved tree, and re-opening an approval over it would ask a
   # person a question the second asking cannot answer any better.
+  #
+  # THE TREE IT NAMED IS THE ONE THE ACT RUNS IN, resolved through
+  # gate_act_worktree — the same call the issuer freezes through, so the two
+  # sides cannot drift apart.
   local frag cur
   frag=$(gate_act_tuple_head "$1")
   [ -n "$frag" ] || return 0
-  cur=$(cd "$(target_field "$2" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  cur=$(cd "$(gate_act_worktree "$2")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   [ -n "$cur" ] || {
     warn "승인 $1 의 구속 튜플을 대조할 HEAD 를 읽지 못했습니다 — 움직인 트리가 아니므로 신선한 것으로 봅니다"
     return 0
@@ -3899,7 +3942,7 @@ gate_issue_act_approval() {
     *) return 0 ;;
   esac
   base=$(target_field "$alias" '베이스 브랜치')
-  head=$(cd "$(target_field "$alias" '메인 워크트리')" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  head=$(cd "$(gate_act_worktree "$alias")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
     "행위 다이제스트=$ad" "구속 튜플=$alias/$base/${head:0:12}/$grade" \
     "막는 세그먼트=$seg" "질문 문면=사전 인가 밖 행위를 수행할까요" \
@@ -3996,14 +4039,17 @@ gate_clause_settled() {
   # every held clause with the question holding it. The state's disposition is
   # visible; it is not silent the way `충족` would be.
   #
-  # AND `보류` STOPS COUNTING THE MOMENT THE ANSWER ARRIVES. The state means "a
-  # person's answer is outstanding"; once it is not, the clause is back to being
-  # unsettled and the router has to re-settle it as `충족` or `불가능` with the
-  # answer in hand. Without this arm the disposition was permanent: one question
-  # answered at 23:00 left the clause reading "on hold" for the rest of the run
-  # and into the morning report, which is the opposite of what the contract says
-  # `보류` hands to the successor.
-  local last jid ids
+  # AND `보류` KEEPS COUNTING ONCE THE ANSWER ARRIVES. The opposite reading was
+  # here first — the clause went back to unsettled the moment its question closed
+  # — and it made a run a person ANSWERED leave less behind than one nobody
+  # touched: the answer flipped condition 10 back to unmet, the done proposal was
+  # refused, and the terminal line that carries the run's residual was never
+  # written at all. The contract hands an answered hold to the SUCCESSOR run
+  # rather than re-opening this one, so re-settling the clause as `충족` or
+  # `불가능` is that run's work, with the answer in hand. What travels across the
+  # boundary is the `done` file, which names the clause, every approval holding
+  # it, and the state each of those approvals is now in.
+  local last ids
   last=$( { gate_rows '종료 절' | grep -F "id=$1 " || true; } | tail -1)
   [ -n "$last" ] || return 1
   if [ "$(gate_row_field "$last" '상태')" = "보류" ]; then
@@ -4011,9 +4057,6 @@ gate_clause_settled() {
     # No id at all is not "nothing to check" — the write-time floor refuses such
     # a row, so one here means the field was lost, and unsettled is the safe read.
     [ -n "$ids" ] || return 1
-    for jid in $ids; do
-      [ "$(gate_approval_state "$jid")" = "대기" ] || return 1
-    done
   fi
   return 0
 }
@@ -4028,14 +4071,26 @@ gate_held_clause_ids() {
   # legitimately name more than one approval, and reporting the first while the
   # floor checked the last meant the morning could read an id the gate had never
   # measured anything about.
-  local cid last jids
+  #
+  # EACH ID CARRIES ITS APPROVAL'S CURRENT STATE. A hold whose answer has already
+  # arrived and a hold still waiting are otherwise the same string, and those are
+  # the two things the morning most needs to tell apart — the first is work the
+  # successor run can finish, the second is a question still owed to a person.
+  # The clause stays settled either way, so this line is the only place where the
+  # arrival of an answer becomes visible.
+  local cid last jid jst jids
   for cid in $(gate_clause_ids); do
     [ -n "$cid" ] || continue
     last=$( { gate_rows '종료 절' | grep -F "id=$cid " || true; } | tail -1)
     [ -n "$last" ] || continue
     [ "$(gate_row_field "$last" '상태')" = "보류" ] || continue
-    jids=$(gate_clause_evidence_ids "$(gate_row_field "$last" '근거')" \
-           | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    jids=""
+    for jid in $(gate_clause_evidence_ids "$(gate_row_field "$last" '근거')"); do
+      [ -n "$jid" ] || continue
+      jst=$(gate_approval_state "$jid")
+      jids="$jids $jid:${jst:-미상}"
+    done
+    jids=${jids# }
     printf '%s(%s)\n' "$cid" "${jids:-승인 미상}"
   done
 }

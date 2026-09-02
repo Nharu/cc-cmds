@@ -14,7 +14,8 @@
 # Rules:
 #   1  `JUDGMENT_CLASSES_FORBIDDEN` is a subset of `JUDGMENT_CLASSES`   [fail]
 #   2  every literal `판단 부류=<값>` in the tree names one of the eight [fail]
-#   3  the five emitted-judgment markers are defined under `_common/`    [fail]
+#   3  the emitted-judgment markers agree between the gate's parser and
+#      `_common/`, in BOTH directions                                   [fail]
 #
 # Rule 1 is not bookkeeping. The design's whole point about the two forbidden
 # values is that they are NAMED and forbidden rather than left out: a class with
@@ -23,11 +24,17 @@
 # either from the vocabulary would restore the leak silently, and rule 1 is what
 # makes that a failing build.
 #
-# What counts as a literal: the three metasyntactic shapes the tree actually
+# What counts as a literal: the four metasyntactic shapes the tree actually
 # contains are recognised by shape and skipped — a shell expansion
-# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`) and a
-# parser's own pattern (`s/^ *판단 부류=//p`) — and everything else made of
-# Hangul, ASCII letters, digits, hyphens AND SPACES is a value claim.
+# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`), a
+# parser's own pattern (`s/^ *판단 부류=//p`) and the ledger's "no value"
+# sentinel (`판단 부류=-`) — and everything else made of Hangul, ASCII letters,
+# digits, hyphens AND SPACES is a value claim.
+#
+# The sentinel is a shape and not an exception. Every field of a ledger row that
+# has no value carries `-`, so a row written for a judgment whose class never
+# arrived spells it that way too; reading that as a claim about a class made the
+# lint demand that `-` be one of the eight.
 #
 # Spaces are inside that set deliberately. A value carrying a space is the shape
 # this lint most needs to see: the driver's vocabulary check accepted one
@@ -46,7 +53,8 @@
 #   bash scripts/lint-autoadopt-vocabulary.sh
 #
 # Env overrides (fixture runner):
-#   ORCH_ROOT=<dir>   # directory holding run.sh, the vocabulary's SOT
+#   ORCH_ROOT=<dir>   # directory holding run.sh (the vocabulary's SOT) and
+#                     # gate.sh (the emitted-judgment parser rule 3 reads)
 #   SCAN_ROOT=<dir>   # tree to scan for occurrences
 #
 # Posture: if run.sh is absent the whole check is a silent skip, so the script
@@ -128,6 +136,7 @@ while IFS= read -r f; do
       '$'*) continue ;;   # a shell expansion
       '<'*) continue ;;   # a schema placeholder
       */*)  continue ;;   # a parser's own sed pattern
+      '-')  continue ;;   # the ledger's "no value" sentinel
     esac
     printf '%s' "$v" | grep -qE '^[가-힣A-Za-z0-9 -]+$' || continue
     hits=$((hits + 1))
@@ -143,38 +152,75 @@ done <<EOF
 $files
 EOF
 
-# --- Rule 3: the five emitted-judgment markers are DEFINED somewhere -------
+# --- Rule 3: the emitted-judgment markers agree on BOTH sides --------------
 #
-# The gate parses five markers out of a stage's terminal message and absorbs the
-# judgment through the auto-adoption floor. The PARSER existed and the PRODUCER
-# did not: no stage skill defined these spellings anywhere, so a stage had no way
-# to know what to write, and a decision it made and acted on inside its own turn
-# reached the ledger only if it guessed the bytes.
+# The gate parses judgment markers out of a stage's terminal message and absorbs
+# the judgment through the auto-adoption floor. The PARSER existed and the
+# PRODUCER did not: no stage skill defined these spellings anywhere, so a stage
+# had no way to know what to write, and a decision it made and acted on inside
+# its own turn reached the ledger only if it guessed the bytes.
 #
-# The check is EXISTENCE and nothing more. It does not demand that each skill
-# reference the definition, because the referencing form differs from skill to
-# skill and pinning it mechanically would freeze the prose rather than the
-# contract. What it catches is the failure that actually happened — a wiring
-# whose producer side is prose in one file and disappears when that file is
-# edited.
+# BOTH SIDES ARE EXTRACTED and neither is written down here. A hardcoded list can
+# only ever check the side it was copied from: renaming the parser's `판단 부류`
+# to `판단 유형` left this lint green, because the literals it carried still
+# existed under `_common/` and nothing ever compared them against the parser. The
+# suite's own real-tree check reads the same one side, so two greens covered one
+# surface.
+#
+# The comparison runs in BOTH directions because the two failures are repaired in
+# different places. A marker only the parser knows is a producer that does not
+# exist — a stage cannot write what no document defines. A marker only the
+# documents know is a dead convention — prose telling stages to emit bytes the
+# gate will never read. Naming which side a marker is missing from is therefore
+# part of the failure, not decoration on it.
+#
+# One extraction serves both sides. The parser writes its markers inside a `sed`
+# regex, so every asterisk carries a backslash, while the documents write plain
+# markdown; stripping backslashes makes the two spellings one.
+GATE_SH="$orch_root/gate.sh"
 common_root="$scan_root/plugins/cc-cmds/skills/_common"
-if [[ -d "$common_root" ]]; then
-  markers_missing=""
-  nmark=0
-  for m in '**판단 부류**:' '**판단 등급**:' '**판단 기준**:' '**판단 되돌리는 법**:' '**판단 근거**:'; do
-    nmark=$((nmark + 1))
-    if ! grep -rqF -- "$m" "$common_root" 2>/dev/null; then
-      markers_missing="$markers_missing $m"
-    fi
-  done
-  if [[ -n "$markers_missing" ]]; then
-    echo "FAIL: 방출 판단 마커가 _common/ 어느 문서에도 정의돼 있지 않다:$markers_missing" >&2
-    echo "       게이트는 이 다섯을 스테이지의 종단 메시지에서 파싱한다 — 산출자 쪽 정의가 없으면 스테이지는 무엇을 적어야 하는지 알 방법이 없다" >&2
+marker_scan() {
+  grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$@" 2>/dev/null | tr -d '\\' | sort -u
+}
+nmark=0
+if [[ ! -f "$GATE_SH" ]]; then
+  # The same posture the top of this file takes for run.sh: an absent SOT is a
+  # silent skip, not a violation.
+  echo "SKIP: gate.sh not found under $orch_root — 방출 판단 파서 부재"
+elif [[ ! -d "$common_root" ]]; then
+  echo "SKIP: _common 디렉터리가 없어 방출 마커 대조를 건너뛴다"
+else
+  parser_side=$(marker_scan "$GATE_SH")
+  doc_side=$(marker_scan "$common_root")
+  if [[ -z "$parser_side" ]]; then
+    echo "FAIL: gate.sh 에서 방출 판단 마커를 하나도 뽑지 못했다 — 파서가 사라졌거나 스펠링이 이 대조가 아는 꼴이 아니다" >&2
     fail=1
   fi
-else
-  echo "SKIP: _common 디렉터리가 없어 방출 마커 정의 검사를 건너뛴다"
-  nmark=0
+  # The value is CAPTURED rather than piped into `grep -q`: an early-exiting
+  # reader on the right of a pipe kills the writer with SIGPIPE, and under
+  # `pipefail` the whole pipeline then reports failure even though the match was
+  # found.
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    nmark=$((nmark + 1))
+    hit=$(printf '%s\n' "$doc_side" | grep -xF -- "$m" || true)
+    if [[ -z "$hit" ]]; then
+      echo "FAIL: 방출 판단 마커 '$m' 가 파서에만 있다 — _common/ 어느 문서도 정의하지 않으므로 스테이지는 무엇을 적어야 하는지 알 방법이 없다" >&2
+      fail=1
+    fi
+  done <<EOF
+$parser_side
+EOF
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    hit=$(printf '%s\n' "$parser_side" | grep -xF -- "$m" || true)
+    if [[ -z "$hit" ]]; then
+      echo "FAIL: 방출 판단 마커 '$m' 가 문서에만 있다 — 게이트 파서가 읽지 않으므로 스테이지가 그대로 적어도 흡수되는 것이 없다" >&2
+      fail=1
+    fi
+  done <<EOF
+$doc_side
+EOF
 fi
 
 if [[ "$fail" != "0" ]]; then
@@ -184,5 +230,5 @@ fi
 
 ncls=0; for t in $classes; do ncls=$((ncls + 1)); done
 nfb=0;  for t in $forbidden; do nfb=$((nfb + 1)); done
-echo "OK:   judgment-class vocabulary — 토큰 ${ncls}개(금지 ${nfb}개), 파일 ${scanned}건에서 리터럴 ${hits}건 대조, 방출 마커 ${nmark}개 정의 확인"
+echo "OK:   judgment-class vocabulary — 토큰 ${ncls}개(금지 ${nfb}개), 파일 ${scanned}건에서 리터럴 ${hits}건 대조, 방출 마커 ${nmark}개 양방향 대조"
 exit 0

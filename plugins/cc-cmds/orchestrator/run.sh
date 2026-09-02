@@ -3114,8 +3114,21 @@ main_loop() {
 # wrote one — so it is silent rather than an absence worth reporting. Its own
 # function so that the test harness can reach it: the walk it is called from
 # needs a whole plan to run.
+#
+# ONCE, HOWEVER THE RUN ENDS. The walk's tail calls this on the ordinary path and
+# an exit trap calls it on every other one — a `die`, a signal, a budget stop —
+# because the walk's tail was the only caller and a run that halted anywhere else
+# left the `done` file on disk and the morning report without it, which is the
+# one surface a person actually reads. The two callers overlap on a run that ends
+# normally, so the flag file below is what keeps the same terminal line from
+# reaching the report twice.
 report_run_residual() {
+  [ -n "${RUN_DIR:-}" ] || return 0
   [ -f "$RUN_DIR/done" ] || return 0
+  if [ -e "$RUN_DIR/residual-reported" ]; then
+    return 0
+  fi
+  : > "$RUN_DIR/residual-reported"
   report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
 }
 
@@ -3357,6 +3370,14 @@ else
 fi
 
 rundir_init
+
+# THE RESIDUAL REPORT SITS ON THE EXIT PATH, not only on the walk's tail. A run
+# that stopped at a `die`, a signal or the cycle budget wrote its `done` file and
+# then never forwarded it, so the questions left open — and the termination
+# clauses each of them holds — vanished from the morning report exactly on the
+# nights something went wrong. Installed after the run directory exists, because
+# there is nothing to forward before that.
+trap 'report_run_residual || true' EXIT
 
 check_grant
 ledger_init

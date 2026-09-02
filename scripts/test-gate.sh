@@ -3348,6 +3348,14 @@ LINTAV="$repo_root/scripts/lint-autoadopt-vocabulary.sh"
 LR="$WORK/lint-root"
 mkdir -p "$LR/plugins" "$LR/scripts" "$LR/orch"
 sed -n '/^readonly JUDGMENT_CLASSES/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$LR/orch/run.sh"
+# 규칙 3 은 파서 쪽 집합을 gate.sh 에서 뽑아 문서 쪽과 대조하므로 픽스처 트리에도
+# 파서가 있어야 한다. 실물에서 마커를 담은 줄만 옮긴다.
+{ grep -E '\\\*\\\*판단 ' "$GATE" || true; } > "$LR/orch/gate.sh"
+if [ -s "$LR/orch/gate.sh" ]; then
+  ok "린트 픽스처가 실물 파서에서 방출 마커 줄을 옮긴다"
+else
+  bad "린트 픽스처" "gate.sh 에서 방출 판단 마커 줄을 하나도 뽑지 못했다 — 뒤따르는 단언이 전부 공허하다"
+fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   ok "린트 — 여덟 값 안의 판단 부류는 통과한다"
@@ -3367,6 +3375,16 @@ fi
 # coverage gap in the absorber: deleting it turns 31o and 31z red. The tests were
 # there and the producer was not.
 rm -f "$LR/plugins/bad.md"
+# 원장의 「값 없음」 센티널은 부류 주장이 아니다. 부류 없이 방출된 판단을 흡수기가
+# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 여덟 값 중 하나이기를
+# 요구하게 되고 실제 트리 전체 스캔이 그 자리에서 빨개진다.
+printf -- '- `자율 승인` | 판단 부류=- | 등급=- | 사유=x\n' > "$LR/plugins/sentinel.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 값 없음 센티널은 부류 주장으로 읽지 않는다"
+else
+  bad "린트" "판단 부류=- 를 어휘 밖 값으로 잡았다"
+fi
+rm -f "$LR/plugins/sentinel.md"
 LRC="$LR/plugins/cc-cmds/skills/_common"
 mkdir -p "$LRC"
 cat > "$LRC/judgment-grade.md" <<'EOF'
@@ -3390,17 +3408,54 @@ if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   ok "린트 — 마커 하나가 빠지면 실패한다"
 fi
-# And the real tree actually carries them. The fixture above tests the lint; this
-# tests the thing the lint is about, and the two fail for different reasons.
-REALC="$repo_root/plugins/cc-cmds/skills/_common"
-miss=""
-for m in '**판단 부류**:' '**판단 등급**:' '**판단 기준**:' '**판단 되돌리는 법**:' '**판단 근거**:'; do
-  grep -rqF -- "$m" "$REALC" 2>/dev/null || miss="$miss $m"
-done
-if [ -z "$miss" ]; then
-  ok "실제 트리의 _common 이 다섯 방출 마커를 축자로 정의한다"
+printf '| `**판단 되돌리는 법**:` | at grade 1 |\n' >> "$LRC/judgment-grade.md"
+# THE PARSER SIDE, WHICH NOTHING USED TO MEASURE. The rule carried five hardcoded
+# literals and grepped `_common/` for them, so renaming the parser's marker left
+# the lint green — the literals it compared against were its own, not the gate's.
+cp "$LR/orch/gate.sh" "$LR/orch/gate.sh.bak"
+sed 's/판단 부류/판단 유형/' "$LR/orch/gate.sh.bak" > "$LR/orch/gate.sh"
+lav_out=$(ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" 2>&1); lav_rc=$?
+if [ "$lav_rc" = "0" ]; then
+  bad "린트" "파서의 마커 스펠링을 바꿨는데 통과했다 — 규칙이 문서 쪽만 본다"
 else
-  bad "방출 형식 정의" "정의되지 않은 마커:$miss"
+  ok "린트 — 파서의 마커 스펠링이 문서와 어긋나면 실패한다"
+fi
+# 어느 쪽에만 있는지가 실패 문면에 있어야 고치는 자리가 정해진다 — 파서에만 있으면
+# 산출자 부재이고 문서에만 있으면 죽은 규약이라 손대는 파일이 다르다.
+case "$lav_out" in
+  *"'**판단 유형**' 가 파서에만 있다"*) ok "실패가 파서에만 있는 마커를 이름으로 지목한다" ;;
+  *) bad "린트 문면" "$(printf '%s' "$lav_out" | tr '\n' ' ')" ;;
+esac
+case "$lav_out" in
+  *"'**판단 부류**' 가 문서에만 있다"*) ok "같은 실행이 반대 방향도 이름으로 지목한다" ;;
+  *) bad "린트 문면" "$(printf '%s' "$lav_out" | tr '\n' ' ')" ;;
+esac
+mv "$LR/orch/gate.sh.bak" "$LR/orch/gate.sh"
+# 반대 방향 단독: 게이트가 읽지 않는 마커가 문서에만 사는 경우.
+printf '| `**판단 무게**:` | always |\n' >> "$LRC/judgment-grade.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  bad "린트" "게이트가 읽지 않는 마커를 문서에 더했는데 통과했다 — 죽은 규약이 조용하다"
+else
+  ok "린트 — 파서가 읽지 않는 마커가 문서에 있으면 실패한다"
+fi
+grep -vF '**판단 무게**:' "$LRC/judgment-grade.md" > "$LRC/judgment-grade.md.tmp" \
+  && mv "$LRC/judgment-grade.md.tmp" "$LRC/judgment-grade.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 양쪽이 축자로 일치하는 트리는 통과한다"
+else
+  bad "린트" "손대지 않은 픽스처가 실패했다"
+fi
+# And the real tree actually agrees with itself. The fixture above tests the
+# lint; this tests the thing the lint is about, and the two fail for different
+# reasons. Both directions here too — reading only `_common/` is the one-sided
+# green that let the parser rename slip past two checks at once.
+REALC="$repo_root/plugins/cc-cmds/skills/_common"
+real_parser=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$GATE" || true; } | tr -d '\\' | sort -u)
+real_doc=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$REALC" || true; } | tr -d '\\' | sort -u)
+if [ -n "$real_parser" ] && [ "$real_parser" = "$real_doc" ]; then
+  ok "실제 트리의 파서와 _common 이 같은 방출 마커 집합을 갖는다"
+else
+  bad "방출 마커 대조" "파서: $(printf '%s' "$real_parser" | tr '\n' ' ') / 문서: $(printf '%s' "$real_doc" | tr '\n' ' ')"
 fi
 
 # --- 31q. The auto-adoption floor's safety argument, made true ---------------
@@ -4356,41 +4411,46 @@ esac
 held_k1=$(printf '%s' "$done_line" | sed -n 's/.*K1(\([^)]*\)).*/\1/p')
 held_k2=$(printf '%s' "$done_line" | sed -n 's/.*K2(\([^)]*\)).*/\1/p')
 held_k3=$(printf '%s' "$done_line" | sed -n 's/.*K3(\([^)]*\)).*/\1/p')
-check "첫째 절을 붙든 승인 id 가 축자로 실린다" "$held_k1" "$ja"
-check "둘째 절을 붙든 승인 id 가 축자로 실린다" "$held_k2" "$jb"
+check "첫째 절을 붙든 승인 id 와 그 상태가 축자로 실린다" "$held_k1" "$ja:대기"
+check "둘째 절을 붙든 승인 id 와 그 상태가 축자로 실린다" "$held_k2" "$jb:대기"
 # THE WIDENED FORMAT, WHICH IS THE POINT OF THE THIRD CLAUSE. The old reporter
 # took `sed -n '1p'` off the rationale, so a clause waiting on two answers named
 # one and the morning had no way to know the other existed.
 if [ -n "$held_k3" ]; then
   case " $held_k3 " in
-    *" $jc "*) ok "두 물음에 걸친 절이 앞쪽 승인을 싣는다" ;;
+    *" $jc:대기 "*) ok "두 물음에 걸친 절이 앞쪽 승인을 싣는다" ;;
     *) bad "다중 승인 보고" "$held_k3 에 $jc 가 없다" ;;
   esac
   case " $held_k3 " in
-    *" $jd "*) ok "두 물음에 걸친 절이 뒤쪽 승인도 싣는다" ;;
+    *" $jd:대기 "*) ok "두 물음에 걸친 절이 뒤쪽 승인도 싣는다" ;;
     *) bad "다중 승인 보고" "$held_k3 에 $jd 가 없다" ;;
   esac
 else
   bad "다중 승인 보고" "종단 줄에 K3(…) 항목이 없다: $done_line"
 fi
-# `보류` STOPS COUNTING THE MOMENT THE ANSWER ARRIVES. The state means a person's
-# answer is outstanding; once it is not, the clause is unsettled again and the
-# router has to re-settle it with the answer in hand. Without that arm the
-# disposition was permanent — one question answered at 23:00 left the clause
-# reading "on hold" into the morning report.
+# `보류` KEEPS COUNTING ONCE THE ANSWER ARRIVES, and the `done` file is where the
+# arrival becomes visible. The opposite reading was here first: the clause went
+# back to unsettled the moment its question closed, so a run a PERSON answered
+# was refused its own done proposal and left less behind than a run nobody
+# touched — the terminal line carrying the residual was never written at all.
+# The contract hands an answered hold to the successor run instead of re-opening
+# this one, which is why the state travels in the `done` file rather than
+# flipping a termination condition here.
 K1SID="24242424-3434-5656-7878-909090909090"
 k1q=$(row_field "$( { grep -F '`승인`' "$LEDGER4" || true; } | grep -F "승인 id=$ja " | tail -1)" '질문 문면')
 printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$ja" "$k1q" > "$NTX/$K1SID.jsonl"
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$K1SID" bash "$GATE" close --manifest "$NM4" --approval "$ja" 2>&1); rc=$?
 check "첫째 절을 붙들던 물음이 닫힌다" "$rc" "0"
+rm -f "$DONE_DIR/done"
 gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "답이 온 뒤 다시 제안한다"
-check "답이 온 절이 미정산으로 돌아와 종료 제안이 기각된다" "$rc" "3"
-case "$msg" in
-  *"10 종료 절 K1 미정산"*) ok "그 절이 미충족 조건으로 다시 열거된다" ;;
-  *) bad "보류 재정산" "$msg" ;;
-esac
+check "답이 온 절은 정산된 채로 남아 종료 제안이 통과한다" "$rc" "0"
+done_line2=$(cat "$DONE_DIR/done" 2>/dev/null || true)
+held_k1b=$(printf '%s' "$done_line2" | sed -n 's/.*K1(\([^)]*\)).*/\1/p')
+held_k2b=$(printf '%s' "$done_line2" | sed -n 's/.*K2(\([^)]*\)).*/\1/p')
+check "답이 온 승인의 상태가 종단 줄에 축자로 실린다" "$held_k1b" "$ja:승인"
+check "아직 답이 없는 승인은 대기로 실려 둘이 한 줄에서 갈린다" "$held_k2b" "$jb:대기"
 
 # --- 31am. A miss in the polarity scan is `극성 미상`, not consent -----------
 #
@@ -4629,6 +4689,118 @@ if [ "${n_emit_after5:-0}" -gt "${n_emit_before5:-0}" ]; then
   ok "합집합을 통과하는 정상 방출은 여전히 채택 행을 만든다"
 else
   bad "정상 방출 회귀" "채택 행이 늘지 않았다: $n_emit_before5 → $n_emit_after5"
+fi
+
+# --- 31aq. An act approval is bound to the tree the act RUNS IN -------------
+#
+# The freeze and the comparison both read `메인 워크트리` while the act itself
+# runs in `실행 워크트리`, and for a pr or branch anchor those are never the same
+# directory — git refuses to check a branch out twice. So an answer given at
+# 22:00 stayed fresh through a whole night of commits landing in the tree the act
+# was actually run in, and a sibling segment moving the main worktree expired
+# approvals about a tree that had not moved. 31ak can see neither: its target
+# declares no execution worktree, so there the two directories are one.
+EWT="$WORK/exec-wt"
+( cd "$WT" && git worktree add -q -b execwtbr "$EWT" ) >/dev/null 2>&1
+if [ -d "$EWT" ]; then
+  # THE TWO HEADS ARE SPLIT BEFORE ANYTHING IS FROZEN. A worktree added from the
+  # same tip shares its head, and against that fixture every assertion below
+  # passes whichever field the code reads.
+  ( cd "$EWT" && git commit --allow-empty -q -m "실행 워크트리를 메인과 갈라 놓는다" )
+  EWT_RUN_ID=R5
+  if [ "$EWT_RUN_ID" = "$CONE_RUN_ID" ] || [ "$EWT_RUN_ID" = "$DONE_RUN_ID" ] \
+     || [ "$EWT_RUN_ID" = "$prev_run_id" ]; then
+    printf '31aq: 실행 워크트리 픽스처의 런 id 가 앞선 절과 겹친다 (%s)\n' "$EWT_RUN_ID" >&2
+    exit 1
+  fi
+  NM5="$WORK/execwt-plan.md"
+  sed -e "s/run-id=$CONE_RUN_ID;/run-id=$EWT_RUN_ID;/" \
+      -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $EWT_RUN_ID/" "$NM" > "$NM5.tmp"
+  # A read loop and not `sed`: the target row is full of `|` separators, so every
+  # delimiter a substitution could pick already appears in the pattern.
+  : > "$NM5"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '- `target`'*별칭=infra*)
+        case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
+        line="$line | 실행 워크트리=$EWT" ;;
+    esac
+    printf '%s\n' "$line" >> "$NM5"
+  done < "$NM5.tmp"
+  # The target row moved, so the target-map digest moves with it.
+  newtd5=$(cd "$WT" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$NM5"'"
+    canonical_targets | shasum -a 256 | cut -d" " -f1')
+  : > "$NM5.tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $newtd5" ;;
+    esac
+    printf '%s\n' "$line" >> "$NM5.tmp"
+  done < "$NM5"
+  mv "$NM5.tmp" "$NM5"
+  EWT_GRANT="$WT/docs/pipeline-grant/$EWT_RUN_ID.md"
+  sed "s/$CONE_RUN_ID/$EWT_RUN_ID/g" "$CONE_GRANT" > "$EWT_GRANT"
+  LEDGER5="$WT/docs/pipeline-run/$EWT_RUN_ID.md"
+  {
+    printf '# 파이프라인 런 보고서 — %s\n\n' "$EWT_RUN_ID"
+    printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$EWT_RUN_ID"
+  } > "$LEDGER5"
+  gate5() {
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
+  gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
+        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- aws s3 ls s3://execwt/probe
+  check "실행 워크트리를 선언한 대상의 행위가 승인을 발행한다" "$rc" "5"
+  ewt_row=$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
+  ewt_id=$(row_field "$ewt_row" '승인 id')
+  ewt_frag=$(row_field "$ewt_row" '구속 튜플')
+  ewt_frag=${ewt_frag%/*}
+  ewt_frag=${ewt_frag##*/}
+  ewt_head=$(cd "$EWT" && git rev-parse HEAD)
+  main_head=$(cd "$WT" && git rev-parse HEAD)
+  if [ -n "$ewt_frag" ] && [ "$ewt_frag" = "${ewt_head:0:${#ewt_frag}}" ]; then
+    ok "구속 튜플이 실행 워크트리의 HEAD 를 얼린다"
+  else
+    bad "구속 튜플 동결" "튜플의 head 조각 '$ewt_frag' 가 실행 워크트리 HEAD '$ewt_head' 와 맞지 않는다 (메인은 '$main_head')"
+  fi
+  EWTSID="25252525-3434-5656-7878-909090909090"
+  ewt_q=$(row_field "$ewt_row" '질문 문면')
+  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$ewt_id" "$ewt_q" > "$NTX/$EWTSID.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$EWTSID" bash "$GATE" close --manifest "$NM5" --approval "$ewt_id" 2>&1); rc=$?
+  check "실행 워크트리 픽스처의 승인이 닫힌다" "$rc" "0"
+  # `plan` for every probe below, the way 31ak does it: the resolution is read
+  # before the dry-run arm, so the verdict comes back without the argv — which
+  # reaches outside the machine — ever running.
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
+        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  check "두 트리가 다 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
+  # THE FALSE-POSITIVE AXIS. Another segment landing a commit in the main
+  # worktree says nothing about the tree this act runs in.
+  ( cd "$WT" && git commit --allow-empty -q -m "메인만 움직이는 빈 커밋" )
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
+        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  check "메인 워크트리만 움직인 것은 그 승인을 낡게 하지 않는다" "$rc" "0"
+  ( cd "$WT" && git reset -q --soft "$main_head" )
+  check "픽스처가 옮긴 메인 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
+  # THE FALSE-NEGATIVE AXIS, which is the one that let a night of commits through.
+  ( cd "$EWT" && git commit --allow-empty -q -m "실행 워크트리만 움직이는 빈 커밋" )
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
+        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  check "실행 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
+  case "$msg" in
+    *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
+    *) bad "실행 워크트리 대조" "$msg" ;;
+  esac
+  ( cd "$EWT" && git reset -q --soft "$ewt_head" )
+  check "픽스처가 옮긴 실행 워크트리 HEAD 를 되돌린다" "$(cd "$EWT" && git rev-parse HEAD)" "$ewt_head"
+else
+  bad "픽스처 전제" "실행 워크트리를 만들지 못했다"
 fi
 
 # --- 31aa. A question does not switch the boundaries off --------------------
