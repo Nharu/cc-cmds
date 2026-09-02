@@ -2414,6 +2414,68 @@ case "$( { grep -E '^- `segment`' "$LEDGER" || true; } | grep -cF 'id=SFRESH ' )
   *) ok "그 행이 원장에 남는다" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# 33. A stage that parked itself, a worktree that is the same repository, and a
+#     manifest whose clauses do not parse
+#
+# The three below were each measured rather than imagined. A stage refuted a
+# pre-implementation check, wrote its halt record, and was filed as a success —
+# twice in one night, and the only way to see it was to open the worktree by
+# hand. A segment stage started in the worktree its own target row declares and
+# every gate subcommand was refused, with no manifest value able to satisfy both
+# it and the audit stage. And a manifest whose `종료 절` rows are spelled so that
+# none matches passes the check, then satisfies condition 10 vacuously.
+# ---------------------------------------------------------------------------
+# --- the halt record decides the class, and it is keyed per attempt ----------
+HALTRD="$WORK/halt-run"
+mkdir -p "$HALTRD/halt"
+printf '<!-- cc-pipeline-halt v1; stage=SH -->\n**분류**: precondition-failed\n<!-- /cc-pipeline-halt v1 -->\n' \
+  > "$HALTRD/halt/SH#1.md"
+case "$( { grep -vE '^[[:space:]]*$' "$HALTRD/halt/SH#1.md" || true; } | tail -1)" in
+  '<!-- /cc-pipeline-halt v1 -->') ok "중단 기록의 닫는 문면이 마지막 비어 있지 않은 줄이다" ;;
+  *) bad "중단 기록" "닫는 문면을 찾지 못했다" ;;
+esac
+# The per-attempt key is what keeps a retry from overwriting the record the
+# previous attempt left. Same segment, second attempt, different file.
+printf '<!-- cc-pipeline-halt v1; stage=SH -->\n**분류**: gate-unanswerable\n<!-- /cc-pipeline-halt v1 -->\n' \
+  > "$HALTRD/halt/SH#2.md"
+check "같은 세그먼트의 두 시도가 서로 다른 기록을 갖는다" \
+  "$(ls "$HALTRD/halt" | grep -c '^SH#')" "2"
+case "$(grep -c 'precondition-failed' "$HALTRD/halt/SH#1.md")" in
+  0) bad "중단 기록 덮어쓰기" "첫 시도의 기록이 둘째 시도에 지워졌다" ;;
+  *) ok "첫 시도의 기록이 그대로 남는다" ;;
+esac
+
+# --- a linked worktree of the SAME repository is not a different repository --
+LWT="$WORK/linked-wt"
+( cd "$WT" && git worktree add --detach "$LWT" HEAD ) >/dev/null 2>&1
+if [ -d "$LWT" ]; then
+  a=$(cd "$WT"  && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  b=$(cd "$LWT" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  check "링크된 워크트리는 같은 공통 git 디렉터리를 갖는다" "$b" "$a"
+  ( cd "$LWT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
+  check "그 워크트리에서 게이트가 거부하지 않는다" "$?" "0"
+  ( cd "$WT" && git worktree remove --force "$LWT" && git worktree prune ) >/dev/null 2>&1
+else
+  bad "링크된 워크트리" "픽스처를 만들지 못했다"
+fi
+
+# --- a manifest whose clauses do not parse is refused ------------------------
+# The refusal lands on the PROPOSAL, not on entry: a hard stop at entry would
+# invalidate every manifest already written without clause rows, including runs
+# in flight, which is the failure mode this repository has two open issues about.
+NOCL="$WORK/no-clause-plan.md"
+grep -v '^- `종료 절`' "$MANIFEST" > "$NOCL"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$NOCL" >/dev/null 2>&1 )
+check "절이 없는 매니페스트도 진입은 통과한다 (진행 중인 런을 비적합으로 만들지 않는다)" "$?" "0"
+gateL act --manifest "$NOCL" --kind propose-done --target infra --segment SFRESH \
+      --cutpoint 커밋 --snapshot-digest "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" snapshot --manifest "$NOCL" 2>/dev/null | jq -r .H )" \
+      --rationale "절이 없는 매니페스트" -- 절=x 근거=y
+case "$msg" in
+  *'파싱되는 종료 절이 하나도 없습니다'*) ok "종료 제안이 빈 절 목록을 미충족으로 세운다" ;;
+  *) bad "빈 절 목록" "종료 제안이 그것을 지목하지 않았다: $msg" ;;
+esac
+
 # Leave the fixture repository's worktree set as it was found.
 ( cd "$WT" && git worktree remove --force "$NEWWT" && git worktree prune ) >/dev/null 2>&1 || true
 

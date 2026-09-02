@@ -405,13 +405,30 @@ check_manifest() {
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
   local ow
   ow=$(manifest_hdr_field 'origin-worktree')
-  if [ -n "$ow" ] && [ "$ow" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
+  # THE TIE-BREAK IS ABOUT THE REPOSITORY, NOT THE DIRECTORY. Pinning to the
+  # exact worktree made two contract rules unsatisfiable at once: the target row
+  # carries `실행 워크트리` precisely because a branch is checked out in a linked
+  # worktree, and the driver starts a segment stage there — where every gate
+  # subcommand was then refused. Writing the segment worktree into the header
+  # instead only moves the refusal, because the audit stage starts in the home
+  # worktree; with both in one run, NO value satisfies both.
+  #
+  # What the check exists for survives the widening. The sidecar paths derive
+  # from `<base>` — the parent of the COMMON git directory — which every linked
+  # worktree of one repository shares, so no state fans out. And target choice
+  # was never this check's job: `--target` names it explicitly and the gate
+  # carries that through to the act's working directory. A worktree of ANOTHER
+  # repository still fails, which is the case the check was written for.
+  local ow_cg cur_cg
+  ow_cg=$( { cd "$ow" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+  cur_cg=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  if [ -n "$ow" ] && { [ -z "$ow_cg" ] || [ "$ow_cg" != "$cur_cg" ]; }; then
     # The repair belongs in the message. A router that wants to act in another
     # declared target does NOT move here — it stays in the home worktree and
     # names the target with `--target`, which the gate now carries through to
     # the act's working directory. Without that sentence the obvious reading of
     # this stop is "cd there first", which is the one move that cannot work.
-    die "매니페스트 origin-worktree= 가 현재 워크트리와 다릅니다: $ow — 다른 대상에서 행위하려면 여기로 이동하지 말고 홈 워크트리에서 --target 으로 지목하세요"
+    die "매니페스트 origin-worktree= 가 다른 레포입니다: $ow — 같은 레포의 링크된 워크트리는 허용되지만 다른 레포에서는 행위할 수 없습니다. 다른 대상에서 행위하려면 --target 으로 지목하세요"
   fi
 
   # 4 — target preflight. A declared repo set with no verification leaves the
@@ -2530,7 +2547,7 @@ segment_cycle() {
     class=$(classify_termination "$sid" "$rc" "$pred")
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
+      "세션 id=$(stage_session_id "$stage")" "부모=$(stage_parent_id)" "종단 부류=$class"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -2723,7 +2740,7 @@ main_loop() {
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class2"
+      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;

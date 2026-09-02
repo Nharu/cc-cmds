@@ -25,7 +25,18 @@ esac
 [ -f "$GATE_MANIFEST" ] || { echo "사전-인가-대조: 매니페스트를 읽을 수 없습니다" >&2; exit 1; }
 
 argv0=$(printf '%s' "$GATE_ARGV" | awk '{print $1; exit}')
-sub=$(printf '%s' "$GATE_ARGV" | awk '{print $2; exit}')
+# The subcommand is the first word after argv0 that is not an ATTACHED-VALUE
+# global option. `terraform -chdir=<dir> apply` puts its global flag before the
+# subcommand, so reading argv[2] verbatim gave `-chdir=…` and a pre-authorization
+# row spelled `terraform apply` matched nothing — the act then issued an approval
+# nobody was awake to answer.
+#
+# Only `-*=*` forms are skipped, and the limit is deliberate. A detached value
+# (`git -C <path> commit`) cannot be recognized generically: this script sees one
+# argv string and no per-tool table, so skipping a bare `-X` would take its VALUE
+# for the subcommand — a worse answer than the one being fixed. Tools that spell
+# their globals that way still match on argv0 alone.
+sub=$(printf '%s' "$GATE_ARGV" | awk '{ for (i = 2; i <= NF; i++) { if ($i ~ /^-.*=/) continue; print $i; exit } }')
 
 matched=0
 while IFS= read -r line; do

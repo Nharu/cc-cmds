@@ -2726,7 +2726,7 @@ gate_launch_stage() {
   CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
   CC_PIPELINE_TARGET="$alias" \
   CC_PIPELINE_SEGMENT="$seg" \
-  CC_PIPELINE_STAGE_ID="$seg" \
+  CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
@@ -2792,7 +2792,24 @@ gate_record_stage_outcome() {
   # and only the non-zero status caught it — the same object with a zero status
   # would have been classified as a normal completion.
   iserr=$(printf '%s' "$res" | jq -r '.is_error // false' 2>/dev/null || true)
-  if [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
+  # A STAGE THAT PARKED ITSELF IS NOT A SUCCESS, and this arm could not tell the
+  # difference. The halt contract names the orchestrator as the reader and three
+  # skills write the record, but nothing on this path opened it — so a stage that
+  # stopped deliberately, wrote down why, and left the tree untouched was filed
+  # as `정상 완료` when it had written a row, and as `공허한 성공` when it had
+  # not. Measured twice in one night: a stage refuted a pre-implementation check
+  # and halted correctly, and the only way to see that was to open the worktree
+  # by hand.
+  #
+  # The record is checked BEFORE the row-count arms because its answer is more
+  # specific than theirs. A halted stage may well have written rows first.
+  local haltf
+  haltf="$RUN_DIR/halt/$seg#$attempt.md"
+  [ -f "$haltf" ] || haltf="$RUN_DIR/halt/$seg.md"
+  if [ "$rc" = "0" ] && [ -s "$haltf" ] \
+     && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
+    klass='의도된 park'
+  elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
   elif [ "${after:-0}" -gt "${before:-0}" ]; then
     klass='정상 완료'
@@ -3111,6 +3128,21 @@ gate_done_conditions() {
     # repair instruction belongs beside the refusal, not inside the row.
     printf '10 종료 절 %s 미정산\n' "$sid"
   done
+
+  # 10b — the clause list is not EMPTY. Condition 10 iterates the parsed clauses
+  # and reports the unsettled ones, so a manifest whose `종료 절` rows are spelled
+  # such that none matches yields an empty list and the condition is satisfied
+  # VACUOUSLY — the run can propose done the moment it starts, having been
+  # measured against nothing. The `종료 지점` prose still reads correctly to a
+  # person, which is why this passes every human check.
+  #
+  # This fires HERE and not in `check_manifest`, deliberately. A hard stop at
+  # entry would refuse every manifest already written without clause rows —
+  # including runs in flight, which is the failure mode two open issues in this
+  # repository are about. Refusing the PROPOSAL instead costs nothing to a run
+  # that never tries to end and blocks exactly the thing that was wrong.
+  [ -n "$(manifest_clauses)" ] \
+    || printf '10 매니페스트에 파싱되는 종료 절이 하나도 없습니다 — 종료 지점이 산문으로만 있어 이 런은 무엇에도 대조되지 않습니다\n'
 
   # 9 — no unfulfilled review obligation. Condition 3 does not subsume this:
   # 3 narrows when an EXISTING obligation is excused, and 9 holds the ones
