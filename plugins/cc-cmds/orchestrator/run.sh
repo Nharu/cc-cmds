@@ -3134,6 +3134,16 @@ platform_supported || platform_refuse || exit $?
 # else. What is no longer true is that a document is REQUIRED: a run anchored on
 # a pull request, a branch, or a bare intent has no document to name.
 if [ -n "$MANIFEST" ]; then
+  # ABSOLUTE FIRST. The driver hands this value to every stage it dispatches and
+  # each of those passes it back to the gate, where the manifest write guard
+  # compares against it — so a relative or oddly spelled path here becomes a
+  # guard that is looking for a string nothing will match. Normalized only when
+  # the directory exists, for the same reason the gate normalizes conditionally:
+  # a failed `cd` would yield a path naming nothing, and the existence check on
+  # the next line is the honest place for that to be reported.
+  if [ -d "$(dirname "$MANIFEST")" ]; then
+    MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
+  fi
   [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
   check_manifest
   derive_paths_from_manifest

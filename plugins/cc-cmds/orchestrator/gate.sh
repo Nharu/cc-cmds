@@ -1703,6 +1703,22 @@ gate_main() {
   done
 
   [ -n "$MANIFEST" ] || { printf 'gate: --manifest 가 필요합니다\n' >&2; exit 2; }
+  # ABSOLUTE, BEFORE ANYTHING COMPARES AGAINST IT. The manifest write guard asks
+  # whether an act names this file, and it asked by comparing strings — so the
+  # same file reached through a relative path, or through any other spelling of
+  # the same absolute path, was a different string and the guard missed it. The
+  # value is a path the caller chose; normalizing it once here is what makes
+  # every later comparison a question about the FILE.
+  #
+  # Only when the directory exists. `cd` into a missing directory fails, and
+  # letting the failure through would leave `/$(basename …)` — a path naming
+  # nothing, which the guard would then compare against and never match. A
+  # manifest whose directory is absent is a hard stop one line later anyway, so
+  # keeping the original value costs nothing and removes a way to disarm the
+  # guard by pointing it somewhere unreachable.
+  if [ -d "$(dirname "$MANIFEST")" ]; then
+    MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
+  fi
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
@@ -2293,12 +2309,30 @@ gate_manifest_write_guard() {
   # Shaped exactly like the grant arm it mirrors: any non-read act naming the
   # manifest is refused, whatever the cutpoint. Cutpoints say how far an act may
   # go; this act would change the answer.
+  #
+  # THE COMPARISON IS BY BASENAME AND BY CONTAINMENT, NOT BY WHOLE-ELEMENT
+  # EQUALITY. Equality on argv elements had two ways out and both were reachable
+  # by ordinary spellings. A different spelling of the same absolute path — an
+  # extra `/./`, a relative path — is a different string; that half is closed by
+  # normalizing `MANIFEST` at argument-parse time. The other half is not a path
+  # problem at all: `bash -c 'printf x >> <경로>'` puts the path INSIDE an argv
+  # element, so no element equals the manifest and the loop ran to the end while
+  # the redirection wrote the file. Looking for the basename anywhere in any
+  # element catches both, and it catches the interpreter wrapping that the
+  # `bash`→`워크트리쓰기` row would otherwise let through the axis-2 check.
+  #
+  # The false positives this admits are reads that merely MENTION the file, and
+  # the read arm above has already returned for those. What is left is an act
+  # that changes something and carries the manifest's name in its command line,
+  # which is the thing to refuse.
   local graded="$1"; shift
   [ -n "${MANIFEST:-}" ] || return 0
   case "$graded" in 읽기) return 0 ;; esac
-  local a
+  local a mbase
+  mbase=$(basename "$MANIFEST")
+  [ -n "$mbase" ] || return 0
   for a in "$@"; do
-    [ "$a" = "$MANIFEST" ] || continue
+    case "$a" in *"$mbase"*) ;; *) continue ;; esac
     warn "매니페스트에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $MANIFEST"
     warn "「## 인가」의 자동 채택 행은 사람이 지켜보는 자리에서만 선언됩니다 — 런이 자기 사전 채택 목록을 늘리는 것은 인가의 자기확장입니다"
     return "$GATE_EXIT_RULE"
@@ -2374,15 +2408,28 @@ EOF
   # argv0 grading table every act goes through, so prose lands on `등급 미상`
   # and falls out here. The distinction that buys is between ASSERTING that
   # something is reversible and PRODUCING the thing that reverses it.
+  #
+  # THE ACCEPTED SET IS THE WORKTREE-WRITE GRADE ALONE, AND `읽기` IS NOT IN IT.
+  # A command that reverses something CHANGES something — that is what reversing
+  # is. `읽기` was the most permissive arm here while naming the grade with the
+  # least power to undo anything: the first row of the grading table reads
+  # `cat|ls|find|grep|…` as `읽기`, so `되돌리는 법=ls docs/` admitted a judgment
+  # on the strength of an undo that cannot undo. There was no upper bound either,
+  # but the upper end is the side an author has no incentive to reach — the
+  # cheap, quiet spelling is a read, and it was the one being accepted.
+  #
+  # The grades above `워크트리쓰기` stay out for the reason they always did: an
+  # undo that writes outside the tree or changes external state is not something
+  # to adopt without a person, whatever it claims to reverse.
   case "$(gate_revert_surface "$revert")" in
-    읽기|워크트리쓰기)
+    워크트리쓰기)
       # The second half of arm (b) — the act being at or below the target's
       # cutpoint — is `절단점-준수`'s, and that rule carries a lower order index,
       # so arriving here IS that condition holding.
       log "자동 채택 — 팔 (b) 가역 ($cls · $revert)"
       return 0 ;;
   esac
-  warn "자동 채택 불성립 — 부류 '$cls' 는 매니페스트가 선언하지 않았고 되돌리는 법이 실행 가능한 명령이 아닙니다"
+  warn "자동 채택 불성립 — 부류 '$cls' 는 매니페스트가 선언하지 않았고 되돌리는 법이 워크트리를 되돌리는 명령이 아닙니다"
   return 1
 }
 

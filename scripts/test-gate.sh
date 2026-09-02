@@ -3690,6 +3690,71 @@ else
   bad "방출 fail-open" "부류가 없다는 이유로 방출된 판단이 행도 승인도 경고도 없이 사라졌다"
 fi
 
+# --- 31ab. Arm (b) admits the grade that CHANGES something ------------------
+#
+# The arm accepted `읽기` beside `워크트리쓰기`, and the grading table's first
+# row reads `cat|ls|find|grep|…` as `읽기` — so the least powerful grade in the
+# table was the most permissive spelling of an undo. `되돌리는 법=ls docs/`
+# reverses nothing and was adopted for it. Nothing measured the other end
+# either, which is the direction an author has no incentive to reach and so the
+# one a suite has to assert deliberately.
+#
+# The class is `잔여-항목`: inside the vocabulary and outside the forbidden set,
+# so neither the vocabulary floor nor the forbidden-class arm above can be what
+# answers, and the manifest declares only `문서-신선도` so arm (a) stays shut.
+# What is left measuring the outcome is arm (b) alone.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=잔여-항목" 기준="잔여 항목을 이번 런에서 닫을지" \
+         "되돌리는 법=ls docs/" 근거="읽기 등급의 명령은 되돌릴 대상을 만들지 않는다"
+check "아무것도 바꾸지 않는 되돌리기는 팔 (b) 를 열지 못한다 (하한)" "$rc" "5"
+case "$msg" in
+  *"되돌리는 법이 워크트리를 되돌리는 명령이 아닙니다"*)
+    ok "거절이 되돌리기의 등급을 지목한다" ;;
+  *) bad "팔 b 하한 문면" "$msg" ;;
+esac
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=잔여-항목" 기준="잔여 항목을 지우고 갈지" \
+         "되돌리는 법=aws s3 rm s3://x/y --recursive" 근거="외부 상태를 바꾸는 되돌리기다"
+check "외부 상태를 바꾸는 되돌리기도 팔 (b) 를 열지 못한다 (상한)" "$rc" "5"
+# AND THE ARM IS NOT DEAD. An empty accepted set would pass both assertions
+# above while removing the floor's only runtime admission path.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=1 "판단 부류=잔여-항목" 기준="잔여 항목의 인용을 갱신할지" \
+         "되돌리는 법=git checkout -- docs/x.md" 근거="워크트리를 되돌리는 명령이다"
+check "워크트리를 되돌리는 명령은 여전히 채택된다 (팔 b 가 통째로 죽지 않았다)" "$rc" "0"
+
+# --- 31ac. The manifest write guard measures the FILE, not the argv string --
+#
+# 31q asserts the happy path — `tee "$NM"`, one argv element equal to the
+# manifest — and whole-element equality passes that while leaving two ordinary
+# spellings open. A different spelling of the same absolute path equals no
+# element at all. And an interpreter carries the path INSIDE an element:
+# `bash -c 'printf x >> <경로>'` has three elements, none of them the manifest,
+# and `bash` grades `워크트리쓰기` so the axis-2 declaration is honest. Either
+# one appends to the run's own pre-adoption list.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- tee "$WORK/./cone-plan.md"
+check "같은 파일의 다른 철자로도 매니페스트 쓰기가 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $NM"
+check "인터프리터로 감싼 매니페스트 쓰기도 거절된다" "$rc" "3"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "래핑된 쓰기도 인가의 자기확장으로 지목된다" ;;
+  *) bad "래핑 가드 문면" "$msg" ;;
+esac
+# AND THE GUARD DOES NOT SWALLOW READS. Containment matching sees the name in
+# any element, so without the read arm in front of it the morning's own way of
+# looking at the manifest would be refused too.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- grep -c "" "$NM"
+check "같은 경로를 읽기만 하는 행위는 통과한다 (오탐이 아니다)" "$rc" "0"
+
 # --- 31aa. A question does not switch the boundaries off --------------------
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four
