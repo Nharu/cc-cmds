@@ -1282,6 +1282,24 @@ wt_remove_or_defer() {
 # stage that outlives its controller is a hazard, not a benefit, because the
 # driver cannot reclaim a tree it does not own.
 # ---------------------------------------------------------------------------
+stage_attempt() {
+  # stage_attempt <stage-id> — 1 for a first dispatch, N+1 after N recorded ones.
+  #
+  # The session uuid is derived rather than stored, and its derivation already
+  # takes an attempt number — but nothing ever passed one, so every retry of a
+  # stage inside one run resolved to the SAME session id. The CLI then refused to
+  # start a session that already existed, and the retry died instantly with a
+  # cost of zero and a classification that read like the stage itself had failed.
+  #
+  # Counted from the ledger rather than a counter file for the same reason the
+  # gate counts it there: the ledger is the only state that survives a session
+  # cut, and a counter that resets on resume would collide all over again.
+  local stage="$1" n
+  n=$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } \
+       | { grep -cF "스테이지=$stage " || true; } )
+  printf '%s' "$(( ${n:-0} + 1 ))"
+}
+
 session_uuid() {
   # session_uuid <stage-id> [attempt] — derived, never stored.
   #
@@ -1317,7 +1335,7 @@ transcript_path() {
   local cachef uuid p
   cachef="$RUN_DIR/$stage.transcript"
   if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
-  uuid=$(session_uuid "$stage")
+  uuid=$(session_uuid "$stage" "$(stage_attempt "$stage")")
   p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
@@ -1389,13 +1407,20 @@ stage_spawn() {
   # The wrapper is what carries them, and it is the same wrapper the gate uses
   # for a skill act; a second spawn shape here would be a second place for the
   # injection to go missing.
+  # THE STAGE'S BASH IS FULLY GATED, and the refusal the hook hands back names
+  # these three. Without them the stage cannot run a single line: it reads the
+  # instruction, has no manifest to pass, and every spelling it tries is refused
+  # for a reason that is true but unfixable from inside. The five that were here
+  # identify the RUN; these three identify the ACT, and the gate needs both.
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+      CC_PIPELINE_MANIFEST="$MANIFEST" CC_PIPELINE_TARGET="$(seg_alias "$stage" 2>/dev/null || home_alias)" \
+      CC_PIPELINE_SEGMENT="$stage" \
       exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
-        --session-id "$(session_uuid "$stage")" \
+        --session-id "$(session_uuid "$stage" "$(stage_attempt "$stage")")" \
         -- -p "$prompt" "$@" \
         > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
@@ -2670,6 +2695,25 @@ main_loop() {
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
   # never overlaps a sibling worktree creation on the first pass; only a
   # RE-audit can, and the quiet window covers that.
+  # AN AUDIT THAT ALREADY HAPPENED IS NOT REDONE. This dispatch had no predicate
+  # in front of it, so a document a person had already audited by hand was
+  # audited again — billed, and with its findings routed a second time into the
+  # unresolved bucket that only a person can empty. The kickoff freezes a step
+  # graph and takes an approval for it, but the driver never reads that graph,
+  # so the approval could not express "the audit is done".
+  #
+  # The check is the ARTIFACT half of `predicate_audit`. The other half reads
+  # this stage's own stream, which by definition does not exist before the
+  # dispatch, so only the artifact can answer beforehand. A false negative costs
+  # one audit; a false positive would skip an audit that was never run, so the
+  # test is the narrow one — a reader report for THIS document slug.
+  if [ -n "$DOC_SLUG" ] && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; then
+    log "S2 감사 건너뜀 — 이 문서의 감사 리포트가 이미 있다 ($DOC_SLUG)"
+    ledger_row '자율 승인' "kind=audit-composition" "결정=감사 스테이지를 띄우지 않는다" \
+      "기각된 대안=다시 감사한다" "등급=1" "기준=이 문서 슬러그의 리더 리포트가 이미 존재한다" \
+      "되돌리는 법=그 리포트를 옮기고 런을 다시 킥오프한다" \
+      "근거=$DOC_BASE/docs/design-audit/$DOC_SLUG.reader-*.md"
+  else
   quiet_window_begin
   dispatch_stage S2 "$(alias_root "$(home_alias)")" "/cc-cmds:design-audit-unattended $DOC"
   quiet_window_end
@@ -2685,6 +2729,7 @@ main_loop() {
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
+  fi
 
   # S3 SEGMENT-PLAN — routed by the three-branch predicate.
   #
