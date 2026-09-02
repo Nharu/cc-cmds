@@ -240,6 +240,33 @@ run_open_seconds() {
   printf '%s' $(( $(now_epoch) - ep ))
 }
 
+gate_idle_seconds() {
+  # Seconds since the gate was last entered — or empty when there is no such
+  # record or it does not hold an epoch.
+  #
+  # WHY THE GATE AND NOT THE LEDGER. A ledger that has not grown is not a router
+  # that has not worked, and the gap between those two is wide precisely where
+  # the arm below looks: before the first segment the router writes the
+  # manifest, records the grant, stubs the morning report, spawns this watcher
+  # and reads skill contracts, and none of that appends a row.
+  #
+  # `started-at` is rewritten by `rundir_init` on EVERY gate entry, before the
+  # verb is dispatched, so it moves for a `snapshot` and a `--render` too — the
+  # calls that leave the ledger's size exactly where it was. That makes it a
+  # strictly finer activity signal than the size this file already measures, not
+  # a second spelling of it.
+  #
+  # Empty means "cannot judge", the same direction `run_open_seconds` takes. A
+  # run directory the gate never made carries no such file, and reading its
+  # absence as "nobody has called the gate" would accuse a router on the
+  # strength of a file nobody wrote.
+  local at
+  [ -n "$RUN_DIR" ] || return 0
+  at=$(sed -n '1p' "$RUN_DIR/started-at" 2>/dev/null || true)
+  case "${at:-}" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' $(( $(now_epoch) - at ))
+}
+
 banner() {
   # Best-effort, and every failure is swallowed on purpose: a watcher that dies
   # because a notifier is missing removes the only signal the user had left.
@@ -297,7 +324,7 @@ pass() {
   # `watch.heartbeat` entirely — and a stale heartbeat is exactly how a dead
   # watcher looks. Each arm carries its own once-marker, so two firing in one
   # pass is harmless and reaching the bottom every time is the point.
-  local age live pend nonterm run_age size grew silent id newly
+  local age live pend nonterm run_age gate_idle size grew silent id newly
   # The watcher's own pid, so a person (and the status line) can tell a live
   # watcher from a finished run's. The directory is NOT created here: the
   # watcher legitimately runs in the window before the router's first gate call
@@ -389,11 +416,29 @@ pass() {
   # a disjunct its own last-row guard made unreachable, and the window was then
   # left to the stall arm's twenty minutes.
   #
-  # THE IDLE CONJUNCT IS PART OF THE CONDITION, not a refinement. The router
-  # writes `자율 승인` rows before it opens the first segment, so "no segment
-  # yet" on its own accuses a router that is working. Adding "and the ledger has
-  # not grown for `AFTER_STAGE`" asks the sharper question: nothing running,
-  # nothing waiting, nothing written, and still no segment.
+  # THE TWO IDLE CONJUNCTS ARE PART OF THE CONDITION, not refinements. The
+  # router writes `자율 승인` rows before it opens the first segment, so "no
+  # segment yet" on its own accuses a router that is working. Adding "and the
+  # ledger has not grown for `AFTER_STAGE`" asks the sharper question: nothing
+  # running, nothing waiting, nothing written, and still no segment.
+  #
+  # AND THAT IS STILL NOT SHARP ENOUGH, which is what the gate conjunct is for.
+  # Measured on a healthy run: the run 333 seconds old, the ledger unchanged for
+  # 300, no segment row, no live stage and no open approval — every other
+  # conjunct here satisfied — and that router opened its first segment normally
+  # 21 minutes and 32 seconds later. It was not idle in that window; it was
+  # writing the manifest and the grant, stubbing the report, starting this
+  # watcher and reading skill contracts, none of which appends a row.
+  #
+  # RAISING `RUN_OPEN` PAST IT IS NOT THE ANSWER. The observed healthy silence
+  # is longer than `STALL`, so a threshold above it would take this arm's reason
+  # for existing — saying it sooner than the general stall arm does — away.
+  # Asking the gate instead separates "the ledger did not grow" from "nobody
+  # called the gate", and only the second is the failure this arm reports.
+  #
+  # Both idle tests keep `AFTER_STAGE`: they are two readings of one quantity —
+  # how long the run has been silent — and giving them separate thresholds would
+  # make "silent" mean two things in one condition.
   #
   # IT DOES NOT DISPLACE THE STALL ARM. That arm keeps the zero-segment window
   # under its own reason, so a run parked here records two observations — this
@@ -409,10 +454,12 @@ pass() {
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
   run_age=$(run_open_seconds)
+  gate_idle=$(gate_idle_seconds)
   if [ "$live" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
+     && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
     : > "$RUN_DIR/watch.announced-run-open"

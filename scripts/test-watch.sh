@@ -115,8 +115,29 @@ fresh() {
     bad "케이스 격리" "run$case_n 이 이미 있다 — 앞 케이스의 디렉터리를 물려받는다"
   fi
   mkdir -p "$RD"; : > "$LG"
+  # THE GATE LEAVES THIS FILE, on every entry, and the run-age arm reads it as
+  # "when the gate was last called". A directory without it is one the gate
+  # never made, which that arm treats as "cannot judge" — so every case about it
+  # would then pass on the file's absence rather than on what it claims to
+  # measure. The default is an old stamp, the shape of a run whose router has
+  # gone quiet; the cases that need a recent one overwrite it.
+  printf '%s\n' 1577836800 > "$RD/started-at"
 }
 run() { bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
+
+seed_idle() {
+  # seed_idle <초> <run 인자…> — hand the watcher an idle ledger.
+  #
+  # It owns that clock: it records the size it saw and when it first saw it, so
+  # a single pass can only ever report zero and no fixture written from outside
+  # can shorten that. One pass seeds the state file, then line 2 is moved back.
+  # Line 1 comes back out of the watcher's own state rather than being computed
+  # here, so this does not restate how it measures the ledger.
+  local secs="$1"; shift
+  run "$@" >/dev/null
+  printf '%s\n%s\n%s\n' "$(sed -n '1p' "$RD/watch.state")" \
+    "$(( $(date -u +%s) - secs ))" "$LG" > "$RD/watch.state"
+}
 
 # ---------------------------------------------------------------------------
 # 1. Heartbeat
@@ -589,6 +610,72 @@ out=$(run --stall 99999 --after-stage 0 --run-open 0 2>&1 || true)
 case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*) bad "run 나이 arm" "종단 표시가 있는 런에서 발화했다" ;;
   *) ok "종단 표시가 있으면 발화하지 않는다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# A WORKING ROUTER IS NOT A STOPPED ONE, AND THE LEDGER CANNOT TELL THEM APART.
+#
+# Before the first segment the router writes the manifest and the grant, stubs
+# the morning report, starts this watcher and reads skill contracts — none of it
+# appends a row. So an unchanged ledger is not evidence that nothing happened,
+# and this arm keyed on nothing else.
+#
+# The fixture is a healthy run measured at the moment every other conjunct held:
+# the run 333 seconds old, the ledger unchanged for 300 seconds, no segment row,
+# nothing alive and nothing waiting. That router opened its first segment
+# normally 21 minutes and 32 seconds later — longer than `STALL`, so no
+# threshold this arm could carry separates the two. The gate's own record does.
+#
+# THE THRESHOLDS ARE THE PRODUCTION ONES, and they are spelled out rather than
+# left to the defaults so that the case fails if either side moves without the
+# other. A case that picked numbers of its own would keep passing while the
+# configuration a real run uses drifted out from under it.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --after-stage 120 --run-open 300)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    bad "run 나이 arm" "게이트를 방금 부른 라우터를 세그먼트 미개시로 지목했다" ;;
+  *) ok "원장이 조용해도 게이트가 최근에 불렸으면 발화하지 않는다" ;;
+esac
+# The negative control. Silence here would also be produced by a fixture that
+# never reached the idle threshold at all, and then the case above measures
+# nothing — so the pass has to be shown to be one the ledger conjunct passed.
+idle_said=$(printf '%s' "$out" | sed -n 's/.*원장 \([0-9][0-9]*\)초 전 갱신.*/\1/p' | tail -1)
+if [ -n "$idle_said" ] && [ "$idle_said" -ge 120 ] 2>/dev/null; then
+  ok "그 침묵이 원장 유휴 임계를 넘긴 pass 의 것이다 (${idle_said}초)"
+else
+  bad "유휴 대조" "got '$idle_said', want >= 120"
+fi
+
+# AND THE ARM STILL FIRES WHEN THE GATE IS SILENT TOO. Same fixture, same
+# thresholds; the one thing that changes is that nothing has called the gate.
+# Without this the conjunct above could be satisfied by never firing at all.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --after-stage 120 --run-open 300)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*) ok "게이트도 오래 조용하면 발화한다 (arm 이 죽지 않았다)" ;;
+  *) bad "run 나이 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# No record of a gate call is "cannot judge", not "the gate was never called".
+# The run directory is the gate's own artifact, so its absence says the watcher
+# is looking at something the gate did not make — and inventing a report from a
+# file nobody wrote is the direction that costs a person their night.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+rm -f "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 120 --run-open 300
+out=$(run --stall 99999 --after-stage 120 --run-open 300)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    bad "run 나이 arm" "게이트 호출 기록이 없는 것을 호출이 없었던 것으로 읽었다" ;;
+  *) ok "게이트 호출 기록이 없으면 판정하지 않는다" ;;
 esac
 
 # ---------------------------------------------------------------------------
