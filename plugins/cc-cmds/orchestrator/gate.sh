@@ -1951,9 +1951,20 @@ gate_dep_tokens() {
   # removal. That state is reached by FOLLOWING the instructions: the router is
   # told the field may be added to and not subtracted from, and a router holding
   # `없음` that acquires a dependency does exactly this.
+  #
+  # THE SENTINEL SET AND THE `슬라이스 ` PREFIX ARE SHARED WITH `run.sh`'s
+  # `dep_tokens`, character for character. The driver's readers already accepted
+  # `-` as a null and already stripped the prefix a design document's slice
+  # declaration writes; this one did neither, so `**선행**: 슬라이스 SA` was one
+  # dependency to the driver and two unknown tokens to the write-time floor that
+  # decides whether the row may be written at all. Two normalizations for one
+  # field is how the two sides came to disagree about whether a segment had any
+  # dependencies.
   local t out=""
-  for t in $(printf '%s' "$1" | tr ',' ' '); do
-    case "$t" in ''|'없음'|'(없음)') continue ;; esac
+  for t in $(printf '%s' "${1:-}" | tr ',' ' '); do
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
+    t=${t#슬라이스}
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
     out="$out $t"
   done
   printf '%s' "${out# }"

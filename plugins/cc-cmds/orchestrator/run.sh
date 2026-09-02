@@ -1052,12 +1052,52 @@ ledger_init() {
   grep -qE "^## 실행 $RUN_ID$" "$LEDGER" || printf '\n## 실행 %s\n' "$RUN_ID" >> "$LEDGER"
 }
 
+# The driver's row cap, and it is deliberately the gate's number. Both writers
+# append to ONE ledger that one set of readers parses, so a value that fits
+# through one door and not the other is a row the morning can only half read.
+readonly RUN_ROW_MAX=1024
+
 ledger_row() {
   # ledger_row <계열> <field=value> ...
+  #
+  # THIS IS A SECOND WRITER FOR THE SAME FILE, and it went through none of the
+  # floors the gate's writer applies. The one that matters here is field
+  # normalization: `|` separates fields and a newline ends the row, so a value
+  # carrying either SPLICES the grammar — and the values reaching this function
+  # come from the design document (`선행`, `선언 파일 집합`) and from model
+  # output, where a pipe in Korean prose is ordinary. A spliced `segment` row is
+  # not merely ugly: every reader splits the row text on `|`, and the greedy
+  # `id=` extraction then takes the LAST match, so the row changes which segment
+  # it is about.
+  #
+  # THE DUPLICATION IS DELIBERATE AND CARRIES AN OBLIGATION. Routing this writer
+  # through `gate.sh act --kind segment` is the structural repair, and it cannot
+  # be made here: kickoff's declaration path writes `segment` rows BEFORE the
+  # gate requires one to exist, and inverting that order collides with the floor
+  # that refuses to dispatch a stage into a segment with no row. So the transform
+  # is copied, and the copy is marked on BOTH sides — a change to
+  # `gate_append`'s normalization that is not made here silently splits the two
+  # paths again.
+  #
+  # The length check reserves room for a `prev=` field this writer never emits,
+  # so anything this path accepts would also fit through the gate's. The
+  # asymmetry is in the safe direction: the two writers cannot disagree about
+  # what fits.
   local series="$1"; shift
   local line="- \`$series\`"
-  local f
-  for f in "$@"; do line="$line | $f"; done
+  local f k v n
+  for f in "$@"; do
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+    esac
+    line="$line | $f"
+  done
+  n=$(printf '%s | prev=%s\n' "$line" \
+        "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
+  if [ "$n" -gt "$RUN_ROW_MAX" ]; then
+    die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트) — 긴 값은 리포트로 빼야 합니다: ${series}"
+  fi
   printf '%s\n' "$line" >> "$LEDGER"
 }
 
@@ -2965,8 +3005,32 @@ main_loop() {
 
   ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
     "관측 시각=$(now_iso)"
-  report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · 보류 ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
-  log "런 종료 (머지 $merged · 완성-미착지 $landed · 보류 $parked)"
+  report_run_residual
+  # `park` AND NOT `보류`. The two words were one: this counter holds segments the
+  # driver parked, while `보류` is the disposition of a termination clause waiting
+  # on a person's answer — and both appear in the same report, so the reader had
+  # to guess which sense was meant on each line.
+  report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
+  log "런 종료 (머지 $merged · 완성-미착지 $landed · park $parked)"
+}
+
+# THE GATE'S TERMINAL LINE, FORWARDED RATHER THAN REBUILT.
+#
+# The `done` file is where a run's residual actually lives — the questions left
+# open and the termination clauses each of them holds — and none of it reached
+# the morning report, which is the one surface a person reads. A run that ended
+# with three questions outstanding and one that ended with none wrote the same
+# report. The gate already composed that string, so this is a hand-off rather
+# than a second implementation of it; rebuilding the line here would put a second
+# renderer where the two could drift.
+#
+# A missing file is the ordinary case — a run that never proposed done never
+# wrote one — so it is silent rather than an absence worth reporting. Its own
+# function so that the test harness can reach it: the walk it is called from
+# needs a whole plan to run.
+report_run_residual() {
+  [ -f "$RUN_DIR/done" ] || return 0
+  report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
 }
 
 # Record the radius an unknown apply outcome stops, and hold it so the walk can
@@ -2984,9 +3048,11 @@ radius_park() {
       seg_alias "$seg" > "$RUN_DIR/halted-repo.txt" 2>/dev/null || : > "$RUN_DIR/halted-repo.txt"
       log "적용 불명 — 폭발 반경 '레포', 같은 레포의 남은 세그먼트를 park" ;;
     *)
-      printf '%s\n' "$radius" | tr ',' '\n' | while IFS= read -r d; do
-        d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-        [ -n "$d" ] && printf '%s\n' "$d" >> "$RUN_DIR/halted-segments.txt"
+      # The radius is a slice list in the same spelling `선행` uses, so it gets
+      # the same normalization — a radius written `슬라이스 SA, 슬라이스 SB` has
+      # to name the same two segments the dependency guard would name.
+      for d in $(dep_tokens "$radius"); do
+        printf '%s\n' "$d" >> "$RUN_DIR/halted-segments.txt"
       done
       log "적용 불명 — 폭발 반경 '$radius'" ;;
   esac
@@ -3009,12 +3075,11 @@ in_halted_radius() {
 # likely place a first multi-repo run diverges from what the author pictured, so
 # it is recorded rather than assumed understood.
 cross_repo_deps() {
-  local seg="$1" deps="$2" mine d other
-  case "$deps" in ''|'-'|'없음') return 0 ;; esac
+  local seg="$1" deps mine d other
+  deps=$(dep_tokens "$2")
+  [ -n "$deps" ] || return 0
   mine=$(seg_alias "$seg") || return 0
-  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
-    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$d" ] || continue
+  for d in $deps; do
     other=$(seg_alias "$d") || continue
     [ "$other" = "$mine" ] && continue
     log "$seg: 선행 $d 는 레포가 달라 쌓기가 아니라 순서만 보장된다 ($other -> $mine)"
@@ -3030,18 +3095,43 @@ plan_uncell() { local v="$1"; [ "$v" = "-" ] && printf '' || printf '%s' "$v"; }
 # `선행` is satisfied when every named slice is in this run's done list. The
 # literal `없음` is a POSITIVE statement of independence; a missing line is not,
 # which is why the field is required rather than optional.
-deps_satisfied() {
-  local deps="$1" d
-  case "$deps" in ''|'-'|'없음') return 0 ;; esac
-  # The trailing newline is required, not cosmetic: `read` returns non-zero on a
-  # final line that has none, so the loop body never runs for the LAST item and
-  # a one-element `선행` list is satisfied vacuously — every dependency guard
-  # passes and the topological walk degenerates into arbitrary order.
-  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
-    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$d" ] || continue
-    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || exit 1
+#
+# ONE NORMALIZATION FOR THREE CONSUMERS, AND IT MATCHES THE GATE'S. There were
+# four readers of this field across the two files and no two of them agreed:
+# each of the three here tested the WHOLE value against the null sentinels
+# instead of testing each token, so `선행=없음,SA` was a real list to one and
+# nothing to another; and the gate's own reader neither accepted `-` nor stripped
+# the `슬라이스 ` prefix a design document writes, so one spelling of one
+# dependency was one token on this side and two unknown ones on the side that
+# decides whether the row may be written.
+#
+# The sentinel set below is `gate_dep_tokens`'s, character for character. That is
+# the whole property: an agreement written twice is an agreement until someone
+# edits one copy, so the two are marked as one pair rather than left to look
+# coincidental.
+dep_tokens() {
+  # dep_tokens <선행 값> — the dependency ids as whitespace-separated tokens.
+  local t out=""
+  for t in $(printf '%s' "${1:-}" | tr ',' ' '); do
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
+    t=${t#슬라이스}
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
+    out="$out $t"
   done
+  printf '%s' "${out# }"
+}
+
+deps_satisfied() {
+  # A `for` over tokens rather than a `while read` down a pipe, and the shape is
+  # load-bearing twice over: the old loop ran in a SUBSHELL, so it signalled
+  # failure with `exit 1` and any other state it touched was lost; and `read`
+  # returns non-zero on a final line with no newline, which silently skipped the
+  # LAST dependency and made a one-element list satisfied vacuously.
+  local d
+  for d in $(dep_tokens "$1"); do
+    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || return 1
+  done
+  return 0
 }
 
 # Shell-built plan from the declaration. No model in this path at all.

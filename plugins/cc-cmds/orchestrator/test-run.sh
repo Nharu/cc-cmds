@@ -1631,6 +1631,140 @@ for v in CC_PIPELINE_RUN_ID CC_PIPELINE_GRANT CC_PIPELINE_LEDGER CC_PIPELINE_RUN
 done
 
 # ---------------------------------------------------------------------------
+# 22. 원장의 둘째 필자도 게이트와 같은 필드 정규화를 받는다
+#
+# `ledger_row` 는 게이트와 같은 파일에 쓰면서 게이트의 바닥을 하나도 거치지
+# 않았다. `|` 는 필드를 가르고 개행은 행을 끝내므로, 그 둘을 담은 값은 행 문법을
+# 스플라이스한다 — 그리고 이 함수에 닿는 값은 설계 문서의 `선행`·`선언 파일
+# 집합`과 모델 출력이라 한국어 산문의 파이프가 예사롭다. 스플라이스된 `segment`
+# 행은 지저분한 정도가 아니다: 모든 판독기가 행 텍스트를 `|` 로 가르고 `id=` 를
+# 탐욕적으로 잡으므로, 그 행이 어느 세그먼트에 대한 것인지가 바뀐다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"
+LEDGER="$WORK/ledger-norm.md"; : > "$LEDGER"
+ledger_row 'segment' "id=SP" "선행=SA|SB" "사유=파이프 | 가 든 산문"
+# 행 텍스트를 직접 본다 — `ledger_last` 는 마지막 필드가 아닌 값에 후행 공백을
+# 남기므로, 그것으로 재면 정규화가 아니라 판독기의 손질을 재게 된다.
+case "$(grep -F 'id=SP' "$LEDGER")" in
+  *'| 선행=SA/SB |'*) ok "값 안의 파이프가 슬래시로 바뀐다" ;;
+  *) bad "필드 정규화" "$(grep -F 'id=SP' "$LEDGER")" ;;
+esac
+check "그 행은 여전히 한 줄이다" "$(grep -c . "$LEDGER")" "1"
+case "$(grep -F 'id=SP' "$LEDGER")" in
+  *'사유=파이프 / 가 든 산문'*) ok "산문 안의 파이프도 새 필드를 만들지 못한다" ;;
+  *) bad "필드 정규화" "$(grep -F 'id=SP' "$LEDGER")" ;;
+esac
+: > "$LEDGER"
+ledger_row 'segment' "id=SN" "사유=첫 줄
+둘째 줄"
+check "값 안의 개행이 행을 끊지 못한다" "$(grep -c . "$LEDGER")" "1"
+# 상한을 넘는 행은 `die` 로 멈춘다 — 게이트와 같은 처분이므로 서브셸에서 잰다.
+LONGV=$(printf '%1100s' '' | tr ' ' 'x')
+( ledger_row 'segment' "id=SL" "사유=$LONGV" ) >/dev/null 2>&1
+check "상한을 넘는 행은 거부된다" "$?" "1"
+check "거부된 행은 원장에 남지 않는다" "$(grep -cF 'id=SL' "$LEDGER" || true)" "0"
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 23. `선행` 판독기는 하나이고, 게이트의 것과 같은 어휘를 쓴다
+#
+# 이 필드의 판독기가 두 파일에 넷 있었고 어느 둘도 일치하지 않았다. 이쪽 셋은
+# 널 sentinel 을 토큰이 아니라 값 전체에 대고 검사해 `없음,SA` 가 한쪽에는 실제
+# 목록이고 다른 쪽에는 아무것도 아니었으며, 게이트의 판독기는 `-` 를 널로 받지도
+# 설계 문서가 적는 `슬라이스 ` 접두사를 벗기지도 않아 한 의존의 한 철자가 이쪽에선
+# 한 토큰이고 저쪽에선 미지 토큰 둘이었다 — 그리고 저쪽이 행을 쓸 수 있는지를
+# 정하는 바닥이다.
+# ---------------------------------------------------------------------------
+check "쉼표와 공백 철자가 같은 토큰 집합으로 읽힌다" "$(dep_tokens 'SA, SB')" "SA SB"
+check "공백만으로 구분한 철자도 같다" "$(dep_tokens 'SA SB')" "SA SB"
+check "슬라이스 접두사가 벗겨진다" "$(dep_tokens '슬라이스 SA, 슬라이스 SB')" "SA SB"
+check "널 sentinel 은 토큰 단위로 떨어진다" "$(dep_tokens '없음,SA')" "SA"
+check "괄호 친 없음도 널이다" "$(dep_tokens '(없음)')" ""
+check "대시도 널이다" "$(dep_tokens '-')" ""
+check "빈 값도 널이다" "$(dep_tokens '')" ""
+# 세 소비처가 전부 그 하나를 거치는지 — 이 항목의 값은 정규화 자체가 아니라
+# 정규화가 한 곳에 있다는 사실이므로, 판독기가 다시 갈라지면 여기서 잡힌다.
+for fn in deps_satisfied cross_repo_deps radius_park; do
+  if sed -n "/^$fn()/,/^}/p" "$DRIVER" | grep_all_q 'dep_tokens'; then
+    ok "$fn 이 dep_tokens 를 거친다"
+  else
+    bad "선행 판독기" "$fn 이 자기 정규화를 갖고 있다"
+  fi
+done
+# 그리고 게이트의 sentinel 집합과 축자로 같은지. 두 번 적은 합의는 누군가 한쪽을
+# 고치기 전까지만 합의이므로, 우연처럼 보이게 두지 않는다.
+GATE_SH="$(dirname "$DRIVER")/gate.sh"
+sent_run=$(sed -n '/^dep_tokens()/,/^}/p' "$DRIVER" | grep -cF "''|'-'|'없음'|'(없음)'" || true)
+sent_gate=$(sed -n '/^gate_dep_tokens()/,/^}/p' "$GATE_SH" | grep -cF "''|'-'|'없음'|'(없음)'" || true)
+if [ "${sent_run:-0}" -ge 1 ] && [ "$sent_run" = "$sent_gate" ]; then
+  ok "두 판독기의 널 sentinel 집합이 축자로 같다"
+else
+  bad "sentinel 일치" "run.sh ${sent_run}회 vs gate.sh ${sent_gate}회"
+fi
+if sed -n '/^gate_dep_tokens()/,/^}/p' "$GATE_SH" | grep_all_q '슬라이스'; then
+  ok "게이트의 판독기도 슬라이스 접두사를 벗긴다"
+else
+  bad "접두사 일치" "게이트 쪽은 여전히 슬라이스 접두사를 토큰의 일부로 읽는다"
+fi
+# `선행` 하나짜리 목록이 공허하게 충족되지 않는지. 옛 형태는 파이프 오른쪽의
+# `read` 가 개행 없는 마지막 줄에서 비영으로 끝나 마지막 항목을 건너뛰었고, 그래서
+# 원소가 하나면 의존 가드가 전부 통과해 위상 순회가 임의 순서로 무너졌다.
+DONE_SAVE="${RUN_DIR}"
+RUN_DIR="$WORK/deps-run"; mkdir -p "$RUN_DIR"
+printf 'SA\n' > "$RUN_DIR/done.txt"
+if deps_satisfied '없음'; then ok "없음 은 충족으로 읽힌다"; else bad "선행 충족" "없음 이 미충족이 됐다"; fi
+if deps_satisfied 'SA'; then ok "착지한 선행 하나는 충족이다"; else bad "선행 충족" "SA 가 done 에 있는데 미충족이다"; fi
+if deps_satisfied 'SZ'; then bad "선행 충족" "착지하지 않은 원소 하나짜리 목록이 공허하게 통과했다"; else ok "착지하지 않은 원소 하나짜리 목록은 미충족이다"; fi
+if deps_satisfied 'SA,SZ'; then bad "선행 충족" "뒤쪽 원소를 건너뛰었다"; else ok "목록의 뒤쪽 원소도 검사된다"; fi
+if deps_satisfied '슬라이스 SA'; then ok "슬라이스 접두사를 쓴 선행도 충족으로 해소된다"; else bad "선행 충족" "접두사가 붙으면 미충족이 된다"; fi
+RUN_DIR="$DONE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 24. 아침 리포트가 게이트의 종단 줄을 싣는다
+#
+# 열린 물음과 그것이 붙들고 있는 종료 절은 전부 `done` 파일에만 있었고, 사람이
+# 읽는 유일한 면인 아침 리포트에는 한 글자도 닿지 않았다. 물음 셋을 남기고 끝난
+# 런과 하나도 남기지 않은 런이 같은 리포트를 썼다.
+# ---------------------------------------------------------------------------
+RUN_DIR_SAVE3="$RUN_DIR"; BASE_SAVE3="$BASE"; RUN_ID_SAVE3="$RUN_ID"
+RUN_DIR="$WORK/res-run"; mkdir -p "$RUN_DIR"
+BASE="$WORK/res-base"; RUN_ID="resrun"
+report_run_residual
+if [ -f "$(report_path)" ]; then
+  bad "종료 잔여" "done 파일이 없는데 리포트를 만들었다"
+else
+  ok "done 파일이 없으면 조용히 건너뛴다 (제안하지 않은 런의 정상 경로다)"
+fi
+printf '2026-09-02T00:00:00Z 종단 — 질의 잔여 2건 · 승인 J-aaaa1111 J-bbbb2222 · 보류 절 K1(J-aaaa1111) K2(J-bbbb2222) · 근거 x\n' \
+  > "$RUN_DIR/done"
+report_run_residual
+RES_REPORT="$(report_path)"
+if [ -f "$RES_REPORT" ] && grep_all_q -F '질의 잔여 2건' < "$RES_REPORT"; then
+  ok "종단 줄의 질의 잔여가 리포트에 도달한다"
+else
+  bad "종료 잔여" "$(cat "$RES_REPORT" 2>/dev/null || printf '(리포트 없음)')"
+fi
+if grep_all_q -F '보류 절 K1(J-aaaa1111) K2(J-bbbb2222)' < "$RES_REPORT"; then
+  ok "보류 절 항목과 승인 id 가 축자로 도달한다 (재구성이 아니라 전달이다)"
+else
+  bad "종료 잔여" "$(cat "$RES_REPORT" 2>/dev/null || printf '(리포트 없음)')"
+fi
+RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
+# 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
+# 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
+# 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
+if grep -qF 'park ${parked}건' "$DRIVER"; then
+  ok "종료 요약이 park 된 세그먼트를 park 이라 부른다"
+else
+  bad "종료 요약" "park 계수기의 이름이 park 이 아니다"
+fi
+if grep -qF '보류 ${parked}건' "$DRIVER"; then
+  bad "종료 요약" "park 계수기를 아직 보류 라고 부른다 — 종료 절의 보류와 한 단어다"
+else
+  ok "park 계수기가 종료 절의 보류와 다른 단어를 쓴다"
+fi
+
+# ---------------------------------------------------------------------------
 # The detach path is gone, and its absence is asserted rather than assumed.
 #
 # The run is driven by the main session's model now. Detaching would move the
