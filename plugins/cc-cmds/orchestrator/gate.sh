@@ -2458,6 +2458,34 @@ gate_physical_path() {
   printf '%s' "$p"
 }
 
+gate_path_spelling() {
+  # gate_path_spelling <경로> — the path with redundant separators folded away: a
+  # run of `/` becomes one, and a `/./` segment becomes `/`.
+  #
+  # Sibling of `gate_physical_path`, folding one layer below it. That one makes
+  # two spellings of a DIRECTORY compare equal by resolving symlinks; this one
+  # makes two spellings of a SEPARATOR compare equal. Arm 2 of the manifest guard
+  # compares the caller's own bytes against a value the gate normalized, and those
+  # two differ by separators alone whenever a path was built by concatenation:
+  # `mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX"` on a host whose `TMPDIR` ends in `/`
+  # hands back `…/T//x.abc`, while the `cd`+`pwd` normalization at argument-parse
+  # time folds the gate's copy to `…/T/x.abc`.
+  #
+  # Written out rather than delegated to `readlink -f` for the same reason
+  # `gate_physical_path` is: that spelling differs between the BSD and GNU builds.
+  #
+  # Both folds have overlapping matches — `///` leaves a `//` behind, `/././`
+  # leaves a `/./` — so this runs to a fixpoint rather than in one pass. Each pass
+  # either shortens the string or changes nothing, so the loop terminates.
+  local p="$1" prev=''
+  while [ "$p" != "$prev" ]; do
+    prev=$p
+    p=${p//\/\//\/}
+    p=${p//\/.\//\/}
+  done
+  printf '%s' "$p"
+}
+
 gate_manifest_write_refuse() {
   # The refusal text, in one place because three arms reach it. Two arms with
   # their own wording would read as two different rules to whoever hits them.
@@ -2503,6 +2531,8 @@ gate_manifest_write_guard() {
   #          manifest's directory in both spellings, and the two variable names.
   #          The directory is what catches `…/X.plan.m?`, a glob that shares no
   #          basename with the file it will open but has to say where it lives.
+  #          Saying where is not the same as spelling it the gate's way, so both
+  #          sides are separator-folded first; arm 2 below records what that cost.
   #   arm 3  physical path identity for elements shaped like a path. It is the
   #          only arm that sees an alias symlink, which shares neither basename
   #          nor directory with the file it writes.
@@ -2524,7 +2554,7 @@ gate_manifest_write_guard() {
   local graded="$1"; shift
   [ -n "${MANIFEST:-}" ] || return 0
   case "$graded" in 읽기) return 0 ;; esac
-  local a mbase mdir mdirp mreal adir areal joined argv0
+  local a mbase mdir mdirp mreal adir areal joined argv0 joinedn mdirn mdirpn
   mbase=$(basename "$MANIFEST")
   [ -n "$mbase" ] || return 0
   mdir=$(dirname "$MANIFEST")
@@ -2542,10 +2572,26 @@ gate_manifest_write_guard() {
   # than the one below — the manifest's DIRECTORY counts, not only its basename.
   #
   # The directory is what closes the glob spelling. `…/X.plan.m?` shares no
-  # basename with `X.plan.md`, but it names the same directory verbatim, because
-  # a glob that is going to reach the file has to say where the file is. The
-  # environment variable names are here for the same reason one step earlier:
-  # `printf x >> "$CC_PIPELINE_MANIFEST"` never spells the path at all.
+  # basename with `X.plan.md`, but a glob that is going to reach the file has to
+  # say where the file is. The environment variable names are here for the same
+  # reason one step earlier: `printf x >> "$CC_PIPELINE_MANIFEST"` never spells
+  # the path at all.
+  #
+  # HAVING TO SAY WHERE IS NOT HAVING TO SPELL IT THE GATE'S WAY. The sentence
+  # that stood here said the glob "names the same directory verbatim", and that
+  # was measured false in this very tree: the caller's bytes carried `…/T//x.abc`
+  # — a `TMPDIR` ending in `/` fed straight into a `mktemp` template, which
+  # `mktemp` returns as given — while the gate held `…/T/x.abc`, folded by the
+  # `cd`+`pwd` normalization at argument-parse time. Same directory, different
+  # spelling, containment missed, and the glob went through with the two other
+  # arms blind to it by construction. The physical spelling `mdirp` did not help:
+  # it was added for a symlinked root, which is a different divergence.
+  #
+  # So both sides go through `gate_path_spelling` before the comparison. That
+  # closes every duplicate- and dot-separator spelling of this arm at once —
+  # `//`, `///`, `/./` all fold to the same bytes — rather than the one glob that
+  # happened to be measured. The basename and variable-name tests carry no
+  # separator and are left on the raw bytes.
   argv0=${1##*/}
   case "$argv0" in
     bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs)
@@ -2553,9 +2599,12 @@ gate_manifest_write_guard() {
       case "$joined" in *"$mbase"*|*CC_PIPELINE_MANIFEST*|*MANIFEST*)
         gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
       esac
-      case "$mdir" in
+      joinedn=$(gate_path_spelling "$joined")
+      mdirn=$(gate_path_spelling "$mdir")
+      mdirpn=$(gate_path_spelling "$mdirp")
+      case "$mdirn" in
         ''|'/'|'.') ;;
-        *) case "$joined" in *"$mdir"*|*"$mdirp"*)
+        *) case "$joinedn" in *"$mdirn"*|*"$mdirpn"*)
              gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
            esac ;;
       esac
