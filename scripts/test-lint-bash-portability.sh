@@ -46,9 +46,20 @@ for candidate in "${LC_ALL:-}" "${LANG:-}" en_US.UTF-8 C.UTF-8; do
     break
   fi
 done
+
+# Where the probe comes up empty the suite skips the fixtures that turn on the
+# ambient pass rather than standing the whole run down. glibc dropped U+00A0
+# from the space class, so on such a host no locale can make the ambient pass
+# differ from the C-pinned one and the lint reports the multibyte-space file
+# clean whatever it is given — the property those fixtures guard is not a
+# property that host has. Failing them would redden a leg for something
+# unreachable there, and passing them would let a real regression hide behind an
+# assertion that never ran. Every other fixture is ASCII and its verdict does
+# not move with the locale, so the rest of the suite runs as usual.
+locale_dependent_fixtures="FAIL-16-multibyte-space"
+skip_reason=""
 if [[ -z "$utf8_locale" ]]; then
-  echo "test-lint-bash-portability: no locale on this host classifies U+00A0 as space, so the lint's ambient pre-filter pass cannot be told from its C-pinned one" >&2
-  exit 2
+  skip_reason="no locale on this host classifies U+00A0 as space, so the lint's ambient pre-filter pass cannot be told from its C-pinned one"
 fi
 
 if [[ ! -d "$fixtures" ]]; then
@@ -61,6 +72,7 @@ trap 'rm -f "$stderr_capture"' EXIT
 
 passed=0
 failures=0
+skipped=0
 
 for fixture in "$fixtures"/*/; do
   fixture_name=$(basename "$fixture")
@@ -74,9 +86,20 @@ for fixture in "$fixtures"/*/; do
       ;;
   esac
 
+  if [[ -n "$skip_reason" ]] && [[ " $locale_dependent_fixtures " == *" $fixture_name "* ]]; then
+    skipped=$((skipped + 1))
+    printf 'SKIP: %s — %s\n' "$fixture_name" "$skip_reason"
+    continue
+  fi
+
   set +e
-  LC_ALL="$utf8_locale" SCAN_ROOT="$fixture" bash "$script_dir/lint-bash-portability.sh" \
-    >/dev/null 2>"$stderr_capture"
+  if [[ -n "$utf8_locale" ]]; then
+    LC_ALL="$utf8_locale" SCAN_ROOT="$fixture" bash "$script_dir/lint-bash-portability.sh" \
+      >/dev/null 2>"$stderr_capture"
+  else
+    SCAN_ROOT="$fixture" bash "$script_dir/lint-bash-portability.sh" \
+      >/dev/null 2>"$stderr_capture"
+  fi
   ec=$?
   set -e
 
@@ -116,7 +139,8 @@ for fixture in "$fixtures"/*/; do
   fi
 done
 
-echo "test-lint-bash-portability: $passed passed, $failures failed"
+printf 'test-lint-bash-portability: %d passed, %d failed, %d skipped\n' \
+  "$passed" "$failures" "$skipped"
 
 if (( failures > 0 )); then
   exit 1
