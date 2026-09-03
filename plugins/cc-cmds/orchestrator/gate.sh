@@ -3304,8 +3304,36 @@ gate_b3_act_budget() {
   # `grep` with no match exits 1, `pipefail` promotes it, and `set -e` then
   # kills the whole gate on the ordinary case of "no exec acts yet" — silently,
   # with the exit status of a refusal and none of the message.
-  local n
-  n=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } | { grep -v '축2=읽기' || true; } | gate_count)
+  #
+  # THE WINDOW IS THE WHOLE POINT, AND IT USED TO BE MISSING. The sentence above
+  # said "since the last progress move" while the count ran over the entire
+  # ledger from the run's first row, so the budget was a LIFETIME cap wearing the
+  # name of a window. Past it the boundary fired on every judgment for the rest
+  # of the run — and because the count is in the message, and the message is in
+  # the approval id, each firing opened a NEW pending approval rather than
+  # re-opening one. Every pending approval blocks termination condition 1 and
+  # can only be closed by a person, so a run that crossed the budget could not
+  # be finished at all: each act needed to reach the end re-armed the thing
+  # stopping it. Measured at 71 against a budget of 40.
+  #
+  # The reset mirrors B1 and B2 — a digest of the progress vector beside the
+  # count it belongs to. What differs is what is stored: B1 counts repeats of an
+  # unchanged digest, while this counts acts SINCE that digest last changed, so
+  # the companion file holds the baseline the current total is measured from
+  # rather than a repeat tally.
+  local n total prev base h
+  total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } | { grep -v '축2=읽기' || true; } | gate_count)
+  h=$(gate_progress_digest)
+  prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
+  base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
+  # Progress moved: this act is the first of a new window, so the acts before it
+  # are spent history and the baseline becomes the total as of now.
+  if [ "$h" != "$prev" ]; then
+    base="$total"
+    printf '%s\n' "$h"     > "$RUN_DIR/act-budget-digest"
+    printf '%s\n' "$base"  > "$RUN_DIR/act-budget-base"
+  fi
+  n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
   gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
 }

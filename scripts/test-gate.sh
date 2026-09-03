@@ -2741,5 +2741,59 @@ drain_act
 n=$(grep -cF '원인=불명 | 사유=정체 사유 X' "$LEDGER" || true)
 check "해소 뒤 같은 사유가 다시 멈추면 그 관측이 다시 전사된다" "$n" "2"
 
+# ---------------------------------------------------------------------------
+# 12b. B3's budget is a WINDOW, and the two halves are asserted separately
+#
+# The budget's sentence has always said "since the last progress move" while the
+# count ran over the whole ledger, so past the bound the boundary fired on every
+# judgment for the rest of the run. Nothing caught it because B3 had no test of
+# its own at all — the name appeared in this file only inside comments about
+# B1's suspension. A silenced boundary and a fixed one look identical from the
+# "does not fire" side, so both directions are asserted here.
+#
+# Approvals are resolved first for the same reason section 12 resolves them: an
+# open one suspends B1..B3, and a suspended boundary that does not fire would
+# pass the first assertion while proving nothing.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+i=0
+while [ "$i" -lt 41 ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
+  i=$((i + 1))
+done
+
+# Half one — the window is OPEN and 41 acts have been spent inside it. The
+# baseline on file is the count as it stood when this window began, so a
+# boundary that measures the window sees 41 against a bound of 40.
+printf '%s\n' "$(PD)" > "$RD/act-budget-digest"
+printf '%s\n' "0"     > "$RD/act-budget-base"
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B3 예산 소진" -- touch "$WORK/t4"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "B3 이 한 창 안에서 예산을 넘기면 발동한다"
+else
+  bad "B3" "예산을 넘겼는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+fi
+
+# Half two — the regression. The same 41 acts, but progress has moved since,
+# which closes the old window and opens a new one holding none of them. A count
+# that never resets fires here; a windowed one does not.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+printf '%s\n' "진전이 그 뒤로 움직였음을 뜻하는 낡은 값" > "$RD/act-budget-digest"
+printf '%s\n' "0" > "$RD/act-budget-base"
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
+
+
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
