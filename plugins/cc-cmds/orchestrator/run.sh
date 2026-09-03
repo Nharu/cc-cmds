@@ -1787,7 +1787,9 @@ stage_spawn() {
   # and `reap_orphan` remove the pid and the group and leave this file behind,
   # and a `*.pid` glob cannot see it once the pid file is gone. `.pgid` keeps the
   # one job only it can do: the group reclaim in `reap_orphan`.
-  { LC_TIME=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
+  # `LC_ALL` rather than `LC_TIME`: the reader is a different process and only
+  # the top-ranked locale variable survives whatever it inherited.
+  { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
     | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$stage.start"
   # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
   # its successor can find. All three go to the volatile directory only.

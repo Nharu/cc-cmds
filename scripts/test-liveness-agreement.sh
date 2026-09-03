@@ -178,5 +178,41 @@ for f in "$GATE" "$WATCH" "$SL"; do
   check "$(basename "$f") 는 자기 라이브니스 판정을 갖지 않는다" "$n" "0"
 done
 
+# ---------------------------------------------------------------------------
+# Agreement across LOCALES, not just across consumers.
+#
+# The four consumers share one predicate, so they cannot disagree about code —
+# but they are four processes with four environments, and the fingerprint they
+# compare is a date that `ps` localises. Measured: a stage recorded from a shell
+# exporting `LC_ALL=ko_KR.UTF-8` wrote `2026년 9월 4일 금요일 00시 35분 25초`,
+# and a reader that had cleared `LC_ALL` computed `Fri Sep 4 00:35:25 2026` for
+# the same process, so the compare failed and a running stage read as dead. The
+# driver clears `LC_ALL` at startup and the watcher does not, which is exactly a
+# writer and a reader that disagree.
+#
+# Nothing errors when this breaks — it UNDER-counts, and an under-count lets a
+# run declare itself finished while a stage is still running. The consumer-level
+# assertions above cannot see it: they run in one process, so both sides of the
+# compare fold the same way and agree on a wrong answer.
+#
+# Written across a real process boundary with a real locale on each side, since
+# reading the pin out of the source would only re-assert the line that was
+# already there and wrong.
+fx_mkrun agree-loc
+fx_stage_live S1
+RD_L="$FX_RUN_DIR"
+for lc in ko_KR.UTF-8 en_US.UTF-8 C; do
+  got=$(LC_ALL="$lc" bash -c '. "$1"; cc_live_stages "$2"' _ "$LIVENESS" "$RD_L")
+  check "지문이 로케일에 불변이다 (읽는 쪽 LC_ALL=$lc)" "$got" "1"
+done
+# The loop above varies the READER while this suite's own locale fixes the
+# writer, so on a runner whose locale happens to be the C form an unpinned
+# writer would still pass it. This pins the writer directly and without naming a
+# locale: the recorded form is ASCII in every locale that spells the date in
+# ASCII, and the localised forms this breaks on are precisely the ones that are
+# not. Byte collation, because the class is about bytes.
+nonascii=$(LC_ALL=C grep -c '[^ -~]' "$RD_L/S1.start" || true)
+check "기록된 지문이 로케일 문자를 담지 않는다 (쓰는 쪽)" "$nonascii" "0"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

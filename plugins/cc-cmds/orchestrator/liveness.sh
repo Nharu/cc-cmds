@@ -44,10 +44,14 @@ cc_stage_is_live() {
   [ -n "$run_dir" ] && [ -n "$seg" ] || return 1
   f="$run_dir/$seg.pid"
   [ -f "$f" ] || return 1
-  # LC_TIME is fixed HERE rather than at script scope. These functions are
-  # sourced by four different consumers; if the fingerprint's shape depended on
-  # the sourcing script's locale, two of them would compare different strings
-  # for the same process and disagree about whether it is alive.
+  # The fingerprint's shape must not depend on the sourcing script's locale, or
+  # two of the four consumers compare different strings for the same process and
+  # disagree about whether it is alive. Pinning it here is not enough on its own:
+  # `LC_TIME` loses to `LC_ALL`, so a consumer launched from a shell that exports
+  # `LC_ALL` kept reading the localised form while the writer — which clears
+  # `LC_ALL` before it records — had written the C form. The capture itself
+  # therefore pins `LC_ALL`, which nothing outranks; this stays for the callers
+  # that read a fingerprint without going through the capture.
   local LC_TIME=C
   export LC_TIME
   # A pid file is a STAGE only if it carries a sibling one of the two spawners
@@ -115,7 +119,16 @@ cc_live_stages() {
 cc_proc_fingerprint() {
   # cc_proc_fingerprint <pid> — the pid's start time, whitespace-normalised.
   # The pair (pid, start time) is the identity; the pid alone is not.
-  ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  #
+  # `LC_ALL` rather than `LC_TIME`, because this string is compared across
+  # process boundaries and the two sides do not share an environment. `ps -o
+  # lstart=` is a localised date — under a Korean locale it reads `2026년 9월 4일
+  # 금요일 00시 35분 25초` where the C locale reads `Fri Sep 4 00:35:25 2026` —
+  # and `LC_TIME` is overridden by an inherited `LC_ALL`, so a writer that had
+  # cleared `LC_ALL` and a reader that had not produced different strings for one
+  # live process. The reader then called it dead. `LC_ALL` as a command prefix
+  # outranks every other locale variable and does not leak past this line.
+  LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
 }
 
 cc_proc_pgid() {

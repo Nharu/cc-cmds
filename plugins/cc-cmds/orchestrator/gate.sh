@@ -4482,12 +4482,19 @@ gate_launch_stage() {
     -- "$@" > "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err" < /dev/null &
   local spid=$!
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
-  # `LC_TIME=C` on the WRITE side too. The watcher pins it on the read side, and
-  # a fingerprint is only a fingerprint if both sides format it the same way —
-  # under a Korean LC_TIME this line yields `2026년 8월 28일 …`, the comparison
+  # Pinned on the WRITE side too. The watcher pins it on the read side, and a
+  # fingerprint is only a fingerprint if both sides format it the same way —
+  # under a Korean locale this line yields `2026년 8월 28일 …`, the comparison
   # never matches, and the watcher silently skips every stage while reporting
   # "0 live". That failure is invisible: it does not error, it under-counts.
-  LC_TIME=C ps -o lstart= -p "$spid" 2>/dev/null \
+  #
+  # `LC_ALL`, not `LC_TIME`. The variable that decides the format is whichever
+  # one outranks the others in the process that runs `ps`, and `LC_ALL` outranks
+  # `LC_TIME` everywhere. This side clears `LC_ALL` at startup so `LC_TIME` was
+  # enough here, but the reader is a different process with a different
+  # environment; pinning the rank that nothing overrides removes the dependency
+  # on what the reader happens to have inherited.
+  LC_ALL=C ps -o lstart= -p "$spid" 2>/dev/null \
     | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$seg.start"
   wait "$spid" || rc=$?
   # Removed on exit, so "no record implies no process" stays true — a stale
