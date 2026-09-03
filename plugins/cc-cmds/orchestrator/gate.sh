@@ -842,7 +842,7 @@ gate_progress_vector() {
   # They are safe to include for the same reason segment rows are: the gate does
   # not write one on every act, only when a cycle is actually recorded.
   gate_rows 'cycle' \
-    | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u \
+    | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u \
     | while IFS= read -r cseg; do
         [ -n "$cseg" ] || continue
         printf 'cycle=%s|%s\n' "$cseg" \
@@ -906,9 +906,16 @@ gate_open_obligations() {
   # An obligation is closed only by a LATER cycle row for the same segment whose
   # report no longer carries the identity — a `problem` row records an attempt,
   # not a resolution, so reading closure from it would mark every re-try as a fix.
+  # `LC_ALL=C` here and at every other `sort -u` over a FIELD VALUE. These sorts
+  # are set operations, not presentation, and `-u` drops whatever collation calls
+  # equal — the `en_US.UTF-8` collation orders no Hangul, so two different Korean
+  # values compare equal and one of them disappears. `동일성` is Korean free text
+  # by contract, so this is the sort where it bites hardest: distinct problems
+  # would merge into one, the cone built from them would be wrong, and every
+  # check over it would report success.
   gate_rows 'problem' \
     | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' \
-    | sort -u | while IFS= read -r ident; do
+    | LC_ALL=C sort -u | while IFS= read -r ident; do
         [ -n "$ident" ] || continue
         printf 'obligation=%s\n' "$ident"
       done
@@ -1303,7 +1310,7 @@ $(target_field "$a" '실행 워크트리')"
       "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)" \
       "$wt_all" \
     | sed '/^$/d' | sed 's/^(없음)$//' | sed '/^$/d' \
-    | sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
+    | LC_ALL=C sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
 
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
@@ -2187,11 +2194,11 @@ gate_cone_members() {
   # fields and always appends `prev=` last, so no field a caller supplies is ever
   # the final one and the pipe is always there to anchor against.
   idents=$( { gate_rows 'problem' | grep -F "세그먼트=$anchor |" || true; } \
-            | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' | sort -u)
+            | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u)
   while IFS= read -r ident; do
     [ -n "$ident" ] || continue
     for sid in $( { gate_rows 'problem' | grep -F "동일성=$ident |" || true; } \
-                  | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
+                  | sed -n 's/.*세그먼트=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u); do
       case "$members" in *" $sid "*) continue ;; esac
       # THE SAME TERMINAL FILTER THE OTHER THREE AXES CARRY. This seed loop was
       # the one that did not, so a segment already landed or abandoned was pulled

@@ -3470,8 +3470,8 @@ fi
 # reasons. Both directions here too — reading only `_common/` is the one-sided
 # green that let the parser rename slip past two checks at once.
 REALC="$repo_root/plugins/cc-cmds/skills/_common"
-real_parser=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$GATE" || true; } | tr -d '\\' | sort -u)
-real_doc=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$REALC" || true; } | tr -d '\\' | sort -u)
+real_parser=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$GATE" || true; } | tr -d '\\' | LC_ALL=C sort -u)
+real_doc=$( { grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$REALC" || true; } | tr -d '\\' | LC_ALL=C sort -u)
 if [ -n "$real_parser" ] && [ "$real_parser" = "$real_doc" ]; then
   ok "실제 트리의 파서와 _common 이 같은 방출 마커 집합을 갖는다"
 else

@@ -191,7 +191,23 @@ EOF
 GATE_SH="$orch_root/gate.sh"
 common_root="$scan_root/plugins/cc-cmds/skills/_common"
 marker_scan() {
-  grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$@" 2>/dev/null | tr -d '\\' | sort -u
+  # `LC_ALL=C` ON THE SORT IS LOAD-BEARING, and the sort is where it matters.
+  # `sort -u` drops "duplicates" by COLLATION, and the `en_US.UTF-8` collation
+  # has no ordering for Hangul: every marker in this set compares equal to every
+  # other, so `-u` keeps one and discards the rest. Measured on one six-marker
+  # file — grep emitted 6, `tr` passed 6 through, and `sort -u` returned 1 under
+  # `en_US.UTF-8` against 6 under `ko_KR.UTF-8` and under `C`.
+  #
+  # The failure is silent and symmetric, which is what made it survive: markers
+  # collapse on BOTH sides of the comparison, the two sides therefore agree, and
+  # the rule reports success over a set it never really read. It reproduced only
+  # on a CI runner whose locale is `en_US.UTF-8` while the developer shell ran
+  # `ko_KR.UTF-8` — same source, honestly green in one place and hollow in the
+  # other.
+  #
+  # The grep gets the same pin for the same reason: its delimiters are ASCII and
+  # what it walks over is arbitrary bytes, so byte semantics are what it wants.
+  LC_ALL=C grep -rhoE '\\?\*\\?\*판단 [^*\\]+\\?\*\\?\*' "$@" 2>/dev/null | tr -d '\\' | LC_ALL=C sort -u
 }
 nmark=0
 if [[ ! -f "$GATE_SH" ]]; then
