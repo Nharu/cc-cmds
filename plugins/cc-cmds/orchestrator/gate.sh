@@ -2563,6 +2563,11 @@ gate_manifest_write_guard() {
   # that changes something and carries the manifest's name in its command line,
   # which is the thing to refuse.
   local graded="$1"; shift
+  # NO COMMAND MEANS NOTHING TO GUARD. The arms below read `$1` to classify the
+  # act, and under `set -u` an empty argv makes that read fatal rather than
+  # falsy — the gate died before it could enumerate its own conditions, which
+  # reads as the run being broken rather than as this call having nothing to do.
+  [ "$#" -ge 1 ] || return 0
   [ -n "${MANIFEST:-}" ] || return 0
   # THE READ GRADE IS NOT A PASS FOR A COMMAND THAT DELEGATES. `find` grades
   # `읽기` from argv0 alone, so `find <디렉터리> … -exec sh -c 'printf x >> {}' \;`
