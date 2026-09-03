@@ -715,8 +715,14 @@ gate_progress_vector() {
   # this re-introduces the original defect: the boundary's remedy writes an
   # `승인` row, never an `exec` one, so nothing here can reset the counter that
   # fired it.
+  # Selected POSITIVELY — the row must carry a grade, and that grade must not be
+  # `읽기`. Excluding `읽기` alone would also count a row with no `축2=` field at
+  # all, and a row whose surface grade is unknown is not evidence that anything
+  # changed. Unknown is not progress; counting it as progress would let the
+  # boundary be reset by a row that says nothing about what was done.
   printf 'acts=%s\n' \
     "$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
+       | { grep -F '축2=' || true; } \
        | { grep -v '축2=읽기' || true; } | gate_count)"
   # Settling a clause and clearing a run-scope block are progress by definition
   # — they are the only two moves whose whole purpose is to bring the run nearer
@@ -3349,7 +3355,13 @@ gate_b3_act_budget() {
   # the companion file holds the baseline the current total is measured from
   # rather than a repeat tally.
   local n total prev base h
-  total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } | { grep -v '축2=읽기' || true; } | gate_count)
+  # Positively selected, matching the progress vector: the grade must be present
+  # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
+  # grade at all, and here that spends budget on an act nobody established was
+  # above a read.
+  total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
+         | { grep -F '축2=' || true; } \
+         | { grep -v '축2=읽기' || true; } | gate_count)
   h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')

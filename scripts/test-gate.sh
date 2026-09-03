@@ -2831,6 +2831,16 @@ printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트
 after_v=$(PD)
 check "읽기 등급 행위는 진전으로 세지 않는다" "$after_v" "$before_v"
 
+# The third state, which excluding `읽기` alone would have missed: a row with no
+# grade at all. Unknown is not evidence that anything changed, and counting it
+# would let the boundary be reset by a row that says nothing about what was
+# done. Reachable in practice — the fixtures in test-snapshot.sh write exactly
+# this shape.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 근거=등급 없는 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "등급이 없는 행위는 진전으로 세지 않는다 (모름은 진전이 아니다)" "$after_v" "$before_v"
+
 # Half two — a clause settled and a run-scope block cleared are progress by
 # definition; they are the two moves whose purpose is to bring the run nearer
 # to ending.
