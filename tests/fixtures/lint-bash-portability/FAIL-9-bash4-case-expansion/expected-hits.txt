@@ -1,0 +1,2 @@
+probe.sh:8:bash4 case-expansion
+probe.sh:9:bash4 case-expansion
