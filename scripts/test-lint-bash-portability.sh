@@ -29,6 +29,28 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-bash-portability"
 
+# The lint nominates candidate lines under the ambient locale as well as under
+# `LC_ALL=C`, and a fixture can only hold the ambient half in place while the
+# ambient locale actually decodes UTF-8: on a host that leaves LANG unset the two
+# passes are one pass, a multibyte space stops being a space, and the fixture
+# that guards the ambient half reports a clean file. So pin the locale for every
+# fixture run instead of inheriting whatever the runner happens to export. The
+# probe asks for the property itself rather than trusting a name, and the
+# candidates span Apple libc (which has no C.UTF-8) and glibc (where en_US is not
+# always generated).
+utf8_locale=""
+for candidate in "${LC_ALL:-}" "${LANG:-}" en_US.UTF-8 C.UTF-8; do
+  [[ -n "$candidate" ]] || continue
+  if printf 'a\302\240b\n' | LC_ALL="$candidate" grep -qE 'a[[:space:]]b' 2>/dev/null; then
+    utf8_locale="$candidate"
+    break
+  fi
+done
+if [[ -z "$utf8_locale" ]]; then
+  echo "test-lint-bash-portability: no locale on this host classifies U+00A0 as space, so the lint's ambient pre-filter pass cannot be told from its C-pinned one" >&2
+  exit 2
+fi
+
 if [[ ! -d "$fixtures" ]]; then
   echo "FAIL: fixtures root missing: $fixtures" >&2
   exit 2
@@ -53,7 +75,7 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SCAN_ROOT="$fixture" bash "$script_dir/lint-bash-portability.sh" \
+  LC_ALL="$utf8_locale" SCAN_ROOT="$fixture" bash "$script_dir/lint-bash-portability.sh" \
     >/dev/null 2>"$stderr_capture"
   ec=$?
   set -e

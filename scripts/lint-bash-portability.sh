@@ -42,8 +42,8 @@
 # Exit codes:
 #   0 — all inputs pass
 #   1 — at least one violation found
-#   2 — the scan could not be carried out (no scannable files found, or a
-#       denylist table folded into an alternation grep refuses) — never a
+#   2 — the scan could not be carried out (no scannable files found, a pre-filter
+#       call this host's grep refuses, or not one input file readable) — never a
 #       verdict about the input. A single unreadable file is NOT this: it is
 #       reported as that file's own failure and the other files still get a
 #       verdict.
@@ -51,9 +51,10 @@
 # ---------------------------------------------------------------------------
 # Scan strategy — two phases.
 #
-# Phase 1 (nominate). Per file, one `grep -n` per denylist table, each carrying
-# that table's regexes joined into a single ERE alternation. Lines no regex can
-# reach are dropped here and never enter the shell.
+# Phase 1 (nominate). Per file, a fixed handful of `grep -n` calls, each carrying
+# one denylist table's regexes joined into a single ERE alternation and running
+# under one locale (see the locale note below). Lines no regex can reach are
+# dropped here and never enter the shell.
 #
 # Phase 2 (judge). Only the nominated lines run the per-idiom checks — comment
 # stripping, the same-line disable escape, the advice emission. That inner logic
@@ -83,6 +84,18 @@
 # is an end anchor buried inside an alternation branch of a single row
 # (`foo$|bar`) — that branch keeps its anchor and could fail to nominate a line
 # phase 2 would flag. No current row is written that way.
+#
+# The same "looser" requirement runs along a second axis, the LOCALE, and there
+# no single locale satisfies it. A UTF-8 matcher refuses a line that carries a
+# byte which is not valid UTF-8, so it would not nominate `sed -i ''` on such a
+# line even though phase 2 judges that row with a locale-independent bash
+# substring test. A C matcher narrows `[[:space:]]` to the ASCII blanks, so it
+# would not nominate a `date` and a `-j` separated by U+00A0 even though phase 2
+# judges that row with an ambient grep that does match it. Phase 1 therefore runs
+# the PATTERNS/LITERAL_PATTERNS alternation twice, ambient and `LC_ALL=C`, and
+# merges the two nominations; C_LOCALE_PATTERNS needs only its C pass, because
+# phase 2 judges that table under `LC_ALL=C` as well. The union is looser than
+# every phase-2 check, and it costs one more grep per file, not per line.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -190,26 +203,38 @@ for row in "${C_LOCALE_PATTERNS[@]}"; do
   fi
 done
 
-# A rejected alternation is a GLOBAL condition — it makes every file unscannable
-# — so try each one against empty input here, before any file is opened, and
-# abort with the offending table named. That leaves the in-loop greps free to
-# read their own exit 2 as what it can only be there: a per-file read failure.
-# `grep -q` on empty input reports exit 1 (no match); anything above that is the
-# ERE itself being refused.
-ere_ec=0
-grep -qE "$PREFILTER_ERE" </dev/null || ere_ec=$?
-if (( ere_ec > 1 )); then
-  echo "lint-bash-portability: PATTERNS/LITERAL_PATTERNS produced an alternation grep rejects (exit ${ere_ec})" >&2
-  exit 2
-fi
-if [[ -n "$C_PREFILTER_ERE" ]]; then
+# The phase-1 passes, in the order the per-file loop runs them: what to call the
+# pass in a message, which locale it is pinned to, which alternation it carries,
+# and which table that alternation came from.
+PREFILTER_LABELS=("ambient pre-filter" "C-pinned pre-filter" "C-table pre-filter")
+PREFILTER_PINS=("" "C" "C")
+PREFILTER_ERES=("$PREFILTER_ERE" "$PREFILTER_ERE" "$C_PREFILTER_ERE")
+PREFILTER_TABLES=("PATTERNS/LITERAL_PATTERNS" "PATTERNS/LITERAL_PATTERNS" "C_LOCALE_PATTERNS")
+
+# A refused pre-filter call is a GLOBAL condition — it makes every file
+# unscannable — so try each pass here, before any file is opened, and abort with
+# the offending table named. That leaves the in-loop greps free to read their own
+# exit 2 as what it can only be there: a per-file read failure.
+#
+# The probe has to be the loop's call verbatim, same flags and a file operand,
+# rather than the pattern alone: a host whose grep refuses `-a` sails past a
+# `grep -qE "$ere" </dev/null` and then fails on every file in turn, and each of
+# those failures is counted as a violation — which is exactly the exit 2 above
+# turning into a verdict about the input. On an empty file the call reports exit
+# 1 (no match); anything above that is the call itself being refused.
+for (( pass = 0; pass < ${#PREFILTER_ERES[@]}; pass++ )); do
+  [[ -n "${PREFILTER_ERES[$pass]}" ]] || continue
   ere_ec=0
-  LC_ALL=C grep -qE "$C_PREFILTER_ERE" </dev/null || ere_ec=$?
+  if [[ "${PREFILTER_PINS[$pass]}" == C ]]; then
+    LC_ALL=C grep -n -a -E "${PREFILTER_ERES[$pass]}" /dev/null || ere_ec=$?
+  else
+    grep -n -a -E "${PREFILTER_ERES[$pass]}" /dev/null || ere_ec=$?
+  fi
   if (( ere_ec > 1 )); then
-    echo "lint-bash-portability: C_LOCALE_PATTERNS produced an alternation grep rejects (exit ${ere_ec})" >&2
+    echo "lint-bash-portability: grep refuses the ${PREFILTER_LABELS[$pass]} call over ${PREFILTER_TABLES[$pass]} (exit ${ere_ec})" >&2
     exit 2
   fi
-fi
+done
 
 # Resolve scan root + default file list.
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -248,6 +273,7 @@ fi
 
 violation_count=0
 violation_files=0
+unreadable_files=0
 total_files=0
 
 for file in "${FILES[@]}"; do
@@ -280,36 +306,36 @@ for file in "${FILES[@]}"; do
     continue
   fi
 
-  # Phase 1 — nominate candidate lines. `-a` keeps a file that grep would call
-  # binary (a stray non-UTF-8 byte is exactly what the C-locale row hunts for)
-  # from collapsing to a "Binary file matches" line and losing its numbers.
+  # Phase 1 — nominate candidate lines, one pass per entry of the table above.
+  # `-a` keeps a file that grep would call binary (a stray non-UTF-8 byte is
+  # exactly what the C-locale row hunts for) from collapsing to a "Binary file
+  # matches" line and losing its numbers.
+  #
+  # The passes differ only in locale and alternation and their hits are simply
+  # concatenated, because every pass runs `grep -n -a -E` over the same file and
+  # so emits byte-identical records for a line more than one of them nominates.
+  # Which copy survives the de-duplication below therefore cannot change what
+  # phase 2 reads.
   #
   # grep's exit 1 means "no candidate on this file". Anything above that is a
-  # per-file condition now that the alternations were cleared before the loop —
-  # the file cannot be read. Swallowing it would hand back an empty candidate set
-  # that reads exactly like a clean file, so it is counted and named like any
-  # other per-file failure; aborting the run instead would erase the verdict on
-  # every file after it.
+  # per-file condition now that the calls were cleared before the loop — the file
+  # cannot be read. Swallowing it would hand back an empty candidate set that
+  # reads exactly like a clean file, so it is counted and named like any other
+  # per-file failure; aborting the run instead would erase the verdict on every
+  # file after it.
   candidates=""
-  grep_ec=0
-  hits=$(grep -n -a -E "$PREFILTER_ERE" "$file") || grep_ec=$?
-  if (( grep_ec > 1 )); then
-    echo "FAIL: $file — unreadable (pre-filter grep exit ${grep_ec})" >&2
-    violation_count=$((violation_count + 1))
-    violation_files=$((violation_files + 1))
-    continue
-  fi
-  if [[ -n "$hits" ]]; then
-    candidates="$hits"
-  fi
-  if [[ -n "$C_PREFILTER_ERE" ]]; then
+  unreadable=""
+  for (( pass = 0; pass < ${#PREFILTER_ERES[@]}; pass++ )); do
+    [[ -n "${PREFILTER_ERES[$pass]}" ]] || continue
     grep_ec=0
-    hits=$(LC_ALL=C grep -n -a -E "$C_PREFILTER_ERE" "$file") || grep_ec=$?
+    if [[ "${PREFILTER_PINS[$pass]}" == C ]]; then
+      hits=$(LC_ALL=C grep -n -a -E "${PREFILTER_ERES[$pass]}" "$file") || grep_ec=$?
+    else
+      hits=$(grep -n -a -E "${PREFILTER_ERES[$pass]}" "$file") || grep_ec=$?
+    fi
     if (( grep_ec > 1 )); then
-      echo "FAIL: $file — unreadable (C-locale pre-filter grep exit ${grep_ec})" >&2
-      violation_count=$((violation_count + 1))
-      violation_files=$((violation_files + 1))
-      continue
+      unreadable="${PREFILTER_LABELS[$pass]} grep exit ${grep_ec}"
+      break
     fi
     if [[ -n "$hits" ]]; then
       if [[ -n "$candidates" ]]; then
@@ -319,13 +345,20 @@ $hits"
         candidates="$hits"
       fi
     fi
+  done
+  if [[ -n "$unreadable" ]]; then
+    echo "FAIL: $file — unreadable (${unreadable})" >&2
+    violation_count=$((violation_count + 1))
+    violation_files=$((violation_files + 1))
+    unreadable_files=$((unreadable_files + 1))
+    continue
   fi
 
   file_violations=0
   if [[ -n "$candidates" ]]; then
-    # A line matched by both tables appears twice; sorting by line number puts
-    # the duplicates adjacent so the loop can drop them and keep the report in
-    # the same ascending order the line-by-line scan produced.
+    # A line nominated by more than one pass appears once per pass; sorting by
+    # line number puts the duplicates adjacent so the loop can drop them and keep
+    # the report in the same ascending order the line-by-line scan produced.
     #
     # `LC_ALL=C` is not a collation preference — the keys are ASCII digit runs,
     # so C is exactly right — but a guard against the DECODING step: reading a
@@ -428,6 +461,15 @@ $hits"
     echo "OK: $file"
   fi
 done
+
+# Every input unreadable is not a verdict about any of them — it is the scan
+# failing to happen, which is what exit 2 is reserved for. Reporting it as
+# violations would hand a consumer that distinguishes 1 from 2 a judgement on
+# code nothing ever read.
+if (( unreadable_files > 0 && unreadable_files == total_files )); then
+  echo "lint-bash-portability: none of the ${total_files} file(s) could be read" >&2
+  exit 2
+fi
 
 if (( violation_count == 0 )); then
   echo "lint-bash-portability: all ${total_files} file(s) passed"
