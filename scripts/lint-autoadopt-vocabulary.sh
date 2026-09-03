@@ -138,7 +138,18 @@ while IFS= read -r f; do
       */*)  continue ;;   # a parser's own sed pattern
       '-')  continue ;;   # the ledger's "no value" sentinel
     esac
-    printf '%s' "$v" | grep -qE '^[가-힣A-Za-z0-9 -]+$' || continue
+    # NO CHARACTER-RANGE FILTER HERE. The `case` above separates metasyntax by
+    # SHAPE, and everything it does not name is a claim about a value — including
+    # a value spelled with characters this lint did not anticipate, which is
+    # out of vocabulary and has to be reported rather than skipped.
+    #
+    # The filter that used to sit here was `grep -qE '^[<Hangul range>A-Za-z0-9 -]+$'`,
+    # and a multibyte character range is not portable: BSD grep matched Korean
+    # syllables through it and GNU grep did not, so on the GNU side every Korean
+    # value fell through `continue` and the vocabulary was never consulted. The
+    # suite caught it only on the Linux leg — the macOS run was green with the
+    # same source, which is the shape of a portability bug that survives local
+    # verification.
     hits=$((hits + 1))
     if ! in_vocab "$v"; then
       echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
