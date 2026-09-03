@@ -3348,6 +3348,16 @@ LINTAV="$repo_root/scripts/lint-autoadopt-vocabulary.sh"
 LR="$WORK/lint-root"
 mkdir -p "$LR/plugins" "$LR/scripts" "$LR/orch"
 sed -n '/^readonly JUDGMENT_CLASSES/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" > "$LR/orch/run.sh"
+# The same guard the parser copy gets, and for the same reason. The lint SKIPS
+# rule 1 with exit 0 when this file is absent, so a fixture that failed to
+# materialize it makes every assertion below read "the lint passed" — which is
+# indistinguishable from the lint being broken. Measured: one CI leg reported
+# exactly that shape while the local run was green.
+if [ -s "$LR/orch/run.sh" ]; then
+  ok "린트 픽스처가 실물 드라이버에서 어휘 SOT 를 옮긴다"
+else
+  bad "린트 픽스처" "run.sh 에서 readonly JUDGMENT_CLASSES 를 뽑지 못했다 — 린트가 SKIP 으로 0 을 돌려주므로 뒤따르는 단언이 전부 공허하다"
+fi
 # 규칙 3 은 파서 쪽 집합을 gate.sh 에서 뽑아 문서 쪽과 대조하므로 픽스처 트리에도
 # 파서가 있어야 한다. 실물에서 마커를 담은 줄만 옮긴다.
 { grep -E '\\\*\\\*판단 ' "$GATE" || true; } > "$LR/orch/gate.sh"
@@ -3433,8 +3443,13 @@ esac
 mv "$LR/orch/gate.sh.bak" "$LR/orch/gate.sh"
 # 반대 방향 단독: 게이트가 읽지 않는 마커가 문서에만 사는 경우.
 printf '| `**판단 무게**:` | always |\n' >> "$LRC/judgment-grade.md"
-if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  bad "린트" "게이트가 읽지 않는 마커를 문서에 더했는데 통과했다 — 죽은 규약이 조용하다"
+# The lint's own words are captured rather than discarded. A pass here can mean
+# the rule is broken OR that the lint skipped for an unrelated missing input,
+# and those two need different repairs — discarding the output makes them read
+# the same.
+lav_rev=$(ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" 2>&1)
+if [ "$?" = "0" ]; then
+  bad "린트" "게이트가 읽지 않는 마커를 문서에 더했는데 통과했다 — 죽은 규약이 조용하다: $(printf '%s' "$lav_rev" | tr '\n' ' ')"
 else
   ok "린트 — 파서가 읽지 않는 마커가 문서에 있으면 실패한다"
 fi
