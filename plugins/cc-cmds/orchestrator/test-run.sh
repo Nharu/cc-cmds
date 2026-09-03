@@ -1658,11 +1658,13 @@ esac
 ledger_row 'segment' "id=SN" "사유=첫 줄
 둘째 줄"
 check "값 안의 개행이 행을 끊지 못한다" "$(grep -c . "$LEDGER")" "1"
-# 상한을 넘는 행은 `die` 로 멈춘다 — 게이트와 같은 처분이므로 서브셸에서 잰다.
+# 상한을 넘는 값 하나는 이제 거절이 아니라 사이드카로 빠지고, 행은 기록된다. 이
+# 절이 재는 것은 그 처분이 아니라 이 절의 전제다 — 값이 아무리 길어도 행 문법은
+# 한 줄로 남는다. 처분 자체는 22b 가 잰다.
 LONGV=$(printf '%1100s' '' | tr ' ' 'x')
 ( ledger_row 'segment' "id=SL" "사유=$LONGV" ) >/dev/null 2>&1
-check "상한을 넘는 행은 거부된다" "$?" "1"
-check "거부된 행은 원장에 남지 않는다" "$(grep -cF 'id=SL' "$LEDGER" || true)" "0"
+check "상한을 넘는 값 하나는 행을 죽이지 않는다" "$?" "0"
+check "그 행은 원장에 한 줄로 남는다" "$(grep -cF 'id=SL' "$LEDGER" || true)" "1"
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
@@ -1715,16 +1717,116 @@ RUN_DIR="$WORK/rundir-absent"
 ( ledger_row 'segment' "id=SH2" "상태=계획됨" \
     "선언 파일 집합=$(declared_field_for_row SH2 "$DECL")" ) >/dev/null 2>&1
 check "런 디렉터리가 없어도 킥오프 행은 써진다" "$?" "0"
-# 그리고 바닥 자체는 백스톱으로 남는다 — 경계를 거치지 않고 들어온 값은 여전히
-# 거절되고, 거절 문면은 어느 필드가 넘쳤는지 이름으로 지목한다.
-RUN_DIR="$RUN_DIR_SAVE"
+# 그리고 바닥 자체는 백스톱으로 남는다. 닿는 조건은 「긴 필드 하나」가 아니라
+# 「빼낼 곳이 없고 필드가 여럿」이다 — 사이드카가 써지면 행에는 지목만 남아 넷을
+# 실어도 상한 아래로 내려가므로, 런 디렉터리가 없는 상태를 그대로 이어 쓴다. 그
+# 때는 이 층에서 더 할 수 있는 것이 없으므로 여전히 거절하고, 거절 문면은 어느
+# 필드가 넘쳤는지 이름으로 지목한다.
 LONGV2=$(printf '%1100s' '' | tr ' ' 'x')
-LONGOUT=$( { ledger_row 'segment' "id=SL2" "사유=$LONGV2"; } 2>&1 || true)
+LONGOUT=$( { ledger_row 'segment' "id=SL2" "사유=$LONGV2" "관측=$LONGV2" \
+               "근거=$LONGV2" "비고=$LONGV2"; } 2>&1 || true)
 case "$LONGOUT" in
   *"가장 긴 필드는 「사유」"*) ok "상한 거절이 어느 필드가 넘쳤는지 지목한다" ;;
   *) bad "상한 문면" "$LONGOUT" ;;
 esac
+RUN_DIR="$RUN_DIR_SAVE"
 LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 22b. 상한이 죽이던 자리는 park 로 가는 길이었다
+#
+# 22a 는 킥오프의 선언 집합 하나에 탈출구를 뒀고 이탈 행에는 두지 않았다. 그
+# 행은 선언 집합·실제 편집 집합·이탈 목록 셋을 함께 싣고 셋 다 같은 선언과 함께
+# 자라므로, 선언이 긴 세그먼트에서 이탈이 나면 그 행이 상한을 넘었다 — 그리고
+# 그 상한은 `die` 였다. 죽는 자리가 하필 park 로 가는 길이라, 정지해야 할 런이
+# 정지하는 대신 드라이버째 끝났다.
+#
+# 그래서 탈출구를 호출부마다 배선하는 대신 `ledger_row` 자신이 흘리게 한다.
+# 호출부 배선은 새 writer 가 생길 때마다 같은 누락을 되풀이하고, 그 되풀이가
+# 바로 이 절이 재는 결함의 이력이다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"; RUN_DIR_SAVE="$RUN_DIR"; BASE_SAVE="$BASE"
+LEDGER="$WORK/ledger-escape.md"; : > "$LEDGER"
+RUN_DIR="$WORK/rundir-escape"; mkdir -p "$RUN_DIR"
+BASE="$WORK/base-escape"; mkdir -p "$BASE/docs"
+ESC_WT="$WORK/wt-escape"; mkdir -p "$ESC_WT"
+( cd "$ESC_WT" && git init -q . && git config user.email t@t && git config user.name t ) \
+  >/dev/null 2>&1
+# 선언 스무 개와 선언 밖 스무 개. 셋 다 경계가 필요하다는 것이 이 절의 전제이므로
+# 세 필드가 모두 필드 상한을 넘도록 양쪽을 함께 키운다. 한글 경로는 글자당 세
+# 바이트라 그 수는 멀리 있지 않다.
+ESC_DECL=""; i=1
+while [ "$i" -le 20 ]; do
+  printf 'x\n' > "$ESC_WT/오케스트레이터-구현-$i.sh"
+  printf 'x\n' > "$ESC_WT/오케스트레이터-선언밖-$i.sh"
+  ESC_DECL="${ESC_DECL:+$ESC_DECL, }오케스트레이터-구현-$i.sh"
+  i=$((i + 1))
+done
+( cd "$ESC_WT" && git add -A && git commit -q -m init ) >/dev/null 2>&1
+i=1
+while [ "$i" -le 20 ]; do
+  printf 'y\n' > "$ESC_WT/오케스트레이터-선언밖-$i.sh"
+  i=$((i + 1))
+done
+# 서브셸로 부르는 것은 실패 처분이 `die` 로 되돌아가도 스위트가 그 자리에서
+# 끝나지 않게 하려는 것이다 — 원장·사이드카는 파일이라 서브셸 밖에 남는다.
+( fileset_escape SE "$ESC_DECL" "$ESC_WT" ) >/dev/null 2>&1
+check "선언이 긴 세그먼트의 이탈이 드라이버를 죽이지 않고 park 를 반환한다" "$?" "1"
+ESC_ROW=$( { grep -F 'id=SE ' "$LEDGER" || true; } | tail -1)
+case "$ESC_ROW" in
+  *'상태=park'*) ok "이탈이 세그먼트를 park 상태로 원장에 남긴다" ;;
+  *) bad "이탈 행" "$ESC_ROW" ;;
+esac
+ESC_LEN=$(printf '%s' "$ESC_ROW" | wc -c | tr -d ' ')
+if [ "${ESC_LEN:-0}" -gt 0 ] && [ "${ESC_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행은 원장 행 상한 안에 든다 ($ESC_LEN 바이트)"
+else
+  bad "이탈 행 길이" "$ESC_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+# 세 필드가 각자 제 사이드카를 갖는다. 접두사가 `declared` 로 고정돼 있던 동안은
+# 셋 중 하나만 경계를 받았고, 나머지 둘이 같은 행을 그대로 넘겼다.
+for pfx in declared actual escape; do
+  if [ -f "$RUN_DIR/$pfx.SE" ]; then
+    ok "이탈 행의 $pfx 필드가 런 디렉터리에 전체로 남는다"
+  else
+    bad "이탈 사이드카" "$RUN_DIR/$pfx.SE 가 없다"
+  fi
+done
+# park 에 넘긴 관측 문자열도 같은 경계를 받는다 — `park` 는 제 원장 행을 쓰므로
+# 여기서 경계를 주지 않으면 이탈 행을 살려 두고 그 다음 행에서 죽는다.
+BLOCKED_ROW=$( { grep -F '대상=SE ' "$LEDGER" || true; } | tail -1)
+BLOCKED_LEN=$(printf '%s' "$BLOCKED_ROW" | wc -c | tr -d ' ')
+if [ "${BLOCKED_LEN:-0}" -gt 0 ] && [ "${BLOCKED_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "park 이 쓴 blocked 행도 상한 안에 든다 ($BLOCKED_LEN 바이트)"
+else
+  bad "blocked 행 길이" "$BLOCKED_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+# 그리고 `ledger_row` 자신이 흘린다 — 경계를 거치지 않고 들어온 값 하나로 직접
+# 부른다. 호출부가 아무것도 하지 않아도 행이 남고 전체 값을 지목한다는 것이
+# 구조적 폐쇄의 내용이다.
+: > "$LEDGER"
+RAWV=$(printf '%1100s' '' | tr ' ' 'z')
+( ledger_row 'segment' "id=SR" "사유=$RAWV" ) >/dev/null 2>&1
+check "경계 없는 값을 직접 실어도 ledger_row 는 죽지 않는다" "$?" "0"
+RAW_ROW=$( { grep -F 'id=SR ' "$LEDGER" || true; } | tail -1)
+RAW_LEN=$(printf '%s' "$RAW_ROW" | wc -c | tr -d ' ')
+if [ "${RAW_LEN:-0}" -gt 0 ] && [ "${RAW_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행도 상한 안에 든다 ($RAW_LEN 바이트)"
+else
+  bad "흘린 행 길이" "$RAW_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+case "$RAW_ROW" in
+  *"(전체: $RUN_DIR/row.segment."*) ok "흘린 행이 전체 값이 있는 자리를 지목한다" ;;
+  *) bad "흘림 지목" "$RAW_ROW" ;;
+esac
+# 상한 아래의 행은 바이트가 달라지지 않는다 — 이것이 흘림이 기존 단언을 조용히
+# 바꾸지 않았다는 상한이다.
+: > "$LEDGER"
+ledger_row 'segment' "id=SS" "상태=계획됨" "레포=cc-cmds"
+check "상한 아래 행은 바이트가 그대로다" \
+  "$( { grep -F 'id=SS ' "$LEDGER" || true; } )" \
+  '- `segment` | id=SS | 상태=계획됨 | 레포=cc-cmds'
+LEDGER="$LEDGER_SAVE"; RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
 
 # ---------------------------------------------------------------------------
 # 23. `선행` 판독기는 하나이고, 게이트의 것과 같은 어휘를 쓴다

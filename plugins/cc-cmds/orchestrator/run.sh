@@ -1102,8 +1102,15 @@ run_row_safe() {
 }
 
 declared_field_for_row() {
-  # declared_field_for_row <세그먼트 id> <선언 파일 집합> — the row value for a
-  # field that has no bound of its own, with the whole of it kept beside the run.
+  # declared_field_for_row <세그먼트 id> <값> [사이드카 접두사] — the row value for
+  # a field that has no bound of its own, with the whole of it kept beside the run.
+  #
+  # THE PREFIX IS WHAT LETS ONE ROW CARRY MORE THAN ONE UNBOUNDED FIELD. The name
+  # was fixed at `declared`, so the only field that could use this was the
+  # declared set — and the escape row three fields over carries the ACTUAL edited
+  # set and the escape list, both of which grow with the same declaration that
+  # makes the declared set long. Defaulting the prefix leaves both existing call
+  # sites byte-identical.
   #
   # THE CALLER IS THE ONLY PARTY THAT CAN DO THIS. `ledger_row`'s cap is a `die`,
   # and its message tells the reader to move long values out — which nobody
@@ -1114,10 +1121,10 @@ declared_field_for_row() {
   # whole unattended run at its first row. The gate answered the same problem the
   # same way for its dependency cone, so this is that shape rather than a new
   # one.
-  local id="$1" v="$2" n side
+  local id="$1" v="$2" pfx="${3:-declared}" n side
   n=$(printf '%s' "$v" | wc -c | tr -d ' ')
   if [ "${n:-0}" -le "$RUN_FIELD_MAX" ]; then printf '%s' "$v"; return 0; fi
-  side="${RUN_DIR:-}/declared.$id"
+  side="${RUN_DIR:-}/$pfx.$id"
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     printf '%s\n' "$v" > "$side" 2>/dev/null || true
   fi
@@ -1159,7 +1166,7 @@ ledger_row() {
   # what fits.
   local series="$1"; shift
   local line="- \`$series\`"
-  local f k v n longest lmax fl
+  local f k v n longest lmax fl idx side
   for f in "$@"; do
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
@@ -1170,13 +1177,63 @@ ledger_row() {
   n=$(printf '%s | prev=%s\n' "$line" \
         "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
   if [ "$n" -gt "$RUN_ROW_MAX" ]; then
-    # THE BACKSTOP NAMES THE FIELD AND THE PARTY THAT CAN FIX IT. It stays a
-    # `die` on purpose — `ledger_row` is called from nearly every path including
-    # `park` itself, so parking from here opens a recursion — but "긴 값은
-    # 리포트로 빼야 합니다" prescribed an action with no actor: by the time the
-    # writer sees the row the caller that assembled it is gone. Callers whose
-    # fields are genuinely unbounded bound them before they get here, the way
-    # `declared_field_for_row` does.
+    # THE CAP SPILLS BEFORE IT DIES, AND THE SPILL LIVES HERE RATHER THAN IN THE
+    # CALLERS. The `die` prescribed an action with no actor: by the time the
+    # writer sees the row, the caller that assembled it is gone. Wiring each
+    # caller instead repeats the same omission for every writer added later —
+    # measured, in this file: `declared_field_for_row` bounded the DECLARED set
+    # and the escape row two fields over stayed unbounded, so an escape in a
+    # segment with a long declaration killed the driver on the `park` path, and
+    # `park` is the escape hatch that path exists to reach.
+    #
+    # Only fields over the per-field budget move, so a row that is merely wide
+    # keeps every byte it had. A sidecar that cannot be written clips without a
+    # pointer rather than ending the run — a sidecar failure ending the run is
+    # the very shape being removed here, which is why
+    # `declared_field_for_row` already treats its own the same way.
+    #
+    # THE POINTER REPLACES THE VALUE HERE RATHER THAN FOLLOWING A PREVIEW, which
+    # is the one place this differs from `declared_field_for_row`. That one
+    # bounds a field in a row that still fits; this runs only when the row does
+    # NOT fit, so keeping a 300-byte preview per field is what put it over in the
+    # first place — measured on the escape row, whose three bounded fields came
+    # to 1035 bytes and re-spilled to exactly the same size.
+    #
+    # A value that ALREADY carries a pointer keeps that one instead of getting a
+    # second sidecar. The caller bounded it on purpose and its preview is what
+    # has to go, not its whole value written twice.
+    line="- \`$series\`"
+    idx=0
+    for f in "$@"; do
+      idx=$((idx + 1))
+      case "$f" in
+        *=*) k="${f%%=*}"; v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
+             fl=$(printf '%s' "$v" | wc -c | tr -d ' ')
+             if [ "${fl:-0}" -gt "$RUN_FIELD_MAX" ]; then
+               case "$v" in
+                 *' (전체: '*')')
+                   f="$k=(전체: ${v##*' (전체: '}" ;;
+                 *)
+                   side=$(run_row_sidecar "$series" "$idx" "$v")
+                   if [ -n "$side" ]; then
+                     f="$k=(전체: $side)"
+                   else
+                     f="$k=$(run_row_safe "$v" "$RUN_FIELD_MAX")"
+                   fi ;;
+               esac
+             else
+               f="$k=$v"
+             fi ;;
+      esac
+      line="$line | $f"
+    done
+    n=$(printf '%s | prev=%s\n' "$line" \
+          "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
+  fi
+  if [ "$n" -gt "$RUN_ROW_MAX" ]; then
+    # STILL OVER AFTER EVERY UNBOUNDED FIELD MOVED OUT. That is a row with too
+    # many fields rather than one long field, and nothing at this layer can fix
+    # it — so the backstop stays, naming the field and the party that can.
     longest=""; lmax=0
     for f in "$@"; do
       fl=$(printf '%s' "$f" | wc -c | tr -d ' ')
@@ -1185,6 +1242,27 @@ ledger_row() {
     die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트, 계열 ${series}) — 가장 긴 필드는 「${longest:-미상}」(${lmax} 바이트)입니다. 이 자리에서는 줄일 수 없으므로 이 행을 만드는 호출부가 전체 값을 런 디렉터리 아래 사이드카로 빼고 행에는 경계 있는 형태만 실어야 합니다"
   fi
   printf '%s\n' "$line" >> "$LEDGER"
+}
+
+run_row_sidecar() {
+  # run_row_sidecar <계열> <필드 순번> <값> — the whole value beside the run,
+  # printing the path it landed at and NOTHING when it could not be written.
+  #
+  # The field ordinal names the file so two long fields in one row do not
+  # overwrite each other, and an ordinal already taken is raised until one is
+  # free — a series writes many rows over a night and the second row's field 3 is
+  # not the first row's. Separators in the series name are folded because the
+  # name becomes a filename here.
+  local series="$1" idx="$2" v="$3" base side
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  base="$RUN_DIR/row.$(printf '%s' "$series" | tr ' /' '--')"
+  side="$base.$idx"
+  while [ -e "$side" ]; do
+    idx=$((idx + 1))
+    side="$base.$idx"
+  done
+  printf '%s\n' "$v" > "$side" 2>/dev/null || return 0
+  printf '%s' "$side"
 }
 
 ledger_last() {
@@ -2236,15 +2314,27 @@ EOF
   [ -n "$esc" ] || return 0
   # Both sets are written out. A row that names only the escape leaves the
   # reader unable to tell an over-narrow declaration from a stage that wandered.
+  #
+  # ALL THREE ARE UNBOUNDED, AND SO IS THE REASON HANDED TO `park`. They grow
+  # together — a segment declaring twenty Korean paths makes the declared set,
+  # the actual set and the escape list long at once — so bounding one of them
+  # only moves which field carries the row over. `park` writes a `blocked` row of
+  # its own, so its reason goes through the same bound rather than a different
+  # one.
+  local esc_v actual_csv esc_row
+  esc_v=$(printf '%s' "$esc" | sed 's/^ //')
+  actual_csv=$(printf '%s' "$actual" | tr '\n' ',' | sed 's/,$//')
+  esc_row=$(declared_field_for_row "$seg" "$esc_v" escape)
   ledger_row 'segment' "id=$seg" "상태=park" \
-    "선언 파일 집합=$declared" "실제 편집 집합=$(printf '%s' "$actual" | tr '\n' ',' | sed 's/,$//')" \
-    "이탈=$(printf '%s' "$esc" | sed 's/^ //')"
+    "선언 파일 집합=$(declared_field_for_row "$seg" "$declared")" \
+    "실제 편집 집합=$(declared_field_for_row "$seg" "$actual_csv" actual)" \
+    "이탈=$esc_row"
   if [ "$cross" = "1" ]; then
     ledger_row '자율 승인' "kind=citation" "결정=레포 간 파일 집합 이탈로 런 정지" \
       "기각된 대안=세그먼트만 park" "근거=인가되지 않은 레포에 손이 닿았다"
-    park "$seg" run 무효화 "게이트 park" "레포 간 파일 집합 이탈: $(printf '%s' "$esc" | sed 's/^ //')"
+    park "$seg" run 무효화 "게이트 park" "레포 간 파일 집합 이탈: $esc_row"
   else
-    park "$seg" cone 무효화 "게이트 park" "선언 밖 파일 편집: $(printf '%s' "$esc" | sed 's/^ //')"
+    park "$seg" cone 무효화 "게이트 park" "선언 밖 파일 편집: $esc_row"
   fi
   return 1
 }
