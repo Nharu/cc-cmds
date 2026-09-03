@@ -42,8 +42,11 @@
 # Exit codes:
 #   0 — all inputs pass
 #   1 — at least one violation found
-#   2 — the scan could not be carried out (no scannable files found, or the
-#       pre-filter grep failed) — never a verdict about the input
+#   2 — the scan could not be carried out (no scannable files found, or a
+#       denylist table folded into an alternation grep refuses) — never a
+#       verdict about the input. A single unreadable file is NOT this: it is
+#       reported as that file's own failure and the other files still get a
+#       verdict.
 #
 # ---------------------------------------------------------------------------
 # Scan strategy — two phases.
@@ -187,6 +190,27 @@ for row in "${C_LOCALE_PATTERNS[@]}"; do
   fi
 done
 
+# A rejected alternation is a GLOBAL condition — it makes every file unscannable
+# — so try each one against empty input here, before any file is opened, and
+# abort with the offending table named. That leaves the in-loop greps free to
+# read their own exit 2 as what it can only be there: a per-file read failure.
+# `grep -q` on empty input reports exit 1 (no match); anything above that is the
+# ERE itself being refused.
+ere_ec=0
+grep -qE "$PREFILTER_ERE" </dev/null || ere_ec=$?
+if (( ere_ec > 1 )); then
+  echo "lint-bash-portability: PATTERNS/LITERAL_PATTERNS produced an alternation grep rejects (exit ${ere_ec})" >&2
+  exit 2
+fi
+if [[ -n "$C_PREFILTER_ERE" ]]; then
+  ere_ec=0
+  LC_ALL=C grep -qE "$C_PREFILTER_ERE" </dev/null || ere_ec=$?
+  if (( ere_ec > 1 )); then
+    echo "lint-bash-portability: C_LOCALE_PATTERNS produced an alternation grep rejects (exit ${ere_ec})" >&2
+    exit 2
+  fi
+fi
+
 # Resolve scan root + default file list.
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -239,7 +263,13 @@ for file in "${FILES[@]}"; do
   # Self-skip sentinel detection: first 5 lines.
   self_skip=0
   probe_count=0
-  while IFS= read -r probe && (( probe_count < 5 )); do
+  # `|| [[ -n "$probe" ]]` keeps the final line of a file that ends without a
+  # newline: `read` assigns it and still reports failure. The window guard has to
+  # be the body's FIRST statement rather than a `&&` in the loop condition (which
+  # would drop that same line) or a trailing `(( ... )) && break` (which would
+  # abort the script under `set -e` on the iteration where it is false).
+  while IFS= read -r probe || [[ -n "$probe" ]]; do
+    (( probe_count < 5 )) || break
     probe_count=$((probe_count + 1))
     case "$probe" in
       *"# lint-bash-portability: self-skip"*) self_skip=1; break ;;
@@ -254,15 +284,20 @@ for file in "${FILES[@]}"; do
   # binary (a stray non-UTF-8 byte is exactly what the C-locale row hunts for)
   # from collapsing to a "Binary file matches" line and losing its numbers.
   #
-  # grep's exit 1 means "no candidate on this file"; anything above that is the
-  # pre-filter itself failing, and swallowing it would hand back an empty
-  # candidate set that reads exactly like a clean file. Abort loudly instead.
+  # grep's exit 1 means "no candidate on this file". Anything above that is a
+  # per-file condition now that the alternations were cleared before the loop —
+  # the file cannot be read. Swallowing it would hand back an empty candidate set
+  # that reads exactly like a clean file, so it is counted and named like any
+  # other per-file failure; aborting the run instead would erase the verdict on
+  # every file after it.
   candidates=""
   grep_ec=0
   hits=$(grep -n -a -E "$PREFILTER_ERE" "$file") || grep_ec=$?
   if (( grep_ec > 1 )); then
-    echo "lint-bash-portability: pre-filter grep failed (exit ${grep_ec}) on $file" >&2
-    exit 2
+    echo "FAIL: $file — unreadable (pre-filter grep exit ${grep_ec})" >&2
+    violation_count=$((violation_count + 1))
+    violation_files=$((violation_files + 1))
+    continue
   fi
   if [[ -n "$hits" ]]; then
     candidates="$hits"
@@ -271,8 +306,10 @@ for file in "${FILES[@]}"; do
     grep_ec=0
     hits=$(LC_ALL=C grep -n -a -E "$C_PREFILTER_ERE" "$file") || grep_ec=$?
     if (( grep_ec > 1 )); then
-      echo "lint-bash-portability: C-locale pre-filter grep failed (exit ${grep_ec}) on $file" >&2
-      exit 2
+      echo "FAIL: $file — unreadable (C-locale pre-filter grep exit ${grep_ec})" >&2
+      violation_count=$((violation_count + 1))
+      violation_files=$((violation_files + 1))
+      continue
     fi
     if [[ -n "$hits" ]]; then
       if [[ -n "$candidates" ]]; then
@@ -289,7 +326,15 @@ $hits"
     # A line matched by both tables appears twice; sorting by line number puts
     # the duplicates adjacent so the loop can drop them and keep the report in
     # the same ascending order the line-by-line scan produced.
-    candidates=$(printf '%s\n' "$candidates" | sort -t: -k1,1n)
+    #
+    # `LC_ALL=C` is not a collation preference — the keys are ASCII digit runs,
+    # so C is exactly right — but a guard against the DECODING step: reading a
+    # nominated line that carries an invalid multibyte byte makes Apple sort exit
+    # with `Illegal byte sequence`, which `set -o pipefail` would turn into an
+    # aborted run reporting no violations at all. A stray byte in a trailing
+    # comment is enough, since the raw line rides here even when the code the
+    # judgement sees is clean.
+    candidates=$(printf '%s\n' "$candidates" | LC_ALL=C sort -t: -k1,1n)
 
     prev_line_no=""
     while IFS= read -r candidate; do
