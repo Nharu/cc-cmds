@@ -3454,7 +3454,7 @@ if [ "$?" = "0" ]; then
   # tree — a different repair from the rule being wrong. Both marker sets and
   # the fixture's own paths go into the message so the next reader does not
   # have to guess which of the two it is.
-  bad "린트" "게이트가 읽지 않는 마커를 문서에 더했는데 통과했다 — 죽은 규약이 조용하다: $(printf '%s' "$lav_rev" | tr '\n' ' ') | LRC=$LRC 문서마커=[$(grep -ohE '\*\*판단 [^*]+\*\*' "$LRC"/*.md 2>/dev/null | sort -u | tr '\n' ' ')] 파서줄수=$(wc -l < "$LR/orch/gate.sh" | tr -d ' ') SOT줄수=$(wc -l < "$LR/orch/run.sh" | tr -d ' ')"
+  bad "린트" "게이트가 읽지 않는 마커를 문서에 더했는데 통과했다 — 죽은 규약이 조용하다: $(printf '%s' "$lav_rev" | tr '\n' ' ') | LRC=$LRC 문서원문=[$(cat "$LRC/judgment-grade.md" 2>/dev/null | tr '\n' '/')] 디렉터리=[$(ls "$LRC" 2>/dev/null | tr '\n' ' ')] 파서줄수=$(wc -l < "$LR/orch/gate.sh" | tr -d ' ') SOT줄수=$(wc -l < "$LR/orch/run.sh" | tr -d ' ')"
 else
   ok "린트 — 파서가 읽지 않는 마커가 문서에 있으면 실패한다"
 fi
