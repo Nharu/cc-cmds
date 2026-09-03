@@ -42,7 +42,45 @@
 # Exit codes:
 #   0 — all inputs pass
 #   1 — at least one violation found
-#   2 — no scannable files found
+#   2 — the scan could not be carried out (no scannable files found, or the
+#       pre-filter grep failed) — never a verdict about the input
+#
+# ---------------------------------------------------------------------------
+# Scan strategy — two phases.
+#
+# Phase 1 (nominate). Per file, one `grep -n` per denylist table, each carrying
+# that table's regexes joined into a single ERE alternation. Lines no regex can
+# reach are dropped here and never enter the shell.
+#
+# Phase 2 (judge). Only the nominated lines run the per-idiom checks — comment
+# stripping, the same-line disable escape, the advice emission. That inner logic
+# is byte-for-byte the original one, so a line that reaches phase 2 is judged
+# exactly as it always was.
+#
+# Why it is split this way: phase 2 costs two processes per idiom per line, and
+# running it over every line meant ~25 idioms x ~21k lines x 2 = over a million
+# forks for a full-tree run. That is where the time went — 7m20s wall of which
+# 4m17s was kernel time spawning them, enough to push the macOS CI leg into its
+# timeout. Phase 1 makes the process count scale with the number of FILES rather
+# than with lines x idioms, and it changes no verdict because it only decides
+# which lines are worth looking at.
+#
+# Why phase 2 still shells out to grep instead of using bash's own `[[ =~ ]]`:
+# `\b` is a GNU regex extension that BSD grep honours but macOS's libc regcomp —
+# which is what `[[ =~ ]]` calls — does not. Every word-boundary row would go
+# quietly undetected on the very platform this lint exists to protect.
+#
+# Pattern-authoring note. Phase 1 matches the raw line while phase 2 matches the
+# comment-stripped prefix, so the two see different text and phase 1 has to be
+# the looser of the pair. It is: the prefix shares the line's start, so `^`
+# behaves identically; `\b` at the cut point survives because the character
+# following the prefix is always `#`, which is a non-word character; and a
+# trailing end-of-line anchor is stripped when a regex is folded into the
+# alternation, since that only widens the candidate set. The one shape to avoid
+# is an end anchor buried inside an alternation branch of a single row
+# (`foo$|bar`) — that branch keeps its anchor and could fail to nominate a line
+# phase 2 would flag. No current row is written that way.
+# ---------------------------------------------------------------------------
 
 set -euo pipefail
 
@@ -87,6 +125,67 @@ LITERAL_PATTERNS=(
   "sed -i ''|sed -i ''|BSD-only single-quoted backup-extension argument; portable: write to tmp + mv, or branch by OS"
   "awk 'gensub(|awk gensub|GNU awk only; portable: use match() + substr() composition"
 )
+
+# Escape the ERE metacharacter set so a LITERAL_PATTERNS entry can join the
+# phase-1 alternation as a plain-text branch. Pure bash; runs once per literal.
+ere_escape() {
+  local s=$1 out="" ch i
+  for (( i = 0; i < ${#s}; i++ )); do
+    ch=${s:i:1}
+    case "$ch" in
+      \\|\^|\$|.|\[|\]|\||\(|\)|\*|+|\?|\{|\}) out="$out\\$ch" ;;
+      *) out="$out$ch" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Drop a trailing end-of-line anchor before a regex joins the phase-1
+# alternation. Phase 1 reads the raw line and phase 2 the comment-stripped
+# prefix, so an anchored branch could refuse to nominate a line phase 2 would
+# flag; dropping the anchor only widens the candidate set.
+strip_end_anchor() {
+  # Two statements, not one `local rx=$1 n=${#rx}`: bash expands every word of a
+  # command before running it, so `${#rx}` there would read rx before it exists.
+  local rx=$1
+  local n=${#rx}
+  if (( n >= 1 )) && [[ "${rx:n-1:1}" == '$' ]]; then
+    if (( n == 1 )) || [[ "${rx:n-2:1}" != '\' ]]; then
+      rx=${rx:0:n-1}
+    fi
+  fi
+  printf '%s' "$rx"
+}
+
+# Phase-1 alternations, one per table. The C-locale table keeps its own because
+# the locale pin has to stay scoped to it.
+PREFILTER_ERE=""
+C_PREFILTER_ERE=""
+
+for row in "${PATTERNS[@]}"; do
+  branch=$(strip_end_anchor "${row%%|*}")
+  if [[ -z "$PREFILTER_ERE" ]]; then
+    PREFILTER_ERE="$branch"
+  else
+    PREFILTER_ERE="$PREFILTER_ERE|$branch"
+  fi
+done
+for row in "${LITERAL_PATTERNS[@]}"; do
+  branch=$(ere_escape "${row%%|*}")
+  if [[ -z "$PREFILTER_ERE" ]]; then
+    PREFILTER_ERE="$branch"
+  else
+    PREFILTER_ERE="$PREFILTER_ERE|$branch"
+  fi
+done
+for row in "${C_LOCALE_PATTERNS[@]}"; do
+  branch=$(strip_end_anchor "${row%%|*}")
+  if [[ -z "$C_PREFILTER_ERE" ]]; then
+    C_PREFILTER_ERE="$branch"
+  else
+    C_PREFILTER_ERE="$C_PREFILTER_ERE|$branch"
+  fi
+done
 
 # Resolve scan root + default file list.
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -138,93 +237,144 @@ for file in "${FILES[@]}"; do
   fi
 
   # Self-skip sentinel detection: first 5 lines.
-  if head -5 "$file" 2>/dev/null | grep -qF "# lint-bash-portability: self-skip"; then
+  self_skip=0
+  probe_count=0
+  while IFS= read -r probe && (( probe_count < 5 )); do
+    probe_count=$((probe_count + 1))
+    case "$probe" in
+      *"# lint-bash-portability: self-skip"*) self_skip=1; break ;;
+    esac
+  done < "$file"
+  if (( self_skip == 1 )); then
     echo "SKIP: $file (self-skip sentinel)"
     continue
   fi
 
+  # Phase 1 — nominate candidate lines. `-a` keeps a file that grep would call
+  # binary (a stray non-UTF-8 byte is exactly what the C-locale row hunts for)
+  # from collapsing to a "Binary file matches" line and losing its numbers.
+  #
+  # grep's exit 1 means "no candidate on this file"; anything above that is the
+  # pre-filter itself failing, and swallowing it would hand back an empty
+  # candidate set that reads exactly like a clean file. Abort loudly instead.
+  candidates=""
+  grep_ec=0
+  hits=$(grep -n -a -E "$PREFILTER_ERE" "$file") || grep_ec=$?
+  if (( grep_ec > 1 )); then
+    echo "lint-bash-portability: pre-filter grep failed (exit ${grep_ec}) on $file" >&2
+    exit 2
+  fi
+  if [[ -n "$hits" ]]; then
+    candidates="$hits"
+  fi
+  if [[ -n "$C_PREFILTER_ERE" ]]; then
+    grep_ec=0
+    hits=$(LC_ALL=C grep -n -a -E "$C_PREFILTER_ERE" "$file") || grep_ec=$?
+    if (( grep_ec > 1 )); then
+      echo "lint-bash-portability: C-locale pre-filter grep failed (exit ${grep_ec}) on $file" >&2
+      exit 2
+    fi
+    if [[ -n "$hits" ]]; then
+      if [[ -n "$candidates" ]]; then
+        candidates="$candidates
+$hits"
+      else
+        candidates="$hits"
+      fi
+    fi
+  fi
+
   file_violations=0
-  line_no=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line_no=$((line_no + 1))
+  if [[ -n "$candidates" ]]; then
+    # A line matched by both tables appears twice; sorting by line number puts
+    # the duplicates adjacent so the loop can drop them and keep the report in
+    # the same ascending order the line-by-line scan produced.
+    candidates=$(printf '%s\n' "$candidates" | sort -t: -k1,1n)
 
-    # Skip comment-only lines (leading whitespace + #).
-    case "$line" in
-      ''|*[!\ ]*) ;;
-    esac
-    if printf '%s' "$line" | grep -qE '^[[:space:]]*#'; then
-      continue
-    fi
-
-    # Strip trailing comment for code analysis, preserve original for
-    # disable-comment detection. Naive `#` split is acceptable for our
-    # scripts (no `#` inside literal strings in lint scope).
-    code_part="${line%%#*}"
-    comment_part=""
-    if [[ "$line" == *"#"* ]]; then
-      comment_part="#${line#*#}"
-    fi
-
-    # Regex-anchored idioms.
-    for row in "${PATTERNS[@]}"; do
-      regex="${row%%|*}"
-      rest="${row#*|}"
-      idiom_id="${rest%%|*}"
-      advice="${rest#*|}"
-
-      if printf '%s' "$code_part" | grep -qE "$regex"; then
-        # Check same-line disable comment.
-        if printf '%s' "$comment_part" \
-            | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
-          continue
-        fi
-        echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
-        echo "       advice: ${advice}" >&2
-        echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
-        file_violations=$((file_violations + 1))
+    prev_line_no=""
+    while IFS= read -r candidate; do
+      line_no="${candidate%%:*}"
+      if [[ "$line_no" == "$prev_line_no" ]]; then
+        continue
       fi
-    done
+      prev_line_no="$line_no"
+      line="${candidate#*:}"
 
-    # C-locale byte idioms. The locale is pinned HERE rather than for the whole
-    # run: what these match is a byte range, and a UTF-8 locale classifies the
-    # very characters at issue as ordinary punctuation.
-    for row in "${C_LOCALE_PATTERNS[@]}"; do
-      regex="${row%%|*}"
-      rest="${row#*|}"
-      idiom_id="${rest%%|*}"
-      advice="${rest#*|}"
-
-      if printf '%s' "$code_part" | LC_ALL=C grep -qE "$regex"; then
-        if printf '%s' "$comment_part" \
-            | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
-          continue
-        fi
-        echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
-        echo "       advice: ${advice}" >&2
-        echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
-        file_violations=$((file_violations + 1))
+      # Skip comment-only lines (leading whitespace + #).
+      if printf '%s' "$line" | grep -qE '^[[:space:]]*#'; then
+        continue
       fi
-    done
 
-    # Literal-substring idioms.
-    for row in "${LITERAL_PATTERNS[@]}"; do
-      literal="${row%%|*}"
-      rest="${row#*|}"
-      idiom_id="${rest%%|*}"
-      advice="${rest#*|}"
-
-      if [[ "$code_part" == *"$literal"* ]]; then
-        if printf '%s' "$comment_part" \
-            | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
-          continue
-        fi
-        echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
-        echo "       advice: ${advice}" >&2
-        echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
-        file_violations=$((file_violations + 1))
+      # Strip trailing comment for code analysis, preserve original for
+      # disable-comment detection. Naive `#` split is acceptable for our
+      # scripts (no `#` inside literal strings in lint scope).
+      code_part="${line%%#*}"
+      comment_part=""
+      if [[ "$line" == *"#"* ]]; then
+        comment_part="#${line#*#}"
       fi
-    done
-  done < "$file"
+
+      # Regex-anchored idioms.
+      for row in "${PATTERNS[@]}"; do
+        regex="${row%%|*}"
+        rest="${row#*|}"
+        idiom_id="${rest%%|*}"
+        advice="${rest#*|}"
+
+        if printf '%s' "$code_part" | grep -qE "$regex"; then
+          # Check same-line disable comment.
+          if printf '%s' "$comment_part" \
+              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+            continue
+          fi
+          echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
+          echo "       advice: ${advice}" >&2
+          echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
+          file_violations=$((file_violations + 1))
+        fi
+      done
+
+      # C-locale byte idioms. The locale is pinned HERE rather than for the whole
+      # run: what these match is a byte range, and a UTF-8 locale classifies the
+      # very characters at issue as ordinary punctuation.
+      for row in "${C_LOCALE_PATTERNS[@]}"; do
+        regex="${row%%|*}"
+        rest="${row#*|}"
+        idiom_id="${rest%%|*}"
+        advice="${rest#*|}"
+
+        if printf '%s' "$code_part" | LC_ALL=C grep -qE "$regex"; then
+          if printf '%s' "$comment_part" \
+              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+            continue
+          fi
+          echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
+          echo "       advice: ${advice}" >&2
+          echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
+          file_violations=$((file_violations + 1))
+        fi
+      done
+
+      # Literal-substring idioms.
+      for row in "${LITERAL_PATTERNS[@]}"; do
+        literal="${row%%|*}"
+        rest="${row#*|}"
+        idiom_id="${rest%%|*}"
+        advice="${rest#*|}"
+
+        if [[ "$code_part" == *"$literal"* ]]; then
+          if printf '%s' "$comment_part" \
+              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+            continue
+          fi
+          echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
+          echo "       advice: ${advice}" >&2
+          echo "       see CLAUDE.md \"## macOS-CI escalation triggers\" for context" >&2
+          file_violations=$((file_violations + 1))
+        fi
+      done
+    done <<< "$candidates"
+  fi
 
   if (( file_violations > 0 )); then
     violation_count=$((violation_count + file_violations))

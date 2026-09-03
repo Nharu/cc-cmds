@@ -1,0 +1,2 @@
+sample.sh:10:md5sum
+sample.sh:9:tac

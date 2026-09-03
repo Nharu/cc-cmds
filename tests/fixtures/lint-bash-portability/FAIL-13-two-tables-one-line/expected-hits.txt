@@ -1,0 +1,2 @@
+sample.sh:8:tac
+sample.sh:8:var-then-multibyte
