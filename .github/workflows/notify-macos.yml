@@ -37,7 +37,21 @@ jobs:
     # failed, the budget was simply sized for a smaller tree. Raising it buys
     # the darwin half room to finish rather than hiding a failure; a genuine
     # hang still gets caught, just later.
-    timeout-minutes: 45
+    #
+    # 90, not 45. Same shape a third time, and the reason it keeps recurring is
+    # worth writing down rather than re-deriving: the gate suite is not slow in
+    # a flat way, it gets slower as it runs. Every gate call re-reads and
+    # re-hashes the whole ledger, and the suite appends to that ledger with each
+    # assertion, so the last assertions cost far more than the first. Measured on
+    # the runner at 45: the final passing assertions were 10-17 seconds APART,
+    # and the job was cancelled 73 seconds after one of them — still making
+    # progress, never hung. The same suite had finished at 31m32s one commit
+    # earlier, which is how little headroom 45 actually was.
+    #
+    # This buys room; it does not fix anything. The superlinear cost is the real
+    # defect and it is filed separately — a budget that has to be raised every
+    # time the suite grows is a budget standing in for work not yet done.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
