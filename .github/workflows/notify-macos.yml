@@ -31,7 +31,13 @@ jobs:
     # whole suite takes locally. Raising the ceiling stops a green run from
     # reading as a failure; making that lint cheaper is separate work and is not
     # what this number is standing in for.
-    timeout-minutes: 25
+    # 45, not 25. The job is lint + the darwin-only tests, and both halves grew
+    # with the orchestrator: at 25 the run was cancelled at 25m19s with lint
+    # green at 12m41s and the darwin tests cut off at 12m25s — neither half had
+    # failed, the budget was simply sized for a smaller tree. Raising it buys
+    # the darwin half room to finish rather than hiding a failure; a genuine
+    # hang still gets caught, just later.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
