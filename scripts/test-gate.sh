@@ -4592,6 +4592,63 @@ case "$msg" in
   *) ok "매니페스트와 무관한 경로를 쓰는 행위에는 가드가 발화하지 않는다" ;;
 esac
 
+# --- 31ar. A read grade does not carry a delegating command past the guard ---
+#
+# 31ao measured the three arms and every one of its fixtures declared a WRITE.
+# The grade itself was the way out: `find` grades `읽기` from argv0 alone,
+# whatever primaries follow it, so `find <디렉터리> … -exec sh -c 'printf x >> {}'`
+# was declared `읽기`, graded `읽기` — the self-declaration check agreed, both
+# being wrong about the same command — and the guard returned on its first line
+# without looking at the argv that was about to write. And the stem: a glob one
+# character short of the basename, run from the manifest's own directory, spells
+# neither the basename nor the directory, so nothing in arm 2 saw it either.
+# Both are the same guard measured from its two open sides.
+NMDIR=$(dirname "$NM")
+NMBYTES=$(wc -c < "$NM")
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -name '*plan.md' -exec sh -c 'printf x >> {}' \;
+check "읽기로 등급되는 위임자가 매니페스트에 쓰려 하면 거절된다" "$rc" "3"
+# THE BYTES, because a refusal that arrives after the write is not a refusal.
+# The pattern is `*plan.md` and not `*.plan.md` on purpose: this fixture's
+# manifest is `cone-plan.md`, which the second pattern does not match at all, and
+# a fixture that could not have written the file measures nothing here.
+check "거절된 위임자는 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "위임자 거절이 매니페스트 가드를 원인으로 지목한다" ;;
+  *) bad "위임자 가드" "$msg" ;;
+esac
+# THE OTHER DIRECTION OF THE SAME NARROWING, and it is why `find` is not simply
+# listed as a delegator. A walk with no executing primary is an ordinary read of
+# the directory the manifest happens to live in, and it has to stay one.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -name '*.md'
+check "위임하지 않는 읽기는 매니페스트 디렉터리를 걸어도 통과한다" "$rc" "0"
+# THE STEM, which is the assertion that the absolute/relative distinction is
+# gone. There is no directory anywhere in this command line — the glob is a bare
+# name — so neither directory needle can fire and only the stem is left.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $(basename "${NM%?}")?"
+check "디렉터리를 철자하지 않은 어간 글로브도 거절된다" "$rc" "3"
+# THE MANDATED WRAPPER. Three unattended skills require `lockf` around every
+# document write, so it is the wrapper this guard is guaranteed to meet. The
+# plain spelling is refused by the basename scan and was already; the glob
+# spelling is the one that needs `lockf` in arm 2's list.
+if [ -x /usr/bin/lockf ]; then
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
+  check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
+  check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
+else
+  ok "lockf 가 없는 호스트라 래퍼 단언을 건너뛴다"
+fi
+
 # --- 31ap. The absorber disposes of the issuer's return, all three of them --
 #
 # Every emission fixture before this one feeds the parser input it can read, and

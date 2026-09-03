@@ -2527,25 +2527,36 @@ gate_manifest_write_guard() {
   # measurement showed it caught only the one spelling that writes the path
   # verbatim. That claim was read as a check by someone auditing this guard, who
   # closed a finding on it and had to withdraw the closure:
-  #   arm 2  an interpreter's WHOLE command line, against the basename, the
-  #          manifest's directory in both spellings, and the two variable names.
-  #          The directory is what catches `…/X.plan.m?`, a glob that shares no
-  #          basename with the file it will open but has to say where it lives.
-  #          Saying where is not the same as spelling it the gate's way, so both
-  #          sides are separator-folded first; arm 2 below records what that cost.
+  #   arm 2  an interpreter's or wrapper's WHOLE command line, against the
+  #          basename, the basename's stem, the manifest's directory in three
+  #          spellings — logical, physical, and relative to the act's own
+  #          directory — and the two variable names. The stem is what catches
+  #          `X.plan.m?`, a glob that shares no basename with the file it will
+  #          open and need not name the directory at all when the act already
+  #          runs there. The directory needles catch the spellings that name a
+  #          place instead of a file, `find <디렉터리> … -exec` among them. Saying
+  #          where is not the same as spelling it the gate's way, so both sides
+  #          are separator-folded first; arm 2 below records what that cost.
   #   arm 3  physical path identity for elements shaped like a path. It is the
   #          only arm that sees an alias symlink, which shares neither basename
   #          nor directory with the file it writes.
   #   last   basename containment, for an element not shaped like a path at all.
   #          This is what refuses `tee …/X.plan.md` today.
   #
-  # AND WHAT REMAINS OPEN, in the same breath. Arm 2 fires on an argv0 in the
-  # interpreter list, so an interpreter outside that list, reaching the file
-  # through a constructed string, is not seen here. The basename scan refuses
-  # acts that merely mention a file of that name elsewhere in the tree — a false
-  # positive kept on purpose rather than traded for the coverage. And none of the
-  # three anchors a rollback: a write that gets past all of them is caught at the
-  # next entry, where the binding digest is compared against the frozen set.
+  # AND WHAT REMAINS OPEN, in the same breath. Arm 2 fires on an argv0 in its own
+  # list, so a wrapper outside that list, reaching the file through a constructed
+  # string, is not seen here. The stem needle lives in arm 2 only and not in the
+  # basename scan below, so an element that carries the stem without an
+  # interpreter around it passes — the measured bypass went through an
+  # interpreter, and the scan below is already the arm with known false
+  # positives. Those are acts that merely mention a file of that name elsewhere
+  # in the tree, a cost kept on purpose rather than traded for the coverage. The
+  # act-cwd-relative directory needle is as specific as the manifest's own
+  # placement makes it: a manifest one level under the act's directory yields a
+  # single-component needle, and every interpreter command naming that component
+  # is refused. And none of the arms anchors a rollback: a write that gets past
+  # all of them is caught at the next entry, where the binding digest is compared
+  # against the frozen set.
   #
   # The false positives this admits are reads that merely MENTION the file, and
   # the read arm above has already returned for those. What is left is an act
@@ -2553,8 +2564,31 @@ gate_manifest_write_guard() {
   # which is the thing to refuse.
   local graded="$1"; shift
   [ -n "${MANIFEST:-}" ] || return 0
-  case "$graded" in 읽기) return 0 ;; esac
-  local a mbase mdir mdirp mreal adir areal joined argv0 joinedn mdirn mdirpn
+  # THE READ GRADE IS NOT A PASS FOR A COMMAND THAT DELEGATES. `find` grades
+  # `읽기` from argv0 alone, so `find <디렉터리> … -exec sh -c 'printf x >> {}' \;`
+  # arrived here declared and graded as a read, returned on this line, and the
+  # guard never looked at the argv that was about to write. The self-declaration
+  # check cannot catch it either: the declaration MATCHES the grade, and both are
+  # wrong about the same command.
+  #
+  # Two axes decide, not one — whether the argv carries a primary that executes
+  # or deletes, and whether argv0 is a wrapper that runs some other command.
+  # `find` is deliberately NOT in the argv0 list: a plain `find` with no primary
+  # has to keep returning here, or every read that walks the manifest's directory
+  # becomes a refusal.
+  case "$graded" in
+    읽기)
+      case " $* " in
+        *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *)
+          case "${1##*/}" in
+            command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
+            *) return 0 ;;
+          esac ;;
+      esac ;;
+  esac
+  local a mbase mstem mdir mdirp mreal adir areal joined argv0 joinedn
+  local mdirn mdirpn mdirrel actcwdn
   mbase=$(basename "$MANIFEST")
   [ -n "$mbase" ] || return 0
   mdir=$(dirname "$MANIFEST")
@@ -2562,8 +2596,14 @@ gate_manifest_write_guard() {
   # bytes and the caller may have written either one. `MANIFEST` is normalized
   # logically, so on a host where the temp or state root is itself a symlink the
   # physical spelling is a different string that names the same directory.
-  mdirp="$mdir"
-  if [ -d "$mdir" ]; then mdirp="$(cd "$mdir" && pwd -P)"; fi
+  #
+  # A FALLBACK AND NOT AN OVERWRITE. Arm 2 now tests three needles instead of
+  # one, and an empty needle matches every command line — so a `pwd -P` that
+  # returns nothing would turn this guard into a refusal of everything. Each
+  # needle is screened for emptiness below as well; this keeps the value itself
+  # from ever being the empty one.
+  mdirp=$(cd "$mdir" 2>/dev/null && pwd -P) || mdirp="$mdir"
+  [ -n "$mdirp" ] || mdirp="$mdir"
 
   # ARM 2 — AN INTERPRETER HIDES THE PATH OPERAND, SO THE WHOLE COMMAND LINE IS
   # THE OPERAND. `bash -c` takes a program, not arguments: there is no element to
@@ -2592,19 +2632,80 @@ gate_manifest_write_guard() {
   # `//`, `///`, `/./` all fold to the same bytes — rather than the one glob that
   # happened to be measured. The basename and variable-name tests carry no
   # separator and are left on the raw bytes.
+  # THE LIST IS INTERPRETERS AND WRAPPERS, for one reason. A wrapper cannot say
+  # which bytes of its tail will become a filename any more than `bash -c` can,
+  # so the whole command line is the operand there too. `find` is here because
+  # `find <매니페스트 디렉터리> … -exec` reaches the file through an element that
+  # is neither the manifest's path nor its basename; `lockf` is here because
+  # three unattended skills MANDATE it around every document write, which made it
+  # a wrapper the guard was guaranteed to meet.
+  #
+  # Applying arm 2 to every argv0 was measured and REJECTED: the directory needle
+  # then fires on an unrelated file that merely lives beside the manifest, which
+  # is an upper bound this suite already holds green.
   argv0=${1##*/}
   case "$argv0" in
-    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
       joined=$(printf '%s ' "$@")
       case "$joined" in *"$mbase"*|*CC_PIPELINE_MANIFEST*|*MANIFEST*)
         gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
       esac
+      # THE STEM ERASES THE ABSOLUTE/RELATIVE DISTINCTION. A glob one character
+      # short of the basename shares no basename, and it need not spell the
+      # directory at all when the act already runs there — so both needles above
+      # and the directory needles below look past `printf x >> <이름>.plan.m?`
+      # written from the manifest's own directory. The stem is the part of the
+      # name a glob cannot drop while still opening the file, and it appears in
+      # the command line however the caller spelled the path.
+      #
+      # Cut at the LAST dot, not the first. A manifest named `<런 id>.plan.md`
+      # cut at the first dot yields the run id, which is also the run
+      # directory's basename — and then every command mentioning the run
+      # directory is refused. Screened for emptiness and for equality with the
+      # basename: a name with no dot yields the basename back, and testing it
+      # twice is a needle that costs a pass and buys nothing.
+      mstem=${mbase%.*}
+      case "$mstem" in
+        ''|"$mbase") ;;
+        *) case "$joined" in *"$mstem"*)
+             gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
+           esac ;;
+      esac
       joinedn=$(gate_path_spelling "$joined")
       mdirn=$(gate_path_spelling "$mdir")
       mdirpn=$(gate_path_spelling "$mdirp")
+      # THE DIRECTORY AS THE ACT WOULD SPELL IT. Both spellings above are
+      # absolute, and an act running inside the tree writes the relative one.
+      # The needle is built only when the act's directory is an ANCESTOR of the
+      # manifest's, so there is no path by which it takes a value from another
+      # repository or another worktree.
+      mdirrel=''
+      if [ -n "${GATE_ACT_CWD:-}" ]; then
+        actcwdn=$(gate_path_spelling "$GATE_ACT_CWD")
+        case "$mdirn" in "$actcwdn"/*) mdirrel=${mdirn#"$actcwdn"/} ;; esac
+      fi
+      # ONE SENTINEL PER NEEDLE, WHICH IS THE PREMISE OF WIDENING AT ALL. The
+      # single screen that stood here read `mdirn` and then tested `mdirpn`
+      # beside it, so an empty physical spelling refused every act while the
+      # screen reported itself satisfied. With three needles the same hole is
+      # three holes. Written as three blocks rather than a loop over a list:
+      # this file has to run under bash 3.2, where arrays are the thing that
+      # quietly differs.
       case "$mdirn" in
         ''|'/'|'.') ;;
-        *) case "$joinedn" in *"$mdirn"*|*"$mdirpn"*)
+        *) case "$joinedn" in *"$mdirn"*)
+             gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
+           esac ;;
+      esac
+      case "$mdirpn" in
+        ''|'/'|'.') ;;
+        *) case "$joinedn" in *"$mdirpn"*)
+             gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
+           esac ;;
+      esac
+      case "$mdirrel" in
+        ''|'/'|'.') ;;
+        *) case "$joinedn" in *"$mdirrel"*)
              gate_manifest_write_refuse; return "$GATE_EXIT_RULE" ;;
            esac ;;
       esac
