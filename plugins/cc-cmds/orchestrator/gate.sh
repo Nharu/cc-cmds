@@ -878,7 +878,15 @@ gate_progress_vector() {
   # — they are the only two moves whose whole purpose is to bring the run nearer
   # to being able to end. A run that spends a judgment doing one of them and is
   # then told it has not moved is being told something false.
-  printf 'clauses=%s\n' "$( { gate_rows 'clause' || true; } | gate_count)"
+  #
+  # The series is `종료 절`, not `clause`. `gate_rows` matches on the ROW HEAD,
+  # and the only writer of a settlement row spells it `종료 절`; `clause` is the
+  # `--kind` token on the authorisation row, which is a field value and never a
+  # row head. Written the wrong way this counter is a constant zero — measured
+  # on a real run whose ledger held four settlements and zero `clause` rows —
+  # so the one move that takes a run closest to being able to end contributed
+  # nothing to the vector that decides whether it is moving.
+  printf 'clauses=%s\n' "$( { gate_rows '종료 절' || true; } | gate_count)"
   printf 'unblocks=%s\n' \
     "$( { gate_rows 'blocked' | grep -F '원인=해소' || true; } | gate_count)"
   gate_open_obligations | sort
@@ -5465,7 +5473,23 @@ gate_b3_act_budget() {
   total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
          | { grep -F '축2=' || true; } \
          | { grep -v '축2=읽기' || true; } | gate_count)
-  h=$(gate_progress_digest)
+  # THE WINDOW KEY EXCLUDES THIS COUNTER'S OWN INPUT, and getting that wrong is
+  # how the boundary was silently disarmed once already.
+  #
+  # `total` above is byte-for-byte the same pipeline as the vector's `acts=`
+  # line, so if the window were keyed on the full progress digest the count
+  # would sit inside its own hash input and BOTH branches would yield zero:
+  # when `total` moves the digest moves, the baseline is reset to `total`, and
+  # `n` is 0; when `total` does not move the baseline already equals it, and `n`
+  # is 0 again. The boundary then cannot fire on any input at all. Measured on a
+  # live run: baseline 72 against a budget of 40, and `n` was 0.
+  #
+  # That is the counter-inside-its-own-hash defect this file names in
+  # `gate_progress_vector`'s preamble and keeps B1's counter in the run
+  # directory to avoid. Spending budget is not the kind of progress that should
+  # open a new window — if it were, no amount of spending could ever exhaust
+  # one — so the key is the vector with that line removed.
+  h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it

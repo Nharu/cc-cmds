@@ -4968,11 +4968,36 @@ while [ "$i" -lt 41 ]; do
   i=$((i + 1))
 done
 
-# Half one — the window is OPEN and 41 acts have been spent inside it. The
-# baseline on file is the count as it stood when this window began, so a
-# boundary that measures the window sees 41 against a bound of 40.
-printf '%s\n' "$(PD)" > "$RD/act-budget-digest"
-printf '%s\n' "0"     > "$RD/act-budget-base"
+# Half one — the window is OPEN and 41 acts have been spent inside it.
+#
+# THE STATE BELOW MUST BE ONE THE RUNNING SYSTEM CAN REACH, and the first
+# version of this fixture was not. It wrote the full progress digest as the
+# window key beside a baseline of zero — but the baseline is only ever written
+# at the instant the key changes, and at that instant it is set to the current
+# total, so a key-of-now beside a baseline of zero is a pair the code cannot
+# produce. Asserting on it proved the boundary fires in a world that does not
+# exist, and the change that actually disarmed the boundary went green.
+#
+# So the window is opened by the GATE rather than by hand: one ordinary act
+# writes whatever key and baseline the implementation uses, the acts then
+# accumulate without touching that key, and the next act is judged inside the
+# window that first one opened. That is what a router doing commits and pushes
+# between stages produces, and it is why the key must not contain the count.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B3 창 개시" -- touch "$WORK/t3b"
+i=0
+while [ "$i" -lt 41 ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
+  i=$((i + 1))
+done
+# The window-opening act can itself trip B1, and an open approval suspends
+# B1..B3 — so without this the second act is judged under suspension and the
+# assertion below would read "did not fire" as evidence about B3 when it is
+# evidence about the suspension.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
 before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
@@ -5050,7 +5075,7 @@ check "등급이 없는 행위는 진전으로 세지 않는다 (모름은 진�
 # definition; they are the two moves whose purpose is to bring the run nearer
 # to ending.
 before_v=$(PD)
-printf -- '- `clause` | 절=C9 | 상태=충족 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
+printf -- '- `종료 절` | id=C9 | 상태=충족 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
 after_v=$(PD)
 check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
 check_ne "$before_v" "$after_v" "절 정산이 진전 벡터를 움직인다" "절을 정산해도 벡터가 그대로다"
