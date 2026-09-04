@@ -29,6 +29,8 @@ on:
       # and the filter is what decides whether it ever looks.
       - 'scripts/test-gate-chain-equiv.sh'
       - 'tests/fixtures/gate-chain-equiv/**'
+      - 'scripts/measure-gate-cost.sh'
+      - 'scripts/test-measure-gate-cost.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'

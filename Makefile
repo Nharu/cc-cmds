@@ -52,6 +52,7 @@ test: test-active-notify
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
 	bash scripts/test-gate-chain-equiv.sh
+	bash scripts/test-measure-gate-cost.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
 	bash scripts/test-watch.sh
@@ -66,6 +67,7 @@ test-orchestrator:
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
 	bash scripts/test-gate-chain-equiv.sh
+	bash scripts/test-measure-gate-cost.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
 	bash scripts/test-watch.sh
