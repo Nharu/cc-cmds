@@ -179,6 +179,37 @@ for f in "$GATE" "$WATCH" "$SL"; do
 done
 
 # ---------------------------------------------------------------------------
+# The run-scope block census is a SET operation, so it carries the same
+# collation hazard as the fingerprint — and it is worse when it folds.
+#
+# `사유` is Korean free text by contract. Under `en_US.UTF-8` every Hangul
+# syllable weighs the same, so two reasons with the same non-Hangul shape and
+# the same syllable counts compare equal and `sort -u` keeps only whichever came
+# first in the ledger. The pair below is not invented: both are two spaces and
+# 2-2-2 syllables, and they are the real vocabulary this field uses.
+#
+# What makes it a merge blocker rather than a display bug is WHICH one survives.
+# The resolved block is written first, so it is the one kept, and the strongest
+# block this system has — the one raised when a file the boundary rests on was
+# edited — is counted as zero. The run becomes eligible to propose an ending
+# with that block still open, and nothing reports anything.
+#
+# Asserted under `en_US.UTF-8` explicitly rather than under whatever this runner
+# has, because a suite that happens to run under C would pass with the pin gone.
+FX_BLK="$WORK/blocked-census.md"
+{
+  printf -- '- `blocked` | 스코프=run | 원인=불명 | 사유=중단 기록 존재 | prev=x\n'
+  printf -- '- `blocked` | 스코프=run | 원인=해소 | 사유=중단 기록 존재 | prev=x\n'
+  printf -- '- `blocked` | 스코프=run | 원인=불명 | 사유=강제 표면 이동 | prev=x\n'
+} > "$FX_BLK"
+n=$(LC_ALL=en_US.UTF-8 bash -c '. "$1"; cc_unresolved_blocked "$2" | grep -c .' \
+      _ "$LIVENESS" "$FX_BLK" || true)
+check "해소된 블록이 미해소 블록을 가리지 않는다 (en_US 콜레이션)" "$n" "1"
+got=$(LC_ALL=en_US.UTF-8 bash -c '. "$1"; cc_unresolved_blocked "$2"' \
+        _ "$LIVENESS" "$FX_BLK" | sed -n 's/.*\t//p')
+check "남는 것이 강제 표면 이동이다" "$got" "강제 표면 이동"
+
+# ---------------------------------------------------------------------------
 # Agreement across LOCALES, not just across consumers.
 #
 # The four consumers share one predicate, so they cannot disagree about code —
@@ -205,14 +236,44 @@ for lc in ko_KR.UTF-8 en_US.UTF-8 C; do
   got=$(LC_ALL="$lc" bash -c '. "$1"; cc_live_stages "$2"' _ "$LIVENESS" "$RD_L")
   check "지문이 로케일에 불변이다 (읽는 쪽 LC_ALL=$lc)" "$got" "1"
 done
-# The loop above varies the READER while this suite's own locale fixes the
-# writer, so on a runner whose locale happens to be the C form an unpinned
-# writer would still pass it. This pins the writer directly and without naming a
-# locale: the recorded form is ASCII in every locale that spells the date in
-# ASCII, and the localised forms this breaks on are precisely the ones that are
-# not. Byte collation, because the class is about bytes.
-nonascii=$(LC_ALL=C grep -c '[^ -~]' "$RD_L/S1.start" || true)
-check "기록된 지문이 로케일 문자를 담지 않는다 (쓰는 쪽)" "$nonascii" "0"
+# The loop above varies the READER. The WRITER needs its own assertion, and the
+# first version of it was hollow in two ways at once — it is kept described here
+# because the shape is easy to write again.
+#
+# It read the fixture's own recorded byte and asked whether they were ASCII. But
+# (1) the bytes it measured came from the FIXTURE's capture, not from either of
+# the product's two, so reverting both product captures left it green; and (2)
+# it never varied the writer's locale, so an unpinned capture also produces
+# ASCII whenever the suite happens to run somewhere the date is spelled in
+# ASCII. Under mutation it passed. That is the tell, and it was visible in the
+# mutation output at the time: an assertion that survives the removal of the
+# thing it exists to check is not weak, it is absent.
+#
+# Replaced by two assertions that can fail. The first runs the fixture capture
+# in a subprocess under a locale that spells dates in Hangul, so an unpinned
+# capture produces non-ASCII there and is caught wherever this suite runs.
+w=$(LC_ALL=ko_KR.UTF-8 bash -c '
+  . "$1"; FX_RUN_DIR=$2; export FX_RUN_DIR
+  fx_stage_live W >/dev/null 2>&1
+  cat "$FX_RUN_DIR/W.start"
+  kill "$(cat "$FX_RUN_DIR/W.pid")" 2>/dev/null
+' _ "$repo_root/scripts/run-fixture.sh" "$RD_L")
+nonascii=$(printf '%s' "$w" | LC_ALL=C grep -c '[^ -~]' || true)
+check "한글 날짜 로케일에서 캡처해도 지문이 ASCII 다 (쓰는 쪽 픽스처)" "$nonascii" "0"
+
+# The second covers what no fixture can reach: the product's own two captures
+# live inside a stage spawn and a driver spawn, neither of which this suite can
+# drive. So they are asserted on the source. A structural check is weaker than a
+# behavioural one and is used here only because the alternative was the hollow
+# assertion above — and unlike that one, this fails the moment either capture
+# goes back to a variable that `LC_ALL` outranks.
+for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$LIVENESS" \
+         "$repo_root/scripts/run-fixture.sh"; do
+  n=$(grep -c 'LC_ALL=C ps -o lstart=' "$f" || true)
+  bad_n=$(grep -c 'LC_TIME=C ps -o lstart=' "$f" || true)
+  check "$(basename "$f") 의 지문 캡처가 LC_ALL 로 고정돼 있다" "$n" "1"
+  check "$(basename "$f") 에 LC_TIME 만 건 캡처가 남아 있지 않다" "$bad_n" "0"
+done
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

@@ -233,9 +233,21 @@ cc_unresolved_blocked() {
   # gate's verb with status 1 and NO message. Every other refusal in this file
   # carries a sentence naming the repair; this path was the one that said nothing,
   # and a silent failure is the only kind a router cannot recover from.
+  #
+  # `LC_ALL=C` on the sort, because `사유` is Korean free text by contract and
+  # this sort is a SET operation — it decides how many distinct run-scope blocks
+  # the ledger holds, which is what the termination conditions and the status
+  # line both read. Under `en_US.UTF-8` the collation gives every Hangul
+  # syllable the same weight, so two reasons with the same non-Hangul shape and
+  # the same syllable counts compare equal and one is dropped. Measured on this
+  # host: `강제 표면 이동` and `중단 기록 존재` are one line under that locale and
+  # two under C. Losing either is bad; losing that one is worst, because it is
+  # the block the gate raises when a file its boundary rests on was edited — and
+  # a resolved block surviving in its place makes the run eligible to propose an
+  # ending with the strongest block still open, reporting nothing.
   { grep -E '^- `blocked`' "$ledger" 2>/dev/null || true; } \
     | { grep -F '스코프=run' || true; } | tr '|' '\n' \
-    | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | sort -u \
+    | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u \
     | while IFS= read -r reason; do
         [ -n "$reason" ] || continue
         last=$( { grep -E '^- `blocked`' "$ledger" 2>/dev/null | grep -F '스코프=run' \
