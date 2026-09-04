@@ -72,3 +72,4 @@ test-orchestrator:
 # for one skill is what keeps a future darwin-dependent suite from having to
 # re-wire the workflow to be seen.
 test-darwin: test-active-notify test-orchestrator
+	bash scripts/test-lint-bash-portability.sh

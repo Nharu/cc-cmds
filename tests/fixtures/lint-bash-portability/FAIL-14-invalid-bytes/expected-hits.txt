@@ -1,0 +1,4 @@
+sample.sh:10:tac
+sample.sh:10:var-then-multibyte
+sample.sh:12:setsid
+sample.sh:8:md5sum

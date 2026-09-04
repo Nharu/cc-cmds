@@ -31,26 +31,31 @@ jobs:
     # whole suite takes locally. Raising the ceiling stops a green run from
     # reading as a failure; making that lint cheaper is separate work and is not
     # what this number is standing in for.
-    # 45, not 25. The job is lint + the darwin-only tests, and both halves grew
-    # with the orchestrator: at 25 the run was cancelled at 25m19s with lint
-    # green at 12m41s and the darwin tests cut off at 12m25s — neither half had
-    # failed, the budget was simply sized for a smaller tree. Raising it buys
-    # the darwin half room to finish rather than hiding a failure; a genuine
-    # hang still gets caught, just later.
+    # 90, and the number was raised three times before it stuck. The history is
+    # kept because each step measured something the next one needed.
     #
-    # 90, not 45. Same shape a third time, and the reason it keeps recurring is
-    # worth writing down rather than re-deriving: the gate suite is not slow in
-    # a flat way, it gets slower as it runs. Every gate call re-reads and
-    # re-hashes the whole ledger, and the suite appends to that ledger with each
-    # assertion, so the last assertions cost far more than the first. Measured on
-    # the runner at 45: the final passing assertions were 10-17 seconds APART,
-    # and the job was cancelled 73 seconds after one of them — still making
-    # progress, never hung. The same suite had finished at 31m32s one commit
+    # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
+    # darwin tests cut off at 12m25s — neither half had failed, the budget was
+    # simply sized for a smaller tree. Raised to 45.
+    #
+    # At 45 it was cancelled again. The final passing assertions were 10-17
+    # seconds APART and the job died 73 seconds after one of them, still making
+    # progress and never hung; the same suite had finished at 31m32s one commit
     # earlier, which is how little headroom 45 actually was.
     #
-    # This buys room; it does not fix anything. The superlinear cost is the real
-    # defect and it is filed separately — a budget that has to be raised every
-    # time the suite grows is a budget standing in for work not yet done.
+    # Master hit the same wall independently at 25, and that reading is the
+    # sharpest of the three: the run one commit before passed at 24m58s — twenty
+    # two seconds inside the ceiling — and adding a handful of assertions pushed
+    # the next one to a cancellation at 25m22s. A budget with twenty-two seconds
+    # of margin is not a budget.
+    #
+    # The reason it keeps recurring is that this suite does not get slower
+    # evenly, it gets slower as it runs: each gate call re-reads a ledger the
+    # suite has been appending to, so the last assertions cost far more than the
+    # first. A ceiling that fits today stops fitting after the next few
+    # assertions. 90 is chosen to stop this recurring per commit, not because
+    # the suite needs it — the superlinear cost is the real defect and is filed
+    # separately.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

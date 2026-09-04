@@ -4946,5 +4946,127 @@ else
   bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다"
 fi
 
+# ---------------------------------------------------------------------------
+# 12b. B3's budget is a WINDOW, and the two halves are asserted separately
+#
+# The budget's sentence has always said "since the last progress move" while the
+# count ran over the whole ledger, so past the bound the boundary fired on every
+# judgment for the rest of the run. Nothing caught it because B3 had no test of
+# its own at all — the name appeared in this file only inside comments about
+# B1's suspension. A silenced boundary and a fixed one look identical from the
+# "does not fire" side, so both directions are asserted here.
+#
+# Approvals are resolved first for the same reason section 12 resolves them: an
+# open one suspends B1..B3, and a suspended boundary that does not fire would
+# pass the first assertion while proving nothing.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+i=0
+while [ "$i" -lt 41 ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
+  i=$((i + 1))
+done
+
+# Half one — the window is OPEN and 41 acts have been spent inside it. The
+# baseline on file is the count as it stood when this window began, so a
+# boundary that measures the window sees 41 against a bound of 40.
+printf '%s\n' "$(PD)" > "$RD/act-budget-digest"
+printf '%s\n' "0"     > "$RD/act-budget-base"
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B3 예산 소진" -- touch "$WORK/t4"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "B3 이 한 창 안에서 예산을 넘기면 발동한다"
+else
+  bad "B3" "예산을 넘겼는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+fi
+
+# Half two — the regression. The same 41 acts, but progress has moved since,
+# which closes the old window and opens a new one holding none of them. A count
+# that never resets fires here; a windowed one does not.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+printf '%s\n' "진전이 그 뒤로 움직였음을 뜻하는 낡은 값" > "$RD/act-budget-digest"
+printf '%s\n' "0" > "$RD/act-budget-base"
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
+
+
+# ---------------------------------------------------------------------------
+# 12c. B1's progress vector counts what the router actually did
+#
+# The vector saw the manifest, segment rows, cycle rows and obligations — and
+# nothing the router itself performs between stages. Commits, pushes, pull
+# requests and merges all left it unchanged, so a router landing fixes for an
+# hour read as motionless and B1 fired on it. The approval that opens then
+# suspends B1..B3 and blocks termination until a person closes it, and this
+# gate accepts no answer the router typed, so the false positive costs a night
+# rather than a line of output.
+#
+# Both directions again, for the same reason as 12b: a boundary that has been
+# silenced and one that has been fixed are indistinguishable from the side
+# where nothing fires.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+
+# Half one — the router performed a world-changing act. The vector must move,
+# which is what makes the repeat counter reset rather than climb.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=push | 축2=외부상태변경 | 근거=진전 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+if [ "$before_v" != "$after_v" ]; then
+  ok "라우터의 읽기 초과 행위가 진전 벡터를 움직인다"
+else
+  bad "진전 벡터" "커밋·push·PR 를 수행해도 벡터가 그대로다 — B1 이 그 위에서 발화한다"
+fi
+
+# The read-only counterpart, which pins the qualifier rather than the rule: if
+# reads counted, the vector would never settle and B1 could never fire at all.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=읽기 | 근거=읽기 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "읽기 등급 행위는 진전으로 세지 않는다" "$after_v" "$before_v"
+
+# The third state, which excluding `읽기` alone would have missed: a row with no
+# grade at all. Unknown is not evidence that anything changed, and counting it
+# would let the boundary be reset by a row that says nothing about what was
+# done. Reachable in practice — the fixtures in test-snapshot.sh write exactly
+# this shape.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 근거=등급 없는 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "등급이 없는 행위는 진전으로 세지 않는다 (모름은 진전이 아니다)" "$after_v" "$before_v"
+
+# Half two — a clause settled and a run-scope block cleared are progress by
+# definition; they are the two moves whose purpose is to bring the run nearer
+# to ending.
+before_v=$(PD)
+printf -- '- `clause` | 절=C9 | 상태=충족 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
+check_ne "$before_v" "$after_v" "절 정산이 진전 벡터를 움직인다" "절을 정산해도 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=해소 | 사유=픽스처 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "런 스코프 막힘 해소가 진전 벡터를 움직인다" "막힘을 해소해도 벡터가 그대로다"
+
+# Half three — the boundary still fires. Nothing above may buy that away: the
+# remedy B1 issues is an `승인` row, and if that ever entered the vector the
+# boundary's own firing would reset the counter that fired it.
+before_v=$(PD)
+printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 | 질문 문면=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
+
+
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

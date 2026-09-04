@@ -1,0 +1,1 @@
+probe.sh:7:bash4 mapfile
