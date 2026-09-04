@@ -158,6 +158,36 @@ case "$tool" in
           deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
       esac
     fi
+    # SIBLING LANES, and they are the hole the block above cannot close. `cfg`
+    # is parameterized by the ONE config directory this stage happens to run in,
+    # and the literal `*/.claude/...` arms below need the directory to be named
+    # exactly `.claude` — so a stage running in `~/.claude-cc` may freely write
+    # `~/.claude-cci/settings.json`. Measured: all nine deny arms driven, and
+    # the sibling lane's user-scope settings were allowed. That file holds
+    # `hooks`, so a stage can install a hook into the lane its own FUTURE runs
+    # will load, which is the one edit that outlives the run entirely.
+    #
+    # THE DIRECTORY'S EXISTENCE IS DELIBERATELY NOT A CONDITION. Testing `-d`
+    # would leave open the path where a stage CREATES the lane directory and
+    # writes the settings on the way in — the guard would be absent exactly when
+    # the lane is new, which is when nobody is looking at it.
+    #
+    # The `cfg` block above stays. `CLAUDE_CONFIG_DIR` can point outside `$HOME`
+    # and this walk does not reach there; neither is a subset of the other.
+    if [ -n "${HOME:-}" ]; then
+      for lane in "$HOME"/.claude*; do
+        # An unmatched glob expands to the literal pattern, and a pattern is not
+        # a lane. Nothing here may depend on `nullglob`, which is off by default
+        # and is not something a hook can assume of its caller.
+        case "$lane" in *'*') continue ;; esac
+        case "$p" in
+          "$lane"/settings.json|"$lane"/settings.local.json)
+            deny "$(jstr 'gate: 형제 레인의 사용자 스코프 설정도 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
+          "$lane"/projects/*)
+            deny "$(jstr 'gate: 형제 레인의 세션 트랜스크립트도 승인 판독 채널이라 강제 표면입니다')" ;;
+        esac
+      done
+    fi
     case "$p" in
       */.claude/settings.json|*/.claude/settings.local.json)
         deny "$(jstr 'gate: 프로젝트 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
