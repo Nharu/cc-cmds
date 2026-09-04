@@ -1733,13 +1733,19 @@ gate_notify_segment_park() {
   # THE ONLY CHANNEL FOR A STOP NO TERMINAL CLASS CARRIES. The router can read a
   # snapshot and stand a segment down on its own judgment, with no stage-result
   # row in front of it — the stage-side notice cannot see that park and this one
-  # can. Segment rows are written by the router by construction, so this site
-  # never produces a stage-side notice.
+  # can. Nothing in the gate holds segment rows to the router, though, so a stage
+  # call reaches this site too; it raises nothing, and below it also leaves
+  # nothing.
   #
   # THE OVERLAP IS EXACTLY ONE CASE and the marker settles it: a stage ends as a
   # deliberate park, the stage-side notice fires and leaves a marker named by the
   # segment, and the router then records that same segment as parked. Those are
   # one stop, so this side stays quiet when it finds the marker.
+  #
+  # THE MARKER IS SHORT-LIVED BY DESIGN and its expiry lives in the segment-row
+  # writer, not here: keyed by the segment alone, a marker that outlived the park
+  # would make a segment that was unblocked, re-dispatched and parked again read
+  # as the same stop, and its second wait for a person would never be announced.
   #
   # THIS SIDE DERIVES NO ATTEMPT NUMBER. A segment row carries no such field —
   # the contract puts it on the stage-result row — and the only existing idiom
@@ -1751,9 +1757,15 @@ gate_notify_segment_park() {
   if [ -z "${RUN_DIR:-}" ]; then return 0; fi
   mk="$RUN_DIR/notify/park-$seg"
   if [ -f "$mk" ]; then return 0; fi
-  mkdir -p "$RUN_DIR/notify" 2>/dev/null || true
-  : > "$mk" 2>/dev/null || true
   if cc_caller_is_router; then
+    # THE MARKER IS WRITTEN ONLY BY A CALL THAT ACTUALLY RAISED THE NOTICE, and
+    # being inside the guard is the whole of it. Written above the guard, one
+    # stage call — which raises nothing — leaves the marker behind, and the
+    # router's own park for that segment then reads it as "one stop, already
+    # announced" and stays quiet forever. Nothing carries this class afterwards,
+    # so the banner is not delayed by a pass; it is gone.
+    mkdir -p "$RUN_DIR/notify" 2>/dev/null || true
+    : > "$mk" 2>/dev/null || true
     cc_notify_fire hands \
       "세그먼트 \`$seg\` 가 park 되었습니다 — 아침 보고서의 보류 큐를 보세요" "park-$seg" || true
   fi
@@ -1850,6 +1862,13 @@ gate_record_row() {
       gate_append 'segment' "id=$seg" "$@"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
+      elif [ -n "${RUN_DIR:-}" ]; then
+        # THE PARK MARKER EXPIRES HERE, and this is the only writer that sees it
+        # happen. The marker is keyed by the segment id alone, so without an
+        # expiry a segment that leaves park and is parked again is read as the
+        # same stop and its second wait for a person is swallowed. Any state
+        # other than park is that departure.
+        rm -f "$RUN_DIR/notify/park-$seg" 2>/dev/null || true
       fi
       log "세그먼트 기록 — $seg ($st)"
       ;;

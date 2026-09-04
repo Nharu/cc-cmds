@@ -2886,6 +2886,43 @@ check "그 배너는 손 필요 제목을 쓴다" \
 check "그 배너의 그룹이 항목 키를 싣는다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
 
+# --- ONE SEGMENT THROUGH BOTH SEATS ----------------------------------------
+#
+# The interaction the pair above avoids on purpose, driven here on ONE id: a
+# stage-side park followed by the router's park for the same segment. A call
+# that raises no banner must leave no marker, or the router's park — the only
+# channel this class has — is silenced by a stop nobody was ever told about.
+# The assertion spans both calls: exactly one banner, and it is the router's.
+notify_reset
+gateb_stage act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 같은 세그먼트에 대한 라우터 park" -- "상태=park" "워크트리=$WT"
+notify_settle 1
+check "스테이지 park 이 앞선 세그먼트에서도 배너는 정확히 하나다" "$(notify_lines)" "1"
+check "그 하나는 라우터 호출이 올린 것이다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN3 ' "$NOTIFY_LOG" || true)" "1"
+
+# --- A RE-PARK IS A NEW STOP -----------------------------------------------
+#
+# The item key is the segment id alone, so nothing but the marker's expiry can
+# tell the second stop from the first. Park, leave park, park again: two waits
+# for a person, two banners.
+notify_reset
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 첫 park" -- "상태=park" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 풀려서 재파견" -- "상태=실행중" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 다시 park" -- "상태=park" "워크트리=$WT"
+notify_settle 2
+check "풀렸다 다시 park 된 세그먼트의 두 번째 멈춤도 알려진다" "$(notify_lines)" "2"
+
 # --- A RESOLVED BLOCK IS NOT AN ANCHOR (the negative case) ------------------
 #
 # The obvious instrumentation — "a run-scope blocked row was appended" — fails
