@@ -1973,5 +1973,217 @@ else
   ok "detach 경로가 없다 (라우터가 이 세션이므로 떼어 낼 것이 없다)"
 fi
 
+# ---------------------------------------------------------------------------
+# 22. 레인 지속화 — 4단 리졸버, 런 상태 프로브, 형제 레인 훅 구멍
+#
+# 세 표면이 한 절에 있는 이유는 셋이 한 성질의 세 면이기 때문이다: 한 런이 어느
+# 레인을 쓰는가를 (a) 결정하고 (b) 밖에서 읽을 수 있게 하고 (c) 다른 레인을
+# 건드리지 못하게 한다. 어느 하나만 서면 나머지 둘이 조용히 무의미해진다.
+# ---------------------------------------------------------------------------
+LD="$WORK/lane"
+mkdir -p "$LD/env" "$LD/rundir" "$LD/norun" "$LD/home/.claude" \
+         "$LD/xdg/cc-cmds" "$LD/xdgempty" "$LD/xdgbad/cc-cmds" \
+         "$LD/runrec" "$LD/homerec"
+printf '%s\n' "$LD/runrec"  > "$LD/rundir/config-dir"
+printf '%s\n' "$LD/homerec" > "$LD/xdg/cc-cmds/config-dir"
+
+# --- T1~T4: 네 단이 각각 선택된다 -----------------------------------------
+v=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T1 리졸버 1단: 환경변수가 아래 세 단을 모두 이긴다" "$v" "$LD/env"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )
+check "T2 리졸버 2단: 런 디렉터리의 config-dir" "$v" "$LD/runrec"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )
+check "T3 리졸버 3단: 홈 아래 설정 파일" "$v" "$LD/homerec"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
+check "T4 리졸버 4단: 기본값" "$v" "$LD/home/.claude"
+
+# --- T5: 3단은 폴백하지 않는다 ---------------------------------------------
+# 기대값의 절반은 「비영으로 끝난다」가 아니라 「4단의 기본값을 내지 않는다」이다.
+# 폴백하면 운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 쓴다.
+: > "$LD/notadir"
+printf '%s\n' "$LD/notadir" > "$LD/xdgbad/cc-cmds/config-dir"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgbad" resolve_account 2>/dev/null )
+rc=$?
+check "T5 3단 fail-closed: 비영으로 끝난다" "$rc" "1"
+check "T5 3단 fail-closed: 4단의 기본값을 내지 않는다" "$v" ""
+
+# --- T6: 2단도 폴백하지 않는다 ---------------------------------------------
+# 2단의 값이 깨졌을 때 폴백하면 같은 런의 스테이지들이 서로 다른 레인에 앉는데,
+# 그것이 정확히 2단을 둔 이유이므로 여기서 폴백하는 것은 기전의 자기 부정이다.
+mkdir -p "$LD/rundirbad"
+printf '%s\n' "$LD/notadir" > "$LD/rundirbad/config-dir"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirbad" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>/dev/null )
+rc=$?
+check "T6 2단 fail-closed: 비영으로 끝난다" "$rc" "1"
+check "T6 2단 fail-closed: 3·4단으로 내려가지 않는다" "$v" ""
+
+# --- T7: 환경변수 경로는 변경 전과 바이트 동일 -----------------------------
+# 기대 문자열을 손으로 적지 않고 변경 전 구현을 그 자리에서 다시 유도한다.
+# 하드코딩한 기대값은 두 구현이 함께 틀려도 통과한다.
+want=$(CLAUDE_CONFIG_DIR="$LD/env" HOME="$LD/home" \
+       /usr/bin/env sh -c 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"')
+got=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7 1단의 반환값이 변경 전 구현과 바이트 동일" "$got" "$want"
+
+# --- T8: 런당 1회가 아니라 스테이지 디스패치마다 ---------------------------
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | sed 's/#.*//' | grep_all_q 'resolve_account'; then
+  ok "T8a 스테이지 디스패치가 리졸버를 부른다 (런당 1회가 아니다)"
+else
+  bad "T8a 디스패치별 호출" "stage_spawn 이 리졸버를 부르지 않는다 — 런당 1회로 굳는다"
+fi
+# 그리고 그 반복 호출이 같은 답을 낸다는 것이 2단의 존재 이유다. 아래 두 호출은
+# 3단의 설정이 서로 다른데, 런 기록이 있으므로 값이 갈리지 않아야 한다.
+v1=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg"      resolve_account )
+v2=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
+check "T8b 3단이 달라도 런 기록이 있으면 한 런의 스테이지가 갈리지 않는다" "$v1" "$v2"
+
+# --- 런 디렉터리 초기화가 레인과 오케스트레이터를 남긴다 -------------------
+RI_SAVE="$RUN_DIR"; RID_SAVE="$RUN_ID"
+RUN_ID="lane-init"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+RI="$LD/state/cc-cmds/run/lane-init"
+check "rundir_init 이 레인을 기록한다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
+check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(cat "$RI/orchestrator-dir" 2>/dev/null)" "$ORCH_DIR"
+# 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
+printf '%s\n' "$LD/runrec" > "$RI/config-dir"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+check "rundir_init 은 이미 있는 레인 기록을 덮지 않는다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/runrec"
+RUN_DIR="$RI_SAVE"; RUN_ID="$RID_SAVE"
+
+# --- T9~T12: 프로브 ---------------------------------------------------------
+PROBE="$script_dir/lane-probe.sh"
+if [ -x "$PROBE" ]; then ok "프로브에 실행 비트가 있다"; else bad "프로브" "실행 비트가 없다: $PROBE"; fi
+if env -i PATH="$SANITIZED_PATH" /usr/bin/env bash -n "$PROBE" 2>/dev/null; then
+  ok "정제 PATH가 고르는 인터프리터에서 프로브가 파싱된다"
+else
+  bad "프로브 파싱" "bash -n 실패 — bash 4 전용 문법이 섞였을 수 있음"
+fi
+
+FR="$WORK/probe-root"
+mkdir -p "$FR/cc-cmds/run/R-live" "$FR/cc-cmds/run/R-dead" "$FR/cc-cmds/run/R-odd"
+# 살아 있는 스테이지: 기록된 pid 가 살아 있고 시작시각 지문이 일치해야 한다.
+# 지문은 드라이버가 쓰는 것과 같은 형태로 만든다 — 다른 형태로 만들면 이 픽스처가
+# 검증하는 것은 오라클이 아니라 이 하네스 자신이 된다.
+sleep 45 &
+LIVE_PID=$!
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-live/S1.pid"
+ps -o lstart= -p "$LIVE_PID" 2>/dev/null \
+  | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FR/cc-cmds/run/R-live/S1.start"
+printf '%s\n' "$LD/runrec" > "$FR/cc-cmds/run/R-live/config-dir"
+# 죽은 pid: 형상은 인식되므로 판정 불가가 아니라 「아님」이다.
+printf '999999\n' > "$FR/cc-cmds/run/R-dead/S1.pid"
+: > "$FR/cc-cmds/run/R-dead/S1.start"
+# 인식되지 않는 형상: pid 파일이 비어 있다. 스포너의 리다이렉션이 쓰기 전에 파일을
+# 만들기 때문에 실재하는 창이고, 여기서 0 을 세면 그 답이 스왑을 인가한다.
+: > "$FR/cc-cmds/run/R-odd/S1.pid"
+
+probe_out=$(XDG_STATE_HOME="$FR" bash "$PROBE" 2>/dev/null)
+probe_rc=$?
+check "T9 프로브 정상 종료" "$probe_rc" "0"
+check "T9 런 3개에 세 줄" "$(printf '%s\n' "$probe_out" | grep -c .)" "3"
+check "T9 살아 있는 런은 도는중 / 스테이지 1 / 기록된 레인" \
+  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-live //p')" "도는중 1 $LD/runrec"
+check "T9 죽은 pid 의 런은 아님 / 0 / 미기록" \
+  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-dead //p')" "아님 0 (미기록)"
+check "T10 인식되지 않는 형상은 판정 불가이고 개수를 세지 않는다" \
+  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-odd //p')" "판정 불가 ? (미기록)"
+kill "$LIVE_PID" 2>/dev/null
+wait "$LIVE_PID" 2>/dev/null
+
+# T11 — 런 0개의 정상 종료와 열거 실패는 **출력이 같고 종료 코드만 다르다**.
+EMPTY="$WORK/probe-empty"; mkdir -p "$EMPTY/cc-cmds/run"
+zero_out=$(XDG_STATE_HOME="$EMPTY" bash "$PROBE" 2>/dev/null); zero_rc=$?
+check "T11 런 0개: 출력 없음" "$zero_out" ""
+check "T11 런 0개: 정상 종료" "$zero_rc" "0"
+MISSING="$WORK/probe-missing"; mkdir -p "$MISSING"
+miss_out=$(XDG_STATE_HOME="$MISSING" bash "$PROBE" 2>/dev/null); miss_rc=$?
+check "T11 런 루트 부재는 미지가 아니라 런 0개다" "$miss_rc" "0"
+check "T11 런 루트 부재: 출력 없음" "$miss_out" ""
+BLIND="$WORK/probe-blind"; mkdir -p "$BLIND/cc-cmds/run/R1"
+chmod 000 "$BLIND/cc-cmds/run" 2>/dev/null
+if [ -r "$BLIND/cc-cmds/run" ]; then
+  printf 'NOTE: 열거 실패 분기를 만들 수 없다 (이 사용자는 권한을 무시한다 — root 로 보인다)\n'
+else
+  blind_out=$(XDG_STATE_HOME="$BLIND" bash "$PROBE" 2>/dev/null); blind_rc=$?
+  check "T10 열거 실패: 판정 불가 코드" "$blind_rc" "3"
+  check "T10 열거 실패: 아무것도 출력하지 않는다" "$blind_out" ""
+  if [ "$blind_out" = "$zero_out" ] && [ "$blind_rc" != "$zero_rc" ]; then
+    ok "T11 런 0개와 열거 실패는 출력이 같고 종료 코드만으로 갈린다"
+  else
+    bad "T11 구별" "출력 '$blind_out' vs '$zero_out', 코드 $blind_rc vs $zero_rc"
+  fi
+fi
+chmod 755 "$BLIND/cc-cmds/run" 2>/dev/null
+
+# T12 — `--resolve` 는 런이 하나도 없을 때의 답이다.
+res_out=$(XDG_STATE_HOME="$EMPTY" CLAUDE_CONFIG_DIR="$LD/env" bash "$PROBE" --resolve 2>/dev/null)
+res_rc=$?
+check "T12 --resolve 종료 0" "$res_rc" "0"
+check "T12 --resolve 가 리졸버 결과 한 줄을 낸다" "$res_out" "$LD/env"
+res_out=$(env -u CLAUDE_CONFIG_DIR PATH="$PATH" HOME="$LD/home" \
+            XDG_STATE_HOME="$EMPTY" XDG_CONFIG_HOME="$LD/xdg" bash "$PROBE" --resolve 2>/dev/null)
+check "T12 환경변수가 없으면 아래 단이 답한다" "$res_out" "$LD/homerec"
+
+# --- T13~T16: 형제 레인의 훅 판정 -------------------------------------------
+HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
+HH="$WORK/hookhome"
+mkdir -p "$HH/.claude-x" "$HH/.claude-y/projects" "$HH/.claude-y/todos"
+hook_decide() {
+  # hook_decide <편집 대상 경로> — 스테이지는 레인 x 에서 돌고 y 는 형제다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+check "T13 형제 레인의 settings.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.json")" "deny"
+check "T14 형제 레인의 settings.local.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.local.json")" "deny"
+check "T15 형제 레인의 트랜스크립트는 거부" "$(hook_decide "$HH/.claude-y/projects/abc.jsonl")" "deny"
+# 음성 대조군. 이것이 없으면 위 셋의 통과는 「형제 레인을 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 스테이지가 자기 일을 못 하게 만든다.
+check "T16 형제 레인의 강제 표면 아닌 경로는 여전히 허용" "$(hook_decide "$HH/.claude-y/todos/t.json")" "allow"
+check "자기 레인의 settings.json 은 그대로 거부 (기존 분기 존치)" \
+  "$(hook_decide "$HH/.claude-x/settings.json")" "deny"
+# 아직 없는 레인 디렉터리를 만들면서 그 안에 쓰는 경로도 막혀야 한다 — 존재를
+# 조건으로 걸면 가드가 새 레인에서만 사라지고, 그때가 아무도 안 보는 때다.
+mkdir -p "$HH/.claude-z"
+check "존재하지 않던 형제 레인도 덮는다" "$(hook_decide "$HH/.claude-z/settings.json")" "deny"
+
+# --- T17: 등재된 예외가 자체 점검에 있다 ------------------------------------
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-check > "$SC_OUT" 2>&1
+sc_rc2=$?
+check "T17 자체 점검이 통과한다" "$sc_rc2" "0"
+if grep -q '등재된 예외: 구속면 다이제스트의 입력에 오케스트레이터 소스가 없다' "$SC_OUT"; then
+  ok "T17 구속면 다이제스트에서 빠진 것이 등재된 예외로 진술된다"
+else
+  bad "T17 등재된 예외" "다이제스트 쪽 진술이 없다 — 빠진 것과 일부러 뺀 것을 구별할 수 없다"
+fi
+if grep -q '등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다' "$SC_OUT"; then
+  ok "T17 훅 거부 목록에서 빠진 것이 등재된 예외로 진술된다"
+else
+  bad "T17 등재된 예외" "훅 쪽 진술이 없다"
+fi
+# 그리고 그 단언이 실제로 대조한다. 결함을 심지 않은 통과는 공허할 수 있으므로,
+# 플러그인 배치를 그대로 흉내 낸 픽스처에서 훅의 룰 분기를 오케스트레이터 전체로
+# 넓히고 같은 점검을 다시 돌린다 — 등재된 예외의 문면과 어긋났으니 잡혀야 한다.
+FX="$WORK/hookfix"
+mkdir -p "$FX/orchestrator" "$FX/hooks"
+cp "$script_dir"/*.sh "$FX/orchestrator/" 2>/dev/null
+cp -R "$script_dir/prompts" "$FX/orchestrator/" 2>/dev/null || true
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$HOOK" > "$FX/hooks/gate-pretool.sh"
+if grep -q '\*/orchestrator/\*' "$FX/hooks/gate-pretool.sh"; then
+  env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
+    bash "$FX/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
+  fx_rc=$?
+  if [ "$fx_rc" != "0" ] && grep -q '등재된 예외의 문면과 어긋난다' "$SC_OUT"; then
+    ok "T17 훅 거부 분기를 넓히면 등재된 예외 항목이 잡는다"
+  else
+    bad "T17 등재된 예외" "넓힌 훅을 놓쳤다 (rc=$fx_rc) — 위 통과가 공허하다"
+  fi
+else
+  bad "T17 픽스처" "훅의 룰 분기를 넓히지 못했다 — 대조가 성립하지 않는다"
+fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
