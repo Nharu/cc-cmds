@@ -5153,7 +5153,7 @@ gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --rationale "픽스처 — 첫 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 풀려서 재파견" -- "상태=실행중" "워크트리=$WT"
+  --rationale "픽스처 — 풀려서 재파견" -- "상태=실행중" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
   --rationale "픽스처 — 다시 park" -- "상태=park" "워크트리=$WT" "선행=없음"
