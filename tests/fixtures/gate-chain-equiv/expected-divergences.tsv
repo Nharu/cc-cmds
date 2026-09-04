@@ -1,0 +1,26 @@
+# Intended divergences between the live verifier and frozen reference v1.
+#
+# ENUMERATED BY NAME, never by a threshold. The list is enforced in BOTH
+# directions: a divergence that is not listed fails the suite, and a listed one
+# that no longer occurs fails it too. A stale exception is a lie about the code,
+# and it is the more dangerous of the two because it reads as coverage.
+#
+# Columns: <case-name> <direction> <reason — including the PR that approved it>
+# Direction is 수용→거부 or 거부→수용, as seen from reference v1 to the
+# candidate.
+#
+# A 거부→수용 row is a LOSS OF DETECTION and cannot be listed without the
+# literal marker DETECTION-LOSS in its reason. That marker is the only thing
+# enforcing "detection does not get weaker"; without it a slice could enumerate
+# its own regression and the list would rubber-stamp it.
+#
+# `강화 방향` declares whether this commit is one that tightens detection. When
+# 예, the list must name at least one 수용→거부 case — a slice claiming to
+# strengthen detection while producing no divergence at all has not been
+# demonstrated to do anything. It is declared rather than inferred because which
+# slice this is is a property of the commit, not of the tree.
+#
+# 강화 방향: 아니오
+#
+# Empty for the harness's own commit: it changes no judgment, which is the whole
+# claim being made about it.
