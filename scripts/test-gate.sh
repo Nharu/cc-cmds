@@ -2759,7 +2759,7 @@ TAB=$(printf '\t')
 drain_act() {
   gate act --manifest "$MANIFEST" --kind segment --target infra --segment SDR \
     --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT"
+    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
 }
 printf '2026-08-31T00:00:00Z%s정체 사유 X%s재개 명령 X\n' "$TAB" "$TAB" > "$RD/stall"
 drain_act
@@ -5247,7 +5247,7 @@ warn_out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
   CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
   bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra --segment SBW \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 근미스 경고" -- "상태=계획됨" "워크트리=$WT" 2>&1 >/dev/null)
+  --rationale "픽스처 — 근미스 경고" -- "상태=계획됨" "워크트리=$WT" "선행=없음" 2>&1 >/dev/null)
 case "$warn_out" in
   *"알아보지 못했습니다"*) ok "미인식 킬스위치 값에 표준오류로 경고한다" ;;
   *) bad "근미스 경고" "$(printf '%s' "$warn_out" | tr '\n' ' ')" ;;
@@ -5257,7 +5257,7 @@ warn_second=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
   CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
   bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra --segment SBW2 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 근미스 경고 재발" -- "상태=계획됨" "워크트리=$WT" 2>&1 >/dev/null)
+  --rationale "픽스처 — 근미스 경고 재발" -- "상태=계획됨" "워크트리=$WT" "선행=없음" 2>&1 >/dev/null)
 case "$warn_second" in
   *"알아보지 못했습니다"*) bad "근미스 경고" "한 런 안의 두 번째 게이트 호출에서 다시 경고했다" ;;
   *) ok "그 경고는 런당 한 번만 나간다" ;;
@@ -5284,10 +5284,27 @@ printf '배너 켬 (CC_CMDS_AUTOPILOT_NOTIFY)\n' > "$RD/notify.state"
 seat_before=$(grep -cF '배너 좌석:' "$LEDGER" || true)
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBR1 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 배너 상태 전사" -- "상태=계획됨" "워크트리=$WT"
+  --rationale "픽스처 — 배너 상태 전사" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBR2 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 배너 상태 전사 재호출" -- "상태=계획됨" "워크트리=$WT"
+  --rationale "픽스처 — 배너 상태 전사 재호출" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
+# THE FIXTURES ABOVE MUST HAVE LANDED THEIR ROWS, and until now nothing here
+# asked. Every assertion in this section reads a side effect — a stderr warning,
+# a prose-line delta — that the gate produces BEFORE it validates the segment
+# row's own fields. So when this branch made `선행` required and these fixtures
+# did not carry it, the rows were refused, the situation the fixtures exist to
+# set up stopped happening, and every assertion stayed green.
+#
+# That is the same shape the rest of this file keeps finding: a check whose
+# success does not depend on the thing being true. The guard is cheap and it
+# fails loudly the moment a fixture stops establishing its own precondition.
+for _sbseg in SBW SBW2 SBR1 SBR2; do
+  if grep -qF "id=$_sbseg " "$LEDGER"; then
+    ok "픽스처 $_sbseg 의 segment 행이 실제로 원장에 앉았다"
+  else
+    bad "픽스처 전제" "$_sbseg 의 segment 행이 거절돼 이 절의 단언들이 세우려던 상황이 성립하지 않았다 — 단언은 그것과 무관한 부수효과를 보므로 초록으로 남는다"
+  fi
+done
 seat_after=$(grep -cF '배너 좌석:' "$LEDGER" || true)
 check "배너 상태 줄이 보고서 겸 원장에 정확히 한 번 전사된다" \
   "$((seat_after - seat_before))" "1"

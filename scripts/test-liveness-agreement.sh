@@ -301,14 +301,25 @@ done
 # Asserted on the source rather than by firing, and the reason is the same one
 # that makes the defect worth a test: to observe it behaviourally this suite
 # would have to let a banner escape to the real notifier, which is the thing
-# being prevented. So the check is that each suite carries the export — and it
-# names the three that legitimately do not, because for them the banner IS the
-# subject.
+# being prevented. So the check is that each suite carries the export, and the
+# skip list names the ones that legitimately do not — for those the banner IS
+# the subject, so a process-level kill would remove what they assert. The list
+# is deliberately not counted here: it was, and the count outlived a change to
+# the list itself, which is the same defect this file keeps finding one layer
+# up — a statement that was true when written and became false with nothing
+# about the statement changing.
 for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrator/test-run.sh; do
   [ -f "$f" ] || continue
   b=$(basename "$f")
   case "$b" in
-    test-active-notify-*|test-watch.sh|test-gate.sh) continue ;;
+    # `test-gate.sh` is NOT skipped, and it was — which put the one file that
+    # actually leaked, and the one holding a hundred-plus direct gate calls,
+    # outside the only check that would catch a regression. It carries the
+    # export like the others; what differs is only that it turns the channel
+    # back ON inside two helpers, and that is a local override rather than an
+    # absence. The two below are the real exceptions: for them the banner IS
+    # the subject, so a process-level kill would remove what they assert.
+    test-active-notify-*|test-watch.sh) continue ;;
   esac
   # Only suites that can reach a firing path need it — the gate, the driver and
   # the watcher are the three that fire, and what matters is EXECUTING one of
