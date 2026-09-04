@@ -152,20 +152,45 @@ failed=0
 #   C  the extractor yields something else non-empty
 #
 # TWO columns are measured, not one, because the live verifier and the frozen
-# reference no longer run under the same character-type locale and that
-# difference IS the slice being tested. Collapsing them to one number is what
-# made the golden phase assert the reference's column against the candidate's
-# behaviour.
+# reference no longer extract `prev=` the same way — the reference shells out to
+# `sed` under production's UTF-8 locale, the live one matches raw bytes in the
+# single pass — and that difference IS what these slices changed. Collapsing them
+# to one number is what made the golden phase assert the reference's column
+# against the candidate's behaviour.
 PROBE_HEX=00000000000000000000000000000000000000000000000000000000000000ff
-probe_col() {                     # probe_col <LC_CTYPE value> — echoes A/B/C
+col_of() {                        # col_of <rc> <output> — echoes A/B/C
+  if [ "$1" != 0 ] || [ -z "$2" ]; then printf 'A'
+  elif [ "$2" = "$PROBE_HEX" ]; then printf 'B'
+  else printf 'C'
+  fi
+}
+
+# The REFERENCE's extractor: `sed`, under whichever locale it is handed. The
+# frozen v1 still spells it this way and always will, so this probe stays.
+probe_col_ref() {                 # probe_col_ref <LC_CTYPE value> — echoes A/B/C
   local out rc
   out=$(printf 'x\377x | prev=%s\n' "$PROBE_HEX" \
     | env -u LC_ALL LC_CTYPE="$1" sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p' 2>/dev/null)
   rc=$?
-  if [ "$rc" != 0 ] || [ -z "$out" ]; then printf 'A'
-  elif [ "$out" = "$PROBE_HEX" ]; then printf 'B'
-  else printf 'C'
-  fi
+  col_of "$rc" "$out"
+}
+
+# The LIVE extractor, which is no longer `sed` under a pinned locale but a Perl
+# match over the row's raw bytes. The probe moved with it ON PURPOSE: a probe
+# still measuring the old spelling would go on reporting B about a thing the tree
+# had stopped doing, and the coupling — "if that expression changes in gate.sh
+# this line changes with it" — is the whole value of measuring the observable
+# instead of asserting the vendor of a tool.
+probe_col_live() {                # echoes A/B/C
+  local out rc
+  out=$(printf 'x\377x | prev=%s\n' "$PROBE_HEX" \
+    | perl -e 'binmode(STDIN);
+               while (defined(my $l = <STDIN>)) {
+                 last unless $l =~ s/\n\z//;
+                 print "$1\n" if $l =~ /^.*\| prev=([0-9a-f]*)\z/;
+               }' 2>/dev/null)
+  rc=$?
+  col_of "$rc" "$out"
 }
 
 # The reference is v1 AS PRODUCTION RAN IT, and production's `LC_CTYPE` is a
@@ -193,19 +218,59 @@ done
 [ -n "$REF_LOCALE" ] \
   || die2 "no UTF-8 locale on this host — the reference cannot be run as production runs it"
 
-REF_COL=$(probe_col "$REF_LOCALE")
-LIVE_COL=$(probe_col C)
-printf 'test-gate-chain-equiv: extractor column — reference(%s)=%s live(pinned C)=%s\n' \
+REF_COL=$(probe_col_ref "$REF_LOCALE")
+LIVE_COL=$(probe_col_live)
+printf 'test-gate-chain-equiv: extractor column — reference(%s, sed)=%s live(perl, raw bytes)=%s\n' \
   "$REF_LOCALE" "$REF_COL" "$LIVE_COL"
 
-# THE TWO-LEG CLAIM, ASSERTED RATHER THAN DESCRIBED. Pinning the character-type
-# axis to C is supposed to make the extractor byte-faithful on BOTH legs — BSD
-# `sed` stops aborting and GNU `sed` stops emitting a polluted prefix, and the
-# two implementations land on the same correct value. If that ever fails on a
-# leg, the premise of the pin is gone on that leg and every verdict below is
-# measuring something else.
+# THE TWO-LEG CLAIM, ASSERTED RATHER THAN DESCRIBED. The live extractor is
+# supposed to read the hex a row actually carries on BOTH legs, whatever the
+# locale and whatever `sed` the image ships. If that ever fails on a leg, the
+# premise is gone on that leg and every verdict below is measuring something
+# else. Asserted, not described, because it is the claim the whole comparison
+# rests on.
 [ "$LIVE_COL" = B ] || die2 \
-  "the pinned extractor reported column $LIVE_COL, not B — LC_CTYPE=C did not make it byte-faithful on this host"
+  "the live extractor reported column $LIVE_COL, not B — it is not reading the row's bytes on this host"
+
+# ---------- the reference's second axis: what `read` does to a NUL -----------
+# The extractor column is a property of `sed`. This is a property of the
+# INTERPRETER the reference runs under, and the two do not have to move together,
+# so it is measured separately rather than inferred from the column. Folding it
+# into the column would work today only because the two legs happen to differ on
+# both axes at once, and would quietly mislabel the day one image changed.
+#
+#   자름  `read` truncates the row at the NUL, so `| prev=` is lost and the
+#         reference calls the row unreadable  (measured: bash 3.2.57)
+#   지움  `read` drops the NUL and keeps the rest, so the row reads as the
+#         ORIGINAL and the reference sees an intact chain  (measured: bash 5.3.15)
+#
+# The corpus splices a NUL into a row's body and leaves `| prev=<hex>` intact at
+# end of line, so this is exactly the observable that decides those cases.
+REF_NUL_HEX=deadbeef
+probe_ref_nul() {                 # echoes 자름 or 지움
+  local f out
+  f="$WORK/nul-probe"
+  printf 'body\000 | prev=%s\n' "$REF_NUL_HEX" > "$f"
+  # The same interpreter and the same locale `ref_verdict` uses, for the same
+  # reason: this has to describe the reference as it actually runs.
+  out=$(env -u LC_ALL LC_CTYPE="$REF_LOCALE" bash -c \
+          'IFS= read -r line < "$1"; printf "%s" "$line"' _ "$f" \
+        | sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p')
+  if [ "$out" = "$REF_NUL_HEX" ]; then printf '지움'; else printf '자름'; fi
+}
+REF_NUL=$(probe_ref_nul)
+printf 'test-gate-chain-equiv: reference NUL handling = %s\n' "$REF_NUL"
+
+# The conditions a divergence row may be scoped to, and the ones that hold here.
+# A row applies when its condition is active. Keeping the vocabulary closed is
+# what makes a typo a failure instead of a row that silently never applies.
+KNOWN_CONDS="공통 A B C nul자름 nul지움"
+ACTIVE_CONDS="공통 $REF_COL nul$REF_NUL"
+
+in_set() {                        # in_set <needle> <space-separated set>
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 # ---------- phase 1: golden vectors ----------------------------------------
 
@@ -504,16 +569,19 @@ printf 'test-gate-chain-equiv: positive control diverged on %d case(s) — compa
 # listed one that no longer occurs fails too — a stale exception is a lie about
 # the code.
 #
-# Each row also carries the REFERENCE COLUMN it applies to. The frozen reference
-# runs under a UTF-8 locale and the two legs disagree there — BSD `sed` aborts
-# (column A) where GNU `sed` returns a polluted prefix (column C) — so a
-# divergence real on one leg can be genuinely absent on the other. Without that
-# field one file cannot be true on both legs, and the only choices left are a
-# stale exception on one leg or an unlisted divergence on the other.
+# Each row also carries the REFERENCE CONDITION it applies to. The frozen
+# reference behaves differently on the two legs on two independent axes — its
+# `sed` (BSD aborts on an invalid byte, GNU returns a polluted prefix) and its
+# interpreter (bash 3.2 truncates a row at a NUL, bash 5 drops the NUL and keeps
+# the rest) — so a divergence real on one leg can be genuinely absent on the
+# other, or real on both with OPPOSITE directions. Without that field one file
+# cannot be true on both legs, and the only choices left are a stale exception on
+# one leg or an unlisted divergence on the other.
 #
 # The DIRECTION is DERIVED from the two measured verdicts, and the enumerated
-# one is checked against it. Guard 6c keys off the derived value, so writing a
-# convenient label cannot route a detection loss around it.
+# one is checked against it on whichever leg the case diverges. Guard 6c reads
+# the written label on BOTH legs, so scoping a row to the other leg cannot route
+# a detection loss around it.
 strengthening=$(sed -n 's/^# 강화 방향: //p' "$DIVERGENCES" | sed -n 1p)
 listed=$(grep -v '^#' "$DIVERGENCES" | grep -v '^[[:space:]]*$')
 
@@ -526,61 +594,74 @@ direction_of() {
   else                                        printf '거부→거부'
   fi
 }
-# Enumerated for THIS leg — a row scoped to the other column does not count as
-# coverage here, which is what makes an unlisted divergence still fail on the leg
-# where it is real.
+# Enumerated for THIS leg — a row scoped to a condition that does not hold here
+# does not count as coverage, which is what makes an unlisted divergence still
+# fail on the leg where it is real.
 listed_applies() {
-  printf '%s\n' "$listed" | awk -v n="$1" -v c="$REF_COL" \
-    '$1 == n && ($3 == "공통" || $3 == c) { found = 1 } END { exit found ? 0 : 1 }'
+  printf '%s\n' "$listed" | awk -v n="$1" -v a=" $ACTIVE_CONDS " \
+    '$1 == n && index(a, " " $3 " ") { found = 1 } END { exit found ? 0 : 1 }'
 }
 observed_pair() {
   printf '%s\n' "$observed" \
     | awk -F'\t' -v n="$1" '$1 == n && !seen { print $3 "|" $4; seen = 1 }'
 }
 
-accept_to_reject=0
+listed_accept_to_reject=0
 for_each_listed_ok=1
 if [ -n "$listed" ]; then
-  while read -r lname ldir lcol _reason; do
+  while read -r lname ldir lcond _reason; do
     [ -n "$lname" ] || continue
-    case "$lcol" in
-      공통|A|B|C) ;;
-      *) printf 'FAIL: %s carries an unrecognized reference column: %s\n' "$lname" "$lcol" >&2
+    if ! in_set "$lcond" "$KNOWN_CONDS"; then
+      printf 'FAIL: %s carries an unrecognized reference condition: %s\n' "$lname" "$lcond" >&2
+      for_each_listed_ok=0; continue
+    fi
+    case "$ldir" in
+      수용→거부|거부→수용|수용→수용|거부→거부) ;;
+      *) printf 'FAIL: %s carries an unrecognized direction: %s\n' "$lname" "$ldir" >&2
          for_each_listed_ok=0; continue ;;
     esac
-    pair=$(observed_pair "$lname")
-    if [ "$lcol" = 공통 ] || [ "$lcol" = "$REF_COL" ]; then
-      if [ -z "$pair" ]; then
-        printf 'FAIL: %s is listed for reference column %s but no longer diverges (stale exception)\n' \
-          "$lname" "$lcol" >&2
-        for_each_listed_ok=0; continue
-      fi
-    else
-      # The condition is falsifiable in the other direction too: an entry scoped
-      # to a column it did not need is an exception that would silently widen.
-      if [ -n "$pair" ]; then
-        printf 'FAIL: %s is scoped to reference column %s but diverged under column %s\n' \
-          "$lname" "$lcol" "$REF_COL" >&2
-        for_each_listed_ok=0
-      fi
-      continue
-    fi
-    derived=$(direction_of "${pair%%|*}" "${pair##*|}")
-    if [ "$ldir" != "$derived" ]; then
-      printf 'FAIL: %s is enumerated as %s but the measured verdicts read %s\n' \
-        "$lname" "$ldir" "$derived" >&2
-      for_each_listed_ok=0
-    fi
-    case "$derived" in
-      수용→거부) accept_to_reject=$((accept_to_reject + 1)) ;;
+
+    # LABEL-LEVEL guards, applied to every row on EVERY leg. A row scoped to the
+    # other leg is skipped by the derivation below, and guard 6c must not be
+    # skippable by scoping — it is the only thing enforcing that detection does
+    # not get weaker, so it reads the written label, which is present on both
+    # legs. The derivation still catches a label that lies, on whichever leg the
+    # case actually diverges.
+    case "$ldir" in
+      수용→거부) listed_accept_to_reject=$((listed_accept_to_reject + 1)) ;;
       거부→수용)
-        # guard 6c — a loss of detection cannot be enumerated without saying so.
         case "$_reason" in
           *DETECTION-LOSS*) ;;
-          *) printf 'FAIL: %s is a 거부→수용 divergence carrying no DETECTION-LOSS marker\n' "$lname" >&2
+          *) printf 'FAIL: %s is enumerated as 거부→수용 without a DETECTION-LOSS marker\n' "$lname" >&2
              for_each_listed_ok=0 ;;
         esac ;;
     esac
+
+    pair=$(observed_pair "$lname")
+    if in_set "$lcond" "$ACTIVE_CONDS"; then
+      if [ -z "$pair" ]; then
+        printf 'FAIL: %s is listed for reference condition %s but no longer diverges (stale exception)\n' \
+          "$lname" "$lcond" >&2
+        for_each_listed_ok=0; continue
+      fi
+      derived=$(direction_of "${pair%%|*}" "${pair##*|}")
+      if [ "$ldir" != "$derived" ]; then
+        printf 'FAIL: %s is enumerated as %s but the measured verdicts read %s\n' \
+          "$lname" "$ldir" "$derived" >&2
+        for_each_listed_ok=0
+      fi
+    else
+      # Falsifiable in the other direction too: an entry scoped to a condition it
+      # did not need is an exception that would silently widen. It is only wrong,
+      # though, if NO row for this case covers the current leg — a case whose
+      # direction differs BETWEEN legs is enumerated once per leg, and each entry
+      # is inapplicable on the other one by construction.
+      if [ -n "$pair" ] && ! listed_applies "$lname"; then
+        printf 'FAIL: %s is scoped to reference condition %s but diverged under %s with no entry covering it\n' \
+          "$lname" "$lcond" "$ACTIVE_CONDS" >&2
+        for_each_listed_ok=0
+      fi
+    fi
   done <<EOF
 $listed
 EOF
@@ -589,7 +670,14 @@ fi
 # guard 6b — a slice that strengthens detection must name at least one
 # accept→reject divergence. Declared in the file's header rather than inferred,
 # because which slice this is is a property of the commit, not of the tree.
-if [ "$strengthening" = "예" ] && [ "$accept_to_reject" = 0 ]; then
+#
+# Counted over the WHOLE list, not over the rows that apply here. A commit can
+# strengthen detection on one leg only — where the reference's interpreter let a
+# tampered row through — while on the other leg the reference was already
+# rejecting it for a different and wrong reason. Counting per leg would fail that
+# commit on the leg where its own strengthening is invisible, which is the leg
+# that says least about whether it strengthened anything.
+if [ "$strengthening" = "예" ] && [ "$listed_accept_to_reject" = 0 ]; then
   die2 "guard 6b: the divergence list declares 강화 방향: 예 but enumerates no 수용→거부 case"
 fi
 
@@ -614,8 +702,8 @@ else
 fi
 [ "$for_each_listed_ok" = 1 ] || failed=$((failed + 1))
 
-printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, columns ref=%s live=%s, reference accepts %d / rejects %d)\n' \
-  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$REF_COL" "$LIVE_COL" "$ref_accepts" "$ref_rejects"
+printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, conditions %s, reference accepts %d / rejects %d)\n' \
+  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$ACTIVE_CONDS" "$ref_accepts" "$ref_rejects"
 
 [ "$failed" = 0 ] || exit 1
 exit 0

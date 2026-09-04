@@ -1552,33 +1552,24 @@ gate_chain_verify() {
   # before it. This is what covers the ledger, since the whole-file digest
   # cannot (see above). A break is reported with the row number so the morning
   # reader has somewhere to look.
-  local prev line n=0 broke=0 want unreadable=0
-  # ------------------------------------------------------------------------
-  # THE LEDGER IS BYTES, AND THIS FUNCTION MUST READ IT AS BYTES.
   #
-  # Under a UTF-8 `LC_CTYPE` the `prev=` extractor below stops being a function
-  # of the row's content: BSD `sed` exits 1 with "illegal byte sequence" on a
-  # row carrying an invalid byte and prints nothing, while GNU `sed` exits 0 and
-  # prints output with the unsubstituted prefix still attached. Neither yields
-  # the hex the row actually carries, so the same ledger got two different
-  # verdicts on the two CI legs and neither one was the right answer.
+  # ONE PROCESS FOR THE WHOLE LEDGER, NOT THREE PER ROW. This walk used to spawn
+  # `sed`, `shasum` and `cut` once per row — exactly 3n+2 processes for n rows —
+  # and on this platform `shasum` is itself a Perl program wrapping
+  # `Digest::SHA`. Calling that module directly is therefore not a different hash
+  # implementation but the SAME ENGINE with n-1 interpreter startups removed,
+  # which is the strongest equivalence argument available for rewriting a path
+  # that issues verdicts.
   #
-  # `local` + `export` scopes the pin to this call. The value and the export
-  # attribute are both restored when the function returns, so nothing outside
-  # sees it — which is what keeps the driver's deliberate UTF-8 `LC_CTYPE`
-  # (every vocabulary it compares is Korean) intact for the rest of the process.
-  #
-  # WHY THIS DOES NOT MOVE THE FORCED-SURFACE DIGEST, which is the thing a
-  # global `LC_ALL=C` would break. Sort order is decided by `LC_COLLATE`, not by
-  # `LC_CTYPE`, and the driver exports `LC_COLLATE=C` unconditionally before any
-  # of this runs. So the collation axis is already pinned and cannot move; this
-  # touches only the character-type axis. Measured: with `LC_COLLATE=C` held
-  # fixed, flipping `LC_CTYPE` between a UTF-8 locale and C leaves `sort -u`
-  # output byte-identical. The bracket expression `[0-9a-f]` in the extractor is
-  # likewise a range expression, resolved on the collation axis, so it does not
-  # move either.
-  # ------------------------------------------------------------------------
-  local LC_CTYPE=C; export LC_CTYPE
+  # THE CHARACTER-TYPE PIN IS GONE FROM THIS FUNCTION, and its absence is not a
+  # relaxation. The pin was here because `sed` extracted `prev=`, and under a
+  # UTF-8 `LC_CTYPE` that extractor stopped being a function of the row's
+  # content — BSD `sed` aborted on an invalid byte and printed nothing, GNU `sed`
+  # returned output with the unsubstituted prefix still attached, and neither was
+  # the hex the row carried. There is no `sed` here now: the file is opened raw
+  # and matched as bytes unconditionally, which is what the pin was buying. The
+  # other three ledger readers still pin, because they still shell out.
+  local walk rc broke unreadable
   # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
   # never runs, `broke` stays 0, and the function returns "intact" for a file it
   # never opened — so deleting the ledger outright was quieter than editing one
@@ -1588,21 +1579,66 @@ gate_chain_verify() {
     warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
     return 1
   fi
-  prev=$(printf '%s' "## 실행 $RUN_ID" | shasum -a 256 | cut -d' ' -f1)
-  while IFS= read -r line; do
-    case "$line" in '- `'*) ;; *) continue ;; esac
-    n=$((n + 1))
-    want=$(printf '%s' "$line" | sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p')
-    # A row whose `prev=` cannot be read is a BREAK, not a row to step over.
-    # Skipping it left `prev` un-advanced, so the chain re-joined across the row
-    # as though it had never been there and a forged approval spliced in with no
-    # `prev=` — or with one made unreadable by a single invalid byte — was
-    # reported as intact. The row number is already consumed above, so the count
-    # is unchanged and existing fixtures keep their row numbering.
-    if [ -z "$want" ]; then broke=$n; unreadable=1; break; fi
-    if [ "$want" != "$prev" ]; then broke=$n; break; fi
-    prev=$(printf '%s' "$line" | shasum -a 256 | cut -d' ' -f1)
-  done < "$LEDGER"
+  # The whole walk, in one pass. Four behaviours are reproduced deliberately and
+  # none of them is incidental:
+  #
+  #   * ROW SELECTION and ROW NUMBERING are unchanged — a line is a row when it
+  #     starts with "- `", and an unreadable row still consumes its number, so
+  #     every committed fixture keeps the `broke` value it pins.
+  #   * THE EXTRACTOR keeps its greedy match, so it takes the LAST `| prev=` on
+  #     the row and yields nothing unless what follows is hex all the way to the
+  #     end of the line.
+  #   * A ROW WHOSE `prev=` CANNOT BE READ IS A BREAK, not a row to step over.
+  #     Stepping over it left `prev` un-advanced, so the chain re-joined across
+  #     the row as though it had never been there and a forged approval spliced
+  #     in with no `prev=` — or with one made unreadable by a single invalid
+  #     byte — was reported as intact. That is a fixed defect; reproducing it
+  #     here for the sake of "same verdict as before" would be an instruction to
+  #     regress.
+  #   * `read`'s EOF SEMANTICS are reproduced: a final line with no terminating
+  #     newline is never visited, because `read` returns non-zero on it and the
+  #     loop body does not run. The one thing NOT reproduced is what `read` does
+  #     to a NUL byte — it drops or truncates there depending on the interpreter,
+  #     and hashing the row's true bytes instead is a gain in detection, listed
+  #     as such rather than hidden.
+  walk=$(perl -MDigest::SHA=sha256_hex -e '
+    my ($ledger, $seed) = @ARGV;
+    open(my $fh, "<", $ledger) or exit 3;
+    binmode($fh);
+    my $prev = sha256_hex($seed);
+    my ($n, $broke, $unreadable) = (0, 0, 0);
+    while (defined(my $line = <$fh>)) {
+      last unless $line =~ s/\n\z//;
+      next unless substr($line, 0, 3) eq "- `";
+      $n++;
+      my $want = $line =~ /^.*\| prev=([0-9a-f]*)\z/ ? $1 : "";
+      if ($want eq "") { $broke = $n; $unreadable = 1; last }
+      if ($want ne $prev) { $broke = $n; last }
+      $prev = sha256_hex($line);
+    }
+    print "$broke $unreadable\n";
+    exit 0;
+  ' -- "$LEDGER" "## 실행 $RUN_ID" 2>&1)
+  rc=$?
+  # A FAILING TOOL AND A BROKEN CHAIN ARE NOT THE SAME FINDING. If `perl` or the
+  # module is missing, or the process dies, then no verdict was reached at all —
+  # and answering "splice, delete or reorder" there sends the morning reader
+  # looking for something that did not happen. Every morning report would say the
+  # chain broke, and a reader who sees that daily learns to skip the one field
+  # that would have told them. The 0/1 return contract is NOT widened: two
+  # consumers read it as a boolean, and what separates the two cases is the
+  # sentence. stderr is folded into the captured output so a diagnostic cannot
+  # reach the render path, which reads any stderr as a break.
+  case "$walk" in
+    [0-9]*" "[01]) ;;
+    *) rc=1 ;;
+  esac
+  if [ "$rc" != 0 ]; then
+    warn "원장 해시 체인을 검증하지 못했습니다 — 단일 패스 검증기가 판정을 내지 못했습니다 (perl 또는 Digest::SHA): ${walk}"
+    return 1
+  fi
+  broke=${walk%% *}
+  unreadable=${walk##* }
   [ "$broke" = "0" ] && return 0
   # Two causes, two sentences. They are NOT the same finding: a mismatch means
   # some row moved, while an unreadable `prev=` means THIS row cannot be placed
