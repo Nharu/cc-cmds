@@ -126,7 +126,12 @@ PD() { cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/
 # miss on the Linux leg only, once the function it scanned grew long enough for
 # the race to be real. A checker that exempts itself is the shape it exists to
 # refuse.
+# THIS LIST IS NOT A GLOB, so a new file joins it only by being written in. The
+# same omission already happened once with the shared-predicate file and nobody
+# noticed; `notify-run.sh` is by design full of `grep` on the right of a pipe, so
+# leaving it out would exempt the file most likely to carry the defect.
 for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
+         "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
          "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
          "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
          "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
@@ -2794,6 +2799,244 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
 after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
 
+# ---------------------------------------------------------------------------
+# The banner seat, gate side.
+#
+# This suite had no notifier stub at all, so the caller boundary — the single
+# most valuable assertion in this design — had nothing to observe. The idiom is
+# transplanted from the watcher's suite verbatim: intercept the notifier on PATH,
+# log its argv, and pin the two seams so neither the real binary nor the host
+# check can make the assertions unreachable.
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/bin"
+NOTIFY_LOG="$WORK/notifier.log"; : > "$NOTIFY_LOG"
+cat > "$WORK/bin/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$WORK/bin/terminal-notifier"
+
+# The emitter launches the notifier DETACHED and never asks its status, so a
+# write can land after the gate process has exited. Bounded wait, boolean
+# assertion — never a comparison of elapsed seconds.
+notify_settle() {
+  local want="$1" i=0 n
+  while [ "$i" -lt 60 ]; do
+    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
+}
+notify_lines() { grep -c . "$NOTIFY_LOG" 2>/dev/null || true; }
+notify_reset() { : > "$NOTIFY_LOG"; rm -f "$RD/notify.stack" "$RD/notify.overflow"; rm -rf "$RD/notify"; }
+
+# The env prefixes go on the REAL command, not on the shell function: a prefix
+# assignment before a bash function call outlives the call, and every later case
+# would silently inherit it.
+gateb() {
+  local out
+  out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+        CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+        CC_CMDS_NOTIFY_HOST_OS=Darwin \
+        CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+        bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+gateb_stage() {
+  local out
+  out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+        CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+        CC_CMDS_NOTIFY_HOST_OS=Darwin \
+        CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+        CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
+        bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+
+# --- THE CALLER BOUNDARY. The most valuable assertion here ------------------
+#
+# The same act, twice: once with the stage discriminators set and once with them
+# empty. THE ROW MUST LAND BOTH TIMES — the boundary is on the channel, never on
+# the record, and a stage-raised condition is carried by the watcher one pass
+# later. Only the banner is gated.
+#
+# Two different segment ids, because the stage-side call still leaves the park
+# marker: sharing an id would let the marker rather than the boundary explain the
+# silence, and the assertion would pass for the wrong reason.
+notify_reset
+gateb_stage act --manifest "$MANIFEST" --kind segment --target infra --segment SBN1 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 스테이지 호출의 park 기록" -- "상태=park" "워크트리=$WT"
+check "스테이지 호출에서도 세그먼트 park 행은 남는다" \
+  "$(grep -cF 'id=SBN1 | 상태=park' "$LEDGER" || true)" "1"
+sleep 0.3
+check "스테이지 호출은 배너를 올리지 않는다" "$(notify_lines)" "0"
+
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN2 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 라우터 호출의 park 기록" -- "상태=park" "워크트리=$WT"
+check "라우터 호출에서도 세그먼트 park 행은 남는다" \
+  "$(grep -cF 'id=SBN2 | 상태=park' "$LEDGER" || true)" "1"
+notify_settle 1
+check "라우터 호출은 배너를 올린다" "$(notify_lines)" "1"
+check "그 배너는 손 필요 제목을 쓴다" \
+  "$(grep -cF -- '-title [cc-cmds] 손 필요 -message' "$NOTIFY_LOG" || true)" "1"
+check "그 배너의 그룹이 항목 키를 싣는다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
+
+# --- ONE SEGMENT THROUGH BOTH SEATS ----------------------------------------
+#
+# The interaction the pair above avoids on purpose, driven here on ONE id: a
+# stage-side park followed by the router's park for the same segment. A call
+# that raises no banner must leave no marker, or the router's park — the only
+# channel this class has — is silenced by a stop nobody was ever told about.
+# The assertion spans both calls: exactly one banner, and it is the router's.
+notify_reset
+gateb_stage act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 같은 세그먼트에 대한 라우터 park" -- "상태=park" "워크트리=$WT"
+notify_settle 1
+check "스테이지 park 이 앞선 세그먼트에서도 배너는 정확히 하나다" "$(notify_lines)" "1"
+check "그 하나는 라우터 호출이 올린 것이다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN3 ' "$NOTIFY_LOG" || true)" "1"
+
+# --- A RE-PARK IS A NEW STOP -----------------------------------------------
+#
+# The item key is the segment id alone, so nothing but the marker's expiry can
+# tell the second stop from the first. Park, leave park, park again: two waits
+# for a person, two banners.
+notify_reset
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 첫 park" -- "상태=park" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 풀려서 재파견" -- "상태=실행중" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 다시 park" -- "상태=park" "워크트리=$WT"
+notify_settle 2
+check "풀렸다 다시 park 된 세그먼트의 두 번째 멈춤도 알려진다" "$(notify_lines)" "2"
+
+# --- A RESOLVED BLOCK IS NOT AN ANCHOR (the negative case) ------------------
+#
+# The obvious instrumentation — "a run-scope blocked row was appended" — fails
+# here and passes everywhere else: this is the row a PERSON writes when they
+# clear the block, so keying on it announces "the run has anchored" at the exact
+# moment somebody unblocked it.
+notify_reset
+gateb act --manifest "$MANIFEST" --kind blocked --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" --rationale "픽스처" \
+  -- "원인=해소" "사유=정체 사유 X" "근거=픽스처가 다시 해소로 판정했다"
+check "해소 행이 통과한다" "$rc" "0"
+sleep 0.3
+check "라우터가 막힘을 해소했다고 기록하는 자리에서는 배너가 나가지 않는다" "$(notify_lines)" "0"
+
+# --- THE FIRING TABLE, PINNED BY NAME --------------------------------------
+#
+# Six sites write a run-scope block or create that state, and three of them are
+# forbidden. Behaviourally reaching the two run-terminal arms and the
+# forced-surface-move arm inside a fixture would take the run's whole nine
+# termination conditions or a tampered enforcement surface, so these are pinned
+# at their SITE instead — which is the property that matters: an implementation
+# that gets the approval boundary right and this table wrong must fail something.
+site_fires() {
+  # site_fires <anchor-fixed-string> <lines-after>
+  #
+  # BOTH SPELLINGS COUNT. Some sites raise the notice inline and some hand it to
+  # a `gate_notify_*` helper that owns a marker handshake too big to inline —
+  # scanning for the emitter call alone would read a site that fires through a
+  # helper as silent, which is a property of how the code is factored rather than
+  # of whether the site fires.
+  local ln
+  ln=$(grep -nF "$1" "$GATE" | sed -n '1p' | cut -d: -f1)
+  if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
+  sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cE 'cc_notify_fire|gate_notify_' || true
+}
+check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
+  "$( [ "$(site_fires '사유=강제 표면 이동' 24)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+check "F4 — 무효화 종료의 done 표시가 발사한다" \
+  "$( [ "$(site_fires '종단 — 무효화 · 근거' 8)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+check "F4 — 충족 종료의 done 표시가 발사한다" \
+  "$( [ "$(site_fires '종단 — 종료 조건 아홉 성립 · 근거' 10)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+check "F2 — 세그먼트 행 기록 자리가 발사한다" \
+  "$( [ "$(site_fires "gate_append 'segment' \"id=\$seg\" \"\$@\"" 6)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+check "F1 — 스테이지 결과 행 자리가 발사한다" \
+  "$( [ "$(site_fires "gate_append 'stage-result'" 60)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
+  "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
+check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
+  "$(site_fires '"원인=불명" "사유=$why"' 12)" "0"
+
+# --- THE KILL SWITCH'S WARNING: stderr only, once per run ------------------
+#
+# Two separate properties. A warning on stdout would break the router's only
+# declared input, which is one JSON object; a warning per CALL would become
+# hundreds of lines overnight, interleaved with the refusal text a router has to
+# read, because the gate is a new process for every act.
+notify_reset
+rm -f "$RD/notify.warned-killswitch"
+warn_out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+  CC_CMDS_AUTOPILOT_NOTIFY=disabled CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra --segment SBW \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 근미스 경고" -- "상태=계획됨" "워크트리=$WT" 2>&1 >/dev/null)
+case "$warn_out" in
+  *"알아보지 못했습니다"*) ok "미인식 킬스위치 값에 표준오류로 경고한다" ;;
+  *) bad "근미스 경고" "$(printf '%s' "$warn_out" | tr '\n' ' ')" ;;
+esac
+warn_second=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+  CC_CMDS_AUTOPILOT_NOTIFY=disabled CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra --segment SBW2 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 근미스 경고 재발" -- "상태=계획됨" "워크트리=$WT" 2>&1 >/dev/null)
+case "$warn_second" in
+  *"알아보지 못했습니다"*) bad "근미스 경고" "한 런 안의 두 번째 게이트 호출에서 다시 경고했다" ;;
+  *) ok "그 경고는 런당 한 번만 나간다" ;;
+esac
+if (cd "$WT" && CC_CMDS_AUTOPILOT_NOTIFY=disabled bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null) | jq -e . >/dev/null; then
+  ok "경고가 무장된 상태에서도 스냅숏 출력이 JSON 으로 파싱된다"
+else
+  bad "스냅숏 JSON" "킬스위치 경고가 라우터의 선언 입력을 깨뜨렸다"
+fi
+
+# --- THE DURABLE RECORD, transcribed exactly once --------------------------
+#
+# The emitter's own state is written to a run-directory file by whichever seat
+# reaches it first, and this process — the ledger's writer — moves it into the
+# report. Two seats must not leave two lines for one fact.
+#
+# A DELTA, NOT AN ABSOLUTE COUNT. Every act above this line already drove the
+# transcription once, so an absolute count would measure the whole suite's
+# history rather than these two calls. Clearing the marker deliberately reopens
+# the transcription; what is asserted is that reopening it and calling twice
+# leaves exactly ONE more line.
+rm -f "$RD/notify.reported"
+printf '배너 켬 (CC_CMDS_AUTOPILOT_NOTIFY)\n' > "$RD/notify.state"
+seat_before=$(grep -cF '배너 좌석:' "$LEDGER" || true)
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBR1 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 배너 상태 전사" -- "상태=계획됨" "워크트리=$WT"
+gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBR2 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 배너 상태 전사 재호출" -- "상태=계획됨" "워크트리=$WT"
+seat_after=$(grep -cF '배너 좌석:' "$LEDGER" || true)
+check "배너 상태 줄이 보고서 겸 원장에 정확히 한 번 전사된다" \
+  "$((seat_after - seat_before))" "1"
+# The chain hashes rows and only rows, so a line of prose between them must not
+# be able to break it — the kickoff's own stub already puts prose in this file.
+gateb snapshot --manifest "$MANIFEST"
+case "$msg" in
+  *"끊김"*) bad "해시 사슬" "산문 한 줄이 사슬을 깼다: $msg" ;;
+  *) ok "전사된 산문 줄이 해시 사슬을 건드리지 않는다" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did
