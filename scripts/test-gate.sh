@@ -5096,9 +5096,16 @@ gateb_stage() {
 # marker: sharing an id would let the marker rather than the boundary explain the
 # silence, and the assertion would pass for the wrong reason.
 notify_reset
+# `선행=없음` on every segment row below, and it is not boilerplate. This branch
+# made `선행` REQUIRED once a repo holds more than one segment — absence and
+# `없음` are different answers, and the whole point of the requirement is that a
+# silent omission becomes an audible refusal. These fixtures arrived from the
+# other parent, which predates that contract, so they wrote park rows with no
+# `선행` at all and every one of them was refused before it could be recorded.
+# The refusal was correct; the fixtures had to learn the newer contract.
 gateb_stage act --manifest "$MANIFEST" --kind segment --target infra --segment SBN1 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 스테이지 호출의 park 기록" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 스테이지 호출의 park 기록" -- "상태=park" "워크트리=$WT" "선행=없음"
 check "스테이지 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBN1 | 상태=park' "$LEDGER" || true)" "1"
 sleep 0.3
@@ -5106,7 +5113,7 @@ check "스테이지 호출은 배너를 올리지 않는다" "$(notify_lines)" "
 
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN2 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 라우터 호출의 park 기록" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 라우터 호출의 park 기록" -- "상태=park" "워크트리=$WT" "선행=없음"
 check "라우터 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBN2 | 상태=park' "$LEDGER" || true)" "1"
 notify_settle 1
@@ -5126,10 +5133,10 @@ check "그 배너의 그룹이 항목 키를 싣는다" \
 notify_reset
 gateb_stage act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN3 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 같은 세그먼트에 대한 라우터 park" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 같은 세그먼트에 대한 라우터 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 notify_settle 1
 check "스테이지 park 이 앞선 세그먼트에서도 배너는 정확히 하나다" "$(notify_lines)" "1"
 check "그 하나는 라우터 호출이 올린 것이다" \
@@ -5143,13 +5150,13 @@ check "그 하나는 라우터 호출이 올린 것이다" \
 notify_reset
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 첫 park" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 첫 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
   --rationale "픽스처 — 풀려서 재파견" -- "상태=실행중" "워크트리=$WT"
 gateb act --manifest "$MANIFEST" --kind segment --target infra --segment SBN4 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-  --rationale "픽스처 — 다시 park" -- "상태=park" "워크트리=$WT"
+  --rationale "픽스처 — 다시 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 notify_settle 2
 check "풀렸다 다시 park 된 세그먼트의 두 번째 멈춤도 알려진다" "$(notify_lines)" "2"
 
