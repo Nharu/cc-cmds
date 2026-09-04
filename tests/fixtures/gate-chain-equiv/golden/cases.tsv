@@ -1,0 +1,41 @@
+# Golden vectors for gate_chain_verify — frozen (exit code, broken row) tuples.
+#
+# Each row: <case> <rcA> <brokeA> <rcB> <brokeB> <rcC> <brokeC>
+#
+# The three column pairs are NOT platform names. They are the three outcomes of
+# one probe — what the `prev=` extractor returns for a row that carries an
+# invalid UTF-8 byte — because that, not the vendor of `sed`, is what decides
+# these verdicts:
+#
+#   A  the extractor yields nothing (it aborted, or matched nothing)
+#      → the row updates no `prev` and the chain re-joins across it
+#   B  the extractor yields exactly the hex the row carries
+#      → the row is compared normally
+#   C  the extractor yields something else non-empty
+#      → the comparison is against a polluted value and cannot match
+#
+# Naming the observable instead of the vendor is what lets both CI legs assert a
+# literal here. macOS/BSD `sed` measured as A on 2026-09-04; the ubuntu leg is
+# expected to land on B or C, and whichever it is has a frozen expectation
+# rather than a skip.
+#
+# `broke` is 0 when the chain verified. Row numbering counts every row-shaped
+# line, including ones the extractor skipped — that is the existing convention
+# and it is deliberately not changed.
+#
+# THESE VALUES ARE THE PRE-FIX VERDICTS. Four of them describe a forged approval
+# row passing as intact; that is the defect, recorded here so the commit that
+# closes it shows up as a diff in this file rather than nowhere.
+#
+# Derived by hand, then measured for column A. `prev=` digests in the ledgers are
+# computed with openssl, never with the shasum the verifier itself uses.
+
+identity                0 0   0 0   0 0
+insert-last-noprev      0 0   0 0   0 0
+insert-last-clean       1 5   1 5   1 5
+insert-last-badbytes    0 0   1 5   1 5
+insert-mid-clean        1 3   1 3   1 3
+insert-mid-badbytes     0 0   1 3   1 3
+replace-mid-clean       1 4   1 4   1 4
+replace-mid-badbytes    1 4   1 4   1 3
+missing-ledger          0 0   0 0   0 0

@@ -11,6 +11,8 @@ on:
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
+      - 'scripts/test-gate-chain-equiv.sh'
+      - 'tests/fixtures/gate-chain-equiv/**'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'
