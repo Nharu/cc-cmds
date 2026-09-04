@@ -768,6 +768,12 @@ gate_chain_tip() {
   # exactly like a normal kickoff, and a reader who sees `끊김` every morning
   # learns to skip the one field that would have told them.
   local last
+  # Byte-exact for the same reason `gate_chain_verify` is, and it has to be the
+  # SAME reason on both sides: this is the value the verifier's walk is compared
+  # against, so a locale that changed one and not the other would manufacture
+  # breaks out of nothing. See that function for why pinning the character-type
+  # axis leaves the forced-surface digest alone.
+  local LC_CTYPE=C; export LC_CTYPE
   last=$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ -n "$last" ] || last="## 실행 $RUN_ID"
   printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
@@ -1046,6 +1052,13 @@ gate_ledger_damage() {
   # the cycle row carrying the P0 that the merge rule reads, and skipping it
   # makes a live defect look resolved.
   local n total
+  # Pinned for the same reason as the chain walk, and it is not optional here
+  # either: `grep` on an invalid byte under a UTF-8 locale can fail outright, and
+  # this reader's caller interpolates its output into the snapshot object. A
+  # reader that dies mid-object truncates the JSON, so the ledger's DAMAGE COUNT
+  # — the field whose whole job is to report a malformed ledger — became
+  # unreadable on exactly the ledgers it exists to describe.
+  local LC_CTYPE=C; export LC_CTYPE
   n=$(grep -E '^- `[^`]+`( \|.*)?$' "$LEDGER" 2>/dev/null | gate_count)
   total=$(grep -E '^- `' "$LEDGER" 2>/dev/null | gate_count)
   printf '%s' $(( total - n ))
@@ -1226,6 +1239,19 @@ gate_snapshot() {
 
 gate_pending_approvals_json() {
   local ids id state first=1
+  # Pinned for the same reason as the chain walk. This one emits INTO the
+  # snapshot object, so a `tr`/`sed` that dies on an invalid byte does not just
+  # lose the approvals array — it truncates the JSON at that point and every
+  # field after it, including the chain verdict, never reaches the reader. The
+  # ledger the reader most needs a verdict about is precisely the malformed one.
+  #
+  # NOTE FOR ANYONE WIDENING THIS: this function DOES contain a `sort -u`, and
+  # the pin is still safe. The order it produces is decided by `LC_COLLATE`,
+  # which the driver has already fixed to C; `LC_CTYPE` does not enter into it.
+  # The "no `sort` in scope" reasoning that once justified the narrower pin was
+  # never the load-bearing part, and repeating it here would make this look like
+  # a violation of a rule that does not exist.
+  local LC_CTYPE=C; export LC_CTYPE
   ids=$(gate_rows '승인' \
         | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
   for id in $ids; do
@@ -1527,6 +1553,32 @@ gate_chain_verify() {
   # cannot (see above). A break is reported with the row number so the morning
   # reader has somewhere to look.
   local prev line n=0 broke=0 want unreadable=0
+  # ------------------------------------------------------------------------
+  # THE LEDGER IS BYTES, AND THIS FUNCTION MUST READ IT AS BYTES.
+  #
+  # Under a UTF-8 `LC_CTYPE` the `prev=` extractor below stops being a function
+  # of the row's content: BSD `sed` exits 1 with "illegal byte sequence" on a
+  # row carrying an invalid byte and prints nothing, while GNU `sed` exits 0 and
+  # prints output with the unsubstituted prefix still attached. Neither yields
+  # the hex the row actually carries, so the same ledger got two different
+  # verdicts on the two CI legs and neither one was the right answer.
+  #
+  # `local` + `export` scopes the pin to this call. The value and the export
+  # attribute are both restored when the function returns, so nothing outside
+  # sees it — which is what keeps the driver's deliberate UTF-8 `LC_CTYPE`
+  # (every vocabulary it compares is Korean) intact for the rest of the process.
+  #
+  # WHY THIS DOES NOT MOVE THE FORCED-SURFACE DIGEST, which is the thing a
+  # global `LC_ALL=C` would break. Sort order is decided by `LC_COLLATE`, not by
+  # `LC_CTYPE`, and the driver exports `LC_COLLATE=C` unconditionally before any
+  # of this runs. So the collation axis is already pinned and cannot move; this
+  # touches only the character-type axis. Measured: with `LC_COLLATE=C` held
+  # fixed, flipping `LC_CTYPE` between a UTF-8 locale and C leaves `sort -u`
+  # output byte-identical. The bracket expression `[0-9a-f]` in the extractor is
+  # likewise a range expression, resolved on the collation axis, so it does not
+  # move either.
+  # ------------------------------------------------------------------------
+  local LC_CTYPE=C; export LC_CTYPE
   # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
   # never runs, `broke` stays 0, and the function returns "intact" for a file it
   # never opened — so deleting the ledger outright was quieter than editing one

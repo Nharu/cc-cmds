@@ -140,24 +140,74 @@ trap 'rm -rf "$WORK"' EXIT
 passed=0
 failed=0
 
-# ---------- phase 1: golden vectors ----------------------------------------
+# ---------- the two extractor columns ---------------------------------------
 # What decides the invalid-byte cases is not the vendor of `sed` but what the
 # `prev=` extractor returns for a row carrying an invalid byte. Measuring that
 # observable directly is what lets both CI legs assert a frozen tuple instead of
 # one leg skipping. The probe uses the extractor verbatim; if that expression
 # changes in gate.sh this line changes with it, which is the correct coupling.
+#
+#   A  the extractor yields nothing (it aborted, or matched nothing)
+#   B  the extractor yields exactly the hex the row carries
+#   C  the extractor yields something else non-empty
+#
+# TWO columns are measured, not one, because the live verifier and the frozen
+# reference no longer run under the same character-type locale and that
+# difference IS the slice being tested. Collapsing them to one number is what
+# made the golden phase assert the reference's column against the candidate's
+# behaviour.
 PROBE_HEX=00000000000000000000000000000000000000000000000000000000000000ff
-probe_out=$(printf 'x\377x | prev=%s\n' "$PROBE_HEX" \
-  | sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p' 2>/dev/null)
-probe_rc=$?
-if [ "$probe_rc" != 0 ] || [ -z "$probe_out" ]; then
-  COL=A
-elif [ "$probe_out" = "$PROBE_HEX" ]; then
-  COL=B
-else
-  COL=C
-fi
-printf 'test-gate-chain-equiv: invalid-byte extractor column = %s\n' "$COL"
+probe_col() {                     # probe_col <LC_CTYPE value> — echoes A/B/C
+  local out rc
+  out=$(printf 'x\377x | prev=%s\n' "$PROBE_HEX" \
+    | env -u LC_ALL LC_CTYPE="$1" sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p' 2>/dev/null)
+  rc=$?
+  if [ "$rc" != 0 ] || [ -z "$out" ]; then printf 'A'
+  elif [ "$out" = "$PROBE_HEX" ]; then printf 'B'
+  else printf 'C'
+  fi
+}
+
+# The reference is v1 AS PRODUCTION RAN IT, and production's `LC_CTYPE` is a
+# UTF-8 locale by run.sh's deliberate choice — every vocabulary that driver
+# compares is Korean. Running the reference under whatever locale the CI shell
+# happens to export would let a runner that already sits in C report "no
+# divergence" and turn every enumerated case into a stale exception, which fails
+# the suite for the opposite of the real reason.
+#
+# `locale -a` is captured first and matched against the captured text. Not
+# `locale -a | grep -q`: under `pipefail` the early-exiting reader kills the
+# writer with SIGPIPE and the pipeline reports failure, so an available locale
+# reads as absent — the same shape this repository already lints for elsewhere.
+REF_LOCALE=
+available_locales=$(locale -a 2>/dev/null || true)
+for cand in C.UTF-8 en_US.UTF-8; do
+  case "
+$available_locales
+" in
+    *"
+$cand
+"*) REF_LOCALE=$cand; break ;;
+  esac
+done
+[ -n "$REF_LOCALE" ] \
+  || die2 "no UTF-8 locale on this host — the reference cannot be run as production runs it"
+
+REF_COL=$(probe_col "$REF_LOCALE")
+LIVE_COL=$(probe_col C)
+printf 'test-gate-chain-equiv: extractor column — reference(%s)=%s live(pinned C)=%s\n' \
+  "$REF_LOCALE" "$REF_COL" "$LIVE_COL"
+
+# THE TWO-LEG CLAIM, ASSERTED RATHER THAN DESCRIBED. Pinning the character-type
+# axis to C is supposed to make the extractor byte-faithful on BOTH legs — BSD
+# `sed` stops aborting and GNU `sed` stops emitting a polluted prefix, and the
+# two implementations land on the same correct value. If that ever fails on a
+# leg, the premise of the pin is gone on that leg and every verdict below is
+# measuring something else.
+[ "$LIVE_COL" = B ] || die2 \
+  "the pinned extractor reported column $LIVE_COL, not B — LC_CTYPE=C did not make it byte-faithful on this host"
+
+# ---------- phase 1: golden vectors ----------------------------------------
 
 # Both verdict helpers echo "<rc> <broke>" and put stderr in a FILE named by the
 # caller. Stderr cannot travel in a variable here: these are called from inside
@@ -177,9 +227,14 @@ live_verdict() {
 }
 
 # ref_verdict <script> <ledger> <run-id> <errfile>
+#
+# Run under the UTF-8 locale production uses, NOT under the caller's. The frozen
+# reference is "what the verifier did before the pin", and before the pin it did
+# it under run.sh's UTF-8 `LC_CTYPE`. Inheriting the CI shell's locale would
+# make the recorded delta a property of the runner image.
 ref_verdict() {
   local rc broke
-  bash "$1" "$2" "$3" 2>"$4" >/dev/null
+  env -u LC_ALL LC_CTYPE="$REF_LOCALE" bash "$1" "$2" "$3" 2>"$4" >/dev/null
   rc=$?
   broke=$(sed -n 's/.*체인이 \([0-9][0-9]*\)번째 행에서.*/\1/p' "$4")
   [ -n "$broke" ] || broke=0
@@ -191,7 +246,9 @@ golden_intact=0
 golden_broken=0
 while read -r name rcA brA rcB brB rcC brC; do
   case "$name" in ''|'#'*) continue ;; esac
-  case "$COL" in
+  # Asserted against the LIVE column: these vectors pin what the verifier in the
+  # tree does, and it is the verifier that pins its own locale.
+  case "$LIVE_COL" in
     A) want="$rcA $brA" ;;
     B) want="$rcB $brB" ;;
     C) want="$rcC $brC" ;;
@@ -205,7 +262,7 @@ while read -r name rcA brA rcB brB rcC brC; do
     printf 'PASS: golden %-22s (rc broke = %s)\n' "$name" "$got"
   else
     failed=$((failed + 1))
-    printf 'FAIL: golden %-22s got (%s), want (%s) [column %s]\n' "$name" "$got" "$want" "$COL" >&2
+    printf 'FAIL: golden %-22s got (%s), want (%s) [live column %s]\n' "$name" "$got" "$want" "$LIVE_COL" >&2
   fi
 done < "$GOLDEN/cases.tsv"
 
@@ -302,7 +359,14 @@ mutate() {
 # Rule firings are recorded as FILES, not shell variables. The comparison runs
 # inside a command substitution, so a variable set there dies with the subshell
 # and guard 5 would report every rule dead no matter what fired.
-RULE_NAMES="timestamp sed-illegal-byte ledger-path"
+#
+# Each entry is <rule>:<when>. `always` means the rule has to fire on every host.
+# `refcol=A` means it fires exactly when the reference's extractor column is A
+# and must NOT fire otherwise — BSD `sed`'s diagnostic is the very thing that
+# makes that column A, so on the GNU leg the rule is correctly silent. The
+# condition is checked in both directions so that it is falsifiable: a blanket
+# "may or may not fire" would excuse a genuinely dead rule.
+RULE_SPECS="timestamp:always sed-illegal-byte:refcol=A ledger-path:always"
 RULEDIR="$WORK/rules"
 mkdir -p "$RULEDIR"
 
@@ -374,8 +438,11 @@ compare_impl() {
       printf '%s\ttuple\t%s\t%s\n' "$name" "$lv" "$rv"
       continue
     fi
+    # The verdicts travel even when the tuples agree: the direction check below
+    # derives accept/reject from them, and `-` would make every stderr-only
+    # divergence undirected.
     if [ "$(normalize_err "$rerr")" != "$(normalize_err "$lerr")" ]; then
-      printf '%s\tstderr\t-\t-\n' "$name"
+      printf '%s\tstderr\t%s\t%s\n' "$name" "$lv" "$rv"
     fi
   done
 }
@@ -407,8 +474,20 @@ ref_rejects=$(grep -vc '^0 ' "$WORK/refverdicts")
   || die2 "guard 3: the reference rejects nothing in this corpus"
 
 # guard 5 — normalization rule liveness
-for r in $RULE_NAMES; do
-  [ -f "$RULEDIR/$r" ] || die2 "guard 5: normalization rule '$r' never fired over the corpus — it is dead, or it was written to launder a divergence"
+for spec in $RULE_SPECS; do
+  r=${spec%%:*}; when=${spec#*:}
+  case "$when" in
+    always)   required=1 ;;
+    refcol=*) if [ "$REF_COL" = "${when#refcol=}" ]; then required=1; else required=0; fi ;;
+    *) die2 "guard 5: unrecognized liveness condition '$when' on rule '$r'" ;;
+  esac
+  if [ "$required" = 1 ]; then
+    [ -f "$RULEDIR/$r" ] \
+      || die2 "guard 5: normalization rule '$r' never fired over the corpus — it is dead, or it was written to launder a divergence"
+  else
+    [ ! -f "$RULEDIR/$r" ] \
+      || die2 "guard 5: normalization rule '$r' fired although the reference column is $REF_COL — the condition attached to it is wrong"
+  fi
 done
 
 # guard 4 — POSITIVE CONTROL. Guards 1-3 all pass with a comparator that returns
@@ -424,30 +503,84 @@ printf 'test-gate-chain-equiv: positive control diverged on %d case(s) — compa
 # Enumerated by NAME, never by a threshold. An unlisted divergence fails, and a
 # listed one that no longer occurs fails too — a stale exception is a lie about
 # the code.
+#
+# Each row also carries the REFERENCE COLUMN it applies to. The frozen reference
+# runs under a UTF-8 locale and the two legs disagree there — BSD `sed` aborts
+# (column A) where GNU `sed` returns a polluted prefix (column C) — so a
+# divergence real on one leg can be genuinely absent on the other. Without that
+# field one file cannot be true on both legs, and the only choices left are a
+# stale exception on one leg or an unlisted divergence on the other.
+#
+# The DIRECTION is DERIVED from the two measured verdicts, and the enumerated
+# one is checked against it. Guard 6c keys off the derived value, so writing a
+# convenient label cannot route a detection loss around it.
 strengthening=$(sed -n 's/^# 강화 방향: //p' "$DIVERGENCES" | sed -n 1p)
 listed=$(grep -v '^#' "$DIVERGENCES" | grep -v '^[[:space:]]*$')
+
+# direction_of <reference-verdict> <candidate-verdict>, each "<rc> <broke>".
+direction_of() {
+  local ra=${1%% *} rb=${2%% *}
+  if   [ "$ra" =  0 ] && [ "$rb" != 0 ]; then printf '수용→거부'
+  elif [ "$ra" != 0 ] && [ "$rb" =  0 ]; then printf '거부→수용'
+  elif [ "$ra" =  0 ];                   then printf '수용→수용'
+  else                                        printf '거부→거부'
+  fi
+}
+# Enumerated for THIS leg — a row scoped to the other column does not count as
+# coverage here, which is what makes an unlisted divergence still fail on the leg
+# where it is real.
+listed_applies() {
+  printf '%s\n' "$listed" | awk -v n="$1" -v c="$REF_COL" \
+    '$1 == n && ($3 == "공통" || $3 == c) { found = 1 } END { exit found ? 0 : 1 }'
+}
+observed_pair() {
+  printf '%s\n' "$observed" \
+    | awk -F'\t' -v n="$1" '$1 == n && !seen { print $3 "|" $4; seen = 1 }'
+}
 
 accept_to_reject=0
 for_each_listed_ok=1
 if [ -n "$listed" ]; then
-  while read -r lname ldir _reason; do
+  while read -r lname ldir lcol _reason; do
     [ -n "$lname" ] || continue
-    case "$ldir" in
-      수용→거부) accept_to_reject=$((accept_to_reject + 1)) ;;
-      거부→수용)
-        # guard 6c — a loss of detection cannot be listed without saying so.
-        case "$_reason" in
-          *DETECTION-LOSS*) ;;
-          *) printf 'FAIL: %s is listed as 거부→수용 without a DETECTION-LOSS marker\n' "$lname" >&2
-             for_each_listed_ok=0 ;;
-        esac ;;
-      *) printf 'FAIL: %s has an unrecognized direction: %s\n' "$lname" "$ldir" >&2
-         for_each_listed_ok=0 ;;
+    case "$lcol" in
+      공통|A|B|C) ;;
+      *) printf 'FAIL: %s carries an unrecognized reference column: %s\n' "$lname" "$lcol" >&2
+         for_each_listed_ok=0; continue ;;
     esac
-    if ! printf '%s\n' "$observed" | grep -q "^${lname}	"; then
-      printf 'FAIL: %s is listed as an expected divergence but no longer diverges (stale exception)\n' "$lname" >&2
+    pair=$(observed_pair "$lname")
+    if [ "$lcol" = 공통 ] || [ "$lcol" = "$REF_COL" ]; then
+      if [ -z "$pair" ]; then
+        printf 'FAIL: %s is listed for reference column %s but no longer diverges (stale exception)\n' \
+          "$lname" "$lcol" >&2
+        for_each_listed_ok=0; continue
+      fi
+    else
+      # The condition is falsifiable in the other direction too: an entry scoped
+      # to a column it did not need is an exception that would silently widen.
+      if [ -n "$pair" ]; then
+        printf 'FAIL: %s is scoped to reference column %s but diverged under column %s\n' \
+          "$lname" "$lcol" "$REF_COL" >&2
+        for_each_listed_ok=0
+      fi
+      continue
+    fi
+    derived=$(direction_of "${pair%%|*}" "${pair##*|}")
+    if [ "$ldir" != "$derived" ]; then
+      printf 'FAIL: %s is enumerated as %s but the measured verdicts read %s\n' \
+        "$lname" "$ldir" "$derived" >&2
       for_each_listed_ok=0
     fi
+    case "$derived" in
+      수용→거부) accept_to_reject=$((accept_to_reject + 1)) ;;
+      거부→수용)
+        # guard 6c — a loss of detection cannot be enumerated without saying so.
+        case "$_reason" in
+          *DETECTION-LOSS*) ;;
+          *) printf 'FAIL: %s is a 거부→수용 divergence carrying no DETECTION-LOSS marker\n' "$lname" >&2
+             for_each_listed_ok=0 ;;
+        esac ;;
+    esac
   done <<EOF
 $listed
 EOF
@@ -463,9 +596,10 @@ fi
 if [ -n "$observed" ]; then
   while IFS="	" read -r oname okind a b; do
     [ -n "$oname" ] || continue
-    if printf '%s\n' "$listed" | grep -q "^$oname[[:space:]]"; then
+    if listed_applies "$oname"; then
       passed=$((passed + 1))
-      printf 'PASS: divergence %s (%s) is enumerated\n' "$oname" "$okind"
+      printf 'PASS: divergence %s (%s, %s) is enumerated\n' \
+        "$oname" "$okind" "$(direction_of "$a" "$b")"
     else
       failed=$((failed + 1))
       printf 'FAIL: UNLISTED divergence %s (%s): reference=%s candidate=%s\n' \
@@ -480,8 +614,8 @@ else
 fi
 [ "$for_each_listed_ok" = 1 ] || failed=$((failed + 1))
 
-printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, column %s, reference accepts %d / rejects %d)\n' \
-  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$COL" "$ref_accepts" "$ref_rejects"
+printf 'test-gate-chain-equiv: %d passed, %d failed (golden %d, equivalence %d, columns ref=%s live=%s, reference accepts %d / rejects %d)\n' \
+  "$passed" "$failed" "$golden_ran" "$equiv_ran" "$REF_COL" "$LIVE_COL" "$ref_accepts" "$ref_rejects"
 
 [ "$failed" = 0 ] || exit 1
 exit 0

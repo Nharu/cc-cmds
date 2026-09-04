@@ -5,14 +5,28 @@
 # that no longer occurs fails it too. A stale exception is a lie about the code,
 # and it is the more dangerous of the two because it reads as coverage.
 #
-# Columns: <case-name> <direction> <reason — including the PR that approved it>
-# Direction is 수용→거부 or 거부→수용, as seen from reference v1 to the
-# candidate.
+# Columns: <case-name> <direction> <reference-column> <reason — including the PR
+# that approved it>
+#
+# DIRECTION is 수용→거부, 거부→수용, 수용→수용 or 거부→거부, as seen from
+# reference v1 to the candidate. It is DERIVED from the two measured verdicts by
+# the harness and the value written here is checked against that, so the label
+# records understanding rather than granting permission.
 #
 # A 거부→수용 row is a LOSS OF DETECTION and cannot be listed without the
 # literal marker DETECTION-LOSS in its reason. That marker is the only thing
 # enforcing "detection does not get weaker"; without it a slice could enumerate
 # its own regression and the list would rubber-stamp it.
+#
+# REFERENCE-COLUMN is 공통, A, B or C — which observable the frozen reference's
+# `prev=` extractor produces for a row carrying an invalid byte on the leg where
+# this row applies. The reference runs under a UTF-8 locale, because that is the
+# locale production runs under, and the two implementations disagree there: BSD
+# `sed` aborts and yields nothing (A), GNU `sed` returns a prefix it did not
+# substitute (C). Both legs read this same file, so a row real on only one of
+# them has to say which. The condition is checked in both directions — a row
+# scoped to A that diverges under C fails as well, so the scope cannot be used
+# as a quiet blanket.
 #
 # `강화 방향` declares whether this commit is one that tightens detection. When
 # 예, the list must name at least one 수용→거부 case — a slice claiming to
@@ -22,5 +36,36 @@
 #
 # 강화 방향: 아니오
 #
-# Empty for the harness's own commit: it changes no judgment, which is the whole
-# claim being made about it.
+# Pinning the character-type axis neither strengthens nor weakens detection.
+# Every row below is 거부→거부: the chain was already reported broken and still
+# is, and what moved is WHICH ROW is named and WHY. Nothing that was accepted is
+# now rejected, so 예 would be a claim this commit cannot support.
+#
+# ---------------------------------------------------------------------------
+# WHY THE PIN IS SAFE, recorded here because this list is where the next reader
+# arrives when they ask what the locale change was permitted to move.
+#
+# The pin is `LC_CTYPE=C`, scoped to four ledger readers by `local` + `export`:
+# gate_chain_verify, gate_chain_tip, gate_ledger_damage and
+# gate_pending_approvals_json.
+#
+# The argument that it cannot disturb the forced-surface digest is NOT "those
+# functions contain no `sort`". That claim is checkable and it is FALSE —
+# gate_pending_approvals_json, which this commit brings into scope, contains a
+# `sort -u`. The argument that actually carries the weight is the separation of
+# the two axes: sort order is decided by `LC_COLLATE`, and the driver exports
+# `LC_COLLATE=C` unconditionally before any of this runs, so the collation axis
+# is already pinned and this commit does not touch it. Measured — with
+# `LC_COLLATE=C` held fixed, flipping `LC_CTYPE` between a UTF-8 locale and C
+# leaves `sort -u` output byte-identical. The same separation covers the
+# `[0-9a-f]` bracket expression in the `prev=` extractor, a range expression
+# resolved on the collation axis too.
+# ---------------------------------------------------------------------------
+
+badbytes-k1	거부→거부	공통	무효 바이트를 실은 행 1 에서 참조는 그 행을 지목한다 (BSD 는 sed 가 죽어 값이 비고, GNU 는 치환되지 않은 접두가 남아 어긋난다 — 경로는 다르나 지목 행은 같다). 고정된 추출자는 그 행의 prev= 를 올바로 읽어 내고 그 값은 맞으므로, 끊김은 실제로 어긋나는 다음 행에서 잡힌다. 지목이 한 행 뒤로 옮겨간 것이며 검출을 잃은 것이 아니다 (PR: 이 커밋)
+badbytes-k2	거부→거부	공통	행 2 에 대해 badbytes-k1 과 같다 (PR: 이 커밋)
+badbytes-k3	거부→거부	공통	행 3 에 대해 badbytes-k1 과 같다 (PR: 이 커밋)
+badbytes-k4	거부→거부	공통	행 4 에 대해 badbytes-k1 과 같다 (PR: 이 커밋)
+golden:replace-mid-badbytes	거부→거부	공통	교체된 행의 prev= 를 이제 읽을 수 있어 그 행 자신은 체인에 맞물리고, 어긋남은 그 행의 다이제스트를 무는 다음 행에서 드러난다. 참조는 두 레그 모두에서 교체된 행을 지목했다 (PR: 이 커밋)
+golden:insert-last-badbytes	거부→거부	A	튜플은 같고 사유 문면만 다르다. BSD sed 아래의 참조는 prev= 를 읽지 못해 「읽을 수 없습니다」로, 고정된 쪽은 읽어 낸 값이 어긋나 「스플라이스·삭제·재배열」로 보고한다. GNU sed 레그에서는 참조도 후자를 내므로 이 발산이 나타나지 않는다 (PR: 이 커밋)
+golden:insert-mid-badbytes	거부→거부	A	golden:insert-last-badbytes 와 같다 (PR: 이 커밋)
