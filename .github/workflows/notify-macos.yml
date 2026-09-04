@@ -31,7 +31,20 @@ jobs:
     # whole suite takes locally. Raising the ceiling stops a green run from
     # reading as a failure; making that lint cheaper is separate work and is not
     # what this number is standing in for.
-    timeout-minutes: 25
+    #
+    # 90, not 25. The margin had already gone: the run one commit before this
+    # passed at 24m58s, twenty-two seconds inside the ceiling, and adding a
+    # handful of assertions to the gate suite pushed the next one to a
+    # cancellation at 25m22s. Nothing failed either time — the step was still
+    # producing passing assertions when the clock cut it.
+    #
+    # The suite does not get slower evenly; it gets slower as it runs, because
+    # each gate call re-reads a ledger the suite has been appending to. So a
+    # ceiling that fits today stops fitting after the next few assertions, and
+    # raising it is buying room rather than fixing anything. The cost itself is
+    # filed separately, and 90 is chosen to stop this from recurring per commit
+    # rather than because the suite needs it.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 

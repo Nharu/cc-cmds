@@ -2795,5 +2795,73 @@ after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
 
 
+# ---------------------------------------------------------------------------
+# 12c. B1's progress vector counts what the router actually did
+#
+# The vector saw the manifest, segment rows, cycle rows and obligations — and
+# nothing the router itself performs between stages. Commits, pushes, pull
+# requests and merges all left it unchanged, so a router landing fixes for an
+# hour read as motionless and B1 fired on it. The approval that opens then
+# suspends B1..B3 and blocks termination until a person closes it, and this
+# gate accepts no answer the router typed, so the false positive costs a night
+# rather than a line of output.
+#
+# Both directions again, for the same reason as 12b: a boundary that has been
+# silenced and one that has been fixed are indistinguishable from the side
+# where nothing fires.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+
+# Half one — the router performed a world-changing act. The vector must move,
+# which is what makes the repeat counter reset rather than climb.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=push | 축2=외부상태변경 | 근거=진전 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+if [ "$before_v" != "$after_v" ]; then
+  ok "라우터의 읽기 초과 행위가 진전 벡터를 움직인다"
+else
+  bad "진전 벡터" "커밋·push·PR 를 수행해도 벡터가 그대로다 — B1 이 그 위에서 발화한다"
+fi
+
+# The read-only counterpart, which pins the qualifier rather than the rule: if
+# reads counted, the vector would never settle and B1 could never fire at all.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=읽기 | 근거=읽기 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "읽기 등급 행위는 진전으로 세지 않는다" "$after_v" "$before_v"
+
+# The third state, which excluding `읽기` alone would have missed: a row with no
+# grade at all. Unknown is not evidence that anything changed, and counting it
+# would let the boundary be reset by a row that says nothing about what was
+# done. Reachable in practice — the fixtures in test-snapshot.sh write exactly
+# this shape.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind= | 결정=exec | 근거=등급 없는 픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "등급이 없는 행위는 진전으로 세지 않는다 (모름은 진전이 아니다)" "$after_v" "$before_v"
+
+# Half two — a clause settled and a run-scope block cleared are progress by
+# definition; they are the two moves whose purpose is to bring the run nearer
+# to ending.
+before_v=$(PD)
+printf -- '- `clause` | 절=C9 | 상태=충족 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
+check_ne "$before_v" "$after_v" "절 정산이 진전 벡터를 움직인다" "절을 정산해도 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=해소 | 사유=픽스처 | 근거=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "런 스코프 막힘 해소가 진전 벡터를 움직인다" "막힘을 해소해도 벡터가 그대로다"
+
+# Half three — the boundary still fires. Nothing above may buy that away: the
+# remedy B1 issues is an `승인` row, and if that ever entered the vector the
+# boundary's own firing would reset the counter that fired it.
+before_v=$(PD)
+printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 | 질문 문면=픽스처 | prev=x\n' >> "$LEDGER"
+after_v=$(PD)
+check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
+
+
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
