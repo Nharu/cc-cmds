@@ -1526,18 +1526,41 @@ gate_chain_verify() {
   # before it. This is what covers the ledger, since the whole-file digest
   # cannot (see above). A break is reported with the row number so the morning
   # reader has somewhere to look.
-  local prev line n=0 broke=0 want
+  local prev line n=0 broke=0 want unreadable=0
+  # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
+  # never runs, `broke` stays 0, and the function returns "intact" for a file it
+  # never opened — so deleting the ledger outright was quieter than editing one
+  # row of it. Nothing can be said about a chain that was not read, and this is
+  # the difference between "verified intact" and "not verified".
+  if [ ! -f "$LEDGER" ]; then
+    warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
+    return 1
+  fi
   prev=$(printf '%s' "## 실행 $RUN_ID" | shasum -a 256 | cut -d' ' -f1)
   while IFS= read -r line; do
     case "$line" in '- `'*) ;; *) continue ;; esac
     n=$((n + 1))
     want=$(printf '%s' "$line" | sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p')
-    [ -n "$want" ] || continue
+    # A row whose `prev=` cannot be read is a BREAK, not a row to step over.
+    # Skipping it left `prev` un-advanced, so the chain re-joined across the row
+    # as though it had never been there and a forged approval spliced in with no
+    # `prev=` — or with one made unreadable by a single invalid byte — was
+    # reported as intact. The row number is already consumed above, so the count
+    # is unchanged and existing fixtures keep their row numbering.
+    if [ -z "$want" ]; then broke=$n; unreadable=1; break; fi
     if [ "$want" != "$prev" ]; then broke=$n; break; fi
     prev=$(printf '%s' "$line" | shasum -a 256 | cut -d' ' -f1)
   done < "$LEDGER"
   [ "$broke" = "0" ] && return 0
-  warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
+  # Two causes, two sentences. They are NOT the same finding: a mismatch means
+  # some row moved, while an unreadable `prev=` means THIS row cannot be placed
+  # in the chain at all — and pointing a reader at splice/delete/reorder for the
+  # second one sends them to look for something that did not happen.
+  if [ "$unreadable" = "1" ]; then
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행의 prev= 를 읽을 수 없습니다 (필드가 없거나 hex 가 아니거나 무효 바이트가 섞였습니다)"
+  else
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
+  fi
   return 1
 }
 

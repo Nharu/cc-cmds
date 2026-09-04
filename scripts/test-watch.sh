@@ -422,11 +422,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # The watcher does NOT write the ledger. Its row carried no `prev=`, took no
-# lock and passed no length check, and the two sides of the chain then
-# disagreed about it — the verifier skips a row with no `prev=` without
-# advancing its running value while the writer's tip hashes the last ROW
-# including that one. A run whose watcher fired once read as broken from the
-# next row onward, forever.
+# lock and passed no length check, and the chain could not account for it. That
+# used to surface one row late: the verifier stepped over a row it could not
+# read a `prev=` from without advancing its running value, while the writer's
+# tip hashed the last ROW including that one, so a run whose watcher fired once
+# read as broken from the NEXT row onward, forever. It now surfaces on the row
+# itself — an unreadable `prev=` is a break where it occurs — which is a better
+# report of the same defect and no reason to keep the writer.
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F '>> "$LEDGER"'; then
   bad "단일 기록자" "감시자가 여전히 원장에 직접 쓴다"

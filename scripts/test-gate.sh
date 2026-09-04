@@ -588,6 +588,104 @@ case "$out" in
 esac
 cp "$WORK/ledger.bak" "$LEDGER"
 
+# ---------------------------------------------------------------------------
+# 2b. A row whose `prev=` cannot be read is a BREAK, not a row to step over
+#
+# This is an authorization boundary, not a performance property. The verifier
+# used to `continue` past such a row WITHOUT advancing its running `prev`, so
+# the chain re-joined across it as though it had never been written — and a
+# forged approval row carrying no `prev=` at all was reported intact.
+#
+# The forged row does not have to be last. Because a skipped row updates
+# nothing, the next genuine row still carries exactly the `prev` the verifier is
+# holding, so a splice in the middle re-joined just as quietly. Both positions
+# are asserted; assuming the defect needed the final row would leave the wider
+# half of it uncovered.
+#
+# Three shapes reach that one branch and all three are asserted: no `prev=`
+# field, a `prev=` that is not hex, and a `prev=` carrying an invalid byte. The
+# extractor's character class is `[0-9a-f]`, so a non-hex value matches nothing;
+# an invalid byte either aborts the extractor or matches nothing. Either way the
+# result is empty and indistinguishable from absent, which is why closing one
+# shape closes all three.
+#
+# These drive the `snapshot` VERB rather than the function, so what is asserted
+# is that the finding reaches its consumers — the JSON field and the rendered
+# report. The frozen (exit code, broken row) tuples are pinned separately, in
+# tests/fixtures/gate-chain-equiv/golden/.
+# ---------------------------------------------------------------------------
+# WHY THE SUITE'S OTHER `prev=x` FIXTURES DID NOT MOVE. Making an unreadable
+# `prev=` a break was expected to disturb every fixture that writes one — there
+# are 34 of them across this file and test-watch.sh — and it disturbs none. The
+# reason is that only the `snapshot` verb verifies the chain; `act`, `exec`,
+# `grade`, `plan` and `close` never call the verifier, and the watcher never
+# calls it at all. Those fixtures drive the other verbs, so no assertion of
+# theirs reads a verdict that could change. `prev=x` there is a placeholder for
+# a field its consumers do not parse as a chain link, which is exactly why it
+# was free to be unreadable, and why it stays that way.
+chain_intact_now() {
+  (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .chain_intact)
+}
+chain_render_now() {
+  (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null)
+}
+
+# A well-formed approval row in every respect the damage scanner looks at — its
+# regex accepts a row-shaped line with any fields — so nothing else in the
+# morning report points at it. The chain is the only control that can.
+FORGED='- `승인` | 승인 id=FORGED | 상태=승인 | 사유=자기승인'
+
+cp "$LEDGER" "$WORK/ledger.bak"
+printf -- '%s\n' "$FORGED" >> "$LEDGER"
+check "prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+
+# The reason has to be the one that happened. Sending a reader to look for a
+# splice, delete or reorder when the actual finding is "this row's prev= cannot
+# be read" costs them the morning.
+out=$(chain_render_now)
+case "$out" in
+  *"prev= 를 읽을 수 없습니다"*) ok "그 끊김의 사유가 읽을 수 없는 prev= 로 보고된다" ;;
+  *) bad "끊김 사유" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
+esac
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# The same forgery, spliced BEFORE the last row instead of after it.
+awk -v forged="$FORGED" '
+  /^- `/ { if (!done) { print forged; done = 1 } }
+  { print }' "$WORK/ledger.bak" > "$LEDGER"
+check "같은 위조 행을 중간에 끼워 넣어도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# hex 가 아닌 prev= — 같은 분기로 빠지므로 함께 닫힌다.
+printf -- '%s | prev=zzzz\n' "$FORGED" >> "$LEDGER"
+check "hex 가 아닌 prev= 를 실은 행도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# An invalid UTF-8 byte in the row text. The `prev=` field is left syntactically
+# intact on purpose: what is being measured is the byte, not a malformed field.
+printf -- '%s\377 | prev=%s\n' "$FORGED" \
+  "0000000000000000000000000000000000000000000000000000000000000000" >> "$LEDGER"
+check "무효 바이트가 섞인 행도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# AN ABSENT LEDGER IS NOT AN INTACT ONE. The read redirection failed, the loop
+# body never ran, and the verifier answered for a file it never opened — so
+# deleting the ledger outright was quieter than editing one row of it. "Not
+# verified" and "verified and intact" are different statements and only one of
+# them is available here.
+mv "$LEDGER" "$WORK/ledger.gone"
+gone=$(chain_intact_now)
+cp "$WORK/ledger.bak" "$LEDGER"
+if [ "$gone" = "true" ]; then
+  bad "원장 부재" "원장이 없는데 체인이 무결로 보고됐다 — 삭제가 한 행을 고치는 것보다 조용해진다"
+else
+  ok "원장이 없으면 무결이 아니다 (읽지 않은 체인에 대해서는 아무 말도 할 수 없다)"
+fi
+
 gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/nd2"
 check "워크트리 없이 미선언 대상을 쓰려 하면 거부된다" "$rc" "2"
