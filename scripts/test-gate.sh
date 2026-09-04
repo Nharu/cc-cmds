@@ -28,6 +28,28 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS, and the switch is here rather
+# than at the call sites because the call sites cannot be made exhaustive.
+#
+# The gate raises real banners — park notices carry the `hands` token, which
+# also plays a sound — and its fire path prepends the Homebrew directories to
+# PATH itself, so a stub placed on PATH by the suite is shadowed by whatever is
+# really installed. The banner-seat section below handles both seams, but it
+# begins three thousand lines in, and every `상태=park` and `stage-result`
+# fixture before it fired at the real user. Measured: two banners reached a
+# person from an ordinary `make test`, and one of them carried sound.
+#
+# Guarding each invocation was the obvious repair and is the wrong shape: there
+# are over a hundred direct calls to the gate in this file and a new one is a
+# normal thing to write, so the guard would be complete on the day it landed
+# and quietly incomplete afterwards. An exported variable is inherited by every
+# child, including calls nobody has written yet.
+#
+# `gateb`/`gateb_stage` turn it back ON for the assertions that need a banner to
+# fire, which is the one place where firing is the thing being tested.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
@@ -5068,6 +5090,7 @@ notify_reset() { : > "$NOTIFY_LOG"; rm -f "$RD/notify.stack" "$RD/notify.overflo
 gateb() {
   local out
   out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+        CC_CMDS_AUTOPILOT_NOTIFY=1 \
         CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
         CC_CMDS_NOTIFY_HOST_OS=Darwin \
         CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
@@ -5077,6 +5100,7 @@ gateb() {
 gateb_stage() {
   local out
   out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+        CC_CMDS_AUTOPILOT_NOTIFY=1 \
         CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
         CC_CMDS_NOTIFY_HOST_OS=Darwin \
         CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \

@@ -18,6 +18,20 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
+# watcher all raise real banners, and their fire path prepends the Homebrew
+# directories to PATH itself — so a stub this suite puts on PATH is shadowed by
+# whatever is really installed, and an ordinary `make test` reaches the user.
+# Measured on this tree: two banners arrived from a test run, one with sound.
+#
+# Exported rather than set per call, because the call sites cannot be made
+# exhaustive — a new invocation is a normal thing to write and would silently
+# not carry the guard. This suite asserts nothing about banner content, so
+# turning the channel off costs it nothing.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
@@ -273,6 +287,40 @@ for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$LIVENESS" \
   bad_n=$(grep -c 'LC_TIME=C ps -o lstart=' "$f" || true)
   check "$(basename "$f") 의 지문 캡처가 LC_ALL 로 고정돼 있다" "$n" "1"
   check "$(basename "$f") 에 LC_TIME 만 건 캡처가 남아 있지 않다" "$bad_n" "0"
+done
+
+# ---------------------------------------------------------------------------
+# The notifier channel stays off for every suite that does not assert on it.
+#
+# This is a property OF THE SET, like the agreement above: any one suite can be
+# guarded and the tree still reaches a person, because `make test` runs all of
+# them and the gate's fire path defeats a PATH stub by prepending Homebrew's
+# directories itself. Measured before the guard: two banners arrived at a user
+# from an ordinary test run, one of them with sound.
+#
+# Asserted on the source rather than by firing, and the reason is the same one
+# that makes the defect worth a test: to observe it behaviourally this suite
+# would have to let a banner escape to the real notifier, which is the thing
+# being prevented. So the check is that each suite carries the export — and it
+# names the three that legitimately do not, because for them the banner IS the
+# subject.
+for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrator/test-run.sh; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f")
+  case "$b" in
+    test-active-notify-*|test-watch.sh|test-gate.sh) continue ;;
+  esac
+  # Only suites that can reach a firing path need it — the gate, the driver and
+  # the watcher are the three that fire, and what matters is EXECUTING one of
+  # them rather than naming it. The first version of this predicate matched a
+  # mention, so four lint suites that merely read `run.sh` for its vocabulary
+  # were reported as leaking; they invoke nothing and cannot fire.
+  grep -qE 'bash [^ ]*(gate|run|watch)\.sh|bash "\$(GATE|RUNSH|WATCH)"' "$f" || continue
+  if grep -q '^export CC_CMDS_AUTOPILOT_NOTIFY$' "$f"; then
+    ok "$b 가 알림 채널을 프로세스 수준에서 끈다"
+  else
+    bad "알림 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_AUTOPILOT_NOTIFY 를 내보내지 않는다 — 이 스위트가 도는 동안 사용자 화면에 실제 배너가 도달한다"
+  fi
 done
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
