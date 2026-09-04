@@ -363,6 +363,21 @@ binding_set_bytes() {
     canonical_targets | sed 's/^/target\t/'
     grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
     grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    # THE `자동 채택` ROWS ARE IN THE FROZEN SET, and they were not. Arm (a) of
+    # the auto-adoption floor states its safety as four reasons, and the third —
+    # "the binding digest covers it" — was false: of the six things serialized
+    # here only `사전 인가` was row-shaped, so a row added to `## 인가` moved
+    # nothing. One ordinary `워크트리쓰기` act could append a class to the
+    # pre-adopted list and the comparison below would still pass, after which
+    # every judgment of that class is adopted with no person and no
+    # reversibility requirement.
+    #
+    # Scanned over the WHOLE file rather than the `## 인가` section, which is
+    # deliberately wider than the section arm (a) honours: a row planted outside
+    # that section is not honoured AND still moves the digest, so both spellings
+    # of the tampering are visible. A manifest carrying no such row contributes
+    # zero bytes, so this does not make an in-flight run non-conforming.
+    grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -371,6 +386,83 @@ manifest_clauses() {
   # The termination point decomposed into checkable clauses, frozen at kickoff.
   # A run is measured against these, so they are part of what may not move.
   grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
+}
+
+manifest_autoadopt_rows() {
+  # The `자동 채택` rows INSIDE `## 인가`, and nowhere else.
+  #
+  # Arm (a)'s safety rests on "`## 인가` is exactly one" (rule 2 below), and a
+  # whole-file scan does not inherit that guarantee: a row anywhere in the
+  # document was honoured, so the uniqueness proof protected a section the
+  # consumer was not reading. Confining both consumers — this floor's arm (a)
+  # and rule 11's freeze-time check — to that one section is what makes the
+  # guarantee load-bearing rather than decorative.
+  awk '
+    $0 == "## 인가" { inb = 1; next }
+    inb && /^## / { exit }
+    inb && index($0, "- `자동 채택`") == 1 { print }
+  ' "$MANIFEST" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# The judgment-class vocabulary — eight values, closed, two of them named and
+# forbidden.
+#
+# It is NOT `자율 승인.kind`. That field has never carried a classification: its
+# declared eleven tokens appear zero times in the artifacts, roughly nine rows in
+# ten leave it empty, and what does land there is the ACT KIND. A value moved
+# onto a polluted field inherits the pollution — arm (a) of the auto-adoption
+# floor asks "did the manifest declare this class in advance", so a field that
+# also carries the act kind lets one manifest line reading `종류=skill`
+# auto-adopt every stage dispatch there is. The ledger is append-only, so the
+# rows already written can never be repaired; a NEW field starts with zero
+# legacy rows, which is what lets a lint assert the closed set without an
+# exception.
+#
+# THE TWO FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# stop the decision from being made — it forces whoever records it to borrow a
+# permitted token, and that is the leak. Named and forbidden, the leak arrives
+# as a refusal instead.
+#
+# It lives HERE and not in gate.sh because it has two consumers that cannot
+# share a copy: `check_manifest` below runs on the driver's own path as well as
+# inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
+# sources this file for its definitions, so one declaration reaches both — the
+# same arrangement `CUTPOINTS` already has, and for the same reason.
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
+
+# THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
+# hole rather than narrowing it. Both used to be a space-padded substring test
+# over the vocabulary string, so a value carrying a space matched whenever the
+# tokens it named happened to be ADJACENT in that string. The vocabulary ends
+# `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
+# the vocabulary; the forbidden string is `팀-구성 시각-면제`, which does not
+# contain it, so the same value was also not forbidden. One value passed the
+# permission check and escaped the prohibition at once, and `팀-구성` — a class
+# named precisely so that recording it arrives as a refusal — went through.
+#
+# Whichever question a caller asks first, a multi-token value is now refused:
+# outside the vocabulary here, forbidden there. Neither answer depends on the
+# other being consulted.
+judgment_class_ok() {
+  local t
+  for t in $JUDGMENT_CLASSES; do
+    if [ "$t" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+
+judgment_class_forbidden() {
+  local t
+  # A value carrying whitespace cannot name one class, so it is refused here
+  # rather than falling through to the token loop — a caller that asks only this
+  # question must not be where the hole reopens.
+  case "$1" in *[[:space:]]*) return 0 ;; esac
+  for t in $JUDGMENT_CLASSES_FORBIDDEN; do
+    if [ "$t" = "$1" ]; then return 0; fi
+  done
+  return 1
 }
 
 # The conjunction. Order matters: the ownership proof comes before anything that
@@ -494,6 +586,44 @@ check_manifest() {
     [ -n "$(manifest_field '요소' '적용 지점')" ] || die "적용 주체가 파이프라인인데 적용 지점이 없습니다"
     [ -n "$(manifest_field '요소' '적용 프로브')" ] || die "적용 주체가 파이프라인인데 적용 프로브가 없습니다"
   fi
+
+  # 11 — the `자동 채택` rows, checked at FREEZE TIME and nowhere else.
+  #
+  # Deciding mechanically, at the moment a judgment is made, whether it hands
+  # risk to the user is impossible: the only inputs available — the option
+  # labels and the question text — are authored by the party the check would
+  # bind. At freeze time it is much closer to mechanical, because the manifest is
+  # written while a person is present and has no append form afterwards. That
+  # asymmetry is the larger half of the safety argument for arm (a) of the
+  # auto-adoption floor, so the check belongs here and rests on no runtime
+  # self-declaration.
+  #
+  # It is not the WHOLE argument, and saying so is the repair. "No append form"
+  # describes the kickoff writer, not the file: nothing stops a `워크트리쓰기`
+  # act from appending a line, and this check re-runs on every gate entry rather
+  # than only at kickoff, so a planted row would be re-inspected and — for the
+  # six permitted classes — passed. What actually holds the line is the binding
+  # digest now covering these rows, plus `인가-자기확장-금지` refusing a write to
+  # the manifest at all.
+  #
+  # Scanned through `manifest_autoadopt_rows`, so "exactly one `## 인가`" and
+  # "the rows this floor honours" are statements about the same bytes.
+  local aline acls
+  while IFS= read -r aline; do
+    # A manifest with no such row feeds this loop one empty line, which is the
+    # normal case and not a row missing a field.
+    [ -n "$aline" ] || continue
+    acls=$(printf '%s' "$aline" | tr '|' '\n' | sed -n 's/^ *판단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ -n "$acls" ] || die "「자동 채택」 행에 「판단 부류」가 없습니다: $aline"
+    if ! judgment_class_ok "$acls"; then
+      die "「자동 채택」 행의 판단 부류가 어휘 밖입니다: $acls — 허용: $JUDGMENT_CLASSES"
+    fi
+    if judgment_class_forbidden "$acls"; then
+      die "「자동 채택」으로 선언할 수 없는 판단 부류입니다: $acls — 위험을 사용자에게 넘기는 결정은 미리 채택하지 않습니다"
+    fi
+  done <<EOF
+$(manifest_autoadopt_rows)
+EOF
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
@@ -922,13 +1052,217 @@ ledger_init() {
   grep -qE "^## 실행 $RUN_ID$" "$LEDGER" || printf '\n## 실행 %s\n' "$RUN_ID" >> "$LEDGER"
 }
 
+# The driver's row cap, and it is deliberately the gate's number. Both writers
+# append to ONE ledger that one set of readers parses, so a value that fits
+# through one door and not the other is a row the morning can only half read.
+readonly RUN_ROW_MAX=1024
+
+# The per-field budget for a value with no bound of its own. Small enough that a
+# row carrying one of them still has room for its digest, its worktree path and
+# the sidecar pointer appended after the clip.
+readonly RUN_FIELD_MAX=300
+
+run_clip() {
+  # run_clip <text> <max-bytes> — clipped values SAY they were clipped.
+  #
+  # A COPY OF `gate_clip`, AND THE COPY CARRIES AN OBLIGATION. The two writers
+  # append to one ledger that one set of readers parses, exactly as the field
+  # normalization below does, so a change made on one side and not the other
+  # splits them silently. Measured and cut in BYTES: `wc -c` counts bytes while
+  # `cut -c` counts characters here, so a character-wise cut returns up to three
+  # times the budget over Korean text, and a byte-wise one lands inside a UTF-8
+  # sequence. The trailing partial sequence is dropped by reading the last lead
+  # byte's announced length.
+  local s="$1" n="$2" len
+  len=$(printf '%s' "$s" | wc -c | tr -d ' ')
+  if [ "${len:-0}" -le "$n" ]; then printf '%s' "$s"; return 0; fi
+  printf '%s' "$s" | LC_ALL=C awk -v n="$n" '
+    BEGIN { marker = "…(잘림)"; keep = n - length(marker); if (keep < 0) keep = 0 }
+    {
+      t = substr($0, 1, keep); m = length(t)
+      for (i = 0; i < 4 && m - i >= 1; i++) {
+        c = substr(t, m - i, 1)
+        if (c < "\200") break
+        if (c >= "\300") {
+          k = (c < "\340") ? 2 : ((c < "\360") ? 3 : 4)
+          if (i + 1 != k) t = substr(t, 1, m - i - 1)
+          break
+        }
+      }
+      printf "%s%s", t, marker
+    }
+  '
+}
+
+run_row_safe() {
+  # run_row_safe <text> <max-bytes> — one row-safe field value, bounded.
+  # The counterpart of `gate_row_safe`, and marked on both sides for the same
+  # reason `run_clip` is.
+  run_clip "$(printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ')" "$2"
+}
+
+declared_field_for_row() {
+  # declared_field_for_row <세그먼트 id> <값> [사이드카 접두사] — the row value for
+  # a field that has no bound of its own, with the whole of it kept beside the run.
+  #
+  # THE PREFIX IS WHAT LETS ONE ROW CARRY MORE THAN ONE UNBOUNDED FIELD. The name
+  # was fixed at `declared`, so the only field that could use this was the
+  # declared set — and the escape row three fields over carries the ACTUAL edited
+  # set and the escape list, both of which grow with the same declaration that
+  # makes the declared set long. Defaulting the prefix leaves both existing call
+  # sites byte-identical.
+  #
+  # THE CALLER IS THE ONLY PARTY THAT CAN DO THIS. `ledger_row`'s cap is a `die`,
+  # and its message tells the reader to move long values out — which nobody
+  # downstream can do, because by the time the writer is looking at the row the
+  # row is already assembled and the caller is gone. A kickoff that declares
+  # twenty paths is an ordinary declaration, and Korean paths run three bytes to
+  # the character, so the cap is reachable at kickoff — where hitting it ends the
+  # whole unattended run at its first row. The gate answered the same problem the
+  # same way for its dependency cone, so this is that shape rather than a new
+  # one.
+  local id="$1" v="$2" pfx="${3:-declared}" n side
+  n=$(printf '%s' "$v" | wc -c | tr -d ' ')
+  if [ "${n:-0}" -le "$RUN_FIELD_MAX" ]; then printf '%s' "$v"; return 0; fi
+  side="${RUN_DIR:-}/$pfx.$id"
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    printf '%s\n' "$v" > "$side" 2>/dev/null || true
+  fi
+  # A SIDECAR FAILURE MUST NOT END THE RUN — that is the very shape being removed
+  # here — so the clip stands on its own and the path is named only once the file
+  # is actually there.
+  if [ -f "$side" ]; then
+    printf '%s (전체: %s)' "$(run_row_safe "$v" "$RUN_FIELD_MAX")" "$side"
+  else
+    run_row_safe "$v" "$RUN_FIELD_MAX"
+  fi
+}
+
 ledger_row() {
   # ledger_row <계열> <field=value> ...
+  #
+  # THIS IS A SECOND WRITER FOR THE SAME FILE, and it went through none of the
+  # floors the gate's writer applies. The one that matters here is field
+  # normalization: `|` separates fields and a newline ends the row, so a value
+  # carrying either SPLICES the grammar — and the values reaching this function
+  # come from the design document (`선행`, `선언 파일 집합`) and from model
+  # output, where a pipe in Korean prose is ordinary. A spliced `segment` row is
+  # not merely ugly: every reader splits the row text on `|`, and the greedy
+  # `id=` extraction then takes the LAST match, so the row changes which segment
+  # it is about.
+  #
+  # THE DUPLICATION IS DELIBERATE AND CARRIES AN OBLIGATION. Routing this writer
+  # through `gate.sh act --kind segment` is the structural repair, and it cannot
+  # be made here: kickoff's declaration path writes `segment` rows BEFORE the
+  # gate requires one to exist, and inverting that order collides with the floor
+  # that refuses to dispatch a stage into a segment with no row. So the transform
+  # is copied, and the copy is marked on BOTH sides — a change to
+  # `gate_append`'s normalization that is not made here silently splits the two
+  # paths again.
+  #
+  # The length check reserves room for a `prev=` field this writer never emits,
+  # so anything this path accepts would also fit through the gate's. The
+  # asymmetry is in the safe direction: the two writers cannot disagree about
+  # what fits.
   local series="$1"; shift
   local line="- \`$series\`"
-  local f
-  for f in "$@"; do line="$line | $f"; done
+  local f k v n longest lmax fl idx side
+  for f in "$@"; do
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+    esac
+    line="$line | $f"
+  done
+  n=$(printf '%s | prev=%s\n' "$line" \
+        "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
+  if [ "$n" -gt "$RUN_ROW_MAX" ]; then
+    # THE CAP SPILLS BEFORE IT DIES, AND THE SPILL LIVES HERE RATHER THAN IN THE
+    # CALLERS. The `die` prescribed an action with no actor: by the time the
+    # writer sees the row, the caller that assembled it is gone. Wiring each
+    # caller instead repeats the same omission for every writer added later —
+    # measured, in this file: `declared_field_for_row` bounded the DECLARED set
+    # and the escape row two fields over stayed unbounded, so an escape in a
+    # segment with a long declaration killed the driver on the `park` path, and
+    # `park` is the escape hatch that path exists to reach.
+    #
+    # Only fields over the per-field budget move, so a row that is merely wide
+    # keeps every byte it had. A sidecar that cannot be written clips without a
+    # pointer rather than ending the run — a sidecar failure ending the run is
+    # the very shape being removed here, which is why
+    # `declared_field_for_row` already treats its own the same way.
+    #
+    # THE POINTER REPLACES THE VALUE HERE RATHER THAN FOLLOWING A PREVIEW, which
+    # is the one place this differs from `declared_field_for_row`. That one
+    # bounds a field in a row that still fits; this runs only when the row does
+    # NOT fit, so keeping a 300-byte preview per field is what put it over in the
+    # first place — measured on the escape row, whose three bounded fields came
+    # to 1035 bytes and re-spilled to exactly the same size.
+    #
+    # A value that ALREADY carries a pointer keeps that one instead of getting a
+    # second sidecar. The caller bounded it on purpose and its preview is what
+    # has to go, not its whole value written twice.
+    line="- \`$series\`"
+    idx=0
+    for f in "$@"; do
+      idx=$((idx + 1))
+      case "$f" in
+        *=*) k="${f%%=*}"; v=$(printf '%s' "${f#*=}" | tr '|' '/' | tr '\n\r' '  ')
+             fl=$(printf '%s' "$v" | wc -c | tr -d ' ')
+             if [ "${fl:-0}" -gt "$RUN_FIELD_MAX" ]; then
+               case "$v" in
+                 *' (전체: '*')')
+                   f="$k=(전체: ${v##*' (전체: '}" ;;
+                 *)
+                   side=$(run_row_sidecar "$series" "$idx" "$v")
+                   if [ -n "$side" ]; then
+                     f="$k=(전체: $side)"
+                   else
+                     f="$k=$(run_row_safe "$v" "$RUN_FIELD_MAX")"
+                   fi ;;
+               esac
+             else
+               f="$k=$v"
+             fi ;;
+      esac
+      line="$line | $f"
+    done
+    n=$(printf '%s | prev=%s\n' "$line" \
+          "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
+  fi
+  if [ "$n" -gt "$RUN_ROW_MAX" ]; then
+    # STILL OVER AFTER EVERY UNBOUNDED FIELD MOVED OUT. That is a row with too
+    # many fields rather than one long field, and nothing at this layer can fix
+    # it — so the backstop stays, naming the field and the party that can.
+    longest=""; lmax=0
+    for f in "$@"; do
+      fl=$(printf '%s' "$f" | wc -c | tr -d ' ')
+      if [ "${fl:-0}" -gt "$lmax" ]; then lmax="$fl"; longest="${f%%=*}"; fi
+    done
+    die "원장 행이 상한을 넘습니다 (${n} > ${RUN_ROW_MAX} 바이트, 계열 ${series}) — 가장 긴 필드는 「${longest:-미상}」(${lmax} 바이트)입니다. 이 자리에서는 줄일 수 없으므로 이 행을 만드는 호출부가 전체 값을 런 디렉터리 아래 사이드카로 빼고 행에는 경계 있는 형태만 실어야 합니다"
+  fi
   printf '%s\n' "$line" >> "$LEDGER"
+}
+
+run_row_sidecar() {
+  # run_row_sidecar <계열> <필드 순번> <값> — the whole value beside the run,
+  # printing the path it landed at and NOTHING when it could not be written.
+  #
+  # The field ordinal names the file so two long fields in one row do not
+  # overwrite each other, and an ordinal already taken is raised until one is
+  # free — a series writes many rows over a night and the second row's field 3 is
+  # not the first row's. Separators in the series name are folded because the
+  # name becomes a filename here.
+  local series="$1" idx="$2" v="$3" base side
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  base="$RUN_DIR/row.$(printf '%s' "$series" | tr ' /' '--')"
+  side="$base.$idx"
+  while [ -e "$side" ]; do
+    idx=$((idx + 1))
+    side="$base.$idx"
+  done
+  printf '%s\n' "$v" > "$side" 2>/dev/null || return 0
+  printf '%s' "$side"
 }
 
 ledger_last() {
@@ -1453,7 +1787,9 @@ stage_spawn() {
   # and `reap_orphan` remove the pid and the group and leave this file behind,
   # and a `*.pid` glob cannot see it once the pid file is gone. `.pgid` keeps the
   # one job only it can do: the group reclaim in `reap_orphan`.
-  { LC_TIME=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
+  # `LC_ALL` rather than `LC_TIME`: the reader is a different process and only
+  # the top-ranked locale variable survives whatever it inherited.
+  { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
     | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$stage.start"
   # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
   # its successor can find. All three go to the volatile directory only.
@@ -1980,15 +2316,27 @@ EOF
   [ -n "$esc" ] || return 0
   # Both sets are written out. A row that names only the escape leaves the
   # reader unable to tell an over-narrow declaration from a stage that wandered.
+  #
+  # ALL THREE ARE UNBOUNDED, AND SO IS THE REASON HANDED TO `park`. They grow
+  # together — a segment declaring twenty Korean paths makes the declared set,
+  # the actual set and the escape list long at once — so bounding one of them
+  # only moves which field carries the row over. `park` writes a `blocked` row of
+  # its own, so its reason goes through the same bound rather than a different
+  # one.
+  local esc_v actual_csv esc_row
+  esc_v=$(printf '%s' "$esc" | sed 's/^ //')
+  actual_csv=$(printf '%s' "$actual" | tr '\n' ',' | sed 's/,$//')
+  esc_row=$(declared_field_for_row "$seg" "$esc_v" escape)
   ledger_row 'segment' "id=$seg" "상태=park" \
-    "선언 파일 집합=$declared" "실제 편집 집합=$(printf '%s' "$actual" | tr '\n' ',' | sed 's/,$//')" \
-    "이탈=$(printf '%s' "$esc" | sed 's/^ //')"
+    "선언 파일 집합=$(declared_field_for_row "$seg" "$declared")" \
+    "실제 편집 집합=$(declared_field_for_row "$seg" "$actual_csv" actual)" \
+    "이탈=$esc_row"
   if [ "$cross" = "1" ]; then
     ledger_row '자율 승인' "kind=citation" "결정=레포 간 파일 집합 이탈로 런 정지" \
       "기각된 대안=세그먼트만 park" "근거=인가되지 않은 레포에 손이 닿았다"
-    park "$seg" run 무효화 "게이트 park" "레포 간 파일 집합 이탈: $(printf '%s' "$esc" | sed 's/^ //')"
+    park "$seg" run 무효화 "게이트 park" "레포 간 파일 집합 이탈: $esc_row"
   else
-    park "$seg" cone 무효화 "게이트 park" "선언 밖 파일 편집: $(printf '%s' "$esc" | sed 's/^ //')"
+    park "$seg" cone 무효화 "게이트 park" "선언 밖 파일 편집: $esc_row"
   fi
   return 1
 }
@@ -2835,8 +3183,45 @@ main_loop() {
 
   ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
     "관측 시각=$(now_iso)"
-  report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · 보류 ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
-  log "런 종료 (머지 $merged · 완성-미착지 $landed · 보류 $parked)"
+  report_run_residual
+  # `park` AND NOT `보류`. The two words were one: this counter holds segments the
+  # driver parked, while `보류` is the disposition of a termination clause waiting
+  # on a person's answer — and both appear in the same report, so the reader had
+  # to guess which sense was meant on each line.
+  report_append "종료" "머지 ${merged}건 · 완성-미착지 ${landed}건 · park ${parked}건 · 슬라이스 ${total}개 · 사이클 ${RUN_CYCLES}/${RUN_CYCLE_BUDGET}"
+  log "런 종료 (머지 $merged · 완성-미착지 $landed · park $parked)"
+}
+
+# THE GATE'S TERMINAL LINE, FORWARDED RATHER THAN REBUILT.
+#
+# The `done` file is where a run's residual actually lives — the questions left
+# open and the termination clauses each of them holds — and none of it reached
+# the morning report, which is the one surface a person reads. A run that ended
+# with three questions outstanding and one that ended with none wrote the same
+# report. The gate already composed that string, so this is a hand-off rather
+# than a second implementation of it; rebuilding the line here would put a second
+# renderer where the two could drift.
+#
+# A missing file is the ordinary case — a run that never proposed done never
+# wrote one — so it is silent rather than an absence worth reporting. Its own
+# function so that the test harness can reach it: the walk it is called from
+# needs a whole plan to run.
+#
+# ONCE, HOWEVER THE RUN ENDS. The walk's tail calls this on the ordinary path and
+# an exit trap calls it on every other one — a `die`, a signal, a budget stop —
+# because the walk's tail was the only caller and a run that halted anywhere else
+# left the `done` file on disk and the morning report without it, which is the
+# one surface a person actually reads. The two callers overlap on a run that ends
+# normally, so the flag file below is what keeps the same terminal line from
+# reaching the report twice.
+report_run_residual() {
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -f "$RUN_DIR/done" ] || return 0
+  if [ -e "$RUN_DIR/residual-reported" ]; then
+    return 0
+  fi
+  : > "$RUN_DIR/residual-reported"
+  report_append "종료 잔여" "$(cat "$RUN_DIR/done")"
 }
 
 # Record the radius an unknown apply outcome stops, and hold it so the walk can
@@ -2854,9 +3239,11 @@ radius_park() {
       seg_alias "$seg" > "$RUN_DIR/halted-repo.txt" 2>/dev/null || : > "$RUN_DIR/halted-repo.txt"
       log "적용 불명 — 폭발 반경 '레포', 같은 레포의 남은 세그먼트를 park" ;;
     *)
-      printf '%s\n' "$radius" | tr ',' '\n' | while IFS= read -r d; do
-        d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-        [ -n "$d" ] && printf '%s\n' "$d" >> "$RUN_DIR/halted-segments.txt"
+      # The radius is a slice list in the same spelling `선행` uses, so it gets
+      # the same normalization — a radius written `슬라이스 SA, 슬라이스 SB` has
+      # to name the same two segments the dependency guard would name.
+      for d in $(dep_tokens "$radius"); do
+        printf '%s\n' "$d" >> "$RUN_DIR/halted-segments.txt"
       done
       log "적용 불명 — 폭발 반경 '$radius'" ;;
   esac
@@ -2879,12 +3266,11 @@ in_halted_radius() {
 # likely place a first multi-repo run diverges from what the author pictured, so
 # it is recorded rather than assumed understood.
 cross_repo_deps() {
-  local seg="$1" deps="$2" mine d other
-  case "$deps" in ''|'-'|'없음') return 0 ;; esac
+  local seg="$1" deps mine d other
+  deps=$(dep_tokens "$2")
+  [ -n "$deps" ] || return 0
   mine=$(seg_alias "$seg") || return 0
-  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
-    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$d" ] || continue
+  for d in $deps; do
     other=$(seg_alias "$d") || continue
     [ "$other" = "$mine" ] && continue
     log "$seg: 선행 $d 는 레포가 달라 쌓기가 아니라 순서만 보장된다 ($other -> $mine)"
@@ -2900,18 +3286,43 @@ plan_uncell() { local v="$1"; [ "$v" = "-" ] && printf '' || printf '%s' "$v"; }
 # `선행` is satisfied when every named slice is in this run's done list. The
 # literal `없음` is a POSITIVE statement of independence; a missing line is not,
 # which is why the field is required rather than optional.
-deps_satisfied() {
-  local deps="$1" d
-  case "$deps" in ''|'-'|'없음') return 0 ;; esac
-  # The trailing newline is required, not cosmetic: `read` returns non-zero on a
-  # final line that has none, so the loop body never runs for the LAST item and
-  # a one-element `선행` list is satisfied vacuously — every dependency guard
-  # passes and the topological walk degenerates into arbitrary order.
-  printf '%s\n' "$deps" | tr ',' '\n' | while IFS= read -r d; do
-    d=$(printf '%s' "$d" | sed 's/^[[:space:]]*슬라이스[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$d" ] || continue
-    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || exit 1
+#
+# ONE NORMALIZATION FOR THREE CONSUMERS, AND IT MATCHES THE GATE'S. There were
+# four readers of this field across the two files and no two of them agreed:
+# each of the three here tested the WHOLE value against the null sentinels
+# instead of testing each token, so `선행=없음,SA` was a real list to one and
+# nothing to another; and the gate's own reader neither accepted `-` nor stripped
+# the `슬라이스 ` prefix a design document writes, so one spelling of one
+# dependency was one token on this side and two unknown ones on the side that
+# decides whether the row may be written.
+#
+# The sentinel set below is `gate_dep_tokens`'s, character for character. That is
+# the whole property: an agreement written twice is an agreement until someone
+# edits one copy, so the two are marked as one pair rather than left to look
+# coincidental.
+dep_tokens() {
+  # dep_tokens <선행 값> — the dependency ids as whitespace-separated tokens.
+  local t out=""
+  for t in $(printf '%s' "${1:-}" | tr ',' ' '); do
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
+    t=${t#슬라이스}
+    case "$t" in ''|'-'|'없음'|'(없음)') continue ;; esac
+    out="$out $t"
   done
+  printf '%s' "${out# }"
+}
+
+deps_satisfied() {
+  # A `for` over tokens rather than a `while read` down a pipe, and the shape is
+  # load-bearing twice over: the old loop ran in a SUBSHELL, so it signalled
+  # failure with `exit 1` and any other state it touched was lost; and `read`
+  # returns non-zero on a final line with no newline, which silently skipped the
+  # LAST dependency and made a one-element list satisfied vacuously.
+  local d
+  for d in $(dep_tokens "$1"); do
+    grep -qxF "$d" "$RUN_DIR/done.txt" 2>/dev/null || return 1
+  done
+  return 0
 }
 
 # Shell-built plan from the declaration. No model in this path at all.
@@ -2940,7 +3351,7 @@ plan_from_declaration() {
       "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$id" "상태=계획됨" \
-      "선언 파일 집합=$(slice_field "$doc" "$id" '선언 파일')" \
+      "선언 파일 집합=$(declared_field_for_row "$id" "$(slice_field "$doc" "$id" '선언 파일')")" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
       "선행=$(slice_field "$doc" "$id" '선행')" \
       "절단점=$(slice_field "$doc" "$id" '절단점')" \
@@ -2983,7 +3394,7 @@ plan_via_planner() {
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
-      "선언 파일 집합=$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')" \
+      "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
   done
   return 0
@@ -3027,6 +3438,16 @@ platform_supported || platform_refuse || exit $?
 # else. What is no longer true is that a document is REQUIRED: a run anchored on
 # a pull request, a branch, or a bare intent has no document to name.
 if [ -n "$MANIFEST" ]; then
+  # ABSOLUTE FIRST. The driver hands this value to every stage it dispatches and
+  # each of those passes it back to the gate, where the manifest write guard
+  # compares against it — so a relative or oddly spelled path here becomes a
+  # guard that is looking for a string nothing will match. Normalized only when
+  # the directory exists, for the same reason the gate normalizes conditionally:
+  # a failed `cd` would yield a path naming nothing, and the existence check on
+  # the next line is the honest place for that to be reported.
+  if [ -d "$(dirname "$MANIFEST")" ]; then
+    MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
+  fi
   [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
   check_manifest
   derive_paths_from_manifest
@@ -3041,6 +3462,14 @@ else
 fi
 
 rundir_init
+
+# THE RESIDUAL REPORT SITS ON THE EXIT PATH, not only on the walk's tail. A run
+# that stopped at a `die`, a signal or the cycle budget wrote its `done` file and
+# then never forwarded it, so the questions left open — and the termination
+# clauses each of them holds — vanished from the morning report exactly on the
+# nights something went wrong. Installed after the run directory exists, because
+# there is nothing to forward before that.
+trap 'report_run_residual || true' EXIT
 
 check_grant
 ledger_init

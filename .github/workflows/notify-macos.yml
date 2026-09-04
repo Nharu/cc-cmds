@@ -31,19 +31,31 @@ jobs:
     # whole suite takes locally. Raising the ceiling stops a green run from
     # reading as a failure; making that lint cheaper is separate work and is not
     # what this number is standing in for.
+    # 90, and the number was raised three times before it stuck. The history is
+    # kept because each step measured something the next one needed.
     #
-    # 90, not 25. The margin had already gone: the run one commit before this
-    # passed at 24m58s, twenty-two seconds inside the ceiling, and adding a
-    # handful of assertions to the gate suite pushed the next one to a
-    # cancellation at 25m22s. Nothing failed either time — the step was still
-    # producing passing assertions when the clock cut it.
+    # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
+    # darwin tests cut off at 12m25s — neither half had failed, the budget was
+    # simply sized for a smaller tree. Raised to 45.
     #
-    # The suite does not get slower evenly; it gets slower as it runs, because
-    # each gate call re-reads a ledger the suite has been appending to. So a
-    # ceiling that fits today stops fitting after the next few assertions, and
-    # raising it is buying room rather than fixing anything. The cost itself is
-    # filed separately, and 90 is chosen to stop this from recurring per commit
-    # rather than because the suite needs it.
+    # At 45 it was cancelled again. The final passing assertions were 10-17
+    # seconds APART and the job died 73 seconds after one of them, still making
+    # progress and never hung; the same suite had finished at 31m32s one commit
+    # earlier, which is how little headroom 45 actually was.
+    #
+    # Master hit the same wall independently at 25, and that reading is the
+    # sharpest of the three: the run one commit before passed at 24m58s — twenty
+    # two seconds inside the ceiling — and adding a handful of assertions pushed
+    # the next one to a cancellation at 25m22s. A budget with twenty-two seconds
+    # of margin is not a budget.
+    #
+    # The reason it keeps recurring is that this suite does not get slower
+    # evenly, it gets slower as it runs: each gate call re-reads a ledger the
+    # suite has been appending to, so the last assertions cost far more than the
+    # first. A ceiling that fits today stops fitting after the next few
+    # assertions. 90 is chosen to stop this recurring per commit, not because
+    # the suite needs it — the superlinear cost is the real defect and is filed
+    # separately.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

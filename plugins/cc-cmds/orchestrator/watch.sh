@@ -66,10 +66,14 @@
 # Compatibility: bash 3.2 — no associative arrays, no mapfile, no `wait -n`.
 
 set -uo pipefail
-# Script-scope `LC_TIME` stays. What the shared predicates require is that THEY
-# do not depend on a caller's locale, and they fix it inside themselves; this
-# line serves the other time handling in this file and removing it is not
-# something the decision asks for.
+# Script-scope `LC_TIME` stays, but it is NOT what makes the liveness compare
+# work. This file never clears `LC_ALL` — it does not source the driver — so an
+# `LC_ALL` inherited from whoever launched the watcher overrides this line
+# entirely, and for a while that meant a watcher started from a Korean-locale
+# shell read every stage as dead while reporting "0 live". The fingerprint is
+# pinned at its own capture with `LC_ALL` instead, which nothing outranks. What
+# remains here serves this file's other time handling, whose formats are numeric
+# and would survive the override anyway.
 LC_TIME=C
 export LC_TIME
 

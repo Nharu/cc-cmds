@@ -197,7 +197,7 @@ In an ordinary checkout that is the same string as `git rev-parse --show-topleve
 Two digests are computed here and **compared at entry**, so they are not decoration:
 
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
-- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
+- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
 
 **The example in that contract is fenced with four backticks because it contains three-backtick fences of its own.** Any document that explains this grammar has the same shape, which is why the parser reading it skips fenced spans and survives nesting — and why you must not "simplify" the nesting when you copy it.
 
@@ -283,9 +283,24 @@ Measured: a review stage completed and produced its report; the router recorded 
 | `plan` | dry run — would this act pass, and if not which rule refuses it |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
-| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked) |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no) |
 
-**Two `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. `act --kind segment … -- 상태=<…> 워크트리=<path>` advances a segment, and `act --kind cycle … -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'` records a review. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
+**Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
+
+```
+act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>'
+act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'
+act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
+act --kind judgment   -- 등급=1 '판단 부류=<여덟 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
+act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
+act --kind blocked    -- 스코프=run  원인=해소 사유=<선행 막힘의 사유> 근거=<…>
+act --kind blocked    -- 스코프=cone 원인=막힘 사유=<…> 근거=<…> '앵커 세그먼트=<id>' ['의존 세그먼트=<CSV>']
+act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
+```
+
+**Write `선행` on the `segment` row at PLANNING time, not later.** It is the cone's declared axis, and it is the only axis that sees a dependency *before* the predecessor merges — segments branch from the resolved base rather than from each other, so ancestry only says "that one already landed", and the moment a cone typically stands up is before that. Two floors follow from that and both are refusals at write time: the field is **monotone** (a later row may add and may not remove), and **absence is not `없음`** (in a repository with two or more segments, a row without the field is refused; `없음` is accepted as a positive statement of independence). `선언 파일 집합` is likewise carried at planning time — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all.
+
+**A cone is the one `blocked` scope you may create; run scope you may only resolve.** A cone holds what stands on a refuted premise and lets its siblings keep running, which is what an open question needs. Declare `의존 세그먼트` or leave it out — the gate derives the cone either way and refuses a declaration that is a **proper subset** (exit 6). Widening passes.
 
 **Use `grade` and `plan` rather than finding out by doing.** They write no row and cost no budget. Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation.
 
@@ -311,13 +326,29 @@ Exit 5 means the run has asked and cannot answer itself. **Ask the user in this 
 
 `close` reads the **harness-written transcript**, not the router's prose. A router that could type its own answer would be issuing approvals to itself and the record would be indistinguishable from one a person gave. If the transcript cannot be read, `close` refuses; that refusal is the mechanism working.
 
+**`close` has three dispositions and they are not interchangeable.** Bare `close` records `승인` — asked and granted. `close --void` records `무효` — the question should not have been asked. `close --reject` records `거부` — it was asked, and the answer is no. All three need the same transcript line, and `--void` and `--reject` together are refused, because they are different claims about the same approval rather than two strengths of one claim.
+
 **An approval the run should never have asked for is voided, not granted.** `gate.sh close --approval <id> --void` records `무효` and the act does not happen. It needs the same transcript line as an approval — voiding removes a blocker rather than adding one, so it gets no looser gate — and what it buys the person is a way to say *this should not have been asked* without granting the act to get the run moving again.
+
+**A `절단점=판단` approval whose answer reads as "no" cannot be closed as `승인`.** The gate scans the extracted answer bytes for a negative — `아니오`, `아니요`, `거부`, `거절`, `하지 마`, `하지마`, `no`, `nope`, `reject`, `don't` — and refuses the grant, naming what matched and asking for `--reject` or `--void` instead. The scan does not run on act approvals: their `답변 문면` is a fixed literal, so there is nothing extracted to read, and their refusal is the closer naming a flag. `거부` is terminal the way `무효` is — resubmitting the same act against a rejected approval is refused rather than re-asked.
 
 **While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
 
 ### Judgment, not just acts
 
-Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
+Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`·`판단 부류`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
+
+**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second.
+
+**Once the answer arrives, resubmit the same judgment — that is the whole of the follow-up.** The approval's id is derived from the judgment, so the resubmission finds the closed approval rather than opening a new one, and the gate routes on its state: `승인` adopts the judgment and writes the row with `해소 승인=<id>`; `거부` and `무효` refuse the act and do **not** re-ask; `대기` is still waiting, so leave it and come back. **One answer opens one judgment** — an id already named by a `자율 승인` row is spent, and a second judgment leaning on it is refused with a request for a new question. Nothing here re-opens a closed approval: only a question whose `기준` and `근거` differ hashes to a new id.
+
+**The floor is a union.** Either arm admits: the manifest declared this `판단 부류` in a `자동 채택` row, **or** `되돌리는 법` is a runnable command whose argv0 grades at or below `워크트리쓰기`. Prose fails the second arm — it grades `등급 미상` — and that is the point of the field: produce the thing that reverses the decision rather than assert that one exists.
+
+**Two classes are outside the union entirely.** `팀-구성` and `시각-면제` hand risk to the user, so neither arm admits them: the floor rejects them before it looks at the manifest or at the undo command. What follows is an **approval**, not a refusal — recording a judgment of that class is permitted and only adopting it unattended is not. Declaring either in a `자동 채택` row is a hard stop when the manifest is frozen, and the runtime rejection is what makes the two agree instead of contradicting.
+
+**What makes arm (a)'s input unforgeable** is three things, and it is worth knowing which: `## 인가` is exactly one section and the floor reads only that section; the `자동 채택` rows are inside `구속 다이제스트`, so appending one moves the digest and the next gate entry refuses; and the gate refuses any act that writes the manifest, at any cutpoint. The residual is that both sides of the digest comparison live in the same file, so a rewrite that moves the row **and** the digest field together is detected by nothing — which is why the write guard, not the digest, is the load-bearing half.
+
+**A run may END with questions still open.** They do not count against termination condition 2, because a question's answer is an input to work that has not started and a successor run can consume it. What records them is the `done` file's third class, `종단 — 질의 잔여 N건 · 승인 <id>…`. A clause blocked on one is settled with `상태=보류` whose `근거` names that open approval id — which is a different disposition from `불가능`: impossible ends the clause, on hold hands it to the next run.
 
 ### Proposing that the run is done
 

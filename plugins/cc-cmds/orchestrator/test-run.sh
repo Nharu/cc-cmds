@@ -17,6 +17,20 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
+# watcher all raise real banners, and their fire path prepends the Homebrew
+# directories to PATH itself — so a stub this suite puts on PATH is shadowed by
+# whatever is really installed, and an ordinary `make test` reaches the user.
+# Measured on this tree: two banners arrived from a test run, one with sound.
+#
+# Exported rather than set per call, because the call sites cannot be made
+# exhaustive — a new invocation is a normal thing to write and would silently
+# not carry the guard. This suite asserts nothing about banner content, so
+# turning the channel off costs it nothing.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/../../.." && pwd)
 DRIVER="$script_dir/run.sh"
@@ -1629,6 +1643,321 @@ for v in CC_PIPELINE_RUN_ID CC_PIPELINE_GRANT CC_PIPELINE_LEDGER CC_PIPELINE_RUN
     bad "환경 전달" "$v 가 스테이지로 넘어가지 않는다"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# 22. 원장의 둘째 필자도 게이트와 같은 필드 정규화를 받는다
+#
+# `ledger_row` 는 게이트와 같은 파일에 쓰면서 게이트의 바닥을 하나도 거치지
+# 않았다. `|` 는 필드를 가르고 개행은 행을 끝내므로, 그 둘을 담은 값은 행 문법을
+# 스플라이스한다 — 그리고 이 함수에 닿는 값은 설계 문서의 `선행`·`선언 파일
+# 집합`과 모델 출력이라 한국어 산문의 파이프가 예사롭다. 스플라이스된 `segment`
+# 행은 지저분한 정도가 아니다: 모든 판독기가 행 텍스트를 `|` 로 가르고 `id=` 를
+# 탐욕적으로 잡으므로, 그 행이 어느 세그먼트에 대한 것인지가 바뀐다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"
+LEDGER="$WORK/ledger-norm.md"; : > "$LEDGER"
+ledger_row 'segment' "id=SP" "선행=SA|SB" "사유=파이프 | 가 든 산문"
+# 행 텍스트를 직접 본다 — `ledger_last` 는 마지막 필드가 아닌 값에 후행 공백을
+# 남기므로, 그것으로 재면 정규화가 아니라 판독기의 손질을 재게 된다.
+case "$(grep -F 'id=SP' "$LEDGER")" in
+  *'| 선행=SA/SB |'*) ok "값 안의 파이프가 슬래시로 바뀐다" ;;
+  *) bad "필드 정규화" "$(grep -F 'id=SP' "$LEDGER")" ;;
+esac
+check "그 행은 여전히 한 줄이다" "$(grep -c . "$LEDGER")" "1"
+case "$(grep -F 'id=SP' "$LEDGER")" in
+  *'사유=파이프 / 가 든 산문'*) ok "산문 안의 파이프도 새 필드를 만들지 못한다" ;;
+  *) bad "필드 정규화" "$(grep -F 'id=SP' "$LEDGER")" ;;
+esac
+: > "$LEDGER"
+ledger_row 'segment' "id=SN" "사유=첫 줄
+둘째 줄"
+check "값 안의 개행이 행을 끊지 못한다" "$(grep -c . "$LEDGER")" "1"
+# 상한을 넘는 값 하나는 이제 거절이 아니라 사이드카로 빠지고, 행은 기록된다. 이
+# 절이 재는 것은 그 처분이 아니라 이 절의 전제다 — 값이 아무리 길어도 행 문법은
+# 한 줄로 남는다. 처분 자체는 22b 가 잰다.
+LONGV=$(printf '%1100s' '' | tr ' ' 'x')
+( ledger_row 'segment' "id=SL" "사유=$LONGV" ) >/dev/null 2>&1
+check "상한을 넘는 값 하나는 행을 죽이지 않는다" "$?" "0"
+check "그 행은 원장에 한 줄로 남는다" "$(grep -cF 'id=SL' "$LEDGER" || true)" "1"
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 22a. 킥오프의 경계 없는 필드는 사이드카로 빠지고 행은 상한 안에 든다
+#
+# 앞 절의 마지막 단언은 이미 상한을 넘긴 값을 밀어 넣고 거절되는지만 본다. 그것은
+# 바닥이 있다는 사실을 재지 여유를 재지 않는다. 그런데 이 상한은 `die` 이고
+# `die` 는 `exit 1` 이라, 선언 파일이 스무 개인 평범한 킥오프 하나가 무인 런
+# 전체를 첫 행에서 끝냈다 — 한글 경로는 글자당 세 바이트라 그 수는 멀리 있지
+# 않다. 게이트는 같은 상한을 도입할 때 목록을 런 디렉터리로 빼는 탈출구를 함께
+# 두었고, 이쪽은 바닥만 복제하고 그 탈출구를 복제하지 않았다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"; RUN_DIR_SAVE="${RUN_DIR:-}"
+LEDGER="$WORK/ledger-headroom.md"; : > "$LEDGER"
+RUN_DIR="$WORK/rundir-headroom"; mkdir -p "$RUN_DIR"
+DECL=""; i=1
+while [ "$i" -le 20 ]; do
+  DECL="${DECL:+$DECL, }plugins/cc-cmds/오케스트레이터/구현-파일-$i.sh"
+  i=$((i + 1))
+done
+DECLN=$(printf '%s' "$DECL" | wc -c | tr -d ' ')
+if [ "${DECLN:-0}" -gt "$RUN_ROW_MAX" ]; then
+  ok "선언 목록 자체가 행 상한보다 길다 ($DECLN 바이트 — 여유를 재는 전제다)"
+else
+  bad "여유 전제" "선언 목록이 $DECLN 바이트뿐이라 이 절이 아무것도 재지 못한다"
+fi
+( ledger_row 'segment' "id=SH" "상태=계획됨" \
+    "선언 파일 집합=$(declared_field_for_row SH "$DECL")" \
+    "레포=cc-cmds" "선행=없음" "절단점=커밋" \
+    "plan-binding-digest=0000000000000000000000000000000000000000000000000000000000000000" \
+    "워크트리=$WORK/wt-SH" ) >/dev/null 2>&1
+check "선언 파일이 스무 개인 킥오프 행은 드라이버를 죽이지 않는다" "$?" "0"
+ROWLEN=$( { grep -F 'id=SH ' "$LEDGER" || true; } | wc -c | tr -d ' ')
+if [ "${ROWLEN:-0}" -gt 0 ] && [ "${ROWLEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행은 원장 행 상한 안에 든다 ($ROWLEN 바이트)"
+else
+  bad "행 길이" "$ROWLEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+if [ -f "$RUN_DIR/declared.SH" ] && grep -qF "$DECL" "$RUN_DIR/declared.SH"; then
+  ok "전체 목록이 런 디렉터리에 축자로 남는다"
+else
+  bad "사이드카" "$RUN_DIR/declared.SH 에 전체 목록이 없다"
+fi
+case "$( { grep -F 'id=SH ' "$LEDGER" || true; } )" in
+  *"declared.SH"*) ok "행이 전체 목록이 있는 자리를 지목한다" ;;
+  *) bad "사이드카 지목" "$( { grep -F 'id=SH ' "$LEDGER" || true; } )" ;;
+esac
+# 사이드카를 쓸 수 없을 때 킥오프가 죽으면 고치려는 것과 같은 형상이 된다.
+RUN_DIR="$WORK/rundir-absent"
+( ledger_row 'segment' "id=SH2" "상태=계획됨" \
+    "선언 파일 집합=$(declared_field_for_row SH2 "$DECL")" ) >/dev/null 2>&1
+check "런 디렉터리가 없어도 킥오프 행은 써진다" "$?" "0"
+# 그리고 바닥 자체는 백스톱으로 남는다. 닿는 조건은 「긴 필드 하나」가 아니라
+# 「빼낼 곳이 없고 필드가 여럿」이다 — 사이드카가 써지면 행에는 지목만 남아 넷을
+# 실어도 상한 아래로 내려가므로, 런 디렉터리가 없는 상태를 그대로 이어 쓴다. 그
+# 때는 이 층에서 더 할 수 있는 것이 없으므로 여전히 거절하고, 거절 문면은 어느
+# 필드가 넘쳤는지 이름으로 지목한다.
+LONGV2=$(printf '%1100s' '' | tr ' ' 'x')
+LONGOUT=$( { ledger_row 'segment' "id=SL2" "사유=$LONGV2" "관측=$LONGV2" \
+               "근거=$LONGV2" "비고=$LONGV2"; } 2>&1 || true)
+case "$LONGOUT" in
+  *"가장 긴 필드는 「사유」"*) ok "상한 거절이 어느 필드가 넘쳤는지 지목한다" ;;
+  *) bad "상한 문면" "$LONGOUT" ;;
+esac
+RUN_DIR="$RUN_DIR_SAVE"
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 22b. 상한이 죽이던 자리는 park 로 가는 길이었다
+#
+# 22a 는 킥오프의 선언 집합 하나에 탈출구를 뒀고 이탈 행에는 두지 않았다. 그
+# 행은 선언 집합·실제 편집 집합·이탈 목록 셋을 함께 싣고 셋 다 같은 선언과 함께
+# 자라므로, 선언이 긴 세그먼트에서 이탈이 나면 그 행이 상한을 넘었다 — 그리고
+# 그 상한은 `die` 였다. 죽는 자리가 하필 park 로 가는 길이라, 정지해야 할 런이
+# 정지하는 대신 드라이버째 끝났다.
+#
+# 그래서 탈출구를 호출부마다 배선하는 대신 `ledger_row` 자신이 흘리게 한다.
+# 호출부 배선은 새 writer 가 생길 때마다 같은 누락을 되풀이하고, 그 되풀이가
+# 바로 이 절이 재는 결함의 이력이다.
+# ---------------------------------------------------------------------------
+LEDGER_SAVE="$LEDGER"; RUN_DIR_SAVE="$RUN_DIR"; BASE_SAVE="$BASE"
+LEDGER="$WORK/ledger-escape.md"; : > "$LEDGER"
+RUN_DIR="$WORK/rundir-escape"; mkdir -p "$RUN_DIR"
+BASE="$WORK/base-escape"; mkdir -p "$BASE/docs"
+ESC_WT="$WORK/wt-escape"; mkdir -p "$ESC_WT"
+( cd "$ESC_WT" && git init -q . && git config user.email t@t && git config user.name t ) \
+  >/dev/null 2>&1
+# 선언 스무 개와 선언 밖 스무 개. 셋 다 경계가 필요하다는 것이 이 절의 전제이므로
+# 세 필드가 모두 필드 상한을 넘도록 양쪽을 함께 키운다. 한글 경로는 글자당 세
+# 바이트라 그 수는 멀리 있지 않다.
+ESC_DECL=""; i=1
+while [ "$i" -le 20 ]; do
+  printf 'x\n' > "$ESC_WT/오케스트레이터-구현-$i.sh"
+  printf 'x\n' > "$ESC_WT/오케스트레이터-선언밖-$i.sh"
+  ESC_DECL="${ESC_DECL:+$ESC_DECL, }오케스트레이터-구현-$i.sh"
+  i=$((i + 1))
+done
+( cd "$ESC_WT" && git add -A && git commit -q -m init ) >/dev/null 2>&1
+i=1
+while [ "$i" -le 20 ]; do
+  printf 'y\n' > "$ESC_WT/오케스트레이터-선언밖-$i.sh"
+  i=$((i + 1))
+done
+# 서브셸로 부르는 것은 실패 처분이 `die` 로 되돌아가도 스위트가 그 자리에서
+# 끝나지 않게 하려는 것이다 — 원장·사이드카는 파일이라 서브셸 밖에 남는다.
+( fileset_escape SE "$ESC_DECL" "$ESC_WT" ) >/dev/null 2>&1
+check "선언이 긴 세그먼트의 이탈이 드라이버를 죽이지 않고 park 를 반환한다" "$?" "1"
+ESC_ROW=$( { grep -F 'id=SE ' "$LEDGER" || true; } | tail -1)
+case "$ESC_ROW" in
+  *'상태=park'*) ok "이탈이 세그먼트를 park 상태로 원장에 남긴다" ;;
+  *) bad "이탈 행" "$ESC_ROW" ;;
+esac
+ESC_LEN=$(printf '%s' "$ESC_ROW" | wc -c | tr -d ' ')
+if [ "${ESC_LEN:-0}" -gt 0 ] && [ "${ESC_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행은 원장 행 상한 안에 든다 ($ESC_LEN 바이트)"
+else
+  bad "이탈 행 길이" "$ESC_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+# 세 필드가 각자 제 사이드카를 갖는다. 접두사가 `declared` 로 고정돼 있던 동안은
+# 셋 중 하나만 경계를 받았고, 나머지 둘이 같은 행을 그대로 넘겼다.
+for pfx in declared actual escape; do
+  if [ -f "$RUN_DIR/$pfx.SE" ]; then
+    ok "이탈 행의 $pfx 필드가 런 디렉터리에 전체로 남는다"
+  else
+    bad "이탈 사이드카" "$RUN_DIR/$pfx.SE 가 없다"
+  fi
+done
+# park 에 넘긴 관측 문자열도 같은 경계를 받는다 — `park` 는 제 원장 행을 쓰므로
+# 여기서 경계를 주지 않으면 이탈 행을 살려 두고 그 다음 행에서 죽는다.
+BLOCKED_ROW=$( { grep -F '대상=SE ' "$LEDGER" || true; } | tail -1)
+BLOCKED_LEN=$(printf '%s' "$BLOCKED_ROW" | wc -c | tr -d ' ')
+if [ "${BLOCKED_LEN:-0}" -gt 0 ] && [ "${BLOCKED_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "park 이 쓴 blocked 행도 상한 안에 든다 ($BLOCKED_LEN 바이트)"
+else
+  bad "blocked 행 길이" "$BLOCKED_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+# 그리고 `ledger_row` 자신이 흘린다 — 경계를 거치지 않고 들어온 값 하나로 직접
+# 부른다. 호출부가 아무것도 하지 않아도 행이 남고 전체 값을 지목한다는 것이
+# 구조적 폐쇄의 내용이다.
+: > "$LEDGER"
+RAWV=$(printf '%1100s' '' | tr ' ' 'z')
+( ledger_row 'segment' "id=SR" "사유=$RAWV" ) >/dev/null 2>&1
+check "경계 없는 값을 직접 실어도 ledger_row 는 죽지 않는다" "$?" "0"
+RAW_ROW=$( { grep -F 'id=SR ' "$LEDGER" || true; } | tail -1)
+RAW_LEN=$(printf '%s' "$RAW_ROW" | wc -c | tr -d ' ')
+if [ "${RAW_LEN:-0}" -gt 0 ] && [ "${RAW_LEN:-0}" -le "$RUN_ROW_MAX" ]; then
+  ok "그 행도 상한 안에 든다 ($RAW_LEN 바이트)"
+else
+  bad "흘린 행 길이" "$RAW_LEN 바이트 (상한 $RUN_ROW_MAX)"
+fi
+case "$RAW_ROW" in
+  *"(전체: $RUN_DIR/row.segment."*) ok "흘린 행이 전체 값이 있는 자리를 지목한다" ;;
+  *) bad "흘림 지목" "$RAW_ROW" ;;
+esac
+# 상한 아래의 행은 바이트가 달라지지 않는다 — 이것이 흘림이 기존 단언을 조용히
+# 바꾸지 않았다는 상한이다.
+: > "$LEDGER"
+ledger_row 'segment' "id=SS" "상태=계획됨" "레포=cc-cmds"
+check "상한 아래 행은 바이트가 그대로다" \
+  "$( { grep -F 'id=SS ' "$LEDGER" || true; } )" \
+  '- `segment` | id=SS | 상태=계획됨 | 레포=cc-cmds'
+LEDGER="$LEDGER_SAVE"; RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 23. `선행` 판독기는 하나이고, 게이트의 것과 같은 어휘를 쓴다
+#
+# 이 필드의 판독기가 두 파일에 넷 있었고 어느 둘도 일치하지 않았다. 이쪽 셋은
+# 널 sentinel 을 토큰이 아니라 값 전체에 대고 검사해 `없음,SA` 가 한쪽에는 실제
+# 목록이고 다른 쪽에는 아무것도 아니었으며, 게이트의 판독기는 `-` 를 널로 받지도
+# 설계 문서가 적는 `슬라이스 ` 접두사를 벗기지도 않아 한 의존의 한 철자가 이쪽에선
+# 한 토큰이고 저쪽에선 미지 토큰 둘이었다 — 그리고 저쪽이 행을 쓸 수 있는지를
+# 정하는 바닥이다.
+# ---------------------------------------------------------------------------
+check "쉼표와 공백 철자가 같은 토큰 집합으로 읽힌다" "$(dep_tokens 'SA, SB')" "SA SB"
+check "공백만으로 구분한 철자도 같다" "$(dep_tokens 'SA SB')" "SA SB"
+check "슬라이스 접두사가 벗겨진다" "$(dep_tokens '슬라이스 SA, 슬라이스 SB')" "SA SB"
+check "널 sentinel 은 토큰 단위로 떨어진다" "$(dep_tokens '없음,SA')" "SA"
+check "괄호 친 없음도 널이다" "$(dep_tokens '(없음)')" ""
+check "대시도 널이다" "$(dep_tokens '-')" ""
+check "빈 값도 널이다" "$(dep_tokens '')" ""
+# 세 소비처가 전부 그 하나를 거치는지 — 이 항목의 값은 정규화 자체가 아니라
+# 정규화가 한 곳에 있다는 사실이므로, 판독기가 다시 갈라지면 여기서 잡힌다.
+for fn in deps_satisfied cross_repo_deps radius_park; do
+  if sed -n "/^$fn()/,/^}/p" "$DRIVER" | grep_all_q 'dep_tokens'; then
+    ok "$fn 이 dep_tokens 를 거친다"
+  else
+    bad "선행 판독기" "$fn 이 자기 정규화를 갖고 있다"
+  fi
+done
+# 그리고 게이트의 sentinel 집합과 축자로 같은지. 두 번 적은 합의는 누군가 한쪽을
+# 고치기 전까지만 합의이므로, 우연처럼 보이게 두지 않는다.
+GATE_SH="$(dirname "$DRIVER")/gate.sh"
+sent_run=$(sed -n '/^dep_tokens()/,/^}/p' "$DRIVER" | grep -cF "''|'-'|'없음'|'(없음)'" || true)
+sent_gate=$(sed -n '/^gate_dep_tokens()/,/^}/p' "$GATE_SH" | grep -cF "''|'-'|'없음'|'(없음)'" || true)
+if [ "${sent_run:-0}" -ge 1 ] && [ "$sent_run" = "$sent_gate" ]; then
+  ok "두 판독기의 널 sentinel 집합이 축자로 같다"
+else
+  bad "sentinel 일치" "run.sh ${sent_run}회 vs gate.sh ${sent_gate}회"
+fi
+if sed -n '/^gate_dep_tokens()/,/^}/p' "$GATE_SH" | grep_all_q '슬라이스'; then
+  ok "게이트의 판독기도 슬라이스 접두사를 벗긴다"
+else
+  bad "접두사 일치" "게이트 쪽은 여전히 슬라이스 접두사를 토큰의 일부로 읽는다"
+fi
+# `선행` 하나짜리 목록이 공허하게 충족되지 않는지. 옛 형태는 파이프 오른쪽의
+# `read` 가 개행 없는 마지막 줄에서 비영으로 끝나 마지막 항목을 건너뛰었고, 그래서
+# 원소가 하나면 의존 가드가 전부 통과해 위상 순회가 임의 순서로 무너졌다.
+DONE_SAVE="${RUN_DIR}"
+RUN_DIR="$WORK/deps-run"; mkdir -p "$RUN_DIR"
+printf 'SA\n' > "$RUN_DIR/done.txt"
+if deps_satisfied '없음'; then ok "없음 은 충족으로 읽힌다"; else bad "선행 충족" "없음 이 미충족이 됐다"; fi
+if deps_satisfied 'SA'; then ok "착지한 선행 하나는 충족이다"; else bad "선행 충족" "SA 가 done 에 있는데 미충족이다"; fi
+if deps_satisfied 'SZ'; then bad "선행 충족" "착지하지 않은 원소 하나짜리 목록이 공허하게 통과했다"; else ok "착지하지 않은 원소 하나짜리 목록은 미충족이다"; fi
+if deps_satisfied 'SA,SZ'; then bad "선행 충족" "뒤쪽 원소를 건너뛰었다"; else ok "목록의 뒤쪽 원소도 검사된다"; fi
+if deps_satisfied '슬라이스 SA'; then ok "슬라이스 접두사를 쓴 선행도 충족으로 해소된다"; else bad "선행 충족" "접두사가 붙으면 미충족이 된다"; fi
+RUN_DIR="$DONE_SAVE"
+
+# ---------------------------------------------------------------------------
+# 24. 아침 리포트가 게이트의 종단 줄을 싣는다
+#
+# 열린 물음과 그것이 붙들고 있는 종료 절은 전부 `done` 파일에만 있었고, 사람이
+# 읽는 유일한 면인 아침 리포트에는 한 글자도 닿지 않았다. 물음 셋을 남기고 끝난
+# 런과 하나도 남기지 않은 런이 같은 리포트를 썼다.
+# ---------------------------------------------------------------------------
+RUN_DIR_SAVE3="$RUN_DIR"; BASE_SAVE3="$BASE"; RUN_ID_SAVE3="$RUN_ID"
+RUN_DIR="$WORK/res-run"; mkdir -p "$RUN_DIR"
+BASE="$WORK/res-base"; RUN_ID="resrun"
+report_run_residual
+if [ -f "$(report_path)" ]; then
+  bad "종료 잔여" "done 파일이 없는데 리포트를 만들었다"
+else
+  ok "done 파일이 없으면 조용히 건너뛴다 (제안하지 않은 런의 정상 경로다)"
+fi
+printf '2026-09-02T00:00:00Z 종단 — 질의 잔여 2건 · 승인 J-aaaa1111 J-bbbb2222 · 보류 절 K1(J-aaaa1111) K2(J-bbbb2222) · 근거 x\n' \
+  > "$RUN_DIR/done"
+report_run_residual
+RES_REPORT="$(report_path)"
+if [ -f "$RES_REPORT" ] && grep_all_q -F '질의 잔여 2건' < "$RES_REPORT"; then
+  ok "종단 줄의 질의 잔여가 리포트에 도달한다"
+else
+  bad "종료 잔여" "$(cat "$RES_REPORT" 2>/dev/null || printf '(리포트 없음)')"
+fi
+if grep_all_q -F '보류 절 K1(J-aaaa1111) K2(J-bbbb2222)' < "$RES_REPORT"; then
+  ok "보류 절 항목과 승인 id 가 축자로 도달한다 (재구성이 아니라 전달이다)"
+else
+  bad "종료 잔여" "$(cat "$RES_REPORT" 2>/dev/null || printf '(리포트 없음)')"
+fi
+# 순회 꼬리와 EXIT 경로가 둘 다 이 보고를 부른다. 정상으로 끝난 런에서는 두 경로가
+# 겹치므로, 겹침이 아침에 같은 잔여를 두 줄로 만들지 않는지가 두 경로를 둔 값을
+# 결정한다.
+report_run_residual
+res_n=$( { grep -cF '종단 — 질의 잔여 2건' "$RES_REPORT" || true; } )
+if [ "${res_n:-0}" = "1" ]; then
+  ok "겹쳐 불려도 종단 줄은 리포트에 한 번만 실린다"
+else
+  bad "종료 잔여" "종단 줄이 ${res_n}회 실렸다 — 두 경로가 같은 줄을 두 번 쓴다"
+fi
+# 그 두 경로 중 하나가 EXIT 경로다. 순회 꼬리 하나만 있던 동안은 die·신호·예산으로
+# 끝난 런이 `done` 파일을 쓰고도 아침 리포트에는 한 글자도 넘기지 못했다 — 무언가
+# 잘못된 밤에만 잔여가 사라졌다.
+if grep -qF "trap 'report_run_residual || true' EXIT" "$DRIVER"; then
+  ok "드라이버가 종료 잔여 보고를 EXIT 경로에 건다"
+else
+  bad "종료 잔여" "EXIT 경로에 보고가 걸려 있지 않다 — 순회 꼬리에 닿지 못한 런의 잔여는 아침에 도달하지 않는다"
+fi
+RUN_DIR="$RUN_DIR_SAVE3"; BASE="$BASE_SAVE3"; RUN_ID="$RUN_ID_SAVE3"
+# 종료 요약의 단어. `보류` 는 사람의 답을 기다리는 종료 절의 처분이고 이 계수기는
+# 드라이버가 park 한 세그먼트를 센다 — 같은 리포트에 둘 다 나오므로, 한 단어가 두
+# 뜻을 가지면 읽는 사람이 줄마다 어느 쪽인지 짐작해야 한다.
+if grep -qF 'park ${parked}건' "$DRIVER"; then
+  ok "종료 요약이 park 된 세그먼트를 park 이라 부른다"
+else
+  bad "종료 요약" "park 계수기의 이름이 park 이 아니다"
+fi
+if grep -qF '보류 ${parked}건' "$DRIVER"; then
+  bad "종료 요약" "park 계수기를 아직 보류 라고 부른다 — 종료 절의 보류와 한 단어다"
+else
+  ok "park 계수기가 종료 절의 보류와 다른 단어를 쓴다"
+fi
 
 # ---------------------------------------------------------------------------
 # The detach path is gone, and its absence is asserted rather than assumed.

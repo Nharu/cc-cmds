@@ -93,6 +93,43 @@ it can meet. The lint asserts that the disposition exists; it does **not**
 assert that the grade is correct — a wrong grade is interpretable misjudgment,
 and the fence for that is prose, not structure.
 
+### Emission form — how a stage hands a judgment to the gate
+
+The convention above marks a point in a skill's own text. This one is what a
+**running stage** writes, and the two were never the same thing: a stage holds
+no gate verb and writes no sidecar, so its only channel for a decision it made
+is its terminal message. The gate parses five markers out of that message and
+absorbs the judgment through the same auto-adoption floor an `act --kind
+judgment` goes through.
+
+**The parser existed and the producer did not.** Nothing in any stage skill
+defined these five spellings, so a stage had no way to know what to write, and a
+judgment it made inside its own turn reached the ledger only if it happened to
+guess the bytes. Defining them here rather than in each skill is what keeps the
+five from drifting into five-and-a-half.
+
+Each marker is a **line of its own** in the terminal message, spelled exactly:
+
+| marker | required | value |
+| --- | --- | --- |
+| `**판단 부류**:` | always | one token from the `판단 부류` vocabulary, no spaces |
+| `**판단 등급**:` | always | `0`, `1` or `2` |
+| `**판단 기준**:` | always | the authored standard that chose the option |
+| `**판단 되돌리는 법**:` | at grade 1 | the concrete command or edit that undoes it |
+| `**판단 근거**:` | always | what was observed, and why this option |
+
+Two dispositions are worth stating because they are not symmetric. **Grade 0
+emits nothing** — an already-written rule determined the answer, so there was no
+decision. And a judgment emitted with **no `판단 부류` at all** is not treated as
+"no judgment": it raises an approval rather than vanishing, because a stage that
+emitted four of the five markers made a decision and acted on it inside its own
+turn. Silence there would lose exactly the decisions this record exists for.
+
+`scripts/lint-autoadopt-vocabulary.sh` asserts these five spellings are defined
+in at least one `_common/` document. It checks existence and nothing more — the
+form a skill uses to *reference* this section differs from skill to skill, and
+pinning that mechanically would freeze the prose rather than the contract.
+
 ## What the lint does not check
 
 It counts marks and matches dispositions. It cannot tell a `등급 1` that should

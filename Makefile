@@ -12,6 +12,7 @@ lint:
 	bash scripts/lint-team-budget-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
+	bash scripts/lint-autoadopt-vocabulary.sh
 	bash scripts/lint-ledger-row-length.sh
 	bash scripts/lint-judgment-grade.sh
 	bash scripts/lint-notify-env-name.sh

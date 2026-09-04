@@ -86,7 +86,10 @@ fx_stage_live() {
   sleep 120 &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
-  LC_TIME=C ps -o lstart= -p "$pid" 2>/dev/null \
+  # `LC_ALL`, matching the product's capture. The fixture is read back by a gate
+  # SUBPROCESS, so a `LC_TIME` pin here is defeated by an `LC_ALL` this shell
+  # inherited and the two sides format the same instant differently.
+  LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null \
     | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FX_RUN_DIR/$seg.start"
   FX_LAST_PID="$pid"
   FX_PIDS="${FX_PIDS:-}$pid "

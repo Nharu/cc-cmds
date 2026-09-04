@@ -24,6 +24,20 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
+# watcher all raise real banners, and their fire path prepends the Homebrew
+# directories to PATH itself — so a stub this suite puts on PATH is shadowed by
+# whatever is really installed, and an ordinary `make test` reaches the user.
+# Measured on this tree: two banners arrived from a test run, one with sound.
+#
+# Exported rather than set per call, because the call sites cannot be made
+# exhaustive — a new invocation is a normal thing to write and would silently
+# not carry the guard. This suite asserts nothing about banner content, so
+# turning the channel off costs it nothing.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"

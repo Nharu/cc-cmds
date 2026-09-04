@@ -18,6 +18,20 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The gate, the driver and the
+# watcher all raise real banners, and their fire path prepends the Homebrew
+# directories to PATH itself — so a stub this suite puts on PATH is shadowed by
+# whatever is really installed, and an ordinary `make test` reaches the user.
+# Measured on this tree: two banners arrived from a test run, one with sound.
+#
+# Exported rather than set per call, because the call sites cannot be made
+# exhaustive — a new invocation is a normal thing to write and would silently
+# not carry the guard. This suite asserts nothing about banner content, so
+# turning the channel off costs it nothing.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
@@ -176,6 +190,186 @@ fi
 for f in "$GATE" "$WATCH" "$SL"; do
   n=$(sed 's/#.*//' "$f" | grep -c 'kill -0' || true)
   check "$(basename "$f") 는 자기 라이브니스 판정을 갖지 않는다" "$n" "0"
+done
+
+# ---------------------------------------------------------------------------
+# The run-scope block census is a SET operation, so it carries the same
+# collation hazard as the fingerprint — and it is worse when it folds.
+#
+# `사유` is Korean free text by contract. Under `en_US.UTF-8` every Hangul
+# syllable weighs the same, so two reasons with the same non-Hangul shape and
+# the same syllable counts compare equal and `sort -u` keeps only whichever came
+# first in the ledger. The pair below is not invented: both are two spaces and
+# 2-2-2 syllables, and they are the real vocabulary this field uses.
+#
+# What makes it a merge blocker rather than a display bug is WHICH one survives.
+# The resolved block is written first, so it is the one kept, and the strongest
+# block this system has — the one raised when a file the boundary rests on was
+# edited — is counted as zero. The run becomes eligible to propose an ending
+# with that block still open, and nothing reports anything.
+#
+# Asserted under `en_US.UTF-8` explicitly rather than under whatever this runner
+# has, because a suite that happens to run under C would pass with the pin gone.
+FX_BLK="$WORK/blocked-census.md"
+{
+  printf -- '- `blocked` | 스코프=run | 원인=불명 | 사유=중단 기록 존재 | prev=x\n'
+  printf -- '- `blocked` | 스코프=run | 원인=해소 | 사유=중단 기록 존재 | prev=x\n'
+  printf -- '- `blocked` | 스코프=run | 원인=불명 | 사유=강제 표면 이동 | prev=x\n'
+} > "$FX_BLK"
+n=$(LC_ALL=en_US.UTF-8 bash -c '. "$1"; cc_unresolved_blocked "$2" | grep -c .' \
+      _ "$LIVENESS" "$FX_BLK" || true)
+check "해소된 블록이 미해소 블록을 가리지 않는다 (en_US 콜레이션)" "$n" "1"
+got=$(LC_ALL=en_US.UTF-8 bash -c '. "$1"; cc_unresolved_blocked "$2"' \
+        _ "$LIVENESS" "$FX_BLK" | sed -n 's/.*\t//p')
+check "남는 것이 강제 표면 이동이다" "$got" "강제 표면 이동"
+
+# ---------------------------------------------------------------------------
+# Agreement across LOCALES, not just across consumers.
+#
+# The four consumers share one predicate, so they cannot disagree about code —
+# but they are four processes with four environments, and the fingerprint they
+# compare is a date that `ps` localises. Measured: a stage recorded from a shell
+# exporting `LC_ALL=ko_KR.UTF-8` wrote `2026년 9월 4일 금요일 00시 35분 25초`,
+# and a reader that had cleared `LC_ALL` computed `Fri Sep 4 00:35:25 2026` for
+# the same process, so the compare failed and a running stage read as dead. The
+# driver clears `LC_ALL` at startup and the watcher does not, which is exactly a
+# writer and a reader that disagree.
+#
+# Nothing errors when this breaks — it UNDER-counts, and an under-count lets a
+# run declare itself finished while a stage is still running. The consumer-level
+# assertions above cannot see it: they run in one process, so both sides of the
+# compare fold the same way and agree on a wrong answer.
+#
+# Written across a real process boundary with a real locale on each side, since
+# reading the pin out of the source would only re-assert the line that was
+# already there and wrong.
+fx_mkrun agree-loc
+fx_stage_live S1
+RD_L="$FX_RUN_DIR"
+for lc in ko_KR.UTF-8 en_US.UTF-8 C; do
+  got=$(LC_ALL="$lc" bash -c '. "$1"; cc_live_stages "$2"' _ "$LIVENESS" "$RD_L")
+  check "지문이 로케일에 불변이다 (읽는 쪽 LC_ALL=$lc)" "$got" "1"
+done
+# The loop above varies the READER. The WRITER needs its own assertion, and the
+# first version of it was hollow in two ways at once — it is kept described here
+# because the shape is easy to write again.
+#
+# It read the fixture's own recorded byte and asked whether they were ASCII. But
+# (1) the bytes it measured came from the FIXTURE's capture, not from either of
+# the product's two, so reverting both product captures left it green; and (2)
+# it never varied the writer's locale, so an unpinned capture also produces
+# ASCII whenever the suite happens to run somewhere the date is spelled in
+# ASCII. Under mutation it passed. That is the tell, and it was visible in the
+# mutation output at the time: an assertion that survives the removal of the
+# thing it exists to check is not weak, it is absent.
+#
+# Replaced by two assertions that can fail. The first runs the fixture capture
+# in a subprocess under a locale that spells dates in Hangul, so an unpinned
+# capture produces non-ASCII there and is caught wherever this suite runs.
+w=$(LC_ALL=ko_KR.UTF-8 bash -c '
+  . "$1"; FX_RUN_DIR=$2; export FX_RUN_DIR
+  fx_stage_live W >/dev/null 2>&1
+  cat "$FX_RUN_DIR/W.start"
+  kill "$(cat "$FX_RUN_DIR/W.pid")" 2>/dev/null
+' _ "$repo_root/scripts/run-fixture.sh" "$RD_L")
+nonascii=$(printf '%s' "$w" | LC_ALL=C grep -c '[^ -~]' || true)
+check "한글 날짜 로케일에서 캡처해도 지문이 ASCII 다 (쓰는 쪽 픽스처)" "$nonascii" "0"
+
+# The second covers what no fixture can reach: the product's own two captures
+# live inside a stage spawn and a driver spawn, neither of which this suite can
+# drive. So they are asserted on the source. A structural check is weaker than a
+# behavioural one and is used here only because the alternative was the hollow
+# assertion above — and unlike that one, this fails the moment either capture
+# goes back to a variable that `LC_ALL` outranks.
+for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$LIVENESS" \
+         "$repo_root/scripts/run-fixture.sh"; do
+  n=$(grep -c 'LC_ALL=C ps -o lstart=' "$f" || true)
+  bad_n=$(grep -c 'LC_TIME=C ps -o lstart=' "$f" || true)
+  check "$(basename "$f") 의 지문 캡처가 LC_ALL 로 고정돼 있다" "$n" "1"
+  check "$(basename "$f") 에 LC_TIME 만 건 캡처가 남아 있지 않다" "$bad_n" "0"
+done
+
+# ---------------------------------------------------------------------------
+# The notifier channel stays off for every suite that does not assert on it.
+#
+# This is a property OF THE SET, like the agreement above: any one suite can be
+# guarded and the tree still reaches a person, because `make test` runs all of
+# them and the gate's fire path defeats a PATH stub by prepending Homebrew's
+# directories itself. Measured before the guard: two banners arrived at a user
+# from an ordinary test run, one of them with sound.
+#
+# Asserted on the source rather than by firing, and the reason is the same one
+# that makes the defect worth a test: to observe it behaviourally this suite
+# would have to let a banner escape to the real notifier, which is the thing
+# being prevented. So the check is that each suite carries the export, and the
+# skip list names the ones that legitimately do not — for those the banner IS
+# the subject, so a process-level kill would remove what they assert. The list
+# is deliberately not counted here: it was, and the count outlived a change to
+# the list itself, which is the same defect this file keeps finding one layer
+# up — a statement that was true when written and became false with nothing
+# about the statement changing.
+for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrator/test-run.sh; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f")
+  case "$b" in
+    # `test-gate.sh` is NOT skipped, and it was — which put the one file that
+    # actually leaked, and the one holding a hundred-plus direct gate calls,
+    # outside the only check that would catch a regression. It carries the
+    # export like the others; what differs is only that it turns the channel
+    # back ON inside two helpers, and that is a local override rather than an
+    # absence. The two below are the real exceptions: for them the banner IS
+    # the subject, so a process-level kill would remove what they assert.
+    test-active-notify-*|test-watch.sh) continue ;;
+  esac
+  # Only suites that can reach a firing path need it — the gate, the driver and
+  # the watcher are the three that fire, and what matters is EXECUTING one of
+  # them rather than naming it.
+  #
+  # This predicate has been wrong twice in the same direction, so it is built
+  # rather than written. The first version matched any mention, and reported
+  # four lint suites that merely read `run.sh` for its vocabulary. The second
+  # required `bash ` in front — and still matched `# Usage: bash …/test-run.sh`,
+  # while missing that file's real invocations, which go through a handle
+  # (`/usr/bin/env bash "$DRIVER"`) that a hardcoded list of variable names did
+  # not contain. A closed list of handles is the same defect wearing a narrower
+  # spelling: it is complete on the day it is written.
+  #
+  # So comments are cut first — the same treatment the `kill -0` census above
+  # applies, and for the same reason — and the handles are DERIVED from the
+  # file: whatever variable it assigns one of the three scripts to is what its
+  # invocations will name.
+  #
+  # `sed -E`, and the flag is load-bearing. BSD sed's default BRE has no `|`
+  # alternation, so the bracketed group matches nothing and the extraction
+  # yields an empty handle list — which does not error, it selects no suites,
+  # and every assertion in this loop disappears while the suite reports a
+  # smaller green total. Measured: 30 assertions became 26 and nothing said so.
+  _src=$(sed 's/#.*//' "$f")
+  _pat='bash [^ ]*(gate|run|watch)\.sh'
+  for _h in $(printf '%s\n' "$_src" \
+      | sed -n -E 's/^[[:space:]]*([A-Za-z_][A-Za-z_0-9]*)="[^"]*\/(gate|run|watch)\.sh".*/\1/p' \
+      | sort -u); do
+    # `\\$` and not `$`: this string becomes an ERE, where a bare `$` is the
+    # end-of-line anchor. Written unescaped the alternative reads as `bash "`
+    # then end-of-line, matches nothing, and the loop selects no suites at all —
+    # silently, with the suite reporting a smaller green total.
+    _pat="$_pat|bash \"\\\$$_h\""
+  done
+  # `grep -c`, never `grep -q`, and the reason is this file's own section 0a:
+  # under `pipefail` an early-exiting reader on the right of a pipe kills the
+  # writer with SIGPIPE and the pipeline reports that failure. `grep -q` leaves
+  # as soon as it matches, so the bigger the file the likelier the writer is
+  # still going — which selected against exactly the file that matters. Measured:
+  # `test-gate.sh` matched 124 lines and was dropped, while three smaller suites
+  # whose writers finished first were kept. `grep -c` reads to the end.
+  case "$(printf '%s\n' "$_src" | grep -cE "$_pat" || true)" in
+    0|'') continue ;;
+  esac
+  if grep -q '^export CC_CMDS_AUTOPILOT_NOTIFY$' "$f"; then
+    ok "$b 가 알림 채널을 프로세스 수준에서 끈다"
+  else
+    bad "알림 누출" "$b 가 게이트 계열을 부르면서 CC_CMDS_AUTOPILOT_NOTIFY 를 내보내지 않는다 — 이 스위트가 도는 동안 사용자 화면에 실제 배너가 도달한다"
+  fi
 done
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"

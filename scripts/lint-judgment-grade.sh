@@ -105,7 +105,7 @@ for pair in $PAIRS; do
       echo "FAIL: $att — 어휘 밖 등급 토큰: '$tok'" >&2
       badtok=$((badtok + 1))
     }
-  done < <(grep -ohE "$GRADE_RE" "$att_file" | sort -u || true)
+  done < <(grep -ohE "$GRADE_RE" "$att_file" | LC_ALL=C sort -u || true)
   [[ "$badtok" = "0" ]] || fail=1
 
   n_marks=$(grep -ohE "$GRADE_RE" "$att_file" | grep -c . || true)
