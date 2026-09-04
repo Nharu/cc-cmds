@@ -323,10 +323,48 @@ for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrato
   esac
   # Only suites that can reach a firing path need it — the gate, the driver and
   # the watcher are the three that fire, and what matters is EXECUTING one of
-  # them rather than naming it. The first version of this predicate matched a
-  # mention, so four lint suites that merely read `run.sh` for its vocabulary
-  # were reported as leaking; they invoke nothing and cannot fire.
-  grep -qE 'bash [^ ]*(gate|run|watch)\.sh|bash "\$(GATE|RUNSH|WATCH)"' "$f" || continue
+  # them rather than naming it.
+  #
+  # This predicate has been wrong twice in the same direction, so it is built
+  # rather than written. The first version matched any mention, and reported
+  # four lint suites that merely read `run.sh` for its vocabulary. The second
+  # required `bash ` in front — and still matched `# Usage: bash …/test-run.sh`,
+  # while missing that file's real invocations, which go through a handle
+  # (`/usr/bin/env bash "$DRIVER"`) that a hardcoded list of variable names did
+  # not contain. A closed list of handles is the same defect wearing a narrower
+  # spelling: it is complete on the day it is written.
+  #
+  # So comments are cut first — the same treatment the `kill -0` census above
+  # applies, and for the same reason — and the handles are DERIVED from the
+  # file: whatever variable it assigns one of the three scripts to is what its
+  # invocations will name.
+  #
+  # `sed -E`, and the flag is load-bearing. BSD sed's default BRE has no `|`
+  # alternation, so the bracketed group matches nothing and the extraction
+  # yields an empty handle list — which does not error, it selects no suites,
+  # and every assertion in this loop disappears while the suite reports a
+  # smaller green total. Measured: 30 assertions became 26 and nothing said so.
+  _src=$(sed 's/#.*//' "$f")
+  _pat='bash [^ ]*(gate|run|watch)\.sh'
+  for _h in $(printf '%s\n' "$_src" \
+      | sed -n -E 's/^[[:space:]]*([A-Za-z_][A-Za-z_0-9]*)="[^"]*\/(gate|run|watch)\.sh".*/\1/p' \
+      | sort -u); do
+    # `\\$` and not `$`: this string becomes an ERE, where a bare `$` is the
+    # end-of-line anchor. Written unescaped the alternative reads as `bash "`
+    # then end-of-line, matches nothing, and the loop selects no suites at all —
+    # silently, with the suite reporting a smaller green total.
+    _pat="$_pat|bash \"\\\$$_h\""
+  done
+  # `grep -c`, never `grep -q`, and the reason is this file's own section 0a:
+  # under `pipefail` an early-exiting reader on the right of a pipe kills the
+  # writer with SIGPIPE and the pipeline reports that failure. `grep -q` leaves
+  # as soon as it matches, so the bigger the file the likelier the writer is
+  # still going — which selected against exactly the file that matters. Measured:
+  # `test-gate.sh` matched 124 lines and was dropped, while three smaller suites
+  # whose writers finished first were kept. `grep -c` reads to the end.
+  case "$(printf '%s\n' "$_src" | grep -cE "$_pat" || true)" in
+    0|'') continue ;;
+  esac
   if grep -q '^export CC_CMDS_AUTOPILOT_NOTIFY$' "$f"; then
     ok "$b 가 알림 채널을 프로세스 수준에서 끈다"
   else
