@@ -41,7 +41,7 @@ What the router may NOT do is decide from memory. Its input is the snapshot and 
 
 The morning report stays a **separate invocation** (`--report`), because a run that spans days is read from disk rather than from a scrollback.
 
-**CFI-4 — `arm` here, `cancel` there.** The notification lifecycle is split across two owners because a single owner would have to break one rule or the other. `arm` may not be started on a model's own judgment — it needs a user utterance, and this is the only place one exists. `cancel` is named in the spawned-agent prohibition, so no stage may do it; **the driver executes it.** Ask for the arming; never infer it.
+**CFI-4 — Two seats raise banners, and neither of them is an agent.** The liveness watcher outlives the session and is orphaned to init; the adjudication gate is a shell script the router calls. The shared operating rules bar a *spawned agent* from deciding whether a banner reaches the user, and nothing that raises one here is spawned — that is the whole of why this run may raise banners at all. **The number is kept deliberately even though the content changed**: citations to it live outside this file, in pull request comments, issues and other agents' reports, and a renumbering would leave every one of them pointing at a real but unrelated invariant, which is indistinguishable from a correct citation. This skill arms nothing and cancels nothing.
 
 **CFI-5 — The interview takes ONE cutpoint per target, not seven toggles.** See Act 1 Step 5. A per-act toggle matrix invites a grant that is incoherent under composition (push without commit), and it does not match how the user's own standing rules describe delegation. Per-target rather than per-run because a run may span repositories with different appetites — "infrastructure applies, the front end stops at a pull request" is not expressible as one scalar.
 
@@ -162,9 +162,15 @@ The deadline rests on the same assumption 5a just qualified: the user picks a ti
 
 **5f — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
 
-**5g — Morning notification.** Ask whether to arm a morning banner. **Ask — never infer** (CFI-4). On an affirmative, invoke the `active-notify` skill and `arm` it; on anything else, arm nothing and say that the report on disk is the only channel.
+**5g — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
 
-**Say what cannot be promised.** Before writing anything, state the two limits in one line each: **the run may not be able to reach you while you are asleep** — the notification seat provides no delivery confirmation and no push adapter is seated, so the report on disk is the source of truth — and **a stage that improvises past a decision point is not detectable**, which is why the report enumerates every autonomous decision for you to audit in the morning.
+Say all three of these:
+
+- 「이 런의 배너를 전부 끄시려면 런을 시작하기 전에 `CC_CMDS_AUTOPILOT_NOTIFY=0` 을 걸어 주세요 — `off`·`false`·`no` 도 대소문자 구분 없이 같게 읽습니다.」
+- 「런 도중에는 끌 수 없습니다. 감시자는 기동할 때 환경을 물려받고 다시 읽지 않고, 게이트는 호출마다 별개의 프로세스라 앞 호출에서 건 값이 다음 호출에 남지 않습니다 — 지금이 정하는 자리입니다.」
+- 「이 배너들은 서로를 밀어내지 않고 쌓입니다. 여덟 건까지는 하나씩 따로 남고, 그보다 많아지면 나머지는 한 자리에 모여 개수로만 표시됩니다 — 화면에 보이는 배너 수가 실제로 답을 기다리는 건수보다 적을 수 있다는 뜻이고, 빠짐없는 목록은 아침 보고서에 있습니다.」
+
+**Say what cannot be promised.** Before writing anything, state the two limits in one line each. First: 「이 채널이 파는 것은 「깨우기」가 아니라 「처음 보는 화면」입니다 — 돌아와서 보실 때 답을 기다리는 멈춤이 한눈에 들어오는 것. 여덟 건까지는 개별로, 그 이상은 묶여서 보입니다. 전수를 보장하는 것은 배너가 아니라 디스크의 보고서입니다.」 **Say the two halves of that separately**, because they are a measurement and an ordinary fact rather than one observation: this notifier has no permission to override a focus mode, and a focus or sleep schedule suppresses banners and sounds together. "No banner wakes a sleeping person" is the *sum* of those two, and someone who reads only the first will over- or under-trust the channel. Second: **a stage that improvises past a decision point is not detectable**, which is why the report enumerates every autonomous decision the run recorded, for you to audit in the morning.
 
 ---
 
@@ -225,13 +231,13 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 2. **Take the first snapshot, THEN start the watcher.** The run directory is created by the router's first gate call, and the watcher treats a missing directory as "the run went away" and exits — silently, with status 0. Started in the order this list used to give, it was gone before the run began: measured, watcher up at 03:18:0x and the directory created at 03:18:36, with the launching call reporting success. One `gate.sh snapshot --manifest <매니페스트>` first makes the directory exist; the watcher also waits out a short startup window now, but the ordering is what makes that window unnecessary.
 3. **Start the liveness watcher in the background**:
    ```
-   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --notify --stall 1200 --interval 60 --after-stage 120 --run-open 300 > <RUN_DIR>/watch.log 2>&1 < /dev/null &
+   bash <plugin root>/orchestrator/watch.sh --run-dir <RUN_DIR> --ledger <원장 경로> --stall 1200 --interval 60 --after-stage 120 --run-open 300 > <RUN_DIR>/watch.log 2>&1 < /dev/null &
    ```
    It resumes nothing and decides nothing. Its whole job is to make one failure visible — **the router quietly stopping** — which is otherwise indistinguishable from a quiet terminal. It also emits a positive heartbeat, because a watcher that only speaks on failure cannot be told apart from a watcher that died.
 
    **It stops itself.** The gate writes a `done` file into the run directory when the run terminates, and the watcher exits on seeing it — or on the run directory going away. Nothing else reaps it: the gate ends a run without touching it and Act 3 is forbidden from starting or writing anything, so before this the loop outlived every run it watched. Measured on one machine: seven watchers from seven runs, the oldest a day and four hours.
 
-   **`--notify` is not optional here.** The banner code exists and the flag was never passed, so it was dead text: the one condition this process reports — the router stopped — is the condition in which nothing else can report it, and its stdout is closed the moment the launching call returns. A detector whose output reaches nobody is not a detector. This is also the one seat where raising a banner is allowed at all: a spawned agent may not, and a shell script that outlives the session is not an agent.
+   **There is no `--notify` flag any more, and passing one is now an invalid invocation.** Banners are governed by `CC_CMDS_AUTOPILOT_NOTIFY` and by nothing else. A second parsing site is what made the flag worth removing rather than defaulting: with it in place, a user who set the variable went on receiving every banner this process raises while believing they had switched them off. This is still one of the two seats where raising a banner is allowed at all — a spawned agent may not, and a shell script that outlives the session is not an agent (CFI-4).
 
    **The heartbeat goes to a file, not only to stdout.** This is launched in the background by a tool call that then returns, so its stdout is closed and anything printed there reaches nobody. `watch.heartbeat` in the run directory is rewritten every pass, and its mtime is what makes the watcher's own liveness measurable.
 
@@ -410,7 +416,7 @@ Cover, in this order:
 - **자율 결정 전부** — every `자율 승인` row, grouped by `kind`, carrying the decision, the rejected alternative, and the rationale as recorded. **This is the whole point of the report.** The residual it compensates for — a stage that asked in prose, answered itself, and produced output anyway — is byte-indistinguishable from a correct run through every channel the design permits, so after-the-fact auditability is the only control left. Do not summarize these rows away.
 - **보류 큐** — every `blocked` row with its `스코프`, `원인`, `사유`, and the re-invocation command line where one was recorded. Group by scope: an `act` park is one command away from finished, a `cone` park needs its premise repaired first, and a `run` park means the run could not judge a state. **Those command lines are inert**: the driver recorded them and never ran them, and neither does this step. They are for the user's hands.
 - **사람 대조 필요** — every report line so marked. These are the ones where the run could not tell "still working" from "stuck", or where an apply's outcome is unknown. Name the preserved worktree path for each apply of unknown outcome; it is the only reproduction of that state.
-- **스테이지 종단 부류** — per stage: 정상 완료 / 의도된 park / 공허한 성공 / 크래시 / 적용 불명. Call out every `공허한 성공` explicitly; it is a measured failure mode that used to be invisible, and the point of naming it is that it can now be counted.
+- **스테이지 종단 부류** — per stage: 정상 완료 / 의도된 park / 산출물 없는 정지 / 공허한 성공 / 크래시 / 적용 불명. Call out every `공허한 성공` explicitly; it is a measured failure mode that used to be invisible, and the point of naming it is that it can now be counted. `산출물 없는 정지` was missing from this enumeration while the schema has carried it all along, and it is the value a stage lands on when it *correctly refused to decide for the user* — reporting it as one of the others is the same conflation the class was created to end. **A warning, because reading the gate's own source will contradict this line**: a comment there still says that value is not written on that path while the code beneath it writes it. The comment is wrong and is not repaired here.
 - **비용** — the accumulated `cost` rows, and the cycle count against the run's cycle budget.
 
 **State the report's own limit at the end.** It is authored by the run it describes, so it is powerless against a run that improvises **and also** omits that from its own report. The conjunction being rarer than either part is why this control is worth having — it is not a gate, and the real protection against an irreversible autonomous act remains the permission cutpoints the user set in 5b.
@@ -421,7 +427,7 @@ Cover, in this order:
 
 - **Never write the run ledger.** The driver is its sole writer. This skill writes the manifest, the grant and the report stub, and nothing else under `docs/pipeline-run/` after that stub.
 - **Never edit a design document from this skill.** Writing one through `design` in Act 1 is a different act with a human in it; editing an existing one from here is not.
-- **Never infer the arming** (CFI-4). No user utterance, no `arm`.
+- **Never `arm` or `cancel` the notification helper from this skill** (CFI-4). The run's banners come from the two seats named there, and that helper stays an independent skill for use in conversation — what was removed is autopilot's dependency on it, not the helper. This is stated as a prohibition rather than as "do not infer the arming" on purpose: the older wording implied that a user utterance would make arming correct, and after this change there is no path here that arms it at all.
 - **Never run a `재호출 명령`** recorded by a halted stage. It is recorded precisely because re-running it would retry a condition whose cause is still present.
 - **The router's input is the snapshot** (CFI-3). Never act on a remembered decision, a remembered obligation, or a previous turn's plan.
 - **Never assemble a stage command line in the router.** A stage is `act --kind skill`; the gate calls the wrapper.

@@ -42,16 +42,22 @@
 #   watch.sh --run-dir <dir> --ledger <path> [--interval <sec>] [--stall <sec>]
 #                                            [--after-stage <sec>] [--run-open <sec>]
 #   watch.sh --run-dir <dir> --ledger <path> --once      # one pass, no loop
-#   watch.sh … --notify                                  # also raise a banner
 #
-# `--notify` exists because THIS PROCESS IS THE ONLY ONE THAT CAN CARRY THE
-# NEWS. The condition it reports is "the router stopped", and a router that has
-# stopped cannot report it — the loud line above goes to a terminal that may no
-# longer exist. The driver left this seat empty for a stated reason: the shared
-# operating rules forbid a SPAWNED AGENT from deciding whether a banner reaches
-# the user, and a notification-only stage would be one. A shell script is not an
-# agent, and this one outlives the session by design (it is orphaned to init).
-# So it is the one mechanism that satisfies both constraints at once.
+# THIS PROCESS IS ONE OF THE TWO SEATS THAT CAN CARRY THE NEWS; the other is the
+# adjudication gate. The condition this one reports is "the router stopped", and
+# a router that has stopped cannot report it — the loud line above goes to a
+# terminal that may no longer exist. The shared operating rules forbid a SPAWNED
+# AGENT from deciding whether a banner reaches the user, and neither seat is an
+# agent: a shell script is not one, and this script outlives the session by
+# design (it is orphaned to init).
+#
+# THERE IS NO `--notify` FLAG ANY MORE, and dropping it was not tidying. A second
+# parsing site meant the run-level kill switch could not reach these banners: a
+# person who set the variable went on receiving every notice this file raises
+# while believing they had stopped them. The switch is
+# `CC_CMDS_AUTOPILOT_NOTIFY`, it is parsed in `notify-run.sh` and nowhere else,
+# and it is a start-of-run choice — this loop inherits its environment once and
+# never re-reads it.
 #
 # Exit codes:
 #   0  a pass completed (or the loop was terminated)
@@ -76,13 +82,23 @@ export LC_TIME
 WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # shellcheck source=/dev/null
 . "$WATCH_DIR/liveness.sh"
+# The banner emitter, sourced here for the same reason and on the same terms.
+# Every notice this file raises takes its title, group and sound from that file,
+# which is what stops this process and the gate from spelling one group two ways
+# — and a group is a slot, so two spellings mean two runs erasing each other.
+# shellcheck source=/dev/null
+. "$WATCH_DIR/notify-run.sh"
 
 # `RUN_OPEN` is the run-age arm's threshold, and it sits between the other two on
 # purpose: the window it names is bounded below by how long a healthy router
 # takes to open its first segment — the contract says the first `segment` row is
 # at least two model turns after the run opens — and above by `STALL`, which is
 # what used to be the only thing covering it.
-RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; NOTIFY=0; AFTER_STAGE=120; RUN_OPEN=300
+#
+# There is no `NOTIFY` variable beside them: the banners this file raises are
+# governed by the kill switch `notify-run.sh` parses, and a flag here would be a
+# second parsing site the switch could not reach.
+RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -92,7 +108,6 @@ while [ $# -gt 0 ]; do
     --after-stage) AFTER_STAGE="$2"; shift 2 ;;
     --run-open) RUN_OPEN="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
-    --notify)   NOTIFY=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -271,29 +286,16 @@ gate_idle_seconds() {
   printf '%s' $(( $(now_epoch) - at ))
 }
 
-banner() {
-  # Best-effort, and every failure is swallowed on purpose: a watcher that dies
-  # because a notifier is missing removes the only signal the user had left.
-  [ "$NOTIFY" = "1" ] || return 0
-  [ "$(uname -s)" = "Darwin" ] || return 0
-  # The prepend is skippable, because it is what makes the banner path
-  # UNTESTABLE otherwise: a stub placed first on PATH is shadowed by the real
-  # binary in `/opt/homebrew/bin`, so no assertion about what this function
-  # passes can stand. The two other notifier call sites already honour this
-  # variable; they spell the test with `[[ ]]` and this file is POSIX `[ ]`
-  # throughout, so the convention followed here is the file's.
-  if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
-    PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-  fi
-  command -v terminal-notifier >/dev/null 2>&1 || return 0
-  # THE GROUP IS PER RUN. `terminal-notifier` treats a group as a slot and
-  # replaces whatever is in it, so a constant made two concurrent runs erase
-  # each other's banners — the second run's notice silently took the first
-  # one's place and the first run's condition was never seen.
-  { terminal-notifier -title "[cc-cmds] 자율 런" -message "$1" \
-      -group "cc-cmds-autopilot-${RUN_ID}" -execute ':' 2>/dev/null || true; }
-  return 0
-}
+# There is no local `banner()` any more. The whole of what it did — the fixed
+# title, the per-run group, the PATH opt-out, the swallowed failure — is what the
+# emitter's `status` token now produces, so the five status-class call sites
+# below are unchanged in behaviour. The approval one deliberately is not: it used
+# to raise ONE aggregate notice into the run-level replace slot, and open
+# approvals are precisely the class that must not share a slot.
+#
+# Every call swallows, because the emitter promising to return 0 is only half of
+# responsibility 1 and a watcher that died on a missing notifier would take away
+# the last signal the user had.
 
 announce() {
   # Loud, on the terminal, once per condition. The whole point of this script is
@@ -329,12 +331,18 @@ pass() {
   # watcher looks. Each arm carries its own once-marker, so two firing in one
   # pass is harmless and reaching the bottom every time is the point.
   local age live pend nonterm run_age gate_idle size grew silent id newly
+  local cause reason slug mk
   # The watcher's own pid, so a person (and the status line) can tell a live
   # watcher from a finished run's. The directory is NOT created here: the
   # watcher legitimately runs in the window before the router's first gate call
   # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
   # does not count this file — it has no `.start`/`.pgid` sibling.
   [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
+  # The emitter's own state, once per run, into this process's file. The gate
+  # transcribes it into the report on its next call; this seat never appends
+  # there itself, because it holds no lock and the ledger rows beside the prose
+  # are what an interleaved write corrupts.
+  cc_notify_seat_state || true
   age=$(ledger_idle_seconds)
   live=$(live_stages)
   pend=$(open_approvals)
@@ -350,7 +358,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-terminal"
     announce "런이 종단했습니다 — 더 진행할 것이 없습니다" \
              "아침 보고서를 확인하세요 — 이 스크립트는 아무것도 재개하지 않습니다"
-    banner "런이 종단했습니다 — 아침 보고서를 확인하세요"
+    cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
   fi
 
   # A STAGE ENDED AND THE ROUTER DID NOT ACT. This is a far sharper condition
@@ -409,7 +417,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-after-stage"
     announce "스테이지가 끝났는데 라우터가 ${age}초 동안 아무것도 하지 않았습니다" \
              "그 스테이지를 깨울 통지가 없는 형태로 띄웠을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
-    banner "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)"
+    cc_notify_fire status "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)" || true
     record_blocked "스테이지 종단 후 라우터 무응답" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -469,7 +477,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-run-open"
     announce "런이 열린 지 ${run_age}초인데 세그먼트가 하나도 열리지 않았습니다" \
              "라우터가 첫 세그먼트를 열기 전에 멈췄을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
-    banner "런이 열린 뒤 ${run_age}초 동안 세그먼트가 열리지 않았습니다"
+    cc_notify_fire status "런이 열린 뒤 ${run_age}초 동안 세그먼트가 열리지 않았습니다" || true
     record_blocked "세그먼트 미개시" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -509,7 +517,7 @@ pass() {
      && [ "${silent:-0}" = "0" ]; then
     announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
              "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
-    banner "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요"
+    cc_notify_fire status "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요" || true
     record_blocked "라이브니스 침묵" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -525,16 +533,27 @@ pass() {
   # while one closes leaves the count where it was, and the newly opened one
   # then reaches nobody. The ids are appended to one file, so an id already
   # announced stays quiet even after it is resolved and reopened.
+  # ONE BANNER PER APPROVAL ID, and this used to be one aggregate notice for the
+  # whole set, raised into the run-level replace slot. Open approvals are the
+  # class with the longest delay by construction — a boundary approval is
+  # evaluated on every act, so one opened by a long stage waits out that whole
+  # stage, and one of the boundaries carries a dollar figure. Sharing a slot,
+  # they went on erasing each other, which is the measured regression this
+  # channel exists to end. This site is also the ONLY route a stage-opened
+  # approval has: the gate raises those as rows only.
+  #
+  # The loud terminal line stays aggregate. It is one screen a person reads top
+  # to bottom, not a set of slots that overwrite one another.
   newly=0
   for id in $(open_approval_ids); do
     grep -qxF "$id" "$RUN_DIR/watch.announced-approvals" 2>/dev/null && continue
     printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals"
     newly=$((newly + 1))
+    cc_notify_fire answer "승인 $id 이 답을 기다립니다" "$id" || true
   done
   if [ "$newly" -gt 0 ]; then
     announce "승인 대기 ${pend}건 — 런이 답을 기다립니다" \
              "세션으로 돌아가 답하면 그 자리에서 이어집니다"
-    banner "승인 대기 ${pend}건 — 답을 기다립니다"
   fi
 
   if [ "$live" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
@@ -542,8 +561,46 @@ pass() {
     : > "$RUN_DIR/watch.announced-waiting"
     announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
              "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
-    banner "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건"
+    cc_notify_fire status "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건" || true
   fi
+
+  # A RUN THAT ANCHORED. Without this arm a stall a stage caused reaches a person
+  # only through the twenty-minute silence arm above — whose wording tells them
+  # to resume the session and instruct the router, while the gate itself refuses
+  # to clear the very block that caused it. That is the wrong-instruction defect
+  # this channel was built to remove, arriving through the channel that replaced
+  # it.
+  #
+  # THE PREDICATE IS THE CAUSE, NOT A LIST OF REASONS. Two of the conditions that
+  # put an unresolved run-scope block in the ledger are conditions this watcher
+  # announced itself one line earlier — the after-stage arm and the silence arm
+  # each write their observation immediately after raising a banner, and the gate
+  # transcribes those with the cause `불명`, which is the only place it writes
+  # that value. Keying on the cause therefore excludes "authored by this process"
+  # structurally. Enumerating reason strings instead would leave this predicate
+  # quietly stale every time an arm is added here, and nothing would show it.
+  #
+  # `cc_unresolved_blocked` has already dropped anything whose last row resolves
+  # it, so "resolvable" and "resolved" stay different things: the first raises a
+  # banner and the second does not.
+  cc_unresolved_blocked "$LEDGER" | while IFS="$(printf '\t')" read -r cause reason; do
+    [ -n "$reason" ] || continue
+    [ "$cause" = "불명" ] && continue
+    slug=$(printf '%s' "$reason" | tr ' /' '--')
+    mk="$RUN_DIR/watch.announced-stall-$slug"
+    [ -f "$mk" ] && continue
+    : > "$mk"
+    if [ "$cause" = "무효화" ]; then
+      # The gate refuses to resolve this one, so it is not a thing a person can
+      # put their hands on — it takes the replace slot while keeping the hands
+      # title, which is the combination the class token exists for.
+      cc_notify_fire status-hands \
+        "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+    else
+      cc_notify_fire hands \
+        "런이 정박했습니다 — 아침 보고서의 보류 큐를 보세요 ($reason)" "run-$slug" || true
+    fi
+  done
 
   # Positive heartbeat. Says the watcher is alive, which is what makes its
   # silence mean something.
@@ -620,6 +677,25 @@ while :; do
   if run_is_over; then
     if [ -f "$RUN_DIR/done" ]; then
       announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
+      # NARROWED TO THE CASE THE PASS-SIDE ARM CANNOT REACH, which is what earns
+      # this arm its place rather than duplicating one that already exists.
+      #
+      # The pass-side terminal arm keys on the shared run-state predicate, and
+      # that predicate requires zero unresolved run-scope blocks — so a run
+      # invalidated by a forced surface move never returns `종단` and that arm is
+      # silent for it forever. This path reads only the marker file the gate
+      # writes, so for such a run it is the only channel there is. A run that
+      # ended cleanly is announced by the pass-side arm and stays quiet here.
+      #
+      # ITS OWN MARKER, never the pass-side one. Sharing would let whichever arm
+      # fired first silence the other, and a silenced arm cannot be told apart in
+      # the log from one that fired exactly once.
+      if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
+         && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
+        : > "$RUN_DIR/watch.announced-loop-exit"
+        cc_notify_fire status-hands \
+          "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+      fi
     fi
     exit 0
   fi

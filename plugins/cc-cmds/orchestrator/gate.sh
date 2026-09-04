@@ -103,6 +103,17 @@ export CC_ORCH_SOURCE_ONLY
 # termination condition's on the same run. One file, one rule.
 # shellcheck source=/dev/null
 . "$GATE_DIR/liveness.sh"
+# The banner emitter, sourced for the same reason as the two above. The watcher
+# raises notices for this run as well, and a group string spelled two ways turns
+# two runs into one slot — so the title, group and sound come from one file or
+# they come from two that drift.
+#
+# It also owns the caller predicate this file needs. The two existing checks here
+# each read ONE of the stage variables, and a banner path built from either of
+# those copies would raise a notice from a stage call while every test written
+# against the other variable went on passing.
+# shellcheck source=/dev/null
+. "$GATE_DIR/notify-run.sh"
 
 readonly GATE_EXIT_VOCAB=2
 readonly GATE_EXIT_RULE=3
@@ -1612,10 +1623,28 @@ gate_surface_check() {
   # The resume line is the only place a person is told what to do next, so
   # dropping it exactly when the router — the one that would have carried it to
   # them — is the caller inverted its purpose.
-  gate_has_row 'blocked' '사유=강제 표면 이동' \
-    || gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
-         "사유=강제 표면 이동" "관측=$(now_iso)" \
-         "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
+  if ! gate_has_row 'blocked' '사유=강제 표면 이동'; then
+    gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
+      "사유=강제 표면 이동" "관측=$(now_iso)" \
+      "재개 명령=새 런으로 다시 킥오프 — 이 런의 기준선은 다시 잡히지 않습니다"
+    # THE RUN ANCHORED AND CANNOT BE UNANCHORED. This is one of the two places
+    # the run's own end is decided rather than observed, and the notice belongs
+    # here because the other channel cannot carry it: the watcher's terminal arm
+    # keys on a predicate that requires zero unresolved run-scope blocks, and
+    # this row is exactly such a block, so that arm is silent for this run
+    # forever.
+    #
+    # `status-hands` and not `hands`: the gate refuses to resolve a block whose
+    # cause is invalidation, so it is not something a person can put their hands
+    # on. It fails the stacking test — "an individually identified thing that
+    # stays put until a person touches THAT" — while still needing the title
+    # that says a person is needed.
+    if cc_caller_is_router && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
+      : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
+      cc_notify_fire status-hands \
+        "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+    fi
+  fi
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then
     warn "이 조건은 이 런에서 해소되지 않습니다 — 재시도하지 마세요. 지금 중단하고, 무엇을 하려다 막혔는지 반환문에 적고 돌아가세요. 남은 호출도 같은 거부를 받습니다."
   else
@@ -2940,6 +2969,89 @@ gate_judgment_fields_ok() {
   return 0
 }
 
+gate_notify_segment_park() {
+  # gate_notify_segment_park <segment>
+  #
+  # THE ONLY CHANNEL FOR A STOP NO TERMINAL CLASS CARRIES. The router can read a
+  # snapshot and stand a segment down on its own judgment, with no stage-result
+  # row in front of it — the stage-side notice cannot see that park and this one
+  # can. Nothing in the gate holds segment rows to the router, though, so a stage
+  # call reaches this site too; it raises nothing, and below it also leaves
+  # nothing.
+  #
+  # THE OVERLAP IS EXACTLY ONE CASE and the marker settles it: a stage ends as a
+  # deliberate park, the stage-side notice fires and leaves a marker named by the
+  # segment, and the router then records that same segment as parked. Those are
+  # one stop, so this side stays quiet when it finds the marker.
+  #
+  # THE MARKER IS SHORT-LIVED BY DESIGN and its expiry lives in the segment-row
+  # writer, not here: keyed by the segment alone, a marker that outlived the park
+  # would make a segment that was unblocked, re-dispatched and parked again read
+  # as the same stop, and its second wait for a person would never be announced.
+  #
+  # THIS SIDE DERIVES NO ATTEMPT NUMBER. A segment row carries no such field —
+  # the contract puts it on the stage-result row — and the only existing idiom
+  # for deriving one counts ledger rows, which is time-sensitive. Two independent
+  # derivations that disagree would give one stop two group keys and spend two of
+  # the eight stacking slots on it. With no marker there is no attempt to be had,
+  # so the item key carries the segment alone.
+  local seg="$1" mk
+  if [ -z "${RUN_DIR:-}" ]; then return 0; fi
+  mk="$RUN_DIR/notify/park-$seg"
+  if [ -f "$mk" ]; then return 0; fi
+  if cc_caller_is_router; then
+    # THE MARKER IS WRITTEN ONLY BY A CALL THAT ACTUALLY RAISED THE NOTICE, and
+    # being inside the guard is the whole of it. Written above the guard, one
+    # stage call — which raises nothing — leaves the marker behind, and the
+    # router's own park for that segment then reads it as "one stop, already
+    # announced" and stays quiet forever. Nothing carries this class afterwards,
+    # so the banner is not delayed by a pass; it is gone.
+    mkdir -p "$RUN_DIR/notify" 2>/dev/null || true
+    : > "$mk" 2>/dev/null || true
+    cc_notify_fire hands \
+      "세그먼트 \`$seg\` 가 park 되었습니다 — 아침 보고서의 보류 큐를 보세요" "park-$seg" || true
+  fi
+  return 0
+}
+
+gate_notify_approval() {
+  # gate_notify_approval <approval-id> <question>
+  #
+  # THE CALLER BOUNDARY EARNS ITS KEEP HERE AND ESSENTIALLY NOWHERE ELSE. The
+  # stage-result and segment sites are router calls by construction, but an act
+  # approval is issued exactly when a STAGE reaches past its pre-authorization,
+  # and the boundary approvals are evaluated on every act — so both open under
+  # stage calls routinely. A stage-opened approval leaves its row and the watcher
+  # carries it one pass later; only a router-opened one appears at once.
+  #
+  # THE DEDUPLICATION FILE IS THE WATCHER'S, BY NAME, and renaming it is the one
+  # move that must not be made here: a plugin update landing mid-run leaves the
+  # already-running watcher reading the old name while a fresh gate process
+  # writes the new one, and every approval notice then arrives twice. The price
+  # of keeping it is that the prefix now lies slightly about who writes the file,
+  # which is cheaper than the rename.
+  #
+  # The id is written to that file ONLY when this seat actually raised the
+  # notice. Writing it on a stage call would silence the watcher for an approval
+  # nobody had been told about — which is the one route a stage-opened approval
+  # has.
+  #
+  # ONE RACE IS ACCEPTED AND WRITTEN DOWN: a watcher pass overlapping a gate call
+  # can leave both blind to the marker and both raising the same notice. The cost
+  # is one duplicate banner; the fix would put a lock on the critical path of
+  # every act. Recorded here because otherwise a later reader deletes one of the
+  # two firing points and restores the delay this whole seat removed.
+  local id="$1" q="$2"
+  if ! cc_caller_is_router; then return 0; fi
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    if ! grep -qxF "$id" "$RUN_DIR/watch.announced-approvals" 2>/dev/null; then
+      printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
+    fi
+  fi
+  cc_notify_fire answer "$q" "$id" || true
+  return 0
+}
+
 gate_record_row() {
   # gate_record_row <kind> <segment-id> <target-alias> <키=값>...
   #
@@ -3055,6 +3167,16 @@ gate_record_row() {
       done
 
       gate_append 'segment' "id=$seg" "$@"
+      if [ "$st" = "park" ]; then
+        gate_notify_segment_park "$seg"
+      elif [ -n "${RUN_DIR:-}" ]; then
+        # THE PARK MARKER EXPIRES HERE, and this is the only writer that sees it
+        # happen. The marker is keyed by the segment id alone, so without an
+        # expiry a segment that leaves park and is parked again is read as the
+        # same stop and its second wait for a person is swallowed. Any state
+        # other than park is that departure.
+        rm -f "$RUN_DIR/notify/park-$seg" 2>/dev/null || true
+      fi
       log "세그먼트 기록 — $seg ($st)"
       ;;
     cycle)
@@ -3320,6 +3442,11 @@ gate_record_row() {
           warn "이 막힘은 해소할 수 없습니다 (원인=무효화): ${why} — 새 런으로 다시 킥오프하세요"
           return "$GATE_EXIT_RULE" ;;
       esac
+      # NO BANNER HERE, and this is the most dangerous of the sites that write a
+      # run-scope block. It is the RESOLUTION path — a person has just cleared
+      # the block — so instrumenting "a run-scope block row was added", which is
+      # the obvious pattern, raises "the run has anchored" at the exact moment
+      # somebody unblocked it.
       gate_append 'blocked' "대상=-" "스코프=run" "$@"
       log "런 스코프 막힘 해소 — $why"
       ;;
@@ -3389,10 +3516,49 @@ gate_drain_stall() {
     if [ "$( { cc_unresolved_blocked "$LEDGER" | cut -f2- | grep -cxF "$why" || true; } )" != "0" ]; then
       continue
     fi
+    # NO BANNER HERE EITHER. Every condition transcribed on this path was already
+    # announced by the watcher two lines before it wrote the observation, so a
+    # notice here is the same event reaching the user a second time — under a
+    # different title and a different group, and spending one of the eight
+    # stacking slots that an approval actually waiting for an answer needs.
+    #
+    # `원인=불명` is written HERE AND NOWHERE ELSE, which is what lets the
+    # watcher's anchored arm exclude "conditions the watcher authored" by
+    # structure instead of by a list of reason strings that goes stale silently.
     gate_append 'blocked' "대상=-" "스코프=run" "원인=불명" "사유=$why" \
       "관측=$ts" "재개 명령=$cmd"
   done < "$f"
   : > "$f"
+}
+
+gate_drain_notify_state() {
+  # The emitter's own active state, moved from the run directory into the report
+  # as one line of prose.
+  #
+  # WHY THE INDIRECTION. Days later a reader cannot tell "nothing happened" from
+  # "the banners were switched off" — the kickoff says the resolved state out
+  # loud and that utterance goes with the session. Both seats therefore record
+  # it, and neither appends to the report itself: the watcher takes no lock and
+  # this process does, so two unlocked appends to one file interleave and what
+  # breaks is the ledger ROW beside the prose, not the prose. This is the
+  # ledger's writer, so this is where the line becomes durable.
+  #
+  # The hash chain is untouched by construction: it hashes only lines carrying
+  # the row prefix, and the kickoff's own stub already puts prose in this file.
+  #
+  # THE MARKER IS SEPARATE FROM THE OBSERVATION. Using the state file as its own
+  # once-guard is the mistake the stall arm already made — the gate empties that
+  # file on every act, the guard came back to life, and the arm re-fired every
+  # pass.
+  local f m
+  if [ -z "${RUN_DIR:-}" ]; then return 0; fi
+  f="$RUN_DIR/notify.state"; m="$RUN_DIR/notify.reported"
+  if [ ! -s "$f" ]; then return 0; fi
+  if [ -f "$m" ]; then return 0; fi
+  printf '%s · 배너 좌석: %s\n' "$(now_iso)" \
+    "$( { cat "$f" 2>/dev/null || true; } | sed -n '1p')" >> "$LEDGER" 2>/dev/null || true
+  : > "$m" 2>/dev/null || true
+  return 0
 }
 
 gate_deadline_ok() {
@@ -3581,6 +3747,11 @@ gate_verb_act() {
   # records them as a file precisely because it is not the ledger's writer; this
   # is the writer, so this is where they become rows.
   gate_drain_stall
+  # This seat's own state, then the watcher's — both go through the same file, so
+  # whichever wrote it first is the one line the report carries and the two seats
+  # cannot leave two lines for one fact.
+  cc_notify_seat_state || true
+  gate_drain_notify_state
 
   # THE DEADLINE IS A DISPATCH GATE. It is frozen into the binding digest and
   # compared at entry, and then nothing read it — `gate.sh` mentioned neither
@@ -3835,6 +4006,9 @@ gate_verb_act() {
         "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      if cc_caller_is_router; then
+        cc_notify_fire status "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
+      fi
       return 0
     fi
     if [ -n "$unmet" ]; then
@@ -3893,6 +4067,18 @@ gate_verb_act() {
     else
       printf '%s 종단 — 종료 조건 성립%s · 근거 %s\n' \
         "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
+    fi
+    # The notification seat is carried over from the other parent; its own
+    # `done` write is not. That write spelled the same file with the older
+    # single-class line and would have run after the branch above, overwriting
+    # the very distinction that branch exists to record. The banner is kept
+    # whole and fires on every terminal class, including the one holding open
+    # questions — that is still an ending someone should be told about.
+    # The other arm that decides the run's end. `status`, because a satisfied
+    # ending asks nothing of anyone — the replace slot is exactly right for a
+    # fact that needs no answer, and re-raising it costs nothing.
+    if cc_caller_is_router; then
+      cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
     fi
   elif [ -z "$unmet" ]; then
     if ! gate_names_next_obligation "$rationale"; then
@@ -4150,6 +4336,11 @@ gate_issue_act_approval() {
     "행위 다이제스트=$ad" "구속 튜플=$alias/$base/${head:0:12}/$grade" \
     "막는 세그먼트=$seg" "질문 문면=사전 인가 밖 행위를 수행할까요" \
     "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+  # Raised the moment the row is seated. The row's own idempotence guard is the
+  # early return above, so the notice inherits it exactly — same key, same
+  # condition — and an act blocked twice produces one pending approval and one
+  # banner rather than a queue of either.
+  gate_notify_approval "$id" "사전 인가 밖 행위를 수행할까요 — $alias / $cut / $grade"
   warn "승인 대기 발행 $id — $alias / $cut / $grade"
 }
 
@@ -4684,6 +4875,64 @@ gate_record_stage_outcome() {
     gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
+  fi
+
+  # A TERMINAL CLASS OTHER THAN `정상 완료` MEANS THE RUN CANNOT PASS THIS POINT
+  # WITHOUT A PERSON, so it is announced the instant the row is seated — before
+  # the cost block, because the row is the fact and the cost is bookkeeping.
+  #
+  # NO ONCE-MARKER, and that is deliberate rather than an omission. This function
+  # is called exactly once, immediately after the child is waited on; a
+  # re-dispatch is a genuinely new event and deserves a second notice.
+  #
+  # THE SPLIT IS A PREDICATE, NOT AN ENUMERATION — did the stage leave evidence
+  # that it reached a point needing a person? A deliberate park and a stop with
+  # no artifact both did: one says so in its halt record, the other left the
+  # trace of arriving at a decision point it declined to settle. A crash and a
+  # hollow success left nothing this side can read, so at classification time the
+  # gate has no way to know. A class added later divides itself the same way, and
+  # the default is to fire rather than to stay quiet.
+  local q
+  if [ "$klass" != '정상 완료' ]; then
+    case "$klass" in
+      '의도된 park')
+        # The body is the stage's own Korean question, verbatim from the halt
+        # record. The contract binds the WRITER to record it without summarizing,
+        # so the reading rule has to be stated somewhere and this is it: take the
+        # rest of the `질문 문면` line. The path is already resolved above — the
+        # firing point is inside the function that opened it.
+        q=$( { sed -n 's/^\*\*질문 문면\*\*: *//p' "$haltf" 2>/dev/null || true; } | sed -n '1p')
+        # THE FALLBACK IS NOT FOR A CRASH MID-WRITE. This class requires the
+        # closing fence as the record's last non-empty line, so a record cut off
+        # part-way is classified as something else and never reaches here. What
+        # is reachable is a COMPLETE record whose field could not be read, and
+        # the wording says exactly that. An empty extraction must not kill the
+        # shell either: this sits on the critical path of an exit-on-error shell.
+        [ -n "$q" ] || q="스스로 멈췄습니다 — 중단 기록을 확인하세요"
+        # The segment-park marker, written HERE because the attempt number is an
+        # argument of this function and is NOT a field of a segment row. The file
+        # is named by the segment alone so the segment-row side can find it
+        # without deriving an attempt of its own; the attempt is the contents.
+        mkdir -p "$RUN_DIR/notify" 2>/dev/null || true
+        printf '%s\n' "$attempt" > "$RUN_DIR/notify/park-$seg" 2>/dev/null || true
+        if cc_caller_is_router; then
+          cc_notify_fire hands "$q" "park-$seg#$attempt" || true
+        fi ;;
+      '산출물 없는 정지')
+        # ITS OWN WORDING, and it must not borrow the fallback above: this class
+        # is DEFINED by the absence of a halt record, so "check the halt record"
+        # would send a person to a file that does not exist — the same
+        # wrong-instruction failure this channel was built to remove.
+        if cc_caller_is_router; then
+          cc_notify_fire hands \
+            "\`$seg\` 스테이지가 결정 지점에서 멈췄습니다 — 사용자 대신 정하지 않았습니다" \
+            "stop-$seg#$attempt" || true
+        fi ;;
+      *)
+        if cc_caller_is_router; then
+          cc_notify_fire status "스테이지 \`$seg\` 가 $klass 로 끝났습니다" || true
+        fi ;;
+    esac
   fi
 
   # The cost row ACCUMULATES, because that is the shape its only reader wants:
@@ -5529,6 +5778,13 @@ gate_issue_boundary_approval() {
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
     "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \
     "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+  # The boundary approvals are the slowest class this design has, by
+  # construction: they are evaluated on every act, so one opened while a long
+  # stage runs waits out that whole stage — and one of them carries a dollar
+  # figure. That is a declared consequence of raising notices only on router
+  # calls, not a defect, and it is written down here so it is not rediscovered
+  # as one.
+  gate_notify_approval "$id" "$q"
   warn "경계 $name 발동 — 승인 대기 $id: $q"
 }
 
