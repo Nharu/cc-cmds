@@ -149,19 +149,50 @@ PD() { cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/
 # miss on the Linux leg only, once the function it scanned grew long enough for
 # the race to be real. A checker that exempts itself is the shape it exists to
 # refuse.
-# THIS LIST IS NOT A GLOB, so a new file joins it only by being written in. The
-# same omission already happened once with the shared-predicate file and nobody
-# noticed; `notify-run.sh` is by design full of `grep` on the right of a pipe, so
-# leaving it out would exempt the file most likely to carry the defect.
-for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
-         "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
-         "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
-         "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
-         "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
-         "$repo_root/scripts/test-gate.sh" \
-         "$repo_root/scripts/test-watch.sh" \
-         "$repo_root/scripts/test-snapshot.sh" \
-         "$repo_root/scripts/test-orchestrator-pretool-hook.sh"; do
+# THE FIXED HALF IS NOT A GLOB, so a new file joins it only by being written in.
+# The same omission already happened once with the shared-predicate file and
+# nobody noticed; `notify-run.sh` is by design full of `grep` on the right of a
+# pipe, so leaving it out would exempt the file most likely to carry the defect.
+#
+# THE LINT FAMILY JOINS BY GLOB INSTEAD, because being written in is exactly what
+# it never was: every `scripts/lint-*.sh` sat outside this scan while the scan
+# said in its own words that a checker exempting itself is the shape it exists to
+# refuse. A family whose members are named by one pattern is the case where a
+# written-in list buys nothing and costs the next file its coverage — and the
+# cost is not hypothetical, since the vocabulary lint reads the head of every
+# file it scans through a pipe whose reader stops at the first match.
+scanned_files() {
+  printf '%s\n' "$GATE" \
+    "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
+    "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
+    "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
+    "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
+    "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
+    "$repo_root/scripts/test-gate.sh" \
+    "$repo_root/scripts/test-watch.sh" \
+    "$repo_root/scripts/test-snapshot.sh" \
+    "$repo_root/scripts/test-orchestrator-pretool-hook.sh"
+  for f in "$repo_root"/scripts/lint-*.sh; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "$f"
+  done
+}
+# A GLOB THAT EXPANDS TO NOTHING COVERS NOTHING AND LOOKS THE SAME WHILE DOING
+# IT. An unexpanded pattern leaves `[ -f ]` false on every iteration and the
+# loops below simply run shorter, which is the green this whole section exists
+# to distrust — so the count is asserted rather than assumed.
+nlint=0
+for f in "$repo_root"/scripts/lint-*.sh; do
+  [ -f "$f" ] || continue
+  nlint=$((nlint + 1))
+done
+if [ "$nlint" -ge 1 ]; then
+  ok "스캔 목록이 린트 계열을 글로브로 흡수한다 (${nlint}개)"
+else
+  bad "스캔 목록" "scripts/lint-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
+fi
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
   [ -f "$f" ] || continue
   # `grep -c … >/dev/null` belongs in the pattern as well: BSD grep
   # short-circuits when its output is discarded, so that spelling is the same
@@ -172,7 +203,50 @@ for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
   else
     bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
   fi
-done
+done <<EOF
+$(scanned_files)
+EOF
+
+# ---------------------------------------------------------------------------
+# 0b. A helper called above its own definition, which no passing count can show
+#
+# A shell function exists only after the line that defines it has run, so a
+# top-level call written above that line dies as `command not found` — and a
+# missing command is not a failed assertion. Three calls in this file hit that
+# and reported nothing: neither counter moved, the suite stayed green, and the
+# assertions they carried covered nothing while reading as covered. Counting
+# passes cannot reveal it, because nothing is failing; things are absent.
+#
+# ONLY COLUMN-ZERO CALLS COUNT. A call inside another function runs when that
+# function is invoked, which can be anywhere below its own definition; a call at
+# top level runs where it is written, and that is the shape that dies. The
+# definition line itself is not a call — the name there is followed by `(`.
+# ---------------------------------------------------------------------------
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$f" ] || continue
+  offenders=""
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    defline=${d%%:*}
+    name=$(printf '%s' "${d#*:}" | sed -E 's/\(\).*$//')
+    [ -n "$name" ] || continue
+    callline=$(grep -nE "^$name([[:space:]]|\$)" "$f" | sed -n '1s/:.*$//p')
+    [ -n "$callline" ] || continue
+    if [ "$callline" -lt "$defline" ]; then
+      offenders="$offenders $name(호출 $callline < 정의 $defline)"
+    fi
+  done <<INNER
+$(grep -nE '^[a-z_][a-z0-9_]*\(\) *\{' "$f")
+INNER
+  if [ -z "$offenders" ]; then
+    ok "정의보다 먼저 불리는 헬퍼가 없다: $(basename "$f")"
+  else
+    bad "정의 전 호출" "$(basename "$f"):$offenders — 이 호출은 실패가 아니라 부재로 사라지므로 통과 개수에 드러나지 않는다"
+  fi
+done <<EOF
+$(scanned_files)
+EOF
 
 # ---------------------------------------------------------------------------
 # 0. Fixture — a real repository, two targets, two cutpoints
@@ -2820,8 +2894,9 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
 CONE_RUN_ID=R3
 prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$MANIFEST" | tail -1)
 # A BROKEN FIXTURE EXITS RATHER THAN ASSERTING — the idiom `nm_add_auth_row` and
-# `refresh_bd` already use. This guard is the detector for the defect above: an
-# overlap that was silent becomes an audible stop naming both ids.
+# `refresh_bd` already use. The id has to differ because the id is what splits
+# the ledger: an inherited one would merge this section's rows into the previous
+# section's and every derivation below would read both.
 if [ -z "$prev_run_id" ] || [ "$prev_run_id" = "$CONE_RUN_ID" ]; then
   printf '31: 앞 절의 런 id 를 매니페스트에서 읽지 못했거나 이 절의 id 와 겹친다 (읽은 값 %s, 이 절 %s)\n' \
     "${prev_run_id:-(없음)}" "$CONE_RUN_ID" >&2
@@ -2829,6 +2904,22 @@ if [ -z "$prev_run_id" ] || [ "$prev_run_id" = "$CONE_RUN_ID" ]; then
 fi
 
 NM="$WORK/cone-plan.md"
+CONE_GRANT="$WT/docs/pipeline-grant/$CONE_RUN_ID.md"
+LEDGER2="$WT/docs/pipeline-run/$CONE_RUN_ID.md"
+# AND THE GUARD AGAINST THE COLLISION IS ON THE PATHS, NOT ON THE ID. What went
+# wrong was `sed … "$GRANT" > "$CONE_GRANT"` naming one file on both sides: the
+# shell truncated the authorization record before `sed` could read it, the grant
+# went to zero bytes, and every call below died on a missing authorization block.
+# The id is one input to those three paths and not the only one — a section added
+# above can take this id while writing it into its OWN copy of the manifest, so
+# the value this section reads never moves, the id check passes, and the files
+# overlap exactly as before. Each destination is therefore compared against the
+# source it is derived from, which is the pair that actually collides.
+if [ "$NM" = "$MANIFEST" ] || [ "$CONE_GRANT" = "$GRANT" ] || [ "$LEDGER2" = "$LEDGER" ]; then
+  printf '31: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 — 읽기 전에 셸이 원본을 비운다 (매니페스트 %s vs %s · 인가 %s vs %s · 원장 %s vs %s)\n' \
+    "$NM" "$MANIFEST" "$CONE_GRANT" "$GRANT" "$LEDGER2" "$LEDGER" >&2
+  exit 1
+fi
 sed -e "s/run-id=$prev_run_id;/run-id=$CONE_RUN_ID;/" \
     -e "s/^\*\*런 id\*\*: $prev_run_id\$/**런 id**: $CONE_RUN_ID/" "$MANIFEST" > "$NM"
 # The binding digest no longer matches, and that is the check working — so it is
@@ -2868,9 +2959,7 @@ nm_add_auth_row '- `종료 절` | id=K1 | 문면=첫째 절'
 # digest for a loose match to corrupt. What made this line dangerous was never
 # the pattern — it was reading and writing one path, which the guard above now
 # makes unreachable.
-CONE_GRANT="$WT/docs/pipeline-grant/$CONE_RUN_ID.md"
 sed "s/$prev_run_id/$CONE_RUN_ID/g" "$GRANT" > "$CONE_GRANT"
-LEDGER2="$WT/docs/pipeline-run/$CONE_RUN_ID.md"
 {
   printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
   printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
@@ -2893,6 +2982,8 @@ seg_row() {
   gateN act --manifest "$NM" --kind segment --target infra --segment "$id" --cutpoint 커밋 \
         --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 워크트리="$wt" "$@"
 }
+CONE_OF_FAILURES="$WORK/cone-of-failures"
+: > "$CONE_OF_FAILURES"
 cone_of() {
   # cone_of <anchor> <사유> — the `의존 세그먼트` the gate DERIVED. The row is
   # written with no declaration, so what lands on it is the derivation itself.
@@ -2900,6 +2991,22 @@ cone_of() {
         --snapshot-digest "$(HN)" --rationale x \
         -- 스코프=cone 원인=막힘 "앵커 세그먼트=$1" "사유=$2" \
            "근거=$1 이 사람의 답을 기다린다" "재개 명령=승인이 닫히면 다시 디스패치"
+  # THE ACT'S OWN CODE IS READ BEFORE THE LEDGER IS. This section calls with the
+  # same anchor seven times and then takes the LAST row carrying that anchor, so
+  # a call refused for any reason — a digest race, a vocabulary change, the row
+  # length cap the over-long-declaration subsection proves exists — writes no row
+  # and the read below hands back the PREVIOUS call's cone. Nothing downstream
+  # could notice: the pipeline's status is `tail`'s and is always 0.
+  #
+  # THE FAILURE GOES TO A FILE RATHER THAN TO `bad`. Every caller is
+  # `x=$(cone_of …)`, which is a subshell, so a counter incremented here never
+  # reaches the totals — the exact shape this suite is being repaired for. The
+  # file is read once at the end of the section, in the parent.
+  if [ "$rc" != "0" ]; then
+    printf '앵커 %s rc=%s — %s\n' "$1" "$rc" "$msg" >> "$CONE_OF_FAILURES"
+    printf '유도-실패'
+    return 1
+  fi
   { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F "앵커 세그먼트=$1 " | tail -1 \
     | tr '|' '\n' | sed -n 's/^ *의존 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1
 }
@@ -3468,6 +3575,41 @@ case "$lav_out" in
   *) bad "린트 문면" "$(printf '%s' "$lav_out" | tr '\n' ' ')" ;;
 esac
 mv "$LR/orch/gate.sh.bak" "$LR/orch/gate.sh"
+
+# RULE 1, WHICH NOTHING ABOVE TOUCHES. Every assertion so far drives rule 2 or
+# rule 3, so the subset check could be deleted outright and this section stays
+# green. What that rule holds up is stated in the lint's own head comment: the
+# two forbidden classes are NAMED rather than left out, because a class with no
+# token has to borrow a permitted one when the decision is recorded, and the
+# borrowing is the leak. Dropping one from the vocabulary reads as tidying and
+# restores the leak silently — the forbidden test still answers true while the
+# vocabulary test starts answering false, so a refusal quietly demotes into an
+# "out of vocabulary" report about something else.
+LR1="$WORK/lint-root-rule1"
+mkdir -p "$LR1/orch"
+cp "$LR/orch/run.sh" "$LR1/orch/run.sh"
+if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 손대지 않은 어휘 SOT 는 통과한다 (아래 실패가 픽스처 탓이 아니다)"
+else
+  bad "린트 규칙 1" "어휘를 그대로 옮긴 픽스처가 이미 실패한다 — 아래 단언이 무엇 때문에 빨간지 말할 수 없다"
+fi
+sed -e 's/^\(readonly JUDGMENT_CLASSES="[^"]*\) 시각-면제"$/\1"/' \
+    "$LR/orch/run.sh" > "$LR1/orch/run.sh"
+# THE FIXTURE IS CHECKED BEFORE IT IS ASSERTED ON. A substitution that matched
+# nothing leaves the two sets consistent, and then the lint passes for the honest
+# reason while this section reads that pass as the rule being absent.
+cls1=$(sed -n 's/^readonly JUDGMENT_CLASSES="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
+fb1=$(sed -n 's/^readonly JUDGMENT_CLASSES_FORBIDDEN="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
+case "$cls1:$fb1" in
+  *시각-면제:*) bad "린트 픽스처" "어휘에서 금지 부류를 빼지 못했다: $cls1" ;;
+  *:*시각-면제*) ok "픽스처가 금지 부류를 어휘에서만 뺐다 (금지 목록에는 그대로 있다)" ;;
+  *) bad "린트 픽스처" "금지 목록에서도 사라졌다 — 규칙 1 이 볼 불일치가 없다: $fb1" ;;
+esac
+if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  bad "린트 규칙 1" "금지 부류가 어휘에서 빠졌는데 통과했다 — 어휘를 줄이는 편집이 누수를 조용히 되살린다"
+else
+  ok "린트 — 금지 부류가 어휘에서 빠지면 실패한다 (규칙 1 이 살아 있다)"
+fi
 # 반대 방향 단독: 게이트가 읽지 않는 마커가 문서에만 사는 경우.
 printf '| `**판단 무게**:` | always |\n' >> "$LRC/judgment-grade.md"
 # The lint's own words are captured rather than discarded. A pass here can mean
@@ -3817,6 +3959,18 @@ if [ "${n_emit_after2:-0}" -gt "${n_emit_before2:-0}" ]; then
 else
   bad "방출 채택" "합집합을 통과한 방출 판단이 아무 행도 남기지 않았다"
 fi
+# THE ROW'S FIELDS, NOT ONLY ITS EXISTENCE. A count rises whenever a row is
+# appended, whatever the row says — so an extraction that returned the rest of
+# the line for every free-text field passed the assertion above while the undo
+# command on the row carried the two markers after it glued on. What a person
+# reads at 3am is `되돌리는 법`, not the count. The five markers sit on ONE line
+# in this fixture because that is what a stage's terminal message is.
+arow2=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -F '출처=스테이지 방출' | tail -1)
+check "채택 행의 판단 부류가 방출된 값 그대로다" "$(row_field "$arow2" '판단 부류')" "문서-신선도"
+check "채택 행의 등급이 방출된 값 그대로다" "$(row_field "$arow2" '등급')" "1"
+check "채택 행의 되돌리는 법이 뒤따르는 마커를 삼키지 않는다" "$(row_field "$arow2" '되돌리는 법')" "아침에 문서를 다시 읽는다"
+check "채택 행의 기준이 뒤따르는 마커를 삼키지 않는다" "$(row_field "$arow2" '기준')" "문서가 최신인가"
+check "채택 행의 근거가 그대로 실린다" "$(row_field "$arow2" '근거')" "앵커 해시가 그대로다"
 
 # A MARKER WITH NO CLASS IS ESCALATED, NOT DROPPED. The class used to gate the
 # rest of the parse, so "no judgment was emitted" and "a judgment was emitted
@@ -3911,6 +4065,35 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- grep -c "" "$NM"
 check "같은 경로를 읽기만 하는 행위는 통과한다 (오탐이 아니다)" "$rc" "0"
+# AND WHAT IS MEASURED IS PATH IDENTITY, NOT THE NAME. Both refusals above name a
+# file whose basename IS the manifest's, and the guard's last arm is basename
+# containment — so an implementation that knows nothing about paths refuses both
+# and nothing here can tell it apart from one that resolves. A symlink is the
+# case a name cannot answer: it shares neither basename nor directory with the
+# file it opens, and only following it says the two are one file.
+CONE_ALIAS="$WORK/alias"
+mkdir -p "$CONE_ALIAS"
+ln -sf "$NM" "$CONE_ALIAS/별칭.md"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$CONE_ALIAS/별칭.md"
+check "이름을 하나도 공유하지 않는 심링크를 통한 매니페스트 쓰기도 거절된다" "$rc" "3"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "심링크를 통한 쓰기도 인가의 자기확장으로 지목된다" ;;
+  *) bad "심링크 가드 문면" "$msg" ;;
+esac
+# THE UPPER BOUND, IN THE SAME BREATH. A guard that refused every path-shaped
+# element would pass the line above while measuring nothing. The code is not
+# asserted here because an approved write has other reasons to be held; what is
+# asserted is WHICH rule answered, which is the thing being measured.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir "$CONE_ALIAS/무관"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*)
+    bad "매니페스트 가드 오탐" "무관한 경로에 대한 쓰기를 매니페스트 쓰기로 거절했다: $msg" ;;
+  *) ok "무관한 경로 쓰기는 매니페스트 가드에 걸리지 않는다 (모든 쓰기를 거절하는 구현이 아니다)" ;;
+esac
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
 #
@@ -4118,6 +4301,15 @@ if ( cd "$CONE_I" && git rev-parse HEAD ) >/dev/null 2>&1; then
   ok "픽스처가 만든 조건을 되돌린다 (뒤따르는 절이 이 세그먼트를 다시 잴 수 있다)"
 else
   bad "픽스처 복구" "깨뜨린 HEAD 를 되돌리지 못했다"
+fi
+
+# EVERY CONE ABOVE WAS READ FROM A ROW THIS SECTION ACTUALLY WROTE. The
+# derivations run in subshells, so this is where their refusals become visible.
+n=$(grep -c . "$CONE_OF_FAILURES" || true)
+if [ "${n:-0}" = "0" ]; then
+  ok "원뿔 유도 호출이 전부 새 행을 남겼다 (어느 판정도 직전 호출의 원뿔을 다시 읽지 않았다)"
+else
+  bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
 fi
 
 # --- 31ai. `close` reads the POLARITY of the answer, not just its presence --
