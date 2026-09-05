@@ -149,7 +149,15 @@ while IFS= read -r f; do
   case "$f" in
     "$root"/tests/fixtures/*) continue ;;
   esac
-  if { head -5 "$f" 2>/dev/null || true; } | grep -qF 'lint-notify-title-render: self-skip'; then
+  # CAPTURED, NOT `grep -q`, and `sed -n` rather than `head`. An early-exiting
+  # reader on the right of a pipe kills the writer with SIGPIPE, and under
+  # `pipefail` the pipeline then reports failure even though the match was
+  # found — a race that only shows on files long enough to fill the buffer.
+  # `grep -c` has the same truth value and reads its input to the end; the count
+  # is captured rather than discarded, because BSD grep short-circuits when its
+  # output goes to /dev/null.
+  selfskip=$(sed -n '1,5p' "$f" 2>/dev/null | grep -cF 'lint-notify-title-render: self-skip' || true)
+  if [ "${selfskip:-0}" != "0" ]; then
     continue
   fi
   scanned=$((scanned + 1))
