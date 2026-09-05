@@ -1787,12 +1787,28 @@ set_exec_wt "" >/dev/null 2>&1 || true
 # suite will one day run past.
 # ---------------------------------------------------------------------------
 grant_field_set() {
-  # grant_field_set <키> <값> — declare (or redeclare) one `## 인가` field.
-  # `## 인가` is the fixture's last section, so appending lands inside it, which
-  # is where `manifest_field` looks.
-  { grep -v "^\*\*$1\*\*: " "$MANIFEST" || true; } > "$MANIFEST.gf"
-  mv "$MANIFEST.gf" "$MANIFEST"
-  if [ -n "$2" ]; then printf '**%s**: %s\n' "$1" "$2" >> "$MANIFEST"; fi
+  # grant_field_set <키> <값> — declare (or redeclare) one `## 인가` field, or
+  # remove it when the value is empty.
+  #
+  # INSERTED DIRECTLY UNDER THE HEADING, not appended to the file. `manifest_field`
+  # is section-scoped and stops at the next `## `, and this fixture grows sections
+  # BELOW `## 인가` as the suite runs — so a field appended at end-of-file reads as
+  # absent. That is the same trap `refresh_bd` documents for the binding digest,
+  # and it is why this is a read loop with `[ "$line" = … ]` string equality
+  # rather than an `awk`/`sed` insert keyed on a Korean heading.
+  local key="$1" val="$2" line out="$MANIFEST.gf" inserted=0
+  : > "$out"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "**$key**: "*) continue ;;
+    esac
+    printf '%s\n' "$line" >> "$out"
+    if [ "$inserted" = "0" ] && [ "$line" = "## 인가" ] && [ -n "$val" ]; then
+      printf '**%s**: %s\n' "$key" "$val" >> "$out"
+      inserted=1
+    fi
+  done < "$MANIFEST"
+  mv "$out" "$MANIFEST"
   refresh_bd
 }
 
@@ -3676,7 +3692,13 @@ if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   bad "린트 규칙 1" "어휘를 그대로 옮긴 픽스처가 이미 실패한다 — 아래 단언이 무엇 때문에 빨간지 말할 수 없다"
 fi
-sed -e 's/^\(readonly JUDGMENT_CLASSES="[^"]*\) 시각-면제"$/\1"/' \
+# Removed WHEREVER IT SITS in the vocabulary, not only at the end. The earlier
+# spelling anchored on `시각-면제"` — the token immediately before the closing
+# quote — so it silently stopped matching the moment a token was appended after
+# it, and the fixture then carried an unmodified vocabulary into an assertion
+# about a modified one. The check below catches that, but a fixture that breaks
+# on every future vocabulary addition is a fixture that will keep breaking.
+sed -E 's/^(readonly JUDGMENT_CLASSES="[^"]*) 시각-면제([ "])/\1\2/' \
     "$LR/orch/run.sh" > "$LR1/orch/run.sh"
 # THE FIXTURE IS CHECKED BEFORE IT IS ASSERTED ON. A substitution that matched
 # nothing leaves the two sets consistent, and then the lint passes for the honest
