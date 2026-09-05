@@ -235,9 +235,15 @@ if (( round_present == 1 )) && has_heading "$REVIEW_LITE" "$LITE_HEADING"; then
   if [[ "$carve_count" != "1" ]]; then
     echo "FAIL: review-lite/SKILL.md ($LITE_HEADING) — exactly 1 carve-out sentence required, found $carve_count" >&2
     fail=1
-  elif ! printf '%s\n' "$carve_lines" | grep -Fq -- '`### Round budget`'; then
-    echo "FAIL: review-lite/SKILL.md ($LITE_HEADING) — the carve-out sentence must name the shared '### Round budget'" >&2
-    fail=1
+  else
+    # CAPTURED, NOT `grep -Fq`. An early-exiting reader on the right of a pipe
+    # kills the writer with SIGPIPE, and under `pipefail` the pipeline then
+    # reports failure even though the match was found.
+    names_budget=$(printf '%s\n' "$carve_lines" | grep -cF -- '`### Round budget`' || true)
+    if [[ "${names_budget:-0}" = "0" ]]; then
+      echo "FAIL: review-lite/SKILL.md ($LITE_HEADING) — the carve-out sentence must name the shared '### Round budget'" >&2
+      fail=1
+    fi
   fi
 
   # Negative half: the line range the fence below skips.
