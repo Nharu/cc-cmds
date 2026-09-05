@@ -13,20 +13,20 @@
 #
 # Rules:
 #   1  `JUDGMENT_CLASSES_FORBIDDEN` is a subset of `JUDGMENT_CLASSES`   [fail]
-#   2  every literal `판단 부류=<값>` in the tree names one of the eight [fail]
+#   2  every literal `판단 부류=<값>` in the tree names one of the ten   [fail]
 #   3  the emitted-judgment markers agree between the gate's parser and
 #      `_common/`, in BOTH directions                                   [fail]
 #
-# Rule 1 is not bookkeeping. The design's whole point about the two forbidden
+# Rule 1 is not bookkeeping. The design's whole point about the three forbidden
 # values is that they are NAMED and forbidden rather than left out: a class with
 # no token has to borrow a permitted one when the decision is recorded, and that
 # borrowing is the leak. With a token, the leak arrives as a refusal. Dropping
-# either from the vocabulary would restore the leak silently, and rule 1 is what
-# makes that a failing build.
+# any of them from the vocabulary would restore the leak silently, and rule 1 is
+# what makes that a failing build.
 #
 # What counts as a literal: the four metasyntactic shapes the tree actually
 # contains are recognised by shape and skipped — a shell expansion
-# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`), a
+# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<열 값 중 하나>`), a
 # parser's own pattern (`s/^ *판단 부류=//p`) and the ledger's "no value"
 # sentinel (`판단 부류=-`) — and everything else made of Hangul, ASCII letters,
 # digits, hyphens AND SPACES is a value claim.
@@ -34,7 +34,7 @@
 # The sentinel is a shape and not an exception. Every field of a ledger row that
 # has no value carries `-`, so a row written for a judgment whose class never
 # arrived spells it that way too; reading that as a claim about a class made the
-# lint demand that `-` be one of the eight.
+# lint demand that `-` be one of the ten.
 #
 # Spaces are inside that set deliberately. A value carrying a space is the shape
 # this lint most needs to see: the driver's vocabulary check accepted one
@@ -103,7 +103,7 @@ for t in $forbidden; do
   fi
 done
 
-# --- Rule 2: every literal occurrence names one of the eight ---------------
+# --- Rule 2: every literal occurrence names one of the ten -----------------
 files=$(find "$scan_root/plugins" "$scan_root/scripts" -type f 2>/dev/null | sort || true)
 scanned=0
 hits=0
