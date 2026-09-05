@@ -1,0 +1,67 @@
+# Golden vectors for gate_chain_verify — frozen (exit code, broken row) tuples.
+#
+# Each row: <case> <rcA> <brokeA> <rcB> <brokeB> <rcC> <brokeC>
+#
+# The three column pairs are NOT platform names. They are the three outcomes of
+# one probe — what the `prev=` extractor returns for a row that carries an
+# invalid UTF-8 byte — because that, not the vendor of `sed`, is what decides
+# these verdicts:
+#
+#   A  the extractor yields nothing (it aborted, or matched nothing)
+#      → the row updates no `prev` and the chain re-joins across it
+#   B  the extractor yields exactly the hex the row carries
+#      → the row is compared normally
+#   C  the extractor yields something else non-empty
+#      → the comparison is against a polluted value and cannot match
+#
+# Naming the observable instead of the vendor is what lets both CI legs assert a
+# literal here. macOS/BSD `sed` measured as A on 2026-09-04; the ubuntu leg is
+# expected to land on B or C, and whichever it is has a frozen expectation
+# rather than a skip.
+#
+# `broke` is 0 when the chain verified. Row numbering counts every row-shaped
+# line, including ones the extractor skipped — that is the existing convention
+# and it is deliberately not changed.
+#
+# Derived by hand, then measured for column A. `prev=` digests in the ledgers are
+# computed with openssl, never with the shasum the verifier itself uses.
+#
+# The five lines that moved when unreadable-`prev=` rows became a break are
+# marked. Before that commit they read: insert-last-noprev 0 0 / 0 0 / 0 0,
+# insert-last-badbytes 0 0, insert-mid-badbytes 0 0, replace-mid-badbytes 1 4
+# (column A only), missing-ledger 0 0 / 0 0 / 0 0 — four of them a forged
+# approval row or an unopened ledger passing as intact.
+#
+# `missing-ledger` reports broke=0 with rc=1: there is no row to point at,
+# because nothing was read. That pair is the encoding of "not verified", which
+# is a different statement from "verified and intact".
+#
+# The line that moved when a final row with NO TERMINATING NEWLINE became a
+# break is marked too. Before that commit insert-last-noprev-nonl read
+# 0 0 / 0 0 / 0 0 — the same forged approval row as insert-last-noprev, passing
+# as intact for the single reason that the byte after it was never written. The
+# walk ended at the missing newline before the row was counted, so the row
+# consumed no number and the chain was reported whole.
+#
+# It is its own case rather than a variant of insert-last-noprev because the two
+# fail for unrelated reasons: one is a row whose `prev=` cannot be read, the
+# other is a row the walk never reached. Closing the first left the second open,
+# and nothing in the corpus crossed them — `nonl` mutates an INTACT ledger, so
+# reference and candidate agreed there and the agreement read as coverage.
+
+# Data lines carry NO trailing comment: the reader binds the last field to the
+# rest of the line, so an inline note would be parsed as part of column C.
+#
+# replace-mid-badbytes now names row 3 — the row actually forged — where before
+# it named row 4 and called it a splice.
+
+identity                0 0   0 0   0 0
+insert-last-noprev      1 5   1 5   1 5
+insert-last-noprev-nonl 1 5   1 5   1 5
+insert-last-clean       1 5   1 5   1 5
+insert-last-badbytes    1 5   1 5   1 5
+insert-mid-clean        1 3   1 3   1 3
+insert-mid-badbytes     1 3   1 3   1 3
+replace-mid-clean       1 4   1 4   1 4
+replace-mid-badbytes    1 3   1 4   1 3
+missing-ledger          1 0   1 0   1 0
