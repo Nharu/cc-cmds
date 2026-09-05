@@ -57,7 +57,8 @@
 #   gate.sh exec     --manifest <path> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --surface <token>
 #                    --snapshot-digest <hex> --rationale <text> -- <argv...>
-#   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
+#   gate.sh close    --manifest <path> --approval <id> [--void|--reject] [--answer]
+#   gate.sh answers  --manifest <path> [--approval <id>]
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
 # was cut mid-flight instead of running it again. The id must appear on a
@@ -1830,7 +1831,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy="" void=0 reject=0
+  local approval="" render=0 worktree="" review_policy="" void=0 reject=0 answer=0
   GATE_RESUME=""; export GATE_RESUME
   MANIFEST=""
 
@@ -1850,6 +1851,7 @@ gate_main() {
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
+      --answer)          answer=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -2006,7 +2008,10 @@ gate_main() {
       if [ "$void" = "1" ] && [ "$reject" = "1" ]; then
         printf 'gate: --void 와 --reject 는 서로 다른 처분입니다 — 하나만 고르세요\n' >&2; exit 2
       fi
-      gate_close "$approval" "$void" "$reject"
+      gate_close "$approval" "$void" "$reject" "$answer"
+      ;;
+    answers)
+      gate_answers "$approval"
       ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
@@ -4768,6 +4773,7 @@ gate_launch_stage() {
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+  CC_PIPELINE_ANSWER_DIR="$RUN_DIR/answer" \
   CC_PIPELINE_MANIFEST="$MANIFEST" \
   CC_PIPELINE_LEDGER="$LEDGER" \
   CC_PIPELINE_GRANT="$GRANT" \
@@ -5284,7 +5290,17 @@ gate_close() {
   # transcript was recorded as a grant. Every refusal on the unattended
   # adoption surface converges on this channel, so a channel that emits a
   # constant leaves the floors above it deciding nothing.
-  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit scanbody phit
+  #
+  # `--answer` turns off the AFFIRMATIVE requirement and nothing else. It is the
+  # closer saying "these bytes are the answer, consume them" about a question
+  # whose answer is an instruction rather than a verdict — a person who writes
+  # three paragraphs of direction carries no `네` and no `yes`, and the
+  # affirmative arm holds that approval open forever. The NEGATIVE scan stays
+  # armed under the flag, because the failure the two scans guard against are
+  # not symmetric: an unread affirmation costs a re-ask, and an unread refusal
+  # is a grant nobody gave.
+  local id="$1" void="${2:-0}" reject="${3:-0}" answer="${4:-0}"
+  local row state q tx ans f cutp abody extracted hit scanbody phit
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -5365,7 +5381,6 @@ gate_close() {
   cutp=$(gate_row_field "$row" '절단점')
   abody='트랜스크립트 판독'
   if [ "$cutp" = "판단" ]; then
-    local extracted
     extracted=$(printf '%s' "$ans" | jq -r '
       (.message.content? // .content?) as $c
       | if $c == null then empty
@@ -5408,8 +5423,17 @@ gate_close() {
   # `$abody` ITSELF IS NOT TOUCHED. It is what goes into `답변 문면`, which the
   # contract calls the run's only durable copy of the answer; the split is
   # between what is scanned and what is recorded.
+  #
+  # AND THE SPLIT WAS DRAWN ON THE WRONG SIDE OF THE CLIP. The separation above
+  # was real but both sides read `$abody`, which is `$extracted` after the
+  # 400-byte clip — so the scan saw a PREFIX of the answer while the contract
+  # called the untruncated bytes the answer. A refusal written past byte 400
+  # was invisible to the negative scan and the approval closed as a grant,
+  # which is the one direction this scan exists to make impossible. Scanning
+  # `$extracted` puts the whole answer under both halves of the polarity read
+  # and leaves the recorded copy exactly as it was.
   if [ "$cutp" = "판단" ] && [ "$reject" = "0" ]; then
-    scanbody=$(gate_strip_question "$abody" "$q")
+    scanbody=$(gate_strip_question "$extracted" "$q")
     # Whitespace-only remainder means the line held the question and nothing
     # else — a person echoing the question is not an answer, and "no answer" and
     # "an answer that is no" are different states.
@@ -5423,12 +5447,47 @@ gate_close() {
       warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
       exit "$GATE_EXIT_RULE"
     fi
-    phit=$(gate_positive_answer_hit "$scanbody")
-    if [ -z "$phit" ]; then
-      warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
-      warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
-      exit "$GATE_EXIT_APPROVAL"
+    if [ "$answer" = "0" ]; then
+      phit=$(gate_positive_answer_hit "$scanbody")
+      if [ -z "$phit" ]; then
+        warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
+        warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
+        warn "이 답이 판정이 아니라 지시라면 close --answer 로 닫으세요 (부정 스캔은 그대로 걸립니다)"
+        exit "$GATE_EXIT_APPROVAL"
+      fi
     fi
+  fi
+
+  # THE UNTRUNCATED ANSWER, BESIDE THE CLIPPED ONE AND NOT INSTEAD OF IT.
+  #
+  # `답변 문면` stays 400 bytes — it is the ledger's copy and the ledger is the
+  # durable artifact, so a harvested `RUN_DIR` demotes an answer to 400 bytes
+  # rather than losing it. What the clip costs is the REST of the answer, and
+  # the rest is what the next stage consumes: a person answering a judgment
+  # question writes instructions, and instructions do not fit in a row field.
+  #
+  # `${RUN_DIR}/answer/`, not `docs/`. Both sidecar trees under `docs/` are
+  # tracked and watched by the enforcement surface; there is no reason for each
+  # answer a person types to become a tracked-tree write.
+  #
+  # THE PARENT IS MADE HERE, in the same process that writes the file, with the
+  # spelling `$RUN_DIR/log` and `$RUN_DIR/notify` already use. Maker and writer
+  # in one place is what keeps "who should have created it" from becoming a
+  # question at all.
+  #
+  # Written for `절단점=판단` only. An act approval's `답변 문면` is a fixed
+  # literal and nothing about it was clipped, so a sidecar there would hold the
+  # transport frame rather than an answer — and `answers` would then list
+  # entries that are not answers.
+  #
+  # KEYED BY APPROVAL ID, which is the same key the consumption predicate uses:
+  # a `자율 승인` row naming `해소 승인=<id>` says this answer was consumed. No
+  # second ledger, and no new state. The id hashes `RUN_ID` today, so this
+  # mechanism reaches exactly one run; keying the path the same way is what
+  # makes the store follow if that derivation later drops it.
+  if [ "$cutp" = "판단" ] && [ -n "$extracted" ]; then
+    mkdir -p "$RUN_DIR/answer"
+    printf '%s\n' "$extracted" > "$RUN_DIR/answer/$id.md"
   fi
 
   if [ "$reject" = "1" ]; then
@@ -5442,6 +5501,30 @@ gate_close() {
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   log "승인 해소 — $id"
   return 0
+}
+
+gate_answers() {
+  # gate.sh answers [<승인 id>] — the read-only door onto the answer sidecars.
+  #
+  # READ-ONLY AND SEPARATE FROM `close` because the readers are different
+  # entities: `close` is the router recording a resolution, and this is the
+  # re-dispatched STAGE picking up what the person said. A stage that had to
+  # call `close` to see an answer would be a stage holding a recording verb.
+  #
+  # With an id it prints that answer's bytes; without one it lists the ids on
+  # hand, one per line, which is what a reader with no id needs to get one.
+  # Neither form fails when the directory is absent — "no answers yet" is the
+  # ordinary state of a run and is not an error.
+  local id="${1:-}" f
+  if [ -n "$id" ]; then
+    f="$RUN_DIR/answer/$id.md"
+    [ -f "$f" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
+    cat "$f"
+    return 0
+  fi
+  [ -d "$RUN_DIR/answer" ] || return 0
+  find "$RUN_DIR/answer" -maxdepth 1 -type f -name '*.md' 2>/dev/null \
+    | sed 's#.*/##;s#\.md$##' | sort
 }
 
 # ---------------------------------------------------------------------------
