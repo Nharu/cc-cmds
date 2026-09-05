@@ -60,8 +60,8 @@ GATE="${GATE_SH:-$repo_root/plugins/cc-cmds/orchestrator/gate.sh}"
 
 # Committed counts. `> 0` is not enough — losing a fixture has to be a failure,
 # not a quieter suite.
-EXPECT_GOLDEN=9
-EXPECT_EQUIV=60          # 51 corpus mutations + the 9 golden ledgers
+EXPECT_GOLDEN=10
+EXPECT_EQUIV=61          # 51 corpus mutations + the 10 golden ledgers
 
 # The vendored reference's digest. Pinned HERE rather than in a data file so
 # that moving the reference and moving its pin are two edits in two files.
@@ -181,6 +181,14 @@ probe_col_ref() {                 # probe_col_ref <LC_CTYPE value> — echoes A/
 # had stopped doing, and the coupling — "if that expression changes in gate.sh
 # this line changes with it" — is the whole value of measuring the observable
 # instead of asserting the vendor of a tool.
+#
+# THE `last unless` BELOW DELIBERATELY DID NOT MOVE when the live walk stopped
+# stepping over a final row with no terminating newline. What this probe couples
+# to is the EXTRACTOR — `^.*\| prev=([0-9a-f]*)\z` — and that expression is
+# unchanged. The loop control around it is not the observable being measured,
+# and the probe's own input is a single line that ends in a newline, so no
+# spelling of that line could change the column it reports. Copying the walk's
+# new branch in here would add a path this probe never takes.
 probe_col_live() {                # echoes A/B/C
   local out rc
   out=$(printf 'x\377x | prev=%s\n' "$PROBE_HEX" \

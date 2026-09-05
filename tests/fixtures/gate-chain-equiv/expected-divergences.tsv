@@ -60,8 +60,17 @@
 # The single pass hashes each row's TRUE BYTES. Under the reference, a row's
 # bytes first went through `read`, which does not carry a NUL through — so a
 # ledger with a NUL spliced into a row passed as intact on the interpreter that
-# drops it. That is the 수용→거부 the nul지움 rows below name, and it is the
-# only judgment this commit moves in the strengthening direction.
+# drops it. That is the 수용→거부 the nul지움 rows below name.
+#
+# The second strengthening axis is the one `read` opens at END OF FILE. The
+# reference's `while IFS= read -r line` never enters its body for a final chunk
+# with no terminating newline, so a row appended there is not visited, not
+# counted, and not compared — while every other consumer of the ledger reads it
+# as an ordinary row. The single pass judges that chunk when it is row-shaped,
+# and the two rows named for it below are the divergence that produces. It is
+# not a false positive: `gate_append` writes through a `printf` format ending in
+# `\n` on both of its branches, so a ledger the gate wrote always ends with a
+# newline and a final row without one did not come through the gate.
 #
 # ---------------------------------------------------------------------------
 # WHERE THE CHARACTER-TYPE PIN NOW IS, recorded here because this list is where
@@ -100,3 +109,5 @@ nul-k1	수용→거부	nul지움	같은 변이를 NUL 을 지우는 인터프리
 nul-k2	수용→거부	nul지움	행 2 에 대해 nul-k1 의 nul지움 항목과 같다 (PR: 이 커밋)
 nul-k3	수용→거부	nul지움	행 3 에 대해 nul-k1 의 nul지움 항목과 같다 (PR: 이 커밋)
 nul-k4	수용→거부	nul지움	행 4 에 대해 nul-k1 의 nul지움 항목과 같다 (PR: 이 커밋)
+nonl	수용→거부	공통	무결한 원장에서 종단 개행만 뗀 사례. 참조는 read 가 마지막 조각에서 비-0 을 돌려받아 그 줄을 방문조차 하지 않으므로 체인 전체를 무결로 통과시키고, 후보는 그 조각이 행 모양인 것을 보고 행 수를 올려 5번째 행에서 끊는다. 이 행이 은폐를 뒤집는 자리다 — 이 사례의 PASS 가 기록하던 명제는 「두 구현은 개행 없는 마지막 행이 무결로 검증된다는 데 동의한다」였고, 통과가 결함을 의도된 동작으로 증명하고 있었다 (PR: 이 커밋)
+golden:insert-last-noprev-nonl	수용→거부	공통	같은 변형에 위조 승인 행을 실은 형태이며, 개행을 찍지 않은 것이 공격의 전부다. 참조는 무결로, 후보는 그 행을 지목해 5번째 행에서 끊김으로 판정한다. 조건이 공통인 이유는 이 발산이 참조의 sed 축에도 인터프리터의 NUL 축에도 걸리지 않고 두 레그에서 똑같이 나기 때문이다 (PR: 이 커밋)

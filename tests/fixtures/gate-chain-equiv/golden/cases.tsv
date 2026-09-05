@@ -35,6 +35,19 @@
 # `missing-ledger` reports broke=0 with rc=1: there is no row to point at,
 # because nothing was read. That pair is the encoding of "not verified", which
 # is a different statement from "verified and intact".
+#
+# The line that moved when a final row with NO TERMINATING NEWLINE became a
+# break is marked too. Before that commit insert-last-noprev-nonl read
+# 0 0 / 0 0 / 0 0 — the same forged approval row as insert-last-noprev, passing
+# as intact for the single reason that the byte after it was never written. The
+# walk ended at the missing newline before the row was counted, so the row
+# consumed no number and the chain was reported whole.
+#
+# It is its own case rather than a variant of insert-last-noprev because the two
+# fail for unrelated reasons: one is a row whose `prev=` cannot be read, the
+# other is a row the walk never reached. Closing the first left the second open,
+# and nothing in the corpus crossed them — `nonl` mutates an INTACT ledger, so
+# reference and candidate agreed there and the agreement read as coverage.
 
 # Data lines carry NO trailing comment: the reader binds the last field to the
 # rest of the line, so an inline note would be parsed as part of column C.
@@ -44,6 +57,7 @@
 
 identity                0 0   0 0   0 0
 insert-last-noprev      1 5   1 5   1 5
+insert-last-noprev-nonl 1 5   1 5   1 5
 insert-last-clean       1 5   1 5   1 5
 insert-last-badbytes    1 5   1 5   1 5
 insert-mid-clean        1 3   1 3   1 3
