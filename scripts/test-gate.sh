@@ -1741,8 +1741,18 @@ rm -f "$RD_G/done"
 # ---------------------------------------------------------------------------
 graded_as '읽기' 'shasum 이 읽기로 등급된다'   -- shasum -a 256 /tmp/x
 graded_as '읽기' 'sha256sum 도 같다'           -- sha256sum /tmp/x
-# `openssl` stays out on purpose — it computes digests AND opens sockets.
-graded_as '등급 미상' 'openssl 은 들어오지 않는다' -- openssl dgst -sha256 /tmp/x
+# `openssl` is graded by SUBCOMMAND rather than by name, because the one name
+# covers hashing, key generation, file conversion and opening a socket. A
+# name-level grade would have to pick one of the four, and the blanket refusal
+# this replaced picked the safest — which also refused `openssl rand`, the
+# spelling the team protocol MANDATES for a witness nonce. So the arm names the
+# harmless subcommands, refuses everything it does not name (`s_client` and
+# `s_server` are the ones that matter), and checks `-out`/`-keyout` across every
+# arm so a write cannot enter wearing a read's subcommand.
+graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sha256 /tmp/x
+graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
+graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
+graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
 
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true
 rm -rf "$SETTINGS_DIR"
