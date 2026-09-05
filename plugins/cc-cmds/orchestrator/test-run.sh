@@ -2154,6 +2154,26 @@ hook_decide() {
       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
+t_ino() {
+  # t_ino <경로> — 이 러너에서 통하는 철자로 dev:ino 를 낸다. 통하는 철자가 없으면
+  # 아무것도 내지 않는다. BSD 는 `-f` 가 포맷 지정자이고 GNU 는 `-f` 가
+  # `--file-system` 이라, 한 철자만 적으면 다른 쪽에서는 에러 없이 엉뚱한 것을 찍는다.
+  local out
+  out=$(stat -L -f '%d:%i' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -f
+  case "$out" in [0-9]*:[0-9]*) printf '%s' "$out"; return 0 ;; esac
+  out=$(stat -L -c '%d:%i' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -c
+  case "$out" in [0-9]*:[0-9]*) printf '%s' "$out"; return 0 ;; esac
+  return 1
+}
+# 훅 판정 단언들보다 먼저 아이노드 계층의 생존 자체를 잰다. 계층이 통째로 죽으면
+# 아래 철자 단언들은 어휘 계층만 검증하게 되는데, 그때 붉어지는 것은 한둘뿐이고
+# 그 문면은 읽는 사람을 진짜 원인에서 멀어지게 한다 — 「심링크가 안 막힌다」로
+# 읽히지 「이 러너의 stat 이 다른 철자를 쓴다」로 읽히지 않는다.
+if [ -n "$(t_ino "$WORK")" ]; then
+  ok "아이노드 계층이 이 러너에서 dev:ino 를 낸다"
+else
+  bad "아이노드 계층" "이 러너에서 stat 이 어느 철자로도 dev:ino 를 내지 않는다 — 아래 철자 단언들은 어휘 계층만 검증한다"
+fi
 check "T13 형제 레인의 settings.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.json")" "deny"
 check "T14 형제 레인의 settings.local.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.local.json")" "deny"
 check "T15 형제 레인의 트랜스크립트는 거부" "$(hook_decide "$HH/.claude-y/projects/abc.jsonl")" "deny"
@@ -2182,8 +2202,11 @@ check "중복 구분자와 현재 디렉터리 참조를 담은 철자도 거부
 # 건너뜀은 커버리지가 사라진 것과 구별되지 않는다.
 HHP=$(cd "$HH/.claude-y" 2>/dev/null && pwd -P)
 FIRM="/System/Volumes/Data${HHP:-$HH/.claude-y}/settings.json"
-if [ -n "$(stat -Lf '%d:%i' "$FIRM" 2>/dev/null)" ] \
-   && [ "$(stat -Lf '%d:%i' "$FIRM" 2>/dev/null)" = "$(stat -Lf '%d:%i' "$HH/.claude-y/settings.json" 2>/dev/null)" ]; then
+# 건너뜀 술어는 `t_ino` 로 판정한다. 한 철자만 쓰면 이 단언 — 훅이 철자가 아니라
+# 아이노드로 판정한다는 것을 증명하는 유일한 단언 — 이 그 철자가 통하지 않는
+# 플랫폼에서 계층 사망과 함께 조용히 사라진다. 계층 사망은 위에서 따로 보고한다.
+if [ -n "$(t_ino "$FIRM")" ] \
+   && [ "$(t_ino "$FIRM")" = "$(t_ino "$HH/.claude-y/settings.json")" ]; then
   check "데이터 볼륨 대체 절대 철자도 거부 (철자가 아니라 아이노드로 판정한다)" \
     "$(hook_decide "$FIRM")" "deny"
 else
@@ -2196,6 +2219,28 @@ if [ -e "$WORK/lane-link" ]; then
 else
   printf 'NOTE: 심링크를 만들지 못해 건너뛴다\n'
 fi
+# 심링크 디렉터리를 낀 상위 참조. 어휘 정규화는 파일시스템을 읽지 않고 `..` 를
+# 접으므로, 커널이 여는 파일과 훅이 재는 파일이 갈릴 수 있다 — 갈리면 판정할
+# 근거가 없으므로 거부여야 한다.
+mkdir -p "$HH/.claude-y/x"
+ln -sfn "$HH/.claude-y/x" "$WORK/lanedir-link" 2>/dev/null
+if [ -d "$WORK/lanedir-link" ]; then
+  check "심링크 디렉터리를 낀 상위 참조 철자도 거부" \
+    "$(hook_decide "$WORK/lanedir-link/../settings.json")" "deny"
+else
+  printf 'NOTE: 디렉터리 심링크를 만들지 못해 건너뛴다\n'
+fi
+# 대소문자 변형. 파일시스템이 대소문자를 무시하면 진짜 형제 레인에 착지하고,
+# 무시하지 않으면 아직 없는 형제 레인이다 — 어느 쪽이든 거부여야 하므로 이
+# 단언은 조건 없이 선다.
+check "대소문자를 바꾼 형제 레인 철자도 거부 (실재하는 레인)" \
+  "$(hook_decide "$HH/.Claude-y/settings.json")" "deny"
+check "대소문자를 바꾼 형제 레인 철자도 거부 (디렉터리가 없는 레인)" \
+  "$(hook_decide "$HH/.Claude-zzz/settings.json")" "deny"
+# 이 음성 대조군이 없으면 위 둘의 통과가 「대소문자 변형을 통째로 거부한다」와
+# 구별되지 않는다.
+check "음성 대조군: 대소문자를 바꿔도 강제 표면이 아닌 이름은 허용" \
+  "$(hook_decide "$HH/.Claude-y/todos/t.json")" "allow"
 
 # --- 런 디렉터리는 허용 목록이다 --------------------------------------------
 # 게이트가 매 행위마다 되읽는 기준선이 스테이지에게 쓰기 가능하면, 강제 표면
@@ -2208,6 +2253,64 @@ check "런 설정 디렉터리는 그대로 거부 (기존 분기 존치)" "$(ho
 # 중단 기록을 남길 수도, 계획을 방출할 수도 없게 된다.
 check "런 디렉터리의 중단 기록은 허용" "$(hook_decide "$RUN_DIR/halt/impl.md")" "allow"
 check "런 디렉터리의 계획 파일은 허용" "$(hook_decide "$RUN_DIR/slice-D.plan.md")" "allow"
+
+# 대체 철자는 픽스처 런 디렉터리에서 잰다. 라이브 런 디렉터리 안에는 심링크와
+# 하위 디렉터리를 만들 수 없다 — 훅과 게이트가 스테이지의 그 쓰기를 막고, 막지
+# 않더라도 라이브 런 상태를 오염시킨다. 위 여섯 단언은 그대로 둔다: 라이브
+# 디렉터리에 대한 리터럴 판정이 픽스처와 같은 답을 내는지가 별개의 정보다.
+hook_decide_rd() {
+  # hook_decide_rd <런 디렉터리> <편집 대상 경로>
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$2" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      bash "$HOOK" --run-dir "$1" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+FRD="$WORK/fixrun"; mkdir -p "$FRD/halt/deep" "$FRD/sub"
+: > "$FRD/surface-digest"
+ln -sfn "$FRD/surface-digest" "$FRD/x.plan.md" 2>/dev/null
+ln -sfn "$FRD" "$WORK/rd-link" 2>/dev/null
+
+check "픽스처 런 디렉터리에서도 구속면 다이제스트는 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/surface-digest")" "deny"
+check "허용 이름이라도 말단이 심링크면 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/x.plan.md")" "deny"
+check "음성 대조군: 진짜 계획 파일은 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/slice-D.plan.md")" "allow"
+check "중단 기록의 깊이는 한 단계뿐" \
+  "$(hook_decide_rd "$FRD" "$FRD/halt/deep/nested.md")" "deny"
+check "음성 대조군: 한 단계 중단 기록은 그대로 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/halt/impl.md")" "allow"
+check "런 매니페스트 plan.md 는 계획 파일이 아니다" \
+  "$(hook_decide_rd "$FRD" "$FRD/plan.md")" "deny"
+check "하위 디렉터리의 계획 파일은 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/sub/x.plan.md")" "deny"
+check "상위 참조를 낀 런 디렉터리 철자도 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/../fixrun/surface-digest")" "deny"
+if [ -d "$WORK/rd-link" ]; then
+  check "런 디렉터리로의 심링크를 통한 철자도 거부" \
+    "$(hook_decide_rd "$FRD" "$WORK/rd-link/surface-digest")" "deny"
+else
+  printf 'NOTE: 런 디렉터리 심링크를 만들지 못해 건너뛴다\n'
+fi
+
+# 새 fail-closed 분기의 도달 가능성. 이 러너에서는 stat 이 정상이라 자연히
+# 도달하지 않으므로, 항상 실패하는 stat 을 PATH 앞에 심는다 — 훅이 자기 PATH 를
+# 앞에 붙이는 것을 끄지 않으면 진짜 stat 이 먼저 잡혀 이 픽스처가 무력해진다.
+# 대상 경로는 평소 허용되는 이름이라, 거부가 나온다면 그것은 이 분기의 것이다.
+mkdir -p "$WORK/stubbin"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/stubbin/stat"
+chmod +x "$WORK/stubbin/stat"
+stat_probe_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$HH/.claude-y/todos/t.json" \
+  | CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 PATH="$WORK/stubbin:$PATH" HOME="$HH" \
+    CLAUDE_CONFIG_DIR="$HH/.claude-x" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh")
+check "stat 이 dev:ino 를 내지 못하면 판정하지 않고 거부한다" \
+  "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+# 그리고 그 거부가 이 분기의 것인지 확인한다. 다른 분기가 먼저 거부하면 위
+# 단언은 통과하면서 아무것도 검증하지 않는다.
+case "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'디바이스:아이노드'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
+  *) bad "stat 부재 거부 사유" "다른 분기가 먼저 거부했다 — 위 단언이 공허하다" ;;
+esac
 
 # --- 운영자 스코프 설정 디렉터리 --------------------------------------------
 hook_decide_xdg() {
