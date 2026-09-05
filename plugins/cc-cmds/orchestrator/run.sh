@@ -1284,6 +1284,22 @@ rundir_init() {
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
+  # The lane this run opened in, and the orchestrator directory it actually
+  # loaded. `config-dir` is tier 2 of `resolve_account`, and it is written HERE
+  # — before any stage exists, so the tiers below it decide the value exactly
+  # once and every later dispatch reads this file instead of re-deciding. That
+  # is the whole mechanism keeping one run's stages on one lane.
+  #
+  # NEITHER FILE IS OVERWRITTEN WHEN IT ALREADY EXISTS. A driver restarting
+  # against a live run directory must not move the lane a running stage is
+  # already spending, and the file's presence is the record that some stage may
+  # already have read it.
+  local cfg
+  if [ ! -f "$RUN_DIR/config-dir" ]; then
+    cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — 런 디렉터리를 초기화할 수 없습니다"
+    printf '%s\n' "$cfg" > "$RUN_DIR/config-dir"
+  fi
+  [ -f "$RUN_DIR/orchestrator-dir" ] || printf '%s\n' "$ORCH_DIR" > "$RUN_DIR/orchestrator-dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -1294,7 +1310,55 @@ rundir_init() {
 # otherwise throw the work straight back at the account that just ran out.
 # ---------------------------------------------------------------------------
 resolve_account() {
-  printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  # FOUR TIERS, in order: the environment, this run's own record, the machine's
+  # setting for the operator, the built-in default. Tier 1's return value is
+  # byte-identical to what the single-tier form produced, which is what keeps a
+  # run that sets the variable unchanged by this widening.
+  #
+  # TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES. This resolver is called on
+  # every stage DISPATCH and not once per run, so with only the environment and
+  # the machine setting, two stages of one run could resolve differently — the
+  # setting file is editable while the run is going, and the environment is not
+  # inherited identically by every spawn path. `rundir_init` writes the answer
+  # once and every dispatch after it reads that file.
+  #
+  # TIERS 2 AND 3 DO NOT FALL THROUGH ON A BAD VALUE. A recorded path that is
+  # not a directory is a BROKEN record, not an absent one; falling back would
+  # spend the opposite lane's quota under a run somebody deliberately sent
+  # elsewhere, and it would do it silently. Absent or empty genuinely is absent
+  # and falls through to the next tier.
+  #
+  # THE REFUSAL IS A NON-ZERO RETURN WITH THE REASON ON STDERR, NEVER `die`.
+  # Every call site is a command substitution, so an `exit` here would kill only
+  # the subshell and hand the caller an empty string — which concatenates into
+  # `/projects` and reads as an ordinary miss. The callers below turn the
+  # non-zero into the stop.
+  local f v
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    printf '%s' "$CLAUDE_CONFIG_DIR"
+    return 0
+  fi
+
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/config-dir" ]; then
+    v=$(sed -n '1p' "$RUN_DIR/config-dir" 2>/dev/null)
+    if [ -n "$v" ]; then
+      [ -d "$v" ] || { warn "런 디렉터리의 config-dir 가 디렉터리가 아닙니다: $v — 폴백하지 않고 정지합니다(폴백하면 한 런의 스테이지들이 서로 다른 레인에 착지합니다)"; return 1; }
+      printf '%s' "$v"
+      return 0
+    fi
+  fi
+
+  f="${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/config-dir"
+  if [ -f "$f" ]; then
+    v=$(sed -n '1p' "$f" 2>/dev/null)
+    if [ -n "$v" ]; then
+      [ -d "$v" ] || { warn "설정 파일의 config-dir 가 디렉터리가 아닙니다: $v ($f) — 폴백하지 않고 정지합니다(폴백하면 운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 씁니다)"; return 1; }
+      printf '%s' "$v"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$HOME/.claude"
 }
 account_has_headroom() { return 1; }   # trivial resolver: no alternate account
 
@@ -1683,11 +1747,16 @@ transcript_path() {
   # function. It aborted quietly through a caller's `|| printf ''`, and the
   # visible symptom was that every healthy stage looked permanently silent.
   local stage="$1"
-  local cachef uuid p
+  local cachef uuid p cfg
   cachef="$RUN_DIR/$stage.transcript"
   if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
   uuid=$(session_uuid "$stage" "$(stage_attempt "$stage")")
-  p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
+  # The resolver is called into a VARIABLE rather than inline. Inline, a refusal
+  # substitutes the empty string and `find /projects` is an ordinary miss — the
+  # fail-closed tier would report "no transcript" in exactly the case it exists
+  # to make loud. The resolver has already named the reason on stderr.
+  cfg=$(resolve_account) || return 1
+  p=$(find "$cfg/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
   printf '%s' "$p"
@@ -1704,7 +1773,10 @@ stage_spawn() {
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out pid pgid
-  cfg=$(resolve_account)
+  # A stage is never launched on an unresolved lane. The resolver refuses only
+  # when a recorded path is broken rather than absent, and launching anyway
+  # would put this stage on whichever lane the empty string happens to name.
+  cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
   out="$RUN_DIR/log/$stage.json"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
@@ -2694,6 +2766,67 @@ $(sed 's/#.*//' "$sib")"
   fi
   if [ "$unwired" = "0" ]; then printf 'ok   선언된 것에 전부 독자·호출부·비교자가 있다\n'
   else fails=$((fails + unwired)); fi
+
+  # --- D: the orchestrator's own sources are a REGISTERED exception ---------
+  # These scripts are in neither protection: not an input to the enforcement
+  # surface digest, and not on the hook's deny list. That is a decision, and it
+  # is asserted here so the next reader can tell it from an oversight — reading
+  # the two mechanisms and finding the orchestrator absent from both looks
+  # exactly like a hole, and someone closing that "hole" would break both.
+  #
+  # WHY EACH ONE LEAVES THEM OUT. The digest covers surfaces that neither move
+  # on their own nor are shared with the installation; these files are the
+  # shared installation, and every deploy would read as tampering. The hook
+  # denies the rule catalog and its own directory, and widening it to the whole
+  # orchestrator directory would deny the very edits a slice against this
+  # repository exists to make.
+  #
+  # WHAT ACTUALLY PROTECTS THEM IS THE CUTPOINT, NOT A DIGEST. A segment's edits
+  # land in its own linked worktree, which no running run reads; what moves the
+  # tree every run loads is a MERGE, and that is what the permission cutpoint
+  # governs. So the assertions below are that the two mechanisms still have the
+  # shape this exception was registered against, not that the files are covered.
+  local orch_ex=0 gate_file hook_file n_all n_rules
+  gate_file="$ORCH_DIR/gate.sh"
+  hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  if [ -f "$gate_file" ]; then
+    n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
+            | grep -cE 'ORCH_DIR|orchestrator' || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   등재된 예외: 구속면 다이제스트의 입력에 오케스트레이터 소스가 없다\n'
+    else
+      printf 'FAIL 구속면 다이제스트가 오케스트레이터 소스를 입력으로 삼는다 (%s건) — 등재된 예외와 어긋난다\n' "$n_all"
+      orch_ex=$((orch_ex + 1))
+    fi
+  else
+    printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
+    orch_ex=$((orch_ex + 1))
+  fi
+  if [ -f "$hook_file" ]; then
+    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
+    # A count comparison rather than a pattern match: it fails the moment an arm
+    # is widened, which a "does the rules arm exist" check would not.
+    #
+    # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
+    # this assertion exists to catch does not need a new line: an arm widened in
+    # place to `*/orchestrator/rules/*|*/orchestrator/*)` leaves both counts at 1
+    # and passes, while denying every edit under the orchestrator directory —
+    # the exact shape the registered exception says is NOT denied. `grep -o`
+    # emits one line per occurrence, so the union spelling reads 2 against 1.
+    n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
+      printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}" "${n_rules:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+  else
+    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    orch_ex=$((orch_ex + 1))
+  fi
+  fails=$((fails + orch_ex))
 
   if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
   printf 'self-check: %s FAIL\n' "$fails"; return 1

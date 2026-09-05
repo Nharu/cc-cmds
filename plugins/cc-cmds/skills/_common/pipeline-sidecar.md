@@ -617,3 +617,66 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 Priority on read: **a halt record present ⇒ halt.** Absent and terminated ⇒ judge by the predicate.
 
 The third row is a measured failure mode, and its retry count is argued in both directions: not zero, because one observation cannot rule out a transient cause; not the full retry budget, because a clean exit with no artifact is itself evidence that the next attempt does the same. Improvisation is deterministic, so a blind retry loop would reproduce it identically and burn the whole budget before reaching the ladder. **This does not restore the stop that the unattended arm removed** — nothing on the skill side can. It converts an unobservable failure into an observable one, which is the most the driver can do from outside.
+
+---
+
+## 6. The volatile run directory — the file list and who writes each
+
+```
+RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
+```
+
+**This directory is not a sidecar, and nothing here is durable state.** §4 already says so of the halt record; it is true of every entry below. Process handles live here and nowhere else, so a stale record and a stale process die together and pid reuse cannot make the driver kill an unrelated live process. It sits under `XDG_STATE_HOME` rather than `${TMPDIR}` because `/var/folders` is swept without a reboot, and "no record ⇒ no process" must not be falsified by a sweep.
+
+**The list is written down because the directory has four writers and no schema.** A sidecar has a kind token, a single declared writer and an append gate; this directory has none of those — it is a pile of small files that four programs create by redirection. Nothing rejects an unknown name, so a reader that guesses cannot be told it guessed wrong. That matters now because the consumer is no longer only the driver: a lane probe reports the run's state to a scheduler outside this repository, and a scheduler that mistakes an unrecognized file for an absent one reads a live run as idle.
+
+**Run directories are never cleaned up.** Measured on one machine: 139 directories at the start of a session and 145 by the end, spanning weeks, more than half of them reading as non-terminal under a naive predicate. Any reader that enumerates this root has to be bounded and has to treat an unrecognized record shape as *undecidable* rather than as *idle* — degrading to "cannot judge" is what kept an earlier on-disk format drift harmless.
+
+### 6.1 The file table
+
+| Path | Writer | What it is |
+| --- | --- | --- |
+| `plan.md` | `autopilot` (kickoff) | the run manifest of §2b — frozen whole, creation-only |
+| `started-at` | driver (`run.sh`) | run open time, epoch seconds |
+| `config-dir` | driver (`run.sh`) | the **lane** this run opened in — tier 2 of the account resolver, written once at run open so every later stage dispatch resolves to the same lane |
+| `orchestrator-dir` | driver (`run.sh`) | the absolute path of the orchestrator directory this run actually loaded |
+| `generation` | driver (`run.sh`) | segment-plan generation counter |
+| `plan.tsv` · `done.txt` | driver (`run.sh`) | the segment rows, and the segments already merged |
+| `<stage>.pid` | driver (`run.sh`) | the spawned stage's pid |
+| `<stage>.pgid` | driver (`run.sh`) | its process-group id — the **fallback** identity handle |
+| `<stage>.start` | driver (`run.sh`) | its start-time fingerprint; `(pid, start time)` is the identity and the pid alone is not |
+| `<stage>.rc` | driver (`run.sh`) | the collected exit status |
+| `<stage>.transcript` | driver (`run.sh`) | cached path of the stage's session transcript |
+| `log/driver.log` · `log/<stage>.json` | driver (`run.sh`) | driver log, and each stage's result envelope |
+| `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |
+| `halt/<stage-id>.md` | **the halting stage** | the halt record of §4 — the one file a stage writes here |
+| `<segment>.plan.md` | the `implement` stage | the plan emitted by that segment's first process, and the admission token its second one is checked against |
+| `settings/` | gate (`gate.sh`) | the per-run settings the stage wrapper launches with, hook included |
+| `settings.lock` | gate (`gate.sh`) | `mkdir` mutex over the settings directory, held by readers and writer alike |
+| `ledger.lock` | gate (`gate.sh`) | the ledger's advisory lock |
+| `ledger-path` | gate (`gate.sh`) | where this run's ledger is, for readers that have only the run directory |
+| `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
+| `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
+| `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
+| `obligation-digest` · `obligation-repeat` | gate (`gate.sh`) | the same pair for open obligations |
+| `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
+| `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
+| `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
+| `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |
+| `notify.stack` | notifier (`notify-run.sh`) | the notification stack's admitted slots |
+| `notify.reported` · `notify.announced-void` | gate (`gate.sh`) | which events already reached the report |
+| `watch.pid` | watcher (`watch.sh`) | the watcher's own pid — **not a stage**, and a census that counts it answers a different question than its name |
+| `watch.state` · `watch.heartbeat` | watcher (`watch.sh`) | last observed ledger size and time; the published heartbeat |
+| `watch.announced-*` | watcher (`watch.sh`), one written by the gate | once-only announcement markers |
+| `stall` | watcher (`watch.sh`) | appended stall observations |
+| `watch.log` | the kickoff's detach redirection | the watcher's stdout and stderr; **no script writes this path** — it is the shell redirection on the line that orphans the watcher |
+
+**A pid file is a stage only if a sibling handle sits beside it.** Both spawners write `<name>.start` and the driver writes `<name>.pgid` on top of that, so a `*.pid` glob alone over this directory counts the watcher as a stage — and the run's termination condition, which has no resolving verb, then never comes true while a watcher runs.
+
+**The two spawners write those files in OPPOSITE orders, so a sibling-less stage pid is a real on-disk state.** The driver writes `<stage>.start` and then `<stage>.pid`; the gate writes `<stage>.pid` and then `<stage>.start`, and it writes no `<stage>.pgid` at all. A stage the gate spawned therefore has a single identity handle with no fallback, and between those two writes its pid file sits here alone. A reader that meets that shape has **not** observed an idle run — it has observed a record it cannot judge, and it must publish "cannot judge" rather than a count. The distinction is the whole point: the count `0` prints as the answer that authorizes a swap, and the run being sampled may be at its busiest. The exemption runs the other way for `watch.pid`, which is exempt **by name**, because the watcher never leaves a sibling and demanding one would make every watcher-only directory permanently undecidable.
+
+**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md` and `<segment>.plan.md` are permitted, and every other path under `RUN_DIR` is denied. That is this table read back as an enforcement rule — those two rows are exactly the ones naming a stage as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
+
+**Both permitted names are narrower than they read, and the hook enforces the narrower reading.** `halt/<stage-id>.md` is a **direct child and one level only** — a path burrowing below it, `halt/<anything>/<anything>.md`, is not on this list and is denied, because the halt record is one file per stage and a subtree under that name is a second storage area nothing declared. And what the list permits is **the file sitting at that name, not the name itself**: a leaf that is a symlink is denied even where its name matches — whether or not the link resolves — since a name-only match lands wherever the link points and every gate-owned row above sits one `ln -s` away. **That sentence is narrower than it reads, and the two gaps are named here rather than left for a reader to rediscover the hard way.** A hard link at a permitted name is not denied: it has no link to follow and shares the target's device and inode outright, so no symlink test can separate the two names — the split between a name and a file has to come from the inode side there. And the check is reached only for a path this arm decides at all: a path sitting outside the run directory whose leaf resolves inside it shares no ancestor with the run directory, so it is never judged here. Neither gap is new — before this allow-list existed the whole run directory was default-allow, so both were open then too — but neither is closed by the sentence above either.
+
+**`config-dir` and `orchestrator-dir` are written once and never overwritten.** A driver restarting against a live run directory must not move the lane a stage is already spending, and the file's presence is the record that some stage may already have read it. A run directory laid down before these two existed simply has neither; a reader reports that as "unrecorded" rather than as an error, because otherwise the whole history becomes unreadable at once.
