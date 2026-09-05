@@ -317,6 +317,28 @@ surface_of_terraform() {
   esac
 }
 
+surface_of_openssl() {
+  # The subcommand decides, for the reason the digest row states in as many
+  # words: this one name covers hashing, key generation, file conversion and
+  # opening a socket, so a name-level grade would have to pick one of four.
+  #
+  # The default is the TOP of the range, not the bottom. An unrecognized
+  # subcommand is refused rather than read as harmless, because the subcommands
+  # this table does not name include `s_client` and `s_server` — and a grade
+  # that guesses low on those is the laundering the whole table exists to stop.
+  #
+  # `-out <path>` is checked across every arm, not per subcommand. `rand` and
+  # `dgst` both accept it, so an arm that graded `rand` as a read on the
+  # strength of its name alone would let `openssl rand -out secrets.bin 32`
+  # through as one.
+  case " $* " in *" -out "*|*" -keyout "*) printf '워크트리쓰기'; return 0 ;; esac
+  case "${1:-}" in
+    rand|dgst|sha256|sha1|version|list|help) printf '읽기' ;;
+    '') printf '읽기' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -343,6 +365,34 @@ surface_of_argv0() {
     # sha256.
     shasum|sha256sum|sha1sum|sha512sum|cksum|b2sum)
       printf '읽기' ;;
+    # Witness primitives. The same DEADLOCK shape as the digest tools above, one
+    # layer out: the agent-team protocol requires a scratch directory and a
+    # CSPRNG nonce before any member is spawned, and it forbids the model
+    # generating that nonce itself. With no row here every spelling was refused,
+    # so a review stage could not reach the point of dispatching its team at all
+    # — and the merge rule wants a review record, so one missing row closed the
+    # whole back half of the pipeline. Measured: a review stage arrived, tried
+    # `mktemp -d`, `openssl rand`, `uuidgen`, `xxd` and `od` in turn, was refused
+    # on every one, and halted before spawning.
+    #
+    # `uuidgen` takes no file operand and writes nothing, so its grade is the
+    # same as reading. `mktemp` DOES write, and where it writes depends on a
+    # template it may or may not be given, so it takes the higher of the two
+    # spellings rather than a guess — `트리밖쓰기` covers a tree path too.
+    #
+    # `xxd` and `od` stay out. They were tried here only as nonce fallbacks and
+    # are not needed once the two above resolve; `xxd` also takes an output file
+    # as its second operand, so a bare-name grade would be the same imprecision
+    # the `openssl` note below refuses.
+    uuidgen)
+      printf '읽기' ;;
+    mktemp)
+      printf '트리밖쓰기' ;;
+    # The note above says `openssl` may not sit in the digest row because one
+    # name would cover both hashing and opening a socket. That reasoning holds
+    # and is not overturned here — it is the reason this is a subcommand table
+    # rather than a name, the same shape `git`, `gh` and `terraform` already use.
+    openssl) surface_of_openssl "$@" ;;
     git) surface_of_git "$@" ;;
     gh)  surface_of_gh "$@" ;;
     # `lockf` WRAPS another command, so it carries no grade of its own. Three
@@ -396,6 +446,24 @@ surface_of_argv0() {
     # pre-authorization row for a read costs a line in the manifest, while
     # letting a migration through as a read costs the database.
     mysql|mysqladmin|mysqldump|psql|pg_dump|pg_restore|createdb|dropdb|sqlite3|mongo|mongosh|redis-cli)
+      printf '외부상태변경' ;;
+
+    # CI/CD triggers. Same shape as the database clients above and the same
+    # measured failure: a run whose target carries the `배포` cutpoint reached
+    # its apply command and was refused, because the manifest's apply command is
+    # a site-local script and no row named it. `등급 미상` refuses rather than
+    # issuing an approval, so all three ways out were closed at once —
+    # `--surface` is a checked claim and every claim mismatches an unknown
+    # grade, the basename normalization makes the absolute-path spelling
+    # identical, and `bash -c` would record a production deploy as a worktree
+    # write, which is the laundering this table exists to refuse. The run could
+    # not deploy at all despite holding the cutpoint that authorizes it.
+    #
+    # Graded `외부상태변경` from argv0 alone, so a read-only probe of the same
+    # script (`--probe`) grades the same way. That is the intended side of the
+    # trade: a probe needing a pre-authorization row costs a line in the
+    # manifest, while a deploy passing as a read costs the environment.
+    dasee-jenkins-trigger.sh)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
