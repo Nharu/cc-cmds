@@ -21,5 +21,7 @@ if grep -q -- '-group' "$NOTIFIER_LOG"; then
   echo "FIRE: repeat-mode must NOT use -group (pile-up intentional)" >&2
   exit 1
 fi
-grep -q -- '-title \[cc-cmds\] iter' "$NOTIFIER_LOG" || { echo "FIRE: title missing" >&2; exit 1; }
+# Unbracketed for the same reason as the single-mode fixture: a leading bracket
+# makes terminal-notifier drop the title and show the application name instead.
+grep -q -- '-title cc-cmds iter' "$NOTIFIER_LOG" || { echo "FIRE: title missing" >&2; exit 1; }
 grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "FIRE: -execute ':' no-op missing" >&2; exit 1; }
