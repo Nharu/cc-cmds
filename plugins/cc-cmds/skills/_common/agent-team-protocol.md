@@ -1,6 +1,6 @@
 # Agent Team Protocol (Shared Rules)
 
-Shared orchestration contract for multi-agent team workflows (`design`, `design-lite`, `design-analyze`, `design-apply`, `design-audit`, `review`, `review-lite`). A team member is a **nameless background task**: the lead spawns it with `Agent` (`subagent_type: "claude"`, **no `name`**, `run_in_background: true`), resumes it across rounds by its `agentId`, and the task **self-terminates** when it returns.
+Shared orchestration contract for multi-agent team workflows (`design`, `design-lite`, `design-analyze`, `design-apply`, `design-audit`, `review`, `review-lite`, `review-unattended`). A team member is a **nameless background task**: the lead spawns it with `Agent` (`subagent_type: "claude"`, **no `name`**, `run_in_background: true`), resumes it across rounds by its `agentId`, and the task **self-terminates** when it returns.
 
 A returning task delivers its round product two ways at once: a **durable witness file** the member writes before returning, and the **ephemeral return text / background completion notification**. The witness is the **authoritative source of truth**; the notification and return text are demoted to **early-wake hints**. This split is load-bearing: the completion notification is a push channel empirically dropped / duplicated / mis-routed by upstream harness bugs, and the returned `agentId` cannot be status-polled (`TaskGet` on a returned background `agentId` answers "Task not found"). If the lead trusted the dropped channel it would either park forever waiting for a finish notice that never arrives, or — worse — synthesize a round product it never observed (fabrication). The witness closes both holes: the lead reconciles against on-disk bytes the member alone wrote, never against a notification.
 
@@ -8,11 +8,17 @@ A returning task delivers its round product two ways at once: a **durable witnes
 
 Spawn each member as a nameless background task: `Agent({ subagent_type: "claude", run_in_background: true, prompt: <self-contained assignment> })`. A task does **not** share the lead's conversation — embed everything load-bearing into the prompt (role, round, all inputs the member must act on, plus the witness parameters below). Record the returned `agentId`, the member's `scratchDir`, **its `outputFile`** (the `output_file` path the spawn envelope exposes), the team's **`epoch`**, and the member's **round-1 `witnessNonce`** in the ledger immediately, with the same immediacy (see **Role↔agentId ledger v3**). Spawns are synchronous calls: a spawn error is returned inline and handled inline (no dispatch-failure bound needed).
 
-Before spawning the first member of a team, the lead creates one team witness directory **out-of-tree**:
+Before spawning the first member of a team, the lead creates one team witness directory **out-of-tree**, rooted under the driver-exported run directory when there is one and under the system temp dir otherwise:
 
 ```
-WITNESS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-team-witness-<slug>.XXXXXX")
+WITNESS_ROOT="${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}"
+STAGE_TAG=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-}" | tr -c 'A-Za-z0-9._-' '-')
+WITNESS_DIR=$(mktemp -d "${WITNESS_ROOT}/cc-team-witness-<slug>${STAGE_TAG:+.${STAGE_TAG}}.XXXXXX")
 ```
+
+**Root.** Re-rooting under the run directory is a **pure relocation** — it changes no schema, no cleanup path guard, and no same-filesystem rename atomicity for the sibling temps — and it is what fixes the **durability grade** of everything published in this directory: a system temp dir is vulnerable to a reboot, a run directory is not. A run with no driver exports no `CC_PIPELINE_RUN_DIR`, takes the fallback, and is byte-identical to before.
+
+**Name — no new attempt discriminator is minted.** A retried segment gets a fresh scratch dir per attempt and each attempt's ledger starts at `epoch 1`, so `max(epoch)` cannot tell attempts apart. The stage id already carries `<segment>#<attempt>`, so the directory name carries **that id, sanitized** — every character outside `[A-Za-z0-9._-]` replaced, the `#` above all — and the tag is omitted entirely when no stage id is exported. The lead additionally stamps the raw id once per stage into `${WITNESS_DIR}/.attempt` (leading dot, no `.md` suffix, so it is hidden from the witness key glob), which makes the directory self-describing to a later reader.
 
 Out-of-tree placement makes the two-command boundary gate (`verification.md` §6 — assertion 1 plus the three scoped worktree assertions defined there) self-evidently satisfied — even in a user project where `docs/` is tracked, the witness adds **0 surface** to `git status`. Each **fresh** team (the `design` Step-5 walkthrough team, the Step-6 refinement team) gets its **own** nested `mktemp -d` directory, anchored per-row in the ledger as each row's `scratchDir` (see **Role↔agentId ledger v3**) so it survives compaction. Each fresh team is also assigned a **monotone `epoch`** (generation index — the Step-3 discussion team is `epoch 1`; each subsequent fresh team — a Step-5 walkthrough team, a Step-6 refinement team, a `design-analyze` Step-8 re-composition — takes `epoch := max(disk epoch, 0) + 1`, **re-derived from the on-disk ledger at spawn, never from an in-context counter** (a counter lost to a compaction would re-stamp a colliding epoch); the `max` for the **increment** is taken over **all** rows **including `aborted`** so the generation index stays monotone-unique even across a fully-aborted prior team), stamped on **every one of its rows** at spawn in the **same recording window as `agentId`/`scratchDir`** (no new exposure window). The current team is then identified from disk as **`max(epoch)` over non-aborted rows** — the **increment domain is all rows** (uniqueness) while the **selection domain is non-aborted rows** (current team) — a derived quantity with no separate pointer that could desync from the rows, so the scope survives a compaction that leaves no `state=running` row.
 
@@ -135,7 +141,7 @@ Escalate (inline `AskUserQuestion`) only if the resume or the flip Edit itself e
 
 **Reset-on-every-cross-round-resume is a protocol generalization.** The stallMark reset was previously respawn-only. This gate generalizes it to **every** cross-round resume/flip: zero `reentryCount` + `unavailStreak` + `emptyStreak` + `growthStreak` and set `lastBytes:=∅` (each round is a fresh witnessing obligation, so restarting `growthStreak` per round is correct — a member cannot cross a round boundary without publishing that round's witness, so a per-round reset cannot mask a babbler — except the negligible pathological class already bounded by the harness per-agent lifetime, the same class the never-returns escalation treats as negligible), while **keeping** `agentId`/`outputFile` (unlike a respawn, which mints new ones). This is a deliberate addition to the reset rule, recorded here rather than left as a silent side effect.
 
-**Classification.** Hard-MUST protocol prose, not a lint-enforced `## Control-Flow Invariants` block — the same reasoning as the happens-before gate: this shared `_common` file is Read by all seven skills, so a per-skill CFI copy would drift seven ways. It adds **no** new turn-yield semantics — a synchronous pre-wait checklist evaluated from a ledger read; self-heal is tool calls (resume + Edit), and only a hard dispatch error surfaces (the existing inline path). The one Korean line is a one-way progress notice, not an escalation surface.
+**Classification.** Hard-MUST protocol prose, not a lint-enforced `## Control-Flow Invariants` block — the same reasoning as the happens-before gate: this shared `_common` file is Read by all eight skills, so a per-skill CFI copy would drift eight ways. It adds **no** new turn-yield semantics — a synchronous pre-wait checklist evaluated from a ledger read; self-heal is tool calls (resume + Edit), and only a hard dispatch error surfaces (the existing inline path). The one Korean line is a one-way progress notice, not an escalation surface.
 
 ## Reconcile ladder (witness-absent re-entry)
 
@@ -169,7 +175,7 @@ A multi-round team injects the prior round's peer findings **verbatim** into the
 
 If round N was closed as partial via Case-2 option ③, the missing member's round-N+1 verbatim-injection slot **carries the explicit absence annotation** (no empty slot, no silent omission) — so the N+1 peers see that slot as "no report (missing due to respawn failure)" and avoid a soft-fabrication that assumes a complete peer that never existed.
 
-This rule lives as **hard-MUST protocol prose**, not a lint-enforced `## Control-Flow Invariants` block: `agent-team-protocol.md` is a shared `_common` document Read by all seven skills (not a SKILL.md), so a per-skill CFI copy would drift seven ways.
+This rule lives as **hard-MUST protocol prose**, not a lint-enforced `## Control-Flow Invariants` block: `agent-team-protocol.md` is a shared `_common` document Read by all eight skills (not a SKILL.md), so a per-skill CFI copy would drift eight ways.
 
 ## Anti-fabrication (disk is the SOT)
 
@@ -195,7 +201,7 @@ Two cases (counters) plus one routing rule:
 
 The model is roster-less, so an in-context list of agentIds evaporates on compaction with no fallback. Persist a **durable ledger** co-located with each skill's existing artifact:
 
-- **design / design-lite / design-apply / design-audit / review / review-lite**: an HTML-comment block at the top of the output document (right after the H1, before the first `##`): `<!-- cc-design-ledger v3 … -->`. A visible `##` section is forbidden (it would collide with the walkthrough / implement / audit heading parsers and would leak opaque agentIds into the user-facing doc). The doc is created as an **early stub** (title + ledger block) at spawn time, before Step-4 save.
+- **design / design-lite / design-apply / design-audit / review / review-lite / review-unattended**: an HTML-comment block at the top of the output document (right after the H1, before the first `##`): `<!-- cc-design-ledger v3 … -->`. A visible `##` section is forbidden (it would collide with the walkthrough / implement / audit heading parsers and would leak opaque agentIds into the user-facing doc). The doc is created as an **early stub** (title + ledger block) at spawn time, before Step-4 save.
 - **design-analyze**: a `"ledger"` key in the existing `.{slug}.work.json` (already machine-only) holding the same per-row data.
 
 Each ledger entry is **behavior-bearing**, with a **per-row `outputFile`** and **`stallMark`** added in v3 (on top of v2's `scratchDir`):
@@ -223,7 +229,7 @@ where `state ∈ {running, done, aborted}`, `outputFile` is the member's harness
 | Artifact                                                   | Records                                                           | Author                           | Location                                         | Lifetime                                                                                    |
 | ---------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | **Ledger** (`cc-design-ledger v3` / work.json `"ledger"`)  | STATE + per-row transient `scratchDir`, `outputFile`, `stallMark` | **lead**                         | in-tree                                          | whole workflow                                                                              |
-| **Witness** (`${scratchDir}/{role-slug}.{round/phase}.md`) | CONTENT (full product, sentinel-terminated)                       | **member** (sole, atomic rename) | `${TMPDIR:-/tmp}` (system temp dir), out-of-tree | deleted on normal workflow completion (all terminal rows); retained on workflow-level abort |
+| **Witness** (`${scratchDir}/{role-slug}.{round/phase}.md`) | CONTENT (full product, sentinel-terminated)                       | **member** (sole, atomic rename) | `${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}` (driver run dir, else system temp dir), out-of-tree | deleted on normal workflow completion (all terminal rows); retained on workflow-level abort |
 
 Order (MUST, = the happens-before gate): `witness_present` → lead READs the content → lead fills the ledger row `done` + last-return **from the witness content**. The ledger holds no content; the witness holds no `agentId`/state.
 
@@ -235,4 +241,26 @@ When spawning or resuming a member, embed this self-contained header at the top 
 
 ## Per-skill parameter seam
 
-The contract above is defined **once** here — including the full ledger v3 row schema, of which `outputFile` and `stallMark` are **protocol-owned columns**, not per-skill parameters. Each SKILL.md supplies only its **parameters**: the `cc-team-witness-<slug>` scratch-dir `mktemp` invocation and which rounds / phases are witnessed (e.g. `design` marks its fidelity / walkthrough / refinement / coherence phases witnessed; `design-audit` marks its single `fanout` phase witnessed; `design-analyze` carries the ledger in its `work.json` `"ledger"` rows). The six document-ledger skills now **point to this row schema** rather than re-typing the column list (the by-reference collapse), so the schema is genuinely 'defined once' and cannot drift. No skill inlines or paraphrases the contract — all seven Read this file, so there is no duplicated copy to drift (and no new lint phrase / PAIR is introduced).
+The contract above is defined **once** here — including the full ledger v3 row schema, of which `outputFile` and `stallMark` are **protocol-owned columns**, not per-skill parameters. Each SKILL.md supplies only its **parameters**: the scratch-dir `mktemp` invocation (its root and name form fixed under **Spawn** above), which rounds / phases are witnessed (e.g. `design` marks its fidelity / walkthrough / refinement / coherence phases witnessed; `design-audit` marks its single `fanout` phase witnessed; `design-analyze` carries the ledger in its `work.json` `"ledger"` rows), and whether the skill opts in to the **progress checkpoint** defined below. The seven document-ledger skills now **point to this row schema** rather than re-typing the column list (the by-reference collapse), so the schema is genuinely 'defined once' and cannot drift. No skill inlines or paraphrases the contract — all eight Read this file, so there is no duplicated copy to drift (and no new lint phrase / PAIR is introduced).
+
+### Parameter — progress checkpoint (opt-in)
+
+A member holds its findings long before its first witness lands; the lead structurally cannot. So the **member** writes a running checkpoint of what it has so far, and the sole-authorship anchor is unchanged — the lead never writes a member's witness and never writes a member's checkpoint either.
+
+**Opted in by `review`, `review-unattended` and `review-lite` only.** A member of a skill that has not opted in writes no checkpoint. The clause below is therefore **not** part of the task-assignment header block: every skill that spawns a team embeds that header verbatim, so a clause in its body would start checkpoint writing in stage kinds this parameter has neither measured nor costed — `design-audit`'s independent-replicate fan-out above all, a single round where the "ride along on a call you were making anyway" cadence does not hold. An opted-in SKILL.md appends the clause **after** the header instead.
+
+- **Path** — a `partial/` subdirectory beside the witnesses: `${scratchDir}/partial/{role-slug}.{round/phase}.md`. It sits outside the witness key namespace.
+- **Sentinel** — the last line is `<!-- cc-partial: {role-slug} {round/phase} progress {WITNESS_NONCE} seq=<n> -->`. It differs from the witness sentinel in **two tokens**: the comment key (`cc-witness` → `cc-partial`) and the state verb (`complete` → `progress`).
+- **Publish** — write the whole file to a sibling temp and publish with plain `mv`. **`mv -n` is not used here**; the distinction and its reason are owned by `_common/sidecar.md` (「**Plain `mv`, never `mv -n`.**」) and are not restated in this file.
+- **Cadence** — once the first finding clears the member's own confirmation bar (a dedicated turn is allowed for that one), then refreshed on Bash calls the member was making anyway. `seq` counts from 1.
+- **Nothing new is minted** — no phase token, no nonce (the witness nonce is reused verbatim), no ledger column, and no new substitution parameter: the path is derived from `{WITNESS_PATH}`, and the clause substitutes only the four the header already substitutes.
+
+**Nobody reads a checkpoint in a live run.** If the lead could read one, the reconcile ladder's fail-closed gates would acquire a textually-available soft fallback at exactly the moment pressure is highest — and a checkpoint is by definition unconverged and un-cross-reviewed, which is precisely the material Round 2 exists to filter. This rule binds the **lead**, so it lives here and is deliberately absent from the clause injected into members.
+
+`witness_present` fails against checkpoint bytes at **two conjuncts independently** — the path differs (conjunct 1) and the last line's two tokens differ (conjunct 2) — so it is fail-closed against a path slip and a content slip alike.
+
+Clause text, appended verbatim after the task-assignment header by an opted-in SKILL.md:
+
+```
+**Progress checkpoint (MUST)**: from your first confirmed finding on, write your ranked partial findings whole to a sibling temp and publish with plain `mv` (never `mv -n` — `_common/sidecar.md`) at `$(dirname {WITNESS_PATH})/partial/{role-slug}.{round/phase}.md`, last line exactly `<!-- cc-partial: {role-slug} {round/phase} progress {WITNESS_NONCE} seq=<n> -->`, `seq` from 1. Refresh on Bash calls you were already making.
+```
