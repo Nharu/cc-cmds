@@ -2806,8 +2806,15 @@ $(sed 's/#.*//' "$sib")"
     # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
     # A count comparison rather than a pattern match: it fails the moment an arm
     # is widened, which a "does the rules arm exist" check would not.
-    n_all=$(sed 's/#.*//' "$hook_file" | grep -c 'orchestrator' || true)
-    n_rules=$(sed 's/#.*//' "$hook_file" | grep -c '\*/orchestrator/rules/\*' || true)
+    #
+    # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
+    # this assertion exists to catch does not need a new line: an arm widened in
+    # place to `*/orchestrator/rules/*|*/orchestrator/*)` leaves both counts at 1
+    # and passes, while denying every edit under the orchestrator directory —
+    # the exact shape the registered exception says is NOT denied. `grep -o`
+    # emits one line per occurrence, so the union spelling reads 2 against 1.
+    n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
     if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
       printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
     else

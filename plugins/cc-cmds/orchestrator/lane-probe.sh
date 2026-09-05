@@ -71,15 +71,34 @@ probe_shape_ok() {
   # an idle run. An empty or non-numeric pid file is the same failure one level
   # down; it is reachable because a spawner's redirection creates the file
   # before it writes into it.
-  local d="$1" f pid
+  #
+  # THIS CHECK MUST ADMIT EXACTLY THE SET THE CENSUS COUNTS. `cc_stage_is_live`
+  # requires a sibling handle — `<name>.start` or `<name>.pgid` — beside a pid
+  # before it will call that pid a stage, and a pid it rejects there is simply
+  # not counted. So a pid file this shape check waves through without the same
+  # requirement lands in the census as 0, and 0 prints as `아님` — the answer
+  # this file's own header calls the one that authorizes a swap. The window is
+  # real rather than theoretical: the two spawners write the pid and the
+  # fingerprint in OPPOSITE orders, so a stage exists whose pid file is on disk
+  # before its handle is, and a probe run inside that window must say it cannot
+  # judge rather than say the machine is idle.
+  local d="$1" f pid seg
   [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
   for f in "$d"/*.pid; do
     [ -e "$f" ] || continue
+    seg=${f##*/}; seg=${seg%.pid}
+    # The watcher is exempt BY NAME, not by shape. It never leaves a sibling
+    # handle, which is exactly how the census already declines to count it; if
+    # this check demanded one anyway, every watcher-only run directory on disk —
+    # and there are roughly ninety of them — would report 판정 불가 forever, and
+    # a probe that can never say 아님 stops being a gate at all.
+    [ "$seg" = "watch" ] && continue
     [ -r "$f" ] || return 1
     pid=$( { cat "$f" 2>/dev/null || true; } | tr -d '[:space:]')
     case "$pid" in
       ''|*[!0-9]*) return 1 ;;
     esac
+    [ -f "$d/$seg.start" ] || [ -f "$d/$seg.pgid" ] || return 1
   done
   return 0
 }
