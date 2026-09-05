@@ -357,6 +357,9 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local dl sb
+  dl=$(manifest_field '인가' '벽시계 마감')
+  sb=$(manifest_field '인가' '무진전 상한')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -378,7 +381,21 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
-    printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
+    # CONDITIONAL, both of them, and that is what keeps every run already in
+    # flight alive. `deadline` used to be an UNCONDITIONAL `printf`, so a
+    # manifest without the field still contributed a line with an empty value.
+    # The wall-clock deadline is being replaced by a progress-based bound, and
+    # emitting the replacement unconditionally would move the digest of every
+    # manifest ever written — each of which lacks the new field — so the next
+    # gate call of every in-flight run would refuse on a mismatch nobody caused.
+    #
+    # Row-shaped items already solve this with `grep … || true`: absent means
+    # zero bytes. These follow that, so a manifest that declares neither field
+    # serializes exactly as it did, and one that declares `벽시계 마감` — which
+    # is every manifest written so far — serializes byte-identically to before.
+    [ -n "$dl" ] && printf 'deadline\t%s\n' "$dl"
+    [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    true
   } | sort
 }
 

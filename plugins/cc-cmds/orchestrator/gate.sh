@@ -3743,64 +3743,77 @@ gate_drain_notify_state() {
   return 0
 }
 
-gate_deadline_ok() {
-  # gate_deadline_ok <kind> <cutpoint>
+gate_run_ended_ok() {
+  # gate_run_ended_ok <kind> <cutpoint>
   #
-  # THE DEADLINE IS A DISPATCH GATE, and until now nothing read it. It is frozen
-  # into the binding digest and compared at entry, but `gate.sh` mentioned
-  # neither the field nor a comparison, and the only callers of the driver's own
-  # helper sit in the fixed-graph loop the router never enters. The value a user
-  # answered for at kickoff did not reach execution — the same shape #208
-  # recorded for the cutpoint. Measured: a run past its deadline had `plan
-  # --kind skill` answer "통과 예상".
+  # THE WALL CLOCK IS GONE AND THE GATE IT HELD IS NOT. What used to sit here
+  # was a dispatch-and-merge gate keyed on `벽시계 마감`; this is the same gate
+  # keyed on whether a progress-based boundary has ENDED the run.
   #
-  # Checked on every acting call, not only at entry: a deadline that was in the
-  # future when the run started is the normal case, so entry alone is half.
+  # The clock measured elapsed time and the thing worth stopping is pointless
+  # spinning. In three measured cases the clock ran through no fault of the
+  # run's — the machine was asleep for 35 hours, an external queue held it for
+  # most of 262 minutes, nobody resumed it. One run died having performed ZERO
+  # acts, and the independent review it forced cost 2h17m and 82.23 USD. The
+  # purpose survives; the yardstick is replaced, because the clock was a poor
+  # proxy for it.
   #
-  # It gates DISPATCH and MERGE and nothing else, per the contract — a stage in
-  # flight runs to completion and is classified normally, and the run may still
-  # record rows, close approvals and propose that it is done. A deadline that
-  # stopped everything would strand the run instead of ending it.
-  local kind="$1" cut="$2" dl stamp off now idx merge_idx
-  dl=$(manifest_field '인가' '벽시계 마감')
-  case "$dl" in ''|'없음'|'(없음)') return 0 ;; esac
-
-  # `date -d` is GNU and `date -j -f` is BSD, so neither parses this. What both
-  # do have is `date +FMT` under a TZ, so the comparison is made in the
-  # deadline's OWN zone: render now there, and compare digit strings.
-  stamp=$(printf '%s' "$dl" | cut -c1-19 | tr -cd '0-9')
-  off=$(printf '%s' "$dl" | cut -c20-)
-  case "$off" in
-    Z|'')      now=$(date -u +%Y%m%d%H%M%S) ;;
-    # POSIX TZ inverts the sign: UTC+9 is written `UTC-9`.
-    +*:*)      now=$(TZ="UTC-${off#+}" date +%Y%m%d%H%M%S) ;;
-    -*:*)      now=$(TZ="UTC+${off#-}" date +%Y%m%d%H%M%S) ;;
-    *)
-      # An offset this cannot read must NOT silently block every act — a
-      # deadline the gate cannot compare is a reason to say so, not to refuse.
-      warn "벽시계 마감의 시간대를 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"
-      return 0 ;;
-  esac
-  [ ${#stamp} -eq 14 ] || { warn "벽시계 마감의 형식을 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"; return 0; }
-  [ "$now" -le "$stamp" ] 2>/dev/null && return 0
+  # WHAT ENDS A RUN NOW is `gate_end_run`, called from the two boundaries that
+  # sit outside the pending-approval suppression: the cost ceiling at 100% and
+  # the stagnation bound. This function only reads the mark they leave.
+  #
+  # It gates DISPATCH and MERGE and nothing else, exactly as the deadline did —
+  # a stage in flight runs to completion and is classified normally, and the run
+  # may still record rows, close approvals and propose that it is done. A
+  # boundary that stopped everything would strand the run instead of ending it.
+  local kind="$1" cut="$2" mark idx merge_idx
+  [ -s "$RUN_DIR/done" ] || return 0
+  mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
 
   if [ "$kind" = "skill" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
+    warn "런이 이미 종단했습니다 ($mark) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
     return "$GATE_EXIT_RULE"
   fi
   # A DONE PROPOSAL HAS NO ACT BEHIND IT, so the merge arm below must not judge
   # it. `--cutpoint` is required of every acting call and carries no meaning
-  # here — there is nothing for it to authorize — yet the deadline read it and
-  # refused the proposal as if it were a merge. The consequence is the worst
-  # available one: a run past its deadline could not record that it had ended,
-  # so no `done` file was written, the snapshot rendered it in flight forever,
-  # and the watcher never reaped itself.
-  [ "$kind" = "propose-done" ] && return 0
+  # here — there is nothing for it to authorize — yet the deadline this replaces
+  # read it and refused the proposal as if it were a merge. The consequence was
+  # the worst available one: a run past its bound could not record that it had
+  # ended, so the snapshot rendered it in flight forever and the watcher never
+  # reaped itself. Spelled as a `case` rather than the `[ … ] && return 0` the
+  # deadline used, so the one surviving occurrence of that literal belongs to
+  # exactly one function and an assertion naming it cannot pass on the wrong one.
+  case "$kind" in propose-done) return 0 ;; esac
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 마감 뒤로 머지는 없습니다"
+    warn "런이 이미 종단했습니다 ($mark) — 종단 뒤로 머지는 없습니다"
     return "$GATE_EXIT_RULE"
+  fi
+  return 0
+}
+
+gate_end_run() {
+  # gate_end_run <경계 이름> <사유> — a boundary ENDS the run.
+  #
+  # THE DIFFERENCE BETWEEN THIS AND `gate_issue_boundary_approval` IS THE WHOLE
+  # POINT. An approval asks a person; ending needs no one, and the state this
+  # design targets is precisely the one where nobody is awake to be asked. A
+  # boundary that could only ask is a boundary that does nothing at 4am.
+  #
+  # Idempotent by the mark itself: `done` already written means some earlier
+  # decision — this boundary, another one, or an accepted proposal — already
+  # ended the run, and the first reason is the true one. Rewriting it would
+  # replace the morning's account of why the night stopped.
+  local name="$1" why="$2"
+  [ -s "$RUN_DIR/done" ] && return 0
+  gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
+    "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done"
+  warn "경계 $name 이 런을 끝냅니다 — $why"
+  if cc_caller_is_router; then
+    cc_notify_fire status "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
   fi
   return 0
 }
@@ -3948,7 +3961,7 @@ gate_verb_act() {
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
   if [ "$verb" != "grade" ]; then
-    gate_deadline_ok "$kind" "$cutpoint" || exit $?
+    gate_run_ended_ok "$kind" "$cutpoint" || exit $?
   fi
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
@@ -5899,6 +5912,19 @@ gate_boundaries() {
   fi
   # B4 stays live even while waiting: cost can still climb.
   gate_b4_cost
+  # AND B5 STANDS HERE FOR EXACTLY THAT REASON. The stagnation BOUND cannot
+  # reuse B1's counter: B1 increments and compares inside its own evaluation,
+  # and B1's own firing suspends the arm it sits in — an open approval skips
+  # B1, B2 and B3 entirely, so the counter freezes at the first threshold and
+  # never reaches a second one. Nobody answering is the state this whole design
+  # targets, so "wait for the person to close B1's approval" is not a path.
+  #
+  # So B5 keeps its OWN counter and increments it here, in the always-evaluated
+  # position. Moving only the increment out would break the suppression B1
+  # deliberately relies on ("without the suspension B1's own remedy would reset
+  # the counter that fired it"), which is why both the increment and the
+  # comparison live on this side.
+  gate_b5_stagnation_bound
 }
 
 gate_b1_stagnation() {
@@ -6023,6 +6049,11 @@ gate_b3_act_budget() {
 }
 
 gate_b4_cost() {
+  # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
+  # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
+  # ceiling is now one of the two bounds that keep a run finite at all: the
+  # wall-clock deadline that used to do that job is gone, and an approval nobody
+  # answers is not a bound.
   local declared spent pct
   declared=$(manifest_field '인가' '비용 천장')
   case "$declared" in ''|없음) return 0 ;; esac
@@ -6031,7 +6062,54 @@ gate_b4_cost() {
   [ -n "$spent" ] || return 0
   pct=$(awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }')
   [ "$pct" -lt 80 ] && return 0
+  if [ "$pct" -ge 100 ]; then
+    gate_end_run B4 "비용이 선언 천장에 닿았습니다 (${spent}/${declared})"
+    return 0
+  fi
   gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})"
+}
+
+gate_b5_stagnation_bound() {
+  # The STAGNATION BOUND — the other half of what replaced the wall clock.
+  #
+  # Declared as `무진전 상한` in `## 인가`: how many consecutive judgements the
+  # progress vector may stand still for before the run is over. Absent means
+  # unbounded on this axis, which is what every manifest written before this
+  # existed says — so those runs keep exactly the behaviour they had.
+  #
+  # ITS OWN COUNTER, deliberately not B1's. B1 holds `progress-digest` and
+  # `progress-repeat` and both its increment and its comparison sit inside an
+  # arm that B1's own firing switches off; a second threshold on that counter
+  # can never be reached. These two files are read and written only here.
+  #
+  # RESET IS THE PROGRESS VECTOR MOVING, the same signal B1 reads and for the
+  # same reason: the vector is built to move on progress and to stay still for
+  # everything the gate itself writes, so this counter cannot be reset by the
+  # act of measuring it.
+  #
+  # NO LIVE-STAGE SUPPRESSION, unlike B1. B1 suppresses because a working stage
+  # writes nothing the vector sees, and firing on it would be a false positive
+  # for a boundary whose remedy is to ask. This one ends the run, so the same
+  # suppression would hand a stage that grows without producing an unbounded
+  # licence — and that shape is exactly what the wall clock used to backstop.
+  # A stage that terminates writes rows, so a healthy run moves the vector at
+  # every stage boundary; the bound is measured in judgements, and the value
+  # that makes it safe is declared by a person at kickoff.
+  local bound h prev n
+  bound=$(manifest_field '인가' '무진전 상한')
+  case "$bound" in ''|없음|'(없음)') return 0 ;; esac
+  case "$bound" in *[!0-9]*)
+    warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다"
+    return 0 ;;
+  esac
+  h=$(gate_progress_digest)
+  prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
+  n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
+  if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
+  printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
+  printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
+  [ "$n" -lt "$bound" ] && return 0
+  gate_end_run B5 "진전 해시가 연속 ${n}회 판정 동안 불변입니다 (상한 ${bound})"
 }
 
 gate_issue_boundary_approval() {
