@@ -357,6 +357,9 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local dl sb
+  dl=$(manifest_field '인가' '벽시계 마감')
+  sb=$(manifest_field '인가' '무진전 상한')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -378,7 +381,21 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
-    printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
+    # CONDITIONAL, both of them, and that is what keeps every run already in
+    # flight alive. `deadline` used to be an UNCONDITIONAL `printf`, so a
+    # manifest without the field still contributed a line with an empty value.
+    # The wall-clock deadline is being replaced by a progress-based bound, and
+    # emitting the replacement unconditionally would move the digest of every
+    # manifest ever written — each of which lacks the new field — so the next
+    # gate call of every in-flight run would refuse on a mismatch nobody caused.
+    #
+    # Row-shaped items already solve this with `grep … || true`: absent means
+    # zero bytes. These follow that, so a manifest that declares neither field
+    # serializes exactly as it did, and one that declares `벽시계 마감` — which
+    # is every manifest written so far — serializes byte-identically to before.
+    [ -n "$dl" ] && printf 'deadline\t%s\n' "$dl"
+    [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    true
   } | sort
 }
 
@@ -405,7 +422,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — eight values, closed, two of them named and
+# The judgment-class vocabulary — ten values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -419,7 +436,7 @@ manifest_autoadopt_rows() {
 # legacy rows, which is what lets a lint assert the closed set without an
 # exception.
 #
-# THE TWO FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# THE THREE FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
 # stop the decision from being made — it forces whoever records it to borrow a
 # permitted token, and that is the leak. Named and forbidden, the leak arrives
 # as a refusal instead.
@@ -429,14 +446,14 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
-readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
 # hole rather than narrowing it. Both used to be a space-padded substring test
 # over the vocabulary string, so a value carrying a space matched whenever the
-# tokens it named happened to be ADJACENT in that string. The vocabulary ends
-# `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
+# tokens it named happened to be ADJACENT in that string. The vocabulary then
+# ended `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
 # the vocabulary; the forbidden string is `팀-구성 시각-면제`, which does not
 # contain it, so the same value was also not forbidden. One value passed the
 # permission check and escaped the prohibition at once, and `팀-구성` — a class
@@ -1758,20 +1775,40 @@ stage_spawn() {
   # The wrapper is what carries them, and it is the same wrapper the gate uses
   # for a skill act; a second spawn shape here would be a second place for the
   # injection to go missing.
+  # RE-ATTACH, NOT RE-RUN, when the caller has a session to continue. The
+  # wrapper has taken `--resume` since it was written and nothing here reached
+  # it, so the only way to bring an answer back to the stage that asked for it
+  # was a fresh session that had never seen the question. `STAGE_RESUME` is
+  # caller-owned and read once here, the same arrangement `GATE_RESUME` has on
+  # the gate's spawn; the two flags are mutually exclusive at the wrapper, so
+  # this is a choice rather than an addition.
+  local id_flag
+  if [ -n "${STAGE_RESUME:-}" ]; then
+    id_flag="--resume $STAGE_RESUME"
+    log "$stage: 세션 $STAGE_RESUME 재부착"
+  else
+    id_flag="--session-id $(session_uuid "$stage" "$(stage_attempt "$stage")")"
+  fi
+
   # THE STAGE'S BASH IS FULLY GATED, and the refusal the hook hands back names
   # these three. Without them the stage cannot run a single line: it reads the
   # instruction, has no manifest to pass, and every spelling it tries is refused
   # for a reason that is true but unfixable from inside. The five that were here
   # identify the RUN; these three identify the ACT, and the gate needs both.
+  #
+  # `CC_PIPELINE_ANSWER_DIR` points at the answer sidecars, and it is handed down
+  # for the same reason the run id and the two sidecar paths are: a stage that
+  # re-derived the path would be re-deriving `RUN_DIR` first.
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+      CC_PIPELINE_ANSWER_DIR="$RUN_DIR/answer" \
       CC_PIPELINE_MANIFEST="$MANIFEST" CC_PIPELINE_TARGET="$(seg_alias "$stage" 2>/dev/null || home_alias)" \
       CC_PIPELINE_SEGMENT="$stage" \
       exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
-        --session-id "$(session_uuid "$stage" "$(stage_attempt "$stage")")" \
+        $id_flag \
         -- -p "$prompt" "$@" \
         > "$out" 2> "$RUN_DIR/log/$stage.err" < /dev/null ) &
   pid=$!
@@ -1984,6 +2021,60 @@ stage_session_id() {
   fi
   [ -n "$sid" ] || sid=$(session_uuid "$stage")
   printf '%s' "$sid"
+}
+
+answered_judgment_stage() {
+  # answered_judgment_stage <세그먼트> — `<승인 id> <스테이지 id>` for one
+  # judgment this segment raised that a person has ANSWERED and no stage has
+  # used yet. Empty when there is none, which is the ordinary case.
+  #
+  # THE ARRAY THE GATE EMITS AND THIS PREDICATE ARE THE SAME QUESTION asked from
+  # the two sides that need it: the gate's snapshot is what the ROUTER reads to
+  # decide what to do next, and this is what the fixed-graph loop reads to
+  # actually re-dispatch. They are computed from the same three ledger facts —
+  # the approval's state is `승인`, its issuing row's `절단점` is `판단`, and no
+  # `자율 승인` row names `해소 승인=<id>` — rather than one calling the other,
+  # because the driver reads the ledger directly everywhere else and a shell-out
+  # here would be the only place it did not.
+  #
+  # SPENT-NESS IS THE EXISTING PREDICATE AND NOT A NEW STATE. An answer that a
+  # stage consumed leaves a row naming it; an answer that no stage consumed
+  # stays a candidate on the next cycle. That is the intended behaviour and the
+  # cycle cap is what bounds it.
+  #
+  # `막는 세그먼트` HOLDS THE STAGE ID, not the segment id: the gate learns it
+  # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
+  # id when it spawns. So the field already names the re-dispatch candidate, and
+  # the membership test is on the stage id's `:<segment>:` infix.
+  local seg="$1" id row st iss stg spent
+  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$st" = "승인" ] || continue
+    iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
+    # — under `pipefail` — report the whole pipeline as failed. The value is
+    # captured instead and tested as a string, which is the spelling the rest of
+    # this file uses for exactly this reason.
+    spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
+             | { grep -F "해소 승인=$id " || true; } | tail -1)
+    [ -z "$spent" ] || continue
+    stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$stg" in *":$seg:"*) ;; *) continue ;; esac
+    # A session that left no stream cannot be re-attached, and a derived id
+    # would name a session the harness never opened. Falling through to a fresh
+    # dispatch is the honest outcome; claiming a resume that cannot happen is not.
+    [ -f "$RUN_DIR/log/$stg.json" ] || continue
+    printf '%s %s' "$id" "$stg"
+    return 0
+  done
+  return 0
 }
 
 stage_parent_id() {
@@ -2886,7 +2977,25 @@ segment_cycle() {
       park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
       return 1
     }
-    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    # AN ANSWERED JUDGMENT IS RE-DISPATCHED, NOT RE-ASKED. The mechanisms to
+    # raise a question, record the answer and re-attach the asker all existed;
+    # nothing joined them, so an answer sat in the ledger and in the sidecar
+    # while the stage that needed it was never spawned again. This branch is the
+    # join, and it is a branch on whether there IS such an answer — no model
+    # call, no new schema. The stage is handed the approval id and reads the
+    # untruncated bytes itself.
+    local aj aj_id aj_stage prompt
+    aj=$(answered_judgment_stage "$seg")
+    prompt="/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    STAGE_RESUME=""
+    if [ -n "$aj" ]; then
+      aj_id=${aj%% *}; aj_stage=${aj#* }
+      STAGE_RESUME=$(stage_session_id "$aj_stage")
+      prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 선언 파일: $files"
+      log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
+    fi
+    stage_spawn "$sid" "$wt" "$prompt"
+    STAGE_RESUME=""
     stage_wait_all "$sid"
     quiet_window_end
     local rc pred class

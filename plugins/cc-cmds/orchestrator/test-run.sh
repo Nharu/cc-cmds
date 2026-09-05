@@ -702,6 +702,44 @@ else
 fi
 write_manifest "$MF"
 
+# The two clock/bound fields are emitted CONDITIONALLY, and that is what keeps
+# every run already in flight alive. `deadline` used to be an unconditional
+# `printf`, so a manifest without the field still contributed a line carrying an
+# empty value; adding the progress bound the same way would have moved the
+# digest of every manifest ever written — none of which has the new field — and
+# refused each of those runs at its next gate call for a mismatch nobody caused.
+#
+# Three assertions, because "conditional" has three observable halves: the field
+# present emits exactly one line, the field absent emits none, and a manifest
+# that declares neither serializes as if this change had not happened.
+emit_lines() { binding_set_bytes | grep -cE "^$1[[:space:]]" || true; }
+if [ "$(emit_lines deadline)" = "1" ]; then
+  ok "벽시계 마감이 선언되면 한 줄을 낸다"
+else
+  bad "조건부 방출" "선언된 벽시계 마감이 $(emit_lines deadline) 줄로 나온다"
+fi
+if [ "$(emit_lines stagnation)" = "0" ]; then
+  ok "무진전 상한이 없으면 0바이트를 낸다 (기존 매니페스트의 다이제스트가 움직이지 않는다)"
+else
+  bad "조건부 방출" "선언되지 않은 무진전 상한이 $(emit_lines stagnation) 줄로 나온다"
+fi
+bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+printf '**무진전 상한**: 6\n' >> "$MF"
+if [ "$(emit_lines stagnation)" = "1" ] \
+   && [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" != "$bd_before" ]; then
+  ok "무진전 상한이 선언되면 한 줄을 내고 다이제스트를 움직인다"
+else
+  bad "조건부 방출" "무진전 상한을 선언했는데 방출도 다이제스트도 그대로다"
+fi
+write_manifest "$MF"
+sed '/^\*\*벽시계 마감\*\*/d' "$MF" > "$MF.nd" && mv "$MF.nd" "$MF"
+if [ "$(emit_lines deadline)" = "0" ] && [ "$(emit_lines stagnation)" = "0" ]; then
+  ok "두 필드가 모두 없으면 어느 쪽도 방출되지 않는다"
+else
+  bad "조건부 방출" "필드가 없는데 deadline=$(emit_lines deadline) stagnation=$(emit_lines stagnation)"
+fi
+write_manifest "$MF"
+
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then

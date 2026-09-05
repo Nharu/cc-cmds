@@ -57,7 +57,8 @@
 #   gate.sh exec     --manifest <path> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --surface <token>
 #                    --snapshot-digest <hex> --rationale <text> -- <argv...>
-#   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
+#   gate.sh close    --manifest <path> --approval <id> [--void|--reject] [--answer]
+#   gate.sh answers  --manifest <path> [--approval <id>]
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
 # was cut mid-flight instead of running it again. The id must appear on a
@@ -885,6 +886,64 @@ gate_append() {
   return 0
 }
 
+gate_append_cost() {
+  # gate_append_cost <이번 스테이지 usd> <스테이지 수> <관측 시각>
+  #
+  # THE ACCUMULATION IS READ AND WRITTEN INSIDE ONE LOCK, and it used to be a
+  # read outside the lock followed by a write inside one. `gate_append`'s own
+  # header records the same defect for the chain tip and the same repair; this
+  # is that repair applied to the other read-then-act in this file.
+  #
+  # The cost row accumulates, so the value that makes it correct is the previous
+  # row's total. Two stages terminating together both read the same previous
+  # total and both wrote `prev + own`, and the second write erased the first —
+  # not a corrupt row, a QUIET one. The run's only cost figure is then a lower
+  # bound that nothing announces as one, and the cost ceiling is a boundary that
+  # decides when the night ends. Measured: 80 cost rows written and a final
+  # accumulation of roughly half the sum of what they carried.
+  #
+  # `gate_append` CANNOT ABSORB THIS, and that is why there is a second writer.
+  # Its critical section starts after the body is assembled, and the body is
+  # what depends on the read — widening it would mean handing `gate_append` a
+  # per-series accumulation rule.
+  #
+  # The locked command is `/bin/sh` and cannot see this shell's functions, so
+  # `gate_rows` and `gate_chain_tip` are re-spelled inline against `$LEDGER`,
+  # exactly as the chain tip already is. Both row prefixes travel as positional
+  # arguments so the backticks in them are parsed by neither shell.
+  #
+  # The row is fixed-shape — two numbers and a timestamp — so it cannot approach
+  # the row cap `gate_append` checks, and no value in it can carry a separator.
+  local cost="$1" n_stage="$2" at="$3" tool rc=0
+  tool=$(lock_tool)
+  if [ -n "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+    "$tool" -k "$RUN_DIR/ledger.lock" \
+      /bin/sh -c '
+        led=$2
+        prevusd=$(grep "$7" "$led" 2>/dev/null | tail -1 | tr "|" "\n" \
+                  | sed -n "s/^ *누적 usd=//p" | tr -d " " | tail -1)
+        total=$(awk -v a="${prevusd:-0}" -v b="$1" "BEGIN{ printf \"%.4f\", a + b }")
+        body="$8 | 누적 usd=$total | 스테이지 수=$3 | 관측 시각=$4"
+        last=$(grep "$5" "$led" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last=$6
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$body" "$prev" >> "$led"
+      ' _ "$cost" "$LEDGER" "$n_stage" "$at" '^- `' "## 실행 $RUN_ID" '^- `cost`' '- `cost`' || rc=$?
+  else
+    # No lock tool means no concurrency to serialize, so the same sequence is
+    # correct here — it is the interleaving the lock removes, not the order.
+    local prevusd total
+    prevusd=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
+              | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    total=$(awk -v a="${prevusd:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    printf '%s | prev=%s\n' \
+      "- \`cost\` | 누적 usd=$total | 스테이지 수=$n_stage | 관측 시각=$at" \
+      "$(gate_chain_tip)" >> "$LEDGER" || rc=$?
+  fi
+  [ "$rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=$rc) — 기록 없는 행위는 수행하지 않습니다: cost"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Progress vector and its digest.
 #
@@ -1218,6 +1277,10 @@ gate_snapshot() {
   gate_pending_approvals_json
   printf '  ],\n'
 
+  printf '  "answered_judgments": [\n'
+  gate_answered_judgments_json
+  printf '  ],\n'
+
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -1238,6 +1301,53 @@ gate_pending_approvals_json() {
       "$(gate_json_escape "$id")" \
       "$(gate_json_escape "$(gate_rows '승인' | { grep -F "승인 id=$id " || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)")"
+  done
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_answered_judgments_json() {
+  # The judgments a person has ANSWERED and no stage has yet used.
+  #
+  # THE SNAPSHOT USED TO SHOW ONLY `대기`, and it carries no `절단점` either — so
+  # a judgment that had been answered left the pending list and appeared nowhere
+  # else. The answer was in the ledger, in the sidecar and in the approval's
+  # state, and the run still could not move: the router's declared input is the
+  # snapshot, and the snapshot had stopped mentioning it. That is the same
+  # broken-consumer shape this whole change exists to close, one field later.
+  #
+  # WHAT THE ROUTER DOES WITH AN ELEMENT is decided by the router — the gate says
+  # what is true, not what to run next. Each element is a RE-DISPATCH CANDIDATE
+  # for the stage that emitted the judgment, which is why `segment` is on it;
+  # without that field the router would know an answer exists and not know whom
+  # to hand it to.
+  #
+  # THE SPENT TEST REUSES THE PREDICATE THAT ALREADY EXISTS. A `자율 승인` row
+  # naming `해소 승인=<id>` is what "this answer opened an adoption" already
+  # means in two other places. A second bookkeeping of consumption would be a
+  # second floor, and two floors disagree.
+  #
+  # `막는 세그먼트` IS READ OFF THE ISSUING ROW, not the last one. The rows that
+  # close an approval carry the question and the answer and no segment, so a
+  # `tail -1` — which is right for state — yields an empty segment here. The
+  # narrowing to `절단점=판단` picks the issuing row for both duties at once.
+  local ids id row st iss seg first=1
+  ids=$(gate_rows '승인' \
+        | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
+  for id in $ids; do
+    [ -n "$id" ] || continue
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    if gate_has_row '자율 승인' "해소 승인=$id "; then continue; fi
+    seg=$(gate_row_field "$iss" '막는 세그먼트')
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+      "$(gate_json_escape "$id")" \
+      "$(gate_json_escape "${seg:--}")" \
+      "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -1830,7 +1940,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy="" void=0 reject=0
+  local approval="" render=0 worktree="" review_policy="" void=0 reject=0 answer=0
   GATE_RESUME=""; export GATE_RESUME
   MANIFEST=""
 
@@ -1850,6 +1960,7 @@ gate_main() {
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
+      --answer)          answer=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -2006,7 +2117,10 @@ gate_main() {
       if [ "$void" = "1" ] && [ "$reject" = "1" ]; then
         printf 'gate: --void 와 --reject 는 서로 다른 처분입니다 — 하나만 고르세요\n' >&2; exit 2
       fi
-      gate_close "$approval" "$void" "$reject"
+      gate_close "$approval" "$void" "$reject" "$answer"
+      ;;
+    answers)
+      gate_answers "$approval"
       ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
@@ -3629,64 +3743,77 @@ gate_drain_notify_state() {
   return 0
 }
 
-gate_deadline_ok() {
-  # gate_deadline_ok <kind> <cutpoint>
+gate_run_ended_ok() {
+  # gate_run_ended_ok <kind> <cutpoint>
   #
-  # THE DEADLINE IS A DISPATCH GATE, and until now nothing read it. It is frozen
-  # into the binding digest and compared at entry, but `gate.sh` mentioned
-  # neither the field nor a comparison, and the only callers of the driver's own
-  # helper sit in the fixed-graph loop the router never enters. The value a user
-  # answered for at kickoff did not reach execution — the same shape #208
-  # recorded for the cutpoint. Measured: a run past its deadline had `plan
-  # --kind skill` answer "통과 예상".
+  # THE WALL CLOCK IS GONE AND THE GATE IT HELD IS NOT. What used to sit here
+  # was a dispatch-and-merge gate keyed on `벽시계 마감`; this is the same gate
+  # keyed on whether a progress-based boundary has ENDED the run.
   #
-  # Checked on every acting call, not only at entry: a deadline that was in the
-  # future when the run started is the normal case, so entry alone is half.
+  # The clock measured elapsed time and the thing worth stopping is pointless
+  # spinning. In three measured cases the clock ran through no fault of the
+  # run's — the machine was asleep for 35 hours, an external queue held it for
+  # most of 262 minutes, nobody resumed it. One run died having performed ZERO
+  # acts, and the independent review it forced cost 2h17m and 82.23 USD. The
+  # purpose survives; the yardstick is replaced, because the clock was a poor
+  # proxy for it.
   #
-  # It gates DISPATCH and MERGE and nothing else, per the contract — a stage in
-  # flight runs to completion and is classified normally, and the run may still
-  # record rows, close approvals and propose that it is done. A deadline that
-  # stopped everything would strand the run instead of ending it.
-  local kind="$1" cut="$2" dl stamp off now idx merge_idx
-  dl=$(manifest_field '인가' '벽시계 마감')
-  case "$dl" in ''|'없음'|'(없음)') return 0 ;; esac
-
-  # `date -d` is GNU and `date -j -f` is BSD, so neither parses this. What both
-  # do have is `date +FMT` under a TZ, so the comparison is made in the
-  # deadline's OWN zone: render now there, and compare digit strings.
-  stamp=$(printf '%s' "$dl" | cut -c1-19 | tr -cd '0-9')
-  off=$(printf '%s' "$dl" | cut -c20-)
-  case "$off" in
-    Z|'')      now=$(date -u +%Y%m%d%H%M%S) ;;
-    # POSIX TZ inverts the sign: UTC+9 is written `UTC-9`.
-    +*:*)      now=$(TZ="UTC-${off#+}" date +%Y%m%d%H%M%S) ;;
-    -*:*)      now=$(TZ="UTC+${off#-}" date +%Y%m%d%H%M%S) ;;
-    *)
-      # An offset this cannot read must NOT silently block every act — a
-      # deadline the gate cannot compare is a reason to say so, not to refuse.
-      warn "벽시계 마감의 시간대를 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"
-      return 0 ;;
-  esac
-  [ ${#stamp} -eq 14 ] || { warn "벽시계 마감의 형식을 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"; return 0; }
-  [ "$now" -le "$stamp" ] 2>/dev/null && return 0
+  # WHAT ENDS A RUN NOW is `gate_end_run`, called from the two boundaries that
+  # sit outside the pending-approval suppression: the cost ceiling at 100% and
+  # the stagnation bound. This function only reads the mark they leave.
+  #
+  # It gates DISPATCH and MERGE and nothing else, exactly as the deadline did —
+  # a stage in flight runs to completion and is classified normally, and the run
+  # may still record rows, close approvals and propose that it is done. A
+  # boundary that stopped everything would strand the run instead of ending it.
+  local kind="$1" cut="$2" mark idx merge_idx
+  [ -s "$RUN_DIR/done" ] || return 0
+  mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
 
   if [ "$kind" = "skill" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
+    warn "런이 이미 종단했습니다 ($mark) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
     return "$GATE_EXIT_RULE"
   fi
   # A DONE PROPOSAL HAS NO ACT BEHIND IT, so the merge arm below must not judge
   # it. `--cutpoint` is required of every acting call and carries no meaning
-  # here — there is nothing for it to authorize — yet the deadline read it and
-  # refused the proposal as if it were a merge. The consequence is the worst
-  # available one: a run past its deadline could not record that it had ended,
-  # so no `done` file was written, the snapshot rendered it in flight forever,
-  # and the watcher never reaped itself.
-  [ "$kind" = "propose-done" ] && return 0
+  # here — there is nothing for it to authorize — yet the deadline this replaces
+  # read it and refused the proposal as if it were a merge. The consequence was
+  # the worst available one: a run past its bound could not record that it had
+  # ended, so the snapshot rendered it in flight forever and the watcher never
+  # reaped itself. Spelled as a `case` rather than the `[ … ] && return 0` the
+  # deadline used, so the one surviving occurrence of that literal belongs to
+  # exactly one function and an assertion naming it cannot pass on the wrong one.
+  case "$kind" in propose-done) return 0 ;; esac
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 마감 뒤로 머지는 없습니다"
+    warn "런이 이미 종단했습니다 ($mark) — 종단 뒤로 머지는 없습니다"
     return "$GATE_EXIT_RULE"
+  fi
+  return 0
+}
+
+gate_end_run() {
+  # gate_end_run <경계 이름> <사유> — a boundary ENDS the run.
+  #
+  # THE DIFFERENCE BETWEEN THIS AND `gate_issue_boundary_approval` IS THE WHOLE
+  # POINT. An approval asks a person; ending needs no one, and the state this
+  # design targets is precisely the one where nobody is awake to be asked. A
+  # boundary that could only ask is a boundary that does nothing at 4am.
+  #
+  # Idempotent by the mark itself: `done` already written means some earlier
+  # decision — this boundary, another one, or an accepted proposal — already
+  # ended the run, and the first reason is the true one. Rewriting it would
+  # replace the morning's account of why the night stopped.
+  local name="$1" why="$2"
+  [ -s "$RUN_DIR/done" ] && return 0
+  gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
+    "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done"
+  warn "경계 $name 이 런을 끝냅니다 — $why"
+  if cc_caller_is_router; then
+    cc_notify_fire status "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
   fi
   return 0
 }
@@ -3834,7 +3961,7 @@ gate_verb_act() {
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
   if [ "$verb" != "grade" ]; then
-    gate_deadline_ok "$kind" "$cutpoint" || exit $?
+    gate_run_ended_ok "$kind" "$cutpoint" || exit $?
   fi
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
@@ -4768,6 +4895,7 @@ gate_launch_stage() {
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+  CC_PIPELINE_ANSWER_DIR="$RUN_DIR/answer" \
   CC_PIPELINE_MANIFEST="$MANIFEST" \
   CC_PIPELINE_LEDGER="$LEDGER" \
   CC_PIPELINE_GRANT="$GRANT" \
@@ -5006,12 +5134,14 @@ gate_record_stage_outcome() {
   # The cost row ACCUMULATES, because that is the shape its only reader wants:
   # the boundary compares one number against the declared ceiling rather than
   # summing the file on every act.
+  #
+  # THE READ AND THE WRITE ARE ONE CRITICAL SECTION — see `gate_append_cost`.
+  # The previous total used to be read here, outside any lock, and only the row
+  # write was serialized; two stages terminating together then both added to the
+  # same figure and one of the two additions was lost.
   if [ -n "$cost" ]; then
-    prev=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
-           | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    total=$(awk -v a="${prev:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
     n_stage=$(gate_rows 'stage-result' | gate_count)
-    gate_append 'cost' "누적 usd=$total" "스테이지 수=${n_stage:-1}" "관측 시각=$(now_iso)"
+    gate_append_cost "$cost" "${n_stage:-1}" "$(now_iso)"
   fi
 
   gate_absorb_emitted_judgment "$alias" "$seg" "$res"
@@ -5284,7 +5414,17 @@ gate_close() {
   # transcript was recorded as a grant. Every refusal on the unattended
   # adoption surface converges on this channel, so a channel that emits a
   # constant leaves the floors above it deciding nothing.
-  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit scanbody phit
+  #
+  # `--answer` turns off the AFFIRMATIVE requirement and nothing else. It is the
+  # closer saying "these bytes are the answer, consume them" about a question
+  # whose answer is an instruction rather than a verdict — a person who writes
+  # three paragraphs of direction carries no `네` and no `yes`, and the
+  # affirmative arm holds that approval open forever. The NEGATIVE scan stays
+  # armed under the flag, because the failure the two scans guard against are
+  # not symmetric: an unread affirmation costs a re-ask, and an unread refusal
+  # is a grant nobody gave.
+  local id="$1" void="${2:-0}" reject="${3:-0}" answer="${4:-0}"
+  local row state q tx ans f cutp abody extracted hit scanbody phit
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -5365,7 +5505,6 @@ gate_close() {
   cutp=$(gate_row_field "$row" '절단점')
   abody='트랜스크립트 판독'
   if [ "$cutp" = "판단" ]; then
-    local extracted
     extracted=$(printf '%s' "$ans" | jq -r '
       (.message.content? // .content?) as $c
       | if $c == null then empty
@@ -5408,8 +5547,17 @@ gate_close() {
   # `$abody` ITSELF IS NOT TOUCHED. It is what goes into `답변 문면`, which the
   # contract calls the run's only durable copy of the answer; the split is
   # between what is scanned and what is recorded.
+  #
+  # AND THE SPLIT WAS DRAWN ON THE WRONG SIDE OF THE CLIP. The separation above
+  # was real but both sides read `$abody`, which is `$extracted` after the
+  # 400-byte clip — so the scan saw a PREFIX of the answer while the contract
+  # called the untruncated bytes the answer. A refusal written past byte 400
+  # was invisible to the negative scan and the approval closed as a grant,
+  # which is the one direction this scan exists to make impossible. Scanning
+  # `$extracted` puts the whole answer under both halves of the polarity read
+  # and leaves the recorded copy exactly as it was.
   if [ "$cutp" = "판단" ] && [ "$reject" = "0" ]; then
-    scanbody=$(gate_strip_question "$abody" "$q")
+    scanbody=$(gate_strip_question "$extracted" "$q")
     # Whitespace-only remainder means the line held the question and nothing
     # else — a person echoing the question is not an answer, and "no answer" and
     # "an answer that is no" are different states.
@@ -5423,12 +5571,47 @@ gate_close() {
       warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
       exit "$GATE_EXIT_RULE"
     fi
-    phit=$(gate_positive_answer_hit "$scanbody")
-    if [ -z "$phit" ]; then
-      warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
-      warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
-      exit "$GATE_EXIT_APPROVAL"
+    if [ "$answer" = "0" ]; then
+      phit=$(gate_positive_answer_hit "$scanbody")
+      if [ -z "$phit" ]; then
+        warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
+        warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
+        warn "이 답이 판정이 아니라 지시라면 close --answer 로 닫으세요 (부정 스캔은 그대로 걸립니다)"
+        exit "$GATE_EXIT_APPROVAL"
+      fi
     fi
+  fi
+
+  # THE UNTRUNCATED ANSWER, BESIDE THE CLIPPED ONE AND NOT INSTEAD OF IT.
+  #
+  # `답변 문면` stays 400 bytes — it is the ledger's copy and the ledger is the
+  # durable artifact, so a harvested `RUN_DIR` demotes an answer to 400 bytes
+  # rather than losing it. What the clip costs is the REST of the answer, and
+  # the rest is what the next stage consumes: a person answering a judgment
+  # question writes instructions, and instructions do not fit in a row field.
+  #
+  # `${RUN_DIR}/answer/`, not `docs/`. Both sidecar trees under `docs/` are
+  # tracked and watched by the enforcement surface; there is no reason for each
+  # answer a person types to become a tracked-tree write.
+  #
+  # THE PARENT IS MADE HERE, in the same process that writes the file, with the
+  # spelling `$RUN_DIR/log` and `$RUN_DIR/notify` already use. Maker and writer
+  # in one place is what keeps "who should have created it" from becoming a
+  # question at all.
+  #
+  # Written for `절단점=판단` only. An act approval's `답변 문면` is a fixed
+  # literal and nothing about it was clipped, so a sidecar there would hold the
+  # transport frame rather than an answer — and `answers` would then list
+  # entries that are not answers.
+  #
+  # KEYED BY APPROVAL ID, which is the same key the consumption predicate uses:
+  # a `자율 승인` row naming `해소 승인=<id>` says this answer was consumed. No
+  # second ledger, and no new state. The id hashes `RUN_ID` today, so this
+  # mechanism reaches exactly one run; keying the path the same way is what
+  # makes the store follow if that derivation later drops it.
+  if [ "$cutp" = "판단" ] && [ -n "$extracted" ]; then
+    mkdir -p "$RUN_DIR/answer"
+    printf '%s\n' "$extracted" > "$RUN_DIR/answer/$id.md"
   fi
 
   if [ "$reject" = "1" ]; then
@@ -5442,6 +5625,30 @@ gate_close() {
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   log "승인 해소 — $id"
   return 0
+}
+
+gate_answers() {
+  # gate.sh answers [<승인 id>] — the read-only door onto the answer sidecars.
+  #
+  # READ-ONLY AND SEPARATE FROM `close` because the readers are different
+  # entities: `close` is the router recording a resolution, and this is the
+  # re-dispatched STAGE picking up what the person said. A stage that had to
+  # call `close` to see an answer would be a stage holding a recording verb.
+  #
+  # With an id it prints that answer's bytes; without one it lists the ids on
+  # hand, one per line, which is what a reader with no id needs to get one.
+  # Neither form fails when the directory is absent — "no answers yet" is the
+  # ordinary state of a run and is not an error.
+  local id="${1:-}" f
+  if [ -n "$id" ]; then
+    f="$RUN_DIR/answer/$id.md"
+    [ -f "$f" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
+    cat "$f"
+    return 0
+  fi
+  [ -d "$RUN_DIR/answer" ] || return 0
+  find "$RUN_DIR/answer" -maxdepth 1 -type f -name '*.md' 2>/dev/null \
+    | sed 's#.*/##;s#\.md$##' | sort
 }
 
 # ---------------------------------------------------------------------------
@@ -5705,6 +5912,19 @@ gate_boundaries() {
   fi
   # B4 stays live even while waiting: cost can still climb.
   gate_b4_cost
+  # AND B5 STANDS HERE FOR EXACTLY THAT REASON. The stagnation BOUND cannot
+  # reuse B1's counter: B1 increments and compares inside its own evaluation,
+  # and B1's own firing suspends the arm it sits in — an open approval skips
+  # B1, B2 and B3 entirely, so the counter freezes at the first threshold and
+  # never reaches a second one. Nobody answering is the state this whole design
+  # targets, so "wait for the person to close B1's approval" is not a path.
+  #
+  # So B5 keeps its OWN counter and increments it here, in the always-evaluated
+  # position. Moving only the increment out would break the suppression B1
+  # deliberately relies on ("without the suspension B1's own remedy would reset
+  # the counter that fired it"), which is why both the increment and the
+  # comparison live on this side.
+  gate_b5_stagnation_bound
 }
 
 gate_b1_stagnation() {
@@ -5829,6 +6049,11 @@ gate_b3_act_budget() {
 }
 
 gate_b4_cost() {
+  # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
+  # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
+  # ceiling is now one of the two bounds that keep a run finite at all: the
+  # wall-clock deadline that used to do that job is gone, and an approval nobody
+  # answers is not a bound.
   local declared spent pct
   declared=$(manifest_field '인가' '비용 천장')
   case "$declared" in ''|없음) return 0 ;; esac
@@ -5837,7 +6062,54 @@ gate_b4_cost() {
   [ -n "$spent" ] || return 0
   pct=$(awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }')
   [ "$pct" -lt 80 ] && return 0
+  if [ "$pct" -ge 100 ]; then
+    gate_end_run B4 "비용이 선언 천장에 닿았습니다 (${spent}/${declared})"
+    return 0
+  fi
   gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})"
+}
+
+gate_b5_stagnation_bound() {
+  # The STAGNATION BOUND — the other half of what replaced the wall clock.
+  #
+  # Declared as `무진전 상한` in `## 인가`: how many consecutive judgements the
+  # progress vector may stand still for before the run is over. Absent means
+  # unbounded on this axis, which is what every manifest written before this
+  # existed says — so those runs keep exactly the behaviour they had.
+  #
+  # ITS OWN COUNTER, deliberately not B1's. B1 holds `progress-digest` and
+  # `progress-repeat` and both its increment and its comparison sit inside an
+  # arm that B1's own firing switches off; a second threshold on that counter
+  # can never be reached. These two files are read and written only here.
+  #
+  # RESET IS THE PROGRESS VECTOR MOVING, the same signal B1 reads and for the
+  # same reason: the vector is built to move on progress and to stay still for
+  # everything the gate itself writes, so this counter cannot be reset by the
+  # act of measuring it.
+  #
+  # NO LIVE-STAGE SUPPRESSION, unlike B1. B1 suppresses because a working stage
+  # writes nothing the vector sees, and firing on it would be a false positive
+  # for a boundary whose remedy is to ask. This one ends the run, so the same
+  # suppression would hand a stage that grows without producing an unbounded
+  # licence — and that shape is exactly what the wall clock used to backstop.
+  # A stage that terminates writes rows, so a healthy run moves the vector at
+  # every stage boundary; the bound is measured in judgements, and the value
+  # that makes it safe is declared by a person at kickoff.
+  local bound h prev n
+  bound=$(manifest_field '인가' '무진전 상한')
+  case "$bound" in ''|없음|'(없음)') return 0 ;; esac
+  case "$bound" in *[!0-9]*)
+    warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다"
+    return 0 ;;
+  esac
+  h=$(gate_progress_digest)
+  prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
+  n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
+  if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
+  printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
+  printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
+  [ "$n" -lt "$bound" ] && return 0
+  gate_end_run B5 "진전 해시가 연속 ${n}회 판정 동안 불변입니다 (상한 ${bound})"
 }
 
 gate_issue_boundary_approval() {

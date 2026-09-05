@@ -13,20 +13,23 @@
 #
 # Rules:
 #   1  `JUDGMENT_CLASSES_FORBIDDEN` is a subset of `JUDGMENT_CLASSES`   [fail]
-#   2  every literal `판단 부류=<값>` in the tree names one of the eight [fail]
+#   2  every literal `판단 부류=<값>` in the tree names a vocabulary token
+#                                                                      [fail]
 #   3  the emitted-judgment markers agree between the gate's parser and
 #      `_common/`, in BOTH directions                                   [fail]
+#   4  the Korean numeral inside every `판단 부류=<N 값…>` placeholder says
+#      how many tokens the vocabulary actually holds                    [fail]
 #
-# Rule 1 is not bookkeeping. The design's whole point about the two forbidden
+# Rule 1 is not bookkeeping. The design's whole point about the three forbidden
 # values is that they are NAMED and forbidden rather than left out: a class with
 # no token has to borrow a permitted one when the decision is recorded, and that
 # borrowing is the leak. With a token, the leak arrives as a refusal. Dropping
-# either from the vocabulary would restore the leak silently, and rule 1 is what
-# makes that a failing build.
+# any of them from the vocabulary would restore the leak silently, and rule 1 is
+# what makes that a failing build.
 #
 # What counts as a literal: the four metasyntactic shapes the tree actually
 # contains are recognised by shape and skipped — a shell expansion
-# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`), a
+# (`판단 부류=$cls`), a schema placeholder (`판단 부류=<… 값 중 하나>`), a
 # parser's own pattern (`s/^ *판단 부류=//p`) and the ledger's "no value"
 # sentinel (`판단 부류=-`) — and everything else made of Hangul, ASCII letters,
 # digits, hyphens AND SPACES is a value claim.
@@ -34,7 +37,7 @@
 # The sentinel is a shape and not an exception. Every field of a ledger row that
 # has no value carries `-`, so a row written for a judgment whose class never
 # arrived spells it that way too; reading that as a claim about a class made the
-# lint demand that `-` be one of the eight.
+# lint demand that `-` be one of the vocabulary's tokens.
 #
 # Spaces are inside that set deliberately. A value carrying a space is the shape
 # this lint most needs to see: the driver's vocabulary check accepted one
@@ -43,11 +46,29 @@
 # forbidden list. Skipping space-carrying values as metasyntax made the lint
 # blind to exactly that.
 #
+# Rule 4 covers what rule 2 cannot see. Rule 2 skips a placeholder BY SHAPE,
+# because a placeholder names no value — but the numeral written inside it is a
+# claim about the SIZE of the set, addressed to whoever has to fill the
+# placeholder in. Adding a token to the vocabulary leaves every one of those
+# numerals saying the old number and nothing fails, because the prose is
+# router-facing and the only reader who could notice is a human counting the
+# tokens by hand. That is how the numerals in this tree went stale, and hand
+# repair is the repair that guarantees the next token does it again.
+#
+# The size comes from `awk '{print NF}'` and NOT from `wc -w`. Measured on this
+# platform: `wc -w` reports 12 for the eight-token vocabulary string, 14 for the
+# nine-token one and 15 for the ten-token one — it is not counting what the
+# shell would word-split, and the error is not a constant offset either. NF
+# splits on the same whitespace the vocabulary is stored with, and agrees with
+# `set -- $classes; echo $#` on all three.
+#
 # Residual, stated rather than hidden: a file carrying the `self-skip` marker on
 # its second line is not scanned at all, and `scripts/test-gate.sh` carries one
 # because asserting that an out-of-vocabulary value is REFUSED requires writing
 # one down. A typo in that file's good values is therefore not caught here; it
-# is caught by the assertion itself failing.
+# is caught by the assertion itself failing. This file carries the marker too,
+# so rule 4 does not read the placeholder in its own header — which is why that
+# header states the vocabulary's size nowhere.
 #
 # Usage:
 #   bash scripts/lint-autoadopt-vocabulary.sh
@@ -86,6 +107,10 @@ if [[ -z "$classes" ]]; then
   echo "FAIL: run.sh — readonly JUDGMENT_CLASSES=\"…\" 를 찾지 못했다 (어휘 SOT 부재)" >&2
   exit 1
 fi
+# The size rule 4 compares the placeholder numerals against, and the number the
+# summary line reports. `awk '{print NF}'` rather than `wc -w` — see the note in
+# the header for what `wc -w` returns on these tokens.
+ncls=$(printf '%s\n' "$classes" | awk '{print NF}')
 
 fail=0
 
@@ -103,7 +128,7 @@ for t in $forbidden; do
   fi
 done
 
-# --- Rule 2: every literal occurrence names one of the eight ---------------
+# --- Rule 2: every literal occurrence names a vocabulary token -------------
 files=$(find "$scan_root/plugins" "$scan_root/scripts" -type f 2>/dev/null | sort || true)
 scanned=0
 hits=0
@@ -140,7 +165,7 @@ while IFS= read -r f; do
     # one shape it silently walked past.
     case "$v" in
       '$'*) continue ;;   # a shell expansion
-      '<'*) continue ;;   # a schema placeholder
+      '<'*) continue ;;   # a schema placeholder — rule 4 reads what is inside
       */*)  continue ;;   # a parser's own sed pattern
       '-')  continue ;;   # the ledger's "no value" sentinel
     esac
@@ -256,12 +281,78 @@ $doc_side
 EOF
 fi
 
+# --- Rule 4: placeholder numerals say the vocabulary's real size -----------
+#
+# The shape read here is `판단 부류=<N 값…>` — a numeral sitting immediately
+# inside the angle bracket and followed by `값`. A bracket holding anything else
+# makes no claim about the size (`판단 부류=<값>`) and is left alone, so this
+# rule is a strict refinement of the `'<'*` arm rule 2 skips rather than a
+# second reading of the same bytes.
+#
+# The numerals are the attributive series, which is what the prose actually
+# writes: 여덟 값, 열 값. The range ends where the tree's need ends, and running
+# off it is a FAILURE rather than a skip — a vocabulary that outgrew this table
+# would otherwise silently stop being checked, which is the exact defect this
+# rule exists to close.
+numeral_of_count() {
+  case "$1" in
+    1)  printf '한' ;;
+    2)  printf '두' ;;
+    3)  printf '세' ;;
+    4)  printf '네' ;;
+    5)  printf '다섯' ;;
+    6)  printf '여섯' ;;
+    7)  printf '일곱' ;;
+    8)  printf '여덟' ;;
+    9)  printf '아홉' ;;
+    10) printf '열' ;;
+    11) printf '열한' ;;
+    12) printf '열두' ;;
+    *)  return 1 ;;
+  esac
+}
+placeholders=0
+expected_numeral=$(numeral_of_count "$ncls" || true)
+if [[ -z "$expected_numeral" ]]; then
+  echo "FAIL: JUDGMENT_CLASSES 토큰이 ${ncls}개인데 이 린트의 수사 표는 1–12 만 안다 — 자리표시자 수사를 대조할 수 없으므로 numeral_of_count 를 넓혀야 한다" >&2
+  fail=1
+else
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -f "$f" ]] || continue
+    selfskip=$(sed -n '1,5p' "$f" | grep -cF 'lint-autoadopt-vocabulary: self-skip' || true)
+    if [[ "${selfskip:-0}" != "0" ]]; then
+      continue
+    fi
+    while IFS= read -r n; do
+      [[ -n "$n" ]] || continue
+      line="${n#*:}"
+      lno="${n%%:*}"
+      # `LC_ALL=C` for the reason `marker_scan` takes it — the delimiters are
+      # ASCII and what is walked over is arbitrary bytes. The negated class is
+      # ASCII-only, so no multibyte character range is involved; that is the
+      # trap recorded above rule 2's deleted filter, and it is avoided by not
+      # naming a Hangul range at all.
+      got=$(printf '%s' "$line" | LC_ALL=C sed -n 's/.*판단 부류=<\([^ <>]*\) 값.*/\1/p')
+      [[ -n "$got" ]] || continue
+      placeholders=$((placeholders + 1))
+      if [[ "$got" != "$expected_numeral" ]]; then
+        echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 자리표시자의 수사가 어휘와 어긋난다: 관측 '$got', 기대 '$expected_numeral' (JUDGMENT_CLASSES 토큰 ${ncls}개)" >&2
+        fail=1
+      fi
+    done <<EOF
+$(grep -nF '판단 부류=<' "$f" 2>/dev/null || true)
+EOF
+  done <<EOF
+$files
+EOF
+fi
+
 if [[ "$fail" != "0" ]]; then
   echo "lint-autoadopt-vocabulary: violations found" >&2
   exit 1
 fi
 
-ncls=0; for t in $classes; do ncls=$((ncls + 1)); done
 nfb=0;  for t in $forbidden; do nfb=$((nfb + 1)); done
-echo "OK:   judgment-class vocabulary — 토큰 ${ncls}개(금지 ${nfb}개), 파일 ${scanned}건에서 리터럴 ${hits}건 대조, 방출 마커 ${nmark}개 양방향 대조"
+echo "OK:   judgment-class vocabulary — 토큰 ${ncls}개(금지 ${nfb}개), 파일 ${scanned}건에서 리터럴 ${hits}건 대조, 방출 마커 ${nmark}개 양방향 대조, 자리표시자 수사 ${placeholders}건 대조"
 exit 0
