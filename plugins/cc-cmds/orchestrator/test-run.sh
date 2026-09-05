@@ -2269,11 +2269,22 @@ FRD="$WORK/fixrun"; mkdir -p "$FRD/halt/deep" "$FRD/sub"
 : > "$FRD/surface-digest"
 ln -sfn "$FRD/surface-digest" "$FRD/x.plan.md" 2>/dev/null
 ln -sfn "$FRD" "$WORK/rd-link" 2>/dev/null
+# 매달린 심링크: 표적이 실재하지 않는다. 살아 있는 심링크만으로는 말단 판정이
+# `-L` 인지 `-e` 인지 갈리지 않는다 — 실재하는 표적을 가리키는 링크는 두 판정
+# 모두에서 참이기 때문이다. 표적을 런 설정 디렉터리에 두는 이유는 이 벡터가
+# 실제로 열렸을 때 착지하는 곳이 거기이기 때문이다.
+ln -sfn "$FRD/settings/absent.json" "$FRD/dangling.plan.md" 2>/dev/null
 
 check "픽스처 런 디렉터리에서도 구속면 다이제스트는 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/surface-digest")" "deny"
 check "허용 이름이라도 말단이 심링크면 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/x.plan.md")" "deny"
+if [ -L "$FRD/dangling.plan.md" ]; then
+  check "허용 이름이라도 말단이 매달린 심링크면 거부" \
+    "$(hook_decide_rd "$FRD" "$FRD/dangling.plan.md")" "deny"
+else
+  printf 'NOTE: 매달린 심링크를 만들지 못해 건너뛴다\n'
+fi
 check "음성 대조군: 진짜 계획 파일은 허용" \
   "$(hook_decide_rd "$FRD" "$FRD/slice-D.plan.md")" "allow"
 check "중단 기록의 깊이는 한 단계뿐" \
