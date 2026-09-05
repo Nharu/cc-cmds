@@ -74,6 +74,26 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 # BOTH sides costs those assertions nothing, because neither slot names a script.
 strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'; }
 
+# AND THE STRIPPING IS PINNED HERE, BECAUSE NOWHERE ELSE CAN PIN IT. Turned into
+# a no-op this function fails none of the three cases that call it — it only
+# makes them disagree when a second boundary falls between their two command
+# substitutions, which is a red about one run in seven and a green the rest, so
+# the suite reports the defect as flake rather than as a broken scrubber.
+# Measured: with the body replaced by `cat` this suite is 100 green.
+#
+# The pair below differs in the two slots and in nothing else, so it has to
+# collapse to one line — and it has to have been two lines to begin with, or it
+# would prove nothing about what was removed.
+_sc_a='⟳ run-live S1 · 원장 5초 전 00:03'
+_sc_b='⟳ run-live S1 · 원장 6초 전 00:04'
+if [ "$_sc_a" != "$_sc_b" ]; then
+  ok "시계 슬롯 대조쌍이 벗기기 전에는 서로 다르다"
+else
+  bad "시계 슬롯 대조쌍" "두 줄이 이미 같다 — 이 쌍은 벗기기를 재지 못한다"
+fi
+check "시계 슬롯을 벗기면 두 시점의 같은 사실이 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_a" | strip_clock)" "$(printf '%s\n' "$_sc_b" | strip_clock)"
+
 # The "no run" line. Byte-identical to every degraded path's output, which is
 # the property cases 10-13 exist to hold in place.
 #
@@ -353,6 +373,19 @@ else
   bad "XDG_STATE_HOME 폴백" "관용구가 없다"
 fi
 
+# The pair pinned next to the definition is a shape typed by hand, and it stays
+# true no matter what the renderer does. What it cannot see is the slot moving:
+# a rendered line whose elapsed field is spelled differently, or dropped, leaves
+# the scrubber matching nothing, and the comparisons below quietly go back to
+# being decided by a clock. So the live render is required to actually lose
+# something here.
+sl_live_raw=$(sl sess-live)
+if [ "$sl_live_raw" != "$(printf '%s\n' "$sl_live_raw" | strip_clock)" ]; then
+  ok "실제 렌더에도 시계 슬롯이 실려 있다 (벗기기가 공회전이 아니다)"
+else
+  bad "시계 슬롯 대조" "'$sl_live_raw' 에서 벗겨지는 것이 없다 — 슬롯 형태가 바뀌었다"
+fi
+
 # ---------------------------------------------------------------------------
 # F1-F2. The defensive command that gets installed
 # ---------------------------------------------------------------------------
@@ -554,8 +587,21 @@ check "공백이 든 절대경로 — 설치된 명령이 폴백이 아니라 �
 SREF="$WORK/settings-reeval.json"; mk_settings "$SREF"
 EREF=$(digest_of "$SREF"); BREF=$(shasum -a 256 "$SREF" | cut -d' ' -f1)
 
+# THE FOURTH NAME PINS THE STRATEGY, NOT A CHARACTER. The three before it are
+# the characters a reader would enumerate, so a pre-evaluation rewritten as
+# "reject `$`, `"` and a backtick" keeps all three of them red — and installs a
+# dead status line for the fourth. Two backslashes pass such an enumeration
+# untouched and still collapse to one at the render's second evaluation, so the
+# installed guard then tests a path that does not exist, is false forever, and
+# the apply lands rc=0 anyway. Measured: with the pre-evaluation replaced by
+# that enumeration this suite is green except for this one case.
+#
+# Its sibling below is the ACCEPT case for a SINGLE backslash, which the second
+# evaluation does leave alone. The pair is what keeps this from being read as
+# "backslashes are dangerous" — the question is whether the guard about to be
+# installed is true, not which characters somebody has thought of.
 mkdir -p "$WORK/reeval"
-for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`'; do
+for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`' 'plug\\double'; do
   bad_plug="$WORK/reeval/$bad_name"
   mkdir -p "$bad_plug/orchestrator"
   cp "$SL" "$LIVENESS" "$bad_plug/orchestrator/"
@@ -563,7 +609,7 @@ for bad_name in 'plug$dollar' 'plug"quote' 'plug`tick`'; do
   bash "$APPLY" --apply --settings "$SREF" --plugin-dir "$bad_plug" --expect "$EREF" >/dev/null 2>&1
   check "재평가에서 해석되는 문자가 든 절대경로 ($bad_name) — 쓰기 전에 park 한다" "$?" "1"
 done
-check "재평가로 park 한 세 경우 모두 파일을 건드리지 않았다" \
+check "재평가로 park 한 네 경우 모두 파일을 건드리지 않았다" \
   "$(shasum -a 256 "$SREF" | cut -d' ' -f1)" "$BREF"
 
 reeval_ok_case() {

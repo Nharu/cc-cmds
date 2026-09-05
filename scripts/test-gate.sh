@@ -52,7 +52,7 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
-GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 
