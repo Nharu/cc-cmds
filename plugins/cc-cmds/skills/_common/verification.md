@@ -203,26 +203,50 @@ A single, generalized definition (it subsumes and replaces the earlier reproduct
 - **Definition rescope**: a *modification* is a change that persists in the **session's main working tree** (in git vocabulary an experiment worktree is also a "working tree", so a merge without rescoping would self-contradict).
 - **FORBIDDEN rescope**: editing a tracked source file **in the main working tree** — forbidden even transiently, even if it will be reverted.
 - **Two-command boundary gate** (the "single verifiable invariant" advertisement is retired — scope is per-surface). At every team-discussion boundary check both, in this order:
-    1. main tree `git status --porcelain` == the pre-workflow baseline;
+    1. main tree `git status --porcelain` == the pre-workflow baseline, **within the caller's declared measurement surface** (§6.0);
     2. the worktree baseline, compared as the **three scoped assertions** below (porcelain does not see records inside `.git/worktrees/` — the F1 blind spot — so the worktree list is a separate gate from assertion 1).
 
 **Assertion 2 is scoped, never a whole-output equality.** `git worktree list --porcelain` is a **repository-global** command: run from any worktree it emits every worktree of the shared repository, each with its own `HEAD <sha>` line. Comparing that output wholesale fails the gate whenever an unrelated sibling worktree commits — a tree no caller of this gate measured, and one whose movement changes no byte of anything the caller did measure. All three of these must hold, and they are what assertion 2 means everywhere in this repository:
 
-- **2a — path set.** The set of worktree paths (`git worktree list --porcelain | grep '^worktree '`) equals the baseline, **modulo the caller's declared exception pattern**. Catches a worktree created or removed inside the window.
+- **2a — owned path set.** The set of worktree paths (`git worktree list --porcelain | grep '^worktree '`) whose final path component begins with one of the caller's **declared ownership prefixes** equals the baseline set taken the same way. Catches an *owned* worktree created or removed inside the window.
 - **2b — own entry.** This caller's own worktree entry — its `worktree` / `HEAD` / `branch` lines — equals the baseline. Catches a HEAD move under the tree the work actually measured.
 - **2c — mechanism-owned leak.** The count of entries carrying the `cc-design-exp-` prefix is **0**. A belt-and-braces assertion that proves mechanism-owned cleanup even when a baseline string is lost to compaction, and **never condemns the user's own pre-existing worktrees**.
 
+**2a and 2c are not the same assertion, and the axis that separates them is baseline dependency.** 2a is *relative*: it reads a baseline, so what it catches is an owned worktree that appeared or vanished **inside the window**, and it deliberately passes a leak that was already there when the window opened. 2c is *absolute*: its predicate reads no baseline at all, which is why it still holds when compaction has lost the baseline string — and it fails exactly the case 2a passes. The input that separates them: one inherited `cc-design-exp-` worktree, present at open and still present at close — **2a passes, 2c fails**.
+
 **A sibling worktree's `HEAD` moving is deliberately not a mismatch.** It changes no byte of the caller's own tree and no byte of any reviewed text, so whatever the gate protects — an induced-defect rate, a frozen document, a claim's measurement root — is untouched, and the callers that hash their input hash it directly. This was a measured false positive rather than a hypothetical: an audit halted at `freeze-mismatch` because a sibling worktree of the same repository committed inside the window, while the document hash, every `git status --porcelain` baseline, and every measurement root were unchanged.
 
-**The declared exception pattern of assertion 2a.** A caller that legitimately creates and removes worktrees while a gated window is open declares, **before the window opens**, a single path-substring pattern naming the worktrees it owns. Assertion 2a then compares the worktree path set with the entries matching that pattern removed from *both* sides. **The default is the empty pattern**, under which 2a is the whole-set equality it has always been — so a caller that declares nothing is byte-unchanged in that assertion.
+**The declared ownership prefixes of assertion 2a.** A caller declares, **before the window opens**, the path prefixes of the worktrees **it owns**; 2a measures those and nothing else. **The default is no prefix**, under which the measured set is empty on both sides and 2a holds trivially — a caller that declares nothing has 2a measure nothing. That default reverses the earlier whole-set equality, and the reason is that the earlier form's polarity could not be made to work: it tried to *exempt other runs' worktrees by name*, so it failed the moment a name it had not anticipated appeared, and no caller can enumerate the names of runs it does not own. Naming one's own worktrees is something a caller can always do. A caller that creates isolated worktrees per §6.2 declares `cc-design-exp-`, the prefix that mechanism already stamps.
 
-The exception is bounded by three things, and it is not safe without all three:
+**What 2a stops catching, and what covers each piece.** It no longer catches a third party creating or removing a worktree. Tree contents remain assertion 1's; the caller's own HEAD remains 2b's; a mechanism-owned leak, inherited or fresh, remains 2c's; and a caller that hashes its reviewed input covers those bytes with that hash directly. What is genuinely given up is notice that the repository gained an unrelated worktree — which no caller of this gate measures, and which was the sole source of the false halts this scoping removes.
 
-- **It is declared, not inferred.** A pattern chosen after an unexpected worktree appears would excuse exactly the change the gate exists to catch.
-- **It reaches 2a and nothing else.** A declared pattern excuses a *worktree path-set* entry only: tree contents still have to match (assertion 1), the caller's own entry still has to be where it was (2b), and the mechanism-owned prefix still has to be absent (2c). Those are different failure modes with different owners.
-- **The declaring caller owes a teardown guard**, and that guard — not the pattern — is what keeps the exception from being a hole. Matching the pattern must never by itself authorize removing a worktree; the caller removes a path only when its own durable record shows that path was created *by this run*, with the pattern as a second, independent condition. A pattern alone would let a hand-made lookalike be torn down.
+The declaration is bounded by three things, and it is not safe without all three:
+
+- **It is declared, not inferred.** A prefix chosen after an unexpected worktree appears would shape the measured set around the very change the gate exists to catch.
+- **It reaches 2a and nothing else.** Tree contents still have to match (assertion 1), the caller's own entry still has to be where it was (2b), and the mechanism-owned prefix still has to be absent (2c). Those are different failure modes with different owners.
+- **The declaring caller owes a teardown guard**, and that guard — not the prefix — is what keeps ownership from being a hole. Matching a declared prefix must never by itself authorize removing a worktree; the caller removes a path only when its own durable record shows that path was created *by this run*, with the prefix as a second, independent condition. A prefix alone would let a hand-made lookalike be torn down.
 
 This parameterization is what lets the gate's own promise — that it **never condemns the user's own pre-existing worktrees** — extend to a caller whose normal operation transforms the worktree set, without weakening it for anyone else.
+
+### 6.0 Assertion 1's declared measurement surface
+
+**A change to a path the caller never measured is not a mismatch.** Assertion 1 is equality *within the caller's declared measurement surface*. When the closing `git status --porcelain` differs from the baseline, take the set of paths that difference points at — every path named on a line present in one output and absent from the other — and intersect it with the measurement surface. An **empty intersection is not a mismatch** and the window stays open; a non-empty one is a mismatch exactly as before, and the failure report names the intersecting paths, because that line is the only thing telling a later reader what ended the window.
+
+**The default is the whole tree**, so a caller that declares nothing gets today's whole-porcelain equality byte for byte. This default runs opposite to 2a's, deliberately: what 2a stops measuring is another run's worktree, while what assertion 1 would stop measuring is a file in this very tree. Empty that one by default and the gate stops measuring the thing it exists for.
+
+**Where the surface comes from — it is derived, never composed by hand.** From records the caller already writes before it compares anything:
+
+- every repository-relative path in a collected witness's anchor comparison table (that table's anchor column carries the cited path or `path:line`);
+- every repository-relative path in a `path:line` citation inside those witnesses' findings;
+- every path read by the deterministic checks the caller ran itself.
+
+An anchor entry that is a symbol, a count, or a numeric claim rather than a path contributes nothing. The caller's own output paths and the frozen document need no entry: a caller that hashes its input covers those bytes with that hash directly, so this scoping loses nothing there.
+
+**The after-the-fact narrowing hazard, and what closes it.** 2a's prefixes must be declared *before* the window opens because a declaration made after an unexpected worktree appears would shape the measurement around the change. The matching hazard here is shrinking the measurement surface after reading the diff. What closes it is that the surface is **derived rather than selected**, and derived from witnesses that are out-of-tree files sealed with a phase nonce and fixed before the caller observes the closing porcelain at all. **That ordering is a requirement, not a description**: a surface derived after the closing observation is not a surface, and a caller that finds itself deriving one then must treat it as absent.
+
+**Fail closed when the derivation is not total.** If the witnesses are missing or do not parse, the measurement surface is **the whole tree — not the empty set.** An empty surface makes assertion 1 pass unconditionally, which is an unchecked field wearing the shape of a check.
+
+**A caller whose records carry no such paths cannot declare a surface.** Declaring one requires accumulating the paths measured *at the moment they were cited*, in a record that outlives the citing agent. A caller that keeps no such record gets the default, and assertion 1 stays whole-tree equality for it.
 
 ### 6.1 Surface 1 — main working tree (reproduction + categories a/b/c/d)
 
@@ -279,7 +303,7 @@ A sweep **PASSES** iff all four hold over the synthesis draft:
 1. **Save-forbidden token absent** — both literal forms of `미검증` are document-wide 0: the full-line field form (the §3.4 ERE with `<value>` pinned to the literal `미검증`) and the inline-tag form `[검증 등급: 미검증]` (`grep -F`). This is the absence-proof exception of §3.4.
 2. **Every verifiable load-bearing claim is anchored** — 0 verifiable load-bearing claims without a `(§검증 기록 V<n>)` or `(§구현 시 검증 항목 R<n>)` anchor reference (§4.1).
 3. **Residual encoding complete** — every `구현 시 검증` item is present in the `## 구현 시 검증 항목` residual encoding (§5).
-4. **Two-command boundary gate == baseline** (§6) — assertion 1 and all three of assertions 2a/2b/2c, as §6 defines them. Do not restate a partial form of the worktree half here: a sweep that checked only the `cc-design-exp-` count would pass a leaked user-visible worktree, and one that compared the whole porcelain output would fail on a sibling's commit.
+4. **Two-command boundary gate == baseline** (§6) — assertion 1 and all three of assertions 2a/2b/2c, as §6 defines them. Do not restate a partial form of either half here: a sweep that checked only the `cc-design-exp-` count would pass a leaked user-visible worktree, and one that compared the whole `git worktree list --porcelain` output — or ran assertion 1 outside the caller's measurement surface — would fail on a change no caller of this gate ever measured.
 
 Any condition failing makes the sweep **FAIL**, and the owning SKILL.md's failure path takes over from there — `design` allows at most one re-convergence cycle per failing claim before escalating; `design-lite` routes to its Round 3 and then to a 3-option escalation. Those paths are economically divergent by design and are **not** unified here.
 
