@@ -1772,45 +1772,96 @@ fi
 set_exec_wt "" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-# 14k. The deadline is a dispatch gate, and it is read
+# 14k. The run's END is the dispatch gate, and the progress boundaries set it
 #
-# It was frozen into the binding digest and compared at entry, and then nothing
-# read it — the field appears nowhere in this file and the driver's own helper
-# is only called from the loop the router never enters. Measured: a run past its
-# deadline had `plan --kind skill` answer "통과 예상".
+# The wall clock used to hold this gate. It measured elapsed time, while the
+# thing worth stopping is pointless spinning — measured, one run died having
+# performed zero acts because the machine slept for 35 hours, and the
+# independent review that loss forced cost 2h17m. The gate's SHAPE is unchanged
+# and is asserted here as such: dispatch and merge refused, ledger acts still
+# recorded, a done proposal exempt. What it reads is now the mark a
+# progress-based boundary leaves.
+#
+# Keyed on the mark rather than on the clock, these assertions no longer expire:
+# the old ones compared against a literal `2030-01-01`, which is a date this
+# suite will one day run past.
 # ---------------------------------------------------------------------------
-past_dl() {
-  local line out="$MANIFEST.dl"
-  : > "$out"
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      '**벽시계 마감**: '*) line="**벽시계 마감**: $1" ;;
-    esac
-    printf '%s\n' "$line" >> "$out"
-  done < "$MANIFEST"
-  mv "$out" "$MANIFEST"
+grant_field_set() {
+  # grant_field_set <키> <값> — declare (or redeclare) one `## 인가` field.
+  # `## 인가` is the fixture's last section, so appending lands inside it, which
+  # is where `manifest_field` looks.
+  { grep -v "^\*\*$1\*\*: " "$MANIFEST" || true; } > "$MANIFEST.gf"
+  mv "$MANIFEST.gf" "$MANIFEST"
+  if [ -n "$2" ]; then printf '**%s**: %s\n' "$1" "$2" >> "$MANIFEST"; fi
   refresh_bd
 }
-past_dl '2020-01-01T00:00:00Z'
+
+printf '2026-01-01T00:00:00Z 종단 — 경계 B5 · 근거 픽스처\n' > "$RD/done"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
-check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
+check "런이 종단하면 스테이지 디스패치가 거부된다" "$rc" "3"
 case "$msg" in
-  *"마감이 지났습니다"*) ok "거부가 마감을 이유로 든다" ;;
-  *) bad "마감 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+  *"이미 종단했습니다"*) ok "거부가 종단을 이유로 든다" ;;
+  *) bad "종단 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
 esac
 gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
-check "마감 뒤 머지도 거부된다" "$rc" "3"
-# But recording and closing still work — a deadline that stopped everything
+check "종단 뒤 머지도 거부된다" "$rc" "3"
+# But recording and closing still work — a boundary that stopped everything
 # would strand the run instead of ending it.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
      --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
-check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
-past_dl '2030-01-01T00:00:00Z'
+check "종단 뒤에도 장부 행위는 통과한다" "$rc" "0"
+rm -f "$RD/done"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
-check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
+check "종단 표시가 없으면 디스패치가 통과한다" "$rc" "0"
+
+# --- B5: the stagnation bound ENDS the run, it does not ask -----------------
+#
+# B1 asks and B5 ends, and they cannot share a counter: B1's own firing skips
+# the arm B1 evaluates in, so its counter freezes at the first threshold. B5
+# therefore keeps `stagnation-repeat` and is evaluated beside B4.
+grant_field_set '무진전 상한' '2'
+printf '%s\n' "$(PD)" > "$RD/stagnation-digest"
+printf '%s\n' "5"      > "$RD/stagnation-repeat"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5" -- touch "$WORK/t-b5"
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B5"*) ok "무진전 상한이 런을 끝낸다 (묻지 않는다)" ;;
+  *) bad "B5" "무진전이 상한을 넘었는데 런이 끝나지 않았다: $(cat "$RD/done" 2>/dev/null || printf '(종단 표시 없음)')" ;;
+esac
+if grep -q '기준=B5' "$LEDGER"; then
+  ok "B5 종료가 원장에 행을 남긴다"
+else
+  bad "B5 행" "런이 끝났는데 원장에 그 이유가 없다"
+fi
+rm -f "$RD/done" "$RD/stagnation-digest" "$RD/stagnation-repeat"
+grant_field_set '무진전 상한' ''
+
+# --- B4: 80% asks, 100% ends ------------------------------------------------
+grant_field_set '비용 천장' '10'
+printf -- '- `cost` | 누적 usd=8.0000 | 스테이지 수=1 | 관측 시각=테스트 | prev=x\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-80" -- touch "$WORK/t-b4a"
+if grep -q '구속 튜플=B4' "$LEDGER" && [ ! -s "$RD/done" ]; then
+  ok "비용이 천장의 80%에 닿으면 묻고, 런은 계속 간다"
+else
+  bad "B4 80%" "80%에서 승인이 없거나 런이 이미 끝났다"
+fi
+printf -- '- `cost` | 누적 usd=10.5000 | 스테이지 수=1 | 관측 시각=테스트 | prev=x\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-100" -- touch "$WORK/t-b4b"
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B4"*) ok "비용이 천장에 닿으면 런이 끝난다" ;;
+  *) bad "B4 100%" "천장을 넘었는데 런이 끝나지 않았다: $(cat "$RD/done" 2>/dev/null || printf '(종단 표시 없음)')" ;;
+esac
+rm -f "$RD/done"
+grant_field_set '비용 천장' ''
+grep -v '^- `cost`' "$LEDGER" > "$LEDGER.nc" && mv "$LEDGER.nc" "$LEDGER"
 
 # ---------------------------------------------------------------------------
 # 14l. The authorization list can grow, and only through the gate
@@ -2196,17 +2247,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 22. A done proposal is not judged by the deadline's merge arm
+# 22. A done proposal is not judged by the end gate's merge arm
 #
 # It has no act behind it, so `--cutpoint` carries no meaning there — yet the
-# deadline read it and refused, leaving a past-deadline run unable to record
-# that it had ended.
+# gate read it and refused, leaving a run past its bound unable to record that
+# it had ended: no `done` file, a snapshot showing it in flight forever, and a
+# watcher that never reaped itself.
+#
+# THIS ASSERTION USED TO BE A `grep` FOR THE EXEMPTION'S SOURCE LINE, and it was
+# worse than no test. The literal it looked for occurred TWICE in the gate and
+# the helper it used answers "at least one", so deleting the exemption left the
+# section green — a passing test asserting the exemption of a gate that was no
+# longer there. That is the failure mode a red test does not have: an
+# implementer reads the checklist, runs the suite, sees green and concludes the
+# net held. So the section now EXERCISES the exemption instead of looking for
+# it, and the two ways it can break — the exemption removed, or the gate itself
+# removed — are distinguished by the two cases below rather than conflated into
+# one grep that passes either way.
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '[ "$kind" = "propose-done" ] && return 0'; then
-  ok "마감 게이트가 종료 제안을 면제한다"
+printf '2026-01-01T00:00:00Z 종단 — 경계 B4 · 근거 22절 픽스처\n' > "$RD/done"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
+if [ "$rc" = "3" ]; then
+  ok "종단한 런에서 머지는 여전히 거부된다 (관문이 살아 있다)"
 else
-  bad "마감 면제" "마감이 지난 런이 종료를 기록할 수 없다"
+  bad "종단 관문" "종단 표시가 있는데 머지가 rc=$rc 로 통과했다"
 fi
+gate plan --manifest "$MANIFEST" --kind propose-done --target infra --segment SD --cutpoint 머지 -- true
+if [ "$rc" = "3" ]; then
+  bad "종료 면제" "종단한 런이 종료 제안을 관문에 막혀 기록할 수 없다"
+else
+  ok "종단 관문이 종료 제안을 면제한다"
+fi
+rm -f "$RD/done"
 
 # ---------------------------------------------------------------------------
 # 23. The settings directory is serialized for readers and writers alike

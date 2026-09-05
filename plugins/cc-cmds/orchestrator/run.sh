@@ -2046,7 +2046,7 @@ answered_judgment_stage() {
   # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
   # id when it spawns. So the field already names the re-dispatch candidate, and
   # the membership test is on the stage id's `:<segment>:` infix.
-  local seg="$1" id row st iss stg
+  local seg="$1" id row st iss stg spent
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -2058,8 +2058,13 @@ answered_judgment_stage() {
            | { grep -F "승인 id=$id " || true; } \
            | { grep -F '절단점=판단 ' || true; } | tail -1)
     [ -n "$iss" ] || continue
-    if { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
-       | grep -qF "해소 승인=$id "; then continue; fi
+    # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
+    # — under `pipefail` — report the whole pipeline as failed. The value is
+    # captured instead and tested as a string, which is the spelling the rest of
+    # this file uses for exactly this reason.
+    spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
+             | { grep -F "해소 승인=$id " || true; } | tail -1)
+    [ -z "$spent" ] || continue
     stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
     case "$stg" in *":$seg:"*) ;; *) continue ;; esac
     # A session that left no stream cannot be re-attached, and a derived id
