@@ -113,8 +113,9 @@ fi
 # The inode layer costs ONE `stat` call for the whole decision. Per-path calls
 # would put dozens of forks on every edit a stage makes. What that budget rules
 # out is a fork PER PATH, not a fixed handful per decision — the spelling probe
-# below costs at most two and the symlink-leaf reading costs one, and neither
-# grows with the number of paths a decision compares.
+# below costs at most two and the symlink-leaf reading costs none at all, since
+# it is a shell builtin, and neither grows with the number of paths a decision
+# compares.
 # ---------------------------------------------------------------------------
 NL='
 '
@@ -222,23 +223,22 @@ hook_stat_probe() {
 }
 
 hook_leaf_is_symlink() {
-  # hook_leaf_is_symlink <경로> — 말단 자신이 심링크인가. `-L` 없이 한 번 더 재서
-  # `-L` 판독인 `NP_INO` 와 비교한다: 두 값이 다르면 심링크를 따라간 것이다.
-  #
-  # 매달린 심링크는 `-L` 판독이 비고 비-`-L` 판독이 차므로 「심링크 맞음」이 되고,
-  # 아직 만들어지지 않은 말단은 두 판독이 모두 비어 「심링크 아님」이 된다 —
+  # hook_leaf_is_symlink <경로> — 말단 자신이 심링크인가. 셸 내장 `[ -L ]` 은
+  # lstat 만 보므로 표적이 실재하는지와 무관하게 답한다: 매달린 심링크도
+  # 「심링크 맞음」이고, 아직 만들어지지 않은 말단은 「심링크 아님」이 된다 —
   # 계획 방출과 중단 기록이 그 정상 경로다.
   #
-  # 이 fork 는 런 디렉터리의 허용 두 갈래에서만 일어나므로, 이 파일의 예산 논거
-  # (경로마다 fork 하지 않는다)를 어기지 않는다.
-  local raw
-  case "$HOOK_STAT_FMT" in
-    bsd) raw=$(stat -f '%d:%i' "$1" 2>/dev/null) ;;   # lint-bash-portability: disable=stat -f
-    gnu) raw=$(stat -c '%d:%i' "$1" 2>/dev/null) ;;   # lint-bash-portability: disable=stat -c
-    *)   return 0 ;;
-  esac
-  [ -n "$raw" ] || return 1
-  [ "$raw" != "$NP_INO" ]
+  # 이전 형태는 `-L` 판독과 비-`-L` 판독을 비교했고 macOS 에서 틀렸다. BSD 의
+  # `stat(1)` 은 `-L` 로 stat(2) 가 실패하면 조용히 lstat 판독을 내므로 매달린
+  # 심링크에서 두 값이 같아져 「심링크 아님」이 됐다 — GNU 는 반대로 답해 같은
+  # 코드가 플랫폼마다 다른 답을 냈다. 그리고 판독 실패와 「말단이 아직 없다」가
+  # 한 분기로 접혀, 판정 불가가 허용으로 샜다. 내장 판정에는 그 두 실패가 없고,
+  # 발산 철자를 늘리지 않으며, fork 를 하지 않는다.
+  #
+  # 하드링크는 이 검사로 잡히지 않고 그것이 맞는 답이다 — 하드링크에는 따라갈
+  # 링크가 없고 표적과 아이노드를 공유하므로, 이름과 파일을 가르는 그 갈래는
+  # 심링크 검사가 아니라 아이노드 쪽 판정이 져야 한다.
+  [ -L "$1" ]
 }
 
 hook_is() {
