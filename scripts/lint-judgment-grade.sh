@@ -101,10 +101,15 @@ for pair in $PAIRS; do
   badtok=0
   while IFS= read -r tok; do
     [[ -n "$tok" ]] || continue
-    printf '%s' "$tok" | grep -qE "^$VALID_RE$" || {
+    # CAPTURED, NOT `grep -q`. An early-exiting reader on the right of a pipe
+    # kills the writer with SIGPIPE, and under `pipefail` the pipeline then
+    # reports failure even though the match was found. `grep -c` has the same
+    # truth value and reads its input to the end.
+    tok_hit=$(printf '%s' "$tok" | grep -cE "^$VALID_RE$" || true)
+    if [[ "${tok_hit:-0}" = "0" ]]; then
       echo "FAIL: $att — 어휘 밖 등급 토큰: '$tok'" >&2
       badtok=$((badtok + 1))
-    }
+    fi
   done < <(grep -ohE "$GRADE_RE" "$att_file" | LC_ALL=C sort -u || true)
   [[ "$badtok" = "0" ]] || fail=1
 

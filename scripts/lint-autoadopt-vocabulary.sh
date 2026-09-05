@@ -112,7 +112,13 @@ while IFS= read -r f; do
   [[ -f "$f" ]] || continue
   # The marker is looked for in the first few lines only, so a file that merely
   # mentions it in prose is still scanned.
-  if sed -n '1,5p' "$f" | grep -qF 'lint-autoadopt-vocabulary: self-skip'; then
+  # CAPTURED, NOT `grep -q`. An early-exiting reader on the right of a pipe
+  # kills the writer with SIGPIPE, and under `pipefail` the pipeline then reports
+  # failure even though the match was found. `grep -c` has the same truth value
+  # and reads its input to the end; the count is captured rather than discarded,
+  # because BSD grep short-circuits when its output goes to /dev/null.
+  selfskip=$(sed -n '1,5p' "$f" | grep -cF 'lint-autoadopt-vocabulary: self-skip' || true)
+  if [[ "${selfskip:-0}" != "0" ]]; then
     continue
   fi
   grep -qF '판단 부류=' "$f" 2>/dev/null || continue
