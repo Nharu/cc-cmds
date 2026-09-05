@@ -1219,6 +1219,10 @@ gate_snapshot() {
   gate_pending_approvals_json
   printf '  ],\n'
 
+  printf '  "answered_judgments": [\n'
+  gate_answered_judgments_json
+  printf '  ],\n'
+
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -1239,6 +1243,53 @@ gate_pending_approvals_json() {
       "$(gate_json_escape "$id")" \
       "$(gate_json_escape "$(gate_rows '승인' | { grep -F "승인 id=$id " || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)")"
+  done
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_answered_judgments_json() {
+  # The judgments a person has ANSWERED and no stage has yet used.
+  #
+  # THE SNAPSHOT USED TO SHOW ONLY `대기`, and it carries no `절단점` either — so
+  # a judgment that had been answered left the pending list and appeared nowhere
+  # else. The answer was in the ledger, in the sidecar and in the approval's
+  # state, and the run still could not move: the router's declared input is the
+  # snapshot, and the snapshot had stopped mentioning it. That is the same
+  # broken-consumer shape this whole change exists to close, one field later.
+  #
+  # WHAT THE ROUTER DOES WITH AN ELEMENT is decided by the router — the gate says
+  # what is true, not what to run next. Each element is a RE-DISPATCH CANDIDATE
+  # for the stage that emitted the judgment, which is why `segment` is on it;
+  # without that field the router would know an answer exists and not know whom
+  # to hand it to.
+  #
+  # THE SPENT TEST REUSES THE PREDICATE THAT ALREADY EXISTS. A `자율 승인` row
+  # naming `해소 승인=<id>` is what "this answer opened an adoption" already
+  # means in two other places. A second bookkeeping of consumption would be a
+  # second floor, and two floors disagree.
+  #
+  # `막는 세그먼트` IS READ OFF THE ISSUING ROW, not the last one. The rows that
+  # close an approval carry the question and the answer and no segment, so a
+  # `tail -1` — which is right for state — yields an empty segment here. The
+  # narrowing to `절단점=판단` picks the issuing row for both duties at once.
+  local ids id row st iss seg first=1
+  ids=$(gate_rows '승인' \
+        | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
+  for id in $ids; do
+    [ -n "$id" ] || continue
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    if gate_has_row '자율 승인' "해소 승인=$id "; then continue; fi
+    seg=$(gate_row_field "$iss" '막는 세그먼트')
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+      "$(gate_json_escape "$id")" \
+      "$(gate_json_escape "${seg:--}")" \
+      "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
   done
   [ "$first" = "1" ] || printf '\n'
 }

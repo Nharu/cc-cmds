@@ -264,6 +264,10 @@ snapshot  →  decide  →  gate call  →  (repeat)
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
 
+**`answered_judgments` is a list of RE-DISPATCH CANDIDATES, and that is the whole of its reading rule.** Each element names a judgment a person has answered and that no stage has used yet: `id` is the approval, `segment` is the stage that raised it, and `answer` is the file holding the answer's untruncated bytes. The candidate is the stage — re-dispatching it, with the approval id so it can read those bytes, is what turns the answer back into work. **The gate does not re-dispatch on its own**: it says what is true, and which stage runs next is the router's decision and no one else's, because whether that segment still wants that stage depends on a plan the manifest never froze.
+
+**An element leaves the array when a stage consumes it, and by no other route.** Consumption means a `자율 승인` row naming `해소 승인=<id>` — the same predicate two other places already use. An answer nobody consumed stays a candidate on the next pass, which is intended: an answer that vanished from the router's input without being used would be `pending_approvals` losing it all over again, one field later.
+
 **THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
 
 That includes the moments that feel like natural checkpoints: a stage just finished, a review came back with findings, the next step is large or expensive, the previous act failed. None of those is a question. **A router that asks at one of them stops the run**, and the stop is invisible — the ledger is well-formed, the last row is a normal one, nothing refused anything. It is not even distinguishable from a run waiting on an approval, because *that* state leaves a `승인` row and this one leaves nothing at all. Unattended, nobody answers and the night is spent.
@@ -283,7 +287,8 @@ Measured: a review stage completed and produced its report; the router recorded 
 | `plan` | dry run — would this act pass, and if not which rule refuses it |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
-| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no) |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no, `--answer` that the bytes are an instruction rather than a verdict — it drops the affirmative-token requirement and keeps the negative scan) |
+| `answers` | read-only — print an answer's untruncated bytes by approval id, or list the ids on hand |
 
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
 
