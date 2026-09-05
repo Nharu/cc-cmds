@@ -1569,7 +1569,7 @@ gate_chain_verify() {
   # the hex the row carried. There is no `sed` here now: the file is opened raw
   # and matched as bytes unconditionally, which is what the pin was buying. The
   # other three ledger readers still pin, because they still shell out.
-  local walk rc broke unreadable
+  local walk rc broke cause
   # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
   # never runs, `broke` stays 0, and the function returns "intact" for a file it
   # never opened — so deleting the ledger outright was quieter than editing one
@@ -1579,8 +1579,8 @@ gate_chain_verify() {
     warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
     return 1
   fi
-  # The whole walk, in one pass. Four behaviours are reproduced deliberately and
-  # none of them is incidental:
+  # The whole walk, in one pass. Four behaviours are decided deliberately here
+  # and none of them is incidental:
   #
   #   * ROW SELECTION and ROW NUMBERING are unchanged — a line is a row when it
   #     starts with "- `", and an unreadable row still consumes its number, so
@@ -1595,28 +1595,49 @@ gate_chain_verify() {
   #     byte — was reported as intact. That is a fixed defect; reproducing it
   #     here for the sake of "same verdict as before" would be an instruction to
   #     regress.
-  #   * `read`'s EOF SEMANTICS are reproduced: a final line with no terminating
-  #     newline is never visited, because `read` returns non-zero on it and the
-  #     loop body does not run. The one thing NOT reproduced is what `read` does
-  #     to a NUL byte — it drops or truncates there depending on the interpreter,
-  #     and hashing the row's true bytes instead is a gain in detection, listed
-  #     as such rather than hidden.
+  #   * `read`'s EOF SEMANTICS ARE NOT REPRODUCED, and dropping them tightens
+  #     detection rather than relaxing it. A final chunk with no terminating
+  #     newline used to end the walk before it was counted, so a forged approval
+  #     row appended with the newline left off was never visited at all — while
+  #     every other consumer read it as a valid row and the authorization took
+  #     effect. It is cheaper to produce than any of the three shapes above:
+  #     not printing one byte is the whole attack.
+  #
+  #     A FALSE POSITIVE IS NOT POSSIBLE HERE, and the reason is in `gate_append`
+  #     rather than in this function. That is the ledger's only writer, and both
+  #     of its branches — the locked `/bin/sh -c` and the no-lock fallback — write
+  #     through a `printf` whose format ends in `\n`. A ledger the gate wrote
+  #     therefore always ends with a newline, so a final row that does not is by
+  #     itself evidence of a write that did not come through the gate.
+  #
+  #     Only a ROW-SHAPED chunk is judged. A partial write that is not row-shaped
+  #     — a truncated heading, half a prose line — still ends the walk silently,
+  #     because counting a non-row as a row would move the `broke` value every
+  #     committed fixture pins.
+  #
+  #     The other thing NOT reproduced is what `read` does to a NUL byte — it
+  #     drops or truncates there depending on the interpreter, and hashing the
+  #     row's true bytes instead is a gain in detection, listed as such rather
+  #     than hidden.
   walk=$(perl -MDigest::SHA=sha256_hex -e '
     my ($ledger, $seed) = @ARGV;
     open(my $fh, "<", $ledger) or exit 3;
     binmode($fh);
     my $prev = sha256_hex($seed);
-    my ($n, $broke, $unreadable) = (0, 0, 0);
+    my ($n, $broke, $cause) = (0, 0, 0);
     while (defined(my $line = <$fh>)) {
-      last unless $line =~ s/\n\z//;
+      unless ($line =~ s/\n\z//) {
+        last unless substr($line, 0, 3) eq "- `";
+        $n++; $broke = $n; $cause = 2; last;
+      }
       next unless substr($line, 0, 3) eq "- `";
       $n++;
       my $want = $line =~ /^.*\| prev=([0-9a-f]*)\z/ ? $1 : "";
-      if ($want eq "") { $broke = $n; $unreadable = 1; last }
+      if ($want eq "") { $broke = $n; $cause = 1; last }
       if ($want ne $prev) { $broke = $n; last }
       $prev = sha256_hex($line);
     }
-    print "$broke $unreadable\n";
+    print "$broke $cause\n";
     exit 0;
   ' -- "$LEDGER" "## 실행 $RUN_ID" 2>&1)
   rc=$?
@@ -1630,7 +1651,7 @@ gate_chain_verify() {
   # sentence. stderr is folded into the captured output so a diagnostic cannot
   # reach the render path, which reads any stderr as a break.
   case "$walk" in
-    [0-9]*" "[01]) ;;
+    [0-9]*" "[012]) ;;
     *) rc=1 ;;
   esac
   if [ "$rc" != 0 ]; then
@@ -1638,13 +1659,20 @@ gate_chain_verify() {
     return 1
   fi
   broke=${walk%% *}
-  unreadable=${walk##* }
+  cause=${walk##* }
   [ "$broke" = "0" ] && return 0
-  # Two causes, two sentences. They are NOT the same finding: a mismatch means
-  # some row moved, while an unreadable `prev=` means THIS row cannot be placed
-  # in the chain at all — and pointing a reader at splice/delete/reorder for the
-  # second one sends them to look for something that did not happen.
-  if [ "$unreadable" = "1" ]; then
+  # Three causes, three sentences. They are NOT the same finding: a mismatch
+  # means some row moved, an unreadable `prev=` means THIS row cannot be placed
+  # in the chain at all, and a row that does not end with a newline means the row
+  # was appended by something other than the gate. Pointing a reader at
+  # splice/delete/reorder for either of the last two sends them to look for
+  # something that did not happen. `cause` is an encoding internal to this
+  # function — the 0/1 return contract and the boolean `chain_intact` field both
+  # stay exactly as they were, and the two consumers go on reading non-zero as a
+  # break. What the number selects is the sentence.
+  if [ "$cause" = "2" ]; then
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행이 개행으로 끝나지 않습니다 (게이트가 쓴 원장은 언제나 개행으로 끝나므로 게이트 밖에서 덧붙여진 행입니다)"
+  elif [ "$cause" = "1" ]; then
     warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행의 prev= 를 읽을 수 없습니다 (필드가 없거나 hex 가 아니거나 무효 바이트가 섞였습니다)"
   else
     warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
