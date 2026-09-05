@@ -14,6 +14,10 @@ bash "$NOTIFY_SH" fire-now "build" "성공"
 lines=$(wc -l < "$NOTIFIER_LOG" | tr -d ' ')
 [[ "$lines" == "1" ]] || { echo "expected 1 notifier call, got $lines" >&2; exit 1; }
 grep -q -- '-group cc-cmds-active-notify' "$NOTIFIER_LOG" || { echo "single armCount=1 must use -group" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
-grep -q -- '-title \[cc-cmds\] build' "$NOTIFIER_LOG" || { echo "title missing" >&2; exit 1; }
+# The source marker carries no brackets. terminal-notifier swallows a title
+# whose first character is one of `[ ( { < " -`, replacing it with the
+# application's own name — so the bracketed form erased the very marker it was
+# there to provide.
+grep -q -- '-title cc-cmds build' "$NOTIFIER_LOG" || { echo "title missing" >&2; exit 1; }
 grep -q -- '-message 성공' "$NOTIFIER_LOG" || { echo "summary missing" >&2; exit 1; }
 grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "-execute ':' no-op missing" >&2; exit 1; }

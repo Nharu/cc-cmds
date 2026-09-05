@@ -11,9 +11,21 @@ on:
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
+      # The banner-rendering layer. The oracle below is the only thing in the
+      # tree that measures the notifier's own swallowing set rather than our
+      # assumptions about it, and it needs the real binary — so it runs on this
+      # leg and nowhere else. A file this filter does not name is a file this
+      # job never sees, which would leave the test existing and never once run.
+      - 'scripts/test-notify-title-oracle.sh'
+      - 'scripts/lint-notify-title-render.sh'
+      - 'scripts/test-lint-notify-title-render.sh'
+      - 'scripts/lint-notify-fire-sites.sh'
+      - 'scripts/test-lint-notify-fire-sites.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'
+      - 'tests/fixtures/lint-notify-title-render/**'
+      - 'tests/fixtures/lint-notify-fire-sites/**'
       - '.github/workflows/notify-macos.yml'
       - 'Makefile'
   push:

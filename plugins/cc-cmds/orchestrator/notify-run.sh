@@ -126,12 +126,31 @@ cc_caller_is_router() {
 }
 
 cc_notify_title() {
+  # NO TITLE MAY BEGIN WITH ONE OF SIX CHARACTERS — `[ ( { < " -`. The notifier's
+  # argument parser swallows such a value whole: the banner still appears, but
+  # with the application's own name where the title was. Every arm here used to
+  # carry a `[cc-cmds] ` prefix, so EVERY banner this system has ever raised
+  # arrived with no title at all and the distinction these tokens draw has never
+  # once reached a screen. Closing brackets pass. A leading space is no shield
+  # for five of the six — the value parser strips whitespace before it judges —
+  # while `-` is swallowed for the other reason, that the word looks like an
+  # option, so a space in front does save that one.
+  #
+  # There is no way to change the application name (`-sender` and `-appIcon` are
+  # discontinued), so the title is the only marker of where a notice came from,
+  # and it was the one thing being dropped.
+  #
+  # THIS VOCABULARY IS AN INTERMEDIATE FORM. Five tokens share three strings, so
+  # the two pairs that demand different actions — answer a question, versus go
+  # and do something by hand — still arrive wearing the same title. Removing the
+  # prefix makes titles reach the screen; it does not restore the distinction.
+  # Rewriting the vocabulary so a title carries the action is separate work.
   case "$1" in
-    answer)       printf '[cc-cmds] 답 필요' ;;
-    hands)        printf '[cc-cmds] 손 필요' ;;
-    status)       printf '[cc-cmds] 자율 런' ;;
-    status-hands) printf '[cc-cmds] 손 필요' ;;
-    overflow)     printf '[cc-cmds] 답 필요' ;;
+    answer)       printf '답 필요' ;;
+    hands)        printf '손 필요' ;;
+    status)       printf '자율 런' ;;
+    status-hands) printf '손 필요' ;;
+    overflow)     printf '답 필요' ;;
   esac
 }
 
@@ -167,23 +186,51 @@ cc_notify_body() {
   # Strings pulled from the ledger — a stall reason, a boundary approval's
   # question — are generated sentences and can be long, so they are cut.
   #
-  # THE CUT RESULT MUST NOT BEGIN WITH A BRACKET. This notifier treats a leading
-  # bracket in the body specially, so a truncation that happens to expose one
-  # changes how the notice renders. Leading whitespace goes for the same reason.
+  # THE SWALLOWING SET IS SIX CHARACTERS — `[ ( { < " -` — AND STRIPPING IS THE
+  # WRONG CURE. A value beginning with any of them is dropped by the notifier's
+  # argument parser. The previous form stripped a leading `[` and stated the rule
+  # as "must not begin with a bracket", which is half of the truth; that same
+  # asymmetry is why the title carried a bracketed prefix for as long as it did.
+  #
+  # Widening the strip to all six would trade a lost body for a distorted one:
+  # `-p 를 빠뜨렸습니다` loses its subject the moment the `-` goes. The body is the
+  # only channel a caller's specifics travel on — a stage's halt question, a
+  # stall reason — so it is QUOTED instead, losslessly: escape the inner `\` and
+  # `"`, then wrap both ends in `"`.
+  #
+  # Leading WHITESPACE is still dropped: it carries no meaning, and for five of
+  # the six the parser strips it before judging anyway. Dropping it loses nothing
+  # on the sixth either — a leading space is the one thing that saves a `-`, and
+  # once the space is gone the value is quoted like any other, so the set that
+  # survives is the same either way.
+  #
+  # THE CUT COMES BEFORE THE QUOTING. Cutting afterwards would take the closing
+  # quote off the end and hand the parser an unterminated string.
   #
   # Bash substring expansion rather than `cut -c` or an `awk` substr: those two
   # differ across the BSD and GNU builds this repo runs on, and the exact
   # boundary is not a property anything asserts — what matters is that the value
-  # is bounded and does not start with a bracket.
+  # is bounded and survives the parser intact.
+  #
+  # The escaping is two parameter expansions rather than a `sed` call: this sits
+  # on the critical path of every act and the expansions need no subshell.
   local s
   s=$(printf '%s' "${1:-}" | tr '\n\t' '  ')
   while :; do
     case "$s" in
-      ' '*|'['*) s="${s#?}" ;;
+      ' '*) s="${s#?}" ;;
       *) break ;;
     esac
   done
-  printf '%s' "${s:0:200}"
+  s="${s:0:200}"
+  case "$s" in
+    '['*|'('*|'{'*|'<'*|'"'*|'-'*)
+      s="${s//\\/\\\\}"
+      s="${s//\"/\\\"}"
+      s="\"${s}\""
+      ;;
+  esac
+  printf '%s' "$s"
 }
 
 cc_notify_stack_admit() {
@@ -217,6 +264,47 @@ cc_notify_stack_admit() {
     printf '%s\n' "$key" >> "$o" 2>/dev/null || true
   fi
   return 1
+}
+
+cc_notify_stack_release() {
+  # cc_notify_stack_release <item-key>
+  #
+  # WITHOUT THIS THE CAP IS A LIFETIME RATHER THAN A CONCURRENCY. Nothing in the
+  # run removed a line from the stack file, so the eight individual slots were
+  # spent over the whole night instead of being held by the eight items actually
+  # waiting — and the ninth arrival collapsed into the overflow slot while eight
+  # keys answered hours earlier still occupied their seats.
+  #
+  # WHY NO CALLER GUARD HERE, WHEN CLEARING A BANNER WOULD NEED ONE. The
+  # discriminator is whether the act itself calls the notifier at that moment.
+  # This one erases a line in a file and calls nothing: it can neither raise a
+  # banner nor suppress one, because a shorter stack moves admission only TOWARD
+  # the individual slot. It is idempotent, it converges, and the decision to fire
+  # stays exactly where it already is — at the call sites the router guard
+  # covers. Clearing a banner is the opposite: it changes what is on a person's
+  # screen right now, so the guard is a genuine precondition there.
+  #
+  # Putting the same guard on a site that delivers nothing would cost more than
+  # the two lines it saves. Every guarded site today shares one property — it
+  # hands an event to a person — and a guard on a site that hands over nothing
+  # kills that property as a MARKER. Whoever comes next could no longer tell the
+  # two kinds apart by whether a guard is present, and a banner clear added later
+  # without one would not stand out.
+  local key="$1" f t
+  if [ -z "${RUN_DIR:-}" ] || [ ! -d "${RUN_DIR:-}" ]; then
+    return 0
+  fi
+  f="$RUN_DIR/notify.stack"
+  [ -f "$f" ] || return 0
+  # Same directory, so the rename stays inside one filesystem and is atomic.
+  t="$f.$$"
+  # `grep -v` exits 1 when it filters everything away, and an empty stack is a
+  # normal state rather than a failure — so the status is swallowed and the
+  # emptiness is written through. Responsibility 1: every path returns 0.
+  { grep -vxF "$key" "$f" || true; } > "$t" 2>/dev/null \
+    || { rm -f "$t" 2>/dev/null || true; return 0; }
+  mv "$t" "$f" 2>/dev/null || rm -f "$t" 2>/dev/null || true
+  return 0
 }
 
 cc_notify_overflow_count() {

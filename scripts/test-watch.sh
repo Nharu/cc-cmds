@@ -909,7 +909,7 @@ if grep -q '런이 종단했습니다' "$NOTIFY_LOG" 2>/dev/null; then
 else
   bad "arm B 배너" "$(tr '\n' ' ' < "$NOTIFY_LOG" 2>/dev/null)"
 fi
-check "종단 배너는 상태 슬롯의 제목을 쓴다" "$(has_title '[cc-cmds] 자율 런')" "1"
+check "종단 배너는 상태 슬롯의 제목을 쓴다" "$(has_title '자율 런')" "1"
 
 # ---------------------------------------------------------------------------
 # The banner group is per run.
@@ -1022,7 +1022,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 approval_row A1
 runb >/dev/null
 notify_settle 1
-check "answer — 제목" "$(has_title '[cc-cmds] 답 필요')" "1"
+check "answer — 제목" "$(has_title '답 필요')" "1"
 check "answer — 그룹이 승인 id 별이다" "$(has_group "cc-cmds-autopilot-$(basename "$RD")-A1")" "1"
 check "answer — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
 
@@ -1033,7 +1033,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 blocked_row 사람대기 "적용 판정 불가"
 runb >/dev/null
 notify_settle 1
-check "hands — 제목" "$(has_title '[cc-cmds] 손 필요')" "1"
+check "hands — 제목" "$(has_title '손 필요')" "1"
 check "hands — 그룹이 항목 키를 싣는다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")-run-적용-판정-불가")" "1"
 check "hands — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
@@ -1048,7 +1048,7 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 blocked_row 무효화 "강제 표면 이동"
 runb >/dev/null
 notify_settle 1
-check "status-hands — 제목은 손 필요" "$(has_title '[cc-cmds] 손 필요')" "1"
+check "status-hands — 제목은 손 필요" "$(has_title '손 필요')" "1"
 check "status-hands — 그룹은 런 단위 상태 슬롯" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "1"
 check "status-hands — 대체 버킷이라 소리가 없다" "$(n_sound)" "0"
@@ -1103,7 +1103,7 @@ check "아홉째는 넘침 자리로 모인다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")-대기")" "1"
 check "그 자리는 상태 슬롯과 다른 자리다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "0"
-check "넘침 자리 제목은 답 필요다" "$(has_title '[cc-cmds] 답 필요')" "9"
+check "넘침 자리 제목은 답 필요다" "$(has_title '답 필요')" "9"
 
 approval_row A10
 approval_row A11

@@ -182,7 +182,15 @@ dispatch_fire() {
       rm -f "$consuming"
       exit 0
     fi
-    notifier_args=( -title "[cc-cmds] ${workflow}" -message "${summary}" -execute ':' )
+    # NO LEADING BRACKET IN A TITLE. terminal-notifier swallows a title whose
+    # first character is one of `[ ( { < " -` — the banner still appears, but
+    # with the application's own name in place of the title, so a bracketed
+    # source marker erased the very thing it was there to mark. Measured against
+    # the real binary: `cc-cmds 손 필요` renders as itself, `[cc-cmds] 손 필요`
+    # renders as `Terminal`. The bare marker is kept because there is no way to
+    # change the application name (`-sender` and `-appIcon` are discontinued), so
+    # the title is the only place provenance can live.
+    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute ':' )
     # arm_count == 1 ↔ classic 1-shot ARM; -group "cc-cmds-active-notify" gives
     # banner replace semantics for visual parity with §7 bypass. armCount > 1
     # omits -group so each sub-event banner persists in Notification Center.
@@ -190,8 +198,9 @@ dispatch_fire() {
     dispatch_notifier "${notifier_args[@]}" || true
   else
     # repeat — never -group (intentional pile-up; dynamic-trust anti-spam).
+    # Same swallowing rule as the single-mode dispatch above.
     dispatch_notifier \
-      -title "[cc-cmds] ${workflow}" \
+      -title "cc-cmds ${workflow}" \
       -message "${summary}" \
       -execute ':' || true
   fi
