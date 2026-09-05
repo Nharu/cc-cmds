@@ -14,6 +14,7 @@ Before spawning the first member of a team, the lead creates one team witness di
 WITNESS_ROOT="${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}"
 STAGE_TAG=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-}" | tr -c 'A-Za-z0-9._-' '-')
 WITNESS_DIR=$(mktemp -d "${WITNESS_ROOT}/cc-team-witness-<slug>${STAGE_TAG:+.${STAGE_TAG}}.XXXXXX")
+printf '%s\n' "$WITNESS_DIR"
 ```
 
 **Root.** Re-rooting under the run directory is a **pure relocation** — it changes no schema, no cleanup path guard, and no same-filesystem rename atomicity for the sibling temps — and it is what fixes the **durability grade** of everything published in this directory: a system temp dir is vulnerable to a reboot, a run directory is not. A run with no driver exports no `CC_PIPELINE_RUN_DIR`, takes the fallback, and is byte-identical to before.
