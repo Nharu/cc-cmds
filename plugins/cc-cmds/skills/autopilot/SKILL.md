@@ -160,9 +160,15 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 The deadline rests on the same assumption 5a just qualified: the user picks a time believing the implementation happens overnight. If an audit stands first in the graph, what exists at that hour may be the audit's output and nothing else. Say so while they choose the time, not afterwards.
 
-**5f — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+**This deadline and the next two questions are the run's termination boundaries, all of them.** Say that here, so the user hears the set before being asked its members: only the deadline is required, and each of the other two is unbounded on its own axis when left undeclared. Nothing else ends a run that is otherwise making no headway.
 
-**5g — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
+**5f — Cost ceiling, written to the manifest as `비용 천장`.** A figure in USD, or leave it undeclared. Say what the two thresholds do: at 80% of the declared ceiling the gate opens a boundary approval — which unattended means it waits for the morning rather than stopping — and at 100% it **ends the run**. Say the state this question is changing, too: the gate has always read this field, and until now nothing wrote it, so `gate_b4_cost` returned immediately on every run ever made and the ceiling was a bound in name. Undeclared keeps exactly that behaviour, which is why it stays legal.
+
+**5g — Stagnation bound, written to the manifest as `무진전 상한`.** An integer, or `없음`. What it counts is **the router's judgements** — how many of them in a row the progress vector may stand still for before the run ends — and not gate calls: a stage's own traffic through the gate is not counted at all, which is what keeps a healthy stage from spending the bound while it works. `없음` is unbounded on this axis and is what every manifest written before this field existed says. Offer a default and make the user move it: the value that makes this bound safe depends on how much the run is expected to do between judgements, and only the user knows that.
+
+**5h — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+
+**5i — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
 
 Say all three of these:
 

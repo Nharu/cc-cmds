@@ -609,6 +609,14 @@ check_manifest() {
   printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
     || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
 
+  # `비용 천장` AND `무진전 상한` ARE NOT CHECKED HERE, and the omission is the
+  # decision rather than the oversight. Undeclared is legal for both — the gate
+  # reads an absent value as "unbounded on that axis" — and that is the whole of
+  # their backward compatibility: every manifest written before the two fields
+  # existed lacks them. A required check in this conjunction runs on every verb,
+  # so adding one would `die` mid-run on `snapshot` and `propose-done` alike,
+  # against a frozen block nobody can edit. Do not fill this in as a gap.
+
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
     [ -n "$(manifest_field '요소' '적용 지점')" ] || die "적용 주체가 파이프라인인데 적용 지점이 없습니다"

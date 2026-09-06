@@ -740,6 +740,29 @@ else
 fi
 write_manifest "$MF"
 
+# THE TWO BOUNDARY FIELDS NEED A WRITER, not only a reader, and for a while they
+# had none. The gate has read `비용 천장` and `무진전 상한` since it gained the
+# boundaries, but neither the manifest template nor the kickoff interview
+# carried them — so `gate_b4_cost` returned on its first line for every run ever
+# made, and both were bounds in name. Nothing in the driver's own code shows
+# that gap, because from the driver's side an undeclared field is a legal state.
+# So it is asserted at the document layer: if the writing sites disappear again,
+# something goes red.
+SIDECAR_DOC="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
+KICKOFF_DOC="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+for bf in '비용 천장' '무진전 상한'; do
+  if grep -qF "**$bf**:" "$SIDECAR_DOC"; then
+    ok "인가 템플릿이 $bf 를 담는다"
+  else
+    bad "인가 템플릿" "$bf 를 적을 자리가 템플릿에 없다 — 게이트는 읽는데 쓰는 자리가 없다"
+  fi
+  if grep -qF "$bf" "$KICKOFF_DOC"; then
+    ok "킥오프 인터뷰가 $bf 를 걷는다"
+  else
+    bad "킥오프 인터뷰" "$bf 를 사용자에게 묻는 단계가 없다"
+  fi
+done
+
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then

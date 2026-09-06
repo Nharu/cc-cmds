@@ -142,6 +142,8 @@ once per run rather than on every append.
 **런 최대 절단점**: <token>
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
+**비용 천장**: <USD>
+**무진전 상한**: <정수> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
@@ -158,8 +160,26 @@ whole contract exists to remove, arriving as a leftover.
 What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
-irreversible acts, **the `자동 채택` rows**, and the optional deadline. The gate
-compares that digest at entry.
+irreversible acts, **the `자동 채택` rows**, the deadline — which is **required**,
+not optional — and, when it is declared, `무진전 상한`. The gate compares that
+digest at entry.
+
+**The deadline is serialized unconditionally and the stagnation bound only when
+declared, and the asymmetry is load-bearing rather than untidy.** The deadline
+is an old field whose unconditional emission is itself already frozen: a
+manifest that omits it, or carries it empty, still contributes its line, so
+making that line conditional would move the digest of manifests written before
+the change and leave a run already in flight unable to act, record or finish —
+the digest check runs on every verb. `무진전 상한` is new, so the compatibility
+argument runs the other way: an undeclared new field must contribute nothing, or
+the digest of every in-flight manifest moves the moment the field exists. The
+compatibility argument for a conditional line is needed by **new** fields only.
+`비용 천장` is in neither list — it is not serialized at all.
+
+**The three boundary fields are `벽시계 마감`, `비용 천장` and `무진전 상한`, and
+only the first is required.** The other two are legal undeclared, and the gate
+reads an undeclared value as "unbounded on that axis" rather than as a defect —
+which is exactly what keeps a manifest written before they existed running.
 
 The `자동 채택` rows are in that list because they were not, and the omission was
 load-bearing. They are the one other row shape a run could reach that decides
@@ -272,14 +292,20 @@ never compared.
    A mismatch is a **hard stop before the driver starts**, not a park.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
-   target rows, rule settings, pre-authorization rows, deadline. The PLAN is not
-   in it: the router decides the step graph one act at a time, so a frozen plan
-   would be recorded and never compared.
+   target rows, rule settings, pre-authorization rows, the deadline, and
+   `무진전 상한` where it is declared. The PLAN is not in it: the router decides
+   the step graph one act at a time, so a frozen plan would be recorded and
+   never compared.
 7. **Every cutpoint token** is in `CUTPOINTS` — an unrecognized token is a hard
    error, never a silent zero.
 8. **`벽시계 마감` parses as an absolute timestamp.** `없음` is refused: a field
    comment saying "required" means nothing if a validator accepts the absent
-   value, so the outermost bound holds here or nowhere.
+   value, so the outermost bound holds here or nowhere. **`비용 천장` and
+   `무진전 상한` are deliberately NOT checked, and their absence from this
+   conjunction is the whole of their backward compatibility.** Undeclared is
+   legal for both, the gate reads it as unbounded on that axis, and a required
+   check here would refuse every manifest written before the two fields existed
+   — at its next verb, mid-run, with no way to edit the frozen block.
 9. **`적용 주체: 파이프라인` requires `적용 지점` and `적용 프로브`.** An apply
    with no probe is refused at kickoff. (`적용 명령` is a *slice* field, not a
    manifest field, so it cannot be checked here.)
