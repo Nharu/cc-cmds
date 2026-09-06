@@ -6298,7 +6298,11 @@ check "스테이지 호출은 배너를 지우지 않는다" "$(notify_lines)" "
 overflow_settle_probe() {
   # overflow_settle_probe <ledger-path>
   rm -rf "$WORK/ovf"; mkdir -p "$WORK/ovf"
-  printf 'K9\nK10\n' > "$WORK/ovf/notify.overflow"
+  # THE KEYS ARE APPROVAL IDS THE LEDGER KNOWS, and that is not decoration. The
+  # predicate walks the slot's own occupants and asks each one whether it is
+  # settled, so a key no ledger names is held alive on purpose — an occupant
+  # nothing can retire must not be silently counted as gone.
+  printf 'OVF1\nOVF2\n' > "$WORK/ovf/notify.overflow"
   : > "$NOTIFY_LOG"
   PATH="$WORK/bin:$PATH" \
   CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
@@ -6311,9 +6315,12 @@ overflow_settle_probe() {
              gate_notify_overflow_settled; wait' \
     _ "$GATE" "$WORK/ovf" "$1" >/dev/null 2>&1
 }
-printf -- '- `승인` | 승인 id=OVF1 | 상태=대기 | 절단점=커밋 | prev=x\n' > "$WORK/ovf-pending.md"
+{ printf -- '- `승인` | 승인 id=OVF1 | 상태=대기 | 절단점=커밋 | prev=x\n'
+  printf -- '- `승인` | 승인 id=OVF2 | 상태=대기 | 절단점=커밋 | prev=x\n'
+} > "$WORK/ovf-pending.md"
 { cat "$WORK/ovf-pending.md"
   printf -- '- `승인` | 승인 id=OVF1 | 상태=승인 | 해소 시각=x | prev=y\n'
+  printf -- '- `승인` | 승인 id=OVF2 | 상태=승인 | 해소 시각=x | prev=y\n'
 } > "$WORK/ovf-settled.md"
 
 overflow_settle_probe "$WORK/ovf-pending.md"
@@ -6331,6 +6338,87 @@ check "그 지우기는 넘침 슬롯 주소로 나간다 (개별 주소가 아�
 # list that count is read from.
 check "넘침 목록 자체는 회수하지 않는다" \
   "$(grep -c . "$WORK/ovf/notify.overflow" || true)" "2"
+
+# --- THE SLOT HOLDS STOPS TOO, AND DEMOTION IS DRIVEN FOR REAL --------------
+#
+# The waiting slot does not stand for approvals alone. The stacking branch takes
+# `answer` AND `hands` against one cap and demotes either the same way, so the
+# thing that banner represents can be a stop summons — and a stop is not an
+# approval row. A predicate that polled approvals therefore took the banner down
+# while its subject was still waiting, and every stop firing point sits behind a
+# once-marker, so it did not come back.
+#
+# THE CAP IS REACHED BY FIRING, not by writing the overflow file by hand. Every
+# assertion above hands the list to the predicate ready-made, which tests the
+# predicate and not the path that fills it; nothing in the tree drove a real
+# demotion, so the population question could not have been asked. Eight answers
+# take the eight seats and the ninth firing is the stop.
+#
+# THE MARKER IS THE SETTLEMENT SIGNAL for a park key, and both directions are
+# driven: while the router has not yet recorded that segment out of park the
+# banner must stay, and once that marker is expired it may go.
+overflow_demotion_probe() {
+  # overflow_demotion_probe <ledger-path> <present|expired>
+  rm -rf "$WORK/ovfd"; mkdir -p "$WORK/ovfd/notify"
+  if [ "$2" = "present" ]; then printf '1\n' > "$WORK/ovfd/notify/park-SD1"; fi
+  : > "$NOTIFY_LOG"
+  PATH="$WORK/bin:$PATH" \
+  CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  CC_CMDS_AUTOPILOT_NOTIFY=1 \
+  CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+  CC_GATE_SOURCE_ONLY=1 \
+    bash -c '. "$1"; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RTDEM
+             for i in 1 2 3 4 5 6 7 8; do cc_notify_fire answer "질문 $i" "OVD$i"; done
+             cc_notify_fire hands "세그먼트 SD1 이 park 되었습니다" "park-SD1#1"
+             gate_notify_overflow_settled; wait' \
+    _ "$GATE" "$WORK/ovfd" "$1" >/dev/null 2>&1
+}
+: > "$WORK/ovfd-settled.md"
+for i in 1 2 3 4 5 6 7 8; do
+  printf -- '- `승인` | 승인 id=OVD%s | 상태=대기 | 절단점=커밋 | prev=x\n' "$i" >> "$WORK/ovfd-settled.md"
+  printf -- '- `승인` | 승인 id=OVD%s | 상태=승인 | 해소 시각=x | prev=y\n' "$i" >> "$WORK/ovfd-settled.md"
+done
+
+overflow_demotion_probe "$WORK/ovfd-settled.md" present
+check "대조군 — 아홉째 발사가 실제로 강등된다" \
+  "$(grep -c . "$WORK/ovfd/notify.overflow" || true)" "1"
+check "대조군 — 강등된 것이 그 멈춤 키다" \
+  "$(grep -cxF 'park-SD1#1' "$WORK/ovfd/notify.overflow" || true)" "1"
+check "대조군 — 여덟 자리는 개별로 차 있다" \
+  "$(grep -c . "$WORK/ovfd/notify.stack" || true)" "8"
+check "대조군 — 강등된 멈춤이 대기 슬롯 배너를 올린다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "1"
+check "승인이 전부 닫혀도 살아 있는 멈춤이 남으면 대기 배너를 지우지 않는다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "0"
+
+overflow_demotion_probe "$WORK/ovfd-settled.md" expired
+check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "1"
+
+# --- THE THREE CALL SITES ARE PINNED, LOUDLY --------------------------------
+#
+# Everything this repair gives a person hangs on three lines in `gate_close`, and
+# the probes above call the function DIRECTLY — so deleting all three left the
+# suite reporting the same counts and the same `PASS:` lines, byte for byte. A
+# green that cannot go red for the only wiring it has does not merely stay quiet;
+# it reads as verification.
+#
+# THE RAW COUNT IS THE OBSERVED VALUE, not a verdict word. The window helpers in
+# this file fold a missing anchor into a positive verdict, so a fourth copy of
+# that idiom would add to the class an earlier review already named. Two sites
+# here already compare a raw count against its expectation, and this follows
+# them.
+#
+# ADJACENCY IS PINNED WITH THE COUNT, so relocating a call out of its terminal is
+# caught as well as deleting it: the individual clear and this one are one act in
+# two lines, and the second is only correct where the first is.
+check "넘침 정리가 승인 닫기 세 종단에 전부 배선돼 있다" \
+  "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "3"
+check "그 셋이 각각 개별 배너 지우기 바로 뒤에 붙어 있다" \
+  "$( { grep -A1 -F 'cc_notify_clear answer "$id" || true' "$GATE" || true; } \
+      | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "3"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #

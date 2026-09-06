@@ -3642,9 +3642,17 @@ gate_notify_overflow_settled() {
   # THE CONDITION IS "NOTHING IS WAITING", NOT "THE STACK IS EMPTY". An empty
   # stack means every notice that held an individual seat has been answered, and
   # says nothing about the demoted ones — which may still be open. Clearing on
-  # that signal would take down a banner that is telling the truth. The ledger
-  # answers the real question directly, and by the time this runs the closing row
-  # is already appended, so the approval being closed is not counted.
+  # that signal would take down a banner that is telling the truth.
+  #
+  # AND "NOTHING IS WAITING" IS NOT "NO APPROVAL IS OPEN". That was the first
+  # form of this check and it had the same hole one population over: the waiting
+  # slot does not hold approvals alone. The stacking branch admits `answer` AND
+  # `hands` against one cap and demotes either the same way, so a stop summons
+  # can be the thing the slot stands for — and a stop is not an approval row.
+  # With approvals as the whole population, the last approval closing took down
+  # a banner whose subject was still waiting for a person, and the stop firing
+  # points all sit behind once-markers, so it never came back. The slot's own
+  # occupants are the population, so this walks them.
   #
   # THE OVERFLOW LIST IS NOT RECLAIMED HERE. Whether a demoted item is ever
   # promoted back into an individual seat is a separate accepted trade-off; this
@@ -3652,10 +3660,57 @@ gate_notify_overflow_settled() {
   #
   # No caller guard on this line: the clear verb carries the seat guard inside
   # itself, which is the whole reason it was put there rather than at call sites.
+  local o key
   [ "$(cc_notify_overflow_count)" != "0" ] || return 0
-  [ "$(gate_pending_approval_ids | gate_count)" = "0" ] || return 0
+  o="${RUN_DIR:-}/notify.overflow"
+  [ -f "$o" ] || return 0
+  # Redirected from the file rather than piped, so an early return leaves the
+  # function rather than a subshell.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if gate_notify_slot_key_alive "$key"; then return 0; fi
+  done < "$o"
   cc_notify_clear overflow || true
   return 0
+}
+
+gate_notify_slot_key_alive() {
+  # gate_notify_slot_key_alive <item-key> — 0 when the thing this key stands for
+  # may still be waiting for a person, 1 when it is settled.
+  #
+  # UNKNOWN MEANS ALIVE. Of the two ways to be wrong, holding a banner that is no
+  # longer needed shows a person something stale that one glance corrects, while
+  # taking down a banner that is still true removes the only trace the demoted
+  # item ever had — nobody can miss a notice that never arrived. So every arm
+  # that cannot prove settlement answers "alive".
+  local key="$1" seg st row
+  case "$key" in
+    park-*)
+      # `park-<seg>` and `park-<seg>#<attempt>` both resolve to ONE marker file
+      # named by the segment alone, which is why the attempt is the marker's
+      # contents rather than part of its name. The router expires that marker the
+      # moment the segment lands in any state other than park, and that writer is
+      # the only one that sees the departure happen — so its absence is the
+      # settlement signal and no second bookkeeping is needed.
+      seg="${key#park-}"
+      seg="${seg%%#*}"
+      [ -f "${RUN_DIR:-}/notify/park-$seg" ] && return 0
+      return 1 ;;
+    stop-*|run-*)
+      # NEITHER OF THESE HAS AN EXPIRY PATH. A stop with no artifact writes no
+      # marker, and a run-scope anchor's key is a reason slug with nothing that
+      # retires it. With no signal that says "settled", the honest answer is the
+      # conservative one, and the cost is a waiting-slot banner that outlives its
+      # subject rather than one that predeceases it.
+      return 0 ;;
+  esac
+  # Everything else is an approval id — the same last-row-per-id fold the pending
+  # census uses, applied to one id.
+  row=$( { gate_rows '승인' | grep -F "승인 id=$key " || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  st=$(gate_row_field "$row" '상태')
+  [ "$st" = "대기" ] && return 0
+  return 1
 }
 
 gate_record_row() {
