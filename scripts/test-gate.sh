@@ -6385,6 +6385,58 @@ if [ -n "$ij" ]; then
   esac
 fi
 
+# --- 32d-2. A judgment closed as a REFUSAL is not an answer ------------------
+#
+# `gate_close` writes the answer sidecar BEFORE it branches on the refusal, so a
+# judgment closed as 거부 leaves a fully formed file behind. Keeping that file is
+# right — a refusal's own words are the durable record of why the answer was no.
+# What must not happen is the door handing those words to a re-dispatched stage
+# as the thing to act on, which is a refusal read as an instruction. The state is
+# the ledger fact that tells the two apart, and this door read only the other two.
+RJ="RJ-32d"
+RJQ="거부로 닫히는 판단의 물음 문면"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$LEDGER2"; RUN_DIR="$CONE_RD"; RUN_ID="$CONE_RUN_ID"
+  gate_append '승인' "승인 id=$RJ" "상태=대기" "절단점=판단" \
+    "질문 문면=$RJQ" "막는 세그먼트=SJ8" "발행 시각=2026-01-01T00:00:00Z" >/dev/null 2>&1
+  gate_append '승인' "승인 id=$RJ" "상태=거부" "질문 문면=$RJQ" \
+    "답변 문면=그 방향으로는 가지 마세요" "해소 시각=2026-01-01T00:10:00Z" >/dev/null 2>&1
+) >/dev/null 2>&1
+printf '그 방향으로는 가지 마세요\n' > "$CONE_RD/answer/$RJ.md"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" --approval "$RJ" 2>/dev/null); rc=$?
+if [ "$rc" = "0" ]; then
+  bad "거부된 판단" "거부로 닫힌 판단의 거절문이 답으로 나왔다"
+else
+  ok "거부로 닫힌 판단은 사이드카가 있어도 답으로 내주지 않는다"
+fi
+check "그 경우에도 바이트를 내지 않는다" "$out" ""
+
+# --- 32d-3. The id-less listing asks the same questions ----------------------
+#
+# The verb's own comment calls the id-less form the way a reader with no id gets
+# one. A listing that names ids the id form then refuses cannot be used for that,
+# and it was a bare `find` with no ledger question in it at all. Both forms go
+# through one predicate, so the two cannot come apart.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" 2>/dev/null); rc=$?
+check "무인자 목록은 0 으로 끝난다" "$rc" "0"
+case "$out" in
+  *"$RJ"*) bad "무인자 목록" "거부로 닫힌 판단의 id 가 목록에 있다: $out" ;;
+  *) ok "거부로 닫힌 판단의 id 는 목록에 없다" ;;
+esac
+case "$out" in
+  *"$NONJ"*) bad "무인자 목록" "절단점이 판단이 아닌 승인의 id 가 목록에 있다: $out" ;;
+  *) ok "절단점이 판단이 아닌 승인의 id 는 목록에 없다" ;;
+esac
+if [ -n "$ij" ]; then
+  case "$out" in
+    *"$ij"*) ok "답이 온 판단의 id 는 목록에 남는다" ;;
+    *) bad "무인자 목록" "답이 온 판단의 id 가 목록에서 빠졌다: $out" ;;
+  esac
+fi
+
 # --- 32e. A collected sidecar is `null`, not a missing element --------------
 #
 # An element that vanishes from the array is indistinguishable from one a stage
