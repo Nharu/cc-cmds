@@ -4945,9 +4945,9 @@ gate_record_stage_outcome() {
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
   fi
 
-  # A TERMINAL CLASS OTHER THAN `정상 완료` MEANS THE RUN CANNOT PASS THIS POINT
-  # WITHOUT A PERSON, so it is announced the instant the row is seated — before
-  # the cost block, because the row is the fact and the cost is bookkeeping.
+  # A TERMINAL CLASS THAT LEFT EVIDENCE OF REACHING A POINT NEEDING A PERSON is
+  # announced the instant the row is seated — before the cost block, because the
+  # row is the fact and the cost is bookkeeping.
   #
   # NO ONCE-MARKER, and that is deliberate rather than an omission. This function
   # is called exactly once, immediately after the child is waited on; a
@@ -4956,10 +4956,24 @@ gate_record_stage_outcome() {
   # THE SPLIT IS A PREDICATE, NOT AN ENUMERATION — did the stage leave evidence
   # that it reached a point needing a person? A deliberate park and a stop with
   # no artifact both did: one says so in its halt record, the other left the
-  # trace of arriving at a decision point it declined to settle. A crash and a
-  # hollow success left nothing this side can read, so at classification time the
-  # gate has no way to know. A class added later divides itself the same way, and
-  # the default is to fire rather than to stay quiet.
+  # trace of arriving at a decision point it declined to settle.
+  #
+  # A CLASS WHOSE NEED FOR A PERSON CANNOT BE KNOWN HERE IS NOT ANNOUNCED. A
+  # crash and a hollow success left nothing this side can read, so at
+  # classification time there is no way to tell a stage that needs a person from
+  # one that merely died and will be re-dispatched — and a notice sent on that
+  # ignorance asks a sleeping person for an action the gate would refuse anyway.
+  # If such a condition really does stop the run's progress, it becomes visible
+  # where stalling is observable rather than guessed: a park, an anchored run, a
+  # stall arm, a termination. A class added later divides itself the same way,
+  # and THE DEFAULT IS SILENCE.
+  #
+  # THE SUBSTITUTE PATH IS NOT ALWAYS IMMEDIATE, and the cost is written down
+  # rather than rounded to zero. The predicate that counts unresolved blockage
+  # filters on run scope alone while the driver also parks at cone scope, so on
+  # that branch the segment park row catches it, and failing that the stall arm
+  # does — one silence ceiling later. The delay is the price; losing the
+  # condition is not among the outcomes.
   local q
   if [ "$klass" != '정상 완료' ]; then
     case "$klass" in
@@ -4995,10 +5009,6 @@ gate_record_stage_outcome() {
           cc_notify_fire hands \
             "\`$seg\` 스테이지가 결정 지점에서 멈췄습니다 — 사용자 대신 정하지 않았습니다" \
             "stop-$seg#$attempt" || true
-        fi ;;
-      *)
-        if cc_caller_is_router; then
-          cc_notify_fire status "스테이지 \`$seg\` 가 $klass 로 끝났습니다" || true
         fi ;;
     esac
   fi
@@ -5334,6 +5344,11 @@ gate_close() {
   if [ "$void" = "1" ]; then
     gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
       "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"
+    # THE SLOT GOES BACK ON ALL THREE TERMINALS, and the key is the approval id
+    # because that is what the firing site (`cc_notify_fire answer "$q" "$id"`)
+    # wrote into the stack. Deriving it differently here would leave the seat
+    # occupied by a key nothing releases.
+    cc_notify_stack_release "$id" || true
     log "승인 무효 — $id (행위는 수행되지 않습니다)"
     return 0
   fi
@@ -5434,12 +5449,14 @@ gate_close() {
   if [ "$reject" = "1" ]; then
     gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
       "답변 문면=$abody" "해소 시각=$(now_iso)"
+    cc_notify_stack_release "$id" || true
     log "승인 거부 — $id (물었고 답이 아니오입니다)"
     return 0
   fi
 
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
+  cc_notify_stack_release "$id" || true
   log "승인 해소 — $id"
   return 0
 }

@@ -16,6 +16,8 @@ lint:
 	bash scripts/lint-ledger-row-length.sh
 	bash scripts/lint-judgment-grade.sh
 	bash scripts/lint-notify-env-name.sh
+	bash scripts/lint-notify-title-render.sh
+	bash scripts/lint-notify-fire-sites.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
@@ -42,6 +44,8 @@ test: test-active-notify
 	bash scripts/test-lint-ledger-row-length.sh
 	bash scripts/test-lint-judgment-grade.sh
 	bash scripts/test-lint-notify-env-name.sh
+	bash scripts/test-lint-notify-title-render.sh
+	bash scripts/test-lint-notify-fire-sites.sh
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
@@ -75,3 +79,4 @@ test-orchestrator:
 # re-wire the workflow to be seen.
 test-darwin: test-active-notify test-orchestrator
 	bash scripts/test-lint-bash-portability.sh
+	bash scripts/test-notify-title-oracle.sh
