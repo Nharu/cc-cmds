@@ -15,12 +15,28 @@
 #     fenced block must be byte-identical to the base's. A forked spine's one
 #     real drift risk is a budget that quietly diverges, so it is pinned
 #     rather than trusted.
+#   Rule 4 (inherited question points are dispositioned) — an arm does not
+#     copy its `references/`, it SHARES the base skill's tree, and the two
+#     shipped question points in this repo are in exactly that tree. The arm
+#     cannot delete them, because the interactive arm needs them, so what it
+#     owes is a statement of what it does instead, naming the file. Checked in
+#     both directions: an undispositioned question point is a surface the arm
+#     claims not to have, and a disposition for a file carrying none is a
+#     clause pointing at nothing.
 #
 # Why these are checkable here and not in general: each unattended arm lives
 # in its OWN file and carries exactly one arm, so a whole-file predicate is
 # an arm-level predicate. The same predicate over a two-arm file proves
 # nothing about either arm, which is why the arms were split into files in
 # the first place.
+#
+# Rule 4 exists because Rules 1 and 2 could not reach those two points twice
+# over, and repairing either layer alone leaves them still passing. The scan
+# set opened one file per arm — `<skill>/SKILL.md` — and the shared tree is
+# not under the arm's directory at all. The pattern then required an opening
+# parenthesis, while both occurrences are a backticked bare name inside a
+# sentence. A contract that asserts an absence, measured by a device that
+# cannot reach the place the absence is claimed about, is green forever.
 #
 # What Rules 1 and 2 do NOT prove: that the model never asks. A model can ask
 # in prose and answer itself, and no text or tool roster removes that. These
@@ -31,6 +47,13 @@
 # these files legitimately discusses the tools it must not use ("AskUserQuestion
 # is deliberately NOT loaded"), so a token-level denylist would flag exactly
 # the sentences that document the invariant.
+#
+# Rule 4 is the deliberate asymmetry: inside a reference tree the pattern
+# matches the BARE NAME. That is sound exactly where the call-form rule is not,
+# because a reference file carries instructions and no meta-discussion of this
+# invariant — nothing there is documenting what must not be reached. It is also
+# necessary, since a question point written as prose ("surface it with at most
+# one `AskUserQuestion`") is a real routing instruction wearing no parenthesis.
 #
 # Usage:
 #   bash scripts/lint-unattended-surfaces.sh
@@ -79,9 +102,30 @@ QUESTION_RE='ToolSearch\("select:[^"]*AskUserQuestion|AskUserQuestion\(|EnterPla
 # call-form anchoring so a prose mention in a README sentence is not a hit.
 NOTIFY_RE='PushNotification\(|notify\.sh[[:space:]]+(arm|fire-now|cancel)|terminal-notifier[[:space:]]+-'
 
+# Rule 4 — "<arm>|<skill whose references/ tree the arm reads>". Explicit for
+# the same reason the skill list is: the sharing is stated in prose inside each
+# arm and nothing derives it, so a glob would silently drop a renamed arm
+# instead of failing. An arm that shares nobody's tree names itself.
+REFERENCE_TREES=(
+  "implement-unattended|implement"
+  "design-audit-unattended|design-audit"
+  "review-unattended|review"
+  "design-reconverge|design-reconverge"
+)
+
+# Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
+# no call form required; see the asymmetry note in the header.
+REF_QUESTION_RE='AskUserQuestion|EnterPlanMode|ExitPlanMode'
+
+# The clause an arm owes for each shared reference file that holds a question
+# point. Fixed prefix plus the file's own name in backticks, so the check is a
+# byte comparison rather than a guess at how the disposition was worded.
+DISPOSITION_PREFIX='**Inherited question point** — '
+
 fail=0
 checked=0
 skipped=0
+refs_checked=0
 
 for skill in "${UNATTENDED_SKILLS[@]}"; do
   file="$skills_root/$skill/SKILL.md"
@@ -151,10 +195,62 @@ for pair in ${PARITY_PAIRS[@]+"${PARITY_PAIRS[@]}"}; do
   fi
 done
 
+for pair in ${REFERENCE_TREES[@]+"${REFERENCE_TREES[@]}"}; do
+  arm="${pair%%|*}"
+  base="${pair##*|}"
+  arm_file="$skills_root/$arm/SKILL.md"
+  ref_dir="$skills_root/$base/references"
+
+  [[ -f "$arm_file" ]] || continue
+  if [[ ! -d "$ref_dir" ]]; then
+    echo "SKIP: $arm — $base/references/ not present"
+    continue
+  fi
+  refs_checked=$((refs_checked + 1))
+
+  # Both sides collected whole, as basenames, and neither written down here.
+  # `LC_ALL=C` on the sort is load-bearing wherever `-u` is used as a set
+  # operation: `-u` drops "duplicates" by collation, and a locale with no
+  # ordering for a script compares every element equal to every other.
+  hit_files=$(LC_ALL=C grep -rlE "$REF_QUESTION_RE" "$ref_dir" 2>/dev/null \
+    | sed 's|.*/||' | LC_ALL=C sort -u || true)
+  disp_files=$(LC_ALL=C grep -F -- "$DISPOSITION_PREFIX" "$arm_file" 2>/dev/null \
+    | sed -n 's/.*\*\*Inherited question point\*\* — `\([^`]*\)`.*/\1/p' \
+    | LC_ALL=C sort -u || true)
+
+  while IFS= read -r bn; do
+    [[ -n "$bn" ]] || continue
+    # CAPTURED, NOT `grep -qxF`. An early-exiting reader on the right of a pipe
+    # kills the writer with SIGPIPE, and under `pipefail` the pipeline then
+    # reports failure even though the match was found.
+    hit=$(printf '%s\n' "$disp_files" | grep -xF -- "$bn" || true)
+    if [[ -z "$hit" ]]; then
+      echo "FAIL: $arm — $base/references/$bn 가 질문 지점을 갖는데 이 갈래가 그 처분을 적지 않았다" >&2
+      echo "       공유하는 트리라 지울 수 없다 — 대신 무엇을 하는지를 파일 이름과 함께 적어야 한다" >&2
+      LC_ALL=C grep -nE "$REF_QUESTION_RE" "$ref_dir/$bn" >&2 || true
+      fail=1
+    fi
+  done <<EOF
+$hit_files
+EOF
+
+  while IFS= read -r bn; do
+    [[ -n "$bn" ]] || continue
+    hit=$(printf '%s\n' "$hit_files" | grep -xF -- "$bn" || true)
+    if [[ -z "$hit" ]]; then
+      echo "FAIL: $arm — $base/references/$bn 의 처분을 적었는데 그 파일에는 질문 지점이 없다" >&2
+      echo "       가리키는 것이 없는 절은 다음 독자에게 아직 상속받는 중이라고 읽힌다" >&2
+      fail=1
+    fi
+  done <<EOF
+$disp_files
+EOF
+done
+
 if [[ "$fail" -ne 0 ]]; then
   echo "lint-unattended-surfaces: violations found" >&2
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked"
 exit 0
