@@ -733,10 +733,24 @@ else
 fi
 write_manifest "$MF"
 sed '/^\*\*벽시계 마감\*\*/d' "$MF" > "$MF.nd" && mv "$MF.nd" "$MF"
-if [ "$(emit_lines deadline)" = "0" ] && [ "$(emit_lines stagnation)" = "0" ]; then
-  ok "두 필드가 모두 없으면 어느 쪽도 방출되지 않는다"
+if [ "$(emit_lines deadline)" = "1" ] && [ "$(emit_lines stagnation)" = "0" ]; then
+  ok "마감 필드가 없어도 마감은 한 줄을 내고 무진전 상한은 0줄이다"
 else
-  bad "조건부 방출" "필드가 없는데 deadline=$(emit_lines deadline) stagnation=$(emit_lines stagnation)"
+  bad "무조건 방출" "필드가 없는데 deadline=$(emit_lines deadline) stagnation=$(emit_lines stagnation)"
+fi
+# AND THAT ONE LINE IS NOT A COINCIDENCE OF THIS FIXTURE. The old unconditional
+# `printf` could not tell an absent deadline from a present-but-empty one —
+# both produced the same line — and preserving exactly that indistinguishability
+# is the whole of what keeps a manifest written before this change serializing
+# to the same bytes. Pinned by comparing the two serializations against each
+# other rather than against a golden hash, so the fixture can grow without this
+# assertion going stale.
+bs_nofield=$(binding_set_bytes)
+printf '**벽시계 마감**: \n' >> "$MF"
+if [ "$bs_nofield" = "$(binding_set_bytes)" ]; then
+  ok "마감 필드의 부재와 빈 값이 갈리지 않는다 (옛 무조건 방출의 성질 그대로)"
+else
+  bad "무조건 방출" "필드를 지운 판본과 빈 값을 넣은 판본의 구속 집합이 갈렸다"
 fi
 write_manifest "$MF"
 

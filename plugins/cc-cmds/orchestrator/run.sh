@@ -392,20 +392,31 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
-    # CONDITIONAL, both of them, and that is what keeps every run already in
-    # flight alive. `deadline` used to be an UNCONDITIONAL `printf`, so a
-    # manifest without the field still contributed a line with an empty value.
-    # The wall-clock deadline is being replaced by a progress-based bound, and
-    # emitting the replacement unconditionally would move the digest of every
-    # manifest ever written — each of which lacks the new field — so the next
-    # gate call of every in-flight run would refuse on a mismatch nobody caused.
+    # ONE OF THEM IS CONDITIONAL AND THE OTHER MUST NOT BE, and the asymmetry is
+    # the compatibility argument rather than an inconsistency left behind.
     #
-    # Row-shaped items already solve this with `grep … || true`: absent means
-    # zero bytes. These follow that, so a manifest that declares neither field
-    # serializes exactly as it did, and one that declares `벽시계 마감` — which
-    # is every manifest written so far — serializes byte-identically to before.
-    [ -n "$dl" ] && printf 'deadline\t%s\n' "$dl"
+    # `deadline` is emitted UNCONDITIONALLY because it always was. The old line
+    # could not tell an absent field from a present-but-empty one — both
+    # produced `deadline` followed by nothing — and that indistinguishability is
+    # itself frozen. Making this line conditional emits zero bytes in exactly
+    # those two cases and therefore MOVES the digest of a manifest that declares
+    # no deadline. Nothing in `check_manifest`'s frozen-set rules requires the
+    # field, so such a manifest is reachable; and once the digest disagrees,
+    # `check_manifest` dies on every verb — `snapshot` and `propose-done`
+    # included — so the run can no longer act, record, or end.
+    #
+    # The compatibility argument is needed by NEW fields only: an undeclared new
+    # field must contribute nothing, or the digest of every manifest ever
+    # written moves the moment the field exists. `stagnation` is new, so it
+    # stays conditional, following the `grep … || true` shape the row-shaped
+    # items above already use.
+    printf 'deadline\t%s\n' "$dl"
     [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    # THE BARE `true` IS LOAD-BEARING, not leftover scaffolding. When `$sb` is
+    # empty the line above is an AND-list whose second command never runs, so
+    # the block's last command has failed; `pipefail` promotes that to the whole
+    # pipeline, and it arrives at the `bd=$(binding_set_bytes | shasum …)`
+    # assignment as a fatal status. This makes the block end on a success.
     true
   } | sort
 }
