@@ -3053,8 +3053,16 @@ EOF
 # ---------------------------------------------------------------------------
 main_loop() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
+  # The two the morning reads. The surface digest excludes the plugin files on
+  # purpose — a redeploy must not kill a running run — so the code that actually
+  # enforced this run is otherwise unrecorded. These do not detect a mid-run
+  # change; they record what it started from, which is what lets the morning tell
+  # a clean night apart from one that ran unreviewed working-copy enforcement.
   ledger_row 'run' "run-id=$RUN_ID" "시작=$(now_iso)" "설계 문서=$DOC_KEY" \
-    "전체 sha256=$(shasum -a 256 "$DOC" | cut -d' ' -f1)" "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
+    "전체 sha256=$(shasum -a 256 "$DOC" | cut -d' ' -f1)" \
+    "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+    "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+    "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
 
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window

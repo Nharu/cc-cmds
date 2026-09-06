@@ -491,6 +491,38 @@ else
   bad "런 파일 읽기" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
 fi
 
+# The CLAUDE.md read allow-list. A stage that builds a prefix proposal has to
+# read the live file, and the live slots are outside every directory above. The
+# narrow form was measured to be sufficient — one `permissions.allow` entry
+# naming one file grants that read, and the same read without it is refused — so
+# the wide alternative (`additionalDirectories` over the user config directory
+# and the workspace root) buys nothing this needs and opens two trees that hold
+# credentials-adjacent state.
+#
+# Asserted on SHAPE, not on this machine's paths: the list is derived from the
+# config directory and the base worktree's ancestors precisely so it is not a
+# literal that is true on one box.
+allow_n=$(jq -r '.permissions.allow // [] | length' "$SETTINGS_DIR/generic.json" 2>/dev/null)
+if [ "${allow_n:-0}" -gt 0 ] 2>/dev/null; then
+  ok "설정에 CLAUDE.md 읽기 allow 목록이 있다 (${allow_n}개)"
+else
+  bad "allow 목록" "비어 있다 — 제안본을 만들 스테이지가 라이브 슬롯을 읽지 못한다"
+fi
+if jq -e '.permissions.allow // [] | map(select(test("^Read\\(/.*/CLAUDE\\.md\\)$"))) | length > 0' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "allow 항목이 Read(/<절대경로>/CLAUDE.md) 형태다"
+else
+  bad "allow 형태" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
+fi
+# Nothing but CLAUDE.md. An entry that widened past that would be the directory
+# expansion arriving through the narrow door.
+if jq -e '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | length == 0' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "allow 목록에 CLAUDE.md 아닌 항목이 없다"
+else
+  bad "allow 범위" "$(jq -c '.permissions.allow' "$SETTINGS_DIR/generic.json")"
+fi
+
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
 # retry of that segment was refused by the CLI with "already in use" — after the
@@ -5735,6 +5767,87 @@ printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 
 after_v=$(PD)
 check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
 
+
+# ---------------------------------------------------------------------------
+# Layer 3 — `리뷰-후-적용`, driven directly against a fixture ledger
+#
+# THE FIRST ASSERTION IS THAT IT FIRES AT ALL, and it is the one the other two
+# cannot replace. The cutpoint ladder has no `적용` token, so a checker that
+# copies the sibling rule's opening line — `[ "$GATE_ACT" = "머지" ] || exit 0` —
+# returns 0 on every apply, forever. Both remaining assertions would still pass
+# against that checker, because a rule that never runs never refuses. Measured
+# as a trap rather than imagined: the sibling idiom is what a person writing this
+# rule from the catalog's conventions would reach for first.
+# ---------------------------------------------------------------------------
+RULE3="$repo_root/plugins/cc-cmds/orchestrator/rules/리뷰-후-적용.sh"
+R3W=$(mktemp -d "${TMPDIR:-/tmp}/cc-rule3.XXXXXX")
+R3L="$R3W/ledger.md"
+
+r3() {
+  # r3 <slot> <digest> ; ledger already staged. Echoes the exit code.
+  local rc=0
+  GATE_CLAUDEMD_SLOT="$1" GATE_CLAUDEMD_DIGEST="$2" \
+    GATE_SEGMENT="seg-1" GATE_LEDGER="$R3L" GATE_ACT="커밋" \
+    /bin/sh "$RULE3" >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+
+: > "$R3L"
+check "층3: 슬롯이 없으면 발동하지 않는다 (CLAUDE.md 아닌 행위는 통과)" "$(r3 '' 'deadbeef')" "0"
+
+# FIRES: the slot is set and there is no review record at all. A checker gated on
+# GATE_ACT would return 0 here.
+check "층3: 발동한다 — 리뷰 기록이 없으면 거부한다" "$(r3 '/x/CLAUDE.md' 'deadbeef')" "1"
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=2 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 미해결 P0 가 남아 있으면 거부한다" "$(r3 '/x/CLAUDE.md' 'deadbeef')" "1"
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 리뷰가 덮고 다이제스트가 같으면 통과한다" "$(r3 '/x/CLAUDE.md' 'deadbeef')" "0"
+check "층3: 리뷰가 승인한 제안본과 다르면 거부한다" "$(r3 '/x/CLAUDE.md' 'cafebabe')" "1"
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0\n' > "$R3L"
+check "층3: 리뷰 행에 「적용 대상」이 없으면 거부한다" "$(r3 '/x/CLAUDE.md' 'deadbeef')" "1"
+
+printf -- '- `cycle` | 세그먼트=seg-1 | P0=0 | P1=0 | 적용 대상=deadbeef\n' > "$R3L"
+check "층3: 슬롯을 지목하지 못한 세탁 형태는 거부한다" "$(r3 '(세탁됨)' 'deadbeef')" "1"
+check "층3: 게이트가 다이제스트를 넘기지 않으면 거부한다" "$(r3 '/x/CLAUDE.md' '')" "1"
+rm -rf "$R3W"
+
+# The trap, asserted statically as well: the sibling idiom must not be in this
+# checker. The dynamic assertion above catches it too, but only while the
+# fixture ledger stays empty in the right test — this one cannot be defeated by
+# a later edit to the fixtures.
+# Comments are stripped first: the checker's own header explains why it does NOT
+# use this variable, and scanning raw bytes made that explanation fail the test
+# it exists to describe.
+if grep -v '^[[:space:]]*#' "$RULE3" | grep_all_q 'GATE_ACT'; then
+  bad "층3 검사기가 GATE_ACT 로 발동한다" "사다리에 「적용」 토큰이 없어 항상 exit 0 한다"
+else
+  ok "층3 검사기가 GATE_ACT 로 발동하지 않는다"
+fi
+
+# Un-switchable-off is not a property a declaration confers. The exemption list
+# in `gate_rule_enabled` is what makes it true, and the rule file only says so.
+if grep -qE '절단점-준수\|사전-인가-대조\|인가-자기확장-금지\|리뷰-후-적용\)' "$GATE"; then
+  ok "층3 이 gate_rule_enabled 의 면제 목록에 등록돼 있다"
+else
+  bad "층3 면제 등록" "매니페스트의 「룰 설정: 끔」이 그대로 통한다"
+fi
+
+# Layer 2 publishes what layer 3 fires on. A guard that catches the act and
+# returns without exporting leaves layer 3 asleep, and that failure reads as
+# success from every direction.
+if grep -q 'export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST' "$GATE"; then
+  ok "층2 가 GATE_CLAUDEMD_SLOT·GATE_CLAUDEMD_DIGEST 를 export 한다"
+else
+  bad "층2 export" "층3 이 발동할 근거를 받지 못한다"
+fi
+if grep -q 'gate_claudemd_slot_guard "$graded" "$@"' "$GATE"; then
+  ok "층2 가 act 경로에서 호출된다"
+else
+  bad "층2 호출" "정의만 있고 불리지 않으면 층3 은 영원히 잠잔다"
+fi
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
