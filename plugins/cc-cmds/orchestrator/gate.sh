@@ -1126,7 +1126,7 @@ gate_rule_enabled() {
   # off.
   local name="$1"
   case "$name" in
-    절단점-준수|사전-인가-대조|인가-자기확장-금지) return 0 ;;
+    절단점-준수|사전-인가-대조|인가-자기확장-금지|리뷰-후-적용) return 0 ;;
   esac
   local setting
   setting=$(manifest_field '룰 설정' "$name")
@@ -1458,6 +1458,54 @@ $(target_field "$a" '실행 워크트리')"
     | sed '/^$/d' | sed 's/^(없음)$//' | sed '/^$/d' \
     | LC_ALL=C sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
 
+  # THE READ ALLOW-LIST, AND WHY IT IS NOT A DIRECTORY WIDENING. A stage that
+  # builds a CLAUDE.md proposal has to read the live file, and the live slots sit
+  # outside every directory above. `additionalDirectories` would reach them, but
+  # it opens whole trees — the user config directory holds credentials-adjacent
+  # state and a skill that handles external logins, and the workspace root holds
+  # every sibling repository. Measured: a `permissions.allow` entry naming ONE
+  # FILE grants that read and nothing else, and the same read without the entry
+  # is refused outright ("Claude requested permissions to read from … but you
+  # haven't granted it yet"). So the narrow form is not merely preferable, it is
+  # sufficient, and the wide one buys nothing this needs.
+  #
+  # DERIVED, NEVER ENUMERATED. The slots are absolute paths outside the
+  # repository and differ per machine; a literal list would be correct on the
+  # author's box and silently empty everywhere else. The set built here is
+  # exactly the chain the harness itself loads into every session's prefix — the
+  # user-scope file plus a `CLAUDE.md` in each ancestor of the base worktree — so
+  # granting a read of it grants nothing the stage's own prompt did not already
+  # contain.
+  local cfgdir adir aprev allow_extra=""
+  cfgdir="${CLAUDE_CONFIG_DIR:-}"
+  [ -n "$cfgdir" ] || cfgdir="${HOME:-}${HOME:+/.claude}"
+  cfgdir="${cfgdir%/}"
+  # `Read(` takes the path with ONE extra leading slash — the repo's own
+  # `.claude/settings.local.json` spells `/tmp` as `Read(//tmp/**)`. These values
+  # are already absolute, so the literal here is a single slash and the path
+  # supplies the second. A third slash was measured and it also resolves, so this
+  # is a convention rather than a correctness constraint; it is written the one
+  # way the tree already spells it so a reader comparing the two files does not
+  # have to wonder which spelling is the working one.
+  [ -n "$cfgdir" ] && allow_extra="\"Read(/$cfgdir/CLAUDE.md)\""
+  # TERMINATION IS ON `dirname` SHRINKING, not on reaching `/`. `dirname .` is
+  # `.` and `dirname x` is `.` as well, so a relative or empty `BASE` walks this
+  # loop forever — and it runs at run open, before anything has been recorded, so
+  # the run would hang with no row saying why. The `/` test alone never fires on
+  # those inputs. Bounded twice: the value has to keep changing, and it has to be
+  # absolute to contribute a rule at all.
+  adir="$BASE"
+  while [ -n "$adir" ] && [ "$adir" != "/" ]; do
+    case "$adir" in
+      /*) if [ -n "$allow_extra" ]; then allow_extra="$allow_extra, "; fi
+          allow_extra="$allow_extra\"Read(/$adir/CLAUDE.md)\"" ;;
+      *)  break ;;
+    esac
+    aprev="$adir"
+    adir=$(dirname "$adir")
+    [ "$adir" != "$aprev" ] || break
+  done
+
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
     # `design` alone loses the network-fetch tools. The per-stage spend cap that
@@ -1470,6 +1518,7 @@ $(target_field "$a" '실행 워크트리')"
 {
   "permissions": {
     "deny": [ ${deny_extra}"Bash(sudo:*)" ],
+    "allow": [ ${allow_extra} ],
     "additionalDirectories": [ ${extra_dirs} ]
   },
   "hooks": {
@@ -2110,9 +2159,19 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
+    # `강제 코드` and `베이스 청결` are the two the morning reads. The surface
+    # digest above deliberately excludes the plugin files — a redeploy that
+    # rewrites a rule must not kill a running run, and that exclusion is what
+    # makes it safe. The cost is that the code actually enforcing this run is
+    # unrecorded, so these two record it instead of detecting it: the base HEAD
+    # at kickoff, and whether that tree had uncommitted changes. A run opened on
+    # a dirty tree ran enforcement code no review saw, and without this field the
+    # morning cannot tell that apart from a clean night.
     gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
       "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
       "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
+      "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
   else
     gate_resettle_settings
@@ -2775,6 +2834,105 @@ gate_manifest_write_refuse() {
   # their own wording would read as two different rules to whoever hits them.
   warn "매니페스트에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $MANIFEST"
   warn "「## 인가」의 자동 채택 행은 사람이 지켜보는 자리에서만 선언됩니다 — 런이 자기 사전 채택 목록을 늘리는 것은 인가의 자기확장입니다"
+}
+
+gate_claudemd_digest() {
+  # The sha256 the review approved and the sha256 about to be applied have to be
+  # computed the same way or the comparison is theatre. One definition, here, and
+  # both sides call it: the review stage writes the value onto its `cycle` row,
+  # the layer-3 checker receives this one and compares strings.
+  #
+  # Slot order is `LC_ALL=C sort`, not glob order, because glob order over these
+  # names is locale-dependent and a digest that changes with the caller's locale
+  # would refuse every apply on a machine with a different one.
+  local d="${RUN_DIR:-}/claudemd" f
+  [ -d "$d" ] || { printf '(제안본 없음)'; return 0; }
+  f=$(ls "$d"/*.proposed.md 2>/dev/null | LC_ALL=C sort)
+  [ -n "$f" ] || { printf '(제안본 없음)'; return 0; }
+  # shellcheck disable=SC2086
+  cat $f | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_claudemd_slot_guard() {
+  # gate_claudemd_slot_guard <graded-surface> <argv...>
+  #
+  # LAYER 2, AND IT REFUSES NOTHING. Its whole output is two exported values;
+  # the decision belongs to the `리뷰-후-적용` rule, which is layer 3. Written as
+  # a guard beside `gate_manifest_write_guard` because it needs the same thing
+  # that one needs — the argv as it actually is, before an interpreter hides the
+  # operand — and putting a second copy of that scanning inside a `/bin/sh`
+  # checker would be the copy that drifts.
+  #
+  # THE EXPORT IS A DELIVERABLE, NOT A SIDE EFFECT. The rule fires on
+  # `GATE_CLAUDEMD_SLOT` being non-empty and cannot fire on anything else: the
+  # cutpoint ladder has no `적용` token, so the `GATE_ACT` idiom every other rule
+  # opens with would `exit 0` on the first line, forever, while reading as a
+  # check that passes. A layer 2 that catches the act and returns without
+  # exporting leaves layer 3 asleep and the failure looks exactly like success.
+  #
+  # WHY THE READ GRADE RETURNS EARLY. A proposal stage has to read the live file
+  # to write a proposal against it, and firing the rule on that read would demand
+  # a review record for an act that changes nothing. The delegation caveat from
+  # the sibling guard is kept verbatim in shape: a command graded `읽기` from
+  # argv0 alone can still write through `-exec` or a wrapper, and those two axes
+  # are the ones that decide.
+  GATE_CLAUDEMD_SLOT=""
+  GATE_CLAUDEMD_DIGEST=""
+  export GATE_CLAUDEMD_SLOT GATE_CLAUDEMD_DIGEST
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기)
+      case " $* " in
+        *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *)
+          case "${1##*/}" in
+            command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
+            *) return 0 ;;
+          esac ;;
+      esac ;;
+  esac
+
+  local a argv0 joined slot=""
+  # ARM 1 — the act names its target as an argv element, which is the shape the
+  # sanctioned apply has (`cp <제안본> <슬롯>`). This is the only arm that yields
+  # a slot path, and the slot path is what the ledger row and the morning report
+  # are able to say something about.
+  for a in "$@"; do
+    case "${a##*/}" in
+      CLAUDE.md|CLAUDE.local.md) slot="$a" ;;
+    esac
+  done
+
+  if [ -n "$slot" ]; then
+    GATE_CLAUDEMD_SLOT=$(gate_physical_path "$slot")
+    [ -n "$GATE_CLAUDEMD_SLOT" ] || GATE_CLAUDEMD_SLOT="$slot"
+    GATE_CLAUDEMD_DIGEST=$(gate_claudemd_digest)
+    return 0
+  fi
+
+  # ARM 2 — AN INTERPRETER HID THE OPERAND. `bash -c 'cat p > ~/.claude-cc/CLAUDE.md'`
+  # has no element whose basename is the file, so arm 1 sees nothing while the
+  # redirection writes it. Here the whole command line is the operand, exactly as
+  # the manifest guard reasons about the same evasion.
+  #
+  # THE SLOT IS DELIBERATELY NOT PARSED OUT OF IT. Recovering a path from a
+  # program text needs a shell parser, and a wrong answer here is worse than no
+  # answer: it would name a slot the act does not touch, and the row, the report
+  # and the rollback would all point at the wrong file. So the value is the
+  # marker below, and layer 3 refuses on it — an application has to name its
+  # target as an element, which the sanctioned form already does.
+  argv0=${1##*/}
+  case "$argv0" in
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node|npx|make|env|xargs|find|lockf|command|nice|nohup|time|timeout|stdbuf)
+      joined=$(printf '%s ' "$@")
+      case "$joined" in
+        *CLAUDE.md*|*CLAUDE.local.md*)
+          GATE_CLAUDEMD_SLOT='(세탁됨)'
+          GATE_CLAUDEMD_DIGEST=$(gate_claudemd_digest) ;;
+      esac ;;
+  esac
+  return 0
 }
 
 gate_manifest_write_guard() {
@@ -3990,6 +4148,11 @@ gate_verb_act() {
   GATE_SURFACE="$graded"; export GATE_SURFACE
 
   gate_manifest_write_guard "$graded" "$@" || exit $?
+
+  # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
+  # values the `리뷰-후-적용` rule reads. Placed after the manifest guard so an
+  # act that is refused outright never reaches a rule at all.
+  gate_claudemd_slot_guard "$graded" "$@"
 
   # WHAT THE AUTO-ADOPTION RULE READS. A rule checker is a separate `/bin/sh`
   # process and cannot call this file's functions, so the gate resolves the
