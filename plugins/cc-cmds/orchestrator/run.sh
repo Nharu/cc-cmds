@@ -202,6 +202,17 @@ readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
 readonly STALL_SILENT_POLLS=6
 readonly WORKTREE_INFIX="-run-"          # reserved; also the boundary gate's exception pattern
 readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
+# How many times one answered judgment may re-attach the stage that raised it.
+#
+# The consumption record is written by the STAGE — it re-submits the same
+# judgment and the gate writes `해소 승인=<id>` — so a stage that reads the
+# answer and forgets to re-submit leaves the answer un-spent, and the candidate
+# comes back on the next cycle unchanged. That is a loop the prompt alone cannot
+# close: prose is read by a model and a model that skipped it once skips it
+# again. Two is enough for a transient miss and small enough that the segment
+# falls through to an ordinary dispatch rather than spending its cycle budget
+# handing the same answer to the same stage.
+readonly REDISPATCH_MAX=2
 
 # Terminal literals. These are fixed bytes inside skill text, which is what
 # makes them safe as wire format — unlike the next-step lines those skills also
@@ -2023,10 +2034,48 @@ stage_session_id() {
   printf '%s' "$sid"
 }
 
+stage_session_id_strict() {
+  # The id the HARNESS assigned, and NOTHING ELSE — empty when the stage left no
+  # stream or the stream carries no id.
+  #
+  # THE FALLBACK ABOVE IS RIGHT FOR ITS CALLER AND WRONG FOR THIS ONE. A
+  # `stage-result` row wants the field filled, so a derived id there is better
+  # than a blank. A re-attachment wants a session the harness actually opened:
+  # handed a derived id, `--resume` names a session that never existed, and the
+  # failure is silent in the worst direction — the stage comes up with none of
+  # the context the re-attachment exists to preserve while the driver's log says
+  # it was resumed. An empty value falls through to a fresh dispatch, which is
+  # the honest outcome.
+  local stage="$1" out="$RUN_DIR/log/$stage.json" sid=""
+  if [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+  fi
+  printf '%s' "$sid"
+}
+
+redispatch_spend() {
+  # redispatch_spend <승인 id> <스테이지 종류> — how many times this run has
+  # re-attached that stage kind on the strength of this one answer, counting the
+  # attempt being asked about.
+  #
+  # ON DISK UNDER `$RUN_DIR`, not in a shell variable. A driver that was cut and
+  # resumed starts a fresh process, so an in-memory counter would reset — and
+  # the loop this bounds is precisely one that survives a resume, since its
+  # inputs are ledger rows the new process reads back.
+  local id="$1" kind="$2" f n
+  mkdir -p "$RUN_DIR/redispatch"
+  f="$RUN_DIR/redispatch/$kind.$id"
+  n=$(cat "$f" 2>/dev/null || printf '0')
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$f"
+  printf '%s' "$n"
+}
+
 answered_judgment_stage() {
-  # answered_judgment_stage <세그먼트> — `<승인 id> <스테이지 id>` for one
-  # judgment this segment raised that a person has ANSWERED and no stage has
-  # used yet. Empty when there is none, which is the ordinary case.
+  # answered_judgment_stage <세그먼트> <스테이지 종류> — `<승인 id> <스테이지 id>`
+  # for one judgment this segment raised that a person has ANSWERED and no stage
+  # has used yet. Empty when there is none, which is the ordinary case.
   #
   # THE ARRAY THE GATE EMITS AND THIS PREDICATE ARE THE SAME QUESTION asked from
   # the two sides that need it: the gate's snapshot is what the ROUTER reads to
@@ -2044,9 +2093,17 @@ answered_judgment_stage() {
   #
   # `막는 세그먼트` HOLDS THE STAGE ID, not the segment id: the gate learns it
   # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
-  # id when it spawns. So the field already names the re-dispatch candidate, and
-  # the membership test is on the stage id's `:<segment>:` infix.
-  local seg="$1" id row st iss stg spent
+  # id when it spawns. So the field already names the re-dispatch candidate.
+  #
+  # THE STAGE KIND IS PART OF THE MEMBERSHIP TEST, and the `:<segment>:` infix
+  # alone was not. A stage id is `<종류>:<세그먼트>:<사이클>`, so the kind sits in
+  # the PREFIX and a test that only looked at the infix matched every kind this
+  # segment had ever run: an answer to a judgment a review stage raised came
+  # back as a candidate in the implement slot, and the implement stage was then
+  # re-attached to a session that had been reviewing. A candidate whose kind
+  # does not match is left in the list rather than discarded — the router
+  # dispatches that kind later and consumes it there.
+  local seg="$1" kind="$2" id row st iss stg spent
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -2066,7 +2123,7 @@ answered_judgment_stage() {
              | { grep -F "해소 승인=$id " || true; } | tail -1)
     [ -z "$spent" ] || continue
     stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    case "$stg" in *":$seg:"*) ;; *) continue ;; esac
+    case "$stg" in "$kind:$seg:"*) ;; *) continue ;; esac
     # A session that left no stream cannot be re-attached, and a derived id
     # would name a session the harness never opened. Falling through to a fresh
     # dispatch is the honest outcome; claiming a resume that cannot happen is not.
@@ -2984,14 +3041,39 @@ segment_cycle() {
     # join, and it is a branch on whether there IS such an answer — no model
     # call, no new schema. The stage is handed the approval id and reads the
     # untruncated bytes itself.
-    local aj aj_id aj_stage prompt
-    aj=$(answered_judgment_stage "$seg")
+    #
+    # THIS RELAY BELONGS TO `run.sh main`'s FIXED-GRAPH TRAVERSAL, and it is not
+    # the only consumer of an answered judgment. A run driven by the router
+    # never enters this loop at all; there the live consumers are the snapshot's
+    # `answered_judgments` array and the kickoff skill's router section, which
+    # carries the same re-submission duty the prompt below states. Both readings
+    # compute from the same three ledger facts, so they cannot disagree about
+    # which answers are outstanding — but only one of them is reached on any
+    # given run, and a repair applied to this branch alone reaches neither
+    # router-driven run.
+    local aj aj_id aj_stage prompt redispatch_note=""
+    aj=$(answered_judgment_stage "$seg" S4)
     prompt="/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
     STAGE_RESUME=""
     if [ -n "$aj" ]; then
       aj_id=${aj%% *}; aj_stage=${aj#* }
-      STAGE_RESUME=$(stage_session_id "$aj_stage")
-      prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 선언 파일: $files"
+      # THE CAP IS ON THIS SIDE BECAUSE THE PROMPT ALONE CANNOT CLOSE THE LOOP.
+      # An answer leaves the candidate list only when a stage re-submits the
+      # judgment, and that re-submission is instructed in prose — a stage that
+      # reads the instruction and does not act on it comes back as the same
+      # candidate next cycle, forever. Counting on this side bounds it without
+      # touching `answered_judgment_stage`, whose selection is the gate's own
+      # three ledger facts and must stay identical to the array the snapshot
+      # emits; a fourth term there would split the two readings apart.
+      if [ "$(redispatch_spend "$aj_id" S4)" -gt "$REDISPATCH_MAX" ]; then
+        redispatch_note="판단 $aj_id 재부착이 상한 ${REDISPATCH_MAX}회를 넘어 평범한 디스패치로 떨어졌다"
+        warn "$seg: $redispatch_note"
+        aj=""
+      fi
+    fi
+    if [ -n "$aj" ]; then
+      STAGE_RESUME=$(stage_session_id_strict "$aj_stage")
+      prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
       log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
     fi
     stage_spawn "$sid" "$wt" "$prompt"
@@ -3012,7 +3094,11 @@ segment_cycle() {
     case "$class" in
       '정상 완료') : ;;
       '의도된 park')
-        park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
+        # The re-dispatch note travels with the park rather than into a ledger
+        # series of its own. A spent cap is not an act and not an approval; it
+        # is context for whoever reads why this segment stopped, and a new row
+        # kind would have to be counted by the termination conditions.
+        park "$seg" cone 무효화 "게이트 park" "중단 기록${redispatch_note:+ · $redispatch_note}" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
         return 1 ;;
       '공허한 성공')
         # One retry, then a DISTINCT park reason. Not zero, because one
@@ -3023,9 +3109,9 @@ segment_cycle() {
         stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
-          park "$seg" cone 무효화 "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
+          park "$seg" cone 무효화 "게이트 park" "공허한 성공 2회 — 산출물 없음${redispatch_note:+ · $redispatch_note}"; return 1
         fi ;;
-      *) park "$seg" cone 무효화 "게이트 park" "크래시"; return 1 ;;
+      *) park "$seg" cone 무효화 "게이트 park" "크래시${redispatch_note:+ · $redispatch_note}"; return 1 ;;
     esac
 
     # --- S5 REVIEW ---------------------------------------------------------
