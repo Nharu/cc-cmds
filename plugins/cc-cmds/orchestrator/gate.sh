@@ -6177,6 +6177,43 @@ readonly B1_STAGNATION_N=3
 readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
 
+gate_unbounded_notice() {
+  # BOTH PROGRESS-AXIS BOUNDS UNDECLARED IS A STATE, AND THE RUN HAD NO WAY TO
+  # HEAR ABOUT IT.
+  #
+  # The manifest check is asymmetric and each half of the asymmetry is a
+  # decision. It hard-fails a manifest without `벽시계 마감` — a field no
+  # boundary on the router's path reads. It says nothing about `비용 천장` and
+  # `무진전 상한`, the two that actually bound a router run, because undeclared
+  # is legal for both and that legality is the whole of their backward
+  # compatibility. Both halves are right on their own; together they mean a
+  # manifest that PASSES the check reads as "the bounds were checked" while the
+  # two bounds that matter may both be absent.
+  #
+  # A required check cannot repair that — the comment beside it in `run.sh` says
+  # why, and the reason is that the check runs on every verb against a frozen
+  # block nobody can edit, so a run in flight would die on its next `snapshot`.
+  # What can be done for a run whose manifest is already frozen is to tell it,
+  # which is what this is: the fact, once, naming both fields and what is left
+  # unbounded.
+  #
+  # ONCE is kept with a marker file in the run directory, the same idiom
+  # `stagnation-digest` and `progress-repeat` use. A warning on every act is the
+  # thing that teaches a reader to skip the line that matters.
+  [ -e "$RUN_DIR/unbounded-notice" ] && return 0
+  local cost bound
+  cost=$(manifest_field '인가' '비용 천장')
+  bound=$(manifest_field '인가' '무진전 상한')
+  # The three undeclared spellings are the same vocabulary `gate_b4_cost` and
+  # `gate_b5_stagnation_bound` read, because a value one of them treats as
+  # "unbounded on this axis" has to read that way here too.
+  case "$cost" in ''|없음|'(없음)') : ;; *) return 0 ;; esac
+  case "$bound" in ''|없음|'(없음)') : ;; *) return 0 ;; esac
+  : > "$RUN_DIR/unbounded-notice"
+  warn "이 런은 「비용 천장」과 「무진전 상한」이 둘 다 미선언입니다 — 두 진전 축 어디에도 상한이 없습니다"
+  warn "남는 유계는 「벽시계 마감」뿐이고 그것은 고정 그래프 경로의 디스패치·머지 관문에서만 읽힙니다 — 라우터 경로는 그 마감에 닿지 않습니다"
+}
+
 gate_boundaries() {
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
   # three of its four call sites got one; this was the fourth, so `want` was
@@ -6192,6 +6229,7 @@ gate_boundaries() {
   # the 40-act budget until the wall-clock deadline. The reason recorded for the
   # suspension ("waiting, not stalled") is false for this class specifically,
   # because the design promises the run keeps going alongside the question.
+  gate_unbounded_notice
   local pending
   pending=$(gate_pending_approval_ids act | gate_count)
 

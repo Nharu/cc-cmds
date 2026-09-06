@@ -614,6 +614,15 @@ check_manifest() {
 
   # 8 — absolute deadline. `없음` is refused: a comment saying "required" means
   # nothing while a validator accepts the absent value.
+  #
+  # WHAT THIS HARD STOP SAYS IS NARROWER THAN IT LOOKS, and the narrowness is
+  # worth writing down beside the check rather than leaving to be rediscovered.
+  # `벽시계 마감` is not an input to any boundary on the ROUTER's path: it is
+  # read by the fixed-graph cycle loop's two dispatch gates and its merge gate,
+  # and by the status line, and a router run never enters that loop. So the
+  # field stays required — the fixed-graph path really does depend on it — while
+  # this check passing says something about that path and nothing at all about
+  # whether the run about to start is bounded.
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
@@ -627,6 +636,16 @@ check_manifest() {
   # existed lacks them. A required check in this conjunction runs on every verb,
   # so adding one would `die` mid-run on `snapshot` and `propose-done` alike,
   # against a frozen block nobody can edit. Do not fill this in as a gap.
+  #
+  # AND THE LENIENCE MUST NOT BE READ AS A VERDICT. A manifest that passes this
+  # whole conjunction has had exactly one bound checked — the one above, which
+  # binds the path the router does not take. Both of the fields that actually
+  # bound a router run may be absent and the check still passes, so「검사 통과」
+  # and「이 런은 유계다」are different statements and the first has been mistaken
+  # for the second. The gate says the remaining one out loud instead:
+  # `gate_unbounded_notice` warns once per run when both of these are
+  # undeclared, which is the disclosure this silence owes a run whose manifest
+  # is already frozen and therefore unrepairable.
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then

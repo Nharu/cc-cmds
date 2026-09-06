@@ -2165,6 +2165,45 @@ check "표시와 종료 행을 함께 지워야 런이 다시 열린다" "$rc" "
 grant_field_set '비용 천장' ''
 grep -v '^- `cost`' "$LEDGER" > "$LEDGER.nc" && mv "$LEDGER.nc" "$LEDGER"
 
+# --- Both progress bounds undeclared is said out loud, once -----------------
+#
+# The driver's manifest check hard-fails a run with no `벽시계 마감` — a field
+# no boundary on the router's path reads — and passes over these two in
+# silence, because undeclared is legal for both and that legality is the whole
+# of their backward compatibility. So a manifest that PASSES that check reads as
+# "the bounds were checked" while both of the bounds that actually bind a router
+# run may be absent. A required check cannot repair it (it runs on every verb
+# against a frozen block), so the gate says the fact instead. Once: a warning on
+# every act is what teaches a reader to skip the line that matters.
+grant_field_set '무진전 상한' ''
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-1" -- touch "$WORK/t-unbounded-1"
+check "두 경계 필드가 모두 미선언이어도 동사는 죽지 않는다" "$rc" "0"
+case "$msg" in
+  *"둘 다 미선언"*) ok "두 경계 필드가 모두 미선언이면 첫 경계 평가가 그 사실을 알린다" ;;
+  *) bad "무계 고지" "첫 경계 평가에 고지가 없다: $msg" ;;
+esac
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-2" -- touch "$WORK/t-unbounded-2"
+check "그다음 평가에서도 동사는 죽지 않는다" "$rc" "0"
+case "$msg" in
+  *"둘 다 미선언"*) bad "무계 고지 반복" "두 번째 평가에서도 같은 고지가 났다" ;;
+  *) ok "그 고지는 런당 정확히 한 번이다" ;;
+esac
+# And a declared bound removes it entirely — the notice is about the pair being
+# empty, not about either field on its own.
+grant_field_set '무진전 상한' '99'
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-3" -- touch "$WORK/t-unbounded-3"
+case "$msg" in
+  *"둘 다 미선언"*) bad "무계 고지 범위" "한쪽이 선언됐는데도 고지가 났다" ;;
+  *) ok "한쪽이라도 선언되면 고지하지 않는다" ;;
+esac
+grant_field_set '무진전 상한' ''
+rm -f "$RD/unbounded-notice" "$RD/stagnation-digest" "$RD/stagnation-repeat"
+
 # ---------------------------------------------------------------------------
 # 14l. The authorization list can grow, and only through the gate
 #
