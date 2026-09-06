@@ -38,6 +38,14 @@
 # The file therefore ships mode 755 with the shebang above, and a change that
 # clears the executable bit silently re-opens the defect.
 #
+# THIS COMMENT IS NOT WHERE THAT RULE LIVES, because a header is read only after
+# someone has already typed the wrong thing. The prohibition is stated at the
+# four places a caller actually reads — the team protocol's Spawn section and
+# the three review skills' witness bullets — and it is stated there against a
+# pull, since the two other places in this plugin that run an orchestrator
+# script from skill prose both write `bash <path>`. Do not delete it from those
+# four on the grounds that it is written here.
+#
 # Prints the created directory to stdout and nothing else, so the caller can
 # record the printed path literally. Diagnostics go to stderr.
 #

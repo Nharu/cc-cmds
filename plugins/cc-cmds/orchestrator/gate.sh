@@ -339,6 +339,38 @@ surface_of_openssl() {
   esac
 }
 
+gate_sibling_script_hint() {
+  # gate_sibling_script_hint <argv0> — one extra warn line when an ungraded
+  # argv0 names a script that sits BESIDE this gate.
+  #
+  # `등급 미상` is the table's answer for every name it does not carry, so two
+  # very different situations arrive wearing the same string: a tool nobody has
+  # ever added a row for, and a script this plugin SHIPS whose row landed in a
+  # commit this gate copy does not have. The second one is not the caller's
+  # mistake and there is nothing for them to respell — the run is being
+  # adjudicated by a gate older than the tree it is adjudicating, because the
+  # hook takes the gate as a runtime parameter and nothing requires that copy to
+  # be the one under review.
+  #
+  # Measured: a slice added a script and its grading row in one commit; the run
+  # reviewing that slice was adjudicated by a different, dirty checkout without
+  # the row. Both exits from the refusal were bad — an interpreter in front
+  # passes while restoring the very laundering the row existed to stop, and the
+  # honest fallback drops an artifact — and the refusal text said nothing that
+  # would let a reader tell this apart from an unknown tool.
+  #
+  # The test is deliberately weak: same basename, a file, next to this gate. It
+  # cannot be strong, because the whole condition is that this copy does not
+  # know about that script. A false positive costs one advisory sentence.
+  local b="${1##*/}"
+  case "$b" in
+    *.sh) ;;
+    *) return 0 ;;
+  esac
+  [ -f "$GATE_DIR/$b" ] || return 0
+  warn "그 이름은 이 게이트 자신의 디렉터리에 있는 스크립트입니다 ($GATE_DIR/$b) — 모르는 도구가 아니라 이 게이트 사본이 그 행을 실은 트리보다 낡았다는 뜻입니다. 판정에 쓰이는 게이트는 $GATE_DIR/gate.sh 이고, 다른 사본의 등급표를 고쳐도 이 판정은 바뀌지 않습니다. 인터프리터를 앞에 붙이거나 더 낮은 철자로 우회하지 마세요 — 전자는 통과하면서 그 행이 막으려던 것을 되살리고, 후자는 산출물을 잃습니다"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -2005,7 +2037,17 @@ gate_main() {
       printf '축2=%s\n' "$g"
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
-      if [ "$g" = "등급 미상" ]; then exit "$GATE_EXIT_VOCAB"; fi
+      #
+      # The version-skew hint belongs here as much as on the acting path, and
+      # arguably more: `grade` is what a caller runs to find out what to declare,
+      # so this is where the answer "the table has no row for a script sitting
+      # next to me" is cheapest to receive. The acting path reaches the same
+      # helper through `gate_verb_act`; this arm never gets there, because it
+      # calls the table directly and returns.
+      if [ "$g" = "등급 미상" ]; then
+        gate_sibling_script_hint "$1"
+        exit "$GATE_EXIT_VOCAB"
+      fi
       ;;
     plan|act|exec)
       gate_verb_act "$verb" "$kind" "$alias" "$segment" "$cutpoint" "$surface" \
@@ -3814,10 +3856,12 @@ gate_verb_act() {
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     if [ "$surface" != "$graded" ]; then
       warn "축2 자기선언 불일치: 선언 '$surface' vs 등급 '$graded'"
+      if [ "$graded" = "등급 미상" ]; then gate_sibling_script_hint "$1"; fi
       exit "$GATE_EXIT_GRADE"
     fi
   fi
   if [ "$graded" = "등급 미상" ]; then
+    gate_sibling_script_hint "$1"
     # The message names WHICH repair, because two different things arrive here:
     # a tool the table has never listed (widen the table), and a recognized tool
     # in a form the sub-table could not parse (respell the command). Without the

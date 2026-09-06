@@ -1776,6 +1776,32 @@ graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- opens
 graded_as '트리밖쓰기' '위트니스 초기화 스크립트는 트리 밖을 쓴다' -- cc-team-witness-init.sh review-x
 graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' \
   -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+# THE WRONG SPELLING, ASSERTED WRONG ON PURPOSE. The row above only holds while
+# the script is argv0, and an interpreter in front takes that away — which is
+# the whole defect the script was written to escape, restored by four
+# characters. The two suites that ship with it assert the row exists and the
+# file is executable, and NEITHER of them can see what a caller types, so
+# without this line the regression comes back with everything green. It is
+# pinned as `워크트리쓰기` because that IS what the gate answers; the assertion
+# is that the wrong spelling is visibly wrong, not that it is refused.
+graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+
+# An ungraded name that sits beside this gate is a VERSION SKEW, not an unknown
+# tool, and the refusal has to say which. `watch.sh` is used because it really
+# does live next to the gate and really has no grading row, so the branch is
+# exercised against the shipped layout rather than a fixture.
+gate grade --manifest "$MANIFEST" -- watch.sh --run x
+case "$msg" in
+  *'이 게이트 자신의 디렉터리에 있는 스크립트'*) ok "게이트 옆 스크립트의 미상은 버전 어긋남으로 안내된다" ;;
+  *) bad "게이트 옆 스크립트의 미상은 버전 어긋남으로 안내된다" "got '$msg'" ;;
+esac
+gate grade --manifest "$MANIFEST" -- not-a-sibling-script.sh --run x
+case "$msg" in
+  *'이 게이트 자신의 디렉터리에 있는 스크립트'*)
+    bad "옆에 없는 이름에는 그 안내를 붙이지 않는다" "got '$msg'" ;;
+  *) ok "옆에 없는 이름에는 그 안내를 붙이지 않는다" ;;
+esac
 
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true
 rm -rf "$SETTINGS_DIR"
