@@ -21,6 +21,16 @@ on:
       - 'scripts/test-lint-notify-title-render.sh'
       - 'scripts/lint-notify-fire-sites.sh'
       - 'scripts/test-lint-notify-fire-sites.sh'
+      # The chain-equivalence harness runs the frozen reference against the
+      # candidate under a UTF-8 locale, which is the configuration the driver
+      # deliberately runs in, so its verdict is only meaningful on a leg that
+      # has one. The same reasoning as the comment above applies with the
+      # divergence reversed: this leg is the one that already had the locale,
+      # and the filter is what decides whether it ever looks.
+      - 'scripts/test-gate-chain-equiv.sh'
+      - 'tests/fixtures/gate-chain-equiv/**'
+      - 'scripts/measure-gate-cost.sh'
+      - 'scripts/test-measure-gate-cost.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'

@@ -768,6 +768,12 @@ gate_chain_tip() {
   # exactly like a normal kickoff, and a reader who sees `끊김` every morning
   # learns to skip the one field that would have told them.
   local last
+  # Byte-exact for the same reason `gate_chain_verify` is, and it has to be the
+  # SAME reason on both sides: this is the value the verifier's walk is compared
+  # against, so a locale that changed one and not the other would manufacture
+  # breaks out of nothing. See that function for why pinning the character-type
+  # axis leaves the forced-surface digest alone.
+  local LC_CTYPE=C; export LC_CTYPE
   last=$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ -n "$last" ] || last="## 실행 $RUN_ID"
   printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
@@ -1046,6 +1052,13 @@ gate_ledger_damage() {
   # the cycle row carrying the P0 that the merge rule reads, and skipping it
   # makes a live defect look resolved.
   local n total
+  # Pinned for the same reason as the chain walk, and it is not optional here
+  # either: `grep` on an invalid byte under a UTF-8 locale can fail outright, and
+  # this reader's caller interpolates its output into the snapshot object. A
+  # reader that dies mid-object truncates the JSON, so the ledger's DAMAGE COUNT
+  # — the field whose whole job is to report a malformed ledger — became
+  # unreadable on exactly the ledgers it exists to describe.
+  local LC_CTYPE=C; export LC_CTYPE
   n=$(grep -E '^- `[^`]+`( \|.*)?$' "$LEDGER" 2>/dev/null | gate_count)
   total=$(grep -E '^- `' "$LEDGER" 2>/dev/null | gate_count)
   printf '%s' $(( total - n ))
@@ -1226,6 +1239,19 @@ gate_snapshot() {
 
 gate_pending_approvals_json() {
   local ids id state first=1
+  # Pinned for the same reason as the chain walk. This one emits INTO the
+  # snapshot object, so a `tr`/`sed` that dies on an invalid byte does not just
+  # lose the approvals array — it truncates the JSON at that point and every
+  # field after it, including the chain verdict, never reaches the reader. The
+  # ledger the reader most needs a verdict about is precisely the malformed one.
+  #
+  # NOTE FOR ANYONE WIDENING THIS: this function DOES contain a `sort -u`, and
+  # the pin is still safe. The order it produces is decided by `LC_COLLATE`,
+  # which the driver has already fixed to C; `LC_CTYPE` does not enter into it.
+  # The "no `sort` in scope" reasoning that once justified the narrower pin was
+  # never the load-bearing part, and repeating it here would make this look like
+  # a violation of a rule that does not exist.
+  local LC_CTYPE=C; export LC_CTYPE
   ids=$(gate_rows '승인' \
         | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
   for id in $ids; do
@@ -1526,18 +1552,131 @@ gate_chain_verify() {
   # before it. This is what covers the ledger, since the whole-file digest
   # cannot (see above). A break is reported with the row number so the morning
   # reader has somewhere to look.
-  local prev line n=0 broke=0 want
-  prev=$(printf '%s' "## 실행 $RUN_ID" | shasum -a 256 | cut -d' ' -f1)
-  while IFS= read -r line; do
-    case "$line" in '- `'*) ;; *) continue ;; esac
-    n=$((n + 1))
-    want=$(printf '%s' "$line" | sed -n 's/.*| prev=\([0-9a-f]*\)$/\1/p')
-    [ -n "$want" ] || continue
-    if [ "$want" != "$prev" ]; then broke=$n; break; fi
-    prev=$(printf '%s' "$line" | shasum -a 256 | cut -d' ' -f1)
-  done < "$LEDGER"
+  #
+  # ONE PROCESS FOR THE WHOLE LEDGER, NOT THREE PER ROW. This walk used to spawn
+  # `sed`, `shasum` and `cut` once per row — exactly 3n+2 processes for n rows —
+  # and on this platform `shasum` is itself a Perl program wrapping
+  # `Digest::SHA`. Calling that module directly is therefore not a different hash
+  # implementation but the SAME ENGINE with n-1 interpreter startups removed,
+  # which is the strongest equivalence argument available for rewriting a path
+  # that issues verdicts.
+  #
+  # THE CHARACTER-TYPE PIN IS GONE FROM THIS FUNCTION, and its absence is not a
+  # relaxation. The pin was here because `sed` extracted `prev=`, and under a
+  # UTF-8 `LC_CTYPE` that extractor stopped being a function of the row's
+  # content — BSD `sed` aborted on an invalid byte and printed nothing, GNU `sed`
+  # returned output with the unsubstituted prefix still attached, and neither was
+  # the hex the row carried. There is no `sed` here now: the file is opened raw
+  # and matched as bytes unconditionally, which is what the pin was buying. The
+  # other three ledger readers still pin, because they still shell out.
+  local walk rc broke cause
+  # AN ABSENT LEDGER USED TO VERIFY. The redirection below fails, the loop body
+  # never runs, `broke` stays 0, and the function returns "intact" for a file it
+  # never opened — so deleting the ledger outright was quieter than editing one
+  # row of it. Nothing can be said about a chain that was not read, and this is
+  # the difference between "verified intact" and "not verified".
+  if [ ! -f "$LEDGER" ]; then
+    warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
+    return 1
+  fi
+  # The whole walk, in one pass. Four behaviours are decided deliberately here
+  # and none of them is incidental:
+  #
+  #   * ROW SELECTION and ROW NUMBERING are unchanged — a line is a row when it
+  #     starts with "- `", and an unreadable row still consumes its number, so
+  #     every committed fixture keeps the `broke` value it pins.
+  #   * THE EXTRACTOR keeps its greedy match, so it takes the LAST `| prev=` on
+  #     the row and yields nothing unless what follows is hex all the way to the
+  #     end of the line.
+  #   * A ROW WHOSE `prev=` CANNOT BE READ IS A BREAK, not a row to step over.
+  #     Stepping over it left `prev` un-advanced, so the chain re-joined across
+  #     the row as though it had never been there and a forged approval spliced
+  #     in with no `prev=` — or with one made unreadable by a single invalid
+  #     byte — was reported as intact. That is a fixed defect; reproducing it
+  #     here for the sake of "same verdict as before" would be an instruction to
+  #     regress.
+  #   * `read`'s EOF SEMANTICS ARE NOT REPRODUCED, and dropping them tightens
+  #     detection rather than relaxing it. A final chunk with no terminating
+  #     newline used to end the walk before it was counted, so a forged approval
+  #     row appended with the newline left off was never visited at all — while
+  #     every other consumer read it as a valid row and the authorization took
+  #     effect. It is cheaper to produce than any of the three shapes above:
+  #     not printing one byte is the whole attack.
+  #
+  #     A FALSE POSITIVE IS NOT POSSIBLE HERE, and the reason is in `gate_append`
+  #     rather than in this function. That is the ledger's only writer, and both
+  #     of its branches — the locked `/bin/sh -c` and the no-lock fallback — write
+  #     through a `printf` whose format ends in `\n`. A ledger the gate wrote
+  #     therefore always ends with a newline, so a final row that does not is by
+  #     itself evidence of a write that did not come through the gate.
+  #
+  #     Only a ROW-SHAPED chunk is judged. A partial write that is not row-shaped
+  #     — a truncated heading, half a prose line — still ends the walk silently,
+  #     because counting a non-row as a row would move the `broke` value every
+  #     committed fixture pins.
+  #
+  #     The other thing NOT reproduced is what `read` does to a NUL byte — it
+  #     drops or truncates there depending on the interpreter, and hashing the
+  #     row's true bytes instead is a gain in detection, listed as such rather
+  #     than hidden.
+  walk=$(perl -MDigest::SHA=sha256_hex -e '
+    my ($ledger, $seed) = @ARGV;
+    open(my $fh, "<", $ledger) or exit 3;
+    binmode($fh);
+    my $prev = sha256_hex($seed);
+    my ($n, $broke, $cause) = (0, 0, 0);
+    while (defined(my $line = <$fh>)) {
+      unless ($line =~ s/\n\z//) {
+        last unless substr($line, 0, 3) eq "- `";
+        $n++; $broke = $n; $cause = 2; last;
+      }
+      next unless substr($line, 0, 3) eq "- `";
+      $n++;
+      my $want = $line =~ /^.*\| prev=([0-9a-f]*)\z/ ? $1 : "";
+      if ($want eq "") { $broke = $n; $cause = 1; last }
+      if ($want ne $prev) { $broke = $n; last }
+      $prev = sha256_hex($line);
+    }
+    print "$broke $cause\n";
+    exit 0;
+  ' -- "$LEDGER" "## 실행 $RUN_ID" 2>&1)
+  rc=$?
+  # A FAILING TOOL AND A BROKEN CHAIN ARE NOT THE SAME FINDING. If `perl` or the
+  # module is missing, or the process dies, then no verdict was reached at all —
+  # and answering "splice, delete or reorder" there sends the morning reader
+  # looking for something that did not happen. Every morning report would say the
+  # chain broke, and a reader who sees that daily learns to skip the one field
+  # that would have told them. The 0/1 return contract is NOT widened: two
+  # consumers read it as a boolean, and what separates the two cases is the
+  # sentence. stderr is folded into the captured output so a diagnostic cannot
+  # reach the render path, which reads any stderr as a break.
+  case "$walk" in
+    [0-9]*" "[012]) ;;
+    *) rc=1 ;;
+  esac
+  if [ "$rc" != 0 ]; then
+    warn "원장 해시 체인을 검증하지 못했습니다 — 단일 패스 검증기가 판정을 내지 못했습니다 (perl 또는 Digest::SHA): ${walk}"
+    return 1
+  fi
+  broke=${walk%% *}
+  cause=${walk##* }
   [ "$broke" = "0" ] && return 0
-  warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
+  # Three causes, three sentences. They are NOT the same finding: a mismatch
+  # means some row moved, an unreadable `prev=` means THIS row cannot be placed
+  # in the chain at all, and a row that does not end with a newline means the row
+  # was appended by something other than the gate. Pointing a reader at
+  # splice/delete/reorder for either of the last two sends them to look for
+  # something that did not happen. `cause` is an encoding internal to this
+  # function — the 0/1 return contract and the boolean `chain_intact` field both
+  # stay exactly as they were, and the two consumers go on reading non-zero as a
+  # break. What the number selects is the sentence.
+  if [ "$cause" = "2" ]; then
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행이 개행으로 끝나지 않습니다 (게이트가 쓴 원장은 언제나 개행으로 끝나므로 게이트 밖에서 덧붙여진 행입니다)"
+  elif [ "$cause" = "1" ]; then
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행의 prev= 를 읽을 수 없습니다 (필드가 없거나 hex 가 아니거나 무효 바이트가 섞였습니다)"
+  else
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
+  fi
   return 1
 }
 

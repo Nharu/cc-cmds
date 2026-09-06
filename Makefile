@@ -51,6 +51,8 @@ test: test-active-notify
 	bash scripts/test-readme-gen-parity.sh
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
+	bash scripts/test-gate-chain-equiv.sh
+	bash scripts/test-measure-gate-cost.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
 	bash scripts/test-watch.sh
@@ -64,6 +66,8 @@ test-active-notify:
 test-orchestrator:
 	bash plugins/cc-cmds/orchestrator/test-run.sh
 	bash scripts/test-gate.sh
+	bash scripts/test-gate-chain-equiv.sh
+	bash scripts/test-measure-gate-cost.sh
 	bash scripts/test-snapshot.sh
 	bash scripts/test-orchestrator-pretool-hook.sh
 	bash scripts/test-watch.sh
