@@ -1365,6 +1365,15 @@ gate_answered_judgments_json() {
   # `tail -1` — which is right for state — yields an empty segment here. The
   # narrowing to `절단점=판단` picks the issuing row for both duties at once.
   local ids id row st iss seg first=1
+  # Pinned for the same reason as `gate_pending_approvals_json` above, and the
+  # note there about `sort -u` applies here unchanged: the order is decided by
+  # `LC_COLLATE`, which the driver has already fixed to C, and `LC_CTYPE` does
+  # not enter into it. This function emits INTO the snapshot object too, so a
+  # `tr`/`sed` that dies on an invalid byte does not merely lose this array — it
+  # truncates the JSON at that point and every field after it, `chain_intact`
+  # included, never reaches the reader. The ledger a reader most needs a verdict
+  # about is precisely the malformed one.
+  local LC_CTYPE=C; export LC_CTYPE
   ids=$(gate_rows '승인' \
         | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
   for id in $ids; do
