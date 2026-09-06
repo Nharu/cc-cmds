@@ -930,8 +930,16 @@ gate_append_cost() {
         printf "%s | prev=%s\n" "$body" "$prev" >> "$led"
       ' _ "$cost" "$LEDGER" "$n_stage" "$at" '^- `' "## 실행 $RUN_ID" '^- `cost`' '- `cost`' || rc=$?
   else
-    # No lock tool means no concurrency to serialize, so the same sequence is
-    # correct here — it is the interleaving the lock removes, not the order.
+    # THIS BRANCH IS NOT SERIALIZED, and the comment here used to claim it did
+    # not need to be — "no lock tool means no concurrency to serialize", which
+    # is a statement about the platform rather than about this code. The
+    # accurate statement is narrower: the branch is reached only where
+    # `lock_tool` yields an empty string, the refusal that keeps the pipeline
+    # off such a host lives in `run.sh`'s `main`, and the gate sources that file
+    # for its definitions without ever executing `main`. So the protection is
+    # real but it is somewhere else, and two concurrent writers arriving here
+    # would lose an accumulation exactly as the header describes. The sequence
+    # below is the locked one with the lock removed; behaviour is unchanged.
     local prevusd total
     prevusd=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
               | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -1344,10 +1352,24 @@ gate_answered_judgments_json() {
     seg=$(gate_row_field "$iss" '막는 세그먼트')
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
-      "$(gate_json_escape "$id")" \
-      "$(gate_json_escape "${seg:--}")" \
-      "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
+    # A MISSING SIDECAR IS REPORTED AS `null`, NOT AS A MISSING ELEMENT. The
+    # path was emitted unconditionally, so a run whose `$RUN_DIR` had been
+    # collected handed the router a path to a file that is not there — and the
+    # obvious repair, dropping the element, is worse: an element that vanishes
+    # is indistinguishable from one a stage consumed, which is the state the
+    # spent test above is the sole owner of. `null` keeps the candidate visible
+    # and says the bytes are gone, and the ledger's `답변 문면` still holds the
+    # clipped copy.
+    if [ -f "$RUN_DIR/answer/$id.md" ]; then
+      printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")" \
+        "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
+    else
+      printf '    {"id": "%s", "segment": "%s", "answer": null}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")"
+    fi
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -3766,9 +3788,29 @@ gate_run_ended_ok() {
   # a stage in flight runs to completion and is classified normally, and the run
   # may still record rows, close approvals and propose that it is done. A
   # boundary that stopped everything would strand the run instead of ending it.
-  local kind="$1" cut="$2" mark idx merge_idx
-  [ -s "$RUN_DIR/done" ] || return 0
-  mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
+  #
+  # THE MARK IS A CACHE AND THE LEDGER ROW IS THE AUTHORITY, and this predicate
+  # used to read only the cache. `$RUN_DIR` is volatile — a reaper, a temp sweep
+  # or a hand `rm -rf` takes it — and `gate_main` calls `rundir_init` on every
+  # entry, which RE-CREATES the directory empty. So a run whose directory had
+  # been collected came back with no `done` file, this function answered "not
+  # ended", and the end was not a refusal but a state the very next gate call
+  # silently repaired: a run past its cost ceiling resumed dispatching stages.
+  # The ledger lives OUTSIDE `$RUN_DIR` (`docs/pipeline-run/<run-id>.md`) and is
+  # covered by the hash chain, so the row `gate_end_run` writes survives
+  # everything the mark does not.
+  local kind="$1" cut="$2" mark idx merge_idx row
+  if [ -s "$RUN_DIR/done" ]; then
+    mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
+  elif gate_has_row '자율 승인' '결정=종료 '; then
+    # The mark is gone and the row is not, so the reason is rebuilt from the
+    # ending row's own fields. Both refusals below interpolate it, and an empty
+    # parenthesis would tell the morning nothing about why the night stopped.
+    row=$( { gate_rows '자율 승인' | grep -F '결정=종료 ' || true; } | tail -1)
+    mark="경계 $(gate_row_field "$row" '기준') · 근거 $(gate_row_field "$row" '근거') (원장 종료 행 — 종단 표시는 수거됐습니다)"
+  else
+    return 0
+  fi
 
   if [ "$kind" = "skill" ]; then
     warn "런이 이미 종단했습니다 ($mark) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
@@ -3810,7 +3852,16 @@ gate_end_run() {
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
     "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
     "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
-  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done"
+  # PUBLISHED BY RENAME, so the filesystem decides who was first. The check
+  # above and a bare `>` are a read-then-act with no lock around them, and two
+  # boundaries firing together both read an absent mark and both truncated the
+  # file — leaving the morning whichever reason happened to be written last,
+  # while this function's own header calls the FIRST reason the true one.
+  # `mv -n` refuses to replace an existing target, so a loser writes nothing;
+  # its leftover temp file is removed rather than left in the run directory.
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
+  mv -n "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null || true
+  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   warn "경계 $name 이 런을 끝냅니다 — $why"
   if cc_caller_is_router; then
     cc_notify_fire status "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
@@ -5423,6 +5474,19 @@ gate_close() {
   # armed under the flag, because the failure the two scans guard against are
   # not symmetric: an unread affirmation costs a re-ask, and an unread refusal
   # is a grant nobody gave.
+  #
+  # `--answer` IS NOT NARROWED TO A JUDGMENT CLASS, AND THAT IS A DECISION
+  # RATHER THAN AN OMISSION. Narrowing it would mean the closer naming which
+  # classes may waive the affirmative requirement, and the closer cannot get
+  # that from the ledger: the row that ISSUES a judgment approval carries
+  # `절단점=판단` and no `판단 부류` field, so there is nothing to read and the
+  # class would have to be re-asserted on the command line by the same entity
+  # the flag is being restricted for. What the flag turns off is bounded on its
+  # own terms — only the affirmative requirement, and the negative scan above
+  # stays armed for every class — so the widest thing an unnarrowed flag can do
+  # is close a question whose answer is an instruction. Adding the field to the
+  # issuing row is the other branch, and it changes the ledger row schema, which
+  # belongs to the kickoff surface rather than to this verb.
   local id="$1" void="${2:-0}" reject="${3:-0}" answer="${4:-0}"
   local row state q tx ans f cutp abody extracted hit scanbody phit
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
@@ -5639,8 +5703,22 @@ gate_answers() {
   # hand, one per line, which is what a reader with no id needs to get one.
   # Neither form fails when the directory is absent — "no answers yet" is the
   # ordinary state of a run and is not an error.
-  local id="${1:-}" f
+  #
+  # THE LEDGER IS ASKED FIRST AND THE FILESYSTEM SECOND. What this verb hands
+  # out is the bytes a person typed, and it used to decide on a path existing
+  # under `$RUN_DIR/answer/` and nothing else — so any file that landed in that
+  # directory was served as an answer, with no row behind it saying a person had
+  # ever been asked. The predicate is the one `gate_answered_judgments_json`
+  # already computes from the same three ledger facts: a `승인` row carries this
+  # id, and the row that ISSUED it has `절단점=판단`. No new state, and the two
+  # readers of an answer cannot disagree about whether it is one.
+  local id="${1:-}" f row iss
   if [ -n "$id" ]; then
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    [ -n "$row" ] || { warn "그 승인 id 가 원장에 없습니다: $id"; return 1; }
+    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || { warn "그 승인은 판단 물음이 아닙니다 — 답 사이드카는 절단점=판단 에만 있습니다: $id"; return 1; }
     f="$RUN_DIR/answer/$id.md"
     [ -f "$f" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
     cat "$f"
