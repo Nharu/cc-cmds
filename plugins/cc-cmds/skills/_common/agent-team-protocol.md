@@ -276,5 +276,5 @@ A member holds its findings long before its first witness lands; the lead struct
 Clause text, appended verbatim after the task-assignment header by an opted-in SKILL.md:
 
 ```
-**Progress checkpoint (MUST)**: from your first confirmed finding on, `mkdir -p` the directory below, then write your ranked partial findings whole to a sibling temp in it and publish with plain `mv` (never `mv -n` — `_common/sidecar.md`) at `$(dirname {WITNESS_PATH})/partial/{role-slug}.{round/phase}.md`, last line exactly `<!-- cc-partial: {role-slug} {round/phase} progress {WITNESS_NONCE} seq=<n> -->`, `seq` from 1. Refresh on Bash calls you were already making.
+**Progress checkpoint (MUST)**: from your first confirmed finding on, `mkdir -p "$(dirname {WITNESS_PATH})/partial"`, then write your ranked partial findings whole to a sibling temp in it and publish with plain `mv` (never `mv -n` — `_common/sidecar.md`) at `$(dirname {WITNESS_PATH})/partial/{role-slug}.{round/phase}.md`, last line exactly `<!-- cc-partial: {role-slug} {round/phase} progress {WITNESS_NONCE} seq=<n> -->`, `seq` from 1. Refresh on Bash calls you were already making.
 ```

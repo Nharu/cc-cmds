@@ -231,7 +231,7 @@ For small PRs the *미커버 영역* line is typically *"없음"*. For large PRs
 After saving the report:
 
 - Notify the user in Korean: *"리뷰 보고서 저장을 완료했습니다. 팀을 정리한 뒤 결과를 공유드리겠습니다."*
-- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it. In the normal path cleanup is a **no-op** (every reviewer self-terminated the moment it returned); on abort, call `TaskStop` on any ledger row still `state=running`; then apply ledger hygiene so no `state=running` row survives (returned → `done`, `TaskStop`-ed → `aborted`).
+- **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it **in full** — its four bullets are the process side (every reviewer self-terminated the moment it returned, so `TaskStop` is only for a wedged one), ledger hygiene, and removal of the team's witness directory. Do not summarize it here: the summary that used to sit on this line carried only the first two, and the witness directory was never removed.
 - Present the report summary to the user in Korean.
 - Emit the lite-redirect footer (single line, every invocation):
 

@@ -360,7 +360,7 @@ Refer to `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md` "Document
 
 Repeat until user is satisfied.
 
-**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it: normal completion = no-op (returned tasks already self-terminated), abort = `TaskStop` on any `agentId` whose ledger `state` is still `running`, then ledger hygiene (no `state=running` row survives). If additional reviewer clarification is needed during Step 5 document writing, do so first by resuming that reviewer's `agentId`. When Step 6 triggers re-spawn, apply ledger hygiene before the next spawn.
+**Before Step 6 begins (after Step 5 documentation is complete), Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and follow it **in full** — its four bullets are the process side (returned tasks already self-terminated; `TaskStop` only a wedged one), ledger hygiene, and removal of the team's witness directory. Do not summarize it here: the summary that used to sit on this line carried only the first two and the witness directory was never removed. If additional reviewer clarification is needed during Step 5 document writing, do so first by resuming that reviewer's `agentId`. When Step 6 triggers re-spawn, apply ledger hygiene before the next spawn.
 
 ---
 
