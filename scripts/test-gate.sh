@@ -52,7 +52,17 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
-GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
+# of the environment — every use is in this shell, in a subshell, or in a
+# `bash -c` whose argv the parent interpolates — so the export reads as
+# removable. What it holds up is in another suite: the notification-leak census
+# derives each suite's gate handle from that suite's own assignments, and this
+# line is the one that stops being recognised when the derivation narrows back
+# to a line-anchored form. Measured, with that derivation reverted: this file is
+# dropped from the census while the export stands, and picked back up when the
+# export goes. Deleting it because nobody reads it takes that coverage away
+# without failing anything.
+export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 
@@ -587,6 +597,104 @@ case "$out" in
   *) bad "체인 진단" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
 esac
 cp "$WORK/ledger.bak" "$LEDGER"
+
+# ---------------------------------------------------------------------------
+# 2b. A row whose `prev=` cannot be read is a BREAK, not a row to step over
+#
+# This is an authorization boundary, not a performance property. The verifier
+# used to `continue` past such a row WITHOUT advancing its running `prev`, so
+# the chain re-joined across it as though it had never been written — and a
+# forged approval row carrying no `prev=` at all was reported intact.
+#
+# The forged row does not have to be last. Because a skipped row updates
+# nothing, the next genuine row still carries exactly the `prev` the verifier is
+# holding, so a splice in the middle re-joined just as quietly. Both positions
+# are asserted; assuming the defect needed the final row would leave the wider
+# half of it uncovered.
+#
+# Three shapes reach that one branch and all three are asserted: no `prev=`
+# field, a `prev=` that is not hex, and a `prev=` carrying an invalid byte. The
+# extractor's character class is `[0-9a-f]`, so a non-hex value matches nothing;
+# an invalid byte either aborts the extractor or matches nothing. Either way the
+# result is empty and indistinguishable from absent, which is why closing one
+# shape closes all three.
+#
+# These drive the `snapshot` VERB rather than the function, so what is asserted
+# is that the finding reaches its consumers — the JSON field and the rendered
+# report. The frozen (exit code, broken row) tuples are pinned separately, in
+# tests/fixtures/gate-chain-equiv/golden/.
+# ---------------------------------------------------------------------------
+# WHY THE SUITE'S OTHER `prev=x` FIXTURES DID NOT MOVE. Making an unreadable
+# `prev=` a break was expected to disturb every fixture that writes one — there
+# are 34 of them across this file and test-watch.sh — and it disturbs none. The
+# reason is that only the `snapshot` verb verifies the chain; `act`, `exec`,
+# `grade`, `plan` and `close` never call the verifier, and the watcher never
+# calls it at all. Those fixtures drive the other verbs, so no assertion of
+# theirs reads a verdict that could change. `prev=x` there is a placeholder for
+# a field its consumers do not parse as a chain link, which is exactly why it
+# was free to be unreadable, and why it stays that way.
+chain_intact_now() {
+  (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .chain_intact)
+}
+chain_render_now() {
+  (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null)
+}
+
+# A well-formed approval row in every respect the damage scanner looks at — its
+# regex accepts a row-shaped line with any fields — so nothing else in the
+# morning report points at it. The chain is the only control that can.
+FORGED='- `승인` | 승인 id=FORGED | 상태=승인 | 사유=자기승인'
+
+cp "$LEDGER" "$WORK/ledger.bak"
+printf -- '%s\n' "$FORGED" >> "$LEDGER"
+check "prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+
+# The reason has to be the one that happened. Sending a reader to look for a
+# splice, delete or reorder when the actual finding is "this row's prev= cannot
+# be read" costs them the morning.
+out=$(chain_render_now)
+case "$out" in
+  *"prev= 를 읽을 수 없습니다"*) ok "그 끊김의 사유가 읽을 수 없는 prev= 로 보고된다" ;;
+  *) bad "끊김 사유" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
+esac
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# The same forgery, spliced BEFORE the last row instead of after it.
+awk -v forged="$FORGED" '
+  /^- `/ { if (!done) { print forged; done = 1 } }
+  { print }' "$WORK/ledger.bak" > "$LEDGER"
+check "같은 위조 행을 중간에 끼워 넣어도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# hex 가 아닌 prev= — 같은 분기로 빠지므로 함께 닫힌다.
+printf -- '%s | prev=zzzz\n' "$FORGED" >> "$LEDGER"
+check "hex 가 아닌 prev= 를 실은 행도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# An invalid UTF-8 byte in the row text. The `prev=` field is left syntactically
+# intact on purpose: what is being measured is the byte, not a malformed field.
+printf -- '%s\377 | prev=%s\n' "$FORGED" \
+  "0000000000000000000000000000000000000000000000000000000000000000" >> "$LEDGER"
+check "무효 바이트가 섞인 행도 끊김으로 판정된다" \
+  "$(chain_intact_now)" "false"
+cp "$WORK/ledger.bak" "$LEDGER"
+
+# AN ABSENT LEDGER IS NOT AN INTACT ONE. The read redirection failed, the loop
+# body never ran, and the verifier answered for a file it never opened — so
+# deleting the ledger outright was quieter than editing one row of it. "Not
+# verified" and "verified and intact" are different statements and only one of
+# them is available here.
+mv "$LEDGER" "$WORK/ledger.gone"
+gone=$(chain_intact_now)
+cp "$WORK/ledger.bak" "$LEDGER"
+if [ "$gone" = "true" ]; then
+  bad "원장 부재" "원장이 없는데 체인이 무결로 보고됐다 — 삭제가 한 행을 고치는 것보다 조용해진다"
+else
+  ok "원장이 없으면 무결이 아니다 (읽지 않은 체인에 대해서는 아무 말도 할 수 없다)"
+fi
 
 gate act --manifest "$MANIFEST" --kind x --target nope2 --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- touch "$WORK/nd2"
@@ -5630,7 +5738,7 @@ check "라우터 호출에서도 세그먼트 park 행은 남는다" \
 notify_settle 1
 check "라우터 호출은 배너를 올린다" "$(notify_lines)" "1"
 check "그 배너는 손 필요 제목을 쓴다" \
-  "$(grep -cF -- '-title [cc-cmds] 손 필요 -message' "$NOTIFY_LOG" || true)" "1"
+  "$(grep -cF -- '-title 손 필요 -message' "$NOTIFY_LOG" || true)" "1"
 check "그 배너의 그룹이 항목 키를 싣는다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
 
@@ -5714,8 +5822,14 @@ check "F4 — 충족 종료의 done 표시가 발사한다" \
   "$( [ "$(site_fires '종단 — 종료 조건 아홉 성립 · 근거' 10)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "F2 — 세그먼트 행 기록 자리가 발사한다" \
   "$( [ "$(site_fires "gate_append 'segment' \"id=\$seg\" \"\$@\"" 6)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+# The window is 80 rather than 60. Removing the class that fired on no evidence
+# meant rewriting the rationale beside it — the reasoning for staying silent is
+# longer than the reasoning for firing was — so the surviving firing arms moved
+# two lines past the old window and this assertion read `silent` while both arms
+# were still there. The window measures nothing about the property; it is the
+# helper's reach.
 check "F1 — 스테이지 결과 행 자리가 발사한다" \
-  "$( [ "$(site_fires "gate_append 'stage-result'" 60)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$( [ "$(site_fires "gate_append 'stage-result'" 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
   "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
 check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
@@ -5802,6 +5916,150 @@ case "$msg" in
   *"끊김"*) bad "해시 사슬" "산문 한 줄이 사슬을 깼다: $msg" ;;
   *) ok "전사된 산문 줄이 해시 사슬을 건드리지 않는다" ;;
 esac
+
+# --- THE CLASS THAT LEAVES NO EVIDENCE IS NOT ANNOUNCED ---------------------
+#
+# A crash and a hollow success left nothing this side can read, so at
+# classification time there is no way to tell a stage that needs a person from
+# one that merely died and will be re-dispatched. A notice raised on that
+# ignorance wakes somebody for an action the gate would refuse anyway.
+#
+# A NEGATIVE TEST ALONE PASSES WHEN THE WHOLE FIRING PATH IS DEAD, so the
+# control runs first and inside the SAME initialization window: a deliberate
+# park must still raise its banner. Without the pair, deleting the emitter
+# outright would turn this section green.
+outcome_notify() {
+  # outcome_notify <rc> <subtype> <segment> [halt-question]
+  #
+  # The seams are pinned exactly as `gateb` pins them, and on the REAL command
+  # rather than on a shell function — a prefix assignment before a function call
+  # outlives the call.
+  cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    CC_GATE_SOURCE_ONLY=1 bash -c '
+      . "'"$GATE"'"
+      MANIFEST="'"$MANIFEST"'"
+      check_manifest >/dev/null 2>&1
+      derive_paths_from_manifest
+      rundir_init 2>/dev/null || true
+      mkdir -p "$RUN_DIR/log" "$RUN_DIR/halt"
+      printf "{\"type\":\"result\",\"subtype\":\"%s\",\"total_cost_usd\":0,\"session_id\":\"sid-n\"}\n" \
+        "$2" > "$RUN_DIR/log/$3.json"
+      if [ -n "$4" ]; then
+        { printf "**질문 문면**: %s\n" "$4"
+          printf "%s\n" "<!-- /cc-pipeline-halt v1 -->"
+        } > "$RUN_DIR/halt/$3#1.md"
+      fi
+      nb=$(gate_rows "자율 승인" | gate_count)
+      gate_record_stage_outcome cc-cmds "$3" review 1 "$1" "$nb" >/dev/null 2>&1
+    ' _ "$1" "$2" "$3" "${4:-}"
+}
+
+notify_reset
+outcome_notify 0 success SNP1 "확인이 필요합니다"
+notify_settle 1
+check "대조군 — 의도된 park 은 여전히 배너를 올린다" "$(notify_lines)" "1"
+
+notify_reset
+outcome_notify 1 error SNC1 ''
+outcome_notify 0 success SNH1 ''
+sleep 0.5
+check "크래시와 공허한 성공은 배너를 올리지 않는다" "$(notify_lines)" "0"
+case "$(grep -c '종단 부류=크래시' "$LEDGER" || true)" in
+  0) bad "종단 분류" "크래시 행이 남지 않아 위 음성 단언이 아무것도 재지 않았다" ;;
+  *) ok "분류 자체는 사라지지 않는다 — 원장 행이 그것을 담는다" ;;
+esac
+
+# --- THE BODY'S DANGEROUS FIRST CHARACTERS REACH THE SCREEN ALIVE -----------
+#
+# Five of the six swallowing characters can legitimately open a Korean sentence,
+# and the body is the only channel a caller's specifics travel on — a stage's
+# halt question, a stall reason. Widening the old strip to cover them would have
+# traded a lost body for a distorted one, so the emitter quotes instead. What is
+# asserted is that the argument no longer OPENS with the raw character and that
+# the sentence survives intact.
+body_survives() {
+  # body_survives <index> <body> <fragment-that-must-survive>
+  #
+  # The fragment is passed separately because the quoting escapes an inner `"`,
+  # so for that one case the bytes on the wire are deliberately not the bytes
+  # that went in — and asserting the input verbatim would demand the lossy
+  # behaviour this change removed.
+  notify_reset
+  outcome_notify 0 success "SNB$1" "$2"
+  notify_settle 1
+  local line
+  line=$(tail -1 "$NOTIFY_LOG")
+  case "$line" in
+    *'-message "'*) ok "본문이 인용돼 나간다: $2" ;;
+    *) bad "본문 인용" "$line" ;;
+  esac
+  case "$line" in
+    *"$3"*) ok "본문의 뜻이 보존된다: $2" ;;
+    *) bad "본문 보존" "$line" ;;
+  esac
+}
+body_survives 1 '(임시) 확인이 필요합니다'   '(임시) 확인이 필요합니다'
+body_survives 2 '{키} 값을 정해야 합니다'    '{키} 값을 정해야 합니다'
+body_survives 3 '<대상> 을 골라야 합니다'    '<대상> 을 골라야 합니다'
+body_survives 4 '"계속할까요" 라고 물었습니다' '계속할까요\" 라고 물었습니다'
+body_survives 5 '-p 를 빠뜨렸습니다'         '-p 를 빠뜨렸습니다'
+
+# --- THE CAP IS A CONCURRENCY, NOT A LIFETIME ------------------------------
+#
+# Nothing removed a line from the stack file, so eight slots were spent over the
+# whole run rather than held by the eight items actually waiting. Driven against
+# the emitter's own two functions: reaching the cap through eight real approvals
+# would spend the entire approval lifecycle to say something about one file.
+stack_probe() {
+  bash -c '
+    . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+    RUN_DIR="'"$WORK"'/stack"
+    rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+    for i in 1 2 3 4 5 6 7 8; do cc_notify_stack_admit "K$i" >/dev/null; done
+    cc_notify_stack_admit K9 || printf "K9=overflow\n"
+    cc_notify_stack_release K3
+    cc_notify_stack_admit K10 || printf "K10=overflow\n"
+    cc_notify_stack_release 없는키 && printf "absent-key-ok\n"
+  '
+}
+_sp=$(stack_probe)
+case "$_sp" in
+  *"K9=overflow"*) ok "상한 여덟 — 아홉째는 넘침 자리로 간다" ;;
+  *) bad "쌓기 상한" "$_sp" ;;
+esac
+case "$_sp" in
+  *"K10=overflow"*) bad "슬롯 회수" "회수 뒤에도 다음 항목이 넘쳤다 — 상한이 여전히 평생이다: $_sp" ;;
+  *) ok "슬롯을 회수하면 다음 항목이 개별 자리를 받는다" ;;
+esac
+case "$_sp" in
+  *"absent-key-ok"*) ok "없는 키를 회수해도 조용히 0 을 낸다 (멱등하고 수렴한다)" ;;
+  *) bad "슬롯 회수" "$_sp" ;;
+esac
+
+# --- ALL THREE TERMINALS RECLAIM, pinned at their SITE ---------------------
+#
+# One missing arm means an approval closed down that path holds its seat for the
+# rest of the night, and the symptom — a ninth item collapsing into the overflow
+# slot — appears hours later and nowhere near the cause. Behaviourally reaching
+# `무효` and `거부` needs a transcript the fixture does not have, so the three
+# are pinned where `site_fires` above pins the firing table.
+site_releases() {
+  # site_releases <anchor-fixed-string> <lines-after>
+  local ln
+  ln=$(grep -nF "$1" "$GATE" | sed -n '1p' | cut -d: -f1)
+  if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
+  sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'cc_notify_stack_release' || true
+}
+check "승인 닫기 — 무효 종단이 슬롯을 회수한다" \
+  "$( [ "$(site_releases "\"상태=무효\" \"질문 문면=\$q\"" 10)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+check "승인 닫기 — 거부 종단이 슬롯을 회수한다" \
+  "$( [ "$(site_releases "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+check "승인 닫기 — 승인 종단이 슬롯을 회수한다" \
+  "$( [ "$(site_releases "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did
