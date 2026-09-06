@@ -388,6 +388,21 @@ surface_of_argv0() {
       printf '읽기' ;;
     mktemp)
       printf '트리밖쓰기' ;;
+    # The team witness directory, minted by one script rather than by four
+    # statements the caller has to run in a single shell. Same grade as the
+    # `mktemp` above because that is what it does — it roots under the driver's
+    # run directory or the system temp dir, both out of tree, and writes one
+    # `.attempt` file inside the directory it just made. Nothing under the
+    # worktree is touched on any path.
+    #
+    # THE ROW IS WHAT MAKES THE HONEST DECLARATION POSSIBLE. Four statements in
+    # one call is `bash -c`, and `bash` is graded a worktree write below without
+    # inspecting what it wraps; the comparator is strict equality, so declaring
+    # the effect that actually happens was refused exactly as laundering is
+    # refused. The caller was left choosing between a false declaration and not
+    # running. Measured on one review stage: eight forced false declarations.
+    cc-team-witness-init.sh)
+      printf '트리밖쓰기' ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
     # and is not overturned here — it is the reason this is a subcommand table

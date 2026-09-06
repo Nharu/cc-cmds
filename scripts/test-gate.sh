@@ -1763,6 +1763,19 @@ graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sh
 graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
 graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
 graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
+# The team witness initializer. It is the second half of a pair: the script
+# exists so that the four statements it runs stop needing `bash -c`, and this
+# row is what makes that worth doing. Without the row the script would fall to
+# `등급 미상` and the caller would be back to the interpreter, which is graded a
+# worktree write whatever it wraps — so the declaration the caller could make
+# honestly would again be one the comparator refuses.
+#
+# Asserted through the absolute spelling as well, because that is how a skill
+# invokes it (`<plugin root>/orchestrator/…`) and a name-only assertion would
+# pass while every real call fell through to `등급 미상`.
+graded_as '트리밖쓰기' '위트니스 초기화 스크립트는 트리 밖을 쓴다' -- cc-team-witness-init.sh review-x
+graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
 
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true
 rm -rf "$SETTINGS_DIR"
