@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # lint-notify-fire-sites: self-skip
 # Pin the shape the seat guard depends on: the notifier is launched from exactly
-# two lines, and both of them are inside the shared emitter's fire function.
+# two lines — one raising a banner and one removing it — and both of them are
+# inside the shared emitter, in the two functions that carry the seat guard.
 #
 # WHY THIS EXISTS AT ALL. Reclaiming a stacking slot needs no caller guard —
 # it erases a line in a file and delivers nothing to anybody — while CLEARING a
@@ -23,15 +24,22 @@
 #   2  both of them are in the emitter file                               [fail]
 #   3  both of them come after the fire function opens                    [fail]
 #
+# WHY TWO AND NOT ONE OR THREE. The emitter raises a banner from one line and
+# removes one from another, and those are the only two acts that reach the
+# binary. The count is pinned from below as well as from above: an emitter that
+# lost the removal arm still launches a notifier, so a check asking only "are all
+# launches inside the emitter" would pass with the arm gone.
+#
 # The existence probe (`command -v terminal-notifier`) is excluded: it launches
 # nothing. Everything else that names the binary counts, and the check is NOT
-# narrowed to lines carrying `-title` — narrowing that way would make a banner
+# narrowed to lines carrying `-title` — narrowing that way would make the banner
 # CLEAR (`-remove`) structurally invisible, and a clear arriving without a seat
 # guard is precisely the thing this lint was put here to catch.
 #
 # Rule 3 is spelled as "after the fire function opens" rather than "inside its
-# braces" because the fire function is the last in the file, which makes the two
-# the same statement and the former needs no brace matching.
+# braces" because the two functions that launch the binary — the fire function
+# and the clear function — are the last two in the file and the fire function
+# opens first, so the former is the same statement and needs no brace matching.
 #
 # Usage:
 #   bash scripts/lint-notify-fire-sites.sh
@@ -118,5 +126,5 @@ if [ "$fail" != "0" ]; then
   exit 1
 fi
 
-echo "OK:   notify fire sites — 발사기를 부르는 줄은 정확히 둘이고 둘 다 emitter 의 발사 함수 안이다"
+echo "OK:   notify fire sites — 발사기를 부르는 줄은 정확히 둘(올리기·지우기)이고 둘 다 emitter 의 가드 안이다"
 exit 0

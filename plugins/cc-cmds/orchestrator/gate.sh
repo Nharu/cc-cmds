@@ -1702,14 +1702,15 @@ gate_surface_check() {
     # this row is exactly such a block, so that arm is silent for this run
     # forever.
     #
-    # `status-hands` and not `hands`: the gate refuses to resolve a block whose
-    # cause is invalidation, so it is not something a person can put their hands
-    # on. It fails the stacking test — "an individually identified thing that
-    # stays put until a person touches THAT" — while still needing the title
-    # that says a person is needed.
+    # `rekick` and not `hands`: the gate refuses to resolve a block whose cause
+    # is invalidation, so it is not something a person can put their hands on. It
+    # fails the stacking test — "an individually identified thing that stays put
+    # until a person touches THAT" — so it takes the per-run replace slot, and
+    # the title names the one action actually available here, which is to open a
+    # fresh run because this one's baseline cannot be taken again.
     if cc_caller_is_router && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
       : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
-      cc_notify_fire status-hands \
+      cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
     fi
   fi
@@ -4074,8 +4075,12 @@ gate_verb_act() {
         "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
+      # left for a person is to read the result rather than to re-open anything.
+      # The instruction to kick off again belongs to the site that anchors the
+      # run, which has already spoken by the time this one does.
       if cc_caller_is_router; then
-        cc_notify_fire status "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
+        cc_notify_fire ended "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
       fi
       return 0
     fi
@@ -4142,11 +4147,12 @@ gate_verb_act() {
     # the very distinction that branch exists to record. The banner is kept
     # whole and fires on every terminal class, including the one holding open
     # questions — that is still an ending someone should be told about.
-    # The other arm that decides the run's end. `status`, because a satisfied
-    # ending asks nothing of anyone — the replace slot is exactly right for a
-    # fact that needs no answer, and re-raising it costs nothing.
+    # The other arm that decides the run's end. `ended`, because what a person
+    # does next here is look at the result and decide what follows — the per-run
+    # replace slot is exactly right for a fact that supersedes any earlier state
+    # of the same run, and re-raising it costs nothing.
     if cc_caller_is_router; then
-      cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+      cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
     fi
   elif [ -z "$unmet" ]; then
     if ! gate_names_next_obligation "$rationale"; then
@@ -4990,7 +4996,19 @@ gate_record_stage_outcome() {
         # is reachable is a COMPLETE record whose field could not be read, and
         # the wording says exactly that. An empty extraction must not kill the
         # shell either: this sits on the critical path of an exit-on-error shell.
-        [ -n "$q" ] || q="스스로 멈췄습니다 — 중단 기록을 확인하세요"
+        #
+        # THE QUESTION IS REPORTED, NOT ASKED. Now that a title carries an
+        # instruction, handing the stage's raw question straight to the body puts
+        # "직접 손대세요" over "계속할까요?" — the title commands, the body asks, and
+        # there is nowhere on that screen to answer. The question stays verbatim
+        # because it is the best wording this design has; it is wrapped in a
+        # statement so the two halves make one speech act. The fallback takes the
+        # same form for the same reason.
+        if [ -n "$q" ]; then
+          q="\`${seg}\` 스테이지가 물음 앞에서 멈췄습니다 — 「${q}」"
+        else
+          q="\`${seg}\` 스테이지가 스스로 멈췄습니다 — 중단 기록을 확인하세요"
+        fi
         # The segment-park marker, written HERE because the attempt number is an
         # argument of this function and is NOT a field of a segment row. The file
         # is named by the segment alone so the segment-row side can find it
@@ -5348,7 +5366,16 @@ gate_close() {
     # because that is what the firing site (`cc_notify_fire answer "$q" "$id"`)
     # wrote into the stack. Deriving it differently here would leave the seat
     # occupied by a key nothing releases.
+    #
+    # AND THE BANNER COMES OFF THE SCREEN ON ALL THREE TOO. An approval that was
+    # voided, refused or granted is equally done being waited on, so leaving its
+    # notice up is the state the address was added to end: in the morning the
+    # answered and the unanswered look the same. The two calls are deliberately
+    # NOT one — reclaiming a slot erases a line in a file and delivers nothing,
+    # while clearing changes what is on a person's screen right now, so only the
+    # second carries a seat guard, and that guard lives inside the verb.
     cc_notify_stack_release "$id" || true
+    cc_notify_clear answer "$id" || true
     log "승인 무효 — $id (행위는 수행되지 않습니다)"
     return 0
   fi
@@ -5450,6 +5477,7 @@ gate_close() {
     gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
       "답변 문면=$abody" "해소 시각=$(now_iso)"
     cc_notify_stack_release "$id" || true
+    cc_notify_clear answer "$id" || true
     log "승인 거부 — $id (물었고 답이 아니오입니다)"
     return 0
   fi
@@ -5457,6 +5485,7 @@ gate_close() {
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   cc_notify_stack_release "$id" || true
+  cc_notify_clear answer "$id" || true
   log "승인 해소 — $id"
   return 0
 }

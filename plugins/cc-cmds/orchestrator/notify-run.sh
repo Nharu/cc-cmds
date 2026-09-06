@@ -10,11 +10,18 @@
 # and the erased one's condition reached nobody at all. One file makes "they
 # cannot disagree" structural instead of a habit two maintainers keep.
 #
-# ONE TOKEN CHOOSES THREE AXES. A caller passes a class token and a body; this
-# file decides the title, the group and whether a sound plays. Handing the three
-# separately opens exactly one typo per call site — a "손 필요" notice landing in
-# the replace slot arrives with well-formed arguments and silently erases another
-# summons, which is the same class of defect this seat exists to remove.
+# ONE TOKEN CHOOSES TITLE AND GROUP; THE SOUND IS A CONSTANT. A caller passes a
+# class token and a body; this file decides the title and the group, and every
+# banner carries a sound. Handing title and group separately opens exactly one
+# typo per call site — a "직접 손대세요" notice landing in the replace slot arrives
+# with well-formed arguments and silently erases another summons, which is the
+# same class of defect this seat exists to remove.
+#
+# THE SOUND STOPPED BEING AN AXIS once re-firing was counted across every status
+# firing point: none of them repeats, because each is held by a once-marker or by
+# a ledger row and speaks a single time. "Re-firing into a replace slot is free,
+# so a sound there would repeat the same fact all night" was a precaution rather
+# than an observation, and the count refuted it.
 #
 # FIVE RESPONSIBILITIES, each a measured failure if dropped:
 #   1  never change the caller's exit status. The gate runs under an exit-on-
@@ -140,17 +147,26 @@ cc_notify_title() {
   # discontinued), so the title is the only marker of where a notice came from,
   # and it was the one thing being dropped.
   #
-  # THIS VOCABULARY IS AN INTERMEDIATE FORM. Five tokens share three strings, so
-  # the two pairs that demand different actions — answer a question, versus go
-  # and do something by hand — still arrive wearing the same title. Removing the
-  # prefix makes titles reach the screen; it does not restore the distinction.
-  # Rewriting the vocabulary so a title carries the action is separate work.
+  # THE TITLE CARRIES THE ACTION. The previous vocabulary had five tokens sharing
+  # three strings, so the pairs that demand different actions — answer a question,
+  # versus go and do something by hand, versus open a fresh run — arrived wearing
+  # the same words once the prefix was removed. Seven tokens is not the cost it
+  # looks like: a call site's typo surface is "picked the wrong token" whatever
+  # the count, and the real protection is the closed set below plus the refusal of
+  # an unknown token. Collapsing them is what would hurt — three different
+  # instructions under one title is a banner that cannot say what to do.
+  #
+  # `cc-cmds` STAYS IN FRONT because the application name is permanently
+  # `Terminal`, so the title is the only marker of origin, and a value starting
+  # with `c` was measured safe against the swallowing set above.
   case "$1" in
-    answer)       printf '답 필요' ;;
-    hands)        printf '손 필요' ;;
-    status)       printf '자율 런' ;;
-    status-hands) printf '손 필요' ;;
-    overflow)     printf '답 필요' ;;
+    answer)     printf 'cc-cmds · 답하세요' ;;
+    answer-run) printf 'cc-cmds · 답하세요' ;;
+    overflow)   printf 'cc-cmds · 답할 것이 더 있습니다' ;;
+    hands)      printf 'cc-cmds · 직접 손대세요' ;;
+    resume)     printf 'cc-cmds · 세션으로 돌아가세요' ;;
+    rekick)     printf 'cc-cmds · 새 런을 여세요' ;;
+    ended)      printf 'cc-cmds · 결과를 확인하세요' ;;
   esac
 }
 
@@ -162,24 +178,46 @@ cc_notify_group() {
   # parking `S1` would write the same key and erase each other's summons. That
   # is the measured regression which made this group per-run in the first place,
   # revived in the very channel that was added to prevent it.
+  # THE RUN SLOT IS SHARED BY THE LIFECYCLE THREE AND BY NOBODY ELSE. `resume`,
+  # `rekick` and `ended` are mutually exclusive states of one run — it cannot be
+  # both waiting for a session and finished — so one slot is right and the later
+  # notice erasing the earlier one is the correct behaviour. `answer-run` is NOT
+  # in that set: a run can hold open approvals at the same time as any of the
+  # three, so sharing would let "세션으로 돌아가세요" erase "답하세요" or the other
+  # way round, and the person would be told whichever arrived last regardless of
+  # what is actually outstanding. It gets its own suffix instead, which keeps
+  # per-run replacement intact without the collision.
+  #
+  # The suffix must not collide with the overflow one, so it is `답` and not
+  # `대기`.
   local rid="${RUN_ID:-미상}"
   case "$1" in
     answer|hands) printf 'cc-cmds-autopilot-%s-%s' "$rid" "$2" ;;
+    answer-run)   printf 'cc-cmds-autopilot-%s-답' "$rid" ;;
     overflow)     printf 'cc-cmds-autopilot-%s-대기' "$rid" ;;
     *)            printf 'cc-cmds-autopilot-%s' "$rid" ;;
   esac
 }
 
 cc_notify_sound() {
-  # ONLY THE STACKING BUCKETS MAKE A SOUND. A banner that waits for a person is
-  # worth something to someone who is awake but away from the screen; a status
-  # report is not, and re-firing into a replace slot is free — so a sound there
-  # would repeat the same fact all night. This is the second reason the three
-  # axes come from one token: passed separately, every call site opens a
-  # combination where a status notice makes noise.
-  case "$1" in
-    answer|hands) printf 'default' ;;
-  esac
+  # EVERY BANNER MAKES A SOUND. The token is taken and ignored: this is a
+  # constant, and it stays a function so the one place that names it is still one
+  # place — a caller reading a literal out of this file would be the drift the
+  # shared emitter exists to prevent.
+  #
+  # WHY IT IS NO LONGER AN AXIS. The old split gave sound only to the stacking
+  # buckets, on the ground that re-firing into a replace slot is free and a sound
+  # there would repeat the same fact all night. Counting every status firing point
+  # refuted it: all of them are held by a once-marker or by a ledger row and speak
+  # exactly once, including the stall arm, whose window closes because the gate
+  # empties the stall file only after transcribing it.
+  #
+  # THE CONSTANT MAY NOT SHIP WITHOUT SLOT RECLAMATION, and that ordering is why
+  # this line is safe to write today: without reclamation the cap is a lifetime
+  # rather than a concurrency, and the overflow body would count items answered
+  # hours ago — a sound announcing a wait that is not happening. Reclamation
+  # landed first.
+  printf 'default'
 }
 
 cc_notify_body() {
@@ -350,13 +388,13 @@ cc_notify_seat_state() {
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
-  # The token is one of five and the set is closed: an unrecognized one raises
+  # The token is one of seven and the set is closed: an unrecognized one raises
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
   local token="${1:-}" body="${2:-}" key="${3:-}" title group sound n
   case "$token" in
-    answer|hands|status|status-hands|overflow) : ;;
+    answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 올리지 않습니다\n' "$token" >&2
       return 0 ;;
@@ -369,6 +407,10 @@ cc_notify_fire() {
   if ! cc_notify_enabled; then return 0; fi
   if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
 
+  # ONLY THE STACKING TOKENS ARE ADMITTED AGAINST THE CAP. `answer-run` says the
+  # whole run is waiting and occupies a per-run replace slot, so counting it
+  # against the eight individual seats would let one run-level banner eat a seat
+  # an individually identified approval needs.
   case "$token" in
     answer|hands)
       if [ -z "$key" ]; then key="$token"; fi
@@ -401,12 +443,63 @@ cc_notify_fire() {
   # brings it straight back.
   #
   # Responsibility 3: launched detached, status never asked.
-  if [ -n "$sound" ]; then
-    { terminal-notifier -title "$title" -message "$body" -group "$group" \
-        -sound "$sound" -execute ':' >/dev/null 2>&1 & } 2>/dev/null || true
-  else
-    { terminal-notifier -title "$title" -message "$body" -group "$group" \
-        -execute ':' >/dev/null 2>&1 & } 2>/dev/null || true
+  #
+  # ONE ARM, NOT TWO. The pair used to be split on whether a sound was chosen;
+  # the sound is a constant now, so the silent arm was unreachable code that read
+  # like a live branch.
+  { terminal-notifier -title "$title" -message "$body" -group "$group" \
+      -sound "$sound" -execute ':' >/dev/null 2>&1 & } 2>/dev/null || true
+  return 0
+}
+
+cc_notify_clear() {
+  # cc_notify_clear <token> [item-key]
+  #
+  # Take a banner off the screen by addressing its group. A group is a SLOT and
+  # also an ADDRESS: without one a notice can never be removed, counted or
+  # queried, so in the morning an approval that was answered and one that was not
+  # look identical. Keys landed first because a banner that already went out
+  # without one is unaddressable forever; removal is the half that could wait, and
+  # this is it arriving.
+  #
+  # THE SEAT GUARD IS INSIDE THIS VERB, NOT AT ITS CALL SITES. Every firing point
+  # in the gate carries its own copy of the guard, and that copy is exactly the
+  # shape the shared emitter was created to end — a guard that does not inherit is
+  # a guard one new call site can be written without. Clearing changes what is on
+  # a person's screen right now, which is the property the guard is a genuine
+  # precondition for, so it lives where it cannot be forgotten.
+  #
+  # THE CONTRAST WITH RECLAIMING A SLOT IS THE POINT, and it is the reason
+  # `cc_notify_stack_release` deliberately carries no guard: that one erases a
+  # line in a file and calls nothing, so it can neither raise a banner nor
+  # suppress one. Guarded sites all share the property of handing an event to a
+  # person; putting a guard on one that hands over nothing would kill that
+  # property as a marker, and then a clear added later without a guard would not
+  # stand out.
+  #
+  # Same four gates as firing — kill switch, host, PATH prepend, exit status
+  # untouched — because this reaches the same binary and sits on the same
+  # critical path.
+  local token="${1:-}" key="${2:-}" group
+  case "$token" in
+    answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
+    *)
+      printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 지우지 않습니다\n' "$token" >&2
+      return 0 ;;
+  esac
+  if ! cc_caller_is_router; then return 0; fi
+  if ! cc_notify_enabled; then return 0; fi
+  if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
+
+  if [ -z "$key" ]; then key="$token"; fi
+  group=$(cc_notify_group "$token" "$key")
+
+  if [ -z "${CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND:-}" ]; then
+    PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   fi
+  if ! command -v terminal-notifier >/dev/null 2>&1; then
+    return 0
+  fi
+  { terminal-notifier -remove "$group" >/dev/null 2>&1 & } 2>/dev/null || true
   return 0
 }
