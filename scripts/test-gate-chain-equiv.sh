@@ -212,9 +212,19 @@ probe_col_live() {                # echoes A/B/C
 # `locale -a | grep -q`: under `pipefail` the early-exiting reader kills the
 # writer with SIGPIPE and the pipeline reports failure, so an available locale
 # reads as absent — the same shape this repository already lints for elsewhere.
+#
+# Each locale is listed under BOTH spellings, because glibc's `locale -a`
+# normalises the codeset it prints: the locale `setlocale` accepts as
+# `C.UTF-8` comes back as `C.utf8`. Matching only the hyphenated spellings read
+# an existing locale as absent on every glibc host and killed this harness
+# before it ran a single case, which is why the Linux leg never once executed
+# the comparison. The hyphenated two stay FIRST and in this order — the macOS
+# image carries `C.UTF-8`, the selected locale is what fixes which divergence
+# rows apply below, and reordering would move the verdict inputs of a leg that
+# is already passing.
 REF_LOCALE=
 available_locales=$(locale -a 2>/dev/null || true)
-for cand in C.UTF-8 en_US.UTF-8; do
+for cand in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
   case "
 $available_locales
 " in
