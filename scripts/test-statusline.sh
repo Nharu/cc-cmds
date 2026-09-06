@@ -84,15 +84,29 @@ strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 
 # The pair below differs in the two slots and in nothing else, so it has to
 # collapse to one line — and it has to have been two lines to begin with, or it
 # would prove nothing about what was removed.
+#
+# AND THE LINE IT COLLAPSES TO IS SPELLED OUT, rather than compared against the
+# other side. Both sides are outputs of this function, so a body that emits
+# NOTHING satisfies them — `"" = ""` — and an empty scrubber is what a `sed`
+# typo, a deleted function and a missing `sed` all produce. Measured: with the
+# body replaced by one that writes nothing, this suite stayed at its baseline
+# green. Every other reading of this function in this file is stripped-against-
+# stripped too, and so is the real-render case below, which a `stripped` that is
+# empty also satisfies — so this is the one place the direction can be closed.
+# A literal on the right cannot be produced by an absent scrubber, and it is
+# still wrong for a scrubber that does nothing, so one assertion closes both.
 _sc_a='⟳ run-live S1 · 원장 5초 전 00:03'
 _sc_b='⟳ run-live S1 · 원장 6초 전 00:04'
+_sc_want='⟳ run-live S1 · 원장 N'
 if [ "$_sc_a" != "$_sc_b" ]; then
   ok "시계 슬롯 대조쌍이 벗기기 전에는 서로 다르다"
 else
   bad "시계 슬롯 대조쌍" "두 줄이 이미 같다 — 이 쌍은 벗기기를 재지 못한다"
 fi
-check "시계 슬롯을 벗기면 두 시점의 같은 사실이 한 줄이 된다" \
-  "$(printf '%s\n' "$_sc_a" | strip_clock)" "$(printf '%s\n' "$_sc_b" | strip_clock)"
+check "시계 슬롯을 벗기면 앞 시점이 알려진 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_a" | strip_clock)" "$_sc_want"
+check "시계 슬롯을 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_b" | strip_clock)" "$_sc_want"
 
 # The "no run" line. Byte-identical to every degraded path's output, which is
 # the property cases 10-13 exist to hold in place.

@@ -52,6 +52,16 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
+# of the environment — every use is in this shell, in a subshell, or in a
+# `bash -c` whose argv the parent interpolates — so the export reads as
+# removable. What it holds up is in another suite: the notification-leak census
+# derives each suite's gate handle from that suite's own assignments, and this
+# line is the one that stops being recognised when the derivation narrows back
+# to a line-anchored form. Measured, with that derivation reverted: this file is
+# dropped from the census while the export stands, and picked back up when the
+# export goes. Deleting it because nobody reads it takes that coverage away
+# without failing anything.
 export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"

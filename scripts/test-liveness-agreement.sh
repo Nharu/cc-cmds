@@ -229,22 +229,31 @@ got=$(LC_ALL=en_US.UTF-8 bash -c '. "$1"; cc_unresolved_blocked "$2"' \
         _ "$LIVENESS" "$FX_BLK" | sed -n 's/.*\t//p')
 check "남는 것이 강제 표면 이동이다" "$got" "강제 표면 이동"
 
-# AND THE PAIR IS REQUIRED TO BE REAL VOCABULARY, not said to be. The paragraph
-# above is the whole difference between this fixture reporting a hazard and it
-# demonstrating a collation rule, and a paragraph is exactly the part that stays
-# behind when the vocabulary moves: the pair this one replaced named a string
-# that turns up only as a park's 관측, and every assertion here stayed green
-# while the sentence underneath them was false. Comments are cut first because
-# one of these files carries the paragraph that names both values.
+# AND THE PAIR IS REQUIRED TO BE REAL VOCABULARY OF THIS FIELD, not said to be.
+# The paragraph above is the whole difference between this fixture reporting a
+# hazard and it demonstrating a collation rule, and a paragraph is exactly the
+# part that stays behind when the vocabulary moves: the pair this one replaced
+# named a string that turns up only as a park's 관측, and every assertion here
+# stayed green while the sentence underneath them was false.
+#
+# A BARE SUBSTRING SEARCH DOES NOT SEPARATE THOSE TWO, so it was still the wrong
+# question one layer down. Measured: put the discarded value back into the
+# fixture and into the search and this suite stays green — it does occur, just
+# as a park's fifth argument rather than its fourth. The search is therefore
+# anchored on the FIELD, in the two spellings the product writes it in: `사유=`
+# where a row is appended by name, and the fourth positional of a `park` where
+# the driver calls one. A value that only ever occupies some other argument
+# matches neither. Comments are cut first because one of these files carries the
+# paragraph that names both values.
 for _sy in '자동 채택 미달' '강제 표면 이동'; do
   _sy_n=$(sed 's/#.*//' \
         "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
         "$repo_root/plugins/cc-cmds/orchestrator/run.sh" \
-      | grep -cF "$_sy" || true)
+      | grep -cE "(사유=|park([[:space:]]+[^[:space:]]+){3}[[:space:]]+\")$_sy" || true)
   if [ "${_sy_n:-0}" -gt 0 ]; then
     ok "'$_sy' 는 제품이 이 필드에 실제로 쓰는 값이다 (${_sy_n}곳)"
   else
-    bad "충돌쌍 어휘" "'$_sy' 를 쓰는 자리가 코드에 없다 — 이 쌍은 콜레이션만 보이고 위험은 보이지 않는다"
+    bad "충돌쌍 어휘" "'$_sy' 를 사유 자리에 쓰는 곳이 코드에 없다 — 이 쌍은 콜레이션만 보이고 위험은 보이지 않는다"
   fi
 done
 
@@ -381,6 +390,89 @@ done
 # smaller total, which is what a clean tree looks like too. The count leaves the
 # loop so that outcome can be asserted rather than left to a reader who happens
 # to remember the previous total.
+leak_pat() {
+  # leak_pat <주석 걷어낸 소스> — build the ERE that recognises an invocation of
+  # the gate, the driver or the watcher inside that source.
+  #
+  # A FUNCTION RATHER THAN A BLOCK INSIDE THE LOOP, because the tree the loop
+  # reads does not exercise every branch of what it builds. Measured: the base
+  # branch — a literal path after `bash` — selects ZERO suites here today, and
+  # all four that are selected come from a handle branch. So that branch could be
+  # deleted, or narrowed, without a single verdict moving. Lifted out, it can be
+  # handed a corpus written for it; the recognition table below is that corpus.
+  #
+  # A `bash` THAT BEGINS INSIDE A STRING LITERAL IS DATA, NOT AN INVOCATION.
+  # Some suites here carry command lines as fixtures — the pretool-hook suite
+  # feeds `"bash $GATE snapshot …"` to the hook it is testing — and reading one
+  # of those selects a suite that never runs the gate, then reports it as a
+  # leak. So the character in front of `bash` may not be a double quote; nor may
+  # it be part of a longer word, which is what keeps `bash_json` from counting.
+  # Everything a real call site puts there — a line start, a space, a `(`, a
+  # `/` — still counts.
+  #
+  # THE DERIVATION READS WORDS, NOT LINES, because a line-anchored extraction is
+  # a closed list of assignment spellings wearing a regex — the same defect as
+  # the hardcoded handle list it replaced, moved one layer down. Measured, it
+  # missed `local`/`export`/`readonly` prefixes, a second assignment on the same
+  # line, `H=$d/gate.sh` with no quotes, and `H="$d"/gate.sh` with the quotes
+  # around the other half. Splitting on the shell's own separators first makes a
+  # prefix its own word and every assignment its own word, so what is left to
+  # recognise is `<name>=…<script>` — the one shape all of them share. A
+  # trailing `;` needs no removal; the pattern's tail absorbs it.
+  #
+  # `sed -E`, and the flag is load-bearing. BSD sed's default BRE has no `|`
+  # alternation, so the bracketed group matches nothing and the extraction
+  # yields an empty handle list — which does not error, it selects no suites,
+  # and every assertion in that loop disappears while the suite reports a
+  # smaller green total. Measured: 30 assertions became 26 and nothing said so.
+  local _src="$1" _h _ref _pat
+  _pat='(^|[^"A-Za-z_0-9])bash +[^ ]*(gate|run|watch)\.sh'
+  for _h in $(printf '%s\n' "$_src" | tr ' \t' '\n\n' \
+      | sed -n -E 's/^([A-Za-z_][A-Za-z_0-9]*)=.*(gate|run|watch)\.sh.*$/\1/p' \
+      | sort -u); do
+    # `\\$` and not `$`: this string becomes an ERE, where a bare `$` is the
+    # end-of-line anchor. Written unescaped the alternative reads as `bash "`
+    # then end-of-line, matches nothing, and the caller selects no suites at
+    # all — silently, with the suite reporting a smaller green total.
+    #
+    # The braces and the quotes are OPTIONAL in the reference, because
+    # `bash "$H"`, `bash "${H}"` and `bash $H` are one act spelled three ways.
+    # And running the handle DIRECTLY is a fourth — no `bash` in front of it at
+    # all — so that one anchors on the start of the line instead. Requiring a
+    # literal `bash "$H"` was a closed list of invocation spellings, which is
+    # the same defect as the closed list of assignment spellings above.
+    _ref="\\\$\\{?$_h\\}?"
+    _pat="$_pat|(^|[^\"A-Za-z_0-9])bash +\"?$_ref\"?"
+    _pat="$_pat|^[[:space:]]*\"?$_ref\"?([[:space:]]|\$)"
+  done
+  printf '%s' "$_pat"
+}
+
+# THE BRANCHES THE TREE DOES NOT REACH ARE CHECKED AGAINST A CORPUS WRITTEN FOR
+# THEM. One row per branch and one per exclusion, spelled the way a real call
+# site and a real non-call-site are spelled, so each row is failed by breaking
+# the one thing it names — and the base branch, which today's tree cannot fail,
+# is failed here.
+_lp=$(leak_pat 'GATE=/x/plugins/cc-cmds/orchestrator/gate.sh')
+while IFS='|' read -r _want _line; do
+  [ -n "$_want" ] || continue
+  _got=$(printf '%s\n' "$_line" | grep -cE "$_lp" || true)
+  case "$_want:${_got:-0}" in
+    y:0) bad "누출 술어 인식" "호출로 인식해야 하는 줄을 놓쳤다: $_line" ;;
+    n:0) ok "누출 술어가 호출 아닌 줄을 세지 않는다: $_line" ;;
+    y:*) ok "누출 술어가 호출 표기를 인식한다: $_line" ;;
+    *)   bad "누출 술어 인식" "호출이 아닌 줄을 호출로 셌다: $_line" ;;
+  esac
+done <<'LEAKROWS'
+y|bash /x/plugins/cc-cmds/orchestrator/gate.sh snapshot --manifest m
+y|  bash "$GATE" act --kind segment
+y|bash ${GATE} act --kind segment
+y|  "$GATE" act --kind segment
+n|  "bash $GATE snapshot --manifest m"
+n|bash_json "$GATE" act
+n|  echo "$GATEWAY" act
+LEAKROWS
+
 _selected=0
 _selected_names=""
 for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrator/test-run.sh; do
@@ -414,49 +506,10 @@ for f in "$repo_root"/scripts/test-*.sh "$repo_root"/plugins/cc-cmds/orchestrato
   # file: whatever variable it assigns one of the three scripts to is what its
   # invocations will name.
   #
-  # THE DERIVATION READS WORDS, NOT LINES, because a line-anchored extraction is
-  # a closed list of assignment spellings wearing a regex — the same defect as
-  # the hardcoded handle list it replaced, moved one layer down. Measured, it
-  # missed `local`/`export`/`readonly` prefixes, a second assignment on the same
-  # line, `H=$d/gate.sh` with no quotes, and `H="$d"/gate.sh` with the quotes
-  # around the other half. Splitting on the shell's own separators first makes a
-  # prefix its own word and every assignment its own word, so what is left to
-  # recognise is `<name>=…<script>` — the one shape all of them share. A
-  # trailing `;` needs no removal; the pattern's tail absorbs it.
-  #
-  # `sed -E`, and the flag is load-bearing. BSD sed's default BRE has no `|`
-  # alternation, so the bracketed group matches nothing and the extraction
-  # yields an empty handle list — which does not error, it selects no suites,
-  # and every assertion in this loop disappears while the suite reports a
-  # smaller green total. Measured: 30 assertions became 26 and nothing said so.
+  # Comments are cut first, and the pattern is built from what is left — the
+  # construction, and why it has the shape it has, live in `leak_pat` above.
   _src=$(sed 's/#.*//' "$f")
-  # A `bash` THAT BEGINS INSIDE A STRING LITERAL IS DATA, NOT AN INVOCATION.
-  # Some suites here carry command lines as fixtures — the pretool-hook suite
-  # feeds `"bash $GATE snapshot …"` to the hook it is testing — and reading one
-  # of those selects a suite that never runs the gate, then reports it as a
-  # leak. So the character in front of `bash` may not be a double quote; nor may
-  # it be part of a longer word, which is what keeps `bash_json` from counting.
-  # Everything a real call site puts there — a line start, a space, a `(`, a
-  # `/` — still counts.
-  _pat='(^|[^"A-Za-z_0-9])bash +[^ ]*(gate|run|watch)\.sh'
-  for _h in $(printf '%s\n' "$_src" | tr ' \t' '\n\n' \
-      | sed -n -E 's/^([A-Za-z_][A-Za-z_0-9]*)=.*(gate|run|watch)\.sh.*$/\1/p' \
-      | sort -u); do
-    # `\\$` and not `$`: this string becomes an ERE, where a bare `$` is the
-    # end-of-line anchor. Written unescaped the alternative reads as `bash "`
-    # then end-of-line, matches nothing, and the loop selects no suites at all —
-    # silently, with the suite reporting a smaller green total.
-    #
-    # The braces and the quotes are OPTIONAL in the reference, because
-    # `bash "$H"`, `bash "${H}"` and `bash $H` are one act spelled three ways.
-    # And running the handle DIRECTLY is a fourth — no `bash` in front of it at
-    # all — so that one anchors on the start of the line instead. Requiring a
-    # literal `bash "$H"` was a closed list of invocation spellings, which is
-    # the same defect as the closed list of assignment spellings above.
-    _ref="\\\$\\{?$_h\\}?"
-    _pat="$_pat|(^|[^\"A-Za-z_0-9])bash +\"?$_ref\"?"
-    _pat="$_pat|^[[:space:]]*\"?$_ref\"?([[:space:]]|\$)"
-  done
+  _pat=$(leak_pat "$_src")
   # `grep -c`, never `grep -q`, and the reason is this file's own section 0a:
   # under `pipefail` an early-exiting reader on the right of a pipe kills the
   # writer with SIGPIPE and the pipeline reports that failure. `grep -q` leaves
@@ -503,6 +556,19 @@ case " $_selected_names " in
   *" test-gate.sh "*) ok "그 선택에 test-gate.sh 가 들어 있다 (가장 많이 부르는 스위트가 빠지지 않았다)" ;;
   *) bad "누출 술어" "test-gate.sh 를 고르지 못했다 — 핸들 유도나 호출 표기 인식이 좁아졌다" ;;
 esac
+# AND THE WHOLE SET, because "above zero" and "contains one name" both survive a
+# predicate that narrowed. A narrowing drops suites one at a time, and the suite
+# then ends with zero failures and a smaller total — which is what a clean tree
+# looks like too. Measured: a derivation broken so that a whole branch matched
+# nothing left this count at four and this name present, and nothing said so.
+#
+# Spelling the set out means a suite added to this tree that calls the gate
+# family has to be added here as well. That edit is the point rather than a cost:
+# it is the one moment somebody looks at whether the new suite kills the channel.
+_selected_want="test-gate.sh test-liveness-agreement.sh test-run.sh test-snapshot.sh"
+_selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
+                  | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
+check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
