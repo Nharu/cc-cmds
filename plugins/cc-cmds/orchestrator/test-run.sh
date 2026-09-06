@@ -2063,7 +2063,8 @@ fi
 
 FR="$WORK/probe-root"
 mkdir -p "$FR/cc-cmds/run/R-live" "$FR/cc-cmds/run/R-dead" "$FR/cc-cmds/run/R-odd" \
-         "$FR/cc-cmds/run/R-spawning" "$FR/cc-cmds/run/R-watcher"
+         "$FR/cc-cmds/run/R-spawning" "$FR/cc-cmds/run/R-watcher" \
+         "$FR/cc-cmds/run/R-spacey"
 # 살아 있는 스테이지: 기록된 pid 가 살아 있고 시작시각 지문이 일치해야 한다.
 # 지문은 드라이버가 쓰는 것과 같은 형태로 만든다 — 다른 형태로 만들면 이 픽스처가
 # 검증하는 것은 오라클이 아니라 이 하네스 자신이 된다.
@@ -2091,21 +2092,57 @@ printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-spawning/S1.pid"
 # 위 픽스처의 통과가 「형제 없는 pid 는 전부 판정 불가」와 구별되고, 그 해석은
 # 온디스크의 워처 전용 디렉터리를 영구히 판정 불가로 만든다.
 printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-watcher/watch.pid"
+# 공백을 담은 레인 경로. macOS 에서 `Library/Application Support` 아래 레인은 이상한
+# 설정이 아니고, 마지막 필드가 무경계라는 사실 자체가 계약이 깨지는 넓은 쪽이다 —
+# 이 픽스처가 없으면 아래 필드 수 단언이 오늘의 픽스처에서 우연히 통과한다.
+printf '%s\n' "$LD/lane with space" > "$FR/cc-cmds/run/R-spacey/config-dir"
 
 probe_out=$(XDG_STATE_HOME="$FR" bash "$PROBE" 2>/dev/null)
 probe_rc=$?
 check "T9 프로브 정상 종료" "$probe_rc" "0"
-check "T9 런 5개에 다섯 줄" "$(printf '%s\n' "$probe_out" | grep -c .)" "5"
+check "T9 런 6개에 여섯 줄" "$(printf '%s\n' "$probe_out" | grep -c .)" "6"
+# 추출도 탭으로 한다. 첫 공백까지를 떼어 내던 이전 형태는 상태 토큰의 공백에서도
+# 레인 경로의 공백에서도 성립하지 않았고, 기대값을 서로 다른 필드 수로 나란히
+# 박아 둔 채 한 번도 비교하지 않았다.
+TAB=$(printf '\t')
+probe_field() {
+  # probe_field <run-id> — 그 런의 줄에서 run-id 를 뗀 나머지를 탭 그대로 낸다.
+  printf '%s\n' "$probe_out" | awk -F'\t' -v r="$1" '$1==r{print $2 FS $3 FS $4}'
+}
 check "T9 살아 있는 런은 도는중 / 스테이지 1 / 기록된 레인" \
-  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-live //p')" "도는중 1 $LD/runrec"
+  "$(probe_field R-live)" "도는중${TAB}1${TAB}$LD/runrec"
 check "T9 죽은 pid 의 런은 아님 / 0 / 미기록" \
-  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-dead //p')" "아님 0 (미기록)"
+  "$(probe_field R-dead)" "아님${TAB}0${TAB}(미기록)"
 check "T10 인식되지 않는 형상은 판정 불가이고 개수를 세지 않는다" \
-  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-odd //p')" "판정 불가 ? (미기록)"
+  "$(probe_field R-odd)" "판정 불가${TAB}?${TAB}(미기록)"
 check "T10 형제 지문이 없는 살아 있는 pid 는 판정 불가다 (아님이 아니다)" \
-  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-spawning //p')" "판정 불가 ? (미기록)"
+  "$(probe_field R-spawning)" "판정 불가${TAB}?${TAB}(미기록)"
 check "T10 대조군: 같은 모양이라도 워처 pid 는 아님 0 이다" \
-  "$(printf '%s\n' "$probe_out" | sed -n 's/^R-watcher //p')" "아님 0 (미기록)"
+  "$(probe_field R-watcher)" "아님${TAB}0${TAB}(미기록)"
+check "T9 공백을 담은 레인 경로도 마지막 한 필드로 남는다" \
+  "$(probe_field R-spacey)" "아님${TAB}0${TAB}$LD/lane with space"
+# 그리고 철자와 독립적으로 필드 수 자체를 잰다. 기본 FS 로 재면 공백을 담은 레인
+# 에서 이 단언 자신이 거짓 실패를 낸다 — 계약이 탭이므로 재는 것도 탭이어야 한다.
+check "프로브의 모든 줄이 네 필드다" \
+  "$(printf '%s\n' "$probe_out" | awk -F'\t' 'NF!=4' | grep -c . || true)" "0"
+
+# 부분 설치본: 의존 소싱 실패는 「런 없음」이 아니라 열거 실패다. 프로브는 언제나
+# 완전한 설치본 옆에서만 돌았다. 소싱 실패를 확인하지 않으면 `cc_live_stages` 가
+# 미정의인 채로 센서스에 도달해 빈 문자열을 내고, 그 값이 `아님 0` 으로 발행되며
+# 종료 코드는 0 으로 나간다 — 살아 있는 런 위에서 스왑을 인가하는 답이다. 위
+# 픽스처가 아직 살아 있는 동안 재야 그 답이 실제로 위험한 답인지가 드러난다.
+PP="$WORK/probe-partial"; mkdir -p "$PP"
+cp "$PROBE" "$script_dir/run.sh" "$PP/" 2>/dev/null
+part_out=$(XDG_STATE_HOME="$FR" bash "$PP/lane-probe.sh" 2>/dev/null); part_rc=$?
+check "liveness.sh 가 없는 설치본은 열거 실패로 끝난다" "$part_rc" "3"
+check "그리고 아무것도 출력하지 않는다 (살아 있는 런을 아님 0 으로 부르지 않는다)" \
+  "$part_out" ""
+PP2="$WORK/probe-partial2"; mkdir -p "$PP2"
+cp "$PROBE" "$script_dir/liveness.sh" "$PP2/" 2>/dev/null
+part2_out=$(XDG_STATE_HOME="$FR" bash "$PP2/lane-probe.sh" 2>/dev/null); part2_rc=$?
+check "run.sh 가 없는 설치본도 같은 형태로 열거 실패다" "$part2_rc" "3"
+check "그리고 아무것도 출력하지 않는다" "$part2_out" ""
+
 kill "$LIVE_PID" 2>/dev/null
 wait "$LIVE_PID" 2>/dev/null
 
@@ -2369,6 +2406,38 @@ check "XDG 가 없으면 홈 아래 기본 자리를 본다" \
      | env -u XDG_CONFIG_HOME HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
        bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
      | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+
+# --- 매달린 말단 심링크: 아이노드 계층이 통째로 죽는 자리 --------------------
+# 말단이 심링크이고 표적이 실재하지 않으면 BSD 의 `stat -L` 은 lstat 판독으로
+# 떨어져 링크 자신의 값을 rc=0 으로 내고 GNU 는 줄을 내지 않는다 — 어느 쪽이든
+# 파일 앵커가 전부 죽는다. 링크가 레인 밖에 앉으면 조상 사슬이 겹치지 않아
+# 디렉터리 앵커도 걸리지 않고, 철자는 링크 자신의 것이라 어휘 팔도 걸리지 않는다.
+# 그 상태로 허용하면 커널이 링크를 따라가 강제 표면 안에 파일을 만든다. 아래 표적
+# 넷은 그렇게 열려 있던 표면 그대로다.
+DL="$WORK/dangling"; mkdir -p "$DL"
+ln -sfn "$HH/.claude-y/settings.local.json"     "$DL/sib-local" 2>/dev/null
+ln -sfn "$HH/.claude-x/settings.local.json"     "$DL/own-local" 2>/dev/null
+ln -sfn "$HH/.claude-nonexistent/settings.json" "$DL/newlane"   2>/dev/null
+ln -sfn "$HH/xdg/cc-cmds/absent.json"           "$DL/xdg-absent" 2>/dev/null
+if [ -L "$DL/sib-local" ] && [ ! -e "$DL/sib-local" ]; then
+  check "매달린 심링크: 형제 레인의 settings.local.json 을 향해도 거부" \
+    "$(hook_decide "$DL/sib-local")" "deny"
+  check "매달린 심링크: 살아 있는 레인의 settings.local.json 을 향해도 거부" \
+    "$(hook_decide "$DL/own-local")" "deny"
+  check "매달린 심링크: 아직 없는 형제 레인의 settings.json 을 향해도 거부" \
+    "$(hook_decide "$DL/newlane")" "deny"
+  check "매달린 심링크: 운영자 스코프 안을 향해도 거부" \
+    "$(hook_decide_xdg "$HH/xdg" "$DL/xdg-absent")" "deny"
+  # 대조군. 표적이 실재하는 같은 자리의 링크는 오늘도 거부되며 그 답은 새 팔이
+  # 아니라 파일 앵커가 낸다 — 이것이 없으면 위 넷의 통과가 「새 팔이 답했다」와
+  # 구별되지 않는다.
+  : > "$HH/.claude-y/settings.local.json"
+  ln -sfn "$HH/.claude-y/settings.local.json" "$DL/sib-local-live" 2>/dev/null
+  check "대조군: 표적이 실재하는 같은 링크도 거부 (파일 앵커가 답한다)" \
+    "$(hook_decide "$DL/sib-local-live")" "deny"
+else
+  printf 'NOTE: 매달린 심링크를 만들지 못해 레인 표면 격자를 건너뛴다\n'
+fi
 
 # --- T17: 등재된 예외가 자체 점검에 있다 ------------------------------------
 env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-check > "$SC_OUT" 2>&1

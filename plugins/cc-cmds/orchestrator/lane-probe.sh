@@ -2,9 +2,17 @@
 #
 # lane-probe.sh — which lane is the pipeline spending, and is anything running?
 #
-# One line per run directory:
+# One line per run directory, TAB-separated:
 #
-#   <run-id> <상태> <살아있는 스테이지 수> <config dir>
+#   <run-id>\t<상태>\t<살아있는 스테이지 수>\t<config dir>
+#
+# THE SEPARATOR IS A TAB AND THAT IS PART OF THE CONTRACT. The last field is a
+# filesystem path and the status token contains a space, so neither is bounded
+# by whitespace; a consumer splitting on spaces reads `판정` as the status and a
+# truncated path as the lane. Split on TAB — `cut -f4`, `awk -F'\t'`, or
+# `IFS=$'\t' read`. No field may contain a tab: the run id is a directory name
+# this program creates the shape of, the status is one of three literals, the
+# count is digits or `?`, and a lane path holding a tab is refused upstream.
 #
 # WHY THIS IS A SEPARATE PROGRAM. Its consumer is outside this repository — a
 # swap scheduler has to know whether an unattended run is live before it moves a
@@ -43,6 +51,9 @@
 set -uo pipefail
 
 PROBE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+# `cd` 가 실패하면 빈 문자열이 되고, 그러면 아래 두 소싱이 루트에서 엉뚱한 파일을
+# 찾거나 조용히 실패한다. 열거 실패는 열거 실패로 나가야 한다.
+[ -n "$PROBE_DIR" ] || exit 3
 
 # The predicates are SOURCED, never re-implemented. `cc_stage_is_live` is the
 # one place that knows a live stage is a live pid AND a matching start-time
@@ -53,10 +64,21 @@ PROBE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # `CC_ORCH_SOURCE_ONLY=1` is the driver's own seam for loading definitions
 # without running a pipeline. Sourcing imports `set -e`, which this program must
 # not inherit — every branch below runs a command expected to fail.
+# 소싱 실패를 확인하지 않으면 `cc_live_stages` 가 미정의인 채로 센서스에 도달해
+# 빈 문자열을 내고, 그 값이 `아님 0` 으로 인쇄되며 종료 코드는 0 으로 나간다 —
+# 이 파일 헤더가 종료 코드만이 열거 실패와 런 없음을 가른다고 선언한 그 계약이
+# 그 자리에서 깨진다. `set -e` 는 위 사유로 걸 수 없으므로 각각을 직접 확인한다.
+# `|| exit 3` 이 붙은 소싱은 복합 명령이라, 소싱이 들여오는 `set -e` 아래에서도
+# 스크립트를 중단시키지 않는다.
 # shellcheck disable=SC1091
-. "$PROBE_DIR/liveness.sh"
-CC_ORCH_SOURCE_ONLY=1 . "$PROBE_DIR/run.sh"
+[ -r "$PROBE_DIR/liveness.sh" ] || exit 3
+. "$PROBE_DIR/liveness.sh" || exit 3
+[ -r "$PROBE_DIR/run.sh" ] || exit 3
+CC_ORCH_SOURCE_ONLY=1 . "$PROBE_DIR/run.sh" || exit 3
 set +e
+# 소싱이 rc=0 으로 성공하고도 정의가 없는 경우(잘린 파일, 이름 변경)까지 덮는다.
+# 이 프로그램이 기대는 술어 둘을 이름으로 못박아 두는 것이 이 줄의 요점이다.
+command -v cc_live_stages >/dev/null && command -v resolve_account >/dev/null || exit 3
 
 RUN_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
 
@@ -127,15 +149,23 @@ probe_runs() {
     rid=${d##*/}
     if probe_shape_ok "$d"; then
       live=$(cc_live_stages "$d")
-      if [ "${live:-0}" -gt 0 ] 2>/dev/null; then
-        printf '%s 도는중 %s %s\n' "$rid" "$live" "$(probe_config_dir "$d")"
-      else
-        printf '%s 아님 %s %s\n' "$rid" "${live:-0}" "$(probe_config_dir "$d")"
-      fi
+      case "${live:-}" in
+        ''|*[!0-9]*)
+          # 센서스가 수치를 내지 않았다. 0 으로 메우면 그 값이 `아님` 으로
+          # 발행되고, 이 파일 헤더가 스왑을 인가하는 답이라고 부른 것이 바로 그
+          # 값이다. 측정이 없었으므로 개수는 `?` 다.
+          printf '%s\t판정 불가\t?\t%s\n' "$rid" "$(probe_config_dir "$d")" ;;
+        *)
+          if [ "$live" -gt 0 ]; then
+            printf '%s\t도는중\t%s\t%s\n' "$rid" "$live" "$(probe_config_dir "$d")"
+          else
+            printf '%s\t아님\t%s\t%s\n' "$rid" "$live" "$(probe_config_dir "$d")"
+          fi ;;
+      esac
     else
       # The count is `?` and not `0`. A number here would be read as a
       # measurement, and there was no measurement.
-      printf '%s 판정 불가 ? %s\n' "$rid" "$(probe_config_dir "$d")"
+      printf '%s\t판정 불가\t?\t%s\n' "$rid" "$(probe_config_dir "$d")"
     fi
   done
   return 0
