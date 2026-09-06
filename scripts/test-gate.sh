@@ -50,6 +50,24 @@ set -uo pipefail
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 
+# AND THE PIPELINE GROUP IS CLEARED FOR THE WHOLE PROCESS, for the same reason
+# and with the same shape. This suite is itself run from inside pipeline stages,
+# which is where these variables come from, and the gate branches on several of
+# them — `CC_PIPELINE_STAGE_ID` decides whether a call is the router's or a
+# stage's, and that decision now reaches the stagnation bound as well as the
+# session lineage. An inherited value silently sends every assertion below down
+# the stage arm, so the suite passes or fails on who invoked it.
+#
+# The liveness section three thousand lines down already cleared the group for
+# its own assertions and wrote down why; the sections above it were left reading
+# the caller's environment. The clear belongs here, before the first gate call —
+# the local one stays where it is, since a section that sets a member and unsets
+# it again is not owed a guarantee by a line that ran once at startup.
+unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_PARENT_SESSION
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
@@ -2017,6 +2035,77 @@ else
   bad "B5 행" "런이 끝났는데 원장에 그 이유가 없다"
 fi
 unend_run
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+grant_field_set '무진전 상한' ''
+
+# --- B5 counts ROUTER JUDGEMENTS, not gate calls ----------------------------
+#
+# Every `act` and every `exec` reaches the boundary arm, and the pretool hook
+# routes a stage's Bash, Write and Edit through the gate as `exec` — while the
+# progress vector's `acts=` term excludes `결정=exec` rows graded `축2=읽기`. A
+# stage reading files through the gate therefore held the vector still, and the
+# bound fired on a healthy stage. `CC_PIPELINE_STAGE_ID` is exported to stage
+# children by the driver and to nothing else, so its presence is what tells the
+# two callers apart.
+grant_field_set '무진전 상한' '2'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+CC_PIPELINE_STAGE_ID='SD#1'
+export CC_PIPELINE_STAGE_ID
+i=0
+while [ "$i" -lt 4 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-stage" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+unset CC_PIPELINE_STAGE_ID
+if [ ! -e "$RD/stagnation-repeat" ] && [ ! -s "$RD/done" ]; then
+  ok "스테이지의 연속 읽기는 상한을 넘겨도 카운터를 만들지 않고 런을 끝내지 않는다"
+else
+  bad "B5 스테이지 호출" "스테이지 읽기 ${i}회에 카운터 '$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')' / 종단 '$(cat "$RD/done" 2>/dev/null || printf '(없음)')'"
+fi
+
+# The SAME four calls from the router end the run — the bound is not disarmed,
+# it is aimed.
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+i=0
+while [ "$i" -lt 4 ] && [ ! -s "$RD/done" ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-router" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B5"*) ok "라우터의 연속 판정이 상한에 닿으면 런이 끝난다" ;;
+  *) bad "B5 라우터 판정" "라우터 판정 ${i}회에도 런이 끝나지 않았다" ;;
+esac
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "B5 가 끝낸 뒤에는 스테이지 디스패치가 거부된다" "$rc" "3"
+unend_run
+
+# A `return 0`, NOT B1's suppression. The stage call neither reads nor writes
+# the counter, so it does not freeze it either — the router's next judgement
+# continues from where the router's last one left it.
+grant_field_set '무진전 상한' '99'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+printf '%s\n' "$(PD)" > "$RD/stagnation-digest"
+printf '%s\n' "0"     > "$RD/stagnation-repeat"
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-1" -- grep -q . "$MANIFEST"
+CC_PIPELINE_STAGE_ID='SD#2'
+export CC_PIPELINE_STAGE_ID
+i=0
+while [ "$i" -lt 3 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-mix-stage" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+unset CC_PIPELINE_STAGE_ID
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "사이에 낀 스테이지 호출은 카운터를 건드리지 않는다" "$n" "1"
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-2" -- grep -q . "$MANIFEST"
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "라우터 판정은 스테이지 호출을 건너뛰고 이어서 센다" "$n" "2"
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 grant_field_set '무진전 상한' ''
 

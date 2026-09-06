@@ -6290,7 +6290,11 @@ gate_b4_cost() {
   # answers is not a bound.
   local declared spent pct
   declared=$(manifest_field '인가' '비용 천장')
-  case "$declared" in ''|없음) return 0 ;; esac
+  # The three undeclared spellings are one vocabulary shared with the stagnation
+  # bound below — the interview writes both fields from the same template, so a
+  # value one boundary reads as "unbounded on this axis" cannot be a figure to
+  # the other.
+  case "$declared" in ''|없음|'(없음)') return 0 ;; esac
   spent=$(gate_rows 'cost' | tail -1 | tr '|' '
 ' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   [ -n "$spent" ] || return 0
@@ -6321,15 +6325,34 @@ gate_b5_stagnation_bound() {
   # everything the gate itself writes, so this counter cannot be reset by the
   # act of measuring it.
   #
-  # NO LIVE-STAGE SUPPRESSION, unlike B1. B1 suppresses because a working stage
-  # writes nothing the vector sees, and firing on it would be a false positive
-  # for a boundary whose remedy is to ask. This one ends the run, so the same
-  # suppression would hand a stage that grows without producing an unbounded
-  # licence — and that shape is exactly what the wall clock used to backstop.
-  # A stage that terminates writes rows, so a healthy run moves the vector at
-  # every stage boundary; the bound is measured in judgements, and the value
-  # that makes it safe is declared by a person at kickoff.
+  # WHAT IT COUNTS IS ROUTER JUDGEMENTS, NOT GATE CALLS, and the discriminator
+  # is the same one this file already uses to decide whose session lineage is
+  # being recorded: `CC_PIPELINE_STAGE_ID` is exported to stage children by the
+  # driver and to nothing else, so its presence is the router/stage distinction
+  # rather than a heuristic. A stage's own gate traffic returns below before the
+  # counter is read at all.
+  #
+  # Without that discriminator the bound counted the wrong thing in both
+  # directions at once. Every `act` and every `exec` reaches this evaluation —
+  # `plan`, `grade` and `snapshot` return earlier, and the pretool hook routes a
+  # stage's Bash, Write and Edit here as `exec` — while the vector's `acts=`
+  # term deliberately excludes `결정=exec` rows graded `축2=읽기`. So a stage
+  # reading files through the gate left the vector still and walked a healthy
+  # run to `상한+1` and out. Meanwhile the rotation this bound exists to stop —
+  # a segment re-dispatched around a cycle — writes a `cycle` row every pass,
+  # and that row IS a term of the vector, so the count it was meant to trip was
+  # reset before it could reach the bound.
+  #
+  # THIS IS A `return 0`, NOT B1's SUPPRESSION. B1 skips its whole evaluation
+  # whenever any stage is live, so a router judgement made during a long stage
+  # does not count. This skips only the stage's own calls: the router's
+  # judgements keep counting while a stage runs, and the counter is neither read
+  # nor written in between, so the router's next judgement continues from where
+  # its last one left it rather than resuming a frozen tally. A stage that grows
+  # without producing therefore gets no licence here — that shape is exactly
+  # what the wall clock used to backstop, and the wall clock is gone.
   local bound h prev n
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && return 0
   bound=$(manifest_field '인가' '무진전 상한')
   case "$bound" in ''|없음|'(없음)') return 0 ;; esac
   case "$bound" in *[!0-9]*)
