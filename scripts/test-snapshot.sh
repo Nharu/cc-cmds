@@ -306,6 +306,26 @@ check "종단 부류 필드가 없는 행은 진전이 아니다" "$(digest)" "$
 printf -- '- `stage-result` | 세그먼트=SN6 | 스테이지=SN6 | 관측=앞 스테이지가 종단 부류=정상 완료 로 끝났다고 적혀 있었다 | 종단 부류=크래시\n' >> "$LEDGER"
 check "다른 필드에 박힌 리터럴은 진전이 아니다 (부분 문자열 매치가 여기서 깨진다)" "$(digest)" "$sn3"
 
+# THE SHAPE EVERY REAL ROW HAS, and every row above is the other one. The field
+# read cuts the value at the next ` | ` when one follows and takes the rest of
+# the line when none does — two branches — and the writer appends a `시각=` field
+# after the class on every row it emits, so the ledger only ever contains the
+# first shape while the rows above only ever exercise the second. An off-by-one
+# in the boundary arithmetic of the branch that real rows take would leave this
+# whole counter dead and every assertion above still green.
+printf -- '- `stage-result` | 세그먼트=SN7 | 스테이지=SN7 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
+sn4=$(digest)
+if [ "$sn4" = "$sn3" ]; then
+  bad "뒤에 필드가 붙은 정상 종단" "실제 원장 행의 모양(종단 부류 뒤에 시각 필드)이 들어왔는데 해시가 그대로다 — 이 카운터는 실제 런에서 죽어 있다"
+else
+  ok "종단 부류 뒤에 필드가 붙은 정상 완료가 움직인다 (실제 원장 행의 모양)"
+fi
+
+# The same shape on the refusing side. Without it the assertion above is also
+# satisfied by a branch that counts whatever it finds once a field follows.
+printf -- '- `stage-result` | 세그먼트=SN8 | 스테이지=SN8 | 종류=implement | 종료 코드=1 | 종단 부류=크래시 | 시각=2026-01-01T00:00:01Z\n' >> "$LEDGER"
+check "뒤에 필드가 붙은 크래시는 진전이 아니다" "$(digest)" "$sn4"
+
 # ---------------------------------------------------------------------------
 # 5. Byte-identity of the rendered snapshot
 # ---------------------------------------------------------------------------

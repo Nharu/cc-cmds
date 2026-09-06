@@ -264,6 +264,21 @@ snapshot  →  decide  →  gate call  →  (repeat)
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
 
+**The keys of that object are the contract, and the render table is not a substitute for them.** The router is told to read the JSON every turn and is judged on doing so, so a key that exists in the output and nowhere in this document is a key the router has no reason to trust or even to look for. Everything the object carries:
+
+| Key | What it carries |
+| --- | --- |
+| `run_id`, `goal`, `goal_digest` | the run's identity and the frozen termination point |
+| `targets[]` | `alias`, `slug`, `cutpoint`, `home` — one object per target |
+| `obligations[]`, `obligations_total` | open obligations; the array is capped and the total is not, so compare them before concluding the list is whole |
+| `pending_approvals[]` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases |
+| `unmet_conditions[]` | the numbered termination conditions that do NOT hold, as rendered lines. **Capped**, and the lines that grow with the night take the front of it |
+| `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
+| `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most ten, and never truncated. This is the one to read when the two above disagree |
+| `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
+| `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
+| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest` |
+
 **THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
 
 That includes the moments that feel like natural checkpoints: a stage just finished, a review came back with findings, the next step is large or expensive, the previous act failed. None of those is a question. **A router that asks at one of them stops the run**, and the stop is invisible — the ledger is well-formed, the last row is a normal one, nothing refused anything. It is not even distinguishable from a run waiting on an approval, because *that* state leaves a `승인` row and this one leaves nothing at all. Unattended, nobody answers and the night is spent.
