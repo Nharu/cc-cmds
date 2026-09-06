@@ -25,6 +25,22 @@
 # and a lint that reports it is switched off by its reader, taking the bypass
 # detection with it. The two fail in opposite directions, so no single broken
 # extraction leaves both green.
+#
+# THE TWO PATHS THROUGH THE LINT NEED SEPARATE FIXTURES, and for a while only
+# one of them had any. A value that reaches a terminator is compared whole; a
+# value that runs to the end of the line is decided by its tokens, and those are
+# different code. `FAIL-2-multi-token` ends at a field separator, so it exercises
+# the first path only — disabling the token path's multi-token arm entirely left
+# this suite green. `FAIL-7-bare-multi-token` is the same shape written without a
+# terminator and is the only fixture that reaches that arm.
+#
+# `FAIL-8-bare-out-of-vocab-with-path` and `OK-4-sentinel-prose` are the two
+# directions of one root: which string the metasyntax shapes are matched
+# against. Asked about the whole unterminated remainder, a slash anywhere in a
+# sentence skipped the line and its out-of-vocabulary head went uncompared,
+# while a sentence beginning with the ledger sentinel was reported as a
+# vocabulary violation. They fail in opposite directions for the same reason the
+# pair above does.
 
 set -euo pipefail
 

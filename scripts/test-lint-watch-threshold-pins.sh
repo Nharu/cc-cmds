@@ -14,6 +14,12 @@
 # that goes on stating the old number. That divergence is invisible until a
 # night run behaves unlike its own contract, and every other check in the repo
 # stays green through it.
+#
+# `FAIL-4-second-mention-drift` covers the other half of the same failure. Its
+# launch line agrees with the script, so the rules anchored on that line pass,
+# and only the paragraph restating the four thresholds has gone stale — the
+# paragraph that carries no script name and is therefore invisible to a scan
+# that locates the launch line by the script it invokes.
 
 set -euo pipefail
 

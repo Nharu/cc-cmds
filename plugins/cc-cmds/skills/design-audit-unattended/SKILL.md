@@ -34,7 +34,7 @@ This is the unattended arm of `/cc-cmds:design-audit`. It is a **separate file**
 
 `references/` is **shared with the base skill, not copied** — every reference path below points into `../design-audit/references/`. One file in that tree does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
 
-**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement that cannot be dispositioned from the reports alone halts instead of asking.
+**Inherited question point** — `03-adjustment-pass.md`: its adjustment pass surfaces a composed requirement with at most one question. CFI-U0 resolves that terminus to `park` — the synthesis question of CFI-3b is asked and answered **in writing** inside the pass, and a composed requirement halts, unconditionally. The disposition carries no "unless the reports settle it" clause because the shared file states the rule without one: composing findings into a new requirement changes what the run is trying to do, which is `등급 2`, and this arm's own per-grade table gives `등급 2` exactly one disposition. There is also nowhere to put the decision a narrower reading would license — the `자율 승인` row is prescribed for `등급 1`, this path emits no judgment marker, and the disclosure block is fixed-arity.
 
 ## Input
 

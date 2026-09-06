@@ -17,11 +17,24 @@
 #   1  watch.sh declares exactly one default for each of the four     [fail]
 #   2  the launch line carries each of the four flags exactly once    [fail]
 #   3  each pinned value equals the declared default                  [fail]
+#   4  every other mention of a flag in the document agrees too       [fail]
 #
 # Rule 3 derives the expected value from the script instead of pinning a literal
 # here, so this check cannot drift away from the value it protects. Rule 1 is not
 # bookkeeping either: a second assignment of the same variable is drift with no
 # detector, because whichever runs last wins while the document pins the other.
+#
+# Rule 4 exists because the launch line is not the only place the document writes
+# these numbers. The paragraph under it restates all four independently, and that
+# paragraph is where the sentence quoted at the top of this header lives — the
+# one asserting they are the script's own defaults. It names no script, so a scan
+# anchored on `watch.sh` never reaches it. Measured: moving a default and
+# repairing only the launch line printed OK while that sentence went on pinning
+# the old number and claiming it was the default, and repairing only that
+# sentence produced a failure naming the launch line, which was not the stale
+# text. Rules 2 and 3 stay anchored on the launch line because that line is the
+# configuration a run actually consumes and has to be identifiable as exactly
+# one; rule 4 is the wider sweep no single line can stand in for.
 #
 # Usage:
 #   bash scripts/lint-watch-threshold-pins.sh
@@ -70,6 +83,7 @@ PINS=(
 
 fail=0
 checked=0
+mentions_total=0
 
 # The launch line, located by the two things that identify it — the script name
 # and the argument every invocation is required to carry.
@@ -129,6 +143,29 @@ for pin in "${PINS[@]}"; do
     echo "       둘이 갈라지면 '네 임계 전부가 스크립트 기본값' 이라는 진술이 거짓이 된다" >&2
     fail=1
   fi
+
+  # --- Rule 4: every mention in the document, not only the launch line -----
+  # The whole file rather than `$launch`, because the second place these numbers
+  # are written carries no script name and is therefore invisible to the scan
+  # that locates the launch line. Counted rather than short-circuited for the
+  # same SIGPIPE reason as above.
+  mentions=$(LC_ALL=C grep -oE -- "$flag [0-9]+" "$CONSUMER" || true)
+  nment=0
+  nstale=0
+  if [[ -n "$mentions" ]]; then
+    nment=$(printf '%s\n' "$mentions" | grep -c '' || true)
+    stale=$(printf '%s\n' "$mentions" | sed -E "s/^$flag //" \
+            | LC_ALL=C grep -vxF -- "$want" || true)
+    if [[ -n "$stale" ]]; then
+      nstale=$(printf '%s\n' "$stale" | grep -c '' || true)
+    fi
+  fi
+  mentions_total=$((mentions_total + nment))
+  if [[ "$nstale" != "0" ]]; then
+    echo "FAIL: $flag — 문서 안 기재 ${nment}건 중 ${nstale}건이 watch.sh 의 $var 기본값 $want 과 다르다" >&2
+    echo "       기동 줄 밖의 기재도 같은 값을 못 박아야 한다 — '네 임계 전부가 스크립트 기본값' 이라고 단언하는 문장이 그 기재다" >&2
+    fail=1
+  fi
 done
 
 if [[ "$fail" != "0" ]]; then
@@ -136,5 +173,5 @@ if [[ "$fail" != "0" ]]; then
   exit 1
 fi
 
-echo "OK:   watch threshold pins — 임계 ${checked}개가 watch.sh 기본값과 축자로 일치"
+echo "OK:   watch threshold pins — 임계 ${checked}개, 문서 안 기재 ${mentions_total}건이 watch.sh 기본값과 축자로 일치"
 exit 0

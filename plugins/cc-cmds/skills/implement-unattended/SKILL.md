@@ -30,7 +30,7 @@ This is the unattended arm of `/cc-cmds:implement`. It exists as a **separate fi
 
 `references/` is **shared with the base skill, not copied** — every reference path below points into `../implement/references/`. That tree is written for the interactive arm and one file in it does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
 
-**Inherited question point** — `visual-fidelity-gate.md`: its Tier C fallback routes to a question when neither recipe source is available. This arm never arrives there — a design document carrying the visual marker halts before implementation (CFI-U5) — so the disposition is a halt, never an improvised answer.
+**Inherited question point** — `visual-fidelity-gate.md`: its Tier C fallback routes to a question when neither headless renderer is available — the system Chrome/Chromium binary of Tier A and the `npx playwright screenshot` fallback of Tier B. A recipe is a different thing in that file and is one of the options the Tier C question offers, not the input that went missing. This arm never arrives there — a design document carrying the visual marker halts before implementation (CFI-U5) — so the disposition is a halt, never an improvised answer.
 
 ## Halt record — the disposition for every point that would have asked
 
