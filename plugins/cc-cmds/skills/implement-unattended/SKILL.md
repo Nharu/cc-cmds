@@ -28,7 +28,9 @@ This is the unattended arm of `/cc-cmds:implement`. It exists as a **separate fi
 
 **What the split does not buy.** It removes the *instruction* to ask; it does not remove the model's ability to ask in prose and answer itself. That residual is real, is not closed here, and its compensating control is the run ledger's enumeration of every autonomous decision — audited in the morning, not gated at runtime.
 
-`references/` is **shared with the base skill, not copied** — every reference path below points into `../implement/references/`. Nothing under that directory carries a human-question surface, which is why sharing it is safe.
+`references/` is **shared with the base skill, not copied** — every reference path below points into `../implement/references/`. That tree is written for the interactive arm and one file in it does route to a question, so what makes sharing safe is a disposition, not an absence. The disposition is stated here, in the form `scripts/lint-unattended-surfaces.sh` reads:
+
+**Inherited question point** — `visual-fidelity-gate.md`: its Tier C fallback routes to a question when neither recipe source is available. This arm never arrives there — a design document carrying the visual marker halts before implementation (CFI-U5) — so the disposition is a halt, never an improvised answer.
 
 ## Halt record — the disposition for every point that would have asked
 

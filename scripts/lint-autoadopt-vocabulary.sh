@@ -31,6 +31,28 @@
 # sentinel (`판단 부류=-`) — and everything else made of Hangul, ASCII letters,
 # digits, hyphens AND SPACES is a value claim.
 #
+# WHERE THE VALUE ENDS is the other half of that judgment, and leaving it
+# unanswered made this rule report prose. A field ends at a terminator: a ledger
+# row separates fields with `|`, an argv quotes its value, a comment wraps it in
+# backticks, a capture group closes with `)`. A sentence reaches none of them —
+# it runs to the end of the line — so a line reading
+# `판단 부류=감사-발견 인 경우에는 사람에게 묻지 않는다` was read as one long
+# class name and reported as out of vocabulary. A lint that reports a sentence
+# as a vocabulary violation gets switched off at its first false positive, and
+# the multi-token detection this rule exists for goes off with it.
+#
+# So a capture that REACHED a terminator is a field and is compared whole. A
+# capture that ran to the end of the line is judged by its TOKENS instead,
+# because that is what separates the two shapes able to appear there:
+#
+#   - every token names a class and there is more than one — the multi-token
+#     bypass, whose whole trick is that its parts are all real class names
+#     sitting next to each other, so it FAILS;
+#   - the first token names a class and the rest are ordinary words — prose
+#     about a class, and it is skipped;
+#   - the first token names no class — an out-of-vocabulary claim written bare,
+#     so it FAILS.
+#
 # The sentinel is a shape and not an exception. Every field of a ledger row that
 # has no value carries `-`, so a row written for a judgment whose class never
 # arrived spells it that way too; reading that as a claim about a class made the
@@ -104,6 +126,13 @@ for t in $forbidden; do
 done
 
 # --- Rule 2: every literal occurrence names one of the eight ---------------
+
+# The characters that END a field. A ledger row separates fields with `|`, an
+# argv quotes its value, a comment wraps it in backticks, and a parser's capture
+# group closes with `)`. A value that reaches none of them ran to the end of the
+# line, which is what a sentence does and a field does not.
+VALUE_TERMINATORS="\"'\`|)"
+
 files=$(find "$scan_root/plugins" "$scan_root/scripts" -type f 2>/dev/null | sort || true)
 scanned=0
 hits=0
@@ -127,9 +156,17 @@ while IFS= read -r f; do
     [[ -n "$n" ]] || continue
     line="${n#*:}"
     lno="${n%%:*}"
-    v=$(printf '%s' "$line" \
-        | sed -n 's/.*판단 부류=\([^"'"'"'`|)]*\).*/\1/p' \
-        | sed 's/[[:space:]]*$//')
+    # THE REMAINDER IS KEPT, not only the capture. Whether the value ended at a
+    # terminator or ran off the end of the line is the one signal on the line
+    # that tells a field from a sentence, and capturing alone throws it away.
+    rest=$(printf '%s' "$line" | sed -n 's/.*판단 부류=//p')
+    [[ -n "$rest" ]] || continue
+    field=${rest%%[$VALUE_TERMINATORS]*}
+    terminated=1
+    if [[ "$field" == "$rest" ]]; then
+      terminated=0
+    fi
+    v=$(printf '%s' "$field" | sed 's/[[:space:]]*$//')
     [[ -n "$v" ]] || continue
     # Metasyntax, not a claim about a value. Recognised by SHAPE rather than by
     # "contains only Hangul, letters, digits and hyphens", because that older
@@ -156,11 +193,38 @@ while IFS= read -r f; do
     # suite caught it only on the Linux leg — the macOS run was green with the
     # same source, which is the shape of a portability bug that survives local
     # verification.
-    hits=$((hits + 1))
-    if ! in_vocab "$v"; then
-      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
+    if [[ "$terminated" = "1" ]]; then
+      hits=$((hits + 1))
+      if ! in_vocab "$v"; then
+        echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
+        echo "       허용: $classes" >&2
+        fail=1
+      fi
+      continue
+    fi
+    # Unterminated — decided by tokens. `set -f` around the split is required:
+    # the words being split are arbitrary document text, and an unquoted
+    # expansion would otherwise let a `*` in a sentence expand to filenames.
+    ntok=0; nvocab=0; first=""
+    set -f
+    for t in $v; do
+      ntok=$((ntok + 1))
+      if [[ -z "$first" ]]; then first="$t"; fi
+      if in_vocab "$t"; then nvocab=$((nvocab + 1)); fi
+    done
+    set +f
+    if [[ "$ntok" -gt 1 && "$nvocab" -eq "$ntok" ]]; then
+      hits=$((hits + 1))
+      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다 (부류 이름 ${ntok}개를 이어 붙인 값이다)" >&2
       echo "       허용: $classes" >&2
       fail=1
+    elif ! in_vocab "$first"; then
+      hits=$((hits + 1))
+      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$first' 가 어휘 밖이다" >&2
+      echo "       허용: $classes" >&2
+      fail=1
+    elif [[ "$ntok" -eq 1 ]]; then
+      hits=$((hits + 1))
     fi
   done <<EOF
 $(grep -nF '판단 부류=' "$f" 2>/dev/null || true)

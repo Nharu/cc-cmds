@@ -1,0 +1,4 @@
+No watch.sh under orchestrator/, so the defaults' source of truth is absent and
+the whole check is a silent skip. This is the incremental-rollout posture the
+lint states in its header, asserted here so a future rewrite cannot turn an
+absent SOT into a failing build.
