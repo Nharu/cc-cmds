@@ -73,6 +73,24 @@ d=$(run_init "$RUNDIR" '' review-alpha)
 check "실행 디렉터리가 있으면 그 아래에 만든다" "$(dirname "$d")" "$RUNDIR"
 
 # ---------------------------------------------------------------------------
+# A root with a trailing slash — the ORDINARY interactive case, not an edge one
+#
+# macOS exports a `TMPDIR` that ends in `/`, so an unnormalized join produces a
+# doubled separator in the very path the caller records verbatim as `scratchDir`
+# and the cleanup procedure later hands to a path-guarded `rm -rf`. The earlier
+# fixtures could not see this: they set roots without a trailing slash, and the
+# root assertions compare `dirname` output, which folds `//` away.
+# ---------------------------------------------------------------------------
+#
+# Asserted on the JOIN and not on the whole string: this suite's own `$WORK`
+# comes from `mktemp` under the real `TMPDIR`, so it already carries a `//` of
+# its own, and a bare "no `//` anywhere" test would fail on the harness rather
+# than on the script.
+d=$(run_init "$RUNDIR/" '' review-alpha)
+check "후행 슬래시 루트가 이중 구분자를 남기지 않는다" "$d" "$RUNDIR/$(basename "$d")"
+check "후행 슬래시가 있어도 루트는 그대로다" "$(dirname "$d")" "$RUNDIR"
+
+# ---------------------------------------------------------------------------
 # stdout is exactly the path — nothing else may ride on it
 # ---------------------------------------------------------------------------
 out=$(run_init "$RUNDIR" 'SB-1#2' review-alpha)

@@ -1787,20 +1787,59 @@ graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' 
 graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
   -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
 
-# An ungraded name that sits beside this gate is a VERSION SKEW, not an unknown
-# tool, and the refusal has to say which. `watch.sh` is used because it really
-# does live next to the gate and really has no grading row, so the branch is
-# exercised against the shipped layout rather than a fixture.
+# An ungraded name that this plugin SHIPS is a VERSION SKEW, not an unknown
+# tool, and the refusal has to say which.
+#
+# THE FIXTURE IS A SCRIPT THIS GATE DOES NOT HAVE, and that is the whole point.
+# A first version of the check asked whether a file of the same basename sat
+# beside the gate, which cannot fire in the case it was written for — the script
+# and its grading row ship in one commit, so a copy missing the row is missing
+# the file too. The fixture below reproduces the real shape: the CALLER's tree
+# has the script, this gate has neither the row nor the file.
+SKEWDIR="$WORK/newer-tree/orchestrator"
+mkdir -p "$SKEWDIR"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SKEWDIR/cc-not-yet-graded.sh"
+chmod +x "$SKEWDIR/cc-not-yet-graded.sh"
+HINT='이 플러그인이 싣는 오케스트레이터 스크립트'
+
+gate grade --manifest "$MANIFEST" -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" ;;
+  *) bad "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" "got '$msg'" ;;
+esac
+
+# THE ACTING PATH, NOT JUST `grade`. A caller hits this skew while declaring a
+# surface, and the two acting call sites reach the helper through a different
+# branch than the grade verb does. Asserting only on `grade` left both of them
+# uncovered.
+gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+  --surface 트리밖쓰기 -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "선언과 함께 부딪혀도 같은 안내가 나온다" ;;
+  *) bad "선언과 함께 부딪혀도 같은 안내가 나온다" "got '$msg'" ;;
+esac
+
+# `watch.sh` really does live beside the gate and really has no grading row, so
+# it exercises the bare-name fallback against the shipped layout.
 gate grade --manifest "$MANIFEST" -- watch.sh --run x
 case "$msg" in
-  *'이 게이트 자신의 디렉터리에 있는 스크립트'*) ok "게이트 옆 스크립트의 미상은 버전 어긋남으로 안내된다" ;;
-  *) bad "게이트 옆 스크립트의 미상은 버전 어긋남으로 안내된다" "got '$msg'" ;;
+  *"$HINT"*) ok "경로 없는 맨 이름은 게이트 이웃으로 잡는다" ;;
+  *) bad "경로 없는 맨 이름은 게이트 이웃으로 잡는다" "got '$msg'" ;;
+esac
+
+# A real script that is NOT under an `orchestrator/` directory must not collect
+# the hint — the advisory is about this plugin's own tools, and attaching it to
+# any unknown `.sh` would make it noise.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/some-project-script.sh"
+gate grade --manifest "$MANIFEST" -- "$WORK/some-project-script.sh" --x
+case "$msg" in
+  *"$HINT"*) bad "오케스트레이터 밖의 스크립트에는 붙이지 않는다" "got '$msg'" ;;
+  *) ok "오케스트레이터 밖의 스크립트에는 붙이지 않는다" ;;
 esac
 gate grade --manifest "$MANIFEST" -- not-a-sibling-script.sh --run x
 case "$msg" in
-  *'이 게이트 자신의 디렉터리에 있는 스크립트'*)
-    bad "옆에 없는 이름에는 그 안내를 붙이지 않는다" "got '$msg'" ;;
-  *) ok "옆에 없는 이름에는 그 안내를 붙이지 않는다" ;;
+  *"$HINT"*) bad "존재하지 않는 이름에는 붙이지 않는다" "got '$msg'" ;;
+  *) ok "존재하지 않는 이름에는 붙이지 않는다" ;;
 esac
 
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true

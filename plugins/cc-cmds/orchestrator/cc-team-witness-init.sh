@@ -22,8 +22,7 @@
 # the out-of-tree one, and the gate compares the declared surface against the
 # graded one by strict string equality. An honest declaration is refused
 # identically to a dishonest one, leaving the caller a choice between declaring
-# an effect that does not happen and not running at all. Measured on one review
-# stage: eight forced false declarations, seven from a single member.
+# an effect that does not happen and not running at all.
 #
 # A script has a name of its own, so it takes a grade of its own, and the row
 # the gate carries for it says what this actually does. The four statements stop
@@ -72,7 +71,16 @@ fi
 # narrower one, so both halves of the name are normalized the same way.
 slug=$(printf '%s' "$slug" | tr -c 'A-Za-z0-9._-' '-')
 
+# The trailing slash is stripped because the printed path is not just displayed
+# — the caller records it verbatim as `scratchDir`, and the cleanup procedure
+# feeds that recorded string to a path-guarded `rm -rf`. macOS exports a
+# `TMPDIR` that ends in a slash, so the doubled separator is the ordinary
+# interactive path rather than an edge case, and an implementer who normalizes
+# it later is normalizing the input of a destructive command — which is the one
+# branch that procedure forbids. Normalize once, here, where it is only a
+# string.
 WITNESS_ROOT="${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}"
+WITNESS_ROOT="${WITNESS_ROOT%/}"
 STAGE_TAG=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-}" | tr -c 'A-Za-z0-9._-' '-')
 WITNESS_DIR=$(mktemp -d "${WITNESS_ROOT}/cc-team-witness-${slug}${STAGE_TAG:+.${STAGE_TAG}}.XXXXXX")
 

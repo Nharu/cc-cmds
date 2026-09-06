@@ -339,9 +339,9 @@ surface_of_openssl() {
   esac
 }
 
-gate_sibling_script_hint() {
-  # gate_sibling_script_hint <argv0> — one extra warn line when an ungraded
-  # argv0 names a script that sits BESIDE this gate.
+gate_orchestrator_script_hint() {
+  # gate_orchestrator_script_hint <argv0> — one extra warn line when an ungraded
+  # argv0 names a script this plugin SHIPS.
   #
   # `등급 미상` is the table's answer for every name it does not carry, so two
   # very different situations arrive wearing the same string: a tool nobody has
@@ -359,16 +359,45 @@ gate_sibling_script_hint() {
   # honest fallback drops an artifact — and the refusal text said nothing that
   # would let a reader tell this apart from an unknown tool.
   #
-  # The test is deliberately weak: same basename, a file, next to this gate. It
-  # cannot be strong, because the whole condition is that this copy does not
-  # know about that script. A false positive costs one advisory sentence.
-  local b="${1##*/}"
+  # WHAT IS LOOKED AT IS THE CALLER'S PATH, NOT THIS GATE'S NEIGHBOURS. The
+  # first version of this checked whether a file of the same basename sat next
+  # to the gate, and that check can never fire in the case it was written for: a
+  # script and its grading row land in the SAME commit, so a copy without the
+  # row has no such file either. "No row" implies "no neighbour", which makes
+  # the miss structural rather than unlikely — the only window it did fire in
+  # was a partially applied checkout, which is not the motivating case at all.
+  #
+  # The observable that survives is the ARGV0 THE CALLER HANDED OVER. The
+  # grading table throws the path away and matches on the basename, but the path
+  # is still right here: a caller in the newer tree passes something that
+  # resolves, and its parent directory is this plugin's `orchestrator/`. That is
+  # precisely the skew — the caller's tree has the script, this gate does not
+  # have the row.
+  #
+  # The neighbour test is KEPT as a second trigger rather than replaced, because
+  # it covers what the path test cannot: an argv0 given as a bare name, with no
+  # path to inspect. Either one alone leaves a hole the other closes.
+  #
+  # A false positive costs one advisory sentence, so both tests are loose on
+  # purpose. What they must not be is silent in the normal case, which is what
+  # the first version was.
+  local b="${1##*/}" hit='' parent=''
   case "$b" in
     *.sh) ;;
     *) return 0 ;;
   esac
-  [ -f "$GATE_DIR/$b" ] || return 0
-  warn "그 이름은 이 게이트 자신의 디렉터리에 있는 스크립트입니다 ($GATE_DIR/$b) — 모르는 도구가 아니라 이 게이트 사본이 그 행을 실은 트리보다 낡았다는 뜻입니다. 판정에 쓰이는 게이트는 $GATE_DIR/gate.sh 이고, 다른 사본의 등급표를 고쳐도 이 판정은 바뀌지 않습니다. 인터프리터를 앞에 붙이거나 더 낮은 철자로 우회하지 마세요 — 전자는 통과하면서 그 행이 막으려던 것을 되살리고, 후자는 산출물을 잃습니다"
+  case "$1" in
+    */*)
+      if [ -f "$1" ]; then
+        parent=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || parent=''
+        case "$parent" in
+          */orchestrator) hit="$1" ;;
+        esac
+      fi ;;
+  esac
+  if [ -z "$hit" ] && [ -f "$GATE_DIR/$b" ]; then hit="$GATE_DIR/$b"; fi
+  [ -n "$hit" ] || return 0
+  warn "그 이름은 이 플러그인이 싣는 오케스트레이터 스크립트입니다 ($hit) — 모르는 도구가 아니라 이 게이트 사본이 그 등급 행을 실은 트리보다 낡았다는 뜻입니다. 판정에 쓰이는 게이트는 $GATE_DIR/gate.sh 이고, 다른 사본의 등급표를 고쳐도 이 판정은 바뀌지 않습니다. 인터프리터를 앞에 붙이거나 더 낮은 철자로 우회하지 마세요 — 전자는 통과하면서 그 행이 막으려던 것을 되살리고, 후자는 산출물을 잃습니다"
 }
 
 surface_of_argv0() {
@@ -432,7 +461,7 @@ surface_of_argv0() {
     # inspecting what it wraps; the comparator is strict equality, so declaring
     # the effect that actually happens was refused exactly as laundering is
     # refused. The caller was left choosing between a false declaration and not
-    # running. Measured on one review stage: eight forced false declarations.
+    # running.
     cc-team-witness-init.sh)
       printf '트리밖쓰기' ;;
     # The note above says `openssl` may not sit in the digest row because one
@@ -2045,7 +2074,7 @@ gate_main() {
       # helper through `gate_verb_act`; this arm never gets there, because it
       # calls the table directly and returns.
       if [ "$g" = "등급 미상" ]; then
-        gate_sibling_script_hint "$1"
+        gate_orchestrator_script_hint "$1"
         exit "$GATE_EXIT_VOCAB"
       fi
       ;;
@@ -3856,12 +3885,12 @@ gate_verb_act() {
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     if [ "$surface" != "$graded" ]; then
       warn "축2 자기선언 불일치: 선언 '$surface' vs 등급 '$graded'"
-      if [ "$graded" = "등급 미상" ]; then gate_sibling_script_hint "$1"; fi
+      if [ "$graded" = "등급 미상" ]; then gate_orchestrator_script_hint "$1"; fi
       exit "$GATE_EXIT_GRADE"
     fi
   fi
   if [ "$graded" = "등급 미상" ]; then
-    gate_sibling_script_hint "$1"
+    gate_orchestrator_script_hint "$1"
     # The message names WHICH repair, because two different things arrive here:
     # a tool the table has never listed (widen the table), and a recognized tool
     # in a form the sub-table could not parse (respell the command). Without the
