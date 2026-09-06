@@ -379,7 +379,15 @@ $hits"
       line="${candidate#*:}"
 
       # Skip comment-only lines (leading whitespace + #).
-      if printf '%s' "$line" | grep -qE '^[[:space:]]*#'; then
+      #
+      # CAPTURED, NOT `grep -q`, here and at the four tests below. An
+      # early-exiting reader on the right of a pipe kills the writer with
+      # SIGPIPE, and under `pipefail` the pipeline then reports failure even
+      # though the match was found. `grep -c` has the same truth value and reads
+      # its input to the end; the count is captured rather than discarded,
+      # because BSD grep short-circuits when its output goes to /dev/null.
+      comment_only=$(printf '%s' "$line" | grep -cE '^[[:space:]]*#' || true)
+      if [[ "${comment_only:-0}" != "0" ]]; then
         continue
       fi
 
@@ -399,10 +407,12 @@ $hits"
         idiom_id="${rest%%|*}"
         advice="${rest#*|}"
 
-        if printf '%s' "$code_part" | grep -qE "$regex"; then
+        re_hit=$(printf '%s' "$code_part" | grep -cE "$regex" || true)
+        if [[ "${re_hit:-0}" != "0" ]]; then
           # Check same-line disable comment.
-          if printf '%s' "$comment_part" \
-              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+          dis_hit=$(printf '%s' "$comment_part" \
+              | grep -cF "lint-bash-portability: disable=${idiom_id}" || true)
+          if [[ "${dis_hit:-0}" != "0" ]]; then
             continue
           fi
           echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
@@ -421,9 +431,11 @@ $hits"
         idiom_id="${rest%%|*}"
         advice="${rest#*|}"
 
-        if printf '%s' "$code_part" | LC_ALL=C grep -qE "$regex"; then
-          if printf '%s' "$comment_part" \
-              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+        re_hit=$(printf '%s' "$code_part" | LC_ALL=C grep -cE "$regex" || true)
+        if [[ "${re_hit:-0}" != "0" ]]; then
+          dis_hit=$(printf '%s' "$comment_part" \
+              | grep -cF "lint-bash-portability: disable=${idiom_id}" || true)
+          if [[ "${dis_hit:-0}" != "0" ]]; then
             continue
           fi
           echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2
@@ -441,8 +453,9 @@ $hits"
         advice="${rest#*|}"
 
         if [[ "$code_part" == *"$literal"* ]]; then
-          if printf '%s' "$comment_part" \
-              | grep -qF "lint-bash-portability: disable=${idiom_id}"; then
+          dis_hit=$(printf '%s' "$comment_part" \
+              | grep -cF "lint-bash-portability: disable=${idiom_id}" || true)
+          if [[ "${dis_hit:-0}" != "0" ]]; then
             continue
           fi
           echo "FAIL: BSD/GNU divergent idiom '${idiom_id}' detected in $file:$line_no" >&2

@@ -129,7 +129,11 @@ for file in "${FILES[@]}"; do
   approx_tokens=$(awk -v w="$word_count" -v r="$WORDS_PER_TOKEN_RATIO" 'BEGIN{printf "%.0f", w*r}')
 
   # Find the first line of the invariant heading; if none, fail immediately
-  heading_line=$(grep -n -E "$INVARIANT_HEADING" "$file" | head -1 | cut -d: -f1 || true)
+  # `sed` RATHER THAN `head -1`, which stops reading at the first line and kills
+  # the writer with SIGPIPE — under `pipefail` the pipeline then reports failure
+  # even though the line was found. `sed -n '1s/…/…/p'` prints the same line and
+  # consumes its input to the end.
+  heading_line=$(grep -n -E "$INVARIANT_HEADING" "$file" | sed -n '1s/:.*$//p' || true)
 
   if [[ -z "$heading_line" ]]; then
     echo "FAIL: $file — missing '## Control-Flow Invariants' heading (approx ${approx_tokens} tokens total)" >&2

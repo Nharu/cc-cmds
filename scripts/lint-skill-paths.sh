@@ -96,7 +96,11 @@ for file in "${FILES[@]}"; do
   while IFS= read -r line; do
     line_no=$((line_no + 1))
     stripped=$(printf '%s\n' "$line" | sed -e "$STRIP_SED_BARE" -e "$STRIP_SED_BRACED")
-    if printf '%s\n' "$stripped" | grep -qE "$BANNED_RE"; then
+    # CAPTURED, NOT `grep -q`. An early-exiting reader on the right of a pipe
+    # kills the writer with SIGPIPE, and under `pipefail` the pipeline then
+    # reports failure even though the match was found.
+    banned_hit=$(printf '%s\n' "$stripped" | grep -cE "$BANNED_RE" || true)
+    if [[ "${banned_hit:-0}" != "0" ]]; then
       echo "FAIL: $file — line $line_no: $line" >&2
       file_violations=$((file_violations + 1))
     fi

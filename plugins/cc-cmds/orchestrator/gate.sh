@@ -317,6 +317,28 @@ surface_of_terraform() {
   esac
 }
 
+surface_of_openssl() {
+  # The subcommand decides, for the reason the digest row states in as many
+  # words: this one name covers hashing, key generation, file conversion and
+  # opening a socket, so a name-level grade would have to pick one of four.
+  #
+  # The default is the TOP of the range, not the bottom. An unrecognized
+  # subcommand is refused rather than read as harmless, because the subcommands
+  # this table does not name include `s_client` and `s_server` — and a grade
+  # that guesses low on those is the laundering the whole table exists to stop.
+  #
+  # `-out <path>` is checked across every arm, not per subcommand. `rand` and
+  # `dgst` both accept it, so an arm that graded `rand` as a read on the
+  # strength of its name alone would let `openssl rand -out secrets.bin 32`
+  # through as one.
+  case " $* " in *" -out "*|*" -keyout "*) printf '워크트리쓰기'; return 0 ;; esac
+  case "${1:-}" in
+    rand|dgst|sha256|sha1|version|list|help) printf '읽기' ;;
+    '') printf '읽기' ;;
+    *) printf '등급 미상' ;;
+  esac
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -343,6 +365,34 @@ surface_of_argv0() {
     # sha256.
     shasum|sha256sum|sha1sum|sha512sum|cksum|b2sum)
       printf '읽기' ;;
+    # Witness primitives. The same DEADLOCK shape as the digest tools above, one
+    # layer out: the agent-team protocol requires a scratch directory and a
+    # CSPRNG nonce before any member is spawned, and it forbids the model
+    # generating that nonce itself. With no row here every spelling was refused,
+    # so a review stage could not reach the point of dispatching its team at all
+    # — and the merge rule wants a review record, so one missing row closed the
+    # whole back half of the pipeline. Measured: a review stage arrived, tried
+    # `mktemp -d`, `openssl rand`, `uuidgen`, `xxd` and `od` in turn, was refused
+    # on every one, and halted before spawning.
+    #
+    # `uuidgen` takes no file operand and writes nothing, so its grade is the
+    # same as reading. `mktemp` DOES write, and where it writes depends on a
+    # template it may or may not be given, so it takes the higher of the two
+    # spellings rather than a guess — `트리밖쓰기` covers a tree path too.
+    #
+    # `xxd` and `od` stay out. They were tried here only as nonce fallbacks and
+    # are not needed once the two above resolve; `xxd` also takes an output file
+    # as its second operand, so a bare-name grade would be the same imprecision
+    # the `openssl` note below refuses.
+    uuidgen)
+      printf '읽기' ;;
+    mktemp)
+      printf '트리밖쓰기' ;;
+    # The note above says `openssl` may not sit in the digest row because one
+    # name would cover both hashing and opening a socket. That reasoning holds
+    # and is not overturned here — it is the reason this is a subcommand table
+    # rather than a name, the same shape `git`, `gh` and `terraform` already use.
+    openssl) surface_of_openssl "$@" ;;
     git) surface_of_git "$@" ;;
     gh)  surface_of_gh "$@" ;;
     # `lockf` WRAPS another command, so it carries no grade of its own. Three
@@ -396,6 +446,24 @@ surface_of_argv0() {
     # pre-authorization row for a read costs a line in the manifest, while
     # letting a migration through as a read costs the database.
     mysql|mysqladmin|mysqldump|psql|pg_dump|pg_restore|createdb|dropdb|sqlite3|mongo|mongosh|redis-cli)
+      printf '외부상태변경' ;;
+
+    # CI/CD triggers. Same shape as the database clients above and the same
+    # measured failure: a run whose target carries the `배포` cutpoint reached
+    # its apply command and was refused, because the manifest's apply command is
+    # a site-local script and no row named it. `등급 미상` refuses rather than
+    # issuing an approval, so all three ways out were closed at once —
+    # `--surface` is a checked claim and every claim mismatches an unknown
+    # grade, the basename normalization makes the absolute-path spelling
+    # identical, and `bash -c` would record a production deploy as a worktree
+    # write, which is the laundering this table exists to refuse. The run could
+    # not deploy at all despite holding the cutpoint that authorizes it.
+    #
+    # Graded `외부상태변경` from argv0 alone, so a read-only probe of the same
+    # script (`--probe`) grades the same way. That is the intended side of the
+    # trade: a probe needing a pre-authorization row costs a line in the
+    # manifest, while a deploy passing as a read costs the environment.
+    dasee-jenkins-trigger.sh)
       printf '외부상태변경' ;;
     *) printf '등급 미상' ;;
   esac
@@ -4877,9 +4945,9 @@ gate_record_stage_outcome() {
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
   fi
 
-  # A TERMINAL CLASS OTHER THAN `정상 완료` MEANS THE RUN CANNOT PASS THIS POINT
-  # WITHOUT A PERSON, so it is announced the instant the row is seated — before
-  # the cost block, because the row is the fact and the cost is bookkeeping.
+  # A TERMINAL CLASS THAT LEFT EVIDENCE OF REACHING A POINT NEEDING A PERSON is
+  # announced the instant the row is seated — before the cost block, because the
+  # row is the fact and the cost is bookkeeping.
   #
   # NO ONCE-MARKER, and that is deliberate rather than an omission. This function
   # is called exactly once, immediately after the child is waited on; a
@@ -4888,10 +4956,24 @@ gate_record_stage_outcome() {
   # THE SPLIT IS A PREDICATE, NOT AN ENUMERATION — did the stage leave evidence
   # that it reached a point needing a person? A deliberate park and a stop with
   # no artifact both did: one says so in its halt record, the other left the
-  # trace of arriving at a decision point it declined to settle. A crash and a
-  # hollow success left nothing this side can read, so at classification time the
-  # gate has no way to know. A class added later divides itself the same way, and
-  # the default is to fire rather than to stay quiet.
+  # trace of arriving at a decision point it declined to settle.
+  #
+  # A CLASS WHOSE NEED FOR A PERSON CANNOT BE KNOWN HERE IS NOT ANNOUNCED. A
+  # crash and a hollow success left nothing this side can read, so at
+  # classification time there is no way to tell a stage that needs a person from
+  # one that merely died and will be re-dispatched — and a notice sent on that
+  # ignorance asks a sleeping person for an action the gate would refuse anyway.
+  # If such a condition really does stop the run's progress, it becomes visible
+  # where stalling is observable rather than guessed: a park, an anchored run, a
+  # stall arm, a termination. A class added later divides itself the same way,
+  # and THE DEFAULT IS SILENCE.
+  #
+  # THE SUBSTITUTE PATH IS NOT ALWAYS IMMEDIATE, and the cost is written down
+  # rather than rounded to zero. The predicate that counts unresolved blockage
+  # filters on run scope alone while the driver also parks at cone scope, so on
+  # that branch the segment park row catches it, and failing that the stall arm
+  # does — one silence ceiling later. The delay is the price; losing the
+  # condition is not among the outcomes.
   local q
   if [ "$klass" != '정상 완료' ]; then
     case "$klass" in
@@ -4927,10 +5009,6 @@ gate_record_stage_outcome() {
           cc_notify_fire hands \
             "\`$seg\` 스테이지가 결정 지점에서 멈췄습니다 — 사용자 대신 정하지 않았습니다" \
             "stop-$seg#$attempt" || true
-        fi ;;
-      *)
-        if cc_caller_is_router; then
-          cc_notify_fire status "스테이지 \`$seg\` 가 $klass 로 끝났습니다" || true
         fi ;;
     esac
   fi
@@ -5021,9 +5099,16 @@ gate_absorb_emitted_judgment() {
   # class that is present but out of vocabulary, which escalates.
   cls=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 부류\*\*: *\([^ *`]*\).*/\1/p' | sed -n '1p')
   grade=$(printf '%s' "$txt"  | sed -n 's/.*\*\*판단 등급\*\*: *\([0-9]\).*/\1/p' | sed -n '1p')
-  std=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p')
-  revert=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p')
-  why=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p')
+  # THE VALUE ENDS AT THE NEXT MARKER, NOT AT THE END OF THE LINE. A stage's
+  # terminal message is one JSON string, so the five markers ordinarily arrive on
+  # a single line — and `\(.*\)` then hands each free-text field everything that
+  # follows it, markers included. Measured on that ordinary spelling: the undo
+  # command came back carrying the standard and the rationale glued onto it. The
+  # row keeps that value, and the undo command is what a person reads in the
+  # morning, so a swallowed field is worse than an absent one.
+  std=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 기준\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  revert=$(printf '%s' "$txt" | sed -n 's/.*\*\*판단 되돌리는 법\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
+  why=$(printf '%s' "$txt"    | sed -n 's/.*\*\*판단 근거\*\*: *\(.*\)/\1/p' | sed -n '1p' | sed 's/ *\*\*판단 .*$//')
 
   # No marker of ANY kind — the stage recorded no decision, which is the common
   # case and the only one that may return quietly.
@@ -5259,6 +5344,11 @@ gate_close() {
   if [ "$void" = "1" ]; then
     gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
       "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"
+    # THE SLOT GOES BACK ON ALL THREE TERMINALS, and the key is the approval id
+    # because that is what the firing site (`cc_notify_fire answer "$q" "$id"`)
+    # wrote into the stack. Deriving it differently here would leave the seat
+    # occupied by a key nothing releases.
+    cc_notify_stack_release "$id" || true
     log "승인 무효 — $id (행위는 수행되지 않습니다)"
     return 0
   fi
@@ -5359,12 +5449,14 @@ gate_close() {
   if [ "$reject" = "1" ]; then
     gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
       "답변 문면=$abody" "해소 시각=$(now_iso)"
+    cc_notify_stack_release "$id" || true
     log "승인 거부 — $id (물었고 답이 아니오입니다)"
     return 0
   fi
 
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
+  cc_notify_stack_release "$id" || true
   log "승인 해소 — $id"
   return 0
 }
