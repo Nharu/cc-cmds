@@ -317,6 +317,39 @@ surface_of_terraform() {
   esac
 }
 
+surface_of_eas() {
+  # Expo Application Services CLI. A build is a billed job on someone else's
+  # machines, `update` publishes over the air to installed apps, and the
+  # channel/branch verbs write server records — every one of those outlives the
+  # run directory, so the DEFAULT here is `외부상태변경` and not an unknown
+  # grade. Measured: with no row at all every spelling fell to `등급 미상`,
+  # which refuses outright rather than issuing an approval, and that closed all
+  # three ways out at once — `--surface` is a checked claim and any claim
+  # mismatches an unknown grade, the basename normalization makes the
+  # absolute-path spelling identical, and `bash -c` would record a paid cloud
+  # build as a worktree write. A run holding the `배포` cutpoint could not reach
+  # its own apply command at all.
+  #
+  # Split by subcommand, the way `git` and `gh` are and unlike the CI/CD trigger
+  # below, because this CLI spells the read/write distinction in the subcommand
+  # itself: the `:view` and `:list` forms query, the bare verbs act. That split
+  # is load-bearing rather than tidy — a manifest that declares
+  # `적용 주체: 파이프라인` must also declare an apply PROBE, and the probe for a
+  # channel is `eas channel:view`. Without the split the probe would need a
+  # pre-authorization row naming the same argv prefix as the apply, which grants
+  # the apply as a side effect of declaring the check for it.
+  #
+  # The unrecognized arm is the top of the range, not the bottom. Guessing low
+  # on a verb this table does not name is the laundering the whole table exists
+  # to stop, and guessing high costs one line in the manifest.
+  case "${1:-}" in
+    ''|-v|-h|--version|--help) printf '읽기' ;;
+    whoami|config|diagnostics)  printf '읽기' ;;
+    *:view|*:list|*:info)       printf '읽기' ;;
+    *)                          printf '외부상태변경' ;;
+  esac
+}
+
 surface_of_openssl() {
   # The subcommand decides, for the reason the digest row states in as many
   # words: this one name covers hashing, key generation, file conversion and
@@ -393,6 +426,7 @@ surface_of_argv0() {
     # and is not overturned here — it is the reason this is a subcommand table
     # rather than a name, the same shape `git`, `gh` and `terraform` already use.
     openssl) surface_of_openssl "$@" ;;
+    eas|eas-cli) surface_of_eas "$@" ;;
     git) surface_of_git "$@" ;;
     gh)  surface_of_gh "$@" ;;
     # `lockf` WRAPS another command, so it carries no grade of its own. Three
@@ -959,6 +993,54 @@ gate_progress_vector() {
     "$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
        | { grep -F '축2=' || true; } \
        | { grep -v '축2=읽기' || true; } | gate_count)"
+  # A STAGE FINISHING NORMALLY IS PROGRESS, and until now nothing here saw it.
+  # Segment rows move only when the STATE changes, so a segment that runs several
+  # stages under `실행중` contributes a constant — and the two processes of one
+  # implement stage are BOTH `실행중`, so not even that transition is expressible
+  # as a segment row. Measured: a stage terminated normally, the ledger grew by a
+  # `stage-result` row and a `cost` row, the chain stayed intact, and both the
+  # progress digest and the stagnation window key came back byte-identical.
+  #
+  # A ROW COUNT AND NOT A SET. `gate_record_stage_outcome` writes `세그먼트=$seg`
+  # and `스테이지=$seg` from one variable, so a set keyed on that pair collapses
+  # to the segment alone — twenty-one normal terminations became three elements
+  # on a real ledger. And the element count was the wrong measure regardless:
+  # what the act budget watches is the GAP between movements, and replaying a
+  # real run's 1033 rows put the worst gap at 59 for the count against 128 for
+  # the best set and 195 for the vector without this line.
+  #
+  # Selected POSITIVELY — the field must be present and its value must be exactly
+  # `정상 완료`. An exclusion-based selector (`everything but 크래시`) would count
+  # `공허한 성공`, and that class exists precisely to name a stage that produced
+  # nothing, so counting it as progress voids the reason it was named.
+  #
+  # Parsed rather than substring-matched, in ONE awk pass. The driver writes a
+  # prose `관측=` field on these rows, so a match on the class value alone can be
+  # satisfied by a sentence; this locates the field by its delimiter and compares
+  # the WHOLE value. The last occurrence wins, the way every other field read in
+  # this file does. And it is awk rather than a shell loop because the vector is
+  # walked five times per act — a per-row subshell measured 1.92 seconds against
+  # 0.007 for this on the same ledger.
+  #
+  # `LC_ALL=C` makes `index`, `substr` and `length` byte operations on both the
+  # BWK awk this ships on and the gawk a Linux runner has, so the two hosts agree
+  # on where a field starts. Without it the same row could be cut at a different
+  # offset on each side and the vector would be host-dependent.
+  printf 'stage-normal=%s\n' \
+    "$( { gate_rows 'stage-result' || true; } | LC_ALL=C awk '
+        BEGIN { key = " | 종단 부류="; klen = length(key); sep = " | "; n = 0 }
+        {
+          rest = $0; value = ""; seen = 0
+          while ((p = index(rest, key)) > 0) {
+            rest = substr(rest, p + klen)
+            q = index(rest, sep)
+            value = (q > 0) ? substr(rest, 1, q - 1) : rest
+            seen = 1
+          }
+          if (seen && value == "정상 완료") n++
+        }
+        END { printf "%d", n }
+      ')"
   # Settling a clause and clearing a run-scope block are progress by definition
   # — they are the only two moves whose whole purpose is to bring the run nearer
   # to being able to end. A run that spends a judgment doing one of them and is
@@ -1187,6 +1269,16 @@ gate_run_rules() {
 # ---------------------------------------------------------------------------
 readonly GATE_OBLIGATION_CAP=50
 
+# The unmet-condition TEXT list is capped; its NUMBERS are not, and the two are
+# carried together for that reason. Conditions 1 and 3 emit one line per segment
+# and per obligation, so they grow with the length of the night and take the
+# front of this list — which pushes the singleton tails off it, and those tails
+# (the review obligation, "no termination clause parses") are exactly the answer
+# to "why can this run not end". The number list is deduplicated and cannot
+# exceed ten values, so it survives any night. There is no arrangement that keeps
+# the cap and drops the numbers: dropping them means dropping the cap too.
+readonly GATE_UNMET_CAP=20
+
 gate_json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
@@ -1231,6 +1323,36 @@ gate_snapshot() {
   gate_pending_approvals_json
   printf '  ],\n'
 
+  # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
+  # to read every turn. The top-level keys carried the goal, the targets, the
+  # obligations, the approvals, the damage count and the two digests — and
+  # nothing at all about the termination conditions. So a router obeying the
+  # contract and reading only this could learn what blocked the end only by
+  # proposing it and reading the refusal, which is finding out by doing on the
+  # one question looking was supposed to answer.
+  local unmet unmet_total
+  unmet=$(gate_done_conditions)
+  unmet_total=$(printf '%s\n' "$unmet" | grep -c . || true)
+  printf '  "unmet_conditions": [\n'
+  shown=0
+  printf '%s\n' "$unmet" | awk -v cap="$GATE_UNMET_CAP" 'NF { c++; if (c <= cap) print }' \
+    | while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        [ "$shown" = "0" ] || printf ',\n'
+        shown=1
+        printf '    "%s"' "$(gate_json_escape "$u")"
+      done
+  [ "${unmet_total:-0}" = "0" ] || printf '\n'
+  printf '  ],\n'
+  printf '  "unmet_conditions_total": %s,\n' "${unmet_total:-0}"
+  # UNCAPPED, and that is the point of carrying it beside the capped list. It is
+  # deduplicated, ascending, and cannot exceed ten values, so it never loses its
+  # tail — while the text list loses precisely the singleton causes once a long
+  # night fills its front with per-segment and per-obligation lines.
+  printf '  "unmet_condition_numbers": [%s],\n' \
+    "$(gate_unmet_numbers "$unmet" | tr '\n' ',' | sed 's/,$//')"
+  printf '  "disposition": "%s",\n' "$(gate_json_escape "$(gate_done_disposition "$unmet")")"
+
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -1238,7 +1360,19 @@ gate_snapshot() {
 }
 
 gate_pending_approvals_json() {
-  local ids id state first=1
+  # THE CUTPOINT AND THE QUESTION TRAVEL WITH THE ID, because the array mixes two
+  # kinds of answer whose lifetimes are opposite and gave the router no field to
+  # tell them apart. Termination condition 2 does not count an approval whose
+  # cutpoint is `판단`: an act approval's answer is valid only against the tree
+  # its binding tuple named, while a question's answer is durable and a successor
+  # run consumes it. A router reading this array as uniformly blocking cannot end
+  # a run that one open question does not block — which is the defect this design
+  # exists to remove, arriving through a different door.
+  #
+  # The question text comes along for the same reason the id alone was not
+  # enough: an id is a hash and says nothing about what is being asked, so a
+  # person handed the array had to go read the ledger to know what to answer.
+  local ids id state row first=1
   # Pinned for the same reason as the chain walk. This one emits INTO the
   # snapshot object, so a `tr`/`sed` that dies on an invalid byte does not just
   # lose the approvals array — it truncates the JSON at that point and every
@@ -1255,15 +1389,19 @@ gate_pending_approvals_json() {
   ids=$(gate_rows '승인' \
         | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
   for id in $ids; do
-    state=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1 \
-            | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    # The LAST row for the id decides, and it is read once here rather than
+    # re-grepped per field — three reads of the same row could straddle a
+    # concurrent append and describe two different rows as one object.
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    state=$(gate_row_field "$row" '상태')
     [ "$state" = "대기" ] || continue
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"id": "%s", "blocks": "%s"}' \
+    printf '    {"id": "%s", "blocks": "%s", "cutpoint": "%s", "question": "%s"}' \
       "$(gate_json_escape "$id")" \
-      "$(gate_json_escape "$(gate_rows '승인' | { grep -F "승인 id=$id " || true; } | tail -1 \
-          | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)")"
+      "$(gate_json_escape "$(gate_row_field "$row" '막는 세그먼트')")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '절단점')")" \
+      "$(gate_json_escape "$(gate_row_field "$row" '질문 문면')")"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -1290,6 +1428,35 @@ gate_render_snapshot() {
       "$(target_field "$a" '원격 슬러그')" "$(target_field "$a" '절단점')"
   done
   printf '미해결 의무: %s건\n' "$(gate_open_obligations | gate_count)"
+
+  # PENDING APPROVALS, AND THIS LINE DOES NOT DISAPPEAR AT ZERO. The JSON carried
+  # them and the render did not, so a run held by an approval printed `원장 손상`,
+  # `해시 체인` and `미해결 의무` in a row — three lines all reading fine — while
+  # a person was the only thing that could move it, and the word `승인` appeared
+  # nowhere in the whole output. A line that shows up only when the count is
+  # non-zero cannot be told apart from a line nobody wrote, which is the same
+  # absence wearing a different face.
+  local n_pending
+  n_pending=$(gate_pending_approval_ids | gate_count)
+  printf '대기 승인 : %s건\n' "$n_pending"
+
+  # WHY THE RUN CANNOT END, beside the rest of it. NO COUNT OF CONDITIONS GOES ON
+  # THIS LINE — the number was already written down wrong in two comments, and a
+  # third copy is a third thing to keep in step with a function that decides it.
+  # What the line carries is the disposition and the condition numbers, both
+  # derived at the moment of printing.
+  local r_unmet r_disposition r_numbers
+  r_unmet=$(gate_done_conditions)
+  r_disposition=$(gate_done_disposition "$r_unmet")
+  r_numbers=$(gate_unmet_numbers "$r_unmet" | tr '\n' ',' | sed 's/,$//')
+  if [ "$r_disposition" = "충족" ]; then
+    printf '미충족 조건: 없음 — 종료 조건이 전부 성립합니다\n'
+  elif [ "$r_disposition" = "무효화" ]; then
+    printf '미충족 조건: 조건 %s — 무효화만 남았습니다. 종료를 제안하면 충족이 아니라 무효로 기록되고, 이 런의 기준선은 다시 잡히지 않습니다\n' \
+      "${r_numbers:-미상}"
+  else
+    printf '미충족 조건: 조건 %s\n' "${r_numbers:-미상}"
+  fi
 
   # LIVENESS, because "is this still going?" had no cheap answer. The heartbeat
   # a watcher prints goes to a stdout that its launching tool call already
@@ -1789,11 +1956,19 @@ EOF
 }
 
 gate_surface_check() {
+  # gate_surface_check <호출 동사>
+  #
   # Compared on every act, not only at run start. The four surfaces the hook
   # cannot deny a write to get after-the-fact detection only, and after-the-fact
   # is still before the NEXT act — which is the difference between one act
   # slipping through and the rest of the night doing so.
-  local base now
+  #
+  # THE VERB DECIDES ONLY WHETHER THE CONSEQUENCE IS RECORDED, never whether the
+  # comparison happens. Everything down to the verdict is a pure read — the
+  # baseline file, the digest, the equality — so a dry run can answer this axis
+  # exactly and cheaply, and a verb that could answer it and returned zero
+  # instead is the defect class this whole change removes.
+  local verb="${1:-act}" base now
   base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
   [ -n "$base" ] || return 0
   now=$(gate_surface_digest)
@@ -1830,6 +2005,19 @@ gate_surface_check() {
   # The resume line is the only place a person is told what to do next, so
   # dropping it exactly when the router — the one that would have carried it to
   # them — is the caller inverted its purpose.
+  # A DRY RUN STOPS HERE, and the three things below are each independently a
+  # reason it must. The row it would append carries `원인=무효화`, which
+  # condition 5 declares permanently unresolvable — so a question about the run
+  # would end the run. The `done` path then opens for a run nobody proposed to
+  # finish. And the same branch fires a desktop banner at a sleeping person to
+  # report an event that did not happen.
+  #
+  # What the caller gets instead is the exit code by itself: on `plan`, 7 is a
+  # forecast rather than an event.
+  if [ "$verb" = "plan" ]; then
+    warn "plan(dry-run): 같은 argv 의 act 는 여기서 exit 7 을 받습니다 — 예고이므로 blocked 행도 배너도 남기지 않았습니다"
+    return "$GATE_EXIT_SURFACE"
+  fi
   if ! gate_has_row 'blocked' '사유=강제 표면 이동'; then
     gate_append 'blocked' "대상=${CC_PIPELINE_TARGET:--}" "스코프=run" "원인=무효화" \
       "사유=강제 표면 이동" "관측=$(now_iso)" \
@@ -3857,6 +4045,37 @@ gate_act_worktree() {
   printf '%s' "$wt"
 }
 
+gate_plan_unchecked_axes() {
+  # gate_plan_unchecked_axes <kind> — the axes this dry run did NOT evaluate,
+  # named on stderr.
+  #
+  # A forecast that reports only its verdict reads as a complete answer, and the
+  # router acts on it as one. Two axes stay structurally out of reach here, and
+  # each of them returns a code the router has no other way to anticipate — so
+  # what this turns a passing `plan` into is "these held, and these two were not
+  # looked at" rather than a green light.
+  #
+  # THE ENFORCEMENT SURFACE IS DELIBERATELY ABSENT FROM THIS LIST. It used to be
+  # unreachable for this verb and is now compared like any other read; listing it
+  # here would keep telling the router to expect a blind spot that was closed.
+  local kind="$1"
+  warn "plan(dry-run) 미검사 축 — 아래는 이 예고가 평가하지 않은 축입니다:"
+  # Not compared, because a dry run is not bound to the state it read: the guard
+  # on the way in skips it for this verb outright. So the same argv issued as
+  # `act` can still come back 4 when a sibling segment landed a row in between.
+  warn "  - 스냅숏 다이제스트 — act 는 --snapshot-digest 를 현재 값과 대조하며 어긋나면 4 입니다"
+  case "$kind" in
+    segment|cycle|problem|blocked|clause|judgment|obligation)
+      # The `키=값` list after `--` is validated by the row writer, and the row
+      # writer runs only on the performing path. Four known divergences live
+      # behind this one line — a predecessor-monotonicity violation, a
+      # predecessor segment absent from the ledger, a `cycle` row missing a
+      # required field, and a missing cone anchor row — so naming the axis is
+      # what lets the router expect them instead of meeting them.
+      warn "  - 기록 행 필드 유효성(${kind}) — -- 뒤 키=값 필드는 기록 시점에 검사되므로 같은 argv 의 act 가 2 나 6 으로 돌아올 수 있습니다" ;;
+  esac
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -4127,13 +4346,7 @@ gate_verb_act() {
   fi
   [ "$rules_rc" = "0" ] || exit "$rules_rc"
 
-  if [ "$verb" = "plan" ]; then
-    printf '통과 예상: kind=%s target=%s 절단점=%s 축2=%s\n' \
-      "$kind" "$alias" "$cutpoint" "$graded"
-    return 0
-  fi
-
-  gate_surface_check || exit $?
+  gate_surface_check "$verb" || exit $?
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #
@@ -4154,7 +4367,12 @@ gate_verb_act() {
   # termination condition 1, which counts `segment` rows, so a run that skips
   # them cannot merge anything and cannot propose it is done — a debt taken on
   # here and presented much later wearing a different face.
-  if [ "$kind" = "skill" ] && [ "$verb" = "act" ]; then
+  # NO `act` CONJUNCT. Both checks below are pure reads of rows already written,
+  # and excluding the dry run from them was the mechanism rather than a side
+  # effect: moving the early return alone leaves this arm still keyed on `act`,
+  # so `plan --kind skill` would go on answering "통과 예상" for a segment with no
+  # row and for a predecessor that has not landed.
+  if [ "$kind" = "skill" ]; then
     if [ -z "$(gate_segment_field "$segment" '상태')" ]; then
       warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
       warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
@@ -4186,13 +4404,35 @@ gate_verb_act() {
     done
   fi
 
-  # The nine conditions are evaluated on EVERY act, not only on a done proposal.
+  # The ten conditions are evaluated on EVERY act, not only on a done proposal.
   # A gate that can refuse a proposal but never cause one leaves the router
   # alone deciding when the night ends — so when every condition holds and the
   # router reaches for something else, it has to name what is left.
-  local unmet
+  local unmet disposition
   unmet=$(gate_done_conditions)
+  disposition=$(gate_done_disposition "$unmet")
   if [ "$kind" = "propose-done" ]; then
+    # THE DRY RUN ANSWERS AND WRITES NOTHING, and this arm sits ABOVE all three
+    # of the arms that write, because two of them do it with an exit status of
+    # zero. Without it, asking whether the run may stop ENDED the run: the `done`
+    # file was created with an empty rationale, the terminal banner fired on a
+    # live run, and the status was 0 in both directions — while the accepting arm
+    # writes no ledger row at all. Neither the exit code nor the ledger told the
+    # question apart from the act; only the file did.
+    if [ "$verb" = "plan" ]; then
+      case "$disposition" in
+        충족)
+          printf '통과 예상: 종료 조건이 전부 성립합니다 — act 로 내면 done 을 기록합니다\n'
+          return 0 ;;
+        무효화)
+          printf '통과 예상: 무효화 종료 — act 로 내면 충족이 아니라 무효로 기록합니다\n'
+          return 0 ;;
+        *)
+          warn "plan(dry-run): 종료 제안은 기각됩니다 — $(gate_unmet_summary "$unmet")"
+          printf '%s\n' "$unmet" >&2
+          exit "$GATE_EXIT_RULE" ;;
+      esac
+    fi
     # AN INVALIDATED RUN MUST STILL BE ABLE TO SAY IT ENDED. Condition 5 counts
     # a run-scope `blocked` row whose cause is `무효화` as permanently unmet —
     # deliberately, because clearing it would be the run re-authorizing itself
@@ -4205,9 +4445,10 @@ gate_verb_act() {
     # reaches disk. So when the invalidation is the ONLY thing left unmet, the
     # proposal is accepted and the `done` file records the run as invalidated
     # rather than as satisfied — the two must not read alike in the morning.
-    local unmet_other
-    unmet_other=$(printf '%s' "$unmet" | grep -v '해소 불가입니다' || true)
-    if [ -n "$unmet" ] && [ -z "$unmet_other" ]; then
+    # Tested by POSITIVE equality against the token, and the arm below tests the
+    # other accepted value the same way. Everything the function did not name —
+    # including a value it never printed — falls through to the refusing arm.
+    if [ "$disposition" = "무효화" ]; then
       warn "런이 무효화된 채로 종료를 기록합니다 — 충족이 아니라 무효로 남습니다"
       gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
         "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
@@ -4218,7 +4459,7 @@ gate_verb_act() {
       fi
       return 0
     fi
-    if [ -n "$unmet" ]; then
+    if [ "$disposition" != "충족" ]; then
       warn "종료 제안 기각 — 미충족 조건:"
       case "$unmet" in
         *"종료 절"*) warn "미정산 절은 act --kind clause 로 근거를 남기거나 불가능으로 표시하세요" ;;
@@ -4234,14 +4475,10 @@ gate_verb_act() {
       # The full text is already on stderr immediately above, which is where a
       # reader looks; what the row needs is enough to say what happened and how
       # many, bounded by construction.
-      local unmet_n unmet_ids
-      unmet_n=$(printf '%s\n' "$unmet" | grep -c . || true)
-      unmet_ids=$(printf '%s\n' "$unmet" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' \
-                  | sort -un | tr '\n' ',' | sed 's/,$//')
       gate_append '자율 승인' "kind=$kind" "결정=기각" "대상=$alias" "세그먼트=$segment" \
         "절단점=$cutpoint" "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
         "되돌리는 법=해당 없음(거부)" \
-        "근거=미충족 ${unmet_n}건 · 조건 ${unmet_ids:-미상}"
+        "근거=$(gate_unmet_summary "$unmet")"
       exit "$GATE_EXIT_RULE"
     fi
     log "종료 조건이 전부 성립합니다"
@@ -4288,10 +4525,38 @@ gate_verb_act() {
       cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
     fi
   elif [ -z "$unmet" ]; then
+    # THE LITERAL TEST STAYS. Every other site compares the disposition token by
+    # positive equality, and this one cannot: the chain ends at `fi`, so there is
+    # no refusing arm to fall into, and the polarity is inverted — ENTERING this
+    # branch is what produces the refusal. Written as `= "충족"` an unrecognized
+    # value would SKIP the obligation check and let the act proceed unexamined,
+    # which is the one place the token form would be looser than the literal.
+    #
+    # `--rationale` does not switch this axis off. Skipping it removes a rare
+    # false red and opens a false green in the far commoner all-met state, where
+    # there is nothing to name and `act` refuses every rationale too — so the
+    # skip would make `plan` answer 0 exactly where `act` answers 3. What the
+    # missing input gets instead is disclosure.
+    if [ "$verb" = "plan" ] && [ -z "$rationale" ]; then
+      warn "plan(dry-run): --rationale 이 없어 의무 지목 축을 빈 근거로 평가했습니다 — 라우터가 실제로 낼 argv 로 다시 물으면 정확해집니다"
+    fi
     if ! gate_names_next_obligation "$rationale"; then
       warn "종료 조건이 전부 성립하는데 다음 의무를 지목하지 못했습니다 — 런은 충족으로 종료합니다"
       exit "$GATE_EXIT_RULE"
     fi
+  fi
+
+  # THE FORECAST IS ISSUED HERE, past every read-only axis and before every
+  # write. Above this line sit the surface comparison, the segment-row existence
+  # check, the predecessor-landing check, the termination conditions and the
+  # obligation-naming arm — all reads, and all of them axes the same argv meets
+  # as an `act`. Below it sit the boundaries, the credential resolution, the
+  # ledger append and the act itself.
+  if [ "$verb" = "plan" ]; then
+    gate_plan_unchecked_axes "$kind"
+    printf '통과 예상: kind=%s target=%s 절단점=%s 축2=%s\n' \
+      "$kind" "$alias" "$cutpoint" "$graded"
+    return 0
   fi
 
   gate_boundaries
@@ -5615,9 +5880,64 @@ gate_close() {
 # status line reads the same set through the same file, and a copy is how the
 # render and this check came to disagree about the same segment.
 
+gate_done_disposition() {
+  # gate_done_disposition <미충족 텍스트> — one of `충족`, `무효화`, `미충족`.
+  #
+  # Takes the ALREADY COMPUTED text rather than calling `gate_done_conditions`
+  # again: three callers each want this verdict about the same evaluation, and a
+  # second evaluation could disagree with the first because the ledger moved
+  # between them.
+  #
+  # NEVER THE EMPTY STRING, on any path. The value is compared by equality at
+  # every call site and one of those comparisons decides whether the run's `done`
+  # file is written — an empty answer there reads as "not this branch" at each
+  # arm in turn and falls out of the chain having decided nothing.
+  #
+  # The recognized values are used with POSITIVE equality by every caller that
+  # ACCEPTS on them, so an unrecognized value and the empty string both land in
+  # the refusing arm. That is what makes a token here as fail-closed as a
+  # predicate would be, which was the one property the predicate form had over
+  # this one.
+  local unmet="$1" other
+  [ -n "$unmet" ] || { printf '충족'; return 0; }
+  # `해소 불가입니다` is condition 5's rendering of an invalidation block, which
+  # is unmet permanently by construction. A run left with only that is over — it
+  # may record its end, but as invalidated rather than as satisfied.
+  other=$(printf '%s' "$unmet" | grep -v '해소 불가입니다' || true)
+  [ -n "$other" ] || { printf '무효화'; return 0; }
+  printf '미충족'
+}
+
+gate_unmet_summary() {
+  # gate_unmet_summary <미충족 텍스트> — the count and the condition numbers,
+  # bounded by construction.
+  #
+  # The row this feeds has a 1024-byte cap and the full list grows with the run
+  # — one line per non-terminal segment, one per unsettled clause — so joining
+  # the text made a run with enough of them unable to record its own rejection.
+  # The numbers cannot exceed ten distinct values, so this field cannot.
+  local unmet="$1" n ids
+  n=$(printf '%s\n' "$unmet" | grep -c . || true)
+  ids=$(printf '%s\n' "$unmet" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' \
+        | sort -un | tr '\n' ',' | sed 's/,$//')
+  printf '미충족 %s건 · 조건 %s' "${n:-0}" "${ids:-미상}"
+}
+
+gate_unmet_numbers() {
+  # gate_unmet_summary's numbers alone, deduplicated and ascending, one per line.
+  # Carried separately from the capped text list because it is the half that
+  # cannot be truncated: it answers "why can this run not end" in ten values at
+  # most, while the text grows without bound and loses its tail exactly when the
+  # night has been long enough for the tail to matter.
+  printf '%s\n' "$1" | sed -n 's/^\([0-9]\{1,2\}\) .*/\1/p' | sort -un
+}
+
 gate_done_conditions() {
-  # Prints one line per UNMET condition, numbered. Empty output means all nine
+  # Prints one line per UNMET condition, numbered. Empty output means all TEN
   # hold. Never silently empty on an unreadable ledger — that is condition 4.
+  #
+  # Ten and not nine: condition 10 splits into two arms and both print `10`, so
+  # the numbering runs 1..10 while the count of printable causes is larger.
   local sid st n
 
   # 1 — every segment in a terminal state.

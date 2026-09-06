@@ -259,7 +259,7 @@ The router decides **what happens next**. The gate decides **whether it may**. T
 snapshot  →  decide  →  gate call  →  (repeat)
 ```
 
-1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
+1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. It also carries what is HOLDING the run: a `대기 승인` count that stays on the table at zero rather than vanishing, so "no approvals" and "no line" remain different readings, and a `미충족 조건` line naming the termination conditions by number and saying so when the only thing left is an invalidation. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
 2. **Decide one next act.**
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
@@ -280,7 +280,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 | --- | --- |
 | `snapshot` | emit the whole input as one JSON object |
 | `grade` | dry run — what are this argv's two grades? changes nothing |
-| `plan` | dry run — would this act pass, and if not which rule refuses it |
+| `plan` | dry run — would this act pass, and if not which rule refuses it. Every read-only axis the same argv would meet as an `act` is evaluated, including the enforcement surface, the termination conditions, the segment-row existence check and the predecessor-landing check; the axes a dry run cannot reach are named on stderr rather than passed over silently |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
 | `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no) |
@@ -302,7 +302,9 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 
 **A cone is the one `blocked` scope you may create; run scope you may only resolve.** A cone holds what stands on a refuted premise and lets its siblings keep running, which is what an open question needs. Declare `의존 세그먼트` or leave it out — the gate derives the cone either way and refuses a declaration that is a **proper subset** (exit 6). Widening passes.
 
-**Use `grade` and `plan` rather than finding out by doing.** They write no row and cost no budget. Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation.
+**Use `grade` and `plan` rather than finding out by doing.** Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation. Neither verb performs the act, neither takes act budget, and neither writes the row the act would have written.
+
+**They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest, and a router that reads a digest, asks `plan`, and then acts on the digest it read first will be refused with exit 4. **Re-read the snapshot after asking.** Making the re-derivation conditional on the verb would not fix this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
 
 ### Reading the exit codes
 
@@ -317,6 +319,8 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
 
 **Exit 7 is the router's alone, and a stage that receives it can only stop.** The condition is outside a stage by definition — the surfaces are the run's settings, the rule catalog, the hook and the project settings — and it cannot even look at them, because looking needs the Bash that was just refused. It has no re-baseline available either: that would be the bound moving its own boundary. So the gate now tells a stage in as many words to stop rather than retry, and records a run-scope `blocked` row so the condition is visible as run state instead of as a stage's wasted turns. Measured before that: five stages, four of which retried into the same refusal 3, 9, 12 and 15 times and produced nothing. **The run does not recover — re-baselining is not offered.** Start a new run.
+
+**On `plan`, 7 is a forecast and not an event.** The comparison that produces it is a pure read, so the dry run makes it exactly as an act does — but it appends no run-scope `blocked` row, raises no banner, and does not end the run. A 7 from `plan` says the next `act` carrying this argv will take the paragraph above; a 7 from `act` says it just did. Only the second is the run's ending. Before this the dry run answered 0 here, having skipped the axis altogether — which is the shape of defect this verb exists to remove: an axis that is cheap to check, writes nothing when checked, and was reported as passing without being looked at.
 
 Past the checks, the act's own exit status passes through. A refusal always arrives with a `gate:` line and no output from the act — that, not the number, is what separates them.
 
