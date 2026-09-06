@@ -5778,6 +5778,63 @@ clear_probe SBC
 sleep 0.3
 check "스테이지 호출은 배너를 지우지 않는다" "$(notify_lines)" "0"
 
+# --- THE WAITING-SLOT BANNER COMES DOWN TOO ---------------------------------
+#
+# The ninth and later approvals never get an individual address — they are
+# demoted into one shared waiting slot — so the id-addressed clear at a close
+# site aims at a group that never carried a banner. Without this path the eight
+# individual notices vanished as they were answered while "there is more to
+# answer — N" stayed on screen alone, which says the opposite of the truth on a
+# morning where nothing is left.
+#
+# MEASURED ON THE ARGUMENT THAT GOES OUT, not on a window of source lines. The
+# window helpers elsewhere in this file report a positive verdict when their
+# anchor moves, so a static check here would go quiet exactly when the wording it
+# depends on is edited. This drives the real function and reads the real argv.
+#
+# BOTH DIRECTIONS, because the negative alone passes when the path is dead: with
+# an approval still open the banner is telling the truth and must stay, and only
+# when the last one closes may it come down.
+#
+# The `wait` is load-bearing — the notifier is launched detached, so without it
+# the child may not have written by the time the assertion reads the log.
+overflow_settle_probe() {
+  # overflow_settle_probe <ledger-path>
+  rm -rf "$WORK/ovf"; mkdir -p "$WORK/ovf"
+  printf 'K9\nK10\n' > "$WORK/ovf/notify.overflow"
+  : > "$NOTIFY_LOG"
+  PATH="$WORK/bin:$PATH" \
+  CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  CC_CMDS_AUTOPILOT_NOTIFY=1 \
+  CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+  CC_GATE_SOURCE_ONLY=1 \
+    bash -c '. "$1"; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RTOVF
+             gate_notify_overflow_settled; wait' \
+    _ "$GATE" "$WORK/ovf" "$1" >/dev/null 2>&1
+}
+printf -- '- `승인` | 승인 id=OVF1 | 상태=대기 | 절단점=커밋 | prev=x\n' > "$WORK/ovf-pending.md"
+{ cat "$WORK/ovf-pending.md"
+  printf -- '- `승인` | 승인 id=OVF1 | 상태=승인 | 해소 시각=x | prev=y\n'
+} > "$WORK/ovf-settled.md"
+
+overflow_settle_probe "$WORK/ovf-pending.md"
+check "열린 승인이 남아 있으면 넘침 배너를 지우지 않는다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-대기' "$NOTIFY_LOG" || true)" "0"
+
+overflow_settle_probe "$WORK/ovf-settled.md"
+check "마지막 승인이 닫히면 넘침 배너도 함께 지운다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-대기' "$NOTIFY_LOG" || true)" "1"
+check "그 지우기는 넘침 슬롯 주소로 나간다 (개별 주소가 아니라)" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-OVF1' "$NOTIFY_LOG" || true)" "0"
+
+# The accepted trade-off is not reopened: a demoted item is still never promoted
+# back, and this path takes a false count off the screen without touching the
+# list that count is read from.
+check "넘침 목록 자체는 회수하지 않는다" \
+  "$(grep -c . "$WORK/ovf/notify.overflow" || true)" "2"
+
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
 # Hard-coding a token's title and group slot inside the suite means the scaffold

@@ -3121,6 +3121,37 @@ gate_notify_approval() {
   return 0
 }
 
+gate_notify_overflow_settled() {
+  # THE WAITING-SLOT BANNER HAS TO COME DOWN TOO, and nothing was taking it down.
+  #
+  # An individual approval's notice is addressed by its own id, so closing that
+  # approval clears it. The ninth and later arrivals never got an individual
+  # address — they were demoted into the one shared waiting slot — so the
+  # id-addressed clear at a close site aims at a group that never carried a
+  # banner. The result was the exact inversion of what the address was added for:
+  # the eight individual notices vanished as they were answered while "there is
+  # more to answer — N" stayed on screen alone, telling a person that a run with
+  # nothing left to answer still had N waiting.
+  #
+  # THE CONDITION IS "NOTHING IS WAITING", NOT "THE STACK IS EMPTY". An empty
+  # stack means every notice that held an individual seat has been answered, and
+  # says nothing about the demoted ones — which may still be open. Clearing on
+  # that signal would take down a banner that is telling the truth. The ledger
+  # answers the real question directly, and by the time this runs the closing row
+  # is already appended, so the approval being closed is not counted.
+  #
+  # THE OVERFLOW LIST IS NOT RECLAIMED HERE. Whether a demoted item is ever
+  # promoted back into an individual seat is a separate accepted trade-off; this
+  # takes a false count off the screen and nothing else.
+  #
+  # No caller guard on this line: the clear verb carries the seat guard inside
+  # itself, which is the whole reason it was put there rather than at call sites.
+  [ "$(cc_notify_overflow_count)" != "0" ] || return 0
+  [ "$(gate_pending_approval_ids | gate_count)" = "0" ] || return 0
+  cc_notify_clear overflow || true
+  return 0
+}
+
 gate_record_row() {
   # gate_record_row <kind> <segment-id> <target-alias> <키=값>...
   #
@@ -5376,6 +5407,7 @@ gate_close() {
     # second carries a seat guard, and that guard lives inside the verb.
     cc_notify_stack_release "$id" || true
     cc_notify_clear answer "$id" || true
+    gate_notify_overflow_settled || true
     log "승인 무효 — $id (행위는 수행되지 않습니다)"
     return 0
   fi
@@ -5478,6 +5510,7 @@ gate_close() {
       "답변 문면=$abody" "해소 시각=$(now_iso)"
     cc_notify_stack_release "$id" || true
     cc_notify_clear answer "$id" || true
+    gate_notify_overflow_settled || true
     log "승인 거부 — $id (물었고 답이 아니오입니다)"
     return 0
   fi
@@ -5486,6 +5519,7 @@ gate_close() {
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   cc_notify_stack_release "$id" || true
   cc_notify_clear answer "$id" || true
+  gate_notify_overflow_settled || true
   log "승인 해소 — $id"
   return 0
 }
