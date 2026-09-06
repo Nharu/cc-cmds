@@ -81,10 +81,18 @@ export XDG_STATE_HOME="$WORK/state"
 # writer never sees a closed pipe. The count goes to /dev/null; only the exit
 # status is wanted.
 grep_all_q() {
-  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
-  # when its output is being discarded, which reintroduces the very SIGPIPE this
-  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
-  # 141 while `n=$(grep -c …)` returns 0.
+  # The count is CAPTURED rather than redirected to /dev/null — but NOT because
+  # discarding the output makes grep exit early. It does not. Re-measured on this
+  # host over 200,000 lines behind a `sed`: `sed … | grep -c … >/dev/null`
+  # produced a non-zero pipeline 0 times out of 10 and the captured form 0 out of
+  # 10, while the control `grep -q` produced one 10 out of 10. What
+  # short-circuits is the `-q` flag itself.
+  #
+  # What capturing actually buys is that the verdict is a VALUE rather than an
+  # exit status. `grep -c` exits 1 when the count is zero, so the redirected form
+  # hands its truth value to `pipefail` — fine while this stays an `if` condition
+  # and a trap for whoever copies the idiom into a pipeline whose failure means
+  # something else.
   local n
   n=$(grep -c "$@" || true)
   [ "${n:-0}" != "0" ]
@@ -204,9 +212,19 @@ fi
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -f "$f" ] || continue
-  # `grep -c … >/dev/null` belongs in the pattern as well: BSD grep
-  # short-circuits when its output is discarded, so that spelling is the same
-  # early-exiting read wearing a different name.
+  # `grep -c … >/dev/null` belongs in the pattern as well, but NOT because it
+  # exits early — it does not. Measured on BSD grep 2.6.0-FreeBSD and GNU grep
+  # 3.12 over 4MB and 16MB inputs: `grep -cF … >/dev/null` produced a non-zero
+  # pipeline 0 times out of 40 on both, while the control `grep -qF …` produced
+  # one 40 out of 40 with the redirection and 40 out of 40 without it. What
+  # short-circuits is the `-q` flag itself; discarding the output has nothing to
+  # do with it.
+  #
+  # The reason to refuse this spelling is the other one: `grep -c` exits 1 when
+  # the count is zero, and zero matches is an ordinary result rather than a
+  # failure — so on the right of a pipe under `pipefail` it fails the pipeline
+  # for finding nothing. Taking the count into a variable is what moves the
+  # verdict from an exit status onto a value, which is the shape this tree wants.
   early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
   if [ -z "$early" ]; then
     ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
@@ -5841,8 +5859,8 @@ check "라우터 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBN2 | 상태=park' "$LEDGER" || true)" "1"
 notify_settle 1
 check "라우터 호출은 배너를 올린다" "$(notify_lines)" "1"
-check "그 배너는 손 필요 제목을 쓴다" \
-  "$(grep -cF -- '-title 손 필요 -message' "$NOTIFY_LOG" || true)" "1"
+check "그 배너 제목이 할 일을 말한다" \
+  "$(grep -cF -- '-title cc-cmds · 직접 손대세요 -message' "$NOTIFY_LOG" || true)" "1"
 check "그 배너의 그룹이 항목 키를 싣는다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
 
@@ -6085,32 +6103,69 @@ esac
 # traded a lost body for a distorted one, so the emitter quotes instead. What is
 # asserted is that the argument no longer OPENS with the raw character and that
 # the sentence survives intact.
+#
+# THIS PATH NOW SATISFIES THE FIRST PROPERTY BY A DIFFERENT MECHANISM, and the
+# assertions follow the mechanism rather than pinning the old one. The title
+# carries an instruction now, so handing a bare question to the body puts a
+# command over a question with nowhere on that screen to answer it. The question
+# is REPORTED inside a statement instead — which also means the value opens with
+# the statement, never with the caller's first character. The quoting branch is
+# still what protects a body handed over raw, and the probe below drives it
+# directly because no call site on this path reaches it any more.
 body_survives() {
-  # body_survives <index> <body> <fragment-that-must-survive>
-  #
-  # The fragment is passed separately because the quoting escapes an inner `"`,
-  # so for that one case the bytes on the wire are deliberately not the bytes
-  # that went in — and asserting the input verbatim would demand the lossy
-  # behaviour this change removed.
+  # body_survives <index> <body>
   notify_reset
   outcome_notify 0 success "SNB$1" "$2"
   notify_settle 1
   local line
   line=$(tail -1 "$NOTIFY_LOG")
   case "$line" in
-    *'-message "'*) ok "본문이 인용돼 나간다: $2" ;;
-    *) bad "본문 인용" "$line" ;;
+    *"-message \`SNB$1\` 스테이지가 물음 앞에서 멈췄습니다 — 「$2」"*)
+      ok "질문이 진술 안에 축자로 실려 나간다: $2" ;;
+    *) bad "본문 화행" "$line" ;;
   esac
   case "$line" in
-    *"$3"*) ok "본문의 뜻이 보존된다: $2" ;;
-    *) bad "본문 보존" "$line" ;;
+    *'-message ['*|*'-message ('*|*'-message {'*|*'-message <'*|*'-message "'*|*'-message -'*)
+      bad "본문 선행 문자" "$line" ;;
+    *) ok "본문이 삼킴 문자로 시작하지 않는다: $2" ;;
   esac
 }
-body_survives 1 '(임시) 확인이 필요합니다'   '(임시) 확인이 필요합니다'
-body_survives 2 '{키} 값을 정해야 합니다'    '{키} 값을 정해야 합니다'
-body_survives 3 '<대상> 을 골라야 합니다'    '<대상> 을 골라야 합니다'
-body_survives 4 '"계속할까요" 라고 물었습니다' '계속할까요\" 라고 물었습니다'
-body_survives 5 '-p 를 빠뜨렸습니다'         '-p 를 빠뜨렸습니다'
+body_survives 1 '(임시) 확인이 필요합니다'
+body_survives 2 '{키} 값을 정해야 합니다'
+body_survives 3 '<대상> 을 골라야 합니다'
+body_survives 4 '"계속할까요" 라고 물었습니다'
+body_survives 5 '-p 를 빠뜨렸습니다'
+
+# --- THE LOSSLESS QUOTING, DRIVEN AT THE EMITTER ----------------------------
+#
+# An approval's question is handed over VERBATIM and can open with any character,
+# so the quoting branch is live even though the park path no longer reaches it.
+# Driving `cc_notify_body` directly is what keeps that branch measured; asserting
+# it only through a call site would make it silently untested the moment that
+# call site starts wrapping — which is exactly what just happened.
+quote_probe() {
+  bash -c '
+    . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+    for b in "$@"; do printf "%s\n" "$(cc_notify_body "$b")"; done
+  ' _ \
+    '(임시) 확인이 필요합니다' \
+    '{키} 값을 정해야 합니다' \
+    '<대상> 을 골라야 합니다' \
+    '"계속할까요" 라고 물었습니다' \
+    '-p 를 빠뜨렸습니다' \
+    '[대괄호] 확인이 필요합니다'
+}
+_qp=$(quote_probe)
+check "위험 문자로 시작하는 본문 여섯이 전부 인용으로 감싸진다" \
+  "$(printf '%s\n' "$_qp" | grep -c '^"' || true)" "6"
+case "$_qp" in
+  *'계속할까요\"'*) ok "안쪽 따옴표를 escape 해 원문이 복원 가능하게 남는다" ;;
+  *) bad "무손실 인용" "$(printf '%s' "$_qp" | tr '\n' ' ')" ;;
+esac
+case "$_qp" in
+  *'"-p 를 빠뜨렸습니다"'*) ok "선행 대시를 벗기지 않고 감싼다 (뜻이 훼손되지 않는다)" ;;
+  *) bad "무손실 인용" "$(printf '%s' "$_qp" | tr '\n' ' ')" ;;
+esac
 
 # --- THE CAP IS A CONCURRENCY, NOT A LIFETIME ------------------------------
 #
@@ -6159,11 +6214,277 @@ site_releases() {
   sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'cc_notify_stack_release' || true
 }
 check "승인 닫기 — 무효 종단이 슬롯을 회수한다" \
-  "$( [ "$(site_releases "\"상태=무효\" \"질문 문면=\$q\"" 10)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+  "$( [ "$(site_releases "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 check "승인 닫기 — 거부 종단이 슬롯을 회수한다" \
   "$( [ "$(site_releases "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
 check "승인 닫기 — 승인 종단이 슬롯을 회수한다" \
   "$( [ "$(site_releases "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+
+# --- AND ALL THREE TAKE THE BANNER OFF THE SCREEN ---------------------------
+#
+# Reclaiming a slot and clearing a banner are different acts and both belong on
+# every terminal. An approval that was voided, refused or granted is equally done
+# being waited on, so a clear on only one of the three leaves the other two
+# showing a summons nobody owes an answer to — which is the exact state the group
+# key was added to end.
+site_clears() {
+  # site_clears <anchor-fixed-string> <lines-after>
+  local ln
+  ln=$(grep -nF "$1" "$GATE" | sed -n '1p' | cut -d: -f1)
+  if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
+  sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'cc_notify_clear' || true
+}
+check "승인 닫기 — 무효 종단이 배너를 지운다" \
+  "$( [ "$(site_clears "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
+check "승인 닫기 — 거부 종단이 배너를 지운다" \
+  "$( [ "$(site_clears "\"상태=거부\" \"질문 문면=\$q\"" 5)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
+check "승인 닫기 — 승인 종단이 배너를 지운다" \
+  "$( [ "$(site_clears "\"상태=승인\" \"질문 문면=\$q\"" 5)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
+
+# --- THE SEAT GUARD ON CLEARING, DRIVEN IN BOTH DIRECTIONS ------------------
+#
+# Clearing changes what is on a person's screen right now, which is why it needs
+# the guard that reclaiming a slot does not. The guard lives INSIDE the verb
+# rather than at its call sites — every firing point in the gate carries its own
+# copy, and a copy is a guard the next call site can be written without.
+#
+# Both directions, because a negative assertion alone passes when the verb does
+# nothing at all.
+clear_probe() {
+  # clear_probe <stage-segment-or-empty>
+  CC_PIPELINE_SEGMENT="$1" CC_PIPELINE_STAGE_ID="$1" \
+  PATH="$WORK/bin:$PATH" \
+  CC_CMDS_AUTOPILOT_NOTIFY=1 \
+  CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  bash -c '
+    . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+    RUN_ID=RT
+    cc_notify_clear answer A1
+  '
+}
+: > "$NOTIFY_LOG"
+clear_probe ''
+notify_settle 1
+check "라우터 호출은 배너를 지운다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RT-A1' "$NOTIFY_LOG" || true)" "1"
+
+: > "$NOTIFY_LOG"
+clear_probe SBC
+sleep 0.3
+check "스테이지 호출은 배너를 지우지 않는다" "$(notify_lines)" "0"
+
+# --- THE WAITING-SLOT BANNER COMES DOWN TOO ---------------------------------
+#
+# The ninth and later approvals never get an individual address — they are
+# demoted into one shared waiting slot — so the id-addressed clear at a close
+# site aims at a group that never carried a banner. Without this path the eight
+# individual notices vanished as they were answered while "there is more to
+# answer — N" stayed on screen alone, which says the opposite of the truth on a
+# morning where nothing is left.
+#
+# MEASURED ON THE ARGUMENT THAT GOES OUT, not on a window of source lines. The
+# window helpers elsewhere in this file report a positive verdict when their
+# anchor moves, so a static check here would go quiet exactly when the wording it
+# depends on is edited. This drives the real function and reads the real argv.
+#
+# BOTH DIRECTIONS, because the negative alone passes when the path is dead: with
+# an approval still open the banner is telling the truth and must stay, and only
+# when the last one closes may it come down.
+#
+# The `wait` is load-bearing — the notifier is launched detached, so without it
+# the child may not have written by the time the assertion reads the log.
+overflow_settle_probe() {
+  # overflow_settle_probe <ledger-path>
+  rm -rf "$WORK/ovf"; mkdir -p "$WORK/ovf"
+  # THE KEYS ARE APPROVAL IDS THE LEDGER KNOWS, and that is not decoration. The
+  # predicate walks the slot's own occupants and asks each one whether it is
+  # settled, so a key no ledger names is held alive on purpose — an occupant
+  # nothing can retire must not be silently counted as gone.
+  printf 'OVF1\nOVF2\n' > "$WORK/ovf/notify.overflow"
+  : > "$NOTIFY_LOG"
+  PATH="$WORK/bin:$PATH" \
+  CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  CC_CMDS_AUTOPILOT_NOTIFY=1 \
+  CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+  CC_GATE_SOURCE_ONLY=1 \
+    bash -c '. "$1"; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RTOVF
+             gate_notify_overflow_settled; wait' \
+    _ "$GATE" "$WORK/ovf" "$1" >/dev/null 2>&1
+}
+{ printf -- '- `승인` | 승인 id=OVF1 | 상태=대기 | 절단점=커밋 | prev=x\n'
+  printf -- '- `승인` | 승인 id=OVF2 | 상태=대기 | 절단점=커밋 | prev=x\n'
+} > "$WORK/ovf-pending.md"
+{ cat "$WORK/ovf-pending.md"
+  printf -- '- `승인` | 승인 id=OVF1 | 상태=승인 | 해소 시각=x | prev=y\n'
+  printf -- '- `승인` | 승인 id=OVF2 | 상태=승인 | 해소 시각=x | prev=y\n'
+} > "$WORK/ovf-settled.md"
+
+overflow_settle_probe "$WORK/ovf-pending.md"
+check "열린 승인이 남아 있으면 넘침 배너를 지우지 않는다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-대기' "$NOTIFY_LOG" || true)" "0"
+
+overflow_settle_probe "$WORK/ovf-settled.md"
+check "마지막 승인이 닫히면 넘침 배너도 함께 지운다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-대기' "$NOTIFY_LOG" || true)" "1"
+check "그 지우기는 넘침 슬롯 주소로 나간다 (개별 주소가 아니라)" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTOVF-OVF1' "$NOTIFY_LOG" || true)" "0"
+
+# The accepted trade-off is not reopened: a demoted item is still never promoted
+# back, and this path takes a false count off the screen without touching the
+# list that count is read from.
+check "넘침 목록 자체는 회수하지 않는다" \
+  "$(grep -c . "$WORK/ovf/notify.overflow" || true)" "2"
+
+# --- THE SLOT HOLDS STOPS TOO, AND DEMOTION IS DRIVEN FOR REAL --------------
+#
+# The waiting slot does not stand for approvals alone. The stacking branch takes
+# `answer` AND `hands` against one cap and demotes either the same way, so the
+# thing that banner represents can be a stop summons — and a stop is not an
+# approval row. A predicate that polled approvals therefore took the banner down
+# while its subject was still waiting, and every stop firing point sits behind a
+# once-marker, so it did not come back.
+#
+# THE CAP IS REACHED BY FIRING, not by writing the overflow file by hand. Every
+# assertion above hands the list to the predicate ready-made, which tests the
+# predicate and not the path that fills it; nothing in the tree drove a real
+# demotion, so the population question could not have been asked. Eight answers
+# take the eight seats and the ninth firing is the stop.
+#
+# THE MARKER IS THE SETTLEMENT SIGNAL for a park key, and both directions are
+# driven: while the router has not yet recorded that segment out of park the
+# banner must stay, and once that marker is expired it may go.
+overflow_demotion_probe() {
+  # overflow_demotion_probe <ledger-path> <present|expired>
+  rm -rf "$WORK/ovfd"; mkdir -p "$WORK/ovfd/notify"
+  if [ "$2" = "present" ]; then printf '1\n' > "$WORK/ovfd/notify/park-SD1"; fi
+  : > "$NOTIFY_LOG"
+  PATH="$WORK/bin:$PATH" \
+  CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+  CC_CMDS_AUTOPILOT_NOTIFY=1 \
+  CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+  CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+  CC_GATE_SOURCE_ONLY=1 \
+    bash -c '. "$1"; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RTDEM
+             for i in 1 2 3 4 5 6 7 8; do cc_notify_fire answer "질문 $i" "OVD$i"; done
+             cc_notify_fire hands "세그먼트 SD1 이 park 되었습니다" "park-SD1#1"
+             gate_notify_overflow_settled; wait' \
+    _ "$GATE" "$WORK/ovfd" "$1" >/dev/null 2>&1
+}
+: > "$WORK/ovfd-settled.md"
+for i in 1 2 3 4 5 6 7 8; do
+  printf -- '- `승인` | 승인 id=OVD%s | 상태=대기 | 절단점=커밋 | prev=x\n' "$i" >> "$WORK/ovfd-settled.md"
+  printf -- '- `승인` | 승인 id=OVD%s | 상태=승인 | 해소 시각=x | prev=y\n' "$i" >> "$WORK/ovfd-settled.md"
+done
+
+overflow_demotion_probe "$WORK/ovfd-settled.md" present
+check "대조군 — 아홉째 발사가 실제로 강등된다" \
+  "$(grep -c . "$WORK/ovfd/notify.overflow" || true)" "1"
+check "대조군 — 강등된 것이 그 멈춤 키다" \
+  "$(grep -cxF 'park-SD1#1' "$WORK/ovfd/notify.overflow" || true)" "1"
+check "대조군 — 여덟 자리는 개별로 차 있다" \
+  "$(grep -c . "$WORK/ovfd/notify.stack" || true)" "8"
+check "대조군 — 강등된 멈춤이 대기 슬롯 배너를 올린다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "1"
+check "승인이 전부 닫혀도 살아 있는 멈춤이 남으면 대기 배너를 지우지 않는다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "0"
+
+overflow_demotion_probe "$WORK/ovfd-settled.md" expired
+check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
+  "$(grep -cF -- '-remove cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "1"
+
+# --- THE THREE CALL SITES ARE PINNED, LOUDLY --------------------------------
+#
+# Everything this repair gives a person hangs on three lines in `gate_close`, and
+# the probes above call the function DIRECTLY — so deleting all three left the
+# suite reporting the same counts and the same `PASS:` lines, byte for byte. A
+# green that cannot go red for the only wiring it has does not merely stay quiet;
+# it reads as verification.
+#
+# THE RAW COUNT IS THE OBSERVED VALUE, not a verdict word. The window helpers in
+# this file fold a missing anchor into a positive verdict, so a fourth copy of
+# that idiom would add to the class an earlier review already named. Two sites
+# here already compare a raw count against its expectation, and this follows
+# them.
+#
+# ADJACENCY IS PINNED WITH THE COUNT, so relocating a call out of its terminal is
+# caught as well as deleting it: the individual clear and this one are one act in
+# two lines, and the second is only correct where the first is.
+check "넘침 정리가 승인 닫기 세 종단에 전부 배선돼 있다" \
+  "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "3"
+check "그 셋이 각각 개별 배너 지우기 바로 뒤에 붙어 있다" \
+  "$( { grep -A1 -F 'cc_notify_clear answer "$id" || true' "$GATE" || true; } \
+      | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "3"
+
+# --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
+#
+# Hard-coding a token's title and group slot inside the suite means the scaffold
+# has to be rewritten every time an axis moves, and it is that rewrite — not the
+# table — that drifts. One file, one walk: adding a column is a column, and the
+# suite reads whatever is there.
+#
+# The sound is asserted as a CONSTANT rather than as a column. It stopped being
+# an axis when every firing point was counted and none of them repeats, so the
+# table has nothing to say about it and the suite says the one thing that is
+# true: all of them carry it, and a single silent token is a failure.
+TOKEN_TABLE="$repo_root/tests/fixtures/notify-class-tokens.tsv"
+if [ ! -f "$TOKEN_TABLE" ]; then
+  bad "토큰 표" "$TOKEN_TABLE 가 없다 — 표가 없으면 아래 순회는 조용히 0회 돈다"
+else
+  n_tok=0
+  while IFS="$(printf '\t')" read -r tok want_title want_group want_bucket; do
+    case "$tok" in ''|'#'*) continue ;; esac
+    n_tok=$((n_tok + 1))
+    exp_group=$(printf '%s' "$want_group" | sed 's/<RUN>/RT/; s/<KEY>/KEY/')
+    got=$(bash -c '
+      . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+      RUN_ID=RT
+      printf "%s\t%s\t%s" \
+        "$(cc_notify_title "$1")" "$(cc_notify_group "$1" KEY)" "$(cc_notify_sound "$1")"
+    ' _ "$tok")
+    check "토큰 표 — $tok 의 제목·그룹·소리" \
+      "$got" "$(printf '%s\t%s\tdefault' "$want_title" "$exp_group")"
+
+    other=$(bash -c '
+      . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+      RUN_ID=RT
+      printf "%s" "$(cc_notify_group "$1" 다른키)"
+    ' _ "$tok")
+    if [ "$want_bucket" = "stack" ]; then
+      check "토큰 표 — $tok 는 항목 키마다 다른 자리를 쓴다 (쌓기)" \
+        "$( [ "$other" != "$exp_group" ] && printf 'differs' || printf 'same')" "differs"
+    else
+      check "토큰 표 — $tok 는 항목 키와 무관하게 한 자리다 (대체)" \
+        "$( [ "$other" = "$exp_group" ] && printf 'same' || printf 'differs')" "same"
+    fi
+  done < "$TOKEN_TABLE"
+  check "토큰 표가 일곱 행이다" "$n_tok" "7"
+fi
+
+# The set is CLOSED, and an unrecognized token raises nothing and says so.
+# Falling back to the quietest token is the characteristic failure of a table
+# like this: an unclassified condition would reach the user as a status report,
+# or not at all.
+tok_refusal=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  CC_CMDS_NOTIFY_HOST_OS=NotDarwin cc_notify_fire 없는토큰 본문 2>&1
+')
+case "$tok_refusal" in
+  *"알 수 없는 부류 토큰"*) ok "폐쇄 집합 — 모르는 토큰은 배너를 올리지 않고 그렇게 말한다" ;;
+  *) bad "폐쇄 집합" "$(printf '%s' "$tok_refusal" | tr '\n' ' ')" ;;
+esac
+tok_refusal_clear=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  CC_CMDS_NOTIFY_HOST_OS=NotDarwin cc_notify_clear 없는토큰 K 2>&1
+')
+case "$tok_refusal_clear" in
+  *"알 수 없는 부류 토큰"*) ok "폐쇄 집합 — 지우기도 같은 집합을 쓴다" ;;
+  *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did

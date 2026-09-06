@@ -2099,14 +2099,15 @@ gate_surface_check() {
     # this row is exactly such a block, so that arm is silent for this run
     # forever.
     #
-    # `status-hands` and not `hands`: the gate refuses to resolve a block whose
-    # cause is invalidation, so it is not something a person can put their hands
-    # on. It fails the stacking test — "an individually identified thing that
-    # stays put until a person touches THAT" — while still needing the title
-    # that says a person is needed.
+    # `rekick` and not `hands`: the gate refuses to resolve a block whose cause
+    # is invalidation, so it is not something a person can put their hands on. It
+    # fails the stacking test — "an individually identified thing that stays put
+    # until a person touches THAT" — so it takes the per-run replace slot, and
+    # the title names the one action actually available here, which is to open a
+    # fresh run because this one's baseline cannot be taken again.
     if cc_caller_is_router && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
       : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
-      cc_notify_fire status-hands \
+      cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
     fi
   fi
@@ -3626,6 +3627,92 @@ gate_notify_approval() {
   return 0
 }
 
+gate_notify_overflow_settled() {
+  # THE WAITING-SLOT BANNER HAS TO COME DOWN TOO, and nothing was taking it down.
+  #
+  # An individual approval's notice is addressed by its own id, so closing that
+  # approval clears it. The ninth and later arrivals never got an individual
+  # address — they were demoted into the one shared waiting slot — so the
+  # id-addressed clear at a close site aims at a group that never carried a
+  # banner. The result was the exact inversion of what the address was added for:
+  # the eight individual notices vanished as they were answered while "there is
+  # more to answer — N" stayed on screen alone, telling a person that a run with
+  # nothing left to answer still had N waiting.
+  #
+  # THE CONDITION IS "NOTHING IS WAITING", NOT "THE STACK IS EMPTY". An empty
+  # stack means every notice that held an individual seat has been answered, and
+  # says nothing about the demoted ones — which may still be open. Clearing on
+  # that signal would take down a banner that is telling the truth.
+  #
+  # AND "NOTHING IS WAITING" IS NOT "NO APPROVAL IS OPEN". That was the first
+  # form of this check and it had the same hole one population over: the waiting
+  # slot does not hold approvals alone. The stacking branch admits `answer` AND
+  # `hands` against one cap and demotes either the same way, so a stop summons
+  # can be the thing the slot stands for — and a stop is not an approval row.
+  # With approvals as the whole population, the last approval closing took down
+  # a banner whose subject was still waiting for a person, and the stop firing
+  # points all sit behind once-markers, so it never came back. The slot's own
+  # occupants are the population, so this walks them.
+  #
+  # THE OVERFLOW LIST IS NOT RECLAIMED HERE. Whether a demoted item is ever
+  # promoted back into an individual seat is a separate accepted trade-off; this
+  # takes a false count off the screen and nothing else.
+  #
+  # No caller guard on this line: the clear verb carries the seat guard inside
+  # itself, which is the whole reason it was put there rather than at call sites.
+  local o key
+  [ "$(cc_notify_overflow_count)" != "0" ] || return 0
+  o="${RUN_DIR:-}/notify.overflow"
+  [ -f "$o" ] || return 0
+  # Redirected from the file rather than piped, so an early return leaves the
+  # function rather than a subshell.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if gate_notify_slot_key_alive "$key"; then return 0; fi
+  done < "$o"
+  cc_notify_clear overflow || true
+  return 0
+}
+
+gate_notify_slot_key_alive() {
+  # gate_notify_slot_key_alive <item-key> — 0 when the thing this key stands for
+  # may still be waiting for a person, 1 when it is settled.
+  #
+  # UNKNOWN MEANS ALIVE. Of the two ways to be wrong, holding a banner that is no
+  # longer needed shows a person something stale that one glance corrects, while
+  # taking down a banner that is still true removes the only trace the demoted
+  # item ever had — nobody can miss a notice that never arrived. So every arm
+  # that cannot prove settlement answers "alive".
+  local key="$1" seg st row
+  case "$key" in
+    park-*)
+      # `park-<seg>` and `park-<seg>#<attempt>` both resolve to ONE marker file
+      # named by the segment alone, which is why the attempt is the marker's
+      # contents rather than part of its name. The router expires that marker the
+      # moment the segment lands in any state other than park, and that writer is
+      # the only one that sees the departure happen — so its absence is the
+      # settlement signal and no second bookkeeping is needed.
+      seg="${key#park-}"
+      seg="${seg%%#*}"
+      [ -f "${RUN_DIR:-}/notify/park-$seg" ] && return 0
+      return 1 ;;
+    stop-*|run-*)
+      # NEITHER OF THESE HAS AN EXPIRY PATH. A stop with no artifact writes no
+      # marker, and a run-scope anchor's key is a reason slug with nothing that
+      # retires it. With no signal that says "settled", the honest answer is the
+      # conservative one, and the cost is a waiting-slot banner that outlives its
+      # subject rather than one that predeceases it.
+      return 0 ;;
+  esac
+  # Everything else is an approval id — the same last-row-per-id fold the pending
+  # census uses, applied to one id.
+  row=$( { gate_rows '승인' | grep -F "승인 id=$key " || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  st=$(gate_row_field "$row" '상태')
+  [ "$st" = "대기" ] && return 0
+  return 1
+}
+
 gate_record_row() {
   # gate_record_row <kind> <segment-id> <target-alias> <키=값>...
   #
@@ -4671,8 +4758,12 @@ gate_verb_act() {
         "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
+      # left for a person is to read the result rather than to re-open anything.
+      # The instruction to kick off again belongs to the site that anchors the
+      # run, which has already spoken by the time this one does.
       if cc_caller_is_router; then
-        cc_notify_fire status "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
+        cc_notify_fire ended "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
       fi
       return 0
     fi
@@ -4735,11 +4826,12 @@ gate_verb_act() {
     # the very distinction that branch exists to record. The banner is kept
     # whole and fires on every terminal class, including the one holding open
     # questions — that is still an ending someone should be told about.
-    # The other arm that decides the run's end. `status`, because a satisfied
-    # ending asks nothing of anyone — the replace slot is exactly right for a
-    # fact that needs no answer, and re-raising it costs nothing.
+    # The other arm that decides the run's end. `ended`, because what a person
+    # does next here is look at the result and decide what follows — the per-run
+    # replace slot is exactly right for a fact that supersedes any earlier state
+    # of the same run, and re-raising it costs nothing.
     if cc_caller_is_router; then
-      cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+      cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
     fi
   elif [ -z "$unmet" ]; then
     # THE LITERAL TEST STAYS. Every other site compares the disposition token by
@@ -5611,7 +5703,19 @@ gate_record_stage_outcome() {
         # is reachable is a COMPLETE record whose field could not be read, and
         # the wording says exactly that. An empty extraction must not kill the
         # shell either: this sits on the critical path of an exit-on-error shell.
-        [ -n "$q" ] || q="스스로 멈췄습니다 — 중단 기록을 확인하세요"
+        #
+        # THE QUESTION IS REPORTED, NOT ASKED. Now that a title carries an
+        # instruction, handing the stage's raw question straight to the body puts
+        # "직접 손대세요" over "계속할까요?" — the title commands, the body asks, and
+        # there is nowhere on that screen to answer. The question stays verbatim
+        # because it is the best wording this design has; it is wrapped in a
+        # statement so the two halves make one speech act. The fallback takes the
+        # same form for the same reason.
+        if [ -n "$q" ]; then
+          q="\`${seg}\` 스테이지가 물음 앞에서 멈췄습니다 — 「${q}」"
+        else
+          q="\`${seg}\` 스테이지가 스스로 멈췄습니다 — 중단 기록을 확인하세요"
+        fi
         # The segment-park marker, written HERE because the attempt number is an
         # argument of this function and is NOT a field of a segment row. The file
         # is named by the segment alone so the segment-row side can find it
@@ -5969,7 +6073,17 @@ gate_close() {
     # because that is what the firing site (`cc_notify_fire answer "$q" "$id"`)
     # wrote into the stack. Deriving it differently here would leave the seat
     # occupied by a key nothing releases.
+    #
+    # AND THE BANNER COMES OFF THE SCREEN ON ALL THREE TOO. An approval that was
+    # voided, refused or granted is equally done being waited on, so leaving its
+    # notice up is the state the address was added to end: in the morning the
+    # answered and the unanswered look the same. The two calls are deliberately
+    # NOT one — reclaiming a slot erases a line in a file and delivers nothing,
+    # while clearing changes what is on a person's screen right now, so only the
+    # second carries a seat guard, and that guard lives inside the verb.
     cc_notify_stack_release "$id" || true
+    cc_notify_clear answer "$id" || true
+    gate_notify_overflow_settled || true
     log "승인 무효 — $id (행위는 수행되지 않습니다)"
     return 0
   fi
@@ -6071,6 +6185,8 @@ gate_close() {
     gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
       "답변 문면=$abody" "해소 시각=$(now_iso)"
     cc_notify_stack_release "$id" || true
+    cc_notify_clear answer "$id" || true
+    gate_notify_overflow_settled || true
     log "승인 거부 — $id (물었고 답이 아니오입니다)"
     return 0
   fi
@@ -6078,6 +6194,8 @@ gate_close() {
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
     "답변 문면=$abody" "해소 시각=$(now_iso)"
   cc_notify_stack_release "$id" || true
+  cc_notify_clear answer "$id" || true
+  gate_notify_overflow_settled || true
   log "승인 해소 — $id"
   return 0
 }
