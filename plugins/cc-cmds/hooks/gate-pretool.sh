@@ -393,6 +393,7 @@ case "$tool" in
       stat_args[${#stat_args[@]}]="$a"
     done
     stat_args[${#stat_args[@]}]="$RUN_DIR"
+    stat_args[${#stat_args[@]}]="$RUN_DIR/settings"
     stat_args[${#stat_args[@]}]="$hook_self"
     [ -n "$LEDGER" ] && stat_args[${#stat_args[@]}]="$LEDGER"
     [ -n "$GRANT" ]  && stat_args[${#stat_args[@]}]="$GRANT"
@@ -441,6 +442,18 @@ case "$tool" in
     phys_par=""; hook_ino "$ap_par" && phys_par="$HOOK_INO"
     lex_par="";  hook_ino "$np_par" && lex_par="$HOOK_INO"
     [ "$phys_par" = "$lex_par" ] || deny "$(jstr 'gate: 이 경로의 상위 디렉터리가 어휘 해소와 커널 해소에서 다릅니다 — 판정 불가는 허용이 아닙니다. 상위 참조와 심링크를 걷어낸 철자로 다시 부르세요')"
+
+    # 런 설정 디렉터리는 런 디렉터리 안에서 아이노드 앵커가 없는 유일한 게이트
+    # 소유 디렉터리였다. `hook_under` 는 조상 사슬을 아래에서 위로 훑어 가장 깊은
+    # 일치에서 접으므로, 중간 성분이 이 디렉터리로 해소되면 그 조상이 아무와도
+    # 비교되지 않고 사슬이 런 디렉터리까지 떨어진다 — 그러면 꼬리가 허용 이름으로
+    # 나오고 허용 팔이 답한다. 같은 파일의 직접 철자는 거부되므로, 그 순간 허용
+    # 목록 자신의 거부 팔이 철자만으로 우회된다. 아래 `settings/*` 팔은 꼬리
+    # 철자를 보므로 이 경우를 볼 수 없다 — 앵커가 그 블록보다 앞에 서야 한다.
+    # 같은 패턴이 이미 이 파일의 `$cfg/projects`·`$lane/projects` 앵커에 있다.
+    if hook_under "$RUN_DIR/settings"; then
+      deny "$(jstr 'gate: 런 설정 디렉터리는 강제 표면입니다 — 여기 한 번 쓰면 이 스테이지의 경계가 통째로 사라집니다')"
+    fi
 
     # THE RUN DIRECTORY IS AN ALLOW-LIST, NOT A DENY-LIST — the same inversion
     # this file's header argues for, applied to the one storage area that was

@@ -2304,6 +2304,30 @@ else
   printf 'NOTE: 런 디렉터리 심링크를 만들지 못해 건너뛴다\n'
 fi
 
+# 조상 앵커. 런 설정 디렉터리는 런 디렉터리 안에서 아이노드 앵커가 없는 유일한
+# 게이트 소유 디렉터리였고, 그래서 중간 성분이 그리로 해소되면 꼬리가 허용
+# 이름으로 나와 허용 팔이 답했다 — 같은 파일의 직접 철자는 거부되므로 허용
+# 목록 자신의 거부 팔이 철자만으로 우회됐다. 앵커를 지우면 이 둘만 붉어진다.
+ARD="$WORK/ancrun"; mkdir -p "$ARD/settings"
+: > "$ARD/settings/keep.json"
+ln -sfn "$ARD/settings" "$ARD/halt" 2>/dev/null
+if [ -L "$ARD/halt" ] && [ -d "$ARD/halt" ]; then
+  check "중간 성분이 런 설정 디렉터리로 해소되는 철자는 거부" \
+    "$(hook_decide_rd "$ARD" "$ARD/halt/evil.json")" "deny"
+  # 새 파일과 기존 파일을 갈라 잰다. 착지가 아니라 덮어쓰기가 이 벡터의 해악이다.
+  check "그 철자가 설정 디렉터리의 기존 파일을 겨눠도 거부" \
+    "$(hook_decide_rd "$ARD" "$ARD/halt/keep.json")" "deny"
+else
+  printf 'NOTE: 런 설정 디렉터리로의 심링크를 만들지 못해 건너뛴다\n'
+fi
+# 음성 대조군. 이것이 없으면 위 둘의 통과가 「halt 아래를 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 스테이지가 중단 기록을 남기지 못하게 만든다.
+NRD="$WORK/ancrun-neg"; mkdir -p "$NRD/settings" "$NRD/halt"
+check "음성 대조군: 진짜 halt 디렉터리 아래 중단 기록은 그대로 허용" \
+  "$(hook_decide_rd "$NRD" "$NRD/halt/impl.md")" "allow"
+check "음성 대조군: 설정 디렉터리가 있어도 직접 철자의 거부 문면은 그대로" \
+  "$(hook_decide_rd "$NRD" "$NRD/settings/x.json")" "deny"
+
 # 새 fail-closed 분기의 도달 가능성. 이 러너에서는 stat 이 정상이라 자연히
 # 도달하지 않으므로, 항상 실패하는 stat 을 PATH 앞에 심는다 — 훅이 자기 PATH 를
 # 앞에 붙이는 것을 끄지 않으면 진짜 stat 이 먼저 잡혀 이 픽스처가 무력해진다.
