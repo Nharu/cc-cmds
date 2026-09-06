@@ -6381,12 +6381,15 @@ gate_b5_stagnation_bound() {
   # everything the gate itself writes, so this counter cannot be reset by the
   # act of measuring it.
   #
-  # WHAT IT COUNTS IS ROUTER JUDGEMENTS, NOT GATE CALLS, and the discriminator
-  # is the same one this file already uses to decide whose session lineage is
-  # being recorded: `CC_PIPELINE_STAGE_ID` is exported to stage children by the
-  # driver and to nothing else, so its presence is the router/stage distinction
-  # rather than a heuristic. A stage's own gate traffic returns below before the
-  # counter is read at all.
+  # WHAT IT COUNTS IS THE ROUTER'S ACTS, NOT GATE CALLS, and it takes two
+  # discriminators to say that — one for who is calling and one for what the
+  # call does.
+  #
+  # WHO: `CC_PIPELINE_STAGE_ID` is exported to stage children by the driver and
+  # to nothing else, so its presence is the router/stage distinction rather than
+  # a heuristic — the same discriminator this file already uses to decide whose
+  # session lineage is being recorded. A stage's own gate traffic returns below
+  # before the counter is read at all.
   #
   # Without that discriminator the bound counted the wrong thing in both
   # directions at once. Every `act` and every `exec` reaches this evaluation —
@@ -6399,16 +6402,43 @@ gate_b5_stagnation_bound() {
   # and that row IS a term of the vector, so the count it was meant to trip was
   # reset before it could reach the bound.
   #
+  # WHAT: a read is not an act. The `who` test removes the stage's traffic and
+  # leaves the router's own looking around, which is most of what a router does
+  # between decisions — `exec --surface 읽기` is how it reads a file, a ledger
+  # row or a manifest before deciding anything. Those calls move no term of the
+  # progress vector by construction, because the vector's `acts=` term excludes
+  # them for its own good reasons, so a router that spent `상한+1` calls simply
+  # looking walked a healthy run out. Ending a night on reconnaissance is the
+  # worst shape this boundary has: nothing was wrong, nobody is awake, and the
+  # run is over.
+  #
+  # THE PREDICATE IS NOT A NEW ONE. It is the progress vector's `acts=` term and
+  # `gate_b3_act_budget`'s, spelled the same way — the grade must be PRESENT and
+  # must not be `읽기`. Selecting positively matters here for the same reason it
+  # does there: a call whose surface grade is unknown is not evidence that
+  # anything was done, and spending the bound on it counts an unknown as an act.
+  # `GATE_SURFACE` is this call's grade, set by `gate_verb_act` a few lines
+  # before it reaches the boundary arm.
+  #
+  # AND THE ASYMMETRY WITH B1 IS WHY THE MISCOUNT MATTERED. B1 ISSUES a boundary
+  # approval on the same arithmetic, so a person can look at it and say no; B5
+  # ENDS the run. When what is counted and what the ending message says drift
+  # apart, the price of the drift is the whole night rather than one question —
+  # which is why the message below names the calls it actually counted.
+  #
   # THIS IS A `return 0`, NOT B1's SUPPRESSION. B1 skips its whole evaluation
-  # whenever any stage is live, so a router judgement made during a long stage
-  # does not count. This skips only the stage's own calls: the router's
-  # judgements keep counting while a stage runs, and the counter is neither read
-  # nor written in between, so the router's next judgement continues from where
-  # its last one left it rather than resuming a frozen tally. A stage that grows
-  # without producing therefore gets no licence here — that shape is exactly
-  # what the wall clock used to backstop, and the wall clock is gone.
+  # whenever any stage is live, so a router act made during a long stage does
+  # not count. This skips only the calls it names: the router's acts keep
+  # counting while a stage runs, and the counter is neither read nor written in
+  # between, so the router's next act continues from where its last one left it
+  # rather than resuming a frozen tally. A stage that grows without producing
+  # therefore gets no licence here — that shape is exactly what the wall clock
+  # used to backstop, and the wall clock is gone.
   local bound h prev n
   [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && return 0
+  # Beside the discriminator above and before the manifest lookup: it is an
+  # early return of the same character, and it costs the same nothing.
+  case "${GATE_SURFACE:-}" in ''|읽기) return 0 ;; esac
   bound=$(manifest_field '인가' '무진전 상한')
   case "$bound" in ''|없음|'(없음)') return 0 ;; esac
   case "$bound" in *[!0-9]*)
@@ -6422,7 +6452,7 @@ gate_b5_stagnation_bound() {
   printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
   printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
   [ "$n" -lt "$bound" ] && return 0
-  gate_end_run B5 "진전 해시가 연속 ${n}회 판정 동안 불변입니다 (상한 ${bound})"
+  gate_end_run B5 "진전 해시가 라우터의 읽기 초과 호출 연속 ${n}회 동안 불변입니다 (상한 ${bound})"
 }
 
 gate_issue_boundary_approval() {

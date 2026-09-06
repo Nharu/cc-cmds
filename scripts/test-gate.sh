@@ -2038,15 +2038,19 @@ unend_run
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 grant_field_set '무진전 상한' ''
 
-# --- B5 counts ROUTER JUDGEMENTS, not gate calls ----------------------------
+# --- B5 counts the ROUTER'S ACTS — not gate calls, and not reads ------------
 #
 # Every `act` and every `exec` reaches the boundary arm, and the pretool hook
 # routes a stage's Bash, Write and Edit through the gate as `exec` — while the
-# progress vector's `acts=` term excludes `결정=exec` rows graded `축2=읽기`. A
-# stage reading files through the gate therefore held the vector still, and the
-# bound fired on a healthy stage. `CC_PIPELINE_STAGE_ID` is exported to stage
-# children by the driver and to nothing else, so its presence is what tells the
-# two callers apart.
+# progress vector's `acts=` term excludes `결정=exec` rows graded `축2=읽기`. So
+# two different callers held the vector still while walking the counter up, and
+# it takes two discriminators to remove them both.
+#
+# `CC_PIPELINE_STAGE_ID` is exported to stage children by the driver and to
+# nothing else, so its presence is what tells a stage's call from the router's.
+# The GRADE is what tells the router's reading from the router's acting: a
+# router that only reads moves no term of the vector either, so a stretch of
+# reconnaissance long enough to reach the bound ended a healthy night.
 grant_field_set '무진전 상한' '2'
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 CC_PIPELINE_STAGE_ID='SD#1'
@@ -2064,33 +2068,51 @@ else
   bad "B5 스테이지 호출" "스테이지 읽기 ${i}회에 카운터 '$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')' / 종단 '$(cat "$RD/done" 2>/dev/null || printf '(없음)')'"
 fi
 
-# The SAME four calls from the router end the run — the bound is not disarmed,
-# it is aimed.
+# The SAME four calls from the ROUTER do not end it either. This is the arm the
+# fixture used to assert the other way round — it drove four `--surface 읽기`
+# calls from the router and required the run to be over, which nailed "pure
+# reconnaissance ends the night" down as the intent.
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+i=0
+while [ "$i" -lt 4 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-router-read" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+if [ ! -e "$RD/stagnation-repeat" ] && [ ! -s "$RD/done" ]; then
+  ok "라우터의 연속 읽기도 상한을 넘겨도 카운터를 만들지 않고 런을 끝내지 않는다"
+else
+  bad "B5 라우터 읽기" "라우터 읽기 ${i}회에 카운터 '$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')' / 종단 '$(cat "$RD/done" 2>/dev/null || printf '(없음)')'"
+fi
+
+# But the router's ACTS are counted — the bound is not disarmed, it is aimed. An
+# `act` graded above `읽기` writes a `결정=act` row, and `acts=` counts only
+# `결정=exec` rows, so the vector stands still while the count climbs.
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 i=0
 while [ "$i" -lt 4 ] && [ ! -s "$RD/done" ]; do
-  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
-       --snapshot-digest "$(HH)" --rationale "B5-router" -- grep -q . "$MANIFEST"
+  gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale "B5-router-act" -- touch "$WORK/t-b5r$i"
   i=$((i + 1))
 done
 case "$(cat "$RD/done" 2>/dev/null || true)" in
-  *"경계 B5"*) ok "라우터의 연속 판정이 상한에 닿으면 런이 끝난다" ;;
-  *) bad "B5 라우터 판정" "라우터 판정 ${i}회에도 런이 끝나지 않았다" ;;
+  *"경계 B5"*) ok "라우터의 연속 행위가 상한에 닿으면 런이 끝난다" ;;
+  *) bad "B5 라우터 행위" "라우터 행위 ${i}회에도 런이 끝나지 않았다" ;;
 esac
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
 check "B5 가 끝낸 뒤에는 스테이지 디스패치가 거부된다" "$rc" "3"
 unend_run
 
-# A `return 0`, NOT B1's suppression. The stage call neither reads nor writes
-# the counter, so it does not freeze it either — the router's next judgement
-# continues from where the router's last one left it.
+# A `return 0`, NOT B1's suppression. Neither skipped caller reads or writes the
+# counter, so neither freezes it either — the router's next act continues from
+# where the router's last one left it.
 grant_field_set '무진전 상한' '99'
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 printf '%s\n' "$(PD)" > "$RD/stagnation-digest"
 printf '%s\n' "0"     > "$RD/stagnation-repeat"
-gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale "B5-mix-router-1" -- grep -q . "$MANIFEST"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-1" -- touch "$WORK/t-b5m1"
 CC_PIPELINE_STAGE_ID='SD#2'
 export CC_PIPELINE_STAGE_ID
 i=0
@@ -2102,10 +2124,16 @@ done
 unset CC_PIPELINE_STAGE_ID
 n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
 check "사이에 낀 스테이지 호출은 카운터를 건드리지 않는다" "$n" "1"
+# And the router's own reads are the other skipped caller, asserted on the same
+# counter so that "not counted" and "not frozen" are both nailed down.
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale "B5-mix-router-2" -- grep -q . "$MANIFEST"
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-read" -- grep -q . "$MANIFEST"
 n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
-check "라우터 판정은 스테이지 호출을 건너뛰고 이어서 센다" "$n" "2"
+check "사이에 낀 라우터의 읽기도 카운터를 건드리지 않는다" "$n" "1"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-2" -- touch "$WORK/t-b5m2"
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "라우터의 행위는 건너뛴 호출들을 지나 이어서 센다" "$n" "2"
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 grant_field_set '무진전 상한' ''
 
