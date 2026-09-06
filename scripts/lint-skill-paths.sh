@@ -26,6 +26,22 @@
 #     `~/\.claude` branch. The lint enforces the policy by behavior, not
 #     just by documentation.
 #
+# Second rule — the team witness directory's root and basename.
+#   The agent-team protocol moved the witness dir off `${TMPDIR}` and dropped
+#   the `cc-` prefix from its basename: it is `${CC_PIPELINE_RUN_DIR}/
+#   team-witness-<slug>` when that variable is set and a `mktemp -d` under
+#   `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design/` otherwise. Nine
+#   consumer SKILL.md files kept spelling the old `${TMPDIR:-/tmp}/
+#   cc-team-witness-<slug>.XXXXXX`, so the move never reached the stages that
+#   actually run: a `${TMPDIR}` directory is collected within about an hour on
+#   this host, and the witness is the anti-fabrication anchor — gone, the lead
+#   either parks forever or synthesizes a round product it never observed. The
+#   basename half matters for a different reason: the cleanup contract's path
+#   guard recognizes exactly one spelling, so two spellings mean the guard
+#   knows a name nothing creates while the created one is never swept.
+#   Hand-fixing the nine files does not stop the tenth from being written with
+#   the old spelling, which is what this rule is for.
+#
 # Usage:
 #   bash scripts/lint-skill-paths.sh                  # lint all runtime markdown
 #   bash scripts/lint-skill-paths.sh path/to/file.md  # lint specific files
@@ -52,6 +68,16 @@ BANNED_RE='(~/\.claude|\$HOME/\.claude|\$[{]HOME[}]/\.claude|/Users/[^/[:space:]
 # unrelated violation) need both strips applied to surface only the violation.
 STRIP_SED_BARE='s/[$][{]CLAUDE_CONFIG_DIR:-[$]HOME[^}]*[}]//g'
 STRIP_SED_BRACED='s/[$][{]CLAUDE_CONFIG_DIR:-[$][{]HOME[}][^}]*[}]//g'
+
+# Witness-directory rule (POSIX ERE). Two branches:
+#   1. the retired `cc-team-witness-` basename, anywhere;
+#   2. a witness path ROOTED AT `${TMPDIR}` / `$TMPDIR` — the `/` after the
+#      expansion is required, so prose that merely names the variable (the
+#      protocol's own paragraph explaining why `${TMPDIR}` cannot hold this)
+#      is not a hit. Branch 2 stands on its own because dropping the `cc-`
+#      prefix while keeping `${TMPDIR}` fixes the name and leaves the lifetime
+#      defect, which is the half that loses the witness.
+WITNESS_BANNED_RE='(cc-team-witness-|[$][{]TMPDIR[^}]*[}]/[^[:space:]]*team-witness|[$]TMPDIR/[^[:space:]]*team-witness)'
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -102,6 +128,15 @@ for file in "${FILES[@]}"; do
     banned_hit=$(printf '%s\n' "$stripped" | grep -cE "$BANNED_RE" || true)
     if [[ "${banned_hit:-0}" != "0" ]]; then
       echo "FAIL: $file — line $line_no: $line" >&2
+      file_violations=$((file_violations + 1))
+    fi
+    # The RAW line, not the stripped one: the `${CLAUDE_CONFIG_DIR:-…}` strips
+    # above exist to hide a permitted fallback from the `.claude` rule and have
+    # nothing to say about a witness path, so running this branch on the
+    # stripped text would only add a way for the two rules to interfere.
+    witness_hit=$(printf '%s\n' "$line" | grep -cE "$WITNESS_BANNED_RE" || true)
+    if [[ "${witness_hit:-0}" != "0" ]]; then
+      echo "FAIL: $file — line $line_no (위트니스 경로): $line" >&2
       file_violations=$((file_violations + 1))
     fi
   done < "$file"
