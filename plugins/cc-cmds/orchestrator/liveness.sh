@@ -240,8 +240,10 @@ cc_unresolved_blocked() {
   # line both read. Under `en_US.UTF-8` the collation gives every Hangul
   # syllable the same weight, so two reasons with the same non-Hangul shape and
   # the same syllable counts compare equal and one is dropped. Measured on this
-  # host: `강제 표면 이동` and `중단 기록 존재` are one line under that locale and
-  # two under C. Losing either is bad; losing that one is worst, because it is
+  # host: `강제 표면 이동` and `자동 채택 미달` are one line under that locale and
+  # two under C — and both of those are values this field is written with, so
+  # the fold is reachable without anybody adding a word. Losing either is bad;
+  # losing the first is worst, because it is
   # the block the gate raises when a file its boundary rests on was edited — and
   # a resolved block surviving in its place makes the run eligible to propose an
   # ending with the strongest block still open, reporting nothing.

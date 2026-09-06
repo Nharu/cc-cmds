@@ -172,6 +172,28 @@ run() { bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
 # banners off while every one of them kept arriving.
 runb() { CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once "$@" 2>&1; }
 
+# The watcher's own time conversion, taken as source text and run on its own.
+# It is lifted out HERE, above its first user, because two things need it: the
+# valid/invalid tables far below, which are what it was extracted for, and the
+# seeding helper right under this, which has to know how old a fixture's run row
+# claims to be before it can say whether a threshold is out of that fixture's
+# reach.
+iso_fn=$(sed -n '/^iso_to_epoch() {/,/^}/p' "$WATCH")
+iso_epoch() { CC_ISO_FN="$iso_fn" bash -c 'eval "$CC_ISO_FN"; iso_to_epoch "$1"' _ "$1"; }
+
+out_of_reach() {
+  # out_of_reach <이름> <효력 임계> <측정값> — the override has to STRICTLY
+  # exceed what the seeding pass measured, or it is not what is holding its arm
+  # off. Silent on success: this is the helper's own bookkeeping, not a case, and
+  # a passing line per call would put it into every caller's total.
+  case "${2:-}" in
+    ''|*[!0-9]*)
+      bad "시딩 헬퍼" "$1 임계를 인자 목록에서 읽지 못했다 ('${2:-}')"; return ;;
+  esac
+  [ "$2" -gt "$3" ] || bad "시딩 헬퍼" \
+    "$1 임계 $2 가 시딩 pass 의 측정값 $3 을 넘지 못한다 — 이 override 는 arm 을 막고 있지 않다"
+}
+
 seed_idle() {
   # seed_idle <초> <run 인자…> — hand the watcher an idle ledger.
   #
@@ -180,8 +202,75 @@ seed_idle() {
   # can shorten that. One pass seeds the state file, then line 2 is moved back.
   # Line 1 comes back out of the watcher's own state rather than being computed
   # here, so this does not restate how it measures the ledger.
+  #
+  # THE SEEDING PASS IS A FULL PASS. It writes `watch.state`, and it also
+  # evaluates every arm — so an arm that fires HERE leaves its once-marker, the
+  # pass the case actually measures is then held back by that marker, and the
+  # case reads it as "the arm did not fire". The diagnosis points at the exact
+  # opposite of the defect. The thresholds are therefore put out of reach for
+  # this pass alone; they are appended after the caller's, so the last value
+  # wins and each case still spells its own for the pass it measures.
+  #
+  # ONE ARGUMENT VECTOR, NOT TWO. The pass below and the check under it read the
+  # same list, so a threshold dropped from here is dropped from both — a check
+  # carrying its own copy of these numbers would go on asserting about a
+  # threshold the pass no longer ran with.
   local secs="$1"; shift
+  set -- "$@" --stall 99999999999 --after-stage 99999999999 --run-open 99999999999
   run "$@" >/dev/null
+  # And the assumption is checked rather than trusted, because it is the kind
+  # that stops holding quietly: an arm carrying no threshold, or one whose
+  # threshold this list stops naming, would leave its marker here and nothing
+  # else in the suite would say so.
+  if [ -e "$RD/stall" ] || [ -n "$(ls "$RD"/watch.announced-* 2>/dev/null || true)" ]; then
+    bad "시딩 헬퍼" "시딩 pass 가 arm 을 발화시켰다 — 뒤따르는 측정 pass 가 once 가드에 막혀 침묵을 결함으로 보고한다"
+  fi
+  # AND "OUT OF REACH" IS MEASURED, NOT DECLARED. Two of the three overrides
+  # carried no load at all. The run-age one was about 3.17 years while every
+  # fixture that reaches that arm opens its run in 2020, so the number this
+  # comment called unreachable was already exceeded twice over; and the stall one
+  # was held off by the caller's own number rather than by this one. Both could
+  # be deleted with the whole suite staying green. So each threshold IN EFFECT —
+  # last spelling wins, the rule the watcher's own parser applies — is compared
+  # against the quantity its arm reads on this pass.
+  local _a _prev="" _eff_stall="" _eff_after="" _eff_open=""
+  for _a in "$@"; do
+    case "$_prev" in
+      --stall)       _eff_stall="$_a" ;;
+      --after-stage) _eff_after="$_a" ;;
+      --run-open)    _eff_open="$_a" ;;
+    esac
+    _prev="$_a"
+  done
+  local _now _seen _idle _gate_at _run_at _run_ep
+  _now=$(date -u +%s)
+  # The ledger idleness this pass saw, out of the watcher's own state rather than
+  # recomputed here — line 2 is when it first saw the size it still sees.
+  _seen=$(sed -n '2p' "$RD/watch.state" 2>/dev/null || true)
+  case "${_seen:-}" in
+    ''|*[!0-9]*)
+      bad "시딩 헬퍼" "시딩 pass 뒤에 watch.state 의 관측 시각을 읽지 못했다 ('${_seen:-}') — 아래 대조가 잴 것이 없다" ;;
+    *)
+      _idle=$(( _now - _seen ))
+      out_of_reach --stall "$_eff_stall" "$_idle"
+      out_of_reach --after-stage "$_eff_after" "$_idle" ;;
+  esac
+  # The gate-idle reading the after-stage threshold is also compared against. A
+  # fixture that removed the file is one where that arm cannot judge at all, so
+  # there is nothing for the threshold to hold off.
+  _gate_at=$(sed -n '1p' "$RD/started-at" 2>/dev/null || true)
+  case "${_gate_at:-}" in
+    ''|*[!0-9]*) : ;;
+    *) out_of_reach --after-stage "$_eff_after" "$(( _now - _gate_at ))" ;;
+  esac
+  # And the run age, read the way the watcher reads it. No `run` row, or a stamp
+  # that does not parse, is again a fixture that arm cannot judge.
+  _run_at=$( { grep -E '^- `run`' "$LG" 2>/dev/null || true; } | tail -1 \
+             | tr '|' '\n' | sed -n 's/^ *시작=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  if [ -n "$_run_at" ]; then
+    _run_ep=$(iso_epoch "$_run_at")
+    [ -z "$_run_ep" ] || out_of_reach --run-open "$_eff_open" "$(( _now - _run_ep ))"
+  fi
   printf '%s\n%s\n%s\n' "$(sed -n '1p' "$RD/watch.state")" \
     "$(( $(date -u +%s) - secs ))" "$LG" > "$RD/watch.state"
 }
@@ -430,11 +519,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # The watcher does NOT write the ledger. Its row carried no `prev=`, took no
-# lock and passed no length check, and the two sides of the chain then
-# disagreed about it — the verifier skips a row with no `prev=` without
-# advancing its running value while the writer's tip hashes the last ROW
-# including that one. A run whose watcher fired once read as broken from the
-# next row onward, forever.
+# lock and passed no length check, and the chain could not account for it. That
+# used to surface one row late: the verifier stepped over a row it could not
+# read a `prev=` from without advancing its running value, while the writer's
+# tip hashed the last ROW including that one, so a run whose watcher fired once
+# read as broken from the NEXT row onward, forever. It now surfaces on the row
+# itself — an unreadable `prev=` is a break where it occurs — which is a better
+# report of the same defect and no reason to keep the writer.
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F '>> "$LEDGER"'; then
   bad "단일 기록자" "감시자가 여전히 원장에 직접 쓴다"
@@ -629,6 +720,70 @@ else
   bad "run 행 나이 환산" "got '$age_said', want 0..60"
 fi
 
+# ---------------------------------------------------------------------------
+# THE CONVERSION ITSELF, FED DIRECTLY.
+#
+# The two cases above reach `iso_to_epoch` through the arm, and between them
+# they feed it exactly two stamps: one fixed old one and one taken now. Its four
+# validation guards — the digit count, the 1970 floor, the month range and the
+# day range — are reached by neither, so all four could be deleted and this
+# suite would stay green.
+#
+# The arithmetic being right is not what is at risk; it is that a stamp the
+# function cannot parse comes back as a number instead of as nothing. A wrong
+# epoch becomes a negative age, a negative age is below every threshold, and the
+# arm then falls SILENT — which is indistinguishable from the healthy case and
+# is also the exact failure this watcher exists to break. So the guards fail in
+# the one direction nothing else in this suite can see.
+#
+# Taken as source text and run on its own, the way the shared predicate's
+# consumers are read elsewhere in this tree: driving it through the arm would
+# need a ledger and a run directory per row, and neither is what these rows are
+# about. The extraction itself is at the top of this file, because the seeding
+# helper needs the same conversion; what stays here is the assertion that it
+# found something to run.
+# ---------------------------------------------------------------------------
+if [ -n "$iso_fn" ]; then
+  ok "watch.sh 에서 시각 환산 함수를 떼어냈다"
+else
+  bad "시각 환산 추출" "iso_to_epoch 를 찾지 못했다 — 아래 행들은 잴 것이 없다"
+fi
+
+# The valid side. The rows are the boundaries hand-rolled civil-date arithmetic
+# gets wrong: the epoch itself, a 400-year leap year, a 100-year NON-leap year,
+# the leap day the March-based rebase moves, and the two signed-integer cliffs.
+for iso_row in \
+  '1970-01-01T00:00:00Z|0' \
+  '2020-01-01T00:00:00Z|1577836800' \
+  '2000-02-29T00:00:00Z|951782400' \
+  '2100-03-01T00:00:00Z|4107542400' \
+  '2024-02-29T12:34:56Z|1709210096' \
+  '2038-01-19T03:14:08Z|2147483648' \
+  ; do
+  check "시각 환산 ${iso_row%%|*}" "$(iso_epoch "${iso_row%%|*}")" "${iso_row##*|}"
+done
+
+# THE INVALID SIDE IS NOT OPTIONAL. A table of valid inputs alone stays green
+# with every guard deleted — that is measured, not supposed. One row per guard:
+# a stamp one digit short of a full field, the year floor, the month range and
+# the day range. The empty string is here for the contract rather than for a
+# guard: with the digit count gone it still answers empty, because the
+# arithmetic aborts on a field that is not there.
+#
+# AND A RANGE IS TWO COMPARISONS, NOT ONE. The month and day guards each carry a
+# floor as well as a ceiling, and a table that only overshoots reaches neither
+# floor: measured, `[ "$m" -ge 1 ] &&` and `[ "$d" -ge 1 ] &&` could each be
+# deleted with this suite staying green. What comes back through that hole is not
+# a wrong month, it is a NUMBER where the contract says empty — `2026-00-01`
+# answered 1764547200 and `2026-01-00` answered 1767139200 — and a number here
+# becomes a negative age, a negative age is under every threshold, and the arm
+# falls silent, which is the one failure this watcher exists to break.
+for iso_bad in '' '2026-01-01T00:00:0Z' '1969-12-31T23:59:59Z' \
+               '2026-00-01T00:00:00Z' '2026-13-01T00:00:00Z' \
+               '2026-01-00T00:00:00Z' '2026-01-32T00:00:00Z'; do
+  check "파싱되지 않는 시각은 빈 값이다 ('$iso_bad')" "$(iso_epoch "$iso_bad")" ""
+done
+
 # No stamp to read is "cannot judge", not "zero seconds old". Silence can only
 # delay the report to the stall arm's margin; the other direction invents one
 # for every ledger written before that field existed.
@@ -731,6 +886,153 @@ case "$out" in
   *"세그먼트가 하나도 열리지 않았습니다"*)
     bad "run 나이 arm" "게이트 호출 기록이 없는 것을 호출이 없었던 것으로 읽었다" ;;
   *) ok "게이트 호출 기록이 없으면 판정하지 않는다" ;;
+esac
+# The negative control the sibling case above carries and this one did not. The
+# silence asserted here is also what a fixture that never crossed the ledger
+# idle threshold produces, and the two are the same green — so the pass has to
+# be shown to be one that reached the threshold before its silence means the
+# missing gate record.
+idle_said=$(printf '%s' "$out" | sed -n 's/.*원장 \([0-9][0-9]*\)초 전 갱신.*/\1/p' | tail -1)
+if [ -n "$idle_said" ] && [ "$idle_said" -ge 120 ] 2>/dev/null; then
+  ok "그 침묵도 원장 유휴 임계를 넘긴 pass 의 것이다 (${idle_said}초)"
+else
+  bad "유휴 대조" "got '$idle_said', want >= 120"
+fi
+
+# ---------------------------------------------------------------------------
+# THE THREE CONJUNCTS THAT WERE NEVER DRIVEN FROM THEIR FALSE SIDE.
+#
+# Every case above hands this arm a ledger already idle past the threshold, no
+# live stage and no open approval, so those three conjuncts were true in all of
+# them — and deleting any one of the three lines changed no verdict anywhere in
+# this suite. They are not refinements and they are not dead: each one names a
+# router that IS working, and without them this arm accuses it.
+#
+# The fixtures below differ from the firing one by a single fact each, and the
+# firing case is repeated underneath the first so the silence cannot be blamed
+# on some other conjunct having quietly failed.
+# ---------------------------------------------------------------------------
+# The ledger conjunct. The idle count comes from the watcher's own clock, and a
+# first pass against a fresh run directory records the size it sees and reports
+# zero — so this fixture is silent for exactly one reason.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+out=$(run --stall 99999 --after-stage 120 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    bad "run 나이 arm" "원장이 방금 갱신된 런을 세그먼트 미개시로 지목했다" ;;
+  *) ok "원장이 아직 조용하지 않으면 발화하지 않는다" ;;
+esac
+idle_said=$(printf '%s' "$out" | sed -n 's/.*원장 \([0-9][0-9]*\)초 전 갱신.*/\1/p' | tail -1)
+if [ -n "$idle_said" ] && [ "$idle_said" -lt 120 ] 2>/dev/null; then
+  ok "그 침묵이 원장 유휴 임계에 못 미친 pass 의 것이다 (${idle_said}초)"
+else
+  bad "유휴 대조" "got '$idle_said', want < 120"
+fi
+
+# The same fixture with only the idle threshold moved. Without this the case
+# above would read the same whether the ledger conjunct held it back or some
+# other conjunct never became true at all.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    ok "임계만 내리면 같은 픽스처가 발화한다 (나머지 연언지는 전부 참이었다)" ;;
+  *) bad "유휴 연언지 대조" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# The approval conjunct. A run waiting on a person has not failed to open a
+# segment; it is doing the one thing that legitimately takes an unbounded time.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 막는 세그먼트=S1\n' >> "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    bad "run 나이 arm" "사람을 기다리는 런을 세그먼트 미개시로 지목했다" ;;
+  *) ok "대기 승인이 있으면 발화하지 않는다" ;;
+esac
+
+# The live-stage conjunct. The shared fixture rather than a hand-rolled pid
+# file, for the reason the stall arm's case states: a pid file alone is not a
+# stage to the predicate.
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+FX_RUN_DIR="$RD"; FX_PIDS=""
+fx_stage_live S1
+out=$(run --stall 99999 --after-stage 0 --run-open 60)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    bad "run 나이 arm" "스테이지가 도는 런을 세그먼트 미개시로 지목했다" ;;
+  *) ok "살아 있는 스테이지가 있으면 발화하지 않는다" ;;
+esac
+fx_reap
+
+# ---------------------------------------------------------------------------
+# THE SEEDING HELPER, DRIVEN FROM THE SIDE IT EXISTS TO PROTECT.
+#
+# Every case above hands `seed_idle` thresholds that no arm can reach on the
+# seeding pass, so the guard inside it never has anything to say and the
+# override it protects can be deleted with this whole suite staying green. The
+# helper is held up by its callers rather than by itself, and the next case
+# somebody writes is the one that stops holding it up.
+#
+# The thresholds here ARE reachable on that pass, which is what a case written
+# without thinking about the helper looks like. Two things then have to hold at
+# once: the seeding pass leaves no once-marker, and the measuring pass still
+# fires. Without the override the seeding pass takes the marker and the
+# measuring pass falls silent — reported as "the arm did not fire", which is the
+# opposite of what happened.
+# ---------------------------------------------------------------------------
+#
+# TWO ARMS, NOT ONE, because the helper names a threshold per arm and a case that
+# only puts the run-age one within reach leaves the other overrides unmeasured —
+# which is how two of the three came to carry no load at all. The stall
+# threshold is spelled `0` here for exactly that reason: its arm then fires on
+# the seeding pass the moment the override stops holding it off.
+# ---------------------------------------------------------------------------
+fresh
+printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 0 --after-stage 0 --run-open 0
+out=$(run --stall 0 --after-stage 0 --run-open 0)
+case "$out" in
+  *"세그먼트가 하나도 열리지 않았습니다"*)
+    ok "시딩 pass 가 once 마커를 가져가지 않아 측정 pass 가 발화한다" ;;
+  *) bad "시딩 헬퍼" "임계가 닿는 픽스처에서 측정 pass 가 침묵했다 — 시딩 pass 가 arm 을 먼저 발화시켰다" ;;
+esac
+case "$out" in
+  *"아무것도 쓰지 않았습니다"*)
+    ok "같은 pass 에서 정지 arm 도 발화한다 (그 임계의 override 도 잴 것이 생긴다)" ;;
+  *) bad "시딩 헬퍼" "정지 임계가 닿는 픽스처에서 측정 pass 가 침묵했다 — 시딩 pass 가 정지 arm 을 먼저 발화시켰다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# AND THE ARM NO FIXTURE ABOVE CAN REACH.
+#
+# Every ledger above carries a `run` row and no segment row, and that is the one
+# shape the stage-ended arm is structurally excluded from: it needs a
+# non-terminal segment AND a terminal stage row as the last row. So the override
+# that holds THAT arm off on the seeding pass was being measured by nothing, and
+# what stood in for it was the run-age arm reading the same threshold. A ledger
+# of the other shape separates them.
+# ---------------------------------------------------------------------------
+fresh
+{ printf -- '- `segment` | id=S1 | 상태=실행중\n'
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종료 코드=0 | 종단 부류=정상 완료\n'
+} > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$RD/started-at"
+seed_idle 300 --stall 99999 --after-stage 0 --run-open 99999
+out=$(run --stall 99999 --after-stage 0 --run-open 99999)
+case "$out" in
+  *"스테이지가 끝났는데 라우터가"*)
+    ok "시딩 pass 가 스테이지 종단 arm 의 마커를 가져가지 않아 측정 pass 가 발화한다" ;;
+  *) bad "시딩 헬퍼" "임계가 닿는 픽스처에서 스테이지 종단 arm 이 침묵했다 — $(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
 
 # ---------------------------------------------------------------------------

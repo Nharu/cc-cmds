@@ -398,5 +398,61 @@ check "명령 치환으로 감싼 게이트는 여전히 거부된다" "$dec" "d
 decide "$(bash_json "echo x; $GATE snapshot --manifest /tmp/m.md")"
 check "앞에 다른 명령을 붙인 형태도 거부된다" "$dec" "deny"
 
+# ---------------------------------------------------------------------------
+# CLAUDE.md — the one edit target git does not watch
+#
+# These are the arms the whole three-layer audit stands on. Write/Edit is the
+# only path that leaves no ledger row, so if it stays open for these files the
+# other two layers are unreachable: a stage edits the prefix and nothing records
+# that it did. Asserted per spelling because the arm is a glob and a glob that
+# stops matching fails silently.
+# ---------------------------------------------------------------------------
+for slot in \
+    "$HOME/.claude-cc/CLAUDE.md" \
+    "$HOME/dev/CLAUDE.md" \
+    "$HOME/dev/cc-cmds/CLAUDE.md" \
+    "$HOME/Documents/orderbook/CLAUDE.md" \
+    "/some/other/place/CLAUDE.md" \
+    "CLAUDE.md" \
+    "/a/b/CLAUDE.local.md"; do
+  decide "$(write_json "$slot")"
+  check "CLAUDE.md 슬롯 쓰기가 거부된다: $slot" "$dec" "deny"
+done
+
+# The denial has to hand back a command the stage can actually run, the same way
+# the Bash denial does. A refusal with no route is one an unattended stage works
+# around or stops on.
+decide "$(write_json "$HOME/.claude-cc/CLAUDE.md")"
+reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason" in
+  *"$GATE exec"*) ok "CLAUDE.md 거부 문면이 게이트 exec 로 유도한다" ;;
+  *) bad "CLAUDE.md 에스컬레이션 문면" "'$reason'" ;;
+esac
+
+# A file merely NAMED like one of these somewhere unrelated is still the same
+# channel, but a file that only CONTAINS the name is not — asserted so the arm
+# is not "fixed" into a containment test.
+decide "$(write_json "/tmp/CLAUDE.md.bak")"
+check "이름을 포함하기만 하는 파일은 대상이 아니다" "$dec" "allow"
+
+# ---------------------------------------------------------------------------
+# The rollback sources — baseline copies and per-version history
+#
+# Both are read-only evidence for the morning comparison. A stage that can write
+# either one can make its own edit look like it was always there, and then the
+# comparison succeeds while meaning nothing.
+# ---------------------------------------------------------------------------
+# `decide_cfg` and `cfgdir` are the relocated-config helpers defined above; this
+# section reuses them rather than defining a second pair. A shadowing redefinition
+# reads as harmless and is not — the tree's own lint flags a call that precedes
+# the surviving definition, and the earlier calls then run against a helper the
+# reader is no longer looking at.
+for evid in "$cfgdir/backups/20260906/home-CLAUDE.md" "$cfgdir/file-history/abc123.md"; do
+  decide_cfg "$(write_json "$evid")"
+  check "롤백 증거 쓰기가 거부된다: ${evid#"$cfgdir"/}" "$dec" "deny"
+done
+decide_cfg "$(write_json "$WORK/unrelated/backups/x.md")"
+check "다른 트리의 같은 이름 디렉터리는 대상이 아니다" "$dec" "allow"
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
