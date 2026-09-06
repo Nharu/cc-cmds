@@ -692,7 +692,13 @@ surface_of_git_config() {
 surface_of_gh() {
   case "${1:-}" in
     api) surface_of_gh_api "$@" ;;
-    pr|issue|release|repo|workflow|run) printf '외부상태변경' ;;
+    # `project` sits beside `issue` because filing an issue and putting it on the
+    # board are one obligation, not two. A run that files the issue and then
+    # cannot reach the board leaves the tracking half-done in the direction that
+    # hides itself: the issue exists, so nothing looks missing, and it is absent
+    # from the only place the items are enumerated. Measured — three issues were
+    # filed and all three `item-add` calls came back `등급 미상`.
+    pr|issue|project|release|repo|workflow|run) printf '외부상태변경' ;;
     # `auth` is a DELIBERATE refusal, not a gap in the table. It reads and
     # rewrites the credential the whole separation rests on, so an act that
     # reached it would be editing the thing that limits it.
@@ -1452,7 +1458,7 @@ gate_render_snapshot() {
   if [ "$r_disposition" = "충족" ]; then
     printf '미충족 조건: 없음 — 종료 조건이 전부 성립합니다\n'
   elif [ "$r_disposition" = "무효화" ]; then
-    printf '미충족 조건: 조건 %s — 무효화만 남았습니다. 종료를 제안하면 충족이 아니라 무효로 기록되고, 이 런의 기준선은 다시 잡히지 않습니다\n' \
+    printf '미충족 조건: 조건 %s — 무효화만 남았습니다. act --kind propose-done 이 충족이 아니라 무효로 기록하고 런을 닫습니다. 이 런의 기준선은 다시 잡히지 않습니다\n' \
       "${r_numbers:-미상}"
   else
     printf '미충족 조건: 조건 %s\n' "${r_numbers:-미상}"
@@ -2017,9 +2023,24 @@ gate_surface_check() {
   # baseline file, the digest, the equality — so a dry run can answer this axis
   # exactly and cheaply, and a verb that could answer it and returned zero
   # instead is the defect class this whole change removes.
+  # NO BASELINE FILE AND AN EMPTY ONE ARE DIFFERENT ANSWERS, and reading them as
+  # the same one made this check fail OPEN on exactly the input it exists to
+  # catch. A missing file means the run has not been baselined yet — kickoff
+  # writes it, and every act before that has nothing to compare against, so
+  # returning zero there is the only thing it can do. A file that is PRESENT and
+  # EMPTY means the baseline was written and the value in it is gone: the digest
+  # this comparison needs was lost, not never taken. Collapsed together, that
+  # second state passed every act for the rest of the night without ever
+  # comparing anything, silently, while the surrounding documentation promises
+  # the opposite — that a run whose surface moved does not recover. Lost signal
+  # takes the same exit as a moved surface, which is what fail-closed means here.
   local verb="${1:-act}" base now
+  [ -f "$RUN_DIR/surface-digest" ] || return 0
   base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
-  [ -n "$base" ] || return 0
+  if [ -z "$base" ]; then
+    warn "강제 표면 기준선 파일이 비어 있습니다 — 기준선이 기록된 뒤 값이 사라졌으므로 비교할 것이 없습니다"
+    base='(비어 있음)'
+  fi
   now=$(gate_surface_digest)
   [ "$now" = "$base" ] && return 0
   warn "강제 표면이 런 개시 이후 바뀌었습니다 (기준선 ${base}, 현재 ${now}) — 설정·룰·훅·프로젝트 설정 중 하나가 편집됐습니다"
@@ -4509,7 +4530,30 @@ gate_verb_act() {
   fi
   [ "$rules_rc" = "0" ] || exit "$rules_rc"
 
-  gate_surface_check "$verb" || exit $?
+  # THE ONE KIND THAT OUTLIVES THE SURFACE MOVE IS THE RUN SAYING IT ENDED.
+  #
+  # A moved enforcement surface is permanent: the branch below writes a run-scope
+  # `blocked` row with `원인=무효화` and refuses every act after it. Termination
+  # condition 5 then reads that row as unmet forever, and the whole point of the
+  # invalidated arm further down is that such a run must still be able to write
+  # `done` — as invalidated, never as satisfied.
+  #
+  # Without this bypass that arm could not be reached by the state it exists for.
+  # The check sits above it, so the only `propose-done` that ever got past here
+  # was one on a run whose blocked row had been placed by hand, and a real
+  # invalidated run stayed `진행 중` forever — the exact condition the arm was
+  # added to end. The render line that tells a person to propose done in this
+  # state was, for the same reason, an instruction that could not be followed.
+  #
+  # The bypass is narrow in both directions. It needs the row to be there
+  # ALREADY, so the first act after a surface move still takes the refusal, the
+  # row and the banner — the detection is not weakened, only the second visit is
+  # let through. And `propose-done` authorizes nothing: with that row present the
+  # disposition is `무효화` by construction, so the only thing this can reach is
+  # the arm that records the run as invalid.
+  if ! { [ "$kind" = "propose-done" ] && gate_has_row 'blocked' '사유=강제 표면 이동'; }; then
+    gate_surface_check "$verb" || exit $?
+  fi
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #
@@ -4583,11 +4627,21 @@ gate_verb_act() {
     # writes no ledger row at all. Neither the exit code nor the ledger told the
     # question apart from the act; only the file did.
     if [ "$verb" = "plan" ]; then
+      # THE UNCHECKED AXES ARE NAMED HERE TOO, and this is the forecast that
+      # needs them most. Every other `plan` announces what it did not look at
+      # before returning; this one returned straight from the verdict, so the
+      # single question that decides whether the night ends — "may the run
+      # stop?" — was the one answered without disclosing its blind spot. The
+      # snapshot digest is not compared on any dry run, so a `충족` here can
+      # still meet exit 4 as an act when a sibling segment lands a row in
+      # between, and nothing said so.
       case "$disposition" in
         충족)
+          gate_plan_unchecked_axes "$kind"
           printf '통과 예상: 종료 조건이 전부 성립합니다 — act 로 내면 done 을 기록합니다\n'
           return 0 ;;
         무효화)
+          gate_plan_unchecked_axes "$kind"
           printf '통과 예상: 무효화 종료 — act 로 내면 충족이 아니라 무효로 기록합니다\n'
           return 0 ;;
         *)
@@ -6063,10 +6117,19 @@ gate_done_disposition() {
   # this one.
   local unmet="$1" other
   [ -n "$unmet" ] || { printf '충족'; return 0; }
-  # `해소 불가입니다` is condition 5's rendering of an invalidation block, which
-  # is unmet permanently by construction. A run left with only that is over — it
-  # may record its end, but as invalidated rather than as satisfied.
-  other=$(printf '%s' "$unmet" | grep -v '해소 불가입니다' || true)
+  # Condition 5's invalidation line is the one unmet cause that is permanent by
+  # construction. A run left with only that is over — it may record its end, but
+  # as invalidated rather than as satisfied.
+  #
+  # THE MATCH IS ANCHORED TO THE FIXED HEAD OF THAT LINE, not to the phrase
+  # wherever it appears. Every condition interpolates free text — a segment's
+  # status, an obligation's text, a blocked row's reason — and all of it lands
+  # AFTER the line's fixed prose, never at the start. An unanchored substring
+  # filter therefore let one router-typed value carrying the phrase delete a
+  # genuine unmet cause from this verdict, and a run with conditions actually
+  # outstanding recorded itself as invalidated and stopped. Anchoring makes the
+  # only line this can drop the one the gate itself writes.
+  other=$(printf '%s' "$unmet" | grep -v '^5 런 스코프 blocked 가 해소 불가입니다 ' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
   printf '미충족'
 }

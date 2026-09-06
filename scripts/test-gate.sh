@@ -2104,6 +2104,27 @@ d1=$(cat "$RD_L/surface-digest")
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
 check "입력이 그대로면 다시 쓰지 않는다" "$(cat "$RD_L/surface-digest")" "$d1"
 
+# LOST SIGNAL IS NOT A PASS. The surface here has NOT moved — every assertion
+# above just established that — so anything but a clean pass below comes from the
+# baseline itself rather than from the files it covers. The digest is taken
+# before the file is touched, because reading it goes through `snapshot` and a
+# snapshot could re-derive the very baseline being removed.
+h_sig=$(HH)
+: > "$RD_L/surface-digest"
+out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SR \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h_sig" --rationale x -- ls 2>&1); rc=$?
+check "기준선 파일이 비면 비교 없이 통과하지 않는다 (신호 상실은 fail-closed)" "$rc" "7"
+
+# The other side of that boundary, and the reason it is a boundary rather than
+# "any missing value fails". A run before its first baseline has nothing to
+# compare against, so this path must stay open — collapsing the two would make
+# every act of a fresh run exit 7 before the run could write its baseline.
+rm -f "$RD_L/surface-digest"
+out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SR \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h_sig" --rationale x -- ls 2>&1); rc=$?
+check "기준선 파일이 아예 없으면 통과한다 (아직 기준선을 잡기 전)" "$rc" "0"
+printf '%s\n' "$d1" > "$RD_L/surface-digest"
+
 # THE OTHER HALF: an edit this writer did not make is still exit 7. The
 # re-derivation must not repair it — repairing would erase the evidence the
 # surface check reads, which is the whole detection.
@@ -2330,6 +2351,19 @@ if [ -n "$inval_line" ] && [ -n "$other_line" ]; then
   # accepts does so by positive equality — so an unknown value refuses, which is
   # the property the predicate form was preferred for.
   check "인식되지 않는 줄도 미충족으로 떨어진다" "$(disp_of '알 수 없는 줄')" "미충족"
+  # THE FILTER IS ANCHORED, and this is the assertion that says so. Every
+  # condition interpolates free text somebody else typed — a segment's status, an
+  # obligation's text, a blocked row's reason — and all of it lands after the
+  # line's fixed prose. An unanchored substring match therefore let one such
+  # value carrying condition 5's phrase delete a REAL unmet cause from this
+  # verdict, and a run with conditions genuinely outstanding recorded itself as
+  # invalidated and stopped. The line below is a condition-1 line, not a
+  # condition-5 one, so a correct filter keeps it.
+  check "다른 조건의 자유 텍스트에 그 문구가 들어가도 미충족이다" \
+    "$(disp_of '1 세그먼트 S1 의 상태가 종단이 아닙니다 (해소 불가입니다)')" "미충족"
+  check "그 문구를 품은 줄이 무효화 줄과 함께 와도 미충족이다" \
+    "$(disp_of "$(printf '%s\n1 세그먼트 S1 의 상태가 종단이 아닙니다 (해소 불가입니다)' "$inval_line")")" \
+    "미충족"
 else
   bad "처분 토큰 픽스처" "실제 거절에서 조건 5 줄이나 대조 줄을 뽑지 못했다: $(printf '%s' "$out" | tr '\n' ' ')"
 fi
@@ -5118,11 +5152,51 @@ case "$msg" in
   *"무효"*) ok "그 예고가 충족이 아니라 무효로 기록될 것임을 말한다" ;;
   *) bad "무효화 예고 문면" "$msg" ;;
 esac
+# Every other passing `plan` names the axes it did not evaluate before it
+# returns, and this one — the forecast on the single question that decides
+# whether the night ends — returned straight from the verdict. So the one
+# forecast a router is most likely to act on was the one that read as complete.
+case "$msg" in
+  *"미검사 축"*) ok "그 예고도 평가하지 않은 축을 밝힌다" ;;
+  *) bad "무효화 예고 미검사 축" "$msg" ;;
+esac
 if [ -f "$DONE_DIR/done" ]; then
   bad "P-bis" "무효화 상태의 dry run 이 done 파일을 썼다"
 else
   ok "그 예고도 done 파일을 남기지 않는다"
 fi
+
+# P-ter — the same arm in the state that actually produces it, which is the one
+# state P-bis above cannot enter. The `원인=무효화` block is not something a run
+# arrives at with an intact surface: the only writer of that row is the surface
+# check itself, so a real invalidated run ALSO has a moved surface — and the
+# surface check sits above this arm and exits 7. Which meant the branch that
+# exists so an invalidated run can say it ended was reachable only by a ledger
+# row placed by hand, and a real one rendered `진행 중` until somebody killed it.
+#
+# Both halves are asserted: `propose-done` gets through, and nothing else does.
+h_ter=$(H4)
+base_ter=$(cat "$DONE_DIR/surface-digest" 2>/dev/null || true)
+rm -f "$DONE_DIR/done"
+printf '%s\n' '0000000000000000000000000000000000000000000000000000000000000000' \
+  > "$DONE_DIR/surface-digest"
+gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$h_ter" --rationale "표면이 움직인 채의 보통 행위" -- ls
+check "P-ter: 표면이 움직이면 보통 행위는 여전히 7 이다" "$rc" "7"
+gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$h_ter" --rationale "무효화된 채로 끝났다고 기록한다"
+check "P-ter: 표면이 움직인 무효화 런도 종료를 기록할 수 있다" "$rc" "0"
+if [ -f "$DONE_DIR/done" ]; then
+  case "$(cat "$DONE_DIR/done" 2>/dev/null || true)" in
+    *무효*) ok "그 기록이 충족이 아니라 무효다" ;;
+    *) bad "P-ter 종단 문면" "$(cat "$DONE_DIR/done" | tr '\n' ' ')" ;;
+  esac
+else
+  bad "P-ter" "무효화 런이 표면 이동 때문에 여전히 종료를 기록하지 못한다"
+fi
+if [ -n "$base_ter" ]; then printf '%s\n' "$base_ter" > "$DONE_DIR/surface-digest"
+else rm -f "$DONE_DIR/surface-digest"; fi
+rm -f "$DONE_DIR/done"
 
 # --- 31am. A miss in the polarity scan is `극성 미상`, not consent -----------
 #
