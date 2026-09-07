@@ -128,12 +128,8 @@ git log {DEFAULT_BRANCH}..HEAD --oneline  # commit history
 
 **A supplied `--base-sha` is verified, never trusted — and lite is no different.** Run `git merge-base --is-ancestor <supplied base> <target head>`. `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command runs in; binding to the ambient head makes the guard depend on the caller's working directory, which is the same class of failure the flag exists to close. The substitution replaces the base derivation only; a PR target still collects its metadata and comments as before. On success take the diff against that base in either mode:
 
-```bash
-git diff <supplied base>...HEAD           # PR or local diff, once verified
-git log <supplied base>..HEAD --oneline
-```
 
-**On failure fall back** to the derivation this step already has — `gh pr view … baseRefName` for a PR, `{DEFAULT_BRANCH}` for a local diff — and record one line in the report overview naming the rejected value and the base actually used. A base that is not an ancestor of `HEAD` produces a diff of a tree nobody wrote, and the report reads exactly as it would have, so nothing else surfaces the mistake. This costs one command and lite does not economize on it: the saving would be a review of the wrong change.
+**On failure fall back** to the derivation this step already has — `gh pr view … baseRefName` for a PR, `{DEFAULT_BRANCH}` for a local diff — and record one line in the report overview naming the rejected value and the base actually used. A base that is not an ancestor of `<target head>` produces a diff of a tree nobody wrote, and the report reads exactly as it would have, so nothing else surfaces the mistake. This costs one command and lite does not economize on it: the saving would be a review of the wrong change.
 
 #### 1c: Scope confirmation
 

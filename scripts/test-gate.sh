@@ -1655,6 +1655,18 @@ else
   check "방출 파일이 대기 승인 총계를 싣는다" \
     "$(jq -r .pending_approvals_total "$EMIT/d2.json")" \
     "$(printf '%s' "$snapjson" | jq -r .pending_approvals_total)"
+  # THE ACTOR FIELD IS COMPARED THE WAY A CONSUMER COMPARES IT — verbatim
+  # against its own `$CC_PIPELINE_STAGE_ID`. A first version sanitized the field
+  # on the directory-name character class, and every stage id this pipeline
+  # mints carries a character outside it, so a verbatim comparison called every
+  # stage's own file foreign. Nothing read the field, so nothing caught that.
+  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMIT/d2.json")" "router"
+  ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" exec --manifest "$MANIFEST" \
+      --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HH)" --rationale x \
+      --emit-digest-to "$EMIT/actor.json" -- ls ) >/dev/null 2>&1
+  check "스테이지 id 는 축자로 실린다 (소비자의 대조가 성립한다)" \
+    "$(jq -r .actor "$EMIT/actor.json" 2>/dev/null)" "S5:SEG:2"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -1706,6 +1718,48 @@ if [ -e "$WORK/outside.json" ]; then
 else
   ok "거부된 방출 경로에는 아무것도 쓰이지 않는다"
 fi
+
+# THE PREFIX TEST RUNS BEFORE ANYTHING IS CREATED. `mkdir -p` on an out-of-tree
+# path makes that directory and only then gets refused, which leaves a
+# directory outside the run whose creation nothing records.
+rm -rf "$WORK/never"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$WORK/never/deep/d.json" -- ls
+check "밖 경로는 부모를 만들기 전에 거부된다" "$rc" "2"
+if [ -d "$WORK/never" ]; then
+  bad "거부된 밖 경로의 부모가 만들어지지 않는다" "$WORK/never 가 생겼다"
+else
+  ok "거부된 밖 경로의 부모가 만들어지지 않는다"
+fi
+
+# A SYMLINK COMPONENT INSIDE THE RUN DIRECTORY, which is the case a logical
+# resolution cannot see. `cd`/`pwd` default to logical mode: they fold `..`
+# lexically and leave a symlink exactly as written, so a prefix test on the
+# logical path accepts this and the bytes land outside the run.
+RDIR="$XDG_STATE_HOME/cc-cmds/run/R1"
+rm -rf "$WORK/escape" "$RDIR/link"
+mkdir -p "$WORK/escape"
+ln -s "$WORK/escape" "$RDIR/link"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$RDIR/link/d.json" -- ls
+check "심볼릭 링크로 밖을 가리키는 경로는 거부된다" "$rc" "2"
+if [ -e "$WORK/escape/d.json" ]; then
+  bad "링크 너머에 바이트가 착지하지 않는다" "$WORK/escape/d.json 이 생겼다"
+else
+  ok "링크 너머에 바이트가 착지하지 않는다"
+fi
+
+# THE CONTROL: the run directory reached THROUGH a symlink must still be
+# accepted. Resolving only the candidate side and not the root would refuse
+# this, which is why both sides take `-P`.
+rm -rf "$WORK/rdlink"
+ln -s "$RDIR" "$WORK/rdlink"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$WORK/rdlink/viaLink.json" -- ls
+check "링크를 거쳐 도달한 런 디렉터리는 거짓 거부되지 않는다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer

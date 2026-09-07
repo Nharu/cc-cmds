@@ -61,8 +61,11 @@
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #
 # `--emit-digest-to <path>` writes, after this call's LAST ledger row, a
-# one-line JSON object `{"H":…,"obligations_total":…,"pending_approvals_total":…}`
-# whose `H` is the value the NEXT acting call passes to `--snapshot-digest`. It
+# one-line JSON object
+# `{"H":…,"obligations_total":…,"pending_approvals_total":…,"actor":…}`
+# whose `H` is the value the NEXT acting call passes to `--snapshot-digest`, and
+# whose `actor` is the emitting stage id verbatim (`router` when there is none)
+# so a reader can tell a foreign emission from a stale one. It
 # removes the read-back `snapshot` call, not the flag: the binding is unchanged
 # and the digest is still compared against live state. `plan` emits nothing (it
 # writes no row and performs nothing), and a caller that finds no file — an
@@ -1493,12 +1496,23 @@ gate_snapshot() {
 # ---------------------------------------------------------------------------
 gate_emit_digest() {
   [ -n "${GATE_EMIT_DIGEST_TO:-}" ] || return 0
-  # SINGLE SHOT. The explicit calls below mark the points where the last row of
-  # a known branch has just landed; the EXIT trap catches every other way out of
-  # an acting verb, including the refusals that append a row and then exit. With
-  # both in place a branch would otherwise write the file twice, so the first
-  # success clears the target and every later call becomes a no-op.
-  local tmp="$GATE_EMIT_DIGEST_TO.$$"
+  # NOT SINGLE SHOT, AND THERE ARE NO EXPLICIT CALLS LEFT. Disarming on the
+  # first success made the trap cover only "exits that happen before the first
+  # emission" — any ledger append landing after that call was invisible to it,
+  # which is the same defect the enumeration had, turned around. The rule is
+  # "the value the caller reads is the state at exit", so the only call site is
+  # the trap and the last write wins.
+  #
+  # THE TEMP IS MINTED, NOT NAMED. A predictable sibling can be pre-created as a
+  # symlink by anything that can write this directory, and `>` follows it — so
+  # the redirection would land wherever the link points, outside every check the
+  # target path passed. `mktemp` in the same directory keeps the rename atomic
+  # and takes the name out of the attacker's hands.
+  local tmp
+  tmp=$(mktemp "$(dirname "$GATE_EMIT_DIGEST_TO")/.gate-digest.XXXXXX" 2>/dev/null) || {
+    warn "다이제스트 임시 파일을 만들지 못했습니다: $GATE_EMIT_DIGEST_TO — 소비 측은 snapshot 으로 폴백합니다"
+    return 0
+  }
   # Same directory as the target by construction, so the rename is atomic and a
   # reader never sees a half-written object.
   # THE EMITTING ACTOR TRAVELS WITH THE VALUE. The file name separates actors by
@@ -1507,13 +1521,20 @@ gate_emit_digest() {
   # its own knows it is holding someone else's digest rather than a stale one.
   # `CC_PIPELINE_STAGE_ID` is empty in the router and set in a stage, which is
   # the same distinction this file already relies on elsewhere.
+  #
+  # WRITTEN RAW, so a consumer can compare it against its own
+  # `$CC_PIPELINE_STAGE_ID` VERBATIM. A first version sanitized it on the same
+  # character class the directory names use, and every stage id this pipeline
+  # mints carries a character outside that class — `<segment>#<attempt>` from
+  # the gate, `S5:<segment>:<cycle>` from the driver — so a verbatim comparison
+  # reported every stage's own file as someone else's. Only the two characters
+  # that would break the JSON string are replaced.
   if printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s,"actor":"%s"}\n' \
        "$(gate_snapshot_digest)" \
        "$(gate_open_obligations | gate_count)" \
        "$(gate_pending_approval_ids | gate_count)" \
-       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')" >"$tmp" 2>/dev/null \
+       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr '"\\' '__')" >"$tmp" 2>/dev/null \
      && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; then
-    GATE_EMIT_DIGEST_TO=""
     return 0
   fi
   rm -f "$tmp" 2>/dev/null || true
@@ -2486,21 +2507,54 @@ gate_main() {
   # `gate-digest.<segment>.json`; the gate does not police the basename, because
   # a wrong one costs a stale digest and exit 4, which is loud.
   #
-  # Resolved physically before comparing, because `..` and a symlinked parent
-  # are both ways to spell a path that leaves the run directory while looking
-  # like it does not.
+  # THREE STEPS, IN THIS ORDER, and the order is the check rather than an
+  # implementation detail.
+  #
+  #   1. a lexical prefix test on the path as given, BEFORE anything is created
+  #   2. `mkdir -p`, which may now only create directories inside the run dir
+  #   3. a PHYSICAL re-test, which is the one that actually holds
+  #
+  # Step 1 exists because `mkdir -p` on an out-of-tree path creates that
+  # directory and only then gets refused, leaving a directory outside the run
+  # whose creation no row records. Step 3 exists because step 1 is not a
+  # security check: `cd`/`pwd` default to LOGICAL mode, and a logical resolution
+  # folds `..` lexically while leaving symlink components exactly as they are.
+  # So `<run dir>/link/d.json`, where `link` points outside, passes any test
+  # that resolves logically — measured, twice and independently — and the bytes
+  # land outside the run directory while the gate reports success. `-P` on both
+  # `cd` and `pwd`, and on BOTH sides: resolving only one side false-refuses a
+  # legitimate path when the run directory is itself reached through a symlink.
+  #
+  # The final component is deliberately NOT resolved. It need not exist yet, and
+  # `mv` is rename(2), which does not follow a symlink at the target — so
+  # resolving it would add an existence precondition and buy no confinement.
   if [ -n "$emit_digest_to" ]; then
     emit_digest_dir=$(dirname "$emit_digest_to")
+    # STEP 1 GUARDS CREATION AND NOTHING ELSE. It refuses to CREATE a directory
+    # whose path is not lexically under the run directory, which is what stops a
+    # doomed call from leaving one behind. It is not the confinement decision:
+    # an existing directory skips this arm entirely and is judged by step 3, so
+    # a run directory reached THROUGH a symlink — lexically elsewhere,
+    # physically the right place — is accepted rather than refused for the
+    # spelling of the path it was named by.
+    if [ ! -d "$emit_digest_dir" ]; then
+      case "$emit_digest_dir/" in
+        "$RUN_DIR"/*) ;;
+        *) printf 'gate: --emit-digest-to 는 런 디렉터리 아래여야 합니다: %s (런 디렉터리 %s)\n' \
+             "$emit_digest_to" "$RUN_DIR" >&2
+           exit 2 ;;
+      esac
+    fi
     if ! mkdir -p "$emit_digest_dir" 2>/dev/null || [ ! -w "$emit_digest_dir" ]; then
       printf 'gate: --emit-digest-to 의 경로에 쓸 수 없습니다: %s\n' "$emit_digest_to" >&2
       exit 2
     fi
-    emit_digest_dir=$(cd "$emit_digest_dir" && pwd)
-    emit_digest_root=$(cd "$RUN_DIR" && pwd)
+    emit_digest_dir=$(cd -P "$emit_digest_dir" && pwd -P)
+    emit_digest_root=$(cd -P "$RUN_DIR" && pwd -P)
     case "$emit_digest_dir/" in
       "$emit_digest_root"/*) ;;
-      *) printf 'gate: --emit-digest-to 는 런 디렉터리 아래여야 합니다: %s (런 디렉터리 %s)\n' \
-           "$emit_digest_to" "$RUN_DIR" >&2
+      *) printf 'gate: --emit-digest-to 가 런 디렉터리 밖으로 해소됩니다: %s → %s (런 디렉터리 %s)\n' \
+           "$emit_digest_to" "$emit_digest_dir" "$emit_digest_root" >&2
          exit 2 ;;
     esac
     GATE_EMIT_DIGEST_TO="$emit_digest_dir/$(basename "$emit_digest_to")"
@@ -5169,11 +5223,10 @@ gate_verb_act() {
   # back exit 4 — a run that deadlocks loudly on the mechanism meant to speed it
   # up. `plan` never reaches this line and emits nothing, which is why the
   # re-read after a `plan` stays in the router's contract.
-  if [ "$kind" = "propose-done" ]; then gate_emit_digest; return 0; fi
+  if [ "$kind" = "propose-done" ]; then return 0; fi
   case "$kind" in
     segment|cycle|problem|blocked|clause|judgment|obligation)
       gate_record_row "$kind" "$segment" "$alias" "$@" || rc=$?
-      gate_emit_digest
       return "$rc" ;;
   esac
   case "$verb" in
@@ -5205,7 +5258,6 @@ gate_verb_act() {
     gate_append '자율 승인' "kind=$kind" "결정=결과" "대상=$alias" "세그먼트=$segment" \
       "절단점=$cutpoint" "축2=$graded" "근거=rc=$rc"
   fi
-  gate_emit_digest
   return "$rc"
 }
 

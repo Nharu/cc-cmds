@@ -372,13 +372,28 @@ esac
 
 # Every gate-path occurrence in the message is the start of a command it is
 # telling the stage to run. Each must be allowed.
-n_shapes=0; n_denied=0
+#
+# CUT AT ONE COMMAND, NOT AT THE END OF THE MESSAGE. Taking the whole tail made
+# this assertion vacuous past the first token: the hook matches argv0, so any
+# trailing prose rode along and every candidate passed no matter what followed.
+# The message separates its prescribed commands with a standalone `.`, which is
+# where a command actually ends, so that is where the extraction stops.
+n_shapes=0; n_denied=0; n_thin=0
 for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.*//'); do
-  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" | tr '\n' ' ')
+  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" \
+         | awk 'NR>1 && $0=="." {exit} {print}' | tr '\n' ' ')
   n_shapes=$((n_shapes + 1))
+  # A candidate that carries no `--manifest` is not a command this message
+  # prescribes — it is a fragment the cut got wrong, and passing it through the
+  # hook would assert nothing. A lone separator is red here rather than green.
+  case "$cand" in
+    *--manifest*) ;;
+    *) n_thin=$((n_thin + 1)) ;;
+  esac
   decide "$(bash_json "$cand")"
   [ "$dec" = "allow" ] || n_denied=$((n_denied + 1))
 done
+check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어긋나지 않았다)" "$n_thin" "0"
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else
