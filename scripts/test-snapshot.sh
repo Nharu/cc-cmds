@@ -56,12 +56,23 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; 
 # ---------------------------------------------------------------------------
 REPO="$WORK/repo"
 mkdir -p "$REPO"
+# THE BRANCH IS PINNED, NOT ASSUMED. The target row below declares `main`, and
+# the manifest preflight resolves that name against this repository — so the
+# fixture only holds together if the branch really is called `main`. What
+# `git init` names the first branch is a property of the git build and its
+# system config, not of this suite: the Apple build ships
+# `init.defaultBranch=main`, other builds still fall back to `master`. With the
+# name left to the ambient git, every gate invocation below died in the
+# preflight on a host whose git defaults to `master`, and since those calls are
+# read through `2>/dev/null` the whole suite saw empty output rather than an
+# error. The sibling gate fixture pins the same way.
 ( cd "$REPO" \
   && git init -q . \
   && git config user.email t@example.invalid \
   && git config user.name  T \
   && mkdir -p docs/pipeline-run docs/pipeline-grant \
-  && echo one > a.txt && git add -A && git commit -qm one ) >/dev/null 2>&1
+  && echo one > a.txt && git add -A && git commit -qm one \
+  && git branch -M main ) >/dev/null 2>&1
 
 WT=$(cd "$REPO" && git rev-parse --show-toplevel)
 CG=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)
