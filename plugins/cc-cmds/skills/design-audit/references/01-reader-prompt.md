@@ -15,7 +15,7 @@ FREEZE NOTICE: the document is frozen for the duration of this pass. You are rea
 
 REPO GROUND-TRUTH MEASUREMENT (MANDATORY — reading the document is not sufficient):
 You MUST NOT report only on the document's internal coherence.
-(a) For every file path, path:line anchor, symbol, command, count, or numeric claim the document cites, open the cited target read-only (Read / Grep / Glob / ls / git log) and record one row of your "## 앵커 대조표" with a verdict of MATCH, MISMATCH, or ABSENT plus the observed value. Report the anchor rows EVEN WHEN EVERY ANCHOR MATCHES — the table is evidence that measurement happened, not a finding list.
+(a) For every file path, path:line anchor, symbol, command, count, or numeric claim the document cites, open the cited target read-only (Read / Grep / Glob / ls / git log) and record one row of your "## 앵커 대조표" with a verdict of MATCH, MISMATCH, or ABSENT plus the observed value. Write every path you record — in the anchor column and in Evidence alike — as a repository-relative path against CODE_ROOT: never an absolute path, and never a mix of the two in one report. Report the anchor rows EVEN WHEN EVERY ANCHOR MATCHES — the table is evidence that measurement happened, not a finding list.
 (b) For every artifact the document's own architecture REQUIRES to exist — a command, a file, a hook, a gate predicate, a convention or config file, a script — verify that some step of the document actually creates it and that it is reachable. Report every "required but created by no step" as a finding.
 (c) Reading a recipe or a command is REQUIRED. RUNNING a verification recipe, or any command that mutates state, is FORBIDDEN. Read-only inspection commands are how you satisfy (a) and (b).
 
@@ -43,13 +43,14 @@ PART 1 — the anchor ledger:
 | 앵커 | 문서 주장 | 실측 | 판정 |
 | --- | --- | --- | --- |
 | <cited path / path:line / symbol / number> | <what the document says> | <what you observed> | MATCH \ MISMATCH \ ABSENT |
+Every path in the 앵커 column is repository-relative against CODE_ROOT.
 
 PART 2 — the findings, each in this format:
 
 ### F-{role-slug}-<n>
 - **Location**: <section or anchor in the document>
 - **Issue**: <what is wrong>
-- **Evidence**: <path:line, or the command you ran and the bytes/values you observed>
+- **Evidence**: <path:line repository-relative against CODE_ROOT, or the command you ran and the bytes/values you observed>
 - **Concept**: <what should change and why>
 - **영향**: <one line — what breaks downstream if this is not fixed>
 
