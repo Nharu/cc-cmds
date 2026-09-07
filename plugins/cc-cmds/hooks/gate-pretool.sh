@@ -309,6 +309,83 @@ hook_phys() {
   done
 }
 
+HOOK_LEAF_TAIL=""
+hook_leaf_under() {
+  # hook_leaf_under <접힌 말단 철자> <앵커> — 접힌 말단이 그 앵커 자신이거나 그
+  # 아래인가. 아래이면 꼬리를 `HOOK_LEAF_TAIL` 에 남긴다.
+  #
+  # 비교의 **양쪽을 함께** 접는다. 한쪽만 물리화하면 macOS 에서 `/tmp` 가
+  # `/private/tmp` 로의 심링크라 앵커 전체와 갈려, 링크와 무관한 자기 런 직접
+  # 철자까지 함께 무너진다 — 그 잘못된 패치를 실제로 넣은 관측이 420 passed,
+  # 27 failed 였다. 그래서 앵커도 `hook_phys` 로 접는다.
+  #
+  # 앵커가 비었으면 거짓이다. 빈 변수로 만든 앵커는 아무것도 아닌 것을 가리키는
+  # 대신 **다른 것**(`/settings.json` 같은)을 가리키게 되고, 그 실패는 이 파일이
+  # `cfg` 유도부에서 이미 논증해 둔 것이다.
+  local l="$1" a
+  HOOK_LEAF_TAIL=""
+  [ -n "$2" ] || return 1
+  hook_phys "$2" || return 1
+  a="$HOOK_PHYS"
+  [ -n "$a" ] || return 1
+  [ "$l" = "$a" ] && return 0
+  case "$a" in
+    /) case "$l" in /?*) HOOK_LEAF_TAIL="${l#/}"; return 0 ;; esac ;;
+    *) case "$l" in "$a"/*) HOOK_LEAF_TAIL="${l#"$a"/}"; return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+HOOK_LEAF=""
+hook_leaf_resolve() {
+  # hook_leaf_resolve <절대 경로> — 말단이 심링크인 경로를 그 표적의 물리 철자로
+  # 접어 `HOOK_LEAF` 에 넣는다. 얻지 못하면 거짓.
+  #
+  # 왜 `hook_phys` 로는 모자라는가. `hook_phys` 는 실재하는 가장 깊은 **디렉터리**
+  # 조상에서 접으므로, 말단이 파일을 가리키는 심링크이면 그 말단이 어휘 꼬리로
+  # 남는다. 그러면 표적의 조상 사슬이 아니라 **링크가 앉은 자리**의 조상 사슬이
+  # 검사되고, 링크를 강제 표면 밖에 두면 앵커가 사슬에 아예 등장하지 않는다.
+  # 실측된 규칙이 그것이다 — 파일 앵커(`hook_is`)가 있는 자리는 닫히고 디렉터리
+  # 앵커(`hook_under`)만 있는 자리는 열렸으며, 런 디렉터리에는 파일 앵커가 하나도
+  # 없었다. 그리고 `allow` 를 받은 뒤의 쓰기가 실제로 피해 런의 `config-dir` 을
+  # 관통해 바꿨다(링크는 링크로 남았다 — 관통이지 교체가 아니다).
+  #
+  # 열거로는 닫히지 않는다. 열린 자리 여섯 중 넷은 앵커할 파일 집합이 무한하다 —
+  # `$cfg/projects`·`$lane/projects` 아래는 트랜스크립트이고, `$xdgcc` 아래와 형제
+  # 런 디렉터리 아래는 깊이가 무한하다. 그래서 `hook_is` 를 더 다는 형태가 아니라
+  # `hook_phys` 가 이미 적어 둔 답 — 「철자를 한 번 접는다」 — 을 말단까지 넓힌다.
+  # 접힌 철자의 조상 사슬에는 앵커가 다시 등장하므로 이미 있는 디렉터리 앵커가
+  # 답한다. 즉 「디렉터리는 안의 파일들에 **더하는** 앵커이지 대신하는 앵커가
+  # 아니다」가 열거할 수 없는 자리에서 일반형으로 서는 것이다.
+  #
+  # `readlink -f` 는 쓰지 않는다 — 이 레포의 이식성 린트가 GNU 전용 관용구로 잡고,
+  # 오래된 macOS 에 그 플래그가 없다. 사슬을 한 단계씩 맨 `readlink` 로 따라가고
+  # 상대 표적은 링크가 앉은 디렉터리에 이어 붙인다.
+  #
+  # FORK 비용: 말단이 심링크일 때에**만** 돌고, 그때 홉당 `readlink` 한 번과 끝에
+  # `hook_phys` 한 번이다. 경로 개수에 비례하지 않으므로 이 파일의 fork 예산이
+  # 금하는 「경로당 fork」가 아니다(그 예산 주석의 열거는 이번에 갱신하지 않았다 —
+  # 그것은 별건이고 이번 사이클의 대상이 아니다).
+  #
+  # 홉 상한 40 은 순환 링크에서 루프를 끊는다. 상한에 닿는 것은 판정 실패이지
+  # 「심링크 아님」이 아니므로 거짓을 내고, 호출부가 거부한다.
+  local p="$1" t d n=0
+  HOOK_LEAF=""
+  case "$p" in /*) : ;; *) return 1 ;; esac
+  while [ -L "$p" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    t=$(readlink "$p") || return 1
+    [ -n "$t" ] || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *)  d="${p%/*}"; [ -n "$d" ] || d="/"; p="$d/$t" ;;
+    esac
+  done
+  hook_phys "$p" || return 1
+  HOOK_LEAF="$HOOK_PHYS"
+  return 0
+}
+
 hook_run_dir_verdict() {
   # hook_run_dir_verdict <이 런 디렉터리 아래의 꼬리> — 스테이지에게 선언된 쓰기
   # 표면인지 판정한다. 거부면 여기서 끝나고, 허용이면 돌아간다.
@@ -476,6 +553,18 @@ case "$tool" in
     done
     stat_args[${#stat_args[@]}]="$RUN_DIR"
     stat_args[${#stat_args[@]}]="$RUN_DIR/settings"
+    # AND THE RUN DIRECTORY'S OWN FILE ANCHORS. The paragraph above says the
+    # directory anchor ADDS to the files inside it rather than replacing them,
+    # and `cfg` and `lane` keep that pairing — but the run directory had a
+    # directory anchor and no file anchor at all, which is exactly the set of
+    # rows a symlinked leaf was measured to walk through. These four are the
+    # gate-owned files inside it whose names are fixed and therefore enumerable;
+    # the rest of the vector is closed by the leaf pass further down, and the
+    # two overlapping is the point rather than an oversight.
+    stat_args[${#stat_args[@]}]="$RUN_DIR/config-dir"
+    stat_args[${#stat_args[@]}]="$RUN_DIR/orchestrator-dir"
+    stat_args[${#stat_args[@]}]="$RUN_DIR/ledger-path"
+    stat_args[${#stat_args[@]}]="$RUN_DIR/started-at"
     [ -n "$run_root" ] && stat_args[${#stat_args[@]}]="$run_root"
     stat_args[${#stat_args[@]}]="$hook_self"
     [ -n "$LEDGER" ] && stat_args[${#stat_args[@]}]="$LEDGER"
@@ -551,6 +640,14 @@ case "$tool" in
     # 같은 패턴이 이미 이 파일의 `$cfg/projects`·`$lane/projects` 앵커에 있다.
     if hook_under "$RUN_DIR/settings"; then
       deny "$(jstr 'gate: 런 설정 디렉터리는 강제 표면입니다 — 여기 한 번 쓰면 이 스테이지의 경계가 통째로 사라집니다')"
+    fi
+    # 그리고 그 짝인 파일 앵커. 위가 편집 대상 자신의 조상 사슬을 훑으므로, 런
+    # 디렉터리 밖에 앉아 그 안의 파일을 가리키는 심링크는 조상이 겹치지 않아 걸리지
+    # 않는다 — 말단의 아이노드를 그 파일의 것과 직접 대는 이쪽이 그것을 닫는다.
+    # `cfg`·`lane` 이 이미 이 짝을 지키고 있고, 런 디렉터리에만 그 짝이 없었다.
+    if hook_is "$RUN_DIR/config-dir" || hook_is "$RUN_DIR/orchestrator-dir" \
+       || hook_is "$RUN_DIR/ledger-path" || hook_is "$RUN_DIR/started-at"; then
+      deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')"
     fi
 
     # THE RUN DIRECTORY IS AN ALLOW-LIST, NOT A DENY-LIST — the same inversion
@@ -815,6 +912,112 @@ case "$tool" in
       */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
         deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --rationale '리뷰 채택본 적용' -- cp <제안본> ${p}")" ;;
     esac
+    # THE LEAF SYMLINK PASS. Everything above walks the ancestor chain of the
+    # spelling the tool handed us. `hook_under` compares ancestor COMPONENTS by
+    # inode but climbs the chain LEXICALLY, so taking an anchor out of the
+    # lexical chain means that anchor is never examined — and there are two ways
+    # to take it out. An ANCESTOR link pointing inside an anchor is one, and the
+    # physical pass above closes it, but only for `run_root`. A LEAF link
+    # pointing at a file inside an anchor is the other, and the physical pass
+    # cannot reach it: `hook_phys` folds at the deepest existing DIRECTORY, so a
+    # file leaf stays a lexical tail.
+    #
+    # Measured, and the rule was clean: a leaf link to `<victim>/config-dir`,
+    # `<victim>/settings/impl.json`, THIS run's own `config-dir`,
+    # `$cfg/projects/…`, `$lane/projects/…` and under `$xdgcc` were all ALLOW,
+    # while `$cfg/settings.json` — the one of the seven with a file anchor — was
+    # DENY. Places with a file anchor were closed and places with only a
+    # directory anchor were open, and the run directory had no file anchor at
+    # all. The write then went THROUGH the link and changed the victim run's
+    # `config-dir`; the link stayed a link.
+    #
+    # WHY NOT SUBSTITUTE `$ap`/`$np` AND RE-RUN THE PASSES ABOVE. Because
+    # `hook_run_dir_verdict` reads `$ap` to refuse an allowed NAME whose leaf is
+    # a symlink, and substituting would take that arm out — undoing something
+    # already closed. So this runs as a SECOND pass in the same shape as the
+    # physical one above: the first verdict stands, and the folded spelling is
+    # judged once more.
+    #
+    # AND THE DENIAL TEXTS ARE THE FIRST PASS'S, VERBATIM. Minting new ones would
+    # create places where the suite's reason assertions cannot tell the two
+    # passes apart, which is a failure mode this file has already named.
+    #
+    # A DANGLING LEAF IS ALREADY DENIED further up and is NOT undone here — this
+    # pass runs only when `[ -e ]`. The harder case being closed while the easier
+    # one was open is what made the suite's green look like coverage.
+    #
+    # FORKS: one `hook_phys` per anchor, and only when the leaf is a symlink. It
+    # does not grow with the number of paths a decision compares, which is what
+    # the fork budget above rules out. (That budget comment's enumeration is not
+    # updated here; it is a separate item and out of this change's scope.)
+    if hook_leaf_is_symlink "$ap" && [ -e "$ap" ]; then
+      hook_leaf_resolve "$ap" \
+        || deny "$(jstr 'gate: 편집 대상 말단 심링크의 표적 철자를 얻지 못해 판정할 수 없습니다 — 판정 불가는 허용이 아닙니다')"
+      leaf="$HOOK_LEAF"
+
+      # 이 런의 팔이 형제 런의 팔보다 **먼저** 와야 한다. `$RUN_DIR` 이 `run_root`
+      # 아래라 반대 순서면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
+      if hook_leaf_under "$leaf" "$RUN_DIR/settings"; then
+        deny "$(jstr 'gate: 런 설정 디렉터리는 강제 표면입니다 — 여기 한 번 쓰면 이 스테이지의 경계가 통째로 사라집니다')"
+      fi
+      leaf_in_run=""
+      if hook_leaf_under "$leaf" "$RUN_DIR"; then
+        leaf_in_run=1
+        # 꼬리가 비면 표적이 런 디렉터리 **자신**이고, 그것은 이미 허용이다.
+        if [ -n "$HOOK_LEAF_TAIL" ]; then
+          hook_run_dir_verdict "$HOOK_LEAF_TAIL"
+        fi
+      fi
+      if [ -z "$leaf_in_run" ] && [ -n "$run_root" ]; then
+        if hook_leaf_under "$leaf" "$run_root"; then
+          deny "$(jstr 'gate: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다. 그 아래에는 그 런의 훅·권한 설정과 레인 기록이 있어, 한 번 쓰면 그 런의 경계와 계정 선택이 이 스테이지의 손에 들어갑니다')"
+        fi
+      fi
+      if hook_leaf_under "$leaf" "$hook_self"; then
+        deny "$(jstr 'gate: 훅 스크립트 자신은 강제 표면입니다')"
+      fi
+      if [ -n "$xdgcc" ] && hook_leaf_under "$leaf" "$xdgcc"; then
+        deny "$(jstr 'gate: 운영자 스코프 설정 디렉터리는 강제 표면입니다 — 여기 기록된 레인은 이 런이 끝난 뒤의 런들이 읽으므로, 여기 쓰는 것은 런보다 오래 사는 편집입니다')"
+      fi
+      if [ -n "$LEDGER" ] && hook_leaf_under "$leaf" "$LEDGER" && [ -z "$HOOK_LEAF_TAIL" ]; then
+        deny "$(jstr 'gate: 원장의 기록자는 게이트뿐입니다 — 행을 남기려면 gate.sh act 또는 gate.sh exec 를 쓰세요')"
+      fi
+      if [ -n "$GRANT" ] && hook_leaf_under "$leaf" "$GRANT" && [ -z "$HOOK_LEAF_TAIL" ]; then
+        deny "$(jstr 'gate: 인가 기록은 킥오프만 씁니다 — 런 중에는 읽기 전용입니다')"
+      fi
+      if [ -n "$cfg" ] && hook_leaf_under "$leaf" "$cfg"; then
+        case "$HOOK_LEAF_TAIL" in
+          settings.json|settings.local.json)
+            deny "$(jstr 'gate: 사용자 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
+          projects/*)
+            deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
+        esac
+      fi
+      if [ -n "${HOME:-}" ]; then
+        for lane in "$HOME"/.claude*; do
+          case "$lane" in *'*') continue ;; esac
+          if hook_leaf_under "$leaf" "$lane"; then
+            case "$HOOK_LEAF_TAIL" in
+              settings.json|settings.local.json)
+                deny "$(jstr 'gate: 형제 레인의 사용자 스코프 설정도 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
+              projects/*)
+                deny "$(jstr 'gate: 형제 레인의 세션 트랜스크립트도 승인 판독 채널이라 강제 표면입니다')" ;;
+            esac
+          fi
+        done
+      fi
+      # 그리고 접미 글롭도 접힌 철자로 한 번 더 본다. 위 여덟 자리는 앵커가 변수로
+      # 잡히지만 이 셋은 앵커가 없어 어휘 계층뿐이고, 링크를 따라간 뒤의 철자가 곧
+      # 도구가 실제로 여는 파일이므로 여기서 보는 것이 그 계층을 말단까지 넓힌다.
+      case "$leaf" in
+        */.claude/settings.json|*/.claude/settings.local.json)
+          deny "$(jstr 'gate: 프로젝트 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
+        */.claude/projects/*|*/transcripts/*)
+          deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
+        */orchestrator/rules/*)
+          deny "$(jstr 'gate: 룰 카탈로그는 강제 표면입니다 — 룰을 고치는 것은 런의 일이 아닙니다')" ;;
+      esac
+    fi
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;
   Bash) ;;
