@@ -964,7 +964,21 @@ gate_append() {
     gate_check_scope "$scope" || return "$GATE_EXIT_VOCAB"
   fi
 
+  # THE SHIFT SCALE IS ADDED HERE, WHERE EVERY ROW IS WRITTEN AND NOWHERE
+  # ELSE. The morning report asks how many routing shifts ran after the
+  # instruction files were applied, and no row carried a shift number at all —
+  # so the question had no scale to be answered on. Put on one series it could
+  # only count that series; put here it is on every row by construction, and a
+  # writer added later cannot forget it.
+  #
+  # A caller that supplies its own `교대` keeps it. The `handoff` row names the
+  # shift that is ENDING, which is the number as of before this row — the same
+  # value this function would derive, stated by the writer that knows why.
+  # Deriving it a second time would put two spellings of one field on one row.
+  local has_shift=0
+  for f in "$@"; do case "$f" in 교대=*) has_shift=1 ;; esac; done
   body="- \`$series\`"
+  [ "$has_shift" = "1" ] || body="$body | 교대=$(gate_shift_number)"
   for f in "$@"; do body="$body | $f"; done
 
   # The length check runs on the body plus a 64-character stand-in, because
@@ -1435,6 +1449,33 @@ gate_snapshot() {
     "$(gate_unmet_numbers "$unmet" | tr '\n' ',' | sed 's/,$//')"
   printf '  "disposition": "%s",\n' "$(gate_json_escape "$(gate_done_disposition "$unmet")")"
 
+  # WHAT A SUCCESSOR SHIFT NEEDS AND WHAT `--resume` USED TO SUPPLY INSTEAD.
+  # Until the routing loop moved out of the lead session, a cut router was
+  # resumed rather than replaced, so the conversation history carried the
+  # segments, the blocks and the cycle results and nobody noticed the snapshot
+  # did not. A shift is a NEW process with no history at all: handed the object
+  # as it stood, it could not name a single segment. The claim that the router
+  # holds no state a snapshot does not was false the moment it was written and
+  # became load-bearing only now.
+  #
+  # Every block is BOUNDED. The point of the shift is a smaller starting
+  # context, and an unbounded resume payload spends on the first turn exactly
+  # what the mechanism exists to save.
+  printf '  "segments": [\n'
+  gate_snapshot_segments_json
+  printf '  ],\n'
+  printf '  "segments_total": %s,\n' "$(gate_segment_ids | gate_count)"
+  printf '  "blocked": [\n'
+  gate_snapshot_blocked_json
+  printf '  ],\n'
+  printf '  "cycles": [\n'
+  gate_snapshot_cycles_json
+  printf '  ],\n'
+  printf '  "shift": %s,\n' "$(gate_shift_state)"
+  printf '  "handoff": [\n'
+  gate_snapshot_handoff_json
+  printf '  ],\n'
+
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -1589,7 +1630,20 @@ gate_mtime() {
 # as its element, because adding a variant must not be a way to escape the
 # comparison.
 # ---------------------------------------------------------------------------
-readonly STAGE_KINDS="design implement review audit reconverge generic"
+# `shift` IS A SETTINGS VARIANT, NOT A UNIT OF WORK. Nothing dispatches into
+# it — it IS the routing loop, moved out of the lead session and into a
+# headless one. It is on this list because this list is what
+# `gate_write_settings` iterates and what `gate_settings_file` resolves
+# against, and the shift needs a settings file of its own precisely so it can
+# be handed LESS than any stage gets.
+#
+# TWO LAYERS, TWO NAMES, AND THEY ARE NOT THE SAME NAME. `act --kind
+# router-shift` is the LEDGER ROW KIND that authorises the launch; `shift`
+# here is the SETTINGS VARIANT handed to the wrapper. Spelling either one in
+# the other's slot produces a shift running under settings that are not its
+# own — which is the same confusion the warning about the first token after
+# `--` already names one layer down.
+readonly STAGE_KINDS="design implement review audit reconverge generic shift"
 
 gate_settings_dir() {
   # The override exists for ONE caller: the re-derivation probe, which needs to
@@ -1615,6 +1669,7 @@ gate_write_settings() {
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
   local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
+  local kind_dirs kind_allow
   dir=$(gate_settings_dir)
   mkdir -p "$dir"
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
@@ -1763,12 +1818,47 @@ $(target_field "$a" '실행 워크트리')"
     # enforcement point available is the settings file the wrapper injects.
     deny_extra=""
     [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
+
+    # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
+    # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
+    # ONCE above and interpolated identically into every variant; the only thing
+    # that has ever branched per kind is `deny_extra`. So adding the token to
+    # `STAGE_KINDS` without this branch writes the file and leaves the
+    # permissions wide — the file exists, the launch succeeds, and nothing says
+    # the narrowing did not happen.
+    #
+    # A shift writes no files. Its loop is snapshot → decide → gate, and
+    # everything it changes goes through the gate's own bash path, so a Write
+    # that leaked would land somewhere git has no history to undo it.
+    # `additionalDirectories` is READ authorisation as well, so the stage list
+    # would also let the routing seat read files routing has no use for — and
+    # every directory in that list is an element of the enforcement-surface
+    # digest, so an unnecessary one widens the surface an `exit 7` is measured
+    # against.
+    #
+    # BOTH HALVES COME OUT, and dropping only one is the trap. The directories
+    # go out through `additionalDirectories` and the individual CLAUDE.md reads
+    # through `permissions.allow`; leaving the allow-list in place re-opens
+    # exactly as much as narrowing the directory list just closed.
+    #
+    # THE HOOK'S CLAUDE.md REFUSAL ARM STAYS IN EVERY VARIANT, THIS ONE
+    # INCLUDED. It never fires here, because the path is unreachable to begin
+    # with. But where a run reaches those files through the read allow-list
+    # instead of through a directory grant, that arm is the only defence left,
+    # so it is not this branch's to remove.
+    kind_dirs="$extra_dirs"
+    kind_allow="$allow_extra"
+    if [ "$k" = "shift" ]; then
+      kind_dirs=""
+      kind_allow=""
+      deny_extra="${deny_extra}\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
+    fi
     cat > "$f" <<JSON
 {
   "permissions": {
     "deny": [ ${deny_extra}"Bash(sudo:*)" ],
-    "allow": [ ${allow_extra} ],
-    "additionalDirectories": [ ${extra_dirs} ]
+    "allow": [ ${kind_allow} ],
+    "additionalDirectories": [ ${kind_dirs} ]
   },
   "hooks": {
     "PreToolUse": [
@@ -2401,7 +2491,19 @@ gate_main() {
   # `CC_PIPELINE_STAGE_ID` is exported to stage children by the driver and to
   # nothing else, so its presence is the router/stage distinction rather than a
   # heuristic.
-  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || gate_session_lineage >/dev/null
+  # AND NOT A SHIFT EITHER, WHICH THE STAGE TEST ALONE DOES NOT COVER. A router
+  # shift IS a router, so it walks through this gate and gets enrolled — and an
+  # enrolled session id is an id allowed to ANSWER, so `gate_close` would then
+  # read the shift's own transcript as a person's reply. That is the
+  # self-approval path the separation exists to keep shut, arriving through the
+  # one door the guard was not watching. A person can answer only at the lead,
+  # so the lead is the only seat lineage holds.
+  #
+  # `CC_PIPELINE_SHIFT_ID` is exported by `gate_launch_shift` and by nothing
+  # else, so like the stage marker beside it this is a structural distinction
+  # rather than a heuristic.
+  [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ] \
+    || gate_session_lineage >/dev/null
 
   # Run start is "the settings directory does not exist yet".
   #
@@ -3703,6 +3805,16 @@ gate_notify_approval() {
   # every act. Recorded here because otherwise a later reader deletes one of the
   # two firing points and restores the delay this whole seat removed.
   local id="$1" q="$2"
+  # A SHIFT DOES NOT DECIDE WHETHER A BANNER REACHES THE USER. It was launched
+  # by the lead, and a launched process choosing what the user sees is the one
+  # thing the notification rules forbid outright. The stage test above does not
+  # cover it, because a shift is a router by every other measure.
+  #
+  # NO BANNER IS LOST BY THIS. The watcher's approval arm fires from its own
+  # seat the moment an approval is issued, and the watcher is orphaned to init
+  # rather than launched by anyone — so this suppression tidies the seating
+  # rather than removing the notice.
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then return 0; fi
   if ! cc_caller_is_router; then return 0; fi
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     if ! grep -qxF "$id" "$RUN_DIR/watch.announced-approvals" 2>/dev/null; then
@@ -3822,7 +3934,7 @@ gate_record_row() {
   # so asking the router to name one again only creates a way for the two to
   # disagree.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
-     && [ "$kind" != "obligation" ] \
+     && [ "$kind" != "obligation" ] && [ "$kind" != "handoff" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "$kind 행에는 --segment 가 필요합니다"
     return "$GATE_EXIT_VOCAB"
@@ -4196,6 +4308,54 @@ gate_record_row() {
       # somebody unblocked it.
       gate_append 'blocked' "대상=-" "스코프=run" "$@"
       log "런 스코프 막힘 해소 — $why"
+      ;;
+    handoff)
+      # THE ROW THAT CARRIES WHAT THE SNAPSHOT CANNOT. A shift ends and its
+      # successor starts from the snapshot alone, and the snapshot is a record
+      # of PROGRESS — it says what landed, never what was tried and dropped. So
+      # the successor re-walks the predecessor's dead ends, and the morning
+      # report's request for the rejected alternative is answerable only if a
+      # router happened to write it into free-text rationale, where no reader
+      # looks.
+      #
+      # A shift is an event of the WHOLE RUN, so `--segment` is not required —
+      # the same exemption `blocked`, `clause` and `judgment` already hold, and
+      # for the same reason: demanding a part makes the kind that describes the
+      # whole unwritable.
+      local hn hwhy hd hb hc hlen hw=300
+      hn=$(gate_field_of '교대' "$@")
+      hwhy=$(gate_field_of '사유' "$@")
+      case "$hwhy" in
+        상한|승인|종단|중단) : ;;
+        *) warn "handoff 행의 「사유」가 어휘 밖입니다: ${hwhy:-없음} — 상한 승인 종단 중단"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      case "$hn" in
+        ''|*[!0-9]*)
+           warn "handoff 행에는 「교대=<정수>」가 필요합니다 — 아침 보고서의 「적용 이후 교대 수」가 이 눈금 위에 섭니다"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      # THREE FREE-TEXT FIELDS AT 300 CHARACTERS, THEN NARROWED AGAIN IF THE ROW
+      # STILL DOES NOT FIT. Three Korean fields at their full width are past the
+      # 1024-byte row cap on their own, and `gate_append` answers that with a
+      # `die` — which would turn the row that reports a handoff into the thing
+      # that kills the run performing it. The declared width is the ceiling; the
+      # cap is the constraint; this loop is where the two are reconciled instead
+      # of colliding at 3am.
+      while [ "$hw" -ge 40 ]; do
+        hd=$(gate_row_safe "$(gate_field_of '버린 선택지' "$@")" "$hw")
+        hb=$(gate_row_safe "$(gate_field_of '막힌 지점' "$@")" "$hw")
+        hc=$(gate_row_safe "$(gate_field_of '다음 후보' "$@")" "$hw")
+        hlen=$(printf -- '- `handoff` | 교대=%s | 사유=%s | 버린 선택지=%s | 막힌 지점=%s | 다음 후보=%s | 대상=%s | 기록 시각=%s | prev=%064d\n' \
+                 "$hn" "$hwhy" "$hd" "$hb" "$hc" "$alias" "$(now_iso)" 0 \
+               | wc -c | tr -d ' ')
+        [ "$hlen" -le "$GATE_ROW_MAX" ] && break
+        hw=$((hw - 40))
+      done
+      gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
+        "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" \
+        "대상=$alias" "기록 시각=$(now_iso)"
+      log "교대 $hn 기록 — 사유 $hwhy"
       ;;
     obligation)
       # THE ONLY EXIT FROM TERMINATION CONDITION 9. `리뷰 의무` rows are written
@@ -5000,7 +5160,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation) gate_record_row "$kind" "$segment" "$alias" "$@"; return $? ;;
+    segment|cycle|problem|blocked|clause|judgment|obligation|handoff) gate_record_row "$kind" "$segment" "$alias" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)
@@ -5011,6 +5171,11 @@ gate_verb_act() {
     act)
       case "$kind" in
         skill) gate_launch_stage "$alias" "$segment" "$@" || rc=$? ;;
+        # The first token after `--` is the HANDOFF REASON here, the way it is
+        # the stage kind for `skill`. Same shape, different layer: this one
+        # decides whether the suppressor below applies, and the settings variant
+        # is always `shift`.
+        router-shift) gate_launch_shift "$alias" "$@" || rc=$? ;;
         *)     gate_run_readonly "$@" || rc=$? ;;
       esac
       ;;
@@ -6578,6 +6743,325 @@ gate_live_stages() {
   # `kill -0` alone cannot see that; the shared predicate compares the recorded
   # start-time fingerprint too.
   cc_live_stages "$RUN_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# The router shift — the session cap, measured from here.
+#
+# Cost grows as N x (P + C) / 2, so a routing loop that never restarts pays for
+# its whole history on every turn. The remedy is to end the routing session on a
+# threshold and start a successor, and the reason it is measured HERE is that
+# nobody else can: the router cannot read its own context (an estimate would be
+# memory wearing a number), and the watcher refuses on charter — it resumes
+# nothing, retries nothing and decides nothing. The gate already holds the three
+# pieces this needs: it can tell a router from a stage, it knows where the
+# transcripts are, and reading the tail of one costs milliseconds.
+#
+# THE SOFT CAP IS 300K BECAUSE MARGINAL RETURN COLLAPSES BELOW IT. Measured on
+# the worst observed session at a 75K restart floor: 500K saves 46.5%, 300K
+# saves 64.9%, 250K saves 68.8%. The step down to 300K buys 18.4 points; the next
+# one buys 4.6 and takes the shift count from 28 to 36, and every shift pays for
+# a successor re-finding its bearings.
+#
+# THE HARD CAP IS 1.5x THE SOFT ONE. Past the soft cap a shift still needs room
+# to finish what it started — receive a dispatch result, write its handoff row —
+# and at a median 926 tokens per turn that is roughly 162 turns of slack, which
+# does not reach the 500K band where 39.1% of all cost sits.
+#
+# TURN COUNT IS A SECOND-ORDER TRIPWIRE AND NOT A SHIFT TRIGGER. Turns per shift
+# spread 57..277, a 4.9x spread, which makes them a poor proxy for the quantity
+# actually being capped. What the tripwire catches is a pathological low-cost
+# loop — hundreds of turns adding almost nothing — and that is a failure of
+# PROGRESS rather than of context, so it belongs to the stagnation boundary that
+# already exists and not here.
+#
+# A SESSION CAP IS A ROUTING INSTRUCTION, NOT AN APPROVAL. Every one of B1..B4
+# writes a `상태=대기` approval and stops the run until a person answers, so
+# routing the cap through that machinery would end the night at the first
+# threshold crossing. The one exception is the livelock guard below, and it is
+# marked as one where it lives.
+# ---------------------------------------------------------------------------
+readonly SHIFT_SOFT_TOKENS=300000
+readonly SHIFT_HARD_TOKENS=450000
+readonly SHIFT_TURN_TRIPWIRE=400
+readonly SHIFT_HANDOFF_CAP=3
+readonly SHIFT_FLOOR_MAX=130000
+
+gate_shift_number() {
+  # How many shifts have already ended. The lead's own seat is 0, and a run whose
+  # routing never leaves it writes 0 on every row — the scale costs nothing where
+  # the mechanism is unused.
+  #
+  # Derived from the ledger rather than from the environment, so a row written by
+  # a process that lost its marker still carries the right number.
+  local n
+  if [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ]; then printf '0'; return 0; fi
+  n=$( { gate_rows 'handoff' || true; } | gate_count)
+  printf '%s' "${n:-0}"
+}
+
+gate_transcript_of_session() {
+  # The transcript file for one session id, or nothing. Searched by NAME for the
+  # same reason `gate_transcript_files` does: the directory is keyed by cwd and
+  # shared with unrelated sessions.
+  local sid="$1" dir
+  [ -n "$sid" ] || return 0
+  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1
+}
+
+gate_usage_scan() {
+  # Reads a JSONL stream on stdin and prints "<첫 턴 총 컨텍스트> <마지막 턴 cache_read>".
+  #
+  # THE TWO ENDS ARE MEASURED DIFFERENTLY BECAUSE THEY ARE DIFFERENT QUANTITIES.
+  # The current context is the last turn's `cache_read_input_tokens`: by then the
+  # prefix is cached and the read is the whole of it. The FLOOR is the first
+  # turn's read PLUS its creation — on a session's opening turn the cache
+  # breakpoint has not been established, so most of the prefix is billed as
+  # creation and the read component alone reports a floor several times too
+  # small. Conflating the two is the error this file's own measurement history
+  # records: a floor quoted at 21,736 was the read component of a turn whose
+  # actual context was 116,055.
+  awk '
+    {
+      r = 0; c = 0
+      if (match($0, /"cache_read_input_tokens":[ ]*[0-9]+/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); r = s + 0
+      }
+      if (match($0, /"cache_creation_input_tokens":[ ]*[0-9]+/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/[^0-9]*/, "", s); c = s + 0
+      }
+      if (r == 0 && c == 0) next
+      if (first == 0) first = r + c
+      last = r
+    }
+    END { printf "%d %d", first + 0, last + 0 }
+  ' 2>/dev/null
+}
+
+gate_router_context() {
+  # The routing session's context right now, in tokens, or `0`.
+  #
+  # THE CURRENT SESSION COMES FIRST AND THE LINEAGE IS THE FALLBACK, and the
+  # order is not a preference. A shift is deliberately kept OUT of
+  # `session-lineage` — that is what stops it answering its own approvals — so
+  # lineage holds lead sessions only, and a shift asking lineage how big it is
+  # would be handed the lead's number instead of its own.
+  #
+  # Bounded read. The tail is where the last turn is, and 256KB of it is many
+  # records; on a 42MB transcript this costs milliseconds, which is what makes it
+  # affordable on a path the gate takes often.
+  local f v
+  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}")
+  if [ -z "$f" ]; then
+    f=$( { gate_transcript_files 2>/dev/null || true; } | tail -1)
+  fi
+  [ -n "$f" ] && [ -f "$f" ] || { printf '0'; return 0; }
+  v=$(tail -c 262144 "$f" 2>/dev/null | gate_usage_scan | awk '{print $2}')
+  case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
+  printf '%s' "$v"
+}
+
+gate_shift_floor() {
+  # The context this routing session STARTED at — the price of having restarted.
+  #
+  # A shift is a new process and inherits no compaction summary, so its floor is
+  # the static prefix plus the snapshot plus the handoff rows: measured at
+  # 73K..77K, against 109K..118K for an automatic compaction whose floor carries
+  # a 37K..49K summary inside it. The difference is part of what the mechanism
+  # buys, and quoting the compaction floor here would erase it.
+  local f v
+  f=$(gate_transcript_of_session "${CLAUDE_CODE_SESSION_ID:-}")
+  if [ -z "$f" ]; then
+    f=$( { gate_transcript_files 2>/dev/null || true; } | tail -1)
+  fi
+  [ -n "$f" ] && [ -f "$f" ] || { printf '0'; return 0; }
+  v=$(head -c 1048576 "$f" 2>/dev/null | gate_usage_scan | awk '{print $1}')
+  case "${v:-}" in ''|*[!0-9]*) v=0 ;; esac
+  printf '%s' "$v"
+}
+
+gate_shift_state() {
+  # The `shift` block of the snapshot, as a JSON object.
+  local n ctx floor over
+  n=$(gate_shift_number)
+  ctx=$(gate_router_context)
+  floor=$(gate_shift_floor)
+  over=false
+  [ "${ctx:-0}" -ge "$SHIFT_SOFT_TOKENS" ] && over=true
+  printf '{"n": %s, "context": %s, "soft": %s, "hard": %s, "over_soft": %s, "floor": %s}' \
+    "${n:-0}" "${ctx:-0}" "$SHIFT_SOFT_TOKENS" "$SHIFT_HARD_TOKENS" "$over" "${floor:-0}"
+}
+
+gate_snapshot_segments_json() {
+  local out sid
+  out=$( gate_segment_ids | while IFS= read -r sid; do
+           [ -n "$sid" ] || continue
+           printf '    {"id": "%s", "상태": "%s", "워크트리": "%s", "선행": "%s", "커밋": "%s", "마지막 스테이지": "%s"},\n' \
+             "$(gate_json_escape "$sid")" \
+             "$(gate_json_escape "$(gate_segment_field "$sid" '상태')")" \
+             "$(gate_json_escape "$(gate_segment_field "$sid" '워크트리')")" \
+             "$(gate_json_escape "$(gate_segment_field "$sid" '선행')")" \
+             "$(gate_json_escape "$(gate_segment_field "$sid" '커밋')")" \
+             "$(gate_json_escape "$(gate_row_field "$( { gate_rows 'stage-result' | grep -F "세그먼트=$sid " || true; } | tail -1)" '스테이지')")"
+         done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_snapshot_blocked_json() {
+  # Unresolved only. A `원인=해소` row CLOSES an earlier one, so carrying it here
+  # would hand the successor a block that is already gone — and the successor has
+  # no history to notice with.
+  local out row
+  out=$( { gate_rows 'blocked' || true; } | { grep -v '원인=해소' || true; } \
+         | tail -40 | while IFS= read -r row; do
+           [ -n "$row" ] || continue
+           printf '    {"스코프": "%s", "사유": "%s", "앵커": "%s"},\n' \
+             "$(gate_json_escape "$(gate_row_field "$row" '스코프')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '앵커 세그먼트')")"
+         done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_snapshot_cycles_json() {
+  local out row
+  out=$( { gate_rows 'cycle' || true; } | tail -20 | while IFS= read -r row; do
+           [ -n "$row" ] || continue
+           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s"},\n' \
+             "$(gate_json_escape "$(gate_row_field "$row" '세그먼트')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" 'P0')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" 'P1')")"
+         done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_snapshot_handoff_json() {
+  # The last `SHIFT_HANDOFF_CAP` handoffs and no more. The whole series would
+  # grow without bound across a night, and an unbounded resume payload spends on
+  # the successor's first turn exactly what the shift exists to save.
+  local out row
+  out=$( { gate_rows 'handoff' || true; } | tail -"$SHIFT_HANDOFF_CAP" | while IFS= read -r row; do
+           [ -n "$row" ] || continue
+           printf '    {"교대": "%s", "버린 선택지": "%s", "막힌 지점": "%s", "다음 후보": "%s"},\n' \
+             "$(gate_json_escape "$(gate_row_field "$row" '교대')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '버린 선택지')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '막힌 지점')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '다음 후보')")"
+         done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
+}
+
+gate_launch_shift() {
+  # gate_launch_shift <alias> <사유> <cli args...>
+  #
+  # The successor routing session. It runs under the `shift` settings variant,
+  # which is narrower than any stage's, and it is NOT recorded in
+  # `session-lineage` — see the marker's own comment at the entry point.
+  local alias="$1" reason="$2"; shift 2
+  local wrapper="$GATE_DIR/stage-wrapper.sh"
+  [ -f "$wrapper" ] || { warn "스테이지 래퍼가 없습니다: $wrapper"; return 127; }
+  [ -n "${CLI_BIN:-}" ] || { warn "게이트가 CLI 바이너리를 해소하지 못했습니다"; return 127; }
+
+  case "$reason" in
+    상한|승인|종단|중단) : ;;
+    *) warn "교대 사유가 어휘 밖입니다: ${reason:-없음} — 상한 승인 종단 중단"
+       return "$GATE_EXIT_VOCAB" ;;
+  esac
+
+  # THE SUPPRESSOR, AND ITS RANGE IS `상한` ALONE.
+  #
+  # A live stage is the router's child: end the routing session while it runs and
+  # the stage is orphaned. So a shift waits — and waiting costs nothing, because
+  # the router's context barely grows while a stage works, which is precisely why
+  # the stagnation boundary already declines to call such a run stalled.
+  #
+  # IT MUST NOT REACH `승인` OR `종단`. A shift that received exit 5 ends so the
+  # LEAD can answer; holding it behind a live stage means the approval waits out
+  # that stage, and overnight that is the whole night. The same applies at the
+  # hard cap. The three ending reasons and this suppressor have opposite
+  # polarity — those END a shift, this one keeps it from ending — so they are not
+  # one list and must not be given one condition.
+  if [ "$reason" = "상한" ] && [ "$(gate_live_stages)" != "0" ]; then
+    printf '교대 보류: 살아 있는 스테이지가 있습니다 — 상한 교대는 스테이지 종단 뒤에 다시 시도하세요\n'
+    log "상한 교대 보류 — 살아 있는 스테이지"
+    return 0
+  fi
+
+  # THE LIVELOCK GUARD, AND IT IS THE ONE PLACE A CAP BECOMES AN APPROVAL.
+  #
+  # If the handoff floor grows with every shift the design inverts: simulated on
+  # the measured trajectory, a floor fixed at 75K saves 64.9% over 28 shifts,
+  # while one growing 8K per shift costs 1083% more than doing nothing and
+  # livelocks at 2,613 shifts. Handing the whole ledger to the successor is the
+  # most natural way to build exactly that shape.
+  #
+  # 130,000 IS CHOSEN AGAINST THRASHING, NOT AGAINST ECONOMICS. The break-even
+  # moved 34% in a single round of re-derivation, and a guard hung on a number
+  # that moves like that is a guard on nothing. At a 150K floor the shift count
+  # goes 28 → 42 and turns per shift 151 → 96: handoff is already half the work,
+  # well before break-even. 130,000 sits before that degradation shows, and the
+  # derivation does not depend on the break-even assumption at all.
+  #
+  # AND THE RESPONSE IS AN APPROVAL RATHER THAN A SHIFT. A floor near a third of
+  # the cap is not a state routing can fix, so neither trimming the floor nor
+  # warning and continuing is right. THIS IS THE SOLE EXCEPTION TO "a session cap
+  # is a routing instruction, not an approval" — written here because an
+  # implementer following that rule would otherwise decline to raise one.
+  local floor
+  floor=$(gate_shift_floor)
+  if [ "${floor:-0}" -gt "$SHIFT_FLOOR_MAX" ]; then
+    gate_issue_boundary_approval SHIFT-FLOOR \
+      "인수인계 바닥이 ${floor} 토큰으로 상한 ${SHIFT_FLOOR_MAX} 를 넘었습니다 — 교대가 일을 대신하고 있어 라우팅으로 풀리지 않습니다"
+    warn "교대 중단: 인수인계 바닥 ${floor} > ${SHIFT_FLOOR_MAX} — 승인을 발행했습니다"
+    return 0
+  fi
+
+  local plugin_dir n rc=0
+  plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
+  n=$(( $(gate_shift_number) + 1 ))
+  mkdir -p "$RUN_DIR/log"
+
+  # AN EXPIRY TIMESTAMP AND NOT AN EMPTY MARKER. The watcher's after-stage arm
+  # reads this file to keep from calling a shift "router silent after a stage
+  # ended" — a misreading that writes a run-scope `blocked` row with cause
+  # unknown, and an unresolved run-scope block is an input to the termination
+  # condition, so the run cannot finish. But `RUN_DIR` is never pruned: written
+  # as a bare marker and tested with `[ ! -f ]`, a shift that dies right after
+  # its handoff leaves the file behind for the rest of the night and the safety
+  # device becomes a silent hole. 300 seconds is the cold-start budget a first
+  # run is expected to measure against.
+  printf '%s\n' "$(( $(date +%s) + 300 ))" > "$RUN_DIR/shift.in-progress"
+
+  # NO PID FILE, DELIBERATELY. A pid file is what makes a STAGE visible to the
+  # watcher's liveness count, and a shift recorded there would read as a live
+  # stage — which suppresses the very arms that exist to notice a router that
+  # stopped. The expiry marker above is the shift's liveness token instead.
+  log "교대 $n 시작 — 사유 $reason"
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
+  CC_CLAUDE_BIN="$CLI_BIN" \
+  CC_PIPELINE_RUN_ID="$RUN_ID" \
+  CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+  CC_PIPELINE_MANIFEST="$MANIFEST" \
+  CC_PIPELINE_LEDGER="$LEDGER" \
+  CC_PIPELINE_GRANT="$GRANT" \
+  CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
+  CC_PIPELINE_TARGET="$alias" \
+  CC_PIPELINE_SHIFT_ID="$RUN_ID#$n" \
+  bash "$wrapper" \
+    --settings "$(gate_settings_file shift)" \
+    --plugin-dir "$plugin_dir" \
+    --session-id "$(session_uuid "shift" "$n")" \
+    -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null || rc=$?
+  rm -f "$RUN_DIR/shift.in-progress"
+  log "교대 $n 종료 (rc=$rc)"
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
