@@ -10,9 +10,38 @@
 # filesystem path and the status token contains a space, so neither is bounded
 # by whitespace; a consumer splitting on spaces reads `판정` as the status and a
 # truncated path as the lane. Split on TAB — `cut -f4`, `awk -F'\t'`, or
-# `IFS=$'\t' read`. No field may contain a tab: the run id is a directory name
-# this program creates the shape of, the status is one of three literals, the
-# count is digits or `?`, and a lane path holding a tab is refused upstream.
+# `IFS=$'\t' read`.
+#
+# NO FIELD MAY CONTAIN A TAB OR A NEWLINE, AND THIS PROGRAM IS WHAT MAKES THAT
+# TRUE — it is not a property inherited from elsewhere. An earlier version of
+# this paragraph claimed it twice over and was wrong both times: it said the run
+# id is a directory name this program creates the shape of (it is not — the
+# names are ENUMERATED from a shared root nothing here creates or cleans), and
+# it said a lane path holding a tab is refused upstream (it was not, anywhere).
+# A tab split a record into five fields; a NEWLINE was worse, because it does
+# not split a field, it MANUFACTURES A WHOLE RECORD — one planted directory
+# produced a syntactically perfect line for a run id that does not exist, with
+# all three swap-deciding fields under the planter's control, delivered at
+# exit 0. A consumer cannot defend against that by parsing more carefully.
+#
+# So both ends are closed here. A run id carrying a control character is never
+# interpolated: the line is published with the fixed literal `(비정규 이름)` and
+# the status `판정 불가`, so the directory stays visible without its bytes
+# reaching the record. A lane path carrying one is refused by the resolver's
+# file tiers and, for the environment tier those do not cover, by the field
+# printer below. The status is one of three literals and the count is digits or
+# `?`, and neither comes from disk.
+#
+# THE DECLARED RUN-ID SHAPE IS NOT USED AS THE FILTER, and that is a measured
+# decision rather than an omission. The contract document names the shape
+# `<UTC date>-<8 hex>`, but the run root is never cleaned and holds names from
+# before that shape existed: 82 of the 202 real directories on this machine do
+# not match it (`2026-09-04-23fa6c24`, `btopen-20260904-985a8a02`, `R1`).
+# Filtering on the shape would publish 판정 불가 for 40% of the history
+# permanently — and a probe that can never say 아님 for those directories stops
+# being a gate for them, which is the same argument the `watch.pid` exemption
+# below makes. The control-character refusal closes the forgery completely
+# without that cost; the shape is a naming convention, not a security boundary.
 #
 # WHY THIS IS A SEPARATE PROGRAM. Its consumer is outside this repository — a
 # swap scheduler has to know whether an unattended run is live before it moves a
@@ -104,6 +133,31 @@ probe_shape_ok() {
   # fingerprint in OPPOSITE orders, so a stage exists whose pid file is on disk
   # before its handle is, and a probe run inside that window must say it cannot
   # judge rather than say the machine is idle.
+  #
+  # AND "THE SAME REQUIREMENT" MEANS CONTENT, NOT EXISTENCE. This test used to
+  # ask `[ -f ]` while the census asks for a NON-EMPTY handle, so the invariant
+  # above was false in exactly the direction that hurts: an empty `.start` was
+  # admitted here, fell through the census's `.pgid` fallback — the gate writes
+  # no `.pgid` at all — and published as `아님 0` for a stage that was alive.
+  #
+  # The empty state is not a narrow race. The gate spawner's `.start` is the
+  # output redirection target of a `ps | sed` pipeline, so the shell creates and
+  # truncates the file before `ps` emits a byte: measured 300/300 in a window
+  # about 3.9 ms wide. And `ps` runs with stderr discarded and its output
+  # unchecked, so if it prints nothing the file stays empty for the stage's
+  # ENTIRE lifetime — a persistent state, not a window.
+  #
+  # The test is the UNION of the two handles being non-empty, not `.start`
+  # alone. `cc_stage_is_live` answers "alive" for an empty `.start` sitting
+  # beside a valid `.pgid` (measured: 도는중 1), so `[ -s .start ]` on its own
+  # would flip every driver-spawned directory to 판정 불가 — the same
+  # over-admission failure pointed the other way.
+  #
+  # The structurally better form is to lift this predicate into `liveness.sh`
+  # and have the census and this check call one named thing, which would make
+  # the invariant above true by construction instead of by comment. It is not
+  # done here because `liveness.sh` is outside this change's declared file set —
+  # recorded so the next reader can tell a deliberate omission from a missing one.
   local d="$1" f pid seg
   [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || return 1
   for f in "$d"/*.pid; do
@@ -120,7 +174,7 @@ probe_shape_ok() {
     case "$pid" in
       ''|*[!0-9]*) return 1 ;;
     esac
-    [ -f "$d/$seg.start" ] || [ -f "$d/$seg.pgid" ] || return 1
+    [ -s "$d/$seg.start" ] || [ -s "$d/$seg.pgid" ] || return 1
   done
   return 0
 }
@@ -130,10 +184,21 @@ probe_config_dir() {
   # `(미기록)`. Absence is ordinary rather than an error: every run directory
   # laid down before the driver started recording the lane has no such file, and
   # reporting those as undecidable would make the whole history unreadable.
+  #
+  # A CONTROL CHARACTER IN THE RECORDED VALUE IS NEVER INTERPOLATED. The
+  # resolver's file tiers refuse such a value upstream, but tier 1 is the
+  # environment and this printer is reached through a path that tier does not
+  # cover — and the field is last on the line, so a tab here adds a fifth field
+  # and a newline manufactures a record. `(비정규 레인)` is distinct from
+  # `(미기록)` on purpose: absence is ordinary, a value that cannot be published
+  # is not, and folding them would hide the second inside the first.
   local d="$1" v
   [ -r "$d/config-dir" ] || { printf '(미기록)'; return 0; }
   v=$(sed -n '1p' "$d/config-dir" 2>/dev/null)
   [ -n "$v" ] || { printf '(미기록)'; return 0; }
+  case "$v" in
+    *[[:cntrl:]]*) printf '(비정규 레인)'; return 0 ;;
+  esac
   printf '%s' "$v"
 }
 
@@ -147,6 +212,20 @@ probe_runs() {
   for d in "$RUN_ROOT"/*; do
     [ -d "$d" ] || continue
     rid=${d##*/}
+    # THE NAME IS ENUMERATED, NOT AUTHORED, so it is not trusted to be a field.
+    # A directory name may hold anything but `/` and NUL, and the two characters
+    # that matter here are the two that carry structure: a tab adds a field, a
+    # newline adds a RECORD. Planting one directory was enough to deliver a
+    # syntactically perfect line — correct field count, a status literal, a
+    # count — for a run id that does not exist. The line stays, because a
+    # directory that cannot be published is itself worth seeing, but the name
+    # does not: a fixed literal takes its place and the status is 판정 불가,
+    # since nothing was measured about a directory this program refused to name.
+    case "$rid" in
+      *[[:cntrl:]]*)
+        printf '(비정규 이름)\t판정 불가\t?\t(미기록)\n'
+        continue ;;
+    esac
     if probe_shape_ok "$d"; then
       live=$(cc_live_stages "$d")
       case "${live:-}" in
