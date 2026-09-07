@@ -668,23 +668,43 @@ EOF
 # refused for a second reason. Kickoff is the one moment where a refusal is both
 # actionable and cheap, so the check is made once, there.
 #
-# THE ACCEPTED SET IS THE CONSUMED SET. `base_sha` resolves `refs/remotes/origin/…`
-# and nothing else, so a name that exists only as a local head passed kickoff and
-# died later at worktree creation — accepting more than the consumer can use is
-# the same defect as freezing an unverified value, one step further downstream.
+# THE ACCEPTED SET IS THE CONSUMED SET, AND THE CONSUMER FETCHES FIRST. `base_sha`
+# resolves `refs/remotes/origin/…` and nothing else, so a name that exists only as
+# a local head passed kickoff and died later at worktree creation — accepting more
+# than the consumer can use is the same defect as freezing an unverified value, one
+# step further downstream. But the consumption site calls `base_fetch` on the line
+# above `base_sha`, so the consumed set is the remote-tracking set AFTER a fetch
+# while kickoff was reading it before one. That made the accepted set a proper
+# subset, and every shape whose base branch exists on the server but is not yet in
+# this clone — a single-branch clone, a branch created after the clone, a narrowed
+# `remote.origin.fetch` — went from completing normally to a hard stop at kickoff.
+# Fetching here is what makes the two sets the same set rather than widening the
+# check back out.
 check_base_branches() {
   local a wt bb
   for a in $(target_aliases); do
     bb=$(target_field "$a" '베이스 브랜치')
+    base_fetch "$a"
     # `(없음)` is the declaration that this target names no base branch, and it
-    # is `base_branch` that turns that into a derived one. It is not exempt from
-    # verification here — there is nothing declared to verify.
-    case "$bb" in ''|'(없음)') continue ;; esac
+    # is `base_branch` that turns that into a derived one. THE DERIVED VALUE IS
+    # VERIFIED TOO: it is frozen into `$RUN_DIR/base-branch.<alias>` and then
+    # carried into the worktree branch point, the ledger's base sha, the external
+    # drift comparison and the rebase target, so exempting this arm left the one
+    # branch that most needs checking as a silent host-dependent guess — the
+    # derivation falls back to whatever HEAD a person happens to have checked out
+    # in the main worktree. `base_branch` owns the check; a subshell keeps its
+    # `BASE_BRANCH` assignment from leaking into a run that has not started yet.
+    case "$bb" in
+      ''|'(없음)')
+        ( base_branch "$a" >/dev/null ) \
+          || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 (fetch 이후에도 refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        continue ;;
+    esac
     wt=$(target_field "$a" '메인 워크트리')
     # Verified in the MAIN worktree because refs are shared across every linked
     # worktree of one repository.
     ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
-      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb (refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb (fetch 이후에도 refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
   done
 }
 
@@ -1862,9 +1882,10 @@ stage_pin_attempt() {
 # which meant a re-dispatch destroyed the previous attempt's stream at the
 # moment it started. The combination that lost the most was the common one: the
 # first attempt parks, the second is dispatched to find out why, and dispatching
-# it erases the path that led there. The halt record next door was already
-# attempt-scoped, so the two artifacts of one attempt disagreed about what they
-# belonged to.
+# it erases the path that led there. The halt record next door was NOT
+# attempt-scoped either — it is scoped by `halt_record_path` for the same reason
+# and off the same pin, so the two artifacts of one attempt agree about what they
+# belong to.
 #
 # The number is PINNED at dispatch rather than recomputed, because the counter
 # it comes from is the ledger's own `stage-result` rows — so it advances the
@@ -2025,7 +2046,12 @@ stage_spawn() {
   # instruction, has no manifest to pass, and every spelling it tries is refused
   # for a reason that is true but unfixable from inside. The five that were here
   # identify the RUN; these three identify the ACT, and the gate needs both.
-  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage" \
+  # `CC_PIPELINE_STAGE_ID` carries the ATTEMPT, because it is what the stage names
+  # its halt record after — an unscoped id put every attempt's record at one path,
+  # and the classifier then read the first attempt's record for the second. The
+  # gate's launcher already hands down `<segment>#<attempt>`; this is the same
+  # spelling, so one reader resolves both.
+  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
       CC_PIPELINE_MANIFEST="$MANIFEST" CC_PIPELINE_TARGET="$(seg_alias "$stage" 2>/dev/null || home_alias)" \
@@ -2221,8 +2247,35 @@ predicate_implement() {
 # independent axes; the halt record is the third. Crossing all three separates
 # "it died" from "it believed it was finished".
 # ---------------------------------------------------------------------------
+# The halt record's path, SCOPED BY ATTEMPT — the same pin, the same legacy arm and
+# the same reason as `stage_log_path`.
+#
+# It was NOT attempt-scoped, and `classify_termination` asks this axis before it
+# looks at the exit status or the predicate. `segment_cycle` enters every segment
+# at cycle 0, so resuming one run id re-dispatches the identical id; the first
+# attempt's record was still sitting at the unsuffixed name, and the second attempt
+# was therefore classified `의도된 park` however cleanly it finished — then parked
+# while quoting the FIRST attempt's recall command. A segment parked on its first
+# attempt cannot be brought back by resuming.
+#
+# With a pin the scoped name is the only answer, which is what keeps a fresh
+# dispatch from reading the previous attempt's record; without one the record is
+# either from a driver that predates the scoping or one a harness wrote by hand,
+# and the unsuffixed name is right for both.
+halt_record_path() {
+  local stage="$1" p
+  if [ -f "$RUN_DIR/$stage.attempt" ]; then
+    printf '%s/halt/%s#%s.md' "$RUN_DIR" "$stage" "$(cat "$RUN_DIR/$stage.attempt")"
+    return 0
+  fi
+  p="$RUN_DIR/halt/$stage.md"
+  if [ ! -f "$p" ]; then p="$RUN_DIR/halt/$stage#$(stage_attempt "$stage").md"; fi
+  printf '%s' "$p"
+}
+
 halt_record_present() {
-  local stage="$1" f="$RUN_DIR/halt/$1.md"
+  local stage="$1" f
+  f=$(halt_record_path "$stage")
   [ -f "$f" ] || return 1
   # The closing fence is the terminator. A record whose last non-empty line is
   # not the fence is a crash mid-write, not a halt.
@@ -3056,7 +3109,23 @@ base_branch() {
   [ -n "$BASE_BRANCH" ] && [ -z "${RUN_DIR:-}" ] && { printf '%s' "$BASE_BRANCH"; return 0; }
   root=$(alias_root "$al") || return 1
   b=$( cd "$root" && { git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's#^origin/##'; } )
-  [ -n "$b" ] || b=$( cd "$root" && git rev-parse --abbrev-ref HEAD )
+  # `2>/dev/null || true` on the fallback too. In a repository with no commits
+  # `rev-parse --abbrev-ref HEAD` exits 128, and as the last command of an `A || B`
+  # list that status is `set -e`'s to act on — the subshell died, the caller took
+  # an empty value and the reason was nowhere. This arm only became reachable when
+  # `(없음)` started falling through to derivation.
+  [ -n "$b" ] || b=$( cd "$root" && { git rev-parse --abbrev-ref HEAD 2>/dev/null || true; } )
+  # A DERIVED NAME IS VERIFIED BEFORE IT IS FROZEN. `origin/HEAD` is a symbolic ref
+  # that `git clone` writes and `git init` + `git remote add` does not, so the
+  # second arm answers with whatever branch is checked out in the main worktree —
+  # a person's `hotfix/x` became the run's base, silently, and the frozen value
+  # then reached the worktree branch point, the ledger, the drift comparison and
+  # the rebase target. Before the sentinel fell through here the same input failed
+  # loudly at `base_sha`; refusing here keeps that loudness and moves it earlier.
+  { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1 ); } || {
+    warn "대상 '$al' 의 베이스 브랜치를 유도했으나 원격 추적 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
+    return 1
+  }
   BASE_BRANCH="$b"
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] && printf '%s' "$b" > "$f"
   printf '%s' "$b"
@@ -3065,7 +3134,17 @@ base_branch() {
 # Refresh the remote-tracking refs. This does NOT touch the working tree — it
 # reads the remote and moves `refs/remotes/origin/*` only — so it is compatible
 # with the decision never to fast-forward the tree a human is working in.
-base_fetch() { local al="${1:-$(home_alias)}"; ( cd "$(alias_root "$al")" && git fetch --quiet origin 2>/dev/null ) || true; }
+# The root is resolved into a variable rather than substituted into `cd`: an alias
+# the manifest does not declare makes `alias_root` fail and print nothing, and
+# `cd ""` is a successful no-op — so the fetch would have run in whatever directory
+# the driver happened to be in. Kickoff calls this for every declared target, which
+# is where an unresolvable one is most likely to appear.
+base_fetch() {
+  local al="${1:-$(home_alias)}" root
+  root=$(alias_root "$al") || return 0
+  [ -n "$root" ] || return 0
+  ( cd "$root" && git fetch --quiet origin 2>/dev/null ) || true
+}
 
 # Resolve from the REMOTE-TRACKING ref, not the stripped local name.
 #
@@ -3167,7 +3246,7 @@ segment_cycle() {
     # id it actually dispatched, and nothing else in the row carries it.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "$stage")" "부모=$(stage_parent_id)" "종단 부류=$class"
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -3175,7 +3254,7 @@ segment_cycle() {
     case "$class" in
       '정상 완료') : ;;
       '의도된 park')
-        park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/$sid.md" 2>/dev/null)"
+        park "$seg" cone 무효화 "게이트 park" "중단 기록" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "$sid")" 2>/dev/null)"
         return 1 ;;
       '공허한 성공')
         # One retry, then a DISTINCT park reason. Not zero, because one
@@ -3200,8 +3279,15 @@ segment_cycle() {
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
     class=$(classify_termination "$sid" "$rc" "$pred")
+    # The session lineage is on THIS row too. The separation rule reads `세션 id`
+    # and `부모` from both sides and treats an unrecorded one as a refusal rather
+    # than a pass, so a review row without them refused every merge on the fixed
+    # graph path; and the gate's `--resume` admits a session only when it appears
+    # as this segment's `세션 id`, so a stage cut mid-flight could not be
+    # re-attached and had to be paid for again.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
-      "아티팩트 술어 결과=$pred" "종단 부류=$class"
+      "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+      "종단 부류=$class"
     [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
 
     # --- S6 TRIAGE ---------------------------------------------------------
@@ -3413,7 +3499,7 @@ main_loop() {
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
   case "$class2" in
     '정상 완료') : ;;
-    '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RUN_DIR/halt/S2.md" 2>/dev/null)"; return 0 ;;
+    '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
     *) park "S2" run 무효화 "게이트 park" "종단 부류 $class2"; return 0 ;;
   esac
   fi

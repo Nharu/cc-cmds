@@ -2189,6 +2189,32 @@ if ( check_base_branches ) >/dev/null 2>&1; then
 else
   ok "로컬 헤드에만 있는 베이스 브랜치가 거부된다 (소비 집합과 같은 집합을 받는다)"
 fi
+# 소비 집합은 fetch **이후**의 원격 추적 ref 집합이다 — 소비 지점이 `base_fetch` 를
+# 먼저 부르고 그다음 `base_sha` 를 부른다. 킥오프가 fetch 이전의 것을 보면 수용 집합이
+# 진부분집합이 되어, 서버에는 있는데 이 클론이 아직 가져오지 않은 베이스 브랜치가
+# 완주하던 자리에서 하드 스톱된다 — 단일 브랜치 클론, 클론 이후 서버에서 만들어진
+# 브랜치, 좁혀진 fetch refspec 이 전부 그 형상이다.
+MF_ORIGIN="$WORK/manifest-origin"; mkdir -p "$MF_ORIGIN"
+( cd "$MF_ORIGIN" \
+  && git init -q . \
+  && git config user.email t@example.invalid \
+  && git config user.name  T \
+  && git commit -q --allow-empty --no-gpg-sign -m init \
+  && git branch -M main \
+  && git branch server-only ) >/dev/null 2>&1
+( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+if ( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/server-only >/dev/null 2>&1 ); then
+  bad "베이스 브랜치 검증" "픽스처가 이미 가져온 상태다 — fetch 이전 상태를 재지 못한다"
+else
+  ok "픽스처에 서버에만 있고 아직 가져오지 않은 브랜치를 만들었다"
+fi
+write_manifest "$MF" "" "" "server-only"
+MANIFEST="$MF"
+if ( check_base_branches ) >/dev/null 2>&1; then
+  ok "아직 가져오지 않은 베이스 브랜치가 킥오프를 통과한다 (소비자가 부르는 fetch 를 검사도 부른다)"
+else
+  bad "베이스 브랜치 검증" "가져오지 않은 ref 가 거부됐다 — 완주하던 형태가 하드 스톱된다: $( ( check_base_branches ) 2>&1 | tail -1 )"
+fi
 # 이 검사가 모든 게이트 호출마다 돌면, 베이스 브랜치가 런 도중 해소 불가가 됐을 때
 # 이후 모든 행위가 하드 스톱되고 값이 구속 다이제스트에 얼어 있어 복구할 길이 없다.
 # 그래서 검사는 킥오프 경로에만 있어야 한다 — 게이트가 부르는 것은 `check_manifest` 다.
@@ -2213,6 +2239,30 @@ if [ "$( ( RUN_DIR=""; BASE_BRANCH=""; base_branch home ) )" = "(없음)" ]; the
 else
   ok "베이스 브랜치 (없음) 은 선언 부재로 읽혀 유도로 넘어간다"
 fi
+# 넘어간 그 파생값도 검증된다. 파생은 `origin/HEAD` 의 축약 이름이고, 그 심볼릭 ref 는
+# `git clone` 이 만들고 `git init` + `remote add` 로 만든 레포에는 없으므로 파생은
+# **메인 워크트리에 사람이 체크아웃해 둔 HEAD 의 이름**으로 내려간다. 그 값은
+# `$RUN_DIR/base-branch.<별칭>` 으로 동결돼 워크트리 분기점·원장의 베이스 sha·외부
+# 드리프트 비교·rebase 대상에 전부 실린다 — 검증에서 면제하면 시끄럽게 실패하던 경로가
+# 조용한 호스트 의존 추측이 된다.
+( cd "$MF_REPO" && git checkout -q -b derived-only ) >/dev/null 2>&1
+write_manifest "$MF" "" "" "(없음)"
+MANIFEST="$MF"
+# `RUN_DIR` 를 비워 부른다 — 동결된 사본이 있으면 유도 자체가 일어나지 않아 이 절이
+# 재려는 것을 재지 못한다.
+if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
+  bad "베이스 브랜치 (없음)" "해소되지 않는 유도값이 킥오프를 통과했다 — 런이 조용히 체크아웃된 브랜치를 베이스로 삼는다"
+else
+  ok "해소되지 않는 유도값이 거부된다 ((없음) 분기가 검증에서 면제되지 않는다)"
+fi
+( cd "$MF_REPO" && git checkout -q main ) >/dev/null 2>&1
+if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
+  ok "해소되는 유도값은 그대로 통과한다 (파생값 검증이 공허하지 않다)"
+else
+  bad "베이스 브랜치 (없음)" "실재하는 유도값이 거부됐다: $( ( check_base_branches ) 2>&1 | tail -1 )"
+fi
+check "유도된 이름이 체크아웃된 HEAD 가 아니라 해소되는 이름이다" \
+  "$( ( RUN_DIR=""; BASE_BRANCH=""; base_branch home ) )" "main"
 write_manifest "$MF"
 MANIFEST="$MF"
 
@@ -2366,6 +2416,110 @@ if grep_all_q -F '> "$out" 2> "$RUN_DIR/log/$stage.err"' < "$DRIVER"; then
   bad "스테이지 스트림" "잘림 리다이렉션이 남아 있다"
 else
   ok "잘림 리다이렉션이 남아 있지 않다"
+fi
+
+# 중단 기록은 분류의 첫 축이다. 스트림만 시도로 갈리고 이 축이 안 갈리면, 같은 run id
+# 로 재개했을 때 `segment_cycle` 이 사이클 0 에서 시작해 같은 파견 id 를 다시 쓰므로
+# 2회차가 아무리 정상 종료해도 1회차가 남긴 기록 때문에 `의도된 park` 이 되고, 첫 시도가
+# park 한 세그먼트는 재개로 되살아나지 않는다.
+mkdir -p "$RUN_DIR/halt"
+HALT25=$(halt_record_path "$SEG25")
+check "중단 기록 경로가 이 시도로 스코프된다" "$HALT25" "$RUN_DIR/halt/$SEG25#3.md"
+printf '# 정지\n**재호출 명령**: /cc-cmds:x\n<!-- /cc-pipeline-halt v1 -->\n' > "$HALT25"
+if halt_record_present "$SEG25"; then
+  ok "이 시도가 남긴 중단 기록은 이 시도의 판정 입력이다"
+else
+  bad "중단 기록 스코프" "자기 시도의 중단 기록을 읽지 못한다"
+fi
+stage_pin_attempt "$SEG25" >/dev/null
+if halt_record_present "$SEG25"; then
+  bad "중단 기록 스코프" "재파견이 앞 시도의 중단 기록을 자기 것으로 읽는다"
+else
+  ok "재파견이 앞 시도의 중단 기록을 읽지 않는다"
+fi
+check "앞 시도가 park 해도 정상 종료한 재파견은 정상 완료로 분류된다" \
+  "$(classify_termination "$SEG25" 0 0)" "정상 완료"
+# 그 이름은 스테이지가 스스로 짓는다 — 파견이 넘기는 id 에 시도가 없으면 모든 시도의
+# 기록이 한 경로에 앉고 위 단언들이 잴 것이 없어진다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'CC_PIPELINE_STAGE_ID="$stage#$attempt"'; then
+  ok "파견이 스테이지에 시도까지 실은 id 를 넘긴다"
+else
+  bad "중단 기록 스코프" "파견이 무스코프 id 를 넘겨 모든 시도의 중단 기록이 한 경로에 앉는다"
+fi
+
+# --- 25g 세그먼트 결과 행의 세션 계보 ---------------------------------------
+# `segment_cycle` 의 지역 변수는 `sid` 다. 스코프에 없는 이름을 넘기면 `set -u` 아래에서
+# 명령 치환 서브셸이 죽고 필드가 조용히 빈 값이 된다 — 부모 셸은 계속 돈다.
+check "세그먼트 결과 행 두 자리가 스코프 안의 파견 id 로 세션 id 를 유도한다" \
+  "$( sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | { grep -cF 'stage_session_id "$sid"' || true; } )" "2"
+check "세그먼트 안에 스코프 밖 이름으로 세션 id 를 유도하는 자리가 없다" \
+  "$( sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | { grep -cF 'stage_session_id "$stage"' || true; } )" "0"
+check "세그먼트 결과 행 두 자리가 부모를 싣는다" \
+  "$( sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | { grep -cF '"부모=$(stage_parent_id)"' || true; } )" "2"
+# 그 값에 하중을 건 소비자 둘을 실제로 태운다. 형상 단언만으로는 필드가 실려도 소비자가
+# 요구하는 형태인지 알 수 없다 — 재부착 검증은 값 뒤의 공백을 요구하고, 머지 규칙은 빈
+# 계보를 통과가 아니라 거절로 처리한다.
+LEDGER="$WORK/ledger-lineage.md"; : > "$LEDGER"
+ledger_row 'stage-result' "세그먼트=segL" "스테이지=S4" "파견 id=S4:segL:0" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "세션 id=SID-IMPL" "부모=SID-ROUTER" "종단 부류=정상 완료"
+ledger_row 'stage-result' "세그먼트=segL" "스테이지=S5" "파견 id=S5:segL:0" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "세션 id=SID-REV" "부모=SID-ROUTER" "종단 부류=정상 완료"
+check "게이트의 재부착 검증이 리뷰 스테이지의 세션을 이 세그먼트의 것으로 찾는다" \
+  "$( { grep -E '^- `stage-result`' "$LEDGER" | grep -F '세그먼트=segL ' || true; } \
+      | { grep -cF '세션 id=SID-REV ' || true; } )" "1"
+if GATE_ACT=머지 GATE_SEGMENT=segL GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>/dev/null; then
+  ok "세션 계보가 실리면 고정 그래프 경로의 머지가 통과한다"
+else
+  bad "세션 계보" "계보가 실려도 머지가 거절된다: $( GATE_ACT=머지 GATE_SEGMENT=segL GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>&1 | tail -1 )"
+fi
+# 반대 방향 — 필드가 비면 그 규칙은 통과가 아니라 거절이다. 이것이 이 절이 재는 손실의
+# 실체이며, 이 단언이 없으면 위 통과가 규칙이 공허해서 나온 것인지 구별되지 않는다.
+: > "$LEDGER"
+ledger_row 'stage-result' "세그먼트=segL" "스테이지=S4" "파견 id=S4:segL:0" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "세션 id=" "부모=SID-ROUTER" "종단 부류=정상 완료"
+ledger_row 'stage-result' "세그먼트=segL" "스테이지=S5" "파견 id=S5:segL:0" "종료 코드=0" \
+  "아티팩트 술어 결과=0" "종단 부류=정상 완료"
+if GATE_ACT=머지 GATE_SEGMENT=segL GATE_LEDGER="$LEDGER" /bin/sh "$script_dir/rules/구현-리뷰-분리.sh" 2>/dev/null; then
+  bad "세션 계보" "빈 계보를 통과로 처리한다 — 규칙이 공허하게 참이 된다"
+else
+  ok "빈 계보는 통과가 아니라 거절이다 (필드가 비면 머지가 매번 막힌다)"
+fi
+
+# --- 25h 게이트의 스테이지 런처도 같은 규칙으로 연다 ------------------------
+# 스테이지 스트림의 작성자가 둘인데 위 스트림 단언 둘은 `run.sh` 만 본다. 라우터 경로에서
+# 실제로 스테이지를 띄우는 것은 게이트이고, 그쪽이 무스코프 잘림으로 열면 한 세그먼트의
+# 모든 파견이 같은 파일 하나를 매번 잘라 쓴다 — 구현 스테이지의 전사가 같은 세그먼트의
+# 리뷰 스테이지에 지워진다.
+GATE25="$script_dir/gate.sh"
+if grep_all_q -F '> "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err"' < "$GATE25"; then
+  bad "스테이지 스트림" "게이트 런처에 무스코프 잘림 경로가 남아 있다"
+else
+  ok "게이트 런처에 무스코프 잘림 경로가 남아 있지 않다"
+fi
+if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F 'out="$RUN_DIR/log/$seg#$attempt.json"'; then
+  ok "게이트 런처의 전사 경로가 시도로 스코프된다"
+else
+  bad "스테이지 스트림" "게이트가 시도 번호를 유도해 놓고 경로에는 쓰지 않는다"
+fi
+if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F '>> "$out" 2>> "$err"'; then
+  ok "게이트 런처가 덧붙임으로 연다"
+else
+  bad "스테이지 스트림" "게이트 런처가 잘림 모드로 연다"
+fi
+# 핀이 없으면 양쪽이 서로 다른 계수로 같은 경로를 유도한다 — 게이트는 `자율 승인` 행을,
+# 드라이버는 `파견 id=` 행을 센다. 드라이버의 판독기가 핀 파일을 가장 먼저 보므로,
+# 게이트가 그 파일을 쓰는 것이 두 쪽을 한 경로로 묶는 지점이다.
+if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F '> "$RUN_DIR/$seg.attempt"'; then
+  ok "게이트 런처가 드라이버의 판독기가 읽는 핀을 쓴다"
+else
+  bad "스테이지 스트림" "게이트가 핀을 남기지 않아 판독기가 다른 경로를 유도한다"
+fi
+# 결과 기록기도 같은 스트림을 봐야 한다. 다시 유도하면 작성자와 판독자가 또 갈린다.
+if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" \
+     | grep_all_q -F 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before" "$out"'; then
+  ok "게이트의 결과 기록기가 이 파견이 실제로 쓴 스트림을 받는다"
+else
+  bad "스테이지 스트림" "결과 기록기가 스트림 경로를 다시 유도한다"
 fi
 
 DOC="$DOC_SAVE25"; DOC_KEY="$DOC_KEY_SAVE25"

@@ -5559,6 +5559,30 @@ gate_launch_stage() {
              | { grep -cF "세그먼트=$seg " || true; } )
   [ "${attempt:-0}" -ge 1 ] || attempt=1
 
+  mkdir -p "$RUN_DIR/log"
+  # ADVANCED PAST EVERY STREAM ALREADY ON DISK, then pinned. The row count is the
+  # starting point and not the answer: a dispatch that died before its row landed
+  # leaves the count where it was, and the router re-dispatches the same segment
+  # id — so two attempts would land on one path. The driver pins the same way and
+  # for the same reason, and its readers consult the pin FIRST, which is what
+  # makes one file the answer for both sides instead of each deriving its own.
+  while [ -e "$RUN_DIR/log/$seg#$attempt.json" ] || [ -e "$RUN_DIR/log/$seg#$attempt.err" ]; do
+    attempt=$(( attempt + 1 ))
+  done
+  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
+
+  # THE STREAM IS SCOPED BY ATTEMPT AND OPENED FOR APPEND. This launcher is the
+  # one the router actually uses, and it wrote every dispatch of one segment to a
+  # single truncating path — so the implementation stage's transcript was erased
+  # by the review stage of the same segment, and the readers on the other side
+  # (`stage_session_id`, `predicate_reconverge`, `decision_point_reached`) were
+  # reading a file this side could zero at any moment. The transcript is the only
+  # record of what a stage read and concluded, and in an unattended run nobody
+  # was there to see it happen. The attempt number was already derived just above
+  # and handed to the stage in its environment; it simply was not on the path.
+  local out="$RUN_DIR/log/$seg#$attempt.json"
+  local err="$RUN_DIR/log/$seg#$attempt.err"
+
   # The stage's stream goes to a FILE rather than through a `tee`. A tee would
   # make `$!` the tee's pid, and the pid is what the watcher uses to tell a
   # working stage from a stopped router — so the visible stream would be bought
@@ -5570,8 +5594,6 @@ gate_launch_stage() {
   else
     id_flag="--session-id $(session_uuid "$seg" "$attempt")"
   fi
-
-  mkdir -p "$RUN_DIR/log"
 
   local n_rows_before
   n_rows_before=$(gate_rows '자율 승인' | gate_count)
@@ -5592,7 +5614,7 @@ gate_launch_stage() {
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     $id_flag \
-    -- "$@" > "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err" < /dev/null &
+    -- "$@" >> "$out" 2>> "$err" < /dev/null &
   local spid=$!
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
   # Pinned on the WRITE side too. The watcher pins it on the read side, and a
@@ -5614,12 +5636,12 @@ gate_launch_stage() {
   # record and a stale process must die together or pid reuse makes the watcher
   # report a stage that is not there.
   rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start"
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before"
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before" "$out"
   return "$rc"
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <rows-before>
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <rows-before> [stream]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -5630,7 +5652,11 @@ gate_record_stage_outcome() {
   # implementation-review separation rule reads ancestry from; with no rows that
   # rule returns early and passes vacuously on every run it exists to catch.
   local alias="$1" seg="$2" kind="$3" attempt="$4" rc="$5" before="$6"
-  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha iserr
+  # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
+  # Re-deriving is how the writer and the reader came apart once already; the
+  # unsuffixed name stays as the fallback for a caller that predates the argument.
+  local out="${7:-}" res cost subtype sid klass after denials prev total n_stage psha iserr
+  [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
