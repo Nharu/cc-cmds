@@ -26,7 +26,8 @@ Write the result into the audit report as a `## 결정론적 검사` section. Ea
 - **Location**: <section or anchor in the document>
 - **Issue**: <what is wrong>
 - **Evidence**: <the observed bytes, path, or count>
-All paths in `Location` and `Evidence` are repository-relative against `CODE_ROOT`
 ```
+
+Write every path in `Location` and `Evidence` as a repository-relative path against `CODE_ROOT`: never an absolute path, and never a mix of the two in one report. This line is an instruction to you and not part of the shape above — inside the fence it was copied into the report as if it were a field, and a producer reading a description of its own output has been told nothing to do.
 
 These entries count toward `원시 발견 수` and `고유 결함 수` in the disclosure block, and are **excluded from `미보강 잔여 수`**: reinforcement multiplicity is not a meaningful notion for a saturated channel, and counting a deterministic finding as unreinforced would corrupt the invariant that unreinforced residuals are the ones no second reader confirmed.
