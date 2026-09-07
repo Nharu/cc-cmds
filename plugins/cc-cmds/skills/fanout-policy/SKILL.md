@@ -94,7 +94,7 @@ Do NOT hand a fanned-out agent:
 - Acts that are hard to undo or that go outward — `git push`, commits, merges, creating or commenting on PRs / issues, `gh auth switch`, deletions, external or MCP writes.
 - File edits that were not instructed.
 - Commands that touch the whole tree — formatters, codemods, `npm install`. (The standing "install it rather than finding an alternative" rule does NOT apply to a fanned-out agent.)
-- Edits to configuration, memory, or CLAUDE.md under `~/.claude*`.
+- Edits to configuration, memory, or CLAUDE.md under the Claude Code configuration directory — `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` and every sibling directory sharing that `.claude` name prefix.
 
 During a skill run, whatever that skill forbids stays forbidden — **this rule
 does not loosen a skill's constraints**. Do not use a fan-out product in place
