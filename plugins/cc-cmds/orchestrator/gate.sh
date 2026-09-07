@@ -372,6 +372,67 @@ surface_of_openssl() {
   esac
 }
 
+gate_orchestrator_script_hint() {
+  # gate_orchestrator_script_hint <argv0> — one extra warn line when an ungraded
+  # argv0 names a script this plugin SHIPS.
+  #
+  # `등급 미상` is the table's answer for every name it does not carry, so two
+  # very different situations arrive wearing the same string: a tool nobody has
+  # ever added a row for, and a script this plugin SHIPS whose row landed in a
+  # commit this gate copy does not have. The second one is not the caller's
+  # mistake and there is nothing for them to respell — the run is being
+  # adjudicated by a gate older than the tree it is adjudicating, because the
+  # hook takes the gate as a runtime parameter and nothing requires that copy to
+  # be the one under review.
+  #
+  # Measured: a slice added a script and its grading row in one commit; the run
+  # reviewing that slice was adjudicated by a different, dirty checkout without
+  # the row. Both exits from the refusal were bad — an interpreter in front
+  # passes while restoring the very laundering the row existed to stop, and the
+  # honest fallback drops an artifact — and the refusal text said nothing that
+  # would let a reader tell this apart from an unknown tool.
+  #
+  # WHAT IS LOOKED AT IS THE CALLER'S PATH, NOT THIS GATE'S NEIGHBOURS. The
+  # first version of this checked whether a file of the same basename sat next
+  # to the gate, and that check can never fire in the case it was written for: a
+  # script and its grading row land in the SAME commit, so a copy without the
+  # row has no such file either. "No row" implies "no neighbour", which makes
+  # the miss structural rather than unlikely — the only window it did fire in
+  # was a partially applied checkout, which is not the motivating case at all.
+  #
+  # The observable that survives is the ARGV0 THE CALLER HANDED OVER. The
+  # grading table throws the path away and matches on the basename, but the path
+  # is still right here: a caller in the newer tree passes something that
+  # resolves, and its parent directory is this plugin's `orchestrator/`. That is
+  # precisely the skew — the caller's tree has the script, this gate does not
+  # have the row.
+  #
+  # The neighbour test is KEPT as a second trigger rather than replaced, because
+  # it covers what the path test cannot: an argv0 given as a bare name, with no
+  # path to inspect. Either one alone leaves a hole the other closes.
+  #
+  # A false positive costs one advisory sentence, so both tests are loose on
+  # purpose. What they must not be is silent in the normal case, which is what
+  # the first version was.
+  local b="${1##*/}" hit='' parent=''
+  case "$b" in
+    *.sh) ;;
+    *) return 0 ;;
+  esac
+  case "$1" in
+    */*)
+      if [ -f "$1" ]; then
+        parent=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || parent=''
+        case "$parent" in
+          */orchestrator) hit="$1" ;;
+        esac
+      fi ;;
+  esac
+  if [ -z "$hit" ] && [ -f "$GATE_DIR/$b" ]; then hit="$GATE_DIR/$b"; fi
+  [ -n "$hit" ] || return 0
+  warn "그 이름은 이 플러그인이 싣는 오케스트레이터 스크립트입니다 ($hit) — 모르는 도구가 아니라 이 게이트 사본이 그 등급 행을 실은 트리보다 낡았다는 뜻입니다. 판정에 쓰이는 게이트는 $GATE_DIR/gate.sh 이고, 다른 사본의 등급표를 고쳐도 이 판정은 바뀌지 않습니다. 인터프리터를 앞에 붙이거나 더 낮은 철자로 우회하지 마세요 — 전자는 통과하면서 그 행이 막으려던 것을 되살리고, 후자는 산출물을 잃습니다"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -420,6 +481,21 @@ surface_of_argv0() {
     uuidgen)
       printf '읽기' ;;
     mktemp)
+      printf '트리밖쓰기' ;;
+    # The team witness directory, minted by one script rather than by four
+    # statements the caller has to run in a single shell. Same grade as the
+    # `mktemp` above because that is what it does — it roots under the driver's
+    # run directory or the system temp dir, both out of tree, and writes one
+    # `.attempt` file inside the directory it just made. Nothing under the
+    # worktree is touched on any path.
+    #
+    # THE ROW IS WHAT MAKES THE HONEST DECLARATION POSSIBLE. Four statements in
+    # one call is `bash -c`, and `bash` is graded a worktree write below without
+    # inspecting what it wraps; the comparator is strict equality, so declaring
+    # the effect that actually happens was refused exactly as laundering is
+    # refused. The caller was left choosing between a false declaration and not
+    # running.
+    cc-team-witness-init.sh)
       printf '트리밖쓰기' ;;
     # The note above says `openssl` may not sit in the digest row because one
     # name would cover both hashing and opening a socket. That reasoning holds
@@ -2398,7 +2474,17 @@ gate_main() {
       printf '축2=%s\n' "$g"
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
-      if [ "$g" = "등급 미상" ]; then exit "$GATE_EXIT_VOCAB"; fi
+      #
+      # The version-skew hint belongs here as much as on the acting path, and
+      # arguably more: `grade` is what a caller runs to find out what to declare,
+      # so this is where the answer "the table has no row for a script sitting
+      # next to me" is cheapest to receive. The acting path reaches the same
+      # helper through `gate_verb_act`; this arm never gets there, because it
+      # calls the table directly and returns.
+      if [ "$g" = "등급 미상" ]; then
+        gate_orchestrator_script_hint "$1"
+        exit "$GATE_EXIT_VOCAB"
+      fi
       ;;
     plan|act|exec)
       gate_verb_act "$verb" "$kind" "$alias" "$segment" "$cutpoint" "$surface" \
@@ -4423,15 +4509,25 @@ gate_verb_act() {
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     if [ "$surface" != "$graded" ]; then
       warn "축2 자기선언 불일치: 선언 '$surface' vs 등급 '$graded'"
+      if [ "$graded" = "등급 미상" ]; then gate_orchestrator_script_hint "$1"; fi
       exit "$GATE_EXIT_GRADE"
     fi
   fi
   if [ "$graded" = "등급 미상" ]; then
-    # The message names WHICH repair, because two different things arrive here:
-    # a tool the table has never listed (widen the table), and a recognized tool
-    # in a form the sub-table could not parse (respell the command). Without the
-    # distinction the router sees one refusal and has no way to tell which.
+    # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
+    # lines name a repair and the two repairs are opposites: the generic one
+    # says respell the command, the version-skew advisory says do NOT respell it
+    # because both respellings available here are losses. Printed the other way
+    # round the reader's last instruction was the one that does not apply, and
+    # the two spellings it invites are exactly the two the advisory forbids.
+    #
+    # The generic message names WHICH repair, because two different things
+    # arrive here: a tool the table has never listed (widen the table), and a
+    # recognized tool in a form the sub-table could not parse (respell the
+    # command). Without the distinction the router sees one refusal and has no
+    # way to tell which.
     warn "축2 등급 미상 — 등급표에 없는 argv0 는 읽기로 떨어지지 않습니다: $1 (그 도구가 표에 오른 적이 없다면 표를 넓혀야 하고, 표에 있는 도구인데 형태를 못 읽은 것이라면 하위 명령이 보이도록 다시 쓰세요)"
+    gate_orchestrator_script_hint "$1"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
 

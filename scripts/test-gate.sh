@@ -1971,6 +1971,103 @@ graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sh
 graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
 graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
 graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
+# The team witness initializer. It is the second half of a pair: the script
+# exists so that the four statements it runs stop needing `bash -c`, and this
+# row is what makes that worth doing. Without the row the script would fall to
+# `등급 미상` and the caller would be back to the interpreter, which is graded a
+# worktree write whatever it wraps — so the declaration the caller could make
+# honestly would again be one the comparator refuses.
+#
+# Asserted through the absolute spelling as well, because that is how a skill
+# invokes it (`<plugin root>/orchestrator/…`) and a name-only assertion would
+# pass while every real call fell through to `등급 미상`.
+graded_as '트리밖쓰기' '위트니스 초기화 스크립트는 트리 밖을 쓴다' -- cc-team-witness-init.sh review-x
+graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+# THE WRONG SPELLING, ASSERTED WRONG ON PURPOSE. The row above only holds while
+# the script is argv0, and an interpreter in front takes that away — which is
+# the whole defect the script was written to escape, restored by four
+# characters. The two suites that ship with it assert the row exists and the
+# file is executable, and NEITHER of them can see what a caller types, so
+# without this line the regression comes back with everything green. It is
+# pinned as `워크트리쓰기` because that IS what the gate answers; the assertion
+# is that the wrong spelling is visibly wrong, not that it is refused.
+graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+
+# An ungraded name that this plugin SHIPS is a VERSION SKEW, not an unknown
+# tool, and the refusal has to say which.
+#
+# THE FIXTURE IS A SCRIPT THIS GATE DOES NOT HAVE, and that is the whole point.
+# A first version of the check asked whether a file of the same basename sat
+# beside the gate, which cannot fire in the case it was written for — the script
+# and its grading row ship in one commit, so a copy missing the row is missing
+# the file too. The fixture below reproduces the real shape: the CALLER's tree
+# has the script, this gate has neither the row nor the file.
+SKEWDIR="$WORK/newer-tree/orchestrator"
+mkdir -p "$SKEWDIR"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SKEWDIR/cc-not-yet-graded.sh"
+chmod +x "$SKEWDIR/cc-not-yet-graded.sh"
+HINT='이 플러그인이 싣는 오케스트레이터 스크립트'
+
+gate grade --manifest "$MANIFEST" -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" ;;
+  *) bad "이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다" "got '$msg'" ;;
+esac
+
+# THE ACTING PATH, NOT JUST `grade`. A caller hits this skew while declaring a
+# surface, and the two acting call sites reach the helper through a different
+# branch than the grade verb does. Asserting only on `grade` left both of them
+# uncovered.
+gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+  --surface 트리밖쓰기 -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "선언과 함께 부딪혀도 같은 안내가 나온다" ;;
+  *) bad "선언과 함께 부딪혀도 같은 안내가 나온다" "got '$msg'" ;;
+esac
+
+# The SECOND acting site, and it is a different branch from the one above: with
+# no `--surface` the mismatch check never runs and the helper is reached from
+# the plain unknown-grade arm instead. Asserting only the declaring shape left
+# this one uncovered.
+gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+  -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "선언 없이 부딪혀도 같은 안내가 나온다" ;;
+  *) bad "선언 없이 부딪혀도 같은 안내가 나온다" "got '$msg'" ;;
+esac
+# And the two lines are ordered so the specific advice is what the reader ends
+# on: the generic message invites a respelling, the advisory says both available
+# respellings are losses. Reversed, the last instruction read is the wrong one.
+generic='등급표에 없는 argv0'
+case "$msg" in
+  *"$generic"*"$HINT"*) ok "일반 거부가 먼저 나오고 구체 안내가 마지막에 남는다" ;;
+  *) bad "일반 거부가 먼저 나오고 구체 안내가 마지막에 남는다" "got '$msg'" ;;
+esac
+
+# `watch.sh` really does live beside the gate and really has no grading row, so
+# it exercises the bare-name fallback against the shipped layout.
+gate grade --manifest "$MANIFEST" -- watch.sh --run x
+case "$msg" in
+  *"$HINT"*) ok "경로 없는 맨 이름은 게이트 이웃으로 잡는다" ;;
+  *) bad "경로 없는 맨 이름은 게이트 이웃으로 잡는다" "got '$msg'" ;;
+esac
+
+# A real script that is NOT under an `orchestrator/` directory must not collect
+# the hint — the advisory is about this plugin's own tools, and attaching it to
+# any unknown `.sh` would make it noise.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/some-project-script.sh"
+gate grade --manifest "$MANIFEST" -- "$WORK/some-project-script.sh" --x
+case "$msg" in
+  *"$HINT"*) bad "오케스트레이터 밖의 스크립트에는 붙이지 않는다" "got '$msg'" ;;
+  *) ok "오케스트레이터 밖의 스크립트에는 붙이지 않는다" ;;
+esac
+gate grade --manifest "$MANIFEST" -- not-a-sibling-script.sh --run x
+case "$msg" in
+  *"$HINT"*) bad "존재하지 않는 이름에는 붙이지 않는다" "got '$msg'" ;;
+  *) ok "존재하지 않는 이름에는 붙이지 않는다" ;;
+esac
 graded_as '읽기' '하위 명령 없는 openssl 은 읽기다'    -- openssl
 # THE DEFAULT ARM IS WHY THE TABLE EXISTS, and asserting only the read arms
 # proves nothing about it. `s_client` above and `s_server` here are the two
