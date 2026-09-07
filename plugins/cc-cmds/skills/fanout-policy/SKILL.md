@@ -116,7 +116,7 @@ during a skill run include that skill's prohibitions as well.
 - Filter results through `.filter(Boolean)` before using them, and `log()` the number sent against the number returned. Without the filter, a `null` sits in the failed slot and the counts look equal.
 - **If the number of returned results differs from the number of agents sent, do not use it as grounds for deleting, migrating, or removing anything** — a missing result is "unknown", not "absent".
 - If results come back empty or the run ends early, do not summarize from what is left alone — state what is missing.
-- Worktrees a fan-out creates (`isolation: "worktree"`) are separate from user-requested worktrees and are not subject to the worktree rules governing those. But one left behind after an abnormal exit may be the only copy of a change — do not force-remove it; report it, on the same principle as post-merge cleanup (on failure: no force delete, no worktree removal, no stash — report only).
+- Worktrees a fan-out creates (`isolation: "worktree"`) are separate from a worktree the user asked for (which must be a plain `git worktree`) and are not subject to that rule. But one left behind after an abnormal exit may be the only copy of a change — do not force-remove it; report it, on the same principle as post-merge cleanup (on failure: no force delete, no worktree removal, no stash — report only).
 
 ## 8. Waiting while it runs
 

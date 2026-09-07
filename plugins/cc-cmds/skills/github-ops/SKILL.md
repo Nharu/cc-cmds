@@ -24,7 +24,7 @@ one inline review comment.
 - Sketching a rough direction is allowed — "several instances must be coordinated into one cycle" is the right altitude. Concrete design and implementation method belong to a later, separate step, not to the issue: a detailed fix fixed before investigation narrows both root-cause analysis and the search for alternatives.
 - The high-level direction is optional, not an obligation. A problem description alone can be the whole body (when the cause is clear the direction is usually self-evident), and if you do include one, keep it to the core in a sentence or two.
 - **Exception**: include a detailed solution only when the user explicitly asks for one.
-- **NEVER write a meta sentence saying this rule is being followed** — e.g. "구체 설계는 별도 단계에서 다룬다", "상세 방안은 이후 논의에서 정한다". Such a sentence is meaningless to an outside reader. The rule is a behavioral instruction to the author, not content for the issue.
+- **NEVER write a meta sentence saying this rule is being followed** — e.g. "구체 설계는 별도 단계에서 다룬다", "상세 방안은 이후 논의에서 정한다". Such a sentence is meaningless to an outside reader. The rule is a behavioral instruction to the author, not body content — and this holds for PR bodies as well as issue bodies.
 
 ## 2. Assignee on issues
 
