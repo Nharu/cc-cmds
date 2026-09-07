@@ -8,7 +8,8 @@ Engineering workflow commands for Claude Code.
 
 | Command | Description | When to use |
 |---------|-------------|-------------|
-| `/cc-cmds:autopilot` | 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고 | 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널에서 보이고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때 |
+| `/cc-cmds:autopilot` | 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고 | 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때 |
+| `/cc-cmds:autopilot-router-shift` | 게이트가 띄운 헤드리스 라우터 샤드가 받는 라우팅 루프 — 스냅숏을 읽어 한 행위를 정하고 게이트에 넘기며, 상한·승인·종단에서 인수인계 행을 남기고 끝난다 | 이 커맨드는 사람이 치는 것이 아니다 — 라우터 샤드가 받는 스킬이다. 리드 세션이 `gate.sh act --kind router-shift` 로 교대를 시작할 때 그 샤드가 이 문서를 프롬프트로 받는다 |
 | `/cc-cmds:design` | 에이전트 팀을 활용한 기능 설계 토론 진행 | 사용자가 새 기능 설계/아키텍처 결정/다관점 검토가 필요한 설계 논의를 요청할 때 |
 | `/cc-cmds:design-analyze` | 에이전트 팀을 활용한 제3자 설계 문서 다관점 분석 (읽기 전용) | 타인이 작성한 설계/리팩토링 문서를 원본 수정 없이 다관점으로 분석하고 분석 산출물(보고서/주석본/피드백)을 생성하고자 할 때 |
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
@@ -116,6 +117,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 <!-- SKILLS_OPTIONS_START -->
 
 - [/cc-cmds:autopilot](#cc-cmdsautopilot)
+- [/cc-cmds:autopilot-router-shift](#cc-cmdsautopilot-router-shift)
 - [/cc-cmds:design](#cc-cmdsdesign)
 - [/cc-cmds:design-analyze](#cc-cmdsdesign-analyze)
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
@@ -144,6 +146,12 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 | `--report` | off (킥오프 모드 — 1막 인터뷰 후 드라이버 기동) | 아침 보고 모드. 그 런의 매니페스트·원장·보고서를 읽어 한국어로 렌더링만 하고, 새 런을 시작하지 않는다. |
 
 > _Parsing (`<의도 또는 대상>`): `$ARGUMENTS` 전체를 의도로 읽는다. `.md` 토큰이 있으면 문서 앵커 후보로 우선 해석하되, 최종 앵커 종류는 진입 판정과 사용자 확인이 정한다._
+
+### /cc-cmds:autopilot-router-shift
+
+**Usage**: `(사람이 치는 커맨드가 아니다 — gate.sh act --kind router-shift 가 claude -p 로 넘긴다)`
+
+_`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에게 묻는 자리도, 배너를 띄우는 자리도, 진행 채널을 여는 자리도 아니다 — 그 셋은 전부 리드에 남는다. 이 샤드가 하는 것은 스냅숏을 읽고 한 행위를 정해 게이트에 넘기는 것뿐이며, 끝날 때 후임이 읽을 인수인계 행 하나를 남긴다._
 
 ### /cc-cmds:design
 

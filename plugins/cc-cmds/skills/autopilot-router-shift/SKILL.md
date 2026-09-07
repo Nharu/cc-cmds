@@ -3,7 +3,7 @@ name: autopilot-router-shift
 description: 게이트가 띄운 헤드리스 라우터 샤드가 받는 라우팅 루프 — 스냅숏을 읽어 한 행위를 정하고 게이트에 넘기며, 상한·승인·종단에서 인수인계 행을 남기고 끝난다
 when_to_use: 이 커맨드는 사람이 치는 것이 아니다 — 라우터 샤드가 받는 스킬이다. 리드 세션이 `gate.sh act --kind router-shift` 로 교대를 시작할 때 그 샤드가 이 문서를 프롬프트로 받는다
 disable-model-invocation: true
-usage: "(사람이 치는 커맨드가 아니다 — `gate.sh act --kind router-shift` 가 `claude -p` 로 넘긴다)"
+usage: "(사람이 치는 커맨드가 아니다 — gate.sh act --kind router-shift 가 claude -p 로 넘긴다)"
 options: []
 notes: |
     `autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에게 묻는 자리도,
