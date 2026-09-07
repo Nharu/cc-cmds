@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고
-when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널에서 보이고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
+when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
 disable-model-invocation: true
 usage: "/cc-cmds:autopilot <의도 또는 대상> [--report]"
 options:
@@ -35,9 +35,17 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 **CFI-2 — One block per run, frozen at append.** Re-authorizing is a **new run with a new `<run-id>`**, never an edit to an existing block. There is no field with a mutable region and no close form. The manifest's `plan.md` is **creation-only**: it is frozen whole and has no append form at all.
 
-**CFI-3 — This session IS the router, and it does not detach.** The run is not handed to a background driver that decides things out of sight; the model reading these words takes the turns, and the terminal shows the run happening. What that buys is the whole reason for the shape: progress is visible while it happens, and the person can interrupt.
+**CFI-3 — The routing loop runs as a headless SHIFT, and this session is the run's SEAT.** Cost grows with the square of a session's length — every turn re-reads the whole history before it — so a routing loop that never restarts pays for the night twice over. The loop is therefore capped and handed to a successor `claude -p` shift instead of being run to exhaustion here. An interactive session cannot end itself and start a successor: the harness has no affordance for it, and the watcher refuses to on charter. Moving the loop out is the only shape available. What stays here is the seat where a person is — where a question is asked, where a banner belongs, and where a shift is started.
 
-What the router may NOT do is decide from memory. Its input is the snapshot and nothing else — see Act 2b. The session is compacted repeatedly over a long run, so a router that leaned on conversation history would have its input silently rewritten, and every claim about reproducibility would go with it.
+**The number is kept deliberately even though the content changed**, on CFI-4's precedent: citations to it live outside this file, in pull request comments, issues and other agents' reports, and a renumbering would leave every one of them pointing at a real but unrelated invariant, which is indistinguishable from a correct citation.
+
+**What is not lost is after-the-fact reconstruction.** Every routing act is a ledger row, and the morning report already reads from disk rather than from a scrollback.
+
+**What IS lost is watching it happen** — the shift's turns no longer flow through this terminal. The progress channel buys part of that back: it projects the ledger's boundary events and state transitions into this session as messages, measured at roughly five an hour. And that observability was already incomplete before this shape, so the channel covers more than the hole it was cut for: a run with any live stage reports as running, and every arm that would report a stopped router requires zero live ones — so a stage that is itself wedged is visible on no channel at all today.
+
+**Interruption is partly lost.** Ctrl+C no longer cuts the shift's current turn; the lead cancels the background task instead. Cancelling the shift does NOT take the channel down with it — a task stop reaches one task id and nothing else. But if you stopped the FEED yourself, re-arm it: that is the one death nothing reports.
+
+What the router may NOT do is decide from memory. Its input is the snapshot and nothing else — see Act 2b. A shift is a NEW process with no conversation history at all, so leaning on one would be leaning on something it does not have; and this seat is compacted repeatedly over a long run, so the same reliance here would have its input silently rewritten.
 
 The morning report stays a **separate invocation** (`--report`), because a run that spans days is read from disk rather than from a scrollback.
 
@@ -46,6 +54,12 @@ The morning report stays a **separate invocation** (`--report`), because a run t
 **CFI-5 — The interview takes ONE cutpoint per target, not seven toggles.** See Act 1 Step 5. A per-act toggle matrix invites a grant that is incoherent under composition (push without commit), and it does not match how the user's own standing rules describe delegation. Per-target rather than per-run because a run may span repositories with different appetites — "infrastructure applies, the front end stops at a pull request" is not expressible as one scalar.
 
 **CFI-6 — Act 2 starts only when Act 1 has nothing left to ask.** Every entry in the judgment's `unresolved` is answered, every target is confirmed by the user, and the plan is approved, before a single byte of the manifest is written. A question carried across the seam is a question nobody will answer.
+
+**CFI-7 — A channel event is not a turn to route in.** Under CFI-3's shape the run is routed by a `claude -p` shift that holds the run's only routing seat; what remains here is the seat where a person is. The progress channel wakes this session even when its turn has ended — measured: an idle lead with no user input took a turn 94 seconds after arming, on the event alone, with the emitting process still running — and it wakes it roughly once every ten minutes all night. **On a wake caused by a channel event, relay the line and stop.** Do not call the gate, do not read the snapshot, do not dispatch a stage, do not launch or close a shift, do not answer an approval, do not decide anything.
+
+**Read the envelope before acting. Every arrival carries a `<task-id>`, so the task id alone settles nothing — and which id is which is recall, which a compaction erases.** What separates them is whether `<summary>` carries the channel's own `description` (`autopilot <run-id>`), whether `<status>` is present, and what the body says. With **no `<status>`** and a body the feed could have written: **relay it, and that is the whole of the turn.** With no `<status>` and a body of `[Monitor timed out — re-arm if needed.]`: the channel is dead — **re-arm it, relay nothing.** With no `<status>` and a body of `[N events suppressed]`: lines were lost and the channel is alive — relay nothing, re-arm nothing. **With a `<status>`** the task has ended: if `<summary>` is the channel's, the channel is dead — **re-arm it, relay nothing, and do not route**, because a dead channel is not progress; if `<summary>` is not the channel's, the shift has ended and **routing resumes** — this is the only notification that resumes it. The last thing that resumes routing is a message the human actually typed, and it is the only arrival you did not launch yourself.
+
+A lead that routes on a channel event is a second router, and two routers disagree in the dark. That is why `watch.sh` resumes nothing, retries nothing and decides nothing, and why the shift is kept out of `session-lineage`.
 
 ---
 
@@ -56,6 +70,10 @@ The morning report stays a **separate invocation** (`--report`), because a run t
 Load deferred tools via ToolSearch before any other step:
 
 - `ToolSearch("select:AskUserQuestion")` — MUST load before Act 1
+- `ToolSearch("select:Monitor")` — MUST load before Step 7. The progress channel is
+  armed with it, and under CFI-3's shape that channel is the only thing a person sees
+  while the night runs. Loaded here rather than at the call site because Step 7 is
+  reached after the human has left.
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`** and apply its hard construction constraints to every call in this skill.
 
@@ -244,8 +262,19 @@ Two digests are computed here and **compared at entry**, so they are not decorat
    **All four thresholds are the script's own defaults and none of them is an attempt to change anything.** They are pinned here because the status line has to decide whether a heartbeat is fresh, and a threshold it cannot read from a contract is a threshold it invents. `--stall 1200` and `--interval 60` were spelled out for that reason and the two newer arms then went unwritten, which left the only configuration this run actually uses readable nowhere. `--after-stage 120` is how long a stage's terminal row may sit as the last row before the router is named, and it is also the idleness the run-open arm requires. `--run-open 300` is how long the run may be open with no segment. They are all deliberately NOT matched to the status line's own 180-second staleness mark: that mark is a render that clears itself on the next tick, while these arms write a ledger row that only a person's resolving row takes back. Two different costs deserve two different thresholds.
 
    **The redirection is new, and discoverability is its whole justification.** The harness keys a background task's output on an internal task id, which cannot be walked back to a run directory — so the watcher's loud line landed somewhere nobody could find from the one place a person actually looks in the morning, which is the run directory. `< /dev/null` goes with it so the process cannot be stopped waiting on a terminal that is no longer there.
-4. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
-5. **Enter the router loop of Act 2b.** Do not stop here.
+4. **Arm the progress channel.** Under CFI-3's shape the routing turns do not flow through this terminal, so this is what a person sees while the night runs:
+   ```
+   Monitor(command: "bash <plugin root>/orchestrator/feed.sh --run-dir <RUN_DIR> --ledger <원장 경로>",
+           persistent: true,
+           description: "autopilot <run-id>")
+   ```
+   **`persistent: true` is not optional.** Without it the monitor carries a default timeout and dies partway through the night, and the death arrives as a bracketed harness marker rather than as a status — which is the shape CFI-7's envelope test exists to catch.
+
+   **The `description` must be exactly `autopilot <run-id>`.** That string rides in the `<summary>` of every event this channel produces, and it is the ONLY thing that separates two runs emitting at once — a task id cannot do it, because every arrival carries one. CFI-7 keys on this string, so a different spelling makes the invariant undecidable rather than merely untidy.
+
+   The channel emits nothing when nothing happens, so a quiet hour costs no notification and no model turn. It does not replace the morning report: it is a pure projection of the ledger and can say nothing the ledger does not, and if it is removed with a task stop it leaves no trace of having gone.
+5. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run's boundary events will be relayed into this terminal.
+6. **Enter the router loop of Act 2b.** Do not stop here.
 
 ---
 
@@ -276,6 +305,11 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
 | `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most ten, and never truncated. This is the one to read when the two above disagree |
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
+| `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all |
+| `blocked[]` | `스코프`, `사유`, `앵커` — unresolved blocks only; a row whose cause is `해소` closes an earlier one and is not carried |
+| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1` — the review results, capped |
+| `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift |
+| `handoff[]` | `교대`, `버린 선택지`, `막힌 지점`, `다음 후보` — the last three handoffs and no more. This is where a successor learns what its predecessor already tried and dropped |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
 | `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest` |
 
@@ -422,6 +456,39 @@ Three conditions must **all** hold before a segment is dispatchable, and reading
 Five ways a run is cut, and all five resume: the terminal closes, Ctrl+C, the token limit, the network drops, a reboot. **Resume by resuming this session and saying so.** The router then does what it always does — read the snapshot and continue. There is no separate resume protocol, because the router holds no state that a snapshot does not.
 
 A stage that was mid-flight when the session died is **re-attached, not re-run**: `--resume` continues its turn rather than restarting it. And a re-attached stage is not this shell's child, so `wait` would report a clean exit for a process it never reaped — liveness is `kill -0` on the recorded pid together with its start-time fingerprint, never `wait`.
+
+### Shifting the loop, and re-arming the channel on every return
+
+The loop is capped rather than run to exhaustion, and the cap is read from the snapshot's `shift` block — never estimated. A session cannot measure its own context, and a number a router recalls is memory wearing a number.
+
+**Three reasons end a shift, and they are not a list with the suppressor.** `상한` — `shift.over_soft` is true. `승인` — the gate answered exit 5, so the shift ends without answering and the seat does. `종단` — a `propose-done` was accepted. A live stage holds back only the FIRST of the three: a shift kept waiting on `승인` means the approval waits out that stage, and overnight that is the whole night.
+
+Ending a shift is two calls, in this order:
+
+```
+gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
+  --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  -- 교대=<n> 사유=<상한|승인|종단|중단> \
+     '버린 선택지=<시도했고 버린 것 · 무엇을 보고 버렸는가>' \
+     '막힌 지점=<지금 벽이 있는 자리>' \
+     '다음 후보=<후임이 먼저 볼 것>'
+```
+
+**`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED; without this the successor re-walks every dead end its predecessor already paid for, and the morning report's request for the rejected alternative has no source at all. A shift that ends with all three fields empty has handed over its position and none of its reasoning.
+
+Then the seat starts the successor:
+
+```
+gate.sh act --manifest <매니페스트> --kind router-shift --target <alias> \
+  --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  -- <사유> -p "/cc-cmds:autopilot-router-shift <매니페스트>"
+```
+
+**The first token after `--` is the HANDOFF REASON**, the way it is the stage kind for `act --kind skill`. `--kind router-shift` is the LEDGER ROW KIND and `shift` is the SETTINGS VARIANT the wrapper receives; they are different layers with different names, and swapping them runs the shift under settings that are not its own.
+
+**The successor reads the snapshot itself and never the `H` its predecessor handed back.** The `handoff` row moved the ledger's row count and its chain tip, so a digest quoted from before it is stale by construction and the gate will refuse it.
+
+**RE-ARM THE PROGRESS CHANNEL ON EVERY SHIFT RETURN.** Whether a `persistent` monitor survives a compaction or a resume is unmeasured, and this binds the risk without waiting for the answer: at most three times a night, at moments the seat is awake anyway. Both branches hold — alive, the feed's lock finds the running instance, prints one line and exits 0 so a healthy night files no false failure; dead, the cursor picks up exactly where the last line stopped. Re-arm with the same command and the same `description` as Step 7.
 
 ---
 
