@@ -53,29 +53,51 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 # lands on this shipped, executable file.
 # ---------------------------------------------------------------------------
 CALL='<plugin root>/orchestrator/cc-team-witness-init.sh'
+PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
+
+# JUDGED LINE BY LINE, and the operative line is the one that RUNS the script.
+# A single `grep` whose matches are joined by newlines makes the glob below
+# match ACROSS a line boundary, so a correct prose edit that mentions the script
+# somewhere else in the file turns this red for the wrong reason.
+#
+# THE FORM IS POSITIVE: `<plugin root>` must begin the command. Listing
+# forbidden prefixes cannot cover the next unknown one — two different wrong
+# prefixes have already shipped, an interpreter and a shell variable — and a
+# negative list also fails on prose that legitimately names a bad spelling as an
+# example. "Begins the command" is one condition and it excludes every prefix at
+# once. In markdown that means the call sits at the start of a fenced line or
+# directly after the backtick that opens its code span.
+#
+# EVERY occurrence must satisfy it, not just one, so a wrong spelling cannot
+# hide behind a correct one earlier in the file. The constraint that leaves on
+# prose is narrow: prose naming a forbidden spelling writes the bare filename
+# (`bash cc-team-witness-init.sh`) rather than the full `<plugin root>/…` path.
 for f in plugins/cc-cmds/skills/_common/agent-team-protocol.md \
          plugins/cc-cmds/skills/review/SKILL.md \
          plugins/cc-cmds/skills/review-unattended/SKILL.md \
          plugins/cc-cmds/skills/review-lite/SKILL.md; do
-  line=$(grep -F 'cc-team-witness-init.sh' "$repo_root/$f" | grep -v '^#' || true)
-  case "$line" in
-    *"$CALL"*) ok "$f — 문서화된 호출 철자를 그대로 담는다" ;;
-    *) bad "$f — 문서화된 호출 철자를 그대로 담는다" "got '$line'" ;;
-  esac
-  case "$line" in
-    *'bash '*"cc-team-witness-init.sh"*|*'sh '*"/orchestrator/cc-team-witness-init.sh"*)
-      bad "$f — 인터프리터 접두가 붙어 있지 않다" "got '$line'" ;;
-    *) ok "$f — 인터프리터 접두가 붙어 있지 않다" ;;
-  esac
-  case "$line" in
-    *'CLAUDE_SKILL_DIR'*"cc-team-witness-init.sh"*)
-      bad "$f — 셸이 확장할 수 없는 자리표시자를 쓰지 않는다" "got '$line'" ;;
-    *) ok "$f — 셸이 확장할 수 없는 자리표시자를 쓰지 않는다" ;;
-  esac
+  found=0
+  clean=0
+  while IFS= read -r line; do
+    case "$line" in *"$CALL"*) ;; *) continue ;; esac
+    found=$((found + 1))
+    prefix=${line%%"$CALL"*}
+    case "$prefix" in
+      ''|*'`') clean=$((clean + 1)) ;;
+    esac
+  done < "$repo_root/$f"
+  if [ "$found" -gt 0 ]; then
+    ok "$f — 문서화된 호출 철자를 담는다"
+  else
+    bad "$f — 문서화된 호출 철자를 담는다" "매치 없음"
+  fi
+  check "$f — 그 철자가 명령의 시작이다 (앞에 아무것도 없다)" "$clean" "$found"
 done
-# `<plugin root>` substituted the one documented way must land on this file.
-PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
-SUBST="${PLUGIN_ROOT}/orchestrator/cc-team-witness-init.sh"
+
+# DERIVED FROM `$CALL`, not re-hardcoded. Spelled out separately, this assertion
+# could not fail on its own: it would keep passing against a path the documented
+# call no longer names.
+SUBST="${CALL/<plugin root>/$PLUGIN_ROOT}"
 if [ -x "$SUBST" ]; then
   ok "치환된 호출 철자가 실린 실행 파일에 착지한다"
 else
