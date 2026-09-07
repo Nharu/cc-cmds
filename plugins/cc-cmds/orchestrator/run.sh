@@ -1290,16 +1290,64 @@ rundir_init() {
   # once and every later dispatch reads this file instead of re-deciding. That
   # is the whole mechanism keeping one run's stages on one lane.
   #
-  # NEITHER FILE IS OVERWRITTEN WHEN IT ALREADY EXISTS. A driver restarting
-  # against a live run directory must not move the lane a running stage is
-  # already spending, and the file's presence is the record that some stage may
-  # already have read it.
-  local cfg
-  if [ ! -f "$RUN_DIR/config-dir" ]; then
-    cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — 런 디렉터리를 초기화할 수 없습니다"
-    printf '%s\n' "$cfg" > "$RUN_DIR/config-dir"
+  # NEITHER FILE IS OVERWRITTEN WHEN IT ALREADY HOLDS A USABLE RECORD. A driver
+  # restarting against a live run directory must not move the lane a running
+  # stage is already spending.
+  #
+  # THE GUARD ASKS WHETHER A USABLE RECORD CAME BACK, NOT WHETHER A FILE EXISTS.
+  # `[ ! -f ]` is false for a ZERO-BYTE record, so a driver that died between the
+  # redirection and the `printf` left a file the restart then PRESERVED — and the
+  # resolver reads an empty record as "absent" and falls through, so every
+  # dispatch after that re-decides the lane from the environment and the machine
+  # setting. That is the exact inverse of the reason tier 2 exists. Measured:
+  # truncating the record with `: >` and re-running this function left it at zero
+  # bytes, and the resolver then returned the default lane at rc=0.
+  # `write_run_record` removes the window; the rewrite below recovers a record
+  # already stuck in it.
+  #
+  # `[ -s ]` HERE IS A REDUNDANT COVER AND IS KEPT ONLY TO DECLARE THE INTENT.
+  # What actually does the recovery is `lane_record_read` answering "genuinely
+  # absent" for an empty record, which leaves `cur` empty and takes the rewrite
+  # branch. Measured: swapping this back to `[ -f ]` leaves the suite green,
+  # because the rewrite happens either way. Said plainly rather than left to read
+  # as the load-bearing line, since a reader who trusts it would be relying on
+  # nothing.
+  #
+  # AND AN EXISTING RECORD IS VALIDATED HERE RATHER THAN AT FIRST DISPATCH. A
+  # record pointing at a directory that does not exist used to let `started-at`,
+  # the EXIT trap, `check_grant`, `ledger_init` and `notify_probe` all run before
+  # the run died — the failure belongs at init, where the operator is still
+  # looking at it. The `die` on the refusal is a second redundant cover, and
+  # measured as one: removing it still stops the run, because the resolver
+  # immediately below meets the same broken record and its own `|| die` fires.
+  # It is kept because it names the cause where the cause is, rather than as an
+  # account-resolution failure three lines later.
+  #
+  # WHAT THIS DOES NOT DO is tell a planted record from an honest one. A record
+  # naming a real directory validates whether the driver wrote it or a stage in
+  # another run did; what closes that is the hook refusing writes into a run
+  # directory that is not the writer's own. This check closes the broken record
+  # and the truncated one, and those only.
+  local cfg cur rc
+  cur=""
+  if [ -s "$RUN_DIR/config-dir" ]; then
+    rc=0
+    lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 기존 config-dir" \
+      "이 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+    if [ "$rc" = "1" ]; then
+      die "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다"
+    fi
+    if [ "$rc" = "0" ]; then cur="$LANE_RECORD"; fi
   fi
-  [ -f "$RUN_DIR/orchestrator-dir" ] || printf '%s\n' "$ORCH_DIR" > "$RUN_DIR/orchestrator-dir"
+  if [ -z "$cur" ]; then
+    cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — 런 디렉터리를 초기화할 수 없습니다"
+    write_run_record "$RUN_DIR/config-dir" "$cfg" \
+      || die "런 디렉터리에 레인 기록을 쓰지 못했습니다: $RUN_DIR/config-dir"
+  fi
+  if [ ! -s "$RUN_DIR/orchestrator-dir" ]; then
+    write_run_record "$RUN_DIR/orchestrator-dir" "$ORCH_DIR" \
+      || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1309,11 +1357,95 @@ rundir_init() {
 # envelope lands on the "dead + predicate false" row, and that row would
 # otherwise throw the work straight back at the account that just ran out.
 # ---------------------------------------------------------------------------
+LANE_RECORD=""
+lane_record_read() {
+  # lane_record_read <파일> <출처 문면> <폴백의 해악> — 기록된 레인 한 줄을 읽어
+  # `LANE_RECORD` 에 넣는다. 세 결과를 가른다:
+  #
+  #   0 — 읽었고 값이 있고 쓸 수 있다. `LANE_RECORD` 에 들어 있다.
+  #   1 — 거부. 사유를 stderr 에 적었다. 호출자는 다음 단으로 내려가면 안 된다.
+  #   2 — 기록이 진짜로 없다. 다음 단으로 내려가도 된다.
+  #
+  # 「읽을 수 없었다」와 「읽었더니 비어 있었다」를 가르는 것이 이 함수의 요점이다.
+  # 이전 형태는 두 단이 각각 `v=$(sed -n 1p … 2>/dev/null)` 뒤에 `[ -n "$v" ]` 만
+  # 보았고, 읽을 수 없는 파일은 `sed` 를 실패시키고 `2>/dev/null` 이 사유를 버리므로
+  # `v` 가 비어 — 기록이 아예 없었던 것처럼 그 단을 건너뛰고 조용히 아래 단으로
+  # 폴백했다. 그런데 읽을 수 없는 기록은 없는 것도 빈 것도 아니라 **존재하지만
+  # 읽히지 않는** 기록이고, 바로 아래 주석이 금지한다고 적은 폴백에 경고 한 줄 없이
+  # 착지한다. 실측: 내용이 유효한 레인 디렉터리인 파일을 `chmod 000` 한 뒤 두 단
+  # 모두 rc=0 으로 기본 레인을 반환했고 stderr 에는 아무것도 나오지 않았다. 3단
+  # 파일은 운영자가 쓰는 것이라 `sudo` 아래에서 만들어진 root 소유 사본이 평범한
+  # 도달 경로이고, 그 뒤 모든 무인 런이 아무 데도 메시지를 남기지 않고 잘못된
+  # 계정을 쓴다.
+  #
+  # 제어 문자도 여기서 거부한다. 이 값은 프로브의 네 필드 계약에서 **마지막
+  # 필드**로 발행되므로, 탭 하나가 필드를 하나 늘리고 개행 하나가 레코드를 통째로
+  # 만들어 낸다 — 스왑 스케줄러가 읽는 줄이다.
+  #
+  # 한 함수인 이유는 두 단이 **같은** 처리를 받아야 하기 때문이다. 나란한 두 블록은
+  # 한쪽만 고쳐도 통과하고, 그때 아래 주석의 진술은 절반만 참인 채로 남는다.
+  #
+  # `[ -r ]` 검사와 `sed` 종료 상태 검사는 서로의 중복 커버다 — 실측으로 확인했다:
+  # 어느 한쪽을 지워도 거부는 그대로 나고 거부 사유 문면만 바뀐다. 둘 다 두는 이유는
+  # 두 실패가 같은 것이 아니기 때문이다. 「열 수 없다」는 권한이고 「읽다 실패했다」는
+  # 그 밖의 모든 것이며, 무인 런의 아침 감사에서 그 둘은 다른 행동을 부른다.
+  # `sed` 의 종료 상태는 `rc=$?` 로 따로 받지 않고 `|| rc=$?` 로 받는다. 이 파일은
+  # `set -e` 아래 돌므로 실패한 대입은 다음 줄이 실행되기 전에 셸을 끝내고, 그러면
+  # 이 함수가 존재하는 이유인 「읽기 실패」 분기가 도달 불가가 된다.
+  local f="$1" src="$2" harm="$3" v rc
+  LANE_RECORD=""
+  [ -f "$f" ] || return 2
+  if [ ! -r "$f" ]; then
+    warn "$src 를 읽을 수 없습니다: $f — 기록이 없는 것이 아니라 읽히지 않는 것이므로 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  rc=0
+  v=$(sed -n '1p' "$f" 2>/dev/null) || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "$src 를 읽는 중 실패했습니다(rc=$rc): $f — 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  [ -n "$v" ] || return 2
+  case "$v" in
+    *[[:cntrl:]]*)
+      warn "$src 에 제어 문자가 들어 있습니다: $f — 폴백하지 않고 정지합니다(폴백하면 $harm, 그리고 이 값은 프로브의 한 줄 계약에서 마지막 필드로 발행됩니다)"
+      return 1 ;;
+  esac
+  if [ ! -d "$v" ]; then
+    warn "$src 가 디렉터리가 아닙니다: $v ($f) — 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  LANE_RECORD="$v"
+  return 0
+}
+
+write_run_record() {
+  # write_run_record <경로> <값> — 같은 디렉터리의 임시 파일에 쓰고 `mv` 로 제자리에
+  # 옮긴다. 리다이렉션은 `printf` 가 돌기 **전에** 파일을 만들고 잘라 내므로, 그
+  # 순간 죽은 드라이버(또는 ENOSPC)는 0바이트 기록을 남긴다 — `lane-probe.sh` 가 pid
+  # 파일에 대해 논증하는 바로 그 만들고-쓰기 위험이다. 그리고 0바이트 레인 기록은
+  # 특히 나쁘다: 리졸버가 그것을 「없음」으로 읽고 폴백하므로 이후 모든 디스패치가
+  # 환경과 머신 설정에서 레인을 다시 결정하는데, 그것이 정확히 2단을 둔 이유의
+  # 정반대다. 이 형태에서는 기록이 「없거나 완전」 두 상태만 갖는다.
+  local dst="$1" val="$2" tmp="$1.tmp.$$"
+  printf '%s\n' "$val" > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$dst" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
 resolve_account() {
   # FOUR TIERS, in order: the environment, this run's own record, the machine's
   # setting for the operator, the built-in default. Tier 1's return value is
   # byte-identical to what the single-tier form produced, which is what keeps a
   # run that sets the variable unchanged by this widening.
+  #
+  # TIER 1 IS NOT VALIDATED AND THAT IS DELIBERATE. The acceptance criterion for
+  # this widening is that a run setting the variable gets back exactly what the
+  # single-tier form gave it, byte for byte; a check here would change that
+  # return value. So a control character reaching through the environment is a
+  # stated residue rather than a closed hole — it touches the probe's
+  # `--resolve` single-field output and cannot manufacture a four-field record,
+  # and the probe's own field printer refuses it there.
   #
   # TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES. This resolver is called on
   # every stage DISPATCH and not once per run, so with only the environment and
@@ -1328,34 +1460,42 @@ resolve_account() {
   # elsewhere, and it would do it silently. Absent or empty genuinely is absent
   # and falls through to the next tier.
   #
+  # AND "ABSENT" IS DECIDED BY WHETHER THE FILE COULD BE READ, NOT BY WHAT `sed`
+  # HAPPENED TO PRINT. An unreadable record is neither absent nor empty, and the
+  # old form folded it into "empty" and fell through anyway. `lane_record_read`
+  # above returns three values so that this distinction has somewhere to live,
+  # and both tiers call the same function so it cannot be half-fixed.
+  #
   # THE REFUSAL IS A NON-ZERO RETURN WITH THE REASON ON STDERR, NEVER `die`.
   # Every call site is a command substitution, so an `exit` here would kill only
   # the subshell and hand the caller an empty string — which concatenates into
   # `/projects` and reads as an ordinary miss. The callers below turn the
   # non-zero into the stop.
-  local f v
+  local f rc
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     printf '%s' "$CLAUDE_CONFIG_DIR"
     return 0
   fi
 
-  if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/config-dir" ]; then
-    v=$(sed -n '1p' "$RUN_DIR/config-dir" 2>/dev/null)
-    if [ -n "$v" ]; then
-      [ -d "$v" ] || { warn "런 디렉터리의 config-dir 가 디렉터리가 아닙니다: $v — 폴백하지 않고 정지합니다(폴백하면 한 런의 스테이지들이 서로 다른 레인에 착지합니다)"; return 1; }
-      printf '%s' "$v"
+  if [ -n "${RUN_DIR:-}" ]; then
+    rc=0
+    lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" \
+      "한 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+    if [ "$rc" = "1" ]; then return 1; fi
+    if [ "$rc" = "0" ]; then
+      printf '%s' "$LANE_RECORD"
       return 0
     fi
   fi
 
   f="${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/config-dir"
-  if [ -f "$f" ]; then
-    v=$(sed -n '1p' "$f" 2>/dev/null)
-    if [ -n "$v" ]; then
-      [ -d "$v" ] || { warn "설정 파일의 config-dir 가 디렉터리가 아닙니다: $v ($f) — 폴백하지 않고 정지합니다(폴백하면 운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 씁니다)"; return 1; }
-      printf '%s' "$v"
-      return 0
-    fi
+  rc=0
+  lane_record_read "$f" "설정 파일의 config-dir" \
+    "운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 씁니다" || rc=$?
+  if [ "$rc" = "1" ]; then return 1; fi
+  if [ "$rc" = "0" ]; then
+    printf '%s' "$LANE_RECORD"
+    return 0
   fi
 
   printf '%s' "$HOME/.claude"
