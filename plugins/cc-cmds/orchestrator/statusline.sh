@@ -222,7 +222,20 @@ now=$(date -u +%s)
 grew=$(cc_ledger_growth_at "$best_rd" "$best_ledger")
 age_slot=""
 if [ -n "$grew" ]; then
-  age_slot=" · 원장 $(age_phrase "$((now - grew))")"
+  # CLAMPED, AND CLAMPED HERE RATHER THAN AT THE SOURCE. A ledger mtime in the
+  # future is not hypothetical — one run on this host measured 28 seconds ahead
+  # — and the mtime fallback above put a `grew` on far more runs than the
+  # heartbeat field ever did, so the exposure grew with it. Without this the
+  # line says `원장 -72초 전` while `cc_run_state`, which clamps the very same
+  # value, calls the run 진행중: two axes disagreeing about one run's sign. The
+  # slot is shared, so this one place covers 승인대기, 정지경고, 버려짐, 진행중
+  # and the 도는중 else branch. Clamping inside `cc_ledger_growth_at` would let
+  # both consumers inherit it, but that function has no `now` and would spend a
+  # `date` fork per call — once per indexed run per ten-second tick, twelve of
+  # them on a twelve-run session. Measure that before moving it.
+  a=$((now - grew))
+  [ "$a" -lt 0 ] && a=0
+  age_slot=" · 원장 $(age_phrase "$a")"
 fi
 
 # `watch.pid` is what keeps "has not come up yet" from collapsing into "died".

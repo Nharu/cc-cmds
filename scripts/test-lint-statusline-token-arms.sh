@@ -10,14 +10,25 @@
 # is why the lint carries one.
 #
 # Each root is a self-contained pair: a `liveness.sh` holding a `cc_run_state`
-# whose `printf` literals are the vocabulary, and a `statusline.sh` holding the
-# render `case`. Nothing here sources or executes either one — the lint reads
-# them as bytes, so the fixtures only need the two shapes it matches.
+# whose `printf` literals are the vocabulary AND a `cc_run_grade` whose arms are
+# the third copy of it, and a `statusline.sh` holding the render `case`. Nothing
+# here sources or executes either one — the lint reads them as bytes, so the
+# fixtures only need the three shapes it matches.
 #
 # `FAIL-missing-arm` is the fixture that earns this lint's keep. A token with no
 # arm falls to `*) emit_fallback`, whose bytes ARE the "no run in this session"
 # line — so the defect ships green through the suite, the render probe and the
 # apply verification, and a reader cannot tell it from having nothing to say.
+#
+# `FAIL-missing-grade-arm` is its sibling for rule 3, and it is the case rules 1
+# and 2 cannot make: token set, render arms and grade arms all agree except that
+# the grade is one arm short, so the first two rules are green on their own.
+# That is why the grade arms are a SEPARATE argument here — folding them into
+# the token list would make the only event rule 3 detects unwritable.
+#
+# `FAIL-two-literals-one-line` is what holds the extraction repair in place.
+# Against the old greedy match it exits 0; against the repaired one the hidden
+# token has no arm anywhere and it exits 1.
 
 set -uo pipefail
 
@@ -36,15 +47,41 @@ passed=0
 failures=0
 
 mk_liveness() {
-  # mk_liveness <root> <token>... — a `cc_run_state` that can print those tokens.
+  # mk_liveness [--grade "<arm>..."] [--state-line "<line>"] <root> <token>...
+  #
+  # A `cc_run_state` that can print those tokens, plus a `cc_run_grade` whose
+  # arms are BY DEFAULT exactly those tokens — which is what keeps the six cases
+  # written before rule 3 existed passing unamended.
+  #
+  # `--grade` makes the two sets diverge, and that divergence is the only event
+  # rule 3 detects. `--state-line` injects one raw line into `cc_run_state`,
+  # which is the only way to put two `printf` literals on one line and so the
+  # only way to pin the extraction repair.
+  local grade="" extra=""
+  while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+      --grade)      grade="$2"; shift 2 ;;
+      --state-line) extra="$2"; shift 2 ;;
+      *) echo "mk_liveness: unknown option $1" >&2; return 2 ;;
+    esac
+  done
   local root="$1"; shift
+  [[ -n "$grade" ]] || grade="$*"
   mkdir -p "$root"
   {
     printf '#!/usr/bin/env bash\n'
     printf 'cc_run_state() {\n'
     printf '  # printf %s — a comment holding a literal, which must not be extracted.\n' "'미끼'"
+    [[ -z "$extra" ]] || printf '%s\n' "$extra"
     local t
     for t in "$@"; do printf "  printf '%s'\n" "$t"; done
+    printf '}\n'
+    printf 'cc_run_grade() {\n'
+    printf '  case "$1" in\n'
+    local a
+    for a in $grade; do printf "    %s)   printf '1' ;;\n" "$a"; done
+    printf "    *)        printf '9' ;;\n"
+    printf '  esac\n'
     printf '}\n'
   } > "$root/liveness.sh"
 }
@@ -111,6 +148,29 @@ run_case "FAIL-orphan-arm" 1 "$WORK/orphan"
 mk_liveness   "$WORK/grouped" $VOCAB
 mk_statusline "$WORK/grouped" 도는중 승인대기 종단 진행중 '정지경고|버려짐'
 run_case "FAIL-grouped-arm" 1 "$WORK/grouped"
+
+# FAIL — rule 3's own case. Six tokens, six render arms, and `cc_run_grade` is
+# missing the arm for one of them. Rules 1 and 2 are both green here, so without
+# rule 3 this root passes and the token sinks to the worst rank in silence.
+mk_liveness --grade "도는중 승인대기 종단 진행중 정지경고" "$WORK/nograde" $VOCAB
+mk_statusline "$WORK/nograde" $VOCAB
+run_case "FAIL-missing-grade-arm" 1 "$WORK/nograde"
+
+# FAIL — the other direction: a grade arm for a token `cc_run_state` cannot
+# print. Dead ranking code that reads as a supported state.
+mk_liveness --grade "$VOCAB 없는토큰" "$WORK/gorphan" $VOCAB
+mk_statusline "$WORK/gorphan" $VOCAB
+run_case "FAIL-orphan-grade-arm" 1 "$WORK/gorphan"
+
+# FAIL — two `printf` literals on one line. This is the fixture that pins the
+# extraction repair rather than any rule: the greedy match kept only the second
+# literal, so the first token was never extracted, had no arm anywhere, and the
+# lint exited 0. Collecting every occurrence surfaces 숨은토큰, which has no
+# render arm and no grade arm, and both rule 1 and rule 3 say so.
+mk_liveness --state-line "  if x; then printf '숨은토큰'; else printf '도는중'; fi" \
+  "$WORK/twolit" $VOCAB
+mk_statusline "$WORK/twolit" $VOCAB
+run_case "FAIL-two-literals-one-line" 1 "$WORK/twolit"
 
 # Exit 2 — the render is there and the vocabulary could not be read. Separated
 # from exit 1 because "the extraction broke" is not "the arms are wrong", and

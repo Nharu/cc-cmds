@@ -502,6 +502,33 @@ has "A7 미해소 run 스코프 blocked 가 있는 버려진 런 — 같은 글�
 has "A7 그 런은 방치가 아니라 차단으로 읽힌다" "$out" "차단"
 hasnt "A7 차단 줄에 방치가 함께 실리지 않는다" "$out" "방치"
 
+# And the arm one step further down: a run with NO CLOCK AT ALL. Every 버려짐
+# run above reaches that token the other way — A1, A5 and A7 all carry a
+# `ledger-path` and an old-but-present ledger, so they enter through
+# `idle ≥ abandon`. The arm that returns 버려짐 because NEITHER the heartbeat
+# field NOR a ledger file exists is the one the design calls the strongest idle
+# signal and the one whose own comment reads `EMPTY IS STILL A VERDICT`, and
+# until now no assertion walked it: regress it or reorder it and every A7
+# assertion above still passes. Measured on this host, 55 runs have no
+# `ledger-path` at all, so this is not a corner.
+#
+# The last assertion is the observation that tells this arm apart from A7's.
+# With no clock `age_slot` stays empty, so the line has no `· 원장 …` slot —
+# a distinct render shape that nothing in this suite had ever seen.
+fx_mkrun run-a7-noclock
+fx_session_index sess-a7-noclock run-a7-noclock
+out=$(sl sess-a7-noclock)
+has   "A7 판정할 시계가 없는 런 — 같은 글리프" "$out" "⊘"
+has   "A7 판정할 시계가 없는 런 — 방치로 읽힌다" "$out" "방치"
+hasnt "A7 시계가 없으면 나이 슬롯이 통째로 빠진다" "$out" "원장"
+# Worth more here than on A7's line, not less: with no age slot either, this
+# line is one step CLOSER to the fallback bytes.
+if [ "$out" = "$FALLBACK" ]; then
+  bad "A7 시계 없는 팔이 폴백으로 새지 않는다" "런 없음 줄과 바이트 동일"
+else
+  ok "A7 시계 없는 팔이 폴백으로 새지 않는다"
+fi
+
 # A8. The fifth rank's whole reason for existing. Between two stages there is no
 # live pid for an instant, and a literal four-rank grade drops that run to the
 # bottom — handing the screen to a run that finished yesterday. The signal here
@@ -527,6 +554,23 @@ hasnt "A9 신선 둘 중 더 오래된 쪽은 아니다" "$out" "run-a9-old"
 # A10. The boundary itself. Idle exactly at the mark falls on the stall side,
 # and the assertion survives a second boundary crossing between the fixture and
 # the render because elapsing time only pushes idle further past the mark.
+#
+# THAT IS A SAFETY PROPERTY AND NOT A DISCRIMINATION ONE, and the difference is
+# the known limit of this case. The fixture writes growth at `T − 180` and the
+# predicate reads its own `now = T + δ`, so idle is `180 + δ` where δ counts the
+# second boundaries crossed in between — and the moment idle is 181 this case
+# tests "past the mark" rather than "at" it, which is exactly what it was
+# written to pin. Measured over 200 dense repetitions: δ=1 about 10% of the time
+# on the solo render and about 25% on the second one below, and two reviewers
+# detected an inverted comparison in 15 of 16 runs. The decay is green-only, so
+# it cannot make this suite flake — it quietly costs sensitivity instead, and
+# more of it the slower the runner. Pinning the boundary by CONSTRUCTION means
+# calling the predicate directly with a measured elapsed passed as the threshold
+# argument, which needs this suite to `source` liveness.sh rather than copy it;
+# the design put predicate-level tests in another slice, so that is a follow-up.
+# Adding a 179 twin instead is the obvious move and is WRONG: at δ=1 its idle
+# becomes 180, it goes red, and a quiet loss of sensitivity turns into a real
+# flake.
 fx_mkrun run-a10; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 180
 fx_session_index sess-a10-solo run-a10
 has "A10 원장 유휴가 정확히 stall — 정지 경고 쪽" "$(sl sess-a10-solo)" "⚠"
