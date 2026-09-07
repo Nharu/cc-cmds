@@ -47,13 +47,31 @@
 # drops `-list`). So before any claim is measured, the discriminator is measured
 # against two controls whose answers are already known:
 #
-#   `x`   must be ACCEPTED (exit 0)      — proves it can say yes
-#   `[x`  must be REFUSED  (exit non-0)  — proves it can say no
+#   `x`                          must be ACCEPTED (exit 0)     — it can say yes
+#   `--cc-oracle-not-an-option`  must be REFUSED  (exit non-0)  — it can say no
 #
 # One control would not do. A probe that only checked the accepting side stays
 # green when everything is refused, which is exactly the failure above; a probe
 # that only checked the refusing side stays green when everything is accepted.
 # The pair is what makes "it answered" different from "it discriminates".
+#
+# BOTH CONTROLS SIT OUTSIDE THE MEASURED SETS, and that is a correctness
+# requirement rather than tidiness. A refusal control taken FROM the swallowed
+# set makes the probe presuppose the very claim it is guarding: with `[x` in that
+# slot, a world where `[` alone stopped being swallowed left the control accepted,
+# the probe skipped, and the whole suite exited 0 — so the one character this
+# repair is about was the one character the oracle could not report on. Swapping
+# it for a different swallowed character only moves the circle, because being a
+# refusal control means being swallowed and the swallowed values ARE the measured
+# set. `--cc-oracle-not-an-option` is refused for the same option-shaped reason a
+# leading `-` is, and this file asserts nothing about it.
+#
+# THREE OUTCOMES, NOT TWO, and the third is why the clause below is split. The
+# original pair of cases was "everything refused" and "everything accepted", and
+# both are genuine liveness failures where skipping is right. The case that was
+# missing is a discriminator that is ALIVE while one character regresses: the
+# accepting control answers yes, the refusal control answers yes too, and nothing
+# is broken about the host. That is a FAILURE and it exits non-zero.
 #
 # `uname` and "is the file there" are deliberately NOT used for this. Both were
 # true on the runner that produced the false result.
@@ -63,22 +81,42 @@
 # becomes permanent:
 #
 #   RUNS  — a macOS desktop with a logged-in GUI session and the Homebrew build
-#           on PATH. Measured 2026-09-05: terminal-notifier 3.1.0 at
-#           /opt/homebrew/bin/terminal-notifier, 25 passed / 0 failed.
+#           on PATH. Measured 2026-09-06 against /opt/homebrew/bin/terminal-notifier:
+#           28 passed / 0 failed / 0 skipped, which includes all six title strings
+#           this system now ships.
 #   SKIPS — a host with no notifier at all (the ubuntu leg, any Linux).
-#   UNKNOWN UNTIL IT RUNS — the GitHub macOS runner. Naming the binary by its
-#           Homebrew path removes the shadowing that broke it; whether a headless
-#           runner can answer `-list` at all is not settled here, and the
-#           liveness block below is what reports the answer either way. If it
-#           skips there, the skip line names which control failed and with what
-#           status, so the next reader does not have to re-derive this.
+#   SKIPS — the GitHub macOS runner, measured. Naming the binary by its Homebrew
+#           path did remove the shadowing: the run resolved
+#           /opt/homebrew/bin/terminal-notifier and still reported
+#           `0 passed, 0 failed, 25 skipped`, because BOTH controls came back
+#           exit 1 — the headless runner cannot answer `-list` at all (2026-09-05,
+#           run 33967180169, job conclusion success).
+#
+# THE CONSEQUENCE, STATED PLAINLY: this test discriminates on NO leg of CI. The
+# ubuntu leg never calls it and the macOS leg skips it, so the property this file
+# calls "the only thing in the tree that would notice" is checked exactly when a
+# person runs it on a desktop. Making a headless runner answer `-list` is not
+# something this repo has a way to do, so the honest disposition is to declare
+# the gap rather than paper over it — and to give the skip a way of being turned
+# into a failure where somebody does want to depend on it. That is
+# `CC_CMDS_NOTIFY_ORACLE_REQUIRED` below.
 #
 # A SKIP IS LOUD AND COUNTED. It prints the resolved path, both control statuses
 # and the notifier's own stderr, and the summary line carries the skipped count
 # beside passed and failed — a suite that reports `0 passed, 0 failed` with no
 # third number is indistinguishable from one that had nothing to say.
 #
+# BUT LOUD IS NOT THE SAME AS AUDIBLE. A skip exits 0, so the caller cannot tell
+# 25 measured from 25 skipped, and the loud lines only reach a person who opens
+# the log. Setting `CC_CMDS_NOTIFY_ORACLE_REQUIRED` to a non-empty value turns
+# both skip paths into exit 1, which is how a place that means to depend on this
+# measurement pins it as a procedure instead of a habit. The default is unset, so
+# the ubuntu leg and any host without the notifier are unaffected.
+#
 # Usage: bash scripts/test-notify-title-oracle.sh
+#
+# Env:
+#   CC_CMDS_NOTIFY_ORACLE_REQUIRED=1   # a skip becomes a failure
 
 set -uo pipefail
 
@@ -103,15 +141,33 @@ fi
 # zero, which reads as "there was nothing to do" and is the quiet shape this
 # whole block exists to refuse.
 SWALLOWED=( '[x' '(x' '{x' '<x' '"x' '-x' ' [x' ' (x' ' {x' ' <x' ' "x' )
-PASSING=( ' -x' ')x' ']x' '}x' '>x' "'x" '.x' '#x' '~x' '가x' '1x' '답 필요' '손 필요' '자율 런' )
+PASSING=( ' -x' ')x' ']x' '}x' '>x' "'x" '.x' '#x' '~x' '가x' '1x' \
+          'cc-cmds · 답하세요' 'cc-cmds · 답할 것이 더 있습니다' 'cc-cmds · 직접 손대세요' \
+          'cc-cmds · 세션으로 돌아가세요' 'cc-cmds · 새 런을 여세요' 'cc-cmds · 결과를 확인하세요' )
 n_cases=$(( ${#SWALLOWED[@]} + ${#PASSING[@]} ))
+
+# The refusal control, named once. It is deliberately not an element of either
+# set above — see the header — and this file makes no claim about it beyond
+# "an option-shaped word is refused".
+REFUSE_CONTROL='--cc-oracle-not-an-option'
+
+# A skip exits 0 by default, so the caller cannot tell a measured run from a
+# skipped one; this seam is how a caller that depends on the measurement says so.
+skip_status() {
+  if [ -n "${CC_CMDS_NOTIFY_ORACLE_REQUIRED:-}" ]; then
+    echo "      CC_CMDS_NOTIFY_ORACLE_REQUIRED 가 설정돼 있어 이 건너뜀을 실패로 올린다." >&2
+    return 1
+  fi
+  return 0
+}
 
 NOTIFIER=$(command -v terminal-notifier 2>/dev/null || true)
 if [ -z "$NOTIFIER" ]; then
   echo "SKIP: terminal-notifier not installed — nothing to measure the parser against"
   echo "      이 시험이 실제로 도는 자리는 파일 상단 주석의 「WHERE THIS TEST ACTUALLY RUNS」 에 적혀 있다."
   echo "test-notify-title-oracle: 0 passed, 0 failed, ${n_cases} skipped"
-  exit 0
+  skip_status
+  exit $?
 fi
 
 # --- Liveness: can the discriminator still discriminate? --------------------
@@ -120,23 +176,39 @@ trap 'rm -f "$errfile"' EXIT
 
 "$NOTIFIER" -list "x" >/dev/null 2>"$errfile"
 rc_accept=$?
-"$NOTIFIER" -list "[x" >/dev/null 2>&1
+"$NOTIFIER" -list "$REFUSE_CONTROL" >/dev/null 2>&1
 rc_refuse=$?
 
-if [ "$rc_accept" != "0" ] || [ "$rc_refuse" = "0" ]; then
-  echo "SKIP: 판별기가 판별하지 못한다 — 이 호스트에서 삼킴 문자 집합을 잴 수 없다"
+# THE TWO CASES ARE SEPARATED BECAUSE THEIR DISPOSITIONS DIFFER. An accepting
+# control that is refused means the discriminator is not answering at all, and
+# nothing measured after it would be an observation about characters — that is a
+# skip. A refusal control that is ACCEPTED means the opposite: the binary is
+# answering, and it said yes to a word it has always said no to. Folding the
+# second into the first is how a real regression left as a skip and an exit 0.
+if [ "$rc_accept" != "0" ]; then
+  echo "SKIP: 판별기가 답하지 못한다 — 이 호스트에서 삼킴 문자 집합을 잴 수 없다"
   echo "      resolved   : $NOTIFIER"
-  echo "      control 「x」  (통과해야 함): exit=$rc_accept"
-  echo "      control 「[x」 (삼켜져야 함): exit=$rc_refuse"
+  echo "      control 「x」 (통과해야 함): exit=$rc_accept"
+  echo "      control 「${REFUSE_CONTROL}」 (거절해야 함): exit=$rc_refuse"
   echo "      notifier stderr:"
   sed -n '1,5p' "$errfile" 2>/dev/null || true
-  echo "      두 control 이 갈리지 않으면 개별 값의 종료 코드는 문자에 대한 관측이 아니다."
+  echo "      수용 control 이 거절되면 개별 값의 종료 코드는 문자에 대한 관측이 아니다."
   echo "      이 시험이 실제로 도는 자리는 파일 상단 주석의 「WHERE THIS TEST ACTUALLY RUNS」 에 적혀 있다."
   echo "test-notify-title-oracle: 0 passed, 0 failed, ${n_cases} skipped"
-  exit 0
+  skip_status
+  exit $?
 fi
 
-echo "OK:   판별기 생존 확인 — $NOTIFIER (「x」 accept, 「[x」 refuse)"
+if [ "$rc_refuse" = "0" ]; then
+  echo "FAIL: 판별기는 살아 있는데 거절 control 을 받아들였다 — 파서가 바뀌었다" >&2
+  echo "      resolved   : $NOTIFIER" >&2
+  echo "      control 「x」 (통과해야 함): exit=$rc_accept" >&2
+  echo "      control 「${REFUSE_CONTROL}」 (거절해야 함): exit=$rc_refuse" >&2
+  echo "test-notify-title-oracle: 0 passed, 1 failed, ${n_cases} skipped" >&2
+  exit 1
+fi
+
+echo "OK:   판별기 생존 확인 — $NOTIFIER (「x」 accept, 「${REFUSE_CONTROL}」 refuse)"
 
 passed=0
 failures=0

@@ -1,0 +1,5 @@
+## 실행 GOLDEN
+- `run` | run-id=GOLDEN | 순번=1 | prev=486838ad49beaad43fcb60ea738b8b5e281e3d229c71481137b3e7bb55466e3b
+- `act` | 순번=2 | prev=4523d32e262e80b149b1b562713fd8db48cf139b6a5d77bd39c25e06f9a85fb8
+- `act` | 순번=3 | 위조�=예 | prev=86b5067b88c72b7b9ef491f1e8e52dc877f17cd30d09b61ec85f40939403187b
+- `act` | 순번=4 | prev=08dbcb42770366afa104ce4b6d3f39da4375aeb2c33869173addfd9c974d0dd1

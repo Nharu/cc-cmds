@@ -156,6 +156,15 @@ case "$tool" in
           deny "$(jstr 'gate: 사용자 스코프 설정은 훅 설치 채널이라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
         "$cfg"/projects/*)
           deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
+        # THE ROLLBACK SOURCES. A run that applies CLAUDE.md is judged in the
+        # morning by comparing the live file against a baseline taken before the
+        # night, and the harness keeps its own per-version copies beside it. Both
+        # are read-only evidence for that comparison: a stage that can write
+        # either one can make its own edit look like it was there all along, and
+        # the comparison then succeeds while meaning nothing. Denied for the same
+        # reason the ledger is — the writer is not the party being audited.
+        "$cfg"/backups/*|"$cfg"/file-history/*)
+          deny "$(jstr 'gate: 롤백 기준선과 판본 이력은 아침 판정의 증거라 강제 표면입니다 — 이 런에서는 편집할 수 없습니다')" ;;
       esac
     fi
     case "$p" in
@@ -165,6 +174,30 @@ case "$tool" in
         deny "$(jstr 'gate: 세션 트랜스크립트는 승인 판독 채널이라 강제 표면입니다')" ;;
       */orchestrator/rules/*)
         deny "$(jstr 'gate: 룰 카탈로그는 강제 표면입니다 — 룰을 고치는 것은 런의 일이 아닙니다')" ;;
+      # CLAUDE.md IS THE ONE EDIT TARGET GIT DOES NOT WATCH. Every other file a
+      # stage touches is tracked, so a review reads its diff and the declared-file
+      # check bounds it. These are untracked live files that enter the next
+      # session's prefix the moment they change, and nothing downstream would
+      # ever show what moved — the declared-file check cannot name them (it takes
+      # repo-relative paths and these are neither in the repo nor relative to it),
+      # and the cutpoint ladder never sees the edit at all.
+      #
+      # So this is not a refusal, it is a REROUTE, and the whole layering depends
+      # on it: `Write`/`Edit` is the only path that leaves no ledger row, and
+      # closing it forces the application onto `gate.sh exec`, where the argv is
+      # graded, the row is written, and the review-before-apply rule can fire.
+      # Leave this arm out and the other two layers are unreachable — an
+      # unattended stage simply edits the file and nothing records that it did.
+      #
+      # DELIBERATELY EVERY `CLAUDE.md`, not an enumerated list of slots. The four
+      # this machine has are absolute paths outside the repository; baking them
+      # into a shipped hook would make the protection true on one machine and
+      # silently absent everywhere else, which is the failure signature the
+      # config-directory comment above already records once. `CLAUDE.local.md` is
+      # here because it is the same channel under a different name, and leaving
+      # it out would make the arm a one-rename bypass.
+      */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
+        deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --rationale '리뷰 채택본 적용' -- cp <제안본> ${p}")" ;;
     esac
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;

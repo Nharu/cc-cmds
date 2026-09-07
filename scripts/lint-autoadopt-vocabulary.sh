@@ -29,7 +29,34 @@
 # (`판단 부류=$cls`), a schema placeholder (`판단 부류=<여덟 값 중 하나>`), a
 # parser's own pattern (`s/^ *판단 부류=//p`) and the ledger's "no value"
 # sentinel (`판단 부류=-`) — and everything else made of Hangul, ASCII letters,
-# digits, hyphens AND SPACES is a value claim.
+# digits, hyphens AND SPACES is a value claim. WHICH STRING those shapes are
+# matched against follows the same split the rest of this rule makes: a
+# terminated capture is a field and is matched whole, an unterminated one is a
+# sentence and is matched by the token the vocabulary comparison will actually
+# receive. Matching the whole remainder in both cases leaked in both directions
+# at once — see `is_metasyntax`.
+#
+# WHERE THE VALUE ENDS is the other half of that judgment, and leaving it
+# unanswered made this rule report prose. A field ends at a terminator: a ledger
+# row separates fields with `|`, an argv quotes its value, a comment wraps it in
+# backticks, a capture group closes with `)`. A sentence reaches none of them —
+# it runs to the end of the line — so a line reading
+# `판단 부류=감사-발견 인 경우에는 사람에게 묻지 않는다` was read as one long
+# class name and reported as out of vocabulary. A lint that reports a sentence
+# as a vocabulary violation gets switched off at its first false positive, and
+# the multi-token detection this rule exists for goes off with it.
+#
+# So a capture that REACHED a terminator is a field and is compared whole. A
+# capture that ran to the end of the line is judged by its TOKENS instead,
+# because that is what separates the two shapes able to appear there:
+#
+#   - every token names a class and there is more than one — the multi-token
+#     bypass, whose whole trick is that its parts are all real class names
+#     sitting next to each other, so it FAILS;
+#   - the first token names a class and the rest are ordinary words — prose
+#     about a class, and it is skipped;
+#   - the first token names no class — an out-of-vocabulary claim written bare,
+#     so it FAILS.
 #
 # The sentinel is a shape and not an exception. Every field of a ledger row that
 # has no value carries `-`, so a row written for a judgment whose class never
@@ -95,6 +122,34 @@ in_vocab() {
   return 1
 }
 
+# Metasyntax, not a claim about a value. Recognised by SHAPE rather than by
+# "contains only Hangul, letters, digits and hyphens", because that older test
+# also skipped every value carrying a space — and a space is exactly what a
+# multi-token value carries. The driver's vocabulary check used to accept such a
+# value whenever the tokens it named were adjacent in the vocabulary string, so
+# the one shape this lint most needs to catch was the one shape it silently
+# walked past.
+#
+# THE ARGUMENT IS THE STRING BEING JUDGED, and passing the wrong one leaked both
+# ways from a single root. This used to be asked about the whole unterminated
+# remainder while the vocabulary comparison ran on the first token, so a slash
+# anywhere in a sentence matched the parser-pattern shape and skipped the line
+# whole — an out-of-vocabulary token at its head was never compared, and slashes
+# are common in these documents. In the other direction the sentinel arm wants
+# the remainder to BE `-`, so a sentence beginning with the sentinel did not
+# match it and the token path then reported `-` as out of vocabulary — the value
+# this header calls a shape and not an exception. Callers pass the field when the
+# capture reached a terminator and the first token when it did not.
+is_metasyntax() {
+  case "$1" in
+    '$'*) return 0 ;;   # a shell expansion
+    '<'*) return 0 ;;   # a schema placeholder
+    */*)  return 0 ;;   # a parser's own sed pattern
+    '-')  return 0 ;;   # the ledger's "no value" sentinel
+  esac
+  return 1
+}
+
 # --- Rule 1: the forbidden set is a subset of the vocabulary ----------------
 for t in $forbidden; do
   if ! in_vocab "$t"; then
@@ -104,6 +159,13 @@ for t in $forbidden; do
 done
 
 # --- Rule 2: every literal occurrence names one of the eight ---------------
+
+# The characters that END a field. A ledger row separates fields with `|`, an
+# argv quotes its value, a comment wraps it in backticks, and a parser's capture
+# group closes with `)`. A value that reaches none of them ran to the end of the
+# line, which is what a sentence does and a field does not.
+VALUE_TERMINATORS="\"'\`|)"
+
 files=$(find "$scan_root/plugins" "$scan_root/scripts" -type f 2>/dev/null | sort || true)
 scanned=0
 hits=0
@@ -127,24 +189,19 @@ while IFS= read -r f; do
     [[ -n "$n" ]] || continue
     line="${n#*:}"
     lno="${n%%:*}"
-    v=$(printf '%s' "$line" \
-        | sed -n 's/.*판단 부류=\([^"'"'"'`|)]*\).*/\1/p' \
-        | sed 's/[[:space:]]*$//')
+    # THE REMAINDER IS KEPT, not only the capture. Whether the value ended at a
+    # terminator or ran off the end of the line is the one signal on the line
+    # that tells a field from a sentence, and capturing alone throws it away.
+    rest=$(printf '%s' "$line" | sed -n 's/.*판단 부류=//p')
+    [[ -n "$rest" ]] || continue
+    field=${rest%%[$VALUE_TERMINATORS]*}
+    terminated=1
+    if [[ "$field" == "$rest" ]]; then
+      terminated=0
+    fi
+    v=$(printf '%s' "$field" | sed 's/[[:space:]]*$//')
     [[ -n "$v" ]] || continue
-    # Metasyntax, not a claim about a value. Recognised by SHAPE rather than by
-    # "contains only Hangul, letters, digits and hyphens", because that older
-    # test also skipped every value carrying a space — and a space is exactly
-    # what a multi-token value carries. The driver's vocabulary check used to
-    # accept such a value whenever the tokens it named were adjacent in the
-    # vocabulary string, so the one shape this lint most needs to catch was the
-    # one shape it silently walked past.
-    case "$v" in
-      '$'*) continue ;;   # a shell expansion
-      '<'*) continue ;;   # a schema placeholder
-      */*)  continue ;;   # a parser's own sed pattern
-      '-')  continue ;;   # the ledger's "no value" sentinel
-    esac
-    # NO CHARACTER-RANGE FILTER HERE. The `case` above separates metasyntax by
+    # NO CHARACTER-RANGE FILTER HERE. `is_metasyntax` separates metasyntax by
     # SHAPE, and everything it does not name is a claim about a value — including
     # a value spelled with characters this lint did not anticipate, which is
     # out of vocabulary and has to be reported rather than skipped.
@@ -156,11 +213,50 @@ while IFS= read -r f; do
     # suite caught it only on the Linux leg — the macOS run was green with the
     # same source, which is the shape of a portability bug that survives local
     # verification.
-    hits=$((hits + 1))
-    if ! in_vocab "$v"; then
-      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
+    if [[ "$terminated" = "1" ]]; then
+      # The field, whole — that is the string compared against the vocabulary
+      # two lines down, so it is the string the shape test has to be asked about.
+      if is_metasyntax "$v"; then
+        continue
+      fi
+      hits=$((hits + 1))
+      if ! in_vocab "$v"; then
+        echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다" >&2
+        echo "       허용: $classes" >&2
+        fail=1
+      fi
+      continue
+    fi
+    # Unterminated — decided by tokens. `set -f` around the split is required:
+    # the words being split are arbitrary document text, and an unquoted
+    # expansion would otherwise let a `*` in a sentence expand to filenames.
+    ntok=0; nvocab=0; first=""
+    set -f
+    for t in $v; do
+      ntok=$((ntok + 1))
+      if [[ -z "$first" ]]; then first="$t"; fi
+      if in_vocab "$t"; then nvocab=$((nvocab + 1)); fi
+    done
+    set +f
+    # The first token, because that is the string every branch below compares —
+    # `in_vocab "$first"` directly, and the multi-token arm through the count
+    # that includes it. A metasyntax token is in no vocabulary, so the bypass arm
+    # cannot fire on one and this single test covers both.
+    if is_metasyntax "$first"; then
+      continue
+    fi
+    if [[ "$ntok" -gt 1 && "$nvocab" -eq "$ntok" ]]; then
+      hits=$((hits + 1))
+      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$v' 가 어휘 밖이다 (부류 이름 ${ntok}개를 이어 붙인 값이다)" >&2
       echo "       허용: $classes" >&2
       fail=1
+    elif ! in_vocab "$first"; then
+      hits=$((hits + 1))
+      echo "FAIL: ${f#"$scan_root"/}:${lno} — 판단 부류 '$first' 가 어휘 밖이다" >&2
+      echo "       허용: $classes" >&2
+      fail=1
+    elif [[ "$ntok" -eq 1 ]]; then
+      hits=$((hits + 1))
     fi
   done <<EOF
 $(grep -nF '판단 부류=' "$f" 2>/dev/null || true)
