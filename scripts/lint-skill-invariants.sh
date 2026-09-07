@@ -59,6 +59,15 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     fail-closed defaults — that is the termination guarantee, not the
 #     TaskGet-recovered cap/verdict state (which only restores it across
 #     compaction). Remove this clause when that loop leaves implement.
+#   - Model-invocable policy references (github-ops / fanout-policy /
+#     browser-policy / local-html) — these carry no workflow at all. They are
+#     procedure text the model opens at a decision point and applies in place,
+#     so there is no loop, no counter, and no phase transition for compaction
+#     to summarize away. Rule (A) has nothing to protect here, and requiring a
+#     `## Control-Flow Invariants` heading would only add a section asserting
+#     that the file has no control flow. Their `disable-model-invocation: false`
+#     puts `description` + `when_to_use` in every session's listing, which is
+#     precisely why these files stay short rather than growing a ritual heading.
 # In effect, the non-exempt members are `design` (whose phase-transition
 # invariants live in its top `## Control-Flow Invariants`), `design-audit`, and
 # `design-analyze`. `design-audit` is non-exempt for the
@@ -75,7 +84,7 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 # could corrupt), `design-analyze` creates files while its source repo must stay
 # untouched, so a summarized-away read-only rule is a real silent-corruption
 # vector that first-5K placement guards against.
-EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply")
+EXEMPT_SKILLS=("active-notify" "design-upgrade" "review-upgrade" "implement" "review" "design-lite" "review-lite" "design-system" "design-prompt" "design-ingest" "design-apply" "github-ops" "fanout-policy" "browser-policy" "local-html")
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
