@@ -2270,9 +2270,19 @@ check "종단 표시가 없으면 디스패치가 통과한다" "$rc" "0"
 # the arm B1 evaluates in, so its counter freezes at the first threshold. B5
 # therefore keeps `stagnation-repeat` and is evaluated beside B4.
 grant_field_set '무진전 상한' '2'
-printf '%s\n' "$(PD)" > "$RD/stagnation-digest"
-printf '%s\n' "5"      > "$RD/stagnation-repeat"
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+# THE WINDOW KEY IS SEEDED BY THE BOUNDARY ITSELF, not spelled by the fixture.
+# B1, B3 and B5 hash DIFFERENT subsets of the progress vector — B5's key omits
+# the `cycle=` term so a rotation cannot reset the count it exists to trip — and
+# a fixture that writes the full progress digest into B5's state file makes the
+# boundary compare two unrelated values and reset instead of firing. One priming
+# act lets B5 record its own key, after which consecutive acts leave that key
+# alone: `acts=` counts `결정=exec` rows and an `act` writes `결정=act`. Spelled
+# this way the fixture cannot drift from the term set the boundary picks.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-prime" -- touch "$WORK/t-b5prime"
+printf '%s\n' "5" > "$RD/stagnation-repeat"
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "B5" -- touch "$WORK/t-b5"
 case "$(cat "$RD/done" 2>/dev/null || true)" in
@@ -2359,8 +2369,12 @@ unend_run
 # where the router's last one left it.
 grant_field_set '무진전 상한' '99'
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
-printf '%s\n' "$(PD)" > "$RD/stagnation-digest"
-printf '%s\n' "0"     > "$RD/stagnation-repeat"
+# Primed the same way and for the same reason as the arm above: the boundary
+# writes its own window key, so this fixture never has to spell which terms that
+# key covers.
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-prime" -- touch "$WORK/t-b5m0"
+printf '%s\n' "0" > "$RD/stagnation-repeat"
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "B5-mix-router-1" -- touch "$WORK/t-b5m1"
 CC_PIPELINE_STAGE_ID='SD#2'
@@ -3064,14 +3078,28 @@ if [ "$rc" = "3" ]; then
 else
   bad "종단 관문" "종단 표시가 있는데 머지가 rc=$rc 로 통과했다"
 fi
-# EXACT, NOT `rc != 3`. The expected value is 0 — `plan` returns before the nine
-# condition blocks, so `plan --kind propose-done` cannot legitimately reach a
-# rule refusal — and a `!=` test passes on every other code too, including the
-# vocabulary and stale-digest refusals that mean the call never got as far as
-# the gate being exempted. The same file two lines above already uses the exact
-# comparison helper.
+# ASSERTED ON THE REFUSAL'S IDENTITY, NOT ON `rc = 0`. Two different gates can
+# answer this call and only one of them is what this section is about. The end
+# gate refuses with `런이 이미 종단했습니다`; the nine condition blocks refuse a
+# proposal whose run genuinely is not finished, and by this point in the file the
+# fixture ledger legitimately carries unterminated segments, pending approvals,
+# open obligations and a run-scope block that earlier sections put there on
+# purpose. Requiring 0 made this assertion a function of everything every earlier
+# section happened to leave behind — which says nothing about the exemption, and
+# turns any new fixture section upstream into a failure here.
+#
+# What the exemption claims is exactly "whatever answers this call, it is not the
+# end gate", so that is what is asserted. A bare `!= 3` would have the weakness
+# the earlier spelling warned about; testing the refusal TEXT does not, because a
+# vocabulary or stale-digest refusal carries neither the end gate's sentence nor
+# anything resembling it. The message is printed on failure, so a wrong refusal
+# is read rather than inferred from a number.
 gate plan --manifest "$MANIFEST" --kind propose-done --target infra --segment SD --cutpoint 머지 -- true
-check "종단 관문이 종료 제안을 면제한다" "$rc" "0"
+case "$msg" in
+  *"런이 이미 종단했습니다"*)
+    bad "종단 관문이 종료 제안을 면제한다" "종단 관문이 종료 제안을 거부했다 — rc=$rc — $msg" ;;
+  *) ok "종단 관문이 종료 제안을 면제한다" ;;
+esac
 rm -f "$RD/done"
 
 # ---------------------------------------------------------------------------
@@ -3098,7 +3126,11 @@ case "$msg" in
   *) bad "종단 사유 유도" "$msg" ;;
 esac
 gate plan --manifest "$MANIFEST" --kind propose-done --target infra --segment SD --cutpoint 머지 -- true
-check "원장으로 종단을 읽어도 종료 제안은 여전히 면제된다" "$rc" "0"
+case "$msg" in
+  *"런이 이미 종단했습니다"*)
+    bad "원장으로 종단을 읽어도 종료 제안은 여전히 면제된다" "종단 관문이 종료 제안을 거부했다 — rc=$rc — $msg" ;;
+  *) ok "원장으로 종단을 읽어도 종료 제안은 여전히 면제된다" ;;
+esac
 cp "$LBAK22" "$LEDGER"
 
 # ---------------------------------------------------------------------------
