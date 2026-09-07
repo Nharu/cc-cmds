@@ -173,8 +173,12 @@ check "비용 행은 진전이 아니다" "$(digest)" "$d0"
 printf -- '- `cost` | 누적=99999 | 사이클=40\n' >> "$LEDGER"
 check "비용이 40배가 되어도 진전이 아니다" "$(digest)" "$d0"
 
-printf -- '- `stage-result` | 세그먼트=S1 | 결과=크래시 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
-check "스테이지 결과 행 자체는 진전이 아니다" "$(digest)" "$d0"
+# `종단 부류=` and not `결과=`. The gate writes the former and nothing writes the
+# latter, so the row as it stood exercised "an unrecognized field is ignored" and
+# never touched the selector — it would have passed against an implementation
+# that counted every `stage-result` row there is.
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=크래시 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
+check "크래시로 끝난 스테이지 결과 행은 진전이 아니다" "$(digest)" "$d0"
 
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
@@ -235,6 +239,93 @@ fi
 printf -- '- `problem` | 세그먼트=S1 | 동일성=P0-누수 | 시각=2026-01-01T04:00:00Z\n' >> "$LEDGER"
 check "같은 동일성의 재시도는 진전이 아니다" "$(digest)" "$d3"
 
+# A STAGE FINISHING NORMALLY IS PROGRESS, and the vector could not see it.
+# Segment rows move this digest only when the STATE changes, so a segment that
+# runs several stages under one state contributes a constant — and an implement
+# stage's plan-emission process and its editing process are BOTH `실행중`, so not
+# even that transition is expressible as a segment row. Measured before this
+# counter existed: a stage terminated normally, the ledger grew by a
+# `stage-result` row and a `cost` row, the chain stayed intact, and both this
+# digest and the act-budget window key came back byte-identical.
+sn0=$(digest)
+printf -- '- `stage-result` | 세그먼트=SN1 | 스테이지=SN1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$LEDGER"
+sn1=$(digest)
+if [ "$sn1" = "$sn0" ]; then
+  bad "스테이지 정상 종단" "정상 완료 행이 들어왔는데 해시가 그대로다 — 스테이지가 끝나도 벡터가 보지 못한다"
+else
+  ok "첫 정상 완료 행이 다이제스트를 움직인다"
+fi
+
+# The pair that keeps the assertion above from being satisfied by "hash the
+# whole ledger". A crashed stage built nothing to go on, and counting it would
+# reset the stagnation counter on the very failure the counter exists to notice.
+printf -- '- `stage-result` | 세그먼트=SN1 | 스테이지=SN1 | 종류=implement | 종료 코드=1 | 종단 부류=크래시\n' >> "$LEDGER"
+check "크래시 종단은 다이제스트를 움직이지 않는다" "$(digest)" "$sn1"
+
+# Refutes a boolean implementation. "Has any stage finished at all" satisfies the
+# first assertion and stops moving here.
+printf -- '- `stage-result` | 세그먼트=SN2 | 스테이지=SN2 | 종류=review | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$LEDGER"
+sn2=$(digest)
+if [ "$sn2" = "$sn1" ]; then
+  bad "다른 세그먼트의 정상 종단" "두 번째 세그먼트가 정상 종단했는데 해시가 그대로다"
+else
+  ok "다른 세그먼트의 정상 완료가 다시 움직인다"
+fi
+
+# THE DISCRIMINATOR, and the reason it is written this way rather than as another
+# copy of the assertion above. The withdrawn design keyed a SET on
+# `(세그먼트, 스테이지)`, and the gate writes both of those fields from one
+# variable — so that set degenerates to the segment and this row does not move
+# it. That design passes every assertion above and fails only here. Written to
+# match it instead, this assertion would have pinned the standstill as the
+# correct answer.
+printf -- '- `stage-result` | 세그먼트=SN1 | 스테이지=SN1 | 종류=review | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$LEDGER"
+sn3=$(digest)
+if [ "$sn3" = "$sn2" ]; then
+  bad "같은 세그먼트의 두 번째 정상 종단" "같은 세그먼트가 또 정상 종단했는데 해시가 그대로다 — 집합 설계는 정확히 여기서만 갈린다"
+else
+  ok "같은 세그먼트의 두 번째 정상 완료가 움직인다 (집합 설계 판별자)"
+fi
+
+# The selection is POSITIVE, and the four rows below are what pins that. An
+# exclusion-based selector passes the crash assertion above and fails on the
+# first of them.
+printf -- '- `stage-result` | 세그먼트=SN3 | 스테이지=SN3 | 종류=implement | 종료 코드=0 | 종단 부류=공허한 성공\n' >> "$LEDGER"
+check "공허한 성공은 진전이 아니다 (제외 기반 구현이 여기서 실패한다)" "$(digest)" "$sn3"
+
+printf -- '- `stage-result` | 세그먼트=SN4 | 스테이지=SN4 | 종류=implement | 종료 코드=0 | 종단 부류=아직 이름 없는 부류\n' >> "$LEDGER"
+check "정의되지 않은 종단 부류는 진전이 아니다" "$(digest)" "$sn3"
+
+printf -- '- `stage-result` | 세그먼트=SN5 | 스테이지=SN5 | 종류=implement | 종료 코드=0\n' >> "$LEDGER"
+check "종단 부류 필드가 없는 행은 진전이 아니다" "$(digest)" "$sn3"
+
+# The one that breaks the moment somebody simplifies the field parse into a
+# substring match. The driver really does write a prose `관측=` field on these
+# rows, so this shape is a live surface rather than a contrivance: the literal
+# sits inside another field's value and the row's actual class is `크래시`.
+printf -- '- `stage-result` | 세그먼트=SN6 | 스테이지=SN6 | 관측=앞 스테이지가 종단 부류=정상 완료 로 끝났다고 적혀 있었다 | 종단 부류=크래시\n' >> "$LEDGER"
+check "다른 필드에 박힌 리터럴은 진전이 아니다 (부분 문자열 매치가 여기서 깨진다)" "$(digest)" "$sn3"
+
+# THE SHAPE EVERY REAL ROW HAS, and every row above is the other one. The field
+# read cuts the value at the next ` | ` when one follows and takes the rest of
+# the line when none does — two branches — and the writer appends a `시각=` field
+# after the class on every row it emits, so the ledger only ever contains the
+# first shape while the rows above only ever exercise the second. An off-by-one
+# in the boundary arithmetic of the branch that real rows take would leave this
+# whole counter dead and every assertion above still green.
+printf -- '- `stage-result` | 세그먼트=SN7 | 스테이지=SN7 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | 시각=2026-01-01T00:00:00Z\n' >> "$LEDGER"
+sn4=$(digest)
+if [ "$sn4" = "$sn3" ]; then
+  bad "뒤에 필드가 붙은 정상 종단" "실제 원장 행의 모양(종단 부류 뒤에 시각 필드)이 들어왔는데 해시가 그대로다 — 이 카운터는 실제 런에서 죽어 있다"
+else
+  ok "종단 부류 뒤에 필드가 붙은 정상 완료가 움직인다 (실제 원장 행의 모양)"
+fi
+
+# The same shape on the refusing side. Without it the assertion above is also
+# satisfied by a branch that counts whatever it finds once a field follows.
+printf -- '- `stage-result` | 세그먼트=SN8 | 스테이지=SN8 | 종류=implement | 종료 코드=1 | 종단 부류=크래시 | 시각=2026-01-01T00:00:01Z\n' >> "$LEDGER"
+check "뒤에 필드가 붙은 크래시는 진전이 아니다" "$(digest)" "$sn4"
+
 # ---------------------------------------------------------------------------
 # 5. Byte-identity of the rendered snapshot
 # ---------------------------------------------------------------------------
@@ -294,6 +385,73 @@ if [ "$after" -gt 0 ] 2>/dev/null; then
   ok "행 문법이 깨진 줄이 손상으로 계수된다 (${after}건)"
 else
   bad "손상 계수" "깨진 행을 넣었는데 손상 수가 '$after' 이다"
+fi
+
+# ---------------------------------------------------------------------------
+# 6b. What is holding the run — in the JSON and in the render
+#
+# The snapshot's top-level keys carried the goal, the targets, the obligations,
+# the approvals, the damage count and the two digests, and nothing at all about
+# the termination conditions — so a router obeying the contract and reading only
+# this object could learn what blocked the end only by proposing it and reading
+# the refusal. The render was worse: it printed `원장 손상`, `해시 체인` and
+# `미해결 의무` in a row while a pending approval held the run, and the word
+# `승인` appeared nowhere in the whole output.
+# ---------------------------------------------------------------------------
+SNAP_U="$WORK/unmet.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_U"
+
+if jq -e . "$SNAP_U" >/dev/null 2>&1; then
+  ok "종료 조건 집합이 실린 스냅숏도 유효한 JSON 이다"
+else
+  bad "스냅숏 JSON" "종료 조건 키가 붙자 파싱이 깨졌다"
+fi
+
+# BOTH CLAUSES. The first alone passes on an implementation that always emits an
+# empty array, and this fixture has non-terminal segments and a damaged row, so
+# the conditions genuinely do not hold.
+u_total=$(jq -r '.unmet_conditions_total' "$SNAP_U")
+u_len=$(jq -r '.unmet_conditions | length' "$SNAP_U")
+if [ "$u_total" -gt 0 ] 2>/dev/null && [ "$u_len" -gt 0 ] 2>/dev/null; then
+  ok "JSON 이 종료 조건 집합을 싣고 미충족 픽스처에서 비어 있지 않다 (${u_total}건)"
+else
+  bad "종료 조건 집합" "총수 '$u_total' · 배열 길이 '$u_len' — 미충족이 있는 픽스처인데 비어 있다"
+fi
+
+# The number array is the half that is never truncated, so it has to be there
+# even when the text list is capped.
+u_nums=$(jq -r '.unmet_condition_numbers | length' "$SNAP_U")
+if [ "$u_nums" -gt 0 ] 2>/dev/null; then
+  ok "미충족 조건 번호가 별도 배열로 실린다 (${u_nums}개)"
+else
+  bad "조건 번호 배열" "미충족이 ${u_total}건인데 번호 배열이 비어 있다"
+fi
+
+check "처분이 세 토큰 중 하나로 실린다" "$(jq -r '.disposition' "$SNAP_U")" "미충족"
+
+# The approval array now says which KIND of answer each entry is waiting for.
+# Termination condition 2 does not count an approval whose cutpoint is `판단`,
+# and without this field the router cannot tell the two lifetimes apart.
+check "대기 승인 항목이 절단점을 싣는다" \
+  "$(jq -r '.pending_approvals[0].cutpoint' "$SNAP_U")" "판단"
+check "대기 승인 항목이 질문 문면을 싣는다" \
+  "$(jq -r '.pending_approvals[0].question' "$SNAP_U")" "q"
+
+RENDER_U="$WORK/render.txt"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null ) > "$RENDER_U"
+
+# THE COUNT, not merely the line. A render that prints the label and no number
+# reports the same thing whether one approval is open or twelve are.
+if grep -q '^대기 승인 : 1건$' "$RENDER_U"; then
+  ok "렌더가 대기 승인 줄을 내고 실제 건수를 싣는다"
+else
+  bad "대기 승인 줄" "got '$(grep '대기 승인' "$RENDER_U" || printf '(줄 없음)')'"
+fi
+
+if grep -q '^미충족 조건: 조건 ' "$RENDER_U"; then
+  ok "렌더가 미충족 조건을 번호로 보여 준다"
+else
+  bad "미충족 조건 줄" "got '$(grep '미충족 조건' "$RENDER_U" || printf '(줄 없음)')'"
 fi
 
 # ---------------------------------------------------------------------------

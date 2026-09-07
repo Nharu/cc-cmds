@@ -50,10 +50,18 @@ trap 'fx_reap; rm -rf "$WORK"' EXIT
 # writer never sees a closed pipe. The count goes to /dev/null; only the exit
 # status is wanted.
 grep_all_q() {
-  # The count is CAPTURED, not redirected to /dev/null: BSD grep short-circuits
-  # when its output is being discarded, which reintroduces the very SIGPIPE this
-  # helper exists to avoid. Measured — `sed … | grep -c … >/dev/null` returns
-  # 141 while `n=$(grep -c …)` returns 0.
+  # The count is CAPTURED rather than redirected to /dev/null — but NOT because
+  # discarding the output makes grep exit early. It does not. Re-measured on this
+  # host over 200,000 lines behind a `sed`: `sed … | grep -c … >/dev/null`
+  # produced a non-zero pipeline 0 times out of 10 and the captured form 0 out of
+  # 10, while the control `grep -q` produced one 10 out of 10. What
+  # short-circuits is the `-q` flag itself.
+  #
+  # What capturing actually buys is that the verdict is a VALUE rather than an
+  # exit status. `grep -c` exits 1 when the count is zero, so the redirected form
+  # hands its truth value to `pipefail` — fine while this stays an `if` condition
+  # and a trap for whoever copies the idiom into a pipeline whose failure means
+  # something else.
   local n
   n=$(grep -c "$@" || true)
   [ "${n:-0}" != "0" ]
@@ -511,11 +519,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # The watcher does NOT write the ledger. Its row carried no `prev=`, took no
-# lock and passed no length check, and the two sides of the chain then
-# disagreed about it — the verifier skips a row with no `prev=` without
-# advancing its running value while the writer's tip hashes the last ROW
-# including that one. A run whose watcher fired once read as broken from the
-# next row onward, forever.
+# lock and passed no length check, and the chain could not account for it. That
+# used to surface one row late: the verifier stepped over a row it could not
+# read a `prev=` from without advancing its running value, while the writer's
+# tip hashed the last ROW including that one, so a run whose watcher fired once
+# read as broken from the NEXT row onward, forever. It now surfaces on the row
+# itself — an unreadable `prev=` is a break where it occurs — which is a better
+# report of the same defect and no reason to keep the writer.
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F '>> "$LEDGER"'; then
   bad "단일 기록자" "감시자가 여전히 원장에 직접 쓴다"
@@ -1209,7 +1219,7 @@ if grep -q '런이 종단했습니다' "$NOTIFY_LOG" 2>/dev/null; then
 else
   bad "arm B 배너" "$(tr '\n' ' ' < "$NOTIFY_LOG" 2>/dev/null)"
 fi
-check "종단 배너는 상태 슬롯의 제목을 쓴다" "$(has_title '자율 런')" "1"
+check "종단 배너 제목이 할 일을 말한다" "$(has_title 'cc-cmds · 결과를 확인하세요')" "1"
 
 # ---------------------------------------------------------------------------
 # The banner group is per run.
@@ -1308,12 +1318,78 @@ case "$out" in
 esac
 
 # ---------------------------------------------------------------------------
-# One token chooses THREE axes, and the assertion looks at all three together.
+# THE SCOPE OF THE SWITCH IS EVERY FIRING POINT IN THIS PROCESS, and the
+# denominator is measured rather than remembered.
 #
-# Splitting them is what opens a combination per call site — a "손 필요" notice
-# landing in the replace slot arrives with well-formed arguments and silently
-# erases another summons. Driving each token and reading title, group and sound
-# from the same log line is what makes that combination unreachable.
+# The loop above drives ONE arm. That was enough while the design said the switch
+# had to reach "the five call sites this file already had" — but the census says
+# nine, and the four the old number left out are the arms this work added. An
+# implementation that routed some of them through the emitter and left the rest
+# on a path of their own would pass every assertion above.
+#
+# EACH ARM IS DRIVEN TWICE AND THE ON PASS IS NOT DECORATION. A negative
+# assertion on its own passes when the fixture never reached the arm at all, so
+# each arm first has to be shown firing; only then does its silence mean
+# something. The loop-exit arm is the ninth and lives below, because it needs the
+# real loop rather than a single `--once` pass.
+# ---------------------------------------------------------------------------
+ks_seed() {
+  # ks_seed <arm> — the minimal ledger that reaches one watcher firing point.
+  case "$1" in
+    ended)       printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG" ;;
+    answer)      printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+                 approval_row A1 ;;
+    answer-run)  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+                 approval_row A1 ;;
+    rekick)      printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+                 blocked_row 무효화 "강제 표면 이동" ;;
+    hands)       printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+                 blocked_row 사람대기 "적용 판정 불가" ;;
+    after-stage) printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+                 printf -- '- `stage-result` | 세그먼트=S1 | 종료 코드=0\n' >> "$LG" ;;
+    run-open)    printf -- '- `run` | id=R1 | 시작=2026-09-03T00:00:00Z\n' > "$LG" ;;
+    silence)     printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG" ;;
+  esac
+}
+ks_run() {
+  # ks_run <killswitch-value> <arm> — thresholds lowered per arm, never globally.
+  case "$2" in
+    after-stage) runk "$1" --after-stage 0 ;;
+    run-open)    runk "$1" --run-open 0 --after-stage 0 ;;
+    silence)     runk "$1" --stall 0 ;;
+    *)           runk "$1" ;;
+  esac
+}
+
+for arm in ended answer answer-run rekick hands after-stage run-open silence; do
+  fresh
+  : > "$NOTIFY_LOG"
+  ks_seed "$arm"
+  ks_run 1 "$arm" >/dev/null
+  notify_settle 1
+  if [ "$(notify_lines)" -ge 1 ]; then
+    ok "대조군 — '$arm' arm 이 켬에서 실제로 발화한다"
+  else
+    bad "킬스위치 대조군 '$arm'" "켬인데도 배너가 0이라 아래 끔 단언이 공허하다"
+  fi
+
+  fresh
+  : > "$NOTIFY_LOG"
+  ks_seed "$arm"
+  ks_run 0 "$arm" >/dev/null
+  sleep 0.2
+  check "킬스위치가 '$arm' arm 도 끈다" "$(notify_lines)" "0"
+done
+
+# ---------------------------------------------------------------------------
+# One token chooses TITLE AND GROUP, and the assertion reads both from the same
+# log line. The sound is now a CONSTANT rather than an axis, so it is asserted as
+# one — every banner carries it, and a single silent one is a failure.
+#
+# Splitting title and group is what opens a combination per call site — a
+# "직접 손대세요" notice landing in the replace slot arrives with well-formed
+# arguments and silently erases another summons. Driving each token and reading
+# both from one line is what makes that combination unreachable.
 # ---------------------------------------------------------------------------
 # `answer` — an open approval. One banner PER ID, into its own group, with sound.
 fresh
@@ -1322,9 +1398,9 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 approval_row A1
 runb >/dev/null
 notify_settle 1
-check "answer — 제목" "$(has_title '답 필요')" "1"
+check "answer — 제목" "$(has_title 'cc-cmds · 답하세요')" "1"
 check "answer — 그룹이 승인 id 별이다" "$(has_group "cc-cmds-autopilot-$(basename "$RD")-A1")" "1"
-check "answer — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
+check "answer — 소리가 있다" "$(n_sound)" "1"
 
 # `hands` — a resolvable run-scope anchor, keyed by its reason.
 fresh
@@ -1333,25 +1409,41 @@ printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 blocked_row 사람대기 "적용 판정 불가"
 runb >/dev/null
 notify_settle 1
-check "hands — 제목" "$(has_title '손 필요')" "1"
+check "hands — 제목" "$(has_title 'cc-cmds · 직접 손대세요')" "1"
 check "hands — 그룹이 항목 키를 싣는다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")-run-적용-판정-불가")" "1"
-check "hands — 쌓기 버킷이라 소리가 있다" "$(n_sound)" "1"
+check "hands — 소리가 있다" "$(n_sound)" "1"
 
-# `status-hands` — the fourth combination, and the one the three-token shape
-# could not express: an invalidated run takes the run-level replace slot while
-# keeping the title that says a person is needed. The gate refuses to resolve
-# this cause, so it is not something anyone can put their hands on directly.
+# `rekick` — an invalidated run. The gate refuses to resolve this cause, so it is
+# NOT something anyone can put their hands on: it takes the per-run replace slot,
+# and the title names the only action actually available, which is to open a new
+# run. This is the case the older three-token shape could not express, and the
+# combination it names is title-says-a-person-is-needed with a replace group.
 fresh
 : > "$NOTIFY_LOG"
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 blocked_row 무효화 "강제 표면 이동"
 runb >/dev/null
 notify_settle 1
-check "status-hands — 제목은 손 필요" "$(has_title '손 필요')" "1"
-check "status-hands — 그룹은 런 단위 상태 슬롯" \
+check "rekick — 제목이 새 런을 열라고 말한다" "$(has_title 'cc-cmds · 새 런을 여세요')" "1"
+check "rekick — 그룹은 런 단위 대체 슬롯" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "1"
-check "status-hands — 대체 버킷이라 소리가 없다" "$(n_sound)" "0"
+check "rekick — 대체 버킷이어도 소리가 있다" "$(n_sound)" "1"
+
+# `answer-run` — the whole run is waiting. It shares no slot with the lifecycle
+# three, because a run can hold open approvals while it is also stalled or
+# finished, and a shared slot would let one of those erase this one.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+approval_row A1
+runb >/dev/null
+notify_settle 2
+check "answer-run — 제목은 답하세요" "$(has_title 'cc-cmds · 답하세요')" "2"
+check "answer-run — 자기 슬롯을 갖는다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")-답")" "1"
+check "answer-run — 생애주기 슬롯을 쓰지 않는다" \
+  "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "0"
 
 # The address must be UNIQUE per waiting item, or the morning cannot tell what is
 # still waiting from what was answered hours ago. N distinct approvals, N
@@ -1403,7 +1495,12 @@ check "아홉째는 넘침 자리로 모인다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")-대기")" "1"
 check "그 자리는 상태 슬롯과 다른 자리다" \
   "$(has_group "cc-cmds-autopilot-$(basename "$RD")")" "0"
-check "넘침 자리 제목은 답 필요다" "$(has_title '답 필요')" "9"
+# The overflow notice has a title OF ITS OWN, and that is new. While every
+# answer-shaped token shared one string, "the ninth arrived" and "answer this
+# one" were indistinguishable on screen; now the eight individual notices say
+# 답하세요 and the collapsed one says there is more waiting.
+check "개별 여덟은 답하세요 제목을 쓴다" "$(has_title 'cc-cmds · 답하세요')" "8"
+check "넘침 자리는 자기 제목을 쓴다" "$(has_title 'cc-cmds · 답할 것이 더 있습니다')" "1"
 
 approval_row A10
 approval_row A11
@@ -1498,6 +1595,19 @@ else
 fi
 check "두 마커의 이름이 실제로 다르다" \
   "$( { [ -f "$RD/watch.announced-terminal" ] && printf 'shared'; } || printf 'distinct')" "distinct"
+
+# The ninth firing point under the kill switch. It sits here rather than in the
+# table above because it needs the real loop: the marker is written on the way
+# out, which a single `--once` pass never reaches.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+blocked_row 무효화 "강제 표면 이동"
+printf '2026-09-03T00:00:00Z 종단 — 무효화\n' > "$RD/done"
+CC_CMDS_AUTOPILOT_NOTIFY=0 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1
+sleep 0.3
+check "킬스위치가 루프 종료 arm 도 끈다" "$(notify_lines)" "0"
 
 # ---------------------------------------------------------------------------
 # The emitter records its own state ONCE, into this process's own file — never

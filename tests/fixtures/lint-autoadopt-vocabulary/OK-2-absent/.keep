@@ -1,0 +1,4 @@
+No run.sh under orchestrator/, so the vocabulary SOT is absent and the whole
+check is a silent skip. This is the incremental-rollout posture the lint states
+in its header, and it is asserted here so a future rewrite cannot turn an absent
+SOT into a failing build.

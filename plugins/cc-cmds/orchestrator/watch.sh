@@ -358,7 +358,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-terminal"
     announce "런이 종단했습니다 — 더 진행할 것이 없습니다" \
              "아침 보고서를 확인하세요 — 이 스크립트는 아무것도 재개하지 않습니다"
-    cc_notify_fire status "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
+    cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
   fi
 
   # A STAGE ENDED AND THE ROUTER DID NOT ACT. This is a far sharper condition
@@ -417,7 +417,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-after-stage"
     announce "스테이지가 끝났는데 라우터가 ${age}초 동안 아무것도 하지 않았습니다" \
              "그 스테이지를 깨울 통지가 없는 형태로 띄웠을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
-    cc_notify_fire status "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)" || true
+    cc_notify_fire resume "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)" || true
     record_blocked "스테이지 종단 후 라우터 무응답" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -477,7 +477,7 @@ pass() {
     : > "$RUN_DIR/watch.announced-run-open"
     announce "런이 열린 지 ${run_age}초인데 세그먼트가 하나도 열리지 않았습니다" \
              "라우터가 첫 세그먼트를 열기 전에 멈췄을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
-    cc_notify_fire status "런이 열린 뒤 ${run_age}초 동안 세그먼트가 열리지 않았습니다" || true
+    cc_notify_fire resume "런이 열린 뒤 ${run_age}초 동안 세그먼트가 열리지 않았습니다" || true
     record_blocked "세그먼트 미개시" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -517,7 +517,7 @@ pass() {
      && [ "${silent:-0}" = "0" ]; then
     announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 대기 승인 0)" \
              "라우터가 턴을 잡지 않고 있을 수 있습니다 — 이 스크립트는 아무것도 재개하지 않습니다"
-    cc_notify_fire status "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요" || true
+    cc_notify_fire resume "라우터가 ${age}초 동안 멈춰 있습니다 — 세션을 resume 하고 재개를 지시하세요" || true
     record_blocked "라이브니스 침묵" "메인 세션에서 이어서 진행하도록 지시"
   fi
 
@@ -561,7 +561,13 @@ pass() {
     : > "$RUN_DIR/watch.announced-waiting"
     announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
              "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
-    cc_notify_fire status "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건" || true
+    # `answer-run` and not `status`: this is the one banner that asserts the WHOLE
+    # run is stopped waiting for a person, and what that person does is answer. It
+    # needs a per-run slot rather than a per-approval one, and it needs a slot of
+    # its own rather than the lifecycle three's — a run can hold open approvals
+    # while it is also stalled or finished, so sharing would let one of those
+    # erase this one and leave an instruction that no longer matches the state.
+    cc_notify_fire answer-run "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건" || true
   fi
 
   # A RUN THAT ANCHORED. Without this arm a stall a stage caused reaches a person
@@ -592,9 +598,10 @@ pass() {
     : > "$mk"
     if [ "$cause" = "무효화" ]; then
       # The gate refuses to resolve this one, so it is not a thing a person can
-      # put their hands on — it takes the replace slot while keeping the hands
-      # title, which is the combination the class token exists for.
-      cc_notify_fire status-hands \
+      # put their hands on — it takes the per-run replace slot, and the title
+      # names the only action that is actually available, which is to open a new
+      # run rather than to touch this one.
+      cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
     else
       cc_notify_fire hands \
@@ -606,10 +613,14 @@ pass() {
   # silence mean something.
   #
   # Written to a FILE as well as to stdout, and the file is what carries the
-  # claim. This process is launched into the background by a tool call that then
-  # returns, so its stdout is closed and every heartbeat printed there reaches
-  # nobody — the property "a live watcher's silence differs from a dead one's"
-  # was stated and then not obtainable. The file's own mtime is what makes the
+  # claim. This process is launched into the background with its STDIN closed and
+  # its STDOUT REDIRECTED to a log file in the run directory — not closed, which
+  # is what this comment used to say and what the design inherited from it. The
+  # older wording described the launch form that preceded the redirection. The
+  # consequence is the same either way and it is the reason the file exists:
+  # nobody opens that log overnight, so a heartbeat printed there reaches no one
+  # and the property "a live watcher's silence differs from a dead one's" was
+  # stated and then not obtainable. The file's own mtime is what makes the
   # watcher's liveness measurable, and it is rewritten every pass even when
   # nothing changed, which is exactly the case `watch.state` cannot cover: that
   # file only moves when the ledger's size moves.
@@ -693,7 +704,7 @@ while :; do
       if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
          && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
         : > "$RUN_DIR/watch.announced-loop-exit"
-        cc_notify_fire status-hands \
+        cc_notify_fire rekick \
           "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
       fi
     fi
