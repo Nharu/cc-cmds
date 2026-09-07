@@ -1,0 +1,18 @@
+# 부류 토큰 표 — 토큰 / 제목 / 그룹 템플릿 / 버킷 (탭 구분)
+#
+# 시험이 이 파일을 순회한다. 토큰별 제목과 그룹 슬롯을 시험 안에 하드코딩하면
+# 축이 하나 늘 때마다 스캐폴드를 다시 써야 하고, 그때 표와 시험이 갈린다.
+#
+# 그룹 템플릿의 <RUN> 은 런 id, <KEY> 는 항목 키 자리다. 버킷 열은 그 자리가
+# 실제로 하중을 지는지를 재는 데 쓴다 — stack 이면 항목 키가 바뀔 때 그룹이
+# 갈려야 하고, replace 면 갈리지 않아야 한다.
+#
+# 소리는 축이 아니라 상수라 열을 두지 않는다. 시험은 일곱 행 전부에 대해
+# 소리가 default 임을 단언하며, 하나라도 비면 실패다.
+answer	cc-cmds · 답하세요	cc-cmds-autopilot-<RUN>-<KEY>	stack
+answer-run	cc-cmds · 답하세요	cc-cmds-autopilot-<RUN>-답	replace
+overflow	cc-cmds · 답할 것이 더 있습니다	cc-cmds-autopilot-<RUN>-대기	replace
+hands	cc-cmds · 직접 손대세요	cc-cmds-autopilot-<RUN>-<KEY>	stack
+resume	cc-cmds · 세션으로 돌아가세요	cc-cmds-autopilot-<RUN>	replace
+rekick	cc-cmds · 새 런을 여세요	cc-cmds-autopilot-<RUN>	replace
+ended	cc-cmds · 결과를 확인하세요	cc-cmds-autopilot-<RUN>	replace
