@@ -697,14 +697,14 @@ check_base_branches() {
     case "$bb" in
       ''|'(없음)')
         ( base_branch "$a" >/dev/null ) \
-          || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 (fetch 이후에도 refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+          || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
         continue ;;
     esac
     wt=$(target_field "$a" '메인 워크트리')
     # Verified in the MAIN worktree because refs are shared across every linked
     # worktree of one repository.
     ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
-      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb (fetch 이후에도 refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
   done
 }
 
@@ -3139,11 +3139,35 @@ base_branch() {
 # `cd ""` is a successful no-op — so the fetch would have run in whatever directory
 # the driver happened to be in. Kickoff calls this for every declared target, which
 # is where an unresolvable one is most likely to appear.
+#
+# THE OUTCOME IS RECORDED EVEN THOUGH IT IS NOT RETURNED. Staying quiet is right
+# for the consumption sites — a stale remote-tracking set is worse than no
+# refresh but neither is worth stopping a run for — and `|| true` with
+# `2>/dev/null` makes offline, an expired credential, a remote not named `origin`
+# and an unresolvable alias one indistinguishable silence. Kickoff is the ONE
+# caller that turns that silence into a hard stop, and its message asserted "even
+# after the fetch", which sends the person reading it at 3am to the branch name
+# when the real cause was the network. The status goes in a variable so that one
+# caller can say which of the two it is; every other caller is unchanged.
+BASE_FETCH_RC=0
+
 base_fetch() {
   local al="${1:-$(home_alias)}" root
-  root=$(alias_root "$al") || return 0
-  [ -n "$root" ] || return 0
-  ( cd "$root" && git fetch --quiet origin 2>/dev/null ) || true
+  BASE_FETCH_RC=0
+  root=$(alias_root "$al") || { BASE_FETCH_RC=2; return 0; }
+  [ -n "$root" ] || { BASE_FETCH_RC=2; return 0; }
+  ( cd "$root" && git fetch --quiet origin 2>/dev/null ) || BASE_FETCH_RC=1
+  return 0
+}
+
+base_fetch_note() {
+  # The clause kickoff's hard stop puts in front of "no such remote-tracking ref",
+  # so the sentence states what was observed rather than what was assumed.
+  case "${BASE_FETCH_RC:-0}" in
+    1) printf 'fetch 가 실패했습니다 — 오프라인·자격 만료·원격 이름이 origin 이 아님 중 하나일 수 있습니다' ;;
+    2) printf '대상 루트를 해소하지 못해 fetch 를 시도하지도 못했습니다' ;;
+    *) printf 'fetch 는 성공했습니다' ;;
+  esac
 }
 
 # Resolve from the REMOTE-TRACKING ref, not the stripped local name.

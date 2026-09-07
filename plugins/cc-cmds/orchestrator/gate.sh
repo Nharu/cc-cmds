@@ -5431,6 +5431,39 @@ CREDS
   )
 }
 
+gate_pin_attempt() {
+  # gate_pin_attempt <segment> — pin this dispatch's attempt number, echo it.
+  #
+  # A NAMED FUNCTION rather than a block inside the launcher, so a test can burn
+  # it. Inlined, the only thing a suite could reach was the launcher's source
+  # text, and a shape assertion stays green as long as the literals survive —
+  # deleting the advance loop below leaves every literal in place and lands two
+  # dispatches on one path with nothing red.
+  #
+  # THE ROW COUNT IS THE STARTING POINT AND NOT THE ANSWER. A dispatch that died
+  # before its row landed leaves the count where it was, and the router
+  # re-dispatches the same segment id — so two attempts would land on one path.
+  # The driver pins the same way and for the same reason, and its readers consult
+  # the pin FIRST, which is what makes one file the answer for both sides instead
+  # of each deriving its own.
+  #
+  # The count is taken from the gate's OWN rows and not from the driver's
+  # `stage_attempt`: the gate has already appended this dispatch's `자율 승인` row
+  # by the time it gets here, while the driver counts `stage-result` rows that
+  # only land at termination. Two counting bases, one pin — the advance loop is
+  # what makes them agree on the file.
+  local seg="$1" attempt
+  attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
+             | { grep -cF "세그먼트=$seg " || true; } )
+  [ "${attempt:-0}" -ge 1 ] || attempt=1
+  mkdir -p "$RUN_DIR/log"
+  while [ -e "$RUN_DIR/log/$seg#$attempt.json" ] || [ -e "$RUN_DIR/log/$seg#$attempt.err" ]; do
+    attempt=$(( attempt + 1 ))
+  done
+  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
+  printf '%s' "$attempt"
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -5548,28 +5581,13 @@ gate_launch_stage() {
   # attempted twice with nothing to show for either, and the cause lived in one
   # line of the CLI's stdout.
   #
-  # Derived from the ledger and NOT taken as argv: the gate has already appended
-  # this dispatch's own `자율 승인` row by the time it gets here, so counting the
-  # skill dispatches for this segment IS the attempt number. Adding an
-  # `--attempt` flag instead would let a router re-type the number it used last
-  # time, which reproduces the collision through the one surface that is
-  # supposed to prevent it.
+  # Derived from the ledger and NOT taken as argv: adding an `--attempt` flag
+  # would let a router re-type the number it used last time, which reproduces the
+  # collision through the one surface that is supposed to prevent it. The
+  # derivation and the pin both live in `gate_pin_attempt` so a test can burn
+  # them.
   local attempt
-  attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
-             | { grep -cF "세그먼트=$seg " || true; } )
-  [ "${attempt:-0}" -ge 1 ] || attempt=1
-
-  mkdir -p "$RUN_DIR/log"
-  # ADVANCED PAST EVERY STREAM ALREADY ON DISK, then pinned. The row count is the
-  # starting point and not the answer: a dispatch that died before its row landed
-  # leaves the count where it was, and the router re-dispatches the same segment
-  # id — so two attempts would land on one path. The driver pins the same way and
-  # for the same reason, and its readers consult the pin FIRST, which is what
-  # makes one file the answer for both sides instead of each deriving its own.
-  while [ -e "$RUN_DIR/log/$seg#$attempt.json" ] || [ -e "$RUN_DIR/log/$seg#$attempt.err" ]; do
-    attempt=$(( attempt + 1 ))
-  done
-  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
+  attempt=$(gate_pin_attempt "$seg")
 
   # THE STREAM IS SCOPED BY ATTEMPT AND OPENED FOR APPEND. This launcher is the
   # one the router actually uses, and it wrote every dispatch of one segment to a
@@ -5578,10 +5596,16 @@ gate_launch_stage() {
   # (`stage_session_id`, `predicate_reconverge`, `decision_point_reached`) were
   # reading a file this side could zero at any moment. The transcript is the only
   # record of what a stage read and concluded, and in an unattended run nobody
-  # was there to see it happen. The attempt number was already derived just above
-  # and handed to the stage in its environment; it simply was not on the path.
-  local out="$RUN_DIR/log/$seg#$attempt.json"
-  local err="$RUN_DIR/log/$seg#$attempt.err"
+  # was there to see it happen.
+  #
+  # THE PATH COMES FROM THE READER'S OWN FUNCTION rather than from a second copy
+  # of the rule. The pin was written one line above, so `stage_log_path` — the
+  # same function `stage_session_id` and `predicate_reconverge` call — resolves to
+  # this attempt's name and nothing else. Spelling the rule twice is what let the
+  # writer and the readers come apart in the first place.
+  local out err
+  out=$(stage_log_path "$seg")
+  err="${out%.json}.err"
 
   # The stage's stream goes to a FILE rather than through a `tee`. A tee would
   # make `$!` the tee's pid, and the pid is what the watcher uses to tell a
@@ -5697,9 +5721,18 @@ gate_record_stage_outcome() {
   #
   # The record is checked BEFORE the row-count arms because its answer is more
   # specific than theirs. A halted stage may well have written rows first.
+  #
+  # THE NAME COMES FROM THE DRIVER'S OWN RULE, not from a second copy of it. This
+  # side used to try the attempt-scoped name and fall back to the unsuffixed one
+  # WHATEVER THE PIN SAID, which is the opposite of what the driver does: with a
+  # pin the scoped name is the only answer. Two readers of one artifact then
+  # disagreed about the same dispatch — a run started before the driver scoped its
+  # stage ids leaves an unsuffixed record, and resuming that run id pins attempt 2,
+  # so the driver saw no record and classified `정상 완료` while this side found the
+  # first attempt's record and wrote `의도된 park` into the ledger. The row and the
+  # control flow then describe different runs.
   local haltf
-  haltf="$RUN_DIR/halt/$seg#$attempt.md"
-  [ -f "$haltf" ] || haltf="$RUN_DIR/halt/$seg.md"
+  haltf=$(halt_record_path "$seg")
   if [ "$rc" = "0" ] && [ -s "$haltf" ] \
      && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
     klass='의도된 park'

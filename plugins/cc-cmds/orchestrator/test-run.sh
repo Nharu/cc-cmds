@@ -2194,14 +2194,26 @@ fi
 # 진부분집합이 되어, 서버에는 있는데 이 클론이 아직 가져오지 않은 베이스 브랜치가
 # 완주하던 자리에서 하드 스톱된다 — 단일 브랜치 클론, 클론 이후 서버에서 만들어진
 # 브랜치, 좁혀진 fetch refspec 이 전부 그 형상이다.
-MF_ORIGIN="$WORK/manifest-origin"; mkdir -p "$MF_ORIGIN"
+#
+# 원격은 `$MF_REPO` 에서 **클론**한다. 별도 `git init` 으로 만들면 공통 조상이 없는
+# 커밋이 나오고, 바로 아래 `check_base_branches` 가 부르는 `base_fetch` 가 기본
+# refspec 의 강제 갱신으로 픽스처가 맨 처음 손수 심어 둔 `refs/remotes/origin/main`
+# (= 이 레포 자신의 HEAD) 을 그 무관한 커밋으로 갈아 끼운다. 지금은 그 아래에
+# `base_sha` 를 보는 절이 없어 깨지는 단언이 없지만, 픽스처의 기본 불변식이 절
+# 중간에서 조용히 뒤집히는 것이라 나중에 여기 단언을 더하는 쪽이 재현하기 어려운
+# 자리에서 막힌다. 클론이면 fetch 뒤에도 같은 커밋이라 불변식이 유지된다.
+#
+# 클론은 대상 디렉터리를 스스로 만들고, HEAD 도 원본의 것을 따라가므로 호스트의
+# `init.defaultBranch` 에 기대지 않는다.
+MF_ORIGIN="$WORK/manifest-origin"
+git clone -q "$MF_REPO" "$MF_ORIGIN" >/dev/null 2>&1
 ( cd "$MF_ORIGIN" \
-  && git init -q . \
   && git config user.email t@example.invalid \
   && git config user.name  T \
-  && git commit -q --allow-empty --no-gpg-sign -m init \
-  && git branch -M main \
   && git branch server-only ) >/dev/null 2>&1
+check "픽스처 원격이 이 레포에서 클론돼 같은 커밋을 가리킨다" \
+  "$( cd "$MF_ORIGIN" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_ORIGIN" && git rev-parse HEAD )" \
+  "main/$( cd "$MF_REPO" && git rev-parse HEAD )"
 ( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
 if ( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/server-only >/dev/null 2>&1 ); then
   bad "베이스 브랜치 검증" "픽스처가 이미 가져온 상태다 — fetch 이전 상태를 재지 못한다"
@@ -2215,6 +2227,11 @@ if ( check_base_branches ) >/dev/null 2>&1; then
 else
   bad "베이스 브랜치 검증" "가져오지 않은 ref 가 거부됐다 — 완주하던 형태가 하드 스톱된다: $( ( check_base_branches ) 2>&1 | tail -1 )"
 fi
+# 위 fetch 가 픽스처의 기본 불변식을 뒤집지 않았는지 확인한다 — 원격이 클론이 아니면
+# 여기서 두 값이 갈린다.
+check "fetch 뒤에도 origin/main 은 이 레포 자신의 HEAD 다" \
+  "$( cd "$MF_REPO" && git rev-parse refs/remotes/origin/main )" \
+  "$( cd "$MF_REPO" && git rev-parse HEAD )"
 # 이 검사가 모든 게이트 호출마다 돌면, 베이스 브랜치가 런 도중 해소 불가가 됐을 때
 # 이후 모든 행위가 하드 스톱되고 값이 구속 다이제스트에 얼어 있어 복구할 길이 없다.
 # 그래서 검사는 킥오프 경로에만 있어야 한다 — 게이트가 부르는 것은 `check_manifest` 다.
@@ -2253,10 +2270,12 @@ fi
 # 원격 자체를 잠시 떼어 낸다. ref 만 지우면 `check_base_branches` 가 맨 먼저 부르는
 # `base_fetch` 가 실제 origin 에서 그것을 되살려, 유도가 다시 첫 팔에서 해소된다 —
 # 실측: 지운 직후 `refs/remotes/origin/HEAD` 가 없다가 그 호출 뒤 되살아났다.
+#
+# 원격 제거가 그 원격의 원격 추적 브랜치까지 함께 지우므로 `git update-ref -d` 로
+# `origin/HEAD`·`origin/main` 을 따로 지우던 두 줄은 이미 없는 것을 지우는 죽은 줄이었다.
+# 그 둘이 있어야 전제가 선다고 읽히기 쉬워 지웠고, 전제 자체는 아래 `check` 가 잡는다.
 ( cd "$MF_REPO" \
   && git remote remove origin \
-  && git update-ref -d refs/remotes/origin/HEAD \
-  && git update-ref -d refs/remotes/origin/main \
   && git checkout -q -b derived-only ) >/dev/null 2>&1
 # 전제가 실제로 섰는지 반증 가능하게 확인한다 — 위 체인은 출력을 버리므로 실패해도 조용하다.
 check "유도가 체크아웃된 이름으로 내려가는 상태다" \
@@ -2271,18 +2290,50 @@ if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
 else
   ok "해소되지 않는 유도값이 거부된다 ((없음) 분기가 검증에서 면제되지 않는다)"
 fi
+# 그 거절 문면이 fetch 의 성패를 진술하는가. `base_fetch` 는 `2>/dev/null` 과 `|| true`
+# 로 오프라인·자격 만료·원격 부재·해소 불가 별칭을 전부 같은 침묵으로 만드는데, 킥오프는
+# 그 침묵에 하드 스톱을 거는 유일한 자리다 — 「fetch 이후에도 없음」이라고 단정하면
+# 무인 런에서 아침에 이 줄을 읽는 사람이 브랜치 이름 쪽으로 간다. 이 픽스처는 지금
+# 원격이 떼어진 상태이므로 fetch 는 실패한 쪽이어야 한다.
+BBMSG25F=$( ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) 2>&1 | tail -1 )
+case "$BBMSG25F" in
+  *"fetch 가 실패했습니다"*) ok "하드 스톱 문면이 fetch 의 성패를 관측대로 진술한다" ;;
+  *) bad "베이스 브랜치 문면" "fetch 실패를 브랜치명 오류와 구별하지 않는다: $BBMSG25F" ;;
+esac
 # 원격을 되돌린다 — 아래 절은 유도값이 해소되는 쪽을 재므로 원격 추적 ref 가 필요하다.
+#
+# **`main` 을 체크아웃하지 않고 `derived-only` 에 남긴다.** 되돌린 뒤 `main` 위에 서면
+# 유도의 두 팔이 — `origin/HEAD` 로 해소하는 팔과 체크아웃된 이름으로 내려가는 팔이 —
+# 둘 다 `main` 을 내어, 절 끝의 단언이 자기 라벨이 주장하는 구별을 하지 못한다.
+#
+# **`origin/HEAD` 는 명시적으로 세운다.** fetch 가 원격 HEAD 를 따라 그것을 만들어 주는
+# 것은 비교적 최근 동작이고, 만들지 않는 판본에서는 유도가 둘째 팔로 내려간다. 그러면
+# 어느 팔이 답했는지가 호스트마다 갈리는데 두 팔의 답이 같으면 어느 쪽이든 통과해서,
+# 그 갈림이 어디에도 드러나지 않는다.
 ( cd "$MF_REPO" \
-  && git checkout -q main \
   && git remote add origin "$MF_ORIGIN" \
-  && git fetch -q origin ) >/dev/null 2>&1
+  && git fetch -q origin \
+  && git remote set-head origin -a ) >/dev/null 2>&1
+# 두 팔이 실제로 다른 값을 내는 상태인지 반증 가능하게 확인한다 — 위 체인도 출력을 버린다.
+check "복원 뒤 체크아웃된 이름과 해소되는 이름이 갈린다" \
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --abbrev-ref origin/HEAD 2>/dev/null )" \
+  "derived-only/origin/main"
 if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
   ok "해소되는 유도값은 그대로 통과한다 (파생값 검증이 공허하지 않다)"
 else
   bad "베이스 브랜치 (없음)" "실재하는 유도값이 거부됐다: $( ( check_base_branches ) 2>&1 | tail -1 )"
 fi
+# 체크아웃된 이름은 `derived-only` 이므로 기대값 `main` 은 첫 팔에서만 나온다.
 check "유도된 이름이 체크아웃된 HEAD 가 아니라 해소되는 이름이다" \
   "$( ( RUN_DIR=""; BASE_BRANCH=""; base_branch home ) )" "main"
+# 절이 만든 지역 브랜치를 치운다. 되돌림이 ref 집합만 복원하고 지역 브랜치를 남기면
+# 다음에 이 레포를 쓰는 절이 「절 이전 형상」을 전제할 수 없다.
+( cd "$MF_REPO" \
+  && git checkout -q main \
+  && git branch -D derived-only ) >/dev/null 2>&1
+check "절이 만든 지역 브랜치가 남지 않는다" \
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/heads/derived-only >/dev/null 2>&1 && printf 있음 || printf 없음 )" \
+  "main/없음"
 write_manifest "$MF"
 MANIFEST="$MF"
 
@@ -2516,31 +2567,93 @@ if grep_all_q -F '> "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err"' < "$GAT
 else
   ok "게이트 런처에 무스코프 잘림 경로가 남아 있지 않다"
 fi
-if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F 'out="$RUN_DIR/log/$seg#$attempt.json"'; then
-  ok "게이트 런처의 전사 경로가 시도로 스코프된다"
-else
-  bad "스테이지 스트림" "게이트가 시도 번호를 유도해 놓고 경로에는 쓰지 않는다"
-fi
+# 아래 두 줄만 형상 단언으로 남는다 — 리다이렉션 연산자는 함수를 태워도 관측되지 않고,
+# 실제 CLI 를 띄우지 않고 재려면 스트림을 잘랐는지 덧붙였는지를 볼 방법이 없다. 나머지는
+# 전부 함수를 태워 잰다.
 if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F '>> "$out" 2>> "$err"'; then
   ok "게이트 런처가 덧붙임으로 연다"
 else
   bad "스테이지 스트림" "게이트 런처가 잘림 모드로 연다"
 fi
-# 핀이 없으면 양쪽이 서로 다른 계수로 같은 경로를 유도한다 — 게이트는 `자율 승인` 행을,
-# 드라이버는 `파견 id=` 행을 센다. 드라이버의 판독기가 핀 파일을 가장 먼저 보므로,
-# 게이트가 그 파일을 쓰는 것이 두 쪽을 한 경로로 묶는 지점이다.
-if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F '> "$RUN_DIR/$seg.attempt"'; then
-  ok "게이트 런처가 드라이버의 판독기가 읽는 핀을 쓴다"
-else
-  bad "스테이지 스트림" "게이트가 핀을 남기지 않아 판독기가 다른 경로를 유도한다"
-fi
-# 결과 기록기도 같은 스트림을 봐야 한다. 다시 유도하면 작성자와 판독자가 또 갈린다.
 if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" \
      | grep_all_q -F 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before" "$out"'; then
   ok "게이트의 결과 기록기가 이 파견이 실제로 쓴 스트림을 받는다"
 else
   bad "스테이지 스트림" "결과 기록기가 스트림 경로를 다시 유도한다"
 fi
+
+# 여기부터는 게이트의 함수를 **실제로 태운다.**
+#
+# 앞 판본의 다섯 단언은 전부 `gate.sh` 소스를 `grep -F` 하는 형상 단언이었고, 형상은
+# 리터럴만 보존되면 초록이다 — 시도 전진 루프만 지워 두 파견이 한 경로로 떨어지게 만들어도
+# 다섯이 전부 통과했다. 「고쳤다」가 거짓이었던 자리가 정확히 여기인데 새 펜스가 그 거짓을
+# 잡지 못했다.
+#
+# 별도 프로세스인 이유: 게이트를 소싱하면 드라이버가 다시 소싱되며 이 하네스가 이미 세워
+# 둔 `RUN_DIR`·`LEDGER`·`PATH` 가 초기화된다. 소싱 시임은 게이트가 이미 싣고 있다.
+GB25="$WORK/gate-burn"
+mkdir -p "$GB25/log"
+# 1회차의 바이트를 디스크에 심어 둔다. 전진 루프가 없으면 2회차가 이 경로에 앉는다.
+printf 'ATTEMPT1\n' > "$GB25/log/segB#1.json"
+: > "$GB25/log/segB#1.err"
+: > "$GB25/ledger.md"
+cat > "$GB25/burn.sh" <<'GBEOF'
+#!/usr/bin/env bash
+# 25h 번인 — 하네스가 런타임에 쓰고 별도 프로세스로 태운다.
+set -uo pipefail
+GATE="$1"; RD="$2"; MFP="$3"
+# 드라이버는 자기 하위 프로세스를 위해 PATH 를 정제 집합으로 고정하고, 소싱하면 그것까지
+# 들어온다 — 그러면 `jq` 가 사라져 결과 줄 파싱이 조용히 빈 값을 낸다.
+HP="$PATH"
+CC_GATE_SOURCE_ONLY=1
+export CC_GATE_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$GATE" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+# 소싱은 드라이버의 `-e` 도 들여온다. 아래는 실패를 기대하는 호출을 포함한다.
+set +e
+# 경로 변수는 소싱 **뒤에** 세운다 — 드라이버가 로딩 중 자기 경로 변수를 빈 문자열로
+# 다시 초기화하므로 앞에 세우면 조용히 지워진다.
+RUN_DIR="$RD"
+LEDGER="$RD/ledger.md"
+MANIFEST="$MFP"
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
+# (A) 시도 유도가 디스크에 있는 1회차를 넘어 전진하는가, 그 번호를 핀으로 남기는가,
+#     1회차 바이트는 그대로인가, 그리고 판독기의 경로 함수가 같은 이름을 내는가.
+a=$(gate_pin_attempt segB)
+p=$(stage_log_path segB)
+printf 'A %s %s %s %s\n' \
+  "$a" "$(cat "$RUN_DIR/segB.attempt" 2>/dev/null)" \
+  "$(cat "$RUN_DIR/log/segB#1.json" 2>/dev/null)" "${p#$RUN_DIR/}"
+
+# (B) 핀이 2 이고 접미 중단 기록이 없는데 **무접미 기록만** 디스크에 있을 때, 결과
+#     기록기가 그것을 자기 것으로 읽지 않는가. 읽으면 `의도된 park` 이 나온다.
+mkdir -p "$RUN_DIR/halt"
+printf '# 정지\n<!-- /cc-pipeline-halt v1 -->\n' > "$RUN_DIR/halt/segB.md"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"SID-B","total_cost_usd":0}' > "$p"
+gate_record_stage_outcome home segB review 2 0 0 "$p" >/dev/null 2>&1
+printf 'B %s\n' "$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } \
+                    | sed -n 's/.*종단 부류=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | tail -1)"
+
+# (C) 반대 방향 — 자기 시도의 기록은 읽어야 한다. 이것이 없으면 (B) 는 「중단 기록을
+#     아예 안 본다」로도 통과한다.
+b1=없음; b2=있음
+printf '# 정지\n<!-- /cc-pipeline-halt v1 -->\n' > "$RUN_DIR/halt/segB#2.md"
+halt_record_present segB && b1=있음
+rm -f "$RUN_DIR/halt/segB#2.md"
+halt_record_present segB || b2=없음
+printf 'C %s/%s\n' "$b1" "$b2"
+GBEOF
+GB25_OUT=$(bash "$GB25/burn.sh" "$GATE25" "$GB25" "$MF" </dev/null 2>/dev/null)
+check "게이트의 시도 유도가 디스크의 1회차를 넘어 전진하고 핀과 판독기 경로가 그 번호로 맞는다" \
+  "$(printf '%s\n' "$GB25_OUT" | sed -n 's/^A //p')" "2 2 ATTEMPT1 log/segB#2.json"
+check "핀이 있으면 결과 기록기가 앞 시도의 무접미 중단 기록을 자기 것으로 읽지 않는다" \
+  "$(printf '%s\n' "$GB25_OUT" | sed -n 's/^B //p')" "공허한 성공"
+check "자기 시도의 중단 기록은 읽는다 (B 가 중단 기록을 무시해서 통과한 것이 아니다)" \
+  "$(printf '%s\n' "$GB25_OUT" | sed -n 's/^C //p')" "있음/없음"
 
 DOC="$DOC_SAVE25"; DOC_KEY="$DOC_KEY_SAVE25"
 RUN_DIR="$RUN_DIR_SAVE25"; LEDGER="$LEDGER_SAVE25"
