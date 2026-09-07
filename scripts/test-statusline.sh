@@ -379,6 +379,165 @@ out=$(sl sess-e2)
 has "E2 둘 다 종단 — 더 최근 쪽의 종료가 남는다" "$out" "✓ run-e2-new 종료"
 
 # ---------------------------------------------------------------------------
+# A1-A10. The five-rank grade, and the render for the bottom rank
+# ---------------------------------------------------------------------------
+#
+# THE AXIS THESE CASES PIN IS EVIDENCE, NOT ABSENCE. Selection used to rank on
+# "shows no sign of having finished", so a run that never opened a segment —
+# which can satisfy neither the derived terminal test nor the `done` shortcut —
+# was permanently non-terminal and permanently first. Every case below fixes one
+# rank boundary or one tie-break inside a rank; recency is only ever allowed to
+# decide between two runs of the SAME rank.
+
+# A1. The repro's own shape: no segment row, no live stage, no approval, no
+# `done`, and a ledger that stopped moving. It loses to a finished run. This
+# takes a different arm from case 15 — `n_seg = 0` there, `nonterm > 0` here —
+# so without it the zero-segment arm is the one the suite never walks.
+fx_mkrun run-a1-orphan; fx_ledger_path
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a1-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a1 run-a1-orphan run-a1-term
+out=$(sl sess-a1)
+has "A1 세그먼트 0개에 원장이 멎은 런은 종단 런에게 진다" "$out" "run-a1-term"
+hasnt "A1 그 런을 표시하지 않는다" "$out" "run-a1-orphan"
+
+# A2. Three ranks in one session, indexed against the grade order, so a loop
+# that picked on position rather than on rank would pick a different one.
+fx_mkrun run-a2-live; fx_ledger_path; fx_stage_live S1; fx_heartbeat 0 5
+fx_mkrun run-a2-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_mkrun run-a2-pend; fx_ledger_path; fx_approval A1 대기; fx_heartbeat 0 5
+fx_session_index sess-a2 run-a2-live run-a2-term run-a2-pend
+out=$(sl sess-a2)
+has "A2 라이브 · 승인대기 · 종단 중 라이브가 선택된다" "$out" "run-a2-live"
+hasnt "A2 종단을 표시하지 않는다" "$out" "run-a2-term"
+hasnt "A2 승인대기를 표시하지 않는다" "$out" "run-a2-pend"
+
+# A3. Rank beats recency. Case 15's non-terminal run has no live pid, so nothing
+# until now asserted that a genuinely running stage outranks a MORE RECENT
+# finish.
+fx_mkrun run-a3-live; fx_ledger_path; fx_stage_live S1; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a3-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a3 run-a3-live run-a3-term
+out=$(sl sess-a3)
+has "A3 라이브 스테이지가 더 최근의 종단 런을 이긴다" "$out" "run-a3-live"
+hasnt "A3 더 최근이어도 종단을 표시하지 않는다" "$out" "run-a3-term"
+
+# A4. Recency still decides INSIDE a rank. Case 16 already covers the terminal
+# rank, so it is cited rather than re-derived; these are the two ranks it does
+# not reach.
+fx_mkrun run-a4-pend-old; fx_ledger_path; fx_approval A1 대기; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a4-pend-new; fx_ledger_path; fx_approval A1 대기; fx_heartbeat 0 5
+fx_session_index sess-a4p run-a4-pend-old run-a4-pend-new
+out=$(sl sess-a4p)
+has "A4 승인대기 둘 중 더 최근" "$out" "run-a4-pend-new"
+hasnt "A4 승인대기 둘 중 더 오래된 쪽은 아니다" "$out" "run-a4-pend-old"
+
+fx_mkrun run-a4-live-old; fx_ledger_path; fx_stage_live S1; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a4-live-new; fx_ledger_path; fx_stage_live S1; fx_heartbeat 0 5
+fx_session_index sess-a4l run-a4-live-old run-a4-live-new
+out=$(sl sess-a4l)
+has "A4 살아있음 둘 중 더 최근" "$out" "run-a4-live-new"
+hasnt "A4 살아있음 둘 중 더 오래된 쪽은 아니다" "$out" "run-a4-live-old"
+
+# A5. The refuted claim, guarded. A watcher beating every few seconds over a
+# ledger that has not moved in over an hour was observed on this host with zero
+# live stages and no `done` — so heartbeat freshness is not an input to the
+# grade, and this run must lose to a finished one.
+fx_mkrun run-a5-guard; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 4000
+fx_mkrun run-a5-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a5 run-a5-guard run-a5-term
+out=$(sl sess-a5)
+has "A5 신선한 하트비트 + 노후한 원장 성장 — 종단 런이 이긴다" "$out" "run-a5-term"
+hasnt "A5 하트비트 신선도는 등급의 입력이 아니다" "$out" "run-a5-guard"
+
+# A6. A3's other direction. An off-by-one in the rank numbers shows up in one of
+# the two and not both.
+fx_mkrun run-a6-pend; fx_ledger_path; fx_approval A1 대기; fx_heartbeat 0 5
+fx_mkrun run-a6-live; fx_ledger_path; fx_stage_live S1; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 7200
+fx_session_index sess-a6 run-a6-pend run-a6-live
+out=$(sl sess-a6)
+has "A6 살아있음이 더 최근의 승인대기를 이긴다" "$out" "run-a6-live"
+hasnt "A6 더 최근이어도 승인대기를 표시하지 않는다" "$out" "run-a6-pend"
+
+# A7. Case 8a's sibling — the placement invariant's regression test. The 버려짐
+# arms sit below the terminal block, so a finished run never becomes abandoned;
+# put the other way round, the watcher's `= "종단"` compare would stop
+# announcing finished runs.
+fx_mkrun run-a7-aband; fx_ledger_path; fx_segment S1 실행중
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a7-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a7 run-a7-aband run-a7-term
+out=$(sl sess-a7)
+has "A7 종단이 버려짐보다 앞선다" "$out" "run-a7-term"
+hasnt "A7 버려진 런을 표시하지 않는다" "$out" "run-a7-aband"
+
+# And the render for that bottom rank, on a session where there is nothing to
+# outrank — which is the half the ordering cannot reach at all. Measured on this
+# host: 20 single-run sessions hold exactly one abandoned run.
+fx_session_index sess-a7-solo run-a7-aband
+out=$(sl sess-a7-solo)
+has "A7 버려진 런 하나뿐인 세션 — 움직이지 않는 글리프" "$out" "⊘"
+has "A7 버려진 런 — 방치로 읽힌다" "$out" "방치"
+hasnt "A7 버려진 팔은 도는 글리프를 쓰지 않는다" "$out" "⟳"
+hasnt "A7 버려진 팔에서는 워처 슬롯이 억제된다" "$out" "워처"
+# NOT `emit_fallback`. Routing this arm there is byte-legal — those are the
+# "this session has no run" bytes — so every other assertion in this suite would
+# stay green while the line said the opposite of what it means.
+if [ "$out" = "$FALLBACK" ]; then
+  bad "A7 버려진 팔이 폴백으로 새지 않는다" "런 없음 줄과 바이트 동일"
+else
+  ok "A7 버려진 팔이 폴백으로 새지 않는다"
+fi
+
+fx_mkrun run-a7-blocked; fx_ledger_path; fx_segment S1 실행중
+fx_blocked "픽스처 차단" 불명
+fx_age_file "$FX_LEDGER" 7200
+fx_session_index sess-a7-blocked run-a7-blocked
+out=$(sl sess-a7-blocked)
+has "A7 미해소 run 스코프 blocked 가 있는 버려진 런 — 같은 글리프" "$out" "⊘"
+has "A7 그 런은 방치가 아니라 차단으로 읽힌다" "$out" "차단"
+hasnt "A7 차단 줄에 방치가 함께 실리지 않는다" "$out" "방치"
+
+# A8. The fifth rank's whole reason for existing. Between two stages there is no
+# live pid for an instant, and a literal four-rank grade drops that run to the
+# bottom — handing the screen to a run that finished yesterday. The signal here
+# is the LEDGER'S GROWTH, not the watcher's pulse, which is why A5 above does
+# not cover this: A5's run is the one whose ledger is stale.
+fx_mkrun run-a8-fresh; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a8-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a8 run-a8-fresh run-a8-term
+out=$(sl sess-a8)
+has "A8 신선 단이 더 최근의 종단 단을 이긴다" "$out" "run-a8-fresh"
+hasnt "A8 더 최근이어도 종단을 표시하지 않는다" "$out" "run-a8-term"
+
+# A9. And recency decides inside that new rank too.
+fx_mkrun run-a9-old; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+fx_age_file "$FX_LEDGER" 1800
+fx_mkrun run-a9-new; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 5
+fx_session_index sess-a9 run-a9-old run-a9-new
+out=$(sl sess-a9)
+has "A9 신선 둘 중 더 최근" "$out" "run-a9-new"
+hasnt "A9 신선 둘 중 더 오래된 쪽은 아니다" "$out" "run-a9-old"
+
+# A10. The boundary itself. Idle exactly at the mark falls on the stall side,
+# and the assertion survives a second boundary crossing between the fixture and
+# the render because elapsing time only pushes idle further past the mark.
+fx_mkrun run-a10; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 180
+fx_session_index sess-a10-solo run-a10
+has "A10 원장 유휴가 정확히 stall — 정지 경고 쪽" "$(sl sess-a10-solo)" "⚠"
+
+fx_mkrun run-a10-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a10 run-a10 run-a10-term
+out=$(sl sess-a10)
+has "A10 그 런은 종단 런 아래 단이다" "$out" "run-a10-term"
+hasnt "A10 경계의 런이 종단을 이기지 않는다" "$out" "⚠"
+
+# ---------------------------------------------------------------------------
 # The branch the isolation cannot reach
 # ---------------------------------------------------------------------------
 if grep -qF '${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds' "$SL"; then
