@@ -126,6 +126,12 @@ run_init() {
   "$INIT" "$@"
 }
 
+# The fallback root is derived from `XDG_STATE_HOME`, so it is pointed into the
+# work dir. Left at the real value this suite would create — and leave behind —
+# directories under the user's own state tree.
+XDG_STATE_HOME="$WORK/state"; export XDG_STATE_HOME
+STATE_ROOT="$XDG_STATE_HOME/cc-cmds/design"
+
 # ---------------------------------------------------------------------------
 # Root selection
 # ---------------------------------------------------------------------------
@@ -134,8 +140,25 @@ mkdir -p "$TMPDIR"
 RUNDIR="$WORK/rundir"
 mkdir -p "$RUNDIR"
 
+# THE FALLBACK IS THE STATE DIRECTORY, NOT THE SYSTEM TEMP DIR. A temp root is
+# collected out from under a live team, and the witness is the one artifact a
+# lead cannot re-derive — losing it leaves parking or fabrication as the only
+# moves. `$TMPDIR` is exported and non-empty here precisely so that a regression
+# to the old root shows up as a wrong parent rather than as an absent one.
+if [ -d "$STATE_ROOT" ]; then
+  bad "폴백 부모는 스크립트가 만든다" "$STATE_ROOT 가 호출 전부터 있었다 — 이 단언이 무의미해진다"
+fi
 d=$(run_init '' '' review-alpha)
-check "실행 디렉터리가 없으면 임시 디렉터리 아래에 만든다" "$(dirname "$d")" "$TMPDIR"
+check "실행 디렉터리가 없으면 상태 디렉터리 아래에 만든다" "$(dirname "$d")" "$STATE_ROOT"
+case "$(dirname "$d")" in
+  "$TMPDIR"|"$TMPDIR"/*) bad "폴백이 임시 디렉터리가 아니다" "$d" ;;
+  *) ok "폴백이 임시 디렉터리가 아니다" ;;
+esac
+if [ -d "$STATE_ROOT" ]; then
+  ok "없던 폴백 부모를 스크립트가 만든다"
+else
+  bad "없던 폴백 부모를 스크립트가 만든다" "$STATE_ROOT"
+fi
 if [ -d "$d" ]; then ok "만들어진 디렉터리가 실재한다"; else bad "만들어진 디렉터리가 실재한다" "$d"; fi
 
 d=$(run_init "$RUNDIR" '' review-alpha)

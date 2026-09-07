@@ -26,21 +26,29 @@
 #     `~/\.claude` branch. The lint enforces the policy by behavior, not
 #     just by documentation.
 #
-# Second rule — the team witness directory's root and basename.
-#   The agent-team protocol moved the witness dir off `${TMPDIR}` and dropped
-#   the `cc-` prefix from its basename: it is `${CC_PIPELINE_RUN_DIR}/
-#   team-witness-<slug>` when that variable is set and a `mktemp -d` under
+# Second rule — the team witness directory's ROOT.
+#   The witness dir must never be rooted at `${TMPDIR}`. It is
+#   `${CC_PIPELINE_RUN_DIR}/…` when that variable is set and a `mktemp -d` under
 #   `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design/` otherwise. Nine
-#   consumer SKILL.md files kept spelling the old `${TMPDIR:-/tmp}/
-#   cc-team-witness-<slug>.XXXXXX`, so the move never reached the stages that
-#   actually run: a `${TMPDIR}` directory is collected within about an hour on
-#   this host, and the witness is the anti-fabrication anchor — gone, the lead
-#   either parks forever or synthesizes a round product it never observed. The
-#   basename half matters for a different reason: the cleanup contract's path
-#   guard recognizes exactly one spelling, so two spellings mean the guard
-#   knows a name nothing creates while the created one is never swept.
-#   Hand-fixing the nine files does not stop the tenth from being written with
-#   the old spelling, which is what this rule is for.
+#   consumer SKILL.md files once kept spelling a `${TMPDIR:-/tmp}` root, so the
+#   move never reached the stages that actually run: a `${TMPDIR}` directory is
+#   collected within about an hour on this host, and the witness is the
+#   anti-fabrication anchor — gone, the lead either parks forever or synthesizes
+#   a round product it never observed. Hand-fixing the nine files does not stop
+#   the tenth from being written with the old root, which is what this rule is
+#   for.
+#
+#   THE BASENAME HALF OF THIS RULE IS RETIRED, and what retired it is that a
+#   lint is the weaker of the two ways to get one spelling. The rule used to ban
+#   the `cc-team-witness-` basename outright, because two spellings mean the
+#   cleanup contract's path guard knows a name nothing creates while the created
+#   one is never swept. Minting has since moved into a single script that is now
+#   the only thing that creates the directory, so the spelling cannot diverge by
+#   construction and the guard is matched against what is actually made — and
+#   the spelling that script mints carries the `cc-` prefix, so keeping the ban
+#   would forbid the one name the tree now produces. The root half stands on its
+#   own and is unaffected: fixing the name while keeping `${TMPDIR}` leaves the
+#   lifetime defect, which is the half that loses the witness.
 #
 # Usage:
 #   bash scripts/lint-skill-paths.sh                  # lint all runtime markdown
@@ -69,15 +77,12 @@ BANNED_RE='(~/\.claude|\$HOME/\.claude|\$[{]HOME[}]/\.claude|/Users/[^/[:space:]
 STRIP_SED_BARE='s/[$][{]CLAUDE_CONFIG_DIR:-[$]HOME[^}]*[}]//g'
 STRIP_SED_BRACED='s/[$][{]CLAUDE_CONFIG_DIR:-[$][{]HOME[}][^}]*[}]//g'
 
-# Witness-directory rule (POSIX ERE). Two branches:
-#   1. the retired `cc-team-witness-` basename, anywhere;
-#   2. a witness path ROOTED AT `${TMPDIR}` / `$TMPDIR` — the `/` after the
-#      expansion is required, so prose that merely names the variable (the
-#      protocol's own paragraph explaining why `${TMPDIR}` cannot hold this)
-#      is not a hit. Branch 2 stands on its own because dropping the `cc-`
-#      prefix while keeping `${TMPDIR}` fixes the name and leaves the lifetime
-#      defect, which is the half that loses the witness.
-WITNESS_BANNED_RE='(cc-team-witness-|[$][{]TMPDIR[^}]*[}]/[^[:space:]]*team-witness|[$]TMPDIR/[^[:space:]]*team-witness)'
+# Witness-directory rule (POSIX ERE). One branch, the root: a witness path
+# ROOTED AT `${TMPDIR}` / `$TMPDIR`. The `/` after the expansion is required, so
+# prose that merely names the variable — the protocol's own paragraph explaining
+# why the system temp dir cannot hold this — is not a hit. The basename branch
+# that used to lead this alternation was retired; see the header for why.
+WITNESS_BANNED_RE='([$][{]TMPDIR[^}]*[}]/[^[:space:]]*team-witness|[$]TMPDIR/[^[:space:]]*team-witness)'
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
