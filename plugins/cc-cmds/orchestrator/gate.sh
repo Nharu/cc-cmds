@@ -2030,13 +2030,17 @@ EOF
   # same one; where it does not, the grant must carry the explicit absence
   # marker rather than omit the field — so "no document" stays distinguishable
   # from "field forgotten", which is what makes absence fail closed.
+  # Through `owner_doc_match`, which is the driver's reader too. Two readers with
+  # independently spelled acceptance sets is what let a grant pass kickoff and
+  # then have every act here refused — the stage did nothing, exited clean, and
+  # was recorded as a hollow success.
   mowner=$(manifest_hdr_field 'owner-doc')
-  gowner=$(sed -n '2p' "$GRANT" | sed -n 's/.*owner-doc=\([^;]*\).*/\1/p' | sed 's/[[:space:]]*$//')
+  gowner=$(grant_owner_doc)
   if [ -z "$gowner" ]; then
     warn "인가 기록에 owner-doc= 이 없습니다 — fail-closed"
     return "$GATE_EXIT_RULE"
   fi
-  if [ "$gowner" != "$mowner" ]; then
+  if ! owner_doc_match "$mowner" "$gowner"; then
     warn "인가 기록의 owner-doc= 이 매니페스트와 다릅니다: '$gowner' vs '$mowner'"
     return "$GATE_EXIT_RULE"
   fi

@@ -488,6 +488,23 @@ check_manifest() {
   RUN_ID="$h_run"; ANCHOR_KEY="$h_anchor"
   ANCHOR_KIND=$(manifest_field '런 정체' '앵커 종류')
 
+  # `owner-doc=` IS CHECKED HERE BECAUSE THE GATE TREATS IT AS ITS SOLE AUTHORITY.
+  # The grant's ownership proof is decided by comparing the grant against this
+  # header field and against nothing else, and this preflight compared every other
+  # header field against the body while leaving that one alone. A manifest that
+  # omits it therefore passed, the driver logged a clean start, and then every act
+  # the run made was refused because the reader on the other side got an empty
+  # string — the run was dead on arrival with the real cause recorded nowhere.
+  # The body's `설계 문서` is the value it must agree with, `(없음)` being the
+  # explicit absence marker rather than an omission.
+  local h_owner b_owner
+  h_owner=$(manifest_hdr_field 'owner-doc')
+  [ -n "$h_owner" ] || die "매니페스트 헤더에 owner-doc= 이 없습니다 — fail-closed"
+  b_owner=$(manifest_field '요소' '설계 문서')
+  case "$b_owner" in ''|'(없음)') b_owner='(없음)' ;; esac
+  [ "$h_owner" = "$b_owner" ] \
+    || die "헤더 owner-doc= 와 본문 「설계 문서」가 다릅니다: '$h_owner' vs '$b_owner'"
+
   # 2 — exactly one authorization block. No append form exists, so a second is
   # not residue from a normal path; it is tampering.
   local n
@@ -525,7 +542,7 @@ check_manifest() {
 
   # 4 — target preflight. A declared repo set with no verification leaves the
   # silent-`.` fallback alive, so this is a hard stop BEFORE the driver starts.
-  local a wt cg ewt bb
+  local a wt cg ewt
   for a in $(target_aliases); do
     wt=$(target_field "$a" '메인 워크트리')
     cg=$(target_field "$a" '공통 git 디렉터리')
@@ -549,30 +566,6 @@ check_manifest() {
       [ -d "$ewt" ] || die "대상 '$a' 의 실행 워크트리가 없습니다: $ewt"
       [ "$(cd "$ewt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$cg" ] \
         || die "대상 '$a' 의 실행 워크트리가 같은 레포가 아닙니다: $ewt"
-    fi
-    # The BASE BRANCH, which the binding digest freezes and nothing verified.
-    # Every other target field is compared against the disk before it is frozen;
-    # this one was consumed straight out of the manifest by `base_branch` and
-    # returned verbatim to every caller — merge target, review range, the
-    # binding tuple of an approval. A typo, a deleted branch, or another
-    # repository's branch name was therefore promoted to an invariant that a
-    # later run could never satisfy and that no check ever contradicted.
-    #
-    # The shape that produces a wrong value here is ordinary rather than
-    # exotic: kickoff runs in whichever linked worktree happened to be current,
-    # and `base_branch`'s fallback — origin/HEAD first, the checked-out HEAD
-    # only after — never runs at all once the manifest carries a value. So one
-    # worktree's incidental checkout becomes the run's base branch.
-    #
-    # Either ref answers "this name exists in this repository": the local head
-    # for a repository that has not fetched, the remote-tracking ref for the
-    # value `base_sha` actually resolves. Verified in the MAIN worktree because
-    # refs are shared across every linked worktree of one repository.
-    bb=$(target_field "$a" '베이스 브랜치')
-    if [ -n "$bb" ] && [ "$bb" != "(없음)" ]; then
-      ( cd "$wt" && git rev-parse --verify --quiet "refs/heads/$bb" >/dev/null 2>&1 ) \
-        || ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
-        || die "대상 '$a' 의 베이스 브랜치가 그 레포에 없습니다: $bb (로컬 refs/heads 에도 refs/remotes/origin 에도 없음)"
     fi
     # 7 — every cutpoint token is in the vocabulary.
     cutpoint_index "$(target_field "$a" '절단점')" >/dev/null \
@@ -650,6 +643,49 @@ $(manifest_autoadopt_rows)
 EOF
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+# The BASE BRANCH, which the binding digest freezes and nothing verified. Every
+# other target field is compared against the disk before it is frozen; this one
+# was consumed straight out of the manifest by `base_branch` and returned
+# verbatim to every caller — merge target, review range, the binding tuple of an
+# approval. A typo, a deleted branch, or another repository's branch name was
+# therefore promoted to an invariant that a later run could never satisfy and
+# that no check ever contradicted.
+#
+# The shape that produces a wrong value is ordinary rather than exotic: kickoff
+# runs in whichever linked worktree happened to be current, and `base_branch`'s
+# fallback — origin/HEAD first, the checked-out HEAD only after — never runs at
+# all once the manifest carries a value. So one worktree's incidental checkout
+# becomes the run's base branch.
+#
+# THIS IS NOT PART OF `check_manifest`, and that separation is the point. The
+# gate sources this file and calls `check_manifest` on every act, so a check
+# living there runs on every gate call of every stage — and a base branch that
+# stops resolving MID-RUN (a deleted local branch, a re-cloned target) would then
+# hard-stop every remaining act with no way back: the value is frozen into the
+# binding digest, so repairing the manifest moves the digest and the next call is
+# refused for a second reason. Kickoff is the one moment where a refusal is both
+# actionable and cheap, so the check is made once, there.
+#
+# THE ACCEPTED SET IS THE CONSUMED SET. `base_sha` resolves `refs/remotes/origin/…`
+# and nothing else, so a name that exists only as a local head passed kickoff and
+# died later at worktree creation — accepting more than the consumer can use is
+# the same defect as freezing an unverified value, one step further downstream.
+check_base_branches() {
+  local a wt bb
+  for a in $(target_aliases); do
+    bb=$(target_field "$a" '베이스 브랜치')
+    # `(없음)` is the declaration that this target names no base branch, and it
+    # is `base_branch` that turns that into a derived one. It is not exempt from
+    # verification here — there is nothing declared to verify.
+    case "$bb" in ''|'(없음)') continue ;; esac
+    wt=$(target_field "$a" '메인 워크트리')
+    # Verified in the MAIN worktree because refs are shared across every linked
+    # worktree of one repository.
+    ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
+      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb (refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+  done
 }
 
 # Manifest-derived paths. `BASE` from the declared worktree, everything else
@@ -1014,25 +1050,60 @@ grant_field() {
 
 grant_blocks() { grep -E '^## 인가 ' "$GRANT" 2>/dev/null | sed -E 's/^## 인가 //' || true; }
 
+grant_owner_doc() {
+  # The grant's ownership field, read the SAME way by both readers. The trailing
+  # whitespace strip was on one side only, so a grant written with a space before
+  # the `;` matched in one process and not in the other.
+  sed -n '2p' "$GRANT" | sed -n 's/.*owner-doc=\([^;]*\).*/\1/p' | sed 's/[[:space:]]*$//'
+}
+
+owner_doc_match() {
+  # owner_doc_match <매니페스트 헤더 값> <인가 기록 값>
+  #
+  # THE ACCEPTANCE SET LIVES IN ONE PLACE because it has two readers — the
+  # driver's kickoff check and the gate's per-act check — and a run whose grant
+  # satisfies one but not the other starts and then has every act refused. That
+  # failure is silent all the way down: the stage exits clean with no artifact,
+  # which is classified as a hollow success, retried once and parked, so what
+  # reaches the morning is "no artifact" and never "the grant did not match".
+  #
+  # TWO SPELLINGS ARE CORRECT FOR A RUN WITH NO DOCUMENT. The kickoff template
+  # instructs `owner-doc=<document key> | (없음)`, so a writer following it
+  # literally puts `(없음)`; the driver folds an absent document onto the anchor
+  # key. Both name the same run and the writing side cannot see which the reader
+  # wanted. The fold is conditioned on the MANIFEST HEADER carrying the absence
+  # marker — and the preflight now checks that header against the body — so a run
+  # that really does name a document folds nothing and a mismatched key is still
+  # a hard stop.
+  local m="$1" g="$2" ak
+  [ -n "$g" ] || return 1
+  if [ "$m" = "$g" ]; then return 0; fi
+  if [ "$m" = "(없음)" ]; then
+    if [ -n "${MANIFEST:-}" ]; then ak=$(manifest_field '런 정체' '앵커 키'); else ak="${ANCHOR_KEY:-}"; fi
+    if [ -n "$ak" ] && [ "$g" = "$ak" ]; then return 0; fi
+  fi
+  return 1
+}
+
 check_grant() {
   [ -f "$GRANT" ] || die "인가 기록이 없습니다: $GRANT (킥오프 스킬이 먼저 돌아야 합니다)"
 
   # Provenance guard (sidecar.md §1.2). Absence of owner-doc= is a mismatch.
-  local owner
-  owner=$(sed -n '2p' "$GRANT" | sed -n 's/.*owner-doc=\([^;]*\).*/\1/p')
+  # Compared against the MANIFEST HEADER and not against `$DOC_KEY`, because the
+  # gate compares against the header and the two must receive the same set. They
+  # did not: this reader took `$DOC_KEY` — the anchor key on a documentless run —
+  # while the gate took the header, so a grant written with the anchor-key
+  # spelling passed here and was then refused by EVERY gate call the run made.
+  # The stage does nothing, exits clean, is classified a hollow success, retried
+  # once and parked; the night empties out and the ledger never names the cause.
+  local owner mowner
+  owner=$(grant_owner_doc)
   [ -n "$owner" ] || die "인가 기록에 owner-doc= 이 없습니다 — fail-closed"
-  # TWO SPELLINGS ARE CORRECT FOR A RUN WITH NO DOCUMENT, and refusing one of
-  # them made every such run stop here. The kickoff template instructs
-  # `owner-doc=<document key> | (없음)`, so a writer following it literally puts
-  # `(없음)`; the driver meanwhile folds an absent document onto the anchor key.
-  # Both name the same run, and the writing side has no way to see which the
-  # reader wanted. The guard still binds: `(없음)` is accepted ONLY when this run
-  # really carries no document, so it can never stand in for a mismatched one.
-  if [ -z "$DOC" ] && [ "$owner" = "(없음)" ]; then
-    :
-  else
-    [ "$owner" = "$DOC_KEY" ] || die "인가 기록의 owner-doc= 불일치 (문서 키 충돌): '$owner' vs '$DOC_KEY'"
-  fi
+  # The degenerate `--doc` entry has no manifest at all, so the document key is
+  # the only authority there.
+  if [ -n "${MANIFEST:-}" ]; then mowner=$(manifest_hdr_field 'owner-doc'); else mowner="$DOC_KEY"; fi
+  owner_doc_match "$mowner" "$owner" \
+    || die "인가 기록의 owner-doc= 이 매니페스트와 다릅니다: '$owner' vs '$mowner'"
 
   # Foreign grant. §1.4 forbids deletion and {slug} folds every run of one
   # document onto one path, so run N+1 finds a grant it did not write. Silently
@@ -1731,10 +1802,55 @@ stage_attempt() {
   # Counted from the ledger rather than a counter file for the same reason the
   # gate counts it there: the ledger is the only state that survives a session
   # cut, and a counter that resets on resume would collide all over again.
+  #
+  # COUNTED ON THE DISPATCH ID, NOT ON THE STAGE KIND. Those are not the same
+  # string for any stage a segment runs: the driver dispatches `S4:<세그먼트>:<사이클>`
+  # while the result row carries only `스테이지=S4`. Counting the kind made this
+  # function answer 1 forever for every segment stage — measured — so the pin
+  # never advanced, a re-dispatch resolved to the previous attempt's path, and
+  # the append that keeps a stream from truncating itself concatenated the two
+  # transcripts instead. A reader that scans the whole file then answers with the
+  # FIRST attempt's bytes, which is a misread the truncating version could not
+  # produce: `stage_session_id` hands back the earlier session, and
+  # `predicate_reconverge` is CONTROL FLOW, so a crashed second attempt reads
+  # true on the first one's terminal literal and the park is skipped.
+  #
+  # The result row therefore carries the full dispatch id in a field of its own,
+  # and `스테이지=` keeps carrying the kind because the gate's readers group on it.
   local stage="$1" n
   n=$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } \
-       | { grep -cF "스테이지=$stage " || true; } )
+       | { grep -cF "파견 id=$stage " || true; } )
   printf '%s' "$(( ${n:-0} + 1 ))"
+}
+
+stage_attempt_pinned() {
+  # The attempt THIS dispatch pinned, with the live count as the fallback for a
+  # stage this driver never dispatched. Everything that has to agree with the
+  # RUNNING stage reads the pin rather than recounting: the count moves the
+  # moment this attempt's result row lands, while the stage keeps the identity it
+  # was started with until it is collected.
+  local stage="$1"
+  if [ -f "$RUN_DIR/$stage.attempt" ]; then cat "$RUN_DIR/$stage.attempt"; else stage_attempt "$stage"; fi
+}
+
+stage_pin_attempt() {
+  # stage_pin_attempt <stage-id> — pin this dispatch's attempt number, echo it.
+  #
+  # The ledger count is the starting point, not the answer. A dispatch that died
+  # before its result row was written leaves the count where it was, and
+  # `segment_cycle` starts every entry at cycle 0 — so resuming one run id
+  # re-dispatches the identical id and would land on a path that already holds
+  # the previous attempt's stream. Both streams are opened for append, so that
+  # collision concatenates rather than replaces. Advancing past every stream
+  # already on disk makes the pin monotone without the ledger having to be
+  # complete, which is exactly the case a crash leaves behind.
+  local stage="$1" n
+  n=$(stage_attempt "$stage")
+  while [ -e "$RUN_DIR/log/$stage#$n.json" ] || [ -e "$RUN_DIR/log/$stage#$n.err" ]; do
+    n=$(( n + 1 ))
+  done
+  printf '%s\n' "$n" > "$RUN_DIR/$stage.attempt"
+  printf '%s' "$n"
 }
 
 # ---------------------------------------------------------------------------
@@ -1806,7 +1922,7 @@ transcript_path() {
   local cachef uuid p
   cachef="$RUN_DIR/$stage.transcript"
   if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
-  uuid=$(session_uuid "$stage" "$(stage_attempt "$stage")")
+  uuid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
   p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
@@ -1823,13 +1939,16 @@ stage_spawn() {
   # is the oracle the resume table already specifies, so using it here avoids a
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
-  local cfg out err pid pgid
+  local cfg out err pid pgid attempt
   cfg=$(resolve_account)
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
   rm -f "$RUN_DIR/$stage.rc"
-  # Pin this dispatch's attempt number before anything derives a path from it.
-  printf '%s\n' "$(stage_attempt "$stage")" > "$RUN_DIR/$stage.attempt"
+  # Pin this dispatch's attempt number before anything derives a path from it,
+  # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
+  # it per derivation is how the session uuid and the stream path came from two
+  # different counts of the same thing.
+  attempt=$(stage_pin_attempt "$stage")
   # The transcript pointer is a per-attempt fact too. Cached by path and returned
   # whenever the file exists, it would have handed this attempt the previous
   # one's transcript — the progress oracle then watches a file that stopped
@@ -1914,7 +2033,7 @@ stage_spawn() {
       exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
-        --session-id "$(session_uuid "$stage" "$(stage_attempt "$stage")")" \
+        --session-id "$(session_uuid "$stage" "$attempt")" \
         -- -p "$prompt" "$@" \
         >> "$out" 2>> "$err" < /dev/null ) &
   pid=$!
@@ -2126,7 +2245,7 @@ stage_session_id() {
     # and its own self-test refuses it.
     sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
   fi
-  [ -n "$sid" ] || sid=$(session_uuid "$stage")
+  [ -n "$sid" ] || sid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
   printf '%s' "$sid"
 }
 
@@ -2925,7 +3044,12 @@ base_branch() {
   local al="${1:-$(home_alias)}" root f b
   if [ -n "$MANIFEST" ] && [ "$al" != "." ]; then
     b=$(target_field "$al" '베이스 브랜치')
-    [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+    # `(없음)` is the explicit absence marker, not a branch name. Returned
+    # verbatim it reached `base_sha` as `refs/remotes/origin/(없음)`, so the one
+    # spelling the preflight exempted was exactly the one no consumer could
+    # handle. Falling through derives a name instead, which is what the marker
+    # asks for.
+    case "$b" in ''|'(없음)') : ;; *) printf '%s' "$b"; return 0 ;; esac
   fi
   f="${RUN_DIR:-}/base-branch.$al"
   [ -n "${RUN_DIR:-}" ] && [ -f "$f" ] && { cat "$f"; return 0; }
@@ -3038,7 +3162,10 @@ segment_cycle() {
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
     if predicate_implement "$branch" "$pre_head" "$seg"; then pred=0; else pred=1; fi
     class=$(classify_termination "$sid" "$rc" "$pred")
-    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "종료 코드=$rc" \
+    # `파견 id=` carries the FULL dispatch id beside the kind. `스테이지=` stays the
+    # kind because the gate's readers group on it; the attempt counter needs the
+    # id it actually dispatched, and nothing else in the row carries it.
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "$stage")" "부모=$(stage_parent_id)" "종단 부류=$class"
 
@@ -3073,7 +3200,7 @@ segment_cycle() {
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
     class=$(classify_termination "$sid" "$rc" "$pred")
-    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "종료 코드=$rc" \
+    ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "종단 부류=$class"
     [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
 
@@ -3127,7 +3254,18 @@ segment_cycle() {
       # First rather than appended, for the same reason the gate puts it first —
       # this writer emits no trailing `prev=`, so a last field has no ` |` after
       # it and the anchor lookup could not match.
+      #
+      # `생성 등급` is the third reader on this same identity axis and the one the
+      # excusal rule consumes. Adding the segment field alone cleared the gate's
+      # two cone readers and left this one reading an empty string, so termination
+      # condition 3 could never excuse an obligation a real run had created — and
+      # a run whose obligations can be neither closed nor excused can never
+      # propose `done`. The value is the axis-2 grade of the act that MADE this
+      # obligation: the finding comes out of an implement pass and a review pass,
+      # and the segment's merge happens only after this ladder is clear, so no act
+      # above a worktree write has run when this row is written.
       ledger_row 'problem' "세그먼트=$seg" "동일성=$fid" "현재 단=R$rung" \
+        "생성 등급=워크트리쓰기" \
         "payload=$(printf '%s' "$fx" | jq -r '.root_cause_payload')"
       ledger_row '자율 승인' "kind=lane" "결정=$flane" \
         "기각된 대안=$(printf '%s' "$fx" | jq -r '.lane_rationale')" "근거=R$rung"
@@ -3270,7 +3408,7 @@ main_loop() {
   rc2=$(cat "$RUN_DIR/S2.rc" 2>/dev/null || printf '1')
   if predicate_audit S2; then pred2=0; else pred2=1; fi
   class2=$(classify_termination S2 "$rc2" "$pred2")
-  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "종료 코드=$rc2" \
+  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
   case "$class2" in
@@ -3643,6 +3781,9 @@ if [ -n "$MANIFEST" ]; then
   fi
   [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
   check_manifest
+  # KICKOFF ONLY. The gate re-enters `check_manifest` on every act; this one runs
+  # once, where a refusal can still be acted on.
+  check_base_branches
   derive_paths_from_manifest
 elif [ -n "$DOC" ]; then
   [ -f "$DOC" ] || { echo "run.sh: design document not found: $DOC" >&2; exit 2; }

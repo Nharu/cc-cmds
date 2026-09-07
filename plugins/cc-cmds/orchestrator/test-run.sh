@@ -618,12 +618,39 @@ MF="$MF_DIR/plan.md"
 HERE=$(git rev-parse --show-toplevel)
 CG=$(cd "$HERE" && git rev-parse --path-format=absolute --git-common-dir)
 
-write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치]
-  # 넷째 인자는 베이스 브랜치를 갈아 끼운다. 기본값은 이 레포에 실재하는 이름이라
-  # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 실재하지 않는 값을 넣어야만
-  # 하는 절만 명시한다.
-  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-master}"
-  local trow="- \`target\` | 별칭=home | 메인 워크트리=$HERE | 공통 git 디렉터리=$CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
+# 대상 행이 가리키는 레포는 픽스처다. 이 스위트의 초록을 주변 클론에 어떤 이름의
+# 브랜치가 있는지에 묶으면 안 된다 — `actions/checkout` 의 기본 얕은 단일 ref
+# 체크아웃에는 `refs/heads/master` 도 `refs/remotes/origin/master` 도 없고, 그 위에서
+# 대상 행이 실제 체크아웃을 가리키면 CI 가 이 스위트에서 깨진다. 형제 스냅숏 픽스처가
+# 브랜치를 고정하는 것과 같은 이유이며, 같은 방식으로 고정한다.
+#
+# `origin-worktree=` 는 실행 중인 레포여야 한다(그 자리는 현재 공통 git 디렉터리와
+# 대조된다). 그래서 헤더는 `$HERE` 로 두고 대상 행만 떼어 낸다.
+#
+# 원격 추적 ref 를 손으로 만들어 둔다. 베이스 브랜치 검사는 `base_sha` 가 소비할 수
+# 있는 형태 — `refs/remotes/origin/…` — 만 받으므로, 로컬 헤드만 있는 픽스처는 검사를
+# 통과하지 못한다.
+MF_REPO="$WORK/manifest-repo"; mkdir -p "$MF_REPO"
+( cd "$MF_REPO" \
+  && git init -q . \
+  && git config user.email t@example.invalid \
+  && git config user.name  T \
+  && git commit -q --allow-empty --no-gpg-sign -m init \
+  && git branch -M main \
+  && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+MF_CG=$(cd "$MF_REPO" && git rev-parse --path-format=absolute --git-common-dir)
+# 핀이 실패해도 조용하다 — 위 체인은 출력을 버리고 종료 상태를 아무도 읽지 않는다.
+# 그래서 핀을 반증 가능하게 만드는 단언을 여기 둔다.
+check "매니페스트 픽스처 레포의 베이스 브랜치가 고정됐다" \
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )" "main"
+
+write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치] [설계문서]
+  # 넷째 인자는 베이스 브랜치를 갈아 끼운다. 기본값은 픽스처 레포에 고정해 둔 이름이라
+  # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
+  # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
+  # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
+  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
   local plan='{ "steps": ["audit", "implement"] }'
   [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
   # An empty third argument means "omit the binding digest"; a non-empty one is
@@ -632,12 +659,12 @@ write_manifest() {   # write_manifest <출력> [대상맵다이제스트override
     printf '# 파이프라인 런 매니페스트 — 20260825-deadbeef\n'
     printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=20260825-deadbeef;\n'
     printf '     anchor-kind=repo; anchor-key=Nharu/cc-cmds;\n'
-    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$HERE"
+    printf '     owner-doc=%s; origin-worktree=%s;\n' "$doc" "$HERE"
     printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
     printf '## 런 정체\n**킥오프 일시**: 2026-08-25T00:00:00Z\n**런 id**: 20260825-deadbeef\n'
     printf '**앵커 종류**: repo\n**앵커 키**: Nharu/cc-cmds\n**사용자 확인 문면**: 돌려라\n\n'
     printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$tdig" "$trow"
-    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc"
     printf '## 실행 계획\n**승인 문면**: 진행\n'
     printf '```json\n%s\n```\n\n' "$plan"
     printf '## 인가\n**런 최대 절단점**: 머지\n**종료 지점**: 전부 머지\n'
@@ -719,6 +746,28 @@ else
   ok "헤더와 본문의 런 id 불일치가 거부된다"
 fi
 
+# 헤더의 `owner-doc=` 은 게이트가 인가 판정의 유일 권위로 쓰는 필드인데, 프리플라이트가
+# 다른 헤더 필드는 전부 본문과 대조하면서 이 하나만 보지 않았다. 그런 매니페스트는
+# 검사를 통과해 런이 시작되고, 그다음 게이트가 그 런의 모든 행위를 거부한다.
+write_manifest "$MF"; sed 's/ owner-doc=[^;]*;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "소유 증명" "owner-doc= 없이 통과했다 — 게이트가 빈 값으로 모든 행위를 거부한다"
+else
+  ok "헤더 owner-doc= 부재는 fail-closed"
+fi
+write_manifest "$MF"; sed 's/^\*\*설계 문서\*\*: .*/**설계 문서**: docs\/다른문서.md/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "소유 증명" "헤더 owner-doc= 와 본문 설계 문서가 달라도 통과했다"
+else
+  ok "헤더 owner-doc= 와 본문 설계 문서의 불일치가 거부된다"
+fi
+write_manifest "$MF" "" "" "" "docs/x.md"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "헤더와 본문이 같은 문서를 가리키면 통과한다 (검사가 공허하지 않다)"
+else
+  bad "소유 증명" "일치하는데 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+
 # 8 — 「없음」을 받는 검증자가 있으면 필수성은 성립하지 않는다.
 write_manifest "$MF"; sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 없음/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then
@@ -736,7 +785,7 @@ else
 fi
 
 # 4 — 검증 없는 레포 집합 선언은 조용한 폴백을 살려 둔다.
-write_manifest "$MF"; sed "s|메인 워크트리=$HERE|메인 워크트리=/없는/경로|" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+write_manifest "$MF"; sed "s|메인 워크트리=$MF_REPO|메인 워크트리=/없는/경로|" "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then
   bad "대상 프리플라이트" "실재하지 않는 워크트리를 통과시켰다"
 else
@@ -1992,6 +2041,12 @@ check "문서 다이제스트의 원시 호출은 접근자 안 한 곳뿐" "$RA
 # 쓰는 쪽 틀은 `owner-doc=<document key> | (없음)` 이라 문서가 없으면 `(없음)` 을
 # 넣게 되는데, 읽는 쪽은 앵커 키를 기대했다. 두 값이 같은 런을 가리키는데 하나만
 # 통과했다.
+#
+# 그리고 이 필드의 판독기는 둘이다 — 드라이버의 킥오프 대조와 게이트의 매 행위 대조.
+# 한쪽만 통과한 런은 시작된 뒤 모든 행위가 거부되고, 스테이지는 아무것도 못 한 채
+# 깨끗이 끝나 공허한 성공으로 분류되므로 원장에 진짜 원인이 남지 않는다. 그래서 이
+# 절은 두 판독기가 공유하는 수용 집합(`owner_doc_match`)을 재고, 권위를 매니페스트
+# 헤더 하나로 고정한다.
 GR25="$WORK/grant-docless.md"
 write_grant25() {   # write_grant25 <owner-doc 값>
   { printf '# 인가 기록\n'
@@ -1999,7 +2054,28 @@ write_grant25() {   # write_grant25 <owner-doc 값>
     printf '## 인가 %s\n**권한 절단점**: PR\n' "$RUN_ID"
   } > "$GR25"
 }
+# 매니페스트가 권위이므로 이 절은 그것을 명시적으로 세운다. 문서 없는 런의 헤더는
+# `(없음)` 이다.
+write_manifest "$MF"; MANIFEST="$MF"
 RUN_ID="docless-run"; GRANT="$GR25"; DOC=""; DOC_KEY="Nharu/cc-cmds"
+# 두 철자가 같은 값으로 접히는지부터 잰다 — 두 판독기가 이 함수를 함께 쓰므로, 여기서
+# 갈리면 그 아래 단언들은 한쪽 판독기만 재게 된다.
+if owner_doc_match '(없음)' '(없음)' && owner_doc_match '(없음)' 'Nharu/cc-cmds'; then
+  ok "문서 없는 런의 두 철자가 같은 수용 집합에 든다"
+else
+  bad "인가 owner-doc" "두 철자 중 하나가 수용 집합 밖이다 — 판독기 둘이 갈린다"
+fi
+if owner_doc_match 'docs/x.md' '(없음)'; then
+  bad "인가 owner-doc" "문서 있는 런에서 (없음) 이 접혔다 — 인가가 아무 문서에나 붙는다"
+else
+  ok "접기는 문서 없는 런에 한정된다"
+fi
+# 게이트 쪽 판독기가 같은 함수를 지난다. 다른 철자로 다시 쓰면 두 집합이 또 갈린다.
+if sed -n '/^gate_check_grant()/,/^}/p' "$script_dir/gate.sh" | grep_all_q -F 'owner_doc_match "$mowner" "$gowner"'; then
+  ok "게이트의 owner-doc 판정이 드라이버와 같은 수용 집합을 지난다"
+else
+  bad "인가 owner-doc" "게이트가 자기 철자로 다시 비교한다 — 두 판독기가 갈린다"
+fi
 write_grant25 '(없음)'
 if ( check_grant ) >/dev/null 2>&1; then
   ok "문서 없는 런에서 owner-doc=(없음) 이 통과한다"
@@ -2021,6 +2097,7 @@ else
 fi
 # `(없음)` 의 수용은 문서가 실제로 없을 때로 한정된다. 이 조건이 빠지면 문서 있는
 # 런의 인가가 아무 문서에나 붙는다.
+write_manifest "$MF" "" "" "" "docs/x.md"
 DOC="$WORK/base/docs/x.md"; DOC_KEY="docs/x.md"
 write_grant25 '(없음)'
 if ( check_grant ) >/dev/null 2>&1; then
@@ -2028,6 +2105,15 @@ if ( check_grant ) >/dev/null 2>&1; then
 else
   ok "문서 있는 런에서는 (없음) 이 여전히 거부된다"
 fi
+# 앵커 키 철자도 문서 있는 런에서는 접히지 않는다 — 접기가 문서 유무와 무관해지면
+# 위 단언 하나만으로는 그 사실이 드러나지 않는다.
+write_grant25 'Nharu/cc-cmds'
+if ( check_grant ) >/dev/null 2>&1; then
+  bad "인가 owner-doc" "문서 있는 런이 앵커 키 인가를 물려받았다"
+else
+  ok "문서 있는 런에서는 앵커 키 표기도 거부된다"
+fi
+write_manifest "$MF"
 DOC=""; DOC_KEY="Nharu/cc-cmds"
 
 # --- 25c 문서 없는 런의 실행 경로 -------------------------------------------
@@ -2074,29 +2160,68 @@ check "main_loop 이 감사와 계획 두 지점에서 문서 부재를 분기�
 # 드러나지 않았다.
 write_manifest "$MF" "" "" "존재하지-않는-브랜치"
 MANIFEST="$MF"
-if ( check_manifest ) >/dev/null 2>&1; then
+if ( check_base_branches ) >/dev/null 2>&1; then
   bad "베이스 브랜치 검증" "레포에 없는 브랜치명이 통과했다 — 대조 없이 불변식으로 승격된다"
 else
-  BBMSG25=$( ( check_manifest ) 2>&1 | tail -1 )
+  BBMSG25=$( ( check_base_branches ) 2>&1 | tail -1 )
   case "$BBMSG25" in
-    *"베이스 브랜치가 그 레포에 없습니다"*) ok "레포에 없는 베이스 브랜치가 지명되어 거부된다" ;;
+    *"원격 추적 ref 로 해소되지 않습니다"*) ok "레포에 없는 베이스 브랜치가 지명되어 거부된다" ;;
     *) bad "베이스 브랜치 검증" "거부는 됐으나 다른 이유였다: $BBMSG25" ;;
   esac
 fi
 write_manifest "$MF"
 MANIFEST="$MF"
-if ( check_manifest ) >/dev/null 2>&1; then
+if ( check_base_branches ) >/dev/null 2>&1; then
   ok "실재하는 베이스 브랜치는 그대로 통과한다 (검사가 공허하지 않다)"
 else
-  bad "베이스 브랜치 검증" "실재하는 브랜치가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+  bad "베이스 브랜치 검증" "실재하는 브랜치가 거부됐다: $( ( check_base_branches ) 2>&1 | tail -1 )"
 fi
+# 수용 집합이 소비 집합보다 넓으면 거절이 아니라 과수용으로 샌다. `base_sha` 는
+# `refs/remotes/origin/…` 만 해소하므로, 로컬 헤드에만 있는 이름은 킥오프를 통과한 뒤
+# 세그먼트 워크트리 생성에서 죽는다 — 얼기 전에 대조한다는 취지가 정확히 거기서 깨진다.
+( cd "$MF_REPO" && git branch local-only-branch ) >/dev/null 2>&1
+check "픽스처에 로컬 헤드만 있는 이름을 만들었다" \
+  "$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/heads/local-only-branch >/dev/null 2>&1 && printf 있음 )" "있음"
+write_manifest "$MF" "" "" "local-only-branch"
+MANIFEST="$MF"
+if ( check_base_branches ) >/dev/null 2>&1; then
+  bad "베이스 브랜치 검증" "로컬 헤드에만 있는 이름이 통과했다 — 소비자가 해소하지 못하는 값을 얼린다"
+else
+  ok "로컬 헤드에만 있는 베이스 브랜치가 거부된다 (소비 집합과 같은 집합을 받는다)"
+fi
+# 이 검사가 모든 게이트 호출마다 돌면, 베이스 브랜치가 런 도중 해소 불가가 됐을 때
+# 이후 모든 행위가 하드 스톱되고 값이 구속 다이제스트에 얼어 있어 복구할 길이 없다.
+# 그래서 검사는 킥오프 경로에만 있어야 한다 — 게이트가 부르는 것은 `check_manifest` 다.
+write_manifest "$MF" "" "" "존재하지-않는-브랜치"
+MANIFEST="$MF"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "매니페스트 검사는 베이스 브랜치를 보지 않는다 (게이트 경로가 런 중에 막히지 않는다)"
+else
+  bad "베이스 브랜치 검증" "게이트가 부르는 검사에 남아 있다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+if sed -n '/^check_manifest()/,/^}/p' "$DRIVER" | grep_all_q -F 'refs/remotes/origin/$bb'; then
+  bad "베이스 브랜치 검증" "매니페스트 검사 안에 베이스 브랜치 해소가 남아 있다"
+else
+  ok "베이스 브랜치 해소가 매니페스트 검사 밖에 있다"
+fi
+# `(없음)` 은 검사에서만 면제되고 소비 경로에서는 면제되지 않았다 — 검사가 유일하게
+# 확인하지 않기로 한 철자가 정확히 소비자가 다루지 못하는 철자였다.
+write_manifest "$MF" "" "" "(없음)"
+MANIFEST="$MF"
+if [ "$( ( RUN_DIR=""; BASE_BRANCH=""; base_branch home ) )" = "(없음)" ]; then
+  bad "베이스 브랜치 (없음)" "센티널이 브랜치명으로 새어 나간다 — base_sha 가 refs/remotes/origin/(없음) 을 찾는다"
+else
+  ok "베이스 브랜치 (없음) 은 선언 부재로 읽혀 유도로 넘어간다"
+fi
+write_manifest "$MF"
+MANIFEST="$MF"
 
 # --- 25e 드라이버의 problem 행이 게이트의 동일성 축에 걸린다 ----------------
 # 픽스처는 게이트가 쓴 행을 게이트가 읽는 닫힌 고리를 재는데, 실물은 드라이버가 쓴
 # 행을 게이트가 읽는다. 그 간극에서 `세그먼트=` 가 통째로 빠져 있었고, 앵커 조회와
 # 멤버 추출이 양방향으로 죽어 있었다.
 LEDGER="$WORK/ledger-problem.md"; : > "$LEDGER"
-ledger_row 'problem' "세그먼트=S4" "동일성=결함-A" "현재 단=R2" "payload=근본원인"
+ledger_row 'problem' "세그먼트=S4" "동일성=결함-A" "현재 단=R2" "생성 등급=워크트리쓰기" "payload=근본원인"
 PIDENT25=$( { grep -F '세그먼트=S4 |' "$LEDGER" || true; } \
             | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' )
 check "게이트의 앵커 조회가 드라이버 problem 행을 잡는다" "$PIDENT25" "결함-A"
@@ -2111,52 +2236,129 @@ if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" \
 else
   bad "problem 행" "작성 지점에 세그먼트= 가 없다 — 동일성 축이 실물 런에서 발화하지 않는다"
 fi
+# 같은 축의 세 번째 판독기. 게이트 자신의 problem 작성기는 `동일성`·`현재 단`·`생성 등급`
+# 셋을 필수로 선언하고, 면제 규칙이 그 `생성 등급` 을 읽는다. 드라이버가 그 필드를
+# 빠뜨리면 실물 런이 만든 의무는 닫히지도 면제되지도 않고, 그 런은 done 을 제안할 수
+# 없다.
+PGRADE25=$( { grep -F '동일성=결함-A |' "$LEDGER" || true; } \
+            | tr '|' '\n' | sed -n 's/^ *생성 등급=//p' | sed 's/[[:space:]]*$//' )
+case "$PGRADE25" in
+  읽기|워크트리쓰기) ok "드라이버 problem 행의 생성 등급이 면제 가능한 축2 등급이다 ($PGRADE25)" ;;
+  '') bad "problem 행" "생성 등급이 비어 있다 — 종료 조건 3 이 이 의무를 영원히 면제하지 못한다" ;;
+  *)  bad "problem 행" "생성 등급이 면제 어휘 밖이다: $PGRADE25" ;;
+esac
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q -F '"생성 등급=워크트리쓰기"'; then
+  ok "드라이버의 problem 작성 지점이 생성 등급을 낸다"
+else
+  bad "problem 행" "작성 지점에 생성 등급= 이 없다 — 픽스처만 그 필드를 싣는다"
+fi
 
-# --- 25f 전사는 실행 버전으로 스코프되고 잘리지 않는다 ----------------------
+# --- 25f 전사는 시도로 스코프되고 잘리지 않는다 -----------------------------
+# 이 절은 **드라이버가 실제로 파견하는 id 로** 잰다. 앞 판본은 `SLOG` 같은 종류 하나짜리
+# 이름으로 쟀는데, 실물의 파견 id 는 `S4:<세그먼트>:<사이클>` 이고 원장 결과 행은
+# 종류(`스테이지=S4`)만 실었다. 그래서 시도 계수가 실물에서는 영원히 1 이었는데도 이
+# 절은 전부 초록이었다.
+#
+# 그리고 파견을 흉내 내는 것이 아니라 **파견이 실제로 쓰는 핀 함수를 태운다**. 앞
+# 판본은 하네스가 손으로 쓴 핀을 자기가 다시 읽었을 뿐이라, 스코프를 통째로 되돌려도
+# 여덟 단언 중 하나만 빨개졌다.
 RUN_DIR="$WORK/logscope"; mkdir -p "$RUN_DIR/log"
 LEDGER="$WORK/ledger-logscope.md"; : > "$LEDGER"
-SEG25=SLOG
+SEG25="S4:segA:1"           # 드라이버가 실제로 파견하는 철자
+KIND25=S4                   # 원장 결과 행이 싣는 종류
 # 핀이 없을 때는 스코프 없는 이름이 답이다 — 이 스코프를 몰랐던 드라이버가 남긴
 # 전사와, 하네스가 직접 써 넣는 전사가 그 형태다.
 printf '옛 전사\n' > "$RUN_DIR/log/$SEG25.json"
 check "핀이 없으면 스코프 없는 전사를 읽는다" "$(stage_log_path "$SEG25")" "$RUN_DIR/log/$SEG25.json"
 rm -f "$RUN_DIR/log/$SEG25.json"
-printf '%s\n' "$(stage_attempt "$SEG25")" > "$RUN_DIR/$SEG25.attempt"
+
+# 1회차 파견. 파견이 부르는 함수를 그대로 부른다.
+stage_pin_attempt "$SEG25" >/dev/null
 P1_25=$(stage_log_path "$SEG25")
-printf '1회차 전사\n' > "$P1_25"
+printf '{"session_id":"AAAA-attempt1"}\n1회차 전사 %s\n' "$LIT_RECONVERGE_TERMINAL" >> "$P1_25"
+BYTES1_25=$(wc -c < "$P1_25" | tr -d ' ')
 # 1회차가 park 하고 그 결과가 원장에 남은 뒤 2회차가 파견된다 — 손실이 가장 큰 조합이
 # 정확히 이것이다. 왜 멈췄는지는 정지 기록에 남지만 거기까지 어떻게 갔는지는 이
-# 전사에만 있다.
-ledger_row 'stage-result' "스테이지=$SEG25" "종료 코드=0" "종단 부류=의도된 park"
-printf '%s\n' "$(stage_attempt "$SEG25")" > "$RUN_DIR/$SEG25.attempt"
+# 전사에만 있다. 행은 드라이버가 쓰는 철자 그대로 — 종류와 파견 id 를 둘 다 싣는다.
+ledger_row 'stage-result' "세그먼트=segA" "스테이지=$KIND25" "파견 id=$SEG25" \
+  "종료 코드=0" "종단 부류=의도된 park"
+check "결과 행이 남으면 시도 계수가 실제 파견 id 로 올라간다" "$(stage_attempt "$SEG25")" "2"
+
+# 2회차 파견. 같은 세그먼트, 같은 사이클 — 재개하면 실제로 이 형태가 된다.
+stage_pin_attempt "$SEG25" >/dev/null
 P2_25=$(stage_log_path "$SEG25")
+printf '{"session_id":"BBBB-attempt2"}\n2회차 전사\n' >> "$P2_25"
 if [ "$P1_25" != "$P2_25" ]; then
   ok "재파견이 앞 시도와 다른 전사 경로를 쓴다"
 else
   bad "전사 스코프" "두 시도가 같은 경로를 쓴다: $P1_25"
 fi
-check "1회차 전사가 재파견 뒤에도 남아 있다" "$(cat "$P1_25" 2>/dev/null)" "1회차 전사"
-# 실행 버전은 원장의 결과 행에서 세지므로, 이 시도의 결과가 기록되는 순간 세어서
-# 얻은 값은 한 칸 앞선다. 파견 시점에 핀으로 고정하지 않으면 판독기가 아직 없는
-# 파일을 가리킨다 — 술어와 종단 분류가 전부 그 파일을 읽는다.
-ledger_row 'stage-result' "스테이지=$SEG25" "종료 코드=0" "종단 부류=정상 완료"
-check "결과 행이 늘어도 판독 경로는 이 시도의 것이다" "$(stage_log_path "$SEG25")" "$P2_25"
+# 아래 넷이 이 이슈의 본론이다. 경로가 갈리지 않으면 덧붙임이 두 전사를 이어 붙이고,
+# 파일을 통째로 훑는 판독기들이 앞 시도의 내용을 돌려준다 — 잘림 시절에는 없던 오독이다.
+check "1회차 전사가 재파견 뒤에도 바이트 그대로 남아 있다" "$(wc -c < "$P1_25" | tr -d ' ')" "$BYTES1_25"
+if grep_all_q -F '2회차 전사' < "$P1_25"; then
+  bad "전사 스코프" "2회차가 1회차 파일에 이어 붙었다 — 판독기가 두 시도를 한 전사로 읽는다"
+else
+  ok "2회차가 1회차 파일에 이어 붙지 않는다"
+fi
+check "세션 id 판독기가 이 시도의 것을 낸다" "$(stage_session_id "$SEG25")" "BBBB-attempt2"
+# `predicate_reconverge` 는 제어 흐름이다. 1회차의 종단 리터럴이 2회차 자리에서 읽히면
+# 크래시한 재수렴이 참으로 통과하고 park 가 건너뛰어진다.
+if predicate_reconverge "$SEG25"; then
+  bad "전사 스코프" "재수렴 술어가 앞 시도의 종단 리터럴로 참이 된다 — park 가 건너뛰어진다"
+else
+  ok "재수렴 술어가 앞 시도의 종단 리터럴을 읽지 않는다"
+fi
+# 원장 행이 유실된 재개에서도 핀은 올라가야 한다. 계수만으로는 1 에 머물러 두 파견이
+# 한 경로로 떨어지고, 열기가 덧붙임이라 두 전사가 이어 붙는다.
+: > "$LEDGER"
+stage_pin_attempt "$SEG25" >/dev/null
+P3_25=$(stage_log_path "$SEG25")
+if [ "$P3_25" != "$P1_25" ] && [ "$P3_25" != "$P2_25" ]; then
+  ok "결과 행이 없는 재개에서도 핀이 앞 시도들을 넘어간다"
+else
+  bad "전사 스코프" "원장 행이 없으면 앞 시도의 경로로 되돌아간다: $P3_25"
+fi
+# 크기 단조. 세 시도를 태운 뒤 이 스테이지의 전사 코퍼스는 1회차 바이트를 여전히 담고
+# 있어야 한다 — 「크기가 단조 증가한다」가 재는 것이 이것이다.
+printf '3회차 전사\n' >> "$P3_25"
+CORPUS25=$(cat "$RUN_DIR/log/$SEG25"#*.json | wc -c | tr -d ' ')
+if [ "$CORPUS25" -gt "$BYTES1_25" ]; then
+  ok "전사 코퍼스의 크기가 시도를 거치며 단조 증가한다"
+else
+  bad "스테이지 스트림" "코퍼스가 1회차보다 작거나 같다 ($CORPUS25 <= $BYTES1_25) — 어느 시도의 바이트가 사라졌다"
+fi
 # 파견이 핀을 쓰지 않으면 위 단언들은 하네스가 손으로 쓴 핀만 재고 실물은 재지
 # 않는다.
-if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '> "$RUN_DIR/$stage.attempt"'; then
-  ok "파견이 이 시도의 실행 버전을 핀으로 고정한다"
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'attempt=$(stage_pin_attempt "$stage")'; then
+  ok "파견이 이 시도의 번호를 핀으로 고정한다"
 else
-  bad "전사 스코프" "파견이 실행 버전을 고정하지 않는다 — 결과 행이 쌓이면 판독이 어긋난다"
+  bad "전사 스코프" "파견이 시도 번호를 고정하지 않는다 — 결과 행이 쌓이면 판독이 어긋난다"
 fi
 if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'out=$(stage_log_path "$stage")'; then
   ok "파견이 판독기와 같은 경로 규칙을 쓴다"
 else
   bad "전사 스코프" "파견과 판독이 다른 경로 규칙을 쓴다"
 fi
+# 세션 id 도 같은 핀에서 유도돼야 한다. 다시 세면 결과 행이 늘어난 뒤 값이 어긋나고,
+# CLI 가 중복 세션을 거부해 재파견이 즉시 죽는다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'session_uuid "$stage" "$attempt"'; then
+  ok "파견이 전사 경로와 같은 핀에서 세션 id 를 유도한다"
+else
+  bad "세션 id" "파견이 세션 id 를 다시 세어 유도한다 — 재파견이 같은 UUID 로 죽는다"
+fi
+# 드라이버가 실제로 쓰는 결과 행에 파견 id 가 없으면 계수기는 종류만 보게 되고, 이
+# 절의 계수 단언은 하네스가 손으로 실은 필드만 재게 된다.
+# 개수로 잰다. 존재형이면 세그먼트가 파견하는 두 스테이지 중 하나만 필드를 잃어도
+# 나머지 하나가 단언을 통과시킨다 — 잃은 쪽의 시도 계수는 실물에서 다시 1 에 묶인다.
+check "드라이버의 세그먼트 결과 행 두 자리가 파견 id 를 싣는다" \
+  "$( sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | { grep -cF '"파견 id=$sid"' || true; } )" "2"
+check "감사 결과 행도 파견 id 를 싣는다" \
+  "$( { grep -cF '"파견 id=S2"' "$DRIVER" || true; } )" "1"
 # 경로가 갈려도 열기가 잘림이면 두 번째 결함은 그대로다. 잘림은 조용하다 — 오프셋을
 # 들고 tail 하는 소비자는 파일이 자라는 중에도 영원히 빈 결과를 받는다.
 if grep_all_q -F '>> "$out" 2>> "$err"' < "$DRIVER"; then
-  ok "스테이지 스트림이 덧붙임으로 열린다 (크기가 단조 증가한다)"
+  ok "스테이지 스트림이 덧붙임으로 열린다"
 else
   bad "스테이지 스트림" "잘림 모드로 열린다 — 오프셋 리더가 조용히 귀머거리가 된다"
 fi
