@@ -1,0 +1,23 @@
+name: notify-macos
+
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  test-macos-native:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: jq sanity check
+        run: jq --version
+      - name: Run darwin-only tests
+        run: make test-darwin

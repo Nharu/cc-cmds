@@ -49,6 +49,7 @@ test: test-active-notify
 	bash scripts/test-lint-notify-title-render.sh
 	bash scripts/test-lint-notify-fire-sites.sh
 	bash scripts/test-lint-watch-threshold-pins.sh
+	bash scripts/test-lint-ci-scope-binding.sh
 	bash scripts/test-measure-team-cost.sh
 	bash scripts/test-generate-readme.sh
 	bash scripts/test-readme-gen-parity.sh
