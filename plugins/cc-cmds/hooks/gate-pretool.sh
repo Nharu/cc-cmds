@@ -360,9 +360,23 @@ case "$tool" in
     xdgcc="${XDG_CONFIG_HOME:-}"
     [ -n "$xdgcc" ] || xdgcc="${HOME:-}${HOME:+/.config}"
     xdgcc="${xdgcc%/}"; xdgcc="${xdgcc:+$xdgcc/cc-cmds}"
-    # 이 둘은 환경변수에서 방금 만들어졌으므로 앞의 일괄 정규화가 닿지 않는다.
+    # AND THE ROOT EVERY RUN DIRECTORY HANGS OFF. `$RUN_DIR` names THIS run, so
+    # every arm parameterized by it stops at the boundary of this run — and
+    # another run's directory is literally a sibling of it, one component
+    # across. Derived the same way the driver derives it, from the same two
+    # variables, so the two cannot drift into different namespaces.
+    #
+    # Empty when neither variable is set, and the arm below is skipped rather
+    # than anchored at `/.local/state/...` — an anchor built from an empty
+    # variable degrades into one that matches something else, which is the
+    # failure the `cfg` derivation above already argues against.
+    run_root="${XDG_STATE_HOME:-}"
+    [ -n "$run_root" ] || run_root="${HOME:-}${HOME:+/.local/state}"
+    run_root="${run_root%/}"; run_root="${run_root:+$run_root/cc-cmds/run}"
+    # 이 셋은 환경변수에서 방금 만들어졌으므로 앞의 일괄 정규화가 닿지 않는다.
     hook_lexnorm_var cfg
     hook_lexnorm_var xdgcc
+    hook_lexnorm_var run_root
 
     # ONE `stat` CALL FOR THE WHOLE DECISION: the edit target's ancestor chain
     # plus every guarded path, measured together. `-L` follows symlinks, which
@@ -394,6 +408,7 @@ case "$tool" in
     done
     stat_args[${#stat_args[@]}]="$RUN_DIR"
     stat_args[${#stat_args[@]}]="$RUN_DIR/settings"
+    [ -n "$run_root" ] && stat_args[${#stat_args[@]}]="$run_root"
     stat_args[${#stat_args[@]}]="$hook_self"
     [ -n "$LEDGER" ] && stat_args[${#stat_args[@]}]="$LEDGER"
     [ -n "$GRANT" ]  && stat_args[${#stat_args[@]}]="$GRANT"
@@ -507,6 +522,41 @@ case "$tool" in
             && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
         *)
           deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
+      esac
+    fi
+    # AND THAT ALLOW-LIST IS PARAMETERIZED BY **THIS** RUN, WHICH LEFT EVERY
+    # OTHER RUN DEFAULT-ALLOW. `run_tail` is computed from `$RUN_DIR` alone, so a
+    # path one component across — another run's directory — matched no arm here
+    # and fell through to the final allow. Measured: this run's `config-dir`,
+    # `orchestrator-dir` and `settings/<kind>.json` all deny, and a sibling run's
+    # same three names all allow. Neither is an incidental file.
+    # `<run>/settings/<kind>.json` IS that run's hook and permission set — the
+    # denial text a few lines up states its own weight — and `<run>/config-dir`
+    # is the lane every dispatch of that run resolves its account from. One plain
+    # `Write` with a plain absolute path reaches both: no link, no shell rider,
+    # and the Write/Edit half of this hook carries no ledger requirement, so the
+    # write leaves no row either.
+    #
+    # SO THE RUN ROOT IS ANCHORED IN ADDITION TO THIS RUN, and the structure is
+    # inverted rather than extended: under the root but not under `$RUN_DIR` is
+    # an immediate refusal, because a stage writing into a run that is not its
+    # own has no legitimate form worth preserving. Under `$RUN_DIR` the list
+    # above is unchanged.
+    #
+    # ORDER IS LOAD-BEARING. This arm runs AFTER that block and only when
+    # `run_tail` came back empty. Placed before it, or without that test, it
+    # would deny this run's own `halt/<stage-id>.md` and `<segment>.plan.md` —
+    # the two paths whose declared writer is a stage.
+    if [ -z "$run_tail" ] && [ -n "$run_root" ]; then
+      if hook_under "$run_root" || hook_is "$run_root"; then
+        deny "$(jstr 'gate: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다. 그 아래에는 그 런의 훅·권한 설정과 레인 기록이 있어, 한 번 쓰면 그 런의 경계와 계정 선택이 이 스테이지의 손에 들어갑니다')"
+      fi
+      # 어휘 팔. 아직 만들어지지 않은 런 디렉터리에는 비교할 아이노드가 없고,
+      # 그 창이야말로 위 결정이 덮겠다고 선언한 것이다 — 열리지 않은 런에 기록을
+      # 심어 두면 그 런의 초기화가 그것을 보존한 채 시작한다.
+      case "$np" in
+        "$run_root"|"$run_root"/*)
+          deny "$(jstr 'gate: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다. 그 아래에는 그 런의 훅·권한 설정과 레인 기록이 있어, 한 번 쓰면 그 런의 경계와 계정 선택이 이 스테이지의 손에 들어갑니다')" ;;
       esac
     fi
     if hook_under "$hook_self"; then
@@ -687,14 +737,84 @@ esac
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [ -n "$cmd" ] || deny "$(jstr 'gate: 명령 문자열을 읽지 못했습니다 — 판정 불가는 허용이 아닙니다')"
 
+hook_unquoted_shell_op() {
+  # hook_unquoted_shell_op <명령 문자열> — 인용되지 않은 셸 제어 연산자가 있으면 참.
+  #
+  # 셸을 해석하지 않는다. 세 상태(무인용 / `'` 안 / `"` 안)와 백슬래시 이스케이프만
+  # 추적해서 **연산자가 살아 있는 자리인지**만 가른다. 인용 추적이 필요한 이유는
+  # `--rationale "…; …"` 처럼 인용된 세미콜론이 게이트의 정당한 인자이기 때문이다 —
+  # 그것까지 거부하면 이 허용 목록이 자기가 처방한 명령을 다시 거부하고, 그 실패는
+  # 아래 재호출 주석이 이미 실측으로 적어 둔 것이다.
+  #
+  # 큰따옴표 안에서도 명령 치환과 백틱은 살아 있으므로 그 상태에서도 거부한다.
+  # 리다이렉션(`>`·`<`)도 같은 부류로 거부한다 — 이 파일이 보장한다고 적은 성질은
+  # 「행위를 막는다」가 아니라 「행이 남는다」이고, 원장 없이 셸이 파일을 여는 자리는
+  # 임의 명령과 같은 무게다. 이 훅이 처방하는 두 명령에는 어느 것도 나오지 않는다.
+  #
+  # 파이프라인이 정말 필요하면 인용해서 게이트에 넘긴다 — `<게이트> exec … -- bash
+  # -c '<파이프라인>'`. 그러면 그 명령이 원장에 argv 로 남는다. 그것이 이 거부가
+  # 닫는 것과 여는 것의 차이다.
+  #
+  # bash 3.2 안전이고 외부 프로세스를 하나도 쓰지 않는다.
+  local s="$1" n i c nx st=u
+  n=${#s}; i=0
+  while [ "$i" -lt "$n" ]; do
+    c=${s:$i:1}
+    case "$st" in
+      u)
+        case "$c" in
+          '\')                              i=$((i+2)); continue ;;
+          "'")                              st=s ;;
+          '"')                              st=d ;;
+          ';'|'&'|'|'|'`'|'>'|'<'|"$NL")    return 0 ;;
+          '$')  nx=${s:$((i+1)):1}; [ "$nx" = '(' ] && return 0 ;;
+        esac ;;
+      s)
+        case "$c" in "'") st=u ;; esac ;;
+      d)
+        case "$c" in
+          '\')  i=$((i+2)); continue ;;
+          '"')  st=u ;;
+          '`')  return 0 ;;
+          '$')  nx=${s:$((i+1)):1}; [ "$nx" = '(' ] && return 0 ;;
+        esac ;;
+    esac
+    i=$((i+1))
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
-# The allow-list is ONE shape.
+# The allow-list is ONE shape, AND IT ENDS WHERE THE SHAPE ENDS.
 #
 # Anchored at the start of the command and matched against the gate's absolute
-# path, so neither a `; gate.sh` suffix nor a same-named script elsewhere on
-# PATH satisfies it. What follows the path is not inspected: the gate's own
-# argument parser is the schema, and a second, weaker copy of it here would be
-# the thing that drifts.
+# path, so a same-named script elsewhere on PATH does not satisfy it. What
+# follows the path is not inspected as a schema: the gate's own argument parser
+# is the schema, and a second, weaker copy of it here would be the thing that
+# drifts.
+#
+# BUT THE FIRST TOKEN IS NOT THE WHOLE COMMAND, and for a while this file
+# behaved as though it were. Under a first-token rule `|`, `;`, `&&`, `&`, a
+# newline and `$( )` are indistinguishable from one another, so blessing one of
+# them — an earlier note here blessed the pipe — blessed all of them:
+# `<gate> … ; <anything>` was allowed IN FULL, both halves ran in one shell, and
+# the right-hand half reached it without a ledger row. The claim a few lines up
+# that a `; gate.sh` suffix cannot satisfy the anchor was true only when the
+# suffix was itself a gate call; with an arbitrary command in that position it
+# was false. Measured: bare call, pipe, `;` chain, `&&` chain, command
+# substitution, newline chain and background+chain all allowed; plain commands,
+# a leading assignment and `bash -c` all denied.
+#
+# That is not a partial failure. LEDGER COMPLETENESS is the only property this
+# file claims, and it was false for every command written that way.
+#
+# THE FIX DOES NOT TEACH THE MATCHER TO PARSE A SHELL. A second weak parser in
+# an allow-list fails OPEN — the argument the re-invocation note below already
+# makes. It goes the other way: keep the first-token check, then REFUSE when
+# what follows carries an unquoted shell control operator. This is a
+# character-class refusal INSIDE an already-allowed shape, so the "write it to a
+# file and run the file" evasion has nothing to work with; the shape is still an
+# allow-list and the refusal only narrows it.
 # ---------------------------------------------------------------------------
 # Tokenized rather than pattern-matched: a path is full of regex metacharacters,
 # and an escaping bug in an allow-list fails OPEN.
@@ -707,6 +827,28 @@ esac
 # the opposite of what any other advice would tell it.
 first=$(printf '%s' "$first" | sed -e "s/^['\"]//" -e "s/['\"]$//")
 if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
+  # `| jq -r .H` 는 단 하나의 특례다. 아래 거부 문면이 처방하는 1번 명령이 그
+  # 파이프를 쓰므로, 전면 거부하면 이 훅이 다시 자기 처방을 거부한다. 특례는
+  # **명령 끝의 축자 연속 한 번**에만 성립한다 — 잘라 낸 뒤 남은 문자열에 제어
+  # 연산자가 있으면 그대로 거부한다.
+  #
+  # 파이프 자체가 필요 없게 만드는 더 깔끔한 형태(스냅숏에 필드 선택 플래그를
+  # 주어 `jq` 를 없애고 이 특례를 지우는 것)는 게이트 스크립트를 고쳐야 하는데,
+  # 그 파일은 이 변경의 선언 파일 집합 밖이라 채택하지 않았다.
+  scan="$cmd"
+  while :; do
+    case "$scan" in
+      *[[:space:]]) scan="${scan%?}" ;;
+      *)            break ;;
+    esac
+  done
+  case "$scan" in
+    *'| jq -r .H') scan="${scan%'| jq -r .H'}" ;;
+    *'|jq -r .H')  scan="${scan%'|jq -r .H'}" ;;
+  esac
+  if hook_unquoted_shell_op "$scan"; then
+    deny "$(jstr "gate: 첫 토큰은 게이트 경로가 맞지만 그 뒤에 인용되지 않은 셸 제어 연산자(\`;\` \`&\` \`|\` 개행 백틱 \$( ) \`>\` \`<\`)가 있습니다. 게이트 오른쪽에 올라탄 명령은 원장에 행을 남기지 않고 실행되므로, 이 훅이 보장하는 유일한 성질이 무력화됩니다. 허용되는 파이프는 명령 끝의 '| jq -r .H' 하나뿐입니다. 명령을 나눠 각각 게이트로 실행하시거나, 파이프라인 자체가 필요하면 인용해서 넘기세요: ${GATE} exec … -- bash -c '<파이프라인>'. 거부된 명령: ${cmd}")"
+  fi
   allow "$(jstr 'gate: 게이트 호출')"
 fi
 
@@ -724,9 +866,22 @@ fi
 # the single shape this allow-list has. The alternative — teaching the matcher
 # to see through a leading assignment and a command substitution — would put a
 # second, weaker shell parser in the allow-list, and an escaping bug in an
-# allow-list fails OPEN. A pipe is fine and the first line uses one: what is
-# matched is the first token, and `jq` sits on the right of it.
+# allow-list fails OPEN.
+#
+# EXACTLY ONE PIPE SPELLING IS FINE, and it is the one line 1 uses. An earlier
+# note here said "a pipe is fine" without qualification, on the reasoning that
+# the first token is what is matched and `jq` sits to the right of it — which is
+# true, and is also true of every other operator, so the sentence blessed far
+# more than it named. The check above now allows `| jq -r .H` as a trailing
+# literal and refuses the rest.
 #
 # The snapshot hash is not baked in because it moves on every ledger write; the
 # stage reads it from line 1 and types it into line 2.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"
+#
+# THE PRESCRIBED LINE QUOTES THE OFFENDING COMMAND BACK AFTER `--`, so when the
+# denial was caused by a control operator, the prescription carries that
+# operator too and the new check refuses it in turn. That is the correct
+# behaviour rather than a loop: the operator has to leave the command before any
+# form of it can run, and the reply above — quote the pipeline and hand it to
+# `bash -c` through the gate — is the form that keeps the argv in a row.
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치면(\`;\` \`&&\` \`&\` 개행 \$( )) 게이트 오른쪽 절반이 원장에 행을 남기지 않고 실행되므로 이 훅이 거부합니다. 허용되는 파이프는 (1) 끝의 \`| jq -r .H\` 하나뿐입니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"
