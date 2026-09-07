@@ -1328,19 +1328,80 @@ rundir_init() {
   # another run did; what closes that is the hook refusing writes into a run
   # directory that is not the writer's own. This check closes the broken record
   # and the truncated one, and those only.
-  local cfg cur rc
+  #
+  # AND THE VALIDATION USED TO REFUSE THIS FUNCTION'S OWN WRITE. Reading an
+  # existing record with `[ -d ]` while writing a new one with no check at all
+  # is an asymmetry, not two independent decisions: tier 4 of the resolver hands
+  # back `$HOME/.claude` unvalidated, so on a host that has never run the CLI the
+  # first entry recorded a directory that does not exist — at rc=0, quietly — and
+  # every entry after it met that record here and died. The gate runs this
+  # function on EVERY entry, so what an operator saw was not "the install failed"
+  # but "a run that worked once stops working", and the record survives a reboot
+  # under XDG_STATE_HOME. The write side below now materializes the directory, so
+  # the value this function writes satisfies the predicate this function reads.
+  local cfg cur rc lp
   cur=""
   if [ -s "$RUN_DIR/config-dir" ]; then
     rc=0
     lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 기존 config-dir" \
       "이 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
     if [ "$rc" = "1" ]; then
-      die "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다"
+      # THE STOP IS RIGHT AND ITS SILENCE IS NOT. Refusing to fall back is what
+      # the design asks for; what it does not ask for is that the refusal leave
+      # nothing durable behind. `die` writes stderr and exits, and on the gate's
+      # path this function runs BEFORE `ledger-path` is written — so an
+      # unattended run that broke here left no ledger row, no park, and no
+      # instruction for whoever reads in the morning. Nobody is watching stderr
+      # at night, which makes that outcome observationally identical to the
+      # silent failure the "fail loudly" rule exists to prevent. The rule's
+      # "audible" means a durable record here, not a stream.
+      #
+      # So the STOP stays and only the SILENCE goes. A park is a stop, not a
+      # fallback. Where a previous entry already wrote `ledger-path` the ledger
+      # it names is adopted and the refusal lands as one `blocked` row — and
+      # that is exactly the shape which produces this refusal, since the first
+      # entry succeeds and only the ones after it meet the broken record. With
+      # no such file the run has no ledger to write into and `die` alone is the
+      # whole of what can be done.
+      #
+      # MOVING THIS CALL AFTER THE LEDGER INIT WOULD REMOVE THE CONDITION, and
+      # it is not done here: the call site is `gate.sh`, which is outside this
+      # change's declared file set.
+      lp=""
+      if [ -s "$RUN_DIR/ledger-path" ]; then
+        lp=$(sed -n '1p' "$RUN_DIR/ledger-path" 2>/dev/null) || lp=""
+      fi
+      if [ -n "$lp" ] && [ -f "$lp" ] && [ -n "${BASE:-}" ]; then
+        LEDGER="$lp"
+        park "$RUN_ID" run 막힘 "게이트 park" \
+          "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $RUN_DIR/config-dir" \
+          "rm \"$RUN_DIR/config-dir\""
+      fi
+      # THE REFUSAL CARRIES THE RECOVERY COMMAND VERBATIM. Without it the person
+      # reading in the morning knows a run is stuck and not which file to remove.
+      die "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다. 회복: rm \"$RUN_DIR/config-dir\""
     fi
     if [ "$rc" = "0" ]; then cur="$LANE_RECORD"; fi
   fi
   if [ -z "$cur" ]; then
     cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — 런 디렉터리를 초기화할 수 없습니다"
+    # MATERIALIZE BEFORE RECORDING. This one line is what makes the value this
+    # function writes satisfy the predicate this function reads. Measured with no
+    # `$HOME/.claude` present: the first `rundir_init` returned rc=0 and the
+    # second rc=1; adding this `mkdir -p` alone made both rc=0.
+    #
+    # THE FIX SITS HERE AND NOT IN `resolve_account`, and the reason is a
+    # requirement rather than taste. Tier 1 has to return byte-identically to
+    # what the single-tier form produced — that is the acceptance criterion for
+    # the resolver's widening — so the resolver may not touch its value at all.
+    # And hanging `[ -d ]` on tier 4 (or tier 1) only moves the death earlier
+    # without removing it: the asymmetry to remove is "unvalidated on write,
+    # validated on read", and the write side is here.
+    #
+    # Creating an empty directory is idempotent and is what the CLI itself does
+    # on first use, so this adds no state the tool would not have created anyway.
+    [ -d "$cfg" ] || mkdir -p "$cfg" 2>/dev/null \
+      || die "레인 디렉터리를 만들 수 없습니다: $cfg — 기록하면 다음 진입이 자기 기록을 거부하므로 여기서 멈춥니다"
     write_run_record "$RUN_DIR/config-dir" "$cfg" \
       || die "런 디렉터리에 레인 기록을 쓰지 못했습니다: $RUN_DIR/config-dir"
   fi

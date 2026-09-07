@@ -271,6 +271,74 @@ hook_under() {
   return 1
 }
 
+HOOK_PHYS=""
+hook_phys() {
+  # hook_phys <절대 경로> — 실재하는 가장 깊은 조상에서 물리 철자를 한 번 얻고 그
+  # 아래 남은 어휘 꼬리를 다시 이어 붙여 `HOOK_PHYS` 에 넣는다. 얻지 못하면 거짓.
+  #
+  # 왜 필요한가. 위 `hook_under` 는 조상 **성분**을 아이노드로 비교하지만 사슬을
+  # 거슬러 오르는 것은 **어휘적**이다. 그래서 앵커된 디렉터리를 *가리키는* 링크는
+  # 잡히고(그 성분의 아이노드가 앵커와 같다) 그 **안쪽**을 가리키는 링크는 잡히지
+  # 않는다 — 그 성분의 아이노드는 앵커가 아니고, 그 성분의 부모는 어휘 사슬에 없어
+  # 영원히 검사되지 않는다. `$RUN_DIR` 은 보호 대상이 바로 안에 있는 **말단 앵커**라
+  # 링크가 반드시 앵커를 사슬에 등장시키지만, `run_root` 는 보호 대상이 한 단계 더
+  # 깊은 **비말단 앵커**라 그 한 단계를 링크로 건너뛰면 앵커가 사슬에 아예 등장하지
+  # 않는다. 무한한 것은 앵커할 파일 집합이 아니라 앵커와 보호 대상 사이의 깊이이므로
+  # 팔을 하나 더 붙여 닫을 수 있는 형태가 아니고, 철자를 한 번 접는 것이 답이다.
+  #
+  # 존재를 조건으로 걸지 않는다. 아직 만들어지지 않은 디렉터리 아래로 쓰는 것은 이
+  # 트리 어디서나 정당하므로, 실재하지 않는 부모에서 곧바로 거부하면 런 루트와 무관한
+  # 경로까지 함께 막는다. 실재하는 조상에서 접으면 그 성질이 그대로 유지된다.
+  #
+  # 상대 경로와 빈 문자열은 거짓이다. 어휘 사슬을 거슬러 오르는 루프가 절대 경로를
+  # 전제하므로, 아니면 `/` 에 닿지 못하고 돌지 않는 루프가 된다.
+  local p="$1" tail="" base out
+  HOOK_PHYS=""
+  case "$p" in /*) : ;; *) return 1 ;; esac
+  while :; do
+    if [ -d "$p" ]; then
+      out=$(cd "$p" 2>/dev/null && pwd -P) || return 1
+      [ -n "$out" ] || return 1
+      if [ -n "$tail" ]; then HOOK_PHYS="${out%/}/$tail"; else HOOK_PHYS="$out"; fi
+      return 0
+    fi
+    [ "$p" != "/" ] || return 1
+    base="${p##*/}"
+    p="${p%/*}"; [ -n "$p" ] || p="/"
+    tail="$base${tail:+/}$tail"
+  done
+}
+
+hook_run_dir_verdict() {
+  # hook_run_dir_verdict <이 런 디렉터리 아래의 꼬리> — 스테이지에게 선언된 쓰기
+  # 표면인지 판정한다. 거부면 여기서 끝나고, 허용이면 돌아간다.
+  #
+  # 함수인 이유는 호출자가 둘이기 때문이다 — 호출자가 준 철자로 도는 1차 패스와,
+  # 심링크 조상을 접은 물리 철자로 도는 2차 패스. 나란한 두 사본을 두면 한쪽만 고쳐도
+  # 스위트가 초록이고, 그 실패 방식은 이 파일이 이미 여러 자리에 적어 둔 것이다.
+  case "$1" in
+    settings/*)
+      deny "$(jstr 'gate: 런 설정 디렉터리는 강제 표면입니다 — 여기 한 번 쓰면 이 스테이지의 경계가 통째로 사라집니다')" ;;
+    # 깊이 팔이 한 단계 팔보다 먼저 와야 한다. 반대 순서면 `halt/deep/x.md`
+    # 가 한 단계 팔에 먼저 걸려 허용된다.
+    halt/*/*)
+      deny "$(jstr 'gate: 런 디렉터리의 중단 기록은 halt/<stage-id>.md 한 단계뿐입니다')" ;;
+    halt/*)
+      hook_leaf_is_symlink "$ap" \
+        && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
+    */*)
+      deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
+    # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
+    # 이 디렉터리의 다른 어떤 파일로도 향할 수 있으므로 거부한다.
+    *.plan.md)
+      hook_leaf_is_symlink "$ap" \
+        && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
+    *)
+      deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
+  esac
+  return 0
+}
+
 # Prepended so `jq` is discoverable regardless of the caller's PATH — the same
 # convention the sibling hook uses. The disable switch exists so the fail-closed
 # branch below is reachable in a test; on a machine with jq installed there is
@@ -503,26 +571,7 @@ case "$tool" in
       esac
     fi
     if [ -n "$run_tail" ]; then
-      case "$run_tail" in
-        settings/*)
-          deny "$(jstr 'gate: 런 설정 디렉터리는 강제 표면입니다 — 여기 한 번 쓰면 이 스테이지의 경계가 통째로 사라집니다')" ;;
-        # 깊이 팔이 한 단계 팔보다 먼저 와야 한다. 반대 순서면 `halt/deep/x.md`
-        # 가 한 단계 팔에 먼저 걸려 허용된다.
-        halt/*/*)
-          deny "$(jstr 'gate: 런 디렉터리의 중단 기록은 halt/<stage-id>.md 한 단계뿐입니다')" ;;
-        halt/*)
-          hook_leaf_is_symlink "$ap" \
-            && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
-        */*)
-          deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
-        # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
-        # 이 디렉터리의 다른 어떤 파일로도 향할 수 있으므로 거부한다.
-        *.plan.md)
-          hook_leaf_is_symlink "$ap" \
-            && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
-        *)
-          deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
-      esac
+      hook_run_dir_verdict "$run_tail"
     fi
     # AND THAT ALLOW-LIST IS PARAMETERIZED BY **THIS** RUN, WHICH LEFT EVERY
     # OTHER RUN DEFAULT-ALLOW. `run_tail` is computed from `$RUN_DIR` alone, so a
@@ -556,6 +605,44 @@ case "$tool" in
       # 심어 두면 그 런의 초기화가 그것을 보존한 채 시작한다.
       case "$np" in
         "$run_root"|"$run_root"/*)
+          deny "$(jstr 'gate: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다. 그 아래에는 그 런의 훅·권한 설정과 레인 기록이 있어, 한 번 쓰면 그 런의 경계와 계정 선택이 이 스테이지의 손에 들어갑니다')" ;;
+      esac
+
+      # 그리고 물리 철자로 한 번 더 판정한다 — 두 팔 모두 통과했다는 것이 「런 루트
+      # 밖」을 뜻하지 않기 때문이다. 아이노드 팔은 조상 성분을 아이노드로 비교하되
+      # 사슬을 **어휘적**으로 거슬러 오르므로, 피해 런 디렉터리를 가리키는 링크를 런
+      # 루트 **밖**에 두고 그 아래로 쓰면 앵커가 사슬에 아예 등장하지 않는다. 어휘
+      # 팔은 그 철자가 `run_root` 로 시작하지 않으니 당연히 서지 않는다. 실측된
+      # 우회가 `L-victim/config-dir`·`L-victim/settings/impl.json`·
+      # `L-victim/orchestrator-dir` 이고, 실제 `Write` 도구가 그 링크를 관통해 피해
+      # 런 안에 파일을 만드는 것까지 확인됐다(링크는 링크로 남았다 — 관통이지 교체가
+      # 아니다). 링크 생성이 무해하지도 않다: 맨 `ln -s` 는 게이트가 `등급 미상`으로
+      # 거부하지만 `bash -c` 로 감싸면 통과하고, 그 뒤의 `Write` 는 원장에 행을 남기지
+      # 않는다.
+      #
+      # 비교의 **양쪽을 함께** 접는다. 한쪽만 물리화하면 macOS 에서 `/tmp` 가
+      # `/private/tmp` 로의 심링크라 앵커 전체와 갈려, 링크와 무관한 자기 런 직접
+      # 철자까지 함께 무너진다 — 그 잘못된 패치를 실제로 넣은 관측이 420 passed,
+      # 27 failed 였다.
+      #
+      # 판정 불가는 허용이 아니다. 실재하는 조상에서 `cd` 가 실패하면 이 경로가 어느
+      # 런 아래인지 말할 수 없으므로 거부한다. 실재하지 않는 부모는 판정 불가가 아니라
+      # 정상이며 `hook_phys` 가 위로 올라가 접는다.
+      hook_phys "$ap" \
+        || deny "$(jstr 'gate: 편집 대상의 물리 철자를 얻지 못해 어느 런 아래인지 판정할 수 없습니다 — 판정 불가는 허용이 아닙니다')"
+      phys_np="$HOOK_PHYS"
+      hook_phys "$run_root" \
+        || deny "$(jstr 'gate: 런 루트의 물리 철자를 얻지 못해 이 편집을 판정할 수 없습니다 — 판정 불가는 허용이 아닙니다')"
+      phys_rr="$HOOK_PHYS"
+      hook_phys "$RUN_DIR" \
+        || deny "$(jstr 'gate: 이 런 디렉터리의 물리 철자를 얻지 못해 이 편집을 판정할 수 없습니다 — 판정 불가는 허용이 아닙니다')"
+      phys_rd="$HOOK_PHYS"
+      # 이 런의 팔이 형제 런의 팔보다 앞에 와야 한다. `$RUN_DIR` 이 `run_root` 아래라
+      # 반대 순서면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
+      case "$phys_np" in
+        "$phys_rd")   : ;;
+        "$phys_rd"/*) hook_run_dir_verdict "${phys_np#"$phys_rd"/}" ;;
+        "$phys_rr"|"$phys_rr"/*)
           deny "$(jstr 'gate: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다. 그 아래에는 그 런의 훅·권한 설정과 레인 기록이 있어, 한 번 쓰면 그 런의 경계와 계정 선택이 이 스테이지의 손에 들어갑니다')" ;;
       esac
     fi
@@ -751,11 +838,34 @@ hook_unquoted_shell_op() {
   # 「행위를 막는다」가 아니라 「행이 남는다」이고, 원장 없이 셸이 파일을 여는 자리는
   # 임의 명령과 같은 무게다. 이 훅이 처방하는 두 명령에는 어느 것도 나오지 않는다.
   #
-  # 파이프라인이 정말 필요하면 인용해서 게이트에 넘긴다 — `<게이트> exec … -- bash
-  # -c '<파이프라인>'`. 그러면 그 명령이 원장에 argv 로 남는다. 그것이 이 거부가
-  # 닫는 것과 여는 것의 차이다.
+  # 파이프라인을 통째로 넘기는 형태(`-- bash -c '<파이프라인>'`)는 **조건부**다.
+  # 아래 거부 문면이 그 조건을 함께 적는다 — 감싸면 등급기가 `-c` 문자열 안을 보지
+  # 않아 미등재 명령이 `bash` 의 등급을 물려받고, 게이트가 `등급 미상`으로 내던
+  # 거부가 세탁된다. 조건 없이 처방하면 그것이 곧 조건 없는 사용이다.
   #
   # bash 3.2 안전이고 외부 프로세스를 하나도 쓰지 않는다.
+  #
+  # ANSI-C 인용(`$'…'`)은 이 세 상태로 표현되지 않는다. bash 에서 `$'…'` 안의 `\'`
+  # 는 이스케이프된 작은따옴표라 `$'\''` 가 **한 단어로 닫히는데**, 아래 상태 `s` 는
+  # `'` 만 처리하고 백슬래시를 무시하므로 `\'` 의 `'` 가 인용을 닫고 이어지는 `'` 가
+  # 다시 연다. 그러면 스캐너가 문자열 끝까지 인용 안에 갇혀 그 뒤 연산자가 전부
+  # 보이지 않는다 — 실측된 우회가 13종이고 세미콜론·AND·파이프·개행 체인만이 아니라
+  # 리다이렉션·명령 치환·임의 인터프리터까지 같은 여섯 글자로 열렸다.
+  #
+  # 술어는 홀짝이 아니다. `$'a\'b\'c'` 는 `\'` 가 짝수인데도 우회한다 — 두 `\'` 가
+  # 각각 상태 `s` 와 `u` 에서 소비되어 상쇄되지 않기 때문이다. 올바른 조건은
+  # **「`$'…'` 안에 `\'` 가 하나라도 있으면 어긋난다」**이며, 픽스처를 홀짝으로
+  # 세우면 이 부류를 통째로 놓친다.
+  #
+  # 그래서 둘을 함께 둔다. (1) 원천 차단 — 상태 `u` 에서 `$` 다음이 `(`·`'`·`"` 중
+  # 무엇이든 거부한다. 우회 13종이 전부 `$'` 를 필요로 하므로 이것 하나로 닫힌다.
+  # (2) 그물 — 스캔이 끝났을 때 종단 상태가 `u` 가 아니면 거부한다. 어긋남을 만드는
+  # 문법이 하나만 더 생겨도 (1) 의 열거가 조용히 낡기 때문에 (1) 만으로는 부족하다.
+  # 미종료 인용은 bash 가 문법 오류로 거절하므로 (2) 는 **실행 가능한 명령을 하나도
+  # 잃지 않는다.**
+  #
+  # 큰따옴표 안(`d`)에는 이 규칙이 없다 — bash 에서 `"…$'…'…"` 의 `$'` 는 ANSI-C
+  # 인용이 아니라 평범한 두 글자라, 여기서 거부하면 정당한 문면을 막는다.
   local s="$1" n i c nx st=u
   n=${#s}; i=0
   while [ "$i" -lt "$n" ]; do
@@ -767,7 +877,8 @@ hook_unquoted_shell_op() {
           "'")                              st=s ;;
           '"')                              st=d ;;
           ';'|'&'|'|'|'`'|'>'|'<'|"$NL")    return 0 ;;
-          '$')  nx=${s:$((i+1)):1}; [ "$nx" = '(' ] && return 0 ;;
+          '$')  nx=${s:$((i+1)):1}
+                case "$nx" in '('|"'"|'"') return 0 ;; esac ;;
         esac ;;
       s)
         case "$c" in "'") st=u ;; esac ;;
@@ -781,6 +892,7 @@ hook_unquoted_shell_op() {
     esac
     i=$((i+1))
   done
+  [ "$st" = u ] || return 0
   return 1
 }
 
@@ -847,7 +959,7 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
     *'|jq -r .H')  scan="${scan%'|jq -r .H'}" ;;
   esac
   if hook_unquoted_shell_op "$scan"; then
-    deny "$(jstr "gate: 첫 토큰은 게이트 경로가 맞지만 그 뒤에 인용되지 않은 셸 제어 연산자(\`;\` \`&\` \`|\` 개행 백틱 \$( ) \`>\` \`<\`)가 있습니다. 게이트 오른쪽에 올라탄 명령은 원장에 행을 남기지 않고 실행되므로, 이 훅이 보장하는 유일한 성질이 무력화됩니다. 허용되는 파이프는 명령 끝의 '| jq -r .H' 하나뿐입니다. 명령을 나눠 각각 게이트로 실행하시거나, 파이프라인 자체가 필요하면 인용해서 넘기세요: ${GATE} exec … -- bash -c '<파이프라인>'. 거부된 명령: ${cmd}")"
+    deny "$(jstr "gate: 첫 토큰은 게이트 경로가 맞지만 그 뒤에 인용되지 않은 셸 제어 연산자(\`;\` \`&\` \`|\` 개행 백틱 \$( ) \`>\` \`<\`)가 있거나, ANSI-C 인용(\$'…')처럼 이 훅이 판정할 수 없는 인용이 있습니다. 게이트 오른쪽에 올라탄 명령은 원장에 행을 남기지 않고 실행되므로, 이 훅이 보장하는 유일한 성질이 무력화됩니다. 허용되는 파이프는 명령 끝의 '| jq -r .H' 하나뿐입니다. 1순위는 명령을 나눠 각각 게이트로 실행하는 것입니다. 파이프라인 자체를 넘겨야 한다면 그 파이프라인의 각 명령이 등급표에 행을 가질 때에 한해 ${GATE} exec … -- bash -c '<파이프라인>' 형태를 쓰세요 — 게이트는 -c 문자열 안을 보지 않으므로, 등재되지 않은 argv0 가 그 안에 있으면 게이트가 내던 '등급 미상' 거부가 bash 의 등급으로 세탁되고 원장의 표면 축에 실제 행위와 다른 값이 남습니다. 거부된 명령: ${cmd}")"
   fi
   allow "$(jstr 'gate: 게이트 호출')"
 fi
@@ -882,6 +994,25 @@ fi
 # denial was caused by a control operator, the prescription carries that
 # operator too and the new check refuses it in turn. That is the correct
 # behaviour rather than a loop: the operator has to leave the command before any
-# form of it can run, and the reply above — quote the pipeline and hand it to
-# `bash -c` through the gate — is the form that keeps the argv in a row.
+# form of it can run, and the way out is to SPLIT the command and run each half
+# through the gate.
+#
+# WRAPPING THE PIPELINE IN `bash -c` IS THE SECOND ANSWER AND IT IS CONDITIONAL,
+# because prescribing it unconditionally prescribes a bypass. The grader does not
+# look inside the `-c` string, so an argv0 with no row in the grade table — which
+# the gate itself defines as `등급 미상` and NEVER `읽기`, that is, a refusal —
+# inherits `bash`'s grade and passes. Measured: `-- ln -s <path> /tmp/L` is
+# refused as `등급 미상` under every self-declaration, while
+# `-- bash -c "ln -s <path> /tmp/L"` is graded `워크트리쓰기`, passes, and the link
+# is actually created. The row still gets written, so this is not a ledger-free
+# bypass; what it corrupts is the SURFACE axis, which is the axis a later audit
+# reads. So the condition is that every command inside the pipeline has a row of
+# its own, and the denial text above states it rather than leaving it here.
+#
+# THE STRUCTURAL FIX IS IN THE GRADER, NOT HERE, and it is not made in this
+# change: teaching the grader to tokenize the first argument of `bash -c`/`sh -c`
+# and grade recursively — yielding `등급 미상` for the whole when the inner argv0
+# has no row — requires editing `gate.sh`, which is outside this change's
+# declared file set. Recorded so the next reader can tell what was deliberately
+# left out from what was missed.
 deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치면(\`;\` \`&&\` \`&\` 개행 \$( )) 게이트 오른쪽 절반이 원장에 행을 남기지 않고 실행되므로 이 훅이 거부합니다. 허용되는 파이프는 (1) 끝의 \`| jq -r .H\` 하나뿐입니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"

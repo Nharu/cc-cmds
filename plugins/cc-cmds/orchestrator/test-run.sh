@@ -2025,6 +2025,77 @@ want=$(CLAUDE_CONFIG_DIR="$LD/env" HOME="$LD/home" \
 got=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
 check "T7 1단의 반환값이 변경 전 구현과 바이트 동일" "$got" "$want"
 
+# --- T7b: init 이 쓰는 값이 init 이 읽는 술어를 만족한다 --------------------
+# 이것을 **왕복**으로 재지 않으면 잡히지 않는다. 4단은 `$HOME/.claude` 를 검증 없이
+# 내고 `rundir_init` 은 그것을 그대로 영속화하는데, 같은 함수가 다음 진입에서 그
+# 기록에 `[ -d ]` 를 요구했다. 그래서 1회차는 rc=0 으로 조용히 성공하고 2회차부터
+# 죽는다 — 운영자가 보는 증상은 「설치 실패」가 아니라 「한 번 됐던 런이 다음부터
+# 안 됨」이고, 기록이 `XDG_STATE_HOME` 아래라 재부팅으로도 사라지지 않는다.
+#
+# 발화 조건은 `CLAUDE_CONFIG_DIR` 도 3단 기록도 `$HOME/.claude` 도 없는 호스트이며,
+# 새 설치·컨테이너·서비스 계정·CI 러너가 정확히 그 집합이다. 위 `$LD` 픽스처는
+# `$LD/home/.claude` 를 **항상** 미리 만들어 이 조건 자체를 배제하고 있었고, 그래서
+# 로컬 초록과 CI 빨강이 동시에 참이 됐다. 기존 픽스처를 고치는 대신 이 조건을 갖는
+# 픽스처를 새로 세운다 — 기존 것을 바꾸면 그것이 지키던 단언들이 함께 움직인다.
+RTH="$WORK/rt-home"; mkdir -p "$RTH"                     # `.claude` 를 만들지 않는다
+RTS="$WORK/rt-state"; mkdir -p "$RTS"
+rt_init() (
+  unset CLAUDE_CONFIG_DIR
+  HOME="$RTH" XDG_STATE_HOME="$RTS" XDG_CONFIG_HOME="$WORK/rt-xdg-absent" \
+    RUN_ID=rt-run ORCH_DIR="$script_dir" rundir_init
+)
+rt_init >/dev/null 2>&1; rc=$?
+check "T7b init 1회차는 성공한다" "$rc" "0"
+rt_init >/dev/null 2>&1; rc=$?
+check "T7b init 2회차도 성공한다 (자기가 쓴 기록을 자기가 거부하지 않는다)" "$rc" "0"
+# 두 번 다 rc=0 이면서 기록이 비어 있으면 위 두 단언은 공허하다.
+check "T7b 기록이 실제로 쓰였다" \
+  "$(sed -n '1p' "$RTS/cc-cmds/run/rt-run/config-dir" 2>/dev/null)" "$RTH/.claude"
+check "T7b 기록이 가리키는 디렉터리가 실재한다 (쓰는 값이 읽는 술어를 만족한다)" \
+  "$( [ -d "$RTH/.claude" ] && printf yes || printf no )" "yes"
+
+# --- T7c: 깨진 기록에서의 정지가 들린다 ------------------------------------
+# 정지한다는 결정 자체는 설계가 요구한 것이라 문제가 아니다. 문제는 그 정지가 아무
+# 내구적 기록도 남기지 않는다는 것이었다 — 무인 런에서 stderr 는 아무도 보지 않으므로,
+# 그 실패는 「시끄럽게 실패하라」가 막으려던 조용한 실패와 관측상 구별되지 않는다.
+BKH="$WORK/bk-home"; mkdir -p "$BKH/.claude"
+BKS="$WORK/bk-state"; mkdir -p "$BKS/cc-cmds/run/bk-run"
+BKREC="$BKS/cc-cmds/run/bk-run/config-dir"
+printf '%s\n' "$WORK/bk-absent-lane" > "$BKREC"
+bk_init() (
+  unset CLAUDE_CONFIG_DIR
+  HOME="$BKH" XDG_STATE_HOME="$BKS" XDG_CONFIG_HOME="$WORK/bk-xdg-absent" \
+    RUN_ID=bk-run ORCH_DIR="$script_dir" BASE="$WORK/bk-base" rundir_init
+)
+bk_out=$(bk_init 2>&1); rc=$?
+check "T7c 깨진 기록에서는 그대로 정지한다" "$rc" "1"
+case "$bk_out" in
+  *"rm \"$BKREC\""*) ok "T7c 거부 문면이 회복 명령을 축자로 싣는다" ;;
+  *) bad "T7c 회복 명령" "거부 문면이 무엇을 지워야 하는지 말하지 않는다" ;;
+esac
+# 그리고 `ledger-path` 가 이미 있으면 그 정지가 원장에 한 행을 남긴다. 이것이 이
+# 잔여를 닫을 수 있는 이유다 — 위 발화 형상에서 1회차 진입은 성공하므로 그 파일이
+# 이미 디스크에 있다.
+BKL="$WORK/bk-ledger.md"; printf '# 원장\n\n## 실행 bk-run\n' > "$BKL"
+printf '%s\n' "$BKL" > "$BKS/cc-cmds/run/bk-run/ledger-path"
+bk_before=$(wc -l < "$BKL" | tr -d ' ')
+bk_init >/dev/null 2>&1; rc=$?
+bk_after=$(wc -l < "$BKL" | tr -d ' ')
+check "T7c ledger-path 가 있어도 정지 자체는 그대로다" "$rc" "1"
+check "T7c 그 정지가 원장에 한 행을 남긴다" "$((bk_after - bk_before))" "1"
+case "$(sed -n '$p' "$BKL")" in
+  *'blocked'*'재개 명령=rm '*) ok "T7c 그 행이 park 이고 회복 명령을 싣는다" ;;
+  *) bad "T7c park 행" "마지막 행이 회복 명령을 실은 blocked 행이 아니다: $(sed -n '$p' "$BKL")" ;;
+esac
+# 음성 대조군. `ledger-path` 가 없으면 적을 원장이 없는 것이고, 그때 없는 파일에
+# 행을 만들어 내면 그것은 park 가 아니라 새 상태의 발명이다.
+rm -f "$BKS/cc-cmds/run/bk-run/ledger-path"
+bk_before=$(wc -l < "$BKL" | tr -d ' ')
+bk_init >/dev/null 2>&1
+bk_after=$(wc -l < "$BKL" | tr -d ' ')
+check "T7c 음성 대조군: ledger-path 가 없으면 원장에 아무 행도 남기지 않는다" \
+  "$((bk_after - bk_before))" "0"
+
 # --- T8: 런당 1회가 아니라 스테이지 디스패치마다 ---------------------------
 # 이 단언은 **계수**한다. 이전 형태는 `stage_spawn` 본문을 `resolve_account`
 # 토큰으로 grep 했는데, 그것은 의무가 이름 붙인 성질 — 런당 1회가 아니라 디스패치
@@ -2609,6 +2680,52 @@ case "$(hook_reason_rr "$MYRUN/config-dir")" in
   *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
 esac
 
+# --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
+# 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
+# 조상 성분을 아이노드로 비교하되 사슬을 거슬러 오르는 것은 **어휘적**이라, 앵커된
+# 디렉터리를 *가리키는* 링크는 잡히고 그 **안쪽**을 가리키는 링크는 잡히지 않는다 —
+# `$RUN_DIR` 은 보호 대상이 바로 안에 있는 말단 앵커지만 런 루트는 한 단계 더 깊은
+# 비말단 앵커라, 그 한 단계를 링크로 건너뛰면 앵커가 사슬에 아예 등장하지 않는다.
+# 실제 `Write` 도구가 그 링크를 관통해 피해 런 안에 파일을 만드는 것까지 확인된
+# 벡터이고, 착지하는 것은 그 런의 훅·권한 설정과 레인 기록이다.
+ln -sfn "$RR/cc-cmds/run/victim" "$WORK/L-victim" 2>/dev/null
+ln -sfn "$MYRUN"                 "$WORK/L-self"   2>/dev/null
+ln -sfn "$RR/cc-cmds/run"        "$WORK/L-root"   2>/dev/null
+if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
+  check "형제 런을 가리키는 심링크 조상을 통한 철자도 거부" \
+    "$(hook_decide_rr "$WORK/L-victim/config-dir")" "deny"
+  check "그 심링크를 통한 스테이지 설정 파일도 거부 (그 런의 훅·권한 그 자체다)" \
+    "$(hook_decide_rr "$WORK/L-victim/settings/impl.json")" "deny"
+  check "그 심링크를 통한 오케스트레이터 기록도 거부" \
+    "$(hook_decide_rr "$WORK/L-victim/orchestrator-dir")" "deny"
+  check "런 루트를 가리키는 심링크를 통한 철자도 거부" \
+    "$(hook_decide_rr "$WORK/L-root/victim/config-dir")" "deny"
+  # `deny` 만 재면 어느 팔이 답했는지 모른다. 사이클 2 가 실측으로 확정한 것이
+  # 정확히 이것이다 — 한쪽 팔은 `deny` 단언으로 잡히지 않고 사유 문면 단언만이 잡는다.
+  case "$(hook_reason_rr "$WORK/L-victim/config-dir")" in
+    *'다른 런의 디렉터리'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *) bad "심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언들이 공허하다" ;;
+  esac
+  # 음성 대조군 넷. 없으면 위 넷의 통과가 「런 루트 밖 링크를 통째로 거부한다」와
+  # 구별되지 않고, 통째 거부는 파이프라인 자신이 쓰는 경로를 함께 막는다.
+  check "음성 대조군: 자기 런을 가리키는 심링크 조상의 중단 기록은 그대로 허용" \
+    "$(hook_decide_rr "$WORK/L-self/halt/impl.md")" "allow"
+  check "음성 대조군: 자기 런을 가리키는 심링크 조상의 계획 파일도 그대로 허용" \
+    "$(hook_decide_rr "$WORK/L-self/slice-D.plan.md")" "allow"
+  check "음성 대조군: 자기 런을 가리키는 심링크의 기준선은 그대로 거부" \
+    "$(hook_decide_rr "$WORK/L-self/config-dir")" "deny"
+  case "$(hook_reason_rr "$WORK/L-self/config-dir")" in
+    *'다른 런의 디렉터리'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
+    *) ok "자기 런 심링크 거부는 종전 팔이 낸다" ;;
+  esac
+else
+  printf 'NOTE: 형제 런 심링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+# 물리화가 「부모가 실재할 때만 판정한다」로 퇴화하면 이것이 함께 막힌다. 아직
+# 만들어지지 않은 디렉터리 아래로 쓰는 것은 이 트리 어디서나 정당하다.
+check "음성 대조군: 아직 없는 디렉터리 아래의 평범한 쓰기는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/no-such-dir-yet/deep/new.txt")" "allow"
+
 # --- Bash 허용 목록은 첫 토큰 뒤도 본다 -------------------------------------
 # 첫 토큰 규칙 아래에서 `|`·`;`·`&&`·`&`·개행·`$( )` 는 서로 구별되지 않으므로,
 # 하나를 축복하는 것이 전부를 축복하는 것이었다. `<게이트> … ; <임의 명령>` 이
@@ -2665,6 +2782,62 @@ case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
   *'인용되지 않은 셸 제어 연산자'*) ok "체인 거부가 새 검사의 것이다" ;;
   *) bad "체인 거부 사유" "다른 팔이 먼저 거부했다 — 위 체인 단언들이 공허하다" ;;
+esac
+
+# --- 그 인용 상태 기계는 ANSI-C 인용을 몰랐다 -------------------------------
+# 위 열여덟 단언은 거부 기대가 전부 인용 없는 평문 연산자이고 허용 기대가 전부 짝이
+# 맞는 평범한 인용이다. bash 에서 `$'…'` 안의 `\'` 는 이스케이프된 작은따옴표라
+# `$'\''` 가 한 단어로 닫히는데, 세 상태 스캐너는 상태 `s` 에서 백슬래시를 무시하므로
+# 그 `'` 가 인용을 닫고 이어지는 `'` 가 다시 연다 — 스캐너가 문자열 끝까지 인용 안에
+# 갇히고 그 뒤 연산자가 전부 보이지 않는다. 여섯 글자로 열린 형태가 실측 13종이고,
+# 세미콜론·AND·파이프·개행 체인만이 아니라 리다이렉션·명령 치환·임의 인터프리터까지
+# 같은 여섯 글자로 열렸다.
+#
+# **술어는 홀짝이 아니다.** `$'a\'b\'c'` 는 `\'` 가 짝수인데도 우회한다 — 두 `\'` 가
+# 각각 상태 `s` 와 `u` 에서 소비되어 상쇄되지 않기 때문이다. 픽스처를 홀짝으로 세우면
+# 이 부류를 통째로 놓치므로, 조건은 「`$'…'` 안에 `\'` 가 하나라도 있으면」이다.
+# 중첩 인용이 깨지기 쉬운 자리라 변수로 한 단계 뺀다.
+ANSIQ=$(printf '%s' "\$'\\''")
+ANSIQ3=$(printf '%s' "\$'a\\'b\\'c'")
+ANSIQ2=$(printf '%s' "\$'ab'")
+check "ANSI-C 인용을 낀 세미콜론 체인은 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ ; touch $WORK/rider")" "deny"
+check "백슬래시-쿼트가 짝수여도 거부 (홀짝이 아니라 존재가 술어다)" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ3 ; touch $WORK/rider")" "deny"
+check "ANSI-C 인용을 낀 리다이렉션도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ > $WORK/rider")" "deny"
+check "ANSI-C 인용을 낀 명령 치환도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ \$(touch $WORK/rider)")" "deny"
+check "ANSI-C 인용을 낀 임의 인터프리터도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ | sh -c 'touch $WORK/rider'")" "deny"
+check "인자 자리의 ANSI-C 인용도 거부" \
+  "$(hook_decide_bash "$GATEP exec --rationale $ANSIQ ; touch $WORK/rider")" "deny"
+# 원천 차단은 상태 `u` 에서 `$` 다음의 `'` 를 무조건 막으므로 **짝이 맞는** ANSI-C
+# 인용 하나도 거부다. 리뷰가 제안한 기대값은 `allow` 였는데 그것은 그물만 넣었을 때의
+# 값이고, 여기서는 원천 차단을 함께 넣기로 했으므로 픽스처를 선택한 수정안에 맞춘다.
+# 정당 행위를 막지 않는다는 근거는 아래 대조군들과, 이 파이프라인이 실제로 발행하는
+# 게이트 명령에 `$'`·`$"` 가 0회라는 실측이 진다.
+check "짝이 맞는 ANSI-C 인용 하나도 원천 차단으로 거부" \
+  "$(hook_decide_bash "$GATEP exec --rationale $ANSIQ2 -- ls")" "deny"
+# 그물 단독의 하중. 이 둘에는 `$'` 가 없어 원천 차단이 서지 않고, 오직 종단 상태가
+# `u` 가 아니라는 것만으로 거부된다 — 그물을 빼면 이 둘만 붉어진다. 잃는 것은 없다:
+# 미종료 인용은 bash 가 문법 오류로 거절하므로 실행 가능한 명령이 아니다.
+check "닫히지 않은 홑따옴표는 종단 상태 그물이 거부한다" \
+  "$(hook_decide_bash "$GATEP snapshot 'abc ; touch $WORK/rider")" "deny"
+check "닫히지 않은 큰따옴표도 종단 상태 그물이 거부한다" \
+  "$(hook_decide_bash "$GATEP snapshot \"abc ; touch $WORK/rider")" "deny"
+# 그물의 음성 대조군. `'…'\''…'` 이어붙임은 종단 상태가 `u` 라 그대로 허용돼야 한다 —
+# 그물이 「따옴표가 하나라도 있으면 거부」로 퇴화하면 이것이 붉어진다.
+check "음성 대조군: 홑따옴표 이어붙임은 그대로 허용" \
+  "$(hook_decide_bash "$GATEP exec --rationale 'a'\\''b' -- ls")" "allow"
+# 그리고 그 거부가 어느 팔의 것인지 가른다. 종전 팔이 먼저 답하면 위 단언들이 전부
+# 공허하다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot $ANSIQ ; touch $WORK/rider" | jq -Rs .)" \
+        | HOME="$HH" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'인용되지 않은 셸 제어 연산자'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
+  *) bad "ANSI-C 라이더 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
 esac
 
 # 새 fail-closed 분기의 도달 가능성. 이 러너에서는 stat 이 정상이라 자연히
