@@ -1090,12 +1090,16 @@ esac
 # ---------------------------------------------------------------------------
 mkdir -p "$WT/sub"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+# FULL EQUALITY AGAINST THE SAME COMMAND RUN DIRECTLY, and stdout separated from
+# stderr to get it. `case "$out" in *base.txt*` matched a directory listing that
+# happened to CONTAIN the file, so anything the gate printed to stdout alongside
+# the act — a log line, a digest — passed it. Comparing against `ls` run in that
+# same directory asserts both halves at once: the act moved there, and nothing
+# else reached the caller's stdout.
+want_ls=$(cd "$WT" && ls)
 out=$(cd "$WT/sub" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-case "$out" in
-  *base.txt*) ok "행위가 대상 워크트리에서 실행된다 (호출자의 cwd 가 아니라)" ;;
-  *) bad "대상 워크트리" "'"'"'$out'"'"'" ;;
-esac
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다 (호출자의 cwd 가 아니라)" "$out" "$want_ls"
 
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
@@ -1560,12 +1564,10 @@ if [ -d "$LINKED" ]; then
 
   set_exec_wt "$LINKED"
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  want_ls=$(cd "$LINKED" && ls)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-  case "$out" in
-    *only-here.txt*) ok "행위가 실행 워크트리에서 실행된다 (메인 워크트리가 아니라)" ;;
-    *) bad "실행 워크트리" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
-  esac
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+  check "행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라)" "$out" "$want_ls"
 
   # A declared execution worktree in ANOTHER repository is refused — that would
   # be a second target wearing the first one's cutpoint.
@@ -1581,15 +1583,106 @@ if [ -d "$LINKED" ]; then
   # Absent is the default, and the default is the main worktree.
   set_exec_wt ""
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  want_ls=$(cd "$WT" && ls)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-  case "$out" in
-    *base.txt*) ok "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" ;;
-    *) bad "실행 워크트리 기본값" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
-  esac
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+  check "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" "$out" "$want_ls"
 else
   bad "픽스처 전제" "링크된 워크트리를 만들지 못했다"
 fi
+
+# ---------------------------------------------------------------------------
+# 14c-1. The post-mutation digest is emitted to a file, after the last row
+#
+# Every acting call carries `--snapshot-digest`, and the only way to learn that
+# value was a separate `snapshot` call whose entire purpose was to read back a
+# number the previous acting call had already decided. `--emit-digest-to`
+# removes that round trip. Three ways of building it are wrong, and none of the
+# existing assertions in this file would catch any of them:
+#
+#   - Writing the digest to stdout corrupts `exec`'s pass-through of the wrapped
+#     command's own output — silently, because a caller parsing that output for
+#     a substring still finds it.
+#   - Writing it to stderr puts it where the run log goes, so a caller reading
+#     the log picks up a hash that looks like a diagnostic.
+#   - Emitting BEFORE the gate's own ledger appends hands back a value that is
+#     stale the moment it arrives, and every acting call after it comes back
+#     exit 4. That failure is loud but it is also total: the run deadlocks on
+#     the mechanism meant to speed it up. The `act --kind segment` case below is
+#     the discriminating one — that branch writes a SECOND row after the
+#     `자율 승인` row, so an emission placed at the first append passes every
+#     other assertion here and fails only this one.
+# ---------------------------------------------------------------------------
+EMIT="$WORK/emit"
+
+# The directory is deliberately NOT created first: the gate makes the parent of
+# the path it was handed, and a caller naming a fresh run-directory subpath is
+# the normal case rather than an edge one.
+want_ls=$(cd "$WT" && ls)
+out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+      --emit-digest-to "$EMIT/d1.json" -- ls 2>/dev/null)
+check "방출을 켜도 exec 의 stdout 은 래핑된 명령의 stdout 그 자체다" "$out" "$want_ls"
+
+errout=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+         --emit-digest-to "$EMIT/d2.json" -- ls 2>&1 >/dev/null)
+H_emit=$(jq -r .H "$EMIT/d2.json" 2>/dev/null || true)
+if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
+  bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
+else
+  case "$errout" in
+    *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
+    *) ok "다이제스트가 stderr 로 새지 않는다" ;;
+  esac
+  check "방출된 H 가 64자리다" "${#H_emit}" "64"
+  case "$H_emit" in
+    *[!0-9a-f]*) bad "방출 H 문자 집합" "16진수 밖의 문자가 있다: '$H_emit'" ;;
+    *) ok "방출된 H 가 소문자 16진수만으로 이뤄진다" ;;
+  esac
+  # THE VALUE IS THE ONE THAT HOLDS AFTER THE CALL'S OWN WRITES. A pre-append
+  # emission fails right here.
+  check "방출값이 직후 snapshot 의 H 와 같다" "$H_emit" "$(HH)"
+  snapjson=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
+  check "방출 파일이 의무 총계를 싣는다" \
+    "$(jq -r .obligations_total "$EMIT/d2.json")" \
+    "$(printf '%s' "$snapjson" | jq -r .obligations_total)"
+  check "방출 파일이 대기 승인 총계를 싣는다" \
+    "$(jq -r .pending_approvals_total "$EMIT/d2.json")" \
+    "$(printf '%s' "$snapjson" | jq -r .pending_approvals_total)"
+fi
+
+# `act` is the other acting verb and it is captured with `2>&1` everywhere else
+# in this file, so leaving it out would let the emission be wired into `exec`
+# alone and stay green.
+( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --target infra --segment SW \
+  --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest-to "$EMIT/d3.json" -- ls ) >/dev/null 2>&1
+check "act 경로도 방출한다" "$(jq -r .H "$EMIT/d3.json" 2>/dev/null || true)" "$(HH)"
+
+# The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
+# emission taken at that first append is one row behind here and only here.
+( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra \
+  --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest-to "$EMIT/d4.json" -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+n=$(grep -c '^- `segment` | id=SEMIT ' "$LEDGER" || true)
+check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
+check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
+  "$(jq -r .H "$EMIT/d4.json" 2>/dev/null || true)" "$(HH)"
+
+# The refusal path. An emission the caller asked for and did not get is the one
+# failure it cannot detect on its own — it just falls back to the round trip
+# forever — so an unusable path is an argv error rather than a warning.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest-to "" -- ls
+check "--emit-digest-to 에 빈 값이면 인자 오류다" "$rc" "2"
+
+# The parent is an existing REGULAR FILE, so `mkdir -p` genuinely fails. A
+# merely-absent directory would not test anything: the gate creates that one.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$WT/base.txt/d.json" -- ls
+check "디렉터리를 만들 수 없는 경로면 인자 오류다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer

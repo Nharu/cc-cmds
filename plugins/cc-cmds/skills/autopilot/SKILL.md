@@ -271,13 +271,13 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `run_id`, `goal`, `goal_digest` | the run's identity and the frozen termination point |
 | `targets[]` | `alias`, `slug`, `cutpoint`, `home` — one object per target |
 | `obligations[]`, `obligations_total` | open obligations; the array is capped and the total is not, so compare them before concluding the list is whole |
-| `pending_approvals[]` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases |
+| `pending_approvals[]`, `pending_approvals_total` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases. Unlike `obligations[]` the array is not capped, so the total is the same count as a bare number; it is carried because the emitted digest file below carries it too, and one derivation is what keeps the two surfaces from disagreeing |
 | `unmet_conditions[]` | the numbered termination conditions that do NOT hold, as rendered lines. **Capped**, and the lines that grow with the night take the front of it |
 | `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
 | `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most ten, and never truncated. This is the one to read when the two above disagree |
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
-| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest` |
+| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest`. An acting call that carried `--emit-digest-to <path>` has already written this same value to that file, so reading the file is the ordinary way to obtain it and calling `snapshot` again is the fallback |
 
 **THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
 
@@ -287,7 +287,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 
 **Where a decision is genuinely yours to make rather than to act on, the answer is the judgment grades below — not a question.** Grade 0 you take, grade 1 you take and record, grade 2 you escalate, and escalation means issuing an approval through the gate so the stop is a row rather than a silence.
 
-**Every acting call carries `--snapshot-digest <H>`, copied from the snapshot just read.** This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
+**Every acting call carries `--snapshot-digest <H>`, and every acting call carries `--emit-digest-to <run-dir>/gate-digest.json` so the next one does not have to go looking for it.** The gate writes that file after its own last ledger row, so its `H` is the value the *next* acting call needs; read the file rather than calling `snapshot` again. Measured: without it every act cost two gate invocations, and the first of the two existed only to read back a number the previous invocation had already decided. **Fall back to `snapshot` in exactly three cases** — the first acting call of a run, a call whose emission failed, and a gate old enough to refuse the flag with exit 2 as an unknown argument (the hook receives the gate as a runtime parameter, so the two copies can be different deployments). In that last case drop the flag and keep using `snapshot`. What does **not** change is the binding: the digest is still compared against live state, and it is still the one just observed rather than one held across a turn. This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
 
 ### The verbs
 
@@ -321,6 +321,8 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 
 **They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest, and a router that reads a digest, asks `plan`, and then acts on the digest it read first will be refused with exit 4. **Re-read the snapshot after asking.** Making the re-derivation conditional on the verb would not fix this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
 
+**And this re-read is a real `snapshot` call, not a file read.** `grade` and `plan` perform nothing and reach no acting path, so neither emits a digest however the flag is spelled — which is deliberate rather than an omission: emitting from a verb that answers a question would put a value in the file that no act of this run stands behind. So the emitted file is stale after a dry run in exactly the way it is stale after any other write, and the two paths do not overlap. This is the one place in the loop where the round trip stays.
+
 ### Reading the exit codes
 
 | Code | Meaning | What the router does |
@@ -328,7 +330,7 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 | 0 | performed | continue |
 | 2 | vocabulary error | fix the argv — a token was outside a closed set |
 | 3 | a rule refused | read which one; the refusal names the repair |
-| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one |
+| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one. This is also the recovery path when an emitted digest went stale — something appended between the emission and the call — so a 4 here is not evidence against the emission, it is the emission's designed failure mode |
 | 5 | approval issued | the act is outside pre-authorization — see below |
 | 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
@@ -392,8 +394,11 @@ A stage is `act --kind skill`, and the gate launches it through the wrapper. Nev
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id> \
   --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  --emit-digest-to <run-dir>/gate-digest.json \
   -- <스테이지 종류> -p "/cc-cmds:<스킬>-unattended <인자…>"
 ```
+
+`<H>` comes from `<run-dir>/gate-digest.json`, written by the previous acting call's own `--emit-digest-to`; where that file is absent take it from `snapshot` instead, and where the gate refuses the flag as an unknown argument drop the flag and keep taking it from `snapshot`.
 
 **The first token after `--` is the STAGE KIND, and it is consumed before the CLI ever sees the rest.** `act --kind skill` calls the launcher as `<alias> <segment> <stage-kind> <cli args…>`, so a form that starts with `-p` hands `-p` over as the kind. The vocabulary check then falls back to `generic`, meaning the stage runs under settings that are not its own, and `-p` is gone from what reaches the wrapper. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`, and it selects the settings variant rather than the skill.
 

@@ -2923,7 +2923,25 @@ segment_cycle() {
     local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
     mkdir -p "$(dirname "$rp")"
     sid="S5:$seg:$cycle"
-    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp \"설계는 $DOC\""
+    # THE REVIEW'S SCOPE TRAVELS ON THE DISPATCH LINE, the same way the
+    # implementation arm's declared file set already does two stages up. Without
+    # it the review derives its own base — `gh pr view … baseRefName`, or the
+    # default branch — and a segment branched from a base that has since moved
+    # is diffed against the wrong tree. That failure is silent: the report is
+    # well-formed, the findings are real findings about the wrong diff, and
+    # nothing in the run says which tree was read. `선언 파일 집합` is the other
+    # half of the same gap — git can say which files changed, and only the
+    # declaration says which ones were supposed to.
+    #
+    # Both flags are OMITTED rather than passed empty when their value is
+    # unavailable. A flag whose value is missing consumes the next token, so
+    # `--base-sha --declared-files …` would hand the review the literal string
+    # `--declared-files` as a base sha and then lose the file set entirely.
+    local rbase rscope=""
+    rbase=$(base_sha "$al" 2>/dev/null) || rbase=""
+    [ -z "$rbase" ] || rscope=" --base-sha $rbase"
+    [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
+    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $DOC\""
     stage_wait_all "$sid"
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')

@@ -270,12 +270,14 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review
 
-**Usage**: `/cc-cmds:review [<target>] [<directive>]`
+**Usage**: `/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상. 입력 형태에 따라 PR/브랜치/파일 모드로 자동 분기. |
 | `<directive>` | _(optional)_ | 리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로"). |
+| `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 이미 base 를 아는 호출자(파이프라인 드라이버 등)가 리뷰의 재유도를 없애기 위해 넘긴다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 검증에 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
+| `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
 
 **`<target>` 입력 형태별 처리:**
 
@@ -288,31 +290,47 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰(`42`)은 PR 번호, 하이픈·영문 포함 토큰(`42-fix-bug`)은 브랜치로 해석. 순수 숫자 + 브랜치 동시 존재 시 PR 번호 우선. 어느 형태에도 해당되지 않으면 `AskUserQuestion`으로 명확화._
 
-> _Parsing (`<directive>`): 지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향._
+> _Parsing (`<directive>`): 지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향. 인식된 플래그와 그 값을 뺀 나머지가 지시문이며, 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 경고 후 폐기한다._
+
+> _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다._
+
+> _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다._
 
 ### /cc-cmds:review-lite
 
-**Usage**: `/cc-cmds:review-lite [<target>]`
+**Usage**: `/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | _(optional)_ | 리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시. |
+| `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 호출자가 지정. 넘겨받은 값은 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. lite 에서도 동일하다. |
+| `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 변경이 건드리기로 선언된 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하므로, 선언 밖 파일을 지목할 수 있게 한다. |
+
+> _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다._
+
+> _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다._
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<target>` | (required) | 리뷰 대상. 드라이버가 방금 만든 PR 번호나 브랜치를 넘긴다. |
 | `<directive>` | _(optional)_ | 리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향. |
 | `--report-path <abs-path>` | off (리포트를 cwd 상대 `docs/reviews/{slug}.md`에 기록) | 뒤에 오는 **메인 워크트리 절대 경로**에 리포트를 기록한다. 세그먼트 워크트리에서 실행될 때 리포트가 그 트리에 떨어져 철거와 함께 파괴되는 것을 막는 유일한 수단. |
+| `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
+| `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 `--report-path` 값을 뺀 나머지._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
+
+> _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다 — 정지하지 않는다._
+
+> _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다._
 
 ### /cc-cmds:review-upgrade
 
