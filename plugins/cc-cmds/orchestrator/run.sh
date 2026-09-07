@@ -2937,9 +2937,21 @@ segment_cycle() {
     # unavailable. A flag whose value is missing consumes the next token, so
     # `--base-sha --declared-files …` would hand the review the literal string
     # `--declared-files` as a base sha and then lose the file set entirely.
-    local rbase rscope=""
-    rbase=$(base_sha "$al" 2>/dev/null) || rbase=""
-    [ -z "$rbase" ] || rscope=" --base-sha $rbase"
+    # `pre_head` AND NOT A FRESH `base_sha`. The comment above names a base that
+    # moved as the failure this flag exists to prevent, and re-deriving here
+    # reads whatever the base is NOW — which in that exact situation is the
+    # wrong value, so the flag would be rejected as a non-ancestor and the arm
+    # would fall back to the derivation it was added to replace. The branch
+    # point is already fixed in this function and already trusted by the
+    # implementation predicate.
+    #
+    # Two limits ride along, and neither is new exposure. A resumed run reuses
+    # an existing worktree, so `pre_head` is that tree's current HEAD rather
+    # than the branch point; and `pre_head` is assigned once outside the cycle
+    # loop while the rebase runs inside it, so after a rebase it is no longer an
+    # ancestor. Correctness across a rebase needs a re-derivation at that site.
+    local rscope=""
+    [ -z "$pre_head" ] || rscope=" --base-sha $pre_head"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
     stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $DOC\""
     stage_wait_all "$sid"

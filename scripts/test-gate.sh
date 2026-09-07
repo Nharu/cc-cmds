@@ -1613,7 +1613,12 @@ fi
 #     `자율 승인` row, so an emission placed at the first append passes every
 #     other assertion here and fails only this one.
 # ---------------------------------------------------------------------------
-EMIT="$WORK/emit"
+# UNDER THE GATE'S OWN RUN DIRECTORY, because the emission target is confined
+# there. A fixture path elsewhere in `$WORK` is refused before anything is
+# written, and every assertion downstream of the read then collapses on a
+# premise rather than on the property it names — which is how a suite reports
+# five failures for one cause.
+EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/emit"
 
 # The directory is deliberately NOT created first: the gate makes the parent of
 # the path it was handed, and a caller naming a fresh run-directory subpath is
@@ -1679,10 +1684,28 @@ check "--emit-digest-to 에 빈 값이면 인자 오류다" "$rc" "2"
 
 # The parent is an existing REGULAR FILE, so `mkdir -p` genuinely fails. A
 # merely-absent directory would not test anything: the gate creates that one.
+# It sits INSIDE the run directory so this measures the filesystem check and not
+# the confinement check — two different exit-2 arms, and a fixture outside would
+# reach the second one and pass while proving nothing about the first.
+printf 'x\n' > "$XDG_STATE_HOME/cc-cmds/run/R1/notadir"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$WT/base.txt/d.json" -- ls
+     --emit-digest-to "$XDG_STATE_HOME/cc-cmds/run/R1/notadir/d.json" -- ls
 check "디렉터리를 만들 수 없는 경로면 인자 오류다" "$rc" "2"
+
+# THE CONFINEMENT ARM, asserted separately from the one above. The emission
+# target is a second write the axis-2 grade does not describe and the ledger row
+# has no field for, so an unconfined path would let an act declaring a read
+# overwrite anything this uid can write.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$WORK/outside.json" -- ls
+check "런 디렉터리 밖 방출 경로는 거부된다" "$rc" "2"
+if [ -e "$WORK/outside.json" ]; then
+  bad "거부된 방출 경로에는 아무것도 쓰이지 않는다" "$WORK/outside.json 이 생겼다"
+else
+  ok "거부된 방출 경로에는 아무것도 쓰이지 않는다"
+fi
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer

@@ -1493,14 +1493,27 @@ gate_snapshot() {
 # ---------------------------------------------------------------------------
 gate_emit_digest() {
   [ -n "${GATE_EMIT_DIGEST_TO:-}" ] || return 0
+  # SINGLE SHOT. The explicit calls below mark the points where the last row of
+  # a known branch has just landed; the EXIT trap catches every other way out of
+  # an acting verb, including the refusals that append a row and then exit. With
+  # both in place a branch would otherwise write the file twice, so the first
+  # success clears the target and every later call becomes a no-op.
   local tmp="$GATE_EMIT_DIGEST_TO.$$"
   # Same directory as the target by construction, so the rename is atomic and a
   # reader never sees a half-written object.
-  if printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s}\n' \
+  # THE EMITTING ACTOR TRAVELS WITH THE VALUE. The file name separates actors by
+  # convention, and a convention is exactly what a caller can get wrong — so the
+  # object also says who wrote it, and a consumer that finds an id other than
+  # its own knows it is holding someone else's digest rather than a stale one.
+  # `CC_PIPELINE_STAGE_ID` is empty in the router and set in a stage, which is
+  # the same distinction this file already relies on elsewhere.
+  if printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s,"actor":"%s"}\n' \
        "$(gate_snapshot_digest)" \
        "$(gate_open_obligations | gate_count)" \
-       "$(gate_pending_approval_ids | gate_count)" >"$tmp" 2>/dev/null \
+       "$(gate_pending_approval_ids | gate_count)" \
+       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')" >"$tmp" 2>/dev/null \
      && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; then
+    GATE_EMIT_DIGEST_TO=""
     return 0
   fi
   rm -f "$tmp" 2>/dev/null || true
@@ -2372,7 +2385,7 @@ gate_main() {
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
   local approval="" render=0 worktree="" review_policy="" void=0 reject=0
-  local emit_digest_to="" emit_digest_seen=0 emit_digest_dir=""
+  local emit_digest_to="" emit_digest_seen=0 emit_digest_dir="" emit_digest_root=""
   GATE_RESUME=""; export GATE_RESUME
   # The emit path travels to `gate_verb_act` as a global rather than as an
   # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
@@ -2411,15 +2424,15 @@ gate_main() {
   # and got no file falls back to the round trip forever, which looks exactly
   # like the flag working and saving nothing. Refusing with the same exit 2 the
   # unknown-argument arm uses is what makes that case audible.
+  # ARGV SHAPE ONLY. Everything that touches the filesystem moved below
+  # `rundir_init`, and the reason is not tidiness: creating the parent directory
+  # here happened before the manifest existence check, before `check_manifest`,
+  # before `gate_check_grant` and before the run directory exists, so a call
+  # that was about to be refused had already made a directory and no row
+  # recorded it.
   if [ "$emit_digest_seen" = "1" ]; then
     [ -n "$emit_digest_to" ] || \
       { printf 'gate: --emit-digest-to 에 경로가 필요합니다\n' >&2; exit 2; }
-    emit_digest_dir=$(dirname "$emit_digest_to")
-    if ! mkdir -p "$emit_digest_dir" 2>/dev/null || [ ! -w "$emit_digest_dir" ]; then
-      printf 'gate: --emit-digest-to 의 경로에 쓸 수 없습니다: %s\n' "$emit_digest_to" >&2
-      exit 2
-    fi
-    GATE_EMIT_DIGEST_TO="$emit_digest_to"
   fi
 
   [ -n "$MANIFEST" ] || { printf 'gate: --manifest 가 필요합니다\n' >&2; exit 2; }
@@ -2450,6 +2463,62 @@ gate_main() {
   derive_paths_from_manifest
   gate_check_grant || exit $?
   rundir_init
+
+  # THE EMISSION TARGET IS CONFINED TO THE RUN DIRECTORY, and this is a boundary
+  # check rather than hygiene. The path is consumed by the option loop, so it is
+  # not in the `"$@"` the write guards inspect; the axis-2 grade is computed
+  # from the wrapped command's argv0 and says nothing about it; and the act's
+  # ledger row has no field to carry it. So an unconfined value is a SECOND
+  # write target that no part of the boundary grades, guards or records — an act
+  # declaring `--surface 읽기` could overwrite any path this uid can write while
+  # the ledger recorded a read.
+  #
+  # Confinement costs nothing: every real consumer already writes under the run
+  # directory, which is the "one value, one file" idiom this file already
+  # follows for `surface-digest`, `ledger-path` and `progress-digest`.
+  #
+  # THE FILE IS PER-ACTOR, and that is the caller's part of the contract rather
+  # than something enforced here. A run has more than one actor acting through
+  # this gate — the router, and whatever stage is live — and one shared filename
+  # would have them overwriting each other's digest, so a reader could take a
+  # value that was never its own. That is a race the round trip it replaces did
+  # not have. The router writes `gate-digest.router.json` and a stage writes
+  # `gate-digest.<segment>.json`; the gate does not police the basename, because
+  # a wrong one costs a stale digest and exit 4, which is loud.
+  #
+  # Resolved physically before comparing, because `..` and a symlinked parent
+  # are both ways to spell a path that leaves the run directory while looking
+  # like it does not.
+  if [ -n "$emit_digest_to" ]; then
+    emit_digest_dir=$(dirname "$emit_digest_to")
+    if ! mkdir -p "$emit_digest_dir" 2>/dev/null || [ ! -w "$emit_digest_dir" ]; then
+      printf 'gate: --emit-digest-to 의 경로에 쓸 수 없습니다: %s\n' "$emit_digest_to" >&2
+      exit 2
+    fi
+    emit_digest_dir=$(cd "$emit_digest_dir" && pwd)
+    emit_digest_root=$(cd "$RUN_DIR" && pwd)
+    case "$emit_digest_dir/" in
+      "$emit_digest_root"/*) ;;
+      *) printf 'gate: --emit-digest-to 는 런 디렉터리 아래여야 합니다: %s (런 디렉터리 %s)\n' \
+           "$emit_digest_to" "$RUN_DIR" >&2
+         exit 2 ;;
+    esac
+    GATE_EMIT_DIGEST_TO="$emit_digest_dir/$(basename "$emit_digest_to")"
+    # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
+    # and an enumeration of exit points is the wrong shape for it — the first
+    # enumeration missed four refusals that append a row and then exit, and a
+    # caller reading no file there falls back to the round trip forever, which
+    # looks exactly like the flag working and saving nothing. A trap states the
+    # rule once and cannot fall behind a new exit.
+    #
+    # Emitting on a path that appended nothing is harmless: the value is the
+    # current digest either way, and a caller holding a correct digest is the
+    # point. `plan` is excluded because it is excluded by contract, not because
+    # it happens to write no row.
+    case "$verb" in
+      act|exec) trap 'gate_emit_digest' EXIT ;;
+    esac
+  fi
 
   # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
   # open. A run that was cut and resumed still has to be findable, and the run
