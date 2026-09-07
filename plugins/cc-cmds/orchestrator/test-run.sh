@@ -2245,7 +2245,23 @@ fi
 # `$RUN_DIR/base-branch.<별칭>` 으로 동결돼 워크트리 분기점·원장의 베이스 sha·외부
 # 드리프트 비교·rebase 대상에 전부 실린다 — 검증에서 면제하면 시끄럽게 실패하던 경로가
 # 조용한 호스트 의존 추측이 된다.
-( cd "$MF_REPO" && git checkout -q -b derived-only ) >/dev/null 2>&1
+#
+# 그 전제는 이 절이 **직접 세운다.** 앞 절들이 이 레포에 `refs/remotes/origin/HEAD` 를
+# 남기고, 그것이 있으면 유도는 첫 팔에서 해소돼 체크아웃된 이름까지 내려가지 않는다 —
+# 즉 이 절이 재려는 상태가 아예 만들어지지 않는다. 실측: 그 ref 가 남은 채로는
+# 유도가 `main` 으로 해소되고 `refs/remotes/origin/main` 이 실재해 검사가 통과한다.
+# 원격 자체를 잠시 떼어 낸다. ref 만 지우면 `check_base_branches` 가 맨 먼저 부르는
+# `base_fetch` 가 실제 origin 에서 그것을 되살려, 유도가 다시 첫 팔에서 해소된다 —
+# 실측: 지운 직후 `refs/remotes/origin/HEAD` 가 없다가 그 호출 뒤 되살아났다.
+( cd "$MF_REPO" \
+  && git remote remove origin \
+  && git update-ref -d refs/remotes/origin/HEAD \
+  && git update-ref -d refs/remotes/origin/main \
+  && git checkout -q -b derived-only ) >/dev/null 2>&1
+# 전제가 실제로 섰는지 반증 가능하게 확인한다 — 위 체인은 출력을 버리므로 실패해도 조용하다.
+check "유도가 체크아웃된 이름으로 내려가는 상태다" \
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$MF_REPO" && git remote | grep -c . )" \
+  "derived-only/없음/0"
 write_manifest "$MF" "" "" "(없음)"
 MANIFEST="$MF"
 # `RUN_DIR` 를 비워 부른다 — 동결된 사본이 있으면 유도 자체가 일어나지 않아 이 절이
@@ -2255,7 +2271,11 @@ if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
 else
   ok "해소되지 않는 유도값이 거부된다 ((없음) 분기가 검증에서 면제되지 않는다)"
 fi
-( cd "$MF_REPO" && git checkout -q main ) >/dev/null 2>&1
+# 원격을 되돌린다 — 아래 절은 유도값이 해소되는 쪽을 재므로 원격 추적 ref 가 필요하다.
+( cd "$MF_REPO" \
+  && git checkout -q main \
+  && git remote add origin "$MF_ORIGIN" \
+  && git fetch -q origin ) >/dev/null 2>&1
 if ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) >/dev/null 2>&1; then
   ok "해소되는 유도값은 그대로 통과한다 (파생값 검증이 공허하지 않다)"
 else
