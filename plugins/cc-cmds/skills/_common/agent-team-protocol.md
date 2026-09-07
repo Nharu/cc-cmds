@@ -11,10 +11,12 @@ Spawn each member as a nameless background task: `Agent({ subagent_type: "claude
 Before spawning the first member of a team, the lead creates one team witness directory **out-of-tree**, rooted under the driver-exported run directory when there is one and under the system temp dir otherwise. One command does the whole of it:
 
 ```
-${CLAUDE_SKILL_DIR}/../../orchestrator/cc-team-witness-init.sh <slug>
+<plugin root>/orchestrator/cc-team-witness-init.sh <slug>
 ```
 
 It prints the created directory on stdout and nothing else, so **the printed path is recorded literally** — never `$WITNESS_DIR`, which does not survive to the next Bash call. Root selection, the stage tag, the `mktemp -d` and the `.attempt` stamp all happen inside it.
+
+**`<plugin root>` is substituted by YOU before the command reaches a shell**, exactly as it is in the two other places in this plugin that run an orchestrator script from skill prose. It is the directory holding `orchestrator/` and `skills/` — the parent of the skill directory's parent. It is deliberately **not** a shell variable: `${CLAUDE_SKILL_DIR}` is a placeholder you substitute into `Read` paths, it is not exported into the shell, and a command written with it expands to an empty prefix and fails on a path that does not exist. That failure is quiet in the worst way — the basename is still this script's, so the gate grades it normally and the version-skew advisory does not fire either, leaving one file-not-found line as the entire signal, and the resulting missing witness directory is the state the contract itself calls hardest to tell apart from a member that wrote nothing.
 
 **Run it directly. Never put `bash` (or `sh`, or any other interpreter) in front of it.** The adjudication gate grades an act by the basename of its argv0, so an interpreter in front makes the act `bash` — which is graded a worktree write whatever it wraps — and the honest out-of-tree declaration is refused again, which is the entire condition this command exists to escape. The prohibition is stated here rather than left to the file's own header comment because that header is only read *after* someone has already typed the wrong thing. It is also stated against a pull: the two other places in this plugin that run an orchestrator script from skill prose both write `bash <path>`, so the repository's own idiom points the wrong way here.
 

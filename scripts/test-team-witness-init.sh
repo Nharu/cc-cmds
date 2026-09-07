@@ -36,6 +36,53 @@ bad()   { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; 
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 
 # ---------------------------------------------------------------------------
+# THE DOCUMENTED CALL SPELLING — the half of this fix no other check can see
+#
+# Everything else in this file calls the script through a path the suite
+# computes itself, so every assertion below stays green no matter what the
+# shipped prose tells a caller to type. Three review cycles found a defect in
+# that prose by hand: first a `bash` prefix that would put the interpreter in
+# argv0 and undo the grading row, then a `${CLAUDE_SKILL_DIR}` prefix that is a
+# model-substituted placeholder rather than a shell variable and expands to
+# nothing in a shell. Both failures are quiet — the basename survives either
+# one, so the gate grades the act normally and the version-skew advisory does
+# not fire — which is exactly why they belong in a test rather than in review.
+#
+# What is pinned: the four places a caller reads carry the same spelling, that
+# spelling substitutes `<plugin root>` and nothing else, and substituting it
+# lands on this shipped, executable file.
+# ---------------------------------------------------------------------------
+CALL='<plugin root>/orchestrator/cc-team-witness-init.sh'
+for f in plugins/cc-cmds/skills/_common/agent-team-protocol.md \
+         plugins/cc-cmds/skills/review/SKILL.md \
+         plugins/cc-cmds/skills/review-unattended/SKILL.md \
+         plugins/cc-cmds/skills/review-lite/SKILL.md; do
+  line=$(grep -F 'cc-team-witness-init.sh' "$repo_root/$f" | grep -v '^#' || true)
+  case "$line" in
+    *"$CALL"*) ok "$f — 문서화된 호출 철자를 그대로 담는다" ;;
+    *) bad "$f — 문서화된 호출 철자를 그대로 담는다" "got '$line'" ;;
+  esac
+  case "$line" in
+    *'bash '*"cc-team-witness-init.sh"*|*'sh '*"/orchestrator/cc-team-witness-init.sh"*)
+      bad "$f — 인터프리터 접두가 붙어 있지 않다" "got '$line'" ;;
+    *) ok "$f — 인터프리터 접두가 붙어 있지 않다" ;;
+  esac
+  case "$line" in
+    *'CLAUDE_SKILL_DIR'*"cc-team-witness-init.sh"*)
+      bad "$f — 셸이 확장할 수 없는 자리표시자를 쓰지 않는다" "got '$line'" ;;
+    *) ok "$f — 셸이 확장할 수 없는 자리표시자를 쓰지 않는다" ;;
+  esac
+done
+# `<plugin root>` substituted the one documented way must land on this file.
+PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
+SUBST="${PLUGIN_ROOT}/orchestrator/cc-team-witness-init.sh"
+if [ -x "$SUBST" ]; then
+  ok "치환된 호출 철자가 실린 실행 파일에 착지한다"
+else
+  bad "치환된 호출 철자가 실린 실행 파일에 착지한다" "$SUBST"
+fi
+
+# ---------------------------------------------------------------------------
 # Directly executable — the pairing the gate row depends on
 # ---------------------------------------------------------------------------
 if [ -x "$INIT" ]; then
@@ -145,6 +192,22 @@ if [ "$d1" = "$d2" ]; then
 else
   ok "같은 슬러그·같은 스테이지라도 디렉터리는 갈린다"
 fi
+
+# ---------------------------------------------------------------------------
+# A root that is not a directory is refused before anything is created
+#
+# The root is an environment value, so the "stdout is exactly the directory"
+# contract holds only as far as that value does. A caller that recorded a
+# non-path would hand it to the cleanup procedure's path-guarded `rm -rf`.
+# ---------------------------------------------------------------------------
+out=$(run_init "$RUNDIR/not-a-real-dir" '' review-alpha 2>/dev/null)
+rc=$?
+check "루트가 디렉터리가 아니면 2 로 거부한다" "$rc" "2"
+check "그때 표준출력에 아무것도 내지 않는다" "$out" ""
+printf 'x\n' > "$WORK/a-file-not-a-dir"
+out=$(run_init "$WORK/a-file-not-a-dir" '' review-alpha 2>/dev/null)
+rc=$?
+check "루트가 파일이어도 거부한다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # A missing slug is refused, and refused without printing a path

@@ -3890,12 +3890,20 @@ gate_verb_act() {
     fi
   fi
   if [ "$graded" = "등급 미상" ]; then
-    gate_orchestrator_script_hint "$1"
-    # The message names WHICH repair, because two different things arrive here:
-    # a tool the table has never listed (widen the table), and a recognized tool
-    # in a form the sub-table could not parse (respell the command). Without the
-    # distinction the router sees one refusal and has no way to tell which.
+    # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
+    # lines name a repair and the two repairs are opposites: the generic one
+    # says respell the command, the version-skew advisory says do NOT respell it
+    # because both respellings available here are losses. Printed the other way
+    # round the reader's last instruction was the one that does not apply, and
+    # the two spellings it invites are exactly the two the advisory forbids.
+    #
+    # The generic message names WHICH repair, because two different things
+    # arrive here: a tool the table has never listed (widen the table), and a
+    # recognized tool in a form the sub-table could not parse (respell the
+    # command). Without the distinction the router sees one refusal and has no
+    # way to tell which.
     warn "축2 등급 미상 — 등급표에 없는 argv0 는 읽기로 떨어지지 않습니다: $1 (그 도구가 표에 오른 적이 없다면 표를 넓혀야 하고, 표에 있는 도구인데 형태를 못 읽은 것이라면 하위 명령이 보이도록 다시 쓰세요)"
+    gate_orchestrator_script_hint "$1"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
 

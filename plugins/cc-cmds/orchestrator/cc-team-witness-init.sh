@@ -81,6 +81,18 @@ slug=$(printf '%s' "$slug" | tr -c 'A-Za-z0-9._-' '-')
 # string.
 WITNESS_ROOT="${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}"
 WITNESS_ROOT="${WITNESS_ROOT%/}"
+# The root is an environment value, so the stdout contract — exactly one line,
+# and that line is the directory — rests on it until it is checked. An empty or
+# non-directory root makes `mktemp` fail with its own message on stderr and this
+# script exit non-zero, which is survivable; what is not survivable is the
+# caller recording whatever came back and the cleanup procedure later feeding
+# that string to a path-guarded `rm -rf`. Refuse here, where it is still only a
+# string, and say which variable produced it.
+if [ -z "$WITNESS_ROOT" ] || [ ! -d "$WITNESS_ROOT" ]; then
+  printf 'cc-team-witness-init.sh: 위트니스 루트가 디렉터리가 아닙니다: %s (CC_PIPELINE_RUN_DIR 또는 TMPDIR 를 확인하세요)\n' \
+    "${WITNESS_ROOT:-(빈 값)}" >&2
+  exit 2
+fi
 STAGE_TAG=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-}" | tr -c 'A-Za-z0-9._-' '-')
 WITNESS_DIR=$(mktemp -d "${WITNESS_ROOT}/cc-team-witness-${slug}${STAGE_TAG:+.${STAGE_TAG}}.XXXXXX")
 

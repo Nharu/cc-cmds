@@ -1819,6 +1819,25 @@ case "$msg" in
   *) bad "선언과 함께 부딪혀도 같은 안내가 나온다" "got '$msg'" ;;
 esac
 
+# The SECOND acting site, and it is a different branch from the one above: with
+# no `--surface` the mismatch check never runs and the helper is reached from
+# the plain unknown-grade arm instead. Asserting only the declaring shape left
+# this one uncovered.
+gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+  -- "$SKEWDIR/cc-not-yet-graded.sh" --x
+case "$msg" in
+  *"$HINT"*) ok "선언 없이 부딪혀도 같은 안내가 나온다" ;;
+  *) bad "선언 없이 부딪혀도 같은 안내가 나온다" "got '$msg'" ;;
+esac
+# And the two lines are ordered so the specific advice is what the reader ends
+# on: the generic message invites a respelling, the advisory says both available
+# respellings are losses. Reversed, the last instruction read is the wrong one.
+generic='등급표에 없는 argv0'
+case "$msg" in
+  *"$generic"*"$HINT"*) ok "일반 거부가 먼저 나오고 구체 안내가 마지막에 남는다" ;;
+  *) bad "일반 거부가 먼저 나오고 구체 안내가 마지막에 남는다" "got '$msg'" ;;
+esac
+
 # `watch.sh` really does live beside the gate and really has no grading row, so
 # it exercises the bare-name fallback against the shipped layout.
 gate grade --manifest "$MANIFEST" -- watch.sh --run x
