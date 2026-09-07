@@ -1,0 +1,6 @@
+규칙 2	docs/note.md
+규칙 4	scripts/suite-a.sh
+규칙 4	scripts/suite-b.sh
+규칙 4	scripts/suite-c.sh
+규칙 4	scripts/suite-d.sh
+규칙 4	scripts/suite-e.sh

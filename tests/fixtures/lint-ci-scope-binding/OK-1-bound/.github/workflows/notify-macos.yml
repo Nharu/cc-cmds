@@ -16,7 +16,7 @@ on:
 jobs:
   test-macos-native:
     runs-on: macos-latest
-    env:
+    env: &native_env
       CC_CMDS_REQUIRE_NATIVE: '1'
       CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
     timeout-minutes: 8
@@ -26,3 +26,17 @@ jobs:
         run: jq --version
       - name: Run darwin-only tests
         run: make test-darwin
+
+  # The second job takes the same env map through an alias, and it does set the
+  # variable — so rule 8 has to stay quiet about it. Read without exploding,
+  # `keys` fails on the alias, `|| true` swallows the error, and the empty key
+  # list is then read as "the variable is absent": a false violation on a job
+  # that is correct, from the same missing word that lets a real one through.
+  report-macos-native:
+    runs-on: macos-latest
+    env: *native_env
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report
+        run: jq --version

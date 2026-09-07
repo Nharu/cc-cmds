@@ -22,9 +22,9 @@
 #                            where detection has to be visible in review, so the
 #                            names are committed rather than described.
 #
-# Two checks keep the suite from passing vacuously, and both measure the SCAN
-# LIST rather than the filesystem. A count taken with `ls` is green against an
-# empty fixture root, which is the failure this pair refuses.
+# Three checks keep the suite from passing vacuously, and none of them measures
+# the filesystem. A count taken with `ls` is green against an empty fixture root,
+# which is the failure the first two refuse.
 #
 #   1. an assertion-count floor, incremented by the assertions that actually
 #      ran. Its job is collapse — an empty or unreadable fixture root — and not
@@ -32,6 +32,16 @@
 #   2. class coverage derived from this runner's own dispatch `case`. The table
 #      that dispatches is the table that measures, so a class that stops being
 #      exercised is caught by the same statement that would have run it.
+#   3. emission coverage derived from the LINT's own `viol` call sites. Neither
+#      of the first two measures WHICH violation a fixture pinned, and mutation
+#      testing found what that costs: neutralizing 12 of 25 `viol` sites left the
+#      suite fully green, because no expected-violations.txt asserted those rules
+#      at all. Rule identity alone is still too coarse — two branches of one rule
+#      reported against one target collapse into one `<id>|<target>` key, so
+#      killing either branch leaves the key behind. So each site is identified by
+#      its own message TEMPLATE, read out of the lint's source and turned into a
+#      pattern, and every site has to have been observed at least once across the
+#      sweep. A site that no fixture reaches is named.
 
 set -uo pipefail
 
@@ -39,7 +49,8 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-ci-scope-binding"
 
-ASSERTION_FLOOR=30
+ASSERTION_FLOOR=60
+VIOL_SITE_FLOOR=26
 
 if [[ ! -d "$fixtures" ]]; then
   echo "FAIL: fixtures root missing: $fixtures" >&2
@@ -48,7 +59,9 @@ fi
 
 stderr_capture=$(mktemp "${TMPDIR:-/tmp}/test-lint-ci-scope-binding.XXXXXX")
 stdout_capture=$(mktemp "${TMPDIR:-/tmp}/test-lint-ci-scope-binding.XXXXXX")
-trap 'rm -f "$stderr_capture" "$stdout_capture"' EXIT
+observed=$(mktemp "${TMPDIR:-/tmp}/test-lint-ci-scope-binding.XXXXXX")
+observed_out=$(mktemp "${TMPDIR:-/tmp}/test-lint-ci-scope-binding.XXXXXX")
+trap 'rm -f "$stderr_capture" "$stdout_capture" "$observed" "$observed_out"' EXIT
 
 passed=0
 failures=0
@@ -61,6 +74,46 @@ seen_err=0
 # carries no `[rule]` bracket and so does not enter the set.
 actual_violations() {
   sed -n 's#^FAIL: \[\([^]]*\)\] \([^ ]*\) — .*$#\1|\2#p' "$1" 2>/dev/null | sort -u
+}
+
+# `<rule id><TAB><message>` per reported violation, appended across the whole
+# sweep. The message is what tells two branches of one rule apart.
+observed_messages() {
+  sed -n 's#^FAIL: \[\([^]]*\)\] [^ ]* — \(.*\)$#\1	\2#p' "$1" 2>/dev/null
+}
+
+# A `viol` message template as written in the lint's source, turned into an ERE:
+# every interpolation becomes `.*` and every other character is matched
+# literally. Matching the literal remainder is the point — `선언이 죽었다 — '$item'
+# 가 tracked 파일이 아니다` and `… 가 tracked 파일을 하나도 담지 않는다` are two
+# sites of one rule that a prefix comparison would merge.
+viol_regex() {
+  printf '%s\n' "$1" | awk '
+    {
+      s = $0; out = ""; n = length(s); i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "$") {
+          # A braced expansion is consumed to its closing brace rather than to
+          # the end of the name: `${item%/}` carries a modifier, and stopping at
+          # the name would leave `%/}` in the pattern as literal text that the
+          # expanded output never contains.
+          if (substr(s, i + 1, 1) == "{") {
+            k = index(substr(s, i + 2), "}")
+            if (k > 0) { out = out ".*"; i = i + 2 + k; continue }
+          } else {
+            k = i + 1
+            while (k <= n && substr(s, k, 1) ~ /[A-Za-z_0-9]/) k++
+            if (k > i + 1) { out = out ".*"; i = k; continue }
+          }
+        }
+        if (index(".^$*+?()[]{}|\\", c) > 0) out = out "\\" c
+        else out = out c
+        i++
+      }
+      print out
+    }
+  '
 }
 
 for fixture in "$fixtures"/*/; do
@@ -79,6 +132,9 @@ for fixture in "$fixtures"/*/; do
   CI_SCOPE_ROOT="$fixture" bash "$script_dir/lint-ci-scope-binding.sh" \
     >"$stdout_capture" 2>"$stderr_capture"
   ec=$?
+
+  observed_messages "$stderr_capture" >> "$observed"
+  cat "$stdout_capture" >> "$observed_out"
 
   fixture_ok=1
 
@@ -143,13 +199,65 @@ for fixture in "$fixtures"/*/; do
   fi
 done
 
-if (( assertions < ASSERTION_FLOOR )); then
-  echo "FAIL: 실행된 단언이 $assertions 개로 하한 $ASSERTION_FLOOR 미만이다 — 픽스처 루트가 비었거나 순회가 무너졌다" >&2
+if (( seen_ok == 0 )) || (( seen_fail == 0 )) || (( seen_err == 0 )); then
+  echo "FAIL: 클래스 커버리지 — OK=$seen_ok FAIL=$seen_fail ERR=$seen_err, 세 팔이 전부 취해져야 한다" >&2
   failures=$((failures + 1))
 fi
 
-if (( seen_ok == 0 )) || (( seen_fail == 0 )) || (( seen_err == 0 )); then
-  echo "FAIL: 클래스 커버리지 — OK=$seen_ok FAIL=$seen_fail ERR=$seen_err, 세 팔이 전부 취해져야 한다" >&2
+# Emission coverage. The site list is read out of the lint rather than kept here,
+# so adding a `viol` call adds an obligation in the same commit that adds the
+# branch — a hand-maintained list would go stale exactly when a new branch shows
+# up unasserted, which is the failure being guarded against.
+uncovered=0
+sites=0
+while IFS=$'\t' read -r vline vid vmsg; do
+  [[ -n "$vid" ]] || continue
+  sites=$((sites + 1))
+  vre=$(viol_regex "$vmsg")
+  assertions=$((assertions + 1))
+  if ! VIOL_RE="$vre" awk -F'\t' -v id="$vid" '
+        BEGIN { re = "^" ENVIRON["VIOL_RE"] "$" }
+        $1 == id && $2 ~ re { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' "$observed"; then
+    uncovered=$((uncovered + 1))
+    echo "FAIL: 방출 커버리지 — lint:$vline 의 [$vid] 가 어느 픽스처에서도 관측되지 않았다: $vmsg" >&2
+  fi
+done < <(
+  grep -nE '(^|[^#])viol "' "$script_dir/lint-ci-scope-binding.sh" \
+    | grep -v '^[0-9]*:[[:space:]]*#' \
+    | sed -n 's#^\([0-9]*\):.*viol "\([^"]*\)" "[^"]*" "\([^"]*\)".*$#\1\t\2\t\3#p'
+)
+if (( uncovered > 0 )); then
+  failures=$((failures + 1))
+fi
+
+# The obligations above are read out of the lint, so DELETING a `viol` call
+# deletes the obligation to exercise it and the loop stays silent — measured:
+# neutralizing the I3 two-field site left the sweep green, because the sibling
+# I3 branch keeps the `<id>|<target>` key alive and the vanished site is no
+# longer asked about. A floor is what a self-derived list cannot supply itself:
+# adding a site clears it, removing one has to be a deliberate edit here.
+assertions=$((assertions + 1))
+if (( sites < VIOL_SITE_FLOOR )); then
+  echo "FAIL: 방출 자리가 $sites 개로 하한 $VIOL_SITE_FLOOR 미만이다 — viol 호출이 지워졌거나 추출식이 낡았다" >&2
+  failures=$((failures + 1))
+fi
+
+# B5 emits a claim line rather than a violation, so no expected-violations.txt
+# can hold it and the loop above cannot see it. It is the one number this lint
+# puts in a GREEN log, which is precisely why nothing else would notice it going
+# quiet.
+assertions=$((assertions + 1))
+if ! grep -q '^청구: ' "$observed_out"; then
+  echo "FAIL: 방출 커버리지 — B5 의 청구 줄이 어느 픽스처에서도 관측되지 않았다" >&2
+  failures=$((failures + 1))
+fi
+
+# Last, so that it counts every assertion the run actually made — including the
+# emission-coverage ones above, which is where most of them now are.
+if (( assertions < ASSERTION_FLOOR )); then
+  echo "FAIL: 실행된 단언이 $assertions 개로 하한 $ASSERTION_FLOOR 미만이다 — 픽스처 루트가 비었거나 순회가 무너졌다" >&2
   failures=$((failures + 1))
 fi
 

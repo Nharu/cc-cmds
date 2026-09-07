@@ -1,1 +1,5 @@
 I1	.github/workflows/notify-macos.yml
+I4	scripts/lint-ci-scope-binding.sh
+I4	scripts/suite-b.sh
+규칙 1	scripts/lint-ci-scope-binding.sh
+규칙 1	scripts/suite-b.sh

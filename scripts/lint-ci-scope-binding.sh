@@ -23,7 +23,12 @@
 #   execution side  — the single `run: make <target>` line of that workflow
 #                     (I1), the recipe lines of that Makefile target (I3), and
 #                     the `# ci-deps:` declarations of the scripts those lines
-#                     name.
+#                     name. When there is more than one such line I1 reports the
+#                     ambiguity and the execution set is the UNION of every named
+#                     target: taking one of them would compute every other rule
+#                     against an arbitrary half of the leg, which both invents
+#                     violations against the half that runs and hides the real
+#                     ones of the half that was dropped.
 #
 # Two markers, and they do not fold into one. `# ci-deps:` is what a suite
 # READS: it joins the execution set, so rule 1 pushes it into the filter, and it
@@ -50,6 +55,11 @@
 #      event of the target workflow declaring no `paths` at all (rule 6-strict),
 #      no `run: make` line, or an empty derivation on either side.
 #
+#      An abort reached AFTER a violation has already been recorded exits 1, not
+#      2. Once something has been found, "could not be carried out" is no longer
+#      true of the run, and a caller that treats exit 2 as "precondition unmet,
+#      skip" would drop the findings that were already printed.
+#
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no mapfile.
 # Glob matching runs under bash and never under zsh: `case "$p" in $glob)` lets
 # `*` cross a `/` in zsh but not in bash, and a matcher that silently matches
@@ -75,6 +85,17 @@ viol() {
 }
 
 die2() {
+  # Exit 2 says the comparison was never carried out. Once a violation has been
+  # recorded that statement is false about this run, and a wrapper that reads
+  # exit 2 as "precondition unmet, skip" throws away what the lint already
+  # found — the FAIL lines are printed and then discarded by the exit code that
+  # follows them. A violation already on the record outranks the abort: the
+  # abort keeps its diagnostic and the run exits 1.
+  if [ "$fail" -ne 0 ]; then
+    printf 'FAIL: %s\n' "$1" >&2
+    printf 'FAIL: ci-scope-binding — 비교를 끝까지 수행하지 못했으나 이미 기록된 위반이 있다 — exit 1\n' >&2
+    exit 1
+  fi
   printf 'ERR: %s\n' "$1" >&2
   exit 2
 }
@@ -90,7 +111,14 @@ command -v yq >/dev/null 2>&1 || die2 "yq (mikefarah v4) 를 찾지 못했다 �
 # `find` would put untracked files into rule 2's corpus and manufacture
 # violations, so the transition has to be readable from the log.
 
-corpus=$( (cd "$root" && git ls-files 2>/dev/null) | sort )
+#
+# `-z` is not a nicety. With the default `core.quotePath`, `git ls-files` wraps a
+# non-ASCII path in double quotes and octal-escapes every byte of it, so the
+# corpus element is a string no matcher is ever handed — the file drops out of
+# `in_corpus`, `tracked_under`, rules 2 and 3 at once, and the line COUNT is
+# unchanged, so nothing in the summary reports the loss. `-z` sidesteps the
+# quoting entirely rather than turning it off after the fact.
+corpus=$( (cd "$root" && git -c core.quotePath=false ls-files -z 2>/dev/null) | tr '\0' '\n' | sort )
 enumerator="git ls-files"
 if [ -z "$corpus" ]; then
   corpus=$( (cd "$root" && find . -type f 2>/dev/null) | sed -E 's|^\./||' | sort )
@@ -195,7 +223,7 @@ matches_filter() {
 
 # --- execution side: I1 -----------------------------------------------------
 
-run_lines=$(yq -r '.jobs[].steps[] | select(has("run")) | .run' "$workflow" 2>/dev/null) \
+run_lines=$(yq -r 'explode(.) | .jobs[].steps[] | select(has("run")) | .run' "$workflow" 2>/dev/null) \
   || die2 "워크플로의 steps 를 파싱하지 못했다: $workflow_rel"
 
 make_lines=$(printf '%s\n' "$run_lines" | grep -E '^[[:space:]]*make[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]*$' || true)
@@ -204,20 +232,31 @@ make_count=$(printf '%s\n' "$make_lines" | grep -c '[^[:space:]]' || true)
 if [ "$make_count" -eq 0 ]; then
   die2 "I1: 'run: make <타깃>' 줄이 0 개다 — 실행 집합을 유도할 수 없다"
 fi
+# `awk` reads every line without exiting early, for the same reason the matcher
+# above avoids `grep -q`: a right side that stops reading turns the pipeline into
+# a failure under `pipefail`.
+make_targets=$(printf '%s\n' "$make_lines" | awk '
+  NF { sub(/^[ \t]*make[ \t]+/, ""); sub(/[ \t]*$/, ""); print }
+' | sort -u)
+make_targets_flat=$(printf '%s\n' "$make_targets" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')
+
 if [ "$make_count" -gt 1 ]; then
   # Two `make` lines is a violation the lint DETECTED, not a comparison it could
   # not carry out, so it is exit 1. Making it exit 2 would turn "this tree is
   # red today" into "this tree could not be compared" and erase what the
   # measurement behind this lint is measuring.
-  viol "I1" "$workflow_rel" "'run: make <타깃>' 줄이 $make_count 개다 — 레그의 타깃이 모호하다"
+  #
+  # Reporting the ambiguity is not the same as resolving it, and taking one of
+  # the lines would compute every downstream rule against an arbitrary half of
+  # the leg. Both directions are wrong and the quiet one is worse: the suites the
+  # OTHER target runs get charged with "the filter wakes them but nothing runs
+  # them", which prescribes the reverse repair of dropping them from the filter,
+  # while the true violations of the half that was dropped are not reported at
+  # all. So the execution set is the UNION of every named target's expansion —
+  # I1 still names the ambiguity and the targets it is derived from, and rules 1,
+  # 2 and I4 still answer about the leg that actually runs.
+  viol "I1" "$workflow_rel" "'run: make <타깃>' 줄이 $make_count 개다 — 레그의 타깃이 모호하다. 실행 집합은 그 전부의 합집합으로 유도한다: $make_targets_flat"
 fi
-
-# `awk` takes the first non-blank line without exiting early, for the same
-# reason the matcher above avoids `grep -q`: a right side that stops reading
-# turns the pipeline into a failure under `pipefail`.
-make_target=$(printf '%s\n' "$make_lines" | awk '
-  NF && !seen { sub(/^[ \t]*make[ \t]+/, ""); sub(/[ \t]*$/, ""); print; seen = 1 }
-')
 
 # Any other `run:` verb — `brew install …`, `jq --version` — contributes nothing
 # to the execution set and passes quietly. Failing on an unrecognized verb would
@@ -251,30 +290,34 @@ make_field() {
   ' "$makefile"
 }
 
-prereqs=$(make_field "$make_target" PREREQ)
-own_recipe=$(make_field "$make_target" RECIPE)
-
-if [ -n "$(printf '%s' "$prereqs" | tr -d '[:space:]')" ]; then
-  viol "I2" "Makefile:$make_target" "선행 타깃이 있다: $prereqs — ubuntu 를 겨냥한 편집이 이 레그를 함께 움직인다"
-fi
-
-# I3 binds the named target's own recipe lines. Extraction has to be a total
-# function rather than a best effort, which is what this invariant buys.
+# I2 and I3 bind EACH named target's own prerequisites and recipe lines, and the
+# violations they report name the target they came from, so a tree with more than
+# one `make` line can be read without guessing which half a message is about.
+# Extraction has to be a total function rather than a best effort, which is what
+# these invariants buy.
+prereqs=""
 scripts_rel=""
 bash_recipe_re='^bash [^[:space:]]+$'
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  case "$line" in
-    *'\') viol "I3" "Makefile:$make_target" "줄이음이 있다: $line" ; continue ;;
-  esac
-  if [[ $line =~ $bash_recipe_re ]]; then
-    scripts_rel=$(printf '%s\n%s\n' "$scripts_rel" "${line#bash }")
-  else
-    viol "I3" "Makefile:$make_target" "레시피 줄이 'bash <경로>' 두 필드가 아니다: $line"
+for t in $make_targets; do
+  t_prereqs=$(make_field "$t" PREREQ)
+  if [ -n "$(printf '%s' "$t_prereqs" | tr -d '[:space:]')" ]; then
+    viol "I2" "Makefile:$t" "선행 타깃이 있다: $t_prereqs — ubuntu 를 겨냥한 편집이 이 레그를 함께 움직인다"
+    prereqs="$prereqs $t_prereqs"
   fi
-done <<EOF
-$own_recipe
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *'\') viol "I3" "Makefile:$t" "줄이음이 있다: $line" ; continue ;;
+    esac
+    if [[ $line =~ $bash_recipe_re ]]; then
+      scripts_rel=$(printf '%s\n%s\n' "$scripts_rel" "${line#bash }")
+    else
+      viol "I3" "Makefile:$t" "레시피 줄이 'bash <경로>' 두 필드가 아니다: $line"
+    fi
+  done <<EOF
+$(make_field "$t" RECIPE)
 EOF
+done
 
 # Prerequisites are expanded anyway so rule 1 still has both sides to compare;
 # I2 has already recorded that they should not be there.
@@ -298,7 +341,7 @@ EOF
 expand_prereqs "$prereqs"
 
 scripts_rel=$(printf '%s\n' "$scripts_rel" | grep -v '^$' | sort -u)
-[ -n "$scripts_rel" ] || die2 "실행 집합 변의 유도가 비었다 — '$make_target' 에서 'bash <경로>' 줄을 얻지 못했다"
+[ -n "$scripts_rel" ] || die2 "실행 집합 변의 유도가 비었다 — '$make_targets_flat' 에서 'bash <경로>' 줄을 얻지 못했다"
 
 # I4: every extracted path is a real regular file and is named by the filter.
 while IFS= read -r s; do
@@ -326,6 +369,20 @@ tracked_under() {
   printf '%s\n' "$corpus" | grep -E "^$(glob_body "$1")/" || true
 }
 
+dir_has_wildcard() {
+  # The directory part of `<디렉터리>/**` must be a literal. Both markers ask the
+  # same question of the same shape, so they ask it in one place: when the two
+  # asked separately, `# ci-subject:` rejected `pkg*/mod/**` while `# ci-deps:`
+  # accepted `*/**` — the same text refused by one marker and admitted by the
+  # other. An admitted `*/**` is not a narrow declaration either: `tracked_under`
+  # then greps `^[^/]*/` and absorbs every path with a slash into the execution
+  # set, so one comment line turns the whole detector off.
+  case "$1" in
+    *'*'*|*'?'*) return 0 ;;
+  esac
+  return 1
+}
+
 exec_set="$scripts_rel"
 subject_lines=""
 
@@ -337,8 +394,16 @@ while IFS= read -r s; do
   if [ -z "$deps" ]; then
     # `# ci-deps: none` is mandatory rather than optional precisely so that its
     # absence shows up as a missing line in a diff instead of as nothing.
+    #
+    # Reporting it must NOT skip the rest of this body. The `# ci-subject:`
+    # collection below feeds `subject_trees`, and an empty `subject_trees`
+    # removes rule 2's exemption, so one missing line charges every tracked file
+    # under a declared tree with "not in the execution set and not in a declared
+    # subject tree" — while the declaration sits in the file the lint refused to
+    # finish reading. The amplification is the size of the tree, and the wording
+    # points the reader away from the one-line cause. The item loop below runs
+    # zero times on an empty `deps`, so no guard is needed here.
     viol "규칙 4" "$s" "'# ci-deps:' 선언이 없다 ('# ci-deps: none' 도 선언이다)"
-    continue
   fi
 
   while IFS= read -r item; do
@@ -347,6 +412,10 @@ while IFS= read -r s; do
     case "$item" in
       */\*\*)
         d=${item%/\*\*}
+        if dir_has_wildcard "$d"; then
+          viol "규칙 4" "$s" "디렉터리 부분에 와일드카드가 있다 — '<디렉터리>/**' 의 디렉터리는 리터럴이어야 한다: $item"
+          continue
+        fi
         under=$(tracked_under "$d")
         if [ -z "$under" ]; then
           viol "규칙 4" "$s" "선언이 죽었다 — '$item' 가 tracked 파일을 하나도 담지 않는다"
@@ -586,9 +655,10 @@ while IFS=$'\t' read -r owner tree; do
     *) viol "규칙 7/B1" "$owner" "주제 트리의 형태가 '<디렉터리>/**' 가 아니다: $tree" ; continue ;;
   esac
   d=${tree%/\*\*}
-  case "$d" in
-    *'*'*|*'?'*) viol "규칙 7/B1" "$owner" "디렉터리 부분에 와일드카드가 있다: $tree" ; continue ;;
-  esac
+  if dir_has_wildcard "$d"; then
+    viol "규칙 7/B1" "$owner" "디렉터리 부분에 와일드카드가 있다: $tree"
+    continue
+  fi
   seg_count=$(printf '%s\n' "$d" | tr '/' '\n' | grep -c '[^[:space:]]')
   if [ "$seg_count" -lt 2 ]; then
     viol "규칙 7/B1" "$owner" "경로 세그먼트가 둘 미만이다 — 최상위 디렉터리는 주제가 아니라 범주다: $tree"
@@ -645,17 +715,25 @@ EOF
 # drop out of this check. On the reduced leg a skip becomes the whole job, and
 # without the flag the skip reports green.
 
-job_names=$(yq -r '.jobs | keys | .[]' "$workflow" 2>/dev/null || true)
+#
+# Every `.jobs` query explodes first, exactly as the `on:`/`paths` queries above
+# do. Without it an aliased `runs-on: *ro` comes back as the literal string
+# `*ro`, which holds no `macos`, so the job falls out of this check entirely —
+# rule 8, whose whole subject is the silent green skip, skipping silently. The
+# same omission on the `env` query makes `keys` fail on an alias, `|| true`
+# swallows the error, and the empty key list is then read as "the variable is
+# absent" — a false violation from the same missing word.
+job_names=$(yq -r 'explode(.) | .jobs | keys | .[]' "$workflow" 2>/dev/null || true)
 for job in $job_names; do
   # `runs-on` is read on its own rather than folded into one row per job, so a
   # sequence-valued `runs-on` still yields its entries instead of collapsing the
   # whole check into a parse failure.
-  runs_on=$(yq -r ".jobs.\"$job\".\"runs-on\"" "$workflow" 2>/dev/null || true)
+  runs_on=$(yq -r "explode(.) | .jobs.\"$job\".\"runs-on\"" "$workflow" 2>/dev/null || true)
   case "$runs_on" in
     *macos*) : ;;
     *) continue ;;
   esac
-  env_keys=$(yq -r ".jobs.\"$job\".env | keys | .[]" "$workflow" 2>/dev/null || true)
+  env_keys=$(yq -r "explode(.) | .jobs.\"$job\".env | keys | .[]" "$workflow" 2>/dev/null || true)
   case "
 $env_keys
 " in
@@ -676,7 +754,7 @@ done
 runner_workflow=""
 for wf in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
   [ -f "$wf" ] || continue
-  wf_runs=$(yq -r '.jobs[].steps[] | select(has("run")) | .run' "$wf" 2>/dev/null || true)
+  wf_runs=$(yq -r 'explode(.) | .jobs[].steps[] | select(has("run")) | .run' "$wf" 2>/dev/null || true)
   if [ -n "$(printf '%s\n' "$wf_runs" | grep -E '^[[:space:]]*make[[:space:]]+lint[[:space:]]*$')" ]; then
     runner_workflow=${wf#"$root"/}
     break
