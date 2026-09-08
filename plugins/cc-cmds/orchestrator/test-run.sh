@@ -2557,8 +2557,26 @@ HH="$WORK/hookhome"
 mkdir -p "$HH/.claude-x" "$HH/.claude-y/projects" "$HH/.claude-y/todos"
 hook_decide() {
   # hook_decide <편집 대상 경로> — 스테이지는 레인 x 에서 돌고 y 는 형제다.
+  #
+  # 훅이 환경에서 유도하는 앵커 변수를 **하나도 남기지 않고** 고정한다. 훅은
+  # 운영자 스코프 앵커를 `XDG_CONFIG_HOME` 으로, 런 루트를 `XDG_STATE_HOME` 으로
+  # 먼저 유도하고 없을 때만 `$HOME` 아래 기본 자리로 떨어진다 — 그래서 하나라도
+  # 비워 두면 픽스처 경로가 「이 하네스가 선언한 값」이 아니라 「주변 환경과
+  # 우연히 일치한 값」의 귀결이 된다. 그 우연이 깨진 것이 실제 사고였다:
+  # 말단 링크 절이 `XDG_CONFIG_HOME` 을 비워 둔 채 `$HH/.config` 아래 경로를
+  # 재는 바람에, 그 변수가 설정된 호스트에서 훅이 픽스처 밖을 앵커해 정확히
+  # 네 단언이 붉어졌다. 로컬은 초록이고 러너만 붉은 형태라 원인이 훅에 있는
+  # 것처럼 읽혔다.
+  #
+  # 값은 훅의 폴백 유도값과 **같게** 잡는다. 두 헬퍼가 이미 `HOME` 을 `$HH` 로
+  # 고정하므로 `$HH/.config`·`$HH/.local/state` 가 곧 「변수가 없을 때 훅이
+  # 보는 자리」이고, 그래서 이 고정은 판정을 옮기지 않고 유도만 결정적으로
+  # 만든다. 지우는 쪽(`env -u`)을 쓰지 않는 이유는 「변수가 없을 때의 기본 자리
+  # 유도」를 재는 전용 단언이 아래에 따로 있어서, 지우면 그 커버리지를 중복
+  # 소비하고 나중에 기본 자리 정책이 바뀌면 무관한 이유로 함께 붉어지기 때문이다.
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
     | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
@@ -2667,9 +2685,11 @@ check "런 디렉터리의 계획 파일은 허용" "$(hook_decide "$RUN_DIR/sli
 # 않더라도 라이브 런 상태를 오염시킨다. 위 여섯 단언은 그대로 둔다: 라이브
 # 디렉터리에 대한 리터럴 판정이 픽스처와 같은 답을 내는지가 별개의 정보다.
 hook_decide_rd() {
-  # hook_decide_rd <런 디렉터리> <편집 대상 경로>
+  # hook_decide_rd <런 디렉터리> <편집 대상 경로> — 앵커 변수 고정의 이유는
+  # `hook_decide` 의 주석에 있다.
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$2" \
     | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
       bash "$HOOK" --run-dir "$1" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
@@ -2752,14 +2772,23 @@ hook_decide_rr() {
   # `mine` 에서 돌고 `victim` 은 형제다. `XDG_STATE_HOME` 을 주는 이유는 훅이
   # 드라이버와 **같은 방식으로** 런 루트를 유도하기 때문이다 — 다른 방식으로
   # 유도하면 이 픽스처가 재는 것은 훅이 아니라 이 하네스 자신이 된다.
+  #
+  # `XDG_CONFIG_HOME` 도 같은 이유로 고정한다. 이 절의 「운영자 스코프의 레인
+  # 기록」 행이 `$HH/.config/cc-cmds/...` 를 재는데, 훅은 그 앵커를 그 변수로
+  # **먼저** 유도하고 없을 때만 `$HOME/.config` 로 떨어진다 — 비워 두면 그
+  # 변수가 설정된 호스트에서 앵커가 픽스처 밖을 가리켜 그 행이 통째로 무너지고,
+  # 이 헬퍼 짝이 행마다 판정 2개와 사유 2개를 재므로 정확히 넷이 붉어진다.
+  # 로컬은 초록이고 러너만 붉은 형태로 실제로 CI 를 멈춘 자리다.
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
     | XDG_STATE_HOME="$RR" HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" \
       bash "$HOOK" --run-dir "$MYRUN" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
 hook_reason_rr() {
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
     | XDG_STATE_HOME="$RR" HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" \
       bash "$HOOK" --run-dir "$MYRUN" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecisionReason'
 }
@@ -2910,6 +2939,18 @@ leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.js
 # 이번 변경 뒤에도 **같은 문면**이어야 한다. 2차 패스를 1차 **뒤**에 두는 것이
 # 그것을 보장하고, 앞에 두면 이 행의 사유 단언이 함께 붉어진다.
 leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              '사용자 스코프 설정은 훅 설치 채널'
+# 여덟째부터 열째. 이 셋은 1차 패스에만 팔이 있고 2차 말단 패스에는 없어서, 병합
+# 트리에서 **직접 철자는 `deny`, 말단 심링크는 `allow`** 로 갈렸던 자리다. 어느 쪽
+# 브랜치 단독으로도 성립하지 않고 오직 병합에서만 성립하는 부류라 양쪽 스위트가
+# 모두 초록이었고, 그래서 이 행들이 재는 것은 팔의 존재가 아니라 **두 패스가 같은
+# 목록을 본다는 것**이다. `leaf_row` 가 두 철자를 함께 재므로 행 하나가 곧 그 단언이다.
+mkdir -p "$HH/.claude-x/backups" "$HH/.claude-x/file-history" "$WORK/proj"
+: > "$HH/.claude-x/backups/b.md"
+: > "$HH/.claude-x/file-history/h.md"
+: > "$WORK/proj/CLAUDE.md"
+leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               '롤백 기준선과 판본 이력'
+leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          '롤백 기준선과 판본 이력'
+leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'git 이 추적하지 않는 라이브 프리픽스'
 # 자기 런 거부가 형제 런 팔에 삼켜지지 않았는지. `$RUN_DIR` 이 런 루트 아래라
 # 순서가 뒤집히면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
 case "$(hook_reason_rr "$WORK/LEAF-3")" in
@@ -2951,6 +2992,135 @@ else
   printf 'NOTE: 순환 링크를 만들지 못해 건너뛴다\n'
 fi
 
+# --- 조상 링크: 물리 접기가 한 앵커에만 걸려 있었다 --------------------------
+# 위 조상 링크 절은 전부 런 루트 계열이고, 그것이 유일하게 닫혀 있던 계열이다.
+# 링크를 앵커 **밖**에 두고 표적만 한 단계씩 깊게 옮기면 나머지 앵커는 전부
+# 우회됐다 — 실측 격자에서 `$cfg/projects`·`$xdgcc`·형제 레인 `projects/` 셋 다
+# 0단은 `deny` 이고 1단·2단은 `ALLOW` 이며, 같은 파일의 **직접 철자는 전부 `deny`**
+# 였다. `allow` 를 받은 뒤의 쓰기가 실제로 운영자 스코프 레인 기록과 세션
+# 트랜스크립트를 관통해 바꿨다.
+#
+# **0단만 재는 픽스처는 아무것도 재지 못한다.** 0단이 닫히는 것은 보호가 아니라
+# 우연이다 — 링크 표적의 아이노드가 마침 앵커 **자신**이라 조상 성분 비교가 답한
+# 것뿐이고, 한 단계만 깊어지면 그 앵커는 어휘 사슬에 영원히 등장하지 않는다.
+# 그래서 아래 행들은 전부 1단 이상이다.
+anc_n=0
+anc_row() {
+  # anc_row <단언 이름> <링크가 가리킬 디렉터리> <그 아래 꼬리> <기대 거부 문면 조각>
+  #
+  # 링크를 앵커 밖($WORK)에 두고 그 링크를 **조상 성분으로** 지나는 철자를 만든다.
+  # 말단은 평범한 파일이므로 말단 심링크 패스는 아예 돌지 않는다 — 이 벡터에
+  # 답하는 것은 조상 물리 접기뿐이고, 그래서 이 행이 그 팔에 하중을 건다.
+  anc_n=$((anc_n + 1))
+  local nm="$1" dir="$2" tail="$3" frag="$4" lnk="$WORK/ANC-$anc_n"
+  ln -sfn "$dir" "$lnk" 2>/dev/null
+  if [ ! -L "$lnk" ] || [ ! -d "$lnk" ]; then
+    bad "조상 링크 픽스처: $nm" "디렉터리를 가리키는 링크를 만들지 못했다: $dir"
+    return
+  fi
+  check "조상 링크: $nm 은 거부" "$(hook_decide_rr "$lnk/$tail")" "deny"
+  case "$(hook_reason_rr "$lnk/$tail")" in
+    *"$frag"*) ok "조상 링크: $nm 의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "조상 링크 거부 사유: $nm" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$lnk/$tail")" ;;
+  esac
+  check "직접 철자: $nm 도 같은 판정" "$(hook_decide_rr "$dir/$tail")" "deny"
+  case "$(hook_reason_rr "$dir/$tail")" in
+    *"$frag"*) ok "직접 철자: $nm 의 거부 문면이 링크 철자의 것과 같다" ;;
+    *) bad "두 철자 발산: $nm" "직접 철자와 링크 철자가 다른 팔에 답해진다 — 물리 접기가 이 앵커에 걸리지 않았다" ;;
+  esac
+}
+mkdir -p "$HH/.claude-x/projects/p/deep" "$HH/.claude-y/projects" \
+         "$HH/.config/cc-cmds/lanes"
+anc_row "사용자 스코프 projects 1단"  "$HH/.claude-x/projects/p"        "a.jsonl" \
+  '세션 트랜스크립트는 승인 판독 채널'
+anc_row "사용자 스코프 projects 2단"  "$HH/.claude-x/projects/p/deep"   "a.jsonl" \
+  '세션 트랜스크립트는 승인 판독 채널'
+anc_row "운영자 스코프 1단"           "$HH/.config/cc-cmds/lanes"       "x.json" \
+  '운영자 스코프 설정 디렉터리'
+anc_row "형제 레인 projects 1단"      "$HH/.claude-y/projects"          "a.jsonl" \
+  '형제 레인의 세션 트랜스크립트'
+# 거짓 양성 대조군 둘. 물리 접기를 넓히면 「링크를 조상으로 지나면 통째로 거부」로
+# 퇴화하기 쉽고, 그 퇴화는 이 파이프라인 자신이 쓰는 경로를 함께 막는다.
+mkdir -p "$WORK/anc-plain/sub"
+ln -sfn "$WORK/anc-plain" "$WORK/ANC-ok" 2>/dev/null
+check "음성 대조군: 앵커 밖을 가리키는 조상 링크는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/ANC-ok/sub/f.txt")" "allow"
+# 그리고 자기 레인 안이라도 강제 표면이 아닌 자리. 접기가 앵커 전체를 삼키면
+# 이것이 함께 붉어진다.
+mkdir -p "$HH/.claude-x/todos"
+ln -sfn "$HH/.claude-x/todos" "$WORK/ANC-ok-todos" 2>/dev/null
+check "음성 대조군: 레인 안이라도 강제 표면이 아닌 자리를 지나는 조상 링크는 허용" \
+  "$(hook_decide_rr "$WORK/ANC-ok-todos/t.json")" "allow"
+
+# --- 하드링크: 두 층이 갈리는 유일한 벡터인데 픽스처가 0개였다 ---------------
+# 위 일곱 행은 전부 **심링크**다. 하드링크는 따라갈 링크가 없어 2차 말단 패스의
+# 진입 조건(「말단이 심링크이고 표적이 실재한다」)에 아예 들어가지 않고, 표적과
+# 조상을 공유하지도 않으므로 물리 접기도 앵커를 사슬에 올리지 못한다. 그래서
+# 하드링크에 답하는 것은 파일 앵커 **열거**와 링크 수 **술어** 둘뿐이다.
+#
+# 그 공백이 무해하지 않았다. 런 디렉터리의 파일 앵커 넷과 그 짝인 4중 거부 블록을
+# 각각 지워도, **동시에** 지워도 스위트가 완전 무변화였다 — 심링크 벡터는 말단
+# 패스가 이중으로 덮으므로 어느 한 층을 지워도 다른 층이 답하기 때문이다. 즉 그
+# 초록은 어느 층도 지키지 않고 「적어도 하나는 살아 있다」만 지켰다. 두 층이
+# 갈리는 유일한 벡터가 하드링크인데 `ln` 낱말 22회 전수 중 21회가 `ln -sfn` 이고
+# 나머지 하나는 주석이라, 그 벡터를 재는 단언이 0개였다.
+hard_n=0
+hard_row() {
+  # hard_row <단언 이름> <표적의 직접 철자> <기대 거부 문면 조각>
+  #
+  # 표적과 아이노드를 공유하는 **하드링크**를 앵커 밖($WORK)에 만들어 판정과 거부
+  # 문면을 함께 잰다. 문면까지 재는 것이 하중의 전부다 — 판정만 재면 파일 앵커가
+  # 답했는지 링크 수 술어가 답했는지 갈리지 않아, 앵커를 지워도 `deny` 가 그대로
+  # 나오고 이 단언이 초록으로 남는다. 그것이 정확히 지금 고치는 실패 방식이다.
+  hard_n=$((hard_n + 1))
+  local nm="$1" tgt="$2" frag="$3" lnk="$WORK/HARD-$hard_n"
+  rm -f "$lnk"
+  ln "$tgt" "$lnk" 2>/dev/null
+  # 만들지 못하면 건너뛰지 않고 **실패로 계상한다.** 두 경로가 같은 임시 트리
+  # 아래라 같은 파일시스템이고 하드링크는 성립해야 하므로, 성립하지 않는다면
+  # 그것은 「이 호스트에서는 잴 수 없다」가 아니라 이 픽스처가 무너진 것이다.
+  # 건너뜀은 이 러너에서 통과로 계상되므로 총계가 조용히 내려앉는다.
+  if [ ! -e "$lnk" ] || [ -L "$lnk" ]; then
+    bad "하드링크 픽스처: $nm" "하드링크를 만들지 못했다: $tgt"
+    return
+  fi
+  check "하드링크: $nm 은 거부" "$(hook_decide_rr "$lnk")" "deny"
+  case "$(hook_reason_rr "$lnk")" in
+    *"$frag"*) ok "하드링크: $nm 의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "하드링크 거부 사유: $nm" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$lnk")" ;;
+  esac
+}
+# 파일 앵커가 **있는** 이름. 앵커를 지우면 링크 수 술어가 대신 답해 판정은 `deny`
+# 그대로이고 문면만 갈리므로, 이 행의 하중은 전적으로 문면 단언이 진다. 그리고
+# 하드링크에서 런 디렉터리 안의 이 넷만 앵커로 닫히는 것이 이 커밋의 실질 이득이라,
+# 다음 사이클에 누가 「스위트가 안 재니 중복이다」로 읽고 지우면 여기서 붉어진다.
+hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
+# 파일 앵커가 **없는** 이름. 런 디렉터리 안의 이름 집합은 유한하지 않아 열거로
+# 닫을 수 없고, 그 나머지를 링크 수 술어가 받는다.
+: > "$MYRUN/surface-digest"
+hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" '하드링크입니다'
+# 운영자 스코프의 레인 기록. 여기 쓰면 이 런이 끝난 뒤의 모든 런의 레인이 정해지고,
+# 앵커할 이름 집합이 무한해 열거가 애초에 서지 않는 자리다.
+hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" '하드링크입니다'
+# 그리고 형제 레인의 세션 트랜스크립트. 이름이 무한한 두 번째 자리이고, 실측된
+# 관통 세 자리 중 하나다.
+hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" '하드링크입니다'
+# 거짓 양성 대조군 셋. 없으면 위 넷의 통과가 「실재하는 말단은 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 이 파이프라인 자신의 스테이지가 아무것도 못 하게 만든다.
+: > "$WORK/hard-plain.txt"
+check "음성 대조군: 링크 수 1 인 평범한 파일은 그대로 허용" \
+  "$(hook_decide_rr "$WORK/hard-plain.txt")" "allow"
+# 디렉터리의 링크 수는 하위 디렉터리 수라 언제나 1보다 크다. 술어가 디렉터리를
+# 제외하지 않으면 이 팔이 「디렉터리를 겨눈 철자는 전부 거부」로 퇴화한다.
+mkdir -p "$WORK/hard-dir/a" "$WORK/hard-dir/b"
+check "음성 대조군: 하위 디렉터리를 가진 디렉터리 철자는 링크 수 술어에 걸리지 않는다" \
+  "$(hook_decide_rr "$WORK/hard-dir")" "allow"
+# 그리고 자기 런의 선언된 쓰기 표면. 이 둘이 막히면 스테이지가 중단 기록도 계획도
+# 남기지 못한다 — 링크 수 술어는 그 뒤에 서므로 여기까지 오지 않아야 한다.
+: > "$MYRUN/halt/impl.md"
+check "음성 대조군: 이미 존재하는 자기 런의 중단 기록도 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/halt/impl.md")" "allow"
+
 # --- Bash 허용 목록은 첫 토큰 뒤도 본다 -------------------------------------
 # 첫 토큰 규칙 아래에서 `|`·`;`·`&&`·`&`·개행·`$( )` 는 서로 구별되지 않으므로,
 # 하나를 축복하는 것이 전부를 축복하는 것이었다. `<게이트> … ; <임의 명령>` 이
@@ -2963,6 +3133,7 @@ hook_decide_bash() {
   printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
     "$(printf '%s' "$1" | jq -Rs .)" \
     | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
@@ -3003,7 +3174,9 @@ check "bash -c 는 그대로 거부" "$(hook_decide_bash "bash -c '$GATEP snapsh
 # 먼저 답하면 위 체인 단언들은 통과하면서 아무것도 검증하지 않는다.
 case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           "$(printf '%s' "$GATEP snapshot; touch $WORK/rider" | jq -Rs .)" \
-        | HOME="$HH" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
   *'인용되지 않은 셸 제어 연산자'*) ok "체인 거부가 새 검사의 것이다" ;;
   *) bad "체인 거부 사유" "다른 팔이 먼저 거부했다 — 위 체인 단언들이 공허하다" ;;
@@ -3059,7 +3232,9 @@ check "음성 대조군: 홑따옴표 이어붙임은 그대로 허용" \
 # 공허하다.
 case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           "$(printf '%s' "$GATEP snapshot $ANSIQ ; touch $WORK/rider" | jq -Rs .)" \
-        | HOME="$HH" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
   *'인용되지 않은 셸 제어 연산자'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
   *) bad "ANSI-C 라이더 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
@@ -3074,7 +3249,9 @@ printf '#!/bin/sh\nexit 1\n' > "$WORK/stubbin/stat"
 chmod +x "$WORK/stubbin/stat"
 stat_probe_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$HH/.claude-y/todos/t.json" \
   | CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 PATH="$WORK/stubbin:$PATH" HOME="$HH" \
-    CLAUDE_CONFIG_DIR="$HH/.claude-x" bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh")
+    CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+    XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+    bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh")
 check "stat 이 dev:ino 를 내지 못하면 판정하지 않고 거부한다" \
   "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
 # 그리고 그 거부가 이 분기의 것인지 확인한다. 다른 분기가 먼저 거부하면 위
@@ -3086,9 +3263,12 @@ esac
 
 # --- 운영자 스코프 설정 디렉터리 --------------------------------------------
 hook_decide_xdg() {
-  # hook_decide_xdg <XDG_CONFIG_HOME> <편집 대상 경로>
+  # hook_decide_xdg <XDG_CONFIG_HOME> <편집 대상 경로> — 이 헬퍼는 운영자 스코프
+  # 앵커를 **인자로** 지시하므로 `XDG_CONFIG_HOME` 은 여기서 곧 픽스처의 일부다.
+  # 남은 하나(`XDG_STATE_HOME`)는 다른 헬퍼들과 같은 이유로 고정한다.
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$2" \
     | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" XDG_CONFIG_HOME="$1" \
+      XDG_STATE_HOME="$HH/.local/state" \
       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecision'
 }
@@ -3104,6 +3284,7 @@ check "음성 대조군: 그 옆 디렉터리는 여전히 허용" \
 check "XDG 가 없으면 홈 아래 기본 자리를 본다" \
   "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$HH/.config/cc-cmds/config-dir" \
      | env -u XDG_CONFIG_HOME HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+       XDG_STATE_HOME="$HH/.local/state" \
        bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
      | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
 
@@ -3150,8 +3331,10 @@ fi
 # 그래서 착지하는 두 파일이 **어떤 강제 표면에도 속하지 않게** 만든다. 그러면
 # 어느 앵커도 먼저 답할 수 없고, 남는 것은 이 두 팔뿐이다.
 hook_reason() {
+  # 앵커 변수 고정의 이유는 `hook_decide` 의 주석에 있다.
   printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
     | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
     | jq -r '.hookSpecificOutput.permissionDecisionReason'
 }
