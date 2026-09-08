@@ -1727,7 +1727,7 @@ check "act 경로도 방출한다" "$(jq -r .H "$EMITFILE" 2>/dev/null || true)"
 ( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra \
   --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
   --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
-n=$(grep -c '^- `segment` | id=SEMIT ' "$LEDGER" || true)
+n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SEMIT ' "$LEDGER" || true)
 check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
 check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
   "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
