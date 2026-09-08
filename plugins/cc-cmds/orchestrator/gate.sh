@@ -4641,6 +4641,32 @@ gate_verb_act() {
   if [ "$kind" != "propose-done" ]; then
     [ $# -ge 1 ] || { printf 'gate: -- 뒤에 argv 가 필요합니다\n' >&2; exit 2; }
   fi
+  # `exec` DOES NOT TAKE `--kind`, AND THE USAGE HEADER ALREADY SAID SO. A kind
+  # names a row the gate PERFORMS, which is an `act`/`plan` notion; `exec`
+  # declares its surface with `--surface` and runs the argv itself. But the
+  # option parser is verb-agnostic, so `exec --kind skill` arrived here carrying
+  # a kind, and two arms below read `kind` without asking which verb they are
+  # under: the grading arm pins `워크트리쓰기` instead of consulting the argv0
+  # table, and the manifest write guard is skipped outright.
+  #
+  # Both arms rest on ONE premise — a dispatch argv is a prompt a launcher
+  # consumes, not a command line this process runs — and only `act` reaches a
+  # launcher. `exec` hands the argv to the read-scoped runner, which runs `"$@"`
+  # verbatim, so under that verb the premise is false and the two arms gave a
+  # real write both a false grade and an exemption from the guard. The
+  # self-declaration check could not catch it either: it compares the declared
+  # surface against the value the grading arm just pinned, so `--surface
+  # 워크트리쓰기` agreed with itself by construction and exit 6 was unreachable.
+  #
+  # REFUSING THE FLAG IS WHAT CLOSES BOTH ARMS AT ONCE. Narrowing each arm to
+  # `verb = act` closes them one at a time and leaves the next kind-reading arm
+  # to remember the verb on its own; making `kind` unreachable under `exec`
+  # makes every such arm `act`-only by construction, without either arm naming
+  # the verb.
+  if [ "$verb" = "exec" ] && [ -n "$kind" ]; then
+    printf 'gate: exec 은 --kind 를 받지 않습니다 — exec 의 표면은 --surface 로 선언하고, kind 가 붙는 행위는 act 입니다\n' >&2
+    exit 2
+  fi
 
   # Vocabulary first, and by return status rather than `die` — see surface_index.
   cutpoint_index "$cutpoint" >/dev/null || exit "$GATE_EXIT_VOCAB"

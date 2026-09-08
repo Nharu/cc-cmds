@@ -5557,6 +5557,54 @@ else
   ok "lockf 가 없는 호스트라 래퍼 단언을 건너뛴다"
 fi
 
+# --- 31as. An exempt kind crossed with the `exec` verb, which nothing walked --
+#
+# The guard exemption and the pinned grade are both keyed on the caller-supplied
+# kind and neither looked at the verb, while only `act` reaches a launcher —
+# `exec` runs the argv verbatim. So `exec --kind skill` took a real write past
+# the guard AND past the argv0 grading at once, and the self-declaration check
+# could not see it: it compares the declaration against the value the grading arm
+# pinned, so `--surface 워크트리쓰기` agreed with itself. Every fixture in the
+# guard sections above declares a default or bookkeeping kind, and the two exempt
+# kinds were only ever measured under `act` — so the crossing that makes the
+# exemption false was the one combination no assertion stepped on.
+NMBYTES=$(wc -c < "$NM")
+gateN exec --manifest "$NM" --kind skill --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $NM"
+check "면제된 kind 를 단 exec 의 매니페스트 쓰기가 거절된다" "$rc" "2"
+# THE BYTES, because an exemption refused after the write is not closed.
+check "거절된 exec --kind 는 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+case "$msg" in
+  *"exec 은 --kind 를 받지 않습니다"*) ok "거절이 exec 에 kind 가 없다는 계약을 지목한다" ;;
+  *) bad "exec --kind 거부" "$msg" ;;
+esac
+# THE SECOND EXEMPT KIND. The exemption arm names two, and closing one of them is
+# the shape this whole defect is made of.
+gateN exec --manifest "$NM" --kind router-shift --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $NM"
+check "router-shift 를 단 exec 의 매니페스트 쓰기도 거절된다" "$rc" "2"
+check "그 거절도 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+# THE OTHER ARM, MEASURED ON ITS OWN. There is no write in this argv, so the
+# guard has nothing to say about it — what used to pass here is the pinned grade
+# believing a read-graded command's claim of `워크트리쓰기`. An implementation
+# that narrows only the guard leaves this one passing with 0.
+gateN exec --manifest "$NM" --kind skill --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- grep -c "" "$NM"
+check "kind 로 등급을 고정하던 exec 도 거절된다 (가드가 아니라 등급 축)" "$rc" "2"
+# AND THE UPPER BOUND, in both directions: `exec` without a kind is untouched, so
+# the refusal is about the flag and not about the verb.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- grep -c "" "$NM"
+check "kind 없는 exec 읽기는 그대로 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "printf x >> $NM"
+check "kind 없는 exec 의 매니페스트 쓰기는 가드가 그대로 거절한다" "$rc" "3"
+
 # --- 31ap. The absorber disposes of the issuer's return, all three of them --
 #
 # Every emission fixture before this one feeds the parser input it can read, and
