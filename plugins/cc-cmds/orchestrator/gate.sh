@@ -1388,10 +1388,20 @@ gate_evidence_row_line() {
   #
   # A row anchor addresses by the chain predecessor every row already carries, so
   # every row in the ledger is addressable with no schema change at all.
+  #
+  # THE SEGMENT ARM RESOLVES TO THE SEGMENT'S OWN ROW, not to the last line the
+  # identifier happens to appear on. A segment id is stamped on nearly every row
+  # of that segment, so a whole-ledger match answered with the identifier's LAST
+  # occurrence — which is later than almost anything, and so satisfied the order
+  # check for free. The anchor is supposed to name an OBJECT; the row that
+  # declares the object is the `segment` row carrying it as `id=`.
   local tok="$1" hits
   case "$tok" in
     A-*) hits=$( { grep -n "prev=${tok#A-}" "$LEDGER" 2>/dev/null || true; } ) ;;
-    *)   hits=$( { grep -nF "$tok" "$LEDGER" 2>/dev/null || true; } ) ;;
+    RO-*|J-*)
+         hits=$( { grep -nF "$tok" "$LEDGER" 2>/dev/null || true; } ) ;;
+    *)   hits=$( { grep -n '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
+                | { grep -F "id=$tok " || true; } ) ;;
   esac
   printf '%s\n' "$hits" | { grep '^[0-9][0-9]*:- `' || true; } | tail -1 | cut -d: -f1
 }
@@ -6889,6 +6899,16 @@ gate_pending_approval_ids() {
       cut=$(gate_row_field "$row" '절단점')
       case "$want" in
         act)  [ "$cut" = "판단" ] && continue ;;
+        # THE SUSPENSION SELECTOR, and it is not `act`. The boundaries below
+        # stand down while a person is being waited on, and the recorded reason
+        # for that grace — "waiting, not stalled" — is a claim about a question
+        # somebody has to answer. It is false for a boundary's OWN approval:
+        # that one exists because a boundary judged the run stuck, so letting it
+        # count would make the first boundary to fire switch off the other
+        # three. Condition 2 keeps counting these, deliberately — a run that
+        # ended with an unanswered boundary question would have asked it for
+        # nothing.
+        경계제외) { [ "$cut" = "판단" ] || [ "$cut" = "경계" ]; } && continue ;;
         판단) [ "$cut" = "판단" ] || continue ;;
       esac
     fi
@@ -7091,7 +7111,7 @@ gate_boundaries() {
   # suspension ("waiting, not stalled") is false for this class specifically,
   # because the design promises the run keeps going alongside the question.
   local pending
-  pending=$(gate_pending_approval_ids act | gate_count)
+  pending=$(gate_pending_approval_ids 경계제외 | gate_count)
 
   if [ "$pending" = "0" ]; then
     gate_b1_stagnation
@@ -7456,18 +7476,44 @@ gate_b5_disposition_volume() {
   gate_disposition_latch_update
   n=$(gate_disposition_latch | gate_count)
   [ "$n" -lt "$B5_DISPOSITION_N" ] && return 0
-  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다"
+  # THE BINDING IS FIXED, so this boundary folds to one standing approval. The
+  # latch is append-only and the predicate is "at least N lines", so it is true
+  # forever once it is true once — and an id that rotated with progress would
+  # therefore open a new pending approval on every act past the threshold, with
+  # termination condition 2 blocked the whole time. The threshold is also
+  # reachable without any evasion at all: the exemption is one of the three
+  # dispositions and it requires no act, so four parked segments carrying
+  # read-graded problem rows arrive here having called neither closing verb.
+  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다" "$B5_DISPOSITION_N"
 }
 
 gate_issue_boundary_approval() {
-  # gate_issue_boundary_approval <name> <question>
+  # gate_issue_boundary_approval <name> <question> [binding]
   #
   # A boundary approval has NO act, so it can fill neither an act digest nor an
   # argv digest. The cutpoint slot carries the literal `경계` and the binding
   # tuple is (boundary name, H at firing, related segment set) — which is why
   # the three approval shapes share one series rather than needing three.
-  local name="$1" q="$2" id
-  id="${name}-$(printf '%s' "$RUN_ID$name$(gate_progress_digest)" | shasum -a 256 | cut -c1-8)"
+  #
+  # THE BINDING VALUE IS WHAT DECIDES "IS THIS THE SAME QUESTION". Suppression is
+  # an exact match on the derived id and nothing else, so whatever goes into the
+  # preimage is the definition of a distinct firing. A WINDOW boundary wants the
+  # progress digest there — a new window genuinely is a new question — and that
+  # is the default. A MONOTONE boundary must not: its predicate never returns to
+  # false, so a rotating id opens a fresh pending approval on every progress
+  # event, and a pending approval blocks termination condition 2. The run then
+  # cannot propose its own end no matter how many a person closes, because the
+  # next act re-arms the thing stopping it. That exact shape is recorded further
+  # up this file for the act budget, which was fixed by giving it a window; a
+  # monotone predicate has no window to give, so it folds to ONE standing
+  # approval instead.
+  #
+  # The cost boundary shares this shape and is deliberately left alone here: its
+  # question carries a percentage that climbs, and folding it would tell a person
+  # about 80% and never about 95%. It is reached only on a manifest that declares
+  # a ceiling, so it is not the always-on path this argument is about.
+  local name="$1" q="$2" binding="${3:-$(gate_progress_digest)}" id
+  id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
   gate_has_row '승인' "승인 id=$id " && return 0
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
     "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \

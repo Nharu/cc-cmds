@@ -506,7 +506,22 @@ pass() {
     sstart=$(cc_mtime "$RUN_DIR/$sseg.start")
     [ -n "$sstart" ] || continue
     sage=$((snow - sstart))
-    smk="$RUN_DIR/watch.announced-stage-age-$sseg"
+    # THE MARKER IS KEYED TO THE STAGE INSTANCE, NOT THE SEGMENT, because the
+    # clock it guards is per-instance: the gate writes `<seg>.start` on every
+    # launch and deletes it on exit, so the age resets while a segment-keyed
+    # marker would not — and nothing anywhere clears these markers. One false
+    # positive would then consume this segment's detector for the whole run.
+    # That matters because the acceptance argument for this arm's false
+    # positives is "a firing costs one line in the morning, it kills nothing";
+    # if the firing also spends the detector, the cost side gains every later
+    # miss and the comparison stops holding. The ordering it takes is inside
+    # this design's own distribution — a long legitimate stage followed by a
+    # genuinely stuck one on the same segment.
+    #
+    # The start mtime is the instance discriminator because it is the only one
+    # on disk: the gate's own stage identity (`<seg>#<attempt>`) lives in the
+    # child's environment, which the watcher cannot read.
+    smk="$RUN_DIR/watch.announced-stage-age-$sseg-$sstart"
     if [ "$sage" -ge "$STAGE_AGE" ] && [ ! -f "$smk" ]; then
       : > "$smk"
       announce "스테이지 ${sseg} 이 ${sage}초째 살아 있습니다 (임계 ${STAGE_AGE}초)" \

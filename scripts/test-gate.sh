@@ -4079,16 +4079,53 @@ fi
 # question a run that could never say it was done.
 gateN act --manifest "$NM" --kind propose-done --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 절=x 근거=y
-# The fixture legitimately holds ONE pending act approval by this point — the
-# auto-adoption arms above escalate rather than adopt, and an escalation issues
-# one. So the property is not "condition 2 is silent"; it is that the question
-# approval does not ADD to the count. Asserting on the mere presence of the
-# string fails on that legitimate act approval and says nothing about the
+# The fixture legitimately holds pending act-class approvals by this point — the
+# auto-adoption arms above escalate rather than adopt, and the boundaries are
+# live here too. So the property is not "condition 2 is silent"; it is that the
+# question approval does not ADD to the count. Asserting on the mere presence of
+# the string fails on those legitimate approvals and says nothing about the
 # exclusion being tested.
+#
+# THE EXPECTED NUMBER IS DERIVED FROM THE LEDGER, NOT WRITTEN DOWN. A literal
+# pinned the count of everything else the fixture happens to open, so a change
+# anywhere upstream — a boundary that stops suppressing its siblings, say —
+# broke this assertion for a reason that has nothing to do with the axis it
+# tests. Deriving it leaves exactly one thing pinned: that the `판단` approvals
+# are the ones missing from the total.
+pend_by_cut() {
+  # pend_by_cut <ledger> <cutpoint|!판단> — pending approvals, by cutpoint. The
+  # state is read from the LAST row bearing each id, because an approval is
+  # closed by a later row rather than by editing the one that opened it.
+  local lg="$1" want="$2" id row cut n=0
+  for id in $( { grep -F '`승인`' "$lg" 2>/dev/null || true; } \
+               | sed -n 's/.*승인 id=\([^ |]*\).*/\1/p' | LC_ALL=C sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -F "승인 id=$id " "$lg" 2>/dev/null || true; } | tail -1)
+    case "$row" in *"상태=대기"*) ;; *) continue ;; esac
+    cut=$(printf '%s' "$row" | sed -n 's/.*절단점=\([^ |]*\).*/\1/p')
+    case "$want" in
+      '!판단') [ "$cut" = "판단" ] || n=$((n + 1)) ;;
+      *)       [ "$cut" = "$want" ] && n=$((n + 1)) ;;
+    esac
+  done
+  printf '%s' "$n"
+}
+n_q=$(pend_by_cut "$LEDGER2" 판단)
+n_a=$(pend_by_cut "$LEDGER2" '!판단')
+if [ "$n_q" -ge 1 ]; then
+  ok "픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다)"
+else
+  bad "조건 2 픽스처" "제외를 잴 판단 승인이 대기 중이 아니다 — 아래 단언은 아무것도 재지 않는다"
+fi
 case "$msg" in
-  *"2 대기 중인 행위 승인이 1건"*) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (행위 승인 1건만 센다)" ;;
-  *"2 대기 중인 행위 승인"*) bad "조건 2" "절단점=판단 승인이 행위 승인으로 세어졌다: $msg" ;;
-  *) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)" ;;
+  *"2 대기 중인 행위 승인이 ${n_a}건"*) ok "조건 2 가 판단 승인을 뺀 수만 센다 (원장 유도 ${n_a}건, 제외된 판단 ${n_q}건)" ;;
+  *"2 대기 중인 행위 승인"*) bad "조건 2" "행위 승인 수가 원장에서 유도한 ${n_a} 와 다르다 — 판단 ${n_q}건이 섞였을 수 있다: $msg" ;;
+  *)
+    if [ "$n_a" = "0" ]; then
+      ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)"
+    else
+      bad "조건 2" "행위 승인 ${n_a}건이 대기 중인데 조건 2 가 침묵한다: $msg"
+    fi ;;
 esac
 gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
       --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls

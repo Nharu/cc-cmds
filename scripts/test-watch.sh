@@ -1692,11 +1692,40 @@ case "$out" in
   *"스테이지 S1 이"*"살아 있습니다"*) bad "재발화" "매 pass 마다 같은 스테이지를 다시 알린다" ;;
   *) ok "같은 스테이지를 다시 알리지 않는다" ;;
 esac
-if [ -f "$RD/watch.announced-stage-age-S1" ]; then
-  ok "그 억제가 스테이지별 전용 마커 파일이다"
+if ls "$RD"/watch.announced-stage-age-S1-* >/dev/null 2>&1; then
+  ok "그 억제가 스테이지 인스턴스별 전용 마커 파일이다"
 else
   bad "once 가드" "$(ls "$RD" | tr '\n' ' ')"
 fi
+
+# THE SEGMENT AND THE STAGE ARE NOT THE SAME THING, and the pair above cannot
+# tell them apart on its own: this fixture's segment id and stage name are both
+# `S1`, so a segment-keyed marker and a stage-keyed marker land on byte-identical
+# paths. Everything up to here therefore passes under either model while the
+# comment claims the stronger one — the same shape as an assertion whose anchor
+# has drifted out of the file, with the fixture's granularity standing where the
+# anchor would be.
+#
+# What separates them is a SECOND stage on the SAME segment. The gate rewrites
+# `<seg>.start` on each launch and removes it on exit, so the clock resets while
+# a segment-keyed marker does not, and nothing in the tree clears these markers.
+# Under the segment-keyed model the second stage is silent for the rest of the
+# run — which spends this arm's whole tolerance for false positives, since that
+# tolerance was argued from "a firing costs one line in the morning".
+#
+# The age is 7400 rather than 7300 so the two instances cannot share an mtime.
+# `fx_age_file` computes its stamp from the current second, so re-aging by the
+# same amount inside one second would reproduce the collision this assertion
+# exists to catch.
+fx_reap
+rm -f "$RD"/S1.pid "$RD"/S1.start
+fx_stage_live S1
+fx_age_file "$RD/S1.start" 7400
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) ok "같은 세그먼트의 새 스테이지에는 다시 발화한다 (마커가 세그먼트가 아니라 인스턴스에 걸린다)" ;;
+  *) bad "once 가드 입도" "같은 세그먼트라는 이유로 새 스테이지가 침묵했다 — 한 번의 오탐이 그 세그먼트의 탐지기를 런 내내 소비한다" ;;
+esac
 fx_reap
 
 # The threshold is a threshold. A stage that started moments ago has not hung.

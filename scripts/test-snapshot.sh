@@ -630,11 +630,36 @@ case "$( { grep '승인 id=B5-' "$LEDGER" || true; } | tail -1)" in
 esac
 # The latch's own pair: the count is cumulative, and walking the segment back
 # must not reduce it.
+b5_dig_pre=$(gate_progress_digest)
 o_segment SX 실행중
 check "세그먼트를 종단에서 되돌려도 처분 카운트가 줄지 않는다" \
   "$(gate_disposition_latch | gate_count)" "4"
 check "그 되돌림으로 면제가 실제로 풀렸다 (위 단언이 공허하지 않다)" \
   "$(gate_obligation_disposition 'P0-면제1')" ""
+
+# A MONOTONE BOUNDARY FOLDS TO ONE STANDING APPROVAL, and the line above is what
+# makes that measurable: changing the segment state moves the progress vector,
+# which is exactly the trigger that would rotate a digest-keyed approval id. The
+# fixture used to build this state and then read the latch helper directly
+# instead of evaluating the boundary again, so the re-arming shape passed
+# through untouched.
+#
+# The failing form is not cosmetic: this predicate is "the append-only latch has
+# at least N lines", so it never returns to false, and a rotating id would open a
+# fresh pending approval on every act past the threshold. Pending approvals block
+# termination condition 2, so the run could not propose its own end — each act
+# needed to finish would re-arm the thing stopping it. The act budget carries the
+# same shape one file over and was fixed with a window; a monotone predicate has
+# no window, so folding is the fix and this is where it is pinned.
+gate_b5_disposition_volume
+check "임계를 넘은 뒤 진전이 일어나도 경계 승인은 하나로 접힌다" "$(n_b5)" "1"
+o_segment SX park
+o_segment SX 실행중
+gate_b5_disposition_volume
+check "진전이 두 번 더 일어나도 여전히 하나다 (승인이 행위마다 다시 무장하지 않는다)" \
+  "$(n_b5)" "1"
+check "그 진전이 실제로 진전 다이제스트를 움직였다 (위 두 단언이 공허하지 않다)" \
+  "$( [ "$b5_dig_pre" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"
 
 # --- 8f. The terminal enumeration names each disposed obligation -------------
 #
