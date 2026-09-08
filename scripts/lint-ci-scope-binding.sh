@@ -226,21 +226,36 @@ matches_filter() {
 run_lines=$(yq -r 'explode(.) | .jobs[].steps[] | select(has("run")) | .run' "$workflow" 2>/dev/null) \
   || die2 "워크플로의 steps 를 파싱하지 못했다: $workflow_rel"
 
-# A step the workflow disables itself must not contribute to the execution set:
-# the closure of a target named by a step that never runs joins the union and
-# makes the header's claim above false, in the false direction (the filter is
-# told to widen for a script nothing runs) and in the quiet one (a script the
-# filter does name stops being reported because the closure absorbed it).
-# Evaluating a GitHub expression is not this lint's job, so the honest answer is
-# neither to include it nor to drop it quietly — it is that the comparison could
-# not be carried out. A conditional step whose verb is not `make` contributes
-# nothing to the execution set and passes quietly, as the setup steps do.
+# A step carrying an `if:` of its own, or sitting in a job that carries one, must
+# not contribute to the execution set: the closure of a target named by a step
+# that may never run joins the union and makes the header's claim above false, in
+# the false direction (the filter is told to widen for a script nothing runs) and
+# in the quiet one (a script the filter does name stops being reported because the
+# closure absorbed it). Evaluating a GitHub expression is not this lint's job, so
+# the honest answer is neither to include it nor to drop it quietly — it is that
+# the comparison could not be carried out.
+#
+# The predicate is KEY PRESENCE, and the value under the key is deliberately not
+# read. A value test folds `if: false` and an empty `if:` into the same `null` an
+# absent key produces, so it waves through precisely the job that certainly never
+# runs while rejecting the `if: true` that certainly does — the disposition comes
+# out exactly inverted. Asking whether the author attached a condition at all is
+# also the only question a file that has declared it does not evaluate GitHub
+# expressions is entitled to ask.
+#
+# Two shapes stay outside this guard, and they are named here rather than left to
+# be rediscovered. A conditional step whose verb is not `make` contributes nothing
+# to the execution set and passes quietly, as the setup steps do. And a job
+# disabled TRANSITIVELY — one whose `needs:` names a job that itself never runs —
+# carries no `if:` key of its own, so its `make` lines still join the union;
+# measured, such a tree is byte-identical in output to the same tree with the
+# `needs:` removed. Only self-disabling by `if:` is what the guard sees.
 cond_rows=$(yq -r '
   explode(.) | .jobs | to_entries[]
-  | .key as $job | (.value.if // null) as $jobif
+  | .key as $job | (.value | has("if")) as $jobif
   | ((.value.steps // []) | to_entries[])
   | select(.value | has("run"))
-  | select(($jobif != null) or (.value.if != null))
+  | select($jobif or (.value | has("if")))
   | .key as $idx | .value.run as $run
   | ($run | split("\n"))[] | [$job, ($idx|tostring), .] | @tsv
 ' "$workflow" 2>/dev/null || true)
