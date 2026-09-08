@@ -243,13 +243,35 @@ run_lines=$(yq -r 'explode(.) | .jobs[].steps[] | select(has("run")) | .run' "$w
 # also the only question a file that has declared it does not evaluate GitHub
 # expressions is entitled to ask.
 #
-# Two shapes stay outside this guard, and they are named here rather than left to
-# be rediscovered. A conditional step whose verb is not `make` contributes nothing
-# to the execution set and passes quietly, as the setup steps do. And a job
-# disabled TRANSITIVELY — one whose `needs:` names a job that itself never runs —
-# carries no `if:` key of its own, so its `make` lines still join the union;
-# measured, such a tree is byte-identical in output to the same tree with the
-# `needs:` removed. Only self-disabling by `if:` is what the guard sees.
+# Shapes that stay outside this guard are NAMED below and deliberately NOT
+# COUNTED. The sentence that used to sit here said "two shapes stay outside", and
+# a third — a `strategy.matrix` that yields no combinations — was already real
+# when it was written. That third one is closed by the guard immediately after
+# this one. The ones still open:
+#
+#   - a conditional step whose verb is not `make`: it contributes nothing to the
+#     execution set and passes quietly, as the setup steps do;
+#   - a job disabled TRANSITIVELY — one whose `needs:` names a job that itself
+#     never runs — which carries no `if:` key of its own, so its `make` lines
+#     still join the union; measured, such a tree is byte-identical in output to
+#     the same tree with the `needs:` removed;
+#   - a case-variant key (`If:`, `IF:`), which `has("if")` does not see. Unlike
+#     the others this one is loud somewhere else: actionlint rejects it with
+#     `unexpected key "If" for "job" section`, so the workflow fails schema
+#     validation before this lint's silence could matter. The matrix guard below
+#     does NOT close it.
+#
+# That is what was known when this was written. It is not a claim that nothing
+# else escapes.
+#
+# THREE TIMES NOW a universal in this file has turned out false, which is why the
+# passage above is a list and not a count. (1) The header's claim that the
+# execution set is the union of every named target was false along four
+# independent paths. (2) This guard's claim that only self-disabling by `if:`
+# escapes it was false — a zero-combination matrix disables a job with no `if:`
+# key anywhere. (3) The claim that the shapes outside it numbered exactly two was
+# false for the same reason. Each was a sentence asserting completeness over a set
+# that nothing enumerates mechanically. Do not write the fourth.
 cond_rows=$(yq -r '
   explode(.) | .jobs | to_entries[]
   | .key as $job | (.value | has("if")) as $jobif
@@ -268,6 +290,77 @@ cond_make=$(printf '%s\n' "$cond_rows" | awk -F'\t' '
 if [ -n "$cond_make" ]; then
   die2 "조건부 make 스텝이 있다 — 이 린트는 GitHub 표현식을 평가하지 않으므로 그 스텝이 도는지 알 수 없고, 실행 집합을 유도할 수 없다:
 $cond_make"
+fi
+
+# A job whose `strategy.matrix` yields no combinations never runs either, and it
+# does so with no `if:` key anywhere — so the guard above cannot see it by
+# construction. Measured: with such a job as the only `make` holder, the whole
+# execution set is derived from a job that runs nothing, the output is
+# md5-identical to the healthy tree, and a true rule 2 violation is absorbed into
+# that dead job's closure and disappears. `actionlint` does not cover the gap. It
+# warns `constant expression "false" in condition` on `if: false`, but an
+# `exclude` that annihilates the product and a dynamic `${{ fromJSON(…) }}`
+# matrix are workflows it accepts with zero diagnostics — the same "this job
+# never runs" is a code smell in one syntax and a clean bill of health in the
+# other.
+#
+# The question asked is whether the combination count COULD be zero, or is
+# unknown — never what the count is. That is the same refusal to evaluate a
+# GitHub expression the guard above makes, and it is what keeps a normal matrix
+# green. `has("strategy")` was tried and rejected: it sends a two-OS matrix, the
+# very edit this repo's CLAUDE.md calls for, to exit 2.
+#
+# The predicates below test the node path and never a bound variable. Measured on
+# yq v4.53.6: `select($v)` does NOT filter — the row survives, with the variable
+# printing as `false` — while the same test written against the path does.
+matrix_dead=$( {
+  yq -r '
+    explode(.) | .jobs | to_entries[]
+    | select(.value.strategy.matrix != null)
+    | select((.value.strategy.matrix | tag) != "!!map")
+    | .key
+  ' "$workflow" 2>/dev/null
+  yq -r '
+    explode(.) | .jobs | to_entries[]
+    | select((.value.strategy.matrix | tag) == "!!map")
+    | select(
+        (.value.strategy.matrix | has("exclude"))
+        or (([.value.strategy.matrix | to_entries[]
+              | select(.key != "include" and .key != "exclude")
+              | select(((.value | tag) != "!!seq") or ((.value | length) == 0))] | length) > 0)
+        or ((.value.strategy.matrix | has("include"))
+            and ((.value.strategy.matrix.include | tag) != "!!seq"))
+        or ((([.value.strategy.matrix | to_entries[]
+               | select(.key != "include" and .key != "exclude")] | length) == 0)
+            and (((.value.strategy.matrix | has("include")) | not)
+                 or ((.value.strategy.matrix.include | length) == 0)))
+      )
+    | .key
+  ' "$workflow" 2>/dev/null
+} | grep -v '^$' | sort -u || true)
+
+if [ -n "$matrix_dead" ]; then
+  # Job attribution has to be rebuilt here: `run_lines` throws the job away, and
+  # the answer depends on WHICH job a `make` line sits in.
+  job_runs=$(yq -r '
+    explode(.) | .jobs | to_entries[]
+    | .key as $job
+    | (.value.steps // []) | to_entries[]
+    | select(.value | has("run"))
+    | .key as $idx | .value.run as $run
+    | ($run | split("\n"))[] | [$job, ($idx|tostring), .] | @tsv
+  ' "$workflow" 2>/dev/null || true)
+
+  matrix_make=$(printf '%s\n' "$job_runs" | awk -F'\t' -v dead="$matrix_dead" '
+    BEGIN { n = split(dead, d, "\n"); for (i = 1; i <= n; i++) if (d[i] != "") is_dead[d[i]] = 1 }
+    NF >= 3 && ($1 in is_dead) && $3 ~ /^[[:space:]]*make([[:space:]]|$)/ {
+      printf "  잡 %s 스텝 %s: %s\n", $1, $2, $3
+    }
+  ')
+  if [ -n "$matrix_make" ]; then
+    die2 "조합이 0개일 수 있는 strategy.matrix 를 가진 잡에 make 스텝이 있다 — 그 잡이 한 번이라도 도는지 알 수 없으므로 실행 집합을 유도할 수 없다:
+$matrix_make"
+  fi
 fi
 
 make_lines=$(printf '%s\n' "$run_lines" | grep -E '^[[:space:]]*make[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]*$' || true)
