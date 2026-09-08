@@ -2724,16 +2724,270 @@ MANIFEST="$MANIFEST_SAVE25"; RUN_ID="$RUN_ID_SAVE25"; GRANT="$GRANT_SAVE25"
 
 # ---------------------------------------------------------------------------
 # The detach path is gone, and its absence is asserted rather than assumed.
+# 26. The detach flag stays absent — in the driver AND in the gate.
 #
-# The run is driven by the main session's model now. Detaching would move the
-# deciding turn somewhere nobody can see, which is the one thing that silently
-# undoes the reason for this shape — so a re-introduced flag has to fail a test
-# rather than merely contradict a comment.
+# THE SUCCESS LINE NAMES THE FILE IT ACTUALLY SCANNED. It used to read "the
+# router is this session, so there is nothing to detach", which stated a premise
+# rather than a finding — and under the headless-shift shape that premise
+# evaporated while this check went on printing green. A false sentence in a CI
+# log is worse than a wrong comment: nobody re-reads a comment, and everybody
+# trusts a green line.
+#
+# AND THE SCOPE IS BOTH FILES. The shift launcher lives in `gate.sh`, not in the
+# driver, so a driver-only scan can only ever say something about a file the
+# change does not touch. The range is not the launcher alone either — it is
+# every enforcement device that goes into the gate.
 # ---------------------------------------------------------------------------
-if grep -qE '(^[^#]*--detach\)|DETACH=)' "$DRIVER"; then
-  bad "detach 제거" "--detach 가 다시 들어왔다 — 판단하는 턴이 보이지 않는 곳으로 간다"
+for detach_f in "$DRIVER" "$GATE_SH"; do
+  if grep -qE '(^[^#]*--detach\)|DETACH=)' "$detach_f"; then
+    bad "detach 제거" "$(basename "$detach_f") 에 --detach 가 다시 들어왔다 — 판단하는 턴이 보이지 않는 곳으로 간다"
+  else
+    ok "$(basename "$detach_f") 에 detach 경로가 없다"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 27. The three shift-safety properties, asserted rather than assumed.
+#
+# Each of these is a property the shift shape rests on and that nothing else in
+# this suite would notice breaking. They replace what the detach assertion used
+# to be standing in for.
+# ---------------------------------------------------------------------------
+
+# (a) THE SNAPSHOT DIGEST DOES NOT MOVE WITH THE SESSION ID. This is what makes
+# a successor shift able to act at all: it reads the snapshot and carries `H`
+# into its first gate call, and if the session id were an input the digest would
+# differ by construction and every shift would be refused with exit 4. The
+# fixture is a ledger and a manifest, so the ONLY thing differing between the
+# two runs below is the session id.
+SNAPFIX="$WORK/snapdig"; mkdir -p "$SNAPFIX"
+cat > "$SNAPFIX/manifest.md" <<'SNAPMF'
+# 파이프라인 매니페스트 — fixture
+
+## 인가 fixrun
+- 종료 지점: 픽스처 종료 지점
+SNAPMF
+cat > "$SNAPFIX/ledger.md" <<'SNAPLG'
+# 파이프라인 런 원장 — fixture
+
+## 실행 fixrun
+- `run` | 교대=0 | run-id=fixrun | prev=aaaa
+- `segment` | 교대=0 | id=SA | 상태=계획됨 | 워크트리=/tmp/x | 선행=없음 | prev=bbbb
+SNAPLG
+# ONLY the gate is sourced. It sources the driver itself, and the driver
+# declares `readonly` names — so sourcing both makes the second one die on a
+# readonly reassignment, and the digest comes back empty. That failure looks
+# exactly like "the digest does not depend on the session id", which is why the
+# emptiness check below is a `bad` rather than a skip.
+#
+# `set --` clears the positional parameters before either file is read: `.`
+# leaves the caller's arguments in place, and a sourced driver that sees a stray
+# argument parses it.
+snapdig_of() {
+  MANIFEST="$SNAPFIX/manifest.md" LEDGER="$SNAPFIX/ledger.md" \
+  RUN_DIR="$SNAPFIX" CLAUDE_CODE_SESSION_ID="$1" \
+  CC_ORCH_SOURCE_ONLY=1 CC_GATE_SOURCE_ONLY=1 \
+  bash -c 'g="$1"; set --; . "$g" >/dev/null 2>&1; gate_snapshot_digest' \
+    _ "$GATE_SH" 2>/dev/null
+}
+snapdig_a=$(snapdig_of 11111111-1111-1111-1111-111111111111)
+snapdig_b=$(snapdig_of 22222222-2222-2222-2222-222222222222)
+if [ -z "$snapdig_a" ]; then
+  bad "스냅숏 다이제스트" "픽스처에서 다이제스트가 나오지 않았다 — 이 단언은 공허하게 통과할 뻔했다"
+elif [ "$snapdig_a" = "$snapdig_b" ]; then
+  ok "세션 id 가 달라도 스냅숏 다이제스트가 같다 (교대가 exit 4 를 내지 않는다)"
 else
-  ok "detach 경로가 없다 (라우터가 이 세션이므로 떼어 낼 것이 없다)"
+  bad "스냅숏 다이제스트" "세션 id 로 값이 갈렸다 — 후임 샤드의 모든 행위가 exit 4 로 거절된다"
+fi
+
+# (b) THE SHIFT MARKER KEEPS THE SHIFT OUT OF `session-lineage`. Lineage is what
+# the approval reader searches, so every id in it is an id allowed to ANSWER. A
+# shift is a router by every other measure and walks straight through a guard
+# that tests only for the stage marker — and once enrolled, its own transcript
+# is read as a person's reply. That is the self-approval path the whole
+# separation exists to keep shut.
+# The needle is the RECORDING call, which is a different function from the
+# reader: enrolment is a side effect no read path may have, so the writer has
+# its own name and this is the one call site of it. Located with `awk` rather
+# than `grep -n | head -1` — an early-terminating reader on the right of a pipe
+# fails the pipeline under `pipefail` for the case where it found something.
+lineage_ln=$(awk 'index($0, "|| gate_session_lineage_record") { print NR; exit }' "$GATE_SH")
+if [ -n "$lineage_ln" ]; then
+  lineage_txt=$(sed -n "$((lineage_ln - 1)),$((lineage_ln))p" "$GATE_SH")
+  if printf '%s' "$lineage_txt" | grep_all_q -F 'CC_PIPELINE_STAGE_ID' \
+     && printf '%s' "$lineage_txt" | grep_all_q -F 'CC_PIPELINE_SHIFT_ID'; then
+    ok "lineage 등재 관문이 스테이지와 샤드를 둘 다 배제한다"
+  else
+    bad "샤드 lineage" "관문이 두 마커를 함께 보지 않는다: $lineage_txt"
+  fi
+else
+  bad "샤드 lineage" "lineage 등재 지점을 찾지 못했다"
+fi
+if sed -n '/^gate_launch_shift()/,/^}/p' "$GATE_SH" | grep_all_q -F 'CC_PIPELINE_SHIFT_ID='; then
+  ok "교대 런처가 샤드 마커를 실제로 내보낸다 (관문이 볼 값이 존재한다)"
+else
+  bad "샤드 마커" "런처가 마커를 내보내지 않으면 위 관문은 아무것도 배제하지 않는다"
+fi
+
+# (c) `shift.in-progress` SUPPRESSES THE AFTER-STAGE ARM, AND IT EXPIRES. The
+# arm's condition is "a stage's terminal row is the last row, nothing is alive,
+# and the router has not acted" — which is a shift changeover exactly. But
+# `RUN_DIR` is never pruned, so a marker tested with `[ -f ]` alone survives a
+# shift that died right after its handoff and disarms the arm for the rest of
+# the night. The three cases below are the whole of that distinction.
+WATCH_SH="$(dirname "$DRIVER")/watch.sh"
+if sed -n '/watch.announced-after-stage/,/^  fi$/p' "$WATCH_SH" | grep_all_q -F 'shift_active' \
+   || sed -n '/^  if \[ "\$live" = "0" \] \&\& \[ "\$pend" = "0" \] \&\& \[ "\$age" -ge "\$AFTER_STAGE" \]/,/^  fi$/p' "$WATCH_SH" | grep_all_q -F 'shift_active'; then
+  ok "after-stage 아암이 교대 가드를 거친다"
+else
+  bad "교대 가드" "after-stage 아암이 shift_active 를 보지 않는다 — 교대가 라우터 무응답으로 기록된다"
+fi
+SHIFT_SAVE="${RUN_DIR:-}"
+RUN_DIR="$WORK/shift-run"; mkdir -p "$RUN_DIR"
+eval "$(sed -n '/^now_epoch()/,/^}/p' "$WATCH_SH")"
+eval "$(sed -n '/^shift_active()/,/^}/p' "$WATCH_SH")"
+if shift_active; then
+  bad "교대 가드" "마커가 없는데 교대 중이라고 답했다"
+else
+  ok "마커가 없으면 교대 중이 아니다"
+fi
+printf '%s\n' "$(( $(date +%s) + 300 ))" > "$RUN_DIR/shift.in-progress"
+if shift_active; then
+  ok "만료 전 마커는 교대 중으로 읽힌다"
+else
+  bad "교대 가드" "살아 있는 마커를 못 읽었다 — 가드가 아무것도 막지 못한다"
+fi
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$RUN_DIR/shift.in-progress"
+if shift_active; then
+  bad "교대 가드" "만료된 마커가 아직 교대 중으로 읽힌다 — RUN_DIR 은 prune 되지 않으므로 아암이 밤 내내 죽는다"
+else
+  ok "만료된 마커는 스스로 풀린다 (죽은 샤드가 아암을 영구 무력화하지 않는다)"
+fi
+RUN_DIR="$SHIFT_SAVE"
+
+# ---------------------------------------------------------------------------
+# 28. The feed's fence, which no lint can hold.
+#
+# `feed.sh` cannot raise a banner because it does not source the emitter and
+# does not name its two functions. The banner-site lint counts occurrences of
+# the notifier BINARY, so a sourcing path is invisible to it — these two
+# assertions are the fence itself rather than a supplement to one.
+# ---------------------------------------------------------------------------
+FEED_SH="$(dirname "$DRIVER")/feed.sh"
+if [ -f "$FEED_SH" ]; then
+  ok "진행 채널 스크립트가 있다"
+  # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
+  # the door that is already named; asking "is `liveness.sh` the only thing it
+  # sources" also closes the one a future emitter under another name would use.
+  feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
+                    | { grep -v 'liveness\.sh' || true; } )
+  if [ -n "$feed_src_other" ]; then
+    bad "피드 울타리" "feed.sh 가 liveness.sh 밖의 것을 소스한다: $feed_src_other"
+  else
+    ok "feed.sh 가 소스하는 것은 liveness.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+  fi
+  # And the name reaches no executable line. A header sentence explaining the
+  # fence is not a breach of it, so the comment lines are excluded rather than
+  # the file being required never to mention what it refuses to load.
+  feed_notify_code=$( { grep -n 'notify-run\.sh' "$FEED_SH" || true; } \
+                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
+  if [ -n "$feed_notify_code" ]; then
+    bad "피드 울타리" "주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $feed_notify_code"
+  else
+    ok "feed.sh 의 실행 줄 어디에도 notify-run.sh 가 없다"
+  fi
+  if grep -q 'cc_notify_fire\|cc_notify_clear' "$FEED_SH"; then
+    bad "피드 울타리" "feed.sh 가 방출 함수를 이름으로 담고 있다"
+  else
+    ok "feed.sh 가 방출 함수를 이름으로도 부르지 않는다"
+  fi
+else
+  bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
+fi
+
+
+# ---------------------------------------------------------------------------
+# 29. The progress channel survives its own unclean death.
+#
+# `feed.lock` used to be removed only by a trap installed AFTER the lock was
+# taken, and no trap covers SIGKILL or SIGHUP. A feed that died uncleanly left the
+# file behind, every later re-arm took the "the lock is here and its owner is not"
+# branch and exited 3, and the instruction that branch printed was to delete the
+# file by hand — on a path that runs while the only person who could is asleep.
+# The watcher's sixth arm exists to DETECT that death and then tells the lead to
+# re-arm, so detection and recovery sat on two sides of one defect. §27 asserts
+# the fence; nothing asserted the lifecycle.
+# ---------------------------------------------------------------------------
+if [ -f "$FEED_SH" ]; then
+  FEED_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-feed-lock.XXXXXX")
+  FEED_LG="$FEED_RD/ledger.md"
+  printf -- '- `run` | 교대=0 | run-id=feedlock | prev=aaaa\n' > "$FEED_LG"
+  # A pid that is certainly gone: started and reaped right here.
+  ( : ) & dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$FEED_RD/feed.lock"
+  mkdir -p "$FEED_RD/feed.lock.d"
+  feed_rc=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
+    > "$FEED_RD/out" 2> "$FEED_RD/err" || feed_rc=$?
+  if [ "$feed_rc" = "0" ]; then
+    ok "주인이 사라진 락을 회수하고 재장전이 성공한다"
+  else
+    bad "피드 락" "고아 락에서 재장전이 rc=$feed_rc 로 실패했다 — 무인 경로에는 손으로 지울 사람이 없다: $(tr '\n' ' ' < "$FEED_RD/err")"
+  fi
+  if grep -q '회수' "$FEED_RD/err" 2>/dev/null; then
+    ok "회수했다는 사실이 한 줄로 남는다"
+  else
+    bad "피드 락" "락을 조용히 덮어썼다 — 앞선 채널이 깨끗하지 않게 죽었다는 사실이 아침에 남지 않는다"
+  fi
+  if [ -f "$FEED_RD/feed.lock" ]; then
+    bad "피드 락" "깨끗하게 끝난 실행이 자기 락을 남겼다"
+  else
+    ok "깨끗하게 끝난 실행은 자기 락을 지운다"
+  fi
+
+  # THE OTHER BRANCH MUST NOT REGRESS. A live holder still stops a second
+  # instance, and it does so with 0 — the lead re-arms up to three times on a
+  # healthy night, and a non-zero there files three false failures.
+  printf '%s\n%s\n' "$$" \
+    "$(LC_ALL=C ps -o lstart= -p $$ 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" \
+    > "$FEED_RD/feed.lock"
+  mkdir -p "$FEED_RD/feed.lock.d"
+  feed_rc2=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
+    > "$FEED_RD/out2" 2> "$FEED_RD/err2" || feed_rc2=$?
+  if [ "$feed_rc2" = "0" ]; then
+    ok "살아 있는 주인이 있으면 재장전은 0 으로 물러난다"
+  else
+    bad "피드 락" "건강한 밤의 재장전이 rc=$feed_rc2 로 실패를 보고했다"
+  fi
+  if [ -f "$FEED_RD/feed.lock" ]; then
+    ok "물러난 인스턴스는 살아 있는 주인의 락을 지우지 않는다"
+  else
+    bad "피드 락" "물러나면서 남의 락을 지웠다 — 락이 막으려던 이중 실행이 바로 그 상태다"
+  fi
+
+  # The ordering, and the signal set. Neither closes the SIGKILL window — nothing
+  # in a shell can — but installing the trap after the lock widens a window that
+  # costs nothing to close.
+  # `-m1` AND NOT `| head -1`. `head` closes the pipe on its first line, `cut`
+  # takes SIGPIPE, and `pipefail` hands the whole substitution a non-zero status
+  # — so the line lookup failed on exactly the files where the pattern matched
+  # more than once. Stopping the search at the first match asks for the same
+  # value without anyone closing a pipe early.
+  feed_trap_ln=$( { grep -n -m1 "^trap 'release_lock'" "$FEED_SH" || true; } | cut -d: -f1)
+  feed_take_ln=$( { grep -n -m1 '^take_lock$' "$FEED_SH" || true; } | cut -d: -f1)
+  if [ -n "$feed_trap_ln" ] && [ -n "$feed_take_ln" ] && [ "$feed_trap_ln" -lt "$feed_take_ln" ]; then
+    ok "트랩이 락 획득보다 먼저 설치된다"
+  else
+    bad "피드 락" "트랩이 락 획득 뒤에 설치된다 (trap=$feed_trap_ln take=$feed_take_ln)"
+  fi
+  if { grep -q "^trap 'release_lock' EXIT HUP INT TERM" "$FEED_SH"; }; then
+    ok "그 트랩이 HUP 도 덮는다"
+  else
+    bad "피드 락" "HUP 이 트랩 목록에 없다 — 터미널이 사라지는 흔한 종료가 락을 남긴다"
+  fi
+  rm -rf "$FEED_RD"
 fi
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"

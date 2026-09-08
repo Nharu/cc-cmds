@@ -307,6 +307,36 @@ announce() {
   printf '================================================================\n\n'
 }
 
+file_mtime() {
+  # file_mtime <path> — epoch seconds, or empty. `stat` diverges between BSD and
+  # GNU on exactly the flag this needs, and `date -r` is on both and takes the
+  # file directly. The same idiom the gate already uses, spelled the same way so
+  # the two agree about what a timestamp is.
+  [ -f "$1" ] || return 0
+  date -u -r "$1" +%s 2>/dev/null || true
+}
+
+shift_active() {
+  # Is a routing shift being launched right now?
+  #
+  # AN EXPIRY TIMESTAMP, AND `[ ! -f ]` IS FORBIDDEN HERE. The marker exists so
+  # the after-stage arm does not read a shift changeover as "a stage ended and
+  # the router went silent" — a misreading that writes a run-scope `blocked` row
+  # with cause `불명`, and an unresolved run-scope block is an input to the
+  # termination condition, so the run can no longer finish.
+  #
+  # But `RUN_DIR` is never pruned. Tested for mere existence, a shift that dies
+  # immediately after its handoff leaves the file behind for the rest of the
+  # night, and this arm is disarmed for good — the safety device becomes the
+  # silent hole. Reading the timestamp is what makes the marker expire on its
+  # own, with no writer needed to clean up after a process that is gone.
+  local f="$RUN_DIR/shift.in-progress" exp
+  [ -f "$f" ] || return 1
+  exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
+  [ -n "$exp" ] || return 1
+  [ "$(now_epoch)" -lt "$exp" ]
+}
+
 record_blocked() {
   # THE LEDGER HAS ONE WRITER AND IT IS NOT THIS PROCESS. The row this used to
   # append carried no `prev=`, took no lock, and passed no row-length check —
@@ -408,8 +438,15 @@ pass() {
   # re-fired every pass, and — when it still returned early — the heartbeat
   # stopped for good. `record_blocked` still writes `stall`; that file is the
   # observation, not the guard.
+  # AND NOT WHILE A SHIFT IS CHANGING OVER. Under the headless routing shape a
+  # stage ending is followed by the routing session itself ending and a
+  # successor starting, and for those seconds the ledger's last row IS a
+  # terminal stage row with no live stage and no router acting — which is this
+  # arm's condition exactly. The marker distinguishes a changeover from a
+  # stranding, and it is read as an EXPIRY rather than as a flag; see
+  # `shift_active`.
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && [ "$nonterm" -ge 1 ] \
+     && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -608,6 +645,46 @@ pass() {
         "런이 정박했습니다 — 아침 보고서의 보류 큐를 보세요 ($reason)" "run-$slug" || true
     fi
   done
+
+  # THE SIXTH ARM — THE PROGRESS CHANNEL HAS GONE QUIET.
+  #
+  # The channel reports its own death in-band on four of the five paths it can
+  # die on — the harness announces a normal exit, a non-zero exit, a SIGKILL and
+  # a timeout, and the router's invariant re-arms on each. `TaskStop` is the
+  # fifth and it leaves no signal at all, so that one path needs an observer
+  # OUTSIDE the channel. While the lead is idle the only reader awake is this
+  # watcher, which is why the count lives here.
+  #
+  # IT DOES NOT CALL `record_blocked`, AND THAT IS THE POINT. An unresolved
+  # run-scope block is an input to the termination condition, so writing one here
+  # would make losing the night's COMMENTARY stop the night's WORK from
+  # finishing. The channel is a projection of the ledger; the ledger is the run.
+  # Confusing the two layers costs more than the outage it reports.
+  #
+  # DERIVED FROM `--stall`, WITH NO NEW PIN. The lint that keeps the thresholds
+  # honest hardcodes exactly four (flag, value) pairs, so a fifth constant would
+  # be structurally invisible to it — the one defect that check's own header says
+  # it exists to prevent. The channel beats once per `STALL`, and this waits for
+  # `2 x STALL`, which is exactly two missed beats. At any other cadence the
+  # ratio stops being a whole number of beats and one late beat banners a healthy
+  # channel as dead.
+  #
+  # A RUN WITH NO CHANNEL IS NOT ACCUSED. The heartbeat file exists only once the
+  # feed has run, so a night nobody armed one for never reaches this test.
+  local feed_hb feed_mt feed_age
+  feed_hb="$RUN_DIR/feed.heartbeat"
+  feed_age=""
+  feed_mt=$(file_mtime "$feed_hb")
+  [ -n "$feed_mt" ] && feed_age=$(( $(now_epoch) - feed_mt ))
+  if [ -n "$feed_age" ] && [ "$feed_age" -ge "$(( STALL * 2 ))" ] \
+     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && [ ! -f "$RUN_DIR/watch.announced-feed-silence" ]; then
+    : > "$RUN_DIR/watch.announced-feed-silence"
+    announce "진행 채널이 ${feed_age}초 동안 아무 박동도 내지 않았습니다" \
+             "채널이 죽었을 수 있습니다 — 런은 계속 돕니다. 리드 세션에서 채널을 다시 거세요"
+    cc_notify_fire hands \
+      "진행 채널이 ${feed_age}초째 조용합니다 — 밤의 해설만 끊긴 것이고 런은 계속 돕니다" "feed" || true
+  fi
 
   # Positive heartbeat. Says the watcher is alive, which is what makes its
   # silence mean something.
