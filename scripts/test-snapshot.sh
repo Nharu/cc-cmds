@@ -630,7 +630,6 @@ case "$( { grep '승인 id=B5-' "$LEDGER" || true; } | tail -1)" in
 esac
 # The latch's own pair: the count is cumulative, and walking the segment back
 # must not reduce it.
-b5_dig_pre=$(gate_progress_digest)
 o_segment SX 실행중
 check "세그먼트를 종단에서 되돌려도 처분 카운트가 줄지 않는다" \
   "$(gate_disposition_latch | gate_count)" "4"
@@ -653,13 +652,34 @@ check "그 되돌림으로 면제가 실제로 풀렸다 (위 단언이 공허�
 # no window, so folding is the fix and this is where it is pinned.
 gate_b5_disposition_volume
 check "임계를 넘은 뒤 진전이 일어나도 경계 승인은 하나로 접힌다" "$(n_b5)" "1"
-o_segment SX park
-o_segment SX 실행중
+# THE SECOND MOVE IS MONOTONE, NOT A ROUND TRIP. Toggling a segment out and back
+# leaves the vector where it started, so the two evaluations either side of it
+# read a byte-identical digest — the assertion then cannot fail on its own, and
+# a rotating binding shows up only as leftover from the first one. Adding a
+# segment that did not exist moves the vector and does not move it back.
+b5_dig_mid=$(gate_progress_digest)
+o_segment SY 실행중
+o_segment SZ 실행중
 gate_b5_disposition_volume
 check "진전이 두 번 더 일어나도 여전히 하나다 (승인이 행위마다 다시 무장하지 않는다)" \
   "$(n_b5)" "1"
-check "그 진전이 실제로 진전 다이제스트를 움직였다 (위 두 단언이 공허하지 않다)" \
-  "$( [ "$b5_dig_pre" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"
+# The anti-vacuity pair measures the delta BETWEEN the two evaluations. Anchored
+# at the value from before the first one it certifies the earlier transition
+# instead, and then it passes while the assertions it is supposed to support
+# fail — which is what it did.
+check "그 두 진전이 두 평가 사이에서 실제로 다이제스트를 움직였다 (위 단언이 공허하지 않다)" \
+  "$( [ "$b5_dig_mid" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"
+# AND IT IS A WINDOW, NOT A MUTE BUTTON. The boundary is watching a rate, so
+# folding must not turn it into a once-per-run notice: crossing the next
+# multiple of the threshold is a new question and has to be asked.
+i=0
+while [ "$i" -lt "$B5_DISPOSITION_N" ]; do
+  o_problem SX "P0-버킷$i" 읽기
+  i=$((i + 1))
+done
+o_segment SX park
+gate_b5_disposition_volume
+check "처분이 다음 배수를 넘으면 한 번 더 묻는다 (접힘이 침묵이 되지 않는다)" "$(n_b5)" "2"
 
 # --- 8f. The terminal enumeration names each disposed obligation -------------
 #
@@ -837,6 +857,123 @@ if [ "$(b3_base)" != "$b3_base_e" ]; then
 else
   bad "예산 창" "세그먼트 상태가 종단으로 옮겨 갔는데 창이 그대로다"
 fi
+
+# --- 8g. Every boundary folds on ITS OWN predicate value ---------------------
+#
+# The approval id is derived from the boundary name and a binding, and
+# suppression is an exact match on that id and nothing else. So the binding IS
+# the definition of "the same question", and handing a boundary no binding gives
+# it the whole progress digest — a value that moves on things its predicate was
+# built to ignore. The id then rotates while the question stays true, every act
+# past the threshold opens another pending approval, and pending approvals block
+# the run from proposing its own end: each act needed to finish re-arms the thing
+# stopping it. That shape is recorded in the gate as a fixed defect of the old
+# act budget, and it came back through the default argument.
+#
+# Only B5 was measured for this when the folding first landed, so B2 and B3 kept
+# the defect through a green suite. These are the missing siblings. The pairs are
+# what make them discriminators: an act that moves the FULL digest while leaving
+# the boundary's own value alone must not open a new question, and a move of the
+# boundary's own value must.
+n_b2() { { grep -c '승인 id=B2-' "$LEDGER" 2>/dev/null || true; } ; }
+
+# B3 — the window key is the binding, and `acts=` is exactly what it excludes.
+LEDGER="$WORK/b3f.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b3f-run"; mkdir -p "$RUN_DIR"
+o_segment SB 실행중
+b3_act
+gate_b3_act_budget
+i=0
+while [ "$i" -lt 45 ]; do b3_act; i=$((i + 1)); done
+gate_b3_act_budget
+check "예산 경계가 발화한다 (아래 접힘 단언의 전제)" "$(n_b3)" "1"
+b3f_dig=$(gate_progress_digest)
+b3_act
+gate_b3_act_budget
+check "창이 그대로인 동안 예산 경계 승인은 하나로 접힌다" "$(n_b3)" "1"
+check "그 행위가 전체 진전 다이제스트를 실제로 움직였다 (위 단언이 공허하지 않다)" \
+  "$( [ "$b3f_dig" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"
+# The positive control. Folding must not become permanent silence: a genuinely
+# new window is a new question and has to be asked.
+o_segment SB 머지됨
+b3_act
+gate_b3_act_budget
+i=0
+while [ "$i" -lt 45 ]; do b3_act; i=$((i + 1)); done
+gate_b3_act_budget
+check "창이 진짜로 바뀌면 새 질문을 연다 (접힘이 영구 침묵이 아니다)" "$(n_b3)" "2"
+
+# B2 — the obligation digest is the binding, and it is deliberately independent
+# of the progress digest. That independence is the reason B2 exists beside B1,
+# and it is exactly what the default binding threw away.
+LEDGER="$WORK/b2a.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b2a-run"; mkdir -p "$RUN_DIR"
+o_segment SB 실행중
+o_problem SB P0-고정 외부상태변경
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do gate_b2_obligations; i=$((i + 1)); done
+check "의무 적체 경계가 발화한다 (아래 접힘 단언의 전제)" "$(n_b2)" "1"
+b2_dig=$(gate_progress_digest)
+b3_act
+gate_b2_obligations
+check "의무 집합이 그대로인 동안 적체 경계 승인은 하나로 접힌다" "$(n_b2)" "1"
+check "그 행이 전체 진전 다이제스트를 움직였는데도 그렇다 (위 단언이 공허하지 않다)" \
+  "$( [ "$b2_dig" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"
+# The positive control, on this boundary's own axis: a different obligation set
+# is a different question.
+o_problem SB P0-둘째 외부상태변경
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do gate_b2_obligations; i=$((i + 1)); done
+check "의무 집합이 실제로 바뀌면 새 질문을 연다" "$(n_b2)" "2"
+
+# --- 8h. The suspension counts human questions, not the boundaries' own ------
+#
+# The boundaries stand down while somebody is being waited on, and the recorded
+# reason for that grace is "waiting, not stalled". That is a claim about a
+# question a person has to answer; it is false for an approval a boundary opened
+# because it judged the run stuck. Letting those count made the first boundary to
+# fire switch off the other three — the run's stall detector disarmed by its own
+# alarm.
+o_approval() {
+  # o_approval <id> <절단점> — one pending approval row. The id field is read
+  # with a trailing space by every consumer, so it cannot be the last field.
+  printf -- '- `승인` | 승인 id=%s | 상태=대기 | 대상=- | 절단점=%s | 질문 문면=x | prev=x\n' \
+    "$1" "$2" >> "$LEDGER"
+}
+# Only B1 is left real, so the observable effect of `gate_boundaries` is B1's own
+# bookkeeping file and nothing else.
+b_real_b2=$(declare -f gate_b2_obligations)
+b_real_b3=$(declare -f gate_b3_act_budget)
+b_real_b4=$(declare -f gate_b4_cost)
+b_real_b5=$(declare -f gate_b5_disposition_volume)
+gate_b2_obligations() { return 0; }
+gate_b3_act_budget() { return 0; }
+gate_b4_cost() { return 0; }
+gate_b5_disposition_volume() { return 0; }
+
+LEDGER="$WORK/susp-a.md"; : > "$LEDGER"
+RUN_DIR="$WORK/susp-a-run"; mkdir -p "$RUN_DIR"
+o_segment SB 실행중
+o_approval B9-deadbeef 경계
+gate_boundaries
+if [ -f "$RUN_DIR/progress-digest" ]; then
+  ok "대기 중인 경계 승인은 나머지 경계를 끄지 않는다 (정체 감지가 계속 돈다)"
+else
+  bad "유예 선택자" "경계가 스스로 낸 승인 하나에 정체 감지가 꺼졌다 — 알람이 자기를 껐다"
+fi
+# The control, and it is what makes the assertion above a discriminator rather
+# than a claim that nothing suspends at all.
+LEDGER="$WORK/susp-b.md"; : > "$LEDGER"
+RUN_DIR="$WORK/susp-b-run"; mkdir -p "$RUN_DIR"
+o_segment SB 실행중
+o_approval A9-cafebabe 커밋
+gate_boundaries
+if [ -f "$RUN_DIR/progress-digest" ]; then
+  bad "유예 선택자" "행위 승인이 대기 중인데도 경계가 계속 돌았다 — 유예가 통째로 사라졌다"
+else
+  ok "사람의 답을 기다리는 행위 승인에는 여전히 유예가 걸린다 (제외가 과하지 않다)"
+fi
+eval "$b_real_b2"; eval "$b_real_b3"; eval "$b_real_b4"; eval "$b_real_b5"
 
 LEDGER="$LEDGER_SAVE"
 

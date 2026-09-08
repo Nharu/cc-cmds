@@ -7181,7 +7181,22 @@ gate_b2_obligations() {
   printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
   [ "$(gate_open_obligations | gate_count)" = "0" ] && return 0
-  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다"
+  # THE BINDING IS THIS BOUNDARY'S OWN PREDICATE VALUE, not the whole progress
+  # digest. The default binding rotates with anything that moves progress, and
+  # this predicate is deliberately independent of that — the paragraph above
+  # gives that independence as the reason B2 exists beside B1. With the default,
+  # the question stayed true while its id rotated, so every act past the
+  # threshold opened another pending approval and every one of them blocks
+  # termination condition 2. The obligation digest is already in hand, and it is
+  # the value that actually decides whether this is the same question.
+  #
+  # Bucketed by the threshold for the same reason B3 is: the repeat count keeps
+  # climbing while the set sits still, and a set-only binding would say this once
+  # and then never again however long the backlog stayed. Inside a bucket no
+  # cycle re-arms it; crossing the next multiple is a genuinely worse situation
+  # and gets asked.
+  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다" \
+    "$cur/$((n / B2_OBLIGATION_M))"
 }
 
 gate_b3_act_budget() {
@@ -7309,7 +7324,19 @@ gate_b3_act_budget() {
   esac
   n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
-  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
+  # THE BINDING IS THE WINDOW KEY, for the same reason B2 passes its own digest.
+  # This function spends real effort keeping `acts=` and `obligation=` OUT of
+  # that key, and then handing the boundary no binding put them straight back in
+  # through the default — so the id rotated on exactly the acts the window was
+  # built to ignore, and each one opened another approval that blocks
+  # termination. `h` alone is not enough, though: the count keeps climbing inside
+  # one window, so a window-only binding would ask once and then stay silent
+  # while the run spent another budget, and another — the same over-correction
+  # that turning a rotating id into a single standing one produces. The binding
+  # is therefore the window AND how many budgets have been spent in it, so an
+  # act never re-arms the question and each further budget does.
+  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다" \
+    "$h/$((n / B3_ACT_BUDGET))"
 }
 
 gate_b4_cost() {
@@ -7484,7 +7511,20 @@ gate_b5_disposition_volume() {
   # reachable without any evasion at all: the exemption is one of the three
   # dispositions and it requires no act, so four parked segments carrying
   # read-graded problem rows arrive here having called neither closing verb.
-  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다" "$B5_DISPOSITION_N"
+  # THE BINDING IS THE COUNT BUCKETED BY THE THRESHOLD, not the threshold itself.
+  # Folding to a single id for the whole run was the fix for a rotating one, and
+  # it overshot: suppression matches any row bearing the id, an approval is
+  # resolved by appending a row rather than editing the one that opened it, so
+  # the original 대기 row lives in the ledger forever and this boundary would
+  # speak once and never again — at 4 dispositions or at 400. The declared
+  # concern here is a RATE, and a once-per-run notice does not cover a rate.
+  #
+  # Bucketing gives the predicate its own window: the id is fixed inside a
+  # bucket, so no act re-arms it, and it changes only when the count crosses the
+  # next multiple, which is a genuinely new question. "A monotone predicate has
+  # no window" is true of the progress digest and false of the predicate's own
+  # value.
+  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다" "$((n / B5_DISPOSITION_N))"
 }
 
 gate_issue_boundary_approval() {

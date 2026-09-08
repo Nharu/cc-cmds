@@ -261,6 +261,18 @@ while IFS= read -r f; do
     [ -n "$name" ] || continue
     callline=$(grep -nE "^$name([[:space:]]|\$)" "$f" | sed -n '1s/:.*$//p')
     [ -n "$callline" ] || continue
+    # A NAME THE GATE ALREADY DEFINES IS NOT THIS DEFECT. What this check is
+    # about is a call that vanishes into nothing because the name does not exist
+    # yet — the assertion then reads as covered while covering nothing. A suite
+    # that sources the gate has those names bound before its first line, so a
+    # call above a later definition runs the REAL one, which is exactly what a
+    # fixture that shadows a gate function for a few assertions and restores it
+    # afterwards intends. Treating that as an offence would push the fix toward
+    # indenting the shadow out of the pattern's reach, which hides the shadow
+    # from the reader without changing anything the check cares about.
+    if grep -qE "^$name\(\) *\{" "$GATE"; then
+      continue
+    fi
     if [ "$callline" -lt "$defline" ]; then
       offenders="$offenders $name(호출 $callline < 정의 $defline)"
     fi
