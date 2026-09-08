@@ -25,7 +25,8 @@
 #      structured output and halt records; the driver transcribes.
 #
 # Usage:
-#   run.sh --doc <abs-path> [--run-id <id>]
+#   run.sh --manifest <abs-path> [--run-id <id>] [--replan]
+#   run.sh --doc <abs-path> [--run-id <id>] [--replan]
 #
 # THERE IS NO `--detach`. The run is driven by the main session's model — the
 # router — and detaching would put the deciding turn somewhere nobody can see.
@@ -33,10 +34,20 @@
 # and a detach flag is the one thing that would silently undo it.
 #   run.sh --self-check
 #
+# THERE IS NO RESUME EITHER, and that is the other thing this block has to say
+# out loud. Pointing this script at a run id whose ledger already carries
+# segments does NOT continue that run: it plans a fresh one from generation 1,
+# under different segment ids, on a base the earlier plan never used. Naming
+# only `--doc` and `--run-id` here left "continue this run" and "start a new
+# one" indistinguishable at the call site, and the second reading is the one
+# that re-implements work already merged. Such an invocation is REFUSED unless
+# `--replan` says the second plan was meant.
+#
 # Exit codes:
 #   0 — run reached DONE, or --self-check passed
 #   1 — hard stop (foreign grant, unreadable contract state)
-#   2 — invalid invocation
+#   2 — invalid invocation, including a run id the ledger already planned
+#       without `--replan`
 #   3 — interpreter floor not met
 
 # ---------------------------------------------------------------------------
@@ -319,6 +330,12 @@ derive_paths() {
 # a document becomes one optional element inside it.
 # ---------------------------------------------------------------------------
 MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
+
+# Set only by `--replan`. Default 0 so the guard below refuses by default: the
+# expensive mistake is re-planning a run that is already under way, and a
+# default that permits it makes the refusal reachable only by remembering to
+# ask for it.
+REPLAN=0
 
 manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
 
@@ -1450,6 +1467,91 @@ ledger_last() {
 }
 
 # ---------------------------------------------------------------------------
+# Reading THIS run's rows back.
+#
+# `ledger_last` above is unscoped on purpose — it answers about the newest row
+# of a series whoever wrote it. The questions below are about one run id, and
+# the ledger is keyed by DOCUMENT: every run of that document appends to the
+# same file under its own `## 실행` heading. An unscoped read of `segment`
+# therefore answers with a different night's segments, and a guard built on one
+# would refuse the second run of every document that ever completed a first.
+# ---------------------------------------------------------------------------
+run_section_rows() {
+  # run_section_rows <계열> — rows of that series inside this run's block.
+  #
+  # `awk` with string equality and no regex, which is the form this repository
+  # already established for Korean keys: a Korean heading handed to a regex
+  # engine is the construction that had to be rewritten once after failing on
+  # one CI leg and nowhere else.
+  awk -v h="## 실행 $RUN_ID" -v p="- \`$1\`" '
+    $0 == h { inblk = 1; next }
+    substr($0, 1, 3) == "## " { inblk = 0 }
+    inblk && index($0, p) == 1 { print }
+  ' "$LEDGER" 2>/dev/null || true
+}
+
+run_segment_ids() {
+  run_section_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' \
+    | sed 's/[[:space:]]*$//' | sort -u
+}
+
+run_segment_field() {
+  # run_segment_field <세그먼트 id> <key> — last row for that id wins, which is
+  # the same append-only advance the gate's reader implements. Spelled as its
+  # twin rather than reinvented: the two read one file, and a disagreement about
+  # which row wins is a disagreement about what the run currently is.
+  local sid="$1" key="$2"
+  run_section_rows 'segment' \
+    | { grep -F "id=$sid " || true; } | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+# ---------------------------------------------------------------------------
+# In-flight guard.
+#
+# A run id is a KEY, not a name, and pointing a second invocation at one whose
+# ledger already carries segments is not a resume — this driver has no resume.
+# It plans from generation 1 again, and the re-plan is SILENT: the log reads
+# `매니페스트 검사 통과` and `게이트 통과`, exactly as a first kickoff does.
+#
+# Measured: a run whose three segments had landed commits and open pull requests
+# was re-planned under different ids, with a different branch naming rule, on a
+# base the first plan never used — and a fresh worktree and branch were created
+# to re-implement work that was already waiting to merge. It was killed 80
+# seconds in; left alone it would have opened duplicate pull requests, and at a
+# cutpoint of 머지 or above it would have reached somewhere irreversible.
+#
+# Refusing is the whole repair, and it is deliberately a REFUSAL rather than an
+# automatic resume: what such an invocation should have done instead is a
+# routing decision the driver cannot make for the caller. `--replan` is the
+# caller saying the second plan was meant, which is what makes the two intents
+# distinguishable at the call site without claiming a resume that does not
+# exist.
+# ---------------------------------------------------------------------------
+check_inflight() {
+  local ids n id st
+  ids=$(run_segment_ids)
+  n=$(printf '%s\n' "$ids" | grep -c . || true)
+  [ "${n:-0}" -gt 0 ] || return 0
+  if [ "${REPLAN:-0}" = "1" ]; then
+    warn "run-id $RUN_ID 의 원장에 이미 세그먼트 $n 개가 있습니다 — --replan 이 있으므로 다시 계획합니다"
+    ledger_row '자율 승인' "kind=replan" "결정=이미 세그먼트가 있는 런을 다시 계획한다" \
+      "기각된 대안=거절하고 호출부에 되돌린다" "등급=1" \
+      "기준=호출부가 --replan 으로 두 번째 계획을 명시했다" \
+      "되돌리는 법=--replan 없이 같은 run-id 로 다시 부르면 이 호출은 거절된다" \
+      "근거=기존 세그먼트 $n 개"
+    return 0
+  fi
+  echo "run.sh: run-id $RUN_ID 는 이미 계획된 런입니다 — 이 호출은 이어받기가 아니라 재계획입니다" >&2
+  echo "run.sh: 이 드라이버에는 이어받기가 없습니다. 다음 스테이지를 라우팅하려면 gate.sh 의 act/exec 를 쓰고, 정말로 다시 계획하려면 --replan 을 붙이거나 새 run-id 로 부르세요" >&2
+  for id in $ids; do
+    st=$(run_segment_field "$id" '상태')
+    echo "run.sh:   세그먼트 $id — 상태 ${st:-없음}" >&2
+  done
+  exit 2
+}
+
+# ---------------------------------------------------------------------------
 # Volatile run directory. Process handles live here and NOWHERE else: a stale
 # record and a stale process then die together, so pid reuse can never make the
 # driver kill an unrelated live process. It is under XDG_STATE_HOME rather than
@@ -2495,7 +2597,72 @@ boundary_idempotent() {
 
 # ---------------------------------------------------------------------------
 # Merge gate (S8).
+#
+# `gh pr checks` reports "still running" with an exit code of its own — 8 —
+# distinct from the 1 it reports for a failure. Reading the call as a boolean
+# threw that distinction away and mapped both onto the failure park. Measured on
+# a pull request with two checks in flight: the unqualified call returned 8 and
+# the `--required` call returned 1 with zero rows. This repository's macOS leg
+# runs 30-45 minutes, so an unattended run that pushes and goes straight to
+# merge reads its checks at their least settled moment nearly every time, and
+# what the morning got was a recorded failure for checks that had not failed —
+# sending the reader into logs that were green or empty.
+#
+# The wait below is the other half. Unattended there is no later turn that comes
+# back on its own, so a merge path with no wait cannot ever see a settled check;
+# the polling budget is what this run has instead of a person re-checking.
 # ---------------------------------------------------------------------------
+
+# The exit code `gh pr checks` uses for "not settled yet". It is a VALUE and not
+# a truth, which is the whole reason the boolean form could not tell it from 1.
+readonly GH_CHECKS_PENDING=8
+
+# Read at call time rather than frozen at load. The test harness sources this
+# file once and then exercises the wait, and an hour-long budget baked in at
+# source time would leave that path untestable — which is how it stayed unbuilt.
+checks_poll_sec() { printf '%s' "${CC_ORCH_CHECKS_POLL_SEC:-60}"; }
+checks_wait_max() { printf '%s' "${CC_ORCH_CHECKS_WAIT_SEC:-3600}"; }
+
+pr_checks_rc() {
+  # pr_checks_rc <slug> <pr> <required-only 0|1> — the exit code of ONE probe.
+  local slug="$1" pr="$2" req="$3" rc=0
+  if [ "$req" = "1" ]; then
+    gh_q "$slug" pr checks "$pr" --required >/dev/null || rc=$?
+  else
+    gh_q "$slug" pr checks "$pr" >/dev/null || rc=$?
+  fi
+  printf '%s' "$rc"
+}
+
+pr_checks_settle() {
+  # pr_checks_settle <slug> <pr> <required-only 0|1> — poll until the checks
+  # stop reporting pending, and print the LAST exit code observed. Printing the
+  # code rather than a boolean is the point: the caller has three dispositions
+  # and a boolean carries two.
+  #
+  # THE BUDGET IS SPENT IN ATTEMPTS, not in elapsed seconds. Spending it in
+  # seconds makes a poll interval of zero — a legitimate setting, and the only
+  # one a test can use — an interval that never advances the clock, so the loop
+  # would never reach its cap.
+  #
+  # The wall-clock deadline outranks this budget. A merge landing after it is a
+  # terminal act nobody authorized for that hour, so waiting past it could only
+  # produce one — the same reason the driver runs this gate inline rather than
+  # spawning it.
+  local slug="$1" pr="$2" req="$3" rc poll cap tries=0 max_tries
+  poll=$(checks_poll_sec); cap=$(checks_wait_max)
+  if [ "$poll" -gt 0 ]; then max_tries=$(( cap / poll )); else max_tries="$cap"; fi
+  while :; do
+    rc=$(pr_checks_rc "$slug" "$pr" "$req")
+    [ "$rc" = "$GH_CHECKS_PENDING" ] || break
+    [ "$tries" -lt "$max_tries" ] || break
+    if past_deadline; then break; fi
+    tries=$((tries + 1))
+    if [ "$poll" -gt 0 ]; then sleep "$poll"; fi
+  done
+  printf '%s' "$rc"
+}
+
 merge_gate() {
   local seg="$1" branch="$2" pr slug al
   al=$(seg_alias "$seg") || al=""
@@ -2514,17 +2681,28 @@ merge_gate() {
   # A merge grant does NOT come with an --admin exception. A driver blocked by
   # branch protection that issued itself that exception would be widening the
   # authorization silently.
-  local required_rows
+  local required_rows checks_rc req_only
   required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || printf '0')
-  if [ "$required_rows" = "0" ]; then
-    if ! gh_q "$slug" pr checks "$pr" >/dev/null; then
+  if [ "$required_rows" = "0" ]; then req_only=0; else req_only=1; fi
+  checks_rc=$(pr_checks_settle "$slug" "$pr" "$req_only")
+  # PENDING IS ITS OWN DISPOSITION, and it is named as one. A park recorded here
+  # says the budget ran out with the checks still running — which is a different
+  # thing from a failure, and the difference is what sends the morning reader to
+  # the right place.
+  if [ "$checks_rc" = "$GH_CHECKS_PENDING" ]; then
+    park "$seg" act 막힘 "게이트 park" \
+      "체크가 아직 진행 중 — 대기 예산 $(checks_wait_max)초를 넘겼다 (실패가 아니다)" \
+      "gh -R $slug pr checks $pr"
+    return 2
+  fi
+  if [ "$checks_rc" != "0" ]; then
+    if [ "$req_only" = "0" ]; then
       # Interactively this branch enumerates the failed non-required checks and
       # asks. Unattended the answer never comes, so it IS the park branch.
       park "$seg" act 막힘 "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh -R $slug pr merge $pr"
-      return 2
+    else
+      park "$seg" act 막힘 "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
     fi
-  elif ! gh_q "$slug" pr checks "$pr" --required >/dev/null; then
-    park "$seg" act 막힘 "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
     return 2
   fi
 
@@ -3838,6 +4016,60 @@ deps_satisfied() {
   return 0
 }
 
+# THE KICKOFF'S COPY OF THE GATE'S TWO `선행` FLOORS, and the copy carries the
+# same obligation `ledger_row`'s normalization does: a change made on one side
+# and not the other splits them silently.
+#
+# The gate applies both floors on `act --kind segment`, and every `선행` value in
+# a run reaches the ledger FIRST through the path below — kickoff writes the
+# opening `segment` row for every planned id before the gate has ever seen the
+# segment. So the one version of the field the dependency cone reads was the one
+# version neither floor had looked at, and the deferral that left it that way
+# named the ordering collision as its reason rather than hiding it.
+#
+# Both floors have to be write-time. `선행` is monotone, so a token naming a
+# segment that does not exist is permanently required and permanently
+# un-landable — and it surfaces much later as "the predecessor has not landed
+# (상태=없음)", which sends the reader to look for a segment instead of at the
+# spelling. A row that narrows an earlier one cannot be widened back at all.
+plan_dep_floor() {
+  # plan_dep_floor — one line per refusal, nothing at all when the plan passes.
+  # The universe is the plan's own ids PLUS the ids this run's ledger already
+  # knows, which is what the gate's `known` set comes to on its side.
+  local ids seg repo files deps cur prev d
+  ids=" $(cut -f1 "$RUN_DIR/plan.tsv" 2>/dev/null | tr '\n' ' ')$(run_segment_ids | tr '\n' ' ') "
+  while IFS="$(printf '\t')" read -r seg repo files deps; do
+    [ -n "$seg" ] || continue
+    cur=$(dep_tokens "$(plan_uncell "$deps")")
+    for d in $cur; do
+      case "$ids" in
+        *" $d "*) : ;;
+        *) printf '%s: 「선행」이 지목한 세그먼트가 이 계획에 없습니다: %s\n' "$seg" "$d" ;;
+      esac
+    done
+    prev=$(dep_tokens "$(run_segment_field "$seg" '선행')")
+    for d in $prev; do
+      case " $cur " in
+        *" $d "*) : ;;
+        *) printf '%s: 「선행」은 세그먼트마다 단조롭습니다 — 앞선 행의 %s 가 이번 계획에 없습니다\n' "$seg" "$d" ;;
+      esac
+    done
+  done < "$RUN_DIR/plan.tsv"
+}
+
+plan_dep_floor_or_park() {
+  # Called after `plan.tsv` is built and BEFORE the first `segment` row is
+  # written, because writing is the harm the floors exist to prevent.
+  local msgs n
+  msgs=$(plan_dep_floor)
+  n=$(printf '%s\n' "$msgs" | grep -c . || true)
+  if [ "${n:-0}" = "0" ]; then return 0; fi
+  warn "$msgs"
+  park "S3" run 무효화 "게이트 park" \
+    "계획의 「선행」이 바닥을 넘지 못했다 (${n}건): $(printf '%s' "$msgs" | tr '\n' ' ')"
+  return 1
+}
+
 # Shell-built plan from the declaration. No model in this path at all.
 plan_from_declaration() {
   local doc="$1" declared derived id
@@ -3863,6 +4095,9 @@ plan_from_declaration() {
       "$(plan_cell "$(slice_field "$doc" "$id" '레포')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
+  done
+  plan_dep_floor_or_park || return 1
+  for id in $(slice_ids "$doc"); do
     ledger_row 'segment' "id=$id" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$id" "$(slice_field "$doc" "$id" '선언 파일')")" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
@@ -3906,6 +4141,9 @@ plan_via_planner() {
     printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
+  done
+  plan_dep_floor_or_park || return 1
+  for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
@@ -3933,6 +4171,7 @@ while [ $# -gt 0 ]; do
     --manifest)   MANIFEST="$2"; shift 2 ;;
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
+    --replan)     REPLAN=1; shift ;;
     --self-check) self_check; exit $? ;;
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -3989,6 +4228,10 @@ trap 'report_run_residual || true' EXIT
 
 check_grant
 ledger_init
+# AFTER `ledger_init`, because the block this reads is the one that call
+# creates, and BEFORE anything is dispatched or planned — a refusal is worth
+# having only while nothing partial has happened yet.
+check_inflight
 notify_probe
 main_loop
 notify_cleanup
