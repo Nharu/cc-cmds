@@ -98,7 +98,35 @@ WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # There is no `NOTIFY` variable beside them: the banners this file raises are
 # governed by the kill switch `notify-run.sh` parses, and a flag here would be a
 # second parsing site the switch could not reach.
+#
+# `STAGE_AGE` is the stage-age arm's threshold and it measures a DIFFERENT
+# subject from every other number here: the three above time the ROUTER's
+# silence, this one times how long a single stage has been alive. Two hours,
+# calibrated on 27 real runs where the longest stage ran 70.6 minutes and the
+# false-positive count was 0.
+#
+# THAT CALIBRATION IS IN TENSION WITH ANOTHER MEASUREMENT IN THE SAME BODY OF
+# WORK, and the tension is left visible rather than resolved. Stage duration
+# across a wider sample has a 39-minute median with 165 minutes at the 90th
+# percentile and 285 at the 95th, and under that distribution 28 of 217 intervals
+# (12.9%) exceed two hours. The two can coexist — the wider sample's interval
+# lengths come from a proxy that overestimates — but reading "0 false positives
+# in 27" alone says this arm will be quiet, and that is a stronger claim than the
+# evidence supports.
+#
+# The tension is acceptable because of what firing COSTS here: this arm notifies
+# and writes no block, so a long legitimate stage costs one line in the morning,
+# while a genuinely hung stage costs the whole night. That is also why this
+# threshold is not judged by the same statistics as the act budget's rejected
+# wall-clock cap — that boundary's firing opens an approval only a person can
+# close and stops the run, and different consequences do not share a test.
+#
+# THE CALIBRATION DOES NOT TRANSFER TO ANOTHER CLOCK. It was obtained from log
+# file mtimes as a proxy for stage end; the arm below reads the stage's start
+# fingerprint instead, so if that reading is ever swapped the threshold has to be
+# re-measured rather than carried over.
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300
+STAGE_AGE=7200
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -107,6 +135,7 @@ while [ $# -gt 0 ]; do
     --stall)    STALL="$2"; shift 2 ;;
     --after-stage) AFTER_STAGE="$2"; shift 2 ;;
     --run-open) RUN_OPEN="$2"; shift 2 ;;
+    --stage-age) STAGE_AGE="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -420,6 +449,71 @@ pass() {
     cc_notify_fire resume "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)" || true
     record_blocked "스테이지 종단 후 라우터 무응답" "메인 세션에서 이어서 진행하도록 지시"
   fi
+
+  # A STAGE THAT IS ALIVE AND HAS BEEN FOR TOO LONG. Nothing in this file aimed
+  # at that pathology before, and no boundary in the gate did either: a hung stage
+  # produces no acts, and the act budget counts acts, so it was never a hang
+  # detector to begin with. Every arm above times the ROUTER; this one times a
+  # STAGE, and the commercial failure mode — a stage wedged while the router keeps
+  # working normally — is invisible to all of them.
+  #
+  # THREE CANDIDATE ANTECEDENTS WERE MEASURED AND THIS IS THE ONLY ONE THAT
+  # COVERS THE CASE. "The ledger is completely silent" covers 0.7% of real live
+  # intervals — a median of 20 rows are written while a stage lives and 51.6% of
+  # them grade `읽기`, so keeping the ledger noisy is free for the router. "The
+  # ledger has been idle for N" is a different predicate and its own numbers are
+  # decent (4/136 false positives, stable across 20/30/60-minute thresholds), but
+  # it fails on BEHAVIOUR rather than on error rate: a router that keeps writing
+  # never lets the gap open, so it misses "hung stage, working router" too.
+  # "The progress digest has not moved" covers 15.6%; it fires when the router
+  # shoots only reads and stays silent when reads and worktree writes are mixed,
+  # and the observed grade mix is 51.6% read against 37.7% worktree write, so
+  # mixed is the shape that actually occurs. Stage age fires on the first
+  # evaluation in all three shapes.
+  #
+  # THE CLOCK IS THE STAGE'S START FINGERPRINT, `<seg>.start`. It is written once
+  # when the stage spawns and never touched again, so its mtime IS the age — which
+  # is exactly what the word means. The stream log's mtime was the other
+  # candidate and it measures "how long since it last spoke", which loses the
+  # stage that is wedged while its log keeps growing — the very case this arm
+  # exists for. The liveness predicate already uses this file as its fingerprint,
+  # so no new path is introduced.
+  #
+  # `cc_mtime` NAMED EXPLICITLY. Two helpers with this body exist — one here in
+  # `liveness.sh` and one in the gate — and the cross-platform assertion has to
+  # measure the same one this arm reads.
+  #
+  # NOTIFY ONLY; NO BLOCK ROW. Every sibling stall arm calls `record_blocked`, and
+  # copying that here would be wrong in a way that undoes this arm's own
+  # justification: an unresolved run-scope block stands up a termination condition
+  # and the shared state predicate then refuses terminal forever, so one long
+  # legitimate stage would stop the run from ending all night and would need a
+  # person to write the resolving row. The tolerance for false positives above is
+  # bought entirely by "firing leaves a line, it does not kill" — a block row
+  # spends that. And the two differ in kind: the sibling arms measure the
+  # ROUTER's silence, which needs a person to break, while this one measures a
+  # STAGE's, which resolves by itself when the stage ends.
+  #
+  # The once-guard is a dedicated per-stage marker for the same reason the arms
+  # above use one: the gate empties `stall` on every act, so a guard reading that
+  # file would come back to life and this arm would re-fire every pass.
+  local sf sseg sstart snow sage smk
+  snow=$(date -u +%s)
+  for sf in "$RUN_DIR"/*.pid; do
+    [ -f "$sf" ] || continue
+    sseg=${sf##*/}; sseg=${sseg%.pid}
+    cc_stage_is_live "$RUN_DIR" "$sseg" || continue
+    sstart=$(cc_mtime "$RUN_DIR/$sseg.start")
+    [ -n "$sstart" ] || continue
+    sage=$((snow - sstart))
+    smk="$RUN_DIR/watch.announced-stage-age-$sseg"
+    if [ "$sage" -ge "$STAGE_AGE" ] && [ ! -f "$smk" ]; then
+      : > "$smk"
+      announce "스테이지 ${sseg} 이 ${sage}초째 살아 있습니다 (임계 ${STAGE_AGE}초)" \
+               "걸렸을 수 있습니다 — 스트림 로그를 보고 판단하세요. 이 팔은 막힘 행을 쓰지 않으므로 런의 종료를 막지 않습니다"
+      cc_notify_fire hands "스테이지 ${sseg} 이 ${sage}초째 살아 있습니다 — 걸렸는지 확인하세요" || true
+    fi
+  done
 
   # THE RUN OPENED AND NO SEGMENT EVER DID. Its own arm, keyed on the age of the
   # `run` row, because that window has no other clock: with no segment row there

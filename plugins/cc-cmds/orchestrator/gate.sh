@@ -71,9 +71,22 @@
 #               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
 #   gate.sh act --kind obligation --target <alias> ... \\
 #               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
+#   gate.sh act --kind obligation-done --target <alias> ... \\
+#               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
+#   gate.sh act --kind obligation-drop --target <alias> ... \\
+#               -- 동일성=<problem 행이 실은 동일성> 근거=<원장에서 찾을 수 있는 객체를 지목>
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
 # for.
+#
+# `obligation-done` and `obligation-drop` dispose a PROBLEM obligation and are a
+# different series from `obligation`, which is review-obligation only. They take
+# no `--segment` either — the identity bundles problem rows ACROSS segments, so
+# the value is inherited from the row being closed. The rationale must name an
+# object findable in this ledger: a row anchor `A-<8 hex>` (the leading 8 of the
+# chain predecessor every row already carries), an approval id `J-<8 hex>`, a
+# review-obligation id `RO-…`, or a segment id. That object must sit AFTER the
+# problem row, and one anchor closes at most one obligation.
 #
 # Compatibility: bash 3.2 (macOS stock under the sanitized PATH) — no
 # associative arrays, no mapfile, no `wait -n`, no case-modification expansions.
@@ -1033,8 +1046,26 @@ gate_progress_vector() {
     | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u \
     | while IFS= read -r sid; do
         [ -n "$sid" ] || continue
-        printf 'segment=%s|%s|%s\n' "$sid" \
-          "$(gate_segment_field "$sid" '상태')" "$(gate_segment_field "$sid" '커밋')"
+        # STATE ONLY. `커밋` used to sit here and it moved nothing: removing the
+        # component outright changed the worst-case window on 0 of 43 replayed
+        # ledgers, and the top fifteen matched to the digit. It is not a broken
+        # progress input, it is an input that does nothing — carried by 5 of 259
+        # segment rows, because the router contract's row grammar names four
+        # fields and `커밋` is not one of them while the sidecar's field table
+        # declares eleven and it is.
+        #
+        # The fix is the vector giving up the read, not the grammar gaining a
+        # field. "Write it in the grammar and the router will fill it" is false
+        # here — the declared file set IS in the grammar at 18.5%, and `브랜치`
+        # is in the sidecar only at 41.7%. What decides compliance is write-time
+        # enforcement and whether the router can see a consumer, and `커밋` has
+        # neither. Adding it to both is the same move as adding it to neither,
+        # plus a value in the ledger nobody reads.
+        #
+        # THE SIDECAR'S FIELD TABLE KEEPS `커밋`. That table describes the ledger
+        # schema, the router really does write the value, and a person reads it
+        # in the morning. What is withdrawn is this vector's read of it.
+        printf 'segment=%s|%s\n' "$sid" "$(gate_segment_field "$sid" '상태')"
       done
   # `cycle` rows are progress and were missing. A review completing, a
   # remediation landing, a re-review coming back clean — each writes one, and
@@ -1192,10 +1223,9 @@ gate_row_field() {
   printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
-gate_open_obligations() {
-  # An obligation is closed only by a LATER cycle row for the same segment whose
-  # report no longer carries the identity — a `problem` row records an attempt,
-  # not a resolution, so reading closure from it would mark every re-try as a fix.
+gate_problem_identities() {
+  # Every distinct identity a `problem` row has ever carried, disposed or not.
+  #
   # `LC_ALL=C` here and at every other `sort -u` over a FIELD VALUE. These sorts
   # are set operations, not presentation, and `-u` drops whatever collation calls
   # equal — the `en_US.UTF-8` collation orders no Hangul, so two different Korean
@@ -1205,10 +1235,172 @@ gate_open_obligations() {
   # check over it would report success.
   gate_rows 'problem' \
     | tr '|' '\n' | sed -n 's/^ *동일성=//p' | sed 's/[[:space:]]*$//' \
-    | LC_ALL=C sort -u | while IFS= read -r ident; do
-        [ -n "$ident" ] || continue
-        printf 'obligation=%s\n' "$ident"
-      done
+    | LC_ALL=C sort -u | grep -v '^$' || true
+}
+
+gate_obligation_id() {
+  # gate_obligation_id <identity> — `PO-<8 hex>`, derived and never stored.
+  #
+  # DERIVED FROM THE FREE-TEXT IDENTITY, and deliberately not from any row's
+  # chain predecessor. An obligation is the BUNDLE of problem rows sharing an
+  # identity and that bundle crosses segments, so no single row's `prev=` can
+  # name it — the row anchor is a different derived value answering a different
+  # question, and conflating the two would make the closing row point at one row
+  # of a bundle instead of at the bundle.
+  #
+  # Reading it rather than storing it is what lets a problem row written before
+  # this verb existed be closed with no migration: the identity is already in the
+  # ledger and the id is a function of it.
+  #
+  # `RUN_ID` is in the preimage so the value is scoped to this run, which is the
+  # scope an obligation has.
+  printf 'PO-%s' "$(printf '%s|%s' "$RUN_ID" "$1" | shasum -a 256 | cut -c1-8)"
+}
+
+gate_obligation_display() {
+  # The identity, truncated, for a person reading the morning. NO PREDICATE READS
+  # THIS — the row line has a 1024-byte cap and a free-text identity cannot be
+  # carried verbatim, so a truncated copy would be an unsafe key and a useful
+  # label. It is carried as the label only.
+  printf '%s' "$1" | cut -c1-60
+}
+
+gate_obligation_disposed() {
+  # gate_obligation_disposed <identity> <series> — a closing row of that series
+  # names this obligation.
+  gate_has_row "$2" "의무 id=$(gate_obligation_id "$1") "
+}
+
+gate_obligation_disposition() {
+  # gate_obligation_disposition <identity> — `종결`, `포기`, `면제`, or empty.
+  #
+  # ORDERED BY TENSE, and the order is what makes `포기` re-verifiable. A `종결`
+  # row cites a past act, so nothing about it can be withdrawn and it is reported
+  # first. A `포기` row cites a CURRENT segment state, so it is honoured only
+  # while that state still holds — this is the re-verification the design puts at
+  # exclusion time rather than at write time, because a row checked only when it
+  # was written is a permanent verdict standing on a reversible field, which is
+  # the amnesty defect this file opens with.
+  local ident="$1"
+  if gate_obligation_disposed "$ident" '의무 종결'; then printf '종결'; return 0; fi
+  if gate_obligation_disposed "$ident" '의무 포기'; then
+    if gate_obligation_segments_terminal "$ident"; then printf '포기'; return 0; fi
+    return 0
+  fi
+  if gate_obligation_excused "$ident"; then printf '면제'; return 0; fi
+  return 0
+}
+
+gate_obligation_segments_terminal() {
+  # gate_obligation_segments_terminal <identity> — EVERY problem row carrying the
+  # identity sits in a terminal segment, judged now.
+  #
+  # Universally quantified for the same reason the excusal is: the bundle crosses
+  # segments, and reading one row's segment lets a later row naming a parked
+  # segment decide for rows that are not parked at all.
+  local ident="$1" rows row seg st n=0
+  rows=$( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } )
+  [ -n "$rows" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n=$((n + 1))
+    seg=$(gate_row_field "$row" '세그먼트')
+    [ -n "$seg" ] || return 1
+    st=$(gate_segment_field "$seg" '상태')
+    case " $TERMINAL_SEGMENT_STATES " in
+      *" $st "*) : ;;
+      *) return 1 ;;
+    esac
+  done <<GATE_OBL_SEGS
+$rows
+GATE_OBL_SEGS
+  [ "$n" -gt 0 ]
+}
+
+gate_open_obligations() {
+  # The identities with NO disposition. Three dispositions subtract here —
+  # `종결`, `포기` and `면제` — and until this slice there were none: the function
+  # emitted every problem identity unconditionally, so an obligation could be
+  # opened and never closed by anything.
+  #
+  # THE OLD COMMENT PROMISED SOMETHING NO CODE DID. It said a later `cycle` row
+  # for the same segment closes the obligation; nothing here ever read a `cycle`
+  # row. That design is not implemented now either, and the reasons are three.
+  # Silence is the cheapest output, so a router writing the minimum would close
+  # every obligation while asserting nothing. The aggregation keys do not line up
+  # — the described scheme is scoped by segment while this function bundles by
+  # identity ACROSS segments. And it does not resolve the incident that exposed
+  # the defect. Being written down does not create an obligation to implement it.
+  local ident
+  gate_problem_identities | while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    if [ -z "$(gate_obligation_disposition "$ident")" ]; then
+      printf 'obligation=%s\n' "$ident"
+    fi
+  done
+  return 0
+}
+
+gate_obligation_evidence_anchors() {
+  # gate_obligation_evidence_anchors <근거> — the pointers a rationale names, from
+  # a CLOSED SET of four forms: a row anchor `A-<8 hex>`, an approval id
+  # `J-<8 hex>`, a review-obligation id `RO-…`, and a segment id declared in this
+  # ledger.
+  #
+  # PROSE ALONE YIELDS NOTHING, which is the point. "확인했다" is the most
+  # convincing sentence a person can read and is nothing at all to the gate;
+  # admitting it would make the whole evidence requirement decorative.
+  #
+  # Tokenised by complementing the identifier alphabet rather than by a word
+  # boundary — `\b` is a GNU extension and this file runs on both hosts.
+  local why="$1" segs toks t
+  segs=" $(gate_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' \
+           | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u | tr '\n' ' ')"
+  toks=$(printf '%s' "$why" | tr -c 'A-Za-z0-9_-' '\n' | { grep -v '^$' || true; })
+  printf '%s\n' "$toks" | while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    case "$t" in
+      A-*|J-*)
+        # THE DIGIT SHAPE IS CHECKED WITH A GLOB, not through a pipe. `grep -q`
+        # stops at the first match and kills the writer with SIGPIPE, and under
+        # `pipefail` the pipeline then reports failure even though the match was
+        # found — so a well-formed anchor could come back as unrecognised, and an
+        # empty answer here is what refuses a rationale outright. The segment arm
+        # below already answers its own question with a `case`, and the prefix is
+        # already established by the arm this sits in, so what is left to test is
+        # exactly eight hex digits.
+        case "${t#?-}" in
+          [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+            printf '%s\n' "$t" ;;
+        esac ;;
+      RO-*)
+        printf '%s\n' "$t" ;;
+      *)
+        case "$segs" in *" $t "*) printf '%s\n' "$t" ;; esac ;;
+    esac
+  done
+  return 0
+}
+
+gate_evidence_row_line() {
+  # gate_evidence_row_line <anchor> — the ledger line of the LAST row the anchor
+  # points at, or empty when it points at nothing.
+  #
+  # A row anchor addresses by the chain predecessor every row already carries, so
+  # every row in the ledger is addressable with no schema change at all.
+  local tok="$1" hits
+  case "$tok" in
+    A-*) hits=$( { grep -n "prev=${tok#A-}" "$LEDGER" 2>/dev/null || true; } ) ;;
+    *)   hits=$( { grep -nF "$tok" "$LEDGER" 2>/dev/null || true; } ) ;;
+  esac
+  printf '%s\n' "$hits" | { grep '^[0-9][0-9]*:- `' || true; } | tail -1 | cut -d: -f1
+}
+
+gate_problem_last_line() {
+  # gate_problem_last_line <identity> — the ledger line of the last problem row
+  # carrying it. The ORDER CHECK measures against this line.
+  { grep -n '^- `problem`' "$LEDGER" 2>/dev/null || true; } \
+    | { grep -F "동일성=$1 " || true; } | tail -1 | cut -d: -f1
 }
 
 gate_ledger_damage() {
@@ -1509,7 +1701,13 @@ gate_render_snapshot() {
     printf '  %-12s %-24s 절단점 %s\n' "$a" \
       "$(target_field "$a" '원격 슬러그')" "$(target_field "$a" '절단점')"
   done
-  printf '미해결 의무: %s건\n' "$(gate_open_obligations | gate_count)"
+  # THE DISPOSED COUNTS SIT BESIDE THE UNRESOLVED ONE, BROKEN OUT BY DISPOSITION.
+  # The single count cannot show an amnesty: the open list de-duplicates by
+  # identity, so a second problem row for an identity that flips the excusal moves
+  # nothing on this line. Naming what left the set, and by which of the three
+  # exits, is what makes that visible at a glance.
+  printf '미해결 의무: %s건 · 처분 %s\n' \
+    "$(gate_open_obligations | gate_count)" "$(gate_disposition_counts)"
 
   # PENDING APPROVALS, AND THIS LINE DOES NOT DISAPPEAR AT ZERO. The JSON carried
   # them and the render did not, so a run held by an approval printed `원장 손상`,
@@ -1561,6 +1759,12 @@ gate_render_snapshot() {
   done_line=$(cat "$RUN_DIR/done" 2>/dev/null || true)
   if [ -n "$done_line" ]; then printf '런 상태   : 종단 — %s\n' "$done_line"
   else                         printf '런 상태   : 진행 중\n'; fi
+  # NAMED, or nobody finds it. The enumeration is a sibling file precisely so
+  # `done` keeps its one-line contract, and a sibling nothing points at is a file
+  # that exists for no reader.
+  if [ -f "$RUN_DIR/done-obligations" ]; then
+    printf '처분 의무 : %s/done-obligations\n' "$RUN_DIR"
+  fi
   printf '스테이지 스트림: %s/log/<세그먼트>.json\n' "$RUN_DIR"
 }
 
@@ -3820,9 +4024,13 @@ gate_record_row() {
   # WHOLE run unwritable without naming a part of it. `obligation` is exempt for
   # the opposite reason — it HAS a segment and reads it from the row it closes,
   # so asking the router to name one again only creates a way for the two to
-  # disagree.
+  # disagree. The two obligation-closing kinds are exempt on that same ground and
+  # for a sharper version of it: their bundle CROSSES segments, so a segment
+  # named in argv would not even have a single right answer to be checked
+  # against.
   if [ "$kind" != "blocked" ] && [ "$kind" != "clause" ] && [ "$kind" != "judgment" ] \
      && [ "$kind" != "obligation" ] \
+     && [ "$kind" != "obligation-done" ] && [ "$kind" != "obligation-drop" ] \
      && { [ -z "$seg" ] || [ "$seg" = "-" ]; }; then
     warn "$kind 행에는 --segment 가 필요합니다"
     return "$GATE_EXIT_VOCAB"
@@ -4241,6 +4449,143 @@ gate_record_row() {
         "이행 시각=$(now_iso)"
       log "리뷰 의무 이행 $oid"
       ;;
+    obligation-done|obligation-drop)
+      # CLOSING AN OBLIGATION THE RUN ACTUALLY DISCHARGED. Until this arm the
+      # open set could only grow: the list emitted every problem identity and
+      # nothing subtracted, `act --kind obligation` refuses everything outside
+      # the review-obligation series, and the one exit — the excusal — opens only
+      # for a creating grade at or below `워크트리쓰기`, while a REFUSED act
+      # structurally carries `등급 미상`. Refusal is the main way problem rows
+      # come to exist, so the narrow excuse missed the dominant case by
+      # construction and termination condition 3 could not be satisfied at all.
+      #
+      # TWO VERBS AND NOT ONE, because the two differ in TENSE and therefore in
+      # when they are checked. `종결` says the obligation's content was
+      # discharged; its evidence is a past act row and the past cannot be
+      # rewritten, so it is never re-verified. `포기` says this run has decided
+      # not to do it; that leans on the segment being terminal, which is a
+      # present-tense claim on a reversible field, so it is re-verified at
+      # exclusion time in `gate_obligation_disposition` rather than trusted from
+      # here. Checking `포기` only at write time would make it a permanent
+      # verdict standing on a field the run can rewrite — the amnesty defect this
+      # slice exists to remove.
+      #
+      # The row grades `읽기` like every other bookkeeping act, and deliberately.
+      # It touches nothing outside the ledger, so a higher grade would be false;
+      # and once recording spends the authorization budget the router is pushed
+      # toward recording less, which is the force that produced this whole
+      # defect. Raising the grade would not stop the evasion either — an evasion
+      # is mounted by OPENING obligations, so a toll on closing them is a
+      # defence on the wrong axis.
+      local odisp oseries oident ooid owhy oanchors oanchor oaline opline
+      local oother oprior oseg orow
+      case "$kind" in
+        obligation-done) odisp='종결'; oseries='의무 종결' ;;
+        *)               odisp='포기'; oseries='의무 포기' ;;
+      esac
+      oident=$(gate_field_of '동일성' "$@")
+      if [ -z "$oident" ]; then
+        warn "${oseries} 행에 「동일성」이 필요합니다 — 닫으려는 의무를 problem 행이 실은 자유 텍스트 동일성으로 지목하세요"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # The identity is taken and the derived id is computed HERE rather than
+      # accepted from argv. A router that could restate the id could also restate
+      # it wrongly, and the wrong obligation would close silently.
+      opline=$(gate_problem_last_line "$oident")
+      if [ -z "$opline" ]; then
+        warn "그 동일성의 problem 행이 원장에 없습니다: ${oident}"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      oprior=$(gate_obligation_disposition "$oident")
+      if [ -n "$oprior" ]; then
+        warn "이미 처분된 의무입니다: ${oident} (처분=${oprior})"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      ooid=$(gate_obligation_id "$oident")
+      # 충돌 거절 — two OPEN obligations deriving the same id. The id is eight hex
+      # digits, so a collision is possible however unlikely, and without this
+      # clause the residual is not "a rare hash collision" but "the wrong
+      # obligation closes" — a reader keyed on the id cannot tell which bundle
+      # the row meant. Refusing is the only disposition that keeps the id usable
+      # as a key.
+      oother=$( { gate_open_obligations | sed 's/^obligation=//' || true; } \
+                | while IFS= read -r orow; do
+                    [ -n "$orow" ] || continue
+                    if [ "$orow" != "$oident" ] \
+                       && [ "$(gate_obligation_id "$orow")" = "$ooid" ]; then
+                      printf '%s\n' "$orow"
+                    fi
+                  done )
+      if [ -n "$oother" ]; then
+        warn "의무 식별자 ${ooid} 이 열린 의무 둘에서 유도됩니다 — 종결을 거절합니다"
+        warn "  지목한 것: ${oident}"
+        warn "  충돌하는 것: $(printf '%s' "$oother" | tr '\n' ' ')"
+        return "$GATE_EXIT_RULE"
+      fi
+      owhy=$(gate_field_of '근거' "$@")
+      if [ -z "$owhy" ]; then
+        warn "${oseries} 행에 「근거」가 필요합니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      # EVIDENCE LAYER 1, and the gate resolves layer 1 ONLY. What it can check is
+      # that the rationale names an object findable in this ledger and that the
+      # object came AFTER the problem row. Whether that act actually discharged
+      # the obligation is layer 2, and the gate cannot decide it — so it does not
+      # pretend to. That residual is carried to the morning by the terminal
+      # enumeration, which names each disposed obligation beside its anchor.
+      oanchors=$(gate_obligation_evidence_anchors "$owhy")
+      if [ -z "$oanchors" ]; then
+        warn "산문만인 근거는 통과하지 못합니다 — 원장에서 찾을 수 있는 객체를 하나 이상 지목하세요"
+        warn "  인정되는 형태: 행 앵커 A-<8자리 16진> · 승인 id J-<8자리 16진> · 리뷰 의무 id RO-… · 이 원장의 세그먼트 id"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      while IFS= read -r oanchor; do
+        [ -n "$oanchor" ] || continue
+        oaline=$(gate_evidence_row_line "$oanchor")
+        if [ -z "$oaline" ]; then
+          warn "근거가 지목한 ${oanchor} 을 원장에서 찾을 수 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # THE ORDER CHECK IS THE ONE THAT CARRIES WEIGHT AT LAYER 1. It blocks the
+        # cheapest forgery there is — reaching up the ledger for any identifier
+        # already lying around — because without it a freshly opened obligation
+        # can be closed by something that existed before it.
+        if [ "$oaline" -le "$opline" ]; then
+          warn "근거 ${oanchor} 은 닫으려는 문제 행보다 원장에서 앞에 있습니다 (근거 ${oaline}행 · 문제 ${opline}행)"
+          return "$GATE_EXIT_RULE"
+        fi
+        # 증폭 방지 — one anchor closes one obligation. This file already holds the
+        # same discipline for a held termination clause, and the comment there
+        # names the reason: what is refused is the amplification, not the single
+        # answer.
+        oprior=$( { gate_rows '의무 종결'; gate_rows '의무 포기'; } \
+                  | { grep -F "$oanchor" || true; } | tail -1)
+        if [ -n "$oprior" ]; then
+          warn "근거 앵커 ${oanchor} 은 이미 의무 $(gate_row_field "$oprior" '의무 id') 을 닫는 데 쓰였습니다 — 근거 하나가 여러 의무를 닫을 수 없습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+      done <<GATE_OBL_ANCHORS
+$oanchors
+GATE_OBL_ANCHORS
+      if [ "$kind" = "obligation-drop" ]; then
+        if ! gate_obligation_segments_terminal "$oident"; then
+          warn "포기는 그 의무를 실은 problem 행의 세그먼트가 전부 종단일 것을 요구합니다"
+          return "$GATE_EXIT_RULE"
+        fi
+      fi
+      # 필드 승계 — the segment comes from the row being closed and never from
+      # argv, the same rule the review-obligation arm above already applies.
+      oseg=$(gate_row_field \
+        "$( { gate_rows 'problem' | grep -F "동일성=$oident " || true; } | tail -1)" '세그먼트')
+      # THE VERBATIM IDENTITY IS NOT CARRIED. A row has a 1024-byte cap and the
+      # identity is unbounded Korean free text, so what goes on the row is the
+      # derived id — which every reader keys on — plus a truncated label for the
+      # person reading in the morning. No predicate reads the label.
+      gate_append "$oseries" "의무 id=$ooid" \
+        "표시 동일성=$(gate_obligation_display "$oident")" \
+        "처분=$odisp" "세그먼트=${oseg:--}" "근거=$owhy" "처분 시각=$(now_iso)"
+      log "의무 ${odisp} ${ooid}"
+      ;;
   esac
   return 0
 }
@@ -4417,7 +4762,7 @@ gate_plan_unchecked_axes() {
   # `act` can still come back 4 when a sibling segment landed a row in between.
   warn "  - 스냅숏 다이제스트 — act 는 --snapshot-digest 를 현재 값과 대조하며 어긋나면 4 입니다"
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop)
       # The `키=값` list after `--` is validated by the row writer, and the row
       # writer runs only on the performing path. Four known divergences live
       # behind this one line — a predecessor-monotonicity violation, a
@@ -4483,10 +4828,16 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle|problem|blocked|clause|judgment|obligation)
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop)
       # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
       # and what it performs is the ledger row the gate would write anyway. It
       # reaches nothing outside the ledger, so it grades `읽기`.
+      #
+      # THE TWO OBLIGATION-CLOSING KINDS HAVE TO BE IN THIS SET. Left out they
+      # fall through to the argv0 table, which has no row for a `키=값` list, so
+      # they grade `등급 미상` and are refused with rc=2 — and that failure wears
+      # exactly the face of the defect being fixed, "the obligation cannot be
+      # closed", while the code that closes it is sitting right there.
       graded="읽기" ;;
     skill)
       # A stage dispatch's argv does NOT begin with a command: its first token
@@ -4854,6 +5205,11 @@ gate_verb_act() {
         "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      # The itemised dispositions land beside `done`, never inside it — the file
+      # is a one-line contract with four consumers. An invalidated run gets the
+      # enumeration too: what it disposed of on the way to being invalidated is
+      # exactly what the morning has to look at.
+      gate_write_disposition_report
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
       # left for a person is to read the result rather than to re-open anything.
       # The instruction to kick off again belongs to the site that anchors the
@@ -4916,6 +5272,7 @@ gate_verb_act() {
       printf '%s 종단 — 종료 조건 성립%s · 근거 %s\n' \
         "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
     fi
+    gate_write_disposition_report
     # The notification seat is carried over from the other parent; its own
     # `done` write is not. That write spelled the same file with the older
     # single-class line and would have run after the branch above, overwriting
@@ -5000,7 +5357,7 @@ gate_verb_act() {
 
   [ "$kind" = "propose-done" ] && return 0
   case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation) gate_record_row "$kind" "$segment" "$alias" "$@"; return $? ;;
+    segment|cycle|problem|blocked|clause|judgment|obligation|obligation-done|obligation-drop) gate_record_row "$kind" "$segment" "$alias" "$@"; return $? ;;
   esac
   case "$verb" in
     exec)
@@ -6407,13 +6764,20 @@ gate_done_conditions() {
   n=$(gate_pending_approval_ids act | gate_count)
   [ "$n" = "0" ] || printf '2 대기 중인 행위 승인이 %s건 있습니다\n' "$n"
 
-  # 3 — obligations empty, or excused. The excuse is NARROW: the obligation
-  # belongs to a parked segment AND the act that created it graded at or below
-  # `워크트리쓰기`. An obligation made by a higher-graded act is never excused,
-  # because that is precisely the obligation whose effects left the machine.
+  # 3 — obligations empty, or disposed. THE SUBTRACTION MOVED INTO
+  # `gate_open_obligations` and is no longer applied a second time here: three
+  # dispositions now close an obligation — `종결`, `포기` and `면제` — and the
+  # list is what knows about all three. Re-applying the excusal here would name
+  # only one of them and would say nothing about the other two.
+  #
+  # The excuse itself stays NARROW: every problem row of the identity sits in a
+  # parked segment AND the highest creation grade any of them recorded is at or
+  # below `워크트리쓰기`. An obligation made by a higher-graded act is never
+  # excused, because that is precisely the obligation whose effects left the
+  # machine.
   gate_open_obligations | while IFS= read -r o; do
     [ -n "$o" ] || continue
-    gate_obligation_excused "${o#obligation=}" || printf '3 미해결 의무가 남아 있습니다: %s\n' "${o#obligation=}"
+    printf '3 미해결 의무가 남아 있습니다: %s\n' "${o#obligation=}"
   done
 
   # 4 — ledger damage
@@ -6544,20 +6908,122 @@ gate_unfulfilled_review_obligations() {
   return 0
 }
 
+gate_grade_rank() {
+  # gate_grade_rank <grade> — a rank over THIS function's own closed set.
+  #
+  # SELF-CONTAINED ON PURPOSE, and not a second copy of `surface_index`. That
+  # function answers an empty string and rc=1 for a value off its ladder, and the
+  # gate is sourced under `errexit` with `nounset`, so an unguarded assignment
+  # from it dies on the very input this comparison exists to handle — with rc=1,
+  # which is also an act's own failure code, so the morning cannot tell a refusal
+  # from a failed act. Ranking here means a value off the ladder never reaches a
+  # numeric comparison at all.
+  #
+  # EVERY UNKNOWN VALUE RANKS ABOVE EVERY KNOWN GRADE, which is what makes
+  # `등급 미상` un-excusable. That token is the grade a REFUSED act structurally
+  # carries, and refused acts are the main way problem rows come to exist — so
+  # letting it fall through to the low end would excuse exactly the obligations
+  # the narrow rule was written to keep open. When the grading table later splits
+  # that token into "no row in the table" and "deliberate refusal", both halves
+  # are still unknown values here and both still rank at the top; this arm holds
+  # its own guard rather than consuming one that has not landed yet.
+  case "$1" in
+    읽기)         printf '1' ;;
+    워크트리쓰기) printf '2' ;;
+    트리밖쓰기)   printf '3' ;;
+    외부상태변경) printf '4' ;;
+    *)            printf '9' ;;
+  esac
+}
+
+# The highest known grade the narrow excuse still admits — `워크트리쓰기`.
+readonly EXCUSE_GRADE_CEILING=2
+
 gate_obligation_excused() {
   # gate_obligation_excused <identity>
-  local ident="$1" seg st grade
-  seg=$( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } | tail -1 \
-        | tr '|' '\n' | sed -n 's/^ *세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
-  [ -n "$seg" ] || return 1
-  st=$(gate_segment_field "$seg" '상태')
-  [ "$st" = "park" ] || return 1
-  grade=$( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } | tail -1 \
-          | tr '|' '\n' | sed -n 's/^ *생성 등급=//p' | sed 's/[[:space:]]*$//' | tail -1)
-  case "$grade" in
-    읽기|워크트리쓰기) return 0 ;;
-    *) return 1 ;;
-  esac
+  #
+  # BOTH AXES ARE UNIVERSALLY QUANTIFIED over the problem rows carrying this
+  # identity, and neither reads `tail -1` any more. The last row used to win on
+  # both, and both fields arrive in the router's argv — so writing one more
+  # problem row for the same identity, naming a parked segment and a low creation
+  # grade, excused an obligation that had been opened at a higher grade in a live
+  # segment. The chain stayed intact, the row was well formed, and the act was
+  # itself graded `읽기` so it spent no budget. A barrier standing on a field the
+  # run can rewrite is not a barrier, and this was that defect on two axes at
+  # once — the design fixed the grade axis first and the segment axis was still
+  # carrying it.
+  #
+  # Grade axis: the HIGHEST creation grade ever recorded for the identity. Once a
+  # row claims a grade the claim is kept, so a later row cannot lower it.
+  # Segment axis: excused only when EVERY such row sits in a terminal segment.
+  # Both quantifiers point the same way — adding a row can only move the answer
+  # AWAY from excusal, never toward it.
+  #
+  # TERMINAL IS RE-READ AT CALL TIME rather than carried, and that is a
+  # deliberate split by tense. Segment state is reversible — park→실행중→park is
+  # rc=0 at every step — so "this segment is terminal" is a claim about the
+  # present, and a claim about the present is re-verified where it is used. The
+  # obligation-closing verbs make the same split for the same reason: `종결`
+  # cites a past act and is never re-checked because the past cannot be
+  # rewritten, `포기` cites a current state and is re-checked at exclusion time.
+  # `park` AND NOT THE WIDER TERMINAL SET. The excuse's segment test is narrowed
+  # here, not widened: this slice changes the QUANTIFIER on both axes and nothing
+  # else, and swapping `park` for every terminal state would open the excuse to
+  # obligations in merged and completed segments — a change nobody asked for,
+  # arriving disguised as a refactor. The `포기` verb, which is a different
+  # disposition with a different question, uses the wider set on purpose.
+  local ident="$1"
+  gate_obligation_segments_parked "$ident" || return 1
+  [ "$(gate_grade_rank "$(gate_obligation_top_grade "$ident")")" \
+    -le "$EXCUSE_GRADE_CEILING" ]
+}
+
+gate_obligation_top_grade() {
+  # gate_obligation_top_grade <identity> — the HIGHEST `생성 등급` any problem row
+  # for the identity has recorded, or `없음` when there are none. Once a row
+  # claims a grade the claim is kept, so a later row cannot lower it.
+  local ident="$1" rows row grade rank best=0 top='없음'
+  rows=$( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } )
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    grade=$(gate_row_field "$row" '생성 등급')
+    rank=$(gate_grade_rank "$grade")
+    if [ "$rank" -gt "$best" ]; then best="$rank"; top="${grade:-없음}"; fi
+  done <<GATE_TOP_GRADE_ROWS
+$rows
+GATE_TOP_GRADE_ROWS
+  # A here-document and not a pipe: a `while` on the right of a pipe runs in a
+  # subshell, so `best` would be discarded at the loop's end and every identity
+  # would compare against 0.
+  printf '%s' "$top"
+}
+
+gate_obligation_segments() {
+  # gate_obligation_segments <identity> — the distinct segments its problem rows
+  # name, space separated. The bundle crosses segments, so this is a set.
+  { gate_rows 'problem' | grep -F "동일성=$1 " || true; } \
+    | tr '|' '\n' | sed -n 's/^ *세그먼트=//p' | sed 's/[[:space:]]*$//' \
+    | { grep -v '^$' || true; } | LC_ALL=C sort -u \
+    | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+gate_obligation_segments_parked() {
+  # gate_obligation_segments_parked <identity> — EVERY problem row carrying the
+  # identity sits in a `park` segment, judged now.
+  local ident="$1" rows row seg st n=0
+  rows=$( { gate_rows 'problem' | grep -F "동일성=$ident " || true; } )
+  [ -n "$rows" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n=$((n + 1))
+    seg=$(gate_row_field "$row" '세그먼트')
+    [ -n "$seg" ] || return 1
+    st=$(gate_segment_field "$seg" '상태')
+    [ "$st" = "park" ] || return 1
+  done <<GATE_PARK_ROWS
+$rows
+GATE_PARK_ROWS
+  [ "$n" -gt 0 ]
 }
 
 gate_terminal_cap_ok() {
@@ -6595,6 +7061,19 @@ gate_live_stages() {
 readonly B1_STAGNATION_N=3
 readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
+# B5. NOT A VERIFIED CEILING — AN ARGUMENT FROM ABSENCE, and the difference
+# matters to whoever changes it. It rests on no observed run ever having disposed
+# of more than one obligation: 47 ledgers and 11,127 rows held 2 problem rows and
+# 0 review-obligation rows (observed 2026-09-07). So the false-positive rate has
+# not been MEASURED; there has never been an input that could produce one. Read
+# as a verified ceiling this number claims something nobody established.
+#
+# THAT DENOMINATOR GROWS. The ledger tree is alive — the same corpus went from 45
+# to 47 during this design — so it has to be read with its observation date. The
+# two load-bearing values held at both readings.
+#
+# The blast radius is one constant, so being wrong is cheap to undo.
+readonly B5_DISPOSITION_N=4
 
 gate_boundaries() {
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
@@ -6621,6 +7100,11 @@ gate_boundaries() {
   fi
   # B4 stays live even while waiting: cost can still climb.
   gate_b4_cost
+  # B5 STAYS LIVE TOO, AND THAT PLACEMENT IS THE DECISION. Inside the `pending`
+  # branch it would switch off with B1..B3 the moment any approval opened, and its
+  # threshold is 4 — so one open question would return the evasion cost to zero,
+  # this time with a boundary in place as the reason nobody re-measures it.
+  gate_b5_disposition_volume
 }
 
 gate_b1_stagnation() {
@@ -6705,7 +7189,7 @@ gate_b3_act_budget() {
   # unchanged digest, while this counts acts SINCE that digest last changed, so
   # the companion file holds the baseline the current total is measured from
   # rather than a repeat tally.
-  local n total prev base h
+  local n total prev base h live
   # Positively selected, matching the progress vector: the grade must be present
   # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
   # grade at all, and here that spends budget on an act nobody established was
@@ -6729,7 +7213,31 @@ gate_b3_act_budget() {
   # directory to avoid. Spending budget is not the kind of progress that should
   # open a new window — if it were, no amount of spending could ever exhaust
   # one — so the key is the vector with that line removed.
-  h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
+  #
+  # THE OBLIGATION COMPONENT COMES OUT TOO, for a reason of a different kind. It
+  # is not this counter's own input; it is the component a run can move for free.
+  # Opening a problem row under a new identity changes the open set and therefore
+  # this key, so a fresh window opens — and the act that opens it grades `읽기`,
+  # so it spends no budget at all. Measured: one problem row per cycle mixed with
+  # reads kept the boundaries silent past 122 acts with termination condition 3
+  # holding throughout, and that run was cut by a harness time limit rather than
+  # by any ceiling. With the component removed the three evasion shapes all fire
+  # again at the control value of 41.
+  #
+  # THE FREQUENCY ARGUMENT DOES NOT DECIDE THIS. Of 660 observed window openings
+  # only 2 were opened by obligations, and a separate decision in this design
+  # DECLINES to redesign the clause and segment components that account for far
+  # more. The axis that separates them is not how often each fires but whether
+  # THIS design makes the path cheaper: the obligation-closing verbs are what
+  # turn opening into an open-and-close cycle, so this is a path this slice
+  # created and closes, while clause repetition and segment toggling are
+  # unchanged before and after and are carried as declared residuals.
+  #
+  # `B1`'s `gate_progress_digest` is deliberately NOT changed. This decision is
+  # about B3's window key alone.
+  h=$( gate_progress_vector \
+       | { grep -v '^acts=' || true; } \
+       | { grep -v '^obligation=' || true; } | shasum -a 256 | cut -d' ' -f1)
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it
@@ -6739,6 +7247,46 @@ gate_b3_act_budget() {
     printf '%s\n' "$h"     > "$RUN_DIR/act-budget-digest"
     printf '%s\n' "$base"  > "$RUN_DIR/act-budget-base"
   fi
+
+  # THIS IS A COUNT STOP, NOT A GUARD, and the difference is the whole decision.
+  # 96.1% of above-read `exec` acts happen while a stage is live, and this key
+  # cannot move during that time by construction — a stage doing its work writes
+  # no segment row, no cycle row and no clause row. So for most of a run B3 was
+  # measuring nothing while spending budget.
+  #
+  # Six candidates were replayed against real ledgers. Copying B1's guard — skip
+  # the whole boundary while a stage is live — left the worst window at 74 with 5
+  # of 43 ledgers over budget: it does not FIX the problem and it switches off the
+  # 96% stretch as well. Stopping the count while keeping the window put the worst
+  # window at 9 and over-budget ledgers at 0 of 43, and adds no progress input a
+  # stage can control.
+  #
+  # A finite wall-clock cap was rejected on the same replay: stage duration runs
+  # to a 39-minute median with 165 at the 90th percentile and 285 at the 95th, so
+  # every finite cap returns the worst window to 100.
+  #
+  # THE BASELINE ADVANCES AND THE WINDOW KEY DOES NOT. That pair is what tells
+  # this design apart from the guard, and they diverge at exactly one moment: the
+  # first evaluation after live falls to zero. A guard leaves `total` unadvanced,
+  # so everything the stage piled up is then billed to the ROUTER in one lump; the
+  # count stop has already moved the baseline past it and bills none of it.
+  #
+  # The window is kept rather than reset because resetting it would make
+  # launching a stage a budget-reset button — spend to the edge, dispatch a
+  # stage, start over.
+  #
+  # FAIL-CLOSED ON THE LIVE READING. `[ "$(gate_live_stages)" != "0" ]` reads TRUE
+  # for an empty value, so losing the signal would stop the count — a boundary
+  # that switches itself off when it cannot see is the same class of defect this
+  # slice removes. Only a positive integer stops it; anything else keeps counting
+  # and lets the boundary fire.
+  live=$(gate_live_stages)
+  case "$live" in
+    ''|*[!0-9]*|0) : ;;
+    *)
+      printf '%s\n' "$total" > "$RUN_DIR/act-budget-base"
+      return 0 ;;
+  esac
   n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
   gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
@@ -6754,6 +7302,161 @@ gate_b4_cost() {
   pct=$(awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }')
   [ "$pct" -lt 80 ] && return 0
   gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})"
+}
+
+gate_disposition_latch() {
+  # The run-scoped, append-only set of obligations that have EVER been disposed,
+  # one `<처분>\t<동일성>` line each, first disposition wins.
+  #
+  # THE LATCH EXISTS FOR THE EXEMPTION COMPONENT. `종결` and `포기` are rows, so
+  # they only ever accumulate; `면제` is a PREDICATE re-evaluated on every call
+  # that re-reads segment state, and segment state is reversible. So the exemption
+  # count can FALL, and the word "cumulative" is not true of it without this file.
+  # Unlatched, the boundary is evaded by walking a parked segment back to `실행중`
+  # one row before the threshold and parking it again: the exemption count drops,
+  # termination condition 3 comes back, and only the counter has been reset.
+  #
+  # Latching every disposition rather than the exemption alone also removes the
+  # double count — an identity excused first and closed later would otherwise be
+  # a latch line AND a row.
+  # READ ONLY. The writer is `gate_disposition_latch_update` and the split is
+  # deliberate: the morning status render reads this, and a render that latched
+  # would be a read verb with a side effect on the state it reports.
+  { cat "$RUN_DIR/obligation-latch" 2>/dev/null || true; } | grep -v '^$' || true
+}
+
+gate_disposition_latch_update() {
+  # Append any identity that now has a disposition and is not already latched.
+  # Called from the boundary — which runs on every act — and once more when the
+  # run writes its terminal marker.
+  local latch="$RUN_DIR/obligation-latch" ident d tab
+  [ -d "$RUN_DIR" ] || return 0
+  # Spelled rather than typed: a literal tab in a `grep -F` pattern is invisible
+  # in review and one stray edit turns the membership test into a prefix match.
+  tab=$(printf '\t')
+  gate_problem_identities | while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    if grep -qF "${tab}${ident}" "$latch" 2>/dev/null; then continue; fi
+    d=$(gate_obligation_disposition "$ident")
+    if [ -n "$d" ]; then printf '%s%s%s\n' "$d" "$tab" "$ident" >> "$latch"; fi
+  done
+  return 0
+}
+
+gate_disposition_counts() {
+  # `종결 n · 포기 n · 면제 n`, from the latch, for the morning's one-line render.
+  local latch tab d n_done=0 n_drop=0 n_ex=0 ident
+  tab=$(printf '\t')
+  latch=$(gate_disposition_latch)
+  while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    d=${ident%%"$tab"*}
+    case "$d" in
+      종결) n_done=$((n_done + 1)) ;;
+      포기) n_drop=$((n_drop + 1)) ;;
+      면제) n_ex=$((n_ex + 1)) ;;
+    esac
+  done <<GATE_DISP_COUNTS
+$latch
+GATE_DISP_COUNTS
+  printf '종결 %s · 포기 %s · 면제 %s' "$n_done" "$n_drop" "$n_ex"
+}
+
+gate_write_disposition_report() {
+  # THE ITEMISED ENUMERATION GOES IN ITS OWN FILE, and that choice is forced.
+  # `done` is a ONE-LINE contract with four consumers — the morning status
+  # render's `런 상태` line, the morning report which inserts the file whole, the
+  # watcher's terminal banner which uses the file as the banner body, and the
+  # status line which reads only its mtime. Widening it to many lines would break
+  # the first, make the third vomit the whole list into a notification, and
+  # require editing two files that are not in this change's declared set. A
+  # sibling file keeps every one of those consumers untouched.
+  #
+  # WHY THIS FILE EXISTS AT ALL. This design leans on "a person reads it in the
+  # morning" in three places, and the morning was told almost nothing: the only
+  # thing it received about obligations was a COUNT of the unresolved ones, and
+  # the terminal marker said not one word about them. Worse, the open list
+  # de-duplicates by identity, so a second problem row for an identity does not
+  # move that count — an amnesty could happen and the number would not budge.
+  #
+  # THE EXEMPTION IS ENUMERATED TOO, and that is the most important decision
+  # here. It is the one disposition that writes no row, so it is the only one the
+  # morning has no path to see at all; listing the two new verbs while leaving the
+  # old one hidden would make the least inspected path the most attractive one.
+  # Its anchor is the two values the exemption actually read — the segments and
+  # the highest creation grade — so the amnesty class is visible on sight.
+  #
+  # WHAT THIS FILE DOES NOT UNDERWRITE. Of the three places that lean on the
+  # morning, it carries two: evidence layer 2, and a lie told when the row was
+  # first written. The third — detecting grade laundering after the fact — needs
+  # the ledger to carry argv and the declared grade, and that was split out as
+  # separate work, so it stays a residual this release does not support.
+  local f="$RUN_DIR/done-obligations" latch tab d ident cur oid row
+  [ -d "$RUN_DIR" ] || return 0
+  tab=$(printf '\t')
+  gate_disposition_latch_update
+  latch=$(gate_disposition_latch)
+  { printf '# 처분된 의무 — %s\n' "$(now_iso)"
+    printf '# 근거 2층(그 행위가 정말 그 의무를 이행했는가)은 게이트가 해소하지 않습니다 — 여기가 그 잔여를 드러내는 자리입니다\n'
+    if [ -z "$latch" ]; then
+      printf '처분된 의무 없음\n'
+    fi
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      d=${row%%"$tab"*}
+      ident=${row#*"$tab"}
+      oid=$(gate_obligation_id "$ident")
+      cur=$(gate_obligation_disposition "$ident")
+      case "$d" in
+        면제)
+          printf '%s | 처분=면제 | 근거=세그먼트 %s · 최고 생성 등급 %s | 동일성=%s\n' \
+            "$oid" "$(gate_obligation_segments "$ident")" \
+            "$(gate_obligation_top_grade "$ident")" "$(gate_obligation_display "$ident")" ;;
+        *)
+          printf '%s | 처분=%s | 근거=%s | 동일성=%s\n' "$oid" "$d" \
+            "$(gate_row_field \
+                "$( { gate_rows "의무 $d" | grep -F "의무 id=$oid " || true; } | tail -1)" '근거')" \
+            "$(gate_obligation_display "$ident")" ;;
+      esac
+      # The latch records the FIRST disposition and never rewrites it, so a
+      # disposition that has since lapsed — a `포기` whose segment came back out
+      # of terminal — is reported as the latched fact AND as its present state.
+      # Hiding the divergence would make the latch look like a live reading.
+      if [ "$cur" != "$d" ]; then
+        printf '  └ 래치 이후 변동: 현재 처분=%s\n' "${cur:-없음(미처분으로 되돌아옴)}"
+      fi
+    done <<GATE_DISP_REPORT
+$latch
+GATE_DISP_REPORT
+  } > "$f"
+}
+
+gate_b5_disposition_volume() {
+  # B5 — the DISPOSITION VOLUME boundary. A run that disposes of obligations
+  # faster than a person can read about them is doing the thing this slice made
+  # possible, and nothing else here counts it.
+  #
+  # IT COUNTS ALL THREE DISPOSITIONS, INCLUDING THE EXEMPTION, and that is the
+  # most important line in this function. Counting only the two new verbs was
+  # measured and inverts the incentive: today's evasion runs entirely on the
+  # exemption, which writes NO ROW, so the disposition count stays 0 across 122
+  # acts and the boundary never fires — it would catch only the honest new
+  # mechanism at 8 acts while leaving the cheaper, row-free path untouched. With
+  # all three counted the previously unbounded surface comes down to 4 acts.
+  # The 종결-and-포기-only form is not a weaker version of this boundary; it is a
+  # fine levied on the honest path, and this design does not land it.
+  #
+  # AND THE NEW VERBS DO NOT WIDEN THE SURFACE. Measured on the same harness, the
+  # closing verb reaches at least 164 acts without hitting a ceiling either — the
+  # same unbounded surface as today, at twice the cost per cycle. The 4-versus-8
+  # split under this boundary is that doubled cycle cost reaching the threshold
+  # half as fast, not a new surface. Without this paragraph the "8 acts" reading
+  # stands alone and says the opposite.
+  local n
+  gate_disposition_latch_update
+  n=$(gate_disposition_latch | gate_count)
+  [ "$n" -lt "$B5_DISPOSITION_N" ] && return 0
+  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다"
 }
 
 gate_issue_boundary_approval() {

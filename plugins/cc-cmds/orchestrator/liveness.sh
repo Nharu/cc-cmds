@@ -283,12 +283,17 @@ cc_ledger_growth_at() {
   # cc_ledger_growth_at <run-dir> — epoch seconds when the ledger last grew, or
   # empty when the watcher has not published it.
   #
-  # THE FIELD IS NOT HERE YET AND ITS ABSENCE IS NORMAL. The watcher carries the
-  # value in its heartbeat, and putting it there is slice B's edit; the slice
-  # order is C then B then A. So this reads a field that does not exist today
-  # and returns empty, which `cc_run_state` treats as "cannot judge staleness"
-  # rather than as "not stale". A function that is only total after a later
-  # slice lands is a function this slice cannot ship.
+  # THE WATCHER WRITES THIS FIELD TODAY — it is the `마지막성장=` component of the
+  # heartbeat line. The comment that stood here said the opposite, that the field
+  # did not exist yet and would arrive in "slice B" with an ordering of "C then B
+  # then A"; both halves were wrong by the time anyone read them. That label
+  # belongs to a DIFFERENT design's slicing and has nothing to do with the slices
+  # of whatever work brings a reader here — an implementer who opens this file and
+  # takes the label as an instruction is reading someone else's plan.
+  #
+  # Empty is still a real answer and still means "cannot judge staleness" rather
+  # than "not stale": the heartbeat is absent before the watcher's first pass and
+  # in a run directory written by an older build.
   local run_dir="$1" hb
   [ -n "$run_dir" ] || return 0
   hb="$run_dir/watch.heartbeat"

@@ -1638,5 +1638,190 @@ runb >/dev/null
 sleep 0.2
 check "게이트가 이미 알린 승인 id 를 감시자가 존중한다" "$(notify_lines)" "0"
 
+# ---------------------------------------------------------------------------
+# A STAGE WEDGED WHILE THE ROUTER KEEPS WORKING — the seventh arm.
+#
+# Every arm above times the ROUTER's silence. This one times how long a single
+# STAGE has been alive, and the commercial failure mode — a stage hung while the
+# router goes on writing rows normally — is invisible to all of them and to every
+# boundary in the gate, because a hung stage produces no acts and those
+# boundaries count acts.
+#
+# THE CLOCK IS THE STAGE'S START FINGERPRINT. It is written once when the stage
+# spawns and never touched again, so its mtime IS the age. The stream log's mtime
+# was the other candidate and it measures "how long since it last spoke", which
+# loses the stage that is wedged while its log keeps growing.
+# ---------------------------------------------------------------------------
+fresh
+: > "$NOTIFY_LOG"
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+# THE ROUTER IS WORKING IN THIS FIXTURE, and the three thresholds below are the
+# PRODUCTION ones rather than large numbers. The ledger was just written and the
+# gate was just called, so the sibling arms are silent because their conditions
+# genuinely do not hold — not because a test put them out of reach. That is what
+# makes this case say "fires even while the router is fine" instead of merely
+# "fires".
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_live S1
+fx_age_file "$RD/S1.start" 7300
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) ok "스테이지가 임계를 넘게 살아 있으면 발화한다" ;;
+  *) bad "스테이지 연령 arm" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+case "$out" in
+  *"라이브니스 침묵"*) bad "형제 arm" "라우터가 정상인 픽스처에서 정체 arm 이 함께 발화했다" ;;
+  *) ok "라우터가 계속 행을 쓰고 있어도 이 팔만 발화한다 (형제 arm 은 침묵한다)" ;;
+esac
+# NOTIFY ONLY; NO BLOCK ROW. An unresolved run-scope block stands up a
+# termination condition, so one long legitimate stage would stop the run from
+# ending all night and would need a person to write the resolving row — which
+# spends the very tolerance for false positives this arm's threshold rests on.
+if [ -f "$RD/stall" ]; then
+  bad "스테이지 연령 arm" "막힘 관측 파일을 남겼다 — 정당한 긴 스테이지 하나가 밤새 런의 종료를 막는다"
+else
+  ok "이 팔은 막힘 관측을 남기지 않는다 (통지만 한다)"
+fi
+
+# The once-guard is a DEDICATED PER-STAGE MARKER for the same reason the arms
+# above use one: the gate empties `stall` on every act, so a guard reading that
+# file would come back to life and this arm would re-fire every pass.
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"스테이지 S1 이"*"살아 있습니다"*) bad "재발화" "매 pass 마다 같은 스테이지를 다시 알린다" ;;
+  *) ok "같은 스테이지를 다시 알리지 않는다" ;;
+esac
+if [ -f "$RD/watch.announced-stage-age-S1" ]; then
+  ok "그 억제가 스테이지별 전용 마커 파일이다"
+else
+  bad "once 가드" "$(ls "$RD" | tr '\n' ' ')"
+fi
+fx_reap
+
+# The threshold is a threshold. A stage that started moments ago has not hung.
+fresh
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_live S2
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"살아 있습니다"*) bad "스테이지 연령 arm" "막 시작한 스테이지를 걸린 것으로 지목했다" ;;
+  *) ok "임계 이전에는 발화하지 않는다" ;;
+esac
+fx_reap
+
+# AND A DEAD STAGE IS NOT AN OLD ONE. The pid file outlives a stage that crashed
+# without cleaning up, and its fingerprint file keeps ageing forever — so without
+# the liveness conjunct this arm would report every crashed stage of the night,
+# repeatedly, as a hang.
+fresh
+FX_RUN_DIR="$RD"; FX_PIDS=""
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+fx_stage_dead S3
+fx_age_file "$RD/S3.start" 7300
+out=$(run --stall 1200 --after-stage 120 --run-open 300 --stage-age 7200)
+case "$out" in
+  *"살아 있습니다"*) bad "스테이지 연령 arm" "죽은 스테이지의 낡은 지문을 걸린 스테이지로 읽었다" ;;
+  *) ok "죽은 스테이지에는 발화하지 않는다 (연령만이 아니라 생존도 본다)" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# The fifth threshold is PINNED, here rather than in the lint that pins the other
+# four — that script is outside this change's declared file set. The property is
+# the same one: the launch line a run actually consumes has to spell the script's
+# own default, or the sentence beside it saying these are the defaults becomes
+# false and nothing says so.
+# ---------------------------------------------------------------------------
+SKILL_MD="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+sa_decl=$( { grep -oE '(^|[;[:space:]])STAGE_AGE=[0-9]+' "$WATCH" || true; } \
+           | sed -E 's/.*STAGE_AGE=//')
+check "watch.sh 가 STAGE_AGE 기본값을 정확히 하나 선언한다" \
+  "$(printf '%s\n' "$sa_decl" | grep -c . || true)" "1"
+sa_launch=$( { grep -E 'watch\.sh .*--run-dir' "$SKILL_MD" || true; } \
+             | { grep -oE -- '--stage-age [0-9]+' || true; } | sed -E 's/^--stage-age //')
+check "기동 줄이 --stage-age 를 정확히 하나 싣는다" \
+  "$(printf '%s\n' "$sa_launch" | grep -c . || true)" "1"
+check "기동 줄의 값이 watch.sh 의 기본값과 축자로 같다" "$sa_launch" "$sa_decl"
+# The launch line is not the only place the document writes this number — the
+# paragraph under it restates it, and that paragraph is where the claim about
+# defaults lives. A scan anchored on the launch line never reaches it.
+sa_stale=$( { grep -oE -- '--stage-age [0-9]+' "$SKILL_MD" || true; } \
+            | sed -E 's/^--stage-age //' | { grep -vxF "$sa_decl" || true; } )
+check "문서 안의 다른 기재도 같은 값을 못 박는다" \
+  "$(printf '%s' "$sa_stale" | grep -c . || true)" "0"
+
+# ---------------------------------------------------------------------------
+# `cc_mtime` — the helper the arm above names, ON BOTH PLATFORMS.
+#
+# The claim is that BSD and GNU answer the same epoch for the same file, and no
+# single leg can compare two hosts. What makes the comparison possible is that
+# the expected values are LITERALS: both CI legs already run this file, so both
+# assert against the same numbers, and a divergence arrives as a red leg rather
+# than as a difference nobody is in a position to observe. Asserting "the two
+# hosts agree" by hand instead would close once and re-open on the next change.
+#
+# TWO HELPERS CARRY THIS BODY — one in `liveness.sh` and one in the gate — so the
+# one under test is NAMED rather than found. An assertion measuring the other
+# copy would stay green while the arm's own reading diverged.
+#
+# Taken as source text and run on its own, the way `iso_to_epoch` is read above:
+# driving it through the arm would need a run directory and a live process per
+# row, and neither is what these rows are about.
+# ---------------------------------------------------------------------------
+LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+mtime_fn=$(sed -n '/^cc_mtime() {/,/^}/p' "$LIVENESS")
+if [ -n "$mtime_fn" ]; then
+  ok "liveness.sh 에서 cc_mtime 을 떼어냈다"
+else
+  bad "cc_mtime 추출" "함수를 찾지 못했다 — 아래 행들은 잴 것이 없다"
+fi
+# The zone is attached to `bash` and not to the function name: for a shell
+# function a prefix assignment does NOT scope to the call, which this file
+# already had to learn once for the host seam.
+cc_mtime_of() {
+  # cc_mtime_of <path> [TZ]
+  CC_MTIME_FN="$mtime_fn" TZ="${2:-UTC}" \
+    bash -c 'eval "$CC_MTIME_FN"; cc_mtime "$1"' _ "$1"
+}
+
+# `perl`, and not `touch -t`, for the reason the shared fixture already gives:
+# computing the stamp `touch` wants means formatting an epoch, and that is the
+# one operation where the two date implementations take incompatible flags.
+# `utime` takes the number directly. The rows are the epoch itself, a round
+# stamp, a 400-year leap day and the signed-32-bit cliff.
+MT="$WORK/mtime-probe"
+for mt_row in 0 1577836800 951782400 2147483648; do
+  : > "$MT"
+  perl -e 'my ($f, $t) = @ARGV; utime $t, $t, $f or die "utime: $!";' "$MT" "$mt_row"
+  check "cc_mtime 이 epoch $mt_row 을 그대로 낸다 (두 레그가 같은 리터럴을 단언한다)" \
+    "$(cc_mtime_of "$MT")" "$mt_row"
+done
+
+# AND THE ANSWER MUST NOT DEPEND ON THE HOST'S ZONE. `date -r` without `-u`
+# answers a local calendar time, and the two legs do not share a zone — so a
+# dropped `-u` would show up as a platform divergence when it is nothing of the
+# kind. Two zones, one file, one expected number.
+: > "$MT"
+perl -e 'my ($f, $t) = @ARGV; utime $t, $t, $f or die "utime: $!";' "$MT" 1577836800
+check "시간대가 달라도 같은 값을 낸다 (Asia/Seoul)" \
+  "$(cc_mtime_of "$MT" Asia/Seoul)" "1577836800"
+check "시간대가 달라도 같은 값을 낸다 (UTC)" \
+  "$(cc_mtime_of "$MT" UTC)" "1577836800"
+
+# No file is "cannot judge", not "epoch zero" — the arm above skips a stage whose
+# fingerprint it cannot read, and a number here would make it judge one.
+check "없는 파일에는 빈 값을 낸다" "$(cc_mtime_of "$WORK/없는파일")" ""
+
+# And the arm really does read THIS helper. Without this line the rows above
+# measure a function the watcher might not be calling.
+if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F 'cc_mtime "$RUN_DIR/$sseg.start"'; then
+  ok "스테이지 연령 팔이 지목된 헬퍼 cc_mtime 으로 기점을 읽는다"
+else
+  bad "헬퍼 지목" "워처 팔이 cc_mtime 을 읽지 않는다 — 위 단언이 다른 사본을 재고 있다"
+fi
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
