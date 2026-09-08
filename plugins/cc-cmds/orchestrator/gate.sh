@@ -1569,7 +1569,12 @@ gate_mtime() {
   # GNU on the very flag this needs, so neither spelling is used: `find -newer`
   # against a probe would need a probe, and `ls` output is locale-shaped. `date
   # -r` is present on both and takes the file directly.
-  [ -f "$1" ] || return 0
+  # `-e` RATHER THAN `-f`, because the reap lock is a DIRECTORY and dating it is
+  # what lets a lock with no readable owner line expire instead of standing
+  # forever. `date -u -r` takes a directory on both platforms — verified on this
+  # host — and every other caller passes a file, so widening the guard adds a
+  # case rather than changing one.
+  [ -e "$1" ] || return 0
   date -u -r "$1" +%s 2>/dev/null || true
 }
 
@@ -1715,8 +1720,17 @@ gate_reap_lock() {
   fi
   owner=$(cat "$lock/owner" 2>/dev/null || true)
   ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
-  # Absent or unparsable owner information is not a stale lock — it is a lock
-  # this process cannot reason about, and breaking it would race the holder.
+  # AN UNREADABLE OWNER LINE FALLS BACK TO THE LOCK DIRECTORY'S OWN mtime, and
+  # refusing outright was the bug rather than the caution. Refusing was meant to
+  # avoid racing a live holder, but it also made an owner-less lock PERMANENT,
+  # and that shape was reachable with no crash at all: the release used to remove
+  # the owner line and then the directory, so every ordinary release passed
+  # through it, and any failure of the second step froze the reaper for good with
+  # no symptom anywhere. The directory is created by the `mkdir` above and its
+  # mtime is set then, so it dates the acquisition exactly as the owner line
+  # does — a holder younger than the expiry is still protected, because the same
+  # threshold decides both.
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
   [ -n "$ots" ] || return 1
   now=$(date -u +%s)
   [ $((now - ots)) -ge 900 ] || return 1
@@ -1962,7 +1976,7 @@ gate_reap_locked() {
 }
 
 gate_reap_cycle() {
-  local root stamp now rc lock
+  local root stamp now rc lock dead
   root=$(gate_reap_root)
   [ -d "$root/run" ] || return 0
   now=$(date -u +%s)
@@ -1983,9 +1997,18 @@ gate_reap_cycle() {
   # is the premise the backlog arithmetic rests on — 103 directories in about six
   # cycles rather than in one burst.
   date -u +%s > "$root/reap.stamp" 2>/dev/null || true
+  # THE RELEASE IS ONE RENAME, so no moment exists in which the lock stands
+  # without its owner line. Removing the owner and then the directory put every
+  # ordinary release through that state, and a `rmdir` that failed for any reason
+  # — a leftover artifact inside, `EBUSY`, a filesystem that renames on delete —
+  # left behind a lock nothing could date and nothing could break. What this form
+  # leaves behind when its own cleanup fails is an inert directory beside the
+  # lock: no scan here walks it and no later cycle consults it.
   lock="$root/.reap.lock"
-  rm -f "$lock/owner" 2>/dev/null || true
-  rmdir "$lock" 2>/dev/null || true
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
   return $rc
 }
 

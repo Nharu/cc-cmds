@@ -3297,15 +3297,29 @@ BSESS="$BSTATE/session"
 # compares SETS rather than counts, because other runs open while the suite is
 # running (measured: 200 to 202 in one round).
 #
-# ITS COVERAGE IS HALF, and saying so is the point of this comment. Today this
-# is a CREATION detector, not a DELETION detector: no run on this host has
-# crossed the retention threshold, so an isolation break plus a correctly
-# thresholded reaper would find nothing to delete and come back green. The
-# deletion half only wakes up once real data ages past the threshold. The
-# creation half is alive today, and the accident that actually happened —
-# `~/.local/state/cc-cmds/run/R1` — is exactly that kind.
-B_REALRUN="$HOME/.local/state/cc-cmds/run"
-b_canary() { { ls -1 "$B_REALRUN" 2>/dev/null || true; } | LC_ALL=C sort; }
+# BOTH HALVES ARE HERE, AND THEY ARE NOT WRITTEN THE SAME WAY, because only one
+# of them can be stated as "nothing changed". Entries genuinely appear while the
+# suite runs — other sessions open runs of their own (measured 212 to 214 in one
+# round) — so a creation half phrased as "nothing was created" would fail on a
+# busy host and pass on an idle one, which is a coin toss rather than a check.
+# So the deletion half asks that NOTHING vanished, and the creation half asks
+# only that nothing bearing a FIXTURE NAME appeared. That is the sharper
+# question anyway: the accident being guarded against is this suite writing into
+# the real state directory — `~/.local/state/cc-cmds/run/R1` is the one that
+# actually happened — and a fixture name showing up there is that accident and
+# nothing else.
+#
+# The three subdirectories are all walked because the reaper writes in all
+# three: it deletes run directories under `run/`, rewrites and removes session
+# indexes under `session/`, and stages victims through `.reap-trash/`. Watching
+# only `run/` left the other two unguarded against the same break.
+B_REALSTATE="$HOME/.local/state/cc-cmds"
+b_canary() {
+  local sub
+  for sub in run session .reap-trash; do
+    { ls -1 "$B_REALSTATE/$sub" 2>/dev/null || true; } | sed "s|^|$sub/|"
+  done | LC_ALL=C sort
+}
 B_CANARY_BEFORE=$(b_canary)
 
 b_exists() { if [ -e "$1" ]; then printf 'yes'; else printf 'no'; fi; }
@@ -3686,11 +3700,39 @@ b_trigger RB13b
 n=$( { ls -1d "$B13T"/RV-B13S-* 2>/dev/null || true; } | grep -c . || true)
 check "B13 스윕도 같은 사이클 상한 안에서 돈다" "$n" "2"
 
+# --- B14 — owner 를 읽을 수 없는 잠금도 만료된다 -----------------------------
+# 해제가 단일 rename 이 된 뒤로 이 스위트 자신은 이 상태를 만들지 않지만, 밖에서
+# 들어올 수 있다 — 옛 판본이 남긴 잔여물, 잠금 안에 뭔가를 떨어뜨린 다른 도구.
+# 그때 「읽을 수 없으니 거부」로 끝내면 회수기는 아무 증상 없이 영원히 꺼진다.
+# 만료 판정을 디렉터리 자신의 mtime 으로 물러서게 한 것이 그것을 막는다.
+b_victim RV-B14 "$BAGE_OLD" 종단
+B14V="$B_VICTIM"
+mkdir -p "$BSTATE/.reap.lock"
+fx_age_file "$BSTATE/.reap.lock" 1800
+b_trigger RB14
+check "B14 owner 없는 낡은 잠금이 회수를 막지 않는다" "$(b_exists "$B14V")" "no"
+
+# 반대쪽을 함께 고정하지 않으면 위의 통과는 「만료를 지켰다」가 아니라 「잠금을
+# 아예 안 본다」로도 설명된다.
+b_victim RV-B14B "$BAGE_OLD" 종단
+B14BV="$B_VICTIM"
+mkdir -p "$BSTATE/.reap.lock"
+b_trigger RB14b
+check "B14 갓 생긴 owner 없는 잠금은 존중된다" "$(b_exists "$B14BV")" "yes"
+rm -rf "$BSTATE/.reap.lock"
+
 # --- 카나리아 정산 -----------------------------------------------------------
 B_CANARY_AFTER=$(b_canary)
 n=$(LC_ALL=C comm -23 <(printf '%s\n' "$B_CANARY_BEFORE") \
                       <(printf '%s\n' "$B_CANARY_AFTER") | grep -c . || true)
-check "카나리아 — 실사용자 런 디렉터리가 하나도 사라지지 않았다" "$n" "0"
+check "카나리아 — 실사용자 상태 항목이 하나도 사라지지 않았다" "$n" "0"
+# 생성 절반. 「아무것도 안 생겼다」로 물으면 같이 도는 다른 세션의 런 때문에
+# 흔들리므로, 이 스위트가 쓰는 이름만 골라 본다. 실사용자 런 id 는 날짜-해시
+# 꼴이고 세션 인덱스는 UUID 라 이 이름들과 겹치지 않는다.
+n=$(LC_ALL=C comm -13 <(printf '%s\n' "$B_CANARY_BEFORE") \
+                      <(printf '%s\n' "$B_CANARY_AFTER") \
+     | grep -cE '/(R[0-9]|RV-|RB|B7X-|sess-)' || true)
+check "카나리아 — 픽스처 이름이 실사용자 상태에 하나도 나타나지 않았다" "$n" "0"
 
 # Hand the following sections back the run they were written against.
 MANIFEST="$B_MANIFEST_SAVE"; LEDGER="$B_LEDGER_SAVE"
