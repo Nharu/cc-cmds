@@ -274,7 +274,7 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 
    The channel emits nothing when nothing happens, so a quiet hour costs no notification and no model turn. It does not replace the morning report: it is a pure projection of the ledger and can say nothing the ledger does not, and if it is removed with a task stop it leaves no trace of having gone.
 5. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run's boundary events will be relayed into this terminal.
-6. **Enter the router loop of Act 2b.** Do not stop here.
+6. **Start the first shift. This seat does not route.** Act 2b is the shift's loop and never this session's: the routing seat leaves the lead at kickoff and comes back only as a return line, which is what CFI-3 and CFI-7 both say and what the shift numbering is built on — `교대=0` means routing never left this seat, and shift `n` stamps `n`. Issue the `act --kind router-shift` call of 「Shifting the loop」 with `사유=상한`, then wait for its return. Do not stop here, and do not route while it runs.
 
 ---
 
@@ -485,6 +485,8 @@ gate.sh act --manifest <매니페스트> --kind router-shift --target <alias> \
 ```
 
 **The first token after `--` is the HANDOFF REASON**, the way it is the stage kind for `act --kind skill`. `--kind router-shift` is the LEDGER ROW KIND and `shift` is the SETTINGS VARIANT the wrapper receives; they are different layers with different names, and swapping them runs the shift under settings that are not its own.
+
+**That call has THREE outcomes and they are told apart by exit status, not by prose.** `0` — the successor ran and came back, so route again on its return line. `5` — an approval was issued instead of a launch: the handoff floor is past its cap, nothing was started, and this is a question for a person, so answer it here before trying again. `10` — the cap shift is held behind a live stage: nothing was started and nothing is wrong, so let the stage finish and reissue. All three used to report `0`, which is why 「 the successor is running」 had to be inferred rather than read.
 
 **The successor reads the snapshot itself and never the `H` its predecessor handed back.** The `handoff` row moved the ledger's row count and its chain tip, so a digest quoted from before it is stale by construction and the gate will refuse it.
 

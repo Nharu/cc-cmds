@@ -2142,5 +2142,89 @@ else
 fi
 
 
+# ---------------------------------------------------------------------------
+# 28. The progress channel survives its own unclean death.
+#
+# `feed.lock` used to be removed only by a trap installed AFTER the lock was
+# taken, and no trap covers SIGKILL or SIGHUP. A feed that died uncleanly left the
+# file behind, every later re-arm took the "the lock is here and its owner is not"
+# branch and exited 3, and the instruction that branch printed was to delete the
+# file by hand — on a path that runs while the only person who could is asleep.
+# The watcher's sixth arm exists to DETECT that death and then tells the lead to
+# re-arm, so detection and recovery sat on two sides of one defect. §27 asserts
+# the fence; nothing asserted the lifecycle.
+# ---------------------------------------------------------------------------
+if [ -f "$FEED_SH" ]; then
+  FEED_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-feed-lock.XXXXXX")
+  FEED_LG="$FEED_RD/ledger.md"
+  printf -- '- `run` | 교대=0 | run-id=feedlock | prev=aaaa\n' > "$FEED_LG"
+  # A pid that is certainly gone: started and reaped right here.
+  ( : ) & dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$FEED_RD/feed.lock"
+  mkdir -p "$FEED_RD/feed.lock.d"
+  feed_rc=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
+    > "$FEED_RD/out" 2> "$FEED_RD/err" || feed_rc=$?
+  if [ "$feed_rc" = "0" ]; then
+    ok "주인이 사라진 락을 회수하고 재장전이 성공한다"
+  else
+    bad "피드 락" "고아 락에서 재장전이 rc=$feed_rc 로 실패했다 — 무인 경로에는 손으로 지울 사람이 없다: $(tr '\n' ' ' < "$FEED_RD/err")"
+  fi
+  if grep -q '회수' "$FEED_RD/err" 2>/dev/null; then
+    ok "회수했다는 사실이 한 줄로 남는다"
+  else
+    bad "피드 락" "락을 조용히 덮어썼다 — 앞선 채널이 깨끗하지 않게 죽었다는 사실이 아침에 남지 않는다"
+  fi
+  if [ -f "$FEED_RD/feed.lock" ]; then
+    bad "피드 락" "깨끗하게 끝난 실행이 자기 락을 남겼다"
+  else
+    ok "깨끗하게 끝난 실행은 자기 락을 지운다"
+  fi
+
+  # THE OTHER BRANCH MUST NOT REGRESS. A live holder still stops a second
+  # instance, and it does so with 0 — the lead re-arms up to three times on a
+  # healthy night, and a non-zero there files three false failures.
+  printf '%s\n%s\n' "$$" \
+    "$(LC_ALL=C ps -o lstart= -p $$ 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" \
+    > "$FEED_RD/feed.lock"
+  mkdir -p "$FEED_RD/feed.lock.d"
+  feed_rc2=0
+  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
+    > "$FEED_RD/out2" 2> "$FEED_RD/err2" || feed_rc2=$?
+  if [ "$feed_rc2" = "0" ]; then
+    ok "살아 있는 주인이 있으면 재장전은 0 으로 물러난다"
+  else
+    bad "피드 락" "건강한 밤의 재장전이 rc=$feed_rc2 로 실패를 보고했다"
+  fi
+  if [ -f "$FEED_RD/feed.lock" ]; then
+    ok "물러난 인스턴스는 살아 있는 주인의 락을 지우지 않는다"
+  else
+    bad "피드 락" "물러나면서 남의 락을 지웠다 — 락이 막으려던 이중 실행이 바로 그 상태다"
+  fi
+
+  # The ordering, and the signal set. Neither closes the SIGKILL window — nothing
+  # in a shell can — but installing the trap after the lock widens a window that
+  # costs nothing to close.
+  # `-m1` AND NOT `| head -1`. `head` closes the pipe on its first line, `cut`
+  # takes SIGPIPE, and `pipefail` hands the whole substitution a non-zero status
+  # — so the line lookup failed on exactly the files where the pattern matched
+  # more than once. Stopping the search at the first match asks for the same
+  # value without anyone closing a pipe early.
+  feed_trap_ln=$( { grep -n -m1 "^trap 'release_lock'" "$FEED_SH" || true; } | cut -d: -f1)
+  feed_take_ln=$( { grep -n -m1 '^take_lock$' "$FEED_SH" || true; } | cut -d: -f1)
+  if [ -n "$feed_trap_ln" ] && [ -n "$feed_take_ln" ] && [ "$feed_trap_ln" -lt "$feed_take_ln" ]; then
+    ok "트랩이 락 획득보다 먼저 설치된다"
+  else
+    bad "피드 락" "트랩이 락 획득 뒤에 설치된다 (trap=$feed_trap_ln take=$feed_take_ln)"
+  fi
+  if { grep -q "^trap 'release_lock' EXIT HUP INT TERM" "$FEED_SH"; }; then
+    ok "그 트랩이 HUP 도 덮는다"
+  else
+    bad "피드 락" "HUP 이 트랩 목록에 없다 — 터미널이 사라지는 흔한 종료가 락을 남긴다"
+  fi
+  rm -rf "$FEED_RD"
+fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

@@ -115,6 +115,23 @@ export CC_ORCH_SOURCE_ONLY
 # shellcheck source=/dev/null
 . "$GATE_DIR/notify-run.sh"
 
+# ---------------------------------------------------------------------------
+# THE SEAT QUESTION HAS ONE OWNER IN THIS FILE.
+#
+# `cc_caller_is_router` reads `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` —
+# the two markers a launched STAGE carries. A routing SHIFT carries neither, so
+# that predicate answers "router" inside one and a shard raises the run's own
+# terminal banner. The shard's marker is `CC_PIPELINE_SHIFT_ID`, and it is tested
+# HERE rather than at the firing sites: there are seven of those, one of them
+# carried the test and six did not, and a seat question owned by seven copies is
+# what produced that gap. An eighth site added later gets the answer by using the
+# same predicate its siblings already use.
+# ---------------------------------------------------------------------------
+gate_may_raise_banner() {
+  [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 1
+  cc_caller_is_router
+}
+
 readonly GATE_EXIT_VOCAB=2
 readonly GATE_EXIT_RULE=3
 readonly GATE_EXIT_STALE=4
@@ -2271,7 +2288,7 @@ gate_surface_check() {
     # until a person touches THAT" — so it takes the per-run replace slot, and
     # the title names the one action actually available here, which is to open a
     # fresh run because this one's baseline cannot be taken again.
-    if cc_caller_is_router && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
+    if gate_may_raise_banner && [ -n "${RUN_DIR:-}" ] && [ ! -f "$RUN_DIR/notify.announced-void" ]; then
       : > "$RUN_DIR/notify.announced-void" 2>/dev/null || true
       cc_notify_fire rekick \
         "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
@@ -3768,7 +3785,7 @@ gate_notify_segment_park() {
   if [ -z "${RUN_DIR:-}" ]; then return 0; fi
   mk="$RUN_DIR/notify/park-$seg"
   if [ -f "$mk" ]; then return 0; fi
-  if cc_caller_is_router; then
+  if gate_may_raise_banner; then
     # THE MARKER IS WRITTEN ONLY BY A CALL THAT ACTUALLY RAISED THE NOTICE, and
     # being inside the guard is the whole of it. Written above the guard, one
     # stage call — which raises nothing — leaves the marker behind, and the
@@ -3813,15 +3830,16 @@ gate_notify_approval() {
   local id="$1" q="$2"
   # A SHIFT DOES NOT DECIDE WHETHER A BANNER REACHES THE USER. It was launched
   # by the lead, and a launched process choosing what the user sees is the one
-  # thing the notification rules forbid outright. The stage test above does not
-  # cover it, because a shift is a router by every other measure.
+  # thing the notification rules forbid outright. That test used to sit here as a
+  # second early return of its own, which is what left the other six firing sites
+  # answering the seat question with a predicate that cannot see a shift; it now
+  # lives in `gate_may_raise_banner` and this site reads it like every other one.
   #
   # NO BANNER IS LOST BY THIS. The watcher's approval arm fires from its own
   # seat the moment an approval is issued, and the watcher is orphaned to init
   # rather than launched by anyone — so this suppression tidies the seating
   # rather than removing the notice.
-  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then return 0; fi
-  if ! cc_caller_is_router; then return 0; fi
+  if ! gate_may_raise_banner; then return 0; fi
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     if ! grep -qxF "$id" "$RUN_DIR/watch.announced-approvals" 2>/dev/null; then
       printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
@@ -4594,6 +4612,20 @@ gate_plan_unchecked_axes() {
   esac
 }
 
+gate_kind_is_bookkeeping() {
+  # gate_kind_is_bookkeeping <kind> — the row kinds an `act` performs by
+  # APPENDING A ROW and doing nothing else. Every one of them grades `읽기`.
+  #
+  # THE SET IS SPELLED ONCE. Two readers need it — the dispatch that performs
+  # them and the all-met arm that must not refuse them — and when the arm carried
+  # no copy at all, the terminal shift could not write the one row the protocol
+  # requires it to write.
+  case "$1" in
+    segment|cycle|problem|blocked|clause|judgment|obligation|handoff) return 0 ;;
+  esac
+  return 1
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -4649,12 +4681,7 @@ gate_verb_act() {
   case "$kind" in
     propose-done)
       graded="읽기" ;;
-    segment|cycle|problem|blocked|clause|judgment|obligation)
-      # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
-      # and what it performs is the ledger row the gate would write anyway. It
-      # reaches nothing outside the ledger, so it grades `읽기`.
-      graded="읽기" ;;
-    skill)
+    skill|router-shift)
       # A stage dispatch's argv does NOT begin with a command: its first token
       # is the STAGE KIND that selects a settings variant, and the wrapper is
       # what eventually runs a binary. Feeding that token to the argv0 table
@@ -4667,9 +4694,30 @@ gate_verb_act() {
       # this run does not authorize, so what it can reach on its own is the
       # tree. Anything it does ABOVE that grade goes back through this gate as
       # its own act and is graded there.
+      #
+      # A ROUTING SHIFT HAS THE SAME SHAPE AND WAS LEFT OUT OF IT. Its first
+      # token is the handoff reason — `상한`, `승인` — which is no more a command
+      # than a stage kind is, so it graded `등급 미상` and the launcher could not
+      # be reached at all: declared `읽기` the act came back 6, declared not at
+      # all it came back 2. It starts its successor the way a stage dispatch
+      # starts one, under the same read-scoped credential, so it takes the same
+      # grade rather than a second answer to one question.
       graded="워크트리쓰기" ;;
     *)
-      graded=$(surface_of_argv0 "$@") ;;
+      if gate_kind_is_bookkeeping "$kind"; then
+        # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
+        # and what it performs is the ledger row the gate would write anyway. It
+        # reaches nothing outside the ledger, so it grades `읽기`.
+        #
+        # THE SET IS ASKED FOR HERE, NOT SPELLED AGAIN. This site carried a
+        # private copy of the list and that copy was missing `handoff`, so the
+        # one act whose argv begins with `교대=0` graded `등급 미상` and the
+        # terminal shift's own row came back 6 — refused by the axis that was
+        # never about it.
+        graded="읽기"
+      else
+        graded=$(surface_of_argv0 "$@")
+      fi ;;
   esac
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
@@ -5024,7 +5072,7 @@ gate_verb_act() {
       # left for a person is to read the result rather than to re-open anything.
       # The instruction to kick off again belongs to the site that anchors the
       # run, which has already spoken by the time this one does.
-      if cc_caller_is_router; then
+      if gate_may_raise_banner; then
         cc_notify_fire ended "런이 무효화된 채로 종료됐습니다 — 아침 보고서를 확인하세요" || true
       fi
       return 0
@@ -5092,10 +5140,18 @@ gate_verb_act() {
     # does next here is look at the result and decide what follows — the per-run
     # replace slot is exactly right for a fact that supersedes any earlier state
     # of the same run, and re-raising it costs nothing.
-    if cc_caller_is_router; then
+    if gate_may_raise_banner; then
       cc_notify_fire ended "런이 종단했습니다 — 아침 보고서를 확인하세요" || true
     fi
-  elif [ -z "$unmet" ]; then
+  # BOOKKEEPING IS EXEMPT, AND THE EXEMPTION IS THIS ARM'S OWN PURPOSE READ
+  # CORRECTLY. What it refuses is a router that walks past a satisfied ending and
+  # keeps routing; a row recording WHY the seat stopped is not walking past
+  # anything. Without it all eight bookkeeping kinds are refused with exit 3 in
+  # exactly the state where the protocol requires the terminal shift to write its
+  # `handoff` row — and no `--rationale` reaches them, because the three sources
+  # `gate_names_next_obligation` can name are all empty precisely when `unmet`
+  # is. The morning then loses the last shift's rejected alternatives whole.
+  elif [ -z "$unmet" ] && ! gate_kind_is_bookkeeping "$kind"; then
     # THE LITERAL TEST STAYS. Every other site compares the disposition token by
     # positive equality, and this one cannot: the chain ends at `fi`, so there is
     # no refusing arm to fall into, and the polarity is inverted — ENTERING this
@@ -5165,9 +5221,10 @@ gate_verb_act() {
   gate_issue_review_obligation "$segment" "$cutpoint" "$graded" "$review_policy"
 
   [ "$kind" = "propose-done" ] && return 0
-  case "$kind" in
-    segment|cycle|problem|blocked|clause|judgment|obligation|handoff) gate_record_row "$kind" "$segment" "$alias" "$@"; return $? ;;
-  esac
+  if gate_kind_is_bookkeeping "$kind"; then
+    gate_record_row "$kind" "$segment" "$alias" "$@"
+    return $?
+  fi
   case "$verb" in
     exec)
       # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
@@ -5989,7 +6046,7 @@ gate_record_stage_outcome() {
         # without deriving an attempt of its own; the attempt is the contents.
         mkdir -p "$RUN_DIR/notify" 2>/dev/null || true
         printf '%s\n' "$attempt" > "$RUN_DIR/notify/park-$seg" 2>/dev/null || true
-        if cc_caller_is_router; then
+        if gate_may_raise_banner; then
           cc_notify_fire hands "$q" "park-$seg#$attempt" || true
         fi ;;
       '산출물 없는 정지')
@@ -5997,7 +6054,7 @@ gate_record_stage_outcome() {
         # is DEFINED by the absence of a halt record, so "check the halt record"
         # would send a person to a file that does not exist — the same
         # wrong-instruction failure this channel was built to remove.
-        if cc_caller_is_router; then
+        if gate_may_raise_banner; then
           cc_notify_fire hands \
             "\`$seg\` 스테이지가 결정 지점에서 멈췄습니다 — 사용자 대신 정하지 않았습니다" \
             "stop-$seg#$attempt" || true
@@ -6805,17 +6862,51 @@ readonly SHIFT_TURN_TRIPWIRE=400
 readonly SHIFT_HANDOFF_CAP=3
 readonly SHIFT_FLOOR_MAX=130000
 
-gate_shift_number() {
-  # How many shifts have already ended. The lead's own seat is 0, and a run whose
-  # routing never leaves it writes 0 on every row — the scale costs nothing where
-  # the mechanism is unused.
+# THE LAUNCHER'S OWN NON-ZERO, and it sits outside the gate's 2..7 refusal band on
+# purpose: a hold is not a refusal, and borrowing a refusal code would make "the
+# shift is waiting on a live stage" unreadable against "the gate said no". Zero is
+# the one value it must not be — in this system zero means the successor ran to
+# completion, and three different outcomes were reporting it.
+readonly GATE_EXIT_SHIFT_HELD=10
+
+gate_shift_launches() {
+  # How many routing shifts this ledger has LAUNCHED. `gate_verb_act` appends the
+  # act's `자율 승인` row before the dispatch that starts one, so at the moment a
+  # launch runs this count already includes its own row and is therefore that
+  # launch's ordinal.
   #
-  # Derived from the ledger rather than from the environment, so a row written by
-  # a process that lost its marker still carries the right number.
+  # LAUNCHES AND NOT ENDINGS. The count of `handoff` rows stood here, and the two
+  # diverge the moment a launch is held or a shift dies before writing its row —
+  # neither of which the gate checks, so the scale silently drifted from the
+  # identifier. `결정=act` excludes the outcome row a failed act appends under the
+  # same `kind`.
   local n
   if [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ]; then printf '0'; return 0; fi
-  n=$( { gate_rows 'handoff' || true; } | gate_count)
+  n=$( { gate_rows '자율 승인' || true; } \
+       | { grep -F 'kind=router-shift' || true; } \
+       | { grep -F '결정=act' || true; } | gate_count)
   printf '%s' "${n:-0}"
+}
+
+gate_shift_number() {
+  # The number of the shift that HOLDS THE ROUTING SEAT as this row is written.
+  # `0` is the lead's own seat and the sidecar reserves it for a run whose
+  # routing never left the lead, so a shard must never stamp it.
+  #
+  # A SHIFT READS ITS OWN MARKER. `CC_PIPELINE_SHIFT_ID` is `<run-id>#<n>` and the
+  # launcher wrote that `<n>` from `gate_shift_launches`, so the number a shard
+  # stamps is the number it was launched under — one expression carried across
+  # the process boundary rather than re-derived on the far side of it. The count
+  # of ENDED handoffs used to stand here, and it is a different quantity: shift 1
+  # stamped `0` right up to its own handoff row, byte-identical to the value that
+  # means routing never left the lead, and no reader could tell the two apart.
+  local n
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    n="${CC_PIPELINE_SHIFT_ID##*#}"
+    case "$n" in ''|*[!0-9]*) n='' ;; esac
+    if [ -n "$n" ]; then printf '%s' "$n"; return 0; fi
+  fi
+  gate_shift_launches
 }
 
 gate_transcript_of_session() {
@@ -6938,16 +7029,29 @@ gate_snapshot_segments_json() {
 }
 
 gate_snapshot_blocked_json() {
-  # Unresolved only. A `원인=해소` row CLOSES an earlier one, so carrying it here
-  # would hand the successor a block that is already gone — and the successor has
-  # no history to notice with.
-  local out row
-  out=$( { gate_rows 'blocked' || true; } | { grep -v '원인=해소' || true; } \
-         | tail -40 | while IFS= read -r row; do
-           [ -n "$row" ] || continue
-           printf '    {"스코프": "%s", "사유": "%s", "앵커": "%s"},\n' \
-             "$(gate_json_escape "$(gate_row_field "$row" '스코프')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" '사유')")" \
+  # Unresolved only, AND THE FOLD THAT DECIDES IT IS THE CANONICAL ONE. Resolution
+  # in this ledger is an APPEND, not an edit: the closing row carries `원인=해소`
+  # and the row it closes stays exactly where it is. Filtering the closing row out
+  # therefore kept the block and dropped the evidence that it was gone — the
+  # opposite of what this comment used to promise — and the successor has no
+  # history to notice with, so a block somebody had already cleared sat in every
+  # shard's input for the rest of the night.
+  #
+  # `cc_unresolved_blocked` takes the LAST row per `사유` and drops it when that
+  # row resolves. Termination condition 5 and the status line already read it,
+  # and its own header says it exists so those two read one rule rather than two
+  # copies of it; this projector was a third copy and the only wrong one.
+  #
+  # RUN SCOPE, because that is the span the canonical fold covers. Narrowing here
+  # is deliberate — a fourth private copy of the fold is precisely the defect.
+  local out reason row
+  out=$( { cc_unresolved_blocked "${LEDGER:-}" || true; } | cut -f2- \
+         | tail -40 | while IFS= read -r reason; do
+           [ -n "$reason" ] || continue
+           row=$( { gate_rows 'blocked' | grep -F '스코프=run' \
+                    | grep -F "사유=$reason " || true; } | tail -1)
+           printf '    {"스코프": "run", "사유": "%s", "앵커": "%s"},\n' \
+             "$(gate_json_escape "$reason")" \
              "$(gate_json_escape "$(gate_row_field "$row" '앵커 세그먼트')")"
          done )
   [ -n "$out" ] || return 0
@@ -7018,7 +7122,7 @@ gate_launch_shift() {
   if [ "$reason" = "상한" ] && [ "$(gate_live_stages)" != "0" ]; then
     printf '교대 보류: 살아 있는 스테이지가 있습니다 — 상한 교대는 스테이지 종단 뒤에 다시 시도하세요\n'
     log "상한 교대 보류 — 살아 있는 스테이지"
-    return 0
+    return "$GATE_EXIT_SHIFT_HELD"
   fi
 
   # THE LIVELOCK GUARD, AND IT IS THE ONE PLACE A CAP BECOMES AN APPROVAL.
@@ -7041,18 +7145,46 @@ gate_launch_shift() {
   # warning and continuing is right. THIS IS THE SOLE EXCEPTION TO "a session cap
   # is a routing instruction, not an approval" — written here because an
   # implementer following that rule would otherwise decline to raise one.
-  local floor
-  floor=$(gate_shift_floor)
+  # AND IT MEASURES THE OUTGOING SHIFT, NOT THE PROCESS DOING THE LAUNCHING.
+  #
+  # `gate_shift_floor` reads the transcript of the session RUNNING THIS CODE. When
+  # the lead calls it that is the lead's opening context — a constant that does
+  # not move all night, and not the growing quantity the paragraph above is about
+  # at all. It failed in both directions: below the cap the guard never spoke, and
+  # above it the FIRST launch of the night issued an approval and returned with no
+  # successor, leaving the run without a routing seat.
+  #
+  # A SHIFT calling this IS the predecessor being replaced, so its own opening
+  # context is the handoff floor that grows shift to shift. The lead is not
+  # measured: a floor that does not exist yet cannot be compared, and a guard that
+  # measures nothing beats one that measures the wrong process.
+  local floor=0
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    floor=$(gate_shift_floor)
+  fi
   if [ "${floor:-0}" -gt "$SHIFT_FLOOR_MAX" ]; then
     gate_issue_boundary_approval SHIFT-FLOOR \
       "인수인계 바닥이 ${floor} 토큰으로 상한 ${SHIFT_FLOOR_MAX} 를 넘었습니다 — 교대가 일을 대신하고 있어 라우팅으로 풀리지 않습니다"
     warn "교대 중단: 인수인계 바닥 ${floor} > ${SHIFT_FLOOR_MAX} — 승인을 발행했습니다"
-    return 0
+    # AN ISSUED APPROVAL REPORTS AS ONE. Every other approval site in this file
+    # answers `GATE_EXIT_APPROVAL`, and the conversion that does it for the rule
+    # path runs before the dispatch that reaches here — so a `return 0` handed the
+    # caller the code meaning "the successor ran to completion" for a call that
+    # started nothing at all. The duplicate-suppressed re-issue answers 5 too: the
+    # approval is open either way, and only the first call would otherwise say so.
+    return "$GATE_EXIT_APPROVAL"
   fi
 
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  n=$(( $(gate_shift_number) + 1 ))
+  # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` already counts this
+  # ledger's launches and this act's own row is on it before the dispatch gets
+  # here, so the count IS this launch's ordinal. Adding one to a count of ENDED
+  # handoffs put the identifier a notch above the number the successor's own rows
+  # would carry, and a morning reader following `handoff | 교대=N` to
+  # `log/shift-N.json` was handed a different shift's stdout.
+  n=$(gate_shift_launches)
+  [ "${n:-0}" -ge 1 ] || n=1
   mkdir -p "$RUN_DIR/log"
 
   # AN EXPIRY TIMESTAMP AND NOT AN EMPTY MARKER. The watcher's after-stage arm

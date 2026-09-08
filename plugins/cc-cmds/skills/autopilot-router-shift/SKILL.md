@@ -102,7 +102,7 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
      '다음 후보=<후임이 먼저 볼 것>'
 ```
 
-`교대=<n>` is the snapshot's `shift.n`. The three free-text fields are clipped by the gate; write them anyway.
+`교대=<n>` is the snapshot's `shift.n`, and that is YOUR OWN launch number — the gate hands it down in `CC_PIPELINE_SHIFT_ID` and stamps the same value on every row you write. `0` is reserved for the lead's seat and means routing never left it, so it is never a number you write. The three free-text fields are clipped by the gate; write them anyway.
 
 **`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED — never what was considered and dropped. Leave it empty and your successor pays again for every dead end you already walked, and the morning report's request for the rejected alternative has no source at all.
 

@@ -46,9 +46,9 @@
 #           [--once]
 #
 # Exit codes:
-#   0 — ran, or another live feed already holds the lock (see `feed.lock`)
+#   0 — ran, or another live feed already holds the lock (see `feed.lock`), or
+#       reclaimed a lock whose holder is gone
 #   2 — bad arguments
-#   3 — the lock exists but its holder is gone
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`.
 
@@ -76,6 +76,12 @@ CURSOR="$RUN_DIR/feed.cursor"
 STATEF="$RUN_DIR/feed.state"
 HEARTBEAT="$RUN_DIR/feed.heartbeat"
 LOCKF="$RUN_DIR/feed.lock"
+# The acquisition token is a DIRECTORY, and the record beside it is what says who
+# holds it. `mkdir` either creates or fails, in one syscall, with no window
+# between the test and the write — which is the idiom this repository's own helper
+# convention already names for exactly this job.
+LOCKD="$LOCKF.d"
+LOCK_OWNED=0
 
 now_epoch() { date +%s; }
 now_stamp() { date -u +%H:%MZ; }
@@ -121,7 +127,16 @@ row_field() {
 # where the last line left off. A non-zero exit is reported to the lead as a
 # failure, so the healthy night would file up to three false failures.
 #
-# A LOCK WHOSE HOLDER IS GONE IS A REAL ANOMALY and keeps its non-zero code.
+# A LOCK WHOSE HOLDER IS GONE IS RECLAIMED, not reported. It used to exit 3 with
+# an instruction to delete the file by hand, and there is no hand on this path: the
+# feed is armed by a sleeping user's session, so one unclean death — SIGKILL, an
+# OOM kill, a crash, a reboot — turned every re-arm for the rest of the night into
+# a failure. The same comment below names "the re-arm does nothing for the rest of
+# the night" as the most expensive failure direction, and exit 3 produced it by
+# another road. Worse, the watcher's sixth arm exists to DETECT that death and then
+# tells the lead to re-arm, so detection and recovery sat on two sides of one
+# defect. Overwriting a dead pid's stale record creates no new risk; the
+# fingerprint below is what makes "dead" mean dead rather than "recycled".
 #
 # AND THE PID ALONE IS NOT THE HOLDER'S IDENTITY. `RUN_DIR` survives a reboot by
 # design, so a recycled pid reads as "a feed is already running" and the re-arm
@@ -152,19 +167,30 @@ lock_holder_alive() {
 }
 
 take_lock() {
-  if [ -f "$LOCKF" ]; then
+  if ! mkdir "$LOCKD" 2>/dev/null; then
     if lock_holder_alive; then
       printf '%s 진행 채널이 이미 돌고 있습니다 (pid %s) — 이 호출은 아무것도 중복하지 않습니다\n' \
         "$(now_stamp)" "$(sed -n '1p' "$LOCKF" 2>/dev/null | tr -dc '0-9')"
       exit 0
     fi
-    printf 'feed: 락은 있는데 그 주인이 없습니다: %s — 손으로 지우고 다시 거세요\n' "$LOCKF" >&2
-    exit 3
+    # ONE LINE, THEN CARRY ON. The morning needs to know the last channel did not
+    # shut down cleanly; the night needs the channel running either way.
+    printf 'feed: 주인이 사라진 락을 회수합니다 (%s) — 앞선 진행 채널이 깨끗하지 않게 죽었습니다\n' \
+      "$LOCKD" >&2
   fi
   printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$LOCKF"
+  LOCK_OWNED=1
 }
 
-release_lock() { rm -f "$LOCKF"; }
+release_lock() {
+  # ONLY THE HOLDER RELEASES. The trap is installed before the lock is taken, so
+  # the instance that finds a live holder and exits 0 runs this too — and without
+  # the flag it would delete the running instance's lock on its way out, which is
+  # the duplicate-feed state the lock exists to prevent.
+  [ "$LOCK_OWNED" = "1" ] || return 0
+  rm -f "$LOCKF"
+  rmdir "$LOCKD" 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------------------
 # Emission.
@@ -370,8 +396,14 @@ run_is_over() {
 }
 
 [ -d "$RUN_DIR" ] || { printf 'feed: 런 디렉터리가 없습니다: %s\n' "$RUN_DIR" >&2; exit 2; }
+# THE TRAP GOES UP BEFORE THE LOCK DOES, and `HUP` is on it. Installed after
+# `take_lock`, a signal arriving in between left the lock behind with nothing to
+# remove it; `HUP` is on the list because a terminal going away is one of the
+# ordinary ways this process ends. Neither closes the SIGKILL window — nothing in
+# a shell can — which is why the reclaim above is the load-bearing half and this
+# ordering is only the half that is free.
+trap 'release_lock' EXIT HUP INT TERM
 take_lock
-trap 'release_lock' EXIT INT TERM
 
 while :; do
   pass

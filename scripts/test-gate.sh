@@ -5193,6 +5193,20 @@ gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "이제 슬슬 정리하자" -- ls
 check "Q2: 같은 상태에서 근거를 준 act 도 3 이다 — 지목할 것이 없으므로" "$rc" "3"
 
+# Q3 — AND A BOOKKEEPING ACT IS NOT REFUSED BY THAT AXIS. Q2 has just shown that
+# no rationale passes here; if the axis also covered bookkeeping, then all eight
+# bookkeeping kinds would be refused in exactly the state where the protocol
+# requires the terminal shift to write its `handoff` row, and the morning would
+# lose the last shift's rejected alternatives whole. This suite reached the
+# all-met state before and never issued a bookkeeping act from inside it, which
+# is why 1880 assertions passed over the refusal.
+gate4 act --manifest "$NM4" --kind handoff --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H4)" --rationale "종단 교대의 인수인계" \
+      -- 교대=0 사유=종단 '버린 선택지=SN2 를 되살리는 길' '막힌 지점=없음' '다음 후보=없음'
+check "Q3: 조건이 전부 성립해도 handoff 부기 행위는 통과한다" "$rc" "0"
+check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
+  "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
+
 gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 절 셋이 전부 정산되었다"
 check "조건이 전부 성립하면 종료 제안이 통과한다" "$rc" "0"
@@ -5946,6 +5960,18 @@ gateb_stage() {
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 
+gateb_shift() {
+  local out
+  out=$(cd "$WT" && PATH="$WORK/bin:$PATH" \
+        CC_CMDS_AUTOPILOT_NOTIFY=1 \
+        CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+        CC_CMDS_NOTIFY_HOST_OS=Darwin \
+        CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+        CC_PIPELINE_SHIFT_ID='R2#1' \
+        bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+
 # --- THE CALLER BOUNDARY. The most valuable assertion here ------------------
 #
 # The same act, twice: once with the stage discriminators set and once with them
@@ -5983,6 +6009,30 @@ check "그 배너 제목이 할 일을 말한다" \
   "$(grep -cF -- '-title cc-cmds · 직접 손대세요 -message' "$NOTIFY_LOG" || true)" "1"
 check "그 배너의 그룹이 항목 키를 싣는다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R2-park-SBN2 ' "$NOTIFY_LOG" || true)" "1"
+
+# --- THE SHARD'S SEAT, AT A SITE THAT IS NOT THE APPROVAL ONE ---------------
+#
+# A routing shift carries NEITHER of the two markers a launched stage carries, so
+# the stage predicate answers "router" inside one and every firing site in this
+# file fires from a launched process. One site — the approval notice — carried a
+# shift test of its own and the other six did not, and those six include the run's
+# own terminal banner: the shard would raise the night's ending on the user's
+# screen. The segment park below is one of the six, so it pins the property at a
+# site the fixed one never covered.
+notify_reset
+gateb_shift act --manifest "$MANIFEST" --kind segment --target infra --segment SBS1 \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --rationale "픽스처 — 샤드 좌석의 park 기록" -- "상태=park" "워크트리=$WT" "선행=없음"
+check "샤드 호출에서도 세그먼트 park 행은 남는다" \
+  "$(grep -cF 'id=SBS1 | 상태=park' "$LEDGER" || true)" "1"
+sleep 0.3
+check "샤드 호출은 배너를 올리지 않는다" "$(notify_lines)" "0"
+# AND THE SAME ROW CARRIES THE SCALE. `CC_PIPELINE_SHIFT_ID` is `<run-id>#<n>`, and
+# the number a shard stamps has to be the number it was launched under: the
+# sidecar reserves `0` for "routing never left the lead", so a shard stamping 0
+# makes a night with one shift byte-identical to a night with none.
+check "샤드가 쓴 행의 교대 눈금이 자기 기동 번호다" \
+  "$(grep -cF '`segment` | 교대=1 | id=SBS1 ' "$LEDGER" || true)" "1"
 
 # --- ONE SEGMENT THROUGH BOTH SEATS ----------------------------------------
 #
@@ -6034,6 +6084,46 @@ gateb act --manifest "$MANIFEST" --kind blocked --target infra --segment - \
 check "해소 행이 통과한다" "$rc" "0"
 sleep 0.3
 check "라우터가 막힘을 해소했다고 기록하는 자리에서는 배너가 나가지 않는다" "$(notify_lines)" "0"
+
+# --- THE SNAPSHOT'S BLOCK LIST READS THE CANONICAL FOLD ---------------------
+#
+# Resolution in this ledger is an APPEND: the closing row carries `원인=해소` and
+# the row it closes stays where it is. A projector filtering the closing row out
+# therefore keeps the block and drops the evidence that it is gone — and a shard
+# has no conversation history to notice with, so a block somebody already cleared
+# sits in every successor's input for the rest of the night. Termination condition
+# 5 reads the canonical fold and finishes the run anyway, which is what makes the
+# two pictures diverge with no channel to reconcile them. Only the SEQUENCE shows
+# it: block, resolve, then read what a shard would actually be handed.
+# AND THE OPEN BLOCK IS MADE THE ONLY WAY ONE CAN BE MADE. A router may RESOLVE
+# a run-scope block and may not raise one — the gate refuses `원인=막힘` from an
+# act outright, because raising this state is the gate's own job — so the block
+# opened here is a stall observation drained into a row, which is the path that
+# produces every run-scope block on a real night.
+printf '2026-08-31T00:03:00Z%s아직 열린 막힘 Y%s재개 명령 Y\n' "$TAB" "$TAB" > "$RD/stall"
+drain_act
+check "새 막힘이 원장에 전사된다" \
+  "$( { grep -cF '원인=불명 | 사유=아직 열린 막힘 Y' "$LEDGER" || true; } )" "1"
+snap_blocked=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
+                | jq -r '(.blocked // []) | .[] | .["사유"]' | tr '\n' '|')
+case "$snap_blocked" in
+  *"정체 사유 X"*) bad "스냅숏 막힘 목록" "해소된 막힘이 후임의 입력에 남아 있다: $snap_blocked" ;;
+  *) ok "해소된 막힘은 스냅숏의 blocked 에서 사라진다" ;;
+esac
+case "$snap_blocked" in
+  *"아직 열린 막힘 Y"*) ok "아직 열린 막힘은 스냅숏의 blocked 에 남는다" ;;
+  *) bad "스냅숏 막힘 목록" "열린 막힘이 빠져 앞 단언이 공허하다: $snap_blocked" ;;
+esac
+gateb act --manifest "$MANIFEST" --kind blocked --target infra --segment - \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" --rationale "픽스처" \
+  -- "원인=해소" "사유=아직 열린 막힘 Y" "근거=픽스처가 그 막힘을 다시 닫는다"
+check "그 막힘의 해소 행도 통과한다" "$rc" "0"
+snap_blocked2=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
+                 | jq -r '(.blocked // []) | .[] | .["사유"]' | tr '\n' '|')
+case "$snap_blocked2" in
+  *"아직 열린 막힘 Y"*) bad "스냅숏 막힘 목록" "닫은 막힘이 그대로 남았다: $snap_blocked2" ;;
+  *) ok "닫힌 뒤에는 그 막힘도 목록에서 빠진다" ;;
+esac
 
 # --- THE FIRING TABLE, PINNED BY NAME --------------------------------------
 #
@@ -6754,6 +6844,133 @@ if grep -q 'gate_claudemd_slot_guard "$graded" "$@"' "$GATE"; then
 else
   bad "층2 호출" "정의만 있고 불리지 않으면 층3 은 영원히 잠잔다"
 fi
+
+# ---------------------------------------------------------------------------
+# 32. The shift launcher's three outcomes, and the number it launches under.
+#
+# Nothing in this suite ever RAN `gate_launch_shift`. Its three results — held
+# behind a live stage, an approval issued on the handoff floor, and an actual
+# launch — all answered 0, which in this system means "the successor ran to
+# completion"; and the guard that issues that approval measured the session
+# CALLING it, which is the lead, whose opening context does not move all night.
+# Neither is visible in a fragment, so this section drives the launcher on an
+# isolated ledger of its own.
+# ---------------------------------------------------------------------------
+SHIFT_RUN_ID=R5
+if [ "$SHIFT_RUN_ID" = "$CONE_RUN_ID" ] || [ "$SHIFT_RUN_ID" = "$DONE_RUN_ID" ]; then
+  printf '32: 교대 픽스처의 런 id 가 앞선 절과 겹친다 (%s)\n' "$SHIFT_RUN_ID" >&2
+  exit 1
+fi
+NM5="$WORK/shift-plan.md"
+sed -e "s/run-id=$CONE_RUN_ID;/run-id=$SHIFT_RUN_ID;/" \
+    -e "s/^\*\*런 id\*\*: $CONE_RUN_ID\$/**런 id**: $SHIFT_RUN_ID/" "$NM" > "$NM5"
+SHIFT_GRANT="$WT/docs/pipeline-grant/$SHIFT_RUN_ID.md"
+sed "s/$CONE_RUN_ID/$SHIFT_RUN_ID/g" "$CONE_GRANT" > "$SHIFT_GRANT"
+LEDGER5="$WT/docs/pipeline-run/$SHIFT_RUN_ID.md"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$SHIFT_RUN_ID"
+  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$SHIFT_RUN_ID"
+} > "$LEDGER5"
+SHIFT_DIR="$STATE_CONE/cc-cmds/run/$SHIFT_RUN_ID"
+
+# THE LAUNCH PATH IS REACHED, NOT AVOIDED. The half that says "no approval was
+# issued" means nothing unless the code actually walked past the guard, so the CLI
+# the launcher execs is replaced by something that cannot do anything.
+mkdir -p "$WORK/bin"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/claude-stub"
+chmod +x "$WORK/bin/claude-stub"
+
+# A session whose FIRST turn already exceeds the 130,000 handoff-floor cap. The
+# first turn is billed as read PLUS creation, which is why both fields are here.
+SHIFT_SID="55555555-6666-7777-8888-999999999999"
+printf '{"message":{"usage":{"cache_read_input_tokens":90000,"cache_creation_input_tokens":90000}}}\n' \
+  > "$NTX/$SHIFT_SID.jsonl"
+
+H5() {  # H5 [교대 id] — the digest AS THE ACT'S OWN ENVIRONMENT SEES IT.
+  #
+  # `--snapshot-digest` binds an act to the state its caller observed, and what
+  # the gate is able to observe depends on the session variables it was handed:
+  # measured on this host, one unchanged ledger digests to two different stable
+  # values with and without `CLAUDE_CONFIG_DIR` + `CLAUDE_CODE_SESSION_ID`. Read
+  # bare and then acted with them set, every call in this section came back exit
+  # 4 and not one of the three launcher outcomes below was ever reached — the
+  # assertions read as failures of the launcher while the launcher was never
+  # entered. So the read carries the act's whole environment, shift marker
+  # included, and `jq` does the extraction the way `H4` already does it.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+    CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+    CC_CLAUDE_BIN="$WORK/bin/claude-stub" \
+    CC_PIPELINE_SHIFT_ID="${1:-}" \
+    bash "$GATE" snapshot --manifest "$NM5" 2>/dev/null ) | jq -r .H
+}
+gate5() {  # gate5 <shift-id-or-empty> <argv...>
+  local sid="$1"; shift
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+        CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+        CC_CLAUDE_BIN="$WORK/bin/claude-stub" \
+        CC_PIPELINE_SHIFT_ID="$sid" \
+        bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+
+gate5 '' act --manifest "$NM5" --kind segment --target infra --segment SS1 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" --rationale x \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "교대 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
+
+# (a) A LIVE STAGE HOLDS THE CAP SHIFT, AND SAYS SO WITH A CODE OF ITS OWN.
+# Reported as 0 the caller cannot tell "held, nothing started" from "the successor
+# ran and came back", and those two demand opposite next moves.
+SHIFT_FX_SAVE="$FX_RUN_DIR"
+mkdir -p "$SHIFT_DIR"
+FX_RUN_DIR="$SHIFT_DIR"
+fx_stage_live SS1
+FX_RUN_DIR="$SHIFT_FX_SAVE"
+gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5)" \
+      --rationale "픽스처 — 살아 있는 스테이지 아래의 상한 교대" \
+      -- 상한 -p "/cc-cmds:autopilot-router-shift $NM5"
+check "(a) 살아 있는 스테이지가 있으면 상한 교대는 0 이 아닌 코드로 보류된다" "$rc" "10"
+check "(a) 보류는 아무것도 기동하지 않는다" \
+  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "0"
+rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
+
+# (c) THE LEAD'S OWN CONTEXT IS NOT THE HANDOFF FLOOR. The transcript above is
+# nearly 40% over the cap and this caller is the lead, so the guard must stay
+# silent — under the old measurement this very call issued an approval and
+# returned without a successor, taking the run's routing seat away on the FIRST
+# launch of the night. And the number it launches under has to be the launch
+# ordinal: (a) put a `router-shift` row on the ledger without a `handoff` beside
+# it, so a scale counting ENDED handoffs and one counting launches now disagree.
+gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5)" \
+      --rationale "픽스처 — 리드가 띄우는 승인 사유 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5"
+check "(c) 리드가 띄우는 교대는 바닥 가드에 걸리지 않고 실제로 기동한다" "$rc" "0"
+check "(c) 리드 컨텍스트로는 인수인계 바닥 승인이 발행되지 않는다" \
+  "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "0"
+shift_k=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
+check "(c) 기동 로그가 원장의 기동 서수와 같은 번호를 쓴다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-$shift_k.json" ] && printf 'yes' || printf 'no' )" "yes"
+check "(c) 다른 번호의 교대 로그는 생기지 않는다" \
+  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+
+# (b) AND WHEN THE CALLER IS THE OUTGOING SHIFT, THE GUARD DOES FIRE — and the
+# approval it issues is reported as an approval. Returned as 0 it read as "the
+# successor ran", while the pending row it left behind suspended B1·B2·B3, so the
+# one device that would have noticed the stopped run was switched off by the row
+# that stopped it.
+gate5 "$SHIFT_RUN_ID#1" act --manifest "$NM5" --kind router-shift --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(H5 "$SHIFT_RUN_ID#1")" \
+      --rationale "픽스처 — 후임 바닥이 상한을 넘은 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5"
+check "(b) 후임의 바닥이 상한을 넘으면 승인 발행이 exit 5 로 보고된다" "$rc" "5"
+check "(b) 그 승인이 원장에 실제로 남는다" \
+  "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "1"
+check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
+  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
