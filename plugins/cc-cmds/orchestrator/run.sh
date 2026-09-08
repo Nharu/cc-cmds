@@ -3291,7 +3291,26 @@ segment_cycle() {
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" cone 무효화 "게이트 park" "공허한 성공 2회 — 산출물 없음"; return 1
         fi ;;
-      *) park "$seg" cone 무효화 "게이트 park" "크래시"; return 1 ;;
+      '크래시')
+        # The same one retry as the arm three lines up, and for a stronger
+        # reason. A clean exit with no artifact is evidence the next attempt
+        # does the same; a process that DIED says nothing of the kind, and the
+        # measurement agrees — of the crashed stages in the committed ledgers,
+        # 57.8% succeeded on the very next attempt and 67.0% succeeded on some
+        # later one. Those retries all happened, by hand, after a person
+        # noticed. Zero here did not prevent the work from being re-bought; it
+        # only moved the cost onto a person and onto the wall clock.
+        #
+        # A crashed stage dies near the end rather than early — median 23.6
+        # minutes against 22.3 for a stage that completes — so what a crash
+        # throws away is close to a whole stage.
+        log "$seg: 크래시 — 1회만 재시도"
+        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 재시도) · 선언 파일: $files\""
+        stage_wait_all "$sid.retry"
+        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
+          park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
+        fi ;;
+      *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac
 
     # --- S5 REVIEW ---------------------------------------------------------
