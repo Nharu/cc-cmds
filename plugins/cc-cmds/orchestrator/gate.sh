@@ -7473,10 +7473,15 @@ gate_b5_stagnation_bound() {
   # carry it.
   #
   # WHAT THIS BOUND COVERS IS STANDING STILL, NOT GOING ROUND, AND ON THE
-  # ROUTER'S PATH NOTHING ELSE COVERS THE GOING ROUND. `gate_unbounded_notice`
-  # above names `비용 천장` and `무진전 상한` as the two that actually bound a
-  # router run, and that enumeration is exhaustive. This comment used to cite a
-  # third — the re-dispatch cap — and the citation was wrong on every count.
+  # ROUTER'S PATH NOTHING BUT A DECLARED `비용 천장` COVERS THE GOING ROUND —
+  # `gate_b4_cost` ends the run outright at 100%, so a rotation inside a run that
+  # declared a ceiling is bounded on the cost axis however many laps it turns,
+  # and it is a run that declared none that has nothing there at all. The
+  # unqualified universal this sentence used to carry was false for every run
+  # that declared one. `gate_unbounded_notice` above names `비용 천장` and
+  # `무진전 상한` as the two that actually bound a router run, and that
+  # enumeration is exhaustive. This comment used to cite a third — the
+  # re-dispatch cap — and the citation was wrong on every count.
   # That cap's only call site sits inside `segment_cycle` in `run.sh`, under a
   # comment saying in as many words that a run driven by the router never enters
   # that loop at all. It keys on the approval id, so it counts re-attachments
@@ -7486,7 +7491,8 @@ gate_b5_stagnation_bound() {
   # than ending the run. So it bounds the fixed-graph traversal's re-attachments
   # — not rotation, and not here. Splitting standing-still from going-round is
   # still what lets this one keep reading the whole vector; what is not true is
-  # that anything on this path is holding the other half.
+  # that anything on this path other than a declared `비용 천장` is holding the
+  # other half.
   #
   # WHAT IT COUNTS IS THE ROUTER'S ACTS, NOT GATE CALLS, and it takes two
   # discriminators to say that — one for who is calling and one for what the
