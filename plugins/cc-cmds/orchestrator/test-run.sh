@@ -1973,5 +1973,93 @@ else
   ok "detach 경로가 없다 (라우터가 이 세션이므로 떼어 낼 것이 없다)"
 fi
 
+# ---------------------------------------------------------------------------
+# 리뷰 정책 축 — 어휘, 조기 진단, 전파
+#
+# 이 파일의 초록은 수용 기준이 아니다. 이 경로에는 프로덕션 진입점이 없다 —
+# 어떤 shipped 스킬도 `run.sh` 를 프로그램으로 실행하지 않고, 아래 함수들은
+# 게이트가 소싱해 쓰는 정의이거나 도달 불가한 드라이버 팔이다. 수용 기준은
+# `gate.sh act --kind segment` 픽스처이며 그것은 `scripts/test-gate.sh` 에 있다.
+# 여기서 재는 것은 그 정의들이 존재하고 순서가 맞다는 것뿐이다.
+# ---------------------------------------------------------------------------
+check "리뷰 정책 어휘가 엄격 → 느슨 순서다" "$REVIEW_POLICIES" "선리뷰후머지 선머지후리뷰 리뷰없음"
+check "가장 엄격한 값이 0 이다"   "$(review_policy_index 선리뷰후머지)" "0"
+check "가운데 값이 1 이다"        "$(review_policy_index 선머지후리뷰)" "1"
+check "가장 느슨한 값이 2 다"     "$(review_policy_index 리뷰없음)"     "2"
+rp_rc=0; review_policy_index '없는토큰' >/dev/null 2>&1 || rp_rc=$?
+if [ "$rp_rc" = "0" ]; then
+  bad "리뷰 정책 색인" "어휘 밖 토큰이 0 으로 성공했다 — 조용한 부인이다"
+else
+  ok "어휘 밖 토큰은 비영 종료로 답한다 (die 가 아니라 반환 상태다)"
+fi
+
+# 조기 진단 — 상한 초과 슬라이스는 거절되고, 무관한 사전 인가 행만으로는 더 이상
+# `리뷰없음` 이 통과하지 않는다. 옛 가드는 매니페스트가 아무 `사전 인가` 행이라도
+# 가지고 있으면 통과시켰다: 그 행이 이 슬라이스에 대한 것인지도, 리뷰에 대한
+# 것인지도 묻지 않았으므로 장식이었다.
+RP_DIR="$WORK/review-policy"; mkdir -p "$RP_DIR"
+RP_MF="$RP_DIR/plan.md"
+{
+  printf '# 파이프라인 런 매니페스트 — RP\n\n'
+  printf '## 대상\n'
+  printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 공통 git 디렉터리=%s/.git | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰\n\n' "$RP_DIR" "$RP_DIR"
+  printf '## 인가\n'
+  printf -- '- `사전 인가` | 형태=npm test | 사유=무관한 항목\n'
+} > "$RP_MF"
+RP_MANIFEST_SAVE="${MANIFEST:-}"
+MANIFEST="$RP_MF"
+
+rp_doc() {
+  # rp_doc <파일> <정책> — 한 슬라이스짜리 선언 문서.
+  {
+    printf '## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 A\n'
+    printf -- '- **스킬**: `implement`\n'
+    printf -- '- **레포**: `o/r`\n'
+    printf -- '- **선언 파일**: `a.txt`\n'
+    printf -- '- **선행**: 없음\n'
+    printf -- '- **절단점**: 머지\n'
+    printf -- '- **리뷰 정책**: %s\n' "$2"
+  } > "$1"
+}
+
+rp_doc "$RP_DIR/ok.md" 선머지후리뷰
+rp_rc=0; slicing_fields_ok "$RP_DIR/ok.md" >/dev/null 2>&1 || rp_rc=$?
+check "상한과 같은 값을 선언한 슬라이스는 통과한다" "$rp_rc" "0"
+
+rp_doc "$RP_DIR/over.md" 리뷰없음
+rp_rc=0; slicing_fields_ok "$RP_DIR/over.md" >/dev/null 2>&1 || rp_rc=$?
+check "상한을 넘는 슬라이스는 거절된다 (무관한 사전 인가 행이 있어도)" "$rp_rc" "1"
+
+rp_doc "$RP_DIR/bad.md" 없는정책
+rp_rc=0; slicing_fields_ok "$RP_DIR/bad.md" >/dev/null 2>&1 || rp_rc=$?
+check "어휘 밖 정책 토큰은 거절된다" "$rp_rc" "1"
+
+if grep -q '사전 인가' "$RP_MF"; then
+  ok "그 매니페스트가 여전히 사전 인가 행을 갖고 있다 (거절이 그 행의 부재 때문이 아니다)"
+else
+  bad "픽스처" "사전 인가 행이 없어 이 단언이 옛 가드와 구별되지 않는다"
+fi
+MANIFEST="$RP_MANIFEST_SAVE"
+
+# 전파 — 슬라이스 선언의 값이 세그먼트 행 argv 로 넘어가고, 쓰기 시점에 앞 행에서
+# 옮겨 적힌다. 두 자리 다 `CC_ORCH_SOURCE_ONLY=1` 아래 도달 불가한 드라이버 팔이라
+# 정적으로만 잰다 — 그것이 이 파일이 이 축에 대해 세울 수 있는 전부다.
+if grep -qF "_rp=\$(slice_field \"\$doc\" \"\$id\" '리뷰 정책')" "$DRIVER"; then
+  ok "드라이버가 슬라이스의 리뷰 정책을 읽는다"
+else
+  bad "슬라이스 전파" "드라이버가 슬라이스 선언의 리뷰 정책을 읽지 않는다"
+fi
+if grep -qF "_segargs+=( \"리뷰 정책=\$_rp\" )" "$DRIVER"; then
+  ok "그 값을 세그먼트 행 argv 로 넘긴다"
+else
+  bad "슬라이스 전파" "읽기만 하고 세그먼트 행으로 넘기지 않는다"
+fi
+if grep -qF "set -- \"\$@\" \"리뷰 정책=\$_pv\"" "$DRIVER"; then
+  ok "세그먼트 행 writer 가 앞 행의 값을 새 행에 옮겨 적는다 (읽기 시점 폴백이 아니다)"
+else
+  bad "carry-forward" "앞 행의 값을 새 행에 적지 않는다 — 두 번째 리더가 생긴다"
+fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

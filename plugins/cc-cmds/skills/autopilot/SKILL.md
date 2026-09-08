@@ -152,6 +152,16 @@ At or below the chosen point the run acts on its own; the first act above it sen
 - **`머지` does not carry an `--admin` exception.** A run blocked by branch protection parks. A driver that granted itself that exception because it "was authorized to merge" would be widening the grant silently.
 - **A failed non-required check parks.** The shipped policy enumerates such failures and asks whether to merge, and forbids merging without an answer — so unattended, that branch *is* the park branch. It fires rarely with a human present and becomes a default path without one.
 
+**Then, for each target whose cutpoint is `머지` or above, take that target's `리뷰 정책 상한`.** This is the tail of 5b and not a new step — it is asked about the same target, immediately after that target's cutpoint, and only when the answer put the target at `머지` or higher. A target that cannot merge has nothing for this value to bound.
+
+**Do not take the default silently.** Present it as a choice being confirmed rather than a question being skipped, because this is the last moment it can be set at all. Three things the wording must say:
+
+- **It is a CEILING and not a default.** Each slice declares its own review policy at or below this value; raising the ceiling does not mean any slice will use it, and lowering it refuses slices that declare looser.
+- **What `선머지후리뷰` actually buys and costs.** The first merge of a segment passes and leaves one obligation behind; while that obligation is unfulfilled the **second** merge of that segment is refused, and the run cannot terminate.
+- **It can only be set here.** Once the manifest is frozen, editing this field moves both digests and the next gate entry is a hard stop — there is no amendment form.
+
+**When this run declares `적용 주체=파이프라인`, drop `리뷰없음` from the offered options** and say why in one clause: the apply would then be held by a rule the manifest cannot turn off, so it could never be performed and the run could not end. **Removing it here is shaping the question, not enforcing the answer** — the enforcement is the manifest check, which hard-stops on that combination however the manifest came to carry it.
+
 **5c — Apply, if any target's cutpoint is `배포`.** Take the apply command verbatim, the read-only probe that decides whether an apply is needed, the actor (`파이프라인` or `사람`), and — when the actor is the pipeline — the blast radius that parks if the apply's outcome cannot be judged. The default radius is the repository and it may only be **narrowed**. State plainly that the driver executes an apply itself, with zero retries, and that an outcome it cannot judge stops the declared radius and preserves the worktree for the morning.
 
 **5d — Terminal-act cap, per target.** Default is `없음`, and say why the question is being asked at all: at this moment nobody knows how many merges the cutpoint authorizes, because segmentation happens later and a re-design can re-split it. Offer `없음` (recommended) or an integer. A number latches against the measured segment count and routes the excess to the blocked queue.
@@ -303,7 +313,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.
 
 ```
-act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>'
+act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
 act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>'
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
 act --kind judgment   -- 등급=1 '판단 부류=<여덟 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
@@ -314,6 +324,10 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 ```
 
 **Write `선행` on the `segment` row at PLANNING time, not later.** It is the cone's declared axis, and it is the only axis that sees a dependency *before* the predecessor merges — segments branch from the resolved base rather than from each other, so ancestry only says "that one already landed", and the moment a cone typically stands up is before that. Two floors follow from that and both are refusals at write time: the field is **monotone** (a later row may add and may not remove), and **absence is not `없음`** (in a repository with two or more segments, a row without the field is refused; `없음` is accepted as a positive statement of independence). `선언 파일 집합` is likewise carried at planning time — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all.
+
+**Put `리뷰 정책` on the segment's FIRST row when the slice declared one.** The gate carries the value forward from row to row, and carrying forward can only propagate a value some first row actually wrote — a template that never writes one leaves every later resolution falling to the strict default, and the policy the slice declared reaches nothing. Omitting the field on a **later** row is inheritance and not a reset. A value exceeding that target's `리뷰 정책 상한` is refused with **exit 2** and is never quietly tightened to fit.
+
+**`act --kind obligation` now has its `--target` compared against the obligation row's `대상`.** A mismatch is exit 2. The landing test runs in that target's anchor repository, so fulfilling against a different target would measure the right commit in the wrong repository and report a confident wrong answer; the repair is to call again naming the target the row points at.
 
 **A cone is the one `blocked` scope you may create; run scope you may only resolve.** A cone holds what stands on a refuted premise and lets its siblings keep running, which is what an open question needs. Declare `의존 세그먼트` or leave it out — the gate derives the cone either way and refuses a declaration that is a **proper subset** (exit 6). Widening passes.
 
@@ -332,6 +346,13 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 | 5 | approval issued | the act is outside pre-authorization — see below |
 | 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
+| 8 | *(empty slot)* | — |
+| 9 | *(empty slot)* | — |
+| 10 | the merge cannot say what it merges | **fix the segment row and call again with the same argv** — do not raise anything |
+
+**8 and 9 are empty on purpose, and saying so is what keeps them empty.** A hole with no stated reason reads as a mistake and gets filled by the next person to add a code. 9 is held by an internal signal the gate uses to mean "this question already has an answer"; assigning it here would make one number both a sentinel and a contract code, falsifying the comments that defend the sentinel. 8 belongs to a rejection that lands in a separate change.
+
+**Why 10 is neither 2 nor 3.** 2 tells the router to fix its argv — but here the argv is correct and the **ledger's segment row** is what is wrong, so a router obeying 2 retries the identical argv into the identical refusal forever. 3 says a rule refused — but this refusal is not in the catalog and it survives `**리뷰-후-머지**: 끔`, so reporting it as 3 would cancel, on the very surface the router reads, the property that turning the rule off does not turn this off. The prescription is to record or repair the segment row that names the worktree, then re-issue the same call.
 
 **Exit 7 is the router's alone, and a stage that receives it can only stop.** The condition is outside a stage by definition — the surfaces are the run's settings, the rule catalog, the hook and the project settings — and it cannot even look at them, because looking needs the Bash that was just refused. It has no re-baseline available either: that would be the bound moving its own boundary. So the gate now tells a stage in as many words to stop rather than retry, and records a run-scope `blocked` row so the condition is visible as run state instead of as a stage's wasted turns. Measured before that: five stages, four of which retried into the same refusal 3, 9, 12 and 15 times and produced nothing. **The run does not recover — re-baselining is not offered.** Start a new run.
 
