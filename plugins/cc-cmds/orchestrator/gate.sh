@@ -7402,10 +7402,21 @@ gate_b5_stagnation_bound() {
   # trunk, after the omission had been designed against a vector that did not yet
   # carry it.
   #
-  # WHAT THIS BOUND COVERS IS STANDING STILL, NOT GOING ROUND. Rotation is bound
-  # separately by the re-dispatch cap, which counts laps directly instead of
-  # inferring them from a digest that stopped moving. Splitting the two that way
-  # is what lets this one keep reading the whole vector.
+  # WHAT THIS BOUND COVERS IS STANDING STILL, NOT GOING ROUND, AND ON THE
+  # ROUTER'S PATH NOTHING ELSE COVERS THE GOING ROUND. `gate_unbounded_notice`
+  # above names `비용 천장` and `무진전 상한` as the two that actually bound a
+  # router run, and that enumeration is exhaustive. This comment used to cite a
+  # third — the re-dispatch cap — and the citation was wrong on every count.
+  # That cap's only call site sits inside `segment_cycle` in `run.sh`, under a
+  # comment saying in as many words that a run driven by the router never enters
+  # that loop at all. It keys on the approval id, so it counts re-attachments
+  # made on the strength of one answer rather than laps, and a rotation that
+  # opens a fresh judgement every lap starts each lap at zero on a fresh key.
+  # And exceeding it clears the answered judgement and dispatches anyway rather
+  # than ending the run. So it bounds the fixed-graph traversal's re-attachments
+  # — not rotation, and not here. Splitting standing-still from going-round is
+  # still what lets this one keep reading the whole vector; what is not true is
+  # that anything on this path is holding the other half.
   #
   # WHAT IT COUNTS IS THE ROUTER'S ACTS, NOT GATE CALLS, and it takes two
   # discriminators to say that — one for who is calling and one for what the

@@ -171,7 +171,7 @@ Write the output into the report as `## 결정론적 검사` and hand its path t
 
 Readers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), self-terminating on return; each reader's result is delivered by its **witness file**. The `Agent()` call **omits `model`** so readers inherit the session model.
 
-- **Witness scratch dir**: before the first spawn, run the protocol's `## Spawn` command — `<plugin root>/orchestrator/cc-team-witness-init.sh {slug}` (no `bash` in front — see the protocol's note) — and record the **printed path, literally** (not `$WITNESS_DIR`) as each reader's `scratchDir`. The witnessed phase is `PASS_TOKEN` and the witness path is `${WITNESS_DIR}/reader-<k>.fanout.md`. Out-of-tree, leaving the boundary gate untouched.
+- **Witness scratch dir**: before the first spawn, run the protocol's `## Spawn` command — `<plugin root>/orchestrator/cc-team-witness-init.sh {slug}` (no `bash` in front — see the protocol's note) — and record the **printed path, literally** (not `$WITNESS_DIR`) as each reader's `scratchDir`. The witnessed phase is `PASS_TOKEN` and the witness path is `${scratchDir}/reader-<k>.fanout.md`. Out-of-tree, leaving the boundary gate untouched.
 - **Ledger**: record each returned `agentId` immediately (`state=running`, phase `fanout`), stamping `epoch` and the phase `witnessNonce` on every row in the same at-spawn recording window.
 - **MUST — byte-identical prompts.** The `READER_COUNT` rendered prompts differ **only** in `{WITNESS_PATH}`, `{WITNESS_NONCE}`, and `{role-slug}`. Differentiating readers by lens destroys the reinforcement statistic the `미보강 잔여 수` slot reports.
 - **Every reader prompt additionally carries CFI-U0 verbatim.** A spawned reader has no question surface and no notification surface either; it reports completion and blockage to its spawner by witness file and return value only, and never emits a banner by any route — not the notification tools, not a script, not by asking someone else to emit one on its behalf.
@@ -203,7 +203,7 @@ Severity is re-assigned here, by one labeller, in one pass. It is **never** aggr
 
 **Read `${CLAUDE_SKILL_DIR}/../design-audit/references/04-disclosure-block.md`.**
 
-Compose the disclosure block, run the four anti-vacuity self-checks, write the report, write the block into the report in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip plus `rm -rf "$WITNESS_DIR"`. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
+Compose the disclosure block, run the four anti-vacuity self-checks, write the report, write the block into the report in Korean, then **Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md`** and apply the terminal strip. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. Emit the next-step line, then stop with the literal statement *"이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다."*
 
 That literal is the driver's terminal predicate, so it must be emitted byte for byte. **The next-step line is inert** — it is a cwd-relative string for a human to run in the morning, and nothing downstream executes it.
 
