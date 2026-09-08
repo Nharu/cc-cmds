@@ -4,7 +4,7 @@ on:
   pull_request:
     paths: &notify_macos_paths
       - 'scripts/**'
-      - 'docs/**'
+      - 'notes/**'
       - 'Makefile'
       - '.github/workflows/notify-macos.yml'
   push:
