@@ -925,8 +925,23 @@ i=0
 while [ "$i" -le "$B2_OBLIGATION_M" ]; do gate_b2_obligations; i=$((i + 1)); done
 check "의무 적체 경계가 발화한다 (아래 접힘 단언의 전제)" "$(n_b2)" "1"
 b2_dig=$(gate_progress_digest)
-b3_act
-gate_b2_obligations
+# THE LOOP LENGTH IS WHAT GIVES THIS ASSERTION ITS REACH, and one evaluation is
+# not enough. A single extra evaluation catches only a binding that rotates on
+# EVERY evaluation; a binding that rotates every k-th one survives it for any
+# k ≥ 2, and the form this suite is guarding against rotated every third. The
+# gap was measured by replaying the fixture one evaluation at a time: the count
+# held at 1 through two extra evaluations and broke on the third, so the old
+# fixture stopped exactly two short of the thing it was written to pin.
+#
+# The bound is derived from the threshold rather than written down, so a change
+# to the constant cannot leave this assertion behind. Three times the threshold
+# clears any bucket whose width is the threshold itself and leaves room over.
+b2_i=0
+while [ "$b2_i" -lt $((B2_OBLIGATION_M * 3)) ]; do
+  b3_act
+  gate_b2_obligations
+  b2_i=$((b2_i + 1))
+done
 check "의무 집합이 그대로인 동안 적체 경계 승인은 하나로 접힌다" "$(n_b2)" "1"
 check "그 행이 전체 진전 다이제스트를 움직였는데도 그렇다 (위 단언이 공허하지 않다)" \
   "$( [ "$b2_dig" != "$(gate_progress_digest)" ] && printf 'moved' || printf 'same')" "moved"

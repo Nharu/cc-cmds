@@ -7958,13 +7958,41 @@ gate_b2_obligations() {
   # termination condition 2. The obligation digest is already in hand, and it is
   # the value that actually decides whether this is the same question.
   #
-  # Bucketed by the threshold for the same reason B3 is: the repeat count keeps
-  # climbing while the set sits still, and a set-only binding would say this once
-  # and then never again however long the backlog stayed. Inside a bucket no
-  # cycle re-arms it; crossing the next multiple is a genuinely worse situation
-  # and gets asked.
-  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다" \
-    "$cur/$((n / B2_OBLIGATION_M))"
+  # AND IT IS NOT BUCKETED, WHICH IS WHERE THIS BOUNDARY DIFFERS FROM ITS TWO
+  # SIBLINGS. Bucketing a count only bounds anything if the count measures what
+  # its threshold claims to measure. `n` here counts EVALUATIONS OF THIS
+  # FUNCTION, and the single production caller of the boundary set is the `act`
+  # verb — so the unit is gate acts, not cycles, and a bucket of width 3 means
+  # "every third act". Measured: 30 evaluations with one obligation held open
+  # produced 9 pending approvals, while the same probe with the progress vector
+  # genuinely moving on every evaluation produced 0 from B1 and the SAME nine
+  # identifiers from B2. An identifier that is byte-identical whether or not the
+  # run progressed is not measuring the run.
+  #
+  # Reads make this concrete. A read-grade act deliberately does not move the
+  # progress vector — looking around is not progress — but it does reach here, so
+  # under a bucket an unclosed obligation turned ordinary reconnaissance into a
+  # new pending approval every three reads, each one blocking termination.
+  #
+  # The set digest alone is the honest binding: it moves whenever the backlog
+  # changes in either direction, so a worsening backlog asks again, and the only
+  # silence is after a person has already said continue and the set has not
+  # moved since. Re-keying the counter to `cycle` rows was measured and rejected
+  # — this run's ledger holds 3 of them against 521 acts, so the threshold would
+  # never be reached and the boundary would never fire at all.
+  #
+  # THE MISSING GUARD IS DELIBERATE AND STATED RATHER THAN LEFT AS AN ASYMMETRY.
+  # B1 stands down while a stage is live and B3 pauses its count; B2 does
+  # neither, because its subject is the obligation SET, which a running stage
+  # does not change — a stage writes rows, and the identities in them are the
+  # router's judgment, recorded by the router. Suppressing B2 during a stage
+  # would hide exactly the case it exists for: a run that keeps dispatching while
+  # nothing it opened ever closes.
+  #
+  # The question text says 판정 rather than 사이클 for the same reason B1's does:
+  # `사이클` is a declared row series in this contract, and naming it here would
+  # have the one sentence a person reads state a unit nothing counts.
+  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다" "$cur"
 }
 
 gate_b3_act_budget() {
