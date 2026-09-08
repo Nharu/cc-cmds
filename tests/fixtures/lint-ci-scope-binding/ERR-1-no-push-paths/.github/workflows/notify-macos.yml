@@ -1,0 +1,22 @@
+name: notify-macos
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+
+jobs:
+  test-macos-native:
+    runs-on: macos-latest
+    env:
+      CC_CMDS_REQUIRE_NATIVE: '1'
+      CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run darwin-only tests
+        run: make test-darwin

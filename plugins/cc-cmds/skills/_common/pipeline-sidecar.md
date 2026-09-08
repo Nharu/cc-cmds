@@ -359,13 +359,17 @@ Block 0 is `## 계획 <run-id>` — the plan record written when the run starts.
 
 Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row carries the fence's info string instead of the inline value.
 
+**Every row carries `교대=<n>` as its first field after the series name.** `<n>` is the number of the routing shift that was current when the row was written, counted from `0` for the lead's own seat. It is on every row rather than on the `handoff` row alone because the question the morning asks — how many shifts ran after the instruction files were applied — is answered by reading any row's shift number, and a scale that exists on one series can only count that series. A run whose routing never left the lead writes `교대=0` on every row, so the field costs nothing where the mechanism is unused.
+
 ### 3.1a Row length has a hard cap
 
 **A row is at most 1024 bytes including its newline.** Above that, concurrent appends interleave: two independent measurements put the last clean size at exactly 1024, with corruption beginning at 1025 and line counts staying correct while field values splice. That is the shape no row-grammar regex and no `wc -l` can detect, which is why the cap is a lint rather than a convention.
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at sixteen
+### 3.2 The row series is closed at seventeen
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen` — `handoff` arrived as the fifteenth kind, and `의무 종결`·`의무 포기` as the sixteenth and seventeenth. A heading that states a count states a falsehood the moment the count moves, and it has moved three times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
@@ -393,6 +397,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
+| `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
 | `의무 종결` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`종결`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 | `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 
@@ -436,6 +441,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`세션 id` and `부모` are the ancestry record, and without them the implementation-review separation rule is vacuous.** That rule asks whether a review stage's session is disjoint from the implementation's. While session ids are *derived* from `owner-doc|구간|단계|시도` they differ by construction, so the comparison is a tautology and passes on every run including the ones it exists to catch. Recording the id the harness actually assigned, plus the id of the session that spawned it, turns the rule into a real ancestry-closure check — and a fork inherits its parent, so a forked session cannot review its own work by taking a new id.
 
+**`handoff` is the fifteenth because nothing in the first fourteen can hold an abandoned alternative.** When the routing loop runs as a headless shift rather than as the lead's own session, a shift ends and a successor starts from the snapshot alone — and the snapshot carries progress, not deliberation. `자율 승인` records the decision that was taken and `blocked` records a stop; neither has a place for *what was tried and dropped, and on seeing what*. The morning report asks for exactly that, so without this series the value exists only if a router happens to write it into free-text rationale, where no reader can find it. The row takes `키=값` fields after `--` like `segment` and `cycle` do, grades `읽기`, and — like `blocked`, `종료 절` and a judgment `자율 승인` — does **not** require `--segment`: a shift is an event of the whole run rather than of one segment. Each of the three free-text fields is clipped to 300 characters, which is what keeps the row inside the cap of §3.1a.
+
 ### 3.3 Closed vocabularies
 
 | Field | Values |
@@ -450,6 +457,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `대상 추가.층` | `0` \| `1` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
+| `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` |

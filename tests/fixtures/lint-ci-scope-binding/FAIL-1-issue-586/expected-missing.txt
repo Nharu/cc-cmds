@@ -1,0 +1,4 @@
+plugins/cc-cmds/orchestrator/test-run.sh
+scripts/test-gate.sh
+scripts/test-lint-bash-portability.sh
+scripts/test-notify-title-oracle.sh
