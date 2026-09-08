@@ -7383,31 +7383,29 @@ gate_b5_stagnation_bound() {
   # arm that B1's own firing switches off; a second threshold on that counter
   # can never be reached. These two files are read and written only here.
   #
-  # RESET IS THE PROGRESS VECTOR MOVING — but NOT the whole of it, and this is
-  # the one place that sentence has to be read carefully. The vector is built to
-  # move on progress and to stay still for everything the gate itself writes, so
-  # it is the right signal; what it may not carry is the term this counter is
-  # counting. A counter whose own input resets it cannot fire.
+  # RESET IS THE PROGRESS VECTOR MOVING, the same signal B1 reads and for the
+  # same reason: the vector is built to move on progress and to stay still for
+  # everything the gate itself writes, so this counter cannot be reset by the
+  # act of measuring it.
   #
-  # The rotation this bound exists to stop is a segment re-dispatched around a
-  # cycle, and every pass writes a `cycle` row. That row is a term of the vector,
-  # so hashing the whole vector let the rotation zero the count on every lap —
-  # the count was reset by the very thing it was watching for. Dropping the
-  # `cycle=` line is the same repair `gate_b3_act_budget` makes for `acts=`, and
-  # it is spelled the same way on purpose.
+  # THE WHOLE VECTOR, AND DROPPING A TERM FROM IT WAS TRIED AND WITHDRAWN. A
+  # rotating segment writes a `cycle` row every lap, so hashing the whole vector
+  # does let a rotation move this key — and omitting the `cycle=` line, the way
+  # `gate_b3_act_budget` omits `acts=`, looks like the matching repair. It is
+  # not, because dropping terms cannot reach the property it was aimed at: THREE
+  # terms of this key move on one lap of a rotation, and the third is
+  # `stage-normal=`, which rises on every stage that terminates normally. A
+  # rotation whose stages finish is indistinguishable from progress here no
+  # matter which single term is removed, so the omission bought no observable
+  # behaviour while making "progress" mean three different things at three
+  # boundaries. `stage-normal=` arrived in this key with a base update from the
+  # trunk, after the omission had been designed against a vector that did not yet
+  # carry it.
   #
-  # SO "PROGRESS" IS NOT ONE THING HERE. The three boundaries deliberately hash
-  # different term sets: B1 takes the whole vector, B3 takes it without `acts=`,
-  # and B5 takes it without `cycle=`. One rule produces all three — a counter's
-  # own input must not reset that counter — and it names a different term at each
-  # boundary because each boundary counts something different. Reading any two of
-  # them as "the same signal" is what put a counter inside its own hash input.
-  #
-  # WHAT THIS DOES NOT CLOSE. The `acts=` term is still in this key, and the
-  # boundary evaluation runs BEFORE the act's own authorisation row is appended,
-  # so each of the router's read-exceeding calls leaves a row that moves the next
-  # call's digest. The rotation's `cycle` half is closed here; the router's own
-  # consecutive calls are not.
+  # WHAT THIS BOUND COVERS IS STANDING STILL, NOT GOING ROUND. Rotation is bound
+  # separately by the re-dispatch cap, which counts laps directly instead of
+  # inferring them from a digest that stopped moving. Splitting the two that way
+  # is what lets this one keep reading the whole vector.
   #
   # WHAT IT COUNTS IS THE ROUTER'S ACTS, NOT GATE CALLS, and it takes two
   # discriminators to say that — one for who is calling and one for what the
@@ -7428,8 +7426,7 @@ gate_b5_stagnation_bound() {
   # run to `상한+1` and out. Meanwhile the rotation this bound exists to stop —
   # a segment re-dispatched around a cycle — writes a `cycle` row every pass,
   # and that row IS a term of the vector, so the count it was meant to trip was
-  # reset before it could reach the bound. That second half is closed by the
-  # window key below rather than by this discriminator.
+  # reset before it could reach the bound.
   #
   # WHAT: a read is not an act. The `who` test removes the stage's traffic and
   # leaves the router's own looking around, which is most of what a router does
@@ -7474,7 +7471,7 @@ gate_b5_stagnation_bound() {
     warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다"
     return 0 ;;
   esac
-  h=$(gate_progress_vector | grep -v '^cycle=' | shasum -a 256 | cut -d' ' -f1)
+  h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
   if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
