@@ -2028,6 +2028,34 @@ rp_doc() {
   } > "$1"
 }
 
+# 카탈로그 전수 — 모든 선언이 파싱 가능한 `끌 수 있는가` 값을 낸다.
+#
+# 이 판별이 조용히 실패하면 게이트가 실제로 읽고 있는 룰이 「끌 수 없는」 집합에
+# 합류하고, 운영자는 아침 로그에서 자기 「끔」이 무력하다고 읽는다 — 실제로는
+# 그 「끔」이 머지 검사를 끄고 있는데도. 오늘 이 값을 세우는 것이 트리에 이
+# 단언뿐이다.
+rs_rules_dir=$(dirname "$DRIVER")/rules
+rs_bad=""
+for rs_f in "$rs_rules_dir"/*.rule; do
+  [ -f "$rs_f" ] || continue
+  case "$(rule_switchable_value "$rs_f")" in
+    예*|아니오*) : ;;
+    *) rs_bad="$rs_bad $(basename "$rs_f")" ;;
+  esac
+done
+if [ -z "$rs_bad" ]; then
+  ok "모든 룰 선언이 파싱 가능한 「끌 수 있는가」 값을 낸다"
+else
+  bad "끌 수 있는가 파싱" "값을 읽지 못한 선언:$rs_bad"
+fi
+# 비공허성 — 값을 블록으로 적은 선언이 실재해야 이 단언이 옛 한 줄 판별과
+# 구별된다. 전부 한 줄이면 고치기 전의 grep 으로도 초록이다.
+if grep -qE '^끌 수 있는가:[[:space:]]*$' "$rs_rules_dir"/*.rule; then
+  ok "값을 블록으로 적은 선언이 실재한다 (이 단언이 한 줄 판별과 구별된다)"
+else
+  bad "끌 수 있는가 픽스처" "모든 선언이 한 줄이라 이 단언이 옛 판별과 구별되지 않는다"
+fi
+
 rp_doc "$RP_DIR/ok.md" 선머지후리뷰
 rp_rc=0; slicing_fields_ok "$RP_DIR/ok.md" >/dev/null 2>&1 || rp_rc=$?
 check "상한과 같은 값을 선언한 슬라이스는 통과한다" "$rp_rc" "0"

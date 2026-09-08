@@ -8039,6 +8039,131 @@ case "$msg" in
   *"9 미이행 리뷰 의무"*) bad "32 조건 9" "의무를 닫았는데 여전히 미충족으로 열거된다" ;;
   *) ok "32: 이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
 esac
+# --- 33. 세그먼트를 달지 않은 머지 — 처분을 못박는다 -------------------------
+#
+# 생략되거나 `-` 인 세그먼트는 가설이 아니라 도달 가능하다 — 발행 전 앵커 검사가
+# 그 모양을 명시적으로 검사한다. 그런데 두 스위트의 모든 머지가 세그먼트를
+# 지명하고 있어, 그 자리에 무엇이 서는지 재는 것이 하나도 없었다.
+#
+# 창은 셋이 아니라 둘이다. 정책은 언제나 세그먼트 행에서 해소되므로 행이 없으면
+# 가장 엄격한 값으로 떨어지고, 따라서 세 정책을 각각 실은 세 창이라는 것은 이
+# argv 모양에 대해 구성 자체가 되지 않는다. 실재하는 창은 룰이 켜진 창과 `끔` 인
+# 창이며, 둘 다 여기서 못박는다.
+sa_new '세그먼트 없는 머지' 선머지후리뷰
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 켬 — 세그먼트를 생략한 머지는 거절된다" "$rc" "3"
+if sa_names_rule; then ok "33: 그 거절이 리뷰-후-머지 를 지명한다 (생략)"; else bad "33 거절 이름" "$msg"; fi
+case "$msg" in
+  *"세그먼트가 지정되지 않았습니다"*) ok "33: 문면이 빠진 것을 지목한다 (생략)" ;;
+  *) bad "33 문면" "$msg" ;;
+esac
+
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment - \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 켬 — 세그먼트가 '-' 인 머지도 거절된다" "$rc" "3"
+if sa_names_rule; then ok "33: 그 거절이 리뷰-후-머지 를 지명한다 (-)"; else bad "33 거절 이름" "$msg"; fi
+
+# `끔` 창의 처분은 통과이며, 그것이 이 항목이 기록하는 선택이다. 대신 서 주는
+# 것이 없다는 사실도 함께 적어 둔다 — 발행 전 앵커 검사는 머지 먼저 정책에서만
+# 발동하는데, 세그먼트 행이 없으면 정책은 리뷰 먼저로 떨어진다.
+sa_new '세그먼트 없는 머지 (끔)' 선머지후리뷰 '**리뷰-후-머지**: 끔'
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 끔 — 세그먼트를 생략한 머지는 통과한다 (선택이 기록된다)" "$rc" "0"
+
+# --- 34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
+#
+# 해소기는 룰 루프와 장부 기록자보다 앞에서 돈다. 그래서 상한이 나중에 조여져
+# 이미 기록된 실값이 상한을 넘게 되면 그 세그먼트에 대한 모든 행위가 옛 값으로
+# 먼저 거절되고, 고쳐 쓸 행위 자신도 거기 걸린다 — 세그먼트는 비종단에 남고
+# 런은 제안할 끝이 없다. 탈출구는 한 방향뿐이어야 한다.
+sa_new '상한 조인 뒤 수리' 리뷰없음
+sa_seg_row S34 리뷰없음
+check "34: 느슨한 상한 아래에서는 그 행이 통과한다" "$rc" "0"
+sa_manifest 선리뷰후머지
+rm -rf "$SA_RUN"
+sa_commit '작업' >/dev/null
+sa_merge S34
+check "34: 상한을 조인 뒤 그 세그먼트의 머지는 해소기가 거절한다" "$rc" "2"
+sa_seg_row S34 선리뷰후머지
+check "34: 상한 이하를 실은 segment 행은 argv 에서 해소돼 기록된다" "$rc" "0"
+sa_merge S34
+check "34: 고친 뒤에는 그 세그먼트의 행위가 해소기를 지난다" "$rc" "3"
+if sa_names_rule; then
+  ok "34: 이제 세우는 것은 상한이 아니라 리뷰 룰이다 (세그먼트가 되살아났다)"
+else
+  bad "34 거절 주체" "$msg"
+fi
+sa_seg_row S34 리뷰없음
+check "34: 상한을 넘겨 푸는 행은 여전히 거절된다 (탈출구가 한 방향이다)" "$rc" "2"
+
+# --- 35. 다시 쓰인 머지도 착지로 판정된다 ------------------------------------
+#
+# 조상 검사만으로 판정하면 squash·rebase 로 머지하는 저장소에서 세그먼트 팁은
+# 베이스의 조상이 결코 되지 않는다. 그러면 미착지가 그 sha 에 대해 영구적인
+# 답이 되고, 미착지는 근거만으로 닫히므로 포함 술어가 한 번도 불리지 않은 채
+# 이연된 리뷰 의무가 전부 소멸한다 — 변경은 베이스에 들어가 있는데.
+sa_new '다시 쓰인 머지' 선머지후리뷰
+sa_seg_row S35 선머지후리뷰
+sa_commit '세그먼트 작업' >/dev/null
+sa_merge S35 "$SA_SEGBR:refs/heads/parked"
+check "35: 머지가 통과하고 의무를 남긴다" "$rc" "0"
+OID35=$(sa_ob_id S35)
+m35=$(sa_field "$(sa_ob_last "$OID35")" '머지 커밋')
+# 서버 측 squash 를 형상으로 흉내 낸다 — 베이스에 팁과 같은 트리의 새 커밋을
+# 앉히고 민다. 팁 자신은 베이스의 조상이 되지 않는다.
+( cd "$SA_WT" \
+  && sq=$(git commit-tree "$m35^{tree}" -p "$(git rev-parse "$SA_BASE")" -m squash) \
+  && git update-ref "refs/heads/$SA_BASE" "$sq" \
+  && git push -q origin "$SA_BASE" ) >/dev/null 2>&1
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$m35" "refs/remotes/origin/$SA_BASE" >/dev/null 2>&1 ); then
+  bad "35 전제" "머지 커밋이 베이스의 조상이다 — 이 항목은 다시 쓰인 머지를 재야 한다"
+else
+  ok "35: 머지 커밋은 베이스의 조상이 아니다 (다시 쓰인 머지의 형상이다)"
+fi
+sa_fulfil "$OID35"
+check "35: 그 의무는 근거만으로 닫히지 않는다 (착지로 판정돼 포함 검사가 돈다)" "$rc" "2"
+case "$msg" in
+  *"덮는 리뷰가 없습니다"*) ok "35: 거절이 포함을 지목한다 — 미착지 갈래로 새지 않았다" ;;
+  *) bad "35 문면" "$msg" ;;
+esac
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S35 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$m35"
+check "35: 그 커밋을 덮는 리뷰 기록이 쓰인다" "$rc" "0"
+sa_fulfil "$OID35"
+check "35: 덮는 리뷰가 있으면 닫힌다" "$rc" "0"
+check "35: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID35")" '이행 판정')" "착지·포함"
+
+# --- 36. 「끔」 아래에서 팁이 다른 두 머지는 빚 둘을 남긴다 -------------------
+#
+# 의무 슬롯을 (런, 세그먼트)로만 키잉하면 룰이 꺼진 창에서 두 번째 머지가 첫
+# 머지의 열린 슬롯에 접혀 행을 하나도 남기지 않는다. 그 하나를 이행하면 첫 팁
+# 기준으로 닫히고 종료 조건 9 는 깨끗해지며, 두 팁 사이의 모든 것이 리뷰 없이
+# 베이스에 들어가 있고 빚졌다는 흔적조차 남지 않는다.
+sa_new '끔 아래 두 팁' 선머지후리뷰 '**리뷰-후-머지**: 끔'
+sa_seg_row S36 선머지후리뷰
+sa_commit '작업 1' >/dev/null
+sa_merge S36 "$SA_SEGBR:refs/heads/parked1"
+check "36: 첫 머지가 통과한다" "$rc" "0"
+n36=$(sa_ob_count)
+sa_commit '작업 2' >/dev/null
+sa_merge S36 "$SA_SEGBR:refs/heads/parked2"
+check "36: 새 팁의 두 번째 머지도 통과한다 (룰이 꺼져 있다)" "$rc" "0"
+check "36: 그 두 번째 머지가 자기 의무를 발행한다 (빚이 접히지 않는다)" "$(sa_ob_count)" "$((n36 + 1))"
+n36ids=$(sa_ob_rows | grep -F "세그먼트=S36 " | tr '|' '\n' \
+         | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u | grep -c .)
+check "36: 두 머지가 서로 다른 슬롯을 연다" "$n36ids" "2"
+# 멱등성은 그대로여야 한다 — 팁이 움직이지 않은 머지는 새 슬롯을 열지 않는다.
+n36b=$(sa_ob_count)
+sa_merge S36 "$SA_SEGBR:refs/heads/parked3"
+check "36: 팁이 그대로인 세 번째 머지는 새 슬롯을 열지 않는다 (멱등성 유지)" "$(sa_ob_count)" "$n36b"
+
 ( cd "$REPO" && git worktree remove --force "$ORPH" ) >/dev/null 2>&1 || true
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"

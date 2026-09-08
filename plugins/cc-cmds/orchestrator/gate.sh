@@ -1309,7 +1309,8 @@ gate_export_cutpoints() {
 # that a manifest may not turn off — that is the whole reason it lives here and
 # not inside a checker.
 gate_resolve_review_policy() {
-  local seg="$1" alias="$2" pol ceil
+  local seg="$1" alias="$2" kind="$3" pol ceil apol api
+  shift 3
   pol=$(gate_segment_field "$seg" '리뷰 정책')
   [ -n "$pol" ] || pol='선리뷰후머지'
   ceil=$(target_field "$alias" '리뷰 정책 상한')
@@ -1322,6 +1323,28 @@ gate_resolve_review_policy() {
     warn "대상 '$alias' 의 리뷰 정책 상한 토큰이 어휘에 없습니다: '$ceil'"
     return "$GATE_EXIT_VOCAB"
   }
+  # THE TIGHTENING ROW IS ALWAYS WRITABLE. This resolution runs before the rule
+  # loop AND before the ledger writer, so a segment row that already carries a
+  # value above the ceiling had no verb left to repair it: writing the corrected
+  # row needs `act --kind segment` on that same id, and that act re-enters here
+  # and is refused on the OLD value first. The segment then stays in a
+  # non-terminal state, termination condition 1 never holds, and the run has no
+  # ending it can propose. Keying the row on a different segment does not reach
+  # the stuck id, so nothing else could unstick it.
+  #
+  # So the ONE act that can repair it resolves from its own argv instead of from
+  # the prior row — and only when that argv is at or below the ceiling. Relaxing
+  # past the ceiling is refused exactly as before, so the property the refusal
+  # protects is untouched: what changes is only that the direction which restores
+  # compliance stops being unreachable.
+  if [ "$kind" = "segment" ]; then
+    apol=$(gate_field_of '리뷰 정책' "$@")
+    if [ -n "$apol" ] && api=$(review_policy_index "$apol" 2>/dev/null) \
+       && [ "$api" -le "$GATE_REVIEW_CEILING_INDEX" ]; then
+      pol="$apol"
+      GATE_REVIEW_POLICY_INDEX="$api"
+    fi
+  fi
   if [ "$GATE_REVIEW_POLICY_INDEX" -gt "$GATE_REVIEW_CEILING_INDEX" ]; then
     warn "세그먼트 '$seg' 의 리뷰 정책 '$pol' 이 대상 '$alias' 의 상한 '$ceil' 을 넘습니다 — 상한 위반은 조여 넣지 않고 거절합니다"
     return "$GATE_EXIT_VOCAB"
@@ -4825,7 +4848,7 @@ gate_verb_act() {
   # on purpose — the ceiling comparison is the part of this axis a manifest may
   # not switch off, and putting it inside a checker would let one setting turn
   # off both the check and the ceiling that bounds it.
-  gate_resolve_review_policy "$segment" "$alias" || exit $?
+  gate_resolve_review_policy "$segment" "$alias" "$kind" "$@" || exit $?
 
   # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
   # cannot call the reader above it, and letting it grep the ledger itself would
@@ -5721,6 +5744,34 @@ gate_landing_unlanded_why() {
   fi
 }
 
+gate_landing_rewritten_landed() {
+  # gate_landing_rewritten_landed <root> <ref> <머지 커밋>
+  #
+  # A REWRITING MERGE NEVER MAKES THE TIP AN ANCESTOR. `--squash` and `--rebase`
+  # build new commits on the server side, so the ancestry test answers no for
+  # that sha forever while the change itself IS on the base branch. Left at that,
+  # every deferred obligation in such a repository closes on `근거` alone and the
+  # containment predicate is never called once — the debt is discharged having
+  # consulted no review at all.
+  #
+  # The second clause is TREE EQUALITY, on the same grounds the staleness ladder
+  # already admits a same-tree exception: a rewrite that leaves the tree
+  # byte-identical carried the content across. The window is bounded to what the
+  # base gained since it forked from the merged commit — outside that window an
+  # equal tree says nothing about THIS merge. No common ancestor means no window
+  # and the answer stays no, which is the case the wording helper already calls
+  # unrecoverable.
+  local root="$1" ref="$2" m="$3" t mb tt
+  t=$( cd "$root" && git rev-parse --verify --quiet "${m}^{tree}" 2>/dev/null ) || t=""
+  [ -n "$t" ] || return 1
+  mb=$( cd "$root" && git merge-base "$m" "$ref" 2>/dev/null ) || mb=""
+  [ -n "$mb" ] || return 1
+  for tt in $( cd "$root" && git log --format=%T "${mb}..${ref}" 2>/dev/null ); do
+    [ "$tt" = "$t" ] && return 0
+  done
+  return 1
+}
+
 gate_obligation_landing() {
   # gate_obligation_landing <대상 별칭> <머지 커밋>
   #
@@ -5760,7 +5811,11 @@ gate_obligation_landing() {
   # turn a settled 미착지 into an unsettleable one.
   if ! ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then
     case "$rc" in
-      1) GATE_LANDING_WHY="원격이 없어 로컬 refs/heads/$br 가 세계 전부입니다 — $(gate_landing_unlanded_why "$root" "refs/heads/$br" "$m")"
+      1) if gate_landing_rewritten_landed "$root" "refs/heads/$br" "$m"; then
+           GATE_LANDING_WHY="원격이 없고 로컬 refs/heads/$br 가 머지 커밋과 같은 트리의 커밋을 담고 있습니다 — 다시 쓰인 머지입니다"
+           GATE_LANDING_VERDICT='착지'; return 0
+         fi
+         GATE_LANDING_WHY="원격이 없어 로컬 refs/heads/$br 가 세계 전부입니다 — $(gate_landing_unlanded_why "$root" "refs/heads/$br" "$m")"
          GATE_LANDING_VERDICT='미착지'; return 0 ;;
       *) GATE_LANDING_WHY="원격이 없고 로컬 refs/heads/$br 에 대한 조상 검사가 답하지 못했습니다 (git rc=$rc)"
          GATE_LANDING_VERDICT='판정 불가'; return 0 ;;
@@ -5789,7 +5844,11 @@ gate_obligation_landing() {
   case "$rc" in
     0) GATE_LANDING_WHY="refs/remotes/origin/$br 가 머지 커밋을 담고 있습니다"
        GATE_LANDING_VERDICT='착지'; return 0 ;;
-    1) GATE_LANDING_WHY=$(gate_landing_unlanded_why "$root" "refs/remotes/origin/$br" "$m")
+    1) if gate_landing_rewritten_landed "$root" "refs/remotes/origin/$br" "$m"; then
+         GATE_LANDING_WHY="refs/remotes/origin/$br 가 머지 커밋과 같은 트리의 커밋을 담고 있습니다 — 다시 쓰인 머지입니다"
+         GATE_LANDING_VERDICT='착지'; return 0
+       fi
+       GATE_LANDING_WHY=$(gate_landing_unlanded_why "$root" "refs/remotes/origin/$br" "$m")
        GATE_LANDING_VERDICT='미착지'; return 0 ;;
     *) GATE_LANDING_WHY="refs/remotes/origin/$br 에 대한 조상 검사가 답하지 못했습니다 (git rc=$rc)"
        GATE_LANDING_VERDICT='판정 불가'; return 0 ;;
@@ -5897,10 +5956,30 @@ gate_issue_review_obligation() {
   [ "$policy" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
-  # The id stays keyed on (run, segment) and NOT on the review cycle: it is the
-  # key of a review SLOT, not of a cycle. Re-keying it per cycle would change
+  # THE ANCHOR IS RESOLVED BEFORE THE ID, because the id is keyed on it. The
+  # order is safe: this issuer runs only under `선머지후리뷰` at cutpoint `머지`,
+  # which is exactly the window in which the pre-issue anchor check has already
+  # run and refused an unreadable tip, so nothing new can fail here.
+  tip="${GATE_MERGE_ANCHOR:-}"
+  [ -n "$tip" ] || { tip=$(gate_segment_tip "$seg") || tip=""; }
+  if [ -z "$tip" ]; then
+    warn "세그먼트 '$seg' 의 팁을 읽지 못해 리뷰 의무를 발행할 수 없습니다"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  # The id is keyed on (run, segment, ANCHOR) and NOT on the review cycle: it is
+  # the key of a review SLOT, not of a cycle. Re-keying it per cycle would change
   # what termination condition 9 counts.
-  id="RO-$(printf '%s|%s' "$RUN_ID" "$seg" | shasum -a 256 | cut -c1-8)"
+  #
+  # THE ANCHOR IS IN THE KEY BECAUSE (run, segment) ALONE COLLAPSES N MERGES INTO
+  # ONE DEBT. Under `끔` the ordering predicate does not run, so a second merge at
+  # a NEW tip reaches this issuer with the first tip's slot still open and the
+  # duplicate guard below returns without a row — the second merge leaves no
+  # trace at all. Fulfilling the one slot then closes on the first tip, which a
+  # review does cover, and everything between the two tips lands on the base
+  # branch reviewed by nobody with nothing in the ledger to say so. The reason
+  # cycle-keying was rejected does not carry over: an unreviewed second merge
+  # SHOULD raise the count condition 9 holds the run open on.
+  id="RO-$(printf '%s|%s|%s' "$RUN_ID" "$seg" "$tip" | shasum -a 256 | cut -c1-8)"
   # Membership is decided over a VALUE rather than over a pipeline exit status:
   # ids are `RO-` plus hex and carry no whitespace, so the word-splitting loop
   # this file already uses for the same list reads them exactly.
@@ -5908,12 +5987,6 @@ gate_issue_review_obligation() {
   for open_id in $(gate_unfulfilled_review_obligations "$seg"); do
     [ "$open_id" = "$id" ] && return 0
   done
-  tip="${GATE_MERGE_ANCHOR:-}"
-  [ -n "$tip" ] || { tip=$(gate_segment_tip "$seg") || tip=""; }
-  if [ -z "$tip" ]; then
-    warn "세그먼트 '$seg' 의 팁을 읽지 못해 리뷰 의무를 발행할 수 없습니다"
-    return "$GATE_EXIT_ANCHOR"
-  fi
   gate_append '리뷰 의무' "의무 id=$id" "상태=미이행" "세그먼트=$seg" \
     "대상=$alias" "머지 커밋=$tip" "생성 등급=$grade" \
     "발행 시각=$(now_iso)" "이행 시각=-"

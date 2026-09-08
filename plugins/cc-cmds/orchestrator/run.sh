@@ -717,10 +717,16 @@ EOF
   # THE KEY SET IS DERIVED FROM THE DECLARATIONS and never from a list written
   # here. A list goes stale the moment the catalog grows, which is exactly how
   # the count in the prose fell behind the count in the code.
+  #
+  # THE VALUE IS NOT ASSUMED TO SIT ON THE KEY LINE. A declaration may answer in a
+  # block, and a one-line predicate reads that as no answer at all — so the rule
+  # joins the un-switchable set, and the operator is told the setting is inert
+  # while the gate is in fact reading it. That misinforms in the direction that
+  # leaves a merge gate believed to be on after it was switched off.
   local rf rname
   for rf in "$ORCH_DIR"/rules/*.rule; do
     [ -f "$rf" ] || continue
-    grep -qE '^끌 수 있는가: *예' "$rf" && continue
+    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
     rname=$(basename "$rf" .rule)
     [ -n "$(manifest_field '룰 설정' "$rname")" ] || continue
     warn_once 'rule-setting-inert' \
@@ -728,6 +734,31 @@ EOF
   done
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+# The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
+# on the key line, or as the first non-empty line of an indented block under it.
+# Prints the empty string when the key is absent or answers nothing.
+#
+# ONE READER FOR THE FIELD. The condition above and the assertion that every
+# declaration answers parseably both go through here, so a declaration that
+# reformats its answer breaks loudly in the suite rather than silently flipping
+# one rule into the un-switchable set.
+rule_switchable_value() {
+  awk '
+    /^끌 수 있는가:/ {
+      sub(/^끌 수 있는가:[[:space:]]*/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+      inblock = 1
+      next
+    }
+    inblock {
+      # An unindented line ends the block: that is the next key, not this value.
+      if ($0 ~ /^[^[:space:]]/) exit
+      sub(/^[[:space:]]+/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+    }
+  ' "$1"
 }
 
 # Manifest-derived paths. `BASE` from the declared worktree, everything else
