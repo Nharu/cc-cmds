@@ -1,0 +1,41 @@
+name: notify-macos
+
+# The other side of the matrix guard: a matrix that DOES produce combinations is
+# a job that runs, so its `make` line must keep deriving the execution set and
+# the tree must stay green. Without this fixture the guard could be widened to
+# `has("strategy")` and the suite would not notice — that widening was tried,
+# measured to reject a normal matrix with exit 2, and withdrawn.
+#
+# Both combination sources are exercised at once: a non-empty axis and a
+# non-empty `include`. `runs-on` is the literal `macos-latest` rather than
+# `${{ matrix.os }}` on purpose — the expression form is green today for a
+# reason that belongs to rule 8 and not to this guard, and pinning it here would
+# freeze that separate question inside a fixture about matrix emptiness.
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  test-macos-native:
+    runs-on: macos-latest
+    env:
+      CC_CMDS_REQUIRE_NATIVE: '1'
+      CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
+    timeout-minutes: 8
+    strategy:
+      matrix:
+        suite: [a, b]
+        include:
+          - suite: a
+            label: primary
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run darwin-only tests
+        run: make test-darwin
