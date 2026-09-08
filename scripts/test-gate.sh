@@ -1932,6 +1932,34 @@ if [ -f "$(dirname "$SETTINGS_DIR")/SL.pid" ]; then
 else
   ok "스테이지가 끝나면 pid 기록이 지워진다"
 fi
+# THE PIN AND THE TRANSCRIPT NAME, measured from what the launcher left on disk.
+#
+# The seam between `gate_launch_stage` and the two functions it derives those
+# from was witnessed only by the source text: a suite that calls the functions
+# directly says nothing about whether the launcher calls them, and hardcoding the
+# attempt back to a constant or re-deriving the stream path from the segment id
+# alone left the whole suite green. This is the same seam with the stub CLI
+# actually run through it, so both of those revert red here.
+RD_SL=$(dirname "$SETTINGS_DIR")
+check "런처가 이 파견의 시도 번호를 핀으로 남긴다" "$(cat "$RD_SL/SL.attempt" 2>/dev/null)" "1"
+if [ -f "$RD_SL/log/SL#1.json" ]; then
+  ok "런처의 전사가 시도로 스코프된 이름에 앉는다"
+else
+  bad "스테이지 스트림" "시도 스코프 전사가 없다 — 런처가 판독기와 다른 경로 규칙을 쓴다"
+fi
+if [ -e "$RD_SL/log/SL.json" ]; then
+  bad "스테이지 스트림" "무스코프 이름으로 전사가 앉았다 — 같은 세그먼트의 다음 파견이 이것을 덮는다"
+else
+  ok "무스코프 이름으로는 전사가 앉지 않는다"
+fi
+# And the recorder read THAT file rather than re-deriving the name. The session
+# id on the row comes from the result line inside the stream this dispatch wrote,
+# so a recorder handed no stream falls back to the unsuffixed name, finds nothing
+# and writes `미상`.
+case "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" in
+  *"세션 id=stub-session"*) ok "결과 기록기가 이 파견이 실제로 쓴 전사에서 세션 id 를 읽는다" ;;
+  *) bad "종단 기록" "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 14i. The render answers "is this still going?"

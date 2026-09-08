@@ -1,0 +1,19 @@
+name: lint
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'Makefile'
+      - '.github/workflows/lint.yml'
+  push:
+    branches:
+      - master
+
+jobs:
+  lint-and-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: make lint
