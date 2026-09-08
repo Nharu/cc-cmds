@@ -2845,20 +2845,30 @@ eval "$PD27_SAVE"
 
 # 그리고 머지 게이트가 그 값을 실제로 갈라 읽는가. 위 셋이 전부 초록인 채로
 # 게이트가 여전히 참/거짓으로 읽으면 밤은 그대로 잃는다.
-PARK27=""
-park() { PARK27="$4 | $5"; }
-seg_alias()  { printf 'home'; }
-alias_slug() { printf 'o/r'; }
-authorized() { return 0; }
-gh() {
-  case "$*" in
-    *"pr list"*)   printf '77\n'; return 0 ;;
-    *"pr checks"*) return 8 ;;
-  esac
-  return 1
-}
+#
+# 이 스텁 넷은 드라이버가 같은 이름으로 정의한 함수다. 파일 스코프에 두면 이 절
+# 아래의 모든 절이 드라이버 대신 스텁을 받고, 걷어내려고 `unset -f` 를 쓰면
+# 스텁이 아니라 드라이버의 정의가 지워져 뒤쪽 절은 그 함수 없이 돈다 — 어느
+# 쪽이든 조용히 무력화되며 통과 개수에는 드러나지 않는다. 그래서 스텁은 서브셸
+# 안에서만 살리고, 관측은 파일로 꺼낸다. 서브셸이라 변수로는 나오지 못한다.
+PARK27_FILE="$WORK/park27"; : > "$PARK27_FILE"
 CC_ORCH_CHECKS_WAIT_SEC=0; export CC_ORCH_CHECKS_WAIT_SEC
-merge_gate seg27 br27 >/dev/null 2>&1; RC27=$?
+(
+  park() { printf '%s | %s\n' "$4" "$5" > "$PARK27_FILE"; }
+  seg_alias()  { printf 'home'; }
+  alias_slug() { printf 'o/r'; }
+  authorized() { return 0; }
+  gh() {
+    case "$*" in
+      *"pr list"*)   printf '77\n'; return 0 ;;
+      *"pr checks"*) return 8 ;;
+    esac
+    return 1
+  }
+  merge_gate seg27 br27 >/dev/null 2>&1
+)
+RC27=$?
+PARK27=$(cat "$PARK27_FILE")
 check "진행 중인 체크에서 머지 게이트는 2로 park 한다" "$RC27" "2"
 case "$PARK27" in
   *"체크가 아직 진행 중"*) ok "park 사유가 진행 중이라고 적는다" ;;
@@ -2871,7 +2881,10 @@ case "$PARK27" in
   *"체크 실패"*|*"체크가 실패"*) bad "머지 게이트" "진행 중인 체크를 실패로 적었다: $PARK27" ;;
   *) ok "진행 중인 체크를 실패로 적지 않는다" ;;
 esac
-unset -f gh park seg_alias alias_slug authorized
+# `gh` 만 걷는다 — 이것은 드라이버의 함수가 아니라 PATH 의 실물이라 지워야 뒤쪽
+# 절이 실물을 본다. 나머지 넷은 서브셸과 함께 이미 사라졌고, 여기서 이름을 부르면
+# 스텁이 아니라 드라이버의 정의를 지우게 된다.
+unset -f gh
 unset CC_ORCH_CHECKS_POLL_SEC CC_ORCH_CHECKS_WAIT_SEC
 MANIFEST="$MANIFEST_SAVE27"
 
