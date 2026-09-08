@@ -8077,6 +8077,70 @@ sag act --manifest "$SA_MANIFEST" --kind merge --target main \
     -- git push origin "$SA_SEGBR:$SA_BASE"
 check "33: 룰 끔 — 세그먼트를 생략한 머지는 통과한다 (선택이 기록된다)" "$rc" "0"
 
+# --- 33b. 좁히는 축은 축2 등급이고, 워크트리쓰기 칸은 argv 가 한 번 더 가른다 --
+#
+# 이 트리의 등급표는 로컬 머지·리베이스·체리픽을 워크트리쓰기로 등급한다. 그
+# 칸을 통째로 면제하면 그 머지들이 세그먼트를 정직하게 달고 가장 엄격한 정책
+# 아래에서도 리뷰 기록 하나 없이 이 검사를 통째로 지나간다. 그 칸을 통째로
+# 검사에 넣으면 반대쪽이 깨진다 — 라우터는 대상의 절단점으로 모든 행위를
+# 라벨링하므로 배포로 신고된 평범한 워크트리 쓰기가 통상 경로이고, 그것이
+# 리뷰 기록을 요구받으면 검사가 아니라 벽이다.
+#
+# 가르는 값은 신고가 아니라 argv 다. 신고로 가르면 같은 구멍이 축만 바꿔
+# 그대로 남으므로, 아래 둘째 묶음이 그 등가성을 직접 잰다.
+#
+# 그래서 이 항목은 한 방향이 아니라 네 방향을 함께 못박는다. 어느 하나만
+# 세우면 반대쪽으로 무너진 구현에서도 초록이다.
+sa_new '워크트리쓰기 등급 머지' 선리뷰후머지
+sa_seg_row S33B 선리뷰후머지
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S33B \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: 워크트리쓰기로 등급되는 로컬 머지도 리뷰 검사를 받는다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "33b 거절 이름" "$msg"; fi
+
+# 둘째 묶음 — 같은 로컬 머지를 다른 형태로 신고한다. 첫 단언만 있으면
+# 「종류가 merge 인가」로 가르는 구현에서도 초록이고, 그 구현에서는 아래 둘이
+# 그대로 빠져나간다. 신고가 이 판정을 흔들지 못한다는 것이 이 묶음의 명제다.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S33B \
+    --cutpoint 머지 --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: exec 으로 신고한 로컬 머지도 리뷰 없이 지나가지 못한다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절도 리뷰-후-머지 를 지명한다"; else bad "33b exec 거절 이름" "$msg"; fi
+# 그리고 어휘 밖의 종류. 여기서 관측되는 것이 rc 3 이라는 사실 자체가 이
+# 묶음의 나머지 절반이다 — `x` 가 어휘 검사에 걸려 rc 2 로 돌아왔다면 종류는
+# 닫힌 집합이고 그것으로 가르는 것이 성립했을 것이다. 통과해서 룰까지
+# 내려왔다는 것은 `--kind` 에 무엇이든 실린다는 뜻이고, 그래서 종류는 이
+# 판정을 지탱할 수 없다.
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment S33B \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: 어휘 밖 종류로 신고한 로컬 머지도 리뷰 없이 지나가지 못한다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절도 리뷰-후-머지 를 지명한다"; else bad "33b 어휘 밖 종류 거절 이름" "$msg"; fi
+
+# 셋째 묶음 — 반대 방향의 가드 둘. 좁히는 것이 옛 소음을 되살리지 않는다.
+# 둘 다 리뷰 기록이 아직 없는 자리에서 잰다. 리뷰 기록을 먼저 심어 두면 이
+# 둘은 면제가 아니라 신선도 통과로도 초록이 되어, 면제를 지운 구현에서까지
+# 초록이 된다.
+#
+# (1) 워크트리쓰기 칸. 첫 단언과 같은 칸에 있으면서 이력을 통합하지 않는
+#     행위다. 이것이 없으면 첫 단언은 그 칸을 통째로 검사에 넣는 구현 —
+#     세그먼트를 단 모든 배포 신고 행위가 리뷰 기록을 요구받는 구현 — 에서도
+#     초록이라, 이 항목이 재는 것이 한 방향뿐이 된다.
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment S33B --cutpoint 배포 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- mkdir -p "$SA_ROOT/scratch33b"
+check "33b: 배포로 신고된 평범한 워크트리 쓰기는 이 룰에 걸리지 않는다" "$rc" "0"
+[ -d "$SA_ROOT/scratch33b" ] && ok "33b: 그 행위가 실제로 수행된다" \
+                            || bad "33b 수행" "통과했는데 디렉터리가 생기지 않았다"
+# (2) 읽기 칸. 장부 기록은 게이트가 종류만 보고 읽기로 등급하므로, 사다리
+#     위칸으로 신고해도 이 룰에 닿지 않는다.
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S33B --cutpoint 배포 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$(cd "$SA_SEGWT" && git rev-parse HEAD)"
+check "33b: 사다리 위칸으로 신고된 장부 기록은 이 룰에 걸리지 않는다" "$rc" "0"
+
 # --- 34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
 #
 # 해소기는 룰 루프와 장부 기록자보다 앞에서 돈다. 그래서 상한이 나중에 조여져

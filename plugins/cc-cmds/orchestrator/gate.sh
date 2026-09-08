@@ -635,6 +635,64 @@ surface_of_lockf() {
   printf '등급 미상'
 }
 
+gate_history_integration() {
+  # gate_history_integration <argv...> — prints 1 when this argv integrates one
+  # line of history into another, 0 when it does not.
+  #
+  # THIS EXISTS BECAUSE THE GRADED SURFACE CANNOT SPLIT ITS OWN WORKTREE-WRITE
+  # CELL. The table below grades a local `merge`, `rebase` and `cherry-pick` as
+  # `워크트리쓰기`, and the same cell holds `mkdir` and `touch`. Exempting the
+  # cell lets a local merge carry an honest segment and pass the review rule
+  # with no review record at all; checking the cell whole demands a review
+  # record from an ordinary directory creation, and that is not an edge case —
+  # the router labels every act with its TARGET's cutpoint, so an ordinary write
+  # declared at `배포` is the normal path, not noise.
+  #
+  # THE SPLITTING VALUE IS READ FROM argv AND NEVER FROM A DECLARATION. `--kind`
+  # has no vocabulary check, so any word at all rides there; and `exec` refuses
+  # `--kind` outright, so under that verb the kind is always the empty string.
+  # A cell split on the kind would therefore exempt both `exec -- git merge` and
+  # `act --kind x -- git merge`, which is the surface-exemption hole surviving
+  # with nothing changed but the axis it hides behind.
+  #
+  # AN UNRECOGNIZED SPELLING ANSWERS 1, AND THAT IS WHY THIS IS NOT A SECOND
+  # COPY OF THE GRADING TABLE. That table answers `등급 미상` and refuses; this
+  # one answers "check it". The two therefore fail in OPPOSITE directions, so
+  # where they drift the drift can only over-check — one manifest line — and
+  # never open the bypass this rule exists to close.
+  local cmd="${1##*/}"
+  [ "$cmd" = "git" ] || { printf '0'; return 0; }
+  shift
+  # The same global-option skip the grader does, spelled the same way, because a
+  # global option left in place puts a non-subcommand in the slot below. The one
+  # divergence is the unknown arm, for the reason given above.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ $# -ge 2 ] || { printf '1'; return 0; }
+        shift 2 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
+        shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        shift ;;
+      -*) printf '1'; return 0 ;;
+      *)  break ;;
+    esac
+  done
+  # `merge-base` is a query and is NOT on this list — `case` matches whole
+  # patterns, so it does not reach the `merge` arm. `pull` is here even though
+  # the grader puts it in `외부상태변경`, a cell this split never reaches: the
+  # list states what the predicate MEANS rather than what the caller happens to
+  # ask about, and a predicate that omits a case because today's caller cannot
+  # reach it is one refactor away from being wrong.
+  case "${1:-}" in
+    merge|rebase|cherry-pick|am|pull) printf '1' ;;
+    *) printf '0' ;;
+  esac
+}
+
 surface_of_git() {
   # git's GLOBAL options come BEFORE the subcommand, so `git -C <path> commit`
   # puts `-C` in the slot the table reads and the whole act graded `등급 미상`.
@@ -4806,6 +4864,25 @@ gate_verb_act() {
     export GATE_ACT_CWD
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
+
+  # THE SECOND argv-DERIVED VALUE, PUBLISHED BESIDE THE FIRST. `리뷰-후-머지`
+  # narrows on the graded surface and then splits that surface's worktree-write
+  # cell with this; keeping the two exports together is what stops a later
+  # editor from moving one and leaving the other behind.
+  #
+  # THE KIND-PINNED ARMS ANSWER 0, AND THAT 0 IS A FACT RATHER THAN A GUESS.
+  # Where the grade came from the kind rather than from the table, the argv is
+  # not a command at all — a bookkeeping act's argv is a list of `키=값` fields,
+  # a stage dispatch's first token is a stage kind, a routing shift's is a
+  # handoff reason. Asking "does this command integrate history" of a field list
+  # has no answer, and 0 is the honest one: no history is being integrated.
+  GATE_HISTORY_INTEGRATION=0
+  case "$kind" in
+    propose-done|skill|router-shift) : ;;
+    *) gate_kind_is_bookkeeping "$kind" \
+         || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
+  esac
+  export GATE_HISTORY_INTEGRATION
 
   gate_manifest_write_guard "$graded" "$@" || exit $?
 
