@@ -398,6 +398,47 @@ else
   bad "base_sha" "벗겨 낸 로컬 이름에서 해소 — 로컬 ref는 전진하지 않는다"
 fi
 if grep -qE '^base_fetch\(\)' "$DRIVER"; then ok "base_fetch 가 존재한다"; else bad "base_fetch" "정의 없음"; fi
+
+# ---------------------------------------------------------------------------
+# 12c. 리뷰에 실리는 base 는 분기점이지 재개 시점의 HEAD 가 아니다
+# ---------------------------------------------------------------------------
+# 이 결함은 코드 모양이 아니라 값 흐름이다 — 플래그도 함수도 제자리에 있고
+# 실리는 값만 틀리므로, 본문 스캔만으로는 틀린 값이 실린 채 초록이 된다.
+# 그래서 두 값이 실제로 갈라지는 트리를 만들어 구별부터 세우고, 그다음 파견
+# 줄이 어느 쪽 이름을 싣는지 본다.
+#
+# 재개된 런은 이미 있는 워크트리를 그대로 돌려받으므로 그때의 HEAD 는
+# 브랜치 팁이다. 그 값은 분기점의 후손이라 세 리뷰 팔이 처방하는
+# `--is-ancestor` 를 통과한다 — 가드가 걸리지 않고 리뷰 범위만 조용히 좁는다.
+BW="$WORK/basewt"
+rm -rf "$BW"; mkdir -p "$BW"
+( cd "$BW" && git init -q . && git config user.email t@t && git config user.name t \
+  && : > a.txt && git add a.txt && git commit -qm base \
+  && git branch -q -f seg/x && git checkout -q seg/x \
+  && : > b.txt && git add b.txt && git commit -qm ontop ) >/dev/null 2>&1
+BP=$( cd "$BW" && git rev-parse HEAD~1 )
+TIP=$( cd "$BW" && git rev-parse HEAD )
+if [ -n "$BP" ] && [ "$BP" != "$TIP" ]; then
+  ok "분기점과 재개 시점 HEAD 는 서로 다른 값이다 (구별이 성립한다)"
+else
+  bad "분기점과 재개 시점 HEAD" "두 값이 같아 이 단언이 아무것도 구별하지 못한다"
+fi
+if ( cd "$BW" && git merge-base --is-ancestor "$TIP" seg/x ) >/dev/null 2>&1; then
+  ok "재개 HEAD 는 조상 검사를 통과한다 (가드가 걸리지 않는다)"
+else
+  bad "재개 HEAD 의 조상 검사" "통과하지 않는다 — 이 결함의 전제가 성립하지 않는다"
+fi
+# 그리고 파견 줄이 싣는 것은 분기점 쪽 이름이어야 한다.
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q -- '--base-sha \$seg_base'; then
+  ok "리뷰 파견이 분기점 값을 싣는다"
+else
+  bad "리뷰 파견의 base" "분기점이 아닌 값을 싣는다 — 재개 워크트리에서 범위가 조용히 좁아진다"
+fi
+if sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep_all_q -- '--base-sha \$pre_head'; then
+  bad "리뷰 파견의 base" "사전 HEAD 를 싣고 있다"
+else
+  ok "리뷰 파견이 사전 HEAD 를 싣지 않는다"
+fi
 if sed 's/#.*//' "$DRIVER" | grep_all_q -E 'git worktree add -b "\$branch" "\$p" HEAD'; then
   bad "wt_create" "리터럴 HEAD에서 분기 — 메인 팁은 런 내내 움직이지 않는다"
 else

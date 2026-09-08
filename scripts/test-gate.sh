@@ -1619,6 +1619,8 @@ fi
 # premise rather than on the property it names — which is how a suite reports
 # five failures for one cause.
 EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
+# The gate derives the name now, so every fixture reads the same one.
+EMITFILE="$EMIT/gate-digest-router.json"
 
 # The directory is deliberately NOT created first: the gate makes the parent of
 # the path it was handed, and a caller naming a fresh run-directory subpath is
@@ -1626,13 +1628,13 @@ EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
 want_ls=$(cd "$WT" && ls)
 out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
-      --emit-digest-to "$EMIT/gate-digest-d1.json" -- ls 2>/dev/null)
+      --emit-digest -- ls 2>/dev/null)
 check "방출을 켜도 exec 의 stdout 은 래핑된 명령의 stdout 그 자체다" "$out" "$want_ls"
 
 errout=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
-         --emit-digest-to "$EMIT/gate-digest-d2.json" -- ls 2>&1 >/dev/null)
-H_emit=$(jq -r .H "$EMIT/gate-digest-d2.json" 2>/dev/null || true)
+         --emit-digest -- ls 2>&1 >/dev/null)
+H_emit=$(jq -r .H "$EMITFILE" 2>/dev/null || true)
 if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
   bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
 else
@@ -1650,23 +1652,29 @@ else
   check "방출값이 직후 snapshot 의 H 와 같다" "$H_emit" "$(HH)"
   snapjson=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
   check "방출 파일이 의무 총계를 싣는다" \
-    "$(jq -r .obligations_total "$EMIT/gate-digest-d2.json")" \
+    "$(jq -r .obligations_total "$EMITFILE")" \
     "$(printf '%s' "$snapjson" | jq -r .obligations_total)"
   check "방출 파일이 대기 승인 총계를 싣는다" \
-    "$(jq -r .pending_approvals_total "$EMIT/gate-digest-d2.json")" \
+    "$(jq -r .pending_approvals_total "$EMITFILE")" \
     "$(printf '%s' "$snapjson" | jq -r .pending_approvals_total)"
   # THE ACTOR FIELD IS COMPARED THE WAY A CONSUMER COMPARES IT — verbatim
   # against its own `$CC_PIPELINE_STAGE_ID`. A first version sanitized the field
   # on the directory-name character class, and every stage id this pipeline
   # mints carries a character outside it, so a verbatim comparison called every
   # stage's own file foreign. Nothing read the field, so nothing caught that.
-  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMIT/gate-digest-d2.json")" "router"
+  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMITFILE")" "router"
   ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" exec --manifest "$MANIFEST" \
       --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HH)" --rationale x \
-      --emit-digest-to "$EMIT/gate-digest-actor.json" -- ls ) >/dev/null 2>&1
+      --emit-digest -- ls ) >/dev/null 2>&1
+  # A DIFFERENT FILE, and that is the per-actor separation working: the derived
+  # NAME sanitizes the id because a filename must, while the `actor` FIELD keeps
+  # it raw because a consumer compares that verbatim against its own.
+  check "스테이지는 자기 이름의 파일에 방출한다" \
+    "$(basename "$(ls "$EMIT"/gate-digest-S5-SEG-2.json 2>/dev/null)" 2>/dev/null)" \
+    "gate-digest-S5-SEG-2.json"
   check "스테이지 id 는 축자로 실린다 (소비자의 대조가 성립한다)" \
-    "$(jq -r .actor "$EMIT/gate-digest-actor.json" 2>/dev/null)" "S5:SEG:2"
+    "$(jq -r .actor "$EMIT/gate-digest-S5-SEG-2.json" 2>/dev/null)" "S5:SEG:2"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -1674,124 +1682,92 @@ fi
 # alone and stay green.
 ( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --target infra --segment SW \
   --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest-to "$EMIT/gate-digest-d3.json" -- ls ) >/dev/null 2>&1
-check "act 경로도 방출한다" "$(jq -r .H "$EMIT/gate-digest-d3.json" 2>/dev/null || true)" "$(HH)"
+  --emit-digest -- ls ) >/dev/null 2>&1
+check "act 경로도 방출한다" "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
 
 # The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
 # emission taken at that first append is one row behind here and only here.
 ( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra \
   --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest-to "$EMIT/gate-digest-d4.json" -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
 n=$(grep -c '^- `segment` | id=SEMIT ' "$LEDGER" || true)
 check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
 check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
-  "$(jq -r .H "$EMIT/gate-digest-d4.json" 2>/dev/null || true)" "$(HH)"
+  "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
 
 # The refusal path. An emission the caller asked for and did not get is the one
 # failure it cannot detect on its own — it just falls back to the round trip
 # forever — so an unusable path is an argv error rather than a warning.
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale x --emit-digest-to "" -- ls
-check "--emit-digest-to 에 빈 값이면 인자 오류다" "$rc" "2"
-
-# The parent is an existing REGULAR FILE, so `mkdir -p` genuinely fails. A
-# merely-absent directory would not test anything: the gate creates that one.
-# It sits INSIDE the run directory so this measures the filesystem check and not
-# the confinement check — two different exit-2 arms, and a fixture outside would
-# reach the second one and pass while proving nothing about the first.
-printf 'x\n' > "$XDG_STATE_HOME/cc-cmds/run/R1/notadir"
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+# THE FLAG TAKES NO PATH, AND THE OLD SPELLING IS REFUSED RATHER THAN IGNORED.
+# Four cycles were spent on the checks a caller-named path needed — confinement,
+# a basename pattern, `..`, physical resolution, an ordering between the
+# creation guard and the test that would refuse it — and two of those rounds
+# introduced the hole the next one closed. The parameter is gone, so the class
+# is gone; what is left to assert is that it is really gone.
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$XDG_STATE_HOME/cc-cmds/run/R1/notadir/d.json" -- ls
-check "디렉터리를 만들 수 없는 경로면 인자 오류다" "$rc" "2"
+     --emit-digest-to "$XDG_STATE_HOME/cc-cmds/run/R1/digest/gate-digest-x.json" -- ls
+check "옛 경로 인자 형태는 거부된다" "$rc" "2"
+case "$msg" in
+  *'--emit-digest'*) ok "거부 문면이 새 철자를 알려 준다" ;;
+  *) bad "거부 문면이 새 철자를 알려 준다" "got '$msg'" ;;
+esac
 
-# THE CONFINEMENT ARM, asserted separately from the one above. The emission
-# target is a second write the axis-2 grade does not describe and the ledger row
-# has no field for, so an unconfined path would let an act declaring a read
-# overwrite anything this uid can write.
+# THE DERIVED PATH IS THE ONLY ONE. A caller cannot name a control-plane file
+# because it cannot name anything, and the fixtures below read the one name the
+# gate computes.
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$WORK/outside.json" -- ls
-check "런 디렉터리 밖 방출 경로는 거부된다" "$rc" "2"
-if [ -e "$WORK/outside.json" ]; then
-  bad "거부된 방출 경로에는 아무것도 쓰이지 않는다" "$WORK/outside.json 이 생겼다"
-else
-  ok "거부된 방출 경로에는 아무것도 쓰이지 않는다"
-fi
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+check "불리언 형태는 통과한다" "$rc" "0"
+if [ -s "$EMITFILE" ]; then ok "게이트가 정한 경로에 방출한다"; else bad "게이트가 정한 경로에 방출한다" "$EMITFILE"; fi
+check "그 경로는 격리 디렉터리 안이다" "$(dirname "$EMITFILE")" "$EMIT"
 
 # THE TRAP'S WHOLE REASON, ASSERTED. The enumeration it replaced missed the
 # refusals that append a row and then exit, and a caller finding no file there
 # falls back to the round trip forever — which looks exactly like the flag
-# working and saving nothing. A stale digest takes exit 4 through that shape:
-# the call is refused, and the value the caller needs is the one it could not
-# have known. Nothing pinned this; it was checked by hand and left unmeasured.
-rm -f "$EMIT/gate-digest-refused.json"
+# working and saving nothing.
+rm -f "$EMITFILE"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
-     --rationale x --emit-digest-to "$EMIT/gate-digest-refused.json" -- ls
+     --rationale x --emit-digest -- ls
 check "낡은 다이제스트는 거부된다 (이 단언의 전제)" "$rc" "4"
-if [ -s "$EMIT/gate-digest-refused.json" ]; then
+if [ -s "$EMITFILE" ]; then
   ok "거부된 호출도 방출한다 (트랩이 덮는 자리)"
 else
   bad "거부된 호출도 방출한다 (트랩이 덮는 자리)" "파일이 없거나 비었다"
 fi
-check "거부 뒤 방출값이 살아 있는 다이제스트다" \
-  "$(jq -r .H "$EMIT/gate-digest-refused.json" 2>/dev/null)" "$(HH)"
+check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
 
-# THE CONTROL PLANE IS NOT REACHABLE. The run directory holds the watcher's
-# stop flag, the stage exit codes that get read back into ledger rows, and the
-# ledger lock — an ungraded write into any of them is worse than the one this
-# flag was confined for, so the basename and the directory are both pinned.
-for evil in "$XDG_STATE_HOME/cc-cmds/run/R1/done" \
-            "$XDG_STATE_HOME/cc-cmds/run/R1/ledger.lock" \
-            "$XDG_STATE_HOME/cc-cmds/run/R1/gate-digest-loose.json" \
-            "$EMIT/notadigest.json"; do
-  gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-       --snapshot-digest "$(HH)" --rationale x --emit-digest-to "$evil" -- ls
-  check "제어 평면 경로는 거부된다 ($(basename "$evil"))" "$rc" "2"
-done
-
-# THE PREFIX TEST RUNS BEFORE ANYTHING IS CREATED. `mkdir -p` on an out-of-tree
-# path makes that directory and only then gets refused, which leaves a
-# directory outside the run whose creation nothing records.
-rm -rf "$WORK/never"
-gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$WORK/never/deep/d.json" -- ls
-check "밖 경로는 부모를 만들기 전에 거부된다" "$rc" "2"
-if [ -d "$WORK/never" ]; then
-  bad "거부된 밖 경로의 부모가 만들어지지 않는다" "$WORK/never 가 생겼다"
+# AND THE CLASS THE TRAP WAS ACTUALLY WRITTEN FOR: a refusal that APPENDS A ROW
+# and then exits. The stale-digest case above refuses BEFORE any append, so it
+# exercises the trap without exercising the reason it exists. An act outside
+# pre-authorization writes a `승인` row and leaves with exit 5 — the value the
+# caller needs is the one that row just moved, and it is exactly the value it
+# could not have known before making the call.
+rows_before=$(grep -c . "$LEDGER" 2>/dev/null || printf '0')
+rm -f "$EMITFILE"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl https://example.invalid
+check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
+rows_after=$(grep -c . "$LEDGER" 2>/dev/null || printf '0')
+if [ "$rows_after" -gt "$rows_before" ]; then
+  ok "그 거부가 원장 행을 덧붙였다 (트랩이 겨냥한 부류)"
 else
-  ok "거부된 밖 경로의 부모가 만들어지지 않는다"
+  bad "그 거부가 원장 행을 덧붙였다" "원장이 자라지 않았다 — 이 인스턴스가 그 부류가 아니다"
 fi
-
-# A SYMLINK COMPONENT INSIDE THE RUN DIRECTORY, which is the case a logical
-# resolution cannot see. `cd`/`pwd` default to logical mode: they fold `..`
-# lexically and leave a symlink exactly as written, so a prefix test on the
-# logical path accepts this and the bytes land outside the run.
-RDIR="$XDG_STATE_HOME/cc-cmds/run/R1"
-rm -rf "$WORK/escape" "$RDIR/link"
-mkdir -p "$WORK/escape"
-ln -s "$WORK/escape" "$RDIR/link"
-gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$RDIR/link/d.json" -- ls
-check "심볼릭 링크로 밖을 가리키는 경로는 거부된다" "$rc" "2"
-if [ -e "$WORK/escape/d.json" ]; then
-  bad "링크 너머에 바이트가 착지하지 않는다" "$WORK/escape/d.json 이 생겼다"
+if [ -s "$EMITFILE" ]; then
+  ok "행을 덧붙이고 거부한 뒤에도 방출한다"
 else
-  ok "링크 너머에 바이트가 착지하지 않는다"
+  bad "행을 덧붙이고 거부한 뒤에도 방출한다" "파일이 없거나 비었다"
 fi
+check "그 방출값은 덧붙인 행 이후의 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
 
-# THE CONTROL: the run directory reached THROUGH a symlink must still be
-# accepted. Resolving only the candidate side and not the root would refuse
-# this, which is why both sides take `-P`.
-rm -rf "$WORK/rdlink"
-ln -s "$RDIR/digest" "$WORK/rdlink"
-gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-     --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$WORK/rdlink/gate-digest-vialink.json" -- ls
-check "링크를 거쳐 도달한 격리 디렉터리는 거짓 거부되지 않는다" "$rc" "0"
+# NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
+# a caller believes is working.
+gate grade --manifest "$MANIFEST" --emit-digest -- ls
+check "행위 동사 밖에서는 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer

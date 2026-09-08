@@ -2861,6 +2861,12 @@ segment_cycle() {
 
   wt=$(wt_create "$seg" "$branch") || { park "$seg" cone 무효화 "게이트 park" "워크트리 생성 실패"; return 1; }
   pre_head=$( cd "$wt" && git rev-parse HEAD )
+  # THE BRANCH POINT, DERIVED ONCE AND FIXED. This is what the review's
+  # `--base-sha` carries, and it is NOT `pre_head`: this function already keeps
+  # the two apart on the row below, naming one `사전 HEAD` and the other
+  # `베이스 sha`. Fixing it here rather than re-deriving at dispatch answers the
+  # objection that a later derivation reads whatever the base is by then.
+  local seg_base; seg_base=$(base_sha "$al")
   local stash_before; stash_before=$(stash_ref "$seg_repo")
   local plan_digest; plan_digest=$(binding_digest)
   ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "사전 HEAD=$pre_head" \
@@ -2954,13 +2960,21 @@ segment_cycle() {
     # point is already fixed in this function and already trusted by the
     # implementation predicate.
     #
-    # Two limits ride along, and neither is new exposure. A resumed run reuses
-    # an existing worktree, so `pre_head` is that tree's current HEAD rather
-    # than the branch point; and `pre_head` is assigned once outside the cycle
-    # loop while the rebase runs inside it, so after a rebase it is no longer an
-    # ancestor. Correctness across a rebase needs a re-derivation at that site.
+    # WHY NOT `pre_head`, WHICH THIS LINE USED TO SEND. On a resumed run
+    # `wt_create` hands back an existing worktree, so `pre_head` is that tree's
+    # current HEAD rather than the branch point — and being an ancestor of the
+    # branch head, it PASSES the `--is-ancestor` guard every review arm runs.
+    # The guard does not fire, no fallback happens, and the review silently sees
+    # only the commits this run added while the previous run's work leaves the
+    # diff. The declared-file comparison narrows with it.
+    #
+    # That is the opposite of the rebase limit, and the two must not be written
+    # as one sentence: after a rebase the value is NOT an ancestor, so the guard
+    # FAILS and the arm falls back — loud, and not exposure. Putting them
+    # together let the harmless case stand as the reason to ignore the harmful
+    # one.
     local rscope=""
-    [ -z "$pre_head" ] || rscope=" --base-sha $pre_head"
+    [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
     [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
     stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $DOC\""
     stage_wait_all "$sid"
