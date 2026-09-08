@@ -2161,6 +2161,46 @@ graded_as '트리밖쓰기' '템플릿을 준 mktemp 도 같다'    -- mktemp /t
 graded_as '등급 미상' 'xxd 는 표에 없다 (의도된 배제)'  -- xxd -l 8 -p /dev/urandom
 graded_as '등급 미상' 'od 도 표에 없다 (의도된 배제)'   -- od -An -tx1 -N8 /dev/urandom
 
+# `mv` and `rm` are graded by their OPERANDS, not by their name. Both were on
+# the name-graded write arm, and both are MANDATED to act out of tree by shared
+# contracts in this plugin — a witness is published with an atomic `mv -n` into
+# the out-of-tree scratch dir and torn down with `rm -rf` — so the honest
+# `트리밖쓰기` mismatched the name-level grade and was refused while the false
+# `워크트리쓰기` ran. The section is appended at the END of this one so the
+# assertions above keep their output ordering.
+#
+# THE OUT-OF-TREE LITERAL IS DERIVED, NOT TYPED. `$WORK` is minted under
+# `${TMPDIR:-/tmp}`, so a hard-coded `/tmp/...` is not reliably outside the
+# fixture repository, and on macOS `git rev-parse --show-toplevel` hands back the
+# `/private`-resolved spelling while `$WORK` keeps the symlinked one. The parent
+# of the tree root is outside it under every one of those spellings.
+OUT_OF_TREE=$(dirname "$WT")
+graded_as '워크트리쓰기' '트리 안 mv 는 워크트리 쓰기다' -- mv a.txt b.txt
+graded_as '트리밖쓰기' '트리 밖으로 옮기는 mv 는 트리 밖 쓰기다' \
+  -- mv -n a.txt "$OUT_OF_TREE/moved.txt"
+# THE SOURCE IS A DESTINATION TOO, because `mv` REMOVES what it moves. Grading
+# only the last operand would call this one an in-tree write while a file
+# disappears from outside the tree.
+graded_as '트리밖쓰기' '트리 밖에서 들여오는 mv 도 트리 밖 쓰기다' \
+  -- mv "$OUT_OF_TREE/incoming.txt" a.txt
+graded_as '워크트리쓰기' '트리 안 rm -rf 는 워크트리 쓰기다' -- rm -rf docs
+graded_as '트리밖쓰기' '트리 밖 rm -rf 는 트리 밖 쓰기다' \
+  -- rm -rf "$OUT_OF_TREE/scratch"
+# Nothing to read and a letter the scan does not know: both refuse rather than
+# guess, which is the disposition `surface_of_git` takes for the same reason.
+graded_as '등급 미상' '피연산자 없는 mv 는 등급되지 않는다' -- mv -n
+graded_as '등급 미상' '모르는 대시 옵션이 붙은 rm 도 그렇다' -- rm -Q /tmp/x
+# `--` ENDS THE OPTION SCAN. A filename beginning with a dash is a path after
+# it, not an unknown option — without this the refusal above would swallow a
+# legitimate removal.
+graded_as '워크트리쓰기' '-- 뒤의 대시 이름은 경로로 등급된다' -- rm -f -- -weird-name
+# The normalization is LEXICAL and really does rewind. None of these operands
+# exist, which is the normal case — an `mv` destination is a name about to be
+# created — so a resolver that touched the filesystem would answer `등급 미상`
+# for every row above.
+graded_as '워크트리쓰기' '되돌아오는 .. 경로는 트리 안이다' \
+  -- mv a.txt "$WT/../${WT##*/}/back.txt"
+
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true
 rm -rf "$SETTINGS_DIR"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
