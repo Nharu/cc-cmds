@@ -1496,6 +1496,24 @@ gate_snapshot() {
 # finds no file falls back to `snapshot | jq -r .H`, which is the same path a
 # gate too old to know this flag already leaves it on.
 # ---------------------------------------------------------------------------
+gate_digest_path() {
+  # gate_digest_path — where THIS process emits, derived in one place.
+  #
+  # ONE DERIVATION, BECAUSE TWO DRIFT. The hook tells a stage which file to
+  # open, and it used to build that path itself — same shape, but interpolating
+  # the stage id verbatim while this file sanitizes it. Every stage id this
+  # pipeline mints carries a character outside the sanitized class, so the two
+  # paths agreed only for the router, which is the one actor the hook is never
+  # installed for. The failure was silent in both directions: the gate emitted
+  # correctly, the stage opened a name that did not exist, and it fell back to
+  # the round trip the flag exists to remove — with the run green throughout.
+  #
+  # Anything that needs the path asks for it now. `gate.sh digest-path` prints
+  # this same value, so a second copy of the rule cannot exist.
+  printf '%s/digest/gate-digest-%s.json' "$RUN_DIR" \
+    "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')"
+}
+
 gate_emit_digest() {
   # THE EXIT STATUS ON THE WAY OUT IS NOT THIS FUNCTION'S TO CHANGE. This runs
   # from an EXIT trap, and a trap body that fails under `errexit` REPLACES the
@@ -2532,7 +2550,7 @@ gate_main() {
   if [ "$emit_digest_seen" = "1" ]; then
     emit_digest_dir="$RUN_DIR/digest"
     mkdir -p "$emit_digest_dir" 2>/dev/null || true
-    GATE_EMIT_DIGEST_TO="$emit_digest_dir/gate-digest-$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-').json"
+    GATE_EMIT_DIGEST_TO=$(gate_digest_path)
     # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
     # and an enumeration of exit points is the wrong shape for it — the first
     # enumeration missed four refusals that append a row and then exit, and a
@@ -2654,6 +2672,10 @@ gate_main() {
   fi
 
   case "$verb" in
+    digest-path)
+      # Reading, not acting: it prints where an emission would land and writes
+      # nothing. The hook calls this instead of rebuilding the path.
+      gate_digest_path; printf '\n' ;;
     snapshot)
       if [ "$render" = "1" ]; then gate_render_snapshot; else gate_snapshot; fi
       ;;

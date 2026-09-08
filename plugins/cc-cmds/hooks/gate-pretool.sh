@@ -69,7 +69,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-DIGEST_FILE="${RUN_DIR}/digest/gate-digest-${CC_PIPELINE_STAGE_ID:-router}.json"
+# ASKED, NOT REBUILT. This used to interpolate the stage id verbatim while the
+# gate sanitizes it, so the path handed to a stage disagreed with the one the
+# gate writes for every id this pipeline mints — and agreed only for the router,
+# which never meets this hook. The gate owns the derivation; this asks for it.
+DIGEST_FILE=$(bash "$GATE" digest-path --manifest "${CC_PIPELINE_MANIFEST:-}" 2>/dev/null || true)
+[ -n "$DIGEST_FILE" ] || DIGEST_FILE="${RUN_DIR}/digest/gate-digest-router.json"
 
 deny() {
   # A denial carries the escalation, not just the refusal. The verb name must

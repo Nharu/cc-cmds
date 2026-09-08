@@ -1619,7 +1619,13 @@ fi
 # premise rather than on the property it names — which is how a suite reports
 # five failures for one cause.
 EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
-# The gate derives the name now, so every fixture reads the same one.
+# THE ACTOR IS DECLARED, NOT INHERITED. The gate names the emitted file after
+# `CC_PIPELINE_STAGE_ID`, and this suite runs from whatever process starts it —
+# including a pipeline stage, which exports one. Inheriting it silently moves
+# every file these fixtures read, so the block below breaks in exactly the
+# environment it is most likely to run in. Cleared here and set explicitly where
+# a stage id is the thing under test.
+unset CC_PIPELINE_STAGE_ID
 EMITFILE="$EMIT/gate-digest-router.json"
 
 # The directory is deliberately NOT created first: the gate makes the parent of
@@ -1675,6 +1681,14 @@ else
     "gate-digest-S5-SEG-2.json"
   check "스테이지 id 는 축자로 실린다 (소비자의 대조가 성립한다)" \
     "$(jq -r .actor "$EMIT/gate-digest-S5-SEG-2.json" 2>/dev/null)" "S5:SEG:2"
+  # AND THE PRINTED PATH IS THE WRITTEN PATH. The hook hands a stage this value
+  # instead of rebuilding it, so if `digest-path` and the emitter ever disagreed
+  # the stage would open a name nothing writes — silently, because the gate
+  # emits fine and the caller just falls back forever. The hook suite asserts it
+  # asks; this asserts the answer is true.
+  printed=$( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" digest-path \
+             --manifest "$MANIFEST" 2>/dev/null | tail -1 )
+  check "인쇄한 경로가 실제로 쓴 파일이다" "$printed" "$EMIT/gate-digest-S5-SEG-2.json"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -1763,6 +1777,26 @@ else
   bad "행을 덧붙이고 거부한 뒤에도 방출한다" "파일이 없거나 비었다"
 fi
 check "그 방출값은 덧붙인 행 이후의 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+
+# THE ROUND TRIP THIS FLAG EXISTS TO REMOVE, DRIVEN IN BOTH DIRECTIONS. Every
+# assertion above reads the emitted object; none of them fed it back, which is
+# the one thing the feature is for — the emitted `H` must be exactly what the
+# NEXT acting call needs for `--snapshot-digest`. A value that is well-formed
+# and not accepted saves nothing, and the suite could not tell those apart.
+rm -f "$EMITFILE"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+check "왕복 대체 — 첫 호출이 통과한다 (전제)" "$rc" "0"
+emitted=$(jq -r .H "$EMITFILE" 2>/dev/null)
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$emitted" --rationale x --emit-digest -- ls
+check "방출값을 그대로 다음 호출에 넣으면 통과한다 (되읽기가 필요 없다)" "$rc" "0"
+# And the negative half: an emitted value that is no longer current must be
+# refused, or the flag would be trading the round trip for a stale binding.
+stale="$emitted"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$stale" --rationale x --emit-digest -- ls
+check "한 번 쓰인 방출값을 다시 쓰면 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
 
 # NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
 # a caller believes is working.
