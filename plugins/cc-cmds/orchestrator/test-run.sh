@@ -2042,7 +2042,12 @@ fi
 # that tests only for the stage marker — and once enrolled, its own transcript
 # is read as a person's reply. That is the self-approval path the whole
 # separation exists to keep shut.
-lineage_ln=$( { grep -n 'gate_session_lineage >/dev/null' "$GATE_SH" || true; } | head -1 | cut -d: -f1)
+# The needle is the RECORDING call, which is a different function from the
+# reader: enrolment is a side effect no read path may have, so the writer has
+# its own name and this is the one call site of it. Located with `awk` rather
+# than `grep -n | head -1` — an early-terminating reader on the right of a pipe
+# fails the pipeline under `pipefail` for the case where it found something.
+lineage_ln=$(awk 'index($0, "|| gate_session_lineage_record") { print NR; exit }' "$GATE_SH")
 if [ -n "$lineage_ln" ]; then
   lineage_txt=$(sed -n "$((lineage_ln - 1)),$((lineage_ln))p" "$GATE_SH")
   if printf '%s' "$lineage_txt" | grep_all_q -F 'CC_PIPELINE_STAGE_ID' \

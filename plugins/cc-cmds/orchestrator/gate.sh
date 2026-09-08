@@ -2502,8 +2502,14 @@ gate_main() {
   # `CC_PIPELINE_SHIFT_ID` is exported by `gate_launch_shift` and by nothing
   # else, so like the stage marker beside it this is a structural distinction
   # rather than a heuristic.
+  #
+  # THE WRITER IS A SEPARATE FUNCTION FROM THE READER, and that is what makes
+  # this guard the whole door rather than one of several. While enrolment was a
+  # side effect of reading, anything that read the lineage enrolled its caller
+  # past this test — `gate_shift_state` reaches the reader from `snapshot`, so a
+  # stage that took a snapshot put itself in the set of ids allowed to answer.
   [ -n "${CC_PIPELINE_STAGE_ID:-}" ] || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ] \
-    || gate_session_lineage >/dev/null
+    || gate_session_lineage_record
 
   # Run start is "the settings directory does not exist yet".
   #
@@ -6130,16 +6136,28 @@ gate_absorb_emitted_judgment() {
   log "스테이지가 방출한 판단을 채택했습니다 — $seg 부류 $cls"
 }
 
+gate_session_lineage_record() {
+  # THE ONLY WRITER, and it is called from the one place the stage/shift guard
+  # stands. Enrolment used to live inside the reader below, so every path that
+  # merely READ the lineage enrolled its caller as a side effect — and the
+  # guard at the entry point could not see those paths at all. `gate_shift_state`
+  # put one of them on the `snapshot` path: a caller whose own transcript is
+  # absent falls through to the lineage search, so a stage taking a snapshot
+  # enrolled itself. An enrolled id is an id allowed to ANSWER, which is exactly
+  # the self-approval path the guard exists to keep shut, reached through the
+  # reader instead of through the door. Reading is side-effect free from here on.
+  local f="$RUN_DIR/session-lineage"
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 0
+  grep -qxF "$CLAUDE_CODE_SESSION_ID" "$f" 2>/dev/null || \
+    printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >> "$f"
+}
+
 gate_session_lineage() {
   # Every session id this run has had. A `--resume` gives the run a NEW id and
   # leaves the earlier transcript behind, so an approval issued before the break
   # is answered in one file and looked for in another. The lineage is recorded
-  # on every entry and searched as a set.
+  # on every entry by the function above and searched as a set here.
   local f="$RUN_DIR/session-lineage"
-  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && {
-    grep -qxF "$CLAUDE_CODE_SESSION_ID" "$f" 2>/dev/null || \
-      printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >> "$f"
-  }
   cat "$f" 2>/dev/null || true
 }
 
@@ -6804,11 +6822,20 @@ gate_transcript_of_session() {
   # The transcript file for one session id, or nothing. Searched by NAME for the
   # same reason `gate_transcript_files` does: the directory is keyed by cwd and
   # shared with unrelated sessions.
-  local sid="$1" dir
+  local sid="$1" dir f
   [ -n "$sid" ] || return 0
   dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
   [ -d "$dir" ] || return 0
-  find "$dir" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1
+  # Globbed rather than piped into an early-terminating reader. A reader that
+  # stops at the first line kills the writer on its left, and under `pipefail`
+  # that turns "found it" into a failed pipeline. The two patterns are the two
+  # depths `-maxdepth 2` covered, and the first existing match still wins.
+  for f in "$dir/$sid.jsonl" "$dir"/*/"$sid.jsonl"; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "$f"
+    return 0
+  done
+  return 0
 }
 
 gate_usage_scan() {

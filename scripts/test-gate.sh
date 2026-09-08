@@ -494,13 +494,30 @@ fi
 # permits. Measured: a review stage ran seven turns, collected five `Read`
 # denials under the plugin directory, reported that it had stopped before its
 # first step, and exited 0 with no artifact.
+#
+# THE SHIFT VARIANT IS THE ONE EXCEPTION, AND IT IS AN EXCEPTION ON PURPOSE. A
+# shift writes no files and reads nothing a stage reads: everything it changes
+# goes out through the gate's own bash path, and every directory in this list is
+# an element of the enforcement-surface digest, so one it does not need widens
+# the surface an `exit 7` is measured against. Its empty list is the narrowing,
+# not a variant that forgot. The exception is named by file so that a NEW kind
+# arriving with an empty list is still counted.
 missing_dirs=0
 for f in "$SETTINGS_DIR"/*.json; do
   [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "shift.json" ] && continue
   n=$(jq -r '.permissions.additionalDirectories // [] | length' "$f" 2>/dev/null)
   [ "${n:-0}" -ge 1 ] || missing_dirs=$((missing_dirs + 1))
 done
-check "모든 변종이 읽을 수 있는 디렉터리를 선언한다" "$missing_dirs" "0"
+check "샤드를 뺀 모든 변종이 읽을 수 있는 디렉터리를 선언한다" "$missing_dirs" "0"
+# And the exemption is not a hole: the shift variant has to be there, and it has
+# to be empty. Skipping a file that does not exist would read the same as this.
+if [ -f "$SETTINGS_DIR/shift.json" ]; then
+  n=$(jq -r '.permissions.additionalDirectories // [] | length' "$SETTINGS_DIR/shift.json" 2>/dev/null)
+  check "샤드 변종은 디렉터리를 하나도 선언하지 않는다" "${n:-미상}" "0"
+else
+  bad "샤드 변종" "shift.json 이 없다 — 위 예외가 아무것도 면제하지 않았다"
+fi
 
 plug=$(cd "$(dirname "$repo_root/plugins/cc-cmds/orchestrator")" && pwd)
 if jq -e --arg d "$plug" '.permissions.additionalDirectories | index($d)' \
@@ -1031,7 +1048,13 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "세그먼트 행이 기록된다" "$rc" "0"
-n=$(grep -c '^- `segment` | id=SW ' "$LEDGER" || true)
+# `교대=<n>` IS PART OF THE ANCHOR RATHER THAN NOISE TO STEP OVER. The gate puts
+# the shift scale on every row as the first field after the series name, so an
+# anchor that ran from the series straight to the caller's first field stopped
+# matching the moment the scale arrived — and a `grep -c` that matches nothing
+# reports "the row was never written" instead of "the pattern is stale". Pinning
+# the field here also makes the grammar itself asserted rather than assumed.
+n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SW ' "$LEDGER" || true)
 check "그 행이 원장에 있다" "$n" "1"
 
 # The `cycle` row's four required fields are the four the merge rule reads. A
@@ -1060,9 +1083,9 @@ esac
 
 # The bookkeeping act is graded `읽기`: what it performs is the row, and the row
 # reaches nothing a credential or a cutpoint could widen.
-case "$(grep '^- `자율 승인` | kind=cycle ' "$LEDGER" | tail -1)" in
+case "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" | tail -1)" in
   *"축2=읽기"*) ok "장부 행위는 읽기로 등급된다" ;;
-  *) bad "장부 등급" "$(grep '^- `자율 승인` | kind=cycle ' "$LEDGER" | tail -1)" ;;
+  *) bad "장부 등급" "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" | tail -1)" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -1074,7 +1097,7 @@ esac
 # while every surface reported normal operation. The fallback stays; being
 # silent about it does not.
 # ---------------------------------------------------------------------------
-case "$(grep '^- `자율 승인` | kind=segment ' "$LEDGER" | tail -1)" in
+case "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=segment ' "$LEDGER" | tail -1)" in
   *"자격=분리"*|*"자격=주변"*) ok "행마다 어느 자격으로 돌았는지가 남는다" ;;
   *) bad "자격 기록" "자율 승인 행에 「자격」 필드가 없다" ;;
 esac
@@ -1899,9 +1922,9 @@ case "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" in
   *"세그먼트=SL"*) ok "기동이 끝나면 stage-result 행이 남는다" ;;
   *) bad "종단 기록" "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" ;;
 esac
-case "$(grep '^- `자율 승인` | kind=skill ' "$LEDGER" | tail -1)" in
+case "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=skill ' "$LEDGER" | tail -1)" in
   *"세그먼트=SL"*) ok "디스패치 자체도 원장에 남는다" ;;
-  *) bad "디스패치 기록" "$(grep '^- `자율 승인` | kind=skill ' "$LEDGER" | tail -1)" ;;
+  *) bad "디스패치 기록" "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=skill ' "$LEDGER" | tail -1)" ;;
 esac
 # The pid file is removed on exit, so "no record implies no process" holds.
 if [ -f "$(dirname "$SETTINGS_DIR")/SL.pid" ]; then
