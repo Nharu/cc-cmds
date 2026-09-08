@@ -381,7 +381,7 @@ esac
 n_shapes=0; n_denied=0; n_thin=0
 for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.*//'); do
   cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" \
-         | awk 'NR>1 && $0=="." {exit} {print}' | tr '\n' ' ')
+         | awk 'NR>1 && ($0=="." || $0=="』" || $0=="『") {exit} {print}' | tr '\n' ' ')
   n_shapes=$((n_shapes + 1))
   # A candidate that carries no `--manifest` is not a command this message
   # prescribes — it is a fragment the cut got wrong, and passing it through the
@@ -394,6 +394,14 @@ for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.
   [ "$dec" = "allow" ] || n_denied=$((n_denied + 1))
 done
 check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어긋나지 않았다)" "$n_thin" "0"
+# A BARE `.` MUST NOT SIT WHERE AN ARGUMENT WOULD. The message ends its
+# prescriptions with a marker rather than a sentence period, because a period
+# copied along with the command reaches the shell as a word — `jq -r .H .` asks
+# jq to read a file named `.` and the documented fallback fails on first use.
+case "$reason" in
+  *'jq -r .H .'*) bad "처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
+  *)              ok "처방된 명령이 문장 마침표로 끝나지 않는다" ;;
+esac
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else

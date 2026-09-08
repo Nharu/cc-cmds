@@ -51,6 +51,14 @@
 set -uo pipefail
 
 RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""
+
+# THE DIGEST PATH IS EXPANDED HERE, NOT HANDED OVER AS A VARIABLE. The messages
+# below tell a stage to open this file with `Read`, and `Read` takes a literal
+# path — it performs no shell expansion, so a `$CC_PIPELINE_STAGE_ID` inside the
+# string reaches the tool verbatim and the open fails on a name that does not
+# exist. This hook runs in the stage's own environment, so it can resolve the
+# id itself and hand over a path that is already a path.
+DIGEST_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) RUN_DIR="$2"; shift 2 ;;
@@ -60,6 +68,8 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+
+DIGEST_FILE="${RUN_DIR}/digest/gate-digest-${CC_PIPELINE_STAGE_ID:-router}.json"
 
 deny() {
   # A denial carries the escalation, not just the refusal. The verb name must
@@ -197,7 +207,7 @@ case "$tool" in
       # here because it is the same channel under a different name, and leaving
       # it out would make the arm a one-rename bypass.
       */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
-        deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --emit-digest-to ${RUN_DIR}/gate-digest-\$CC_PIPELINE_STAGE_ID.json --rationale '리뷰 채택본 적용' -- cp <제안본> ${p} — <스냅숏 해시> 는 직전 게이트 호출이 ${RUN_DIR}/gate-digest-\$CC_PIPELINE_STAGE_ID.json 에 방출한 H 필드이고(Read 도구로 열면 됩니다), 그 파일이 없으면 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 로 받습니다. --emit-digest-to 가 '알 수 없는 인자' 로 거부되면 그 플래그만 빼고 다시 실행하세요")" ;;
+        deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --emit-digest-to ${DIGEST_FILE} --rationale '리뷰 채택본 적용' -- cp <제안본> ${p} — <스냅숏 해시> 는 직전 게이트 호출이 ${DIGEST_FILE} 에 방출한 H 필드이고(Read 도구로 열면 됩니다), 그 파일이 없으면 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 로 받습니다. --emit-digest-to 가 '알 수 없는 인자' 로 거부되면 그 플래그만 빼고 다시 실행하세요")" ;;
     esac
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;
@@ -267,4 +277,4 @@ fi
 # THE PRESCRIBED LINE STILL CARRIES THE FLAG, deliberately. The file exists only
 # because some earlier call asked for it, so a prescription that reads the file
 # without ever writing it describes a mechanism that never starts.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${RUN_DIR}/gate-digest-\$CC_PIPELINE_STAGE_ID.json 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <방출 파일의 H> --emit-digest-to ${RUN_DIR}/gate-digest-\$CC_PIPELINE_STAGE_ID.json --rationale <왜 이 명령이 필요한가> -- ${cmd} . 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요 — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H . 그리고 --emit-digest-to 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <방출 파일의 H> --emit-digest-to ${DIGEST_FILE} --rationale <왜 이 명령이 필요한가> -- ${cmd} 』 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest-to 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"

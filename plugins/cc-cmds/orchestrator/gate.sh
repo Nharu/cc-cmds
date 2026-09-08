@@ -1495,6 +1495,20 @@ gate_snapshot() {
 # gate too old to know this flag already leaves it on.
 # ---------------------------------------------------------------------------
 gate_emit_digest() {
+  # THE EXIT STATUS ON THE WAY OUT IS NOT THIS FUNCTION'S TO CHANGE. This runs
+  # from an EXIT trap, and a trap body that fails under `errexit` REPLACES the
+  # status the script was exiting with — so a hiccup here could turn a refusal
+  # into a success, which is the one outcome this whole file exists to make
+  # impossible. The status is captured first and restored last, and the body
+  # runs with `errexit` off so no single command can short-circuit that.
+  local __rc=$?
+  set +e
+  gate_emit_digest_body
+  set -e
+  return "$__rc"
+}
+
+gate_emit_digest_body() {
   [ -n "${GATE_EMIT_DIGEST_TO:-}" ] || return 0
   # NOT SINGLE SHOT, AND THERE ARE NO EXPLICIT CALLS LEFT. Disarming on the
   # first success made the trap cover only "exits that happen before the first
@@ -1533,7 +1547,7 @@ gate_emit_digest() {
        "$(gate_snapshot_digest)" \
        "$(gate_open_obligations | gate_count)" \
        "$(gate_pending_approval_ids | gate_count)" \
-       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr '"\\' '__')" >"$tmp" 2>/dev/null \
+       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -d '\000-\037' | tr '"\\' '__')" >"$tmp" 2>/dev/null \
      && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; then
     return 0
   fi
@@ -2425,7 +2439,12 @@ gate_main() {
       --cutpoint)        cutpoint="$2"; shift 2 ;;
       --surface)         surface="$2"; shift 2 ;;
       --snapshot-digest) snapdig="$2"; shift 2 ;;
-      --emit-digest-to)  emit_digest_to="$2"; emit_digest_seen=1; shift 2 ;;
+      # `${2:-}` AND NOT `$2`. Under `set -u` a flag given last with no value
+      # dies on the expansion itself — a raw `$2: unbound variable` and exit 1,
+      # before the guard written for exactly that case ever runs. The guard is
+      # the one that names the flag; this expansion is what lets it speak.
+      --emit-digest-to)  emit_digest_to="${2:-}"; emit_digest_seen=1
+                         [ "$#" -ge 2 ] && shift 2 || shift ;;
       --rationale)       rationale="$2"; shift 2 ;;
       --approval)        approval="$2"; shift 2 ;;
       --worktree)        worktree="$2"; shift 2 ;;
@@ -2451,9 +2470,20 @@ gate_main() {
   # before `gate_check_grant` and before the run directory exists, so a call
   # that was about to be refused had already made a directory and no row
   # recorded it.
+  # ACCEPTED ONLY WHERE IT DOES SOMETHING. Emission happens on the acting verbs
+  # and nowhere else, but the flag used to be parsed, validated and have its
+  # parent directory created on every verb — so `snapshot`, `grade` and `plan`
+  # took a value they would never use and made a directory for it. A flag that
+  # is silently inert is a flag a caller believes is working.
   if [ "$emit_digest_seen" = "1" ]; then
     [ -n "$emit_digest_to" ] || \
       { printf 'gate: --emit-digest-to 에 경로가 필요합니다\n' >&2; exit 2; }
+    case "$verb" in
+      act|exec) ;;
+      *) printf 'gate: --emit-digest-to 는 act 와 exec 에서만 쓰입니다 (받은 동사: %s)\n' \
+           "$verb" >&2
+         exit 2 ;;
+    esac
   fi
 
   [ -n "$MANIFEST" ] || { printf 'gate: --manifest 가 필요합니다\n' >&2; exit 2; }
@@ -2529,6 +2559,28 @@ gate_main() {
   # `mv` is rename(2), which does not follow a symlink at the target — so
   # resolving it would add an existence precondition and buy no confinement.
   if [ -n "$emit_digest_to" ]; then
+    # `..` IS REFUSED OUTRIGHT, before any of the three steps. A lexical prefix
+    # test accepts `$RUN_DIR/../../elsewhere` — it does start with the run
+    # directory — so the creation guard below would happily make that directory.
+    # Neither this nor the physical test subsumes the other: this one runs
+    # before anything exists, that one after.
+    case "/$emit_digest_to/" in
+      */../*) printf 'gate: --emit-digest-to 에 .. 를 쓸 수 없습니다: %s\n' "$emit_digest_to" >&2
+              exit 2 ;;
+    esac
+    # THE BASENAME IS CONFINED TOO, and to a directory nothing else owns. A
+    # directory-only confinement still reaches every control-plane file the run
+    # keeps — the watcher's stop flag, the stage exit codes that are read back
+    # into ledger rows, the ledger lock — with a write that carries no grade and
+    # no row. And the emission survives refusal: the trap is installed before
+    # the verb dispatch that grades and compares, so exits 3, 4 and 6 all fire
+    # it, which means a REFUSED act would otherwise write into that set.
+    case "$(basename "$emit_digest_to")" in
+      gate-digest-*.json) ;;
+      *) printf 'gate: --emit-digest-to 의 파일 이름은 gate-digest-<행위자>.json 이어야 합니다: %s\n' \
+           "$emit_digest_to" >&2
+         exit 2 ;;
+    esac
     emit_digest_dir=$(dirname "$emit_digest_to")
     # STEP 1 GUARDS CREATION AND NOTHING ELSE. It refuses to CREATE a directory
     # whose path is not lexically under the run directory, which is what stops a
@@ -2549,14 +2601,24 @@ gate_main() {
       printf 'gate: --emit-digest-to 의 경로에 쓸 수 없습니다: %s\n' "$emit_digest_to" >&2
       exit 2
     fi
-    emit_digest_dir=$(cd -P "$emit_digest_dir" && pwd -P)
-    emit_digest_root=$(cd -P "$RUN_DIR" && pwd -P)
-    case "$emit_digest_dir/" in
-      "$emit_digest_root"/*) ;;
-      *) printf 'gate: --emit-digest-to 가 런 디렉터리 밖으로 해소됩니다: %s → %s (런 디렉터리 %s)\n' \
-           "$emit_digest_to" "$emit_digest_dir" "$emit_digest_root" >&2
-         exit 2 ;;
-    esac
+    # BOTH RESOLUTIONS ARE CHECKED. `cd -P … && pwd -P` in a substitution yields
+    # an EMPTY string when it fails, and an empty value silently turns the
+    # comparison below into something other than the test it reads as. A
+    # confinement decision may not rest on a value nothing looked at.
+    emit_digest_dir=$(cd -P "$emit_digest_dir" 2>/dev/null && pwd -P) || emit_digest_dir=""
+    emit_digest_root=$(cd -P "$RUN_DIR/digest" 2>/dev/null && pwd -P) || emit_digest_root=""
+    if [ -z "$emit_digest_dir" ] || [ -z "$emit_digest_root" ]; then
+      printf 'gate: --emit-digest-to 의 경로를 해소하지 못했습니다: %s (격리 %s)\n' \
+        "$emit_digest_to" "$RUN_DIR/digest" >&2
+      exit 2
+    fi
+    # EQUAL, not "under". A subtree would let the caller mint directories inside
+    # the quarantine, and there is nothing a nested path buys.
+    if [ "$emit_digest_dir" != "$emit_digest_root" ]; then
+      printf 'gate: --emit-digest-to 는 %s 안이어야 합니다 — 받은 값은 %s 로 해소됩니다\n' \
+        "$emit_digest_root" "$emit_digest_dir" >&2
+      exit 2
+    fi
     GATE_EMIT_DIGEST_TO="$emit_digest_dir/$(basename "$emit_digest_to")"
     # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
     # and an enumeration of exit points is the wrong shape for it — the first

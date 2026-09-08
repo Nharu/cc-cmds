@@ -1281,7 +1281,16 @@ ledger_last() {
 # ---------------------------------------------------------------------------
 rundir_init() {
   RUN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$RUN_ID"
-  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log"
+  # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest-to`
+  # writes a path the caller names, and that write is graded by nothing, guarded
+  # by nothing and recorded in no ledger field — so the set of paths it can
+  # reach is the whole of its containment. The run directory itself is the run's
+  # CONTROL PLANE: `done` stops the watcher by existing, a stage's `.rc` is read
+  # back and laundered into a ledger row's exit code, `ledger.lock` is what
+  # makes the hash-chained ledger's mutual exclusion hold. Nothing owns this
+  # subdirectory but the emission, so an ungraded write inside it can destroy
+  # only a value the next caller re-derives anyway.
+  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
 }

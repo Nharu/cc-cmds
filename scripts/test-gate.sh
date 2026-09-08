@@ -1618,7 +1618,7 @@ fi
 # written, and every assertion downstream of the read then collapses on a
 # premise rather than on the property it names — which is how a suite reports
 # five failures for one cause.
-EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/emit"
+EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
 
 # The directory is deliberately NOT created first: the gate makes the parent of
 # the path it was handed, and a caller naming a fresh run-directory subpath is
@@ -1626,13 +1626,13 @@ EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/emit"
 want_ls=$(cd "$WT" && ls)
 out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
-      --emit-digest-to "$EMIT/d1.json" -- ls 2>/dev/null)
+      --emit-digest-to "$EMIT/gate-digest-d1.json" -- ls 2>/dev/null)
 check "방출을 켜도 exec 의 stdout 은 래핑된 명령의 stdout 그 자체다" "$out" "$want_ls"
 
 errout=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
-         --emit-digest-to "$EMIT/d2.json" -- ls 2>&1 >/dev/null)
-H_emit=$(jq -r .H "$EMIT/d2.json" 2>/dev/null || true)
+         --emit-digest-to "$EMIT/gate-digest-d2.json" -- ls 2>&1 >/dev/null)
+H_emit=$(jq -r .H "$EMIT/gate-digest-d2.json" 2>/dev/null || true)
 if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
   bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
 else
@@ -1650,23 +1650,23 @@ else
   check "방출값이 직후 snapshot 의 H 와 같다" "$H_emit" "$(HH)"
   snapjson=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
   check "방출 파일이 의무 총계를 싣는다" \
-    "$(jq -r .obligations_total "$EMIT/d2.json")" \
+    "$(jq -r .obligations_total "$EMIT/gate-digest-d2.json")" \
     "$(printf '%s' "$snapjson" | jq -r .obligations_total)"
   check "방출 파일이 대기 승인 총계를 싣는다" \
-    "$(jq -r .pending_approvals_total "$EMIT/d2.json")" \
+    "$(jq -r .pending_approvals_total "$EMIT/gate-digest-d2.json")" \
     "$(printf '%s' "$snapjson" | jq -r .pending_approvals_total)"
   # THE ACTOR FIELD IS COMPARED THE WAY A CONSUMER COMPARES IT — verbatim
   # against its own `$CC_PIPELINE_STAGE_ID`. A first version sanitized the field
   # on the directory-name character class, and every stage id this pipeline
   # mints carries a character outside it, so a verbatim comparison called every
   # stage's own file foreign. Nothing read the field, so nothing caught that.
-  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMIT/d2.json")" "router"
+  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMIT/gate-digest-d2.json")" "router"
   ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" exec --manifest "$MANIFEST" \
       --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HH)" --rationale x \
-      --emit-digest-to "$EMIT/actor.json" -- ls ) >/dev/null 2>&1
+      --emit-digest-to "$EMIT/gate-digest-actor.json" -- ls ) >/dev/null 2>&1
   check "스테이지 id 는 축자로 실린다 (소비자의 대조가 성립한다)" \
-    "$(jq -r .actor "$EMIT/actor.json" 2>/dev/null)" "S5:SEG:2"
+    "$(jq -r .actor "$EMIT/gate-digest-actor.json" 2>/dev/null)" "S5:SEG:2"
 fi
 
 # `act` is the other acting verb and it is captured with `2>&1` everywhere else
@@ -1674,18 +1674,18 @@ fi
 # alone and stay green.
 ( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --target infra --segment SW \
   --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest-to "$EMIT/d3.json" -- ls ) >/dev/null 2>&1
-check "act 경로도 방출한다" "$(jq -r .H "$EMIT/d3.json" 2>/dev/null || true)" "$(HH)"
+  --emit-digest-to "$EMIT/gate-digest-d3.json" -- ls ) >/dev/null 2>&1
+check "act 경로도 방출한다" "$(jq -r .H "$EMIT/gate-digest-d3.json" 2>/dev/null || true)" "$(HH)"
 
 # The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
 # emission taken at that first append is one row behind here and only here.
 ( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra \
   --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
-  --emit-digest-to "$EMIT/d4.json" -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+  --emit-digest-to "$EMIT/gate-digest-d4.json" -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
 n=$(grep -c '^- `segment` | id=SEMIT ' "$LEDGER" || true)
 check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
 check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
-  "$(jq -r .H "$EMIT/d4.json" 2>/dev/null || true)" "$(HH)"
+  "$(jq -r .H "$EMIT/gate-digest-d4.json" 2>/dev/null || true)" "$(HH)"
 
 # The refusal path. An emission the caller asked for and did not get is the one
 # failure it cannot detect on its own — it just falls back to the round trip
@@ -1718,6 +1718,38 @@ if [ -e "$WORK/outside.json" ]; then
 else
   ok "거부된 방출 경로에는 아무것도 쓰이지 않는다"
 fi
+
+# THE TRAP'S WHOLE REASON, ASSERTED. The enumeration it replaced missed the
+# refusals that append a row and then exit, and a caller finding no file there
+# falls back to the round trip forever — which looks exactly like the flag
+# working and saving nothing. A stale digest takes exit 4 through that shape:
+# the call is refused, and the value the caller needs is the one it could not
+# have known. Nothing pinned this; it was checked by hand and left unmeasured.
+rm -f "$EMIT/gate-digest-refused.json"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
+     --rationale x --emit-digest-to "$EMIT/gate-digest-refused.json" -- ls
+check "낡은 다이제스트는 거부된다 (이 단언의 전제)" "$rc" "4"
+if [ -s "$EMIT/gate-digest-refused.json" ]; then
+  ok "거부된 호출도 방출한다 (트랩이 덮는 자리)"
+else
+  bad "거부된 호출도 방출한다 (트랩이 덮는 자리)" "파일이 없거나 비었다"
+fi
+check "거부 뒤 방출값이 살아 있는 다이제스트다" \
+  "$(jq -r .H "$EMIT/gate-digest-refused.json" 2>/dev/null)" "$(HH)"
+
+# THE CONTROL PLANE IS NOT REACHABLE. The run directory holds the watcher's
+# stop flag, the stage exit codes that get read back into ledger rows, and the
+# ledger lock — an ungraded write into any of them is worse than the one this
+# flag was confined for, so the basename and the directory are both pinned.
+for evil in "$XDG_STATE_HOME/cc-cmds/run/R1/done" \
+            "$XDG_STATE_HOME/cc-cmds/run/R1/ledger.lock" \
+            "$XDG_STATE_HOME/cc-cmds/run/R1/gate-digest-loose.json" \
+            "$EMIT/notadigest.json"; do
+  gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale x --emit-digest-to "$evil" -- ls
+  check "제어 평면 경로는 거부된다 ($(basename "$evil"))" "$rc" "2"
+done
 
 # THE PREFIX TEST RUNS BEFORE ANYTHING IS CREATED. `mkdir -p` on an out-of-tree
 # path makes that directory and only then gets refused, which leaves a
@@ -1755,11 +1787,11 @@ fi
 # accepted. Resolving only the candidate side and not the root would refuse
 # this, which is why both sides take `-P`.
 rm -rf "$WORK/rdlink"
-ln -s "$RDIR" "$WORK/rdlink"
+ln -s "$RDIR/digest" "$WORK/rdlink"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$(HH)" --rationale x \
-     --emit-digest-to "$WORK/rdlink/viaLink.json" -- ls
-check "링크를 거쳐 도달한 런 디렉터리는 거짓 거부되지 않는다" "$rc" "0"
+     --emit-digest-to "$WORK/rdlink/gate-digest-vialink.json" -- ls
+check "링크를 거쳐 도달한 격리 디렉터리는 거짓 거부되지 않는다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer
