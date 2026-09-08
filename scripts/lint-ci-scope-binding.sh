@@ -226,11 +226,58 @@ matches_filter() {
 run_lines=$(yq -r 'explode(.) | .jobs[].steps[] | select(has("run")) | .run' "$workflow" 2>/dev/null) \
   || die2 "워크플로의 steps 를 파싱하지 못했다: $workflow_rel"
 
+# A step the workflow disables itself must not contribute to the execution set:
+# the closure of a target named by a step that never runs joins the union and
+# makes the header's claim above false, in the false direction (the filter is
+# told to widen for a script nothing runs) and in the quiet one (a script the
+# filter does name stops being reported because the closure absorbed it).
+# Evaluating a GitHub expression is not this lint's job, so the honest answer is
+# neither to include it nor to drop it quietly — it is that the comparison could
+# not be carried out. A conditional step whose verb is not `make` contributes
+# nothing to the execution set and passes quietly, as the setup steps do.
+cond_rows=$(yq -r '
+  explode(.) | .jobs | to_entries[]
+  | .key as $job | (.value.if // null) as $jobif
+  | ((.value.steps // []) | to_entries[])
+  | select(.value | has("run"))
+  | select(($jobif != null) or (.value.if != null))
+  | .key as $idx | .value.run as $run
+  | ($run | split("\n"))[] | [$job, ($idx|tostring), .] | @tsv
+' "$workflow" 2>/dev/null || true)
+
+cond_make=$(printf '%s\n' "$cond_rows" | awk -F'\t' '
+  NF >= 3 && $3 ~ /^[[:space:]]*make([[:space:]]|$)/ {
+    printf "  잡 %s 스텝 %s: %s\n", $1, $2, $3
+  }
+')
+if [ -n "$cond_make" ]; then
+  die2 "조건부 make 스텝이 있다 — 이 린트는 GitHub 표현식을 평가하지 않으므로 그 스텝이 도는지 알 수 없고, 실행 집합을 유도할 수 없다:
+$cond_make"
+fi
+
 make_lines=$(printf '%s\n' "$run_lines" | grep -E '^[[:space:]]*make[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]*$' || true)
 make_count=$(printf '%s\n' "$make_lines" | grep -c '[^[:space:]]' || true)
 
 if [ "$make_count" -eq 0 ]; then
   die2 "I1: 'run: make <타깃>' 줄이 0 개다 — 실행 집합을 유도할 수 없다"
+fi
+
+# The strict regex above is what yields a target name. A `run:` line that starts
+# with `make` but does not match it — `make -C dir t`, `make t VAR=1`, `make a b`,
+# `make ${{ matrix.t }}`, `make t && echo done` — would otherwise drop out with no
+# trace at all. When it is the only `make` line the check above is already loud,
+# but when a well-formed line accompanies it the union is silently incomplete:
+# the header's claim is false and nothing says so. Same defect shape as the
+# conditional step, so it gets the same disposition, and the rejected lines are
+# quoted verbatim so the reader sees which form was not understood.
+loose_make=$(printf '%s\n' "$run_lines" | grep -E '^[[:space:]]*make([[:space:]]|$)' || true)
+loose_count=$(printf '%s\n' "$loose_make" | grep -c '[^[:space:]]' || true)
+if [ "$loose_count" -ne "$make_count" ]; then
+  unparsable=$(printf '%s\n' "$loose_make" \
+    | grep -vE '^[[:space:]]*make[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]*$' \
+    | grep '[^[:space:]]' | sed -E 's/^/  /' || true)
+  die2 "'run: make …' 줄 중 타깃을 유도할 수 없는 형태가 있다 — 합집합이 조용히 불완전해진다:
+$unparsable"
 fi
 # `awk` reads every line without exiting early, for the same reason the matcher
 # above avoids `grep -q`: a right side that stops reading turns the pipeline into
@@ -298,12 +345,17 @@ make_field() {
 prereqs=""
 scripts_rel=""
 bash_recipe_re='^bash [^[:space:]]+$'
-for t in $make_targets; do
-  t_prereqs=$(make_field "$t" PREREQ)
-  if [ -n "$(printf '%s' "$t_prereqs" | tr -d '[:space:]')" ]; then
-    viol "I2" "Makefile:$t" "선행 타깃이 있다: $t_prereqs — ubuntu 를 겨냥한 편집이 이 레그를 함께 움직인다"
-    prereqs="$prereqs $t_prereqs"
-  fi
+
+# The same question asked of the same text must get the same answer wherever it
+# is asked. This body used to be inline in the per-target loop while the
+# prerequisite walker carried a prefix-match copy that checked neither the field
+# count nor a line continuation, so every recipe line reached THROUGH a
+# prerequisite bypassed I3 — and that is the route the union derivation feeds
+# most of the execution set through. Lifting it makes the check total over every
+# recipe line the leg reaches by any route, and keys each violation to the target
+# it actually came from.
+collect_recipe_scripts() {
+  local t="$1" line
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
@@ -317,21 +369,35 @@ for t in $make_targets; do
   done <<EOF
 $(make_field "$t" RECIPE)
 EOF
+}
+
+for t in $make_targets; do
+  t_prereqs=$(make_field "$t" PREREQ)
+  t_recipe=$(make_field "$t" RECIPE)
+  # A target the Makefile does not resolve yields empty for both fields. The loop
+  # then contributes nothing while `scripts_rel` stays non-empty thanks to some
+  # OTHER target, so the emptiness check further down never fires — and the I1
+  # line above goes on claiming the execution set was derived from this name.
+  # Existence has to be its own invariant rather than a side effect of that
+  # check. One predicate covers all three shapes: undefined, defined-but-empty,
+  # and defined in an `include`d file the root-Makefile reader never sees.
+  if [ -z "$(printf '%s' "$t_prereqs" | tr -d '[:space:]')" ] &&
+     [ -z "$(printf '%s' "$t_recipe" | tr -d '[:space:]')" ]; then
+    viol "I1" "Makefile:$t" "워크플로가 이름을 댄 타깃을 Makefile 이 해소하지 못한다 — 선행도 레시피도 없다(정의되지 않았거나, 비었거나, include 로 정의됐다)"
+  fi
+  if [ -n "$(printf '%s' "$t_prereqs" | tr -d '[:space:]')" ]; then
+    viol "I2" "Makefile:$t" "선행 타깃이 있다: $t_prereqs — ubuntu 를 겨냥한 편집이 이 레그를 함께 움직인다"
+    prereqs="$prereqs $t_prereqs"
+  fi
+  collect_recipe_scripts "$t"
 done
 
 # Prerequisites are expanded anyway so rule 1 still has both sides to compare;
 # I2 has already recorded that they should not be there.
 expand_prereqs() {
-  local t p sub
+  local t sub
   for t in $1; do
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      case "$line" in
-        'bash '*) scripts_rel=$(printf '%s\n%s\n' "$scripts_rel" "${line#bash }") ;;
-      esac
-    done <<EOF
-$(make_field "$t" RECIPE)
-EOF
+    collect_recipe_scripts "$t"
     sub=$(make_field "$t" PREREQ)
     if [ -n "$(printf '%s' "$sub" | tr -d '[:space:]')" ]; then
       expand_prereqs "$sub"

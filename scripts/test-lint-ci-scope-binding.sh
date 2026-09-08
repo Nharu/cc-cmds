@@ -21,6 +21,12 @@
 #   expected-missing.txt     the files rule 1 must name. `FAIL-1-issue-586` is
 #                            where detection has to be visible in review, so the
 #                            names are committed rather than described.
+#   expected-claim.txt       the exact B5 `청구:` lines that fixture must print,
+#                            compared as a SET. Absent means the empty set, and
+#                            that is the assertion that catches the claim line
+#                            being emitted ABOVE the B1-B4 gate: a rejected
+#                            subject tree that starts billing turns its fixture
+#                            red instead of passing unnoticed.
 #
 # Three checks keep the suite from passing vacuously, and none of them measures
 # the filesystem. A count taken with `ls` is green against an empty fixture root,
@@ -42,19 +48,57 @@
 #      its own message TEMPLATE, read out of the lint's source and turned into a
 #      pattern, and every site has to have been observed at least once across the
 #      sweep. A site that no fixture reaches is named.
+#
+#      That derivation has to be TOTAL over the source, and it is not total for
+#      free. The extraction wants three quoted arguments, and a `viol` call
+#      written across two physical lines with a trailing backslash used to match
+#      the loose `grep` and then be refused by the strict `sed` — a refusal
+#      indistinguishable from a line that was never named at all, so the site
+#      carried no obligation and the sweep stayed green. The 26 call sites run to
+#      a median of 126 columns, so wrapping the next one is an ordinary edit
+#      rather than an exotic one. Two things close it: the reader consumes
+#      LOGICAL lines (continuations joined, the first physical line number kept
+#      for the message), and the loose count and the parsed count are asserted
+#      EQUAL so any future extraction miss is a named failure.
+#
+#      The obligation list is a checked-in INVENTORY compared by set equality,
+#      not a cardinality floor. A floor is satisfied again by a deletion paired
+#      with a decoy that reuses an already-observed template, since the emission
+#      set is keyed by `(rule id, template)` and pooled across the sweep — so an
+#      unreachable site is exempted by a real one it shares wording with. Set
+#      equality makes a deleted branch show up in review as a deleted line, and
+#      a duplicate `(id, template)` pair is a hard failure because two sites with
+#      identical wording are indistinguishable by construction.
 
 set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-ci-scope-binding"
+lint_src="$script_dir/lint-ci-scope-binding.sh"
+viol_inventory="$fixtures/expected-viol-sites.txt"
 
 ASSERTION_FLOOR=60
-VIOL_SITE_FLOOR=26
 
 if [[ ! -d "$fixtures" ]]; then
   echo "FAIL: fixtures root missing: $fixtures" >&2
   exit 2
+fi
+
+# The lint enumerates its corpus with `git ls-files` and falls back to `find`
+# when that comes back empty, and `find` does not honour `.gitignore`. So the
+# verdict used to depend on WHERE the fixture tree sat: copied outside a
+# repository, an ignored fixture file the lint should have reported was swept
+# into the corpus and the suite went green on the very defect CI was red for.
+# The lint names its enumerator on every summary line precisely so the
+# transition is readable; nothing read it. Both branches below assert, so the
+# pass/fail verdict no longer moves with the location — only which enumerator is
+# named, and that is stated out loud.
+if git -C "$fixtures" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  inside_repo=1
+else
+  inside_repo=0
+  echo "NOTE: 픽스처 트리가 git 레포 밖이다 — 린트가 find 열거자로 떨어지며 이 런은 그 사실을 단언한다. 무시-삼킴 탐지는 이 위치에서 불가능하다"
 fi
 
 stderr_capture=$(mktemp "${TMPDIR:-/tmp}/test-lint-ci-scope-binding.XXXXXX")
@@ -178,6 +222,68 @@ for fixture in "$fixtures"/*/; do
     done < "$expected_missing"
   fi
 
+  # B5's billing line, pinned PER FIXTURE against the exact expected lines. A
+  # sweep-wide `grep -q '^청구: '` says only that some fixture somewhere printed
+  # one, and exactly two fixtures do — so either of them discharged the whole
+  # sweep's obligation while the number went wrong, the owner went wrong, or the
+  # line climbed above the B1-B4 gate. All three of those mutations were green.
+  # The fixtures with no expectation file assert ZERO claim lines, and that is
+  # the half that catches a rejected subject tree starting to bill.
+  expected_claim="$fixture/expected-claim.txt"
+  if [[ -f "$expected_claim" ]]; then
+    want_c=$(grep -v '^$' "$expected_claim" | sort)
+  else
+    want_c=""
+  fi
+  got_c=$(grep '^청구: ' "$stdout_capture" | sort)
+  assertions=$((assertions + 1))
+  if [[ "$got_c" != "$want_c" ]]; then
+    fixture_ok=0
+    echo "FAIL: $fixture_name (B5 청구 줄이 기대와 다르다)" >&2
+    echo "  expected:" >&2
+    printf '%s\n' "$want_c" | sed 's/^/    /' >&2
+    echo "  actual:" >&2
+    printf '%s\n' "$got_c" | sed 's/^/    /' >&2
+  fi
+
+  # The enumerator the lint actually used. Fixtures that abort before the
+  # summary line — the `ERR-*` class, and any fixture whose `die2` fires — never
+  # print one, so asserting on them unconditionally would redden them for a
+  # reason that has nothing to do with enumeration.
+  if grep -qh 'ci-scope-binding — 필터 글로브' "$stdout_capture" "$stderr_capture"; then
+    assertions=$((assertions + 1))
+    if (( inside_repo == 1 )); then
+      if ! grep -qh '(git ls-files)' "$stdout_capture" "$stderr_capture"; then
+        fixture_ok=0
+        echo "FAIL: $fixture_name (레포 안인데 린트가 git ls-files 로 열거하지 않았다 — find 폴백은 무시된 파일을 코퍼스에 넣는다)" >&2
+      fi
+    else
+      if ! grep -qh '(find)' "$stdout_capture" "$stderr_capture"; then
+        fixture_ok=0
+        echo "FAIL: $fixture_name (레포 밖인데 린트가 find 로 열거하지 않았다)" >&2
+      fi
+    fi
+  fi
+
+  # The guard the first review asked for alongside whichever fix was chosen:
+  # a fixture file swallowed by the host repo's ignore rules is present to
+  # `find` and absent from `git ls-files`, and that difference is the whole
+  # class. Naming the files turns "CI is red and nobody knows why" into a named
+  # failure. Only meaningful inside a repository — outside one there is no
+  # ignore information to compare against, which is stated in the NOTE above.
+  if (( inside_repo == 1 )); then
+    assertions=$((assertions + 1))
+    fx_tracked=$( (cd "$fixture" && git -c core.quotePath=false ls-files -z 2>/dev/null) \
+      | tr '\0' '\n' | grep -v '^$' | sort )
+    fx_found=$( (cd "$fixture" && find . -type f 2>/dev/null) | sed -E 's|^\./||' | sort )
+    fx_swallowed=$(comm -13 <(printf '%s\n' "$fx_tracked") <(printf '%s\n' "$fx_found") | grep -v '^$')
+    if [[ -n "$fx_swallowed" ]]; then
+      fixture_ok=0
+      echo "FAIL: $fixture_name (픽스처 파일이 tracked 가 아니다 — 호스트 레포의 무시 규칙에 삼켜졌거나 add 되지 않았다)" >&2
+      printf '%s\n' "$fx_swallowed" | sed 's/^/    /' >&2
+    fi
+  fi
+
   # R11's negative control, kept in the suite rather than left as a one-off
   # observation: rules 8 and 9 must be silent on an input that does not violate
   # them. A rule that reports on everything is not a detector either.
@@ -208,6 +314,38 @@ fi
 # so adding a `viol` call adds an obligation in the same commit that adds the
 # branch — a hand-maintained list would go stale exactly when a new branch shows
 # up unasserted, which is the failure being guarded against.
+
+# Physical lines folded into logical ones: a trailing backslash continues, and
+# the leading whitespace of the continued line collapses to a single space the
+# way the shell's own word splitting would see it. The FIRST physical line
+# number is what is carried forward, so `lint:<n>` in a message still points at
+# the line a reader would go to.
+logical_lines() {
+  awk '
+    {
+      line = $0
+      if (buf == "") start = NR
+      if (line ~ /\\$/) {
+        sub(/[ \t]*\\$/, "", line)
+        if (buf == "") { buf = line } else { sub(/^[ \t]+/, " ", line); buf = buf line }
+        next
+      }
+      if (buf != "") { sub(/^[ \t]+/, " ", line); line = buf line; buf = "" }
+      printf "%d\t%s\n", start, line
+    }
+    END { if (buf != "") printf "%d\t%s\n", start, buf }
+  ' "$1"
+}
+
+# Loose: every logical line that calls `viol`, excluding commented-out ones.
+# Strict: the same lines with the three quoted arguments pulled out. The two are
+# asserted equal below; that equality is what makes the derivation total.
+loose_sites=$(logical_lines "$lint_src" \
+  | grep -E '(^|[^#])viol "' \
+  | grep -vE '^[0-9]+	[[:space:]]*#')
+parsed_sites=$(printf '%s\n' "$loose_sites" \
+  | sed -n 's#^\([0-9]*\)	.*viol "\([^"]*\)" "[^"]*" "\([^"]*\)".*$#\1	\2	\3#p')
+
 uncovered=0
 sites=0
 while IFS=$'\t' read -r vline vid vmsg; do
@@ -223,12 +361,40 @@ while IFS=$'\t' read -r vline vid vmsg; do
     uncovered=$((uncovered + 1))
     echo "FAIL: 방출 커버리지 — lint:$vline 의 [$vid] 가 어느 픽스처에서도 관측되지 않았다: $vmsg" >&2
   fi
-done < <(
-  grep -nE '(^|[^#])viol "' "$script_dir/lint-ci-scope-binding.sh" \
-    | grep -v '^[0-9]*:[[:space:]]*#' \
-    | sed -n 's#^\([0-9]*\):.*viol "\([^"]*\)" "[^"]*" "\([^"]*\)".*$#\1\t\2\t\3#p'
-)
+done < <(printf '%s\n' "$parsed_sites")
 if (( uncovered > 0 )); then
+  failures=$((failures + 1))
+fi
+
+# Every logical line the loose match named must have been parsed. A `sed` that
+# refuses a line it was handed looks exactly like a line that was never handed
+# to it, so without this the extraction can go partial in silence — and going
+# partial is what removes a site's obligation.
+assertions=$((assertions + 1))
+unparsed_sites=$(comm -13 \
+  <(printf '%s\n' "$parsed_sites" | grep -v '^$' | cut -f1 | sort -u) \
+  <(printf '%s\n' "$loose_sites" | grep -v '^$' | cut -f1 | sort -u))
+if [[ -n "$unparsed_sites" ]]; then
+  echo "FAIL: 방출 커버리지 — viol 호출로 지명됐으나 세 인자 추출에 실패한 줄이 있다 — 그 자리는 아무 의무도 지지 않는다:" >&2
+  printf '%s\n' "$unparsed_sites" | sed 's/^/  lint:/' >&2
+  failures=$((failures + 1))
+fi
+
+# Two sites with identical `(rule id, template)` are indistinguishable by
+# construction: the emission set is pooled across the sweep, so one of them is
+# discharged by the other's output and can never be asked about on its own.
+# That makes the duplicate itself the error, not a thing to tolerate.
+assertions=$((assertions + 1))
+dup_keys=$(printf '%s\n' "$parsed_sites" | grep -v '^$' | cut -f2,3 | sort | uniq -d)
+if [[ -n "$dup_keys" ]]; then
+  echo "FAIL: 방출 커버리지 — (규칙 id, 템플릿) 이 같은 자리가 둘 이상이다 — 서로를 면제하므로 문면을 갈라야 한다:" >&2
+  while IFS= read -r dk; do
+    [[ -n "$dk" ]] || continue
+    dl=$(printf '%s\n' "$parsed_sites" | awk -F'\t' -v k="$dk" '$2 "\t" $3 == k { printf "%s ", $1 }')
+    echo "  [$dk] — lint:$dl" >&2
+  done <<EOF
+$dup_keys
+EOF
   failures=$((failures + 1))
 fi
 
@@ -236,18 +402,33 @@ fi
 # deletes the obligation to exercise it and the loop stays silent — measured:
 # neutralizing the I3 two-field site left the sweep green, because the sibling
 # I3 branch keeps the `<id>|<target>` key alive and the vanished site is no
-# longer asked about. A floor is what a self-derived list cannot supply itself:
-# adding a site clears it, removing one has to be a deliberate edit here.
+# longer asked about. A cardinality floor does not answer that: a deletion paired
+# with a decoy reusing an observed template restores the count exactly. A
+# checked-in inventory compared by SET EQUALITY does — a removed branch arrives
+# in review as a removed line, and drift in either direction is named.
 assertions=$((assertions + 1))
-if (( sites < VIOL_SITE_FLOOR )); then
-  echo "FAIL: 방출 자리가 $sites 개로 하한 $VIOL_SITE_FLOOR 미만이다 — viol 호출이 지워졌거나 추출식이 낡았다" >&2
+derived_inventory=$(printf '%s\n' "$parsed_sites" | grep -v '^$' | cut -f2,3 | sort -u)
+if [[ ! -f "$viol_inventory" ]]; then
+  echo "FAIL: 방출 자리 인벤토리가 없다: $viol_inventory" >&2
   failures=$((failures + 1))
+else
+  want_inventory=$(grep -v '^$' "$viol_inventory" | sort -u)
+  if [[ "$derived_inventory" != "$want_inventory" ]]; then
+    echo "FAIL: 방출 자리 인벤토리가 린트의 실제 viol 자리와 다르다 — 갈래가 지워졌거나 새 갈래가 등록되지 않았다" >&2
+    echo "  인벤토리에만 있다(지워진 갈래):" >&2
+    comm -23 <(printf '%s\n' "$want_inventory") <(printf '%s\n' "$derived_inventory") | sed 's/^/    /' >&2
+    echo "  린트에만 있다(등록되지 않은 갈래):" >&2
+    comm -13 <(printf '%s\n' "$want_inventory") <(printf '%s\n' "$derived_inventory") | sed 's/^/    /' >&2
+    failures=$((failures + 1))
+  fi
 fi
 
 # B5 emits a claim line rather than a violation, so no expected-violations.txt
 # can hold it and the loop above cannot see it. It is the one number this lint
 # puts in a GREEN log, which is precisely why nothing else would notice it going
-# quiet.
+# quiet. The per-fixture `expected-claim.txt` assertions carry the real weight;
+# this sweep-wide check stays as a COLLAPSE guard, because if the fixture root
+# went empty every per-fixture assertion would pass vacuously.
 assertions=$((assertions + 1))
 if ! grep -q '^청구: ' "$observed_out"; then
   echo "FAIL: 방출 커버리지 — B5 의 청구 줄이 어느 픽스처에서도 관측되지 않았다" >&2
