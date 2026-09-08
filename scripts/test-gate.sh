@@ -51,7 +51,12 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-repo_root=$(cd "$script_dir/.." && pwd)
+# `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
+# override. The selector runs a cut-down COPY of this file out of a scratch
+# directory, and a copy outside `scripts/` cannot derive the repository root
+# from its own path. A full run never sets the variable, so the derivation
+# below is what it always was.
+repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
 # `bash -c` whose argv the parent interpolates — so the export reads as
@@ -65,6 +70,181 @@ repo_root=$(cd "$script_dir/.." && pwd)
 export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+
+# ---------------------------------------------------------------------------
+# The section selector — `--list` and `--sections <id>[,<id>...]`
+#
+# This suite is serial by construction: its sections share one fixture and one
+# accumulating ledger, so "run only the named section" cannot be a conditional
+# wrapped around each block — the state that flows between sections would leak
+# straight past the condition. The selector instead cuts a COPY of this file
+# down to the unconditional regions plus the named sections, and runs that.
+#
+# THE UNCONDITIONAL REGIONS ARE TWO, and both are delimited by a marker rather
+# than by a line range. `# --- preamble-end ---` closes the head — the shared
+# helpers, the static scans, and the fixture repository every section stands
+# on — and `# --- epilogue-begin ---` opens the tail, which is the totals line
+# and the exit status. Line numbers move whenever a section is added or a
+# banner is edited; a marker moves only when someone moves it, which is what
+# makes it the unit a later change can carry.
+#
+# EVERY ESCAPE HATCH POINTS AT THE FULL RUN. An id nobody declared, a marker
+# that is missing, a section that is not there — each of them runs MORE, never
+# less, so a wrong mapping costs time and never coverage. The single exception
+# is a DUPLICATE id, and it is an exception because it fails in the forbidden
+# direction: an ambiguous pick RESOLVES to one of the two blocks, so the run
+# covers less while reporting green. That one is a hard error, and the message
+# names both banners rather than the id alone.
+# ---------------------------------------------------------------------------
+SELF="$script_dir/${0##*/}"
+sections_want=""
+sections_list=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --list)
+      sections_list=1; shift ;;
+    --sections)
+      sections_want="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --sections=*)
+      sections_want="${1#--sections=}"; shift ;;
+    *)
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...])\n' "$1" >&2
+      exit 2 ;;
+  esac
+done
+
+# The index, one record per line:
+#
+#   PRE <line>                                the last line of the head
+#   EPI <line>                                the first line of the tail
+#   SEC <start> <end> <id> <idline> <title>   one addressable section
+#
+# A section carrying no machine-readable banner reports its id as `-`, which is
+# how `--list` tells "not addressable yet" from "addressable". Sections that
+# sit inside the head are not indexed at all — they are not skippable, so
+# giving them a row would invite a caller to try.
+#
+# A section BEGINS at the rule line that opens its banner box, not at the
+# numbered line inside it, because the box is one comment and cutting it in
+# half would leave a dangling rule at the top of the copy.
+section_index() {
+  awk '
+    {
+      if ($0 ~ /^# --- preamble-end ---$/)        { pre = NR }
+      else if ($0 ~ /^# --- epilogue-begin ---$/) { epi = NR }
+      else if ($0 ~ /^# --- section: /) {
+        id = $0
+        sub(/^# --- section:[ \t]*/, "", id)
+        sub(/[ \t]*\|.*$/, "", id)
+        sub(/[ \t]*---[ \t]*$/, "", id)
+        nid = nid + 1; idline[nid] = NR; idval[nid] = id
+      }
+      else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*\. /) {
+        nb = nb + 1; bound[nb] = NR - 1; title[nb] = $0
+      }
+      prev = $0
+    }
+    END {
+      if (pre == 0 || epi == 0) { print "ERR"; exit 0 }
+      print "PRE " pre
+      print "EPI " epi
+      for (i = 1; i <= nb; i++) {
+        s = bound[i]
+        if (s <= pre) continue
+        e = (i < nb ? bound[i + 1] - 1 : epi - 1)
+        if (e >= epi) e = epi - 1
+        id = "-"; il = 0
+        for (j = 1; j <= nid; j++) {
+          if (idline[j] >= s && idline[j] <= e) { id = idval[j]; il = idline[j] }
+        }
+        print "SEC " s " " e " " id " " il " " title[i]
+      }
+    }
+  ' "$SELF"
+}
+
+sec_idx=""
+if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
+  sec_idx=$(section_index)
+  case "$sec_idx" in
+    ERR*)
+      if [ "$sections_list" = "1" ]; then
+        printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
+        exit 2
+      fi
+      printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
+      sec_idx="" ;;
+  esac
+fi
+
+if [ -n "$sec_idx" ]; then
+  # DUPLICATES ARE CHECKED BEFORE ANY PICK, and `--list` is checked too. The id
+  # space is one entry wide today, so this is trivially green — it is here
+  # because the addressing pass that fills the other banners needs the check to
+  # be ALREADY in place, or the ids that collide slip through in silence.
+  sec_dups=$(printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) .*$/\1/p' \
+    | sed -n '/^-$/!p' | sort | uniq -d)
+  if [ -n "$sec_dups" ]; then
+    printf 'test-gate: 절 id 가 중복입니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' >&2
+    for d in $sec_dups; do
+      printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC [0-9]* [0-9]* $d \([0-9]*\) \(.*\)\$/  id=$d — 배너 줄 \1: \2/p" >&2
+    done
+    exit 2
+  fi
+fi
+
+if [ "$sections_list" = "1" ]; then
+  printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* \(.*\)$/\1 \2/p' \
+    | sed -n '/^- /!p'
+  exit 0
+fi
+
+if [ -n "$sections_want" ] && [ -n "$sec_idx" ]; then
+  sec_ranges=""
+  sec_miss=""
+  while IFS= read -r sec_w; do
+    [ -n "$sec_w" ] || continue
+    # An id spelled with anything outside this set is treated as unknown rather
+    # than interpolated into the `sed` address below.
+    case "$sec_w" in
+      *[!A-Za-z0-9_-]*) sec_miss="$sec_w"; break ;;
+    esac
+    sec_r=$(printf '%s\n' "$sec_idx" \
+      | sed -n "s/^SEC \([0-9]*\) \([0-9]*\) $sec_w [0-9]* .*\$/\1 \2/p")
+    if [ -z "$sec_r" ]; then sec_miss="$sec_w"; break; fi
+    sec_ranges="$sec_ranges$sec_r
+"
+  done <<SECEOF
+$(printf '%s\n' "$sections_want" | tr ',' '\n')
+SECEOF
+
+  if [ -n "$sec_miss" ]; then
+    printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
+  else
+    sec_pre=$(printf '%s\n' "$sec_idx" | sed -n 's/^PRE \([0-9]*\)$/\1/p')
+    sec_epi=$(printf '%s\n' "$sec_idx" | sed -n 's/^EPI \([0-9]*\)$/\1/p')
+    sec_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-sections.XXXXXX")
+    sec_cut="$sec_dir/test-gate.sh"
+    sed -n "1,${sec_pre}p" "$SELF" > "$sec_cut"
+    # Sorted by start line so the copy keeps FILE order whatever order the ids
+    # were typed in — the sections are not independent of each other's order.
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+    sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
+    CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
+    sec_rc=$?
+    rm -rf "$sec_dir"
+    exit "$sec_rc"
+  fi
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -411,6 +591,18 @@ esac
 check "픽스처 매니페스트가 검사를 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+
+# EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
+# helpers, the two static scans (`0a`, `0b`), and the fixture repository with
+# its manifest and authorization record. The fixture is unconditional because
+# every section below stands on the `$WORK` tree and the repository it builds,
+# and a selected section handed neither would fail for a reason that has
+# nothing to do with what it asserts.
+#
+# The two scans are here because they are still part of the head. The pass that
+# lifts them out into sections of their own moves this marker above them, and
+# the head's assertion count drops to the fixture's own three.
+# --- preamble-end ---
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -2538,6 +2730,13 @@ check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 18. Concurrent appends do not chain to the same parent
+# --- section: 18 | group: darwin | covers: gate_append, lock_tool ---
+#
+# THE ONE ADDRESSABLE SECTION SO FAR, and it is this one because it is the only
+# block left whose darwin-ness is real: `lock_tool()` hands out `/usr/bin/lockf`
+# on darwin and nothing elsewhere, so the ordering asserted below is a property
+# of the locked arm and cannot be claimed off it. The narrowed macOS leg names
+# this id instead of running the file.
 #
 # `gate_append` used to read the chain tip OUTSIDE the lock, so two writers read
 # the same tip and both emitted rows carrying the same `prev`. The verifier then
@@ -5497,18 +5696,22 @@ check "디렉터리를 철자하지 않은 어간 글로브도 거절된다" "$r
 # document write, so it is the wrapper this guard is guaranteed to meet. The
 # plain spelling is refused by the basename scan and was already; the glob
 # spelling is the one that needs `lockf` in arm 2's list.
-if [ -x /usr/bin/lockf ]; then
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
-  check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
-  check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
-else
-  ok "lockf 가 없는 호스트라 래퍼 단언을 건너뛴다"
-fi
+#
+# UNCONDITIONAL, AND THE DARWIN GUARD THAT USED TO WRAP THESE TWO WAS FALSE.
+# What they assert is that the gate REFUSES this argv, and the refusal is a
+# pure `case` over the command line with no filesystem probe — `lockf` is never
+# executed, so whether `/usr/bin/lockf` exists on the host cannot move the
+# verdict. The stem assertion four lines up is the same class through the same
+# code path and has been passing off darwin all along. The wrapper cost the
+# Linux leg two assertions and left the macOS leg carrying them alone.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
+check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
+check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
 
 # --- 31ap. The absorber disposes of the issuer's return, all three of them --
 #
@@ -6732,5 +6935,10 @@ else
   bad "층2 호출" "정의만 있고 불리지 않으면 층3 은 영원히 잠잔다"
 fi
 
+# --- epilogue-begin ---
+#
+# THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
+# its own exit status, so the cut copy gets these two lines appended exactly as
+# they stand here.
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
