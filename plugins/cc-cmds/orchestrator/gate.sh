@@ -983,7 +983,14 @@ gate_append() {
   # parsed by either shell.
   local tool rc=0
   tool=$(lock_tool)
-  if [ -n "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+  # THE TOOL IS SELECTED BY PLATFORM AND USED ONLY IF IT IS THERE. Selection
+  # answers "which lock does this platform use"; it does not observe the file.
+  # The suite drives the darwin branches on any runner by injecting the host OS,
+  # so on a linux runner this arm was reached with a BSD path that does not
+  # exist — the locked command failed, the row was never appended, and the
+  # assertion above it read an empty ledger. Falling through on absence is the
+  # same disposition the comment below already states for "no tool at all".
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
