@@ -6536,10 +6536,19 @@ else
   while IFS="$(printf '\t')" read -r tok want_title want_group want_bucket; do
     case "$tok" in ''|'#'*) continue ;; esac
     n_tok=$((n_tok + 1))
-    exp_group=$(printf '%s' "$want_group" | sed 's/<RUN>/RT/; s/<KEY>/KEY/')
+    # `<SESSION>` IS A THIRD PLACEHOLDER AND ITS BRANCH IS NOT OPTIONAL. A session
+    # seat's group carries no run id, so its row cannot be written with `<RUN>`;
+    # leaving the substitution out makes the expected value the literal
+    # `<SESSION>` and the two session rows go red on arrival.
+    exp_group=$(printf '%s' "$want_group" | sed 's/<RUN>/RT/; s/<KEY>/KEY/; s/<SESSION>/SID9/')
+    # THE SESSION VARIABLE GOES INTO BOTH SUBSHELLS. The walk is split in two,
+    # and injecting into one of them leaves the other resolving the id to its
+    # empty fallback — which produces a well-formed group string, so the
+    # mismatch would look like a table error rather than a missing injection.
     got=$(bash -c '
       . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
       RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
       printf "%s\t%s\t%s" \
         "$(cc_notify_title "$1")" "$(cc_notify_group "$1" KEY)" "$(cc_notify_sound "$1")"
     ' _ "$tok")
@@ -6549,6 +6558,7 @@ else
     other=$(bash -c '
       . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
       RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
       printf "%s" "$(cc_notify_group "$1" 다른키)"
     ' _ "$tok")
     if [ "$want_bucket" = "stack" ]; then
@@ -6558,8 +6568,25 @@ else
       check "토큰 표 — $tok 는 항목 키와 무관하게 한 자리다 (대체)" \
         "$( [ "$other" = "$exp_group" ] && printf 'same' || printf 'differs')" "same"
     fi
+
+    # THE CLOSED SET LIVES IN TWO PLACES AND ONLY ONE OF THEM WAS EXERCISED.
+    # `cc_notify_fire` and `cc_notify_clear` each carry their own token case, and
+    # every other assertion in this walk reaches the first one only — so a token
+    # added to firing alone leaves the whole file green. Measured on exactly that
+    # state: the walk reported `pass=16 fail=0` while `cc_notify_clear` answered
+    # 「알 수 없는 부류 토큰」 for the new token. One round trip per row closes it.
+    roundtrip=$(bash -c '
+      . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+      RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
+      CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+      cc_notify_fire "$1" 본문 KEY 2>&1
+      cc_notify_clear "$1" KEY 2>&1
+    ' _ "$tok")
+    check "토큰 표 — $tok 가 발사와 지우기 양쪽 폐쇄 집합에 있다" \
+      "$(printf '%s' "$roundtrip" | grep -c '알 수 없는 부류 토큰' || true)" "0"
   done < "$TOKEN_TABLE"
-  check "토큰 표가 일곱 행이다" "$n_tok" "7"
+  check "토큰 표가 아홉 행이다" "$n_tok" "9"
 fi
 
 # The set is CLOSED, and an unrecognized token raises nothing and says so.
@@ -6582,6 +6609,136 @@ case "$tok_refusal_clear" in
   *"알 수 없는 부류 토큰"*) ok "폐쇄 집합 — 지우기도 같은 집합을 쓴다" ;;
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
+
+# --- THE SESSION SEATS' SLOT --------------------------------------------------
+#
+# The walk above compares each row against the table, which is an equality — and
+# an equality cannot see the failure this arm actually has. Omitting the session
+# arm from `cc_notify_group` does not error: `*)` catches the tokens and hands
+# back `cc-cmds-autopilot-<run id>`, which with no run in scope is the literal
+# `cc-cmds-autopilot-미상` — the very slot the lifecycle three write to. The
+# value is well formed, the status is zero, nothing warns. So the assertion that
+# catches it has to be NEGATIVE, about the prefix.
+sess_group_ask=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  printf "%s" "$(cc_notify_group session-ask KEY)"
+')
+sess_group_turn=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  printf "%s" "$(cc_notify_group session-turn 다른키)"
+')
+check "세션 슬롯 — 두 세션 토큰이 같은 자리를 쓴다" "$sess_group_ask" "$sess_group_turn"
+# The verdict is computed on its own line rather than inside the `check` call: a
+# `case` pattern's closing `)` inside a `$( )` ends the substitution early, and
+# what reaches the comparison is then the tail of this file's own source text.
+case "$sess_group_ask" in
+  cc-cmds-autopilot-*) sess_prefix_verdict='starts' ;;
+  *)                   sess_prefix_verdict='does-not' ;;
+esac
+check "세션 슬롯 — 오토파일럿 접두로 시작하지 않는다 (음성 단언)" \
+  "$sess_prefix_verdict" "does-not"
+# An EMPTY id passes both assertions above — the prefix is still right — and puts
+# every session into one slot. So the id itself is asserted, not just its shape.
+check "세션 슬롯 — 접두 뒤가 비어 있지 않고 주입한 id 와 축자로 같다" \
+  "$sess_group_ask" "cc-cmds-session-SID9"
+
+# --- WHICH L3 FUNCTIONS A SESSION FIRING TOUCHES ------------------------------
+#
+# Stated as "no L3 function is called" this would fail forever: `cc_notify_fire`
+# calls `cc_notify_seat_state` unconditionally right after the token check. The
+# two functions are harmless for DIFFERENT reasons and the difference is the
+# claim — `seat_state` IS called and returns before it touches anything, while
+# `stack_admit` is never reached at all, because the arm that calls it is
+# `answer|hands` and the session tokens are deliberately outside it.
+t6_dir=$(mktemp -d "$WORK/t6.XXXXXX")
+t6_calls="$t6_dir/calls"; : > "$t6_calls"
+env -u RUN_DIR -u RUN_ID CC_T6_CALLS="$t6_calls" bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  CC_NOTIFY_SESSION_ID=SID9
+  CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+  cc_notify_seat_state()  { printf "seat_state\n"  >> "$CC_T6_CALLS"; return 0; }
+  cc_notify_stack_admit() { printf "stack_admit\n" >> "$CC_T6_CALLS"; return 0; }
+  cc_notify_fire session-ask 본문
+' >/dev/null 2>&1
+check "세션 발사는 cc_notify_seat_state 를 부른다 (불리고 즉시 반환한다)" \
+  "$(grep -c '^seat_state$' "$t6_calls" 2>/dev/null || true)" "1"
+check "세션 발사는 cc_notify_stack_admit 을 부르지 않는다 (팔 밖이다)" \
+  "$(grep -c '^stack_admit$' "$t6_calls" 2>/dev/null || true)" "0"
+
+# The other half: called, but writing nothing. `RUN_DIR` is what it needs and a
+# session has none, so a firing leaves no file behind at all.
+t6b_dir=$(mktemp -d "$WORK/t6b.XXXXXX")
+( cd "$t6b_dir" && env -u RUN_DIR -u RUN_ID bash -c '
+    . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+    CC_NOTIFY_SESSION_ID=SID9
+    CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+    cc_notify_fire session-ask 본문
+  ' ) >/dev/null 2>&1
+check "RUN_DIR 없이 세션을 발사해도 파일이 하나도 생기지 않는다" \
+  "$(find "$t6b_dir" -type f 2>/dev/null | grep -c . || true)" "0"
+
+# --- THE TWO KILL SWITCHES ARE INDEPENDENT ------------------------------------
+#
+# Before the scope dispatcher, `cc_notify_fire` consulted the autopilot switch
+# whatever the token, so `CC_CMDS_AUTOPILOT_NOTIFY=0` silenced a session banner
+# too — measured, on both `0` and `off`. That makes the one combination the
+# second switch exists for inexpressible, and neither switch's own test can see
+# it, because each of those looks at one switch alone.
+notify_pair() {
+  # notify_pair <token> <AUTOPILOT> <SESSION> → 발사된 줄 수
+  local tok="$1" a="$2" s="$3" log
+  log="$WORK/killswitch.log"; : > "$log"
+  ( PATH="$WORK/bin:$PATH" \
+      CC_CMDS_AUTOPILOT_NOTIFY="$a" \
+      CC_CMDS_SESSION_NOTIFY="$s" \
+      CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+      CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$log" \
+      bash -c '
+        . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+        CC_NOTIFY_SESSION_ID=SID9
+        cc_notify_fire "$1" 본문 KEY
+      ' _ "$tok" ) >/dev/null 2>&1
+  sleep 0.5
+  grep -c . "$log" 2>/dev/null || true
+}
+check "킬스위치 독립 — 오토파일럿을 꺼도 세션 배너는 나간다" "$(notify_pair session-ask 0 1)" "1"
+check "킬스위치 독립 — 세션을 꺼도 런 배너는 나간다"       "$(notify_pair answer-run 1 0)" "1"
+check "킬스위치 독립 — 세션을 끄면 세션 배너는 멈춘다"     "$(notify_pair session-ask 1 0)" "0"
+check "킬스위치 독립 — 오토파일럿을 끄면 런 배너는 멈춘다" "$(notify_pair answer-run 0 1)" "0"
+
+# --- THE BODY CUT IS BYTE-SAFE WHATEVER THE LOCALE ----------------------------
+#
+# `${s:0:200}` counts characters under a UTF-8 locale and BYTES under `LC_ALL=C`,
+# and the second one lands inside a multi-byte sequence. Measured before the fix:
+# 66 Korean characters came out valid at 198 bytes and 67, 120 and 200 all came
+# out INVALID at 200. The cut sits in the shared layer, so this covers the
+# autopilot banners as well as the session ones.
+body_utf8_verdict() {
+  if printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+    printf 'valid'
+  else
+    printf 'invalid'
+  fi
+}
+t22_c=$(LC_ALL=C bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  s=""; i=0; while [ $i -lt 200 ]; do s="${s}가"; i=$((i + 1)); done
+  cc_notify_body "$s"
+')
+check "본문 절단 — LC_ALL=C 에서 한글 200자가 유효한 UTF-8 로 나온다" \
+  "$(body_utf8_verdict "$t22_c")" "valid"
+t22_ambient=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  s=""; i=0; while [ $i -lt 200 ]; do s="${s}가"; i=$((i + 1)); done
+  cc_notify_body "$s"
+')
+check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다" \
+  "$(body_utf8_verdict "$t22_ambient")" "valid"
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did

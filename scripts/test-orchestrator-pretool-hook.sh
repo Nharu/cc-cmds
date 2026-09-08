@@ -248,6 +248,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. The session banner seats' registration
+#
+# THE EVENT KEY IS ASSERTED, NOT JUST THE TIMEOUT. The two seats sit in
+# structurally different places — seat 1 is a sibling element inside the existing
+# `PreToolUse` array, seat 2 opens a top-level `Stop` key that did not exist —
+# and putting the `Stop` element into the `PreToolUse` array instead is a SILENT
+# failure: the harness passes it over on a matcher miss and seat 2 never runs.
+# A check that only looks for `"timeout": 5` is green on exactly that mistake,
+# and the resulting silence cannot be told apart from nobody marking a turn.
+#
+# This block lives beside the registration check above rather than in a suite of
+# its own, because both are answering one question — what does this repo's
+# hooks.json actually declare — and splitting it is how the next entry gets
+# added without anything noticing.
+# ---------------------------------------------------------------------------
+HOOKS_JSON="$repo_root/plugins/cc-cmds/hooks/hooks.json"
+
+check "T16 PreToolUse 에 AskUserQuestion 매처 항목이 정확히 하나 있다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")] | length' "$HOOKS_JSON")" "1"
+check "T16 최상위에 Stop 키가 있다" \
+  "$(jq -r 'if (.hooks | has("Stop")) then "yes" else "no" end' "$HOOKS_JSON")" "yes"
+check "T16 Stop 배열에 항목이 정확히 하나 있다" \
+  "$(jq -r '.hooks.Stop | length' "$HOOKS_JSON")" "1"
+check "T16 두 세션 항목 모두 timeout 5 를 가진다" \
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")), (.hooks.Stop[]?)] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
+# The negative form of the same claim: a matcher-less element inside PreToolUse
+# is what a misplaced Stop entry looks like, and it is well-formed JSON.
+check "T16 매처 없는 원소가 PreToolUse 배열에 들어가 있지 않다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(has("matcher") | not)] | length' "$HOOKS_JSON")" "0"
+check "T16 두 세션 훅의 스크립트가 각각 제 자리를 가리킨다" \
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion") | .hooks[].command | select(contains("session-ask-notify.sh"))), (.hooks.Stop[]?.hooks[].command | select(contains("session-turn-notify.sh")))] | length' "$HOOKS_JSON")" "2"
+
+# T17 — the existing Bash entry is untouched. The matchers are deliberately NOT
+# merged into `"Bash|AskUserQuestion"`: merging would turn the sibling hook's
+# `non-Bash matcher slip → noop` line into a permanently active path instead of
+# the defence it is. That decision is not observable from behaviour — both
+# scripts drop a payload that is not theirs — so the assertion is structural.
+check "T17 기존 Bash 항목이 그대로다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[] | select(.command | contains("active-notify-pretool.sh"))] | length' "$HOOKS_JSON")" "1"
+check "T17 Bash 매처가 다른 도구 이름과 합쳐지지 않았다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher? // "" | test("\\|"))] | length' "$HOOKS_JSON")" "0"
+
+# ---------------------------------------------------------------------------
 # 7. The wrapper's hard stops — the other half of layer 1
 #
 # The hook only reaches a stage that was launched WITH the settings, so the
