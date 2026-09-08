@@ -2011,15 +2011,20 @@ MANIFEST="$RP_MF"
 
 rp_doc() {
   # rp_doc <파일> <정책> — 한 슬라이스짜리 선언 문서.
+  #
+  # 필드 줄에 앞 대시를 두지 않는다. `slice_field` 의 패턴은 `^**키**: ` 로
+  # 앵커되어 있어 대시가 붙으면 어떤 필드도 읽히지 않고, 그러면 이 절의 거절
+  # 단언들이 상한이 아니라 「필수 필드 없음」으로 만족돼 상한 가드를 통째로
+  # 지워도 초록으로 남는다. 표준 표기는 형제 픽스처와 계약 문서의 것과 같다.
   {
     printf '## 구현 슬라이싱\n\n'
     printf '### 슬라이스 A\n'
-    printf -- '- **스킬**: `implement`\n'
-    printf -- '- **레포**: `o/r`\n'
-    printf -- '- **선언 파일**: `a.txt`\n'
-    printf -- '- **선행**: 없음\n'
-    printf -- '- **절단점**: 머지\n'
-    printf -- '- **리뷰 정책**: %s\n' "$2"
+    printf '**스킬**: `implement`\n'
+    printf '**레포**: `o/r`\n'
+    printf '**선언 파일**: `a.txt`\n'
+    printf '**선행**: 없음\n'
+    printf '**절단점**: 머지\n'
+    printf '**리뷰 정책**: %s\n' "$2"
   } > "$1"
 }
 
@@ -2027,13 +2032,24 @@ rp_doc "$RP_DIR/ok.md" 선머지후리뷰
 rp_rc=0; slicing_fields_ok "$RP_DIR/ok.md" >/dev/null 2>&1 || rp_rc=$?
 check "상한과 같은 값을 선언한 슬라이스는 통과한다" "$rp_rc" "0"
 
+# 두 거절은 종료 상태가 아니라 **이유**로 판정한다. 상태만 재면 앞선 무관한
+# 거절 — 필드를 못 읽어 생기는 「필수 필드 없음」 같은 것 — 이 같은 1 을 내어
+# 단언이 재려던 가드가 사라져도 통과한다.
 rp_doc "$RP_DIR/over.md" 리뷰없음
-rp_rc=0; slicing_fields_ok "$RP_DIR/over.md" >/dev/null 2>&1 || rp_rc=$?
+rp_rc=0; rp_err=$(slicing_fields_ok "$RP_DIR/over.md" 2>&1 >/dev/null) || rp_rc=$?
 check "상한을 넘는 슬라이스는 거절된다 (무관한 사전 인가 행이 있어도)" "$rp_rc" "1"
+case "$rp_err" in
+  *상한*) ok "그 거절이 상한을 지목한다 (앞선 무관한 거절이 아니다)" ;;
+  *) bad "상한 거절 이유" "$rp_err" ;;
+esac
 
 rp_doc "$RP_DIR/bad.md" 없는정책
-rp_rc=0; slicing_fields_ok "$RP_DIR/bad.md" >/dev/null 2>&1 || rp_rc=$?
+rp_rc=0; rp_err=$(slicing_fields_ok "$RP_DIR/bad.md" 2>&1 >/dev/null) || rp_rc=$?
 check "어휘 밖 정책 토큰은 거절된다" "$rp_rc" "1"
+case "$rp_err" in
+  *어휘*) ok "그 거절이 어휘를 지목한다 (앞선 무관한 거절이 아니다)" ;;
+  *) bad "어휘 거절 이유" "$rp_err" ;;
+esac
 
 if grep -q '사전 인가' "$RP_MF"; then
   ok "그 매니페스트가 여전히 사전 인가 행을 갖고 있다 (거절이 그 행의 부재 때문이 아니다)"

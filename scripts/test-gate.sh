@@ -862,6 +862,13 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SNONE --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 기록이 없는 머지는 거부된다" "$rc" "3"
+# 아래 `passes_review` 가 찾는 문면을 이 픽스처가 실제로 만들어 낸다는 것을 먼저
+# 세운다. 그 술어는 거절 문면의 부재로 통과를 판정하므로, 프로덕션이 문구를
+# 바꾸면 조용히 상수 참이 되고 그것에 기대는 세 단언이 한꺼번에 판정을 잃는다.
+case "$msg" in
+  *"룰 거부: 리뷰-후-머지"*) ok "그 거절 문면이 프로덕션에서 실제로 나온다 (passes_review 가 공허하지 않다)" ;;
+  *) bad "passes_review 전제" "리뷰 룰의 거절 문면이 '룰 거부: 리뷰-후-머지' 가 아니다: '$msg'" ;;
+esac
 
 {
   printf -- '- `segment` | id=S9 | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$head0" "$seg_wt"
@@ -877,8 +884,12 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 # Judged by the ABSENCE of the rule's refusal line rather than by the exit code:
 # past the checks the gate performs the act, and `gh pr merge` in a fixture with
 # no GitHub behind it fails for reasons that have nothing to do with the rule.
+# 리터럴은 프로덕션이 오늘 실제로 내보내는 접두사다. 검사기의 거절은 룰 이름
+# 뒤에 콜론이 아니라 공백과 대시를 두고, 게이트의 일반 절반도 이름 뒤에 콜론을
+# 두지 않는다. 옛 형태(`리뷰-후-머지:`)를 찾으면 어떤 문면에도 맞지 않아 이
+# 술어가 무조건 통과를 돌려준다.
 passes_review() {
-  case "$msg" in *"리뷰-후-머지:"*) return 1 ;; *) return 0 ;; esac
+  case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 1 ;; *) return 0 ;; esac
 }
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
@@ -1054,7 +1065,7 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
      -- gh pr merge 1
 case "$msg" in
-  *"리뷰-후-머지:"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
+  *"룰 거부: 리뷰-후-머지"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
   *) ok "게이트가 쓴 세그먼트·사이클 행으로 머지가 통과한다" ;;
 esac
 
@@ -7338,23 +7349,32 @@ check "12(게이트, 수용 기준): 상한보다 느슨한 리뷰없음 은 행
 check "12: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 
 sa_doc="$SA_ROOT/slice.md"
+# 앞 대시 없이 쓴다. `slice_field` 의 패턴이 `^**키**: ` 로 앵커되어 있어 대시가
+# 붙으면 필드가 하나도 읽히지 않고, 그러면 아래 거절은 상한이 아니라 「필수 필드
+# 없음」에서 나와 상한 가드를 지워도 이 단언이 초록으로 남는다.
 {
   printf '## 구현 슬라이싱\n\n'
   printf '### 슬라이스 SX\n'
-  printf -- '- **스킬**: implement\n'
-  printf -- '- **레포**: t/none\n'
-  printf -- '- **선언 파일**: a.txt\n'
-  printf -- '- **선행**: 없음\n'
-  printf -- '- **절단점**: 머지\n'
-  printf -- '- **리뷰 정책**: 리뷰없음\n'
+  printf '**스킬**: implement\n'
+  printf '**레포**: t/none\n'
+  printf '**선언 파일**: a.txt\n'
+  printf '**선행**: 없음\n'
+  printf '**절단점**: 머지\n'
+  printf '**리뷰 정책**: 리뷰없음\n'
 } > "$sa_doc"
-sa_slice_rc=$( cd "$SA_WT" && bash -c '
+sa_slice_out=$( cd "$SA_WT" && bash -c '
   CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
   MANIFEST="'"$SA_MANIFEST"'"
-  slicing_fields_ok "'"$sa_doc"'" >/dev/null 2>&1 && sc=0 || sc=$?
-  printf "%s" "$sc"' )
+  serr=$(slicing_fields_ok "'"$sa_doc"'" 2>&1 >/dev/null) && sc=0 || sc=$?
+  printf "%s\n%s" "$sc" "$serr"' )
+sa_slice_rc=$(printf '%s\n' "$sa_slice_out" | sed -n 1p)
+sa_slice_err=$(printf '%s\n' "$sa_slice_out" | sed -n '2,$p')
 check "12(run.sh, 조기 진단, 수용 기준 아님): 무관한 사전 인가 행만으로는 더 이상 통과하지 않는다" \
   "$sa_slice_rc" "1"
+case "$sa_slice_err" in
+  *상한*) ok "12: 그 거절이 상한을 지목한다 (필드를 못 읽어 생긴 앞선 거절이 아니다)" ;;
+  *) bad "12 거절 이유" "$sa_slice_err" ;;
+esac
 
 # --- 13. 팁을 읽지 못하는 머지는 발행이 아니라 그 자리에서 거절된다 ----------
 #
