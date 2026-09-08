@@ -1193,7 +1193,14 @@ gate_append() {
   # parsed by either shell.
   local tool rc=0
   tool=$(lock_tool)
-  if [ -n "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+  # THE TOOL IS SELECTED BY PLATFORM AND USED ONLY IF IT IS THERE. Selection
+  # answers "which lock does this platform use"; it does not observe the file.
+  # The suite drives the darwin branches on any runner by injecting the host OS,
+  # so on a linux runner this arm was reached with a BSD path that does not
+  # exist — the locked command failed, the row was never appended, and the
+  # assertion above it read an empty ledger. Falling through on absence is the
+  # same disposition the comment below already states for "no tool at all".
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
@@ -2380,13 +2387,17 @@ EOF
   # same one; where it does not, the grant must carry the explicit absence
   # marker rather than omit the field — so "no document" stays distinguishable
   # from "field forgotten", which is what makes absence fail closed.
+  # Through `owner_doc_match`, which is the driver's reader too. Two readers with
+  # independently spelled acceptance sets is what let a grant pass kickoff and
+  # then have every act here refused — the stage did nothing, exited clean, and
+  # was recorded as a hollow success.
   mowner=$(manifest_hdr_field 'owner-doc')
-  gowner=$(sed -n '2p' "$GRANT" | sed -n 's/.*owner-doc=\([^;]*\).*/\1/p' | sed 's/[[:space:]]*$//')
+  gowner=$(grant_owner_doc)
   if [ -z "$gowner" ]; then
     warn "인가 기록에 owner-doc= 이 없습니다 — fail-closed"
     return "$GATE_EXIT_RULE"
   fi
-  if [ "$gowner" != "$mowner" ]; then
+  if ! owner_doc_match "$mowner" "$gowner"; then
     warn "인가 기록의 owner-doc= 이 매니페스트와 다릅니다: '$gowner' vs '$mowner'"
     return "$GATE_EXIT_RULE"
   fi
@@ -5823,6 +5834,39 @@ CREDS
   )
 }
 
+gate_pin_attempt() {
+  # gate_pin_attempt <segment> — pin this dispatch's attempt number, echo it.
+  #
+  # A NAMED FUNCTION rather than a block inside the launcher, so a test can burn
+  # it. Inlined, the only thing a suite could reach was the launcher's source
+  # text, and a shape assertion stays green as long as the literals survive —
+  # deleting the advance loop below leaves every literal in place and lands two
+  # dispatches on one path with nothing red.
+  #
+  # THE ROW COUNT IS THE STARTING POINT AND NOT THE ANSWER. A dispatch that died
+  # before its row landed leaves the count where it was, and the router
+  # re-dispatches the same segment id — so two attempts would land on one path.
+  # The driver pins the same way and for the same reason, and its readers consult
+  # the pin FIRST, which is what makes one file the answer for both sides instead
+  # of each deriving its own.
+  #
+  # The count is taken from the gate's OWN rows and not from the driver's
+  # `stage_attempt`: the gate has already appended this dispatch's `자율 승인` row
+  # by the time it gets here, while the driver counts `stage-result` rows that
+  # only land at termination. Two counting bases, one pin — the advance loop is
+  # what makes them agree on the file.
+  local seg="$1" attempt
+  attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
+             | { grep -cF "세그먼트=$seg " || true; } )
+  [ "${attempt:-0}" -ge 1 ] || attempt=1
+  mkdir -p "$RUN_DIR/log"
+  while [ -e "$RUN_DIR/log/$seg#$attempt.json" ] || [ -e "$RUN_DIR/log/$seg#$attempt.err" ]; do
+    attempt=$(( attempt + 1 ))
+  done
+  printf '%s\n' "$attempt" > "$RUN_DIR/$seg.attempt"
+  printf '%s' "$attempt"
+}
+
 gate_launch_stage() {
   # gate_launch_stage <alias> <segment> <stage-kind> <cli args...>
   #
@@ -5940,16 +5984,31 @@ gate_launch_stage() {
   # attempted twice with nothing to show for either, and the cause lived in one
   # line of the CLI's stdout.
   #
-  # Derived from the ledger and NOT taken as argv: the gate has already appended
-  # this dispatch's own `자율 승인` row by the time it gets here, so counting the
-  # skill dispatches for this segment IS the attempt number. Adding an
-  # `--attempt` flag instead would let a router re-type the number it used last
-  # time, which reproduces the collision through the one surface that is
-  # supposed to prevent it.
+  # Derived from the ledger and NOT taken as argv: adding an `--attempt` flag
+  # would let a router re-type the number it used last time, which reproduces the
+  # collision through the one surface that is supposed to prevent it. The
+  # derivation and the pin both live in `gate_pin_attempt` so a test can burn
+  # them.
   local attempt
-  attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
-             | { grep -cF "세그먼트=$seg " || true; } )
-  [ "${attempt:-0}" -ge 1 ] || attempt=1
+  attempt=$(gate_pin_attempt "$seg")
+
+  # THE STREAM IS SCOPED BY ATTEMPT AND OPENED FOR APPEND. This launcher is the
+  # one the router actually uses, and it wrote every dispatch of one segment to a
+  # single truncating path — so the implementation stage's transcript was erased
+  # by the review stage of the same segment, and the readers on the other side
+  # (`stage_session_id`, `predicate_reconverge`, `decision_point_reached`) were
+  # reading a file this side could zero at any moment. The transcript is the only
+  # record of what a stage read and concluded, and in an unattended run nobody
+  # was there to see it happen.
+  #
+  # THE PATH COMES FROM THE READER'S OWN FUNCTION rather than from a second copy
+  # of the rule. The pin was written one line above, so `stage_log_path` — the
+  # same function `stage_session_id` and `predicate_reconverge` call — resolves to
+  # this attempt's name and nothing else. Spelling the rule twice is what let the
+  # writer and the readers come apart in the first place.
+  local out err
+  out=$(stage_log_path "$seg")
+  err="${out%.json}.err"
 
   # The stage's stream goes to a FILE rather than through a `tee`. A tee would
   # make `$!` the tee's pid, and the pid is what the watcher uses to tell a
@@ -5962,8 +6021,6 @@ gate_launch_stage() {
   else
     id_flag="--session-id $(session_uuid "$seg" "$attempt")"
   fi
-
-  mkdir -p "$RUN_DIR/log"
 
   local n_rows_before
   n_rows_before=$(gate_rows '자율 승인' | gate_count)
@@ -5985,7 +6042,7 @@ gate_launch_stage() {
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     $id_flag \
-    -- "$@" > "$RUN_DIR/log/$seg.json" 2> "$RUN_DIR/log/$seg.err" < /dev/null &
+    -- "$@" >> "$out" 2>> "$err" < /dev/null &
   local spid=$!
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
   # Pinned on the WRITE side too. The watcher pins it on the read side, and a
@@ -6007,12 +6064,12 @@ gate_launch_stage() {
   # record and a stale process must die together or pid reuse makes the watcher
   # report a stage that is not there.
   rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start"
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before"
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before" "$out"
   return "$rc"
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <rows-before>
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <rows-before> [stream]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -6023,7 +6080,11 @@ gate_record_stage_outcome() {
   # implementation-review separation rule reads ancestry from; with no rows that
   # rule returns early and passes vacuously on every run it exists to catch.
   local alias="$1" seg="$2" kind="$3" attempt="$4" rc="$5" before="$6"
-  local out="$RUN_DIR/log/$seg.json" res cost subtype sid klass after denials prev total n_stage psha iserr
+  # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
+  # Re-deriving is how the writer and the reader came apart once already; the
+  # unsuffixed name stays as the fallback for a caller that predates the argument.
+  local out="${7:-}" res cost subtype sid klass after denials prev total n_stage psha iserr
+  [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
@@ -6064,9 +6125,18 @@ gate_record_stage_outcome() {
   #
   # The record is checked BEFORE the row-count arms because its answer is more
   # specific than theirs. A halted stage may well have written rows first.
+  #
+  # THE NAME COMES FROM THE DRIVER'S OWN RULE, not from a second copy of it. This
+  # side used to try the attempt-scoped name and fall back to the unsuffixed one
+  # WHATEVER THE PIN SAID, which is the opposite of what the driver does: with a
+  # pin the scoped name is the only answer. Two readers of one artifact then
+  # disagreed about the same dispatch — a run started before the driver scoped its
+  # stage ids leaves an unsuffixed record, and resuming that run id pins attempt 2,
+  # so the driver saw no record and classified `정상 완료` while this side found the
+  # first attempt's record and wrote `의도된 park` into the ledger. The row and the
+  # control flow then describe different runs.
   local haltf
-  haltf="$RUN_DIR/halt/$seg#$attempt.md"
-  [ -f "$haltf" ] || haltf="$RUN_DIR/halt/$seg.md"
+  haltf=$(halt_record_path "$seg")
   if [ "$rc" = "0" ] && [ -s "$haltf" ] \
      && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
     klass='의도된 park'
