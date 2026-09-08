@@ -1574,6 +1574,422 @@ gate_mtime() {
 }
 
 # ---------------------------------------------------------------------------
+# Bounded reclamation of the state directory.
+#
+# WHERE, AND WHY ONLY THERE. The gate is re-entered on every verb, so the one
+# place that runs exactly once per run is the run-open branch further down. A
+# reap on every entry was ruled out by measurement rather than by taste: the
+# busiest run's ledger carries 875 rows and gate entries outnumber them, which at
+# ~400ms a victim is six minutes of pure overhead per run.
+#
+# 보존 기준 30일 — the retention floor, in seconds. This is the one constant here
+# that gets restated outside its own declaration (in this block's prose and in
+# the gate suite's fixtures), which is why it is the one that gets a lint:
+# `scripts/lint-reap-retention.sh` extracts it from the line below and refuses a
+# bare copy of the number anywhere else. The extraction anchors on the whole
+# line, so this has to stay a single `readonly <NAME>=<digits>` and nothing more.
+readonly GATE_REAP_RETENTION=2592000
+# The other three correct themselves when wrong — a cap set too low leaves work
+# for the next cycle, a budget set too tight ends the pass early, an interval set
+# too long only delays it — so they get `readonly` and no lint. 20 x (75ms of
+# state predicate + 400ms of removal), plus the pre-filter, the age checks and
+# one index scan, is about 11.1s: the count cap and the wall clock bite together.
+readonly GATE_REAP_MAX=20
+readonly GATE_REAP_BUDGET_S=12
+readonly GATE_REAP_INTERVAL=21600
+
+gate_reap_root() {
+  printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_reap_day_epoch() {
+  # gate_reap_day_epoch <YYYYMMDD> — 00:00:00Z of that day in epoch seconds, or
+  # empty for anything that is not eight digits or not a real date.
+  #
+  # ARITHMETIC RATHER THAN `date`. The two spellings that parse a date string,
+  # `date -d` and `date -j`, are both on the portability lint's denylist because
+  # they diverge between GNU and BSD, so the days-from-civil conversion is done
+  # here instead. March is treated as the first month, which is what removes the
+  # leap-day special case from the expression.
+  local s="$1" y m d era yoe doy doe days
+  case "$s" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) return 0 ;;
+  esac
+  y=$((10#${s:0:4})); m=$((10#${s:4:2})); d=$((10#${s:6:2}))
+  { [ "$m" -ge 1 ] && [ "$m" -le 12 ]; } || return 0
+  { [ "$d" -ge 1 ] && [ "$d" -le 31 ]; } || return 0
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$(( (y >= 0 ? y : y - 399) / 400 ))
+  yoe=$(( y - era * 400 ))
+  doy=$(( (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1 ))
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  days=$(( era * 146097 + doe - 719468 ))
+  printf '%s' $(( days * 86400 ))
+}
+
+gate_reap_eligible() {
+  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all five clauses hold.
+  #
+  # FAIL-CLOSED IN EVERY CLAUSE. Reclamation needs positive evidence of age: a
+  # clock that is missing, empty, unreadable or unparsable means "unknown", and
+  # unknown is never reclaimed. The `age=$(cc_mtime …); [ -z "$age" ] && age=0`
+  # shape is forbidden here for exactly that reason — it reads a ledger that a
+  # `git clean` in some other repo removed as "1970, infinitely old", which turns
+  # that command into a remote delete for this run's state directory.
+  local rd="$1" id="$2" now="$3" started ledger state day_epoch
+  # 4 — a symlink is not a candidate at all. This is also what makes the
+  # slash-free victim path safe rather than merely tidy.
+  [ ! -L "$rd" ] || return 1
+  [ -d "$rd" ] || return 1
+  # 3 — never the current run. Structurally unreachable anyway, because
+  # `rundir_init` rewrites this run's `started-at` to `now` before the run-open
+  # branch is reached, but the comparison is one test and says so out loud.
+  [ "$rd" != "${RUN_DIR:-}" ] || return 1
+  # 2 — the retention clock is the CONTENT of `started-at`, which `rundir_init`
+  # rewrites on every gate entry. Its name says "run start" and its meaning is
+  # "last gate entry", and the second is what retention actually asks: is anyone
+  # still reaching for this? Selection sorts on `done`/ledger mtime instead, so
+  # the two clocks diverge — measured, in one direction only (97 runs at +0 days,
+  # 2 at +1, 1 at +2, 3 at +4, and zero the other way), because every gate entry
+  # that could write `done` rewrote `started-at` first. Retention is therefore
+  # always the more conservative of the two and the early-delete direction is
+  # unreachable.
+  started=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$rd/started-at" 2>/dev/null || true)
+  [ -n "$started" ] || return 1
+  [ "$started" -gt 0 ] 2>/dev/null || return 1
+  [ $((now - started)) -ge "$GATE_REAP_RETENTION" ] || return 1
+  # 1 — terminal, evaluated HERE and never from a cache. A run with no
+  # `ledger-path` hands an empty ledger to the predicate, which then counts zero
+  # segments and cannot answer 종단, so those fall out of candidacy on their own.
+  # The thresholds are passed explicitly rather than inherited, per the rule that
+  # two consumers must not grade one run with two values; this clause's answer
+  # happens to be independent of both.
+  ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
+  state=$(cc_run_state "$rd" "$ledger" 180 3600 2>/dev/null || true)
+  [ "$state" = "종단" ] || return 1
+  # 5 — an id that parses as a date must not be NEWER than the retention clock it
+  # is paired with. An id that does not parse passes: the clause is a conditional
+  # and its antecedent is "parses as a date".
+  case "$id" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*)
+      day_epoch=$(gate_reap_day_epoch "${id%%-*}")
+      [ -n "$day_epoch" ] || return 0
+      [ "$day_epoch" -le "$started" ] || return 1
+      ;;
+  esac
+  return 0
+}
+
+gate_reap_note() {
+  # One line of PROSE into this run's report, which is the same file as its
+  # ledger. Deliberately not a row: every row predicate anchors on a backticked
+  # series token at the start of the line, so a line opening with a timestamp is
+  # invisible to all of them and is counted toward no termination condition.
+  # `gate_drain_notify_state` is the existing precedent for the shape.
+  #
+  # THE REPORT OF THE RUN THAT DID THE REAPING, not of the run that was reaped.
+  # The victim's report is a closed record of a finished run, may live in another
+  # repo entirely, and would have the run writing down that it was deleted.
+  [ -n "${LEDGER:-}" ] || return 0
+  printf '%s · %s\n' "$(now_iso)" "$1" >> "$LEDGER" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_lock() {
+  # gate_reap_lock <root> — ONE ATTEMPT, NO WAITING. Contention means another
+  # gate is already reaping, so the work is being done and queueing behind it
+  # buys nothing. That is why this cannot be `gate_settings_lock`, which waits;
+  # and `ledger.lock` is worse still — it is scoped per run, it guards a file in
+  # the repo, and it lives INSIDE a directory a reap may be deleting.
+  #
+  # A lock older than fifteen minutes is broken, judged from the owner line
+  # written straight after the `mkdir`. Without that line the expiry cannot be
+  # decided at all, and what a never-expiring lock produces here is a reaper that
+  # is switched off forever with no symptom.
+  local root="$1" lock owner ots now
+  lock="$root/.reap.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  # Absent or unparsable owner information is not a stale lock — it is a lock
+  # this process cannot reason about, and breaking it would race the holder.
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge 900 ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_sweep() {
+  # gate_reap_sweep <root> <cycle-start> — empties `.reap-trash/` and prints the
+  # names it has given up on, space separated.
+  #
+  # An entry there is a directory whose rename succeeded and whose removal did
+  # not. It is invisible to every enumeration of runs, because `.reap-trash/` is
+  # a SIBLING of `run/`, but it still holds the bytes the cycle came for.
+  local root="$1" start="$2"
+  local trash entry name fails now swept=0 gave_up=""
+  trash="$root/.reap-trash"
+  [ -d "$trash" ] || return 0
+  for entry in "$trash"/*; do
+    # Also what skips the `.fails` siblings: those are files.
+    [ -d "$entry" ] || continue
+    now=$(date -u +%s)
+    [ "$swept" -lt "$GATE_REAP_MAX" ] || break
+    [ $((now - start)) -lt "$GATE_REAP_BUDGET_S" ] || break
+    name=$(basename "$entry")
+    fails=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$entry.fails" 2>/dev/null || true)
+    [ -n "$fails" ] || fails=0
+    # THREE STRIKES AND THE NAME GOES IN THE SUMMARY LINE. Retrying forever turns
+    # a local failure into a global one — it eats the cycle's budget every cycle.
+    if [ "$fails" -ge 3 ]; then gave_up="$gave_up $name"; continue; fi
+    rm -rf "$entry" 2>/dev/null || true
+    if [ ! -e "$entry" ]; then
+      rm -f "$entry.fails" 2>/dev/null || true
+    else
+      printf '%s\n' "$((fails + 1))" > "$entry.fails" 2>/dev/null || true
+    fi
+    swept=$((swept + 1))
+  done
+  printf '%s' "${gave_up# }"
+  return 0
+}
+
+gate_reap_prune_index() {
+  # gate_reap_prune_index <root> <pair-file> — drops from the forward session
+  # index every entry whose run directory is gone, and appends one
+  # `<id> <index-file-name>` line per removal to <pair-file>, which is what lets
+  # each victim's report line name its own share.
+  #
+  # THE CRITERION IS RE-DERIVED FROM DISK rather than carried over from the
+  # deletions above, and that is what makes the prune STATELESS BETWEEN CYCLES: a
+  # file this cycle gives up on is simply walked again by the next one. Carrying
+  # the id list instead would make "given up for this cycle" indistinguishable
+  # from "stuck forever", because the next cycle would arrive with a different
+  # list and never look at the skipped file's real contents again.
+  #
+  # ONE BATCH SCAN PER CYCLE, not one per victim: the scan cost is FLAT in the
+  # number of victims (0.40s for one, 0.37s for three). The reverse index cannot
+  # stand in for it — `session-lineage` covers 143 of 930 forward entries,
+  # because the forward append has no stage guard and lineage does.
+  #
+  # AFTER THE DELETIONS, and the order is the whole point of the criterion. Run
+  # before them and every victim still has a directory, so nothing is pruned at
+  # all; run after and the entries that survive are exactly the runs that did. An
+  # index entry whose directory is gone is a stale pointer the reader already
+  # filters out; a directory whose index entry is gone is a live run nobody can
+  # find.
+  #
+  # COMPARE AND SWAP ON (size, mtime), immediately before the swap, and the
+  # contract is SAFETY GUARANTEED, PROGRESS NOT. The append side takes no lock
+  # and runs on every gate entry, so a naive read-modify-write loses concurrent
+  # appends — measured 384 to 401 of 1200. Re-reading both turns that loss into a
+  # skip. Under unbroken append pressure every attempt skips and nothing is ever
+  # pruned (0 writes in 3600 appends); at the cadence a real gate produces, 6 of
+  # 6 succeeded on the first try. The asymmetry is the right way round: a lost
+  # append costs that session its status-line pin, while an unpruned entry costs
+  # nothing at all, since the reader skips entries whose directory is gone.
+  local root="$1" pairs="$2"
+  local dir f tmp line kept dropped n_after size_before size_after
+  local mtime_before mtime_after
+  dir="$root/session"
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.reap-tmp.*) continue ;; esac
+    # THE FIRST PASS ONLY ASKS WHETHER THERE IS ANYTHING TO DROP, and it forks
+    # nothing. Most index files have no stale entry at all, and they leave here
+    # without paying for the two stat calls the swap below needs.
+    dropped=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      [ -d "$root/run/$line" ] || { dropped="있음"; break; }
+    done < "$f"
+    [ -n "$dropped" ] || continue
+    # THE STAMP IS TAKEN BEFORE THE READ IT GUARDS, and that order is the whole
+    # of what makes the comparison below mean anything. Reading first and
+    # stamping afterwards leaves a window — from the last line read to the
+    # stamp — in which an append lands, is counted into `size_before`, matches
+    # `size_after` exactly, and is dropped by a swap that believes nothing
+    # moved. The second pass re-reads underneath the stamp, so an append in that
+    # window is either seen by the read or caught by the comparison. A lost
+    # append is the one failure this function is not allowed to have.
+    size_before=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+    mtime_before=$(gate_mtime "$f")
+    kept=""; dropped=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if [ -d "$root/run/$line" ]; then
+        kept="$kept$line
+"
+      else
+        dropped="$dropped$line
+"
+      fi
+    done < "$f"
+    [ -n "$dropped" ] || continue
+    # The temp file is in the SAME directory, so the swap is one `rename(2)`.
+    tmp="$f.reap-tmp.$$"
+    printf '%s' "$kept" > "$tmp" 2>/dev/null || { continue; }
+    n_after=$(grep -c . "$tmp" 2>/dev/null || true)
+    [ -n "$n_after" ] || n_after=0
+    size_after=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+    mtime_after=$(gate_mtime "$f")
+    if [ "$size_after" != "$size_before" ] || [ "$mtime_after" != "$mtime_before" ]; then
+      # Give this file up FOR THIS CYCLE and leave no state behind.
+      rm -f "$tmp" 2>/dev/null || true
+      continue
+    fi
+    if [ "$n_after" -eq 0 ]; then
+      # An index with nothing left in it is REMOVED, not emptied.
+      rm -f "$f" "$tmp" 2>/dev/null || true
+    else
+      mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
+    fi
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      printf '%s %s\n' "$line" "$(basename "$f")" >> "$pairs" 2>/dev/null || true
+    done <<< "$dropped"
+  done
+  return 0
+}
+
+gate_reap_locked() {
+  # gate_reap_locked <root> — the body, split out so the unlock has one caller
+  # rather than one per return path. This file has no `trap` habit
+  # (`gate_settings_unlock` is called by hand on each path), so the split follows
+  # that rather than introducing one.
+  local root="$1"
+  local start now cand cand_list id rd trash kb bytes days started
+  local recfile pairs v_items v_files sweep_note
+  local deleted=0 candidates=0 total_bytes=0 capped="미도달" gave_up=""
+  start=$(date -u +%s)
+
+  # THE SWEEP GOES FIRST, and draws on the same wall clock as the deletions.
+  gave_up=$(gate_reap_sweep "$root" "$start")
+
+  mkdir -p "$root/.reap-trash" 2>/dev/null || true
+  recfile=$(mktemp "${TMPDIR:-/tmp}/cc-reap-rec.XXXXXX" 2>/dev/null) || return 1
+  pairs=$(mktemp "${TMPDIR:-/tmp}/cc-reap-pairs.XXXXXX" 2>/dev/null) \
+    || { rm -f "$recfile" 2>/dev/null || true; return 1; }
+
+  # THE PRE-FILTER IS A SUPERSET AND NOTHING MORE. `+25` rather than `+30` is
+  # SLACK, not a constant: BSD `find -mtime +30` selects 31 days and over —
+  # measured, it missed exactly 30 days, 30 days + 1 second and 30 days + 12
+  # hours, a one-day systematic error rather than a rounding edge — so five days
+  # of margin keeps this a superset of the authoritative check on any `find`.
+  # THE POLICY IS DEFINED BY THE EPOCH ARITHMETIC IN `gate_reap_eligible` AND BY
+  # NOTHING ELSE. Anyone "tidying" this to 30 restores that error.
+  cand_list=$(find "$root/run" -maxdepth 1 -mindepth 1 -type d -mtime +25 2>/dev/null || true)
+  candidates=$(printf '%s' "$cand_list" | grep -c . || true)
+  [ -n "$candidates" ] || candidates=0
+
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    now=$(date -u +%s)
+    if [ "$deleted" -ge "$GATE_REAP_MAX" ] \
+       || [ $((now - start)) -ge "$GATE_REAP_BUDGET_S" ]; then
+      capped="걸림"; break
+    fi
+    # The victim path is assembled from a basename off the directory listing and
+    # nothing else — no manifest string, no ledger field, nothing a model wrote —
+    # and carries NO TRAILING SLASH, because `rm -rf dir/` follows a symlink on
+    # BSD.
+    id=$(basename "$cand")
+    rd="$root/run/$id"
+    gate_reap_eligible "$rd" "$id" "$now" || continue
+    started=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$rd/started-at" 2>/dev/null || true)
+    days=$(( (now - started) / 86400 ))
+    # Measured BEFORE the rename: after the removal there is nothing left to
+    # measure. `du -sk` reports allocation blocks, so this is size on disk rather
+    # than the sum of the file lengths.
+    kb=$(du -sk "$rd" 2>/dev/null | sed -n '1s/^\([0-9][0-9]*\).*/\1/p')
+    [ -n "$kb" ] || kb=0
+    bytes=$((kb * 1024))
+    trash="$root/.reap-trash/$id.$$.$now"
+    # RENAME, THEN DELETE. `rm -rf` under a concurrent writer does not fail
+    # cleanly — measured rc=1 with a `watch.heartbeat`-only husk left in place,
+    # and a husk with no `ledger-path` counts zero segments and is permanently
+    # non-terminal. A partially failed reclamation would therefore MANUFACTURE
+    # the immortal run this whole change exists to remove. One atomic
+    # `rename(2)` takes the directory out of `run/` first.
+    mv "$rd" "$trash" 2>/dev/null || continue
+    # A failing removal now leaves the bytes in the trash rather than a husk in
+    # `run/`, and the next cycle's sweep takes it from there.
+    rm -rf "$trash" 2>/dev/null || true
+    deleted=$((deleted + 1))
+    total_bytes=$((total_bytes + bytes))
+    printf '%s\t%s\t%s\n' "$id" "$days" "$bytes" >> "$recfile" 2>/dev/null || true
+  done <<< "$cand_list"
+
+  gate_reap_prune_index "$root" "$pairs"
+
+  # One line per deletion, then one summary line. The per-deletion line carries
+  # the run id (the surviving ledger is findable by it), the age AND WHAT THE AGE
+  # IS OF — "since the last gate entry", not "since it ended", because the two
+  # clocks diverge and an unnamed age is read as the wrong one — the byte count
+  # (the only size information that outlives the directory) and the index share.
+  # IT DOES NOT CARRY A PATH: the path derives from the id and the state root,
+  # and a path in a report is a thing somebody pastes into a command.
+  while IFS="$(printf '\t')" read -r id days bytes; do
+    [ -n "$id" ] || continue
+    v_items=$(grep -c "^$id " "$pairs" 2>/dev/null || true)
+    [ -n "$v_items" ] || v_items=0
+    v_files=$( { grep "^$id " "$pairs" 2>/dev/null || true; } \
+                 | LC_ALL=C sort -u | grep -c . || true )
+    [ -n "$v_files" ] || v_files=0
+    gate_reap_note "회수: 런 $id — 마지막 게이트 진입 이후 ${days}일 · ${bytes}바이트 · 인덱스 항목 ${v_items}개/${v_files}개 파일에서 제거"
+  done < "$recfile"
+
+  # THE SUMMARY IS WRITTEN EVEN WHEN NOTHING WAS DELETED. That is what separates
+  # "nothing qualified" from "the reaper never ran" — the distinction this
+  # codebase keeps drawing about silence. It is not written when the cadence gate
+  # returned early, because that is "not this cycle's turn" rather than "ran and
+  # found none".
+  now=$(date -u +%s)
+  sweep_note=""
+  if [ -n "$gave_up" ]; then sweep_note=" · 스윕 포기: $gave_up"; fi
+  gate_reap_note "회수 요약: 후보 ${candidates}건 · 삭제 ${deleted}건 · 상한 ${capped} · $((now - start))초 · ${total_bytes}바이트${sweep_note}"
+
+  rm -f "$recfile" "$pairs" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_cycle() {
+  local root stamp now rc lock
+  root=$(gate_reap_root)
+  [ -d "$root/run" ] || return 0
+  now=$(date -u +%s)
+  # THE CADENCE GATE, one cheap read. autopilot opens runs in bursts, so "once
+  # per run" is not the same as "rarely".
+  #
+  # NOT fail-closed, unlike the retention predicate. A missing or unparsable
+  # stamp means "this has never run", not "we cannot tell how old something is":
+  # the stamp answers whose turn it is, never whether a directory may die.
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$root/reap.stamp" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_REAP_INTERVAL" ]; then
+    return 0
+  fi
+  gate_reap_lock "$root" || return 0
+  gate_reap_locked "$root"; rc=$?
+  # THE STAMP ADVANCES WHETHER OR NOT THE CAP WAS HIT. Candidates left over wait
+  # for the next window rather than being picked up by the next run-open, which
+  # is the premise the backlog arithmetic rests on — 103 directories in about six
+  # cycles rather than in one burst.
+  date -u +%s > "$root/reap.stamp" 2>/dev/null || true
+  lock="$root/.reap.lock"
+  rm -f "$lock/owner" 2>/dev/null || true
+  rmdir "$lock" 2>/dev/null || true
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
 # Run settings — one file per stage kind, written by the gate, injected by the
 # wrapper.
 #
@@ -2374,8 +2790,16 @@ gate_main() {
   # way (run → its session ids) and answering "which run belongs to this
   # session?" from it means scanning every run directory. One session can hold
   # several runs, so this is a LIST — one run id per line, appended, deduped.
-  # Entries for runs whose directory is gone are left alone: the reader filters
-  # with `[ -d ]`, and pruning would add a write to a path that has none.
+  # NO LOCK HERE, and that is a decision rather than an omission. This path runs
+  # on every gate entry (over 875 times in the busiest run), and the one failure
+  # the lock would close SELF-HEALS: the append is unconditional, so the session's
+  # next gate entry puts a lost id back. The prune side carries the
+  # compare-and-swap instead.
+  #
+  # Entries for runs whose directory is gone stay put until a reap cycle removes
+  # them: the reader filters with `[ -d ]`, and that filter is what makes an entry
+  # outliving its directory harmless — which in turn is why the prune can run on a
+  # sparse schedule instead of tracking every deletion.
   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
     grep -qxF "$RUN_ID" \
@@ -2459,6 +2883,14 @@ gate_main() {
       "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
       "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+    # AFTER the `run` row, and only here. Before it, a reap that died would leave
+    # the run without so much as its own opening row; and this is the one branch
+    # that runs once per run rather than once per gate entry.
+    #
+    # `|| true` because reclamation is housekeeping, not the run's work. A run
+    # must not fail to open because a directory somewhere else could not be
+    # removed.
+    gate_reap_cycle || true
   else
     gate_resettle_settings
   fi
