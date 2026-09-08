@@ -1,0 +1,2 @@
+scripts/lint-ci-scope-binding.sh
+scripts/suite-b.sh
