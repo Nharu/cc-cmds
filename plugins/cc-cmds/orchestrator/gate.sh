@@ -4784,7 +4784,32 @@ gate_verb_act() {
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
 
-  gate_manifest_write_guard "$graded" "$@" || exit $?
+  # A DISPATCH ARGV IS A PROMPT, NOT A COMMAND LINE, so the guard below has
+  # nothing to look at there. `skill` and `router-shift` hand their argv to a
+  # launcher — the first token is consumed as the stage kind or the handoff
+  # reason and the rest goes to the wrapper — and no byte of it is ever run as a
+  # command by this process. What the successor then does comes back through
+  # this gate as its own act and is guarded there, which is the same reading the
+  # grading arm above already gives these two kinds.
+  #
+  # WITHOUT THIS THE PROTOCOL REFUSED ITS OWN MANDATED FORM. A shift is
+  # dispatched as `-p "/cc-cmds:autopilot-router-shift <매니페스트>"` because the
+  # successor has to be told which run it is resuming, and the guard's last arm
+  # is basename containment over the argv elements — so that one element carries
+  # the manifest's name and every routing shift was refused with `매니페스트에
+  # 쓰려 합니다`, exit 3. It stayed invisible while a routing shift graded
+  # `등급 미상`, because the vocabulary refusal above returns before this line;
+  # giving it the `워크트리쓰기` grade is what moved the act into this range.
+  #
+  # Residual, stated rather than hidden: a dispatch is no longer measured by
+  # this guard at all, so a prompt that instructs the successor to write the
+  # manifest is not caught here. It is caught where it becomes an act — the
+  # successor's own gate call — which is the only place the write actually
+  # exists.
+  case "$kind" in
+    skill|router-shift) : ;;
+    *) gate_manifest_write_guard "$graded" "$@" || exit $? ;;
+  esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
   # values the `리뷰-후-적용` rule reads. Placed after the manifest guard so an

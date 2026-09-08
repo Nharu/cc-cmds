@@ -5207,6 +5207,16 @@ check "Q3: 조건이 전부 성립해도 handoff 부기 행위는 통과한다" 
 check "Q3: 그 인수인계 행이 실제로 원장에 남는다" \
   "$( { grep -c '^- `handoff` ' "$LEDGER4" || true; } )" "1"
 
+# AND Q3 IS EXACTLY THE SHIFT THE NOTE ABOVE PREDICTED. The drain before P is
+# separated from the proposal below by three assertions, and one of them — Q3 —
+# is an ACT: it reaches `gate_boundaries` on its way out, where B1 fires on a
+# progress digest that no bookkeeping row can move and opens an approval whose
+# `절단점` is `경계`, which termination condition 2 counts as an act approval.
+# So the proposal was refused with `종료 제안 기각` and exit 3, `done` was never
+# written, and every assertion reading that file went vacuous. The section's own
+# rule is that every proposal drains for itself; this is the third proposal that
+# needs it.
+drain4 "종료 제안 전의"
 gate4 act --manifest "$NM4" --kind propose-done --target infra --segment SN1 --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "종료 절 셋이 전부 정산되었다"
 check "조건이 전부 성립하면 종료 제안이 통과한다" "$rc" "0"
