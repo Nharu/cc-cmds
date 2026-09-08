@@ -53,11 +53,27 @@
 #                    --cutpoint <token> -- <argv...>
 #   gate.sh act      --manifest <path> --kind <k> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --snapshot-digest <hex> --rationale <text>
-#                    -- <argv...>
+#                    [--emit-digest] -- <argv...>
 #   gate.sh exec     --manifest <path> --target <alias> [--segment <id>]
 #                    --cutpoint <token> --surface <token>
-#                    --snapshot-digest <hex> --rationale <text> -- <argv...>
+#                    --snapshot-digest <hex> --rationale <text>
+#                    [--emit-digest] -- <argv...>
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
+#
+# `--emit-digest` writes, after this call's LAST ledger row, a
+# one-line JSON object
+# `{"H":…,"obligations_total":…,"pending_approvals_total":…,"actor":…}` into
+# `<run-dir>/digest/gate-digest-<actor>.json` — a path the GATE derives, so no
+# caller names one,
+# whose `H` is the value the NEXT acting call passes to `--snapshot-digest`, and
+# whose `actor` is the emitting stage id verbatim (`router` when there is none)
+# so a reader can tell a foreign emission from a stale one. It
+# removes the read-back `snapshot` call, not the flag: the binding is unchanged
+# and the digest is still compared against live state. `plan` emits nothing (it
+# writes no row and performs nothing), and a caller that finds no file — an
+# emission that failed, or a gate older than this flag — falls back to
+# `gate.sh snapshot … | jq -r .H`. The flag is not passed unconditionally for
+# that second reason: a gate that predates it exits 2 on the unknown argument.
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
 # was cut mid-flight instead of running it again. The id must appear on a
@@ -1439,6 +1455,13 @@ gate_snapshot() {
   printf '  ],\n'
   printf '  "obligations_total": %s,\n' "$total"
 
+  # THE COUNT BESIDE THE ARRAY, because the array alone could not be read as a
+  # number. `obligations` has carried its total since it was capped; this side
+  # had only the list, so anything wanting the count — the render line, and now
+  # the emitted digest — had to derive it, and two derivations of one number is
+  # how two surfaces come to disagree about the same run.
+  printf '  "pending_approvals_total": %s,\n' "$(gate_pending_approval_ids | gate_count)"
+
   printf '  "pending_approvals": [\n'
   gate_pending_approvals_json
   printf '  ],\n'
@@ -1504,6 +1527,118 @@ gate_snapshot() {
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
   printf '}\n'
+}
+
+# ---------------------------------------------------------------------------
+# The post-mutation digest, written to a file the caller names.
+#
+# WHAT IT BUYS. Every acting call has to carry `--snapshot-digest`, and the only
+# way to learn that value was a separate `snapshot` call — so each act cost two
+# gate invocations, and the first of the two existed solely to read back a value
+# this process had just finished deciding. Emitting it at the end of the act the
+# caller already made removes the read-back without weakening the binding: the
+# flag stays in the argv, the comparison stays where it was, and what changes is
+# only where the caller gets the number.
+#
+# WHY A FILE AND NOT A FILE DESCRIPTOR. "One value, one file under the run
+# directory" is this script's dominant idiom already — `surface-digest`,
+# `ledger-path` and `progress-digest` are all written that way — and there is
+# not one `exec 3>` in the file to copy instead. A fixed descriptor also
+# collides with the `exec` verb structurally: `gate_run_readonly` runs the
+# wrapped argv in a subshell, which inherits every open descriptor, so the
+# judgment channel would be writable by the command under judgment. bash 3.2 is
+# the floor here, so `{fd}>` dynamic allocation is not available either, and a
+# fixed number would have to be opened by the hook, the test suite and the stage
+# wrapper — three call sites frozen as literal lines.
+#
+# WHY THE TWO TOTALS COME ALONG. A caller reading this file is reading it
+# INSTEAD of a `snapshot` round trip, and those two counts are the other things
+# it would have gone there for. The key names match `snapshot`'s exactly so no
+# consumer has to learn a second vocabulary for the same values.
+#
+# BEST EFFORT, and deliberately so. This runs after the act and after its ledger
+# row; refusing here would report a failure that did not happen. A caller that
+# finds no file falls back to `snapshot | jq -r .H`, which is the same path a
+# gate too old to know this flag already leaves it on.
+# ---------------------------------------------------------------------------
+gate_digest_path() {
+  # gate_digest_path — where THIS process emits, derived in one place.
+  #
+  # ONE DERIVATION, BECAUSE TWO DRIFT. The hook tells a stage which file to
+  # open, and it used to build that path itself — same shape, but interpolating
+  # the stage id verbatim while this file sanitizes it. Every stage id this
+  # pipeline mints carries a character outside the sanitized class, so the two
+  # paths agreed only for the router, which is the one actor the hook is never
+  # installed for. The failure was silent in both directions: the gate emitted
+  # correctly, the stage opened a name that did not exist, and it fell back to
+  # the round trip the flag exists to remove — with the run green throughout.
+  #
+  # Anything that needs the path asks for it now. `gate.sh digest-path` prints
+  # this same value, so a second copy of the rule cannot exist.
+  printf '%s/digest/gate-digest-%s.json' "$RUN_DIR" \
+    "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')"
+}
+
+gate_emit_digest() {
+  # THE EXIT STATUS ON THE WAY OUT IS NOT THIS FUNCTION'S TO CHANGE. This runs
+  # from an EXIT trap, and a trap body that fails under `errexit` REPLACES the
+  # status the script was exiting with — so a hiccup here could turn a refusal
+  # into a success, which is the one outcome this whole file exists to make
+  # impossible. The status is captured first and restored last, and the body
+  # runs with `errexit` off so no single command can short-circuit that.
+  local __rc=$?
+  set +e
+  gate_emit_digest_body
+  set -e
+  return "$__rc"
+}
+
+gate_emit_digest_body() {
+  [ -n "${GATE_EMIT_DIGEST_TO:-}" ] || return 0
+  # NOT SINGLE SHOT, AND THERE ARE NO EXPLICIT CALLS LEFT. Disarming on the
+  # first success made the trap cover only "exits that happen before the first
+  # emission" — any ledger append landing after that call was invisible to it,
+  # which is the same defect the enumeration had, turned around. The rule is
+  # "the value the caller reads is the state at exit", so the only call site is
+  # the trap and the last write wins.
+  #
+  # THE TEMP IS MINTED, NOT NAMED. A predictable sibling can be pre-created as a
+  # symlink by anything that can write this directory, and `>` follows it — so
+  # the redirection would land wherever the link points, outside every check the
+  # target path passed. `mktemp` in the same directory keeps the rename atomic
+  # and takes the name out of the attacker's hands.
+  local tmp
+  tmp=$(mktemp "$(dirname "$GATE_EMIT_DIGEST_TO")/.gate-digest.XXXXXX" 2>/dev/null) || {
+    warn "다이제스트 임시 파일을 만들지 못했습니다: $GATE_EMIT_DIGEST_TO — 소비 측은 snapshot 으로 폴백합니다"
+    return 0
+  }
+  # Same directory as the target by construction, so the rename is atomic and a
+  # reader never sees a half-written object.
+  # THE EMITTING ACTOR TRAVELS WITH THE VALUE. The file name separates actors by
+  # convention, and a convention is exactly what a caller can get wrong — so the
+  # object also says who wrote it, and a consumer that finds an id other than
+  # its own knows it is holding someone else's digest rather than a stale one.
+  # `CC_PIPELINE_STAGE_ID` is empty in the router and set in a stage, which is
+  # the same distinction this file already relies on elsewhere.
+  #
+  # WRITTEN RAW, so a consumer can compare it against its own
+  # `$CC_PIPELINE_STAGE_ID` VERBATIM. A first version sanitized it on the same
+  # character class the directory names use, and every stage id this pipeline
+  # mints carries a character outside that class — `<segment>#<attempt>` from
+  # the gate, `S5:<segment>:<cycle>` from the driver — so a verbatim comparison
+  # reported every stage's own file as someone else's. Only the two characters
+  # that would break the JSON string are replaced.
+  if printf '{"H":"%s","obligations_total":%s,"pending_approvals_total":%s,"actor":"%s"}\n' \
+       "$(gate_snapshot_digest)" \
+       "$(gate_open_obligations | gate_count)" \
+       "$(gate_pending_approval_ids | gate_count)" \
+       "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -d '\000-\037' | tr '"\\' '__')" >"$tmp" 2>/dev/null \
+     && mv "$tmp" "$GATE_EMIT_DIGEST_TO" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  warn "다이제스트를 방출하지 못했습니다: $GATE_EMIT_DIGEST_TO — 소비 측은 snapshot 으로 폴백합니다"
+  return 0
 }
 
 gate_pending_approvals_json() {
@@ -2423,7 +2558,14 @@ gate_main() {
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
   local approval="" render=0 worktree="" review_policy="" void=0 reject=0
+  local emit_digest_seen=0 emit_digest_dir=""
   GATE_RESUME=""; export GATE_RESUME
+  # The emit path travels to `gate_verb_act` as a global rather than as an
+  # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
+  # `GATE_SURFACE` already do. Adding a position would mean fixing the call site
+  # and the `shift 9` arithmetic inside the callee at the same time, for a value
+  # neither of them decides anything on.
+  GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
   MANIFEST=""
 
   while [ $# -gt 0 ]; do
@@ -2435,6 +2577,12 @@ gate_main() {
       --cutpoint)        cutpoint="$2"; shift 2 ;;
       --surface)         surface="$2"; shift 2 ;;
       --snapshot-digest) snapdig="$2"; shift 2 ;;
+      # A BOOLEAN. It took a path once; see the emission block for why it does
+      # not any more. The old spelling is refused rather than ignored, because a
+      # caller passing a path believes it chose where the value lands.
+      --emit-digest)     emit_digest_seen=1; shift ;;
+      --emit-digest-to)  printf 'gate: --emit-digest-to 는 없어졌습니다 — 경로 없이 --emit-digest 를 쓰세요 (게이트가 런 디렉터리 아래 경로를 정합니다)\n' >&2
+                         exit 2 ;;
       --rationale)       rationale="$2"; shift 2 ;;
       --approval)        approval="$2"; shift 2 ;;
       --worktree)        worktree="$2"; shift 2 ;;
@@ -2447,6 +2595,31 @@ gate_main() {
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
+
+  # THE EMIT PATH IS SETTLED BEFORE ANYTHING READS THE LEDGER, because its
+  # failure is an argv error and not a run state — and because the failure the
+  # caller cannot afford is the silent one. A caller that asked for the digest
+  # and got no file falls back to the round trip forever, which looks exactly
+  # like the flag working and saving nothing. Refusing with the same exit 2 the
+  # unknown-argument arm uses is what makes that case audible.
+  # ARGV SHAPE ONLY. Everything that touches the filesystem moved below
+  # `rundir_init`, and the reason is not tidiness: creating the parent directory
+  # here happened before the manifest existence check, before `check_manifest`,
+  # before `gate_check_grant` and before the run directory exists, so a call
+  # that was about to be refused had already made a directory and no row
+  # recorded it.
+  # ACCEPTED ONLY WHERE IT DOES SOMETHING. Emission happens on the acting verbs
+  # and nowhere else, but the flag used to be parsed, validated and have its
+  # parent directory created on every verb — so `snapshot`, `grade` and `plan`
+  # took a value they would never use and made a directory for it. A flag that
+  # is silently inert is a flag a caller believes is working.
+  if [ "$emit_digest_seen" = "1" ]; then
+    case "$verb" in
+      act|exec) ;;
+      *) printf 'gate: --emit-digest 는 act 와 exec 에서만 쓰입니다 (받은 동사: %s)\n' "$verb" >&2
+         exit 2 ;;
+    esac
+  fi
 
   [ -n "$MANIFEST" ] || { printf 'gate: --manifest 가 필요합니다\n' >&2; exit 2; }
   # ABSOLUTE, BEFORE ANYTHING COMPARES AGAINST IT. The manifest write guard asks
@@ -2476,6 +2649,41 @@ gate_main() {
   derive_paths_from_manifest
   gate_check_grant || exit $?
   rundir_init
+
+  # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
+  #
+  # This flag used to take a path, and four review cycles were spent on the
+  # checks that made a caller-named path safe: confinement to the run
+  # directory, then to a quarantine inside it, a basename pattern, a `..`
+  # rejection, physical resolution of both sides, an ordering between the
+  # creation guard and the physical test. Each round closed a hole and two of
+  # them opened a new one — the anchor derived from the component it was
+  # confining, and a `mkdir -p` that ran before the test that would refuse it.
+  #
+  # None of those checks buy anything, because no caller ever needed to choose.
+  # The gate already knows the run directory and already knows the actor, so the
+  # path is a value it can compute — and a value it computes is a value nobody
+  # can point somewhere else. Removing the parameter removes the entire class,
+  # rather than adding a seventh check to it.
+  if [ "$emit_digest_seen" = "1" ]; then
+    emit_digest_dir="$RUN_DIR/digest"
+    mkdir -p "$emit_digest_dir" 2>/dev/null || true
+    GATE_EMIT_DIGEST_TO=$(gate_digest_path)
+    # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
+    # and an enumeration of exit points is the wrong shape for it — the first
+    # enumeration missed four refusals that append a row and then exit, and a
+    # caller reading no file there falls back to the round trip forever, which
+    # looks exactly like the flag working and saving nothing. A trap states the
+    # rule once and cannot fall behind a new exit.
+    #
+    # Emitting on a path that appended nothing is harmless: the value is the
+    # current digest either way, and a caller holding a correct digest is the
+    # point. `plan` is excluded because it is excluded by contract, not because
+    # it happens to write no row.
+    case "$verb" in
+      act|exec) trap 'gate_emit_digest' EXIT ;;
+    esac
+  fi
 
   # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
   # open. A run that was cut and resumed still has to be findable, and the run
@@ -2600,6 +2808,10 @@ gate_main() {
   fi
 
   case "$verb" in
+    digest-path)
+      # Reading, not acting: it prints where an emission would land and writes
+      # nothing. The hook calls this instead of rebuilding the path.
+      gate_digest_path; printf '\n' ;;
     snapshot)
       if [ "$render" = "1" ]; then gate_render_snapshot; else gate_snapshot; fi
       ;;
@@ -5282,6 +5494,16 @@ gate_verb_act() {
   local rc=0
   gate_issue_review_obligation "$segment" "$cutpoint" "$graded" "$review_policy"
 
+  # EVERY RETURN FROM HERE DOWN EMITS, AND EMITS LAST. The emission runs from an
+  # EXIT trap, so it sees the state after this call's final ledger write — and
+  # the exits below write different numbers of rows: the `자율 승인` row above is
+  # the last write for `exec` and for `act --kind skill`, a bookkeeping kind
+  # writes a SECOND row, and a failed act writes a third at the bottom. A
+  # pre-append value would hand the caller a digest already stale on arrival and
+  # every acting call after it would come back exit 4 — a run that deadlocks
+  # loudly on the mechanism meant to speed it up. `plan` never reaches this line
+  # and emits nothing, which is why the re-read after a `plan` stays in the
+  # router's contract.
   [ "$kind" = "propose-done" ] && return 0
   if gate_kind_is_bookkeeping "$kind"; then
     gate_record_row "$kind" "$segment" "$alias" "$@"

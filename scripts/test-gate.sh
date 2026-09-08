@@ -1113,12 +1113,16 @@ esac
 # ---------------------------------------------------------------------------
 mkdir -p "$WT/sub"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+# FULL EQUALITY AGAINST THE SAME COMMAND RUN DIRECTLY, and stdout separated from
+# stderr to get it. `case "$out" in *base.txt*` matched a directory listing that
+# happened to CONTAIN the file, so anything the gate printed to stdout alongside
+# the act — a log line, a digest — passed it. Comparing against `ls` run in that
+# same directory asserts both halves at once: the act moved there, and nothing
+# else reached the caller's stdout.
+want_ls=$(cd "$WT" && ls)
 out=$(cd "$WT/sub" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-case "$out" in
-  *base.txt*) ok "행위가 대상 워크트리에서 실행된다 (호출자의 cwd 가 아니라)" ;;
-  *) bad "대상 워크트리" "'"'"'$out'"'"'" ;;
-esac
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다 (호출자의 cwd 가 아니라)" "$out" "$want_ls"
 
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
@@ -1583,12 +1587,10 @@ if [ -d "$LINKED" ]; then
 
   set_exec_wt "$LINKED"
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  want_ls=$(cd "$LINKED" && ls)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-  case "$out" in
-    *only-here.txt*) ok "행위가 실행 워크트리에서 실행된다 (메인 워크트리가 아니라)" ;;
-    *) bad "실행 워크트리" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
-  esac
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+  check "행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라)" "$out" "$want_ls"
 
   # A declared execution worktree in ANOTHER repository is refused — that would
   # be a second target wearing the first one's cutpoint.
@@ -1604,15 +1606,225 @@ if [ -d "$LINKED" ]; then
   # Absent is the default, and the default is the main worktree.
   set_exec_wt ""
   H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+  want_ls=$(cd "$WT" && ls)
   out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
-        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1)
-  case "$out" in
-    *base.txt*) ok "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" ;;
-    *) bad "실행 워크트리 기본값" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
-  esac
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
+  check "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" "$out" "$want_ls"
 else
   bad "픽스처 전제" "링크된 워크트리를 만들지 못했다"
 fi
+
+# ---------------------------------------------------------------------------
+# 14c-1. The post-mutation digest is emitted to a file, after the last row
+#
+# Every acting call carries `--snapshot-digest`, and the only way to learn that
+# value was a separate `snapshot` call whose entire purpose was to read back a
+# number the previous acting call had already decided. `--emit-digest-to`
+# removes that round trip. Three ways of building it are wrong, and none of the
+# existing assertions in this file would catch any of them:
+#
+#   - Writing the digest to stdout corrupts `exec`'s pass-through of the wrapped
+#     command's own output — silently, because a caller parsing that output for
+#     a substring still finds it.
+#   - Writing it to stderr puts it where the run log goes, so a caller reading
+#     the log picks up a hash that looks like a diagnostic.
+#   - Emitting BEFORE the gate's own ledger appends hands back a value that is
+#     stale the moment it arrives, and every acting call after it comes back
+#     exit 4. That failure is loud but it is also total: the run deadlocks on
+#     the mechanism meant to speed it up. The `act --kind segment` case below is
+#     the discriminating one — that branch writes a SECOND row after the
+#     `자율 승인` row, so an emission placed at the first append passes every
+#     other assertion here and fails only this one.
+# ---------------------------------------------------------------------------
+# UNDER THE GATE'S OWN RUN DIRECTORY, because the emission target is confined
+# there. A fixture path elsewhere in `$WORK` is refused before anything is
+# written, and every assertion downstream of the read then collapses on a
+# premise rather than on the property it names — which is how a suite reports
+# five failures for one cause.
+EMIT="$XDG_STATE_HOME/cc-cmds/run/R1/digest"
+# THE ACTOR IS DECLARED, NOT INHERITED. The gate names the emitted file after
+# `CC_PIPELINE_STAGE_ID`, and this suite runs from whatever process starts it —
+# including a pipeline stage, which exports one. Inheriting it silently moves
+# every file these fixtures read, so the block below breaks in exactly the
+# environment it is most likely to run in. Cleared here and set explicitly where
+# a stage id is the thing under test.
+unset CC_PIPELINE_STAGE_ID
+EMITFILE="$EMIT/gate-digest-router.json"
+
+# The directory is deliberately NOT created first: the gate makes the parent of
+# the path it was handed, and a caller naming a fresh run-directory subpath is
+# the normal case rather than an edge one.
+want_ls=$(cd "$WT" && ls)
+out=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+      --emit-digest -- ls 2>/dev/null)
+check "방출을 켜도 exec 의 stdout 은 래핑된 명령의 stdout 그 자체다" "$out" "$want_ls"
+
+errout=$(cd "$WT" && bash "$GATE" exec --manifest "$MANIFEST" --target infra --segment SW \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x \
+         --emit-digest -- ls 2>&1 >/dev/null)
+H_emit=$(jq -r .H "$EMITFILE" 2>/dev/null || true)
+if [ -z "$H_emit" ] || [ "$H_emit" = "null" ]; then
+  bad "다이제스트 방출" "방출 파일에서 H 를 읽지 못했다 — 이하 단언의 전제가 무너진다"
+else
+  case "$errout" in
+    *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
+    *) ok "다이제스트가 stderr 로 새지 않는다" ;;
+  esac
+  check "방출된 H 가 64자리다" "${#H_emit}" "64"
+  case "$H_emit" in
+    *[!0-9a-f]*) bad "방출 H 문자 집합" "16진수 밖의 문자가 있다: '$H_emit'" ;;
+    *) ok "방출된 H 가 소문자 16진수만으로 이뤄진다" ;;
+  esac
+  # THE VALUE IS THE ONE THAT HOLDS AFTER THE CALL'S OWN WRITES. A pre-append
+  # emission fails right here.
+  check "방출값이 직후 snapshot 의 H 와 같다" "$H_emit" "$(HH)"
+  snapjson=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null)
+  check "방출 파일이 의무 총계를 싣는다" \
+    "$(jq -r .obligations_total "$EMITFILE")" \
+    "$(printf '%s' "$snapjson" | jq -r .obligations_total)"
+  check "방출 파일이 대기 승인 총계를 싣는다" \
+    "$(jq -r .pending_approvals_total "$EMITFILE")" \
+    "$(printf '%s' "$snapjson" | jq -r .pending_approvals_total)"
+  # THE ACTOR FIELD IS COMPARED THE WAY A CONSUMER COMPARES IT — verbatim
+  # against its own `$CC_PIPELINE_STAGE_ID`. A first version sanitized the field
+  # on the directory-name character class, and every stage id this pipeline
+  # mints carries a character outside it, so a verbatim comparison called every
+  # stage's own file foreign. Nothing read the field, so nothing caught that.
+  check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMITFILE")" "router"
+  ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" exec --manifest "$MANIFEST" \
+      --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(HH)" --rationale x \
+      --emit-digest -- ls ) >/dev/null 2>&1
+  # A DIFFERENT FILE, and that is the per-actor separation working: the derived
+  # NAME sanitizes the id because a filename must, while the `actor` FIELD keeps
+  # it raw because a consumer compares that verbatim against its own.
+  check "스테이지는 자기 이름의 파일에 방출한다" \
+    "$(basename "$(ls "$EMIT"/gate-digest-S5-SEG-2.json 2>/dev/null)" 2>/dev/null)" \
+    "gate-digest-S5-SEG-2.json"
+  check "스테이지 id 는 축자로 실린다 (소비자의 대조가 성립한다)" \
+    "$(jq -r .actor "$EMIT/gate-digest-S5-SEG-2.json" 2>/dev/null)" "S5:SEG:2"
+  # AND THE PRINTED PATH IS THE WRITTEN PATH. The hook hands a stage this value
+  # instead of rebuilding it, so if `digest-path` and the emitter ever disagreed
+  # the stage would open a name nothing writes — silently, because the gate
+  # emits fine and the caller just falls back forever. The hook suite asserts it
+  # asks; this asserts the answer is true.
+  printed=$( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' bash "$GATE" digest-path \
+             --manifest "$MANIFEST" 2>/dev/null | tail -1 )
+  check "인쇄한 경로가 실제로 쓴 파일이다" "$printed" "$EMIT/gate-digest-S5-SEG-2.json"
+fi
+
+# `act` is the other acting verb and it is captured with `2>&1` everywhere else
+# in this file, so leaving it out would let the emission be wired into `exec`
+# alone and stay green.
+( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --target infra --segment SW \
+  --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest -- ls ) >/dev/null 2>&1
+check "act 경로도 방출한다" "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
+
+# The two-row branch. `gate_record_row` appends after the `자율 승인` row, so an
+# emission taken at that first append is one row behind here and only here.
+( cd "$WT" && bash "$GATE" act --manifest "$MANIFEST" --kind segment --target infra \
+  --segment SEMIT --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+  --emit-digest -- 상태=실행중 워크트리="$WT" 선행=없음 ) >/dev/null 2>&1
+n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SEMIT ' "$LEDGER" || true)
+check "두 번째 행이 실제로 쓰였다 (판별자의 전제)" "$n" "1"
+check "두 행을 쓰는 갈래에서도 방출값이 최종 다이제스트다" \
+  "$(jq -r .H "$EMITFILE" 2>/dev/null || true)" "$(HH)"
+
+# The refusal path. An emission the caller asked for and did not get is the one
+# failure it cannot detect on its own — it just falls back to the round trip
+# forever — so an unusable path is an argv error rather than a warning.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+# THE FLAG TAKES NO PATH, AND THE OLD SPELLING IS REFUSED RATHER THAN IGNORED.
+# Four cycles were spent on the checks a caller-named path needed — confinement,
+# a basename pattern, `..`, physical resolution, an ordering between the
+# creation guard and the test that would refuse it — and two of those rounds
+# introduced the hole the next one closed. The parameter is gone, so the class
+# is gone; what is left to assert is that it is really gone.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x \
+     --emit-digest-to "$XDG_STATE_HOME/cc-cmds/run/R1/digest/gate-digest-x.json" -- ls
+check "옛 경로 인자 형태는 거부된다" "$rc" "2"
+case "$msg" in
+  *'--emit-digest'*) ok "거부 문면이 새 철자를 알려 준다" ;;
+  *) bad "거부 문면이 새 철자를 알려 준다" "got '$msg'" ;;
+esac
+
+# THE DERIVED PATH IS THE ONLY ONE. A caller cannot name a control-plane file
+# because it cannot name anything, and the fixtures below read the one name the
+# gate computes.
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+check "불리언 형태는 통과한다" "$rc" "0"
+if [ -s "$EMITFILE" ]; then ok "게이트가 정한 경로에 방출한다"; else bad "게이트가 정한 경로에 방출한다" "$EMITFILE"; fi
+check "그 경로는 격리 디렉터리 안이다" "$(dirname "$EMITFILE")" "$EMIT"
+
+# THE TRAP'S WHOLE REASON, ASSERTED. The enumeration it replaced missed the
+# refusals that append a row and then exit, and a caller finding no file there
+# falls back to the round trip forever — which looks exactly like the flag
+# working and saving nothing.
+rm -f "$EMITFILE"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
+     --rationale x --emit-digest -- ls
+check "낡은 다이제스트는 거부된다 (이 단언의 전제)" "$rc" "4"
+if [ -s "$EMITFILE" ]; then
+  ok "거부된 호출도 방출한다 (트랩이 덮는 자리)"
+else
+  bad "거부된 호출도 방출한다 (트랩이 덮는 자리)" "파일이 없거나 비었다"
+fi
+check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+
+# AND THE CLASS THE TRAP WAS ACTUALLY WRITTEN FOR: a refusal that APPENDS A ROW
+# and then exits. The stale-digest case above refuses BEFORE any append, so it
+# exercises the trap without exercising the reason it exists. An act outside
+# pre-authorization writes a `승인` row and leaves with exit 5 — the value the
+# caller needs is the one that row just moved, and it is exactly the value it
+# could not have known before making the call.
+rows_before=$(grep -c . "$LEDGER" 2>/dev/null || printf '0')
+rm -f "$EMITFILE"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl https://example.invalid
+check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
+rows_after=$(grep -c . "$LEDGER" 2>/dev/null || printf '0')
+if [ "$rows_after" -gt "$rows_before" ]; then
+  ok "그 거부가 원장 행을 덧붙였다 (트랩이 겨냥한 부류)"
+else
+  bad "그 거부가 원장 행을 덧붙였다" "원장이 자라지 않았다 — 이 인스턴스가 그 부류가 아니다"
+fi
+if [ -s "$EMITFILE" ]; then
+  ok "행을 덧붙이고 거부한 뒤에도 방출한다"
+else
+  bad "행을 덧붙이고 거부한 뒤에도 방출한다" "파일이 없거나 비었다"
+fi
+check "그 방출값은 덧붙인 행 이후의 다이제스트다" "$(jq -r .H "$EMITFILE" 2>/dev/null)" "$(HH)"
+
+# THE ROUND TRIP THIS FLAG EXISTS TO REMOVE, DRIVEN IN BOTH DIRECTIONS. Every
+# assertion above reads the emitted object; none of them fed it back, which is
+# the one thing the feature is for — the emitted `H` must be exactly what the
+# NEXT acting call needs for `--snapshot-digest`. A value that is well-formed
+# and not accepted saves nothing, and the suite could not tell those apart.
+rm -f "$EMITFILE"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- ls
+check "왕복 대체 — 첫 호출이 통과한다 (전제)" "$rc" "0"
+emitted=$(jq -r .H "$EMITFILE" 2>/dev/null)
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$emitted" --rationale x --emit-digest -- ls
+check "방출값을 그대로 다음 호출에 넣으면 통과한다 (되읽기가 필요 없다)" "$rc" "0"
+# And the negative half: an emitted value that is no longer current must be
+# refused, or the flag would be trading the round trip for a stale binding.
+stale="$emitted"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$stale" --rationale x --emit-digest -- ls
+check "한 번 쓰인 방출값을 다시 쓰면 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
+
+# NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
+# a caller believes is working.
+gate grade --manifest "$MANIFEST" --emit-digest -- ls
+check "행위 동사 밖에서는 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer

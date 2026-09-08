@@ -51,6 +51,14 @@
 set -uo pipefail
 
 RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""
+
+# THE DIGEST PATH IS EXPANDED HERE, NOT HANDED OVER AS A VARIABLE. The messages
+# below tell a stage to open this file with `Read`, and `Read` takes a literal
+# path — it performs no shell expansion, so a `$CC_PIPELINE_STAGE_ID` inside the
+# string reaches the tool verbatim and the open fails on a name that does not
+# exist. This hook runs in the stage's own environment, so it can resolve the
+# id itself and hand over a path that is already a path.
+DIGEST_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) RUN_DIR="$2"; shift 2 ;;
@@ -60,6 +68,13 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+
+# ASKED, NOT REBUILT. This used to interpolate the stage id verbatim while the
+# gate sanitizes it, so the path handed to a stage disagreed with the one the
+# gate writes for every id this pipeline mints — and agreed only for the router,
+# which never meets this hook. The gate owns the derivation; this asks for it.
+DIGEST_FILE=$(bash "$GATE" digest-path --manifest "${CC_PIPELINE_MANIFEST:-}" 2>/dev/null || true)
+[ -n "$DIGEST_FILE" ] || DIGEST_FILE="${RUN_DIR}/digest/gate-digest-router.json"
 
 deny() {
   # A denial carries the escalation, not just the refusal. The verb name must
@@ -197,7 +212,7 @@ case "$tool" in
       # here because it is the same channel under a different name, and leaving
       # it out would make the arm a one-rename bypass.
       */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
-        deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --rationale '리뷰 채택본 적용' -- cp <제안본> ${p}")" ;;
+        deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --emit-digest --rationale '리뷰 채택본 적용' -- cp <제안본> ${p} — <스냅숏 해시> 는 직전 게이트 호출이 ${DIGEST_FILE} 에 방출한 H 필드이고(Read 도구로 열면 됩니다), 그 파일이 없으면 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 로 받습니다. --emit-digest 가 '알 수 없는 인자' 로 거부되면 그 플래그만 빼고 다시 실행하세요")" ;;
     esac
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;
@@ -241,13 +256,30 @@ fi
 # across two lines — was denied both times, and stopped without writing its
 # report rather than emit a `P0 0건 | P1 0건` summary having read nothing.
 #
-# TWO SEPARATE COMMANDS, then. Each one's first token is the gate path, which is
-# the single shape this allow-list has. The alternative — teaching the matcher
-# to see through a leading assignment and a command substitution — would put a
-# second, weaker shell parser in the allow-list, and an escaping bug in an
-# allow-list fails OPEN. A pipe is fine and the first line uses one: what is
-# matched is the first token, and `jq` sits on the right of it.
+# SEPARATE COMMANDS WHEN THERE ARE TWO, and each one's first token is the gate
+# path, which is the single shape this allow-list has. The alternative —
+# teaching the matcher to see through a leading assignment and a command
+# substitution — would put a second, weaker shell parser in the allow-list, and
+# an escaping bug in an allow-list fails OPEN. A pipe is fine and the fallback
+# line uses one: what is matched is the first token, and `jq` sits on the right
+# of it.
 #
-# The snapshot hash is not baked in because it moves on every ledger write; the
-# stage reads it from line 1 and types it into line 2.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"
+# ORDINARILY THERE IS ONLY ONE COMMAND NOW. The snapshot hash still cannot be
+# baked in — it moves on every ledger write — but it no longer has to be fetched
+# with a shell: an acting call carrying `--emit-digest` leaves the value the
+# NEXT call needs in a file, and a file is readable with the Read tool, which
+# this hook never sees. So the round trip this message used to prescribe becomes
+# a file read, and the second command survives only as the fallback.
+#
+# THE FALLBACK IS LOAD-BEARING AND NOT PADDING. The hook receives the gate as a
+# runtime parameter, so the hook copy and the gate copy can be different
+# deployments; a gate predating `--emit-digest` exits 2 on the unknown
+# argument, which would refuse an act over a flag that is only ever an
+# optimization. The message therefore names the flag AND names what to do when
+# it comes back rejected — and names the two-command form for the first call of
+# a run, where no earlier call has written the file yet.
+#
+# THE PRESCRIBED LINE STILL CARRIES THE FLAG, deliberately. The file exists only
+# because some earlier call asked for it, so a prescription that reads the file
+# without ever writing it describes a mechanism that never starts.
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <방출 파일의 H> --emit-digest --rationale <왜 이 명령이 필요한가> -- ${cmd} 』 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"

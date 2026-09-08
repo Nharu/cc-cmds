@@ -1458,7 +1458,16 @@ ledger_last() {
 # ---------------------------------------------------------------------------
 rundir_init() {
   RUN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$RUN_ID"
-  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log"
+  # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest-to`
+  # writes a path the caller names, and that write is graded by nothing, guarded
+  # by nothing and recorded in no ledger field — so the set of paths it can
+  # reach is the whole of its containment. The run directory itself is the run's
+  # CONTROL PLANE: `done` stops the watcher by existing, a stage's `.rc` is read
+  # back and laundered into a ledger row's exit code, `ledger.lock` is what
+  # makes the hash-chained ledger's mutual exclusion hold. Nothing owns this
+  # subdirectory but the emission, so an ungraded write inside it can destroy
+  # only a value the next caller re-derives anyway.
+  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
 }
@@ -3224,6 +3233,12 @@ segment_cycle() {
 
   wt=$(wt_create "$seg" "$branch") || { park "$seg" cone 무효화 "게이트 park" "워크트리 생성 실패"; return 1; }
   pre_head=$( cd "$wt" && git rev-parse HEAD )
+  # THE BRANCH POINT, DERIVED ONCE AND FIXED. This is what the review's
+  # `--base-sha` carries, and it is NOT `pre_head`: this function already keeps
+  # the two apart on the row below, naming one `사전 HEAD` and the other
+  # `베이스 sha`. Fixing it here rather than re-deriving at dispatch answers the
+  # objection that a later derivation reads whatever the base is by then.
+  local seg_base; seg_base=$(base_sha "$al")
   local stash_before; stash_before=$(stash_ref "$seg_repo")
   local plan_digest; plan_digest=$(binding_digest)
   ledger_row 'segment' "id=$seg" "상태=실행중" "브랜치=$branch" "사전 HEAD=$pre_head" \
@@ -3317,7 +3332,45 @@ segment_cycle() {
     local rp="$BASE/docs/reviews/review-$SLUG-$seg-c$cycle.md"
     mkdir -p "$(dirname "$rp")"
     sid="S5:$seg:$cycle"
-    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp \"설계는 $(doc_arg)\""
+    # THE REVIEW'S SCOPE TRAVELS ON THE DISPATCH LINE, the same way the
+    # implementation arm's declared file set already does two stages up. Without
+    # it the review derives its own base — `gh pr view … baseRefName`, or the
+    # default branch — and a segment branched from a base that has since moved
+    # is diffed against the wrong tree. That failure is silent: the report is
+    # well-formed, the findings are real findings about the wrong diff, and
+    # nothing in the run says which tree was read. `선언 파일 집합` is the other
+    # half of the same gap — git can say which files changed, and only the
+    # declaration says which ones were supposed to.
+    #
+    # Both flags are OMITTED rather than passed empty when their value is
+    # unavailable. A flag whose value is missing consumes the next token, so
+    # `--base-sha --declared-files …` would hand the review the literal string
+    # `--declared-files` as a base sha and then lose the file set entirely.
+    # `pre_head` AND NOT A FRESH `base_sha`. The comment above names a base that
+    # moved as the failure this flag exists to prevent, and re-deriving here
+    # reads whatever the base is NOW — which in that exact situation is the
+    # wrong value, so the flag would be rejected as a non-ancestor and the arm
+    # would fall back to the derivation it was added to replace. The branch
+    # point is already fixed in this function and already trusted by the
+    # implementation predicate.
+    #
+    # WHY NOT `pre_head`, WHICH THIS LINE USED TO SEND. On a resumed run
+    # `wt_create` hands back an existing worktree, so `pre_head` is that tree's
+    # current HEAD rather than the branch point — and being an ancestor of the
+    # branch head, it PASSES the `--is-ancestor` guard every review arm runs.
+    # The guard does not fire, no fallback happens, and the review silently sees
+    # only the commits this run added while the previous run's work leaves the
+    # diff. The declared-file comparison narrows with it.
+    #
+    # That is the opposite of the rebase limit, and the two must not be written
+    # as one sentence: after a rebase the value is NOT an ancestor, so the guard
+    # FAILS and the arm falls back — loud, and not exposure. Putting them
+    # together let the harmless case stand as the reason to ignore the harmful
+    # one.
+    local rscope=""
+    [ -z "$seg_base" ] || rscope=" --base-sha $seg_base"
+    [ -z "$files" ] || rscope="$rscope --declared-files \"$files\""
+    stage_spawn "$sid" "$seg_repo" "/cc-cmds:review-unattended $branch --report-path $rp$rscope \"설계는 $(doc_arg)\""
     stage_wait_all "$sid"
     if predicate_review "$rp"; then pred=0; else pred=1; fi
     rc=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')
