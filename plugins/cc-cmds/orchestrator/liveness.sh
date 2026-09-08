@@ -280,43 +280,103 @@ cc_ledger_size() {
 }
 
 cc_ledger_growth_at() {
-  # cc_ledger_growth_at <run-dir> — epoch seconds when the ledger last grew, or
-  # empty when the watcher has not published it.
+  # cc_ledger_growth_at <run-dir> [ledger] — epoch seconds when the ledger last
+  # grew, or empty when nothing about this run has been recorded at all.
   #
-  # THE WATCHER WRITES THIS FIELD TODAY — it is the `마지막성장=` component of the
-  # heartbeat line. The comment that stood here said the opposite, that the field
-  # did not exist yet and would arrive in "slice B" with an ordering of "C then B
-  # then A"; both halves were wrong by the time anyone read them. That label
-  # belongs to a DIFFERENT design's slicing and has nothing to do with the slices
-  # of whatever work brings a reader here — an implementer who opens this file and
-  # takes the label as an instruction is reading someone else's plan.
+  # THE HEARTBEAT FIELD IS THE RULE NOW, AND ITS ABSENCE IS THE EXCEPTION.
+  # Measured 2026-09-07: 113 of 167 heartbeats on this host carry `마지막성장`.
+  # The watcher publishes it, so a run with a live or recent watcher has it.
   #
-  # Empty is still a real answer and still means "cannot judge staleness" rather
-  # than "not stale": the heartbeat is absent before the watcher's first pass and
-  # in a run directory written by an older build.
-  local run_dir="$1" hb
+  # THE LEDGER MTIME IS THE FALLBACK, AND IT IS OPTIONAL BY POSITION so that a
+  # one-argument call — every caller before this second parameter existed —
+  # keeps its old meaning. Reaching for it is not the same claim: the heartbeat
+  # says "the watcher saw the ledger grow at T", the mtime says "the file was
+  # last written at T". Both are facts about the RUN rather than about the
+  # watcher, which is what lets a single value stand behind both.
+  #
+  # EMPTY IS STILL A VERDICT. When neither exists, nothing has been recorded
+  # about this run — and `cc_run_state` reads that as 버려짐 rather than as
+  # 진행중, because "no clock to judge by" is not evidence of progress.
+  local run_dir="$1" ledger="${2:-}" hb v
   [ -n "$run_dir" ] || return 0
   hb="$run_dir/watch.heartbeat"
-  [ -f "$hb" ] || return 0
-  sed -n 's/.*마지막성장=\([0-9][0-9]*\).*/\1/p' "$hb" 2>/dev/null | tail -1 || true
+  if [ -f "$hb" ]; then
+    v=$(sed -n 's/.*마지막성장=\([0-9][0-9]*\).*/\1/p' "$hb" 2>/dev/null | tail -1 || true)
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  fi
+  [ -n "$ledger" ] || return 0
+  cc_mtime "$ledger"
+}
+
+cc_run_grade() {
+  # cc_run_grade <token> — the selection rank of a state token, 1 (best) to 9.
+  #
+  # PURE, AND THAT IS THE WHOLE POINT. A version of this that took a run
+  # directory and re-derived the state would walk the predicates a second time
+  # on every render; measured 2026-09-07 that second pass costs 60–120ms per run
+  # and a twelve-run session already spends 1.5s on one render. So the caller
+  # grades the token it already has, and this function does no I/O.
+  #
+  # FIVE RANKS, NOT TWO CLASSES. The old comparison ranked on "no sign of having
+  # finished", which let a run that never opened a segment — permanently
+  # non-terminal by construction — hold a session forever. Ranking on evidence
+  # instead: a live stage beats a waiting approval, which beats a ledger that
+  # moved inside `stall`, which beats a finished run, which beats one that has
+  # gone quiet past `abandon`. 정지경고 and 버려짐 share the bottom rank because
+  # the decision is "the ledger did NOT move inside stall" for both of them;
+  # what `abandon` separates is the glyph and the wording, not the order.
+  #
+  # THE DEFAULT ARM IS THE WORST RANK ON PURPOSE — an unknown token must not
+  # take the screen. It is also SILENT, so a token added to `cc_run_state`
+  # without an arm here would quietly sink instead of failing; that is what
+  # `scripts/lint-statusline-token-arms.sh` exists to catch on the render side,
+  # and this function has to grow with the vocabulary in the same edit.
+  #
+  # TODAY THIS GRADE HAS EXACTLY ONE CONSUMER, `statusline.sh`. That is why
+  # `scripts/test-liveness-agreement.sh` gained no case for it — an agreement
+  # suite with one participant tests a function against itself. When a second
+  # consumer appears, this function and this file are what it must be compared
+  # against.
+  case "$1" in
+    도는중)   printf '1' ;;
+    승인대기) printf '2' ;;
+    진행중)   printf '3' ;;
+    종단)     printf '4' ;;
+    정지경고) printf '5' ;;
+    버려짐)   printf '5' ;;
+    *)        printf '9' ;;
+  esac
 }
 
 cc_run_state() {
-  # cc_run_state <run-dir> <ledger> [stall-seconds] — one state token.
+  # cc_run_state <run-dir> <ledger> [stall-seconds] [abandon-seconds] — one token.
   #
-  # Tokens: 도는중 · 승인대기 · 종단 · 정지경고 · 진행중
+  # Tokens: 도는중 · 승인대기 · 종단 · 정지경고 · 진행중 · 버려짐
   #
   # TERMINAL IS JUDGED BEFORE THE STALL WARNING. A run that has finished has no
   # live stage and a ledger that stopped growing, which is also exactly the
   # shape of a stalled one; ordering the tests the other way labels every clean
   # finish a stall.
   #
-  # `done` is a shortcut, not the definition. Measured 2026-08-30: 2 of 39 run
-  # directories had the file, because almost no run reaches the propose-done
+  # AND 버려짐 IS JUDGED AFTER BOTH, for a sharper reason than tidiness. The
+  # watcher decides whether to announce a finished run by comparing this token
+  # against `종단` — the one place in that file that puts a desktop banner in
+  # front of a person. An idle arm placed before the terminal block would turn
+  # finished runs into 버려짐 and silence that announcement. So the two arms that
+  # can return 버려짐 both sit BELOW the terminal block and the 승인대기 test,
+  # and the token is only ever carved out of 진행중 and 정지경고. That is what
+  # keeps the `종단` set byte-identical without opening `watch.sh` to check.
+  #
+  # `abandon` is declared here, once, and every consumer passes it explicitly or
+  # inherits this default. Two consumers reading one run with two thresholds
+  # would grade it differently and nobody would see the disagreement.
+  #
+  # `done` is a shortcut, not the definition. Measured 2026-09-07: 99 of 202 run
+  # directories had the file, because many runs never reach the propose-done
   # path — so a predicate that only read `done` would answer "진행 중" forever
   # for runs that had plainly ended.
-  local run_dir="$1" ledger="$2" stall="${3:-180}"
-  local live pend nonterm n_seg blocked_n grew now
+  local run_dir="$1" ledger="$2" stall="${3:-180}" abandon="${4:-3600}"
+  local live pend nonterm n_seg blocked_n grew now idle
 
   live=$(cc_live_stages "$run_dir")
   [ "$live" -gt 0 ] 2>/dev/null && { printf '도는중'; return 0; }
@@ -339,11 +399,19 @@ cc_run_state() {
 
   [ "${pend:-0}" -gt 0 ] 2>/dev/null && { printf '승인대기'; return 0; }
 
-  grew=$(cc_ledger_growth_at "$run_dir")
-  if [ -n "$grew" ]; then
-    now=$(date -u +%s)
-    [ "$((now - grew))" -ge "$stall" ] 2>/dev/null && { printf '정지경고'; return 0; }
-  fi
+  grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+  # NO CLOCK AT ALL IS THE STRONGEST IDLE SIGNAL, not the weakest. Neither the
+  # watcher's field nor a ledger file means nothing has ever been recorded about
+  # this run, and the honest reading of that is 버려짐 rather than 진행중.
+  [ -n "$grew" ] || { printf '버려짐'; return 0; }
+  now=$(date -u +%s)
+  idle=$((now - grew))
+  # Clamped, because a ledger mtime in the future is not hypothetical — one run
+  # on this host measured 28 seconds ahead. A negative idle would otherwise read
+  # as the freshest run on the screen.
+  [ "$idle" -lt 0 ] && idle=0
+  [ "$idle" -ge "$abandon" ] 2>/dev/null && { printf '버려짐'; return 0; }
+  [ "$idle" -ge "$stall" ] 2>/dev/null && { printf '정지경고'; return 0; }
 
   printf '진행중'
 }

@@ -52,11 +52,34 @@ CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
 
 # The staleness mark, and why it is not the watcher's.
 #
-# 180 seconds is a RENDER that clears itself on the next tick. The watcher's
-# stall arm sits at 1200 because what it writes is a ledger row that only a
-# person's resolving row takes back. Two different costs, two constants; pinning
-# them to each other is the one change this file must never accept.
+# 180 seconds is now the ORDER BOUNDARY, and it stopped being free to get wrong.
+# It separates rank 3 from rank 5 — a run whose ledger moved inside the mark
+# stands above every finished run in this session, and one that did not stands
+# below them. Set it too low and a run in flight loses the screen to something
+# that ended yesterday; too high and the reverse. That is a different cost from
+# the one this comment used to record, which was a render mark that the next
+# tick erased.
+#
+# The watcher's stall arm still sits at 1200 because what IT writes is a ledger
+# row that only a person's resolving row takes back. Two different costs, two
+# constants; pinning them to each other is the one change this file must never
+# accept, and the boundary above makes that more true rather than less.
 CC_SL_STALL=180
+
+# Past this, a quiet run is not stalled but abandoned. It is the RENDER
+# boundary, not the order boundary: 정지경고 and 버려짐 share a rank, so
+# crossing this mark changes the glyph and the wording and nothing about who
+# wins the line. Passed explicitly on every call so this consumer and the
+# watcher cannot grade one run by two thresholds; the default lives beside
+# `cc_run_state` in `liveness.sh` and is the same number.
+#
+# Not finely tuned, and it must not be read as if it were. Sweeping the
+# threshold from 300 to 86400 moved the abandoned count on this host from 73 to
+# 71 — under a day's idle tops out at 82804s and over a day's starts at
+# 145549s, so the whole range between them is empty. Any value above the 900s
+# floor (below it, an existing case that pins a 900s-idle run to 정지경고 goes
+# red) gives the same verdicts here.
+CC_SL_ABANDON=3600
 
 # Twice the watcher's pinned `--interval`. The launch line fixes that value at
 # 60 precisely so this threshold can be read off a contract instead of guessed.
@@ -138,11 +161,17 @@ idx="$CC_SL_STATE/session/$sid"
 [ -f "$idx" ] || { emit_fallback; exit 0; }
 
 # The index is a LIST — one run id per line, appended and deduped by the gate.
-# A session holds several runs across a night, and the tie-break the design
-# fixed is: anything still going beats anything finished, and within a class the
-# later one wins. Entries whose directory is gone are skipped rather than
-# pruned; pruning would put a write on a path that has none.
-best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_term=1
+# A session holds several runs across a night, and the order is a FIVE-RANK
+# GRADE rather than the two classes this comment used to describe. It ranked on
+# "shows no sign of having finished", which sounds like liveness and is not: a
+# run that never opened a segment can never satisfy the derived terminal test
+# and has no `done` file either, so it was permanently non-terminal and held its
+# session forever. `cc_run_grade` ranks on evidence instead — live stage, then
+# waiting approval, then a ledger that moved inside `CC_SL_STALL`, then
+# finished, then gone quiet. Recency is the tie-break INSIDE a rank and never
+# across two. Entries whose directory is gone are skipped rather than pruned;
+# pruning would put a write on a path that has none.
+best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9
 while IFS= read -r rid; do
   [ -n "$rid" ] || continue
   rd="$CC_SL_STATE/run/$rid"
@@ -152,10 +181,11 @@ while IFS= read -r rid; do
   # describe a run it never managed to read.
   [ -d "$rd" ] && [ -r "$rd" ] || continue
   ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
-  st=$(cc_run_state "$rd" "$ledger" "$CC_SL_STALL" 2>/dev/null || true)
+  st=$(cc_run_state "$rd" "$ledger" "$CC_SL_STALL" "$CC_SL_ABANDON" 2>/dev/null || true)
   [ -n "$st" ] || continue
+  rank=$(cc_run_grade "$st" 2>/dev/null || true)
+  [ -n "$rank" ] || rank=9
   if [ "$st" = "종단" ]; then
-    term=1
     # WHERE A TERMINAL TIME COMES FROM, once, for both paths. `done` carries an
     # ISO stamp but only a handful of runs ever reach the verb that writes it,
     # and a derived termination has no stamp at all — so ordering on the stamp
@@ -163,14 +193,13 @@ while IFS= read -r rid; do
     # clock: `done`'s when it exists, the ledger's last movement otherwise.
     t=$(cc_mtime "$rd/done"); [ -n "$t" ] || t=$(cc_mtime "$ledger")
   else
-    term=0
     t=$(cc_mtime "$ledger")
   fi
   [ -n "$t" ] || t=0
-  if [ -z "$best_rd" ] || [ "$term" -lt "$best_term" ] \
-     || { [ "$term" -eq "$best_term" ] && [ "$t" -gt "$best_t" ]; }; then
+  if [ -z "$best_rd" ] || [ "$rank" -lt "$best_rank" ] \
+     || { [ "$rank" -eq "$best_rank" ] && [ "$t" -gt "$best_t" ]; }; then
     best_rd=$rd; best_rid=$rid; best_state=$st; best_ledger=$ledger
-    best_t=$t; best_term=$term
+    best_t=$t; best_rank=$rank
   fi
 done < "$idx"
 
@@ -182,15 +211,31 @@ done < "$idx"
 
 now=$(date -u +%s)
 
-# The ledger's age comes from the watcher's heartbeat, not from an mtime this
-# process measures. An elapsed-since-last-growth needs somewhere to remember the
-# previous size; the watcher already remembers it, and a status line may not
-# write. An absent field means "cannot judge", which is why every use below is
-# guarded rather than defaulted to zero.
-grew=$(cc_ledger_growth_at "$best_rd")
+# The ledger's age comes from the watcher's heartbeat when there is one, and
+# from the ledger's own mtime when there is not. Measured 2026-09-07: 61 of 62
+# runs in flight published no `마지막성장`, so on the heartbeat alone this slot
+# was empty for almost every run that needed it — and an age-less line reads as
+# "just started" on a run that has been quiet for a day. Reading an mtime is
+# still not a write, so the property this file rests on is untouched. An absent
+# value on BOTH means nothing has been recorded at all, which is why every use
+# below is guarded rather than defaulted to zero.
+grew=$(cc_ledger_growth_at "$best_rd" "$best_ledger")
 age_slot=""
 if [ -n "$grew" ]; then
-  age_slot=" · 원장 $(age_phrase "$((now - grew))")"
+  # CLAMPED, AND CLAMPED HERE RATHER THAN AT THE SOURCE. A ledger mtime in the
+  # future is not hypothetical — one run on this host measured 28 seconds ahead
+  # — and the mtime fallback above put a `grew` on far more runs than the
+  # heartbeat field ever did, so the exposure grew with it. Without this the
+  # line says `원장 -72초 전` while `cc_run_state`, which clamps the very same
+  # value, calls the run 진행중: two axes disagreeing about one run's sign. The
+  # slot is shared, so this one place covers 승인대기, 정지경고, 버려짐, 진행중
+  # and the 도는중 else branch. Clamping inside `cc_ledger_growth_at` would let
+  # both consumers inherit it, but that function has no `now` and would spend a
+  # `date` fork per call — once per indexed run per ten-second tick, twelve of
+  # them on a twelve-run session. Measure that before moving it.
+  a=$((now - grew))
+  [ "$a" -lt 0 ] && a=0
+  age_slot=" · 원장 $(age_phrase "$a")"
 fi
 
 # `watch.pid` is what keeps "has not come up yet" from collapsing into "died".
@@ -218,7 +263,42 @@ case "$best_state" in
     line="⏸ ${best_rid} 승인 대기 ${pend}건${age_slot}"
     ;;
   정지경고)
+    # The glyph and the wording stay. `CC_SL_ABANDON` is what separates this arm
+    # from the one below, and it is the render boundary — the two states share a
+    # rank, so nothing about the selection turns on which side a run falls.
     line="⚠ ${best_rid} 스테이지 0${age_slot}"
+    ;;
+  버려짐)
+    # THREE THINGS MADE THE OLD LINE READ AS ACTIVE, and all three are fixed
+    # here rather than in the ordering. `⟳` was the same glyph a genuinely
+    # running stage gets; the age slot was empty because the heartbeat field was
+    # usually missing; and `· 워처 미기동` reads as "has not started yet" on a
+    # run that has been quiet for a day. So: a glyph that does not read as
+    # motion and is distinct from the other four, an age that now falls back to
+    # the ledger mtime, and no watcher slot at all.
+    #
+    # SUPPRESSING THE WATCHER SLOT IS ALLOWED, NOT REQUIRED ELSEWHERE. The
+    # contract permits a heartbeat to show in the wording; it does not oblige
+    # it. On an abandoned run the slot answers a question nobody is asking and
+    # is the specific phrase that misled a reader, so it goes.
+    #
+    # NEVER `emit_fallback` FROM HERE. Those bytes are the "this session has no
+    # run" line, so routing an abandoned run there would be silently legal —
+    # every assertion in the suite stays green and only the meaning is wrong.
+    #
+    # NO NEW SLOT AFTER THE AGE. Three cases in the suite compare by stripping a
+    # trailing digit run off the end of the line; anything appended past the age
+    # breaks them one time in seven, which is worse than breaking them cleanly.
+    #
+    # NO BUDGET TRIM ON THIS ARM, and that asymmetry is deliberate but not free.
+    # Trimming lives only on the 도는중 arm. The longest run id on this host is
+    # 24 characters, which puts this line inside 30, so the cap is unreachable
+    # today — "unreachable" and "the width is managed" are different claims, and
+    # a longer id would expose this arm first.
+    blocked_n=$(cc_unresolved_blocked "$best_ledger" 2>/dev/null | grep -c . || true)
+    if [ "${blocked_n:-0}" -gt 0 ] 2>/dev/null; then w=차단; else w=방치; fi
+    line="⊘ ${best_rid} ${w}${age_slot}"
+    watch_slot=""
     ;;
   도는중)
     slot=$(newest_stage_pid "$best_rd")
@@ -249,9 +329,11 @@ case "$best_state" in
     fi
     ;;
   진행중)
-    # NOT A SIXTH STATE, and not the running row either. This is the residual:
-    # the run is in flight but no stage is up at this instant — between two of
-    # them, with the ledger still fresh. It says `스테이지 0` for the same reason
+    # NOT A STATE OF ITS OWN, and not the running row either. This is the
+    # residual: the run is in flight but no stage is up at this instant —
+    # between two of them, with the ledger still fresh. And it outranks a
+    # finished run for exactly that reason: the ledger moved inside the mark.
+    # It says `스테이지 0` for the same reason
     # the stall row does, because that is the true and load-bearing fact: a pid
     # file whose process died, or whose pid was reused, must never render as a
     # stage that is up. The only thing separating this line from the stall row
