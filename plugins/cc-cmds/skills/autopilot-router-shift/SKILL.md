@@ -34,7 +34,7 @@ That second clause is the one that closes the hole. The standing rules forbid a 
 
 ## Your first turn
 
-**Read the snapshot yourself. Do not use any `H` your predecessor put in its return line.** Writing the `handoff` row moved the ledger's row count and its chain tip, so a digest quoted from before it is stale by construction and the gate refuses it with exit 4.
+**Read the snapshot yourself. Do not use any `H` your predecessor put in its return line.** The gate no longer refuses that value on the strength of the `handoff` row alone: writing that row moves the chain tip and no component of the progress vector, and the ledger's row count left the digest formula entirely, so a quoted digest can sit inside the bounded ancestry window and pass with exit 0. Reading it yourself is what makes your first act rest on state you observed, and nothing downstream catches it if you do not.
 
 ```
 bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>

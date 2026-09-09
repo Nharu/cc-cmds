@@ -169,6 +169,33 @@ readonly GATE_APPROVAL_ANSWERED=9
 
 readonly GATE_ROW_MAX=1024
 
+# HOW FAR BACK AN OBSERVED TIP MAY SIT AND STILL COUNT AS AN ANCESTOR. The tip
+# axis accepts a value the chain has since grown past, which is what a
+# concurrent writer leaves behind. Unbounded, it also accepted a value read
+# hours earlier — and the state changes that make a held digest dangerous (a
+# pending approval opened, a stage crashed, a run-scope park, a broken chain, a
+# handoff) move no component of the progress vector, so nothing else refuses
+# them either. The bound is what keeps "somebody appended just now" from meaning
+# "anything that ever happened".
+#
+# K IS A BOUND ON CONCURRENT WRITERS AND NOT ON TIME. An observed tip T is
+# carried by the FIRST row appended after it, so if n rows landed between the
+# read and the act, T sits n rows from the end and the admission condition is
+# n <= K. The measured storm was at most four consecutive refusals against a
+# single command in one session, so the observed n topped out at 4; this is
+# twice that. The slack is deliberate and the asymmetry is the reason: too low
+# refuses a legitimate concurrent writer, which is the refusal storm the split
+# was written to end, while a few rows too high only narrows a check that
+# previously did not narrow at all slightly later than it could have. A night's
+# ledger runs to hundreds of rows, so a single digit still puts "read hours ago"
+# far outside — measured against a live 107-row ledger, eight rows is a few
+# minutes.
+#
+# DO NOT RAISE THIS TO MAKE A REFUSAL GO AWAY. Raised far enough it restores the
+# unbounded behaviour while leaving no trace that it was restored; the honest
+# way back is to change what the window MEANS, deliberately, not its number.
+readonly GATE_ANCESTRY_WINDOW=8
+
 # The cone row's segment list, bounded like every other free-length value on a
 # row. Its neighbours on that row are three Korean free-text fields clipped at
 # 400 bytes each, so the budget left for a list is small — and the list is the
@@ -930,6 +957,19 @@ gate_chain_tip() {
   last=$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1)
   [ -n "$last" ] || last="## 실행 $RUN_ID"
   printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_ancestry_window() {
+  # The last GATE_ANCESTRY_WINDOW rows — the set an observed tip may still be an
+  # ancestor from. See that constant for why the window is a bound on concurrent
+  # writers rather than on elapsed time.
+  #
+  # ROWS AND NOT LINES, for the reason gate_chain_tip records one function up:
+  # the ledger is also the morning report, so prose lands in it between rows.
+  # Reading raw lines would let a few paragraphs shrink the window without
+  # anybody choosing to, and the shrink would show up as a refusal nobody could
+  # explain.
+  { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$GATE_ANCESTRY_WINDOW"
 }
 
 gate_append() {
@@ -4948,11 +4988,11 @@ gate_verb_act() {
   # mutates that state.
   if [ "$verb" != "plan" ]; then
     [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest 가 필요합니다\n' >&2; exit 2; }
-    local now nowvec nowtip obsvec obstip stale=0
+    local now nowvec nowtip obsvec obstip stale=0 twopart=0
     now=$(gate_snapshot_digest)
     nowvec="${now%%-*}"; nowtip="${now##*-}"
     case "$snapdig" in
-      *-*) obsvec="${snapdig%%-*}"; obstip="${snapdig##*-}" ;;
+      *-*) twopart=1; obsvec="${snapdig%%-*}"; obstip="${snapdig##*-}" ;;
       # THE OLD ONE-PART FORM KEEPS ITS OLD MEANING, WHICH IS EXACT EQUALITY. The
       # permission hook's own instructions, this repository's fixtures and other
       # sessions' copies of this file all carry a bare digest, so a format change
@@ -4960,22 +5000,60 @@ gate_verb_act() {
       # spelling. Left empty here and handled as a whole-string compare below.
       *) obsvec=""; obstip="" ;;
     esac
-    if [ -z "$obsvec" ]; then
+    if [ "$twopart" = "0" ]; then
       [ "$snapdig" = "$(gate_snapshot_digest_legacy)" ] || stale=1
     else
+      # BOTH HALVES ARE CHECKED FOR SHAPE BEFORE EITHER IS COMPARED, and an empty
+      # half is a FORMAT error rather than a comparison that happens to succeed.
+      # `<벡터해시>-` has the two-part form, so it reached the ancestry probe with
+      # an empty tip and the probe degenerated to `grep -qF "prev="` — true of
+      # every ledger holding a single row. The one value that still had to be
+      # right, the vector half, is printed in full by the refusal message, so
+      # there was nothing left to guess.
+      #
+      # THE ARM IS SELECTED ON THE FORM AND NOT ON AN EMPTY VECTOR HALF. That
+      # selector had the mirror defect: `-<팁>` is two-part by the `case` above
+      # but carries an empty vector, so it fell through to the one-part formula
+      # and was refused for a reason that was not its own.
+      case "$obsvec$obstip" in
+        *[!0-9a-f]*) stale=1 ;;
+      esac
+      { [ ${#obsvec} -eq 64 ] && [ ${#obstip} -eq 64 ]; } || stale=1
       # THE VECTOR HALF IS EXACT, and that is where the check earns its keep: the
       # vector moves only on progress, so a mismatch is a router acting on state
       # that genuinely moved — a compacted one carrying a remembered value
       # included. Nothing about this half is relaxed.
       [ "$obsvec" = "$nowvec" ] || stale=1
-      # AND THE TIP HALF IS ANCESTRY RATHER THAN EQUALITY. Equal is the ordinary
-      # case. Otherwise the tip the caller observed has to appear as some row's
-      # `prev`, which is exactly what makes it a point the current chain has
-      # since grown PAST — somebody else appended between the read and the act,
-      # which is concurrency and not staleness. A tip that appears nowhere on the
-      # chain is neither, and is refused as before.
+      # AND THE TIP HALF IS BOUNDED ANCESTRY RATHER THAN EQUALITY. Equal is the
+      # ordinary case. Otherwise the tip the caller observed has to appear as the
+      # `prev` of one of the last GATE_ANCESTRY_WINDOW rows — a point the chain
+      # has grown past while somebody else appended between the read and the act,
+      # which is concurrency and not staleness. A tip that is on no row at all,
+      # or on a row the chain has left far behind, is neither.
+      #
+      # WHAT THE BOUND DOES NOT BUY. K measures DISTANCE and not KIND, so a
+      # digest presented a few rows after a pending approval was opened still
+      # passes. The vector cannot be widened to cover that: the vector's own note
+      # explains that a boundary firing always issues an approval, so counting
+      # approvals would let the remedy reset the counter that fired it. What the
+      # bound removes is the property that a value read hours ago passed forever.
+      #
+      # ANCHORED TO THE FIELD BOUNDARY. A row's real `prev` is its last field and
+      # is written as ` | prev=<hex>`, and gate_append maps `|` out of every value
+      # a caller supplies, so no field value can forge that boundary. Unanchored,
+      # `근거=prev=<hex>` matched: the authorisation row carries the caller's own
+      # rationale verbatim, so ONE act with a valid digest let a caller mint the
+      # ancestor token it would present later, while knowing no real value in the
+      # ledger. Measured on a live 107-row ledger: the rows carrying `prev=` and
+      # the rows carrying ` | prev=` are the same rows, so the anchor loses no
+      # legitimate ancestor.
+      #
+      # THE SHAPE CHECK ABOVE AND THIS ANCHOR CLOSE DIFFERENT DOORS, and neither
+      # closes the other's. A prefix of a real tip satisfies a substring match
+      # even anchored, so the length check is what refuses it; a minted token is a
+      # perfect 64-character lowercase hex, so the anchor is what refuses it.
       if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
-         && ! { grep -qF "prev=$obstip" "$LEDGER" 2>/dev/null; }; then
+         && ! { gate_ancestry_window | grep -qF " | prev=$obstip"; }; then
         stale=1
       fi
     fi

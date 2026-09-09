@@ -895,6 +895,117 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --rationale "픽스처 — 원장 어디에도 없는 팁" -- touch "$WORK/touched6c"
 check "원장에 없는 팁을 실은 다이제스트는 거부된다" "$rc" "4"
 
+# AND THE THREE PATHS THAT THE ALL-`f` TIP ABOVE DOES NOT DRIVE. That value has
+# the right length, the right character set, and is merely absent from the
+# ledger — so it drives neither an empty half, nor a prefix of a real tip, nor a
+# token the caller planted itself, and those are the three ways an unanchored
+# substring probe was passable. Each of the three below returned rc 0 against the
+# probe as first written.
+#
+# (a) AN EMPTY TIP HALF. `<벡터해시>-` has the two-part form, so it reaches the
+# ancestry arm with an empty `obstip` and the probe degenerates to
+# `grep -qF "prev="`, which every ledger holding one row satisfies. WHAT REFUSES
+# IT IS THE SHAPE CHECK, NOT THE ANCHOR.
+H6e=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6e%%-*}-" \
+     --rationale "픽스처 — 팁 half 가 비었다" -- touch "$WORK/touched6e"
+check "팁 half 가 빈 두 부분 다이제스트는 거부된다" "$rc" "4"
+
+# (b) A PREFIX OF A REAL ANCESTOR TIP. `grep -F` is a substring match, so eight
+# characters of a tip that IS on the chain matched the row carrying the whole of
+# it. The prefix has to be of a genuine ancestor rather than of the current tip —
+# no row carries the current tip as its `prev` yet, so that variant would be
+# refused for the wrong reason and would assert nothing. WHAT REFUSES THIS IS THE
+# LENGTH CHECK AND NOT THE ANCHOR: an anchored probe still finds a prefix inside
+# ` | prev=<full hex>`.
+H6f=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" \
+     --rationale "픽스처 — 다른 행위자가 행을 붙여 앞 팁을 조상으로 만든다" \
+     -- touch "$WORK/touched6f0"
+check "그 팁이 실제 조상이 된다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6f%%-*}-$(printf '%s' "${H6f##*-}" | cut -c1-8)" \
+     --rationale "픽스처 — 실제 조상 팁의 접두사" -- touch "$WORK/touched6f"
+check "실제 조상 팁의 접두사만 실은 다이제스트는 거부된다" "$rc" "4"
+
+# (c) A TOKEN THE CALLER PLANTED ITSELF, and this is the path that makes the
+# item a security one rather than a hardening one. The authorisation row carries
+# `근거=$rationale` verbatim and the row-safety transform only maps `|` and
+# newlines, so a literal `prev=<64 hex>` lands unchanged. One act with a VALID
+# digest therefore mints the ancestor token the same caller presents later, while
+# knowing no real value in the ledger. The minted value is a perfect 64-character
+# lowercase hex, so shape checks pass it by construction — WHAT REFUSES IT IS THE
+# FIELD-BOUNDARY ANCHOR. The two acts are kept adjacent on purpose: with rows
+# stuffed between them the ancestry window would refuse first and the assertion
+# would no longer say which defence fired.
+MINT6g=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "prev=$MINT6g" -- touch "$WORK/touched6g"
+check "근거 문자열을 실은 act 가 통과한다 (이 단언의 전제)" "$rc" "0"
+grep -qF "근거=prev=$MINT6g" "$LEDGER" \
+  && ok "주조된 토큰이 행 본문에 무변형으로 착지한다 (이 단언의 전제)" \
+  || bad "주조 전제" "정규화가 값을 바꿨다 — 이 픽스처가 무는 대상이 사라졌다"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH | cut -d- -f1)-$MINT6g" \
+     --rationale "픽스처 — 자기가 심은 조상 토큰을 제시한다" -- touch "$WORK/touched6h"
+check "호출자가 근거 문자열로 심은 조상 토큰은 통과하지 못한다" "$rc" "4"
+
+# --- THE NIGHT BETWEEN THE TWO EXTREMES ------------------------------------
+#
+# Every other assertion about this check drives an extreme. The refusing ones
+# here and in section 14c both move the progress vector with a `segment` row; the
+# accepting one is a single act the vector does not count. An ordinary night is
+# neither: several ordinary acts land, not one of them moves a vector component,
+# and a caller then acts on the digest it read before them.
+#
+# THIS ASSERTION PINS WHAT THE BOUNDED ANCESTRY DOES NOT CATCH, AND IT IS MEANT
+# TO PASS. Do not "repair" it into a refusal: the value belongs to a concurrent
+# writer and not to a stale reader, and refusing it is the exit 4 storm the split
+# was written to end. The filler must stay strictly under `GATE_ANCESTRY_WINDOW`
+# — if that constant is lowered, this is the assertion that breaks, and the fix
+# is to read the constant's comment rather than to delete this.
+H6i=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 1" -- touch "$WORK/n6i1"
+check "사이의 밤 1 이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate exec --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 2" -- ls
+check "사이의 밤 2 가 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 3" -- touch "$WORK/n6i3"
+check "사이의 밤 3 이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6i" --rationale "픽스처 — 그 뒤에 옛 다이제스트로 행위한다" \
+     -- touch "$WORK/n6i4"
+check "벡터를 밀지 않는 행이 창 안에서 여럿 붙어도 옛 다이제스트는 통과한다" "$rc" "0"
+
+# AND THE SAME SHAPE, FAR ENOUGH BACK, IS REFUSED. This is the only behavioural
+# assertion the bound has: before it a tip passed from any distance and forever,
+# so this ran rc 0. The filler moves no vector component either, so the refusal
+# here is the tip axis and nothing else.
+#
+# THE KIND-SPECIFIC VARIANT IS DELIBERATELY NOT DRIVEN. K bounds DISTANCE and not
+# KIND, so a fixture that opened a pending approval or a run-scope `blocked`
+# before presenting the same old digest would assert the very sentence this one
+# already asserts — and it would change the gate's admission state for every
+# fixture after it in this file. The limit of what the bound buys is stated in
+# the probe's own comment instead.
+H6j=$(HH)
+w6j=0
+while [ "$w6j" -lt 12 ]; do
+  w6j=$((w6j + 1))
+  gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale "픽스처 — 창을 넘기는 밤 $w6j" \
+       -- touch "$WORK/n6j$w6j"
+done
+check "창을 넘기는 마지막 밤이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6j" --rationale "픽스처 — 창 밖의 옛 다이제스트" \
+     -- touch "$WORK/n6j-late"
+check "조상 창을 넘긴 옛 다이제스트는 거부된다" "$rc" "4"
+
 # AND THE FORMAT ITSELF IS PINNED, because the ancestry check has nothing to
 # separate once the two halves stop being separable.
 case "$(HH)" in
@@ -1896,13 +2007,19 @@ check "이미 쓴 방출값도 팁만 뒤로 밀렸으면 통과한다" "$rc" "0
 # WHAT STILL BINDS IS PROGRESS, and it is driven here rather than assumed —
 # without this half the change above reads as the check having been switched off.
 # A segment row moves the vector, and the same emitted value is refused after it.
+#
+# AND THE PARENTHESIS THIS ASSERTION USED TO CARRY OVERSTATED THE SCOPE. What
+# binds is the PROGRESS axis alone. Rows that move no vector component leave the
+# old value acceptable for as long as its tip stays inside the ancestry window,
+# and that is the intent rather than an oversight — section 6 drives exactly that
+# case and asserts that it passes.
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SEMIT2 \
      --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
      -- 상태=실행중 워크트리="$WT" 선행=없음
 check "진전 벡터를 움직인다 (다음 단언의 전제)" "$rc" "0"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$stale" --rationale x --emit-digest -- ls
-check "진전이 움직인 뒤의 옛 방출값은 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
+check "진전이 움직인 뒤의 옛 방출값은 진전 축에서는 여전히 거부된다" "$rc" "4"
 
 # NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
 # a caller believes is working.
