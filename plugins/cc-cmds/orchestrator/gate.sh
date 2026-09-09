@@ -1301,7 +1301,9 @@ gate_append_cost() {
   # the row cap `gate_append` checks, and no value in it can carry a separator.
   local cost="$1" n_stage="$2" at="$3" tool rc=0
   tool=$(lock_tool)
-  if [ -n "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+  # The same selection-versus-observation rule `gate_append` states above: a
+  # platform-selected path is used only if the file is actually there.
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         led=$2

@@ -1663,7 +1663,12 @@ park() {
 with_doc_lock() {
   local rc=0 tool
   tool=$(lock_tool)
+  # Selection names the platform's lock; it does not observe the file. The same
+  # existence check the ledger writers make, for the same reason — a selected
+  # path that is not on this host must fail loudly here rather than as an
+  # unexplained exit code from the locked command.
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was
