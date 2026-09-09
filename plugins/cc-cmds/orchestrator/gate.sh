@@ -991,7 +991,8 @@ gate_append() {
   local series="$1"; shift
   local body f k v
 
-  # EVERY FIELD VALUE IS MADE ROW-SAFE HERE, NOT AT THE CALL SITES.
+  # EVERY FIELD IS MADE ROW-SAFE HERE, KEY AND VALUE ALIKE, NOT AT THE CALL
+  # SITES.
   #
   # `|` separates fields and a newline ends the row, so a value carrying either
   # SPLICES the grammar. `gate_row_safe` performs exactly this transform but is
@@ -1015,6 +1016,16 @@ gate_append() {
   # added later can forget. A value that legitimately needs a pipe uses the
   # contract's other answer (a fence plus its info string); the one value in this
   # file that used `|` as an internal separator now spells it `/`.
+  #
+  # THE KEY HALF USED TO GO THROUGH UNTRANSFORMED, and the header above said
+  # "every field value" because that was all this loop did. It split `키=값`,
+  # mapped the separators out of the VALUE, and put the key back exactly as the
+  # caller spelled it — so a caller that spliced BEFORE the first `=` kept both
+  # characters. A pipe there forges a field boundary; a newline there forges a
+  # whole second ROW, and among the rows worth forging is a `승인` row saying
+  # `상태=승인`. Both halves take the same two maps now. `%%=*` guarantees the key
+  # holds no `=`, so reassembling cannot change how many fields the row has, and
+  # for every field this file writes today the key transform is the identity.
   # Rotated through the positional parameters rather than collected into an
   # array: the interpreter floor is bash 3.2 and the argument list is the one
   # ordered container available without one.
@@ -1023,7 +1034,9 @@ gate_append() {
     f="$1"; shift; i=$((i + 1))
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
-           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
     esac
     set -- "$@" "$f"
   done
@@ -4265,10 +4278,31 @@ gate_record_row() {
     return "$GATE_EXIT_VOCAB"
   fi
   [ $# -ge 1 ] || { warn "$kind 행에 필드가 하나도 없습니다"; return "$GATE_EXIT_VOCAB"; }
+
+  # THE KEY IS CHECKED HERE AND NOT ONLY NORMALIZED IN `gate_append`. The two are
+  # not redundant. Normalization rewrites the field silently; this path is the one
+  # whose refusal reaches the caller, and a caller that spelled a separator into a
+  # field name should be told rather than have the name quietly changed under it.
+  # A key carrying a newline is an attempt to append a SECOND row — the row worth
+  # forging is a `승인` saying `상태=승인` — and a key carrying a pipe forges a
+  # field boundary inside the row it is on. The remaining half of the invariant,
+  # that a key holds no `=`, is discharged by the split itself: `%%=*` cuts at the
+  # first one, so there is nothing left for a branch here to find.
+  #
+  # THE NEWLINE IS A LITERAL, because `$(printf '\n')` is the EMPTY STRING —
+  # command substitution strips exactly the character this pattern has to hold,
+  # and an empty pattern matches every key there is.
+  local nl='
+'
   for f in "$@"; do
     case "$f" in
-      *=*) : ;;
+      *=*) k="${f%%=*}" ;;
       *) warn "$kind 행의 필드는 「키=값」이어야 합니다: $f"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    case "$k" in
+      *"$nl"*|*'|'*)
+        warn "$kind 행의 필드 키에 개행이나 파이프를 담을 수 없습니다: $k"
+        return "$GATE_EXIT_VOCAB" ;;
     esac
   done
 
@@ -5039,8 +5073,12 @@ gate_verb_act() {
       # bound removes is the property that a value read hours ago passed forever.
       #
       # ANCHORED TO THE FIELD BOUNDARY. A row's real `prev` is its last field and
-      # is written as ` | prev=<hex>`, and gate_append maps `|` out of every value
-      # a caller supplies, so no field value can forge that boundary. Unanchored,
+      # is written as ` | prev=<hex>`, and gate_append maps `|` out of every field
+      # a caller supplies, KEY AND VALUE ALIKE, so no field can forge that
+      # boundary. The key half of that transform landed later than this anchor,
+      # which is why both halves are named: while the maps covered values only,
+      # a caller could spell ` | prev` as a field's KEY and put the separator into
+      # the very row this probe reads. Unanchored,
       # `근거=prev=<hex>` matched: the authorisation row carries the caller's own
       # rationale verbatim, so ONE act with a valid digest let a caller mint the
       # ancestor token it would present later, while knowing no real value in the

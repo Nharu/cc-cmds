@@ -937,7 +937,9 @@ check "실제 조상 팁의 접두사만 실은 다이제스트는 거부된다"
 # digest therefore mints the ancestor token the same caller presents later, while
 # knowing no real value in the ledger. The minted value is a perfect 64-character
 # lowercase hex, so shape checks pass it by construction — WHAT REFUSES IT IS THE
-# FIELD-BOUNDARY ANCHOR. The two acts are kept adjacent on purpose: with rows
+# FIELD-BOUNDARY ANCHOR, FOR THIS CARRIER, WHICH IS THE VALUE HALF. The anchor
+# never refused the key half and could not: (d) below drives that carrier and
+# names the check that does. The two acts are kept adjacent on purpose: with rows
 # stuffed between them the ancestry window would refuse first and the assertion
 # would no longer say which defence fired.
 MINT6g=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -951,6 +953,52 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH | cut -d- -f1)-$MINT6g" \
      --rationale "픽스처 — 자기가 심은 조상 토큰을 제시한다" -- touch "$WORK/touched6h"
 check "호출자가 근거 문자열로 심은 조상 토큰은 통과하지 못한다" "$rc" "4"
+
+# (d) THE SAME FORGERY THROUGH THE KEY HALF, which the transform did not cover
+# and the anchor therefore could not refuse. `gate_append` split `키=값`, mapped
+# the separators out of the value, and put the key back exactly as the caller
+# spelled it, while the row writer asked only whether an `=` was present at all.
+# So a caller that spliced BEFORE the first `=` kept both characters: a pipe
+# forged the field boundary the anchor matches, and a NEWLINE forged a whole
+# second row — a `승인` row saying `상태=승인`, on the series the gate reads to
+# decide whether this caller was approved. Both halves are normalized now, and
+# the key is refused as well as transformed, because the transform is silent and
+# this refusal reaches the caller.
+#
+# THE ROW COUNT IS PART OF THE ASSERTION AND NOT DECORATION. A refused
+# bookkeeping act still appends its own `자율 승인` row — that row is written
+# before the dispatch, deliberately — so "nothing was written" is the wrong
+# property and "nothing beyond the authorisation row" is the right one. Counting
+# every row and subtracting that series says exactly that, and keeps saying it
+# however many authorisation rows the gate decides to write.
+n6k=$(grep -c '^- `' "$LEDGER" || true)
+a6k=$(grep -c '^- `자율 승인`' "$LEDGER" || true)
+NL6k=$(printf 'FORGE6K\n- `승인` | 상태')
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 필드 키에 개행을 싣는다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음 "$NL6k=승인"
+check "필드 키에 개행을 실은 호출은 거부된다" "$rc" "2"
+case "$msg" in
+  *"필드 키에"*) ok "거절이 값이 아니라 키를 지목한다" ;;
+  *) bad "키 절반 거절 사유" "$msg" ;;
+esac
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 필드 키에 파이프를 싣는다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음 "FORGE6L | prev=$MINT6g"
+check "필드 키에 파이프를 실은 호출은 거부된다" "$rc" "2"
+m6k=$(grep -c '^- `' "$LEDGER" || true)
+b6k=$(grep -c '^- `자율 승인`' "$LEDGER" || true)
+if [ "$((m6k - b6k))" = "$((n6k - a6k))" ]; then
+  ok "거부된 두 호출은 인가 행 말고 원장에 어떤 행도 남기지 않는다"
+else
+  bad "키 절반 스플라이스" "인가 행 밖 행 수가 $((n6k - a6k)) 에서 $((m6k - b6k)) 로 늘었다"
+fi
+grep -qF 'FORGE6K' "$LEDGER" \
+  && bad "키 절반 스플라이스" "개행을 실은 키의 문면이 원장에 착지했다" \
+  || ok "개행을 실은 키는 원장 어디에도 착지하지 않는다"
+grep -qF 'FORGE6L' "$LEDGER" \
+  && bad "키 절반 스플라이스" "파이프를 실은 키의 문면이 원장에 착지했다" \
+  || ok "파이프를 실은 키는 원장 어디에도 착지하지 않는다"
 
 # --- THE NIGHT BETWEEN THE TWO EXTREMES ------------------------------------
 #
