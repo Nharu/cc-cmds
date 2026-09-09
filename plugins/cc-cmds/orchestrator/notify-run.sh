@@ -115,8 +115,9 @@ cc_notify_enabled() {
 }
 
 cc_caller_is_router() {
-  # BOTH variables must be empty. The gate is called by the router and by a
-  # stage, and only the router may decide that a banner reaches the user.
+  # ALL THREE variables must be empty. The gate is called by the router, by a
+  # launched STAGE and by a routing SHARD, and only the router may decide that a
+  # banner reaches the user.
   #
   # THIS FUNCTION HAS AN OWNER FOR A REASON. Two existing checks in the gate each
   # read ONE of these variables, which is exactly the shape this replaces: a
@@ -124,11 +125,21 @@ cc_caller_is_router() {
   # other one, and a stage call then raises a banner while the rest of the suite
   # stays green.
   #
+  # THE SHARD'S MARKER IS OWNED HERE TOO, and it arrived late in a way that
+  # proves the paragraph above rather than repeating it. It was added to the
+  # gate's own wrapper instead of to this predicate, and a wrapper covers only
+  # the direction that goes through it: firing does, while clearing calls this
+  # predicate directly. So a shard was refused a banner and was still allowed to
+  # take one down — the seat question answered two different ways in two files.
+  # A fourth marker added to one file and not the other splits them again, which
+  # is why all three live here and the gate holds none.
+  #
   # The asymmetry sets the direction. Judging a stage to be the router breaks
   # the operating rule outright; judging the router to be a stage costs one
   # watcher period of delay.
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then return 1; fi
   if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then return 1; fi
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then return 1; fi
   return 0
 }
 

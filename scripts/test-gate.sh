@@ -853,6 +853,67 @@ check "낡은 스냅숏 다이제스트는 거부된다" "$rc" "4"
 gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 -- git commit -m x
 check "plan 은 스냅숏 다이제스트 없이도 답한다 (건드리는 것이 없다)" "$rc" "0"
 
+# --- A CONCURRENT WRITER IS NOT A STALE READER -----------------------------
+#
+# THE SEQUENCE IS THE ASSERTION, and no fragment reaches it: read the digest,
+# let ANOTHER actor append a row, then act on the value that was read. The digest
+# used to fold the ledger's tip into one hash, so an append by anybody at all
+# invalidated it — and `gate_verb_act` appends its own authorisation row before
+# dispatching, which means a successful act invalidated every other actor's
+# digest the instant it landed. Measured in one review session: twelve exit 4s,
+# as many as four consecutively against a single command, every one of them
+# cleared by re-running the identical argv with nothing else changed.
+H6=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 다른 행위자가 원장에 행을 붙인다" \
+     -- mkdir -p "$WORK/scratch6"
+check "다른 행위자의 act 가 먼저 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6" --rationale "픽스처 — 그 사이에 읽어 둔 다이제스트로 행위한다" \
+     -- touch "$WORK/touched6"
+check "그 사이 읽어 둔 다이제스트는 낡은 것이 아니다 (조상이면 통과)" "$rc" "0"
+
+# BUT PROGRESS STILL REFUSES, and this half is why the one above is a repair
+# rather than the check being switched off. The vector is compared exactly, so an
+# act that actually moves the run invalidates a digest read before it.
+H6b=$(HH)
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 진전 벡터를 실제로 움직인다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음
+check "진전 벡터를 움직이는 행위가 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6b" --rationale "픽스처 — 진전 뒤에 쓰는 옛 다이제스트" \
+     -- touch "$WORK/touched6b"
+check "진전 벡터가 움직인 뒤의 옛 다이제스트는 여전히 거부된다" "$rc" "4"
+
+# A TIP THAT IS ON NO ROW IS NEITHER EQUAL NOR AN ANCESTOR. Without this,
+# "the chain grew past it" would collapse into "any tip at all", and the half of
+# the check that catches a remembered value would be gone.
+H6c=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6c%%-*}-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" \
+     --rationale "픽스처 — 원장 어디에도 없는 팁" -- touch "$WORK/touched6c"
+check "원장에 없는 팁을 실은 다이제스트는 거부된다" "$rc" "4"
+
+# AND THE FORMAT ITSELF IS PINNED, because the ancestry check has nothing to
+# separate once the two halves stop being separable.
+case "$(HH)" in
+  *-*) ok "스냅숏 다이제스트가 벡터와 팁 두 부분으로 실려 나온다" ;;
+  *)   bad "스냅숏 형식" "H 가 한 덩어리다 — 팁만 움직인 경우와 진전한 경우를 가를 수 없다" ;;
+esac
+
+# THE ONE-PART FORM KEEPS ITS OLD MEANING, AND ONLY THE REFUSING HALF IS
+# ASSERTED HERE. A bare digest is compared for exact equality against the
+# pre-split formula, so asserting the ACCEPTING half would mean recomputing that
+# formula in this file — and a suite that recomputes the expression under test
+# agrees with itself by construction, which is the failure this whole review
+# found. The refusing half needs no such duplication: a bare value that is not
+# the legacy digest must not be waved through just for having no `-` in it.
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest 1111111111111111111111111111111111111111111111111111111111111111 \
+     --rationale "픽스처 — 옛 형식이되 값이 다르다" -- touch "$WORK/touched6d"
+check "옛 형식이어도 값이 다르면 거부된다" "$rc" "4"
+
 # ---------------------------------------------------------------------------
 # 7. Declared grade is a CHECKED CLAIM, not a self-grant
 # ---------------------------------------------------------------------------
@@ -6325,6 +6386,82 @@ check "샤드 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBS1 | 상태=park' "$LEDGER" || true)" "1"
 sleep 0.3
 check "샤드 호출은 배너를 올리지 않는다" "$(notify_lines)" "0"
+
+# --- AND THE SEAT DECIDES THE CLEARING DIRECTION TOO ------------------------
+#
+# The shard's marker was tested in the gate's wrapper around the predicate, and a
+# wrapper covers only the callers that come through it. Firing does. Clearing
+# does not — `cc_notify_clear` calls the predicate directly — so a shard was
+# refused a banner and was still permitted to take one down, which is the half
+# that changes what is on a person's screen right now.
+#
+# EVERY ASSERTION ABOVE DRIVES THE FIRING DIRECTION, which is why the suite went
+# on passing: a predicate that is right in one direction and wrong in the other
+# satisfies all of them. The two directions are asserted together from here on.
+SEAT_EMITTER="$(dirname "$GATE")/notify-run.sh"
+seat_clear() {  # seat_clear <shift-id> <segment> <stage-id> — `-remove` 회수
+  local i=0
+  : > "$NOTIFY_LOG"
+  ( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    CC_PIPELINE_SHIFT_ID="$1" \
+    CC_PIPELINE_SEGMENT="$2" \
+    CC_PIPELINE_STAGE_ID="$3" \
+    bash -c '. "$0"; cc_notify_clear answer X' "$SEAT_EMITTER" ) >/dev/null 2>&1
+  # THE WAIT IS NOT SKIPPED WHEN ZERO IS EXPECTED. The emitter launches the
+  # notifier detached, so a count read immediately comes back 0 from the race and
+  # the suppression assertion would pass without any suppression existing. This
+  # leaves early only once a line has landed, so the zero case pays the full wait.
+  while [ "$i" -lt 30 ]; do
+    if grep -q -- '-remove' "$NOTIFY_LOG" 2>/dev/null; then break; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -c -- '-remove' "$NOTIFY_LOG" 2>/dev/null || true
+}
+check "샤드 좌석에서는 배너를 내리지도 못한다" "$(seat_clear 'R2#1' '' '')" "0"
+check "리드 좌석의 소거는 그대로 산다" "$(seat_clear '' '' '')" "1"
+notify_reset
+
+# THE TABLE, AND ALL THREE ROWS OF IT. One variable per row is what makes this an
+# enumeration rather than a spot check, and all three are PINNED on every row —
+# one to a value and the other two to empty. Setting only the variable under test
+# leaves the others at whatever the ambient environment holds, and this suite runs
+# from inside a pipeline stage where both stage markers are already exported.
+# Measured: with the ambient values left alone every row answered `not-router` on
+# the unfixed emitter, so the table passed while reading none of its variables.
+seat_pred() {
+  local seg='' stage='' shard=''
+  case "$1" in
+    CC_PIPELINE_SEGMENT)  seg=X ;;
+    CC_PIPELINE_STAGE_ID) stage=X ;;
+    CC_PIPELINE_SHIFT_ID) shard=X ;;
+  esac
+  if ( CC_PIPELINE_SEGMENT="$seg" CC_PIPELINE_STAGE_ID="$stage" \
+       CC_PIPELINE_SHIFT_ID="$shard" \
+       bash -c '. "$0"; cc_caller_is_router' "$SEAT_EMITTER" ) >/dev/null 2>&1
+  then printf 'router'; else printf 'not-router'; fi
+}
+# The control row is first and is not decoration: without it a predicate that
+# answered `not-router` unconditionally would satisfy every row below it.
+check "세 마커가 모두 비면 좌석 술어는 라우터라 답한다" "$(seat_pred NONE)" "router"
+for seat_var in CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
+  check "$seat_var 가 서 있으면 좌석 술어는 라우터라 답하지 않는다" \
+    "$(seat_pred "$seat_var")" "not-router"
+done
+
+# THE SOURCE AXIS, AND IT IS THE REGRESSION FENCE. The behavioural pair above
+# passes again the moment a shard test is re-added to the gate's wrapper — the
+# seat would be answered correctly in both directions and owned by two files
+# again, which is the arrangement that produced this defect. Scoped to the
+# wrapper's own body, because the gate reads that marker elsewhere for questions
+# that are not the seat and a whole-file grep would forbid those too.
+check "게이트의 배너 좌석 래퍼는 좌석 변수를 직접 읽지 않는다" \
+  "$( { awk '/^gate_may_raise_banner\(\) \{/,/^\}/' "$GATE" || true; } \
+      | { grep -c 'CC_PIPELINE_SHIFT_ID' || true; } )" "0"
 # AND THE SAME ROW CARRIES THE SCALE. `CC_PIPELINE_SHIFT_ID` is `<run-id>#<n>`, and
 # the number a shard stamps has to be the number it was launched under: the
 # sidecar reserves `0` for "routing never left the lead", so a shard stamping 0
@@ -7232,6 +7369,15 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
 check "(a) 살아 있는 스테이지가 있으면 상한 교대는 0 이 아닌 코드로 보류된다" "$rc" "10"
 check "(a) 보류는 아무것도 기동하지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "0"
+# AND THE TWO RECORDS OF THAT ONE ATTEMPT DISAGREE, WHICH IS THE WHOLE POINT.
+# `gate_verb_act` appends the authorisation row BEFORE the dispatch, so the hold
+# above leaves it behind having started nothing. Asserting both halves here is
+# what makes the ordinal assertion after (c) mean something: an ordinal counted
+# from the act row would already have been moved by this turned-back attempt.
+check "(a) 보류해도 인가 행은 이미 원장에 있다" \
+  "$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )" "1"
+check "(a) 그러나 기동 행은 남지 않는다" \
+  "$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )" "0"
 rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
 
 # (c) THE LEAD'S OWN CONTEXT IS NOT THE HANDOFF FLOOR. The transcript above is
@@ -7248,11 +7394,59 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
 check "(c) 리드가 띄우는 교대는 바닥 가드에 걸리지 않고 실제로 기동한다" "$rc" "0"
 check "(c) 리드 컨텍스트로는 인수인계 바닥 승인이 발행되지 않는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "0"
-shift_k=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
-check "(c) 기동 로그가 원장의 기동 서수와 같은 번호를 쓴다" \
-  "$( [ -f "$SHIFT_DIR/log/shift-$shift_k.json" ] && printf 'yes' || printf 'no' )" "yes"
+# THE TWO SCALES ARE READ TOGETHER, AND THEIR DIVERGING IS THE ASSERTION.
+#
+# This is the sequence (a) set up: two attempts have written authorisation rows
+# and exactly one successor has ever started. The check that stood here derived
+# the expected ordinal from the act rows, which is the same expression the
+# launcher used — so it recomputed the launcher's error and agreed with it, and
+# `shift-1.json` could go permanently unwritten with the suite green. An expected
+# value has to come from somewhere other than the code under test.
+shift_act=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
+shift_run=$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )
+check "(c) 기동을 시도한 인가 행은 둘이다" "$shift_act" "2"
+check "(c) 그 중 실제로 기동한 것은 하나다" "$shift_run" "1"
+check "(c) 그래서 이 기동의 로그는 첫 번째 번호를 쓴다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-1.json" ] && printf 'yes' || printf 'no' )" "yes"
+check "(c) 보류가 먹어 버렸던 번호로는 로그가 생기지 않는다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-2.json" ] && printf 'yes' || printf 'no' )" "no"
 check "(c) 다른 번호의 교대 로그는 생기지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+# The correspondence a morning reader actually walks — a launch row's ordinal to
+# a file on disk — so the two are asserted against each other rather than each
+# against a literal that could drift apart from the other.
+shift_ord=$( { grep -F '- `교대 기동`' "$LEDGER5" || true; } \
+             | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } | head -1)
+check "(c) 기동 행의 서수가 그 기동 로그 파일의 번호다" \
+  "$( [ -n "$shift_ord" ] && [ -f "$SHIFT_DIR/log/shift-$shift_ord.json" ] \
+       && printf 'yes' || printf 'no' )" "yes"
+
+# --- THE LEAD'S SEAT SURVIVES A LAUNCH -------------------------------------
+#
+# `교대=0` is the seat the sidecar reserves for "routing never left the lead".
+# The seat number fell through to the launch count whenever the writer carried no
+# shift marker, so from the first launch onward the LEAD's own rows stamped the
+# running shift's number and were byte-identical to that shift's. This is the
+# middle state the defect needs and no earlier fixture reaches: one launch has
+# happened, and the lead writes the next row.
+gate5 '' act --manifest "$NM5" --kind segment --target infra --segment SS2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" \
+      --rationale "픽스처 — 기동이 있은 뒤 리드가 쓰는 행" \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "기동이 있은 뒤에도 리드가 쓴 행은 교대=0 이다" \
+  "$( { grep -cF '`segment` | 교대=0 | id=SS2 ' "$LEDGER5" || true; } )" "1"
+
+# AND THE SHARD STAMPS ITS OWN MARKER, AT A NUMBER NEITHER SCALE PRODUCES. `3`
+# is not the act-row count (2) and not the launch count (1), so a fallback of
+# either kind fails this row while reading the marker passes it. Picking a number
+# that collides with one of the counts is how a seat assertion holds by
+# coincidence — which is the shape the shard assertion elsewhere in this file had.
+gate5 "$SHIFT_RUN_ID#3" act --manifest "$NM5" --kind segment --target infra --segment SS3 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(H5 "$SHIFT_RUN_ID#3")" \
+      --rationale "픽스처 — 같은 원장에 샤드가 쓰는 행" \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "같은 원장에서 샤드가 쓴 행은 자기 기동 번호를 찍는다" \
+  "$( { grep -cF '`segment` | 교대=3 | id=SS3 ' "$LEDGER5" || true; } )" "1"
 
 # (b) AND WHEN THE CALLER IS THE OUTGOING SHIFT, THE GUARD DOES FIRE — and the
 # approval it issues is reported as an approval. Returned as 0 it read as "the
@@ -7269,6 +7463,12 @@ check "(b) 그 승인이 원장에 실제로 남는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "1"
 check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+# The floor arm is the second early return, and it must not move the scale
+# either. Asserted on the ROW rather than on the log directory because that is
+# what the ordinal is now counted from — a log file left uncreated says nothing
+# about whether the number was consumed.
+check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
+  "$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )" "1"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

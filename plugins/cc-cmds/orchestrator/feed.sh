@@ -46,7 +46,7 @@
 #           [--once]
 #
 # Exit codes:
-#   0 — ran, or another live feed already holds the lock (see `feed.lock`), or
+#   0 — ran, or another live feed already holds the lock (see `feed.lock.d`), or
 #       reclaimed a lock whose holder is gone
 #   2 — bad arguments
 #
@@ -75,12 +75,23 @@ done
 CURSOR="$RUN_DIR/feed.cursor"
 STATEF="$RUN_DIR/feed.state"
 HEARTBEAT="$RUN_DIR/feed.heartbeat"
-LOCKF="$RUN_DIR/feed.lock"
-# The acquisition token is a DIRECTORY, and the record beside it is what says who
-# holds it. `mkdir` either creates or fails, in one syscall, with no window
-# between the test and the write — which is the idiom this repository's own helper
-# convention already names for exactly this job.
-LOCKD="$LOCKF.d"
+# THE LOCK IS ONE ARTIFACT, AND THAT IS THE PROPERTY IT RESTS ON. The acquisition
+# token is a DIRECTORY — `mkdir` either creates or fails, in one syscall, with no
+# window between the test and the write, which is the idiom this repository's own
+# helper convention already names for exactly this job — and the record of WHO
+# holds it lives INSIDE that directory.
+#
+# It used to live beside it, in a `feed.lock` file written by a second syscall
+# after the `mkdir` had already succeeded, and `lock_holder_alive` opened with
+# `[ -f "$LOCKF" ] || return 1`. Between those two syscalls the lock therefore
+# answered "nobody holds this" — the `mkdir` had bought atomicity and the second
+# write gave it straight back. The window is not theoretical: the value written
+# is `$(cc_proc_fingerprint "$$")`, word expansion happens before the
+# redirection, and that substitution forks `ps`, so an entire process spawn sat
+# inside it. A second instance arriving in that window reclaims a lock whose
+# owner is alive and running, which is precisely the duplicate-feed state this
+# lock exists to prevent.
+LOCKD="$RUN_DIR/feed.lock.d"
 LOCK_OWNED=0
 
 now_epoch() { date +%s; }
@@ -152,10 +163,17 @@ row_field() {
 # deadline at all.
 # ---------------------------------------------------------------------------
 lock_holder_alive() {
-  local pid fp rec
-  [ -f "$LOCKF" ] || return 1
-  pid=$(sed -n '1p' "$LOCKF" 2>/dev/null | tr -dc '0-9')
-  rec=$(sed -n '2p' "$LOCKF" 2>/dev/null)
+  local pid fp rec holder="$LOCKD/holder"
+  [ -d "$LOCKD" ] || return 1
+  # NO RECORD YET MEANS ACQUISITION IN PROGRESS, AND THAT READS AS ALIVE. The
+  # directory exists, so some process won the `mkdir` and is on its way to
+  # writing the record. Answering "dead" here is the reclaiming failure this lock
+  # exists to prevent, and the two errors are not symmetric: backing off from a
+  # holder that turns out to be dead costs one re-arm cycle, while reclaiming
+  # from a holder that is alive puts two feeds on one run.
+  [ -f "$holder" ] || return 0
+  pid=$(sed -n '1p' "$holder" 2>/dev/null | tr -dc '0-9')
+  rec=$(sed -n '2p' "$holder" 2>/dev/null)
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   # A record written before fingerprints existed has nothing to compare, and the
@@ -167,19 +185,54 @@ lock_holder_alive() {
 }
 
 take_lock() {
-  if ! mkdir "$LOCKD" 2>/dev/null; then
+  # RECLAIMING IS ONE ATOMIC STEP, AND THE STEP IS THE RENAME.
+  #
+  # The path here used to be "judge the holder gone → overwrite the record →
+  # declare ownership", and not one of those three is atomic. Two re-arms
+  # reaching one settled orphan both judged it gone, both overwrote, and both
+  # continued as owner — so the branch that exists to recover from a duplicate
+  # feed could create one. Renaming the directory elects a single winner instead:
+  # the loser's `mv` fails with ENOENT because the name it names is already gone.
+  #
+  # OWNERSHIP COMES FROM THE `mkdir` AND FROM NOTHING ELSE. `LOCK_OWNED=1` sits in
+  # that one branch, so it is equivalent to "this process created the directory"
+  # — which is the only claim any of this can actually make atomically. A
+  # reclaimer re-enters the loop and must win the `mkdir` like anyone else rather
+  # than inheriting ownership from having done the cleanup.
+  #
+  # BOUNDED, BECAUSE THIS PATH RUNS WITH NOBODY AWAKE. Each turn either acquires,
+  # backs off, or loses one race to a process that is the holder from then on, so
+  # three turns is already generous; exhausting them backs off the same way a
+  # live holder does. A re-arm on a healthy night must not report failure, so the
+  # exhausted path exits 0 like the others.
+  local tries=0 dead
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    if mkdir "$LOCKD" 2>/dev/null; then
+      printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$LOCKD/holder"
+      LOCK_OWNED=1
+      return 0
+    fi
     if lock_holder_alive; then
       printf '%s 진행 채널이 이미 돌고 있습니다 (pid %s) — 이 호출은 아무것도 중복하지 않습니다\n' \
-        "$(now_stamp)" "$(sed -n '1p' "$LOCKF" 2>/dev/null | tr -dc '0-9')"
+        "$(now_stamp)" "$(sed -n '1p' "$LOCKD/holder" 2>/dev/null | tr -dc '0-9')"
       exit 0
     fi
-    # ONE LINE, THEN CARRY ON. The morning needs to know the last channel did not
-    # shut down cleanly; the night needs the channel running either way.
-    printf 'feed: 주인이 사라진 락을 회수합니다 (%s) — 앞선 진행 채널이 깨끗하지 않게 죽었습니다\n' \
-      "$LOCKD" >&2
-  fi
-  printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$LOCKF"
-  LOCK_OWNED=1
+    dead="$LOCKD.dead.$$"
+    if mv "$LOCKD" "$dead" 2>/dev/null; then
+      rm -rf "$dead"
+      # ONE LINE, THEN CARRY ON. The morning needs to know the last channel did
+      # not shut down cleanly; the night needs the channel running either way.
+      # Only the winner of the rename prints it, so one unclean death leaves one
+      # line however many instances arrived to find it.
+      printf 'feed: 주인이 사라진 락을 회수합니다 (%s) — 앞선 진행 채널이 깨끗하지 않게 죽었습니다\n' \
+        "$LOCKD" >&2
+    fi
+    # Reclaimed or beaten to it, the state has moved. Go round and judge it
+    # again rather than assuming what the move left behind.
+  done
+  printf '%s 진행 채널의 락을 얻지 못했습니다 — 다른 인스턴스가 방금 가져갔습니다\n' "$(now_stamp)"
+  exit 0
 }
 
 release_lock() {
@@ -187,9 +240,12 @@ release_lock() {
   # the instance that finds a live holder and exits 0 runs this too — and without
   # the flag it would delete the running instance's lock on its way out, which is
   # the duplicate-feed state the lock exists to prevent.
+  #
+  # AND IT IS ONE STEP, because there is one artifact. Releasing used to remove
+  # the record and then the directory, which leaves a state — directory present,
+  # record gone — that a concurrent arrival reads as its own acquisition window.
   [ "$LOCK_OWNED" = "1" ] || return 0
-  rm -f "$LOCKF"
-  rmdir "$LOCKD" 2>/dev/null || true
+  rm -rf "$LOCKD"
 }
 
 # ---------------------------------------------------------------------------

@@ -124,27 +124,31 @@ export CC_ORCH_SOURCE_ONLY
 # two runs into one slot — so the title, group and sound come from one file or
 # they come from two that drift.
 #
-# It also owns the caller predicate this file needs. The two existing checks here
-# each read ONE of the stage variables, and a banner path built from either of
-# those copies would raise a notice from a stage call while every test written
-# against the other variable went on passing.
+# It also owns the caller predicate this file needs, and every marker that
+# predicate reads. The two existing checks here each read ONE of the stage
+# variables, and a banner path built from either of those copies would raise a
+# notice from a stage call while every test written against the other variable
+# went on passing.
 # shellcheck source=/dev/null
 . "$GATE_DIR/notify-run.sh"
 
 # ---------------------------------------------------------------------------
-# THE SEAT QUESTION HAS ONE OWNER IN THIS FILE.
+# THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
 #
-# `cc_caller_is_router` reads `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` —
-# the two markers a launched STAGE carries. A routing SHIFT carries neither, so
-# that predicate answers "router" inside one and a shard raises the run's own
-# terminal banner. The shard's marker is `CC_PIPELINE_SHIFT_ID`, and it is tested
-# HERE rather than at the firing sites: there are seven of those, one of them
-# carried the test and six did not, and a seat question owned by seven copies is
-# what produced that gap. An eighth site added later gets the answer by using the
-# same predicate its siblings already use.
+# `cc_caller_is_router` reads all three markers a non-router caller can carry:
+# `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` for a launched STAGE, and
+# `CC_PIPELINE_SHIFT_ID` for a routing SHARD. The shard's marker was tested HERE
+# for a while, and that arrangement is the defect this alias records rather than
+# keeps: a test in this wrapper covers only the callers that come through it.
+# Firing does; clearing does not, because `cc_notify_clear` calls the predicate
+# directly. A shard was therefore refused a banner and still permitted to remove
+# one — and removing is what decides what is on a person's screen right now.
+#
+# THE NAME SURVIVES THOUGH THE TEST MOVED. Seven firing sites call it, and
+# leaving the alias in place means the fix touched none of them; an eighth site
+# added later still reaches the one predicate its siblings already use.
 # ---------------------------------------------------------------------------
 gate_may_raise_banner() {
-  [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 1
   cc_caller_is_router
 }
 
@@ -1216,9 +1220,43 @@ gate_snapshot_digest() {
   # one with 227, produced the byte-identical value. Exit 4 could not fire, and
   # the check passed while the premise it protected was false.
   #
-  # So this one is the vector PLUS the ledger's observable state. The tip alone
-  # would do, since it is the hash of the last row; the count is carried with it
-  # so a revert to an earlier length is not mistaken for no change at all.
+  # SO THIS ONE CARRIES BOTH, AND CARRIES THEM SEPARABLY. The two halves are
+  # joined by `-` rather than hashed together, and that is the whole repair.
+  #
+  # Folded into one hash, the ledger's tip made EVERY append invalidate the value
+  # no matter who wrote it — and `gate_verb_act` appends its authorisation row
+  # before dispatching, so one actor's successful act invalidated every other
+  # actor's digest the moment it landed. Measured in a single review session:
+  # twelve exit 4s, as many as four in a row against one command, every one of
+  # them cleared by re-running the identical argv with nothing else changed. A
+  # check that a bare retry satisfies is not testing the premise it names; it is
+  # a toll on concurrency. There was no ceiling on the re-reads and no backoff.
+  #
+  # Kept apart, each half is compared the way it should be — the vector for exact
+  # equality, the tip for ANCESTRY — and the comparison lives at the call site
+  # because only there is refusing an option. See `gate_verb_act`.
+  #
+  # ONE PASS OVER THE VECTOR. It is the expensive half: this file already
+  # measured the row scan at 1.92s per-row-subshell against 0.007s in `awk`, and
+  # calling `gate_progress_digest` for the first component would walk it a second
+  # time for a value this function already holds.
+  local vec
+  vec=$(gate_progress_vector)
+  printf '%s-%s' \
+    "$(printf '%s\n' "$vec" | shasum -a 256 | cut -d' ' -f1)" \
+    "$(gate_chain_tip)"
+}
+
+gate_snapshot_digest_legacy() {
+  # THE PRE-SPLIT FORM, KEPT ONLY TO BE COMPARED AGAINST. A caller carrying a
+  # one-part digest got it from a gate that hashed the progress vector together
+  # with the ledger's length and tip, and honouring that value's original meaning
+  # — exact equality — requires being able to compute it. The callers this exists
+  # for are runs that were already in flight when the format split, and other
+  # sessions' older copies of this file.
+  #
+  # NOTHING PRODUCES THIS FORMAT ANY MORE, so this is a reader and not a second
+  # writer: the two forms cannot drift apart into two live conventions.
   local n
   n=$( { grep -c '^- `' "$LEDGER" 2>/dev/null || true; } | tr -d ' ')
   { gate_progress_vector
@@ -4910,9 +4948,38 @@ gate_verb_act() {
   # mutates that state.
   if [ "$verb" != "plan" ]; then
     [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest 가 필요합니다\n' >&2; exit 2; }
-    local now
+    local now nowvec nowtip obsvec obstip stale=0
     now=$(gate_snapshot_digest)
-    if [ "$snapdig" != "$now" ]; then
+    nowvec="${now%%-*}"; nowtip="${now##*-}"
+    case "$snapdig" in
+      *-*) obsvec="${snapdig%%-*}"; obstip="${snapdig##*-}" ;;
+      # THE OLD ONE-PART FORM KEEPS ITS OLD MEANING, WHICH IS EXACT EQUALITY. The
+      # permission hook's own instructions, this repository's fixtures and other
+      # sessions' copies of this file all carry a bare digest, so a format change
+      # that refused it would stop runs that are already in flight over a
+      # spelling. Left empty here and handled as a whole-string compare below.
+      *) obsvec=""; obstip="" ;;
+    esac
+    if [ -z "$obsvec" ]; then
+      [ "$snapdig" = "$(gate_snapshot_digest_legacy)" ] || stale=1
+    else
+      # THE VECTOR HALF IS EXACT, and that is where the check earns its keep: the
+      # vector moves only on progress, so a mismatch is a router acting on state
+      # that genuinely moved — a compacted one carrying a remembered value
+      # included. Nothing about this half is relaxed.
+      [ "$obsvec" = "$nowvec" ] || stale=1
+      # AND THE TIP HALF IS ANCESTRY RATHER THAN EQUALITY. Equal is the ordinary
+      # case. Otherwise the tip the caller observed has to appear as some row's
+      # `prev`, which is exactly what makes it a point the current chain has
+      # since grown PAST — somebody else appended between the read and the act,
+      # which is concurrency and not staleness. A tip that appears nowhere on the
+      # chain is neither, and is refused as before.
+      if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
+         && ! { grep -qF "prev=$obstip" "$LEDGER" 2>/dev/null; }; then
+        stale=1
+      fi
+    fi
+    if [ "$stale" != "0" ]; then
       warn "낡은 스냅숏 다이제스트: 관측 '$snapdig' vs 현재 '$now'"
       exit "$GATE_EXIT_STALE"
     fi
@@ -7213,21 +7280,25 @@ readonly SHIFT_FLOOR_MAX=130000
 readonly GATE_EXIT_SHIFT_HELD=10
 
 gate_shift_launches() {
-  # How many routing shifts this ledger has LAUNCHED. `gate_verb_act` appends the
-  # act's `자율 승인` row before the dispatch that starts one, so at the moment a
-  # launch runs this count already includes its own row and is therefore that
-  # launch's ordinal.
+  # How many routing shifts this ledger has actually LAUNCHED: the count of
+  # `교대 기동` rows, which `gate_launch_shift` writes immediately before it execs
+  # the wrapper and in no other place.
   #
-  # LAUNCHES AND NOT ENDINGS. The count of `handoff` rows stood here, and the two
-  # diverge the moment a launch is held or a shift dies before writing its row —
-  # neither of which the gate checks, so the scale silently drifted from the
-  # identifier. `결정=act` excludes the outcome row a failed act appends under the
-  # same `kind`.
+  # AN ATTEMPT IS NOT A LAUNCH, and counting the act's `자율 승인` row made the two
+  # one thing. `gate_verb_act` appends that row BEFORE the dispatch, so it is on
+  # the ledger even when the launcher turns back — held behind a live stage, or
+  # stopped at the handoff floor — and both of those return having started
+  # nothing. Every turned-back attempt therefore consumed an ordinal, and the
+  # ordinal is what names `log/shift-<n>.json`: the file for that number was never
+  # written by any run, so a morning reader following the scale landed on nothing.
+  # Neither arm is exotic — the held one is the recovery `autopilot` prescribes.
+  #
+  # LAUNCHES AND NOT ENDINGS EITHER. The count of `handoff` rows stood here before
+  # that, and it diverges the moment a shift dies before writing its own row.
+  # Counting the launch directly is the only form that survives both.
   local n
   if [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ]; then printf '0'; return 0; fi
-  n=$( { gate_rows '자율 승인' || true; } \
-       | { grep -F 'kind=router-shift' || true; } \
-       | { grep -F '결정=act' || true; } | gate_count)
+  n=$( { gate_rows '교대 기동' || true; } | gate_count)
   printf '%s' "${n:-0}"
 }
 
@@ -7243,13 +7314,27 @@ gate_shift_number() {
   # of ENDED handoffs used to stand here, and it is a different quantity: shift 1
   # stamped `0` right up to its own handoff row, byte-identical to the value that
   # means routing never left the lead, and no reader could tell the two apart.
+  #
+  # AND THE ABSENCE OF THAT MARKER IS A SEAT, NOT A COUNT. This fell through to
+  # `gate_shift_launches`, so from the first launch of the night onward every row
+  # the LEAD wrote stamped the number of the shift then running — and `0`, the
+  # value the sidecar reserves for "routing never left the lead", stopped being
+  # written at all. The lead's rows became byte-identical to that shift's, which
+  # is the same indistinguishability the paragraph above describes, arriving from
+  # the other side.
+  #
+  # ONE EXPRESSION MUST NOT ANSWER TWO QUESTIONS. "How many shifts have been
+  # launched" belongs to `gate_launch_shift`'s ordinal and nothing else; "who is
+  # sitting in the routing seat as this row is written" is this function. Sharing
+  # one expression between them is the root of the defect rather than a detail of
+  # it, so the fallback here is the constant the seat is defined as.
   local n
   if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
     n="${CC_PIPELINE_SHIFT_ID##*#}"
     case "$n" in ''|*[!0-9]*) n='' ;; esac
     if [ -n "$n" ]; then printf '%s' "$n"; return 0; fi
   fi
-  gate_shift_launches
+  printf '0'
 }
 
 gate_transcript_of_session() {
@@ -7520,13 +7605,18 @@ gate_launch_shift() {
 
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` already counts this
-  # ledger's launches and this act's own row is on it before the dispatch gets
-  # here, so the count IS this launch's ordinal. Adding one to a count of ENDED
-  # handoffs put the identifier a notch above the number the successor's own rows
-  # would carry, and a morning reader following `handoff | 교대=N` to
-  # `log/shift-N.json` was handed a different shift's stdout.
-  n=$(gate_shift_launches)
+  # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` counts the rows written
+  # by launches that actually happened, and THIS launch has not written its own
+  # yet — it is written a few lines below, past both early returns — so the
+  # ordinal is that count plus one.
+  #
+  # The count used to include this act's own `자율 승인` row and was taken as the
+  # ordinal directly. That put attempts and launches on one scale: the two early
+  # returns above leave the act row behind and start nothing, so a held attempt
+  # moved the scale and the number it consumed named a `log/shift-N.json` no run
+  # ever wrote. Adding one to a count of ENDED handoffs, the form before that, put
+  # the identifier a notch above the number the successor's own rows would carry.
+  n=$(( $(gate_shift_launches) + 1 ))
   [ "${n:-0}" -ge 1 ] || n=1
   mkdir -p "$RUN_DIR/log"
 
@@ -7545,6 +7635,16 @@ gate_launch_shift() {
   # watcher's liveness count, and a shift recorded there would read as a live
   # stage — which suppresses the very arms that exist to notice a router that
   # stopped. The expiry marker above is the shift's liveness token instead.
+  # THE LAUNCH ROW, AND THE SCALE IS COUNTED FROM IT RATHER THAN FROM THE ACT.
+  # It sits below both early returns and above the exec, so it exists exactly
+  # when a successor was actually started. `gate_shift_launches` reads it.
+  #
+  # THE FIELD IS `서수`, NOT `교대`. `gate_append` stamps the routing SEAT on every
+  # row unless the caller supplies `교대` itself, so spelling this field `교대`
+  # would suppress that stamp on the one row whose whole purpose is to carry an
+  # ordinal — and the two numbers are different quantities: the seat is who
+  # launched this shift, the ordinal is which shift was launched.
+  gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)"
   log "교대 $n 시작 — 사유 $reason"
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
