@@ -149,6 +149,23 @@ assert_quiet() {
 
 pay() { printf '%s' "$1" > "$WORK/payload.json"; printf '%s' "$WORK/payload.json"; }
 
+# THE TWO SEATS READ DIFFERENT FIELDS, so a case that has to drive both cannot
+# reuse one payload: seat 1 needs `tool_name` plus `tool_input.questions`, seat 2
+# needs a marker on the last non-empty line of `last_assistant_message`. This
+# builds the minimal payload that the named seat actually fires on, and adds
+# `agent_id` when one is given. Without it the bodies of the both-seat loops
+# below would be duplicated per seat — which is the very duplication those loops
+# exist to catch.
+payload_for() {
+  local hook="$1" sid="$2" agent="${3:-}" extra=''
+  if [ -n "$agent" ]; then extra=",\"agent_id\":\"$agent\""; fi
+  if [ "$hook" = "$TURN_HOOK" ]; then
+    pay "{\"session_id\":\"$sid\"$extra,\"last_assistant_message\":\"본문 한 줄.\\n**cc-cmds 차례 넘김**: 이유\"}"
+  else
+    pay "{\"session_id\":\"$sid\"$extra,\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"header\":\"머지\",\"question\":\"지금?\"}]}}"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Seat 1 — PreToolUse / AskUserQuestion
 # ---------------------------------------------------------------------------
@@ -183,25 +200,6 @@ check "T19 3건 — 건수와 header 들을 싣는다" \
 check "T19 3건 — 첫 건의 question 이 본문에 없다" \
   "$(grep -cF -- '이것은 첫 질문의 본문이며' "$NOTIFY_LOG" || true)" "0"
 assert_quiet "T19"
-
-# T9 — a subagent payload. `agent_id` is present ONLY inside a subagent, and the
-# gate reads that field rather than `agent_type` for the reason in the seat
-# contract: `agent_type` is present on an `--agent` main thread too.
-P=$(pay '{"session_id":"S-T9","agent_id":"AG-1","tool_name":"AskUserQuestion","tool_input":{"questions":[{"header":"머지","question":"지금?"}]}}')
-hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
-notify_quiet_window
-check "T9 agent_id 가 있으면 무발사" "$(notify_lines)" "0"
-check "T9 종료 코드" "$HOOK_RC" "0"
-assert_quiet "T9"
-
-# Seat 6 of the contract: an empty session id would put every session into one
-# group string, and the prefix would still be right, so nothing downstream can
-# catch it.
-P=$(pay '{"session_id":"","tool_name":"AskUserQuestion","tool_input":{"questions":[{"header":"머지","question":"지금?"}]}}')
-hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
-notify_quiet_window
-check "세션 id 가 비면 무발사 (계약 6)" "$(notify_lines)" "0"
-assert_quiet "빈 세션 id"
 
 # Zero questions still raises a banner: the session is waiting either way, and the
 # body says only that much.
@@ -261,18 +259,100 @@ check "T12 종료 코드" "$HOOK_RC" "0"
 assert_quiet "T12"
 
 # ---------------------------------------------------------------------------
+# The firing gate — BOTH SEATS
+#
+# The gate is four predicates and it is COPIED into each hook rather than shared,
+# so "seat 1 refuses this payload" says nothing at all about seat 2. Every case
+# below therefore walks both seats and puts the seat name in the label, so a
+# failure names the copy that lost the predicate rather than the predicate.
+#
+# These come after T20 and T10 on purpose: each seat's positive control has
+# already asserted that a banner IS raised, so a no-banner verdict here is a
+# refusal rather than a seat that fires nothing.
+# ---------------------------------------------------------------------------
+
+# T9 — a subagent payload. `agent_id` is present ONLY inside a subagent, and the
+# gate reads that field rather than `agent_type` for the reason in the seat
+# contract: `agent_type` is present on an `--agent` main thread too. Losing this
+# in either copy means banners from subagents.
+for hook in "$ASK_HOOK" "$TURN_HOOK"; do
+  seat=$(basename "$hook")
+  P=$(payload_for "$hook" S-T9 AG-1)
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_quiet_window
+  check "T9 agent_id 가 있으면 무발사 ($seat)" "$(notify_lines)" "0"
+  check "T9 종료 코드 ($seat)" "$HOOK_RC" "0"
+  assert_quiet "T9/$seat"
+done
+
+# Contract 6: an empty session id would put every session into one group string,
+# and the prefix would still be right, so nothing downstream can catch it — the
+# shipped `hooks/README.md` says outright that the hook is the only place it can
+# be caught. This measures that the catcher is alive in BOTH copies.
+for hook in "$ASK_HOOK" "$TURN_HOOK"; do
+  seat=$(basename "$hook")
+  P=$(payload_for "$hook" "")
+  hook_run "$hook" "$P" "$PATH_FULL"
+  notify_quiet_window
+  check "세션 id 가 비면 무발사 (계약 6, $seat)" "$(notify_lines)" "0"
+  check "세션 id 가 비면 종료 코드 0 (계약 6, $seat)" "$HOOK_RC" "0"
+  assert_quiet "빈 세션 id/$seat"
+done
+
+# ---------------------------------------------------------------------------
 # The switches, and the two fail-open paths
 # ---------------------------------------------------------------------------
 
 # T13 — the session kill switch. Every value in the off set, because a grammar
-# that only honours `0` is a grammar that silently ignores what a user typed.
-for v in 0 off OFF false no; do
-  P=$(pay '{"session_id":"S-T13","tool_name":"AskUserQuestion","tool_input":{"questions":[{"header":"머지","question":"지금?"}]}}')
-  hook_run "$ASK_HOOK" "$P" "$PATH_FULL" CC_CMDS_SESSION_NOTIFY="$v"
+# that only honours `0` is a grammar that silently ignores what a user typed —
+# and both seats, because the switch is read by a copy of the gate in each hook.
+# The failure this catches is banners that keep coming at a user who turned them
+# off.
+#
+# WHAT IT CANNOT SEE, IN EITHER SEAT, is which copy of the guard did the
+# refusing. The hook's guard and the emitter's `cc_notify_scope_enabled` read the
+# same variable, and the design puts the hook's in FRONT of the emitter's rather
+# than in place of it — so deleting the hook line leaves the outcome identical:
+# no banner, exit 0, no bytes. Measured on both seats, one line at a time: the
+# whole suite stays green. Every other gate predicate has no such twin and does
+# go red. Killing this mutant needs an observation this suite does not have — it
+# reads argv, exit status and byte counts, and nothing else — so the limit is
+# named here rather than left for a reader to infer from a passing case.
+for hook in "$ASK_HOOK" "$TURN_HOOK"; do
+  seat=$(basename "$hook")
+  for v in 0 off OFF false no; do
+    P=$(payload_for "$hook" S-T13)
+    hook_run "$hook" "$P" "$PATH_FULL" CC_CMDS_SESSION_NOTIFY="$v"
+    notify_quiet_window
+    check "T13 세션 킬스위치 '$v' — 무발사 ($seat)" "$(notify_lines)" "0"
+    check "T13 세션 킬스위치 '$v' — 종료 코드 ($seat)" "$HOOK_RC" "0"
+    assert_quiet "T13/$v/$seat"
+  done
+done
+
+# `cc_caller_is_router` — the second conjunct of the firing gate, and until this
+# case existed neither seat exercised it: `hook_run` unsets both pipeline
+# variables on every run and nothing set them back, so the predicate was true in
+# every single case above.
+#
+# THE VALUE IS SET AT THE CALL SITE RATHER THAN REMOVED FROM `hook_run`'s `env -u`
+# LIST, and that is deliberate. This suite may itself be run from inside an
+# unattended stage, where those variables are already exported; the `-u` list is
+# what stops every negative assertion above from passing for the wrong reason
+# there. This case layers a value on top of that floor and measures the opposite
+# direction only. Dropping the two names from the `-u` list would look like a
+# simplification and would take the floor away.
+#
+# The failure this catches is a run banner and a session banner landing on top of
+# each other in an unattended stage session.
+for hook in "$ASK_HOOK" "$TURN_HOOK"; do
+  seat=$(basename "$hook")
+  P=$(payload_for "$hook" S-ROUTER)
+  hook_run "$hook" "$P" "$PATH_FULL" CC_PIPELINE_SEGMENT=S1
   notify_quiet_window
-  check "T13 세션 킬스위치 '$v' — 무발사" "$(notify_lines)" "0"
-  check "T13 세션 킬스위치 '$v' — 종료 코드" "$HOOK_RC" "0"
-  assert_quiet "T13/$v"
+  check "스테이지 세션(cc_caller_is_router 거짓) — 무발사 ($seat)" "$(notify_lines)" "0"
+  check "스테이지 세션(cc_caller_is_router 거짓) — 종료 코드 ($seat)" "$HOOK_RC" "0"
+  assert_quiet "cc_caller_is_router/$seat"
 done
 
 # The unrecognized value reads as ON, deliberately and without a warning — see

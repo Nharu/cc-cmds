@@ -28,8 +28,16 @@
 
 set -uo pipefail
 
-# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS, and the switch is here rather
-# than at the call sites because the call sites cannot be made exhaustive.
+# EVERY BANNER SWITCH IS OFF FOR THIS WHOLE PROCESS, and the switches are here
+# rather than at the call sites because the call sites cannot be made exhaustive.
+#
+# THERE ARE TWO OF THEM, not one. `CC_CMDS_AUTOPILOT_NOTIFY` silences the run
+# banners and `CC_CMDS_SESSION_NOTIFY` silences the general-session seats, and
+# after the scope dispatcher landed neither is the master of the other — that
+# independence is the point of the second switch and it is asserted further down.
+# Naming only the run notifier here is how the second one gets forgotten: the
+# next token family to arrive opens the same hole again, in a file whose fixtures
+# have already reached a real person twice.
 #
 # The gate raises real banners — park notices carry the `hands` token, which
 # also plays a sound — and its fire path prepends the Homebrew directories to
@@ -45,10 +53,15 @@ set -uo pipefail
 # and quietly incomplete afterwards. An exported variable is inherited by every
 # child, including calls nobody has written yet.
 #
-# `gateb`/`gateb_stage` turn it back ON for the assertions that need a banner to
-# fire, which is the one place where firing is the thing being tested.
+# `gateb`/`gateb_stage` turn the run notifier back ON for the assertions that
+# need a banner to fire, which is the one place where firing is the thing being
+# tested. The four places a session token reaches the emitter each carry their
+# own seam — a `NotDarwin` host, or the switch set explicitly in the subshell —
+# so none of them was relying on `CC_CMDS_SESSION_NOTIFY` being unset.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_SESSION_NOTIFY=0
+export CC_CMDS_SESSION_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
