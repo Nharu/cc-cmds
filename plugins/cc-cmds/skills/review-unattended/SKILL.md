@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--recover --scratch-dir <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -25,11 +25,21 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
+    - name: "--recover"
+      kind: flag
+      default: "off (팀을 띄워 Steps 2~4 를 정상 수행)"
+      summary: "Steps 2~4 를 통째로 대체해 팀을 하나도 띄우지 않고, 드라이버가 지명한 위트니스 scratch 디렉터리의 디스크 내용만으로 리포트를 합성한다. 크래시로 죽은 리뷰 스테이지의 부분 산출물을 되살리는 경로."
+      parse_note: "값을 취하지 않는다. 이 플래그가 없으면 복구 절 전체가 발동하지 않는다."
+    - name: "--scratch-dir <abs-path>"
+      kind: flag
+      default: "off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다)"
+      summary: "드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다."
+      parse_note: "`--scratch-dir` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 지명이 없는 것으로 다뤄 열거 후 거부 경로로 간다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(정지 술어를 얇게 만들기 때문), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -108,6 +118,8 @@ dispositions, and says so.
 
 Those four are re-read every time they are consulted.
 
+**CFI-U7 — The recovery arm spawns nothing.** Under `--recover` this arm calls `Agent` zero times and reads only from disk. Every clause that stands up a team — Steps 3 and 4, the progress-checkpoint opt-in, the task-assignment header — does not reach it, so a recovery that finds itself composing a roster has already left the arm it was dispatched into.
+
 ---
 
 ## Workflow
@@ -140,6 +152,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4 and go to `## Recovery arm` below.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
 - **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** with `분류: precondition-failed`, listing the candidates it found.
@@ -266,6 +279,25 @@ Below each P0~P2 finding's analysis, write a self-contained, paste-ready GitHub 
 **Then clean up and stop.** Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` and apply it: returned tasks already self-terminated, so normal completion is a no-op plus ledger hygiene (no `state=running` row survives); `TaskStop` any genuinely-running leftover before marking it `aborted`. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. The restatement that used to sit here spelled it `rm -rf "$WITNESS_DIR"`, and that variable is unset in the shell the cleanup runs in — the expansion was empty, the command removed nothing, and the ledger recorded a cleanup that had not happened.
 
 **There is no Step 6** (CFI-U2). The findings are routed by the orchestrator's triage stage.
+
+---
+
+## Recovery arm (`--recover`)
+
+The driver dispatches this arm when a review stage terminated as a crash and the attempt it observed left a witness scratch directory behind. It replaces Steps 2, 3 and 4 outright: **nothing is spawned** (CFI-U7), and the report is synthesized from what is already on disk.
+
+1. **Entry.** Step 0's tool loading runs unchanged, and Step 1 runs only as far as parsing the target and resolving the report path. Steps 2 (codebase survey), 3 (team composition) and 4 (parallel review) do **not** run. What is produced is a Step 5 synthesis whose input is a directory instead of a team.
+2. **Precondition — refuse rather than improvise.** If the named directory is absent or is not a directory, **refuse**: write no report, point at `${RUN_DIR}/halt/<stage-id>.md` when one is there, and end the turn. Crash durability and precondition stops are disjoint failure classes, and offering a partial result for a stage that never started is a category error.
+3. **Enumerate-then-refuse.** With no naming — the forensic case, where a person invoked this arm by hand — list the candidates under `${CC_PIPELINE_RUN_DIR}/cc-team-witness-*/` that carry an `.attempt` stamp, print each candidate's stamp value beside it, and **recover nothing until one of them is named.** Retries of one logical segment each get their own directory and each writes `epoch 1`, so nothing inside them tells the attempts apart. **Do not sort by mtime** — the corpus holds a segment whose two attempts interleave across twelve hours, and mtime order lies there.
+4. **Tiered synthesis, per role.** Every role descends the tiers on its own; one role resolving high says nothing about the next.
+    - **`witness`** — the highest-round witness satisfying all three junctions (path, sentinel comment key, sentinel state verb). Where the report's ledger block is gone and the nonce therefore cannot be compared, fall back to a self-consistency check and **record `nonce 미검증` in the report** — the downgrade is tolerable only while it stays visible.
+    - **`checkpoint`** — the highest-round checkpoint under `partial/` whose last non-empty line satisfies `cc-partial … progress {nonce} seq=<n>`. Record the `seq`.
+    - **`absent`** — nothing on disk for that role. **Record the absence explicitly and never fabricate.**
+5. **`seq` records, it never adjudicates.** Put the `seq` as read into the provenance table and select nothing with it. A later reader who finds the on-disk `seq` ahead of the recorded one learns after the fact that the producer was alive during recovery, and that is the moment the fact becomes actionable — not now.
+6. **No pid liveness check.** Do not test whether the producing process is still alive. A pid is reusable and can be live on another host or process tree, so the test is insufficient; worse, it revives the "absence of signal ⇒ death" inference the reconcile ladder deliberately deleted. The authority is the driver's dispatch.
+7. **Publication — absence-conditional CAS.** Write to the path the report-path flag names. The condition is that the path does **not already hold a completed report**, and completion is decided by whether the driver's termination-predicate line appears anywhere in that file. **It is not decided by the file existing.** Step 4 early-stubs the report before the first spawn and the scratch directory is created in that same window, so on every path that leads to a recovery the report file is already there; a file-existence test would push every recovery onto the sibling path and break the requirement that a recovery land where the driver reads. If the predicate line is already present, the original stage came back and finished — write `<report>.recover.md` instead, and say so in both the report and the return value. Publish by writing the whole file to a temporary file in the same directory and renaming it with a plain `mv`.
+8. **Interlock.** Follow the shape the report template pins. Emit the findings-summary line verbatim in the template's position **only when every role resolved to `witness`**; if any role came back `checkpoint` or `absent`, emit the partial-recovery line the template defines instead, and put the predicate shape nowhere in the file.
+9. **`## 복구 프로버넌스`.** Emit this section in the report — one row per role carrying role / tier / round / file / `seq` / whether `nonce 미검증` applies.
 
 ---
 

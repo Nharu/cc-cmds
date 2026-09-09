@@ -1917,6 +1917,32 @@ stage_log_path() {
   printf '%s' "$p"
 }
 
+# ---------------------------------------------------------------------------
+# The witness scratch directories of ONE attempt — the third path derived from
+# the same `RUN_DIR` plus attempt pin that `stage_log_path` and
+# `halt_record_path` come from.
+#
+# MATCHED ON THE STAMP, NOT ON THE NAME. `cc-team-witness-init.sh` sanitizes the
+# stage id into the directory NAME and writes the raw id into `.attempt` inside
+# the directory it just made. Comparing the stamp sets the bytes the driver
+# dispatched against the bytes the lead received, so a later change to the
+# sanitizing character class cannot make the match silently stop working. The
+# stamp observed in a real crash was the unsanitized original, which is what
+# makes this the comparison that holds rather than the name.
+#
+# NEITHER SORTED NOR SELECTED BY mtime. The corpus holds one logical segment
+# whose two attempts interleave across twelve hours, and mtime order lies there.
+witness_dirs_for_attempt() {
+  # witness_dirs_for_attempt <stage-id> <attempt> — one path per line.
+  local stage="$1" att="$2" d
+  for d in "$RUN_DIR"/cc-team-witness-*/; do
+    [ -d "$d" ] || continue
+    [ -f "$d.attempt" ] || continue
+    [ "$(cat "$d.attempt" 2>/dev/null)" = "$stage#$att" ] || continue
+    printf '%s\n' "${d%/}"
+  done
+}
+
 session_uuid() {
   # session_uuid <stage-id> [attempt] — derived, never stored.
   #
@@ -3210,6 +3236,84 @@ rebase_onto_base() {
 }
 
 # ---------------------------------------------------------------------------
+# Review crash recovery — dispatched BEFORE the park, and only for a crash.
+#
+# The other terminal classes are precondition stops, and crash durability and
+# precondition stops are disjoint failure classes: proposing a partial result to
+# a stage that never started is a category error. Those classes take today's
+# park unchanged.
+#
+# Three duties, and the driver is the only party that can discharge any of them.
+#
+#   (a) THE REPORT PATH TRAVELS ON THE DISPATCH LINE. It is the premise of the
+#       recovery arm's absence-conditional CAS, and the only way a recovery
+#       report lands on the path the driver actually reads. A recovery written
+#       anywhere else is invisible to the terminal predicate however correct it
+#       is, so a fully witness-resolved recovery would still read as "no
+#       artifact" and park the segment.
+#   (b) THE SCRATCH DIRECTORY IS NAMED, or nothing is dispatched. The driver is
+#       the only party that knows which attempt it observed — each retry gets its
+#       own directory and each writes `epoch 1`, so nothing inside them
+#       distinguishes the attempts. With two or more candidates this names none
+#       and parks with them enumerated; dispatching unnamed would buy a stage
+#       that is certain to refuse.
+#   (c) REACHING STEP 4 IS DECIDED BY THAT DIRECTORY'S EXISTENCE. None means the
+#       stage died before its first spawn, so there is nothing on disk to
+#       recover from and the park says exactly that.
+#
+# `predicate_review` IS NOT TOUCHED, here or anywhere else. If the recovery
+# clears it the cycle continues into triage; if it does not, the segment parks
+# and a person has somewhere to arrive. Wanting to edit the predicate is the
+# signal that one of the two clauses above was implemented wrong.
+#
+# The dispatch id is `S5R:` rather than `S5:` so that `stage_attempt`'s
+# `파견 id=` count, `stage_log_path` and `halt_record_path` all separate the
+# recovery from the review it recovers. Both ids fall to the `generic` settings
+# variant — neither matches `stage_spawn`'s `*review*` arm — so the recovery
+# runs under exactly the hook coverage the original stage ran under.
+review_recover() {
+  local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
+  [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+  if predicate_review "$rp"; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
+    return 1
+  fi
+  local att dirs n=0
+  att=$(stage_attempt_pinned "$sid")
+  dirs=$(witness_dirs_for_attempt "$sid" "$att")
+  # Guarded on `-n` rather than written as the `grep -c . || printf '0'` fallback
+  # used elsewhere in this file. On empty input `grep -c` prints `0` AND exits 1,
+  # so that fallback appends a second `0` and the value matches neither branch
+  # below — the no-directory case would take the cannot-name park carrying the
+  # wrong reason, and the Step-4 verdict would be unreachable.
+  [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
+  if [ "$n" = "0" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
+    return 1
+  fi
+  if [ "$n" != "1" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
+    return 1
+  fi
+  local rsid="S5R:$seg:$cycle" rc pred rclass
+  log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
+  stage_wait_all "$rsid"
+  rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
+  if predicate_review "$rp"; then pred=0; else pred=1; fi
+  rclass=$(classify_termination "$rsid" "$rc" "$pred")
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
+    "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "종단 부류=$rclass" "복구 scratch=$dirs"
+  [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # One segment's S4..S8 cycle
 # ---------------------------------------------------------------------------
 segment_cycle() {
@@ -3384,7 +3488,9 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "종단 부류=$class"
-    [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+    if [ "$class" != "정상 완료" ]; then
+      review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
+    fi
 
     # --- S6 TRIAGE ---------------------------------------------------------
     local tri_out tri

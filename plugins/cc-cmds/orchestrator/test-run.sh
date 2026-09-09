@@ -2186,7 +2186,7 @@ DOC=""
 check "구현 스테이지 두 자리가 접근자를 쓴다" \
   "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "리뷰 스테이지가 접근자를 쓴다" \
-  "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "1"
+  "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "재수렴 스테이지가 접근자를 쓴다" \
   "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "1"
 # 감사와 계획, 두 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞

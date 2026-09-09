@@ -104,6 +104,55 @@ When a finding only **confirms an existing PR comment** (it carries `📎 관련
 
 (If the thread reference is a URL, substitute `이미 [이 PR 코멘트](URL)에서 제기된 사항입니다`.) The absence of a blockquote on a confirms-existing finding is the signal for "nothing new to post" (P3 excepted — a P3 line is itself the comment). In the rare case a P3 line is itself confirms-existing, the dedup rule wins: do not post that line as a comment, leave only the confirms-existing plain note.
 
+## Recovery report — the termination-predicate interlock
+
+A recovery report is written by the recovery arm from a crashed stage's on-disk
+leftovers, and it is **thin by construction** — unconverged, uncross-reviewed,
+and cut off at the moment of death. Without this interlock the mechanism is
+worse than not having it: a review that died at twenty minutes yields a
+plausible-looking "clean review" and the run terminates on it.
+
+**What the driver matches is the SHAPE of the findings-summary line.** Verbatim:
+
+```text
+^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건
+```
+
+The **values of the counts are never read**, and there is **no position
+condition** — the driver greps the whole report file and the line matches
+wherever it sits.
+
+**The `P0 + P1 = 0` line of the Merge Recommendation Rules above is NOT the
+suppression target.** The two lines are easy to conflate and conflating them
+puts the suppression in the wrong place: an implementation that deletes only the
+rubric line leaves the predicate passing, so a thin recovery report reads as
+P0 and P1 zero and the run terminates on it — precisely the scenario this
+interlock exists to prevent.
+
+**The suppression target is the shape, not the position.** A recovery report in
+which **any** role resolved to the `checkpoint` or `absent` tier puts a line of
+the shape above **nowhere in the file**. Moving such a line elsewhere does not
+suppress it; it still matches. In its place, emit a line that names the tier and
+is deliberately built not to match:
+
+```
+- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상 — 최저 계층 {checkpoint|absent}
+```
+
+It breaks at two independent junctions — the key is `발견 요약(부분 복구)`, so
+`^- \*\*발견 요약\*\*: 🔴` does not match it, and the count positions read `미상`,
+so `[0-9]+건` does not match either. Either junction alone would do; both are
+present so that a later edit to one of them cannot silently re-arm the line.
+
+**The real consequence of the predicate failing is a park.** The driver folds
+that result into its terminal classification, the class is not "정상 완료", and
+the segment parks. A thin recovery report therefore leaves a place for a person
+to arrive at instead of quietly ending the run.
+
+**A recovery in which every role resolved to `witness` emits the line
+normally** — it carries the same finding set the original stage would have
+published, so it is sound to read either way.
+
 ## Document Structure
 
 ```markdown
@@ -195,6 +244,25 @@ Mention CI failure items if applicable.]
 
 [Findings invalidated by user context. Leave empty on initial creation.]
 ```
+
+### Recovery-report variant
+
+A recovery report follows the same skeleton with two changes. The `발견 요약`
+line follows the interlock above — the ordinary line when every role resolved to
+`witness`, the partial-recovery line otherwise — and one extra section is added
+directly after `## 개요`:
+
+```markdown
+## 복구 프로버넌스
+
+| 역할 | 계층 | 라운드 | 파일 | seq | nonce 미검증 |
+| --- | --- | --- | --- | --- | --- |
+| [role] | witness / checkpoint / absent | [N] | [path read, or — for absent] | [N, or — outside the checkpoint tier] | 예 / 아니오 |
+```
+
+`seq` is recorded as read and adjudicates nothing. `nonce 미검증` is `예` only
+where the ledger block was gone and the witness was accepted on a
+self-consistency check instead of a nonce comparison.
 
 ## File Saving
 
