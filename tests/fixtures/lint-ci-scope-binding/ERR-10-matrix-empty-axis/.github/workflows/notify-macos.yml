@@ -1,0 +1,31 @@
+name: notify-macos
+
+# The empty-vector form of the same defect: an axis declared with no values makes
+# the product empty, so the only `make` holder never runs. actionlint does catch
+# this one (`"matrix values" section should not be empty`), but this lint may not
+# assume actionlint is wired — in this repo it is not.
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  test-macos-native:
+    runs-on: macos-latest
+    env:
+      CC_CMDS_REQUIRE_NATIVE: '1'
+      CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
+    timeout-minutes: 8
+    strategy:
+      matrix:
+        os: []
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run darwin-only tests
+        run: make test-darwin

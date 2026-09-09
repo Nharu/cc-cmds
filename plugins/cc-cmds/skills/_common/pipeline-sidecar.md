@@ -359,13 +359,17 @@ Block 0 is `## 계획 <run-id>` — the plan record written when the run starts.
 
 Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row carries the fence's info string instead of the inline value.
 
+**Every row carries `교대=<n>` as its first field after the series name.** `<n>` is the number of the routing shift that was current when the row was written, counted from `0` for the lead's own seat. It is on every row rather than on the `handoff` row alone because the question the morning asks — how many shifts ran after the instruction files were applied — is answered by reading any row's shift number, and a scale that exists on one series can only count that series. A run whose routing never left the lead writes `교대=0` on every row, so the field costs nothing where the mechanism is unused.
+
 ### 3.1a Row length has a hard cap
 
 **A row is at most 1024 bytes including its newline.** Above that, concurrent appends interleave: two independent measurements put the last clean size at exactly 1024, with corruption beginning at 1025 and line counts staying correct while field values splice. That is the shape no row-grammar regex and no `wc -l` can detect, which is why the cap is a lint rather than a convention.
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at fourteen
+### 3.2 The row series is closed at fifteen
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen` — `handoff` arrived as the fifteenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
@@ -389,6 +393,7 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
+| `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
@@ -426,6 +431,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`세션 id` and `부모` are the ancestry record, and without them the implementation-review separation rule is vacuous.** That rule asks whether a review stage's session is disjoint from the implementation's. While session ids are *derived* from `owner-doc|구간|단계|시도` they differ by construction, so the comparison is a tautology and passes on every run including the ones it exists to catch. Recording the id the harness actually assigned, plus the id of the session that spawned it, turns the rule into a real ancestry-closure check — and a fork inherits its parent, so a forked session cannot review its own work by taking a new id.
 
+**`handoff` is the fifteenth because nothing in the first fourteen can hold an abandoned alternative.** When the routing loop runs as a headless shift rather than as the lead's own session, a shift ends and a successor starts from the snapshot alone — and the snapshot carries progress, not deliberation. `자율 승인` records the decision that was taken and `blocked` records a stop; neither has a place for *what was tried and dropped, and on seeing what*. The morning report asks for exactly that, so without this series the value exists only if a router happens to write it into free-text rationale, where no reader can find it. The row takes `키=값` fields after `--` like `segment` and `cycle` do, grades `읽기`, and — like `blocked`, `종료 절` and a judgment `자율 승인` — does **not** require `--segment`: a shift is an event of the whole run rather than of one segment. Each of the three free-text fields is clipped to 300 characters, which is what keeps the row inside the cap of §3.1a.
+
 ### 3.3 Closed vocabularies
 
 | Field | Values |
@@ -440,6 +447,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `대상 추가.층` | `0` \| `1` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
+| `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` |
@@ -568,12 +576,14 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 **선택지**:
 - `<label>` — <description, verbatim>
 **하네스 오류**: <the original harness error string, verbatim> | (없음)
+**관측 상세**: <the measurement values this 분류 owes, parts joined with ` / `> | (없음)
 **재호출 명령**: <the command line the skill would have emitted, verbatim> | (없음)
 **후속**: 보류 큐
 <!-- /cc-pipeline-halt v1 -->
 ```
 
 - **Written with the atomic form of `sidecar.md` §1.3** (temp file in the same directory, then rename), so a partial record is never observed. The closing fence is the terminator: a record whose last non-empty line is not `<!-- /cc-pipeline-halt v1 -->` is **a crash mid-write, not a halt**.
+- **`관측 상세` is where measurement values go, and `질문 문면` is not.** A `freeze-mismatch` halt owes which assertion diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — on an assertion 1 mismatch — the intersecting paths, which `verification.md` §6.0 calls the only thing telling a later reader what ended the window. Without a field of their own those values land in `질문 문면`, which the schema defines as the verbatim question and which is the one field a human uses to audit a forged halt — so the obligation and the grammar disagreed and the misuse was the only way to satisfy both. It is **one line like every other field line in this block**, parts joined with ` / `, and every field line sits above the closing fence because that fence is the terminator. A class with no measurement values of its own writes `(없음)`.
 - **`재호출 명령` is inert.** The driver records it and **never executes it**. Auto-running it retries a condition whose cause is still present, which makes a single pass into a bounded-only-by-budget loop — and does so precisely when the tree has been *proven* to be in motion. The field is named for its inertness because attributing that in prose is not enough: the predictable failure is a future implementer wiring it to a dispatcher.
 - **Termination discipline**: write the record atomically → take **no further step** (no cleanup beyond what the halting step already committed, no partial progress, no fallback act) → end the turn normally.
 - **The discriminator is the artifact, not the exit code.** A halt is a *clean* stop, so its terminal envelope looks like a normal completion, and a model-driven skill cannot set an exit code to mean otherwise. **Exit says the stage ended; the halt record says why.** Both are machine-read; neither is prose.
