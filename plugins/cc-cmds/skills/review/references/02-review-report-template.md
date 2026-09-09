@@ -131,13 +131,14 @@ interlock exists to prevent.
 
 **The suppression target is the shape, not the position.** A recovery report in
 which **any** role resolved to the `checkpoint` or `absent` tier — **or in which
-the roster could not be obtained at all** — puts a line of the shape above
-**nowhere in the file**. Moving such a line elsewhere does not suppress it; it
-still matches. In its place, emit a line that names the tier and is deliberately
-built not to match:
+every role resolved to `witness` but any of them did so at a round below the last
+round the ledger block records** — **or in which the roster could not be obtained
+at all** — puts a line of the shape above **nowhere in the file**. Moving such a
+line elsewhere does not suppress it; it still matches. In its place, emit a line
+that names the tier and is deliberately built not to match:
 
 ```
-- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상 — 최저 계층 {checkpoint|absent|로스터 불가}, 최저 라운드 {N|미상}
+- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상 — 최저 계층 {checkpoint|absent|로스터 불가|라운드 미달}, 최저 라운드 {N|미상}
 ```
 
 It breaks at two independent junctions — the key is `발견 요약(부분 복구)`, so
@@ -158,15 +159,16 @@ that result into its terminal classification, the class is not "정상 완료", 
 the segment parks. A thin recovery report therefore leaves a place for a person
 to arrive at instead of quietly ending the run.
 
-**A recovery in which every role resolved to `witness` emits the line
-normally.** What such a report carries is the finding set **as of the highest
-round that survived** — this interlock does not establish that the round is the
-one the original stage would have published from. Rounds after the first exist
+**A recovery in which every role resolved to `witness` at the last round the
+ledger block records emits the line normally.** Uniform `witness` is not
+sufficient on its own — the round has to match too. Rounds after the first exist
 to cross-review and converge, and a round-1 witness is by definition upstream of
 both, so a recovery built entirely from round-1 witnesses is a real finding set
-that has not yet had its self-refutations taken out of it. That judgment is the
-reader's, and the two places to make it from are `## 복구 프로버넌스`'s round
-column and the `최저 라운드` field of the partial-recovery line above.
+that has not yet had its self-refutations taken out of it, and it is not the
+finding set the original stage would have published. That case takes the
+partial-recovery line with `최저 계층 라운드 미달`, and the two places to read
+the shortfall from are `## 복구 프로버넌스`'s round column and the `최저 라운드`
+field of that line.
 
 ## Document Structure
 
@@ -264,7 +266,8 @@ Mention CI failure items if applicable.]
 
 A recovery report follows the same skeleton with two changes. The `발견 요약`
 line follows the interlock above — the ordinary line when every role resolved to
-`witness`, the partial-recovery line otherwise — and one extra section is added
+`witness` at the last round the ledger block records, the partial-recovery line
+otherwise — and one extra section is added
 directly after `## 개요`:
 
 ```markdown

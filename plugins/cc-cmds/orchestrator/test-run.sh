@@ -3079,11 +3079,58 @@ check "이름이 어긋나도 스탬프가 맞으면 잡힌다" \
 rm -rf "$RUN_DIR/cc-team-witness-unrelated-name.SX-9"
 
 # --- (2) review_recover 의 다섯 분기 ----------------------------------------
-REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_REAPED=""
+REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_ROWS=""; REC_REAPED=""
 REC_PRED=1                 # predicate_review 의 반환값 (0 = 술어 줄이 이미 있음)
 REC_RCLASS="정상 완료"
 
-rec_reset() { REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_REAPED=""; }
+rec_reset() { REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_ROWS=""; REC_REAPED=""; }
+
+# --- (2a) reap_orphan 의 효과 — 진짜 함수를 구동한다 -------------------------
+# 아래 (3) 의 단언들은 스파이가 설치된 뒤의 관측이라 호출 지점의 위치만 고정할 수
+# 있다. 효과는 여기서 고정한다. 이 자리가 스파이 설치보다 앞이라는 것이 요점이며
+# 20절과 같은 이유다 — `rec_install_spies` 아래로 내려가는 순간 `reap_orphan` 은
+# 무조건 기록하는 스텁이 되어 진짜 함수가 무엇을 하든 통과한다.
+#
+# 20절의 `unset -f reap_orphan` 은 복원이 아니라 제거이므로 이 자리에는 진짜
+# 정의가 없다. 드라이버에서 그 함수만 다시 읽어 온다 — `watch.sh` 의 두 함수를
+# 가져오는 자리와 같은 형태다. `log` 도 같은 이유로 없을 수 있어 스텁을 둔다.
+eval "$(sed -n '/^reap_orphan()/,/^}/p' "$DRIVER")"
+log() { :; }
+
+# pid 파일이 없는 경우를 **조용한 무동작으로서** 단언한다. 이번 사이클의 발견이
+# 정확히 「도달 가능한 모든 경로가 이 형상이다」이므로, 그 삼킴 가드가 스위트에
+# 보이지 않으면 다음 사람이 같은 자리를 다시 연다.
+REC_ORPH_NONE="S5:orph-none:0"
+rm -f "$RUN_DIR/$REC_ORPH_NONE.pid" "$RUN_DIR/$REC_ORPH_NONE.reaped"
+reap_orphan "$REC_ORPH_NONE"; REC_RC=$?
+check "pid 파일이 없으면 reap_orphan 은 0 으로 반환한다" "$REC_RC" "0"
+check "pid 파일이 없으면 스탬프도 남지 않는다 (조용한 무동작)" \
+  "$( { [ -e "$RUN_DIR/$REC_ORPH_NONE.reaped" ] && printf 'yes' || printf 'no'; } )" "no"
+
+# pid 파일이 있고 그 pid 가 이미 죽은 경우 — 판정이 스탬프로 남고 pid 는 지워진다.
+# 스탬프가 없으면 「이미 죽어 있었다」와 「회수가 아예 없었다」가 구별되지 않는다.
+REC_ORPH_DEAD="S5:orph-dead:0"; REC_DEAD_PID=999999
+rm -f "$RUN_DIR/$REC_ORPH_DEAD.reaped"
+printf '%s\n' "$REC_DEAD_PID" > "$RUN_DIR/$REC_ORPH_DEAD.pid"
+reap_orphan "$REC_ORPH_DEAD"
+check "죽은 pid 는 dead 로 스탬프된다" \
+  "$( { cat "$RUN_DIR/$REC_ORPH_DEAD.reaped" 2>/dev/null || true; } )" "$REC_DEAD_PID dead"
+check "회수 뒤 pid 파일은 사라진다 (이후의 생존성 오라클이 없어진다)" \
+  "$( { [ -e "$RUN_DIR/$REC_ORPH_DEAD.pid" ] && printf 'yes' || printf 'no'; } )" "no"
+
+# 살아 있는 경우 — 이 스위트가 직접 띄운 자식이라 신호가 밖으로 나가지 않는다.
+REC_ORPH_LIVE="S5:orph-live:0"
+rm -f "$RUN_DIR/$REC_ORPH_LIVE.reaped"
+sleep 30 &
+REC_LIVE_PID=$!
+printf '%s\n' "$REC_LIVE_PID" > "$RUN_DIR/$REC_ORPH_LIVE.pid"
+reap_orphan "$REC_ORPH_LIVE" 2>/dev/null
+check "살아 있는 pid 는 alive 로 스탬프된다" \
+  "$( { cat "$RUN_DIR/$REC_ORPH_LIVE.reaped" 2>/dev/null || true; } )" "$REC_LIVE_PID alive"
+wait "$REC_LIVE_PID" 2>/dev/null || true
+check "살아 있던 자식은 실제로 종료했다" \
+  "$( { kill -0 "$REC_LIVE_PID" 2>/dev/null && printf 'yes' || printf 'no'; } )" "no"
+rm -f "$RUN_DIR/$REC_ORPH_LIVE.reaped" "$RUN_DIR/$REC_ORPH_DEAD.reaped"
 
 # THE SPIES ARE INSTALLED FROM INSIDE A FUNCTION, and the indentation is the
 # whole reason. Two of these names — `park` and `ledger_row` — are real
@@ -3101,7 +3148,8 @@ rec_install_spies() {
   stage_spawn()         { REC_SPAWN="$REC_SPAWN|$*"; REC_CALLS="$REC_CALLS stage_spawn"; return 0; }
   stage_wait_all()      { REC_CALLS="$REC_CALLS stage_wait_all"; return 0; }
   classify_termination(){ printf '%s' "$REC_RCLASS"; }
-  ledger_row()          { REC_CALLS="$REC_CALLS ledger_row"; return 0; }
+  # 인자를 버리면 행에 무엇이 실렸는지 원리적으로 셀 수 없다 — 누산한다.
+  ledger_row()          { REC_ROWS="$REC_ROWS|$*"; REC_CALLS="$REC_CALLS ledger_row"; return 0; }
   stage_session_id()    { printf 'SID'; }
   stage_parent_id()     { printf 'PID'; }
   log()                 { :; }
@@ -3154,6 +3202,10 @@ fi
 rm -rf "$RUN_DIR/cc-team-witness-second"
 
 # 5. 디렉터리 1개 — 행복 경로. 파견 줄에 세 인자가 전부 실렸는가.
+# 앞선 회수가 남겼을 스탬프를 픽스처로 깐다. 실제 런에서 이 값을 쓰는 것은
+# `stage_wait_all` 안의 회수이고, 여기 스파이는 그것을 대신하지 않으므로 파일로
+# 세운다 — 단언 대상은 「분기가 스탬프를 읽어 행에 싣는가」다.
+printf '4242 dead\n' > "$RUN_DIR/$SIDR.reaped"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
 check "행복 경로는 반환 0" "$REC_RC" "0"
@@ -3167,13 +3219,35 @@ for want in '--recover' "--scratch-dir $RUN_DIR/cc-team-witness-hit" "--report-p
   fi
 done
 
-# --- (3) 회수와 허용 목록 ----------------------------------------------------
+# --- (3) 회수 호출 지점과 허용 목록 ------------------------------------------
 # 5번과 같은 픽스처의 관측이다 — `rec_reset` 을 사이에 두지 않는다.
-check "원 스테이지를 정확히 한 번 회수한다" "$REC_REAPED" " $SIDR"
+# **이 절이 고정하는 것은 호출 지점의 위치이지 회수의 효과가 아니다.** 스파이가
+# pid 파일을 보지 않고 무조건 기록하므로 진짜 `reap_orphan` 이 무엇을 하든 아래
+# 두 단언은 통과한다. 효과는 (2a) 가 진짜 함수 위에서 고정한다.
+check "원 스테이지를 정확히 한 번 회수 호출한다" "$REC_REAPED" " $SIDR"
 if printf '%s' "$REC_CALLS" | grep_all_q -F 'reap_orphan stage_spawn'; then
-  ok "회수가 파견보다 앞선다 (살아 있는 원 스테이지 위에 파견하지 않는다)"
+  ok "회수 호출이 파견보다 앞선다"
 else
   bad "회수 순서" "reap_orphan 이 stage_spawn 앞에 오지 않는다: $REC_CALLS"
+fi
+
+# 행에 실리는 것 — 스파이가 인자를 누산하므로 이제 셀 수 있다.
+for want in "복구 scratch=$RUN_DIR/cc-team-witness-hit" '원회수=dead' '종단 부류=정상 완료'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+
+# 스탬프가 없으면 행은 `미상` 을 싣는다 — 「모른다」가 원장에 남아야 한다.
+rm -f "$RUN_DIR/$SIDR.reaped"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
+  ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
+else
+  bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
 fi
 if kill_permitted "S5R:segR:0"; then
   ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"

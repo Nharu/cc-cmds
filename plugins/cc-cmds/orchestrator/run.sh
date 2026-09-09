@@ -2205,13 +2205,20 @@ reap_orphan() {
   # A driver that died mid-stage leaves a stage still running — and still able
   # to commit and push. `implement` is re-invocation idempotent, so killing and
   # re-dispatching is safe.
+  # The `kill -0` verdict is stamped before the pid file goes away, because the
+  # pid file is the only thing `stage_alive` reads and this function destroys it.
+  # Without the stamp a later caller cannot tell "the stage was already dead"
+  # from "no reap ever ran here", and both reach the same first-line return.
   local stage="$1" pid pgid
   [ -f "$RUN_DIR/$stage.pid" ] || return 0
   pid=$(cat "$RUN_DIR/$stage.pid")
   pgid=$(cat "$RUN_DIR/$stage.pgid" 2>/dev/null || printf '')
   if kill -0 "$pid" 2>/dev/null; then
     log "고아 스테이지 회수: $stage pid=$pid pgid=$pgid"
+    printf '%s alive\n' "$pid" > "$RUN_DIR/$stage.reaped"
     [ -n "$pgid" ] && kill -- "-$pgid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  else
+    printf '%s dead\n' "$pid" > "$RUN_DIR/$stage.reaped"
   fi
   rm -f "$RUN_DIR/$stage.pid" "$RUN_DIR/$stage.pgid"
 }
@@ -3308,18 +3315,31 @@ review_recover() {
       "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
     return 1
   fi
-  local rsid="S5R:$seg:$cycle" rc pred rclass
+  local rsid="S5R:$seg:$cycle" rc pred rclass reaped
   log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
-  # The original stage may still be running. `stage_wait_all` can return with it
-  # alive: of the three `continue` arms in its limit-shape branch two call
-  # `reap_orphan` without `stage_collect`, and the third deliberately signals
-  # nothing and parks — in every one of them no `.rc` is written, the caller
-  # reads the missing file as `1`, and the class comes out `크래시`. Dispatching
-  # on top of that gives the report path two writers, which is the risk the
-  # publication rule is built to close. Reaping first is what bounds the
-  # remaining window to a reap that failed. No new authorization is needed:
-  # `boundary_idempotent` already admits `S5`.
+  # Dispatching on top of a still-running original gives the report path two
+  # writers, which is the risk the publication rule is built to close. What this
+  # call does about that is less than it looks, and the honest statement is:
+  #
+  # The call below is a no-op on every path that reaches here. Of the three
+  # `continue` arms in `stage_wait_all`'s limit-shape branch, two already called
+  # `reap_orphan` and it removed the pid file; the third parks, and it is
+  # unreachable for `S5` anyway because `kill_permitted` truncates at the first
+  # colon and `boundary_idempotent` admits `S5`. `stage_collect` also removes the
+  # pid file. So `reap_orphan` returns at its first line and signals nothing.
+  #
+  # The signal, where one was sent, therefore went at some earlier and
+  # unrecorded moment — the residual is an unconfirmed signal, not a missing
+  # one. The `.reaped` stamp is what makes that moment observable after the
+  # fact; it is read below and carried on the ledger row. The two predicate
+  # checks in the publication rule narrow the remaining window; **no upper bound
+  # on it is claimed here.** The call is kept because a future arm that does
+  # leave a pid file must be reaped, and `boundary_idempotent` already admits
+  # `S5`, so no new authorization is needed.
   reap_orphan "$sid"
+  reaped=$(cat "$RUN_DIR/$sid.reaped" 2>/dev/null || printf '')
+  reaped="${reaped##* }"
+  [ -n "$reaped" ] || reaped=미상
   stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
   stage_wait_all "$rsid"
   rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
@@ -3327,7 +3347,7 @@ review_recover() {
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
-    "종단 부류=$rclass" "복구 scratch=$dirs"
+    "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
       "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
   return 0
