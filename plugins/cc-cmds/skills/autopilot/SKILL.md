@@ -443,7 +443,9 @@ Four parts, and each one has a measured failure:
 
 - **`-p` is required.** The wrapper passes everything after `--` to the CLI, so without `-p` the prompt is never delivered. Omitting it while passing a bare skill name produced `산출물 없는 정지 rc=0 · 0.809852 USD` — the model woke with an **empty first user message**, read a file, asked "what should I do?", and terminated as a success. Omitting it while passing a quoted slash command instead fails loudly (`stage-wrapper: -- 뒤에 CLI 인자가 필요합니다`, `크래시 rc=2`), which is the better of the two.
 - **The prompt is a slash command**, leading `/` included.
-- **It must be the `-unattended` variant.** The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, so a headless stage naming them resolves nothing at all.
+- **It must be the `-unattended` variant** — and the reason is not that the plain name fails. The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, which closes the **Skill tool** path and nothing else; a headless stage that names one still reaches the same instructions by reading the file, and measured, one did — a complete report, 129 USD, produced end to end from a plain skill name. So the failure mode is not an error, it is a stage running the interactive-shaped workflow with nobody to interview, and it is green. Nothing in this loop detects it, because there is nothing to detect: the dispatch is well formed and the stage produces output. Only the spelling in the prompt separates the two.
+
+  This paragraph used to say the plain name "resolves nothing at all". That was false, and its falseness is why no check was ever built here — a form believed to fail loudly needs no guard.
 
 The first form is the dangerous one precisely because it is green: exit 0, cost charged, no output. Neither the gate nor the wrapper can catch it — a prompt is a string, and any string is a valid one.
 
