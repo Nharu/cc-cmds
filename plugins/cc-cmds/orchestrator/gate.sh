@@ -5048,12 +5048,17 @@ gate_verb_act() {
       # the rows carrying ` | prev=` are the same rows, so the anchor loses no
       # legitimate ancestor.
       #
+      # NOT A PIPE. `grep -q` exits at its first match, which closes the pipe on
+      # an upstream that is still writing — under `pipefail` that SIGPIPE turns a
+      # found ancestor into a failed test. The window is bounded rows, so a here
+      # string costs nothing and removes the race the lint refuses.
+      #
       # THE SHAPE CHECK ABOVE AND THIS ANCHOR CLOSE DIFFERENT DOORS, and neither
       # closes the other's. A prefix of a real tip satisfies a substring match
       # even anchored, so the length check is what refuses it; a minted token is a
       # perfect 64-character lowercase hex, so the anchor is what refuses it.
       if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
-         && ! { gate_ancestry_window | grep -qF " | prev=$obstip"; }; then
+         && ! grep -qF " | prev=$obstip" <<<"$(gate_ancestry_window)"; then
         stale=1
       fi
     fi
