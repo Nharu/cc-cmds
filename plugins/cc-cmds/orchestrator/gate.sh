@@ -641,31 +641,53 @@ surface_of_argv0() {
   esac
 }
 
-surface_of_lockf() {
-  # surface_of_lockf lockf [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
+gate_unwrap_lockf() {
+  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
   #
-  # Skip lockf's own options and its lockfile operand, then grade what is left.
-  # `-t` takes a value; `-k` and `-s` do not. The lockfile is the first
-  # non-option word and is never itself the command.
+  # Skip lockf's own options and its lockfile operand, then hand what is left to
+  # <resolver>. `-t` takes a value; `-k`, `-s` and `-n` do not. The lockfile is
+  # the first non-option word and is never itself the command.
   #
-  # A lock with nothing after it locks and exits — that is a worktree write (it
-  # creates the lockfile) and there is no wrapped command to defer to.
+  # ONE UNWRAP SHARED BY TWO TABLES. The grader and the history-integration
+  # predicate both have to see through `lockf`, and while each carried its own
+  # skip loop the two could resolve the SAME argv differently — a wrapped local
+  # merge graded `워크트리쓰기` while the predicate answered "not an integration"
+  # and exempted it from the review rule. Only the terminal answers differ, so
+  # only those are parameters: the grader passes `워크트리쓰기`/`등급 미상`, the
+  # predicate passes `0`/`1`.
+  #
+  # ARGV0 IS ALREADY GONE. `surface_of_argv0` drops it before dispatching and the
+  # lockf arm of the predicate drops it explicitly, so this loop starts at the
+  # first option. The old code shifted a SECOND time here, which ate whatever
+  # stood first: `lockf <file> git status` then read `git` as the lockfile and
+  # graded `status` alone, and `lockf -t 5 <file> git commit` read `5` as the
+  # lockfile. Both are the shapes the fixtures below now pin.
+  local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
   local seen_file=0
-  shift                                   # drop `lockf` itself
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      # `-t` with no value after it emits NOTHING, which is what this did before
+      # it was factored out. Repairing that here would mix a second change into
+      # the one these fixtures measure.
       -t) shift 2 || return 0 ;;
       -t*) shift ;;
       -k|-s|-n) shift ;;
-      -*) printf '등급 미상'; return 0 ;;
+      -*) printf '%s' "$unknown_opt"; return 0 ;;
       *)
         if [ "$seen_file" = 0 ]; then seen_file=1; shift; continue; fi
-        surface_of_argv0 "$@"
+        "$resolver" "$@"
         return 0 ;;
     esac
   done
-  [ "$seen_file" = 1 ] && { printf '워크트리쓰기'; return 0; }
-  printf '등급 미상'
+  # A lock with nothing after it locks and exits — that is a worktree write (it
+  # creates the lockfile) and there is no wrapped command to defer to.
+  [ "$seen_file" = 1 ] && { printf '%s' "$lock_only"; return 0; }
+  printf '%s' "$unknown_opt"
+}
+
+surface_of_lockf() {
+  # surface_of_lockf <lockf-args-after-argv0...>
+  gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
 }
 
 gate_history_integration() {
@@ -693,8 +715,34 @@ gate_history_integration() {
   # one answers "check it". The two therefore fail in OPPOSITE directions, so
   # where they drift the drift can only over-check — one manifest line — and
   # never open the bypass this rule exists to close.
+  #
+  # THE argv0 LAYER IS A TABLE, NOT AN EQUALITY AGAINST `git`. Comparing argv0
+  # to one name answered 0 for every wrapper, so the two spellings the grading
+  # table CANNOT see through both fell out of the check entirely: `lockf … git
+  # merge` and `bash -c 'git merge …'` each graded `워크트리쓰기` and each
+  # answered "not an integration". That is the exemption this predicate exists to
+  # close, reached by the shortest possible detour.
   local cmd="${1##*/}"
-  [ "$cmd" = "git" ] || { printf '0'; return 0; }
+  case "$cmd" in
+    # `lockf` wraps, so unwrap it with the same routine the grader uses and ask
+    # this question of what it wrapped. Sharing the unwrap is the point: two
+    # copies of the skip loop are two chances for the tables to disagree about
+    # which word is the command.
+    lockf)
+      shift
+      gate_unwrap_lockf gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    # Names the grading table answers `워크트리쓰기` WITHOUT asking what they
+    # wrap. This predicate cannot parse a shell word without being a shell, so
+    # it answers 1 rather than guessing — the direction the paragraph above
+    # already commits to, where drift can only over-check. What that costs is
+    # bounded: the review rule exits before asking for a record unless the
+    # target's cutpoint is at or above `머지`.
+    bash|sh|zsh|make|npm|npx|yarn|pnpm|pytest|go|cargo|python3|node)
+      printf '1'; return 0 ;;
+    git) ;;
+    *) printf '0'; return 0 ;;
+  esac
   shift
   # The same global-option skip the grader does, spelled the same way, because a
   # global option left in place puts a non-subcommand in the slot below. The one
@@ -720,8 +768,16 @@ gate_history_integration() {
   # list states what the predicate MEANS rather than what the caller happens to
   # ask about, and a predicate that omits a case because today's caller cannot
   # reach it is one refactor away from being wrong.
+  #
+  # `reset` IS ON THE LIST EVEN THOUGH ITS NAME DOES NOT DECIDE. Aimed at another
+  # ref it moves this branch onto another line of history, which is the thing
+  # this predicate names; aimed at nothing but `--hard` it only discards local
+  # work. Telling those apart means telling a ref operand from a pathspec, and
+  # that needs the repository — so the name goes on the list and the cost is an
+  # over-check. `revert` stays OFF: it writes a new commit on this branch undoing
+  # one already in this branch's history, so no second line is integrated.
   case "${1:-}" in
-    merge|rebase|cherry-pick|am|pull) printf '1' ;;
+    merge|rebase|cherry-pick|am|pull|reset) printf '1' ;;
     *) printf '0' ;;
   esac
 }
@@ -4519,6 +4575,29 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # "NOT EMPTY" IS NOT A SHAPE. The merge rule interpolates this field as a
+      # revision expression, so `HEAD`, `@`, a branch name or `HEAD@{0}` all
+      # resolve — against the tree the rule is reading at that moment, which is
+      # the merged one. A review recorded that way passes the freshness ladder by
+      # construction, no matter which tree was actually reviewed.
+      #
+      # CONSTRAINED AT WRITE TIME AND NOT AT READ TIME. Putting the check in the
+      # rule would make a second copy of this vocabulary in a file that already
+      # records the two drifting apart, and it would leave rows already on the
+      # append-only ledger asserting a review that never happened. Here the value
+      # the writer supplies is pinned before anything can read it.
+      local rh rh_bad
+      rh=$(gate_field_of '리뷰 HEAD' "$@")
+      # `case` globbing and `${#rh}` rather than a regex engine, which is the
+      # idiom the rest of this file uses and calls no second process.
+      case "$rh" in
+        *[!0-9a-f]*) rh_bad=1 ;;
+        *) rh_bad=0 ;;
+      esac
+      if [ "$rh_bad" = 1 ] || [ "${#rh}" -lt 7 ] || [ "${#rh}" -gt 40 ]; then
+        warn "cycle 행의 「리뷰 HEAD」는 해소된 커밋 sha 여야 합니다 — 7~40자 소문자 16진만 받습니다: '$rh'"
+        return "$GATE_EXIT_VOCAB"
+      fi
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;

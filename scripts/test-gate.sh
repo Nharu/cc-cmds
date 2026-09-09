@@ -70,6 +70,31 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 export XDG_STATE_HOME="$WORK/state"
 
+# THE CLI THE LAUNCHER EXECS IS OFF FOR THIS WHOLE PROCESS, for the same reason
+# the notifier above is: the call sites cannot be made exhaustive.
+#
+# `run.sh:70` resolves `CLI_BIN` from `CC_CLAUDE_BIN` and falls back to whatever
+# `claude` is on PATH, so any stage dispatch this file makes without a stub execs
+# the real binary — a live model call in the middle of a unit suite. Measured: one
+# `--kind skill` dispatch reached it and the suite never returned. Two runs of very
+# different elapsed time stopped at the same assertion, and no totals line was ever
+# printed, so nobody could observe pass and fail counts at all.
+#
+# Guarding each dispatch was tried and is the wrong shape here for the reason the
+# banner-seat comment already argues about its own class: a new dispatch is a
+# normal thing to write, so a per-site guard is complete on the day it lands and
+# quietly incomplete afterwards. Eight sites needed it and seven had it. An
+# exported default is inherited by every child, including dispatches nobody has
+# written yet, and the sites that are actually TESTING the launcher keep setting
+# their own `CC_CLAUDE_BIN` on the invocation, which wins over this.
+#
+# This must sit after `WORK` exists, not beside the notifier export, because the
+# value has to be a real executable path.
+mkdir -p "$WORK/bin"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/claude-noop"
+chmod +x "$WORK/bin/claude-noop"
+export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -1098,6 +1123,47 @@ case "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" |
   *"축2=읽기"*) ok "장부 행위는 읽기로 등급된다" ;;
   *) bad "장부 등급" "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" | tail -1)" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 8b-2. `리뷰 HEAD` is pinned to a resolved sha AT WRITE TIME
+#
+# The four required fields were checked for emptiness and for nothing else, and
+# the merge rule interpolates THIS one as a revision expression. So `HEAD`, `@`,
+# a branch name and `HEAD@{0}` were all well-formed rows, and each resolves
+# against whatever tree the rule is reading at the moment it reads — the merged
+# one. A review recorded that way clears the freshness ladder by construction,
+# without anyone having reviewed the tree it claims.
+#
+# Nothing measured this class before. Every `리뷰 HEAD=` value planted across the
+# two suites is an already-resolved 40-character sha, so the field's shape was
+# exercised in exactly one direction.
+# ---------------------------------------------------------------------------
+for badhead in 'HEAD' '@' 'seg/20260907-ef4438ac-slice-A' 'HEAD@{0}'; do
+  gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$badhead"
+  check "개정 표현식은 리뷰 HEAD 로 거부된다 ($badhead)" "$rc" "2"
+  # THE TEXT, NOT ONLY THE STATUS. Exit 2 is the vocabulary refusal that every
+  # missing-field branch above also returns, so a status-only assertion cannot
+  # tell "the shape was rejected" from "a field was absent" — and the second is
+  # what this row would silently degrade into if the shape check were removed.
+  case "$msg" in
+    *"해소된 커밋 sha"*) ok "그 거절이 sha 형태를 지목한다 ($badhead)" ;;
+    *) bad "거절 문면 ($badhead)" "$msg" ;;
+  esac
+done
+
+# The 7-character floor, asserted so it is not vacuous: `git rev-parse --short`
+# hands out abbreviations this size and they name a commit just as exactly.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 \
+     "리뷰 HEAD=$(printf '%s' "$head_b" | cut -c1-7)"
+check "7자 짧은 sha 는 통과한다 (하한이 공허하지 않다)" "$rc" "0"
+
+# Written LAST so the newest `cycle` row for SW carries the same full sha it
+# carried before this section existed — the fixtures below read that row.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
@@ -3156,6 +3222,61 @@ graded_as '읽기'         'lockf 가 감싼 읽기도 그 등급이다'        
 graded_as '외부상태변경' 'lockf 는 외부 행위를 워크트리 쓰기로 세탁하지 않는다' -- lockf -k -t 0 /tmp/l.lock curl https://x
 graded_as '워크트리쓰기' '감쌀 명령이 없는 lockf 는 잠금 파일을 만든다' -- lockf -k /tmp/l.lock
 graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'           -- /usr/bin/lockf -k -t 0 /tmp/l.lock git status
+
+# The double shift hiding inside those five. `surface_of_argv0` drops argv0
+# before it dispatches, and `surface_of_lockf` dropped it a SECOND time, so the
+# first word after `lockf` was eaten. That only changes the answer when the
+# number of leading options is even — every fixture above passes `-k -t 0`, an
+# odd three, so the whole class sat under a green block.
+graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'      -- lockf /tmp/l.lock git status
+graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl https://x
+graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
+
+# ---------------------------------------------------------------------------
+# 31b. The narrowing axis reads through the same wrappers the grader does
+#
+# `gate_history_integration` is what keeps the review rule from demanding a
+# review record of every `mkdir` that shares the `워크트리쓰기` cell with a local
+# merge. It compared argv0 against the single name `git`, so both spellings the
+# grading table cannot see through fell out of the check at once: `bash -c 'git
+# merge …'` and `lockf … git merge …` each graded `워크트리쓰기` and each
+# answered "not an integration" — an honest segment carrying a real merge past
+# the rule with no review record at all.
+#
+# Asserted through the source-only seam. The predicate has no verb of its own,
+# and reaching it on the act path means first satisfying a grade, a cutpoint and
+# a manifest, none of which is what these rows are about.
+# ---------------------------------------------------------------------------
+hist_is() {
+  # hist_is <expected> <label> -- <argv...>
+  local want="$1" label="$2"; shift 3
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    gate_history_integration "$@"
+  ' _ "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+hist_is 1 '맨 git merge 는 이력 통합이다'              -- git merge --no-ff seg
+hist_is 1 '경로로 부른 git 도 같다'                    -- /usr/bin/git merge seg
+hist_is 1 'bash -c 뒤에 숨은 머지도 검사에 남는다'     -- bash -c 'git merge --no-ff seg'
+hist_is 1 'sh -c 도 같다'                              -- sh -c 'git merge --no-ff seg'
+hist_is 1 'lockf 가 감싼 머지도 검사에 남는다'         -- lockf -k -t 0 /tmp/l.lock git merge --no-ff seg
+hist_is 0 'lockf 가 감싼 읽기는 이력 통합이 아니다'    -- lockf -k -t 0 /tmp/l.lock git status
+hist_is 0 '평범한 디렉터리 생성은 이력 통합이 아니다'  -- mkdir -p scratch
+
+# The list itself. Narrowing it to `merge` alone used to redden nothing, because
+# only `merge` had a fixture — the other three names were a claim the predicate
+# made about itself and nothing measured.
+hist_is 1 'rebase 도 이력 통합이다'                    -- git rebase origin/master
+hist_is 1 'cherry-pick 도 같다'                        -- git cherry-pick abc1234
+hist_is 1 'am 도 같다'                                 -- git am patch.mbox
+hist_is 1 '다른 ref 로 겨눈 reset 도 이력을 옮긴다'    -- git reset --hard origin/x
+# `revert` stays OFF the list — it writes a new commit on this branch undoing one
+# already in this branch's history, so no second line of history is integrated.
+# Pinned here so the list does not drift wider on its own.
+hist_is 0 'revert 는 목록에 들어가지 않는다'           -- git revert abc1234
 
 # Browser automation. Unlike git and terraform there is no read-only arm to
 # carve out — argv says which page to open, and opening any page is a network
