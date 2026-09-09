@@ -3,12 +3,22 @@ name: review-lite
 description: 2인 팀을 활용한 경량 코드 리뷰
 when_to_use: 빠른 코드 리뷰가 목적이고 다관점 심층 분석이 불필요할 때 (큰 PR coverage gap, 미묘한 race condition·authn bypass 검출률 약화 가능)
 disable-model-invocation: true
-usage: "/cc-cmds:review-lite [<target>]"
+usage: "/cc-cmds:review-lite [<target>] [--base-sha <sha>] [--declared-files <csv>]"
 options:
     - name: "<target>"
       kind: positional
       required: false
       summary: "리뷰 대상 (PR 번호/URL, 브랜치, 파일/디렉토리, 또는 생략 시 현재 브랜치 자동 감지). PR 크기 무관 — 큰 PR 은 report 의 *리뷰 범위* 섹션에 미커버 영역 명시."
+    - name: "--base-sha <sha>"
+      kind: flag
+      default: "off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도)"
+      summary: "diff 의 base 를 호출자가 지정. 넘겨받은 값은 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. lite 에서도 동일하다."
+      parse_note: "`--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다."
+    - name: "--declared-files <csv>"
+      kind: flag
+      default: "off (변경 파일 집합을 diff 에서만 유도)"
+      summary: "이 변경이 건드리기로 선언된 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하므로, 선언 밖 파일을 지목할 수 있게 한다."
+      parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다."
 ---
 
 Conduct a lightweight code review using a fixed 2-member sonnet agent team for the given task.
@@ -34,6 +44,8 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
+**Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md` here, not at Step 4.** It carries the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reading the dispatch contract in the same place as the tools it governs is the placement the sibling skills take. This moves where the file is read and nothing else — lite's deliberate carve-out from the protocol's `### Round budget` stays stated at Step 4, where it binds and where its number belongs.
+
 ---
 
 ### Step 1: PR Detection & Scope Confirmation (Korean)
@@ -55,6 +67,8 @@ Parse `$ARGUMENTS`:
 - **Number** → treat as PR number → `gh pr view {number}`
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review (inform user: "파일 경로 기반 리뷰입니다. PR 기반 리뷰 시 추가 컨텍스트(PR 댓글, CI 상태 등)를 활용할 수 있습니다.")
+- **`--base-sha <sha>` and `--declared-files <csv>`** → scope hints from a caller that already knows both. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string before the remainder is judged below. `--base-sha` names the commit the change branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the change was supposed to touch; quote it. A flag whose value is missing is dropped along with the flag rather than consuming the following token.
+- **Any other token beginning with `--`** → not a directive and not silently absorbed. Emit one Korean warning naming the token and discard it, the same disposition the bullet below takes. The two bullets differ only in what they name: this one exists because an unrecognized flag reaching the discard path as prose would be reported as a rejected *directive*, which sends the reader looking for a directive nobody wrote.
 - **Mixed input with extra tokens after the target** (e.g., "PR #42 보안 중심으로"): extract the target only. Emit one Korean warning and discard the remainder: *"리뷰 지시문은 review-lite에서 지원하지 않아 무시합니다. 가중치 분석이 필요하면 /cc-cmds:review 를 사용하세요."* Do NOT propagate the directive to team composition, context package, or the report.
 - **Ambiguous input** → clarify with AskUserQuestion
 
@@ -112,7 +126,14 @@ git diff {DEFAULT_BRANCH}...HEAD        # full diff
 git log {DEFAULT_BRANCH}..HEAD --oneline  # commit history
 ```
 
+**A supplied `--base-sha` is verified, never trusted — and lite is no different.** Run `git merge-base --is-ancestor <supplied base> <target head>`. `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command runs in; binding to the ambient head makes the guard depend on the caller's working directory, which is the same class of failure the flag exists to close. The substitution replaces the base derivation only; a PR target still collects its metadata and comments as before. On success take the diff against that base in either mode:
+
+
+**On failure fall back** to the derivation this step already has — `gh pr view … baseRefName` for a PR, `{DEFAULT_BRANCH}` for a local diff — and record one line in the report overview naming the rejected value and the base actually used. A base that is not an ancestor of `<target head>` produces a diff of a tree nobody wrote, and the report reads exactly as it would have, so nothing else surfaces the mistake. This costs one command and lite does not economize on it: the saving would be a review of the wrong change.
+
 #### 1c: Scope confirmation
+
+**A supplied `--declared-files` is compared against what actually changed.** List the changed paths for the diff just resolved and set them against the declared set. Name in the report's overview any changed path that is **outside** the declaration, and any declared path with **no** change. Neither is an error and neither narrows the review — the whole diff is reviewed either way — but the two lists are the only place the run says whether the change that landed is the change that was declared. Git can say which files moved; only the declaration says which ones were meant to. With no flag, skip this and say nothing.
 
 Present to user (in Korean):
 - Review target type (PR / local diff / user-specified)
@@ -150,6 +171,8 @@ Explore based on the changed file list:
 
 This exploration output is the key input for Step 3 reviewer context packages.
 
+**Read each source file once** — the per-stage read cache in `## Constraints` binds here, and it binds hardest here: lite's lead explores directly rather than through an `Explore` subagent, so every re-read of an unchanged file is spent out of the lead's own context.
+
 ---
 
 ### Step 3: Team Composition Announcement (Korean)
@@ -183,7 +206,7 @@ The split is structural (path-agnostic): the security reviewer covers any securi
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
+The spawn / ledger / resume+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 17-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
@@ -267,6 +290,7 @@ Repeat until user is satisfied.
 ## Constraints
 
 - **No code modifications.** Review only.
+- **Source files are read once per review stage.** Within one stage, a source file already read is not read again. **A turn yield is not an invalidation point** — nothing about the file changed because the model stopped and resumed. There are exactly three invalidation points: this session wrote to that path with `Edit`/`Write`; a git operation moved `HEAD` or the working tree (`checkout`, `rebase`, `merge`, `stash`, `pull`); or a new stage was entered. **Four things this cache never covers, and each for its own reason** — the **run ledger**, whose contract deliberately produces an under-claim that a stale read inverts into an over-claim; **witness files**, where there is no invalidation event the lead can observe at all, so the cache has nothing to key on; the reviewer **`output_file`**, which a cached read reports as byte-stable and therefore as WEDGED when it is being written normally; and the **gate snapshot**, whose whole purpose is to be re-derived. Those four are re-read every time they are consulted.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
 - **Sonnet pin**: every reviewer uses model `"sonnet"`. Haiku is forbidden; opus is out of scope (use `/cc-cmds:review` if opus depth is required). Both of `/cc-cmds:review-upgrade`'s reinforcement axes are out of scope here — opus upgrade violates the sonnet pin, and reviewer add/split (and the Scope Coordinator add) mutates the fixed 2-member roster (run `/cc-cmds:review-upgrade` against a base `/cc-cmds:review` run instead).
 - **Nameless background sub-agents**: reviewers ARE `Agent({ subagent_type: "claude", run_in_background: true })` sub-agents, resumed across rounds by `agentId` (`SendMessage` to the agentId). The **retained-context resume loop is required** — do NOT degrade to an isolated one-shot `Agent()` per round (a one-shot per round is not a team).

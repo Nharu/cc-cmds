@@ -35,5 +35,8 @@ jobs:
             exit 1
           fi
 
+      # -j is what makes the suite's list-of-prerequisites form pay off; without
+      # it make still walks the scripts one at a time and the step stays at the
+      # half hour it used to take.
       - name: Run tests
-        run: make test
+        run: make -j"$(nproc)" test
