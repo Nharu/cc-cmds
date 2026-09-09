@@ -7264,16 +7264,6 @@ gate_pending_approval_ids() {
       cut=$(gate_row_field "$row" '절단점')
       case "$want" in
         act)  [ "$cut" = "판단" ] && continue ;;
-        # THE SUSPENSION SELECTOR, and it is not `act`. The boundaries below
-        # stand down while a person is being waited on, and the recorded reason
-        # for that grace — "waiting, not stalled" — is a claim about a question
-        # somebody has to answer. It is false for a boundary's OWN approval:
-        # that one exists because a boundary judged the run stuck, so letting it
-        # count would make the first boundary to fire switch off the other
-        # three. Condition 2 keeps counting these, deliberately — a run that
-        # ended with an unanswered boundary question would have asked it for
-        # nothing.
-        경계제외) { [ "$cut" = "판단" ] || [ "$cut" = "경계" ]; } && continue ;;
         판단) [ "$cut" = "판단" ] || continue ;;
       esac
     fi
@@ -7861,7 +7851,6 @@ readonly B3_ACT_BUDGET=40
 # two load-bearing values held at both readings.
 #
 # The blast radius is one constant, so being wrong is cheap to undo.
-readonly B5_DISPOSITION_N=4
 
 gate_boundaries() {
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
@@ -7879,7 +7868,7 @@ gate_boundaries() {
   # suspension ("waiting, not stalled") is false for this class specifically,
   # because the design promises the run keeps going alongside the question.
   local pending
-  pending=$(gate_pending_approval_ids 경계제외 | gate_count)
+  pending=$(gate_pending_approval_ids act | gate_count)
 
   if [ "$pending" = "0" ]; then
     gate_b1_stagnation
@@ -7888,11 +7877,6 @@ gate_boundaries() {
   fi
   # B4 stays live even while waiting: cost can still climb.
   gate_b4_cost
-  # B5 STAYS LIVE TOO, AND THAT PLACEMENT IS THE DECISION. Inside the `pending`
-  # branch it would switch off with B1..B3 the moment any approval opened, and its
-  # threshold is 4 — so one open question would return the evasion cost to zero,
-  # this time with a boundary in place as the reason nobody re-measures it.
-  gate_b5_disposition_volume
 }
 
 gate_b1_stagnation() {
@@ -7949,50 +7933,21 @@ gate_b2_obligations() {
   printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
   [ "$(gate_open_obligations | gate_count)" = "0" ] && return 0
-  # THE BINDING IS THIS BOUNDARY'S OWN PREDICATE VALUE, not the whole progress
-  # digest. The default binding rotates with anything that moves progress, and
-  # this predicate is deliberately independent of that — the paragraph above
-  # gives that independence as the reason B2 exists beside B1. With the default,
-  # the question stayed true while its id rotated, so every act past the
-  # threshold opened another pending approval and every one of them blocks
-  # termination condition 2. The obligation digest is already in hand, and it is
-  # the value that actually decides whether this is the same question.
+  # THE QUESTION TEXT SAYS 판정, NOT 사이클, and that is not cosmetic. `사이클` is
+  # a declared row series in this contract, and `n` counts evaluations of this
+  # function — the single production caller of the boundary set is the `act`
+  # verb, so the unit is gate acts. Naming the row series here would have the one
+  # sentence a person reads state a unit nothing counts. The sibling above
+  # already spells it 판정.
   #
-  # AND IT IS NOT BUCKETED, WHICH IS WHERE THIS BOUNDARY DIFFERS FROM ITS TWO
-  # SIBLINGS. Bucketing a count only bounds anything if the count measures what
-  # its threshold claims to measure. `n` here counts EVALUATIONS OF THIS
-  # FUNCTION, and the single production caller of the boundary set is the `act`
-  # verb — so the unit is gate acts, not cycles, and a bucket of width 3 means
-  # "every third act". Measured: 30 evaluations with one obligation held open
-  # produced 9 pending approvals, while the same probe with the progress vector
-  # genuinely moving on every evaluation produced 0 from B1 and the SAME nine
-  # identifiers from B2. An identifier that is byte-identical whether or not the
-  # run progressed is not measuring the run.
-  #
-  # Reads make this concrete. A read-grade act deliberately does not move the
-  # progress vector — looking around is not progress — but it does reach here, so
-  # under a bucket an unclosed obligation turned ordinary reconnaissance into a
-  # new pending approval every three reads, each one blocking termination.
-  #
-  # The set digest alone is the honest binding: it moves whenever the backlog
-  # changes in either direction, so a worsening backlog asks again, and the only
-  # silence is after a person has already said continue and the set has not
-  # moved since. Re-keying the counter to `cycle` rows was measured and rejected
-  # — this run's ledger holds 3 of them against 521 acts, so the threshold would
-  # never be reached and the boundary would never fire at all.
-  #
-  # THE MISSING GUARD IS DELIBERATE AND STATED RATHER THAN LEFT AS AN ASYMMETRY.
-  # B1 stands down while a stage is live and B3 pauses its count; B2 does
-  # neither, because its subject is the obligation SET, which a running stage
-  # does not change — a stage writes rows, and the identities in them are the
-  # router's judgment, recorded by the router. Suppressing B2 during a stage
-  # would hide exactly the case it exists for: a run that keeps dispatching while
-  # nothing it opened ever closes.
-  #
-  # The question text says 판정 rather than 사이클 for the same reason B1's does:
-  # `사이클` is a declared row series in this contract, and naming it here would
-  # have the one sentence a person reads state a unit nothing counts.
-  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다" "$cur"
+  # THIS BOUNDARY HAS NO LIVE-STAGE GUARD AND NO COUNT PAUSE, unlike both its
+  # siblings, and that asymmetry is not yet argued for. Measured: inside a live
+  # stage it reaches its own threshold in 4 acts. Porting the sibling's shape —
+  # a suppression that keeps the counter rather than resetting it — recovers on
+  # the 4th judgment after the stage ends, which is the delay the sibling
+  # already accepts. Left as it is here because choosing between the two
+  # prescriptions is a design question this file should not answer alone.
+  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다"
 }
 
 gate_b3_act_budget() {
@@ -8120,19 +8075,7 @@ gate_b3_act_budget() {
   esac
   n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
-  # THE BINDING IS THE WINDOW KEY, for the same reason B2 passes its own digest.
-  # This function spends real effort keeping `acts=` and `obligation=` OUT of
-  # that key, and then handing the boundary no binding put them straight back in
-  # through the default — so the id rotated on exactly the acts the window was
-  # built to ignore, and each one opened another approval that blocks
-  # termination. `h` alone is not enough, though: the count keeps climbing inside
-  # one window, so a window-only binding would ask once and then stay silent
-  # while the run spent another budget, and another — the same over-correction
-  # that turning a rotating id into a single standing one produces. The binding
-  # is therefore the window AND how many budgets have been spent in it, so an
-  # act never re-arms the question and each further budget does.
-  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다" \
-    "$h/$((n / B3_ACT_BUDGET))"
+  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
 }
 
 gate_b4_cost() {
@@ -8274,82 +8217,35 @@ GATE_DISP_REPORT
   } > "$f"
 }
 
-gate_b5_disposition_volume() {
-  # B5 — the DISPOSITION VOLUME boundary. A run that disposes of obligations
-  # faster than a person can read about them is doing the thing this slice made
-  # possible, and nothing else here counts it.
-  #
-  # IT COUNTS ALL THREE DISPOSITIONS, INCLUDING THE EXEMPTION, and that is the
-  # most important line in this function. Counting only the two new verbs was
-  # measured and inverts the incentive: today's evasion runs entirely on the
-  # exemption, which writes NO ROW, so the disposition count stays 0 across 122
-  # acts and the boundary never fires — it would catch only the honest new
-  # mechanism at 8 acts while leaving the cheaper, row-free path untouched. With
-  # all three counted the previously unbounded surface comes down to 4 acts.
-  # The 종결-and-포기-only form is not a weaker version of this boundary; it is a
-  # fine levied on the honest path, and this design does not land it.
-  #
-  # AND THE NEW VERBS DO NOT WIDEN THE SURFACE. Measured on the same harness, the
-  # closing verb reaches at least 164 acts without hitting a ceiling either — the
-  # same unbounded surface as today, at twice the cost per cycle. The 4-versus-8
-  # split under this boundary is that doubled cycle cost reaching the threshold
-  # half as fast, not a new surface. Without this paragraph the "8 acts" reading
-  # stands alone and says the opposite.
-  local n
-  gate_disposition_latch_update
-  n=$(gate_disposition_latch | gate_count)
-  [ "$n" -lt "$B5_DISPOSITION_N" ] && return 0
-  # THE BINDING IS FIXED, so this boundary folds to one standing approval. The
-  # latch is append-only and the predicate is "at least N lines", so it is true
-  # forever once it is true once — and an id that rotated with progress would
-  # therefore open a new pending approval on every act past the threshold, with
-  # termination condition 2 blocked the whole time. The threshold is also
-  # reachable without any evasion at all: the exemption is one of the three
-  # dispositions and it requires no act, so four parked segments carrying
-  # read-graded problem rows arrive here having called neither closing verb.
-  # THE BINDING IS THE COUNT BUCKETED BY THE THRESHOLD, not the threshold itself.
-  # Folding to a single id for the whole run was the fix for a rotating one, and
-  # it overshot: suppression matches any row bearing the id, an approval is
-  # resolved by appending a row rather than editing the one that opened it, so
-  # the original 대기 row lives in the ledger forever and this boundary would
-  # speak once and never again — at 4 dispositions or at 400. The declared
-  # concern here is a RATE, and a once-per-run notice does not cover a rate.
-  #
-  # Bucketing gives the predicate its own window: the id is fixed inside a
-  # bucket, so no act re-arms it, and it changes only when the count crosses the
-  # next multiple, which is a genuinely new question. "A monotone predicate has
-  # no window" is true of the progress digest and false of the predicate's own
-  # value.
-  gate_issue_boundary_approval B5 "처분된 의무가 누적 ${n}건입니다" "$((n / B5_DISPOSITION_N))"
-}
-
 gate_issue_boundary_approval() {
-  # gate_issue_boundary_approval <name> <question> [binding]
+  # gate_issue_boundary_approval <name> <question>
   #
   # A boundary approval has NO act, so it can fill neither an act digest nor an
   # argv digest. The cutpoint slot carries the literal `경계` and the binding
   # tuple is (boundary name, H at firing, related segment set) — which is why
   # the three approval shapes share one series rather than needing three.
   #
-  # THE BINDING VALUE IS WHAT DECIDES "IS THIS THE SAME QUESTION". Suppression is
-  # an exact match on the derived id and nothing else, so whatever goes into the
-  # preimage is the definition of a distinct firing. A WINDOW boundary wants the
-  # progress digest there — a new window genuinely is a new question — and that
-  # is the default. A MONOTONE boundary must not: its predicate never returns to
-  # false, so a rotating id opens a fresh pending approval on every progress
-  # event, and a pending approval blocks termination condition 2. The run then
-  # cannot propose its own end no matter how many a person closes, because the
-  # next act re-arms the thing stopping it. That exact shape is recorded further
-  # up this file for the act budget, which was fixed by giving it a window; a
-  # monotone predicate has no window to give, so it folds to ONE standing
-  # approval instead.
+  # THE PROGRESS DIGEST IN THE PREIMAGE IS A KNOWN DEFECT AND IT IS LEFT HERE
+  # DELIBERATELY. Suppression is an exact match on the derived id and nothing
+  # else, so the preimage decides what counts as the same question — and this
+  # one moves on anything that moves progress, including things a given
+  # boundary's own predicate was built to ignore. Measured on this file: with
+  # the suspension counting boundary approvals removed, an obligation held open
+  # produced 9 pending approvals in 30 evaluations, and the same probe with the
+  # progress vector genuinely moving produced the same nine identifiers — a
+  # value that is byte-identical whether or not the run progressed is not
+  # measuring the run.
   #
-  # The cost boundary shares this shape and is deliberately left alone here: its
-  # question carries a percentage that climbs, and folding it would tell a person
-  # about 80% and never about 95%. It is reached only on a manifest that declares
-  # a ceiling, so it is not the always-on path this argument is about.
-  local name="$1" q="$2" binding="${3:-$(gate_progress_digest)}" id
-  id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
+  # Fixing it here was tried and withdrawn. Binding each boundary to its own
+  # predicate value silences an already-answered question forever whenever that
+  # value returns, and the open-obligation set returns routinely because two of
+  # its three subtractions are recomputed from present-tense segment state.
+  # Making the binding react to the return instead doubles accumulation on the
+  # departure axis. The two requirements pull against each other on THIS
+  # suppression mechanism, so the rate limit belongs somewhere that is not the
+  # binding, and naming that place is a design decision rather than a local fix.
+  local name="$1" q="$2" id
+  id="${name}-$(printf '%s' "$RUN_ID$name$(gate_progress_digest)" | shasum -a 256 | cut -c1-8)"
   gate_has_row '승인' "승인 id=$id " && return 0
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
     "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \
