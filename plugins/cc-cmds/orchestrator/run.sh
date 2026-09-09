@@ -2510,12 +2510,19 @@ human_reconcile() {
 
 boundary_idempotent() {
   case "$1" in
-    S2|S4|S5|S8) return 0 ;;   # audit / implement / review / merge
+    S2|S4|S5|S5R|S8) return 0 ;;   # audit / implement / review / review recovery / merge
+    # S5R belongs here for a stronger reason than the S5 it recovers. The
+    # recovery arm spawns no sub-agents at all and reads only from disk, and it
+    # publishes under an absence condition, so killing it at a boundary destroys
+    # nothing that was not already reconstructible from the same directory. A
+    # review that is mid-team has more in flight than that, and it is already on
+    # this list.
+    #
     # S9 is NEVER added here, and the reason is not that it happens to be
     # missing today. An apply is irreversible; "safe to kill at a boundary"
     # would license the driver to interrupt it, and a half-applied state is
     # exactly the outcome this whole stage is built to avoid.
-    *)           return 1 ;;   # design, re-convergence and apply are NOT
+    *)               return 1 ;;   # design, re-convergence and apply are NOT
   esac
 }
 
@@ -3267,10 +3274,13 @@ rebase_onto_base() {
 # signal that one of the two clauses above was implemented wrong.
 #
 # The dispatch id is `S5R:` rather than `S5:` so that `stage_attempt`'s
-# `파견 id=` count, `stage_log_path` and `halt_record_path` all separate the
-# recovery from the review it recovers. Both ids fall to the `generic` settings
-# variant — neither matches `stage_spawn`'s `*review*` arm — so the recovery
-# runs under exactly the hook coverage the original stage ran under.
+# `파견 id=` count, `stage_log_path`, `halt_record_path` and `kill_permitted`
+# all separate the recovery from the review it recovers. Both ids fall to the
+# `generic` settings variant — neither matches `stage_spawn`'s `*review*` arm —
+# so the recovery runs under exactly the hook coverage the original stage ran
+# under. `kill_permitted` normalizes on `${1%%:*}`, so `S5R` has to be its own
+# entry in `boundary_idempotent`; without it a stalled recovery burns the whole
+# backoff and lands on `human_reconcile` instead of being signalled.
 review_recover() {
   local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
   [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
@@ -3300,6 +3310,16 @@ review_recover() {
   fi
   local rsid="S5R:$seg:$cycle" rc pred rclass
   log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  # The original stage may still be running. `stage_wait_all` can return with it
+  # alive: of the three `continue` arms in its limit-shape branch two call
+  # `reap_orphan` without `stage_collect`, and the third deliberately signals
+  # nothing and parks — in every one of them no `.rc` is written, the caller
+  # reads the missing file as `1`, and the class comes out `크래시`. Dispatching
+  # on top of that gives the report path two writers, which is the risk the
+  # publication rule is built to close. Reaping first is what bounds the
+  # remaining window to a reap that failed. No new authorization is needed:
+  # `boundary_idempotent` already admits `S5`.
+  reap_orphan "$sid"
   stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
   stage_wait_all "$rsid"
   rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')

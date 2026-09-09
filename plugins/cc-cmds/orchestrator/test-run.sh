@@ -3029,5 +3029,169 @@ fi
 check "재시도 스폰은 갈래당 1회 (전체 2회)" \
   "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
 
+# ---------------------------------------------------------------------------
+# 30. 리뷰 복구의 읽기 측 — 픽스처 위의 행위 단언
+# ---------------------------------------------------------------------------
+# 이 절이 파일 끝에 앉는 것은 배치가 아니라 제약이다. 20절의 `unset -f reap_orphan`
+# 이 드라이버의 정의를 복원이 아니라 제거하고(배시에 함수 섀도잉이 없다),
+# `review_recover` 는 파견 직전에 `reap_orphan` 을 부른다 — 그 줄 이후의 어느
+# 자리에서 `review_recover` 를 부르든 미정의 함수를 부르게 된다. 그래서 여기서
+# 자기 감시 스텁을 다시 정의하며, 그 스텁은 회수 호출을 관측하는 수단이기도 하다.
+#
+# 읽기 측은 스테이지를 실제로 띄우지 않고는 구동할 수 없는 것이 아니다 — 호출
+# 대상을 전부 스텁으로 갈아 끼우면 분기가 순수 셸이 된다. 그래서 소스 문면 핀이
+# 아니라 행위로 고정한다. 핀은 파견 줄에 무엇이 실렸는지를 원리적으로 셀 수 없다.
+REC_DIR="$WORK/recover"; mkdir -p "$REC_DIR"
+REC_RUN_SAVE="$RUN_DIR"; RUN_DIR="$REC_DIR/run"; mkdir -p "$RUN_DIR/log"
+REC_LEDGER_SAVE="$LEDGER"; LEDGER="$REC_DIR/ledger.md"; : > "$LEDGER"
+REC_BASE_SAVE="$BASE"; BASE="$REC_DIR/base"; mkdir -p "$BASE/docs"
+
+SIDR="S5:segR:0"; ATTR="4"
+REC_RP="$REC_DIR/report.md"; : > "$REC_RP"
+
+mk_wit() {  # mk_wit <디렉터리 이름> <.attempt 내용, 또는 - 로 스탬프 없음>
+  mkdir -p "$RUN_DIR/$1"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$RUN_DIR/$1/.attempt"
+}
+
+# --- (1) witness_dirs_for_attempt — 네 경우와 두 방향의 대조군 --------------
+mk_wit "cc-team-witness-hit"     "$SIDR#$ATTR"
+mk_wit "cc-team-witness-nostamp" -
+# 이름은 대상 시도의 것처럼 지었으나 스탬프가 다른 후보. 이름 비교였다면 잡혔다.
+mk_wit "cc-team-witness-review-seg-r.S5-segR-0-4" "$SIDR#3"
+: > "$RUN_DIR/cc-team-witness-plainfile"   # 이름은 맞지만 디렉터리가 아니다
+
+REC_WD=$(witness_dirs_for_attempt "$SIDR" "$ATTR")
+check "스탬프가 맞는 디렉터리만 나온다" "$REC_WD" "$RUN_DIR/cc-team-witness-hit"
+check "스탬프 없는 후보는 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'nostamp' || true; } )" "0"
+check "이름이 맞고 스탬프가 다른 후보는 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'seg-r' || true; } )" "0"
+check "cc-team-witness-* 이름의 파일은 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'plainfile' || true; } )" "0"
+check "일치하는 스탬프가 없으면 빈 출력" "$(witness_dirs_for_attempt "$SIDR" 99)" ""
+
+# 주석이 주장하는 「이름이 아니라 스탬프로 맞춘다」를 반대 방향에서 단언한다 —
+# 이름은 전혀 다른 시도의 것이고 `.attempt` 내용만 맞는 후보가 잡혀야 한다.
+mk_wit "cc-team-witness-unrelated-name.SX-9" "$SIDR#$ATTR"
+check "이름이 어긋나도 스탬프가 맞으면 잡힌다" \
+  "$( { witness_dirs_for_attempt "$SIDR" "$ATTR" | grep -c . || true; } )" "2"
+rm -rf "$RUN_DIR/cc-team-witness-unrelated-name.SX-9"
+
+# --- (2) review_recover 의 다섯 분기 ----------------------------------------
+REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_REAPED=""
+REC_PRED=1                 # predicate_review 의 반환값 (0 = 술어 줄이 이미 있음)
+REC_RCLASS="정상 완료"
+
+rec_reset() { REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_REAPED=""; }
+
+# THE SPIES ARE INSTALLED FROM INSIDE A FUNCTION, and the indentation is the
+# whole reason. Two of these names — `park` and `ledger_row` — are real
+# functions this file sources from the driver and calls at top level in earlier
+# sections. A column-zero definition of either down here reads, to the
+# called-before-defined check, as a call above its own definition: that check
+# scans column zero precisely because a top-level call runs where it is written,
+# and it cannot see that the earlier calls resolve to the sourced originals.
+# Defining them one level in keeps the check honest — it still catches the shape
+# it exists for — while bash installs them globally the moment this runs.
+rec_install_spies() {
+  park()                { REC_PARK="$REC_PARK|$*"; REC_CALLS="$REC_CALLS park"; return 0; }
+  predicate_review()    { return "$REC_PRED"; }
+  stage_attempt_pinned(){ printf '%s' "$ATTR"; }
+  stage_spawn()         { REC_SPAWN="$REC_SPAWN|$*"; REC_CALLS="$REC_CALLS stage_spawn"; return 0; }
+  stage_wait_all()      { REC_CALLS="$REC_CALLS stage_wait_all"; return 0; }
+  classify_termination(){ printf '%s' "$REC_RCLASS"; }
+  ledger_row()          { REC_CALLS="$REC_CALLS ledger_row"; return 0; }
+  stage_session_id()    { printf 'SID'; }
+  stage_parent_id()     { printf 'PID'; }
+  log()                 { :; }
+  doc_arg()             { printf '%s/docs/x.md' "$BASE"; }
+  reap_orphan()         { REC_REAPED="$REC_REAPED $1"; REC_CALLS="$REC_CALLS reap_orphan"; }
+}
+rec_install_spies
+
+# 1. 비크래시 종단 부류 — 아무것도 띄우지 않고 park 한다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "정상 완료"; REC_RC=$?
+check "비크래시 종단 부류는 반환 1" "$REC_RC" "1"
+check "비크래시 종단 부류는 파견 0회" "$REC_SPAWN" ""
+
+# 2. 술어 줄이 이미 있는 크래시 — 원 스테이지가 리포트를 남기고 죽은 경우.
+rec_reset; REC_PRED=0
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "술어 줄 선재는 반환 1" "$REC_RC" "1"
+check "술어 줄 선재는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q '종료 술어 줄이 이미 있어'; then
+  ok "술어 줄 선재의 park 사유가 그 사실을 지명한다"
+else
+  bad "park 사유" "술어 줄 선재인데 사유가 그것을 말하지 않는다: $REC_PARK"
+fi
+REC_PRED=1
+
+# 3. 위트니스 디렉터리 0개 — Step 4 에 닿기 전에 죽었다.
+rec_reset; ATTR=99
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "디렉터리 0개는 반환 1" "$REC_RC" "1"
+check "디렉터리 0개는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q 'Step 4 미도달'; then
+  ok "디렉터리 0개의 park 사유가 Step 4 미도달이다"
+else
+  bad "park 사유" "디렉터리 0개인데 Step 4 미도달을 말하지 않는다: $REC_PARK"
+fi
+ATTR=4
+
+# 4. 디렉터리 2개 이상 — 지명할 수 없고, 후보가 전부 사유에 실린다.
+rec_reset; mk_wit "cc-team-witness-second" "$SIDR#$ATTR"
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "디렉터리 2개는 반환 1" "$REC_RC" "1"
+check "디렉터리 2개는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q 'cc-team-witness-hit' \
+   && printf '%s' "$REC_PARK" | grep_all_q 'cc-team-witness-second'; then
+  ok "지명 불가 park 사유에 후보가 전부 열거된다"
+else
+  bad "park 사유" "후보 열거가 빠졌다: $REC_PARK"
+fi
+rm -rf "$RUN_DIR/cc-team-witness-second"
+
+# 5. 디렉터리 1개 — 행복 경로. 파견 줄에 세 인자가 전부 실렸는가.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "행복 경로는 반환 0" "$REC_RC" "0"
+check "행복 경로는 정확히 1회 파견한다" \
+  "$( { printf '%s' "$REC_SPAWN" | grep -c 'review-unattended' || true; } )" "1"
+for want in '--recover' "--scratch-dir $RUN_DIR/cc-team-witness-hit" "--report-path $REC_RP"; do
+  if printf '%s' "$REC_SPAWN" | grep_all_q -F -- "$want"; then
+    ok "파견 줄이 $want 를 싣는다"
+  else
+    bad "파견 줄" "$want 가 없다: $REC_SPAWN"
+  fi
+done
+
+# --- (3) 회수와 허용 목록 ----------------------------------------------------
+# 5번과 같은 픽스처의 관측이다 — `rec_reset` 을 사이에 두지 않는다.
+check "원 스테이지를 정확히 한 번 회수한다" "$REC_REAPED" " $SIDR"
+if printf '%s' "$REC_CALLS" | grep_all_q -F 'reap_orphan stage_spawn'; then
+  ok "회수가 파견보다 앞선다 (살아 있는 원 스테이지 위에 파견하지 않는다)"
+else
+  bad "회수 순서" "reap_orphan 이 stage_spawn 앞에 오지 않는다: $REC_CALLS"
+fi
+if kill_permitted "S5R:segR:0"; then
+  ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"
+else
+  bad "허용 목록" "S5R 이 목록 밖이라 정체한 복구가 백오프를 전소한다"
+fi
+if kill_permitted "S9:segR:0"; then
+  bad "허용 목록" "목록 밖 접두까지 허용됐다 — 넓힌 것이 S5R 하나가 아니다"
+else
+  ok "대조군: 목록 밖 접두는 여전히 거부된다"
+fi
+
+# 20절과 같은 이유로 `unset -f` 는 복원이 아니라 제거다. 이 절이 마지막이라
+# 이후에 이 이름들을 부르는 단언이 없고, 아래 요약 출력만 남는다.
+unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
+         classify_termination ledger_row stage_session_id stage_parent_id log \
+         doc_arg reap_orphan mk_wit rec_reset
+RUN_DIR="$REC_RUN_SAVE"; LEDGER="$REC_LEDGER_SAVE"; BASE="$REC_BASE_SAVE"
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
