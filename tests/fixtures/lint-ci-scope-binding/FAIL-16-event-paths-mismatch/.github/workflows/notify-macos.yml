@@ -1,0 +1,31 @@
+name: notify-macos
+
+# The two events declare their own lists rather than sharing an anchor, and the
+# lists disagree: `push` is missing the workflow's own path. A PR that edits this
+# file wakes the leg and the master push of the same change does not.
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'scripts/**'
+      - 'Makefile'
+
+jobs:
+  test-macos-native:
+    runs-on: macos-latest
+    env:
+      CC_CMDS_REQUIRE_NATIVE: '1'
+      CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: jq sanity check
+        run: jq --version
+      - name: Run darwin-only tests
+        run: make test-darwin

@@ -1,0 +1,39 @@
+name: notify-macos
+
+# The dynamic form: the matrix is an expression, so whether it yields any
+# combination at all is decided at run time by another job's output. This lint
+# does not evaluate GitHub expressions, so the honest answer is "unknown", which
+# gets the same disposition as "certainly zero". Like the `exclude` form, this is
+# a workflow actionlint accepts with zero diagnostics.
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      m: ${{ steps.gen.outputs.m }}
+    steps:
+      - id: gen
+        run: echo "m={\"os\":[]}" >> "$GITHUB_OUTPUT"
+  test-macos-native:
+    needs: setup
+    runs-on: macos-latest
+    env:
+      CC_CMDS_REQUIRE_NATIVE: '1'
+      CC_CMDS_NOTIFY_ORACLE_REQUIRED: '1'
+    timeout-minutes: 8
+    strategy:
+      matrix: ${{ fromJSON(needs.setup.outputs.m) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run darwin-only tests
+        run: make test-darwin

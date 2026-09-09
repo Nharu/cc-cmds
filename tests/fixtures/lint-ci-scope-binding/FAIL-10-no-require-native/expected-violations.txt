@@ -1,0 +1,2 @@
+규칙 8	.github/workflows/notify-macos.yml:report-macos-native
+규칙 8	.github/workflows/notify-macos.yml:test-macos-native

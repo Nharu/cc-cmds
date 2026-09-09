@@ -1,0 +1,3 @@
+규칙 7/B1	scripts/suite-a.sh
+규칙 7/B1	scripts/suite-b.sh
+규칙 7/B2	scripts/suite-c.sh
