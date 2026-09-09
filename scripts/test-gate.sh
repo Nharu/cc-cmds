@@ -1732,10 +1732,17 @@ else
     *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
     *) ok "다이제스트가 stderr 로 새지 않는다" ;;
   esac
-  check "방출된 H 가 64자리다" "${#H_emit}" "64"
+  # THE SHAPE IS TWO 64-CHARACTER HALVES JOINED BY A SINGLE `-`, and the join
+  # carries weight rather than decorating: the halves are compared differently —
+  # the progress vector for exact equality, the chain tip for ancestry — so a
+  # value that folded back into one string could not be compared at all.
+  check "방출된 H 가 두 부분이다" \
+    "$(printf '%s' "$H_emit" | awk -F- '{ print NF }')" "2"
+  check "그 두 부분이 각각 64자리다" \
+    "$(printf '%s' "$H_emit" | awk -F- '{ print length($1) "/" length($2) }')" "64/64"
   case "$H_emit" in
-    *[!0-9a-f]*) bad "방출 H 문자 집합" "16진수 밖의 문자가 있다: '$H_emit'" ;;
-    *) ok "방출된 H 가 소문자 16진수만으로 이뤄진다" ;;
+    *[!0-9a-f-]*) bad "방출 H 문자 집합" "16진수와 구분자 밖의 문자가 있다: '$H_emit'" ;;
+    *) ok "방출된 H 가 소문자 16진수와 구분자만으로 이뤄진다" ;;
   esac
   # THE VALUE IS THE ONE THAT HOLDS AFTER THE CALL'S OWN WRITES. A pre-append
   # emission fails right here.
@@ -1875,12 +1882,27 @@ emitted=$(jq -r .H "$EMITFILE" 2>/dev/null)
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$emitted" --rationale x --emit-digest -- ls
 check "방출값을 그대로 다음 호출에 넣으면 통과한다 (되읽기가 필요 없다)" "$rc" "0"
-# And the negative half: an emitted value that is no longer current must be
-# refused, or the flag would be trading the round trip for a stale binding.
+# And the negative half — BUT THE AXIS THAT BINDS IS NO LONGER THE LEDGER'S
+# LENGTH. A value whose only staleness is that rows landed after it is now
+# accepted deliberately: the tip it names is an ancestor of the current one,
+# which is what a concurrent writer leaves behind and not what a stale reader
+# carries. Refusing it meant a successful act by any actor invalidated every
+# other actor's digest the instant it landed, and the only way through was to
+# re-run the identical command until it stuck.
 stale="$emitted"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$stale" --rationale x --emit-digest -- ls
-check "한 번 쓰인 방출값을 다시 쓰면 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
+check "이미 쓴 방출값도 팁만 뒤로 밀렸으면 통과한다" "$rc" "0"
+# WHAT STILL BINDS IS PROGRESS, and it is driven here rather than assumed —
+# without this half the change above reads as the check having been switched off.
+# A segment row moves the vector, and the same emitted value is refused after it.
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SEMIT2 \
+     --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+     -- 상태=실행중 워크트리="$WT" 선행=없음
+check "진전 벡터를 움직인다 (다음 단언의 전제)" "$rc" "0"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$stale" --rationale x --emit-digest -- ls
+check "진전이 움직인 뒤의 옛 방출값은 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
 
 # NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
 # a caller believes is working.
@@ -3581,8 +3603,16 @@ sed '/^R-OTHER$/d' "$SIDX" > "$SIDX.tmp" && mv "$SIDX.tmp" "$SIDX"
 # Every `act` carries a snapshot digest, and the snapshot moves whenever a row
 # lands — so it is re-read immediately before each one rather than reused.
 snapH() {
-  ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
-    | sed -n 's/.*"H": "\([0-9a-f]*\)".*/\1/p' | tail -1
+  # `jq`, LIKE EVERY OTHER READER OF THIS FIELD IN THIS FILE. A hand-rolled
+  # extractor pinned the value's character set from the outside — a run of hex
+  # followed by a closing quote — so the digest growing a second part made the
+  # pattern match nothing at all.
+  #
+  # AND AN EMPTY DIGEST IS NOT A WRONG DIGEST. The gate answers "--snapshot-digest
+  # 가 필요합니다" and exits 2, so every assertion downstream of here failed while
+  # reporting something about the fixture it believed it was testing — a live
+  # stage miscounted, a stop not transcribed — none of which had happened.
+  ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) | jq -r .H
 }
 
 # --- termination condition 7 reads the same predicate -----------------------
@@ -7376,8 +7406,14 @@ check "(a) 보류는 아무것도 기동하지 않는다" \
 # from the act row would already have been moved by this turned-back attempt.
 check "(a) 보류해도 인가 행은 이미 원장에 있다" \
   "$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )" "1"
+# THE PATTERN DOES NOT CARRY THE ROW'S LEADING `- `, and that is not a style
+# choice. An argument beginning with `-` is read as an option, so `grep -cF '- …'`
+# never reaches the file: it exits 2 having printed nothing, the `|| true` turns
+# that into an empty string, and `check` reports an empty value rather than a
+# count. Measured here — the assertion below read `''` where `0` and `1` are the
+# only honest answers, so it could neither pass nor fail for the right reason.
 check "(a) 그러나 기동 행은 남지 않는다" \
-  "$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )" "0"
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "0"
 rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
 
 # (c) THE LEAD'S OWN CONTEXT IS NOT THE HANDOFF FLOOR. The transcript above is
@@ -7403,7 +7439,7 @@ check "(c) 리드 컨텍스트로는 인수인계 바닥 승인이 발행되지 
 # `shift-1.json` could go permanently unwritten with the suite green. An expected
 # value has to come from somewhere other than the code under test.
 shift_act=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
-shift_run=$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )
+shift_run=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
 check "(c) 기동을 시도한 인가 행은 둘이다" "$shift_act" "2"
 check "(c) 그 중 실제로 기동한 것은 하나다" "$shift_run" "1"
 check "(c) 그래서 이 기동의 로그는 첫 번째 번호를 쓴다" \
@@ -7415,8 +7451,8 @@ check "(c) 다른 번호의 교대 로그는 생기지 않는다" \
 # The correspondence a morning reader actually walks — a launch row's ordinal to
 # a file on disk — so the two are asserted against each other rather than each
 # against a literal that could drift apart from the other.
-shift_ord=$( { grep -F '- `교대 기동`' "$LEDGER5" || true; } \
-             | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } | head -1)
+shift_ord=$( { grep -F '`교대 기동`' "$LEDGER5" || true; } \
+             | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } | sed -n '1p')
 check "(c) 기동 행의 서수가 그 기동 로그 파일의 번호다" \
   "$( [ -n "$shift_ord" ] && [ -f "$SHIFT_DIR/log/shift-$shift_ord.json" ] \
        && printf 'yes' || printf 'no' )" "yes"
@@ -7468,7 +7504,7 @@ check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
 # what the ordinal is now counted from — a log file left uncreated says nothing
 # about whether the number was consumed.
 check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
-  "$( { grep -cF '- `교대 기동`' "$LEDGER5" || true; } )" "1"
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
 
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
