@@ -3,7 +3,7 @@ name: review
 description: 에이전트 팀을 활용한 다관점 코드 리뷰
 when_to_use: 사용자가 PR/로컬 diff/파일 경로에 대한 다관점 코드 리뷰(보안/성능/품질 등)를 요청할 때
 disable-model-invocation: true
-usage: "/cc-cmds:review [<target>] [<directive>]"
+usage: "/cc-cmds:review [<target>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -32,11 +32,21 @@ options:
                 **지시문은 깊이/커버리지에만 영향**; severity는 기술 기준으로 독립 평가.
           - label: "(생략)"
             behavior: "빈 입력 시 현재 브랜치/PR 자동 감지 체인 실행"
+    - name: "--base-sha <sha>"
+      kind: flag
+      default: "off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도)"
+      summary: "diff 의 base 를 호출자가 지정. 이미 base 를 아는 호출자(파이프라인 드라이버 등)가 리뷰의 재유도를 없애기 위해 넘긴다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 검증에 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다."
+      parse_note: "`--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다."
+    - name: "--declared-files <csv>"
+      kind: flag
+      default: "off (변경 파일 집합을 diff 에서만 유도)"
+      summary: "이 변경이 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
+      parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있으므로 인용 부호로 감싸 넘긴다. 이 토큰과 값은 `<directive>` 추출 전에 인자열에서 제거된다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. `<target>` 뒤에 자연어로 부가 (예: "보안 중심으로").'
-      parse_note: "지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향."
+      parse_note: "지시문은 severity 기준을 변경하지 않음 — 리뷰 팀 구성과 컨텍스트 가중치에만 영향. 인식된 플래그와 그 값을 뺀 나머지가 지시문이며, 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 경고 후 폐기한다."
 ---
 
 Conduct a multi-perspective code review using an agent team for the given task.
@@ -62,6 +72,8 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
+**Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md` here, not at Step 4.** It carries the spawn / ledger / resume+convergence / escalation contract, the task-assignment header, and the `### Team size budget` ceiling. The ceiling is what makes the placement wrong where it was: Step 3 reads that budget to decide how many reviewers to propose, and Step 4 is two steps later — so the shipped text had a step depending on a file a later step was told to open. Reading the dispatch contract in the same place as the tools it governs removes that inversion. This is a placement change and not a scope change: nothing about what the file says or when it binds is different.
+
 ---
 
 ### Step 1: PR Detection & Scope Confirmation (Korean)
@@ -83,6 +95,8 @@ Parse `$ARGUMENTS`:
 - **Number** → treat as PR number → `gh pr view {number}`
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review (inform user: "파일 경로 기반 리뷰입니다. PR 기반 리뷰 시 추가 컨텍스트(PR 댓글, CI 상태 등)를 활용할 수 있습니다.")
+- **`--base-sha <sha>` and `--declared-files <csv>`** → scope hints from a caller that already knows both. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit the change branched from — verify it in 1b rather than trusting it. `--declared-files` is the comma-separated set the change was supposed to touch; quote it, since it contains commas and may contain spaces. Both are optional and a human invocation normally supplies neither. A flag whose value is missing is dropped along with the flag: consuming the following token would silently swallow the next flag or the directive.
+- **Any other token beginning with `--`** → **not** a directive. Emit one Korean warning naming the token, discard it, and do not propagate it to team composition, the context package, or the report. Absorbing an unrecognized flag into the directive is the failure this bullet exists to prevent: the directive reaches the reviewers as a review-perspective instruction, so a mistyped or newly-added flag arrives as a weighting hint nobody wrote and nothing reports.
 - **Mixed input** (target + directive, e.g., "PR #42 보안 중심으로") → extract target + propagate directive to:
     - Step 3: prioritize directive in team composition (e.g., "보안 중심" → elevate security reviewer model or add extra security focus)
     - Step 4: add "User directive: [directive]" to reviewer context package. Directive influences review depth and coverage; severity is assessed independently on technical criteria.
@@ -123,6 +137,10 @@ gh pr diff $PR_NUMBER
 # gh pr checkout {PR_NUMBER} then git diff origin/{baseRefName}...HEAD -- path/to/dir/
 # Or fall back to filtering gh pr diff full output
 
+# When 1a parsed --base-sha, VERIFY it before using it:
+# git merge-base --is-ancestor <supplied base> <target head>
+
+
 # Existing inline review comments (--paginate for full collection, jq post-processing)
 gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" | \
   jq '[.[] | {author: .user.login, file: .path, line: .line, body: .body, \
@@ -150,7 +168,11 @@ git diff {DEFAULT_BRANCH}...HEAD        # full diff
 git log {DEFAULT_BRANCH}..HEAD --oneline  # commit history
 ```
 
+**A supplied `--base-sha` is verified, never trusted.** Run `git merge-base --is-ancestor <supplied base> <target head>`. `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command runs in; binding to the ambient head makes the guard depend on the caller's working directory, which is the same class of failure the flag exists to close. The substitution replaces the base derivation only; a PR target still collects its metadata and comments as before. On success, take the diff against that base in both modes — `git diff <base>...<target head>` — which is the point of accepting the flag at all: the caller already resolved the base and the derivation here would only re-answer a settled question. **On failure, fall back to the derivation this step already has** (`gh pr view … baseRefName` for a PR, `{DEFAULT_BRANCH}` for a local diff) **and record one line in the report overview naming the rejected value and the base actually used.** A base that is not an ancestor of `<target head>` produces a diff of a tree nobody wrote — findings that are real about the wrong change — and that failure is silent, because the report reads exactly as it would have. Falling back costs one command; trusting the value costs the whole review.
+
 #### 1c: Scope confirmation (with large PR gate)
+
+**A supplied `--declared-files` is compared against what actually changed.** List the changed paths for the diff just resolved and set them against the declared set. Name in the report's overview any changed path that is **outside** the declaration, and any declared path with **no** change. Neither is an error and neither narrows the review — the whole diff is reviewed either way — but the two lists are the only place the run says whether the change that landed is the change that was declared. Git can say which files moved; only the declaration says which ones were meant to. With no flag, skip this and say nothing.
 
 Present to user (in Korean):
 - Review target type (PR / local diff / user-specified)
@@ -289,7 +311,7 @@ Branch on user response:
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
+The spawn / ledger / resume+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return — each reviewer's result is delivered by its **witness file**, and the return text is only an early-wake hint (see the protocol's witness contract and `witness_present` completion predicate). There is no `TeamCreate`/named-teammate/DM machinery.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/references/01-reviewer-context-package.md`** for the 17-item package contents, role-specific checklists, review protocol rounds, and review-specific facilitator additions.
 
@@ -370,6 +392,7 @@ Repeat until user is satisfied.
 - **Inter-agent communication must be in English.** User-facing communication and saved documents in Korean.
 - **Nameless background sub-agents required**: reviewers MUST be spawned as nameless `Agent` background tasks (`subagent_type:"claude"`, `run_in_background:true`, no `name`) and driven through a **retained-context, lead-mediated resume loop** — resume each by `agentId` for cross-review and convergence. Do NOT collapse a round into an isolated one-shot `Agent()` (that throws away retained context and breaks cross-review). There is no `TeamCreate`/named-teammate model; the multi-round resume loop is what makes this a team.
 - **Deferred tool loading**: Before using AskUserQuestion, SendMessage, or TaskStop, you MUST first load them via ToolSearch (`Agent` is built-in and needs no loading). Run `ToolSearch` with query "select:AskUserQuestion", "select:SendMessage", and "select:TaskStop" to load each tool. These are deferred tools and will NOT work unless loaded first. AskUserQuestion MUST be loaded before Step 1 (scope confirmation with user).
+- **Source files are read once per review stage.** Within one stage, a source file already read is not read again. **A turn yield is not an invalidation point** — nothing about the file changed because the model stopped and resumed, and treating a yield as one is what turns a long review into repeated reads of the same unchanged bytes. There are exactly three invalidation points: this session wrote to that path with `Edit`/`Write`; a git operation moved `HEAD` or the working tree (`checkout`, `rebase`, `merge`, `stash`, `pull`); or a new stage was entered. **Four things this cache never covers, and each for its own reason** — the **run ledger**, whose contract deliberately produces an under-claim that a stale read inverts into an over-claim; **witness files**, where there is no invalidation event the lead can observe at all, so the cache has nothing to key on; the reviewer **`output_file`**, which a cached read reports as byte-stable and therefore as WEDGED when it is being written normally; and the **gate snapshot**, whose whole purpose is to be re-derived. Those four are re-read every time they are consulted.
 - **Codebase grounding required**: Reviewers must ground findings in the source — use `grep`/`Glob`/`Read` to locate definitions, callers, and related modules independently. The lead surveys the source tree in Step 2 but does not proxy searches; each reviewer searches its own scope. **One second grounding surface exists**: when a design document was supplied (context-package item 17), a `design-conformance` finding grounds in that document *and* in the source, because its claim is a mismatch between the two. Every other tag stays source-only, and no finding is ever grounded in the design document alone — a document saying something the code does not do is a finding about the code, and the code location is what makes it actionable.
 - **PR comment dedup required**: When existing PR comments/reviews exist, always provide them as context to reviewers. Filter or flag findings that duplicate existing comments.
 - **Fix suggestion inclusion**: Include fix direction when clear. This is judgment-based, not mandatory for all issues — decide based on issue type and complexity.

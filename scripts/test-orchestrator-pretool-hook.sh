@@ -415,17 +415,77 @@ esac
 
 # Every gate-path occurrence in the message is the start of a command it is
 # telling the stage to run. Each must be allowed.
-n_shapes=0; n_denied=0
+#
+# CUT AT ONE COMMAND, NOT AT THE END OF THE MESSAGE. Taking the whole tail made
+# this assertion vacuous past the first token: the hook matches argv0, so any
+# trailing prose rode along and every candidate passed no matter what followed.
+# The message separates its prescribed commands with a standalone `.`, which is
+# where a command actually ends, so that is where the extraction stops.
+n_shapes=0; n_denied=0; n_thin=0
 for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.*//'); do
-  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" | tr '\n' ' ')
+  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" \
+         | awk 'NR>1 && ($0=="." || $0=="』" || $0=="『") {exit} {print}' | tr '\n' ' ')
   n_shapes=$((n_shapes + 1))
+  # A candidate that carries no `--manifest` is not a command this message
+  # prescribes — it is a fragment the cut got wrong, and passing it through the
+  # hook would assert nothing. A lone separator is red here rather than green.
+  case "$cand" in
+    *--manifest*) ;;
+    *) n_thin=$((n_thin + 1)) ;;
+  esac
   decide "$(bash_json "$cand")"
   [ "$dec" = "allow" ] || n_denied=$((n_denied + 1))
 done
+check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어긋나지 않았다)" "$n_thin" "0"
+# A BARE `.` MUST NOT SIT WHERE AN ARGUMENT WOULD. The message ends its
+# prescriptions with a marker rather than a sentence period, because a period
+# copied along with the command reaches the shell as a word — `jq -r .H .` asks
+# jq to read a file named `.` and the documented fallback fails on first use.
+case "$reason" in
+  *'jq -r .H .'*) bad "처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
+  *)              ok "처방된 명령이 문장 마침표로 끝나지 않는다" ;;
+esac
+
+# THE HOOK DOES NOT BUILD THE PATH; IT ASKS. Two programs agreeing on one
+# string disagreed for every stage in the pipeline — the gate sanitizes the
+# stage id into the filename and this hook interpolated it verbatim, so the two
+# matched only for the router, the one actor this hook is never installed for.
+# The failure is silent at both ends: the gate emits correctly, the stage opens
+# a name that does not exist, and it falls back to the round trip the flag
+# exists to remove. What this suite can measure is that the derivation lives in
+# one place; that the printed value equals the file actually written is the
+# gate suite's half.
+if grep -q 'digest-path' "$HOOK"; then
+  ok "훅이 게이트에게 방출 경로를 묻는다"
+else
+  bad "훅이 게이트에게 방출 경로를 묻는다" "스스로 조립하고 있다"
+fi
+if grep -q 'gate-digest-\${CC_PIPELINE_STAGE_ID' "$HOOK"; then
+  bad "훅이 스테이지 id 로 파일명을 조립하지 않는다" "게이트의 정제 규칙을 복제하고 있다"
+else
+  ok "훅이 스테이지 id 로 파일명을 조립하지 않는다"
+fi
+
+# THE MESSAGE CARRIES BOTH HALVES OF THE CONTRACT IT PRESCRIBES. Asserting only
+# that the commands pass the hook says nothing about whether they are the
+# commands the current contract names — the flag could vanish and the path could
+# be wrong, and the shapes would still be allowed.
+case "$reason" in
+  *'--emit-digest'*) ok "거부 문면이 방출 플래그를 처방한다" ;;
+  *) bad "거부 문면이 방출 플래그를 처방한다" "플래그가 문면에 없다" ;;
+esac
+case "$reason" in
+  *'--emit-digest-to'*) bad "거부 문면이 옛 경로 인자 형태를 처방하지 않는다" "옛 철자가 남아 있다" ;;
+  *) ok "거부 문면이 옛 경로 인자 형태를 처방하지 않는다" ;;
+esac
+case "$reason" in
+  *'/digest/gate-digest-'*) ok "거부 문면이 방출 파일 경로를 지목한다" ;;
+  *) bad "거부 문면이 방출 파일 경로를 지목한다" "격리 경로가 문면에 없다" ;;
+esac
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else
-  bad "거부 문면 형태" "게이트로 시작하는 명령이 ${n_shapes}개뿐이다 — 스냅숏과 exec 둘이 필요하다"
+  bad "거부 문면 형태" "게이트로 시작하는 명령이 ${n_shapes}개뿐이다 — 수행할 exec 와, 방출 파일이 없을 때의 스냅숏 폴백 둘이 필요하다"
 fi
 check "그 명령들이 전부 이 훅을 통과한다" "$n_denied" "0"
 

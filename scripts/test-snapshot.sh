@@ -56,12 +56,23 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; 
 # ---------------------------------------------------------------------------
 REPO="$WORK/repo"
 mkdir -p "$REPO"
+# THE BRANCH IS PINNED, NOT ASSUMED. The target row below declares `main`, and
+# the manifest preflight resolves that name against this repository — so the
+# fixture only holds together if the branch really is called `main`. What
+# `git init` names the first branch is a property of the git build and its
+# system config, not of this suite: the Apple build ships
+# `init.defaultBranch=main`, other builds still fall back to `master`. With the
+# name left to the ambient git, every gate invocation below died in the
+# preflight on a host whose git defaults to `master`, and since those calls are
+# read through `2>/dev/null` the whole suite saw empty output rather than an
+# error. The sibling gate fixture pins the same way.
 ( cd "$REPO" \
   && git init -q . \
   && git config user.email t@example.invalid \
   && git config user.name  T \
   && mkdir -p docs/pipeline-run docs/pipeline-grant \
-  && echo one > a.txt && git add -A && git commit -qm one ) >/dev/null 2>&1
+  && echo one > a.txt && git add -A && git commit -qm one \
+  && git branch -M main ) >/dev/null 2>&1
 
 WT=$(cd "$REPO" && git rev-parse --show-toplevel)
 CG=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)
@@ -202,6 +213,12 @@ check "승인이 해소되어도 그 자체로는 움직이지 않는다" "$(dig
 # with the same shape — a boundary nobody can see.
 n_pending=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r '.pending_approvals | length')
 check "그래도 스냅숏은 대기 중 승인을 라우터에게 보여 준다" "$n_pending" "1"
+
+# The total and the array are two derivations of one number, and a consumer that
+# reads only the total — the emitted digest does exactly that — has no way to
+# notice if they part company. So the agreement is the assertion, not the value.
+n_pending_total=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r '.pending_approvals_total')
+check "대기 승인 총계가 배열 길이와 같다" "$n_pending_total" "$n_pending"
 
 # ---------------------------------------------------------------------------
 # 4. Sensitivity — the digest MUST move when the run actually progresses
@@ -368,6 +385,11 @@ check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest
 
 n_ob=$(jq -r '.obligations_total' "$WORK/s1.json")
 check "의무 총수가 중복 제거된 값으로 보고된다" "$n_ob" "1"
+
+# A1 was issued and then resolved, A2 is still open — so the count the digest
+# carries is 1, and it counts STATE rather than rows.
+n_pa=$(jq -r '.pending_approvals_total' "$WORK/s1.json")
+check "대기 승인 총수가 해소된 승인을 빼고 보고된다" "$n_pa" "1"
 
 # ---------------------------------------------------------------------------
 # 6. Damage is reported, never silently zero
