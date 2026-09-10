@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.11.2] - 2026-09-11
 
 무인 런의 좌석·눈금·락·다이제스트에서 「검사는 통과하는데 성질은 성립하지 않는」 여섯 자리를 고치고, 그중 다이제스트 변경이 새로 연 이음매 둘을 이어서 닫는다. 앞 여섯은 모두 기존 회귀 스위트를 통과한 채로 있었고, 이유는 스위트가 조각을 단언하고 시퀀스를 단언하지 않았기 때문이다. 그래서 픽스마다 그 결함이 실제로 나타나는 순서를 밟는 단언을 함께 세웠다.
 
