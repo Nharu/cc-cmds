@@ -3309,17 +3309,45 @@ BSESS="$BSTATE/session"
 # actually happened — and a fixture name showing up there is that accident and
 # nothing else.
 #
-# The three subdirectories are all walked because the reaper writes in all
-# three: it deletes run directories under `run/`, rewrites and removes session
-# indexes under `session/`, and stages victims through `.reap-trash/`. Watching
-# only `run/` left the other two unguarded against the same break.
+# Three subdirectories are walked, and they are not everything the reaper
+# touches. It deletes run directories under `run/`, rewrites and removes session
+# indexes under `session/`, and stages victims through `.reap-trash/` — watching
+# only `run/` left the other two unguarded against the same break. It also
+# writes `reap.stamp` and `.reap.lock` at the root, and those are deliberately
+# NOT watched: an ordinary gate entry from this very session writes both in the
+# real tree, so their presence there is the normal state rather than evidence of
+# anything. Saying "all three" without this paragraph would claim an exhaustive
+# set that the list is not.
+# THE LISTING IS A GLOB, NOT `ls`. Under `CLICOLOR_FORCE` BSD `ls` colours its
+# output even through a pipe, and the escape lands between the prefix and the
+# name — measured: `run/^[[1m^[[36mR1^[[39;49m^[[0m`. The deletion half survives
+# that, because it only counts lines, but the creation half anchors on `/` and
+# matched zero of two names that were plainly there. So the contamination would
+# have silently disabled exactly one of the two halves, which is the failure
+# this canary was rewritten to stop having. A glob also settles locale, a
+# `--color` alias, and names containing newlines, and keeps `ls -1`'s omission
+# of dotfiles.
 B_REALSTATE="$HOME/.local/state/cc-cmds"
 b_canary() {
-  local sub
+  local sub p
   for sub in run session .reap-trash; do
-    { ls -1 "$B_REALSTATE/$sub" 2>/dev/null || true; } | sed "s|^|$sub/|"
+    for p in "$B_REALSTATE/$sub"/*; do
+      [ -e "$p" ] || continue
+      printf '%s/%s\n' "$sub" "${p##*/}"
+    done
   done | LC_ALL=C sort
 }
+
+# EVERY NAME THIS SUITE CAN PUT ON DISK, IN ONE PLACE. Spread through the
+# creation-half regex, a name added to the fixtures below would need this
+# pattern edited too — and nothing fails if nobody does, because an unlisted
+# name simply is not looked for. Derived by enumerating the arguments the
+# fixtures actually pass: `R1`/`R2` and the `RB…` run ids, the `RV-…` victims,
+# the `B7X-…` run directories, the `sess-…` session indexes, and the two
+# date-shaped `-b11` runs — those last two matched nothing before and are the
+# ones hardest to spot by eye afterwards, since they wear the same shape as a
+# real run id.
+B_FIXTURE_NAME_RE='(R[0-9]|RV-|RB|B7X-|sess-|[0-9]{8}-b11)'
 B_CANARY_BEFORE=$(b_canary)
 
 b_exists() { if [ -e "$1" ]; then printf 'yes'; else printf 'no'; fi; }
@@ -3705,9 +3733,22 @@ check "B13 스윕도 같은 사이클 상한 안에서 돈다" "$n" "2"
 # 들어올 수 있다 — 옛 판본이 남긴 잔여물, 잠금 안에 뭔가를 떨어뜨린 다른 도구.
 # 그때 「읽을 수 없으니 거부」로 끝내면 회수기는 아무 증상 없이 영원히 꺼진다.
 # 만료 판정을 디렉터리 자신의 mtime 으로 물러서게 한 것이 그것을 막는다.
+# 이 케이스들이 잡는 것은 만료 판정이 owner 줄 없이도 선다는 것 하나다. 해제를
+# 단일 rename 으로 바꾼 쪽은 여기서 잡지 못한다 — 그 차이는 디렉터리를 지우는
+# 단계가 실패할 때만 드러나는데, 사이클이 잠금을 쥐고 있는 동안 밖에서 그 안에
+# 무언가를 떨어뜨릴 자리가 없어 이 층위에서는 그 실패를 만들어 낼 수 없다. 적어
+# 두는 이유는, 적지 않으면 다음 사람이 이 케이스들을 두 수정 모두의 회귀 방벽으로
+# 읽기 때문이다.
+#
+# 잠금은 `mkdir -p` 가 아니라 지우고 새로 만든다. `mkdir -p` 는 이미 있는
+# 디렉터리에 무연산이라(실측: mtime 도 그대로다) 앞 케이스가 남긴 잠금이 그대로
+# 살아남고, 그것이 owner 를 가진 잠금이면 아래 단언은 자기 표제가 지목하는
+# 구별을 시험하지 않은 채 초록이 된다. 전제를 직접 단언하는 줄이 그 대체를 막는다.
 b_victim RV-B14 "$BAGE_OLD" 종단
 B14V="$B_VICTIM"
-mkdir -p "$BSTATE/.reap.lock"
+rm -rf "$BSTATE/.reap.lock"; mkdir "$BSTATE/.reap.lock"
+check "B14 전제 — 낡은 잠금에 owner 가 없다" \
+  "$(b_exists "$BSTATE/.reap.lock/owner")" "no"
 fx_age_file "$BSTATE/.reap.lock" 1800
 b_trigger RB14
 check "B14 owner 없는 낡은 잠금이 회수를 막지 않는다" "$(b_exists "$B14V")" "no"
@@ -3716,10 +3757,18 @@ check "B14 owner 없는 낡은 잠금이 회수를 막지 않는다" "$(b_exists
 # 아예 안 본다」로도 설명된다.
 b_victim RV-B14B "$BAGE_OLD" 종단
 B14BV="$B_VICTIM"
-mkdir -p "$BSTATE/.reap.lock"
+rm -rf "$BSTATE/.reap.lock"; mkdir "$BSTATE/.reap.lock"
+check "B14 전제 — 갓 생긴 잠금에 owner 가 없다" \
+  "$(b_exists "$BSTATE/.reap.lock/owner")" "no"
 b_trigger RB14b
 check "B14 갓 생긴 owner 없는 잠금은 존중된다" "$(b_exists "$B14BV")" "yes"
+
+# 대조군을 같은 희생자로 둔다. 없으면 위의 생존이 「잠금을 존중했다」가 아니라
+# 「회수기가 아예 안 돌았다」와 구별되지 않는다 — 이 파일이 다른 자리에서 이미
+# 금지한 형태다.
 rm -rf "$BSTATE/.reap.lock"
+b_trigger RB14c
+check "B14 잠금이 걷히면 같은 희생자가 회수된다" "$(b_exists "$B14BV")" "no"
 
 # --- 카나리아 정산 -----------------------------------------------------------
 B_CANARY_AFTER=$(b_canary)
@@ -3731,7 +3780,7 @@ check "카나리아 — 실사용자 상태 항목이 하나도 사라지지 않
 # 꼴이고 세션 인덱스는 UUID 라 이 이름들과 겹치지 않는다.
 n=$(LC_ALL=C comm -13 <(printf '%s\n' "$B_CANARY_BEFORE") \
                       <(printf '%s\n' "$B_CANARY_AFTER") \
-     | grep -cE '/(R[0-9]|RV-|RB|B7X-|sess-)' || true)
+     | grep -cE "/$B_FIXTURE_NAME_RE" || true)
 check "카나리아 — 픽스처 이름이 실사용자 상태에 하나도 나타나지 않았다" "$n" "0"
 
 # Hand the following sections back the run they were written against.
