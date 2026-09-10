@@ -51,7 +51,12 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-repo_root=$(cd "$script_dir/.." && pwd)
+# `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
+# override. The selector runs a cut-down COPY of this file out of a scratch
+# directory, and a copy outside `scripts/` cannot derive the repository root
+# from its own path. A full run never sets the variable, so the derivation
+# below is what it always was.
+repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
 # `bash -c` whose argv the parent interpolates — so the export reads as
@@ -65,6 +70,350 @@ repo_root=$(cd "$script_dir/.." && pwd)
 export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+
+# ---------------------------------------------------------------------------
+# The section selector — `--list` and `--sections <id>[,<id>...]`
+#
+# This suite is serial by construction: its sections share one fixture and one
+# accumulating ledger, so "run only the named section" cannot be a conditional
+# wrapped around each block — the state that flows between sections would leak
+# straight past the condition. The selector instead cuts a COPY of this file
+# down to the unconditional regions plus the named sections, and runs that.
+#
+# THE UNCONDITIONAL REGIONS ARE TWO, and both are delimited by a marker rather
+# than by a line range. `# --- preamble-end ---` closes the head — the shared
+# helpers, the static scans, and the fixture repository every section stands
+# on — and `# --- epilogue-begin ---` opens the tail, which is the totals line
+# and the exit status. Line numbers move whenever a section is added or a
+# banner is edited; a marker moves only when someone moves it, which is what
+# makes it the unit a later change can carry.
+#
+# EVERY ESCAPE HATCH POINTS AT THE FULL RUN. An id nobody declared, a marker
+# that is missing, a section that is not there — each of them runs MORE, never
+# less, so a wrong mapping costs time and never coverage.
+#
+# THE EXCEPTIONS ARE THE PICKS THAT RESOLVE TO THE WRONG THING, and they are
+# exceptions because they fail in the forbidden direction: the pick RESOLVES,
+# to a subset of what was asked for or to something else entirely, so the run
+# covers less while reporting green. All three known ones are hard errors rather
+# than fallbacks.
+#
+#   - A DUPLICATE id, caught at INDEX time, with a message that names both
+#     banners rather than the id alone.
+#   - An id whose lookup matches MORE THAN ONE row, caught at RESOLUTION time.
+#     That is the place nothing can be exempted from, and it is the place `-`
+#     was getting through: `-` is the index's own marker for "this section
+#     carries no banner", the index-time check strips it on purpose, and it is
+#     inside the id charset as a literal. `-` is not an id at all, so it is now
+#     screened before the lookup and falls out the safe way.
+#   - A MARKER THAT NO BANNER OWNS, caught while the index is built. A marker
+#     is its banner's only if it sits on the line after the title; written one
+#     line above its own rule line it lands inside the PREVIOUS section, and a
+#     range test would hand the id to the neighbour. The declared id is also
+#     compared with the banner's own number, by equality only.
+#
+# NEITHER OF THOSE SEES A SECTION THAT WAS TRUNCATED rather than mis-picked: the
+# id still resolves, to exactly one row, carrying the right title, and only the
+# end line moved. A pass count cannot see it either — it certifies HOW MANY
+# assertions ran and never WHICH. That is what the banner's `anchors:` field is
+# for: the named assertions a section must still contain are checked against the
+# CUT before it is run, so a boundary that swallows them stops the run instead of
+# quietly shrinking it.
+# ---------------------------------------------------------------------------
+SELF="$script_dir/${0##*/}"
+sections_want=""
+sections_list=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --list)
+      sections_list=1; shift ;;
+    --sections)
+      sections_want="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --sections=*)
+      sections_want="${1#--sections=}"; shift ;;
+    *)
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...])\n' "$1" >&2
+      exit 2 ;;
+  esac
+done
+
+# The index, one record per line:
+#
+#   PRE <line>                                the last line of the head
+#   EPI <line>                                the first line of the tail
+#   SEC <start> <end> <id> <idline> <title>   one addressable section
+#   ANC <id> <text>                           one assertion that section must keep
+#   MKR <message>                             a marker that no banner owns
+#
+# A section carrying no machine-readable banner reports its id as `-`, which is
+# how `--list` tells "not addressable yet" from "addressable". Sections that
+# sit inside the head are not indexed at all — they are not skippable, so
+# giving them a row would invite a caller to try.
+#
+# `ANC` IS THE ONLY BANNER FIELD ANYTHING READS BACK. `group:` and `covers:` are
+# parsed off the id and discarded; `anchors:` is a comma-separated list of
+# assertion labels that a cut of this section must still contain, and it is
+# checked against the cut before the cut runs. It exists because the id, the
+# title and the number of assertions can all survive a section being truncated,
+# and the label of the assertion that went missing cannot. Anchors are matched as
+# fixed substrings, so they may be a prefix of the label as written; they must
+# not contain `,` or `|`.
+#
+# A section BEGINS at the rule line that opens its banner box, not at the
+# numbered line inside it, because the box is one comment and cutting it in
+# half would leave a dangling rule at the top of the copy.
+section_index() {
+  awk '
+    {
+      if ($0 ~ /^# --- preamble-end ---$/)        { pre = NR }
+      else if ($0 ~ /^# --- epilogue-begin ---$/) { epi = NR }
+      else if ($0 ~ /^# --- section: /) {
+        id = $0
+        sub(/^# --- section:[ \t]*/, "", id)
+        sub(/[ \t]*\|.*$/, "", id)
+        sub(/[ \t]*---[ \t]*$/, "", id)
+        anc = ""
+        if ($0 ~ /\|[ \t]*anchors:/) {
+          anc = $0
+          sub(/[ \t]*---[ \t]*$/, "", anc)
+          sub(/^.*\|[ \t]*anchors:[ \t]*/, "", anc)
+          sub(/[ \t]*\|.*$/, "", anc)
+        }
+        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc
+      }
+      else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*\. /) {
+        nb = nb + 1; bound[nb] = NR - 1; title[nb] = $0
+      }
+      prev = $0
+    }
+    END {
+      if (pre == 0 || epi == 0) { print "ERR"; exit 0 }
+      print "PRE " pre
+      print "EPI " epi
+      # A MARKER BELONGS TO A BANNER ONLY IF IT SITS ON THE LINE AFTER THE TITLE.
+      # `bound[i]` is the opening rule line of the box and the title is the line
+      # after it, so a marker of that box is at `bound[i] + 2`. Range containment
+      # was the earlier rule and it is not the same thing: a marker written one
+      # line ABOVE its own rule line lands on the LAST line of the PREVIOUS
+      # section, which a range test accepts, and `--sections <id>` then cuts the
+      # neighbour, runs it and exits 0 while the named block never runs at all.
+      # That is coverage lost under a named id, so it is a hard error rather
+      # than a fallback.
+      for (i = 1; i <= nb; i++) {
+        if (bound[i] <= pre) continue
+        for (j = 1; j <= nid; j++) {
+          if (idline[j] == bound[i] + 2) { owner[i] = j; claimed[j] = 1 }
+        }
+      }
+      for (j = 1; j <= nid; j++) {
+        if (!(j in claimed)) {
+          print "MKR 줄 " idline[j] ": id=" idval[j] " — 주소화 가능한 어느 배너도 이 마커를 자기 것이라 주장하지 않습니다 (마커는 번호 배너 줄 바로 다음 줄이어야 합니다)"
+        }
+      }
+      for (i = 1; i <= nb; i++) {
+        s = bound[i]
+        if (s <= pre) continue
+        e = (i < nb ? bound[i + 1] - 1 : epi - 1)
+        if (e >= epi) e = epi - 1
+        id = "-"; il = 0; anc = ""
+        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j] }
+        # THE DECLARED ID IS COMPARED WITH THE BANNER`S OWN NUMBER, by equality
+        # and nothing else. Ordering is deliberately not checked — this file`s
+        # banner numbers do not ascend (section 31 is followed by `# 12b.`).
+        if (id != "-") {
+          num = title[i]
+          sub(/^#[ \t]+/, "", num)
+          sub(/\..*$/, "", num)
+          if (id != num) {
+            print "MKR 줄 " il ": id=" id " 가 배너 번호 " num " 과 다릅니다"
+          }
+        }
+        print "SEC " s " " e " " id " " il " " title[i]
+        if (anc != "") {
+          na = split(anc, aa, ",")
+          for (k = 1; k <= na; k++) {
+            a = aa[k]
+            sub(/^[ \t]+/, "", a); sub(/[ \t]+$/, "", a)
+            if (a != "") print "ANC " id " " a
+          }
+        }
+      }
+    }
+  ' "$SELF"
+}
+
+sec_idx=""
+if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
+  sec_idx=$(section_index)
+  case "$sec_idx" in
+    ERR*)
+      if [ "$sections_list" = "1" ]; then
+        printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
+        exit 2
+      fi
+      printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
+      sec_idx="" ;;
+  esac
+fi
+
+if [ -n "$sec_idx" ]; then
+  # MISATTRIBUTED MARKERS ARE CHECKED FIRST, before duplicates and before
+  # `--list`, because a marker that attaches to the wrong banner makes every
+  # later answer about that id wrong — the duplicate check would compare ids
+  # that are already on the wrong rows, and `--list` would advertise an id that
+  # runs a different block.
+  sec_mkr=$(printf '%s\n' "$sec_idx" | sed -n 's/^MKR //p')
+  if [ -n "$sec_mkr" ]; then
+    printf 'test-gate: 절 마커가 배너에 귀속되지 않습니다 — 지목된 id 가 이웃 절로 조용히 해소되어 더 적게 돌면서 초록을 보고하므로 여기서 멈춥니다\n' >&2
+    printf '%s\n' "$sec_mkr" | sed 's/^/  /' >&2
+    exit 2
+  fi
+
+  # DUPLICATES ARE CHECKED BEFORE ANY PICK, and `--list` is checked too. The id
+  # space is one entry wide today, so this is trivially green — it is here
+  # because the addressing pass that fills the other banners needs the check to
+  # be ALREADY in place, or the ids that collide slip through in silence.
+  sec_dups=$(printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) .*$/\1/p' \
+    | sed -n '/^-$/!p' | sort | uniq -d)
+  if [ -n "$sec_dups" ]; then
+    printf 'test-gate: 절 id 가 중복입니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' >&2
+    for d in $sec_dups; do
+      printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC [0-9]* [0-9]* $d \([0-9]*\) \(.*\)\$/  id=$d — 배너 줄 \1: \2/p" >&2
+    done
+    exit 2
+  fi
+fi
+
+if [ "$sections_list" = "1" ]; then
+  printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* \(.*\)$/\1 \2/p' \
+    | sed -n '/^- /!p'
+  exit 0
+fi
+
+if [ -n "$sections_want" ] && [ -n "$sec_idx" ]; then
+  sec_ranges=""
+  sec_miss=""
+  while IFS= read -r sec_w; do
+    [ -n "$sec_w" ] || continue
+    # An id spelled with anything outside this set is treated as unknown rather
+    # than interpolated into the `sed` address below. A BARE `-` IS SCREENED
+    # SEPARATELY, because it is inside the permitted set as a literal member of
+    # the bracket expression and would sail through: the index writes `-` in the
+    # id field of every section that carries no banner, so looking it up matches
+    # all of them at once.
+    case "$sec_w" in
+      -) sec_miss="$sec_w"; break ;;
+      *[!A-Za-z0-9_-]*) sec_miss="$sec_w"; break ;;
+    esac
+    sec_r=$(printf '%s\n' "$sec_idx" \
+      | sed -n "s/^SEC \([0-9]*\) \([0-9]*\) $sec_w [0-9]* .*\$/\1 \2/p")
+    if [ -z "$sec_r" ]; then sec_miss="$sec_w"; break; fi
+    # RESOLUTION TIME IS WHERE NOTHING CAN BE EXEMPTED. The index-time duplicate
+    # check drops the `-` marker before comparing and so cannot see every
+    # ambiguous pick; a lookup that returns two ranges is the same failure
+    # arriving at the one place with no filter standing in front of it. Screening
+    # `-` above closes one token, this closes the class.
+    if [ "$(printf '%s\n' "$sec_r" | grep -c .)" -gt 1 ]; then
+      printf 'test-gate: 절 id 「%s」 가 여러 절에 걸립니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' "$sec_w" >&2
+      exit 2
+    fi
+    sec_ranges="$sec_ranges$sec_r
+"
+  done <<SECEOF
+$(printf '%s\n' "$sections_want" | tr ',' '\n')
+SECEOF
+
+  if [ -n "$sec_miss" ]; then
+    printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
+  else
+    sec_pre=$(printf '%s\n' "$sec_idx" | sed -n 's/^PRE \([0-9]*\)$/\1/p')
+    sec_epi=$(printf '%s\n' "$sec_idx" | sed -n 's/^EPI \([0-9]*\)$/\1/p')
+    sec_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-sections.XXXXXX")
+    sec_cut="$sec_dir/test-gate.sh"
+    sed -n "1,${sec_pre}p" "$SELF" > "$sec_cut"
+    # Sorted by start line so the copy keeps FILE order whatever order the ids
+    # were typed in — the sections are not independent of each other's order.
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+    sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
+
+    # THE ANCHOR CHECK READS THE CUT, NOT THE TRANSCRIPT, and it runs before the
+    # cut does. A count of passing assertions certifies how many ran and never
+    # which, so a section truncated by a boundary that appeared inside it still
+    # resolves to one range with the right title and can land on the expected
+    # total; the assertions it dropped are invisible to every instrument except
+    # their own labels. Reading the text also keeps the check host-independent —
+    # both arms of a host guard are present in the source whichever one executes,
+    # so this says the same thing on darwin and off it, where a transcript-based
+    # check would go falsely red.
+    #
+    # The section's own banner is excluded from the search: it carries the anchor
+    # strings itself and sits at the top of every cut of that section, so leaving
+    # it in would make the check pass for a section that had been truncated down
+    # to nothing but its banner.
+    sec_body="$sec_dir/body"
+    sed -n '/^# --- section: /!p' "$sec_cut" > "$sec_body"
+    sec_anc_miss=""
+    while IFS= read -r sec_w; do
+      [ -n "$sec_w" ] || continue
+      while IFS= read -r sec_anc; do
+        [ -n "$sec_anc" ] || continue
+        # BRACES ARE REQUIRED ON THE TRAILING EXPANSION. The corner bracket that
+        # closes the quote is multi-byte, and bash reads its lead byte as part of
+        # an unbraced name — under `set -u` that is an unbound-variable abort in
+        # the one branch this whole check exists for.
+        grep -F -q -- "$sec_anc" "$sec_body" || sec_anc_miss="${sec_anc_miss}  id=${sec_w} — 「${sec_anc}」
+"
+      done <<ANCEOF
+$(printf '%s\n' "$sec_idx" | sed -n "s/^ANC $sec_w \(.*\)\$/\1/p")
+ANCEOF
+    done <<SECEOF
+$(printf '%s\n' "$sections_want" | tr ',' '\n')
+SECEOF
+    rm -f "$sec_body"
+    if [ -n "$sec_anc_miss" ]; then
+      printf 'test-gate: 잘린 절입니다 — 배너가 선언한 단언이 컷에 남아 있지 않아 실행하지 않습니다\n' >&2
+      printf '%s' "$sec_anc_miss" >&2
+      printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
+      rm -rf "$sec_dir"
+      exit 2
+    fi
+
+    # THE TRANSCRIPT CARRIES THE SCOPE IT RAN, not just the count it produced.
+    # An oracle written against a number alone cannot tell a correct narrowed run
+    # from a shorter one that happened to total the same; these lines give it —
+    # and a human reading the log — the ranges the count was taken over.
+    sec_count=0; sec_span=0
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      sec_count=$(( sec_count + 1 ))
+      sec_span=$(( sec_span + sec_b - sec_a + 1 ))
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+    printf 'test-gate: 좁힌 실행 — 절 %s개, %s줄\n' "$sec_count" "$sec_span" >&2
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* \(.*\)\$/test-gate:   id=\1 줄 $sec_a-$sec_b 「\2」/p" >&2
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+
+    CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
+    sec_rc=$?
+    rm -rf "$sec_dir"
+    exit "$sec_rc"
+  fi
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -411,6 +760,18 @@ esac
 check "픽스처 매니페스트가 검사를 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+
+# EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
+# helpers, the two static scans (`0a`, `0b`), and the fixture repository with
+# its manifest and authorization record. The fixture is unconditional because
+# every section below stands on the `$WORK` tree and the repository it builds,
+# and a selected section handed neither would fail for a reason that has
+# nothing to do with what it asserts.
+#
+# The two scans are here because they are still part of the head. The pass that
+# lifts them out into sections of their own moves this marker above them, and
+# the head's assertion count drops to the fixture's own three.
+# --- preamble-end ---
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -2801,6 +3162,22 @@ check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 18. Concurrent appends do not chain to the same parent
+# --- section: 18 | group: darwin | covers: gate_append, lock_tool | anchors: 여덟 행의 prev 가 서로 다르다, 체인이 끊긴 곳이 없다 ---
+#
+# THE ONE ADDRESSABLE SECTION SO FAR, and it is this one because it is the only
+# block left whose darwin-ness is real: `lock_tool()` hands out `/usr/bin/lockf`
+# on darwin and nothing elsewhere, so the ordering asserted below is a property
+# of the locked arm and cannot be claimed off it. The narrowed macOS leg names
+# this id instead of running the file.
+#
+# THE TWO ANCHORS ARE THE TWO SERIALIZATION ASSERTIONS, and naming them in the
+# banner is what stops a cut of this section from certifying the fix without
+# testing it. They are the whole reason this block is darwin-only, and they sit
+# behind a host guard — so a boundary that truncated the section to its first
+# assertion would drop them while leaving the id, the title and a plausible
+# assertion total intact. The anchor check reads the CUT's text rather than its
+# transcript, which is why it says the same thing on a host that skips the
+# guarded arm as on one that runs it.
 #
 # `gate_append` used to read the chain tip OUTSIDE the lock, so two writers read
 # the same tip and both emitted rows carrying the same `prev`. The verifier then
@@ -5784,18 +6161,22 @@ check "디렉터리를 철자하지 않은 어간 글로브도 거절된다" "$r
 # document write, so it is the wrapper this guard is guaranteed to meet. The
 # plain spelling is refused by the basename scan and was already; the glob
 # spelling is the one that needs `lockf` in arm 2's list.
-if [ -x /usr/bin/lockf ]; then
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
-  check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
-  check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
-else
-  ok "lockf 가 없는 호스트라 래퍼 단언을 건너뛴다"
-fi
+#
+# UNCONDITIONAL, AND THE DARWIN GUARD THAT USED TO WRAP THESE TWO WAS FALSE.
+# What they assert is that the gate REFUSES this argv, and the refusal is a
+# pure `case` over the command line with no filesystem probe — `lockf` is never
+# executed, so whether `/usr/bin/lockf` exists on the host cannot move the
+# verdict. The stem assertion four lines up is the same class through the same
+# code path and has been passing off darwin all along. The wrapper cost the
+# Linux leg two assertions and left the macOS leg carrying them alone.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
+check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
+check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
 
 # --- 31as. An exempt kind crossed with the `exec` verb, which nothing walked --
 #
@@ -7270,5 +7651,10 @@ check "(b) 그 승인이 원장에 실제로 남는다" \
 check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
 
+# --- epilogue-begin ---
+#
+# THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
+# its own exit status, so the cut copy gets these two lines appended exactly as
+# they stand here.
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
