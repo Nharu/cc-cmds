@@ -2905,7 +2905,6 @@ else
   bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
 fi
 
-
 # ---------------------------------------------------------------------------
 # 29. The progress channel survives its own unclean death.
 #
@@ -2921,50 +2920,157 @@ fi
 if [ -f "$FEED_SH" ]; then
   FEED_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-feed-lock.XXXXXX")
   FEED_LG="$FEED_RD/ledger.md"
+  FEED_LD="$FEED_RD/feed.lock.d"
   printf -- '- `run` | 교대=0 | run-id=feedlock | prev=aaaa\n' > "$FEED_LG"
+  feed_once() {  # feed_once <suffix> — one `--once` run, status in feed_rc
+    feed_rc=0
+    bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
+      > "$FEED_RD/out$1" 2> "$FEED_RD/err$1" || feed_rc=$?
+  }
   # A pid that is certainly gone: started and reaped right here.
   ( : ) & dead_pid=$!
   wait "$dead_pid" 2>/dev/null || true
-  printf '%s\n' "$dead_pid" > "$FEED_RD/feed.lock"
-  mkdir -p "$FEED_RD/feed.lock.d"
-  feed_rc=0
-  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
-    > "$FEED_RD/out" 2> "$FEED_RD/err" || feed_rc=$?
+
+  # --- THE ACQUISITION WINDOW, AND IT IS THE DEFECT ITSELF -------------------
+  #
+  # Token present, ownership record absent: the state a holder passes through
+  # between winning the `mkdir` and writing down who it is. While the record
+  # lived in a separate file the liveness test opened by asking whether that file
+  # existed, so this state answered "nobody holds this" and an arriving instance
+  # reclaimed a lock whose owner was alive and running. Nothing asserted it,
+  # because every fixture created the two artifacts together and so never stood
+  # in the window the two-artifact design opened.
+  rm -rf "$FEED_LD"
+  mkdir -p "$FEED_LD"
+  feed_once _win
+  check "획득이 진행 중인 락 앞에서는 물러난다" "$feed_rc" "0"
+  if grep -q '회수' "$FEED_RD/err_win" 2>/dev/null; then
+    bad "피드 락" "기록을 아직 쓰지 않은 살아 있는 주인의 락을 회수했다 — 락이 막으려던 이중 실행이 바로 그 상태다"
+  else
+    ok "기록을 아직 쓰지 않은 주인의 락은 회수하지 않는다"
+  fi
+  if [ -d "$FEED_LD" ]; then
+    ok "그 락은 손대지 않은 채로 남는다"
+  else
+    bad "피드 락" "물러나면서 획득 중인 락을 지웠다"
+  fi
+
+  # --- AND THE SETTLED ORPHAN IS STILL RECLAIMED ----------------------------
+  #
+  # The recovery this section was written for, moved to the new layout rather
+  # than dropped: an unclean death must not turn every later re-arm into a
+  # failure on a path where nobody is awake to clear it by hand.
+  rm -rf "$FEED_LD"
+  mkdir -p "$FEED_LD"
+  printf '%s\n' "$dead_pid" > "$FEED_LD/holder"
+  feed_once _orphan
   if [ "$feed_rc" = "0" ]; then
     ok "주인이 사라진 락을 회수하고 재장전이 성공한다"
   else
-    bad "피드 락" "고아 락에서 재장전이 rc=$feed_rc 로 실패했다 — 무인 경로에는 손으로 지울 사람이 없다: $(tr '\n' ' ' < "$FEED_RD/err")"
+    bad "피드 락" "고아 락에서 재장전이 rc=$feed_rc 로 실패했다 — 무인 경로에는 손으로 지울 사람이 없다: $(tr '\n' ' ' < "$FEED_RD/err_orphan")"
   fi
-  if grep -q '회수' "$FEED_RD/err" 2>/dev/null; then
+  if grep -q '회수' "$FEED_RD/err_orphan" 2>/dev/null; then
     ok "회수했다는 사실이 한 줄로 남는다"
   else
     bad "피드 락" "락을 조용히 덮어썼다 — 앞선 채널이 깨끗하지 않게 죽었다는 사실이 아침에 남지 않는다"
   fi
-  if [ -f "$FEED_RD/feed.lock" ]; then
+  if [ -d "$FEED_LD" ]; then
     bad "피드 락" "깨끗하게 끝난 실행이 자기 락을 남겼다"
   else
-    ok "깨끗하게 끝난 실행은 자기 락을 지운다"
+    ok "깨끗하게 끝난 실행은 자기 락을 한 걸음으로 지운다"
   fi
+
+  # --- THE RECLAIM RACE HAS EXACTLY ONE WINNER ------------------------------
+  #
+  # The losing side of the election, driven deterministically: the orphan has
+  # already been renamed away by another reclaimer, so this instance must win the
+  # empty name through `mkdir` like anyone else and must NOT report a reclaim it
+  # did not perform. Under the old three-step path — judge gone, overwrite the
+  # record, declare ownership — both racers passed all three and both continued
+  # as owner, so the branch that recovers from a duplicate feed could create one.
+  rm -rf "$FEED_LD" "$FEED_LD.dead.test"
+  mkdir -p "$FEED_LD.dead.test"
+  printf '%s\n' "$dead_pid" > "$FEED_LD.dead.test/holder"
+  feed_once _race
+  check "회수의 승자가 이미 정해졌으면 진 쪽은 빈자리를 깨끗이 얻는다" "$feed_rc" "0"
+  if grep -q '회수' "$FEED_RD/err_race" 2>/dev/null; then
+    bad "피드 락" "회수하지 않았는데 회수 문면을 찍었다 — 한 번의 불결한 죽음이 여러 줄로 보고된다"
+  else
+    ok "회수하지 않은 인스턴스는 회수 문면을 찍지 않는다"
+  fi
+  rm -rf "$FEED_LD" "$FEED_LD.dead.test"
 
   # THE OTHER BRANCH MUST NOT REGRESS. A live holder still stops a second
   # instance, and it does so with 0 — the lead re-arms up to three times on a
   # healthy night, and a non-zero there files three false failures.
+  mkdir -p "$FEED_LD"
   printf '%s\n%s\n' "$$" \
     "$(LC_ALL=C ps -o lstart= -p $$ 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" \
-    > "$FEED_RD/feed.lock"
-  mkdir -p "$FEED_RD/feed.lock.d"
-  feed_rc2=0
-  bash "$FEED_SH" --run-dir "$FEED_RD" --ledger "$FEED_LG" --once \
-    > "$FEED_RD/out2" 2> "$FEED_RD/err2" || feed_rc2=$?
-  if [ "$feed_rc2" = "0" ]; then
+    > "$FEED_LD/holder"
+  feed_once _live
+  if [ "$feed_rc" = "0" ]; then
     ok "살아 있는 주인이 있으면 재장전은 0 으로 물러난다"
   else
-    bad "피드 락" "건강한 밤의 재장전이 rc=$feed_rc2 로 실패를 보고했다"
+    bad "피드 락" "건강한 밤의 재장전이 rc=$feed_rc 로 실패를 보고했다"
   fi
-  if [ -f "$FEED_RD/feed.lock" ]; then
+  if [ -d "$FEED_LD" ]; then
     ok "물러난 인스턴스는 살아 있는 주인의 락을 지우지 않는다"
   else
     bad "피드 락" "물러나면서 남의 락을 지웠다 — 락이 막으려던 이중 실행이 바로 그 상태다"
+  fi
+  rm -rf "$FEED_LD"
+
+  # --- THE SOURCE AXIS ------------------------------------------------------
+  #
+  # THE ARTIFACT IS SINGULAR, and that is asserted directly because it is the
+  # observation the defect was found from: both names existed at once. Comment
+  # lines are excluded — the header explains the shape that was removed, and
+  # naming it there is not a breach of the rule, which is the same exclusion §28
+  # makes for the emitter it refuses to load.
+  feed_lockf_code=$( { grep -n 'LOCKF' "$FEED_SH" || true; } \
+                     | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
+  if [ -n "$feed_lockf_code" ]; then
+    bad "피드 락" "실행 줄이 아직 두 번째 락 아티팩트를 만든다: $feed_lockf_code"
+  else
+    ok "락 아티팩트는 하나다 — 소유의 증거가 획득 토큰 밖에 있지 않다"
+  fi
+  if grep -q 'LOCKD/holder' "$FEED_SH"; then
+    ok "소유의 증거가 획득 토큰 아래에 있다"
+  else
+    bad "피드 락" "소유 증거의 경로가 획득 토큰 아래가 아니다"
+  fi
+
+  # OWNERSHIP IS GRANTED BY THE `mkdir` AND BY NOTHING ELSE, asserted by line
+  # order inside `take_lock` the way the trap ordering below already is. The old
+  # path fell out of a FAILED `mkdir` into `LOCK_OWNED=1`, so the flag meant "I
+  # got past the check" rather than "I created the directory" — and only the
+  # second of those is a claim one process can hold alone.
+  # COMMENT LINES ARE DROPPED BEFORE ANYTHING IS COUNTED. The function's own
+  # header explains the shape it replaced and names `LOCK_OWNED=1` while doing
+  # so, so a count over raw lines counts prose and a line-order comparison
+  # anchors on a sentence. Measured: the header put the flag eleven lines above
+  # the `mkdir` that actually grants it.
+  feed_take=$( { awk '/^take_lock\(\) \{/,/^\}/' "$FEED_SH" || true; } \
+               | { grep -vE '^[[:space:]]*#' || true; } )
+  feed_own_n=$( printf '%s\n' "$feed_take" | { grep -c 'LOCK_OWNED=1' || true; } )
+  feed_own_ln=$( printf '%s\n' "$feed_take" \
+                 | { grep -n -m1 'LOCK_OWNED=1' || true; } | cut -d: -f1)
+  feed_mk_ln=$( printf '%s\n' "$feed_take" \
+                | { grep -n -m1 'mkdir "\$LOCKD"' || true; } | cut -d: -f1)
+  feed_mv_ln=$( printf '%s\n' "$feed_take" \
+                | { grep -n -m1 'mv "\$LOCKD"' || true; } | cut -d: -f1)
+  check "소유 선언은 take_lock 안에 단 하나다" "$feed_own_n" "1"
+  if [ -n "$feed_own_ln" ] && [ -n "$feed_mk_ln" ] \
+     && [ "$feed_mk_ln" -lt "$feed_own_ln" ] \
+     && [ $((feed_own_ln - feed_mk_ln)) -le 3 ]; then
+    ok "소유 선언이 mkdir 성공 갈래 안에만 있다"
+  else
+    bad "피드 락" "소유 선언이 mkdir 성공 갈래 밖에 있다 (mkdir=$feed_mk_ln own=$feed_own_ln)"
+  fi
+  if [ -n "$feed_mv_ln" ]; then
+    ok "회수가 rename 한 걸음으로 승자를 정한다"
+  else
+    bad "피드 락" "회수에 원자적 단계가 없다 — 안정된 고아 하나에 두 재장전이 닿으면 둘 다 소유자가 된다"
   fi
 
   # The ordering, and the signal set. Neither closes the SIGKILL window — nothing
