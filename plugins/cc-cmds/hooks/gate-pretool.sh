@@ -735,15 +735,20 @@ case "$tool" in
     # WHAT THE REST OF THE VECTOR IS CLOSED BY, STATED PRECISELY, because an
     # earlier revision of this comment said "the leaf pass further down" without
     # qualification and that was false for one of the two link kinds. The leaf
-    # pass closes the rest of the SYMLINK vector — its entry condition is
-    # `hook_leaf_is_symlink && [ -e ]`, so a HARD link never enters it, and a hard
-    # link shares no ancestor with its target either, so the physical pass does
-    # not reach it. Against hard links these four names were, measured, the whole
-    # defence: the four denied and every unenumerated name in the same directory
-    # allowed. That is why the `st_nlink` predicate at the bottom of this branch
-    # exists — it turns the inode side from an enumeration into a refusal, so
-    # these anchors now IDENTIFY the four rather than being all that stands.
-    # Their overlap with the leaf pass is the point rather than an oversight.
+    # pass closes the rest of the SYMLINK vector ONLY WHERE THE TARGET IS AN
+    # ORDINARY FILE — its entry condition is `hook_leaf_is_symlink && [ -e ]`, so
+    # a HARD link never enters it, and a hard link shares no ancestor with its
+    # target either, so the physical pass does not reach it. Where a symlink's
+    # target IS a hard link the leaf pass folds to the spelling that hard link
+    # sits at, which is under no anchor, and answers `allow`. Against hard links
+    # these four names were, measured, the whole defence: the four denied and
+    # every unenumerated name in the same directory allowed. That is why the
+    # `st_nlink` predicate at the bottom of this branch exists — it turns the
+    # inode side from an enumeration into a refusal, for the bare spelling and
+    # for the symlink-wrapped one alike, because it measures with `stat -L` and
+    # no longer skips a symlinked leaf. So these anchors now IDENTIFY the four
+    # rather than being all that stands. Their overlap with the leaf pass is the
+    # point rather than an oversight.
     stat_args[${#stat_args[@]}]="$RUN_DIR/config-dir"
     stat_args[${#stat_args[@]}]="$RUN_DIR/orchestrator-dir"
     stat_args[${#stat_args[@]}]="$RUN_DIR/ledger-path"
@@ -1125,15 +1130,39 @@ case "$tool" in
     # 이름**이 존재하고 그 이름이 앵커 안인지 이 철자만으로는 말할 수 없다. 이
     # 파일이 자리마다 반복하는 「판정 불가는 허용이 아니다」를 그대로 적용한다.
     #
-    # 세 가지를 제외한다. 디렉터리는 링크 수가 곧 하위 디렉터리 수라 언제나 1보다
-    # 크고, 그것을 세면 이 팔이 「디렉터리 아래로는 아무것도 못 쓴다」가 된다.
-    # 심링크는 위 말단 패스가 이미 표적까지 따라가 판정했다. 아직 만들어지지 않은
-    # 말단은 잴 아이노드가 없고 그 통과는 정상 경로다(계획 방출·중단 기록).
-    if [ -e "$ap" ] && [ ! -L "$ap" ] && [ ! -d "$ap" ]; then
+    # 두 가지를 제외한다. 디렉터리는 링크 수가 곧 하위 디렉터리 수라 언제나 1보다
+    # 크고, 그것을 세면 이 팔이 「디렉터리 아래로는 아무것도 못 쓴다」가 된다. 아직
+    # 만들어지지 않은 말단은 잴 아이노드가 없고 그 통과는 정상 경로다(계획 방출·중단
+    # 기록). 두 검사가 다 링크를 따라가므로 디렉터리를 가리키는 심링크와 매달린
+    # 심링크는 이 둘에 그대로 걸려 빠진다.
+    #
+    # 심링크 말단은 제외하지 **않는다.** 앞선 판본이 「심링크는 위 말단 패스가 이미
+    # 표적까지 따라가 판정했다」를 근거로 `[ ! -L "$ap" ]` 를 세웠는데, 그 근거가
+    # 표적이 하드링크일 때 거짓이다 — 말단 패스는 그 하드링크가 **앉아 있는 자리**의
+    # 물리 철자로 접히므로 어떤 앵커에도 걸리지 않고, 그다음 링크 수 술어는 「이건
+    # 심링크다」로 건너뛴다. 두 층이 서로를 면제해서, 하드링크를 심링크로 한 겹만
+    # 감싸면 다섯 자리가 전부 관통했다(런 디렉터리의 미앵커 파일, 형제 런의
+    # `config-dir`, 형제 레인의 세션 트랜스크립트, 운영자 스코프의 레인 기록, 자기
+    # 레인의 `projects/…`). `hook_nlink` 가 `stat -L` 을 쓰므로 심링크 철자에서도
+    # 표적의 링크 수가 나온다 — 별도 코드 없이 이 술어가 감싼 철자까지 덮는다.
+    if [ -e "$ap" ] && [ ! -d "$ap" ]; then
+      # 두 문면이 서로 구별돼야 한다. 아래 것은 「이 파일이 하드링크다」이고 이
+      # 것은 「하드링크인지 아닌지를 재지 못했다」다 — 둘을 같은 말로 적으면 이
+      # 팔이 섰을 때 읽는 사람이 파일을 의심하고 `stat` 을 의심하지 않는다.
       hook_nlink "$ap" \
-        || deny "$(jstr 'gate: 편집 대상의 링크 수를 읽지 못해 다른 이름이 같은 파일을 가리키는지 판정할 수 없습니다 — 판정 불가는 허용이 아닙니다')"
+        || deny "$(jstr 'gate: 편집 대상의 링크 수를 읽지 못했습니다. 이 파일이 하드링크라는 뜻이 아니라, 하드링크인지 아닌지를 이 훅이 재지 못했다는 뜻입니다 — 판정 불가는 허용이 아닙니다. 이 호스트의 stat 이 링크 수 철자에 답하는지 확인하세요')"
+      # 그리고 이 거부에는 취할 행동을 싣는다. 이 파일의 다른 거부들은 처방을
+      # 싣는데 이 팔만 「판정 불가는 허용이 아닙니다」로 끝나 게이트 경로가 한
+      # 번도 나오지 않았고, 네 편집 도구가 전부 이 팔이라 문면 하나가 넷을 덮는다.
+      # 실을 내용은 둘이고 **둘째가 핵심**이다 — 게이트 경유가 사는 것은
+      # 감사 가능성이지 안전이 아니다. 그 구별을 적지 않으면 문면이 「이렇게 하면
+      # 안전하다」로 읽히고, 그것은 이 파일이 다른 자리에서 결함으로 지목한 형태다.
+      # 싣는 형태에도 위 불변식 C 를 적용한다 — 자리표시자는 홑따옴표 안에 두고,
+      # 게이트 출현부터 문면 끝까지가 이 훅의 스캐너를 통과하게 쓴다. 오늘 이
+      # 문면을 뽑는 단언은 없지만, 한 문면은 통과하고 다른 문면은 통과하지 못하는
+      # 상태를 같은 파일 안에 새로 만들지 않는다.
       [ "$HOOK_NLINK" -le 1 ] \
-        || deny "$(jstr 'gate: 편집 대상이 하드링크입니다 — 같은 파일을 가리키는 다른 이름이 강제 표면 안인지 이 철자로는 판정할 수 없습니다. 판정 불가는 허용이 아닙니다')"
+        || deny "$(jstr "gate: 편집 대상이 하드링크입니다 — 같은 파일을 가리키는 다른 이름이 강제 표면 안인지 이 철자로는 판정할 수 없습니다. 판정 불가는 허용이 아닙니다. 쓰기 자체를 포기할 필요는 없습니다. 게이트를 경유하면 같은 쓰기가 원장에 행을 남기면서 통과합니다. 다만 그것이 모호성을 해소하지는 않습니다 — 다른 이름이 강제 표면 안인지는 그대로 판정할 수 없고, 바뀌는 것은 그 쓰기가 감사 가능해진다는 것뿐입니다. --surface 에는 실제 표면을 적으세요. 그 경로는 이 형태입니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest '스냅숏이 낸 H 값' --rationale '이 파일을 이 자리에 써야 하는 이유' -- cp '원본 경로' '대상 경로'")"
     fi
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;
@@ -1259,10 +1288,17 @@ esac
 # the opposite of what any other advice would tell it.
 first=$(printf '%s' "$first" | sed -e "s/^['\"]//" -e "s/['\"]$//")
 if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
-  # `| jq -r .H` 는 단 하나의 특례다. 아래 거부 문면이 처방하는 1번 명령이 그
-  # 파이프를 쓰므로, 전면 거부하면 이 훅이 다시 자기 처방을 거부한다. 특례는
-  # **명령 끝의 축자 연속 한 번**에만 성립한다 — 잘라 낸 뒤 남은 문자열에 제어
-  # 연산자가 있으면 그대로 거부한다.
+  # `| jq -r .H` 는 단 하나의 특례다. 특례는 **명령 끝의 축자 연속 한 번**에만
+  # 성립한다 — 잘라 낸 뒤 남은 문자열에 제어 연산자가 있으면 그대로 거부한다.
+  #
+  # 근거가 바뀌었다. 앞선 판본은 「아래 거부 문면이 처방하는 1번 명령이 그
+  # 파이프를 쓰므로」라 적었는데, 그것이 오히려 문면을 자기 스캐너에 걸리게 했다 —
+  # 아래 불변식 C 의 후보 1은 **1번 명령부터 문면 끝까지**라 파이프가 문자열
+  # 중간에 놓이고, 접미 특례는 끝에서 한 번만 성립하므로 걸리지 않았다. 그래서
+  # 문면에서는 파이프를 뺐다. 특례가 남는 근거는 이제 둘이다 — 스위트가 이 형태를
+  # **직접** 붙드는 단언을 갖고 있고(첫 토큰이 게이트면 파이프가 붙어도 통과한다),
+  # 스냅숏 출력이 JSON 이라 손으로 필드를 고르는 것이 실제로 쓰이는 형태다.
+  # 문면은 그것을 산문으로 안내하고 명령 자체에는 넣지 않는다.
   #
   # 파이프 자체가 필요 없게 만드는 더 깔끔한 형태(스냅숏에 필드 선택 플래그를
   # 주어 `jq` 를 없애고 이 특례를 지우는 것)는 게이트 스크립트를 고쳐야 하는데,
@@ -1335,4 +1371,47 @@ fi
 # has no row — requires editing `gate.sh`, which is outside this change's
 # declared file set. Recorded so the next reader can tell what was deliberately
 # left out from what was missed.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치면(\`;\` \`&&\` \`&\` 개행 \$( )) 게이트 오른쪽 절반이 원장에 행을 남기지 않고 실행되므로 이 훅이 거부합니다. 허용되는 파이프는 (1) 끝의 \`| jq -r .H\` 하나뿐입니다. (1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H  (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <(1)에서 받은 값> --rationale <왜 이 명령이 필요한가> -- ${cmd}")"
+#
+# THE MESSAGE HAS TO SURVIVE THIS HOOK'S OWN SCANNER, and that is an invariant
+# with a shape rather than something to re-check by eye. The suite takes EVERY
+# gate-path occurrence in this message and feeds the substring from there to the
+# END of the message back through the hook:
+#
+#   INVARIANT C — for every gate-path occurrence THIS FILE AUTHORS, the substring
+#   from that occurrence to the end of the message must pass
+#   `hook_unquoted_shell_op`. The scanner strips a trailing `| jq -r .H` exactly
+#   ONCE, so in practice: after the first authored gate path no unquoted control
+#   operator may appear anywhere, and every quote must close.
+#
+# That is why line (1) no longer carries the pipe. It used to, and the pipe then
+# sat in the MIDDLE of the first candidate, where a trailing exemption cannot
+# reach it. The `<`, `>` and `|` inside `<읽기|워크트리쓰기|…>` denied the second
+# candidate the same way. Measured: both candidates denied, one FAIL line, and
+# that single line was the only red assertion in either CI leg. So the operator
+# vocabulary and the surface vocabulary moved into the PROSE ahead of the first
+# gate path — prose is outside every candidate — and the two prescribed commands
+# are now made of plain shell words only. Typing line (2) verbatim is not a
+# bypass but the normal path: a stale digest comes back as `exit 4` carrying the
+# current one, so the line self-corrects.
+#
+# THE ONE RESIDUAL IS NOT AUTHORED HERE. `$cmd` is echoed back, so if the stage's
+# own command contains the gate path AND an operator after it, that occurrence
+# yields a candidate this scanner denies. Nothing this file writes can change
+# that, and it is exactly the input the message is telling the stage to split.
+if hook_unquoted_shell_op "$cmd"; then
+  # The offending command cannot be pasted after `--`: it would carry its own
+  # operator into the prescription and the hook would deny line (2), which is the
+  # defect above in a second spelling. So the tail becomes a quoted placeholder
+  # and the command moves into the prose, which no candidate reaches.
+  #
+  # NOT `bash -c`. Wrapping launders the SURFACE axis — the denial in the
+  # allow-list branch above refuses to prescribe it unconditionally for exactly
+  # that reason — and the answer this file states a few lines up is the right one
+  # here: SPLIT the command and run each piece through the gate.
+  cmd_note="거부된 명령에 인용되지 않은 셸 제어 연산자가 있습니다. 그것을 (2) 의 -- 뒤에 그대로 붙일 수는 없으니, 명령을 조각으로 나눠 각 조각을 따로 (2) 로 실행하세요. 거부된 명령: ${cmd} "
+  cmd_tail="'나눈 명령 한 조각'"
+else
+  cmd_note=""
+  cmd_tail="${cmd}"
+fi
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. 아래 두 명령을 각각 따로 실행하세요 — 한 줄로 합치면(\`;\` \`&&\` \`&\` 개행 \$( )) 게이트 오른쪽 절반이 원장에 행을 남기지 않고 실행되므로 이 훅이 거부합니다. (2) 의 --surface 에 적는 값은 읽기·워크트리쓰기·트리밖쓰기·외부상태변경 넷 중 하나이고, 아래에 적힌 읽기 는 예시이니 실제 표면으로 바꿔 적으세요. (1) 의 출력은 JSON 이고 다이제스트는 그 H 필드입니다 — 끝에 \`| jq -r .H\` 를 붙여도 되며 이 훅이 허용하는 파이프는 그 하나뿐입니다. ${cmd_note}(1) 지금 시점의 스냅숏 해시를 받습니다: ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" (2) 그 값을 --snapshot-digest 에 그대로 적어 실행합니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 읽기 --snapshot-digest '1번이 낸 H 값' --rationale '이 명령이 필요한 이유' -- ${cmd_tail}")"
