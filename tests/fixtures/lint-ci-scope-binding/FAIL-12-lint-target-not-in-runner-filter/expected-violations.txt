@@ -1,0 +1,1 @@
+규칙 10	.github/workflows/lint.yml:pull_request

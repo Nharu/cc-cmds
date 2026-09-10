@@ -1,0 +1,1 @@
+규칙 7/B3	scripts/suite-a.sh
