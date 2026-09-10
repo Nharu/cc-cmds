@@ -83,7 +83,8 @@ ORCH_TESTS := \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-watch.sh \
 	scripts/test-statusline.sh \
-	scripts/test-liveness-agreement.sh
+	scripts/test-liveness-agreement.sh \
+	scripts/test-lost-dispatch.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh
