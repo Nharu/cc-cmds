@@ -295,6 +295,12 @@ wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 # run id, so whichever value went in, the other consumer read the wrong path.
 DOC=""; DOC_DIR=""; DOC_KEY=""; SLUG=""; DOC_SLUG=""; BASE=""; RUN_ID=""; RUN_DIR=""
 LEDGER=""; GRANT=""; REPORT=""
+# How this run's rows are found inside the ledger. Resolved once at startup by
+# `ledger_scope_resolve`, BEFORE `ledger_init` can append this run's heading —
+# after that append the question it answers is no longer askable. Empty means
+# "not resolved", which every reader below treats as the block form, so a caller
+# that never resolves reads exactly what it read before.
+LEDGER_SCOPE=""
 
 derive_paths() {
   # Document-derived paths. Retained for the degenerate case — a run that names
@@ -1233,6 +1239,44 @@ authorized() {
 # ---------------------------------------------------------------------------
 # Ledger. Single writer, main worktree, append-only.
 # ---------------------------------------------------------------------------
+ledger_scope_resolve() {
+  # ledger_scope_resolve — decide how this run's rows are found, and do it while
+  # the answer is still visible.
+  #
+  # THE HEADING IS NOT A LEDGER-WIDE CONVENTION, and reading as if it were is how
+  # the guard below came to pass on the very state it was built to refuse.
+  # `ledger_init` is the only writer that emits `## 실행 <run-id>`; the gate is
+  # the ledger's OTHER writer and emits no headings at all. Measured on this
+  # repository's own `docs/pipeline-run/`: of the 68 ledgers carrying a
+  # `- \`segment\`` row, 65 carry no `## 실행 ` line anywhere — and one of the 65
+  # is the ledger of a run that had a segment planned, a branch, and an open pull
+  # request. Point a second invocation at such a file and `ledger_init` appends
+  # the heading at the END, every existing row stays above it, and a block-scoped
+  # read answers "no segments" for a run that plainly has one.
+  #
+  #   블록 — the ledger already carries `## 실행 ` lines, so the heading
+  #          discipline is in force in this file and rows are attributable by
+  #          block. An empty block then genuinely means a new run, which is what
+  #          lets the second run of a document proceed.
+  #   파일 — no `## 실행 ` line anywhere AND the ledger is named for this run
+  #          (`<run-id>.md`, the manifest path). One file is one run by
+  #          construction of the name, so every row in it is this run's and no
+  #          anchor is needed to say so.
+  #   불명 — no `## 실행 ` line anywhere, the file is NOT named for this run, and
+  #          it carries `segment` rows. Those rows cannot be attributed to a run
+  #          at all, and "I found no rows" is the one answer that must not be
+  #          given for them.
+  if [ -f "$LEDGER" ] && grep -qE '^## 실행 ' "$LEDGER" 2>/dev/null; then
+    LEDGER_SCOPE=블록
+  elif [ "$(basename "$LEDGER")" = "$RUN_ID.md" ]; then
+    LEDGER_SCOPE=파일
+  elif [ -f "$LEDGER" ] && grep -qF -- '- `segment`' "$LEDGER" 2>/dev/null; then
+    LEDGER_SCOPE=불명
+  else
+    LEDGER_SCOPE=블록
+  fi
+}
+
 ledger_init() {
   mkdir -p "$(dirname "$LEDGER")"
   if [ ! -f "$LEDGER" ]; then
@@ -1243,6 +1287,13 @@ ledger_init() {
       printf '\n## 계획 %s\n' "$RUN_ID"
     } > "$LEDGER"
   fi
+  # AN ANCHORLESS LEDGER STAYS ANCHORLESS. Appending the heading here would make
+  # the file look block-disciplined to the NEXT invocation (`--replan`, or any
+  # call naming the same file), which would then scope to a block holding none of
+  # the rows written before the append — the same silent zero, one call later.
+  # `불명` is included for the same reason and one more: the run is about to be
+  # refused, and a refused run leaves the ledger as it found it.
+  case "$LEDGER_SCOPE" in 파일|불명) return 0 ;; esac
   grep -qE "^## 실행 $RUN_ID$" "$LEDGER" || printf '\n## 실행 %s\n' "$RUN_ID" >> "$LEDGER"
 }
 
@@ -1483,9 +1534,14 @@ run_section_rows() {
   # already established for Korean keys: a Korean heading handed to a regex
   # engine is the construction that had to be rewritten once after failing on
   # one CI leg and nowhere else.
-  awk -v h="## 실행 $RUN_ID" -v p="- \`$1\`" '
-    $0 == h { inblk = 1; next }
-    substr($0, 1, 3) == "## " { inblk = 0 }
+  #
+  # `LEDGER_SCOPE` decides whether there is a block to find at all. Under `파일`
+  # the whole file is this run's and the headings — if a fresh `ledger_init`
+  # wrote any — carry no scoping meaning, so they are not consulted.
+  awk -v h="## 실행 $RUN_ID" -v p="- \`$1\`" -v scope="${LEDGER_SCOPE:-블록}" '
+    BEGIN { whole = (scope == "파일"); inblk = whole }
+    !whole && $0 == h { inblk = 1; next }
+    !whole && substr($0, 1, 3) == "## " { inblk = 0 }
     inblk && index($0, p) == 1 { print }
   ' "$LEDGER" 2>/dev/null || true
 }
@@ -1530,6 +1586,16 @@ run_segment_field() {
 # ---------------------------------------------------------------------------
 check_inflight() {
   local ids n id st
+  # A LEDGER WHOSE ROWS BELONG TO NO NAMEABLE RUN IS NOT AN EMPTY LEDGER. The
+  # reader below can only answer about rows it can attribute, and answering 0 for
+  # rows it cannot is the shape that let this guard pass on a run that already
+  # held an open pull request. There is nothing to route on here, so it refuses.
+  if [ "$LEDGER_SCOPE" = "불명" ]; then
+    echo "run.sh: 원장 $LEDGER 에 세그먼트 행이 있는데 어느 런의 것인지 정할 수 없습니다" >&2
+    echo "run.sh: 이 원장에는 「## 실행 <run-id>」 표제가 하나도 없고 파일 이름도 이 run-id 가 아닙니다 — 그 행들을 이 런의 것으로도 남의 것으로도 읽을 수 없으므로 거절합니다" >&2
+    echo "run.sh: 새 run-id 로 부르거나, 이 원장의 행이 어느 런의 것인지 표제로 갈라 주세요" >&2
+    exit 2
+  fi
   ids=$(run_segment_ids)
   n=$(printf '%s\n' "$ids" | grep -c . || true)
   [ "${n:-0}" -gt 0 ] || return 0
@@ -2682,7 +2748,17 @@ merge_gate() {
   # branch protection that issued itself that exception would be widening the
   # authorization silently.
   local required_rows checks_rc req_only
-  required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || printf '0')
+  # `|| true`, NOT `|| printf '0'`. `grep -c` prints the count on stdout even
+  # when the count is zero and THEN exits 1, so the fallback used to append a
+  # second line and the value became `0\n0` — never the `0` the test below looks
+  # for. `set -o pipefail` widens it: any non-zero from `gh` appends the extra
+  # line too, so a two-row answer came back as `2\n0`. All four combinations were
+  # run in isolation and none of them produced `0`, which pinned `req_only` to 1
+  # forever: the settle wait then polled `--required` always, that call answers
+  # with zero rows and 1 on a live pull request (measured, above), and the run
+  # parked as "필수 체크 실패" without ever having waited. Only the status needs
+  # swallowing here; the count is already out.
+  required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || true)
   if [ "$required_rows" = "0" ]; then req_only=0; else req_only=1; fi
   checks_rc=$(pr_checks_settle "$slug" "$pr" "$req_only")
   # PENDING IS ITS OWN DISPOSITION, and it is named as one. A park recorded here
@@ -4227,10 +4303,14 @@ rundir_init
 trap 'report_run_residual || true' EXIT
 
 check_grant
+# BEFORE `ledger_init`, because that call is what makes this run's heading exist
+# — after it, "did this ledger have an anchor of its own?" is unanswerable and
+# every ledger looks block-disciplined.
+ledger_scope_resolve
 ledger_init
-# AFTER `ledger_init`, because the block this reads is the one that call
-# creates, and BEFORE anything is dispatched or planned — a refusal is worth
-# having only while nothing partial has happened yet.
+# AFTER `ledger_init`, because under the block form the block this reads is the
+# one that call creates, and BEFORE anything is dispatched or planned — a
+# refusal is worth having only while nothing partial has happened yet.
 check_inflight
 notify_probe
 main_loop
