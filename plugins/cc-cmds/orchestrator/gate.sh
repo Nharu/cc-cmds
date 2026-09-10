@@ -4384,7 +4384,11 @@ gate_record_row() {
         esac
       done
 
-      gate_append 'segment' "id=$seg" "$@"
+      # THE GATE'S OWN FIELD GOES LAST. Every reader takes the last `id=`, so a
+      # caller's own `id=` placed after this one would move the row to a segment
+      # the record-time checks above never looked at. The `리뷰 의무` arm already
+      # writes in this order for the same reason.
+      gate_append 'segment' "$@" "id=$seg"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
       elif [ -n "${RUN_DIR:-}" ]; then
@@ -4413,7 +4417,7 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
-      gate_append 'cycle' "세그먼트=$seg" "$@"
+      gate_append 'cycle' "$@" "세그먼트=$seg"
       log "리뷰 사이클 기록 — $seg"
       ;;
     problem)
@@ -4431,7 +4435,7 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
-      gate_append 'problem' "세그먼트=$seg" "$@"
+      gate_append 'problem' "$@" "세그먼트=$seg"
       log "문제 기록 — $seg"
       ;;
     clause)
@@ -5072,6 +5076,13 @@ gate_verb_act() {
       # approvals would let the remedy reset the counter that fired it. What the
       # bound removes is the property that a value read hours ago passed forever.
       #
+      # ANCHORED TO THE FIELD BOUNDARY AND TO END OF LINE. The boundary alone
+      # still matched a carrier that supplies no separator at all, because a
+      # fixed-string probe matches anywhere in the row. `prev` is the last field
+      # by construction, so the row anchor costs nothing and refuses that third
+      # carrier. `$obstip` is 64 lowercase hex by the shape check above, so it
+      # carries no regular-expression metacharacter.
+      #
       # ANCHORED TO THE FIELD BOUNDARY. A row's real `prev` is its last field and
       # is written as ` | prev=<hex>`, and gate_append maps `|` out of every field
       # a caller supplies, KEY AND VALUE ALIKE, so no field can forge that
@@ -5096,7 +5107,7 @@ gate_verb_act() {
       # even anchored, so the length check is what refuses it; a minted token is a
       # perfect 64-character lowercase hex, so the anchor is what refuses it.
       if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
-         && ! grep -qF " | prev=$obstip" <<<"$(gate_ancestry_window)"; then
+         && ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then
         stale=1
       fi
     fi

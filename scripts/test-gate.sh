@@ -937,7 +937,9 @@ check "실제 조상 팁의 접두사만 실은 다이제스트는 거부된다"
 # digest therefore mints the ancestor token the same caller presents later, while
 # knowing no real value in the ledger. The minted value is a perfect 64-character
 # lowercase hex, so shape checks pass it by construction — WHAT REFUSES IT IS THE
-# FIELD-BOUNDARY ANCHOR, FOR THIS CARRIER, WHICH IS THE VALUE HALF. The anchor
+# FIELD-BOUNDARY ANCHOR, FOR THIS CARRIER, WHICH IS THE VALUE HALF. A third
+# carrier supplies no separator at all and is refused by the ROW ANCHOR that
+# now sits beside the boundary one. The anchor
 # never refused the key half and could not: (d) below drives that carrier and
 # names the check that does. The two acts are kept adjacent on purpose: with rows
 # stuffed between them the ancestry window would refuse first and the assertion
