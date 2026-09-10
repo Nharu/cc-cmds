@@ -499,8 +499,28 @@ surface_of_argv0() {
   local cmd="${1##*/}"
   shift
   case "$cmd" in
-    cat|ls|find|grep|rg|head|tail|wc|stat|file|diff|which|command)
+    # This column has no way to run some other command. `which git merge` is a
+    # read and rightly so — it looks a name up and prints it.
+    cat|ls|grep|head|tail|wc|stat|file|diff|which)
       printf '읽기' ;;
+    # THESE THREE RUN WHAT THEY WRAP, so a name cannot answer for them. They sat
+    # in the read row above and graded `읽기` unconditionally, which made
+    # `command git merge` an HONESTLY declared read — and the review rule exits
+    # on the read grade before it ever reaches the history-integration predicate,
+    # so a wrapped merge was exempted from the review requirement outright.
+    # Widening that predicate cannot reach this: the exemption happens one layer
+    # up, in the grade. Measured on this tree, with the rule's read early-return
+    # standing fifteen lines above the line that first reads the predicate.
+    #
+    # DELEGATED, NOT DELETED FROM THE TABLE. Dropping the three names answers
+    # `등급 미상`, which refuses — every ordinary `find` and `rg` read in this
+    # pipeline would stop, including the walks over the manifest's own directory
+    # the guard below is written to keep passing. And a maintainer who hits that
+    # puts the names back on the read row, which reopens this hole exactly as it
+    # was. The delegation form is the one `git`, `gh` and `lockf` already use.
+    command) surface_of_command "$@" ;;
+    find)    surface_of_find "$@" ;;
+    rg)      surface_of_rg "$@" ;;
     # Digest tools. Their absence was a DEADLOCK rather than a gap: the
     # unattended implement arm's process B may enter only after comparing the
     # plan's digest against the one on the ledger row, and computing that digest
@@ -690,6 +710,90 @@ surface_of_lockf() {
   gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
 }
 
+gate_unwrap_command() {
+  # gate_unwrap_command <resolver> <no-exec> <unknown-opt> <command's args after argv0...>
+  #
+  # `command` skips shell functions and aliases and runs the NEXT word. Its own
+  # options are `-p` (default PATH) and `-v`/`-V`, which print what would run and
+  # execute nothing. Everything after that belongs to the wrapped command.
+  #
+  # THE SAME ONE-UNWRAP-TWO-TABLES SHAPE AS `gate_unwrap_lockf`, and for the same
+  # reason: the grader and the history-integration predicate both have to see
+  # through this word, and two copies of the skip loop are two chances for them
+  # to disagree about which word is the command. Only the terminal answers are
+  # parameters — the grader passes `읽기`/`등급 미상`, the predicate `0`/`1`.
+  local resolver="$1" no_exec="$2" unknown_opt="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -v|-V|-pv|-pV|-vp|-Vp) printf '%s' "$no_exec"; return 0 ;;
+      -p) shift ;;
+      --) shift; break ;;
+      -*) printf '%s' "$unknown_opt"; return 0 ;;
+      *)  break ;;
+    esac
+  done
+  [ "$#" -ge 1 ] || { printf '%s' "$no_exec"; return 0; }
+  "$resolver" "$@"
+}
+
+gate_unwrap_find() {
+  # gate_unwrap_find <resolver> <walk-only> <writes> <find's args after argv0...>
+  #
+  # Four primaries hand the match to another command and `-delete` removes it
+  # itself. THE OPTION SET IS NOT INVENTED HERE — it is the one this file already
+  # carries in both write guards below, and a fifth spelling of the same list is
+  # how those two quietly drift apart.
+  #
+  # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
+  # states that cost in place: without it every read that walks the manifest's
+  # directory becomes a refusal.
+  local resolver="$1" walk_only="$2" writes="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -exec|-execdir|-ok|-okdir)
+        shift
+        [ "$#" -ge 1 ] || { printf '%s' "$writes"; return 0; }
+        "$resolver" "$@"
+        return 0 ;;
+      -delete) printf '%s' "$writes"; return 0 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$walk_only"
+}
+
+gate_unwrap_rg() {
+  # gate_unwrap_rg <resolver> <search-only> <truncated> <rg's args after argv0...>
+  #
+  # `--pre` names a program every searched file is fed through before the search.
+  # The value is one program and takes no arguments of its own, so exactly that
+  # one word goes to the resolver.
+  local resolver="$1" search_only="$2" truncated="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pre)
+        shift
+        [ "$#" -ge 1 ] || { printf '%s' "$truncated"; return 0; }
+        "$resolver" "$1"
+        return 0 ;;
+      --pre=*)
+        "$resolver" "${1#--pre=}"
+        return 0 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$search_only"
+}
+
+# The grader's terminal answers. They point the OPPOSITE way from the
+# predicate's, which is deliberate and is the discipline the two-table comment
+# below already sets: this table answers `등급 미상` to what it does not
+# understand and the gate refuses, while the predicate answers `1` and keeps the
+# act under the check.
+surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
+surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$@"; }
+surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
+
 gate_history_integration() {
   # gate_history_integration <argv...> — prints 1 when this argv integrates one
   # line of history into another, 0 when it does not.
@@ -717,11 +821,30 @@ gate_history_integration() {
   # never open the bypass this rule exists to close.
   #
   # THE argv0 LAYER IS A TABLE, NOT AN EQUALITY AGAINST `git`. Comparing argv0
-  # to one name answered 0 for every wrapper, so the two spellings the grading
-  # table CANNOT see through both fell out of the check entirely: `lockf … git
-  # merge` and `bash -c 'git merge …'` each graded `워크트리쓰기` and each
-  # answered "not an integration". That is the exemption this predicate exists to
-  # close, reached by the shortest possible detour.
+  # to one name answered 0 for every wrapper, so both spellings that reach the
+  # `워크트리쓰기` CELL without the grading table seeing what they wrap fell out
+  # of the check entirely: `lockf … git merge` and `bash -c 'git merge …'` each
+  # graded `워크트리쓰기` and each answered "not an integration". That is the
+  # exemption this predicate exists to close, reached by the shortest possible
+  # detour.
+  #
+  # THAT COUNT IS SCOPED TO THAT CELL AND TO NOTHING ELSE. Stated without the
+  # scope it reads as a census of every wrapper this file is blind to, and it
+  # never was one — the sentence stood unscoped here while three more wrappers
+  # were escaping through a DIFFERENT cell, and a maintainer reading it went
+  # looking for the leak in the argv0 list below, where it could not be. The
+  # three were `command`, `find` and `rg`: each runs some other command, each was
+  # graded `읽기` from argv0 alone, and the review rule exits on the read grade
+  # fifteen lines before it first reads this predicate. So `command git merge`
+  # declared `읽기` honestly, agreed with its own grade, and was exempted with
+  # this predicate never consulted. Widening the list below could not have
+  # touched it.
+  #
+  # They are fixed in the grading table instead (`surface_of_command`,
+  # `surface_of_find`, `surface_of_rg`), and the arms below consume those SAME
+  # unwraps so the two tables cannot disagree about which word was wrapped. IF A
+  # WRAPPER IS ESCAPING THIS CHECK, LOOK AT ITS GRADE FIRST — the grade decides
+  # whether the rule ever gets here.
   local cmd="${1##*/}"
   case "$cmd" in
     # `lockf` wraps, so unwrap it with the same routine the grader uses and ask
@@ -731,6 +854,23 @@ gate_history_integration() {
     lockf)
       shift
       gate_unwrap_lockf gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    # The three the grading table now sees through. THIS HALF IS NOT OPTIONAL:
+    # move `command git merge` into `워크트리쓰기` and leave this predicate
+    # answering 0, and the review rule exempts it again on the very next line —
+    # the repair would be green and inert. The unwraps are shared with the grader
+    # for the reason the `lockf` arm above gives.
+    command)
+      shift
+      gate_unwrap_command gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    find)
+      shift
+      gate_unwrap_find gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    rg)
+      shift
+      gate_unwrap_rg gate_history_integration '0' '1' "$@"
       return 0 ;;
     # Names the grading table answers `워크트리쓰기` WITHOUT asking what they
     # wrap. This predicate cannot parse a shell word without being a shell, so

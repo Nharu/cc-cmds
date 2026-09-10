@@ -3232,6 +3232,26 @@ graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
+# --- 31c. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
+#
+# 셋 다 `읽기` 행에 무조건으로 앉아 있었다. 그래서 `command git merge` 가 정직하게
+# `--surface 읽기` 를 신고하면 신고와 등급이 일치했고, 리뷰 룰은 읽기 등급에서 조기
+# 반환하므로 감싼 머지가 리뷰 기록 없이 전면 면제됐다. 술어(31b)를 아무리 넓혀도
+# 닿지 않는다 — 면제가 한 층 위, 등급에서 일어나기 때문이다.
+#
+# 음성 단언이 짝으로 들어간다. 양성만 심으면 수리가 반대 방향(과검사)으로 미끄러져도
+# 이 블록은 초록이다. 평범한 `find`·`rg` 와 `command -v` 가 그 상한을 고정한다.
+graded_as '워크트리쓰기' 'command 가 감싼 머지는 그 등급이다'       -- command git merge --no-ff seg
+graded_as '읽기'         'command 가 감싼 읽기는 계속 읽기다'        -- command git status
+graded_as '읽기'         'command -v 는 무엇이 실행될지 인쇄만 한다' -- command -v git
+graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl https://x
+graded_as '워크트리쓰기' '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
+graded_as '워크트리쓰기' 'find -delete 는 자기가 지운다'             -- find . -delete
+graded_as '외부상태변경' 'rg --pre 는 매 파일을 그 프로그램에 통과시킨다' -- rg --pre curl pattern .
+graded_as '읽기'         '평범한 rg 검색은 읽기다'                   -- rg pattern .
+graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소된다' -- lockf -k -t 0 /tmp/l.lock command git merge seg
+
 # ---------------------------------------------------------------------------
 # 31b. The narrowing axis reads through the same wrappers the grader does
 #
@@ -3277,6 +3297,16 @@ hist_is 1 '다른 ref 로 겨눈 reset 도 이력을 옮긴다'    -- git reset 
 # already in this branch's history, so no second line of history is integrated.
 # Pinned here so the list does not drift wider on its own.
 hist_is 0 'revert 는 목록에 들어가지 않는다'           -- git revert abc1234
+
+# 31c 가 등급표에서 연 세 이름을 술어도 같은 해소로 본다. 이 짝이 없으면 31c 만으로는
+# 수리가 무효다 — `command git merge` 가 `워크트리쓰기` 로 옮겨가도 술어가 0 을 답하면
+# 리뷰 룰이 그 칸에서 다시 면제한다.
+hist_is 1 'command 가 감싼 머지도 검사에 남는다'       -- command git merge --no-ff seg
+hist_is 1 'find -exec 로 넘긴 머지도 검사에 남는다'    -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+hist_is 1 'lockf 와 command 를 겹쳐도 검사에 남는다'   -- lockf -k -t 0 /tmp/l.lock command git merge seg
+hist_is 0 'command 가 감싼 읽기는 이력 통합이 아니다'  -- command git status
+hist_is 0 '실행 primary 없는 find 도 이력 통합이 아니다' -- find . -name '*.md'
+hist_is 0 '평범한 rg 검색도 이력 통합이 아니다'        -- rg pattern .
 
 # Browser automation. Unlike git and terraform there is no read-only arm to
 # carve out — argv says which page to open, and opening any page is a network
@@ -5824,20 +5854,26 @@ esac
 # --- 31ar. A read grade does not carry a delegating command past the guard ---
 #
 # 31ao measured the three arms and every one of its fixtures declared a WRITE.
-# The grade itself was the way out: `find` grades `읽기` from argv0 alone,
-# whatever primaries follow it, so `find <디렉터리> … -exec sh -c 'printf x >> {}'`
+# The grade itself was the way out: `find` used to grade `읽기` from argv0 alone,
+# whatever primaries followed it, so `find <디렉터리> … -exec sh -c 'printf x >> {}'`
 # was declared `읽기`, graded `읽기` — the self-declaration check agreed, both
 # being wrong about the same command — and the guard returned on its first line
 # without looking at the argv that was about to write. And the stem: a glob one
 # character short of the basename, run from the manifest's own directory, spells
 # neither the basename nor the directory, so nothing in arm 2 saw it either.
 # Both are the same guard measured from its two open sides.
+#
+# 31c CLOSED THE FIRST HALF ONE LAYER UP: `find` now delegates to what its
+# executing primary wraps, so the fixture below declares the write it performs.
+# The guard's own two-axis check is what this block still measures, and it is
+# still load-bearing — a delegator whose wrapped command READS keeps arriving
+# here graded `읽기`, which is the assertion that follows this one.
 NMDIR=$(dirname "$NM")
 NMBYTES=$(wc -c < "$NM")
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- find "$NMDIR" -maxdepth 1 -name '*plan.md' -exec sh -c 'printf x >> {}' \;
-check "읽기로 등급되는 위임자가 매니페스트에 쓰려 하면 거절된다" "$rc" "3"
+check "매니페스트에 쓰려는 위임자가 거절된다" "$rc" "3"
 # THE BYTES, because a refusal that arrives after the write is not a refusal.
 # The pattern is `*plan.md` and not `*.plan.md` on purpose: this fixture's
 # manifest is `cone-plan.md`, which the second pattern does not match at all, and
@@ -5847,6 +5883,15 @@ case "$msg" in
   *"매니페스트에 쓰려 합니다"*) ok "위임자 거절이 매니페스트 가드를 원인으로 지목한다" ;;
   *) bad "위임자 가드" "$msg" ;;
 esac
+# THE READ-GRADED DELEGATOR, which is the shape the read early-return above still
+# has to look past. `-exec cat` resolves to a read, so the grade IS `읽기` and the
+# declaration agrees with it — exactly the agreement that used to end the guard on
+# its first line. The `-exec` axis is what keeps it going, and the directory
+# needle is what refuses it.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -name '*plan.md' -exec cat {} \;
+check "읽기로 등급되는 위임자도 매니페스트 디렉터리를 겨누면 거절된다" "$rc" "3"
 # THE OTHER DIRECTION OF THE SAME NARROWING, and it is why `find` is not simply
 # listed as a delegator. A walk with no executing primary is an ordinary read of
 # the directory the manifest happens to live in, and it has to stay one.
