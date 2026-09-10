@@ -133,7 +133,10 @@ interlock exists to prevent.
 which **any** role resolved to the `checkpoint` or `absent` tier — **or in which
 every role resolved to `witness` but any of them did so at a round below the last
 round the ledger block records** — **or in which the roster could not be obtained
-at all** — puts a line of the shape above **nowhere in the file**. Moving such a
+at all** — **or in which any role's resolution round is
+below the highest round at which that role left anything at all** — puts a line
+of the shape above
+**nowhere in the file**. Moving such a
 line elsewhere does not suppress it; it still matches. In its place, emit a line
 that names the tier and is deliberately built not to match:
 
@@ -154,25 +157,47 @@ whatever set it happened to see — including the empty one. Suppressing on an
 unobtainable roster is what keeps the interlock from passing on a set it never
 established.
 
+**The fourth condition catches a seat the ladder demoted.** A role that reached
+a round, left there only a candidate the witness predicate refuses, and had
+nothing else at that round descends to a lower round and resolves at it. Its
+resolution round then sits below the round it actually reached, and that gap is
+the evidence of non-convergence — the ledger's column cannot show it, because a
+crash before the flip leaves that column low as well. The comparand for this
+condition is per role and comes off the disk, not out of the ledger.
+
 **The real consequence of the predicate failing is a park.** The driver folds
 that result into its terminal classification, the class is not "정상 완료", and
 the segment parks. A thin recovery report therefore leaves a place for a person
 to arrive at instead of quietly ending the run.
 
-**A recovery in which every role resolved to `witness` and no role's resolution
-round is below the last round the ledger block records emits the line
-normally.** Uniform `witness` is not sufficient on its own — no role may sit
-below that round. A role sitting **above** it is on the emitting side: the
-ledger's round column is a conservative under-claim that can lag a live round,
-so a role ahead of it left a witness at a round the column had not caught up
-to. Rounds after the first exist
+**A recovery in which every role resolved to `witness`, no role's resolution
+round is below the last round the ledger block records, and no role's resolution
+round is below the highest round at which that role left anything at all emits
+the line normally.** Uniform `witness` is not sufficient on its own — no role may
+sit below either round. A role sitting **above** the ledger's round is on the
+emitting side: that column is a conservative under-claim that can lag a live
+round, so a role ahead of it left a witness at a round the column had not caught
+up to. No role can sit above its own reached round, because the ladder starts
+there and only descends. Rounds after the first exist
 to cross-review and converge, and a round-1 witness is by definition upstream of
 both, so a recovery built entirely from round-1 witnesses is a real finding set
 that has not yet had its self-refutations taken out of it, and it is not the
-finding set the original stage would have published. That case takes the
-partial-recovery line with `최저 계층 라운드 미달`, and the two places to read
-the shortfall from are `## 복구 프로버넌스`'s round column and the `최저 라운드`
+finding set the original stage would have published. **Only where the ledger
+block records a round of 2 or higher does that case take the partial-recovery
+line with `최저 계층 라운드 미달`**, and the two places to read the shortfall
+from are `## 복구 프로버넌스`'s 해소 라운드 column and the `최저 라운드`
 field of that line.
+
+**Where the ledger block records only round 1, neither condition fires on that
+corpus, and that is a hole rather than a design.** The ledger-round comparand is
+the ledger's own round column, and a crash landing before the round-2 flip is
+written lowers it along with the work — every row still reads `round-1`, so a
+round-1-only recovery sits at the comparand rather than below it. The
+reached-round comparand does not help, because a seat that never reached round 2 left nothing
+there and its reached round is 1 as well. Nothing on disk separates that crash
+from a team that legitimately finished in one round, so the paragraph above says
+what such a corpus is worth while the conditions as written let it emit the
+ordinary line.
 
 ## Document Structure
 
@@ -270,22 +295,31 @@ Mention CI failure items if applicable.]
 
 A recovery report follows the same skeleton with two changes. The `발견 요약`
 line follows the interlock above — the ordinary line when every role resolved to
-`witness` and no role's resolution round is below the last round the ledger
-block records, the partial-recovery line otherwise — and one extra section is
+`witness`, no role's resolution round is below the last round the ledger
+block records, and no role's resolution round is below the highest round at
+which that role left anything at all, the partial-recovery line otherwise — and
+one extra section is
 added
 directly after `## 개요`:
 
 ```markdown
 ## 복구 프로버넌스
 
-| 역할 | 계층 | 라운드 | 파일 | seq | nonce 미검증 |
-| --- | --- | --- | --- | --- | --- |
-| [role] | witness / checkpoint / absent | [N] | [path read, or — for absent] | [N, or — outside the checkpoint tier] | 예 / 아니오 |
+| 역할 | 계층 | 해소 라운드 | 도달 라운드 | 파일 | seq | nonce 미검증 |
+| --- | --- | --- | --- | --- | --- | --- |
+| [role] | witness / checkpoint / absent | [N] | [N] | [path read, or — for absent] | [N, or — outside the checkpoint tier] | 예 / 아니오 |
 ```
 
 `seq` is recorded as read and adjudicates nothing. `nonce 미검증` is `예` only
 where the ledger block was gone and the witness was accepted on a
 self-consistency check instead of a nonce comparison.
+
+`해소 라운드` is the round the ladder resolved the role at; `도달 라운드` is the
+highest round at which that role left anything at all, which is where the ladder
+started. The two differ exactly where the ladder descended, and that is the seat
+the second suppression condition catches — a row carrying `2` and `1` says the
+seat got to round 2 and could not finish there, which the `최저 계층 라운드 미달`
+value on the summary line does not say on its own.
 
 A 계층 cell reading `absent (조인 미해소: {파일명})` means the row was left with
 no file while that file stayed assigned to no row — an absence the join
@@ -293,8 +327,8 @@ produced rather than one the disk shows, written so a reader can tell the two
 apart afterwards. It does not say which row that file belonged to.
 
 The partial-recovery line's `최저 라운드` is the **minimum** of this table's
-round column, so the two are read together: the table says which role stopped
-where, the line says how far the weakest one got.
+`해소 라운드` column, so the two are read together: the table says which role
+stopped where, the line says how far the weakest one got.
 
 ## File Saving
 

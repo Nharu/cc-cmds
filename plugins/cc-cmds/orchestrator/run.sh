@@ -3334,8 +3334,9 @@ review_recover() {
   #
   # The signal, where one was sent, therefore went at some earlier and
   # unrecorded moment — the residual is an unconfirmed signal, not a missing
-  # one. The `.reaped` stamp is what makes that moment observable after the
-  # fact; it is read below and carried on the ledger row. The two predicate
+  # one. The `.reaped` stamp carries no timestamp, so what it makes observable
+  # is the verdict at that moment and not when it fell or how long it lasted;
+  # it is read below and carried on the ledger row. The two predicate
   # checks in the publication rule narrow the remaining window; **no upper bound
   # on it is claimed here.** The call is kept because a future arm that does
   # leave a pid file must be reaped, and `boundary_idempotent` already admits
