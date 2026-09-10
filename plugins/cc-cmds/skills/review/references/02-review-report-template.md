@@ -159,9 +159,13 @@ that result into its terminal classification, the class is not "정상 완료", 
 the segment parks. A thin recovery report therefore leaves a place for a person
 to arrive at instead of quietly ending the run.
 
-**A recovery in which every role resolved to `witness` at the last round the
-ledger block records emits the line normally.** Uniform `witness` is not
-sufficient on its own — the round has to match too. Rounds after the first exist
+**A recovery in which every role resolved to `witness` and no role's resolution
+round is below the last round the ledger block records emits the line
+normally.** Uniform `witness` is not sufficient on its own — no role may sit
+below that round. A role sitting **above** it is on the emitting side: the
+ledger's round column is a conservative under-claim that can lag a live round,
+so a role ahead of it left a witness at a round the column had not caught up
+to. Rounds after the first exist
 to cross-review and converge, and a round-1 witness is by definition upstream of
 both, so a recovery built entirely from round-1 witnesses is a real finding set
 that has not yet had its self-refutations taken out of it, and it is not the
@@ -266,8 +270,9 @@ Mention CI failure items if applicable.]
 
 A recovery report follows the same skeleton with two changes. The `발견 요약`
 line follows the interlock above — the ordinary line when every role resolved to
-`witness` at the last round the ledger block records, the partial-recovery line
-otherwise — and one extra section is added
+`witness` and no role's resolution round is below the last round the ledger
+block records, the partial-recovery line otherwise — and one extra section is
+added
 directly after `## 개요`:
 
 ```markdown
@@ -281,6 +286,11 @@ directly after `## 개요`:
 `seq` is recorded as read and adjudicates nothing. `nonce 미검증` is `예` only
 where the ledger block was gone and the witness was accepted on a
 self-consistency check instead of a nonce comparison.
+
+A 계층 cell reading `absent (조인 미해소: {파일명})` means the row was left with
+no file while that file stayed assigned to no row — an absence the join
+produced rather than one the disk shows, written so a reader can tell the two
+apart afterwards. It does not say which row that file belonged to.
 
 The partial-recovery line's `최저 라운드` is the **minimum** of this table's
 round column, so the two are read together: the table says which role stopped
