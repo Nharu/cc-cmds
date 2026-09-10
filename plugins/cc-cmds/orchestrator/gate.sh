@@ -4384,11 +4384,14 @@ gate_record_row() {
         esac
       done
 
-      # THE GATE'S OWN FIELD GOES LAST. Every reader takes the last `id=`, so a
-      # caller's own `id=` placed after this one would move the row to a segment
-      # the record-time checks above never looked at. The `리뷰 의무` arm already
-      # writes in this order for the same reason.
-      gate_append 'segment' "$@" "id=$seg"
+      # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is deliberate
+      # for now. Readers take the last `id=`, so putting the gate's field last
+      # would close that — but five fixtures pin `id=` as the first field after
+      # the shift scale, on purpose, so that the row grammar is asserted rather
+      # than assumed. Changing the grammar to close the override is a decision
+      # that needs a review this run cannot produce, so the finding stays open
+      # and the grammar stays as the fixtures pin it.
+      gate_append 'segment' "id=$seg" "$@"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
       elif [ -n "${RUN_DIR:-}" ]; then
@@ -4417,7 +4420,7 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
-      gate_append 'cycle' "$@" "세그먼트=$seg"
+      gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
     problem)
@@ -4435,7 +4438,7 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
-      gate_append 'problem' "$@" "세그먼트=$seg"
+      gate_append 'problem' "세그먼트=$seg" "$@"
       log "문제 기록 — $seg"
       ;;
     clause)
