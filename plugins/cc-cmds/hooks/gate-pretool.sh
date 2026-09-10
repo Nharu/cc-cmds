@@ -1371,4 +1371,22 @@ fi
 # THE PRESCRIBED LINE STILL CARRIES THE FLAG, deliberately. The file exists only
 # because some earlier call asked for it, so a prescription that reads the file
 # without ever writing it describes a mechanism that never starts.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface <읽기|워크트리쓰기|트리밖쓰기|외부상태변경> --snapshot-digest <방출 파일의 H> --emit-digest --rationale <왜 이 명령이 필요한가> -- ${cmd} 』 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"
+#
+# AND ITS PLACEHOLDERS ARE QUOTED, which is the same failure caught one layer
+# down. The refusal above treats `<`, `>` and `|` as live operators wherever
+# they are unquoted, and it does not care that the surrounding text is a
+# placeholder rather than a filename — nothing here parses a shell, which is
+# the property that keeps the allow-list from failing open. So an
+# angle-bracket placeholder makes this message prescribe a command this file
+# denies on the very next call. Measured: the suite extracts every command the
+# message prescribes and feeds it back through the hook; the exec form came
+# back `deny` and the fallback came back `allow`, so the refusal was correct
+# and the prescription was the thing standing outside the shape.
+#
+# The fix belongs on this side rather than in the operator refusal. Teaching
+# that refusal to tell a placeholder from a redirection means guessing intent
+# from spelling, and `<x` IS a redirection to bash no matter what `x` reads
+# like — the exemption would be a real hole opened to make prose typecheck.
+# Quoting closes it with no hole at all, and it is the spelling the hardlink
+# refusal above already hands out.
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface '읽기·워크트리쓰기·트리밖쓰기·외부상태변경 중 하나' --snapshot-digest '방출 파일의 H 값' --emit-digest --rationale '왜 이 명령이 필요한가' -- ${cmd} 』 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"
