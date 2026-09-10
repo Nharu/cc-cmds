@@ -2723,6 +2723,389 @@ RUN_DIR="$RUN_DIR_SAVE25"; LEDGER="$LEDGER_SAVE25"
 MANIFEST="$MANIFEST_SAVE25"; RUN_ID="$RUN_ID_SAVE25"; GRANT="$GRANT_SAVE25"
 
 # ---------------------------------------------------------------------------
+# 26. 진행 중인 런에 다시 부르면 조용히 재계획하지 않는다
+#
+# 이 절은 전부 함수를 **태운다**. 소스를 `grep` 하는 형상 단언은 가드가 실제로
+# 발화하는지에 대해 아무 말도 하지 않고, 이 부류의 결함이 정확히 「고쳤다고
+# 적혀 있는데 실물에서 발화하지 않는다」였다.
+# ---------------------------------------------------------------------------
+RUN_DIR_SAVE26="$RUN_DIR"; LEDGER_SAVE26="$LEDGER"; RUN_ID_SAVE26="$RUN_ID"
+IF26="$WORK/inflight"; mkdir -p "$IF26"
+LEDGER="$IF26/ledger.md"; RUN_ID="R26"
+cat > "$LEDGER" <<'EOF'
+# 파이프라인 런 원장 — docs-x
+
+## 계획 R26
+
+## 실행 R25
+- `segment` | id=OLD | 상태=머지됨 | 워크트리=/w/old
+
+## 실행 R26
+- `segment` | id=s1 | 상태=계획됨 | 워크트리=/w/s1
+- `segment` | id=s1 | 상태=머지됨 | 워크트리=/w/s1
+- `segment` | id=s2 | 상태=실행중 | 워크트리=/w/s2
+EOF
+# 원장은 문서로 키가 잡혀 있어 한 파일에 여러 런이 산다. 스코프 없는 판독이면
+# 다른 밤의 세그먼트를 세고, 그 위에 세운 가드는 문서의 두 번째 런을 전부
+# 거절한다 — 가드가 있으나 마나가 아니라 반대 방향으로 틀린다.
+check "이 런의 세그먼트만 읽는다" "$(run_segment_ids | tr '\n' ' ')" "s1 s2 "
+check "세그먼트 상태는 마지막 행이 이긴다" "$(run_segment_field s1 '상태')" "머지됨"
+
+REPLAN=0
+IF26_ERR="$IF26/refuse.err"
+( check_inflight ) 2>"$IF26_ERR" >/dev/null; RC26=$?
+check "이미 계획된 run-id 로 부르면 거절한다" "$RC26" "2"
+if grep_all_q -F '이어받기가 아니라 재계획입니다' < "$IF26_ERR"; then
+  ok "거절 문면이 이 호출을 재계획이라고 이름으로 말한다"
+else
+  bad "진행 중 런" "거절 문면이 재계획을 이름으로 말하지 않는다"
+fi
+check "거절이 이미 있는 세그먼트와 그 상태를 열거한다" \
+  "$(grep -c '세그먼트 s[12] — 상태' "$IF26_ERR" || printf 0)" "2"
+
+REPLAN=1
+if ( check_inflight ) >/dev/null 2>&1; then
+  ok "--replan 이 있으면 진행한다 (두 의도가 호출부에서 갈린다)"
+else
+  bad "진행 중 런" "--replan 인데도 거절했다"
+fi
+if grep_all_q -F 'kind=replan' < "$LEDGER"; then
+  ok "--replan 재계획이 자율 승인 행으로 남는다"
+else
+  bad "진행 중 런" "재계획이 아무 기록도 남기지 않는다"
+fi
+
+REPLAN=0
+LEDGER="$IF26/fresh.md"
+printf '# 원장\n\n## 실행 R26\n' > "$LEDGER"
+if ( check_inflight ) >/dev/null 2>&1; then
+  ok "세그먼트가 없는 런은 그대로 진행한다 (가드가 새 런을 막지 않는다)"
+else
+  bad "진행 중 런" "세그먼트가 없는 런을 거절했다"
+fi
+
+# 여기까지의 픽스처는 전부 표제를 **먼저 심고** 시작한다. 그래서 표제가 없는
+# 원장은 한 번도 이 가드에 닿지 않았고, 실측된 원장의 다수파가 정확히 그것이다 —
+# `docs/pipeline-run/` 에서 `segment` 행을 가진 원장 68개 중 65개에 `## 실행` 줄이
+# 없고, 없는 것 중 하나가 세그먼트 하나와 열린 PR 을 담은 살아 있는 런의 원장이다.
+# 아래는 그 형태를 그대로 먹인다. 표제를 심지 않고, 실제 원장이 그렇듯 파일 이름이
+# run-id 인 채로, 드라이버의 진입 순서(scope→init→guard)를 그대로 밟는다.
+LEDGER_SCOPE_SAVE26="$LEDGER_SCOPE"
+LEDGER="$IF26/R26X.md"; RUN_ID="R26X"; REPLAN=0
+cat > "$LEDGER" <<'EOF'
+# 파이프라인 런 보고서 — R26X
+
+**런 id**: R26X · **앵커**: repo:o/r
+- `run` | 교대=0 | run-id=R26X | 시작=2026-09-09T06:53:37Z
+- `segment` | 교대=1 | id=S1 | 상태=계획됨 | 워크트리=/w/S1 | 브랜치=b
+- `segment` | 교대=3 | id=S1 | 상태=리뷰중 | 워크트리=/w/S1 | 브랜치=b | PR=709
+EOF
+LEDGER_SCOPE=""
+ledger_scope_resolve
+check "표제가 하나도 없고 파일 이름이 run-id 면 파일 전체가 이 런의 것이다" \
+  "$LEDGER_SCOPE" "파일"
+ledger_init
+check "앵커 없는 원장에 표제를 덧붙이지 않는다 (덧붙이면 다음 호출이 다시 빈 블록을 읽는다)" \
+  "$(grep -c '^## 실행 ' "$LEDGER" || true)" "0"
+check "표제가 없어도 이 런의 세그먼트를 읽는다" "$(run_segment_ids | tr '\n' ' ')" "S1 "
+check "표제가 없어도 상태는 마지막 행이 이긴다" "$(run_segment_field S1 '상태')" "리뷰중"
+IF26_ANCHORLESS="$IF26/anchorless.err"
+( check_inflight ) 2>"$IF26_ANCHORLESS" >/dev/null; RC26A=$?
+# 이 한 줄이 이 절의 하중이다. 고치기 전에는 여기서 0 이 나왔다 — 세그먼트 하나와
+# 열린 PR 을 담은 원장을 가리켜도 가드가 통과했고, 그것이 이 가드가 막으려던 바로
+# 그 시나리오다.
+check "표제 없는 원장의 진행 중 런도 거절한다" "$RC26A" "2"
+check "그 거절도 이미 있는 세그먼트와 상태를 열거한다" \
+  "$(grep -c '세그먼트 S1 — 상태 리뷰중' "$IF26_ANCHORLESS" || printf 0)" "1"
+
+# 같은 판독기를 「선행」 단조성도 쓴다. 앵커가 없으면 그것도 빈 값을 받아 절반이
+# 조용히 무효가 되므로, 여기서 함께 잰다.
+check "표제가 없어도 「선행」 단조성이 읽을 값을 받는다" \
+  "$(run_segment_field S1 '브랜치')" "b"
+
+# 셋째 형태 — 표제도 없고 파일 이름도 이 런이 아니다. 그 행들은 어느 런의 것으로도
+# 읽을 수 없으므로, 0 을 답하는 것만은 하지 않는다.
+LEDGER="$IF26/foreign.md"; RUN_ID="R26Y"
+printf '# 원장\n- `segment` | id=S1 | 상태=계획됨 | 워크트리=/w/S1\n' > "$LEDGER"
+LEDGER_SCOPE=""
+ledger_scope_resolve
+check "표제도 파일 이름도 이 런을 가리키지 않으면 스코프 판정 불가다" "$LEDGER_SCOPE" "불명"
+ledger_init
+check "판정 불가한 원장에는 아무것도 쓰지 않는다" \
+  "$(grep -c '^## 실행 ' "$LEDGER" || true)" "0"
+IF26_FOREIGN="$IF26/foreign.err"
+( check_inflight ) 2>"$IF26_FOREIGN" >/dev/null; RC26B=$?
+check "귀속할 수 없는 세그먼트 행에 0 을 답하지 않고 거절한다" "$RC26B" "2"
+if grep_all_q -F '어느 런의 것인지 정할 수 없습니다' < "$IF26_FOREIGN"; then
+  ok "거절 문면이 새 런이 아니라 스코프 판정 불가라고 말한다"
+else
+  bad "진행 중 런" "판정 불가 거절이 그 사유를 이름으로 말하지 않는다"
+fi
+
+# 반대 방향의 통제 — 표제가 서 있는 원장은 종전 그대로 블록으로 읽고, 내 블록이
+# 비어 있으면 새 런으로 통과시킨다. 이것이 없으면 위 단언들은 「무엇이든
+# 거절한다」로도 초록이 된다.
+LEDGER="$IF26/blockform.md"; RUN_ID="R26Z"
+printf '# 원장\n\n## 실행 R24\n- `segment` | id=OLD | 상태=머지됨 | 워크트리=/w/old\n' > "$LEDGER"
+LEDGER_SCOPE=""
+ledger_scope_resolve
+check "표제가 있는 원장은 종전대로 블록으로 읽는다" "$LEDGER_SCOPE" "블록"
+ledger_init
+check "블록 형태에서는 이 런의 표제를 세운다" "$(grep -c '^## 실행 R26Z$' "$LEDGER" || true)" "1"
+if ( check_inflight ) >/dev/null 2>&1; then
+  ok "표제가 있는 원장의 다른 런 세그먼트는 이 런을 막지 않는다"
+else
+  bad "진행 중 런" "다른 런의 블록 때문에 새 런을 거절했다"
+fi
+
+# 가드가 정의만 되고 진입점에 걸려 있지 않으면 위 단언들은 전부 초록인 채로
+# 아무것도 지키지 않는다. 이 두 줄만 형상 단언이고, 하중은 위가 진다.
+if grep_all_q -E '^check_inflight$' < "$DRIVER"; then
+  ok "가드가 진입점에서 실제로 불린다"
+else
+  bad "진행 중 런" "check_inflight 가 정의만 되고 진입점에 없다"
+fi
+# 스코프 판정은 `ledger_init` 이 표제를 덧붙이기 **전에** 서야 한다. 뒤에 서면 모든
+# 원장이 블록 규율을 지키는 것처럼 보여 위 단언들이 재는 상태가 진입점에서 아예
+# 발생하지 않는다.
+ORDER26=$(grep -nE '^(ledger_scope_resolve|ledger_init|check_inflight)$' "$DRIVER" \
+  | sed 's/^[0-9]*://' | tr '\n' ' ')
+check "진입점 순서가 scope→init→guard 다" "$ORDER26" \
+  "ledger_scope_resolve ledger_init check_inflight "
+RUN_DIR="$RUN_DIR_SAVE26"; LEDGER="$LEDGER_SAVE26"; RUN_ID="$RUN_ID_SAVE26"
+LEDGER_SCOPE="$LEDGER_SCOPE_SAVE26"
+
+# ---------------------------------------------------------------------------
+# 27. 진행 중인 체크는 실패가 아니고, 정착할 때까지 기다린다
+#
+# `gh pr checks` 는 진행 중을 8, 실패를 1 로 알린다. 참/거짓으로 읽으면 둘이
+# 같은 값이 되고, 이 레포의 macOS 다리가 30~45분이라 무인 런이 push 뒤 곧바로
+# 머지로 가면 거의 언제나 8 을 받는다 — 아침에 남는 것은 실패하지 않은 체크에
+# 대한 실패 기록이다.
+# ---------------------------------------------------------------------------
+GH27="$WORK/ghseq"; mkdir -p "$GH27"
+# 이 절은 자기 전제를 스스로 세운다. 벽시계 마감은 대기 예산보다 위이므로, 앞
+# 절이 남긴 매니페스트의 마감이 이미 지났으면 대기가 첫 조회에서 끊기고 아래
+# 단언은 「기다리지 않는다」를 관측한 채로 빨개진다 — 측정된 그대로다.
+MANIFEST_SAVE27="$MANIFEST"; MANIFEST=""
+# 호출 계수는 파일이다. `gh_q` 가 명령 치환 안에서 부르므로 서브셸이고, 변수로
+# 세면 증가분이 그 자리에서 사라져 「기다렸다」가 늘 참이 된다.
+gh() {
+  local n code
+  printf 'x\n' >> "$GH27/calls"
+  n=$(grep -c . "$GH27/calls" || printf 0)
+  code=$(sed -n "${n}p" "$GH27/codes")
+  [ -n "$code" ] || code=$(tail -1 "$GH27/codes")
+  return "$code"
+}
+
+: > "$GH27/calls"; printf '8\n8\n0\n' > "$GH27/codes"
+CC_ORCH_CHECKS_POLL_SEC=0; CC_ORCH_CHECKS_WAIT_SEC=5
+export CC_ORCH_CHECKS_POLL_SEC CC_ORCH_CHECKS_WAIT_SEC
+check "진행 중이면 정착할 때까지 다시 묻는다" "$(pr_checks_settle o/r 1 0)" "0"
+check "그 대기가 실제로 세 번 물었다"        "$(grep -c . "$GH27/calls" || printf 0)" "3"
+
+: > "$GH27/calls"; printf '8\n' > "$GH27/codes"
+CC_ORCH_CHECKS_WAIT_SEC=0; export CC_ORCH_CHECKS_WAIT_SEC
+check "예산이 없으면 진행 중을 그대로 돌려준다" "$(pr_checks_settle o/r 1 0)" "8"
+check "예산이 없으면 재조회하지 않는다"         "$(grep -c . "$GH27/calls" || printf 0)" "1"
+
+: > "$GH27/calls"; printf '1\n' > "$GH27/codes"
+CC_ORCH_CHECKS_WAIT_SEC=5; export CC_ORCH_CHECKS_WAIT_SEC
+check "실패는 기다리지 않는다"       "$(pr_checks_settle o/r 1 0)" "1"
+check "실패에는 재조회가 없다"       "$(grep -c . "$GH27/calls" || printf 0)" "1"
+
+# 벽시계 마감은 이 예산보다 위다. 마감 뒤의 머지는 그 시각에 아무도 인가하지
+# 않은 말단 행위이므로, 마감을 넘겨 기다리는 것은 그것을 만드는 일밖에 못 한다.
+: > "$GH27/calls"; printf '8\n' > "$GH27/codes"
+CC_ORCH_CHECKS_WAIT_SEC=5; export CC_ORCH_CHECKS_WAIT_SEC
+PD27_SAVE=$(declare -f past_deadline)
+past_deadline() { return 0; }
+check "마감이 지났으면 예산이 남아도 기다리지 않는다" "$(pr_checks_settle o/r 1 0)" "8"
+check "마감이 지났으면 재조회가 없다" "$(grep -c . "$GH27/calls" || printf 0)" "1"
+eval "$PD27_SAVE"
+
+# 그리고 머지 게이트가 그 값을 실제로 갈라 읽는가. 위 셋이 전부 초록인 채로
+# 게이트가 여전히 참/거짓으로 읽으면 밤은 그대로 잃는다.
+#
+# 이 스텁 넷은 드라이버가 같은 이름으로 정의한 함수다. 파일 스코프에 두면 이 절
+# 아래의 모든 절이 드라이버 대신 스텁을 받고, 걷어내려고 `unset -f` 를 쓰면
+# 스텁이 아니라 드라이버의 정의가 지워져 뒤쪽 절은 그 함수 없이 돈다 — 어느
+# 쪽이든 조용히 무력화되며 통과 개수에는 드러나지 않는다. 그래서 스텁은 서브셸
+# 안에서만 살리고, 관측은 파일로 꺼낸다. 서브셸이라 변수로는 나오지 못한다.
+PARK27_FILE="$WORK/park27"; : > "$PARK27_FILE"
+CC_ORCH_CHECKS_WAIT_SEC=0; export CC_ORCH_CHECKS_WAIT_SEC
+(
+  park() { printf '%s | %s\n' "$4" "$5" > "$PARK27_FILE"; }
+  seg_alias()  { printf 'home'; }
+  alias_slug() { printf 'o/r'; }
+  authorized() { return 0; }
+  gh() {
+    case "$*" in
+      *"pr list"*)   printf '77\n'; return 0 ;;
+      *"pr checks"*) return 8 ;;
+    esac
+    return 1
+  }
+  merge_gate seg27 br27 >/dev/null 2>&1
+)
+RC27=$?
+PARK27=$(cat "$PARK27_FILE")
+check "진행 중인 체크에서 머지 게이트는 2로 park 한다" "$RC27" "2"
+case "$PARK27" in
+  *"체크가 아직 진행 중"*) ok "park 사유가 진행 중이라고 적는다" ;;
+  *) bad "머지 게이트" "park 사유가 진행 중을 말하지 않는다: $PARK27" ;;
+esac
+# 실패 쪽 문면은 「… 체크 실패」와 「… 체크가 실패」 두 철자로 갈리므로 둘 다
+# 건다. 좁게 걸었더니 변이가 고른 쪽이 빠져나가 이 부정 펜스만 초록이었다 —
+# 위 긍정 단언이 잡아 준 것이지 이 줄이 잡은 것이 아니었다.
+case "$PARK27" in
+  *"체크 실패"*|*"체크가 실패"*) bad "머지 게이트" "진행 중인 체크를 실패로 적었다: $PARK27" ;;
+  *) ok "진행 중인 체크를 실패로 적지 않는다" ;;
+esac
+# 그리고 `--required` 를 쓸지 말지를 고르는 선택자가 실제로 갈리는가. 위 스텁은
+# `*"pr checks"*` 한 팔로 두 철자를 모두 받으므로 이 배선에 커버리지가 0 이었고,
+# 그 사이 `required_rows` 는 어떤 입력으로도 "0" 이 되지 않아 선택자가 1 에
+# 고정돼 있었다 — 정착 대기가 언제나 `--required` 만 폴링하고, 그 호출은 살아 있는
+# PR 에서 0행 + rc=1 을 돌려주므로 한 번도 기다리지 않고 「필수 체크 실패」로
+# park 했다. 아래는 네 조합을 각각 태워 폴링된 철자와 park 문면을 관측한다.
+REQ27="$WORK/req27"; mkdir -p "$REQ27"
+CC_ORCH_CHECKS_POLL_SEC=0; CC_ORCH_CHECKS_WAIT_SEC=0
+export CC_ORCH_CHECKS_POLL_SEC CC_ORCH_CHECKS_WAIT_SEC
+
+req27_run() {
+  # req27_run <필수 행 수> <필수 rc> <무지정 rc> — merge_gate 를 한 번 태우고
+  # 폴링된 철자와 park 문면을 파일로 꺼낸다. 스텁은 27절의 규율대로 서브셸
+  # 안에서만 살리고, 서브셸이라 변수로는 나오지 못한다.
+  : > "$REQ27/park"; : > "$REQ27/calls"
+  (
+    REQ27_ROWS="$1"; REQ27_RRC="$2"; REQ27_PRC="$3"
+    park() { printf '%s | %s\n' "$4" "$5" > "$REQ27/park"; }
+    seg_alias()  { printf 'home'; }
+    alias_slug() { printf 'o/r'; }
+    authorized() { return 0; }
+    gh() {
+      local i=0
+      case "$*" in
+        *"pr list"*) printf '77\n'; return 0 ;;
+        *"pr checks"*)
+          case "$*" in
+            *--required*)
+              printf 'required\n' >> "$REQ27/calls"
+              while [ "$i" -lt "$REQ27_ROWS" ]; do
+                printf 'c%s\tpass\n' "$i"; i=$((i + 1))
+              done
+              return "$REQ27_RRC" ;;
+            *)
+              printf 'all\n' >> "$REQ27/calls"
+              return "$REQ27_PRC" ;;
+          esac ;;
+      esac
+      return 1
+    }
+    merge_gate seg27 br27 >/dev/null 2>&1
+  )
+}
+# 첫 줄은 개수를 세는 프로브 자신이라 언제나 `required` 다. 선택자가 무엇을 골랐는지
+# 말하는 것은 그 다음 줄 — 정착 대기가 실제로 부른 철자다.
+req27_polled() { tail -n +2 "$REQ27/calls" | sort -u | tr '\n' ' '; }
+
+# 조합 1 — 실측된 형상: `--required` 가 0행 + rc=1. 필수 지정이 없다는 뜻이므로
+# 무지정으로 폴링해야 하고, 진행 중(8)이면 실패가 아니라 진행 중으로 park 해야
+# 한다. 고치기 전에는 여기서 「필수 체크 실패」가 나왔다.
+req27_run 0 1 8
+check "필수 0행이면 무지정으로 폴링한다 (rc=1)" "$(req27_polled)" "all "
+case "$(cat "$REQ27/park")" in
+  *"체크가 아직 진행 중"*) ok "필수 지정이 없는 PR 을 실패로 적지 않는다" ;;
+  *) bad "머지 게이트" "필수 0행에서 park 문면이 진행 중을 말하지 않는다: $(cat "$REQ27/park")" ;;
+esac
+
+# 조합 2 — 0행인데 종료 코드는 0. 개수가 같으므로 처분도 같아야 한다.
+req27_run 0 0 8
+check "필수 0행이면 무지정으로 폴링한다 (rc=0)" "$(req27_polled)" "all "
+
+# 조합 3 — 행이 있고 종료 코드가 비영(8). `pipefail` 때문에 값이 오염되던 자리다.
+# 행이 있으므로 선택자는 1 이어야 하고 `--required` 를 폴링해야 한다.
+req27_run 2 8 0
+check "필수 행이 있으면 --required 로 폴링한다 (rc=8)" "$(req27_polled)" "required "
+
+# 조합 4 — 행이 있고 종료 코드가 0. 선택자가 반대 방향으로 고정되지 않았는지 잰다.
+req27_run 2 0 0
+check "필수 행이 있으면 --required 로 폴링한다 (rc=0)" "$(req27_polled)" "required "
+
+# 그리고 죽어 있던 팔이 실제로 살아났는가. 필수 지정이 없고 비필수 체크가 실패한
+# 형상은 선택자가 1 에 고정돼 있는 동안 도달 불가였다.
+req27_run 0 1 1
+case "$(cat "$REQ27/park")" in
+  *"필수 지정이 없고 비필수 체크가 실패"*) ok "필수 지정 없는 레포의 실패 팔에 실제로 도달한다" ;;
+  *) bad "머지 게이트" "비필수 실패 팔에 도달하지 못했다: $(cat "$REQ27/park")" ;;
+esac
+unset -f req27_run req27_polled
+unset CC_ORCH_CHECKS_POLL_SEC CC_ORCH_CHECKS_WAIT_SEC
+
+# `gh` 만 걷는다 — 이것은 드라이버의 함수가 아니라 PATH 의 실물이라 지워야 뒤쪽
+# 절이 실물을 본다. 나머지 넷은 서브셸과 함께 이미 사라졌고, 여기서 이름을 부르면
+# 스텁이 아니라 드라이버의 정의를 지우게 된다.
+unset -f gh
+unset CC_ORCH_CHECKS_POLL_SEC CC_ORCH_CHECKS_WAIT_SEC
+MANIFEST="$MANIFEST_SAVE27"
+
+# ---------------------------------------------------------------------------
+# 28. 킥오프가 쓰는 「선행」도 두 바닥을 지난다
+#
+# 게이트는 `act --kind segment` 에서 미지 토큰과 단조성을 막지만, 원뿔이 읽는
+# `선행` 값의 최초 판본은 전부 킥오프가 쓴다 — 게이트가 그 세그먼트를 보기
+# 전이다. 두 바닥이 쓰기 시점일 수밖에 없는 이유는 되돌릴 수 없어서다.
+# ---------------------------------------------------------------------------
+RUN_DIR_SAVE28="$RUN_DIR"; LEDGER_SAVE28="$LEDGER"; RUN_ID_SAVE28="$RUN_ID"
+RUN_DIR="$WORK/dep28"; mkdir -p "$RUN_DIR"
+LEDGER="$WORK/dep28-ledger.md"; RUN_ID="R28"
+printf '# 원장\n\n## 실행 R28\n' > "$LEDGER"
+
+printf 'A\t-\t-\t없음\nB\t-\t-\t슬라이스 A\n' > "$RUN_DIR/plan.tsv"
+check "성립하는 계획은 아무 거절도 내지 않는다" \
+  "$(plan_dep_floor | grep -c . || true)" "0"
+
+printf 'A\t-\t-\t없음\nB\t-\t-\tZZ\n' > "$RUN_DIR/plan.tsv"
+DEP28=$(plan_dep_floor)
+check "계획에 없는 선행 토큰이 한 건 잡힌다" \
+  "$(printf '%s\n' "$DEP28" | grep -c . || true)" "1"
+case "$DEP28" in
+  *"이 계획에 없습니다: ZZ"*) ok "거절이 미지 토큰을 이름으로 지목한다" ;;
+  *) bad "선행 바닥" "미지 토큰 거절 문면이 토큰을 지목하지 않는다: $DEP28" ;;
+esac
+
+# 단조성 — 앞선 행이 A 를 들고 있는데 이번 계획이 그것을 뺐다.
+printf -- '- `segment` | id=B | 상태=계획됨 | 선행=A | 워크트리=/w/B\n' >> "$LEDGER"
+printf 'A\t-\t-\t없음\nB\t-\t-\t없음\n' > "$RUN_DIR/plan.tsv"
+DEP28M=$(plan_dep_floor)
+check "앞선 행의 선행을 빼면 한 건 잡힌다" \
+  "$(printf '%s\n' "$DEP28M" | grep -c . || true)" "1"
+case "$DEP28M" in
+  *단조*) ok "거절이 단조성 위반이라고 적는다" ;;
+  *) bad "선행 바닥" "단조성 거절 문면이 아니다: $DEP28M" ;;
+esac
+
+# 반대 방향 — 더하는 것은 막지 않는다. 이것이 없으면 위 단언은 「무엇이든
+# 거절한다」로도 통과한다.
+printf 'A\t-\t-\t없음\nB\t-\t-\tA, C\nC\t-\t-\t없음\n' > "$RUN_DIR/plan.tsv"
+check "선행을 더하는 것은 막지 않는다" \
+  "$(plan_dep_floor | grep -c . || true)" "0"
+
+# 바닥이 첫 `segment` 행보다 **먼저** 서는가. 뒤에 서면 되돌릴 수 없는 행이 이미
+# 원장에 있고, 그것이 이 바닥이 막으려는 바로 그 상태다.
+for fn28 in plan_from_declaration plan_via_planner; do
+  FIRST28=$(sed -n "/^$fn28()/,/^}/p" "$DRIVER" \
+    | grep -oE "plan_dep_floor_or_park|ledger_row 'segment'" | awk 'NR==1')
+  if [ "$FIRST28" = "plan_dep_floor_or_park" ]; then
+    ok "$fn28: 「선행」 바닥이 첫 segment 행보다 먼저 선다"
+  else
+    bad "선행 바닥" "$fn28 에서 먼저 오는 것은 '${FIRST28:-없음}' 이다"
+  fi
+done
+RUN_DIR="$RUN_DIR_SAVE28"; LEDGER="$LEDGER_SAVE28"; RUN_ID="$RUN_ID_SAVE28"
+
+# ---------------------------------------------------------------------------
 # The detach path is gone, and its absence is asserted rather than assumed.
 # 26. The detach flag stays absent — in the driver AND in the gate.
 #
