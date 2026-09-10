@@ -1,0 +1,37 @@
+name: notify-macos
+
+on:
+  pull_request:
+    paths: &notify_macos_paths
+      - 'scripts/suite-a.sh'
+      - 'Makefile'
+      - '.github/workflows/notify-macos.yml'
+  push:
+    branches:
+      - master
+    paths: *notify_macos_paths
+
+jobs:
+  test-macos-native:
+    runs-on: &runner macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: jq sanity check
+        run: jq --version
+      - name: Run darwin-only tests
+        run: make test-darwin
+
+  # The second job reaches the same runner through the alias. Sharing a runner
+  # label by anchor is ordinary refactoring of a two-job workflow, and it touches
+  # neither the filter nor the Makefile, so no other rule of this lint reacts to
+  # it — rule 8 is the only thing standing between that edit and a silent green
+  # skip. Read without exploding, `runs-on` here is the string `*runner`, which
+  # holds no `macos`, and the job drops out of the check entirely.
+  report-macos-native:
+    runs-on: *runner
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report
+        run: jq --version

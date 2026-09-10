@@ -359,17 +359,27 @@ Block 0 is `## 계획 <run-id>` — the plan record written when the run starts.
 
 Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row carries the fence's info string instead of the inline value.
 
+**Every row carries `교대=<n>` as its first field after the series name.** `<n>` is the number of the routing shift that was current when the row was written, counted from `0` for the lead's own seat. It is on every row rather than on the `handoff` row alone because the question the morning asks — how many shifts ran after the instruction files were applied — is answered by reading any row's shift number, and a scale that exists on one series can only count that series. A run whose routing never left the lead writes `교대=0` on every row, so the field costs nothing where the mechanism is unused — and `0` stays the lead's own seat for as long as the run lasts, including after shifts have come and gone, because the seat is read from the writer's own shift marker rather than derived from how many shifts the ledger has seen.
+
+**An attempt that launched nothing consumes no ordinal.** The launcher writes its `교대 기동` row immediately before starting the successor, so a shift held behind a live stage and one stopped at the handoff floor both leave the scale where they found it. Without that rule the ordinal names a `log/shift-<n>.json` that no run ever wrote, and the morning reader following the number lands on nothing.
+
 ### 3.1a Row length has a hard cap
 
 **A row is at most 1024 bytes including its newline.** Above that, concurrent appends interleave: two independent measurements put the last clean size at exactly 1024, with corruption beginning at 1025 and line counts staying correct while field values splice. That is the shape no row-grammar regex and no `wc -l` can detect, which is why the cap is a lint rather than a convention.
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at fourteen
+### 3.2 The row series is closed at sixteen
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fifteen` — `교대 기동` arrived as the sixteenth kind, and a heading that states a count states a falsehood the moment the count moves.
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen` — `handoff` arrived as the fifteenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
 The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
+
+**The sixteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
 
 **The last two are a reconciliation rather than an extension, and the difference matters.** `종료 절` and `문서 해시` were already being written by the gate while this table did not list them — so the table was not a closed definition at all, it was a partial inventory that read like one. A contract that under-reports what its writer emits is worse than one that over-reports: a reader checking whether a series exists gets "no" for something the ledger is full of. They are listed now with the fields the gate actually writes.
 
@@ -389,6 +399,8 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
+| `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
+| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
@@ -426,6 +438,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`세션 id` and `부모` are the ancestry record, and without them the implementation-review separation rule is vacuous.** That rule asks whether a review stage's session is disjoint from the implementation's. While session ids are *derived* from `owner-doc|구간|단계|시도` they differ by construction, so the comparison is a tautology and passes on every run including the ones it exists to catch. Recording the id the harness actually assigned, plus the id of the session that spawned it, turns the rule into a real ancestry-closure check — and a fork inherits its parent, so a forked session cannot review its own work by taking a new id.
 
+**`handoff` is the fifteenth because nothing in the first fourteen can hold an abandoned alternative.** When the routing loop runs as a headless shift rather than as the lead's own session, a shift ends and a successor starts from the snapshot alone — and the snapshot carries progress, not deliberation. `자율 승인` records the decision that was taken and `blocked` records a stop; neither has a place for *what was tried and dropped, and on seeing what*. The morning report asks for exactly that, so without this series the value exists only if a router happens to write it into free-text rationale, where no reader can find it. The row takes `키=값` fields after `--` like `segment` and `cycle` do, grades `읽기`, and — like `blocked`, `종료 절` and a judgment `자율 승인` — does **not** require `--segment`: a shift is an event of the whole run rather than of one segment. Each of the three free-text fields is clipped to 300 characters, which is what keeps the row inside the cap of §3.1a.
+
 ### 3.3 Closed vocabularies
 
 | Field | Values |
@@ -440,6 +454,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `대상 추가.층` | `0` \| `1` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
+| `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` |

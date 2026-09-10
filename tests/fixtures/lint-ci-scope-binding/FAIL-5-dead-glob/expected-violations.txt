@@ -1,0 +1,2 @@
+규칙 3	docs/**
+규칙 3	!scripts/ignore.sh

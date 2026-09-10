@@ -1,0 +1,9 @@
+I2	Makefile:test-darwin
+I4	plugins/cc-cmds/orchestrator/test-run.sh
+I4	scripts/test-gate.sh
+I4	scripts/test-lint-bash-portability.sh
+I4	scripts/test-notify-title-oracle.sh
+규칙 1	plugins/cc-cmds/orchestrator/test-run.sh
+규칙 1	scripts/test-gate.sh
+규칙 1	scripts/test-lint-bash-portability.sh
+규칙 1	scripts/test-notify-title-oracle.sh

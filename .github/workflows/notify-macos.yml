@@ -100,4 +100,4 @@ jobs:
         # reparenting under `set -m`, contention on the advisory lock, and the
         # boot clock across a sleep. Everything else about the driver is
         # seam-driven and is covered by the ubuntu leg through injection.
-        run: make test-darwin
+        run: make -j"$(sysctl -n hw.ncpu)" test-darwin

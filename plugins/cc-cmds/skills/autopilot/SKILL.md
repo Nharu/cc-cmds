@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: 목표 하나를 받아 이 세션이 라우터가 되어 스킬 호출을 스스로 정하며 완주시키는 파이프라인의 킥오프와 아침 보고
-when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널에서 보이고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
+when_to_use: 사용자가 설계 문서·레포·PR·브랜치, 또는 아직 산출물이 없는 목표를 던져 두고 설계·감사·구현·리뷰·머지·적용까지 알아서 이어지게 하고 싶을 때 — 진행은 이 터미널로 중계되고 중요한 결정만 물어 온다. 또는 그렇게 돌린 런의 아침 보고를 받을 때
 disable-model-invocation: true
 usage: "/cc-cmds:autopilot <의도 또는 대상> [--report]"
 options:
@@ -35,9 +35,17 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 **CFI-2 — One block per run, frozen at append.** Re-authorizing is a **new run with a new `<run-id>`**, never an edit to an existing block. There is no field with a mutable region and no close form. The manifest's `plan.md` is **creation-only**: it is frozen whole and has no append form at all.
 
-**CFI-3 — This session IS the router, and it does not detach.** The run is not handed to a background driver that decides things out of sight; the model reading these words takes the turns, and the terminal shows the run happening. What that buys is the whole reason for the shape: progress is visible while it happens, and the person can interrupt.
+**CFI-3 — The routing loop runs as a headless SHIFT, and this session is the run's SEAT.** Cost grows with the square of a session's length — every turn re-reads the whole history before it — so a routing loop that never restarts pays for the night twice over. The loop is therefore capped and handed to a successor `claude -p` shift instead of being run to exhaustion here. An interactive session cannot end itself and start a successor: the harness has no affordance for it, and the watcher refuses to on charter. Moving the loop out is the only shape available. What stays here is the seat where a person is — where a question is asked, where a banner belongs, and where a shift is started.
 
-What the router may NOT do is decide from memory. Its input is the snapshot and nothing else — see Act 2b. The session is compacted repeatedly over a long run, so a router that leaned on conversation history would have its input silently rewritten, and every claim about reproducibility would go with it.
+**The number is kept deliberately even though the content changed**, on CFI-4's precedent: citations to it live outside this file, in pull request comments, issues and other agents' reports, and a renumbering would leave every one of them pointing at a real but unrelated invariant, which is indistinguishable from a correct citation.
+
+**What is not lost is after-the-fact reconstruction.** Every routing act is a ledger row, and the morning report already reads from disk rather than from a scrollback.
+
+**What IS lost is watching it happen** — the shift's turns no longer flow through this terminal. The progress channel buys part of that back: it projects the ledger's boundary events and state transitions into this session as messages, measured at roughly five an hour. And that observability was already incomplete before this shape, so the channel covers more than the hole it was cut for: a run with any live stage reports as running, and every arm that would report a stopped router requires zero live ones — so a stage that is itself wedged is visible on no channel at all today.
+
+**Interruption is partly lost.** Ctrl+C no longer cuts the shift's current turn; the lead cancels the background task instead. Cancelling the shift does NOT take the channel down with it — a task stop reaches one task id and nothing else. But if you stopped the FEED yourself, re-arm it: that is the one death nothing reports.
+
+What the router may NOT do is decide from memory. Its input is the snapshot and nothing else, save the digest value the gate emits from that same state — see Act 2b. A shift is a NEW process with no conversation history at all, so leaning on one would be leaning on something it does not have; and this seat is compacted repeatedly over a long run, so the same reliance here would have its input silently rewritten.
 
 The morning report stays a **separate invocation** (`--report`), because a run that spans days is read from disk rather than from a scrollback.
 
@@ -46,6 +54,12 @@ The morning report stays a **separate invocation** (`--report`), because a run t
 **CFI-5 — The interview takes ONE cutpoint per target, not seven toggles.** See Act 1 Step 5. A per-act toggle matrix invites a grant that is incoherent under composition (push without commit), and it does not match how the user's own standing rules describe delegation. Per-target rather than per-run because a run may span repositories with different appetites — "infrastructure applies, the front end stops at a pull request" is not expressible as one scalar.
 
 **CFI-6 — Act 2 starts only when Act 1 has nothing left to ask.** Every entry in the judgment's `unresolved` is answered, every target is confirmed by the user, and the plan is approved, before a single byte of the manifest is written. A question carried across the seam is a question nobody will answer.
+
+**CFI-7 — A channel event is not a turn to route in.** Under CFI-3's shape the run is routed by a `claude -p` shift that holds the run's only routing seat; what remains here is the seat where a person is. The progress channel wakes this session even when its turn has ended — measured: an idle lead with no user input took a turn 94 seconds after arming, on the event alone, with the emitting process still running — and it wakes it roughly once every ten minutes all night. **On a wake caused by a channel event, relay the line and stop.** Do not call the gate, do not read the snapshot, do not dispatch a stage, do not launch or close a shift, do not answer an approval, do not decide anything.
+
+**Read the envelope before acting. Every arrival carries a `<task-id>`, so the task id alone settles nothing — and which id is which is recall, which a compaction erases.** What separates them is whether `<summary>` carries the channel's own `description` (`autopilot <run-id>`), whether `<status>` is present, and what the body says. With **no `<status>`** and a body the feed could have written: **relay it, and that is the whole of the turn.** With no `<status>` and a body of `[Monitor timed out — re-arm if needed.]`: the channel is dead — **re-arm it, relay nothing.** With no `<status>` and a body of `[N events suppressed]`: lines were lost and the channel is alive — relay nothing, re-arm nothing. **With a `<status>`** the task has ended: if `<summary>` is the channel's, the channel is dead — **re-arm it, relay nothing, and do not route**, because a dead channel is not progress; if `<summary>` is not the channel's, the shift has ended and **routing resumes** — this is the only notification that resumes it. The last thing that resumes routing is a message the human actually typed, and it is the only arrival you did not launch yourself.
+
+A lead that routes on a channel event is a second router, and two routers disagree in the dark. That is why `watch.sh` resumes nothing, retries nothing and decides nothing, and why the shift is kept out of `session-lineage`.
 
 ---
 
@@ -56,6 +70,10 @@ The morning report stays a **separate invocation** (`--report`), because a run t
 Load deferred tools via ToolSearch before any other step:
 
 - `ToolSearch("select:AskUserQuestion")` — MUST load before Act 1
+- `ToolSearch("select:Monitor")` — MUST load before Step 7. The progress channel is
+  armed with it, and under CFI-3's shape that channel is the only thing a person sees
+  while the night runs. Loaded here rather than at the call site because Step 7 is
+  reached after the human has left.
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`** and apply its hard construction constraints to every call in this skill.
 
@@ -244,8 +262,19 @@ Two digests are computed here and **compared at entry**, so they are not decorat
    **All four thresholds are the script's own defaults and none of them is an attempt to change anything.** They are pinned here because the status line has to decide whether a heartbeat is fresh, and a threshold it cannot read from a contract is a threshold it invents. `--stall 1200` and `--interval 60` were spelled out for that reason and the two newer arms then went unwritten, which left the only configuration this run actually uses readable nowhere. `--after-stage 120` is how long a stage's terminal row may sit as the last row before the router is named, and it is also the idleness the run-open arm requires. `--run-open 300` is how long the run may be open with no segment. They are all deliberately NOT matched to the status line's own 180-second staleness mark: that mark is a render that clears itself on the next tick, while these arms write a ledger row that only a person's resolving row takes back. Two different costs deserve two different thresholds.
 
    **The redirection is new, and discoverability is its whole justification.** The harness keys a background task's output on an internal task id, which cannot be walked back to a run directory — so the watcher's loud line landed somewhere nobody could find from the one place a person actually looks in the morning, which is the run directory. `< /dev/null` goes with it so the process cannot be stopped waiting on a terminal that is no longer there.
-4. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run is now visible in this terminal rather than detached.
-5. **Enter the router loop of Act 2b.** Do not stop here.
+4. **Arm the progress channel.** Under CFI-3's shape the routing turns do not flow through this terminal, so this is what a person sees while the night runs:
+   ```
+   Monitor(command: "bash <plugin root>/orchestrator/feed.sh --run-dir <RUN_DIR> --ledger <원장 경로>",
+           persistent: true,
+           description: "autopilot <run-id>")
+   ```
+   **`persistent: true` is not optional.** Without it the monitor carries a default timeout and dies partway through the night, and the death arrives as a bracketed harness marker rather than as a status — which is the shape CFI-7's envelope test exists to catch.
+
+   **The `description` must be exactly `autopilot <run-id>`.** That string rides in the `<summary>` of every event this channel produces, and it is the ONLY thing that separates two runs emitting at once — a task id cannot do it, because every arrival carries one. CFI-7 keys on this string, so a different spelling makes the invariant undecidable rather than merely untidy.
+
+   The channel emits nothing when nothing happens, so a quiet hour costs no notification and no model turn. It does not replace the morning report: it is a pure projection of the ledger and can say nothing the ledger does not, and if it is removed with a task stop it leaves no trace of having gone.
+5. **Tell the user, in Korean, what is about to happen**: the run id, each target and its cutpoint, the termination point, and that the run's boundary events will be relayed into this terminal.
+6. **Start the first shift. This seat does not route.** Act 2b is the shift's loop and never this session's: the routing seat leaves the lead at kickoff and comes back only as a return line, which is what CFI-3 and CFI-7 both say and what the shift numbering is built on — `교대=0` means routing never left this seat, and shift `n` stamps `n`. Issue the `act --kind router-shift` call of 「Shifting the loop」 with `사유=상한`, then wait for its return. Do not stop here, and do not route while it runs.
 
 ---
 
@@ -259,7 +288,7 @@ The router decides **what happens next**. The gate decides **whether it may**. T
 snapshot  →  decide  →  gate call  →  (repeat)
 ```
 
-1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. It also carries what is HOLDING the run: a `대기 승인` count that stays on the table at zero rather than vanishing, so "no approvals" and "no line" remain different readings, and a `미충족 조건` line naming the termination conditions by number and saying so when the only thing left is an invalidation. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
+1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. It also carries what is HOLDING the run: a `대기 승인` count that stays on the table at zero rather than vanishing, so "no approvals" and "no line" remain different readings, and a `미충족 조건` line naming the termination conditions by number and saying so when the only thing left is an invalidation. **This is the router's entire declared input, with one derived exception.** The emitted digest file is a value the gate wrote from the state this same snapshot describes — it carries no decision and no obligation, only the `H` a caller would otherwise re-read, so taking it is a shortcut through the round trip rather than a second source of truth. Everything that is not that number comes from the snapshot. Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
 2. **Decide one next act.**
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
@@ -271,13 +300,18 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `run_id`, `goal`, `goal_digest` | the run's identity and the frozen termination point |
 | `targets[]` | `alias`, `slug`, `cutpoint`, `home` — one object per target |
 | `obligations[]`, `obligations_total` | open obligations; the array is capped and the total is not, so compare them before concluding the list is whole |
-| `pending_approvals[]` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases |
+| `pending_approvals[]`, `pending_approvals_total` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases. Unlike `obligations[]` the array is not capped, so the total is the same count as a bare number; it is carried because the emitted digest file below carries it too, and one derivation is what keeps the two surfaces from disagreeing |
 | `unmet_conditions[]` | the numbered termination conditions that do NOT hold, as rendered lines. **Capped**, and the lines that grow with the night take the front of it |
 | `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
 | `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most ten, and never truncated. This is the one to read when the two above disagree |
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
+| `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all |
+| `blocked[]` | `스코프`, `사유`, `앵커` — unresolved blocks only; a row whose cause is `해소` closes an earlier one and is not carried |
+| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1` — the review results, capped |
+| `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift |
+| `handoff[]` | `교대`, `버린 선택지`, `막힌 지점`, `다음 후보` — the last three handoffs and no more. This is where a successor learns what its predecessor already tried and dropped |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
-| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest` |
+| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest`. An acting call that carried `--emit-digest` has already written this same value to that file, so reading the file is the ordinary way to obtain it and calling `snapshot` again is the fallback |
 
 **THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
 
@@ -287,7 +321,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 
 **Where a decision is genuinely yours to make rather than to act on, the answer is the judgment grades below — not a question.** Grade 0 you take, grade 1 you take and record, grade 2 you escalate, and escalation means issuing an approval through the gate so the stop is a row rather than a silence.
 
-**Every acting call carries `--snapshot-digest <H>`, copied from the snapshot just read.** This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
+**Every acting call carries `--snapshot-digest <H>`, and every acting call carries `--emit-digest` so the next one does not have to go looking for it.** The gate writes that file after its own last ledger row, so its `H` is the value the *next* acting call needs; read the file rather than calling `snapshot` again. Measured: without it every act cost two gate invocations, and the first of the two existed only to read back a number the previous invocation had already decided. **Fall back to `snapshot` wherever the emitted value is not yours to use** — the file is absent (the first acting call of a run, or an emission that failed), its `actor` is not you, it is stale by construction (anything happened after it was written, a dry run included), or the gate refused the flag with exit 2 as an unknown argument (the hook receives the gate as a runtime parameter, so the two copies can be different deployments). In that last case drop the flag and keep using `snapshot`. The list is open on purpose: a closed count went stale the first time a new case appeared, and the rule it was standing in for is one sentence. What does **not** change is the binding: the digest is still compared against live state, and it is still the one just observed rather than one held across a turn. This is the mechanical enforcement of conversational statelessness, and its scope is bounded rather than total: a remembered digest is refused with exit 4 **when the run has since made progress, or when the ledger has grown past the bounded ancestry window** — not merely because rows landed after it. A value a few rows old belongs to a concurrent writer and is admitted on purpose, because refusing it meant one actor's successful act invalidated every other actor's digest the instant it landed. A digest carried across a compaction is far outside that window in practice, so the enforcement still stands where it was aimed; it is no longer a guarantee about *any* remembered value. Re-read; never re-type from memory.
 
 ### The verbs
 
@@ -319,16 +353,19 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 
 **Use `grade` and `plan` rather than finding out by doing.** Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation. Neither verb performs the act, neither takes act budget, and neither writes the row the act would have written.
 
-**They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest, and a router that reads a digest, asks `plan`, and then acts on the digest it read first will be refused with exit 4. **Re-read the snapshot after asking.** Making the re-derivation conditional on the verb would not fix this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
+**They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest — but only its tip half, because the `run` and `대상 추가` rows are not components of the progress vector. The tip axis admits an ancestor inside a bounded window, so a router that reads a digest, asks `plan`, and then acts on the digest it read first is **not** refused, and **the forced re-read after a dry run is no longer needed** — that is the 21 percent, measured above, that stops costing a round trip. Re-read when the dry run sat among many other writers' rows, since the window is a few rows wide rather than a session long. Making the re-derivation conditional on the verb would still not change any of this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
+
+**And where that re-read is wanted it is a real `snapshot` call, not a file read.** `grade` and `plan` perform nothing and reach no acting path, so neither emits a digest however the flag is spelled — which is deliberate rather than an omission: emitting from a verb that answers a question would put a value in the file that no act of this run stands behind. So after a dry run there is no fresh emission to read, and the next acting call either calls `snapshot` or carries the value it held before the dry run, which the bounded ancestry admits.
 
 ### Reading the exit codes
 
 | Code | Meaning | What the router does |
 | --- | --- | --- |
 | 0 | performed | continue |
-| 2 | vocabulary error | fix the argv — a token was outside a closed set |
+| 1 | the gate itself failed | not a refusal — the gate did not reach a verdict. Read the message; a malformed argv reaches the shell before any check runs |
+| 2 | vocabulary error, or an argv this gate does not accept | fix the argv — a token was outside a closed set, or a flag was spelled the way an older gate took it (`--emit-digest` takes no path) or used on a verb that performs nothing |
 | 3 | a rule refused | read which one; the refusal names the repair |
-| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one |
+| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one. A bare append by another actor is not staleness and does not produce a 4 — what does is the run making progress, or the ledger growing past the bounded ancestry window, between the emission and the call. A 4 here is not evidence against the emission, it is the emission's designed failure mode |
 | 5 | approval issued | the act is outside pre-authorization — see below |
 | 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
@@ -392,8 +429,11 @@ A stage is `act --kind skill`, and the gate launches it through the wrapper. Nev
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id> \
   --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  --emit-digest \
   -- <스테이지 종류> -p "/cc-cmds:<스킬>-unattended <인자…>"
 ```
+
+`<H>` comes from `<run-dir>/digest/gate-digest-router.json`, written by the previous acting call's own `--emit-digest`; where that file is absent take it from `snapshot` instead, and where the gate refuses the flag as an unknown argument drop the flag and keep taking it from `snapshot`. **Check its `actor` field before using `H`** — it carries the emitting stage id verbatim, `router` when the router wrote it, and a value that is not yours means the file is somebody else's emission rather than a stale one of your own; fall back to the round trip in that case.
 
 **The first token after `--` is the STAGE KIND, and it is consumed before the CLI ever sees the rest.** `act --kind skill` calls the launcher as `<alias> <segment> <stage-kind> <cli args…>`, so a form that starts with `-p` hands `-p` over as the kind. The vocabulary check then falls back to `generic`, meaning the stage runs under settings that are not its own, and `-p` is gone from what reaches the wrapper. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`, and it selects the settings variant rather than the skill.
 
@@ -403,7 +443,9 @@ Four parts, and each one has a measured failure:
 
 - **`-p` is required.** The wrapper passes everything after `--` to the CLI, so without `-p` the prompt is never delivered. Omitting it while passing a bare skill name produced `산출물 없는 정지 rc=0 · 0.809852 USD` — the model woke with an **empty first user message**, read a file, asked "what should I do?", and terminated as a success. Omitting it while passing a quoted slash command instead fails loudly (`stage-wrapper: -- 뒤에 CLI 인자가 필요합니다`, `크래시 rc=2`), which is the better of the two.
 - **The prompt is a slash command**, leading `/` included.
-- **It must be the `-unattended` variant.** The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, so a headless stage naming them resolves nothing at all.
+- **It must be the `-unattended` variant** — and the reason is not that the plain name fails. The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, which closes the **Skill tool** path and nothing else; a headless stage that names one still reaches the same instructions by reading the file, and measured, one did — a complete report, 129 USD, produced end to end from a plain skill name. So the failure mode is not an error, it is a stage running the interactive-shaped workflow with nobody to interview, and it is green. Nothing in this loop detects it, because there is nothing to detect: the dispatch is well formed and the stage produces output. Only the spelling in the prompt separates the two.
+
+  This paragraph used to say the plain name "resolves nothing at all". That was false, and its falseness is why no check was ever built here — a form believed to fail loudly needs no guard.
 
 The first form is the dangerous one precisely because it is green: exit 0, cost charged, no output. Neither the gate nor the wrapper can catch it — a prompt is a string, and any string is a valid one.
 
@@ -422,6 +464,41 @@ Three conditions must **all** hold before a segment is dispatchable, and reading
 Five ways a run is cut, and all five resume: the terminal closes, Ctrl+C, the token limit, the network drops, a reboot. **Resume by resuming this session and saying so.** The router then does what it always does — read the snapshot and continue. There is no separate resume protocol, because the router holds no state that a snapshot does not.
 
 A stage that was mid-flight when the session died is **re-attached, not re-run**: `--resume` continues its turn rather than restarting it. And a re-attached stage is not this shell's child, so `wait` would report a clean exit for a process it never reaped — liveness is `kill -0` on the recorded pid together with its start-time fingerprint, never `wait`.
+
+### Shifting the loop, and re-arming the channel on every return
+
+The loop is capped rather than run to exhaustion, and the cap is read from the snapshot's `shift` block — never estimated. A session cannot measure its own context, and a number a router recalls is memory wearing a number.
+
+**Three reasons end a shift, and they are not a list with the suppressor.** `상한` — `shift.over_soft` is true. `승인` — the gate answered exit 5, so the shift ends without answering and the seat does. `종단` — a `propose-done` was accepted. A live stage holds back only the FIRST of the three: a shift kept waiting on `승인` means the approval waits out that stage, and overnight that is the whole night.
+
+Ending a shift is two calls, in this order:
+
+```
+gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
+  --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  -- 교대=<n> 사유=<상한|승인|종단|중단> \
+     '버린 선택지=<시도했고 버린 것 · 무엇을 보고 버렸는가>' \
+     '막힌 지점=<지금 벽이 있는 자리>' \
+     '다음 후보=<후임이 먼저 볼 것>'
+```
+
+**`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED; without this the successor re-walks every dead end its predecessor already paid for, and the morning report's request for the rejected alternative has no source at all. A shift that ends with all three fields empty has handed over its position and none of its reasoning.
+
+Then the seat starts the successor:
+
+```
+gate.sh act --manifest <매니페스트> --kind router-shift --target <alias> \
+  --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  -- <사유> -p "/cc-cmds:autopilot-router-shift <매니페스트>"
+```
+
+**The first token after `--` is the HANDOFF REASON**, the way it is the stage kind for `act --kind skill`. `--kind router-shift` is the LEDGER ROW KIND and `shift` is the SETTINGS VARIANT the wrapper receives; they are different layers with different names, and swapping them runs the shift under settings that are not its own.
+
+**That call has THREE outcomes and they are told apart by exit status, not by prose.** `0` — the successor ran and came back, so route again on its return line. `5` — an approval was issued instead of a launch: the handoff floor is past its cap, nothing was started, and this is a question for a person, so answer it here before trying again. `10` — the cap shift is held behind a live stage: nothing was started and nothing is wrong, so let the stage finish and reissue. All three used to report `0`, which is why 「 the successor is running」 had to be inferred rather than read.
+
+**The successor reads the snapshot itself and never the `H` its predecessor handed back.** The gate no longer refuses that value on the strength of the `handoff` row alone: `handoff` moves the chain tip and no component of the progress vector, and the ledger's row count left the digest formula entirely, so a quoted digest can sit inside the bounded ancestry window and pass. Reading it yourself is what makes the successor's first act rest on state it observed — and nothing downstream catches it if it does not.
+
+**RE-ARM THE PROGRESS CHANNEL ON EVERY SHIFT RETURN.** Whether a `persistent` monitor survives a compaction or a resume is unmeasured, and this binds the risk without waiting for the answer: at most three times a night, at moments the seat is awake anyway. Both branches hold — alive, the feed's lock finds the running instance, prints one line and exits 0 so a healthy night files no false failure; dead, the cursor picks up exactly where the last line stopped. Re-arm with the same command and the same `description` as Step 7.
 
 ---
 
