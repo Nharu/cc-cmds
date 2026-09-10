@@ -4384,13 +4384,25 @@ gate_record_row() {
         esac
       done
 
-      # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is deliberate
-      # for now. Readers take the last `id=`, so putting the gate's field last
-      # would close that — but five fixtures pin `id=` as the first field after
-      # the shift scale, on purpose, so that the row grammar is asserted rather
-      # than assumed. Changing the grammar to close the override is a decision
-      # that needs a review this run cannot produce, so the finding stays open
-      # and the grammar stays as the fixtures pin it.
+      # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
+      # deliberately. `cycle` and `problem` below carry the same shape for
+      # `세그먼트=`, so all three share this note.
+      #
+      # REORDERING MOVES THE HOLE RATHER THAN CLOSING IT, and that is why the
+      # obvious repair is not the one to reach for. Readers do not agree on
+      # which duplicate wins: this file's three take the LAST value, and
+      # `feed.sh` takes the FIRST. Putting the gate's field last would close the
+      # override for the readers here and open it for that one. The repair that
+      # closes it for every reader is to REFUSE a caller-supplied `id=` or
+      # `세그먼트=` in `gate_record_row` — the same file already refuses a
+      # spliced key there, so the shape exists.
+      #
+      # THE GRAMMAR IS ALSO PINNED, which is the second reason to leave the
+      # order alone. Fixtures assert this row in two shapes — `교대=<n> | id=<seg>`
+      # and `id=<seg> | <first caller field>` — so that the grammar is asserted
+      # rather than assumed. One of those pins carries a note saying so; the
+      # others are footing that rests on it. Counting them here would go stale
+      # the moment one is added, so the shapes are named and the count is not.
       gate_append 'segment' "id=$seg" "$@"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
@@ -4420,6 +4432,8 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
+      # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -4438,6 +4452,8 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
+      # than `id`.
       gate_append 'problem' "세그먼트=$seg" "$@"
       log "문제 기록 — $seg"
       ;;
