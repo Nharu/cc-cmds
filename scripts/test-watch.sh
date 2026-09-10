@@ -518,6 +518,53 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# THE HEARTBEAT CARRIES THE GATE-IDLE READING, INCLUDING WHEN IT CANNOT BE MADE.
+#
+# Two arms take that reading as a conjunct and fall silent when it comes back
+# empty — "cannot judge" treated as "say nothing", which is the right direction.
+# What was wrong is that the disarming left NO trace: the heartbeat published the
+# ledger age, the live stage count, the open approval count, the non-terminal
+# segment count, the ledger size and its last growth, and this one value alone
+# was missing. So an arm could be off all night and the morning had nothing to
+# read that could say so — a detector built to end silent failures had grown one
+# of its own, and not firing and being unable to fire looked identical.
+#
+# The value is published in a slot of its own that is never dropped. A missing
+# field and a field that says it cannot judge are the same to a reader scanning
+# for it, so the unjudgeable case gets a token rather than an omission.
+# ---------------------------------------------------------------------------
+hb_gate() { sed -n 's/.*게이트유휴=\([^ ]*\).*/\1/p' "$RD/watch.heartbeat" 2>/dev/null; }
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf '%s\n' "$(( $(date -u +%s) - 42 ))" > "$RD/started-at"
+run --stall 99999 --after-stage 99999 --run-open 99999 >/dev/null
+gi=$(hb_gate)
+case "${gi:-}" in
+  ''|*[!0-9]*) bad "하트비트 게이트유휴" "판정 가능한 픽스처인데 숫자가 실리지 않았다 ('${gi:-}')" ;;
+  *) if [ "$gi" -ge 42 ]; then
+       ok "하트비트가 게이트 유휴 초를 싣는다"
+     else
+       bad "하트비트 게이트유휴" "42초 전 스탬프인데 '$gi' 이 실렸다"
+     fi ;;
+esac
+
+# The three shapes that make the reading impossible. Each one disarms both arms
+# that read it, and each used to leave the heartbeat looking exactly like a
+# healthy pass.
+for gshape in 부재 빈파일 공백; do
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  case "$gshape" in
+    부재)   rm -f "$RD/started-at" ;;
+    빈파일) : > "$RD/started-at" ;;
+    공백)   printf ' 1577836800 \n' > "$RD/started-at" ;;
+  esac
+  run --stall 99999 --after-stage 99999 --run-open 99999 >/dev/null
+  check "판정 불가($gshape)가 하트비트에 값으로 실린다" "$(hb_gate)" "판정불가"
+done
+
+# ---------------------------------------------------------------------------
 # The watcher does NOT write the ledger. Its row carried no `prev=`, took no
 # lock and passed no length check, and the chain could not account for it. That
 # used to surface one row late: the verifier stepped over a row it could not
@@ -607,15 +654,110 @@ else
   bad "종단 후 무응답" "stall 파일에 관측이 없다"
 fi
 
-# A row after the stage's terminal row means the router DID act — no alarm.
+# THE ROUTER WROTE ROWS AFTER THE STAGE ENDED AND THEN DIED — and this arm used
+# to be silent for it.
+#
+# Its ledger guard required the LAST row to be `stage-result` or `cost`. But the
+# router goes on writing `judgment`, `exec` and `자율 승인` rows after a stage
+# ends, so three of those and then a death left a last row the guard rejected.
+# The stranding was real, this arm was the one named for it, and the run had to
+# wait for the twenty-minute stall arm — which carries its own latch and can be
+# spent already.
+#
+# The fixture is a `자율 승인` row LAST, the exact shape the old guard excluded,
+# with the gate stamp old (`fresh` leaves it in 2020) so nobody has called the
+# gate either. The arm must speak.
 fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
 printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
 out=$(run --stall 99999 --after-stage 0)
 case "$out" in
-  *"스테이지가 끝났는데"*) bad "종단 후 무응답" "라우터가 이어서 행위했는데 경보가 났다" ;;
-  *) ok "라우터가 이어서 행위했으면 경보가 나지 않는다" ;;
+  *"스테이지가 끝났는데"*)
+    ok "스테이지 뒤에 라우터가 행을 더 쓰고 멈춘 원장에서도 발화한다" ;;
+  *) bad "종단 후 무응답" "마지막 행이 stage-result 가 아니라는 이유로 침묵했다 — $(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+
+# AND THE DISCRIMINATION IS NOT LOST — it moved to the right quantity.
+#
+# "The router has not acted since" is now asked of the GATE, whose `started-at`
+# is rewritten on every entry including the calls that append no row. So a
+# router that is deliberating between rows still moves it, and this arm stays
+# quiet even though the ledger itself has been still for 300 seconds. That is
+# the case the old last-row test was standing in for, and it is the one that
+# would false-alarm if the widening above had taken the load off nothing.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
+printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
+seed_idle 300 --stall 99999 --after-stage 120
+printf '%s\n' "$(date -u +%s)" > "$RD/started-at"
+out=$(run --stall 99999 --after-stage 120)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "종단 후 무응답" "라우터가 방금 게이트를 불렀는데 경보가 났다" ;;
+  *) ok "라우터가 게이트를 최근에 불렀으면 원장이 조용해도 경보가 나지 않는다" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# AND IT SPEAKS MORE THAN ONCE PER RUN.
+#
+# The once-marker was tested for mere existence, so the first firing disarmed
+# this arm for the rest of the night. Measured: a router stopped for 21 hours
+# after this arm had already spoken once, and in that entire window nothing rang
+# again while the heartbeat reported the watcher alive every pass. The ledger
+# held the same number of rows throughout — so the run had exactly one line
+# about a stall that was still going on a day later.
+#
+# The marker now carries the ledger size it fired at, and two different things
+# make the arm speak again. Both are asserted, because they answer different
+# questions and an implementation can have one without the other.
+# ---------------------------------------------------------------------------
+# (a) A DIFFERENT OCCURRENCE. The ledger grew and then went silent again, which
+# is a second stall — the same distinction the approval arm draws between two
+# approval ids.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
+out=$(run --stall 99999 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) ok "첫 정체에서 발화한다 (아래 재발화 단언의 대조군)" ;;
+  *) bad "재발화 대조군" "$(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+out=$(run --stall 99999 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "재발화" "같은 정체가 이어지는데 매 패스마다 울렸다 — 큰 소리가 소음이 된다" ;;
+  *) ok "같은 정체에서는 주기 전까지 다시 울리지 않는다" ;;
+esac
+printf -- '- `자율 승인` | kind=segment | 결정=act | prev=y\n' >> "$LG"
+out=$(run --stall 99999 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) ok "원장이 자란 뒤 다시 멈추면 새 정체로 다시 울린다" ;;
+  *) bad "재발화" "발생이 바뀌었는데 첫 발화의 마커가 계속 막았다 — $(printf '%s' "$out" | tr '\n' ' ')" ;;
+esac
+check "발화한 만큼 관측이 남는다" "$(grep -c '스테이지 종단 후 라우터 무응답' "$RD/stall" || true)" "2"
+
+# (b) THE SAME OCCURRENCE, STILL UNANSWERED. The key has not moved and nobody
+# has touched the run, and that is itself the news — a detector that says it
+# once has told the night nothing. The cadence is `--stall`, so it is driven by
+# winding the marker's own firing time back past that threshold, the way the
+# ledger clock is wound back elsewhere in this file. `--stall 600` keeps the
+# generic stall arm out of the reading: the ledger has been still only since the
+# first pass here.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+printf -- '- `stage-result` | 세그먼트=S1 | 종단 부류=정상 완료 | prev=x\n' >> "$LG"
+run --stall 600 --after-stage 0 >/dev/null
+out=$(run --stall 600 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) bad "재발화 주기" "주기가 지나지 않았는데 다시 울렸다" ;;
+  *) ok "주기 이내에는 조용하다 (아래 단언의 대조군)" ;;
+esac
+as_mk="$RD/watch.announced-after-stage"
+printf '%s\n%s\n' "$(( $(date -u +%s) - 700 ))" "$(sed -n '2p' "$as_mk")" > "$as_mk"
+out=$(run --stall 600 --after-stage 0)
+case "$out" in
+  *"스테이지가 끝났는데"*) ok "풀리지 않은 채 주기가 지나면 같은 정체를 다시 알린다" ;;
+  *) bad "재발화 주기" "정체가 풀리지 않았는데 런당 한 번으로 끝났다 — $(printf '%s' "$out" | tr '\n' ' ')" ;;
 esac
 
 # And a terminated run does not raise it — that is not a stranded router.

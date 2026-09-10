@@ -354,6 +354,50 @@ record_blocked() {
   printf '%s\t%s\t%s\n' "$(now_iso)" "$1" "$2" >> "$RUN_DIR/stall"
 }
 
+announce_due() {
+  # announce_due <마커 경로> <발생 키> — 이 팔이 이번 패스에서 말해야 하는가.
+  #
+  # EXISTENCE IS NOT AN OCCURRENCE KEY, and treating it as one is what made an
+  # arm speak once per RUN. A `[ ! -f <marker> ]` guard disarms permanently:
+  # measured, a router stopped for 21 hours after this arm had already fired
+  # once, and in that whole window nothing rang again while the heartbeat went
+  # on reporting the watcher alive every pass. The approval arm was never shaped
+  # that way — it keys on the approval id and judges each one separately — and
+  # this function is that keying, given to the arms that had no key.
+  #
+  # TWO THINGS MAKE IT SPEAK AGAIN, and they are different questions:
+  #   a different occurrence — the key moved. The ledger grew and then went
+  #       silent again, which is a second stall and not the first one
+  #       continuing, exactly as a second approval id is not the first one.
+  #   the same occurrence, still unresolved — the key is unchanged and `STALL`
+  #       has passed since this arm last spoke. That nobody has touched it yet
+  #       is itself the news, and a detector that says it once has told the
+  #       night shift nothing.
+  #
+  # THE CADENCE IS DERIVED FROM `--stall`, WITH NO NEW PIN, for the reason the
+  # feed arm already takes: the lint that keeps the thresholds honest hardcodes
+  # exactly four (flag, value) pairs, so a fifth constant would be structurally
+  # invisible to it.
+  #
+  # A MARKER THAT DOES NOT PARSE FALLS TO "SPEAK" — including the empty file an
+  # older watcher left behind, which a mid-run plugin update can hand this. That
+  # direction costs one extra banner; the other one is a silent night.
+  local mk="$1" key="$2" prev_at prev_key
+  prev_at=$(sed -n '1p' "$mk" 2>/dev/null || true)
+  prev_key=$(sed -n '2p' "$mk" 2>/dev/null || true)
+  case "${prev_at:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$prev_key" = "$key" ] || return 0
+  [ "$(( $(now_epoch) - prev_at ))" -ge "$STALL" ]
+}
+
+announce_mark() {
+  # announce_mark <마커 경로> <발생 키> — 말했다는 사실을, 어느 발생에 대해
+  # 말했는지와 함께 남긴다. Rewritten rather than appended: the pair is the
+  # arm's whole state and a growing file would make `announce_due` read the
+  # first firing forever.
+  printf '%s\n%s\n' "$(now_epoch)" "$2" > "$1"
+}
+
 pass() {
   # NO ARM RETURNS BEFORE THE HEARTBEAT. Every arm below used to `return 0` on
   # firing, so a run in a condition that keeps re-arming stopped rewriting
@@ -377,6 +421,11 @@ pass() {
   live=$(live_stages)
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
+  # READ ONCE, HERE, because two arms below now ask it and the heartbeat
+  # publishes it. It used to be taken just above its single caller; a second
+  # caller reading it again would be a second reading of one clock, and the two
+  # could disagree across the passes in between.
+  gate_idle=$(gate_idle_seconds)
 
   # THE RUN ENDED. Waiting for the `done` file would mean saying so almost
   # never: measured across 39 run directories, 2 had one, because almost no run
@@ -409,11 +458,30 @@ pass() {
   # as the router has not acted since — so a properly woken router clears it in
   # seconds and a stranded one is named in two minutes.
   #
-  # THE LEDGER GUARD IS PART OF THE CONDITION, not a refinement of it. A run that
-  # finished normally ends with a `stage-result` row as its last row and no live
-  # stage — the exact shape this arm keys on — so without it every clean finish
-  # was told the router had stranded it, and the `blocked` row that produced
-  # then blocked the run's own termination condition.
+  # THE LEDGER GUARD ASKS WHETHER A STAGE EVER ENDED, NOT WHETHER ITS ROW IS
+  # LAST. It used to require the ledger's LAST row to be `stage-result` or
+  # `cost`, and that is a far narrower question than the one this arm exists to
+  # ask: the router keeps writing `judgment`, `exec` and `자율 승인` rows after a
+  # stage ends, so a router that wrote three of those and then died left a last
+  # row this test rejected — and the arm was silent for a stranding of exactly
+  # the kind it names. The generic stall arm then covered it twenty minutes
+  # later, or not at all once its own guard had latched.
+  #
+  # WHAT THE OLD GUARD WAS REALLY FOR was excluding a run that finished
+  # normally, and the non-terminal segment count below already excludes that on
+  # its own: a clean finish has every segment terminal, so `nonterm` is 0. The
+  # last-row test was carrying a load that another conjunct already held.
+  #
+  # AND "THE ROUTER HAS NOT ACTED SINCE" IS CARRIED BY THE TWO IDLE TESTS, which
+  # is what keeps this widening from accusing a working router. `age` says the
+  # ledger has not grown; `gate_idle` says NOBODY HAS CALLED THE GATE — and the
+  # gate's `started-at` is rewritten on every entry, before the verb is
+  # dispatched, so a router that is merely deliberating between rows still moves
+  # it. That separation is the same one the run-age arm below already rests on,
+  # taken for the same reason. Both readings use `AFTER_STAGE`: they are two
+  # readings of one quantity, and separate thresholds would make "silent" mean
+  # two things inside one condition. An empty `gate_idle` is "cannot judge" and
+  # the arm stays silent, the direction every other reader of that value takes.
   #
   # THE NON-TERMINAL SEGMENT COUNT IS THE WHOLE TEST HERE, and a disjunct on "no
   # segment row yet" was attached to it and has been taken back out. The
@@ -433,11 +501,23 @@ pass() {
   # it earlier and on its own key. This arm keys on a stage having ENDED, and in
   # that window no stage ever started.
   #
-  # The once-guard is a DEDICATED MARKER rather than a grep of `stall`, because
-  # the gate empties `stall` on every act: the guard came back to life, the arm
+  # The guard is a DEDICATED MARKER rather than a grep of `stall`, because the
+  # gate empties `stall` on every act: the guard came back to life, the arm
   # re-fired every pass, and — when it still returned early — the heartbeat
   # stopped for good. `record_blocked` still writes `stall`; that file is the
   # observation, not the guard.
+  #
+  # BUT THE MARKER IS KEYED, NOT MERELY PRESENT. Tested with `[ ! -f ]` it was a
+  # once-per-RUN latch, and a router stopped for 21 hours after this arm's first
+  # firing was never named again. The key is the ledger's size at the firing:
+  # a size that moved is a new stall, and a size that did not move for `STALL`
+  # is the same stall still unanswered, which is worth saying again. See
+  # `announce_due`.
+  #
+  # `record_blocked` runs on the repeat too. `cc_unresolved_blocked` folds by
+  # 사유 and keeps only the last row per reason, so the repeats cannot multiply
+  # the run's unresolved-block count or move its termination condition — what
+  # they add is a timeline in `stall` showing how long the stall went unanswered.
   # AND NOT WHILE A SHIFT IS CHANGING OVER. Under the headless routing shape a
   # stage ending is followed by the routing session itself ending and a
   # successor starting, and for those seconds the ledger's last row IS a
@@ -448,10 +528,10 @@ pass() {
   if [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
-     && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
-             | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
-     && [ ! -f "$RUN_DIR/watch.announced-after-stage" ]; then
-    : > "$RUN_DIR/watch.announced-after-stage"
+     && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
+     && [ "$( { grep -cE '^- `(stage-result|cost)`' "$LEDGER" 2>/dev/null || true; } )" != "0" ] \
+     && announce_due "$RUN_DIR/watch.announced-after-stage" "$(ledger_size "$LEDGER")"; then
+    announce_mark "$RUN_DIR/watch.announced-after-stage" "$(ledger_size "$LEDGER")"
     announce "스테이지가 끝났는데 라우터가 ${age}초 동안 아무것도 하지 않았습니다" \
              "그 스테이지를 깨울 통지가 없는 형태로 띄웠을 수 있습니다 — 세션을 resume 하고 재개를 지시하세요"
     cc_notify_fire resume "스테이지가 끝났는데 런이 이어지지 않습니다 (${age}초)" || true
@@ -503,7 +583,6 @@ pass() {
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
   run_age=$(run_open_seconds)
-  gate_idle=$(gate_idle_seconds)
   if [ "$live" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
@@ -712,12 +791,23 @@ pass() {
   #
   # The four existing fields keep their positions and their wording verbatim —
   # they are read from this file by name.
+  #
+  # `게이트유휴` IS THE LAST FIELD AND IT IS NEVER OMITTED. Two arms treat an
+  # unreadable `started-at` as "cannot judge" and fall silent, which is the right
+  # direction — but that silence was indistinguishable from "nothing was wrong".
+  # Six ways of losing the value were measured (absent file, zero bytes, a value
+  # with whitespace in it among them) and five of them left no trace anywhere: an
+  # arm was disarmed all night and the morning had nothing to read that could say
+  # so. The token `판정불가` is published in the field's own slot rather than the
+  # field being dropped, because a MISSING field and a field saying it cannot
+  # judge look the same to a reader scanning for it — which is the defect again,
+  # one layer up.
   size=$(ledger_size "$LEDGER")
   grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
-  printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
-  printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
+  printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s · 게이트유휴=%s\n' \
+    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" "${gate_idle:-판정불가}" > "$RUN_DIR/watch.heartbeat"
+  printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개, 게이트유휴 %s\n' \
+    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "${gate_idle:-판정불가}"
   return 0
 }
 
