@@ -1752,8 +1752,17 @@ gate_reap_sweep() {
   trash="$root/.reap-trash"
   [ -d "$trash" ] || return 0
   for entry in "$trash"/*; do
-    # Also what skips the `.fails` siblings: those are files.
+    # Also what skips the `.fails` and `.keep` siblings: those are files.
     [ -d "$entry" ] || continue
+    # A `.keep` SIBLING IS A DELIBERATE HOLD, NOT A LEFTOVER. The deletion loop
+    # writes one when a victim's retention clock turned out to be fresh after
+    # the rename and its place in `run/` had already been taken. The copy here
+    # is then the only one there is, so sweeping it would destroy the very run
+    # the re-read had just saved. It is not folded into `gave_up`: that name
+    # means "the OS refused to remove this", and reporting a deliberate hold
+    # under it would erase the distinction. The record of the hold is the
+    # `회수 보류` line written at the moment it happened.
+    [ ! -e "$entry.keep" ] || continue
     now=$(date -u +%s)
     [ "$swept" -lt "$GATE_REAP_MAX" ] || break
     [ $((now - start)) -lt "$GATE_REAP_BUDGET_S" ] || break
@@ -1881,6 +1890,7 @@ gate_reap_locked() {
   # that rather than introducing one.
   local root="$1"
   local start now cand cand_list id rd trash kb bytes days started
+  local now2 started2
   local recfile pairs v_items v_files sweep_note
   local deleted=0 candidates=0 total_bytes=0 capped="미도달" gave_up=""
   start=$(date -u +%s)
@@ -1934,6 +1944,46 @@ gate_reap_locked() {
     # the immortal run this whole change exists to remove. One atomic
     # `rename(2)` takes the directory out of `run/` first.
     mv "$rd" "$trash" 2>/dev/null || continue
+    # THE RETENTION CLOCK IS READ AGAIN, AFTER THE RENAME. Nothing holds a lock
+    # on the victim between the verdict and this line: `.reap.lock` excludes
+    # reapers from one another and says nothing about the run being judged, and
+    # clause 3 compares against THIS process's `RUN_DIR` only. So an ordinary
+    # gate entry can land on this id after clause 2 read its clock — and
+    # `rundir_init` rewrites `started-at` to now on every entry — while the
+    # reaper is still inside `cc_run_state` and the recursive `du -sk` walk
+    # above. That is hundreds of milliseconds per victim, times up to
+    # `GATE_REAP_MAX` victims a cycle.
+    #
+    # Deleting through that window does not merely lose a live run. The run's
+    # own verbs carry on to an unguarded `mkdir -p "$RUN_DIR/log"` and rebuild
+    # the directory with no `started-at` in it, which clause 2 then refuses
+    # forever while the `-mtime` pre-filter hides it for another 25 days: this
+    # feature would be manufacturing the immortal run it exists to remove.
+    #
+    # The rename is what makes the re-read possible and it is the last moment at
+    # which the deletion is still reversible. `started-at` moved with the
+    # directory, so a writer that got in first left its bytes on this same
+    # inode, and reading them costs one `sed`. A missing or zero clock is
+    # "unknown" and unknown is not reclaimed, exactly as in clause 2.
+    now2=$(date -u +%s)
+    started2=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$trash/started-at" 2>/dev/null || true)
+    if [ -z "$started2" ] || [ "$started2" -le 0 ] \
+       || [ $((now2 - started2)) -lt "$GATE_REAP_RETENTION" ]; then
+      # PUT IT BACK ONLY IF ITS PLACE IS STILL EMPTY. `mv a b` with `b` an
+      # existing directory moves `a` INSIDE it, so an unguarded restore against
+      # an already-resurrected `run/<id>` would nest the old run under the new
+      # one — a second husk, in a stranger shape than the one being avoided.
+      # When the place is taken the copy stays in the trash under a `.keep`
+      # sibling the sweep honours, because at that moment it is the only copy of
+      # the run's handles and settings that exists.
+      if [ ! -e "$rd" ] && mv "$trash" "$rd" 2>/dev/null; then
+        gate_reap_note "회수 취소: 런 $id — 판정 이후 보존 시계가 신선해져 제자리로 되돌렸다"
+      else
+        : > "$trash.keep" 2>/dev/null || true
+        gate_reap_note "회수 보류: 런 $id — 판정 이후 보존 시계가 신선해졌으나 제자리가 이미 차 있어 .reap-trash 에 남긴다"
+      fi
+      continue
+    fi
     # A failing removal now leaves the bytes in the trash rather than a husk in
     # `run/`, and the next cycle's sweep takes it from there.
     rm -rf "$trash" 2>/dev/null || true
