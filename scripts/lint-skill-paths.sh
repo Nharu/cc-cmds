@@ -38,17 +38,29 @@
 #   the tenth from being written with the old root, which is what this rule is
 #   for.
 #
-#   THE BASENAME HALF OF THIS RULE IS RETIRED, and what retired it is that a
-#   lint is the weaker of the two ways to get one spelling. The rule used to ban
+#   THE BASENAME HALF OF THIS RULE IS RETIRED, and what retired it is that the
+#   ban had come to forbid the one name the tree produces. The rule used to ban
 #   the `cc-team-witness-` basename outright, because two spellings mean the
 #   cleanup contract's path guard knows a name nothing creates while the created
-#   one is never swept. Minting has since moved into a single script that is now
-#   the only thing that creates the directory, so the spelling cannot diverge by
-#   construction and the guard is matched against what is actually made — and
-#   the spelling that script mints carries the `cc-` prefix, so keeping the ban
-#   would forbid the one name the tree now produces. The root half stands on its
-#   own and is unaffected: fixing the name while keeping `${TMPDIR}` leaves the
-#   lifetime defect, which is the half that loses the witness.
+#   one is never swept. Minting has since moved into a single script, and the
+#   spelling that script mints carries the `cc-` prefix — so the ban now fires on
+#   the correct name and stays silent about an incorrect one. That is the whole
+#   of the reason it is gone, and it stands on its own.
+#
+#   WHAT IS NOT THE REASON, and used to be written here as if it were: "minting
+#   moved into a single script that is now the only thing that creates the
+#   directory, so the spelling cannot diverge by construction." That premise is
+#   false of this tree today. Consumer prose still tells a lead that a fresh team
+#   takes its own nested `mktemp -d`, so the directory is minted by hand in a
+#   spelling nothing checks — and the surviving root branch cannot speak to those
+#   lines either, because a bare `mktemp -d` names no root for it to match. A
+#   retired branch is a claim about what no longer needs checking, so resting it
+#   on an unverified sentence is how a rule comes to be retired for a reason that
+#   was never true.
+#
+#   The root half stands on its own and is unaffected: fixing the name while
+#   keeping `${TMPDIR}` leaves the lifetime defect, which is the half that loses
+#   the witness.
 #
 # Usage:
 #   bash scripts/lint-skill-paths.sh                  # lint all runtime markdown

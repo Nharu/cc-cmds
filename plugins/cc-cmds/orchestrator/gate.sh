@@ -479,10 +479,84 @@ gate_orchestrator_script_hint() {
 # the question degenerates to, which keeps the two rows gradeable rather than
 # dropping them to `등급 미상` outside a checkout.
 GATE_TREE_ROOT=''
+GATE_GRADE_CWD=''
+gate_real_prefix() {
+  # gate_real_prefix <절대 경로> — the deepest EXISTING ancestor resolved
+  # physically, with the not-yet-existing tail appended after it.
+  #
+  # WHY NOT `gate_physical_path`. That one needs the path's own directory to
+  # exist, and on this grading path it usually does not: the destination of an
+  # `mv` is a name about to be created, sometimes two levels below a directory
+  # that is also about to be created. Handed such a path it returns the input
+  # unchanged — which is the one answer that must not happen here, because the
+  # comparison this feeds is a PREFIX test and one side coming back unnormalized
+  # makes the test miss rather than answer differently.
+  #
+  # BOTH SIDES GO THROUGH THIS, and that is the whole point. Normalizing only the
+  # tree root turned every absolute operand spelled the logical way — which is how
+  # a caller spells one, because that is what the shell handed them — into an
+  # out-of-tree write. Normalizing only the operand has the mirror failure. The
+  # rule is one function, called on the root, on the base, and on every operand.
+  local p="$1" tail='' d
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    if [ -d "$p" ]; then
+      d=$(cd "$p" 2>/dev/null && pwd -P) || d=''
+      [ -n "$d" ] || d="$p"
+      printf '%s%s' "$d" "$tail"
+      return 0
+    fi
+    tail="/${p##*/}$tail"
+    p="${p%/*}"
+  done
+  printf '%s' "${tail:-/}"
+}
+
+gate_grade_cwd() {
+  # The directory the act being graded will actually RUN IN, in its physical
+  # spelling. Both path resolvers below answer from this and from nothing else.
+  #
+  # WHY NOT `$PWD`. The gate runs in the router's directory while the act runs
+  # in the target's worktree, and `gate_verb_act` used to resolve that worktree
+  # AFTER grading — so a relative operand was measured against a directory the
+  # command never enters. It went wrong in both directions at once: an effect
+  # that leaves the tree graded as a worktree write, and an effect genuinely
+  # inside the worktree refused because the outside-wins rule matched it against
+  # the wrong root. The second direction is the one that was actually costing
+  # callers, since a segment worktree is a same-depth sibling and an escape
+  # upward resolves the same way under either base.
+  #
+  # PHYSICAL, because the two resolvers are compared against each other.
+  # `gate_tree_root` takes its answer from git, which reports a real path, while
+  # `gate_lexical_abs` used to prefix the shell's logical one — so a single
+  # symlinked component made the prefix test miss entirely rather than merely
+  # answer differently. A path under this host's temp directory has exactly that
+  # shape.
+  # THE INHERITED `GATE_ACT_CWD` IS NOT READ HERE, AND THAT IS THE POINT. That
+  # variable is EXPORTED to stage children, so a gate running inside a gate
+  # inherits a directory this invocation never resolved — the outer run's
+  # worktree — and every relative operand of the inner call is then measured
+  # against a tree it has nothing to do with. Measured: a suite running under an
+  # outer gate graded an in-tree destination `트리밖쓰기`, because the root came
+  # from the outer run and the operand from the inner one. `gate_verb_act` sets
+  # this variable directly when it resolves the act's worktree, so the value is
+  # always one THIS process computed; anything else falls back to the caller's
+  # own directory.
+  if [ -z "$GATE_GRADE_CWD" ]; then
+    GATE_GRADE_CWD=$(gate_real_prefix "$PWD")
+  fi
+  printf '%s' "$GATE_GRADE_CWD"
+}
+
 gate_tree_root() {
+  local base
   if [ -z "$GATE_TREE_ROOT" ]; then
-    GATE_TREE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    [ -n "$GATE_TREE_ROOT" ] || GATE_TREE_ROOT="$PWD"
+    base=$(gate_grade_cwd)
+    GATE_TREE_ROOT=$(cd "$base" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$GATE_TREE_ROOT" ]; then
+      GATE_TREE_ROOT=$(gate_real_prefix "$GATE_TREE_ROOT")
+    else
+      GATE_TREE_ROOT="$base"
+    fi
   fi
   printf '%s' "$GATE_TREE_ROOT"
 }
@@ -498,10 +572,16 @@ gate_lexical_abs() {
   # would answer `등급 미상` for precisely the acts these rows were added to
   # spell honestly. `readlink -f` is also refused for a second reason: it is a
   # BSD/GNU divergence the portability lint scans this directory for.
-  local p="$1" out='' seg
+  # THE BASE IS A PARAMETER, and its default is the grading directory rather
+  # than `$PWD`. Reading the shell's own directory here is what made this
+  # resolver answer about a directory the act never runs in; taking it as an
+  # argument is also what lets one caller hand the SAME value to this and to
+  # `gate_tree_root`, which is the other half of the same defect.
+  local p="$1" base="${2:-}" out='' seg
+  [ -n "$base" ] || base=$(gate_grade_cwd)
   case "$p" in
     /*) ;;
-    *)  p="$PWD/$p" ;;
+    *)  p="$base/$p" ;;
   esac
   while [ -n "$p" ]; do
     seg="${p%%/*}"
@@ -524,11 +604,21 @@ surface_of_write_paths() {
   # it cannot be sure — `mktemp` takes the higher of two spellings, and the
   # database clients take the wider grade. Guessing low is the laundering the
   # table exists to refuse; guessing high costs a line in the manifest.
-  local root p abs
+  local root p abs base
   [ "$#" -gt 0 ] || { printf '등급 미상'; return 0; }
   root=$(gate_tree_root)
+  # ONE VALUE FOR BOTH RESOLVERS. The root above and the base below used to be
+  # taken from two different places, so the prefix test compared a git-reported
+  # real path against a shell-reported logical one and simply did not match
+  # whenever any component was a symlink.
+  base=$(gate_grade_cwd)
   for p in "$@"; do
-    abs=$(gate_lexical_abs "$p")
+    # THE OPERAND IS NORMALIZED THE SAME WAY THE ROOT IS. `gate_lexical_abs`
+    # answers without touching the filesystem, which is right for it — the
+    # destination of an `mv` need not exist — but it therefore preserves whatever
+    # spelling the caller used, and an absolute operand spelled logically then
+    # failed a prefix test against a physically spelled root.
+    abs=$(gate_real_prefix "$(gate_lexical_abs "$p" "$base")")
     case "$abs" in
       "$root"|"$root"/*) ;;
       *) printf '트리밖쓰기'; return 0 ;;
@@ -651,12 +741,84 @@ surface_of_rm() {
   surface_of_write_paths "${opnd[@]}"
 }
 
+surface_of_find() {
+  # surface_of_find [predicates and operands]   (argv0 already dropped)
+  #
+  # A pure search is a read. `find` also carries predicates that DELETE and
+  # predicates that EXECUTE an arbitrary command line, and one of those in the
+  # argv makes the grade unknowable from the name alone — so the answer is
+  # `등급 미상` rather than the grade of what is wrapped, because the wrapped
+  # command sits behind `{}` and a `+` or `;` terminator that this table has no
+  # business parsing.
+  #
+  # THE `-fprint` FAMILY BELONGS WITH THE EXECUTING PREDICATES, not with the
+  # read: it writes a file the search names, and a search that writes is not a
+  # search.
+  #
+  # An operand that literally spells one of these names grades `등급 미상` too.
+  # That is the direction this table errs in everywhere else — guessing low is
+  # the laundering it exists to refuse, and guessing high costs a line in the
+  # manifest.
+  local a
+  for a in "$@"; do
+    case "$a" in
+      -delete|-exec|-execdir|-ok|-okdir|-fprint|-fprint0|-fprintf|-fls)
+        printf '등급 미상'; return 0 ;;
+    esac
+  done
+  printf '읽기'
+}
+
+surface_of_command() {
+  # surface_of_command [options] <command> [args]   (argv0 already dropped)
+  #
+  # `command` WRAPS another command and has no effect of its own, so it takes
+  # that command's grade — the shape `lockf` already uses, and for the same
+  # reason. Its two reporting options are the exception: `-v` and `-V` print
+  # where a name resolves and run nothing.
+  #
+  # An unrecognized dash option ends the scan as `등급 미상` rather than a guess,
+  # for the reason `surface_of_mv` states at length: skipping an option that
+  # actually eats a value leaves that value standing in the command slot, and a
+  # wrong grade performs where an unknown one refuses.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      -v|-V|-pv|-pV|-vp|-Vp) printf '읽기'; return 0 ;;
+      -p) shift ;;
+      -*) printf '등급 미상'; return 0 ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -ge 1 ] || { printf '등급 미상'; return 0; }
+  surface_of_argv0 "$@"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
   case "$cmd" in
-    cat|ls|find|grep|rg|head|tail|wc|stat|file|diff|which|command)
+    cat|ls|grep|rg|head|tail|wc|stat|file|diff|which)
       printf '읽기' ;;
+    # `find` AND `command` LEFT THE READ ROW BECAUSE NEITHER OF THEM IS A READ.
+    #
+    # `find` takes `-delete`, `-exec`, `-execdir`, `-ok` and the `-fprint`
+    # family, so `find . -exec rm -rf {} +` was graded a read. The lowest grade
+    # is where such a mistake compounds: it passes a look-honest `읽기`
+    # declaration under strict equality, it spends no act budget, and the one
+    # warning that reports a missing credential split is suppressed at exactly
+    # that grade — so nothing downstream sees it either.
+    #
+    # `command` is wrong in kind rather than in degree. It is a pure prefix with
+    # no reading in it at all, and all it did on this row was relabel whatever
+    # followed it.
+    #
+    # Both take a shape this table already uses for a name whose effect lives in
+    # its operands. `find` gets a sub-table that answers `등급 미상` the moment an
+    # executing or deleting predicate appears and leaves a pure search a read;
+    # `command` delegates to the WRAPPED command exactly as `lockf` does.
+    find) surface_of_find "$@" ;;
+    command) surface_of_command "$@" ;;
     # Digest tools. Their absence was a DEADLOCK rather than a gap: the
     # unattended implement arm's process B may enter only after comparing the
     # plan's digest against the one on the ledger row, and computing that digest
@@ -5071,6 +5233,44 @@ gate_drain_notify_state() {
   return 0
 }
 
+gate_progress_axes_unbounded() {
+  # True when NEITHER progress-axis bound is in force.
+  #
+  # Undeclared counts, and so does declared in a spelling its own boundary
+  # refuses to enforce — a value `gate_b4_cost` warns about and walks away from
+  # bounds exactly nothing, and counting it as declared is how a run came to
+  # report bounds it did not have. One predicate, so the notice, the boundary and
+  # the caller below cannot each answer this differently.
+  local cost bound
+  cost=$(manifest_field '인가' '비용 천장')
+  bound=$(manifest_field '인가' '무진전 상한')
+  case "$cost" in
+    ''|없음|'(없음)') : ;;
+    *) if gate_cost_figure_ok "$cost"; then return 1; fi ;;
+  esac
+  case "$bound" in
+    ''|없음|'(없음)') : ;;
+    *) case "$bound" in *[!0-9]*) : ;; *) return 1 ;; esac ;;
+  esac
+  return 0
+}
+
+gate_past_deadline() {
+  # `벽시계 마감` read the way the driver reads it, for the one narrow purpose
+  # `gate_run_ended_ok` states below.
+  #
+  # BSD `date -j` is the parse form here for the same reason it is in the
+  # driver: this pipeline refuses to start on any non-darwin host, so a portable
+  # shim would be dead code guarding a branch that cannot run.
+  local dl d
+  [ -n "${MANIFEST:-}" ] || return 1
+  dl=$(manifest_field '인가' '벽시계 마감')
+  [ -n "$dl" ] && [ "$dl" != "없음" ] || return 1
+  d=$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "${dl%%+*}" '+%s' 2>/dev/null || true)  # lint-bash-portability: disable=date -j
+  [ -n "$d" ] || return 1
+  [ "$(date +%s)" -ge "$d" ]
+}
+
 gate_run_ended_ok() {
   # gate_run_ended_ok <kind> <cutpoint>
   #
@@ -5114,6 +5314,23 @@ gate_run_ended_ok() {
     # parenthesis would tell the morning nothing about why the night stopped.
     row=$( { gate_rows '자율 승인' | grep -F '결정=종료 ' || true; } | tail -1)
     mark="경계 $(gate_row_field "$row" '기준') · 근거 $(gate_row_field "$row" '근거') (원장 종료 행 — 종단 표시는 수거됐습니다)"
+  elif gate_progress_axes_unbounded && gate_past_deadline; then
+    # THE CLOCK IS KEPT FOR THE MANIFESTS THAT HAVE NOTHING ELSE.
+    #
+    # Replacing the wall clock with two progress-axis bounds is right for a
+    # manifest that declares one of them. Every manifest written before those
+    # fields existed declares neither, and undeclared is legal for both — so for
+    # those runs the replacement was not a replacement but a removal, and the
+    # router path was left with no enforced bound at all. The failure shape is
+    # the worst one available: unattended, it is silence rather than a crash.
+    #
+    # NARROW ON PURPOSE. When either bound is validly declared this arm is never
+    # reached and the clock has no say over the run, which is the whole of why it
+    # was replaced — the three measured cases where it ended a run through no
+    # fault of the run's are not re-admitted here. The predicate above is the same
+    # one `gate_unbounded_notice` uses, so the run that gets this gate is exactly
+    # the run that was told it had nothing.
+    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」과 「무진전 상한」이 둘 다 유효하게 선언되지 않아 마감이 유일한 경계입니다"
   else
     return 0
   fi
@@ -5324,6 +5541,33 @@ gate_verb_act() {
   # mismatch is exit 6 — the same idiom the slicing declaration's `슬라이스 수`
   # already uses, where a value the writer supplies is compared against one the
   # reader derives instead of being trusted.
+  # WHERE THE ACT WILL RUN, RESOLVED BEFORE IT IS GRADED. The operand-reading
+  # rows measure a relative path against a directory, and the only directory
+  # that can be right is the one the command is about to run in. This resolution
+  # used to sit a hundred lines below the grading arm, so every relative operand
+  # was measured against the router's own directory instead. An undeclared
+  # target has no row to read, so it keeps the caller's directory and is bounded
+  # by the layers above.
+  #
+  # `grade` IS EXCLUDED, AND NOT AS AN EXEMPTION. That verb answers what grade an
+  # argv would take and runs nothing, so there is no act and therefore no act
+  # directory — its callers do not even name a target. Handing it a declared
+  # execution worktree measures the caller's own relative operands against a
+  # directory the caller is not standing in, which is this block's own defect
+  # pointed the other way. `plan` is NOT excluded: it forecasts what `act` would
+  # do, so it has to resolve what `act` would resolve.
+  if [ "$verb" != "grade" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+    GATE_ACT_CWD=$(gate_act_worktree "$alias")
+    export GATE_ACT_CWD
+    # The grading base is handed over IN-PROCESS rather than read back out of the
+    # environment, for the reason `gate_grade_cwd` states: the exported copy is
+    # visible to children too, and a child must not grade against its parent's
+    # tree.
+    if [ -n "$GATE_ACT_CWD" ]; then
+      GATE_GRADE_CWD=$(gate_real_prefix "$GATE_ACT_CWD")
+    fi
+  fi
+
   local graded
   case "$kind" in
     propose-done)
@@ -5420,14 +5664,11 @@ gate_verb_act() {
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     gate_export_cutpoints "$alias" "$cutpoint" || exit $?
-    # Where the act runs. A declared target names its own worktree and the act
-    # belongs there; an undeclared one has no row to read, so the act stays in
-    # the caller's directory and is bounded by the layers above instead. The
-    # resolution itself lives in gate_act_worktree, which the approval's freeze
-    # and staleness comparison call too — a stage woke on the main worktree's
-    # branch every time until this was resolved in one place.
-    GATE_ACT_CWD=$(gate_act_worktree "$alias")
-    export GATE_ACT_CWD
+    # `GATE_ACT_CWD` is resolved ABOVE, before the grading arm, because the
+    # operand rows need it. The resolution itself lives in gate_act_worktree,
+    # which the approval's freeze and staleness comparison call too — a stage
+    # woke on the main worktree's branch every time until this was resolved in
+    # one place.
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
 
@@ -7143,10 +7384,68 @@ gate_close() {
   # Binding only the id lets the router point `close` at a different question
   # that WAS genuinely answered, and it then obtains an approval without
   # forging anything at all.
+  #
+  # AND THE LINE MUST HAVE BEEN WRITTEN BY THE PERSON.
+  #
+  # The two matches above bind an answer to a question; they say nothing about
+  # who wrote it. A transcript holds the ROUTER's own turns in the same file, and
+  # both bound values are ones the router reads out of the snapshot itself — so
+  # the pair only blocks pointing `close` at a different question, and never
+  # blocked the router typing its own answer to this one. What stood in for an
+  # author check was the affirmative scan further down, and `--answer` turns that
+  # off by design; under the flag the only surviving requirement was to avoid the
+  # negative vocabulary, and the entity that chooses the flag chooses the words
+  # too. The header above calls the separation of asker from recorder the whole
+  # value of reading this file, and without this filter the file did not deliver
+  # it.
+  #
+  # THE FILTER RUNS ON THE CANDIDATE LINES, NOT ON THE FILE. The two matches are
+  # over raw transcript bytes and `jq` re-serializes, so filtering first would
+  # compare the question text against a re-escaped copy of itself and the binding
+  # would break on any line whose escaping differs. In this order the byte-level
+  # binding is untouched and `jq` only decides which of the already-bound lines
+  # survive.
+  #
+  # WHAT SURVIVES is a user-role entry the harness did not synthesize. An
+  # assistant turn carries the role that names it and is refused on that alone —
+  # that is the router's own writing, and it is the whole of what was missing. A
+  # tool result comes back under the user role too, carrying `toolUseResult` and a
+  # `tool_result` content block; injected context carries `isMeta`; a sub-agent's
+  # own prompts carry `isSidechain`. None of those is a person answering, and each
+  # of them is bytes something other than a person put in the file.
+  #
+  # THE ROLE IS READ FROM THE SAME TWO PLACES THE EXTRACTION BELOW READS THE
+  # CONTENT FROM, and that symmetry is load-bearing rather than tidy. A harness
+  # line nests the message and a bare one does not, which is why the extraction
+  # already spells `.message.content? // .content?`. A filter that knew only the
+  # nested spelling would refuse every flat line — including ones a person really
+  # did write — and "no answer" and "an answer this cannot parse" are the two
+  # states this verb exists to keep apart.
+  #
+  # A LINE THAT IS NOT JSON IS DROPPED RATHER THAN KEPT, which is the opposite of
+  # the extraction below and is right for the opposite reason: extraction falls
+  # back to the raw bytes because it has already been established that a person
+  # wrote them, while here that is the very thing in question and an unparseable
+  # line establishes nothing.
   ans=""
   for f in $tx; do
     [ -f "$f" ] || continue
-    ans=$( { grep -F "$id" "$f" 2>/dev/null || true; } | { grep -F "$q" || true; } | tail -1)
+    ans=$( { grep -F "$id" "$f" 2>/dev/null || true; } | { grep -F "$q" || true; } \
+           | { jq -c 'select(((.message.role? // .role? // .type?) // "") == "user")
+                      | select((.type? // "user") != "assistant")
+                      | select(.isSidechain != true)
+                      | select(.isMeta != true)
+                      | select(has("toolUseResult") | not)
+                      | (.message.content? // .content?) as $c
+                      | select($c != null)
+                      | select(($c | type) == "string"
+                               or (($c | type) == "array"
+                                   and ([ $c[]
+                                          | select((type == "object")
+                                                   and (((.type? // "") == "tool_result")
+                                                        or ((.type? // "") == "tool_use"))) ]
+                                        | length) == 0))' 2>/dev/null || true; } \
+           | tail -1)
     [ -n "$ans" ] && break
   done
 
@@ -7165,7 +7464,7 @@ gate_close() {
         exit "$GATE_EXIT_APPROVAL"
       fi
     done
-    warn "트랜스크립트에 이 승인의 질문에 대한 응답이 없습니다 — 대기 상태를 유지합니다"
+    warn "트랜스크립트에 이 승인의 질문에 대한 사람이 쓴 응답이 없습니다 — 대기 상태를 유지합니다"
     exit "$GATE_EXIT_APPROVAL"
   fi
 
@@ -8164,10 +8463,22 @@ gate_unbounded_notice() {
   # The three undeclared spellings are the same vocabulary `gate_b4_cost` and
   # `gate_b5_stagnation_bound` read, because a value one of them treats as
   # "unbounded on this axis" has to read that way here too.
-  case "$cost" in ''|없음|'(없음)') : ;; *) return 0 ;; esac
-  case "$bound" in ''|없음|'(없음)') : ;; *) return 0 ;; esac
+  #
+  # AND A VALUE THOSE TWO REFUSE TO ENFORCE COUNTS AS UNDECLARED HERE. This test
+  # used to be emptiness alone, so a ceiling of `$50` or a bound of `여섯` was
+  # counted as declared and the one notice a run gets was suppressed — for a run
+  # that had, in fact, nothing on either axis. That is the exact combination this
+  # notice exists to name, and it was the combination it could not see.
+  case "$cost" in
+    ''|없음|'(없음)') : ;;
+    *) if gate_cost_figure_ok "$cost"; then return 0; fi ;;
+  esac
+  case "$bound" in
+    ''|없음|'(없음)') : ;;
+    *) case "$bound" in *[!0-9]*) : ;; *) return 0 ;; esac ;;
+  esac
   : > "$RUN_DIR/unbounded-notice"
-  warn "이 런은 「비용 천장」과 「무진전 상한」이 둘 다 미선언입니다 — 두 진전 축 어디에도 상한이 없습니다"
+  warn "이 런은 「비용 천장」과 「무진전 상한」이 둘 다 미선언입니다 (숫자로 읽히지 않는 값도 미선언으로 셉니다) — 두 진전 축 어디에도 상한이 없습니다"
   warn "남는 유계는 「벽시계 마감」뿐이고 그것은 고정 그래프 경로의 디스패치·머지 관문에서만 읽힙니다 — 라우터 경로는 그 마감에 닿지 않습니다"
 }
 
@@ -8333,6 +8644,29 @@ gate_b3_act_budget() {
   gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
 }
 
+gate_cost_figure_ok() {
+  # gate_cost_figure_ok <값> — true when the value reads as a plain decimal
+  # figure, which is the only form `gate_b4_cost`'s arithmetic can consume.
+  #
+  # `awk` coerces a string with a non-numeric head to 0, the percentage comes
+  # out 0, and the boundary returns without a word — so `$50`, `USD 50`, `약 50`
+  # and `50달러` were ceilings in name only, while `50 USD` survived on its
+  # numeric prefix. One field deciding differently by spelling is worse than one
+  # deciding not at all, because nothing in the run distinguishes the two.
+  #
+  # The stagnation bound already warns and declines to enforce when its value
+  # will not read as an integer. This is that check for this axis, spelled once
+  # so the boundary and the undeclared notice cannot disagree about which values
+  # are figures.
+  case "$1" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  case "$1" in
+    *.*.*|*.) return 1 ;;
+  esac
+  return 0
+}
+
 gate_b4_cost() {
   # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
   # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
@@ -8346,6 +8680,13 @@ gate_b4_cost() {
   # value one boundary reads as "unbounded on this axis" cannot be a figure to
   # the other.
   case "$declared" in ''|없음|'(없음)') return 0 ;; esac
+  # A VALUE THAT WILL NOT READ IS NOT A CEILING, AND SAYING SO IS THE POINT.
+  # Returning in silence is what this arm used to do, and it left a run believing
+  # it had a bound on the one axis that can still end it.
+  if ! gate_cost_figure_ok "$declared"; then
+    warn "비용 천장을 숫자로 읽지 못했습니다 ($declared) — 이 경계를 강제하지 않습니다. 통화 기호나 단위 없이 숫자만 적으세요"
+    return 0
+  fi
   spent=$(gate_rows 'cost' | tail -1 | tr '|' '
 ' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   [ -n "$spent" ] || return 0
@@ -8376,7 +8717,7 @@ gate_b5_stagnation_bound() {
   # everything the gate itself writes, so this counter cannot be reset by the
   # act of measuring it.
   #
-  # THE WHOLE VECTOR, AND DROPPING A TERM FROM IT WAS TRIED AND WITHDRAWN. A
+  # THE VECTOR MINUS `acts=`, AND EVERY OTHER TERM STAYS. Dropping `cycle=` was
   # rotating segment writes a `cycle` row every lap, so hashing the whole vector
   # does let a rotation move this key — and omitting the `cycle=` line, the way
   # `gate_b3_act_budget` omits `acts=`, looks like the matching repair. It is
@@ -8465,6 +8806,18 @@ gate_b5_stagnation_bound() {
   # rather than resuming a frozen tally. A stage that grows without producing
   # therefore gets no licence here — that shape is exactly what the wall clock
   # used to backstop, and the wall clock is gone.
+  # AND `acts=` IS EXCLUDED BECAUSE IT IS THIS COUNTER'S OWN INPUT. The two
+  # discriminators below count a router call whose grade is present and is not
+  # `읽기`; the vector's `acts=` line counts `결정=exec` rows under that same
+  # predicate, computed from the same value. The boundary is evaluated BEFORE the
+  # authorization row is appended, so call N read `acts=N-1` and call N+1 read
+  # `acts=N` — a different digest every time, and the counter was rewritten to 0
+  # on every call it had just counted. A router emitting non-read execs forever
+  # could not reach this bound whatever value was declared, which left the whole
+  # of the router's ACTING path unbounded on the axis this exists to bound; what
+  # was left able to fire were the few bookkeeping acts that move no term of the
+  # vector. `gate_b3_act_budget` drops the same line for the same reason and
+  # states it at length there.
   local bound h prev n
   [ -n "${CC_PIPELINE_STAGE_ID:-}" ] && return 0
   # Beside the discriminator above and before the manifest lookup: it is an
@@ -8476,7 +8829,7 @@ gate_b5_stagnation_bound() {
     warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다"
     return 0 ;;
   esac
-  h=$(gate_progress_digest)
+  h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
   prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
   if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
