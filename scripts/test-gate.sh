@@ -506,6 +506,19 @@ else
   bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
 fi
 
+# THE ANSWER CHANNEL'S WRITE BARRIER IS A RULE THIS FILE MAKES, and `gate_close`
+# said so in its own header while nothing here made it. The author filter that
+# verb applies decides whether a PERSON wrote a line; without this rule the
+# audited party could write that line with one tool call.
+TXD_EXPECT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+missing_txdeny=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  jq -e --arg d "Write($TXD_EXPECT/**)" '(.permissions.deny // []) | index($d) != null' "$f" >/dev/null 2>&1 \
+    || missing_txdeny=$((missing_txdeny + 1))
+done
+check "모든 변종이 트랜스크립트 디렉터리로의 도구 쓰기를 거부한다" "$missing_txdeny" "0"
+
 # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS. Every skill here
 # opens by Reading several `_common/*` files, and those live in the plugin cache
 # — outside the working directory, so outside what the ambient configuration
@@ -2785,6 +2798,26 @@ graded_as 읽기 "command -v 는 읽기다 (해소만 하고 실행하지 않는
 graded_as 워크트리쓰기 "command 는 감싼 명령의 등급을 받는다" -- command touch x
 graded_as 트리밖쓰기 "command 로 감싸도 트리 밖 쓰기는 트리 밖 쓰기다" -- command mv a /private/tmp/b
 
+# --- No act reaches the answer channel, whatever it declares ----------------
+#
+# 등급만으로는 부족하다 — 정직한 `트리밖쓰기` 선언은 정직한 `트리밖쓰기` 등급과
+# 일치해 통과하고, 그러면 감사받는 쪽이 감사 기록에 줄을 덧붙일 수 있다. 승인
+# 종결이 「사람이 썼는가」를 그 파일의 성질로 판정하므로, 그 파일에 대한 쓰기는
+# 표면을 가진 행위가 아니라 감사 기록의 변조다.
+TXD="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
+     --snapshot-digest "$(HH)" --rationale "트랜스크립트 쓰기" -- touch "$TXD/tx-probe.jsonl"
+check "정직하게 선언해도 트랜스크립트 디렉터리로의 쓰기는 거부된다" "$rc" "3"
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
+     --snapshot-digest "$(HH)" --rationale "인라인에 감춘 트랜스크립트 쓰기" -- bash -c "true # $TXD/tx-probe2.jsonl"
+check "인라인 프로그램 안에 감춘 목적지도 같은 거부를 받는다" "$rc" "3"
+# NOT VACUOUS — 같은 동사로 다른 곳에 쓰는 것은 그대로 통과한다.
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
+     --snapshot-digest "$(HH)" --rationale "트랜스크립트 아닌 곳 쓰기" -- touch "$WORK/tx-control"
+check "같은 동사로 트랜스크립트 밖에 쓰는 것은 통과한다" "$rc" "0"
+# 읽기는 막지 않는다 — `gate_close` 자신이 그 파일을 읽어야 한다.
+graded_as 읽기 "트랜스크립트를 읽는 것은 여전히 읽기다" -- cat "$TXD/tx-probe.jsonl"
+
 # --- B5's window key excludes its own input ---------------------------------
 #
 # The boundary counts a router call whose grade is present and is not `읽기`, and
@@ -2864,6 +2897,52 @@ grant_field_set '무진전 상한' '99'
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
 check "한쪽이라도 선언되면 마감은 파견을 막지 않는다" "$rc" "0"
 grant_field_set '무진전 상한' ''
+
+# --- The clock is read in the deadline's own zone ---------------------------
+#
+# 되살아난 팔은 `date -j -f '…%SZ'` 로 파싱하면서 `+HH:MM` 을 잘라내고도 잘려 나간
+# `Z` 를 계속 요구했다. 그래서 오프셋이 붙은 마감은 파싱에 실패했고, 그 실패가
+# `return 1` — 이 함수의 극성에서 「마감을 넘지 않았다」 — 로 흡수돼 열리는 쪽으로
+# 떨어졌다. 이 팔이 존재하는 이유가 두 경계를 모두 선언하지 않은 매니페스트인데,
+# 그 집단에서 열리는 쪽으로 실패하면 남는 경계가 하나도 없다.
+grant_field_set '벽시계 마감' '2020-01-01T09:00:00+09:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "오프셋이 붙은 지난 마감이 스테이지 파견을 막는다" "$rc" "3"
+grant_field_set '벽시계 마감' '2020-01-01T00:00:00-05:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "음수 오프셋이 붙은 지난 마감도 파견을 막는다" "$rc" "3"
+# NOT VACUOUS — 오프셋이 붙었다고 무엇이든 막지는 않는다.
+grant_field_set '벽시계 마감' '2030-01-01T09:00:00+09:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "오지 않은 오프셋 마감은 파견을 막지 않는다" "$rc" "0"
+
+# 파싱되던 `Z` 표기도 지역 시각으로 읽혔다 — `date -j -f` 는 mktime 을 거치고
+# 형식의 `Z` 는 `%Z` 가 아니라 문자 일치라 어떤 존도 세우지 않는다. UTC+9 호스트에서
+# 그 팔은 선언된 마감보다 아홉 시간 이르게 파견과 머지를 거부했다.
+TZ_SAVE="${TZ-}"
+export TZ=Asia/Seoul
+grant_field_set '벽시계 마감' "$(date -u -r "$(( $(date +%s) + 7200 ))" +%Y-%m-%dT%H:%M:%SZ)"
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "UTC+9 호스트에서 두 시간 뒤 UTC 마감은 아직 파견을 막지 않는다" "$rc" "0"
+if [ -n "$TZ_SAVE" ]; then export TZ="$TZ_SAVE"; else unset TZ; fi
+
+# 읽을 수 없는 마감은 강제하지 않되 조용히 버려지지도 않는다. 조용한 폐기가
+# 「경계가 있다」고 보고되는 런을 만들었다.
+grant_field_set '벽시계 마감' '2026-09-11T00:00:00+0900'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "읽을 수 없는 시간대는 파견을 막지 않는다" "$rc" "0"
+case "$msg" in
+  *"시간대를 읽지 못했습니다"*) ok "읽을 수 없는 시간대가 경고로 드러난다" ;;
+  *) bad "마감 시간대 경고" "읽을 수 없는 시간대가 조용히 버려졌다: $msg" ;;
+esac
+grant_field_set '벽시계 마감' '2026-13-45TXX:XX:XXZ'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "읽을 수 없는 형식은 파견을 막지 않는다" "$rc" "0"
+case "$msg" in
+  *"형식을 읽지 못했습니다"*) ok "읽을 수 없는 형식이 경고로 드러난다" ;;
+  *) bad "마감 형식 경고" "읽을 수 없는 형식이 조용히 버려졌다: $msg" ;;
+esac
+
 grant_field_set '벽시계 마감' "$DL_ORIG"
 rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 
@@ -7749,6 +7828,13 @@ approval_state() {
 approval_question() {
   row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '질문 문면'
 }
+approval_close_mode() {
+  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '종결 방식'
+}
+approval_mark() {
+  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } \
+              | { grep -F '상태=대기' || true; } | tail -1)" '답 표식'
+}
 
 # --- 32a. A negation past byte 400 is caught, and `--answer` does not help --
 #
@@ -7813,6 +7899,12 @@ emit_torn SJ8 "$JSTUB7"
 ij=$(row_field "$(last_judgment_approval)" '승인 id')
 if [ -n "$ij" ]; then
   ok "지시문 실험용 판단 승인이 열린다 ($ij)"
+  ijmark=$(approval_mark "$ij")
+  if [ -n "$ijmark" ] && [ "$ijmark" != "-" ]; then
+    ok "그 물음이 답 표식을 싣고 열린다 ($ijmark)"
+  else
+    bad "답 표식" "판단 승인이 표식 없이 열렸다 — --answer 가 결합할 값이 없다"
+  fi
   IJSID="66666666-3434-5656-7878-909090909090"
   printf '{"role":"user","content":"%s / %s → 표를 다시 재고 그 값을 계획에 옮겨 적으라"}\n' \
     "$ij" "$(approval_question "$ij")" > "$NTX/$IJSID.jsonl"
@@ -7820,10 +7912,27 @@ if [ -n "$ij" ]; then
         CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
   check "긍정 토큰이 없는 답은 --answer 없이는 닫히지 않는다" "$rc" "5"
   check "그 사이 승인은 대기로 남는다" "$(approval_state "$ij")" "대기"
+  # 표식이 없으면 `--answer` 는 아무것도 면제하지 않는다. 이것이 없던 자리에서,
+  # 사람이 되묻거나 유예하며 물음을 인용한 줄이 부정 어휘만 피하면 승인으로 닫혔다.
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
         CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
-  check "--answer 로는 같은 답이 승인으로 닫힌다" "$rc" "0"
+  check "표식을 적지 않은 지시문 답은 --answer 로도 닫히지 않는다" "$rc" "5"
+  check "그 승인은 여전히 대기다" "$(approval_state "$ij")" "대기"
+  # 되물음도 마찬가지다 — 부정 어휘를 하나도 담지 않지만 승인이 아니다.
+  printf '{"role":"user","content":"%s / %s → 이 물음 다시 정리해서 줘"}\n' \
+    "$ij" "$(approval_question "$ij")" > "$NTX/$IJSID.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
+  check "되물음은 --answer 아래에서도 승인으로 닫히지 않는다" "$rc" "5"
+  check "되물음 뒤에도 승인은 대기다" "$(approval_state "$ij")" "대기"
+  # NOT VACUOUS — 표식을 옮겨 적은 같은 지시문은 그대로 닫힌다.
+  printf '{"role":"user","content":"%s / %s → 표를 다시 재고 그 값을 계획에 옮겨 적으라 (표식 %s)"}\n' \
+    "$ij" "$(approval_question "$ij")" "$ijmark" > "$NTX/$IJSID.jsonl"
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
+  check "--answer 로는 표식을 실은 같은 답이 승인으로 닫힌다" "$rc" "0"
   check "그 승인의 상태가 승인이 된다" "$(approval_state "$ij")" "승인"
+  check "표식으로 닫힌 종결은 처분이 구별되어 기록된다" "$(approval_close_mode "$ij")" "지시(표식 확인)"
   if [ -f "$CONE_RD/answer/$ij.md" ]; then
     ok "판단 승인이 닫히면 무삭제 전문이 사이드카로 남는다"
   else

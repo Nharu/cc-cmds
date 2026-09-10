@@ -643,8 +643,21 @@ check_manifest() {
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
-  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
-    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
+  # THE SHAPE OF THE VALUE IS NOT CHECKED HERE, AND THAT PLACEMENT IS THE
+  # DECISION. This conjunction runs on EVERY gate entry, so an anchored format
+  # check living here turns an unreadable deadline into a hard stop on `plan`,
+  # `snapshot` and `close` alike — against a frozen block nobody can edit, since
+  # repairing the manifest moves the binding digest and the next call is refused
+  # for a second reason. That is the same trap `check_base_branches` is kept out
+  # of this function to avoid, and it was measured: a manifest carrying
+  # `…T00:00:00+0900` could not be dispatched against at all.
+  #
+  # WHAT AN UNREADABLE DEADLINE GETS INSTEAD IS A WARNING FROM THE BOUNDARY THAT
+  # READS IT. `gate_past_deadline` names the value it could not render and
+  # declines to enforce, so the run keeps going and the missing boundary is on
+  # the record rather than silently discarded. The format is refused once, at
+  # kickoff, by `check_deadline_format` — the one moment a refusal is still
+  # actionable.
 
   # `비용 천장` AND `무진전 상한` ARE NOT CHECKED HERE, and the omission is the
   # decision rather than the oversight. Undeclared is legal for both — the gate
@@ -709,6 +722,37 @@ $(manifest_autoadopt_rows)
 EOF
 
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+# The DEADLINE'S SHAPE, refused once and only at kickoff.
+#
+# THIS IS NOT PART OF `check_manifest`, for the reason stated beside
+# `check_base_branches` below: the gate sources this file and calls
+# `check_manifest` on every act, so an anchored format check living there hard-
+# stops every remaining act of a run whose manifest already carries a value the
+# comparator cannot read — and the value is frozen into the binding digest, so
+# repairing it moves the digest and the next call is refused a second time. The
+# run loses every verb, including the read-only ones it would need to diagnose
+# itself with.
+#
+# WHAT IS ACCEPTED IS EXACTLY WHAT THE COMPARATOR RENDERS — `Z`, or a `+HH:MM`
+# / `-HH:MM` offset — and both ends are anchored. Without a tail anchor any
+# suffix passed kickoff, so a value the gate cannot read got frozen in and the
+# boundary reading it opened silently. Anchoring to `Z` alone would be the
+# opposite error: it refuses offsets the comparator reads correctly.
+#
+# A DEADLINE THAT SLIPS PAST THIS — one frozen by an older driver, or written by
+# hand — is not re-refused later. `gate_past_deadline` warns that it cannot
+# render the value and declines to enforce, which leaves the run going with the
+# missing boundary on the record.
+check_deadline_format() {
+  local dl
+  dl=$(manifest_field '인가' '벽시계 마감')
+  # Absent or `없음` is `check_manifest`'s refusal and it has already run; this
+  # function says nothing about that case rather than saying it twice.
+  [ -n "$dl" ] && [ "$dl" != "없음" ] || return 0
+  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
+    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
 }
 
 # The BASE BRANCH, which the binding digest freezes and nothing verified. Every
@@ -4206,8 +4250,9 @@ if [ -n "$MANIFEST" ]; then
   fi
   [ -f "$MANIFEST" ] || { echo "run.sh: manifest not found: $MANIFEST" >&2; exit 2; }
   check_manifest
-  # KICKOFF ONLY. The gate re-enters `check_manifest` on every act; this one runs
+  # KICKOFF ONLY. The gate re-enters `check_manifest` on every act; these run
   # once, where a refusal can still be acted on.
+  check_deadline_format
   check_base_branches
   derive_paths_from_manifest
 elif [ -n "$DOC" ]; then
