@@ -8292,6 +8292,12 @@ SAGEOF
     printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
     printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
     printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+    # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
+    # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
+    # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
+    # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
+    [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
+      printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
     if [ $# -gt 0 ]; then
       printf '\n## 룰 설정\n'
       for extra in "$@"; do printf '%s\n' "$extra"; done
@@ -8319,6 +8325,7 @@ sa_new() {
   SA_SEGWT="$SA_ROOT/seg"
   SA_SEGBR="seg-$SA_ID"
   SA_APPLY="(해당 없음)"
+  SA_PREAUTH_EXTRA=""
   mkdir -p "$SA_REPO"
   ( cd "$SA_REPO" \
     && git init -q . \
@@ -9922,6 +9929,336 @@ check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
 # about whether the number was consumed.
 check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+
+# ---------------------------------------------------------------------------
+# 33. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
+#
+# 섹션 30 의 픽스처 규약을 그대로 쓴다(자기 저장소·자기 원장·자기 매니페스트).
+# 다른 점은 하나다 — 이 집합의 argv 는 `gh pr merge` 이고, 그것이 사전 인가에
+# 있어야 사전-인가-대조 의 exit 5 가 먼저 서지 않는다. `sb_new` 가 그 한 줄을
+# 더한다.
+#
+# 이 집합의 단언이 지키는 계약은 섹션 30 의 넷에 하나를 더한 것이다:
+#   5. 거절 단언은 그 거절을 낸 **소비자**를 함께 가른다. 저신고의 exit 8 과
+#      인가 상한의 exit 3 은 같은 argv 를 다른 이유로 막으므로, 코드만 재면
+#      한쪽을 지워도 다른 쪽이 초록으로 덮어 준다.
+#
+# `gh pr merge` 는 픽스처의 원격이 로컬 베어 경로라 **반드시 실패한다**. 그래서
+# 통과를 재는 단언은 rc 가 아니라 **게이트가 행위 앞에 쓴 `결정=act` 행**을
+# 읽는다 — 그 행이 곧 게이트의 판정이고, 행위의 rc 는 게이트의 답이 아니다.
+# ---------------------------------------------------------------------------
+sb_new() {
+  # sb_new <라벨> [상한] — sa_new 와 같되 `gh pr` 를 사전 인가에 싣는다.
+  sa_new "$@"
+  SA_PREAUTH_EXTRA='gh pr'
+  sa_manifest "${2-선머지후리뷰}"
+  rm -rf "$SA_RUN"
+}
+
+sb_target_field() {
+  # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
+  # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
+  # 부분 편집이 아니라 행 재작성 + 다이제스트 재계산이 유일하게 맞는 형태다
+  # (섹션 30 의 `sa_manifest` 가 같은 이유로 매니페스트를 통째로 다시 쓴다).
+  local row td
+  row=$( { grep -E '^- `target`' "$SA_MANIFEST" || true; } | sed "s/$1=[^ |]*/$1=$2/")
+  td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  awk -v r="$row" -v td="$td" '
+    /^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next }
+    /^- `target`/ { print r; next }
+    { print }
+  ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
+  sa_bd "$SA_MANIFEST" "$SA_WT"
+  rm -rf "$SA_RUN"
+}
+
+sb_act() {
+  # sb_act <세그먼트> <신고 절단점> <kind> [--] <argv...>
+  local sid="$1" cut="$2" knd="$3"; shift 3
+  case "${1:-}" in --) shift ;; esac
+  sag act --manifest "$SA_MANIFEST" --kind "$knd" --target main --segment "$sid" \
+      --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
+}
+sb_merge() { sb_act "$1" "$2" merge gh pr merge 1; }
+
+sb_row() {
+  # sb_row <세그먼트> — 그 세그먼트의 마지막 `결정=act` 자율 승인 행.
+  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } \
+    | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
+}
+
+# --- 1. 과신고된 머지가 유도 등급으로 판정되고, 원장이 두 값을 싣는다 ---------
+#
+# #505 의 측정 그대로다. 라우터는 모든 행위를 대상의 절단점으로 라벨링하므로
+# `--cutpoint 배포 -- gh pr merge` 가 통상 경로이고, 오늘은 그 행이 `절단점=배포`
+# 로 남아 등호로 좁히는 두 소비자(앵커 검사·의무 발행)가 통째로 비껴간다.
+sb_new '1 과신고' 선머지후리뷰
+sa_seg_row SB1 선머지후리뷰
+check "1: 세그먼트 행이 기록된다" "$rc" "0"
+sa_commit '작업' >/dev/null
+sb_merge SB1 배포
+sb1=$(sb_row SB1)
+if [ -n "$sb1" ]; then ok "1: 게이트가 그 머지를 통과시켜 행을 남겼다"; else bad "1 전제" "결정=act 행이 없다 — 게이트가 행위 앞에서 거절했다"; fi
+check "1: 그 행의 절단점이 유도 등급 머지 다 (오늘은 배포 다)" "$(sa_field "$sb1" '절단점')" "머지"
+check "1: 그리고 유도 절단점 필드가 머지 를 싣는다" "$(sa_field "$sb1" '유도 절단점')" "머지"
+case "$raw" in
+  *과신고*) ok "1: 실행 로그가 눌렸다는 사실을 남긴다 (두 필드가 같은 값이라 원장만으로는 구별되지 않는다)" ;;
+  *) bad "1 과신고 문면" "$raw" ;;
+esac
+
+# --- 2. 저신고는 exit 8 이고, 문면이 처방과 그 처방의 한계를 함께 적는다 ------
+nb=$(sa_rows)
+sb_merge SB1 PR
+check "2: PR 로 저신고된 머지는 exit 8 이다" "$rc" "8"
+sb2="$msg"
+case "$sb2" in
+  *머지*) ok "2: 문면이 유도 등급을 지명한다" ;;
+  *) bad "2 유도 등급" "$sb2" ;;
+esac
+case "$sb2" in
+  *park*) ok "2: 문면이 「올려도 안 될 수 있고 그때는 park」 절을 싣는다" ;;
+  *) bad "2 park 절" "$sb2" ;;
+esac
+check "2: 거절이 원장보다 상류라 행이 늘지 않는다" "$(sa_rows)" "$nb"
+sb_merge SB1 커밋
+check "2: 더 낮은 신고도 같은 코드다 (거리로 갈리지 않는다)" "$rc" "8"
+
+# --- 3. 정직한 신고는 오늘과 같다 --------------------------------------------
+#
+# 새 세그먼트에서 잰다. SB1 은 항목 1 의 머지로 미이행 의무가 열려 있어 두 번째
+# 머지가 룰에서 거절되고, 그러면 `결정=act` 행이 새로 생기지 않아 아래 단언들이
+# 항목 1 의 행을 다시 읽으며 공허하게 초록이 된다.
+sa_seg_row SB3 선머지후리뷰
+sb_merge SB3 머지
+sb3=$(sb_row SB3)
+if [ -n "$sb3" ]; then ok "3: 동치로 신고된 머지가 행을 남긴다"; else bad "3 전제" "결정=act 행이 없다"; fi
+check "3: 절단점이 머지 그대로다" "$(sa_field "$sb3" '절단점')" "머지"
+check "3: 유도 절단점도 머지다" "$(sa_field "$sb3" '유도 절단점')" "머지"
+case "$raw" in
+  *과신고*|*저신고*) bad "3 무경고" "동치인데 경고가 났다: $raw" ;;
+  *) ok "3: 동치는 조용히 통과한다" ;;
+esac
+
+# --- 4. 표가 모르는 argv 는 신고값으로 폴백한다 (오늘의 동작) ------------------
+#
+# 미래의 표 편집이 이 팔을 「미상이면 거절」로 바꾸면 여기서 깨진다.
+sb_act SB4 커밋 x -- cat a.txt
+check "4: 표가 침묵하는 argv 는 그대로 통과한다" "$rc" "0"
+sb4=$(sb_row SB4)
+check "4: 절단점이 신고값 그대로다" "$(sa_field "$sb4" '절단점')" "커밋"
+check "4: 유도 절단점은 - 다 (주장하지 않음)" "$(sa_field "$sb4" '유도 절단점')" "-"
+
+# --- 5. 벽시계 마감이 유도값 위에서 판정된다 ----------------------------------
+#
+# 두 방향을 함께 잰다. 저신고된 머지는 마감에 닿기 전에 exit 8 로 서고(오늘은
+# 마감 검사를 `커밋` 으로 지나갔다), 과신고된 커밋은 마감에 걸리지 않는다(오늘은
+# `배포` 로 읽혀 「마감 뒤로 머지는 없습니다」에 막혔다). 뒤쪽이 이 소비자가
+# 실효값을 읽는다는 것의 유일한 증인이다 — 앞쪽은 시임에서 서므로 이 소비자를
+# 밟지 않는다.
+sb_new '5 마감' 선머지후리뷰
+sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
+    "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
+sa_bd "$SA_MANIFEST" "$SA_WT"
+rm -rf "$SA_RUN"
+sa_seg_row SB5 선머지후리뷰
+check "5: 마감이 지나도 세그먼트 행은 기록된다 (마감은 디스패치와 머지만 막는다)" "$rc" "0"
+sa_commit '작업' >/dev/null
+sb_merge SB5 커밋
+check "5: 마감 뒤의 저신고된 머지가 더 이상 지나가지 않는다" "$rc" "8"
+sb_merge SB5 머지
+check "5: 정직하게 신고하면 마감이 그 머지를 거절한다" "$rc" "3"
+case "$msg" in
+  *마감*) ok "5: 그 거절은 마감의 것이다" ;;
+  *) bad "5 마감 문면" "$msg" ;;
+esac
+sb_act SB5 배포 x -- git commit --allow-empty -m 마감뒤커밋
+check "5: 배포 로 과신고된 커밋은 마감에 걸리지 않는다 (오늘은 rc 3 이다)" "$rc" "0"
+case "$msg" in
+  *마감*) bad "5 과신고" "커밋이 마감 뒤 머지로 읽혔다 — 이 소비자가 신고값을 읽고 있다" ;;
+  *) ok "5: 마감이 그 행위를 머지로 읽지 않는다" ;;
+esac
+
+# --- 6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
+#
+# §검증 기록 V11 이 지목한 자리다. 두 방향을 함께 잰다: 저신고된 머지는 시임에서
+# 서서 `대상 추가` 행을 아예 만들지 못하고, 과신고된 커밋은 유도값 `커밋` 으로
+# 층 1 에 들어 등록된다(오늘은 `배포` 로 읽혀 막혔다).
+sb_new '6 미선언 대상' 선머지후리뷰
+sb6_rows() { grep -cF '`대상 추가`' "$SA_LEDGER" 2>/dev/null || true; }
+sa_base >/dev/null
+n6=$(sb6_rows)
+sag act --manifest "$SA_MANIFEST" --kind merge --target 미선언 --segment SB6 \
+    --cutpoint 커밋 --worktree "$SA_SEGWT" --snapshot-digest "$(SAH)" --rationale x \
+    -- gh pr merge 1
+check "6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다" "$rc" "8"
+check "6: 그래서 대상 추가 등록 행을 쓰지 않는다" "$(sb6_rows)" "$n6"
+sag act --manifest "$SA_MANIFEST" --kind x --target 미선언 --segment SB6 \
+    --cutpoint 배포 --worktree "$SA_SEGWT" --snapshot-digest "$(SAH)" --rationale x \
+    -- git commit --allow-empty -m 미선언커밋
+check "6: 배포 로 과신고된 커밋은 유도값으로 층 1 에 든다 (오늘은 rc 3 이다)" "$rc" "0"
+check "6: 그때는 등록 행이 하나 늘어난다" "$(sb6_rows)" "$((n6 + 1))"
+
+# --- 7. 말단 행위 상한의 계수가 접두 일치로 부풀지 않는다 ---------------------
+#
+# `유도 절단점` 이 같은 행에 실리면서 계수 패턴이 좁아져야 한다. 좁히지 않은
+# 패턴은 `절단점=머지후착수` 도 함께 잡으므로, 머지가 아닌 행위 하나가 대상의
+# 말단 예산을 먹는다. 상한을 1 로 두고 머지 하나 + 머지후착수 하나를 쌓으면 두
+# 구현이 갈린다 — 좁힌 쪽은 1, 넓은 쪽은 2 다.
+sb_new '7 말단 상한' 선머지후리뷰
+sb_target_field 절단점 머지후착수
+sb_target_field '말단 행위 상한' 1
+sa_seg_row SB7 선머지후리뷰
+sa_commit '작업' >/dev/null
+sb_merge SB7 배포
+check "7: 그 머지가 절단점=머지 로 기록된다" "$(sa_field "$(sb_row SB7)" '절단점')" "머지"
+sb_cap_unmet() {
+  sag plan --manifest "$SA_MANIFEST" --kind propose-done --target main --segment SB7 \
+      --cutpoint 커밋 --rationale x
+  case "$raw" in *"말단 행위 상한"*) printf 'yes' ;; *) printf 'no' ;; esac
+}
+check "7: 머지 한 건은 상한 1 을 넘지 않는다" "$(sb_cap_unmet)" "no"
+sb_act SB7 머지후착수 x -- cat a.txt
+check "7: 머지후착수 로 신고된 읽기가 통과한다" "$rc" "0"
+check "7: 그 행이 절단점=머지후착수 로 남는다" "$(sa_field "$(sb_row SB7)" '절단점')" "머지후착수"
+check "7: 그래도 머지 계수는 여전히 하나다 (접두로 세면 둘이 되어 상한을 넘는다)" "$(sb_cap_unmet)" "no"
+sb_target_field '말단 행위 상한' 0
+check "7: 상한을 0 으로 조이면 그 조건이 실제로 발화한다 (위 두 단언이 공허하지 않다)" "$(sb_cap_unmet)" "yes"
+
+# --- 8. 다섯 기록 지점이 두 필드를 싣는다 ------------------------------------
+#
+# 항목 1·3·4 가 본행과 승인 행을 이미 값으로 쟀다. 여기서는 이 집합이 만든 원장
+# 전부를 훑어, `자율 승인` 과 `승인` 계열의 모든 행이 두 필드를 함께 싣는지 본다
+# — 한 기록 지점만 고치고 나머지를 잊는 것이 이 부류의 통상 실패다.
+sb_miss=0; sb_seen=0
+for sb_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
+  [ -f "$sb_l" ] || continue
+  while IFS= read -r sb_r; do
+    [ -n "$sb_r" ] || continue
+    sb_seen=$((sb_seen + 1))
+    [ -n "$(sa_field "$sb_r" '절단점')" ] && [ -n "$(sa_field "$sb_r" '유도 절단점')" ] \
+      || sb_miss=$((sb_miss + 1))
+  done <<EOF
+$( { grep -E '^- `(자율 승인|승인)`' "$sb_l" || true; } )
+EOF
+done
+if [ "$sb_seen" -gt 0 ]; then
+  ok "8: 절단점을 싣는 행이 ${sb_seen}건 관측됐다"
+else
+  bad "8" "그런 행이 하나도 없어 이 단언이 공허하다"
+fi
+check "8: 그 전부가 두 필드를 함께 싣는다" "$sb_miss" "0"
+
+# --- 9. 인가 상한의 폐쇄는 리뷰 룰의 폐쇄와 다른 소비자다 ---------------------
+#
+# 저신고가 인가 상한 자체를 지나가던 경로가 이것이다. 오늘은 rc 0 으로 통과하고
+# 이후 exit 8 인데, 그 8 이 인가 상한의 3 과 **다른 문면**이어야 두 소비자가
+# 구별된다 — 코드만 재면 한쪽을 지워도 다른 쪽이 초록으로 덮는다.
+sb_new '9 인가 상한 폐쇄' 선머지후리뷰
+sb_target_field 절단점 PR
+sa_seg_row SB9 선머지후리뷰
+sa_commit '작업' >/dev/null
+sb_merge SB9 커밋
+check "9: 절단점 PR 인 대상에 커밋 으로 저신고된 머지는 exit 8 이다" "$rc" "8"
+case "$msg" in
+  *"절단점-준수"*) bad "9 거절 주체" "인가 상한 룰이 세운 것으로 보고됐다 — 두 소비자가 구별되지 않는다" ;;
+  *) ok "9: 그 거절은 절단점-준수 의 것이 아니다" ;;
+esac
+sb_merge SB9 머지
+check "9: 정직하게 신고하면 이번에는 인가 상한이 거절한다" "$rc" "3"
+case "$msg" in
+  *"절단점-준수"*) ok "9: 그리고 그 거절은 절단점-준수 의 것이다 (다른 소비자, 다른 코드)" ;;
+  *) bad "9 문면" "$msg" ;;
+esac
+
+# --- 10. 의무 발행이 실효값을 읽는다 (시임 아래의 다섯째 소비자) --------------
+#
+# 시임만으로는 닿지 않는 자리다. 이 항목이 없으면 「저신고·과신고된 머지가
+# 의무를 만들지 않는다」가 슬라이스 B 뒤에도 그대로 남는다.
+sb_new '10 의무 발행' 선머지후리뷰
+sa_seg_row SB10 선머지후리뷰
+sa_commit '작업' >/dev/null
+SB10_TIP=$( cd "$SA_SEGWT" && git rev-parse HEAD )
+sb_merge SB10 배포
+check "10: 배포 로 신고된 머지가 리뷰 의무를 남긴다 (오늘은 남기지 않는다)" "$(sa_ob_count)" "1"
+OID10=$(sa_ob_id SB10)
+check "10: 그 의무의 머지 커밋이 세그먼트 워크트리의 팁이다" \
+  "$(sa_field "$(sa_ob_last "$OID10")" '머지 커밋')" "$SB10_TIP"
+check "10: 생성 등급이 그 행위의 축2 다" \
+  "$(sa_field "$(sa_ob_last "$OID10")" '생성 등급')" "외부상태변경"
+sb_merge SB10 배포
+check "10: 그 세그먼트의 두 번째 머지는 거절된다" "$rc" "3"
+if sa_names_rule; then
+  ok "10: 그 거절이 리뷰-후-머지 의 것이다 (열린 의무가 두 번째 머지를 막는다)"
+else
+  bad "10 문면" "$msg"
+fi
+
+# --- 11. 머지 미만의 행위는 오늘과 같다 --------------------------------------
+sb_new '11 머지 미만' 선머지후리뷰
+sa_seg_row SB11 선머지후리뷰
+sb_act SB11 커밋 x -- git commit --allow-empty -m 평범한커밋
+check "11: 동치로 신고된 커밋이 통과한다" "$rc" "0"
+sb11=$(sb_row SB11)
+check "11: 절단점이 커밋이다" "$(sa_field "$sb11" '절단점')" "커밋"
+check "11: 유도 절단점도 커밋이다" "$(sa_field "$sb11" '유도 절단점')" "커밋"
+check "11: 그리고 의무는 생기지 않는다" "$(sa_ob_count)" "0"
+
+# --- 슬라이스 A 보호 단언 — git push 는 표가 침묵한다 ------------------------
+#
+# 이 집합에서 가장 깨지기 쉬운 결정이며, 깨지면 슬라이스 A 회귀 집합이 한꺼번에
+# 빨개진다. `sa_merge` 는 `git push origin <세그먼트브랜치>:<베이스>` 를
+# `--cutpoint 머지` 로 신고한다. `push` 로 유도하면 그것이 과신고가 되어 실효값이
+# `push` 로 **내려가고**, 리뷰 룰(머지 이상에서만 발동)과 의무 발행(`= 머지`)이
+# 통째로 돌지 않는다. 원리적으로도 refspec 의 목적지가 베이스 브랜치인지는
+# 매니페스트를 읽어야 아는데 이 표는 매니페스트를 읽지 않는다.
+#
+# `sb_new` 가 아니라 `sa_new` 를 쓴다 — 이 항목이 재는 argv 는 `git push` 이고
+# 그 사전 인가는 기본 매니페스트에 이미 있다.
+sa_new 'A 보호' 선머지후리뷰
+sa_seg_row SBA 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge SBA
+check "A 보호: 슬라이스 A 의 머지 형태가 그대로 통과한다" "$rc" "0"
+sba=$(sb_row SBA)
+check "A 보호: 그 행의 절단점이 머지 그대로다" "$(sa_field "$sba" '절단점')" "머지"
+check "A 보호: 표가 침묵하므로 유도 절단점이 - 다" "$(sa_field "$sba" '유도 절단점')" "-"
+check "A 보호: 그래서 그 머지가 여전히 리뷰 의무를 만든다" "$(sa_ob_count)" "1"
+
+# --- 「아무것도 움직이지 않았다」 (슬라이스 B) -------------------------------
+#
+# 이 표가 실제로 답하는 argv 는 열거된 것뿐이며, 그 밖은 전부 침묵이다. 표가
+# 넓어지는 편집은 여기서 드러난다.
+#
+# `plan` 으로 잰다. 행위로 재면 그 argv 들이 각자의 이유로(원격 없음, 열린 의무,
+# `gh` 부재) 실패하거나 거절되고, 그러면 `결정=act` 행이 새로 생기지 않아 원장을
+# 읽는 단언이 앞 행을 다시 읽으며 공허하게 초록이 된다. `plan` 은 아무것도 쓰지
+# 않고 예고 줄에 유도값을 축자로 싣는다.
+#
+# 신고를 사다리의 **바닥**인 `커밋` 으로 둔다 — 이 표가 무엇이든 유도하면 그것은
+# 반드시 바닥보다 위라 저신고가 되고, 그러면 `plan` 이 rc 8 로 끝나 아래 단언이
+# 문면이 아니라 코드에서 먼저 걸린다.
+sb_new '무변경 B' 선머지후리뷰
+sa_seg_row SBZ 선머지후리뷰
+sb_silent() {
+  # sb_silent <라벨> -- <argv...> — 그 argv 가 유도값을 내지 않는지 잰다.
+  local label="$1"; shift 2
+  sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SBZ \
+      --cutpoint 커밋 --rationale x -- "$@"
+  if [ "$rc" != "0" ]; then
+    bad "무변경 B: $label" "plan 이 rc=$rc 로 끝났다 (유도가 생겼거나 다른 축이 섰다): $msg"
+    return 0
+  fi
+  case "$msg" in
+    *"유도=-"*) ok "무변경 B: $label" ;;
+    *) bad "무변경 B: $label" "$msg" ;;
+  esac
+}
+sb_silent 'git push 는 침묵한다'       -- git push origin HEAD:refs/heads/보호1
+sb_silent 'git merge 는 침묵한다'      -- git merge --no-commit --no-ff HEAD
+sb_silent 'git branch 는 침묵한다'     -- git branch 곁가지-보호
+sb_silent 'gh pr view 는 침묵한다'     -- gh pr view 1
+sb_silent 'terraform plan 은 침묵한다' -- terraform plan
+sb_silent 'gh api 의 GET 은 침묵한다'  -- gh api repos/o/r/pulls/1/merge
 
 # --- epilogue-begin ---
 #
