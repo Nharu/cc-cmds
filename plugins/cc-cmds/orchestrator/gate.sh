@@ -9151,15 +9151,21 @@ gate_terminal_cap_ok() {
     # to ` | `, `| 유도 절단점=머지 ` cannot match, because the text immediately
     # before `절단점` there is `유도 ` and not `| `.
     #
-    # `결정=act` IS PART OF THE PATTERN FOR THE SECOND HALF OF THE SAME COUNTING
-    # ERROR. An act that FAILS writes a `결정=결과` row carrying the identical
-    # `절단점`, so one merge that could not reach its remote consumed TWO of the
-    # target's terminal budget — and the budget is spent by acts PERFORMED, not
-    # by rows written about them. A succeeding merge writes no result row, which
-    # is why this never showed up until an argv that fails by construction
-    # (`gh pr merge` against a local bare remote) was counted. The refusal and
-    # void rows the propose-done path writes are excluded by the same token.
-    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -F '| 결정=act |' \
+    # `결정=(act|exec)` IS PART OF THE PATTERN FOR THE SECOND HALF OF THE SAME
+    # COUNTING ERROR. An act that FAILS writes a `결정=결과` row carrying the
+    # identical `절단점`, so one merge that could not reach its remote consumed
+    # TWO of the target's terminal budget — and the budget is spent by acts
+    # PERFORMED, under either verb `act` or `exec`, not by rows written about
+    # them. A succeeding merge writes no result row, which is why this never
+    # showed up until an argv that fails by construction (`gh pr merge` against
+    # a local bare remote) was counted. The refusal and void rows the
+    # propose-done path writes are excluded by the same token.
+    #
+    # BOTH VERBS, NOT ONE. The row above carries `결정=$verb`, and a stage session
+    # performs every merge it makes as `exec` — the hook forces that verb on all
+    # of its bash. Narrowed to `act` alone, a merge the stage pushed passed this
+    # count untouched and a run past its cap could still propose its own end.
+    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -E '\| 결정=(act|exec) \|' \
           | grep -cF '| 절단점=머지 ' || true)
     [ "$n" -le "$cap" ] || return 1
   done
