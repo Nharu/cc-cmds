@@ -20,6 +20,7 @@ lint:
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-reap-retention.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
