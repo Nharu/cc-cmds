@@ -4292,6 +4292,673 @@ snapH() {
   ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) | jq -r .H
 }
 
+# --- B. bounded reclamation and index pruning -------------------------------
+#
+# The reaper lives in the run-open branch, which is the same branch the handles
+# above are published beside — so this is where it is driven, from real gate
+# verbs against a real state directory, rather than from a new suite.
+#
+# EVERY DELETION ASSERTION IS A PAIR. Presence is asserted BEFORE the call and
+# absence AFTER, against the same path variable, so a broken fixture ("it was
+# never there") fails loudly and differently instead of passing. And the
+# reaper's OWN RECORD is read alongside, which is what turns "the directory is
+# gone" — equally consistent with reclaimed, never created, or removed by
+# something else — into "gone, and the reaper wrote down that it did it".
+#
+# THE BACKDATING CONSTRAINT. `started-at` is rewritten by `rundir_init` on every
+# gate entry, so a victim is given exactly one real gate call and every later
+# trigger uses a DIFFERENT run id. `reap.stamp` carries no such constraint: only
+# a reap cycle writes it, so a trigger cannot undo its backdating.
+B_MANIFEST_SAVE="$MANIFEST"; B_LEDGER_SAVE="$LEDGER"
+B_GRANT_SAVE="$GRANT"; B_RD_SAVE="$RD"; B_SID_SAVE="$CLAUDE_CODE_SESSION_ID"
+
+# Enforcement, not convention. This section runs code that deletes directories,
+# and `${XDG_STATE_HOME:-$HOME/.local/state}` is spelled identically in the gate,
+# the driver and the status line — so a suite that forgot to isolate would reap
+# a real run.
+FX_SCRATCH_ROOT="$WORK"
+export FX_SCRATCH_ROOT
+fx_require_isolated_state
+
+BSTATE="$XDG_STATE_HOME/cc-cmds"
+BRUNS="$BSTATE/run"
+BSESS="$BSTATE/session"
+
+# The canary: the real user's `run/` listing, READ ONLY, before and after. It
+# compares SETS rather than counts, because other runs open while the suite is
+# running (measured: 200 to 202 in one round).
+#
+# BOTH HALVES ARE HERE, AND THEY ARE NOT WRITTEN THE SAME WAY, because only one
+# of them can be stated as "nothing changed". Entries genuinely appear while the
+# suite runs — other sessions open runs of their own (measured 212 to 214 in one
+# round) — so a creation half phrased as "nothing was created" would fail on a
+# busy host and pass on an idle one, which is a coin toss rather than a check.
+# So the deletion half asks that NOTHING vanished, and the creation half asks
+# only that nothing bearing a FIXTURE NAME appeared. That is the sharper
+# question anyway: the accident being guarded against is this suite writing into
+# the real state directory — `~/.local/state/cc-cmds/run/R1` is the one that
+# actually happened — and a fixture name showing up there is that accident and
+# nothing else.
+#
+# Three subdirectories are walked, and they are not everything the reaper
+# touches. It deletes run directories under `run/`, rewrites and removes session
+# indexes under `session/`, and stages victims through `.reap-trash/` — watching
+# only `run/` left the other two unguarded against the same break. It also
+# writes `reap.stamp` and `.reap.lock` at the root, and those are deliberately
+# NOT watched: an ordinary gate entry from this very session writes both in the
+# real tree, so their presence there is the normal state rather than evidence of
+# anything. Saying "all three" without this paragraph would claim an exhaustive
+# set that the list is not.
+# THE LISTING IS A GLOB, NOT `ls`. Under `CLICOLOR_FORCE` BSD `ls` colours its
+# output even through a pipe, and the escape lands between the prefix and the
+# name — measured: `run/^[[1m^[[36mR1^[[39;49m^[[0m`. The deletion half survives
+# that, because it only counts lines, but the creation half anchors on `/` and
+# matched zero of two names that were plainly there. So the contamination would
+# have silently disabled exactly one of the two halves, which is the failure
+# this canary was rewritten to stop having. A glob also settles locale, a
+# `--color` alias, and names containing newlines, and keeps `ls -1`'s omission
+# of dotfiles.
+B_REALSTATE="$HOME/.local/state/cc-cmds"
+b_canary() {
+  local sub p
+  for sub in run session .reap-trash; do
+    for p in "$B_REALSTATE/$sub"/*; do
+      [ -e "$p" ] || continue
+      printf '%s/%s\n' "$sub" "${p##*/}"
+    done
+  done | LC_ALL=C sort
+}
+
+# EVERY NAME THIS SUITE CAN PUT ON DISK, IN ONE PLACE. Spread through the
+# creation-half regex, a name added to the fixtures below would need this
+# pattern edited too — and nothing fails if nobody does, because an unlisted
+# name simply is not looked for. Derived by enumerating the arguments the
+# fixtures actually pass: `R1`/`R2` and the `RB…` run ids, the `RV-…` victims,
+# the `B7X-…` run directories, the `sess-…` session indexes, and the two
+# date-shaped `-b11` runs — those last two matched nothing before and are the
+# ones hardest to spot by eye afterwards, since they wear the same shape as a
+# real run id.
+B_FIXTURE_NAME_RE='(R[0-9]|RV-|RB|B7X-|sess-|[0-9]{8}-b11)'
+B_CANARY_BEFORE=$(b_canary)
+
+b_exists() { if [ -e "$1" ]; then printf 'yes'; else printf 'no'; fi; }
+b_isdir()  { if [ -d "$1" ]; then printf 'yes'; else printf 'no'; fi; }
+
+# The retention floor is EXTRACTED from the gate rather than typed here. A
+# fixture that hand-types it stays green while the declaration moves underneath,
+# and the boundary these cases pin then stops being a boundary the code has.
+# `scripts/lint-reap-retention.sh` refuses the hand-typed form.
+BREAP_RET=$(sed -n 's/^readonly GATE_REAP_RETENTION=\([0-9][0-9]*\)$/\1/p' "$GATE")
+BREAP_MAX=$(sed -n 's/^readonly GATE_REAP_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+check "회수 보존 기준을 gate.sh 선언에서 뽑았다" \
+  "$(if [ -n "$BREAP_RET" ] && [ -n "$BREAP_MAX" ]; then printf yes; else printf no; fi)" "yes"
+BAGE_OLD=$((BREAP_RET + 864000))
+BAGE_YOUNG=$((BREAP_RET - 86400))
+
+b_newrun() {
+  # b_newrun <run-id> — a fresh run id, so its first gate call takes the run-open
+  # branch and runs exactly one reap cycle. Only the id changes, the same way the
+  # R2 copy above changes it.
+  local rid="$1"
+  sed "s/R1/$rid/g" "$GBAK" > "$WT/docs/pipeline-grant/$rid.md"
+  sed "s/R2/$rid/g" "$B_MANIFEST_SAVE" > "$WT/plan-$rid.md"
+  MANIFEST="$WT/plan-$rid.md"
+  LEDGER="$WT/docs/pipeline-run/$rid.md"
+  GRANT="$WT/docs/pipeline-grant/$rid.md"
+  RD="$XDG_STATE_HOME/cc-cmds/run/$rid"
+}
+
+b_trigger() {
+  # b_trigger <run-id> — push the cadence stamp into the past, then open a run.
+  # Without the backdating the six-hour window refuses every trigger after the
+  # first, and the cases below would be waiting on a wall clock.
+  printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$BSTATE/reap.stamp"
+  b_newrun "$1"
+  gate snapshot --manifest "$MANIFEST"
+}
+
+b_victim() {
+  # b_victim <run-id> <age-seconds> <종단|버려짐> — a run directory in the shape
+  # the reaper judges. Leaves the path in `B_VICTIM` rather than printing it: the
+  # isolation guard exits on refusal, and an exit inside `$( )` would only leave
+  # the subshell.
+  #
+  # THE DIRECTORY IS AGED LAST. Creating a file inside it moves its mtime, so an
+  # earlier `fx_age_file` would be undone and the victim would never clear the
+  # `-mtime` pre-filter.
+  local rid="$1" age="$2" kind="$3" d
+  d="$BRUNS/$rid"
+  fx_assert_scratch_path "$d"
+  mkdir -p "$d"
+  printf '# 원장과 아침 보고서\n## 실행 %s\n' "$rid" > "$d/fixture-ledger.md"
+  printf '%s\n' "$d/fixture-ledger.md" > "$d/ledger-path"
+  # 종단 by way of the `done` shortcut. 버려짐 has no `done`, no segment rows and
+  # a ledger that stopped moving, which is what puts it in the bottom rank.
+  if [ "$kind" = "종단" ]; then printf '종단 — 픽스처\n' > "$d/done"; fi
+  printf '%s\n' "$(( $(date -u +%s) - age ))" > "$d/started-at"
+  fx_age_file "$d/fixture-ledger.md" "$age"
+  fx_age_file "$d" "$age"
+  B_VICTIM="$d"
+}
+
+b_summary() { grep '회수 요약: ' "$LEDGER" 2>/dev/null | tail -1; }
+
+# --- B1 — 임계 전에는 아무것도 회수되지 않는다 (29일) ------------------------
+b_victim RV-B1 "$BAGE_YOUNG" 종단; B1V="$B_VICTIM"
+fx_session_index sess-b1 RV-B1
+B1_SIDX="$BSESS/sess-b1"
+B1_STARTED=$(cat "$B1V/started-at")
+B1_IDX=$(cat "$B1_SIDX")
+check "B1 전제 — 임계 미만 희생자가 실재한다" "$(b_isdir "$B1V")" "yes"
+b_trigger RB1
+check "B1 회수를 트리거한 런-오픈이 통과한다" "$rc" "0"
+check "B1 임계 전에는 디렉터리가 남는다" "$(b_isdir "$B1V")" "yes"
+check "B1 started-at 이 바이트 동일하게 남는다" "$(cat "$B1V/started-at")" "$B1_STARTED"
+check "B1 인덱스 줄이 바이트 동일하게 남는다" "$(cat "$B1_SIDX")" "$B1_IDX"
+# 회수기가 실제로 돌았음을 요약 줄로 확인한다 — 「아무것도 자격이 없었다」와
+# 「회수기가 아예 안 돌았다」를 가르는 것이 그 줄의 존재 이유다.
+case "$(b_summary)" in
+  *"삭제 0건"*) ok "B1 요약 줄이 돌았고 삭제 0건임을 적는다" ;;
+  *) bad "B1 요약" "요약 줄이 없거나 삭제 0건이 아니다: $(b_summary)" ;;
+esac
+
+# --- B2 — `종단` 만 회수한다 -------------------------------------------------
+# 이 케이스가 없으면 「오래되고 쓸모없음」을 버려짐까지로 일반화한 구현이 나머지를
+# 전부 통과한다.
+b_victim RV-B2T "$BAGE_OLD" 종단;   B2T="$B_VICTIM"
+b_victim RV-B2A "$BAGE_OLD" 버려짐; B2A="$B_VICTIM"
+B2A_STARTED=$(cat "$B2A/started-at")
+check "B2 전제 — 종단 희생자가 실재한다" "$(b_isdir "$B2T")" "yes"
+check "B2 전제 — 버려짐 런이 실재한다" "$(b_isdir "$B2A")" "yes"
+b_trigger RB2
+check "B2 종단 런은 사라진다" "$(b_exists "$B2T")" "no"
+check "B2 버려짐 런은 남는다" "$(b_isdir "$B2A")" "yes"
+check "B2 버려짐 런의 started-at 이 바이트 동일하다" "$(cat "$B2A/started-at")" "$B2A_STARTED"
+n=$(grep -c '회수: 런 RV-B2T ' "$LEDGER" 2>/dev/null || true)
+check "B2 회수기가 자기가 지웠다고 자기 보고서에 적는다" "$n" "1"
+case "$(grep '회수: 런 RV-B2T ' "$LEDGER" | tail -1)" in
+  *"마지막 게이트 진입 이후"*"바이트"*) ok "B2 그 줄이 나이의 이름과 바이트 수를 담는다" ;;
+  *) bad "B2 회수 줄" "나이의 이름이나 바이트 수가 없다" ;;
+esac
+case "$(grep '회수: 런 RV-B2T ' "$LEDGER" | tail -1)" in
+  *"$BRUNS"*) bad "B2 회수 줄" "경로가 적혔다 — id 와 상태 루트에서 유도되어야 한다" ;;
+  *) ok "B2 그 줄에 경로가 없다" ;;
+esac
+# 산문이지 행이 아니다 — 원장 행 술어는 전부 백틱 계열 토큰에 앵커하므로 이
+# 불릿들은 어떤 행 계열도 만들지 않고 어떤 종료 조건에도 세어지지 않는다.
+n=$(grep -c '^- `회수' "$LEDGER" 2>/dev/null || true)
+check "B2 회수 기록이 원장 행 계열을 만들지 않는다" "$n" "0"
+
+# --- B3 — 상한이 실제로 상한이다 --------------------------------------------
+b3=1
+while [ "$b3" -le $((BREAP_MAX + 3)) ]; do
+  b_victim "RV-B3-$b3" "$BAGE_OLD" 종단
+  b3=$((b3 + 1))
+done
+n=$( { ls -1d "$BRUNS"/RV-B3-* 2>/dev/null || true; } | grep -c . || true)
+check "B3 전제 — 상한보다 많은 후보가 실재한다" "$n" "$((BREAP_MAX + 3))"
+b_trigger RB3a
+n=$( { ls -1d "$BRUNS"/RV-B3-* 2>/dev/null || true; } | grep -c . || true)
+check "B3 한 패스에 정확히 상한만큼 사라진다" "$n" "3"
+case "$(b_summary)" in
+  *"상한 걸림"*) ok "B3 요약 줄이 상한에 걸렸음을 적는다" ;;
+  *) bad "B3 요약" "상한에 걸렸는데 요약이 그렇게 적지 않았다: $(b_summary)" ;;
+esac
+b_trigger RB3b
+n=$( { ls -1d "$BRUNS"/RV-B3-* 2>/dev/null || true; } | grep -c . || true)
+check "B3 다음 패스가 나머지를 회수한다 (사이클당 상한이지 영구 상한이 아니다)" "$n" "0"
+
+# --- B4 — 현재 런은 후보가 아니다 -------------------------------------------
+# 대조군을 같은 패스에 둔다. 없으면 「자기를 못 지운다」가 「회수기가 아예 안
+# 돌았다」와 구별되지 않는다.
+B4D="$BRUNS/RB4"
+fx_assert_scratch_path "$B4D"
+mkdir -p "$B4D"
+printf '# 원장과 아침 보고서\n## 실행 RB4\n' > "$B4D/fixture-ledger.md"
+printf '%s\n' "$B4D/fixture-ledger.md" > "$B4D/ledger-path"
+printf '종단 — 픽스처\n' > "$B4D/done"
+printf '%s\n' "$(( $(date -u +%s) - BAGE_OLD ))" > "$B4D/started-at"
+fx_age_file "$B4D/fixture-ledger.md" "$BAGE_OLD"
+fx_age_file "$B4D" "$BAGE_OLD"
+b_victim RV-B4 "$BAGE_OLD" 종단; B4V="$B_VICTIM"
+b_trigger RB4
+check "B4 대조군은 같은 패스에서 사라진다" "$(b_exists "$B4V")" "no"
+check "B4 현재 런은 자기를 지우지 못한다" "$(b_isdir "$B4D")" "yes"
+# 그리고 왜 도달 불가인지. `rundir_init` 이 런-오픈 분기보다 먼저 돌아 자기
+# `started-at` 을 now 로 다시 쓰므로, 회수가 도달할 때 보존 시계가 언제나 0 이다.
+b4_now=$(date -u +%s); b4_started=$(cat "$B4D/started-at" 2>/dev/null || printf 0)
+check "B4 자기 started-at 은 게이트 진입이 now 로 다시 썼다" \
+  "$(if [ $((b4_now - b4_started)) -lt 120 ]; then printf yes; else printf no; fi)" "yes"
+
+# --- B5 / B6 — 인덱스 정리 ---------------------------------------------------
+b_victim RV-B5      "$BAGE_OLD"   종단; B5V="$B_VICTIM"
+b_victim RV-B5-KEEP "$BAGE_YOUNG" 종단; B5K="$B_VICTIM"
+fx_session_index sess-b5 RV-B5 RV-B5-KEEP
+b_victim RV-B6 "$BAGE_OLD" 종단; B6V="$B_VICTIM"
+fx_session_index sess-b6 RV-B6
+check "B5 전제 — 두 런과 그 인덱스가 실재한다" \
+  "$(b_exists "$BSESS/sess-b5")$(b_isdir "$B5V")$(b_isdir "$B5K")" "yesyesyes"
+check "B6 전제 — 한 줄짜리 인덱스가 실재한다" "$(b_exists "$BSESS/sess-b6")" "yes"
+b_trigger RB5
+check "B5 회수된 런의 디렉터리가 사라진다" "$(b_exists "$B5V")" "no"
+n=$(grep -cxF 'RV-B5' "$BSESS/sess-b5" 2>/dev/null || true)
+check "B5 회수된 런의 인덱스 줄이 사라진다" "$n" "0"
+n=$(grep -cxF 'RV-B5-KEEP' "$BSESS/sess-b5" 2>/dev/null || true)
+check "B5 생존자의 줄은 남는다" "$n" "1"
+check "B6 항목이 하나도 안 남은 인덱스는 비워지는 게 아니라 삭제된다" \
+  "$(b_exists "$BSESS/sess-b6")" "no"
+
+# --- B7 — 동시 append 는 유실되지 않는다 (진행성은 단언하지 않는다) ----------
+b_victim RV-B7-1 "$BAGE_OLD" 종단
+b_victim RV-B7-2 "$BAGE_OLD" 종단
+B7_IDX="$BSESS/sess-b7"
+fx_session_index sess-b7 RV-B7-1 RV-B7-2
+B7_LOG="$WORK/b7-appended.txt"
+: > "$B7_LOG"
+# 게이트의 append 관용구를 축자로 쓴다 — 락 없는 `grep -qxF … || printf … >>`.
+# 다른 관용구로 쓰면 이 케이스는 게이트가 실제로 하는 일이 아니라 이 파일이
+# 상상한 일을 시험한다.
+(
+  i=1
+  while [ "$i" -le 60 ]; do
+    # THE RUN DIRECTORY IS CREATED FIRST, because that is the order the gate
+    # writes in — the directory is already there, holding the run's handles,
+    # when the id reaches the session index. An id appended without one is
+    # precisely what the prune exists to remove, so a fixture that skips this
+    # watches the prune do its job and calls the result a lost append.
+    mkdir -p "$BRUNS/B7X-$i" 2>/dev/null || true
+    grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
+    printf '%s\n' "B7X-$i" >> "$B7_LOG"
+    i=$((i + 1))
+    sleep 0.05
+  done
+) &
+B7_PID=$!
+FX_PIDS="${FX_PIDS:-}$B7_PID "
+export FX_PIDS
+b_trigger RB7
+wait "$B7_PID" 2>/dev/null || true
+b7_missing=0
+while IFS= read -r b7id; do
+  [ -n "$b7id" ] || continue
+  grep -qxF "$b7id" "$B7_IDX" 2>/dev/null || b7_missing=$((b7_missing + 1))
+done < "$B7_LOG"
+check "B7 동시 append 가 하나도 유실되지 않는다" "$b7_missing" "0"
+# 스플라이스는 개수가 아니라 모양으로 드러난다.
+n=$(grep -cvE '^[A-Za-z0-9._-]+$' "$B7_IDX" 2>/dev/null || true)
+check "B7 남은 줄이 전부 잘리지 않은 온전한 id 다" "$n" "0"
+# 「이번 사이클 포기」와 「영구 정체」를 가른다. 회수 대상 id 가 남아 있어도
+# 실패가 아니지만, 경합 없는 다음 패스는 그것을 지워야 한다 — 프룬의 기준이
+# 「디렉터리가 없는 항목」이라 사이클 사이에 무상태이고, 그래서 다음 패스가 같은
+# 판단을 처음부터 다시 내린다.
+b_trigger RB7b
+n=$(( $(grep -cxF 'RV-B7-1' "$B7_IDX" 2>/dev/null || true) \
+    + $(grep -cxF 'RV-B7-2' "$B7_IDX" 2>/dev/null || true) ))
+check "B7 경합 없는 후속 패스가 회수 대상 항목을 지운다" "$n" "0"
+
+# 대조군 — 순진한 read-modify-write. 이 케이스가 공회전으로 통과할 수 없게 한다:
+# 같은 관용구·같은 부하에서 순진한 방식이 유실을 내야, 위의 0 이 「경합이
+# 없었다」가 아니라 「CAS 가 막았다」를 뜻한다.
+B7C="$WORK/b7-control-index"
+B7C_LOG="$WORK/b7-control-appended.txt"
+printf 'RV-B7C\n' > "$B7C"
+: > "$B7C_LOG"
+(
+  i=1
+  while [ "$i" -le 800 ]; do
+    grep -qxF "B7C-$i" "$B7C" 2>/dev/null || printf '%s\n' "B7C-$i" >> "$B7C"
+    printf '%s\n' "B7C-$i" >> "$B7C_LOG"
+    i=$((i + 1))
+  done
+) &
+B7C_PID=$!
+FX_PIDS="${FX_PIDS:-}$B7C_PID "
+b7c_rounds=0
+while [ "$b7c_rounds" -lt 200 ] && kill -0 "$B7C_PID" 2>/dev/null; do
+  grep -vxF 'RV-B7C' "$B7C" > "$B7C.tmp" 2>/dev/null
+  sleep 0.02
+  mv "$B7C.tmp" "$B7C" 2>/dev/null || true
+  b7c_rounds=$((b7c_rounds + 1))
+done
+wait "$B7C_PID" 2>/dev/null || true
+b7c_missing=0
+while IFS= read -r b7id; do
+  [ -n "$b7id" ] || continue
+  grep -qxF "$b7id" "$B7C" 2>/dev/null || b7c_missing=$((b7c_missing + 1))
+done < "$B7C_LOG"
+if [ "$b7c_missing" -gt 0 ]; then
+  ok "B7 대조군 — 순진한 read-modify-write 는 같은 부하에서 append 를 유실한다 (${b7c_missing}건)"
+else
+  bad "B7 대조군" "순진한 방식조차 유실하지 않았다 — 경합이 만들어지지 않았으므로 위의 0 은 아무것도 증명하지 않는다"
+fi
+
+# 자기치유를 경합과 분리해 따로 시험한다. 살아 있는 id 를 인덱스에서 손으로
+# 지우는 것은, CAS 가 「불가능」이 아니라 「드물게」만 막는 최악을 경합에서 이길
+# 필요 없이 만들어 내는 방법이다. 이것이 실패하면 앞의 단계들이 통과해도 아무것도
+# 증명하지 못한다 — 「유실이 아니라 지연」이라는 구분 자체가 자기치유 위에 선다.
+CLAUDE_CODE_SESSION_ID=sess-heal
+export CLAUDE_CODE_SESSION_ID
+b_trigger RB7c
+check "자기치유 전제 — 그 세션 인덱스에 런이 들어 있다" \
+  "$(grep -cxF 'RB7c' "$BSESS/sess-heal" 2>/dev/null || true)" "1"
+rm -f "$BSESS/sess-heal"
+gate snapshot --manifest "$MANIFEST"
+check "자기치유 — 손으로 지운 살아 있는 id 가 다음 게이트 진입에 되돌아온다" \
+  "$(grep -cxF 'RB7c' "$BSESS/sess-heal" 2>/dev/null || true)" "1"
+CLAUDE_CODE_SESSION_ID="$B_SID_SAVE"
+export CLAUDE_CODE_SESSION_ID
+
+# --- B8 — `started-at` 이 없으면 회수하지 않는다 -----------------------------
+# 다른 모든 디스크 신호가 「오래됨」을 외치는 상황에서 시험한다. 모름은 회수하지
+# 않는다는 것이 fail-closed 의 내용이다.
+B8V="$BRUNS/RV-B8"
+fx_assert_scratch_path "$B8V"
+mkdir -p "$B8V"
+printf '# 원장과 아침 보고서\n## 실행 RV-B8\n' > "$B8V/fixture-ledger.md"
+printf '%s\n' "$B8V/fixture-ledger.md" > "$B8V/ledger-path"
+printf '종단 — 픽스처\n' > "$B8V/done"
+fx_age_file "$B8V/fixture-ledger.md" "$BAGE_OLD"
+fx_age_file "$B8V/done" "$BAGE_OLD"
+fx_age_file "$B8V" "$BAGE_OLD"
+check "B8 전제 — started-at 없는 낡은 종단 런이 실재한다" \
+  "$(b_isdir "$B8V")$(b_exists "$B8V/started-at")" "yesno"
+b_trigger RB8
+check "B8 started-at 이 없으면 회수하지 않는다" "$(b_isdir "$B8V")" "yes"
+
+# --- B9 — 미래 시각의 `started-at` 은 회수하지 않는다 ------------------------
+b_victim RV-B9 "$BAGE_OLD" 종단; B9V="$B_VICTIM"
+# 기존 파일을 덮어쓰므로 디렉터리 mtime 은 움직이지 않는다 — 사전 필터는 그대로
+# 통과하고, 걸러 내는 것은 나이 검사여야 한다.
+printf '%s\n' "$(( $(date -u +%s) + 86400 ))" > "$B9V/started-at"
+b_trigger RB9
+check "B9 미래 시각의 started-at 은 회수하지 않는다" "$(b_isdir "$B9V")" "yes"
+
+# --- B10 — `run/` 아래의 심볼릭 링크는 후보가 되지 않는다 --------------------
+# 링크 대상이 상태 디렉터리 밖을 가리키는 형태로 만들어 격리 가드도 함께
+# 운동시킨다. 사전 필터의 `-type d` 가 링크를 따라가지 않으므로 술어의 네 번째
+# 절은 두 번째 층이고, 이 케이스가 고정하는 것은 그 결과다.
+B10_OUT="$WORK/outside-b10"
+fx_assert_scratch_path "$B10_OUT"
+mkdir -p "$B10_OUT"
+printf 'x\n' > "$B10_OUT/canary"
+fx_assert_scratch_path "$BRUNS/RV-B10"
+ln -s "$B10_OUT" "$BRUNS/RV-B10"
+b_trigger RB10
+check "B10 run/ 아래의 심볼릭 링크가 남는다" \
+  "$(if [ -L "$BRUNS/RV-B10" ]; then printf yes; else printf no; fi)" "yes"
+check "B10 링크 대상이 온전하다 (링크를 따라가 지우지 않았다)" \
+  "$(cat "$B10_OUT/canary" 2>/dev/null || true)" "x"
+
+# --- B11 — 런 id 의 날짜가 `started-at` 보다 최신이면 회수하지 않는다 --------
+# 오늘 날짜의 id 에 임계를 넘긴 시계가 들어 있는 것은 모순이고, 모순은 회수하지
+# 않는 쪽으로 푼다. 짝이 되는 대조군은 날짜가 아주 오래된 id 로, 이 절이 날짜
+# 모양의 id 를 통째로 막아 버리지 않음을 보인다.
+B11_NEW="$(date -u +%Y%m%d)-b11"
+b_victim "$B11_NEW" "$BAGE_OLD" 종단; B11V="$B_VICTIM"
+b_victim "19700101-b11" "$BAGE_OLD" 종단; B11C="$B_VICTIM"
+check "B11 전제 — 두 희생자가 실재한다" "$(b_isdir "$B11V")$(b_isdir "$B11C")" "yesyes"
+b_trigger RB11
+check "B11 런 id 의 날짜가 started-at 보다 최신이면 회수하지 않는다" "$(b_isdir "$B11V")" "yes"
+check "B11 날짜가 시계보다 오래된 id 는 회수한다 (절이 날짜 id 를 통째로 막지 않는다)" \
+  "$(b_exists "$B11C")" "no"
+
+# --- B12 — 동시 쓰기 아래에서 `run/` 에 잔재가 남지 않는다 -------------------
+# 순진한 `rm -rf` 는 이 경합에서 rc=1 로 끝나며 `watch.heartbeat` 만 남은 잔재를
+# 남기고, 그 잔재는 `ledger-path` 가 없어 영구 비종단이 된다 — 즉 부분 실패한
+# 회수가 이 이슈의 불멸 런을 새로 만들어 낸다. rename-then-delete 에서만
+# 통과하도록, 단언은 빈 디렉터리도 잔재도 허용하지 않는 `[ ! -e ]` 다.
+b_victim RV-B12 "$BAGE_OLD" 종단; RD_VICTIM="$B_VICTIM"
+fx_assert_scratch_path "$RD_VICTIM"
+printf 'hb 0\n' > "$RD_VICTIM/watch.heartbeat"
+b12=1
+while [ "$b12" -le 400 ]; do printf 'x\n' > "$RD_VICTIM/f$b12"; b12=$((b12 + 1)); done
+# 파일을 다 만든 뒤에 다시 나이를 준다 — 위에서 준 나이는 이 생성들이 되돌렸다.
+fx_age_file "$RD_VICTIM" "$BAGE_OLD"
+(
+  i=1
+  while [ "$i" -le 20000 ]; do
+    printf 'hb %s\n' "$i" > "$RD_VICTIM/watch.heartbeat" 2>/dev/null || exit 0
+    i=$((i + 1))
+  done
+) &
+B12_PID=$!
+FX_PIDS="${FX_PIDS:-}$B12_PID "
+check "B12 전제 — 희생자가 실재한다" "$(b_isdir "$RD_VICTIM")" "yes"
+b_trigger RB12
+kill "$B12_PID" 2>/dev/null || true
+wait "$B12_PID" 2>/dev/null || true
+check "B12 동시 쓰기 아래에서 run/ 에 잔재가 남지 않는다" "$(b_exists "$RD_VICTIM")" "no"
+n=$(grep -c '회수: 런 RV-B12 ' "$LEDGER" 2>/dev/null || true)
+check "B12 회수기가 자기가 지웠다고 적는다" "$n" "1"
+
+# --- B13 — `.reap-trash/` 스윕 -----------------------------------------------
+# `mv` 는 됐는데 `rm` 전에 죽은 상태를 손으로 심는다.
+B13T="$BSTATE/.reap-trash"
+fx_assert_scratch_path "$B13T"
+mkdir -p "$B13T/RV-B13.999.1"
+printf 'x\n' > "$B13T/RV-B13.999.1/leftover"
+# (c) 런으로 열거되지 않는다. `.reap-trash/` 가 `run/` 의 형제이므로, 세션
+# 인덱스에 그 이름을 적대적으로 넣어도 상태표시줄은 그것을 런으로 집지 않는다.
+fx_session_index sess-b13 'RV-B13.999.1'
+b13_line=$(fx_statusline_stdin sess-b13 \
+  | bash "$repo_root/plugins/cc-cmds/orchestrator/statusline.sh" 2>/dev/null || true)
+case "$b13_line" in
+  *RV-B13*) bad "B13 열거" ".reap-trash 항목이 런으로 렌더됐다: $b13_line" ;;
+  *) ok "B13 .reap-trash 항목은 런으로 열거되지 않는다" ;;
+esac
+check "B13 전제 — 잔여 항목이 실재한다" "$(b_isdir "$B13T/RV-B13.999.1")" "yes"
+b_trigger RB13
+check "B13 .reap-trash 의 잔여 항목이 스윕된다" "$(b_exists "$B13T/RV-B13.999.1")" "no"
+b13=1
+while [ "$b13" -le $((BREAP_MAX + 2)) ]; do
+  mkdir -p "$B13T/RV-B13S-$b13.999.1"
+  printf 'x\n' > "$B13T/RV-B13S-$b13.999.1/leftover"
+  b13=$((b13 + 1))
+done
+b_trigger RB13b
+n=$( { ls -1d "$B13T"/RV-B13S-* 2>/dev/null || true; } | grep -c . || true)
+check "B13 스윕도 같은 사이클 상한 안에서 돈다" "$n" "2"
+
+# --- B14 — owner 를 읽을 수 없는 잠금도 만료된다 -----------------------------
+# 해제가 단일 rename 이 된 뒤로 이 스위트 자신은 이 상태를 만들지 않지만, 밖에서
+# 들어올 수 있다 — 옛 판본이 남긴 잔여물, 잠금 안에 뭔가를 떨어뜨린 다른 도구.
+# 그때 「읽을 수 없으니 거부」로 끝내면 회수기는 아무 증상 없이 영원히 꺼진다.
+# 만료 판정을 디렉터리 자신의 mtime 으로 물러서게 한 것이 그것을 막는다.
+# 이 케이스들이 잡는 것은 만료 판정이 owner 줄 없이도 선다는 것 하나다. 해제를
+# 단일 rename 으로 바꾼 쪽은 여기서 잡지 못한다 — 그 차이는 디렉터리를 지우는
+# 단계가 실패할 때만 드러나는데, 사이클이 잠금을 쥐고 있는 동안 밖에서 그 안에
+# 무언가를 떨어뜨릴 자리가 없어 이 층위에서는 그 실패를 만들어 낼 수 없다. 적어
+# 두는 이유는, 적지 않으면 다음 사람이 이 케이스들을 두 수정 모두의 회귀 방벽으로
+# 읽기 때문이다.
+#
+# 잠금은 `mkdir -p` 가 아니라 지우고 새로 만든다. `mkdir -p` 는 이미 있는
+# 디렉터리에 무연산이라(실측: mtime 도 그대로다) 앞 케이스가 남긴 잠금이 그대로
+# 살아남고, 그것이 owner 를 가진 잠금이면 아래 단언은 자기 표제가 지목하는
+# 구별을 시험하지 않은 채 초록이 된다. 전제를 직접 단언하는 줄이 그 대체를 막는다.
+b_victim RV-B14 "$BAGE_OLD" 종단
+B14V="$B_VICTIM"
+rm -rf "$BSTATE/.reap.lock"; mkdir "$BSTATE/.reap.lock"
+check "B14 전제 — 낡은 잠금에 owner 가 없다" \
+  "$(b_exists "$BSTATE/.reap.lock/owner")" "no"
+fx_age_file "$BSTATE/.reap.lock" 1800
+b_trigger RB14
+check "B14 owner 없는 낡은 잠금이 회수를 막지 않는다" "$(b_exists "$B14V")" "no"
+
+# 반대쪽을 함께 고정하지 않으면 위의 통과는 「만료를 지켰다」가 아니라 「잠금을
+# 아예 안 본다」로도 설명된다.
+b_victim RV-B14B "$BAGE_OLD" 종단
+B14BV="$B_VICTIM"
+rm -rf "$BSTATE/.reap.lock"; mkdir "$BSTATE/.reap.lock"
+check "B14 전제 — 갓 생긴 잠금에 owner 가 없다" \
+  "$(b_exists "$BSTATE/.reap.lock/owner")" "no"
+b_trigger RB14b
+check "B14 갓 생긴 owner 없는 잠금은 존중된다" "$(b_exists "$B14BV")" "yes"
+
+# 대조군을 같은 희생자로 둔다. 없으면 위의 생존이 「잠금을 존중했다」가 아니라
+# 「회수기가 아예 안 돌았다」와 구별되지 않는다 — 이 파일이 다른 자리에서 이미
+# 금지한 형태다.
+rm -rf "$BSTATE/.reap.lock"
+b_trigger RB14c
+check "B14 잠금이 걷히면 같은 희생자가 회수된다" "$(b_exists "$B14BV")" "no"
+
+# --- B15 — `.keep` 가 붙은 잔여 항목은 스윕이 건드리지 않는다 ----------------
+# 회수 루프는 판정 이후 보존 시계가 신선해진 희생자를 제자리로 되돌리려 하고,
+# 제자리가 이미 차 있어 되돌리지 못하면 `.reap-trash` 에 표식과 함께 남긴다. 그
+# 시점에 그 사본은 그 런의 핸들·설정이 남아 있는 유일한 자리이므로, 스윕이 그것을
+# 여느 잔여물처럼 지우면 재확인이 방금 구해 낸 런을 다음 사이클이 없앤다.
+#
+# 창 자체 — 자격 판정과 `mv` 사이에 런이 되살아나는 것 — 는 이 층위에서 만들어 낼
+# 수 없다. 그 두 지점 사이에는 밖에서 관측할 수 있는 자리가 없어서, 희생자에
+# 대고 `started-at` 을 계속 덮어쓰는 픽스처를 세워도 그 쓰기가 창 안에 들어갔는지
+# 판정 이전에 들어갔는지 구별되지 않고, 후자면 애초에 자격이 없어 케이스가 경합
+# 없이 초록이 된다. 그래서 여기서 못박는 것은 재확인이 남기는 표식을 스윕이
+# 존중한다는 것 하나다 — 적어 두지 않으면 다음 사람이 이 케이스를 창 전체의 회귀
+# 방벽으로 읽는다.
+#
+# 재확인이 그 표식을 만들 결심을 하는 자리는 B16 이 잰다. 이 케이스가 못 만드는
+# 것은 경합이고, 경합이 만들어 낼 상태 자체는 그 함수를 직접 부르면 만들어진다.
+#
+# 대조군을 같은 사이클에 함께 둔다. 없으면 보류 항목의 생존이 「표식을
+# 존중했다」가 아니라 「스윕이 아예 안 돌았다」로도 설명된다.
+B15T="$BSTATE/.reap-trash"
+fx_assert_scratch_path "$B15T"
+mkdir -p "$B15T/RV-B15-HOLD.999.1" "$B15T/RV-B15-GO.999.1"
+printf 'x\n' > "$B15T/RV-B15-HOLD.999.1/leftover"
+printf 'x\n' > "$B15T/RV-B15-GO.999.1/leftover"
+: > "$B15T/RV-B15-HOLD.999.1.keep"
+check "B15 전제 — 보류 항목이 실재한다" "$(b_isdir "$B15T/RV-B15-HOLD.999.1")" "yes"
+check "B15 전제 — 대조군 항목이 실재한다" "$(b_isdir "$B15T/RV-B15-GO.999.1")" "yes"
+b_trigger RB15
+check "B15 표식이 없는 대조군은 스윕된다" "$(b_exists "$B15T/RV-B15-GO.999.1")" "no"
+check "B15 .keep 이 붙은 항목은 스윕이 남긴다" "$(b_isdir "$B15T/RV-B15-HOLD.999.1")" "yes"
+rm -rf "$B15T/RV-B15-HOLD.999.1" "$B15T/RV-B15-HOLD.999.1.keep"
+
+# --- B16 — 되돌림의 네 결말 --------------------------------------------------
+#
+# 회수의 마지막 되돌림 지점이다. 자격 판정이 「낡았다」고 답한 뒤 `mv` 로 희생자를
+# `.reap-trash` 에 옮기고, 거기서 보존 시계를 한 번 더 읽는다. 그 사이에 다른
+# 게이트 진입이 이 런의 `started-at` 을 now 로 다시 쓰면 두 읽기가 다른 값을 본다.
+#
+# B15 가 적어 둔 대로 그 창은 밖에서 만들 수 없다. 그러나 창이 만들어 낼 상태 —
+# 「쓰레기통 안의 시계가 신선하다」 — 는 만들 수 있고, 그것이 이 절이 하는 일이다.
+# 되돌림을 `gate_reap_unwind` 로 떼어 두었으므로 소스 전용 seam 으로 직접 부른다.
+# 떼어 두기 전에는 두 갈래 어느 쪽도 어떤 시험도 실행하지 않았고, 재확인 코드를
+# 통째로 지워도 스위트가 초록이었다.
+#
+# 반환값의 뜻: 0 = 회수하지 않았다(되돌렸거나 보류했다), 1 = 시계가 여전히
+# 회수라고 말한다(호출자가 삭제를 이어 간다).
+b_unwind() {
+  # b_unwind <trash> <rd> <id> <now> — 함수를 그 자리에서 부르고 반환값을 준다.
+  # 원장은 이 스위트의 것을 그대로 물려, 함수가 남기는 산문 줄이 아래 단언에
+  # 잡히게 한다. `LEDGER` 는 소싱 **뒤에** 세운다 — gate.sh 가 run.sh 를 소싱하고
+  # 그쪽이 이 이름을 자기 값으로 덮으므로, 환경으로 넘기면 산문 줄이 이 스위트의
+  # 원장이 아닌 곳으로 가고 아래 `grep` 이 전부 빈손으로 돌아온다.
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_B_LEDGER="$LEDGER" bash -c '
+      . "'"$GATE"'" >/dev/null 2>&1
+      LEDGER="$CC_B_LEDGER"
+      # `set -e` 는 gate.sh 가 소싱한 드라이버에서 켜진다. 1 을 반환하는 것이
+      # 이 함수의 정상 결말 중 하나이므로 그대로 부르면 `printf` 에 닿기 전에
+      # 셸이 죽어 빈 문자열이 나온다. 프로덕션 호출부는 `if` 조건 안이라 이
+      # 문제가 없고, 여기서만 반환값을 값으로 받아야 해서 갈라 놓는다.
+      if gate_reap_unwind "$@"; then printf 0; else printf %s "$?"; fi
+    ' _ "$@" ) 2>/dev/null
+}
+b_uw_make() {
+  # b_uw_make <이름> <started-at 내용> — 쓰레기통 안의 희생자 하나. 내용이 빈
+  # 문자열이면 `started-at` 자체를 두지 않는다(= 시계 미상).
+  B_UW_T="$BSTATE/.reap-trash/$1.777.1"
+  B_UW_R="$BRUNS/$1"
+  fx_assert_scratch_path "$B_UW_T"
+  fx_assert_scratch_path "$B_UW_R"
+  rm -rf "$B_UW_T" "$B_UW_R" "$B_UW_T.keep"
+  mkdir -p "$B_UW_T"
+  printf 'x\n' > "$B_UW_T/handle"
+  [ -z "$2" ] || printf '%s\n' "$2" > "$B_UW_T/started-at"
+}
+B_UW_NOW=$(date -u +%s)
+
+# B16a — 시계가 여전히 낡았다. 되돌리지 않고 호출자에게 삭제를 넘긴다. 이 케이스가
+# 없으면 아래 셋이 전부 통과하는 「항상 되돌린다」 구현도 초록이다.
+b_uw_make RV-B16A "$(( B_UW_NOW - 40 * 86400 ))"
+check "B16a 낡은 시계는 회수를 이어 가라고 답한다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16A "$B_UW_NOW")" "1"
+check "B16a 이어 갈 때는 쓰레기통의 희생자를 건드리지 않는다" "$(b_isdir "$B_UW_T")" "yes"
+check "B16a 이어 갈 때는 제자리를 만들지 않는다" "$(b_exists "$B_UW_R")" "no"
+
+# B16b — 시계가 신선해졌고 제자리가 비어 있다. 되돌린다.
+b_uw_make RV-B16B "$B_UW_NOW"
+check "B16b 신선해진 시계는 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16B "$B_UW_NOW")" "0"
+check "B16b 희생자가 제자리로 돌아왔다" "$(b_isdir "$B_UW_R")" "yes"
+check "B16b 쓰레기통에는 남지 않았다" "$(b_exists "$B_UW_T")" "no"
+case "$(grep '회수 취소: 런 RV-B16B ' "$LEDGER" | tail -1)" in
+  *"제자리로 되돌렸다"*) ok "B16b 되돌림이 보고서에 적힌다" ;;
+  *) bad "B16b 되돌림 줄" "회수 취소 줄이 없다" ;;
+esac
+rm -rf "$B_UW_R"
+
+# B16c — 시계가 신선해졌으나 제자리가 이미 차 있다. 보류하고 표식을 남긴다.
+# 그 사본이 그 런의 핸들이 남은 유일한 자리이므로 지우면 안 된다.
+b_uw_make RV-B16C "$B_UW_NOW"
+mkdir -p "$B_UW_R"; printf 'resurrected\n' > "$B_UW_R/started-at"
+check "B16c 차 있는 제자리에도 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16C "$B_UW_NOW")" "0"
+check "B16c 희생자는 쓰레기통에 남는다" "$(b_isdir "$B_UW_T")" "yes"
+check "B16c 스윕이 존중할 표식이 붙는다" "$(b_exists "$B_UW_T.keep")" "yes"
+# 되살아난 런을 그 안에 중첩시키지 않았다는 것 — `mv a b` 가 b 를 디렉터리로 보면
+# a 를 그 안으로 넣는다는 것이 이 갈래가 존재하는 이유다.
+check "B16c 되살아난 런 안에 희생자를 중첩시키지 않았다" "$(b_exists "$B_UW_R/RV-B16C.777.1")" "no"
+case "$(grep '회수 보류: 런 RV-B16C ' "$LEDGER" | tail -1)" in
+  *"제자리가 이미 차 있어"*) ok "B16c 보류가 보고서에 적힌다" ;;
+  *) bad "B16c 보류 줄" "회수 보류 줄이 없다" ;;
+esac
+rm -rf "$B_UW_T" "$B_UW_T.keep" "$B_UW_R"
+
+# B16d — 시계를 읽을 수 없다. 미상은 회수하지 않는다 — 자격 판정의 같은 규율이다.
+b_uw_make RV-B16D ""
+check "B16d 시계가 없으면 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16D "$B_UW_NOW")" "0"
+check "B16d 시계가 없는 희생자도 제자리로 돌아온다" "$(b_isdir "$B_UW_R")" "yes"
+rm -rf "$B_UW_R"
+
+# B16e — 제자리가 비었는데도 `mv` 가 실패한다. 되돌리지 못했으므로 「되돌렸다」로
+# 적으면 안 된다 — 보고서가 되돌림의 유일한 기록이라, 일어나지 않은 되돌림이
+# 성공으로 적히면 그 뒤로 그 런을 찾을 길이 없다. 부모 디렉터리의 쓰기 권한을
+# 걷어 실패를 결정적으로 만든다. root 는 권한을 무시하므로 그때는 건너뛴다.
+if [ "$(id -u)" != "0" ]; then
+  b_uw_make RV-B16E "$B_UW_NOW"
+  chmod u-w "$BRUNS"
+  B16E_RC=$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16E "$B_UW_NOW")
+  chmod u+w "$BRUNS"
+  check "B16e mv 가 실패해도 회수는 멈춘다" "$B16E_RC" "0"
+  check "B16e 되돌리지 못한 희생자는 쓰레기통에 남는다" "$(b_isdir "$B_UW_T")" "yes"
+  check "B16e 되돌리지 못했어도 표식이 붙는다" "$(b_exists "$B_UW_T.keep")" "yes"
+  case "$(grep 'RV-B16E ' "$LEDGER" | tail -1)" in
+    *"회수 보류"*) ok "B16e 실패한 되돌림은 보류로 적힌다" ;;
+    *"회수 취소"*) bad "B16e 되돌림 줄" "일어나지 않은 되돌림이 성공으로 적혔다" ;;
+    *) bad "B16e 되돌림 줄" "아무 줄도 적히지 않았다" ;;
+  esac
+  rm -rf "$B_UW_T" "$B_UW_T.keep" "$B_UW_R"
+else
+  ok "B16e mv 실패 갈래 — root 는 디렉터리 권한을 무시하므로 이 호스트에서는 세울 수 없다"
+fi
+
+# --- 카나리아 정산 -----------------------------------------------------------
+B_CANARY_AFTER=$(b_canary)
+n=$(LC_ALL=C comm -23 <(printf '%s\n' "$B_CANARY_BEFORE") \
+                      <(printf '%s\n' "$B_CANARY_AFTER") | grep -c . || true)
+check "카나리아 — 실사용자 상태 항목이 하나도 사라지지 않았다" "$n" "0"
+# 생성 절반. 「아무것도 안 생겼다」로 물으면 같이 도는 다른 세션의 런 때문에
+# 흔들리므로, 이 스위트가 쓰는 이름만 골라 본다. 실사용자 런 id 는 날짜-해시
+# 꼴이고 세션 인덱스는 UUID 라 이 이름들과 겹치지 않는다.
+n=$(LC_ALL=C comm -13 <(printf '%s\n' "$B_CANARY_BEFORE") \
+                      <(printf '%s\n' "$B_CANARY_AFTER") \
+     | grep -cE "/$B_FIXTURE_NAME_RE" || true)
+check "카나리아 — 픽스처 이름이 실사용자 상태에 하나도 나타나지 않았다" "$n" "0"
+
+# Hand the following sections back the run they were written against.
+MANIFEST="$B_MANIFEST_SAVE"; LEDGER="$B_LEDGER_SAVE"
+GRANT="$B_GRANT_SAVE"; RD="$B_RD_SAVE"
+CLAUDE_CODE_SESSION_ID="$B_SID_SAVE"
+export CLAUDE_CODE_SESSION_ID
+fx_reap
+
 # --- termination condition 7 reads the same predicate -----------------------
 FX_RUN_DIR="$RD"; FX_PIDS=""
 fx_stage_dead D1
