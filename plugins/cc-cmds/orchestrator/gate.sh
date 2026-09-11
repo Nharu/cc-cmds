@@ -4069,7 +4069,16 @@ gate_issue_judgment_approval() {
       # nothing to issue.
       return "$GATE_APPROVAL_ANSWERED" ;;
   esac
+  # THE LITERAL `-` AND NOT THE EXPORTED GLOBAL, for the same reason the act
+  # digest and the binding tuple beside it are `-`: a judgment approval HAS NO
+  # ACT. `GATE_ACT_DERIVED` may well be set — the judgment is raised while some
+  # act is being adjudicated — and carrying that value here would say the argv
+  # of an unrelated act was the argv of this row, which has none. The field is
+  # written rather than omitted because `절단점` is on the row, and a reader that
+  # finds one of the pair without the other cannot tell "nothing was derived"
+  # from "this recording site was forgotten".
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
+    "유도 절단점=-" \
     "행위 다이제스트=-" "구속 튜플=-" "막는 세그먼트=${seg:--}" \
     "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
   warn "판단 승인 대기 발행 $id — 이 판단은 사람의 답을 기다립니다 (런은 그 옆으로 계속 갑니다)"
@@ -5794,8 +5803,16 @@ gate_verb_act() {
       # tells the router "re-read the snapshot and try again", and a retry with
       # the same misspelled argv walks straight back into this same refusal —
       # so the staleness comparison below must not get to answer first.
+      # THE RULE IS DESCRIBED AND NOT NAMED, and the omission is deliberate. The
+      # catalog refusal spells its own rule's name on stderr — `룰 거부:
+      # 절단점-준수` — and that name is the only thing separating the two
+      # refusals for a reader scanning the transcript. Spelling it here as part
+      # of a PRESCRIPTION would put it on the exit-8 message too, and then the
+      # two consumers this axis exists to tell apart become one string again:
+      # deleting either check leaves the other answering for it. The router's
+      # exit-code table carries the name; this message carries the repair.
       warn "저신고: argv 는 '$GATE_ACT_DERIVED' 등급인데 '$cutpoint' 로 신고됐습니다 — 낮은 신고는 인가를 넓히지 않습니다"
-      warn "신고를 '$GATE_ACT_DERIVED' 로 올려 같은 argv 로 다시 부르세요. 다만 올려도 대상의 절단점을 넘으면 인가되지 않은 것이며, 그때의 처방은 다시 올리는 것이 아니라 park 입니다 — 그 거절은 이 exit 8 이 아니라 절단점-준수의 exit 3 으로 돌아옵니다"
+      warn "신고를 '$GATE_ACT_DERIVED' 로 올려 같은 argv 로 다시 부르세요. 다만 올려도 대상의 절단점을 넘으면 인가되지 않은 것이며, 그때의 처방은 다시 올리는 것이 아니라 park 입니다 — 그 거절은 이 exit 8 이 아니라 인가 상한 룰의 exit 3 으로 돌아옵니다"
       exit "$GATE_EXIT_LADDER"
     fi
     if [ "$d_idx" -lt "$r_idx" ]; then
@@ -8582,7 +8599,17 @@ gate_terminal_cap_ok() {
     # derived `머지` would consume two of the target's terminal-act budget. Anchored
     # to ` | `, `| 유도 절단점=머지 ` cannot match, because the text immediately
     # before `절단점` there is `유도 ` and not `| `.
-    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -cF '| 절단점=머지 ' || true)
+    #
+    # `결정=act` IS PART OF THE PATTERN FOR THE SECOND HALF OF THE SAME COUNTING
+    # ERROR. An act that FAILS writes a `결정=결과` row carrying the identical
+    # `절단점`, so one merge that could not reach its remote consumed TWO of the
+    # target's terminal budget — and the budget is spent by acts PERFORMED, not
+    # by rows written about them. A succeeding merge writes no result row, which
+    # is why this never showed up until an argv that fails by construction
+    # (`gh pr merge` against a local bare remote) was counted. The refusal and
+    # void rows the propose-done path writes are excluded by the same token.
+    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -F '| 결정=act |' \
+          | grep -cF '| 절단점=머지 ' || true)
     [ "$n" -le "$cap" ] || return 1
   done
   return 0
@@ -9219,7 +9246,13 @@ gate_issue_boundary_approval() {
   local name="$1" q="$2" id
   id="${name}-$(printf '%s' "$RUN_ID$name$(gate_progress_digest)" | shasum -a 256 | cut -c1-8)"
   gate_has_row '승인' "승인 id=$id " && return 0
+  # `유도 절단점=-` FOR THE SAME REASON THE ACT DIGEST IS `-`. A boundary has no
+  # act, so there is no argv to derive a rung from, and `경계` in the slot beside
+  # it is not a rung at all. Taking the ambient `GATE_ACT_DERIVED` would attach
+  # the argv of whatever act happened to trip the boundary to a row that is not
+  # about that act.
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
+    "유도 절단점=-" \
     "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \
     "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
   # The boundary approvals are the slowest class this design has, by

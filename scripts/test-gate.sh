@@ -9972,6 +9972,26 @@ sb_target_field() {
   rm -rf "$SA_RUN"
 }
 
+sb_grant_max() {
+  # sb_grant_max <절단점> — 인가 기록의 「권한 절단점」과 매니페스트의 「런 최대
+  # 절단점」을 함께 올린다.
+  #
+  # 대상 행의 절단점은 인가 기록의 권한 절단점을 넘을 수 없고, 넘으면 그 대조가
+  # 룰 루프보다 위에서 모든 호출을 exit 3 으로 세운다. 픽스처의 기본값은 `배포`
+  # 인데 사다리의 꼭대기는 `머지후착수` 이므로, 대상을 그 꼭대기에 두려면 인가
+  # 기록도 함께 올려야 한다 — 올리지 않으면 그 대상에 대한 세그먼트 행조차
+  # 기록되지 않아 아래 단언들이 「행이 없다」만 보고 공허해진다.
+  #
+  # 두 필드를 함께 옮긴다. 오늘 게이트가 읽는 것은 인가 기록 쪽뿐이지만, 두 값이
+  # 하룻밤 내내 어긋나 있는 것이 이 픽스처가 재현해야 할 상태는 아니다.
+  sed "s/^\*\*권한 절단점\*\*: .*/**권한 절단점**: $1/" "$SA_GRANT" > "$SA_GRANT.g" \
+    && mv "$SA_GRANT.g" "$SA_GRANT"
+  sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
+    && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
+  sa_bd "$SA_MANIFEST" "$SA_WT"
+  rm -rf "$SA_RUN"
+}
+
 sb_act() {
   # sb_act <세그먼트> <신고 절단점> <kind> [--] <argv...>
   local sid="$1" cut="$2" knd="$3"; shift 3
@@ -10071,7 +10091,12 @@ case "$msg" in
   *마감*) ok "5: 그 거절은 마감의 것이다" ;;
   *) bad "5 마감 문면" "$msg" ;;
 esac
-sb_act SB5 배포 x -- git commit --allow-empty -m 마감뒤커밋
+# THE COMMIT MESSAGE MUST NOT CONTAIN `마감`, and that is a constraint on the
+# fixture rather than a detail of it. `sag` captures the act's own stdout into
+# `$msg`, so `git commit -m …` echoes its message back into the very bytes the
+# assertion below scans — a message spelled `마감뒤커밋` makes that assertion
+# report the deadline refusal it exists to rule out, whatever the gate did.
+sb_act SB5 배포 x -- git commit --allow-empty -m 기한뒤커밋
 check "5: 배포 로 과신고된 커밋은 마감에 걸리지 않는다 (오늘은 rc 3 이다)" "$rc" "0"
 case "$msg" in
   *마감*) bad "5 과신고" "커밋이 마감 뒤 머지로 읽혔다 — 이 소비자가 신고값을 읽고 있다" ;;
@@ -10104,7 +10129,14 @@ check "6: 그때는 등록 행이 하나 늘어난다" "$(sb6_rows)" "$((n6 + 1)
 # 패턴은 `절단점=머지후착수` 도 함께 잡으므로, 머지가 아닌 행위 하나가 대상의
 # 말단 예산을 먹는다. 상한을 1 로 두고 머지 하나 + 머지후착수 하나를 쌓으면 두
 # 구현이 갈린다 — 좁힌 쪽은 1, 넓은 쪽은 2 다.
+#
+# 그리고 같은 계수가 두 번째 방향으로도 부푼다. 이 집합의 머지 argv 는 픽스처의
+# 원격이 로컬 베어 경로라 반드시 실패하고, 실패한 행위는 같은 절단점을 실은
+# `결정=결과` 행을 하나 더 남긴다 — 행이 아니라 수행된 행위가 예산을 쓰는 것이므로
+# 그 한 건의 머지가 둘로 세어지면 안 된다. 슬라이스 A 의 머지는 `git push` 라
+# 성공해서 결과 행을 남기지 않으므로, 이 방향은 여기서만 드러난다.
 sb_new '7 말단 상한' 선머지후리뷰
+sb_grant_max 머지후착수
 sb_target_field 절단점 머지후착수
 sb_target_field '말단 행위 상한' 1
 sa_seg_row SB7 선머지후리뷰
@@ -10124,11 +10156,16 @@ check "7: 그래도 머지 계수는 여전히 하나다 (접두로 세면 둘�
 sb_target_field '말단 행위 상한' 0
 check "7: 상한을 0 으로 조이면 그 조건이 실제로 발화한다 (위 두 단언이 공허하지 않다)" "$(sb_cap_unmet)" "yes"
 
-# --- 8. 다섯 기록 지점이 두 필드를 싣는다 ------------------------------------
+# --- 8. 절단점을 싣는 기록 지점 전부가 두 필드를 싣는다 ----------------------
 #
 # 항목 1·3·4 가 본행과 승인 행을 이미 값으로 쟀다. 여기서는 이 집합이 만든 원장
 # 전부를 훑어, `자율 승인` 과 `승인` 계열의 모든 행이 두 필드를 함께 싣는지 본다
 # — 한 기록 지점만 고치고 나머지를 잊는 것이 이 부류의 통상 실패다.
+#
+# 수를 표제에 적지 않는다. 행위를 가진 기록 지점은 다섯이지만 `절단점` 을 싣는
+# 지점은 그것이 전부가 아니다 — 행위가 없는 승인 두 종류(`절단점=판단`,
+# `절단점=경계`)도 그 칸을 쓰고, 그 둘은 유도할 argv 가 없으므로 `-` 를 싣는다.
+# 표제에 다섯이라고 적어 두면 여섯째·일곱째를 찾을 이유가 표제에서 사라진다.
 sb_miss=0; sb_seen=0
 for sb_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
   [ -f "$sb_l" ] || continue
