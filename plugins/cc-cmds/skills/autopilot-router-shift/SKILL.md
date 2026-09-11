@@ -87,6 +87,16 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 
 **The first token after `--` is the STAGE KIND** and is consumed before the CLI sees the rest, so a form starting with `-p` hands `-p` over as the kind and the stage runs under settings that are not its own. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`. `-p` is required — without it the prompt is never delivered and the stage wakes with an empty first message, reads something, and terminates as a success having produced nothing. The prompt is a slash command with its leading `/`, and it must be the `-unattended` variant: the plain skills carry `disable-model-invocation: true` and a headless stage naming one resolves nothing.
 
+**Issue that call as a HARNESS-TRACKED BACKGROUND command. Never in the foreground, never with a bare `&`.** This is not a preference and it is the single most expensive thing to get wrong in this loop.
+
+`gate_launch_stage` starts the wrapper, **blocks on it**, and only then writes the `stage-result` row — so the call does not return until the stage is finished, and stages run for minutes to hours. Issued in the foreground it exceeds the tool's timeout, and what happens next looks like success from every angle: the harness moves the process to a background task and hands you a result whose `is_error` is **false**. You read that as "the stage is running", finish your turn, and your session ends — taking the moved process and its stage with it. The gate never reaches the line after its `wait`, so **no `stage-result` row is ever written** and the stage's stream has no `type=result` line. Your own stream still ends with one, so the ledger records a shift that ended normally and a stage that never existed.
+
+Measured on one run: three shifts, three dispatches, three stages killed this way. The tool result each time was the literal string `Command did not complete within its 120s timeout and was moved to the background`. Zero commits, zero `stage-result` rows, zero worktree changes, and every layer reporting success. Raising the timeout does not close this — the ceiling is ten minutes and this repository has a recorded stage that ran one hour fifty-three minutes.
+
+Use the mechanism that **re-invokes you when the command completes**. That notification is the only thing that makes your next turn happen, and it is what keeps your session alive across the stage.
+
+**So: do not end your turn while a stage you launched is live.** The waiting is not idle discipline — it is the mechanism. Your context barely grows while a stage works, so waiting costs almost nothing, and the completion notification is what returns the seat to you with the stage's rows already in the ledger.
+
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
 
 ## Ending your shift
@@ -107,6 +117,8 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
 **`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED — never what was considered and dropped. Leave it empty and your successor pays again for every dead end you already walked, and the morning report's request for the rejected alternative has no source at all.
 
 **A live stage holds back `상한` and nothing else.** If a stage is running, do not end on the cap — the router's context barely grows while a stage works, so waiting costs nothing. But `승인` and `종단` are NOT held: a shift kept waiting on an approval means that approval waits out the stage, and overnight that is the whole night.
+
+**「A stage is running」 means the dispatch has not notified you yet — not that a tool result told you it went to the background.** Those two readings look identical and only one is true. A dispatch that was moved to the background because it timed out is a stage that dies the moment you stop, so treating it as live and then ending your turn is precisely the failure this section exists to prevent. If you did not launch it as a harness-tracked background command, you have no live stage; you have a dispatch that is about to be lost.
 
 ## Your return line
 

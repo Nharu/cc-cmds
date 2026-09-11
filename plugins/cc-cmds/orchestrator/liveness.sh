@@ -116,6 +116,54 @@ cc_live_stages() {
   printf '%s' "$n"
 }
 
+cc_orphan_stages() {
+  # cc_orphan_stages <run-dir> — the segment ids whose dispatch record outlived
+  # the process it names, one per line.
+  #
+  # THIS IS THE FINGERPRINT OF A LOST DISPATCH, and it exists because that
+  # failure was silent at every layer that could have spoken. `gate_launch_stage`
+  # writes `<seg>.pid`, blocks on the stage, and then removes the record and
+  # writes the `stage-result` row — in that order, in one function. So a record
+  # that is still here while its process is gone means the line after the block
+  # never ran, which means the outcome was never recorded and the stage's own
+  # stream has no terminal line either. Nothing else in the run says so: the
+  # dispatching shift ends normally, its stream carries a result line, and the
+  # ledger shows a shift that finished and a stage that never was.
+  #
+  # Measured: three dispatches lost this way in one run, zero rows written, and
+  # every layer reporting success. The dispatch had been issued in the
+  # foreground, the harness moved it to a background task at the tool timeout
+  # and reported that as a non-error, and the moved process died with the
+  # shift's session.
+  #
+  # NARROWER THAN `! cc_stage_is_live`, deliberately. That predicate is also
+  # false when a run directory predates fingerprint recording, and calling those
+  # orphans would report an alarm on directories where nothing is wrong. What is
+  # asked here is only "is the process this record names still here" — a dead
+  # pid, or a live pid that is now somebody else. An unverifiable record is left
+  # out; under-reporting costs a render, over-reporting teaches its reader to
+  # ignore the alarm.
+  local run_dir="$1" f seg pid rec now
+  [ -n "$run_dir" ] || return 0
+  for f in "$run_dir"/*.pid; do
+    [ -f "$f" ] || continue
+    seg=${f##*/}; seg=${seg%.pid}
+    # The watcher's own record lives here too and is not a stage.
+    [ "$seg" = "watch" ] && continue
+    pid=$(cat "$f" 2>/dev/null)
+    [ -n "$pid" ] || continue
+    if ! kill -0 "$pid" 2>/dev/null; then printf '%s\n' "$seg"; continue; fi
+    # Alive, so the only remaining orphan is pid reuse — that pid is a different
+    # process now. Judged only where a fingerprint was recorded to judge against.
+    rec=$(cat "$run_dir/$seg.start" 2>/dev/null || true)
+    if [ -n "$rec" ]; then
+      now=$(cc_proc_fingerprint "$pid")
+      [ "$rec" = "$now" ] || printf '%s\n' "$seg"
+    fi
+  done
+  return 0
+}
+
 cc_proc_fingerprint() {
   # cc_proc_fingerprint <pid> — the pid's start time, whitespace-normalised.
   # The pair (pid, start time) is the identity; the pid alone is not.
