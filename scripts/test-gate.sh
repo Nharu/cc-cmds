@@ -4695,6 +4695,9 @@ check "B14 잠금이 걷히면 같은 희생자가 회수된다" "$(b_exists "$B
 # 존중한다는 것 하나다 — 적어 두지 않으면 다음 사람이 이 케이스를 창 전체의 회귀
 # 방벽으로 읽는다.
 #
+# 재확인이 그 표식을 만들 결심을 하는 자리는 B16 이 잰다. 이 케이스가 못 만드는
+# 것은 경합이고, 경합이 만들어 낼 상태 자체는 그 함수를 직접 부르면 만들어진다.
+#
 # 대조군을 같은 사이클에 함께 둔다. 없으면 보류 항목의 생존이 「표식을
 # 존중했다」가 아니라 「스윕이 아예 안 돌았다」로도 설명된다.
 B15T="$BSTATE/.reap-trash"
@@ -4709,6 +4712,112 @@ b_trigger RB15
 check "B15 표식이 없는 대조군은 스윕된다" "$(b_exists "$B15T/RV-B15-GO.999.1")" "no"
 check "B15 .keep 이 붙은 항목은 스윕이 남긴다" "$(b_isdir "$B15T/RV-B15-HOLD.999.1")" "yes"
 rm -rf "$B15T/RV-B15-HOLD.999.1" "$B15T/RV-B15-HOLD.999.1.keep"
+
+# --- B16 — 되돌림의 네 결말 --------------------------------------------------
+#
+# 회수의 마지막 되돌림 지점이다. 자격 판정이 「낡았다」고 답한 뒤 `mv` 로 희생자를
+# `.reap-trash` 에 옮기고, 거기서 보존 시계를 한 번 더 읽는다. 그 사이에 다른
+# 게이트 진입이 이 런의 `started-at` 을 now 로 다시 쓰면 두 읽기가 다른 값을 본다.
+#
+# B15 가 적어 둔 대로 그 창은 밖에서 만들 수 없다. 그러나 창이 만들어 낼 상태 —
+# 「쓰레기통 안의 시계가 신선하다」 — 는 만들 수 있고, 그것이 이 절이 하는 일이다.
+# 되돌림을 `gate_reap_unwind` 로 떼어 두었으므로 소스 전용 seam 으로 직접 부른다.
+# 떼어 두기 전에는 두 갈래 어느 쪽도 어떤 시험도 실행하지 않았고, 재확인 코드를
+# 통째로 지워도 스위트가 초록이었다.
+#
+# 반환값의 뜻: 0 = 회수하지 않았다(되돌렸거나 보류했다), 1 = 시계가 여전히
+# 회수라고 말한다(호출자가 삭제를 이어 간다).
+b_unwind() {
+  # b_unwind <trash> <rd> <id> <now> — 함수를 그 자리에서 부르고 반환값을 준다.
+  # 원장은 이 스위트의 것을 그대로 물려, 함수가 남기는 산문 줄이 아래 단언에
+  # 잡히게 한다. `LEDGER` 는 소싱 **뒤에** 세운다 — gate.sh 가 run.sh 를 소싱하고
+  # 그쪽이 이 이름을 자기 값으로 덮으므로, 환경으로 넘기면 산문 줄이 이 스위트의
+  # 원장이 아닌 곳으로 가고 아래 `grep` 이 전부 빈손으로 돌아온다.
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_B_LEDGER="$LEDGER" bash -c '
+      . "'"$GATE"'" >/dev/null 2>&1
+      LEDGER="$CC_B_LEDGER"
+      # `set -e` 는 gate.sh 가 소싱한 드라이버에서 켜진다. 1 을 반환하는 것이
+      # 이 함수의 정상 결말 중 하나이므로 그대로 부르면 `printf` 에 닿기 전에
+      # 셸이 죽어 빈 문자열이 나온다. 프로덕션 호출부는 `if` 조건 안이라 이
+      # 문제가 없고, 여기서만 반환값을 값으로 받아야 해서 갈라 놓는다.
+      if gate_reap_unwind "$@"; then printf 0; else printf %s "$?"; fi
+    ' _ "$@" ) 2>/dev/null
+}
+b_uw_make() {
+  # b_uw_make <이름> <started-at 내용> — 쓰레기통 안의 희생자 하나. 내용이 빈
+  # 문자열이면 `started-at` 자체를 두지 않는다(= 시계 미상).
+  B_UW_T="$BSTATE/.reap-trash/$1.777.1"
+  B_UW_R="$BRUNS/$1"
+  fx_assert_scratch_path "$B_UW_T"
+  fx_assert_scratch_path "$B_UW_R"
+  rm -rf "$B_UW_T" "$B_UW_R" "$B_UW_T.keep"
+  mkdir -p "$B_UW_T"
+  printf 'x\n' > "$B_UW_T/handle"
+  [ -z "$2" ] || printf '%s\n' "$2" > "$B_UW_T/started-at"
+}
+B_UW_NOW=$(date -u +%s)
+
+# B16a — 시계가 여전히 낡았다. 되돌리지 않고 호출자에게 삭제를 넘긴다. 이 케이스가
+# 없으면 아래 셋이 전부 통과하는 「항상 되돌린다」 구현도 초록이다.
+b_uw_make RV-B16A "$(( B_UW_NOW - 40 * 86400 ))"
+check "B16a 낡은 시계는 회수를 이어 가라고 답한다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16A "$B_UW_NOW")" "1"
+check "B16a 이어 갈 때는 쓰레기통의 희생자를 건드리지 않는다" "$(b_isdir "$B_UW_T")" "yes"
+check "B16a 이어 갈 때는 제자리를 만들지 않는다" "$(b_exists "$B_UW_R")" "no"
+
+# B16b — 시계가 신선해졌고 제자리가 비어 있다. 되돌린다.
+b_uw_make RV-B16B "$B_UW_NOW"
+check "B16b 신선해진 시계는 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16B "$B_UW_NOW")" "0"
+check "B16b 희생자가 제자리로 돌아왔다" "$(b_isdir "$B_UW_R")" "yes"
+check "B16b 쓰레기통에는 남지 않았다" "$(b_exists "$B_UW_T")" "no"
+case "$(grep '회수 취소: 런 RV-B16B ' "$LEDGER" | tail -1)" in
+  *"제자리로 되돌렸다"*) ok "B16b 되돌림이 보고서에 적힌다" ;;
+  *) bad "B16b 되돌림 줄" "회수 취소 줄이 없다" ;;
+esac
+rm -rf "$B_UW_R"
+
+# B16c — 시계가 신선해졌으나 제자리가 이미 차 있다. 보류하고 표식을 남긴다.
+# 그 사본이 그 런의 핸들이 남은 유일한 자리이므로 지우면 안 된다.
+b_uw_make RV-B16C "$B_UW_NOW"
+mkdir -p "$B_UW_R"; printf 'resurrected\n' > "$B_UW_R/started-at"
+check "B16c 차 있는 제자리에도 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16C "$B_UW_NOW")" "0"
+check "B16c 희생자는 쓰레기통에 남는다" "$(b_isdir "$B_UW_T")" "yes"
+check "B16c 스윕이 존중할 표식이 붙는다" "$(b_exists "$B_UW_T.keep")" "yes"
+# 되살아난 런을 그 안에 중첩시키지 않았다는 것 — `mv a b` 가 b 를 디렉터리로 보면
+# a 를 그 안으로 넣는다는 것이 이 갈래가 존재하는 이유다.
+check "B16c 되살아난 런 안에 희생자를 중첩시키지 않았다" "$(b_exists "$B_UW_R/RV-B16C.777.1")" "no"
+case "$(grep '회수 보류: 런 RV-B16C ' "$LEDGER" | tail -1)" in
+  *"제자리가 이미 차 있어"*) ok "B16c 보류가 보고서에 적힌다" ;;
+  *) bad "B16c 보류 줄" "회수 보류 줄이 없다" ;;
+esac
+rm -rf "$B_UW_T" "$B_UW_T.keep" "$B_UW_R"
+
+# B16d — 시계를 읽을 수 없다. 미상은 회수하지 않는다 — 자격 판정의 같은 규율이다.
+b_uw_make RV-B16D ""
+check "B16d 시계가 없으면 회수를 멈춘다" "$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16D "$B_UW_NOW")" "0"
+check "B16d 시계가 없는 희생자도 제자리로 돌아온다" "$(b_isdir "$B_UW_R")" "yes"
+rm -rf "$B_UW_R"
+
+# B16e — 제자리가 비었는데도 `mv` 가 실패한다. 되돌리지 못했으므로 「되돌렸다」로
+# 적으면 안 된다 — 보고서가 되돌림의 유일한 기록이라, 일어나지 않은 되돌림이
+# 성공으로 적히면 그 뒤로 그 런을 찾을 길이 없다. 부모 디렉터리의 쓰기 권한을
+# 걷어 실패를 결정적으로 만든다. root 는 권한을 무시하므로 그때는 건너뛴다.
+if [ "$(id -u)" != "0" ]; then
+  b_uw_make RV-B16E "$B_UW_NOW"
+  chmod u-w "$BRUNS"
+  B16E_RC=$(b_unwind "$B_UW_T" "$B_UW_R" RV-B16E "$B_UW_NOW")
+  chmod u+w "$BRUNS"
+  check "B16e mv 가 실패해도 회수는 멈춘다" "$B16E_RC" "0"
+  check "B16e 되돌리지 못한 희생자는 쓰레기통에 남는다" "$(b_isdir "$B_UW_T")" "yes"
+  check "B16e 되돌리지 못했어도 표식이 붙는다" "$(b_exists "$B_UW_T.keep")" "yes"
+  case "$(grep 'RV-B16E ' "$LEDGER" | tail -1)" in
+    *"회수 보류"*) ok "B16e 실패한 되돌림은 보류로 적힌다" ;;
+    *"회수 취소"*) bad "B16e 되돌림 줄" "일어나지 않은 되돌림이 성공으로 적혔다" ;;
+    *) bad "B16e 되돌림 줄" "아무 줄도 적히지 않았다" ;;
+  esac
+  rm -rf "$B_UW_T" "$B_UW_T.keep" "$B_UW_R"
+else
+  ok "B16e mv 실패 갈래 — root 는 디렉터리 권한을 무시하므로 이 호스트에서는 세울 수 없다"
+fi
 
 # --- 카나리아 정산 -----------------------------------------------------------
 B_CANARY_AFTER=$(b_canary)

@@ -2004,6 +2004,68 @@ gate_reap_note() {
   return 0
 }
 
+gate_reap_unwind() {
+  # gate_reap_unwind <trash> <run-dir> <id> <now> — the last reversal point of a
+  # reclamation. Returns 0 when the victim was NOT reclaimed (restored, or parked
+  # in the trash under a `.keep`), 1 when its clock still says reclaim and the
+  # caller should proceed with the removal.
+  #
+  # THE RETENTION CLOCK IS READ AGAIN, AFTER THE RENAME. Nothing holds a lock on
+  # the victim between the verdict and this call: `.reap.lock` excludes reapers
+  # from one another and says nothing about the run being judged, and the
+  # never-the-current-run clause compares against the reaping process's own
+  # `RUN_DIR` only. So an ordinary gate entry can land on this id after the
+  # eligibility clock was read — and `rundir_init` rewrites `started-at` to now
+  # on every entry — while the reaper is still inside `cc_run_state` and the
+  # recursive `du -sk` walk.
+  #
+  # Deleting through that window does not merely lose a live run. The run's own
+  # verbs carry on to an unguarded `mkdir -p "$RUN_DIR/log"` and rebuild the
+  # directory with no `started-at` in it, which the eligibility clock then
+  # refuses forever while the `-mtime` pre-filter hides it for another 25 days:
+  # this feature would be manufacturing the immortal run it exists to remove.
+  #
+  # The rename is what makes the re-read possible and it is the last moment at
+  # which the deletion is still reversible. `started-at` moved with the
+  # directory, so a writer that got in first left its bytes on this same inode,
+  # and reading them costs one `sed`. A missing or zero clock is "unknown" and
+  # unknown is not reclaimed, exactly as in the eligibility clause.
+  #
+  # IT IS A FUNCTION AND NOT THREE LINES INLINE because the only way into its two
+  # outcomes is a race the caller cannot stage: the fresh clock has to be written
+  # by some other process in the window between two reads of one file. Inline,
+  # both arms were unreachable from any test — the whole re-verification could be
+  # deleted with the suite staying green — and a cross-review found a real defect
+  # inside one of them. Named, each arm is reached by calling this with the state
+  # the race would have produced.
+  local trash="$1" rd="$2" id="$3" now2="$4" started2
+  started2=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$trash/started-at" 2>/dev/null || true)
+  if [ -n "$started2" ] && [ "$started2" -gt 0 ] 2>/dev/null \
+     && [ $((now2 - started2)) -ge "$GATE_REAP_RETENTION" ]; then
+    return 1
+  fi
+  # PUT IT BACK ONLY IF ITS PLACE IS STILL EMPTY. `mv a b` with `b` an existing
+  # directory moves `a` INSIDE it, so an unguarded restore against an
+  # already-resurrected `run/<id>` would nest the old run under the new one — a
+  # second husk, in a stranger shape than the one being avoided. When the place
+  # is taken the copy stays in the trash under a `.keep` sibling the sweep
+  # honours, because at that moment it is the only copy of the run's handles and
+  # settings that exists.
+  #
+  # THE `mv` RESULT IS PART OF THE CONDITION rather than assumed: a restore that
+  # fails after the emptiness test passes — the place filled in between, the
+  # filesystem refused — would otherwise write "restored" into the report for a
+  # directory still sitting in the trash, and the report is the only record that
+  # the reclamation was undone.
+  if [ ! -e "$rd" ] && mv "$trash" "$rd" 2>/dev/null; then
+    gate_reap_note "회수 취소: 런 $id — 판정 이후 보존 시계가 신선해져 제자리로 되돌렸다"
+  else
+    : > "$trash.keep" 2>/dev/null || true
+    gate_reap_note "회수 보류: 런 $id — 판정 이후 보존 시계가 신선해졌으나 제자리가 이미 차 있어 .reap-trash 에 남긴다"
+  fi
+  return 0
+}
+
 gate_reap_lock() {
   # gate_reap_lock <root> — ONE ATTEMPT, NO WAITING. Contention means another
   # gate is already reaping, so the work is being done and queueing behind it
@@ -2268,23 +2330,7 @@ gate_reap_locked() {
     # directory, so a writer that got in first left its bytes on this same
     # inode, and reading them costs one `sed`. A missing or zero clock is
     # "unknown" and unknown is not reclaimed, exactly as in clause 2.
-    now2=$(date -u +%s)
-    started2=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$trash/started-at" 2>/dev/null || true)
-    if [ -z "$started2" ] || [ "$started2" -le 0 ] \
-       || [ $((now2 - started2)) -lt "$GATE_REAP_RETENTION" ]; then
-      # PUT IT BACK ONLY IF ITS PLACE IS STILL EMPTY. `mv a b` with `b` an
-      # existing directory moves `a` INSIDE it, so an unguarded restore against
-      # an already-resurrected `run/<id>` would nest the old run under the new
-      # one — a second husk, in a stranger shape than the one being avoided.
-      # When the place is taken the copy stays in the trash under a `.keep`
-      # sibling the sweep honours, because at that moment it is the only copy of
-      # the run's handles and settings that exists.
-      if [ ! -e "$rd" ] && mv "$trash" "$rd" 2>/dev/null; then
-        gate_reap_note "회수 취소: 런 $id — 판정 이후 보존 시계가 신선해져 제자리로 되돌렸다"
-      else
-        : > "$trash.keep" 2>/dev/null || true
-        gate_reap_note "회수 보류: 런 $id — 판정 이후 보존 시계가 신선해졌으나 제자리가 이미 차 있어 .reap-trash 에 남긴다"
-      fi
+    if gate_reap_unwind "$trash" "$rd" "$id" "$(date -u +%s)"; then
       continue
     fi
     # A failing removal now leaves the bytes in the trash rather than a husk in
