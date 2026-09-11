@@ -248,6 +248,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. The session banner seats' registration
+#
+# THE EVENT KEY IS ASSERTED, NOT JUST THE TIMEOUT. The two seats sit in
+# structurally different places — seat 1 is a sibling element inside the existing
+# `PreToolUse` array, seat 2 opens a top-level `Stop` key that did not exist —
+# and putting the `Stop` element into the `PreToolUse` array instead is a SILENT
+# failure: the harness passes it over on a matcher miss and seat 2 never runs.
+# A check that only looks for `"timeout": 5` is green on exactly that mistake,
+# and the resulting silence cannot be told apart from nobody marking a turn.
+#
+# This block lives beside the registration check above rather than in a suite of
+# its own, because both are answering one question — what does this repo's
+# hooks.json actually declare — and splitting it is how the next entry gets
+# added without anything noticing.
+# ---------------------------------------------------------------------------
+HOOKS_JSON="$repo_root/plugins/cc-cmds/hooks/hooks.json"
+
+check "T16 PreToolUse 에 AskUserQuestion 매처 항목이 정확히 하나 있다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")] | length' "$HOOKS_JSON")" "1"
+check "T16 최상위에 Stop 키가 있다" \
+  "$(jq -r 'if (.hooks | has("Stop")) then "yes" else "no" end' "$HOOKS_JSON")" "yes"
+check "T16 Stop 배열에 항목이 정확히 하나 있다" \
+  "$(jq -r '.hooks.Stop | length' "$HOOKS_JSON")" "1"
+check "T16 두 세션 항목 모두 timeout 5 를 가진다" \
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion")), (.hooks.Stop[]?)] | [.[].hooks[].timeout] | map(select(. == 5)) | length' "$HOOKS_JSON")" "2"
+# The negative form of the same claim: a matcher-less element inside PreToolUse
+# is what a misplaced Stop entry looks like, and it is well-formed JSON.
+check "T16 매처 없는 원소가 PreToolUse 배열에 들어가 있지 않다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(has("matcher") | not)] | length' "$HOOKS_JSON")" "0"
+check "T16 두 세션 훅의 스크립트가 각각 제 자리를 가리킨다" \
+  "$(jq -r '[(.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion") | .hooks[].command | select(contains("session-ask-notify.sh"))), (.hooks.Stop[]?.hooks[].command | select(contains("session-turn-notify.sh")))] | length' "$HOOKS_JSON")" "2"
+
+# T17 — the existing Bash entry is untouched. The matchers are deliberately NOT
+# merged into `"Bash|AskUserQuestion"`: merging would turn the sibling hook's
+# `non-Bash matcher slip → noop` line into a permanently active path instead of
+# the defence it is. That decision is not observable from behaviour — both
+# scripts drop a payload that is not theirs — so the assertion is structural.
+check "T17 기존 Bash 항목이 그대로다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[] | select(.command | contains("active-notify-pretool.sh"))] | length' "$HOOKS_JSON")" "1"
+check "T17 Bash 매처가 다른 도구 이름과 합쳐지지 않았다" \
+  "$(jq -r '[.hooks.PreToolUse[]? | select(.matcher? // "" | test("\\|"))] | length' "$HOOKS_JSON")" "0"
+
+# ---------------------------------------------------------------------------
 # 7. The wrapper's hard stops — the other half of layer 1
 #
 # The hook only reaches a stage that was launched WITH the settings, so the
@@ -372,17 +415,77 @@ esac
 
 # Every gate-path occurrence in the message is the start of a command it is
 # telling the stage to run. Each must be allowed.
-n_shapes=0; n_denied=0
+#
+# CUT AT ONE COMMAND, NOT AT THE END OF THE MESSAGE. Taking the whole tail made
+# this assertion vacuous past the first token: the hook matches argv0, so any
+# trailing prose rode along and every candidate passed no matter what followed.
+# The message separates its prescribed commands with a standalone `.`, which is
+# where a command actually ends, so that is where the extraction stops.
+n_shapes=0; n_denied=0; n_thin=0
 for frag in $(printf '%s' "$reason" | tr ' ' '\n' | grep -nF "$GATE" | sed 's/:.*//'); do
-  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" | tr '\n' ' ')
+  cand=$(printf '%s' "$reason" | tr ' ' '\n' | sed -n "${frag},\$p" \
+         | awk 'NR>1 && ($0=="." || $0=="』" || $0=="『") {exit} {print}' | tr '\n' ' ')
   n_shapes=$((n_shapes + 1))
+  # A candidate that carries no `--manifest` is not a command this message
+  # prescribes — it is a fragment the cut got wrong, and passing it through the
+  # hook would assert nothing. A lone separator is red here rather than green.
+  case "$cand" in
+    *--manifest*) ;;
+    *) n_thin=$((n_thin + 1)) ;;
+  esac
   decide "$(bash_json "$cand")"
   [ "$dec" = "allow" ] || n_denied=$((n_denied + 1))
 done
+check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어긋나지 않았다)" "$n_thin" "0"
+# A BARE `.` MUST NOT SIT WHERE AN ARGUMENT WOULD. The message ends its
+# prescriptions with a marker rather than a sentence period, because a period
+# copied along with the command reaches the shell as a word — `jq -r .H .` asks
+# jq to read a file named `.` and the documented fallback fails on first use.
+case "$reason" in
+  *'jq -r .H .'*) bad "처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
+  *)              ok "처방된 명령이 문장 마침표로 끝나지 않는다" ;;
+esac
+
+# THE HOOK DOES NOT BUILD THE PATH; IT ASKS. Two programs agreeing on one
+# string disagreed for every stage in the pipeline — the gate sanitizes the
+# stage id into the filename and this hook interpolated it verbatim, so the two
+# matched only for the router, the one actor this hook is never installed for.
+# The failure is silent at both ends: the gate emits correctly, the stage opens
+# a name that does not exist, and it falls back to the round trip the flag
+# exists to remove. What this suite can measure is that the derivation lives in
+# one place; that the printed value equals the file actually written is the
+# gate suite's half.
+if grep -q 'digest-path' "$HOOK"; then
+  ok "훅이 게이트에게 방출 경로를 묻는다"
+else
+  bad "훅이 게이트에게 방출 경로를 묻는다" "스스로 조립하고 있다"
+fi
+if grep -q 'gate-digest-\${CC_PIPELINE_STAGE_ID' "$HOOK"; then
+  bad "훅이 스테이지 id 로 파일명을 조립하지 않는다" "게이트의 정제 규칙을 복제하고 있다"
+else
+  ok "훅이 스테이지 id 로 파일명을 조립하지 않는다"
+fi
+
+# THE MESSAGE CARRIES BOTH HALVES OF THE CONTRACT IT PRESCRIBES. Asserting only
+# that the commands pass the hook says nothing about whether they are the
+# commands the current contract names — the flag could vanish and the path could
+# be wrong, and the shapes would still be allowed.
+case "$reason" in
+  *'--emit-digest'*) ok "거부 문면이 방출 플래그를 처방한다" ;;
+  *) bad "거부 문면이 방출 플래그를 처방한다" "플래그가 문면에 없다" ;;
+esac
+case "$reason" in
+  *'--emit-digest-to'*) bad "거부 문면이 옛 경로 인자 형태를 처방하지 않는다" "옛 철자가 남아 있다" ;;
+  *) ok "거부 문면이 옛 경로 인자 형태를 처방하지 않는다" ;;
+esac
+case "$reason" in
+  *'/digest/gate-digest-'*) ok "거부 문면이 방출 파일 경로를 지목한다" ;;
+  *) bad "거부 문면이 방출 파일 경로를 지목한다" "격리 경로가 문면에 없다" ;;
+esac
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else
-  bad "거부 문면 형태" "게이트로 시작하는 명령이 ${n_shapes}개뿐이다 — 스냅숏과 exec 둘이 필요하다"
+  bad "거부 문면 형태" "게이트로 시작하는 명령이 ${n_shapes}개뿐이다 — 수행할 exec 와, 방출 파일이 없을 때의 스냅숏 폴백 둘이 필요하다"
 fi
 check "그 명령들이 전부 이 훅을 통과한다" "$n_denied" "0"
 

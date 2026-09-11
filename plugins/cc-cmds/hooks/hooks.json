@@ -9,6 +9,27 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/active-notify-pretool.sh\""
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-ask-notify.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-turn-notify.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

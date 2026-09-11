@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -15,11 +15,21 @@ options:
       default: "off (리포트를 cwd 상대 `docs/reviews/{slug}.md`에 기록)"
       summary: "뒤에 오는 **메인 워크트리 절대 경로**에 리포트를 기록한다. 세그먼트 워크트리에서 실행될 때 리포트가 그 트리에 떨어져 철거와 함께 파괴되는 것을 막는 유일한 수단."
       parse_note: "`--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지."
+    - name: "--base-sha <sha>"
+      kind: flag
+      default: "off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도)"
+      summary: "diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다."
+      parse_note: "`--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다 — 정지하지 않는다."
+    - name: "--declared-files <csv>"
+      kind: flag
+      default: "off (변경 파일 집합을 diff 에서만 유도)"
+      summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
+      parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 `--report-path` 값을 뺀 나머지."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(정지 술어를 얇게 만들기 때문), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -89,6 +99,15 @@ dispositions, and says so.
 
 **CFI-U5 — No code modifications.** Review only. Unchanged from the base skill and not weakened by unattended operation.
 
+**CFI-U6 — A source file is read once per stage, and a turn yield is not an invalidation point.** This is a control-flow invariant rather than a constraint because the load-bearing half of it is about control flow: the model stopping and resuming changes nothing about a file's bytes, so a yield that triggers a re-read is spending context to learn what it already knows. Common to all three review arms; CFI-U5's `Unchanged from the base skill` is the precedent for stating a shared rule here. Exactly **three** invalidation points exist — this session wrote to that path with `Edit`/`Write`; a git operation moved `HEAD` or the working tree (`checkout`, `rebase`, `merge`, `stash`, `pull`); or a new stage was entered. **Four things the cache never covers, each for a different reason:**
+
+- the **run ledger** — its contract deliberately produces an under-claim, and a stale read flips that into an over-claim, which is the one direction this pipeline cannot tolerate;
+- **witness files** — there is no invalidation event the lead can observe at all, so the cache has nothing to key on;
+- a reviewer's **`output_file`** — a cached read reports it byte-stable, which is exactly the WEDGED verdict, on a file that is being written normally;
+- the **gate snapshot** — being re-derived is its entire purpose.
+
+Those four are re-read every time they are consulted.
+
 ---
 
 ## Workflow
@@ -104,6 +123,8 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 **Fail-loud, durably.** If a `ToolSearch` for a Step-0-enumerated tool returns no result, or a later call to one fails because its schema was never loaded, **halt** with `분류: tool-unavailable`, carrying the harness error string verbatim.
 
+**Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md` here, not at Step 4.** It carries the spawn / ledger / resume+convergence / escalation contract, the task-assignment header, and the `### Team size budget` ceiling that Step 3 reads — so the shipped placement had Step 3 depending on a file Step 4 was told to open. Reading the dispatch contract in the same place as the tools it governs removes that inversion, and CFI-U0's substitution of `park` for every `AskUserQuestion` terminus in that file is unchanged by where it is read. **This Read is not covered by the fail-loud rule above**, which is scoped to the tools this step enumerates: a contract document is a file and not a tool, so a failure to read it produces no `tool-unavailable` halt and no new halt class is created here.
+
 ---
 
 ### Step 1: Target resolution and context collection
@@ -118,6 +139,8 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Number** → PR number → `gh pr view {number}`
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
+- **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
 - **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** with `분류: precondition-failed`, listing the candidates it found.
 
@@ -127,7 +150,11 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 
 Collect exactly what the base skill collects — repository slug, PR metadata, per-file `{path,additions,deletions}`, the full diff, existing inline review comments and review decisions (`--paginate`), general PR comments, and CI check status. For a local diff target use `git diff {DEFAULT_BRANCH}...HEAD` and `git log {DEFAULT_BRANCH}..HEAD --oneline`.
 
+**A supplied `--base-sha` is verified before it is used, and its failure is a fallback rather than a halt.** Run `git merge-base --is-ancestor <supplied base> <target head>`, where `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command happens to run in. On success, take the diff against that value — `git diff <supplied base>...<target head>`, `git log <supplied base>..<target head> --oneline` — **in place of the base derivation only**; a PR target still collects its metadata and comments the way it already does, and what is replaced is which two commits the diff spans. Binding to the ambient `HEAD` would make the guard depend on the caller's working directory, which is the same class of failure the flag exists to close: an interactive caller sitting in another checkout would verify a base against a tree the review is not about. that substitution is the whole reason the flag exists, since the driver resolved this base when it created the segment and re-deriving it here only re-answers a settled question. **On failure, fall back to the derivation this step already describes and record one line in the report overview naming the rejected value and the base actually used.** The failure mode being bought off is silent: a base that is not an ancestor of `<target head>` yields a diff of a tree nobody wrote, so the reviewers produce real findings about the wrong change and the report reads exactly as it would have. Halting instead would be the wrong trade for the same reason the unknown-flag bullet gives — the segment's review is the run's only `P0 + P1` signal, and a base the driver got wrong is recoverable by deriving one, while a parked segment is not recoverable by anything this arm can do.
+
 #### 1c: Scope record (no confirmation, no narrowing)
+
+**A supplied `--declared-files` is compared against what actually changed.** List the changed paths for the diff just resolved and set them against the declared set. Name in the report's overview any changed path that is **outside** the declaration, and any declared path with **no** change. Neither is an error and neither narrows the review — the whole diff is reviewed either way — but the two lists are the only place the run says whether the change that landed is the change that was declared. Git can say which files moved; only the declaration says which ones were meant to. With no flag, skip this and say nothing.
 
 There is no user to confirm with, and CFI-U1 forbids narrowing. **Record** the scope instead of confirming it — target type, PR title/number/URL, change statistics, key changed files, existing-comment summary, CI status with failed checks highlighted. This record becomes the report's overview.
 
@@ -199,7 +226,7 @@ Above 50 files in scope, add a **Scope Coordinator**. It is meta/orchestration r
 
 ### Step 4: Parallel Review (English, team internal)
 
-**Before assigning reviewers, Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`** for the spawn / ledger / resume+convergence / escalation contract and the task-assignment header. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return; each result is delivered by its **witness file** and the return text is only an early-wake hint.
+The spawn / ledger / resume+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return; each result is delivered by its **witness file** and the return text is only an early-wake hint.
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 17-item package, role checklists, protocol rounds, and facilitator additions.
 

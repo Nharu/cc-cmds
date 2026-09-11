@@ -45,7 +45,7 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 **Interruption is partly lost.** Ctrl+C no longer cuts the shift's current turn; the lead cancels the background task instead. Cancelling the shift does NOT take the channel down with it — a task stop reaches one task id and nothing else. But if you stopped the FEED yourself, re-arm it: that is the one death nothing reports.
 
-What the router may NOT do is decide from memory. Its input is the snapshot and nothing else — see Act 2b. A shift is a NEW process with no conversation history at all, so leaning on one would be leaning on something it does not have; and this seat is compacted repeatedly over a long run, so the same reliance here would have its input silently rewritten.
+What the router may NOT do is decide from memory. Its input is the snapshot and nothing else, save the digest value the gate emits from that same state — see Act 2b. A shift is a NEW process with no conversation history at all, so leaning on one would be leaning on something it does not have; and this seat is compacted repeatedly over a long run, so the same reliance here would have its input silently rewritten.
 
 The morning report stays a **separate invocation** (`--report`), because a run that spans days is read from disk rather than from a scrollback.
 
@@ -290,7 +290,7 @@ The router decides **what happens next**. The gate decides **whether it may**. T
 snapshot  →  decide  →  gate call  →  (repeat)
 ```
 
-1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. It also carries what is HOLDING the run: a `대기 승인` count that stays on the table at zero rather than vanishing, so "no approvals" and "no line" remain different readings, and a `미충족 조건` line naming the termination conditions by number and saying so when the only thing left is an invalidation. **This is the router's entire declared input.** Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
+1. **Read the snapshot.** `bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>` — one JSON object. Add `--render` for the human table when reporting to the terminal; that table carries the run's liveness — live stages, how long ago the ledger grew, the watcher's last heartbeat, and whether the run has terminated — so "is this still going?" is one command rather than a pid comparison. It also carries what is HOLDING the run: a `대기 승인` count that stays on the table at zero rather than vanishing, so "no approvals" and "no line" remain different readings, and a `미충족 조건` line naming the termination conditions by number and saying so when the only thing left is an invalidation. **This is the router's entire declared input, with one derived exception.** The emitted digest file is a value the gate wrote from the state this same snapshot describes — it carries no decision and no obligation, only the `H` a caller would otherwise re-read, so taking it is a shortcut through the round trip rather than a second source of truth. Everything that is not that number comes from the snapshot. Do not carry a decision across turns, do not remember an obligation the snapshot does not show, and do not treat a previous turn's plan as binding.
 2. **Decide one next act.**
 3. **Call the gate with that decision as argv.** The decision is not a document the router writes; **it is the argv**, and the gate's argument parser is the schema check. That is also what makes the router testable without a model in the loop: drive the verbs with bad argv against a fixture ledger and assert the exit code.
 4. **Read the exit code and go back to 1.**
@@ -302,7 +302,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `run_id`, `goal`, `goal_digest` | the run's identity and the frozen termination point |
 | `targets[]` | `alias`, `slug`, `cutpoint`, `home` — one object per target |
 | `obligations[]`, `obligations_total` | open obligations; the array is capped and the total is not, so compare them before concluding the list is whole |
-| `pending_approvals[]` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases |
+| `pending_approvals[]`, `pending_approvals_total` | `id`, `blocks`, `cutpoint`, `question` — what the run is stopped on and what answering it releases. Unlike `obligations[]` the array is not capped, so the total is the same count as a bare number; it is carried because the emitted digest file below carries it too, and one derivation is what keeps the two surfaces from disagreeing |
 | `unmet_conditions[]` | the numbered termination conditions that do NOT hold, as rendered lines. **Capped**, and the lines that grow with the night take the front of it |
 | `unmet_conditions_total` | how many there actually are. Greater than the array's length means the array lost its tail |
 | `unmet_condition_numbers[]` | the same causes as condition numbers — deduplicated, ascending, at most ten, and never truncated. This is the one to read when the two above disagree |
@@ -313,7 +313,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift |
 | `handoff[]` | `교대`, `버린 선택지`, `막힌 지점`, `다음 후보` — the last three handoffs and no more. This is where a successor learns what its predecessor already tried and dropped |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
-| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest` |
+| `H` | the snapshot digest to copy into the next acting call's `--snapshot-digest`. An acting call that carried `--emit-digest` has already written this same value to that file, so reading the file is the ordinary way to obtain it and calling `snapshot` again is the fallback |
 
 **THE LOOP DOES NOT STOP TO ASK.** The person was present exactly once, in Act 1, and everything the run may do without them was frozen there. Inside this loop there is **one** place a question belongs — exit 5, where the gate has issued an approval and the run genuinely cannot answer itself. Everywhere else the router decides, records the decision, and continues.
 
@@ -323,7 +323,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 
 **Where a decision is genuinely yours to make rather than to act on, the answer is the judgment grades below — not a question.** Grade 0 you take, grade 1 you take and record, grade 2 you escalate, and escalation means issuing an approval through the gate so the stop is a row rather than a silence.
 
-**Every acting call carries `--snapshot-digest <H>`, copied from the snapshot just read.** This is the mechanical enforcement of conversational statelessness: a compacted router carrying a remembered digest is refused with exit 4 rather than acting on state that has moved. Re-read; never re-type from memory.
+**Every acting call carries `--snapshot-digest <H>`, and every acting call carries `--emit-digest` so the next one does not have to go looking for it.** The gate writes that file after its own last ledger row, so its `H` is the value the *next* acting call needs; read the file rather than calling `snapshot` again. Measured: without it every act cost two gate invocations, and the first of the two existed only to read back a number the previous invocation had already decided. **Fall back to `snapshot` wherever the emitted value is not yours to use** — the file is absent (the first acting call of a run, or an emission that failed), its `actor` is not you, it is stale by construction (anything happened after it was written, a dry run included), or the gate refused the flag with exit 2 as an unknown argument (the hook receives the gate as a runtime parameter, so the two copies can be different deployments). In that last case drop the flag and keep using `snapshot`. The list is open on purpose: a closed count went stale the first time a new case appeared, and the rule it was standing in for is one sentence. What does **not** change is the binding: the digest is still compared against live state, and it is still the one just observed rather than one held across a turn. This is the mechanical enforcement of conversational statelessness, and its scope is bounded rather than total: a remembered digest is refused with exit 4 **when the run has since made progress, or when the ledger has grown past the bounded ancestry window** — not merely because rows landed after it. A value a few rows old belongs to a concurrent writer and is admitted on purpose, because refusing it meant one actor's successful act invalidated every other actor's digest the instant it landed. A digest carried across a compaction is far outside that window in practice, so the enforcement still stands where it was aimed; it is no longer a guarantee about *any* remembered value. Re-read; never re-type from memory.
 
 ### The verbs
 
@@ -365,16 +365,19 @@ act --kind obligation-drop -- 동일성=<problem 행의 동일성> 근거=<원�
 
 **Use `grade` and `plan` rather than finding out by doing.** Without them the router has to learn by attempting, and that turns the progress-relative act budget into something that fires on grammar instead of on stagnation. Neither verb performs the act, neither takes act budget, and neither writes the row the act would have written.
 
-**They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest, and a router that reads a digest, asks `plan`, and then acts on the digest it read first will be refused with exit 4. **Re-read the snapshot after asking.** Making the re-derivation conditional on the verb would not fix this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
+**They are NOT free of ledger writes, and the sentence that said so was wrong.** A common prelude runs ahead of the verb dispatch on every invocation regardless of which verb was asked for: the first call of a run appends a `run` row unconditionally, and later calls re-derive the authorization directory, overwrite the enforcement-surface baseline and append a `대상 추가` row. That re-derivation is not occasional — measured on one run's ledger it was 170 rows out of 804, 21 percent, alternating between exactly two values with a period of two. So a dry run does move the snapshot digest — but only its tip half, because the `run` and `대상 추가` rows are not components of the progress vector. The tip axis admits an ancestor inside a bounded window, so a router that reads a digest, asks `plan`, and then acts on the digest it read first is **not** refused, and **the forced re-read after a dry run is no longer needed** — that is the 21 percent, measured above, that stops costing a round trip. Re-read when the dry run sat among many other writers' rows, since the window is a few rows wide rather than a session long. Making the re-derivation conditional on the verb would still not change any of this: the `run` row is written from the other arm of the same branch and stays unconditional either way.
+
+**And where that re-read is wanted it is a real `snapshot` call, not a file read.** `grade` and `plan` perform nothing and reach no acting path, so neither emits a digest however the flag is spelled — which is deliberate rather than an omission: emitting from a verb that answers a question would put a value in the file that no act of this run stands behind. So after a dry run there is no fresh emission to read, and the next acting call either calls `snapshot` or carries the value it held before the dry run, which the bounded ancestry admits.
 
 ### Reading the exit codes
 
 | Code | Meaning | What the router does |
 | --- | --- | --- |
 | 0 | performed | continue |
-| 2 | vocabulary error | fix the argv — a token was outside a closed set |
+| 1 | the gate itself failed | not a refusal — the gate did not reach a verdict. Read the message; a malformed argv reaches the shell before any check runs |
+| 2 | vocabulary error, or an argv this gate does not accept | fix the argv — a token was outside a closed set, or a flag was spelled the way an older gate took it (`--emit-digest` takes no path) or used on a verb that performs nothing |
 | 3 | a rule refused | read which one; the refusal names the repair |
-| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one |
+| 4 | stale snapshot digest | **re-read the snapshot** and reconsider; do not retry with the old one. A bare append by another actor is not staleness and does not produce a 4 — what does is the run making progress, or the ledger growing past the bounded ancestry window, between the emission and the call. A 4 here is not evidence against the emission, it is the emission's designed failure mode |
 | 5 | approval issued | the act is outside pre-authorization — see below |
 | 6 | declared grade ≠ graded | the self-declaration was wrong; do not re-declare to match |
 | 7 | enforcement surface moved | stop and tell the user; a file the boundary rests on was edited |
@@ -438,8 +441,11 @@ A stage is `act --kind skill`, and the gate launches it through the wrapper. Nev
 ```
 gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment <id> \
   --cutpoint <token> --surface <token> --snapshot-digest <H> \
+  --emit-digest \
   -- <스테이지 종류> -p "/cc-cmds:<스킬>-unattended <인자…>"
 ```
+
+`<H>` comes from `<run-dir>/digest/gate-digest-router.json`, written by the previous acting call's own `--emit-digest`; where that file is absent take it from `snapshot` instead, and where the gate refuses the flag as an unknown argument drop the flag and keep taking it from `snapshot`. **Check its `actor` field before using `H`** — it carries the emitting stage id verbatim, `router` when the router wrote it, and a value that is not yours means the file is somebody else's emission rather than a stale one of your own; fall back to the round trip in that case.
 
 **The first token after `--` is the STAGE KIND, and it is consumed before the CLI ever sees the rest.** `act --kind skill` calls the launcher as `<alias> <segment> <stage-kind> <cli args…>`, so a form that starts with `-p` hands `-p` over as the kind. The vocabulary check then falls back to `generic`, meaning the stage runs under settings that are not its own, and `-p` is gone from what reaches the wrapper. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`, and it selects the settings variant rather than the skill.
 
@@ -449,7 +455,9 @@ Four parts, and each one has a measured failure:
 
 - **`-p` is required.** The wrapper passes everything after `--` to the CLI, so without `-p` the prompt is never delivered. Omitting it while passing a bare skill name produced `산출물 없는 정지 rc=0 · 0.809852 USD` — the model woke with an **empty first user message**, read a file, asked "what should I do?", and terminated as a success. Omitting it while passing a quoted slash command instead fails loudly (`stage-wrapper: -- 뒤에 CLI 인자가 필요합니다`, `크래시 rc=2`), which is the better of the two.
 - **The prompt is a slash command**, leading `/` included.
-- **It must be the `-unattended` variant.** The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, so a headless stage naming them resolves nothing at all.
+- **It must be the `-unattended` variant** — and the reason is not that the plain name fails. The plain `design-audit`, `implement` and `review` skills carry `disable-model-invocation: true`, which closes the **Skill tool** path and nothing else; a headless stage that names one still reaches the same instructions by reading the file, and measured, one did — a complete report, 129 USD, produced end to end from a plain skill name. So the failure mode is not an error, it is a stage running the interactive-shaped workflow with nobody to interview, and it is green. Nothing in this loop detects it, because there is nothing to detect: the dispatch is well formed and the stage produces output. Only the spelling in the prompt separates the two.
+
+  This paragraph used to say the plain name "resolves nothing at all". That was false, and its falseness is why no check was ever built here — a form believed to fail loudly needs no guard.
 
 The first form is the dangerous one precisely because it is green: exit 0, cost charged, no output. Neither the gate nor the wrapper can catch it — a prompt is a string, and any string is a valid one.
 
@@ -500,7 +508,7 @@ gate.sh act --manifest <매니페스트> --kind router-shift --target <alias> \
 
 **That call has THREE outcomes and they are told apart by exit status, not by prose.** `0` — the successor ran and came back, so route again on its return line. `5` — an approval was issued instead of a launch: the handoff floor is past its cap, nothing was started, and this is a question for a person, so answer it here before trying again. `10` — the cap shift is held behind a live stage: nothing was started and nothing is wrong, so let the stage finish and reissue. All three used to report `0`, which is why 「 the successor is running」 had to be inferred rather than read.
 
-**The successor reads the snapshot itself and never the `H` its predecessor handed back.** The `handoff` row moved the ledger's row count and its chain tip, so a digest quoted from before it is stale by construction and the gate will refuse it.
+**The successor reads the snapshot itself and never the `H` its predecessor handed back.** The gate no longer refuses that value on the strength of the `handoff` row alone: `handoff` moves the chain tip and no component of the progress vector, and the ledger's row count left the digest formula entirely, so a quoted digest can sit inside the bounded ancestry window and pass. Reading it yourself is what makes the successor's first act rest on state it observed — and nothing downstream catches it if it does not.
 
 **RE-ARM THE PROGRESS CHANNEL ON EVERY SHIFT RETURN.** Whether a `persistent` monitor survives a compaction or a resume is unmeasured, and this binds the risk without waiting for the answer: at most three times a night, at moments the seat is awake anyway. Both branches hold — alive, the feed's lock finds the running instance, prints one line and exits 0 so a healthy night files no false failure; dead, the cursor picks up exactly where the last line stopped. Re-arm with the same command and the same `description` as Step 7.
 
