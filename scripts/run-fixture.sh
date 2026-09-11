@@ -296,9 +296,111 @@ fx_watch_pid() {
 
 fx_done() {
   # fx_done — the `done` file, with the ISO stamp the propose-done path writes.
-  # It is a SHORTCUT for the terminal predicate, not its definition: 2 of 39
-  # observed run directories had one.
+  # It is a SHORTCUT for the terminal predicate, not its definition: measured
+  # 2026-09-07, 99 of 202 observed run directories had one.
   printf '%s\n' "종단 — 픽스처" > "$FX_RUN_DIR/done"
+}
+
+# --------------------------------------------------------------------------
+# Isolation guards — enforcement, not convention
+# --------------------------------------------------------------------------
+#
+# THESE TWO ARE AN EXCEPTION TO THIS FILE'S HABIT, DELIBERATELY. Everything
+# above swallows failure (`2>/dev/null || true`) so that the assertion, not the
+# fixture, reports what went wrong. These exit instead, because the suites that
+# call them drive code that DELETES directories and isolation is not a failure
+# that can be swallowed.
+#
+# Every suite exports `XDG_STATE_HOME` under a `mktemp -d`, but that is a habit
+# and not a mechanism, and the `${XDG_STATE_HOME:-$HOME/.local/state}` fallback
+# is spelled identically in `statusline.sh`, `gate.sh` and `run.sh`. A real
+# `~/.local/state/cc-cmds/run/R1` on this host is what the habit breaking once
+# looks like; under a reaper, the same slip removes a run directory a person was
+# using.
+
+fx_path_under() {
+  # fx_path_under <path> <ancestor> — 0 when <path> IS <ancestor> or sits below
+  # it. Both operands are compared as plain strings; resolving them is the
+  # caller's job, because only the caller knows which of them must exist.
+  case "$1" in
+    "$2") return 0 ;;
+    "$2"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+fx_require_isolated_state() {
+  # fx_require_isolated_state — refuse to continue unless `XDG_STATE_HOME` is
+  # set, is neither the real user state directory nor anything under it, and
+  # sits under the scratch `TMPDIR`. Call it once ahead of any path that can
+  # delete.
+  local sh_p tmp_p home_p
+  if [ -z "${XDG_STATE_HOME:-}" ]; then
+    printf 'fx_require_isolated_state: XDG_STATE_HOME 이 설정되지 않았습니다\n' >&2
+    exit 1
+  fi
+  mkdir -p "$XDG_STATE_HOME" 2>/dev/null || true
+  sh_p=$(cd "$XDG_STATE_HOME" 2>/dev/null && pwd -P) || sh_p=""
+  if [ -z "$sh_p" ]; then
+    printf 'fx_require_isolated_state: XDG_STATE_HOME 을 해소할 수 없습니다 — %s\n' \
+      "$XDG_STATE_HOME" >&2
+    exit 1
+  fi
+  # The real one is resolved the same way so that a symlinked `$HOME` cannot make
+  # the two spellings look unrelated.
+  home_p=$(cd "$HOME/.local/state" 2>/dev/null && pwd -P) || home_p=""
+  if [ -n "$home_p" ] && fx_path_under "$sh_p" "$home_p"; then
+    printf 'fx_require_isolated_state: XDG_STATE_HOME 이 실사용자 상태 디렉터리 아래입니다 — %s\n' \
+      "$sh_p" >&2
+    exit 1
+  fi
+  tmp_p=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || tmp_p=""
+  if [ -z "$tmp_p" ] || ! fx_path_under "$sh_p" "$tmp_p"; then
+    printf 'fx_require_isolated_state: XDG_STATE_HOME 이 스크래치 TMPDIR 아래가 아닙니다 — %s (TMPDIR=%s)\n' \
+      "$sh_p" "${TMPDIR:-/tmp}" >&2
+    exit 1
+  fi
+  return 0
+}
+
+fx_assert_scratch_path() {
+  # fx_assert_scratch_path <path> — refuse a path outside the calling suite's own
+  # scratch root. This catches what the environment-level check cannot see: a
+  # correct `XDG_STATE_HOME` paired with a wrong path variable.
+  #
+  # `FX_SCRATCH_ROOT` is the contract — the suite sets it to its own `$WORK`,
+  # because this file has no way to know it. AN UNSET ROOT IS A REFUSAL AND NOT A
+  # PASS: treating it as a pass would erase the only thing this function does.
+  #
+  # The path itself need not exist — it is asserted before a directory is created
+  # and again after it is deleted — so it is the PARENT that gets resolved.
+  local p_dir p root
+  if [ -z "${FX_SCRATCH_ROOT:-}" ]; then
+    printf 'fx_assert_scratch_path: FX_SCRATCH_ROOT 이 설정되지 않았습니다 — 스위트가 자기 스크래치 루트를 선언해야 합니다\n' >&2
+    exit 1
+  fi
+  if [ -z "${1:-}" ]; then
+    printf 'fx_assert_scratch_path: 경로 인자가 없습니다\n' >&2
+    exit 1
+  fi
+  root=$(cd "$FX_SCRATCH_ROOT" 2>/dev/null && pwd -P) || root=""
+  if [ -z "$root" ]; then
+    printf 'fx_assert_scratch_path: FX_SCRATCH_ROOT 을 해소할 수 없습니다 — %s\n' \
+      "$FX_SCRATCH_ROOT" >&2
+    exit 1
+  fi
+  p_dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || p_dir=""
+  if [ -z "$p_dir" ]; then
+    printf 'fx_assert_scratch_path: 경로의 상위 디렉터리를 해소할 수 없습니다 — %s\n' "$1" >&2
+    exit 1
+  fi
+  p="$p_dir/$(basename "$1")"
+  if ! fx_path_under "$p" "$root"; then
+    printf 'fx_assert_scratch_path: 스크래치 루트 밖의 경로입니다 — %s (루트 %s)\n' \
+      "$p" "$root" >&2
+    exit 1
+  fi
+  return 0
 }
 
 fx_statusline_stdin() {

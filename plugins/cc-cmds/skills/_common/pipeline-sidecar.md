@@ -95,7 +95,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 reason: the bytes that carry authorization pass through a writer's transform
 once per run rather than on every append.
 
-### 2b.1 Header and the six sections
+### 2b.1 Header and the seven sections
 
 ````
 # 파이프라인 런 매니페스트 — <run-id>
@@ -121,7 +121,7 @@ once per run rather than on every append.
 - `target` | 별칭=<alias> | 메인 워크트리=<abs> | 공통 git 디렉터리=<abs>
             | 베이스 브랜치=<name> | 홈=예|아니오
             | 원격 슬러그=<owner>/<name> | 절단점=<token> | 말단 행위 상한=없음|<int>
-            [ | 실행 워크트리=<abs> ]
+            [ | 실행 워크트리=<abs> ] [ | 리뷰 정책 상한=선리뷰후머지|선머지후리뷰|리뷰없음 ]
 
 ## 요소
 **설계 문서**: <document key> | (없음)
@@ -147,6 +147,9 @@ once per run rather than on every append.
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
 - `자동 채택` | 판단 부류=<여덟 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
+
+## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
+**<룰 이름>**: 켬 | 끔
 ````
 
 **The manifest freezes the GOAL AND THE CONSTRAINTS, not the plan.** The plan
@@ -253,6 +256,45 @@ the authorization is an N-row table, and that table's only human anchor is
 `사용자 확인 문면`. Collapsing them promotes plan approval into permission
 approval silently.
 
+**`리뷰 정책 상한` is optional on the target row, and its absence reads as
+`선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
+is one of the few surfaces where a NEW key actually enters the frozen set: the
+freeze covers the `target`, `종료 절`, `사전 인가` and `자동 채택` rows and lines
+whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
+`## 인가` moves neither digest.** Written in the most natural-looking place the
+ceiling would freeze nothing, and the tamper-evidence argument for it would be
+false. Recording that here is what stops the next optional field from making the
+same mistake.
+
+**The name deliberately does not share a spelling with the slice's `리뷰 정책`.**
+Two fields called the same thing invite a comparison whose two arguments have been
+swapped, and a swapped comparison computes `상한 ≤ 상한` — always true, always
+silent, and fail-open in the one direction that matters.
+
+**`## 룰 설정` is the optional seventh section, and its absence is the norm.**
+Four things about it, because each has its own way of being got wrong:
+
+1. **No section means every rule is on, and a rule with no key inside the section
+   is on as well.** The gate reads only `끔` as false, so a missing key, a missing
+   section and any other value all leave the rule enforcing.
+2. **The set of admissible keys is derived from the declarations, never fixed by a
+   count.** It is exactly those rules whose `.rule` file says `끌 수 있는가: 예`.
+   Neither the names nor the number are pinned here, because pinning them would
+   create a second list to drift from the catalog.
+3. **`켬` on a switchable rule is a positive statement; a key naming a rule that
+   cannot be switched off is INERT AND YET HASHED.** The enable check returns for
+   those names before it reads any setting, while the binding digest scans the
+   whole file for `켬`/`끔` values — so such a key moves the digest and changes
+   nothing else. That combination is why condition 13 warns about it rather than
+   passing over it.
+4. **A `켬`/`끔` line outside the section moves the digest and is not read by the
+   gate**, and the same setting written twice inside the section is decided by
+   **document order** — the reader stops at the first match.
+
+**No interview question is written for this section.** The default is `켬`, its
+absence is normal, and the middle value people reached for `끔` to express now has
+a field of its own.
+
 ### 2b.2 `check_manifest()` — a conjunction, in order
 
 Without this list the manifest becomes a fresh instance of the defect class
@@ -287,6 +329,45 @@ never compared.
     **fail-closed**: `origin-worktree=`'s fail-open tie-break is only sound
     *between* files that have already proven ownership, so removing the proof
     and keeping the tie-break inverts the order.
+11. **Every `자동 채택` row's `판단 부류` is one of the closed eight**, and the two
+    that hand risk to the user are a hard stop (see §2b.1). This condition was in
+    the code and not in this list, so the list said ten while the implementation
+    checked eleven — a contract that under-reports its own checks teaches the next
+    reader that an unlisted check is an absent one.
+12. **`리뷰 정책 상한` on the target rows, in three branches.**
+    (a) A token outside the review-policy vocabulary is a **hard stop**: a typo
+    quietly read as the strictest value is a declaration the operator made and
+    the machine ignored, which is the symptom this axis exists to remove.
+    **Absence is not a violation** — it reads as `선리뷰후머지`, which is what
+    keeps every manifest written before this field existed valid with no
+    migration.
+    (b) A target whose cutpoint is below `머지` and which declares a ceiling anyway
+    gets a **warning** and the run continues. The value is harmlessly inert there,
+    so refusing would make a manifest unfit for having declared something it will
+    never use — but "not checked" and "checked and inert" must not read the same
+    in the log.
+    (c) If `## 요소` declares `적용 주체: 파이프라인` and **any** target's ceiling
+    is `리뷰없음`, that is a **hard stop**. The apply is then held by a rule the
+    manifest cannot turn off, so it is never performed and the run has no ending
+    it can propose — a failure that would otherwise surface only in the morning.
+    This branch is conservative **by necessity and not by choice**: all three apply
+    declarations are run-scope, none carries a target alias, and no target row
+    carries an apply field, so "which target receives the apply" is not derivable
+    at this point. The price is over-refusal by a sibling target; it is paid
+    because the error in the other direction is a run that cannot end.
+13. **`## 룰 설정` keys naming rules that cannot be turned off** get a **warning**.
+    It is a separate numbered condition rather than a fourth branch of 12 because
+    it reads an entirely different section; folded under the ceiling's name, the
+    next reader would not find it. A warning rather than a hard stop because such
+    keys already sit in frozen manifests and a manifest has no amendment form —
+    refusing would make a run in flight permanently unfit with no way back.
+
+**Both warnings fire at most once per run.** This whole conjunction re-runs on
+every gate entry, so a per-entry warning buries the morning report under its own
+repetitions. The suppression is a sentinel file per warning kind under the run
+directory. This check runs **before** the run directory is initialized, so when
+that directory cannot be created the suppression **fails open** and the warning is
+emitted unsuppressed — a duplicate is cheaper than a loss.
 
 4·5·6 are the **verification points**. Without them fields 3·5·6 ship computed,
 recorded, and never compared — exactly the state the binding-surface digest was
@@ -336,11 +417,24 @@ visible in the manifest rather than inferred.
 
 The manifest is the only schema. A call that supplies only a document is
 absorbed as the **degenerate case**: one document, one target. No grace period,
-no dead code. The ground for that is measured — this pipeline has never run
-(zero grants, zero ledgers, zero run directories, zero segment branches), so
-there is no population for backward compatibility to protect, and keeping two
-sidecar schemas would put two code paths under the mechanisms where single
-writer and fail-closed carry the weight.
+no dead code. Keeping two sidecar schemas would put two code paths under the
+mechanisms where single writer and fail-closed carry the weight.
+
+**The population is not zero, and the claim that it was has been removed rather
+than re-counted.** That claim was read off the committed tree — and the
+manifests, grants and ledgers live under `docs/`, which is git-ignored here, so
+the count could not have seen a single one of them. Re-count by listing
+`<base>/docs/pipeline-grant/` and `<base>/docs/pipeline-run/` **on disk**, never
+from git. A number written into this paragraph would be stale the next night,
+which is why the method is recorded here and the number is not.
+
+What carries the compatibility argument is a property rather than a count: **an
+absent optional field moves neither digest.** A manifest that does not carry one
+is byte-identical to what it was before the field existed, so `대상 맵 다이제스트`
+and `구속 다이제스트` both still verify against their own file and every run in
+flight stays conforming with no migration. That holds however large the
+population turns out to be, which is why it replaces the count instead of
+correcting it.
 
 ## 3. `cc-pipeline-run v1` — the run ledger
 
@@ -359,7 +453,9 @@ Block 0 is `## 계획 <run-id>` — the plan record written when the run starts.
 
 Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row carries the fence's info string instead of the inline value.
 
-**Every row carries `교대=<n>` as its first field after the series name.** `<n>` is the number of the routing shift that was current when the row was written, counted from `0` for the lead's own seat. It is on every row rather than on the `handoff` row alone because the question the morning asks — how many shifts ran after the instruction files were applied — is answered by reading any row's shift number, and a scale that exists on one series can only count that series. A run whose routing never left the lead writes `교대=0` on every row, so the field costs nothing where the mechanism is unused.
+**Every row carries `교대=<n>` as its first field after the series name.** `<n>` is the number of the routing shift that was current when the row was written, counted from `0` for the lead's own seat. It is on every row rather than on the `handoff` row alone because the question the morning asks — how many shifts ran after the instruction files were applied — is answered by reading any row's shift number, and a scale that exists on one series can only count that series. A run whose routing never left the lead writes `교대=0` on every row, so the field costs nothing where the mechanism is unused — and `0` stays the lead's own seat for as long as the run lasts, including after shifts have come and gone, because the seat is read from the writer's own shift marker rather than derived from how many shifts the ledger has seen.
+
+**An attempt that launched nothing consumes no ordinal.** The launcher writes its `교대 기동` row immediately before starting the successor, so a shift held behind a live stage and one stopped at the handoff floor both leave the scale where they found it. Without that rule the ordinal names a `log/shift-<n>.json` that no run ever wrote, and the morning reader following the number lands on nothing.
 
 ### 3.1a Row length has a hard cap
 
@@ -367,7 +463,9 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at fifteen
+### 3.2 The row series is closed at sixteen
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fifteen` — `교대 기동` arrived as the sixteenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
 > **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen` — `handoff` arrived as the fifteenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
@@ -375,25 +473,28 @@ Two consequences the schema carries rather than leaving to callers. Long values 
 
 The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
 
+**The sixteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
+
 **The last two are a reconciliation rather than an extension, and the difference matters.** `종료 절` and `문서 해시` were already being written by the gate while this table did not list them — so the table was not a closed definition at all, it was a partial inventory that read like one. A contract that under-reports what its writer emits is worse than one that over-reports: a reader checking whether a series exists gets "no" for something the ledger is full of. They are listed now with the fields the gate actually writes.
 
 | `계열` | Fields |
 | --- | --- |
 | `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
-| `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` |
+| `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) |
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
-| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
+| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점` · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
-| `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `머지 커밋` · `생성 등급`(축 2) · `발행 시각` · `이행 시각` |
+| `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
 | `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
+| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
@@ -404,6 +505,10 @@ They are written from three different places, because the three have different k
 **The terminal class the gate writes is a strict subset, and the omission is deliberate.** From outside a stage it can distinguish `크래시` (a non-zero status, or a subtype that is not success), `정상 완료` (the stage performed at least one gated act), `산출물 없는 정지` and `공허한 성공` — the last two separated by whether the stage's own transcript carries a `permission_denials` entry, which is precisely the "trace of reaching a decision point" this contract asks for. `의도된 park` and `적용 불명` are **not** written from here: both are claims about the stage's intent, they are read from its halt record, and guessing them from outside would put an unverified value in the ledger.
 
 **`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A `cycle` row is refused without `사이클`, `P0`, `P1` and `리뷰 HEAD`, which are exactly the four that rule reads.
+
+**The shape table above carries the fields `gate_record_row` REQUIRES and the fields the rules READ, and it has to carry both.** It is the router's only instruction for what to put on a row, and `리뷰 HEAD` was missing from the `cycle` line while the paragraph four above enumerated it correctly — so a router following the table wrote a row the merge rule could not use. The general statement is the load-bearing part: **a field some rule reads that is absent from this table is a rule that cannot fire, and that failure is indistinguishable from the check passing.** Silence from a rule reads as consent, so a table that under-declares turns an enforcement point into a no-op with no symptom.
+
+**`segment.리뷰 정책` is optional, and omitting it on a later row is INHERITANCE rather than a reset.** The gate carries the previous row's value forward **at write time**, so every row states the policy in force at that moment and the last row alone answers the question — a read-time fallback would be a second reader of this series holding a different meaning from the first. A value exceeding that target's `리뷰 정책 상한` is **refused with exit 2 and never clamped**: a quietly tightened row is indistinguishable from a conservative one. The carry is on this field alone and deliberately not on `워크트리`, which is required on every row and so cannot be erased in the first place.
 
 **`자격` records which credential each act actually ran under.** With neither pipeline credential provisioned the gate falls through to the ambient one — on a developer machine a full-scope login — and the fallback is kept, because refusing would stop every host that has not provisioned one. What is not kept is the silence: `주변` on the row is how the morning tells a run that had the separation from one that only appeared to.
 
@@ -423,7 +528,15 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 `push` and above take neither path. They park with the cause `대상 미선언`, and the resume command is the re-kickoff that writes a successor manifest.
 
-**`리뷰 의무` exists because `선머지후리뷰` defers an obligation rather than removing one.** Its `생성 등급` is the axis-2 grade of the act that created it, which is the field the run's termination conditions read — an obligation created by an act graded at or below `워크트리 쓰기` is excusable when its segment parks, and one created above that is not.
+**`리뷰 의무` exists because `선머지후리뷰` defers an obligation rather than removing one.**
+
+**`생성 등급` on this series is read by nothing, and the sentence that claimed otherwise is corrected here rather than softened.** It used to say the field was what the termination conditions read, and the excusal rule it pointed at reads a field of the same name on `problem` rows — a different series with a different writer. The field looked load-bearing, so an implementer changing it would have gone looking for a consumer that does not exist. It is kept because the morning wants to know what kind of act deferred the review, not because a predicate waits on it. The same correction is made at the gate's own comment and at the suite's label for this field, because one of the three left uncorrected would contradict the other two.
+
+**`머지 커밋` is the commit BEING merged and not a commit the merge creates** — the tip of the segment worktree at issue time. The name is unchanged and only the definition is written down, because a `cycle` row's `리뷰 HEAD` lives in that same ref space and the containment test between the two means nothing unless both name commits that exist before the merge does.
+
+**`대상` and `이행 판정` are new, and the gate writes both in the carried position where the router's argv cannot overwrite them.** `대상` is the target alias the merge was authorized against, and the fulfilling side runs its landing test in **that** target's anchor repository rather than in the segment worktree — two directories the shape of this design invites collapsing into one. `이행 판정` is a **closed three-value field**: `착지·포함` (the merge landed on the base and a review covers that commit), `미착지` (it has not landed), `앵커 없음` (the row predates `머지 커밋` and cannot be measured). There is no fourth value and there is no `판정 불가` — an unanswerable probe refuses the fulfillment, so it leaves no row to carry a value on. `근거` is required on the fulfilling row on the same terms the `blocked` arm demands it: an obligation closed on the router's say-so is a review that did not happen and a row saying it did.
+
+**The row-length budget, restated as the number a writer can use.** The cap is 1024 bytes (§3.1a). The longest fulfilling row with `근거` empty measures 399 bytes, so what remains for `근거` is **625 bytes** — the two fields added above spend 48 of it, taking the figure from 673 down to 625. That number, not a percentage of headroom, is what a writer needs.
 
 **`실행 버전` belongs to `stage-result`, not to `segment`.** The session uuid is derived from `owner-doc|구간|단계|시도`, so `시도` must be durable — otherwise a reboot re-derives a uuid already bound to a different transcript. Attaching the field to the per-stage row is what makes that durable at the right granularity.
 
@@ -444,6 +557,9 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.자격` | `분리` \| `주변` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
+| `리뷰 의무.이행 판정` | `착지·포함` \| `미착지` \| `앵커 없음` |
+| `segment.리뷰 정책` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; omission on a later row inherits) |
+| `target.리뷰 정책 상한` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; absence reads `선리뷰후머지`) |
 | `대상 추가.층` | `0` \| `1` |
 | `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
@@ -627,3 +743,74 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 Priority on read: **a halt record present ⇒ halt.** Absent and terminated ⇒ judge by the predicate.
 
 The third row is a measured failure mode, and its retry count is argued in both directions: not zero, because one observation cannot rule out a transient cause; not the full retry budget, because a clean exit with no artifact is itself evidence that the next attempt does the same. Improvisation is deterministic, so a blind retry loop would reproduce it identically and burn the whole budget before reaching the ladder. **This does not restore the stop that the unattended arm removed** — nothing on the skill side can. It converts an unobservable failure into an observable one, which is the most the driver can do from outside.
+
+---
+
+## 6. The volatile run directory — the file list and who writes each
+
+```
+RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
+```
+
+**This directory is not a sidecar, and nothing here is durable state.** §4 already says so of the halt record; it is true of every entry below. Process handles live here and nowhere else, so a stale record and a stale process die together and pid reuse cannot make the driver kill an unrelated live process. It sits under `XDG_STATE_HOME` rather than `${TMPDIR}` because `/var/folders` is swept without a reboot, and "no record ⇒ no process" must not be falsified by a sweep.
+
+**The list is written down because the directory has four writers and no schema.** A sidecar has a kind token, a single declared writer and an append gate; this directory has none of those — it is a pile of small files that four programs create by redirection. Nothing rejects an unknown name, so a reader that guesses cannot be told it guessed wrong. That matters now because the consumer is no longer only the driver: a lane probe reports the run's state to a scheduler outside this repository, and a scheduler that mistakes an unrecognized file for an absent one reads a live run as idle.
+
+**Run directories are never cleaned up.** Measured on one machine: 139 directories at the start of a session and 145 by the end, spanning weeks, more than half of them reading as non-terminal under a naive predicate. Any reader that enumerates this root has to be bounded and has to treat an unrecognized record shape as *undecidable* rather than as *idle* — degrading to "cannot judge" is what kept an earlier on-disk format drift harmless.
+
+### 6.1 The file table
+
+| Path | Writer | What it is |
+| --- | --- | --- |
+| `plan.md` | `autopilot` (kickoff) | the run manifest of §2b — frozen whole, creation-only |
+| `started-at` | driver (`run.sh`) | run open time, epoch seconds |
+| `config-dir` | driver (`run.sh`) | the **lane** this run opened in — tier 2 of the account resolver, written once at run open so every later stage dispatch resolves to the same lane |
+| `orchestrator-dir` | driver (`run.sh`) | the absolute path of the orchestrator directory this run actually loaded |
+| `generation` | driver (`run.sh`) | segment-plan generation counter |
+| `plan.tsv` · `done.txt` | driver (`run.sh`) | the segment rows, and the segments already merged |
+| `<stage>.pid` | driver (`run.sh`) | the spawned stage's pid |
+| `<stage>.pgid` | driver (`run.sh`) | its process-group id — the **fallback** identity handle |
+| `<stage>.start` | driver (`run.sh`) | its start-time fingerprint; `(pid, start time)` is the identity and the pid alone is not |
+| `<stage>.rc` | driver (`run.sh`) | the collected exit status |
+| `<stage>.transcript` | driver (`run.sh`) | cached path of the stage's session transcript |
+| `log/driver.log` · `log/<stage>.json` | driver (`run.sh`) | driver log, and each stage's result envelope |
+| `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |
+| `halt/<stage-id>.md` | **the halting stage** | the halt record of §4 — the one file a stage writes here |
+| `<segment>.plan.md` | the `implement` stage | the plan emitted by that segment's first process, and the admission token its second one is checked against |
+| `settings/` | gate (`gate.sh`) | the per-run settings the stage wrapper launches with, hook included |
+| `settings.lock` | gate (`gate.sh`) | `mkdir` mutex over the settings directory, held by readers and writer alike |
+| `ledger.lock` | gate (`gate.sh`) | the ledger's advisory lock |
+| `ledger-path` | gate (`gate.sh`) | where this run's ledger is, for readers that have only the run directory |
+| `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
+| `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
+| `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
+| `obligation-digest` · `obligation-repeat` | gate (`gate.sh`) | the same pair for open obligations |
+| `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
+| `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
+| `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
+| `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |
+| `notify.stack` | notifier (`notify-run.sh`) | the notification stack's admitted slots |
+| `notify.reported` · `notify.announced-void` | gate (`gate.sh`) | which events already reached the report |
+| `watch.pid` | watcher (`watch.sh`) | the watcher's own pid — **not a stage**, and a census that counts it answers a different question than its name |
+| `watch.state` · `watch.heartbeat` | watcher (`watch.sh`) | last observed ledger size and time; the published heartbeat |
+| `watch.announced-*` | watcher (`watch.sh`), one written by the gate | once-only announcement markers |
+| `stall` | watcher (`watch.sh`) | appended stall observations |
+| `watch.log` | the kickoff's detach redirection | the watcher's stdout and stderr; **no script writes this path** — it is the shell redirection on the line that orphans the watcher |
+
+**A pid file is a stage only if a sibling handle sits beside it.** Both spawners write `<name>.start` and the driver writes `<name>.pgid` on top of that, so a `*.pid` glob alone over this directory counts the watcher as a stage — and the run's termination condition, which has no resolving verb, then never comes true while a watcher runs.
+
+**The two spawners write those files in OPPOSITE orders, so a sibling-less stage pid is a real on-disk state.** The driver writes `<stage>.start` and then `<stage>.pid`; the gate writes `<stage>.pid` and then `<stage>.start`, and it writes no `<stage>.pgid` at all. A stage the gate spawned therefore has a single identity handle with no fallback, and between those two writes its pid file sits here alone. A reader that meets that shape has **not** observed an idle run — it has observed a record it cannot judge, and it must publish "cannot judge" rather than a count. The distinction is the whole point: the count `0` prints as the answer that authorizes a swap, and the run being sampled may be at its busiest. The exemption runs the other way for `watch.pid`, which is exempt **by name**, because the watcher never leaves a sibling and demanding one would make every watcher-only directory permanently undecidable.
+
+**What that asymmetry demands of a reader is the sibling's CONTENT, not its presence, and reading only its presence is the same bug one level down.** The gate's `<stage>.start` is the output redirection target of a `ps | sed` pipeline, so the shell creates and truncates the file before `ps` emits a byte — an EMPTY sibling is on disk for the whole of that window (measured: 300 samples out of 300, about 3.9 ms wide), and if `ps` prints nothing at all, which it may since it runs with stderr discarded and its output unchecked, the file stays empty for the stage's entire lifetime. A reader that accepts the file's existence therefore admits a record the census then declines to count, and an uncounted live stage publishes as the count `0` — the answer that authorizes a swap, arriving for a run the gate has just started. The test has to be that one of the two handles is **non-empty**, and it has to be the UNION of them rather than `<stage>.start` alone: a driver-spawned directory can carry an empty `<stage>.start` beside a valid `<stage>.pgid`, and the census calls that alive.
+
+**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md` and `<segment>.plan.md` are permitted, and every other path **this arm judges** is denied. **It does not judge every path under `RUN_DIR`**: the arm is entered by walking the edit target's own spelling upward until an ancestor's inode matches the run directory, so a spelling whose ancestors never meet it is never judged here — whatever the bytes finally land on. That is this table read back as an enforcement rule — those two rows are exactly the ones naming a stage as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
+
+**Both permitted names are narrower than they read, and the hook enforces the narrower reading.** `halt/<stage-id>.md` is a **direct child and one level only** — a path burrowing below it, `halt/<anything>/<anything>.md`, is not on this list and is denied, because the halt record is one file per stage and a subtree under that name is a second storage area nothing declared. And what the list permits is **the file sitting at that name, not the name itself**: a leaf that is a symlink is denied even where its name matches — whether or not the link resolves — since a name-only match lands wherever the link points and every gate-owned row above sits one `ln -s` away. **That sentence is narrower than it reads. The gaps below are the ones known today, and this is not a claim that the list is complete — an earlier revision made that claim in this position and it was false when it was written.**
+
+- **A hard link at a permitted name is not denied.** It has no link to follow and shares the target's device and inode outright, so no symlink test can separate the two names — the split between a name and a file has to come from the inode side there. **A hard link outside the run directory is not denied either, and it falls under no clause above**: it is not a resolution, so the leaf test never fires, and its ancestors are all outside, so the ancestor walk never reaches this arm at all.
+- **A path sitting outside the run directory whose leaf resolves inside it** shares no ancestor with the run directory, so it is never judged here.
+- **An intermediate component that resolves to a gate-owned directory** was a third gap, and it is now closed for `settings/` by a directory-level inode anchor. `hook_under` folds at the deepest matching ancestor, so a `halt` that is a symlink to `settings/` left that ancestor compared against nothing; the tail then came out as `halt/<name>` — an allowed name — while the same file's direct spelling was denied, which made the allow-list's own deny arm reachable around by spelling alone. **The anchor needs the directory to exist**: before `settings/` is created the operand yields no inode row and the anchor cannot fire, so that window stays open. A live run directory always has it, because the gate creates it at run open.
+
+None of these is new — before this allow-list existed the whole run directory was default-allow, so all of them were open then too — but the sentence above closes none of them either.
+
+**`config-dir` and `orchestrator-dir` are written once and never overwritten.** A driver restarting against a live run directory must not move the lane a stage is already spending, and the file's presence is the record that some stage may already have read it. A run directory laid down before these two existed simply has neither; a reader reports that as "unrecorded" rather than as an error, because otherwise the whole history becomes unreadable at once.

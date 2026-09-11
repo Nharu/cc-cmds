@@ -169,8 +169,10 @@ idx="$CC_SL_STATE/session/$sid"
 # session forever. `cc_run_grade` ranks on evidence instead — live stage, then
 # waiting approval, then a ledger that moved inside `CC_SL_STALL`, then
 # finished, then gone quiet. Recency is the tie-break INSIDE a rank and never
-# across two. Entries whose directory is gone are skipped rather than pruned;
-# pruning would put a write on a path that has none.
+# across two. Entries whose directory is gone are skipped HERE rather than
+# pruned, because this file writes nothing by contract; the pruning belongs to
+# the gate, which does it on a sparse cycle beside the reclamation that removed
+# those directories in the first place.
 best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9
 while IFS= read -r rid; do
   [ -n "$rid" ] || continue

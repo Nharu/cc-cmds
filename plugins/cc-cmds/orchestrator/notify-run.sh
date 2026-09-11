@@ -54,6 +54,18 @@
 # has to say what it governs.
 CC_NOTIFY_ENV_NAME=CC_CMDS_AUTOPILOT_NOTIFY
 
+# The session seats' switch, named here for the same reason and read by
+# `cc_notify_session_enabled` below.
+#
+# WHY A SECOND SWITCH AND NOT A SECOND MEANING FOR THE FIRST. Wanting the
+# session banners while wanting an unattended run's banners silenced — or the
+# reverse — is a real state, and one variable cannot express it.
+#
+# IT IS A SECOND SWITCH, NOT A SECOND GRAMMAR. The value vocabulary is the
+# autopilot one exactly, because otherwise the way a user learned to switch one
+# of these off would quietly not work on the other.
+CC_NOTIFY_SESSION_ENV_NAME=CC_CMDS_SESSION_NOTIFY
+
 # The stacking cap. Above it, individual notices collapse into one slot carrying
 # a count — see `cc_notify_stack_admit`.
 CC_NOTIFY_STACK_CAP=8
@@ -114,9 +126,60 @@ cc_notify_enabled() {
   return 0
 }
 
+cc_notify_session_enabled() {
+  # The session seats' half of the switch. Same value grammar as the function
+  # above, deliberately — see `CC_NOTIFY_SESSION_ENV_NAME`.
+  #
+  # IT DOES NOT WARN ON AN UNRECOGNIZED VALUE, and that is a decision rather than
+  # an omission. The warning goes to stderr, the session hooks may not put a byte
+  # there, and the once-guard the autopilot warning uses is a marker file under
+  # `RUN_DIR` — which a session has none of, so the guard would degenerate and
+  # the warning would repeat on every firing.
+  #
+  # THE COST IS REAL AND REACHES THE USER: a typo here leaves the banners on
+  # while the person believes they switched them off, and nothing says so. The
+  # opposite polarity — reading an unrecognized value as OFF — was rejected
+  # because then a typo silently removes the banners instead, which is the worse
+  # of the two silences and also splits the grammar the line above keeps whole.
+  local v="${CC_CMDS_SESSION_NOTIFY:-}"
+  case "$v" in
+    '') return 0 ;;
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]) return 0 ;;
+  esac
+  return 0
+}
+
+cc_notify_scope_enabled() {
+  # cc_notify_scope_enabled <token> — send a token to its own scope's switch.
+  #
+  # THE DISPATCH IS A NEW FUNCTION AND NOT AN ARGUMENT ON `cc_notify_enabled`.
+  # Three call sites reach that one with no argument, so an added parameter would
+  # leave whichever site was missed running on the default — the autopilot switch
+  # — while every test stayed green. A separate verb cannot be half-adopted: a
+  # site either calls it or does not.
+  #
+  # WITHOUT THIS THE AUTOPILOT SWITCH IS THE MASTER OF THE SESSION BANNERS.
+  # Measured: with the session tokens added but the firing gate still calling
+  # `cc_notify_enabled`, `CC_CMDS_AUTOPILOT_NOTIFY=0` and `=off` each stopped a
+  # session firing. That makes the one combination the second switch exists for
+  # — silence the unattended run, keep the session banners — inexpressible.
+  #
+  # IT ALSO KEEPS THE SESSION PATH AWAY FROM `cc_notify_warn_unrecognized`. That
+  # warning's once-guard marker lives under `RUN_DIR`, which a session has none
+  # of, so a typo in the AUTOPILOT switch would otherwise put bytes on the
+  # session hook's stderr on every single firing — and the seat contract forbids
+  # the hooks any stderr at all.
+  case "$1" in
+    session-ask|session-turn) cc_notify_session_enabled ;;
+    *)                        cc_notify_enabled ;;
+  esac
+}
+
 cc_caller_is_router() {
-  # BOTH variables must be empty. The gate is called by the router and by a
-  # stage, and only the router may decide that a banner reaches the user.
+  # ALL THREE variables must be empty. The gate is called by the router, by a
+  # launched STAGE and by a routing SHARD, and only the router may decide that a
+  # banner reaches the user.
   #
   # THIS FUNCTION HAS AN OWNER FOR A REASON. Two existing checks in the gate each
   # read ONE of these variables, which is exactly the shape this replaces: a
@@ -124,11 +187,21 @@ cc_caller_is_router() {
   # other one, and a stage call then raises a banner while the rest of the suite
   # stays green.
   #
+  # THE SHARD'S MARKER IS OWNED HERE TOO, and it arrived late in a way that
+  # proves the paragraph above rather than repeating it. It was added to the
+  # gate's own wrapper instead of to this predicate, and a wrapper covers only
+  # the direction that goes through it: firing does, while clearing calls this
+  # predicate directly. So a shard was refused a banner and was still allowed to
+  # take one down — the seat question answered two different ways in two files.
+  # A fourth marker added to one file and not the other splits them again, which
+  # is why all three live here and the gate holds none.
+  #
   # The asymmetry sets the direction. Judging a stage to be the router breaks
   # the operating rule outright; judging the router to be a stage costs one
   # watcher period of delay.
   if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then return 1; fi
   if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then return 1; fi
+  if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then return 1; fi
   return 0
 }
 
@@ -150,7 +223,7 @@ cc_notify_title() {
   # THE TITLE CARRIES THE ACTION. The previous vocabulary had five tokens sharing
   # three strings, so the pairs that demand different actions — answer a question,
   # versus go and do something by hand, versus open a fresh run — arrived wearing
-  # the same words once the prefix was removed. Seven tokens is not the cost it
+  # the same words once the prefix was removed. Nine tokens is not the cost it
   # looks like: a call site's typo surface is "picked the wrong token" whatever
   # the count, and the real protection is the closed set below plus the refusal of
   # an unknown token. Collapsing them is what would hurt — three different
@@ -167,6 +240,8 @@ cc_notify_title() {
     resume)     printf 'cc-cmds · 세션으로 돌아가세요' ;;
     rekick)     printf 'cc-cmds · 새 런을 여세요' ;;
     ended)      printf 'cc-cmds · 결과를 확인하세요' ;;
+    session-ask)  printf 'cc-cmds · 답하세요' ;;
+    session-turn) printf 'cc-cmds · 차례가 넘어왔습니다' ;;
   esac
 }
 
@@ -190,11 +265,39 @@ cc_notify_group() {
   #
   # The suffix must not collide with the overflow one, so it is `답` and not
   # `대기`.
+  #
+  # THE SESSION ARM EXISTS BECAUSE THE DEFAULT ARM IS A TRAP. `*)` catches
+  # anything unlisted, so leaving the session tokens out does not fail — it
+  # collapses them onto `cc-cmds-autopilot-<rid>`, and with no run in scope that
+  # is the literal `cc-cmds-autopilot-미상`, which is the slot `resume`, `rekick`
+  # and `ended` already write to. The title would be right, the status zero and
+  # nothing would warn. That is why the tokens carry a `session-` prefix instead
+  # of being bare `ask` and `turn`, and why the test asserts the ABSENCE of the
+  # autopilot prefix rather than an equality — a collapse produces a well-formed
+  # value, so only a negative assertion catches it.
+  #
+  # THE SESSION ID COMES FROM THE ENVIRONMENT AND NOT FROM `$2`. This arm ignores
+  # the item key on purpose: one slot per session is the whole of the session
+  # decision, and an arm that cannot read a key is an arm no call site can split
+  # the slot with. Taking the id as an argument turns that structural guarantee
+  # back into a promise written in prose.
+  #
+  # THE NAME IS `CC_NOTIFY_*` AND NOT `CC_CMDS_*` DELIBERATELY. The latter family
+  # is the set of switches a user types, and the lint that guards those names
+  # reads exactly that prefix; this value is an internal hand-off nobody types,
+  # so registering it there would be a false entry rather than an honest one.
+  #
+  # An empty id is NOT defaulted here. Every session would then share one slot
+  # and erase each other's banners, with a prefix correct enough to pass the
+  # negative assertion above — so the hook refuses to fire before it reaches
+  # this function, which is the only place that failure can be caught.
   local rid="${RUN_ID:-미상}"
+  local sid="${CC_NOTIFY_SESSION_ID:-}"
   case "$1" in
     answer|hands) printf 'cc-cmds-autopilot-%s-%s' "$rid" "$2" ;;
     answer-run)   printf 'cc-cmds-autopilot-%s-답' "$rid" ;;
     overflow)     printf 'cc-cmds-autopilot-%s-대기' "$rid" ;;
+    session-ask|session-turn) printf 'cc-cmds-session-%s' "$sid" ;;
     *)            printf 'cc-cmds-autopilot-%s' "$rid" ;;
   esac
 }
@@ -250,9 +353,25 @@ cc_notify_body() {
   # boundary is not a property anything asserts — what matters is that the value
   # is bounded and survives the parser intact.
   #
+  # THE CUT'S UNIT WAS THE CALLER'S LOCALE, AND THAT IS THE DEFECT BEING FIXED.
+  # `${s:0:200}` counts characters under a UTF-8 locale and bytes under
+  # `LC_ALL=C`, and the second one lands inside a multi-byte sequence. Measured
+  # on this file before the pin below: 66 Korean characters came out at 198 bytes
+  # and valid, and 67, 120 and 200 all came out at 200 bytes and INVALID UTF-8,
+  # while the same inputs under `ko_KR.UTF-8` were valid at 198, 201, 360 and 600
+  # bytes. So the old form was neither bounded in bytes nor safe — it was one or
+  # the other depending on who called it. This is not a defence against an
+  # imagined environment: 120 characters is a length already observed in a real
+  # payload, and this repo's own CI has a leg with no locale set.
+  #
+  # PINNING TO `C` MAKES THE UNIT THE SAME EVERYWHERE and the trim below is what
+  # makes the result valid. The pin is a local, so it is undone on return and no
+  # caller's locale is disturbed.
+  #
   # The escaping is two parameter expansions rather than a `sed` call: this sits
   # on the critical path of every act and the expansions need no subshell.
   local s
+  local LC_ALL=C
   s=$(printf '%s' "${1:-}" | tr '\n\t' '  ')
   while :; do
     case "$s" in
@@ -261,6 +380,25 @@ cc_notify_body() {
     esac
   done
   s="${s:0:200}"
+  # DROP A TRAILING PARTIAL UTF-8 SEQUENCE. A lead byte announces how many
+  # continuation bytes follow it, and a byte cut can land inside that run. The
+  # three arms are the only shapes a cut can leave behind — a lead byte with
+  # nothing after it, a three- or four-byte lead holding one continuation, and a
+  # four-byte lead holding two. Every other tail the cut can produce was already
+  # a whole character.
+  #
+  # BYTE RANGES RATHER THAN CHARACTER CLASSES, which is what the `C` above buys:
+  # under it a bracket range is a range of byte values and means the same thing
+  # on every host. The patterns are held in variables because a `case` pattern is
+  # expanded before it is matched, so this is the way to write a byte range once
+  # and use it in three arms.
+  local u_lead=$'[\xC0-\xF7]' u_lead34=$'[\xE0-\xF7]' u_lead4=$'[\xF0-\xF7]'
+  local u_cont=$'[\x80-\xBF]'
+  case "$s" in
+    *$u_lead)                s="${s%?}" ;;
+    *$u_lead34$u_cont)       s="${s%??}" ;;
+    *$u_lead4$u_cont$u_cont) s="${s%???}" ;;
+  esac
   case "$s" in
     '['*|'('*|'{'*|'<'*|'"'*|'-'*)
       s="${s//\\/\\\\}"
@@ -388,13 +526,14 @@ cc_notify_seat_state() {
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
-  # The token is one of seven and the set is closed: an unrecognized one raises
+  # The token is one of nine and the set is closed: an unrecognized one raises
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
   local token="${1:-}" body="${2:-}" key="${3:-}" title group sound n
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
+    session-ask|session-turn) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 올리지 않습니다\n' "$token" >&2
       return 0 ;;
@@ -402,15 +541,32 @@ cc_notify_fire() {
 
   # Responsibility 5: the record goes down before anything is attempted, so a
   # failure past this point still leaves the run's banner state on disk.
+  #
+  # THIS IS THE ONLY L3 FUNCTION A SESSION SEAT REACHES, and it is harmless
+  # there: with no `RUN_DIR` it returns before it consults a switch or writes a
+  # byte. `cc_notify_stack_admit` is harmless for a different reason — the arm
+  # that calls it is `answer|hands`, and the session tokens are deliberately not
+  # in it. Recording those two as one fact would say the session tokens pass
+  # through that arm, which is the arrangement this file forbids just below.
   cc_notify_seat_state
 
-  if ! cc_notify_enabled; then return 0; fi
+  # THE SWITCH IS CHOSEN BY THE TOKEN, and this call sits ABOVE the overflow
+  # demotion below, so `$token` here is still the one the caller passed.
+  if ! cc_notify_scope_enabled "$token"; then return 0; fi
   if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
 
   # ONLY THE STACKING TOKENS ARE ADMITTED AGAINST THE CAP. `answer-run` says the
   # whole run is waiting and occupies a per-run replace slot, so counting it
   # against the eight individual seats would let one run-level banner eat a seat
   # an individually identified approval needs.
+  #
+  # THE SESSION TOKENS ARE DELIBERATELY OUTSIDE THIS ARM. Putting them in passes
+  # today — `cc_notify_stack_admit` returns before it touches anything when there
+  # is no `RUN_DIR`, measured as `fire rc=0` with zero files created — and that
+  # is the reason to keep them out rather than a reason to relax. The right
+  # outcome would be coming from a fallback that exists for a different purpose
+  # entirely, so an implementer who tries it, sees nothing happen and drops the
+  # constraint would be reading a coincidence as a guarantee.
   case "$token" in
     answer|hands)
       if [ -z "$key" ]; then key="$token"; fi
@@ -483,12 +639,13 @@ cc_notify_clear() {
   local token="${1:-}" key="${2:-}" group
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
+    session-ask|session-turn) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 지우지 않습니다\n' "$token" >&2
       return 0 ;;
   esac
   if ! cc_caller_is_router; then return 0; fi
-  if ! cc_notify_enabled; then return 0; fi
+  if ! cc_notify_scope_enabled "$token"; then return 0; fi
   if [ "$(cc_notify_host_os)" != "Darwin" ]; then return 0; fi
 
   if [ -z "$key" ]; then key="$token"; fi

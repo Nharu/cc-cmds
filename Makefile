@@ -20,12 +20,33 @@ lint:
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-reap-retention.sh
 	bash scripts/lint-recovery-interlock-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
-	@test -x plugins/cc-cmds/hooks/active-notify-pretool.sh
+# Every command path in hooks.json must exist and be executable. This REPLACES a
+# hard-coded assertion that named one hook, which had already stopped covering a
+# sibling that was added beside it; a second assertion in a new place would have
+# split the same check in two and let the next hook fall through the same gap.
+# A hook whose path is wrong is silent — the harness runs nothing and says
+# nothing — so this is the only place the typo becomes visible.
+#
+# The resolution count is compared first. `grep -o` would drop a command that is
+# not written against the plugin root, and a dropped command is one this walk
+# never checked while reporting success over the rest.
+	@n_cmd=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -c .); \
+	 n_path=$$(jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' | grep -c .); \
+	 test "$$n_cmd" = "$$n_path" || { echo "lint: hooks.json 의 command $$n_cmd 개 중 $$n_path 개만 플러그인 상대 경로로 해소된다" >&2; exit 1; }; \
+	 jq -r '.hooks[][].hooks[].command' plugins/cc-cmds/hooks/hooks.json \
+	   | grep -oE '[$$][{]CLAUDE_PLUGIN_ROOT[}][^" ]*' \
+	   | sed -e 's|[$$][{]CLAUDE_PLUGIN_ROOT[}]|plugins/cc-cmds|' \
+	   | while IFS= read -r p; do \
+	       test -f "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 없다: $$p" >&2; exit 1; }; \
+	       test -x "$$p" || { echo "lint: hooks.json 이 가리키는 파일이 실행 가능하지 않다: $$p" >&2; exit 1; }; \
+	     done
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
+	@grep -qE '선리뷰후머지.*선머지후리뷰.*리뷰없음' plugins/cc-cmds/skills/_common/pipeline-sidecar.md || (echo "lint: the review-policy axis must be written strict-to-loose in the contract (선리뷰후머지 -> 선머지후리뷰 -> 리뷰없음); a reader who takes the axis backwards picks the opposite end, which is the human form of the defect this axis exists to remove. No lint script is added for this: the token vocabulary has exactly one enumeration in the tree so there is no second copy to drift, and a bad token fails hard on its first call at runtime -- document ORDER is the one thing no runtime detector sees" >&2; exit 1)
 
 readme:
 	bash scripts/generate-readme.sh
@@ -69,6 +90,7 @@ LINT_TESTS := \
 	scripts/test-lint-notify-fire-sites.sh \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-reap-retention.sh \
 	scripts/test-lint-recovery-interlock-pins.sh \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-measure-team-cost.sh \
@@ -83,9 +105,11 @@ ORCH_TESTS := \
 	scripts/test-measure-gate-cost.sh \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
+	scripts/test-session-notify-hook.sh \
 	scripts/test-watch.sh \
 	scripts/test-statusline.sh \
-	scripts/test-liveness-agreement.sh
+	scripts/test-liveness-agreement.sh \
+	scripts/test-lost-dispatch.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh
