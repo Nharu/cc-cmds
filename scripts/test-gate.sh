@@ -3512,7 +3512,7 @@ check "오지 않은 오프셋 마감은 파견을 막지 않는다" "$rc" "0"
 # 그 팔은 선언된 마감보다 아홉 시간 이르게 파견과 머지를 거부했다.
 TZ_SAVE="${TZ-}"
 export TZ=Asia/Seoul
-grant_field_set '벽시계 마감' "$(date -u -r "$(( $(date +%s) + 7200 ))" +%Y-%m-%dT%H:%M:%SZ)"
+grant_field_set '벽시계 마감' "$(python3 -c 'import datetime,time;print(datetime.datetime.fromtimestamp(time.time()+7200,datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
 check "UTC+9 호스트에서 두 시간 뒤 UTC 마감은 아직 파견을 막지 않는다" "$rc" "0"
 if [ -n "$TZ_SAVE" ]; then export TZ="$TZ_SAVE"; else unset TZ; fi
