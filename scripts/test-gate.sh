@@ -28,8 +28,16 @@
 
 set -uo pipefail
 
-# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS, and the switch is here rather
-# than at the call sites because the call sites cannot be made exhaustive.
+# EVERY BANNER SWITCH IS OFF FOR THIS WHOLE PROCESS, and the switches are here
+# rather than at the call sites because the call sites cannot be made exhaustive.
+#
+# THERE ARE TWO OF THEM, not one. `CC_CMDS_AUTOPILOT_NOTIFY` silences the run
+# banners and `CC_CMDS_SESSION_NOTIFY` silences the general-session seats, and
+# after the scope dispatcher landed neither is the master of the other — that
+# independence is the point of the second switch and it is asserted further down.
+# Naming only the run notifier here is how the second one gets forgotten: the
+# next token family to arrive opens the same hole again, in a file whose fixtures
+# have already reached a real person twice.
 #
 # The gate raises real banners — park notices carry the `hands` token, which
 # also plays a sound — and its fire path prepends the Homebrew directories to
@@ -45,10 +53,15 @@ set -uo pipefail
 # and quietly incomplete afterwards. An exported variable is inherited by every
 # child, including calls nobody has written yet.
 #
-# `gateb`/`gateb_stage` turn it back ON for the assertions that need a banner to
-# fire, which is the one place where firing is the thing being tested.
+# `gateb`/`gateb_stage` turn the run notifier back ON for the assertions that
+# need a banner to fire, which is the one place where firing is the thing being
+# tested. The four places a session token reaches the emitter each carry their
+# own seam — a `NotDarwin` host, or the switch set explicitly in the subshell —
+# so none of them was relying on `CC_CMDS_SESSION_NOTIFY` being unset.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_SESSION_NOTIFY=0
+export CC_CMDS_SESSION_NOTIFY
 
 # AND THE PIPELINE GROUP IS CLEARED FOR THE WHOLE PROCESS, for the same reason
 # and with the same shape. This suite is itself run from inside pipeline stages,
@@ -69,7 +82,12 @@ unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
       CC_PIPELINE_PARENT_SESSION
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-repo_root=$(cd "$script_dir/.." && pwd)
+# `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
+# override. The selector runs a cut-down COPY of this file out of a scratch
+# directory, and a copy outside `scripts/` cannot derive the repository root
+# from its own path. A full run never sets the variable, so the derivation
+# below is what it always was.
+repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
 # `bash -c` whose argv the parent interpolates — so the export reads as
@@ -83,6 +101,350 @@ repo_root=$(cd "$script_dir/.." && pwd)
 export GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
+
+# ---------------------------------------------------------------------------
+# The section selector — `--list` and `--sections <id>[,<id>...]`
+#
+# This suite is serial by construction: its sections share one fixture and one
+# accumulating ledger, so "run only the named section" cannot be a conditional
+# wrapped around each block — the state that flows between sections would leak
+# straight past the condition. The selector instead cuts a COPY of this file
+# down to the unconditional regions plus the named sections, and runs that.
+#
+# THE UNCONDITIONAL REGIONS ARE TWO, and both are delimited by a marker rather
+# than by a line range. `# --- preamble-end ---` closes the head — the shared
+# helpers, the static scans, and the fixture repository every section stands
+# on — and `# --- epilogue-begin ---` opens the tail, which is the totals line
+# and the exit status. Line numbers move whenever a section is added or a
+# banner is edited; a marker moves only when someone moves it, which is what
+# makes it the unit a later change can carry.
+#
+# EVERY ESCAPE HATCH POINTS AT THE FULL RUN. An id nobody declared, a marker
+# that is missing, a section that is not there — each of them runs MORE, never
+# less, so a wrong mapping costs time and never coverage.
+#
+# THE EXCEPTIONS ARE THE PICKS THAT RESOLVE TO THE WRONG THING, and they are
+# exceptions because they fail in the forbidden direction: the pick RESOLVES,
+# to a subset of what was asked for or to something else entirely, so the run
+# covers less while reporting green. All three known ones are hard errors rather
+# than fallbacks.
+#
+#   - A DUPLICATE id, caught at INDEX time, with a message that names both
+#     banners rather than the id alone.
+#   - An id whose lookup matches MORE THAN ONE row, caught at RESOLUTION time.
+#     That is the place nothing can be exempted from, and it is the place `-`
+#     was getting through: `-` is the index's own marker for "this section
+#     carries no banner", the index-time check strips it on purpose, and it is
+#     inside the id charset as a literal. `-` is not an id at all, so it is now
+#     screened before the lookup and falls out the safe way.
+#   - A MARKER THAT NO BANNER OWNS, caught while the index is built. A marker
+#     is its banner's only if it sits on the line after the title; written one
+#     line above its own rule line it lands inside the PREVIOUS section, and a
+#     range test would hand the id to the neighbour. The declared id is also
+#     compared with the banner's own number, by equality only.
+#
+# NEITHER OF THOSE SEES A SECTION THAT WAS TRUNCATED rather than mis-picked: the
+# id still resolves, to exactly one row, carrying the right title, and only the
+# end line moved. A pass count cannot see it either — it certifies HOW MANY
+# assertions ran and never WHICH. That is what the banner's `anchors:` field is
+# for: the named assertions a section must still contain are checked against the
+# CUT before it is run, so a boundary that swallows them stops the run instead of
+# quietly shrinking it.
+# ---------------------------------------------------------------------------
+SELF="$script_dir/${0##*/}"
+sections_want=""
+sections_list=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --list)
+      sections_list=1; shift ;;
+    --sections)
+      sections_want="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --sections=*)
+      sections_want="${1#--sections=}"; shift ;;
+    *)
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...])\n' "$1" >&2
+      exit 2 ;;
+  esac
+done
+
+# The index, one record per line:
+#
+#   PRE <line>                                the last line of the head
+#   EPI <line>                                the first line of the tail
+#   SEC <start> <end> <id> <idline> <title>   one addressable section
+#   ANC <id> <text>                           one assertion that section must keep
+#   MKR <message>                             a marker that no banner owns
+#
+# A section carrying no machine-readable banner reports its id as `-`, which is
+# how `--list` tells "not addressable yet" from "addressable". Sections that
+# sit inside the head are not indexed at all — they are not skippable, so
+# giving them a row would invite a caller to try.
+#
+# `ANC` IS THE ONLY BANNER FIELD ANYTHING READS BACK. `group:` and `covers:` are
+# parsed off the id and discarded; `anchors:` is a comma-separated list of
+# assertion labels that a cut of this section must still contain, and it is
+# checked against the cut before the cut runs. It exists because the id, the
+# title and the number of assertions can all survive a section being truncated,
+# and the label of the assertion that went missing cannot. Anchors are matched as
+# fixed substrings, so they may be a prefix of the label as written; they must
+# not contain `,` or `|`.
+#
+# A section BEGINS at the rule line that opens its banner box, not at the
+# numbered line inside it, because the box is one comment and cutting it in
+# half would leave a dangling rule at the top of the copy.
+section_index() {
+  awk '
+    {
+      if ($0 ~ /^# --- preamble-end ---$/)        { pre = NR }
+      else if ($0 ~ /^# --- epilogue-begin ---$/) { epi = NR }
+      else if ($0 ~ /^# --- section: /) {
+        id = $0
+        sub(/^# --- section:[ \t]*/, "", id)
+        sub(/[ \t]*\|.*$/, "", id)
+        sub(/[ \t]*---[ \t]*$/, "", id)
+        anc = ""
+        if ($0 ~ /\|[ \t]*anchors:/) {
+          anc = $0
+          sub(/[ \t]*---[ \t]*$/, "", anc)
+          sub(/^.*\|[ \t]*anchors:[ \t]*/, "", anc)
+          sub(/[ \t]*\|.*$/, "", anc)
+        }
+        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc
+      }
+      else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*\. /) {
+        nb = nb + 1; bound[nb] = NR - 1; title[nb] = $0
+      }
+      prev = $0
+    }
+    END {
+      if (pre == 0 || epi == 0) { print "ERR"; exit 0 }
+      print "PRE " pre
+      print "EPI " epi
+      # A MARKER BELONGS TO A BANNER ONLY IF IT SITS ON THE LINE AFTER THE TITLE.
+      # `bound[i]` is the opening rule line of the box and the title is the line
+      # after it, so a marker of that box is at `bound[i] + 2`. Range containment
+      # was the earlier rule and it is not the same thing: a marker written one
+      # line ABOVE its own rule line lands on the LAST line of the PREVIOUS
+      # section, which a range test accepts, and `--sections <id>` then cuts the
+      # neighbour, runs it and exits 0 while the named block never runs at all.
+      # That is coverage lost under a named id, so it is a hard error rather
+      # than a fallback.
+      for (i = 1; i <= nb; i++) {
+        if (bound[i] <= pre) continue
+        for (j = 1; j <= nid; j++) {
+          if (idline[j] == bound[i] + 2) { owner[i] = j; claimed[j] = 1 }
+        }
+      }
+      for (j = 1; j <= nid; j++) {
+        if (!(j in claimed)) {
+          print "MKR 줄 " idline[j] ": id=" idval[j] " — 주소화 가능한 어느 배너도 이 마커를 자기 것이라 주장하지 않습니다 (마커는 번호 배너 줄 바로 다음 줄이어야 합니다)"
+        }
+      }
+      for (i = 1; i <= nb; i++) {
+        s = bound[i]
+        if (s <= pre) continue
+        e = (i < nb ? bound[i + 1] - 1 : epi - 1)
+        if (e >= epi) e = epi - 1
+        id = "-"; il = 0; anc = ""
+        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j] }
+        # THE DECLARED ID IS COMPARED WITH THE BANNER`S OWN NUMBER, by equality
+        # and nothing else. Ordering is deliberately not checked — this file`s
+        # banner numbers do not ascend (section 31 is followed by `# 12b.`).
+        if (id != "-") {
+          num = title[i]
+          sub(/^#[ \t]+/, "", num)
+          sub(/\..*$/, "", num)
+          if (id != num) {
+            print "MKR 줄 " il ": id=" id " 가 배너 번호 " num " 과 다릅니다"
+          }
+        }
+        print "SEC " s " " e " " id " " il " " title[i]
+        if (anc != "") {
+          na = split(anc, aa, ",")
+          for (k = 1; k <= na; k++) {
+            a = aa[k]
+            sub(/^[ \t]+/, "", a); sub(/[ \t]+$/, "", a)
+            if (a != "") print "ANC " id " " a
+          }
+        }
+      }
+    }
+  ' "$SELF"
+}
+
+sec_idx=""
+if [ "$sections_list" = "1" ] || [ -n "$sections_want" ]; then
+  sec_idx=$(section_index)
+  case "$sec_idx" in
+    ERR*)
+      if [ "$sections_list" = "1" ]; then
+        printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
+        exit 2
+      fi
+      printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
+      sec_idx="" ;;
+  esac
+fi
+
+if [ -n "$sec_idx" ]; then
+  # MISATTRIBUTED MARKERS ARE CHECKED FIRST, before duplicates and before
+  # `--list`, because a marker that attaches to the wrong banner makes every
+  # later answer about that id wrong — the duplicate check would compare ids
+  # that are already on the wrong rows, and `--list` would advertise an id that
+  # runs a different block.
+  sec_mkr=$(printf '%s\n' "$sec_idx" | sed -n 's/^MKR //p')
+  if [ -n "$sec_mkr" ]; then
+    printf 'test-gate: 절 마커가 배너에 귀속되지 않습니다 — 지목된 id 가 이웃 절로 조용히 해소되어 더 적게 돌면서 초록을 보고하므로 여기서 멈춥니다\n' >&2
+    printf '%s\n' "$sec_mkr" | sed 's/^/  /' >&2
+    exit 2
+  fi
+
+  # DUPLICATES ARE CHECKED BEFORE ANY PICK, and `--list` is checked too. The id
+  # space is one entry wide today, so this is trivially green — it is here
+  # because the addressing pass that fills the other banners needs the check to
+  # be ALREADY in place, or the ids that collide slip through in silence.
+  sec_dups=$(printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) .*$/\1/p' \
+    | sed -n '/^-$/!p' | sort | uniq -d)
+  if [ -n "$sec_dups" ]; then
+    printf 'test-gate: 절 id 가 중복입니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' >&2
+    for d in $sec_dups; do
+      printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC [0-9]* [0-9]* $d \([0-9]*\) \(.*\)\$/  id=$d — 배너 줄 \1: \2/p" >&2
+    done
+    exit 2
+  fi
+fi
+
+if [ "$sections_list" = "1" ]; then
+  printf '%s\n' "$sec_idx" \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* \(.*\)$/\1 \2/p' \
+    | sed -n '/^- /!p'
+  exit 0
+fi
+
+if [ -n "$sections_want" ] && [ -n "$sec_idx" ]; then
+  sec_ranges=""
+  sec_miss=""
+  while IFS= read -r sec_w; do
+    [ -n "$sec_w" ] || continue
+    # An id spelled with anything outside this set is treated as unknown rather
+    # than interpolated into the `sed` address below. A BARE `-` IS SCREENED
+    # SEPARATELY, because it is inside the permitted set as a literal member of
+    # the bracket expression and would sail through: the index writes `-` in the
+    # id field of every section that carries no banner, so looking it up matches
+    # all of them at once.
+    case "$sec_w" in
+      -) sec_miss="$sec_w"; break ;;
+      *[!A-Za-z0-9_-]*) sec_miss="$sec_w"; break ;;
+    esac
+    sec_r=$(printf '%s\n' "$sec_idx" \
+      | sed -n "s/^SEC \([0-9]*\) \([0-9]*\) $sec_w [0-9]* .*\$/\1 \2/p")
+    if [ -z "$sec_r" ]; then sec_miss="$sec_w"; break; fi
+    # RESOLUTION TIME IS WHERE NOTHING CAN BE EXEMPTED. The index-time duplicate
+    # check drops the `-` marker before comparing and so cannot see every
+    # ambiguous pick; a lookup that returns two ranges is the same failure
+    # arriving at the one place with no filter standing in front of it. Screening
+    # `-` above closes one token, this closes the class.
+    if [ "$(printf '%s\n' "$sec_r" | grep -c .)" -gt 1 ]; then
+      printf 'test-gate: 절 id 「%s」 가 여러 절에 걸립니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' "$sec_w" >&2
+      exit 2
+    fi
+    sec_ranges="$sec_ranges$sec_r
+"
+  done <<SECEOF
+$(printf '%s\n' "$sections_want" | tr ',' '\n')
+SECEOF
+
+  if [ -n "$sec_miss" ]; then
+    printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
+  else
+    sec_pre=$(printf '%s\n' "$sec_idx" | sed -n 's/^PRE \([0-9]*\)$/\1/p')
+    sec_epi=$(printf '%s\n' "$sec_idx" | sed -n 's/^EPI \([0-9]*\)$/\1/p')
+    sec_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-sections.XXXXXX")
+    sec_cut="$sec_dir/test-gate.sh"
+    sed -n "1,${sec_pre}p" "$SELF" > "$sec_cut"
+    # Sorted by start line so the copy keeps FILE order whatever order the ids
+    # were typed in — the sections are not independent of each other's order.
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+    sed -n "${sec_epi},\$p" "$SELF" >> "$sec_cut"
+
+    # THE ANCHOR CHECK READS THE CUT, NOT THE TRANSCRIPT, and it runs before the
+    # cut does. A count of passing assertions certifies how many ran and never
+    # which, so a section truncated by a boundary that appeared inside it still
+    # resolves to one range with the right title and can land on the expected
+    # total; the assertions it dropped are invisible to every instrument except
+    # their own labels. Reading the text also keeps the check host-independent —
+    # both arms of a host guard are present in the source whichever one executes,
+    # so this says the same thing on darwin and off it, where a transcript-based
+    # check would go falsely red.
+    #
+    # The section's own banner is excluded from the search: it carries the anchor
+    # strings itself and sits at the top of every cut of that section, so leaving
+    # it in would make the check pass for a section that had been truncated down
+    # to nothing but its banner.
+    sec_body="$sec_dir/body"
+    sed -n '/^# --- section: /!p' "$sec_cut" > "$sec_body"
+    sec_anc_miss=""
+    while IFS= read -r sec_w; do
+      [ -n "$sec_w" ] || continue
+      while IFS= read -r sec_anc; do
+        [ -n "$sec_anc" ] || continue
+        # BRACES ARE REQUIRED ON THE TRAILING EXPANSION. The corner bracket that
+        # closes the quote is multi-byte, and bash reads its lead byte as part of
+        # an unbraced name — under `set -u` that is an unbound-variable abort in
+        # the one branch this whole check exists for.
+        grep -F -q -- "$sec_anc" "$sec_body" || sec_anc_miss="${sec_anc_miss}  id=${sec_w} — 「${sec_anc}」
+"
+      done <<ANCEOF
+$(printf '%s\n' "$sec_idx" | sed -n "s/^ANC $sec_w \(.*\)\$/\1/p")
+ANCEOF
+    done <<SECEOF
+$(printf '%s\n' "$sections_want" | tr ',' '\n')
+SECEOF
+    rm -f "$sec_body"
+    if [ -n "$sec_anc_miss" ]; then
+      printf 'test-gate: 잘린 절입니다 — 배너가 선언한 단언이 컷에 남아 있지 않아 실행하지 않습니다\n' >&2
+      printf '%s' "$sec_anc_miss" >&2
+      printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
+      rm -rf "$sec_dir"
+      exit 2
+    fi
+
+    # THE TRANSCRIPT CARRIES THE SCOPE IT RAN, not just the count it produced.
+    # An oracle written against a number alone cannot tell a correct narrowed run
+    # from a shorter one that happened to total the same; these lines give it —
+    # and a human reading the log — the ranges the count was taken over.
+    sec_count=0; sec_span=0
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      sec_count=$(( sec_count + 1 ))
+      sec_span=$(( sec_span + sec_b - sec_a + 1 ))
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+    printf 'test-gate: 좁힌 실행 — 절 %s개, %s줄\n' "$sec_count" "$sec_span" >&2
+    while read -r sec_a sec_b; do
+      [ -n "$sec_a" ] || continue
+      printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* \(.*\)\$/test-gate:   id=\1 줄 $sec_a-$sec_b 「\2」/p" >&2
+    done <<SECEOF
+$(printf '%s' "$sec_ranges" | sort -n -u)
+SECEOF
+
+    CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
+    sec_rc=$?
+    rm -rf "$sec_dir"
+    exit "$sec_rc"
+  fi
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -429,6 +791,18 @@ esac
 check "픽스처 매니페스트가 검사를 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+
+# EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
+# helpers, the two static scans (`0a`, `0b`), and the fixture repository with
+# its manifest and authorization record. The fixture is unconditional because
+# every section below stands on the `$WORK` tree and the repository it builds,
+# and a selected section handed neither would fail for a reason that has
+# nothing to do with what it asserts.
+#
+# The two scans are here because they are still part of the head. The pass that
+# lifts them out into sections of their own moves this marker above them, and
+# the head's assertion count drops to the fixture's own three.
+# --- preamble-end ---
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -870,6 +1244,228 @@ check "낡은 스냅숏 다이제스트는 거부된다" "$rc" "4"
 
 gate plan --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 -- git commit -m x
 check "plan 은 스냅숏 다이제스트 없이도 답한다 (건드리는 것이 없다)" "$rc" "0"
+
+# --- A CONCURRENT WRITER IS NOT A STALE READER -----------------------------
+#
+# THE SEQUENCE IS THE ASSERTION, and no fragment reaches it: read the digest,
+# let ANOTHER actor append a row, then act on the value that was read. The digest
+# used to fold the ledger's tip into one hash, so an append by anybody at all
+# invalidated it — and `gate_verb_act` appends its own authorisation row before
+# dispatching, which means a successful act invalidated every other actor's
+# digest the instant it landed. Measured in one review session: twelve exit 4s,
+# as many as four consecutively against a single command, every one of them
+# cleared by re-running the identical argv with nothing else changed.
+H6=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 다른 행위자가 원장에 행을 붙인다" \
+     -- mkdir -p "$WORK/scratch6"
+check "다른 행위자의 act 가 먼저 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6" --rationale "픽스처 — 그 사이에 읽어 둔 다이제스트로 행위한다" \
+     -- touch "$WORK/touched6"
+check "그 사이 읽어 둔 다이제스트는 낡은 것이 아니다 (조상이면 통과)" "$rc" "0"
+
+# BUT PROGRESS STILL REFUSES, and this half is why the one above is a repair
+# rather than the check being switched off. The vector is compared exactly, so an
+# act that actually moves the run invalidates a digest read before it.
+H6b=$(HH)
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 진전 벡터를 실제로 움직인다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음
+check "진전 벡터를 움직이는 행위가 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6b" --rationale "픽스처 — 진전 뒤에 쓰는 옛 다이제스트" \
+     -- touch "$WORK/touched6b"
+check "진전 벡터가 움직인 뒤의 옛 다이제스트는 여전히 거부된다" "$rc" "4"
+
+# A TIP THAT IS ON NO ROW IS NEITHER EQUAL NOR AN ANCESTOR. Without this,
+# "the chain grew past it" would collapse into "any tip at all", and the half of
+# the check that catches a remembered value would be gone.
+H6c=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6c%%-*}-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" \
+     --rationale "픽스처 — 원장 어디에도 없는 팁" -- touch "$WORK/touched6c"
+check "원장에 없는 팁을 실은 다이제스트는 거부된다" "$rc" "4"
+
+# AND THE THREE PATHS THAT THE ALL-`f` TIP ABOVE DOES NOT DRIVE. That value has
+# the right length, the right character set, and is merely absent from the
+# ledger — so it drives neither an empty half, nor a prefix of a real tip, nor a
+# token the caller planted itself, and those are the three ways an unanchored
+# substring probe was passable. Each of the three below returned rc 0 against the
+# probe as first written.
+#
+# (a) AN EMPTY TIP HALF. `<벡터해시>-` has the two-part form, so it reaches the
+# ancestry arm with an empty `obstip` and the probe degenerates to
+# `grep -qF "prev="`, which every ledger holding one row satisfies. WHAT REFUSES
+# IT IS THE SHAPE CHECK, NOT THE ANCHOR.
+H6e=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6e%%-*}-" \
+     --rationale "픽스처 — 팁 half 가 비었다" -- touch "$WORK/touched6e"
+check "팁 half 가 빈 두 부분 다이제스트는 거부된다" "$rc" "4"
+
+# (b) A PREFIX OF A REAL ANCESTOR TIP. `grep -F` is a substring match, so eight
+# characters of a tip that IS on the chain matched the row carrying the whole of
+# it. The prefix has to be of a genuine ancestor rather than of the current tip —
+# no row carries the current tip as its `prev` yet, so that variant would be
+# refused for the wrong reason and would assert nothing. WHAT REFUSES THIS IS THE
+# LENGTH CHECK AND NOT THE ANCHOR: an anchored probe still finds a prefix inside
+# ` | prev=<full hex>`.
+H6f=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" \
+     --rationale "픽스처 — 다른 행위자가 행을 붙여 앞 팁을 조상으로 만든다" \
+     -- touch "$WORK/touched6f0"
+check "그 팁이 실제 조상이 된다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "${H6f%%-*}-$(printf '%s' "${H6f##*-}" | cut -c1-8)" \
+     --rationale "픽스처 — 실제 조상 팁의 접두사" -- touch "$WORK/touched6f"
+check "실제 조상 팁의 접두사만 실은 다이제스트는 거부된다" "$rc" "4"
+
+# (c) A TOKEN THE CALLER PLANTED ITSELF, and this is the path that makes the
+# item a security one rather than a hardening one. The authorisation row carries
+# `근거=$rationale` verbatim and the row-safety transform only maps `|` and
+# newlines, so a literal `prev=<64 hex>` lands unchanged. One act with a VALID
+# digest therefore mints the ancestor token the same caller presents later, while
+# knowing no real value in the ledger. The minted value is a perfect 64-character
+# lowercase hex, so shape checks pass it by construction — WHAT REFUSES IT IS THE
+# FIELD-BOUNDARY ANCHOR, FOR THIS CARRIER, WHICH IS THE VALUE HALF. A third
+# carrier supplies no separator at all and is refused by the ROW ANCHOR that
+# now sits beside the boundary one. The anchor
+# never refused the key half and could not: (d) below drives that carrier and
+# names the check that does. The two acts are kept adjacent on purpose: with rows
+# stuffed between them the ancestry window would refuse first and the assertion
+# would no longer say which defence fired.
+MINT6g=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "prev=$MINT6g" -- touch "$WORK/touched6g"
+check "근거 문자열을 실은 act 가 통과한다 (이 단언의 전제)" "$rc" "0"
+grep -qF "근거=prev=$MINT6g" "$LEDGER" \
+  && ok "주조된 토큰이 행 본문에 무변형으로 착지한다 (이 단언의 전제)" \
+  || bad "주조 전제" "정규화가 값을 바꿨다 — 이 픽스처가 무는 대상이 사라졌다"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH | cut -d- -f1)-$MINT6g" \
+     --rationale "픽스처 — 자기가 심은 조상 토큰을 제시한다" -- touch "$WORK/touched6h"
+check "호출자가 근거 문자열로 심은 조상 토큰은 통과하지 못한다" "$rc" "4"
+
+# (d) THE SAME FORGERY THROUGH THE KEY HALF, which the transform did not cover
+# and the anchor therefore could not refuse. `gate_append` split `키=값`, mapped
+# the separators out of the value, and put the key back exactly as the caller
+# spelled it, while the row writer asked only whether an `=` was present at all.
+# So a caller that spliced BEFORE the first `=` kept both characters: a pipe
+# forged the field boundary the anchor matches, and a NEWLINE forged a whole
+# second row — a `승인` row saying `상태=승인`, on the series the gate reads to
+# decide whether this caller was approved. Both halves are normalized now, and
+# the key is refused as well as transformed, because the transform is silent and
+# this refusal reaches the caller.
+#
+# THE ROW COUNT IS PART OF THE ASSERTION AND NOT DECORATION. A refused
+# bookkeeping act still appends its own `자율 승인` row — that row is written
+# before the dispatch, deliberately — so "nothing was written" is the wrong
+# property and "nothing beyond the authorisation row" is the right one. Counting
+# every row and subtracting that series says exactly that, and keeps saying it
+# however many authorisation rows the gate decides to write.
+n6k=$(grep -c '^- `' "$LEDGER" || true)
+a6k=$(grep -c '^- `자율 승인`' "$LEDGER" || true)
+NL6k=$(printf 'FORGE6K\n- `승인` | 상태')
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 필드 키에 개행을 싣는다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음 "$NL6k=승인"
+check "필드 키에 개행을 실은 호출은 거부된다" "$rc" "2"
+case "$msg" in
+  *"필드 키에"*) ok "거절이 값이 아니라 키를 지목한다" ;;
+  *) bad "키 절반 거절 사유" "$msg" ;;
+esac
+gate act --manifest "$MANIFEST" --kind segment --target front --segment SD1 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 필드 키에 파이프를 싣는다" \
+     -- 워크트리="$WT" 상태=실행중 선행=없음 "FORGE6L | prev=$MINT6g"
+check "필드 키에 파이프를 실은 호출은 거부된다" "$rc" "2"
+m6k=$(grep -c '^- `' "$LEDGER" || true)
+b6k=$(grep -c '^- `자율 승인`' "$LEDGER" || true)
+if [ "$((m6k - b6k))" = "$((n6k - a6k))" ]; then
+  ok "거부된 두 호출은 인가 행 말고 원장에 어떤 행도 남기지 않는다"
+else
+  bad "키 절반 스플라이스" "인가 행 밖 행 수가 $((n6k - a6k)) 에서 $((m6k - b6k)) 로 늘었다"
+fi
+grep -qF 'FORGE6K' "$LEDGER" \
+  && bad "키 절반 스플라이스" "개행을 실은 키의 문면이 원장에 착지했다" \
+  || ok "개행을 실은 키는 원장 어디에도 착지하지 않는다"
+grep -qF 'FORGE6L' "$LEDGER" \
+  && bad "키 절반 스플라이스" "파이프를 실은 키의 문면이 원장에 착지했다" \
+  || ok "파이프를 실은 키는 원장 어디에도 착지하지 않는다"
+
+# --- THE NIGHT BETWEEN THE TWO EXTREMES ------------------------------------
+#
+# Every other assertion about this check drives an extreme. The refusing ones
+# here and in section 14c both move the progress vector with a `segment` row; the
+# accepting one is a single act the vector does not count. An ordinary night is
+# neither: several ordinary acts land, not one of them moves a vector component,
+# and a caller then acts on the digest it read before them.
+#
+# THIS ASSERTION PINS WHAT THE BOUNDED ANCESTRY DOES NOT CATCH, AND IT IS MEANT
+# TO PASS. Do not "repair" it into a refusal: the value belongs to a concurrent
+# writer and not to a stale reader, and refusing it is the exit 4 storm the split
+# was written to end. The filler must stay strictly under `GATE_ANCESTRY_WINDOW`
+# — if that constant is lowered, this is the assertion that breaks, and the fix
+# is to read the constant's comment rather than to delete this.
+H6i=$(HH)
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 1" -- touch "$WORK/n6i1"
+check "사이의 밤 1 이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate exec --manifest "$MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 2" -- ls
+check "사이의 밤 2 가 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "픽스처 — 사이의 밤 3" -- touch "$WORK/n6i3"
+check "사이의 밤 3 이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6i" --rationale "픽스처 — 그 뒤에 옛 다이제스트로 행위한다" \
+     -- touch "$WORK/n6i4"
+check "벡터를 밀지 않는 행이 창 안에서 여럿 붙어도 옛 다이제스트는 통과한다" "$rc" "0"
+
+# AND THE SAME SHAPE, FAR ENOUGH BACK, IS REFUSED. This is the only behavioural
+# assertion the bound has: before it a tip passed from any distance and forever,
+# so this ran rc 0. The filler moves no vector component either, so the refusal
+# here is the tip axis and nothing else.
+#
+# THE KIND-SPECIFIC VARIANT IS DELIBERATELY NOT DRIVEN. K bounds DISTANCE and not
+# KIND, so a fixture that opened a pending approval or a run-scope `blocked`
+# before presenting the same old digest would assert the very sentence this one
+# already asserts — and it would change the gate's admission state for every
+# fixture after it in this file. The limit of what the bound buys is stated in
+# the probe's own comment instead.
+H6j=$(HH)
+w6j=0
+while [ "$w6j" -lt 12 ]; do
+  w6j=$((w6j + 1))
+  gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale "픽스처 — 창을 넘기는 밤 $w6j" \
+       -- touch "$WORK/n6j$w6j"
+done
+check "창을 넘기는 마지막 밤이 통과한다 (이 단언의 전제)" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$H6j" --rationale "픽스처 — 창 밖의 옛 다이제스트" \
+     -- touch "$WORK/n6j-late"
+check "조상 창을 넘긴 옛 다이제스트는 거부된다" "$rc" "4"
+
+# AND THE FORMAT ITSELF IS PINNED, because the ancestry check has nothing to
+# separate once the two halves stop being separable.
+case "$(HH)" in
+  *-*) ok "스냅숏 다이제스트가 벡터와 팁 두 부분으로 실려 나온다" ;;
+  *)   bad "스냅숏 형식" "H 가 한 덩어리다 — 팁만 움직인 경우와 진전한 경우를 가를 수 없다" ;;
+esac
+
+# THE ONE-PART FORM KEEPS ITS OLD MEANING, AND ONLY THE REFUSING HALF IS
+# ASSERTED HERE. A bare digest is compared for exact equality against the
+# pre-split formula, so asserting the ACCEPTING half would mean recomputing that
+# formula in this file — and a suite that recomputes the expression under test
+# agrees with itself by construction, which is the failure this whole review
+# found. The refusing half needs no such duplication: a bare value that is not
+# the legacy digest must not be waved through just for having no `-` in it.
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest 1111111111111111111111111111111111111111111111111111111111111111 \
+     --rationale "픽스처 — 옛 형식이되 값이 다르다" -- touch "$WORK/touched6d"
+check "옛 형식이어도 값이 다르면 거부된다" "$rc" "4"
 
 # ---------------------------------------------------------------------------
 # 7. Declared grade is a CHECKED CLAIM, not a self-grant
@@ -1689,10 +2285,17 @@ else
     *"$H_emit"*) bad "다이제스트 유출" "방출값이 stderr 로도 나왔다 — 로그를 읽는 소비자가 해시를 진단으로 읽는다" ;;
     *) ok "다이제스트가 stderr 로 새지 않는다" ;;
   esac
-  check "방출된 H 가 64자리다" "${#H_emit}" "64"
+  # THE SHAPE IS TWO 64-CHARACTER HALVES JOINED BY A SINGLE `-`, and the join
+  # carries weight rather than decorating: the halves are compared differently —
+  # the progress vector for exact equality, the chain tip for ancestry — so a
+  # value that folded back into one string could not be compared at all.
+  check "방출된 H 가 두 부분이다" \
+    "$(printf '%s' "$H_emit" | awk -F- '{ print NF }')" "2"
+  check "그 두 부분이 각각 64자리다" \
+    "$(printf '%s' "$H_emit" | awk -F- '{ print length($1) "/" length($2) }')" "64/64"
   case "$H_emit" in
-    *[!0-9a-f]*) bad "방출 H 문자 집합" "16진수 밖의 문자가 있다: '$H_emit'" ;;
-    *) ok "방출된 H 가 소문자 16진수만으로 이뤄진다" ;;
+    *[!0-9a-f-]*) bad "방출 H 문자 집합" "16진수와 구분자 밖의 문자가 있다: '$H_emit'" ;;
+    *) ok "방출된 H 가 소문자 16진수와 구분자만으로 이뤄진다" ;;
   esac
   # THE VALUE IS THE ONE THAT HOLDS AFTER THE CALL'S OWN WRITES. A pre-append
   # emission fails right here.
@@ -1832,12 +2435,33 @@ emitted=$(jq -r .H "$EMITFILE" 2>/dev/null)
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$emitted" --rationale x --emit-digest -- ls
 check "방출값을 그대로 다음 호출에 넣으면 통과한다 (되읽기가 필요 없다)" "$rc" "0"
-# And the negative half: an emitted value that is no longer current must be
-# refused, or the flag would be trading the round trip for a stale binding.
+# And the negative half — BUT THE AXIS THAT BINDS IS NO LONGER THE LEDGER'S
+# LENGTH. A value whose only staleness is that rows landed after it is now
+# accepted deliberately: the tip it names is an ancestor of the current one,
+# which is what a concurrent writer leaves behind and not what a stale reader
+# carries. Refusing it meant a successful act by any actor invalidated every
+# other actor's digest the instant it landed, and the only way through was to
+# re-run the identical command until it stuck.
 stale="$emitted"
 gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
      --snapshot-digest "$stale" --rationale x --emit-digest -- ls
-check "한 번 쓰인 방출값을 다시 쓰면 거부된다 (구속이 약해지지 않았다)" "$rc" "4"
+check "이미 쓴 방출값도 팁만 뒤로 밀렸으면 통과한다" "$rc" "0"
+# WHAT STILL BINDS IS PROGRESS, and it is driven here rather than assumed —
+# without this half the change above reads as the check having been switched off.
+# A segment row moves the vector, and the same emitted value is refused after it.
+#
+# AND THE PARENTHESIS THIS ASSERTION USED TO CARRY OVERSTATED THE SCOPE. What
+# binds is the PROGRESS axis alone. Rows that move no vector component leave the
+# old value acceptable for as long as its tip stays inside the ancestry window,
+# and that is the intent rather than an oversight — section 6 drives exactly that
+# case and asserts that it passes.
+gate act --manifest "$MANIFEST" --kind segment --target infra --segment SEMIT2 \
+     --cutpoint 커밋 --snapshot-digest "$(HH)" --rationale x \
+     -- 상태=실행중 워크트리="$WT" 선행=없음
+check "진전 벡터를 움직인다 (다음 단언의 전제)" "$rc" "0"
+gate exec --manifest "$MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$stale" --rationale x --emit-digest -- ls
+check "진전이 움직인 뒤의 옛 방출값은 진전 축에서는 여전히 거부된다" "$rc" "4"
 
 # NOT ON THE VERBS THAT PERFORM NOTHING. A flag that is silently inert is a flag
 # a caller believes is working.
@@ -3281,6 +3905,22 @@ check "온전한 인가 기록에서는 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 18. Concurrent appends do not chain to the same parent
+# --- section: 18 | group: darwin | covers: gate_append, lock_tool | anchors: 여덟 행의 prev 가 서로 다르다, 체인이 끊긴 곳이 없다 ---
+#
+# THE ONE ADDRESSABLE SECTION SO FAR, and it is this one because it is the only
+# block left whose darwin-ness is real: `lock_tool()` hands out `/usr/bin/lockf`
+# on darwin and nothing elsewhere, so the ordering asserted below is a property
+# of the locked arm and cannot be claimed off it. The narrowed macOS leg names
+# this id instead of running the file.
+#
+# THE TWO ANCHORS ARE THE TWO SERIALIZATION ASSERTIONS, and naming them in the
+# banner is what stops a cut of this section from certifying the fix without
+# testing it. They are the whole reason this block is darwin-only, and they sit
+# behind a host guard — so a boundary that truncated the section to its first
+# assertion would drop them while leaving the id, the title and a plausible
+# assertion total intact. The anchor check reads the CUT's text rather than its
+# transcript, which is why it says the same thing on a host that skips the
+# guarded arm as on one that runs it.
 #
 # `gate_append` used to read the chain tip OUTSIDE the lock, so two writers read
 # the same tip and both emitted rows carrying the same `prev`. The verifier then
@@ -4169,8 +4809,16 @@ sed '/^R-OTHER$/d' "$SIDX" > "$SIDX.tmp" && mv "$SIDX.tmp" "$SIDX"
 # Every `act` carries a snapshot digest, and the snapshot moves whenever a row
 # lands — so it is re-read immediately before each one rather than reused.
 snapH() {
-  ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
-    | sed -n 's/.*"H": "\([0-9a-f]*\)".*/\1/p' | tail -1
+  # `jq`, LIKE EVERY OTHER READER OF THIS FIELD IN THIS FILE. A hand-rolled
+  # extractor pinned the value's character set from the outside — a run of hex
+  # followed by a closing quote — so the digest growing a second part made the
+  # pattern match nothing at all.
+  #
+  # AND AN EMPTY DIGEST IS NOT A WRONG DIGEST. The gate answers "--snapshot-digest
+  # 가 필요합니다" and exits 2, so every assertion downstream of here failed while
+  # reporting something about the fixture it believed it was testing — a live
+  # stage miscounted, a stop not transcribed — none of which had happened.
+  ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) | jq -r .H
 }
 
 # --- termination condition 7 reads the same predicate -----------------------
@@ -6489,18 +7137,22 @@ check "디렉터리를 철자하지 않은 어간 글로브도 거절된다" "$r
 # document write, so it is the wrapper this guard is guaranteed to meet. The
 # plain spelling is refused by the basename scan and was already; the glob
 # spelling is the one that needs `lockf` in arm 2's list.
-if [ -x /usr/bin/lockf ]; then
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
-  check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
-  check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
-else
-  ok "lockf 가 없는 호스트라 래퍼 단언을 건너뛴다"
-fi
+#
+# UNCONDITIONAL, AND THE DARWIN GUARD THAT USED TO WRAP THESE TWO WAS FALSE.
+# What they assert is that the gate REFUSES this argv, and the refusal is a
+# pure `case` over the command line with no filesystem probe — `lockf` is never
+# executed, so whether `/usr/bin/lockf` exists on the host cannot move the
+# verdict. The stem assertion four lines up is the same class through the same
+# code path and has been passing off darwin all along. The wrapper cost the
+# Linux leg two assertions and left the macOS leg carrying them alone.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> $NM"
+check "lockf 로 감싼 매니페스트 쓰기가 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- lockf -k -t 0 "$WORK/x.lock" bash -c "printf x >> ${NM%?}?"
+check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
 
 # --- 31as. An exempt kind crossed with the `exec` verb, which nothing walked --
 #
@@ -7030,6 +7682,82 @@ check "샤드 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBS1 | 상태=park' "$LEDGER" || true)" "1"
 sleep 0.3
 check "샤드 호출은 배너를 올리지 않는다" "$(notify_lines)" "0"
+
+# --- AND THE SEAT DECIDES THE CLEARING DIRECTION TOO ------------------------
+#
+# The shard's marker was tested in the gate's wrapper around the predicate, and a
+# wrapper covers only the callers that come through it. Firing does. Clearing
+# does not — `cc_notify_clear` calls the predicate directly — so a shard was
+# refused a banner and was still permitted to take one down, which is the half
+# that changes what is on a person's screen right now.
+#
+# EVERY ASSERTION ABOVE DRIVES THE FIRING DIRECTION, which is why the suite went
+# on passing: a predicate that is right in one direction and wrong in the other
+# satisfies all of them. The two directions are asserted together from here on.
+SEAT_EMITTER="$(dirname "$GATE")/notify-run.sh"
+seat_clear() {  # seat_clear <shift-id> <segment> <stage-id> — `-remove` 회수
+  local i=0
+  : > "$NOTIFY_LOG"
+  ( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    CC_PIPELINE_SHIFT_ID="$1" \
+    CC_PIPELINE_SEGMENT="$2" \
+    CC_PIPELINE_STAGE_ID="$3" \
+    bash -c '. "$0"; cc_notify_clear answer X' "$SEAT_EMITTER" ) >/dev/null 2>&1
+  # THE WAIT IS NOT SKIPPED WHEN ZERO IS EXPECTED. The emitter launches the
+  # notifier detached, so a count read immediately comes back 0 from the race and
+  # the suppression assertion would pass without any suppression existing. This
+  # leaves early only once a line has landed, so the zero case pays the full wait.
+  while [ "$i" -lt 30 ]; do
+    if grep -q -- '-remove' "$NOTIFY_LOG" 2>/dev/null; then break; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -c -- '-remove' "$NOTIFY_LOG" 2>/dev/null || true
+}
+check "샤드 좌석에서는 배너를 내리지도 못한다" "$(seat_clear 'R2#1' '' '')" "0"
+check "리드 좌석의 소거는 그대로 산다" "$(seat_clear '' '' '')" "1"
+notify_reset
+
+# THE TABLE, AND ALL THREE ROWS OF IT. One variable per row is what makes this an
+# enumeration rather than a spot check, and all three are PINNED on every row —
+# one to a value and the other two to empty. Setting only the variable under test
+# leaves the others at whatever the ambient environment holds, and this suite runs
+# from inside a pipeline stage where both stage markers are already exported.
+# Measured: with the ambient values left alone every row answered `not-router` on
+# the unfixed emitter, so the table passed while reading none of its variables.
+seat_pred() {
+  local seg='' stage='' shard=''
+  case "$1" in
+    CC_PIPELINE_SEGMENT)  seg=X ;;
+    CC_PIPELINE_STAGE_ID) stage=X ;;
+    CC_PIPELINE_SHIFT_ID) shard=X ;;
+  esac
+  if ( CC_PIPELINE_SEGMENT="$seg" CC_PIPELINE_STAGE_ID="$stage" \
+       CC_PIPELINE_SHIFT_ID="$shard" \
+       bash -c '. "$0"; cc_caller_is_router' "$SEAT_EMITTER" ) >/dev/null 2>&1
+  then printf 'router'; else printf 'not-router'; fi
+}
+# The control row is first and is not decoration: without it a predicate that
+# answered `not-router` unconditionally would satisfy every row below it.
+check "세 마커가 모두 비면 좌석 술어는 라우터라 답한다" "$(seat_pred NONE)" "router"
+for seat_var in CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID; do
+  check "$seat_var 가 서 있으면 좌석 술어는 라우터라 답하지 않는다" \
+    "$(seat_pred "$seat_var")" "not-router"
+done
+
+# THE SOURCE AXIS, AND IT IS THE REGRESSION FENCE. The behavioural pair above
+# passes again the moment a shard test is re-added to the gate's wrapper — the
+# seat would be answered correctly in both directions and owned by two files
+# again, which is the arrangement that produced this defect. Scoped to the
+# wrapper's own body, because the gate reads that marker elsewhere for questions
+# that are not the seat and a whole-file grep would forbid those too.
+check "게이트의 배너 좌석 래퍼는 좌석 변수를 직접 읽지 않는다" \
+  "$( { awk '/^gate_may_raise_banner\(\) \{/,/^\}/' "$GATE" || true; } \
+      | { grep -c 'CC_PIPELINE_SHIFT_ID' || true; } )" "0"
 # AND THE SAME ROW CARRIES THE SCALE. `CC_PIPELINE_SHIFT_ID` is `<run-id>#<n>`, and
 # the number a shard stamps has to be the number it was launched under: the
 # sidecar reserves `0` for "routing never left the lead", so a shard stamping 0
@@ -7652,10 +8380,19 @@ else
   while IFS="$(printf '\t')" read -r tok want_title want_group want_bucket; do
     case "$tok" in ''|'#'*) continue ;; esac
     n_tok=$((n_tok + 1))
-    exp_group=$(printf '%s' "$want_group" | sed 's/<RUN>/RT/; s/<KEY>/KEY/')
+    # `<SESSION>` IS A THIRD PLACEHOLDER AND ITS BRANCH IS NOT OPTIONAL. A session
+    # seat's group carries no run id, so its row cannot be written with `<RUN>`;
+    # leaving the substitution out makes the expected value the literal
+    # `<SESSION>` and the two session rows go red on arrival.
+    exp_group=$(printf '%s' "$want_group" | sed 's/<RUN>/RT/; s/<KEY>/KEY/; s/<SESSION>/SID9/')
+    # THE SESSION VARIABLE GOES INTO BOTH SUBSHELLS. The walk is split in two,
+    # and injecting into one of them leaves the other resolving the id to its
+    # empty fallback — which produces a well-formed group string, so the
+    # mismatch would look like a table error rather than a missing injection.
     got=$(bash -c '
       . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
       RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
       printf "%s\t%s\t%s" \
         "$(cc_notify_title "$1")" "$(cc_notify_group "$1" KEY)" "$(cc_notify_sound "$1")"
     ' _ "$tok")
@@ -7665,6 +8402,7 @@ else
     other=$(bash -c '
       . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
       RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
       printf "%s" "$(cc_notify_group "$1" 다른키)"
     ' _ "$tok")
     if [ "$want_bucket" = "stack" ]; then
@@ -7674,8 +8412,25 @@ else
       check "토큰 표 — $tok 는 항목 키와 무관하게 한 자리다 (대체)" \
         "$( [ "$other" = "$exp_group" ] && printf 'same' || printf 'differs')" "same"
     fi
+
+    # THE CLOSED SET LIVES IN TWO PLACES AND ONLY ONE OF THEM WAS EXERCISED.
+    # `cc_notify_fire` and `cc_notify_clear` each carry their own token case, and
+    # every other assertion in this walk reaches the first one only — so a token
+    # added to firing alone leaves the whole file green. Measured on exactly that
+    # state: the walk reported `pass=16 fail=0` while `cc_notify_clear` answered
+    # 「알 수 없는 부류 토큰」 for the new token. One round trip per row closes it.
+    roundtrip=$(bash -c '
+      . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+      RUN_ID=RT
+      CC_NOTIFY_SESSION_ID=SID9
+      CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+      cc_notify_fire "$1" 본문 KEY 2>&1
+      cc_notify_clear "$1" KEY 2>&1
+    ' _ "$tok")
+    check "토큰 표 — $tok 가 발사와 지우기 양쪽 폐쇄 집합에 있다" \
+      "$(printf '%s' "$roundtrip" | grep -c '알 수 없는 부류 토큰' || true)" "0"
   done < "$TOKEN_TABLE"
-  check "토큰 표가 일곱 행이다" "$n_tok" "7"
+  check "토큰 표가 아홉 행이다" "$n_tok" "9"
 fi
 
 # The set is CLOSED, and an unrecognized token raises nothing and says so.
@@ -7698,6 +8453,136 @@ case "$tok_refusal_clear" in
   *"알 수 없는 부류 토큰"*) ok "폐쇄 집합 — 지우기도 같은 집합을 쓴다" ;;
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
+
+# --- THE SESSION SEATS' SLOT --------------------------------------------------
+#
+# The walk above compares each row against the table, which is an equality — and
+# an equality cannot see the failure this arm actually has. Omitting the session
+# arm from `cc_notify_group` does not error: `*)` catches the tokens and hands
+# back `cc-cmds-autopilot-<run id>`, which with no run in scope is the literal
+# `cc-cmds-autopilot-미상` — the very slot the lifecycle three write to. The
+# value is well formed, the status is zero, nothing warns. So the assertion that
+# catches it has to be NEGATIVE, about the prefix.
+sess_group_ask=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  printf "%s" "$(cc_notify_group session-ask KEY)"
+')
+sess_group_turn=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  printf "%s" "$(cc_notify_group session-turn 다른키)"
+')
+check "세션 슬롯 — 두 세션 토큰이 같은 자리를 쓴다" "$sess_group_ask" "$sess_group_turn"
+# The verdict is computed on its own line rather than inside the `check` call: a
+# `case` pattern's closing `)` inside a `$( )` ends the substitution early, and
+# what reaches the comparison is then the tail of this file's own source text.
+case "$sess_group_ask" in
+  cc-cmds-autopilot-*) sess_prefix_verdict='starts' ;;
+  *)                   sess_prefix_verdict='does-not' ;;
+esac
+check "세션 슬롯 — 오토파일럿 접두로 시작하지 않는다 (음성 단언)" \
+  "$sess_prefix_verdict" "does-not"
+# An EMPTY id passes both assertions above — the prefix is still right — and puts
+# every session into one slot. So the id itself is asserted, not just its shape.
+check "세션 슬롯 — 접두 뒤가 비어 있지 않고 주입한 id 와 축자로 같다" \
+  "$sess_group_ask" "cc-cmds-session-SID9"
+
+# --- WHICH L3 FUNCTIONS A SESSION FIRING TOUCHES ------------------------------
+#
+# Stated as "no L3 function is called" this would fail forever: `cc_notify_fire`
+# calls `cc_notify_seat_state` unconditionally right after the token check. The
+# two functions are harmless for DIFFERENT reasons and the difference is the
+# claim — `seat_state` IS called and returns before it touches anything, while
+# `stack_admit` is never reached at all, because the arm that calls it is
+# `answer|hands` and the session tokens are deliberately outside it.
+t6_dir=$(mktemp -d "$WORK/t6.XXXXXX")
+t6_calls="$t6_dir/calls"; : > "$t6_calls"
+env -u RUN_DIR -u RUN_ID CC_T6_CALLS="$t6_calls" bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  CC_NOTIFY_SESSION_ID=SID9
+  CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+  cc_notify_seat_state()  { printf "seat_state\n"  >> "$CC_T6_CALLS"; return 0; }
+  cc_notify_stack_admit() { printf "stack_admit\n" >> "$CC_T6_CALLS"; return 0; }
+  cc_notify_fire session-ask 본문
+' >/dev/null 2>&1
+check "세션 발사는 cc_notify_seat_state 를 부른다 (불리고 즉시 반환한다)" \
+  "$(grep -c '^seat_state$' "$t6_calls" 2>/dev/null || true)" "1"
+check "세션 발사는 cc_notify_stack_admit 을 부르지 않는다 (팔 밖이다)" \
+  "$(grep -c '^stack_admit$' "$t6_calls" 2>/dev/null || true)" "0"
+
+# The other half: called, but writing nothing. `RUN_DIR` is what it needs and a
+# session has none, so a firing leaves no file behind at all.
+t6b_dir=$(mktemp -d "$WORK/t6b.XXXXXX")
+( cd "$t6b_dir" && env -u RUN_DIR -u RUN_ID bash -c '
+    . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+    CC_NOTIFY_SESSION_ID=SID9
+    CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+    cc_notify_fire session-ask 본문
+  ' ) >/dev/null 2>&1
+check "RUN_DIR 없이 세션을 발사해도 파일이 하나도 생기지 않는다" \
+  "$(find "$t6b_dir" -type f 2>/dev/null | grep -c . || true)" "0"
+
+# --- THE TWO KILL SWITCHES ARE INDEPENDENT ------------------------------------
+#
+# Before the scope dispatcher, `cc_notify_fire` consulted the autopilot switch
+# whatever the token, so `CC_CMDS_AUTOPILOT_NOTIFY=0` silenced a session banner
+# too — measured, on both `0` and `off`. That makes the one combination the
+# second switch exists for inexpressible, and neither switch's own test can see
+# it, because each of those looks at one switch alone.
+notify_pair() {
+  # notify_pair <token> <AUTOPILOT> <SESSION> → 발사된 줄 수
+  local tok="$1" a="$2" s="$3" log
+  log="$WORK/killswitch.log"; : > "$log"
+  ( PATH="$WORK/bin:$PATH" \
+      CC_CMDS_AUTOPILOT_NOTIFY="$a" \
+      CC_CMDS_SESSION_NOTIFY="$s" \
+      CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+      CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$log" \
+      bash -c '
+        . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+        CC_NOTIFY_SESSION_ID=SID9
+        cc_notify_fire "$1" 본문 KEY
+      ' _ "$tok" ) >/dev/null 2>&1
+  sleep 0.5
+  grep -c . "$log" 2>/dev/null || true
+}
+check "킬스위치 독립 — 오토파일럿을 꺼도 세션 배너는 나간다" "$(notify_pair session-ask 0 1)" "1"
+check "킬스위치 독립 — 세션을 꺼도 런 배너는 나간다"       "$(notify_pair answer-run 1 0)" "1"
+check "킬스위치 독립 — 세션을 끄면 세션 배너는 멈춘다"     "$(notify_pair session-ask 1 0)" "0"
+check "킬스위치 독립 — 오토파일럿을 끄면 런 배너는 멈춘다" "$(notify_pair answer-run 0 1)" "0"
+
+# --- THE BODY CUT IS BYTE-SAFE WHATEVER THE LOCALE ----------------------------
+#
+# `${s:0:200}` counts characters under a UTF-8 locale and BYTES under `LC_ALL=C`,
+# and the second one lands inside a multi-byte sequence. Measured before the fix:
+# 66 Korean characters came out valid at 198 bytes and 67, 120 and 200 all came
+# out INVALID at 200. The cut sits in the shared layer, so this covers the
+# autopilot banners as well as the session ones.
+body_utf8_verdict() {
+  if printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+    printf 'valid'
+  else
+    printf 'invalid'
+  fi
+}
+t22_c=$(LC_ALL=C bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  s=""; i=0; while [ $i -lt 200 ]; do s="${s}가"; i=$((i + 1)); done
+  cc_notify_body "$s"
+')
+check "본문 절단 — LC_ALL=C 에서 한글 200자가 유효한 UTF-8 로 나온다" \
+  "$(body_utf8_verdict "$t22_c")" "valid"
+t22_ambient=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  s=""; i=0; while [ $i -lt 200 ]; do s="${s}가"; i=$((i + 1)); done
+  cc_notify_body "$s"
+')
+check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다" \
+  "$(body_utf8_verdict "$t22_ambient")" "valid"
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did
@@ -8219,6 +9104,21 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
 check "(a) 살아 있는 스테이지가 있으면 상한 교대는 0 이 아닌 코드로 보류된다" "$rc" "10"
 check "(a) 보류는 아무것도 기동하지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "0"
+# AND THE TWO RECORDS OF THAT ONE ATTEMPT DISAGREE, WHICH IS THE WHOLE POINT.
+# `gate_verb_act` appends the authorisation row BEFORE the dispatch, so the hold
+# above leaves it behind having started nothing. Asserting both halves here is
+# what makes the ordinal assertion after (c) mean something: an ordinal counted
+# from the act row would already have been moved by this turned-back attempt.
+check "(a) 보류해도 인가 행은 이미 원장에 있다" \
+  "$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )" "1"
+# THE PATTERN DOES NOT CARRY THE ROW'S LEADING `- `, and that is not a style
+# choice. An argument beginning with `-` is read as an option, so `grep -cF '- …'`
+# never reaches the file: it exits 2 having printed nothing, the `|| true` turns
+# that into an empty string, and `check` reports an empty value rather than a
+# count. Measured here — the assertion below read `''` where `0` and `1` are the
+# only honest answers, so it could neither pass nor fail for the right reason.
+check "(a) 그러나 기동 행은 남지 않는다" \
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "0"
 rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
 
 # (c) THE LEAD'S OWN CONTEXT IS NOT THE HANDOFF FLOOR. The transcript above is
@@ -8235,11 +9135,59 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
 check "(c) 리드가 띄우는 교대는 바닥 가드에 걸리지 않고 실제로 기동한다" "$rc" "0"
 check "(c) 리드 컨텍스트로는 인수인계 바닥 승인이 발행되지 않는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "0"
-shift_k=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
-check "(c) 기동 로그가 원장의 기동 서수와 같은 번호를 쓴다" \
-  "$( [ -f "$SHIFT_DIR/log/shift-$shift_k.json" ] && printf 'yes' || printf 'no' )" "yes"
+# THE TWO SCALES ARE READ TOGETHER, AND THEIR DIVERGING IS THE ASSERTION.
+#
+# This is the sequence (a) set up: two attempts have written authorisation rows
+# and exactly one successor has ever started. The check that stood here derived
+# the expected ordinal from the act rows, which is the same expression the
+# launcher used — so it recomputed the launcher's error and agreed with it, and
+# `shift-1.json` could go permanently unwritten with the suite green. An expected
+# value has to come from somewhere other than the code under test.
+shift_act=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
+shift_run=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
+check "(c) 기동을 시도한 인가 행은 둘이다" "$shift_act" "2"
+check "(c) 그 중 실제로 기동한 것은 하나다" "$shift_run" "1"
+check "(c) 그래서 이 기동의 로그는 첫 번째 번호를 쓴다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-1.json" ] && printf 'yes' || printf 'no' )" "yes"
+check "(c) 보류가 먹어 버렸던 번호로는 로그가 생기지 않는다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-2.json" ] && printf 'yes' || printf 'no' )" "no"
 check "(c) 다른 번호의 교대 로그는 생기지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+# The correspondence a morning reader actually walks — a launch row's ordinal to
+# a file on disk — so the two are asserted against each other rather than each
+# against a literal that could drift apart from the other.
+shift_ord=$( { grep -F '`교대 기동`' "$LEDGER5" || true; } \
+             | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } | sed -n '1p')
+check "(c) 기동 행의 서수가 그 기동 로그 파일의 번호다" \
+  "$( [ -n "$shift_ord" ] && [ -f "$SHIFT_DIR/log/shift-$shift_ord.json" ] \
+       && printf 'yes' || printf 'no' )" "yes"
+
+# --- THE LEAD'S SEAT SURVIVES A LAUNCH -------------------------------------
+#
+# `교대=0` is the seat the sidecar reserves for "routing never left the lead".
+# The seat number fell through to the launch count whenever the writer carried no
+# shift marker, so from the first launch onward the LEAD's own rows stamped the
+# running shift's number and were byte-identical to that shift's. This is the
+# middle state the defect needs and no earlier fixture reaches: one launch has
+# happened, and the lead writes the next row.
+gate5 '' act --manifest "$NM5" --kind segment --target infra --segment SS2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(H5)" \
+      --rationale "픽스처 — 기동이 있은 뒤 리드가 쓰는 행" \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "기동이 있은 뒤에도 리드가 쓴 행은 교대=0 이다" \
+  "$( { grep -cF '`segment` | 교대=0 | id=SS2 ' "$LEDGER5" || true; } )" "1"
+
+# AND THE SHARD STAMPS ITS OWN MARKER, AT A NUMBER NEITHER SCALE PRODUCES. `3`
+# is not the act-row count (2) and not the launch count (1), so a fallback of
+# either kind fails this row while reading the marker passes it. Picking a number
+# that collides with one of the counts is how a seat assertion holds by
+# coincidence — which is the shape the shard assertion elsewhere in this file had.
+gate5 "$SHIFT_RUN_ID#3" act --manifest "$NM5" --kind segment --target infra --segment SS3 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(H5 "$SHIFT_RUN_ID#3")" \
+      --rationale "픽스처 — 같은 원장에 샤드가 쓰는 행" \
+      -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+check "같은 원장에서 샤드가 쓴 행은 자기 기동 번호를 찍는다" \
+  "$( { grep -cF '`segment` | 교대=3 | id=SS3 ' "$LEDGER5" || true; } )" "1"
 
 # (b) AND WHEN THE CALLER IS THE OUTGOING SHIFT, THE GUARD DOES FIRE — and the
 # approval it issues is reported as an approval. Returned as 0 it read as "the
@@ -8256,6 +9204,17 @@ check "(b) 그 승인이 원장에 실제로 남는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "1"
 check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
   "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+# The floor arm is the second early return, and it must not move the scale
+# either. Asserted on the ROW rather than on the log directory because that is
+# what the ordinal is now counted from — a log file left uncreated says nothing
+# about whether the number was consumed.
+check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
 
+# --- epilogue-begin ---
+#
+# THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
+# its own exit status, so the cut copy gets these two lines appended exactly as
+# they stand here.
 printf '\ntest-gate: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

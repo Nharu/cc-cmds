@@ -125,27 +125,31 @@ export CC_ORCH_SOURCE_ONLY
 # two runs into one slot — so the title, group and sound come from one file or
 # they come from two that drift.
 #
-# It also owns the caller predicate this file needs. The two existing checks here
-# each read ONE of the stage variables, and a banner path built from either of
-# those copies would raise a notice from a stage call while every test written
-# against the other variable went on passing.
+# It also owns the caller predicate this file needs, and every marker that
+# predicate reads. The two existing checks here each read ONE of the stage
+# variables, and a banner path built from either of those copies would raise a
+# notice from a stage call while every test written against the other variable
+# went on passing.
 # shellcheck source=/dev/null
 . "$GATE_DIR/notify-run.sh"
 
 # ---------------------------------------------------------------------------
-# THE SEAT QUESTION HAS ONE OWNER IN THIS FILE.
+# THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
 #
-# `cc_caller_is_router` reads `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` —
-# the two markers a launched STAGE carries. A routing SHIFT carries neither, so
-# that predicate answers "router" inside one and a shard raises the run's own
-# terminal banner. The shard's marker is `CC_PIPELINE_SHIFT_ID`, and it is tested
-# HERE rather than at the firing sites: there are seven of those, one of them
-# carried the test and six did not, and a seat question owned by seven copies is
-# what produced that gap. An eighth site added later gets the answer by using the
-# same predicate its siblings already use.
+# `cc_caller_is_router` reads all three markers a non-router caller can carry:
+# `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` for a launched STAGE, and
+# `CC_PIPELINE_SHIFT_ID` for a routing SHARD. The shard's marker was tested HERE
+# for a while, and that arrangement is the defect this alias records rather than
+# keeps: a test in this wrapper covers only the callers that come through it.
+# Firing does; clearing does not, because `cc_notify_clear` calls the predicate
+# directly. A shard was therefore refused a banner and still permitted to remove
+# one — and removing is what decides what is on a person's screen right now.
+#
+# THE NAME SURVIVES THOUGH THE TEST MOVED. Seven firing sites call it, and
+# leaving the alias in place means the fix touched none of them; an eighth site
+# added later still reaches the one predicate its siblings already use.
 # ---------------------------------------------------------------------------
 gate_may_raise_banner() {
-  [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 1
   cc_caller_is_router
 }
 
@@ -165,6 +169,33 @@ readonly GATE_EXIT_SURFACE=7
 readonly GATE_APPROVAL_ANSWERED=9
 
 readonly GATE_ROW_MAX=1024
+
+# HOW FAR BACK AN OBSERVED TIP MAY SIT AND STILL COUNT AS AN ANCESTOR. The tip
+# axis accepts a value the chain has since grown past, which is what a
+# concurrent writer leaves behind. Unbounded, it also accepted a value read
+# hours earlier — and the state changes that make a held digest dangerous (a
+# pending approval opened, a stage crashed, a run-scope park, a broken chain, a
+# handoff) move no component of the progress vector, so nothing else refuses
+# them either. The bound is what keeps "somebody appended just now" from meaning
+# "anything that ever happened".
+#
+# K IS A BOUND ON CONCURRENT WRITERS AND NOT ON TIME. An observed tip T is
+# carried by the FIRST row appended after it, so if n rows landed between the
+# read and the act, T sits n rows from the end and the admission condition is
+# n <= K. The measured storm was at most four consecutive refusals against a
+# single command in one session, so the observed n topped out at 4; this is
+# twice that. The slack is deliberate and the asymmetry is the reason: too low
+# refuses a legitimate concurrent writer, which is the refusal storm the split
+# was written to end, while a few rows too high only narrows a check that
+# previously did not narrow at all slightly later than it could have. A night's
+# ledger runs to hundreds of rows, so a single digit still puts "read hours ago"
+# far outside — measured against a live 107-row ledger, eight rows is a few
+# minutes.
+#
+# DO NOT RAISE THIS TO MAKE A REFUSAL GO AWAY. Raised far enough it restores the
+# unbounded behaviour while leaving no trace that it was restored; the honest
+# way back is to change what the window MEANS, deliberately, not its number.
+readonly GATE_ANCESTRY_WINDOW=8
 
 # The cone row's segment list, bounded like every other free-length value on a
 # row. Its neighbours on that row are three Korean free-text fields clipped at
@@ -1300,6 +1331,19 @@ gate_chain_tip() {
   printf '%s' "$last" | shasum -a 256 | cut -d' ' -f1
 }
 
+gate_ancestry_window() {
+  # The last GATE_ANCESTRY_WINDOW rows — the set an observed tip may still be an
+  # ancestor from. See that constant for why the window is a bound on concurrent
+  # writers rather than on elapsed time.
+  #
+  # ROWS AND NOT LINES, for the reason gate_chain_tip records one function up:
+  # the ledger is also the morning report, so prose lands in it between rows.
+  # Reading raw lines would let a few paragraphs shrink the window without
+  # anybody choosing to, and the shrink would show up as a refusal nobody could
+  # explain.
+  { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$GATE_ANCESTRY_WINDOW"
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -1319,7 +1363,8 @@ gate_append() {
   local series="$1"; shift
   local body f k v
 
-  # EVERY FIELD VALUE IS MADE ROW-SAFE HERE, NOT AT THE CALL SITES.
+  # EVERY FIELD IS MADE ROW-SAFE HERE, KEY AND VALUE ALIKE, NOT AT THE CALL
+  # SITES.
   #
   # `|` separates fields and a newline ends the row, so a value carrying either
   # SPLICES the grammar. `gate_row_safe` performs exactly this transform but is
@@ -1343,6 +1388,16 @@ gate_append() {
   # added later can forget. A value that legitimately needs a pipe uses the
   # contract's other answer (a fence plus its info string); the one value in this
   # file that used `|` as an internal separator now spells it `/`.
+  #
+  # THE KEY HALF USED TO GO THROUGH UNTRANSFORMED, and the header above said
+  # "every field value" because that was all this loop did. It split `키=값`,
+  # mapped the separators out of the VALUE, and put the key back exactly as the
+  # caller spelled it — so a caller that spliced BEFORE the first `=` kept both
+  # characters. A pipe there forges a field boundary; a newline there forges a
+  # whole second ROW, and among the rows worth forging is a `승인` row saying
+  # `상태=승인`. Both halves take the same two maps now. `%%=*` guarantees the key
+  # holds no `=`, so reassembling cannot change how many fields the row has, and
+  # for every field this file writes today the key transform is the identity.
   # Rotated through the positional parameters rather than collected into an
   # array: the interpreter floor is bash 3.2 and the argument list is the one
   # ordered container available without one.
@@ -1351,7 +1406,9 @@ gate_append() {
     f="$1"; shift; i=$((i + 1))
     case "$f" in
       *=*) k="${f%%=*}"; v="${f#*=}"
-           f="$k=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')" ;;
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
     esac
     set -- "$@" "$f"
   done
@@ -1656,9 +1713,43 @@ gate_snapshot_digest() {
   # one with 227, produced the byte-identical value. Exit 4 could not fire, and
   # the check passed while the premise it protected was false.
   #
-  # So this one is the vector PLUS the ledger's observable state. The tip alone
-  # would do, since it is the hash of the last row; the count is carried with it
-  # so a revert to an earlier length is not mistaken for no change at all.
+  # SO THIS ONE CARRIES BOTH, AND CARRIES THEM SEPARABLY. The two halves are
+  # joined by `-` rather than hashed together, and that is the whole repair.
+  #
+  # Folded into one hash, the ledger's tip made EVERY append invalidate the value
+  # no matter who wrote it — and `gate_verb_act` appends its authorisation row
+  # before dispatching, so one actor's successful act invalidated every other
+  # actor's digest the moment it landed. Measured in a single review session:
+  # twelve exit 4s, as many as four in a row against one command, every one of
+  # them cleared by re-running the identical argv with nothing else changed. A
+  # check that a bare retry satisfies is not testing the premise it names; it is
+  # a toll on concurrency. There was no ceiling on the re-reads and no backoff.
+  #
+  # Kept apart, each half is compared the way it should be — the vector for exact
+  # equality, the tip for ANCESTRY — and the comparison lives at the call site
+  # because only there is refusing an option. See `gate_verb_act`.
+  #
+  # ONE PASS OVER THE VECTOR. It is the expensive half: this file already
+  # measured the row scan at 1.92s per-row-subshell against 0.007s in `awk`, and
+  # calling `gate_progress_digest` for the first component would walk it a second
+  # time for a value this function already holds.
+  local vec
+  vec=$(gate_progress_vector)
+  printf '%s-%s' \
+    "$(printf '%s\n' "$vec" | shasum -a 256 | cut -d' ' -f1)" \
+    "$(gate_chain_tip)"
+}
+
+gate_snapshot_digest_legacy() {
+  # THE PRE-SPLIT FORM, KEPT ONLY TO BE COMPARED AGAINST. A caller carrying a
+  # one-part digest got it from a gate that hashed the progress vector together
+  # with the ledger's length and tip, and honouring that value's original meaning
+  # — exact equality — requires being able to compute it. The callers this exists
+  # for are runs that were already in flight when the format split, and other
+  # sessions' older copies of this file.
+  #
+  # NOTHING PRODUCES THIS FORMAT ANY MORE, so this is a reader and not a second
+  # writer: the two forms cannot drift apart into two live conventions.
   local n
   n=$( { grep -c '^- `' "$LEDGER" 2>/dev/null || true; } | tr -d ' ')
   { gate_progress_vector
@@ -1967,6 +2058,12 @@ gate_snapshot() {
   gate_snapshot_handoff_json
   printf '  ],\n'
 
+  # THE LOST-DISPATCH ALARM, and it is in the snapshot rather than only in the
+  # render because the router reads the object and is judged on doing so. A key
+  # that exists in the output and nowhere in the contract is a key nothing looks
+  # for; this one names the failure whose whole cost was that no layer said it.
+  printf '  "orphan_stages": [%s],\n' \
+    "$( { cc_orphan_stages "$RUN_DIR" || true; } | sed 's/.*/"&"/' | paste -sd, - )"
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -2259,7 +2356,7 @@ gate_render_snapshot() {
   # closed, so it reaches nobody; the render did not carry a live-stage count,
   # a ledger age, or the run's own terminal state. Answering it needed the row
   # grammar and a manual pid comparison.
-  local n_live now_s led_s hb_s done_line
+  local n_live now_s led_s hb_s done_line orphans
   # Counting pid FILES reported stages that were not there: measured 21 files
   # against 5 live processes, and a render claiming "진행 중" for a run whose
   # recorded pid was dead. The shared predicate tests the process.
@@ -2268,6 +2365,12 @@ gate_render_snapshot() {
   led_s=$(gate_mtime "$LEDGER")
   hb_s=$(gate_mtime "$RUN_DIR/watch.heartbeat")
   printf '살아 있는 스테이지: %s개\n' "$n_live"
+  # Rendered only when there is one. A line that reads "0" every night is a line
+  # nobody sees on the night it reads 1, and unlike the pending-approval count
+  # this one has no second reading to preserve — no orphan is no line.
+  orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
+  [ -n "$orphans" ] && \
+    printf '잃어버린 파견: %s — 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았습니다\n' "$orphans"
   if [ -n "$led_s" ]; then printf '원장 갱신 : %s초 전\n' "$((now_s - led_s))"
   else                     printf '원장 갱신 : (없음)\n'; fi
   if [ -n "$hb_s" ]; then printf '감시자    : %s초 전 하트비트\n' "$((now_s - hb_s))"
@@ -4704,10 +4807,31 @@ gate_record_row() {
     return "$GATE_EXIT_VOCAB"
   fi
   [ $# -ge 1 ] || { warn "$kind 행에 필드가 하나도 없습니다"; return "$GATE_EXIT_VOCAB"; }
+
+  # THE KEY IS CHECKED HERE AND NOT ONLY NORMALIZED IN `gate_append`. The two are
+  # not redundant. Normalization rewrites the field silently; this path is the one
+  # whose refusal reaches the caller, and a caller that spelled a separator into a
+  # field name should be told rather than have the name quietly changed under it.
+  # A key carrying a newline is an attempt to append a SECOND row — the row worth
+  # forging is a `승인` saying `상태=승인` — and a key carrying a pipe forges a
+  # field boundary inside the row it is on. The remaining half of the invariant,
+  # that a key holds no `=`, is discharged by the split itself: `%%=*` cuts at the
+  # first one, so there is nothing left for a branch here to find.
+  #
+  # THE NEWLINE IS A LITERAL, because `$(printf '\n')` is the EMPTY STRING —
+  # command substitution strips exactly the character this pattern has to hold,
+  # and an empty pattern matches every key there is.
+  local nl='
+'
   for f in "$@"; do
     case "$f" in
-      *=*) : ;;
+      *=*) k="${f%%=*}" ;;
       *) warn "$kind 행의 필드는 「키=값」이어야 합니다: $f"; return "$GATE_EXIT_VOCAB" ;;
+    esac
+    case "$k" in
+      *"$nl"*|*'|'*)
+        warn "$kind 행의 필드 키에 개행이나 파이프를 담을 수 없습니다: $k"
+        return "$GATE_EXIT_VOCAB" ;;
     esac
   done
 
@@ -4789,6 +4913,25 @@ gate_record_row() {
         esac
       done
 
+      # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
+      # deliberately. `cycle` and `problem` below carry the same shape for
+      # `세그먼트=`, so all three share this note.
+      #
+      # REORDERING MOVES THE HOLE RATHER THAN CLOSING IT, and that is why the
+      # obvious repair is not the one to reach for. Readers do not agree on
+      # which duplicate wins: this file's three take the LAST value, and
+      # `feed.sh` takes the FIRST. Putting the gate's field last would close the
+      # override for the readers here and open it for that one. The repair that
+      # closes it for every reader is to REFUSE a caller-supplied `id=` or
+      # `세그먼트=` in `gate_record_row` — the same file already refuses a
+      # spliced key there, so the shape exists.
+      #
+      # THE GRAMMAR IS ALSO PINNED, which is the second reason to leave the
+      # order alone. Fixtures assert this row in two shapes — `교대=<n> | id=<seg>`
+      # and `id=<seg> | <first caller field>` — so that the grammar is asserted
+      # rather than assumed. One of those pins carries a note saying so; the
+      # others are footing that rests on it. Counting them here would go stale
+      # the moment one is added, so the shapes are named and the count is not.
       gate_append 'segment' "id=$seg" "$@"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
@@ -4818,6 +4961,8 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
+      # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
       log "리뷰 사이클 기록 — $seg"
       ;;
@@ -4836,6 +4981,8 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
+      # than `id`.
       gate_append 'problem' "세그먼트=$seg" "$@"
       log "문제 기록 — $seg"
       ;;
@@ -5544,9 +5691,92 @@ gate_verb_act() {
   # mutates that state.
   if [ "$verb" != "plan" ]; then
     [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest 가 필요합니다\n' >&2; exit 2; }
-    local now
+    local now nowvec nowtip obsvec obstip stale=0 twopart=0
     now=$(gate_snapshot_digest)
-    if [ "$snapdig" != "$now" ]; then
+    nowvec="${now%%-*}"; nowtip="${now##*-}"
+    case "$snapdig" in
+      *-*) twopart=1; obsvec="${snapdig%%-*}"; obstip="${snapdig##*-}" ;;
+      # THE OLD ONE-PART FORM KEEPS ITS OLD MEANING, WHICH IS EXACT EQUALITY. The
+      # permission hook's own instructions, this repository's fixtures and other
+      # sessions' copies of this file all carry a bare digest, so a format change
+      # that refused it would stop runs that are already in flight over a
+      # spelling. Left empty here and handled as a whole-string compare below.
+      *) obsvec=""; obstip="" ;;
+    esac
+    if [ "$twopart" = "0" ]; then
+      [ "$snapdig" = "$(gate_snapshot_digest_legacy)" ] || stale=1
+    else
+      # BOTH HALVES ARE CHECKED FOR SHAPE BEFORE EITHER IS COMPARED, and an empty
+      # half is a FORMAT error rather than a comparison that happens to succeed.
+      # `<벡터해시>-` has the two-part form, so it reached the ancestry probe with
+      # an empty tip and the probe degenerated to `grep -qF "prev="` — true of
+      # every ledger holding a single row. The one value that still had to be
+      # right, the vector half, is printed in full by the refusal message, so
+      # there was nothing left to guess.
+      #
+      # THE ARM IS SELECTED ON THE FORM AND NOT ON AN EMPTY VECTOR HALF. That
+      # selector had the mirror defect: `-<팁>` is two-part by the `case` above
+      # but carries an empty vector, so it fell through to the one-part formula
+      # and was refused for a reason that was not its own.
+      case "$obsvec$obstip" in
+        *[!0-9a-f]*) stale=1 ;;
+      esac
+      { [ ${#obsvec} -eq 64 ] && [ ${#obstip} -eq 64 ]; } || stale=1
+      # THE VECTOR HALF IS EXACT, and that is where the check earns its keep: the
+      # vector moves only on progress, so a mismatch is a router acting on state
+      # that genuinely moved — a compacted one carrying a remembered value
+      # included. Nothing about this half is relaxed.
+      [ "$obsvec" = "$nowvec" ] || stale=1
+      # AND THE TIP HALF IS BOUNDED ANCESTRY RATHER THAN EQUALITY. Equal is the
+      # ordinary case. Otherwise the tip the caller observed has to appear as the
+      # `prev` of one of the last GATE_ANCESTRY_WINDOW rows — a point the chain
+      # has grown past while somebody else appended between the read and the act,
+      # which is concurrency and not staleness. A tip that is on no row at all,
+      # or on a row the chain has left far behind, is neither.
+      #
+      # WHAT THE BOUND DOES NOT BUY. K measures DISTANCE and not KIND, so a
+      # digest presented a few rows after a pending approval was opened still
+      # passes. The vector cannot be widened to cover that: the vector's own note
+      # explains that a boundary firing always issues an approval, so counting
+      # approvals would let the remedy reset the counter that fired it. What the
+      # bound removes is the property that a value read hours ago passed forever.
+      #
+      # ANCHORED TO THE FIELD BOUNDARY AND TO END OF LINE. The boundary alone
+      # still matched a carrier that supplies no separator at all, because a
+      # fixed-string probe matches anywhere in the row. `prev` is the last field
+      # by construction, so the row anchor costs nothing and refuses that third
+      # carrier. `$obstip` is 64 lowercase hex by the shape check above, so it
+      # carries no regular-expression metacharacter.
+      #
+      # ANCHORED TO THE FIELD BOUNDARY. A row's real `prev` is its last field and
+      # is written as ` | prev=<hex>`, and gate_append maps `|` out of every field
+      # a caller supplies, KEY AND VALUE ALIKE, so no field can forge that
+      # boundary. The key half of that transform landed later than this anchor,
+      # which is why both halves are named: while the maps covered values only,
+      # a caller could spell ` | prev` as a field's KEY and put the separator into
+      # the very row this probe reads. Unanchored,
+      # `근거=prev=<hex>` matched: the authorisation row carries the caller's own
+      # rationale verbatim, so ONE act with a valid digest let a caller mint the
+      # ancestor token it would present later, while knowing no real value in the
+      # ledger. Measured on a live 107-row ledger: the rows carrying `prev=` and
+      # the rows carrying ` | prev=` are the same rows, so the anchor loses no
+      # legitimate ancestor.
+      #
+      # NOT A PIPE. `grep -q` exits at its first match, which closes the pipe on
+      # an upstream that is still writing — under `pipefail` that SIGPIPE turns a
+      # found ancestor into a failed test. The window is bounded rows, so a here
+      # string costs nothing and removes the race the lint refuses.
+      #
+      # THE SHAPE CHECK ABOVE AND THIS ANCHOR CLOSE DIFFERENT DOORS, and neither
+      # closes the other's. A prefix of a real tip satisfies a substring match
+      # even anchored, so the length check is what refuses it; a minted token is a
+      # perfect 64-character lowercase hex, so the anchor is what refuses it.
+      if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
+         && ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then
+        stale=1
+      fi
+    fi
+    if [ "$stale" != "0" ]; then
       warn "낡은 스냅숏 다이제스트: 관측 '$snapdig' vs 현재 '$now'"
       exit "$GATE_EXIT_STALE"
     fi
@@ -8067,21 +8297,25 @@ readonly SHIFT_FLOOR_MAX=130000
 readonly GATE_EXIT_SHIFT_HELD=10
 
 gate_shift_launches() {
-  # How many routing shifts this ledger has LAUNCHED. `gate_verb_act` appends the
-  # act's `자율 승인` row before the dispatch that starts one, so at the moment a
-  # launch runs this count already includes its own row and is therefore that
-  # launch's ordinal.
+  # How many routing shifts this ledger has actually LAUNCHED: the count of
+  # `교대 기동` rows, which `gate_launch_shift` writes immediately before it execs
+  # the wrapper and in no other place.
   #
-  # LAUNCHES AND NOT ENDINGS. The count of `handoff` rows stood here, and the two
-  # diverge the moment a launch is held or a shift dies before writing its row —
-  # neither of which the gate checks, so the scale silently drifted from the
-  # identifier. `결정=act` excludes the outcome row a failed act appends under the
-  # same `kind`.
+  # AN ATTEMPT IS NOT A LAUNCH, and counting the act's `자율 승인` row made the two
+  # one thing. `gate_verb_act` appends that row BEFORE the dispatch, so it is on
+  # the ledger even when the launcher turns back — held behind a live stage, or
+  # stopped at the handoff floor — and both of those return having started
+  # nothing. Every turned-back attempt therefore consumed an ordinal, and the
+  # ordinal is what names `log/shift-<n>.json`: the file for that number was never
+  # written by any run, so a morning reader following the scale landed on nothing.
+  # Neither arm is exotic — the held one is the recovery `autopilot` prescribes.
+  #
+  # LAUNCHES AND NOT ENDINGS EITHER. The count of `handoff` rows stood here before
+  # that, and it diverges the moment a shift dies before writing its own row.
+  # Counting the launch directly is the only form that survives both.
   local n
   if [ -z "${LEDGER:-}" ] || [ ! -f "$LEDGER" ]; then printf '0'; return 0; fi
-  n=$( { gate_rows '자율 승인' || true; } \
-       | { grep -F 'kind=router-shift' || true; } \
-       | { grep -F '결정=act' || true; } | gate_count)
+  n=$( { gate_rows '교대 기동' || true; } | gate_count)
   printf '%s' "${n:-0}"
 }
 
@@ -8097,13 +8331,27 @@ gate_shift_number() {
   # of ENDED handoffs used to stand here, and it is a different quantity: shift 1
   # stamped `0` right up to its own handoff row, byte-identical to the value that
   # means routing never left the lead, and no reader could tell the two apart.
+  #
+  # AND THE ABSENCE OF THAT MARKER IS A SEAT, NOT A COUNT. This fell through to
+  # `gate_shift_launches`, so from the first launch of the night onward every row
+  # the LEAD wrote stamped the number of the shift then running — and `0`, the
+  # value the sidecar reserves for "routing never left the lead", stopped being
+  # written at all. The lead's rows became byte-identical to that shift's, which
+  # is the same indistinguishability the paragraph above describes, arriving from
+  # the other side.
+  #
+  # ONE EXPRESSION MUST NOT ANSWER TWO QUESTIONS. "How many shifts have been
+  # launched" belongs to `gate_launch_shift`'s ordinal and nothing else; "who is
+  # sitting in the routing seat as this row is written" is this function. Sharing
+  # one expression between them is the root of the defect rather than a detail of
+  # it, so the fallback here is the constant the seat is defined as.
   local n
   if [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
     n="${CC_PIPELINE_SHIFT_ID##*#}"
     case "$n" in ''|*[!0-9]*) n='' ;; esac
     if [ -n "$n" ]; then printf '%s' "$n"; return 0; fi
   fi
-  gate_shift_launches
+  printf '0'
 }
 
 gate_transcript_of_session() {
@@ -8374,13 +8622,18 @@ gate_launch_shift() {
 
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
-  # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` already counts this
-  # ledger's launches and this act's own row is on it before the dispatch gets
-  # here, so the count IS this launch's ordinal. Adding one to a count of ENDED
-  # handoffs put the identifier a notch above the number the successor's own rows
-  # would carry, and a morning reader following `handoff | 교대=N` to
-  # `log/shift-N.json` was handed a different shift's stdout.
-  n=$(gate_shift_launches)
+  # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` counts the rows written
+  # by launches that actually happened, and THIS launch has not written its own
+  # yet — it is written a few lines below, past both early returns — so the
+  # ordinal is that count plus one.
+  #
+  # The count used to include this act's own `자율 승인` row and was taken as the
+  # ordinal directly. That put attempts and launches on one scale: the two early
+  # returns above leave the act row behind and start nothing, so a held attempt
+  # moved the scale and the number it consumed named a `log/shift-N.json` no run
+  # ever wrote. Adding one to a count of ENDED handoffs, the form before that, put
+  # the identifier a notch above the number the successor's own rows would carry.
+  n=$(( $(gate_shift_launches) + 1 ))
   [ "${n:-0}" -ge 1 ] || n=1
   mkdir -p "$RUN_DIR/log"
 
@@ -8399,6 +8652,16 @@ gate_launch_shift() {
   # watcher's liveness count, and a shift recorded there would read as a live
   # stage — which suppresses the very arms that exist to notice a router that
   # stopped. The expiry marker above is the shift's liveness token instead.
+  # THE LAUNCH ROW, AND THE SCALE IS COUNTED FROM IT RATHER THAN FROM THE ACT.
+  # It sits below both early returns and above the exec, so it exists exactly
+  # when a successor was actually started. `gate_shift_launches` reads it.
+  #
+  # THE FIELD IS `서수`, NOT `교대`. `gate_append` stamps the routing SEAT on every
+  # row unless the caller supplies `교대` itself, so spelling this field `교대`
+  # would suppress that stamp on the one row whose whole purpose is to carry an
+  # ordinal — and the two numbers are different quantities: the seat is who
+  # launched this shift, the ordinal is which shift was launched.
+  gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)"
   log "교대 $n 시작 — 사유 $reason"
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
