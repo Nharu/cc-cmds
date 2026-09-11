@@ -432,6 +432,31 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 export XDG_STATE_HOME="$WORK/state"
 
+# THE CLI THE LAUNCHER EXECS IS OFF FOR THIS WHOLE PROCESS, for the same reason
+# the notifier above is: the call sites cannot be made exhaustive.
+#
+# `run.sh:70` resolves `CLI_BIN` from `CC_CLAUDE_BIN` and falls back to whatever
+# `claude` is on PATH, so any stage dispatch this file makes without a stub execs
+# the real binary — a live model call in the middle of a unit suite. Measured: one
+# `--kind skill` dispatch reached it and the suite never returned. Two runs of very
+# different elapsed time stopped at the same assertion, and no totals line was ever
+# printed, so nobody could observe pass and fail counts at all.
+#
+# Guarding each dispatch was tried and is the wrong shape here for the reason the
+# banner-seat comment already argues about its own class: a new dispatch is a
+# normal thing to write, so a per-site guard is complete on the day it lands and
+# quietly incomplete afterwards. Eight sites needed it and seven had it. An
+# exported default is inherited by every child, including dispatches nobody has
+# written yet, and the sites that are actually TESTING the launcher keep setting
+# their own `CC_CLAUDE_BIN` on the invocation, which wins over this.
+#
+# This must sit after `WORK` exists, not beside the notifier export, because the
+# value has to be a real executable path.
+mkdir -p "$WORK/bin"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/claude-noop"
+chmod +x "$WORK/bin/claude-noop"
+export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -1475,6 +1500,13 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SNONE --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "리뷰 기록이 없는 머지는 거부된다" "$rc" "3"
+# 아래 `passes_review` 가 찾는 문면을 이 픽스처가 실제로 만들어 낸다는 것을 먼저
+# 세운다. 그 술어는 거절 문면의 부재로 통과를 판정하므로, 프로덕션이 문구를
+# 바꾸면 조용히 상수 참이 되고 그것에 기대는 세 단언이 한꺼번에 판정을 잃는다.
+case "$msg" in
+  *"룰 거부: 리뷰-후-머지"*) ok "그 거절 문면이 프로덕션에서 실제로 나온다 (passes_review 가 공허하지 않다)" ;;
+  *) bad "passes_review 전제" "리뷰 룰의 거절 문면이 '룰 거부: 리뷰-후-머지' 가 아니다: '$msg'" ;;
+esac
 
 {
   printf -- '- `segment` | id=S9 | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$head0" "$seg_wt"
@@ -1490,8 +1522,12 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 # Judged by the ABSENCE of the rule's refusal line rather than by the exit code:
 # past the checks the gate performs the act, and `gh pr merge` in a fixture with
 # no GitHub behind it fails for reasons that have nothing to do with the rule.
+# 리터럴은 프로덕션이 오늘 실제로 내보내는 접두사다. 검사기의 거절은 룰 이름
+# 뒤에 콜론이 아니라 공백과 대시를 두고, 게이트의 일반 절반도 이름 뒤에 콜론을
+# 두지 않는다. 옛 형태(`리뷰-후-머지:`)를 찾으면 어떤 문면에도 맞지 않아 이
+# 술어가 무조건 통과를 돌려준다.
 passes_review() {
-  case "$msg" in *"리뷰-후-머지:"*) return 1 ;; *) return 0 ;; esac
+  case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 1 ;; *) return 0 ;; esac
 }
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
@@ -1673,7 +1709,7 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
      -- gh pr merge 1
 case "$msg" in
-  *"리뷰-후-머지:"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
+  *"룰 거부: 리뷰-후-머지"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
   *) ok "게이트가 쓴 세그먼트·사이클 행으로 머지가 통과한다" ;;
 esac
 
@@ -1683,6 +1719,47 @@ case "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" |
   *"축2=읽기"*) ok "장부 행위는 읽기로 등급된다" ;;
   *) bad "장부 등급" "$(grep '^- `자율 승인` | 교대=[0-9][0-9]* | kind=cycle ' "$LEDGER" | tail -1)" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 8b-2. `리뷰 HEAD` is pinned to a resolved sha AT WRITE TIME
+#
+# The four required fields were checked for emptiness and for nothing else, and
+# the merge rule interpolates THIS one as a revision expression. So `HEAD`, `@`,
+# a branch name and `HEAD@{0}` were all well-formed rows, and each resolves
+# against whatever tree the rule is reading at the moment it reads — the merged
+# one. A review recorded that way clears the freshness ladder by construction,
+# without anyone having reviewed the tree it claims.
+#
+# Nothing measured this class before. Every `리뷰 HEAD=` value planted across the
+# two suites is an already-resolved 40-character sha, so the field's shape was
+# exercised in exactly one direction.
+# ---------------------------------------------------------------------------
+for badhead in 'HEAD' '@' 'seg/20260907-ef4438ac-slice-A' 'HEAD@{0}'; do
+  gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$badhead"
+  check "개정 표현식은 리뷰 HEAD 로 거부된다 ($badhead)" "$rc" "2"
+  # THE TEXT, NOT ONLY THE STATUS. Exit 2 is the vocabulary refusal that every
+  # missing-field branch above also returns, so a status-only assertion cannot
+  # tell "the shape was rejected" from "a field was absent" — and the second is
+  # what this row would silently degrade into if the shape check were removed.
+  case "$msg" in
+    *"해소된 커밋 sha"*) ok "그 거절이 sha 형태를 지목한다 ($badhead)" ;;
+    *) bad "거절 문면 ($badhead)" "$msg" ;;
+  esac
+done
+
+# The 7-character floor, asserted so it is not vacuous: `git rev-parse --short`
+# hands out abbreviations this size and they name a commit just as exactly.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 \
+     "리뷰 HEAD=$(printf '%s' "$head_b" | cut -c1-7)"
+check "7자 짧은 sha 는 통과한다 (하한이 공허하지 않다)" "$rc" "0"
+
+# Written LAST so the newest `cycle` row for SW carries the same full sha it
+# carried before this section existed — the fixtures below read that row.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
@@ -1723,6 +1800,13 @@ check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
 # ---------------------------------------------------------------------------
+# THE PRISTINE COPY IS TAKEN HERE, one line above the contamination. Everything
+# below runs against a manifest carrying `**리뷰-후-머지**: 끔`, and that setting
+# is never removed — appending a restoring line further down is silently void,
+# because the section reader returns the FIRST match and the `끔` above wins. So
+# the sections that need the rule ON cut from this copy instead of trying to
+# repair the shared file.
+cp "$MANIFEST" "$WORK/manifest-clean.md"
 {
   printf '\n## 룰 설정\n'
   printf '**절단점-준수**: 끔\n**사전-인가-대조**: 끔\n**인가-자기확장-금지**: 끔\n**리뷰-후-머지**: 끔\n'
@@ -1758,6 +1842,28 @@ else
   bad "룰 스위치" "「끔」인데 여전히 거부한다: $msg"
 fi
 
+# 값싼 가드 — 오염 자체를 고치지 않고, 오염이 실효가 되는 순간을 잡는다.
+#
+# 위 append 는 공유 매니페스트를 룰이 꺼진 채로 남기고 되돌리지 않는다. 되돌리는
+# 수리는 조용히 무효이므로(절 안에서 첫 매치가 이긴다) 오염은 그대로 둔다. 대신
+# 그 창 안에서 머지 등급 행위가 새로 생기는 순간을 잡는다 — 그런 단언은 「정책을
+# 인지한 통과」와 「룰이 꺼져 아무것도 검사되지 않은 통과」를 구별하지 못하기
+# 때문이다. 창은 이 섹션의 표제부터 공유 매니페스트가 재배정되는 줄까지다.
+#
+# 기준값은 재유도한다: 아래 두 줄과 같은 창을 잘라 같은 패턴을 세면 나온다. 이
+# 수가 움직였다면 새 행위가 오염 창 안으로 들어왔다는 뜻이고, 고칠 곳은 이 수가
+# 아니라 그 행위의 자리다 — 룰이 켜진 자기 매니페스트로 옮기면 된다.
+sa_self="${BASH_SOURCE[0]:-$0}"
+sa_pat='--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
+sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
+sa_we=$(grep -n '^MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
+if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
+  sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)
+  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 열 그대로다" "$sa_wn" "10"
+else
+  bad "값싼 가드" "오염 창의 경계를 찾지 못했다 — 표제나 재배정 줄이 바뀌었다"
+fi
+
 # ---------------------------------------------------------------------------
 # 10. The ledger the gate writes — chained, capped, and its own rows
 # ---------------------------------------------------------------------------
@@ -1790,49 +1896,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 10b. `선머지후리뷰` defers the review and the deferral leaves a record
+# 10b. MOVED — see section 31 at the end of this file.
 #
-# A deferral with no record is a removal nobody wrote down. This design's own
-# four slices all declare that mode, so the first run of it against itself takes
-# exactly this path.
+# It used to sit here, one screen below the append above, and asserted that
+# `선머지후리뷰` defers the review. Every one of those assertions ran against a
+# manifest that had just turned `리뷰-후-머지` off, so none of them could tell
+# "the rule treated the deferral as legitimate" from "the rule was off and
+# nothing was checked at all". It now runs on its own manifest, cut from the
+# pristine copy taken above, with the rule ON.
 # ---------------------------------------------------------------------------
-H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
-gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
-     --cutpoint 머지 --review-policy 선머지후리뷰 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
-if grep -q '^- `리뷰 의무`' "$LEDGER"; then
-  ok "선머지후리뷰 머지가 리뷰 의무 행을 남긴다"
-else
-  bad "리뷰 의무" "미뤄진 리뷰가 아무 기록도 남기지 않았다 — 미룬 것과 없앤 것이 구별되지 않는다"
-fi
-if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '상태=미이행'; then
-  ok "발행 시점의 상태는 미이행이다"
-else
-  bad "의무 상태" "$(grep '^- `리뷰 의무`' "$LEDGER" | awk 'NR<=1')"
-fi
-if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '생성 등급=외부상태변경'; then
-  ok "생성 등급을 함께 싣는다 (나중의 면제 판정이 읽는 값이다)"
-else
-  bad "생성 등급" "$(grep '^- `리뷰 의무`' "$LEDGER" | awk 'NR<=1')"
-fi
-
-n_before=$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)
-H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
-gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP \
-     --cutpoint 머지 --review-policy 선머지후리뷰 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
-check "같은 세그먼트에 의무를 중복 발행하지 않는다" "$(grep -c '^- `리뷰 의무`' "$LEDGER" || true)" "$n_before"
-
-# The default mode must NOT create one — an obligation that appears for every
-# merge would make condition 9 permanent and no run could ever terminate.
-gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 \
-     --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
-if grep '^- `리뷰 의무`' "$LEDGER" | grep_all_q '세그먼트=SEP2'; then
-  bad "기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
-else
-  ok "기본 정책에서는 의무를 만들지 않는다"
-fi
 
 # ---------------------------------------------------------------------------
 # 10c. A dry run writes nothing, and a stage dispatch is gradeable
@@ -3719,72 +3791,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 29. A review obligation can be moved to `이행`, and only against evidence
+# 29. MOVED — see section 32 at the end of this file.
 #
-# Section 10b issues one and nothing in the tree could close it: `리뷰 의무` was
-# written in a single place, always as `상태=미이행`, and the router's row-writing
-# kinds did not include the series. Termination condition 9 therefore held
-# against every run that ever deferred a review — the state this pipeline aims
-# at was unreachable, and the refusal read as the mechanism working.
+# It asserted the fulfillment arm in full: evidence-less fulfillment refused, a
+# fulfillment carrying only `근거` accepted, a non-existent obligation refused,
+# re-fulfillment refused, and termination condition 9 released afterwards. Under
+# the landing and containment tests those assertions all CHANGE MEANING — "only
+# `근거`" is now a statement about a branch rather than about the whole arm — so
+# the section moves onto a manifest with the rule on and pins the branch it is
+# measuring in as many words.
 # ---------------------------------------------------------------------------
-ROID=$( { grep '^- `리뷰 의무`' "$LEDGER" || true; } | grep -F '세그먼트=SEP ' | tail -1 \
-        | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
-if [ -n "$ROID" ]; then
-  ok "10b 이 발행한 의무 id 를 원장에서 읽는다 ($ROID)"
-else
-  bad "의무 id" "선머지후리뷰 머지가 남긴 리뷰 의무 행을 찾지 못했다"
-fi
-
-gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- "의무 id=$ROID"
-check "근거 없는 이행은 거부된다 (주장만으로 리뷰를 닫지 않는다)" "$rc" "2"
-
-gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- "의무 id=RO-00000000" 근거=z
-check "존재하지 않는 의무는 닫을 수 없다" "$rc" "2"
-
-gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
-      -- "의무 id=$ROID" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다"
-check "근거를 실은 이행은 통과한다" "$rc" "0"
-
-roall=$( { grep '^- `리뷰 의무`' "$LEDGER" || true; } | grep -F "의무 id=$ROID " || true)
-lastro=$(printf '%s' "$roall" | tail -1)
-case "$lastro" in
-  *"상태=이행"*) ok "그 의무의 마지막 행이 이행이다" ;;
-  *) bad "이행 상태" "$lastro" ;;
-esac
-case "$lastro" in
-  *"이행 시각=-"*) bad "이행 시각" "이행인데 시각 자리가 그대로 비어 있다" ;;
-  *"이행 시각="*)  ok "발행 때 비워 둔 이행 시각이 채워진다" ;;
-  *) bad "이행 시각" "$lastro" ;;
-esac
-case "$lastro" in
-  *"세그먼트=SEP "*) ok "세그먼트를 선행 행에서 옮겨 싣는다 (argv 가 정하지 않는다)" ;;
-  *) bad "세그먼트 승계" "$lastro" ;;
-esac
-# The issuing row must SURVIVE: closing is an append, so the morning can still
-# read when the review was deferred as well as when it landed.
-case "$roall" in
-  *"상태=미이행"*) ok "발행 시점의 미이행 행이 지워지지 않고 남는다 (편집이 아니라 append)" ;;
-  *) bad "append 형태" "발행 행이 사라졌다 — 원장이 append 전용이라는 계약이 깨진다" ;;
-esac
-
-gateL act --manifest "$MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
-      -- "의무 id=$ROID" 근거="두 번째 시도"
-check "이미 닫힌 의무를 다시 닫지 않는다" "$rc" "2"
-
-# THE POINT OF THE SECTION. Condition 9 was permanent; with the only obligation
-# this run issued now fulfilled, it must be gone from the enumeration. Section 11
-# measures the same string while the obligation is still open and is left alone —
-# there it is correct for the condition to be listed.
-gateL act --manifest "$MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HL)" --rationale "끝났다고 본다" -- true
-case "$msg" in
-  *"9 미이행 리뷰 의무"*) bad "조건 9" "의무를 닫았는데 여전히 미충족으로 열거된다" ;;
-  *) ok "이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
-esac
 
 # ---------------------------------------------------------------------------
 # 30. git is graded by its SUBCOMMAND, not by the word `git`
@@ -3846,6 +3862,110 @@ graded_as '읽기'         'lockf 가 감싼 읽기도 그 등급이다'        
 graded_as '외부상태변경' 'lockf 는 외부 행위를 워크트리 쓰기로 세탁하지 않는다' -- lockf -k -t 0 /tmp/l.lock curl https://x
 graded_as '워크트리쓰기' '감쌀 명령이 없는 lockf 는 잠금 파일을 만든다' -- lockf -k /tmp/l.lock
 graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'           -- /usr/bin/lockf -k -t 0 /tmp/l.lock git status
+
+# The double shift hiding inside those five. `surface_of_argv0` drops argv0
+# before it dispatches, and `surface_of_lockf` dropped it a SECOND time, so the
+# first word after `lockf` was eaten. That only changes the answer when the
+# number of leading options is even — every fixture above passes `-k -t 0`, an
+# odd three, so the whole class sat under a green block.
+graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'      -- lockf /tmp/l.lock git status
+graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl https://x
+graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
+
+# --- 31c. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
+#
+# 셋 다 `읽기` 행에 무조건으로 앉아 있었다. 그래서 `command git merge` 가 정직하게
+# `--surface 읽기` 를 신고하면 신고와 등급이 일치했고, 리뷰 룰은 읽기 등급에서 조기
+# 반환하므로 감싼 머지가 리뷰 기록 없이 전면 면제됐다. 술어(31b)를 아무리 넓혀도
+# 닿지 않는다 — 면제가 한 층 위, 등급에서 일어나기 때문이다.
+#
+# 음성 단언이 짝으로 들어간다. 양성만 심으면 수리가 반대 방향(과검사)으로 미끄러져도
+# 이 블록은 초록이다. 평범한 `find`·`rg` 와 `command -v` 가 그 상한을 고정한다.
+graded_as '워크트리쓰기' 'command 가 감싼 머지는 그 등급이다'       -- command git merge --no-ff seg
+graded_as '읽기'         'command 가 감싼 읽기는 계속 읽기다'        -- command git status
+graded_as '읽기'         'command -v 는 무엇이 실행될지 인쇄만 한다' -- command -v git
+graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl https://x
+graded_as '워크트리쓰기' '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
+graded_as '워크트리쓰기' 'find -delete 는 자기가 지운다'             -- find . -delete
+# GNU find 의 파일 쓰기 프리미티브 넷. `-exec` 처럼 남에게 넘기지도, `-delete` 처럼
+# 지우지도 않고 argv 에 적힌 파일을 열어 거기 쓴다. BSD 인 개발 호스트에서는 find 가
+# 인자 자체를 거절하므로 잠복하고, Linux 러너에서는 argv0 만 보면 읽기인 명령으로
+# 매니페스트를 덮어쓰는 가장 싼 길이 된다. 넷을 개별로 심는 이유는 한 낱말만 빠져도
+# 그 낱말이 곧 구멍이기 때문이다.
+graded_as '워크트리쓰기' 'find -fprintf 는 argv 의 파일에 쓴다'      -- find . -fprintf /tmp/out.md '%p'
+graded_as '워크트리쓰기' 'find -fprint 도 같다'                      -- find . -fprint /tmp/out.md
+graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
+graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
+graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
+# 나머지 래퍼 여덟은 해소되지 않고 `등급 미상` 으로 떨어진다 — 그 값은 거부이므로
+# 구멍이 아니라 닫힌 쪽이다. 단언으로 못박는 이유는 그 닫힘을 지키는 것이 지금까지
+# 산문뿐이었기 때문이다. 누군가 이 여덟 중 하나를 「읽기만 하는 래퍼」로 보고 읽기
+# 행에 얹으면, 그 낱말을 앞에 붙인 머지가 정직하게 `읽기` 를 신고하고 신고와 등급이
+# 일치하며 리뷰 룰은 읽기에서 조기 반환한다. 그때 붉어질 자리가 여기다.
+for _w in env xargs nice nohup time timeout stdbuf; do
+  graded_as '등급 미상' "$_w 로 감싼 머지는 해소되지 않아 거부로 떨어진다" -- "$_w" git merge --no-ff seg
+done
+unset _w
+graded_as '외부상태변경' 'rg --pre 는 매 파일을 그 프로그램에 통과시킨다' -- rg --pre curl pattern .
+graded_as '읽기'         '평범한 rg 검색은 읽기다'                   -- rg pattern .
+graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소된다' -- lockf -k -t 0 /tmp/l.lock command git merge seg
+
+# ---------------------------------------------------------------------------
+# 31b. The narrowing axis reads through the same wrappers the grader does
+#
+# `gate_history_integration` is what keeps the review rule from demanding a
+# review record of every `mkdir` that shares the `워크트리쓰기` cell with a local
+# merge. It compared argv0 against the single name `git`, so both spellings the
+# grading table cannot see through fell out of the check at once: `bash -c 'git
+# merge …'` and `lockf … git merge …` each graded `워크트리쓰기` and each
+# answered "not an integration" — an honest segment carrying a real merge past
+# the rule with no review record at all.
+#
+# Asserted through the source-only seam. The predicate has no verb of its own,
+# and reaching it on the act path means first satisfying a grade, a cutpoint and
+# a manifest, none of which is what these rows are about.
+# ---------------------------------------------------------------------------
+hist_is() {
+  # hist_is <expected> <label> -- <argv...>
+  local want="$1" label="$2"; shift 3
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    gate_history_integration "$@"
+  ' _ "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+hist_is 1 '맨 git merge 는 이력 통합이다'              -- git merge --no-ff seg
+hist_is 1 '경로로 부른 git 도 같다'                    -- /usr/bin/git merge seg
+hist_is 1 'bash -c 뒤에 숨은 머지도 검사에 남는다'     -- bash -c 'git merge --no-ff seg'
+hist_is 1 'sh -c 도 같다'                              -- sh -c 'git merge --no-ff seg'
+hist_is 1 'lockf 가 감싼 머지도 검사에 남는다'         -- lockf -k -t 0 /tmp/l.lock git merge --no-ff seg
+hist_is 0 'lockf 가 감싼 읽기는 이력 통합이 아니다'    -- lockf -k -t 0 /tmp/l.lock git status
+hist_is 0 '평범한 디렉터리 생성은 이력 통합이 아니다'  -- mkdir -p scratch
+
+# The list itself. Narrowing it to `merge` alone used to redden nothing, because
+# only `merge` had a fixture — the other three names were a claim the predicate
+# made about itself and nothing measured.
+hist_is 1 'rebase 도 이력 통합이다'                    -- git rebase origin/master
+hist_is 1 'cherry-pick 도 같다'                        -- git cherry-pick abc1234
+hist_is 1 'am 도 같다'                                 -- git am patch.mbox
+hist_is 1 '다른 ref 로 겨눈 reset 도 이력을 옮긴다'    -- git reset --hard origin/x
+# `revert` stays OFF the list — it writes a new commit on this branch undoing one
+# already in this branch's history, so no second line of history is integrated.
+# Pinned here so the list does not drift wider on its own.
+hist_is 0 'revert 는 목록에 들어가지 않는다'           -- git revert abc1234
+
+# 31c 가 등급표에서 연 세 이름을 술어도 같은 해소로 본다. 이 짝이 없으면 31c 만으로는
+# 수리가 무효다 — `command git merge` 가 `워크트리쓰기` 로 옮겨가도 술어가 0 을 답하면
+# 리뷰 룰이 그 칸에서 다시 면제한다.
+hist_is 1 'command 가 감싼 머지도 검사에 남는다'       -- command git merge --no-ff seg
+hist_is 1 'find -exec 로 넘긴 머지도 검사에 남는다'    -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+hist_is 1 'lockf 와 command 를 겹쳐도 검사에 남는다'   -- lockf -k -t 0 /tmp/l.lock command git merge seg
+hist_is 0 'command 가 감싼 읽기는 이력 통합이 아니다'  -- command git status
+hist_is 0 '실행 primary 없는 find 도 이력 통합이 아니다' -- find . -name '*.md'
+hist_is 0 '평범한 rg 검색도 이력 통합이 아니다'        -- rg pattern .
 
 # Browser automation. Unlike git and terraform there is no read-only arm to
 # carve out — argv says which page to open, and opening any page is a network
@@ -5059,6 +5179,16 @@ cone_of() {
 last_judgment_approval() {
   { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1
 }
+last_adoption_row() {
+  # THE ADOPTION ROW IS NOT THE LAST `자율 승인` ROW. A bookkeeping kind records
+  # its own row BEFORE the gate writes the plain approval row for the same `act`
+  # — the ordering that keeps a refused bookkeeping row from leaving an approval
+  # behind — so the plain row lands on top of the adoption. Selecting by
+  # `결정=채택` keeps the assertion's force rather than weakening it: an adoption
+  # always carries `해소 승인`, and `-` is what it carries when the floor
+  # admitted it on its own, so a resolution that went unrecorded still fails.
+  { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -F '결정=채택' | tail -1
+}
 row_field() {
   # row_field <행> <키> — the last value of that key on a ledger row.
   printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
@@ -5903,9 +6033,9 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=1 "판단 부류=감사-발견" 기준="일회성 기준" "되돌리는 법=아침에 다시 본다" 근거="일회성 근거"
 check "해소된 승인이 그 판단을 연다" "$rc" "0"
-case "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" in
+case "$(last_adoption_row)" in
   *"해소 승인=$oid"*) ok "채택 행이 어느 답이 그것을 열었는지 남긴다" ;;
-  *) bad "해소 승인" "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" ;;
+  *) bad "해소 승인" "$(last_adoption_row)" ;;
 esac
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
@@ -6454,9 +6584,9 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 기준="닫힌 승인이 재제출로 다시 열리는가" 근거="수명주기의 나머지 절반"
 check "답이 온 등급 2 판단은 재제출로 채택된다" "$rc" "0"
-case "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" in
+case "$(last_adoption_row)" in
   *"해소 승인=$cjid"*) ok "등급 2 채택 행이 어느 답이 그것을 열었는지 남긴다" ;;
-  *) bad "등급 2 채택" "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | tail -1)" ;;
+  *) bad "등급 2 채택" "$(last_adoption_row)" ;;
 esac
 # THE STATE IS READ, NOT THE EXIT CODE. A resubmission that nonetheless appended
 # a second `상태=대기` row would leave every exit code right and hand the morning
@@ -7058,20 +7188,26 @@ esac
 # --- 31ar. A read grade does not carry a delegating command past the guard ---
 #
 # 31ao measured the three arms and every one of its fixtures declared a WRITE.
-# The grade itself was the way out: `find` grades `읽기` from argv0 alone,
-# whatever primaries follow it, so `find <디렉터리> … -exec sh -c 'printf x >> {}'`
+# The grade itself was the way out: `find` used to grade `읽기` from argv0 alone,
+# whatever primaries followed it, so `find <디렉터리> … -exec sh -c 'printf x >> {}'`
 # was declared `읽기`, graded `읽기` — the self-declaration check agreed, both
 # being wrong about the same command — and the guard returned on its first line
 # without looking at the argv that was about to write. And the stem: a glob one
 # character short of the basename, run from the manifest's own directory, spells
 # neither the basename nor the directory, so nothing in arm 2 saw it either.
 # Both are the same guard measured from its two open sides.
+#
+# 31c CLOSED THE FIRST HALF ONE LAYER UP: `find` now delegates to what its
+# executing primary wraps, so the fixture below declares the write it performs.
+# The guard's own two-axis check is what this block still measures, and it is
+# still load-bearing — a delegator whose wrapped command READS keeps arriving
+# here graded `읽기`, which is the assertion that follows this one.
 NMDIR=$(dirname "$NM")
 NMBYTES=$(wc -c < "$NM")
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- find "$NMDIR" -maxdepth 1 -name '*plan.md' -exec sh -c 'printf x >> {}' \;
-check "읽기로 등급되는 위임자가 매니페스트에 쓰려 하면 거절된다" "$rc" "3"
+check "매니페스트에 쓰려는 위임자가 거절된다" "$rc" "3"
 # THE BYTES, because a refusal that arrives after the write is not a refusal.
 # The pattern is `*plan.md` and not `*.plan.md` on purpose: this fixture's
 # manifest is `cone-plan.md`, which the second pattern does not match at all, and
@@ -7081,6 +7217,31 @@ case "$msg" in
   *"매니페스트에 쓰려 합니다"*) ok "위임자 거절이 매니페스트 가드를 원인으로 지목한다" ;;
   *) bad "위임자 가드" "$msg" ;;
 esac
+# THE SELF-WRITING PRIMARY, which reaches the guard by neither of the two shapes
+# above: it delegates to nothing, so the `-exec` arm never sees it, and it names
+# its destination as a plain argv element rather than a redirection. The refusal
+# has to land BEFORE the act runs, which is also why this assertion is host
+# independent — BSD `find` would reject `-fprintf` outright, and a fixture whose
+# rc came from find rather than from the gate would measure the host instead of
+# the guard.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -fprintf "$NM" '%p'
+check "매니페스트를 -fprintf 목적지로 삼는 행위가 거절된다" "$rc" "3"
+check "거절된 -fprintf 는 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "-fprintf 거절이 매니페스트 가드를 원인으로 지목한다" ;;
+  *) bad "-fprintf 가드" "$msg" ;;
+esac
+# THE READ-GRADED DELEGATOR, which is the shape the read early-return above still
+# has to look past. `-exec cat` resolves to a read, so the grade IS `읽기` and the
+# declaration agrees with it — exactly the agreement that used to end the guard on
+# its first line. The `-exec` axis is what keeps it going, and the directory
+# needle is what refuses it.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -name '*plan.md' -exec cat {} \;
+check "읽기로 등급되는 위임자도 매니페스트 디렉터리를 겨누면 거절된다" "$rc" "3"
 # THE OTHER DIRECTION OF THE SAME NARROWING, and it is why `find` is not simply
 # listed as a delegator. A walk with no executing primary is an ordinary read of
 # the directory the manifest happens to live in, and it has to stay one.
@@ -8696,7 +8857,1545 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 32. The shift launcher's three outcomes, and the number it launches under.
+# 30. 슬라이스 A 회귀 집합 — 리뷰 정책 축이 실제로 게이트에 도달하는가
+#
+# 이 블록의 모든 섹션은 자기 매니페스트·자기 원장·자기 저장소를 만든다. 공용
+# 픽스처를 쓸 수 없는 이유는 둘이다. 첫째, 섹션 9 가 공유 매니페스트에
+# `**리뷰-후-머지**: 끔` 을 덧붙이고 되돌리지 않으므로 그 아래에서 잰 「정책을
+# 인지한 통과」는 「룰이 꺼져 아무것도 검사되지 않은 통과」와 구별되지 않는다.
+# 「섹션 9 에 복원 줄을 덧붙인다」는 수리는 조용히 무효다 — 절 안에서 첫 매치가
+# 이기므로 앞의 `끔` 이 그대로 이긴다.
+#
+# 둘째, 공용 픽스처의 워크트리는 한 지점에서 무관한 브랜치로 갈아탄 뒤 되돌려지지
+# 않아 그 팁이 베이스와 공통 조상이 없다. 착지 여부를 재는 단언이 그 워크트리를
+# 쓰면 판정은 코드가 아니라 픽스처의 브랜치 형상을 재게 되고 언제나 미착지가
+# 나온다 — 단언은 초록인데 재는 것이 딴것이다. 그래서 착지가 결과를 가르는 항목은
+# 자기 `git init` 저장소와 자기 베어 원격을 만들고, 세그먼트 워크트리를 그
+# 저장소의 베이스에서 끊는다.
+#
+# 이 집합의 모든 단언이 지키는 네 계약:
+#   1. 거절 단언은 rc 와 함께 거절을 낸 이름을 싣는다 — 룰 거절은 룰 이름을,
+#      어휘 거절은 거절된 필드나 값을. rc 만 재면 두 룰의 같은 3 이 섞인다.
+#   2. 행 수를 재는 단언은 그 직전 행위의 rc 를 함께 단언한다. 움직이지 않은
+#      계수는, 계수를 움직였어야 할 행위가 거기까지 갔다는 것이 따로 서지
+#      않는 한 증거가 아니다.
+#   3. 통과 단언은 어느 갈래에서 나온 통과인지 세계에서 다시 유도해 함께
+#      단언한다 — 이행 직전에 fetch 하고 조상 관계를 직접 재어 기대한 갈래와
+#      일치하는지 본다.
+#   4. `이행 판정` 은 값으로 단언되고, `앵커 없음` 은 `머지 커밋=-` 인 행에서만
+#      나타난다.
+# ---------------------------------------------------------------------------
+SA_N=0
+SA_ID=""; SA_ROOT=""; SA_REPO=""; SA_REMOTE=""; SA_SEGWT=""; SA_SEGBR=""
+SA_WT=""; SA_CG=""; SA_MANIFEST=""; SA_LEDGER=""; SA_GRANT=""; SA_RUN=""
+
+sa_bd() {
+  # sa_bd <manifest> <worktree> — 구속 다이제스트를 다시 계산해 `## 인가` 안에
+  # 넣는다. 절 스코프 리더라 파일 끝에 붙이면 없는 것으로 읽힌다.
+  local m="$1" w="$2" bd line inserted
+  grep -v '^\*\*구속 다이제스트\*\*:' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
+  bd=$(cd "$w" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$m"'"
+    binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>/dev/null)
+  if [ -z "$bd" ]; then
+    printf 'sa_bd: 구속 다이제스트 계산이 빈 값을 냈다 (%s)\n' "$m" >&2
+    exit 1
+  fi
+  : > "$m.bd"
+  inserted=
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$m.bd"
+    if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
+      printf '**구속 다이제스트**: %s\n' "$bd" >> "$m.bd"
+      inserted=1
+    fi
+  done < "$m"
+  [ -n "$inserted" ] || { printf 'sa_bd: 「## 인가」 절이 없다 (%s)\n' "$m" >&2; exit 1; }
+  mv "$m.bd" "$m"
+}
+
+sa_manifest() {
+  # sa_manifest <상한|""> [<룰설정 줄>...] — 이 픽스처의 매니페스트를 처음부터
+  # 다시 쓴다. 상한을 바꾸는 것은 대상 행을 바꾸는 것이고, 그러면 대상 맵
+  # 다이제스트와 구속 다이제스트가 함께 움직이므로 부분 편집이 아니라 재작성이
+  # 유일하게 맞는 형태다.
+  local ceil="$1"; shift
+  local row td plan pd extra
+  cat > "$SA_GRANT" <<SAGEOF
+# 파이프라인 인가 기록 — $SA_ID
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 $SA_ID
+**인가 일시**: 2026-08-30T00:00:00Z
+**종료 지점**: 픽스처
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**직렬 웨이브 고지**: 해당 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 픽스처 인가
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $SA_LEDGER
+SAGEOF
+  row="- \`target\` | 별칭=main | 메인 워크트리=$SA_WT | 공통 git 디렉터리=$SA_CG | 베이스 브랜치=$SA_BASE | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=배포 | 말단 행위 상한=없음"
+  [ -n "$ceil" ] && row="$row | 리뷰 정책 상한=$ceil"
+  td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  plan='{ "steps": [] }'
+  pd=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
+  {
+    printf '# 파이프라인 런 매니페스트 — %s\n' "$SA_ID"
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$SA_ID"
+    printf '     anchor-kind=repo; anchor-key=t/%s;\n' "$SA_ID"
+    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$SA_WT"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n'
+    printf '**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$SA_ID"
+    printf '**앵커 종류**: repo\n**앵커 키**: t/%s\n**사용자 확인 문면**: 테스트 픽스처\n\n' "$SA_ID"
+    printf '## 의도\n```text\n테스트\n```\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td" "$row"
+    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: %s\n\n' "${SA_APPLY:-(해당 없음)}"
+    printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$pd" "$plan"
+    printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+    printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+    printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+    if [ $# -gt 0 ]; then
+      printf '\n## 룰 설정\n'
+      for extra in "$@"; do printf '%s\n' "$extra"; done
+    fi
+  } > "$SA_MANIFEST"
+  sa_bd "$SA_MANIFEST" "$SA_WT"
+}
+
+sa_new() {
+  # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
+  # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
+  # `${2-…}` and NOT `${2:-…}`: an explicitly empty second argument is how a
+  # caller asks for a manifest that declares NO ceiling, and the colon form
+  # answers that request with the default instead. The one caller that asks for
+  # it is the「아무것도 움직이지 않았다」 block, whose whole claim is that a
+  # manifest without the new field keeps both digests byte-identical — under the
+  # colon form it compared a manifest carrying the field against one without.
+  local label="$1" ceil="${2-선머지후리뷰}"; shift 2 || shift $#
+  SA_N=$((SA_N + 1))
+  SA_ID="RA$SA_N"
+  SA_BASE=main
+  SA_ROOT="$WORK/sa-$SA_N"
+  SA_REPO="$SA_ROOT/repo"
+  SA_REMOTE="$SA_ROOT/remote.git"
+  SA_SEGWT="$SA_ROOT/seg"
+  SA_SEGBR="seg-$SA_ID"
+  SA_APPLY="(해당 없음)"
+  mkdir -p "$SA_REPO"
+  ( cd "$SA_REPO" \
+    && git init -q . \
+    && git config user.email t@example.invalid \
+    && git config user.name  T \
+    && mkdir -p docs/pipeline-run docs/pipeline-grant \
+    && echo one > a.txt && git add -A && git commit -qm one \
+    && git branch -M main ) >/dev/null 2>&1
+  ( git init -q --bare "$SA_REMOTE" \
+    && cd "$SA_REPO" && git remote add origin "$SA_REMOTE" \
+    && git push -q origin main ) >/dev/null 2>&1
+  # 베이스에서 끊는다. 공용 워크트리를 빌려 오면 그 팁이 베이스와 공통 조상이
+  # 없어 착지가 애초에 가능하지 않은 상태에서 시작한다.
+  ( cd "$SA_REPO" && git worktree add -q -b "$SA_SEGBR" "$SA_SEGWT" main ) >/dev/null 2>&1
+  SA_WT=$(cd "$SA_REPO" && git rev-parse --show-toplevel)
+  SA_CG=$(cd "$SA_REPO" && git rev-parse --path-format=absolute --git-common-dir)
+  SA_MANIFEST="$SA_WT/plan.md"
+  SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
+  SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
+  SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+  sa_manifest "$ceil" "$@"
+  SA_LABEL="$label"
+}
+
+sa_commit() {
+  # sa_commit <메시지> — 세그먼트 워크트리에 커밋 하나. 팁 sha 를 찍는다.
+  ( cd "$SA_SEGWT" && printf '%s\n' "$1" >> work.txt && git add -A \
+    && git commit -qm "$1" && git rev-parse HEAD ) 2>/dev/null
+}
+
+sag() {
+  local out
+  out=$(cd "$SA_WT" && bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  # RAW, log lines and all. A passing disposition says why only in the log, so an
+  # assertion about the 미착지 sentence has nowhere else to look.
+  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+SAH() { cd "$SA_WT" && bash "$GATE" snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r .H; }
+
+sa_seg_row() {
+  # sa_seg_row <id> <정책|""> [워크트리] — segment 행 하나.
+  local sid="$1" pol="$2" wt="${3:-$SA_SEGWT}"
+  if [ -n "$pol" ]; then
+    sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+        --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+        -- 상태=실행중 워크트리="$wt" 선행=없음 "리뷰 정책=$pol"
+  else
+    sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+        --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+        -- 상태=실행중 워크트리="$wt" 선행=없음
+  fi
+}
+
+sa_merge() {
+  # sa_merge <세그먼트> [refspec] — 머지 등급 행위. argv 는 `gh pr merge` 가
+  # 아니라 `git push` 다: 픽스처의 유일한 원격은 로컬 베어 경로라 `gh` 는
+  # GitHub 호스트를 찾지 못해 항상 rc=1 로 끝나고, 게이트가 통과시켜도 행위가
+  # 실패하므로 `exit 0` 을 기대하는 항목이 게이트를 아무리 고쳐도 도달 불가가
+  # 된다. `git push` 는 사전 인가에 이미 있고 축2 등급이 같다.
+  local sid="$1" spec="${2:-$SA_SEGBR:$SA_BASE}"
+  sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
+      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+      -- git push origin "$spec"
+}
+
+sa_ob_rows()  { { grep -F '`리뷰 의무`' "$SA_LEDGER" 2>/dev/null || true; }; }
+sa_ob_count() { sa_ob_rows | grep -c . || true; }
+sa_ob_id() {
+  # sa_ob_id <세그먼트> — 그 세그먼트의 마지막 의무 id.
+  sa_ob_rows | grep -F "세그먼트=$1 " | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1
+}
+sa_ob_last() { sa_ob_rows | grep -F "의무 id=$1 " | tail -1; }
+sa_field()   { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+sa_rows()    { grep -c '^- `' "$SA_LEDGER" 2>/dev/null || true; }
+
+sa_base() {
+  # 기준값. 재기 전에 원장을 열어 둔다 — 게이트는 첫 진입에서 `run` 행 하나로
+  # 원장을 열고 그것은 거절과 무관한 정상 동작이므로, 원장이 아직 없는 상태에서
+  # 찍은 기준값은 그 행을 거절의 부작용으로 잘못 센다. 빈 문자열 기준값은 그
+  # 오산을 숨기기까지 한다: 없는 파일에 대한 `grep -c` 는 아무것도 찍지 않아
+  # 「늘지 않았다」가 「'' 과 '2' 를 비교했다」로 실패한다.
+  #
+  # `snapshot` 은 이미 열린 원장에 아무것도 덧붙이지 않으므로 이 여는 행위 자체는
+  # 기준값을 움직이지 않는다. 서브셸에서 도는 덕에 `rc`·`msg` 도 새지 않는다.
+  sag snapshot --manifest "$SA_MANIFEST" >/dev/null 2>&1 || true
+  sa_rows
+}
+
+sa_fulfil() {
+  # sa_fulfil <의무 id> [--target 별칭] [추가 필드...]
+  local oid="$1"; shift
+  local tgt=main
+  if [ "${1:-}" = "--as" ]; then tgt="$2"; shift 2; fi
+  sag act --manifest "$SA_MANIFEST" --kind obligation --target "$tgt" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale x \
+      -- "의무 id=$oid" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다" "$@"
+}
+
+sa_names_rule() { case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 0 ;; esac; return 1; }
+
+# --- 1. 음성 대조군 — 첫 머지가 아니라 두 번째 머지로 잰다 -------------------
+#
+# 첫 머지로는 두 경로가 구별되지 않는다: `선머지후리뷰` 의 첫 머지는 룰이 켜져
+# 있으면 정책에 의해 통과하고 꺼져 있으면 검사가 없어 통과하며, 발행은 룰 루프
+# 바깥이라 두 경우 모두 의무 행이 생긴다. 관측값이 같으므로 아무것도 증명하지
+# 않는다. 구별하는 시나리오는 의무가 `미이행` 인 상태의 두 번째 머지다.
+#
+# 이 픽스처와 4b-i 의 것이 이 블록에서 `끔` 을 싣는 유일한 매니페스트이며, 그것은
+# 이 절의 수리 대상이 아니라 선언된 예외다 — 룰이 켜진 창에서는 두 항목이 재려는
+# 것이 아예 도달 불가이기 때문이다.
+sa_new '음성 대조군' 선머지후리뷰
+SA_OFF_ROOT="$SA_ROOT"
+sa_seg_row S1 선머지후리뷰
+check "1: 룰 켬 — 정책을 실은 세그먼트 행이 통과한다" "$rc" "0"
+sa_merge S1
+check "1: 룰 켬 — 첫 머지가 통과한다" "$rc" "0"
+n1=$(sa_ob_count)
+sa_merge S1
+check "1: 룰 켬 — 미이행 의무 위의 두 번째 머지는 거절이다" "$rc" "3"
+if sa_names_rule; then ok "1: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "1 거절 이름" "$msg"; fi
+check "1: 거절이므로 의무 행이 늘지 않는다" "$(sa_ob_count)" "$n1"
+
+sa_new '음성 대조군 (끔)' 선머지후리뷰 '**리뷰-후-머지**: 끔'
+sa_seg_row S1 선머지후리뷰
+sa_merge S1
+check "1: 룰 끔 — 첫 머지가 통과한다" "$rc" "0"
+n1=$(sa_ob_count)
+sa_merge S1
+check "1: 룰 끔 — 같은 두 번째 머지가 통과한다 (스위치가 진짜 두 검사를 끈다)" "$rc" "0"
+# --- 4b-i. 열린 의무 위에 중복 발행하지 않는다 — 룰이 꺼진 창에서만 관측된다 ---
+#
+# 상태 가드가 옛 존재 가드의 멱등성을 유지하는지는 따로 재야 하는데, 룰이 켜진
+# 창에서는 두 번째 머지가 발행 지점 앞에서 거절되므로 거기서 「행이 늘지 않는다」를
+# 재면 멱등성이 아니라 룰의 거절을 재는 것이 된다. 멱등성이 실제로 걸리는 유일한
+# 경로가 이 `끔` 창이다.
+check "4b-i: 통과했는데도 열린 의무 위에 중복 발행하지 않는다" "$(sa_ob_count)" "$n1"
+
+# --- 2. #569 의 핵심 — 룰이 켜진 채 cycle 행 0 건으로 머지가 통과한다 --------
+sa_new '#569 핵심' 선머지후리뷰
+sa_seg_row S2 선머지후리뷰
+nb=$(sa_ob_count); ncyc=$( { grep -cF '`cycle`' "$SA_LEDGER" || true; } )
+sa_merge S2
+check "2: 룰이 켜진 채 cycle 행 0 건의 선머지후리뷰 머지가 통과한다 (오늘은 exit 3)" "$rc" "0"
+check "2: 리뷰 의무 행이 정확히 하나 는다" "$(sa_ob_count)" "$((nb + 1))"
+orow=$(sa_ob_rows | tail -1)
+check "2: 상태=미이행" "$(sa_field "$orow" '상태')" "미이행"
+check "2: 세그먼트를 싣는다" "$(sa_field "$orow" '세그먼트')" "S2"
+check "2: 생성 등급이 이 행위의 축2 다" "$(sa_field "$orow" '생성 등급')" "외부상태변경"
+check "2: 부수 효과로 cycle 행이 생기지 않는다" "$( { grep -cF '`cycle`' "$SA_LEDGER" || true; } )" "$ncyc"
+
+# --- 4c. 의무 행이 머지된 커밋을 지목한다 ------------------------------------
+SA2_ANCHOR=$(sa_field "$orow" '머지 커밋')
+if [ "$SA2_ANCHOR" = "-" ] || [ -z "$SA2_ANCHOR" ]; then
+  bad "4c 머지 커밋" "의무 행이 머지될 커밋을 지목하지 않는다: '${SA2_ANCHOR:--}'"
+else
+  ok "4c: 의무 행의 머지 커밋이 `-` 가 아니다 ($SA2_ANCHOR)"
+fi
+check "4c: 그 값이 세그먼트 워크트리의 머지 직전 HEAD 다" \
+  "$SA2_ANCHOR" "$( cd "$SA_SEGWT" && git rev-parse HEAD )"
+check "4c: 대상 별칭을 함께 싣는다" "$(sa_field "$orow" '대상')" "main"
+
+# --- 3. 같은 세그먼트의 두 번째 머지, 의무가 미이행인 채 → 거절 --------------
+nb=$(sa_ob_count)
+sa_merge S2
+check "3: 미이행 의무가 있는 세그먼트의 두 번째 머지는 거절이다" "$rc" "3"
+if sa_names_rule; then ok "3: 거절 문면이 리뷰-후-머지 를 지명한다"; else bad "3 거절 이름" "$msg"; fi
+check "3: 거절이므로 의무 행이 늘지 않는다" "$(sa_ob_count)" "$nb"
+
+# --- 4. 의무를 닫은 뒤의 같은 머지 — 미착지 갈래이고, 통과가 재발행을 부른다 --
+#
+# 이 픽스처가 미착지인 이유는 원격의 부재가 아니다. 원격은 실재하는 베어
+# 저장소이고 `git fetch origin` 은 rc=0 으로 성공한다 — 머지 행위가 세그먼트
+# 브랜치를 베이스가 아닌 이름으로 밀었을 뿐이라 앵커가 베이스의 조상이 아니다.
+# 그래서 판정은 `판정 불가` 가 아니라 진짜 `미착지` 이고, 이행은 미착지 갈래로
+# `근거` 만에 닫힌다. 「실제 원격이 없다」로 만든 픽스처는 fetch 실패로
+# `판정 불가` 를 내어 이 항목의 기대 결과를 뒤집는다.
+sa_new '미착지 이행' 선머지후리뷰
+sa_seg_row S4 선머지후리뷰
+sa_commit '세그먼트 작업' >/dev/null
+sa_merge S4 "$SA_SEGBR:refs/heads/parked"
+check "4: 베이스가 아닌 이름으로 민 머지도 통과하고 의무를 남긴다" "$rc" "0"
+OID4=$(sa_ob_id S4)
+# 계약 3 — 통과가 어느 갈래에서 나왔는지 세계에서 다시 유도한다.
+( cd "$SA_WT" && git fetch -q --no-tags origin "+refs/heads/$SA_BASE:refs/remotes/origin/$SA_BASE" ) >/dev/null 2>&1
+fetch_rc=$?
+check "4: 이행 직전의 fetch 가 성공한다 (판정 불가 갈래가 아니다)" "$fetch_rc" "0"
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$(sa_field "$(sa_ob_last "$OID4")" '머지 커밋')" "refs/remotes/origin/$SA_BASE" >/dev/null 2>&1 ); then
+  bad "4 갈래" "머지 커밋이 베이스의 조상이다 — 이 항목은 미착지 갈래를 재야 한다"
+else
+  ok "4: 머지 커밋이 베이스의 조상이 아니다 — 미착지 갈래가 맞다"
+fi
+sa_fulfil "$OID4"
+check "4: 미착지 의무는 cycle 행 없이 근거만으로 닫힌다" "$rc" "0"
+check "4: 이행 판정이 미착지다" "$(sa_field "$(sa_ob_last "$OID4")" '이행 판정')" "미착지"
+nb=$(sa_ob_count)
+sa_merge S4 "$SA_SEGBR:refs/heads/parked"
+check "4: 의무를 닫은 뒤 같은 세그먼트의 머지가 통과한다" "$rc" "0"
+# exit 코드만 단언하면 이 항목은 수리 전의 게이트에서도 초록이다 — 옛 존재
+# 가드에서도 이 머지는 통과하고 다만 아무것도 발행하지 않는다. 재발행 단언이
+# 하중을 전부 진다.
+check "4: 그 머지가 의무를 다시 발행한다" "$(sa_ob_count)" "$((nb + 1))"
+check "4: 재발행된 행이 미이행이다" "$(sa_field "$(sa_ob_rows | tail -1)" '상태')" "미이행"
+
+# --- 4b. 재발행된 의무가 그다음 머지를 막는다 --------------------------------
+nb=$(sa_ob_count)
+sa_merge S4 "$SA_SEGBR:refs/heads/parked"
+check "4b: 재발행된 의무가 그다음 머지를 막는다" "$rc" "3"
+if sa_names_rule; then ok "4b: 그 거절이 리뷰-후-머지 를 지명한다 (구현-리뷰-분리 의 3 과 구별된다)"; else bad "4b 거절 이름" "$msg"; fi
+check "4b: 거절이므로 의무 행이 늘지 않는다" "$(sa_ob_count)" "$nb"
+
+# --- 4a·4d(i). 착지한 머지는 같은 자리에서 갈래가 다르다 ---------------------
+#
+# 항목 4 와 4a 가 같은 원장 상태에서 반대 결과를 내는 것이 정상이며, 가르는 것은
+# 착지 여부 하나다. 4 만 두고 착지하는 픽스처로 옮기면 그 항목이 조용히 빨강이
+# 되고 어느 쪽이 틀렸는지 구별할 방법이 없다.
+sa_new '착지한 머지' 선머지후리뷰
+sa_seg_row S4A 선머지후리뷰
+sa_commit '세그먼트 작업' >/dev/null
+sa_merge S4A
+check "4a: 베이스로 민 머지가 통과한다" "$rc" "0"
+OID4A=$(sa_ob_id S4A)
+M4A=$(sa_field "$(sa_ob_last "$OID4A")" '머지 커밋')
+( cd "$SA_WT" && git fetch -q --no-tags origin "+refs/heads/$SA_BASE:refs/remotes/origin/$SA_BASE" ) >/dev/null 2>&1
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$M4A" "refs/remotes/origin/$SA_BASE" >/dev/null 2>&1 ); then
+  ok "4a: 머지 커밋이 원격 베이스의 조상이다 — 착지 갈래가 맞다"
+else
+  bad "4a 갈래" "착지를 기대했는데 조상이 아니다"
+fi
+nb=$(sa_rows)
+sa_fulfil "$OID4A"
+check "4d(i): 착지했는데 cycle 행이 없는 이행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"덮는 리뷰가 없습니다"*) ok "4d(i): 문면이 덮는 리뷰의 부재를 지목한다" ;;
+  *) bad "4d(i) 문면" "$msg" ;;
+esac
+check "4d(i): 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+
+# --- 4d(ii). 머지 전에 찍힌 리뷰는 덮지 못한다 -------------------------------
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4A --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse 'HEAD~1' )"
+check "4d(ii): 조상 리뷰 HEAD 를 실은 cycle 행이 기록된다" "$rc" "0"
+sa_fulfil "$OID4A"
+check "4d(ii): 리뷰 HEAD 가 머지 커밋의 조상이면 거절된다" "$rc" "2"
+
+# --- 4e. 덮는 리뷰는 닫는다 — 세 형태 전부 ------------------------------------
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4A --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$M4A"
+sa_fulfil "$OID4A"
+check "4e(i): 리뷰 HEAD 가 머지 커밋과 같으면 닫힌다" "$rc" "0"
+check "4e(i): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID4A")" '이행 판정')" "착지·포함"
+
+sa_new '덮는 리뷰 — 후손' 선머지후리뷰
+sa_seg_row S4E 선머지후리뷰
+sa_commit '작업 1' >/dev/null
+sa_merge S4E
+OID=$(sa_ob_id S4E); M=$(sa_field "$(sa_ob_last "$OID")" '머지 커밋')
+DESC=$(sa_commit '작업 2')
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4E --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$DESC"
+sa_fulfil "$OID"
+check "4e(ii): 리뷰 HEAD 가 머지 커밋의 후손이면 닫힌다" "$rc" "0"
+check "4e(ii): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID")" '이행 판정')" "착지·포함"
+
+sa_new '덮는 리뷰 — 같은 트리' 선머지후리뷰
+sa_seg_row S4T 선머지후리뷰
+sa_commit '작업 1' >/dev/null
+sa_merge S4T
+OID=$(sa_ob_id S4T); M=$(sa_field "$(sa_ob_last "$OID")" '머지 커밋')
+# amend 는 sha 를 바꾸고 트리를 그대로 둔다 — 리베이스가 만드는 것과 같은 형태다.
+AMEND=$( cd "$SA_SEGWT" && git commit -q --amend -m 'amended' && git rev-parse HEAD )
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4T --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$AMEND"
+sa_fulfil "$OID"
+check "4e(iii): sha 는 달라도 트리가 같으면 닫힌다 (amend·리베이스)" "$rc" "0"
+check "4e(iii): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID")" '이행 판정')" "착지·포함"
+
+# --- 4f. 착지하지 않은 머지의 거짓 의무는 리뷰 없이 닫힌다 --------------------
+#
+# 착지 검사를 포함 검사보다 뒤에 둔 구현은 여기서 항목 5 의 재시도 경로를 함께
+# 깨뜨린다. 이 섹션은 착지를 요구하지 않으므로 자기 저장소가 필요 없지만, 공용
+# 픽스처의 상태에 기대지 않으려고 같은 형태를 쓴다.
+sa_new '실패한 머지의 거짓 의무' 선머지후리뷰
+sa_seg_row S4F 선머지후리뷰
+sa_commit '작업' >/dev/null
+# 존재하지 않는 원격으로의 푸시 — 행위는 rc≠0 으로 실패하고 M 은 베이스에 들어가지
+# 않는다. 게이트의 검사는 행위보다 앞이므로 의무는 남는다. 없는 브랜치의 삭제 푸시로
+# 쓰지 않는다 — 그 형태는 git 이 실패로 답한다는 보장이 없어 이 항목의 전제가
+# git 판본에 매달리게 된다. 없는 원격은 어느 판본에서도 확실히 실패한다.
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S4F \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push "$SA_ROOT/없는원격.git" "$SA_SEGBR:$SA_BASE"
+if [ "$rc" = "0" ]; then
+  bad "4f 전제" "머지 행위가 실패해야 하는데 통과했다"
+else
+  ok "4f: 머지 행위가 rc≠0 으로 실패한다 (rc=$rc)"
+fi
+OID4F=$(sa_ob_id S4F)
+if [ -n "$OID4F" ]; then ok "4f: 실패한 머지도 의무를 남긴다 (거짓 의무)"; else bad "4f 거짓 의무" "$(sa_ob_rows | tail -1)"; fi
+M4F=$(sa_field "$(sa_ob_last "$OID4F")" '머지 커밋')
+if [ "$M4F" = "-" ] || [ -z "$M4F" ]; then
+  bad "4f 앵커" "거짓 의무의 머지 커밋이 sha 가 아니다"
+else
+  ok "4f: 거짓 의무의 머지 커밋도 `-` 가 아닌 sha 다"
+fi
+# --- 5. 재시도 — 거짓 의무가 같은 머지의 재시도를 막는다 ---------------------
+sa_merge S4F
+check "5: 거짓 의무가 남은 채로 같은 머지를 다시 시도하면 거절된다" "$rc" "3"
+if sa_names_rule; then ok "5: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "5 거절 이름" "$msg"; fi
+case "$msg" in
+  *"$OID4F"*) ok "5: 문면이 닫아야 할 의무 id 를 지목한다 (의도된 과다 거절이고, 그 사실이 여기 단언된다)" ;;
+  *) bad "5 문면" "$msg" ;;
+esac
+sa_fulfil "$OID4F"
+check "4f: cycle 행 없이 근거만으로 이행이 통과한다" "$rc" "0"
+check "4f: 이행 판정이 미착지다" "$(sa_field "$(sa_ob_last "$OID4F")" '이행 판정')" "미착지"
+
+# --- 4g. 판정 불가는 통과가 아니고, 문면이 「덮지 않는다」와 다르다 -----------
+#
+# 해소되지 않는 sha 를 앵커로 가진 의무는 만들 수 없다 — 발행이 세그먼트
+# 워크트리의 실제 HEAD 를 읽기 때문이다. 그래서 이 갈래는 앵커 저장소 쪽에서
+# 만든다: 세그먼트 워크트리에서만 존재하는 커밋을 앵커로 둔 뒤 그 워크트리를
+# 지우면, 대상의 앵커 저장소에서 그 sha 가 해소되지 않아 조상 검사가 128 로
+# 답하지 못한다. 조상 검사의 종료 상태를 두 갈래로 접은 구현은 여기서 거절은
+# 맞히고 문면을 틀린다.
+#
+# `머지 커밋=-` 인 옛 행의 절반은 작성하지 않는다. 원장이 해시 체인이라 행을 손으로
+# 넣을 수 없고, 그 값을 쓰는 게이트는 이 변경 이전의 이진뿐인데 그것을 얻으려면
+# 이 레포 이력의 한 커밋을 스위트에 못 박아야 한다 — 그 참조는 안정적이지 않다.
+# §D19 의 소멸 조건(`머지 커밋=-` 인 행 0건)이 이 절반의 수명을 함께 끝낸다.
+sa_new '판정 불가' 선머지후리뷰
+sa_seg_row S4G 선머지후리뷰
+sa_commit '오직 세그먼트에만 있는 작업' >/dev/null
+sa_merge S4G "$SA_SEGBR:refs/heads/parked"
+OID4G=$(sa_ob_id S4G)
+# 앵커 저장소에서 그 객체를 해소할 수 없게 만든다. 워크트리와 로컬 브랜치를 지우는
+# 것만으로는 부족하다 — 위 머지가 `refs/heads/parked` 로 밀었고 성공한 push 는 그에
+# 대응하는 원격 추적 ref 를 함께 세우므로, 원격의 그 브랜치와 로컬 추적 ref 를 같이
+# 걷어내지 않으면 그 커밋이 여전히 도달 가능해 gc 가 남긴다. 그러면 조상 검사가
+# 128 이 아니라 1 로 답해 이 항목은 「판정 불가」가 아니라 「미착지」를 재게 되고,
+# 미착지는 근거만으로 닫히므로 거절을 기대한 단언이 통과를 본다.
+(
+  cd "$SA_REPO" || exit 0
+  git worktree remove --force "$SA_SEGWT" || true
+  git branch -D "$SA_SEGBR" || true
+  git push -q origin ":refs/heads/parked" || true
+  git update-ref -d refs/remotes/origin/parked || true
+  git reflog expire --expire=now --all || true
+  git gc --prune=now -q || true
+) >/dev/null 2>&1
+nb=$(sa_rows)
+sa_fulfil "$OID4G"
+check "4g: 해소되지 않는 앵커의 이행은 거절된다 (판정 불가는 통과가 아니다)" "$rc" "2"
+case "$msg" in
+  *"판정하지 못했습니다"*) ok "4g: 문면이 판정 불가임을 말한다" ;;
+  *) bad "4g 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"덮는 리뷰가 없습니다"*) bad "4g 문면 구별" "4d 의 문면과 같다 — 두 갈래가 접혔다" ;;
+  *) ok "4g: 그 문면이 4d 의 「덮는 리뷰가 없습니다」와 구별된다" ;;
+esac
+case "$msg" in
+  *조상*|*fetch*|*ref*) ok "4g: 문면이 어디가 답하지 못했는지를 지목한다 (fetch·ref·조상)" ;;
+  *) bad "4g 지목" "$msg" ;;
+esac
+check "4g: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+
+# --- 6. 세그먼트 id 접두 충돌 -------------------------------------------------
+#
+# `S1` 과 `S10` 이 같은 원장 안에 서로 반대 결과의 행을 갖고 각각 독립적으로
+# 판정된다. 필드 종결자(후행 공백) 규율을 쓰지 않은 구현은 여기서 깨진다.
+sa_new '접두 충돌' 선머지후리뷰
+sa_seg_row S1  선머지후리뷰
+sa_seg_row S10 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge S1
+check "6: S1 의 첫 머지가 통과한다" "$rc" "0"
+n_s1=$(sa_ob_rows | grep -cF '세그먼트=S1 ' || true)
+n_s10=$(sa_ob_rows | grep -cF '세그먼트=S10 ' || true)
+check "6: S1 의 의무가 하나다" "$n_s1" "1"
+check "6: S10 은 아직 의무가 없다 (접두가 겹쳐도 섞이지 않는다)" "$n_s10" "0"
+sa_merge S10
+check "6: S10 의 머지는 S1 의 열린 의무에 막히지 않는다" "$rc" "0"
+check "6: S10 의 의무가 하나 생긴다" "$(sa_ob_rows | grep -cF '세그먼트=S10 ' || true)" "1"
+sa_merge S1
+check "6: S1 의 두 번째 머지는 여전히 거절이다" "$rc" "3"
+
+# --- 7. 상속된 리뷰 정책이 뒤따르는 세그먼트 행에서도 살아남는다 -------------
+#
+# 단언은 판정 결과만이 아니라 두 번째 행이 원장에 `리뷰 정책` 을 싣고 있는지도
+# 함께 본다 — 요구되는 것은 읽기 시점의 폴백이 아니라 쓰기 시점의 옮겨 적기이므로,
+# 원장에 값이 없으면 그 결정은 구현되지 않은 것이다. 「필드 하나짜리 행」으로는
+# 이 항목을 만들 수 없다: 살아 있는 writer 는 `워크트리` 를 무조건 요구한다.
+sa_new '정책 상속' 선머지후리뷰
+sa_seg_row S7 선머지후리뷰
+check "7: 정책을 실은 첫 행이 기록된다" "$rc" "0"
+sa_seg_row S7 ""
+check "7: 정책을 싣지 않은 두 번째 행도 기록된다 (워크트리·선행은 여전히 싣는다)" "$rc" "0"
+srow=$( { grep -F '`segment`' "$SA_LEDGER" || true; } | grep -F 'id=S7 ' | tail -1)
+check "7: 두 번째 행이 원장에 정책을 옮겨 적고 있다 (읽기 폴백이 아니다)" \
+  "$(sa_field "$srow" '리뷰 정책')" "선머지후리뷰"
+sa_commit '작업' >/dev/null
+sa_merge S7
+check "7: 그 뒤의 머지가 여전히 선머지후리뷰 로 판정된다" "$rc" "0"
+check "7: 그 판정이 의무를 남긴다" "$(sa_ob_rows | grep -cF '세그먼트=S7 ' || true)" "1"
+
+# --- 8. 상한 초과는 거절이지 클램프가 아니다 ---------------------------------
+sa_new '상한 초과' 선리뷰후머지
+nb=$(sa_base)
+sa_seg_row S8 선머지후리뷰
+check "8: 상한을 넘는 정책을 실은 segment 행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"상한"*) ok "8: 문면이 상한 위반을 지목한다" ;;
+  *) bad "8 문면" "$msg" ;;
+esac
+check "8: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+if { grep -F '`segment`' "$SA_LEDGER" 2>/dev/null || true; } | grep_all_q '리뷰 정책='; then
+  bad "8 클램프" "거절해야 할 값이 조여진 채로 원장에 남았다"
+else
+  ok "8: 조여진 값이 원장에 남지 않는다 (거절이지 클램프가 아니다)"
+fi
+
+# --- 9. 선리뷰후머지 는 오늘과 동일 -------------------------------------------
+sa_seg_row S9A 선리뷰후머지
+check "9: 엄격 정책을 실은 행은 상한 안이라 통과한다" "$rc" "0"
+sa_commit '작업' >/dev/null
+sa_merge S9A
+check "9: 리뷰 기록이 없는 머지는 exit 3 이다" "$rc" "3"
+case "$msg" in
+  *"리뷰 기록이 없습니다"*) ok "9: 오늘과 같은 메시지 계열이다" ;;
+  *) bad "9 문면" "$msg" ;;
+esac
+sa_seg_row S9B ""
+sa_merge S9B
+check "9: 정책 필드가 아예 없을 때도 같다 (부재는 선리뷰후머지)" "$rc" "3"
+
+# --- 10. 매니페스트 검사의 네 단언 --------------------------------------------
+#
+# 넷 다 매 게이트 진입에서 평가된다. (d) 의 발화 횟수는 여기서 재지 않는다 —
+# 그것은 구현 시 검증 항목의 몫이다.
+sa_new '매니페스트 검사' 선머지후리뷰
+sa_manifest '없는정책토큰'
+sag snapshot --manifest "$SA_MANIFEST"
+if [ "$rc" = "0" ]; then bad "10(a)" "어휘 밖 상한 토큰이 통과했다"; else ok "10(a): 어휘 밖 상한 토큰은 하드 스톱이다 (rc=$rc)"; fi
+case "$msg" in
+  *"리뷰 정책 상한"*) ok "10(a): 문면이 그 필드를 지목한다" ;;
+  *) bad "10(a) 문면" "$msg" ;;
+esac
+
+sa_manifest ''
+sag snapshot --manifest "$SA_MANIFEST"
+check "10: 상한을 아예 싣지 않은 매니페스트는 통과한다 (부재는 위반이 아니다)" "$rc" "0"
+
+# (b) 절단점이 머지 미만인 대상이 상한을 선언 → 경고, 런은 계속.
+sa_manifest 선머지후리뷰
+sed 's/절단점=배포/절단점=커밋/' "$SA_MANIFEST" > "$SA_MANIFEST.b" && mv "$SA_MANIFEST.b" "$SA_MANIFEST"
+# 대상 행을 고쳤으므로 두 다이제스트를 함께 다시 세운다.
+newrow=$( { grep -E '^- `target`' "$SA_MANIFEST" || true; } | tail -1)
+newtd=$(printf '%s\n' "$newrow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+sed "s/^\*\*대상 맵 다이제스트\*\*: .*/**대상 맵 다이제스트**: $newtd/" "$SA_MANIFEST" > "$SA_MANIFEST.b" \
+  && mv "$SA_MANIFEST.b" "$SA_MANIFEST"
+sa_bd "$SA_MANIFEST" "$SA_WT"
+rm -rf "$SA_RUN"
+sag snapshot --manifest "$SA_MANIFEST"
+check "10(b): 절단점이 머지 미만인 대상의 상한 선언은 런을 멈추지 않는다" "$rc" "0"
+case "$msg" in
+  *"불활성"*) ok "10(b): 그래도 경고로 로그에 남는다 (「검사 안 함」과 「검사했고 불활성」이 구별된다)" ;;
+  *) bad "10(b) 경고" "$msg" ;;
+esac
+
+# (c) 적용 주체=파이프라인 + 상한 리뷰없음 → 하드 스톱.
+sa_new '적용 주체 조합' 리뷰없음
+SA_APPLY=파이프라인
+sa_manifest 리뷰없음
+sag snapshot --manifest "$SA_MANIFEST"
+if [ "$rc" = "0" ]; then
+  bad "10(c)" "적용 주체가 파이프라인인데 상한 리뷰없음 인 매니페스트가 통과했다"
+else
+  ok "10(c): 그 조합은 하드 스톱이다 (rc=$rc)"
+fi
+case "$msg" in
+  *"적용"*) ok "10(c): 문면이 적용과의 충돌을 말한다" ;;
+  *) bad "10(c) 문면" "$msg" ;;
+esac
+
+# (d) 끌 수 없는 룰의 이름이 `## 룰 설정` 의 키로 있음 → 경고, 런은 계속.
+sa_new '끌 수 없는 룰 키' 선머지후리뷰 '**절단점-준수**: 끔'
+sag snapshot --manifest "$SA_MANIFEST"
+check "10(d): 끌 수 없는 룰의 키가 있어도 런은 계속된다" "$rc" "0"
+case "$msg" in
+  *"끌 수 없"*) ok "10(d): 그래도 경고로 남는다 (불활성이면서 해시되는 조합이다)" ;;
+  *) bad "10(d) 경고" "$msg" ;;
+esac
+
+# --- 11. 해소기의 상한 거절이 행 기록 시점의 것과 같은 코드로 실패한다 -------
+#
+# 세그먼트 행이 상한을 넘는 값을 실은 채 머지를 부르면 룰 루프 이전의 해소기가
+# 거절한다. 두 강제 지점이 다른 코드를 내면 라우터가 같은 위반을 두 가지로
+# 라우팅한다. 그런 행을 만들려면 상한이 허용하던 창에서 쓰고 상한을 나중에
+# 조여야 한다 — 그것이 아래 순서다.
+sa_new '해소기 상한' 리뷰없음
+sa_seg_row S11 리뷰없음
+check "11: 상한이 허용하는 창에서는 그 행이 통과한다" "$rc" "0"
+sa_manifest 선리뷰후머지
+rm -rf "$SA_RUN"
+sa_commit '작업' >/dev/null
+sa_merge S11
+check "11: 상한을 조인 뒤의 머지는 해소기가 거절한다" "$rc" "2"
+case "$msg" in
+  *"상한"*) ok "11: 그 거절이 상한을 지목하고, 코드가 항목 8 의 것과 같다" ;;
+  *) bad "11 문면" "$msg" ;;
+esac
+
+# --- 12. 리뷰없음 의 새 가드 — 두 표면, 하중은 하나 --------------------------
+#
+# 앞쪽(게이트)이 수용 기준이다. 뒤쪽(`run.sh` 의 조기 진단)은 프로덕션에서
+# 실행되지 않으므로 초록이어도 아무것도 증명하지 않으며, 그 사실을 여기 적는다.
+sa_new '리뷰없음 가드' 선머지후리뷰
+nb=$(sa_base)
+sa_seg_row S12 리뷰없음
+check "12(게이트, 수용 기준): 상한보다 느슨한 리뷰없음 은 행 기록에서 거절된다" "$rc" "2"
+check "12: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+
+sa_doc="$SA_ROOT/slice.md"
+# 앞 대시 없이 쓴다. `slice_field` 의 패턴이 `^**키**: ` 로 앵커되어 있어 대시가
+# 붙으면 필드가 하나도 읽히지 않고, 그러면 아래 거절은 상한이 아니라 「필수 필드
+# 없음」에서 나와 상한 가드를 지워도 이 단언이 초록으로 남는다.
+{
+  printf '## 구현 슬라이싱\n\n'
+  printf '### 슬라이스 SX\n'
+  printf '**스킬**: implement\n'
+  printf '**레포**: t/none\n'
+  printf '**선언 파일**: a.txt\n'
+  printf '**선행**: 없음\n'
+  printf '**절단점**: 머지\n'
+  printf '**리뷰 정책**: 리뷰없음\n'
+} > "$sa_doc"
+sa_slice_out=$( cd "$SA_WT" && bash -c '
+  CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+  MANIFEST="'"$SA_MANIFEST"'"
+  serr=$(slicing_fields_ok "'"$sa_doc"'" 2>&1 >/dev/null) && sc=0 || sc=$?
+  printf "%s\n%s" "$sc" "$serr"' )
+sa_slice_rc=$(printf '%s\n' "$sa_slice_out" | sed -n 1p)
+sa_slice_err=$(printf '%s\n' "$sa_slice_out" | sed -n '2,$p')
+check "12(run.sh, 조기 진단, 수용 기준 아님): 무관한 사전 인가 행만으로는 더 이상 통과하지 않는다" \
+  "$sa_slice_rc" "1"
+case "$sa_slice_err" in
+  *상한*) ok "12: 그 거절이 상한을 지목한다 (필드를 못 읽어 생긴 앞선 거절이 아니다)" ;;
+  *) bad "12 거절 이유" "$sa_slice_err" ;;
+esac
+
+# --- 13. 팁을 읽지 못하는 머지는 발행이 아니라 그 자리에서 거절된다 ----------
+#
+# 이 항목이 사는 성질은 **닫을 수 없는 의무가 원장에 서지 않는 것**이고, 세
+# 경우가 그것을 서로 다른 기전으로 산다.
+#
+# (i) 은 앵커 검사가 아니라 그 위층에서 산다. 정책이 사는 곳이 세그먼트 행이므로
+# **행이 없으면 정책은 엄격 기본값으로 떨어지고**, 앵커 검사는 의무를 발행할
+# 정책에서만 발동한다 — 발행하지 않을 머지에 대해 「무엇을 머지하는지 적을 수
+# 있는가」를 묻는 것은 답이 쓰일 자리가 없는 질문이다. 그래서 (i) 에서 세워지는
+# 것은 리뷰 룰이고 코드는 3 이다. 이 항목이 막으려던 것(닫을 수 없는 의무)은
+# 그래도 그대로 막힌다 — 오히려 더 위에서, 발행 지점에 닿기도 전에.
+#
+# 그 결과 (i) 의 문면은 룰의 것이라 「룰」이라는 낱말을 싣는다. 아래 음성 단언은
+# 그래서 (ii)·(iii) 두 앵커 문면에만 건다 — 그 둘이 카탈로그로 접혀 `끔` 의
+# 사정거리에 들어가는 것을 막는 것이 그 단언의 일이고, (i) 은 애초에 룰이다.
+sa_new '앵커 불가 셋' 선머지후리뷰
+# (i) 세그먼트 행이 아예 없다 — 정책이 해소될 곳이 없어 엄격으로 떨어진다.
+nb=$(sa_base)
+nob=$(sa_ob_count)
+sa_merge S13A
+check "13(i): 세그먼트 행이 없는 머지는 거절된다" "$rc" "3"
+m13a="$msg"
+case "$m13a" in
+  *"룰 거부: 리뷰-후-머지"*) ok "13(i): 세우는 것은 리뷰 룰이다 (행이 없으면 정책이 엄격으로 떨어진다)" ;;
+  *) bad "13(i) 문면" "$m13a" ;;
+esac
+check "13(i): 거절이 발행보다 상류라 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+check "13(i): 닫을 수 없는 의무가 서지 않는다" "$(sa_ob_count)" "$nob"
+
+# (ii) 행은 있으나 워크트리 디렉터리가 없다.
+sa_seg_row S13B 선머지후리뷰 "$SA_ROOT/없는디렉터리"
+check "13: 없는 디렉터리를 실은 행 자체는 기록된다" "$rc" "0"
+nb=$(sa_rows)
+sa_merge S13B
+check "13(ii): 워크트리 디렉터리가 없는 머지는 exit 10 이다" "$rc" "10"
+m13b="$msg"
+check "13(ii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+
+# (iii) 디렉터리는 있으나 그 안에서 HEAD 가 해소되지 않는다.
+mkdir -p "$SA_ROOT/git아님"
+sa_seg_row S13C 선머지후리뷰 "$SA_ROOT/git아님"
+nb=$(sa_rows)
+sa_merge S13C
+check "13(iii): HEAD 를 해소하지 못하는 머지는 exit 10 이다" "$rc" "10"
+m13c="$msg"
+check "13(iii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+
+if [ "$m13a" != "$m13b" ] && [ "$m13b" != "$m13c" ] && [ "$m13a" != "$m13c" ]; then
+  ok "13: 셋의 문면이 서로 구별된다"
+else
+  bad "13 문면 구별" "$m13a / $m13b / $m13c"
+fi
+# 음성 단언. 이 거절을 룰 카탈로그로 접어 넣으면 `끔` 의 사정거리 안으로 끌려온다.
+# 두 앵커 문면에만 건다 — (i) 은 위 주석대로 애초에 룰의 거절이다.
+if case "$m13b$m13c" in *룰*) false ;; *) true ;; esac; then
+  ok "13: 두 앵커 문면이 「룰」이라는 낱말을 쓰지 않는다"
+else
+  bad "13 낱말" "거절 문면이 룰을 자칭한다 — 카탈로그로 접히면 끔 이 이것까지 끈다"
+fi
+sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment S13B --cutpoint 머지 \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "13: plan 도 같은 코드를 낸다 (「통과 예상」이라 답하지 않는다)" "$rc" "10"
+
+# --- 13a. 9 는 종료 코드가 아니며, 양방향으로 고정한다 ------------------------
+#
+# 어느 코드가 있는지는 세지 않는다 — 8 과 10 은 두 슬라이스에 나뉘어 착지하므로
+# 존재를 단언하면 그 사이에서 무관한 이유로 빨강이 된다.
+if grep -E '^readonly GATE_EXIT_[A-Z]+=9$' "$GATE" >/dev/null; then
+  bad "13a" "9 가 종료 코드로 배정돼 있다 — 내부 신호와 계약 코드가 한 값이 된다"
+else
+  ok "13a: 9 는 어떤 GATE_EXIT_ 상수의 값도 아니다"
+fi
+if grep -qE '^readonly GATE_APPROVAL_ANSWERED=9$' "$GATE"; then
+  ok "13a: GATE_APPROVAL_ANSWERED 는 여전히 9 다"
+else
+  bad "13a" "내부 신호가 9 를 떠났다 — 종료 범위 안으로 옮겨졌을 수 있다"
+fi
+
+# --- 13b. `앵커 불가` 를 실은 행은 원장 어디에도 없다 -------------------------
+#
+# 항목 13 은 열거한 세 경우가 거절되는 것을 재고, 이 항목은 그 값이 아예 쓰이지
+# 않는다는 것을 잰다. 발행 시점 거절 대신 그 값을 적고 이행에서 거절하는 구현은
+# 항목 13 의 세 경우를 우회한 자리에서 살아남을 수 있다.
+sa_anchorless=0
+for sa_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
+  [ -f "$sa_l" ] || continue
+  sa_anchorless=$((sa_anchorless + $( { grep -F '`리뷰 의무`' "$sa_l" || true; } | grep -cF '앵커 불가' || true)))
+done
+check "13b: 앵커 불가 를 실은 리뷰 의무 행이 어디에도 없다" "$sa_anchorless" "0"
+
+# --- 14. writer 는 여전히 워크트리 를 요구한다 -------------------------------
+#
+# carry-forward 를 `리뷰 정책` 에만 거는 근거가 이 요구다. 요구가 완화되면 그
+# 결정이 근거를 잃는다. 오늘도 초록이고, 이 항목은 초록을 유지하기 위한 것이다.
+sa_new '워크트리 요구' 선머지후리뷰
+nb=$(sa_base)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S14 \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x -- 상태=실행중 선행=없음
+check "14: 워크트리 없는 segment 행은 exit 2 로 거절된다" "$rc" "2"
+check "14: 거절이므로 원장이 늘지 않는다" "$(sa_rows)" "$nb"
+sa_seg_row S14 선머지후리뷰
+check "14: 완전한 행을 먼저 쓴 뒤에도" "$rc" "0"
+nb=$(sa_rows)
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S14 \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x -- 상태=완료
+check "14: 같은 id 의 뒤 행에서도 워크트리 요구가 늦춰지지 않는다" "$rc" "2"
+check "14: 그 거절도 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# --- 15. 다른 대상을 지목한 이행은 의무를 닫지 못한다 ------------------------
+#
+# 이행 대상은 argv 가 아니라 의무 행의 `대상` 에서 유도된다. 두 대상이 같은
+# 워크트리를 공유하면 이 항목은 아무것도 가르지 못하므로, 저장소를 둘 만드는
+# 것이 이 항목의 전제다.
+sa_new '대상 둘' 선머지후리뷰
+SA15_ROOT="$SA_ROOT"; SA15_WT="$SA_WT"; SA15_CG="$SA_CG"
+SA15_B="$SA15_ROOT/repo-b"
+mkdir -p "$SA15_B"
+( cd "$SA15_B" && git init -q . && git config user.email t@example.invalid \
+  && git config user.name T && echo b > b.txt && git add -A && git commit -qm b \
+  && git branch -M main ) >/dev/null 2>&1
+SA15_BWT=$(cd "$SA15_B" && git rev-parse --show-toplevel)
+SA15_BCG=$(cd "$SA15_B" && git rev-parse --path-format=absolute --git-common-dir)
+rowA="- \`target\` | 별칭=main | 메인 워크트리=$SA15_WT | 공통 git 디렉터리=$SA15_CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰"
+rowB="- \`target\` | 별칭=other | 메인 워크트리=$SA15_BWT | 공통 git 디렉터리=$SA15_BCG | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/other | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰"
+td15=$(printf '%s\n%s\n' "$rowA" "$rowB" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+awk -v a="$rowA" -v b="$rowB" -v td="$td15" '
+  /^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; print a; print b; skip=1; next }
+  skip && /^- `target`/ { next }
+  { skip=0; print }
+' "$SA_MANIFEST" > "$SA_MANIFEST.15" && mv "$SA_MANIFEST.15" "$SA_MANIFEST"
+sa_bd "$SA_MANIFEST" "$SA_WT"
+rm -rf "$SA_RUN"
+sag snapshot --manifest "$SA_MANIFEST"
+check "15: 대상 둘을 선언한 매니페스트가 검사를 통과한다" "$rc" "0"
+sa_seg_row S15 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge S15
+check "15: 대상 A 의 머지가 통과한다" "$rc" "0"
+OID15=$(sa_ob_id S15)
+check "15: 그 의무가 대상 A 를 싣는다" "$(sa_field "$(sa_ob_last "$OID15")" '대상')" "main"
+nb=$(sa_rows)
+sa_fulfil "$OID15" --as other
+check "15: 다른 대상을 지목한 이행은 거절된다" "$rc" "2"
+case "$msg" in
+  *"'main'"*) ok "15: 문면이 그 행의 대상을 지목한다" ;;
+  *) bad "15 문면" "$msg" ;;
+esac
+check "15: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+# 이 머지는 베이스로 밀었으므로 착지했고, 착지한 의무는 덮는 리뷰 없이 닫히지
+# 않는다(항목 4d(i)). 그래서 대상을 바로잡는 것만으로는 닫히지 않으며, 덮는 cycle
+# 행을 함께 둔 뒤에야 대상 축 하나만 남는다 — 그것이 이 항목이 재려는 것이다.
+# cycle 행 없이 rc 0 을 기대하면 이 항목은 항목 4d(i) 와 정면으로 어긋난다.
+M15=$(sa_field "$(sa_ob_last "$OID15")" '머지 커밋')
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S15 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M15"
+check "15: 그 머지 커밋을 덮는 cycle 행이 기록된다" "$rc" "0"
+sa_fulfil "$OID15"
+check "15: 그 행의 대상으로 다시 부르면 닫힌다" "$rc" "0"
+
+# --- 16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
+#
+# 추적 ref 를 push 이전 sha 로 되돌린다. 되돌리지 않으면 push 자체가 추적 ref 를
+# 움직여 fetch 단계가 전혀 시험되지 않는다.
+sa_new '원격 착지' 선머지후리뷰
+sa_seg_row S16 선머지후리뷰
+sa_commit '작업' >/dev/null
+PRE16=$( cd "$SA_WT" && git rev-parse "refs/remotes/origin/$SA_BASE" 2>/dev/null || true )
+sa_merge S16
+check "16: 원격 베이스로 민 머지가 통과한다" "$rc" "0"
+OID16=$(sa_ob_id S16)
+M16=$(sa_field "$(sa_ob_last "$OID16")" '머지 커밋')
+if [ -n "$PRE16" ]; then
+  ( cd "$SA_WT" && git update-ref "refs/remotes/origin/$SA_BASE" "$PRE16" ) >/dev/null 2>&1
+  ok "16: 추적 ref 를 push 이전 sha 로 되돌렸다 (fetch 단계가 실제로 시험된다)"
+else
+  bad "16 전제" "push 이전 추적 ref 를 읽지 못했다"
+fi
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$M16" "refs/remotes/origin/$SA_BASE" >/dev/null 2>&1 ); then
+  bad "16 전제" "되돌린 추적 ref 가 여전히 머지 커밋을 담고 있다"
+else
+  ok "16: fetch 전에는 미착지로 보인다"
+fi
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S16 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M16"
+sa_fulfil "$OID16"
+check "16: 게이트가 스스로 fetch 해 착지로 판정한다" "$rc" "0"
+check "16: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID16")" '이행 판정')" "착지·포함"
+
+# fetch 를 실패시킨 상태의 이행은 거절되며 미착지 로 닫히지 않는다.
+sa_seg_row S16B 선머지후리뷰
+sa_commit '작업 2' >/dev/null
+sa_merge S16B
+OID16B=$(sa_ob_id S16B)
+PRE16B=$( cd "$SA_WT" && git rev-parse "refs/remotes/origin/$SA_BASE" 2>/dev/null || true )
+( cd "$SA_WT" && git update-ref "refs/remotes/origin/$SA_BASE" "$PRE16" \
+  && git remote set-url origin "$SA_ROOT/없는원격.git" ) >/dev/null 2>&1
+nb=$(sa_rows)
+sa_fulfil "$OID16B"
+check "16: fetch 가 실패하면 이행은 거절된다 (미착지 로 닫히지 않는다)" "$rc" "2"
+case "$msg" in
+  *fetch*) ok "16: 문면이 fetch 를 지목한다" ;;
+  *) bad "16 fetch 문면" "$msg" ;;
+esac
+check "16: 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+( cd "$SA_WT" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
+
+# --- 17. 형제 세그먼트의 열린 의무가 이 세그먼트의 재발행을 억제하지 않는다 ---
+#
+# 이 항목 하나가 오늘·순진한 수리·옳은 수리 셋을 가른다. 오늘의 게이트에서는
+# 이행 행이 같은 `의무 id=` 문면을 실어 존재 가드에 걸리고, 전역 접기를 그대로
+# 쓴 구현에서는 B 의 의무가 열려 있어 접기가 비지 않는다. 착지를 요구하지 않으므로
+# 미착지로 닫아도 발행 측 성질은 그대로 측정된다.
+sa_new '형제 의무' 선머지후리뷰
+sa_seg_row SA17 선머지후리뷰
+sa_seg_row SB17 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge SA17 "$SA_SEGBR:refs/heads/parkedA"
+check "17: A 의 첫 머지가 통과한다" "$rc" "0"
+OIDA=$(sa_ob_id SA17)
+sa_fulfil "$OIDA"
+check "17: A 의 의무를 닫는다" "$rc" "0"
+sa_merge SB17 "$SA_SEGBR:refs/heads/parkedB"
+check "17: B 의 머지가 통과한다" "$rc" "0"
+OIDB=$(sa_ob_id SB17)
+if [ -n "$OIDB" ]; then ok "17: B 의 의무를 열린 채로 둔다 ($OIDB)"; else bad "17 전제" "B 의 의무가 없다"; fi
+nb=$(sa_ob_rows | grep -cF '세그먼트=SA17 ' || true)
+sa_merge SA17 "$SA_SEGBR:refs/heads/parkedA"
+check "17: 형제의 열린 의무가 A 의 머지를 막지 않는다" "$rc" "0"
+check "17: A 의 의무가 다시 발행된다" "$(sa_ob_rows | grep -cF '세그먼트=SA17 ' || true)" "$((nb + 1))"
+check "17: 재발행된 A 의 행이 미이행이다" \
+  "$(sa_field "$(sa_ob_rows | grep -F '세그먼트=SA17 ' | tail -1)" '상태')" "미이행"
+n_unf=$( { grep -F '`리뷰 의무`' "$SA_LEDGER" || true; } | grep -cF '상태=미이행' || true)
+n_ful=$( { grep -F '`리뷰 의무`' "$SA_LEDGER" || true; } | grep -cF '상태=이행' || true)
+check "17: 그 시점에 미이행 발행 행이 셋, 닫힌 행이 하나다 (A 둘 + B 하나, A 의 첫 것이 닫혔다)" \
+  "$n_unf/$n_ful" "3/1"
+
+# --- 19. 이행 판정 은 세 값 중 하나가 언제나 실리고, 라우터가 고를 수 없다 ---
+#
+# (ii) 의 `앵커 없음` 갈래는 작성하지 않는다 — 그 값을 쓰는 행을 만들려면
+# `머지 커밋` 을 쓰기 전의 게이트가 필요한데, 원장이 해시 체인이라 행을 손으로
+# 넣을 수 없고 옛 이진을 얻으려면 이 레포 이력의 한 커밋을 스위트에 못 박아야
+# 한다. 그 참조는 안정적이지 않다. §D19 의 소멸 조건(`머지 커밋=-` 인 행 0건)이
+# 이 절반의 수명을 함께 끝낸다.
+sa_new '이행 판정' 선머지후리뷰
+sa_seg_row S19 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge S19 "$SA_SEGBR:refs/heads/parked"
+OID19A=$(sa_ob_id S19)
+sa_fulfil "$OID19A"
+check "19(ii): 앵커 있고 미착지면 미착지 다" "$(sa_field "$(sa_ob_last "$OID19A")" '이행 판정')" "미착지"
+
+sa_seg_row S19B 선머지후리뷰
+sa_commit '작업 2' >/dev/null
+sa_merge S19B
+OID19B=$(sa_ob_id S19B)
+M19B=$(sa_field "$(sa_ob_last "$OID19B")" '머지 커밋')
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S19B --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M19B"
+# (iii) 위조 단언 — argv 가 그 값을 정할 수 없다.
+sa_fulfil "$OID19B" "이행 판정=앵커 없음"
+check "19(ii): 앵커 있고 착지에 덮는 cycle 행이 있으면 착지·포함 이다" "$rc" "0"
+check "19(iii): argv 가 실은 위조값을 게이트의 승계값이 덮는다" \
+  "$(sa_field "$(sa_ob_last "$OID19B")" '이행 판정')" "착지·포함"
+
+# (i) 닫힌 이행 행은 전부 이 필드를 싣고, 값이 셋 중 하나다.
+sa_bad19=0; sa_n19=0
+for sa_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
+  [ -f "$sa_l" ] || continue
+  while IFS= read -r sa_row; do
+    [ -n "$sa_row" ] || continue
+    sa_n19=$((sa_n19 + 1))
+    case "$(sa_field "$sa_row" '이행 판정')" in
+      '착지·포함'|'미착지'|'앵커 없음') : ;;
+      *) sa_bad19=$((sa_bad19 + 1)) ;;
+    esac
+  done <<EOF
+$( { grep -F '`리뷰 의무`' "$sa_l" || true; } | { grep -F '상태=이행' || true; } )
+EOF
+done
+if [ "$sa_n19" -gt 0 ]; then
+  ok "19(i): 닫힌 이행 행이 ${sa_n19}건 관측됐다"
+else
+  bad "19(i)" "닫힌 이행 행이 하나도 없어 이 단언이 공허하다"
+fi
+check "19(i): 그 전부가 어휘 안의 이행 판정 을 싣는다 (넷째 값도 판정 불가 도 없다)" "$sa_bad19" "0"
+
+# (iv) 판정 불가 는 행을 쓰지 않는다.
+sa_seg_row S19C 선머지후리뷰
+sa_commit '작업 3' >/dev/null
+sa_merge S19C
+OID19C=$(sa_ob_id S19C)
+( cd "$SA_WT" && git remote set-url origin "$SA_ROOT/없는원격2.git" \
+  && git update-ref -d "refs/remotes/origin/$SA_BASE" ) >/dev/null 2>&1
+nb=$(sa_rows)
+sa_fulfil "$OID19C"
+check "19(iv): fetch 를 실패시킨 이행은 거절된다" "$rc" "2"
+check "19(iv): 그리고 원장의 행 수가 변하지 않는다 (어휘가 셋인 이유가 이것이다)" "$(sa_rows)" "$nb"
+( cd "$SA_WT" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
+
+# --- 20. 원격이 없는 앵커 저장소는 로컬 ref 로 판정된다 -----------------------
+#
+# 이 항목이 없으면 원격 없는 저장소가 fetch 실패로 판정 불가에 갇히는 구현이
+# 초록으로 통과한다 — 그 구현은 항목 16 도 통과한다.
+sa_new '원격 없음' 선머지후리뷰
+( cd "$SA_REPO" && git remote remove origin ) >/dev/null 2>&1
+sa_seg_row S20 선머지후리뷰
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S20 \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+if [ "$rc" = "0" ]; then bad "20(i) 전제" "원격이 없는데 push 가 성공했다"; else ok "20(i): 원격이 없어 머지 행위가 실패한다 (rc=$rc)"; fi
+OID20=$(sa_ob_id S20)
+sa_fulfil "$OID20"
+check "20(i): M 이 로컬 베이스에 없으면 근거만으로 통과한다 (재시도 경로가 산다)" "$rc" "0"
+check "20(i): 이행 판정이 미착지다" "$(sa_field "$(sa_ob_last "$OID20")" '이행 판정')" "미착지"
+
+sa_seg_row S20B 선머지후리뷰
+sa_commit '작업 2' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S20B \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+OID20B=$(sa_ob_id S20B)
+M20B=$(sa_field "$(sa_ob_last "$OID20B")" '머지 커밋')
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$M20B" ) >/dev/null 2>&1
+nb=$(sa_rows)
+sa_fulfil "$OID20B"
+check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 거절된다" "$rc" "2"
+check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# --- 21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
+#
+# 미착지 로 접은 구현은 로컬·원격 이름이 갈리는 모든 저장소에서 포함 보증을
+# 잃는데, 그 인구가 오늘 0 이라 다른 어떤 항목도 이 갈래를 밟지 않는다.
+sa_new '없는 베이스 ref' 선머지후리뷰
+SA_BASE=원격에없는이름
+sa_manifest 선머지후리뷰
+rm -rf "$SA_RUN"
+sa_seg_row S21 선머지후리뷰
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S21 \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:refs/heads/parked"
+check "21: 머지가 통과해 의무를 남긴다" "$rc" "0"
+OID21=$(sa_ob_id S21)
+nb=$(sa_rows)
+sa_fulfil "$OID21"
+check "21: 베이스의 원격 추적 ref 가 없으면 거절된다 (미착지 가 아니다)" "$rc" "2"
+case "$msg" in
+  *ref*) ok "21: 문면이 ref 를 지목한다 (미착지 와도 4d 와도 구별된다)" ;;
+  *) bad "21 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"덮는 리뷰가 없습니다"*) bad "21 문면 구별" "4d 의 문면과 같다" ;;
+  *) ok "21: 4d 의 문면과 구별된다" ;;
+esac
+check "21: 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
+
+# --- 22. 로컬에 이미 착지한 머지는 네트워크를 건드리지 않는다 ----------------
+#
+# fetch 를 먼저 도는 구현은 여기서 판정 불가를 내며 빨강이고, 그것이 단계 1 이
+# 구현에서 조용히 빠졌다는 유일한 신호다.
+sa_new '로컬 착지' 선머지후리뷰
+sa_seg_row S22 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge S22
+OID22=$(sa_ob_id S22)
+M22=$(sa_field "$(sa_ob_last "$OID22")" '머지 커밋')
+( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$M22" \
+  && git remote set-url origin "$SA_ROOT/존재하지-않는-경로.git" ) >/dev/null 2>&1
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S22 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M22"
+sa_fulfil "$OID22"
+check "22: 로컬 베이스가 이미 담고 있으면 원격이 죽어 있어도 착지다" "$rc" "0"
+check "22: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID22")" '이행 판정')" "착지·포함"
+( cd "$SA_REPO" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
+
+# --- 23. 착지 판정이 움직이는 ref 는 하나뿐이다 ------------------------------
+#
+# 저장소 전체 fetch 로 구현하면 여기서 깨지며, 그 깨짐은 이 술어가 아니라 외부
+# 드리프트 비교와 승인 튜플의 base_sha 에서 나중에 드러난다.
+sa_new '움직이는 ref 하나' 선머지후리뷰
+sa_seg_row S23 선머지후리뷰
+sa_commit '작업' >/dev/null
+# 베이스가 아닌 다른 브랜치를 원격에 하나 만들어 둔다 — 전체 fetch 는 이것의
+# 추적 ref 도 함께 만든다.
+( cd "$SA_REPO" && git branch 곁가지 && git push -q origin 곁가지 \
+  && git update-ref -d refs/remotes/origin/곁가지 ) >/dev/null 2>&1
+sa_merge S23 "$SA_SEGBR:refs/heads/parked"
+OID23=$(sa_ob_id S23)
+# 베이스의 추적 ref 가 실제로 움직일 거리를 만든다. 원격의 베이스만 한 칸 밀고 로컬
+# 추적 ref 를 밀기 전 값으로 되돌리면 단계 3 의 fetch 가 그 하나를 정확히 한 칸
+# 움직인다. 이 준비가 없으면 추적 ref 가 이미 최신이라 fetch 가 아무것도 움직이지
+# 않고, 「하나만 움직였다」가 「아무것도 움직이지 않았다」와 구별되지 않는다 —
+# 그러면 전체 fetch 구현도 이 항목을 통과한다. 미는 커밋은 M 과 무관하므로 이행은
+# 여전히 미착지 갈래로 통과하고, 이 항목이 재려는 것은 갈래가 아니라 fetch 의 폭이다.
+SA23_OLD=$( cd "$SA_REPO" && git rev-parse "refs/remotes/origin/$SA_BASE" )
+( cd "$SA_REPO" && printf '베이스 전진\n' >> a.txt && git add -A \
+  && git commit -qm '베이스 전진' && git push -q origin "$SA_BASE" \
+  && git update-ref "refs/remotes/origin/$SA_BASE" "$SA23_OLD" ) >/dev/null 2>&1
+PRE_REMOTES=$( cd "$SA_WT" && git for-each-ref --format='%(refname) %(objectname)' refs/remotes/ )
+PRE_HEADS=$( cd "$SA_WT" && git for-each-ref --format='%(refname) %(objectname)' refs/heads/ )
+# 원장 파일 하나는 뺀다. 이행은 판정을 원장에 남기는 것이 그 일이고, 바로 위의
+# `git add -A` 가 그 파일을 이미 추적으로 만들어 두었으므로 전체 비교는 이 항목이
+# 재려는 것과 무관한 변경 하나를 반드시 잡는다. 이 항목이 재는 것은 fetch 의 폭이며
+# 나머지 경로는 그대로 걸리므로, 체크아웃이나 작업 파일을 건드리는 구현은 여전히
+# 여기서 깨진다.
+PRE_PORC=$( cd "$SA_WT" && git status --porcelain -- . ":(exclude)docs/pipeline-run/$SA_ID.md" )
+sa_fulfil "$OID23"
+check "23: 단계 3 에 도달하는 이행이 통과한다" "$rc" "0"
+POST_REMOTES=$( cd "$SA_WT" && git for-each-ref --format='%(refname) %(objectname)' refs/remotes/ )
+POST_HEADS=$( cd "$SA_WT" && git for-each-ref --format='%(refname) %(objectname)' refs/heads/ )
+POST_PORC=$( cd "$SA_WT" && git status --porcelain -- . ":(exclude)docs/pipeline-run/$SA_ID.md" )
+check "23: 로컬 브랜치는 하나도 움직이지 않는다" "$PRE_HEADS" "$POST_HEADS"
+check "23: 워크트리도 움직이지 않는다" "$PRE_PORC" "$POST_PORC"
+moved=$(printf '%s\n%s\n' "$PRE_REMOTES" "$POST_REMOTES" | sort | uniq -u | awk '{print $1}' | sort -u | grep -c . || true)
+check "23: 움직인 원격 추적 ref 가 하나뿐이다" "$moved" "1"
+if printf '%s\n%s\n' "$PRE_REMOTES" "$POST_REMOTES" | sort | uniq -u | grep_all_q "refs/remotes/origin/$SA_BASE"; then
+  ok "23: 움직인 그 하나가 베이스의 추적 ref 다"
+else
+  bad "23 움직인 ref" "베이스가 아닌 ref 가 움직였다 — 저장소 전체 fetch 로 구현됐다"
+fi
+
+# --- 24. 발행 앵커는 세그먼트 워크트리의 HEAD 이고 메인 워크트리의 것이 아니다 -
+#
+# 항목 4c 는 값이 `-` 가 아님을 재지만 두 워크트리가 같은 픽스처에서는 두 구현을
+# 가르지 못한다. 두 디렉터리를 하나로 접는 것이 이 설계의 가장 흔한 오구현이므로,
+# 이 항목은 두 HEAD 가 다른 픽스처를 전제로 만든다.
+sa_new '발행 앵커' 선머지후리뷰
+sa_seg_row S24 선머지후리뷰
+SEG24=$(sa_commit '세그먼트에만 있는 커밋')
+( cd "$SA_REPO" && echo main-only >> a.txt && git add -A && git commit -qm '메인에만 있는 커밋' ) >/dev/null 2>&1
+MAIN24=$( cd "$SA_REPO" && git rev-parse HEAD )
+if [ "$SEG24" != "$MAIN24" ]; then
+  ok "24: 두 워크트리의 HEAD 가 다르다 (이 항목의 전제)"
+else
+  bad "24 전제" "두 HEAD 가 같아 두 구현을 가르지 못한다"
+fi
+sa_merge S24 "$SA_SEGBR:refs/heads/parked"
+check "24: 그 머지가 통과한다" "$rc" "0"
+OID24=$(sa_ob_id S24)
+check "24: 의무의 머지 커밋이 세그먼트 워크트리의 HEAD 다" \
+  "$(sa_field "$(sa_ob_last "$OID24")" '머지 커밋')" "$SEG24"
+
+# --- 「아무것도 움직이지 않았다」 --------------------------------------------
+#
+# 새 필드가 없는 매니페스트가 두 다이제스트를 바이트 동일하게 유지하고 자기
+# 파일에 대해 그대로 검증되며, 기존 세그먼트 행이 전부 그대로 읽힌다.
+sa_new '무변경' ''
+sa_before_td=$( { grep -F '**대상 맵 다이제스트**' "$SA_MANIFEST" || true; } )
+sa_before_bd=$( { grep -F '**구속 다이제스트**' "$SA_MANIFEST" || true; } )
+sa_manifest ''
+check "무변경: 상한이 없는 매니페스트의 대상 맵 다이제스트가 바이트 동일하다" \
+  "$( { grep -F '**대상 맵 다이제스트**' "$SA_MANIFEST" || true; } )" "$sa_before_td"
+check "무변경: 구속 다이제스트도 바이트 동일하다" \
+  "$( { grep -F '**구속 다이제스트**' "$SA_MANIFEST" || true; } )" "$sa_before_bd"
+sag snapshot --manifest "$SA_MANIFEST"
+check "무변경: 그 매니페스트가 자기 파일에 대해 그대로 검증된다" "$rc" "0"
+sa_seg_row SZ ""
+check "무변경: 정책 필드가 없는 기존 형태의 세그먼트 행이 그대로 읽힌다" "$rc" "0"
+srow=$( { grep -F '`segment`' "$SA_LEDGER" || true; } | grep -F 'id=SZ ' | tail -1)
+if [ -z "$(sa_field "$srow" '리뷰 정책')" ]; then
+  ok "무변경: 상속할 것이 없으면 아무것도 실리지 않고 엄격으로 떨어진다"
+else
+  bad "무변경" "빈 값을 만들어 냈다: $srow"
+fi
+sa_commit '작업' >/dev/null
+sa_merge SZ
+check "무변경: 그 세그먼트의 머지는 선리뷰후머지 로 판정된다 (리뷰 없으니 exit 3)" "$rc" "3"
+
+# ---------------------------------------------------------------------------
+# 31. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다
+#
+# 섹션 10b 에서 옮겨 왔다. 옛 자리에서는 이 단언들이 전부 `리뷰-후-머지` 가 꺼진
+# 매니페스트 위에서 돌았고, 그래서 「룰이 유예를 정당한 것으로 다뤘다」와 「룰이
+# 꺼져 아무것도 검사되지 않았다」를 구별하지 못했다. 여기서는 룰이 켜져 있다.
+# ---------------------------------------------------------------------------
+sa_new '유예의 기록' 선머지후리뷰
+sa_seg_row SEP 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge SEP "$SA_SEGBR:refs/heads/parked"
+check "31: 룰이 켜진 채 선머지후리뷰 머지가 통과한다" "$rc" "0"
+if { grep -F '`리뷰 의무`' "$SA_LEDGER" || true; } | grep_all_q '세그먼트=SEP '; then
+  ok "31: 선머지후리뷰 머지가 리뷰 의무 행을 남긴다"
+else
+  bad "31 리뷰 의무" "미뤄진 리뷰가 아무 기록도 남기지 않았다 — 미룬 것과 없앤 것이 구별되지 않는다"
+fi
+sep_row=$(sa_ob_rows | grep -F '세그먼트=SEP ' | tail -1)
+check "31: 발행 시점의 상태는 미이행이다" "$(sa_field "$sep_row" '상태')" "미이행"
+# `생성 등급` 은 이 계열에서 아무도 읽지 않는다. 면제 규칙이 읽는 것은 `problem`
+# 행의 같은 이름 필드이고 그것은 writer 도 다른 별개 계열이다. 이 필드가 사는
+# 이유는 어떤 등급의 행위가 리뷰를 미뤘는지를 아침이 알고 싶어서이지, 어떤 술어가
+# 기다리고 있어서가 아니다 — 라벨이 그렇게 말하지 않으면 다음 구현자가 없는
+# 소비자를 찾아 나선다.
+check "31: 생성 등급을 함께 싣는다 (아침이 읽는 값이지, 술어가 기다리는 값이 아니다)" \
+  "$(sa_field "$sep_row" '생성 등급')" "외부상태변경"
+
+# 기본 정책은 의무를 만들지 않아야 한다 — 머지마다 의무가 생기면 조건 9 가
+# 영구히 참이 되고 어떤 런도 종료를 제안할 수 없다. 이 단언은 그 머지가 rc 0 으로
+# 통과했다는 것을 함께 재야 의미가 있다: 옛 자리에서는 그 세그먼트의
+# `stage-result` 두 행이 `부모=미상` 이라 `구현-리뷰-분리` 가 rc=3 으로 먼저
+# 거절했고, 그 거절이 발행보다 상류라 「의무가 생기지 않았다」가 공허하게
+# 초록이었다.
+sa_seg_row SEP2 선리뷰후머지
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment SEP2 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse HEAD )"
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment SEP2 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- true
+# 두 스테이지 결과를 실어 `구현-리뷰-분리` 가 빈 집합이 아니라 실제 계보를 읽게
+# 한다. 부모가 라우터 하나로 같고 어느 쪽의 세션 id 도 아니므로 디스패처이며,
+# 그 룰은 통과한다.
+{
+  printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
+} >> "$SA_LEDGER"
+sa_merge SEP2 "$SA_SEGBR:refs/heads/parked2"
+check "31: 기본 정책의 머지가 rc 0 으로 통과한다 (이 단언이 서야 아래가 공허하지 않다)" "$rc" "0"
+if sa_ob_rows | grep_all_q '세그먼트=SEP2 '; then
+  bad "31 기본 정책" "선리뷰후머지 인데도 의무가 생겼다 — 조건 9 가 영구히 참이 된다"
+else
+  ok "31: 기본 정책에서는 의무를 만들지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
+# 32. 리뷰 의무는 `이행` 으로 옮겨질 수 있고, 근거에 대해서만 그렇다
+#
+# 섹션 29 에서 옮겨 왔다. 이 섹션은 **워크트리 조항의 의도된 예외**다 — 세그먼트
+# 워크트리의 팁이 베이스와 **공통 조상이 없어야** 하고, 이 스위트에서 착지 판정의
+# 6b 문면(「공통 조상이 없습니다」)이 발화하는 자리는 여기뿐이다. 「정상 저장소로
+# 고치는」 수리가 그 유일한 증인을 없앤다.
+#
+# 그 성질은 물려받지 않고 **만든다**. 공용 픽스처가 한 지점에서 무관한 브랜치로
+# 갈아탄 결과에 기대면, 그 앞 섹션이 바뀌는 순간 이 섹션은 아무 말 없이 다른
+# 갈래를 재게 된다. 앵커 저장소는 공용 저장소 그대로여야 한다 — 다른 저장소의
+# 워크트리를 쓰면 그 sha 가 앵커 쪽에서 해소되지 않아 판정이 `미착지` 가 아니라
+# `판정 불가` 로 갈린다.
+# ---------------------------------------------------------------------------
+SH_ID=R4
+SH_MANIFEST="$WT/plan-$SH_ID.md"
+SH_LEDGER="$WT/docs/pipeline-run/$SH_ID.md"
+SH_GRANT="$WT/docs/pipeline-grant/$SH_ID.md"
+rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
+sed "s/R1/$SH_ID/g" "$WORK/manifest-clean.md" > "$SH_MANIFEST"
+awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
+    "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
+sh_td=$( { grep -E '^- `target`' "$SH_MANIFEST" || true; } \
+         | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+awk -v td="$sh_td" '/^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next } { print }' \
+    "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
+cat > "$SH_GRANT" <<SHGEOF
+# 파이프라인 인가 기록 — $SH_ID
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 $SH_ID
+**인가 일시**: 2026-08-30T00:00:00Z
+**종료 지점**: 픽스처
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**직렬 웨이브 고지**: 해당 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 픽스처 인가
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $SH_LEDGER
+SHGEOF
+sa_bd "$SH_MANIFEST" "$WT"
+
+sgate() {
+  local out
+  out=$(cd "$WT" && bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+SHH() { cd "$WT" && bash "$GATE" snapshot --manifest "$SH_MANIFEST" 2>/dev/null | jq -r .H; }
+
+ORPH="$WORK/orphan-wt"
+( cd "$REPO" && git remote set-url origin "$REMOTE" \
+  && git worktree add -q --detach "$ORPH" HEAD ) >/dev/null 2>&1
+( cd "$ORPH" && git checkout -q --orphan orph-$SH_ID \
+  && git rm -rqf . >/dev/null 2>&1
+  echo orphan > o.txt && git add -A && git commit -qm orphan ) >/dev/null 2>&1
+ORPH_TIP=$( cd "$ORPH" && git rev-parse HEAD 2>/dev/null || true )
+if [ -n "$ORPH_TIP" ]; then
+  ok "32: 공용 저장소 안에 공통 조상 없는 팁을 세웠다 ($ORPH_TIP)"
+else
+  bad "32 전제" "고아 워크트리를 만들지 못했다"
+fi
+
+sgate act --manifest "$SH_MANIFEST" --kind segment --target infra --segment SEP \
+      --cutpoint 커밋 --snapshot-digest "$(SHH)" --rationale x \
+      -- 상태=실행중 워크트리="$ORPH" 선행=없음 "리뷰 정책=선머지후리뷰"
+check "32: 세그먼트 행이 기록된다" "$rc" "0"
+sgate act --manifest "$SH_MANIFEST" --kind merge --target infra --segment SEP \
+      --cutpoint 머지 --snapshot-digest "$(SHH)" --rationale x \
+      -- git push origin "orph-$SH_ID:refs/heads/parked-$SH_ID"
+check "32: 그 머지가 통과하고 의무를 남긴다" "$rc" "0"
+ROID=$( { grep -F '`리뷰 의무`' "$SH_LEDGER" || true; } | grep -F '세그먼트=SEP ' | tail -1 \
+        | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+if [ -n "$ROID" ]; then
+  ok "32: 발행된 의무 id 를 원장에서 읽는다 ($ROID)"
+else
+  bad "32 의무 id" "선머지후리뷰 머지가 남긴 리뷰 의무 행을 찾지 못했다"
+fi
+# 갈래를 문면으로 못 박는다. 이 픽스처의 팁은 베이스와 공통 조상이 없으므로
+# 착지 판정은 코드와 무관하게 미착지로 결정되고, 그 사실이 아래 이행이 재는
+# 것을 정한다 — 「근거만으로 닫힌다」는 팔 전체가 아니라 이 갈래의 성질이다.
+( cd "$WT" && git fetch -q --no-tags origin '+refs/heads/main:refs/remotes/origin/main' ) >/dev/null 2>&1
+if ( cd "$WT" && git merge-base "$ORPH_TIP" refs/remotes/origin/main >/dev/null 2>&1 ); then
+  bad "32 갈래" "팁이 베이스와 공통 조상을 가진다 — 6b 문면의 유일한 증인이 사라졌다"
+else
+  ok "32: 팁과 베이스에 공통 조상이 없다 (6b 문면이 발화하는 유일한 자리)"
+fi
+
+sgate act --manifest "$SH_MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SHH)" --rationale x -- "의무 id=$ROID"
+check "32: 근거 없는 이행은 거부된다 (주장만으로 리뷰를 닫지 않는다)" "$rc" "2"
+
+sgate act --manifest "$SH_MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SHH)" --rationale x -- "의무 id=RO-00000000" 근거=z
+check "32: 존재하지 않는 의무는 닫을 수 없다" "$rc" "2"
+
+sgate act --manifest "$SH_MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SHH)" --rationale x \
+      -- "의무 id=$ROID" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다"
+check "32: 미착지 갈래에서는 근거를 실은 이행이 통과한다" "$rc" "0"
+case "$raw" in
+  *"공통 조상이 없습니다"*) ok "32: 통과 로그가 6b 의 문면을 싣는다 (재시도로 풀리지 않는 미착지)" ;;
+  *) bad "32 6b 문면" "$raw" ;;
+esac
+
+roall=$( { grep -F '`리뷰 의무`' "$SH_LEDGER" || true; } | grep -F "의무 id=$ROID " || true)
+lastro=$(printf '%s' "$roall" | tail -1)
+case "$lastro" in
+  *"상태=이행"*) ok "32: 그 의무의 마지막 행이 이행이다" ;;
+  *) bad "32 이행 상태" "$lastro" ;;
+esac
+check "32: 이행 판정이 미착지다" "$(sa_field "$lastro" '이행 판정')" "미착지"
+case "$lastro" in
+  *"이행 시각=-"*) bad "32 이행 시각" "이행인데 시각 자리가 그대로 비어 있다" ;;
+  *"이행 시각="*)  ok "32: 발행 때 비워 둔 이행 시각이 채워진다" ;;
+  *) bad "32 이행 시각" "$lastro" ;;
+esac
+case "$lastro" in
+  *"세그먼트=SEP "*) ok "32: 세그먼트를 선행 행에서 옮겨 싣는다 (argv 가 정하지 않는다)" ;;
+  *) bad "32 세그먼트 승계" "$lastro" ;;
+esac
+case "$roall" in
+  *"상태=미이행"*) ok "32: 발행 시점의 미이행 행이 지워지지 않고 남는다 (편집이 아니라 append)" ;;
+  *) bad "32 append 형태" "발행 행이 사라졌다 — 원장이 append 전용이라는 계약이 깨진다" ;;
+esac
+
+sgate act --manifest "$SH_MANIFEST" --kind obligation --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SHH)" --rationale x \
+      -- "의무 id=$ROID" 근거="두 번째 시도"
+check "32: 이미 닫힌 의무를 다시 닫지 않는다" "$rc" "2"
+
+# 조건 9 는 영구히 참이었다. 이 런이 발행한 유일한 의무가 닫혔으므로 열거에서
+# 사라져야 한다.
+sgate act --manifest "$SH_MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SHH)" --rationale "끝났다고 본다" -- true
+case "$msg" in
+  *"9 미이행 리뷰 의무"*) bad "32 조건 9" "의무를 닫았는데 여전히 미충족으로 열거된다" ;;
+  *) ok "32: 이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
+esac
+# --- 33. 세그먼트를 달지 않은 머지 — 처분을 못박는다 -------------------------
+#
+# 생략되거나 `-` 인 세그먼트는 가설이 아니라 도달 가능하다 — 발행 전 앵커 검사가
+# 그 모양을 명시적으로 검사한다. 그런데 두 스위트의 모든 머지가 세그먼트를
+# 지명하고 있어, 그 자리에 무엇이 서는지 재는 것이 하나도 없었다.
+#
+# 창은 셋이 아니라 둘이다. 정책은 언제나 세그먼트 행에서 해소되므로 행이 없으면
+# 가장 엄격한 값으로 떨어지고, 따라서 세 정책을 각각 실은 세 창이라는 것은 이
+# argv 모양에 대해 구성 자체가 되지 않는다. 실재하는 창은 룰이 켜진 창과 `끔` 인
+# 창이며, 둘 다 여기서 못박는다.
+sa_new '세그먼트 없는 머지' 선머지후리뷰
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 켬 — 세그먼트를 생략한 머지는 거절된다" "$rc" "3"
+if sa_names_rule; then ok "33: 그 거절이 리뷰-후-머지 를 지명한다 (생략)"; else bad "33 거절 이름" "$msg"; fi
+case "$msg" in
+  *"세그먼트가 지정되지 않았습니다"*) ok "33: 문면이 빠진 것을 지목한다 (생략)" ;;
+  *) bad "33 문면" "$msg" ;;
+esac
+
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment - \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 켬 — 세그먼트가 '-' 인 머지도 거절된다" "$rc" "3"
+if sa_names_rule; then ok "33: 그 거절이 리뷰-후-머지 를 지명한다 (-)"; else bad "33 거절 이름" "$msg"; fi
+
+# `끔` 창의 처분은 통과이며, 그것이 이 항목이 기록하는 선택이다. 대신 서 주는
+# 것이 없다는 사실도 함께 적어 둔다 — 발행 전 앵커 검사는 머지 먼저 정책에서만
+# 발동하는데, 세그먼트 행이 없으면 정책은 리뷰 먼저로 떨어진다.
+sa_new '세그먼트 없는 머지 (끔)' 선머지후리뷰 '**리뷰-후-머지**: 끔'
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git push origin "$SA_SEGBR:$SA_BASE"
+check "33: 룰 끔 — 세그먼트를 생략한 머지는 통과한다 (선택이 기록된다)" "$rc" "0"
+
+# --- 33b. 좁히는 축은 축2 등급이고, 워크트리쓰기 칸은 argv 가 한 번 더 가른다 --
+#
+# 이 트리의 등급표는 로컬 머지·리베이스·체리픽을 워크트리쓰기로 등급한다. 그
+# 칸을 통째로 면제하면 그 머지들이 세그먼트를 정직하게 달고 가장 엄격한 정책
+# 아래에서도 리뷰 기록 하나 없이 이 검사를 통째로 지나간다. 그 칸을 통째로
+# 검사에 넣으면 반대쪽이 깨진다 — 라우터는 대상의 절단점으로 모든 행위를
+# 라벨링하므로 배포로 신고된 평범한 워크트리 쓰기가 통상 경로이고, 그것이
+# 리뷰 기록을 요구받으면 검사가 아니라 벽이다.
+#
+# 가르는 값은 신고가 아니라 argv 다. 신고로 가르면 같은 구멍이 축만 바꿔
+# 그대로 남으므로, 아래 둘째 묶음이 그 등가성을 직접 잰다.
+#
+# 그래서 이 항목은 한 방향이 아니라 네 방향을 함께 못박는다. 어느 하나만
+# 세우면 반대쪽으로 무너진 구현에서도 초록이다.
+sa_new '워크트리쓰기 등급 머지' 선리뷰후머지
+sa_seg_row S33B 선리뷰후머지
+sa_commit '작업' >/dev/null
+sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S33B \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: 워크트리쓰기로 등급되는 로컬 머지도 리뷰 검사를 받는다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "33b 거절 이름" "$msg"; fi
+
+# 둘째 묶음 — 같은 로컬 머지를 다른 형태로 신고한다. 첫 단언만 있으면
+# 「종류가 merge 인가」로 가르는 구현에서도 초록이고, 그 구현에서는 아래 둘이
+# 그대로 빠져나간다. 신고가 이 판정을 흔들지 못한다는 것이 이 묶음의 명제다.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S33B \
+    --cutpoint 머지 --surface 워크트리쓰기 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: exec 으로 신고한 로컬 머지도 리뷰 없이 지나가지 못한다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절도 리뷰-후-머지 를 지명한다"; else bad "33b exec 거절 이름" "$msg"; fi
+# 그리고 어휘 밖의 종류. 여기서 관측되는 것이 rc 3 이라는 사실 자체가 이
+# 묶음의 나머지 절반이다 — `x` 가 어휘 검사에 걸려 rc 2 로 돌아왔다면 종류는
+# 닫힌 집합이고 그것으로 가르는 것이 성립했을 것이다. 통과해서 룰까지
+# 내려왔다는 것은 `--kind` 에 무엇이든 실린다는 뜻이고, 그래서 종류는 이
+# 판정을 지탱할 수 없다.
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment S33B \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- git merge --no-ff "$SA_SEGBR"
+check "33b: 어휘 밖 종류로 신고한 로컬 머지도 리뷰 없이 지나가지 못한다" "$rc" "3"
+if sa_names_rule; then ok "33b: 그 거절도 리뷰-후-머지 를 지명한다"; else bad "33b 어휘 밖 종류 거절 이름" "$msg"; fi
+
+# 셋째 묶음 — 반대 방향의 가드 둘. 좁히는 것이 옛 소음을 되살리지 않는다.
+# 둘 다 리뷰 기록이 아직 없는 자리에서 잰다. 리뷰 기록을 먼저 심어 두면 이
+# 둘은 면제가 아니라 신선도 통과로도 초록이 되어, 면제를 지운 구현에서까지
+# 초록이 된다.
+#
+# (1) 워크트리쓰기 칸. 첫 단언과 같은 칸에 있으면서 이력을 통합하지 않는
+#     행위다. 이것이 없으면 첫 단언은 그 칸을 통째로 검사에 넣는 구현 —
+#     세그먼트를 단 모든 배포 신고 행위가 리뷰 기록을 요구받는 구현 — 에서도
+#     초록이라, 이 항목이 재는 것이 한 방향뿐이 된다.
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment S33B --cutpoint 배포 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- mkdir -p "$SA_ROOT/scratch33b"
+check "33b: 배포로 신고된 평범한 워크트리 쓰기는 이 룰에 걸리지 않는다" "$rc" "0"
+[ -d "$SA_ROOT/scratch33b" ] && ok "33b: 그 행위가 실제로 수행된다" \
+                            || bad "33b 수행" "통과했는데 디렉터리가 생기지 않았다"
+# (2) 읽기 칸. 장부 기록은 게이트가 종류만 보고 읽기로 등급하므로, 사다리
+#     위칸으로 신고해도 이 룰에 닿지 않는다.
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S33B --cutpoint 배포 \
+    --snapshot-digest "$(SAH)" --rationale x \
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$(cd "$SA_SEGWT" && git rev-parse HEAD)"
+check "33b: 사다리 위칸으로 신고된 장부 기록은 이 룰에 걸리지 않는다" "$rc" "0"
+
+# --- 34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
+#
+# 해소기는 룰 루프와 장부 기록자보다 앞에서 돈다. 그래서 상한이 나중에 조여져
+# 이미 기록된 실값이 상한을 넘게 되면 그 세그먼트에 대한 모든 행위가 옛 값으로
+# 먼저 거절되고, 고쳐 쓸 행위 자신도 거기 걸린다 — 세그먼트는 비종단에 남고
+# 런은 제안할 끝이 없다. 탈출구는 한 방향뿐이어야 한다.
+sa_new '상한 조인 뒤 수리' 리뷰없음
+sa_seg_row S34 리뷰없음
+check "34: 느슨한 상한 아래에서는 그 행이 통과한다" "$rc" "0"
+sa_manifest 선리뷰후머지
+rm -rf "$SA_RUN"
+sa_commit '작업' >/dev/null
+sa_merge S34
+check "34: 상한을 조인 뒤 그 세그먼트의 머지는 해소기가 거절한다" "$rc" "2"
+sa_seg_row S34 선리뷰후머지
+check "34: 상한 이하를 실은 segment 행은 argv 에서 해소돼 기록된다" "$rc" "0"
+sa_merge S34
+check "34: 고친 뒤에는 그 세그먼트의 행위가 해소기를 지난다" "$rc" "3"
+if sa_names_rule; then
+  ok "34: 이제 세우는 것은 상한이 아니라 리뷰 룰이다 (세그먼트가 되살아났다)"
+else
+  bad "34 거절 주체" "$msg"
+fi
+sa_seg_row S34 리뷰없음
+check "34: 상한을 넘겨 푸는 행은 여전히 거절된다 (탈출구가 한 방향이다)" "$rc" "2"
+
+# --- 35. 다시 쓰인 머지도 착지로 판정된다 ------------------------------------
+#
+# 조상 검사만으로 판정하면 squash·rebase 로 머지하는 저장소에서 세그먼트 팁은
+# 베이스의 조상이 결코 되지 않는다. 그러면 미착지가 그 sha 에 대해 영구적인
+# 답이 되고, 미착지는 근거만으로 닫히므로 포함 술어가 한 번도 불리지 않은 채
+# 이연된 리뷰 의무가 전부 소멸한다 — 변경은 베이스에 들어가 있는데.
+sa_new '다시 쓰인 머지' 선머지후리뷰
+sa_seg_row S35 선머지후리뷰
+sa_commit '세그먼트 작업' >/dev/null
+sa_merge S35 "$SA_SEGBR:refs/heads/parked"
+check "35: 머지가 통과하고 의무를 남긴다" "$rc" "0"
+OID35=$(sa_ob_id S35)
+m35=$(sa_field "$(sa_ob_last "$OID35")" '머지 커밋')
+# 서버 측 squash 를 형상으로 흉내 낸다 — 베이스에 팁과 같은 트리의 새 커밋을
+# 앉히고 민다. 팁 자신은 베이스의 조상이 되지 않는다.
+( cd "$SA_WT" \
+  && sq=$(git commit-tree "$m35^{tree}" -p "$(git rev-parse "$SA_BASE")" -m squash) \
+  && git update-ref "refs/heads/$SA_BASE" "$sq" \
+  && git push -q origin "$SA_BASE" ) >/dev/null 2>&1
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$m35" "refs/remotes/origin/$SA_BASE" >/dev/null 2>&1 ); then
+  bad "35 전제" "머지 커밋이 베이스의 조상이다 — 이 항목은 다시 쓰인 머지를 재야 한다"
+else
+  ok "35: 머지 커밋은 베이스의 조상이 아니다 (다시 쓰인 머지의 형상이다)"
+fi
+sa_fulfil "$OID35"
+check "35: 그 의무는 근거만으로 닫히지 않는다 (착지로 판정돼 포함 검사가 돈다)" "$rc" "2"
+case "$msg" in
+  *"덮는 리뷰가 없습니다"*) ok "35: 거절이 포함을 지목한다 — 미착지 갈래로 새지 않았다" ;;
+  *) bad "35 문면" "$msg" ;;
+esac
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S35 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$m35"
+check "35: 그 커밋을 덮는 리뷰 기록이 쓰인다" "$rc" "0"
+sa_fulfil "$OID35"
+check "35: 덮는 리뷰가 있으면 닫힌다" "$rc" "0"
+check "35: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID35")" '이행 판정')" "착지·포함"
+
+# --- 36. 「끔」 아래에서 팁이 다른 두 머지는 빚 둘을 남긴다 -------------------
+#
+# 의무 슬롯을 (런, 세그먼트)로만 키잉하면 룰이 꺼진 창에서 두 번째 머지가 첫
+# 머지의 열린 슬롯에 접혀 행을 하나도 남기지 않는다. 그 하나를 이행하면 첫 팁
+# 기준으로 닫히고 종료 조건 9 는 깨끗해지며, 두 팁 사이의 모든 것이 리뷰 없이
+# 베이스에 들어가 있고 빚졌다는 흔적조차 남지 않는다.
+sa_new '끔 아래 두 팁' 선머지후리뷰 '**리뷰-후-머지**: 끔'
+sa_seg_row S36 선머지후리뷰
+sa_commit '작업 1' >/dev/null
+sa_merge S36 "$SA_SEGBR:refs/heads/parked1"
+check "36: 첫 머지가 통과한다" "$rc" "0"
+n36=$(sa_ob_count)
+sa_commit '작업 2' >/dev/null
+sa_merge S36 "$SA_SEGBR:refs/heads/parked2"
+check "36: 새 팁의 두 번째 머지도 통과한다 (룰이 꺼져 있다)" "$rc" "0"
+check "36: 그 두 번째 머지가 자기 의무를 발행한다 (빚이 접히지 않는다)" "$(sa_ob_count)" "$((n36 + 1))"
+n36ids=$(sa_ob_rows | grep -F "세그먼트=S36 " | tr '|' '\n' \
+         | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u | grep -c .)
+check "36: 두 머지가 서로 다른 슬롯을 연다" "$n36ids" "2"
+# 멱등성은 그대로여야 한다 — 팁이 움직이지 않은 머지는 새 슬롯을 열지 않는다.
+n36b=$(sa_ob_count)
+sa_merge S36 "$SA_SEGBR:refs/heads/parked3"
+check "36: 팁이 그대로인 세 번째 머지는 새 슬롯을 열지 않는다 (멱등성 유지)" "$(sa_ob_count)" "$n36b"
+
+( cd "$REPO" && git worktree remove --force "$ORPH" ) >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# 34. The shift launcher's three outcomes, and the number it launches under.
 #
 # Nothing in this suite ever RAN `gate_launch_shift`. Its three results — held
 # behind a live stage, an approval issued on the handoff floor, and an actual
