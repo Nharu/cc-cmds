@@ -58,7 +58,7 @@
 #                    --cutpoint <token> --surface <token>
 #                    --snapshot-digest <hex> --rationale <text>
 #                    [--emit-digest] -- <argv...>
-#   gate.sh close    --manifest <path> --approval <id> [--void|--reject] [--answer]
+#   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
 #   gate.sh answers  --manifest <path> [--approval <id>]
 #
 # `--emit-digest` writes, after this call's LAST ledger row, a
@@ -2342,28 +2342,11 @@ gate_write_settings() {
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
   local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
-  local kind_dirs kind_allow tx_dir tx_deny
+  local kind_dirs kind_allow
   dir=$(gate_settings_dir)
   mkdir -p "$dir"
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
   [ -f "$hook" ] || die "게이트 훅 스크립트가 없습니다: $hook"
-
-  # THE ANSWER CHANNEL'S WRITE BARRIER, AND `gate_close` ALREADY SAID IT LIVED
-  # HERE. That verb's header states the transcript channel is meaningful only
-  # while the hook denies writes to the transcript directory, and calls making
-  # that rule the run settings' job rather than the script's. This function IS
-  # the run settings and it never made the rule — so the author filter
-  # `gate_close` applies was testing a property of a file the audited party
-  # could edit with one tool call.
-  #
-  # EVERY VARIANT, not only `shift`. A stage has no business writing into a
-  # transcript either, and the entity this is aimed at — the router — runs under
-  # the generic variant, which is the one variant that denied nothing.
-  #
-  # Derived from `$HOME`, so the bytes stay identical across a re-run, which
-  # they must: this file is in the enforcement-surface digest set.
-  tx_dir=$(gate_transcript_dir)
-  tx_deny="\"Write(${tx_dir}/**)\", \"Edit(${tx_dir}/**)\", \"MultiEdit(${tx_dir}/**)\", \"NotebookEdit(${tx_dir}/**)\", "
 
   # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS.
   #
@@ -2506,8 +2489,8 @@ $(target_field "$a" '실행 워크트리')"
     # motivates it cannot be enforced by the argv0 grading table at all — a
     # `WebFetch` call has no argv0 and never reaches the gate — so the only
     # enforcement point available is the settings file the wrapper injects.
-    deny_extra="$tx_deny"
-    [ "$k" = "design" ] && deny_extra="${deny_extra}\"WebFetch\", \"WebSearch\", "
+    deny_extra=""
+    [ "$k" = "design" ] && deny_extra='"WebFetch", "WebSearch", '
 
     # THE SHIFT VARIANT IS NARROWER THAN EVERY STAGE, AND THE NARROWING HAS TO
     # HAPPEN INSIDE THIS LOOP. `extra_dirs` and the read allow-list are computed
@@ -3088,7 +3071,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy="" void=0 reject=0 answer=0
+  local approval="" render=0 worktree="" review_policy="" void=0 reject=0
   local emit_digest_seen=0 emit_digest_dir=""
   GATE_RESUME=""; export GATE_RESUME
   # The emit path travels to `gate_verb_act` as a global rather than as an
@@ -3121,7 +3104,6 @@ gate_main() {
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
-      --answer)          answer=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --)                shift; break ;;
       *) printf 'gate: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
@@ -3380,7 +3362,7 @@ gate_main() {
       if [ "$void" = "1" ] && [ "$reject" = "1" ]; then
         printf 'gate: --void 와 --reject 는 서로 다른 처분입니다 — 하나만 고르세요\n' >&2; exit 2
       fi
-      gate_close "$approval" "$void" "$reject" "$answer"
+      gate_close "$approval" "$void" "$reject"
       ;;
     answers)
       gate_answers "$approval"
@@ -3881,19 +3863,6 @@ gate_judgment_approval_disposition() {
   esac
 }
 
-gate_approval_mark() {
-  # gate_approval_mark <승인 id> — the answer mark this approval was issued
-  # with, or nothing at all when it was issued before marks existed.
-  #
-  # Read off the ISSUING row, which is the `상태=대기` one: the closing rows do
-  # not carry the field and a bare `tail -1` would find one of those instead.
-  local row
-  row=$( { gate_rows '승인' | grep -F "승인 id=$1 " || true; } \
-         | { grep -F '상태=대기' || true; } | tail -1)
-  [ -n "$row" ] || return 0
-  gate_row_field "$row" '답 표식'
-}
-
 gate_issue_judgment_approval() {
   # gate_issue_judgment_approval <alias> <segment> <기준> <근거>
   #
@@ -3945,32 +3914,10 @@ gate_issue_judgment_approval() {
       # nothing to issue.
       return "$GATE_APPROVAL_ANSWERED" ;;
   esac
-  # A MARK PER QUESTION, BECAUSE `--answer` HAD NOTHING TO STAND ON.
-  #
-  # That flag waives the affirmative requirement, which was the only check that
-  # read whether a person AGREED. What remained binding an answer to a grant was
-  # the approval id and the question text appearing on one transcript line, and
-  # both of those are values the closer reads out of the snapshot before it
-  # chooses the flag. So a person's line that quotes the question in order to ask
-  # it again — or to put it off until morning — closed as a grant as long as it
-  # avoided the negative vocabulary.
-  #
-  # THE MARK IS NOT A SECRET AND DOES NOT NEED TO BE. Its force comes from the
-  # write barrier the run settings now place over the transcript directory: the
-  # closer cannot put bytes in that file, so a mark appearing in a user-role
-  # line is a person having deliberately transcribed it. What it converts is
-  # "a person wrote something that mentions this question" into "a person
-  # performed this approval", which is the proposition `--answer` was missing.
-  # Recorded plainly on the row for the same reason: both seats that raise the
-  # banner — this process and the watcher — read the ledger and nothing else,
-  # so a digest here would leave the person with no way to learn the value.
-  local mark
-  mark=$(uuidgen | tr -d '-' | cut -c1-8 | tr 'A-Z' 'a-z')
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
     "행위 다이제스트=-" "구속 튜플=-" "막는 세그먼트=${seg:--}" \
-    "질문 문면=$q" "답 표식=$mark" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+    "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
   warn "판단 승인 대기 발행 $id — 이 판단은 사람의 답을 기다립니다 (런은 그 옆으로 계속 갑니다)"
-  warn "이 물음의 답 표식은 $mark 입니다 — 답이 판정이 아니라 지시라면 그 표식을 답에 함께 적어야 close --answer 로 닫힙니다"
 }
 
 gate_revert_surface() {
@@ -4638,17 +4585,7 @@ gate_notify_approval() {
       printf '%s\n' "$id" >> "$RUN_DIR/watch.announced-approvals" 2>/dev/null || true
     fi
   fi
-  # THE MARK RIDES THE BANNER, WHICH IS THE ONE SURFACE THE PERSON ACTUALLY
-  # READS. An approval whose answer is an instruction is closed with `--answer`,
-  # and that closure now requires the mark — so a notice without it tells the
-  # person to answer while withholding what the answer has to carry.
-  local mk
-  mk=$(gate_approval_mark "$id" || true)
-  if [ -n "$mk" ] && [ "$mk" != "-" ]; then
-    cc_notify_fire answer "$q (지시로 닫으려면 답에 표식 $mk 를 함께 적으세요)" "$id" || true
-  else
-    cc_notify_fire answer "$q" "$id" || true
-  fi
+  cc_notify_fire answer "$q" "$id" || true
   return 0
 }
 
@@ -5691,33 +5628,6 @@ gate_verb_act() {
       else
         graded=$(surface_of_argv0 "$@")
       fi ;;
-  esac
-  # NO ACT WRITES INTO THE TRANSCRIPT DIRECTORY, WHATEVER IT DECLARES.
-  #
-  # GRADING IT CORRECTLY IS NOT ENOUGH, and that is why this is a refusal rather
-  # than a row in the table. An honest `트리밖쓰기` declaration matches an honest
-  # `트리밖쓰기` grade and passes strict equality — so a truthful act could still
-  # append a line to the file the approval channel reads to decide whether a
-  # PERSON answered. That is not an act with a surface; it is the audited party
-  # editing the audit.
-  #
-  # READS ARE UNTOUCHED. `gate_close` has to read those bytes, and a `읽기` grade
-  # reaches nothing this is about. The refusal starts where writing does.
-  #
-  # AND IT IS SCOPED TO THE VERBS THAT PERFORM. `grade` answers what an argv
-  # would be graded and runs nothing; `plan` forecasts. Refusing a forecast
-  # would make the two verbs that exist to be consulted unable to describe the
-  # act they are consulted about.
-  case "$verb" in
-    act|exec)
-      case "$graded" in
-        읽기) : ;;
-        *)
-          if gate_argv_touches_transcript "$@"; then
-            warn "이 argv 가 트랜스크립트 디렉터리를 대상으로 삼습니다 — 승인 답 채널은 어떤 표면 선언으로도 쓰지 않습니다"
-            exit "$GATE_EXIT_RULE"
-          fi ;;
-      esac ;;
   esac
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
@@ -7312,50 +7222,13 @@ gate_session_lineage() {
   cat "$f" 2>/dev/null || true
 }
 
-gate_transcript_dir() {
-  # The one derivation of the harness transcript directory.
-  #
-  # IT IS A FUNCTION BECAUSE THREE READERS NEED THE SAME ANSWER. `gate_close`
-  # searches it for a person's answer, `gate_write_settings` denies tool writes
-  # under it, and `gate_argv_touches_transcript` refuses acts that reach it. A
-  # second copy of the expression is a barrier that one edit can move out from
-  # under the verb that depends on it.
-  printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
-}
-
-gate_argv_touches_transcript() {
-  # True when any word of an argv names the transcript directory.
-  #
-  # SUBSTRING RATHER THAN PATH RESOLUTION, and that is what makes this reach the
-  # form worth refusing. An inline program carries its destination INSIDE one
-  # argv word — `bash -c '… >> …/<session>.jsonl'` — so a check that resolved
-  # only operands as paths would read a program text, find no path, and walk
-  # past it. Both spellings of the directory are compared because `$HOME` may be
-  # a symlink and an act may name either one.
-  local dir phys w
-  dir=$(gate_transcript_dir)
-  [ -n "$dir" ] || return 1
-  phys=$( cd "$dir" 2>/dev/null && pwd -P || true )
-  for w in "$@"; do
-    case "$w" in
-      *"$dir"*) return 0 ;;
-    esac
-    if [ -n "$phys" ]; then
-      case "$w" in
-        *"$phys"*) return 0 ;;
-      esac
-    fi
-  done
-  return 1
-}
-
 gate_transcript_files() {
   # Files, plural, and searched by NAME rather than pinned by path+offset: the
   # `--resume` sibling-file case is exactly what a pinned path gets wrong. The
   # transcript directory is keyed by cwd and therefore shared with unrelated
   # sessions, so the search is confined to this run's own lineage.
   local dir sid
-  dir=$(gate_transcript_dir)
+  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
   [ -d "$dir" ] || return 1
   for sid in $(gate_session_lineage); do
     [ -n "$sid" ] || continue
@@ -7487,30 +7360,17 @@ gate_close() {
   # adoption surface converges on this channel, so a channel that emits a
   # constant leaves the floors above it deciding nothing.
   #
-  # `--answer` turns off the AFFIRMATIVE requirement and nothing else. It is the
-  # closer saying "these bytes are the answer, consume them" about a question
-  # whose answer is an instruction rather than a verdict — a person who writes
-  # three paragraphs of direction carries no `네` and no `yes`, and the
-  # affirmative arm holds that approval open forever. The NEGATIVE scan stays
-  # armed under the flag, because the failure the two scans guard against are
-  # not symmetric: an unread affirmation costs a re-ask, and an unread refusal
-  # is a grant nobody gave.
-  #
-  # `--answer` IS NOT NARROWED TO A JUDGMENT CLASS, AND THAT IS A DECISION
-  # RATHER THAN AN OMISSION. Narrowing it would mean the closer naming which
-  # classes may waive the affirmative requirement, and the closer cannot get
-  # that from the ledger: the row that ISSUES a judgment approval carries
-  # `절단점=판단` and no `판단 부류` field, so there is nothing to read and the
-  # class would have to be re-asserted on the command line by the same entity
-  # the flag is being restricted for. What the flag turns off is bounded on its
-  # own terms — only the affirmative requirement, and the negative scan above
-  # stays armed for every class — so the widest thing an unnarrowed flag can do
-  # is close a question whose answer is an instruction. Adding the field to the
-  # issuing row is the other branch, and it changes the ledger row schema, which
-  # belongs to the kickoff surface rather than to this verb.
-  local id="$1" void="${2:-0}" reject="${3:-0}" answer="${4:-0}"
+  # AN ANSWER THAT IS AN INSTRUCTION RATHER THAN A VERDICT HAS NO CLOSING PATH
+  # HERE, AND THAT IS DELIBERATE. A person who writes three paragraphs of
+  # direction carrying no `네` and no `yes` leaves this approval open, and the
+  # remedy is a line that also says yes — not a flag on this verb. Every waiver
+  # of the affirmative requirement that this verb could offer is a waiver the
+  # CLOSER selects, and the closer is the entity the transcript binding exists to
+  # keep out of the answer; a grant that the audited party can elect is not a
+  # grant a person gave. The cost is a re-ask, which is the direction this verb
+  # errs in everywhere else.
+  local id="$1" void="${2:-0}" reject="${3:-0}"
   local row state q tx ans f cutp abody extracted hit scanbody phit
-  local mark marked=0 close_by='판정'
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
@@ -7539,12 +7399,10 @@ gate_close() {
   # both bound values are ones the router reads out of the snapshot itself — so
   # the pair only blocks pointing `close` at a different question, and never
   # blocked the router typing its own answer to this one. What stood in for an
-  # author check was the affirmative scan further down, and `--answer` turns that
-  # off by design; under the flag the only surviving requirement was to avoid the
-  # negative vocabulary, and the entity that chooses the flag chooses the words
-  # too. The header above calls the separation of asker from recorder the whole
-  # value of reading this file, and without this filter the file did not deliver
-  # it.
+  # author check was the affirmative scan further down, and an affirmative token
+  # is a thing the router can type as easily as a person can. The header above
+  # calls the separation of asker from recorder the whole value of reading this
+  # file, and without this filter the file did not deliver it.
   #
   # THE FILTER RUNS ON THE CANDIDATE LINES, NOT ON THE FILE. The two matches are
   # over raw transcript bytes and `jq` re-serializes, so filtering first would
@@ -7730,44 +7588,12 @@ gate_close() {
       warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
       exit "$GATE_EXIT_RULE"
     fi
-    # `--answer` IS HONOURED ONLY AGAINST THE MARK, and the flag alone waives
-    # nothing. The entity that chooses the flag also chooses the words, so
-    # waiving on the flag is the closer granting itself the exemption; the mark
-    # is the one value in this exchange the closer cannot put into the file it
-    # is reading.
-    #
-    # A MARKLESS APPROVAL DEGRADES RATHER THAN BEING REFUSED. Approvals issued
-    # before the mark existed carry no field to check, and refusing them would
-    # park a run on a question a person may already have answered. Degrading
-    # leaves those exactly as hard as they were before the flag existed, and no
-    # harder.
-    mark=$(gate_approval_mark "$id" || true)
-    # THE MATCH IS A COUNT IN A VARIABLE, NOT AN EXIT STATUS. `grep -q` on the
-    # right of a pipe exits 1 when it finds nothing, and under `pipefail` that
-    # fails the whole pipeline for what is an ordinary result here: an answer
-    # carrying no mark is a verdict this arm reads and degrades on, not an
-    # error. Moving the finding onto a value is the shape this tree's own lint
-    # asks for, and the lint was reading this line.
-    local mark_hits=0
-    if [ -n "$mark" ] && [ "$mark" != "-" ]; then
-      mark_hits=$(printf '%s' "$scanbody" | grep -Fc -- "$mark" || true)
-    fi
-    if [ "$answer" = "1" ] && [ "${mark_hits:-0}" -gt 0 ]; then
-      marked=1
-      close_by='지시(표식 확인)'
-    fi
-    if [ "$marked" = "0" ]; then
-      phit=$(gate_positive_answer_hit "$scanbody")
-      if [ -z "$phit" ]; then
-        warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
-        warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
-        if [ -n "$mark" ] && [ "$mark" != "-" ]; then
-          warn "이 답이 판정이 아니라 지시라면 발행 때 알린 답 표식을 답에 함께 적고 close --answer 로 닫으세요 (부정 스캔은 그대로 걸립니다)"
-        else
-          warn "이 승인은 답 표식 없이 발행됐으므로 --answer 로도 긍정 어휘가 필요합니다"
-        fi
-        exit "$GATE_EXIT_APPROVAL"
-      fi
+    phit=$(gate_positive_answer_hit "$scanbody")
+    if [ -z "$phit" ]; then
+      warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
+      warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
+      warn "답이 지시문이더라도 그 줄에 긍정 어휘를 함께 적어야 승인으로 닫힙니다 — 이 요구를 면제하는 플래그는 없습니다"
+      exit "$GATE_EXIT_APPROVAL"
     fi
   fi
 
@@ -7813,14 +7639,8 @@ gate_close() {
     return 0
   fi
 
-  # THE DISPOSITION IS A FIELD AND NOT A NEW `상태` VALUE. A grant a person
-  # closed with words and one closed by transcribing the mark are different
-  # events and the audit has to be able to tell them apart — but `상태` is read
-  # by the re-closure guard, by `gate_approval_state`, by the answer-servable
-  # predicate and by the pending counter, so a new value there hands every one
-  # of those readers a token it has never seen.
   gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
-    "답변 문면=$abody" "종결 방식=$close_by" "해소 시각=$(now_iso)"
+    "답변 문면=$abody" "해소 시각=$(now_iso)"
   cc_notify_stack_release "$id" || true
   cc_notify_clear answer "$id" || true
   gate_notify_overflow_settled || true

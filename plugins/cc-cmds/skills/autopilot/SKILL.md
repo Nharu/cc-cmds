@@ -351,7 +351,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 | `plan` | dry run — would this act pass, and if not which rule refuses it. Every read-only axis the same argv would meet as an `act` is evaluated, including the enforcement surface, the termination conditions, the segment-row existence check and the predecessor-landing check; the axes a dry run cannot reach are named on stderr rather than passed over silently |
 | `act` | check, record, perform a pipeline act |
 | `exec` | check, record, perform one bash line |
-| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no, `--answer` that the bytes are an instruction rather than a verdict — it drops the affirmative-token requirement and keeps the negative scan) |
+| `close` | resolve a pending approval from the harness-written transcript (`--void` records that it should not have been asked, `--reject` that it was asked and the answer is no). A grant needs an affirmative token in the person's own line and there is no flag that waives it |
 | `answers` | read-only — print an answer's untruncated bytes by approval id, or list the ids on hand |
 
 **Several `act` kinds take FIELDS after `--` rather than a command**, because what they perform is the ledger row itself. **Write them; they are not bookkeeping.** The merge rule reads a `cycle` row, and termination condition 1 counts `segment` rows — a run that never writes either cannot merge anything and cannot propose that it is done, and both failures look exactly like the mechanism working.

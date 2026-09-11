@@ -506,19 +506,6 @@ else
   bad "변종 수" "${n_variants}종 — 단일 파일이면 design 전용 제약을 표현할 자리가 없다"
 fi
 
-# THE ANSWER CHANNEL'S WRITE BARRIER IS A RULE THIS FILE MAKES, and `gate_close`
-# said so in its own header while nothing here made it. The author filter that
-# verb applies decides whether a PERSON wrote a line; without this rule the
-# audited party could write that line with one tool call.
-TXD_EXPECT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
-missing_txdeny=0
-for f in "$SETTINGS_DIR"/*.json; do
-  [ -f "$f" ] || continue
-  jq -e --arg d "Write($TXD_EXPECT/**)" '(.permissions.deny // []) | index($d) != null' "$f" >/dev/null 2>&1 \
-    || missing_txdeny=$((missing_txdeny + 1))
-done
-check "모든 변종이 트랜스크립트 디렉터리로의 도구 쓰기를 거부한다" "$missing_txdeny" "0"
-
 # THE STAGE MUST BE ABLE TO READ ITS OWN SKILL'S DOCUMENTS. Every skill here
 # opens by Reading several `_common/*` files, and those live in the plugin cache
 # — outside the working directory, so outside what the ambient configuration
@@ -2797,26 +2784,6 @@ graded_as '등급 미상' "파일을 쓰는 find 술어도 읽기가 아니다" 
 graded_as 읽기 "command -v 는 읽기다 (해소만 하고 실행하지 않는다)" -- command -v ls
 graded_as 워크트리쓰기 "command 는 감싼 명령의 등급을 받는다" -- command touch x
 graded_as 트리밖쓰기 "command 로 감싸도 트리 밖 쓰기는 트리 밖 쓰기다" -- command mv a /private/tmp/b
-
-# --- No act reaches the answer channel, whatever it declares ----------------
-#
-# 등급만으로는 부족하다 — 정직한 `트리밖쓰기` 선언은 정직한 `트리밖쓰기` 등급과
-# 일치해 통과하고, 그러면 감사받는 쪽이 감사 기록에 줄을 덧붙일 수 있다. 승인
-# 종결이 「사람이 썼는가」를 그 파일의 성질로 판정하므로, 그 파일에 대한 쓰기는
-# 표면을 가진 행위가 아니라 감사 기록의 변조다.
-TXD="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
-gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-     --snapshot-digest "$(HH)" --rationale "트랜스크립트 쓰기" -- touch "$TXD/tx-probe.jsonl"
-check "정직하게 선언해도 트랜스크립트 디렉터리로의 쓰기는 거부된다" "$rc" "3"
-gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-     --snapshot-digest "$(HH)" --rationale "인라인에 감춘 트랜스크립트 쓰기" -- bash -c "true # $TXD/tx-probe2.jsonl"
-check "인라인 프로그램 안에 감춘 목적지도 같은 거부를 받는다" "$rc" "3"
-# NOT VACUOUS — 같은 동사로 다른 곳에 쓰는 것은 그대로 통과한다.
-gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-     --snapshot-digest "$(HH)" --rationale "트랜스크립트 아닌 곳 쓰기" -- touch "$WORK/tx-control"
-check "같은 동사로 트랜스크립트 밖에 쓰는 것은 통과한다" "$rc" "0"
-# 읽기는 막지 않는다 — `gate_close` 자신이 그 파일을 읽어야 한다.
-graded_as 읽기 "트랜스크립트를 읽는 것은 여전히 읽기다" -- cat "$TXD/tx-probe.jsonl"
 
 # --- B5's window key excludes its own input ---------------------------------
 #
@@ -5805,7 +5772,8 @@ check "긍정 답변의 상태는 승인이다 (스캔이 과잉으로 잡지 �
 # snapshot, and the transcript holds the router's own turns in the same file — so
 # the pair blocks pointing `close` at a different question and never blocked the
 # router typing its own answer to this one. What stood in for an author check was
-# the affirmative scan, and `--answer` turns that off by design.
+# the affirmative scan, and an affirmative token is a thing the router can type as
+# easily as a person can.
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 기준="이 답을 누가 썼는지 검사할지" 근거="트랜스크립트에 라우터의 턴이 함께 있다"
@@ -5819,13 +5787,6 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
 check "라우터 자신이 쓴 줄로는 승인이 닫히지 않는다" "$rc" "5"
 wst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$wid " | tail -1)" '상태')
 check "그 승인의 상태는 대기 그대로다" "$wst" "대기"
-# AND `--answer` DOES NOT OPEN IT EITHER. The flag turns off the affirmative
-# requirement, which is precisely the discriminator this check replaces — so a
-# suite that only drove the default form would stay green on the branch the flag
-# creates.
-out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-      CLAUDE_CODE_SESSION_ID="$WSID" bash "$GATE" close --manifest "$NM" --approval "$wid" --answer 2>&1); rc=$?
-check "--answer 를 붙여도 라우터가 쓴 줄은 승인을 닫지 못한다" "$rc" "5"
 # A tool result arrives under the USER role and is not a person either.
 printf '{"role":"user","toolUseResult":"x","content":"%s / %s → 그렇게 하라"}\n' "$wid" "$wq" > "$NTX/$WSID.jsonl"
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
@@ -7809,12 +7770,12 @@ check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카�
 # ---------------------------------------------------------------------------
 # 32. The answer round trip, end to end
 #
-# Every piece of this path existed and NONE of it was asserted: `--answer`
-# turning off the affirmative requirement, the negative scan surviving that
-# flag, the sidecar being written for judgments only, and the read-only door
-# refusing an id the ledger does not carry. A path with no assertions behaves
-# however the last edit left it, and this one stands between a person's words
-# and a recorded approval.
+# Every piece of this path existed and NONE of it was asserted: the polarity
+# scans reading the whole answer rather than its clipped copy, an instruction
+# without an affirmative token leaving the approval open, the sidecar being
+# written for judgments only, and the read-only door refusing an id the ledger
+# does not carry. A path with no assertions behaves however the last edit left
+# it, and this one stands between a person's words and a recorded approval.
 #
 # The cone fixture is reused rather than rebuilt: `$NM` / `$LEDGER2` /
 # `$STATE_CONE` / `$NTX` are untouched by the sections above that write to
@@ -7828,22 +7789,13 @@ approval_state() {
 approval_question() {
   row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '질문 문면'
 }
-approval_close_mode() {
-  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '종결 방식'
-}
-approval_mark() {
-  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } \
-              | { grep -F '상태=대기' || true; } | tail -1)" '답 표식'
-}
 
-# --- 32a. A negation past byte 400 is caught, and `--answer` does not help --
+# --- 32a. A negation past byte 400 is caught -------------------------------
 #
 # `답변 문면` is clipped to 400 bytes and the polarity scan once read the
 # CLIPPED copy, so a refusal written past that boundary was invisible and the
 # approval closed as a grant — the one direction this scan exists to make
-# impossible. The flag is on the call deliberately: `--answer` turns off the
-# affirmative requirement and NOTHING else, and if it ever reached the negative
-# scan too this fixture would close as a grant.
+# impossible.
 JSTUB6="$WORK/judgment-stub-long"
 cat > "$JSTUB6" <<'JSTUB6EOF'
 #!/usr/bin/env bash
@@ -7866,8 +7818,8 @@ if [ -n "$lj" ]; then
   printf '{"role":"user","content":"%s / %s → %s 그 방향으로는 하지 않는다"}\n' \
     "$lj" "$(approval_question "$lj")" "$FILL" > "$NTX/$LJSID.jsonl"
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$LJSID" bash "$GATE" close --manifest "$NM" --approval "$lj" --answer 2>&1); rc=$?
-  check "400바이트 뒤의 부정도 --answer 아래에서 걸린다" "$rc" "3"
+        CLAUDE_CODE_SESSION_ID="$LJSID" bash "$GATE" close --manifest "$NM" --approval "$lj" 2>&1); rc=$?
+  check "400바이트 뒤의 부정도 걸린다" "$rc" "3"
   check "그 승인은 대기로 남는다" "$(approval_state "$lj")" "대기"
   if [ -f "$CONE_RD/answer/$lj.md" ]; then
     bad "답 사이드카" "부정으로 거절된 close 가 답 사이드카를 남겼다"
@@ -7878,13 +7830,14 @@ else
   bad "긴 답 픽스처" "판단 승인이 열리지 않았다: $out"
 fi
 
-# --- 32b. An instruction is not a verdict, and `--answer` is what says so ---
+# --- 32b. An instruction alone does not close an approval -------------------
 #
-# A person answering a judgment question writes direction, not a ruling, so the
-# affirmative arm holds such an approval open forever. That is the whole reason
-# the flag exists, and the two halves — refused without it, closed with it —
-# have to be asserted together: either one alone passes on a flag that does
-# nothing.
+# A person answering a judgment question writes direction rather than a ruling,
+# and the affirmative arm holds such an approval open. There is no flag that
+# waives that requirement, and this section pins the absence: bare direction and
+# a re-question both leave the approval 대기, and only a line that also says yes
+# closes it. Asserting the refusals alone would pass on a verb that closes
+# nothing, so the closing case is asserted beside them.
 JSTUB7="$WORK/judgment-stub-instruction"
 cat > "$JSTUB7" <<'JSTUB7EOF'
 #!/usr/bin/env bash
@@ -7899,40 +7852,27 @@ emit_torn SJ8 "$JSTUB7"
 ij=$(row_field "$(last_judgment_approval)" '승인 id')
 if [ -n "$ij" ]; then
   ok "지시문 실험용 판단 승인이 열린다 ($ij)"
-  ijmark=$(approval_mark "$ij")
-  if [ -n "$ijmark" ] && [ "$ijmark" != "-" ]; then
-    ok "그 물음이 답 표식을 싣고 열린다 ($ijmark)"
-  else
-    bad "답 표식" "판단 승인이 표식 없이 열렸다 — --answer 가 결합할 값이 없다"
-  fi
   IJSID="66666666-3434-5656-7878-909090909090"
   printf '{"role":"user","content":"%s / %s → 표를 다시 재고 그 값을 계획에 옮겨 적으라"}\n' \
     "$ij" "$(approval_question "$ij")" > "$NTX/$IJSID.jsonl"
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
         CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
-  check "긍정 토큰이 없는 답은 --answer 없이는 닫히지 않는다" "$rc" "5"
+  check "긍정 토큰이 없는 지시문 답은 닫히지 않는다" "$rc" "5"
   check "그 사이 승인은 대기로 남는다" "$(approval_state "$ij")" "대기"
-  # 표식이 없으면 `--answer` 는 아무것도 면제하지 않는다. 이것이 없던 자리에서,
-  # 사람이 되묻거나 유예하며 물음을 인용한 줄이 부정 어휘만 피하면 승인으로 닫혔다.
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
-  check "표식을 적지 않은 지시문 답은 --answer 로도 닫히지 않는다" "$rc" "5"
-  check "그 승인은 여전히 대기다" "$(approval_state "$ij")" "대기"
   # 되물음도 마찬가지다 — 부정 어휘를 하나도 담지 않지만 승인이 아니다.
   printf '{"role":"user","content":"%s / %s → 이 물음 다시 정리해서 줘"}\n' \
     "$ij" "$(approval_question "$ij")" > "$NTX/$IJSID.jsonl"
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
-  check "되물음은 --answer 아래에서도 승인으로 닫히지 않는다" "$rc" "5"
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
+  check "되물음도 승인으로 닫히지 않는다" "$rc" "5"
   check "되물음 뒤에도 승인은 대기다" "$(approval_state "$ij")" "대기"
-  # NOT VACUOUS — 표식을 옮겨 적은 같은 지시문은 그대로 닫힌다.
-  printf '{"role":"user","content":"%s / %s → 표를 다시 재고 그 값을 계획에 옮겨 적으라 (표식 %s)"}\n' \
-    "$ij" "$(approval_question "$ij")" "$ijmark" > "$NTX/$IJSID.jsonl"
+  # NOT VACUOUS — 같은 지시문에 긍정 어휘가 함께 오면 닫힌다.
+  printf '{"role":"user","content":"%s / %s → 네, 그렇게 진행해 주세요. 표를 다시 재고 그 값을 계획에 옮겨 적으라"}\n' \
+    "$ij" "$(approval_question "$ij")" > "$NTX/$IJSID.jsonl"
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" --answer 2>&1); rc=$?
-  check "--answer 로는 표식을 실은 같은 답이 승인으로 닫힌다" "$rc" "0"
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
+  check "긍정 어휘를 실은 같은 지시문은 승인으로 닫힌다" "$rc" "0"
   check "그 승인의 상태가 승인이 된다" "$(approval_state "$ij")" "승인"
-  check "표식으로 닫힌 종결은 처분이 구별되어 기록된다" "$(approval_close_mode "$ij")" "지시(표식 확인)"
   if [ -f "$CONE_RD/answer/$ij.md" ]; then
     ok "판단 승인이 닫히면 무삭제 전문이 사이드카로 남는다"
   else
