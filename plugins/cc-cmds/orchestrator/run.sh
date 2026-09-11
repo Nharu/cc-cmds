@@ -25,7 +25,8 @@
 #      structured output and halt records; the driver transcribes.
 #
 # Usage:
-#   run.sh --doc <abs-path> [--run-id <id>]
+#   run.sh --manifest <abs-path> [--run-id <id>] [--replan]
+#   run.sh --doc <abs-path> [--run-id <id>] [--replan]
 #
 # THERE IS NO `--detach`. The run is driven by the main session's model — the
 # router — and detaching would put the deciding turn somewhere nobody can see.
@@ -33,10 +34,20 @@
 # and a detach flag is the one thing that would silently undo it.
 #   run.sh --self-check
 #
+# THERE IS NO RESUME EITHER, and that is the other thing this block has to say
+# out loud. Pointing this script at a run id whose ledger already carries
+# segments does NOT continue that run: it plans a fresh one from generation 1,
+# under different segment ids, on a base the earlier plan never used. Naming
+# only `--doc` and `--run-id` here left "continue this run" and "start a new
+# one" indistinguishable at the call site, and the second reading is the one
+# that re-implements work already merged. Such an invocation is REFUSED unless
+# `--replan` says the second plan was meant.
+#
 # Exit codes:
 #   0 — run reached DONE, or --self-check passed
 #   1 — hard stop (foreign grant, unreadable contract state)
-#   2 — invalid invocation
+#   2 — invalid invocation, including a run id the ledger already planned
+#       without `--replan`
 #   3 — interpreter floor not met
 
 # ---------------------------------------------------------------------------
@@ -284,6 +295,12 @@ wake_source() { platform_supported && printf 'kern.waketime' || printf ''; }
 # run id, so whichever value went in, the other consumer read the wrong path.
 DOC=""; DOC_DIR=""; DOC_KEY=""; SLUG=""; DOC_SLUG=""; BASE=""; RUN_ID=""; RUN_DIR=""
 LEDGER=""; GRANT=""; REPORT=""
+# How this run's rows are found inside the ledger. Resolved once at startup by
+# `ledger_scope_resolve`, BEFORE `ledger_init` can append this run's heading —
+# after that append the question it answers is no longer askable. Empty means
+# "not resolved", which every reader below treats as the block form, so a caller
+# that never resolves reads exactly what it read before.
+LEDGER_SCOPE=""
 
 derive_paths() {
   # Document-derived paths. Retained for the degenerate case — a run that names
@@ -319,6 +336,12 @@ derive_paths() {
 # a document becomes one optional element inside it.
 # ---------------------------------------------------------------------------
 MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
+
+# Set only by `--replan`. Default 0 so the guard below refuses by default: the
+# expensive mistake is re-planning a run that is already under way, and a
+# default that permits it makes the refusal reachable only by remembering to
+# ask for it.
+REPLAN=0
 
 manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
 
@@ -1402,6 +1425,44 @@ review_policy_index() {
 # ---------------------------------------------------------------------------
 # Ledger. Single writer, main worktree, append-only.
 # ---------------------------------------------------------------------------
+ledger_scope_resolve() {
+  # ledger_scope_resolve — decide how this run's rows are found, and do it while
+  # the answer is still visible.
+  #
+  # THE HEADING IS NOT A LEDGER-WIDE CONVENTION, and reading as if it were is how
+  # the guard below came to pass on the very state it was built to refuse.
+  # `ledger_init` is the only writer that emits `## 실행 <run-id>`; the gate is
+  # the ledger's OTHER writer and emits no headings at all. Measured on this
+  # repository's own `docs/pipeline-run/`: of the 68 ledgers carrying a
+  # `- \`segment\`` row, 65 carry no `## 실행 ` line anywhere — and one of the 65
+  # is the ledger of a run that had a segment planned, a branch, and an open pull
+  # request. Point a second invocation at such a file and `ledger_init` appends
+  # the heading at the END, every existing row stays above it, and a block-scoped
+  # read answers "no segments" for a run that plainly has one.
+  #
+  #   블록 — the ledger already carries `## 실행 ` lines, so the heading
+  #          discipline is in force in this file and rows are attributable by
+  #          block. An empty block then genuinely means a new run, which is what
+  #          lets the second run of a document proceed.
+  #   파일 — no `## 실행 ` line anywhere AND the ledger is named for this run
+  #          (`<run-id>.md`, the manifest path). One file is one run by
+  #          construction of the name, so every row in it is this run's and no
+  #          anchor is needed to say so.
+  #   불명 — no `## 실행 ` line anywhere, the file is NOT named for this run, and
+  #          it carries `segment` rows. Those rows cannot be attributed to a run
+  #          at all, and "I found no rows" is the one answer that must not be
+  #          given for them.
+  if [ -f "$LEDGER" ] && grep -qE '^## 실행 ' "$LEDGER" 2>/dev/null; then
+    LEDGER_SCOPE=블록
+  elif [ "$(basename "$LEDGER")" = "$RUN_ID.md" ]; then
+    LEDGER_SCOPE=파일
+  elif [ -f "$LEDGER" ] && grep -qF -- '- `segment`' "$LEDGER" 2>/dev/null; then
+    LEDGER_SCOPE=불명
+  else
+    LEDGER_SCOPE=블록
+  fi
+}
+
 ledger_init() {
   mkdir -p "$(dirname "$LEDGER")"
   if [ ! -f "$LEDGER" ]; then
@@ -1412,6 +1473,13 @@ ledger_init() {
       printf '\n## 계획 %s\n' "$RUN_ID"
     } > "$LEDGER"
   fi
+  # AN ANCHORLESS LEDGER STAYS ANCHORLESS. Appending the heading here would make
+  # the file look block-disciplined to the NEXT invocation (`--replan`, or any
+  # call naming the same file), which would then scope to a block holding none of
+  # the rows written before the append — the same silent zero, one call later.
+  # `불명` is included for the same reason and one more: the run is about to be
+  # refused, and a refused run leaves the ledger as it found it.
+  case "$LEDGER_SCOPE" in 파일|불명) return 0 ;; esac
   grep -qE "^## 실행 $RUN_ID$" "$LEDGER" || printf '\n## 실행 %s\n' "$RUN_ID" >> "$LEDGER"
 }
 
@@ -1665,6 +1733,106 @@ ledger_last() {
 }
 
 # ---------------------------------------------------------------------------
+# Reading THIS run's rows back.
+#
+# `ledger_last` above is unscoped on purpose — it answers about the newest row
+# of a series whoever wrote it. The questions below are about one run id, and
+# the ledger is keyed by DOCUMENT: every run of that document appends to the
+# same file under its own `## 실행` heading. An unscoped read of `segment`
+# therefore answers with a different night's segments, and a guard built on one
+# would refuse the second run of every document that ever completed a first.
+# ---------------------------------------------------------------------------
+run_section_rows() {
+  # run_section_rows <계열> — rows of that series inside this run's block.
+  #
+  # `awk` with string equality and no regex, which is the form this repository
+  # already established for Korean keys: a Korean heading handed to a regex
+  # engine is the construction that had to be rewritten once after failing on
+  # one CI leg and nowhere else.
+  #
+  # `LEDGER_SCOPE` decides whether there is a block to find at all. Under `파일`
+  # the whole file is this run's and the headings — if a fresh `ledger_init`
+  # wrote any — carry no scoping meaning, so they are not consulted.
+  awk -v h="## 실행 $RUN_ID" -v p="- \`$1\`" -v scope="${LEDGER_SCOPE:-블록}" '
+    BEGIN { whole = (scope == "파일"); inblk = whole }
+    !whole && $0 == h { inblk = 1; next }
+    !whole && substr($0, 1, 3) == "## " { inblk = 0 }
+    inblk && index($0, p) == 1 { print }
+  ' "$LEDGER" 2>/dev/null || true
+}
+
+run_segment_ids() {
+  run_section_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' \
+    | sed 's/[[:space:]]*$//' | sort -u
+}
+
+run_segment_field() {
+  # run_segment_field <세그먼트 id> <key> — last row for that id wins, which is
+  # the same append-only advance the gate's reader implements. Spelled as its
+  # twin rather than reinvented: the two read one file, and a disagreement about
+  # which row wins is a disagreement about what the run currently is.
+  local sid="$1" key="$2"
+  run_section_rows 'segment' \
+    | { grep -F "id=$sid " || true; } | tail -1 \
+    | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+# ---------------------------------------------------------------------------
+# In-flight guard.
+#
+# A run id is a KEY, not a name, and pointing a second invocation at one whose
+# ledger already carries segments is not a resume — this driver has no resume.
+# It plans from generation 1 again, and the re-plan is SILENT: the log reads
+# `매니페스트 검사 통과` and `게이트 통과`, exactly as a first kickoff does.
+#
+# Measured: a run whose three segments had landed commits and open pull requests
+# was re-planned under different ids, with a different branch naming rule, on a
+# base the first plan never used — and a fresh worktree and branch were created
+# to re-implement work that was already waiting to merge. It was killed 80
+# seconds in; left alone it would have opened duplicate pull requests, and at a
+# cutpoint of 머지 or above it would have reached somewhere irreversible.
+#
+# Refusing is the whole repair, and it is deliberately a REFUSAL rather than an
+# automatic resume: what such an invocation should have done instead is a
+# routing decision the driver cannot make for the caller. `--replan` is the
+# caller saying the second plan was meant, which is what makes the two intents
+# distinguishable at the call site without claiming a resume that does not
+# exist.
+# ---------------------------------------------------------------------------
+check_inflight() {
+  local ids n id st
+  # A LEDGER WHOSE ROWS BELONG TO NO NAMEABLE RUN IS NOT AN EMPTY LEDGER. The
+  # reader below can only answer about rows it can attribute, and answering 0 for
+  # rows it cannot is the shape that let this guard pass on a run that already
+  # held an open pull request. There is nothing to route on here, so it refuses.
+  if [ "$LEDGER_SCOPE" = "불명" ]; then
+    echo "run.sh: 원장 $LEDGER 에 세그먼트 행이 있는데 어느 런의 것인지 정할 수 없습니다" >&2
+    echo "run.sh: 이 원장에는 「## 실행 <run-id>」 표제가 하나도 없고 파일 이름도 이 run-id 가 아닙니다 — 그 행들을 이 런의 것으로도 남의 것으로도 읽을 수 없으므로 거절합니다" >&2
+    echo "run.sh: 새 run-id 로 부르거나, 이 원장의 행이 어느 런의 것인지 표제로 갈라 주세요" >&2
+    exit 2
+  fi
+  ids=$(run_segment_ids)
+  n=$(printf '%s\n' "$ids" | grep -c . || true)
+  [ "${n:-0}" -gt 0 ] || return 0
+  if [ "${REPLAN:-0}" = "1" ]; then
+    warn "run-id $RUN_ID 의 원장에 이미 세그먼트 $n 개가 있습니다 — --replan 이 있으므로 다시 계획합니다"
+    ledger_row '자율 승인' "kind=replan" "결정=이미 세그먼트가 있는 런을 다시 계획한다" \
+      "기각된 대안=거절하고 호출부에 되돌린다" "등급=1" \
+      "기준=호출부가 --replan 으로 두 번째 계획을 명시했다" \
+      "되돌리는 법=--replan 없이 같은 run-id 로 다시 부르면 이 호출은 거절된다" \
+      "근거=기존 세그먼트 $n 개"
+    return 0
+  fi
+  echo "run.sh: run-id $RUN_ID 는 이미 계획된 런입니다 — 이 호출은 이어받기가 아니라 재계획입니다" >&2
+  echo "run.sh: 이 드라이버에는 이어받기가 없습니다. 다음 스테이지를 라우팅하려면 gate.sh 의 act/exec 를 쓰고, 정말로 다시 계획하려면 --replan 을 붙이거나 새 run-id 로 부르세요" >&2
+  for id in $ids; do
+    st=$(run_segment_field "$id" '상태')
+    echo "run.sh:   세그먼트 $id — 상태 ${st:-없음}" >&2
+  done
+  exit 2
+}
+
+# ---------------------------------------------------------------------------
 # Volatile run directory. Process handles live here and NOWHERE else: a stale
 # record and a stale process then die together, so pid reuse can never make the
 # driver kill an unrelated live process. It is under XDG_STATE_HOME rather than
@@ -1673,18 +1841,225 @@ ledger_last() {
 # ---------------------------------------------------------------------------
 rundir_init() {
   RUN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$RUN_ID"
-  # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest-to`
-  # writes a path the caller names, and that write is graded by nothing, guarded
-  # by nothing and recorded in no ledger field — so the set of paths it can
-  # reach is the whole of its containment. The run directory itself is the run's
-  # CONTROL PLANE: `done` stops the watcher by existing, a stage's `.rc` is read
-  # back and laundered into a ledger row's exit code, `ledger.lock` is what
-  # makes the hash-chained ledger's mutual exclusion hold. Nothing owns this
+  # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest`
+  # write is graded by nothing, guarded by nothing and recorded in no ledger
+  # field — so the directory it lands in is the whole of its containment. The
+  # flag takes no path today and the gate derives one, which is what keeps that
+  # containment from depending on a caller; the quarantine is what makes the
+  # derivation safe to trust rather than the other way round.
+  #
+  # The run directory itself is the run's CONTROL PLANE: `done` stops the
+  # watcher by existing, a stage's `.rc` is read back and laundered into a
+  # ledger row's exit code, `ledger.lock` is what makes the hash-chained
+  # ledger's mutual exclusion hold. Nothing owns this
   # subdirectory but the emission, so an ungraded write inside it can destroy
   # only a value the next caller re-derives anyway.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
+  # The lane this run opened in, and the orchestrator directory it actually
+  # loaded. `config-dir` is tier 2 of `resolve_account`, and it is written HERE
+  # — before any stage exists, so the tiers below it decide the value exactly
+  # once and every later dispatch reads this file instead of re-deciding. That
+  # is the whole mechanism keeping one run's stages on one lane.
+  #
+  # NEITHER FILE IS OVERWRITTEN WHEN IT ALREADY HOLDS A USABLE RECORD. A driver
+  # restarting against a live run directory must not move the lane a running
+  # stage is already spending.
+  #
+  # THE GUARD ASKS WHETHER A USABLE RECORD CAME BACK, NOT WHETHER A FILE EXISTS.
+  # `[ ! -f ]` is false for a ZERO-BYTE record, so a driver that died between the
+  # redirection and the `printf` left a file the restart then PRESERVED — and the
+  # resolver reads an empty record as "absent" and falls through, so every
+  # dispatch after that re-decides the lane from the environment and the machine
+  # setting. That is the exact inverse of the reason tier 2 exists. Measured:
+  # truncating the record with `: >` and re-running this function left it at zero
+  # bytes, and the resolver then returned the default lane at rc=0.
+  # `write_run_record` removes the window; the rewrite below recovers a record
+  # already stuck in it.
+  #
+  # `[ -s ]` HERE IS A REDUNDANT COVER AND IS KEPT ONLY TO DECLARE THE INTENT.
+  # What actually does the recovery is `lane_record_read` answering "genuinely
+  # absent" for an empty record, which leaves `cur` empty and takes the rewrite
+  # branch. Measured: swapping this back to `[ -f ]` leaves the suite green,
+  # because the rewrite happens either way. Said plainly rather than left to read
+  # as the load-bearing line, since a reader who trusts it would be relying on
+  # nothing.
+  #
+  # AND AN EXISTING RECORD IS VALIDATED HERE RATHER THAN AT FIRST DISPATCH. A
+  # record pointing at a directory that does not exist used to let `started-at`,
+  # the EXIT trap, `check_grant`, `ledger_init` and `notify_probe` all run before
+  # the run died — the failure belongs at init, where the operator is still
+  # looking at it. The `die` on the refusal is a second redundant cover, and
+  # measured as one: removing it still stops the run, because the resolver
+  # immediately below meets the same broken record and its own `|| die` fires.
+  # It is kept because it names the cause where the cause is, rather than as an
+  # account-resolution failure three lines later.
+  #
+  # WHAT THIS DOES NOT DO is tell a planted record from an honest one. A record
+  # naming a real directory validates whether the driver wrote it or a stage in
+  # another run did; what closes that is the hook refusing writes into a run
+  # directory that is not the writer's own. This check closes the broken record
+  # and the truncated one, and those only.
+  #
+  # AND THE VALIDATION USED TO REFUSE THIS FUNCTION'S OWN WRITE. Reading an
+  # existing record with `[ -d ]` while writing a new one with no check at all
+  # is an asymmetry, not two independent decisions: tier 4 of the resolver hands
+  # back `$HOME/.claude` unvalidated, so on a host that has never run the CLI the
+  # first entry recorded a directory that does not exist — at rc=0, quietly — and
+  # every entry after it met that record here and died. The gate runs this
+  # function on EVERY entry, so what an operator saw was not "the install failed"
+  # but "a run that worked once stops working", and the record survives a reboot
+  # under XDG_STATE_HOME. The write side below now closes that asymmetry across
+  # every reachable leg of the read predicate — see the block above the `mkdir`,
+  # which enumerates the three legs, says which check closes which, and says why
+  # the remaining one cannot be reached. The earlier form of this sentence said
+  # it in the singular and it was true of one leg only.
+  local cfg cur rc lp
+  cur=""
+  if [ -s "$RUN_DIR/config-dir" ]; then
+    rc=0
+    lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 기존 config-dir" \
+      "이 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+    if [ "$rc" = "1" ]; then
+      # THE STOP IS RIGHT AND ITS SILENCE IS NOT. Refusing to fall back is what
+      # the design asks for; what it does not ask for is that the refusal leave
+      # nothing durable behind. `die` writes stderr and exits, and on the gate's
+      # path this function runs BEFORE `ledger-path` is written — so an
+      # unattended run that broke here left no ledger row, no park, and no
+      # instruction for whoever reads in the morning. Nobody is watching stderr
+      # at night, which makes that outcome observationally identical to the
+      # silent failure the "fail loudly" rule exists to prevent. The rule's
+      # "audible" means a durable record here, not a stream.
+      #
+      # So the STOP stays and only the SILENCE goes. A park is a stop, not a
+      # fallback. Where a previous entry already wrote `ledger-path` the ledger
+      # it names is adopted and the refusal lands as one `blocked` row — and
+      # that is exactly the shape which produces this refusal, since the first
+      # entry succeeds and only the ones after it meet the broken record. With
+      # no such file the run has no ledger to write into and `die` alone is the
+      # whole of what can be done.
+      #
+      # MOVING THIS CALL AFTER THE LEDGER INIT WOULD REMOVE THE CONDITION, and
+      # it is not done here: the call site is `gate.sh`, which is outside this
+      # change's declared file set.
+      # AND THE READ THAT FEEDS THE PARK IS NOT ALLOWED TO BE SILENT EITHER.
+      # An earlier form was `lp=$(sed -n '1p' … 2>/dev/null) || lp=""`, which
+      # folds "could not read" into "not there" — the exact anti-pattern
+      # `lane_record_read` below was introduced to remove, reappearing in the
+      # code whose only purpose is to make this stop durable. Measured: with
+      # `ledger-path` at mode 000 the park did not stand and the ledger grew by
+      # zero rows, quietly. The fallback stays (a park needs a ledger and there
+      # may genuinely be none), but it stops being quiet, and the two failures
+      # are told apart the same way `lane_record_read` tells them apart —
+      # `[ -r ]` is "cannot open", the exit status is everything else. They call
+      # for different actions in a morning audit.
+      lp=""
+      if [ -s "$RUN_DIR/ledger-path" ]; then
+        if [ ! -r "$RUN_DIR/ledger-path" ]; then
+          warn "런 디렉터리의 원장 경로 기록을 읽을 수 없습니다: $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
+        else
+          # `|| rc=$?` for the same reason as in `lane_record_read`: under
+          # `set -e` a failed assignment ends the shell before the next line,
+          # which would make this branch unreachable.
+          rc=0
+          lp=$(sed -n '1p' "$RUN_DIR/ledger-path" 2>/dev/null) || rc=$?
+          if [ "$rc" != "0" ]; then
+            lp=""
+            warn "런 디렉터리의 원장 경로 기록을 읽는 중 실패했습니다(rc=$rc): $RUN_DIR/ledger-path — park 를 세우지 못하고 정지만 남깁니다"
+          fi
+        fi
+      fi
+      if [ -n "$lp" ] && [ -f "$lp" ] && [ -n "${BASE:-}" ]; then
+        LEDGER="$lp"
+        park "$RUN_ID" run 막힘 "게이트 park" \
+          "런 디렉터리의 레인 기록이 가리키는 디렉터리를 쓸 수 없습니다: $RUN_DIR/config-dir" \
+          "rm \"$RUN_DIR/config-dir\""
+      fi
+      # THE REFUSAL CARRIES THE RECOVERY COMMAND VERBATIM. Without it the person
+      # reading in the morning knows a run is stuck and not which file to remove.
+      die "런 디렉터리에 이미 있는 레인 기록을 쓸 수 없습니다 — 첫 디스패치까지 끌고 가지 않고 init 에서 멈춥니다. 회복: rm \"$RUN_DIR/config-dir\""
+    fi
+    if [ "$rc" = "0" ]; then cur="$LANE_RECORD"; fi
+  fi
+  if [ -z "$cur" ]; then
+    cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — 런 디렉터리를 초기화할 수 없습니다"
+    # SATISFY THE READ PREDICATE BEFORE RECORDING — ALL OF IT, NOT ONE LEG.
+    # `lane_record_read` puts THREE predicates on the value: non-empty, free of
+    # control characters, and a directory. An earlier form of this block carried
+    # only `[ -d "$cfg" ] || mkdir -p "$cfg"` under a comment saying "the
+    # asymmetry to remove is unvalidated-on-write / validated-on-read, and the
+    # write side is here" — stated in the singular, unconditionally. It was one
+    # leg of three, and it held only for absolute paths. Measured on the other
+    # two legs, both reached through tier 1 (`CLAUDE_CONFIG_DIR`):
+    #
+    #   TAB in the value            first entry rc=0, second rc=1 ("제어 문자")
+    #   relative path "rel-lane"    first entry rc=0 and the RELATIVE STRING is
+    #                               what persists; entering from another cwd
+    #                               gives rc=1
+    #
+    # Both reproduce the very regression this function was changed to remove: a
+    # first entry that succeeds quietly and every entry after it dying on its
+    # own record. So the two `case` arms below stand where the write happens.
+    #
+    # THE NEWLINE VALUE IS A SEPARATE FAILURE MODE, not a subset of the control
+    # character one. `sed -n '1p'` truncates it silently, so the record names a
+    # DIFFERENT path than the one written, the refusal reads "not a directory"
+    # rather than "control character", and if the truncated prefix happens to be
+    # a real directory there is no refusal at all — the run simply proceeds in
+    # the wrong lane. Rejecting it on the write side means that shape is never
+    # persisted in the first place.
+    #
+    # LEG (1), NON-EMPTY, IS UNREACHABLE and therefore not checked here: tiers
+    # 1-3 all require `[ -n ]` before returning, and tier 4 returns at minimum
+    # `/.claude`. Stating that is the point — an unchecked leg that cannot be
+    # reached is not the same as one that was forgotten.
+    #
+    # THE CHECKS SIT HERE AND NOT IN `resolve_account`, and the reason is a
+    # requirement rather than taste. Tier 1 has to return byte-identically to
+    # what the single-tier form produced, so the resolver may not touch its
+    # value at all. These arms do not touch it either — they stop the run.
+    case "$cfg" in
+      /*) : ;;
+      *) die "레인 디렉터리는 절대 경로여야 합니다: $cfg — 상대 경로는 기록에 그대로 영속되고, 프로브의 한 줄 계약에서 마지막 필드로 다른 프로세스·다른 cwd 의 소비자에게 발행되므로 그쪽에서 해소할 수 없습니다" ;;
+    esac
+    case "$cfg" in
+      *[[:cntrl:]]*) die "레인 디렉터리에 제어 문자가 있습니다: $cfg — 기록하면 다음 진입이 자기 기록을 거부하고, 개행은 기록을 읽는 쪽에서 조용히 절단되어 쓴 것과 다른 경로가 판정됩니다" ;;
+    esac
+    # MATERIALIZE BEFORE RECORDING. Measured with no `$HOME/.claude` present:
+    # the first `rundir_init` returned rc=0 and the second rc=1; adding this
+    # `mkdir -p` alone made both rc=0. Creating an empty directory is idempotent
+    # and is what the CLI itself does on first use, so this adds no state the
+    # tool would not have created anyway.
+    #
+    # THE MODE IS EXPLICIT BECAUSE THIS IS THE FIRST FILESYSTEM SIDE EFFECT the
+    # unvalidated value gets. Only two tiers reach this `mkdir` with a value
+    # nothing has checked — tier 1, which the resolver states outright it does
+    # not validate, and tier 4; tiers 2 and 3 came through `lane_record_read`
+    # and so already passed `[ -d ]`, which means `[ -d "$cfg" ]` is true and
+    # this branch is not entered at all. The two `case` arms above narrow even
+    # those two to absolute, control-character-free paths.
+    #
+    # The limitation on the mode is worth stating so the next reader does not
+    # over-read it. On the tier 4 path it matters: tier 4 names the CLI's own
+    # directory, the CLI creates that directory 0700, and the condition for this
+    # arm to run is precisely that it does not exist yet — so the driver getting
+    # there first is the normal path of this fix, and an umask-dependent 0755
+    # would be a widening the CLI never chose. On the tier 1 path an operator
+    # names their own lane and the existing lanes on a machine may well already
+    # be 0755; `[ -d ]` is true for those and their mode is not touched. The
+    # binding tier of the design says 0700 only about `vault/` and says nothing
+    # at all about lane directory modes, so this is a safe default rather than a
+    # conformance requirement.
+    [ -d "$cfg" ] || ( umask 077; mkdir -p "$cfg" ) 2>/dev/null \
+      || die "레인 디렉터리를 만들 수 없습니다: $cfg — 기록하면 다음 진입이 자기 기록을 거부하므로 여기서 멈춥니다"
+    write_run_record "$RUN_DIR/config-dir" "$cfg" \
+      || die "런 디렉터리에 레인 기록을 쓰지 못했습니다: $RUN_DIR/config-dir"
+  fi
+  if [ ! -s "$RUN_DIR/orchestrator-dir" ]; then
+    write_run_record "$RUN_DIR/orchestrator-dir" "$ORCH_DIR" \
+      || die "런 디렉터리에 오케스트레이터 기록을 쓰지 못했습니다: $RUN_DIR/orchestrator-dir"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1694,8 +2069,148 @@ rundir_init() {
 # envelope lands on the "dead + predicate false" row, and that row would
 # otherwise throw the work straight back at the account that just ran out.
 # ---------------------------------------------------------------------------
+LANE_RECORD=""
+lane_record_read() {
+  # lane_record_read <파일> <출처 문면> <폴백의 해악> — 기록된 레인 한 줄을 읽어
+  # `LANE_RECORD` 에 넣는다. 세 결과를 가른다:
+  #
+  #   0 — 읽었고 값이 있고 쓸 수 있다. `LANE_RECORD` 에 들어 있다.
+  #   1 — 거부. 사유를 stderr 에 적었다. 호출자는 다음 단으로 내려가면 안 된다.
+  #   2 — 기록이 진짜로 없다. 다음 단으로 내려가도 된다.
+  #
+  # 「읽을 수 없었다」와 「읽었더니 비어 있었다」를 가르는 것이 이 함수의 요점이다.
+  # 이전 형태는 두 단이 각각 `v=$(sed -n 1p … 2>/dev/null)` 뒤에 `[ -n "$v" ]` 만
+  # 보았고, 읽을 수 없는 파일은 `sed` 를 실패시키고 `2>/dev/null` 이 사유를 버리므로
+  # `v` 가 비어 — 기록이 아예 없었던 것처럼 그 단을 건너뛰고 조용히 아래 단으로
+  # 폴백했다. 그런데 읽을 수 없는 기록은 없는 것도 빈 것도 아니라 **존재하지만
+  # 읽히지 않는** 기록이고, 바로 아래 주석이 금지한다고 적은 폴백에 경고 한 줄 없이
+  # 착지한다. 실측: 내용이 유효한 레인 디렉터리인 파일을 `chmod 000` 한 뒤 두 단
+  # 모두 rc=0 으로 기본 레인을 반환했고 stderr 에는 아무것도 나오지 않았다. 3단
+  # 파일은 운영자가 쓰는 것이라 `sudo` 아래에서 만들어진 root 소유 사본이 평범한
+  # 도달 경로이고, 그 뒤 모든 무인 런이 아무 데도 메시지를 남기지 않고 잘못된
+  # 계정을 쓴다.
+  #
+  # 제어 문자도 여기서 거부한다. 이 값은 프로브의 네 필드 계약에서 **마지막
+  # 필드**로 발행되므로, 탭 하나가 필드를 하나 늘리고 개행 하나가 레코드를 통째로
+  # 만들어 낸다 — 스왑 스케줄러가 읽는 줄이다.
+  #
+  # 한 함수인 이유는 두 단이 **같은** 처리를 받아야 하기 때문이다. 나란한 두 블록은
+  # 한쪽만 고쳐도 통과하고, 그때 아래 주석의 진술은 절반만 참인 채로 남는다.
+  #
+  # `[ -r ]` 검사와 `sed` 종료 상태 검사는 서로의 중복 커버다 — 실측으로 확인했다:
+  # 어느 한쪽을 지워도 거부는 그대로 나고 거부 사유 문면만 바뀐다. 둘 다 두는 이유는
+  # 두 실패가 같은 것이 아니기 때문이다. 「열 수 없다」는 권한이고 「읽다 실패했다」는
+  # 그 밖의 모든 것이며, 무인 런의 아침 감사에서 그 둘은 다른 행동을 부른다.
+  # `sed` 의 종료 상태는 `rc=$?` 로 따로 받지 않고 `|| rc=$?` 로 받는다. 이 파일은
+  # `set -e` 아래 돌므로 실패한 대입은 다음 줄이 실행되기 전에 셸을 끝내고, 그러면
+  # 이 함수가 존재하는 이유인 「읽기 실패」 분기가 도달 불가가 된다.
+  local f="$1" src="$2" harm="$3" v rc
+  LANE_RECORD=""
+  [ -f "$f" ] || return 2
+  if [ ! -r "$f" ]; then
+    warn "$src 를 읽을 수 없습니다: $f — 기록이 없는 것이 아니라 읽히지 않는 것이므로 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  rc=0
+  v=$(sed -n '1p' "$f" 2>/dev/null) || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "$src 를 읽는 중 실패했습니다(rc=$rc): $f — 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  [ -n "$v" ] || return 2
+  case "$v" in
+    *[[:cntrl:]]*)
+      warn "$src 에 제어 문자가 들어 있습니다: $f — 폴백하지 않고 정지합니다(폴백하면 $harm, 그리고 이 값은 프로브의 한 줄 계약에서 마지막 필드로 발행됩니다)"
+      return 1 ;;
+  esac
+  if [ ! -d "$v" ]; then
+    warn "$src 가 디렉터리가 아닙니다: $v ($f) — 폴백하지 않고 정지합니다(폴백하면 $harm)"
+    return 1
+  fi
+  LANE_RECORD="$v"
+  return 0
+}
+
+write_run_record() {
+  # write_run_record <경로> <값> — 같은 디렉터리의 임시 파일에 쓰고 `mv` 로 제자리에
+  # 옮긴다. 리다이렉션은 `printf` 가 돌기 **전에** 파일을 만들고 잘라 내므로, 그
+  # 순간 죽은 드라이버(또는 ENOSPC)는 0바이트 기록을 남긴다 — `lane-probe.sh` 가 pid
+  # 파일에 대해 논증하는 바로 그 만들고-쓰기 위험이다. 그리고 0바이트 레인 기록은
+  # 특히 나쁘다: 리졸버가 그것을 「없음」으로 읽고 폴백하므로 이후 모든 디스패치가
+  # 환경과 머신 설정에서 레인을 다시 결정하는데, 그것이 정확히 2단을 둔 이유의
+  # 정반대다. 이 형태에서는 기록이 「없거나 완전」 두 상태만 갖는다.
+  local dst="$1" val="$2" tmp="$1.tmp.$$"
+  printf '%s\n' "$val" > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$dst" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
 resolve_account() {
-  printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  # FOUR TIERS, in order: the environment, this run's own record, the machine's
+  # setting for the operator, the built-in default. Tier 1's return value is
+  # byte-identical to what the single-tier form produced, which is what keeps a
+  # run that sets the variable unchanged by this widening.
+  #
+  # TIER 1 IS NOT VALIDATED AND THAT IS DELIBERATE. The acceptance criterion for
+  # this widening is that a run setting the variable gets back exactly what the
+  # single-tier form gave it, byte for byte; a check here would change that
+  # return value. So a control character reaching through the environment is a
+  # stated residue rather than a closed hole — it touches the probe's
+  # `--resolve` single-field output and cannot manufacture a four-field record,
+  # and the probe's own field printer refuses it there.
+  #
+  # TIER 2 IS WHY A RUN DOES NOT SPLIT ACROSS LANES. This resolver is called on
+  # every stage DISPATCH and not once per run, so with only the environment and
+  # the machine setting, two stages of one run could resolve differently — the
+  # setting file is editable while the run is going, and the environment is not
+  # inherited identically by every spawn path. `rundir_init` writes the answer
+  # once and every dispatch after it reads that file.
+  #
+  # TIERS 2 AND 3 DO NOT FALL THROUGH ON A BAD VALUE. A recorded path that is
+  # not a directory is a BROKEN record, not an absent one; falling back would
+  # spend the opposite lane's quota under a run somebody deliberately sent
+  # elsewhere, and it would do it silently. Absent or empty genuinely is absent
+  # and falls through to the next tier.
+  #
+  # AND "ABSENT" IS DECIDED BY WHETHER THE FILE COULD BE READ, NOT BY WHAT `sed`
+  # HAPPENED TO PRINT. An unreadable record is neither absent nor empty, and the
+  # old form folded it into "empty" and fell through anyway. `lane_record_read`
+  # above returns three values so that this distinction has somewhere to live,
+  # and both tiers call the same function so it cannot be half-fixed.
+  #
+  # THE REFUSAL IS A NON-ZERO RETURN WITH THE REASON ON STDERR, NEVER `die`.
+  # Every call site is a command substitution, so an `exit` here would kill only
+  # the subshell and hand the caller an empty string — which concatenates into
+  # `/projects` and reads as an ordinary miss. The callers below turn the
+  # non-zero into the stop.
+  local f rc
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    printf '%s' "$CLAUDE_CONFIG_DIR"
+    return 0
+  fi
+
+  if [ -n "${RUN_DIR:-}" ]; then
+    rc=0
+    lane_record_read "$RUN_DIR/config-dir" "런 디렉터리의 config-dir" \
+      "한 런의 스테이지들이 서로 다른 레인에 착지합니다" || rc=$?
+    if [ "$rc" = "1" ]; then return 1; fi
+    if [ "$rc" = "0" ]; then
+      printf '%s' "$LANE_RECORD"
+      return 0
+    fi
+  fi
+
+  f="${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/config-dir"
+  rc=0
+  lane_record_read "$f" "설정 파일의 config-dir" \
+    "운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 씁니다" || rc=$?
+  if [ "$rc" = "1" ]; then return 1; fi
+  if [ "$rc" = "0" ]; then
+    printf '%s' "$LANE_RECORD"
+    return 0
+  fi
+
+  printf '%s' "$HOME/.claude"
 }
 account_has_headroom() { return 1; }   # trivial resolver: no alternate account
 
@@ -2164,11 +2679,19 @@ transcript_path() {
   # function. It aborted quietly through a caller's `|| printf ''`, and the
   # visible symptom was that every healthy stage looked permanently silent.
   local stage="$1"
-  local cachef uuid p
+  local cachef uuid p cfg
   cachef="$RUN_DIR/$stage.transcript"
   if [ -f "$cachef" ]; then p=$(cat "$cachef"); [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
+  # The attempt number is READ BACK FROM THE PIN rather than recomputed. This
+  # function derives the session uuid, and a second count of the same thing is
+  # how the uuid and the stream path came from two different attempts.
   uuid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
-  p=$(find "$(resolve_account)/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
+  # The resolver is called into a VARIABLE rather than inline. Inline, a refusal
+  # substitutes the empty string and `find /projects` is an ordinary miss — the
+  # fail-closed tier would report "no transcript" in exactly the case it exists
+  # to make loud. The resolver has already named the reason on stderr.
+  cfg=$(resolve_account) || return 1
+  p=$(find "$cfg/projects" -name "$uuid.jsonl" 2>/dev/null | sed -n '1p')
   [ -n "$p" ] || return 1
   printf '%s\n' "$p" > "$cachef"
   printf '%s' "$p"
@@ -2185,7 +2708,14 @@ stage_spawn() {
   # second, divergent liveness path.
   local stage="$1" cwd="$2" prompt="$3"; shift 3
   local cfg out err pid pgid attempt
-  cfg=$(resolve_account)
+  # A stage is never launched on an unresolved lane. The resolver refuses only
+  # when a recorded path is broken rather than absent, and launching anyway
+  # would put this stage on whichever lane the empty string happens to name.
+  #
+  # `out` is NOT assigned here. It is derived from the pinned attempt further
+  # down, and assigning it from an unpinned path first would leave two spellings
+  # of the same log in one dispatch.
+  cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
   rm -f "$RUN_DIR/$stage.rc"
@@ -2710,7 +3240,72 @@ boundary_idempotent() {
 
 # ---------------------------------------------------------------------------
 # Merge gate (S8).
+#
+# `gh pr checks` reports "still running" with an exit code of its own — 8 —
+# distinct from the 1 it reports for a failure. Reading the call as a boolean
+# threw that distinction away and mapped both onto the failure park. Measured on
+# a pull request with two checks in flight: the unqualified call returned 8 and
+# the `--required` call returned 1 with zero rows. This repository's macOS leg
+# runs 30-45 minutes, so an unattended run that pushes and goes straight to
+# merge reads its checks at their least settled moment nearly every time, and
+# what the morning got was a recorded failure for checks that had not failed —
+# sending the reader into logs that were green or empty.
+#
+# The wait below is the other half. Unattended there is no later turn that comes
+# back on its own, so a merge path with no wait cannot ever see a settled check;
+# the polling budget is what this run has instead of a person re-checking.
 # ---------------------------------------------------------------------------
+
+# The exit code `gh pr checks` uses for "not settled yet". It is a VALUE and not
+# a truth, which is the whole reason the boolean form could not tell it from 1.
+readonly GH_CHECKS_PENDING=8
+
+# Read at call time rather than frozen at load. The test harness sources this
+# file once and then exercises the wait, and an hour-long budget baked in at
+# source time would leave that path untestable — which is how it stayed unbuilt.
+checks_poll_sec() { printf '%s' "${CC_ORCH_CHECKS_POLL_SEC:-60}"; }
+checks_wait_max() { printf '%s' "${CC_ORCH_CHECKS_WAIT_SEC:-3600}"; }
+
+pr_checks_rc() {
+  # pr_checks_rc <slug> <pr> <required-only 0|1> — the exit code of ONE probe.
+  local slug="$1" pr="$2" req="$3" rc=0
+  if [ "$req" = "1" ]; then
+    gh_q "$slug" pr checks "$pr" --required >/dev/null || rc=$?
+  else
+    gh_q "$slug" pr checks "$pr" >/dev/null || rc=$?
+  fi
+  printf '%s' "$rc"
+}
+
+pr_checks_settle() {
+  # pr_checks_settle <slug> <pr> <required-only 0|1> — poll until the checks
+  # stop reporting pending, and print the LAST exit code observed. Printing the
+  # code rather than a boolean is the point: the caller has three dispositions
+  # and a boolean carries two.
+  #
+  # THE BUDGET IS SPENT IN ATTEMPTS, not in elapsed seconds. Spending it in
+  # seconds makes a poll interval of zero — a legitimate setting, and the only
+  # one a test can use — an interval that never advances the clock, so the loop
+  # would never reach its cap.
+  #
+  # The wall-clock deadline outranks this budget. A merge landing after it is a
+  # terminal act nobody authorized for that hour, so waiting past it could only
+  # produce one — the same reason the driver runs this gate inline rather than
+  # spawning it.
+  local slug="$1" pr="$2" req="$3" rc poll cap tries=0 max_tries
+  poll=$(checks_poll_sec); cap=$(checks_wait_max)
+  if [ "$poll" -gt 0 ]; then max_tries=$(( cap / poll )); else max_tries="$cap"; fi
+  while :; do
+    rc=$(pr_checks_rc "$slug" "$pr" "$req")
+    [ "$rc" = "$GH_CHECKS_PENDING" ] || break
+    [ "$tries" -lt "$max_tries" ] || break
+    if past_deadline; then break; fi
+    tries=$((tries + 1))
+    if [ "$poll" -gt 0 ]; then sleep "$poll"; fi
+  done
+  printf '%s' "$rc"
+}
+
 merge_gate() {
   local seg="$1" branch="$2" pr slug al
   al=$(seg_alias "$seg") || al=""
@@ -2729,17 +3324,38 @@ merge_gate() {
   # A merge grant does NOT come with an --admin exception. A driver blocked by
   # branch protection that issued itself that exception would be widening the
   # authorization silently.
-  local required_rows
-  required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || printf '0')
-  if [ "$required_rows" = "0" ]; then
-    if ! gh_q "$slug" pr checks "$pr" >/dev/null; then
+  local required_rows checks_rc req_only
+  # `|| true`, NOT `|| printf '0'`. `grep -c` prints the count on stdout even
+  # when the count is zero and THEN exits 1, so the fallback used to append a
+  # second line and the value became `0\n0` — never the `0` the test below looks
+  # for. `set -o pipefail` widens it: any non-zero from `gh` appends the extra
+  # line too, so a two-row answer came back as `2\n0`. All four combinations were
+  # run in isolation and none of them produced `0`, which pinned `req_only` to 1
+  # forever: the settle wait then polled `--required` always, that call answers
+  # with zero rows and 1 on a live pull request (measured, above), and the run
+  # parked as "필수 체크 실패" without ever having waited. Only the status needs
+  # swallowing here; the count is already out.
+  required_rows=$(gh_q "$slug" pr checks "$pr" --required | grep -c . || true)
+  if [ "$required_rows" = "0" ]; then req_only=0; else req_only=1; fi
+  checks_rc=$(pr_checks_settle "$slug" "$pr" "$req_only")
+  # PENDING IS ITS OWN DISPOSITION, and it is named as one. A park recorded here
+  # says the budget ran out with the checks still running — which is a different
+  # thing from a failure, and the difference is what sends the morning reader to
+  # the right place.
+  if [ "$checks_rc" = "$GH_CHECKS_PENDING" ]; then
+    park "$seg" act 막힘 "게이트 park" \
+      "체크가 아직 진행 중 — 대기 예산 $(checks_wait_max)초를 넘겼다 (실패가 아니다)" \
+      "gh -R $slug pr checks $pr"
+    return 2
+  fi
+  if [ "$checks_rc" != "0" ]; then
+    if [ "$req_only" = "0" ]; then
       # Interactively this branch enumerates the failed non-required checks and
       # asks. Unattended the answer never comes, so it IS the park branch.
       park "$seg" act 막힘 "게이트 park" "필수 지정이 없고 비필수 체크가 실패 — 무응답이면 머지 금지" "gh -R $slug pr merge $pr"
-      return 2
+    else
+      park "$seg" act 막힘 "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
     fi
-  elif ! gh_q "$slug" pr checks "$pr" --required >/dev/null; then
-    park "$seg" act 막힘 "게이트 park" "필수 체크 실패${GH_STDERR:+ — $GH_STDERR}" "gh -R $slug pr checks $pr --required"
     return 2
   fi
 
@@ -3235,6 +3851,83 @@ $(sed 's/#.*//' "$sib")"
   fi
   if [ "$unwired" = "0" ]; then printf 'ok   선언된 것에 전부 독자·호출부·비교자가 있다\n'
   else fails=$((fails + unwired)); fi
+
+  # --- D: the orchestrator's own sources are a REGISTERED exception ---------
+  # These scripts are in neither protection: not an input to the enforcement
+  # surface digest, and not on the hook's deny list. That is a decision, and it
+  # is asserted here so the next reader can tell it from an oversight — reading
+  # the two mechanisms and finding the orchestrator absent from both looks
+  # exactly like a hole, and someone closing that "hole" would break both.
+  #
+  # WHY EACH ONE LEAVES THEM OUT. The digest covers surfaces that neither move
+  # on their own nor are shared with the installation; these files are the
+  # shared installation, and every deploy would read as tampering. The hook
+  # denies the rule catalog and its own directory, and widening it to the whole
+  # orchestrator directory would deny the very edits a slice against this
+  # repository exists to make.
+  #
+  # WHAT ACTUALLY PROTECTS THEM IS THE CUTPOINT, NOT A DIGEST. A segment's edits
+  # land in its own linked worktree, which no running run reads; what moves the
+  # tree every run loads is a MERGE, and that is what the permission cutpoint
+  # governs. So the assertions below are that the two mechanisms still have the
+  # shape this exception was registered against, not that the files are covered.
+  local orch_ex=0 gate_file hook_file n_all n_rules n_rec
+  gate_file="$ORCH_DIR/gate.sh"
+  hook_file="$(dirname "$ORCH_DIR")/hooks/gate-pretool.sh"
+  if [ -f "$gate_file" ]; then
+    n_all=$(sed -n '/^gate_surface_digest_raw()/,/^}/p' "$gate_file" | sed 's/#.*//' \
+            | grep -cE 'ORCH_DIR|orchestrator' || true)
+    if [ "${n_all:-0}" = "0" ]; then
+      printf 'ok   등재된 예외: 구속면 다이제스트의 입력에 오케스트레이터 소스가 없다\n'
+    else
+      printf 'FAIL 구속면 다이제스트가 오케스트레이터 소스를 입력으로 삼는다 (%s건) — 등재된 예외와 어긋난다\n' "$n_all"
+      orch_ex=$((orch_ex + 1))
+    fi
+  else
+    printf 'FAIL 게이트 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$gate_file"
+    orch_ex=$((orch_ex + 1))
+  fi
+  if [ -f "$hook_file" ]; then
+    # Every mention of the orchestrator in the hook must BE the rule-catalog arm.
+    # A count comparison rather than a pattern match: it fails the moment an arm
+    # is widened, which a "does the rules arm exist" check would not.
+    #
+    # OCCURRENCES, NOT LINES. `grep -c` counts matching LINES, and the widening
+    # this assertion exists to catch does not need a new line: an arm widened in
+    # place to `*/orchestrator/rules/*|*/orchestrator/*)` leaves both counts at 1
+    # and passes, while denying every edit under the orchestrator directory —
+    # the exact shape the registered exception says is NOT denied. `grep -o`
+    # emits one line per occurrence, so the union spelling reads 2 against 1.
+    #
+    # `orchestrator-dir` IS SUBTRACTED, AND THE SUBTRACTION IS REGISTERED HERE
+    # RATHER THAN LEFT TO THE CHECKER'S SILENCE. That name is a RUN DIRECTORY
+    # RECORD FILE — `$RUN_DIR/orchestrator-dir`, one of the values the gate
+    # re-reads as its own baseline — and the hook anchors it for the same reason
+    # it anchors `config-dir`. It is not a path under the orchestrator source
+    # directory, which is what the registered exception is about, so counting it
+    # here would turn a widening detector into noise and force the anchor to be
+    # dropped for a reason that has nothing to do with the boundary.
+    #
+    # THE DETECTOR IS NOT WEAKENED BY THIS. Every spelling that would deny edits
+    # under the orchestrator directory — `*/orchestrator/*`, `*/orchestrator)`,
+    # `"$ORCH_DIR"/*` written literally — still lands in `n_all` and not in
+    # `n_rules`, because none of them is the string `orchestrator-dir`.
+    n_all=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator' | grep -c . || true)
+    n_rec=$(sed 's/#.*//' "$hook_file" | grep -o 'orchestrator-dir' | grep -c . || true)
+    n_all=$(( ${n_all:-0} - ${n_rec:-0} ))
+    n_rules=$(sed 's/#.*//' "$hook_file" | grep -o '\*/orchestrator/rules/\*' | grep -c . || true)
+    if [ "${n_rules:-0}" -ge 1 ] && [ "${n_all:-0}" = "${n_rules:-0}" ]; then
+      printf 'ok   등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다 (거부되는 것은 룰 카탈로그뿐)\n'
+    else
+      printf 'FAIL 훅의 orchestrator 언급 %s건 중 룰 카탈로그 분기는 %s건 — 등재된 예외의 문면과 어긋난다\n' \
+        "${n_all:-0}" "${n_rules:-0}"
+      orch_ex=$((orch_ex + 1))
+    fi
+  else
+    printf 'FAIL 훅 파일이 없어 등재된 예외를 확인할 수 없다: %s\n' "$hook_file"
+    orch_ex=$((orch_ex + 1))
+  fi
+  fails=$((fails + orch_ex))
 
   if [ "$fails" = "0" ]; then printf 'self-check: PASS\n'; return 0; fi
   printf 'self-check: %s FAIL\n' "$fails"; return 1
@@ -4073,6 +4766,60 @@ deps_satisfied() {
   return 0
 }
 
+# THE KICKOFF'S COPY OF THE GATE'S TWO `선행` FLOORS, and the copy carries the
+# same obligation `ledger_row`'s normalization does: a change made on one side
+# and not the other splits them silently.
+#
+# The gate applies both floors on `act --kind segment`, and every `선행` value in
+# a run reaches the ledger FIRST through the path below — kickoff writes the
+# opening `segment` row for every planned id before the gate has ever seen the
+# segment. So the one version of the field the dependency cone reads was the one
+# version neither floor had looked at, and the deferral that left it that way
+# named the ordering collision as its reason rather than hiding it.
+#
+# Both floors have to be write-time. `선행` is monotone, so a token naming a
+# segment that does not exist is permanently required and permanently
+# un-landable — and it surfaces much later as "the predecessor has not landed
+# (상태=없음)", which sends the reader to look for a segment instead of at the
+# spelling. A row that narrows an earlier one cannot be widened back at all.
+plan_dep_floor() {
+  # plan_dep_floor — one line per refusal, nothing at all when the plan passes.
+  # The universe is the plan's own ids PLUS the ids this run's ledger already
+  # knows, which is what the gate's `known` set comes to on its side.
+  local ids seg repo files deps cur prev d
+  ids=" $(cut -f1 "$RUN_DIR/plan.tsv" 2>/dev/null | tr '\n' ' ')$(run_segment_ids | tr '\n' ' ') "
+  while IFS="$(printf '\t')" read -r seg repo files deps; do
+    [ -n "$seg" ] || continue
+    cur=$(dep_tokens "$(plan_uncell "$deps")")
+    for d in $cur; do
+      case "$ids" in
+        *" $d "*) : ;;
+        *) printf '%s: 「선행」이 지목한 세그먼트가 이 계획에 없습니다: %s\n' "$seg" "$d" ;;
+      esac
+    done
+    prev=$(dep_tokens "$(run_segment_field "$seg" '선행')")
+    for d in $prev; do
+      case " $cur " in
+        *" $d "*) : ;;
+        *) printf '%s: 「선행」은 세그먼트마다 단조롭습니다 — 앞선 행의 %s 가 이번 계획에 없습니다\n' "$seg" "$d" ;;
+      esac
+    done
+  done < "$RUN_DIR/plan.tsv"
+}
+
+plan_dep_floor_or_park() {
+  # Called after `plan.tsv` is built and BEFORE the first `segment` row is
+  # written, because writing is the harm the floors exist to prevent.
+  local msgs n
+  msgs=$(plan_dep_floor)
+  n=$(printf '%s\n' "$msgs" | grep -c . || true)
+  if [ "${n:-0}" = "0" ]; then return 0; fi
+  warn "$msgs"
+  park "S3" run 무효화 "게이트 park" \
+    "계획의 「선행」이 바닥을 넘지 못했다 (${n}건): $(printf '%s' "$msgs" | tr '\n' ' ')"
+  return 1
+}
+
 # Shell-built plan from the declaration. No model in this path at all.
 plan_from_declaration() {
   local doc="$1" declared derived id
@@ -4098,6 +4845,9 @@ plan_from_declaration() {
       "$(plan_cell "$(slice_field "$doc" "$id" '레포')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선언 파일')")" \
       "$(plan_cell "$(slice_field "$doc" "$id" '선행')")" >> "$RUN_DIR/plan.tsv"
+  done
+  plan_dep_floor_or_park || return 1
+  for id in $(slice_ids "$doc"); do
     # SLICE → SEGMENT. The slice declaration is where a person writes the review
     # policy, and the segment row is the only carrier that reaches the gate — so
     # a declaration that stops at the document changes nothing. The field is
@@ -4152,6 +4902,9 @@ plan_via_planner() {
     printf '%s\t%s\t%s\t%s\n' "$seg" "-" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files | join(", ")')")" \
       "$(plan_cell "$(printf '%s' "$plan" | jq -r --arg s "$seg" '.segments[] | select(.id==$s) | .depends_on | join(", ")')")" >> "$RUN_DIR/plan.tsv"
+  done
+  plan_dep_floor_or_park || return 1
+  for seg in $(printf '%s' "$plan" | jq -r '.segments[].id'); do
     ledger_row 'segment' "id=$seg" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$seg" "$(printf '%s' "$plan" | jq -c --arg s "$seg" '.segments[] | select(.id==$s) | .declared_files')")" \
       "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$seg")"
@@ -4179,6 +4932,7 @@ while [ $# -gt 0 ]; do
     --manifest)   MANIFEST="$2"; shift 2 ;;
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
+    --replan)     REPLAN=1; shift ;;
     --self-check) self_check; exit $? ;;
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -4234,7 +4988,15 @@ rundir_init
 trap 'report_run_residual || true' EXIT
 
 check_grant
+# BEFORE `ledger_init`, because that call is what makes this run's heading exist
+# — after it, "did this ledger have an anchor of its own?" is unanswerable and
+# every ledger looks block-disciplined.
+ledger_scope_resolve
 ledger_init
+# AFTER `ledger_init`, because under the block form the block this reads is the
+# one that call creates, and BEFORE anything is dispatched or planned — a
+# refusal is worth having only while nothing partial has happened yet.
+check_inflight
 notify_probe
 main_loop
 notify_cleanup

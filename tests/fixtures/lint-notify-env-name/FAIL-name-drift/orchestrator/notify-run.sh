@@ -9,6 +9,14 @@ cc_notify_enabled() {
   return 0
 }
 
+cc_notify_session_enabled() {
+  local v="${CC_CMDS_SESSION_NOTIFY:-}"
+  case "$v" in
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+  esac
+  return 0
+}
+
 cc_notify_host_os() {
   if [ -n "${CC_CMDS_NOTIFY_HOST_OS:-}" ]; then printf '%s' "$CC_CMDS_NOTIFY_HOST_OS"; return 0; fi
   uname -s 2>/dev/null || printf 'unknown'
