@@ -529,6 +529,33 @@ judgment_class_forbidden() {
 
 # The conjunction. Order matters: the ownership proof comes before anything that
 # would act on the file's contents.
+# A warning that fires ONCE PER RUN rather than once per gate entry.
+#
+# `check_manifest` re-runs on every gate entry, so a warning emitted there lands
+# in the morning report once per act — hundreds of identical lines, which buries
+# the report and makes the warning stop being read. A warning nobody reads is
+# not a warning, and the distinction it was placed there to draw ("not checked"
+# vs "checked and inert") is exactly what is lost.
+#
+# The sentinel is a DIRECTORY and `mkdir` is both the test and the claim, in one
+# atomic step. A `[ -e ]` test followed by a create is two steps, and two gate
+# entries racing through the gap both pass the test.
+#
+# FAIL-OPEN when the sentinel cannot be made. This runs BEFORE the run directory
+# is initialized, so on the first entry this is the writer that creates it; if
+# there is no run id yet, or the state root is not writable, the warning goes out
+# unsuppressed. A duplicated warning is a nuisance and a lost one is the failure
+# the warning exists to prevent, so the tie goes to speaking.
+warn_once() {
+  # warn_once <slug> <message>
+  local slug="$1" msg="$2" d
+  d="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/${RUN_ID:-}/warn-once"
+  if [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
+    mkdir "$d/$slug" 2>/dev/null || return 0
+  fi
+  warn "$msg"
+}
+
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
@@ -744,6 +771,87 @@ check_manifest() {
 $(manifest_autoadopt_rows)
 EOF
 
+  # 12 — the review policy ceiling on the target rows, in three branches.
+  #
+  # The ceiling lives on the target row because that is one of the few surfaces
+  # where a NEW key actually enters the frozen set. A plain `**키**: 값` line
+  # inside `## 인가` moves neither digest, so a ceiling written in the most
+  # natural-looking place would freeze nothing and the tamper-evidence argument
+  # for it would be false.
+  local rc_tok rc_i rc_cut rc_merge rc_any_none=0
+  rc_merge=$(cutpoint_index '머지') || die "절단점 어휘에 '머지' 가 없습니다"
+  for a in $(target_aliases); do
+    rc_tok=$(target_field "$a" '리뷰 정책 상한')
+    # ABSENCE IS NOT A VIOLATION. The field is optional and its absence means the
+    # strictest value, which is what keeps every manifest written before this
+    # field existed valid without a migration.
+    [ -n "$rc_tok" ] || continue
+    # (a) HARD STOP on a token outside the vocabulary. A typo read as "the
+    # strictest value" is a declaration the operator made and the machine
+    # ignored, and that is the symptom this whole axis exists to remove.
+    rc_i=$(review_policy_index "$rc_tok") \
+      || die "대상 '$a' 의 리뷰 정책 상한 토큰이 어휘에 없습니다: '$rc_tok' — 허용 토큰: $REVIEW_POLICIES"
+    # (b) WARNING when the target cannot reach a merge at all. The value is
+    # harmlessly inert there, so refusing would make a manifest unfit for having
+    # declared something it will never use — but "not checked" and "checked and
+    # inert" must not read the same in the log.
+    rc_cut=$(cutpoint_index "$(target_field "$a" '절단점')") || rc_cut=""
+    if [ -n "$rc_cut" ] && [ "$rc_cut" -lt "$rc_merge" ]; then
+      warn_once 'ceiling-below-merge' \
+        "대상 '$a' 의 절단점이 「머지」 미만인데 리뷰 정책 상한 '$rc_tok' 을 선언했습니다 — 그 값은 불활성입니다"
+    fi
+    [ "$rc_tok" = "리뷰없음" ] && rc_any_none=1
+  done
+  # (c) HARD STOP on the one combination that cannot terminate. A run whose
+  # apply is performed BY THE PIPELINE, against a target free to skip review
+  # altogether, is stopped by a rule the manifest cannot turn off — so the apply
+  # is never performed and the run has no ending it can propose. That failure
+  # only becomes visible in the morning, which is why it is judged here, at
+  # kickoff, from two frozen declarations.
+  #
+  # CONSERVATIVE BY NECESSITY AND NOT BY CHOICE. All three apply declarations
+  # are run-scope and none of them carries a target alias, and no target row
+  # carries an apply field — so "which target receives the apply" is not
+  # derivable at this point. Refusing when ANY target holds the loose ceiling is
+  # the only implementable shape. The price is over-refusal: a sibling target
+  # with nothing to do with the apply can stop the run. That price is paid
+  # because the error in the other direction is a run that cannot end.
+  if [ "$rc_any_none" = "1" ] && [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
+    die "적용 주체가 파이프라인인데 리뷰 정책 상한이 「리뷰없음」인 대상이 있습니다 — 그 조합은 끌 수 없는 룰에 막혀 적용을 수행할 수 없고 런이 종단하지 못합니다"
+  fi
+
+  # 13 — `## 룰 설정` keys naming rules that cannot be turned off.
+  #
+  # A SEPARATE numbered condition rather than a fourth branch of 12: it reads a
+  # different section entirely and has nothing to do with the ceiling, so folded
+  # under the ceiling's name the next reader would not find it.
+  #
+  # WARNING RATHER THAN A HARD STOP, because such keys already sit in frozen
+  # manifests and a manifest has no amendment form — refusing would make a run
+  # in flight permanently unfit with no way back. The key is INERT (the enable
+  # check returns for these names before it reads any setting) and yet HASHED
+  # (the binding digest scans the whole file for `켬`/`끔` values, not just the
+  # section), so it freezes a line that means nothing. That is worth saying once.
+  #
+  # THE KEY SET IS DERIVED FROM THE DECLARATIONS and never from a list written
+  # here. A list goes stale the moment the catalog grows, which is exactly how
+  # the count in the prose fell behind the count in the code.
+  #
+  # THE VALUE IS NOT ASSUMED TO SIT ON THE KEY LINE. A declaration may answer in a
+  # block, and a one-line predicate reads that as no answer at all — so the rule
+  # joins the un-switchable set, and the operator is told the setting is inert
+  # while the gate is in fact reading it. That misinforms in the direction that
+  # leaves a merge gate believed to be on after it was switched off.
+  local rf rname
+  for rf in "$ORCH_DIR"/rules/*.rule; do
+    [ -f "$rf" ] || continue
+    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
+    rname=$(basename "$rf" .rule)
+    [ -n "$(manifest_field '룰 설정' "$rname")" ] || continue
+    warn_once 'rule-setting-inert' \
+      "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
+  done
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
 
@@ -776,6 +884,31 @@ check_deadline_format() {
   [ -n "$dl" ] && [ "$dl" != "없음" ] || return 0
   printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
     || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
+}
+
+# The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
+# on the key line, or as the first non-empty line of an indented block under it.
+# Prints the empty string when the key is absent or answers nothing.
+#
+# ONE READER FOR THE FIELD. The condition above and the assertion that every
+# declaration answers parseably both go through here, so a declaration that
+# reformats its answer breaks loudly in the suite rather than silently flipping
+# one rule into the un-switchable set.
+rule_switchable_value() {
+  awk '
+    /^끌 수 있는가:/ {
+      sub(/^끌 수 있는가:[[:space:]]*/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+      inblock = 1
+      next
+    }
+    inblock {
+      # An unindented line ends the block: that is the next key, not this value.
+      if ($0 ~ /^[^[:space:]]/) exit
+      sub(/^[[:space:]]+/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+    }
+  ' "$1"
 }
 
 # The BASE BRANCH, which the binding digest freezes and nothing verified. Every
@@ -1134,18 +1267,39 @@ slicing_fields_ok() {
     # how far a slice may go and cannot say when review happens, which is a
     # different axis entirely — a slice may be authorized to merge and still owe
     # its review afterwards.
+    # THIS WHOLE FUNCTION IS AN EARLY DIAGNOSTIC AND NOT AN ACCEPTANCE CRITERION —
+    # nothing in production calls it, so a green answer here proves the
+    # declaration is readable and proves nothing about the gate.
+    #
+    # The vocabulary goes through `review_policy_index` rather than through a
+    # second literal list. A copy here would be the drift surface the single
+    # enumeration exists to remove.
     v=$(slice_field "$doc" "$id" '리뷰 정책')
-    case "$v" in
-      ''|선리뷰후머지|선머지후리뷰|리뷰없음) : ;;
-      *) warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1 ;;
-    esac
-    # `리뷰없음` is expressible only against a matching pre-authorization entry,
-    # which is what stops a router from choosing it for itself. `선머지후리뷰`
-    # does not remove the obligation, it defers it — the gate leaves a
-    # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
-    if [ "$v" = "리뷰없음" ]; then
-      [ -n "${MANIFEST:-}" ] && grep -q '`사전 인가`' "$MANIFEST" 2>/dev/null \
-        || { warn "슬라이스 $id: 리뷰없음 은 대응하는 사전 인가 항목이 있을 때만 표현 가능"; return 1; }
+    if [ -n "$v" ]; then
+      review_policy_index "$v" >/dev/null \
+        || { warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1; }
+      # THE CEILING REPLACES THE PRE-AUTHORIZATION GUARD that used to stand here.
+      # That guard asked whether the manifest carried ANY `사전 인가` row — not one
+      # about this slice, not one about review — so any authorization for anything
+      # let `리뷰없음` through, and a manifest with none refused it however it was
+      # declared. It was decoration, and the real predicate is the target's own
+      # ceiling: a slice may declare no looser than the target it runs against.
+      # `선머지후리뷰` does not remove the review, it defers it — the gate leaves a
+      # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
+      local sl_al sl_ceil
+      # Backticks stripped, the same way `plan_repo` strips them: the declaration
+      # writes the slug as inline code, and an unstripped value matches no target
+      # so the lookup falls back to the home alias and compares against the wrong
+      # ceiling — silently, and in the loosening direction.
+      sl_al=$(alias_for_slug "$(slice_field "$doc" "$id" '레포' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" 2>/dev/null) || sl_al=""
+      [ -n "$sl_al" ] || sl_al=$(home_alias)
+      sl_ceil=$(target_field "$sl_al" '리뷰 정책 상한')
+      [ -n "$sl_ceil" ] || sl_ceil='선리뷰후머지'
+      if review_policy_index "$sl_ceil" >/dev/null 2>&1 \
+         && [ "$(review_policy_index "$v")" -gt "$(review_policy_index "$sl_ceil")" ]; then
+        warn "슬라이스 $id: 리뷰 정책 '$v' 이 대상 '$sl_al' 의 상한 '$sl_ceil' 을 넘습니다"
+        return 1
+      fi
     fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
@@ -1346,6 +1500,38 @@ authorized() {
   [ "$act_i" -le "$grant_i" ]
 }
 
+# The ordered review policy, strict → loose. The order is load-bearing: a
+# ceiling is "at or below", so the comparison only means anything if the axis
+# runs one way. Reading the axis backwards and picking the far end is the human
+# version of the defect this axis exists to close, and it is the one error a
+# runtime check cannot catch — hence the assertion in the lint target.
+#
+# THIS LITERAL IS THE ONLY ENUMERATION OF THE VOCABULARY IN THE TREE. The rule
+# checkers are separate `/bin/sh` processes and receive resolved integers rather
+# than tokens, so there is no second copy to drift out of step with this one. A
+# typo surfaces as a runtime hard failure on the first call, exactly the way an
+# unrecognized cutpoint does. That is why this axis gets no lint script of its
+# own: there is nothing for one to compare.
+readonly REVIEW_POLICIES="선리뷰후머지 선머지후리뷰 리뷰없음"
+
+# 0-based index, non-zero exit on anything outside the vocabulary. There is no
+# display form to map — unlike the cutpoint ladder, the stored token is the only
+# spelling this axis has, so no `review_policy_display` exists to drift from it.
+#
+# Same signalling discipline as `cutpoint_index`: the error is the RETURN
+# STATUS and never a `die` here, because this runs inside `$( )` where `exit`
+# kills only the subshell and leaves the caller carrying on with an empty
+# string — which is the silent denial the status exists to prevent.
+review_policy_index() {
+  local want="$1" i=0 p
+  for p in $REVIEW_POLICIES; do
+    [ "$p" = "$want" ] && { printf '%s' "$i"; return 0; }
+    i=$((i + 1))
+  done
+  warn "미인식 리뷰 정책 토큰: '${want}' — 허용 토큰: ${REVIEW_POLICIES}"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Ledger. Single writer, main worktree, append-only.
 # ---------------------------------------------------------------------------
@@ -1520,6 +1706,35 @@ ledger_row() {
   # asymmetry is in the safe direction: the two writers cannot disagree about
   # what fits.
   local series="$1"; shift
+  # `리뷰 정책` IS INHERITED AND NOT DEFAULTED, so this writer carries it forward
+  # the way the gate's segment arm does. Without the carry, one ordinary state
+  # transition erases a value an earlier row set, every later resolution falls to
+  # the strict default, and no surface says why the merge was refused.
+  #
+  # THE CARRY IS ON THIS FIELD ONLY. `워크트리` is required on every row the gate
+  # accepts and therefore cannot be erased, and putting a required field into an
+  # inheritance loop creates a branch that never runs — whose existence teaches
+  # the next reader that the field is optional.
+  #
+  # THIS PATH IS UNREACHABLE TODAY and nothing may be accepted on the strength of
+  # it: the driver is loaded definitions-only under the source-only seam and no
+  # shipped skill runs it as a program. It is corrected anyway, because leaving
+  # one writer of this field behind is how the field goes missing on the day the
+  # path comes back.
+  if [ "$series" = "segment" ]; then
+    local _rid="" _has=0 _prev _pv _a
+    for _a in "$@"; do
+      case "$_a" in
+        id=*) _rid="${_a#id=}" ;;
+        '리뷰 정책='*) _has=1 ;;
+      esac
+    done
+    if [ "$_has" = "0" ] && [ -n "$_rid" ] && [ -n "${LEDGER:-}" ]; then
+      _prev=$( { grep -E '^- `segment`' "$LEDGER" 2>/dev/null | grep -F "id=$_rid " || true; } | tail -1)
+      _pv=$(printf '%s' "$_prev" | tr '|' '\n' | sed -n 's/^ *리뷰 정책=//p' | sed 's/[[:space:]]*$//' | tail -1)
+      [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
+    fi
+  fi
   local line="- \`$series\`"
   local f k v n longest lmax fl idx side
   for f in "$@"; do
@@ -4108,6 +4323,26 @@ base_fetch_note() {
   esac
 }
 
+# The status-preserving sibling of `base_fetch`, and a sibling rather than a
+# change to it: `base_fetch`'s callers want a best-effort refresh and its `|| true`
+# with `2>/dev/null` is the right contract there. It is the wrong contract for a
+# caller that has to tell a refreshed tracking ref from a stale one — a failed
+# fetch leaves the old ref in place, and an ancestor test run against it answers
+# confidently and answers wrongly.
+#
+# THE REFSPEC IS EXPLICIT. Fetching the whole repository moves tracking refs that
+# other decisions read, and moving them as a side effect of one landing test is a
+# change nobody asked for. `GIT_TERMINAL_PROMPT=0` keeps a credential prompt from
+# turning an unattended night into a wait nobody is there to answer; git's own
+# slow-connection abort is the only other bound, because `timeout(1)` is not on
+# stock macOS and an obligation cannot rest on a binary that may not be there.
+base_fetch_ref() {
+  local al="$1" br="$2" root
+  root=$(alias_root "$al") || return 1
+  ( cd "$root" && GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags origin \
+      "+refs/heads/${br}:refs/remotes/origin/${br}" )
+}
+
 # Resolve from the REMOTE-TRACKING ref, not the stripped local name.
 #
 # This is the sequential-base premise, and without it the premise is false. The
@@ -4896,12 +5131,23 @@ plan_from_declaration() {
   done
   plan_dep_floor_or_park || return 1
   for id in $(slice_ids "$doc"); do
-    ledger_row 'segment' "id=$id" "상태=계획됨" \
+    # SLICE → SEGMENT. The slice declaration is where a person writes the review
+    # policy, and the segment row is the only carrier that reaches the gate — so
+    # a declaration that stops at the document changes nothing. The field is
+    # OMITTED when the slice declares none, because an empty field would be a row
+    # asserting a value it does not hold, and absence on this row means
+    # inheritance.
+    local -a _segargs
+    _segargs=( "id=$id" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$id" "$(slice_field "$doc" "$id" '선언 파일')")" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
       "선행=$(slice_field "$doc" "$id" '선행')" \
-      "절단점=$(slice_field "$doc" "$id" '절단점')" \
-      "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")"
+      "절단점=$(slice_field "$doc" "$id" '절단점')" )
+    local _rp
+    _rp=$(slice_field "$doc" "$id" '리뷰 정책')
+    [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
+    _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
+    ledger_row 'segment' "${_segargs[@]}"
   done
   return 0
 }
