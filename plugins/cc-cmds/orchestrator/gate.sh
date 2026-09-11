@@ -8324,18 +8324,6 @@ gate_launch_shift() {
 readonly B1_STAGNATION_N=3
 readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
-# B5. NOT A VERIFIED CEILING — AN ARGUMENT FROM ABSENCE, and the difference
-# matters to whoever changes it. It rests on no observed run ever having disposed
-# of more than one obligation: 47 ledgers and 11,127 rows held 2 problem rows and
-# 0 review-obligation rows (observed 2026-09-07). So the false-positive rate has
-# not been MEASURED; there has never been an input that could produce one. Read
-# as a verified ceiling this number claims something nobody established.
-#
-# THAT DENOMINATOR GROWS. The ledger tree is alive — the same corpus went from 45
-# to 47 during this design — so it has to be read with its observation date. The
-# two load-bearing values held at both readings.
-#
-# The blast radius is one constant, so being wrong is cheap to undo.
 
 gate_boundaries() {
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
