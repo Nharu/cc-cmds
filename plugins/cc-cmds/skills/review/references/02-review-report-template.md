@@ -182,22 +182,27 @@ there and only descends. Rounds after the first exist
 to cross-review and converge, and a round-1 witness is by definition upstream of
 both, so a recovery built entirely from round-1 witnesses is a real finding set
 that has not yet had its self-refutations taken out of it, and it is not the
-finding set the original stage would have published. **Only where the ledger
-block records a round of 2 or higher does that case take the partial-recovery
-line with `최저 계층 라운드 미달`**, and the two places to read the shortfall
-from are `## 복구 프로버넌스`'s 해소 라운드 column and the `최저 라운드`
-field of that line.
+finding set the original stage would have published. **That case takes the
+partial-recovery line with `최저 계층 라운드 미달` where the ledger block records
+a round of 2 or higher, and also where any seat resolved at a round below the one
+it reached**, and the places to read the shortfall from are
+`## 복구 프로버넌스`'s 해소 라운드 and 도달 라운드 columns and the `최저 라운드`
+field of that line — a reached-round shortfall does not show in the 해소 라운드
+column on its own, because it is the gap between the two columns.
 
-**Where the ledger block records only round 1, neither condition fires on that
-corpus, and that is a hole rather than a design.** The ledger-round comparand is
-the ledger's own round column, and a crash landing before the round-2 flip is
-written lowers it along with the work — every row still reads `round-1`, so a
-round-1-only recovery sits at the comparand rather than below it. The
-reached-round comparand does not help, because a seat that never reached round 2 left nothing
-there and its reached round is 1 as well. Nothing on disk separates that crash
-from a team that legitimately finished in one round, so the paragraph above says
-what such a corpus is worth while the conditions as written let it emit the
-ordinary line.
+**Where the ledger block records only round 1 and no seat reached a higher round,
+neither condition fires on that corpus, and that is a hole rather than a
+design.** The ledger-round comparand is the ledger's own round column, and a
+crash landing before the round-2 flip is written lowers it along with the work —
+every row still reads `round-1`, so a round-1-only recovery sits at the comparand
+rather than below it. The reached-round comparand does not help **under that
+antecedent**, because a seat that never reached round 2 left nothing
+there and its reached round is 1 as well. **A seat that did reach round 2 and
+descended is outside the antecedent, and the fourth condition catches it — the
+hole is narrower than the ledger column alone suggests.** Nothing on disk
+separates that crash from a team that legitimately finished in one round, so the
+paragraph above says what such a corpus is worth while the conditions as written
+let it emit the ordinary line.
 
 ## Document Structure
 

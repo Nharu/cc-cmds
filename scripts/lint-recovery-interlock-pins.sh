@@ -36,8 +36,9 @@
 #   (v)   THE TWO DISCLOSURES THAT COST THE LAST CYCLE A FINDING. The arm and
 #         the template each carry, in one pinned sentence, the fact that the
 #         ledger-column comparand falls with the work on a crash before the
-#         round-2 flip — so a round-1-only corpus emits the ordinary line.
-#         That sentence is the only place the hole is written down.
+#         round-2 flip — so a round-1-only corpus in which no seat reached a
+#         higher round emits the ordinary line. That sentence is the only place
+#         the hole is written down.
 #   (vi)  THE REAP-STAMP CLAIM STAYS RETRACTED (negative fence). "the size of
 #         the window is recoverable after the fact" must not reappear in the
 #         arm; the stamp carries no timestamp, so the claim is false and it
@@ -45,6 +46,10 @@
 #   (vii) THE PROVENANCE TABLE CARRIES BOTH ROUNDS. Resolution round and
 #         reached round in the arm's item 9 and in the template's skeleton,
 #         which is what makes a descended seat visible to a reader.
+#  (viii) THE THREE ANCHORS ARE PRESENT TOGETHER OR NOT AT ALL. A partial set
+#         is a retitle rather than a revert, and it is a failure. This check is
+#         a floor on the assertion set rather than an assertion, so it does not
+#         move the `checked` total.
 #
 # WHAT THIS LINT DOES NOT MEASURE — stated because a pin that is believed to
 # check more than it checks is worse than no pin.
@@ -55,9 +60,10 @@
 #   * IT DOES NOT SAY THE COMPARAND IS RIGHT. It freezes the current state,
 #     in which the first comparison reads the ledger's own round column. That
 #     column falls with the work when a crash lands before the round-2 flip,
-#     so a round-1-only recovery still emits the ordinary line. GREEN HERE
-#     DOES NOT MEAN THE INTERLOCK IS CORRECT — it means the wording did not
-#     move. Item (v) pins the sentence that admits the hole, not a fix for it.
+#     so a round-1-only recovery in which no seat reached a higher round still
+#     emits the ordinary line. GREEN HERE DOES NOT MEAN THE INTERLOCK IS
+#     CORRECT — it means the wording did not move. Item (v) pins the sentence
+#     that admits the hole, not a fix for it.
 #   * IT DOES NOT REACH THE DRIVER. `run.sh` lives outside SKILLS_ROOT, so
 #     the regex that matches the findings-summary line and the fact that the
 #     partial-recovery line does not match it are owned by
@@ -76,10 +82,13 @@
 #     heading inside a ``` block looks exactly like one. Pins that live past
 #     such a fence are asserted file-wide instead, and that is why some
 #     assertions below are file-scoped rather than section-scoped.
-#   * ITS SKIP-IF-ABSENT POSTURE IS SECTION-GRAINED. Removing a whole
-#     interlock section leaves the tree green, so reverting the feature does
-#     not have to fight `make check`. Removing one clause from a section that
-#     is still present turns the tree red — that is the thing being pinned.
+#   * ITS SKIP-IF-ABSENT POSTURE IS SECTION-GRAINED AND ALL-OR-NOTHING.
+#     Removing all three interlock anchors leaves the tree green, so reverting
+#     the feature does not have to fight `make check`. Removing one clause from
+#     a section that is still present turns the tree red — that is the thing
+#     being pinned. Retitling one anchor while the others stand turns the tree
+#     red as well: a retitle is not a revert, and a silently skipped block
+#     would report success for exactly the rewrite being guarded against.
 # ---------------------------------------------------------------------------
 #
 # Usage:
@@ -87,8 +96,8 @@
 #   SKILLS_ROOT=<dir> bash scripts/lint-recovery-interlock-pins.sh  # fixture
 #
 # Exit codes:
-#   0 — all present pins intact (absent sections skipped)
-#   1 — at least one pin broken
+#   0 — all present pins intact (all three anchors absent ⇒ skipped)
+#   1 — at least one pin broken, or the anchors are only partially present
 
 set -euo pipefail
 
@@ -199,9 +208,30 @@ assert_absent_re() {
 # one file while the other carried the below form.
 EQUALS_FENCE='resolution rounds? (is|are) equal|equal to the last (recorded )?round|rounds equal the last'
 
+# ---------- the anchors, as one set ------------------------------------------
+
+arm_present=0
+tpl_present=0
+var_present=0
+if has_heading "$ARM" "$ARM_HEADING"; then arm_present=1; fi
+if has_heading "$TPL" "$TPL_HEADING"; then tpl_present=1; fi
+if has_heading "$TPL" "$TPL_VARIANT_HEADING"; then var_present=1; fi
+
+# The three anchors are one feature, so the only two honest states are all three
+# present and none present. A partial set is what a retitle produces, and a
+# retitle is the rewrite this lint exists to catch — skipping the block of a
+# missing anchor silently would report success for exactly that edit. This is a
+# floor on the assertion set rather than an assertion, so it does not move
+# `checked`: an unchanged tree still reports the same total it did before.
+present=$((arm_present + tpl_present + var_present))
+if (( present != 0 && present != 3 )); then
+  echo "FAIL: interlock anchors are partially present (arm=$arm_present template=$tpl_present variant=$var_present)" >&2
+  fail=1
+fi
+
 # ---------- the arm (skip-if-absent) -----------------------------------------
 
-if has_heading "$ARM" "$ARM_HEADING"; then
+if (( arm_present )); then
   arm_body=$(fold_text "$(extract_section "$ARM" "$ARM_HEADING")")
   arm_file=$(fold_file "$ARM")
   arm_label="review-unattended/SKILL.md ($ARM_HEADING)"
@@ -262,7 +292,7 @@ fi
 
 # ---------- the template (skip-if-absent) ------------------------------------
 
-if has_heading "$TPL" "$TPL_HEADING"; then
+if (( tpl_present )); then
   tpl_body=$(fold_text "$(extract_section "$TPL" "$TPL_HEADING")")
   tpl_file=$(fold_file "$TPL")
   tpl_label="review/references/02-review-report-template.md ($TPL_HEADING)"
@@ -278,12 +308,12 @@ if has_heading "$TPL" "$TPL_HEADING"; then
     "every role resolved to \`witness\`, no role's resolution round is below the last round the ledger block records, and no role's resolution round is below the highest round at which that role left anything at all" \
     "$tpl_body" 1 "$tpl_label — emission, both comparisons"
 
-  # (v) the narrowed assertion and the hole it leaves named
+  # (v) the round-1-only case and the hole it leaves named
   assert_count \
-    'Only where the ledger block records a round of 2 or higher does that case take the partial-recovery line' \
-    "$tpl_body" 1 "$tpl_label — round-1-only assertion is narrowed"
+    'That case takes the partial-recovery line with `최저 계층 라운드 미달` where the ledger block records a round of 2 or higher, and also where any seat resolved at a round below the one it reached' \
+    "$tpl_body" 1 "$tpl_label — the round-1-only case names both conditions"
   assert_count \
-    'Where the ledger block records only round 1, neither condition fires on that corpus, and that is a hole rather than a design.' \
+    'Where the ledger block records only round 1 and no seat reached a higher round, neither condition fires on that corpus, and that is a hole rather than a design.' \
     "$tpl_body" 1 "$tpl_label — the hole is written down"
 
   # (iii) the definition does NOT live here
@@ -313,7 +343,7 @@ fi
 
 # ---------- the variant section (skip-if-absent) -----------------------------
 
-if has_heading "$TPL" "$TPL_VARIANT_HEADING"; then
+if (( var_present )); then
   var_body=$(fold_text "$(extract_section "$TPL" "$TPL_VARIANT_HEADING")")
   var_label="02-review-report-template.md ($TPL_VARIANT_HEADING)"
 
@@ -323,7 +353,7 @@ if has_heading "$TPL" "$TPL_VARIANT_HEADING"; then
   assert_absent_re "$EQUALS_FENCE" "$var_body" "$var_label"
 fi
 
-if (( checked == 0 )); then
+if (( checked == 0 && fail == 0 )); then
   echo "SKIP: no recovery interlock section found under $skills_root"
   exit 0
 fi

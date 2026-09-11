@@ -12,12 +12,14 @@ the roster could not be obtained at all** — puts a line of the shape above
 **A recovery in which every role resolved to `witness`, no role's resolution
 round is below the last round the ledger block records, and no role's resolution
 round is below the highest round at which that role left anything at all emits
-the line normally.** **Only where the ledger block records a round of 2 or higher
-does that case take the partial-recovery line with `최저 계층 라운드 미달`**.
+the line normally.** **That case takes the partial-recovery line with
+`최저 계층 라운드 미달` where the ledger block records a round of 2 or higher, and
+also where any seat resolved at a round below the one it reached**.
 
-**Where the ledger block records only round 1, neither condition fires on that
-corpus, and that is a hole rather than a design.** The first comparand is the
-ledger's own round column and it falls with the work.
+**Where the ledger block records only round 1 and no seat reached a higher round,
+neither condition fires on that corpus, and that is a hole rather than a
+design.** The first comparand is the ledger's own round column and it falls with
+the work.
 
 ## Document Structure
 
