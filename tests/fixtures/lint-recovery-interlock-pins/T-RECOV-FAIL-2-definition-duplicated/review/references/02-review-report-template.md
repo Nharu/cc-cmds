@@ -20,9 +20,9 @@ the line normally.** **That case takes the partial-recovery line with
 `최저 계층 라운드 미달` where the ledger block records a round of 2 or higher, and
 also where any seat resolved at a round below the one it reached**.
 
-**Where the ledger block records only round 1 and no seat reached a higher round,
-neither condition fires on that corpus, and that is a hole rather than a
-design.** The first comparand is the ledger's own round column and it falls with
+**Where the ledger block records only round 1, neither condition fires on any
+corpus in which every seat resolved to `witness` at the highest round it reached,
+and that is a hole rather than a design.** The first comparand is the ledger's own round column and it falls with
 the work.
 
 ## Document Structure

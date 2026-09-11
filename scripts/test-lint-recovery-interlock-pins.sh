@@ -7,15 +7,20 @@
 #   T-RECOV-OK-*   → expected exit 0
 #   T-RECOV-FAIL-* → expected exit 1
 #
-# Three fixtures are load-bearing rather than illustrative. OK-2 states the same
+# Four fixtures are load-bearing rather than illustrative. OK-2 states the same
 # contract with every clause wrapped across several lines: it is green only
 # because the lint folds a paragraph before comparing, so it is the control
-# that keeps the fold from being deleted as decoration. OK-3 removes the
-# interlock sections altogether and must stay green, so reverting the feature
+# that keeps the fold from being deleted as decoration. The other three fix the
+# boundary between a revert and a retitle from three sides, and none of them is
+# redundant given the other two. OK-3 removes the interlock sections altogether
+# — headings and clauses alike — and must stay green, so reverting the feature
 # does not have to fight `make check` on its way back. FAIL-5 is OK-1 with one
-# anchor heading retitled and nothing else touched: it pairs with OK-3 to fix
-# the boundary between a revert and a retitle, and without it the all-or-nothing
-# anchor gate has no regression guard.
+# anchor heading retitled and nothing else touched, which is what the
+# all-or-nothing anchor gate catches. FAIL-6 is OK-1 with all three anchor
+# headings retitled and nothing else touched: the partial gate passes on it
+# because no anchor is missing relative to the others, so without it a wholesale
+# retitle would skip every block and report success for exactly the rewrite
+# being guarded against.
 #
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin
 # skills are untouched.

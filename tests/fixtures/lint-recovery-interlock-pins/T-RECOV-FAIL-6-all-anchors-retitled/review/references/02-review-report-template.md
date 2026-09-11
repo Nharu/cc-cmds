@@ -1,11 +1,12 @@
-# Review Report Template (fixture — the reached-round suppression clause dropped here only)
+# Review Report Template (fixture)
 
-## Recovery report — the termination-predicate interlock
+## Recovery report — the termination-predicate interlock (v2)
 
 **The suppression target is the shape, not the position.** A recovery report in
 which **any** role resolved to the `checkpoint` or `absent` tier — **or in which
 every role resolved to `witness` but any of them did so at a round below the last
-round the ledger block records** — **or in which
+round the ledger block records** — **or in which any role's resolution round is
+below the highest round at which that role left anything at all** — **or in which
 the roster could not be obtained at all** — puts a line of the shape above
 **nowhere in the file**.
 
@@ -23,7 +24,7 @@ the work.
 
 ## Document Structure
 
-### Recovery-report variant
+### Recovery-report variant (v2)
 
 A recovery report follows the same skeleton with two changes. The `발견 요약`
 line follows the interlock above — the ordinary line when every role resolved to

@@ -190,19 +190,22 @@ it reached**, and the places to read the shortfall from are
 field of that line — a reached-round shortfall does not show in the 해소 라운드
 column on its own, because it is the gap between the two columns.
 
-**Where the ledger block records only round 1 and no seat reached a higher round,
-neither condition fires on that corpus, and that is a hole rather than a
-design.** The ledger-round comparand is the ledger's own round column, and a
-crash landing before the round-2 flip is written lowers it along with the work —
-every row still reads `round-1`, so a round-1-only recovery sits at the comparand
-rather than below it. The reached-round comparand does not help **under that
-antecedent**, because a seat that never reached round 2 left nothing
-there and its reached round is 1 as well. **A seat that did reach round 2 and
-descended is outside the antecedent, and the fourth condition catches it — the
-hole is narrower than the ledger column alone suggests.** Nothing on disk
-separates that crash from a team that legitimately finished in one round, so the
-paragraph above says what such a corpus is worth while the conditions as written
-let it emit the ordinary line.
+**Where the ledger block records only round 1, neither condition fires on any
+corpus in which every seat resolved to `witness` at the highest round it reached,
+and that is a hole rather than a design.** The ledger-round comparand is the
+ledger's own round column, and a crash landing before the round-2 flip is written
+lowers it along with the work — every row still reads `round-1`, so a
+round-1-only recovery sits at the comparand rather than below it. The
+reached-round comparand does not help **on such a corpus**, because a seat that
+resolved at the highest round it reached is not below it. **Only a seat whose
+resolution round fell below the round it reached is outside the antecedent, and
+the fourth condition catches that one — a seat that reached a higher round and
+resolved there leaves the corpus inside the hole, which is why the comparison
+that decides this is the per-role one the arm states as "closes per role, so no
+`max` across the roster is taken".** Nothing on disk separates that crash from a
+team that legitimately finished in one round **where every seat reached only
+round 1**, so the paragraph above says what such a corpus is worth while the
+conditions as written let it emit the ordinary line.
 
 ## Document Structure
 

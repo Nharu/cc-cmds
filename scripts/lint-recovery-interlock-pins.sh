@@ -36,9 +36,9 @@
 #   (v)   THE TWO DISCLOSURES THAT COST THE LAST CYCLE A FINDING. The arm and
 #         the template each carry, in one pinned sentence, the fact that the
 #         ledger-column comparand falls with the work on a crash before the
-#         round-2 flip — so a round-1-only corpus in which no seat reached a
-#         higher round emits the ordinary line. That sentence is the only place
-#         the hole is written down.
+#         round-2 flip — so a round-1-only corpus in which every seat resolved
+#         at the highest round it reached emits the ordinary line. That sentence
+#         is the only place the hole is written down.
 #   (vi)  THE REAP-STAMP CLAIM STAYS RETRACTED (negative fence). "the size of
 #         the window is recoverable after the fact" must not reappear in the
 #         arm; the stamp carries no timestamp, so the claim is false and it
@@ -46,10 +46,13 @@
 #   (vii) THE PROVENANCE TABLE CARRIES BOTH ROUNDS. Resolution round and
 #         reached round in the arm's item 9 and in the template's skeleton,
 #         which is what makes a descended seat visible to a reader.
-#  (viii) THE THREE ANCHORS ARE PRESENT TOGETHER OR NOT AT ALL. A partial set
-#         is a retitle rather than a revert, and it is a failure. This check is
-#         a floor on the assertion set rather than an assertion, so it does not
-#         move the `checked` total.
+#  (viii) THE THREE ANCHORS ARE PRESENT TOGETHER, OR ABSENT TOGETHER WITH THE
+#         PROSE GONE. A partial set is a retitle rather than a revert, and it is
+#         a failure; so is a set that is wholly absent while the pinned interlock
+#         prose is still in the file, which is what retitling, deleting or
+#         demoting all three at once produces. Both checks are floors on the
+#         assertion set rather than assertions, so neither moves the `checked`
+#         total.
 #
 # WHAT THIS LINT DOES NOT MEASURE — stated because a pin that is believed to
 # check more than it checks is worse than no pin.
@@ -60,10 +63,10 @@
 #   * IT DOES NOT SAY THE COMPARAND IS RIGHT. It freezes the current state,
 #     in which the first comparison reads the ledger's own round column. That
 #     column falls with the work when a crash lands before the round-2 flip,
-#     so a round-1-only recovery in which no seat reached a higher round still
-#     emits the ordinary line. GREEN HERE DOES NOT MEAN THE INTERLOCK IS
-#     CORRECT — it means the wording did not move. Item (v) pins the sentence
-#     that admits the hole, not a fix for it.
+#     so a round-1-only recovery in which every seat resolved at the highest
+#     round it reached still emits the ordinary line. GREEN HERE DOES NOT MEAN
+#     THE INTERLOCK IS CORRECT — it means the wording did not move. Item (v)
+#     pins the sentence that admits the hole, not a fix for it.
 #   * IT DOES NOT REACH THE DRIVER. `run.sh` lives outside SKILLS_ROOT, so
 #     the regex that matches the findings-summary line and the fact that the
 #     partial-recovery line does not match it are owned by
@@ -82,13 +85,23 @@
 #     heading inside a ``` block looks exactly like one. Pins that live past
 #     such a fence are asserted file-wide instead, and that is why some
 #     assertions below are file-scoped rather than section-scoped.
-#   * ITS SKIP-IF-ABSENT POSTURE IS SECTION-GRAINED AND ALL-OR-NOTHING.
-#     Removing all three interlock anchors leaves the tree green, so reverting
-#     the feature does not have to fight `make check`. Removing one clause from
-#     a section that is still present turns the tree red — that is the thing
-#     being pinned. Retitling one anchor while the others stand turns the tree
-#     red as well: a retitle is not a revert, and a silently skipped block
-#     would report success for exactly the rewrite being guarded against.
+#   * ITS SKIP-IF-ABSENT POSTURE IS SECTION-GRAINED AND QUALIFIED BY THE PROSE.
+#     Removing all three interlock anchors **together with the clauses they
+#     head** leaves the tree green, so reverting the feature does not have to
+#     fight `make check`. Removing one clause from a section that is still
+#     present turns the tree red — that is the thing being pinned. Retitling one
+#     anchor while the others stand turns the tree red as well, and so does
+#     retitling all three: a retitle is not a revert, and a silently skipped
+#     block would report success for exactly the rewrite being guarded against.
+#   * IT DOES NOT SURVIVE A WHOLESALE REWRITE. The all-or-nothing gate above
+#     keys on three headings and the absent branch keys on five literals, so the
+#     state it still passes is the one where all three headings are retitled and
+#     every pinned clause is rewritten at the same time — an interlock rebuilt
+#     from scratch under new headings. That is one edit further out than the
+#     state this lint was last extended to catch, and it is named here rather
+#     than claimed closed: what would close it is a check on the interlock's
+#     *meaning* rather than on its wording, which this script does not do and
+#     the first bullet of this list already says it does not do.
 # ---------------------------------------------------------------------------
 #
 # Usage:
@@ -96,7 +109,8 @@
 #   SKILLS_ROOT=<dir> bash scripts/lint-recovery-interlock-pins.sh  # fixture
 #
 # Exit codes:
-#   0 — all present pins intact (all three anchors absent ⇒ skipped)
+#   0 — all present pins intact (all three anchors absent **and the pinned
+#       prose gone with them** ⇒ skipped)
 #   1 — at least one pin broken, or the anchors are only partially present
 
 set -euo pipefail
@@ -229,6 +243,33 @@ if (( present != 0 && present != 3 )); then
   fail=1
 fi
 
+# Absent anchors are a revert only if the prose went with them. Retitling,
+# deleting or demoting all three at once leaves every pinned clause in place
+# while skipping every block that would have checked it, so the absent state is
+# qualified by the prose it is supposed to have taken away. Skip-on-missing is
+# untouched: a root holding neither file folds to nothing and matches nothing,
+# which is the posture the four sibling pin lints share. Like the partial gate
+# above this is a floor on the assertion set rather than an assertion, so it
+# does not move `checked`.
+if (( present == 0 )); then
+  for pin_file in "$ARM" "$TPL"; do
+    pin_body=$(fold_file "$pin_file")
+    [[ -n "$pin_body" ]] || continue
+    for pin_literal in \
+      'resolution round is below' \
+      '발견 요약(부분 복구)' \
+      'every role resolved to `witness`' \
+      '최저 계층 라운드 미달' \
+      'What the ledger-round term catches'
+    do
+      if [[ "$(count_occurrences "$pin_literal" "$pin_body")" != "0" ]]; then
+        echo "FAIL: interlock anchors are all absent but pinned interlock prose is still in $pin_file: $pin_literal" >&2
+        fail=1
+      fi
+    done
+  done
+fi
+
 # ---------- the arm (skip-if-absent) -----------------------------------------
 
 if (( arm_present )); then
@@ -313,7 +354,7 @@ if (( tpl_present )); then
     'That case takes the partial-recovery line with `최저 계층 라운드 미달` where the ledger block records a round of 2 or higher, and also where any seat resolved at a round below the one it reached' \
     "$tpl_body" 1 "$tpl_label — the round-1-only case names both conditions"
   assert_count \
-    'Where the ledger block records only round 1 and no seat reached a higher round, neither condition fires on that corpus, and that is a hole rather than a design.' \
+    'Where the ledger block records only round 1, neither condition fires on any corpus in which every seat resolved to `witness` at the highest round it reached, and that is a hole rather than a design.' \
     "$tpl_body" 1 "$tpl_label — the hole is written down"
 
   # (iii) the definition does NOT live here
