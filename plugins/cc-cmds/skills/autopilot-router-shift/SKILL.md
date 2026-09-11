@@ -93,9 +93,21 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 
 Measured on one run: three shifts, three dispatches, three stages killed this way. The tool result each time was the literal string `Command did not complete within its 120s timeout and was moved to the background`. Zero commits, zero `stage-result` rows, zero worktree changes, and every layer reporting success. Raising the timeout does not close this — the ceiling is ten minutes and this repository has a recorded stage that ran one hour fifty-three minutes.
 
-Use the mechanism that **re-invokes you when the command completes**. That notification is the only thing that makes your next turn happen, and it is what keeps your session alive across the stage.
+Use the mechanism that **re-invokes you when the command completes**. That notification is the only thing that makes your next turn happen.
 
-**So: do not end your turn while a stage you launched is live.** The waiting is not idle discipline — it is the mechanism. Your context barely grows while a stage works, so waiting costs almost nothing, and the completion notification is what returns the seat to you with the stage's rows already in the ledger.
+**Then HOLD THE SESSION with an active tool call until it arrives. Do not end your turn.** This is the half that has to be spelled out, because "wait for the notification" has an obvious reading that is fatal here: you are a print-mode session, so **ending your turn ends your session**, and the background task your session owns dies with it. A shift that writes "I will hold the seat until the completion notification" and then stops producing output has done exactly the thing it said it would not.
+
+What holding looks like — this is the form that was measured to work:
+
+```
+Monitor(command: "tail -f <the background task's output file>", ...)
+```
+
+The output path comes back in the dispatch's own tool result. `Monitor` keeps producing turns for you while the stage runs, so the session stays up; when the stage's stream shows it is finished, stop the monitor and go back to the loop. Any active tool call that keeps the turn alive serves — the requirement is that **something of yours is still running**, not that it is this particular tool.
+
+Measured, in one run, across two shifts given this same instruction: the shift that opened a `Monitor` on the task output completed **two** stages and left two `stage-result` rows. The shift that dispatched correctly, announced it would hold the seat, and ended its turn left **zero** rows and one lost dispatch. The dispatch form was identical in both. What separated them was only whether anything of theirs was still running.
+
+Your context barely grows while a stage works, so holding costs almost nothing — and it is what returns the seat to you with the stage's rows already in the ledger.
 
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
 
@@ -119,6 +131,8 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
 **A live stage holds back `상한` and nothing else.** If a stage is running, do not end on the cap — the router's context barely grows while a stage works, so waiting costs nothing. But `승인` and `종단` are NOT held: a shift kept waiting on an approval means that approval waits out the stage, and overnight that is the whole night.
 
 **「A stage is running」 means the dispatch has not notified you yet — not that a tool result told you it went to the background.** Those two readings look identical and only one is true. A dispatch that was moved to the background because it timed out is a stage that dies the moment you stop, so treating it as live and then ending your turn is precisely the failure this section exists to prevent. If you did not launch it as a harness-tracked background command, you have no live stage; you have a dispatch that is about to be lost.
+
+**And a live stage holds back the cap only while YOU are still running.** "Waiting" is not a state your session can be in — either something of yours is executing, or your session has ended. So the rule reads in one direction only: while a stage is live, keep an active tool call going (see the dispatch section). Ending the turn is not waiting; it is the end of the shift, and it takes the stage with it.
 
 ## Your return line
 
