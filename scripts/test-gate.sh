@@ -3888,6 +3888,25 @@ graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하
 graded_as '워크트리쓰기' '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
 graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
 graded_as '워크트리쓰기' 'find -delete 는 자기가 지운다'             -- find . -delete
+# GNU find 의 파일 쓰기 프리미티브 넷. `-exec` 처럼 남에게 넘기지도, `-delete` 처럼
+# 지우지도 않고 argv 에 적힌 파일을 열어 거기 쓴다. BSD 인 개발 호스트에서는 find 가
+# 인자 자체를 거절하므로 잠복하고, Linux 러너에서는 argv0 만 보면 읽기인 명령으로
+# 매니페스트를 덮어쓰는 가장 싼 길이 된다. 넷을 개별로 심는 이유는 한 낱말만 빠져도
+# 그 낱말이 곧 구멍이기 때문이다.
+graded_as '워크트리쓰기' 'find -fprintf 는 argv 의 파일에 쓴다'      -- find . -fprintf /tmp/out.md '%p'
+graded_as '워크트리쓰기' 'find -fprint 도 같다'                      -- find . -fprint /tmp/out.md
+graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
+graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
+graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
+# 나머지 래퍼 여덟은 해소되지 않고 `등급 미상` 으로 떨어진다 — 그 값은 거부이므로
+# 구멍이 아니라 닫힌 쪽이다. 단언으로 못박는 이유는 그 닫힘을 지키는 것이 지금까지
+# 산문뿐이었기 때문이다. 누군가 이 여덟 중 하나를 「읽기만 하는 래퍼」로 보고 읽기
+# 행에 얹으면, 그 낱말을 앞에 붙인 머지가 정직하게 `읽기` 를 신고하고 신고와 등급이
+# 일치하며 리뷰 룰은 읽기에서 조기 반환한다. 그때 붉어질 자리가 여기다.
+for _w in env xargs nice nohup time timeout stdbuf; do
+  graded_as '등급 미상' "$_w 로 감싼 머지는 해소되지 않아 거부로 떨어진다" -- "$_w" git merge --no-ff seg
+done
+unset _w
 graded_as '외부상태변경' 'rg --pre 는 매 파일을 그 프로그램에 통과시킨다' -- rg --pre curl pattern .
 graded_as '읽기'         '평범한 rg 검색은 읽기다'                   -- rg pattern .
 graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소된다' -- lockf -k -t 0 /tmp/l.lock command git merge seg
@@ -6530,6 +6549,22 @@ check "거절된 위임자는 매니페스트 바이트를 바꾸지 않았다" 
 case "$msg" in
   *"매니페스트에 쓰려 합니다"*) ok "위임자 거절이 매니페스트 가드를 원인으로 지목한다" ;;
   *) bad "위임자 가드" "$msg" ;;
+esac
+# THE SELF-WRITING PRIMARY, which reaches the guard by neither of the two shapes
+# above: it delegates to nothing, so the `-exec` arm never sees it, and it names
+# its destination as a plain argv element rather than a redirection. The refusal
+# has to land BEFORE the act runs, which is also why this assertion is host
+# independent — BSD `find` would reject `-fprintf` outright, and a fixture whose
+# rc came from find rather than from the gate would measure the host instead of
+# the guard.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- find "$NMDIR" -maxdepth 1 -fprintf "$NM" '%p'
+check "매니페스트를 -fprintf 목적지로 삼는 행위가 거절된다" "$rc" "3"
+check "거절된 -fprintf 는 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+case "$msg" in
+  *"매니페스트에 쓰려 합니다"*) ok "-fprintf 거절이 매니페스트 가드를 원인으로 지목한다" ;;
+  *) bad "-fprintf 가드" "$msg" ;;
 esac
 # THE READ-GRADED DELEGATOR, which is the shape the read early-return above still
 # has to look past. `-exec cat` resolves to a read, so the grade IS `읽기` and the

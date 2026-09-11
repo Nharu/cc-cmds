@@ -770,10 +770,20 @@ gate_unwrap_command() {
 gate_unwrap_find() {
   # gate_unwrap_find <resolver> <walk-only> <writes> <find's args after argv0...>
   #
-  # Four primaries hand the match to another command and `-delete` removes it
-  # itself. THE OPTION SET IS NOT INVENTED HERE — it is the one this file already
-  # carries in both write guards below, and a fifth spelling of the same list is
-  # how those two quietly drift apart.
+  # Two ways a `find` writes. Four primaries hand the match to another command,
+  # and five act on their own — `-delete` removes the match, while `-fprintf`,
+  # `-fprint`, `-fprint0` and `-fls` each open a file named in argv and write to
+  # it. The last four are GNU-only, so on a BSD host `find` rejects them before
+  # anything happens; on the Linux CI runner they are the cheapest way to
+  # overwrite a file through a command that argv0 alone grades as a read.
+  # THE OPTION SET IS NOT INVENTED HERE — it is the one this file already carries
+  # in both write guards below, and a fifth spelling of the same list is how
+  # those two quietly drift apart.
+  #
+  # THIS LIST IS NOT CLAIMED TO BE COMPLETE. It is the set the two guards below
+  # enforce, and the three have to be changed together; a reader checking one
+  # against the others finds them equal, which says nothing about whether some
+  # sixth primary writes.
   #
   # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
   # states that cost in place: without it every read that walks the manifest's
@@ -786,7 +796,7 @@ gate_unwrap_find() {
         [ "$#" -ge 1 ] || { printf '%s' "$writes"; return 0; }
         "$resolver" "$@"
         return 0 ;;
-      -delete) printf '%s' "$writes"; return 0 ;;
+      -delete|-fprintf|-fprint|-fprint0|-fls) printf '%s' "$writes"; return 0 ;;
       *) shift ;;
     esac
   done
@@ -3998,6 +4008,7 @@ gate_claudemd_slot_guard() {
     읽기)
       case " $* " in
         *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *" -fprintf "*|*" -fprint "*|*" -fprint0 "*|*" -fls "*) ;;
         *)
           case "${1##*/}" in
             command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
@@ -4140,6 +4151,7 @@ gate_manifest_write_guard() {
     읽기)
       case " $* " in
         *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *" -fprintf "*|*" -fprint "*|*" -fprint0 "*|*" -fls "*) ;;
         *)
           case "${1##*/}" in
             command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
