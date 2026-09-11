@@ -369,19 +369,21 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at sixteen
+### 3.2 The row series is closed at eighteen
 
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fifteen` — `교대 기동` arrived as the sixteenth kind, and a heading that states a count states a falsehood the moment the count moves.
-
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen` — `handoff` arrived as the fifteenth kind, and a heading that states a count states a falsehood the moment the count moves.
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen` and `### 3.2 The row series is closed at seventeen` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, and `교대 기동` as the eighteenth. A heading that states a count states a falsehood the moment the count moves, and it has moved four times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
 The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
 
-**The sixteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
+**The eighteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
 
 **The last two are a reconciliation rather than an extension, and the difference matters.** `종료 절` and `문서 해시` were already being written by the gate while this table did not list them — so the table was not a closed definition at all, it was a partial inventory that read like one. A contract that under-reports what its writer emits is worse than one that over-reports: a reader checking whether a series exists gets "no" for something the ledger is full of. They are listed now with the fields the gate actually writes.
+
+**Fifteen and sixteen are `의무 종결` and `의무 포기`, and they exist because a `problem` obligation had no exit.** The open set was derived from `problem` rows and nothing subtracted from it: `obligation` closes review obligations only, and the one other exit — the exemption — opens for a creating grade at or below `워크트리쓰기`, while a REFUSED act structurally carries `등급 미상`. Refusal is the main way a `problem` row comes to exist, so the exemption missed the dominant case by construction and termination condition 3 could not be satisfied at all. The two are separate series rather than one with a state field because they differ in **tense**, and the tense decides when each is checked: `종결` cites a past act row and is never re-verified, `포기` cites a segment being terminal — a reversible, present-tense fact — and is re-verified every time the open set is computed.
+
+Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text identity) that the reader computes rather than the writer stores, so a `problem` row written before these series existed is closable with no migration. Neither carries the identity verbatim: §3.1a's 1024-byte cap makes unbounded free text unsafe on a row, so `표시 동일성` is a truncated label that **no predicate reads**. `세그먼트` is inherited from the row being closed and never accepted from argv, the same discipline `리뷰 의무` already applies to its carried fields.
 
 | `계열` | Fields |
 | --- | --- |
@@ -390,7 +392,7 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` |
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
-| `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
+| `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `생성 등급`(축 2) · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
@@ -400,6 +402,8 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
 | `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
+| `의무 종결` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`종결`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
+| `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 | `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
@@ -416,7 +420,7 @@ They are written from three different places, because the three have different k
 
 **`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
 
-**`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
+**`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`.
 
 **A pending approval has two ends, not one.** `무효` is reachable through the same transcript binding as `승인`, and it exists because the alternative to granting was pending forever: a pending row counts against termination condition 2 and suspends the stagnation boundaries, so one approval nobody wants to grant stalls the rest of the run. Voiding **removes a blocker**, so it is not the conservative direction and does not get a looser gate — it keeps the requirement that a human line naming both the id and the question text appear in the harness-written transcript. What it buys is the ability to answer *this should not have been asked* without also granting the act.
 
