@@ -31,6 +31,8 @@
 #   act        check, record, perform a pipeline act
 #   exec       check, record, perform one bash line (the unit B3 counts)
 #   close      resolve a pending approval from the harness-written transcript
+#   prompt     the canonical question and menu the router must ask for one
+#              approval, as JSON — changes nothing
 #
 # Exit codes:
 #   0  performed (or, for the dry-run verbs, answered)
@@ -59,6 +61,23 @@
 #                    --snapshot-digest <hex> --rationale <text>
 #                    [--emit-digest] -- <argv...>
 #   gate.sh close    --manifest <path> --approval <id> [--void|--reject]
+#   gate.sh prompt   --manifest <path> --approval <id>
+#
+# `close` reads the answer from the harness-written transcript by FRAME, not by
+# text: the line must be the `tool_result` of an `AskUserQuestion` whose
+# question carried the approval id (joined by `tool_use_id`) and must hold the
+# harness's `toolUseResult.answers` map. For a judgment approval the answer is
+# then compared by whole-string equality — recommendation suffix removed —
+# against the gate's own labels (`승인`·`거부`·`무효`); `--void`/`--reject` may
+# only agree with what the person chose. An answer equal to no label is FREE
+# INPUT: the approval stays `대기` (exit 5), the answer is kept in the approval
+# sidecar, and the row gains `처분 사유=자유 입력` so the morning can see it. Act
+# and boundary approvals have no menu; the frame decides and the flag is the
+# disposition, as before.
+#
+# `prompt` is how the router learns what to ask: `question` is the canonical
+# `승인 <id> — <질문>` to carry verbatim into `AskUserQuestion`, and `options[]`
+# are the labels to render verbatim (empty for act and boundary approvals).
 #
 # `--emit-digest` writes, after this call's LAST ledger row, a
 # one-line JSON object
@@ -168,6 +187,83 @@ readonly GATE_EXIT_SURFACE=7
 readonly GATE_APPROVAL_ANSWERED=9
 
 readonly GATE_ROW_MAX=1024
+
+# ---------------------------------------------------------------------------
+# The approval vocabulary and the answer-binding constants.
+#
+# `APPROVAL_STATES` IS THE SINGLE SOURCE OF TRUTH FOR `승인.상태`, the way
+# run.sh's `CUTPOINTS` is for the cutpoint ladder, and
+# `scripts/lint-approval-state-vocabulary.sh` reads it here. Six values. `기각`
+# is written by nothing today and stays in the set anyway: the contract table
+# is the authority and it does not drop a value for being unobserved, so a
+# writer that needs it later finds a token instead of improvising one. `철회` is
+# the state a boundary approval takes when the condition that raised it is gone
+# — no clock, no answer; a person's later answer can still close it — and today
+# it is ACCEPTED here and REQUIRED nowhere: the one transition into it lives
+# beside the boundary predicates and lands with them, not with this vocabulary.
+# ---------------------------------------------------------------------------
+readonly APPROVAL_STATES="대기 승인 거부 무효 기각 철회"
+
+gate_check_approval_state() {
+  # gate_check_approval_state <state> — 0 when the token is in the closed set.
+  case " $APPROVAL_STATES " in *" $1 "*) return 0 ;; esac
+  warn "승인 행의 「상태」가 어휘 밖입니다: ${1:-없음} — 허용 토큰: ${APPROVAL_STATES}"
+  return "$GATE_EXIT_VOCAB"
+}
+
+# The menu a judgment approval is asked with. THE GATE OWNS THE LABELS and the
+# router renders them verbatim: an answer is read by whole-string equality
+# against this set, never by scanning prose for a word that sounds like yes.
+# `gate_menu_labels` prints the three in order; `gate_menu_description` prints
+# the one-line description the router puts beside each. The version token goes
+# into the binding tuple so a row says which menu it MEANT — the row is a
+# pointer to this table, and the table is what an answer is compared against.
+readonly GATE_MENU_VERSION=v1
+
+gate_menu_labels() { printf '승인 거부 무효'; }
+
+gate_menu_description() {
+  case "$1" in
+    승인) printf '이 판단을 채택합니다 — 게이트가 승인 행을 쓰고 런이 그 답으로 이어갑니다' ;;
+    거부) printf '물었고 답은 아니오입니다 — 이 판단은 채택되지 않습니다' ;;
+    무효) printf '애초에 물어서는 안 됐던 질문입니다 — 행위 없이 승인만 닫습니다' ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_menu_normalize() {
+  # gate_menu_normalize <label> — the label with its recommendation suffix
+  # dropped. The AUQ authoring rule this repo lints for marks the recommended
+  # option by appending ` ← 추천` or ` ← 에이전트 추천` to the label ITSELF, so
+  # the transcript's `options[].label` and the answer a person chose both read
+  # `승인 ← 추천` while this table says `승인`. Compared raw, a healthy answer
+  # fails the menu check or falls through to the free-input rung. The suffix
+  # is removed at comparison time and never added to the table.
+  printf '%s' "${1%% ← *}"
+}
+
+# EXCERPT LENGTHS, DERIVED BY ARITHMETIC AGAINST `GATE_ROW_MAX` and not chosen
+# for readability. Measured worst rows: issue 738B, close(승인) 993B, close(무효)
+# 635B. With the fields this design adds — a filled binding tuple, a sidecar
+# anchor, a response token, an answer digest — a 256-byte answer excerpt puts a
+# `승인` close row at 1034B, over the cap. 160 leaves the thinnest row (`무효`
+# close) roughly 61 bytes of headroom. The question excerpt keeps its 400: the
+# arithmetic above was done on that premise, and what this design discards is
+# the raw-line CLIP PATH, not the clip length.
+readonly GATE_Q_EXCERPT=400
+readonly GATE_A_EXCERPT=160
+readonly GATE_REASON_EXCERPT=120
+# The snapshot component of a judgment binding tuple is the first 12 of the
+# snapshot digest — the `head 12자` convention the act tuple already uses. The
+# full 129-byte value would leave an issue row 26 bytes under the cap.
+readonly GATE_TUPLE_SNAP_LEN=12
+
+# The harness's own words for a dismissed dialog. A `tool_result` carrying
+# `is_error` AND this exact string means a person was at the screen and closed
+# the question without choosing; any other `is_error` says only that the call
+# collapsed, cause unobserved. The two get different warnings because they are
+# opposite evidence about whether a person is present.
+readonly GATE_DISMISSAL_TEXT="The user doesn't want to proceed with this tool use"
 
 # HOW FAR BACK AN OBSERVED TIP MAY SIT AND STILL COUNT AS AN ANCESTOR. The tip
 # axis accepts a value the chain has since grown past, which is what a
@@ -1053,6 +1149,19 @@ gate_append() {
     done
     gate_check_scope "$scope" || return "$GATE_EXIT_VOCAB"
   fi
+  # THE APPROVAL STATE IS CHECKED HERE FOR THE SAME REASON. Every reader of the
+  # `승인` series takes the last row's `상태` as current and compares it against
+  # literals, so a value outside the set is not a row that says something odd —
+  # it is an approval no reader can see as open, closed, or anything. `철회` is
+  # in the set and written by nothing yet; the check accepts it because the
+  # vocabulary is the contract's and not the caller list's.
+  if [ "$series" = "승인" ]; then
+    local astate=""
+    for f in "$@"; do
+      case "$f" in 상태=*) astate="${f#상태=}" ;; esac
+    done
+    gate_check_approval_state "$astate" || return "$GATE_EXIT_VOCAB"
+  fi
 
   # THE SHIFT SCALE IS ADDED HERE, WHERE EVERY ROW IS WRITTEN AND NOWHERE
   # ELSE. The morning report asks how many routing shifts ran after the
@@ -1776,10 +1885,17 @@ gate_pending_approvals_json() {
     [ "$state" = "대기" ] || continue
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"id": "%s", "blocks": "%s", "cutpoint": "%s", "question": "%s"}' \
+    # `disposition` IS HOW A FREE-INPUT ANSWER REACHES THE MORNING. An approval
+    # whose last `대기` row carries `처분 사유` was answered by a person and the
+    # gate could derive no disposition from the answer; without this field it
+    # is indistinguishable in the array from one nobody has answered.
+    local disp
+    disp=$(gate_row_field "$row" '처분 사유'); [ -n "$disp" ] || disp='-'
+    printf '    {"id": "%s", "blocks": "%s", "cutpoint": "%s", "disposition": "%s", "question": "%s"}' \
       "$(gate_json_escape "$id")" \
       "$(gate_json_escape "$(gate_row_field "$row" '막는 세그먼트')")" \
       "$(gate_json_escape "$(gate_row_field "$row" '절단점')")" \
+      "$(gate_json_escape "$disp")" \
       "$(gate_json_escape "$(gate_row_field "$row" '질문 문면')")"
   done
   [ "$first" = "1" ] || printf '\n'
@@ -2953,6 +3069,12 @@ gate_main() {
       fi
       gate_close "$approval" "$void" "$reject"
       ;;
+    prompt)
+      # Reading, not acting: it prints the canonical question and the gate's
+      # menu for one approval and writes nothing.
+      [ -n "$approval" ] || { printf 'gate: prompt 는 --approval 이 필요합니다\n' >&2; exit 2; }
+      gate_prompt "$approval"
+      ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
   esac
@@ -3399,6 +3521,263 @@ gate_record_cone() {
 }
 
 # ---------------------------------------------------------------------------
+# The approval sidecar — `<base>/docs/pipeline-approval/<run-id>.md`.
+#
+# A `승인` row carries an EXCERPT of the question and of the answer and a digest
+# of each; the full text lives here, one block per approval id, so the digests
+# on the row have something to be compared against. Keyed on the RUN and not on
+# the design document: a run may start from a pull request or a bare intent
+# and have no document to derive a slug from, so this kind proves its ownership
+# with `owner-run=<run-id>` plus the existence of that run's authorization
+# record, and a file that fails either half is not read and not extended.
+#
+# THE GATE IS ITS ONLY WRITER AND CREATES ITS DIRECTORY. The sidecar contract
+# makes the directory the writer's duty, and without the `mkdir -p` the first
+# approval of a fresh checkout would fail exactly on the path this file exists
+# for — the free-input answer that the ledger deliberately does not carry.
+#
+# Blocks are `## 승인 <id>`. The IMMUTABLE region — the question's sha256 and
+# its fenced text — is written when the approval is issued and never rewritten;
+# the MUTABLE region — the answer's sha256 and its fenced text — is filled when
+# the approval closes, and re-filled if a later answer supersedes an earlier
+# one. Writes take the contract's atomic form: a temp file in the same
+# directory, a compare-and-swap against the bytes the build read, a plain `mv`,
+# a bounded retry. Nothing here deletes.
+# ---------------------------------------------------------------------------
+readonly GATE_APPROVAL_SIDECAR_KIND="cc-pipeline-approval v1"
+
+gate_approval_sidecar_path() {
+  # Nothing when either half of the path is unknown: a caller sourcing this
+  # file without a manifest has no base and no run, and `/docs/pipeline-approval/.md`
+  # is a real path that must not be created by accident.
+  [ -n "${BASE:-}" ] && [ -n "${RUN_ID:-}" ] || return 1
+  printf '%s/docs/pipeline-approval/%s.md' "$BASE" "$RUN_ID"
+}
+
+gate_approval_sidecar_anchor() {
+  # gate_approval_sidecar_anchor <승인 id> — the row field that names the block.
+  printf '%s#%s' "${RUN_ID:-(미상)}" "$1"
+}
+
+gate_approval_sidecar_ok() {
+  # gate_approval_sidecar_ok [<path>] — 0 when the file is absent (creation is
+  # legitimate) or proves itself this run's: the kind token is strictly equal,
+  # `owner-run=` names this run, and the run's authorization record exists.
+  # Anything else is fail-closed for reading and writing alike.
+  local f="${1:-}" hdr
+  [ -n "$f" ] || f=$(gate_approval_sidecar_path) || { warn "승인 사이드카 경로를 유도할 수 없습니다 (BASE·RUN_ID 미상)"; return 1; }
+  [ -e "$f" ] || { [ -n "${GRANT:-}" ] && [ -f "$GRANT" ] && return 0; warn "승인 사이드카를 쓰려면 이 런의 인가 기록이 있어야 합니다: ${GRANT:-(미상)}"; return 1; }
+  hdr=$(sed -n '2p' "$f" 2>/dev/null || true)
+  case "$hdr" in
+    "<!-- $GATE_APPROVAL_SIDECAR_KIND; "*"owner-run=$RUN_ID;"*) ;;
+    *) warn "승인 사이드카의 머신 헤더가 이 런의 것이 아닙니다 (kind·owner-run 불일치) — 읽지도 쓰지도 않습니다: $f"; return 1 ;;
+  esac
+  [ -n "${GRANT:-}" ] && [ -f "$GRANT" ] || { warn "승인 사이드카의 증명쌍 절반인 인가 기록이 없습니다: ${GRANT:-(미상)} — 읽지도 쓰지도 않습니다"; return 1; }
+  return 0
+}
+
+gate_fence_for() {
+  # gate_fence_for <text> — a backtick fence one longer than the longest run
+  # of backticks in the text, never shorter than three, so the payload cannot
+  # close its own fence.
+  local n
+  n=$(printf '%s\n' "$1" | LC_ALL=C awk '
+    { m = 0; c = 0; for (i = 1; i <= length($0); i++) { if (substr($0, i, 1) == "`") { c++; if (c > m) m = c } else c = 0 } if (m > best) best = m }
+    END { printf "%d", (best + 1 > 3) ? best + 1 : 3 }')
+  printf '%*s' "$n" '' | tr ' ' '`'
+}
+
+gate_approval_sidecar_header() {
+  printf '# 파이프라인 승인 기록 — %s\n' "$RUN_ID"
+  printf '<!-- %s; writer=gate; reader=gate; owner-run=%s; owner-doc=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n' \
+    "$GATE_APPROVAL_SIDECAR_KIND" "$RUN_ID" "${DOC_KEY:-(없음)}"
+}
+
+gate_approval_sidecar_region() {
+  # gate_approval_sidecar_region <label> <text> — one fenced region: the
+  # digest line, the fence, the text, the fence.
+  local label="$1" text="$2" fence
+  fence=$(gate_fence_for "$text")
+  printf '**%s sha256**: %s\n' "$label" "$(printf '%s' "$text" | shasum -a 256 | cut -d' ' -f1)"
+  printf '%stext\n%s\n%s\n' "$fence" "$text" "$fence"
+}
+
+gate_approval_sidecar_build() {
+  # gate_approval_sidecar_build <snap> <id> <region-file> <mode> — the whole
+  # new file on stdout, built from the snapshot. `mode` is `issue` (add the
+  # block with its question region if no block exists; leave an existing block
+  # alone) or `answer` (replace or add the answer region inside the block).
+  #
+  # Fence-aware: a `## 승인` line inside an open fence is payload, and the
+  # tracker matches the CLOSING fence by the exact backtick string that opened
+  # it, so a shorter run of backticks in the payload does not close it.
+  local snap="$1" id="$2" region="$3" mode="$4"
+  if [ ! -s "$snap" ]; then
+    gate_approval_sidecar_header
+    printf '\n## 승인 %s\n' "$id"
+    cat "$region"
+    return 0
+  fi
+  LC_ALL=C awk -v id="$id" -v mode="$mode" -v regionfile="$region" '
+    function flush_region(   line) {
+      while ((getline line < regionfile) > 0) print line
+      close(regionfile)
+    }
+    function fence_len(s,   i, n) { n = 0; for (i = 1; i <= length(s); i++) { if (substr(s, i, 1) == "`") n++; else break } return n }
+    BEGIN { infence = 0; inblock = 0; found = 0; inanswer = 0; done = 0 }
+    {
+      line = $0
+      if (infence) {
+        if (fence_len(line) == flen && length(line) == flen) { infence = 0 }
+        if (inblock && mode == "answer" && inanswer) next
+        print line; next
+      }
+      fl = fence_len(line)
+      if (fl >= 3) {
+        infence = 1; flen = fl
+        if (inblock && mode == "answer" && inanswer) next
+        print line; next
+      }
+      if (line ~ /^## 승인 /) {
+        if (inblock && mode == "answer" && !done) { flush_region(); done = 1 }
+        inblock = (line == "## 승인 " id); if (inblock) found = 1
+        inanswer = 0
+        print line; next
+      }
+      if (inblock && mode == "answer" && line ~ /^\*\*답변 sha256\*\*: /) { inanswer = 1; next }
+      if (inblock && mode == "answer" && inanswer && line ~ /^[[:space:]]*$/) { next }
+      inanswer = 0
+      print line
+    }
+    END {
+      if (mode == "answer" && inblock && !done) { flush_region(); done = 1 }
+      if (!found) { printf "\n## 승인 %s\n", id; flush_region() }
+    }
+  ' "$snap"
+}
+
+gate_approval_sidecar_write() {
+  # gate_approval_sidecar_write <id> <mode> <label> <text> — commit one region
+  # through the atomic compare-and-swap. 0 on commit; non-zero means nothing
+  # was written and the caller must not proceed as if it had.
+  local id="$1" mode="$2" label="$3" text="$4" f dir snap t region attempt
+  f=$(gate_approval_sidecar_path) || { warn "승인 사이드카 경로를 유도할 수 없습니다 (BASE·RUN_ID 미상)"; return 1; }
+  dir=$(dirname "$f")
+  gate_approval_sidecar_ok "$f" || return 1
+  region=$(mktemp) || return 1
+  gate_approval_sidecar_region "$label" "$text" > "$region"
+  for attempt in 1 2 3; do
+    mkdir -p "$dir" || { rm -f "$region"; return 1; }
+    snap=$(mktemp) || { rm -f "$region"; return 1; }
+    cp "$f" "$snap" 2>/dev/null || : > "$snap"
+    t=$(mktemp "$dir/.$(basename "$f").XXXXXX") || { rm -f "$snap" "$region"; return 1; }
+    if ! gate_approval_sidecar_build "$snap" "$id" "$region" "$mode" > "$t"; then
+      rm -f "$t" "$snap" "$region"; return 1
+    fi
+    [ -s "$t" ] || { rm -f "$t" "$snap" "$region"; return 1; }
+    if { [ -e "$f" ] && cmp -s "$snap" "$f"; } || { [ ! -e "$f" ] && [ ! -s "$snap" ]; }; then
+      if mv "$t" "$f"; then
+        rm -f "$snap" "$region"
+        # Read-back: this attempt's own block heading must be present.
+        grep -qxF "## 승인 $id" "$f" 2>/dev/null || { warn "승인 사이드카 되짚어 읽기 실패 — 블록이 보이지 않습니다: $f ## 승인 $id"; return 1; }
+        return 0
+      fi
+    fi
+    rm -f "$t" "$snap"
+  done
+  rm -f "$region"
+  warn "승인 사이드카 쓰기가 세 번의 시도 안에 확정되지 않았습니다 — 아무것도 쓰지 않았습니다: $f"
+  return 1
+}
+
+gate_approval_sidecar_question() {
+  # gate_approval_sidecar_question <id> — the full question text of a block,
+  # or nothing when the file fails its proof pair or holds no such block.
+  local f
+  f=$(gate_approval_sidecar_path) || return 0
+  [ -f "$f" ] || return 0
+  gate_approval_sidecar_ok "$f" 2>/dev/null || return 0
+  LC_ALL=C awk -v id="$1" '
+    function fence_len(s,   i, n) { n = 0; for (i = 1; i <= length(s); i++) { if (substr(s, i, 1) == "`") n++; else break } return n }
+    BEGIN { inblock = 0; want = 0; infence = 0 }
+    {
+      if (infence) {
+        if (fence_len($0) == flen && length($0) == flen) { infence = 0; if (want) exit; next }
+        if (want) print; next
+      }
+      fl = fence_len($0)
+      if (fl >= 3) { infence = 1; flen = fl; next }
+      if ($0 ~ /^## 승인 /) { inblock = ($0 == "## 승인 " id); next }
+      if (inblock && $0 ~ /^\*\*질문 sha256\*\*: /) { want = 1; next }
+    }
+  ' "$f"
+}
+
+gate_canon_prompt() {
+  # gate_canon_prompt <id> <question> — the canonical prompt. `승인 <id> — <question>`
+  # is what the router must put verbatim into the question it asks, and the id
+  # riding inside that question is how the answer frame is found again.
+  #
+  # ON STDERR AT ISSUE TIME AND ON STDOUT ONLY THROUGH THE `prompt` VERB. The
+  # issuing paths run inside `act` and `exec`, whose stdout belongs to the act —
+  # a boundary approval opening in the middle of `exec -- git rev-parse HEAD`
+  # would otherwise put this line in front of the sha a caller captured. The
+  # router gets the same bytes, as JSON, from `gate.sh prompt --approval <id>`.
+  printf '승인 %s — %s' "$1" "$2"
+}
+
+gate_warn_canon_prompt() {
+  warn "$(gate_canon_prompt "$1" "$2")"
+}
+
+gate_prompt() {
+  # gate_prompt <승인 id> — the question the router must put to a person, as
+  # one JSON object: `{"id","cutpoint","state","question","menu_version",
+  # "options":[{"label","description"}...]}`. THIS IS THE CONSUMPTION POINT OF
+  # THE CANONICAL PROMPT. The router carries `question` verbatim into
+  # `AskUserQuestion` and renders `options[]` verbatim (adding at most the
+  # authoring rule's ` ← 추천` suffix to one label); the gate then finds the
+  # answer frame by the id inside that question and compares the menu the
+  # person saw against the same table this printed from. Act and boundary
+  # approvals have no menu, so `options` is empty for them and the router asks
+  # as it does today.
+  #
+  # The question text is the sidecar's full text when the block exists and
+  # proves itself this run's, and the row's excerpt otherwise — an approval
+  # issued before the sidecar existed is still askable.
+  local id="$1" row cutp full l opts
+  row=$(gate_approval_last_row "$id")
+  [ -n "$row" ] || die "그런 승인 id 가 원장에 없습니다: $id"
+  cutp=$(gate_row_field "$row" '절단점')
+  full=$(gate_approval_sidecar_question "$id" || true)
+  [ -n "$full" ] || full=$(gate_row_field "$row" '질문 문면')
+  opts='[]'
+  if [ "$cutp" = "판단" ]; then
+    opts=$(for l in $(gate_menu_labels); do
+      jq -n --arg label "$l" --arg description "$(gate_menu_description "$l")" '{label: $label, description: $description}'
+    done | jq -s '.')
+  fi
+  jq -n --arg id "$id" --arg cutpoint "$cutp" --arg state "$(gate_row_field "$row" '상태')" \
+        --arg question "$(gate_canon_prompt "$id" "$full")" --arg mv "$GATE_MENU_VERSION" \
+        --argjson options "$opts" \
+        '{id: $id, cutpoint: $cutpoint, state: $state, question: $question, menu_version: $mv, options: $options}'
+}
+
+gate_tuple_snap() {
+  # The snapshot component of a judgment binding tuple: the first
+  # `GATE_TUPLE_SNAP_LEN` characters of the snapshot digest, which is the
+  # progress-vector half — the value that moves on progress and on nothing else.
+  local h
+  h=$(gate_snapshot_digest)
+  printf '%s' "${h:0:$GATE_TUPLE_SNAP_LEN}"
+}
+
+gate_approval_last_row() {
+  # gate_approval_last_row <승인 id> — the last `승인` row for this id, or nothing.
+  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | tail -1
+}
+
+# ---------------------------------------------------------------------------
 # Judgment approvals — the path grade 2's own refusal used to promise.
 # ---------------------------------------------------------------------------
 gate_judgment_question() {
@@ -3452,16 +3831,25 @@ gate_judgment_approval_disposition() {
 gate_issue_judgment_approval() {
   # gate_issue_judgment_approval <alias> <segment> <기준> <근거>
   #
-  # THE BINDING TUPLE IS `-`, AND THAT IS THE DIFFERENCE FROM AN ACT APPROVAL.
-  # An act approval's answer is valid now and its window closes with the night,
-  # so it carries head and base shas and re-derives freshness against the tree
-  # it named. A question's answer is an input to work that has not happened yet
-  # — it is durable, and there is no tree to measure.
+  # THE BINDING TUPLE IS `<세그먼트>/<질문 sha256>/<선택지판>/<스냅숏 앞자리>`, AND
+  # THAT IS THE DIFFERENCE FROM AN ACT APPROVAL. An act approval's answer is
+  # valid now and its window closes with the night, so it carries head and base
+  # shas and re-derives freshness against the tree it named. A question's
+  # answer is an input to work that has not happened yet — it is durable, and
+  # there is no tree to measure — so what its tuple binds is not a tree but the
+  # QUESTION a person saw and the MENU they were shown: the digest of the full
+  # question text (compared against the sidecar block the anchor names) and the
+  # version token of the gate's own label table (compared, at close, by
+  # re-deriving the labels from that table against the transcript's menu).
   #
   # THE GATE ISSUES IT AND THE ROUTER CANNOT. The router only ever submits its
   # own recommendation through `act --kind judgment`; whether that becomes a
   # question is decided here.
-  local alias="$1" seg="$2" std="$3" why="$4" id q
+  local alias="$1" seg="$2" std="$3" why="$4" id q qfull qdig
+  # The full text goes to the sidecar and is what the row's digest is OF; the
+  # row itself carries the 400-byte excerpt, and the id keeps hashing the excerpt
+  # so every id issued before the sidecar existed still derives to itself.
+  qfull="${std:-미상} — ${why:-근거 없음}"
   q=$(gate_judgment_question "$std" "$why")
   id=$(gate_judgment_approval_id "$seg" "$q")
   # THE ID GOES OUT WITH THE RETURN VALUE. Every one of the three returns below
@@ -3500,10 +3888,23 @@ gate_issue_judgment_approval() {
       # nothing to issue.
       return "$GATE_APPROVAL_ANSWERED" ;;
   esac
+  # THE SIDECAR BLOCK IS WRITTEN BEFORE THE ROW, so the anchor the row carries
+  # names a block that exists. A block whose row never lands is an orphan and
+  # harmless; a row whose block never lands is an anchor to nothing, and the
+  # digest beside it then proves nothing. The write failing is loud and does not
+  # stop the issue: an act refused with nothing pending is the worse failure,
+  # and the row still carries the digest a later reader can check the text
+  # against once the sidecar is repaired.
+  gate_approval_sidecar_write "$id" issue '질문' "$qfull" \
+    || warn "승인 사이드카에 질문 전문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
+  qdig=$(printf '%s' "$qfull" | shasum -a 256 | cut -d' ' -f1)
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
-    "행위 다이제스트=-" "구속 튜플=-" "막는 세그먼트=${seg:--}" \
-    "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+    "행위 다이제스트=-" "구속 튜플=${seg:--}/$qdig/$GATE_MENU_VERSION/$(gate_tuple_snap)" \
+    "막는 세그먼트=${seg:--}" "질문 문면=$q" "답변 문면=-" \
+    "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
+    "발행 시각=$(now_iso)" "해소 시각=-"
   warn "판단 승인 대기 발행 $id — 이 판단은 사람의 답을 기다립니다 (런은 그 옆으로 계속 갑니다)"
+  gate_warn_canon_prompt "$id" "$q"
 }
 
 gate_revert_surface() {
@@ -5951,16 +6352,24 @@ gate_issue_act_approval() {
   esac
   base=$(target_field "$alias" '베이스 브랜치')
   head=$(cd "$(gate_act_worktree "$alias")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  # THE QUESTION IS A FIXED LITERAL AND THE BLOCK IS STILL WRITTEN: the anchor on
+  # the row has to name something, and the close path fills the answer region
+  # of this block the same way it does a judgment's.
+  local q='사전 인가 밖 행위를 수행할까요'
+  gate_approval_sidecar_write "$id" issue '질문' "$q" \
+    || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
     "행위 다이제스트=$ad" "구속 튜플=$alias/$base/${head:0:12}/$grade" \
-    "막는 세그먼트=$seg" "질문 문면=사전 인가 밖 행위를 수행할까요" \
-    "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+    "막는 세그먼트=$seg" "질문 문면=$q" \
+    "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
+    "발행 시각=$(now_iso)" "해소 시각=-"
   # Raised the moment the row is seated. The row's own idempotence guard is the
   # early return above, so the notice inherits it exactly — same key, same
   # condition — and an act blocked twice produces one pending approval and one
   # banner rather than a queue of either.
-  gate_notify_approval "$id" "사전 인가 밖 행위를 수행할까요 — $alias / $cut / $grade"
+  gate_notify_approval "$id" "$q — $alias / $cut / $grade"
   warn "승인 대기 발행 $id — $alias / $cut / $grade"
+  gate_warn_canon_prompt "$id" "$q"
 }
 
 gate_names_next_obligation() {
@@ -6805,95 +7214,194 @@ gate_transcript_files() {
   done
 }
 
-gate_negative_answer_hit() {
-  # gate_negative_answer_hit <답 바이트> — prints the negative term the answer
-  # matched, or nothing at all.
+gate_transcript_torn() {
+  # gate_transcript_torn — 0 when any lineage transcript ends mid-line.
   #
-  # THE VOCABULARY LIVES HERE AND IN NO OTHER PLACE. Spread across the call
-  # sites it would drift, and a scan that is thorough in one caller and thin in
-  # another reads as one floor while behaving as two.
-  #
-  # The two halves are matched differently because the languages differ. Korean
-  # has no word boundary a scan can rest on, so its terms are matched as plain
-  # substrings. The Latin terms are matched against a copy whose punctuation
-  # and multibyte bytes have become spaces and which is space-padded on both
-  # ends, so `no` cannot fire on `note`, `known` or `nothing` — the bare
-  # substring would have made this scan useless in the other direction, which
-  # for a check standing between an answer and a recorded approval is worse
-  # than the constant it replaces.
-  #
-  # THE KOREAN HALF CARRIES THE PRODUCTIVE FORMS AND NOT ONLY THE STANDALONE
-  # WORDS. Korean negates mainly by ending — `-지 않다`, `-지 말다` — and by the
-  # adverbs `안` and `못`; a list of standalone refusals therefore knew none of
-  # the ordinary ways to say no, and `승인하지 않습니다` or `반대합니다` closed as
-  # grants. The ending terms are spelled without their trailing verb (`지 않`) so
-  # one term covers every conjugation of it.
-  local ans="$1" lower flat t
-  lower=$(printf '%s' "$ans" | tr 'A-Z' 'a-z')
-  # THE ADVERB TERMS ARE SPELLED SEVERAL WAYS BECAUSE KOREAN CONJUGATION CHANGES
-  # THE STEM SYLLABLE ITSELF AND NOT ONLY WHAT FOLLOWS IT. `안 되` does not occur
-  # in `안 됩니다` at all — the stem `되` has become `됩` — so one dictionary-form
-  # spelling would know the form nobody writes and miss the form everybody does.
-  # The ending terms above need no such spread: `않` and `말` survive their own
-  # conjugations.
-  for t in 아니오 아니요 거부 거절 '하지 마' 하지마 '지 않' '지 말' \
-           '안 되' '안 됩' '안 돼' '못 하' '못 합' '못 해' '못 한' 반대 불가; do
-    case "$lower" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
+  # A TORN LINE IS NOT AN ABSENCE, and under this design the two mean opposite
+  # things. The gate reads the transcript while the harness is still appending
+  # to it, so the ledger's "discard only the last line" rule does not carry
+  # over — that rule assumes the gate is the writer, and here the harness is.
+  # An incomplete final line that might hold the very id being looked for makes
+  # "not found" ambiguous between "not answered yet" and "half written", so the
+  # verdict is HELD rather than decided. Checked FIRST, before any search: a
+  # search that ran over the torn file would decide on the lines before the
+  # tear as if they were the whole file.
+  local f
+  for f in $(gate_transcript_files || true); do
+    [ -f "$f" ] || continue
+    if [ -n "$(tail -c 1 "$f" 2>/dev/null)" ]; then return 0; fi
   done
-  flat=" $(printf '%s' "$lower" | tr -c "a-z0-9'" ' ') "
-  for t in no nope reject "don't" not negative decline disagree nah; do
-    case "$flat" in *" $t "*) printf '%s' "$t"; return 0 ;; esac
+  return 1
+}
+
+gate_frame_candidate() {
+  # gate_frame_candidate <승인 id> — the binding candidate for an approval.
+  #
+  # Sets GATE_FRAME_FILE, GATE_FRAME_LINE and GATE_FRAME_KIND:
+  #   answers  a line carrying the id AND a `toolUseResult.answers` map — the
+  #            only kind that can close an approval
+  #   result   the `tool_result` of an `AskUserQuestion` that asked this id but
+  #            produced no answer map (a dismissed dialog, a collapsed call)
+  #   asked    the question was put (a `tool_use` carries the id) and no result
+  #            frame exists yet
+  #   other    a line carries the id and is none of the above — the router's
+  #            own tool output echoing the ledger, typically
+  #   none     nothing in the lineage carries the id
+  #
+  # THE BINDING IS THE ID ALONE, NOT THE ID AND THE QUESTION TEXT. Requiring the
+  # question on the same line was meant to stop the router pointing `close` at a
+  # different question; what it actually did was qualify every line the router
+  # READ THE LEDGER on — the ledger row holds both — and reject boundary
+  # approvals whose fixed-literal question is shared by dozens of ids. The
+  # frame approval below is the real guard: a line closes an approval only if
+  # it is the harness-written result of an `AskUserQuestion` whose question
+  # carried the id, and the router cannot manufacture that frame.
+  #
+  # ANSWER FRAMES ARE SEARCHED ACROSS THE WHOLE LINEAGE FIRST, and the first
+  # file holding one wins with its LAST such line — latest answer wins, which is
+  # the rule a person changing their mind needs. The diagnostic kinds are looked
+  # for only when no answer frame exists anywhere, so a dialog dismissed in an
+  # earlier session cannot shadow the answer given in a later one.
+  local id="$1" f line tid
+  GATE_FRAME_FILE=""; GATE_FRAME_LINE=""; GATE_FRAME_KIND="none"
+  for f in $(gate_transcript_files || true); do
+    [ -f "$f" ] || continue
+    line=$( { grep -F "$id" "$f" 2>/dev/null || true; } | { grep -F '"answers":{' || true; } | tail -1)
+    if [ -n "$line" ]; then
+      GATE_FRAME_FILE="$f"; GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="answers"; return 0
+    fi
+  done
+  for f in $(gate_transcript_files || true); do
+    [ -f "$f" ] || continue
+    tid=$( { grep -F "$id" "$f" 2>/dev/null || true; } | { grep -F '"name":"AskUserQuestion"' || true; } | tail -1 \
+      | jq -r --arg id "$id" '
+          [ .message.content[]? | select(type == "object" and .type == "tool_use" and .name == "AskUserQuestion")
+            | select([ .input.questions[]? | .question | tostring | contains($id) ] | any) | .id ] | last // ""' 2>/dev/null || true)
+    if [ -n "$tid" ]; then
+      line=$( { grep -F "\"tool_use_id\":\"$tid\"" "$f" 2>/dev/null || true; } | tail -1)
+      GATE_FRAME_FILE="$f"
+      if [ -n "$line" ]; then GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="result"; else GATE_FRAME_KIND="asked"; fi
+      return 0
+    fi
+    line=$( { grep -F "$id" "$f" 2>/dev/null || true; } | tail -1)
+    if [ -n "$line" ]; then
+      GATE_FRAME_FILE="$f"; GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="other"; return 0
+    fi
+  done
+  return 1
+}
+
+gate_frame_parse() {
+  # gate_frame_parse <file> <line> <승인 id> — take one transcript line apart.
+  #
+  # Sets GATE_FRAME_TYPE (the line's `type`), GATE_FRAME_TID (the `tool_result`
+  # block's `tool_use_id`), GATE_FRAME_ERR (1 when that block says `is_error`),
+  # GATE_FRAME_ERRTEXT (the first bytes of its content, for the dismissal test),
+  # GATE_FRAME_TOOL (the `.name` of the `tool_use` the id joins to, in the same
+  # file), GATE_FRAME_HASANS (1 when `toolUseResult.answers` is an object),
+  # GATE_FRAME_KEY (the question slot carrying the id — the answers map's key),
+  # GATE_FRAME_ANSWER (that slot's answer, verbatim) and GATE_FRAME_LABELS (the
+  # `options[].label` the person was shown for that slot, one per line).
+  #
+  # THE JOIN IS THE FRAME APPROVAL. A `tool_result` names the call it answers by
+  # `tool_use_id`; following that id back to its `tool_use` and reading `.name`
+  # is what tells an `AskUserQuestion` answer apart from a `Bash` result that
+  # happens to contain the same bytes. Nothing about the text decides it.
+  #
+  # THE SLOT IS FOUND BY CONTAINMENT, NOT POSITION. Measured over the corpus,
+  # the id sits at the front of the question in a sixth of the slots and
+  # anywhere from offset 1 to past 100 in the rest; a prefix test would reject
+  # most of what already exists. The canonical prompt fixes where the gate PUTS
+  # the id; this reads it wherever it is.
+  local f="$1" line="$2" id="$3" tu
+  GATE_FRAME_TYPE=$(printf '%s' "$line" | jq -r '.type // ""' 2>/dev/null || true)
+  GATE_FRAME_TID=$(printf '%s' "$line" | jq -r '
+    [ .message.content[]? | select(type == "object" and .type == "tool_result") | .tool_use_id ] | last // ""' 2>/dev/null || true)
+  GATE_FRAME_ERR=$(printf '%s' "$line" | jq -r '
+    [ .message.content[]? | select(type == "object" and .type == "tool_result") | (.is_error == true) ] | last // false
+    | if . then "1" else "0" end' 2>/dev/null || printf '0')
+  # Clipped inside jq rather than by `head -c` on the right of the pipe: an
+  # early-exiting reader there kills the writer under `pipefail`.
+  GATE_FRAME_ERRTEXT=$(printf '%s' "$line" | jq -r '
+    [ .message.content[]? | select(type == "object" and .type == "tool_result") | (.content | tostring)[0:300] ] | last // ""' 2>/dev/null || true)
+  GATE_FRAME_HASANS=$(printf '%s' "$line" | jq -r '
+    if (.toolUseResult.answers? | type) == "object" then "1" else "0" end' 2>/dev/null || printf '0')
+  GATE_FRAME_KEY=$(printf '%s' "$line" | jq -r --arg id "$id" '
+    [ .toolUseResult.questions[]? | .question | select(type == "string" and contains($id)) ] | first // ""' 2>/dev/null || true)
+  [ -n "$GATE_FRAME_KEY" ] || GATE_FRAME_KEY=$(printf '%s' "$line" | jq -r --arg id "$id" '
+    [ .toolUseResult.answers? | objects | keys[] | select(contains($id)) ] | first // ""' 2>/dev/null || true)
+  # THE SLOT AND ITS ENTRY ARE TWO FACTS. A question slot can carry the id while
+  # the answers map has no entry under that key — measured at 2.8% of slots in
+  # the corpus, a failure mode distinct from free input — so `GATE_FRAME_HASKEY`
+  # says whether the map holds the key at all, and an empty answer is not
+  # mistaken for an answer of nothing.
+  GATE_FRAME_ANSWER=""; GATE_FRAME_HASKEY=0
+  if [ -n "$GATE_FRAME_KEY" ]; then
+    GATE_FRAME_HASKEY=$(printf '%s' "$line" | jq -r --arg k "$GATE_FRAME_KEY" '
+      if (.toolUseResult.answers? | type) == "object" and (.toolUseResult.answers | has($k)) then "1" else "0" end' 2>/dev/null || printf '0')
+    GATE_FRAME_ANSWER=$(printf '%s' "$line" | jq -r --arg k "$GATE_FRAME_KEY" '
+      .toolUseResult.answers[$k]? // "" | if type == "string" then . else tojson end' 2>/dev/null || true)
+  fi
+  GATE_FRAME_TOOL=""; GATE_FRAME_LABELS=""
+  if [ -n "$GATE_FRAME_TID" ]; then
+    tu=$( { grep -F "\"id\":\"$GATE_FRAME_TID\"" "$f" 2>/dev/null || true; } | { grep -F '"type":"tool_use"' || true; } | tail -1)
+    if [ -n "$tu" ]; then
+      GATE_FRAME_TOOL=$(printf '%s' "$tu" | jq -r --arg tid "$GATE_FRAME_TID" '
+        [ .message.content[]? | select(type == "object" and .type == "tool_use" and .id == $tid) | .name ] | last // ""' 2>/dev/null || true)
+      GATE_FRAME_LABELS=$(printf '%s' "$tu" | jq -r --arg tid "$GATE_FRAME_TID" --arg id "$id" '
+        [ .message.content[]? | select(type == "object" and .type == "tool_use" and .id == $tid)
+          | .input.questions[]? | select(.question | tostring | contains($id)) | .options[]? | .label | tostring ] | .[]' 2>/dev/null || true)
+    fi
+  fi
+  return 0
+}
+
+gate_menu_matches() {
+  # gate_menu_matches <labels, one per line> — 0 when the normalized set of
+  # labels a person was shown is exactly the gate's own label set.
+  #
+  # THE COMPARISON RE-DERIVES THE LABELS FROM THE CONSTANT TABLE. The row
+  # stores only a version token; the authority is `gate_menu_labels`, and what
+  # is compared is the transcript's `options[].label` — what the person actually
+  # saw — against it. A router that rendered its own menu fails here, before any
+  # answer is read, which is what makes the label set the gate's and not the
+  # router's.
+  local shown want l
+  shown=$(printf '%s\n' "$1" | while IFS= read -r l; do [ -n "$l" ] && gate_menu_normalize "$l" && printf '\n'; done | LC_ALL=C sort -u)
+  want=$(for l in $(gate_menu_labels); do printf '%s\n' "$l"; done | LC_ALL=C sort -u)
+  [ "$shown" = "$want" ]
+}
+
+gate_menu_label_of() {
+  # gate_menu_label_of <answer> — the gate label the answer's normal form equals,
+  # or nothing when it equals none of them (free input).
+  local norm l
+  norm=$(gate_menu_normalize "$1")
+  for l in $(gate_menu_labels); do
+    [ "$norm" = "$l" ] && { printf '%s' "$l"; return 0; }
   done
   return 0
 }
 
-gate_positive_answer_hit() {
-  # gate_positive_answer_hit <답 바이트> — prints the affirmative term the answer
-  # matched, or nothing at all.
+gate_close_settle() {
+  # gate_close_settle <승인 id> — the three notification releases every
+  # terminal disposition performs, in one place.
   #
-  # A MISS IS `극성 미상`, NOT AN AFFIRMATION. With only the negative scan in
-  # place, silence read as consent: an answer carrying none of its terms closed
-  # as `승인`, so every refusal phrased in a word the vocabulary happens not to
-  # know became a grant. Requiring an affirmative term instead moves the cost of
-  # an unknown word onto a question that stays open — which the run survives,
-  # since a `대기` judgment approval is carried to the next cycle — rather than
-  # onto an approval nobody gave, which nothing downstream can undo.
+  # THE SLOT GOES BACK ON EVERY TERMINAL, and the key is the approval id because
+  # that is what the firing site (`cc_notify_fire answer "$q" "$id"`) wrote into
+  # the stack. Deriving it differently here would leave the seat occupied by a
+  # key nothing releases.
   #
-  # Matched in the same two ways as the negative half and for the same reasons:
-  # Korean as plain substrings, Latin against the space-padded flattened copy.
-  local ans="$1" lower flat t
-  lower=$(printf '%s' "$ans" | tr 'A-Z' 'a-z')
-  for t in 네 예 좋 승인 채택 진행 그렇게 해주세요; do
-    case "$lower" in *"$t"*) printf '%s' "$t"; return 0 ;; esac
-  done
-  flat=" $(printf '%s' "$lower" | tr -c "a-z0-9'" ' ') "
-  for t in yes ok okay approve agreed "go ahead"; do
-    case "$flat" in *" $t "*) printf '%s' "$t"; return 0 ;; esac
-  done
-  return 0
-}
-
-gate_strip_question() {
-  # gate_strip_question <바이트> <질문 문면> — the bytes with every verbatim
-  # occurrence of the question removed.
-  #
-  # Written as a prefix/suffix trimming loop rather than `${v//"$q"/}` so the
-  # substitution stays inside what the portability lint accepts, and so removal
-  # is literal: the question text is arbitrary prose and would otherwise be read
-  # as a pattern.
-  local body="$1" q="$2" out='' head
-  [ -n "$q" ] || { printf '%s' "$body"; return 0; }
-  while :; do
-    case "$body" in
-      *"$q"*)
-        head=${body%%"$q"*}
-        out="$out$head"
-        body=${body#*"$q"}
-        ;;
-      *) out="$out$body"; break ;;
-    esac
-  done
-  printf '%s' "$out"
+  # AND THE BANNER COMES OFF THE SCREEN. An approval that was voided, refused or
+  # granted is equally done being waited on, so leaving its notice up is the
+  # state the address was added to end: in the morning the answered and the
+  # unanswered look the same. The two calls are deliberately NOT one —
+  # reclaiming a slot erases a line in a file and delivers nothing, while
+  # clearing changes what is on a person's screen right now, so only the second
+  # carries a seat guard, and that guard lives inside the verb.
+  cc_notify_stack_release "$1" || true
+  cc_notify_clear answer "$1" || true
+  gate_notify_overflow_settled || true
 }
 
 gate_close() {
@@ -6928,185 +7436,214 @@ gate_close() {
   # transcript was recorded as a grant. Every refusal on the unattended
   # adoption surface converges on this channel, so a channel that emits a
   # constant leaves the floors above it deciding nothing.
-  local id="$1" void="${2:-0}" reject="${3:-0}" row state q tx ans f cutp abody hit scanbody phit
+  #
+  # THE LADDER, TOP DOWN. Rung 1 holds on a torn transcript. Rung 2 is FRAME
+  # APPROVAL — the line is the harness-written result of an `AskUserQuestion`
+  # whose question carried the id, joined by `tool_use_id`, and holds an
+  # `answers` map — and inside it 2a refuses a menu that is not the gate's, 2b
+  # closes on a label that equals one of the gate's by whole-string comparison,
+  # and 2c holds on an answer that equals none (free input) or on a slot the
+  # frame does not carry. Rung 3 names an ineligible frame (an `is_error`
+  # result, another tool's result, a parse failure) and holds. Rung 4 is the
+  # diagnostic: a line carries the id and is none of the above — the router's
+  # own ledger read, typically — and NOTHING IS WRITTEN. Judgment approvals run
+  # every rung; act and boundary approvals have no menu and no label set, so
+  # they run 1, the frame approval of 2, 3 and 4 and never 2a/2b/2c.
+  #
+  # NO RAW-LINE FALLBACK AND NO PROSE SCAN. The fallback's whole observed record
+  # was zero true positives and four false ones — a transport frame recorded as
+  # the answer — and the polarity vocabulary was the ledger's own words (`승인`
+  # is a series name), so it either missed real answers or read the ledger as
+  # consent. An unknown shape is named and held; an unknown shape that is
+  # guessed at produces an authorization nobody gave.
+  local id="$1" void="${2:-0}" reject="${3:-0}" row state q cutp anchor afull adig aex label tok
   # `|| true` on every match: a `grep` that finds nothing exits 1, `pipefail`
   # promotes it, and `set -e` then kills the verb with status 1 and NO message —
   # which reads exactly like a refusal and is not one.
-  row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+  row=$(gate_approval_last_row "$id")
   [ -n "$row" ] || die "그런 승인 id 가 원장에 없습니다: $id"
-  state=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-  [ "$state" = "대기" ] || die "승인 '$id' 은 이미 '$state' 입니다 — 해소된 승인은 다시 닫지 않습니다"
+  state=$(gate_row_field "$row" '상태')
+  # `철회` IS THE ONE NON-`대기` STATE A LATER ANSWER MAY STILL CLOSE. A withdrawn
+  # approval is one whose raising condition went away — no clock, no answer —
+  # and a person answering it afterwards is answering a real question; refusing
+  # that answer would make the withdrawal decide for them.
+  case "$state" in
+    대기|철회) ;;
+    *) die "승인 '$id' 은 이미 '$state' 입니다 — 해소된 승인은 다시 닫지 않습니다" ;;
+  esac
+  q=$(gate_row_field "$row" '질문 문면')
+  cutp=$(gate_row_field "$row" '절단점')
+  anchor=$(gate_approval_sidecar_anchor "$id")
 
-  q=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *질문 문면=//p' | sed 's/[[:space:]]*$//' | tail -1)
-
-  tx=$(gate_transcript_files || true)
-  if [ -z "$tx" ]; then
+  if [ -z "$(gate_transcript_files || true)" ]; then
     warn "트랜스크립트를 찾지 못해 승인을 닫을 수 없습니다 — 라우터가 타이핑한 답은 받지 않습니다"
     exit "$GATE_EXIT_APPROVAL"
   fi
 
-  # BOTH the approval id and the question text must appear on the same line.
-  # Binding only the id lets the router point `close` at a different question
-  # that WAS genuinely answered, and it then obtains an approval without
-  # forging anything at all.
-  ans=""
-  for f in $tx; do
-    [ -f "$f" ] || continue
-    ans=$( { grep -F "$id" "$f" 2>/dev/null || true; } | { grep -F "$q" || true; } | tail -1)
-    [ -n "$ans" ] && break
-  done
-
-  if [ -z "$ans" ]; then
-    # A TORN LINE is not an absence, and under this design the two mean opposite
-    # things. The gate reads the transcript while the harness is still appending
-    # to it, so the ledger's "discard only the last line" rule does not carry
-    # over — that rule assumes the gate is the writer, and here the harness is.
-    # An incomplete final line that might hold the very id being looked for
-    # makes "not found" ambiguous between "not answered yet" and "half
-    # written", so the verdict is HELD rather than decided.
-    for f in $tx; do
-      [ -f "$f" ] || continue
-      if [ -n "$(tail -c 1 "$f" 2>/dev/null)" ]; then
-        warn "트랜스크립트의 마지막 줄이 완결되지 않았습니다 — 판정 보류, 다음 판정에서 다시 봅니다"
-        exit "$GATE_EXIT_APPROVAL"
-      fi
-    done
-    warn "트랜스크립트에 이 승인의 질문에 대한 응답이 없습니다 — 대기 상태를 유지합니다"
+  # ---- rung 1
+  if gate_transcript_torn; then
+    warn "트랜스크립트의 마지막 줄이 완결되지 않았습니다 — 판정 보류, 다음 판정에서 다시 봅니다"
     exit "$GATE_EXIT_APPROVAL"
   fi
 
-  if [ "$void" = "1" ]; then
-    gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
-      "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"
-    # THE SLOT GOES BACK ON ALL THREE TERMINALS, and the key is the approval id
-    # because that is what the firing site (`cc_notify_fire answer "$q" "$id"`)
-    # wrote into the stack. Deriving it differently here would leave the seat
-    # occupied by a key nothing releases.
-    #
-    # AND THE BANNER COMES OFF THE SCREEN ON ALL THREE TOO. An approval that was
-    # voided, refused or granted is equally done being waited on, so leaving its
-    # notice up is the state the address was added to end: in the morning the
-    # answered and the unanswered look the same. The two calls are deliberately
-    # NOT one — reclaiming a slot erases a line in a file and delivers nothing,
-    # while clearing changes what is on a person's screen right now, so only the
-    # second carries a seat guard, and that guard lives inside the verb.
-    cc_notify_stack_release "$id" || true
-    cc_notify_clear answer "$id" || true
-    gate_notify_overflow_settled || true
-    log "승인 무효 — $id (행위는 수행되지 않습니다)"
-    return 0
-  fi
-  # THE ANSWER BYTES ARE THE ARTIFACT WHEN THE APPROVAL IS A QUESTION.
-  #
-  # For an act approval the answer is binary — the act happens or it does not —
-  # so the fixed literal lost nothing and the row stayed short. A question's
-  # answer is what the next step consumes, and this row is the run's only
-  # durable copy of it: dropping it means the person answered and the run kept
-  # nothing but the fact that they did.
-  #
-  # Act approvals keep the literal, so no existing reader and no existing
-  # assertion changes.
-  # THE ANSWER IS EXTRACTED FROM THE TRANSPORT FRAME, NOT SHIPPED WITH IT.
-  #
-  # `$ans` is the matched transcript LINE, and a harness transcript line is a
-  # JSON object whose `message.content` sits behind `uuid`, `parentUuid`,
-  # `sessionId` and `timestamp` and is itself an array of blocks. Recording the
-  # line verbatim put four hundred bytes of scaffolding in the field the
-  # contract calls the run's only durable copy of the answer, with the answer
-  # itself beyond the clip. Unlike the clip-unit defect this fired on every real
-  # transcript, and the fixture missed it because a hand-written one-line object
-  # puts the answer near the front.
-  #
-  # The raw line is the FALLBACK rather than the primary: a line that is not
-  # JSON, or is JSON of a shape this does not know, still yields the bytes it
-  # has. The transcript binding is untouched — the id and the question text must
-  # already have been found on this line before extraction runs.
-  cutp=$(gate_row_field "$row" '절단점')
-  abody='트랜스크립트 판독'
-  if [ "$cutp" = "판단" ]; then
-    local extracted
-    extracted=$(printf '%s' "$ans" | jq -r '
-      (.message.content? // .content?) as $c
-      | if $c == null then empty
-        elif ($c | type) == "string" then $c
-        elif ($c | type) == "array" then
-          [ $c[] | if (type == "object") then (.text // empty) else tostring end ] | join(" ")
-        else ($c | tostring) end
-    ' 2>/dev/null || true)
-    [ -n "$extracted" ] || extracted="$ans"
-    abody=$(gate_row_safe "$extracted" 400)
-  fi
+  gate_frame_candidate "$id" || true
+  case "$GATE_FRAME_KIND" in
+    none)
+      warn "트랜스크립트에 이 승인의 응답 프레임이 없습니다 — 대기 상태를 유지합니다"
+      exit "$GATE_EXIT_APPROVAL" ;;
+    asked)
+      warn "승인 $id 의 질문은 물어졌으나 응답 프레임이 아직 없습니다 — 대기 상태를 유지합니다"
+      exit "$GATE_EXIT_APPROVAL" ;;
+    other)
+      # ---- rung 4: a candidate, and not a frame of any kind this ladder knows.
+      gate_frame_parse "$GATE_FRAME_FILE" "$GATE_FRAME_LINE" "$id"
+      warn "승인 $id 를 담은 줄은 있으나 답 프레임이 아닙니다 (관측 프레임: type=${GATE_FRAME_TYPE:-미상} tool=${GATE_FRAME_TOOL:-없음}) — 원장에 아무것도 쓰지 않고 대기로 둡니다"
+      exit "$GATE_EXIT_APPROVAL" ;;
+  esac
 
-  # THE POLARITY IS READ BEFORE `승인` IS WRITTEN.
-  #
-  # A scan over natural language is a heuristic and will sometimes be wrong;
-  # recording a constant is not a heuristic and was always wrong in one
-  # direction. The refusal is the conservative side of the heuristic's error —
-  # it never grants against the words, it only asks the closer to say which
-  # refusal they mean.
-  #
-  # LIMITED TO `절단점=판단`, and the limit is not caution but availability. A
-  # question's answer is prose, and the bytes extracted above ARE that prose.
-  # An act approval's answer is binary and its `답변 문면` is a fixed literal,
-  # so there is nothing extracted to scan — the only text on hand is `$ans`,
-  # the whole transport frame, whose ids, paths and timestamps would make a
-  # substring scan mostly noise. An act approval is refused by the closer
-  # naming `--void` or `--reject`.
-  #
-  # THE QUESTION IS NOT PART OF THE ANSWER, AND IT IS ALWAYS IN THESE BYTES.
-  # The transcript line was selected by requiring the approval id AND the
-  # question text on it, so whenever the binding holds the question text is
-  # inside `$abody` by construction. A judgment question is built from the
-  # router's own `<기준> — <근거>`, so a standard reading "이 발견을 이번
-  # 사이클에서 거절할지" put `거절` into the scanned bytes and the approval could
-  # not be closed as a grant whatever the person wrote. Removing the question
-  # first is the mirror of widening the vocabulary: one error grants against the
-  # words, the other refuses regardless of them, and both scans must look at the
-  # same bytes or the floor is two floors again.
-  #
-  # `$abody` ITSELF IS NOT TOUCHED. It is what goes into `답변 문면`, which the
-  # contract calls the run's only durable copy of the answer; the split is
-  # between what is scanned and what is recorded.
-  if [ "$cutp" = "판단" ] && [ "$reject" = "0" ]; then
-    scanbody=$(gate_strip_question "$abody" "$q")
-    # Whitespace-only remainder means the line held the question and nothing
-    # else — a person echoing the question is not an answer, and "no answer" and
-    # "an answer that is no" are different states.
-    if [ -z "$(printf '%s' "$scanbody" | tr -d '[:space:]')" ]; then
-      warn "이 줄에서 질문 문면을 빼면 남는 답이 없습니다 — ${id} 을 승인으로도 거부로도 닫지 않고 대기로 둡니다"
+  # ---- rung 2 / rung 3: frame approval
+  gate_frame_parse "$GATE_FRAME_FILE" "$GATE_FRAME_LINE" "$id"
+  if [ "$GATE_FRAME_ERR" = "1" ]; then
+    # Two warnings for two opposite facts. The harness's dismissal text means a
+    # person was at the screen and closed the dialog without choosing; any
+    # other `is_error` says only that the call collapsed, cause unobserved.
+    case "$GATE_FRAME_ERRTEXT" in
+      *"$GATE_DISMISSAL_TEXT"*)
+        warn "승인 $id 의 질문 다이얼로그가 취소됐습니다 (다이얼로그 취소 — 사람이 답 없이 닫음) — 대기로 둡니다" ;;
+      *)
+        warn "승인 $id 의 질문 호출이 실패했습니다 (is_error, 원인 미관측) — 대기로 둡니다" ;;
+    esac
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  if [ "$GATE_FRAME_KIND" = "result" ]; then
+    warn "승인 $id 의 응답 프레임에 answers 맵이 없습니다 (프레임 부적격) — 대기로 둡니다"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  if [ -z "$GATE_FRAME_TID" ] || [ "$GATE_FRAME_TYPE" != "user" ]; then
+    warn "승인 $id 의 결속 후보를 tool_result 프레임으로 읽지 못했습니다 (파싱 실패, type=${GATE_FRAME_TYPE:-미상}) — 대기로 둡니다"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  if [ "$GATE_FRAME_TOOL" != "AskUserQuestion" ]; then
+    warn "승인 $id 의 결속 후보는 AskUserQuestion 이 아닌 도구의 결과입니다 (tool=${GATE_FRAME_TOOL:-미상}) — 프레임 부적격, 대기로 둡니다"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  if [ "$GATE_FRAME_HASANS" != "1" ]; then
+    warn "승인 $id 의 결속 후보에 toolUseResult.answers 객체가 없습니다 (파싱 실패) — 대기로 둡니다"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  tok="$GATE_FRAME_TID"
+
+  if [ "$cutp" != "판단" ]; then
+    # ---- act and boundary approvals: the frame decides, the closer's flag is
+    # the disposition. There is no menu to compare and no label set to read, so
+    # `--void` and `--reject` remain the closer's word; what changed is that the
+    # frame must be a real answer to THIS id, and the answer's bytes are kept.
+    if [ -z "$GATE_FRAME_KEY" ] || [ "$GATE_FRAME_HASKEY" != "1" ]; then
+      warn "승인 $id 의 답 프레임에 그 id 를 담은 질문 슬롯의 엔트리가 없습니다 — 원장에 아무것도 쓰지 않고 대기로 둡니다"
       exit "$GATE_EXIT_APPROVAL"
     fi
-    hit=$(gate_negative_answer_hit "$scanbody")
-    if [ -n "$hit" ]; then
-      warn "이 답은 부정으로 읽힙니다 (매치: ${hit}) — ${id} 을 승인으로 닫지 않습니다"
-      warn "물었고 답이 아니오라면 close --reject 로, 애초에 물어서는 안 됐다면 close --void 로 닫으세요"
+    afull="$GATE_FRAME_ANSWER"
+    adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
+    gate_approval_sidecar_write "$id" answer '답변' "$afull" \
+      || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
+    if [ "$void" = "1" ]; then
+      gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
+        "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)" \
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+      gate_close_settle "$id"
+      log "승인 무효 — $id (행위는 수행되지 않습니다)"
+      return 0
+    fi
+    if [ "$reject" = "1" ]; then
+      gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
+        "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+      gate_close_settle "$id"
+      log "승인 거부 — $id (물었고 답이 아니오입니다)"
+      return 0
+    fi
+    gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
+      "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
+      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+    gate_close_settle "$id"
+    log "승인 해소 — $id"
+    return 0
+  fi
+
+  # ---- judgment approvals: 2a, 2b, 2c
+  if [ -n "$GATE_FRAME_KEY" ] && [ "$GATE_FRAME_HASKEY" = "1" ]; then
+    # 2a — the menu the person saw must be the gate's. Compared BEFORE the
+    # answer is read: a menu that is not the gate's makes every label on it a
+    # label the gate did not define, and an answer chosen from it is not a
+    # choice among the gate's dispositions whatever it happens to spell.
+    if ! gate_menu_matches "$GATE_FRAME_LABELS"; then
+      warn "승인 $id 의 메뉴가 게이트의 선택지 집합과 다릅니다 (본 것: $(printf '%s' "$GATE_FRAME_LABELS" | tr '\n' '/') · 게이트: $(gate_menu_labels | tr ' ' '/')) — 라우터는 prompt 동사가 낸 라벨을 축자로 렌더해야 합니다. 대기로 둡니다"
       exit "$GATE_EXIT_RULE"
     fi
-    phit=$(gate_positive_answer_hit "$scanbody")
-    if [ -z "$phit" ]; then
-      warn "이 답에서 긍정도 부정도 읽어내지 못했습니다 — ${id} 은 대기로 남고 다음 판정에서 다시 봅니다"
-      warn "긍정으로 인식하는 표현: 네 예 좋 승인 채택 진행 그렇게 해주세요 yes ok okay approve agreed go ahead"
-      exit "$GATE_EXIT_APPROVAL"
-    fi
+    afull="$GATE_FRAME_ANSWER"
+    label=$(gate_menu_label_of "$afull")
+  else
+    afull=""; label=""
   fi
 
-  if [ "$reject" = "1" ]; then
-    gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
-      "답변 문면=$abody" "해소 시각=$(now_iso)"
-    cc_notify_stack_release "$id" || true
-    cc_notify_clear answer "$id" || true
-    gate_notify_overflow_settled || true
-    log "승인 거부 — $id (물었고 답이 아니오입니다)"
+  if [ -n "$label" ]; then
+    # 2b — whole-string equality against the gate's labels, on the normal form
+    # (recommendation suffix removed). THE FLAGS MAY ONLY AGREE WITH THE ANSWER:
+    # a closer naming `--void` over an answer of `승인` is proposing a
+    # disposition against the person's words, and the person's words win.
+    if [ "$void" = "1" ] && [ "$label" != "무효" ]; then
+      warn "close --void 는 답과 어긋납니다 — 사람은 '$(gate_menu_normalize "$afull")' 을 골랐습니다. 플래그는 답과 동의만 할 수 있습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+    if [ "$reject" = "1" ] && [ "$label" != "거부" ]; then
+      warn "close --reject 는 답과 어긋납니다 — 사람은 '$(gate_menu_normalize "$afull")' 을 골랐습니다. 플래그는 답과 동의만 할 수 있습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+    adig=$(printf '%s' "$afull" | shasum -a 256 | cut -d' ' -f1)
+    aex=$(gate_row_safe "$afull" "$GATE_A_EXCERPT")
+    gate_approval_sidecar_write "$id" answer '답변' "$afull" \
+      || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
+    gate_append '승인' "승인 id=$id" "상태=$label" "질문 문면=$q" \
+      "답변 문면=$aex" "해소 시각=$(now_iso)" \
+      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+    gate_close_settle "$id"
+    case "$label" in
+      승인) log "승인 해소 — $id" ;;
+      거부) log "승인 거부 — $id (물었고 답이 아니오입니다)" ;;
+      무효) log "승인 무효 — $id (행위는 수행되지 않습니다)" ;;
+    esac
     return 0
   fi
 
-  gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
-    "답변 문면=$abody" "해소 시각=$(now_iso)"
-  cc_notify_stack_release "$id" || true
-  cc_notify_clear answer "$id" || true
-  gate_notify_overflow_settled || true
-  log "승인 해소 — $id"
-  return 0
+  # 2c — a real answer frame whose answer equals no label (free input), or a
+  # frame that does not carry this approval's slot at all. `대기` STAYS, THE
+  # ANSWER GOES TO THE SIDECAR ONLY, AND THE ROW GETS A REASON. The ledger row
+  # must not carry the answer: `gate_approval_field` returns the last value a
+  # key ever had, so an answer on a `대기` row would read to every later reader
+  # as an answer with no mark of what it was. The person's words are not
+  # discarded either — they are in the sidecar block the anchor names — and the
+  # reason field is what the morning report reads to surface the approval as
+  # "answered, disposition not derived" rather than "nobody answered". Exit 5
+  # and not 0: 0 means resolved, and this approval is not.
+  local reason
+  if [ -n "$GATE_FRAME_KEY" ] && [ "$GATE_FRAME_HASKEY" = "1" ]; then reason='자유 입력'; else reason='슬롯 부재'; fi
+  if [ "$(gate_row_field "$row" '처분 사유')" = "$reason" ] && [ "$(gate_row_field "$row" '응답 토큰')" = "$tok" ]; then
+    warn "승인 $id 은 이미 이 답 프레임에 대해 '$reason' 으로 기록돼 있습니다 — 대기로 둡니다 (새 답이 오면 다시 봅니다)"
+    exit "$GATE_EXIT_APPROVAL"
+  fi
+  if [ "$reason" = "자유 입력" ]; then
+    if ! gate_approval_sidecar_write "$id" answer '답변' "$afull"; then
+      warn "승인 $id 의 자유 입력 답을 사이드카에 쓰지 못했습니다 — 답을 버리지 않기 위해 원장에도 쓰지 않고 다음 판정에서 다시 봅니다"
+      exit "$GATE_EXIT_APPROVAL"
+    fi
+    warn "승인 $id 의 답이 제시된 어느 라벨과도 같지 않습니다 (자유 입력, $(printf '%s' "$afull" | wc -c | tr -d ' ')바이트 — 사이드카 $anchor 에 기록) — 처분은 유도되지 않았고 대기로 둡니다"
+  else
+    warn "승인 $id 의 답 프레임에 그 id 를 담은 질문 슬롯이 없습니다 (슬롯 부재) — 처분은 유도되지 않았고 대기로 둡니다"
+  fi
+  gate_append '승인' "승인 id=$id" "상태=대기" "대상=$(gate_row_field "$row" '대상')" "절단점=$cutp" \
+    "막는 세그먼트=$(gate_row_field "$row" '막는 세그먼트')" "질문 문면=$q" \
+    "처분 사유=$reason" "응답 토큰=$tok" "사이드카 앵커=$anchor" "관측 시각=$(now_iso)"
+  exit "$GATE_EXIT_APPROVAL"
 }
 
 # ---------------------------------------------------------------------------
@@ -7754,8 +8291,12 @@ gate_launch_shift() {
     floor=$(gate_shift_floor)
   fi
   if [ "${floor:-0}" -gt "$SHIFT_FLOOR_MAX" ]; then
+    # Bound to the progress digest, as before this argument existed: the floor
+    # itself grows shift to shift, and salting with it would mint one approval
+    # per launch attempt for a single condition.
     gate_issue_boundary_approval SHIFT-FLOOR \
-      "인수인계 바닥이 ${floor} 토큰으로 상한 ${SHIFT_FLOOR_MAX} 를 넘었습니다 — 교대가 일을 대신하고 있어 라우팅으로 풀리지 않습니다"
+      "인수인계 바닥이 ${floor} 토큰으로 상한 ${SHIFT_FLOOR_MAX} 를 넘었습니다 — 교대가 일을 대신하고 있어 라우팅으로 풀리지 않습니다" \
+      "$(gate_progress_digest)"
     warn "교대 중단: 인수인계 바닥 ${floor} > ${SHIFT_FLOOR_MAX} — 승인을 발행했습니다"
     # AN ISSUED APPROVAL REPORTS AS ONE. Every other approval site in this file
     # answers `GATE_EXIT_APPROVAL`, and the conversion that does it for the rule
@@ -7908,7 +8449,9 @@ gate_b1_stagnation() {
   # it inside its own input is the original defect: raising it 0→1 changed the
   # hash and reset the very count being raised.
   [ "$n" -lt "$B1_STAGNATION_N" ] && return 0
-  gate_issue_boundary_approval B1 "진전 해시가 연속 ${n}회 판정 동안 불변입니다"
+  # Bound to the digest this predicate just compared — the value that, by
+  # construction, has not moved for `n` judgments.
+  gate_issue_boundary_approval B1 "진전 해시가 연속 ${n}회 판정 동안 불변입니다" "$h"
 }
 
 gate_b2_obligations() {
@@ -7926,7 +8469,9 @@ gate_b2_obligations() {
   printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
   [ "$(gate_open_obligations | gate_count)" = "0" ] && return 0
-  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다"
+  # Bound to the open-obligation digest, which is what this predicate reads;
+  # the progress digest can move under an unchanged obligation set.
+  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다" "$cur"
 }
 
 gate_b3_act_budget() {
@@ -7990,7 +8535,11 @@ gate_b3_act_budget() {
   fi
   n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
-  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다"
+  # Bound to the window key — the vector with `acts=` removed — because that is
+  # the value that opens and closes the window this count lives in. Salting with
+  # the full progress digest put the count inside the id: every act over budget
+  # then minted a new approval, which is the run-cannot-finish loop above.
+  gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다" "$h"
 }
 
 gate_b4_cost() {
@@ -8002,22 +8551,52 @@ gate_b4_cost() {
   [ -n "$spent" ] || return 0
   pct=$(awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }')
   [ "$pct" -lt 80 ] && return 0
-  gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})"
+  # B4 HAS NO BINDING VALUE OF ITS OWN YET. It holds one integer percentage and
+  # one threshold; a bucket tier would need a bucket width, and no width can be
+  # validated against a boundary that has never fired in the corpus. So the
+  # shape changes with its siblings — the caller passes the value — and the
+  # value stays today's progress digest until a width is decided. When it is,
+  # this one argument changes and nothing else does.
+  gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})" "$(gate_progress_digest)"
 }
 
 gate_issue_boundary_approval() {
-  # gate_issue_boundary_approval <name> <question>
+  # gate_issue_boundary_approval <name> <question> <binding>
   #
   # A boundary approval has NO act, so it can fill neither an act digest nor an
   # argv digest. The cutpoint slot carries the literal `경계` and the binding
-  # tuple is (boundary name, H at firing, related segment set) — which is why
-  # the three approval shapes share one series rather than needing three.
-  local name="$1" q="$2" id
-  id="${name}-$(printf '%s' "$RUN_ID$name$(gate_progress_digest)" | shasum -a 256 | cut -c1-8)"
-  gate_has_row '승인' "승인 id=$id " && return 0
+  # tuple is (boundary name, the binding value) — which is why the three
+  # approval shapes share one series rather than needing three.
+  #
+  # THE BINDING VALUE IS THE CALLER'S, AND IT IS THE VALUE THE CALLER'S OWN
+  # PREDICATE READ. This function used to salt every boundary's id with the
+  # progress digest, while B2 decides on the open-obligation digest and B3 on
+  # the window key with `acts=` removed — so two of the four were deduplicated
+  # on a value their predicate never looks at, and the progress digest moving
+  # underneath an unchanged obligation set minted a fresh id per evaluation
+  # (measured: 27 distinct ids over 30 B2 cycles, 50 over 90 B3 acts). B1's
+  # binding IS the progress digest, so for B1 this is the same equivalence
+  # class as before; B4 passes the progress digest until its bucket width is
+  # decided, so its shape changes here and its value does not.
+  #
+  # `RUN_ID` STAYS IN THE SALT. Without it the same condition in two runs shares
+  # one id, and the suppression below then reaches across run boundaries.
+  #
+  # DUPLICATE SUPPRESSION IS "THE LAST ROW IS `대기`", NOT "ANY ROW EXISTS". The
+  # existence test swallowed every recurrence after the first resolution for
+  # good: a stagnation answered at 22:00 and recurring at 03:00 could never ask
+  # again, because the id had a row. A resolved id re-opens with a fresh `대기`
+  # row and the row sequence says what happened to it; an OPEN id is not
+  # re-appended, which is the property the existence test was really for.
+  local name="$1" q="$2" binding="$3" id
+  id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
+  [ "$(gate_approval_state "$id")" = "대기" ] && return 0
+  gate_approval_sidecar_write "$id" issue '질문' "$q" \
+    || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
-    "행위 다이제스트=-" "구속 튜플=$name/$(gate_progress_digest)" "막는 세그먼트=-" \
-    "질문 문면=$q" "답변 문면=-" "발행 시각=$(now_iso)" "해소 시각=-"
+    "행위 다이제스트=-" "구속 튜플=$name/$binding" "막는 세그먼트=-" \
+    "질문 문면=$q" "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
+    "발행 시각=$(now_iso)" "해소 시각=-"
   # The boundary approvals are the slowest class this design has, by
   # construction: they are evaluated on every act, so one opened while a long
   # stage runs waits out that whole stage — and one of them carries a dollar
@@ -8026,6 +8605,7 @@ gate_issue_boundary_approval() {
   # as one.
   gate_notify_approval "$id" "$q"
   warn "경계 $name 발동 — 승인 대기 $id: $q"
+  gate_warn_canon_prompt "$id" "$q"
 }
 
 # The same seam run.sh carries, for the same reason: the tests need the

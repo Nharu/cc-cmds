@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lint-bash-portability: self-skip
 # lint-autoadopt-vocabulary: self-skip
+# lint-approval-state-vocabulary: self-skip
 # Test the policy gate's refusals against a throwaway repository.
 #
 # The gate's whole value is in the branches a successful act never reaches, and
@@ -490,6 +491,15 @@ graded_as() {
 # fixture manifest — and the driver itself runs from the home worktree, which is
 # the shape this reproduces.
 rc=0; msg=""
+# THE SEAT IS DECLARED, NOT INHERITED, FROM THE FIRST SECTION ON. This suite
+# runs from whatever process starts it — including a pipeline stage, which
+# exports a stage id — and the gate enrols a session into the run's lineage
+# only when no stage or shift marker is present. Inherited, the marker kept
+# every `close` fixture below from ever finding its transcript: the section
+# that first cleared it sits after the first three `close` sections, so those
+# read "transcript not found" in exactly the environment the suite is most
+# likely to run in. Set explicitly where a seat is the thing under test.
+unset CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
 gate() {
   local out
   out=$(cd "$WT" && bash "$GATE" "$@" 2>&1); rc=$?
@@ -512,6 +522,43 @@ HH7() { cd "$WT" && XDG_STATE_HOME="$STATE7" bash "$GATE" snapshot --manifest "$
 # boundary compare two unrelated values and reset instead of firing.
 PD() { cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --render 2>/dev/null \
        | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
+
+# THE TRANSCRIPT FIXTURE IS THE HARNESS'S SHAPE, NOT A ONE-LINE STAND-IN.
+# `close` reads an answer by FRAME: the line must be the `tool_result` of an
+# `AskUserQuestion` whose question carried the approval id, joined through
+# `tool_use_id` to the `tool_use` block in the same file, and must hold the
+# harness's `toolUseResult.answers` map with the question as key. A fixture of
+# the form `{"role":"user","content":"<id> / <q> → 승인"}` is exactly what the
+# old text binding accepted and the frame approval rejects, so every fixture
+# below is written by this helper.
+#
+#   auq_frame <file> <승인 id> <question> <answer> [label...]
+#
+# appends the two lines — an `assistant` line carrying the `tool_use` with the
+# canonical prompt `승인 <id> — <question>` and the given option labels, and a
+# `user` line carrying the `tool_result` plus `toolUseResult.{questions,answers}`
+# — and prints the `tool_use_id` it minted. With no labels the menu is the
+# gate's own three, which is what a judgment approval must be asked with. An
+# answer of `__DISMISS__` writes the harness's dismissed-dialog frame instead
+# (`is_error` plus its text, no answers map).
+AUQ_N=0
+auq_frame() {
+  local f="$1" id="$2" q="$3" a="$4"; shift 4
+  AUQ_N=$((AUQ_N + 1))
+  local tid="toolu_TEST$(printf '%05d' "$AUQ_N")" qq="승인 $id — $q" opts
+  [ $# -gt 0 ] || set -- 승인 거부 무효
+  opts=$(for l in "$@"; do jq -n --arg l "$l" '{label: $l, description: ("desc of " + $l)}'; done | jq -s '.')
+  jq -nc --arg tid "$tid" --arg q "$qq" --argjson opts "$opts" \
+    '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: $tid, name: "AskUserQuestion", input: {questions: [{question: $q, header: "승인", multiSelect: false, options: $opts}]}}]}}' >> "$f"
+  if [ "$a" = "__DISMISS__" ]; then
+    jq -nc --arg tid "$tid" \
+      '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: $tid, is_error: true, content: "The user doesn'"'"'t want to proceed with this tool use. The tool use was rejected."}]}}' >> "$f"
+  else
+    jq -nc --arg tid "$tid" --arg q "$qq" --arg a "$a" --argjson opts "$opts" \
+      '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: $tid, content: ("Your questions have been answered: \"" + $q + "\"=\"" + $a + "\"")}]}, toolUseResult: {questions: [{question: $q, header: "승인", multiSelect: false, options: $opts}], answers: {($q): $a}}}' >> "$f"
+  fi
+  printf '%s' "$tid"
+}
 
 # ---------------------------------------------------------------------------
 # 0a. The pipefail trap, scanned the way the driver's own suite scans it
@@ -2044,17 +2091,24 @@ if [ -n "$aid" ]; then
     ok "존재하지 않는 승인 id 는 닫히지 않는다"
   fi
 
-  # With a transcript in place, both binds must hold. Matching the id alone
-  # would let the router point `close` at a DIFFERENT question that was
-  # genuinely answered — an approval obtained without forging anything.
+  # With a transcript in place, the FRAME must hold. A line that merely carries
+  # the id — a router typing it, or a router's own tool output echoing the
+  # ledger — is not the result of an `AskUserQuestion` that asked it, so it
+  # closes nothing and, being the diagnostic rung, writes nothing.
   TXDIR="$WORK/cfg/projects/proj"; mkdir -p "$TXDIR"
   SID="11111111-2222-3333-4444-555555555555"
   printf '{"role":"user","content":"%s 에 대한 답: 승인"}\n' "$aid" > "$TXDIR/$SID.jsonl"
+  before=$(grep -c "승인 id=$aid " "$LEDGER" || true)
   out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/cfg" CLAUDE_CODE_SESSION_ID="$SID" \
         bash "$GATE" close --manifest "$MANIFEST" --approval "$aid" 2>&1); rc=$?
   case "$rc" in
-    0) bad "질문 문면 구속" "id 만 언급한 줄로 승인이 닫혔다" ;;
-    *) ok "id 만 일치하는 줄로는 닫히지 않는다 (질문 문면도 함께 구속한다)" ;;
+    0) bad "프레임 구속" "id 만 언급한 줄로 승인이 닫혔다" ;;
+    *) ok "id 만 일치하는 줄로는 닫히지 않는다 (AskUserQuestion 의 결과 프레임만 결속한다)" ;;
+  esac
+  check "그런 줄은 진단 단이라 원장에 아무것도 쓰지 않는다" "$(grep -c "승인 id=$aid " "$LEDGER" || true)" "$before"
+  case "$out" in
+    *"답 프레임이 아닙니다"*) ok "관측한 프레임을 이름 붙여 경고한다" ;;
+    *) bad "4단 경고" "'$out'" ;;
   esac
 
   # A torn final line is HELD, not read as "no answer" — under this design the
@@ -2086,8 +2140,8 @@ if [ -n "$vaid" ]; then
        | tr '|' '\n' | sed -n 's/^ *질문 문면=//p' | sed 's/[[:space:]]*$//' | tail -1)
   VDIR="$WORK/vcfg/projects/proj"; mkdir -p "$VDIR"
   VSID="99999999-8888-7777-6666-555555555555"
-  printf '{"role":"user","content":"%s / %s → 이 질문은 잘못 발행됐습니다"}\n' "$vaid" "$vq" \
-    > "$VDIR/$VSID.jsonl"
+  : > "$VDIR/$VSID.jsonl"
+  auq_frame "$VDIR/$VSID.jsonl" "$vaid" "$vq" "이 질문은 잘못 발행됐습니다" 예 아니오 >/dev/null
 
   out=$(cd "$WT" && CLAUDE_CONFIG_DIR="$WORK/vcfg" CLAUDE_CODE_SESSION_ID="$VSID" \
         bash "$GATE" close --manifest "$MANIFEST" --approval "$vaid" --void 2>&1); rc=$?
@@ -4667,13 +4721,25 @@ case "$jrow" in
   *"상태=대기"*) ok "그 승인이 대기 상태로 원장에 남는다" ;;
   *) bad "판단 승인" "$jrow" ;;
 esac
-# THE BINDING TUPLE IS `-`, and that is the difference from an act approval: a
-# question's answer is an input to work that has not happened yet, so there is no
-# tree to measure freshness against.
-case "$jrow" in
-  *"구속 튜플=-"*) ok "질문 승인의 구속 튜플은 비어 있다 (잴 트리가 없다)" ;;
-  *) bad "구속 튜플" "$jrow" ;;
-esac
+# THE BINDING TUPLE BINDS THE QUESTION AND THE MENU, NOT A TREE — that is the
+# difference from an act approval: a question's answer is an input to work that
+# has not happened yet, so there is no tree to measure freshness against, and
+# what the tuple carries instead is `<세그먼트>/<질문 전문 sha256>/<선택지판>/<스냅숏 앞 12자>`.
+# The SHAPE is pinned by regex, so a separator or hash-length change cannot pass
+# on content alone.
+jtuple=$(row_field "$jrow" '구속 튜플')
+# Captured, not `grep -q`: an early-exiting reader on the right of a pipe kills
+# the writer under `pipefail`, and this suite's own scan refuses the shape.
+jtuple_ok=$(printf '%s\n' "$jtuple" | grep -E '^[^/]+/[0-9a-f]{64}/v1/[0-9a-f]{12}$' || true)
+if [ -n "$jtuple_ok" ]; then
+  ok "질문 승인의 구속 튜플은 <seg>/<sha256>/v1/<snap12> 형태다"
+else
+  bad "구속 튜플 형태" "$jtuple"
+fi
+check "구속 튜플의 첫 성분은 세그먼트다" "${jtuple%%/*}" "SD"
+check "구속 튜플의 질문 다이제스트는 질문 전문의 sha256 이다" "$(printf '%s' "$jtuple" | cut -d/ -f2)" \
+  "$(printf '%s' '리뷰 스테이지를 몇 개로 나눌지 — 비용과 커버리지가 상충한다' | shasum -a 256 | cut -d' ' -f1)"
+check "발행 행은 사이드카 앵커를 싣는다" "$(row_field "$jrow" '사이드카 앵커')" "$CONE_RUN_ID#$(row_field "$jrow" '승인 id')"
 nj=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' || true)
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
@@ -4789,30 +4855,42 @@ check "열린 절단점=판단 승인 id 를 지목하면 보류로 정산된다
 # --- 31n. `close` carries the answer BYTES for a question approval ----------
 #
 # For an act approval the answer is binary, so the fixed literal lost nothing.
-# A question's answer is what the next step consumes, and the row is the run's
-# only durable copy of it.
+# A question's answer is what the next step consumes: the row carries the
+# excerpt, its digest and the anchor of the sidecar block holding the full text.
 jq_q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" '질문 문면')
 NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
 NSID="12121212-3434-5656-7878-909090909090"
-# The answer opens with an affirmation because closing as `승인` now requires one
-# — a judgment answer carrying neither polarity leaves the approval `대기`. What
-# this fixture measures is that the answer BYTES reach the row, and they do
-# either way.
-ANSWER="네, 리뷰 스테이지는 셋으로 나누고 합성만 하나로 둔다"
-printf '{"role":"user","content":"%s / %s → %s"}\n' "$jid" "$jq_q" "$ANSWER" > "$NTX/$NSID.jsonl"
+# The answer is one of the gate's labels, with the recommendation suffix the
+# authoring rule puts on a rendered label: closing reads the label by equality
+# in NORMAL form. What this fixture measures is that the answer BYTES — the
+# label as chosen — reach the row, and its digest and anchor beside them.
+ANSWER="승인 ← 추천"
+: > "$NTX/$NSID.jsonl"
+ntok=$(auq_frame "$NTX/$NSID.jsonl" "$jid" "$jq_q" "$ANSWER" "$ANSWER" 거부 무효)
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NSID" bash "$GATE" close --manifest "$NM" --approval "$jid" 2>&1); rc=$?
 check "판단 승인이 트랜스크립트로 닫힌다" "$rc" "0"
-case "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" in
-  *"$ANSWER"*) ok "close 가 사람의 답 바이트를 답변 문면에 축자로 싣는다" ;;
-  *) bad "답 바이트" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" ;;
+jrow=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)
+case "$jrow" in
+  *"답변 문면=$ANSWER"*) ok "close 가 사람이 고른 라벨 바이트를 답변 문면에 축자로 싣는다" ;;
+  *) bad "답 바이트" "$jrow" ;;
 esac
+check "종결 행은 결속된 tool_use_id 를 응답 토큰으로 싣는다" "$(row_field "$jrow" '응답 토큰')" "$ntok"
+check "종결 행은 답 전문의 sha256 을 싣는다" "$(row_field "$jrow" '답변 다이제스트')" "$(printf '%s' "$ANSWER" | shasum -a 256 | cut -d' ' -f1)"
+check "종결 행은 사이드카 앵커 <run-id>#<승인 id> 를 싣는다" "$(row_field "$jrow" '사이드카 앵커')" "$CONE_RUN_ID#$jid"
+NSC="$WT/docs/pipeline-approval/$CONE_RUN_ID.md"
+if [ -f "$NSC" ] && grep -qxF "## 승인 $jid" "$NSC" && grep -qxF "$ANSWER" "$NSC"; then
+  ok "답 전문은 승인 사이드카의 그 승인 블록에 있다"
+else
+  bad "승인 사이드카" "$(sed -n '1,3p' "$NSC" 2>/dev/null)"
+fi
 # The act approval keeps the fixed literal, so no existing reader changes.
 aidN=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)" '승인 id')
 if [ -n "$aidN" ]; then
   aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aidN " | tail -1)" '질문 문면')
   ASID="13131313-3434-5656-7878-909090909090"
-  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$aidN" "$aq" > "$NTX/$ASID.jsonl"
+  : > "$NTX/$ASID.jsonl"
+  auq_frame "$NTX/$ASID.jsonl" "$aidN" "$aq" "승인" 승인 거부 >/dev/null
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
         CLAUDE_CODE_SESSION_ID="$ASID" bash "$GATE" close --manifest "$NM" --approval "$aidN" 2>&1); rc=$?
   check "행위 승인도 같은 경로로 닫힌다" "$rc" "0"
@@ -5228,7 +5306,7 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
 oid=$(row_field "$(last_judgment_approval)" '승인 id')
 oq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$oid " | tail -1)" '질문 문면')
 OSID="14141414-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$oid" "$oq" > "$NTX/$OSID.jsonl"
+: > "$NTX/$OSID.jsonl"; auq_frame "$NTX/$OSID.jsonl" "$oid" "$oq" "승인" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$OSID" bash "$GATE" close --manifest "$NM" --approval "$oid" 2>&1); rc=$?
 check "일회성 검사를 위한 판단 승인이 닫힌다" "$rc" "0"
@@ -5260,30 +5338,39 @@ check "소진된 답의 재제출이 그 승인을 다시 대기로 열지 않�
 
 # --- 31x. `close` records the ANSWER, not the transport frame ---------------
 #
-# `$ans` is the matched transcript LINE, and a harness line puts `message.content`
-# behind `uuid`, `parentUuid`, `sessionId` and `timestamp` as an array of blocks.
-# Recorded verbatim, the field the contract calls the run's only durable copy of
-# the answer held four hundred bytes of scaffolding. The old fixture missed it
-# because a hand-written one-line object puts the answer near the front.
+# A harness line puts `message.content` behind `uuid`, `parentUuid`, `sessionId`
+# and `timestamp` as an array of blocks. Recorded verbatim, the field the
+# contract calls the run's only durable copy of the answer held four hundred
+# bytes of scaffolding — and there is no raw-line fallback any more: a line
+# that is not an `AskUserQuestion` answer frame is named and held, whatever
+# text it carries, so a person typing the id into the chat closes nothing.
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 기준="실물 트랜스크립트 모양에서도 답이 실리는가" 근거="프레임이 아니라 답이 남아야 한다"
 rid=$(row_field "$(last_judgment_approval)" '승인 id')
 rq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$rid " | tail -1)" '질문 문면')
-RANS="네, 셋으로 나누고 합성만 하나로 둔다"
 RSID="15151515-3434-5656-7878-909090909090"
-printf '{"parentUuid":"11111111-2222-3333-4444-555555555555","sessionId":"%s","timestamp":"2026-09-01T00:00:00Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"%s / %s → %s"}]},"uuid":"66666666-7777-8888-9999-000000000000"}\n' \
-  "$RSID" "$rid" "$rq" "$RANS" > "$NTX/$RSID.jsonl"
+printf '{"parentUuid":"11111111-2222-3333-4444-555555555555","sessionId":"%s","timestamp":"2026-09-01T00:00:00Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"%s / %s → 네, 셋으로 나누고 합성만 하나로 둔다"}]},"uuid":"66666666-7777-8888-9999-000000000000"}\n' \
+  "$RSID" "$rid" "$rq" > "$NTX/$RSID.jsonl"
+rbefore=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$rid " || true)
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$RSID" bash "$GATE" close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
-check "실물 모양의 트랜스크립트 줄로도 승인이 닫힌다" "$rc" "0"
+check "텍스트 블록 줄은 답 프레임이 아니라 닫지 않는다 (원시 줄 폴백 없음)" "$rc" "5"
+check "그 줄은 원장에 아무것도 쓰지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$rid " || true)" "$rbefore"
+# The real frame, in the harness's shape, closes — and the row carries the
+# chosen label and the anchor, never the frame's scaffolding.
+RANS="승인"
+auq_frame "$NTX/$RSID.jsonl" "$rid" "$rq" "$RANS" >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$RSID" bash "$GATE" close --manifest "$NM" --approval "$rid" 2>&1); rc=$?
+check "실물 모양의 답 프레임으로 승인이 닫힌다" "$rc" "0"
 rrow=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$rid " | tail -1)
 case "$rrow" in
-  *"$RANS"*) ok "답변 문면에 사람의 답이 실린다" ;;
+  *"답변 문면=$RANS"*) ok "답변 문면에 사람의 답이 실린다" ;;
   *) bad "답 추출" "$rrow" ;;
 esac
 case "$rrow" in
-  *parentUuid*|*sessionId*) bad "답 추출" "전송 프레임이 답변 문면에 실렸다: $rrow" ;;
+  *parentUuid*|*sessionId*|*tool_use_id*) bad "답 추출" "전송 프레임이 답변 문면에 실렸다: $rrow" ;;
   *) ok "전송 프레임의 JSON 스캐폴딩은 답변 문면에 실리지 않는다" ;;
 esac
 
@@ -5691,33 +5778,62 @@ else
   bad "원뿔 유도" "${n} 건의 원뿔 행 쓰기가 거절됐다 — 그 뒤의 판정은 stale 한 원뿔을 읽었다: $(tr '\n' ' ' < "$CONE_OF_FAILURES")"
 fi
 
-# --- 31ai. `close` reads the POLARITY of the answer, not just its presence --
+# --- 31ai. `close` reads the answer by LABEL EQUALITY, and a flag only agrees -
 #
-# The recording path held one literal — `상태=승인` — and nothing anywhere read
-# what the person actually wrote, so a transcript line saying no closed the
-# approval as a grant. Every refusal on the unattended adoption surface
-# converges on this one channel, so a channel that emits a constant leaves the
-# floors above it deciding nothing. There is no negative-answer fixture anywhere
-# else in this suite.
+# The recording path once held one literal — `상태=승인` — and then a prose
+# scan whose vocabulary was the ledger's own words. Neither is a mechanism: the
+# gate owns three labels, the router renders them, and the person's choice is
+# compared whole-string against them in normal form. `--void`/`--reject` may
+# agree with that choice and may not overrule it. An answer equal to no label
+# is FREE INPUT — held, kept in the sidecar, surfaced with a reason — and it
+# is neither a grant nor a refusal.
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 기준="이 발견을 이번 런에서 고칠지" 근거="비용이 크다"
-check "부정 답변 실험용 판단이 승인으로 올라간다" "$rc" "5"
+check "거부 라벨 실험용 판단이 승인으로 올라간다" "$rc" "5"
 nid=$(row_field "$(last_judgment_approval)" '승인 id')
 nq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '질문 문면')
-if [ -n "$nid" ]; then ok "부정 답변 실험용 판단 승인 id 를 원장에서 읽는다 ($nid)"; else bad "부정 답변 픽스처" "대기 행이 없다"; fi
+if [ -n "$nid" ]; then ok "거부 라벨 실험용 판단 승인 id 를 원장에서 읽는다 ($nid)"; else bad "거부 라벨 픽스처" "대기 행이 없다"; fi
 NEGSID="17171717-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 아니오, 다음 런에서 본다"}\n' "$nid" "$nq" > "$NTX/$NEGSID.jsonl"
+: > "$NTX/$NEGSID.jsonl"
+# 2c FIRST: a free-input answer holds the approval and writes a REASON row.
+nbefore=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$nid " || true)
+ftok=$(auq_frame "$NTX/$NEGSID.jsonl" "$nid" "$nq" "아니오, 다음 런에서 본다")
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" 2>&1); rc=$?
-check "부정으로 읽히는 답은 승인으로 닫히지 않는다" "$rc" "3"
+check "어느 라벨과도 같지 않은 답(자유 입력)은 닫지 않는다 — 0 이 아니라 5" "$rc" "5"
 case "$out" in
-  *"부정으로 읽힙니다"*) ok "거절이 무엇이 매치했는지와 어느 처분을 고를지 말한다" ;;
-  *) bad "부정 스캔" "$out" ;;
+  *"자유 입력"*) ok "경고가 자유 입력이라고 이름 붙인다" ;;
+  *) bad "자유 입력 경고" "$out" ;;
 esac
-# THE STATE IS READ, NOT THE EXIT CODE. A refusal that nonetheless appended a
-# `상태=승인` row would leave the exit code right and the ledger wrong, and the
-# ledger is the only thing the morning reads.
+frow=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)
+check "2c 는 대기 행 하나를 더한다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$nid " || true)" "$((nbefore + 1))"
+check "그 행의 상태는 대기 그대로다" "$(row_field "$frow" '상태')" "대기"
+check "그 행은 처분 사유=자유 입력 을 싣는다" "$(row_field "$frow" '처분 사유')" "자유 입력"
+check "그 행은 답 프레임의 응답 토큰을 싣는다" "$(row_field "$frow" '응답 토큰')" "$ftok"
+check "그 행은 답변 문면을 얻지 않는다 (미확정 답이 확정처럼 읽히지 않는다)" "$(row_field "$frow" '답변 문면')" ""
+check "그 행은 절단점을 그대로 나른다 (독자가 판단 승인으로 계속 읽는다)" "$(row_field "$frow" '절단점')" "판단"
+if grep -qF '아니오, 다음 런에서 본다' "$WT/docs/pipeline-approval/$CONE_RUN_ID.md" 2>/dev/null; then
+  ok "자유 입력 답의 전문은 사이드카에만 있다"
+else
+  bad "2c 사이드카" "답 전문이 사이드카에 없다"
+fi
+snap_disp=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+            | jq -r --arg id "$nid" '.pending_approvals[] | select(.id == $id) | .disposition')
+check "스냅숏이 그 승인을 disposition=자유 입력 으로 표면화한다" "$snap_disp" "자유 입력"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" 2>&1); rc=$?
+check "같은 자유 입력 프레임에 대한 재호출은 행을 더하지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$nid " || true)" "$((nbefore + 1))"
+# THEN THE LABEL: the person chooses `거부`. The label decides; a flag that
+# disagrees is refused; a flag that agrees is accepted; no flag is fine.
+auq_frame "$NTX/$NEGSID.jsonl" "$nid" "$nq" "거부" >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" --void 2>&1); rc=$?
+check "--void 는 거부 답과 어긋나므로 거절된다 (플래그는 답과 동의만 한다)" "$rc" "3"
+case "$out" in
+  *"동의만"*) ok "거절이 플래그는 답과 동의만 할 수 있다고 말한다" ;;
+  *) bad "플래그 동의" "$out" ;;
+esac
 nst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '상태')
 check "거절된 close 는 그 승인의 상태를 대기 그대로 둔다" "$nst" "대기"
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
@@ -5725,7 +5841,7 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
 check "--void 와 --reject 를 함께 주면 거절된다 (서로 다른 처분이다)" "$rc" "2"
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NEGSID" bash "$GATE" close --manifest "$NM" --approval "$nid" --reject 2>&1); rc=$?
-check "같은 트랜스크립트 줄이 --reject 로는 닫힌다" "$rc" "0"
+check "같은 답 프레임이 --reject 로는 닫힌다 (플래그가 답과 동의한다)" "$rc" "0"
 nst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '상태')
 check "거부로 닫힌 처분이 원장에 남는다" "$nst" "거부"
 # A REJECTION IS AN ANSWER, AND WITHOUT AN ARM FOR IT IT READS AS SILENCE.
@@ -5741,9 +5857,34 @@ case "$msg" in
   *"거부로 닫혔습니다"*) ok "거절이 승인이 거부되었음을 지목한다 (승인이 재발행되지 않는다)" ;;
   *) bad "거부 소비" "$msg" ;;
 esac
-# THE SCAN DOES NOT OVER-MATCH. A positive answer on the same path still closes
-# as `승인`, which is what makes the assertions above measure polarity rather
-# than merely record that `close` can refuse.
+# THE LABEL DECIDES WITHOUT A FLAG TOO: `거부` chosen and bare `close` records
+# `거부`, not `승인`. That is the assertion the constant-literal path failed.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="플래그 없이도 라벨이 처분을 정하는가" 근거="상수 리터럴 경로의 회귀"
+bareid=$(row_field "$(last_judgment_approval)" '승인 id')
+bareq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$bareid " | tail -1)" '질문 문면')
+BARESID="17271727-3434-5656-7878-909090909090"
+: > "$NTX/$BARESID.jsonl"; auq_frame "$NTX/$BARESID.jsonl" "$bareid" "$bareq" "거부" >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$BARESID" bash "$GATE" close --manifest "$NM" --approval "$bareid" 2>&1); rc=$?
+check "거부 라벨은 플래그 없는 close 로도 거부로 닫힌다" "$rc:$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$bareid " | tail -1)" '상태')" "0:거부"
+# AND THE MENU IS COMPARED BEFORE THE ANSWER IS READ: a router rendering its
+# own labels is refused with exit 3 whatever the person chose.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="라우터가 자기 메뉴를 렌더하면" 근거="게이트 상수와 대조된다"
+menuid=$(row_field "$(last_judgment_approval)" '승인 id')
+menuq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$menuid " | tail -1)" '질문 문면')
+MENUSID="17371737-3434-5656-7878-909090909090"
+: > "$NTX/$MENUSID.jsonl"; auq_frame "$NTX/$MENUSID.jsonl" "$menuid" "$menuq" "예" 예 아니오 >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$MENUSID" bash "$GATE" close --manifest "$NM" --approval "$menuid" 2>&1); rc=$?
+check "게이트 상수와 다른 메뉴는 exit 3 으로 거절된다 (2a)" "$rc" "3"
+check "메뉴 불일치는 상태를 대기로 둔다" "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$menuid " | tail -1)" '상태')" "대기"
+# A POSITIVE LABEL WITH THE RECOMMENDATION SUFFIX closes as `승인`: the
+# comparison runs on the normal form, which is what lets the authoring rule and
+# the gate's constant coexist.
 gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 기준="이 정정을 이번 런에서 반영할지" 근거="변경이 작다"
@@ -5751,12 +5892,12 @@ check "긍정 답변 실험용 판단이 승인으로 올라간다" "$rc" "5"
 pid_ok=$(row_field "$(last_judgment_approval)" '승인 id')
 pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '질문 문면')
 POSSID="18181818-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$pid_ok" "$pq" > "$NTX/$POSSID.jsonl"
+: > "$NTX/$POSSID.jsonl"; auq_frame "$NTX/$POSSID.jsonl" "$pid_ok" "$pq" "승인 ← 에이전트 추천" "승인 ← 에이전트 추천" 거부 무효 >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$POSSID" bash "$GATE" close --manifest "$NM" --approval "$pid_ok" 2>&1); rc=$?
-check "긍정 답변은 그대로 승인으로 닫힌다" "$rc" "0"
+check "추천 접미사가 붙은 승인 라벨은 정규형으로 대조돼 승인으로 닫힌다" "$rc" "0"
 pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '상태')
-check "긍정 답변의 상태는 승인이다 (스캔이 과잉으로 잡지 않는다)" "$pst" "승인"
+check "긍정 답변의 상태는 승인이다" "$pst" "승인"
 
 # --- 31aj. An answered approval is CONSUMED, a closed one is never re-opened -
 #
@@ -5775,7 +5916,7 @@ check "재제출 실험용 판단이 승인으로 올라간다" "$rc" "5"
 cjid=$(row_field "$(last_judgment_approval)" '승인 id')
 cjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$cjid " | tail -1)" '질문 문면')
 CJSID="19191919-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$cjid" "$cjq" > "$NTX/$CJSID.jsonl"
+: > "$NTX/$CJSID.jsonl"; auq_frame "$NTX/$CJSID.jsonl" "$cjid" "$cjq" "승인" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$CJSID" bash "$GATE" close --manifest "$NM" --approval "$cjid" 2>&1); rc=$?
 check "재제출 실험용 승인이 승인으로 닫힌다" "$rc" "0"
@@ -5819,7 +5960,7 @@ check "무효 실험용 판단이 승인으로 올라간다" "$rc" "5"
 vjid=$(row_field "$(last_judgment_approval)" '승인 id')
 vjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$vjid " | tail -1)" '질문 문면')
 VJSID="20202020-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$vjid" "$vjq" > "$NTX/$VJSID.jsonl"
+: > "$NTX/$VJSID.jsonl"; auq_frame "$NTX/$VJSID.jsonl" "$vjid" "$vjq" "무효" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$VJSID" bash "$GATE" close --manifest "$NM" --approval "$vjid" --void 2>&1); rc=$?
 check "무효 실험용 승인이 무효로 닫힌다" "$rc" "0"
@@ -5837,7 +5978,7 @@ check "거부 실험용 판단이 승인으로 올라간다" "$rc" "5"
 xjid=$(row_field "$(last_judgment_approval)" '승인 id')
 xjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$xjid " | tail -1)" '질문 문면')
 XJSID="21212121-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 아니오, 하지 마라"}\n' "$xjid" "$xjq" > "$NTX/$XJSID.jsonl"
+: > "$NTX/$XJSID.jsonl"; auq_frame "$NTX/$XJSID.jsonl" "$xjid" "$xjq" "거부" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$XJSID" bash "$GATE" close --manifest "$NM" --approval "$xjid" --reject 2>&1); rc=$?
 check "거부 실험용 승인이 거부로 닫힌다" "$rc" "0"
@@ -5876,7 +6017,7 @@ else
 fi
 TUPSID="22222222-3434-5656-7878-909090909090"
 tup_q=$(row_field "$tup_row" '질문 문면')
-printf '{"role":"user","content":"%s / %s → 승인"}\n' "$tup_id" "$tup_q" > "$NTX/$TUPSID.jsonl"
+: > "$NTX/$TUPSID.jsonl"; auq_frame "$NTX/$TUPSID.jsonl" "$tup_id" "$tup_q" "승인" 승인 거부 >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$TUPSID" bash "$GATE" close --manifest "$NM" --approval "$tup_id" 2>&1); rc=$?
 check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
@@ -6032,7 +6173,7 @@ drain4() {  # drain4 <라벨> — close every pending non-judgment approval on t
   for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM4" 2>/dev/null \
                | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
     aq=$(row_field "$( { grep -F '`승인`' "$LEDGER4" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-    printf '{"role":"user","content":"%s / %s → 승인"}\n' "$aid" "$aq" >> "$NTX/$D4SID.jsonl"
+    auq_frame "$NTX/$D4SID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
     out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
           CLAUDE_CODE_SESSION_ID="$D4SID" bash "$GATE" close --manifest "$NM4" --approval "$aid" 2>&1); rc=$?
     check "${label} 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
@@ -6152,7 +6293,7 @@ fi
 # flipping a termination condition here.
 K1SID="24242424-3434-5656-7878-909090909090"
 k1q=$(row_field "$( { grep -F '`승인`' "$LEDGER4" || true; } | grep -F "승인 id=$ja " | tail -1)" '질문 문면')
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$ja" "$k1q" > "$NTX/$K1SID.jsonl"
+: > "$NTX/$K1SID.jsonl"; auq_frame "$NTX/$K1SID.jsonl" "$ja" "$k1q" "승인" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$K1SID" bash "$GATE" close --manifest "$NM4" --approval "$ja" 2>&1); rc=$?
 check "첫째 절을 붙들던 물음이 닫힌다" "$rc" "0"
@@ -6248,100 +6389,194 @@ if [ -n "$base_ter" ]; then printf '%s\n' "$base_ter" > "$DONE_DIR/surface-diges
 else rm -f "$DONE_DIR/surface-digest"; fi
 rm -f "$DONE_DIR/done"
 
-# --- 31am. A miss in the polarity scan is `극성 미상`, not consent -----------
+# --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
 #
-# 31ai showed the scan fires on `아니오`. What it could not show is what the
-# vocabulary does NOT know, and it knew six standalone Korean words — none of
-# the forms the language actually negates with. Korean negates by ending
-# (`-지 않다`, `-지 말다`) and by the adverbs `안` and `못`, so `승인하지
-# 않습니다` and `반대합니다` were both recorded as grants.
-#
-# The second half is the disposition of a MISS. With only a negative scan,
-# silence read as consent and every refusal phrased in an unknown word became an
-# approval. Requiring an affirmative term moves the cost of an unknown word onto
-# a question that stays open — which this design survives, since a `대기`
-# judgment approval is carried to the next cycle — instead of onto an approval
-# nobody gave.
-polarity_probe() {
-  # polarity_probe <세션 uuid> <기준> <답 문면> — open one grade-2 judgment,
-  # answer it with the given text, and leave `close`'s status in `$rc` and the
-  # approval's state afterwards in `$pst`. Each probe opens its OWN approval so
-  # one verdict cannot carry into the next, and each takes a different `기준` so
-  # the issuing path does not see a question it has already opened.
-  local sid="$1" std="$2" answer="$3" pid pq prev
-  # THE ID MUST BE A NEW ONE. `last_judgment_approval` reads the newest pending
-  # row, so an act that failed to open anything leaves the PREVIOUS probe's id
-  # in hand and every assertion below then measures the wrong approval while
-  # looking green.
+# Rung 3 of the close ladder. A dismissed dialog, a collapsed call, another
+# tool's result and a line that is no frame at all each leave the approval
+# `대기` with exit 5, a warning that says which, and NO ledger row — the
+# diagnostic rung's safety rule, pinned here so "record the diagnosis on the
+# ledger" cannot be reinvented unnoticed. A question whose standard contains a
+# negative word is included on purpose: with no prose scan there is nothing
+# for the question text to poison.
+frame_probe() {
+  # frame_probe <세션 uuid> <기준> — open one grade-2 judgment and leave its id
+  # in `$pid`, its question in `$pq` and its row count in `$pcount`.
+  local sid="$1" std="$2" prev
   prev=$(row_field "$(last_judgment_approval)" '승인 id')
   gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
         --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
-        -- 등급=2 기준="$std" 근거="극성 판독 실험"
+        -- 등급=2 기준="$std" 근거="프레임 승인 실험"
   pid=$(row_field "$(last_judgment_approval)" '승인 id')
   if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
-    bad "극성 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
-    pst=""; rc=99; return 0
+    bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
+    pid=""; return 0
   fi
   pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
-  printf '{"role":"user","content":"%s / %s → %s"}\n' "$pid" "$pq" "$answer" > "$NTX/$sid.jsonl"
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$sid" bash "$GATE" close --manifest "$NM" --approval "$pid" 2>&1); rc=$?
-  pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+  pcount=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
+  : > "$NTX/$sid.jsonl"
 }
-polarity_probe "25252525-3434-5656-7878-909090909090" "어미로 부정한 답을 읽는지" "승인하지 않습니다"
-check "어미 -지 않다 로 부정한 답은 승인으로 닫히지 않는다" "$rc" "3"
-check "그 승인의 상태는 대기 그대로다" "$pst" "대기"
-# THREE TERMS, THREE SEPARATE ARMS OF THE VOCABULARY. An ending, a noun and an
-# adverb are matched by different entries, so one of them dying leaves the other
-# two green and the floor half gone.
-polarity_probe "26262626-3434-5656-7878-909090909090" "낱말로 반대한 답을 읽는지" "반대합니다"
-check "반대합니다 는 승인으로 닫히지 않는다" "$rc" "3"
-polarity_probe "27272727-3434-5656-7878-909090909090" "부사로 부정한 답을 읽는지" "그건 안 됩니다"
-check "부사 안 으로 부정한 답은 승인으로 닫히지 않는다" "$rc" "3"
-# THE MISS ITSELF, and this is the only place it is measured. Neither polarity
-# is present, so there is nothing on the line that can be read as consent.
-polarity_probe "28282828-3434-5656-7878-909090909090" "극성이 없는 답을 어떻게 처분하는지" "확인했습니다"
-check "긍정도 부정도 없는 답은 승인으로 닫히지 않는다" "$rc" "5"
-check "극성 미상으로 남은 승인의 상태는 대기다" "$pst" "대기"
-
-# --- 31an. The question is not scanned as if it were the answer -------------
-#
-# `close` selects the transcript line by requiring the approval id AND the
-# question text on it, so the question is inside the scanned bytes by
-# construction. A judgment question is the router's own `<기준> — <근거>`, so a
-# standard reading "이 발견을 이번 사이클에서 거절할지" put `거절` in front of the
-# polarity scan and that approval could not be closed as a grant no matter what
-# the person wrote. It is the opposite error from 31am, and the two share a
-# floor: both scans read the answer with the question removed, because a scan
-# target that splits is two floors again.
-polarity_probe "30303030-3434-5656-7878-909090909090" "이 발견을 이번 사이클에서 거절할지" "그렇게 하라"
-check "기준에 부정어가 든 물음도 긍정 답으로 닫힌다" "$rc" "0"
-check "그 승인의 상태는 승인이다" "$pst" "승인"
-# AND REMOVING THE QUESTION DID NOT KILL THE NEGATIVE SCAN. Same shape of
-# question, opposite answer.
-polarity_probe "31313131-3434-5656-7878-909090909090" "이 정정을 이번 사이클에서 거절할지" "아니오, 다음 런에서 본다"
-check "같은 모양의 물음에 부정으로 답하면 여전히 승인으로 닫히지 않는다" "$rc" "3"
-check "그 승인의 상태는 대기 그대로다" "$pst" "대기"
-# NO ANSWER IS NOT A NEGATIVE ANSWER. The person repeated the question and wrote
-# nothing else, so removing it leaves no bytes to read a polarity out of. The
-# frame carries the id in a field of its own, which is how the binding still
-# holds while the content is the question alone.
-gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
-      -- 등급=2 기준="사람이 물음을 되풀이만 했을 때" 근거="답과 물음은 다른 것이다"
-eid=$(row_field "$(last_judgment_approval)" '승인 id')
-eq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$eid " | tail -1)" '질문 문면')
-ECHOSID="32323232-3434-5656-7878-909090909090"
-printf '{"role":"user","toolUseResult":"승인 id=%s","content":"%s"}\n' "$eid" "$eq" > "$NTX/$ECHOSID.jsonl"
-out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-      CLAUDE_CODE_SESSION_ID="$ECHOSID" bash "$GATE" close --manifest "$NM" --approval "$eid" 2>&1); rc=$?
-check "물음을 되풀이하기만 한 줄은 승인으로도 거부로도 닫히지 않는다" "$rc" "5"
-est=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$eid " | tail -1)" '상태')
-check "답을 분리할 수 없는 줄은 상태를 대기로 둔다" "$est" "대기"
+probe_close() {  # probe_close <세션 uuid> [flags] — close $pid, leave rc/out/pst/pafter
+  local sid="$1"; shift
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$sid" bash "$GATE" close --manifest "$NM" --approval "$pid" "$@" 2>&1); rc=$?
+  pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+  pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
+}
+# (a) the dismissed dialog — the harness's `is_error` frame with its text
+frame_probe "25252525-3434-5656-7878-909090909090" "이 발견을 이번 사이클에서 거절할지"
+auq_frame "$NTX/25252525-3434-5656-7878-909090909090.jsonl" "$pid" "$pq" "__DISMISS__" >/dev/null
+probe_close "25252525-3434-5656-7878-909090909090"
+check "다이얼로그 취소 프레임은 닫지 않는다 (exit 5)" "$rc" "5"
+check "다이얼로그 취소 뒤에도 상태는 대기다" "$pst" "대기"
+check "다이얼로그 취소는 원장에 아무것도 쓰지 않는다" "$pafter" "$pcount"
 case "$out" in
-  *"남는 답이 없습니다"*) ok "거절 문면이 답이 없는 것과 답이 부정인 것을 가른다" ;;
-  *) bad "물음 제거 후 잔여" "$out" ;;
+  *"다이얼로그 취소"*) ok "경고가 다이얼로그 취소라고 이름 붙인다 (기각 이 아니다)" ;;
+  *) bad "다이얼로그 취소 문구" "$out" ;;
 esac
+case "$out" in
+  *"기각"*) bad "상태 어휘 충돌" "전사 사건에 상태 토큰 「기각」을 썼다: $out" ;;
+  *) ok "전사 사건 이름이 상태 어휘와 겹치지 않는다" ;;
+esac
+# (b) a collapsed call — `is_error` with some other text: cause unobserved
+frame_probe "26262626-3434-5656-7878-909090909090" "호출이 붕괴한 프레임"
+jq -nc '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: "toolu_COLLAPSE", name: "AskUserQuestion", input: {questions: [{question: ("승인 " + $id + " — " + $q), header: "승인", multiSelect: false, options: []}]}}]}}' \
+  --arg id "$pid" --arg q "$pq" >> "$NTX/26262626-3434-5656-7878-909090909090.jsonl"
+jq -nc '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_COLLAPSE", is_error: true, content: "InputValidationError: questions is required"}]}}' \
+  >> "$NTX/26262626-3434-5656-7878-909090909090.jsonl"
+probe_close "26262626-3434-5656-7878-909090909090"
+check "원인 미관측 is_error 프레임은 닫지 않는다 (exit 5)" "$rc" "5"
+check "원인 미관측 프레임은 원장에 아무것도 쓰지 않는다" "$pafter" "$pcount"
+case "$out" in
+  *"원인 미관측"*) ok "경고가 원인 미관측이라고 가른다 (취소와 다른 문구)" ;;
+  *) bad "원인 미관측 문구" "$out" ;;
+esac
+# (c) another tool's result carrying the id — the router reading the ledger
+frame_probe "27272727-3434-5656-7878-909090909090" "다른 도구의 결과에 id 가 있을 때"
+jq -nc '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: "toolu_BASH1", name: "Bash", input: {command: "tail ledger"}}]}}' \
+  >> "$NTX/27272727-3434-5656-7878-909090909090.jsonl"
+jq -nc --arg body "- \`승인\` | 승인 id=$pid | 상태=대기 | 질문 문면=$pq | 답변 문면=승인" \
+  '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_BASH1", content: $body}]}}' \
+  >> "$NTX/27272727-3434-5656-7878-909090909090.jsonl"
+probe_close "27272727-3434-5656-7878-909090909090"
+check "Bash 결과에 id 와 「승인」이 함께 있어도 닫지 않는다" "$rc" "5"
+check "Bash 결과 결속은 원장에 아무것도 쓰지 않는다" "$pafter" "$pcount"
+case "$out" in
+  *"tool=Bash"*) ok "경고가 관측한 프레임의 도구 이름을 댄다" ;;
+  *) bad "4단 문구" "$out" ;;
+esac
+# (d) asked but not yet answered — the tool_use exists, no result frame yet
+frame_probe "28282828-3434-5656-7878-909090909090" "물었으나 아직 답이 없을 때"
+jq -nc '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: "toolu_ASKED", name: "AskUserQuestion", input: {questions: [{question: ("승인 " + $id + " — " + $q), header: "승인", multiSelect: false, options: []}]}}]}}' \
+  --arg id "$pid" --arg q "$pq" >> "$NTX/28282828-3434-5656-7878-909090909090.jsonl"
+probe_close "28282828-3434-5656-7878-909090909090"
+check "질문만 있고 응답 프레임이 없으면 대기다 (exit 5)" "$rc" "5"
+case "$out" in
+  *"응답 프레임이 아직 없습니다"*) ok "경고가 물어졌으나 미응답이라고 말한다" ;;
+  *) bad "미응답 문구" "$out" ;;
+esac
+# (e) the slot is there and the answers map has no entry under it — 키 부재
+frame_probe "29292929-3434-5656-7878-909090909090" "슬롯은 있으나 엔트리가 없을 때"
+jq -nc '{type: "assistant", uuid: "u", message: {role: "assistant", content: [{type: "tool_use", id: "toolu_NOKEY", name: "AskUserQuestion", input: {questions: [{question: ("승인 " + $id + " — " + $q), header: "승인", multiSelect: false, options: [{label: "승인", description: "d"}, {label: "거부", description: "d"}, {label: "무효", description: "d"}]}]}}]}}' \
+  --arg id "$pid" --arg q "$pq" >> "$NTX/29292929-3434-5656-7878-909090909090.jsonl"
+jq -nc '{type: "user", uuid: "v", message: {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_NOKEY", content: "Your questions have been answered"}]}, toolUseResult: {questions: [{question: ("승인 " + $id + " — " + $q), header: "승인", multiSelect: false, options: []}], answers: {"다른 질문": "승인"}}}' \
+  --arg id "$pid" --arg q "$pq" >> "$NTX/29292929-3434-5656-7878-909090909090.jsonl"
+probe_close "29292929-3434-5656-7878-909090909090"
+check "answers 맵에 그 슬롯의 엔트리가 없으면 닫지 않는다 (exit 5)" "$rc" "5"
+check "그 경우 처분 사유=슬롯 부재 를 실은 대기 행이 붙는다" "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '처분 사유')" "슬롯 부재"
+
+# --- 31an. Latest answer wins, first file wins, and `철회` can still close ---
+#
+# UD8 inherited today's selection rule and made it a declaration: between two
+# answer frames for one id the LATER one decides, and the search stops at the
+# first lineage transcript holding an answer frame. And `철회` — the state a
+# boundary approval takes when its raising condition lapses — is the one
+# non-`대기` state a later real answer may still close.
+frame_probe "30303030-3434-5656-7878-909090909090" "두 번 답했을 때 어느 답인가"
+auq_frame "$NTX/30303030-3434-5656-7878-909090909090.jsonl" "$pid" "$pq" "거부" >/dev/null
+auq_frame "$NTX/30303030-3434-5656-7878-909090909090.jsonl" "$pid" "$pq" "승인" >/dev/null
+probe_close "30303030-3434-5656-7878-909090909090"
+check "같은 파일의 두 답 프레임 중 뒤의 것이 이긴다 (최신 우선)" "$rc:$pst" "0:승인"
+# first-hit file: an earlier lineage transcript's answer shadows a later file's
+frame_probe "31313131-3434-5656-7878-909090909090" "두 파일에 답이 있을 때 어느 파일인가"
+FIRSTSID="31313131-3434-5656-7878-909090909090"; SECONDSID="31413141-3434-5656-7878-909090909090"
+auq_frame "$NTX/$FIRSTSID.jsonl" "$pid" "$pq" "거부" >/dev/null
+: > "$NTX/$SECONDSID.jsonl"; auq_frame "$NTX/$SECONDSID.jsonl" "$pid" "$pq" "승인" >/dev/null
+# LINEAGE ORDER IS THE SEARCH ORDER. The first session is enrolled by a plain
+# gate entry under its id; the second is appended after it, so the first file
+# is searched first whatever the answers say.
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CODE_SESSION_ID="$FIRSTSID" \
+  bash "$GATE" snapshot --manifest "$NM" >/dev/null 2>&1 )
+printf '%s\n' "$SECONDSID" >> "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/session-lineage"
+probe_close "$FIRSTSID"
+check "계보의 첫 히트 파일에서 순회가 끝난다 (첫 파일의 답이 이긴다)" "$rc:$pst" "0:거부"
+# 철회: accepted by the vocabulary, closable by a later real answer
+frame_probe "32323232-3434-5656-7878-909090909090" "철회된 승인에 나중에 답이 오면"
+wq="$pq"
+( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
+    set +e
+    gate_append "승인" "승인 id='"$pid"'" "상태=철회" "질문 문면='"$wq"'" "답변 문면=-" "사유=조건 소멸(픽스처)" "해소 시각=$(now_iso)"' ) 2>/dev/null
+check "철회 행이 어휘를 통과한다 (받아들이되 요구하지 않음)" \
+      "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')" "철회"
+auq_frame "$NTX/32323232-3434-5656-7878-909090909090.jsonl" "$pid" "$pq" "승인" >/dev/null
+probe_close "32323232-3434-5656-7878-909090909090"
+check "철회된 승인을 나중에 온 진짜 답이 닫는다 (종단 상태 가드의 유일한 예외)" "$rc:$pst" "0:승인"
+# and the vocabulary itself: a state outside the six is refused at write time
+( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
+    set +e
+    gate_append "승인" "승인 id=X-vocab" "상태=취소" "질문 문면=q"; exit $?' ) >/dev/null 2>&1; vrc=$?
+check "여섯 밖의 승인 상태는 어휘 오류로 거절된다 (exit 2)" "$vrc" "2"
+check "거절된 행은 원장에 없다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '승인 id=X-vocab ' || true)" "0"
+# the six, as the gate's constant: exactly six and `철회` among them
+vocab=$(sed -n 's/^readonly APPROVAL_STATES="\(.*\)"$/\1/p' "$GATE")
+check "APPROVAL_STATES 는 여섯 원소다" "$(printf '%s\n' $vocab | grep -c .)" "6"
+case " $vocab " in *" 철회 "*) ok "APPROVAL_STATES 가 철회 를 담는다" ;; *) bad "철회 어휘" "$vocab" ;; esac
+
+# --- 31an2. Boundary approval ids and tuples have a FIXED SHAPE ---------------
+#
+# Test-design item 2: the id and the binding tuple are pinned by regex, so a
+# separator or hash-length change cannot pass on content alone. One boundary
+# approval per boundary is issued through the issuer itself, on this
+# section's ledger, with the binding value each predicate would pass.
+( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
+    . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
+    BASE="'"$WT"'"; GRANT="'"$CONE_GRANT"'"
+    set +e
+    gate_issue_boundary_approval B1 "형태 회귀 픽스처 B1" "$(gate_progress_digest)"
+    gate_issue_boundary_approval B2 "형태 회귀 픽스처 B2" "$(gate_open_obligations | sort | shasum -a 256 | cut -d" " -f1)"
+    gate_issue_boundary_approval B3 "형태 회귀 픽스처 B3" "$(gate_progress_vector | grep -v "^acts=" | shasum -a 256 | cut -d" " -f1)"
+    gate_issue_boundary_approval B4 "형태 회귀 픽스처 B4" "$(gate_progress_digest)"' ) >/dev/null 2>&1
+bshape_ok=1; bshape_n=0
+while IFS= read -r brow; do
+  [ -n "$brow" ] || continue
+  bshape_n=$((bshape_n + 1))
+  bid=$(row_field "$brow" '승인 id'); btup=$(row_field "$brow" '구속 튜플')
+  bid_ok=$(printf '%s\n' "$bid" | grep -E '^B[1-4]-[0-9a-f]{8}$' || true)
+  btup_ok=$(printf '%s\n' "$btup" | grep -E '^B[1-4]/[0-9a-f]{64}$' || true)
+  [ -n "$bid_ok" ] || { bshape_ok=0; bad "경계 id 형태" "$bid"; }
+  [ -n "$btup_ok" ] || { bshape_ok=0; bad "경계 튜플 형태" "$btup"; }
+done <<EOF
+$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '형태 회귀 픽스처' | grep -F '발행 시각=' )
+EOF
+if [ "$bshape_n" = "4" ] && [ "$bshape_ok" = "1" ]; then
+  ok "경계 승인 id 는 B<n>-<hex8>, 구속 튜플은 B<n>/<sha256> 형태다 (네 경계)"
+elif [ "$bshape_n" != "4" ]; then
+  bad "경계 형태" "네 경계의 발행 행을 기대했는데 ${bshape_n}행이다"
+fi
+# And the four are drained, so the open boundary approvals do not suspend the
+# boundaries for the sections below.
+for bid in $( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '형태 회귀 픽스처' | grep -F '발행 시각=' \
+              | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//'); do
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
+      . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
+      set +e
+      gate_append "승인" "승인 id='"$bid"'" "상태=무효" "질문 문면=형태 회귀 픽스처" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"' ) >/dev/null 2>&1
+done
 
 # --- 31ao. The manifest guard measures the FILE through three arms ----------
 #
@@ -6534,7 +6769,7 @@ tj=$(row_field "$(last_judgment_approval)" '승인 id')
 if [ -n "$tj" ]; then ok "부류를 읽지 못한 방출이 승인을 연다 ($tj)"; else bad "형식 깨진 방출" "승인이 열리지 않았다: $out"; fi
 tjq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$tj " | tail -1)" '질문 문면')
 TJSID="34343434-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 이 물음은 잘못 발행됐습니다"}\n' "$tj" "$tjq" > "$NTX/$TJSID.jsonl"
+: > "$NTX/$TJSID.jsonl"; auq_frame "$NTX/$TJSID.jsonl" "$tj" "$tjq" "무효" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$TJSID" bash "$GATE" close --manifest "$NM" --approval "$tj" --void 2>&1); rc=$?
 check "그 물음을 무효로 닫는다" "$rc" "0"
@@ -6569,7 +6804,7 @@ emit_torn SJ5 "$JSTUB5"
 aj=$(row_field "$(last_judgment_approval)" '승인 id')
 ajq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aj " | tail -1)" '질문 문면')
 AJSID="33333333-3434-5656-7878-909090909090"
-printf '{"role":"user","content":"%s / %s → 그렇게 하라"}\n' "$aj" "$ajq" > "$NTX/$AJSID.jsonl"
+: > "$NTX/$AJSID.jsonl"; auq_frame "$NTX/$AJSID.jsonl" "$aj" "$ajq" "승인" >/dev/null
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$AJSID" bash "$GATE" close --manifest "$NM" --approval "$aj" 2>&1); rc=$?
 check "방출된 판단의 물음이 승인으로 닫힌다" "$rc" "0"
@@ -6675,7 +6910,7 @@ if [ -d "$EWT" ]; then
   fi
   EWTSID="25252525-3434-5656-7878-909090909090"
   ewt_q=$(row_field "$ewt_row" '질문 문면')
-  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$ewt_id" "$ewt_q" > "$NTX/$EWTSID.jsonl"
+  : > "$NTX/$EWTSID.jsonl"; auq_frame "$NTX/$EWTSID.jsonl" "$ewt_id" "$ewt_q" "승인" 승인 거부 >/dev/null
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
         CLAUDE_CODE_SESSION_ID="$EWTSID" bash "$GATE" close --manifest "$NM5" --approval "$ewt_id" 2>&1); rc=$?
   check "실행 워크트리 픽스처의 승인이 닫힌다" "$rc" "0"
@@ -6741,7 +6976,7 @@ DRAINSID="16161616-3434-5656-7878-909090909090"
 for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
              | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
   aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-  printf '{"role":"user","content":"%s / %s → 승인"}\n' "$aid" "$aq" >> "$NTX/$DRAINSID.jsonl"
+  auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
         CLAUDE_CODE_SESSION_ID="$DRAINSID" bash "$GATE" close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
   check "경계 전제를 세우려 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
@@ -6790,13 +7025,24 @@ fi
 for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
 done
+# THE BUDGET IS READ FROM THE GATE, NOT RE-TYPED. A literal `41` here tests
+# whatever the constant used to be: change `B3_ACT_BUDGET` and this section
+# stays green while measuring a different boundary. `over_budget` is one past
+# the constant, which is the count the boundary fires on.
+B3_BUDGET_UNDER_TEST=$(sed -n 's/^readonly B3_ACT_BUDGET=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -n "$B3_BUDGET_UNDER_TEST" ]; then
+  ok "B3_ACT_BUDGET 를 게이트 상수에서 읽는다 ($B3_BUDGET_UNDER_TEST)"
+else
+  bad "B3_ACT_BUDGET" "gate.sh 에서 readonly B3_ACT_BUDGET=<n> 을 읽지 못했다"; B3_BUDGET_UNDER_TEST=40
+fi
+over_budget=$((B3_BUDGET_UNDER_TEST + 1))
 i=0
-while [ "$i" -lt 41 ]; do
+while [ "$i" -lt "$over_budget" ]; do
   printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
   i=$((i + 1))
 done
 
-# Half one — the window is OPEN and 41 acts have been spent inside it.
+# Half one — the window is OPEN and budget+1 acts have been spent inside it.
 #
 # THE STATE BELOW MUST BE ONE THE RUNNING SYSTEM CAN REACH, and the first
 # version of this fixture was not. It wrote the full progress digest as the
@@ -6815,7 +7061,7 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "B3 창 개시" -- touch "$WORK/t3b"
 i=0
-while [ "$i" -lt 41 ]; do
+while [ "$i" -lt "$over_budget" ]; do
   printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
   i=$((i + 1))
 done
@@ -7414,20 +7660,28 @@ stack_probe() {
     . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
     RUN_DIR="'"$WORK"'/stack"
     rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
-    for i in 1 2 3 4 5 6 7 8; do cc_notify_stack_admit "K$i" >/dev/null; done
-    cc_notify_stack_admit K9 || printf "K9=overflow\n"
+    # THE CAP IS READ FROM THE EMITTER, NOT RE-TYPED: a literal eight here
+    # tests whatever the constant used to be.
+    cap="${CC_NOTIFY_STACK_CAP:?CC_NOTIFY_STACK_CAP 가 notify-run.sh 에 없다}"
+    printf "cap=%s\n" "$cap"
+    i=1; while [ "$i" -le "$cap" ]; do cc_notify_stack_admit "K$i" >/dev/null; i=$((i + 1)); done
+    cc_notify_stack_admit "K$((cap + 1))" || printf "first-over=overflow\n"
     cc_notify_stack_release K3
-    cc_notify_stack_admit K10 || printf "K10=overflow\n"
+    cc_notify_stack_admit "K$((cap + 2))" || printf "after-release=overflow\n"
     cc_notify_stack_release 없는키 && printf "absent-key-ok\n"
   '
 }
 _sp=$(stack_probe)
 case "$_sp" in
-  *"K9=overflow"*) ok "상한 여덟 — 아홉째는 넘침 자리로 간다" ;;
+  *"cap="[1-9]*) ok "쌓기 상한을 상수에서 읽는다 ($(printf '%s\n' "$_sp" | sed -n 's/^cap=//p'))" ;;
+  *) bad "쌓기 상한 상수" "$_sp" ;;
+esac
+case "$_sp" in
+  *"first-over=overflow"*) ok "상한까지 채운 뒤의 다음 항목은 넘침 자리로 간다" ;;
   *) bad "쌓기 상한" "$_sp" ;;
 esac
 case "$_sp" in
-  *"K10=overflow"*) bad "슬롯 회수" "회수 뒤에도 다음 항목이 넘쳤다 — 상한이 여전히 평생이다: $_sp" ;;
+  *"after-release=overflow"*) bad "슬롯 회수" "회수 뒤에도 다음 항목이 넘쳤다 — 상한이 여전히 평생이다: $_sp" ;;
   *) ok "슬롯을 회수하면 다음 항목이 개별 자리를 받는다" ;;
 esac
 case "$_sp" in
@@ -7442,6 +7696,9 @@ esac
 # slot — appears hours later and nowhere near the cause. Behaviourally reaching
 # `무효` and `거부` needs a transcript the fixture does not have, so the three
 # are pinned where `site_fires` above pins the firing table.
+# THE THREE RELEASE LINES LIVE ONCE, in `gate_close_settle`, and each terminal
+# of `gate_close` reaches them by calling it — so the pin is in two halves: the
+# helper holds the release, and each terminal's append is followed by the call.
 site_releases() {
   # site_releases <anchor-fixed-string> <lines-after>
   local ln
@@ -7449,12 +7706,23 @@ site_releases() {
   if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
   sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'cc_notify_stack_release' || true
 }
-check "승인 닫기 — 무효 종단이 슬롯을 회수한다" \
-  "$( [ "$(site_releases "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
-check "승인 닫기 — 거부 종단이 슬롯을 회수한다" \
-  "$( [ "$(site_releases "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
-check "승인 닫기 — 승인 종단이 슬롯을 회수한다" \
-  "$( [ "$(site_releases "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+site_settles() {
+  # site_settles <anchor-fixed-string> <lines-after> — the terminal calls the helper
+  local ln
+  ln=$(grep -nF "$1" "$GATE" | sed -n '1p' | cut -d: -f1)
+  if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
+  sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'gate_close_settle "$id"' || true
+}
+check "승인 닫기 — 종단 도우미가 슬롯을 회수한다" \
+  "$( [ "$(site_releases "gate_close_settle() {" 20)" != "0" ] && printf 'releases' || printf 'holds')" "releases"
+check "승인 닫기 — 무효 종단이 도우미를 부른다" \
+  "$( [ "$(site_settles "\"상태=무효\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+check "승인 닫기 — 거부 종단이 도우미를 부른다" \
+  "$( [ "$(site_settles "\"상태=거부\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+check "승인 닫기 — 승인 종단이 도우미를 부른다" \
+  "$( [ "$(site_settles "\"상태=승인\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
+check "승인 닫기 — 판단 라벨 종단이 도우미를 부른다" \
+  "$( [ "$(site_settles "\"상태=\$label\" \"질문 문면=\$q\"" 4)" != "0" ] && printf 'settles' || printf 'holds')" "settles"
 
 # --- AND ALL THREE TAKE THE BANNER OFF THE SCREEN ---------------------------
 #
@@ -7470,12 +7738,8 @@ site_clears() {
   if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
   sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cF 'cc_notify_clear' || true
 }
-check "승인 닫기 — 무효 종단이 배너를 지운다" \
-  "$( [ "$(site_clears "\"상태=무효\" \"질문 문면=\$q\"" 20)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
-check "승인 닫기 — 거부 종단이 배너를 지운다" \
-  "$( [ "$(site_clears "\"상태=거부\" \"질문 문면=\$q\"" 5)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
-check "승인 닫기 — 승인 종단이 배너를 지운다" \
-  "$( [ "$(site_clears "\"상태=승인\" \"질문 문면=\$q\"" 5)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
+check "승인 닫기 — 종단 도우미가 배너를 지운다 (네 종단이 그것을 부른다는 것은 위에서 핀)" \
+  "$( [ "$(site_clears "gate_close_settle() {" 20)" != "0" ] && printf 'clears' || printf 'keeps')" "clears"
 
 # --- THE SEAT GUARD ON CLEARING, DRIVEN IN BOTH DIRECTIONS ------------------
 #
@@ -7606,24 +7870,34 @@ overflow_demotion_probe() {
   CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
   CC_GATE_SOURCE_ONLY=1 \
     bash -c '. "$1"; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RTDEM
-             for i in 1 2 3 4 5 6 7 8; do cc_notify_fire answer "질문 $i" "OVD$i"; done
+             i=1; while [ "$i" -le "$CC_NOTIFY_STACK_CAP" ]; do cc_notify_fire answer "질문 $i" "OVD$i"; i=$((i + 1)); done
              cc_notify_fire hands "세그먼트 SD1 이 park 되었습니다" "park-SD1#1"
              gate_notify_overflow_settled; wait' \
     _ "$GATE" "$WORK/ovfd" "$1" >/dev/null 2>&1
 }
+# The cap is read from the emitter here too, so the fixture ledger holds exactly
+# as many answered approvals as there are seats.
+NOTIFY_CAP_UNDER_TEST=$(sed -n 's/^CC_NOTIFY_STACK_CAP=\([0-9][0-9]*\)$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh")
+if [ -n "$NOTIFY_CAP_UNDER_TEST" ]; then
+  ok "CC_NOTIFY_STACK_CAP 를 방출기 상수에서 읽는다 ($NOTIFY_CAP_UNDER_TEST)"
+else
+  bad "CC_NOTIFY_STACK_CAP" "notify-run.sh 에서 상수를 읽지 못했다"; NOTIFY_CAP_UNDER_TEST=8
+fi
 : > "$WORK/ovfd-settled.md"
-for i in 1 2 3 4 5 6 7 8; do
+i=1
+while [ "$i" -le "$NOTIFY_CAP_UNDER_TEST" ]; do
   printf -- '- `승인` | 승인 id=OVD%s | 상태=대기 | 절단점=커밋 | prev=x\n' "$i" >> "$WORK/ovfd-settled.md"
   printf -- '- `승인` | 승인 id=OVD%s | 상태=승인 | 해소 시각=x | prev=y\n' "$i" >> "$WORK/ovfd-settled.md"
+  i=$((i + 1))
 done
 
 overflow_demotion_probe "$WORK/ovfd-settled.md" present
-check "대조군 — 아홉째 발사가 실제로 강등된다" \
+check "대조군 — 상한 다음 발사가 실제로 강등된다" \
   "$(grep -c . "$WORK/ovfd/notify.overflow" || true)" "1"
 check "대조군 — 강등된 것이 그 멈춤 키다" \
   "$(grep -cxF 'park-SD1#1' "$WORK/ovfd/notify.overflow" || true)" "1"
-check "대조군 — 여덟 자리는 개별로 차 있다" \
-  "$(grep -c . "$WORK/ovfd/notify.stack" || true)" "8"
+check "대조군 — 상한만큼의 자리가 개별로 차 있다" \
+  "$(grep -c . "$WORK/ovfd/notify.stack" || true)" "$NOTIFY_CAP_UNDER_TEST"
 check "대조군 — 강등된 멈춤이 대기 슬롯 배너를 올린다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-RTDEM-대기' "$NOTIFY_LOG" || true)" "1"
 check "승인이 전부 닫혀도 살아 있는 멈춤이 남으면 대기 배너를 지우지 않는다" \
@@ -7649,12 +7923,17 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 #
 # ADJACENCY IS PINNED WITH THE COUNT, so relocating a call out of its terminal is
 # caught as well as deleting it: the individual clear and this one are one act in
-# two lines, and the second is only correct where the first is.
-check "넘침 정리가 승인 닫기 세 종단에 전부 배선돼 있다" \
-  "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "3"
-check "그 셋이 각각 개별 배너 지우기 바로 뒤에 붙어 있다" \
-  "$( { grep -A1 -F 'cc_notify_clear answer "$id" || true' "$GATE" || true; } \
-      | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "3"
+# two lines, and the second is only correct where the first is. The three lines
+# now live ONCE, in `gate_close_settle`, and every terminal of `gate_close` —
+# the act/boundary `무효`·`거부`·`승인` arms and the judgment label arm — calls
+# it; so the pin is the helper's own adjacency plus the count of its call sites.
+check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
+  "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
+check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
+  "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
+      | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
+check "닫기 함수의 네 종단이 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "4"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
