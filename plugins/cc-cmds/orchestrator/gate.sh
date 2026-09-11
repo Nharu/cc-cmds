@@ -1614,6 +1614,12 @@ gate_snapshot() {
   gate_snapshot_handoff_json
   printf '  ],\n'
 
+  # THE LOST-DISPATCH ALARM, and it is in the snapshot rather than only in the
+  # render because the router reads the object and is judged on doing so. A key
+  # that exists in the output and nowhere in the contract is a key nothing looks
+  # for; this one names the failure whose whole cost was that no layer said it.
+  printf '  "orphan_stages": [%s],\n' \
+    "$( { cc_orphan_stages "$RUN_DIR" || true; } | sed 's/.*/"&"/' | paste -sd, - )"
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
@@ -1836,7 +1842,7 @@ gate_render_snapshot() {
   # closed, so it reaches nobody; the render did not carry a live-stage count,
   # a ledger age, or the run's own terminal state. Answering it needed the row
   # grammar and a manual pid comparison.
-  local n_live now_s led_s hb_s done_line
+  local n_live now_s led_s hb_s done_line orphans
   # Counting pid FILES reported stages that were not there: measured 21 files
   # against 5 live processes, and a render claiming "진행 중" for a run whose
   # recorded pid was dead. The shared predicate tests the process.
@@ -1845,6 +1851,12 @@ gate_render_snapshot() {
   led_s=$(gate_mtime "$LEDGER")
   hb_s=$(gate_mtime "$RUN_DIR/watch.heartbeat")
   printf '살아 있는 스테이지: %s개\n' "$n_live"
+  # Rendered only when there is one. A line that reads "0" every night is a line
+  # nobody sees on the night it reads 1, and unlike the pending-approval count
+  # this one has no second reading to preserve — no orphan is no line.
+  orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
+  [ -n "$orphans" ] && \
+    printf '잃어버린 파견: %s — 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았습니다\n' "$orphans"
   if [ -n "$led_s" ]; then printf '원장 갱신 : %s초 전\n' "$((now_s - led_s))"
   else                     printf '원장 갱신 : (없음)\n'; fi
   if [ -n "$hb_s" ]; then printf '감시자    : %s초 전 하트비트\n' "$((now_s - hb_s))"

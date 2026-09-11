@@ -3518,5 +3518,1492 @@ fi
 check "재시도 스폰은 갈래당 1회 (전체 2회)" \
   "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
 
+# ---------------------------------------------------------------------------
+# 22. 레인 지속화 — 4단 리졸버, 런 상태 프로브, 형제 레인 훅 구멍
+#
+# 세 표면이 한 절에 있는 이유는 셋이 한 성질의 세 면이기 때문이다: 한 런이 어느
+# 레인을 쓰는가를 (a) 결정하고 (b) 밖에서 읽을 수 있게 하고 (c) 다른 레인을
+# 건드리지 못하게 한다. 어느 하나만 서면 나머지 둘이 조용히 무의미해진다.
+# ---------------------------------------------------------------------------
+LD="$WORK/lane"
+mkdir -p "$LD/env" "$LD/rundir" "$LD/norun" "$LD/home/.claude" \
+         "$LD/xdg/cc-cmds" "$LD/xdgempty" "$LD/xdgbad/cc-cmds" \
+         "$LD/runrec" "$LD/homerec"
+printf '%s\n' "$LD/runrec"  > "$LD/rundir/config-dir"
+printf '%s\n' "$LD/homerec" > "$LD/xdg/cc-cmds/config-dir"
+
+# --- T1~T4: 네 단이 각각 선택된다 -----------------------------------------
+v=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T1 리졸버 1단: 환경변수가 아래 세 단을 모두 이긴다" "$v" "$LD/env"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )
+check "T2 리졸버 2단: 런 디렉터리의 config-dir" "$v" "$LD/runrec"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )
+check "T3 리졸버 3단: 홈 아래 설정 파일" "$v" "$LD/homerec"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
+check "T4 리졸버 4단: 기본값" "$v" "$LD/home/.claude"
+
+# --- T5: 3단은 폴백하지 않는다 ---------------------------------------------
+# 기대값의 절반은 「비영으로 끝난다」가 아니라 「4단의 기본값을 내지 않는다」이다.
+# 폴백하면 운영자가 의도적으로 보낸 런이 조용히 반대 레인의 할당량을 쓴다.
+: > "$LD/notadir"
+printf '%s\n' "$LD/notadir" > "$LD/xdgbad/cc-cmds/config-dir"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgbad" resolve_account 2>/dev/null )
+rc=$?
+check "T5 3단 fail-closed: 비영으로 끝난다" "$rc" "1"
+check "T5 3단 fail-closed: 4단의 기본값을 내지 않는다" "$v" ""
+
+# --- T6: 2단도 폴백하지 않는다 ---------------------------------------------
+# 2단의 값이 깨졌을 때 폴백하면 같은 런의 스테이지들이 서로 다른 레인에 앉는데,
+# 그것이 정확히 2단을 둔 이유이므로 여기서 폴백하는 것은 기전의 자기 부정이다.
+mkdir -p "$LD/rundirbad"
+printf '%s\n' "$LD/notadir" > "$LD/rundirbad/config-dir"
+v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirbad" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>/dev/null )
+rc=$?
+check "T6 2단 fail-closed: 비영으로 끝난다" "$rc" "1"
+check "T6 2단 fail-closed: 3·4단으로 내려가지 않는다" "$v" ""
+
+# --- T7: 환경변수 경로는 변경 전과 바이트 동일 -----------------------------
+# 기대 문자열을 손으로 적지 않고 변경 전 구현을 그 자리에서 다시 유도한다.
+# 하드코딩한 기대값은 두 구현이 함께 틀려도 통과한다.
+want=$(CLAUDE_CONFIG_DIR="$LD/env" HOME="$LD/home" \
+       /usr/bin/env sh -c 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"')
+got=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7 1단의 반환값이 변경 전 구현과 바이트 동일" "$got" "$want"
+
+# --- T7b: init 이 쓰는 값이 init 이 읽는 술어를 만족한다 --------------------
+# 이것을 **왕복**으로 재지 않으면 잡히지 않는다. 4단은 `$HOME/.claude` 를 검증 없이
+# 내고 `rundir_init` 은 그것을 그대로 영속화하는데, 같은 함수가 다음 진입에서 그
+# 기록에 `[ -d ]` 를 요구했다. 그래서 1회차는 rc=0 으로 조용히 성공하고 2회차부터
+# 죽는다 — 운영자가 보는 증상은 「설치 실패」가 아니라 「한 번 됐던 런이 다음부터
+# 안 됨」이고, 기록이 `XDG_STATE_HOME` 아래라 재부팅으로도 사라지지 않는다.
+#
+# 발화 조건은 `CLAUDE_CONFIG_DIR` 도 3단 기록도 `$HOME/.claude` 도 없는 호스트이며,
+# 새 설치·컨테이너·서비스 계정·CI 러너가 정확히 그 집합이다. 위 `$LD` 픽스처는
+# `$LD/home/.claude` 를 **항상** 미리 만들어 이 조건 자체를 배제하고 있었고, 그래서
+# 로컬 초록과 CI 빨강이 동시에 참이 됐다. 기존 픽스처를 고치는 대신 이 조건을 갖는
+# 픽스처를 새로 세운다 — 기존 것을 바꾸면 그것이 지키던 단언들이 함께 움직인다.
+RTH="$WORK/rt-home"; mkdir -p "$RTH"                     # `.claude` 를 만들지 않는다
+RTS="$WORK/rt-state"; mkdir -p "$RTS"
+rt_init() (
+  unset CLAUDE_CONFIG_DIR
+  HOME="$RTH" XDG_STATE_HOME="$RTS" XDG_CONFIG_HOME="$WORK/rt-xdg-absent" \
+    RUN_ID=rt-run ORCH_DIR="$script_dir" rundir_init
+)
+rt_init >/dev/null 2>&1; rc=$?
+check "T7b init 1회차는 성공한다" "$rc" "0"
+rt_init >/dev/null 2>&1; rc=$?
+check "T7b init 2회차도 성공한다 (자기가 쓴 기록을 자기가 거부하지 않는다)" "$rc" "0"
+# 두 번 다 rc=0 이면서 기록이 비어 있으면 위 두 단언은 공허하다.
+check "T7b 기록이 실제로 쓰였다" \
+  "$(sed -n '1p' "$RTS/cc-cmds/run/rt-run/config-dir" 2>/dev/null)" "$RTH/.claude"
+check "T7b 기록이 가리키는 디렉터리가 실재한다 (쓰는 값이 읽는 술어를 만족한다)" \
+  "$( [ -d "$RTH/.claude" ] && printf yes || printf no )" "yes"
+t_mode() {
+  # t_mode <경로> — 이 러너에서 통하는 철자로 8진 모드를 낸다. `t_ino` 와 같은
+  # 이유로 두 철자를 쓴다: BSD 와 GNU 의 포맷 플래그가 다르고, 한 철자만 적으면
+  # 다른 쪽에서 에러 없이 엉뚱한 것을 찍는다.
+  local out
+  out=$(stat -f '%Lp' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -f
+  case "$out" in [0-7][0-7][0-7]) printf '%s' "$out"; return 0 ;; esac
+  out=$(stat -c '%a' "$1" 2>/dev/null)    # lint-bash-portability: disable=stat -c
+  case "$out" in [0-7][0-7][0-7]) printf '%s' "$out"; return 0 ;; esac
+  return 1
+}
+# 4단 경로에서 만들어지는 것은 CLI 자신의 디렉터리이고 CLI 는 그것을 0700 으로
+# 만든다. 이 팔이 도는 조건이 곧 「그 디렉터리가 아직 없다」이므로 드라이버가 CLI
+# 보다 먼저 만드는 것이 정상 경로이고, umask 에 좌우되는 0755 는 CLI 가 고르지
+# 않은 넓힘이다. `$RTH/.claude` 는 바로 위 1회차 진입이 만든 것이다.
+check "T7b 새로 만든 레인 디렉터리의 모드가 0700 이다" "$(t_mode "$RTH/.claude")" "700"
+# 음성 대조군. 이미 있는 디렉터리의 모드는 건드리지 않는다 — 운영자가 자기 레인을
+# 0755 로 두고 쓰는 것은 이 기기의 실제 레인 두 곳이 그렇듯 평범한 상태이고,
+# `[ -d ]` 가 참인 가지에서 모드를 바꾸면 그것은 이 수정이 요구한 적 없는 변경이다.
+EXH="$WORK/ex-home"; mkdir -p "$EXH/.claude"; chmod 755 "$EXH/.claude"
+EXS="$WORK/ex-state"; mkdir -p "$EXS"
+( unset CLAUDE_CONFIG_DIR
+  HOME="$EXH" XDG_STATE_HOME="$EXS" XDG_CONFIG_HOME="$WORK/ex-xdg-absent" \
+    RUN_ID=ex-run ORCH_DIR="$script_dir" rundir_init ) >/dev/null 2>&1
+check "T7b 음성 대조군: 이미 있는 레인 디렉터리의 모드는 그대로다" \
+  "$(t_mode "$EXH/.claude")" "755"
+
+# --- T7d: 값 술어의 나머지 다리 — 절대 경로와 제어 문자 --------------------
+# 읽는 쪽이 **값**에 거는 술어는 셋이다(비어 있지 않음·제어문자 없음·디렉터리).
+# 위 T7b 가 재는 것은 셋째 하나뿐이고, 나머지 둘에서 같은 회귀가 그대로 재현됐다 —
+# 1회차는 조용히 rc=0 이고 이후 진입이 자기 기록에 죽는다. 셋 다 리졸버 1단
+# (`CLAUDE_CONFIG_DIR`)을 통해서만 닿으므로 픽스처도 그 단으로 구동한다.
+#
+# **정지가 1회차로 앞당겨지는 것**이 이 단언들의 요점이다. 오염된 기록이 애초에
+# 영속되지 않으므로 「한 번 됐던 런이 다음부터 안 됨」이라는 증상 자체가 생기지
+# 않는다. 그래서 rc 만이 아니라 기록의 **부재**를 함께 단언한다.
+VT=$(printf '\t')
+VNL='
+'
+vd_init() (
+  # $1 — CLAUDE_CONFIG_DIR 값, $2 — 런 id
+  HOME="$WORK/vd-home" XDG_STATE_HOME="$WORK/vd-state" \
+    XDG_CONFIG_HOME="$WORK/vd-xdg-absent" CLAUDE_CONFIG_DIR="$1" \
+    RUN_ID="$2" ORCH_DIR="$script_dir" rundir_init
+)
+mkdir -p "$WORK/vd-home/.claude" "$WORK/vd-state/cc-cmds/run/vd-rel" \
+         "$WORK/vd-state/cc-cmds/run/vd-tab" "$WORK/vd-state/cc-cmds/run/vd-nl" \
+         "$WORK/vd-state/cc-cmds/run/vd-ok"
+vd_out=$(vd_init "rel-lane" vd-rel 2>&1); rc=$?
+check "T7d 상대 경로 레인은 1회차에서 거부된다" "$rc" "1"
+check "T7d 그리고 그 값이 기록에 영속되지 않는다" \
+  "$( [ -e "$WORK/vd-state/cc-cmds/run/vd-rel/config-dir" ] && printf yes || printf no )" "no"
+case "$vd_out" in
+  *'절대 경로여야 합니다'*) ok "T7d 거부가 절대 경로 팔의 것이다" ;;
+  *) bad "T7d 상대 경로 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $vd_out" ;;
+esac
+# 상대 문자열이 cwd 아래에 디렉터리를 만들어 두지도 않는다. 만들어 두면 그 값이
+# 그 cwd 에서만 해소되는 기록으로 남고, 프로브의 한 줄 계약은 그것을 다른
+# 프로세스·다른 cwd 의 소비자에게 마지막 필드로 발행한다.
+check "T7d 상대 경로 레인 디렉터리가 만들어지지 않는다" \
+  "$( [ -e "rel-lane" ] && printf yes || printf no )" "no"
+vd_out=$(vd_init "$WORK/vd-tab${VT}lane" vd-tab 2>&1); rc=$?
+check "T7d 탭을 담은 레인은 1회차에서 거부된다" "$rc" "1"
+check "T7d 그리고 그 값이 기록에 영속되지 않는다 (탭)" \
+  "$( [ -e "$WORK/vd-state/cc-cmds/run/vd-tab/config-dir" ] && printf yes || printf no )" "no"
+case "$vd_out" in
+  *'제어 문자가 있습니다'*) ok "T7d 탭 거부가 제어 문자 팔의 것이다" ;;
+  *) bad "T7d 탭 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $vd_out" ;;
+esac
+# 개행은 탭의 부분집합이 아니라 별도의 실패 양식이다. 기록을 읽는 쪽의
+# `sed -n '1p'` 이 값을 조용히 절단하므로, 쓰기 쪽에서 막지 않으면 기록이 「쓴 것과
+# 다른 경로」를 지목한 채 판정되고 제어 문자 팔은 서지도 못한다. 절단값이 우연히
+# 실재하는 디렉터리이면 거부조차 나지 않고 런이 잘못된 레인에서 돈다.
+vd_out=$(vd_init "$WORK/vd-nl-lane${VNL}second" vd-nl 2>&1); rc=$?
+check "T7d 개행을 담은 레인은 1회차에서 거부된다" "$rc" "1"
+check "T7d 그리고 그 값이 기록에 영속되지 않는다 (개행)" \
+  "$( [ -e "$WORK/vd-state/cc-cmds/run/vd-nl/config-dir" ] && printf yes || printf no )" "no"
+case "$vd_out" in
+  *'제어 문자가 있습니다'*) ok "T7d 개행 거부도 제어 문자 팔의 것이다 (절단 뒤 「디렉터리 아님」이 아니다)" ;;
+  *) bad "T7d 개행 거부 사유" "절단이 먼저 일어나 다른 팔이 답했다: $vd_out" ;;
+esac
+# 음성 대조군. 이것이 없으면 위 셋의 통과가 「1단을 통째로 거부한다」와 구별되지
+# 않고, 통째 거부는 운영자가 환경변수로 레인을 고르는 지원되는 사용법을 없앤다.
+( vd_init "$WORK/vd-good-lane" vd-ok ) >/dev/null 2>&1; rc=$?
+check "T7d 음성 대조군: 유효한 절대 경로는 1회차에서 통과한다" "$rc" "0"
+check "T7d 음성 대조군: 그리고 그 값이 실제로 기록된다" \
+  "$(sed -n '1p' "$WORK/vd-state/cc-cmds/run/vd-ok/config-dir" 2>/dev/null)" "$WORK/vd-good-lane"
+( vd_init "$WORK/vd-good-lane" vd-ok ) >/dev/null 2>&1; rc=$?
+check "T7d 음성 대조군: 2회차도 자기 기록 위에서 통과한다" "$rc" "0"
+
+# --- T7c: 깨진 기록에서의 정지가 들린다 ------------------------------------
+# 정지한다는 결정 자체는 설계가 요구한 것이라 문제가 아니다. 문제는 그 정지가 아무
+# 내구적 기록도 남기지 않는다는 것이었다 — 무인 런에서 stderr 는 아무도 보지 않으므로,
+# 그 실패는 「시끄럽게 실패하라」가 막으려던 조용한 실패와 관측상 구별되지 않는다.
+BKH="$WORK/bk-home"; mkdir -p "$BKH/.claude"
+BKS="$WORK/bk-state"; mkdir -p "$BKS/cc-cmds/run/bk-run"
+BKREC="$BKS/cc-cmds/run/bk-run/config-dir"
+printf '%s\n' "$WORK/bk-absent-lane" > "$BKREC"
+bk_init() (
+  unset CLAUDE_CONFIG_DIR
+  HOME="$BKH" XDG_STATE_HOME="$BKS" XDG_CONFIG_HOME="$WORK/bk-xdg-absent" \
+    RUN_ID=bk-run ORCH_DIR="$script_dir" BASE="$WORK/bk-base" rundir_init
+)
+bk_out=$(bk_init 2>&1); rc=$?
+check "T7c 깨진 기록에서는 그대로 정지한다" "$rc" "1"
+case "$bk_out" in
+  *"rm \"$BKREC\""*) ok "T7c 거부 문면이 회복 명령을 축자로 싣는다" ;;
+  *) bad "T7c 회복 명령" "거부 문면이 무엇을 지워야 하는지 말하지 않는다" ;;
+esac
+# 그리고 `ledger-path` 가 이미 있으면 그 정지가 원장에 한 행을 남긴다. 이것이 이
+# 잔여를 닫을 수 있는 이유다 — 위 발화 형상에서 1회차 진입은 성공하므로 그 파일이
+# 이미 디스크에 있다.
+BKL="$WORK/bk-ledger.md"; printf '# 원장\n\n## 실행 bk-run\n' > "$BKL"
+printf '%s\n' "$BKL" > "$BKS/cc-cmds/run/bk-run/ledger-path"
+bk_before=$(wc -l < "$BKL" | tr -d ' ')
+bk_init >/dev/null 2>&1; rc=$?
+bk_after=$(wc -l < "$BKL" | tr -d ' ')
+check "T7c ledger-path 가 있어도 정지 자체는 그대로다" "$rc" "1"
+check "T7c 그 정지가 원장에 한 행을 남긴다" "$((bk_after - bk_before))" "1"
+case "$(sed -n '$p' "$BKL")" in
+  *'blocked'*'재개 명령=rm '*) ok "T7c 그 행이 park 이고 회복 명령을 싣는다" ;;
+  *) bad "T7c park 행" "마지막 행이 회복 명령을 실은 blocked 행이 아니다: $(sed -n '$p' "$BKL")" ;;
+esac
+# 음성 대조군. `ledger-path` 가 없으면 적을 원장이 없는 것이고, 그때 없는 파일에
+# 행을 만들어 내면 그것은 park 가 아니라 새 상태의 발명이다.
+rm -f "$BKS/cc-cmds/run/bk-run/ledger-path"
+bk_before=$(wc -l < "$BKL" | tr -d ' ')
+bk_init >/dev/null 2>&1
+bk_after=$(wc -l < "$BKL" | tr -d ' ')
+check "T7c 음성 대조군: ledger-path 가 없으면 원장에 아무 행도 남기지 않는다" \
+  "$((bk_after - bk_before))" "0"
+
+# --- T7e: 그 park 팔의 ledger-path 읽기 실패가 조용하지 않다 ----------------
+# 「읽을 수 없음」을 「없음」으로 접으면 park 가 서지 않고 원장 증가 0 으로 조용히
+# 죽는다 — 이 팔이 존재하는 유일한 목적이 「정지가 내구적 기록을 남기게」인데 그
+# 목적이 무산되고, 무인 런은 아침에 아무것도 못 본다. 이 파일이 `lane_record_read`
+# 를 도입하며 금지한다고 명시적으로 적어 둔 형태이기도 하다.
+#
+# 폴백 자체는 유지된다(적을 원장이 진짜로 없을 수 있다). 재는 것은 그 폴백이
+# **들리는가**이다.
+printf '%s\n' "$BKL" > "$BKS/cc-cmds/run/bk-run/ledger-path"
+chmod 000 "$BKS/cc-cmds/run/bk-run/ledger-path"
+if [ -r "$BKS/cc-cmds/run/bk-run/ledger-path" ]; then
+  # root 로 돌면 mode 000 도 읽히므로 이 픽스처가 재려는 상태가 성립하지 않는다.
+  bad "T7e 픽스처" "mode 000 파일이 읽혀 읽기 실패 상태를 만들지 못했다 (root 로 실행 중인가)"
+else
+  bk_before=$(wc -l < "$BKL" | tr -d ' ')
+  bk_out=$(bk_init 2>&1); rc=$?
+  bk_after=$(wc -l < "$BKL" | tr -d ' ')
+  check "T7e 읽을 수 없는 ledger-path 에서도 정지 자체는 그대로다" "$rc" "1"
+  case "$bk_out" in
+    *'원장 경로 기록을 읽을 수 없습니다'*)
+      ok "T7e 그 읽기 실패가 경고 한 줄로 들린다 (부재로 접히지 않는다)" ;;
+    *) bad "T7e 읽기 실패 경고" "읽을 수 없는 ledger-path 가 없는 것과 같게 조용히 접혔다" ;;
+  esac
+  # 그리고 최악은 여전히 막혀 있다 — 회복 명령은 `lp` 가 무엇이든 나간다.
+  case "$bk_out" in
+    *"rm \"$BKREC\""*) ok "T7e 회복 명령은 원장을 잃어도 그대로 나간다" ;;
+    *) bad "T7e 회복 명령" "읽기 실패 경로에서 거부 문면이 회복 명령을 잃었다" ;;
+  esac
+  # park 는 서지 못한다. 읽지 못한 경로를 원장으로 삼는 것은 park 가 아니라 추측이다.
+  check "T7e park 가 서지 못하므로 원장은 늘지 않는다" "$((bk_after - bk_before))" "0"
+fi
+chmod 644 "$BKS/cc-cmds/run/bk-run/ledger-path"
+rm -f "$BKS/cc-cmds/run/bk-run/ledger-path"
+
+# --- T8: 런당 1회가 아니라 스테이지 디스패치마다 ---------------------------
+# 이 단언은 **계수**한다. 이전 형태는 `stage_spawn` 본문을 `resolve_account`
+# 토큰으로 grep 했는데, 그것은 의무가 이름 붙인 성질 — 런당 1회가 아니라 디스패치
+# 마다 해소된다 — 을 재지 않는다. 실측으로 확정됐다: `stage_spawn` 에 런당 1회
+# 캐싱을 심고 토큰은 본문에 남겨 두면 스위트가 그대로 초록이었고, 반대로 토큰만
+# 지우면 실패했는데 그 실패 메시지가 스스로 「런당 1회로 굳는다」라고 적었다 —
+# 단언이 자기가 탐지하지 못하는 조건의 이름을 부르고 있었던 셈이다.
+#
+# 그래서 리졸버를 계수 스텁으로 갈아 끼우고 디스패치를 두 번 태운다. seam 은
+# `stage_spawn` 이 리졸버를 부른 **직후**에 있는 두 이른 반환이다 — `CLI_BIN` 이
+# 비면 그 자리에서 127 로 돌아오므로, 프로세스를 하나도 띄우지 않고 디스패치
+# 경로를 실제로 가로지른다. 스위트가 `reap_orphan` 감시 스텁에 이미 쓰는 기법이다.
+T8DIR="$WORK/t8"; mkdir -p "$T8DIR/log"
+T8_COUNT="$T8DIR/resolve-calls"; : > "$T8_COUNT"
+T8_RUN_SAVE="$RUN_DIR"; RUN_DIR="$T8DIR"
+T8_CLI_SAVE="${CLI_BIN:-}"; CLI_BIN=""
+# 정의를 **먼저 떠 둔다.** bash 에는 함수 섀도잉이 없어 덮어쓰면 원본이 이
+# 프로세스에서 사라지고, 아래 T8b 와 프로브 절과 훅 절이 전부 진짜 리졸버를
+# 부르므로 복원은 선택이 아니다. 파일에서 다시 읽는 대신 `declare -f` 로 뜨는
+# 이유는 그쪽이 파일의 줄 배치에 기대지 않기 때문이다.
+T8_ORIG=$(declare -f resolve_account)
+resolve_account() { printf 'call\n' >> "$T8_COUNT"; printf '%s' "$LD/env"; }
+stage_spawn "t8-implement-a" "$WORK" "prompt" >/dev/null 2>&1
+stage_spawn "t8-implement-b" "$WORK" "prompt" >/dev/null 2>&1
+check "T8a 리졸버가 디스패치마다 해소된다 (런당 1회로 굳지 않는다)" \
+  "$(grep -c . "$T8_COUNT" || true)" "2"
+eval "$T8_ORIG"
+RUN_DIR="$T8_RUN_SAVE"; CLI_BIN="$T8_CLI_SAVE"
+# 복원됐는지 값으로 확인한다. 스텁이 남아 있으면 아래 T8b 는 두 호출이 같은
+# 스텁 값을 내어 통과하면서 아무것도 검증하지 않는다.
+check "T8a 뒤 진짜 리졸버가 복원됐다 (스텁이 남아 있지 않다)" \
+  "$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )" \
+  "$LD/runrec"
+# 그리고 그 반복 호출이 같은 답을 낸다는 것이 2단의 존재 이유다. 아래 두 호출은
+# 3단의 설정이 서로 다른데, 런 기록이 있으므로 값이 갈리지 않아야 한다.
+v1=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg"      resolve_account )
+v2=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgempty" resolve_account )
+check "T8b 3단이 달라도 런 기록이 있으면 한 런의 스테이지가 갈리지 않는다" "$v1" "$v2"
+
+# --- 런 디렉터리 초기화가 레인과 오케스트레이터를 남긴다 -------------------
+RI_SAVE="$RUN_DIR"; RID_SAVE="$RUN_ID"
+RUN_ID="lane-init"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+RI="$LD/state/cc-cmds/run/lane-init"
+check "rundir_init 이 레인을 기록한다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
+check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(cat "$RI/orchestrator-dir" 2>/dev/null)" "$ORCH_DIR"
+# 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
+printf '%s\n' "$LD/runrec" > "$RI/config-dir"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+check "rundir_init 은 이미 있는 레인 기록을 덮지 않는다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/runrec"
+
+# --- 「읽을 수 없었다」는 「없었다」가 아니다 --------------------------------
+# 두 단은 「기록이 없음」을 파일을 읽을 수 있었는지가 아니라 `sed` 가 낸 값으로
+# 판정했다. 읽을 수 없는 파일은 `sed` 를 실패시키고 `2>/dev/null` 이 사유를 버리므로
+# 값이 비어, 기록이 없었던 것처럼 그 단이 건너뛰어지고 경고 한 줄 없이 기본 레인으로
+# 폴백했다. 읽을 수 없는 기록은 없는 것도 빈 것도 아니라 존재하지만 읽히지 않는
+# 기록이고, 그 폴백은 바로 위 주석이 금지한다고 적은 그것이다.
+mkdir -p "$LD/rundirblind" "$LD/xdgblind/cc-cmds"
+printf '%s\n' "$LD/runrec"  > "$LD/rundirblind/config-dir"
+printf '%s\n' "$LD/homerec" > "$LD/xdgblind/cc-cmds/config-dir"
+chmod 000 "$LD/rundirblind/config-dir" "$LD/xdgblind/cc-cmds/config-dir" 2>/dev/null
+if [ -r "$LD/rundirblind/config-dir" ]; then
+  printf 'NOTE: 읽을 수 없는 기록 분기를 만들 수 없다 (이 사용자는 권한을 무시한다 — root 로 보인다)\n'
+else
+  v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirblind" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>/dev/null )
+  rc=$?
+  check "읽을 수 없는 2단 기록은 비영으로 끝난다" "$rc" "1"
+  check "그리고 기본 레인을 내지 않는다" "$v" ""
+  v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/norun" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdgblind" resolve_account 2>/dev/null )
+  rc=$?
+  check "읽을 수 없는 3단 기록도 같은 처리를 받는다 (한쪽만 고쳐지지 않았다)" "$rc" "1"
+  check "3단도 기본 레인을 내지 않는다" "$v" ""
+  # 사유가 stderr 로 나가는지. 조용한 거부는 무인 런에서 조용한 폴백과 구별되지
+  # 않는다 — 실측된 결함의 절반이 「stderr 에 아무것도 나오지 않았다」였다.
+  errtxt=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirblind" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>&1 >/dev/null )
+  case "$errtxt" in
+    *'읽을 수 없습니다'*) ok "읽을 수 없는 기록의 거부가 사유를 남긴다" ;;
+    *) bad "읽기 실패 사유" "stderr 가 비었거나 다른 사유다: '$errtxt'" ;;
+  esac
+fi
+chmod 644 "$LD/rundirblind/config-dir" "$LD/xdgblind/cc-cmds/config-dir" 2>/dev/null
+# 대조군. 「디렉터리가 아닌 값」은 종전대로 거부돼야 하고(T5·T6 가 재고 있다),
+# 「읽을 수 있고 유효한 값」은 종전대로 통과해야 한다 — 이것이 없으면 위 단언들의
+# 통과가 「2단을 통째로 거부한다」와 구별되지 않는다.
+check "대조군: 읽을 수 있는 유효한 2단 기록은 그대로 통과" \
+  "$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirblind" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account )" \
+  "$LD/runrec"
+
+# --- 제어 문자를 담은 레인 값은 두 단 모두에서 거부된다 ---------------------
+# 이 값은 프로브의 네 필드 계약에서 마지막 필드로 발행되므로, 탭 하나가 필드를
+# 하나 늘리고 개행 하나가 레코드를 통째로 만들어 낸다. 계약 헤더는 이 값이
+# 상류에서 거부된다고 적고 있었는데 어디에서도 거부되지 않았다.
+#
+# 픽스처의 값은 **실재하는 디렉터리**여야 한다. 탭을 담았지만 실재하지 않는 경로를
+# 쓰면 기존 `[ -d "$v" ]` 가 먼저 거부하므로, 제어 문자 검사를 지워도 단언이 통과해
+# 아무것도 재지 못한다 — 실측으로 확인한 자리다.
+TABLANE="$LD/lane$(printf '\t')tabbed"
+mkdir -p "$TABLANE" 2>/dev/null
+if [ -d "$TABLANE" ]; then
+  mkdir -p "$LD/rundirtab"
+  printf '%s\n' "$TABLANE" > "$LD/rundirtab/config-dir"
+  v=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirtab" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>/dev/null )
+  rc=$?
+  check "탭을 담은 2단 기록은 실재하는 디렉터리라도 거부된다" "$rc" "1"
+  check "그리고 기본 레인을 내지 않는다 (탭)" "$v" ""
+  errtxt=$( unset CLAUDE_CONFIG_DIR; RUN_DIR="$LD/rundirtab" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account 2>&1 >/dev/null )
+  case "$errtxt" in
+    *'제어 문자'*) ok "그 거부가 제어 문자 검사의 것이다" ;;
+    *) bad "탭 거부 사유" "다른 검사가 먼저 거부했다 — 위 단언이 공허하다: '$errtxt'" ;;
+  esac
+else
+  printf 'NOTE: 탭을 담은 디렉터리를 만들지 못해 제어 문자 거부를 건너뛴다\n'
+fi
+
+# --- 0바이트 기록은 복구되고, 깨진 기록은 init 에서 런을 세운다 -------------
+# 리다이렉션이 `printf` 전에 파일을 만들고 자르므로 그 순간 죽은 드라이버는
+# 0바이트 기록을 남기는데, `[ ! -f ]` 는 0바이트 파일에 대해 거짓이라 재기동한
+# 드라이버가 복구하지 못했다. 그리고 리졸버가 그 빈 파일을 「없음」으로 읽고
+# 폴백하므로 이후 모든 디스패치가 환경과 머신 설정에서 레인을 다시 결정했다 —
+# 2단을 둔 이유의 정반대다.
+RUN_ID="lane-init"
+: > "$RI/config-dir"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+check "0바이트로 잘린 레인 기록은 재기동한 드라이버가 복구한다" \
+  "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
+# 그리고 그 쓰기가 원자적인지 — 임시 파일이 남지 않는다.
+check "레인 기록 쓰기가 임시 파일을 남기지 않는다" \
+  "$(ls "$RI"/config-dir.tmp.* 2>/dev/null | grep -c . || true)" "0"
+# 실재하지 않는 디렉터리를 가리키는 기록 위에서는 init 이 실패해야 한다. 종전에는
+# rc=0 으로 성공하고 `started-at`·EXIT 트랩·`check_grant`·`ledger_init`·
+# `notify_probe` 가 모두 돈 뒤 첫 디스패치에서 죽었다.
+printf '%s\n' "$LD/absent-lane" > "$RI/config-dir"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+rc=$?
+if [ "$rc" != "0" ]; then
+  ok "깨진 레인 기록 위에서는 init 이 런을 세운다 (첫 디스패치까지 끌고 가지 않는다)"
+else
+  bad "init 검증" "실재하지 않는 디렉터리를 가리키는 기록 위에서 rundir_init 이 성공했다"
+fi
+# 음성 대조군: 유효한 기록 위에서는 init 이 그대로 성공하고 값을 유지한다.
+printf '%s\n' "$LD/runrec" > "$RI/config-dir"
+( unset CLAUDE_CONFIG_DIR
+  XDG_STATE_HOME="$LD/state" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" rundir_init ) >/dev/null 2>&1
+rc=$?
+check "음성 대조군: 유효한 기록 위에서 init 은 그대로 성공한다" "$rc" "0"
+check "음성 대조군: 그 값도 그대로다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/runrec"
+RUN_DIR="$RI_SAVE"; RUN_ID="$RID_SAVE"
+
+# --- T9~T12: 프로브 ---------------------------------------------------------
+PROBE="$script_dir/lane-probe.sh"
+if [ -x "$PROBE" ]; then ok "프로브에 실행 비트가 있다"; else bad "프로브" "실행 비트가 없다: $PROBE"; fi
+if env -i PATH="$SANITIZED_PATH" /usr/bin/env bash -n "$PROBE" 2>/dev/null; then
+  ok "정제 PATH가 고르는 인터프리터에서 프로브가 파싱된다"
+else
+  bad "프로브 파싱" "bash -n 실패 — bash 4 전용 문법이 섞였을 수 있음"
+fi
+
+FR="$WORK/probe-root"
+mkdir -p "$FR/cc-cmds/run/R-live" "$FR/cc-cmds/run/R-dead" "$FR/cc-cmds/run/R-odd" \
+         "$FR/cc-cmds/run/R-spawning" "$FR/cc-cmds/run/R-watcher" \
+         "$FR/cc-cmds/run/R-spacey"
+# 살아 있는 스테이지: 기록된 pid 가 살아 있고 시작시각 지문이 일치해야 한다.
+# 지문은 드라이버가 쓰는 것과 같은 형태로 만든다 — 다른 형태로 만들면 이 픽스처가
+# 검증하는 것은 오라클이 아니라 이 하네스 자신이 된다.
+sleep 45 &
+LIVE_PID=$!
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-live/S1.pid"
+ps -o lstart= -p "$LIVE_PID" 2>/dev/null \
+  | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FR/cc-cmds/run/R-live/S1.start"
+printf '%s\n' "$LD/runrec" > "$FR/cc-cmds/run/R-live/config-dir"
+# 죽은 pid: 형상은 인식되므로 판정 불가가 아니라 「아님」이다. 지문 파일은 비워 두지
+# 않고 그럴듯한 값으로 채운다 — 비워 두면 「pid 가 죽었다」와 「지문이 비어 있다」는
+# 두 독립 원인이 같은 기대값을 내고, 그러면 이 픽스처는 어느 쪽도 고정하지 못한다.
+printf '999999\n' > "$FR/cc-cmds/run/R-dead/S1.pid"
+printf '%s\n' 'Mon Jan 1 00:00:00 2001' > "$FR/cc-cmds/run/R-dead/S1.start"
+# 인식되지 않는 형상: pid 파일이 비어 있다. 스포너의 리다이렉션이 쓰기 전에 파일을
+# 만들기 때문에 실재하는 창이고, 여기서 0 을 세면 그 답이 스왑을 인가한다.
+: > "$FR/cc-cmds/run/R-odd/S1.pid"
+# 막 뜬 스테이지: 살아 있는 pid 가 기록됐는데 형제 지문이 아직 없다. 두 스포너가
+# 이 파일들을 반대 순서로 쓰기 때문에 실재하는 창이며, 센서스는 형제 없는 pid 를
+# 세지 않으므로 0 이 나온다 — 형태 검사가 이것을 통과시키면 그 0 이 「아님」으로
+# 발행되고, 그 값이 스왑을 인가한다.
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-spawning/S1.pid"
+# 그리고 그 대조군. 같은 살아 있는 pid 를 워처의 이름으로 기록한다 — 워처는 형제
+# 지문을 원래 남기지 않으므로 이쪽은 「아님 0」이어야 한다. 이 둘이 함께 있어야
+# 위 픽스처의 통과가 「형제 없는 pid 는 전부 판정 불가」와 구별되고, 그 해석은
+# 온디스크의 워처 전용 디렉터리를 영구히 판정 불가로 만든다.
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-watcher/watch.pid"
+# 공백을 담은 레인 경로. macOS 에서 `Library/Application Support` 아래 레인은 이상한
+# 설정이 아니고, 마지막 필드가 무경계라는 사실 자체가 계약이 깨지는 넓은 쪽이다 —
+# 이 픽스처가 없으면 아래 필드 수 단언이 오늘의 픽스처에서 우연히 통과한다.
+printf '%s\n' "$LD/lane with space" > "$FR/cc-cmds/run/R-spacey/config-dir"
+# 형상 검사가 센서스와 **같은 것**을 요구하는가. 센서스는 형제 핸들이 비어 있지
+# 않을 것을 요구하는데 형상 검사는 존재만 보았고, 그래서 빈 `.start` 가 통과해
+# 센서스의 `.pgid` 폴백으로 떨어졌다 — 게이트는 `.pgid` 를 아예 쓰지 않으므로
+# 센서스가 0 을 내고 프로브가 `아님` 을 찍었다. 살아 있는 스테이지 위에서 스왑을
+# 인가하는 값이다. 빈 `.start` 는 좁은 경주가 아니다: 게이트 스포너의 `.start` 는
+# `ps | sed` 파이프라인의 리다이렉션 대상이라 셸이 `ps` 보다 먼저 파일을 만들고
+# 잘라 내며, `ps` 가 아무것도 내지 않으면 그 상태가 스테이지 수명 내내 지속된다.
+mkdir -p "$FR/cc-cmds/run/R-emptystart" "$FR/cc-cmds/run/R-emptypgid"
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-emptystart/S1.pid"
+: > "$FR/cc-cmds/run/R-emptystart/S1.start"
+# 그리고 합집합이 필요한 이유를 고정하는 대조군. 빈 `.start` 옆에 유효한 `.pgid`
+# 가 있으면 센서스는 살아 있다고 답하므로, 형상 검사를 `[ -s .start ]` 단독으로
+# 고치면 드라이버가 남긴 `.pgid` 계열 디렉터리가 새로 판정 불가로 뒤집힌다.
+printf '%s\n' "$LIVE_PID" > "$FR/cc-cmds/run/R-emptypgid/S1.pid"
+: > "$FR/cc-cmds/run/R-emptypgid/S1.start"
+ps -o pgid= -p "$LIVE_PID" 2>/dev/null | tr -d '[:space:]' > "$FR/cc-cmds/run/R-emptypgid/S1.pgid"
+# 레코드 위조. 디렉터리 이름은 이 프로그램이 만드는 것이 아니라 정리되지 않는 공유
+# 루트에서 열거한 값이고, 탭은 필드를 하나 늘리고 개행은 **레코드를 통째로 만들어
+# 낸다** — 심어 둔 디렉터리 하나가 존재하지 않는 run id 에 대해 문법적으로 완전한
+# 줄을 exit 0 으로 배달한다. 소비자는 레포 밖 스왑 스케줄러이고, 위조된 줄은
+# 문법적으로 완전하므로 더 조심스럽게 파싱해도 걸러지지 않는다.
+# 레인 필드 쪽의 같은 벡터. 프로브는 `config-dir` 을 `[ -d ]` 없이 읽어 마지막
+# 필드로 발행하므로, 리졸버가 거부하는 값이라도 이 경로로는 그대로 나갔다 —
+# 상류 거부만으로는 닫히지 않는 자리이고, 그래서 발행 지점에도 검사가 필요하다.
+mkdir -p "$FR/cc-cmds/run/R-tablane"
+printf '%s\n' "$LD/lane$(printf '\t')tabbed" > "$FR/cc-cmds/run/R-tablane/config-dir"
+FORGE_TAB=$(printf 'R\tTABBED')
+FORGE_NL=$(printf 'R-x\n20260101-victimrun\t아님\t0\t%s' "$LD/attacker-lane")
+mkdir -p "$FR/cc-cmds/run/$FORGE_TAB" "$FR/cc-cmds/run/$FORGE_NL" 2>/dev/null
+FORGE_OK=0
+{ [ -d "$FR/cc-cmds/run/$FORGE_TAB" ] && [ -d "$FR/cc-cmds/run/$FORGE_NL" ]; } && FORGE_OK=1
+
+probe_out=$(XDG_STATE_HOME="$FR" bash "$PROBE" 2>/dev/null)
+probe_rc=$?
+check "T9 프로브 정상 종료" "$probe_rc" "0"
+if [ "$FORGE_OK" = "1" ]; then
+  check "T9 런 11개에 열한 줄" "$(printf '%s\n' "$probe_out" | grep -c .)" "11"
+else
+  printf 'NOTE: 제어 문자를 담은 디렉터리를 만들지 못해 위조 픽스처를 건너뛴다\n'
+  check "T9 런 9개에 아홉 줄" "$(printf '%s\n' "$probe_out" | grep -c .)" "9"
+fi
+# 추출도 탭으로 한다. 첫 공백까지를 떼어 내던 이전 형태는 상태 토큰의 공백에서도
+# 레인 경로의 공백에서도 성립하지 않았고, 기대값을 서로 다른 필드 수로 나란히
+# 박아 둔 채 한 번도 비교하지 않았다.
+TAB=$(printf '\t')
+probe_field() {
+  # probe_field <run-id> — 그 런의 줄에서 run-id 를 뗀 나머지를 탭 그대로 낸다.
+  printf '%s\n' "$probe_out" | awk -F'\t' -v r="$1" '$1==r{print $2 FS $3 FS $4}'
+}
+check "T9 살아 있는 런은 도는중 / 스테이지 1 / 기록된 레인" \
+  "$(probe_field R-live)" "도는중${TAB}1${TAB}$LD/runrec"
+check "T9 죽은 pid 의 런은 아님 / 0 / 미기록" \
+  "$(probe_field R-dead)" "아님${TAB}0${TAB}(미기록)"
+check "T10 인식되지 않는 형상은 판정 불가이고 개수를 세지 않는다" \
+  "$(probe_field R-odd)" "판정 불가${TAB}?${TAB}(미기록)"
+check "T10 형제 지문이 없는 살아 있는 pid 는 판정 불가다 (아님이 아니다)" \
+  "$(probe_field R-spawning)" "판정 불가${TAB}?${TAB}(미기록)"
+check "T10 대조군: 같은 모양이라도 워처 pid 는 아님 0 이다" \
+  "$(probe_field R-watcher)" "아님${TAB}0${TAB}(미기록)"
+check "T9 공백을 담은 레인 경로도 마지막 한 필드로 남는다" \
+  "$(probe_field R-spacey)" "아님${TAB}0${TAB}$LD/lane with space"
+check "빈 형제 핸들은 판정 불가다 (살아 있는 스테이지를 아님 0 으로 부르지 않는다)" \
+  "$(probe_field R-emptystart)" "판정 불가${TAB}?${TAB}(미기록)"
+check "대조군: 빈 .start 옆에 유효한 .pgid 가 있으면 도는중이다" \
+  "$(probe_field R-emptypgid)" "도는중${TAB}1${TAB}(미기록)"
+check "탭을 담은 레인 값은 발행 지점에서 고정 리터럴로 대체된다" \
+  "$(probe_field R-tablane)" "아님${TAB}0${TAB}(비정규 레인)"
+if [ "$FORGE_OK" = "1" ]; then
+  # 세 단언이다 — (a) 두 위조 이름이 고정 리터럴로 나오고, (b) 위조된 바이트가
+  # 출력 어디에도 나타나지 않으며, (c) 존재하지 않는 run id 의 줄이 배달되지 않는다.
+  check "제어 문자를 담은 디렉터리 이름은 고정 리터럴로 발행된다" \
+    "$(printf '%s\n' "$probe_out" | awk -F'\t' '$1=="(비정규 이름)"' | grep -c . || true)" "2"
+  check "위조된 run id 바이트가 출력에 나타나지 않는다" \
+    "$(printf '%s\n' "$probe_out" | grep -c 'victimrun' || true)" "0"
+  check "위조된 레인 경로도 출력에 나타나지 않는다" \
+    "$(printf '%s\n' "$probe_out" | grep -c 'attacker-lane' || true)" "0"
+fi
+# 그리고 철자와 독립적으로 필드 수 자체를 잰다. 기본 FS 로 재면 공백을 담은 레인
+# 에서 이 단언 자신이 거짓 실패를 낸다 — 계약이 탭이므로 재는 것도 탭이어야 한다.
+check "프로브의 모든 줄이 네 필드다" \
+  "$(printf '%s\n' "$probe_out" | awk -F'\t' 'NF!=4' | grep -c . || true)" "0"
+
+# 부분 설치본: 의존 소싱 실패는 「런 없음」이 아니라 열거 실패다. 프로브는 언제나
+# 완전한 설치본 옆에서만 돌았다. 소싱 실패를 확인하지 않으면 `cc_live_stages` 가
+# 미정의인 채로 센서스에 도달해 빈 문자열을 내고, 그 값이 `아님 0` 으로 발행되며
+# 종료 코드는 0 으로 나간다 — 살아 있는 런 위에서 스왑을 인가하는 답이다. 위
+# 픽스처가 아직 살아 있는 동안 재야 그 답이 실제로 위험한 답인지가 드러난다.
+PP="$WORK/probe-partial"; mkdir -p "$PP"
+cp "$PROBE" "$script_dir/run.sh" "$PP/" 2>/dev/null
+part_out=$(XDG_STATE_HOME="$FR" bash "$PP/lane-probe.sh" 2>/dev/null); part_rc=$?
+check "liveness.sh 가 없는 설치본은 열거 실패로 끝난다" "$part_rc" "3"
+check "그리고 아무것도 출력하지 않는다 (살아 있는 런을 아님 0 으로 부르지 않는다)" \
+  "$part_out" ""
+PP2="$WORK/probe-partial2"; mkdir -p "$PP2"
+cp "$PROBE" "$script_dir/liveness.sh" "$PP2/" 2>/dev/null
+part2_out=$(XDG_STATE_HOME="$FR" bash "$PP2/lane-probe.sh" 2>/dev/null); part2_rc=$?
+check "run.sh 가 없는 설치본도 같은 형태로 열거 실패다" "$part2_rc" "3"
+check "그리고 아무것도 출력하지 않는다" "$part2_out" ""
+
+kill "$LIVE_PID" 2>/dev/null
+wait "$LIVE_PID" 2>/dev/null
+
+# T11 — 런 0개의 정상 종료와 열거 실패는 **출력이 같고 종료 코드만 다르다**.
+EMPTY="$WORK/probe-empty"; mkdir -p "$EMPTY/cc-cmds/run"
+zero_out=$(XDG_STATE_HOME="$EMPTY" bash "$PROBE" 2>/dev/null); zero_rc=$?
+check "T11 런 0개: 출력 없음" "$zero_out" ""
+check "T11 런 0개: 정상 종료" "$zero_rc" "0"
+MISSING="$WORK/probe-missing"; mkdir -p "$MISSING"
+miss_out=$(XDG_STATE_HOME="$MISSING" bash "$PROBE" 2>/dev/null); miss_rc=$?
+check "T11 런 루트 부재는 미지가 아니라 런 0개다" "$miss_rc" "0"
+check "T11 런 루트 부재: 출력 없음" "$miss_out" ""
+BLIND="$WORK/probe-blind"; mkdir -p "$BLIND/cc-cmds/run/R1"
+chmod 000 "$BLIND/cc-cmds/run" 2>/dev/null
+if [ -r "$BLIND/cc-cmds/run" ]; then
+  printf 'NOTE: 열거 실패 분기를 만들 수 없다 (이 사용자는 권한을 무시한다 — root 로 보인다)\n'
+else
+  blind_out=$(XDG_STATE_HOME="$BLIND" bash "$PROBE" 2>/dev/null); blind_rc=$?
+  check "T10 열거 실패: 판정 불가 코드" "$blind_rc" "3"
+  check "T10 열거 실패: 아무것도 출력하지 않는다" "$blind_out" ""
+  if [ "$blind_out" = "$zero_out" ] && [ "$blind_rc" != "$zero_rc" ]; then
+    ok "T11 런 0개와 열거 실패는 출력이 같고 종료 코드만으로 갈린다"
+  else
+    bad "T11 구별" "출력 '$blind_out' vs '$zero_out', 코드 $blind_rc vs $zero_rc"
+  fi
+fi
+chmod 755 "$BLIND/cc-cmds/run" 2>/dev/null
+
+# T12 — `--resolve` 는 런이 하나도 없을 때의 답이다.
+res_out=$(XDG_STATE_HOME="$EMPTY" CLAUDE_CONFIG_DIR="$LD/env" bash "$PROBE" --resolve 2>/dev/null)
+res_rc=$?
+check "T12 --resolve 종료 0" "$res_rc" "0"
+check "T12 --resolve 가 리졸버 결과 한 줄을 낸다" "$res_out" "$LD/env"
+res_out=$(env -u CLAUDE_CONFIG_DIR PATH="$PATH" HOME="$LD/home" \
+            XDG_STATE_HOME="$EMPTY" XDG_CONFIG_HOME="$LD/xdg" bash "$PROBE" --resolve 2>/dev/null)
+check "T12 환경변수가 없으면 아래 단이 답한다" "$res_out" "$LD/homerec"
+
+# --- T13~T16: 형제 레인의 훅 판정 -------------------------------------------
+HOOK="$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"
+HH="$WORK/hookhome"
+mkdir -p "$HH/.claude-x" "$HH/.claude-y/projects" "$HH/.claude-y/todos"
+hook_decide() {
+  # hook_decide <편집 대상 경로> — 스테이지는 레인 x 에서 돌고 y 는 형제다.
+  #
+  # 훅이 환경에서 유도하는 앵커 변수를 **하나도 남기지 않고** 고정한다. 훅은
+  # 운영자 스코프 앵커를 `XDG_CONFIG_HOME` 으로, 런 루트를 `XDG_STATE_HOME` 으로
+  # 먼저 유도하고 없을 때만 `$HOME` 아래 기본 자리로 떨어진다 — 그래서 하나라도
+  # 비워 두면 픽스처 경로가 「이 하네스가 선언한 값」이 아니라 「주변 환경과
+  # 우연히 일치한 값」의 귀결이 된다. 그 우연이 깨진 것이 실제 사고였다:
+  # 말단 링크 절이 `XDG_CONFIG_HOME` 을 비워 둔 채 `$HH/.config` 아래 경로를
+  # 재는 바람에, 그 변수가 설정된 호스트에서 훅이 픽스처 밖을 앵커해 정확히
+  # 네 단언이 붉어졌다. 로컬은 초록이고 러너만 붉은 형태라 원인이 훅에 있는
+  # 것처럼 읽혔다.
+  #
+  # 값은 훅의 폴백 유도값과 **같게** 잡는다. 두 헬퍼가 이미 `HOME` 을 `$HH` 로
+  # 고정하므로 `$HH/.config`·`$HH/.local/state` 가 곧 「변수가 없을 때 훅이
+  # 보는 자리」이고, 그래서 이 고정은 판정을 옮기지 않고 유도만 결정적으로
+  # 만든다. 지우는 쪽(`env -u`)을 쓰지 않는 이유는 「변수가 없을 때의 기본 자리
+  # 유도」를 재는 전용 단언이 아래에 따로 있어서, 지우면 그 커버리지를 중복
+  # 소비하고 나중에 기본 자리 정책이 바뀌면 무관한 이유로 함께 붉어지기 때문이다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+      bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+t_ino() {
+  # t_ino <경로> — 이 러너에서 통하는 철자로 dev:ino 를 낸다. 통하는 철자가 없으면
+  # 아무것도 내지 않는다. BSD 는 `-f` 가 포맷 지정자이고 GNU 는 `-f` 가
+  # `--file-system` 이라, 한 철자만 적으면 다른 쪽에서는 에러 없이 엉뚱한 것을 찍는다.
+  local out
+  out=$(stat -L -f '%d:%i' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -f
+  case "$out" in [0-9]*:[0-9]*) printf '%s' "$out"; return 0 ;; esac
+  out=$(stat -L -c '%d:%i' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -c
+  case "$out" in [0-9]*:[0-9]*) printf '%s' "$out"; return 0 ;; esac
+  return 1
+}
+# 훅 판정 단언들보다 먼저 아이노드 계층의 생존 자체를 잰다. 계층이 통째로 죽으면
+# 아래 철자 단언들은 어휘 계층만 검증하게 되는데, 그때 붉어지는 것은 한둘뿐이고
+# 그 문면은 읽는 사람을 진짜 원인에서 멀어지게 한다 — 「심링크가 안 막힌다」로
+# 읽히지 「이 러너의 stat 이 다른 철자를 쓴다」로 읽히지 않는다.
+if [ -n "$(t_ino "$WORK")" ]; then
+  ok "아이노드 계층이 이 러너에서 dev:ino 를 낸다"
+else
+  bad "아이노드 계층" "이 러너에서 stat 이 어느 철자로도 dev:ino 를 내지 않는다 — 아래 철자 단언들은 어휘 계층만 검증한다"
+fi
+check "T13 형제 레인의 settings.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.json")" "deny"
+check "T14 형제 레인의 settings.local.json 은 거부" "$(hook_decide "$HH/.claude-y/settings.local.json")" "deny"
+check "T15 형제 레인의 트랜스크립트는 거부" "$(hook_decide "$HH/.claude-y/projects/abc.jsonl")" "deny"
+# 음성 대조군. 이것이 없으면 위 셋의 통과는 「형제 레인을 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 스테이지가 자기 일을 못 하게 만든다.
+check "T16 형제 레인의 강제 표면 아닌 경로는 여전히 허용" "$(hook_decide "$HH/.claude-y/todos/t.json")" "allow"
+check "자기 레인의 settings.json 은 그대로 거부 (기존 분기 존치)" \
+  "$(hook_decide "$HH/.claude-x/settings.json")" "deny"
+# 아직 없는 레인 디렉터리를 만들면서 그 안에 쓰는 경로도 막혀야 한다 — 존재를
+# 조건으로 걸면 가드가 새 레인에서만 사라지고, 그때가 아무도 안 보는 때다.
+mkdir -p "$HH/.claude-z"
+check "존재하지 않던 형제 레인도 덮는다" "$(hook_decide "$HH/.claude-z/settings.json")" "deny"
+# 그리고 디렉터리조차 만들지 않은 레인. 위 픽스처는 mkdir 을 하므로 훅의 글롭에
+# 잡히고, 그래서 「글롭이 내지 못하는 레인」은 위 단언이 덮지 못한다.
+check "디렉터리가 아직 없는 형제 레인도 덮는다" \
+  "$(hook_decide "$HH/.claude-nonexistent/settings.json")" "deny"
+
+# --- 경로 철자: 같은 파일에 이르는 다른 철자도 같은 판정을 받아야 한다 --------
+: > "$HH/.claude-y/settings.json"
+check "상위 참조를 담은 철자도 거부" \
+  "$(hook_decide "$HH/.claude-y/../.claude-y/settings.json")" "deny"
+check "중복 구분자와 현재 디렉터리 참조를 담은 철자도 거부" \
+  "$(hook_decide "$HH/.claude-y//./settings.json")" "deny"
+# 데이터 볼륨 대체 절대 철자. 이 철자가 실제로 같은 파일로 해소될 때만 의미가
+# 있으므로, 해소되지 않으면 건너뛰되 건너뛴 사실을 한 줄로 남긴다 — 세지 않는
+# 건너뜀은 커버리지가 사라진 것과 구별되지 않는다.
+HHP=$(cd "$HH/.claude-y" 2>/dev/null && pwd -P)
+FIRM="/System/Volumes/Data${HHP:-$HH/.claude-y}/settings.json"
+# 건너뜀 술어는 `t_ino` 로 판정한다. 한 철자만 쓰면 이 단언 — 훅이 철자가 아니라
+# 아이노드로 판정한다는 것을 증명하는 유일한 단언 — 이 그 철자가 통하지 않는
+# 플랫폼에서 계층 사망과 함께 조용히 사라진다. 계층 사망은 위에서 따로 보고한다.
+if [ -n "$(t_ino "$FIRM")" ] \
+   && [ "$(t_ino "$FIRM")" = "$(t_ino "$HH/.claude-y/settings.json")" ]; then
+  check "데이터 볼륨 대체 절대 철자도 거부 (철자가 아니라 아이노드로 판정한다)" \
+    "$(hook_decide "$FIRM")" "deny"
+else
+  printf 'NOTE: 데이터 볼륨 대체 철자가 이 경로에 해소되지 않아 건너뛴다 (%s)\n' "$FIRM"
+fi
+# 심링크 꼬리. 앵커된 분기는 아이노드로 비교하므로 이것도 닫힌다.
+ln -sfn "$HH/.claude-y/settings.json" "$WORK/lane-link" 2>/dev/null
+if [ -e "$WORK/lane-link" ]; then
+  check "심링크를 통한 철자도 거부" "$(hook_decide "$WORK/lane-link")" "deny"
+else
+  printf 'NOTE: 심링크를 만들지 못해 건너뛴다\n'
+fi
+# 심링크 디렉터리를 낀 상위 참조. 어휘 정규화는 파일시스템을 읽지 않고 `..` 를
+# 접으므로, 커널이 여는 파일과 훅이 재는 파일이 갈릴 수 있다 — 갈리면 판정할
+# 근거가 없으므로 거부여야 한다.
+mkdir -p "$HH/.claude-y/x"
+ln -sfn "$HH/.claude-y/x" "$WORK/lanedir-link" 2>/dev/null
+if [ -d "$WORK/lanedir-link" ]; then
+  check "심링크 디렉터리를 낀 상위 참조 철자도 거부" \
+    "$(hook_decide "$WORK/lanedir-link/../settings.json")" "deny"
+else
+  printf 'NOTE: 디렉터리 심링크를 만들지 못해 건너뛴다\n'
+fi
+# 대소문자 변형. 파일시스템이 대소문자를 무시하면 진짜 형제 레인에 착지하고,
+# 무시하지 않으면 아직 없는 형제 레인이다 — 어느 쪽이든 거부여야 하므로 이
+# 단언은 조건 없이 선다.
+check "대소문자를 바꾼 형제 레인 철자도 거부 (실재하는 레인)" \
+  "$(hook_decide "$HH/.Claude-y/settings.json")" "deny"
+check "대소문자를 바꾼 형제 레인 철자도 거부 (디렉터리가 없는 레인)" \
+  "$(hook_decide "$HH/.Claude-zzz/settings.json")" "deny"
+# 이 음성 대조군이 없으면 위 둘의 통과가 「대소문자 변형을 통째로 거부한다」와
+# 구별되지 않는다.
+check "음성 대조군: 대소문자를 바꿔도 강제 표면이 아닌 이름은 허용" \
+  "$(hook_decide "$HH/.Claude-y/todos/t.json")" "allow"
+
+# --- 런 디렉터리는 허용 목록이다 --------------------------------------------
+# 게이트가 매 행위마다 되읽는 기준선이 스테이지에게 쓰기 가능하면, 강제 표면
+# 검사가 자기 자신을 기준으로 다시 잡힌다.
+check "런 디렉터리의 구속면 다이제스트는 거부" "$(hook_decide "$RUN_DIR/surface-digest")" "deny"
+check "런 디렉터리의 레인 기록은 거부" "$(hook_decide "$RUN_DIR/config-dir")" "deny"
+check "런 디렉터리의 원장 경로 기록은 거부" "$(hook_decide "$RUN_DIR/ledger-path")" "deny"
+check "런 설정 디렉터리는 그대로 거부 (기존 분기 존치)" "$(hook_decide "$RUN_DIR/settings/x.json")" "deny"
+# 그리고 음성 대조군. 이 둘이 막히면 파이프라인 자신이 멈춘다 — 스테이지가
+# 중단 기록을 남길 수도, 계획을 방출할 수도 없게 된다.
+check "런 디렉터리의 중단 기록은 허용" "$(hook_decide "$RUN_DIR/halt/impl.md")" "allow"
+check "런 디렉터리의 계획 파일은 허용" "$(hook_decide "$RUN_DIR/slice-D.plan.md")" "allow"
+
+# 대체 철자는 픽스처 런 디렉터리에서 잰다. 라이브 런 디렉터리 안에는 심링크와
+# 하위 디렉터리를 만들 수 없다 — 훅과 게이트가 스테이지의 그 쓰기를 막고, 막지
+# 않더라도 라이브 런 상태를 오염시킨다. 위 여섯 단언은 그대로 둔다: 라이브
+# 디렉터리에 대한 리터럴 판정이 픽스처와 같은 답을 내는지가 별개의 정보다.
+hook_decide_rd() {
+  # hook_decide_rd <런 디렉터리> <편집 대상 경로> — 앵커 변수 고정의 이유는
+  # `hook_decide` 의 주석에 있다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$2" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+      bash "$HOOK" --run-dir "$1" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+FRD="$WORK/fixrun"; mkdir -p "$FRD/halt/deep" "$FRD/sub"
+: > "$FRD/surface-digest"
+ln -sfn "$FRD/surface-digest" "$FRD/x.plan.md" 2>/dev/null
+ln -sfn "$FRD" "$WORK/rd-link" 2>/dev/null
+# 매달린 심링크: 표적이 실재하지 않는다. 살아 있는 심링크만으로는 말단 판정이
+# `-L` 인지 `-e` 인지 갈리지 않는다 — 실재하는 표적을 가리키는 링크는 두 판정
+# 모두에서 참이기 때문이다. 표적을 런 설정 디렉터리에 두는 이유는 이 벡터가
+# 실제로 열렸을 때 착지하는 곳이 거기이기 때문이다.
+ln -sfn "$FRD/settings/absent.json" "$FRD/dangling.plan.md" 2>/dev/null
+
+check "픽스처 런 디렉터리에서도 구속면 다이제스트는 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/surface-digest")" "deny"
+check "허용 이름이라도 말단이 심링크면 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/x.plan.md")" "deny"
+if [ -L "$FRD/dangling.plan.md" ]; then
+  check "허용 이름이라도 말단이 매달린 심링크면 거부" \
+    "$(hook_decide_rd "$FRD" "$FRD/dangling.plan.md")" "deny"
+else
+  printf 'NOTE: 매달린 심링크를 만들지 못해 건너뛴다\n'
+fi
+check "음성 대조군: 진짜 계획 파일은 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/slice-D.plan.md")" "allow"
+check "중단 기록의 깊이는 한 단계뿐" \
+  "$(hook_decide_rd "$FRD" "$FRD/halt/deep/nested.md")" "deny"
+check "음성 대조군: 한 단계 중단 기록은 그대로 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/halt/impl.md")" "allow"
+check "런 매니페스트 plan.md 는 계획 파일이 아니다" \
+  "$(hook_decide_rd "$FRD" "$FRD/plan.md")" "deny"
+check "하위 디렉터리의 계획 파일은 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/sub/x.plan.md")" "deny"
+check "상위 참조를 낀 런 디렉터리 철자도 거부" \
+  "$(hook_decide_rd "$FRD" "$FRD/../fixrun/surface-digest")" "deny"
+if [ -d "$WORK/rd-link" ]; then
+  check "런 디렉터리로의 심링크를 통한 철자도 거부" \
+    "$(hook_decide_rd "$FRD" "$WORK/rd-link/surface-digest")" "deny"
+else
+  printf 'NOTE: 런 디렉터리 심링크를 만들지 못해 건너뛴다\n'
+fi
+
+# 조상 앵커. 런 설정 디렉터리는 런 디렉터리 안에서 아이노드 앵커가 없는 유일한
+# 게이트 소유 디렉터리였고, 그래서 중간 성분이 그리로 해소되면 꼬리가 허용
+# 이름으로 나와 허용 팔이 답했다 — 같은 파일의 직접 철자는 거부되므로 허용
+# 목록 자신의 거부 팔이 철자만으로 우회됐다. 앵커를 지우면 이 둘만 붉어진다.
+ARD="$WORK/ancrun"; mkdir -p "$ARD/settings"
+: > "$ARD/settings/keep.json"
+ln -sfn "$ARD/settings" "$ARD/halt" 2>/dev/null
+if [ -L "$ARD/halt" ] && [ -d "$ARD/halt" ]; then
+  check "중간 성분이 런 설정 디렉터리로 해소되는 철자는 거부" \
+    "$(hook_decide_rd "$ARD" "$ARD/halt/evil.json")" "deny"
+  # 새 파일과 기존 파일을 갈라 잰다. 착지가 아니라 덮어쓰기가 이 벡터의 해악이다.
+  check "그 철자가 설정 디렉터리의 기존 파일을 겨눠도 거부" \
+    "$(hook_decide_rd "$ARD" "$ARD/halt/keep.json")" "deny"
+else
+  printf 'NOTE: 런 설정 디렉터리로의 심링크를 만들지 못해 건너뛴다\n'
+fi
+# 음성 대조군. 이것이 없으면 위 둘의 통과가 「halt 아래를 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 스테이지가 중단 기록을 남기지 못하게 만든다.
+NRD="$WORK/ancrun-neg"; mkdir -p "$NRD/settings" "$NRD/halt"
+check "음성 대조군: 진짜 halt 디렉터리 아래 중단 기록은 그대로 허용" \
+  "$(hook_decide_rd "$NRD" "$NRD/halt/impl.md")" "allow"
+check "음성 대조군: 설정 디렉터리가 있어도 직접 철자의 거부 문면은 그대로" \
+  "$(hook_decide_rd "$NRD" "$NRD/settings/x.json")" "deny"
+
+# --- 그 허용 목록은 **이** 런 하나로만 파라미터화돼 있었다 -------------------
+# 위 단언들은 전부 편집 대상이 자기 런 디렉터리 아래일 때의 판정이다. 한 디렉터리
+# 건너 — 다른 런의 디렉터리 — 는 어느 팔에도 걸리지 않고 마지막 허용에 떨어졌다.
+# 거기 있는 것은 부수적인 파일이 아니다: `<런>/settings/<종류>.json` 은 그 런
+# 스테이지의 훅·권한 설정 자체이고, `<런>/config-dir` 은 그 런의 모든 디스패치가
+# 계정을 해소하는 레인 기록이다. 링크도 셸 라이더도 없는 평문 절대 경로 한 번이면
+# 둘 다 닿고, 훅의 Write/Edit 절반에는 원장 요구가 없어 행도 남지 않는다.
+RR="$WORK/runroot"
+mkdir -p "$RR/cc-cmds/run/mine/halt" "$RR/cc-cmds/run/mine/settings" \
+         "$RR/cc-cmds/run/victim/settings" "$RR/cc-cmds/run/victim/halt"
+MYRUN="$RR/cc-cmds/run/mine"
+hook_decide_rr() {
+  # hook_decide_rr <편집 대상 경로> — 런 루트 아래 런이 둘인 픽스처. 스테이지는
+  # `mine` 에서 돌고 `victim` 은 형제다. `XDG_STATE_HOME` 을 주는 이유는 훅이
+  # 드라이버와 **같은 방식으로** 런 루트를 유도하기 때문이다 — 다른 방식으로
+  # 유도하면 이 픽스처가 재는 것은 훅이 아니라 이 하네스 자신이 된다.
+  #
+  # `XDG_CONFIG_HOME` 도 같은 이유로 고정한다. 이 절의 「운영자 스코프의 레인
+  # 기록」 행이 `$HH/.config/cc-cmds/...` 를 재는데, 훅은 그 앵커를 그 변수로
+  # **먼저** 유도하고 없을 때만 `$HOME/.config` 로 떨어진다 — 비워 두면 그
+  # 변수가 설정된 호스트에서 앵커가 픽스처 밖을 가리켜 그 행이 통째로 무너지고,
+  # 이 헬퍼 짝이 행마다 판정 2개와 사유 2개를 재므로 정확히 넷이 붉어진다.
+  # 로컬은 초록이고 러너만 붉은 형태로 실제로 CI 를 멈춘 자리다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | XDG_STATE_HOME="$RR" HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" \
+      bash "$HOOK" --run-dir "$MYRUN" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+hook_reason_rr() {
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | XDG_STATE_HOME="$RR" HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" \
+      bash "$HOOK" --run-dir "$MYRUN" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecisionReason'
+}
+check "형제 런의 레인 기록은 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/config-dir")" "deny"
+check "형제 런의 오케스트레이터 기록은 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/orchestrator-dir")" "deny"
+check "형제 런의 스테이지 설정 파일은 거부 (그 런의 훅·권한 그 자체다)" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/settings/impl.json")" "deny"
+# 이 런의 허용 이름이라도 다른 런의 것이면 거부다. 허용 목록은 이름이 아니라
+# 「이 런의 그 이름」이므로, 이름만 맞춘 형제 런 경로가 통과하면 위 셋의 통과가
+# 「이름으로 거부한다」와 구별되지 않는다.
+check "형제 런의 중단 기록도 거부 (허용 이름은 이 런의 것일 때만이다)" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/halt/impl.md")" "deny"
+check "형제 런의 계획 파일도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/x.plan.md")" "deny"
+# 아직 열리지 않은 런. 글롭도 아이노드도 없는 자리이고, 그 창이야말로 이 결정이
+# 덮겠다고 선언한 것이다 — 열리지 않은 런에 기록을 심어 두면 그 런의 초기화가
+# 그것을 보존한 채 시작한다.
+check "아직 만들어지지 않은 런의 디렉터리도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/20260101-deadbeef/config-dir")" "deny"
+# 음성 대조군 셋. 이것들이 없으면 위 여섯의 통과가 「런 루트 아래를 통째로
+# 거부한다」와 구별되지 않고, 통째 거부는 스테이지가 중단 기록도 계획도 남기지
+# 못하게 만들어 파이프라인 자신을 멈춘다.
+check "음성 대조군: 자기 런의 중단 기록은 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/halt/impl.md")" "allow"
+check "음성 대조군: 자기 런의 계획 파일은 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/slice-D.plan.md")" "allow"
+check "음성 대조군: 런 루트 밖의 평범한 경로는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/runroot-outside.txt")" "allow"
+# 자기 런의 기준선은 종전 문면으로 거부돼야 한다. 두 팔이 같은 문면을 내면 새 팔이
+# 옛 팔을 삼켰는지 알 수 없다.
+check "자기 런의 레인 기록은 그대로 거부" \
+  "$(hook_decide_rr "$MYRUN/config-dir")" "deny"
+case "$(hook_reason_rr "$RR/cc-cmds/run/victim/config-dir")" in
+  *'다른 런의 디렉터리'*) ok "형제 런 거부가 다른 런을 지목한다" ;;
+  *) bad "형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
+esac
+case "$(hook_reason_rr "$MYRUN/config-dir")" in
+  *'다른 런의 디렉터리'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
+  *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
+esac
+
+# --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
+# 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
+# 조상 성분을 아이노드로 비교하되 사슬을 거슬러 오르는 것은 **어휘적**이라, 앵커된
+# 디렉터리를 *가리키는* 링크는 잡히고 그 **안쪽**을 가리키는 링크는 잡히지 않는다 —
+# `$RUN_DIR` 은 보호 대상이 바로 안에 있는 말단 앵커지만 런 루트는 한 단계 더 깊은
+# 비말단 앵커라, 그 한 단계를 링크로 건너뛰면 앵커가 사슬에 아예 등장하지 않는다.
+# 실제 `Write` 도구가 그 링크를 관통해 피해 런 안에 파일을 만드는 것까지 확인된
+# 벡터이고, 착지하는 것은 그 런의 훅·권한 설정과 레인 기록이다.
+ln -sfn "$RR/cc-cmds/run/victim" "$WORK/L-victim" 2>/dev/null
+ln -sfn "$MYRUN"                 "$WORK/L-self"   2>/dev/null
+ln -sfn "$RR/cc-cmds/run"        "$WORK/L-root"   2>/dev/null
+if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
+  check "형제 런을 가리키는 심링크 조상을 통한 철자도 거부" \
+    "$(hook_decide_rr "$WORK/L-victim/config-dir")" "deny"
+  check "그 심링크를 통한 스테이지 설정 파일도 거부 (그 런의 훅·권한 그 자체다)" \
+    "$(hook_decide_rr "$WORK/L-victim/settings/impl.json")" "deny"
+  check "그 심링크를 통한 오케스트레이터 기록도 거부" \
+    "$(hook_decide_rr "$WORK/L-victim/orchestrator-dir")" "deny"
+  check "런 루트를 가리키는 심링크를 통한 철자도 거부" \
+    "$(hook_decide_rr "$WORK/L-root/victim/config-dir")" "deny"
+  # `deny` 만 재면 어느 팔이 답했는지 모른다. 사이클 2 가 실측으로 확정한 것이
+  # 정확히 이것이다 — 한쪽 팔은 `deny` 단언으로 잡히지 않고 사유 문면 단언만이 잡는다.
+  case "$(hook_reason_rr "$WORK/L-victim/config-dir")" in
+    *'다른 런의 디렉터리'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *) bad "심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언들이 공허하다" ;;
+  esac
+  # 음성 대조군 넷. 없으면 위 넷의 통과가 「런 루트 밖 링크를 통째로 거부한다」와
+  # 구별되지 않고, 통째 거부는 파이프라인 자신이 쓰는 경로를 함께 막는다.
+  check "음성 대조군: 자기 런을 가리키는 심링크 조상의 중단 기록은 그대로 허용" \
+    "$(hook_decide_rr "$WORK/L-self/halt/impl.md")" "allow"
+  check "음성 대조군: 자기 런을 가리키는 심링크 조상의 계획 파일도 그대로 허용" \
+    "$(hook_decide_rr "$WORK/L-self/slice-D.plan.md")" "allow"
+  check "음성 대조군: 자기 런을 가리키는 심링크의 기준선은 그대로 거부" \
+    "$(hook_decide_rr "$WORK/L-self/config-dir")" "deny"
+  case "$(hook_reason_rr "$WORK/L-self/config-dir")" in
+    *'다른 런의 디렉터리'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
+    *) ok "자기 런 심링크 거부는 종전 팔이 낸다" ;;
+  esac
+else
+  printf 'NOTE: 형제 런 심링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+# 물리화가 「부모가 실재할 때만 판정한다」로 퇴화하면 이것이 함께 막힌다. 아직
+# 만들어지지 않은 디렉터리 아래로 쓰는 것은 이 트리 어디서나 정당하다.
+check "음성 대조군: 아직 없는 디렉터리 아래의 평범한 쓰기는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/no-such-dir-yet/deep/new.txt")" "allow"
+
+# --- 그리고 **말단** 링크로도 통째로 우회됐다 (한 뿌리의 둘째 기전) ----------
+# 위 절이 닫은 것은 조상 링크가 앵커의 **안쪽**을 가리키는 경우다. 같은 뿌리
+# (`hook_under` 가 조상 성분을 아이노드로 비교하되 사슬은 어휘적으로 오른다)에서
+# 나오는 둘째 기전은 **말단** 링크가 앵커 안의 **파일**을 가리키는 것이고, 조상
+# 물리화는 실재하는 가장 깊은 **디렉터리**에서만 접으므로 파일 말단은 어휘 꼬리로
+# 남아 그것을 닫지 못했다.
+#
+# 실측된 규칙이 깔끔했다 — **파일 앵커가 있는 자리는 닫히고 디렉터리 앵커만 있는
+# 자리는 열리며, 런 디렉터리에는 파일 앵커가 하나도 없었다.** 아래 일곱 행이 그
+# 표 자신이다. 여섯은 `allow` 였고, 파일 앵커가 함께 있던 일곱째만 `deny` 였다.
+# 그리고 `allow` 뒤의 쓰기가 실제로 링크를 관통해 피해 런의 `config-dir` 을 바꿨다.
+#
+# 왜 눈에 띄지 않았는지도 이 표가 설명한다 — **매달린** 말단은 이미 `deny` 였다.
+# 더 어려운 경우가 닫히고 더 쉬운 경우가 열린 역전이라, 스위트의 초록이 이 부류를
+# 재고 있다는 착시를 만들었다. 그 매달린 팔은 되돌리지 않으며 위쪽에 그대로 있다.
+mkdir -p "$RR/cc-cmds/run/victim/settings" "$HH/.claude-x/projects/p" \
+         "$HH/.claude-y/projects" "$HH/.config/cc-cmds/lanes"
+: > "$RR/cc-cmds/run/victim/config-dir"
+: > "$RR/cc-cmds/run/victim/settings/impl.json"
+: > "$MYRUN/config-dir"
+: > "$HH/.claude-x/projects/p/a.jsonl"
+: > "$HH/.claude-y/projects/a.jsonl"
+: > "$HH/.config/cc-cmds/lanes/x.json"
+: > "$HH/.claude-x/settings.json"
+leaf_n=0
+leaf_row() {
+  # leaf_row <단언 이름> <표적의 직접 철자> <기대 거부 문면 조각>
+  #
+  # 표적을 가리키는 말단 링크를 앵커 **밖**($WORK)에 만들어 두 철자를 함께 잰다 —
+  # 직접 철자와 링크 철자가 **같은 문면으로** 거부돼야 한다. 판정만 재면 두 팔이
+  # 갈린 것을 못 보고, 문면까지 재면 1차·2차 패스의 앵커 목록이 발산하는 순간
+  # 붉어진다. 나란한 두 목록 중 한쪽만 고쳐도 초록인 실패 방식이 이 파일이 이미
+  # 여러 자리에 적어 둔 것이다.
+  leaf_n=$((leaf_n + 1))
+  local nm="$1" tgt="$2" frag="$3" lnk="$WORK/LEAF-$leaf_n"
+  ln -sfn "$tgt" "$lnk" 2>/dev/null
+  if [ ! -L "$lnk" ] || [ ! -e "$lnk" ]; then
+    bad "말단 링크 픽스처: $nm" "링크를 만들지 못했거나 표적이 실재하지 않는다: $tgt"
+    return
+  fi
+  check "말단 링크: $nm 은 거부" "$(hook_decide_rr "$lnk")" "deny"
+  case "$(hook_reason_rr "$lnk")" in
+    *"$frag"*) ok "말단 링크: $nm 의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "말단 링크 거부 사유: $nm" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $(hook_reason_rr "$lnk")" ;;
+  esac
+  check "직접 철자: $nm 도 같은 판정" "$(hook_decide_rr "$tgt")" "deny"
+  case "$(hook_reason_rr "$tgt")" in
+    *"$frag"*) ok "직접 철자: $nm 의 거부 문면이 링크 철자의 것과 같다" ;;
+    *) bad "두 철자 발산: $nm" "직접 철자와 링크 철자가 다른 팔에 답해진다 — 앵커 목록이 갈렸다" ;;
+  esac
+}
+leaf_row "형제 런의 레인 기록"        "$RR/cc-cmds/run/victim/config-dir"        '다른 런의 디렉터리'
+leaf_row "형제 런의 스테이지 설정"    "$RR/cc-cmds/run/victim/settings/impl.json" '다른 런의 디렉터리'
+leaf_row "자기 런의 레인 기록"        "$MYRUN/config-dir"                        '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
+leaf_row "자기 레인의 트랜스크립트"   "$HH/.claude-x/projects/p/a.jsonl"         '세션 트랜스크립트는 승인 판독 채널'
+leaf_row "형제 레인의 트랜스크립트"   "$HH/.claude-y/projects/a.jsonl"           '형제 레인의 세션 트랜스크립트'
+leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.json"         '운영자 스코프 설정 디렉터리'
+# 일곱째. 이것만 종전에도 `deny` 였고 — 그 자리에 파일 앵커가 있었기 때문이다 —
+# 이번 변경 뒤에도 **같은 문면**이어야 한다. 2차 패스를 1차 **뒤**에 두는 것이
+# 그것을 보장하고, 앞에 두면 이 행의 사유 단언이 함께 붉어진다.
+leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              '사용자 스코프 설정은 훅 설치 채널'
+# 여덟째부터 열째. 이 셋은 1차 패스에만 팔이 있고 2차 말단 패스에는 없어서, 병합
+# 트리에서 **직접 철자는 `deny`, 말단 심링크는 `allow`** 로 갈렸던 자리다. 어느 쪽
+# 브랜치 단독으로도 성립하지 않고 오직 병합에서만 성립하는 부류라 양쪽 스위트가
+# 모두 초록이었고, 그래서 이 행들이 재는 것은 팔의 존재가 아니라 **두 패스가 같은
+# 목록을 본다는 것**이다. `leaf_row` 가 두 철자를 함께 재므로 행 하나가 곧 그 단언이다.
+mkdir -p "$HH/.claude-x/backups" "$HH/.claude-x/file-history" "$WORK/proj"
+: > "$HH/.claude-x/backups/b.md"
+: > "$HH/.claude-x/file-history/h.md"
+: > "$WORK/proj/CLAUDE.md"
+leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               '롤백 기준선과 판본 이력'
+leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          '롤백 기준선과 판본 이력'
+leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'git 이 추적하지 않는 라이브 프리픽스'
+# 자기 런 거부가 형제 런 팔에 삼켜지지 않았는지. `$RUN_DIR` 이 런 루트 아래라
+# 순서가 뒤집히면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
+case "$(hook_reason_rr "$WORK/LEAF-3")" in
+  *'다른 런의 디렉터리'*) bad "말단 링크 순서" "자기 런의 말단 링크가 형제 런 문면으로 거부됐다 — 2차 패스의 순서가 뒤집혔다" ;;
+  *) ok "말단 링크: 자기 런 거부가 형제 런 팔에 삼켜지지 않는다" ;;
+esac
+
+# 거짓 양성 대조군. 이것들이 없으면 위 일곱의 통과가 「말단이 심링크면 통째로
+# 거부한다」와 구별되지 않고, 통째 거부는 이 런의 스테이지가 아무것도 못 하게
+# 만든다 — 파이프라인 자신이 멈춘다.
+: > "$WORK/leaf-plain.txt"
+ln -sfn "$WORK/leaf-plain.txt" "$WORK/LEAF-ok-plain" 2>/dev/null
+check "음성 대조군: 앵커 어디에도 닿지 않는 표적을 가리키는 말단 링크는 허용" \
+  "$(hook_decide_rr "$WORK/LEAF-ok-plain")" "allow"
+ln -sfn "$HH/.claude-y/todos/t.json" "$WORK/LEAF-ok-lane" 2>/dev/null
+mkdir -p "$HH/.claude-y/todos"; : > "$HH/.claude-y/todos/t.json"
+check "음성 대조군: 레인 안이라도 강제 표면이 아닌 파일을 가리키는 말단 링크는 허용" \
+  "$(hook_decide_rr "$WORK/LEAF-ok-lane")" "allow"
+ln -sfn "$MYRUN" "$WORK/LEAF-ok-selfdir" 2>/dev/null
+check "음성 대조군: 자기 런 디렉터리 자신을 가리키는 말단 링크는 허용" \
+  "$(hook_decide_rr "$WORK/LEAF-ok-selfdir")" "allow"
+# 이 둘은 말단이 심링크가 **아니므로** 2차 패스가 아예 돌지 않아야 한다. 돌기
+# 시작하면 스테이지가 중단 기록도 계획도 남기지 못한다.
+check "음성 대조군: 자기 런의 중단 기록은 말단 패스 뒤에도 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/halt/impl.md")" "allow"
+check "음성 대조군: 자기 런의 계획 파일도 말단 패스 뒤에도 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/slice-D.plan.md")" "allow"
+# 그리고 아직 만들어지지 않은 말단. `[ -e ]` 를 조건으로 걸지 않으면 이것이 함께
+# 막히고, 아직 없는 디렉터리 아래로 쓰는 것은 이 트리 어디서나 정당하다.
+check "음성 대조군: 아직 없는 말단은 말단 패스에 들어가지 않는다" \
+  "$(hook_decide_rr "$WORK/leaf-not-yet/deep/new.txt")" "allow"
+# 순환 링크는 판정 불가이고, 판정 불가는 허용이 아니다.
+ln -sfn "$WORK/LEAF-loop-b" "$WORK/LEAF-loop-a" 2>/dev/null
+ln -sfn "$WORK/LEAF-loop-a" "$WORK/LEAF-loop-b" 2>/dev/null
+if [ -L "$WORK/LEAF-loop-a" ]; then
+  check "순환 말단 링크는 거부 (매달린 팔이 답한다 — 판정 불가는 허용이 아니다)" \
+    "$(hook_decide_rr "$WORK/LEAF-loop-a")" "deny"
+else
+  printf 'NOTE: 순환 링크를 만들지 못해 건너뛴다\n'
+fi
+
+# --- 조상 링크: 물리 접기가 한 앵커에만 걸려 있었다 --------------------------
+# 위 조상 링크 절은 전부 런 루트 계열이고, 그것이 유일하게 닫혀 있던 계열이다.
+# 링크를 앵커 **밖**에 두고 표적만 한 단계씩 깊게 옮기면 나머지 앵커는 전부
+# 우회됐다 — 실측 격자에서 `$cfg/projects`·`$xdgcc`·형제 레인 `projects/` 셋 다
+# 0단은 `deny` 이고 1단·2단은 `ALLOW` 이며, 같은 파일의 **직접 철자는 전부 `deny`**
+# 였다. `allow` 를 받은 뒤의 쓰기가 실제로 운영자 스코프 레인 기록과 세션
+# 트랜스크립트를 관통해 바꿨다.
+#
+# **0단만 재는 픽스처는 아무것도 재지 못한다.** 0단이 닫히는 것은 보호가 아니라
+# 우연이다 — 링크 표적의 아이노드가 마침 앵커 **자신**이라 조상 성분 비교가 답한
+# 것뿐이고, 한 단계만 깊어지면 그 앵커는 어휘 사슬에 영원히 등장하지 않는다.
+# 그래서 아래 행들은 전부 1단 이상이다.
+anc_n=0
+anc_row() {
+  # anc_row <단언 이름> <링크가 가리킬 디렉터리> <그 아래 꼬리> <기대 거부 문면 조각>
+  #
+  # 링크를 앵커 밖($WORK)에 두고 그 링크를 **조상 성분으로** 지나는 철자를 만든다.
+  # 말단은 평범한 파일이므로 말단 심링크 패스는 아예 돌지 않는다 — 이 벡터에
+  # 답하는 것은 조상 물리 접기뿐이고, 그래서 이 행이 그 팔에 하중을 건다.
+  anc_n=$((anc_n + 1))
+  local nm="$1" dir="$2" tail="$3" frag="$4" lnk="$WORK/ANC-$anc_n"
+  ln -sfn "$dir" "$lnk" 2>/dev/null
+  if [ ! -L "$lnk" ] || [ ! -d "$lnk" ]; then
+    bad "조상 링크 픽스처: $nm" "디렉터리를 가리키는 링크를 만들지 못했다: $dir"
+    return
+  fi
+  check "조상 링크: $nm 은 거부" "$(hook_decide_rr "$lnk/$tail")" "deny"
+  case "$(hook_reason_rr "$lnk/$tail")" in
+    *"$frag"*) ok "조상 링크: $nm 의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "조상 링크 거부 사유: $nm" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$lnk/$tail")" ;;
+  esac
+  check "직접 철자: $nm 도 같은 판정" "$(hook_decide_rr "$dir/$tail")" "deny"
+  case "$(hook_reason_rr "$dir/$tail")" in
+    *"$frag"*) ok "직접 철자: $nm 의 거부 문면이 링크 철자의 것과 같다" ;;
+    *) bad "두 철자 발산: $nm" "직접 철자와 링크 철자가 다른 팔에 답해진다 — 물리 접기가 이 앵커에 걸리지 않았다" ;;
+  esac
+}
+mkdir -p "$HH/.claude-x/projects/p/deep" "$HH/.claude-y/projects" \
+         "$HH/.config/cc-cmds/lanes"
+anc_row "사용자 스코프 projects 1단"  "$HH/.claude-x/projects/p"        "a.jsonl" \
+  '세션 트랜스크립트는 승인 판독 채널'
+anc_row "사용자 스코프 projects 2단"  "$HH/.claude-x/projects/p/deep"   "a.jsonl" \
+  '세션 트랜스크립트는 승인 판독 채널'
+anc_row "운영자 스코프 1단"           "$HH/.config/cc-cmds/lanes"       "x.json" \
+  '운영자 스코프 설정 디렉터리'
+anc_row "형제 레인 projects 1단"      "$HH/.claude-y/projects"          "a.jsonl" \
+  '형제 레인의 세션 트랜스크립트'
+# 거짓 양성 대조군 둘. 물리 접기를 넓히면 「링크를 조상으로 지나면 통째로 거부」로
+# 퇴화하기 쉽고, 그 퇴화는 이 파이프라인 자신이 쓰는 경로를 함께 막는다.
+mkdir -p "$WORK/anc-plain/sub"
+ln -sfn "$WORK/anc-plain" "$WORK/ANC-ok" 2>/dev/null
+check "음성 대조군: 앵커 밖을 가리키는 조상 링크는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/ANC-ok/sub/f.txt")" "allow"
+# 그리고 자기 레인 안이라도 강제 표면이 아닌 자리. 접기가 앵커 전체를 삼키면
+# 이것이 함께 붉어진다.
+mkdir -p "$HH/.claude-x/todos"
+ln -sfn "$HH/.claude-x/todos" "$WORK/ANC-ok-todos" 2>/dev/null
+check "음성 대조군: 레인 안이라도 강제 표면이 아닌 자리를 지나는 조상 링크는 허용" \
+  "$(hook_decide_rr "$WORK/ANC-ok-todos/t.json")" "allow"
+
+# --- 하드링크: 두 층이 갈리는 유일한 벡터인데 픽스처가 0개였다 ---------------
+# 위 일곱 행은 전부 **심링크**다. 하드링크는 따라갈 링크가 없어 2차 말단 패스의
+# 진입 조건(「말단이 심링크이고 표적이 실재한다」)에 아예 들어가지 않고, 표적과
+# 조상을 공유하지도 않으므로 물리 접기도 앵커를 사슬에 올리지 못한다. 그래서
+# 하드링크에 답하는 것은 파일 앵커 **열거**와 링크 수 **술어** 둘뿐이다.
+#
+# 그 공백이 무해하지 않았다. 런 디렉터리의 파일 앵커 넷과 그 짝인 4중 거부 블록을
+# 각각 지워도, **동시에** 지워도 스위트가 완전 무변화였다 — 심링크 벡터는 말단
+# 패스가 이중으로 덮으므로 어느 한 층을 지워도 다른 층이 답하기 때문이다. 즉 그
+# 초록은 어느 층도 지키지 않고 「적어도 하나는 살아 있다」만 지켰다. 두 층이
+# 갈리는 유일한 벡터가 하드링크인데 `ln` 낱말 22회 전수 중 21회가 `ln -sfn` 이고
+# 나머지 하나는 주석이라, 그 벡터를 재는 단언이 0개였다.
+hard_n=0
+hard_row() {
+  # hard_row <단언 이름> <표적의 직접 철자> <기대 거부 문면 조각>
+  #
+  # 표적과 아이노드를 공유하는 **하드링크**를 앵커 밖($WORK)에 만들어 판정과 거부
+  # 문면을 함께 잰다. 문면까지 재는 것이 하중의 전부다 — 판정만 재면 파일 앵커가
+  # 답했는지 링크 수 술어가 답했는지 갈리지 않아, 앵커를 지워도 `deny` 가 그대로
+  # 나오고 이 단언이 초록으로 남는다. 그것이 정확히 지금 고치는 실패 방식이다.
+  hard_n=$((hard_n + 1))
+  local nm="$1" tgt="$2" frag="$3" lnk="$WORK/HARD-$hard_n"
+  rm -f "$lnk"
+  ln "$tgt" "$lnk" 2>/dev/null
+  # 만들지 못하면 건너뛰지 않고 **실패로 계상한다.** 두 경로가 같은 임시 트리
+  # 아래라 같은 파일시스템이고 하드링크는 성립해야 하므로, 성립하지 않는다면
+  # 그것은 「이 호스트에서는 잴 수 없다」가 아니라 이 픽스처가 무너진 것이다.
+  # 건너뜀은 이 러너에서 통과로 계상되므로 총계가 조용히 내려앉는다.
+  if [ ! -e "$lnk" ] || [ -L "$lnk" ]; then
+    bad "하드링크 픽스처: $nm" "하드링크를 만들지 못했다: $tgt"
+    return
+  fi
+  check "하드링크: $nm 은 거부" "$(hook_decide_rr "$lnk")" "deny"
+  case "$(hook_reason_rr "$lnk")" in
+    *"$frag"*) ok "하드링크: $nm 의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "하드링크 거부 사유: $nm" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$lnk")" ;;
+  esac
+}
+# 파일 앵커가 **있는** 이름. 앵커를 지우면 링크 수 술어가 대신 답해 판정은 `deny`
+# 그대로이고 문면만 갈리므로, 이 행의 하중은 전적으로 문면 단언이 진다. 그리고
+# 하드링크에서 런 디렉터리 안의 이 넷만 앵커로 닫히는 것이 이 커밋의 실질 이득이라,
+# 다음 사이클에 누가 「스위트가 안 재니 중복이다」로 읽고 지우면 여기서 붉어진다.
+hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
+# 파일 앵커가 **없는** 이름. 런 디렉터리 안의 이름 집합은 유한하지 않아 열거로
+# 닫을 수 없고, 그 나머지를 링크 수 술어가 받는다.
+: > "$MYRUN/surface-digest"
+hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" '하드링크입니다'
+# 운영자 스코프의 레인 기록. 여기 쓰면 이 런이 끝난 뒤의 모든 런의 레인이 정해지고,
+# 앵커할 이름 집합이 무한해 열거가 애초에 서지 않는 자리다.
+hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" '하드링크입니다'
+# 그리고 형제 레인의 세션 트랜스크립트. 이름이 무한한 두 번째 자리이고, 실측된
+# 관통 세 자리 중 하나다.
+hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" '하드링크입니다'
+# 거짓 양성 대조군 셋. 없으면 위 넷의 통과가 「실재하는 말단은 통째로 거부한다」와
+# 구별되지 않고, 통째 거부는 이 파이프라인 자신의 스테이지가 아무것도 못 하게 만든다.
+: > "$WORK/hard-plain.txt"
+check "음성 대조군: 링크 수 1 인 평범한 파일은 그대로 허용" \
+  "$(hook_decide_rr "$WORK/hard-plain.txt")" "allow"
+# 디렉터리의 링크 수는 하위 디렉터리 수라 언제나 1보다 크다. 술어가 디렉터리를
+# 제외하지 않으면 이 팔이 「디렉터리를 겨눈 철자는 전부 거부」로 퇴화한다.
+mkdir -p "$WORK/hard-dir/a" "$WORK/hard-dir/b"
+check "음성 대조군: 하위 디렉터리를 가진 디렉터리 철자는 링크 수 술어에 걸리지 않는다" \
+  "$(hook_decide_rr "$WORK/hard-dir")" "allow"
+# 그리고 자기 런의 선언된 쓰기 표면. 이 둘이 막히면 스테이지가 중단 기록도 계획도
+# 남기지 못한다 — 링크 수 술어는 그 뒤에 서므로 여기까지 오지 않아야 한다.
+: > "$MYRUN/halt/impl.md"
+check "음성 대조군: 이미 존재하는 자기 런의 중단 기록도 그대로 허용" \
+  "$(hook_decide_rr "$MYRUN/halt/impl.md")" "allow"
+
+# --- 심링크로 한 겹 감싼 하드링크: 위 네 행이 재지 못한 우회 --------------------
+# 위 네 행은 전부 `ln "$tgt" "$lnk"` 로 **직접 철자**만 만든다. 하드링크를 심링크로
+# 한 겹 감싸면 두 층이 서로를 면제해서 통째로 관통했다 — 말단 패스는 하드링크가
+# 앉아 있는 자리의 물리 철자로 접혀 어떤 앵커에도 걸리지 않고, 링크 수 술어는
+# 진입 조건의 「말단이 심링크가 아닐 것」에 걸려 아예 돌지 않는다. 그 우회가 있는
+# 트리와 없는 트리가 **같은 수**를 냈다. 즉 이 절이 그 변경을 전혀 보지 못했다.
+hardw_hard="$WORK/HARDW-hard"
+hardw_link="$WORK/HARDW-link"
+rm -f "$hardw_hard" "$hardw_link"
+ln "$MYRUN/surface-digest" "$hardw_hard" 2>/dev/null
+ln -sfn "$hardw_hard" "$hardw_link" 2>/dev/null
+# 픽스처 생성 실패는 위 `hard_row` 와 같은 이유로 건너뛰지 않고 실패로 계상한다 —
+# 건너뜀이 이 러너에서 통과로 계상되므로 총계가 조용히 내려앉는다. 두 홉이 다
+# 서야 하므로 하드링크 성립과 심링크 성립을 함께 본다.
+if [ ! -e "$hardw_hard" ] || [ -L "$hardw_hard" ] || [ ! -L "$hardw_link" ]; then
+  bad "하드링크 픽스처: 심링크로 감싼 형태" "두 홉을 만들지 못했다: $hardw_link"
+else
+  check "하드링크: 심링크로 감싼 형태도 거부" "$(hook_decide_rr "$hardw_link")" "deny"
+  # 판정만 재면 말단 패스가 답했는지 링크 수 술어가 답했는지 갈리지 않는다. 사유
+  # 조각까지 재야 이 단언이 공허해지지 않는다 — `hard_row` 와 같은 이유다.
+  case "$(hook_reason_rr "$hardw_link")" in
+    *'하드링크입니다'*) ok "하드링크: 감싼 형태의 거부 문면이 그 자리의 것이다" ;;
+    *) bad "하드링크 거부 사유: 감싼 형태" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$hardw_link")" ;;
+  esac
+fi
+# 거짓 양성 경계. 링크 수 술어가 이제 심링크 말단을 보므로, 평범한 파일을 가리키는
+# 심링크가 새로 거부되지 않는지를 이 자리에서 붙든다. 이 행이 없으면 술어가 「말단이
+# 심링크면 전부 거부」로 퇴화해도 이 절이 초록으로 남는다.
+ln -sfn "$WORK/hard-plain.txt" "$WORK/HARDW-plain" 2>/dev/null
+check "음성 대조군: 링크 수 1 인 파일을 가리키는 심링크는 그대로 허용" \
+  "$(hook_decide_rr "$WORK/HARDW-plain")" "allow"
+
+# --- Bash 허용 목록은 첫 토큰 뒤도 본다 -------------------------------------
+# 첫 토큰 규칙 아래에서 `|`·`;`·`&&`·`&`·개행·`$( )` 는 서로 구별되지 않으므로,
+# 하나를 축복하는 것이 전부를 축복하는 것이었다. `<게이트> … ; <임의 명령>` 이
+# 통째로 허용됐고 두 절반이 한 셸에서 실행됐으며, 오른쪽 절반은 원장에 행을
+# 남기지 않았다 — 이 훅이 보장한다고 적은 유일한 성질이 그 명령들에 대해 거짓이었다.
+GATEP="$script_dir/gate.sh"
+hook_decide_bash() {
+  # hook_decide_bash <명령 문자열> — 명령을 `jq -Rs` 로 인코딩해서 넘긴다.
+  # 손으로 이스케이프하면 개행·따옴표 픽스처가 바로 그 이스케이프 버그를 재게 된다.
+  printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+    "$(printf '%s' "$1" | jq -Rs .)" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+      bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+BNL='
+'
+check "맨 게이트 호출은 허용" "$(hook_decide_bash "$GATEP snapshot --manifest m")" "allow"
+# 특례는 하나뿐이고 꼬리에서만 성립한다. 거부 문면이 처방하는 1번 명령이 이
+# 파이프를 쓰므로, 전면 거부하면 허용 목록이 자기 처방을 다시 거부한다.
+check "특례 파이프 '| jq -r .H' 는 허용" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "allow"
+check "특례 파이프의 후행 공백도 허용" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "allow"
+check "세미콜론 체인은 거부" "$(hook_decide_bash "$GATEP snapshot; touch $WORK/rider")" "deny"
+check "AND 체인은 거부" "$(hook_decide_bash "$GATEP snapshot && touch $WORK/rider")" "deny"
+check "백그라운드+체인은 거부" "$(hook_decide_bash "$GATEP snapshot & touch $WORK/rider")" "deny"
+check "개행 체인은 거부" "$(hook_decide_bash "$GATEP snapshot${BNL}touch $WORK/rider")" "deny"
+check "명령 치환 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \$(whoami) -- ls")" "deny"
+check "백틱 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \`whoami\` -- ls")" "deny"
+check "특례가 아닌 파이프는 거부" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
+check "리다이렉션도 거부 (원장 없이 셸이 파일을 여는 자리다)" \
+  "$(hook_decide_bash "$GATEP snapshot > $WORK/rider")" "deny"
+check "특례 뒤에 이어 붙인 체인은 거부 (특례는 꼬리에서 한 번뿐이다)" \
+  "$(hook_decide_bash "$GATEP snapshot | jq -r .H; touch $WORK/rider")" "deny"
+# 인용된 제어 문자는 게이트의 정당한 인자다. 이 둘이 없으면 위 거부들의 통과가
+# 「세미콜론을 통째로 거부한다」와 구별되지 않고, 통째 거부는 이 훅이 처방하는
+# `--rationale` 을 스테이지가 쓸 수 없게 만든다.
+check "음성 대조군: 큰따옴표 안의 세미콜론은 허용" \
+  "$(hook_decide_bash "$GATEP exec --rationale \"왜; 이 명령이 필요한가\" -- ls")" "allow"
+check "음성 대조군: 홑따옴표 안의 세미콜론은 허용" \
+  "$(hook_decide_bash "$GATEP exec --rationale '가;나' -- ls")" "allow"
+check "음성 대조군: 인용해서 게이트에 넘긴 파이프라인은 허용" \
+  "$(hook_decide_bash "$GATEP exec --rationale r -- bash -c 'a | b'")" "allow"
+# 종전 거부들이 그대로인지. 새 검사가 앞에 서면서 이 셋의 사유가 바뀌면 안 된다.
+check "평문 명령은 그대로 거부" "$(hook_decide_bash "ls -la")" "deny"
+check "선행 환경변수 할당은 그대로 거부" "$(hook_decide_bash "FOO=1 $GATEP snapshot")" "deny"
+check "bash -c 는 그대로 거부" "$(hook_decide_bash "bash -c '$GATEP snapshot'")" "deny"
+# 그리고 그 거부가 새 검사의 것인지 확인한다. 종전의 「게이트 호출이 아님」 팔이
+# 먼저 답하면 위 체인 단언들은 통과하면서 아무것도 검증하지 않는다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot; touch $WORK/rider" | jq -Rs .)" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'인용되지 않은 셸 제어 연산자'*) ok "체인 거부가 새 검사의 것이다" ;;
+  *) bad "체인 거부 사유" "다른 팔이 먼저 거부했다 — 위 체인 단언들이 공허하다" ;;
+esac
+
+# --- 그 인용 상태 기계는 ANSI-C 인용을 몰랐다 -------------------------------
+# 위 열여덟 단언은 거부 기대가 전부 인용 없는 평문 연산자이고 허용 기대가 전부 짝이
+# 맞는 평범한 인용이다. bash 에서 `$'…'` 안의 `\'` 는 이스케이프된 작은따옴표라
+# `$'\''` 가 한 단어로 닫히는데, 세 상태 스캐너는 상태 `s` 에서 백슬래시를 무시하므로
+# 그 `'` 가 인용을 닫고 이어지는 `'` 가 다시 연다 — 스캐너가 문자열 끝까지 인용 안에
+# 갇히고 그 뒤 연산자가 전부 보이지 않는다. 여섯 글자로 열린 형태가 실측 13종이고,
+# 세미콜론·AND·파이프·개행 체인만이 아니라 리다이렉션·명령 치환·임의 인터프리터까지
+# 같은 여섯 글자로 열렸다.
+#
+# **술어는 홀짝이 아니다.** `$'a\'b\'c'` 는 `\'` 가 짝수인데도 우회한다 — 두 `\'` 가
+# 각각 상태 `s` 와 `u` 에서 소비되어 상쇄되지 않기 때문이다. 픽스처를 홀짝으로 세우면
+# 이 부류를 통째로 놓치므로, 조건은 「`$'…'` 안에 `\'` 가 하나라도 있으면」이다.
+# 중첩 인용이 깨지기 쉬운 자리라 변수로 한 단계 뺀다.
+ANSIQ=$(printf '%s' "\$'\\''")
+ANSIQ3=$(printf '%s' "\$'a\\'b\\'c'")
+ANSIQ2=$(printf '%s' "\$'ab'")
+check "ANSI-C 인용을 낀 세미콜론 체인은 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ ; touch $WORK/rider")" "deny"
+check "백슬래시-쿼트가 짝수여도 거부 (홀짝이 아니라 존재가 술어다)" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ3 ; touch $WORK/rider")" "deny"
+check "ANSI-C 인용을 낀 리다이렉션도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ > $WORK/rider")" "deny"
+check "ANSI-C 인용을 낀 명령 치환도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ \$(touch $WORK/rider)")" "deny"
+check "ANSI-C 인용을 낀 임의 인터프리터도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot $ANSIQ | sh -c 'touch $WORK/rider'")" "deny"
+check "인자 자리의 ANSI-C 인용도 거부" \
+  "$(hook_decide_bash "$GATEP exec --rationale $ANSIQ ; touch $WORK/rider")" "deny"
+# 원천 차단은 상태 `u` 에서 `$` 다음의 `'` 를 무조건 막으므로 **짝이 맞는** ANSI-C
+# 인용 하나도 거부다. 리뷰가 제안한 기대값은 `allow` 였는데 그것은 그물만 넣었을 때의
+# 값이고, 여기서는 원천 차단을 함께 넣기로 했으므로 픽스처를 선택한 수정안에 맞춘다.
+# 정당 행위를 막지 않는다는 근거는 아래 대조군들과, 이 파이프라인이 실제로 발행하는
+# 게이트 명령에 `$'`·`$"` 가 0회라는 실측이 진다.
+check "짝이 맞는 ANSI-C 인용 하나도 원천 차단으로 거부" \
+  "$(hook_decide_bash "$GATEP exec --rationale $ANSIQ2 -- ls")" "deny"
+# 그물 단독의 하중. 이 둘에는 `$'` 가 없어 원천 차단이 서지 않고, 오직 종단 상태가
+# `u` 가 아니라는 것만으로 거부된다 — 그물을 빼면 이 둘만 붉어진다. 잃는 것은 없다:
+# 미종료 인용은 bash 가 문법 오류로 거절하므로 실행 가능한 명령이 아니다.
+check "닫히지 않은 홑따옴표는 종단 상태 그물이 거부한다" \
+  "$(hook_decide_bash "$GATEP snapshot 'abc ; touch $WORK/rider")" "deny"
+check "닫히지 않은 큰따옴표도 종단 상태 그물이 거부한다" \
+  "$(hook_decide_bash "$GATEP snapshot \"abc ; touch $WORK/rider")" "deny"
+# 그물의 음성 대조군. `'…'\''…'` 이어붙임은 종단 상태가 `u` 라 그대로 허용돼야 한다 —
+# 그물이 「따옴표가 하나라도 있으면 거부」로 퇴화하면 이것이 붉어진다.
+check "음성 대조군: 홑따옴표 이어붙임은 그대로 허용" \
+  "$(hook_decide_bash "$GATEP exec --rationale 'a'\\''b' -- ls")" "allow"
+# 그리고 그 거부가 어느 팔의 것인지 가른다. 종전 팔이 먼저 답하면 위 단언들이 전부
+# 공허하다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot $ANSIQ ; touch $WORK/rider" | jq -Rs .)" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'인용되지 않은 셸 제어 연산자'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
+  *) bad "ANSI-C 라이더 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
+esac
+
+# 새 fail-closed 분기의 도달 가능성. 이 러너에서는 stat 이 정상이라 자연히
+# 도달하지 않으므로, 항상 실패하는 stat 을 PATH 앞에 심는다 — 훅이 자기 PATH 를
+# 앞에 붙이는 것을 끄지 않으면 진짜 stat 이 먼저 잡혀 이 픽스처가 무력해진다.
+# 대상 경로는 평소 허용되는 이름이라, 거부가 나온다면 그것은 이 분기의 것이다.
+mkdir -p "$WORK/stubbin"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/stubbin/stat"
+chmod +x "$WORK/stubbin/stat"
+stat_probe_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$HH/.claude-y/todos/t.json" \
+  | CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 PATH="$WORK/stubbin:$PATH" HOME="$HH" \
+    CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+    XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+    bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh")
+check "stat 이 dev:ino 를 내지 못하면 판정하지 않고 거부한다" \
+  "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+# 그리고 그 거부가 이 분기의 것인지 확인한다. 다른 분기가 먼저 거부하면 위
+# 단언은 통과하면서 아무것도 검증하지 않는다.
+case "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'디바이스:아이노드'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
+  *) bad "stat 부재 거부 사유" "다른 분기가 먼저 거부했다 — 위 단언이 공허하다" ;;
+esac
+
+# --- 운영자 스코프 설정 디렉터리 --------------------------------------------
+hook_decide_xdg() {
+  # hook_decide_xdg <XDG_CONFIG_HOME> <편집 대상 경로> — 이 헬퍼는 운영자 스코프
+  # 앵커를 **인자로** 지시하므로 `XDG_CONFIG_HOME` 은 여기서 곧 픽스처의 일부다.
+  # 남은 하나(`XDG_STATE_HOME`)는 다른 헬퍼들과 같은 이유로 고정한다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$2" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" XDG_CONFIG_HOME="$1" \
+      XDG_STATE_HOME="$HH/.local/state" \
+      bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecision'
+}
+mkdir -p "$HH/xdg/cc-cmds" "$HH/xdg/other"
+check "운영자 스코프의 레인 기록은 거부 (런보다 오래 사는 편집이다)" \
+  "$(hook_decide_xdg "$HH/xdg" "$HH/xdg/cc-cmds/config-dir")" "deny"
+check "아직 없는 이웃 파일도 같은 디렉터리라 거부" \
+  "$(hook_decide_xdg "$HH/xdg" "$HH/xdg/cc-cmds/무엇이든")" "deny"
+check "음성 대조군: 그 옆 디렉터리는 여전히 허용" \
+  "$(hook_decide_xdg "$HH/xdg" "$HH/xdg/other/f.json")" "allow"
+# 환경변수가 없을 때의 기본 자리. 하네스 자신의 XDG_CONFIG_HOME 이 새어 들어오면
+# 훅이 다른 디렉터리를 보게 되므로 여기서만 명시적으로 지운다.
+check "XDG 가 없으면 홈 아래 기본 자리를 본다" \
+  "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$HH/.config/cc-cmds/config-dir" \
+     | env -u XDG_CONFIG_HOME HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+       XDG_STATE_HOME="$HH/.local/state" \
+       bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
+     | jq -r '.hookSpecificOutput.permissionDecision')" "deny"
+
+# --- 매달린 말단 심링크: 아이노드 계층이 통째로 죽는 자리 --------------------
+# 말단이 심링크이고 표적이 실재하지 않으면 BSD 의 `stat -L` 은 lstat 판독으로
+# 떨어져 링크 자신의 값을 rc=0 으로 내고 GNU 는 줄을 내지 않는다 — 어느 쪽이든
+# 파일 앵커가 전부 죽는다. 링크가 레인 밖에 앉으면 조상 사슬이 겹치지 않아
+# 디렉터리 앵커도 걸리지 않고, 철자는 링크 자신의 것이라 어휘 팔도 걸리지 않는다.
+# 그 상태로 허용하면 커널이 링크를 따라가 강제 표면 안에 파일을 만든다. 아래 표적
+# 넷은 그렇게 열려 있던 표면 그대로다.
+DL="$WORK/dangling"; mkdir -p "$DL"
+ln -sfn "$HH/.claude-y/settings.local.json"     "$DL/sib-local" 2>/dev/null
+ln -sfn "$HH/.claude-x/settings.local.json"     "$DL/own-local" 2>/dev/null
+ln -sfn "$HH/.claude-nonexistent/settings.json" "$DL/newlane"   2>/dev/null
+ln -sfn "$HH/xdg/cc-cmds/absent.json"           "$DL/xdg-absent" 2>/dev/null
+if [ -L "$DL/sib-local" ] && [ ! -e "$DL/sib-local" ]; then
+  check "매달린 심링크: 형제 레인의 settings.local.json 을 향해도 거부" \
+    "$(hook_decide "$DL/sib-local")" "deny"
+  check "매달린 심링크: 살아 있는 레인의 settings.local.json 을 향해도 거부" \
+    "$(hook_decide "$DL/own-local")" "deny"
+  check "매달린 심링크: 아직 없는 형제 레인의 settings.json 을 향해도 거부" \
+    "$(hook_decide "$DL/newlane")" "deny"
+  check "매달린 심링크: 운영자 스코프 안을 향해도 거부" \
+    "$(hook_decide_xdg "$HH/xdg" "$DL/xdg-absent")" "deny"
+  # 대조군. 표적이 실재하는 같은 자리의 링크는 오늘도 거부되며 그 답은 새 팔이
+  # 아니라 파일 앵커가 낸다 — 이것이 없으면 위 넷의 통과가 「새 팔이 답했다」와
+  # 구별되지 않는다.
+  : > "$HH/.claude-y/settings.local.json"
+  ln -sfn "$HH/.claude-y/settings.local.json" "$DL/sib-local-live" 2>/dev/null
+  check "대조군: 표적이 실재하는 같은 링크도 거부 (파일 앵커가 답한다)" \
+    "$(hook_decide "$DL/sib-local-live")" "deny"
+else
+  printf 'NOTE: 매달린 심링크를 만들지 못해 레인 표면 격자를 건너뛴다\n'
+fi
+
+# --- 어휘 해소와 커널 해소를 화해시키는 두 팔에 하중을 건다 -----------------
+# 이 두 팔은 「불일치는 훅 앞에 파일이 둘 있다는 뜻이라 어느 쪽도 판정 대상으로
+# 삼을 근거가 없다」를 참으로 만드는 계층인데, 둘 다 `|| true` 로 바꿔도 스위트가
+# 초록이었다. 이유는 도달성이다 — 위 픽스처들은 전부 형제 레인 파일 앵커에 먼저
+# 답해지므로 이 팔들이 발화할 기회가 없었다. 그 사실은 같은 배치의 음성 대조군이
+# 증명했다: 형제 레인 파일 앵커를 끄면 정확히 그 두 단언이 거부에서 허용으로
+# 뒤집혀 실패했으므로, 하네스는 이 파일의 편집을 볼 수 있고 위 초록은 진짜 구멍이다.
+#
+# 그래서 착지하는 두 파일이 **어떤 강제 표면에도 속하지 않게** 만든다. 그러면
+# 어느 앵커도 먼저 답할 수 없고, 남는 것은 이 두 팔뿐이다.
+hook_reason() {
+  # 앵커 변수 고정의 이유는 `hook_decide` 의 주석에 있다.
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1" \
+    | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+      XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+      bash "$HOOK" --run-dir "$RUN_DIR" --gate "$script_dir/gate.sh" \
+    | jq -r '.hookSpecificOutput.permissionDecisionReason'
+}
+LK="$WORK/lexker"; mkdir -p "$LK/sub/other"
+ln -sfn "$LK/sub/other" "$LK/dirlink" 2>/dev/null
+if [ -d "$LK/dirlink" ] && [ -L "$LK/dirlink" ]; then
+  # 말단 대조용. `$LK/dirlink/../plain.txt` 의 어휘 해소는 `$LK/plain.txt` 이고
+  # 커널 해소는 `$LK/sub/plain.txt` 다 — `..` 를 어휘로 접으면 링크를 따라가지
+  # 않고, 커널은 따라간 뒤 접기 때문이다. 두 파일을 모두 실재시켜야 두 아이노드가
+  # 둘 다 비지 않아 이 팔이 실제로 값을 비교한다.
+  : > "$LK/plain.txt"
+  : > "$LK/sub/plain.txt"
+  check "어휘 해소와 커널 해소가 다른 파일을 가리키면 거부" \
+    "$(hook_decide "$LK/dirlink/../plain.txt")" "deny"
+  case "$(hook_reason "$LK/dirlink/../plain.txt")" in
+    *'어휘 해소와 커널 해소가 다른 파일'*) ok "그 거부가 말단 해소 대조의 것이다" ;;
+    *) bad "말단 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
+  esac
+  # 상위 대조용. 같은 철자에서 말단만 양쪽 다 부재하게 하면 위 팔은 두 값이 함께
+  # 비어 통과하고, 상위 디렉터리의 아이노드가 갈려 이 팔이 발화한다.
+  check "상위 디렉터리가 어휘 해소와 커널 해소에서 다르면 거부" \
+    "$(hook_decide "$LK/dirlink/../absent.txt")" "deny"
+  case "$(hook_reason "$LK/dirlink/../absent.txt")" in
+    *'상위 디렉터리가 어휘 해소와 커널 해소'*) ok "그 거부가 상위 해소 대조의 것이다" ;;
+    *) bad "상위 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
+  esac
+  # 음성 대조군. 링크를 끼지 않은 같은 자리의 파일은 그대로 허용돼야 한다 —
+  # 이것이 없으면 위 넷의 통과가 「이 디렉터리를 통째로 거부한다」와 구별되지 않는다.
+  check "음성 대조군: 링크를 끼지 않은 같은 자리의 파일은 허용" \
+    "$(hook_decide "$LK/plain.txt")" "allow"
+  check "음성 대조군: 아직 없는 말단도 링크를 끼지 않으면 허용" \
+    "$(hook_decide "$LK/absent.txt")" "allow"
+else
+  printf 'NOTE: 디렉터리 심링크를 만들지 못해 어휘/커널 해소 격자를 건너뛴다\n'
+fi
+
+# --- T17: 등재된 예외가 자체 점검에 있다 ------------------------------------
+env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin bash "$DRIVER" --self-check > "$SC_OUT" 2>&1
+sc_rc2=$?
+check "T17 자체 점검이 통과한다" "$sc_rc2" "0"
+if grep -q '등재된 예외: 구속면 다이제스트의 입력에 오케스트레이터 소스가 없다' "$SC_OUT"; then
+  ok "T17 구속면 다이제스트에서 빠진 것이 등재된 예외로 진술된다"
+else
+  bad "T17 등재된 예외" "다이제스트 쪽 진술이 없다 — 빠진 것과 일부러 뺀 것을 구별할 수 없다"
+fi
+if grep -q '등재된 예외: 훅 거부 목록에 오케스트레이터 소스가 없다' "$SC_OUT"; then
+  ok "T17 훅 거부 목록에서 빠진 것이 등재된 예외로 진술된다"
+else
+  bad "T17 등재된 예외" "훅 쪽 진술이 없다"
+fi
+# 그리고 그 단언이 실제로 대조한다. 결함을 심지 않은 통과는 공허할 수 있으므로,
+# 플러그인 배치를 그대로 흉내 낸 픽스처에서 훅의 룰 분기를 오케스트레이터 전체로
+# 넓히고 같은 점검을 다시 돌린다 — 등재된 예외의 문면과 어긋났으니 잡혀야 한다.
+FX="$WORK/hookfix"
+mkdir -p "$FX/orchestrator" "$FX/hooks"
+cp "$script_dir"/*.sh "$FX/orchestrator/" 2>/dev/null
+cp -R "$script_dir/prompts" "$FX/orchestrator/" 2>/dev/null || true
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/*)#' "$HOOK" > "$FX/hooks/gate-pretool.sh"
+if grep -q '\*/orchestrator/\*' "$FX/hooks/gate-pretool.sh"; then
+  env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
+    bash "$FX/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
+  fx_rc=$?
+  if [ "$fx_rc" != "0" ] && grep -q '등재된 예외의 문면과 어긋난다' "$SC_OUT"; then
+    ok "T17 훅 거부 분기를 넓히면 등재된 예외 항목이 잡는다"
+  else
+    bad "T17 등재된 예외" "넓힌 훅을 놓쳤다 (rc=$fx_rc) — 위 통과가 공허하다"
+  fi
+else
+  bad "T17 픽스처" "훅의 룰 분기를 넓히지 못했다 — 대조가 성립하지 않는다"
+fi
+# 그리고 두 번째 변이. 위 변이는 분기를 **교체**하므로 가드가 세는 두 수를 함께
+# 움직이고, 그래서 줄을 세든 출현을 세든 잡힌다. 분기를 제자리에서 **합집합으로
+# 넓히는** 변이는 다르다 — 같은 줄에 룰 패턴을 남긴 채 오케스트레이터 전체를
+# 더하므로, 줄을 세는 가드에서는 두 수가 함께 1로 남아 통과한다. 열리는 구멍은
+# 위 변이와 같은데 대조군은 하나뿐이었다.
+FX2="$WORK/hookfix-union"
+mkdir -p "$FX2/orchestrator" "$FX2/hooks"
+cp "$script_dir"/*.sh "$FX2/orchestrator/" 2>/dev/null
+cp -R "$script_dir/prompts" "$FX2/orchestrator/" 2>/dev/null || true
+sed 's#\*/orchestrator/rules/\*)#*/orchestrator/rules/*|*/orchestrator/*)#' "$HOOK" > "$FX2/hooks/gate-pretool.sh"
+if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretool.sh"; then
+  env -u CC_ORCH_SOURCE_ONLY CC_CMDS_ORCH_HOST_OS=Darwin \
+    bash "$FX2/orchestrator/run.sh" --self-check > "$SC_OUT" 2>&1
+  fx2_rc=$?
+  if [ "$fx2_rc" != "0" ] && grep -q '등재된 예외의 문면과 어긋난다' "$SC_OUT"; then
+    ok "T17 훅 거부 분기를 합집합으로 넓혀도 등재된 예외 항목이 잡는다"
+  else
+    bad "T17 등재된 예외" "합집합으로 넓힌 훅을 놓쳤다 (rc=$fx2_rc) — 줄을 세는 가드는 제자리 확장을 보지 못한다"
+  fi
+else
+  bad "T17 픽스처" "훅의 룰 분기를 합집합으로 넓히지 못했다 — 대조가 성립하지 않는다"
+fi
+
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

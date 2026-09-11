@@ -719,6 +719,23 @@ pass() {
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
   printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
+  # A SEPARATE LINE, NOT A FIFTH HEARTBEAT FIELD. The four above are read out of
+  # this file by name and their positions are part of that contract; this alarm
+  # is also not a periodic measurement but a condition that is either there or
+  # not. It is emitted only when it holds, so a night with none of these is a
+  # night with none of these lines — which is what makes the one night that has
+  # it legible.
+  #
+  # What it names is a dispatch whose record outlived its process: the stage's
+  # outcome was never written, and no other surface says so. The dispatching
+  # shift ends normally and its own stream carries a terminal line, so without
+  # this the run's account of itself is a shift that finished and a stage that
+  # never existed.
+  local orphans
+  orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
+  [ -n "$orphans" ] && \
+    printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았으니 스테이지가 아니라 파견 방식을 보세요\n' \
+      "$(now_iso)" "$orphans"
   return 0
 }
 
