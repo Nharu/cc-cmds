@@ -143,7 +143,8 @@ fi
 SWALLOWED=( '[x' '(x' '{x' '<x' '"x' '-x' ' [x' ' (x' ' {x' ' <x' ' "x' )
 PASSING=( ' -x' ')x' ']x' '}x' '>x' "'x" '.x' '#x' '~x' '가x' '1x' \
           'cc-cmds · 답하세요' 'cc-cmds · 답할 것이 더 있습니다' 'cc-cmds · 직접 손대세요' \
-          'cc-cmds · 세션으로 돌아가세요' 'cc-cmds · 새 런을 여세요' 'cc-cmds · 결과를 확인하세요' )
+          'cc-cmds · 세션으로 돌아가세요' 'cc-cmds · 새 런을 여세요' 'cc-cmds · 결과를 확인하세요' \
+          'cc-cmds · 차례가 넘어왔습니다' )
 n_cases=$(( ${#SWALLOWED[@]} + ${#PASSING[@]} ))
 
 # The refusal control, named once. It is deliberately not an element of either
