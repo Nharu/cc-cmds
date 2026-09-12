@@ -1646,32 +1646,39 @@ gate_progress_vector() {
         printf 'cycle=%s|%s\n' "$cseg" \
           "$( { gate_rows 'cycle' | grep -F "세그먼트=$cseg " || true; } | gate_count)"
       done
-  # The router's OWN acts were missing, and they are most of what a run does
-  # between stages. A commit, a push, a pull request, a merge — every one is
-  # authorised through this gate and writes a row, and none of them moved this
-  # vector. So a router that spent an hour landing fixes read as motionless and
-  # the stagnation boundary fired on it. That is not a cosmetic false positive:
-  # the approval it opens suspends B1..B3 and blocks termination until a PERSON
-  # closes it, and the gate accepts no answer the router typed — so a run doing
-  # visible work stops and waits for someone who may be asleep.
+  # A DISPATCH IS PROGRESS. The router's own above-read acts used to be counted
+  # here as `acts=`, and under the judgment definition `gate_boundaries` applies
+  # that count is the number of judgments itself — so the counter sat inside
+  # its own hash input: the digest judgment k compared against had already been
+  # moved by judgment k-1's row, and `n` could never climb past 0. That is the
+  # counter-inside-its-own-hash defect this file names in the preamble above,
+  # one layer up. The above-read exec count now lives ONLY in the act budget
+  # (B3), where it is the thing being spent rather than the thing being
+  # measured against.
   #
-  # Only acts graded ABOVE `읽기`. Reads are how the router looks around and
-  # they happen constantly; counting them would keep this vector permanently in
-  # motion and the boundary would never fire on anything.
+  # What replaced it is the one act that can move the run: a stage dispatch.
+  # `교대 기동` is not counted (a shift is a structural event, not progress) and
+  # a pid file is not consulted (it is not a fact of the ledger).
   #
-  # Safe for the same reason `cycle` rows are, and the reason has to hold or
-  # this re-introduces the original defect: the boundary's remedy writes an
-  # `승인` row, never an `exec` one, so nothing here can reset the counter that
-  # fired it.
-  # Selected POSITIVELY — the row must carry a grade, and that grade must not be
-  # `읽기`. Excluding `읽기` alone would also count a row with no `축2=` field at
-  # all, and a row whose surface grade is unknown is not evidence that anything
-  # changed. Unknown is not progress; counting it as progress would let the
-  # boundary be reset by a row that says nothing about what was done.
-  printf 'acts=%s\n' \
-    "$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
-       | { grep -F '축2=' || true; } \
-       | { grep -v '축2=읽기' || true; } | gate_count)"
+  # SELECTED POSITIVELY ON THREE FIELDS, delimiter-anchored so a `근거=` prose
+  # field that happens to mention `kind=skill` cannot match: the row is a
+  # `kind=skill` authorisation (`결정=act`, never the `결정=결과` row a failed
+  # dispatch appends), AND it carries `행위자`, AND that actor is not the stage.
+  # Nothing stops a stage from calling `act --kind skill`, and `교대=` is 0 for
+  # the lead and for a stage alike — so without the actor field this component
+  # would be an input the constrained side can write. Rows written before the
+  # field existed carry no `행위자` and contribute nothing, which is the safe
+  # direction.
+  #
+  # A KNOWN SIDE EFFECT, accepted: with `acts=` gone the vector half of
+  # `--snapshot-digest` no longer goes stale on another actor's above-read exec;
+  # what remains is the tip half's ancestry window. That is the direction the
+  # `gate_snapshot_digest` comment already argued for.
+  printf 'dispatches=%s\n' \
+    "$( { gate_rows '자율 승인' | grep -F '| kind=skill |' || true; } \
+       | { grep -F '| 결정=act |' || true; } \
+       | { grep -F '| 행위자=' || true; } \
+       | { grep -vF '| 행위자=스테이지 |' || true; } | gate_count)"
   # A STAGE FINISHING NORMALLY IS PROGRESS, and until now nothing here saw it.
   # Segment rows move only when the STATE changes, so a segment that runs several
   # stages under `실행중` contributes a constant — and the two processes of one
@@ -7091,7 +7098,7 @@ gate_verb_act() {
     return 0
   fi
 
-  gate_boundaries
+  gate_boundaries "$graded" "$kind"
 
   # Which credential the act will actually run under, recorded on every act.
   # With neither pipeline credential provisioned the gate used to fall through
@@ -7108,6 +7115,23 @@ gate_verb_act() {
     # line that matters.
     [ "$graded" = "읽기" ] || \
       warn "파이프라인 자격이 없어 주변 자격으로 실행합니다 — 이 행위에는 자격 분리가 걸려 있지 않습니다"
+  fi
+
+  # WHO IS WRITING THIS ROW, recorded for the readers that come later. `교대=`
+  # is 0 for the lead and for a stage alike — it reads only the shift marker —
+  # so nothing on the row told the lead's dispatch from a stage's. The progress
+  # vector's `dispatches=` positively selects on this field so that a stage
+  # calling `act --kind skill` cannot write the router's own progress; the
+  # morning report and a replay read it too. It does not replace the runtime
+  # caller check in `gate_boundaries` — that reads the environment at judgment
+  # time, this is for whoever reads the row afterwards. The stage test comes
+  # before the shift marker because a stage a shift launched inherits
+  # `CC_PIPELINE_SHIFT_ID`.
+  local actor='리드'
+  if cc_caller_is_stage; then
+    actor='스테이지'
+  elif [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
+    actor='교대'
   fi
 
   # A BOOKKEEPING KIND IS DECIDED BEFORE THE APPROVAL ROW IS WRITTEN, and every
@@ -7139,7 +7163,7 @@ gate_verb_act() {
   # entire subject of this axis.
   gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
     "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-    "축2=$graded" "자격=$credmode" "근거=$rationale"
+    "축2=$graded" "자격=$credmode" "행위자=$actor" "근거=$rationale"
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
 
   # The RESOLVED policy and not a flag value. What decides whether a merge defers
@@ -9628,12 +9652,53 @@ gate_launch_shift() {
 # stalled, it is waiting — and without the suspension B1's own remedy would
 # reset the counter that fired it, which is the same defect the progress vector
 # was rebuilt to remove, reappearing one layer up.
+#
+# B1..B3 ARE EVALUATED ON A JUDGMENT ONLY. A judgment is a gate call on which
+# all three hold: (1) the caller is not a stage — `cc_caller_is_stage` is
+# false, i.e. `CC_PIPELINE_SEGMENT` and `CC_PIPELINE_STAGE_ID` are both empty
+# (a routing shard carries neither and IS the router); (2) the grade is above
+# `읽기`; (3) the kind is neither `skill` nor `router-shift`. Condition (2)
+# alone drops every reconnaissance read and every bookkeeping act (`segment`,
+# `cycle`, `problem`, `blocked`, `clause`, `judgment`, `obligation`, `handoff`
+# all grade `읽기`) and `propose-done` — WITHOUT A LIST, because a list is a
+# hole the moment a kind is added. Condition (3) makes a dispatch the act that
+# MAKES progress rather than a judgment about it, so the evaluation-order
+# problem (B1 firing in the dispatch act's own preamble, before the stage
+# exists) does not move — it disappears.
+#
+# A router that only reads is caught by none of B1..B3, and that is an ACCEPTED
+# residual: counting reads is exactly the defect that fired B1 on the router's
+# first three reconnaissance reads, and what bounds the rest is the shift cap,
+# the wall-clock deadline and B4. So B4 sits OUTSIDE the predicate — a read
+# still spends tokens, and a cost boundary inside the predicate would leave a
+# reconnaissance-only overrun unseen by every boundary at once.
+#
+# B2 lives inside the same block and inherits the predicate, and that is a fix
+# rather than a side effect: B2 never had a live-stage early return, so four
+# gate calls from a stage could fire B2 against itself.
 # ---------------------------------------------------------------------------
-readonly B1_STAGNATION_N=3
+# N=5, NOT 3. Replaying a real ledger, N=3 fired three times on one healthy run
+# and N=5 fired zero times. A contract-keeping router emits at most three
+# above-read acts between structural rows (commit, push, PR creation — or push,
+# merge), so 3 was never a binding condition. The asymmetry decides the rest: a
+# false positive costs a night and the in-flight stage's work; a false negative
+# costs two more acts before the slower detector (B3, 40 acts) takes over.
+readonly B1_STAGNATION_N=5
+# M stays at 3. B2 counts the INVARIANCE of the obligation set, not the repeat
+# of a judgment, so judgments becoming rarer changes how fast it is reached and
+# not what it means — and the direction is slower, which is the safe one.
 readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
 
 gate_boundaries() {
+  # gate_boundaries <graded> <kind> — evaluated on every act and exec.
+  #
+  # CALLED FROM `gate_verb_act` AND NOT FROM THE PREAMBLE. Every verb passes the
+  # preamble, so a boundary evaluated there would fire B1 on entry to a
+  # two-hour `wait` and re-evaluate it on every heartbeat. The boundaries are
+  # per act; the preamble is where settlement and bookkeeping live, and the
+  # temptation to hoist something here is exactly what this sentence is for.
+  local graded="${1:-}" kind="${2:-}" judgment=1
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
   # three of its four call sites got one; this was the fourth, so `want` was
   # empty, the narrowing was skipped entirely, and a `절단점=판단` approval
@@ -9651,35 +9716,57 @@ gate_boundaries() {
   local pending
   pending=$(gate_pending_approval_ids act | gate_count)
 
-  if [ "$pending" = "0" ]; then
+  # THE JUDGMENT PREDICATE — see the block comment above. A stage is not a
+  # judging actor, a read is not a judgment, and a dispatch or a shift launch
+  # is the act that MAKES progress rather than a judgment about it. The stage
+  # check reads the environment through the one owner of the seat markers.
+  if cc_caller_is_stage; then judgment=0; fi
+  [ "$graded" = "읽기" ] && judgment=0
+  case "$kind" in skill|router-shift) judgment=0 ;; esac
+
+  if [ "$pending" = "0" ] && [ "$judgment" = "1" ]; then
     gate_b1_stagnation
     gate_b2_obligations
     gate_b3_act_budget
   fi
-  # B4 stays live even while waiting: cost can still climb.
+  # B4 stays live even while waiting, and OUTSIDE the judgment predicate: a
+  # read-only router still spends tokens, and a boundary inside the predicate
+  # would leave that spend unseen by every boundary at once.
   gate_b4_cost
 }
 
 gate_b1_stagnation() {
-  # A RUN WITH A LIVE STAGE IS NOT STALLED, and without this the boundary fires
-  # on every healthy run. The vector is manifest-derived plus segment rows plus
-  # obligations plus cycles; a stage doing its work writes none of those, so the
-  # digest is constant for as long as it runs — by construction, not by
-  # accident. Any stage making four gate calls therefore issued B1 against
-  # itself.
+  # THE LIVE-STAGE SUPPRESSION IS GONE. It neither raised nor reset the counter,
+  # so the value FROZE while a stage ran, and the first judgment after the last
+  # stage died used that value and fired at once — the very moment a healthy
+  # run resumes routing. Measured: live, the counter held at 4 and nothing
+  # fired; the first judgment after the stage died raised it to 5 and fired.
+  # And because B1's own approval suspends B1..B3, the counter did not merely
+  # freeze — it froze AT THE FIRING THRESHOLD.
   #
-  # And the false positive did not end there: an open approval suspends B1, B2
-  # and B3, so one of these a few minutes into the first stage switched off
-  # stagnation detection for the rest of the night. The three boundaries were
-  # spent before they could do the thing they exist for.
+  # What the suppression was for (a stage firing B1 against itself) is covered
+  # completely by the caller condition in `gate_boundaries`. B1 now measures the
+  # ROUTER, not the run, and the router's cadence does not change because a
+  # stage is running elsewhere. Replaying a real 1037-row ledger with the
+  # suppression removed and the caller condition applied, judgments went from
+  # 19 to 28, the longest freeze stayed at 4, and N=5 fired zero times.
   #
-  # This is a suppression rather than a reset: the counter is left alone so that
-  # a run which really does stop after its stages end still reaches the
-  # threshold on the following judgements.
+  # THE COUNTER IS NOT RESET AT A SHIFT BOUNDARY. `progress-repeat` lives in
+  # the run directory and carries across shifts. Zeroing it at shift launch
+  # ("a new shift, fresh eyes") would mean B1 can never see a stall longer than
+  # one shift, and the shift cap would become a way to launder stagnation. The
+  # unit of judgment is the whole router — the seat and every shift as one —
+  # and `교대 기동` is not progress.
+  #
+  # AFTER A PERSON CLOSES THE APPROVAL, what to expect: while it is open there
+  # is neither evaluation nor counting. Once closed, the next judgment on the
+  # same key raises the counter but computes the SAME id, so no new question
+  # appears (`gate_has_row` matches closed rows too). One structural row landing
+  # takes `n` back to 0 and yields a fresh id. So "keep going" buys exactly one
+  # frozen state, and the router has to move a structural row to earn the next
+  # question. Closing the approval does not touch the counter — a boundary's
+  # remedy must not move its own counter.
   local h prev n
-  if [ "$(gate_live_stages)" != "0" ]; then
-    return 0
-  fi
   h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/progress-repeat" 2>/dev/null || printf '0')
@@ -9714,7 +9801,7 @@ gate_b2_obligations() {
   printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
   [ "$(gate_open_obligations | gate_count)" = "0" ] && return 0
-  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}개 사이클 동안 진전 없이 그대로입니다"
+  gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다"
 }
 
 gate_b3_act_budget() {
@@ -9750,23 +9837,18 @@ gate_b3_act_budget() {
   total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
          | { grep -F '축2=' || true; } \
          | { grep -v '축2=읽기' || true; } | gate_count)
-  # THE WINDOW KEY EXCLUDES THIS COUNTER'S OWN INPUT, and getting that wrong is
-  # how the boundary was silently disarmed once already.
-  #
-  # `total` above is byte-for-byte the same pipeline as the vector's `acts=`
-  # line, so if the window were keyed on the full progress digest the count
-  # would sit inside its own hash input and BOTH branches would yield zero:
-  # when `total` moves the digest moves, the baseline is reset to `total`, and
-  # `n` is 0; when `total` does not move the baseline already equals it, and `n`
-  # is 0 again. The boundary then cannot fire on any input at all. Measured on a
-  # live run: baseline 72 against a budget of 40, and `n` was 0.
-  #
-  # That is the counter-inside-its-own-hash defect this file names in
-  # `gate_progress_vector`'s preamble and keeps B1's counter in the run
-  # directory to avoid. Spending budget is not the kind of progress that should
-  # open a new window — if it were, no amount of spending could ever exhaust
-  # one — so the key is the vector with that line removed.
-  h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
+  # THE WINDOW KEY IS THE WHOLE PROGRESS DIGEST, and it can be only because the
+  # exec count is no longer a component of the vector. While `acts=` sat there
+  # this key had to strip it: `total` was byte-for-byte the vector's own line,
+  # so keying on the full digest put the count inside its own hash and BOTH
+  # branches yielded zero — when `total` moved the digest moved and the
+  # baseline was reset to `total`; when it did not move the baseline already
+  # equalled it. Measured on a live run: baseline 72 against a budget of 40 and
+  # `n` at 0. The vector now carries `dispatches=` instead, which this count
+  # does not touch, so the stripped-key form and the full digest are the same
+  # value and the full digest is the one spelled here. Spending budget is still
+  # not the kind of progress that opens a new window.
+  h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it

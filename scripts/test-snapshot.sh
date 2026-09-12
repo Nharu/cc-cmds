@@ -383,6 +383,38 @@ else
 fi
 check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest)" "$pd_before"
 
+# AN ABOVE-READ EXEC IS NOT PROGRESS EITHER. It used to be (`acts=`), and under
+# the judgment definition that made the judgment count a component of the very
+# digest the stagnation counter compares — the counter inside its own hash.
+pd_before=$(digest)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=repo | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=x | prev=z\n' >> "$FIX_LEDGER"
+check "읽기 초과 exec 행은 진전 다이제스트를 움직이지 않는다" "$(digest)" "$pd_before"
+
+# A DISPATCH IS PROGRESS, and it is selected on the actor field POSITIVELY. The
+# row a stage could forge (`행위자=스테이지`) and the row written before the
+# field existed both contribute nothing; only a router's dispatch moves it.
+pd_before=$(digest)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+pd_disp=$(digest)
+if [ "$pd_disp" != "$pd_before" ]; then
+  ok "교대의 파견 인가 행이 진전 다이제스트를 움직인다"
+else
+  bad "파견 진전" "파견 행이 들어왔는데 해시가 그대로다"
+fi
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD2 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+pd_lead=$(digest)
+if [ "$pd_lead" != "$pd_disp" ]; then
+  ok "리드의 파견 인가 행도 움직인다"
+else
+  bad "파견 진전" "리드 파견 행이 들어왔는데 해시가 그대로다"
+fi
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD3 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+check "스테이지가 쓴 파견 행은 진전이 아니다 (구속되는 쪽은 자기 진전을 쓸 수 없다)" "$(digest)" "$pd_lead"
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD4 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=옛 행 | prev=z\n' >> "$FIX_LEDGER"
+check "행위자 필드가 없는 옛 파견 행은 아무것도 기여하지 않는다" "$(digest)" "$pd_lead"
+printf -- '- `자율 승인` | kind=skill | 결정=결과 | 대상=repo | 세그먼트=SD1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 행위자=교대 | 근거=rc=1 | prev=z\n' >> "$FIX_LEDGER"
+check "파견 실패를 적는 결정=결과 행은 진전이 아니다" "$(digest)" "$pd_lead"
+
 n_ob=$(jq -r '.obligations_total' "$WORK/s1.json")
 check "의무 총수가 중복 제거된 값으로 보고된다" "$n_ob" "1"
 
@@ -512,6 +544,48 @@ else
 fi
 
 LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 8. The judgment predicate — who moves the stagnation counter, and B4 outside it
+#
+# `gate_boundaries` is driven directly through the sourcing seam. B1..B3 are
+# evaluated on a JUDGMENT only: a call from a seat that is not a stage, graded
+# above `읽기`, whose kind is neither a dispatch nor a shift launch. All three
+# seat markers are PINNED on every call — this suite runs from inside a
+# pipeline stage too, and an inherited marker would make every row below a
+# stage call that judges nothing. A1 is resolved and A2 is `절단점=판단`, so no
+# act-class approval suspends the boundaries here.
+# ---------------------------------------------------------------------------
+printf '%s\n' "$(digest)" > "$RUN_DIR/progress-digest"
+printf '%s\n' "1" > "$RUN_DIR/progress-repeat"
+printf '%s\n' "0" > "$RUN_DIR/obligation-repeat"
+judge() {  # judge <seg> <stage> <shift> <graded> <kind>
+  ( CC_PIPELINE_SEGMENT="$1" CC_PIPELINE_STAGE_ID="$2" CC_PIPELINE_SHIFT_ID="$3"
+    export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+    gate_boundaries "$4" "$5" ) >/dev/null 2>&1
+  cat "$RUN_DIR/progress-repeat"
+}
+check "스테이지 좌석의 읽기 초과 호출은 판정이 아니다"          "$(judge S1 'S1#1' '' 워크트리쓰기 '')" "1"
+check "스테이지 마커 하나만 서 있어도 판정이 아니다"             "$(judge '' 'S1#1' '' 워크트리쓰기 '')" "1"
+check "라우터의 읽기는 판정이 아니다"                            "$(judge '' '' '' 읽기 '')" "1"
+check "기장 행위(읽기 등급)는 판정이 아니다"                     "$(judge '' '' '' 읽기 segment)" "1"
+check "파견(kind=skill)은 판정이 아니다"                         "$(judge '' '' '' 워크트리쓰기 skill)" "1"
+check "교대 기동(kind=router-shift)은 판정이 아니다"             "$(judge '' '' '' 워크트리쓰기 router-shift)" "1"
+# The control rows: without them every row above passes against a boundary
+# that never counts.
+check "리드의 읽기 초과 행위는 판정이다 (카운터 +1)"             "$(judge '' '' '' 워크트리쓰기 x)" "2"
+check "교대 샤드의 읽기 초과 행위도 판정이다 (샤드는 라우터다)"  "$(judge '' '' 'R1#1' 외부상태변경 '')" "3"
+check "여기까지 경계 승인은 없다 (N=5 미만)" "$(grep -c '절단점=경계' "$LEDGER" || true)" "0"
+
+# B4 IS OUTSIDE THE PREDICATE: a read-only router — or a stage — still spends
+# tokens, and a cost boundary inside the predicate would leave that spend unseen
+# by every boundary at once. `## 인가` is the manifest's last section, so the
+# ceiling lands inside it; no CLI call follows this point.
+printf '**비용 천장**: 100\n' >> "$FIX_MANIFEST"
+printf -- '- `cost` | 누적 usd=90 | 스테이지 수=1 | 관측 시각=2026-01-01T05:00:00Z | prev=z\n' >> "$FIX_LEDGER"
+judge S1 'S1#1' '' 읽기 '' >/dev/null
+check "스테이지의 읽기에서도 B4 는 평가된다 (술어 밖)" "$(grep -c '구속 튜플=B4' "$LEDGER" || true)" "1"
+check "그 호출이 정체 카운터는 건드리지 않았다" "$(cat "$RUN_DIR/progress-repeat")" "3"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

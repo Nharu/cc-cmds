@@ -485,7 +485,7 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
 | `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
@@ -513,6 +513,8 @@ They are written from three different places, because the three have different k
 **`절단점` and `유도 절단점` are two different claims and are carried as two fields.** `--cutpoint` is what the CALLER said, and the gate also derives a rung from the argv itself — `gh pr merge` and a non-GET `gh api …/pulls/<n>/merge` are `머지`, `gh pr create` is `PR`, `git commit` is `커밋`, `terraform apply`/`destroy` is `배포`, and wrappers (`lockf`, `command`, `find -exec`, `rg --pre`) are unwrapped to whatever they run. `절단점` on the row is the rung the act was **adjudicated** at and `유도 절단점` is what the argv said, `-` where the table has no row for that command. One field cannot carry both: "the argv says this is a merge" and "the caller says this is a merge" would become the same sentence, and telling them apart is the whole of this axis. **Declaring below the derived rung is refused with exit 8**; declaring above it passes and the derived rung wins, because labelling every act with the target's cutpoint is the ordinary router path rather than an anomaly. **`git push`, `git merge` and `git branch` are deliberately not derived** — whether a push IS the merge depends on the refspec's destination, which only the manifest's target row can answer, and this derivation runs before target resolution. **A residual, stated rather than hidden**: when the derived rung wins, both fields carry the same value, so an act declared honestly low and one declared high and pushed down read alike on the row — the difference survives only as a `과신고` line on stderr.
 
 **`자격` records which credential each act actually ran under.** With neither pipeline credential provisioned the gate falls through to the ambient one — on a developer machine a full-scope login — and the fallback is kept, because refusing would stop every host that has not provisioned one. What is not kept is the silence: `주변` on the row is how the morning tells a run that had the separation from one that only appeared to.
+
+**`행위자` records which seat wrote the authorisation row — `리드`, `교대` or `스테이지`.** Nothing else on the row could: `교대=` is `0` for the lead and for a stage alike (it reads only the shift marker), and no guard stops a stage from calling `act --kind skill`. The progress vector's `dispatches=` component positively selects dispatch authorisation rows that carry this field with a value other than `스테이지`, which is what keeps the constrained side from writing its own progress. A row written before the field existed carries none and contributes nothing — the safe direction. The field does not replace the runtime judgment (the gate reads the seat markers from the environment at judgment time); it is for whoever reads the row afterwards — the vector component, the morning report, a replay.
 
 **`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
 
@@ -557,6 +559,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.등급` | `0` \| `1` \| `2` |
 | `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` |
 | `자율 승인.자격` | `분리` \| `주변` |
+| `자율 승인.행위자` | `리드` \| `교대` \| `스테이지` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
 | `리뷰 의무.이행 판정` | `착지·포함` \| `미착지` \| `앵커 없음` |
