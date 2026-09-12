@@ -431,6 +431,11 @@ fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+# 리뷰-후-머지 룰은 `cycle` 행이 가리키는 리포트가 실재하고 「발견 요약」을
+# 담고 있는지 본다. 통과를 기대하는 픽스처들이 공유하는 완결 리포트이며,
+# 미완 리포트와 부재는 그 절이 자기 파일을 따로 만들어 잰다.
+FXREPORT="$WORK/fixture-review.md"
+printf '# 픽스처 리뷰 리포트\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$FXREPORT"
 export XDG_STATE_HOME="$WORK/state"
 
 # THE CLI THE LAUNCHER EXECS IS OFF FOR THIS WHOLE PROCESS, for the same reason
@@ -1564,7 +1569,7 @@ gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpo
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
-printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head0" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 # Judged by the ABSENCE of the rule's refusal line rather than by the exit code:
 # past the checks the gate performs the act, and `gh pr merge` in a fixture with
@@ -1597,7 +1602,7 @@ fi
 # review record is re-stamped at the amended HEAD first: without that, the
 # amend above has already made the old HEAD unreachable and this case would
 # silently exercise the `무관` arm while claiming to test this one.
-printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head_amend" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head_amend" "$FXREPORT" >> "$LEDGER"
 ( cd "$WT" && echo two > b.txt && git add -A && git commit -qm two ) >/dev/null 2>&1
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
@@ -1633,7 +1638,7 @@ esac
 # together with the id of the session that spawned it.
 # ---------------------------------------------------------------------------
 printf -- '- `segment` | id=SEP | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
-printf -- '- `cycle` | 세그먼트=SEP | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEP | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$LEDGER"
 # THE DISPATCHER IS NOT AN ANCESTOR IN THE SENSE THIS RULE MEANS. The router
 # launches both stages and the gate records it as `부모` on both rows, so the
 # two closures met at the router on EVERY run a router drove and this rule
@@ -1656,7 +1661,7 @@ esac
 printf -- '- `stage-result` | 세그먼트=SEPF | 스테이지=S4 | 세션 id=impl-f | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `stage-result` | 세그먼트=SEPF | 스테이지=S5 | 세션 id=rev-f | 부모=impl-f | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `segment` | id=SEPF | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
-printf -- '- `cycle` | 세그먼트=SEPF | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEPF | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPF --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
@@ -1669,7 +1674,7 @@ esac
 printf -- '- `stage-result` | 세그먼트=SEPD | 스테이지=S4 | 세션 id=same-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `stage-result` | 세그먼트=SEPD | 스테이지=S5 | 세션 id=same-1 | 부모=router-1 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `segment` | id=SEPD | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
-printf -- '- `cycle` | 세그먼트=SEPD | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEPD | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEPD --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
@@ -1681,7 +1686,7 @@ esac
 printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S4 | 세션 id=impl-9 | 부모=미상 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `stage-result` | 세그먼트=SEP2 | 스테이지=S5 | 세션 id=rev-9 | 부모=미상 | 종단 부류=정상 완료\n' >> "$LEDGER"
 printf -- '- `segment` | id=SEP2 | 상태=구현완료 | 커밋=%s | 워크트리=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$WT" >> "$LEDGER"
-printf -- '- `cycle` | 세그먼트=SEP2 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$(cd "$WT" && git rev-parse HEAD)" >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=SEP2 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$(cd "$WT" && git rev-parse HEAD)" "$FXREPORT" >> "$LEDGER"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment SEP2 --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
@@ -1736,7 +1741,7 @@ check "세그먼트 행이 기록된다" "$rc" "0"
 n=$(grep -c '^- `segment` | 교대=[0-9][0-9]* | id=SW ' "$LEDGER" || true)
 check "그 행이 원장에 있다" "$n" "1"
 
-# The `cycle` row's four required fields are the four the merge rule reads. A
+# The `cycle` row's five required fields are the five the merge rule reads. A
 # row missing one of them does not fail here under the old path either — it
 # fails inside the rule, reported as a review with no HEAD, which sends the
 # reader to the review instead of to the row this run wrote.
@@ -1744,20 +1749,110 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0
 check "리뷰 HEAD 없는 사이클 행은 거부된다" "$rc" "2"
+# THE TEXT, NOT ONLY THE STATUS — and this arm needed it the moment a second
+# field joined the required list. This call now omits `리뷰 HEAD` AND `리포트
+# 경로`, and the loop returns the same vocabulary code at whichever it reaches
+# first, so a status-only assertion stays green even with `리뷰 HEAD` deleted
+# from that list. What was lost is not the branch but the ability to tell the
+# two omissions apart.
+case "$msg" in
+  *"리뷰 HEAD"*) ok "그 거절이 빠진 필드를 이름으로 말한다" ;;
+  *) bad "리뷰 HEAD 누락 거절 문면" "$msg" ;;
+esac
 
+# THE WRITE SIDE AND THE READ SIDE MOVE TOGETHER. The rule now opens the report
+# the row names, so a row without that field can never satisfy it — and a
+# refusal that waits for the merge arrives hours after the call that omitted it,
+# in a run that can no longer repair the row. Refusing at write time puts the
+# failure on the one call a router can still fix. Measured: the documented
+# router argv carried four fields, so the writer this rule depends on was
+# producing rows the rule would reject.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+check "리포트 경로 없는 사이클 행은 쓰기 시점에 거부된다" "$rc" "2"
+case "$msg" in
+  *"리포트 경로"*) ok "그 거절이 빠진 필드를 이름으로 말한다" ;;
+  *) bad "쓰기 시점 거절 문면" "$msg" ;;
+esac
+
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT"
 check "사이클 행이 기록된다" "$rc" "0"
 
+# --- THE ROW IS A CLAIM AND THE REPORT IS WHAT BACKS IT ---------------------
+#
+# The rule used to read the ledger and nothing else, so a `cycle` row saying
+# `P0=0 P1=0` passed whatever produced it — including a review stage that died
+# in its first round and left a thirteen-line stub. Measured on three runs in
+# one night: two segments carried a passing row whose report had no findings
+# summary and no merge verdict, and a third reached its merge with no `cycle`
+# row at all. The four cases below are the four answers the rule can give, and
+# only the last passes.
+#
+# THE FIRST CASE IS WRITTEN STRAIGHT INTO THE LEDGER, and that is not a shortcut.
+# The gate now refuses a `cycle` row without this field at write time, so the row
+# this case needs cannot be produced through `act` at all — pointing the fixture
+# at the gate would make the rule's own arm unreachable and the assertion would
+# pass by measuring the writer instead. The arm still has to hold: the ledger has
+# writers that are not this gate (the driver's own `ledger_row`, and every row
+# written before the field was required), and for those the rule is the only
+# check left. So the row is planted the way such a row actually arrives.
+printf -- '- `cycle` | 세그먼트=SW | 사이클=9 | P0=0 | P1=0 | 리뷰 HEAD=%s\n' "$head_b" >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
+     -- gh pr merge 1
+case "$msg" in
+  *"「리포트 경로」가 없어"*) ok "리포트 경로 없는 사이클 행으로는 머지가 통과하지 않는다" ;;
+  *) bad "리포트 경로 부재" "$msg" ;;
+esac
+
+# The path is named and nothing is there.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$head_b" \
+     "리포트 경로=$WORK/no-such-report.md"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
+     -- gh pr merge 1
+case "$msg" in
+  *"가리키는 리포트가 없습니다"*) ok "가리키는 리포트가 없으면 머지가 통과하지 않는다" ;;
+  *) bad "리포트 부재" "$msg" ;;
+esac
+
+# THE STUB, which is the shape that actually happened. A real file with a real
+# title and one `(작성 중 …)` line — indistinguishable from a finished report by
+# existence alone, which is why existence alone is not the check.
+SWSTUB="$WORK/review-stub.md"
+printf '# 코드 리뷰 리포트 — SW 사이클 3\n\n## 개요\n\n(작성 중 — 리뷰 팀 라운드 1 진행 중)\n' > "$SWSTUB"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 P0=0 P1=0 "리뷰 HEAD=$head_b" \
+     "리포트 경로=$SWSTUB"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
+     -- gh pr merge 1
+case "$msg" in
+  *"「발견 요약」이 없습니다"*) ok "발견 요약 없는 스텁 리포트로는 머지가 통과하지 않는다" ;;
+  *) bad "스텁 리포트" "$msg" ;;
+esac
+
 # End to end: the same merge that was refused for want of a review record is now
-# judged by the record instead of by its absence.
+# judged by the record AND by the report that backs it.
+SWREPORT="$WORK/review-real.md"
+printf '# 코드 리뷰 리포트 — SW 사이클 4\n\n## 개요\n\n- **발견 요약**: P0 0건 | P1 0건 | P2 2건\n\n## 머지 판정\n\n머지 가능.\n' > "$SWREPORT"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=4 P0=0 P1=0 "리뷰 HEAD=$head_b" \
+     "리포트 경로=$SWREPORT"
+check "리포트를 갖춘 사이클 행이 기록된다" "$rc" "0"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SW --cutpoint 머지 \
      -- gh pr merge 1
 case "$msg" in
   *"룰 거부: 리뷰-후-머지"*) bad "라우터 기록" "게이트가 쓴 리뷰 기록을 룰이 읽지 못한다: '"'"'$msg'"'"'" ;;
-  *) ok "게이트가 쓴 세그먼트·사이클 행으로 머지가 통과한다" ;;
+  *) ok "게이트가 쓴 세그먼트·사이클 행과 실재하는 리포트로 머지가 통과한다" ;;
 esac
 
 # The bookkeeping act is graded `읽기`: what it performs is the row, and the row
@@ -1783,7 +1878,7 @@ esac
 # ---------------------------------------------------------------------------
 for badhead in 'HEAD' '@' 'seg/20260907-ef4438ac-slice-A' 'HEAD@{0}'; do
   gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
-       --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$badhead"
+       --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$badhead" "리포트 경로=$FXREPORT"
   check "개정 표현식은 리뷰 HEAD 로 거부된다 ($badhead)" "$rc" "2"
   # THE TEXT, NOT ONLY THE STATUS. Exit 2 is the vocabulary refusal that every
   # missing-field branch above also returns, so a status-only assertion cannot
@@ -1799,13 +1894,13 @@ done
 # hands out abbreviations this size and they name a commit just as exactly.
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 \
-     "리뷰 HEAD=$(printf '%s' "$head_b" | cut -c1-7)"
+     "리뷰 HEAD=$(printf '%s' "$head_b" | cut -c1-7)" "리포트 경로=$FXREPORT"
 check "7자 짧은 sha 는 통과한다 (하한이 공허하지 않다)" "$rc" "0"
 
 # Written LAST so the newest `cycle` row for SW carries the same full sha it
 # carried before this section existed — the fixtures below read that row.
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
-     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b"
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT"
 check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
@@ -9514,7 +9609,7 @@ check "4d(i): 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 # --- 4d(ii). 머지 전에 찍힌 리뷰는 덮지 못한다 -------------------------------
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4A --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x \
-    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse 'HEAD~1' )"
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse 'HEAD~1' )" "리포트 경로=$FXREPORT"
 check "4d(ii): 조상 리뷰 HEAD 를 실은 cycle 행이 기록된다" "$rc" "0"
 sa_fulfil "$OID4A"
 check "4d(ii): 리뷰 HEAD 가 머지 커밋의 조상이면 거절된다" "$rc" "2"
@@ -9522,7 +9617,7 @@ check "4d(ii): 리뷰 HEAD 가 머지 커밋의 조상이면 거절된다" "$rc"
 # --- 4e. 덮는 리뷰는 닫는다 — 세 형태 전부 ------------------------------------
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4A --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x \
-    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$M4A"
+    -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$M4A" "리포트 경로=$FXREPORT"
 sa_fulfil "$OID4A"
 check "4e(i): 리뷰 HEAD 가 머지 커밋과 같으면 닫힌다" "$rc" "0"
 check "4e(i): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID4A")" '이행 판정')" "착지·포함"
@@ -9534,7 +9629,7 @@ sa_merge S4E
 OID=$(sa_ob_id S4E); M=$(sa_field "$(sa_ob_last "$OID")" '머지 커밋')
 DESC=$(sa_commit '작업 2')
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4E --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$DESC"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$DESC" "리포트 경로=$FXREPORT"
 sa_fulfil "$OID"
 check "4e(ii): 리뷰 HEAD 가 머지 커밋의 후손이면 닫힌다" "$rc" "0"
 check "4e(ii): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID")" '이행 판정')" "착지·포함"
@@ -9547,7 +9642,7 @@ OID=$(sa_ob_id S4T); M=$(sa_field "$(sa_ob_last "$OID")" '머지 커밋')
 # amend 는 sha 를 바꾸고 트리를 그대로 둔다 — 리베이스가 만드는 것과 같은 형태다.
 AMEND=$( cd "$SA_SEGWT" && git commit -q --amend -m 'amended' && git rev-parse HEAD )
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4T --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$AMEND"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$AMEND" "리포트 경로=$FXREPORT"
 sa_fulfil "$OID"
 check "4e(iii): sha 는 달라도 트리가 같으면 닫힌다 (amend·리베이스)" "$rc" "0"
 check "4e(iii): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID")" '이행 판정')" "착지·포함"
@@ -9980,7 +10075,7 @@ check "15: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 # cycle 행 없이 rc 0 을 기대하면 이 항목은 항목 4d(i) 와 정면으로 어긋난다.
 M15=$(sa_field "$(sa_ob_last "$OID15")" '머지 커밋')
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S15 --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M15"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M15" "리포트 경로=$FXREPORT"
 check "15: 그 머지 커밋을 덮는 cycle 행이 기록된다" "$rc" "0"
 sa_fulfil "$OID15"
 check "15: 그 행의 대상으로 다시 부르면 닫힌다" "$rc" "0"
@@ -10009,7 +10104,7 @@ else
   ok "16: fetch 전에는 미착지로 보인다"
 fi
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S16 --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M16"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M16" "리포트 경로=$FXREPORT"
 sa_fulfil "$OID16"
 check "16: 게이트가 스스로 fetch 해 착지로 판정한다" "$rc" "0"
 check "16: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID16")" '이행 판정')" "착지·포함"
@@ -10083,7 +10178,7 @@ sa_merge S19B
 OID19B=$(sa_ob_id S19B)
 M19B=$(sa_field "$(sa_ob_last "$OID19B")" '머지 커밋')
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S19B --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M19B"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M19B" "리포트 경로=$FXREPORT"
 # (iii) 위조 단언 — argv 가 그 값을 정할 수 없다.
 sa_fulfil "$OID19B" "이행 판정=앵커 없음"
 check "19(ii): 앵커 있고 착지에 덮는 cycle 행이 있으면 착지·포함 이다" "$rc" "0"
@@ -10196,7 +10291,7 @@ M22=$(sa_field "$(sa_ob_last "$OID22")" '머지 커밋')
 ( cd "$SA_REPO" && git update-ref "refs/heads/$SA_BASE" "$M22" \
   && git remote set-url origin "$SA_ROOT/존재하지-않는-경로.git" ) >/dev/null 2>&1
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S22 --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M22"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M22" "리포트 경로=$FXREPORT"
 sa_fulfil "$OID22"
 check "22: 로컬 베이스가 이미 담고 있으면 원격이 죽어 있어도 착지다" "$rc" "0"
 check "22: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID22")" '이행 판정')" "착지·포함"
@@ -10331,7 +10426,7 @@ check "31: 생성 등급을 함께 싣는다 (아침이 읽는 값이지, 술어
 sa_seg_row SEP2 선리뷰후머지
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment SEP2 --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x \
-    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse HEAD )"
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$( cd "$SA_SEGWT" && git rev-parse HEAD )" "리포트 경로=$FXREPORT"
 sag act --manifest "$SA_MANIFEST" --kind x --target main --segment SEP2 --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x -- true
 # 두 스테이지 결과를 실어 `구현-리뷰-분리` 가 빈 집합이 아니라 실제 계보를 읽게
@@ -10588,7 +10683,7 @@ check "33b: 배포로 신고된 평범한 워크트리 쓰기는 이 룰에 걸�
 #     위칸으로 신고해도 이 룰에 닿지 않는다.
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S33B --cutpoint 배포 \
     --snapshot-digest "$(SAH)" --rationale x \
-    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$(cd "$SA_SEGWT" && git rev-parse HEAD)"
+    -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$(cd "$SA_SEGWT" && git rev-parse HEAD)" "리포트 경로=$FXREPORT"
 check "33b: 사다리 위칸으로 신고된 장부 기록은 이 룰에 걸리지 않는다" "$rc" "0"
 
 # --- 34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
@@ -10648,7 +10743,7 @@ case "$msg" in
   *) bad "35 문면" "$msg" ;;
 esac
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S35 --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$m35"
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$m35" "리포트 경로=$FXREPORT"
 check "35: 그 커밋을 덮는 리뷰 기록이 쓰인다" "$rc" "0"
 sa_fulfil "$OID35"
 check "35: 덮는 리뷰가 있으면 닫힌다" "$rc" "0"

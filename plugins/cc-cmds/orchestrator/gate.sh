@@ -110,7 +110,7 @@
 #   gate.sh act --kind segment --target <alias> --segment <id> ... \\
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
-#               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
+#               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
 #   gate.sh act --kind obligation --target <alias> ... \\
 #               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
@@ -6009,11 +6009,20 @@ gate_record_row() {
       log "세그먼트 기록 — $seg ($st)"
       ;;
     cycle)
-      # The four the merge rule actually reads. A cycle row missing any of them
+      # The five the merge rule actually reads. A cycle row missing any of them
       # does not fail at write time under the old path either — it fails later,
       # inside the rule, as "the review record has no HEAD", which reads as a
       # broken review rather than as a row this run wrote incompletely.
-      for k in '사이클' 'P0' 'P1' '리뷰 HEAD'; do
+      #
+      # `리포트 경로` JOINED THIS LIST WITH THE RULE THAT READS IT. The rule now
+      # opens that file and looks for a findings summary, because a row claiming
+      # `P0=0 P1=0` used to pass whatever produced it — including a review stage
+      # that died in its first round and left a stub. Requiring the field only on
+      # the reading side would put the failure at the merge, hours after the row
+      # was written and in a run that can no longer repair it; requiring it here
+      # puts the refusal on the call that omitted it, which is the one place a
+      # router can still add the field.
+      for k in '사이클' 'P0' 'P1' '리뷰 HEAD' '리포트 경로'; do
         if [ -z "$(gate_field_of "$k" "$@")" ]; then
           # `${k}` and not `$k`: the closing bracket that follows is multibyte,
           # and bash reads its first byte as part of the variable NAME — the
