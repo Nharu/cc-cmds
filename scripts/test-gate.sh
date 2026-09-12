@@ -7338,6 +7338,28 @@ case " $vocab " in *" 철회 "*) ok "APPROVAL_STATES 가 철회 를 담는다" ;
 # separator or hash-length change cannot pass on content alone. One boundary
 # approval per boundary is issued through the issuer itself, on this
 # section's ledger, with the binding value each predicate would pass.
+#
+# THE PREMISE IS ESTABLISHED HERE RATHER THAN INHERITED, for the reason 31aa
+# establishes its own. Duplicate suppression is "the last row is `대기`", so a
+# boundary approval that a subsection above left open — same name, same binding
+# value this section is about to pass — makes the issuer correctly return without
+# writing a row, and the count below then reads three rows for four boundaries.
+# The read credit is what moved one there: B1 no longer fires inside a
+# reconnaissance burst, so its firing lands later in the run and is still open
+# when this section arrives. Draining first is what keeps the expectation at
+# four; relaxing it to "three or four" would stop pinning the fourth shape at
+# all, which is the whole assertion.
+for bid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+             | jq -r '.pending_approvals[].id' | grep -E '^B[1-4]-' || true); do
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
+      . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
+      set +e
+      gate_append "승인" "승인 id='"$bid"'" "상태=무효" "질문 문면=앞 절이 남긴 경계 승인" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"' ) >/dev/null 2>&1
+done
+check "형태 픽스처의 전제 — 열린 경계 승인이 하나도 없다" \
+      "$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+         | jq -r '.pending_approvals[].id' | grep -cE '^B[1-4]-' || true)" "0"
 ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
     . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST="'"$NM"'"; LEDGER="'"$LEDGER2"'"; RUN_ID="'"$CONE_RUN_ID"'"; RUN_DIR="'"$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"'"
@@ -7347,11 +7369,17 @@ case " $vocab " in *" 철회 "*) ok "APPROVAL_STATES 가 철회 를 담는다" ;
     gate_issue_boundary_approval B2 "형태 회귀 픽스처 B2" "$(gate_open_obligations | sort | shasum -a 256 | cut -d" " -f1)"
     gate_issue_boundary_approval B3 "형태 회귀 픽스처 B3" "$(gate_progress_vector | grep -v "^acts=" | shasum -a 256 | cut -d" " -f1)"
     gate_issue_boundary_approval B4 "형태 회귀 픽스처 B4" "$(gate_progress_digest)"' ) >/dev/null 2>&1
-bshape_ok=1; bshape_n=0
+# THE BOUNDARY NAMES ARE CARRIED INTO THE VERDICT. A bare count says four rows
+# were expected and three arrived and leaves the reader to guess which boundary
+# went missing — and the three candidates repair differently: a suppression, an
+# id collision, and a row the issuer refused to write are three different
+# defects that produce the same number.
+bshape_ok=1; bshape_n=0; bshape_names=""
 while IFS= read -r brow; do
   [ -n "$brow" ] || continue
   bshape_n=$((bshape_n + 1))
   bid=$(row_field "$brow" '승인 id'); btup=$(row_field "$brow" '구속 튜플')
+  bshape_names="$bshape_names ${bid%%-*}"
   bid_ok=$(printf '%s\n' "$bid" | grep -E '^B[1-4]-[0-9a-f]{8}$' || true)
   btup_ok=$(printf '%s\n' "$btup" | grep -E '^B[1-4]/[0-9a-f]{64}$' || true)
   [ -n "$bid_ok" ] || { bshape_ok=0; bad "경계 id 형태" "$bid"; }
@@ -7362,7 +7390,7 @@ EOF
 if [ "$bshape_n" = "4" ] && [ "$bshape_ok" = "1" ]; then
   ok "경계 승인 id 는 B<n>-<hex8>, 구속 튜플은 B<n>/<sha256> 형태다 (네 경계)"
 elif [ "$bshape_n" != "4" ]; then
-  bad "경계 형태" "네 경계의 발행 행을 기대했는데 ${bshape_n}행이다"
+  bad "경계 형태" "네 경계의 발행 행을 기대했는데 ${bshape_n}행이다 (발행된 경계:${bshape_names:- 없음})"
 fi
 # And the four are drained, so the open boundary approvals do not suspend the
 # boundaries for the sections below.
@@ -7824,8 +7852,23 @@ if [ "${npend_act:-0}" = "0" ]; then
 else
   bad "경계 픽스처" "행위 승인이 ${npend_act}건 열려 있어 유예의 원인을 가릴 수 없다"
 fi
+# THE READ COUNT IS THE CREDIT, AND IT IS READ FROM THE GATE RATHER THAN TYPED.
+# `gate_b1_stagnation` skips the boundary while the no-progress stretch is made
+# of reads and is SHORTER than `B1_READ_CREDIT`, so a fixed loop of six
+# read-grade acts sits inside the credit and B1 stays quiet for a reason this
+# section is not about. The verdict below would then name the open judgment
+# approval as the culprit — the exact misattribution the note above says the
+# fixture must not produce, arriving from the other side. Driving the loop to the
+# credit is what keeps the two causes separable, and reading the constant keeps
+# the loop pointed at the credit that ships rather than at the one that shipped.
+B1_CREDIT_UNDER_TEST=$(sed -n 's/^readonly B1_READ_CREDIT=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -n "$B1_CREDIT_UNDER_TEST" ]; then
+  ok "B1_READ_CREDIT 를 게이트 상수에서 읽는다 ($B1_CREDIT_UNDER_TEST)"
+else
+  bad "B1_READ_CREDIT" "gate.sh 에서 readonly B1_READ_CREDIT=<n> 을 읽지 못했다"; B1_CREDIT_UNDER_TEST=8
+fi
 i=0
-while [ "$i" -lt 6 ]; do
+while [ "$i" -lt "$B1_CREDIT_UNDER_TEST" ]; do
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
         --snapshot-digest "$(HN)" --rationale "정체 경계 확인" -- ls "$CONE_A"
   i=$((i + 1))
@@ -8755,13 +8798,21 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # now live ONCE, in `gate_close_settle`, and every terminal of `gate_close` —
 # the act/boundary `무효`·`거부`·`승인` arms and the judgment label arm — calls
 # it; so the pin is the helper's own adjacency plus the count of its call sites.
+#
+# THE FIFTH SITE IS `철회`, AND IT IS A TERMINAL FOR THE SAME REASON THE OTHER
+# FOUR ARE. A withdrawn approval is equally done being waited on: the seat has to
+# go back and the banner has to come off, and `gate_withdraw_boundary_approval`
+# is the only place that happens outside `gate_close`. Pinning four here after
+# that terminal landed would say the helper is wired at exactly the places it was
+# wired before the withdrawal existed, so the one call the new state depends on
+# would be the one call the count forbids.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 네 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "4"
+check "닫기의 네 종단과 철회 종단이 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "5"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
