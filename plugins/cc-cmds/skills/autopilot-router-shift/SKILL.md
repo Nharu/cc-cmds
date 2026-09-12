@@ -28,6 +28,8 @@ That second clause is the one that closes the hole. The standing rules forbid a 
 
 **CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be the self-approval path the whole separation exists to keep shut — which is also why your session is deliberately kept out of `session-lineage`.
 
+You do not render the question either, and you do not call `prompt`. The canonical prompt (`승인 <id> — <질문>`) and the gate's option menu are the LEAD's to carry into `AskUserQuestion`, verbatim, from `gate.sh prompt --approval <id>`; a shift has no person to show them to, so the whole of your duty is to put the approval id on your return line and end. Two things read as exit 5 from `close`, and the lead tells them apart by the snapshot: an approval nobody has answered yet, and one a person answered with free input — the answer equalled none of the gate's labels, so no disposition could be derived. The second carries `처분 사유=자유 입력` on its last row and the snapshot surfaces it as `disposition` on that `pending_approvals[]` entry (`-` for the first). You will see both as open approvals; neither is yours to resolve.
+
 **CFI-S5 — You write no files.** Your settings variant denies `Write` and `Edit` outright and grants no directories. Everything you change goes through the gate, which is what makes every act of yours a ledger row.
 
 ---
@@ -64,6 +66,7 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `act` | perform a decision the run is authorized for |
 | `exec` | perform a shell act under the gate |
 | `close` | resolve an approval a person has answered — **not yours to call** |
+| `prompt` | the canonical question and menu for one approval — **the lead's to call**; you have nobody to ask |
 
 ### Exit codes
 

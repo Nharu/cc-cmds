@@ -2,13 +2,14 @@
 
 The payload schemas for the autonomous pipeline's durable state. Generic mechanics — path and slug derivation, the header grammar and `owner-doc=` provenance guard, the atomic compare-and-swap write, the never-delete lifetime, the version token — are **not restated here**: they live in `_common/sidecar.md` §1 and this file cites them read-only. What follows is only what §1 delegates to a payload schema: the kinds, their block grammars, their field sets, their mutability splits, and their write forms.
 
-Two sidecar kinds and one non-sidecar record are defined:
+Four sidecar kinds and one non-sidecar record are defined:
 
 | Artifact | Kind token | Writer | Location |
 | --- | --- | --- | --- |
 | Run manifest | `cc-run-manifest v1` | `autopilot` (kickoff) **only** | `<run 디렉터리>/plan.md` |
 | Authorization record | `cc-pipeline-grant v1` | `autopilot` (kickoff) **only** | `<base>/docs/pipeline-grant/{slug}.md` |
 | Run ledger | `cc-pipeline-run v1` | the driver **only** | `<base>/docs/pipeline-run/{slug}.md` |
+| Approval sidecar | `cc-pipeline-approval v1` | the gate **only** | `<base>/docs/pipeline-approval/<run-id>.md` |
 | Halt record | `cc-pipeline-halt v1` | the halting stage | volatile run directory (§4) — **not a sidecar** |
 
 **Why the authorization is a separate file from the ledger.** The decision is about **exposure**, not about structure or convention. In a single file the bytes carrying the permission grant pass through the writer's transform on **every append**, all night; in two files they pass through it **once per run**. That asymmetry holds under both fault models — a bug in the transform and a bug in the append gate — and it matters here specifically because **no lint validates a sidecar**, so a protection that does not rest on gate correctness is the one that actually pays. Progress cursor and resume state still live in **one** ledger; the grant is not progress state, it is the run's input contract.
@@ -505,22 +506,24 @@ The count moved from nine to eleven when the gate acquired two records the exist
 
 | `계열` | Fields |
 | --- | --- |
-| `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `RUN_DIR` · `보고서` |
+| `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `강제 코드` · `베이스 청결` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
 | `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) |
-| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `아티팩트 술어 결과` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
+| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
-| `problem` | `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `finding-id`(required iff `kind=severity`) |
+| `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
-| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `발행 시각` · `해소 시각` |
+| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only; writer pending — the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer) · `관측 시각`(that same row) |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
-| `handoff` | `교대` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` |
+| `handoff` | `교대` · `대상` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` · `기록 시각` |
 | `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
+
+**This table is held equal to the gate's call sites by `scripts/lint-sidecar-field-table.sh`, and the first run of that lint was a reconciliation.** Per series, the union of literal `<키>=` names across every `gate_append '<계열>' …` call must be listed here; where no call site forwards `"$@"`, the listed set must also be written by some call site. `교대` and `prev` are outside the comparison — `gate_append` adds both to every row itself. What that first run found and this table now says: `run` also carries `강제 코드` and `베이스 청결`; `problem` carries `세그먼트`; `자율 승인` carries `대상`·`세그먼트`·`절단점`·`축2` on the acting path and `출처` when absorbed from a stage's terminal line; `handoff` carries `대상` and `기록 시각`; and `stage-result` never spelled `아티팩트 술어 결과` — the predicate's result is folded into `종단 부류` — so that name is gone from the row rather than kept as a field nothing writes. One field is listed ahead of its writer on purpose and says so in its cell: `사유` on a `철회` row is written by the boundary evaluation that withdraws an approval, which lands after this table did — a cell marked `writer pending` is the one shape the lint's reverse direction passes over, and it reports the field by name rather than silently, so the marker cannot outlive the writer's arrival unnoticed.
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
@@ -542,13 +545,23 @@ They are written from three different places, because the three have different k
 
 **`승인` advances by appending, never by editing** — the same discipline `segment.상태` already takes (§3.4). A row carries the `승인 id` it advances; readers take the last row for an id as current. Everything needed to re-issue the question after a session cut is on the row, which is what makes the resume path have a source rather than a memory.
 
-**`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지 집합 다이제스트, 스냅숏 다이제스트)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 발동 시점 H, 관련 세그먼트 집합)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
+**`절단점` on a `승인` row is not always a cutpoint token.** Three shapes share the series because they share the lifecycle: an **act** approval carries a `CUTPOINTS` token and a binding tuple of `(대상 별칭, 슬러그, 행위 토큰, argv 다이제스트, 브랜치, head_sha, base_sha, PR 번호, 리뷰 리포트 다이제스트, 열린 P0·P1)`; a **judgment** approval carries the literal `판단` and a tuple of `(스테이지 id, 질문 문면 다이제스트, 선택지판, 스냅숏 다이제스트 앞 12자)`; a **boundary** approval — issued by B1–B4, which have no act at all — carries the literal `경계` and a tuple of `(경계 이름, 그 경계 술어가 자기 안에서 계산한 결속값)`. Staleness is re-derived at execution against whichever tuple the row carries, so the three do not need three series.
 
-**A pending approval has two ends, not one.** `무효` is reachable through the same transcript binding as `승인`, and it exists because the alternative to granting was pending forever: a pending row counts against termination condition 2 and suspends the stagnation boundaries, so one approval nobody wants to grant stalls the rest of the run. Voiding **removes a blocker**, so it is not the conservative direction and does not get a looser gate — it keeps the requirement that a human line naming both the id and the question text appear in the harness-written transcript. What it buys is the ability to answer *this should not have been asked* without also granting the act.
+**The judgment tuple is serialized into the one `구속 튜플` field as four `/`-separated components** — `<세그먼트>/<질문 전문의 sha256>/<선택지판>/<스냅숏 다이제스트 앞 12자>`, e.g. `S2-slice-A/3f1a…(64 hex)/v1/298c3e07b3c6` — the same shape the act tuple already takes, and no separate `질문 다이제스트` or `선택지판` field exists. The question digest is of the FULL question text, which the approval sidecar (§3b) holds under the block the row's `사이드카 앵커` names, so the row's digest has something to be compared against. `선택지판` is a version token (`v1`) rather than a digest: the option set is a compile-time constant of the gate, its sha256 would be the same 64 characters on every row, and a 2-character token says the same thing — which menu the row MEANT. It does not prove what a person saw; that comparison is made at close, by re-deriving the labels from the gate's table and matching them against the transcript's `options[].label`. Where the segment is unknown the first component is `-`.
 
-**`질문 문면` and `답변 문면` are fenced or sidecar'd, not inlined.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not.
+**The boundary tuple's second component is the value the boundary's own predicate read** — B1 the progress digest, B2 the open-obligation digest, B3 the act-budget window key (the progress vector with `acts=` removed), B4 the progress digest until a bucket width is decided — and the approval id is `<경계 이름>-<sha256(RUN_ID + 경계 이름 + 결속값) 앞 8자>`. `RUN_ID` stays in the salt so the same condition in two runs does not share an id. There is no clock component: `발행 시각` is the only time on the row. Duplicate suppression is "the last row for that id is `대기`", not "any row exists" — a resolved id re-opens with a fresh `대기` row when the same binding value recurs, and the row sequence says what happened to it.
 
-**For a `절단점=판단` approval, `답변 문면` carries the answer BYTES.** For an act approval the answer is binary — the act happens or it does not — so the fixed literal `트랜스크립트 판독` lost nothing, and act approvals keep it. A question's answer is what the next step consumes, and this row is the run's only durable copy of it: recording only that a person answered means the run kept the fact and threw away the content. The excerpt is normalized before it lands — `|` and newlines would splice the row grammar — and clipped with a visible marker rather than silently, because a silent truncation reads in the morning as the whole answer.
+**A pending approval has two ends, not one.** `무효` is reachable through the same transcript binding as `승인`, and it exists because the alternative to granting was pending forever: a pending row counts against termination condition 2 and suspends the stagnation boundaries, so one approval nobody wants to grant stalls the rest of the run. Voiding **removes a blocker**, so it is not the conservative direction and does not get a looser gate — it keeps the requirement that the answer be a real answer frame in the harness-written transcript. What it buys is the ability to answer *this should not have been asked* without also granting the act.
+
+**The transcript binding is by FRAME, not by text.** The line that closes an approval must be the `tool_result` of an `AskUserQuestion` call whose question carried the approval id (joined through `tool_use_id` to the `tool_use` block in the same transcript) and must hold the harness's `toolUseResult.answers` map, in which the question text is the key and the person's choice is the value. The id is looked for by containment anywhere in the question text. Nothing else qualifies: not the router's own Bash output echoing the ledger, not another tool's result, not an `is_error` frame (a dismissed dialog — the harness's text `The user doesn't want to proceed with this tool use` — or a collapsed call; the two get different warnings because they are opposite evidence about whether a person was present, and the first is called `다이얼로그 취소`, never `기각`, which is a state token). An ineligible frame, a torn last line, or a line that carries the id and is no frame at all leaves the approval `대기` and writes **no row**. Between two answer frames for one id the later one wins, and the search stops at the first lineage transcript holding one.
+
+**For a `절단점=판단` approval the answer is read by label equality against the gate's own label set, never by scanning prose.** The gate owns the labels (`승인` · `거부` · `무효`) and the router renders them verbatim; the person's choice is compared whole-string, in **normal form** — the label with everything from its last ` ← ` onward removed, because the AUQ authoring rule marks the recommended option by appending ` ← 추천` to the label itself — and a menu whose normalized labels are not exactly the gate's set is refused before any answer is read. An answer equal to a label closes the approval with that state. **An answer equal to no label is FREE INPUT and is neither a grant nor a refusal**: the approval stays `대기`, the answer's full text goes to the approval sidecar only, and a further `대기` row is appended carrying `처분 사유=자유 입력` (or `슬롯 부재` when the frame's question slot has no entry in the answers map), `응답 토큰`, `사이드카 앵커` and `관측 시각` — and NO answer field, because `gate_approval_field` returns the last value a key ever had, so an answer on a `대기` row would read to every later reader as an answer with no mark of its status. `close` exits 5 on that path, not 0: 0 means resolved. `--void` and `--reject` may only agree with the label the person chose; a flag against it is refused. Act and boundary approvals have no menu and no label set, so for them the frame decides and the closer's flag is the disposition, as before.
+
+**`질문 문면` and `답변 문면` are excerpts; the full texts live in the approval sidecar.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not. `질문 문면` is clipped to 400 bytes on every row that carries it; `답변 문면` on a judgment approval's `승인`·`거부`·`무효` closing row is clipped to 160 bytes (the `무효` closing row is the thinnest and keeps roughly 61 bytes of headroom); `사유` on a `철회` row to 120. Both clips are normalized before they land — `|` and newlines would splice the row grammar — and cut with a visible marker rather than silently. Beside each excerpt the row carries the sha256 of the full text (`구속 튜플`'s second component for the question, `답변 다이제스트` for the answer), and `사이드카 앵커=<run-id>#<승인 id>` names the sidecar block those digests are of — without the anchor the digests would be values recorded and compared against nothing.
+
+**For a `절단점=판단` approval, `답변 문면` carries the answer BYTES (as that excerpt); act approvals keep the fixed literal `트랜스크립트 판독`.** For an act approval the answer is binary — the act happens or it does not — so the literal lost nothing. A question's answer is what the next step consumes, and recording only that a person answered would mean the run kept the fact and threw away the content; the excerpt is on the row where the morning reader is looking, and the full text is one anchor away. Closing rows of every shape also carry `응답 토큰` — the `tool_use_id` of the answer frame — and `답변 다이제스트`.
+
+**`철회` is the one closing state with no answer behind it, and it has no clock.** A boundary approval whose raising condition has gone away is withdrawn by the gate's own boundary evaluation — never by the router, which has no verb for it — with `사유=` naming the condition that lapsed; the transition is refused while an answer frame for the id exists in this run's lineage, and while a `다이얼로그 취소` was observed in the same cycle. A later real answer may still close a `철회` approval: `close` admits `철회` as the one non-`대기` starting state. The entry point that writes `철회` lands with the boundary predicates; this vocabulary accepts the token ahead of it.
 
 **`대상 추가` records a repository the run reached that the manifest did not name, and it is a RECORD rather than a grant.** The distinction is the whole of it. A declared target already has a cutpoint the manifest gave it, and an approval there opens one act inside that grant; an undeclared repository has no cutpoint to open, so a row that conferred one would move the seat of authorization from the manifest to a file the run writes. That is the property the split-writer rule exists to hold, and it does not depend on whether the row could be forged.
 
@@ -581,7 +594,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.kind` | `lane` \| `citation` \| `severity` \| `visual-waiver` \| `verification-residual` \| `audit-composition` \| `unresolved-issue` \| `refinement` \| `roster-degradation` \| `stage-retry` \| `target-expansion` |
 | `자율 승인.판단 부류` | `문서-신선도` \| `감사-발견` \| `심각도-조정` \| `잔여-항목` \| `인용-갱신` \| `스테이지-재시도` \| `팀-구성`(pre-adoption forbidden) \| `시각-면제`(pre-adoption forbidden) |
 | `자율 승인.등급` | `0` \| `1` \| `2` |
-| `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` |
+| `승인.상태` | `대기` \| `승인` \| `거부` \| `무효` \| `기각` \| `철회` |
 | `자율 승인.자격` | `분리` \| `주변` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
@@ -597,6 +610,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
+
+**`승인.상태` has six values and the gate's `APPROVAL_STATES` constant is their single source of truth; `scripts/lint-approval-state-vocabulary.sh` holds the two equal.** `기각` is written by nothing today and stays in the set — the table is the authority and does not drop a value for being unobserved (the paragraph below says why). `철회` is accepted by the gate's row check and written by nothing yet: the transition into it lands with the boundary predicates, and the vocabulary admits the token ahead of its writer so that writer finds a token instead of improvising one. The dismissed-dialog transcript event is called `다이얼로그 취소` precisely so it is never confused with `기각`.
 
 **Three of the values above are a reconciliation with the artifacts, not a widening.** `blocked.사유=강제 표면 이동` and `=라이브니스 침묵` are written by the gate's surface check and by the watcher's stall transcription, and `segment.상태=완료` is accepted by the gate as a terminal state — all three were in the ledger while this table said they were outside the vocabulary. **Nothing is REMOVED from the table for being unobserved**, and that asymmetry is deliberate: a declared value that no artifact carries means "not seen yet", not "does not exist", and deleting it would make the next writer improvise a synonym.
 
@@ -616,7 +631,7 @@ Two floors sit on `선행`, and the cone's superset check cannot supply them, be
 
 **`종료 절.상태=보류` is not `불가능` with a softer name.** Impossible ends the clause forever; on hold says a person's answer is outstanding and a successor run picks it up. Its `근거` must therefore name an **open** approval whose cutpoint is the literal `판단`, and the gate confirms that id exists in the ledger with `상태=대기` — evidence rather than wording, on the same terms every other clause settlement takes.
 
-**`승인.절단점=판단` finally has a writer, and the writer is the gate.** The router never chooses to ask: it submits its own recommendation through `act --kind judgment`, and whether that becomes a question is decided here. A grade-2 judgment is raised to one — the old refusal said so in as many words while refusing, and no such path existed anywhere — and so is a grade-1 judgment that does not clear the auto-adoption floor. The approval's id is derived from the judgment rather than from an argv, so the same judgment submitted twice yields one approval instead of a queue, and its **binding tuple is `-`**: an act approval carries head and base shas because its answer is valid only against the tree it named, while a question's answer is an input to work that has not started and has no tree to measure.
+**`승인.절단점=판단` finally has a writer, and the writer is the gate.** The router never chooses to ask: it submits its own recommendation through `act --kind judgment`, and whether that becomes a question is decided here. A grade-2 judgment is raised to one — the old refusal said so in as many words while refusing, and no such path existed anywhere — and so is a grade-1 judgment that does not clear the auto-adoption floor. The approval's id is derived from the judgment rather than from an argv, so the same judgment submitted twice yields one approval instead of a queue, and its **binding tuple binds the question and the menu rather than a tree**: an act approval carries head and base shas because its answer is valid only against the tree it named, while a question's answer is an input to work that has not started and has no tree to measure — so what its tuple carries is the digest of the question a person saw and the version of the menu they were shown (the four-component serialization stated under §3.2).
 
 **And the answer has a consumer, which the contract did not name.** Issuing the question was only half a lifecycle: the state a closed approval leaves behind means nothing unless something reads it, and until it did, a run that got its answer resubmitted the judgment and was asked the same question again. The resubmission is the consumption. The gate reads the approval's state before issuing anything: `승인` adopts the judgment and writes `자율 승인` carrying `해소 승인=<id>`; `거부` and `무효` refuse and do not re-ask; `대기` returns quietly. **A closed approval is never re-opened by a resubmission** — the id derivation guarantees only a genuinely different question reaches a new id — and **one answer opens one judgment**, enforced by refusing any id a `자율 승인` row already names.
 
@@ -698,6 +713,41 @@ The report lives at `<base>/docs/pipeline-run/{runId}.md` — the same `<kind>` 
 - **It enumerates every autonomous decision the run RECORDED** — the heading is `기록된 자율 결정`, and the qualifier is measured rather than modest: a stage that improvises and produces output lands as `정상 완료` and writes no row, so a heading promising "every" decision would be false — all `자율 승인` rows grouped by `kind` with decision, rejected alternative and rationale carried verbatim; every fix the ladder auto-adopted; every parked item with its `사유`; and each stage's `종단 부류`.
 
 **The limit is stated with the control.** The report is itself authored by the run, so it is powerless against a run that improvises a decision **and also** omits it from its own report. The conjunction being rarer than either part is the whole of this control's value — it is not a gate, and **the real protection against an irreversible autonomous act remains the permission cutpoint of §2.3.**
+
+---
+
+## 3b. `cc-pipeline-approval v1` — the approval sidecar
+
+```
+# 파이프라인 승인 기록 — <run-id>
+<!-- cc-pipeline-approval v1; writer=gate; reader=gate; owner-run=<run-id>; owner-doc=<document key> | (없음); NOT a design doc; mechanism-local, never staged by a skill -->
+```
+
+**Path**: `<base>/docs/pipeline-approval/<run-id>.md`. Keyed on the RUN rather than derived from the design document by `sidecar.md` §1.1's slug rule: that rule's `{slug}` is the document key with `.md` dropped and `/` turned into `-`, which cannot produce a run id, and a run may start from a pull request or a bare intent and have no document to derive from at all. This is therefore a kind under §1.2's exception clause, and this section states everything that clause requires of such a kind.
+
+**Header and proof pair.** Where a document-keyed kind carries `owner-doc=`, this one carries `owner-run=<run-id>` and, beside it, `owner-doc=` for the record (`(없음)` when the run names no document). Its proof pair is `owner-run=<run-id>` **together with the existence of that run's authorization record** `<base>/docs/pipeline-grant/<run-id>.md`. A reader takes the file as this run's only when both halves hold, and a writer refuses to create or extend it otherwise — fail-closed in both directions, which is what keeps a slug collision or a worktree fan-out from reading one run's answers as another's.
+
+**Writer and directory.** The gate is the only writer, and — §1.1 makes directory creation the writer's duty — **the gate creates `<base>/docs/pipeline-approval/` immediately before its first write**. Without that line the first approval of a fresh checkout would fail on exactly the path this file exists for: the free-input answer that the ledger deliberately does not carry would be swallowed, and a person would have answered with nothing recorded anywhere.
+
+**Blocks.** One block per approval, `## 승인 <승인 id>`, holding two fenced regions:
+
+````
+## 승인 J-867db2b3
+**질문 sha256**: <64 hex>
+```text
+<the full question text>
+```
+**답변 sha256**: <64 hex>
+```text
+<the full answer text>
+```
+````
+
+The **immutable region** — `질문 sha256` and its fence — is written when the approval is issued and never rewritten. The **mutable region** — `답변 sha256` and its fence — is filled when the approval closes, and re-filled if a later answer supersedes an earlier one; a free-input answer (ledger `처분 사유=자유 입력`) is written here and nowhere else. Fences are one backtick longer than the longest backtick run in the payload, never shorter than three, so a payload cannot close its own fence; the tokenizer matches a closing fence by the exact backtick string that opened it and treats a `## 승인` line inside an open fence as payload. Act and boundary approvals get a block too — their question is a fixed literal, but the row's anchor has to name something and their closing rows carry the answer digest.
+
+**Write form.** §1.3 of `sidecar.md` unchanged: a temp file in the same directory, a compare-and-swap against the bytes the build read, a plain `mv`, a read-back that the block heading is present, a bounded retry. Nothing here deletes or truncates.
+
+**What the ledger carries about it.** Every `승인` row that this kind backs carries `사이드카 앵커=<run-id>#<승인 id>`, and the row's digests — the question digest inside `구속 튜플`, `답변 다이제스트` on a closing row — are digests OF the fenced texts in that block. `응답 토큰` names the transcript frame, not the sidecar, and does not stand in for the anchor.
 
 ---
 
