@@ -7829,14 +7829,38 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
       -- 등급=2 기준="경계 단언의 전제로 열어 두는 물음" 근거="이 절은 열린 판단 승인 하나를 필요로 한다"
 check "경계 단언의 전제인 판단 승인이 열린다" "$rc" "5"
 DRAINSID="16161616-3434-5656-7878-909090909090"
-for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
-             | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
-  aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
-  auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$DRAINSID" bash "$GATE" close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
-  check "경계 전제를 세우려 열린 행위 승인 $aid 를 닫는다" "$rc" "0"
-done
+# THE DRAIN IS AN INVARIANT OVER THE MEASUREMENT WINDOW, NOT A STATE AT ITS START,
+# and draining once was the defect. `gate_boundaries` suspends B1..B3 whenever any
+# non-judgment approval is open, so an approval opened by ANOTHER boundary while
+# the read loop below is running switches B1 off for the rest of the loop — and
+# the verdict at the end then reports that the open JUDGMENT approval disarmed it.
+# Measured: this section leaves an open obligation behind, the obligation
+# boundary reaches its own threshold on the second evaluation of the loop, and
+# from the third onward B1 is never evaluated again. The suppression trace freezes
+# at a credit balance of 7 with `nread` at 1, which reads exactly like a read run
+# that resets every iteration and is not one — the run accumulates fine, and the
+# credit fires on schedule the moment nothing else is holding the suspension.
+#
+# THE BOUNDARY UNDER TEST IS EXEMPT FROM THE DRAIN. Closing B1's own approval
+# would erase the observation this section exists to make, so it is the one id
+# left open — and once it is open the conclusion is already established, so the
+# suspension it then causes costs nothing.
+b1_drain_acts() {
+  # b1_drain_acts <라벨> [<남겨 둘 승인 id 접두>]
+  local label="$1" keep="${2-}" aid aq
+  for aid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+               | jq -r '.pending_approvals[].id' | grep -v '^J-' || true); do
+    if [ -n "$keep" ]; then
+      case "$aid" in "$keep"*) continue ;; esac
+    fi
+    aq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aid " | tail -1)" '질문 문면')
+    auq_frame "$NTX/$DRAINSID.jsonl" "$aid" "$aq" "승인" 승인 거부 >/dev/null
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="$DRAINSID" bash "$GATE" close --manifest "$NM" --approval "$aid" 2>&1); rc=$?
+    check "$label $aid 를 닫는다" "$rc" "0"
+  done
+}
+b1_drain_acts "경계 전제를 세우려 열린 행위 승인"
 b1_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
 npend_judgment=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
                  | jq -r '.pending_approvals[].id' | grep -c '^J-' || true)
@@ -7882,6 +7906,7 @@ fi
 b1_at_credit=0
 i=0
 while [ "$i" -lt "$((B1_CREDIT_UNDER_TEST + 1))" ]; do
+  b1_drain_acts "측정 구간에서 다른 경계가 연 행위 승인" B1-
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
         --snapshot-digest "$(HN)" --rationale "정체 경계 확인" -- ls "$CONE_A"
   i=$((i + 1))
