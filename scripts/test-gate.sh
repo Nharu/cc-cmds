@@ -1702,6 +1702,16 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0
 check "리뷰 HEAD 없는 사이클 행은 거부된다" "$rc" "2"
+# THE TEXT, NOT ONLY THE STATUS — and this arm needed it the moment a second
+# field joined the required list. This call now omits `리뷰 HEAD` AND `리포트
+# 경로`, and the loop returns the same vocabulary code at whichever it reaches
+# first, so a status-only assertion stays green even with `리뷰 HEAD` deleted
+# from that list. What was lost is not the branch but the ability to tell the
+# two omissions apart.
+case "$msg" in
+  *"리뷰 HEAD"*) ok "그 거절이 빠진 필드를 이름으로 말한다" ;;
+  *) bad "리뷰 HEAD 누락 거절 문면" "$msg" ;;
+esac
 
 # THE WRITE SIDE AND THE READ SIDE MOVE TOGETHER. The rule now opens the report
 # the row names, so a row without that field can never satisfy it — and a
