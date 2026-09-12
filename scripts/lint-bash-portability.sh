@@ -107,6 +107,8 @@ set -euo pipefail
 PATTERNS=(
   '\bdate[[:space:]]+-j\b|date -j|BSD-only; portable timestamp arithmetic via date -u +%s or a perl/python shim'
   '\bdate[[:space:]]+-d\b|date -d|GNU-only; portable parsing via date -j -f <fmt> <input> (BSD) or a perl/python shim'
+  '\bdate[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-r[[:space:]]+"?[0-9]|date -r <seconds>|BSD reads -r as SECONDS and GNU only as a FILE; a file argument works on both, an epoch argument does not — use a python/perl shim for epoch formatting'
+  '\bdate[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-r[[:space:]]+"?[$][(][(]|date -r <seconds>|arithmetic expansion after -r is an epoch, which BSD reads as SECONDS and GNU as a FILE name — use a python/perl shim for epoch formatting'
   '\bfind[[:space:]]+-E\b|find -E|BSD-only; portable regex find via -regex (BRE) or pipe through grep -E'
   '\bstat[[:space:]]+-f\b|stat -f|BSD-only; for portable file metadata branch by OS or use wc -c (size)'
   '\bstat[[:space:]]+-c\b|stat -c|GNU-only; mirror of stat -f — branch by OS'

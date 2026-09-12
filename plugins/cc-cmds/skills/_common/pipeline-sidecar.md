@@ -143,11 +143,13 @@ once per run rather than on every append.
 **런 최대 절단점**: <token>
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
+**비용 천장**: <숫자만 — 통화 기호도 단위도 없이> | 없음
+**무진전 상한**: <정수> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
-- `자동 채택` | 판단 부류=<여덟 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
+- `자동 채택` | 판단 부류=<열 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -162,8 +164,26 @@ whole contract exists to remove, arriving as a leftover.
 What IS frozen, and what `구속 다이제스트` covers: the goal, the termination
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
-irreversible acts, **the `자동 채택` rows**, and the optional deadline. The gate
-compares that digest at entry.
+irreversible acts, **the `자동 채택` rows**, the deadline — which is **required**,
+not optional — and, when it is declared, `무진전 상한`. The gate compares that
+digest at entry.
+
+**The deadline is serialized unconditionally and the stagnation bound only when
+declared, and the asymmetry is load-bearing rather than untidy.** The deadline
+is an old field whose unconditional emission is itself already frozen: a
+manifest that omits it, or carries it empty, still contributes its line, so
+making that line conditional would move the digest of manifests written before
+the change and leave a run already in flight unable to act, record or finish —
+the digest check runs on every verb. `무진전 상한` is new, so the compatibility
+argument runs the other way: an undeclared new field must contribute nothing, or
+the digest of every in-flight manifest moves the moment the field exists. The
+compatibility argument for a conditional line is needed by **new** fields only.
+`비용 천장` is in neither list — it is not serialized at all.
+
+**The three boundary fields are `벽시계 마감`, `비용 천장` and `무진전 상한`, and
+only the first is required.** The other two are legal undeclared, and the gate
+reads an undeclared value as "unbounded on that axis" rather than as a defect —
+which is exactly what keeps a manifest written before they existed running.
 
 The `자동 채택` rows are in that list because they were not, and the omission was
 load-bearing. They are the one other row shape a run could reach that decides
@@ -315,14 +335,20 @@ never compared.
    A mismatch is a **hard stop before the driver starts**, not a park.
 5. **Target-map digest** matches the canonical serialization of the target rows.
 6. **`구속 다이제스트`** matches the frozen set — goal, termination clauses,
-   target rows, rule settings, pre-authorization rows, deadline. The PLAN is not
-   in it: the router decides the step graph one act at a time, so a frozen plan
-   would be recorded and never compared.
+   target rows, rule settings, pre-authorization rows, the deadline, and
+   `무진전 상한` where it is declared. The PLAN is not in it: the router decides
+   the step graph one act at a time, so a frozen plan would be recorded and
+   never compared.
 7. **Every cutpoint token** is in `CUTPOINTS` — an unrecognized token is a hard
    error, never a silent zero.
 8. **`벽시계 마감` parses as an absolute timestamp.** `없음` is refused: a field
    comment saying "required" means nothing if a validator accepts the absent
-   value, so the outermost bound holds here or nowhere.
+   value, so the outermost bound holds here or nowhere. **`비용 천장` and
+   `무진전 상한` are deliberately NOT checked, and their absence from this
+   conjunction is the whole of their backward compatibility.** Undeclared is
+   legal for both, the gate reads it as unbounded on that axis, and a required
+   check here would refuse every manifest written before the two fields existed
+   — at its next verb, mid-run, with no way to edit the frozen block.
 9. **`적용 주체: 파이프라인` requires `적용 지점` and `적용 프로브`.** An apply
    with no probe is refused at kickoff. (`적용 명령` is a *slice* field, not a
    manifest field, so it cannot be checked here.)
@@ -593,7 +619,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`자율 승인.판단 부류` is where a classification actually lives, and it is a new field for a reason that is not tidiness.** The auto-adoption floor's first arm asks whether the manifest declared this class in advance; on a field that also carries the act kind, one manifest line reading `종류=skill` would pre-adopt every stage dispatch there is. Moving values onto a polluted field inherits the pollution. And the ledger is append-only with deletion forbidden, so the rows already written can never be repaired — a new field has zero legacy rows, which is what lets the lint assert the closed set with no exception.
 
-**The two forbidden values are IN the vocabulary and forbidden there, rather than left out.** A class with no token does not stop being decided; it forces whoever records the decision to borrow a permitted token, and the borrowing is the leak. Named and forbidden, the leak arrives as a refusal. The refusal is at **freeze time**: `check_manifest` compares every `자동 채택` row's class against the eight and hard-stops on either of the two, which is a check that runs while a person is present and rests on nothing the run says about itself at runtime. Recording a judgment OF that class is still permitted — what is forbidden is pre-adopting it.
+**The three forbidden values are IN the vocabulary and forbidden there, rather than left out.** A class with no token does not stop being decided; it forces whoever records the decision to borrow a permitted token, and the borrowing is the leak. Named and forbidden, the leak arrives as a refusal. The refusal is at **freeze time**: `check_manifest` compares every `자동 채택` row's class against the ten and hard-stops on any of the three, which is a check that runs while a person is present and rests on nothing the run says about itself at runtime. Recording a judgment OF that class is still permitted — what is forbidden is pre-adopting it.
 
 **`segment.선행` and `segment.선언 파일 집합` are carried by the router and consumed by the gate; neither is authored by either.** The authority is the design document's slice declaration. `선행` is the cone's declared axis — the only axis that sees a dependency before the predecessor merges — and `선언 파일 집합` is the sole input to "did this segment reach outside what it declared", a question git cannot answer at all.
 

@@ -773,6 +773,81 @@ else
 fi
 write_manifest "$MF"
 
+# The two clock/bound fields are emitted CONDITIONALLY, and that is what keeps
+# every run already in flight alive. `deadline` used to be an unconditional
+# `printf`, so a manifest without the field still contributed a line carrying an
+# empty value; adding the progress bound the same way would have moved the
+# digest of every manifest ever written — none of which has the new field — and
+# refused each of those runs at its next gate call for a mismatch nobody caused.
+#
+# Three assertions, because "conditional" has three observable halves: the field
+# present emits exactly one line, the field absent emits none, and a manifest
+# that declares neither serializes as if this change had not happened.
+emit_lines() { binding_set_bytes | grep -cE "^$1[[:space:]]" || true; }
+if [ "$(emit_lines deadline)" = "1" ]; then
+  ok "벽시계 마감이 선언되면 한 줄을 낸다"
+else
+  bad "조건부 방출" "선언된 벽시계 마감이 $(emit_lines deadline) 줄로 나온다"
+fi
+if [ "$(emit_lines stagnation)" = "0" ]; then
+  ok "무진전 상한이 없으면 0바이트를 낸다 (기존 매니페스트의 다이제스트가 움직이지 않는다)"
+else
+  bad "조건부 방출" "선언되지 않은 무진전 상한이 $(emit_lines stagnation) 줄로 나온다"
+fi
+bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+printf '**무진전 상한**: 6\n' >> "$MF"
+if [ "$(emit_lines stagnation)" = "1" ] \
+   && [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" != "$bd_before" ]; then
+  ok "무진전 상한이 선언되면 한 줄을 내고 다이제스트를 움직인다"
+else
+  bad "조건부 방출" "무진전 상한을 선언했는데 방출도 다이제스트도 그대로다"
+fi
+write_manifest "$MF"
+sed '/^\*\*벽시계 마감\*\*/d' "$MF" > "$MF.nd" && mv "$MF.nd" "$MF"
+if [ "$(emit_lines deadline)" = "1" ] && [ "$(emit_lines stagnation)" = "0" ]; then
+  ok "마감 필드가 없어도 마감은 한 줄을 내고 무진전 상한은 0줄이다"
+else
+  bad "무조건 방출" "필드가 없는데 deadline=$(emit_lines deadline) stagnation=$(emit_lines stagnation)"
+fi
+# AND THAT ONE LINE IS NOT A COINCIDENCE OF THIS FIXTURE. The old unconditional
+# `printf` could not tell an absent deadline from a present-but-empty one —
+# both produced the same line — and preserving exactly that indistinguishability
+# is the whole of what keeps a manifest written before this change serializing
+# to the same bytes. Pinned by comparing the two serializations against each
+# other rather than against a golden hash, so the fixture can grow without this
+# assertion going stale.
+bs_nofield=$(binding_set_bytes)
+printf '**벽시계 마감**: \n' >> "$MF"
+if [ "$bs_nofield" = "$(binding_set_bytes)" ]; then
+  ok "마감 필드의 부재와 빈 값이 갈리지 않는다 (옛 무조건 방출의 성질 그대로)"
+else
+  bad "무조건 방출" "필드를 지운 판본과 빈 값을 넣은 판본의 구속 집합이 갈렸다"
+fi
+write_manifest "$MF"
+
+# THE TWO BOUNDARY FIELDS NEED A WRITER, not only a reader, and for a while they
+# had none. The gate has read `비용 천장` and `무진전 상한` since it gained the
+# boundaries, but neither the manifest template nor the kickoff interview
+# carried them — so `gate_b4_cost` returned on its first line for every run ever
+# made, and both were bounds in name. Nothing in the driver's own code shows
+# that gap, because from the driver's side an undeclared field is a legal state.
+# So it is asserted at the document layer: if the writing sites disappear again,
+# something goes red.
+SIDECAR_DOC="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
+KICKOFF_DOC="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+for bf in '비용 천장' '무진전 상한'; do
+  if grep -qF "**$bf**:" "$SIDECAR_DOC"; then
+    ok "인가 템플릿이 $bf 를 담는다"
+  else
+    bad "인가 템플릿" "$bf 를 적을 자리가 템플릿에 없다 — 게이트는 읽는데 쓰는 자리가 없다"
+  fi
+  if grep -qF "$bf" "$KICKOFF_DOC"; then
+    ok "킥오프 인터뷰가 $bf 를 걷는다"
+  else
+    bad "킥오프 인터뷰" "$bf 를 사용자에게 묻는 단계가 없다"
+  fi
+done
+
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then
@@ -815,6 +890,34 @@ if ( check_manifest ) >/dev/null 2>&1; then
   bad "벽시계 마감" "「없음」을 받아들였다 — 최외곽 상한이 성립하지 않는다"
 else
   ok "벽시계 마감의 「없음」이 거부된다"
+fi
+
+# 8b — 꼬리가 앵커되지 않은 검증자는 게이트가 비교할 수 없는 값을 얼려 넣는다.
+#
+# 정규식이 끝을 앵커하지 않아 꼬리가 무엇이든 킥오프를 통과했고, 그 값을 읽는 경계는
+# 파싱 실패를 「마감을 넘지 않았다」로 흡수해 조용히 열렸다. 받는 집합은 비교자가
+# 실제로 읽는 집합 — `Z` 또는 `+HH:MM`/`-HH:MM` 오프셋 — 과 같아야 한다.
+#
+# 그리고 그 검사는 킥오프 전용이다. `check_manifest` 는 게이트 진입마다 다시 도는데,
+# 형식 거부를 그 안에 두면 이미 얼어붙은 값을 실은 런이 남은 모든 동사를 잃는다 —
+# 매니페스트를 고치면 구속 다이제스트가 움직여 두 번째 이유로 또 거부되므로 되돌아갈
+# 길도 없다. 그래서 두 함수에 각각 묻는다.
+write_manifest "$MF"; sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2026-08-26T09:00:00Z꼬리/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_deadline_format ) >/dev/null 2>&1; then
+  bad "벽시계 마감 앵커" "꼬리가 붙은 마감을 통과시켰다 — 게이트가 비교할 수 없는 값이 얼어붙는다"
+else
+  ok "꼬리가 붙은 벽시계 마감이 킥오프에서 거부된다"
+fi
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "같은 값이 매니페스트 검사는 막지 않는다 (얼어붙은 런이 남은 동사를 잃지 않는다)"
+else
+  bad "벽시계 마감 앵커" "읽을 수 없는 마감이 매니페스트 검사를 하드 스톱했다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+write_manifest "$MF"; sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2026-08-26T09:00:00+09:00/' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
+if ( check_deadline_format ) >/dev/null 2>&1; then
+  ok "오프셋 표기 마감은 그대로 통과한다 (앵커가 비교자가 읽는 값을 막지 않는다)"
+else
+  bad "벽시계 마감 앵커" "비교자가 읽는 오프셋 표기를 킥오프가 거부했다"
 fi
 
 # 2 — append 형식이 없으므로 둘째 인가 블록은 잔재가 아니라 변조다.
@@ -2183,8 +2286,11 @@ DOC="$WORK/base/docs/x.md"
 check "문서가 있으면 접근자는 그 문서를 낸다" "$(doc_arg)" "$WORK/base/docs/x.md"
 DOC=""
 # 접근자가 있어도 호출부가 `$DOC` 를 그대로 끼우면 아무것도 달라지지 않는다.
-check "구현 스테이지 두 자리가 접근자를 쓴다" \
-  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
+check "구현 스테이지 세 자리가 접근자를 쓴다" \
+  "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "3"
+# 맨 `$DOC` 가 하나라도 남으면 위 수는 맞아도 성질은 깨진다 — 자리 수와 별개로 센다.
+check "구현 스테이지에 맨 변수를 끼운 자리가 없다" \
+  "$( { grep -cF 'implement-unattended $DOC' "$DRIVER" || true; } )" "0"
 check "리뷰 스테이지가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "1"
 check "재수렴 스테이지가 접근자를 쓴다" \

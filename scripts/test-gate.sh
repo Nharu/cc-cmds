@@ -64,6 +64,24 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
 
+# AND THE PIPELINE GROUP IS CLEARED FOR THE WHOLE PROCESS, for the same reason
+# and with the same shape. This suite is itself run from inside pipeline stages,
+# which is where these variables come from, and the gate branches on several of
+# them — `CC_PIPELINE_STAGE_ID` decides whether a call is the router's or a
+# stage's, and that decision now reaches the stagnation bound as well as the
+# session lineage. An inherited value silently sends every assertion below down
+# the stage arm, so the suite passes or fails on who invoked it.
+#
+# The liveness section three thousand lines down already cleared the group for
+# its own assertions and wrote down why; the sections above it were left reading
+# the caller's environment. The clear belongs here, before the first gate call —
+# the local one stays where it is, since a section that sets a member and unsets
+# it again is not owed a guarantee by a line that ran once at startup.
+unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_PARENT_SESSION
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
 # override. The selector runs a cut-down COPY of this file out of a scratch
@@ -1898,15 +1916,30 @@ fi
 # 때문이다. 창은 이 섹션의 표제부터 공유 매니페스트가 재배정되는 줄까지다.
 #
 # 기준값은 재유도한다: 아래 두 줄과 같은 창을 잘라 같은 패턴을 세면 나온다. 이
-# 수가 움직였다면 새 행위가 오염 창 안으로 들어왔다는 뜻이고, 고칠 곳은 이 수가
-# 아니라 그 행위의 자리다 — 룰이 켜진 자기 매니페스트로 옮기면 된다.
+# 수가 움직였다면 새 행위가 오염 창 안으로 들어왔다는 뜻이고, 고칠 곳은 대개 이
+# 수가 아니라 그 행위의 자리다 — 룰이 켜진 자기 매니페스트로 옮기면 된다.
+#
+# 열에서 열넷으로 한 번 올렸고, 그 이유를 적어 둔다. 올리는 것은 이 가드를
+# 끄는 것과 구별이 안 되므로 근거 없이 올리면 안 된다.
+#
+# 들어온 넷은 종단 관문(경계 B4·B9) 절의 `gate plan` 넷이다. 그 절들이 재는 것은
+# 리뷰 룰이 아니라 **종단 관문이 머지를 세우고 종료 제안은 면제하는가**이고,
+# 단언이 rc 만 보지 않고 거절의 신원을 문면으로 확인한다(`런이 이미 종단했습니다`,
+# `경계 B9`). 그래서 이 넷에는 위의 처방이 반대로 작동한다 — 룰이 켜진 매니페스트로
+# 옮기면 리뷰 룰이 먼저 답해 그 문면이 나오지 않고, 단언은 의도한 관문이 아니라
+# 다른 관문을 재게 된다. 룰이 꺼진 창에 있는 것이 이 넷에게는 격리이지 오염이
+# 아니다.
+#
+# 그러므로 다음에 이 수가 움직이면 먼저 물을 것은 「새로 들어온 행위가 리뷰 룰의
+# 답을 기대하는가」다. 기대하면 옮기고, 다른 관문의 신원을 재는 것이면 여기에
+# 한 줄을 더해 그 사실을 남기고 수를 올린다.
 sa_self="${BASH_SOURCE[0]:-$0}"
 sa_pat='--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
 sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
 sa_we=$(grep -n '^MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
   sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)
-  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 열 그대로다" "$sa_wn" "10"
+  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 열넷 그대로다" "$sa_wn" "14"
 else
   bad "값싼 가드" "오염 창의 경계를 찾지 못했다 — 표제나 재배정 줄이 바뀌었다"
 fi
@@ -2923,6 +2956,37 @@ case "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" in
   *) bad "종단 기록" "$(grep '^- `stage-result` ' "$LEDGER" | tail -1)" ;;
 esac
 
+# --- 14h2. A resume that IS on the ledger reaches the wrapper argv ----------
+#
+# 14g pins the refusal — a session id with no `stage-result` row behind it is
+# rejected — and nothing pinned the other half, so `--resume` could have been
+# dropped on the floor for every value and both sections would still be green.
+# This is the assertion the answered-judgment relay rests on: re-attaching the
+# stage that raised the question is how the answer reaches the session that
+# asked it, and a re-dispatch that quietly opens a FRESH session loses exactly
+# the context the re-attachment exists to preserve — while the log says the
+# stage was resumed.
+sl_sid=$(grep '^- `stage-result` ' "$LEDGER" | { grep -F '세그먼트=SL' || true; } | tail -1 \
+         | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
+check "첫 디스패치의 세션 id 가 원장에 남는다" "$sl_sid" "stub-session"
+: > "$WORK/stub-argv.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv.txt" \
+      bash "$GATE" act --manifest "$MANIFEST" --kind skill --target infra --segment SL \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      --resume "$sl_sid" \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "원장에 기록된 세션으로의 재부착은 통과한다" "$rc" "0"
+# EITHER SPELLING, because the gate hands the wrapper `--resume <id>` and the
+# wrapper hands the CLI the short form. What is being pinned is that the FIRST
+# session's id reaches the launched process under a resume flag rather than a
+# fresh `--session-id`; which of the two spellings survives the wrapper is the
+# wrapper's business and not this assertion's.
+if grep_all_q -E -- "(--resume|-r) $sl_sid" "$WORK/stub-argv.txt"; then
+  ok "두 번째 wrapper argv 에 첫 세션 id 가 재부착 플래그로 담긴다"
+else
+  bad "재부착 argv" "$(cat "$WORK/stub-argv.txt" 2>/dev/null || printf '(빈 파일)')"
+fi
+
 # ---------------------------------------------------------------------------
 # 14i. The render answers "is this still going?"
 #
@@ -3125,6 +3189,46 @@ graded_as '트리밖쓰기' '템플릿을 준 mktemp 도 같다'    -- mktemp /t
 graded_as '등급 미상' 'xxd 는 표에 없다 (의도된 배제)'  -- xxd -l 8 -p /dev/urandom
 graded_as '등급 미상' 'od 도 표에 없다 (의도된 배제)'   -- od -An -tx1 -N8 /dev/urandom
 
+# `mv` and `rm` are graded by their OPERANDS, not by their name. Both were on
+# the name-graded write arm, and both are MANDATED to act out of tree by shared
+# contracts in this plugin — a witness is published with an atomic `mv -n` into
+# the out-of-tree scratch dir and torn down with `rm -rf` — so the honest
+# `트리밖쓰기` mismatched the name-level grade and was refused while the false
+# `워크트리쓰기` ran. The section is appended at the END of this one so the
+# assertions above keep their output ordering.
+#
+# THE OUT-OF-TREE LITERAL IS DERIVED, NOT TYPED. `$WORK` is minted under
+# `${TMPDIR:-/tmp}`, so a hard-coded `/tmp/...` is not reliably outside the
+# fixture repository, and on macOS `git rev-parse --show-toplevel` hands back the
+# `/private`-resolved spelling while `$WORK` keeps the symlinked one. The parent
+# of the tree root is outside it under every one of those spellings.
+OUT_OF_TREE=$(dirname "$WT")
+graded_as '워크트리쓰기' '트리 안 mv 는 워크트리 쓰기다' -- mv a.txt b.txt
+graded_as '트리밖쓰기' '트리 밖으로 옮기는 mv 는 트리 밖 쓰기다' \
+  -- mv -n a.txt "$OUT_OF_TREE/moved.txt"
+# THE SOURCE IS A DESTINATION TOO, because `mv` REMOVES what it moves. Grading
+# only the last operand would call this one an in-tree write while a file
+# disappears from outside the tree.
+graded_as '트리밖쓰기' '트리 밖에서 들여오는 mv 도 트리 밖 쓰기다' \
+  -- mv "$OUT_OF_TREE/incoming.txt" a.txt
+graded_as '워크트리쓰기' '트리 안 rm -rf 는 워크트리 쓰기다' -- rm -rf docs
+graded_as '트리밖쓰기' '트리 밖 rm -rf 는 트리 밖 쓰기다' \
+  -- rm -rf "$OUT_OF_TREE/scratch"
+# Nothing to read and a letter the scan does not know: both refuse rather than
+# guess, which is the disposition `surface_of_git` takes for the same reason.
+graded_as '등급 미상' '피연산자 없는 mv 는 등급되지 않는다' -- mv -n
+graded_as '등급 미상' '모르는 대시 옵션이 붙은 rm 도 그렇다' -- rm -Q /tmp/x
+# `--` ENDS THE OPTION SCAN. A filename beginning with a dash is a path after
+# it, not an unknown option — without this the refusal above would swallow a
+# legitimate removal.
+graded_as '워크트리쓰기' '-- 뒤의 대시 이름은 경로로 등급된다' -- rm -f -- -weird-name
+# The normalization is LEXICAL and really does rewind. None of these operands
+# exist, which is the normal case — an `mv` destination is a name about to be
+# created — so a resolver that touched the filesystem would answer `등급 미상`
+# for every row above.
+graded_as '워크트리쓰기' '되돌아오는 .. 경로는 트리 안이다' \
+  -- mv a.txt "$WT/../${WT##*/}/back.txt"
+
 set_exec_wt "$LINKED" >/dev/null 2>&1 || true
 rm -rf "$SETTINGS_DIR"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" >/dev/null 2>&1 )
@@ -3143,45 +3247,442 @@ fi
 set_exec_wt "" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-# 14k. The deadline is a dispatch gate, and it is read
+# 14k. The run's END is the dispatch gate, and the progress boundaries set it
 #
-# It was frozen into the binding digest and compared at entry, and then nothing
-# read it — the field appears nowhere in this file and the driver's own helper
-# is only called from the loop the router never enters. Measured: a run past its
-# deadline had `plan --kind skill` answer "통과 예상".
+# The wall clock used to hold this gate. It measured elapsed time, while the
+# thing worth stopping is pointless spinning — measured, one run died having
+# performed zero acts because the machine slept for 35 hours, and the
+# independent review that loss forced cost 2h17m. The gate's SHAPE is unchanged
+# and is asserted here as such: dispatch and merge refused, ledger acts still
+# recorded, a done proposal exempt. What it reads is now the mark a
+# progress-based boundary leaves.
+#
+# Keyed on the mark rather than on the clock, these assertions no longer expire:
+# the old ones compared against a literal `2030-01-01`, which is a date this
+# suite will one day run past.
 # ---------------------------------------------------------------------------
-past_dl() {
-  local line out="$MANIFEST.dl"
+grant_field_set() {
+  # grant_field_set <키> <값> — declare (or redeclare) one `## 인가` field, or
+  # remove it when the value is empty.
+  #
+  # INSERTED DIRECTLY UNDER THE HEADING, not appended to the file. `manifest_field`
+  # is section-scoped and stops at the next `## `, and this fixture grows sections
+  # BELOW `## 인가` as the suite runs — so a field appended at end-of-file reads as
+  # absent. That is the same trap `refresh_bd` documents for the binding digest,
+  # and it is why this is a read loop with `[ "$line" = … ]` string equality
+  # rather than an `awk`/`sed` insert keyed on a Korean heading.
+  local key="$1" val="$2" line out="$MANIFEST.gf" inserted=0
   : > "$out"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
-      '**벽시계 마감**: '*) line="**벽시계 마감**: $1" ;;
+      "**$key**: "*) continue ;;
     esac
     printf '%s\n' "$line" >> "$out"
+    if [ "$inserted" = "0" ] && [ "$line" = "## 인가" ] && [ -n "$val" ]; then
+      printf '**%s**: %s\n' "$key" "$val" >> "$out"
+      inserted=1
+    fi
   done < "$MANIFEST"
   mv "$out" "$MANIFEST"
   refresh_bd
 }
-past_dl '2020-01-01T00:00:00Z'
+
+unend_run() {
+  # Put the fixture run back into a NOT-ENDED state.
+  #
+  # DELETING THE MARK ALONE USED TO BE ENOUGH AND IS NOT. The end gate reads the
+  # ledger's `결정=종료` row as the authority and `$RUN_DIR/done` as its cache,
+  # exactly so that a collected run directory cannot resurrect a run that ended
+  # — which is the behaviour the sections below assert. A fixture that ends the
+  # run to exercise a boundary therefore has to clear both, or every later
+  # dispatch in this file is refused for a reason that has nothing to do with
+  # what it is testing.
+  #
+  # Row surgery breaks the hash chain, which is already true of this region:
+  # the cost fixtures below append rows carrying `prev=x` and then strip every
+  # cost row back out again.
+  rm -f "$RD/done"
+  { grep -v '결정=종료' "$LEDGER" || true; } > "$LEDGER.ue"
+  mv "$LEDGER.ue" "$LEDGER"
+}
+
+printf '2026-01-01T00:00:00Z 종단 — 경계 B5 · 근거 픽스처\n' > "$RD/done"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
-check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
+check "런이 종단하면 스테이지 디스패치가 거부된다" "$rc" "3"
 case "$msg" in
-  *"마감이 지났습니다"*) ok "거부가 마감을 이유로 든다" ;;
-  *) bad "마감 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+  *"이미 종단했습니다"*) ok "거부가 종단을 이유로 든다" ;;
+  *) bad "종단 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
 esac
 gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
-check "마감 뒤 머지도 거부된다" "$rc" "3"
-# But recording and closing still work — a deadline that stopped everything
+check "종단 뒤 머지도 거부된다" "$rc" "3"
+# But recording and closing still work — a boundary that stopped everything
 # would strand the run instead of ending it.
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
      --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
-check "마감 뒤에도 장부 행위는 통과한다" "$rc" "0"
-past_dl '2030-01-01T00:00:00Z'
+check "종단 뒤에도 장부 행위는 통과한다" "$rc" "0"
+# THE MARK ALONE DOES NOT RE-OPEN THE RUN. This fixture wrote the mark and no
+# ledger row, so removing it is enough here — but the assertion is spelled
+# against the mark for a reason: with a `결정=종료` row also present the
+# dispatch below stays refused, which is what the two cost and stagnation
+# fixtures further down now have to clear through `unend_run`.
+rm -f "$RD/done"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
-check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
+check "종단 표시가 없으면 디스패치가 통과한다" "$rc" "0"
+
+# --- B5: the stagnation bound ENDS the run, it does not ask -----------------
+#
+# B1 asks and B5 ends, and they cannot share a counter: B1's own firing skips
+# the arm B1 evaluates in, so its counter freezes at the first threshold. B5
+# therefore keeps `stagnation-repeat` and is evaluated beside B4.
+grant_field_set '무진전 상한' '2'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+# THE WINDOW KEY IS SEEDED BY THE BOUNDARY ITSELF, not spelled by the fixture.
+# B1, B3 and B5 hash DIFFERENT subsets of the progress vector — B5's key omits
+# the `cycle=` term so a rotation cannot reset the count it exists to trip — and
+# a fixture that writes the full progress digest into B5's state file makes the
+# boundary compare two unrelated values and reset instead of firing. One priming
+# act lets B5 record its own key, after which consecutive acts leave that key
+# alone: `acts=` counts `결정=exec` rows and an `act` writes `결정=act`. Spelled
+# this way the fixture cannot drift from the term set the boundary picks.
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-prime" -- touch "$WORK/t-b5prime"
+printf '%s\n' "5" > "$RD/stagnation-repeat"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5" -- touch "$WORK/t-b5"
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B5"*) ok "무진전 상한이 런을 끝낸다 (묻지 않는다)" ;;
+  *) bad "B5" "무진전이 상한을 넘었는데 런이 끝나지 않았다: $(cat "$RD/done" 2>/dev/null || printf '(종단 표시 없음)')" ;;
+esac
+if grep -q '기준=B5' "$LEDGER"; then
+  ok "B5 종료가 원장에 행을 남긴다"
+else
+  bad "B5 행" "런이 끝났는데 원장에 그 이유가 없다"
+fi
+unend_run
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+grant_field_set '무진전 상한' ''
+
+# --- B5 counts the ROUTER'S ACTS — not gate calls, and not reads ------------
+#
+# Every `act` and every `exec` reaches the boundary arm, and the pretool hook
+# routes a stage's Bash, Write and Edit through the gate as `exec` — while the
+# progress vector's `acts=` term excludes `결정=exec` rows graded `축2=읽기`. So
+# two different callers held the vector still while walking the counter up, and
+# it takes two discriminators to remove them both.
+#
+# `CC_PIPELINE_STAGE_ID` is exported to stage children by the driver and to
+# nothing else, so its presence is what tells a stage's call from the router's.
+# The GRADE is what tells the router's reading from the router's acting: a
+# router that only reads moves no term of the vector either, so a stretch of
+# reconnaissance long enough to reach the bound ended a healthy night.
+grant_field_set '무진전 상한' '2'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+CC_PIPELINE_STAGE_ID='SD#1'
+export CC_PIPELINE_STAGE_ID
+i=0
+while [ "$i" -lt 4 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-stage" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+unset CC_PIPELINE_STAGE_ID
+if [ ! -e "$RD/stagnation-repeat" ] && [ ! -s "$RD/done" ]; then
+  ok "스테이지의 연속 읽기는 상한을 넘겨도 카운터를 만들지 않고 런을 끝내지 않는다"
+else
+  bad "B5 스테이지 호출" "스테이지 읽기 ${i}회에 카운터 '$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')' / 종단 '$(cat "$RD/done" 2>/dev/null || printf '(없음)')'"
+fi
+
+# The SAME four calls from the ROUTER do not end it either. This is the arm the
+# fixture used to assert the other way round — it drove four `--surface 읽기`
+# calls from the router and required the run to be over, which nailed "pure
+# reconnaissance ends the night" down as the intent.
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+i=0
+while [ "$i" -lt 4 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-router-read" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+if [ ! -e "$RD/stagnation-repeat" ] && [ ! -s "$RD/done" ]; then
+  ok "라우터의 연속 읽기도 상한을 넘겨도 카운터를 만들지 않고 런을 끝내지 않는다"
+else
+  bad "B5 라우터 읽기" "라우터 읽기 ${i}회에 카운터 '$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')' / 종단 '$(cat "$RD/done" 2>/dev/null || printf '(없음)')'"
+fi
+
+# But the router's ACTS are counted — the bound is not disarmed, it is aimed. An
+# `act` graded above `읽기` writes a `결정=act` row, and `acts=` counts only
+# `결정=exec` rows, so the vector stands still while the count climbs.
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+i=0
+while [ "$i" -lt 4 ] && [ ! -s "$RD/done" ]; do
+  gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+       --snapshot-digest "$(HH)" --rationale "B5-router-act" -- touch "$WORK/t-b5r$i"
+  i=$((i + 1))
+done
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B5"*) ok "라우터의 연속 행위가 상한에 닿으면 런이 끝난다" ;;
+  *) bad "B5 라우터 행위" "라우터 행위 ${i}회에도 런이 끝나지 않았다" ;;
+esac
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "B5 가 끝낸 뒤에는 스테이지 디스패치가 거부된다" "$rc" "3"
+unend_run
+
+# A `return 0`, NOT B1's suppression. Neither skipped caller reads or writes the
+# counter, so neither freezes it either — the router's next act continues from
+# where the router's last one left it.
+grant_field_set '무진전 상한' '99'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+# Primed the same way and for the same reason as the arm above: the boundary
+# writes its own window key, so this fixture never has to spell which terms that
+# key covers.
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-prime" -- touch "$WORK/t-b5m0"
+printf '%s\n' "0" > "$RD/stagnation-repeat"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-1" -- touch "$WORK/t-b5m1"
+CC_PIPELINE_STAGE_ID='SD#2'
+export CC_PIPELINE_STAGE_ID
+i=0
+while [ "$i" -lt 3 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+       --snapshot-digest "$(HH)" --rationale "B5-mix-stage" -- grep -q . "$MANIFEST"
+  i=$((i + 1))
+done
+unset CC_PIPELINE_STAGE_ID
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "사이에 낀 스테이지 호출은 카운터를 건드리지 않는다" "$n" "1"
+# And the router's own reads are the other skipped caller, asserted on the same
+# counter so that "not counted" and "not frozen" are both nailed down.
+gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-read" -- grep -q . "$MANIFEST"
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "사이에 낀 라우터의 읽기도 카운터를 건드리지 않는다" "$n" "1"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B5-mix-router-2" -- touch "$WORK/t-b5m2"
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "라우터의 행위는 건너뛴 호출들을 지나 이어서 센다" "$n" "2"
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+grant_field_set '무진전 상한' ''
+
+# --- B4: 80% asks, 100% ends ------------------------------------------------
+grant_field_set '비용 천장' '10'
+printf -- '- `cost` | 누적 usd=8.0000 | 스테이지 수=1 | 관측 시각=테스트 | prev=x\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-80" -- touch "$WORK/t-b4a"
+if grep -q '구속 튜플=B4' "$LEDGER" && [ ! -s "$RD/done" ]; then
+  ok "비용이 천장의 80%에 닿으면 묻고, 런은 계속 간다"
+else
+  bad "B4 80%" "80%에서 승인이 없거나 런이 이미 끝났다"
+fi
+printf -- '- `cost` | 누적 usd=10.5000 | 스테이지 수=1 | 관측 시각=테스트 | prev=x\n' >> "$LEDGER"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-100" -- touch "$WORK/t-b4b"
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B4"*) ok "비용이 천장에 닿으면 런이 끝난다" ;;
+  *) bad "B4 100%" "천장을 넘었는데 런이 끝나지 않았다: $(cat "$RD/done" 2>/dev/null || printf '(종단 표시 없음)')" ;;
+esac
+# THE MARK IS A CACHE, so a fixture that only deleted it left the run ended for
+# every section after this one — the ledger row outlives the file.
+unend_run
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "표시와 종료 행을 함께 지워야 런이 다시 열린다" "$rc" "0"
+grant_field_set '비용 천장' ''
+grep -v '^- `cost`' "$LEDGER" > "$LEDGER.nc" && mv "$LEDGER.nc" "$LEDGER"
+
+# --- Both progress bounds undeclared is said out loud, once -----------------
+#
+# The driver's manifest check hard-fails a run with no `벽시계 마감` — a field
+# no boundary on the router's path reads — and passes over these two in
+# silence, because undeclared is legal for both and that legality is the whole
+# of their backward compatibility. So a manifest that PASSES that check reads as
+# "the bounds were checked" while both of the bounds that actually bind a router
+# run may be absent. A required check cannot repair it (it runs on every verb
+# against a frozen block), so the gate says the fact instead. Once: a warning on
+# every act is what teaches a reader to skip the line that matters.
+grant_field_set '무진전 상한' ''
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-1" -- touch "$WORK/t-unbounded-1"
+check "두 경계 필드가 모두 미선언이어도 동사는 죽지 않는다" "$rc" "0"
+case "$msg" in
+  *"둘 다 미선언"*) ok "두 경계 필드가 모두 미선언이면 첫 경계 평가가 그 사실을 알린다" ;;
+  *) bad "무계 고지" "첫 경계 평가에 고지가 없다: $msg" ;;
+esac
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-2" -- touch "$WORK/t-unbounded-2"
+check "그다음 평가에서도 동사는 죽지 않는다" "$rc" "0"
+case "$msg" in
+  *"둘 다 미선언"*) bad "무계 고지 반복" "두 번째 평가에서도 같은 고지가 났다" ;;
+  *) ok "그 고지는 런당 정확히 한 번이다" ;;
+esac
+# And a declared bound removes it entirely — the notice is about the pair being
+# empty, not about either field on its own.
+grant_field_set '무진전 상한' '99'
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "무계-3" -- touch "$WORK/t-unbounded-3"
+case "$msg" in
+  *"둘 다 미선언"*) bad "무계 고지 범위" "한쪽이 선언됐는데도 고지가 났다" ;;
+  *) ok "한쪽이라도 선언되면 고지하지 않는다" ;;
+esac
+grant_field_set '무진전 상한' ''
+rm -f "$RD/unbounded-notice" "$RD/stagnation-digest" "$RD/stagnation-repeat"
+
+# --- The read row holds no name that can run something else -----------------
+#
+# The lowest grade is where a wrong answer compounds: it passes a look-honest
+# `읽기` declaration under strict equality, it spends no act budget, and the
+# credential-split warning is suppressed at exactly that grade. Two names on that
+# row could run an arbitrary command line.
+#
+# 이 절이 묻는 것은 「그 이름들이 읽기 행을 떠났는가」이고, 떠난 자리가 어디인지는
+# 묻지 않는다. 처음 쓸 때 이 단언들은 `등급 미상`(거부)을 기대했다 — 그때의 구현이
+# 실행·삭제 술어를 만나면 해소를 포기했기 때문이다. 지금은 감싼 명령으로 위임해
+# 그 명령의 등급을 답한다. 답이 더 정확해진 것이지 이 절의 질문이 바뀐 것이 아니므로
+# 기대값만 옮긴다 — 셋 다 여전히 `읽기` 가 아니고, 그것이 이 절의 하중이다.
+graded_as 읽기 "순수 find 는 읽기다" -- find . -name x
+graded_as 워크트리쓰기 "실행 술어가 붙은 find 는 읽기가 아니라 감싼 명령의 등급이다" -- find . -exec rm -rf {} +
+graded_as 워크트리쓰기 "삭제 술어가 붙은 find 도 읽기가 아니다" -- find . -delete
+graded_as 워크트리쓰기 "파일을 쓰는 find 술어도 읽기가 아니다" -- find . -fprintf /tmp/x %p
+graded_as 읽기 "command -v 는 읽기다 (해소만 하고 실행하지 않는다)" -- command -v ls
+graded_as 워크트리쓰기 "command 는 감싼 명령의 등급을 받는다" -- command touch x
+graded_as 트리밖쓰기 "command 로 감싸도 트리 밖 쓰기는 트리 밖 쓰기다" -- command mv a /private/tmp/b
+
+# --- B5's window key excludes its own input ---------------------------------
+#
+# The boundary counts a router call whose grade is present and is not `읽기`, and
+# the progress vector's `acts=` term counts `결정=exec` rows under that same
+# predicate. Keyed on the whole vector, every counted call moved the key and reset
+# the count to zero — so this bound could not fire on execs whatever value was
+# declared. Four consecutive ones must leave the counter at three.
+grant_field_set '무진전 상한' '99'
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+i=0
+while [ "$i" -lt 4 ]; do
+  gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
+       --snapshot-digest "$(HH)" --rationale "B5-exec-$i" -- touch "$WORK/t-b5x$i"
+  i=$((i + 1))
+done
+n=$(cat "$RD/stagnation-repeat" 2>/dev/null || printf '(없음)')
+check "라우터의 비읽기 exec 가 연속으로 계수기를 올린다" "$n" "3"
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
+grant_field_set '무진전 상한' ''
+
+# --- A ceiling that will not read is not a ceiling, and says so -------------
+#
+# `awk` coerces a string with a non-numeric head to zero and the boundary returns
+# without a word, so a currency spelling disarmed it in silence — while a numeric
+# prefix survived, which is the same field deciding differently by spelling.
+grant_field_set '비용 천장' '$50'
+printf -- '- `cost` | 누적 usd=99.0000 | 스테이지 수=1 | 관측 시각=테스트 | prev=x\n' >> "$LEDGER"
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-비수치" -- touch "$WORK/t-b4nan"
+case "$msg" in
+  *"비용 천장을 숫자로 읽지 못했습니다"*) ok "숫자로 읽히지 않는 천장은 경고하고 강제하지 않는다" ;;
+  *) bad "B4 비수치" "경고가 없다: $msg" ;;
+esac
+if [ ! -s "$RD/done" ]; then
+  ok "읽히지 않는 천장은 누적이 그 값을 넘겨도 런을 끝내지 않는다"
+else
+  bad "B4 비수치 종단" "읽히지 않는 값으로 런이 끝났다"
+fi
+case "$msg" in
+  *"둘 다 미선언"*) ok "읽히지 않는 천장은 미선언 고지에서 미선언으로 세어진다" ;;
+  *) bad "무계 고지 비수치" "읽히지 않는 천장이 선언된 것으로 세어졌다: $msg" ;;
+esac
+# NOT VACUOUS — the same figure without the symbol is enforced.
+unend_run
+grant_field_set '비용 천장' '50'
+rm -f "$RD/unbounded-notice"
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B4-수치" -- touch "$WORK/t-b4num"
+case "$(cat "$RD/done" 2>/dev/null || true)" in
+  *"경계 B4"*) ok "기호를 뗀 같은 값은 그대로 강제된다 (판독기가 과잉으로 막지 않는다)" ;;
+  *) bad "B4 수치" "숫자 천장을 넘겼는데 런이 끝나지 않았다" ;;
+esac
+unend_run
+grant_field_set '비용 천장' ''
+grep -v '^- `cost`' "$LEDGER" > "$LEDGER.nc" && mv "$LEDGER.nc" "$LEDGER"
+rm -f "$RD/unbounded-notice"
+
+# --- The wall clock is kept for a manifest that declares neither bound -------
+#
+# Two progress-axis bounds replaced the clock, and for a manifest that declares
+# one of them that is a replacement. For a manifest that declares neither — which
+# is every manifest written before those fields existed, and undeclared is legal
+# for both — it was a removal, and the router path was left with nothing.
+DL_ORIG=$( { grep -m1 '^\*\*벽시계 마감\*\*: ' "$MANIFEST" || true; } | sed 's/^\*\*벽시계 마감\*\*: //')
+grant_field_set '벽시계 마감' '2020-01-01T00:00:00Z'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "두 경계가 모두 미선언이면 마감 경과가 스테이지 파견을 막는다" "$rc" "3"
+case "$msg" in
+  *"벽시계 마감 경과"*) ok "그 거절이 마감을 이유로 지목한다" ;;
+  *) bad "마감 거절 사유" "거절이 마감을 지목하지 않는다: $msg" ;;
+esac
+# One declared bound and the clock has no say again, which is the whole of why it
+# was replaced — the measured cases where it ended a run through no fault of the
+# run's are not re-admitted.
+grant_field_set '무진전 상한' '99'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "한쪽이라도 선언되면 마감은 파견을 막지 않는다" "$rc" "0"
+grant_field_set '무진전 상한' ''
+
+# --- The clock is read in the deadline's own zone ---------------------------
+#
+# 되살아난 팔은 `date -j -f '…%SZ'` 로 파싱하면서 `+HH:MM` 을 잘라내고도 잘려 나간
+# `Z` 를 계속 요구했다. 그래서 오프셋이 붙은 마감은 파싱에 실패했고, 그 실패가
+# `return 1` — 이 함수의 극성에서 「마감을 넘지 않았다」 — 로 흡수돼 열리는 쪽으로
+# 떨어졌다. 이 팔이 존재하는 이유가 두 경계를 모두 선언하지 않은 매니페스트인데,
+# 그 집단에서 열리는 쪽으로 실패하면 남는 경계가 하나도 없다.
+grant_field_set '벽시계 마감' '2020-01-01T09:00:00+09:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "오프셋이 붙은 지난 마감이 스테이지 파견을 막는다" "$rc" "3"
+grant_field_set '벽시계 마감' '2020-01-01T00:00:00-05:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "음수 오프셋이 붙은 지난 마감도 파견을 막는다" "$rc" "3"
+# NOT VACUOUS — 오프셋이 붙었다고 무엇이든 막지는 않는다.
+grant_field_set '벽시계 마감' '2030-01-01T09:00:00+09:00'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "오지 않은 오프셋 마감은 파견을 막지 않는다" "$rc" "0"
+
+# 파싱되던 `Z` 표기도 지역 시각으로 읽혔다 — `date -j -f` 는 mktime 을 거치고
+# 형식의 `Z` 는 `%Z` 가 아니라 문자 일치라 어떤 존도 세우지 않는다. UTC+9 호스트에서
+# 그 팔은 선언된 마감보다 아홉 시간 이르게 파견과 머지를 거부했다.
+TZ_SAVE="${TZ-}"
+export TZ=Asia/Seoul
+grant_field_set '벽시계 마감' "$(python3 -c 'import datetime,time;print(datetime.datetime.fromtimestamp(time.time()+7200,datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "UTC+9 호스트에서 두 시간 뒤 UTC 마감은 아직 파견을 막지 않는다" "$rc" "0"
+if [ -n "$TZ_SAVE" ]; then export TZ="$TZ_SAVE"; else unset TZ; fi
+
+# 읽을 수 없는 마감은 강제하지 않되 조용히 버려지지도 않는다. 조용한 폐기가
+# 「경계가 있다」고 보고되는 런을 만들었다.
+grant_field_set '벽시계 마감' '2026-09-11T00:00:00+0900'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "읽을 수 없는 시간대는 파견을 막지 않는다" "$rc" "0"
+case "$msg" in
+  *"시간대를 읽지 못했습니다"*) ok "읽을 수 없는 시간대가 경고로 드러난다" ;;
+  *) bad "마감 시간대 경고" "읽을 수 없는 시간대가 조용히 버려졌다: $msg" ;;
+esac
+grant_field_set '벽시계 마감' '2026-13-45TXX:XX:XXZ'
+gate plan --manifest "$MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
+check "읽을 수 없는 형식은 파견을 막지 않는다" "$rc" "0"
+case "$msg" in
+  *"형식을 읽지 못했습니다"*) ok "읽을 수 없는 형식이 경고로 드러난다" ;;
+  *) bad "마감 형식 경고" "읽을 수 없는 형식이 조용히 버려졌다: $msg" ;;
+esac
+
+grant_field_set '벽시계 마감' "$DL_ORIG"
+rm -f "$RD/stagnation-digest" "$RD/stagnation-repeat"
 
 # ---------------------------------------------------------------------------
 # 14l. The authorization list can grow, and only through the gate
@@ -3619,6 +4120,106 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 18b. The cost accumulator, the ending mark, and the lock-free branch
+#
+# Three surfaces that only concurrency distinguishes, and none of them had an
+# assertion. The cost row is a read-then-act on the PREVIOUS total, so a second
+# writer that read the same total erases the first — quietly, since what is left
+# is a well-formed row carrying a lower number. The ending mark used to be a
+# bare `>` outside every lock, so two boundaries firing together left whichever
+# reason was written last while the function's own header calls the FIRST reason
+# the true one. And the lock-free `else` branch is reached wherever `lock_tool`
+# yields nothing, which makes it the branch that carries the accumulation on
+# exactly the hosts with no lock — nothing compared its bytes against the
+# locked branch's.
+# ---------------------------------------------------------------------------
+cost_ledger_seed() {
+  # A run heading and nothing else, which is what a fresh ledger looks like to
+  # `gate_chain_tip`.
+  printf '## 실행 RC\n' > "$1"
+}
+
+CCOST="$WORK/cost-conc"; mkdir -p "$CCOST"
+CCLEDGER="$CCOST/ledger.md"; cost_ledger_seed "$CCLEDGER"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$CCLEDGER"; RUN_DIR="$CCOST"; RUN_ID="RC"
+  gate_append_cost 1.0000 1 t1 >/dev/null 2>&1 &
+  gate_append_cost 2.0000 1 t2 >/dev/null 2>&1 &
+  wait
+) >/dev/null 2>&1
+n_cost=$(grep -c '^- `cost`' "$CCLEDGER" 2>/dev/null || true)
+check "동시 두 기록자가 각각 cost 행을 남긴다" "${n_cost:-0}" "2"
+if [ -x /usr/bin/lockf ]; then
+  # The ACCUMULATION, not the row count. Two rows are written either way; what
+  # the lock buys is that the second one adds to the first instead of to the
+  # value the first also started from.
+  last_total=$(sed -n 's/.*누적 usd=\([0-9.]*\).*/\1/p' "$CCLEDGER" | tail -1)
+  check "마지막 누적이 두 기록자의 합이다 (뒤에 쓴 쪽이 앞을 지우지 않는다)" "$last_total" "3.0000"
+else
+  ok "잠금 도구가 없는 호스트라 누적 보존 단언을 건너뛴다"
+fi
+
+CEND="$WORK/end-conc"; mkdir -p "$CEND"
+CELEDGER="$CEND/ledger.md"; cost_ledger_seed "$CELEDGER"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$CELEDGER"; RUN_DIR="$CEND"; RUN_ID="RC"
+  gate_end_run B4 "첫째 사유" >/dev/null 2>&1
+  gate_end_run B5 "둘째 사유" >/dev/null 2>&1
+) >/dev/null 2>&1
+n_end=$(grep -c '결정=종료' "$CELEDGER" 2>/dev/null || true)
+check "두 경계가 차례로 끝내도 종료 행은 하나다" "${n_end:-0}" "1"
+n_mark=$(grep -c . "$CEND/done" 2>/dev/null || true)
+check "종단 표시도 한 줄이다" "${n_mark:-0}" "1"
+case "$(cat "$CEND/done" 2>/dev/null || true)" in
+  *"경계 B4"*) ok "첫 사유가 표시에 남는다 (뒤 경계가 덮어쓰지 않는다)" ;;
+  *) bad "종단 표시" "$(cat "$CEND/done" 2>/dev/null || true)" ;;
+esac
+# `mv -n` leaves the LOSER's file behind, so the publication has to clean up
+# after itself or the run directory accumulates one `done.<pid>` per attempt.
+if [ -z "$(find "$CEND" -maxdepth 1 -name 'done.*' 2>/dev/null)" ]; then
+  ok "발행에 진 기록자의 임시 파일이 런 디렉터리에 남지 않는다"
+else
+  bad "종단 표시" "done.<pid> 임시 파일이 남았다: $(find "$CEND" -maxdepth 1 -name 'done.*')"
+fi
+
+CLOCKED="$WORK/cost-locked"; mkdir -p "$CLOCKED"
+CFREE="$WORK/cost-lockfree"; mkdir -p "$CFREE"
+cost_ledger_seed "$CLOCKED/ledger.md"
+cost_ledger_seed "$CFREE/ledger.md"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$CLOCKED/ledger.md"; RUN_DIR="$CLOCKED"; RUN_ID="RC"
+  gate_append_cost 1.5000 3 2026-01-01T00:00:00Z >/dev/null 2>&1
+) >/dev/null 2>&1
+(
+  set +e
+  # EXPORTED BEFORE THE SOURCE. `ORCH_HOST_OS` is assigned while `run.sh` is
+  # being sourced, so a value set afterwards arrives too late and `lock_tool`
+  # would still name the lock — the branch under test would never run and the
+  # comparison below would pass by comparing the locked branch with itself.
+  export CC_CMDS_ORCH_HOST_OS=Linux
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$CFREE/ledger.md"; RUN_DIR="$CFREE"; RUN_ID="RC"
+  gate_append_cost 1.5000 3 2026-01-01T00:00:00Z >/dev/null 2>&1
+) >/dev/null 2>&1
+locked_row=$(grep '^- `cost`' "$CLOCKED/ledger.md" 2>/dev/null | tail -1)
+free_row=$(grep '^- `cost`' "$CFREE/ledger.md" 2>/dev/null | tail -1)
+if [ -n "$free_row" ]; then
+  check "락 없는 분기가 락 분기와 같은 바이트를 쓴다" "$free_row" "$locked_row"
+else
+  bad "락 없는 분기" "행이 나오지 않았다 — else 분기가 아무것도 쓰지 않는다"
+fi
+
+# ---------------------------------------------------------------------------
 # 19. The nine grant fields are checked for presence
 #
 # The block is frozen at append and has no rewrite form, so a field omitted is
@@ -3683,17 +4284,86 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 22. A done proposal is not judged by the deadline's merge arm
+# 22. A done proposal is not judged by the end gate's merge arm
 #
 # It has no act behind it, so `--cutpoint` carries no meaning there — yet the
-# deadline read it and refused, leaving a past-deadline run unable to record
-# that it had ended.
+# gate read it and refused, leaving a run past its bound unable to record that
+# it had ended: no `done` file, a snapshot showing it in flight forever, and a
+# watcher that never reaped itself.
+#
+# THIS ASSERTION USED TO BE A `grep` FOR THE EXEMPTION'S SOURCE LINE, and it was
+# worse than no test. The literal it looked for occurred TWICE in the gate and
+# the helper it used answers "at least one", so deleting the exemption left the
+# section green — a passing test asserting the exemption of a gate that was no
+# longer there. That is the failure mode a red test does not have: an
+# implementer reads the checklist, runs the suite, sees green and concludes the
+# net held. So the section now EXERCISES the exemption instead of looking for
+# it, and the two ways it can break — the exemption removed, or the gate itself
+# removed — are distinguished by the two cases below rather than conflated into
+# one grep that passes either way.
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '[ "$kind" = "propose-done" ] && return 0'; then
-  ok "마감 게이트가 종료 제안을 면제한다"
+printf '2026-01-01T00:00:00Z 종단 — 경계 B4 · 근거 22절 픽스처\n' > "$RD/done"
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
+if [ "$rc" = "3" ]; then
+  ok "종단한 런에서 머지는 여전히 거부된다 (관문이 살아 있다)"
 else
-  bad "마감 면제" "마감이 지난 런이 종료를 기록할 수 없다"
+  bad "종단 관문" "종단 표시가 있는데 머지가 rc=$rc 로 통과했다"
 fi
+# ASSERTED ON THE REFUSAL'S IDENTITY, NOT ON `rc = 0`. Two different gates can
+# answer this call and only one of them is what this section is about. The end
+# gate refuses with `런이 이미 종단했습니다`; the nine condition blocks refuse a
+# proposal whose run genuinely is not finished, and by this point in the file the
+# fixture ledger legitimately carries unterminated segments, pending approvals,
+# open obligations and a run-scope block that earlier sections put there on
+# purpose. Requiring 0 made this assertion a function of everything every earlier
+# section happened to leave behind — which says nothing about the exemption, and
+# turns any new fixture section upstream into a failure here.
+#
+# What the exemption claims is exactly "whatever answers this call, it is not the
+# end gate", so that is what is asserted. A bare `!= 3` would have the weakness
+# the earlier spelling warned about; testing the refusal TEXT does not, because a
+# vocabulary or stale-digest refusal carries neither the end gate's sentence nor
+# anything resembling it. The message is printed on failure, so a wrong refusal
+# is read rather than inferred from a number.
+gate plan --manifest "$MANIFEST" --kind propose-done --target infra --segment SD --cutpoint 머지 -- true
+case "$msg" in
+  *"런이 이미 종단했습니다"*)
+    bad "종단 관문이 종료 제안을 면제한다" "종단 관문이 종료 제안을 거부했다 — rc=$rc — $msg" ;;
+  *) ok "종단 관문이 종료 제안을 면제한다" ;;
+esac
+rm -f "$RD/done"
+
+# ---------------------------------------------------------------------------
+# 22b. The ending mark is a CACHE and the ledger row is the authority
+#
+# `$RUN_DIR` is volatile and `gate_main` calls `rundir_init` on every entry, so
+# a collected run directory came back EMPTY and the end gate read "not ended" —
+# the end was not a refusal but a state the next gate call silently repaired,
+# and a run past its cost ceiling resumed dispatching. The row survives because
+# the ledger lives outside the run directory and under the hash chain.
+# ---------------------------------------------------------------------------
+#
+# THE FIXTURE ROW IS REMOVED AGAIN. It carries `prev=x`, which is a chain break
+# by construction, and every later section reads the same ledger — so the whole
+# file is restored from a copy rather than left carrying a break that a later
+# assertion would attribute to the code under test.
+LBAK22="$WORK/ledger.22b.bak"; cp "$LEDGER" "$LBAK22"
+printf -- '- `자율 승인` | kind=boundary | 결정=종료 | 대상=- | 세그먼트=- | 절단점=경계 | 축2=읽기 | 등급=1 | 기준=B9 | 되돌리는 법=새 런으로 다시 킥오프 | 근거=22b 픽스처 | prev=x\n' >> "$LEDGER"
+rm -f "$RD/done"
+gate plan --manifest "$MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
+check "표시가 수거돼도 원장의 종료 행이 머지를 막는다" "$rc" "3"
+case "$msg" in
+  *"경계 B9"*) ok "표시가 없을 때 사유를 종료 행의 기준·근거에서 만든다" ;;
+  *) bad "종단 사유 유도" "$msg" ;;
+esac
+gate plan --manifest "$MANIFEST" --kind propose-done --target infra --segment SD --cutpoint 머지 -- true
+case "$msg" in
+  *"런이 이미 종단했습니다"*)
+    bad "원장으로 종단을 읽어도 종료 제안은 여전히 면제된다" "종단 관문이 종료 제안을 거부했다 — rc=$rc — $msg" ;;
+  *) ok "원장으로 종단을 읽어도 종료 제안은 여전히 면제된다" ;;
+esac
+cp "$LBAK22" "$LEDGER"
 
 # ---------------------------------------------------------------------------
 # 23. The settings directory is serialized for readers and writers alike
@@ -5756,7 +6426,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 여덟 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -5764,7 +6434,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 여덟 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -5774,7 +6444,7 @@ fi
 # there and the producer was not.
 rm -f "$LR/plugins/bad.md"
 # 원장의 「값 없음」 센티널은 부류 주장이 아니다. 부류 없이 방출된 판단을 흡수기가
-# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 여덟 값 중 하나이기를
+# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 열 값 중 하나이기를
 # 요구하게 되고 실제 트리 전체 스캔이 그 자리에서 빨개진다.
 printf -- '- `자율 승인` | 판단 부류=- | 등급=- | 사유=x\n' > "$LR/plugins/sentinel.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
@@ -5847,7 +6517,13 @@ if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   bad "린트 규칙 1" "어휘를 그대로 옮긴 픽스처가 이미 실패한다 — 아래 단언이 무엇 때문에 빨간지 말할 수 없다"
 fi
-sed -e 's/^\(readonly JUDGMENT_CLASSES="[^"]*\) 시각-면제"$/\1"/' \
+# Removed WHEREVER IT SITS in the vocabulary, not only at the end. The earlier
+# spelling anchored on `시각-면제"` — the token immediately before the closing
+# quote — so it silently stopped matching the moment a token was appended after
+# it, and the fixture then carried an unmodified vocabulary into an assertion
+# about a modified one. The check below catches that, but a fixture that breaks
+# on every future vocabulary addition is a fixture that will keep breaking.
+sed -E 's/^(readonly JUDGMENT_CLASSES="[^"]*) 시각-면제([ "])/\1\2/' \
     "$LR/orch/run.sh" > "$LR1/orch/run.sh"
 # THE FIXTURE IS CHECKED BEFORE IT IS ASSERTED ON. A substitution that matched
 # nothing leaves the two sets consistent, and then the lint passes for the honest
@@ -6696,6 +7372,52 @@ check "추천 접미사가 붙은 승인 라벨은 정규형으로 대조돼 승
 pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid_ok " | tail -1)" '상태')
 check "긍정 답변의 상태는 승인이다" "$pst" "승인"
 
+# --- 31at. The answer must have been written by the PERSON ------------------
+#
+# The approval id and the question text bind an answer to a question and say
+# nothing about who wrote it. Both are values the router reads out of the
+# snapshot, and the transcript holds the router's own turns in the same file — so
+# the pair blocks pointing `close` at a different question and never blocked the
+# router typing its own answer to this one. What stood in for an author check was
+# the affirmative scan, and an affirmative token is a thing the router can type as
+# easily as a person can.
+gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 기준="이 답을 누가 썼는지 검사할지" 근거="트랜스크립트에 라우터의 턴이 함께 있다"
+check "작성자 실험용 판단이 승인으로 올라간다" "$rc" "5"
+wid=$(row_field "$(last_judgment_approval)" '승인 id')
+wq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$wid " | tail -1)" '질문 문면')
+WSID="19191919-3434-5656-7878-909090909090"
+printf '{"role":"assistant","content":"%s / %s → 그렇게 하라"}\n' "$wid" "$wq" > "$NTX/$WSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$WSID" bash "$GATE" close --manifest "$NM" --approval "$wid" 2>&1); rc=$?
+check "라우터 자신이 쓴 줄로는 승인이 닫히지 않는다" "$rc" "5"
+wst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$wid " | tail -1)" '상태')
+check "그 승인의 상태는 대기 그대로다" "$wst" "대기"
+# A tool result arrives under the USER role and is not a person either.
+printf '{"role":"user","toolUseResult":"x","content":"%s / %s → 그렇게 하라"}\n' "$wid" "$wq" > "$NTX/$WSID.jsonl"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$WSID" bash "$GATE" close --manifest "$NM" --approval "$wid" 2>&1); rc=$?
+check "하네스가 합성한 사용자 역할 항목도 답이 아니다" "$rc" "5"
+# NOT VACUOUS: an answer carried the way the harness actually carries one still
+# closes it. The two refusals above are about the AUTHOR — an assistant line and
+# a synthesized user entry — and this arm is the person's own.
+#
+# TWO THINGS MOVED UNDER THIS ASSERTION AND BOTH HAD TO BE FOLLOWED. The binding
+# is no longer "the id and the question on one line": `close` joins the answer
+# through the `AskUserQuestion` `tool_use`/`tool_result` pair, so a one-line
+# stand-in is refused for having no frame at all — that is exit 5 and it says
+# nothing about authorship. And the menu is the GATE'S, not the fixture's: the
+# labels are compared verbatim, so an invented one is refused as a menu
+# mismatch — exit 3, which also says nothing about authorship. Left on the old
+# spelling this assertion reported a failure at each layer in turn while the
+# property it names was never exercised.
+: > "$NTX/$WSID.jsonl"
+auq_frame "$NTX/$WSID.jsonl" "$wid" "$wq" "승인" 승인 거부 무효 >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$WSID" bash "$GATE" close --manifest "$NM" --approval "$wid" 2>&1); rc=$?
+check "같은 말이 사람의 역할로 오면 닫힌다 (검사가 공허하지 않다)" "$rc" "0"
+
 # --- 31aj. An answered approval is CONSUMED, a closed one is never re-opened -
 #
 # Issuing the question was half a lifecycle. A grade-2 judgment never reaches the
@@ -7448,6 +8170,12 @@ check "매니페스트에 쓰려는 위임자가 거절된다" "$rc" "3"
 # manifest is `cone-plan.md`, which the second pattern does not match at all, and
 # a fixture that could not have written the file measures nothing here.
 check "거절된 위임자는 매니페스트 바이트를 바꾸지 않았다" "$(wc -c < "$NM")" "$NMBYTES"
+# 어느 축이 먼저 세우는지는 등급기가 이 argv 를 어떻게 읽느냐에 달려 있고, 그것이
+# 바뀌었다. 예전 등급기는 실행 술어를 만나면 해소를 포기해 `등급 미상` 을 답했고,
+# 그러면 신고한 `워크트리쓰기` 와 어긋나 자기선언 검사(6)가 먼저 세웠다. 지금은
+# `-exec sh -c` 를 감싼 명령으로 위임해 `워크트리쓰기` 를 답하므로 신고와 등급이
+# **일치하고**, 그래서 자기선언 검사를 지나 매니페스트 가드(3)가 세운다. 위의
+# `rc` 단언이 3 을 기대하는 것과 같은 이유다 — 둘이 같은 거절을 가리켜야 한다.
 case "$msg" in
   *"매니페스트에 쓰려 합니다"*) ok "위임자 거절이 매니페스트 가드를 원인으로 지목한다" ;;
   *) bad "위임자 가드" "$msg" ;;
@@ -9053,6 +9781,296 @@ printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 
 after_v=$(PD)
 check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
 
+
+# ---------------------------------------------------------------------------
+# 32. The answer round trip, end to end
+#
+# Every piece of this path existed and NONE of it was asserted: the polarity
+# scans reading the whole answer rather than its clipped copy, an instruction
+# without an affirmative token leaving the approval open, the sidecar being
+# written for judgments only, and the read-only door refusing an id the ledger
+# does not carry. A path with no assertions behaves however the last edit left
+# it, and this one stands between a person's words and a recorded approval.
+#
+# The cone fixture is reused rather than rebuilt: `$NM` / `$LEDGER2` /
+# `$STATE_CONE` / `$NTX` are untouched by the sections above that write to
+# `$LEDGER`, so the run this section drives is the cone run and nothing else.
+# ---------------------------------------------------------------------------
+CONE_RD="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"
+approval_state() {
+  # approval_state <승인 id> — the LAST state recorded for that approval.
+  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '상태'
+}
+approval_question() {
+  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1)" '질문 문면'
+}
+
+# --- 32a. A long answer that is no label is free input, and stores nothing ---
+#
+# This section used to measure the prose polarity scan reading past the 400-byte
+# clip. That scan is gone: a judgment answer is compared to the gate's labels by
+# whole-string equality, so an answer of any length that is not a label closes
+# nothing whatever it says. What still has to hold is the consequence the old
+# assertion was really protecting — a `close` that did not grant leaves NO
+# re-dispatch store behind, so no stage is ever handed a refusal to act on.
+JSTUB6="$WORK/judgment-stub-long"
+cat > "$JSTUB6" <<'JSTUB6EOF'
+#!/usr/bin/env bash
+cat <<'RES6EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-6","num_turns":1,"result":"**판단 부류**: 시각-면제 **판단 등급**: 2 **판단 기준**: 400바이트 뒤에 놓인 답을 끝까지 읽는지 **판단 근거**: 클립 뒤로 답이 이어진다"}
+RES6EOF
+exit 0
+JSTUB6EOF
+chmod +x "$JSTUB6"
+seg_row SJ7 "$CONE_C" 상태=실행중 선행=없음
+emit_torn SJ7 "$JSTUB6"
+lj=$(row_field "$(last_judgment_approval)" '승인 id')
+if [ -n "$lj" ]; then
+  ok "긴 답 실험용 판단 승인이 열린다 ($lj)"
+  # 450 filler bytes so the answer runs well past the row field's clip, with the
+  # refusal placed after them: the length is what the old scan tripped on, and
+  # the point now is that neither the length nor the wording enters the decision.
+  FILL=$(printf '%0450d' 0 | tr '0' 'x')
+  LJSID="55555555-3434-5656-7878-909090909090"
+  : > "$NTX/$LJSID.jsonl"
+  auq_frame "$NTX/$LJSID.jsonl" "$lj" "$(approval_question "$lj")" \
+    "$FILL 그 방향으로는 하지 않는다" >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$LJSID" bash "$GATE" close --manifest "$NM" --approval "$lj" 2>&1); rc=$?
+  check "라벨과 같지 않은 긴 답은 닫지 않는다 (자유 입력)" "$rc" "5"
+  check "그 승인은 대기로 남는다" "$(approval_state "$lj")" "대기"
+  if [ -f "$CONE_RD/answer/$lj.md" ]; then
+    bad "재파견 저장소" "승인으로 닫히지 않은 close 가 재파견 저장소를 남겼다"
+  else
+    ok "승인으로 닫히지 않은 close 는 재파견 저장소를 만들지 않는다"
+  fi
+else
+  bad "긴 답 픽스처" "판단 승인이 열리지 않았다: $out"
+fi
+
+# --- 32b. An instruction alone does not close an approval -------------------
+#
+# A person answering a judgment question writes direction rather than a ruling,
+# and direction equals no label — so it is free input and the approval stays
+# open. There is no flag that waives that, and this section pins the absence:
+# bare direction and a re-question both leave the approval 대기, and only an
+# answer that IS one of the gate's labels closes it. Asserting the refusals alone
+# would pass on a verb that closes nothing, so the closing case is asserted
+# beside them — and it is also where the re-dispatch store is checked, because
+# a granted judgment is the only thing that writes one.
+JSTUB7="$WORK/judgment-stub-instruction"
+cat > "$JSTUB7" <<'JSTUB7EOF'
+#!/usr/bin/env bash
+cat <<'RES7EOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-7","num_turns":1,"result":"**판단 부류**: 시각-면제 **판단 등급**: 2 **판단 기준**: 지시문 성격의 답을 어떤 상태로 닫는지 **판단 근거**: 사람이 판정 대신 방향을 적었다"}
+RES7EOF
+exit 0
+JSTUB7EOF
+chmod +x "$JSTUB7"
+seg_row SJ8 "$CONE_C" 상태=실행중 선행=없음
+emit_torn SJ8 "$JSTUB7"
+ij=$(row_field "$(last_judgment_approval)" '승인 id')
+if [ -n "$ij" ]; then
+  ok "지시문 실험용 판단 승인이 열린다 ($ij)"
+  IJSID="66666666-3434-5656-7878-909090909090"
+  : > "$NTX/$IJSID.jsonl"
+  auq_frame "$NTX/$IJSID.jsonl" "$ij" "$(approval_question "$ij")" \
+    "표를 다시 재고 그 값을 계획에 옮겨 적으라" >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
+  check "라벨과 같지 않은 지시문 답은 닫히지 않는다" "$rc" "5"
+  check "그 사이 승인은 대기로 남는다" "$(approval_state "$ij")" "대기"
+  # 되물음도 마찬가지다 — 부정 어휘를 하나도 담지 않지만 라벨도 아니다.
+  : > "$NTX/$IJSID.jsonl"
+  auq_frame "$NTX/$IJSID.jsonl" "$ij" "$(approval_question "$ij")" \
+    "이 물음 다시 정리해서 줘" >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
+  check "되물음도 승인으로 닫히지 않는다" "$rc" "5"
+  check "되물음 뒤에도 승인은 대기다" "$(approval_state "$ij")" "대기"
+  # NOT VACUOUS — 같은 물음에 게이트의 라벨로 답하면 닫힌다.
+  : > "$NTX/$IJSID.jsonl"
+  auq_frame "$NTX/$IJSID.jsonl" "$ij" "$(approval_question "$ij")" "승인" >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$IJSID" bash "$GATE" close --manifest "$NM" --approval "$ij" 2>&1); rc=$?
+  check "라벨과 같은 답은 승인으로 닫힌다" "$rc" "0"
+  check "그 승인의 상태가 승인이 된다" "$(approval_state "$ij")" "승인"
+  if [ -f "$CONE_RD/answer/$ij.md" ]; then
+    ok "승인으로 닫힌 판단은 재파견 저장소를 남긴다"
+  else
+    bad "재파견 저장소" "판단 승인을 닫았는데 $CONE_RD/answer/$ij.md 가 없다"
+  fi
+else
+  bad "지시문 픽스처" "판단 승인이 열리지 않았다: $out"
+fi
+
+# --- 32c. The store belongs to `절단점=판단` and to nothing else ------------
+#
+# An act approval's answer is a disposition with nothing for a stage to resume
+# from, so a re-dispatch store there would hold something that is not an answer
+# — and `answers` would then list entries that are not answers at all.
+NONJ="NJ-32c"
+NONJQ="비판단 절단점의 물음 문면"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$LEDGER2"; RUN_DIR="$CONE_RD"; RUN_ID="$CONE_RUN_ID"
+  gate_append '승인' "승인 id=$NONJ" "상태=대기" "절단점=커밋" \
+    "질문 문면=$NONJQ" "발행 시각=2026-01-01T00:00:00Z" >/dev/null 2>&1
+) >/dev/null 2>&1
+NJSID="77777777-3434-5656-7878-909090909090"
+: > "$NTX/$NJSID.jsonl"
+auq_frame "$NTX/$NJSID.jsonl" "$NONJ" "$NONJQ" "그렇게 진행하라" >/dev/null
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$NJSID" bash "$GATE" close --manifest "$NM" --approval "$NONJ" 2>&1); rc=$?
+check "비판단 승인은 답 프레임 하나로 닫힌다" "$rc" "0"
+if [ -f "$CONE_RD/answer/$NONJ.md" ]; then
+  bad "재파견 저장소" "절단점이 판단이 아닌 승인에도 저장소가 생겼다"
+else
+  ok "절단점이 판단이 아니면 재파견 저장소를 만들지 않는다"
+fi
+
+# --- 32d. The read-only door is fail-closed, and it asks the ledger --------
+#
+# `answers` hands out the bytes a person typed. It used to decide on a path
+# existing under the answer directory and nothing else, so anything that landed
+# there was served as an answer with no row behind it saying a person had been
+# asked.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" --approval "없는-승인-id" 2>/dev/null); rc=$?
+if [ "$rc" = "0" ]; then
+  bad "answers 실패 폐쇄" "원장에 없는 승인 id 가 0 으로 끝났다"
+else
+  ok "원장에 없는 승인 id 는 0 이 아닌 코드로 끝난다"
+fi
+check "그때 표준출력으로 바이트를 내지 않는다" "$out" ""
+# Bytes planted under the answer directory for the NON-judgment approval above:
+# the file exists, the row exists, and the row's cutpoint is what refuses.
+mkdir -p "$CONE_RD/answer"
+printf '심어 둔 바이트\n' > "$CONE_RD/answer/$NONJ.md"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" --approval "$NONJ" 2>/dev/null); rc=$?
+if [ "$rc" = "0" ]; then
+  bad "answers 원장 대조" "절단점이 판단이 아닌 승인의 바이트가 답으로 나왔다"
+else
+  ok "절단점이 판단이 아니면 사이드카가 있어도 답으로 내주지 않는다"
+fi
+check "그 경우에도 바이트를 내지 않는다" "$out" ""
+# The narrowing does not close the door it narrows: the judgment answer from
+# 32b still comes out whole.
+if [ -n "$ij" ]; then
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" --approval "$ij" 2>/dev/null); rc=$?
+  check "판단 승인의 답은 그대로 나온다" "$rc" "0"
+  case "$out" in
+    *"승인"*) ok "사람이 고른 라벨이 그대로 나온다" ;;
+    *) bad "답 전문" "$out" ;;
+  esac
+fi
+
+# --- 32d-2. A judgment closed as a REFUSAL is not an answer ------------------
+#
+# `gate_close` writes the answer sidecar BEFORE it branches on the refusal, so a
+# judgment closed as 거부 leaves a fully formed file behind. Keeping that file is
+# right — a refusal's own words are the durable record of why the answer was no.
+# What must not happen is the door handing those words to a re-dispatched stage
+# as the thing to act on, which is a refusal read as an instruction. The state is
+# the ledger fact that tells the two apart, and this door read only the other two.
+RJ="RJ-32d"
+RJQ="거부로 닫히는 판단의 물음 문면"
+(
+  set +e
+  # shellcheck disable=SC1090
+  CC_GATE_SOURCE_ONLY=1 . "$GATE" 2>/dev/null
+  LEDGER="$LEDGER2"; RUN_DIR="$CONE_RD"; RUN_ID="$CONE_RUN_ID"
+  gate_append '승인' "승인 id=$RJ" "상태=대기" "절단점=판단" \
+    "질문 문면=$RJQ" "막는 세그먼트=SJ8" "발행 시각=2026-01-01T00:00:00Z" >/dev/null 2>&1
+  gate_append '승인' "승인 id=$RJ" "상태=거부" "질문 문면=$RJQ" \
+    "답변 문면=그 방향으로는 가지 마세요" "해소 시각=2026-01-01T00:10:00Z" >/dev/null 2>&1
+) >/dev/null 2>&1
+printf '그 방향으로는 가지 마세요\n' > "$CONE_RD/answer/$RJ.md"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" --approval "$RJ" 2>/dev/null); rc=$?
+if [ "$rc" = "0" ]; then
+  bad "거부된 판단" "거부로 닫힌 판단의 거절문이 답으로 나왔다"
+else
+  ok "거부로 닫힌 판단은 사이드카가 있어도 답으로 내주지 않는다"
+fi
+check "그 경우에도 바이트를 내지 않는다" "$out" ""
+
+# --- 32d-3. The id-less listing asks the same questions ----------------------
+#
+# The verb's own comment calls the id-less form the way a reader with no id gets
+# one. A listing that names ids the id form then refuses cannot be used for that,
+# and it was a bare `find` with no ledger question in it at all. Both forms go
+# through one predicate, so the two cannot come apart.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" answers --manifest "$NM" 2>/dev/null); rc=$?
+check "무인자 목록은 0 으로 끝난다" "$rc" "0"
+case "$out" in
+  *"$RJ"*) bad "무인자 목록" "거부로 닫힌 판단의 id 가 목록에 있다: $out" ;;
+  *) ok "거부로 닫힌 판단의 id 는 목록에 없다" ;;
+esac
+case "$out" in
+  *"$NONJ"*) bad "무인자 목록" "절단점이 판단이 아닌 승인의 id 가 목록에 있다: $out" ;;
+  *) ok "절단점이 판단이 아닌 승인의 id 는 목록에 없다" ;;
+esac
+if [ -n "$ij" ]; then
+  case "$out" in
+    *"$ij"*) ok "답이 온 판단의 id 는 목록에 남는다" ;;
+    *) bad "무인자 목록" "답이 온 판단의 id 가 목록에서 빠졌다: $out" ;;
+  esac
+fi
+
+# --- 32e. A collected sidecar is `null`, not a missing element --------------
+#
+# An element that vanishes from the array is indistinguishable from one a stage
+# consumed, and consumption is the sole owner of that meaning.
+if [ -n "$ij" ]; then
+  mv "$CONE_RD/answer/$ij.md" "$CONE_RD/answer/$ij.md.moved"
+  aj_json=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+            | jq -c --arg id "$ij" '.answered_judgments[]? | select(.id == $id)')
+  if [ -n "$aj_json" ]; then
+    ok "사이드카가 사라져도 그 판단은 후보 목록에 남는다"
+  else
+    bad "수거된 사이드카" "원소가 배열에서 사라졌다 — 소비된 것과 구별되지 않는다"
+  fi
+  case "$aj_json" in
+    *'"answer":null'*) ok "그 원소의 answer 가 null 로 나온다 (바이트가 없다는 사실이 드러난다)" ;;
+    *) bad "수거된 사이드카" "$aj_json" ;;
+  esac
+  mv "$CONE_RD/answer/$ij.md.moved" "$CONE_RD/answer/$ij.md"
+fi
+
+# --- 32f. The router section states BOTH halves of the re-dispatch duty -----
+#
+# The live consumer on a router-driven run is prose, so the prose is what
+# carries the mechanism — and prose that names only the approval id produces
+# work with no consumption record, leaving the same answer to be handed to the
+# same stage on every later pass.
+AUTOPILOT_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+if [ -f "$AUTOPILOT_SKILL" ]; then
+  if grep_all_q -F -- '--approval' "$AUTOPILOT_SKILL"; then
+    ok "라우터 절이 스테이지에 승인 id 를 넘기라고 적는다"
+  else
+    bad "라우터 절" "재디스패치에 승인 id 를 넘기라는 문면이 없다"
+  fi
+  if grep_all_q -F -- '해소 승인=<id>' "$AUTOPILOT_SKILL"; then
+    ok "라우터 절이 같은 판단의 재제출로 해소 승인 행이 남는다고 적는다"
+  else
+    bad "라우터 절" "재제출이 남기는 해소 승인 행에 대한 문면이 없다"
+  fi
+else
+  bad "라우터 절" "autopilot/SKILL.md 를 찾지 못했다: $AUTOPILOT_SKILL"
+fi
+
+# And the fixed-graph driver's own re-attachment prompt carries the same two.
+if grep_all_q -F -- '해소 승인=$aj_id' "$RUNSH"; then
+  ok "드라이버의 재부착 프롬프트가 소비 술어를 발화시킨다"
+else
+  bad "재부착 프롬프트" "프롬프트가 해소 승인 행을 남기라고 지시하지 않는다"
+fi
+if grep_all_q -F -- 'answered_judgment_stage "$seg" S4' "$RUNSH"; then
+  ok "후보 선별이 스테이지 종류를 인자로 받는다"
+else
+  bad "후보 선별" "answered_judgment_stage 호출이 스테이지 종류를 넘기지 않는다"
+fi
 
 # ---------------------------------------------------------------------------
 # Layer 3 — `리뷰-후-적용`, driven directly against a fixture ledger
