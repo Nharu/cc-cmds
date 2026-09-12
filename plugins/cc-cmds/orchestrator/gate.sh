@@ -47,6 +47,13 @@
 #   5  approval issued — the act is outside pre-authorization and irreversible
 #   6  grade self-declaration mismatch — the claimed grade is not the graded one
 #   7  enforcement surface moved — a file the boundary rests on was edited
+#   8, 9  DELIBERATELY EMPTY. 9 is held by `GATE_APPROVAL_ANSWERED` as an
+#      internal signal and 8 belongs to a rejection landing in a separate
+#      change. A hole with no stated reason is read as a mistake and filled.
+#  10  merge anchor unreadable — the segment row cannot say WHAT would be
+#      merged. Not 2 (the argv is correct and the ledger row is wrong) and not
+#      3 (this refusal is not in the catalog and survives turning the review
+#      rule off). Repair the segment row and re-issue the same call.
 #
 # Usage:
 #   gate.sh snapshot --manifest <path> [--render]
@@ -108,7 +115,9 @@
 #               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
 # obligation cannot be fulfilled into a segment other than the one it was issued
-# for.
+# for. Its `--target` IS compared against that row's `대상` and a mismatch is
+# exit 2 — the landing test runs in that target's anchor repository, so the wrong
+# target measures the right commit in the wrong place and answers confidently.
 #
 # Compatibility: bash 3.2 (macOS stock under the sanitized PATH) — no
 # associative arrays, no mapfile, no `wait -n`, no case-modification expansions.
@@ -177,6 +186,50 @@ readonly GATE_EXIT_STALE=4
 readonly GATE_EXIT_APPROVAL=5
 readonly GATE_EXIT_GRADE=6
 readonly GATE_EXIT_SURFACE=7
+
+# The act that declared a rung BELOW the one its own argv climbs. `ladder_of_argv0`
+# reads a rung out of argv0 and its subcommand; where that derivation is STRICTLY
+# HIGHER than `--cutpoint`, every consumer downstream was being handed a value the
+# argv itself contradicts, and all of them open on the low side — the rule catalog
+# never fires, the target's ceiling is never compared, the wall-clock deadline lets
+# a merge through, an undeclared target gets registered, and no review obligation
+# is issued. One misspelled word did all five.
+#
+# OVER-DECLARATION IS NOT REFUSED, and that asymmetry is the design rather than an
+# omission. The router labels every act with its TARGET's cutpoint, so
+# `--cutpoint 배포 -- git commit …` is the ordinary path all night; refusing it
+# would be a wall rather than a check. The high declaration simply loses to the
+# derived rung, and the ledger records both.
+#
+# NOT 3. A rule refusal is switchable — every catalog entry answers to a
+# `## 룰 설정` line — and this refusal stands ABOVE the rule loop and survives all
+# of them. NOT 6 either: `GATE_EXIT_GRADE` already carries two meanings whose
+# prescriptions point in opposite directions ("do not re-declare to match" and
+# "declare wider and retry"), and this is a third whose repair is "raise the
+# declaration" — which, done on an act the target cannot authorize, lands on a
+# DIFFERENT code entirely (`절단점-준수` answers 3). A code that cannot be stated
+# truly in one sentence is a code the router cannot route at three in the morning.
+readonly GATE_EXIT_LADDER=8
+
+# The merge that cannot say what it merges. Issued when the review obligation's
+# anchor — the tip of the segment worktree being merged — cannot be read, so the
+# row that would be written could never be closed.
+#
+# 8 IS TAKEN by the under-declaration rejection declared directly above; 9 IS
+# SKIPPED because `GATE_APPROVAL_ANSWERED` below already holds that value as an
+# internal signal, and assigning it here would make one number both a sentinel
+# and a contract code, falsifying the three comments in this tree that defend the
+# sentinel. That gap is not an accident, and the router's exit-code table says so
+# — a hole with no reason is read as a mistake and filled by the next person to
+# add a code.
+#
+# NOT 2 and NOT 3. 2 tells the router to fix its argv, but here the argv is
+# correct and the ledger's segment row is wrong, so a router obeying 2 retries
+# the same argv into the same refusal forever. 3 says a rule refused, but this
+# refusal is not in the catalog and survives `**리뷰-후-머지**: 끔` — reporting
+# it as 3 would cancel, on the surface the router actually reads, the property
+# that turning the rule off does not turn this off.
+readonly GATE_EXIT_ANCHOR=10
 
 # AN INTERNAL SIGNAL AND NOT AN EXIT CODE. `gate_issue_judgment_approval`
 # returns it to say "this question already has an answer, so nothing was
@@ -597,8 +650,28 @@ surface_of_argv0() {
   local cmd="${1##*/}"
   shift
   case "$cmd" in
-    cat|ls|find|grep|rg|head|tail|wc|stat|file|diff|which|command)
+    # This column has no way to run some other command. `which git merge` is a
+    # read and rightly so — it looks a name up and prints it.
+    cat|ls|grep|head|tail|wc|stat|file|diff|which)
       printf '읽기' ;;
+    # THESE THREE RUN WHAT THEY WRAP, so a name cannot answer for them. They sat
+    # in the read row above and graded `읽기` unconditionally, which made
+    # `command git merge` an HONESTLY declared read — and the review rule exits
+    # on the read grade before it ever reaches the history-integration predicate,
+    # so a wrapped merge was exempted from the review requirement outright.
+    # Widening that predicate cannot reach this: the exemption happens one layer
+    # up, in the grade. Measured on this tree, with the rule's read early-return
+    # standing fifteen lines above the line that first reads the predicate.
+    #
+    # DELEGATED, NOT DELETED FROM THE TABLE. Dropping the three names answers
+    # `등급 미상`, which refuses — every ordinary `find` and `rg` read in this
+    # pipeline would stop, including the walks over the manifest's own directory
+    # the guard below is written to keep passing. And a maintainer who hits that
+    # puts the names back on the read row, which reopens this hole exactly as it
+    # was. The delegation form is the one `git`, `gh` and `lockf` already use.
+    command) surface_of_command "$@" ;;
+    find)    surface_of_find "$@" ;;
+    rg)      surface_of_rg "$@" ;;
     # Digest tools. Their absence was a DEADLOCK rather than a gap: the
     # unattended implement arm's process B may enter only after comparing the
     # plan's digest against the one on the ledger row, and computing that digest
@@ -739,31 +812,275 @@ surface_of_argv0() {
   esac
 }
 
-surface_of_lockf() {
-  # surface_of_lockf lockf [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
+gate_unwrap_lockf() {
+  # gate_unwrap_lockf <resolver> <lock-only> <unknown-opt> [-k] [-s] [-t <sec>] <lockfile> <command> [args...]
   #
-  # Skip lockf's own options and its lockfile operand, then grade what is left.
-  # `-t` takes a value; `-k` and `-s` do not. The lockfile is the first
-  # non-option word and is never itself the command.
+  # Skip lockf's own options and its lockfile operand, then hand what is left to
+  # <resolver>. `-t` takes a value; `-k`, `-s` and `-n` do not. The lockfile is
+  # the first non-option word and is never itself the command.
   #
-  # A lock with nothing after it locks and exits — that is a worktree write (it
-  # creates the lockfile) and there is no wrapped command to defer to.
+  # ONE UNWRAP SHARED BY TWO TABLES. The grader and the history-integration
+  # predicate both have to see through `lockf`, and while each carried its own
+  # skip loop the two could resolve the SAME argv differently — a wrapped local
+  # merge graded `워크트리쓰기` while the predicate answered "not an integration"
+  # and exempted it from the review rule. Only the terminal answers differ, so
+  # only those are parameters: the grader passes `워크트리쓰기`/`등급 미상`, the
+  # predicate passes `0`/`1`.
+  #
+  # ARGV0 IS ALREADY GONE. `surface_of_argv0` drops it before dispatching and the
+  # lockf arm of the predicate drops it explicitly, so this loop starts at the
+  # first option. The old code shifted a SECOND time here, which ate whatever
+  # stood first: `lockf <file> git status` then read `git` as the lockfile and
+  # graded `status` alone, and `lockf -t 5 <file> git commit` read `5` as the
+  # lockfile. Both are the shapes the fixtures below now pin.
+  local resolver="$1" lock_only="$2" unknown_opt="$3"; shift 3
   local seen_file=0
-  shift                                   # drop `lockf` itself
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      # `-t` with no value after it emits NOTHING, which is what this did before
+      # it was factored out. Repairing that here would mix a second change into
+      # the one these fixtures measure.
       -t) shift 2 || return 0 ;;
       -t*) shift ;;
       -k|-s|-n) shift ;;
-      -*) printf '등급 미상'; return 0 ;;
+      -*) printf '%s' "$unknown_opt"; return 0 ;;
       *)
         if [ "$seen_file" = 0 ]; then seen_file=1; shift; continue; fi
-        surface_of_argv0 "$@"
+        "$resolver" "$@"
         return 0 ;;
     esac
   done
-  [ "$seen_file" = 1 ] && { printf '워크트리쓰기'; return 0; }
-  printf '등급 미상'
+  # A lock with nothing after it locks and exits — that is a worktree write (it
+  # creates the lockfile) and there is no wrapped command to defer to.
+  [ "$seen_file" = 1 ] && { printf '%s' "$lock_only"; return 0; }
+  printf '%s' "$unknown_opt"
+}
+
+surface_of_lockf() {
+  # surface_of_lockf <lockf-args-after-argv0...>
+  gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
+}
+
+gate_unwrap_command() {
+  # gate_unwrap_command <resolver> <no-exec> <unknown-opt> <command's args after argv0...>
+  #
+  # `command` skips shell functions and aliases and runs the NEXT word. Its own
+  # options are `-p` (default PATH) and `-v`/`-V`, which print what would run and
+  # execute nothing. Everything after that belongs to the wrapped command.
+  #
+  # THE SAME ONE-UNWRAP-TWO-TABLES SHAPE AS `gate_unwrap_lockf`, and for the same
+  # reason: the grader and the history-integration predicate both have to see
+  # through this word, and two copies of the skip loop are two chances for them
+  # to disagree about which word is the command. Only the terminal answers are
+  # parameters — the grader passes `읽기`/`등급 미상`, the predicate `0`/`1`.
+  local resolver="$1" no_exec="$2" unknown_opt="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -v|-V|-pv|-pV|-vp|-Vp) printf '%s' "$no_exec"; return 0 ;;
+      -p) shift ;;
+      --) shift; break ;;
+      -*) printf '%s' "$unknown_opt"; return 0 ;;
+      *)  break ;;
+    esac
+  done
+  [ "$#" -ge 1 ] || { printf '%s' "$no_exec"; return 0; }
+  "$resolver" "$@"
+}
+
+gate_unwrap_find() {
+  # gate_unwrap_find <resolver> <walk-only> <writes> <find's args after argv0...>
+  #
+  # Two ways a `find` writes. Four primaries hand the match to another command,
+  # and five act on their own — `-delete` removes the match, while `-fprintf`,
+  # `-fprint`, `-fprint0` and `-fls` each open a file named in argv and write to
+  # it. The last four are GNU-only, so on a BSD host `find` rejects them before
+  # anything happens; on the Linux CI runner they are the cheapest way to
+  # overwrite a file through a command that argv0 alone grades as a read.
+  # THE OPTION SET IS NOT INVENTED HERE — it is the one this file already carries
+  # in both write guards below, and a fifth spelling of the same list is how
+  # those two quietly drift apart.
+  #
+  # THIS LIST IS NOT CLAIMED TO BE COMPLETE. It is the set the two guards below
+  # enforce, and the three have to be changed together; a reader checking one
+  # against the others finds them equal, which says nothing about whether some
+  # sixth primary writes.
+  #
+  # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
+  # states that cost in place: without it every read that walks the manifest's
+  # directory becomes a refusal.
+  local resolver="$1" walk_only="$2" writes="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -exec|-execdir|-ok|-okdir)
+        shift
+        [ "$#" -ge 1 ] || { printf '%s' "$writes"; return 0; }
+        "$resolver" "$@"
+        return 0 ;;
+      -delete|-fprintf|-fprint|-fprint0|-fls) printf '%s' "$writes"; return 0 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$walk_only"
+}
+
+gate_unwrap_rg() {
+  # gate_unwrap_rg <resolver> <search-only> <truncated> <rg's args after argv0...>
+  #
+  # `--pre` names a program every searched file is fed through before the search.
+  # The value is one program and takes no arguments of its own, so exactly that
+  # one word goes to the resolver.
+  local resolver="$1" search_only="$2" truncated="$3"; shift 3
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pre)
+        shift
+        [ "$#" -ge 1 ] || { printf '%s' "$truncated"; return 0; }
+        "$resolver" "$1"
+        return 0 ;;
+      --pre=*)
+        "$resolver" "${1#--pre=}"
+        return 0 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$search_only"
+}
+
+# The grader's terminal answers. They point the OPPOSITE way from the
+# predicate's, which is deliberate and is the discipline the two-table comment
+# below already sets: this table answers `등급 미상` to what it does not
+# understand and the gate refuses, while the predicate answers `1` and keeps the
+# act under the check.
+surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
+surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$@"; }
+surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
+
+gate_history_integration() {
+  # gate_history_integration <argv...> — prints 1 when this argv integrates one
+  # line of history into another, 0 when it does not.
+  #
+  # THIS EXISTS BECAUSE THE GRADED SURFACE CANNOT SPLIT ITS OWN WORKTREE-WRITE
+  # CELL. The table below grades a local `merge`, `rebase` and `cherry-pick` as
+  # `워크트리쓰기`, and the same cell holds `mkdir` and `touch`. Exempting the
+  # cell lets a local merge carry an honest segment and pass the review rule
+  # with no review record at all; checking the cell whole demands a review
+  # record from an ordinary directory creation, and that is not an edge case —
+  # the router labels every act with its TARGET's cutpoint, so an ordinary write
+  # declared at `배포` is the normal path, not noise.
+  #
+  # THE SPLITTING VALUE IS READ FROM argv AND NEVER FROM A DECLARATION. `--kind`
+  # has no vocabulary check, so any word at all rides there; and `exec` refuses
+  # `--kind` outright, so under that verb the kind is always the empty string.
+  # A cell split on the kind would therefore exempt both `exec -- git merge` and
+  # `act --kind x -- git merge`, which is the surface-exemption hole surviving
+  # with nothing changed but the axis it hides behind.
+  #
+  # AN UNRECOGNIZED SPELLING ANSWERS 1, AND THAT IS WHY THIS IS NOT A SECOND
+  # COPY OF THE GRADING TABLE. That table answers `등급 미상` and refuses; this
+  # one answers "check it". The two therefore fail in OPPOSITE directions, so
+  # where they drift the drift can only over-check — one manifest line — and
+  # never open the bypass this rule exists to close.
+  #
+  # THE argv0 LAYER IS A TABLE, NOT AN EQUALITY AGAINST `git`. Comparing argv0
+  # to one name answered 0 for every wrapper, so both spellings that reach the
+  # `워크트리쓰기` CELL without the grading table seeing what they wrap fell out
+  # of the check entirely: `lockf … git merge` and `bash -c 'git merge …'` each
+  # graded `워크트리쓰기` and each answered "not an integration". That is the
+  # exemption this predicate exists to close, reached by the shortest possible
+  # detour.
+  #
+  # THAT COUNT IS SCOPED TO THAT CELL AND TO NOTHING ELSE. Stated without the
+  # scope it reads as a census of every wrapper this file is blind to, and it
+  # never was one — the sentence stood unscoped here while three more wrappers
+  # were escaping through a DIFFERENT cell, and a maintainer reading it went
+  # looking for the leak in the argv0 list below, where it could not be. The
+  # three were `command`, `find` and `rg`: each runs some other command, each was
+  # graded `읽기` from argv0 alone, and the review rule exits on the read grade
+  # fifteen lines before it first reads this predicate. So `command git merge`
+  # declared `읽기` honestly, agreed with its own grade, and was exempted with
+  # this predicate never consulted. Widening the list below could not have
+  # touched it.
+  #
+  # They are fixed in the grading table instead (`surface_of_command`,
+  # `surface_of_find`, `surface_of_rg`), and the arms below consume those SAME
+  # unwraps so the two tables cannot disagree about which word was wrapped. IF A
+  # WRAPPER IS ESCAPING THIS CHECK, LOOK AT ITS GRADE FIRST — the grade decides
+  # whether the rule ever gets here.
+  local cmd="${1##*/}"
+  case "$cmd" in
+    # `lockf` wraps, so unwrap it with the same routine the grader uses and ask
+    # this question of what it wrapped. Sharing the unwrap is the point: two
+    # copies of the skip loop are two chances for the tables to disagree about
+    # which word is the command.
+    lockf)
+      shift
+      gate_unwrap_lockf gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    # The three the grading table now sees through. THIS HALF IS NOT OPTIONAL:
+    # move `command git merge` into `워크트리쓰기` and leave this predicate
+    # answering 0, and the review rule exempts it again on the very next line —
+    # the repair would be green and inert. The unwraps are shared with the grader
+    # for the reason the `lockf` arm above gives.
+    command)
+      shift
+      gate_unwrap_command gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    find)
+      shift
+      gate_unwrap_find gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    rg)
+      shift
+      gate_unwrap_rg gate_history_integration '0' '1' "$@"
+      return 0 ;;
+    # Names the grading table answers `워크트리쓰기` WITHOUT asking what they
+    # wrap. This predicate cannot parse a shell word without being a shell, so
+    # it answers 1 rather than guessing — the direction the paragraph above
+    # already commits to, where drift can only over-check. What that costs is
+    # bounded: the review rule exits before asking for a record unless the
+    # target's cutpoint is at or above `머지`.
+    bash|sh|zsh|make|npm|npx|yarn|pnpm|pytest|go|cargo|python3|node)
+      printf '1'; return 0 ;;
+    git) ;;
+    *) printf '0'; return 0 ;;
+  esac
+  shift
+  # The same global-option skip the grader does, spelled the same way, because a
+  # global option left in place puts a non-subcommand in the slot below. The one
+  # divergence is the unknown arm, for the reason given above.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ $# -ge 2 ] || { printf '1'; return 0; }
+        shift 2 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
+        shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        shift ;;
+      -*) printf '1'; return 0 ;;
+      *)  break ;;
+    esac
+  done
+  # `merge-base` is a query and is NOT on this list — `case` matches whole
+  # patterns, so it does not reach the `merge` arm. `pull` is here even though
+  # the grader puts it in `외부상태변경`, a cell this split never reaches: the
+  # list states what the predicate MEANS rather than what the caller happens to
+  # ask about, and a predicate that omits a case because today's caller cannot
+  # reach it is one refactor away from being wrong.
+  #
+  # `reset` IS ON THE LIST EVEN THOUGH ITS NAME DOES NOT DECIDE. Aimed at another
+  # ref it moves this branch onto another line of history, which is the thing
+  # this predicate names; aimed at nothing but `--hard` it only discards local
+  # work. Telling those apart means telling a ref operand from a pathspec, and
+  # that needs the repository — so the name goes on the list and the cost is an
+  # over-check. `revert` stays OFF: it writes a new commit on this branch undoing
+  # one already in this branch's history, so no second line is integrated.
+  case "${1:-}" in
+    merge|rebase|cherry-pick|am|pull|reset) printf '1' ;;
+    *) printf '0' ;;
+  esac
 }
 
 surface_of_git() {
@@ -980,6 +1297,175 @@ surface_of_gh_api() {
     GET|get|HEAD|head) printf '읽기' ;;
     *) printf '외부상태변경' ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# The permission RUNG argv itself claims — a second reading of the same argv,
+# answering a different question from the grading table above.
+#
+# Axis 2 asks "how far out of this worktree does this reach"; this asks "which
+# rung of the permission ladder does this climb". They are orthogonal: `gh pr
+# merge` and `curl` share the `외부상태변경` cell and only one of them is a merge.
+#
+# THE RETURN IS A `CUTPOINTS` TOKEN OR THE EMPTY STRING, and never an integer and
+# never a `등급 미상`-shaped sentinel. An integer would put a copy of the ladder's
+# ORDER here, which is the drift `gate_export_cutpoints` already refuses on the
+# checkers' behalf. A sentinel is worse: to be comparable it would have to enter
+# `CUTPOINTS`, and then every caller of `cutpoint_index` — seventeen of them
+# across this file and `run.sh` — acquires an exception. The empty string asserts
+# nothing and needs no rung, so the comparison below simply does not run.
+#
+# THE DEFAULT IS SILENCE, AND IT POINTS THE OPPOSITE WAY FROM THE GRADING TABLE.
+# That table answers `등급 미상` to what it does not recognize and the gate
+# refuses, because guessing low there is the laundering it exists to stop. Here
+# guessing HIGH is what costs: an over-derivation is a refusal the run cannot
+# widen — `리뷰-후-머지` is a refusal and not a delay — so a wrong high answer
+# bricks the night, while the empty string falls back to the declared value,
+# which is exactly today's behaviour.
+#
+# WHAT THIS TABLE DELIBERATELY STAYS SILENT ABOUT, and the silence is load-bearing.
+# `git push`, `git merge` and `git branch` have no row. A refspec's destination
+# decides whether a push IS the merge, and knowing that means reading the
+# manifest's target row — which this table does not do and must not start doing,
+# because it runs before target resolution. Worse, guessing `push` for them turns
+# an honestly declared `--cutpoint 머지` into an OVER-declaration and drags the
+# effective rung DOWN below the merge rung, switching off the review rule and the
+# obligation issuer for the very act they exist to cover.
+ladder_of_argv0() {
+  [ "$#" -ge 1 ] || return 0
+  local cmd="${1##*/}"
+  shift
+  case "$cmd" in
+    # The four wrappers run some other command, so a name cannot answer for them.
+    # The unwraps are SHARED with the grading table and the history-integration
+    # predicate rather than re-spelled, for the reason `gate_unwrap_lockf` states:
+    # two copies of a skip loop are two chances to disagree about which word is
+    # the command. Only the terminal answers are parameters, and both of this
+    # table's are the empty string — a wrapper whose payload cannot be read
+    # asserts nothing, the same as any other name with no row.
+    lockf)   gate_unwrap_lockf   ladder_of_argv0 '' '' "$@" ;;
+    command) gate_unwrap_command ladder_of_argv0 '' '' "$@" ;;
+    find)    gate_unwrap_find    ladder_of_argv0 '' '' "$@" ;;
+    rg)      gate_unwrap_rg      ladder_of_argv0 '' '' "$@" ;;
+    git)       ladder_of_git "$@" ;;
+    gh)        ladder_of_gh "$@" ;;
+    terraform) ladder_of_terraform "$@" ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+ladder_of_git() {
+  # The SAME global-option skip `surface_of_git` performs, spelled the same way,
+  # because a global left in place puts a non-subcommand in the slot below. The
+  # unknown arm diverges: that table answers `등급 미상` and refuses, this one
+  # answers silence and defers to the declaration.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+        [ $# -ge 2 ] || return 0
+        shift 2 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+        shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
+        shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        shift ;;
+      -*) return 0 ;;
+      *)  break ;;
+    esac
+  done
+  case "${1:-}" in
+    # `커밋` is the BOTTOM rung, so this row can never produce an
+    # under-declaration — its only effect is to pull an over-declared commit back
+    # down to what it is. That is the common case rather than a corner: the
+    # router labels an ordinary commit with its target's cutpoint.
+    commit) printf '커밋' ;;
+    # `push`, `merge`, `branch` are deliberately absent — see the note above.
+    *) : ;;
+  esac
+  return 0
+}
+
+ladder_of_gh() {
+  case "${1:-}" in
+    api) ladder_of_gh_api "$@" ;;
+    pr)
+      case "${2:-}" in
+        merge)  printf '머지' ;;
+        create) printf 'PR' ;;
+        # `view`, `list`, `review`, `comment` and everything else this row does
+        # not name assert nothing. Naming them would be guessing, and the guess
+        # that costs is the high one.
+        *) : ;;
+      esac ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+ladder_of_gh_api() {
+  # `gh pr merge` is not the only spelling of a merge — `gh api -X PUT
+  # repos/o/r/pulls/1/merge` is the same act through the other door, and it is
+  # the door a run takes when it wants the merge method spelled out. So the same
+  # method resolution `surface_of_gh_api` does is done here, and the PATH decides
+  # on top of it: a non-GET against `…/pulls/<n>/merge` is a merge, and every
+  # other endpoint asserts nothing.
+  shift
+  local m="" body=0 path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -X|--method)
+        [ $# -ge 2 ] || break
+        m="$2"; shift 2 ;;
+      --method=*) m="${1#--method=}"; shift ;;
+      -X*)        m="${1#-X}"; shift ;;
+      -f|-F|--field|--raw-field|--input)
+        body=1
+        [ $# -ge 2 ] || break
+        shift 2 ;;
+      -f*|-F*)    body=1; shift ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
+        [ $# -ge 2 ] || break
+        shift 2 ;;
+      # The first bare word is the endpoint. Anything later is a positional this
+      # table has no use for, so the first one wins and the scan continues —
+      # stopping here would leave a trailing `-X` unread.
+      -*) shift ;;
+      *)  [ -n "$path" ] || path="$1"; shift ;;
+    esac
+  done
+  if [ -z "$m" ]; then
+    if [ "$body" = "1" ]; then m=POST; else m=GET; fi
+  fi
+  case "$m" in GET|get|HEAD|head) return 0 ;; esac
+  case "$path" in
+    */pulls/*/merge) printf '머지' ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+ladder_of_terraform() {
+  # The same global skip `surface_of_terraform` performs, so `terraform -chdir=x
+  # apply` reads like `terraform apply`.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -chdir=*|-help|-version|--help|--version) shift ;;
+      -*) return 0 ;;
+      *) break ;;
+    esac
+  done
+  case "${1:-}" in
+    # `배포` and not `머지`: these two change an environment, and the ladder puts
+    # that rung above merge. `state rm`/`import` reach production state too, but
+    # they are not the rung a manifest authorizes a deploy for — silence there
+    # keeps the declared value, and the axis-2 grade already refuses them out of
+    # a read.
+    apply|destroy) printf '배포' ;;
+    *) : ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1502,7 +1988,80 @@ gate_export_cutpoints() {
   [ -n "$tgt" ] || { warn "대상 '$alias' 의 절단점이 매니페스트에 없습니다"; return 1; }
   GATE_TARGET_CUTPOINT="$tgt"
   GATE_TARGET_INDEX=$(cutpoint_index "$tgt") || return "$GATE_EXIT_VOCAB"
-  export GATE_ACT_INDEX GATE_TARGET_CUTPOINT GATE_TARGET_INDEX
+  # The merge rung as an integer, for checkers that fire at merge OR ABOVE. A
+  # checker comparing the token would need its own copy of the ladder order to
+  # know what "above" means, and a second copy of an order is the drift this
+  # exporter exists to prevent — so the gate, which holds the table, resolves it
+  # and the checker compares two integers.
+  GATE_MERGE_INDEX=$(cutpoint_index '머지') || return "$GATE_EXIT_VOCAB"
+  export GATE_ACT_INDEX GATE_TARGET_CUTPOINT GATE_TARGET_INDEX GATE_MERGE_INDEX
+  return 0
+}
+
+# gate_resolve_review_policy <segment> <alias>
+#
+# Resolves this act's review policy and publishes it to the rule checkers, which
+# are separate `/bin/sh` processes and have no other way to learn it. Same
+# division of labour as the cutpoint exporter directly above: the gate holds
+# run.sh's tables and resolves the vocabulary, the catalog decides.
+#
+# The effective value comes from the ledger's segment row, the ceiling from the
+# manifest's target row. ABSENCE IS THE STRICT VALUE on both sides, and on the
+# segment side that is not "the default" — the segment arm of `gate_record_row`
+# carries the field forward on every write, so a row with no value is a segment
+# that never had one.
+#
+# EXCEEDING THE CEILING IS A REFUSAL AND NOT A CLAMP. Quietly tightening makes a
+# forged row and a conservative row indistinguishable in the ledger.
+#
+# This runs on EVERY act and BEFORE the rule loop. Behind the loop there would
+# be nothing for the checkers to read; behind `gate_rule_enabled` it would be
+# something `끔` could switch off, and the ceiling is the one part of this axis
+# that a manifest may not turn off — that is the whole reason it lives here and
+# not inside a checker.
+gate_resolve_review_policy() {
+  local seg="$1" alias="$2" kind="$3" pol ceil apol api
+  shift 3
+  pol=$(gate_segment_field "$seg" '리뷰 정책')
+  [ -n "$pol" ] || pol='선리뷰후머지'
+  ceil=$(target_field "$alias" '리뷰 정책 상한')
+  [ -n "$ceil" ] || ceil='선리뷰후머지'
+  GATE_REVIEW_POLICY_INDEX=$(review_policy_index "$pol") || {
+    warn "세그먼트 '$seg' 의 리뷰 정책 토큰이 어휘에 없습니다: '$pol'"
+    return "$GATE_EXIT_VOCAB"
+  }
+  GATE_REVIEW_CEILING_INDEX=$(review_policy_index "$ceil") || {
+    warn "대상 '$alias' 의 리뷰 정책 상한 토큰이 어휘에 없습니다: '$ceil'"
+    return "$GATE_EXIT_VOCAB"
+  }
+  # THE TIGHTENING ROW IS ALWAYS WRITABLE. This resolution runs before the rule
+  # loop AND before the ledger writer, so a segment row that already carries a
+  # value above the ceiling had no verb left to repair it: writing the corrected
+  # row needs `act --kind segment` on that same id, and that act re-enters here
+  # and is refused on the OLD value first. The segment then stays in a
+  # non-terminal state, termination condition 1 never holds, and the run has no
+  # ending it can propose. Keying the row on a different segment does not reach
+  # the stuck id, so nothing else could unstick it.
+  #
+  # So the ONE act that can repair it resolves from its own argv instead of from
+  # the prior row — and only when that argv is at or below the ceiling. Relaxing
+  # past the ceiling is refused exactly as before, so the property the refusal
+  # protects is untouched: what changes is only that the direction which restores
+  # compliance stops being unreachable.
+  if [ "$kind" = "segment" ]; then
+    apol=$(gate_field_of '리뷰 정책' "$@")
+    if [ -n "$apol" ] && api=$(review_policy_index "$apol" 2>/dev/null) \
+       && [ "$api" -le "$GATE_REVIEW_CEILING_INDEX" ]; then
+      pol="$apol"
+      GATE_REVIEW_POLICY_INDEX="$api"
+    fi
+  fi
+  if [ "$GATE_REVIEW_POLICY_INDEX" -gt "$GATE_REVIEW_CEILING_INDEX" ]; then
+    warn "세그먼트 '$seg' 의 리뷰 정책 '$pol' 이 대상 '$alias' 의 상한 '$ceil' 을 넘습니다 — 상한 위반은 조여 넣지 않고 거절합니다"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  GATE_REVIEW_POLICY="$pol"
+  export GATE_REVIEW_POLICY GATE_REVIEW_POLICY_INDEX GATE_REVIEW_CEILING_INDEX
   return 0
 }
 
@@ -1536,12 +2095,23 @@ gate_rule_order() {
 }
 
 gate_rule_enabled() {
-  # A rule is on unless the manifest turns it off. Three ignore the setting:
-  # `절단점 준수`, `사전 인가 대조` and `인가 자기확장 금지`. The authorization
-  # record means nothing if the first two can be switched off, and a
-  # self-widening ban that can be switched off is not a ban at all — after the
+  # A rule is on unless the manifest turns it off. FOUR ignore the setting, and
+  # the `case` below is the list: `절단점-준수`, `사전-인가-대조`,
+  # `인가-자기확장-금지` and `리뷰-후-적용`. This comment named three of them
+  # while the code exempted four, which is the shape that makes an operator
+  # believe a rule can be switched off when it cannot.
+  #
+  # The authorization record means nothing if the first two can be switched off;
+  # a self-widening ban that can be switched off is not a ban at all — after the
   # first time it is turned off, the record does not even say what was turned
-  # off.
+  # off; and `리뷰-후-적용` guards a change to the instruction file this whole
+  # mechanism reads.
+  #
+  # `리뷰-후-머지` IS NOT ON THIS LIST and must not be added to it. What that
+  # rule holds is a policy the manifest is entitled to relax, and the parts of
+  # the review axis a manifest may NOT relax — the ceiling comparison and the
+  # anchor check — already live outside the catalog, where `끔` cannot reach
+  # them.
   local name="$1"
   case "$name" in
     절단점-준수|사전-인가-대조|인가-자기확장-금지|리뷰-후-적용) return 0 ;;
@@ -1988,8 +2558,543 @@ gate_mtime() {
   # GNU on the very flag this needs, so neither spelling is used: `find -newer`
   # against a probe would need a probe, and `ls` output is locale-shaped. `date
   # -r` is present on both and takes the file directly.
-  [ -f "$1" ] || return 0
+  # `-e` RATHER THAN `-f`, because the reap lock is a DIRECTORY and dating it is
+  # what lets a lock with no readable owner line expire instead of standing
+  # forever. `date -u -r` takes a directory on both platforms — verified on this
+  # host — and every other caller passes a file, so widening the guard adds a
+  # case rather than changing one.
+  [ -e "$1" ] || return 0
   date -u -r "$1" +%s 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Bounded reclamation of the state directory.
+#
+# WHERE, AND WHY ONLY THERE. The gate is re-entered on every verb, so the one
+# place that runs exactly once per run is the run-open branch further down. A
+# reap on every entry was ruled out by measurement rather than by taste: the
+# busiest run's ledger carries 875 rows and gate entries outnumber them, which at
+# ~400ms a victim is six minutes of pure overhead per run.
+#
+# 보존 기준 30일 — the retention floor, in seconds. This is the one constant here
+# that gets restated outside its own declaration (in this block's prose and in
+# the gate suite's fixtures), which is why it is the one that gets a lint:
+# `scripts/lint-reap-retention.sh` extracts it from the line below and refuses a
+# bare copy of the number anywhere else. The extraction anchors on the whole
+# line, so this has to stay a single `readonly <NAME>=<digits>` and nothing more.
+readonly GATE_REAP_RETENTION=2592000
+# The other three correct themselves when wrong — a cap set too low leaves work
+# for the next cycle, a budget set too tight ends the pass early, an interval set
+# too long only delays it — so they get `readonly` and no lint. 20 x (75ms of
+# state predicate + 400ms of removal), plus the pre-filter, the age checks and
+# one index scan, is about 11.1s: the count cap and the wall clock bite together.
+readonly GATE_REAP_MAX=20
+readonly GATE_REAP_BUDGET_S=12
+readonly GATE_REAP_INTERVAL=21600
+
+gate_reap_root() {
+  printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_reap_day_epoch() {
+  # gate_reap_day_epoch <YYYYMMDD> — 00:00:00Z of that day in epoch seconds, or
+  # empty for anything that is not eight digits or not a real date.
+  #
+  # ARITHMETIC RATHER THAN `date`. The two spellings that parse a date string,
+  # `date -d` and `date -j`, are both on the portability lint's denylist because
+  # they diverge between GNU and BSD, so the days-from-civil conversion is done
+  # here instead. March is treated as the first month, which is what removes the
+  # leap-day special case from the expression.
+  local s="$1" y m d era yoe doy doe days
+  case "$s" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) return 0 ;;
+  esac
+  y=$((10#${s:0:4})); m=$((10#${s:4:2})); d=$((10#${s:6:2}))
+  { [ "$m" -ge 1 ] && [ "$m" -le 12 ]; } || return 0
+  { [ "$d" -ge 1 ] && [ "$d" -le 31 ]; } || return 0
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$(( (y >= 0 ? y : y - 399) / 400 ))
+  yoe=$(( y - era * 400 ))
+  doy=$(( (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1 ))
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  days=$(( era * 146097 + doe - 719468 ))
+  printf '%s' $(( days * 86400 ))
+}
+
+gate_reap_eligible() {
+  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all five clauses hold.
+  #
+  # FAIL-CLOSED IN EVERY CLAUSE. Reclamation needs positive evidence of age: a
+  # clock that is missing, empty, unreadable or unparsable means "unknown", and
+  # unknown is never reclaimed. The `age=$(cc_mtime …); [ -z "$age" ] && age=0`
+  # shape is forbidden here for exactly that reason — it reads a ledger that a
+  # `git clean` in some other repo removed as "1970, infinitely old", which turns
+  # that command into a remote delete for this run's state directory.
+  local rd="$1" id="$2" now="$3" started ledger state day_epoch
+  # 4 — a symlink is not a candidate at all. This is also what makes the
+  # slash-free victim path safe rather than merely tidy.
+  [ ! -L "$rd" ] || return 1
+  [ -d "$rd" ] || return 1
+  # 3 — never the current run. Structurally unreachable anyway, because
+  # `rundir_init` rewrites this run's `started-at` to `now` before the run-open
+  # branch is reached, but the comparison is one test and says so out loud.
+  [ "$rd" != "${RUN_DIR:-}" ] || return 1
+  # 2 — the retention clock is the CONTENT of `started-at`, which `rundir_init`
+  # rewrites on every gate entry. Its name says "run start" and its meaning is
+  # "last gate entry", and the second is what retention actually asks: is anyone
+  # still reaching for this? Selection sorts on `done`/ledger mtime instead, so
+  # the two clocks diverge — measured, in one direction only (97 runs at +0 days,
+  # 2 at +1, 1 at +2, 3 at +4, and zero the other way), because every gate entry
+  # that could write `done` rewrote `started-at` first. Retention is therefore
+  # always the more conservative of the two and the early-delete direction is
+  # unreachable.
+  started=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$rd/started-at" 2>/dev/null || true)
+  [ -n "$started" ] || return 1
+  [ "$started" -gt 0 ] 2>/dev/null || return 1
+  [ $((now - started)) -ge "$GATE_REAP_RETENTION" ] || return 1
+  # 1 — terminal, evaluated HERE and never from a cache. A run with no
+  # `ledger-path` hands an empty ledger to the predicate, which then counts zero
+  # segments and cannot answer 종단, so those fall out of candidacy on their own.
+  # The thresholds are passed explicitly rather than inherited, per the rule that
+  # two consumers must not grade one run with two values; this clause's answer
+  # happens to be independent of both.
+  ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
+  state=$(cc_run_state "$rd" "$ledger" 180 3600 2>/dev/null || true)
+  [ "$state" = "종단" ] || return 1
+  # 5 — an id that parses as a date must not be NEWER than the retention clock it
+  # is paired with. An id that does not parse passes: the clause is a conditional
+  # and its antecedent is "parses as a date".
+  case "$id" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*)
+      day_epoch=$(gate_reap_day_epoch "${id%%-*}")
+      [ -n "$day_epoch" ] || return 0
+      [ "$day_epoch" -le "$started" ] || return 1
+      ;;
+  esac
+  return 0
+}
+
+gate_reap_note() {
+  # One line of PROSE into this run's report, which is the same file as its
+  # ledger. Deliberately not a row: every row predicate anchors on a backticked
+  # series token at the start of the line, so a line opening with a timestamp is
+  # invisible to all of them and is counted toward no termination condition.
+  # `gate_drain_notify_state` is the existing precedent for the shape.
+  #
+  # THE REPORT OF THE RUN THAT DID THE REAPING, not of the run that was reaped.
+  # The victim's report is a closed record of a finished run, may live in another
+  # repo entirely, and would have the run writing down that it was deleted.
+  [ -n "${LEDGER:-}" ] || return 0
+  printf '%s · %s\n' "$(now_iso)" "$1" >> "$LEDGER" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_unwind() {
+  # gate_reap_unwind <trash> <run-dir> <id> <now> — the last reversal point of a
+  # reclamation. Returns 0 when the victim was NOT reclaimed (restored, or parked
+  # in the trash under a `.keep`), 1 when its clock still says reclaim and the
+  # caller should proceed with the removal.
+  #
+  # THE RETENTION CLOCK IS READ AGAIN, AFTER THE RENAME. Nothing holds a lock on
+  # the victim between the verdict and this call: `.reap.lock` excludes reapers
+  # from one another and says nothing about the run being judged, and the
+  # never-the-current-run clause compares against the reaping process's own
+  # `RUN_DIR` only. So an ordinary gate entry can land on this id after the
+  # eligibility clock was read — and `rundir_init` rewrites `started-at` to now
+  # on every entry — while the reaper is still inside `cc_run_state` and the
+  # recursive `du -sk` walk.
+  #
+  # Deleting through that window does not merely lose a live run. The run's own
+  # verbs carry on to an unguarded `mkdir -p "$RUN_DIR/log"` and rebuild the
+  # directory with no `started-at` in it, which the eligibility clock then
+  # refuses forever while the `-mtime` pre-filter hides it for another 25 days:
+  # this feature would be manufacturing the immortal run it exists to remove.
+  #
+  # The rename is what makes the re-read possible and it is the last moment at
+  # which the deletion is still reversible. `started-at` moved with the
+  # directory, so a writer that got in first left its bytes on this same inode,
+  # and reading them costs one `sed`. A missing or zero clock is "unknown" and
+  # unknown is not reclaimed, exactly as in the eligibility clause.
+  #
+  # IT IS A FUNCTION AND NOT THREE LINES INLINE because the only way into its two
+  # outcomes is a race the caller cannot stage: the fresh clock has to be written
+  # by some other process in the window between two reads of one file. Inline,
+  # both arms were unreachable from any test — the whole re-verification could be
+  # deleted with the suite staying green — and a cross-review found a real defect
+  # inside one of them. Named, each arm is reached by calling this with the state
+  # the race would have produced.
+  local trash="$1" rd="$2" id="$3" now2="$4" started2
+  started2=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$trash/started-at" 2>/dev/null || true)
+  if [ -n "$started2" ] && [ "$started2" -gt 0 ] 2>/dev/null \
+     && [ $((now2 - started2)) -ge "$GATE_REAP_RETENTION" ]; then
+    return 1
+  fi
+  # PUT IT BACK ONLY IF ITS PLACE IS STILL EMPTY. `mv a b` with `b` an existing
+  # directory moves `a` INSIDE it, so an unguarded restore against an
+  # already-resurrected `run/<id>` would nest the old run under the new one — a
+  # second husk, in a stranger shape than the one being avoided. When the place
+  # is taken the copy stays in the trash under a `.keep` sibling the sweep
+  # honours, because at that moment it is the only copy of the run's handles and
+  # settings that exists.
+  #
+  # THE `mv` RESULT IS PART OF THE CONDITION rather than assumed: a restore that
+  # fails after the emptiness test passes — the place filled in between, the
+  # filesystem refused — would otherwise write "restored" into the report for a
+  # directory still sitting in the trash, and the report is the only record that
+  # the reclamation was undone.
+  if [ ! -e "$rd" ] && mv "$trash" "$rd" 2>/dev/null; then
+    gate_reap_note "회수 취소: 런 $id — 판정 이후 보존 시계가 신선해져 제자리로 되돌렸다"
+  else
+    : > "$trash.keep" 2>/dev/null || true
+    gate_reap_note "회수 보류: 런 $id — 판정 이후 보존 시계가 신선해졌으나 제자리가 이미 차 있어 .reap-trash 에 남긴다"
+  fi
+  return 0
+}
+
+gate_reap_lock() {
+  # gate_reap_lock <root> — ONE ATTEMPT, NO WAITING. Contention means another
+  # gate is already reaping, so the work is being done and queueing behind it
+  # buys nothing. That is why this cannot be `gate_settings_lock`, which waits;
+  # and `ledger.lock` is worse still — it is scoped per run, it guards a file in
+  # the repo, and it lives INSIDE a directory a reap may be deleting.
+  #
+  # A lock older than fifteen minutes is broken, judged from the owner line
+  # written straight after the `mkdir`. Without that line the expiry cannot be
+  # decided at all, and what a never-expiring lock produces here is a reaper that
+  # is switched off forever with no symptom.
+  local root="$1" lock owner ots now
+  lock="$root/.reap.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  # AN UNREADABLE OWNER LINE FALLS BACK TO THE LOCK DIRECTORY'S OWN mtime, and
+  # refusing outright was the bug rather than the caution. Refusing was meant to
+  # avoid racing a live holder, but it also made an owner-less lock PERMANENT,
+  # and that shape was reachable with no crash at all: the release used to remove
+  # the owner line and then the directory, so every ordinary release passed
+  # through it, and any failure of the second step froze the reaper for good with
+  # no symptom anywhere. The directory is created by the `mkdir` above and its
+  # mtime is set then, so it dates the acquisition exactly as the owner line
+  # does — a holder younger than the expiry is still protected, because the same
+  # threshold decides both.
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge 900 ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_sweep() {
+  # gate_reap_sweep <root> <cycle-start> — empties `.reap-trash/` and prints the
+  # names it has given up on, space separated.
+  #
+  # An entry there is a directory whose rename succeeded and whose removal did
+  # not. It is invisible to every enumeration of runs, because `.reap-trash/` is
+  # a SIBLING of `run/`, but it still holds the bytes the cycle came for.
+  local root="$1" start="$2"
+  local trash entry name fails now swept=0 gave_up=""
+  trash="$root/.reap-trash"
+  [ -d "$trash" ] || return 0
+  for entry in "$trash"/*; do
+    # Also what skips the `.fails` and `.keep` siblings: those are files.
+    [ -d "$entry" ] || continue
+    # A `.keep` SIBLING IS A DELIBERATE HOLD, NOT A LEFTOVER. The deletion loop
+    # writes one when a victim's retention clock turned out to be fresh after
+    # the rename and its place in `run/` had already been taken. The copy here
+    # is then the only one there is, so sweeping it would destroy the very run
+    # the re-read had just saved. It is not folded into `gave_up`: that name
+    # means "the OS refused to remove this", and reporting a deliberate hold
+    # under it would erase the distinction. The record of the hold is the
+    # `회수 보류` line written at the moment it happened.
+    [ ! -e "$entry.keep" ] || continue
+    now=$(date -u +%s)
+    [ "$swept" -lt "$GATE_REAP_MAX" ] || break
+    [ $((now - start)) -lt "$GATE_REAP_BUDGET_S" ] || break
+    name=$(basename "$entry")
+    fails=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$entry.fails" 2>/dev/null || true)
+    [ -n "$fails" ] || fails=0
+    # THREE STRIKES AND THE NAME GOES IN THE SUMMARY LINE. Retrying forever turns
+    # a local failure into a global one — it eats the cycle's budget every cycle.
+    if [ "$fails" -ge 3 ]; then gave_up="$gave_up $name"; continue; fi
+    rm -rf "$entry" 2>/dev/null || true
+    if [ ! -e "$entry" ]; then
+      rm -f "$entry.fails" 2>/dev/null || true
+    else
+      printf '%s\n' "$((fails + 1))" > "$entry.fails" 2>/dev/null || true
+    fi
+    swept=$((swept + 1))
+  done
+  printf '%s' "${gave_up# }"
+  return 0
+}
+
+gate_reap_prune_index() {
+  # gate_reap_prune_index <root> <pair-file> — drops from the forward session
+  # index every entry whose run directory is gone, and appends one
+  # `<id> <index-file-name>` line per removal to <pair-file>, which is what lets
+  # each victim's report line name its own share.
+  #
+  # THE CRITERION IS RE-DERIVED FROM DISK rather than carried over from the
+  # deletions above, and that is what makes the prune STATELESS BETWEEN CYCLES: a
+  # file this cycle gives up on is simply walked again by the next one. Carrying
+  # the id list instead would make "given up for this cycle" indistinguishable
+  # from "stuck forever", because the next cycle would arrive with a different
+  # list and never look at the skipped file's real contents again.
+  #
+  # ONE BATCH SCAN PER CYCLE, not one per victim: the scan cost is FLAT in the
+  # number of victims (0.40s for one, 0.37s for three). The reverse index cannot
+  # stand in for it — `session-lineage` covers 143 of 930 forward entries,
+  # because the forward append has no stage guard and lineage does.
+  #
+  # AFTER THE DELETIONS, and the order is the whole point of the criterion. Run
+  # before them and every victim still has a directory, so nothing is pruned at
+  # all; run after and the entries that survive are exactly the runs that did. An
+  # index entry whose directory is gone is a stale pointer the reader already
+  # filters out; a directory whose index entry is gone is a live run nobody can
+  # find.
+  #
+  # COMPARE AND SWAP ON (size, mtime), immediately before the swap, and the
+  # contract is SAFETY GUARANTEED, PROGRESS NOT. The append side takes no lock
+  # and runs on every gate entry, so a naive read-modify-write loses concurrent
+  # appends — measured 384 to 401 of 1200. Re-reading both turns that loss into a
+  # skip. Under unbroken append pressure every attempt skips and nothing is ever
+  # pruned (0 writes in 3600 appends); at the cadence a real gate produces, 6 of
+  # 6 succeeded on the first try. The asymmetry is the right way round: a lost
+  # append costs that session its status-line pin, while an unpruned entry costs
+  # nothing at all, since the reader skips entries whose directory is gone.
+  local root="$1" pairs="$2"
+  local dir f tmp line kept dropped n_after size_before size_after
+  local mtime_before mtime_after
+  dir="$root/session"
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.reap-tmp.*) continue ;; esac
+    # THE FIRST PASS ONLY ASKS WHETHER THERE IS ANYTHING TO DROP, and it forks
+    # nothing. Most index files have no stale entry at all, and they leave here
+    # without paying for the two stat calls the swap below needs.
+    dropped=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      [ -d "$root/run/$line" ] || { dropped="있음"; break; }
+    done < "$f"
+    [ -n "$dropped" ] || continue
+    # THE STAMP IS TAKEN BEFORE THE READ IT GUARDS, and that order is the whole
+    # of what makes the comparison below mean anything. Reading first and
+    # stamping afterwards leaves a window — from the last line read to the
+    # stamp — in which an append lands, is counted into `size_before`, matches
+    # `size_after` exactly, and is dropped by a swap that believes nothing
+    # moved. The second pass re-reads underneath the stamp, so an append in that
+    # window is either seen by the read or caught by the comparison. A lost
+    # append is the one failure this function is not allowed to have.
+    size_before=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+    mtime_before=$(gate_mtime "$f")
+    kept=""; dropped=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if [ -d "$root/run/$line" ]; then
+        kept="$kept$line
+"
+      else
+        dropped="$dropped$line
+"
+      fi
+    done < "$f"
+    [ -n "$dropped" ] || continue
+    # The temp file is in the SAME directory, so the swap is one `rename(2)`.
+    tmp="$f.reap-tmp.$$"
+    printf '%s' "$kept" > "$tmp" 2>/dev/null || { continue; }
+    n_after=$(grep -c . "$tmp" 2>/dev/null || true)
+    [ -n "$n_after" ] || n_after=0
+    size_after=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+    mtime_after=$(gate_mtime "$f")
+    if [ "$size_after" != "$size_before" ] || [ "$mtime_after" != "$mtime_before" ]; then
+      # Give this file up FOR THIS CYCLE and leave no state behind.
+      rm -f "$tmp" 2>/dev/null || true
+      continue
+    fi
+    if [ "$n_after" -eq 0 ]; then
+      # An index with nothing left in it is REMOVED, not emptied.
+      rm -f "$f" "$tmp" 2>/dev/null || true
+    else
+      mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
+    fi
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      printf '%s %s\n' "$line" "$(basename "$f")" >> "$pairs" 2>/dev/null || true
+    done <<< "$dropped"
+  done
+  return 0
+}
+
+gate_reap_locked() {
+  # gate_reap_locked <root> — the body, split out so the unlock has one caller
+  # rather than one per return path. This file has no `trap` habit
+  # (`gate_settings_unlock` is called by hand on each path), so the split follows
+  # that rather than introducing one.
+  local root="$1"
+  local start now cand cand_list id rd trash kb bytes days started
+  local now2 started2
+  local recfile pairs v_items v_files sweep_note
+  local deleted=0 candidates=0 total_bytes=0 capped="미도달" gave_up=""
+  start=$(date -u +%s)
+
+  # THE SWEEP GOES FIRST, and draws on the same wall clock as the deletions.
+  gave_up=$(gate_reap_sweep "$root" "$start")
+
+  mkdir -p "$root/.reap-trash" 2>/dev/null || true
+  recfile=$(mktemp "${TMPDIR:-/tmp}/cc-reap-rec.XXXXXX" 2>/dev/null) || return 1
+  pairs=$(mktemp "${TMPDIR:-/tmp}/cc-reap-pairs.XXXXXX" 2>/dev/null) \
+    || { rm -f "$recfile" 2>/dev/null || true; return 1; }
+
+  # THE PRE-FILTER IS A SUPERSET AND NOTHING MORE. `+25` rather than `+30` is
+  # SLACK, not a constant: BSD `find -mtime +30` selects 31 days and over —
+  # measured, it missed exactly 30 days, 30 days + 1 second and 30 days + 12
+  # hours, a one-day systematic error rather than a rounding edge — so five days
+  # of margin keeps this a superset of the authoritative check on any `find`.
+  # THE POLICY IS DEFINED BY THE EPOCH ARITHMETIC IN `gate_reap_eligible` AND BY
+  # NOTHING ELSE. Anyone "tidying" this to 30 restores that error.
+  cand_list=$(find "$root/run" -maxdepth 1 -mindepth 1 -type d -mtime +25 2>/dev/null || true)
+  candidates=$(printf '%s' "$cand_list" | grep -c . || true)
+  [ -n "$candidates" ] || candidates=0
+
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    now=$(date -u +%s)
+    if [ "$deleted" -ge "$GATE_REAP_MAX" ] \
+       || [ $((now - start)) -ge "$GATE_REAP_BUDGET_S" ]; then
+      capped="걸림"; break
+    fi
+    # The victim path is assembled from a basename off the directory listing and
+    # nothing else — no manifest string, no ledger field, nothing a model wrote —
+    # and carries NO TRAILING SLASH, because `rm -rf dir/` follows a symlink on
+    # BSD.
+    id=$(basename "$cand")
+    rd="$root/run/$id"
+    gate_reap_eligible "$rd" "$id" "$now" || continue
+    started=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$rd/started-at" 2>/dev/null || true)
+    days=$(( (now - started) / 86400 ))
+    # Measured BEFORE the rename: after the removal there is nothing left to
+    # measure. `du -sk` reports allocation blocks, so this is size on disk rather
+    # than the sum of the file lengths.
+    kb=$(du -sk "$rd" 2>/dev/null | sed -n '1s/^\([0-9][0-9]*\).*/\1/p')
+    [ -n "$kb" ] || kb=0
+    bytes=$((kb * 1024))
+    trash="$root/.reap-trash/$id.$$.$now"
+    # RENAME, THEN DELETE. `rm -rf` under a concurrent writer does not fail
+    # cleanly — measured rc=1 with a `watch.heartbeat`-only husk left in place,
+    # and a husk with no `ledger-path` counts zero segments and is permanently
+    # non-terminal. A partially failed reclamation would therefore MANUFACTURE
+    # the immortal run this whole change exists to remove. One atomic
+    # `rename(2)` takes the directory out of `run/` first.
+    mv "$rd" "$trash" 2>/dev/null || continue
+    # THE RETENTION CLOCK IS READ AGAIN, AFTER THE RENAME. Nothing holds a lock
+    # on the victim between the verdict and this line: `.reap.lock` excludes
+    # reapers from one another and says nothing about the run being judged, and
+    # clause 3 compares against THIS process's `RUN_DIR` only. So an ordinary
+    # gate entry can land on this id after clause 2 read its clock — and
+    # `rundir_init` rewrites `started-at` to now on every entry — while the
+    # reaper is still inside `cc_run_state` and the recursive `du -sk` walk
+    # above. That is hundreds of milliseconds per victim, times up to
+    # `GATE_REAP_MAX` victims a cycle.
+    #
+    # Deleting through that window does not merely lose a live run. The run's
+    # own verbs carry on to an unguarded `mkdir -p "$RUN_DIR/log"` and rebuild
+    # the directory with no `started-at` in it, which clause 2 then refuses
+    # forever while the `-mtime` pre-filter hides it for another 25 days: this
+    # feature would be manufacturing the immortal run it exists to remove.
+    #
+    # The rename is what makes the re-read possible and it is the last moment at
+    # which the deletion is still reversible. `started-at` moved with the
+    # directory, so a writer that got in first left its bytes on this same
+    # inode, and reading them costs one `sed`. A missing or zero clock is
+    # "unknown" and unknown is not reclaimed, exactly as in clause 2.
+    if gate_reap_unwind "$trash" "$rd" "$id" "$(date -u +%s)"; then
+      continue
+    fi
+    # A failing removal now leaves the bytes in the trash rather than a husk in
+    # `run/`, and the next cycle's sweep takes it from there.
+    rm -rf "$trash" 2>/dev/null || true
+    deleted=$((deleted + 1))
+    total_bytes=$((total_bytes + bytes))
+    printf '%s\t%s\t%s\n' "$id" "$days" "$bytes" >> "$recfile" 2>/dev/null || true
+  done <<< "$cand_list"
+
+  gate_reap_prune_index "$root" "$pairs"
+
+  # One line per deletion, then one summary line. The per-deletion line carries
+  # the run id (the surviving ledger is findable by it), the age AND WHAT THE AGE
+  # IS OF — "since the last gate entry", not "since it ended", because the two
+  # clocks diverge and an unnamed age is read as the wrong one — the byte count
+  # (the only size information that outlives the directory) and the index share.
+  # IT DOES NOT CARRY A PATH: the path derives from the id and the state root,
+  # and a path in a report is a thing somebody pastes into a command.
+  while IFS="$(printf '\t')" read -r id days bytes; do
+    [ -n "$id" ] || continue
+    v_items=$(grep -c "^$id " "$pairs" 2>/dev/null || true)
+    [ -n "$v_items" ] || v_items=0
+    v_files=$( { grep "^$id " "$pairs" 2>/dev/null || true; } \
+                 | LC_ALL=C sort -u | grep -c . || true )
+    [ -n "$v_files" ] || v_files=0
+    gate_reap_note "회수: 런 $id — 마지막 게이트 진입 이후 ${days}일 · ${bytes}바이트 · 인덱스 항목 ${v_items}개/${v_files}개 파일에서 제거"
+  done < "$recfile"
+
+  # THE SUMMARY IS WRITTEN EVEN WHEN NOTHING WAS DELETED. That is what separates
+  # "nothing qualified" from "the reaper never ran" — the distinction this
+  # codebase keeps drawing about silence. It is not written when the cadence gate
+  # returned early, because that is "not this cycle's turn" rather than "ran and
+  # found none".
+  now=$(date -u +%s)
+  sweep_note=""
+  if [ -n "$gave_up" ]; then sweep_note=" · 스윕 포기: $gave_up"; fi
+  gate_reap_note "회수 요약: 후보 ${candidates}건 · 삭제 ${deleted}건 · 상한 ${capped} · $((now - start))초 · ${total_bytes}바이트${sweep_note}"
+
+  rm -f "$recfile" "$pairs" 2>/dev/null || true
+  return 0
+}
+
+gate_reap_cycle() {
+  local root stamp now rc lock dead
+  root=$(gate_reap_root)
+  [ -d "$root/run" ] || return 0
+  now=$(date -u +%s)
+  # THE CADENCE GATE, one cheap read. autopilot opens runs in bursts, so "once
+  # per run" is not the same as "rarely".
+  #
+  # NOT fail-closed, unlike the retention predicate. A missing or unparsable
+  # stamp means "this has never run", not "we cannot tell how old something is":
+  # the stamp answers whose turn it is, never whether a directory may die.
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$root/reap.stamp" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_REAP_INTERVAL" ]; then
+    return 0
+  fi
+  gate_reap_lock "$root" || return 0
+  gate_reap_locked "$root"; rc=$?
+  # THE STAMP ADVANCES WHETHER OR NOT THE CAP WAS HIT. Candidates left over wait
+  # for the next window rather than being picked up by the next run-open, which
+  # is the premise the backlog arithmetic rests on — 103 directories in about six
+  # cycles rather than in one burst.
+  date -u +%s > "$root/reap.stamp" 2>/dev/null || true
+  # THE RELEASE IS ONE RENAME, so no moment exists in which the lock stands
+  # without its owner line. Removing the owner and then the directory put every
+  # ordinary release through that state, and a `rmdir` that failed for any reason
+  # — a leftover artifact inside, `EBUSY`, a filesystem that renames on delete —
+  # left behind a lock nothing could date and nothing could break. What this form
+  # leaves behind when its own cleanup fails is an inert directory beside the
+  # lock: no scan here walks it and no later cycle consults it.
+  lock="$root/.reap.lock"
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -2776,7 +3881,7 @@ gate_main() {
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
-  local approval="" render=0 worktree="" review_policy="" void=0 reject=0
+  local approval="" render=0 worktree="" void=0 reject=0
   local emit_digest_seen=0 emit_digest_dir=""
   GATE_RESUME=""; export GATE_RESUME
   # The emit path travels to `gate_verb_act` as a global rather than as an
@@ -2805,7 +3910,6 @@ gate_main() {
       --rationale)       rationale="$2"; shift 2 ;;
       --approval)        approval="$2"; shift 2 ;;
       --worktree)        worktree="$2"; shift 2 ;;
-      --review-policy)   review_policy="$2"; shift 2 ;;
       --render)          render=1; shift ;;
       --void)            void=1; shift ;;
       --reject)          reject=1; shift ;;
@@ -2919,8 +4023,16 @@ gate_main() {
   # way (run → its session ids) and answering "which run belongs to this
   # session?" from it means scanning every run directory. One session can hold
   # several runs, so this is a LIST — one run id per line, appended, deduped.
-  # Entries for runs whose directory is gone are left alone: the reader filters
-  # with `[ -d ]`, and pruning would add a write to a path that has none.
+  # NO LOCK HERE, and that is a decision rather than an omission. This path runs
+  # on every gate entry (over 875 times in the busiest run), and the one failure
+  # the lock would close SELF-HEALS: the append is unconditional, so the session's
+  # next gate entry puts a lost id back. The prune side carries the
+  # compare-and-swap instead.
+  #
+  # Entries for runs whose directory is gone stay put until a reap cycle removes
+  # them: the reader filters with `[ -d ]`, and that filter is what makes an entry
+  # outliving its directory harmless — which in turn is why the prune can run on a
+  # sparse schedule instead of tracking every deletion.
   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
     grep -qxF "$RUN_ID" \
@@ -3022,6 +4134,14 @@ gate_main() {
       "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
       "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+    # AFTER the `run` row, and only here. Before it, a reap that died would leave
+    # the run without so much as its own opening row; and this is the one branch
+    # that runs once per run rather than once per gate entry.
+    #
+    # `|| true` because reclamation is housekeeping, not the run's work. A run
+    # must not fail to open because a directory somewhere else could not be
+    # removed.
+    gate_reap_cycle || true
   else
     gate_resettle_settings
   fi
@@ -3055,7 +4175,7 @@ gate_main() {
       ;;
     plan|act|exec)
       gate_verb_act "$verb" "$kind" "$alias" "$segment" "$cutpoint" "$surface" \
-                    "$snapdig" "$rationale" "$worktree" "$review_policy" "$@"
+                    "$snapdig" "$rationale" "$worktree" "$@"
       ;;
     close)
       [ -n "$approval" ] || { printf 'gate: close 는 --approval 이 필요합니다\n' >&2; exit 2; }
@@ -3898,7 +5018,16 @@ gate_issue_judgment_approval() {
   gate_approval_sidecar_write "$id" issue '질문' "$qfull" \
     || warn "승인 사이드카에 질문 전문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   qdig=$(printf '%s' "$qfull" | shasum -a 256 | cut -d' ' -f1)
+  # `유도 절단점=-` AND NOT THE EXPORTED GLOBAL, for the same reason the act
+  # digest beside it is `-`: a judgment approval HAS NO ACT. `GATE_ACT_DERIVED`
+  # may well be set — the judgment is raised while some act is being adjudicated
+  # — and carrying that value here would say the argv of an unrelated act was
+  # the argv of this row, which has none. The field is written rather than
+  # omitted because `절단점` is on the row, and a reader that finds one of the
+  # pair without the other cannot tell "nothing was derived" from "this
+  # recording site was forgotten".
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=판단" \
+    "유도 절단점=-" \
     "행위 다이제스트=-" "구속 튜플=${seg:--}/$qdig/$GATE_MENU_VERSION/$(gate_tuple_snap)" \
     "막는 세그먼트=${seg:--}" "질문 문면=$q" "답변 문면=-" \
     "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
@@ -4033,6 +5162,7 @@ gate_claudemd_slot_guard() {
     읽기)
       case " $* " in
         *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *" -fprintf "*|*" -fprint "*|*" -fprint0 "*|*" -fls "*) ;;
         *)
           case "${1##*/}" in
             command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
@@ -4175,6 +5305,7 @@ gate_manifest_write_guard() {
     읽기)
       case " $* " in
         *" -exec "*|*" -execdir "*|*" -ok "*|*" -okdir "*|*" -delete "*) ;;
+        *" -fprintf "*|*" -fprint "*|*" -fprint0 "*|*" -fls "*) ;;
         *)
           case "${1##*/}" in
             command|env|xargs|lockf|nice|nohup|time|timeout|stdbuf) ;;
@@ -4797,6 +5928,54 @@ gate_record_row() {
         esac
       done
 
+      # `리뷰 정책` — OPTIONAL on this row, and its absence in a LATER row is
+      # INHERITANCE and not a reset. The router's row template carries the
+      # required fields and not the optional ones, so an ordinary state
+      # transition would otherwise erase a value an earlier row carried; every
+      # later resolution would then fall to the strict default and nothing on any
+      # surface would say why the merge was refused.
+      #
+      # CARRIED FORWARD AT WRITE TIME rather than folded at read time. A
+      # read-time fallback would be a SECOND reader of this series holding a
+      # different meaning from the first, and the one that drifts is the one
+      # nobody is looking at. Writing it forward also means every row states the
+      # policy in force at that moment, so the last row alone answers the
+      # question.
+      #
+      # THE CARRY IS ON THIS FIELD ONLY, and deliberately not on `워크트리`. That
+      # one is REQUIRED on every row above, so it cannot be erased in the first
+      # place — and putting a required field into an inheritance loop creates a
+      # branch that never runs, whose mere existence teaches the next reader that
+      # the field is optional. That drifts the writer in the loosening direction,
+      # which is worse than the defect the carry exists to fix.
+      local rpol rceil rpi rci
+      rpol=$(gate_field_of '리뷰 정책' "$@")
+      if [ -z "$rpol" ] && [ -n "$prior" ]; then
+        rpol=$(gate_row_field "$prior" '리뷰 정책')
+        [ -n "$rpol" ] && set -- "$@" "리뷰 정책=$rpol"
+      fi
+      if [ -n "$rpol" ]; then
+        # THE CEILING IS COMPARED BEFORE THE APPEND. The ledger is append-only,
+        # so a value admitted here can never be taken back — the whole content of
+        # this ordering is that the check precedes the only write on this arm.
+        # And exceeding the ceiling is REFUSED, not clamped: a quietly tightened
+        # row is indistinguishable from a conservative one.
+        rpi=$(review_policy_index "$rpol") || {
+          warn "segment 행의 「리뷰 정책」이 어휘 밖입니다: '$rpol' — 허용 토큰: ${REVIEW_POLICIES}"
+          return "$GATE_EXIT_VOCAB"
+        }
+        rceil=$(target_field "$alias" '리뷰 정책 상한')
+        [ -n "$rceil" ] || rceil='선리뷰후머지'
+        rci=$(review_policy_index "$rceil") || {
+          warn "대상 '$alias' 의 「리뷰 정책 상한」이 어휘 밖입니다: '$rceil'"
+          return "$GATE_EXIT_VOCAB"
+        }
+        if [ "$rpi" -gt "$rci" ]; then
+          warn "segment 행의 「리뷰 정책」 '$rpol' 이 대상 '$alias' 의 상한 '$rceil' 을 넘습니다 — 상한 위반은 조여 넣지 않고 거절합니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      fi
+
       # THE CALLER'S OWN `id=` CAN STILL WIN HERE, and this order is left alone
       # deliberately. `cycle` and `problem` below carry the same shape for
       # `세그먼트=`, so all three share this note.
@@ -4845,6 +6024,29 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       done
+      # "NOT EMPTY" IS NOT A SHAPE. The merge rule interpolates this field as a
+      # revision expression, so `HEAD`, `@`, a branch name or `HEAD@{0}` all
+      # resolve — against the tree the rule is reading at that moment, which is
+      # the merged one. A review recorded that way passes the freshness ladder by
+      # construction, no matter which tree was actually reviewed.
+      #
+      # CONSTRAINED AT WRITE TIME AND NOT AT READ TIME. Putting the check in the
+      # rule would make a second copy of this vocabulary in a file that already
+      # records the two drifting apart, and it would leave rows already on the
+      # append-only ledger asserting a review that never happened. Here the value
+      # the writer supplies is pinned before anything can read it.
+      local rh rh_bad
+      rh=$(gate_field_of '리뷰 HEAD' "$@")
+      # `case` globbing and `${#rh}` rather than a regex engine, which is the
+      # idiom the rest of this file uses and calls no second process.
+      case "$rh" in
+        *[!0-9a-f]*) rh_bad=1 ;;
+        *) rh_bad=0 ;;
+      esac
+      if [ "$rh_bad" = 1 ] || [ "${#rh}" -lt 7 ] || [ "${#rh}" -gt 40 ]; then
+        warn "cycle 행의 「리뷰 HEAD」는 해소된 커밋 sha 여야 합니다 — 7~40자 소문자 16진만 받습니다: '$rh'"
+        return "$GATE_EXIT_VOCAB"
+      fi
       # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
       # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
@@ -5165,7 +6367,7 @@ gate_record_row() {
       # Fulfilling is an APPEND, not an edit: the reader takes the LAST row per
       # obligation id, so the issuing row stays where it is and the morning can
       # still see both when the review was deferred and when it landed.
-      local oid oprior ost
+      local oid oprior ost oalias oseg omerge olanding ocover overdict orhead
       oid=$(gate_field_of '의무 id' "$@")
       [ -n "$oid" ] || { warn "의무 행에 「의무 id」가 필요합니다"; return "$GATE_EXIT_VOCAB"; }
       # Evidence, on the same terms the `blocked` arm already demands it. An
@@ -5184,17 +6386,95 @@ gate_record_row() {
         warn "이미 닫힌 리뷰 의무입니다: ${oid} (상태=${ost:-없음})"
         return "$GATE_EXIT_VOCAB"
       fi
+      oalias=$(gate_row_field "$oprior" '대상')
+      oseg=$(gate_row_field "$oprior" '세그먼트')
+      omerge=$(gate_row_field "$oprior" '머지 커밋')
+
+      # `--target` IS COMPARED AND NOT MERELY RECORDED. The landing test below
+      # runs in the anchor repository of the target the merge was authorized
+      # against, so a fulfillment aimed at a different target measures the right
+      # commit in the wrong repository and reports 미착지 with full confidence.
+      # The code is the vocabulary one because every other refusal in this arm is,
+      # and because the repair really is to fix the argv — which is exactly what 2
+      # tells the router to do.
+      if [ -n "$oalias" ] && [ "$oalias" != "-" ] && [ "$alias" != "$oalias" ]; then
+        warn "이행하려는 의무 ${oid} 의 대상은 '$oalias' 인데 --target 은 '$alias' 입니다"
+        warn "그 행이 지목하는 대상으로 다시 부르세요 — 착지 판정이 도는 저장소가 대상마다 다릅니다"
+        return "$GATE_EXIT_VOCAB"
+      fi
+
+      # LANDING FIRST, CONTAINMENT SECOND. Reversed, a merge that never landed is
+      # judged on whether some review covered it, and the retry path for that
+      # merge breaks along with the judgment.
+      #
+      # A row carrying `머지 커밋=-` predates the anchor and cannot be measured at
+      # all, so it passes with `이행 판정=앵커 없음` rather than being refused —
+      # refusing it would strand obligations written before this field existed.
+      # THIS ARM DISAPPEARS when `리뷰 의무` rows with `머지 커밋=-` reach zero at
+      # the ledger root, and nothing else expires it.
+      if [ -z "$omerge" ] || [ "$omerge" = "-" ]; then
+        overdict='앵커 없음'
+      else
+        # CALLED PLAINLY, never through `$(…)`: the sentence rides on a global and
+        # a command substitution runs the predicate in a subshell, which discards
+        # it. The verdict rides on a global for the same reason.
+        gate_obligation_landing "${oalias:-$alias}" "$omerge"
+        olanding="$GATE_LANDING_VERDICT"
+        case "$olanding" in
+          미착지) overdict='미착지' ;;
+          착지)
+            orhead=$(gate_segment_review_head "$oseg")
+            gate_obligation_covers "${oalias:-$alias}" "$omerge" "$orhead"
+            ocover="$GATE_COVER_VERDICT"
+            case "$ocover" in
+              '덮는다') overdict='착지·포함' ;;
+              '덮지 않는다')
+                warn "의무 ${oid} 의 머지 커밋 ${omerge} 을 덮는 리뷰가 없습니다: ${GATE_COVER_WHY}"
+                warn "그 커밋을 덮는 cycle 행을 먼저 기록하고 같은 argv 로 다시 부르세요"
+                return "$GATE_EXIT_VOCAB" ;;
+              *)
+                warn "의무 ${oid} 의 포함 여부를 판정하지 못했습니다: ${GATE_COVER_WHY}"
+                return "$GATE_EXIT_VOCAB" ;;
+            esac ;;
+          *)
+            # 판정 불가 IS A REFUSAL AND NEVER A VALUE — there is no row to carry
+            # it on, because the row exists only when the obligation is fulfilled.
+            # The exit code is shared with the other refusals here and the SENTENCE
+            # carries the distinction: which of fetch, ref or ancestry failed to
+            # answer. No automatic retry sits here either — how many attempts at
+            # what interval is not a number anybody has measured.
+            warn "의무 ${oid} 의 착지를 판정하지 못했습니다: ${GATE_LANDING_WHY}"
+            warn "자동 재시도는 두지 않습니다 — 판정이 가능해진 뒤 같은 argv 로 다시 부르세요"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+      fi
+
       # The carried fields come from the row being closed and never from argv.
-      # `세그먼트` is what ties the fulfillment to the merge it belongs to, and
-      # `생성 등급` is the value the excusal rule reads later — a router that
-      # could restate either could also restate it wrongly.
+      # `세그먼트` is what ties the fulfillment to the merge it belongs to,
+      # `생성 등급` is the value the excusal rule reads later, and `대상` names the
+      # repository the landing test just ran in — a router that could restate any
+      # of them could also restate it wrongly. They sit AFTER `"$@"` so the
+      # router's argv is overwritten rather than merely accompanied.
+      #
+      # `이행 판정` IS WRITTEN ON EVERY BRANCH. Written conditionally it becomes a
+      # key outside the carried set, the router's argv survives in that position,
+      # and the field built to COUNT exemptions turns into the handle that inflates
+      # them. Its value set is closed at three; there is no fourth and no
+      # `판정 불가`, because that outcome refused above and left no row.
       gate_append '리뷰 의무' "$@" "상태=이행" \
-        "세그먼트=$(gate_row_field "$oprior" '세그먼트')" \
-        "머지 커밋=$(gate_row_field "$oprior" '머지 커밋')" \
+        "세그먼트=$oseg" \
+        "대상=${oalias:-$alias}" \
+        "머지 커밋=$omerge" \
         "생성 등급=$(gate_row_field "$oprior" '생성 등급')" \
+        "이행 판정=$overdict" \
         "발행 시각=$(gate_row_field "$oprior" '발행 시각')" \
         "이행 시각=$(now_iso)"
-      log "리뷰 의무 이행 $oid"
+      # THE LANDING SENTENCE IS LOGGED EVEN WHEN NOTHING WAS REFUSED. `미착지` is
+      # a passing disposition, so without this line the only witness to WHY it
+      # did not land is a variable nobody reads — and the two 미착지 sentences
+      # differ in the one way an operator acts on: one says the base does not
+      # contain it yet, the other that no retry will ever make it.
+      log "리뷰 의무 이행 $oid — 대상 ${oalias:-$alias} · 이행 판정 $overdict${GATE_LANDING_WHY:+ · $GATE_LANDING_WHY}"
       ;;
   esac
   return 0
@@ -5401,7 +6681,6 @@ gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
   shift 9
-  local review_policy="$1"; shift
   local argv="$*"
 
   [ -n "$alias" ]    || { printf 'gate: --target 이 필요합니다\n' >&2; exit 2; }
@@ -5441,6 +6720,64 @@ gate_verb_act() {
 
   # Vocabulary first, and by return status rather than `die` — see surface_index.
   cutpoint_index "$cutpoint" >/dev/null || exit "$GATE_EXIT_VOCAB"
+
+  # ---- the argv ladder, derived and compared against the declaration --------
+  #
+  # THE SEAM IS HERE AND NOT AT `gate_export_cutpoints`, and the position is the
+  # whole of the repair. Five consumers read the declared rung as a threshold —
+  # the rule catalog's `GATE_ACT`, the target-ceiling exporter, the wall-clock
+  # deadline, the undeclared-target layers and the obligation issuer — and
+  # #Nharu/cc-cmds#505 names only the first. Fixing the rule call site alone
+  # leaves the other four open to the identical misspelling, so the value is
+  # corrected once, above all of them. The exporter cannot be that place: three
+  # of the five already sit above it.
+  #
+  # DERIVE FIRST, AND ONLY WHERE THE argv IS A COMMAND. `propose-done` has no act
+  # behind it, a `skill` or `router-shift` argv begins with a stage kind or a
+  # handoff reason, and a bookkeeping act's argv is a list of `키=값` fields.
+  # Feeding any of those to the table asks a question it cannot answer, so the
+  # split is the same one `GATE_HISTORY_INTEGRATION` already makes verbatim a few
+  # hundred lines below — and for the same reason, which is that the answer there
+  # would be a guess rather than a fact.
+  GATE_ACT_DERIVED=""
+  case "$kind" in
+    propose-done|skill|router-shift) : ;;
+    *) gate_kind_is_bookkeeping "$kind" \
+         || GATE_ACT_DERIVED=$(ladder_of_argv0 "$@") ;;
+  esac
+  GATE_ACT_EFFECTIVE="$cutpoint"
+  if [ -n "$GATE_ACT_DERIVED" ]; then
+    local d_idx r_idx
+    d_idx=$(cutpoint_index "$GATE_ACT_DERIVED") || exit "$GATE_EXIT_VOCAB"
+    r_idx=$(cutpoint_index "$cutpoint") || exit "$GATE_EXIT_VOCAB"
+    if [ "$d_idx" -gt "$r_idx" ]; then
+      # UNDER-DECLARATION, AND IT IS REFUSED BEFORE exit 4 ON PURPOSE. Exit 4
+      # tells the router "re-read the snapshot and try again", and a retry with
+      # the same misspelled argv walks straight back into this same refusal —
+      # so the staleness comparison below must not get to answer first.
+      # THE RULE IS DESCRIBED AND NOT NAMED, and the omission is deliberate. The
+      # catalog refusal spells its own rule's name on stderr — `룰 거부:
+      # 절단점-준수` — and that name is the only thing separating the two
+      # refusals for a reader scanning the transcript. Spelling it here as part
+      # of a PRESCRIPTION would put it on the exit-8 message too, and then the
+      # two consumers this axis exists to tell apart become one string again:
+      # deleting either check leaves the other answering for it. The router's
+      # exit-code table carries the name; this message carries the repair.
+      warn "저신고: argv 는 '$GATE_ACT_DERIVED' 등급인데 '$cutpoint' 로 신고됐습니다 — 낮은 신고는 인가를 넓히지 않습니다"
+      warn "신고를 '$GATE_ACT_DERIVED' 로 올려 같은 argv 로 다시 부르세요. 다만 올려도 대상의 절단점을 넘으면 인가되지 않은 것이며, 그때의 처방은 다시 올리는 것이 아니라 park 입니다 — 그 거절은 이 exit 8 이 아니라 인가 상한 룰의 exit 3 으로 돌아옵니다"
+      exit "$GATE_EXIT_LADDER"
+    fi
+    if [ "$d_idx" -lt "$r_idx" ]; then
+      # OVER-DECLARATION PASSES, AND THE CONSUMERS TAKE THE DERIVED RUNG. The
+      # router labels every act with its target's cutpoint, so this is the
+      # ordinary path and refusing it would be a wall. What it is not is silent:
+      # the ledger carries both values and this line carries the third thing
+      # neither field can say, which is that one of them was lowered.
+      warn "과신고: argv 는 '$GATE_ACT_DERIVED' 등급인데 '$cutpoint' 로 신고됐습니다 — 이 행위는 유도 등급으로 판정합니다"
+      GATE_ACT_EFFECTIVE="$GATE_ACT_DERIVED"
+    fi
+  fi
+  export GATE_ACT_DERIVED GATE_ACT_EFFECTIVE
 
   # Snapshot binding, and it sits HERE — after the state-independent argument
   # and vocabulary checks, and before anything that writes. Under parallel
@@ -5550,7 +6887,12 @@ gate_verb_act() {
   fi
   case " $(target_aliases | tr '\n' ' ') " in
     *" $alias "*) : ;;
-    *) gate_undeclared_target "$alias" "$cutpoint" "$worktree" || exit $? ;;
+    # THE EFFECTIVE RUNG AND NOT THE DECLARED ONE, here and at the six sites
+    # below. This one decides whether an undeclared repository is refused
+    # outright or quietly REGISTERED with a `대상 추가` row, so a merge spelled
+    # `--cutpoint 커밋` used to walk past the refusal and leave the registration
+    # behind it.
+    *) gate_undeclared_target "$alias" "$GATE_ACT_EFFECTIVE" "$worktree" || exit $? ;;
   esac
 
   # The router's declared surface is a CHECKED CLAIM, not a self-grant. A
@@ -5648,11 +6990,11 @@ gate_verb_act() {
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
   if [ "$verb" != "grade" ]; then
-    gate_deadline_ok "$kind" "$cutpoint" || exit $?
+    gate_deadline_ok "$kind" "$GATE_ACT_EFFECTIVE" || exit $?
   fi
 
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
-    gate_export_cutpoints "$alias" "$cutpoint" || exit $?
+    gate_export_cutpoints "$alias" "$GATE_ACT_EFFECTIVE" || exit $?
     # Where the act runs. A declared target names its own worktree and the act
     # belongs there; an undeclared one has no row to read, so the act stays in
     # the caller's directory and is bounded by the layers above instead. The
@@ -5663,6 +7005,25 @@ gate_verb_act() {
     export GATE_ACT_CWD
   fi
   GATE_SURFACE="$graded"; export GATE_SURFACE
+
+  # THE SECOND argv-DERIVED VALUE, PUBLISHED BESIDE THE FIRST. `리뷰-후-머지`
+  # narrows on the graded surface and then splits that surface's worktree-write
+  # cell with this; keeping the two exports together is what stops a later
+  # editor from moving one and leaving the other behind.
+  #
+  # THE KIND-PINNED ARMS ANSWER 0, AND THAT 0 IS A FACT RATHER THAN A GUESS.
+  # Where the grade came from the kind rather than from the table, the argv is
+  # not a command at all — a bookkeeping act's argv is a list of `키=값` fields,
+  # a stage dispatch's first token is a stage kind, a routing shift's is a
+  # handoff reason. Asking "does this command integrate history" of a field list
+  # has no answer, and 0 is the honest one: no history is being integrated.
+  GATE_HISTORY_INTEGRATION=0
+  case "$kind" in
+    propose-done|skill|router-shift) : ;;
+    *) gate_kind_is_bookkeeping "$kind" \
+         || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
+  esac
+  export GATE_HISTORY_INTEGRATION
 
   # A DISPATCH ARGV IS A PROMPT, NOT A COMMAND LINE, so the guard below has
   # nothing to look at there. `skill` and `router-shift` hand their argv to a
@@ -5724,8 +7085,30 @@ gate_verb_act() {
   fi
   export GATE_KIND GATE_JUDGMENT_CLASS GATE_REVERT GATE_REVERT_SURFACE
 
+  # THE REVIEW POLICY, RESOLVED BEFORE THE CATALOG RUNS. The checkers are
+  # separate processes and receive this as ambient state; resolving it after the
+  # loop would leave them nothing to read. It is also outside `gate_rule_enabled`
+  # on purpose — the ceiling comparison is the part of this axis a manifest may
+  # not switch off, and putting it inside a checker would let one setting turn
+  # off both the check and the ceiling that bounds it.
+  gate_resolve_review_policy "$segment" "$alias" "$kind" "$@" || exit $?
+
+  # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
+  # cannot call the reader above it, and letting it grep the ledger itself would
+  # put a THIRD copy of "which obligations are open" beside this file's reader
+  # and termination condition 9 — the gate folds it, the checker receives the
+  # value. Narrowed to this segment for the reason the reader's own comment
+  # gives: run-wide, a sibling's open obligation refuses this segment's merge.
+  GATE_SEGMENT_OPEN_OBLIGATIONS=$(gate_unfulfilled_review_obligations "$segment" \
+    | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  export GATE_SEGMENT_OPEN_OBLIGATIONS
+
   local rules_rc=0
-  gate_run_rules "$cutpoint" "$alias" "$segment" "$argv" || rules_rc=$?
+  # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
+  # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
+  # line of the catalog changes and no checker acquires a second copy of the
+  # ladder.
+  gate_run_rules "$GATE_ACT_EFFECTIVE" "$alias" "$segment" "$argv" || rules_rc=$?
 
   # THE AUTO-ADOPTION FLOOR. It runs beside the catalog rather than only inside
   # it because its other consumer — a judgment a stage emitted in its terminal
@@ -5827,7 +7210,7 @@ gate_verb_act() {
         *) exit "$iss_rc" ;;
       esac
     fi
-    gate_issue_act_approval "$alias" "$segment" "$cutpoint" "$graded" "$argv"
+    gate_issue_act_approval "$alias" "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$argv"
     exit "$GATE_EXIT_APPROVAL"
   fi
   [ "$rules_rc" = "0" ] || exit "$rules_rc"
@@ -5970,7 +7353,8 @@ gate_verb_act() {
     if [ "$disposition" = "무효화" ]; then
       warn "런이 무효화된 채로 종료를 기록합니다 — 충족이 아니라 무효로 남습니다"
       gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
-        "절단점=$cutpoint" "축2=$graded" "등급=1" "기준=무효화 종료" \
+        "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+        "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
@@ -5999,7 +7383,8 @@ gate_verb_act() {
       # reader looks; what the row needs is enough to say what happened and how
       # many, bounded by construction.
       gate_append '자율 승인' "kind=$kind" "결정=기각" "대상=$alias" "세그먼트=$segment" \
-        "절단점=$cutpoint" "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
+        "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+        "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
         "되돌리는 법=해당 없음(거부)" \
         "근거=$(gate_unmet_summary "$unmet")"
       exit "$GATE_EXIT_RULE"
@@ -6078,16 +7463,32 @@ gate_verb_act() {
     fi
   fi
 
+  # THE ANCHOR CHECK, and its position is the whole of its effect. It sits AFTER
+  # the rule loop and UPSTREAM OF BOTH APPENDS — the `자율 승인` row below and
+  # the obligation row the issuer writes — so a merge refused here leaves no row
+  # of either kind. It also sits above the forecast arm, so `plan` answers with
+  # the same code: an arm that forecast "통과 예상" and then had `act` refuse is
+  # the state a router cannot plan around.
+  # THIS SITE AND THE ISSUER BELOW TAKE THE EFFECTIVE RUNG TOGETHER, and splitting
+  # them is the one wrong way to do it: both narrow on `= 머지`, so leaving the
+  # anchor check on the declared value lets an under-declared merge skip the
+  # anchor and reach the issuer anyway — a row with no commit to close it.
+  gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" || exit $?
+
   # THE FORECAST IS ISSUED HERE, past every read-only axis and before every
   # write. Above this line sit the surface comparison, the segment-row existence
-  # check, the predecessor-landing check, the termination conditions and the
-  # obligation-naming arm — all reads, and all of them axes the same argv meets
-  # as an `act`. Below it sit the boundaries, the credential resolution, the
-  # ledger append and the act itself.
+  # check, the predecessor-landing check, the termination conditions, the
+  # obligation-naming arm and the anchor check — all reads, and all of them axes
+  # the same argv meets as an `act`. Below it sit the boundaries, the credential
+  # resolution, the ledger append and the act itself.
   if [ "$verb" = "plan" ]; then
     gate_plan_unchecked_axes "$kind"
-    printf '통과 예상: kind=%s target=%s 절단점=%s 축2=%s\n' \
-      "$kind" "$alias" "$cutpoint" "$graded"
+    # The forecast reports the rung the act would be ADJUDICATED at, and names the
+    # derived one beside it. Reporting the declared word would make the dry run
+    # disagree with the row the same argv writes as an `act` — which is the one
+    # thing a forecast must not do.
+    printf '통과 예상: kind=%s target=%s 절단점=%s 유도=%s 축2=%s\n' \
+      "$kind" "$alias" "$GATE_ACT_EFFECTIVE" "${GATE_ACT_DERIVED:--}" "$graded"
     return 0
   fi
 
@@ -6110,9 +7511,49 @@ gate_verb_act() {
       warn "파이프라인 자격이 없어 주변 자격으로 실행합니다 — 이 행위에는 자격 분리가 걸려 있지 않습니다"
   fi
 
+  # A BOOKKEEPING KIND IS DECIDED BEFORE THE APPROVAL ROW IS WRITTEN, and every
+  # other kind after it. The two orderings look inconsistent and are not: what
+  # the early row buys is a record surviving a crash PART WAY THROUGH AN ACT,
+  # and a bookkeeping kind performs no act — its entire effect is one atomic
+  # `gate_append`, which either lands whole or not at all. So writing approval
+  # first buys nothing there and costs the thing this ordering must not cost: a
+  # REFUSED row still leaves a row saying the gate approved it, and refusals on
+  # this arm are ordinary (a ceiling excess, a missing `워크트리`, an obligation
+  # naming another target). A refusal that grows the ledger is indistinguishable
+  # in the morning from an act that happened.
+  #
+  # THE SET IS STILL SPELLED ONCE. Moving the branch above the approval row is
+  # an ordering change and not a second copy of the vocabulary — re-spelling the
+  # kinds here would leave this arm behind the moment a kind is added, which is
+  # exactly what `gate_kind_is_bookkeeping` exists to prevent.
+  local rc=0
+  local bookkeeping=
+  if gate_kind_is_bookkeeping "$kind"; then
+    bookkeeping=1
+    gate_record_row "$kind" "$segment" "$alias" "$@" || return $?
+  fi
+
+  # TWO FIELDS AND NOT ONE. `절단점` is what the gate ADJUDICATED this act as and
+  # `유도 절단점` is what the argv itself said, `-` where the table stayed silent.
+  # Folded into one field, "the argv says this is a merge" and "the caller says
+  # this is a merge" become the same sentence — and telling those apart is the
+  # entire subject of this axis.
   gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
-    "절단점=$cutpoint" "축2=$graded" "자격=$credmode" "근거=$rationale"
-  log "게이트 통과 — $verb $cutpoint ($alias)"
+    "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+    "축2=$graded" "자격=$credmode" "근거=$rationale"
+  log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
+
+  # The RESOLVED policy and not a flag value. What decides whether a merge defers
+  # its review is the segment row bounded by the target's ceiling, and a caller
+  # that could name the policy on the command line could also name one the
+  # ceiling forbids.
+  # THE FIFTH CONSUMER, AND IT SITS BELOW THE SEAM — so the seam alone does not
+  # reach it and this call site is corrected on its own. Left reading the declared
+  # rung it would go on comparing `= 머지` against a word the caller chose, and
+  # "an under-declared merge issues no obligation" would survive the whole repair.
+  gate_issue_review_obligation "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$GATE_REVIEW_POLICY" "$alias"
+
+  [ -n "$bookkeeping" ] && return 0
 
   # ---- and now PERFORM it -------------------------------------------------
   #
@@ -6122,24 +7563,17 @@ gate_verb_act() {
   # all. The row is written BEFORE the act, deliberately — a row with no act is
   # an over-report a person can see in the morning, and an act with no row is
   # the thing this design exists to prevent.
-  local rc=0
-  gate_issue_review_obligation "$segment" "$cutpoint" "$graded" "$review_policy"
-
   # EVERY RETURN FROM HERE DOWN EMITS, AND EMITS LAST. The emission runs from an
   # EXIT trap, so it sees the state after this call's final ledger write — and
   # the exits below write different numbers of rows: the `자율 승인` row above is
-  # the last write for `exec` and for `act --kind skill`, a bookkeeping kind
-  # writes a SECOND row, and a failed act writes a third at the bottom. A
-  # pre-append value would hand the caller a digest already stale on arrival and
-  # every acting call after it would come back exit 4 — a run that deadlocks
-  # loudly on the mechanism meant to speed it up. `plan` never reaches this line
-  # and emits nothing, which is why the re-read after a `plan` stays in the
-  # router's contract.
+  # the last write for `exec`, for `act --kind skill` and for a bookkeeping kind
+  # (whose own row was already written above it), and a failed act writes one
+  # more at the bottom. A pre-append value would hand the caller a digest already
+  # stale on arrival and every acting call after it would come back exit 4 — a
+  # run that deadlocks loudly on the mechanism meant to speed it up. `plan` never
+  # reaches this line and emits nothing, which is why the re-read after a `plan`
+  # stays in the router's contract.
   [ "$kind" = "propose-done" ] && return 0
-  if gate_kind_is_bookkeeping "$kind"; then
-    gate_record_row "$kind" "$segment" "$alias" "$@"
-    return $?
-  fi
   case "$verb" in
     exec)
       # The stage's own credential set: read-scoped, so a `gh pr merge` spelled
@@ -6172,7 +7606,8 @@ gate_verb_act() {
   if [ "$rc" != "0" ]; then
     warn "행위가 실패했습니다 (rc=$rc) — 행은 이미 원장에 있습니다"
     gate_append '자율 승인' "kind=$kind" "결정=결과" "대상=$alias" "세그먼트=$segment" \
-      "절단점=$cutpoint" "축2=$graded" "근거=rc=$rc"
+      "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+      "축2=$graded" "근거=rc=$rc"
   fi
   return "$rc"
 }
@@ -6237,7 +7672,14 @@ gate_undeclared_target() {
   GATE_TARGET_CUTPOINT='브랜치'
   GATE_TARGET_INDEX="$branch_idx"
   GATE_ACT_INDEX="$idx"
-  export GATE_TARGET_CUTPOINT GATE_TARGET_INDEX GATE_ACT_INDEX
+  # The merge rung travels with the act rung, exactly as on the declared path.
+  # A checker that fires at merge OR ABOVE needs both integers to decide it is
+  # NOT firing, so shipping only one makes it refuse for want of an index — and
+  # that refusal lands on acts far below merge, where the checker had nothing to
+  # say. Fail-closed in a checker is right; reaching it with a half-filled
+  # environment is the caller's defect.
+  GATE_MERGE_INDEX=$(cutpoint_index '머지') || return "$GATE_EXIT_VOCAB"
+  export GATE_TARGET_CUTPOINT GATE_TARGET_INDEX GATE_ACT_INDEX GATE_MERGE_INDEX
   GATE_UNDECLARED=1
   return 0
 }
@@ -6355,10 +7797,17 @@ gate_issue_act_approval() {
   # THE QUESTION IS A FIXED LITERAL AND THE BLOCK IS STILL WRITTEN: the anchor on
   # the row has to name something, and the close path fills the answer region
   # of this block the same way it does a judgment's.
+  #
+  # THE FIFTH RECORDING SITE sits on the row below. `$cut` is already the
+  # EFFECTIVE rung — the caller resolved it before the rule loop — so the
+  # derived value is read from the exported global rather than threaded through
+  # a sixth parameter. A question a person answers in the morning has to say
+  # which rung it is about, and the rung the run acted on is the effective one.
   local q='사전 인가 밖 행위를 수행할까요'
   gate_approval_sidecar_write "$id" issue '질문' "$q" \
     || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=$alias" "절단점=$cut" \
+    "유도 절단점=${GATE_ACT_DERIVED:--}" \
     "행위 다이제스트=$ad" "구속 튜플=$alias/$base/${head:0:12}/$grade" \
     "막는 세그먼트=$seg" "질문 문면=$q" \
     "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
@@ -6525,27 +7974,332 @@ gate_unmet_clause_ids() {
   done
 }
 
+# gate_check_merge_anchor <segment> <cutpoint>
+#
+# A merge that cannot say WHAT IT MERGES is refused before it happens. The
+# obligation this act is about to issue carries the tip of the segment worktree
+# as its anchor, and the fulfilling review is matched against that commit — so
+# an obligation issued without one is a row nobody can ever close, and
+# termination condition 9 then holds the run open on it forever. Refusing at the
+# issuing point costs one merge; writing the unanchorable row costs the run.
+#
+# THE THREE FAILURES GET THREE DIFFERENT SENTENCES, and none of the three uses
+# the word 「룰」. That is a load-bearing prohibition rather than a matter of
+# style: a refusal phrased as a rule refusal is folded into the rule catalog by
+# the next reader, and every entry of that catalog is switchable — so the fold
+# would quietly bring this refusal inside the range of `끔`, which is precisely
+# what its own exit code exists to deny.
+gate_check_merge_anchor() {
+  local seg="$1" cut="$2" wt tip
+  [ "${GATE_REVIEW_POLICY:-}" = "선머지후리뷰" ] || return 0
+  [ "$cut" = "머지" ] || return 0
+
+  # `상태` is required on every segment row, so its absence is the absence of the
+  # row rather than of one field.
+  if [ -z "$seg" ] || [ "$seg" = "-" ] || [ -z "$(gate_segment_field "$seg" '상태')" ]; then
+    warn "머지될 커밋을 지목할 세그먼트 행이 원장에 없습니다: '${seg:--}'"
+    warn "세그먼트 행을 먼저 기록하고 같은 argv 로 다시 부르세요"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  wt=$(gate_segment_worktree "$seg")
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    warn "세그먼트 '$seg' 의 워크트리 디렉터리가 없습니다: '${wt:--}'"
+    warn "그 자리에서 머지될 커밋을 읽을 수 없으므로 이 머지는 발행되지 않습니다"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  tip=$(gate_segment_tip "$seg") || tip=""
+  if [ -z "$tip" ]; then
+    warn "세그먼트 '$seg' 의 워크트리 '$wt' 에서 HEAD 를 해소하지 못했습니다"
+    warn "머지될 커밋을 적을 수 없으므로 이 머지는 발행되지 않습니다"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  # Resolved once and reused by the issuer below, so the value on the row is the
+  # same one this check passed on. Re-reading it there would open a window in
+  # which the refusal and the row disagree about the same worktree.
+  GATE_MERGE_ANCHOR="$tip"
+  export GATE_MERGE_ANCHOR
+  return 0
+}
+
+# The two judgments the fulfillment arm makes, and the sentence each leaves
+# behind. They are functions rather than inline blocks because each has THREE
+# outcomes and the third one — "the world did not answer" — is the one an inline
+# block loses: folded into either neighbour it becomes a confident yes or a
+# confident no about something nothing measured.
+# THE VERDICT TRAVELS IN A VARIABLE, NOT ON STDOUT. Both predicates answer with a
+# verdict AND a sentence, and a caller that took the verdict through `$(…)` ran
+# the function in a subshell — so the sentence, set on a global, was discarded at
+# the moment it was assigned. Every refusal then printed its reason as the empty
+# string, which is precisely the state the third value exists to prevent: the
+# operator is told the gate could not decide and not told what failed to answer.
+# Returning both the same way is what keeps them together.
+GATE_LANDING_VERDICT=""
+GATE_LANDING_WHY=""
+GATE_COVER_VERDICT=""
+GATE_COVER_WHY=""
+
+gate_landing_unlanded_why() {
+  # gate_landing_unlanded_why <root> <ref> <머지 커밋>
+  #
+  # WORDING ONLY. Two commits with no common ancestor are not going to acquire one
+  # by waiting, and an operator reading 미착지 needs to know which of the two they
+  # are looking at. The DISPOSITION is 미착지 either way: a fourth outcome here
+  # would leak into `이행 판정`, whose value set is closed at three.
+  local root="$1" ref="$2" m="$3"
+  if ( cd "$root" && git merge-base "$m" "$ref" >/dev/null 2>&1 ); then
+    printf '%s 가 머지 커밋을 담고 있지 않습니다' "$ref"
+  else
+    printf '머지 커밋과 %s 에 공통 조상이 없습니다 — 재시도로 풀리지 않습니다' "$ref"
+  fi
+}
+
+gate_landing_rewritten_landed() {
+  # gate_landing_rewritten_landed <root> <ref> <머지 커밋>
+  #
+  # A REWRITING MERGE NEVER MAKES THE TIP AN ANCESTOR. `--squash` and `--rebase`
+  # build new commits on the server side, so the ancestry test answers no for
+  # that sha forever while the change itself IS on the base branch. Left at that,
+  # every deferred obligation in such a repository closes on `근거` alone and the
+  # containment predicate is never called once — the debt is discharged having
+  # consulted no review at all.
+  #
+  # The second clause is TREE EQUALITY, on the same grounds the staleness ladder
+  # already admits a same-tree exception: a rewrite that leaves the tree
+  # byte-identical carried the content across. The window is bounded to what the
+  # base gained since it forked from the merged commit — outside that window an
+  # equal tree says nothing about THIS merge. No common ancestor means no window
+  # and the answer stays no, which is the case the wording helper already calls
+  # unrecoverable.
+  local root="$1" ref="$2" m="$3" t mb tt
+  t=$( cd "$root" && git rev-parse --verify --quiet "${m}^{tree}" 2>/dev/null ) || t=""
+  [ -n "$t" ] || return 1
+  mb=$( cd "$root" && git merge-base "$m" "$ref" 2>/dev/null ) || mb=""
+  [ -n "$mb" ] || return 1
+  for tt in $( cd "$root" && git log --format=%T "${mb}..${ref}" 2>/dev/null ); do
+    [ "$tt" = "$t" ] && return 0
+  done
+  return 1
+}
+
+gate_obligation_landing() {
+  # gate_obligation_landing <대상 별칭> <머지 커밋>
+  #
+  # Prints 착지 / 미착지 / 판정 불가 and leaves the explaining sentence in
+  # `GATE_LANDING_WHY`.
+  #
+  # IT RUNS IN THE TARGET'S ANCHOR REPOSITORY AND NOT IN THE SEGMENT WORKTREE.
+  # Collapsing those two directories into one is the most common misreading of
+  # this design: the worktree holds the commit that was merged, and the base
+  # branch it has to land on lives in the target's own repository root.
+  local al="$1" m="$2" root br rc
+  GATE_LANDING_VERDICT=""
+  GATE_LANDING_WHY=""
+  root=$(alias_root "$al" 2>/dev/null) || root=""
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    GATE_LANDING_WHY="대상 '$al' 의 앵커 저장소 루트를 해소하지 못했습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+  br=$(base_branch "$al" 2>/dev/null) || br=""
+  if [ -z "$br" ]; then
+    GATE_LANDING_WHY="대상 '$al' 의 베이스 브랜치를 해소하지 못했습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+
+  # The local branch first, and when it answers yes NOTHING TOUCHES THE NETWORK.
+  # An unresolvable `refs/heads/<베이스>` is ordinary rather than an error — a
+  # fresh clone need not carry one — and falls through to the remote arm.
+  rc=0
+  ( cd "$root" && git merge-base --is-ancestor "$m" "refs/heads/$br" >/dev/null 2>&1 ) || rc=$?
+  if [ "$rc" = "0" ]; then
+    GATE_LANDING_WHY="로컬 refs/heads/$br 가 이미 머지 커밋을 담고 있습니다"
+    GATE_LANDING_VERDICT='착지'; return 0
+  fi
+
+  # No origin means the local refs ARE the whole world, so the answer above is
+  # final rather than provisional. Reaching for a remote that does not exist would
+  # turn a settled 미착지 into an unsettleable one.
+  if ! ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then
+    case "$rc" in
+      1) if gate_landing_rewritten_landed "$root" "refs/heads/$br" "$m"; then
+           GATE_LANDING_WHY="원격이 없고 로컬 refs/heads/$br 가 머지 커밋과 같은 트리의 커밋을 담고 있습니다 — 다시 쓰인 머지입니다"
+           GATE_LANDING_VERDICT='착지'; return 0
+         fi
+         GATE_LANDING_WHY="원격이 없어 로컬 refs/heads/$br 가 세계 전부입니다 — $(gate_landing_unlanded_why "$root" "refs/heads/$br" "$m")"
+         GATE_LANDING_VERDICT='미착지'; return 0 ;;
+      *) GATE_LANDING_WHY="원격이 없고 로컬 refs/heads/$br 에 대한 조상 검사가 답하지 못했습니다 (git rc=$rc)"
+         GATE_LANDING_VERDICT='판정 불가'; return 0 ;;
+    esac
+  fi
+
+  # A FAILED FETCH IS A REFUSAL AND NOT A 미착지. The failure leaves the stale
+  # tracking ref exactly where it was, so the ancestor test below would run and
+  # would answer — with the confidence of a measurement and the content of a
+  # guess. `base_fetch` cannot be used here: it reports success on a dead remote.
+  if ! base_fetch_ref "$al" "$br"; then
+    GATE_LANDING_WHY="원격 fetch 가 실패해 refs/remotes/origin/$br 가 낡은 채로 남았습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+  # A fetch that succeeded and still left no tracking ref is also a refusal. That
+  # the branch has zero population today means the answer is MISSING, not that it
+  # is no.
+  if ! ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null 2>&1 ); then
+    GATE_LANDING_WHY="fetch 는 성공했으나 refs/remotes/origin/$br 가 없습니다"
+    GATE_LANDING_VERDICT='판정 불가'; return 0
+  fi
+  # THREE BRANCHES, NEVER FOLDED TO TWO. A merge commit that does not resolve in
+  # this repository exits 128 here, and 128 is a refusal rather than a no.
+  rc=0
+  ( cd "$root" && git merge-base --is-ancestor "$m" "refs/remotes/origin/$br" >/dev/null 2>&1 ) || rc=$?
+  case "$rc" in
+    0) GATE_LANDING_WHY="refs/remotes/origin/$br 가 머지 커밋을 담고 있습니다"
+       GATE_LANDING_VERDICT='착지'; return 0 ;;
+    1) if gate_landing_rewritten_landed "$root" "refs/remotes/origin/$br" "$m"; then
+         GATE_LANDING_WHY="refs/remotes/origin/$br 가 머지 커밋과 같은 트리의 커밋을 담고 있습니다 — 다시 쓰인 머지입니다"
+         GATE_LANDING_VERDICT='착지'; return 0
+       fi
+       GATE_LANDING_WHY=$(gate_landing_unlanded_why "$root" "refs/remotes/origin/$br" "$m")
+       GATE_LANDING_VERDICT='미착지'; return 0 ;;
+    *) GATE_LANDING_WHY="refs/remotes/origin/$br 에 대한 조상 검사가 답하지 못했습니다 (git rc=$rc)"
+       GATE_LANDING_VERDICT='판정 불가'; return 0 ;;
+  esac
+}
+
+gate_segment_review_head() {
+  # gate_segment_review_head <segment> — the `리뷰 HEAD` of that segment's LAST
+  # `cycle` row. Last and not first: a segment reviewed twice is answered by the
+  # review that happened most recently, which is the one the containment test is
+  # about.
+  local row
+  row=$( { gate_rows 'cycle' | grep -F "세그먼트=$1 " || true; } | tail -1)
+  [ -n "$row" ] || return 0
+  gate_row_field "$row" '리뷰 HEAD'
+}
+
+gate_obligation_covers() {
+  # gate_obligation_covers <대상 별칭> <머지 커밋> <리뷰 HEAD>
+  #
+  # Prints 덮는다 / 덮지 않는다 / 판정 불가 and leaves the sentence in
+  # `GATE_COVER_WHY`. The question is whether the review that closed this
+  # obligation actually looked at the commit that was merged — a review of the
+  # segment is not the same thing as a review of that commit.
+  local al="$1" m="$2" r="$3" root rc tm tr
+  GATE_COVER_VERDICT=""
+  GATE_COVER_WHY=""
+  # NO REVIEW AT ALL IS `덮지 않는다`, NOT `판정 불가`. The third value is for a
+  # question the world declined to answer — an unresolvable sha, a dead remote, a
+  # missing ref — and it is a refusal whose repair is "make the judgment possible
+  # and call again". The absence of a `cycle` row is not that: it is a complete,
+  # confident answer that no review covers this commit, and its repair is "record
+  # the review". Folding the two together sends the operator to look for a broken
+  # repository when what is missing is the review itself.
+  if [ -z "$r" ] || [ "$r" = "-" ]; then
+    GATE_COVER_WHY="이 세그먼트에 「리뷰 HEAD」를 실은 cycle 행이 없습니다"
+    GATE_COVER_VERDICT='덮지 않는다'; return 0
+  fi
+  root=$(alias_root "$al" 2>/dev/null) || root=""
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    GATE_COVER_WHY="대상 '$al' 의 앵커 저장소 루트를 해소하지 못했습니다"
+    GATE_COVER_VERDICT='판정 불가'; return 0
+  fi
+  # `--is-ancestor` answers the equal case with 0 as well, so "ancestor of, or the
+  # same as" is one test rather than two.
+  rc=0
+  ( cd "$root" && git merge-base --is-ancestor "$m" "$r" >/dev/null 2>&1 ) || rc=$?
+  case "$rc" in
+    0) GATE_COVER_WHY="리뷰 HEAD $r 가 머지 커밋을 담고 있습니다"
+       GATE_COVER_VERDICT='덮는다'; return 0 ;;
+    1) : ;;
+    *) GATE_COVER_WHY="리뷰 HEAD $r 에 대한 조상 검사가 답하지 못했습니다 (git rc=$rc)"
+       GATE_COVER_VERDICT='판정 불가'; return 0 ;;
+  esac
+  # The tree exception, on the same terms the freshness ladder already grants it.
+  # A rebase or an amend moves the commit id and leaves the reviewed bytes
+  # identical; refusing those would refuse reviews that did happen.
+  tm=$( { cd "$root" 2>/dev/null && git rev-parse "${m}^{tree}" 2>/dev/null; } || true)
+  tr=$( { cd "$root" 2>/dev/null && git rev-parse "${r}^{tree}" 2>/dev/null; } || true)
+  if [ -n "$tm" ] && [ "$tm" = "$tr" ]; then
+    GATE_COVER_WHY="리뷰 HEAD $r 의 트리가 머지 커밋의 트리와 같습니다 (리베이스·amend)"
+    GATE_COVER_VERDICT='덮는다'; return 0
+  fi
+  GATE_COVER_WHY="리뷰 HEAD $r 가 머지 커밋을 담지 않고 트리도 다릅니다"
+  GATE_COVER_VERDICT='덮지 않는다'; return 0
+}
+
 gate_issue_review_obligation() {
-  # gate_issue_review_obligation <segment> <cutpoint> <grade> <policy>
+  # gate_issue_review_obligation <segment> <cutpoint> <grade> <policy> <alias>
   #
   # `선머지후리뷰` does not REMOVE the review, it defers it — and a deferral with
   # no record is a removal that nobody wrote down. The row is what makes the
   # deferral survive the merge: termination condition 9 refuses to let the run
   # end while one is unfulfilled.
   #
-  # `생성 등급` is the axis-2 grade of the act that created the obligation,
-  # because that is the field the excusal rule reads later: an obligation made
-  # by an act at or below `워크트리 쓰기` may be excused when its segment parks,
-  # and one made above that may not.
-  local seg="$1" cut="$2" grade="$3" policy="$4" id
+  # `생성 등급` is the axis-2 grade of the act that created the obligation, and
+  # NOTHING IN THIS TREE READS IT ON THIS SERIES. The excusal rule reads a field
+  # of the same name on `problem` rows, which is a different series with a
+  # different writer, and this comment used to claim that reader as its own — so
+  # the field looked load-bearing and an implementer changing it would have
+  # searched for a consumer that does not exist. It is kept because the morning
+  # wants to know what kind of act deferred the review, not because a predicate
+  # is waiting on it.
+  #
+  # THE ALIAS ARRIVES AS AN ARGUMENT because there is nowhere else to get it: it
+  # is on neither the segment row nor this series, and only the calling scope
+  # knows which target the merge was authorized against. The row carries it as
+  # `대상` so the fulfilling side runs its landing test in THAT target's anchor
+  # repository rather than in the segment worktree — two directories the shape
+  # of this design invites collapsing into one.
+  #
+  # `머지 커밋` IS THE COMMIT BEING MERGED and not a commit the merge creates:
+  # the tip of the segment worktree at issue time. A `cycle` row's `리뷰 HEAD`
+  # lives in that same ref space, and the containment test between the two means
+  # nothing unless both name commits that exist before the merge does.
+  #
+  # THE DUPLICATE GUARD ASKS ABOUT STATE, NOT EXISTENCE. A fulfillment row
+  # carries the same `의무 id=`, so an existence test suppressed every issue
+  # after the first fulfillment — a segment's second merge then created no
+  # obligation at all, which is the hole this series exists to close. And the
+  # question is narrowed to THIS segment: asked run-wide, a sibling segment's
+  # open obligation suppresses this one's, trading a defect inside a segment for
+  # the guarantee between segments.
+  local seg="$1" cut="$2" grade="$3" policy="$4" alias="$5" id tip
   [ "$policy" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
-  id="RO-$(printf '%s|%s' "$RUN_ID" "$seg" | shasum -a 256 | cut -c1-8)"
-  gate_has_row '리뷰 의무' "의무 id=$id " && return 0
+  # THE ANCHOR IS RESOLVED BEFORE THE ID, because the id is keyed on it. The
+  # order is safe: this issuer runs only under `선머지후리뷰` at cutpoint `머지`,
+  # which is exactly the window in which the pre-issue anchor check has already
+  # run and refused an unreadable tip, so nothing new can fail here.
+  tip="${GATE_MERGE_ANCHOR:-}"
+  [ -n "$tip" ] || { tip=$(gate_segment_tip "$seg") || tip=""; }
+  if [ -z "$tip" ]; then
+    warn "세그먼트 '$seg' 의 팁을 읽지 못해 리뷰 의무를 발행할 수 없습니다"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  # The id is keyed on (run, segment, ANCHOR) and NOT on the review cycle: it is
+  # the key of a review SLOT, not of a cycle. Re-keying it per cycle would change
+  # what termination condition 9 counts.
+  #
+  # THE ANCHOR IS IN THE KEY BECAUSE (run, segment) ALONE COLLAPSES N MERGES INTO
+  # ONE DEBT. Under `끔` the ordering predicate does not run, so a second merge at
+  # a NEW tip reaches this issuer with the first tip's slot still open and the
+  # duplicate guard below returns without a row — the second merge leaves no
+  # trace at all. Fulfilling the one slot then closes on the first tip, which a
+  # review does cover, and everything between the two tips lands on the base
+  # branch reviewed by nobody with nothing in the ledger to say so. The reason
+  # cycle-keying was rejected does not carry over: an unreviewed second merge
+  # SHOULD raise the count condition 9 holds the run open on.
+  id="RO-$(printf '%s|%s|%s' "$RUN_ID" "$seg" "$tip" | shasum -a 256 | cut -c1-8)"
+  # Membership is decided over a VALUE rather than over a pipeline exit status:
+  # ids are `RO-` plus hex and carry no whitespace, so the word-splitting loop
+  # this file already uses for the same list reads them exactly.
+  local open_id
+  for open_id in $(gate_unfulfilled_review_obligations "$seg"); do
+    [ "$open_id" = "$id" ] && return 0
+  done
   gate_append '리뷰 의무' "의무 id=$id" "상태=미이행" "세그먼트=$seg" \
-    "머지 커밋=-" "생성 등급=$grade" "발행 시각=$(now_iso)" "이행 시각=-"
-  log "리뷰 의무 발행 $id — 세그먼트 $seg (선머지후리뷰)"
+    "대상=$alias" "머지 커밋=$tip" "생성 등급=$grade" \
+    "발행 시각=$(now_iso)" "이행 시각=-"
+  log "리뷰 의무 발행 $id — 세그먼트 $seg · 대상 $alias · 머지 커밋 $tip (선머지후리뷰)"
 }
 
 gate_run_readonly() {
@@ -7884,12 +9638,25 @@ gate_pending_approval_ids() {
 }
 
 gate_unfulfilled_review_obligations() {
-  local id st
+  # gate_unfulfilled_review_obligations [segment]
+  #
+  # With no argument this is the run-wide list that termination condition 9
+  # counts. With one it is narrowed to that segment, which is what the issuing
+  # guard and the order predicate need — asked run-wide, they would let a
+  # sibling segment's open obligation answer a question posed about this one,
+  # and the answer would be wrong in the permissive direction for the issuer and
+  # in the refusing direction for the predicate.
+  local want="${1:-}" id st row seg
   for id in $(gate_rows '리뷰 의무' | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    st=$( { gate_rows '리뷰 의무' | grep -F "의무 id=$id " || true; } | tail -1 \
-         | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    [ "$st" = "미이행" ] && printf '%s\n' "$id"
+    row=$( { gate_rows '리뷰 의무' | grep -F "의무 id=$id " || true; } | tail -1)
+    st=$(gate_row_field "$row" '상태')
+    [ "$st" = "미이행" ] || continue
+    if [ -n "$want" ]; then
+      seg=$(gate_row_field "$row" '세그먼트')
+      [ "$seg" = "$want" ] || continue
+    fi
+    printf '%s\n' "$id"
   done
   return 0
 }
@@ -7915,7 +9682,29 @@ gate_terminal_cap_ok() {
   for a in $(target_aliases); do
     cap=$(target_field "$a" '말단 행위 상한')
     case "$cap" in ''|없음) continue ;; esac
-    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -c '절단점=머지' || true)
+    # THE FIELD SEPARATOR IS PART OF THE PATTERN, and without it this counts every
+    # merge TWICE. The row now carries `유도 절단점=` beside `절단점=`, and an
+    # unanchored substring matches inside the longer key — so one merge whose argv
+    # derived `머지` would consume two of the target's terminal-act budget. Anchored
+    # to ` | `, `| 유도 절단점=머지 ` cannot match, because the text immediately
+    # before `절단점` there is `유도 ` and not `| `.
+    #
+    # `결정=(act|exec)` IS PART OF THE PATTERN FOR THE SECOND HALF OF THE SAME
+    # COUNTING ERROR. An act that FAILS writes a `결정=결과` row carrying the
+    # identical `절단점`, so one merge that could not reach its remote consumed
+    # TWO of the target's terminal budget — and the budget is spent by acts
+    # PERFORMED, under either verb `act` or `exec`, not by rows written about
+    # them. A succeeding merge writes no result row, which is why this never
+    # showed up until an argv that fails by construction (`gh pr merge` against
+    # a local bare remote) was counted. The refusal and void rows the
+    # propose-done path writes are excluded by the same token.
+    #
+    # BOTH VERBS, NOT ONE. The row above carries `결정=$verb`, and a stage session
+    # performs every merge it makes as `exec` — the hook forces that verb on all
+    # of its bash. Narrowed to `act` alone, a merge the stage pushed passed this
+    # count untouched and a run past its cap could still propose its own end.
+    n=$(gate_rows '자율 승인' | grep -F "대상=$a " | grep -E '\| 결정=(act|exec) \|' \
+          | grep -cF '| 절단점=머지 ' || true)
     [ "$n" -le "$cap" ] || return 1
   done
   return 0
@@ -8593,7 +10382,13 @@ gate_issue_boundary_approval() {
   [ "$(gate_approval_state "$id")" = "대기" ] && return 0
   gate_approval_sidecar_write "$id" issue '질문' "$q" \
     || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
+  # `유도 절단점=-` FOR THE SAME REASON THE ACT DIGEST IS `-`. A boundary has no
+  # act, so there is no argv to derive a rung from, and `경계` in the slot beside
+  # it is not a rung at all. Taking the ambient `GATE_ACT_DERIVED` would attach
+  # the argv of whatever act happened to trip the boundary to a row that is not
+  # about that act.
   gate_append '승인' "승인 id=$id" "상태=대기" "대상=-" "절단점=경계" \
+    "유도 절단점=-" \
     "행위 다이제스트=-" "구속 튜플=$name/$binding" "막는 세그먼트=-" \
     "질문 문면=$q" "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
     "발행 시각=$(now_iso)" "해소 시각=-"

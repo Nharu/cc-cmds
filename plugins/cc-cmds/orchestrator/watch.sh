@@ -378,11 +378,12 @@ pass() {
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
 
-  # THE RUN ENDED. Waiting for the `done` file would mean saying so almost
-  # never: measured across 39 run directories, 2 had one, because almost no run
-  # reaches the propose-done path. The shared state predicate derives the same
-  # conclusion from the ledger, and using it here is what keeps this line and
-  # the status line from disagreeing about whether a run is over.
+  # THE RUN ENDED. The `done` file is a SHORTCUT for that and not its
+  # definition: measured 2026-09-07, 99 of 202 run directories had one, so
+  # waiting for it would stay silent about the half of all runs that never reach
+  # the propose-done path. The shared state predicate derives the same conclusion
+  # from the ledger, and using it here is what keeps this line and the status
+  # line from disagreeing about whether a run is over.
   if [ "$(cc_run_state "$RUN_DIR" "$LEDGER" "$STALL")" = "종단" ] \
      && [ ! -f "$RUN_DIR/watch.announced-terminal" ]; then
     : > "$RUN_DIR/watch.announced-terminal"
