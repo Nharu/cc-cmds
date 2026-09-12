@@ -7861,23 +7861,43 @@ fi
 # fixture must not produce, arriving from the other side. Driving the loop to the
 # credit is what keeps the two causes separable, and reading the constant keeps
 # the loop pointed at the credit that ships rather than at the one that shipped.
+#
+# AND THE LOOP RUNS ONE PAST THE CREDIT, WHICH IS THE BOUNDARY'S EVALUATION
+# ORDER AND NOT SLACK IN THE FIXTURE. `gate_boundaries` is called upstream of the
+# `자율 승인` row for the very act that triggered it, so the k-th read-grade act
+# is adjudicated against a ledger holding k-1 reads. A loop of exactly
+# `B1_READ_CREDIT` acts therefore leaves the last evaluation one short of the
+# credit, the suppression holds, and the verdict below blames the open judgment
+# approval for a quiet B1 that the credit was silencing — the same
+# misattribution as the loop that was too short, one act further along. One more
+# act is what puts `nread` ON the credit, which is the saturation point the
+# design names. The counts and the last credit balance ride on the verdict
+# message so the endpoint is observable in the run rather than only argued here.
 B1_CREDIT_UNDER_TEST=$(sed -n 's/^readonly B1_READ_CREDIT=\([0-9][0-9]*\)$/\1/p' "$GATE")
 if [ -n "$B1_CREDIT_UNDER_TEST" ]; then
   ok "B1_READ_CREDIT 를 게이트 상수에서 읽는다 ($B1_CREDIT_UNDER_TEST)"
 else
   bad "B1_READ_CREDIT" "gate.sh 에서 readonly B1_READ_CREDIT=<n> 을 읽지 못했다"; B1_CREDIT_UNDER_TEST=8
 fi
+b1_at_credit=0
 i=0
-while [ "$i" -lt "$B1_CREDIT_UNDER_TEST" ]; do
+while [ "$i" -lt "$((B1_CREDIT_UNDER_TEST + 1))" ]; do
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
         --snapshot-digest "$(HN)" --rationale "정체 경계 확인" -- ls "$CONE_A"
   i=$((i + 1))
+  if [ "$i" = "$B1_CREDIT_UNDER_TEST" ]; then
+    b1_at_credit=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
+  fi
 done
 b1_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
+# `크레딧 잔량` is `B1_READ_CREDIT - nread` written at evaluation time, so the
+# last suppression row reports what the predicate actually counted on the act
+# that did not fire — the measurement the paragraph above rests on.
+b1_last_balance=$(row_field "$( { grep -F '`경계 억제`' "$LEDGER2" || true; } | tail -1)" '크레딧 잔량')
 if [ "${b1_after:-0}" -gt "${b1_before:-0}" ]; then
-  ok "판단 승인이 열려 있어도 정체 경계는 살아 있다 (B1~B3 이 밤새 꺼지지 않는다)"
+  ok "판단 승인이 열려 있어도 정체 경계는 살아 있다 (읽기 ${B1_CREDIT_UNDER_TEST}회 시점 발행 $((${b1_at_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--}, 한 번 더에서 발행 $((${b1_after:-0} - ${b1_before:-0}))건)"
 else
-  bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다"
+  bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다 (읽기 ${B1_CREDIT_UNDER_TEST}회 시점 발행 $((${b1_at_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--})"
 fi
 
 # ---------------------------------------------------------------------------
