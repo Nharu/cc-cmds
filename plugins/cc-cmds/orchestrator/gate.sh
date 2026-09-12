@@ -10175,6 +10175,43 @@ readonly B1_STAGNATION_N=3
 readonly B2_OBLIGATION_M=3
 readonly B3_ACT_BUDGET=40
 
+# THE BOUNDED SATURATING READ CREDIT. A shift the launcher starts is a fresh
+# print-mode process with no conversation history, so it MUST read before it can
+# declare a segment, and the minimum number of those reads is three — which is
+# exactly `B1_STAGNATION_N`. The healthy way to start a run was therefore the
+# boundary's own firing condition. What is wrong is not the sign of the vector's
+# read exclusion but that the allowance was all-or-nothing: zero or unbounded.
+#
+# THIS VALUE WAS CHOSEN AND NOT DERIVED, which is recorded because no
+# measurement picks it. Observed launch bursts are two to three; replaying the
+# corpus gives 90 firings at 3, 47 at 8 and 33 at 12, and launch-phase false
+# positives are zero at every value. So the credit does not buy the launch phase
+# — it sells sensitivity AFTER the launch — and 8 leaves headroom above the
+# observed burst without covering twelve consecutive reads in silence.
+readonly B1_READ_CREDIT=8
+
+gate_boundary_binding() {
+  # gate_boundary_binding <B1|B2|B3|B4> — the value that boundary's own
+  # predicate decides on.
+  #
+  # ONE DEFINITION BECAUSE TWO READERS MUST AGREE. The predicates salt their
+  # approval ids with this value and the withdrawal below compares a value
+  # stored in a row against the current one; two copies of the expression let
+  # the comparison answer "it moved" for a value that had not, and the
+  # withdrawal would then discard a live question.
+  #
+  # B4 HAS NO BINDING OF ITS OWN YET — it holds one integer percentage and one
+  # threshold, and a bucket tier would need a width no observation can validate
+  # against a boundary that has never fired. It passes the progress digest until
+  # a width is decided, so its shape is its siblings' and its value is today's.
+  case "$1" in
+    B1|B4) gate_progress_digest ;;
+    B2)    gate_open_obligations | sort | shasum -a 256 | cut -d' ' -f1 ;;
+    B3)    gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1 ;;
+    *)     return 1 ;;
+  esac
+}
+
 gate_boundaries() {
   # `act` AND NOT EVERY APPROVAL. This helper gained a narrowing argument and
   # three of its four call sites got one; this was the fourth, so `want` was
@@ -10190,8 +10227,25 @@ gate_boundaries() {
   # the 40-act budget until the wall-clock deadline. The reason recorded for the
   # suspension ("waiting, not stalled") is false for this class specifically,
   # because the design promises the run keeps going alongside the question.
-  local pending
-  pending=$(gate_pending_approval_ids act | gate_count)
+  local pending ids
+  # WITHDRAWAL IS ACCOUNTED FOR BEFORE THE SUSPENSION IS COUNTED, and the order
+  # is the point. An open boundary approval suspends B1..B3, so an approval whose
+  # condition has already gone away goes on suspending them until a person closes
+  # a question that is no longer about anything. Counting first would defer every
+  # withdrawal by one evaluation, and on a run with one stale approval and nothing
+  # else open it would defer it for the rest of the night.
+  #
+  # THE PENDING LIST IS ENUMERATED ONCE ON THE COMMON PATH. `gate_pending_approval_ids`
+  # greps the whole ledger per approval id, so this runs on every gate call of the
+  # night against a ledger that only grows; re-enumerating unconditionally would
+  # pay that cost twice for the overwhelmingly common case of nothing being open.
+  # The second enumeration happens only when a withdrawal actually landed, which
+  # is the one case where the first answer has gone stale.
+  ids=$(gate_pending_approval_ids act)
+  if gate_withdraw_stale_boundaries "$ids"; then
+    ids=$(gate_pending_approval_ids act)
+  fi
+  pending=$(printf '%s\n' "$ids" | gate_count)
 
   if [ "$pending" = "0" ]; then
     gate_b1_stagnation
@@ -10200,6 +10254,52 @@ gate_boundaries() {
   fi
   # B4 stays live even while waiting: cost can still climb.
   gate_b4_cost
+}
+
+gate_b1_read_run() {
+  # The number of `결정=exec` authorisations since the last row that moved the
+  # progress vector — or `-1` when that stretch holds one which is not a read.
+  #
+  # THE CREDIT IS A SUPPRESSION AND NOT A VECTOR COMPONENT, and the placement is
+  # the decision rather than an implementation detail. A component would leak
+  # into `gate_b3_act_budget`'s window key — the vector with `acts=` removed —
+  # and into `--snapshot-digest`, so a counter that saturates would move two
+  # values it has no business moving, and the second of those is what makes a
+  # snapshot reproducible. Here the vector does not change by one byte.
+  #
+  # THE MOVING ROWS ARE ENUMERATED TO MATCH `gate_progress_vector` ABOVE: a
+  # `segment` or `cycle` row, a settled `종료 절`, a `stage-result` whose
+  # `종단 부류` is `정상 완료`, a `blocked` whose `원인` is `해소`, and an `exec`
+  # authorisation graded above `읽기`.
+  #
+  # THE READ TEST IS THE VECTOR'S OWN TWO-STEP SELECTION, in the same order: the
+  # grade must be PRESENT and must not be `읽기`. That matters because it leaves
+  # a third case — a row carrying no `축2=` at all — which is neither progress
+  # nor a read, and it is why this returns `-1` rather than a count. A stretch of
+  # unknown-grade acts is not a reconnaissance burst, and forgiving it would let
+  # the boundary be silenced by rows that say nothing about what was done.
+  #
+  # `LC_ALL=C` for the reason the `stage-normal` pass pins it: `index` is then a
+  # byte operation on both the BWK awk this ships on and a runner's gawk, so the
+  # two hosts agree on where a field starts.
+  { grep '^- `' "$LEDGER" 2>/dev/null || true; } | LC_ALL=C awk '
+      BEGIN { n = 0; pure = 1 }
+      {
+        if (index($0, "- `segment`") == 1 || index($0, "- `cycle`") == 1 \
+            || index($0, "- `종료 절`") == 1) { n = 0; pure = 1; next }
+        if (index($0, "- `stage-result`") == 1) {
+          if (index($0, " | 종단 부류=정상 완료 |") > 0) { n = 0; pure = 1 }
+          next }
+        if (index($0, "- `blocked`") == 1) {
+          if (index($0, " | 원인=해소 |") > 0) { n = 0; pure = 1 }
+          next }
+        if (index($0, "- `자율 승인`") == 1) {
+          if (index($0, "결정=exec") == 0) next
+          if (index($0, "축2=") == 0) { n = n + 1; pure = 0; next }
+          if (index($0, "축2=읽기") > 0) { n = n + 1; next }
+          n = 0; pure = 1; next }
+      }
+      END { if (pure) printf "%d", n; else printf "%d", -1 }'
 }
 
 gate_b1_stagnation() {
@@ -10218,11 +10318,11 @@ gate_b1_stagnation() {
   # This is a suppression rather than a reset: the counter is left alone so that
   # a run which really does stop after its stages end still reaches the
   # threshold on the following judgements.
-  local h prev n
+  local h prev n nread
   if [ "$(gate_live_stages)" != "0" ]; then
     return 0
   fi
-  h=$(gate_progress_digest)
+  h=$(gate_boundary_binding B1)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/progress-repeat" 2>/dev/null || printf '0')
   if [ "$h" = "$prev" ]; then
@@ -10238,6 +10338,44 @@ gate_b1_stagnation() {
   # it inside its own input is the original defect: raising it 0→1 changed the
   # hash and reset the very count being raised.
   [ "$n" -lt "$B1_STAGNATION_N" ] && return 0
+  # ---- the bounded saturating read credit.
+  #
+  # A stretch of reconnaissance reads is forgiven while it is short. On the
+  # cleanest real case a shift was launched, read twice, made one judgment, and
+  # B1 fired 1 minute 48 seconds later — before the first non-read act and three
+  # rows ahead of its own `segment` row. Across the corpus B1 was behaving as a
+  # read-burst detector rather than a stagnation detector: in 58% of its firings
+  # the row that moved the vector sat within two rows of the approval it had just
+  # opened.
+  #
+  # AN EMPTY STRETCH IS NOT FORGIVEN. Nothing has been read since the last
+  # progress move, so there is no burst to excuse — and a router spinning on
+  # judgments alone is precisely the run this boundary exists for. Reading "made
+  # of reads" as vacuously true of the empty stretch would silence B1 on it.
+  #
+  # A NEGATIVE RUN IS NOT FORGIVEN EITHER: `-1` says the stretch holds an act
+  # whose surface grade nobody established, which is not a read.
+  #
+  # THE CREDIT HAS NO KEY AND WRITES NO STATE. Every key variant measured
+  # identically to a plain count because the credit SATURATES at `C`, and the
+  # variants built from existing fields measured worst — `세그먼트` and `절단점`
+  # barely move inside a burst, so two thirds of the credit never gets issued.
+  # The stretch is re-derived from the ledger here instead, which costs zero
+  # bytes in the run directory.
+  nread=$(gate_b1_read_run)
+  if [ "$nread" -ge 1 ] && [ "$nread" -lt "$B1_READ_CREDIT" ]; then
+    # THE TRACE GOES TO ITS OWN SERIES. `blocked` is read by B2, so writing there
+    # would let this suppression move another boundary's input; and a suppression
+    # that is frequent and silent is the one thing this boundary must not become.
+    # The property the series name carries is that NO boundary reads it.
+    gate_append '경계 억제' "경계=B1" "사유=읽기 크레딧" \
+      "크레딧 잔량=$((B1_READ_CREDIT - nread))" "기록 시각=$(now_iso)"
+    # A suppression, not a reset: `progress-repeat` is left alone, so a run that
+    # really does stop once the reading ends still reaches the threshold on the
+    # judgments that follow. This is the shape the live-stage suppression above
+    # already uses.
+    return 0
+  fi
   # Bound to the digest this predicate just compared — the value that, by
   # construction, has not moved for `n` judgments.
   gate_issue_boundary_approval B1 "진전 해시가 연속 ${n}회 판정 동안 불변입니다" "$h"
@@ -10250,7 +10388,7 @@ gate_b2_obligations() {
   # the element stays put. Progress means `|O|` genuinely fell, or an element
   # left and no element of the same identity came back.
   local cur prev n
-  cur=$(gate_open_obligations | sort | shasum -a 256 | cut -d' ' -f1)
+  cur=$(gate_boundary_binding B2)
   prev=$(cat "$RUN_DIR/obligation-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/obligation-repeat" 2>/dev/null || printf '0')
   if [ "$cur" = "$prev" ]; then n=$((n + 1)); else n=0; fi
@@ -10312,7 +10450,7 @@ gate_b3_act_budget() {
   # directory to avoid. Spending budget is not the kind of progress that should
   # open a new window — if it were, no amount of spending could ever exhaust
   # one — so the key is the vector with that line removed.
-  h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
+  h=$(gate_boundary_binding B3)
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it
@@ -10346,7 +10484,166 @@ gate_b4_cost() {
   # shape changes with its siblings — the caller passes the value — and the
   # value stays today's progress digest until a width is decided. When it is,
   # this one argument changes and nothing else does.
-  gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})" "$(gate_progress_digest)"
+  gate_issue_boundary_approval B4 "비용이 선언 천장의 ${pct}%% 입니다 (${spent}/${declared})" "$(gate_boundary_binding B4)"
+}
+
+gate_dismissal_observed() {
+  # 0 when this run's transcript lineage holds an `is_error` `tool_result` whose
+  # content carries the harness's dialog-dismissal text.
+  #
+  # NOTHING IS STORED, AND THAT IS WHY THIS CARRIER WAS CHOSEN. "A dismissal was
+  # seen" has to reach the withdrawal, which fires at a separate moment, and
+  # there were three candidate carriers: a new ledger series, a marker in the run
+  # directory, and a predicate that re-reads the transcript when asked. A new
+  # series would have to be READ by the withdrawal — and the series this slice
+  # adds is one whose whole load-bearing property is that no boundary reads it,
+  # so the two could not be the same series and an eighteenth is out of scope. A
+  # run-directory marker has no defined lifetime across a shift and no way to be
+  # adjudicated against the transcript when the two disagree. A predicate that
+  # stores nothing cannot disagree with the transcript.
+  #
+  # THE WINDOW IS THIS RUN'S LINEAGE, WHICH IS WIDER THAN "THIS CYCLE" ON
+  # PURPOSE. The cycle boundary is undefined, and the sibling rule — an answer
+  # frame refuses the withdrawal — already measures existence over THIS RUN
+  # rather than over a cycle or the whole transcript directory. The two rules are
+  # two faces of one question, whether a person was there, so a window split
+  # between them would leave the same evidence visible to one and invisible to
+  # the other. Wider means the withdrawal is refused more often, which is the
+  # side away from the failure it exists to prevent: discarding an answer
+  # somebody is in the middle of giving.
+  #
+  # THE TEXT AND THE ERROR FLAG ARE READ OFF THE SAME BLOCK, not merely the same
+  # line. A line-level conjunction would also match the router quoting the string
+  # into its own output, and while that error is in the refusing direction it
+  # would make the predicate true for the rest of the run once quoted.
+  local f line hit
+  for f in $(gate_transcript_files || true); do
+    [ -f "$f" ] || continue
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      hit=$(printf '%s' "$line" | jq -r --arg t "$GATE_DISMISSAL_TEXT" '
+        [ .message.content[]? | select(type == "object" and .type == "tool_result")
+          | select(.is_error == true)
+          | select((.content | tostring) | contains($t)) ] | length' 2>/dev/null || printf '0')
+      [ "${hit:-0}" != "0" ] && return 0
+    done <<EOF
+$( { grep -F "$GATE_DISMISSAL_TEXT" "$f" 2>/dev/null || true; } )
+EOF
+  done
+  return 1
+}
+
+gate_withdraw_boundary_approval() {
+  # gate_withdraw_boundary_approval <승인 id> <사유> — move an OPEN boundary
+  # approval to `철회` because the condition that raised it went away.
+  #
+  # THE STATE IS `철회` AND NOT `만료`, AND THERE IS NO CLOCK. A clock makes this
+  # a timeout, and a timeout discards a question that is still true. The trigger
+  # is the disappearance of the raising condition, and the caller names which
+  # condition in `사유=` rather than leaving a reader to infer it.
+  #
+  # THE ROUTER HAS NO SURFACE ONTO THIS. It is reached from the boundary
+  # evaluation and from nowhere else, and `gate_main` gains no verb for it. The
+  # foundation this design rests on is that the router cannot type an answer, and
+  # a router-callable withdrawal would route around that foundation with one new
+  # verb rather than break it head-on. Rules (2) and (3) below do not close that
+  # path — they are about evidence, not about who is calling — so it is closed
+  # structurally instead.
+  #
+  # TWO REFUSALS, BOTH ASKING THE SAME QUESTION: WAS A PERSON THERE?
+  #   (2) an answer frame exists for this id — somebody answered, and withdrawing
+  #       would throw their answer away
+  #   (3) a dialog dismissal was observed — somebody was at the screen and closed
+  #       the dialog without choosing, which is evidence of presence exactly as
+  #       an answer is
+  # AN INTERRUPT AND AN `is_error` OF UNOBSERVED CAUSE ARE NOT EVIDENCE OF
+  # PRESENCE and do not refuse. Folding those into the dismissal case is the
+  # distinction `gate_close` keeps two separate warnings for, and collapsing the
+  # three into two is what would make rule (3) unfalsifiable.
+  local id="$1" reason="$2" st
+  st=$(gate_approval_state "$id")
+  [ "$st" = "대기" ] || return 0
+  gate_frame_candidate "$id" || true
+  if [ "$GATE_FRAME_KIND" = "answers" ]; then
+    warn "승인 $id 의 철회를 거부합니다 — 이 런에 답 프레임이 있습니다 (사람이 답한 승인은 조건 소멸로 걷지 않습니다)"
+    return 0
+  fi
+  if gate_dismissal_observed; then
+    warn "승인 $id 의 철회를 거부합니다 — 이 런에 다이얼로그 취소가 관측됐습니다 (사람이 화면에 있었다는 증거입니다)"
+    return 0
+  fi
+  # No `응답 토큰` and no `답변 다이제스트`: rule (2) has just established that no
+  # answer frame exists, so a `-` in either slot would be a value recorded with
+  # nothing to compare it against — the defect class this contract removes.
+  gate_append '승인' "승인 id=$id" "상태=철회" \
+    "질문 문면=$(gate_approval_field "$id" '질문 문면')" \
+    "답변 문면=-" "사유=$(gate_row_safe "$reason" "$GATE_REASON_EXCERPT")" \
+    "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "해소 시각=$(now_iso)"
+  # A withdrawn approval is equally done being waited on, so the seat goes back
+  # and the banner comes off. `gate_close` does the same at each of its terminals.
+  gate_close_settle "$id"
+  log "승인 철회 — $id ($reason)"
+}
+
+gate_withdraw_stale_boundaries() {
+  # Every OPEN boundary approval whose binding value has moved: the question it
+  # asked is about a condition that no longer holds.
+  #
+  # THE BINDING VALUE IN THE ROW IS WHAT MAKES THIS POSSIBLE WITH NO NEW STORAGE.
+  # Each boundary approval carries `구속 튜플=<경계 이름>/<결속값>`, and that value
+  # is the one the boundary's own predicate decided on — so re-deriving it now
+  # through the shared helper and comparing is the whole test.
+  #
+  # ONLY B1..B4. The launcher's floor approval shares this series and this id
+  # shape, but its raising condition is a context measurement rather than a
+  # boundary predicate, so there is no binding to re-derive for it and it is left
+  # alone rather than withdrawn on a value this function would have to invent.
+  #
+  # AN UNREADABLE OR ABSENT TUPLE IS NOT A MOVED CONDITION. Skipping is the
+  # refusing direction: the approval stays open and a person still sees it.
+  #
+  # gate_withdraw_stale_boundaries <pending ids> — 0 when at least one approval
+  # was actually withdrawn, so the caller knows whether its list went stale. The
+  # ids are passed in rather than re-derived: the caller has just enumerated them
+  # and that enumeration walks the whole ledger once per id.
+  # The argument is optional so the predicate can also be driven on its own; an
+  # ABSENT argument enumerates, an EMPTY one means "the caller looked and found
+  # none". Collapsing those two would make the caller's empty answer trigger a
+  # second walk of the ledger, which is the cost this argument exists to avoid.
+  local ids id name binding cur did=1
+  if [ "$#" -ge 1 ]; then ids="$1"; else ids=$(gate_pending_approval_ids act); fi
+  for id in $ids; do
+    case "$id" in
+      B1-*|B2-*|B3-*|B4-*) ;;
+      *) continue ;;
+    esac
+    name="${id%%-*}"
+    binding=$(gate_approval_field "$id" '구속 튜플')
+    case "$binding" in "$name"/*) binding="${binding#"$name"/}" ;; *) continue ;; esac
+    [ -n "$binding" ] || continue
+    cur=$(gate_boundary_binding "$name") || continue
+    [ -n "$cur" ] || continue
+    [ "$cur" = "$binding" ] && continue
+    gate_withdraw_boundary_approval "$id" "$(gate_boundary_withdraw_reason "$name")"
+    # The withdrawal can REFUSE — rules (2) and (3) — so whether the caller's list
+    # went stale is read off the state rather than assumed from having called.
+    [ "$(gate_approval_state "$id")" = "철회" ] && did=0
+  done
+  return "$did"
+}
+
+gate_boundary_withdraw_reason() {
+  # The named condition whose disappearance withdrew a boundary approval. Named
+  # per boundary rather than left to one generic string: `사유` is the only field
+  # on a `철회` row that says WHY, and "조건 소멸" repeated four times would make
+  # the field as uninformative as the clock this state replaced.
+  case "$1" in
+    B1) printf '진전 재개' ;;
+    B2) printf '의무 집합 변동' ;;
+    B3) printf '창 키 이동' ;;
+    B4) printf '비용 비율 변동' ;;
+    *)  printf '조건 소멸' ;;
+  esac
 }
 
 gate_issue_boundary_approval() {
