@@ -66,6 +66,28 @@ header: "안전 한계"                            # 5 codepoints; full meaning 
 question: "외부 이터레이션 안전 한계(5회)에 도달했습니다. 계속 진행하시겠습니까?"
 ```
 
+## Gate-issued approval questions
+
+When the pipeline gate has issued an approval (`gate.sh` exit 5) the question is **not authored by the caller**. The router runs `gate.sh prompt --manifest <m> --approval <id>` and renders its output:
+
+- `question` **must be the gate's canonical prompt verbatim** — it reads `승인 <id> — <질문 문면>` and the id inside it is what lets `gate.sh close` find the answer frame again. Do not rephrase, reorder, or drop the id; the gate finds the id anywhere inside the question text, but the prompt it emits is the form to carry.
+- For a `절단점=판단` approval, `options[]` **must be the gate's label table verbatim** — `승인` · `거부` · `무효`, each with the `description` the `prompt` output supplies. Do not add an option, do not reword a label, and do not add a manual "Other" (the auto-provided one is the free-input path).
+- The recommendation suffix rule above still applies and is the **only** decoration allowed: at most one label, at position 1, with ` ← 추천` or ` ← 에이전트 추천` appended. **The gate compares labels and answers in NORMAL FORM** — the label with everything from its last ` ← ` onward removed — so `승인 ← 추천` on the menu and in the person's answer both compare equal to the gate's `승인`. Any other decoration makes the menu fail the gate's comparison and `close` refuses with exit 3.
+- Act and boundary approvals have no menu (`options` is empty in the `prompt` output): ask them with the canonical `question` and a plain yes/no pair of your own; the gate reads the frame, and the closer's flag is the disposition.
+
+```
+# VALID — a judgment approval rendered from `gate.sh prompt`
+question: "승인 J-867db2b3 — 이 발견을 이번 사이클에서 채택할지 — 리뷰가 P1 로 올렸고 되돌리는 법이 있다"
+header: "승인"
+options:
+  - label: "승인 ← 추천"
+    description: "이 판단을 채택합니다 — 게이트가 승인 행을 쓰고 런이 그 답으로 이어갑니다"
+  - label: "거부"
+    description: "물었고 답은 아니오입니다 — 이 판단은 채택되지 않습니다"
+  - label: "무효"
+    description: "애초에 물어서는 안 됐던 질문입니다 — 행위 없이 승인만 닫습니다"
+```
+
 ## Pre-call Checklist
 
 Before every AUQ call, confirm:

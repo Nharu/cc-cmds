@@ -20,6 +20,9 @@ lint:
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-approval-state-vocabulary.sh
+	bash scripts/lint-sidecar-field-table.sh
+	bash scripts/lint-approval-answer-provenance.sh
 	bash scripts/lint-reap-retention.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
@@ -89,6 +92,9 @@ LINT_TESTS := \
 	scripts/test-lint-notify-fire-sites.sh \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-approval-state-vocabulary.sh \
+	scripts/test-lint-sidecar-field-table.sh \
+	scripts/test-lint-approval-answer-provenance.sh \
 	scripts/test-lint-reap-retention.sh \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-measure-team-cost.sh \
