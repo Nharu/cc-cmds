@@ -52,10 +52,10 @@ jobs:
     # cause was fixed: `ab41653` rewrote the portability lint from two processes
     # per line per idiom to two per file, taking a whole-tree run from 7m20.990s
     # to 0.498s, and that commit names itself as what had been pushing this leg
-    # into the 25-minute ceiling. The lint step now measures 1m17s to 3m35s
-    # across this leg's eight most recent runs — low single-digit percent of the
-    # budget. The 12m41s recorded further down is from before that rewrite, and
-    # is left there as the history it is.
+    # into the 25-minute ceiling. Since that rewrite every run of this leg has
+    # measured its lint step between one and four minutes — low single-digit
+    # percent of the budget. The 12m41s recorded further down is from before
+    # that rewrite, and is left there as the history it is.
     # The ceiling is now 150, and the number was raised four times to get there.
     # The history is kept because each step measured something the next one
     # needed.
@@ -77,10 +77,12 @@ jobs:
     #
     # At 90 it was cancelled a fourth time, and the reading that followed moved
     # the cause off the lint step for good. The whole test step is effectively
-    # ONE SCRIPT: `make -j` starts 16 suites, 15 of them finish inside the first
-    # four minutes, and `scripts/test-gate.sh` then runs ALONE for 76 of that
-    # step's 79 minutes. Those three hold in both completed runs of this leg. The parallelism is already saturated, so this ceiling
-    # buys time for one script's serial stretch and nothing else.
+    # ONE SCRIPT: in the two runs profiled in #764, `make -j` starts 16 suites,
+    # 15 of them finish inside the first four minutes, and `scripts/test-gate.sh`
+    # then runs ALONE for 76 of that step's 79 minutes. The parallelism is
+    # already saturated, so this ceiling buys time for one script's serial
+    # stretch and nothing else. The step itself is not a fixed size: across the
+    # runs of this leg that finished it has ranged from 69m25s to 87m03s.
     #
     # The measurements behind that — and the earlier claim on this block that
     # the cost grows with ledger size, which does not hold — are in issue #764,
@@ -89,9 +91,13 @@ jobs:
     # into a workflow comment has no occasion to be re-checked, and this block
     # went on carrying its stale one past the very commit that invalidated it.
     #
-    # 150 is sized against a COMPLETED job of 82m05s. The 90 ceiling was hit at
-    # 86m30s, and that figure is a cancellation point rather than a duration —
-    # that run never finished, so its true cost is unknown and larger.
+    # 150 is sized against the top of that range rather than against one run.
+    # The 90 ceiling was hit at 86m30s, and that figure is a cancellation point
+    # rather than a duration — that run never finished, so its true cost is
+    # unknown and larger. The run that did finish highest, on master, took
+    # 89m29s for the job against the 90 it was given: THIRTY-ONE SECONDS of
+    # margin, which is the same shape as the twenty-two seconds recorded above
+    # at the 25 ceiling, and that one was followed by a cancellation.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
