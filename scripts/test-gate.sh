@@ -5980,9 +5980,13 @@ B7_IDX="$BSESS/sess-b7"
 fx_session_index sess-b7 RV-B7-1 RV-B7-2
 B7_LOG="$WORK/b7-appended.txt"
 : > "$B7_LOG"
-# 게이트의 append 관용구를 축자로 쓴다 — 락 없는 `grep -qxF … || printf … >>`.
-# 다른 관용구로 쓰면 이 케이스는 게이트가 실제로 하는 일이 아니라 이 파일이
-# 상상한 일을 시험한다.
+# 게이트의 append 관용구를 축자로 쓴다 — 인덱스 락을 잡고, 스무 번 안에 못
+# 잡으면 이번 append 를 건너뛴다. 다른 관용구로 쓰면 이 케이스는 게이트가 실제로
+# 하는 일이 아니라 이 파일이 상상한 일을 시험한다.
+#
+# 건너뛴 것은 `$B7_LOG` 에 적지 않는다. 이 로그가 뜻하는 것은 「쓰려고 했다」가
+# 아니라 「실제로 인덱스에 들어갔다」이고, 아래 단언이 세는 것이 바로 그것이기
+# 때문이다. 건너뛴 것까지 적으면 게이트가 스스로 포기한 쓰기를 유실로 세게 된다.
 (
   i=1
   while [ "$i" -le 60 ]; do
@@ -5992,8 +5996,17 @@ B7_LOG="$WORK/b7-appended.txt"
     # precisely what the prune exists to remove, so a fixture that skips this
     # watches the prune do its job and calls the result a lost append.
     mkdir -p "$BRUNS/B7X-$i" 2>/dev/null || true
-    grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
-    printf '%s\n' "B7X-$i" >> "$B7_LOG"
+    b7w=0
+    while ! mkdir "$B7_IDX.lock" 2>/dev/null; do
+      b7w=$((b7w + 1))
+      [ "$b7w" -gt 20 ] && break
+      sleep 0.05
+    done
+    if [ "$b7w" -le 20 ]; then
+      grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
+      printf '%s\n' "B7X-$i" >> "$B7_LOG"
+      rmdir "$B7_IDX.lock" 2>/dev/null || true
+    fi
     i=$((i + 1))
     sleep 0.05
   done
@@ -6009,6 +6022,15 @@ while IFS= read -r b7id; do
   grep -qxF "$b7id" "$B7_IDX" 2>/dev/null || b7_missing=$((b7_missing + 1))
 done < "$B7_LOG"
 check "B7 동시 append 가 하나도 유실되지 않는다" "$b7_missing" "0"
+# 공허한 통과를 막는다. writer 가 락을 한 번도 못 잡으면 `$B7_LOG` 가 비고 위
+# 단언은 셀 것이 없어 통과한다 — 유실이 없어서가 아니라 쓴 것이 없어서다.
+b7_written=$(grep -c . "$B7_LOG" 2>/dev/null || true)
+[ -n "$b7_written" ] || b7_written=0
+if [ "$b7_written" -gt 0 ]; then
+  ok "B7 writer 가 실제로 인덱스에 썼다 (위 단언이 공허하지 않다): $b7_written 건"
+else
+  bad "B7 공허성" "writer 가 락을 한 번도 잡지 못해 아무것도 쓰지 않았다"
+fi
 # 스플라이스는 개수가 아니라 모양으로 드러난다.
 n=$(grep -cvE '^[A-Za-z0-9._-]+$' "$B7_IDX" 2>/dev/null || true)
 check "B7 남은 줄이 전부 잘리지 않은 온전한 id 다" "$n" "0"
@@ -6020,6 +6042,34 @@ b_trigger RB7b
 n=$(( $(grep -cxF 'RV-B7-1' "$B7_IDX" 2>/dev/null || true) \
     + $(grep -cxF 'RV-B7-2' "$B7_IDX" 2>/dev/null || true) ))
 check "B7 경합 없는 후속 패스가 회수 대상 항목을 지운다" "$n" "0"
+
+# --- B7L — 인덱스 락이 실제로 스왑을 막는다 (결정적) -------------------------
+#
+# 위의 B7 은 경쟁이 실제로 일어나기를 기다리는 확률적 케이스라, 통과해도 락이
+# 걸렸는지 창이 우연히 안 열렸는지 구별하지 못한다. 아래 둘은 락을 손으로 잡아
+# 그 구별을 결정적으로 만든다.
+b_victim RV-B7L "$BAGE_OLD" 종단
+B7L_IDX="$BSESS/sess-b7l"
+fx_session_index sess-b7l RV-B7L
+# 다른 행위자가 락을 들고 있는 동안에는 프룬이 이 파일을 포기한다. 포기는
+# 실패가 아니다 — 기준이 디스크에서 다시 유도되므로 다음 사이클이 같은 판단을
+# 처음부터 내린다.
+mkdir "$B7L_IDX.lock" 2>/dev/null || true
+b_trigger RB7L
+check "B7L 락이 잡혀 있으면 프룬이 그 인덱스를 건드리지 않는다" \
+  "$(grep -cxF 'RV-B7L' "$B7L_IDX" 2>/dev/null || true)" "1"
+check "B7L 그 사이 임시 파일을 남기지 않는다" \
+  "$(find "$BSESS" -name 'sess-b7l.reap-tmp.*' 2>/dev/null | grep -c . || true)" "0"
+# 락을 놓아 주면 다음 패스가 같은 항목을 지운다. 이것이 「이번 사이클 포기」와
+# 「영구 정체」를 가르는 자리이며, 락이 그 성질을 바꾸지 않았음을 고정한다.
+rmdir "$B7L_IDX.lock" 2>/dev/null || true
+b_trigger RB7Lb
+check "B7L 락을 놓으면 다음 패스가 그 항목을 지운다" \
+  "$(b_exists "$B7L_IDX")" "no"
+# 그리고 프룬은 자기가 잡은 락을 반드시 놓는다. 놓지 않으면 위 단언은 통과하되
+# 이후 모든 사이클이 영구히 포기하게 되고, 그 정체는 아무 데도 보고되지 않는다.
+check "B7L 프룬이 끝나며 락 디렉터리를 남기지 않는다" \
+  "$(find "$BSESS" -type d -name '*.lock' 2>/dev/null | grep -c . || true)" "0"
 
 # 대조군 — 순진한 read-modify-write. 이 케이스가 공회전으로 통과할 수 없게 한다:
 # 같은 관용구·같은 부하에서 순진한 방식이 유실을 내야, 위의 0 이 「경합이

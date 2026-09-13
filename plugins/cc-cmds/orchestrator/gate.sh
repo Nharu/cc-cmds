@@ -2923,6 +2923,47 @@ gate_reap_sweep() {
   return 0
 }
 
+gate_index_lock() {
+  # gate_index_lock <index-file> — a mutex over ONE forward session index file,
+  # held by the appender and by the prune's swap. Returns 0 when held, 1 when
+  # the caller must go without it.
+  #
+  # WHY A LOCK AT ALL, when the append side spent a paragraph explaining that it
+  # does not take one. The two sides had written down contracts that cannot both
+  # be true: the appender said a lost id SELF-HEALS on the session's next gate
+  # entry and left the hazard to the prune, while the prune said a lost append
+  # is the one failure it is not allowed to have. Its compare-and-swap cannot
+  # deliver that — the (size, mtime) pair is re-read BEFORE the `mv`, so an
+  # append landing between the comparison and the rename is overwritten by a
+  # swap that already decided nothing had moved. Check-then-act with another
+  # writer in the gap is not a guarantee, it is a narrow window, and the window
+  # was observed closing on a CI runner with nothing else competing for the
+  # disk.
+  #
+  # `mkdir` because it is atomic on every filesystem this runs on and needs no
+  # external tool, the same reason the settings mutex uses it. The lock is PER
+  # INDEX FILE, not over the directory: two sessions appending to their own
+  # indexes have no reason to wait on each other, and the prune walks files one
+  # at a time anyway.
+  #
+  # THE BUDGET IS DELIBERATELY SHORT. The appender runs on every gate entry —
+  # over 875 times in the busiest run measured — so the thing that must not
+  # happen is a gate entry stalling behind a reaper. Twenty tries at 50ms caps
+  # the wait at one second, and a caller that times out is expected to skip its
+  # write rather than force it: that is exactly the self-healing the append side
+  # already documented, and it is now the ONLY path that skips, instead of being
+  # a property invoked to excuse a race.
+  local lockdir="$1.lock" waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    waited=$(( waited + 1 ))
+    [ "$waited" -gt 20 ] && return 1
+    sleep 0.05
+  done
+  return 0
+}
+
+gate_index_unlock() { rmdir "$1.lock" 2>/dev/null || true; }
+
 gate_reap_prune_index() {
   # gate_reap_prune_index <root> <pair-file> — drops from the forward session
   # index every entry whose run directory is gone, and appends one
@@ -2974,6 +3015,14 @@ gate_reap_prune_index() {
       [ -d "$root/run/$line" ] || { dropped="있음"; break; }
     done < "$f"
     [ -n "$dropped" ] || continue
+    # THE SWAP RUNS UNDER THE INDEX LOCK, and everything from the stamp to the
+    # rename is inside it. Without the lock the comparison below is a
+    # check-then-act: it is re-read before the `mv`, so an append arriving in
+    # the gap between them is silently overwritten by a rename that has already
+    # decided the file did not move. Failing to take the lock means giving this
+    # file up for this cycle, which costs nothing — the criterion is re-derived
+    # from disk next cycle, and an unpruned entry is one the reader skips.
+    gate_index_lock "$f" || continue
     # THE STAMP IS TAKEN BEFORE THE READ IT GUARDS, and that order is the whole
     # of what makes the comparison below mean anything. Reading first and
     # stamping afterwards leaves a window — from the last line read to the
@@ -2995,25 +3044,38 @@ gate_reap_prune_index() {
 "
       fi
     done < "$f"
-    [ -n "$dropped" ] || continue
+    [ -n "$dropped" ] || { gate_index_unlock "$f"; continue; }
     # The temp file is in the SAME directory, so the swap is one `rename(2)`.
     tmp="$f.reap-tmp.$$"
-    printf '%s' "$kept" > "$tmp" 2>/dev/null || { continue; }
+    printf '%s' "$kept" > "$tmp" 2>/dev/null || { gate_index_unlock "$f"; continue; }
     n_after=$(grep -c . "$tmp" 2>/dev/null || true)
     [ -n "$n_after" ] || n_after=0
+    # THE COMPARISON STAYS even though the lock now excludes the appender, and
+    # it is not redundant. The lock has a give-up budget, so a writer that could
+    # not take it is free to proceed without one; and a file left behind by an
+    # interrupted reaper leaves a stale lockdir that the next cycle will take.
+    # Keeping the stamp means the swap refuses whenever the file moved, whoever
+    # moved it, and the lock turns that refusal from the common case into the
+    # rare one.
     size_after=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
     mtime_after=$(gate_mtime "$f")
     if [ "$size_after" != "$size_before" ] || [ "$mtime_after" != "$mtime_before" ]; then
       # Give this file up FOR THIS CYCLE and leave no state behind.
       rm -f "$tmp" 2>/dev/null || true
+      gate_index_unlock "$f"
       continue
     fi
     if [ "$n_after" -eq 0 ]; then
       # An index with nothing left in it is REMOVED, not emptied.
       rm -f "$f" "$tmp" 2>/dev/null || true
     else
-      mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
+      mv "$tmp" "$f" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        gate_index_unlock "$f"
+        continue
+      }
     fi
+    gate_index_unlock "$f"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       printf '%s %s\n' "$line" "$(basename "$f")" >> "$pairs" 2>/dev/null || true
@@ -4263,11 +4325,27 @@ gate_main() {
   # way (run → its session ids) and answering "which run belongs to this
   # session?" from it means scanning every run directory. One session can hold
   # several runs, so this is a LIST — one run id per line, appended, deduped.
-  # NO LOCK HERE, and that is a decision rather than an omission. This path runs
-  # on every gate entry (over 875 times in the busiest run), and the one failure
-  # the lock would close SELF-HEALS: the append is unconditional, so the session's
-  # next gate entry puts a lost id back. The prune side carries the
-  # compare-and-swap instead.
+  # THIS PATH TAKES THE INDEX LOCK, and the paragraph that used to stand here
+  # saying it deliberately did not is replaced rather than amended, because its
+  # reasoning was load-bearing for a guarantee the other side could not keep.
+  # It argued that a lost id SELF-HEALS on the session's next gate entry and
+  # that the prune's compare-and-swap carried the hazard; the prune meanwhile
+  # declared a lost append the one failure it was not allowed to have. Both
+  # could not be true, and it was the prune's sentence that was wrong — its
+  # comparison is re-read before the rename, so an append in that gap is
+  # overwritten. Observed on a CI runner, one id of sixty.
+  #
+  # The cost argument against locking does not survive either. The measurement
+  # it cited is the call count, over 875 gate entries in the busiest run, and it
+  # never priced the lock: an uncontended `mkdir` and `rmdir` is a fraction of a
+  # millisecond, so the whole run pays well under a tenth of a second for it.
+  #
+  # A WRITER THAT CANNOT TAKE THE LOCK SKIPS ITS APPEND rather than forcing it.
+  # Forcing would reinstate exactly the window the lock exists to close, with
+  # the added harm of looking locked. Skipping is the self-healing the old
+  # paragraph described — the append is unconditional, so this session's next
+  # gate entry puts the id back — and that property is now a fallback for a
+  # bounded wait instead of an excuse for a race.
   #
   # Entries for runs whose directory is gone stay put until a reap cycle removes
   # them: the reader filters with `[ -d ]`, and that filter is what makes an entry
@@ -4275,10 +4353,13 @@ gate_main() {
   # sparse schedule instead of tracking every deletion.
   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
-    grep -qxF "$RUN_ID" \
-      "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID" 2>/dev/null \
-      || printf '%s\n' "$RUN_ID" \
-           >> "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID"
+    _idx="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID"
+    if gate_index_lock "$_idx"; then
+      grep -qxF "$RUN_ID" "$_idx" 2>/dev/null \
+        || printf '%s\n' "$RUN_ID" >> "$_idx"
+      gate_index_unlock "$_idx"
+    fi
+    unset _idx
   fi
 
   # Lineage is recorded here rather than only where it is consumed. Its one
