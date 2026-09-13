@@ -67,30 +67,36 @@ jobs:
     # grows with every run while nothing ever sends a reader back to this
     # comment. A named run's numbers cannot go stale.
     #
-    # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
-    # darwin tests cut off at 12m25s — neither half had failed, the budget was
-    # simply sized for a smaller tree. Raised to 45.
+    # At 25 run 33737037691 was cancelled at 25m19s with lint green at 12m41s
+    # and the darwin tests cut off at 12m25s — neither half had failed, the
+    # budget was simply sized for a smaller tree. Raised to 45.
     #
-    # At 45 it was cancelled again. The final passing assertions were 10-17
-    # seconds APART and the job died 73 seconds after one of them, still making
-    # progress and never hung; the same suite had finished at 31m32s one commit
-    # earlier, which is how little headroom 45 actually was.
+    # At 45 run 33778922460 was cancelled at 45m26s. Its final passing
+    # assertions were 10-17 seconds APART and the job died 73 seconds after one
+    # of them, still making progress and never hung; run 33765121407 had
+    # finished the same suite at 31m32s, which is how little headroom 45 was.
     #
-    # Master hit the same wall independently at 25, and that reading is the
-    # sharpest of the three: run 33783404550 passed at 24m58s — TWO seconds
-    # inside the 25-minute ceiling — and adding a handful of assertions pushed
-    # run 33786390084 to a cancellation at 25m22s, twenty-two seconds past it.
-    # A budget with two seconds of margin is not a budget. The earlier text here
-    # said twenty-two seconds of margin, which read the cancelled run's overage
-    # as the passing run's headroom.
+    # Master hit the same wall independently at 25, and naming the runs makes
+    # it the sharpest reading of the three. Run 33783404550 passed at 24m58s —
+    # TWO seconds inside the 25-minute ceiling — and run 33786390084 was
+    # cancelled at 25m22s, twenty-two seconds past it. THE TWO RAN THE SAME
+    # TREE: `0fc164d` and the merge commit `beffbbd` that carried it to master
+    # both have tree 10cae49b and `git diff` between them is empty. Nothing was
+    # added; the 24 seconds came from the lint step drifting 788s to 857s on
+    # identical input. A budget with two seconds of margin is not a budget, and
+    # that is why — the same tree run twice is enough to cross it. The earlier
+    # text here read the cancelled run's overage as the passing run's headroom
+    # and blamed added assertions; both were wrong, and both only became
+    # checkable once the runs were named.
     #
-    # At 90 it was cancelled a fourth time, and the reading that followed moved
-    # the cause off the lint step for good. The whole test step is effectively
-    # ONE SCRIPT: in run 34716071374, `make -j` starts 16 suites, 15 of them
-    # finish inside the first three minutes, and `scripts/test-gate.sh` then
-    # runs ALONE for 76 of that step's 79 minutes. The parallelism is already
-    # saturated, so this ceiling buys time for one script's serial stretch and
-    # nothing else. How much that stretch varies from run to run is in #764.
+    # At 90 run 34709583079 was cancelled — the fourth time — and the reading
+    # that followed moved the cause off the lint step for good. The whole test
+    # step is effectively ONE SCRIPT: in run 34716071374, `make -j` starts 16
+    # suites, 15 of them finish inside the first three minutes, and
+    # `scripts/test-gate.sh` then runs ALONE for 76 of that step's 79 minutes.
+    # The parallelism is already saturated, so this ceiling buys time for one
+    # script's serial stretch and nothing else. #764 carries the run-to-run
+    # variation, named run by run.
     #
     # The measurements behind that — and the earlier claim on this block that
     # the cost grows with ledger size, which does not hold — are in issue #764,
@@ -100,10 +106,9 @@ jobs:
     # 150 is sized against run 34764405535 on master, which finished its job in
     # 89m29s against the 90 it was given — THIRTY-ONE SECONDS inside, the same
     # shape as the two seconds recorded above at the 25 ceiling, and that one
-    # was followed by a cancellation. The 90 ceiling was hit at 86m30s in run
-    # 34709583079 on this branch, and that figure is a cancellation point rather
-    # than a duration — that run never finished, so its true cost is unknown and
-    # larger.
+    # was followed by a cancellation. The 86m30s that 34709583079 reached above
+    # is a cancellation point rather than a duration — that run never finished,
+    # so its true cost is unknown and larger.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
