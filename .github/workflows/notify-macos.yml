@@ -53,8 +53,9 @@ jobs:
     # whole suite takes locally. Raising the ceiling stops a green run from
     # reading as a failure; making that lint cheaper is separate work and is not
     # what this number is standing in for.
-    # 90, and the number was raised three times before it stuck. The history is
-    # kept because each step measured something the next one needed.
+    # The ceiling is now 150, and the number was raised four times to get there.
+    # The history is kept because each step measured something the next one
+    # needed.
     #
     # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
     # darwin tests cut off at 12m25s — neither half had failed, the budget was
@@ -72,29 +73,38 @@ jobs:
     # of margin is not a budget.
     #
     # At 90 it was cancelled a fourth time, and this reading finally says where
-    # the wall clock goes. The whole job is ONE SCRIPT: `make -j` starts all 39
-    # suites within the first two minutes and 38 of them are done inside the
-    # first two, while `scripts/test-gate.sh` runs alone for the remaining 79
-    # minutes. The parallelism is already saturated, so the ceiling is that one
-    # script's serial time and nothing else.
+    # the wall clock goes. The test step is ONE SCRIPT: `make -j` starts 16
+    # suites and 15 of them are done inside the first three minutes, after which
+    # `scripts/test-gate.sh` runs ALONE for 76 of that step's 79 minutes. The
+    # parallelism is already saturated, so the ceiling is that one script's
+    # serial time and nothing else. The twenty-three lint scripts are NOT part
+    # of this count — they belong to the separate lint step, and counting the
+    # two steps together is how the first version of this paragraph arrived at
+    # a suite count of 39.
     #
     # THE EARLIER EXPLANATION ON THIS BLOCK WAS WRONG and is corrected rather
     # than deleted, because it named a mechanism a reader would otherwise go on
     # optimizing. It said the suite gets slower as it runs because each gate
-    # call re-reads a growing ledger. Measured, the chain walk is flat — 9.9ms
-    # over 91 rows against 13.9ms over 2849 — and the assertion rate does not
-    # decay: bucketed over the run it is 135/118/180/205 per five minutes at the
-    # start, 8-50 through the middle, and back to 212/177 near the end. The last
-    # stretch is as fast as the first, which a ledger-size cost cannot produce.
-    # What is actually expensive is a BAND of sections, not a trend: roughly 45
-    # of the 79 minutes go to about 260 assertions in the approval-frame area,
-    # where every assertion opens and closes a real approval through the gate.
+    # call re-reads a growing ledger. The chain walk is flat — about 10ms over
+    # 91 rows against about 14ms over 2849, because it walks the whole ledger in
+    # one process — and the assertion rate does not decay. Bucketed on
+    # five-minute boundaries across the stretch where the script runs alone, it
+    # is 118/180/205 over the first fifteen minutes, 8 to 50 over the next
+    # forty-five, and 212/177 over the last ten. The end is as fast as the
+    # start, which a ledger-size cost cannot produce.
     #
-    # So the growth is linear in assertion count, not superlinear, and the
-    # defect is that a single serial script carries the whole leg. 150 is chosen
-    # against a measured 86m30s on this branch, which is the run this number is
-    # unblocking; splitting the script so `-j` can reach it is the real fix and
-    # is filed separately.
+    # What is expensive is a BAND of sections rather than a trend: those middle
+    # forty-five minutes carry about 260 assertions, in the area where every
+    # assertion opens and closes a real approval through the gate. Per-assertion
+    # cost varies more than tenfold across the run, so what these numbers settle
+    # is that the cost is NOT superlinear in ledger size — they do not make the
+    # total linear in assertion count either.
+    #
+    # 150 is chosen against a COMPLETED run of 79m54s for this step, 82m05s for
+    # the job. The 90 ceiling was hit at 86m30s, and that figure is a
+    # cancellation point rather than a duration — that run never finished, so
+    # its true cost is unknown and larger than 86m30s. Splitting the script so
+    # `-j` can reach it is the real fix and is filed separately.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
