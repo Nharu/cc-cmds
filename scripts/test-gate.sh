@@ -3426,12 +3426,20 @@ esac
 # ---------------------------------------------------------------------------
 # 15/16. Late sections run against their OWN state home.
 #
-# Section 14e deliberately moves the enforcement surface and never puts it back,
-# and the tail sections that follow it use `grade` and `plan`, neither of which
-# reaches the surface check. Anything below that uses `act` therefore inherits a
-# moved surface and gets exit 7 for reasons that have nothing to do with what it
-# is testing. A fresh state home gives these sections their own baseline while
-# keeping the same ledger.
+# The section that moves the enforcement surface and never puts it back is 14l,
+# not 14e. Section 14e edits a settings file too, but in a state home of its own
+# (`STATE7`) and the base home never sees it — what 14e leaves behind in the
+# SHARED ledger is a run-scope `blocked` row, which is a different fact and is
+# what the assertions further down that mention 14e are about. Section 14l, by
+# contrast, works in the base home: it declares an execution worktree, then
+# appends a newline to the base home's `generic.json` to stand in for somebody
+# else's edit and asserts exit 7 — and its closing `set_exec_wt ""` restores
+# only the declaration, never that newline. So the surface digest of the base
+# home stays moved from there on, and every later `act` against it gets exit 7
+# for reasons that have nothing to do with what it is testing. The sections
+# between use `grade` and `plan`, neither of which reaches the surface check,
+# which is why nothing red appears until the next `act`. A fresh state home
+# gives these sections their own baseline while keeping the same ledger.
 # ---------------------------------------------------------------------------
 STATE_LATE="$WORK/state-late"
 gateL() {
