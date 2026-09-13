@@ -2241,6 +2241,12 @@ check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "
 # ---------------------------------------------------------------------------
 # 13. close never accepts an answer the router typed
 # ---------------------------------------------------------------------------
+# THE ELSE ARM IS A FAILURE, NOT A SKIP. Until today an empty `$aid` fell through
+# the `if` and the seven assertions inside it simply never ran — neither counter
+# moved, so the suite stayed green while covering nothing. Section 12 leaves a
+# boundary approval pending, which is what puts this block on the `if` arm in a
+# serial run; a section that reaches here without one is a broken precondition
+# and must say so.
 aid=$(grep -E '^- `승인`' "$LEDGER" | grep '상태=대기' | tail -1 \
       | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
 if [ -n "$aid" ]; then
@@ -2288,6 +2294,8 @@ if [ -n "$aid" ]; then
     *"판정 보류"*) ok "찢어진 줄은 「없음」이 아니라 판정 보류다" ;;
     *) bad "찢어진 줄" "'$out'" ;;
   esac
+else
+  bad "close 프레임 구속" "미결 승인이 없어 이 절의 단언 일곱이 부재로 사라진다 — 절 12 가 경계 승인을 열어 두지 않았다"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2300,6 +2308,8 @@ fi
 # blocker, which is why it keeps the same transcript binding instead of becoming
 # a router-writable escape.
 # ---------------------------------------------------------------------------
+# Same shape as section 13: with no pending approval the four assertions below
+# used to vanish rather than fail, so the `else` arm now records the absence.
 vaid=$(grep -E '^- `승인`' "$LEDGER" | grep '상태=대기' | tail -1 \
        | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
 if [ -n "$vaid" ]; then
@@ -2330,6 +2340,8 @@ if [ -n "$vaid" ]; then
   else
     ok "무효화된 승인은 다시 닫히지 않는다"
   fi
+else
+  bad "무효화" "미결 승인이 없어 이 절의 단언 넷이 부재로 사라진다 — 절 12·13 이 대기 승인을 남기지 않았다"
 fi
 
 # ---------------------------------------------------------------------------
