@@ -52,13 +52,20 @@ jobs:
     # cause was fixed: `ab41653` rewrote the portability lint from two processes
     # per line per idiom to two per file, taking a whole-tree run from 7m20.990s
     # to 0.498s, and that commit names itself as what had been pushing this leg
-    # into the 25-minute ceiling. Since that rewrite every run of this leg has
-    # measured its lint step between one and four minutes — low single-digit
-    # percent of the budget. The 12m41s recorded further down is from before
-    # that rewrite, and is left there as the history it is.
+    # into the 25-minute ceiling. The 12m41s recorded further down is from
+    # before that rewrite, and is left there as the history it is. What the lint
+    # step costs today is in issue #764 and is deliberately not restated here —
+    # a figure kept in this block has no occasion to be re-checked, which is
+    # exactly how the 7-8.5 outlived the commit that invalidated it.
     # The ceiling is now 150, and the number was raised four times to get there.
     # The history is kept because each step measured something the next one
     # needed.
+    #
+    # EVERY FIGURE BELOW NAMES THE RUN IT CAME FROM, and that is a rule for this
+    # block rather than a courtesy. Ranges, superlatives and "the last N runs"
+    # have each been tried here and each was falsified, because the population
+    # grows with every run while nothing ever sends a reader back to this
+    # comment. A named run's numbers cannot go stale.
     #
     # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
     # darwin tests cut off at 12m25s — neither half had failed, the budget was
@@ -70,34 +77,33 @@ jobs:
     # earlier, which is how little headroom 45 actually was.
     #
     # Master hit the same wall independently at 25, and that reading is the
-    # sharpest of the three: the run one commit before passed at 24m58s — twenty
-    # two seconds inside the ceiling — and adding a handful of assertions pushed
-    # the next one to a cancellation at 25m22s. A budget with twenty-two seconds
-    # of margin is not a budget.
+    # sharpest of the three: run 33783404550 passed at 24m58s — TWO seconds
+    # inside the 25-minute ceiling — and adding a handful of assertions pushed
+    # run 33786390084 to a cancellation at 25m22s, twenty-two seconds past it.
+    # A budget with two seconds of margin is not a budget. The earlier text here
+    # said twenty-two seconds of margin, which read the cancelled run's overage
+    # as the passing run's headroom.
     #
     # At 90 it was cancelled a fourth time, and the reading that followed moved
     # the cause off the lint step for good. The whole test step is effectively
-    # ONE SCRIPT: in the two runs profiled in #764, `make -j` starts 16 suites,
-    # 15 of them finish inside the first four minutes, and `scripts/test-gate.sh`
-    # then runs ALONE for 76 of that step's 79 minutes. The parallelism is
-    # already saturated, so this ceiling buys time for one script's serial
-    # stretch and nothing else. The step itself is not a fixed size: across the
-    # runs of this leg that finished it has ranged from 69m25s to 87m03s.
+    # ONE SCRIPT: in run 34716071374, `make -j` starts 16 suites, 15 of them
+    # finish inside the first three minutes, and `scripts/test-gate.sh` then
+    # runs ALONE for 76 of that step's 79 minutes. The parallelism is already
+    # saturated, so this ceiling buys time for one script's serial stretch and
+    # nothing else. How much that stretch varies from run to run is in #764.
     #
     # The measurements behind that — and the earlier claim on this block that
     # the cost grows with ledger size, which does not hold — are in issue #764,
     # together with the real fix, which is to split that script so `-j` can
-    # reach it. They are kept there rather than here because a profile written
-    # into a workflow comment has no occasion to be re-checked, and this block
-    # went on carrying its stale one past the very commit that invalidated it.
+    # reach it.
     #
-    # 150 is sized against the top of that range rather than against one run.
-    # The 90 ceiling was hit at 86m30s, and that figure is a cancellation point
-    # rather than a duration — that run never finished, so its true cost is
-    # unknown and larger. The run that did finish highest, on master, took
-    # 89m29s for the job against the 90 it was given: THIRTY-ONE SECONDS of
-    # margin, which is the same shape as the twenty-two seconds recorded above
-    # at the 25 ceiling, and that one was followed by a cancellation.
+    # 150 is sized against run 34764405535 on master, which finished its job in
+    # 89m29s against the 90 it was given — THIRTY-ONE SECONDS inside, the same
+    # shape as the two seconds recorded above at the 25 ceiling, and that one
+    # was followed by a cancellation. The 90 ceiling was hit at 86m30s in run
+    # 34709583079 on this branch, and that figure is a cancellation point rather
+    # than a duration — that run never finished, so its true cost is unknown and
+    # larger.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
