@@ -24,6 +24,7 @@ lint:
 	bash scripts/lint-sidecar-field-table.sh
 	bash scripts/lint-approval-answer-provenance.sh
 	bash scripts/lint-reap-retention.sh
+	bash scripts/lint-macos-keepset-paths.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -97,6 +98,7 @@ LINT_TESTS := \
 	scripts/test-lint-approval-answer-provenance.sh \
 	scripts/test-lint-reap-retention.sh \
 	scripts/test-lint-ci-scope-binding.sh \
+	scripts/test-lint-macos-keepset-paths.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh
