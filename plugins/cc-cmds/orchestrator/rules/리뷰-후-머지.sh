@@ -117,6 +117,51 @@ fi
   exit 1
 }
 
+# THE ROW IS A CLAIM AND THE REPORT IS WHAT BACKS IT. Until here the rule read
+# only the ledger, so a `cycle` row saying `P0=0 P1=0` passed whatever produced
+# it — including a review stage that died in its first round and left a stub.
+# Measured on three runs in one night: two segments carried a passing row whose
+# report was thirteen lines with no findings summary and no merge verdict, and a
+# third run reached its merge with no `cycle` row at all. The row and the work
+# it claims are written by different acts, and nothing compared them.
+#
+# WHAT IS CHECKED IS EXISTENCE AND A FINDINGS SUMMARY, not the verdict's text.
+# Reading the verdict would put this rule in the business of re-judging a review
+# it did not run; reading the summary asks only whether a review got far enough
+# to count what it found. A stub cannot answer that and a finished report always
+# can, which is exactly the line the two measured failures fall on.
+#
+# ABSENT IS REFUSED RATHER THAN PASSED. A row written before this field existed
+# has no path to name, and treating that as "nothing to check" would restore the
+# hole for every such row — the same fail-open this file's own exemption comment
+# argues against a few lines above. The repair is one field on the next row.
+report=$(field '리포트 경로')
+[ -n "$report" ] || {
+  echo "룰 거부: 리뷰-후-머지 — 리뷰 기록에 「리포트 경로」가 없어 그 행을 뒷받침하는 것을 찾을 수 없습니다" >&2
+  exit 1
+}
+# A relative path is resolved against the BASE, and the base is derived from the
+# manifest rather than from the caller's directory. The rule runs wherever the
+# act runs, so `$PWD` is a segment worktree as often as not, and the report is
+# written under the base that the manifest itself sits two levels below
+# (`<base>/docs/pipeline-run/<run-id>.plan.md`). Deriving it here keeps the
+# check working for both spellings a router might record.
+case "$report" in
+  /*) report_abs="$report" ;;
+  *)  report_abs="$(cd "$(dirname "$GATE_MANIFEST")/../.." 2>/dev/null && pwd)/$report" ;;
+esac
+[ -f "$report_abs" ] || {
+  echo "룰 거부: 리뷰-후-머지 — 리뷰 기록이 가리키는 리포트가 없습니다: $report" >&2
+  exit 1
+}
+# `발견 요약` is what every finished report of this pipeline carries, and a stub
+# carries a single `(작성 중 …)` line instead. Anchored to the line so a mention
+# inside prose does not satisfy it.
+grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$report_abs" || {
+  echo "룰 거부: 리뷰-후-머지 — 리포트에 「발견 요약」이 없습니다 (미완 리포트로 보입니다): $report" >&2
+  exit 1
+}
+
 seg_row=$(grep -E '^- `segment`' "$GATE_LEDGER" | grep -F "id=$GATE_SEGMENT " | tail -1)
 wt=$(printf '%s' "$seg_row" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//' | tail -1)
 [ -d "$wt" ] || { echo "룰 거부: 리뷰-후-머지 — 세그먼트 워크트리가 없습니다: $wt" >&2; exit 1; }
