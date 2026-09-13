@@ -3997,6 +3997,7 @@ gate_main() {
   # neither of them decides anything on.
   GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
   MANIFEST=""
+  MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4074,6 +4075,12 @@ gate_main() {
   if [ -d "$(dirname "$MANIFEST")" ]; then
     MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
   fi
+  # ONE READ OF THE MANIFEST FOR THIS WHOLE CALL. Taken after the path is
+  # settled and before the first reader, in this shell so every reader — the
+  # ones inside command substitutions included — answers from the same bytes.
+  # A missing file leaves the memo empty and `check_manifest` refuses it with
+  # the same message it always did.
+  manifest_snapshot_take
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
@@ -7978,7 +7985,7 @@ gate_clause_ids() {
   # never read these at all — `종료 절` appears zero times in it — so the nine
   # conditions measured the ledger's shape and never the thing the user actually
   # authorized the run against.
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null \
+  manifest_clause_rows_raw \
     | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//'
 }
 
