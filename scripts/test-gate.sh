@@ -7951,15 +7951,30 @@ else
   check "31ab: 물려받은 B1 승인이 대기 상태다" "$(row_field "$(b31ab_last)" '상태')" "대기"
   # 진전을 움직인다 — 읽기를 넘는 등급의 행위 하나면 벡터의 `acts=` 가 오른다. 원장에
   # 남는 상태는 그 인가 행뿐이라 뒤 절들이 읽는 세그먼트·의무·절은 건드리지 않는다.
+  #
+  # 인터프리터로 감싸지 않는다. 이 행위의 첫 판본은 `bash -c "printf x >> $CONE_D/…"`
+  # 였고 exit 3 을 받았다 — 매니페스트 쓰기 가드의 인터프리터 팔은 결합한 argv 에
+  # 매니페스트의 **디렉터리**가 들어 있으면 거절하는데, 콘 워크트리는 전부 매니페스트와
+  # 같은 `$WORK` 아래 있으므로 감싼 쓰기는 경로를 어디로 잡아도 그 바늘에 걸린다. 그
+  # 거절은 31ao 가 상한으로 단언하는 설계이지 이 절이 잴 배선이 아니다. `touch` 는
+  # 인터프리터 목록 밖이라 그 팔을 지나지 않고, 경로 동일성 팔은 실제 파일을 비교한다.
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
         --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale "B1 결속값을 움직인다" \
-        -- bash -c "printf x >> $CONE_D/b31ab.tmp"
-  check "31ab: 읽기를 넘는 행위가 통과한다" "$rc" "0"
+        -- touch "$CONE_D/b31ab.tmp"
+  if [ "$rc" = "0" ]; then
+    ok "31ab: 결속값을 움직인 행위가 인가 행을 남긴다"
+  else
+    bad "31ab: 결속값을 움직인 행위가 인가 행을 남긴다" "rc=$rc — $msg"
+  fi
   # 그리고 다음 행위 — 이 호출의 `gate_boundaries` 가 낡은 승인을 철회하고, 목록을
   # 다시 열거하고, 그 뒤에 유예를 센다.
   gateNT exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
         --snapshot-digest "$(HN)" --rationale "철회 배선 확인" -- ls "$CONE_A"
-  check "31ab: 철회가 일어난 호출의 행위 자신은 유예되지 않는다" "$rc" "0"
+  if [ "$rc" = "0" ]; then
+    ok "31ab: 철회가 일어난 호출의 행위 자신은 유예되지 않는다"
+  else
+    bad "31ab: 철회가 일어난 호출의 행위 자신은 유예되지 않는다" "rc=$rc — $msg"
+  fi
   check "31ab: 결속값이 움직인 B1 승인이 상태=철회 에 도달한다" \
     "$(row_field "$(b31ab_last)" '상태')" "철회"
   check "31ab: 그 철회 행이 B1 의 사유를 싣는다" "$(row_field "$(b31ab_last)" '사유')" "진전 재개"
