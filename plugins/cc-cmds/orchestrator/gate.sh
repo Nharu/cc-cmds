@@ -3146,6 +3146,72 @@ gate_settings_file() {
   printf '%s/%s.json' "$(gate_settings_dir)" "$k"
 }
 
+gate_settings_key() {
+  # A digest of everything `gate_write_settings` renders FROM. When it has not
+  # moved, that function cannot produce different bytes, so the probe render and
+  # the `diff -r` that compares it against disk are pure cost — which is what
+  # the caller below skips.
+  #
+  # NO LEDGER ROW IS AN INPUT, and that is the property the whole saving rests
+  # on. The ledger grows on every act, so a key that read it would change at
+  # moments when the settings provably cannot, and the skip would never fire.
+  # NO WALL CLOCK AND NO FILE CONTENT either, for the same reason — only the
+  # values the renderer interpolates.
+  #
+  # `gate.sh` ITSELF IS AN INPUT, because the JSON template lives here: a
+  # redeploy that changes what a variant contains must re-derive rather than
+  # match a key written by the old template.
+  #
+  # AN INPUT MISSED HERE FAILS CLOSED. The settings then fail to WIDEN, so a
+  # stage is refused a directory and the run stops with a refusal naming it —
+  # never the other direction, where an authorization silently grows.
+  local hookp plugind
+  hookp="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
+  plugind=$(cd "$(dirname "$GATE_DIR")" 2>/dev/null && pwd)
+  {
+    printf 'stage-kinds\t%s\n' "$STAGE_KINDS"
+    printf 'hook\t%s\n' "$hookp"
+    printf 'hook-exists\t%s\n' "$( [ -f "$hookp" ] && printf 'yes' || printf 'no' )"
+    printf 'plugin-dir\t%s\n' "$plugind"
+    printf 'run-dir\t%s\n' "${RUN_DIR:-}"
+    printf 'base\t%s\n' "${BASE:-}"
+    printf 'manifest-dir\t%s\n' "$(dirname "${MANIFEST:-}")"
+    printf 'ledger-dir\t%s\n' "$(dirname "${LEDGER:-}")"
+    printf 'grant-dir\t%s\n' "$(dirname "${GRANT:-}")"
+    printf 'doc\t%s\n' "${DOC:-}"
+    printf 'doc-dir\t%s\n' "${DOC_DIR:-}"
+    printf 'doc-base\t%s\n' "${DOC_BASE:-}"
+    printf 'doc-dir-phys\t%s\n' "$( [ -n "${DOC_DIR:-}" ] && cd "$DOC_DIR" 2>/dev/null && pwd -P || true)"
+    printf 'doc-base-phys\t%s\n' "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)"
+    printf 'config-dir\t%s\n' "${CLAUDE_CONFIG_DIR:-}"
+    printf 'home\t%s\n' "${HOME:-}"
+    # The target rows verbatim: both worktree fields of every declared target
+    # are interpolated into `additionalDirectories`.
+    manifest_targets | sed 's/^/target\t/'
+    printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_settings_key_record() {
+  # Written ONLY where the render and the baseline BOTH just succeeded. A key
+  # recorded on a failed path would claim settings are settled that were never
+  # written, and the next call would skip the re-derivation that repairs them.
+  #
+  # Never under the probe override: that render goes to a temporary directory
+  # and says nothing about what is on disk.
+  local k keyf
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -z "${CC_GATE_SETTINGS_OVERRIDE:-}" ] || return 0
+  k=$(gate_settings_key)
+  [ -n "$k" ] || return 0
+  keyf="$RUN_DIR/settings-key"
+  # Same directory, then rename: a reader never sees a half-written key, and a
+  # failure to write leaves the previous state rather than a truncated one.
+  printf '%s\n' "$k" > "$keyf.$$" 2>/dev/null || { rm -f "$keyf.$$"; return 0; }
+  mv "$keyf.$$" "$keyf" 2>/dev/null || rm -f "$keyf.$$"
+  return 0
+}
+
 gate_write_settings() {
   # Writes every variant. Called at run start and idempotent — a re-run after a
   # session cut must find the same bytes, because those bytes are in the
@@ -3154,7 +3220,7 @@ gate_write_settings() {
   local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
   local kind_dirs kind_allow
   dir=$(gate_settings_dir)
-  mkdir -p "$dir"
+  mkdir -p "$dir" || return 1
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
   [ -f "$hook" ] || die "게이트 훅 스크립트가 없습니다: $hook"
 
@@ -3336,7 +3402,11 @@ $(target_field "$a" '실행 워크트리')"
       kind_allow=""
       deny_extra="${deny_extra}\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
     fi
-    cat > "$f" <<JSON
+    # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
+    # the status, so a caller re-baselined and recorded a settled key over files
+    # that were never rewritten. Returning here is what makes "both the rewrite
+    # and the baseline succeeded" a condition rather than a hope.
+    cat > "$f" <<JSON || return 1
 {
   "permissions": {
     "deny": [ ${deny_extra}"Bash(sudo:*)" ],
@@ -3389,7 +3459,27 @@ gate_resettle_settings() {
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
   local before after tmpdir base lk="${RUN_DIR:-}/settings.lock"
+  local key keyf
   [ -n "${RUN_DIR:-}" ] || return 0
+  # THE INPUTS HAVE NOT MOVED, SO NEITHER CAN THE OUTPUT. Everything below —
+  # the lock, two surface digests, a whole second render of the settings tree
+  # and a recursive `diff` — exists to answer "did the derivation change?", and
+  # this answers it from the derivation's own inputs instead.
+  #
+  # IT SKIPS NO DETECTION. Finding a difference here never refuses anything;
+  # `gate_surface_check` owns that verdict and runs independently on every act.
+  # A tampered settings file is still exit 7 whether or not this returned early,
+  # and the branch below would not have repaired it either — it returns
+  # untouched when the baseline has already moved.
+  #
+  # The key is recorded only after a successful render, so an absent key file —
+  # a run that started before this existed, or one whose last write failed —
+  # takes the full path.
+  keyf="$RUN_DIR/settings-key"
+  key=$(gate_settings_key)
+  if [ -n "$key" ] && [ -f "$keyf" ] && [ "$key" = "$(cat "$keyf" 2>/dev/null)" ]; then
+    return 0
+  fi
   # The WHOLE sequence is inside the lock — read, compare, rewrite, re-measure,
   # re-baseline. Guarding only the write would leave the guard below reading a
   # baseline another process is about to replace, which is the same read-then-act
@@ -3412,13 +3502,19 @@ gate_resettle_settings() {
   ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
     gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0; }
   if diff -r -q "$tmpdir" "$(gate_settings_dir)" >/dev/null 2>&1; then
-    rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0
+    # The render matches disk and the baseline matched above, so the settings
+    # are settled for these inputs: record the key so the next call can say so
+    # without rendering again. This is the arm that adopts a run which started
+    # before the key existed.
+    rm -rf "$tmpdir"; gate_settings_key_record; gate_settings_unlock "$lk"; return 0
   fi
   rm -rf "$tmpdir"
 
   gate_write_settings >/dev/null 2>&1 || { gate_settings_unlock "$lk"; return 0; }
   after=$(gate_surface_digest_raw)
   printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
+  # After BOTH the rewrite and the re-baseline, never between them.
+  gate_settings_key_record
   gate_append '대상 추가' "별칭=-" "원격 슬러그=-" \
     "메인 워크트리=-" "공통 git 디렉터리=-" "베이스 브랜치=-" "층=0" \
     "발견 경로=인가 디렉터리 재유도 (${before} → ${after})" "기록 시각=$(now_iso)"
@@ -4114,6 +4210,9 @@ gate_main() {
   # and the cutpoint is what governs whatever leaves the machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
+    # The baseline is written inside that call, so both halves have succeeded
+    # by here and the key describes what is on disk.
+    gate_settings_key_record
     # Run open is the one moment this belongs — the comment on `cred_check`
     # already says a run whose cutpoint reaches `머지` should learn at kickoff
     # and not at 3am, and until now nothing called it, so nothing ever did. It
