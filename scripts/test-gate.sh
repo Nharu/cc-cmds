@@ -25,7 +25,7 @@
 # The fixture is a `git init` in a scratch directory, used as its own
 # origin-worktree, so nothing here touches the checkout the tests run from.
 #
-# Usage: bash scripts/test-gate.sh
+# Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
 
 set -uo pipefail
 
@@ -86,7 +86,8 @@ LIVENESS="$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 
 # ---------------------------------------------------------------------------
-# The section selector — `--list` and `--sections <id>[,<id>...]`
+# The section selector — `--list`, `--sections <id>[,<id>...]` and
+# `--run-one <id>`
 #
 # This suite is serial by construction: its sections share one fixture and one
 # accumulating ledger, so "run only the named section" cannot be a conditional
@@ -96,15 +97,31 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 #
 # THE UNCONDITIONAL REGIONS ARE TWO, and both are delimited by a marker rather
 # than by a line range. `# --- preamble-end ---` closes the head — the shared
-# helpers, the static scans, and the fixture repository every section stands
-# on — and `# --- epilogue-begin ---` opens the tail, which is the totals line
-# and the exit status. Line numbers move whenever a section is added or a
-# banner is edited; a marker moves only when someone moves it, which is what
-# makes it the unit a later change can carry.
+# helpers and the fixture repository every section stands on — and
+# `# --- epilogue-begin ---` opens the tail, which is the totals line and the
+# exit status. Line numbers move whenever a section is added or a banner is
+# edited; a marker moves only when someone moves it, which is what makes it
+# the unit a later change can carry.
+#
+# A SECTION OPENS IN ONE OF TWO SHAPES. The boxed shape is a rule line
+# (`# ---…`) followed by a numbered title line (`# <id>. …`), and the section
+# begins at the rule. The dashed shape is a single line `# --- <id>. … ---`,
+# the form the family sub-blocks use, and the section begins at that line. An
+# id is digits with an optional letter suffix and an optional `-<digits><letters>`
+# tail — `18`, `14c-1`, `35-4c` — and the tail is what lets a sub-block keep its
+# own number under its parent's. A section ends where the next section of
+# EITHER shape opens, so a boxed section that holds dashed sub-blocks ends at
+# its first sub-block; what it asserts before that is its own, and what the
+# sub-blocks assert is theirs.
 #
 # EVERY ESCAPE HATCH POINTS AT THE FULL RUN. An id nobody declared, a marker
 # that is missing, a section that is not there — each of them runs MORE, never
-# less, so a wrong mapping costs time and never coverage.
+# less, so a wrong mapping costs time and never coverage. `--run-one` is the
+# one caller for which that escape is itself the wrong direction: a worker
+# dispatched with an id runs that id and nothing else, and a worker that fell
+# back to the full run would report forty minutes of green under a name the
+# dispatch-return reconciliation then counts as that section. So `--run-one`
+# takes exactly one id and treats an unknown one as a hard error.
 #
 # THE EXCEPTIONS ARE THE PICKS THAT RESOLVE TO THE WRONG THING, and they are
 # exceptions because they fail in the forbidden direction: the pick RESOLVES,
@@ -133,10 +150,20 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # for: the named assertions a section must still contain are checked against the
 # CUT before it is run, so a boundary that swallows them stops the run instead of
 # quietly shrinking it.
+#
+# A CUT CARRIES ITS FAMILY'S PRELUDE. The sections of one family — the cone,
+# slice A, the review obligation, slice B — share settings and helpers that
+# their container used to define in line. Those live in `pre_<group>()`
+# functions in the head now, and the cut inserts one call to `pre_<group>`
+# before the first selected section of that group, reading the group off the
+# banner's `group:` field. A group with no such function (`base`, `darwin`,
+# `static`) gets no call; the full run calls the same functions from the
+# containers' own positions, so the serial order is unchanged.
 # ---------------------------------------------------------------------------
 SELF="$script_dir/${0##*/}"
 sections_want=""
 sections_list=0
+sections_strict=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -146,35 +173,50 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --sections=*)
       sections_want="${1#--sections=}"; shift ;;
+    --run-one)
+      sections_want="${2-}"; sections_strict=1
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --run-one=*)
+      sections_want="${1#--run-one=}"; sections_strict=1; shift ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...])\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
+if [ "$sections_strict" = "1" ]; then
+  case "$sections_want" in
+    ''|*,*)
+      printf 'test-gate: --run-one 은 절 id 정확히 하나를 받습니다 (받은 것: 「%s」)\n' "${sections_want}" >&2
+      exit 2 ;;
+  esac
+fi
 
 # The index, one record per line:
 #
-#   PRE <line>                                the last line of the head
-#   EPI <line>                                the first line of the tail
-#   SEC <start> <end> <id> <idline> <title>   one addressable section
-#   ANC <id> <text>                           one assertion that section must keep
-#   MKR <message>                             a marker that no banner owns
+#   PRE <line>                                        the last line of the head
+#   EPI <line>                                        the first line of the tail
+#   SEC <start> <end> <id> <idline> <group> <title>   one addressable section
+#   ANC <id> <text>                                   one assertion that section must keep
+#   MKR <message>                                     a marker that no banner owns
 #
-# A section carrying no machine-readable banner reports its id as `-`, which is
-# how `--list` tells "not addressable yet" from "addressable". Sections that
-# sit inside the head are not indexed at all — they are not skippable, so
-# giving them a row would invite a caller to try.
+# A section carrying no machine-readable banner reports its id as `-` and its
+# group as `-`, which is how `--list` tells "not addressable" from
+# "addressable". The pure containers — a banner that opens a family and
+# delegates every assertion to its sub-blocks — are deliberately left that way:
+# dispatching one would run no assertion and be reported as a section that
+# produced no result. Sections that sit inside the head are not indexed at all
+# — they are not skippable, so giving them a row would invite a caller to try.
 #
-# `ANC` IS THE ONLY BANNER FIELD ANYTHING READS BACK. `group:` and `covers:` are
-# parsed off the id and discarded; `anchors:` is a comma-separated list of
-# assertion labels that a cut of this section must still contain, and it is
-# checked against the cut before the cut runs. It exists because the id, the
-# title and the number of assertions can all survive a section being truncated,
-# and the label of the assertion that went missing cannot. Anchors are matched as
-# fixed substrings, so they may be a prefix of the label as written; they must
-# not contain `,` or `|`.
+# `ANC` AND `group:` ARE THE BANNER FIELDS READ BACK; `covers:` is parsed off
+# and discarded here (it is the change-based selector's input, not this one's).
+# `anchors:` is a comma-separated list of assertion labels that a cut of this
+# section must still contain, and it is checked against the cut before the cut
+# runs. It exists because the id, the title and the number of assertions can
+# all survive a section being truncated, and the label of the assertion that
+# went missing cannot. Anchors are matched as fixed substrings, so they may be
+# a prefix of the label as written; they must not contain `,` or `|`.
 #
-# A section BEGINS at the rule line that opens its banner box, not at the
+# A boxed section BEGINS at the rule line that opens its banner box, not at the
 # numbered line inside it, because the box is one comment and cutting it in
 # half would leave a dangling rule at the top of the copy.
 section_index() {
@@ -194,10 +236,22 @@ section_index() {
           sub(/^.*\|[ \t]*anchors:[ \t]*/, "", anc)
           sub(/[ \t]*\|.*$/, "", anc)
         }
-        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc
+        grp = "-"
+        if ($0 ~ /\|[ \t]*group:/) {
+          grp = $0
+          sub(/[ \t]*---[ \t]*$/, "", grp)
+          sub(/^.*\|[ \t]*group:[ \t]*/, "", grp)
+          sub(/[ \t]*\|.*$/, "", grp)
+          sub(/[ \t]+$/, "", grp)
+          if (grp == "") grp = "-"
+        }
+        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc; grpval[nid] = grp
       }
-      else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*\. /) {
-        nb = nb + 1; bound[nb] = NR - 1; title[nb] = $0
+      else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*(-[0-9]+[a-z]*)?\. /) {
+        nb = nb + 1; bound[nb] = NR - 1; tline[nb] = NR; title[nb] = $0
+      }
+      else if ($0 ~ /^# --- [0-9]+[a-z]*(-[0-9]+[a-z]*)?\. /) {
+        nb = nb + 1; bound[nb] = NR; tline[nb] = NR; title[nb] = $0
       }
       prev = $0
     }
@@ -206,18 +260,18 @@ section_index() {
       print "PRE " pre
       print "EPI " epi
       # A MARKER BELONGS TO A BANNER ONLY IF IT SITS ON THE LINE AFTER THE TITLE.
-      # `bound[i]` is the opening rule line of the box and the title is the line
-      # after it, so a marker of that box is at `bound[i] + 2`. Range containment
-      # was the earlier rule and it is not the same thing: a marker written one
-      # line ABOVE its own rule line lands on the LAST line of the PREVIOUS
-      # section, which a range test accepts, and `--sections <id>` then cuts the
-      # neighbour, runs it and exits 0 while the named block never runs at all.
-      # That is coverage lost under a named id, so it is a hard error rather
-      # than a fallback.
+      # For a boxed banner the title is the line after the rule, for a dashed
+      # banner the title IS the banner line; either way the marker is at
+      # `tline[i] + 1`. Range containment was the earlier rule and it is not the
+      # same thing: a marker written one line ABOVE its own rule line lands on
+      # the LAST line of the PREVIOUS section, which a range test accepts, and
+      # `--sections <id>` then cuts the neighbour, runs it and exits 0 while the
+      # named block never runs at all. That is coverage lost under a named id,
+      # so it is a hard error rather than a fallback.
       for (i = 1; i <= nb; i++) {
         if (bound[i] <= pre) continue
         for (j = 1; j <= nid; j++) {
-          if (idline[j] == bound[i] + 2) { owner[i] = j; claimed[j] = 1 }
+          if (idline[j] == tline[i] + 1) { owner[i] = j; claimed[j] = 1 }
         }
       }
       for (j = 1; j <= nid; j++) {
@@ -230,20 +284,20 @@ section_index() {
         if (s <= pre) continue
         e = (i < nb ? bound[i + 1] - 1 : epi - 1)
         if (e >= epi) e = epi - 1
-        id = "-"; il = 0; anc = ""
-        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j] }
+        id = "-"; il = 0; anc = ""; grp = "-"
+        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j]; grp = grpval[j] }
         # THE DECLARED ID IS COMPARED WITH THE BANNER`S OWN NUMBER, by equality
         # and nothing else. Ordering is deliberately not checked — this file`s
         # banner numbers do not ascend (section 31 is followed by `# 12b.`).
         if (id != "-") {
           num = title[i]
-          sub(/^#[ \t]+/, "", num)
+          sub(/^#[ \t]+(---[ \t]+)?/, "", num)
           sub(/\..*$/, "", num)
           if (id != num) {
             print "MKR 줄 " il ": id=" id " 가 배너 번호 " num " 과 다릅니다"
           }
         }
-        print "SEC " s " " e " " id " " il " " title[i]
+        print "SEC " s " " e " " id " " il " " grp " " title[i]
         if (anc != "") {
           na = split(anc, aa, ",")
           for (k = 1; k <= na; k++) {
@@ -284,10 +338,13 @@ if [ -n "$sec_idx" ]; then
     exit 2
   fi
 
-  # DUPLICATES ARE CHECKED BEFORE ANY PICK, and `--list` is checked too. The id
-  # space is one entry wide today, so this is trivially green — it is here
-  # because the addressing pass that fills the other banners needs the check to
-  # be ALREADY in place, or the ids that collide slip through in silence.
+  # DUPLICATES ARE CHECKED BEFORE ANY PICK, and `--list` is checked too. Every
+  # leaf block carries an id now, and the ids that used to collide — a number
+  # reused by a later section, a sub-block numbered like a sibling family's —
+  # were made unique by prefixing sub-blocks with their parent's number and
+  # renumbering the later of two boxed sections. This check is what keeps that
+  # true: a colliding id would otherwise resolve to one of its two blocks and
+  # report green over the other.
   sec_dups=$(printf '%s\n' "$sec_idx" \
     | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) .*$/\1/p' \
     | sed -n '/^-$/!p' | sort | uniq -d)
@@ -295,7 +352,7 @@ if [ -n "$sec_idx" ]; then
     printf 'test-gate: 절 id 가 중복입니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' >&2
     for d in $sec_dups; do
       printf '%s\n' "$sec_idx" \
-        | sed -n "s/^SEC [0-9]* [0-9]* $d \([0-9]*\) \(.*\)\$/  id=$d — 배너 줄 \1: \2/p" >&2
+        | sed -n "s/^SEC [0-9]* [0-9]* $d \([0-9]*\) [^ ]* \(.*\)\$/  id=$d — 배너 줄 \1: \2/p" >&2
     done
     exit 2
   fi
@@ -303,7 +360,7 @@ fi
 
 if [ "$sections_list" = "1" ]; then
   printf '%s\n' "$sec_idx" \
-    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* \(.*\)$/\1 \2/p' \
+    | sed -n 's/^SEC [0-9]* [0-9]* \([^ ]*\) [0-9]* [^ ]* \(.*\)$/\1 \2/p' \
     | sed -n '/^- /!p'
   exit 0
 fi
@@ -341,6 +398,14 @@ if [ -n "$sections_want" ] && [ -n "$sec_idx" ]; then
 $(printf '%s\n' "$sections_want" | tr ',' '\n')
 SECEOF
 
+  if [ -n "$sec_miss" ] && [ "$sections_strict" = "1" ]; then
+    # `--run-one` NEVER FALLS BACK. The full run is the safe escape for a
+    # human typing `--sections`; for a dispatched worker it is the forbidden
+    # direction — forty minutes of green returned under the name of the one
+    # section the reconciliation then marks as run.
+    printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
+    exit 2
+  fi
   if [ -n "$sec_miss" ]; then
     printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
   else
@@ -351,8 +416,30 @@ SECEOF
     sed -n "1,${sec_pre}p" "$SELF" > "$sec_cut"
     # Sorted by start line so the copy keeps FILE order whatever order the ids
     # were typed in — the sections are not independent of each other's order.
+    #
+    # THE FAMILY PRELUDE GOES IN FRONT OF THE FIRST SECTION OF ITS GROUP. The
+    # group is read off the index row, and a `pre_<group>` call is inserted only
+    # if the head actually defines such a function — the base and darwin
+    # groups have none, because the fixture itself is their prelude. One call
+    # per group per cut: the functions are idempotent as well, so a serial
+    # caller that meets both the container's own call and this one runs it once.
+    sec_pre_done=" "
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
+      sec_grp=$(printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC $sec_a $sec_b [^ ]* [0-9]* \([^ ]*\) .*\$/\1/p")
+      case "$sec_grp" in
+        ''|-) ;;
+        *)
+          case "$sec_pre_done" in
+            *" $sec_grp "*) ;;
+            *)
+              sec_pre_done="$sec_pre_done$sec_grp "
+              if [ "$(grep -cE "^pre_${sec_grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
+                printf '\n# --- prelude: %s (inserted by the selector) ---\npre_%s\n' "$sec_grp" "$sec_grp" >> "$sec_cut"
+              fi ;;
+          esac ;;
+      esac
       sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
@@ -396,7 +483,7 @@ SECEOF
     if [ -n "$sec_anc_miss" ]; then
       printf 'test-gate: 잘린 절입니다 — 배너가 선언한 단언이 컷에 남아 있지 않아 실행하지 않습니다\n' >&2
       printf '%s' "$sec_anc_miss" >&2
-      printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
+      printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄, 또는 `# --- <번호>. … ---` 한 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
       rm -rf "$sec_dir"
       exit 2
     fi
@@ -417,7 +504,7 @@ SECEOF
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
       printf '%s\n' "$sec_idx" \
-        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* \(.*\)\$/test-gate:   id=\1 줄 $sec_a-$sec_b 「\2」/p" >&2
+        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* \([^ ]*\) \(.*\)\$/test-gate:   id=\1 group=\2 줄 $sec_a-$sec_b 「\3」/p" >&2
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
@@ -865,6 +952,7 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
+# --- section: 1 | group: base | covers: snapshot | anchors: 스냅숏이 유효한 JSON 객체로 나온다 ---
 # ---------------------------------------------------------------------------
 if (cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null) | jq -e . >/dev/null; then
   ok "스냅숏이 유효한 JSON 객체로 나온다"
@@ -913,6 +1001,7 @@ mkdir -p "$(dirname "$FX_LEDGER")"
 
 # ---------------------------------------------------------------------------
 # 1b. The run settings the gate generates
+# --- section: 1b | group: base | covers: - | anchors: 게이트가 런 개시에 설정 디렉터리를 만든다 ---
 #
 # These files decide whether a stage has any hook coverage at all, and they are
 # GENERATED — so nothing in the tree is reviewed when they are wrong. They
@@ -1058,6 +1147,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
+# --- section: 2 | group: base | covers: act, snapshot | anchors: 어휘 밖 절단점 토큰은 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 머지후 \
      --snapshot-digest "$(HH)" --rationale x -- git push origin main
@@ -1118,6 +1208,7 @@ cp "$WORK/ledger.bak" "$FX_LEDGER"
 
 # ---------------------------------------------------------------------------
 # 2b. A row whose `prev=` cannot be read is a BREAK, not a row to step over
+# --- section: 2b | group: base | covers: snapshot, act, grade | anchors: prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다 ---
 #
 # This is an authorization boundary, not a performance property. The verifier
 # used to `continue` past such a row WITHOUT advancing its running `prev`, so
@@ -1234,6 +1325,7 @@ check "읽기 등급이 읽기로 나온다" "$msg" "축2=읽기"
 
 # ---------------------------------------------------------------------------
 # 3. Cutpoint adjudication is PER TARGET (#208 regression)
+# --- section: 3 | group: base | covers: act, snapshot | anchors: 절단점 이하의 행위는 통과한다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind push --target front --cutpoint push \
      --snapshot-digest "$(HH)" --rationale x -- git push origin main
@@ -1260,6 +1352,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 4. Self-widening is refused at every cutpoint
+# --- section: 4 | group: base | covers: act | anchors: --admin 은 배포 인가에서도 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S1 --cutpoint 배포 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin
@@ -1282,6 +1375,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 5. Pre-authorization: outside the list is an APPROVAL, not a refusal
+# --- section: 5 | group: base | covers: act | anchors: 사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 \
      --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
@@ -1295,6 +1389,7 @@ check "워크트리 쓰기는 사전 인가 목록을 요구하지 않는다" "$
 
 # ---------------------------------------------------------------------------
 # 6. Snapshot binding — a stale digest is a loud re-read
+# --- section: 6 | group: base | covers: act, plan, exec | anchors: 낡은 스냅숏 다이제스트는 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
@@ -1528,6 +1623,7 @@ check "옛 형식이어도 값이 다르면 거부된다" "$rc" "4"
 
 # ---------------------------------------------------------------------------
 # 7. Declared grade is a CHECKED CLAIM, not a self-grant
+# --- section: 7 | group: base | covers: snapshot, exec | anchors: 축2 자기선언이 등급과 다르면 거부된다 ---
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate exec --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
@@ -1544,6 +1640,7 @@ check "어휘 밖 축2 토큰은 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 8. Review-before-merge, and its five staleness grades
+# --- section: 8 | group: base | covers: snapshot, act | anchors: 리뷰 기록이 없는 머지는 거부된다 ---
 # ---------------------------------------------------------------------------
 seg_wt="$WT"
 head0=$(cd "$WT" && git rev-parse HEAD)
@@ -1630,6 +1727,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 8b. Implementation and review must be separate sessions
+# --- section: 8b | group: base | covers: snapshot, act | anchors: 디스패처를 공유하는 것은 자기 작업 리뷰가 아니다 ---
 #
 # The rule this replaces compared session ids while those ids were DERIVED from
 # `run|doc|stage|attempt` — values that differ by construction. So the check was
@@ -1696,7 +1794,8 @@ case "$msg" in
 esac
 
 # ---------------------------------------------------------------------------
-# 8b. The router's own writer for `segment` and `cycle`
+# 8e. The router's own writer for `segment` and `cycle`
+# --- section: 8e | group: base | covers: snapshot, act, plan | anchors: 리뷰 기록 없는 세그먼트의 머지는 아직 거부된다 ---
 #
 # Both rows used to be written only by the fixed-graph loop, which the router
 # path never enters. The consequence was not a missing convenience: the merge
@@ -1864,6 +1963,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 8b-2. `리뷰 HEAD` is pinned to a resolved sha AT WRITE TIME
+# --- section: 8b-2 | group: base | covers: act | anchors: 7자 짧은 sha 는 통과한다 (하한이 공허하지 않다) ---
 #
 # The four required fields were checked for emptiness and for nothing else, and
 # the merge rule interpolates THIS one as a revision expression. So `HEAD`, `@`,
@@ -1905,6 +2005,7 @@ check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
+# --- section: 8c | group: base | covers: - | anchors: 행마다 어느 자격으로 돌았는지가 남는다 ---
 #
 # With neither pipeline credential provisioned the gate fell through to whatever
 # the calling environment held — on a developer machine a full-scope `gh` login
@@ -1919,6 +2020,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 8d. The act runs in the TARGET's worktree
+# --- section: 8d | group: base | covers: snapshot, exec | anchors: 행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다 (호출자의 cwd 가 아니라) ---
 #
 # `--target` is a parameter of both acting verbs and every target row carries an
 # absolute worktree, but nothing carried that value to the act's working
@@ -1941,6 +2043,7 @@ check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다
 
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
+# --- section: 9 | group: base | covers: snapshot, act | anchors: 절단점-준수 는 「끔」을 무시한다 ---
 # ---------------------------------------------------------------------------
 # THE PRISTINE COPY IS TAKEN HERE, one line above the contamination. Everything
 # below runs against a manifest carrying `**리뷰-후-머지**: 끔`, and that setting
@@ -2008,6 +2111,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10. The ledger the gate writes — chained, capped, and its own rows
+# --- section: 10 | group: base | covers: act | anchors: 모든 행이 앞 행의 다이제스트를 물고 있다 ---
 # ---------------------------------------------------------------------------
 n_rows=$(grep -cE '^- `자율 승인`' "$FX_LEDGER" || true)
 if [ "$n_rows" -gt 0 ]; then
@@ -2038,7 +2142,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 10b. MOVED — see section 31 at the end of this file.
+# 10b. MOVED — see section 36 at the end of this file.
 #
 # It used to sit here, one screen below the append above, and asserted that
 # `선머지후리뷰` defers the review. Every one of those assertions ran against a
@@ -2050,6 +2154,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10c. A dry run writes nothing, and a stage dispatch is gradeable
+# --- section: 10c | group: base | covers: snapshot, plan, grade, act | anchors: plan 이 사전 인가 밖을 승인 대기로 답한다 ---
 #
 # All three of these were found by the FIRST act of the first real run, and they
 # composed into "the router cannot dispatch any stage at all":
@@ -2163,6 +2268,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 11. Termination — nine conditions, and the disagreement that runs both ways
+# --- section: 11 | group: base | covers: snapshot, act | anchors: 미충족 조건이 있으면 종료 제안이 기각된다 ---
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
@@ -2202,6 +2308,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 12. Boundaries convert to an approval, never to a park
+# --- section: 12 | group: base | covers: snapshot, act | anchors: B1 이 발동하면 park 이 아니라 승인 대기를 발행한다 ---
 # ---------------------------------------------------------------------------
 # Resolve everything pending first: an open approval suspends B1..B3, so a B1
 # test run against a ledger with one open would be asserting the suspension
@@ -2240,6 +2347,7 @@ check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "
 
 # ---------------------------------------------------------------------------
 # 13. close never accepts an answer the router typed
+# --- section: 13 | group: base | covers: close | anchors: 트랜스크립트가 없으면 승인은 닫히지 않는다 ---
 # ---------------------------------------------------------------------------
 # THE ELSE ARM IS A FAILURE, NOT A SKIP. Until today an empty `$aid` fell through
 # the `if` and the seven assertions inside it simply never ran — neither counter
@@ -2300,6 +2408,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14. A pending approval can be VOIDED, not only granted
+# --- section: 14 | group: base | covers: close, snapshot | anchors: 무효화는 트랜스크립트 한 줄로 성립한다 ---
 #
 # Before this there was one recording path, so an approval had two possible
 # ends: granted, or pending forever. Pending is not inert — it counts against
@@ -2346,6 +2455,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14b. The credential report runs at RUN OPEN, where it was never called
+# --- section: 14b | group: base | covers: snapshot | anchors: 런 개시에 자격 상태가 보고된다 ---
 #
 # `cred_check`'s own comment says a run whose cutpoint reaches `머지` should
 # learn at kickoff and not at 3am. Nothing called it, so nothing ever did.
@@ -2366,6 +2476,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14c. The act runs in the EXECUTION worktree when the row declares one
+# --- section: 14c | group: base | covers: snapshot, exec | anchors: 행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라) ---
 #
 # One field could not carry both duties. The sidecar path has to converge on the
 # MAIN worktree so that N linked worktrees of one repository do not split the
@@ -2445,6 +2556,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14c-1. The post-mutation digest is emitted to a file, after the last row
+# --- section: 14c-1 | group: base | covers: exec, snapshot, digest-path, act, grade | anchors: 방출을 켜도 exec 의 stdout 은 래핑된 명령의 stdout 그 자체다 ---
 #
 # Every acting call carries `--snapshot-digest`, and the only way to learn that
 # value was a separate `snapshot` call whose entire purpose was to read back a
@@ -2685,6 +2797,7 @@ check "행위 동사 밖에서는 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer
+# --- section: 14d | group: base | covers: snapshot, act | anchors: 생성 등급 없는 problem 행은 거부된다 ---
 #
 # Five of the twelve declared series were written by nothing, and each one made
 # a check that reads it answer the same thing forever: the cost boundary read an
@@ -2826,6 +2939,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14e. exit 7 tells a STAGE what to do, because only the router can do the
+# --- section: 14e | group: base | covers: snapshot, plan, exec | anchors: I-bis: 표면이 움직인 상태에서 plan 도 7 을 낸다 ---
 # prescribed thing
 #
 # The disposition is "stop and tell the user", and a stage can do neither half:
@@ -2885,6 +2999,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14f. A documentless run does not get its base's PARENT
+# --- section: 14f | group: base | covers: - | anchors: 문서 없는 런은 베이스의 부모를 열지 않는다 ---
 #
 # The workspace widening is for a document that belongs to no repository. A run
 # with no document sets both document variables to the run's base, so a guard
@@ -2900,6 +3015,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14g. A cut stage is RE-ATTACHED, not re-run — and the id is checked
+# --- section: 14g | group: base | covers: snapshot, act | anchors: 게이트가 래퍼에 --resume 을 넘길 수 있다 ---
 #
 # The contract already said so and the wrapper already accepted `--resume`;
 # nothing carried the router's intent to it, so the only recovery was a full
@@ -2943,6 +3059,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14h. The launch path is actually ENTERED, with a stub CLI
+# --- section: 14h | group: base | covers: snapshot, act | anchors: 스텁 CLI 로 스테이지 기동이 끝까지 간다 ---
 #
 # Every assertion above stops at `gate_launch_stage`'s argument checks, because
 # the fixture has no CLI binary and the function returns 127 before doing
@@ -3032,6 +3149,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14i. The render answers "is this still going?"
+# --- section: 14i | group: base | covers: snapshot | anchors: 종단 표시가 없으면 진행 중이라고 답한다 ---
 #
 # It did not. The heartbeat a watcher prints goes to a stdout its launching tool
 # call already closed, so it reaches nobody; the render carried no live-stage
@@ -3070,6 +3188,7 @@ rm -f "$RD_G/done"
 
 # ---------------------------------------------------------------------------
 # 14j. The grant reaches every declared worktree, and digest tools are readable
+# --- section: 14j | group: base | covers: grade, plan, snapshot | anchors: 이 게이트에 없는 오케스트레이터 스크립트는 버전 어긋남으로 안내된다 ---
 #
 # `실행 워크트리` was wired to the act's cwd and not to the stage's readable set,
 # so a stage woke in a worktree it could not read. And no other target's main
@@ -3251,6 +3370,7 @@ set_exec_wt "" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 14k. The deadline is a dispatch gate, and it is read
+# --- section: 14k | group: base | covers: snapshot, plan, act | anchors: 마감이 지나면 스테이지 디스패치가 거부된다 ---
 #
 # It was frozen into the binding digest and compared at entry, and then nothing
 # read it — the field appears nowhere in this file and the driver's own helper
@@ -3292,6 +3412,7 @@ check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 14l. The authorization list can grow, and only through the gate
+# --- section: 14l | group: base | covers: snapshot, act, exec | anchors: 유도의 입력이 움직이면 인가 목록이 자란다 ---
 #
 # It used to be written once and never again, so a directory kickoff could not
 # know about — a segment's own worktree, a repository added at layer 1 — was
@@ -3372,6 +3493,7 @@ set_exec_wt ""
 
 # ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
+# --- section: 15 | group: base | covers: grade, plan, snapshot | anchors: 미상 거부가 표를 넓히라는 쪽과 다시 쓰라는 쪽을 구별해 말한다 ---
 #
 # Three defects met here and left no spelling that reached `gh` at all: the
 # sanitized PATH made the bare name unresolvable, the table read argv0 verbatim
@@ -3450,7 +3572,8 @@ gateL() {
 HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
 
 # ---------------------------------------------------------------------------
-# 15. A stage may not be dispatched into a segment with no `segment` row
+# 15b. A stage may not be dispatched into a segment with no `segment` row
+# --- section: 15b | group: base | covers: act, plan | anchors: segment 행 없는 세그먼트로는 스테이지를 띄우지 못한다 ---
 #
 # The progress vector is built from those rows, so a run that skips them has a
 # vector that cannot move and a stagnation boundary that fires on a healthy
@@ -3501,6 +3624,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
+# --- section: 16 | group: base | covers: act, exec | anchors: 근거 없는 해소 행은 거부된다 ---
 #
 # Counting raw rows made it a one-way latch: a ledger row is never deleted, so a
 # single run-scope block — a watcher false positive included — took the run's
@@ -3561,6 +3685,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 16b. The disposition token, one fixture per value
+# --- section: 16b | group: base | covers: act | anchors: 미충족이 하나도 없으면 처분은 충족이다 ---
 #
 # One shared helper is safer than three copies of the same test only if
 # something binds its one drifting input — a substring match on the Korean
@@ -3613,6 +3738,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 17. The authorization record is READ, on the router path
+# --- section: 17 | group: base | covers: grade | anchors: 인가 기록이 없으면 어떤 동사도 서지 않는다 ---
 #
 # `check_grant` lives on the fixed graph and the router never enters it, so a
 # run could execute with a grant that was absent, foreign, or disagreed with the
@@ -3735,6 +3861,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 19. The nine grant fields are checked for presence
+# --- section: 19 | group: base | covers: grade | anchors: 아홉 필드 중 하나가 빠지면 선다 ---
 #
 # The block is frozen at append and has no rewrite form, so a field omitted is
 # omitted for the life of the run. Nothing compared the set, and the kickoff
@@ -3753,6 +3880,7 @@ cp "$GBAK2" "$FX_GRANT"
 
 # ---------------------------------------------------------------------------
 # 20. A resolved approval opens the act; a voided one closes it
+# --- section: 20 | group: base | covers: act, plan | anchors: 사전 인가 밖 행위는 승인을 발행한다 ---
 #
 # Nothing consumed the resolution, so `close` moved the row to `승인` and the
 # next attempt at the same act took the same exit 5 — a loop that never closed.
@@ -3780,6 +3908,7 @@ check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 
 # ---------------------------------------------------------------------------
 # 21. A live stage suppresses the stagnation boundary
+# --- section: 21 | group: base | covers: - | anchors: B1 이 살아 있는 스테이지가 있으면 판정을 건너뛴다 ---
 #
 # The vector cannot move while a stage works — it is manifest-derived plus
 # segment rows plus obligations plus cycles, and a working stage writes none of
@@ -3799,6 +3928,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 22. A done proposal is not judged by the deadline's merge arm
+# --- section: 22 | group: base | covers: - | anchors: 마감 게이트가 종료 제안을 면제한다 ---
 #
 # It has no act behind it, so `--cutpoint` carries no meaning there — yet the
 # deadline read it and refused, leaving a past-deadline run unable to record
@@ -3812,6 +3942,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 23. The settings directory is serialized for readers and writers alike
+# --- section: 23 | group: base | covers: - | anchors: 재유도가 락 안에서 돈다 ---
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'gate_settings_lock "$lk" || return 0'; then
   ok "재유도가 락 안에서 돈다"
@@ -3826,6 +3957,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 24. terraform is graded by its SUBCOMMAND
+# --- section: 24 | group: base | covers: grade ---
 #
 # The name alone graded `외부상태변경`, so `terraform plan` — which the pipeline
 # contract classifies as a read — issued an approval every time and an
@@ -3843,6 +3975,7 @@ graded_as '읽기'         'fmt -check 는 고치지 않는다'           -- ter
 
 # ---------------------------------------------------------------------------
 # 25. Termination condition 10 — the authorized clauses are read
+# --- section: 25 | group: base | covers: snapshot | anchors: 정산되지 않은 종료 절이 있으면 종료 제안이 기각된다 ---
 #
 # The nine measured the ledger's shape and never the thing the user authorized
 # the run against, so a run with clauses unsettled ended as `충족`. The fixture
@@ -3900,6 +4033,7 @@ check "불가능으로도 정산할 수 있다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 26. Grade-1 judgments have a writer
+# --- section: 26 | group: base | covers: - | anchors: 되돌리는 법이 없는 판단 행은 거부된다 ---
 # ---------------------------------------------------------------------------
 # A grade-1 judgment also carries `판단 부류`, because that is the field arm (a)
 # of the auto-adoption floor reads and the floor is consulted on every grade-1
@@ -3924,6 +4058,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 27. `완료` is a terminal segment state
+# --- section: 27 | group: base | covers: act | anchors: 완료 상태가 어휘에 있다 ---
 #
 # A stage that produced its output and had nothing to merge could only be
 # recorded as a merge that did not happen or a blockage that was a success.
@@ -3949,6 +4084,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 28. The prose escape in the next-obligation check is gone
+# --- section: 28 | group: base | covers: - | anchors: 근거 문자열만으로 다음 의무를 지목했다고 인정하지 않는다 ---
 #
 # Its own comment says prose does not count, and its last line accepted any
 # rationale containing one Korean word.
@@ -3960,7 +4096,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 29. MOVED — see section 32 at the end of this file.
+# 29. MOVED — see section 37 at the end of this file.
 #
 # It asserted the fulfillment arm in full: evidence-less fulfillment refused, a
 # fulfillment carrying only `근거` accepted, a non-existent obligation refused,
@@ -3973,6 +4109,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 30. git is graded by its SUBCOMMAND, not by the word `git`
+# --- section: 30 | group: base | covers: grade, exec | anchors: 정직하게 선언한 워크트리 생성이 exit 6 으로 거절되지 않는다 ---
 #
 # `worktree`, `branch` and `config` all sat on the read arm, so creating a
 # working tree, deleting a ref and rewriting $HOME's own configuration each
@@ -4007,7 +4144,8 @@ else
   bad "워크트리 생성" "통과했는데 경로가 없다: $msg"
 fi
 # ---------------------------------------------------------------------------
-# 31. Three holes in the grading table, and each one cost a stage its night
+# 30b. Three holes in the grading table, and each one cost a stage its night
+# --- section: 30b | group: base | covers: grade ---
 #
 # A command with no row falls to `등급 미상`, and that refuses. The stage is
 # then left with three moves — break whatever rule sent it there, hide argv0
@@ -4041,7 +4179,8 @@ graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
-# --- 31c. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
+# --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
+# --- section: 30b-1 | group: base | covers: grade ---
 #
 # 셋 다 `읽기` 행에 무조건으로 앉아 있었다. 그래서 `command git merge` 가 정직하게
 # `--surface 읽기` 를 신고하면 신고와 등급이 일치했고, 리뷰 룰은 읽기 등급에서 조기
@@ -4081,7 +4220,8 @@ graded_as '읽기'         '평범한 rg 검색은 읽기다'                   
 graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소된다' -- lockf -k -t 0 /tmp/l.lock command git merge seg
 
 # ---------------------------------------------------------------------------
-# 31b. The narrowing axis reads through the same wrappers the grader does
+# 30c. The narrowing axis reads through the same wrappers the grader does
+# --- section: 30c | group: base | covers: grade ---
 #
 # `gate_history_integration` is what keeps the review rule from demanding a
 # review record of every `mkdir` that shares the `워크트리쓰기` cell with a local
@@ -4145,6 +4285,7 @@ graded_as '외부상태변경' '경로로 부른 브라우저 도구도 같다' 
 
 # ---------------------------------------------------------------------------
 # 32. A middle `grep` that matches nothing must not kill the verb
+# --- section: 32 | group: base | covers: act | anchors: run 스코프 blocked 가 없는 원장에서 죽지 않는다 ---
 #
 # `set -e` and `pipefail` are both on — the gate sources the driver, which sets
 # them. So an unguarded `grep` in the MIDDLE of a pipeline turns "found nothing"
@@ -4192,6 +4333,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 33. A stage that parked itself, a worktree that is the same repository, and a
+# --- section: 33 | group: base | covers: snapshot, act | anchors: 중단 기록의 닫는 문면이 마지막 비어 있지 않은 줄이다 ---
 #     manifest whose clauses do not parse
 #
 # The three below were each measured rather than imagined. A stage refuted a
@@ -5405,6 +5547,7 @@ REPO2="$WORK/repo2"; mkdir -p "$REPO2"
   && echo x > x.txt && git add -A && git commit -qm x ) >/dev/null 2>&1
 
 # --- 31a. The gate checks its own scope vocabulary -------------------------
+# --- section: 31a | group: cone | covers: act | anchors: 게이트가 스코프 어휘를 검사한다 ---
 #
 # Until now the only code comparing scope tokens was `park()` in the driver, and
 # the gate spelled every one of them as a literal. A misspelled scope is not a
@@ -5422,6 +5565,7 @@ gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --sur
 check "「스코프」 필드가 아예 없는 blocked 행도 거절된다" "$rc" "2"
 
 # --- 31b. `선행` — absence, `없음`, and monotonicity ------------------------
+# --- section: 31b | group: cone | covers: act | anchors: 앵커 세그먼트 행이 기록된다 ---
 seg_row SA "$CONE_A" 상태=실행중 선행=없음
 check "앵커 세그먼트 행이 기록된다" "$rc" "0"
 # ABSENCE AND `없음` ARE DIFFERENT THINGS, and write time is the only moment at
@@ -5440,6 +5584,7 @@ seg_row SX "$REPO2" 상태=실행중 선행=없음
 check "다른 레포의 세그먼트 행도 기록된다" "$rc" "0"
 
 # --- 31c. The cone's two axes cover different windows ----------------------
+# --- section: 31c | group: cone | covers: act | anchors: 앵커는 무조건 원뿔에 든다 ---
 cone1=$(cone_of SA "SA 가 감사 발견으로 멈췄다")
 case ",$cone1," in
   *,SA,*) ok "앵커는 무조건 원뿔에 든다" ;;
@@ -5493,6 +5638,7 @@ case "$msg" in
 esac
 
 # --- 31d. The cone is a predicate, not a frozen set ------------------------
+# --- section: 31d | group: cone | covers: act | anchors: 아직 A 와 무관한 F 의 행이 기록된다 ---
 seg_row SF "$CONE_F" 상태=실행중 선행=없음
 check "아직 A 와 무관한 F 의 행이 기록된다" "$rc" "0"
 cone3=$(cone_of SA "리베이스 전")
@@ -5508,6 +5654,7 @@ case ",$cone4," in
 esac
 
 # --- 31e. An unmeasurable ancestry is FAIL-CLOSED --------------------------
+# --- section: 31e | group: cone | covers: act | anchors: 곧 사라질 워크트리의 세그먼트 행이 기록된다 ---
 #
 # `--is-ancestor` answers 1 for "no" and 128 for "that object is not here".
 # Folding them turns every fault into "not in the cone, so nothing is held",
@@ -5544,6 +5691,7 @@ case ",$cone5," in
 esac
 
 # --- 31f. A file-set escape raises its own cone ----------------------------
+# --- section: 31f | group: cone | covers: act | anchors: 선언 파일 집합을 실은 세그먼트 행이 기록된다 ---
 #
 # git answers "was B built on A" and cannot answer "did this segment touch
 # something it did not declare" at all. The only input to that judgment is
@@ -5583,6 +5731,7 @@ case "$crow" in
 esac
 
 # --- 31g. The router's declaration is checked, and only one way -------------
+# --- section: 31g | group: cone | covers: act | anchors: 유도 결과의 진부분집합을 선언하면 거절된다 ---
 gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HN)" --rationale x \
       -- 스코프=cone 원인=막힘 "앵커 세그먼트=SA" "의존 세그먼트=SA" 사유="좁게 선언한다" \
@@ -5595,6 +5744,7 @@ gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --sur
 check "상위집합 선언은 통과한다 (넓히는 방향은 열려 있다)" "$rc" "0"
 
 # --- 31h. `선행` has a SECOND consumer, and that is what costs the lie ------
+# --- section: 31h | group: cone | covers: act | anchors: 선행이 착지하지 않았으면 후행 디스패치가 막힌다 ---
 #
 # With only the cone reading it, declaring narrowly would be free — a segment
 # that names nobody simply stays out of the cone, and staying out is the
@@ -5624,6 +5774,7 @@ case "$msg" in
 esac
 
 # --- 31i. Grade 2 becomes the approval its own refusal used to promise ------
+# --- section: 31i | group: cone | covers: act | anchors: 등급 2 판단은 절단점=판단 승인으로 응답한다 ---
 #
 # The old refusal said in as many words that grade 2 is raised to an approval,
 # while refusing — and no such path existed anywhere in the tree.
@@ -5663,6 +5814,7 @@ nj2=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' 
 check "같은 판단을 두 번 제출해도 승인이 하나다 (id 가 판단 내용에서 유도된다)" "$nj2" "$nj"
 
 # --- 31j. The auto-adoption floor is a UNION of two arms --------------------
+# --- section: 31j | group: cone | covers: act | anchors: 매니페스트가 미리 선언한 부류는 채택된다 (팔 a) ---
 #
 # ARM (a) — declared in advance. The undo here is prose on purpose, so arm (b)
 # cannot admit it and only the manifest declaration can.
@@ -5699,6 +5851,7 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
 check "어휘 밖 판단 부류는 거절된다" "$rc" "2"
 
 # --- 31k. The forbidden classes are named, and refused at freeze time -------
+# --- section: 31k | group: cone | covers: snapshot | anchors: 금지 부류를 자동 채택으로 선언하면 매니페스트 검사가 하드 스톱한다 ---
 #
 # Leaving them out of the vocabulary does not stop the decision from being made;
 # it forces whoever records it to borrow a permitted token, and that is the leak.
@@ -5725,6 +5878,7 @@ else
 fi
 
 # --- 31l. Termination condition 2 excludes the question approval ------------
+# --- section: 31l | group: cone | covers: act | anchors: 조건 2 는 절단점=판단 승인을 세지 않는다 (행위 승인 1건만 센다) ---
 #
 # An act approval's answer is valid NOW and its window closes with the night; a
 # question's answer is an input to work that has not begun, so it is durable and
@@ -5754,6 +5908,7 @@ case "$msg" in
 esac
 
 # --- 31m. A termination clause can be put ON HOLD, against a named question --
+# --- section: 31m | group: cone | covers: act | anchors: 보류 절의 근거가 열린 판단 승인을 지목하지 않으면 거절된다 ---
 #
 # `불가능` ends the clause forever; `보류` says a person's answer is outstanding
 # and the successor picks it up. So the evidence has to BE that question — an
@@ -5768,6 +5923,7 @@ gateN act --manifest "$NM" --kind clause --target infra --cutpoint 커밋 --surf
 check "열린 절단점=판단 승인 id 를 지목하면 보류로 정산된다" "$rc" "0"
 
 # --- 31n. `close` carries the answer BYTES for a question approval ----------
+# --- section: 31n | group: cone | covers: close | anchors: 판단 승인이 트랜스크립트로 닫힌다 ---
 #
 # For an act approval the answer is binary, so the fixed literal lost nothing.
 # A question's answer is what the next step consumes: the row carries the
@@ -5818,6 +5974,7 @@ else
 fi
 
 # --- 31o. A judgment a STAGE emitted goes through the same floor -------------
+# --- section: 31o | group: cone | covers: act | anchors: 방출 실험용 세그먼트 행이 기록된다 ---
 #
 # A stage writes no sidecar and holds no gate verb, so its only channel for a
 # decision is its terminal message. If that path had its own copy of the floor,
@@ -5846,6 +6003,7 @@ case "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단'
 esac
 
 # --- 31p. The vocabulary lint, run against a fixture tree -------------------
+# --- section: 31p | group: cone | covers: - | anchors: 린트 픽스처가 실물 드라이버에서 어휘 SOT 를 옮긴다 ---
 #
 # There are zero legacy `판단 부류=` rows, which is exactly what a NEW field buys
 # and what a reuse of `자율 승인.kind` could never have: the closed set can be
@@ -6020,6 +6178,7 @@ else
 fi
 
 # --- 31q. The auto-adoption floor's safety argument, made true ---------------
+# --- section: 31q | group: cone | covers: snapshot, act, exec | anchors: 픽스처 매니페스트의 사본이 얼린 집합 대조를 통과한다 ---
 #
 # The code stated arm (a)'s safety as four reasons and two of them were false:
 # the binding digest did not serialize `자동 채택` rows, and the rule named as
@@ -6073,6 +6232,7 @@ case "$msg" in
 esac
 
 # --- 31r. The forbidden classes are refused at RUNTIME too ------------------
+# --- section: 31r | group: cone | covers: act | anchors: 금지 부류는 실행 가능한 되돌리기로도 채택되지 않는다 (팔 b 가 금지를 본다) ---
 #
 # `judgment_class_forbidden` had one caller — the freeze-time check — and that
 # one guards arm (a). Arm (b) branched on the undo command's grade alone, so a
@@ -6099,6 +6259,7 @@ else
 fi
 
 # --- 31s. `gate_clip` measures and cuts in the SAME unit --------------------
+# --- section: 31s | group: cone | covers: act | anchors: 상한 너머 길이의 한국어 판단도 승인을 연다 ---
 #
 # `wc -c` counts bytes and `cut -c` counts characters here, so a 400-byte budget
 # returned up to ~1200 bytes and the marker went on top of that. Both ends of a
@@ -6129,6 +6290,7 @@ case "$(last_judgment_approval)" in
 esac
 
 # --- 31t. A `|` in a field value cannot splice the row ----------------------
+# --- section: 31t | group: cone | covers: - | anchors: 필드 값 안의 파이프가 새 필드를 만들지 못한다 ---
 #
 # The write-time checks read the argv LIST and every reader splits the row TEXT,
 # so a pipe inside one argv element was invisible to the first and a new field
@@ -6153,6 +6315,7 @@ case "$( { grep -F '`blocked`' "$LEDGER2" || true; } | tail -1)" in
 esac
 
 # --- 31u. `선행` — one normalization for the reader and the floor -----------
+# --- section: 31u | group: cone | covers: act | anchors: 공백 스펠링 픽스처의 첫 세그먼트 행이 기록된다 ---
 #
 # The reader split on comma AND whitespace; the floor deleted whitespace and
 # split on comma only. So `선행=SA SB` — the spacing a design document's slice
@@ -6184,6 +6347,7 @@ case "$msg" in
 esac
 
 # --- 31v. An over-long declared cone is refused by LENGTH -------------------
+# --- section: 31v | group: cone | covers: act | anchors: 상한을 넘는 「의존 세그먼트」 선언은 append 이전에 거절된다 ---
 LONGDEP=$(awk 'BEGIN{ s="SEG0000"; for (i = 1; i < 60; i++) s = s ",SEG" i; printf "%s", s }')
 gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
       --snapshot-digest "$(HN)" --rationale x \
@@ -6195,6 +6359,7 @@ case "$msg" in
 esac
 
 # --- 31w. A judgment approval's identity is the whole question --------------
+# --- section: 31w | group: cone | covers: act, close | anchors: 승인 id 는 질문 문면 전체에서 유도된다 (기준만 같은 다른 질문은 다른 승인이다) ---
 #
 # The id hashed `기준` alone while the row carried `기준 — 근거`, and a judgment
 # approval has no binding tuple, so nothing about it ever goes stale. Two
@@ -6252,6 +6417,7 @@ check "소진된 답의 재제출이 그 승인을 다시 대기로 열지 않�
       "승인"
 
 # --- 31x. `close` records the ANSWER, not the transport frame ---------------
+# --- section: 31x | group: cone | covers: act, close | anchors: 텍스트 블록 줄은 답 프레임이 아니라 닫지 않는다 (원시 줄 폴백 없음) ---
 #
 # A harness line puts `message.content` behind `uuid`, `parentUuid`, `sessionId`
 # and `timestamp` as an array of blocks. Recorded verbatim, the field the
@@ -6290,6 +6456,7 @@ case "$rrow" in
 esac
 
 # --- 31y. One question holds ONE clause -------------------------------------
+# --- section: 31y | group: cone | covers: act | anchors: 둘째 절은 자기 물음에 대해 보류로 정산된다 ---
 #
 # Condition 10 is the only one of the ten that measures what the USER authorized
 # the run against, and `보류` settles it — so one grade-2 judgment cited by every
@@ -6313,6 +6480,7 @@ case "$msg" in
 esac
 
 # --- 31z. A judgment a STAGE emitted, in both directions --------------------
+# --- section: 31z | group: cone | covers: act | anchors: 채택 실험용 세그먼트 행이 기록된다 ---
 #
 # 31o asserts only that a judgment which FAILS the union writes no row, and that
 # assertion holds when the absorber does not run at all — deleting the call
@@ -6383,6 +6551,7 @@ else
 fi
 
 # --- 31ab. Arm (b) admits the grade that CHANGES something ------------------
+# --- section: 31ab | group: cone | covers: act | anchors: 아무것도 바꾸지 않는 되돌리기는 팔 (b) 를 열지 못한다 (하한) ---
 #
 # The arm accepted `읽기` beside `워크트리쓰기`, and the grading table's first
 # row reads `cat|ls|find|grep|…` as `읽기` — so the least powerful grade in the
@@ -6419,6 +6588,7 @@ gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoin
 check "워크트리를 되돌리는 명령은 여전히 채택된다 (팔 b 가 통째로 죽지 않았다)" "$rc" "0"
 
 # --- 31ac. The manifest write guard measures the FILE, not the argv string --
+# --- section: 31ac | group: cone | covers: exec | anchors: 같은 파일의 다른 철자로도 매니페스트 쓰기가 거절된다 ---
 #
 # 31q asserts the happy path — `tee "$NM"`, one argv element equal to the
 # manifest — and whole-element equality passes that while leaving two ordinary
@@ -6477,6 +6647,7 @@ case "$msg" in
 esac
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
+# --- section: 31ad | group: cone | covers: act | anchors: 워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다 ---
 #
 # `선행` is pure ledger data and no repository probe can inform it, yet it was
 # evaluated after that probe — so two ordinary declarations were thrown away. A
@@ -6516,6 +6687,7 @@ case ",$cone7," in
 esac
 
 # --- 31ae. Two segments on ONE tip are not each other's ancestors -----------
+# --- section: 31ae | group: cone | covers: act | anchors: 한 워크트리에 얹힌 첫 세그먼트 행이 기록된다 ---
 #
 # `git merge-base --is-ancestor X X` is true, which answers the question git was
 # asked and not the one the ancestry axis asks. That axis trades on "the member
@@ -6547,6 +6719,7 @@ case ",$cone8," in
 esac
 
 # --- 31af. A path with a space and a Korean path survive the escape check ---
+# --- section: 31af | group: cone | covers: act | anchors: 공백과 한글이 든 파일 집합을 선언한 세그먼트 행이 기록된다 ---
 #
 # `for f in $(git diff --name-only)` tore `docs/설계 노트.md` into two fragments,
 # and the identical splitting on the declaration side tore `설계 문서/` into two
@@ -6578,6 +6751,7 @@ case ",$cone9," in
 esac
 
 # --- 31ag. The defect-identity seed filters terminal states, and matches the
+# --- section: 31ag | group: cone | covers: act | anchors: 동일성 씨앗의 앵커 세그먼트 행이 기록된다 ---
 #           WHOLE field value ------------------------------------------------
 #
 # THE WHOLE TERM WAS UNCOVERED. No fixture in this section wrote a `problem` row,
@@ -6633,6 +6807,7 @@ case ",$cone10," in
 esac
 
 # --- 31ah. The ancestry probe's undecidable answer is actually REACHED -------
+# --- section: 31ah | group: cone | covers: act | anchors: 곧 팁을 잴 수 없게 될 세그먼트 행이 기록된다 ---
 #
 # 31e removes a worktree, which settles the pair inside `gate_cone_edge`'s
 # repository arm — `gate_ancestor_of` is never called there, so its undecidable
@@ -6694,6 +6869,7 @@ else
 fi
 
 # --- 31ai. `close` reads the answer by LABEL EQUALITY, and a flag only agrees -
+# --- section: 31ai | group: cone | covers: act, close, snapshot | anchors: 거부 라벨 실험용 판단이 승인으로 올라간다 ---
 #
 # The recording path once held one literal — `상태=승인` — and then a prose
 # scan whose vocabulary was the ledger's own words. Neither is a mechanism: the
@@ -6815,6 +6991,7 @@ pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인
 check "긍정 답변의 상태는 승인이다" "$pst" "승인"
 
 # --- 31aj. An answered approval is CONSUMED, a closed one is never re-opened -
+# --- section: 31aj | group: cone | covers: act, close | anchors: 재제출 실험용 판단이 승인으로 올라간다 ---
 #
 # Issuing the question was half a lifecycle. A grade-2 judgment never reaches the
 # resolution block on the acting path — that block runs only when the
@@ -6906,6 +7083,7 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
       "거부"
 
 # --- 31ak. An act approval EXPIRES when the tree it named moves -------------
+# --- section: 31ak | group: cone | covers: act, close, plan | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
 #
 # `구속 튜플` was written at issue time and read by NOTHING in the tree, so the
 # property stated beside it — an act approval's answer is valid only against the
@@ -6972,6 +7150,7 @@ fi
 check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$head_before"
 
 # --- 31al. The `done` file names every held clause and every question -------
+# --- section: 31al | group: cone | covers: snapshot, close | anchors: 종료 픽스처의 세그먼트 행이 기록된다 ---
 #
 # `gate_held_clause_ids` had ZERO coverage: nothing in this suite ever opened the
 # `done` file, so deleting the function whole left the suite green. It is also
@@ -7305,6 +7484,7 @@ else rm -f "$DONE_DIR/surface-digest"; fi
 rm -f "$DONE_DIR/done"
 
 # --- 31am. An ineligible frame is NAMED and held, and writes nothing --------
+# --- section: 31am | group: cone | covers: act, close | anchors: 다이얼로그 취소 프레임은 닫지 않는다 (exit 5) ---
 #
 # Rung 3 of the close ladder. A dismissed dialog, a collapsed call, another
 # tool's result and a line that is no frame at all each leave the approval
@@ -7400,6 +7580,7 @@ check "answers 맵에 그 슬롯의 엔트리가 없으면 닫지 않는다 (exi
 check "그 경우 처분 사유=슬롯 부재 를 실은 대기 행이 붙는다" "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '처분 사유')" "슬롯 부재"
 
 # --- 31an. Latest answer wins, first file wins, and `철회` can still close ---
+# --- section: 31an | group: cone | covers: snapshot | anchors: 같은 파일의 두 답 프레임 중 뒤의 것이 이긴다 (최신 우선) ---
 #
 # UD8 inherited today's selection rule and made it a declaration: between two
 # answer frames for one id the LATER one decides, and the search stops at the
@@ -7494,6 +7675,7 @@ for bid in $( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '형태 회�
 done
 
 # --- 31ao. The manifest guard measures the FILE through three arms ----------
+# --- section: 31ao | group: cone | covers: exec | anchors: 글로브로 한 글자 바꾼 철자도 매니페스트 쓰기로 거절된다 ---
 #
 # 31ac closed the two spellings it named and left the shape underneath: the test
 # was the manifest's basename appearing somewhere in some argv element, so any
@@ -7539,6 +7721,7 @@ case "$msg" in
 esac
 
 # --- 31ar. A read grade does not carry a delegating command past the guard ---
+# --- section: 31ar | group: cone | covers: exec | anchors: 매니페스트에 쓰려는 위임자가 거절된다 ---
 #
 # 31ao measured the three arms and every one of its fixtures declared a WRITE.
 # The grade itself was the way out: `find` used to grade `읽기` from argv0 alone,
@@ -7631,6 +7814,7 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
 check "lockf 로 감싼 글로브 철자도 거절된다" "$rc" "3"
 
 # --- 31as. An exempt kind crossed with the `exec` verb, which nothing walked --
+# --- section: 31as | group: cone | covers: exec | anchors: 면제된 kind 를 단 exec 의 매니페스트 쓰기가 거절된다 ---
 #
 # The guard exemption and the pinned grade are both keyed on the caller-supplied
 # kind and neither looked at the verb, while only `act` reaches a launcher —
@@ -7679,6 +7863,7 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
 check "kind 없는 exec 의 매니페스트 쓰기는 가드가 그대로 거절한다" "$rc" "3"
 
 # --- 31ap. The absorber disposes of the issuer's return, all three of them --
+# --- section: 31ap | group: cone | covers: act, close | anchors: 형식 깨진 방출 실험용 세그먼트 행이 기록된다 ---
 #
 # Every emission fixture before this one feeds the parser input it can read, and
 # every one of them lands on the issuer's `발행` arm. The other two returns —
@@ -7778,6 +7963,7 @@ else
 fi
 
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------
+# --- section: 31aq | group: cone | covers: snapshot, close | anchors: 실행 워크트리를 선언한 대상의 행위가 승인을 발행한다 ---
 #
 # The freeze and the comparison both read `메인 워크트리` while the act itself
 # runs in `실행 워크트리`, and for a pr or branch anchor those are never the same
@@ -7890,6 +8076,7 @@ else
 fi
 
 # --- 31aa. A question does not switch the boundaries off --------------------
+# --- section: 31aa | group: cone | covers: act, snapshot, close, exec | anchors: 경계 단언의 전제인 판단 승인이 열린다 ---
 #
 # `gate_pending_approval_ids` gained a narrowing argument and three of its four
 # call sites got one. `gate_boundaries` was the fourth, so a `절단점=판단`
@@ -7957,6 +8144,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
+# --- section: 12b | group: base | covers: snapshot, act | anchors: B3 이 한 창 안에서 예산을 넘기면 발동한다 ---
 #
 # The budget's sentence has always said "since the last progress move" while the
 # count ran over the whole ledger, so past the bound the boundary fired on every
@@ -9106,6 +9294,7 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did
+# --- section: 12c | group: base | covers: - | anchors: 라우터의 읽기 초과 행위가 진전 벡터를 움직인다 ---
 #
 # The vector saw the manifest, segment rows, cycle rows and obligations — and
 # nothing the router itself performs between stages. Commits, pushes, pull
@@ -9254,7 +9443,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 30. 슬라이스 A 회귀 집합 — 리뷰 정책 축이 실제로 게이트에 도달하는가
+# 35. 슬라이스 A 회귀 집합 — 리뷰 정책 축이 실제로 게이트에 도달하는가
 #
 # 이 블록의 모든 섹션은 자기 매니페스트·자기 원장·자기 저장소를 만든다. 공용
 # 픽스처를 쓸 수 없는 이유는 둘이다. 첫째, 섹션 9 가 공유 매니페스트에
@@ -9492,7 +9681,8 @@ sa_fulfil() {
 
 sa_names_rule() { case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 0 ;; esac; return 1; }
 
-# --- 1. 음성 대조군 — 첫 머지가 아니라 두 번째 머지로 잰다 -------------------
+# --- 35-1. 음성 대조군 — 첫 머지가 아니라 두 번째 머지로 잰다 -------------------
+# --- section: 35-1 | group: sa | covers: act | anchors: 1: 룰 켬 — 정책을 실은 세그먼트 행이 통과한다 ---
 #
 # 첫 머지로는 두 경로가 구별되지 않는다: `선머지후리뷰` 의 첫 머지는 룰이 켜져
 # 있으면 정책에 의해 통과하고 꺼져 있으면 검사가 없어 통과하며, 발행은 룰 루프
@@ -9529,7 +9719,8 @@ check "1: 룰 끔 — 같은 두 번째 머지가 통과한다 (스위치가 진
 # 경로가 이 `끔` 창이다.
 check "4b-i: 통과했는데도 열린 의무 위에 중복 발행하지 않는다" "$(sa_ob_count)" "$n1"
 
-# --- 2. #569 의 핵심 — 룰이 켜진 채 cycle 행 0 건으로 머지가 통과한다 --------
+# --- 35-2. #569 의 핵심 — 룰이 켜진 채 cycle 행 0 건으로 머지가 통과한다 --------
+# --- section: 35-2 | group: sa | covers: act | anchors: 2: 룰이 켜진 채 cycle 행 0 건의 선머지후리뷰 머지가 통과한다 (오늘은 exit 3) ---
 sa_new '#569 핵심' 선머지후리뷰
 sa_seg_row S2 선머지후리뷰
 nb=$(sa_ob_count); ncyc=$( { grep -cF '`cycle`' "$SA_LEDGER" || true; } )
@@ -9542,7 +9733,8 @@ check "2: 세그먼트를 싣는다" "$(sa_field "$orow" '세그먼트')" "S2"
 check "2: 생성 등급이 이 행위의 축2 다" "$(sa_field "$orow" '생성 등급')" "외부상태변경"
 check "2: 부수 효과로 cycle 행이 생기지 않는다" "$( { grep -cF '`cycle`' "$SA_LEDGER" || true; } )" "$ncyc"
 
-# --- 4c. 의무 행이 머지된 커밋을 지목한다 ------------------------------------
+# --- 35-4c. 의무 행이 머지된 커밋을 지목한다 ------------------------------------
+# --- section: 35-4c | group: sa | covers: - | anchors: 4c: 그 값이 세그먼트 워크트리의 머지 직전 HEAD 다 ---
 SA2_ANCHOR=$(sa_field "$orow" '머지 커밋')
 if [ "$SA2_ANCHOR" = "-" ] || [ -z "$SA2_ANCHOR" ]; then
   bad "4c 머지 커밋" "의무 행이 머지될 커밋을 지목하지 않는다: '${SA2_ANCHOR:--}'"
@@ -9553,14 +9745,16 @@ check "4c: 그 값이 세그먼트 워크트리의 머지 직전 HEAD 다" \
   "$SA2_ANCHOR" "$( cd "$SA_SEGWT" && git rev-parse HEAD )"
 check "4c: 대상 별칭을 함께 싣는다" "$(sa_field "$orow" '대상')" "main"
 
-# --- 3. 같은 세그먼트의 두 번째 머지, 의무가 미이행인 채 → 거절 --------------
+# --- 35-3. 같은 세그먼트의 두 번째 머지, 의무가 미이행인 채 → 거절 --------------
+# --- section: 35-3 | group: sa | covers: act | anchors: 3: 미이행 의무가 있는 세그먼트의 두 번째 머지는 거절이다 ---
 nb=$(sa_ob_count)
 sa_merge S2
 check "3: 미이행 의무가 있는 세그먼트의 두 번째 머지는 거절이다" "$rc" "3"
 if sa_names_rule; then ok "3: 거절 문면이 리뷰-후-머지 를 지명한다"; else bad "3 거절 이름" "$msg"; fi
 check "3: 거절이므로 의무 행이 늘지 않는다" "$(sa_ob_count)" "$nb"
 
-# --- 4. 의무를 닫은 뒤의 같은 머지 — 미착지 갈래이고, 통과가 재발행을 부른다 --
+# --- 35-4. 의무를 닫은 뒤의 같은 머지 — 미착지 갈래이고, 통과가 재발행을 부른다 --
+# --- section: 35-4 | group: sa | covers: act | anchors: 4: 베이스가 아닌 이름으로 민 머지도 통과하고 의무를 남긴다 ---
 #
 # 이 픽스처가 미착지인 이유는 원격의 부재가 아니다. 원격은 실재하는 베어
 # 저장소이고 `git fetch origin` 은 rc=0 으로 성공한다 — 머지 행위가 세그먼트
@@ -9595,7 +9789,8 @@ check "4: 의무를 닫은 뒤 같은 세그먼트의 머지가 통과한다" "$
 check "4: 그 머지가 의무를 다시 발행한다" "$(sa_ob_count)" "$((nb + 1))"
 check "4: 재발행된 행이 미이행이다" "$(sa_field "$(sa_ob_rows | tail -1)" '상태')" "미이행"
 
-# --- 4b. 재발행된 의무가 그다음 머지를 막는다 --------------------------------
+# --- 35-4b. 재발행된 의무가 그다음 머지를 막는다 --------------------------------
+# --- section: 35-4b | group: sa | covers: act | anchors: 4b: 재발행된 의무가 그다음 머지를 막는다 ---
 nb=$(sa_ob_count)
 sa_merge S4 "$SA_SEGBR:refs/heads/parked"
 check "4b: 재발행된 의무가 그다음 머지를 막는다" "$rc" "3"
@@ -9637,7 +9832,8 @@ check "4d(ii): 조상 리뷰 HEAD 를 실은 cycle 행이 기록된다" "$rc" "0
 sa_fulfil "$OID4A"
 check "4d(ii): 리뷰 HEAD 가 머지 커밋의 조상이면 거절된다" "$rc" "2"
 
-# --- 4e. 덮는 리뷰는 닫는다 — 세 형태 전부 ------------------------------------
+# --- 35-4e. 덮는 리뷰는 닫는다 — 세 형태 전부 ------------------------------------
+# --- section: 35-4e | group: sa | covers: act | anchors: 4e(i): 리뷰 HEAD 가 머지 커밋과 같으면 닫힌다 ---
 sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S4A --cutpoint 커밋 \
     --snapshot-digest "$(SAH)" --rationale x \
     -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$M4A" "리포트 경로=$FXREPORT"
@@ -9670,7 +9866,8 @@ sa_fulfil "$OID"
 check "4e(iii): sha 는 달라도 트리가 같으면 닫힌다 (amend·리베이스)" "$rc" "0"
 check "4e(iii): 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID")" '이행 판정')" "착지·포함"
 
-# --- 4f. 착지하지 않은 머지의 거짓 의무는 리뷰 없이 닫힌다 --------------------
+# --- 35-4f. 착지하지 않은 머지의 거짓 의무는 리뷰 없이 닫힌다 --------------------
+# --- section: 35-4f | group: sa | covers: act | anchors: 4f: 실패한 머지도 의무를 남긴다 (거짓 의무) ---
 #
 # 착지 검사를 포함 검사보다 뒤에 둔 구현은 여기서 항목 5 의 재시도 경로를 함께
 # 깨뜨린다. 이 섹션은 착지를 요구하지 않으므로 자기 저장소가 필요 없지만, 공용
@@ -9698,7 +9895,8 @@ if [ "$M4F" = "-" ] || [ -z "$M4F" ]; then
 else
   ok "4f: 거짓 의무의 머지 커밋도 `-` 가 아닌 sha 다"
 fi
-# --- 5. 재시도 — 거짓 의무가 같은 머지의 재시도를 막는다 ---------------------
+# --- 35-5. 재시도 — 거짓 의무가 같은 머지의 재시도를 막는다 ---------------------
+# --- section: 35-5 | group: sa | covers: act | anchors: 5: 거짓 의무가 남은 채로 같은 머지를 다시 시도하면 거절된다 ---
 sa_merge S4F
 check "5: 거짓 의무가 남은 채로 같은 머지를 다시 시도하면 거절된다" "$rc" "3"
 if sa_names_rule; then ok "5: 그 거절이 리뷰-후-머지 를 지명한다"; else bad "5 거절 이름" "$msg"; fi
@@ -9710,7 +9908,8 @@ sa_fulfil "$OID4F"
 check "4f: cycle 행 없이 근거만으로 이행이 통과한다" "$rc" "0"
 check "4f: 이행 판정이 미착지다" "$(sa_field "$(sa_ob_last "$OID4F")" '이행 판정')" "미착지"
 
-# --- 4g. 판정 불가는 통과가 아니고, 문면이 「덮지 않는다」와 다르다 -----------
+# --- 35-4g. 판정 불가는 통과가 아니고, 문면이 「덮지 않는다」와 다르다 -----------
+# --- section: 35-4g | group: sa | covers: act | anchors: 4g: 해소되지 않는 앵커의 이행은 거절된다 (판정 불가는 통과가 아니다) ---
 #
 # 해소되지 않는 sha 를 앵커로 가진 의무는 만들 수 없다 — 발행이 세그먼트
 # 워크트리의 실제 HEAD 를 읽기 때문이다. 그래서 이 갈래는 앵커 저장소 쪽에서
@@ -9760,7 +9959,8 @@ case "$msg" in
 esac
 check "4g: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 
-# --- 6. 세그먼트 id 접두 충돌 -------------------------------------------------
+# --- 35-6. 세그먼트 id 접두 충돌 -------------------------------------------------
+# --- section: 35-6 | group: sa | covers: act | anchors: 6: S1 의 첫 머지가 통과한다 ---
 #
 # `S1` 과 `S10` 이 같은 원장 안에 서로 반대 결과의 행을 갖고 각각 독립적으로
 # 판정된다. 필드 종결자(후행 공백) 규율을 쓰지 않은 구현은 여기서 깨진다.
@@ -9780,7 +9980,8 @@ check "6: S10 의 의무가 하나 생긴다" "$(sa_ob_rows | grep -cF '세그�
 sa_merge S1
 check "6: S1 의 두 번째 머지는 여전히 거절이다" "$rc" "3"
 
-# --- 7. 상속된 리뷰 정책이 뒤따르는 세그먼트 행에서도 살아남는다 -------------
+# --- 35-7. 상속된 리뷰 정책이 뒤따르는 세그먼트 행에서도 살아남는다 -------------
+# --- section: 35-7 | group: sa | covers: act | anchors: 7: 정책을 실은 첫 행이 기록된다 ---
 #
 # 단언은 판정 결과만이 아니라 두 번째 행이 원장에 `리뷰 정책` 을 싣고 있는지도
 # 함께 본다 — 요구되는 것은 읽기 시점의 폴백이 아니라 쓰기 시점의 옮겨 적기이므로,
@@ -9799,7 +10000,8 @@ sa_merge S7
 check "7: 그 뒤의 머지가 여전히 선머지후리뷰 로 판정된다" "$rc" "0"
 check "7: 그 판정이 의무를 남긴다" "$(sa_ob_rows | grep -cF '세그먼트=S7 ' || true)" "1"
 
-# --- 8. 상한 초과는 거절이지 클램프가 아니다 ---------------------------------
+# --- 35-8. 상한 초과는 거절이지 클램프가 아니다 ---------------------------------
+# --- section: 35-8 | group: sa | covers: act | anchors: 8: 상한을 넘는 정책을 실은 segment 행은 거절된다 ---
 sa_new '상한 초과' 선리뷰후머지
 nb=$(sa_base)
 sa_seg_row S8 선머지후리뷰
@@ -9815,7 +10017,8 @@ else
   ok "8: 조여진 값이 원장에 남지 않는다 (거절이지 클램프가 아니다)"
 fi
 
-# --- 9. 선리뷰후머지 는 오늘과 동일 -------------------------------------------
+# --- 35-9. 선리뷰후머지 는 오늘과 동일 -------------------------------------------
+# --- section: 35-9 | group: sa | covers: act | anchors: 9: 엄격 정책을 실은 행은 상한 안이라 통과한다 ---
 sa_seg_row S9A 선리뷰후머지
 check "9: 엄격 정책을 실은 행은 상한 안이라 통과한다" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -9829,7 +10032,8 @@ sa_seg_row S9B ""
 sa_merge S9B
 check "9: 정책 필드가 아예 없을 때도 같다 (부재는 선리뷰후머지)" "$rc" "3"
 
-# --- 10. 매니페스트 검사의 네 단언 --------------------------------------------
+# --- 35-10. 매니페스트 검사의 네 단언 --------------------------------------------
+# --- section: 35-10 | group: sa | covers: snapshot | anchors: 10(a): 문면이 그 필드를 지목한다 ---
 #
 # 넷 다 매 게이트 진입에서 평가된다. (d) 의 발화 횟수는 여기서 재지 않는다 —
 # 그것은 구현 시 검증 항목의 몫이다.
@@ -9887,7 +10091,8 @@ case "$msg" in
   *) bad "10(d) 경고" "$msg" ;;
 esac
 
-# --- 11. 해소기의 상한 거절이 행 기록 시점의 것과 같은 코드로 실패한다 -------
+# --- 35-11. 해소기의 상한 거절이 행 기록 시점의 것과 같은 코드로 실패한다 -------
+# --- section: 35-11 | group: sa | covers: act | anchors: 11: 상한이 허용하는 창에서는 그 행이 통과한다 ---
 #
 # 세그먼트 행이 상한을 넘는 값을 실은 채 머지를 부르면 룰 루프 이전의 해소기가
 # 거절한다. 두 강제 지점이 다른 코드를 내면 라우터가 같은 위반을 두 가지로
@@ -9906,7 +10111,8 @@ case "$msg" in
   *) bad "11 문면" "$msg" ;;
 esac
 
-# --- 12. 리뷰없음 의 새 가드 — 두 표면, 하중은 하나 --------------------------
+# --- 35-12. 리뷰없음 의 새 가드 — 두 표면, 하중은 하나 --------------------------
+# --- section: 35-12 | group: sa | covers: act | anchors: 12(게이트 ---
 #
 # 앞쪽(게이트)이 수용 기준이다. 뒤쪽(`run.sh` 의 조기 진단)은 프로덕션에서
 # 실행되지 않으므로 초록이어도 아무것도 증명하지 않으며, 그 사실을 여기 적는다.
@@ -9944,7 +10150,8 @@ case "$sa_slice_err" in
   *) bad "12 거절 이유" "$sa_slice_err" ;;
 esac
 
-# --- 13. 팁을 읽지 못하는 머지는 발행이 아니라 그 자리에서 거절된다 ----------
+# --- 35-13. 팁을 읽지 못하는 머지는 발행이 아니라 그 자리에서 거절된다 ----------
+# --- section: 35-13 | group: sa | covers: act, plan | anchors: 13(i): 세그먼트 행이 없는 머지는 거절된다 ---
 #
 # 이 항목이 사는 성질은 **닫을 수 없는 의무가 원장에 서지 않는 것**이고, 세
 # 경우가 그것을 서로 다른 기전으로 산다.
@@ -10007,7 +10214,8 @@ sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment S13B --c
     -- git push origin "$SA_SEGBR:$SA_BASE"
 check "13: plan 도 같은 코드를 낸다 (「통과 예상」이라 답하지 않는다)" "$rc" "10"
 
-# --- 13a. 9 는 종료 코드가 아니며, 양방향으로 고정한다 ------------------------
+# --- 35-13a. 9 는 종료 코드가 아니며, 양방향으로 고정한다 ------------------------
+# --- section: 35-13a | group: sa | covers: - | anchors: 13a: 9 는 어떤 GATE_EXIT_ 상수의 값도 아니다 ---
 #
 # 어느 코드가 있는지는 세지 않는다 — 8 과 10 은 두 슬라이스에 나뉘어 착지하므로
 # 존재를 단언하면 그 사이에서 무관한 이유로 빨강이 된다.
@@ -10022,7 +10230,8 @@ else
   bad "13a" "내부 신호가 9 를 떠났다 — 종료 범위 안으로 옮겨졌을 수 있다"
 fi
 
-# --- 13b. `앵커 불가` 를 실은 행은 원장 어디에도 없다 -------------------------
+# --- 35-13b. `앵커 불가` 를 실은 행은 원장 어디에도 없다 -------------------------
+# --- section: 35-13b | group: sa | covers: - | anchors: 13b: 앵커 불가 를 실은 리뷰 의무 행이 어디에도 없다 ---
 #
 # 항목 13 은 열거한 세 경우가 거절되는 것을 재고, 이 항목은 그 값이 아예 쓰이지
 # 않는다는 것을 잰다. 발행 시점 거절 대신 그 값을 적고 이행에서 거절하는 구현은
@@ -10034,7 +10243,8 @@ for sa_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
 done
 check "13b: 앵커 불가 를 실은 리뷰 의무 행이 어디에도 없다" "$sa_anchorless" "0"
 
-# --- 14. writer 는 여전히 워크트리 를 요구한다 -------------------------------
+# --- 35-14. writer 는 여전히 워크트리 를 요구한다 -------------------------------
+# --- section: 35-14 | group: sa | covers: act | anchors: 14: 워크트리 없는 segment 행은 exit 2 로 거절된다 ---
 #
 # carry-forward 를 `리뷰 정책` 에만 거는 근거가 이 요구다. 요구가 완화되면 그
 # 결정이 근거를 잃는다. 오늘도 초록이고, 이 항목은 초록을 유지하기 위한 것이다.
@@ -10052,7 +10262,8 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S14 \
 check "14: 같은 id 의 뒤 행에서도 워크트리 요구가 늦춰지지 않는다" "$rc" "2"
 check "14: 그 거절도 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
-# --- 15. 다른 대상을 지목한 이행은 의무를 닫지 못한다 ------------------------
+# --- 35-15. 다른 대상을 지목한 이행은 의무를 닫지 못한다 ------------------------
+# --- section: 35-15 | group: sa | covers: snapshot, act | anchors: 15: 대상 둘을 선언한 매니페스트가 검사를 통과한다 ---
 #
 # 이행 대상은 argv 가 아니라 의무 행의 `대상` 에서 유도된다. 두 대상이 같은
 # 워크트리를 공유하면 이 항목은 아무것도 가르지 못하므로, 저장소를 둘 만드는
@@ -10103,7 +10314,8 @@ check "15: 그 머지 커밋을 덮는 cycle 행이 기록된다" "$rc" "0"
 sa_fulfil "$OID15"
 check "15: 그 행의 대상으로 다시 부르면 닫힌다" "$rc" "0"
 
-# --- 16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
+# --- 35-16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
+# --- section: 35-16 | group: sa | covers: act | anchors: 16: 원격 베이스로 민 머지가 통과한다 ---
 #
 # 추적 ref 를 push 이전 sha 로 되돌린다. 되돌리지 않으면 push 자체가 추적 ref 를
 # 움직여 fetch 단계가 전혀 시험되지 않는다.
@@ -10150,7 +10362,8 @@ esac
 check "16: 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 ( cd "$SA_WT" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
 
-# --- 17. 형제 세그먼트의 열린 의무가 이 세그먼트의 재발행을 억제하지 않는다 ---
+# --- 35-17. 형제 세그먼트의 열린 의무가 이 세그먼트의 재발행을 억제하지 않는다 ---
+# --- section: 35-17 | group: sa | covers: act | anchors: 17: A 의 첫 머지가 통과한다 ---
 #
 # 이 항목 하나가 오늘·순진한 수리·옳은 수리 셋을 가른다. 오늘의 게이트에서는
 # 이행 행이 같은 `의무 id=` 문면을 실어 존재 가드에 걸리고, 전역 접기를 그대로
@@ -10180,7 +10393,8 @@ n_ful=$( { grep -F '`리뷰 의무`' "$SA_LEDGER" || true; } | grep -cF '상태=
 check "17: 그 시점에 미이행 발행 행이 셋, 닫힌 행이 하나다 (A 둘 + B 하나, A 의 첫 것이 닫혔다)" \
   "$n_unf/$n_ful" "3/1"
 
-# --- 19. 이행 판정 은 세 값 중 하나가 언제나 실리고, 라우터가 고를 수 없다 ---
+# --- 35-19. 이행 판정 은 세 값 중 하나가 언제나 실리고, 라우터가 고를 수 없다 ---
+# --- section: 35-19 | group: sa | covers: act | anchors: 19(ii): 앵커 있고 미착지면 미착지 다 ---
 #
 # (ii) 의 `앵커 없음` 갈래는 작성하지 않는다 — 그 값을 쓰는 행을 만들려면
 # `머지 커밋` 을 쓰기 전의 게이트가 필요한데, 원장이 해시 체인이라 행을 손으로
@@ -10243,7 +10457,8 @@ check "19(iv): fetch 를 실패시킨 이행은 거절된다" "$rc" "2"
 check "19(iv): 그리고 원장의 행 수가 변하지 않는다 (어휘가 셋인 이유가 이것이다)" "$(sa_rows)" "$nb"
 ( cd "$SA_WT" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
 
-# --- 20. 원격이 없는 앵커 저장소는 로컬 ref 로 판정된다 -----------------------
+# --- 35-20. 원격이 없는 앵커 저장소는 로컬 ref 로 판정된다 -----------------------
+# --- section: 35-20 | group: sa | covers: act | anchors: 20(i): M 이 로컬 베이스에 없으면 근거만으로 통과한다 (재시도 경로가 산다) ---
 #
 # 이 항목이 없으면 원격 없는 저장소가 fetch 실패로 판정 불가에 갇히는 구현이
 # 초록으로 통과한다 — 그 구현은 항목 16 도 통과한다.
@@ -10273,7 +10488,8 @@ sa_fulfil "$OID20B"
 check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 거절된다" "$rc" "2"
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
-# --- 21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
+# --- 35-21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
+# --- section: 35-21 | group: sa | covers: act | anchors: 21: 머지가 통과해 의무를 남긴다 ---
 #
 # 미착지 로 접은 구현은 로컬·원격 이름이 갈리는 모든 저장소에서 포함 보증을
 # 잃는데, 그 인구가 오늘 0 이라 다른 어떤 항목도 이 갈래를 밟지 않는다.
@@ -10301,7 +10517,8 @@ case "$msg" in
 esac
 check "21: 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
-# --- 22. 로컬에 이미 착지한 머지는 네트워크를 건드리지 않는다 ----------------
+# --- 35-22. 로컬에 이미 착지한 머지는 네트워크를 건드리지 않는다 ----------------
+# --- section: 35-22 | group: sa | covers: act | anchors: 22: 로컬 베이스가 이미 담고 있으면 원격이 죽어 있어도 착지다 ---
 #
 # fetch 를 먼저 도는 구현은 여기서 판정 불가를 내며 빨강이고, 그것이 단계 1 이
 # 구현에서 조용히 빠졌다는 유일한 신호다.
@@ -10320,7 +10537,8 @@ check "22: 로컬 베이스가 이미 담고 있으면 원격이 죽어 있어�
 check "22: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID22")" '이행 판정')" "착지·포함"
 ( cd "$SA_REPO" && git remote set-url origin "$SA_REMOTE" ) >/dev/null 2>&1
 
-# --- 23. 착지 판정이 움직이는 ref 는 하나뿐이다 ------------------------------
+# --- 35-23. 착지 판정이 움직이는 ref 는 하나뿐이다 ------------------------------
+# --- section: 35-23 | group: sa | covers: act | anchors: 23: 단계 3 에 도달하는 이행이 통과한다 ---
 #
 # 저장소 전체 fetch 로 구현하면 여기서 깨지며, 그 깨짐은 이 술어가 아니라 외부
 # 드리프트 비교와 승인 튜플의 base_sha 에서 나중에 드러난다.
@@ -10366,7 +10584,8 @@ else
   bad "23 움직인 ref" "베이스가 아닌 ref 가 움직였다 — 저장소 전체 fetch 로 구현됐다"
 fi
 
-# --- 24. 발행 앵커는 세그먼트 워크트리의 HEAD 이고 메인 워크트리의 것이 아니다 -
+# --- 35-24. 발행 앵커는 세그먼트 워크트리의 HEAD 이고 메인 워크트리의 것이 아니다 -
+# --- section: 35-24 | group: sa | covers: act, snapshot | anchors: 24: 두 워크트리의 HEAD 가 다르다 (이 항목의 전제) ---
 #
 # 항목 4c 는 값이 `-` 가 아님을 재지만 두 워크트리가 같은 픽스처에서는 두 구현을
 # 가르지 못한다. 두 디렉터리를 하나로 접는 것이 이 설계의 가장 흔한 오구현이므로,
@@ -10414,7 +10633,8 @@ sa_merge SZ
 check "무변경: 그 세그먼트의 머지는 선리뷰후머지 로 판정된다 (리뷰 없으니 exit 3)" "$rc" "3"
 
 # ---------------------------------------------------------------------------
-# 31. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다
+# 36. 선머지후리뷰 는 리뷰를 없애지 않고 미룬다 — 그 유예가 기록으로 남는다
+# --- section: 36 | group: sa | covers: act | anchors: 31: 룰이 켜진 채 선머지후리뷰 머지가 통과한다 ---
 #
 # 섹션 10b 에서 옮겨 왔다. 옛 자리에서는 이 단언들이 전부 `리뷰-후-머지` 가 꺼진
 # 매니페스트 위에서 돌았고, 그래서 「룰이 유예를 정당한 것으로 다뤘다」와 「룰이
@@ -10468,7 +10688,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 32. 리뷰 의무는 `이행` 으로 옮겨질 수 있고, 근거에 대해서만 그렇다
+# 37. 리뷰 의무는 `이행` 으로 옮겨질 수 있고, 근거에 대해서만 그렇다
+# --- section: 37 | group: review | covers: snapshot, act | anchors: 32: 세그먼트 행이 기록된다 ---
 #
 # 섹션 29 에서 옮겨 왔다. 이 섹션은 **워크트리 조항의 의도된 예외**다 — 세그먼트
 # 워크트리의 팁이 베이스와 **공통 조상이 없어야** 하고, 이 스위트에서 착지 판정의
@@ -10607,7 +10828,8 @@ case "$msg" in
   *"9 미이행 리뷰 의무"*) bad "32 조건 9" "의무를 닫았는데 여전히 미충족으로 열거된다" ;;
   *) ok "32: 이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
 esac
-# --- 33. 세그먼트를 달지 않은 머지 — 처분을 못박는다 -------------------------
+# --- 37-33. 세그먼트를 달지 않은 머지 — 처분을 못박는다 -------------------------
+# --- section: 37-33 | group: review | covers: act | anchors: 33: 룰 켬 — 세그먼트를 생략한 머지는 거절된다 ---
 #
 # 생략되거나 `-` 인 세그먼트는 가설이 아니라 도달 가능하다 — 발행 전 앵커 검사가
 # 그 모양을 명시적으로 검사한다. 그런데 두 스위트의 모든 머지가 세그먼트를
@@ -10645,7 +10867,8 @@ sag act --manifest "$SA_MANIFEST" --kind merge --target main \
     -- git push origin "$SA_SEGBR:$SA_BASE"
 check "33: 룰 끔 — 세그먼트를 생략한 머지는 통과한다 (선택이 기록된다)" "$rc" "0"
 
-# --- 33b. 좁히는 축은 축2 등급이고, 워크트리쓰기 칸은 argv 가 한 번 더 가른다 --
+# --- 37-33b. 좁히는 축은 축2 등급이고, 워크트리쓰기 칸은 argv 가 한 번 더 가른다 --
+# --- section: 37-33b | group: review | covers: act, exec | anchors: 33b: 워크트리쓰기로 등급되는 로컬 머지도 리뷰 검사를 받는다 ---
 #
 # 이 트리의 등급표는 로컬 머지·리베이스·체리픽을 워크트리쓰기로 등급한다. 그
 # 칸을 통째로 면제하면 그 머지들이 세그먼트를 정직하게 달고 가장 엄격한 정책
@@ -10709,7 +10932,8 @@ sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S33B --cu
     -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$(cd "$SA_SEGWT" && git rev-parse HEAD)" "리포트 경로=$FXREPORT"
 check "33b: 사다리 위칸으로 신고된 장부 기록은 이 룰에 걸리지 않는다" "$rc" "0"
 
-# --- 34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
+# --- 37-34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
+# --- section: 37-34 | group: review | covers: act | anchors: 34: 느슨한 상한 아래에서는 그 행이 통과한다 ---
 #
 # 해소기는 룰 루프와 장부 기록자보다 앞에서 돈다. 그래서 상한이 나중에 조여져
 # 이미 기록된 실값이 상한을 넘게 되면 그 세그먼트에 대한 모든 행위가 옛 값으로
@@ -10735,7 +10959,8 @@ fi
 sa_seg_row S34 리뷰없음
 check "34: 상한을 넘겨 푸는 행은 여전히 거절된다 (탈출구가 한 방향이다)" "$rc" "2"
 
-# --- 35. 다시 쓰인 머지도 착지로 판정된다 ------------------------------------
+# --- 37-35. 다시 쓰인 머지도 착지로 판정된다 ------------------------------------
+# --- section: 37-35 | group: review | covers: act | anchors: 35: 머지가 통과하고 의무를 남긴다 ---
 #
 # 조상 검사만으로 판정하면 squash·rebase 로 머지하는 저장소에서 세그먼트 팁은
 # 베이스의 조상이 결코 되지 않는다. 그러면 미착지가 그 sha 에 대해 영구적인
@@ -10772,7 +10997,8 @@ sa_fulfil "$OID35"
 check "35: 덮는 리뷰가 있으면 닫힌다" "$rc" "0"
 check "35: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID35")" '이행 판정')" "착지·포함"
 
-# --- 36. 「끔」 아래에서 팁이 다른 두 머지는 빚 둘을 남긴다 -------------------
+# --- 37-36. 「끔」 아래에서 팁이 다른 두 머지는 빚 둘을 남긴다 -------------------
+# --- section: 37-36 | group: review | covers: act | anchors: 36: 첫 머지가 통과한다 ---
 #
 # 의무 슬롯을 (런, 세그먼트)로만 키잉하면 룰이 꺼진 창에서 두 번째 머지가 첫
 # 머지의 열린 슬롯에 접혀 행을 하나도 남기지 않는다. 그 하나를 이행하면 첫 팁
@@ -10800,6 +11026,7 @@ check "36: 팁이 그대로인 세 번째 머지는 새 슬롯을 열지 않는�
 
 # ---------------------------------------------------------------------------
 # 34. The shift launcher's three outcomes, and the number it launches under.
+# --- section: 34 | group: cone | covers: snapshot | anchors: 교대 픽스처의 세그먼트 행이 기록된다 ---
 #
 # Nothing in this suite ever RAN `gate_launch_shift`. Its three results — held
 # behind a live stage, an approval issued on the handoff floor, and an actual
@@ -10995,14 +11222,14 @@ check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는�
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
 
 # ---------------------------------------------------------------------------
-# 33. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
+# 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
-# 섹션 30 의 픽스처 규약을 그대로 쓴다(자기 저장소·자기 원장·자기 매니페스트).
+# 섹션 35 의 픽스처 규약을 그대로 쓴다(자기 저장소·자기 원장·자기 매니페스트).
 # 다른 점은 하나다 — 이 집합의 argv 는 `gh pr merge` 이고, 그것이 사전 인가에
 # 있어야 사전-인가-대조 의 exit 5 가 먼저 서지 않는다. `sb_new` 가 그 한 줄을
 # 더한다.
 #
-# 이 집합의 단언이 지키는 계약은 섹션 30 의 넷에 하나를 더한 것이다:
+# 이 집합의 단언이 지키는 계약은 섹션 35 의 넷에 하나를 더한 것이다:
 #   5. 거절 단언은 그 거절을 낸 **소비자**를 함께 가른다. 저신고의 exit 8 과
 #      인가 상한의 exit 3 은 같은 argv 를 다른 이유로 막으므로, 코드만 재면
 #      한쪽을 지워도 다른 쪽이 초록으로 덮어 준다.
@@ -11023,7 +11250,7 @@ sb_target_field() {
   # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
   # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
   # 부분 편집이 아니라 행 재작성 + 다이제스트 재계산이 유일하게 맞는 형태다
-  # (섹션 30 의 `sa_manifest` 가 같은 이유로 매니페스트를 통째로 다시 쓴다).
+  # (섹션 35 의 `sa_manifest` 가 같은 이유로 매니페스트를 통째로 다시 쓴다).
   local row td
   row=$( { grep -E '^- `target`' "$SA_MANIFEST" || true; } | sed "s/$1=[^ |]*/$1=$2/")
   td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
@@ -11071,7 +11298,8 @@ sb_row() {
     | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
 }
 
-# --- 1. 과신고된 머지가 유도 등급으로 판정되고, 원장이 두 값을 싣는다 ---------
+# --- 38-1. 과신고된 머지가 유도 등급으로 판정되고, 원장이 두 값을 싣는다 ---------
+# --- section: 38-1 | group: sb | covers: act | anchors: 1: 세그먼트 행이 기록된다 ---
 #
 # #505 의 측정 그대로다. 라우터는 모든 행위를 대상의 절단점으로 라벨링하므로
 # `--cutpoint 배포 -- gh pr merge` 가 통상 경로이고, 오늘은 그 행이 `절단점=배포`
@@ -11090,7 +11318,8 @@ case "$raw" in
   *) bad "1 과신고 문면" "$raw" ;;
 esac
 
-# --- 2. 저신고는 exit 8 이고, 문면이 처방과 그 처방의 한계를 함께 적는다 ------
+# --- 38-2. 저신고는 exit 8 이고, 문면이 처방과 그 처방의 한계를 함께 적는다 ------
+# --- section: 38-2 | group: sb | covers: act | anchors: 2: PR 로 저신고된 머지는 exit 8 이다 ---
 nb=$(sa_rows)
 sb_merge SB1 PR
 check "2: PR 로 저신고된 머지는 exit 8 이다" "$rc" "8"
@@ -11107,7 +11336,8 @@ check "2: 거절이 원장보다 상류라 행이 늘지 않는다" "$(sa_rows)"
 sb_merge SB1 커밋
 check "2: 더 낮은 신고도 같은 코드다 (거리로 갈리지 않는다)" "$rc" "8"
 
-# --- 3. 정직한 신고는 오늘과 같다 --------------------------------------------
+# --- 38-3. 정직한 신고는 오늘과 같다 --------------------------------------------
+# --- section: 38-3 | group: sb | covers: act | anchors: 3: 동치로 신고된 머지가 행을 남긴다 ---
 #
 # 새 세그먼트에서 잰다. SB1 은 항목 1 의 머지로 미이행 의무가 열려 있어 두 번째
 # 머지가 룰에서 거절되고, 그러면 `결정=act` 행이 새로 생기지 않아 아래 단언들이
@@ -11123,7 +11353,8 @@ case "$raw" in
   *) ok "3: 동치는 조용히 통과한다" ;;
 esac
 
-# --- 4. 표가 모르는 argv 는 신고값으로 폴백한다 (오늘의 동작) ------------------
+# --- 38-4. 표가 모르는 argv 는 신고값으로 폴백한다 (오늘의 동작) ------------------
+# --- section: 38-4 | group: sb | covers: act | anchors: 4: 표가 침묵하는 argv 는 그대로 통과한다 ---
 #
 # 미래의 표 편집이 이 팔을 「미상이면 거절」로 바꾸면 여기서 깨진다.
 sb_act SB4 커밋 x -- cat a.txt
@@ -11132,7 +11363,8 @@ sb4=$(sb_row SB4)
 check "4: 절단점이 신고값 그대로다" "$(sa_field "$sb4" '절단점')" "커밋"
 check "4: 유도 절단점은 - 다 (주장하지 않음)" "$(sa_field "$sb4" '유도 절단점')" "-"
 
-# --- 5. 벽시계 마감이 유도값 위에서 판정된다 ----------------------------------
+# --- 38-5. 벽시계 마감이 유도값 위에서 판정된다 ----------------------------------
+# --- section: 38-5 | group: sb | covers: act | anchors: 5: 마감이 지나도 세그먼트 행은 기록된다 (마감은 디스패치와 머지만 막는다) ---
 #
 # 두 방향을 함께 잰다. 저신고된 머지는 마감에 닿기 전에 exit 8 로 서고(오늘은
 # 마감 검사를 `커밋` 으로 지나갔다), 과신고된 커밋은 마감에 걸리지 않는다(오늘은
@@ -11167,7 +11399,8 @@ case "$msg" in
   *) ok "5: 마감이 그 행위를 머지로 읽지 않는다" ;;
 esac
 
-# --- 6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
+# --- 38-6. 미선언 대상 — 등록 행이 저신고로 쓰이지 않는다 ------------------------
+# --- section: 38-6 | group: sb | covers: act | anchors: 6: 미선언 대상에 대한 저신고된 머지는 exit 8 이다 ---
 #
 # §검증 기록 V11 이 지목한 자리다. 두 방향을 함께 잰다: 저신고된 머지는 시임에서
 # 서서 `대상 추가` 행을 아예 만들지 못하고, 과신고된 커밋은 유도값 `커밋` 으로
@@ -11187,7 +11420,8 @@ sag act --manifest "$SA_MANIFEST" --kind x --target 미선언 --segment SB6 \
 check "6: 배포 로 과신고된 커밋은 유도값으로 층 1 에 든다 (오늘은 rc 3 이다)" "$rc" "0"
 check "6: 그때는 등록 행이 하나 늘어난다" "$(sb6_rows)" "$((n6 + 1))"
 
-# --- 7. 말단 행위 상한의 계수가 접두 일치로 부풀지 않는다 ---------------------
+# --- 38-7. 말단 행위 상한의 계수가 접두 일치로 부풀지 않는다 ---------------------
+# --- section: 38-7 | group: sb | covers: act, plan, exec | anchors: 7: 그 머지가 절단점=머지 로 기록된다 ---
 #
 # `유도 절단점` 이 같은 행에 실리면서 계수 패턴이 좁아져야 한다. 좁히지 않은
 # 패턴은 `절단점=머지후착수` 도 함께 잡으므로, 머지가 아닌 행위 하나가 대상의
@@ -11237,7 +11471,8 @@ check "7: exec 으로 수행된 머지도 계수에 들어 상한 1 을 넘긴�
 sb_target_field '말단 행위 상한' 0
 check "7: 상한을 0 으로 조이면 그 조건이 실제로 발화한다 (위 단언들이 공허하지 않다)" "$(sb_cap_unmet)" "yes"
 
-# --- 8. 절단점을 싣는 기록 지점 전부가 두 필드를 싣는다 ----------------------
+# --- 38-8. 절단점을 싣는 기록 지점 전부가 두 필드를 싣는다 ----------------------
+# --- section: 38-8 | group: sb | covers: - | anchors: 8: 그 전부가 두 필드를 함께 싣는다 ---
 #
 # 항목 1·3·4 가 본행과 승인 행을 이미 값으로 쟀다. 여기서는 이 집합이 만든 원장
 # 전부를 훑어, `자율 승인` 과 `승인` 계열의 모든 행이 두 필드를 함께 싣는지 본다
@@ -11266,7 +11501,8 @@ else
 fi
 check "8: 그 전부가 두 필드를 함께 싣는다" "$sb_miss" "0"
 
-# --- 9. 인가 상한의 폐쇄는 리뷰 룰의 폐쇄와 다른 소비자다 ---------------------
+# --- 38-9. 인가 상한의 폐쇄는 리뷰 룰의 폐쇄와 다른 소비자다 ---------------------
+# --- section: 38-9 | group: sb | covers: act | anchors: 9: 절단점 PR 인 대상에 커밋 으로 저신고된 머지는 exit 8 이다 ---
 #
 # 저신고가 인가 상한 자체를 지나가던 경로가 이것이다. 오늘은 rc 0 으로 통과하고
 # 이후 exit 8 인데, 그 8 이 인가 상한의 3 과 **다른 문면**이어야 두 소비자가
@@ -11288,7 +11524,8 @@ case "$msg" in
   *) bad "9 문면" "$msg" ;;
 esac
 
-# --- 10. 의무 발행이 실효값을 읽는다 (시임 아래의 다섯째 소비자) --------------
+# --- 38-10. 의무 발행이 실효값을 읽는다 (시임 아래의 다섯째 소비자) --------------
+# --- section: 38-10 | group: sb | covers: act | anchors: 10: 배포 로 신고된 머지가 리뷰 의무를 남긴다 (오늘은 남기지 않는다) ---
 #
 # 시임만으로는 닿지 않는 자리다. 이 항목이 없으면 「저신고·과신고된 머지가
 # 의무를 만들지 않는다」가 슬라이스 B 뒤에도 그대로 남는다.
@@ -11311,7 +11548,8 @@ else
   bad "10 문면" "$msg"
 fi
 
-# --- 11. 머지 미만의 행위는 오늘과 같다 --------------------------------------
+# --- 38-11. 머지 미만의 행위는 오늘과 같다 --------------------------------------
+# --- section: 38-11 | group: sb | covers: act, plan | anchors: 11: 동치로 신고된 커밋이 통과한다 ---
 sb_new '11 머지 미만' 선머지후리뷰
 sa_seg_row SB11 선머지후리뷰
 sb_act SB11 커밋 x -- git commit --allow-empty -m 평범한커밋
