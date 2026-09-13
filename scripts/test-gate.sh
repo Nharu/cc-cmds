@@ -7925,6 +7925,46 @@ else
   bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다 (읽기 ${B1_CREDIT_UNDER_TEST}회 시점 발행 $((${b1_at_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--})"
 fi
 
+# --- 31ab. 철회 배선이 실제 런에서 구동된다 -----------------------------------
+#
+# `gate_boundaries` 를 호출하는 자리가 `scripts/` 트리 전체에 없었다. 그래서 대기
+# 목록의 열거, 철회가 실제로 일어났을 때만 도는 조건부 재열거, 그 뒤의 유예 계수,
+# 그리고 「세기 전에 철회한다」는 순서 주장이 전부 미커버였다 — 순서를 뒤집으면 낡은
+# 승인 하나가, 다른 것이 아무것도 열려 있지 않은 런을 밤새 유예시킨다. 술어를 직접
+# 무는 §34 는 이 배선을 통과하지 않으므로 그 구멍을 덮지 못한다.
+#
+# 바로 위 절이 B1 승인 하나를 열어 둔 채 끝나므로 그 상태를 물려받는다.
+gateNT() {
+  # gateN 과 같되 전사 디렉터리를 보인다. 철회의 「사람이 있었는가」 판정이 전사를
+  # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        bash "$GATE" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+b31ab_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '구속 튜플=B1/' | tail -1)
+b31ab_aid=$(row_field "$b31ab_row" '승인 id')
+b31ab_last() { { grep -F "승인 id=$b31ab_aid " "$LEDGER2" || true; } | tail -1; }
+if [ -z "$b31ab_aid" ]; then
+  bad "철회 배선 픽스처" "앞 절이 열어 둔 B1 승인을 찾지 못했다"
+else
+  check "31ab: 물려받은 B1 승인이 대기 상태다" "$(row_field "$(b31ab_last)" '상태')" "대기"
+  # 진전을 움직인다 — 읽기를 넘는 등급의 행위 하나면 벡터의 `acts=` 가 오른다. 원장에
+  # 남는 상태는 그 인가 행뿐이라 뒤 절들이 읽는 세그먼트·의무·절은 건드리지 않는다.
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale "B1 결속값을 움직인다" \
+        -- bash -c "printf x >> $CONE_D/b31ab.tmp"
+  check "31ab: 읽기를 넘는 행위가 통과한다" "$rc" "0"
+  # 그리고 다음 행위 — 이 호출의 `gate_boundaries` 가 낡은 승인을 철회하고, 목록을
+  # 다시 열거하고, 그 뒤에 유예를 센다.
+  gateNT exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(HN)" --rationale "철회 배선 확인" -- ls "$CONE_A"
+  check "31ab: 철회가 일어난 호출의 행위 자신은 유예되지 않는다" "$rc" "0"
+  check "31ab: 결속값이 움직인 B1 승인이 상태=철회 에 도달한다" \
+    "$(row_field "$(b31ab_last)" '상태')" "철회"
+  check "31ab: 그 철회 행이 B1 의 사유를 싣는다" "$(row_field "$(b31ab_last)" '사유')" "진전 재개"
+fi
+
 # ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
 #
@@ -11482,33 +11522,104 @@ check "34: 픽스처에 억제 행이 실제로 쌓였다" "$(b34_rows '경계 �
 b34_after=$(b34_seam 'printf "%s %s %s %s %s\n" "$(gate_boundary_binding B1)" "$(gate_boundary_binding B2)" "$(gate_boundary_binding B3)" "$(gate_boundary_binding B4)" "$(gate_b1_read_run)"' 2>/dev/null)
 check "34: 억제 행을 쌓아도 네 경계의 결속값과 읽기 구간이 전부 그대로다" "$b34_after" "$b34_before"
 
+# --- 리셋의 성질 오라클 — 분기가 아니라 성질을 단언한다 -----------------------
+#
+# 「리셋 종류별로 단언 하나씩」은 통하지 않는다. 오라클을 읽기 구간 술어의 리터럴
+# 목록에서 유도하면 그 목록에 없는 행 종류는 구조적으로 보이지 않고(`problem` 이
+# 정확히 그랬다), 자연스러운 구성에서는 두 구현이 우연히 일치해 통과하며(새 sid
+# `segment`), 다른 구성으로 쓰면 올바른 구현이 해서는 안 되는 리셋을 단언해 버그를
+# 명세로 굳힌다(중복 sid `segment`).
+#
+# 그래서 성질을 잰다 — **읽기 구간은 `gate_progress_digest` 가 움직이는 경우에만
+# 리셋된다.** 먹이는 행은 벡터가 읽는 조건만 다른 쌍으로 고르므로, 앞으로 벡터에
+# 입력이 하나 더 붙어도 그 쌍을 여기 더하기만 하면 된다.
+b34_reset_case() {
+  # b34_reset_case <라벨> <이동|불변> <선행 행> <후보 행>
+  local label="$1" want="$2" seed="$3" cand="$4" d0 d1 moved nread
+  b34_fixture 2
+  [ -z "$seed" ] || printf '%s\n' "$seed" >> "$B34_LEDGER"
+  # 첫 판정이 기준선을 세운다 — 이 시점이 구간의 기원이다.
+  b34_seam 'gate_b1_stagnation' >/dev/null 2>&1
+  d0=$(b34_seam 'gate_progress_digest' 2>/dev/null | tail -1)
+  printf '%s\n' "$cand" >> "$B34_LEDGER"
+  d1=$(b34_seam 'gate_progress_digest' 2>/dev/null | tail -1)
+  if [ "$d0" = "$d1" ]; then moved=불변; else moved=이동; fi
+  # 먼저 픽스처가 의도한 쪽을 실제로 만들었는지 확인한다. 이 단언이 없으면 후보 행의
+  # 오타 하나가 두 단언을 함께 자명하게 만든다.
+  check "34: [$label] 진전 다이제스트가 $want" "$moved" "$want"
+  b34_seam 'gate_b1_stagnation' >/dev/null 2>&1
+  nread=$(b34_seam 'gate_b1_read_run' 2>/dev/null | tail -1)
+  if [ "$want" = "이동" ]; then
+    check "34: [$label] 벡터가 움직였으므로 읽기 구간이 리셋된다" "$nread" "0"
+  elif [ "$nread" = "0" ]; then
+    bad "34: [$label] 읽기 구간" "벡터가 움직이지 않았는데 구간이 리셋됐다"
+  else
+    ok "34: [$label] 벡터가 그대로이므로 구간도 그대로다 (nread=$nread)"
+  fi
+}
+b34_seg_row='- `segment` | 교대=1 | id=SR1 | 상태=실행중 | 커밋=- | 워크트리=/tmp/sr1'
+b34_prob_row='- `problem` | 교대=1 | 동일성=P1 | 세그먼트=S1 | 근거=오라클'
+b34_reset_case '새 sid segment'        이동 '' "$b34_seg_row"
+b34_reset_case '중복 sid segment'      불변 "$b34_seg_row" "$b34_seg_row"
+b34_reset_case '세그먼트= 가 있는 cycle' 이동 '' '- `cycle` | 교대=1 | 세그먼트=S1 | 회차=1 | 결과=완료'
+b34_reset_case '세그먼트= 가 없는 cycle' 불변 '' '- `cycle` | 교대=1 | 회차=1 | 결과=완료'
+b34_reset_case '새 동일성 problem'      이동 '' "$b34_prob_row"
+b34_reset_case '기존 동일성 problem'    불변 "$b34_prob_row" "$b34_prob_row"
+b34_reset_case '종료 절'               이동 '' '- `종료 절` | 교대=1 | id=C1 | 상태=충족 | 근거=오라클'
+b34_reset_case '정상 완료 stage-result' 이동 '' '- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | 관측=오라클'
+b34_reset_case '공허한 성공 stage-result' 불변 '' '- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=공허한 성공 | 관측=오라클'
+b34_reset_case '원인=해소 blocked'      이동 '' '- `blocked` | 교대=1 | 대상=- | 스코프=run | 원인=해소 | 사유=오라클 | 근거=오라클'
+b34_reset_case '원인=막힘 blocked'      불변 '' '- `blocked` | 교대=1 | 대상=- | 스코프=run | 원인=막힘 | 사유=오라클 | 근거=오라클'
+b34_reset_case '읽기 초과 exec'         이동 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 근거=오라클'
+b34_reset_case '읽기 등급 exec'         불변 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=읽기 | 자격=주변 | 근거=오라클'
+# `결정=exec` 가 아닌 인가 행은 진전도 읽기도 아니다. 위 표의 「불변」 쪽과 같은
+# 부류이되 결과가 다르다 — 구간이 순수하지 않으므로 `-1` 이고, 이 행이 보이지 않으면
+# 읽기 셋 뒤에 판단만 도는 라우터가 밤새 크레딧 안에 앉는다.
+b34_reset_case '판단 인가(결정=act)'    불변 '' '- `자율 승인` | 교대=1 | kind=judgment | 결정=act | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=읽기 | 자격=주변 | 근거=오라클'
+check "34: 판단 인가가 섞이면 구간은 순수하지 않다 (-1)" \
+  "$(b34_seam 'gate_b1_read_run' 2>/dev/null | tail -1)" "-1"
+# 근거 문면 위조 — `--rationale` 는 라우터가 자유롭게 쓰고 `근거=` 로 가공 없이 실린다.
+# 앵커 없는 부분 문자열 판정이면 이 한 줄이 읽기 크레딧·B3 예산·진전 다이제스트를
+# 한꺼번에 무장해제한다.
+b34_reset_case '근거= 로 위조한 읽기 등급' 이동 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 근거=축2=읽기 로 잘못 등급했다'
+
 # --- 철회 회귀 — D7 의 세 규칙과 그 진입점 ------------------------------------
 #
 # 철회의 호출 표면은 경계 평가뿐이고 라우터에게는 주지 않는다. 주는 순간 「라우터가
 # 답을 타이핑할 수 없다」는 토대가 새 동사 하나로 우회되므로, 규칙이 아니라 구조로
 # 닫는다 — 그래서 이 절은 verb 가 아니라 술어를 부른다.
 b34_withdraw_fixture() {
-  # b34_withdraw_fixture <원인> [결속값] — 열린 `절단점=경계` 승인 하나와, 그 원인에
-  # 해당하는 전사 하나를 만든다. 원인은 취소 | 중단 | 미관측 | 응답.
+  # b34_withdraw_fixture <원인> [결속값] [경계 이름] — 열린 `절단점=경계` 승인 하나와,
+  # 그 원인에 해당하는 전사 하나를 만든다. 원인은 취소 | 중단 | 미관측 | 응답 | 질문중.
+  #
+  # 경계 이름을 파라미터로 받는 이유는 B1 만 박아 두면 이 절의 철회 단언 전부가
+  # B1 에 관한 것이 되기 때문이다. 그러면 사유 문면만 B4 를 이름에 달고 통과해,
+  # 커버리지를 훑는 사람이 라벨에서 B4 를 보고 더 보지 않게 된다.
+  #
+  # `중단` 은 `is_error` 결과 프레임으로 만든다. 설계가 가르는 세 부류는 전부
+  # `questions` 를 제대로 가진 호출의 `is_error` 안에 있고, 결과 프레임이 아예 없는
+  # 상태는 그 셋 중 어느 것도 아니라 `질문중` 으로 따로 세운다 — 물어졌고 아직
+  # 답이 없는, 화면에 떠 있는 다이얼로그다.
   b34_fixture 0
-  local cause="$1" binding="${2:-낡은결속값}" sid tr
+  local cause="$1" binding="${2:-낡은결속값}" bname="${3:-B1}" sid tr
   B34_CFG="$B34_DIR/cfg"; mkdir -p "$B34_CFG/projects/p"
   sid="sess-$cause"
   printf '%s\n' "$sid" > "$B34_RD/session-lineage"
   tr="$B34_CFG/projects/p/$sid.jsonl"
-  B34_AID='B1-deadbeef'
-  B34_Q="승인 $B34_AID — 진전 해시가 연속 3회 판정 동안 불변입니다"
-  printf -- '- `승인` | 교대=1 | 승인 id=%s | 상태=대기 | 대상=- | 절단점=경계 | 유도 절단점=- | 행위 다이제스트=- | 구속 튜플=B1/%s | 막는 세그먼트=- | 질문 문면=%s | 답변 문면=- | 사이드카 앵커=B34#%s | 발행 시각=2026-09-12T00:00:00Z | 해소 시각=-\n' \
-    "$B34_AID" "$binding" "$B34_Q" "$B34_AID" >> "$B34_LEDGER"
-  # 질문은 네 원인 모두에서 물어졌다 — 그것이 `questions` 를 제대로 가진 호출의
+  B34_AID="$bname-deadbeef"
+  B34_Q="승인 $B34_AID — 경계 $bname 가 발동했습니다"
+  printf -- '- `승인` | 교대=1 | 승인 id=%s | 상태=대기 | 대상=- | 절단점=경계 | 유도 절단점=- | 행위 다이제스트=- | 구속 튜플=%s/%s | 막는 세그먼트=- | 질문 문면=%s | 답변 문면=- | 사이드카 앵커=B34#%s | 발행 시각=2026-09-12T00:00:00Z | 해소 시각=-\n' \
+    "$B34_AID" "$bname" "$binding" "$B34_Q" "$B34_AID" >> "$B34_LEDGER"
+  # 질문은 다섯 원인 모두에서 물어졌다 — 그것이 `questions` 를 제대로 가진 호출의
   # `is_error` 와, 아예 붕괴한 호출을 가르는 자리다.
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"AskUserQuestion","input":{"questions":[{"question":"%s","options":[{"label":"승인"},{"label":"거부"}]}]}}]}}\n' \
     "$B34_Q" > "$tr"
   case "$cause" in
     취소)   printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":"The user doesn'"'"'t want to proceed with this tool use"}]}}\n' >> "$tr" ;;
-    중단)   : ;;
+    중단)   printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":"[Request interrupted by user]"}]}}\n' >> "$tr" ;;
     미관측) printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":"API Error: request was aborted"}]}}\n' >> "$tr" ;;
     응답)   printf '{"type":"user","toolUseResult":{"answers":{"%s":"승인"}},"message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":false,"content":"Your questions have been answered"}]}}\n' "$B34_Q" >> "$tr" ;;
+    질문중) : ;;
   esac
 }
 b34_state() { b34_seam 'gate_approval_state "'"$B34_AID"'"' 2>/dev/null | tail -1; }
@@ -11533,6 +11644,36 @@ check "34: (다) 원인 미관측도 철회를 막지 않는다" "$(b34_state)" 
 b34_withdraw_fixture 응답
 b34_seam 'gate_withdraw_boundary_approval "'"$B34_AID"'" "진전 재개"' >/dev/null 2>&1
 check "34: 답 프레임이 있으면 철회는 거부된다" "$(b34_state)" "대기"
+# 그 규칙의 미답변 쌍 — 물어졌고 결과 프레임이 아직 없는 상태는 화면에 떠 있는
+# 다이얼로그다. `answers` 하나만 보면 여기를 그냥 통과해 사람이 보고 있는 배너를
+# 걷는다.
+b34_withdraw_fixture 질문중
+b34_seam 'gate_withdraw_boundary_approval "'"$B34_AID"'" "진전 재개"' >/dev/null 2>&1
+check "34: 물어졌고 아직 답이 없는 다이얼로그는 철회를 막는다" "$(b34_state)" "대기"
+# 판독 불가는 「사람 없음」이 아니다. 「못 봤다」와 「보니 없더라」가 한 값으로
+# 도착하면 둘 다 철회를 허용하고, 그 허용은 답을 버리는 쪽이다.
+b34_withdraw_fixture 중단
+rm -f "$B34_CFG/projects/p/"*.jsonl
+b34_seam 'gate_withdraw_boundary_approval "'"$B34_AID"'" "진전 재개"' >/dev/null 2>&1
+check "34: 전사를 찾지 못하면 철회는 보류된다" "$(b34_state)" "대기"
+b34_withdraw_fixture 중단
+printf '{"type":"user","message":{"content":[{"type":"tool_result"' \
+  >> "$B34_CFG/projects/p/sess-중단.jsonl"
+b34_seam 'gate_withdraw_boundary_approval "'"$B34_AID"'" "진전 재개"' >/dev/null 2>&1
+check "34: 찢어진 전사에서는 철회가 보류된다" "$(b34_state)" "대기"
+# 취소 관측 술어 자신도 셋으로 답한다 — 판독 불가를 「취소 없음」으로 접으면 fail-open
+# 이고, 그 접기가 일어나는 자리가 정확히 찢어진 마지막 줄이다.
+b34_withdraw_fixture 취소
+check "34: 취소가 관측되면 술어는 0 을 낸다" \
+  "$(b34_seam 'gate_dismissal_observed; printf "%s" "$?"' 2>/dev/null | tail -1)" "0"
+b34_withdraw_fixture 미관측
+check "34: 취소가 없으면 술어는 1 을 낸다" \
+  "$(b34_seam 'gate_dismissal_observed; printf "%s" "$?"' 2>/dev/null | tail -1)" "1"
+b34_withdraw_fixture 취소
+printf '{"type":"user","message":{"content":[{"type":"tool_result"' \
+  >> "$B34_CFG/projects/p/sess-취소.jsonl"
+check "34: 판독할 수 없으면 술어는 2 를 낸다 (미판정은 취소 없음이 아니다)" \
+  "$(b34_seam 'gate_dismissal_observed; printf "%s" "$?"' 2>/dev/null | tail -1)" "2"
 
 # 진입점 — 행의 구속 튜플과 그 경계의 **현재** 결속값이 다를 때만 철회한다.
 b34_withdraw_fixture 중단
@@ -11550,12 +11691,54 @@ printf -- '- `승인` | 교대=1 | 승인 id=SHIFT-FLOOR-abcd1234 | 상태=대�
 b34_seam 'gate_withdraw_stale_boundaries' >/dev/null 2>&1
 check "34: SHIFT-FLOOR 승인은 철회 대상이 아니다" \
   "$(b34_seam 'gate_approval_state SHIFT-FLOOR-abcd1234' 2>/dev/null | tail -1)" "대기"
-# 사유는 경계마다 갈린다 — 네 번 되풀이되는 한 문자열이면 이 필드는 시계만큼이나
+
+# arity — 프로덕션 호출부는 **항상** 인자를 넘기고 그 값은 흔한 경로에서 빈 문자열이다.
+# 「부재는 열거하고, 빈 값은 호출자가 봤는데 없더라」를 `${1:-$(…)}` 하나로 합치는
+# 리팩터는 밤새 매 게이트 호출마다 원장 전체를 다시 훑게 만들면서 초록으로 출하된다.
+# 두 arity 를 각각 물어야 그 리팩터에서만 실패한다.
+b34_withdraw_fixture 중단
+b34_seam 'gate_withdraw_stale_boundaries ""' >/dev/null 2>&1
+check "34: 빈 인자는 「봤는데 없더라」이므로 아무것도 철회하지 않는다" "$(b34_state)" "대기"
+b34_withdraw_fixture 중단
+b34_seam 'gate_withdraw_stale_boundaries "'"$B34_AID"'"' >/dev/null 2>&1
+check "34: 인자로 받은 id 는 철회 대상이 된다" "$(b34_state)" "철회"
+
+# B4 는 자기 술어가 정하는 결속값이 없다. 오늘 B4 가 든 값은 진전 다이제스트이고
+# 그 값은 비용과 무관하게 움직이므로, 철회에 참여시키면 비용이 천장 위에 그대로
+# 있는데도 승인이 걷히고 `gate_b4_cost` 가 같은 호출에서 **다른 id** 로 다시 연다.
+b34_withdraw_fixture 중단 낡은결속값 B4
+b34_seam 'gate_withdraw_stale_boundaries' >/dev/null 2>&1
+check "34: B4 승인은 결속값이 달라도 철회되지 않는다" "$(b34_state)" "대기"
+# 그리고 그 결속값이 실제로 비용과 무관하게 움직이는 것을 같은 픽스처에서 보인다 —
+# 비용은 건드리지 않고 진전만 움직이는 행 하나면 충분하다.
+b34_withdraw_fixture 중단 x B4
+b34_b4_cur=$(b34_seam 'gate_boundary_binding B4' 2>/dev/null | tail -1)
+b34_withdraw_fixture 중단 "$b34_b4_cur" B4
+printf -- '- `종료 절` | 교대=1 | id=C4 | 상태=충족 | 근거=비용과 무관한 진전\n' >> "$B34_LEDGER"
+if [ "$(b34_seam 'gate_boundary_binding B4' 2>/dev/null | tail -1)" = "$b34_b4_cur" ]; then
+  bad "34: B4 결속값" "비용과 무관한 행이 B4 의 결속값을 움직이지 못해 이 단언이 공허하다"
+else
+  ok "34: 비용과 무관한 진전 행이 B4 의 빌려온 결속값을 움직인다"
+fi
+b34_seam 'gate_withdraw_stale_boundaries' >/dev/null 2>&1
+check "34: 비용이 그대로인데 진전만 움직여도 B4 승인은 열린 채로 남는다" "$(b34_state)" "대기"
+# 대조 — 같은 모양의 B1 승인은 같은 행에 철회된다. 이것이 없으면 위 단언은 철회
+# 경로 자체가 죽어도 통과한다.
+b34_withdraw_fixture 중단 x B1
+b34_b1_cur=$(b34_seam 'gate_boundary_binding B1' 2>/dev/null | tail -1)
+b34_withdraw_fixture 중단 "$b34_b1_cur" B1
+printf -- '- `종료 절` | 교대=1 | id=C4 | 상태=충족 | 근거=비용과 무관한 진전\n' >> "$B34_LEDGER"
+b34_seam 'gate_withdraw_stale_boundaries' >/dev/null 2>&1
+check "34: 같은 행에서 B1 승인은 철회된다 (대조군)" "$(b34_state)" "철회"
+
+# 사유는 경계마다 갈린다 — 세 번 되풀이되는 한 문자열이면 이 필드는 시계만큼이나
 # 아무것도 말하지 않는다.
 check "34: 철회 사유가 B1 에서 갈린다" "$(b34_seam 'gate_boundary_withdraw_reason B1' 2>/dev/null | tail -1)" "진전 재개"
 check "34: 철회 사유가 B2 에서 갈린다" "$(b34_seam 'gate_boundary_withdraw_reason B2' 2>/dev/null | tail -1)" "의무 집합 변동"
 check "34: 철회 사유가 B3 에서 갈린다" "$(b34_seam 'gate_boundary_withdraw_reason B3' 2>/dev/null | tail -1)" "창 키 이동"
-check "34: 철회 사유가 B4 에서 갈린다" "$(b34_seam 'gate_boundary_withdraw_reason B4' 2>/dev/null | tail -1)" "비용 비율 변동"
+# B4 는 철회 경로에 없으므로 자기 사유 문면도 갖지 않는다. 가지면 커버리지를 훑는
+# 사람이 라벨에서 B4 를 보고 멈추는데, 정작 B4 동작은 한 줄도 시험되지 않는다.
+check "34: B4 는 자기 철회 사유를 갖지 않는다" "$(b34_seam 'gate_boundary_withdraw_reason B4' 2>/dev/null | tail -1)" "조건 소멸"
 
 # --- epilogue-begin ---
 #
