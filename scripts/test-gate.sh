@@ -7912,9 +7912,13 @@ else
   bad "B3_ACT_BUDGET" "gate.sh 에서 readonly B3_ACT_BUDGET=<n> 을 읽지 못했다"; B3_BUDGET_UNDER_TEST=40
 fi
 over_budget=$((B3_BUDGET_UNDER_TEST + 1))
+# `행위자=리드` ON EVERY HAND-WRITTEN BUDGET ROW. The spend count is the router's
+# and is filtered on that field the way the vector's `dispatches=` is, so a row
+# without it spends nothing — which is the right answer for a row from before
+# the field existed and the wrong shape for a fixture meaning to spend.
 i=0
 while [ "$i" -lt "$over_budget" ]; do
-  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
   i=$((i + 1))
 done
 
@@ -7938,7 +7942,7 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "B3 창 개시" -- touch "$WORK/t3b"
 i=0
 while [ "$i" -lt "$over_budget" ]; do
-  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$LEDGER"
   i=$((i + 1))
 done
 # The window-opening act can itself trip B1, and an open approval suspends
@@ -7973,6 +7977,46 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
 after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
+
+# Half three — the budget is the ROUTER's. The window the act above opened is
+# still open; the same 41 rows written from the stage seat spend none of it,
+# because a stage sends every Bash line it runs through this gate and most of
+# those grade above `읽기`, so an unfiltered count fired B3 on a router that had
+# done nothing. Then the same 41 from the lead, in the same window, fire it —
+# which is what keeps the stage half from passing against a boundary that
+# simply stopped counting.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+i=0
+while [ "$i" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=SB3 | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=스테이지 통행량 %s | prev=x\n' "$i" >> "$LEDGER"
+  i=$((i + 1))
+done
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "스테이지 통행량 뒤의 판정" -- touch "$WORK/t5s"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+check "스테이지가 쓴 읽기 초과 행은 라우터의 예산을 쓰지 않는다" "$after" "$before"
+i=0
+while [ "$i" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 재차 %s | prev=x\n' "$i" >> "$LEDGER"
+  i=$((i + 1))
+done
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "리드 통행량 뒤의 판정" -- touch "$WORK/t5l"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "같은 창에서 리드가 쓴 41행은 예산을 쓴다 (위 단언이 꺼진 경계 위에서 통과한 것이 아니다)"
+else
+  bad "B3 행위자 필터" "리드의 41행이 들어왔는데 경계가 발동하지 않았다"
+fi
 
 # ---------------------------------------------------------------------------
 # The banner seat, gate side.
@@ -9048,7 +9092,8 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
   "$(body_utf8_verdict "$t22_ambient")" "valid"
 
 # ---------------------------------------------------------------------------
-# 12c. B1's progress vector counts a DISPATCH, and not the router's own acts
+# 12c. B1's progress vector counts a DISPATCH'S OUTCOME, and not the router's
+#      own acts — nor the dispatch's authorisation row
 #
 # The router's above-read exec used to be a component of this vector (`acts=`).
 # Under the judgment definition the boundaries now apply — a judgment is a
@@ -9056,8 +9101,10 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 # number of judgments, so the counter sat inside its own hash input: the digest
 # judgment k compared against had already been moved by judgment k-1's row, and
 # `n` could never climb past 0. So the count left the vector, and what entered
-# in its place is the one act that actually moves a run: a stage dispatch
-# authorisation row.
+# in its place is the one act that actually moves a run: a stage dispatch —
+# read from its `stage-result` outcome, because the authorisation row lands
+# BEFORE the launch and a dispatch that died at launch would otherwise reset
+# the counter with the very row its re-dispatch writes again.
 #
 # Both directions again, for the same reason as 12b: a boundary that has been
 # silenced and one that has been fixed are indistinguishable from the side
@@ -9075,37 +9122,60 @@ printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트
 after_v=$(PD)
 check "라우터의 읽기 초과 행위는 진전이 아니다 (판정의 개수가 자기 해시 안에 앉지 않는다)" "$after_v" "$before_v"
 
-# THE DISPATCH COMPONENT, SELECTED POSITIVELY ON THE ACTOR FIELD. This is the
-# one assertion the actor field exists for: nothing stops a stage from calling
-# `act --kind skill`, and `교대=` is 0 for the lead and for a stage alike, so
-# an exclusion-shaped selector would let the constrained side write its own
-# progress. A stage-written dispatch row must contribute NOTHING, and so must
-# a row from before the field existed. Segment ids are unique to this block —
-# `gate_pin_attempt` counts per segment, so later sections are unaffected.
+# THE DISPATCH COMPONENT: AN OUTCOME, FOR A SEGMENT THE ROUTER DISPATCHED. The
+# authorisation row alone moves nothing — it is written before the launch, so
+# counting it made a launch that never produced a process reset the counter.
+# The seat is read from that row all the same, selected POSITIVELY on the actor
+# field: nothing stops a stage from calling `act --kind skill`, and `교대=` is 0
+# for the lead and for a stage alike, so an exclusion-shaped selector would let
+# the constrained side write its own progress. A stage-dispatched segment's
+# outcome must contribute NOTHING, and so must one whose row predates the
+# field. Segment ids are unique to this block — `gate_pin_attempt` counts per
+# segment, so later sections are unaffected. The outcome classes used are the
+# ones `stage-normal=` does not count, so every movement here is this
+# component's alone.
 before_v=$(PD)
 printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견 픽스처 | prev=x\n' >> "$LEDGER"
 after_v=$(PD)
-check_ne "$before_v" "$after_v" "교대의 파견 인가 행은 진전이다" "교대가 파견했는데 벡터가 그대로다"
-before_v=$(PD)
+check "파견 인가 행만으로는 진전이 아니다 (기동보다 먼저 쓰이는 행이다)" "$after_v" "$before_v"
 printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP2 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=파견 픽스처 | prev=x\n' >> "$LEDGER"
 after_v=$(PD)
-check_ne "$before_v" "$after_v" "리드의 파견 인가 행도 진전이다" "리드가 파견했는데 벡터가 그대로다"
-before_v=$(PD)
-printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP3 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=파견 픽스처 | prev=x\n' >> "$LEDGER"
-after_v=$(PD)
-check "스테이지가 쓴 파견 행은 진전이 아니다 (구속되는 쪽은 자기 진전을 쓸 수 없다)" "$after_v" "$before_v"
-before_v=$(PD)
-printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP4 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=행위자 필드 이전의 옛 행 | prev=x\n' >> "$LEDGER"
-after_v=$(PD)
-check "행위자 필드가 없는 옛 파견 행은 아무것도 기여하지 않는다" "$after_v" "$before_v"
-before_v=$(PD)
+check "리드의 파견 인가 행도 그 자체로는 진전이 아니다" "$after_v" "$before_v"
+# THE FAILED DISPATCH, WHOLE, compared against the value from BEFORE the
+# dispatch — not after its authorisation row — so a component that counts the
+# authorisation row fails here instead of passing on a value it had already
+# moved. The gate writes `종단 부류=크래시` for a launch that never started, and
+# the failure row after it.
+printf -- '- `stage-result` | 세그먼트=SDP1 | 스테이지=SDP1 | 종류=implement | 종료 코드=1 | 실행 버전=1 | 종단 부류=크래시 | 시각=2026-01-01T06:00:00Z\n' >> "$LEDGER"
 printf -- '- `자율 승인` | kind=skill | 결정=결과 | 대상=front | 세그먼트=SDP1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 행위자=교대 | 근거=rc=1 | prev=x\n' >> "$LEDGER"
 after_v=$(PD)
-check "파견 실패를 적는 결정=결과 행은 진전이 아니다" "$after_v" "$before_v"
+check "기동에서 죽은 파견은 인가·크래시·결과 행을 다 합쳐도 진전이 아니다 (파견 직전 값 그대로)" "$after_v" "$before_v"
+printf -- '- `stage-result` | 세그먼트=SDP1 | 스테이지=SDP1 | 종류=implement | 종료 코드=0 | 실행 버전=2 | 종단 부류=의도된 park | 시각=2026-01-01T06:10:00Z\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "교대가 파견한 스테이지가 관측 가능한 결과를 남기면 진전이다" "재파견이 park 로 끝났는데 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `stage-result` | 세그먼트=SDP2 | 스테이지=SDP2 | 종류=review | 종료 코드=0 | 실행 버전=1 | 종단 부류=산출물 없는 정지 | 시각=2026-01-01T06:20:00Z\n' >> "$LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "리드가 파견한 스테이지의 결과도 진전이다" "리드 파견의 결과 행이 들어왔는데 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `stage-result` | 세그먼트=SDP2 | 스테이지=SDP2 | 종류=review | 종료 코드=0 | 실행 버전=2 | 종단 부류=공허한 성공 | 시각=2026-01-01T06:30:00Z\n' >> "$LEDGER"
+after_v=$(PD)
+check "라우터가 파견했어도 공허한 성공은 진전이 아니다" "$after_v" "$before_v"
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP3 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=파견 픽스처 | prev=x\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP3 | 스테이지=SDP3 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:40:00Z\n' >> "$LEDGER"
+after_v=$(PD)
+check "스테이지가 파견한 세그먼트의 결과는 진전이 아니다 (구속되는 쪽은 자기 진전을 쓸 수 없다)" "$after_v" "$before_v"
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP4 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=행위자 필드 이전의 옛 행 | prev=x\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP4 | 스테이지=SDP4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:50:00Z\n' >> "$LEDGER"
+after_v=$(PD)
+check "행위자 필드가 없는 옛 파견 행이 낸 세그먼트의 결과는 아무것도 기여하지 않는다" "$after_v" "$before_v"
 before_v=$(PD)
 printf -- '- `자율 승인` | kind=x | 결정=act | 대상=front | 세그먼트=SDP5 | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견이 아닌 act | prev=x\n' >> "$LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP5 | 스테이지=SDP5 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T07:00:00Z\n' >> "$LEDGER"
 after_v=$(PD)
-check "kind 가 skill 이 아닌 act 행은 파견이 아니다" "$after_v" "$before_v"
+check "kind 가 skill 이 아닌 act 행은 파견이 아니다 (그 세그먼트의 결과도 세지 않는다)" "$after_v" "$before_v"
 
 # The read-only counterpart, which pins the qualifier rather than the rule: if
 # reads counted, the vector would never settle and B1 could never fire at all.
@@ -9143,6 +9213,75 @@ before_v=$(PD)
 printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 | 질문 문면=픽스처 | prev=x\n' >> "$LEDGER"
 after_v=$(PD)
 check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
+
+# ---------------------------------------------------------------------------
+# 12d. A live stage does not hold B1 back — the router's judgment fires it
+#
+# THE LIVE-STAGE EARLY RETURN IS GONE, AND THIS IS THE ONE FIXTURE THAT SAYS SO.
+# That return neither raised nor reset the counter, so the value froze while a
+# stage ran and the first judgment after the stage died fired on it — the very
+# moment a healthy run resumes routing. Its purpose (a stage firing B1 against
+# itself) is carried by the caller condition, which section 21 drives; but
+# every fixture that drives B1 does so with no pid file in the run directory,
+# so putting the early return back would leave both suites green. This one
+# writes a LIVE stage record into the run directory the boundary reads, seeds
+# the counter one short of the threshold, and drives ONE router judgment: the
+# B1 row must appear, and it appears only if the boundary evaluated with a live
+# stage present.
+#
+# NOT REACHABLE THROUGH `act --kind skill`, and that is why the record is
+# written by hand: the launcher waits on the stage it started, so the router
+# has no judgment while its own dispatch is alive. The state this pins is the
+# one the driver's spawn path and the detached supervisor produce — a stage
+# alive in the run directory while the routing seat goes on judging.
+# ---------------------------------------------------------------------------
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+B1_N_UNDER_TEST=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -n "$B1_N_UNDER_TEST" ]; then
+  ok "B1_STAGNATION_N 를 게이트 상수에서 읽는다 ($B1_N_UNDER_TEST)"
+else
+  bad "B1_STAGNATION_N" "gate.sh 에서 readonly B1_STAGNATION_N=<n> 을 읽지 못했다"; B1_N_UNDER_TEST=5
+fi
+# The live record, in the shape the gate's own launcher leaves: a pid file and
+# the start-time fingerprint beside it, for a process that is really running.
+FX_RUN_DIR_SAVE="${FX_RUN_DIR:-}"; FX_RUN_DIR="$RD"
+fx_stage_live SLIVE
+FX_RUN_DIR="$FX_RUN_DIR_SAVE"
+check "픽스처의 스테이지가 살아 있는 것으로 세어진다 (아래 단언이 공허하지 않다)" "$(cc_live_stages "$RD")" "1"
+printf '%s\n' "$(PD)" > "$RD/progress-digest"
+printf '%s\n' "$((B1_N_UNDER_TEST - 1))" > "$RD/progress-repeat"
+printf '%s\n' "0" > "$RD/obligation-repeat"
+# A NEW digest for this judgment's B1 id. Every B1 issued earlier in this file
+# was answered by a drain loop, and an answered id stays quiet while its digest
+# is unchanged — so the digest is moved by a structural row first, and the
+# counter is re-seeded after the judgment that observes the move.
+printf -- '- `종료 절` | id=C12d | 상태=충족 | 근거=12d 픽스처 | prev=x\n' >> "$LEDGER"
+printf '%s\n' "$(PD)" > "$RD/progress-digest"
+b1_12d_before=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "12d — 살아 있는 스테이지 아래의 라우터 판정" -- touch "$WORK/t12d"
+check "살아 있는 스테이지 아래의 라우터 판정 자체는 통과한다" "$rc" "0"
+check "그 판정이 정체 카운터를 문턱까지 올린다 (살아 있는 스테이지가 카운터를 얼리지 않는다)" \
+  "$(cat "$RD/progress-repeat")" "$B1_N_UNDER_TEST"
+b1_12d_after=$(grep -c '구속 튜플=B1' "$LEDGER" || true)
+if [ "${b1_12d_after:-0}" -gt "${b1_12d_before:-0}" ]; then
+  ok "살아 있는 스테이지가 있어도 라우터의 판정에서 B1 이 발화한다 (이른 반환이 돌아오면 여기가 빨개진다)"
+else
+  bad "B1 살아 있는 스테이지" "스테이지가 살아 있는 동안 B1 이 발화하지 않았다 — 지워진 이른 반환이 돌아왔다"
+fi
+# Nothing stays open or alive: the approval this fired would suspend B1..B3 for
+# every section below that shares this state directory, and the pid would count
+# as a live stage for termination condition 7.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD/SLIVE.pid" "$RD/SLIVE.start"
+check "픽스처의 스테이지를 거둔 뒤 살아 있는 스테이지는 없다" "$(cc_live_stages "$RD")" "0"
 
 
 # ---------------------------------------------------------------------------
@@ -10966,6 +11105,59 @@ check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
 # about whether the number was consumed.
 check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+
+# (d) A SHIFT LAUNCHED FROM A STAGE SEAT DOES NOT INHERIT THAT SEAT. Nothing
+# refuses `--kind router-shift` from a stage, and an environment prefix adds
+# and overwrites but never unsets — so the successor arrived carrying both
+# stage markers, `cc_caller_is_stage` answered "stage" for it all night, the
+# judgment predicate evaluated no boundary on that seat, and its dispatch rows
+# stamped `행위자=스테이지` and moved no progress. The two situations "a stage a
+# shift launched" and "a shift a stage launched" have byte-identical
+# environments, so this cannot be told apart in the actor block — the launcher
+# has to clear the markers, and this fixture drives the launcher from a seat
+# that carries both.
+#
+# The stub CLI records the environment it was handed and then, as the successor
+# itself, writes one row through the gate — the assertion that matters is the
+# actor on THAT row. `SS4` is a segment id no other row in this section uses.
+cat > "$WORK/bin/claude-envstub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${CC_PIPELINE_SEGMENT:-}" "${CC_PIPELINE_STAGE_ID:-}" "${CC_PIPELINE_SHIFT_ID:-}" > "$CC_TEST_SHIFT_ENV"
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind segment --target infra \
+  --segment SS4 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 후속 교대 자신이 쓰는 행" \
+  -- "워크트리=$CC_TEST_CONE_A" 상태=실행중 선행=없음 >/dev/null 2>&1
+exit 0
+STUB
+chmod +x "$WORK/bin/claude-envstub"
+: > "$WORK/shift-env.txt"
+H5S() {  # the digest as the STAGE-SEATED act's own environment sees it
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+    CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+    CC_CLAUDE_BIN="$WORK/bin/claude-envstub" \
+    CC_PIPELINE_SEGMENT=SS9 CC_PIPELINE_STAGE_ID='SS9#1' \
+    bash "$GATE" snapshot --manifest "$NM5" 2>/dev/null ) | jq -r .H
+}
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+      CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+      CC_CLAUDE_BIN="$WORK/bin/claude-envstub" \
+      CC_TEST_SHIFT_ENV="$WORK/shift-env.txt" CC_TEST_CONE_A="$CONE_A" \
+      CC_PIPELINE_SEGMENT=SS9 CC_PIPELINE_STAGE_ID='SS9#1' \
+      bash "$GATE" act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5S)" \
+      --rationale "픽스처 — 스테이지 좌석에서 띄우는 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
+msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+check "(d) 스테이지 좌석에서 띄운 교대도 실제로 기동한다" "$rc" "0"
+check "(d) 후속자가 실제로 실행됐다 (환경 기록 한 줄)" "$(grep -c . "$WORK/shift-env.txt" || true)" "1"
+IFS='|' read -r sx_seg sx_stage sx_shift < "$WORK/shift-env.txt" || true
+check "(d) 후속자의 환경에서 CC_PIPELINE_SEGMENT 는 비어 있다"  "$sx_seg"   ""
+check "(d) 후속자의 환경에서 CC_PIPELINE_STAGE_ID 는 비어 있다" "$sx_stage" ""
+check "(d) 후속자의 환경에는 자기 교대 마커가 서 있다" "$sx_shift" "$SHIFT_RUN_ID#2"
+actor5() { { grep -F '`자율 승인`' "$LEDGER5" || true; } | grep -F "세그먼트=$1 " | tail -1 \
+           | tr '|' '\n' | sed -n 's/^ *행위자=//p' | sed 's/[[:space:]]*$//' | tail -1; }
+check "(d) 후속자 자신이 쓴 인가 행은 행위자=교대 다 (기동자의 좌석을 물려받지 않는다)" "$(actor5 SS4)" "교대"
 
 # ---------------------------------------------------------------------------
 # 33. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조

@@ -1769,25 +1769,78 @@ gate_progress_vector() {
   # `교대 기동` is not counted (a shift is a structural event, not progress) and
   # a pid file is not consulted (it is not a fact of the ledger).
   #
-  # SELECTED POSITIVELY ON THREE FIELDS, delimiter-anchored so a `근거=` prose
-  # field that happens to mention `kind=skill` cannot match: the row is a
-  # `kind=skill` authorisation (`결정=act`, never the `결정=결과` row a failed
-  # dispatch appends), AND it carries `행위자`, AND that actor is not the stage.
-  # Nothing stops a stage from calling `act --kind skill`, and `교대=` is 0 for
-  # the lead and for a stage alike — so without the actor field this component
-  # would be an input the constrained side can write. Rows written before the
-  # field existed carry no `행위자` and contribute nothing, which is the safe
-  # direction.
+  # A DISPATCH COUNTS WHEN IT HAS AN OBSERVED OUTCOME, NOT WHEN IT WAS
+  # AUTHORISED. The `kind=skill | 결정=act` row is appended BEFORE the launch —
+  # that ordering is what makes a crash mid-act still leave a record — so a
+  # component that read the authorisation row counted a dispatch that never
+  # produced a process: a launch-path fault leaves `종단 부류=크래시 rc=1`, no pid
+  # file and no process, and the row that reset the stagnation counter was the
+  # same row that will be written again on the re-dispatch. That is a loop with
+  # nothing in it, and the ledger's own failure row (`결정=결과`) does not undo
+  # the authorisation row it follows. This component therefore reads the
+  # `stage-result` rows — the terminal record the gate writes after the stage
+  # was waited on — and counts only a class that says the stage ran and left a
+  # trace: `정상 완료`, `의도된 park` (a halt record) or `산출물 없는 정지` (a
+  # permission-denial trace). `크래시` and `공허한 성공` contribute nothing, for
+  # the reason `stage-normal=` below gives: those classes exist to name a
+  # dispatch that produced nothing, and counting them voids the name. Positive
+  # selection, so a class added later contributes nothing until it is listed.
+  #
+  # THE ACTOR IS STILL THE ROUTER'S, read through the segment. A stage-result
+  # row carries no seat, so the seat comes from the dispatch authorisation row of
+  # the SAME segment: the segment counts only if some `kind=skill | 결정=act` row
+  # for it carries `행위자` with a value other than `스테이지` — delimiter-anchored
+  # so a `근거=` prose field that mentions `kind=skill` cannot match. Nothing
+  # stops a stage from calling `act --kind skill`, and `교대=` is 0 for the lead
+  # and for a stage alike, so without that field a stage could dispatch a
+  # trivial nested stage and reset the counter that constrains its router. A
+  # segment whose dispatch rows predate the field, and one nobody dispatched
+  # through the gate at all, contribute nothing — the safe direction.
+  #
+  # NOT THE SAME COUNT AS `gate_pin_attempt`, ON PURPOSE. That function counts
+  # the authorisation rows of a segment to number the NEXT attempt, and it has
+  # to: the number is needed before the outcome exists, and a failed attempt
+  # consumed its number as surely as a successful one. Progress asks the
+  # opposite question — did anything come of it — so the two readers of the
+  # `kind=skill` rows want opposite semantics and must not share a helper.
   #
   # A KNOWN SIDE EFFECT, accepted: with `acts=` gone the vector half of
   # `--snapshot-digest` no longer goes stale on another actor's above-read exec;
   # what remains is the tip half's ancestry window. That is the direction the
   # `gate_snapshot_digest` comment already argued for.
-  printf 'dispatches=%s\n' \
-    "$( { gate_rows '자율 승인' | grep -F '| kind=skill |' || true; } \
+  #
+  # The same one-pass awk shape as `stage-normal=` below, for the same reasons:
+  # the class is located by its delimiter and compared whole (the driver writes
+  # a prose `관측=` field on these rows), and `LC_ALL=C` keeps the byte offsets
+  # host-independent. The segment set is handed in as one space-padded string
+  # so membership is a single `index`, with no per-row subshell.
+  local disp_segs
+  disp_segs=$( { gate_rows '자율 승인' | grep -F '| kind=skill |' || true; } \
        | { grep -F '| 결정=act |' || true; } \
        | { grep -F '| 행위자=' || true; } \
-       | { grep -vF '| 행위자=스테이지 |' || true; } | gate_count)"
+       | { grep -vF '| 행위자=스테이지 |' || true; } \
+       | sed -n 's/.*| 세그먼트=\([^|]*\) |.*/\1/p' | sed 's/[[:space:]]*$//' \
+       | LC_ALL=C sort -u | tr '\n' ' ')
+  printf 'dispatches=%s\n' \
+    "$( { gate_rows 'stage-result' || true; } | LC_ALL=C awk -v segs=" $disp_segs" '
+        function field(line, key, klen,    rest, p, q, v) {
+          rest = line; v = ""
+          while ((p = index(rest, key)) > 0) {
+            rest = substr(rest, p + klen)
+            q = index(rest, sep)
+            v = (q > 0) ? substr(rest, 1, q - 1) : rest
+          }
+          return v
+        }
+        BEGIN { skey = " | 세그먼트="; slen = length(skey)
+                ckey = " | 종단 부류="; clen = length(ckey); sep = " | "; n = 0 }
+        {
+          seg = field($0, skey, slen); cls = field($0, ckey, clen)
+          if (seg == "" || index(segs, " " seg " ") == 0) next
+          if (cls == "정상 완료" || cls == "의도된 park" || cls == "산출물 없는 정지") n++
+        }
+        END { printf "%d", n }
+      ')"
   # A STAGE FINISHING NORMALLY IS PROGRESS, and until now nothing here saw it.
   # Segment rows move only when the STATE changes, so a segment that runs several
   # stages under `실행중` contributes a constant — and the two processes of one
@@ -8377,6 +8430,13 @@ gate_pin_attempt() {
   # by the time it gets here, while the driver counts `stage-result` rows that
   # only land at termination. Two counting bases, one pin — the advance loop is
   # what makes them agree on the file.
+  #
+  # AND THE PROGRESS VECTOR DELIBERATELY DOES NOT SHARE THIS COUNT. Here every
+  # authorisation row must consume a number, outcome unknown, or two attempts
+  # land on one log path; there (`dispatches=` in `gate_progress_vector`) an
+  # attempt that produced nothing observable must count for nothing, or a
+  # dispatch that dies at launch resets the stagnation counter. Same rows,
+  # opposite questions — a shared helper would be wrong for one of them.
   local seg="$1" attempt
   attempt=$( { gate_rows '자율 승인' | grep -F 'kind=skill ' || true; } \
              | { grep -cF "세그먼트=$seg " || true; } )
@@ -10163,6 +10223,18 @@ gate_launch_shift() {
   # launched this shift, the ordinal is which shift was launched.
   gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)"
   log "교대 $n 시작 — 사유 $reason"
+  # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
+  # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
+  # shift launched from a stage seat — a stage reaches this arm like any other
+  # gate call, and nothing refuses `--kind router-shift` there — inherited both
+  # stage markers, and the successor was a router that `cc_caller_is_stage`
+  # answered "stage" for, for its whole life: the judgment predicate never
+  # evaluated B1..B3 on that seat, and its dispatch rows stamped `행위자=스테이지`,
+  # so the progress vector did not see them either. The two markers are cleared
+  # HERE rather than told apart in the actor block, because "a stage a shift
+  # launched" and "a shift a stage launched" carry byte-identical environments
+  # and no branch order answers both. `gate_launch_stage` deliberately leaves
+  # `CC_PIPELINE_SHIFT_ID` in place for the opposite direction; that stays.
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
@@ -10172,6 +10244,8 @@ gate_launch_shift() {
   CC_PIPELINE_GRANT="$GRANT" \
   CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
   CC_PIPELINE_TARGET="$alias" \
+  CC_PIPELINE_SEGMENT= \
+  CC_PIPELINE_STAGE_ID= \
   CC_PIPELINE_SHIFT_ID="$RUN_ID#$n" \
   bash "$wrapper" \
     --settings "$(gate_settings_file shift)" \
@@ -10302,12 +10376,20 @@ gate_b1_stagnation() {
   #
   # AFTER A PERSON CLOSES THE APPROVAL, what to expect: while it is open there
   # is neither evaluation nor counting. Once closed, the next judgment on the
-  # same key raises the counter but computes the SAME id, so no new question
-  # appears (`gate_has_row` matches closed rows too). One structural row landing
-  # takes `n` back to 0 and yields a fresh id. So "keep going" buys exactly one
-  # frozen state, and the router has to move a structural row to earn the next
-  # question. Closing the approval does not touch the counter — a boundary's
-  # remedy must not move its own counter.
+  # same key raises the counter and computes the SAME id — and the issuer keeps
+  # that id quiet, because the marker it left (`boundary-B1.asked`, the digest
+  # it last asked about) still equals the digest and the id already carries an
+  # answer. So no new question appears. One structural row landing takes `n`
+  # back to 0, clears that marker (below), and yields a fresh id. So "keep
+  # going" buys exactly one frozen state, and the router has to move a
+  # structural row to earn the next question. Closing the approval does not
+  # touch the counter — a boundary's remedy must not move its own counter.
+  #
+  # This paragraph used to credit `gate_has_row` with the suppression, and that
+  # was false: the issuer re-opened any answered id the moment its predicate
+  # held again, so the answered B1 came back on the next judgment and blocked
+  # the run a person had just released. The mechanism is the issuer's answered
+  # arm, and it is written down there.
   local h prev n
   h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
@@ -10316,6 +10398,10 @@ gate_b1_stagnation() {
     n=$((n + 1))
   else
     n=0
+    # The digest moved, so whatever B1 last asked about is no longer the state.
+    # Clearing the marker is what lets the same digest ask again if it ever
+    # comes back — a recurrence rather than the state a person already answered.
+    rm -f "$RUN_DIR/boundary-B1.asked"
   fi
   printf '%s
 ' "$h" > "$RUN_DIR/progress-digest"
@@ -10340,7 +10426,10 @@ gate_b2_obligations() {
   cur=$(gate_open_obligations | sort | shasum -a 256 | cut -d' ' -f1)
   prev=$(cat "$RUN_DIR/obligation-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/obligation-repeat" 2>/dev/null || printf '0')
-  if [ "$cur" = "$prev" ]; then n=$((n + 1)); else n=0; fi
+  # The marker is cleared when the set moves, for the reason B1 gives: an
+  # obligation set can genuinely return to an earlier value, and that return
+  # is a recurrence the issuer must be allowed to ask about again.
+  if [ "$cur" = "$prev" ]; then n=$((n + 1)); else n=0; rm -f "$RUN_DIR/boundary-B2.asked"; fi
   printf '%s\n' "$cur" > "$RUN_DIR/obligation-digest"
   printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
@@ -10380,9 +10469,25 @@ gate_b3_act_budget() {
   # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
   # grade at all, and here that spends budget on an act nobody established was
   # above a read.
+  #
+  # AND THE ACTOR MUST BE THE ROUTER'S, by the same positive selection the
+  # vector's `dispatches=` applies: the row carries `행위자` and its value is not
+  # `스테이지`. This is the router's budget — the window opens on the ROUTER's
+  # progress and B3 is evaluated on the router's judgment — but a stage sends
+  # every one of its Bash lines through this gate, and most of what a working
+  # stage runs grades above `읽기` (`sed`, `cp`, `mkdir`, `install` are all
+  # `워크트리쓰기`), so an unfiltered count was dominated by the constrained side
+  # while the window key deliberately excluded the rows that side wrote.
+  # Measured: a read-only review team of three spent the whole 40 and fired
+  # this boundary against a router that had done nothing. Rows written before
+  # the field existed carry no `행위자` and contribute nothing — the same safe
+  # direction as the vector, and it means a ledger from before the field cannot
+  # fire this boundary on history.
   total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
          | { grep -F '축2=' || true; } \
-         | { grep -v '축2=읽기' || true; } | gate_count)
+         | { grep -v '축2=읽기' || true; } \
+         | { grep -F '| 행위자=' || true; } \
+         | { grep -vF '| 행위자=스테이지 |' || true; } | gate_count)
   # THE WINDOW KEY IS THE WHOLE PROGRESS DIGEST, and it can be only because the
   # exec count is no longer a component of the vector. While `acts=` sat there
   # this key had to strip it: `total` was byte-for-byte the vector's own line,
@@ -10403,6 +10508,9 @@ gate_b3_act_budget() {
     base="$total"
     printf '%s\n' "$h"     > "$RUN_DIR/act-budget-digest"
     printf '%s\n' "$base"  > "$RUN_DIR/act-budget-base"
+    # A new window: the budget a person released under the old key is spent
+    # history, and the marker that kept its answered id quiet goes with it.
+    rm -f "$RUN_DIR/boundary-B3.asked"
   fi
   n=$((total - base))
   [ "$n" -lt "$B3_ACT_BUDGET" ] && return 0
@@ -10456,15 +10564,45 @@ gate_issue_boundary_approval() {
   # `RUN_ID` STAYS IN THE SALT. Without it the same condition in two runs shares
   # one id, and the suppression below then reaches across run boundaries.
   #
-  # DUPLICATE SUPPRESSION IS "THE LAST ROW IS `대기`", NOT "ANY ROW EXISTS". The
-  # existence test swallowed every recurrence after the first resolution for
-  # good: a stagnation answered at 22:00 and recurring at 03:00 could never ask
-  # again, because the id had a row. A resolved id re-opens with a fresh `대기`
-  # row and the row sequence says what happened to it; an OPEN id is not
-  # re-appended, which is the property the existence test was really for.
-  local name="$1" q="$2" binding="$3" id
+  # DUPLICATE SUPPRESSION HAS THREE ARMS, AND THE MIDDLE ONE IS THE ONE THAT
+  # WAS MISSING. An OPEN id (last row `대기`) is not re-appended. An id nobody
+  # has asked is issued. And an id a person has ANSWERED is re-issued only once
+  # the binding value has moved away and come back — not on the very next
+  # judgment with the value unchanged.
+  #
+  # The middle arm used to be the first: "the last row is `대기`" alone, so a
+  # resolved id re-opened with a fresh `대기` row whenever its predicate held
+  # again. For B1 that is every judgment after the answer: the binding is the
+  # progress digest, an `승인` row is not in the vector, and neither is anything
+  # the router does with its own hands (commit, push, PR, merge), so the digest
+  # a person had just said "keep going" about was still the digest at the next
+  # judgment — same binding, same id, new `대기` row, B1..B3 suspended again.
+  # "Keep going" could not be honoured at all. The contract says what an answer
+  # buys instead: one frozen state, with the next question earned only by a
+  # structural row moving the digest and minting a new id.
+  #
+  # WHY NOT "ANY ROW EXISTS", the form this replaced earlier: that swallowed
+  # every recurrence after the first answer for good — a condition answered at
+  # 22:00 whose binding value moved away and RETURNED at 03:00 could never ask
+  # again, because the id had a row. B2's binding is the open-obligation set and
+  # an identical set can genuinely come back. So the answered arm reads a marker
+  # beside the counters: `boundary-<name>.asked` holds the binding this boundary
+  # was last issued for, and the predicate that owns the counter CLEARS it the
+  # moment its binding moves (B1 and B3 when the digest changes, B2 when the
+  # obligation digest changes). An answered id with the marker still equal to
+  # the binding has been in the same state continuously since the answer, and
+  # stays suppressed; one whose marker is gone is a recurrence, and asks. B4 and
+  # the handoff floor bind to the progress digest and clear nothing — their
+  # value does not return in practice, and an answered one stays answered
+  # until the digest moves, which is what a person expects of "yes, continue".
+  local name="$1" q="$2" binding="$3" id st
   id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
-  [ "$(gate_approval_state "$id")" = "대기" ] && return 0
+  st=$(gate_approval_state "$id")
+  [ "$st" = "대기" ] && return 0
+  if [ -n "$st" ] && [ "$(cat "$RUN_DIR/boundary-$name.asked" 2>/dev/null || true)" = "$binding" ]; then
+    return 0
+  fi
+  printf '%s\n' "$binding" > "$RUN_DIR/boundary-$name.asked"
   gate_approval_sidecar_write "$id" issue '질문' "$q" \
     || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   # `유도 절단점=-` FOR THE SAME REASON THE ACT DIGEST IS `-`. A boundary has no
