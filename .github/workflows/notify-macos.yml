@@ -11,16 +11,12 @@ on:
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
-      # The banner-rendering layer. The oracle below is the only thing in the
-      # tree that measures the notifier's own swallowing set rather than our
-      # assumptions about it, and it needs the real binary — so it runs on this
-      # leg and nowhere else. A file this filter does not name is a file this
-      # job never sees, which would leave the test existing and never once run.
+      # The notifier oracle is the only thing in the tree that measures the
+      # notifier's own swallowing set rather than our assumptions about it,
+      # and it needs the real binary — so it runs on this leg and nowhere
+      # else. A file this filter does not name is a file this job never sees,
+      # which would leave the test existing and never once run.
       - 'scripts/test-notify-title-oracle.sh'
-      - 'scripts/lint-notify-title-render.sh'
-      - 'scripts/test-lint-notify-title-render.sh'
-      - 'scripts/lint-notify-fire-sites.sh'
-      - 'scripts/test-lint-notify-fire-sites.sh'
       # The chain-equivalence harness runs the frozen reference against the
       # candidate under a UTF-8 locale, which is the configuration the driver
       # deliberately runs in, so its verdict is only meaningful on a leg that
@@ -29,13 +25,15 @@ on:
       # and the filter is what decides whether it ever looks.
       - 'scripts/test-gate-chain-equiv.sh'
       - 'tests/fixtures/gate-chain-equiv/**'
-      - 'scripts/measure-gate-cost.sh'
-      - 'scripts/test-measure-gate-cost.sh'
+      # The gate suite's advisory-lock section and the Hangul-date fingerprint
+      # assertions check something only on this host, and both suites source
+      # the shared fixture library, so the library is named with them.
+      - 'scripts/test-gate.sh'
+      - 'scripts/test-liveness-agreement.sh'
+      - 'scripts/run-fixture.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'
-      - 'tests/fixtures/lint-notify-title-render/**'
-      - 'tests/fixtures/lint-notify-fire-sites/**'
       - '.github/workflows/notify-macos.yml'
       - 'Makefile'
   push:
@@ -46,39 +44,20 @@ on:
 jobs:
   lint-and-test-macos:
     runs-on: macos-latest
-    # `make lint` alone has been taking 7-8.5 minutes on this runner against the
-    # old 10-minute ceiling — 70-85% of the budget spent before the tests start,
-    # so ordinary runner variance cancelled the job with every step reporting
-    # success. One lint dominates: lint-bash-portability is 206s of the 242s the
-    # whole suite takes locally. Raising the ceiling stops a green run from
-    # reading as a failure; making that lint cheaper is separate work and is not
-    # what this number is standing in for.
-    # 90, and the number was raised three times before it stuck. The history is
-    # kept because each step measured something the next one needed.
+    # This leg runs only what the ubuntu leg cannot check — the short list in
+    # the Makefile's `test-darwin-narrow` target. It no longer runs the whole
+    # gate suite, so the old reason for a very long ceiling (that suite slowing
+    # down as it runs) no longer applies to this job.
     #
-    # At 25 the job was cancelled at 25m19s with lint green at 12m41s and the
-    # darwin tests cut off at 12m25s — neither half had failed, the budget was
-    # simply sized for a smaller tree. Raised to 45.
-    #
-    # At 45 it was cancelled again. The final passing assertions were 10-17
-    # seconds APART and the job died 73 seconds after one of them, still making
-    # progress and never hung; the same suite had finished at 31m32s one commit
-    # earlier, which is how little headroom 45 actually was.
-    #
-    # Master hit the same wall independently at 25, and that reading is the
-    # sharpest of the three: the run one commit before passed at 24m58s — twenty
-    # two seconds inside the ceiling — and adding a handful of assertions pushed
-    # the next one to a cancellation at 25m22s. A budget with twenty-two seconds
-    # of margin is not a budget.
-    #
-    # The reason it keeps recurring is that this suite does not get slower
-    # evenly, it gets slower as it runs: each gate call re-reads a ledger the
-    # suite has been appending to, so the last assertions cost far more than the
-    # first. A ceiling that fits today stops fitting after the next few
-    # assertions. 90 is chosen to stop this recurring per commit, not because
-    # the suite needs it — the superlinear cost is the real defect and is filed
-    # separately.
-    timeout-minutes: 90
+    # The ceiling is derived from what the job does now: twice the sum of the
+    # brew step's own 3-minute cap, the kept suites' summed durations rounded
+    # up to whole minutes, and one minute for checkout and setup. Measured on
+    # the commit this was sized against, with every suite sharing the runner,
+    # the kept suites summed to under four minutes, so 2 x (3 + 4 + 1) = 16.
+    # When the list grows, recompute by the same rule. The ceiling never goes
+    # below the brew step's cap. A ceiling far above the job's real size
+    # cannot tell a hang from a run that is still making progress.
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
 
@@ -92,12 +71,9 @@ jobs:
       - name: yq sanity check
         run: yq --version
 
-      - name: Run lint
-        run: make lint
-
       - name: Run darwin-only tests
-        # The orchestrator's darwin-only claims live here and NOWHERE else:
-        # reparenting under `set -m`, contention on the advisory lock, and the
-        # boot clock across a sleep. Everything else about the driver is
-        # seam-driven and is covered by the ubuntu leg through injection.
-        run: make -j"$(sysctl -n hw.ncpu)" test-darwin
+        # Only the suites whose assertions check something on this host that
+        # they do not check on ubuntu. The list, and the reason for each entry,
+        # sit beside the target in the Makefile. Everything else — `make lint`
+        # included — runs on the ubuntu leg in the `lint` workflow.
+        run: make -j"$(sysctl -n hw.ncpu)" test-darwin-narrow
