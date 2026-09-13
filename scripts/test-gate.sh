@@ -156,9 +156,11 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # their container used to define in line. Those live in `pre_<group>()`
 # functions in the head now, and the cut inserts one call to `pre_<group>`
 # before the first selected section of that group, reading the group off the
-# banner's `group:` field. A group with no such function (`base`, `darwin`,
-# `static`) gets no call; the full run calls the same functions from the
-# containers' own positions, so the serial order is unchanged.
+# banner's `group:` field. A group with no such function (`darwin`) gets no
+# call, and `pre_base` is already called by the head itself, so the call the
+# cut inserts for a base section is a no-op; the full run calls the same
+# functions from the containers' own positions, so the serial order is
+# unchanged.
 # ---------------------------------------------------------------------------
 SELF="$script_dir/${0##*/}"
 sections_want=""
@@ -677,130 +679,6 @@ auq_frame() {
   printf '%s' "$tid"
 }
 
-# ---------------------------------------------------------------------------
-# 0a. The pipefail trap, scanned the way the driver's own suite scans it
-#
-# Under `pipefail` an early-exiting reader on the right of a pipe kills the
-# writer with SIGPIPE and the whole pipeline reports failure. In this file every
-# such site was a PRESENCE test used to decide whether to append, so a row that
-# existed came back as absent and the gate wrote a duplicate — duplicate
-# approvals and duplicate obligations, which the termination conditions then
-# count. The driver's suite already refuses this shape; the gate is the busier
-# file and had six of them.
-# ---------------------------------------------------------------------------
-# The TEST files are scanned too. This class first bit the harness rather than
-# the driver: an assertion of the form `sed … | grep -q …` reported a match as a
-# miss on the Linux leg only, once the function it scanned grew long enough for
-# the race to be real. A checker that exempts itself is the shape it exists to
-# refuse.
-# THE FIXED HALF IS NOT A GLOB, so a new file joins it only by being written in.
-# The same omission already happened once with the shared-predicate file and
-# nobody noticed; `notify-run.sh` is by design full of `grep` on the right of a
-# pipe, so leaving it out would exempt the file most likely to carry the defect.
-#
-# THE LINT FAMILY JOINS BY GLOB INSTEAD, because being written in is exactly what
-# it never was: every `scripts/lint-*.sh` sat outside this scan while the scan
-# said in its own words that a checker exempting itself is the shape it exists to
-# refuse. A family whose members are named by one pattern is the case where a
-# written-in list buys nothing and costs the next file its coverage — and the
-# cost is not hypothetical, since the vocabulary lint reads the head of every
-# file it scans through a pipe whose reader stops at the first match.
-scanned_files() {
-  printf '%s\n' "$GATE" \
-    "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
-    "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
-    "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
-    "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
-    "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
-    "$repo_root/scripts/test-gate.sh" \
-    "$repo_root/scripts/test-watch.sh" \
-    "$repo_root/scripts/test-snapshot.sh" \
-    "$repo_root/scripts/test-orchestrator-pretool-hook.sh"
-  for f in "$repo_root"/scripts/lint-*.sh; do
-    [ -f "$f" ] || continue
-    printf '%s\n' "$f"
-  done
-}
-# A GLOB THAT EXPANDS TO NOTHING COVERS NOTHING AND LOOKS THE SAME WHILE DOING
-# IT. An unexpanded pattern leaves `[ -f ]` false on every iteration and the
-# loops below simply run shorter, which is the green this whole section exists
-# to distrust — so the count is asserted rather than assumed.
-nlint=0
-for f in "$repo_root"/scripts/lint-*.sh; do
-  [ -f "$f" ] || continue
-  nlint=$((nlint + 1))
-done
-if [ "$nlint" -ge 1 ]; then
-  ok "스캔 목록이 린트 계열을 글로브로 흡수한다 (${nlint}개)"
-else
-  bad "스캔 목록" "scripts/lint-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
-fi
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  [ -f "$f" ] || continue
-  # `grep -c … >/dev/null` belongs in the pattern as well, but NOT because it
-  # exits early — it does not. Measured on BSD grep 2.6.0-FreeBSD and GNU grep
-  # 3.12 over 4MB and 16MB inputs: `grep -cF … >/dev/null` produced a non-zero
-  # pipeline 0 times out of 40 on both, while the control `grep -qF …` produced
-  # one 40 out of 40 with the redirection and 40 out of 40 without it. What
-  # short-circuits is the `-q` flag itself; discarding the output has nothing to
-  # do with it.
-  #
-  # The reason to refuse this spelling is the other one: `grep -c` exits 1 when
-  # the count is zero, and zero matches is an ordinary result rather than a
-  # failure — so on the right of a pipe under `pipefail` it fails the pipeline
-  # for finding nothing. Taking the count into a variable is what moves the
-  # verdict from an exit status onto a value, which is the shape this tree wants.
-  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
-  if [ -z "$early" ]; then
-    ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
-  else
-    bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
-  fi
-done <<EOF
-$(scanned_files)
-EOF
-
-# ---------------------------------------------------------------------------
-# 0b. A helper called above its own definition, which no passing count can show
-#
-# A shell function exists only after the line that defines it has run, so a
-# top-level call written above that line dies as `command not found` — and a
-# missing command is not a failed assertion. Three calls in this file hit that
-# and reported nothing: neither counter moved, the suite stayed green, and the
-# assertions they carried covered nothing while reading as covered. Counting
-# passes cannot reveal it, because nothing is failing; things are absent.
-#
-# ONLY COLUMN-ZERO CALLS COUNT. A call inside another function runs when that
-# function is invoked, which can be anywhere below its own definition; a call at
-# top level runs where it is written, and that is the shape that dies. The
-# definition line itself is not a call — the name there is followed by `(`.
-# ---------------------------------------------------------------------------
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  [ -f "$f" ] || continue
-  offenders=""
-  while IFS= read -r d; do
-    [ -n "$d" ] || continue
-    defline=${d%%:*}
-    name=$(printf '%s' "${d#*:}" | sed -E 's/\(\).*$//')
-    [ -n "$name" ] || continue
-    callline=$(grep -nE "^$name([[:space:]]|\$)" "$f" | sed -n '1s/:.*$//p')
-    [ -n "$callline" ] || continue
-    if [ "$callline" -lt "$defline" ]; then
-      offenders="$offenders $name(호출 $callline < 정의 $defline)"
-    fi
-  done <<INNER
-$(grep -nE '^[a-z_][a-z0-9_]*\(\) *\{' "$f")
-INNER
-  if [ -z "$offenders" ]; then
-    ok "정의보다 먼저 불리는 헬퍼가 없다: $(basename "$f")"
-  else
-    bad "정의 전 호출" "$(basename "$f"):$offenders — 이 호출은 실패가 아니라 부재로 사라지므로 통과 개수에 드러나지 않는다"
-  fi
-done <<EOF
-$(scanned_files)
-EOF
 
 # ---------------------------------------------------------------------------
 # 0. Fixture — a real repository, two targets, two cutpoints
@@ -938,17 +816,763 @@ check "픽스처 매니페스트가 검사를 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 
-# EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
-# helpers, the two static scans (`0a`, `0b`), and the fixture repository with
-# its manifest and authorization record. The fixture is unconditional because
-# every section below stands on the `$WORK` tree and the repository it builds,
-# and a selected section handed neither would fail for a reason that has
-# nothing to do with what it asserts.
+# ---------------------------------------------------------------------------
+# The family preludes — `pre_<group>()`
 #
-# The two scans are here because they are still part of the head. The pass that
-# lifts them out into sections of their own moves this marker above them, and
-# the head's assertion count drops to the fixture's own three.
+# Each family of sections — the base fixture's late sections, the cone, slice
+# A, the review obligation, slice B — used to have its shared settings and
+# helpers written in line at the family's container, so the only way to reach
+# one of its sections was to have run everything above it. Each family's
+# shared part now lives in one function here, and two callers reach it: the
+# full run, which calls it from the container's own position so the serial
+# order is exactly what it was; and the section selector, which inserts one
+# call in front of the first selected section of that group. Both may call it
+# in one process, so every prelude is idempotent — a `PRE_<GROUP>_DONE` flag
+# returns early on the second call.
+#
+# WHAT MOVES IS SETTINGS AND DEFINITIONS, NEVER AN ASSERTION. A prelude sets
+# paths, derives ids, writes the family's manifest, grant and ledger, and
+# defines the helpers its sections call. The assertions stay where they were,
+# and so does the one absolute-value assertion on a prelude-emptied ledger,
+# which must never leave its own prelude.
+#
+# The dependencies run inward: `pre_review` and `pre_sb` call `pre_sa` first
+# because they use its helpers, and `pre_base` is called once right below its
+# definition, because the base family's prelude is the fixture itself and the
+# definitions it carries are pure strings and functions.
+# ---------------------------------------------------------------------------
+# `static` — the two scans that read the tree and touch no fixture. Their one
+# shared piece is the list of files they scan, which is what a cut of either
+# section has to carry.
+pre_static() {
+  [ -n "${PRE_STATIC_DONE:-}" ] && return 0
+  PRE_STATIC_DONE=1
+  # The TEST files are scanned too. This class first bit the harness rather than
+  # the driver: an assertion of the form `sed … | grep -q …` reported a match as a
+  # miss on the Linux leg only, once the function it scanned grew long enough for
+  # the race to be real. A checker that exempts itself is the shape it exists to
+  # refuse.
+  # THE FIXED HALF IS NOT A GLOB, so a new file joins it only by being written in.
+  # The same omission already happened once with the shared-predicate file and
+  # nobody noticed; `notify-run.sh` is by design full of `grep` on the right of a
+  # pipe, so leaving it out would exempt the file most likely to carry the defect.
+  #
+  # THE LINT FAMILY JOINS BY GLOB INSTEAD, because being written in is exactly what
+  # it never was: every `scripts/lint-*.sh` sat outside this scan while the scan
+  # said in its own words that a checker exempting itself is the shape it exists to
+  # refuse. A family whose members are named by one pattern is the case where a
+  # written-in list buys nothing and costs the next file its coverage — and the
+  # cost is not hypothetical, since the vocabulary lint reads the head of every
+  # file it scans through a pipe whose reader stops at the first match.
+  scanned_files() {
+    printf '%s\n' "$GATE" \
+      "$repo_root/plugins/cc-cmds/orchestrator/watch.sh" \
+      "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" \
+      "$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh" \
+      "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
+      "$repo_root/plugins/cc-cmds/orchestrator/test-run.sh" \
+      "$repo_root/scripts/test-gate.sh" \
+      "$repo_root/scripts/test-watch.sh" \
+      "$repo_root/scripts/test-snapshot.sh" \
+      "$repo_root/scripts/test-orchestrator-pretool-hook.sh"
+    for f in "$repo_root"/scripts/lint-*.sh; do
+      [ -f "$f" ] || continue
+      printf '%s\n' "$f"
+    done
+  }
+}
+
+# `base` — the definitions the base family's sections used to write in line as
+# they went: the run's settings directory (section 1b), the run directory
+# (12), the linked worktree's path (14c), the surface-test state home (14e),
+# the settings directory's parent (14l), and the late state home with its two
+# gate wrappers (the note between 14l and 15b). Every one of them is a string
+# or a function — the commands that actually CREATE those things stay in
+# their sections, because moving one would change the world an earlier
+# section's assertions see. Lifting only the definitions means a late section
+# cut on its own no longer dies on an unbound name.
+#
+# `gateL`/`HL` run against a state home of their own. The section that moves
+# the enforcement surface and never puts it back is 14l: it appends a newline
+# to the base home's `generic.json` to stand in for somebody else's edit,
+# asserts exit 7, and its closing `set_exec_wt ""` restores only the
+# declaration — so every later `act` against the base home gets exit 7 for
+# reasons unrelated to what it tests. A fresh state home gives the sections
+# after it their own baseline while keeping the same ledger.
+pre_base() {
+  [ -n "${PRE_BASE_DONE:-}" ] && return 0
+  PRE_BASE_DONE=1
+  SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
+  RD="$XDG_STATE_HOME/cc-cmds/run/R1"
+  LINKED="$WORK/linked"
+  STATE7="$WORK/state-surface"
+  RD_L=$(dirname "$SETTINGS_DIR")
+  STATE_LATE="$WORK/state-late"
+  gateL() {
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+}
+pre_base
+
+# `cone` — the container of section 31, moved here whole: the pipeline
+# environment cleared, the run id derived from the manifest and asserted to
+# differ, the collision guard on the three paths, the cone manifest, grant
+# and ledger, the `gateN`/`HN`/`seg_row`/`cone_of` helpers, the seven cone
+# worktrees and the second repository. The full run calls it from the
+# container's own position; section 34 (the shift launcher) stands on the
+# same names, so a cut naming it gets this prelude too.
+pre_cone() {
+  [ -n "${PRE_CONE_DONE:-}" ] && return 0
+  PRE_CONE_DONE=1
+  # The pipeline environment group, cleared AGAIN. Section 33 (the self-parked
+  # stage) clears it for its own reasons and this family needs the same thing for
+  # the same reason — a stage session is deliberately kept out of the lineage, so
+  # an inherited `CC_PIPELINE_STAGE_ID` makes every call below take that branch.
+  # Leaning on an earlier section having done it is the shape this repair exists
+  # to remove, and a cut of one cone section has no earlier section at all.
+  unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+        CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+        CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+        CC_PIPELINE_PARENT_SESSION
+
+  CONE_RUN_ID=R3
+  prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+  # A BROKEN FIXTURE EXITS RATHER THAN ASSERTING — the idiom `nm_add_auth_row` and
+  # `refresh_bd` already use. The id has to differ because the id is what splits
+  # the ledger: an inherited one would merge this section's rows into the previous
+  # section's and every derivation below would read both.
+  if [ -z "$prev_run_id" ] || [ "$prev_run_id" = "$CONE_RUN_ID" ]; then
+    printf '31: 앞 절의 런 id 를 매니페스트에서 읽지 못했거나 이 절의 id 와 겹친다 (읽은 값 %s, 이 절 %s)\n' \
+      "${prev_run_id:-(없음)}" "$CONE_RUN_ID" >&2
+    exit 1
+  fi
+
+  NM="$WORK/cone-plan.md"
+  CONE_GRANT="$WT/docs/pipeline-grant/$CONE_RUN_ID.md"
+  LEDGER2="$WT/docs/pipeline-run/$CONE_RUN_ID.md"
+  # AND THE GUARD AGAINST THE COLLISION IS ON THE PATHS, NOT ON THE ID. What went
+  # wrong was `sed … "$FX_GRANT" > "$CONE_GRANT"` naming one file on both sides: the
+  # shell truncated the authorization record before `sed` could read it, the grant
+  # went to zero bytes, and every call below died on a missing authorization block.
+  # The id is one input to those three paths and not the only one — a section added
+  # above can take this id while writing it into its OWN copy of the manifest, so
+  # the value this section reads never moves, the id check passes, and the files
+  # overlap exactly as before. Each destination is therefore compared against the
+  # source it is derived from, which is the pair that actually collides.
+  if [ "$NM" = "$FX_MANIFEST" ] || [ "$CONE_GRANT" = "$FX_GRANT" ] || [ "$LEDGER2" = "$FX_LEDGER" ]; then
+    printf '31: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 — 읽기 전에 셸이 원본을 비운다 (매니페스트 %s vs %s · 인가 %s vs %s · 원장 %s vs %s)\n' \
+      "$NM" "$FX_MANIFEST" "$CONE_GRANT" "$FX_GRANT" "$LEDGER2" "$FX_LEDGER" >&2
+    exit 1
+  fi
+  sed -e "s/run-id=$prev_run_id;/run-id=$CONE_RUN_ID;/" \
+      -e "s/^\*\*런 id\*\*: $prev_run_id\$/**런 id**: $CONE_RUN_ID/" "$FX_MANIFEST" > "$NM"
+  # The binding digest no longer matches, and that is the check working — so it is
+  # dropped rather than recomputed, which the driver reports and allows.
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$NM" && rm -f "$NM.bak"
+  # ROWS GO INSIDE `## 인가`, AND APPENDING TO THE FILE DOES NOT PUT THEM THERE.
+  #
+  # This suite adds a `## 룰 설정` section below `## 인가` earlier on, so `>>` lands
+  # a row in THAT section — and the auto-adoption floor honours only rows inside
+  # `## 인가`, because that is the section the "exactly one" guarantee is about. A
+  # row anywhere else is not a declaration the floor reads; treating it as one is
+  # the hole being closed, so the fixture must place the row the way a kickoff
+  # does rather than wherever the file happens to end.
+  nm_add_auth_row() {
+    local line="$1" out="$NM.ins" l inserted=
+    : > "$out"
+    while IFS= read -r l || [ -n "$l" ]; do
+      printf '%s\n' "$l" >> "$out"
+      if [ -z "$inserted" ] && [ "$l" = "## 인가" ]; then
+        printf '%s\n' "$line" >> "$out"
+        inserted=1
+      fi
+    done < "$NM"
+    if [ -z "$inserted" ]; then
+      printf 'nm_add_auth_row: 매니페스트에 「## 인가」 절이 없다\n' >&2
+      exit 1
+    fi
+    mv "$out" "$NM"
+  }
+  # One pre-declared judgment class — this is arm (a)'s only input, and a run
+  # cannot write it.
+  nm_add_auth_row '- `자동 채택` | 판단 부류=문서-신선도 | 상한=없음 | 심각도 상한=minor | 사유=문서 신선도 판정은 되돌릴 대상이 없다'
+  nm_add_auth_row '- `종료 절` | id=K1 | 문면=첫째 절'
+  # A BLANKET substitution is right here and an anchored one is right above. The
+  # grant carries the id in its title, in its `## 인가` heading and inside the
+  # `**보고서**:` path, all three of which must move together, and it holds no hex
+  # digest for a loose match to corrupt. What made this line dangerous was never
+  # the pattern — it was reading and writing one path, which the guard above now
+  # makes unreachable.
+  sed "s/$prev_run_id/$CONE_RUN_ID/g" "$FX_GRANT" > "$CONE_GRANT"
+  {
+    printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
+    printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
+  } > "$LEDGER2"
+
+  # HELPERS FIRST, BEFORE ANY CALL. A helper defined below its first use dies as
+  # `command not found` while the suite still reports green — the trap 9e1be1b
+  # closed, in the file that closed it.
+  STATE_CONE="$WORK/state-cone"
+  gateN() {
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  HN() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null | jq -r .H; }
+  seg_row() {
+    # seg_row <id> <worktree> <필드>… — one `segment` act, always through the gate
+    # so the write-time floors actually run.
+    local id="$1" wt="$2"; shift 2
+    gateN act --manifest "$NM" --kind segment --target infra --segment "$id" --cutpoint 커밋 \
+          --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 워크트리="$wt" "$@"
+  }
+  CONE_OF_FAILURES="$WORK/cone-of-failures"
+  : > "$CONE_OF_FAILURES"
+  cone_of() {
+    # cone_of <anchor> <사유> — the `의존 세그먼트` the gate DERIVED. The row is
+    # written with no declaration, so what lands on it is the derivation itself.
+    gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+          --snapshot-digest "$(HN)" --rationale x \
+          -- 스코프=cone 원인=막힘 "앵커 세그먼트=$1" "사유=$2" \
+             "근거=$1 이 사람의 답을 기다린다" "재개 명령=승인이 닫히면 다시 디스패치"
+    # THE ACT'S OWN CODE IS READ BEFORE THE LEDGER IS. This section calls with the
+    # same anchor seven times and then takes the LAST row carrying that anchor, so
+    # a call refused for any reason — a digest race, a vocabulary change, the row
+    # length cap the over-long-declaration subsection proves exists — writes no row
+    # and the read below hands back the PREVIOUS call's cone. Nothing downstream
+    # could notice: the pipeline's status is `tail`'s and is always 0.
+    #
+    # THE FAILURE GOES TO A FILE RATHER THAN TO `bad`. Every caller is
+    # `x=$(cone_of …)`, which is a subshell, so a counter incremented here never
+    # reaches the totals — the exact shape this suite is being repaired for. The
+    # file is read once at the end of the section, in the parent.
+    if [ "$rc" != "0" ]; then
+      printf '앵커 %s rc=%s — %s\n' "$1" "$rc" "$msg" >> "$CONE_OF_FAILURES"
+      printf '유도-실패'
+      return 1
+    fi
+    { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F "앵커 세그먼트=$1 " | tail -1 \
+      | tr '|' '\n' | sed -n 's/^ *의존 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1
+  }
+  last_judgment_approval() {
+    { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1
+  }
+  last_adoption_row() {
+    # THE ADOPTION ROW IS NOT THE LAST `자율 승인` ROW. A bookkeeping kind records
+    # its own row BEFORE the gate writes the plain approval row for the same `act`
+    # — the ordering that keeps a refused bookkeeping row from leaving an approval
+    # behind — so the plain row lands on top of the adoption. Selecting by
+    # `결정=채택` keeps the assertion's force rather than weakening it: an adoption
+    # always carries `해소 승인`, and `-` is what it carries when the floor
+    # admitted it on its own, so a resolution that went unrecorded still fails.
+    { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -F '결정=채택' | tail -1
+  }
+  row_field() {
+    # row_field <행> <키> — the last value of that key on a ledger row.
+    printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+  }
+
+  # REAL WORKTREES WITH REAL ANCESTRY. The ancestor axis runs `git merge-base
+  # --is-ancestor` against live trees, so a fixture made of ledger rows alone would
+  # assert nothing about the half of the derivation that reads git.
+  #
+  #   A   base + a1                    the anchor
+  #   B   A + b1                       stacked on A — ancestor axis, no declaration
+  #   C   base + c1                    unrelated — must stay out
+  #   D   base + d1, `선행=A`          declared but NOT stacked — the main case
+  #   E   base + src/e1, declares docs/ file-set escape
+  #   F   base + f1, rebased onto A later     the predicate
+  #   G   base, worktree removed later        undecidable
+  CONE_A="$WORK/cone-a"; CONE_B="$WORK/cone-b"; CONE_C="$WORK/cone-c"
+  CONE_D="$WORK/cone-d"; CONE_E="$WORK/cone-e"; CONE_F="$WORK/cone-f"; CONE_G="$WORK/cone-g"
+  ( cd "$REPO" && git worktree add -q -b coneA "$CONE_A" main \
+    && cd "$CONE_A" && echo a1 > a1.txt && git add -A && git commit -qm a1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneB "$CONE_B" coneA \
+    && cd "$CONE_B" && echo b1 > b1.txt && git add -A && git commit -qm b1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneC "$CONE_C" main \
+    && cd "$CONE_C" && echo c1 > c1.txt && git add -A && git commit -qm c1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneD "$CONE_D" main \
+    && cd "$CONE_D" && echo d1 > d1.txt && git add -A && git commit -qm d1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneE "$CONE_E" main \
+    && cd "$CONE_E" && mkdir -p src && echo e1 > src/e1.txt && git add -A && git commit -qm e1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneF "$CONE_F" main \
+    && cd "$CONE_F" && echo f1 > f1.txt && git add -A && git commit -qm f1 ) >/dev/null 2>&1
+  ( cd "$REPO" && git worktree add -q -b coneG "$CONE_G" main ) >/dev/null 2>&1
+  tipA=$(cd "$CONE_A" && git rev-parse HEAD)
+  base_main=$(cd "$REPO" && git rev-parse main)
+
+  # A SECOND REPOSITORY. Commits do not stack across repositories, so that edge is
+  # settled without asking git at all — and settling it first is what leaves
+  # `--is-ancestor`'s 128 meaning a genuine fault instead of the commonest benign
+  # case.
+  REPO2="$WORK/repo2"; mkdir -p "$REPO2"
+  ( cd "$REPO2" && git init -q . \
+    && git config user.email t@example.invalid && git config user.name T \
+    && echo x > x.txt && git add -A && git commit -qm x ) >/dev/null 2>&1
+}
+
+# `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
+# helpers every slice-A sub-block calls. Sections 36 (the deferred review),
+# 37 (the review obligation, through `pre_review`) and 38 (slice B, through
+# `pre_sb`) stand on the same helpers.
+pre_sa() {
+  [ -n "${PRE_SA_DONE:-}" ] && return 0
+  PRE_SA_DONE=1
+  SA_N=0
+  SA_ID=""; SA_ROOT=""; SA_REPO=""; SA_REMOTE=""; SA_SEGWT=""; SA_SEGBR=""
+  SA_WT=""; SA_CG=""; SA_MANIFEST=""; SA_LEDGER=""; SA_GRANT=""; SA_RUN=""
+
+  sa_bd() {
+    # sa_bd <manifest> <worktree> — 구속 다이제스트를 다시 계산해 `## 인가` 안에
+    # 넣는다. 절 스코프 리더라 파일 끝에 붙이면 없는 것으로 읽힌다.
+    local m="$1" w="$2" bd line inserted
+    grep -v '^\*\*구속 다이제스트\*\*:' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
+    bd=$(cd "$w" && bash -c '
+      CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+      MANIFEST="'"$m"'"
+      binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>/dev/null)
+    if [ -z "$bd" ]; then
+      printf 'sa_bd: 구속 다이제스트 계산이 빈 값을 냈다 (%s)\n' "$m" >&2
+      exit 1
+    fi
+    : > "$m.bd"
+    inserted=
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf '%s\n' "$line" >> "$m.bd"
+      if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
+        printf '**구속 다이제스트**: %s\n' "$bd" >> "$m.bd"
+        inserted=1
+      fi
+    done < "$m"
+    [ -n "$inserted" ] || { printf 'sa_bd: 「## 인가」 절이 없다 (%s)\n' "$m" >&2; exit 1; }
+    mv "$m.bd" "$m"
+  }
+
+  sa_manifest() {
+    # sa_manifest <상한|""> [<룰설정 줄>...] — 이 픽스처의 매니페스트를 처음부터
+    # 다시 쓴다. 상한을 바꾸는 것은 대상 행을 바꾸는 것이고, 그러면 대상 맵
+    # 다이제스트와 구속 다이제스트가 함께 움직이므로 부분 편집이 아니라 재작성이
+    # 유일하게 맞는 형태다.
+    local ceil="$1"; shift
+    local row td plan pd extra
+    cat > "$SA_GRANT" <<SAGEOF
+# 파이프라인 인가 기록 — $SA_ID
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 $SA_ID
+**인가 일시**: 2026-08-30T00:00:00Z
+**종료 지점**: 픽스처
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**직렬 웨이브 고지**: 해당 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 픽스처 인가
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $SA_LEDGER
+SAGEOF
+    row="- \`target\` | 별칭=main | 메인 워크트리=$SA_WT | 공통 git 디렉터리=$SA_CG | 베이스 브랜치=$SA_BASE | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=배포 | 말단 행위 상한=없음"
+    [ -n "$ceil" ] && row="$row | 리뷰 정책 상한=$ceil"
+    td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+    plan='{ "steps": [] }'
+    pd=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
+    {
+      printf '# 파이프라인 런 매니페스트 — %s\n' "$SA_ID"
+      printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$SA_ID"
+      printf '     anchor-kind=repo; anchor-key=t/%s;\n' "$SA_ID"
+      printf '     owner-doc=(없음); origin-worktree=%s;\n' "$SA_WT"
+      printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+      printf '## 런 정체\n'
+      printf '**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$SA_ID"
+      printf '**앵커 종류**: repo\n**앵커 키**: t/%s\n**사용자 확인 문면**: 테스트 픽스처\n\n' "$SA_ID"
+      printf '## 의도\n```text\n테스트\n```\n\n'
+      printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td" "$row"
+      printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: %s\n\n' "${SA_APPLY:-(해당 없음)}"
+      printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$pd" "$plan"
+      printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+      printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+      printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+      printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
+      # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
+      # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
+      # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
+      # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
+      [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
+        printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
+      if [ $# -gt 0 ]; then
+        printf '\n## 룰 설정\n'
+        for extra in "$@"; do printf '%s\n' "$extra"; done
+      fi
+    } > "$SA_MANIFEST"
+    sa_bd "$SA_MANIFEST" "$SA_WT"
+  }
+
+  sa_new() {
+    # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
+    # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
+    # `${2-…}` and NOT `${2:-…}`: an explicitly empty second argument is how a
+    # caller asks for a manifest that declares NO ceiling, and the colon form
+    # answers that request with the default instead. The one caller that asks for
+    # it is the「아무것도 움직이지 않았다」 block, whose whole claim is that a
+    # manifest without the new field keeps both digests byte-identical — under the
+    # colon form it compared a manifest carrying the field against one without.
+    local label="$1" ceil="${2-선머지후리뷰}"; shift 2 || shift $#
+    SA_N=$((SA_N + 1))
+    SA_ID="RA$SA_N"
+    SA_BASE=main
+    SA_ROOT="$WORK/sa-$SA_N"
+    SA_REPO="$SA_ROOT/repo"
+    SA_REMOTE="$SA_ROOT/remote.git"
+    SA_SEGWT="$SA_ROOT/seg"
+    SA_SEGBR="seg-$SA_ID"
+    SA_APPLY="(해당 없음)"
+    SA_PREAUTH_EXTRA=""
+    mkdir -p "$SA_REPO"
+    ( cd "$SA_REPO" \
+      && git init -q . \
+      && git config user.email t@example.invalid \
+      && git config user.name  T \
+      && mkdir -p docs/pipeline-run docs/pipeline-grant \
+      && echo one > a.txt && git add -A && git commit -qm one \
+      && git branch -M main ) >/dev/null 2>&1
+    ( git init -q --bare "$SA_REMOTE" \
+      && cd "$SA_REPO" && git remote add origin "$SA_REMOTE" \
+      && git push -q origin main ) >/dev/null 2>&1
+    # 베이스에서 끊는다. 공용 워크트리를 빌려 오면 그 팁이 베이스와 공통 조상이
+    # 없어 착지가 애초에 가능하지 않은 상태에서 시작한다.
+    ( cd "$SA_REPO" && git worktree add -q -b "$SA_SEGBR" "$SA_SEGWT" main ) >/dev/null 2>&1
+    SA_WT=$(cd "$SA_REPO" && git rev-parse --show-toplevel)
+    SA_CG=$(cd "$SA_REPO" && git rev-parse --path-format=absolute --git-common-dir)
+    SA_MANIFEST="$SA_WT/plan.md"
+    SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
+    SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
+    SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+    sa_manifest "$ceil" "$@"
+    SA_LABEL="$label"
+  }
+
+  sa_commit() {
+    # sa_commit <메시지> — 세그먼트 워크트리에 커밋 하나. 팁 sha 를 찍는다.
+    ( cd "$SA_SEGWT" && printf '%s\n' "$1" >> work.txt && git add -A \
+      && git commit -qm "$1" && git rev-parse HEAD ) 2>/dev/null
+  }
+
+  sag() {
+    local out
+    out=$(cd "$SA_WT" && bash "$GATE" "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    # RAW, log lines and all. A passing disposition says why only in the log, so an
+    # assertion about the 미착지 sentence has nowhere else to look.
+    raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  SAH() { cd "$SA_WT" && bash "$GATE" snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r .H; }
+
+  sa_seg_row() {
+    # sa_seg_row <id> <정책|""> [워크트리] — segment 행 하나.
+    local sid="$1" pol="$2" wt="${3:-$SA_SEGWT}"
+    if [ -n "$pol" ]; then
+      sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+          --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+          -- 상태=실행중 워크트리="$wt" 선행=없음 "리뷰 정책=$pol"
+    else
+      sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+          --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+          -- 상태=실행중 워크트리="$wt" 선행=없음
+    fi
+  }
+
+  sa_merge() {
+    # sa_merge <세그먼트> [refspec] — 머지 등급 행위. argv 는 `gh pr merge` 가
+    # 아니라 `git push` 다: 픽스처의 유일한 원격은 로컬 베어 경로라 `gh` 는
+    # GitHub 호스트를 찾지 못해 항상 rc=1 로 끝나고, 게이트가 통과시켜도 행위가
+    # 실패하므로 `exit 0` 을 기대하는 항목이 게이트를 아무리 고쳐도 도달 불가가
+    # 된다. `git push` 는 사전 인가에 이미 있고 축2 등급이 같다.
+    local sid="$1" spec="${2:-$SA_SEGBR:$SA_BASE}"
+    sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
+        --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+        -- git push origin "$spec"
+  }
+
+  sa_ob_rows()  { { grep -F '`리뷰 의무`' "$SA_LEDGER" 2>/dev/null || true; }; }
+  sa_ob_count() { sa_ob_rows | grep -c . || true; }
+  sa_ob_id() {
+    # sa_ob_id <세그먼트> — 그 세그먼트의 마지막 의무 id.
+    sa_ob_rows | grep -F "세그먼트=$1 " | tail -1 \
+      | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1
+  }
+  sa_ob_last() { sa_ob_rows | grep -F "의무 id=$1 " | tail -1; }
+  sa_field()   { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+  sa_rows()    { grep -c '^- `' "$SA_LEDGER" 2>/dev/null || true; }
+
+  sa_base() {
+    # 기준값. 재기 전에 원장을 열어 둔다 — 게이트는 첫 진입에서 `run` 행 하나로
+    # 원장을 열고 그것은 거절과 무관한 정상 동작이므로, 원장이 아직 없는 상태에서
+    # 찍은 기준값은 그 행을 거절의 부작용으로 잘못 센다. 빈 문자열 기준값은 그
+    # 오산을 숨기기까지 한다: 없는 파일에 대한 `grep -c` 는 아무것도 찍지 않아
+    # 「늘지 않았다」가 「'' 과 '2' 를 비교했다」로 실패한다.
+    #
+    # `snapshot` 은 이미 열린 원장에 아무것도 덧붙이지 않으므로 이 여는 행위 자체는
+    # 기준값을 움직이지 않는다. 서브셸에서 도는 덕에 `rc`·`msg` 도 새지 않는다.
+    sag snapshot --manifest "$SA_MANIFEST" >/dev/null 2>&1 || true
+    sa_rows
+  }
+
+  sa_fulfil() {
+    # sa_fulfil <의무 id> [--target 별칭] [추가 필드...]
+    local oid="$1"; shift
+    local tgt=main
+    if [ "${1:-}" = "--as" ]; then tgt="$2"; shift 2; fi
+    sag act --manifest "$SA_MANIFEST" --kind obligation --target "$tgt" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(SAH)" --rationale x \
+        -- "의무 id=$oid" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다" "$@"
+  }
+
+  sa_names_rule() { case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 0 ;; esac; return 1; }
+}
+
+# `review` — the head of section 37: the `SH_*` run derived from the clean
+# manifest section 9 saved, its grant, the `sgate`/`SHH` wrappers, and the
+# orphan worktree whose tip shares no ancestor with the base. That last one is
+# the deliberate exception to the worktree clause and the only witness of the
+# "no common ancestor" disposition in this suite, so it is BUILT here rather
+# than inherited from whatever an earlier section left the shared worktree on.
+#
+# This prelude reads `$WORK/manifest-clean.md`, which section 9 writes — a
+# coupling to the base family's ledger history rather than to a setting, so a
+# cut of 37 on its own is expected to fail on it until that coupling is broken.
+pre_review() {
+  [ -n "${PRE_REVIEW_DONE:-}" ] && return 0
+  PRE_REVIEW_DONE=1
+  pre_sa
+  SH_ID=R4
+  SH_MANIFEST="$WT/plan-$SH_ID.md"
+  SH_LEDGER="$WT/docs/pipeline-run/$SH_ID.md"
+  SH_GRANT="$WT/docs/pipeline-grant/$SH_ID.md"
+  rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
+  sed "s/R1/$SH_ID/g" "$WORK/manifest-clean.md" > "$SH_MANIFEST"
+  awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
+      "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
+  sh_td=$( { grep -E '^- `target`' "$SH_MANIFEST" || true; } \
+           | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  awk -v td="$sh_td" '/^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next } { print }' \
+      "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
+  cat > "$SH_GRANT" <<SHGEOF
+# 파이프라인 인가 기록 — $SH_ID
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
+
+## 인가 $SH_ID
+**인가 일시**: 2026-08-30T00:00:00Z
+**종료 지점**: 픽스처
+**권한 절단점**: 배포
+**말단 행위 상한**: 없음
+**직렬 웨이브 고지**: 해당 없음
+**시각 정합 마커**: 없음
+**사용자 확인 문면**: 픽스처 인가
+**설계 문서 전체 sha256**: (해당 없음)
+**보고서**: $SH_LEDGER
+SHGEOF
+  sa_bd "$SH_MANIFEST" "$WT"
+
+  sgate() {
+    local out
+    out=$(cd "$WT" && bash "$GATE" "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  SHH() { cd "$WT" && bash "$GATE" snapshot --manifest "$SH_MANIFEST" 2>/dev/null | jq -r .H; }
+
+  ORPH="$WORK/orphan-wt"
+  ( cd "$REPO" && git remote set-url origin "$REMOTE" \
+    && git worktree add -q --detach "$ORPH" HEAD ) >/dev/null 2>&1
+  ( cd "$ORPH" && git checkout -q --orphan orph-$SH_ID \
+    && git rm -rqf . >/dev/null 2>&1
+    echo orphan > o.txt && git add -A && git commit -qm orphan ) >/dev/null 2>&1
+  ORPH_TIP=$( cd "$ORPH" && git rev-parse HEAD 2>/dev/null || true )
+}
+
+# `sb` — the container of section 38: the `sb_*` helpers, each a thin layer
+# over slice A's, which is why `pre_sa` is called first.
+pre_sb() {
+  [ -n "${PRE_SB_DONE:-}" ] && return 0
+  PRE_SB_DONE=1
+  pre_sa
+  sb_new() {
+    # sb_new <라벨> [상한] — sa_new 와 같되 `gh pr` 를 사전 인가에 싣는다.
+    sa_new "$@"
+    SA_PREAUTH_EXTRA='gh pr'
+    sa_manifest "${2-선머지후리뷰}"
+    rm -rf "$SA_RUN"
+  }
+
+  sb_target_field() {
+    # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
+    # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
+    # 부분 편집이 아니라 행 재작성 + 다이제스트 재계산이 유일하게 맞는 형태다
+    # (섹션 35 의 `sa_manifest` 가 같은 이유로 매니페스트를 통째로 다시 쓴다).
+    local row td
+    row=$( { grep -E '^- `target`' "$SA_MANIFEST" || true; } | sed "s/$1=[^ |]*/$1=$2/")
+    td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+    awk -v r="$row" -v td="$td" '
+      /^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next }
+      /^- `target`/ { print r; next }
+      { print }
+    ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
+    sa_bd "$SA_MANIFEST" "$SA_WT"
+    rm -rf "$SA_RUN"
+  }
+
+  sb_grant_max() {
+    # sb_grant_max <절단점> — 인가 기록의 「권한 절단점」과 매니페스트의 「런 최대
+    # 절단점」을 함께 올린다.
+    #
+    # 대상 행의 절단점은 인가 기록의 권한 절단점을 넘을 수 없고, 넘으면 그 대조가
+    # 룰 루프보다 위에서 모든 호출을 exit 3 으로 세운다. 픽스처의 기본값은 `배포`
+    # 인데 사다리의 꼭대기는 `머지후착수` 이므로, 대상을 그 꼭대기에 두려면 인가
+    # 기록도 함께 올려야 한다 — 올리지 않으면 그 대상에 대한 세그먼트 행조차
+    # 기록되지 않아 아래 단언들이 「행이 없다」만 보고 공허해진다.
+    #
+    # 두 필드를 함께 옮긴다. 오늘 게이트가 읽는 것은 인가 기록 쪽뿐이지만, 두 값이
+    # 하룻밤 내내 어긋나 있는 것이 이 픽스처가 재현해야 할 상태는 아니다.
+    sed "s/^\*\*권한 절단점\*\*: .*/**권한 절단점**: $1/" "$SA_GRANT" > "$SA_GRANT.g" \
+      && mv "$SA_GRANT.g" "$SA_GRANT"
+    sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
+      && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
+    sa_bd "$SA_MANIFEST" "$SA_WT"
+    rm -rf "$SA_RUN"
+  }
+
+  sb_act() {
+    # sb_act <세그먼트> <신고 절단점> <kind> [--] <argv...>
+    local sid="$1" cut="$2" knd="$3"; shift 3
+    case "${1:-}" in --) shift ;; esac
+    sag act --manifest "$SA_MANIFEST" --kind "$knd" --target main --segment "$sid" \
+        --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
+  }
+  sb_merge() { sb_act "$1" "$2" merge gh pr merge 1; }
+
+  sb_row() {
+    # sb_row <세그먼트> — 그 세그먼트의 마지막 `결정=act` 자율 승인 행.
+    { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } \
+      | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
+  }
+}
+
+# EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
+# helpers, the family preludes, and the fixture repository with its manifest
+# and authorization record. The fixture is unconditional because every section
+# below stands on the `$WORK` tree and the repository it builds, and a selected
+# section handed neither would fail for a reason that has nothing to do with
+# what it asserts.
+#
+# The head's own assertions are the fixture's three self-checks above. The two
+# static scans (`0a`, `0b`) used to sit here too and are sections of their own
+# now, directly below this marker: a cut that does not name them does not run
+# them, which is the intended shape and not a shortfall — they read the tree
+# and stand on no fixture, so nothing a cut asserts depends on them.
 # --- preamble-end ---
+
+# The two static scans stand on `$repo_root` and `$GATE` alone — neither on
+# `$WORK` nor on the fixture repository — which is what lets them leave the
+# head: a cut naming one section no longer scans every lint script first.
+# Their shared helper lives in `pre_static`; the full run calls it here and the
+# selector inserts the same call in front of a cut of either section.
+pre_static
+
+# ---------------------------------------------------------------------------
+# 0a. The pipefail trap, scanned the way the driver's own suite scans it
+# --- section: 0a | group: static | covers: - | anchors: 스캔 목록이 린트 계열을 글로브로 흡수한다 ---
+#
+# Under `pipefail` an early-exiting reader on the right of a pipe kills the
+# writer with SIGPIPE and the whole pipeline reports failure. In this file every
+# such site was a PRESENCE test used to decide whether to append, so a row that
+# existed came back as absent and the gate wrote a duplicate — duplicate
+# approvals and duplicate obligations, which the termination conditions then
+# count. The driver's suite already refuses this shape; the gate is the busier
+# file and had six of them.
+# ---------------------------------------------------------------------------
+# A GLOB THAT EXPANDS TO NOTHING COVERS NOTHING AND LOOKS THE SAME WHILE DOING
+# IT. An unexpanded pattern leaves `[ -f ]` false on every iteration and the
+# loops below simply run shorter, which is the green this whole section exists
+# to distrust — so the count is asserted rather than assumed.
+nlint=0
+for f in "$repo_root"/scripts/lint-*.sh; do
+  [ -f "$f" ] || continue
+  nlint=$((nlint + 1))
+done
+if [ "$nlint" -ge 1 ]; then
+  ok "스캔 목록이 린트 계열을 글로브로 흡수한다 (${nlint}개)"
+else
+  bad "스캔 목록" "scripts/lint-*.sh 가 하나도 잡히지 않았다 — 목록이 비면 아래 루프는 조용히 짧아진다"
+fi
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$f" ] || continue
+  # `grep -c … >/dev/null` belongs in the pattern as well, but NOT because it
+  # exits early — it does not. Measured on BSD grep 2.6.0-FreeBSD and GNU grep
+  # 3.12 over 4MB and 16MB inputs: `grep -cF … >/dev/null` produced a non-zero
+  # pipeline 0 times out of 40 on both, while the control `grep -qF …` produced
+  # one 40 out of 40 with the redirection and 40 out of 40 without it. What
+  # short-circuits is the `-q` flag itself; discarding the output has nothing to
+  # do with it.
+  #
+  # The reason to refuse this spelling is the other one: `grep -c` exits 1 when
+  # the count is zero, and zero matches is an ordinary result rather than a
+  # failure — so on the right of a pipe under `pipefail` it fails the pipeline
+  # for finding nothing. Taking the count into a variable is what moves the
+  # verdict from an exit status onto a value, which is the shape this tree wants.
+  early=$(sed 's/#.*//' "$f" | grep -nE '\| *(head -|grep -[A-Za-z]*q|grep -c[A-Za-z]* [^|]*>/dev/null)' || true)
+  if [ -z "$early" ]; then
+    ok "파이프 오른쪽에 조기 종료 읽기가 없다: $(basename "$f")"
+  else
+    bad "pipefail 함정" "$(basename "$f"): $(printf '%s' "$early" | awk 'NR<=3' | tr '\n' ' ')"
+  fi
+done <<EOF
+$(scanned_files)
+EOF
+
+# ---------------------------------------------------------------------------
+# 0b. A helper called above its own definition, which no passing count can show
+# --- section: 0b | group: static | covers: - | anchors: 정의보다 먼저 불리는 헬퍼가 없다 ---
+#
+# A shell function exists only after the line that defines it has run, so a
+# top-level call written above that line dies as `command not found` — and a
+# missing command is not a failed assertion. Three calls in this file hit that
+# and reported nothing: neither counter moved, the suite stayed green, and the
+# assertions they carried covered nothing while reading as covered. Counting
+# passes cannot reveal it, because nothing is failing; things are absent.
+#
+# ONLY COLUMN-ZERO CALLS COUNT. A call inside another function runs when that
+# function is invoked, which can be anywhere below its own definition; a call at
+# top level runs where it is written, and that is the shape that dies. The
+# definition line itself is not a call — the name there is followed by `(`.
+# ---------------------------------------------------------------------------
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$f" ] || continue
+  offenders=""
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    defline=${d%%:*}
+    name=$(printf '%s' "${d#*:}" | sed -E 's/\(\).*$//')
+    [ -n "$name" ] || continue
+    callline=$(grep -nE "^$name([[:space:]]|\$)" "$f" | sed -n '1s/:.*$//p')
+    [ -n "$callline" ] || continue
+    if [ "$callline" -lt "$defline" ]; then
+      offenders="$offenders $name(호출 $callline < 정의 $defline)"
+    fi
+  done <<INNER
+$(grep -nE '^[a-z_][a-z0-9_]*\(\) *\{' "$f")
+INNER
+  if [ -z "$offenders" ]; then
+    ok "정의보다 먼저 불리는 헬퍼가 없다: $(basename "$f")"
+  else
+    bad "정의 전 호출" "$(basename "$f"):$offenders — 이 호출은 실패가 아니라 부재로 사라지므로 통과 개수에 드러나지 않는다"
+  fi
+done <<EOF
+$(scanned_files)
+EOF
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -1008,7 +1632,7 @@ mkdir -p "$(dirname "$FX_LEDGER")"
 # shipped once as syntactically invalid JSON while every test here still passed,
 # because no assertion had ever opened one.
 # ---------------------------------------------------------------------------
-SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
+# `SETTINGS_DIR` is set in `pre_base`, in the head.
 if [ -d "$SETTINGS_DIR" ]; then
   ok "게이트가 런 개시에 설정 디렉터리를 만든다"
 else
@@ -2317,7 +2941,7 @@ for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sor
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
 
-RD="$XDG_STATE_HOME/cc-cmds/run/R1"
+# `RD` is set in `pre_base`, in the head.
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
 printf '%s\n' "9" > "$RD/progress-repeat"
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
@@ -2486,7 +3110,7 @@ esac
 # time. The symptom is silent: the stage starts, the files are readable, and
 # what it reads is a different version.
 # ---------------------------------------------------------------------------
-LINKED="$WORK/linked"
+# `LINKED` is set in `pre_base`, in the head; the worktree is made here.
 ( cd "$WT" && git worktree add -q -b linkedbr "$LINKED" ) >/dev/null 2>&1
 if [ -d "$LINKED" ]; then
   ( cd "$LINKED" && echo linked > only-here.txt && git add -A && git commit -qm linked ) >/dev/null 2>&1
@@ -2948,7 +3572,7 @@ esac
 # refusal 3, 9, 12 and 15 times, and the fifth stopped because of its own
 # judgment rather than anything the contract said.
 # ---------------------------------------------------------------------------
-STATE7="$WORK/state-surface"
+# `STATE7` is set in `pre_base`, in the head.
 H=$(cd "$WT" && XDG_STATE_HOME="$STATE7" bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 # Editing a settings file IS moving the surface — that file is one of the four.
 printf '\n' >> "$STATE7/cc-cmds/run/R1/settings/generic.json"
@@ -3424,7 +4048,7 @@ check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 # that it moves only through THIS writer and leaves a row. Both halves are
 # asserted here — the growth, and the refusal to repair somebody else's edit.
 # ---------------------------------------------------------------------------
-RD_L=$(dirname "$SETTINGS_DIR")
+# `RD_L` is set in `pre_base`, in the head.
 n_before=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")
 n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
 
@@ -3562,14 +4186,11 @@ esac
 # between use `grade` and `plan`, neither of which reaches the surface check,
 # which is why nothing red appears until the next `act`. A fresh state home
 # gives these sections their own baseline while keeping the same ledger.
+#
+# That home (`STATE_LATE`) and its two wrappers (`gateL`, `HL`) are defined in
+# `pre_base`, in the head, so a late section cut on its own has them too. From
+# here on the sections call `gateL` where they used to call `gate`.
 # ---------------------------------------------------------------------------
-STATE_LATE="$WORK/state-late"
-gateL() {
-  local out
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" "$@" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-}
-HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
 
 # ---------------------------------------------------------------------------
 # 15b. A stage may not be dispatched into a segment with no `segment` row
@@ -5361,190 +5982,11 @@ check "해소 뒤 같은 사유가 다시 멈추면 그 관측이 다시 전사�
 # would only move the collision to whichever id the next section upstream takes,
 # and it would be just as quiet when it arrived.
 # ---------------------------------------------------------------------------
-# The pipeline environment group, cleared AGAIN. The section above clears it for
-# its own reasons and this one needs the same thing for the same reason — a stage
-# session is deliberately kept out of the lineage, so an inherited
-# `CC_PIPELINE_STAGE_ID` makes every call below take that branch. Leaning on the
-# previous section having done it is the shape this repair exists to remove.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
-      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION
-
-CONE_RUN_ID=R3
-prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
-# A BROKEN FIXTURE EXITS RATHER THAN ASSERTING — the idiom `nm_add_auth_row` and
-# `refresh_bd` already use. The id has to differ because the id is what splits
-# the ledger: an inherited one would merge this section's rows into the previous
-# section's and every derivation below would read both.
-if [ -z "$prev_run_id" ] || [ "$prev_run_id" = "$CONE_RUN_ID" ]; then
-  printf '31: 앞 절의 런 id 를 매니페스트에서 읽지 못했거나 이 절의 id 와 겹친다 (읽은 값 %s, 이 절 %s)\n' \
-    "${prev_run_id:-(없음)}" "$CONE_RUN_ID" >&2
-  exit 1
-fi
-
-NM="$WORK/cone-plan.md"
-CONE_GRANT="$WT/docs/pipeline-grant/$CONE_RUN_ID.md"
-LEDGER2="$WT/docs/pipeline-run/$CONE_RUN_ID.md"
-# AND THE GUARD AGAINST THE COLLISION IS ON THE PATHS, NOT ON THE ID. What went
-# wrong was `sed … "$FX_GRANT" > "$CONE_GRANT"` naming one file on both sides: the
-# shell truncated the authorization record before `sed` could read it, the grant
-# went to zero bytes, and every call below died on a missing authorization block.
-# The id is one input to those three paths and not the only one — a section added
-# above can take this id while writing it into its OWN copy of the manifest, so
-# the value this section reads never moves, the id check passes, and the files
-# overlap exactly as before. Each destination is therefore compared against the
-# source it is derived from, which is the pair that actually collides.
-if [ "$NM" = "$FX_MANIFEST" ] || [ "$CONE_GRANT" = "$FX_GRANT" ] || [ "$LEDGER2" = "$FX_LEDGER" ]; then
-  printf '31: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 — 읽기 전에 셸이 원본을 비운다 (매니페스트 %s vs %s · 인가 %s vs %s · 원장 %s vs %s)\n' \
-    "$NM" "$FX_MANIFEST" "$CONE_GRANT" "$FX_GRANT" "$LEDGER2" "$FX_LEDGER" >&2
-  exit 1
-fi
-sed -e "s/run-id=$prev_run_id;/run-id=$CONE_RUN_ID;/" \
-    -e "s/^\*\*런 id\*\*: $prev_run_id\$/**런 id**: $CONE_RUN_ID/" "$FX_MANIFEST" > "$NM"
-# The binding digest no longer matches, and that is the check working — so it is
-# dropped rather than recomputed, which the driver reports and allows.
-sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$NM" && rm -f "$NM.bak"
-# ROWS GO INSIDE `## 인가`, AND APPENDING TO THE FILE DOES NOT PUT THEM THERE.
-#
-# This suite adds a `## 룰 설정` section below `## 인가` earlier on, so `>>` lands
-# a row in THAT section — and the auto-adoption floor honours only rows inside
-# `## 인가`, because that is the section the "exactly one" guarantee is about. A
-# row anywhere else is not a declaration the floor reads; treating it as one is
-# the hole being closed, so the fixture must place the row the way a kickoff
-# does rather than wherever the file happens to end.
-nm_add_auth_row() {
-  local line="$1" out="$NM.ins" l inserted=
-  : > "$out"
-  while IFS= read -r l || [ -n "$l" ]; do
-    printf '%s\n' "$l" >> "$out"
-    if [ -z "$inserted" ] && [ "$l" = "## 인가" ]; then
-      printf '%s\n' "$line" >> "$out"
-      inserted=1
-    fi
-  done < "$NM"
-  if [ -z "$inserted" ]; then
-    printf 'nm_add_auth_row: 매니페스트에 「## 인가」 절이 없다\n' >&2
-    exit 1
-  fi
-  mv "$out" "$NM"
-}
-# One pre-declared judgment class — this is arm (a)'s only input, and a run
-# cannot write it.
-nm_add_auth_row '- `자동 채택` | 판단 부류=문서-신선도 | 상한=없음 | 심각도 상한=minor | 사유=문서 신선도 판정은 되돌릴 대상이 없다'
-nm_add_auth_row '- `종료 절` | id=K1 | 문면=첫째 절'
-# A BLANKET substitution is right here and an anchored one is right above. The
-# grant carries the id in its title, in its `## 인가` heading and inside the
-# `**보고서**:` path, all three of which must move together, and it holds no hex
-# digest for a loose match to corrupt. What made this line dangerous was never
-# the pattern — it was reading and writing one path, which the guard above now
-# makes unreachable.
-sed "s/$prev_run_id/$CONE_RUN_ID/g" "$FX_GRANT" > "$CONE_GRANT"
-{
-  printf '# 파이프라인 런 보고서 — %s\n\n' "$CONE_RUN_ID"
-  printf '런 id %s · 앵커 repo:t/front · 대상 front(절단점 PR) infra(절단점 배포)\n' "$CONE_RUN_ID"
-} > "$LEDGER2"
-
-# HELPERS FIRST, BEFORE ANY CALL. A helper defined below its first use dies as
-# `command not found` while the suite still reports green — the trap 9e1be1b
-# closed, in the file that closed it.
-STATE_CONE="$WORK/state-cone"
-gateN() {
-  local out
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" "$@" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-}
-HN() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null | jq -r .H; }
-seg_row() {
-  # seg_row <id> <worktree> <필드>… — one `segment` act, always through the gate
-  # so the write-time floors actually run.
-  local id="$1" wt="$2"; shift 2
-  gateN act --manifest "$NM" --kind segment --target infra --segment "$id" --cutpoint 커밋 \
-        --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 워크트리="$wt" "$@"
-}
-CONE_OF_FAILURES="$WORK/cone-of-failures"
-: > "$CONE_OF_FAILURES"
-cone_of() {
-  # cone_of <anchor> <사유> — the `의존 세그먼트` the gate DERIVED. The row is
-  # written with no declaration, so what lands on it is the derivation itself.
-  gateN act --manifest "$NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
-        --snapshot-digest "$(HN)" --rationale x \
-        -- 스코프=cone 원인=막힘 "앵커 세그먼트=$1" "사유=$2" \
-           "근거=$1 이 사람의 답을 기다린다" "재개 명령=승인이 닫히면 다시 디스패치"
-  # THE ACT'S OWN CODE IS READ BEFORE THE LEDGER IS. This section calls with the
-  # same anchor seven times and then takes the LAST row carrying that anchor, so
-  # a call refused for any reason — a digest race, a vocabulary change, the row
-  # length cap the over-long-declaration subsection proves exists — writes no row
-  # and the read below hands back the PREVIOUS call's cone. Nothing downstream
-  # could notice: the pipeline's status is `tail`'s and is always 0.
-  #
-  # THE FAILURE GOES TO A FILE RATHER THAN TO `bad`. Every caller is
-  # `x=$(cone_of …)`, which is a subshell, so a counter incremented here never
-  # reaches the totals — the exact shape this suite is being repaired for. The
-  # file is read once at the end of the section, in the parent.
-  if [ "$rc" != "0" ]; then
-    printf '앵커 %s rc=%s — %s\n' "$1" "$rc" "$msg" >> "$CONE_OF_FAILURES"
-    printf '유도-실패'
-    return 1
-  fi
-  { grep -F '`blocked`' "$LEDGER2" || true; } | grep -F "앵커 세그먼트=$1 " | tail -1 \
-    | tr '|' '\n' | sed -n 's/^ *의존 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1
-}
-last_judgment_approval() {
-  { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F '상태=대기' | tail -1
-}
-last_adoption_row() {
-  # THE ADOPTION ROW IS NOT THE LAST `자율 승인` ROW. A bookkeeping kind records
-  # its own row BEFORE the gate writes the plain approval row for the same `act`
-  # — the ordering that keeps a refused bookkeeping row from leaving an approval
-  # behind — so the plain row lands on top of the adoption. Selecting by
-  # `결정=채택` keeps the assertion's force rather than weakening it: an adoption
-  # always carries `해소 승인`, and `-` is what it carries when the floor
-  # admitted it on its own, so a resolution that went unrecorded still fails.
-  { grep -F '`자율 승인`' "$LEDGER2" || true; } | grep -F '결정=채택' | tail -1
-}
-row_field() {
-  # row_field <행> <키> — the last value of that key on a ledger row.
-  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
-}
-
-# REAL WORKTREES WITH REAL ANCESTRY. The ancestor axis runs `git merge-base
-# --is-ancestor` against live trees, so a fixture made of ledger rows alone would
-# assert nothing about the half of the derivation that reads git.
-#
-#   A   base + a1                    the anchor
-#   B   A + b1                       stacked on A — ancestor axis, no declaration
-#   C   base + c1                    unrelated — must stay out
-#   D   base + d1, `선행=A`          declared but NOT stacked — the main case
-#   E   base + src/e1, declares docs/ file-set escape
-#   F   base + f1, rebased onto A later     the predicate
-#   G   base, worktree removed later        undecidable
-CONE_A="$WORK/cone-a"; CONE_B="$WORK/cone-b"; CONE_C="$WORK/cone-c"
-CONE_D="$WORK/cone-d"; CONE_E="$WORK/cone-e"; CONE_F="$WORK/cone-f"; CONE_G="$WORK/cone-g"
-( cd "$REPO" && git worktree add -q -b coneA "$CONE_A" main \
-  && cd "$CONE_A" && echo a1 > a1.txt && git add -A && git commit -qm a1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneB "$CONE_B" coneA \
-  && cd "$CONE_B" && echo b1 > b1.txt && git add -A && git commit -qm b1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneC "$CONE_C" main \
-  && cd "$CONE_C" && echo c1 > c1.txt && git add -A && git commit -qm c1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneD "$CONE_D" main \
-  && cd "$CONE_D" && echo d1 > d1.txt && git add -A && git commit -qm d1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneE "$CONE_E" main \
-  && cd "$CONE_E" && mkdir -p src && echo e1 > src/e1.txt && git add -A && git commit -qm e1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneF "$CONE_F" main \
-  && cd "$CONE_F" && echo f1 > f1.txt && git add -A && git commit -qm f1 ) >/dev/null 2>&1
-( cd "$REPO" && git worktree add -q -b coneG "$CONE_G" main ) >/dev/null 2>&1
-tipA=$(cd "$CONE_A" && git rev-parse HEAD)
-base_main=$(cd "$REPO" && git rev-parse main)
-
-# A SECOND REPOSITORY. Commits do not stack across repositories, so that edge is
-# settled without asking git at all — and settling it first is what leaves
-# `--is-ancestor`'s 128 meaning a genuine fault instead of the commonest benign
-# case.
-REPO2="$WORK/repo2"; mkdir -p "$REPO2"
-( cd "$REPO2" && git init -q . \
-  && git config user.email t@example.invalid && git config user.name T \
-  && echo x > x.txt && git add -A && git commit -qm x ) >/dev/null 2>&1
+# The container's code — the environment cleared, the run id and the three
+# paths derived and guarded, the manifest, grant and ledger, the helpers, the
+# seven worktrees and the second repository — is `pre_cone` in the head now,
+# called from here so the serial order is exactly what it was.
+pre_cone
 
 # --- 31a. The gate checks its own scope vocabulary -------------------------
 # --- section: 31a | group: cone | covers: act | anchors: 게이트가 스코프 어휘를 검사한다 ---
@@ -9471,215 +9913,9 @@ fi
 #   4. `이행 판정` 은 값으로 단언되고, `앵커 없음` 은 `머지 커밋=-` 인 행에서만
 #      나타난다.
 # ---------------------------------------------------------------------------
-SA_N=0
-SA_ID=""; SA_ROOT=""; SA_REPO=""; SA_REMOTE=""; SA_SEGWT=""; SA_SEGBR=""
-SA_WT=""; SA_CG=""; SA_MANIFEST=""; SA_LEDGER=""; SA_GRANT=""; SA_RUN=""
-
-sa_bd() {
-  # sa_bd <manifest> <worktree> — 구속 다이제스트를 다시 계산해 `## 인가` 안에
-  # 넣는다. 절 스코프 리더라 파일 끝에 붙이면 없는 것으로 읽힌다.
-  local m="$1" w="$2" bd line inserted
-  grep -v '^\*\*구속 다이제스트\*\*:' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
-  bd=$(cd "$w" && bash -c '
-    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
-    MANIFEST="'"$m"'"
-    binding_set_bytes | shasum -a 256 | cut -d" " -f1' 2>/dev/null)
-  if [ -z "$bd" ]; then
-    printf 'sa_bd: 구속 다이제스트 계산이 빈 값을 냈다 (%s)\n' "$m" >&2
-    exit 1
-  fi
-  : > "$m.bd"
-  inserted=
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line" >> "$m.bd"
-    if [ -z "$inserted" ] && [ "$line" = "## 인가" ]; then
-      printf '**구속 다이제스트**: %s\n' "$bd" >> "$m.bd"
-      inserted=1
-    fi
-  done < "$m"
-  [ -n "$inserted" ] || { printf 'sa_bd: 「## 인가」 절이 없다 (%s)\n' "$m" >&2; exit 1; }
-  mv "$m.bd" "$m"
-}
-
-sa_manifest() {
-  # sa_manifest <상한|""> [<룰설정 줄>...] — 이 픽스처의 매니페스트를 처음부터
-  # 다시 쓴다. 상한을 바꾸는 것은 대상 행을 바꾸는 것이고, 그러면 대상 맵
-  # 다이제스트와 구속 다이제스트가 함께 움직이므로 부분 편집이 아니라 재작성이
-  # 유일하게 맞는 형태다.
-  local ceil="$1"; shift
-  local row td plan pd extra
-  cat > "$SA_GRANT" <<SAGEOF
-# 파이프라인 인가 기록 — $SA_ID
-<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$SA_WT; NOT a design doc; mechanism-local, never staged by a skill -->
-
-## 인가 $SA_ID
-**인가 일시**: 2026-08-30T00:00:00Z
-**종료 지점**: 픽스처
-**권한 절단점**: 배포
-**말단 행위 상한**: 없음
-**직렬 웨이브 고지**: 해당 없음
-**시각 정합 마커**: 없음
-**사용자 확인 문면**: 픽스처 인가
-**설계 문서 전체 sha256**: (해당 없음)
-**보고서**: $SA_LEDGER
-SAGEOF
-  row="- \`target\` | 별칭=main | 메인 워크트리=$SA_WT | 공통 git 디렉터리=$SA_CG | 베이스 브랜치=$SA_BASE | 홈=예 | 원격 슬러그=t/$SA_ID | 절단점=배포 | 말단 행위 상한=없음"
-  [ -n "$ceil" ] && row="$row | 리뷰 정책 상한=$ceil"
-  td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-  plan='{ "steps": [] }'
-  pd=$(printf '%s\n' "$plan" | shasum -a 256 | cut -d' ' -f1)
-  {
-    printf '# 파이프라인 런 매니페스트 — %s\n' "$SA_ID"
-    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$SA_ID"
-    printf '     anchor-kind=repo; anchor-key=t/%s;\n' "$SA_ID"
-    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$SA_WT"
-    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
-    printf '## 런 정체\n'
-    printf '**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$SA_ID"
-    printf '**앵커 종류**: repo\n**앵커 키**: t/%s\n**사용자 확인 문면**: 테스트 픽스처\n\n' "$SA_ID"
-    printf '## 의도\n```text\n테스트\n```\n\n'
-    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td" "$row"
-    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: %s\n\n' "${SA_APPLY:-(해당 없음)}"
-    printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$pd" "$plan"
-    printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
-    printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
-    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
-    printf -- '- `사전 인가` | 형태=git push | 사유=테스트\n'
-    # 선택 2행. 기본이 빈 문자열이라 이 블록의 기존 매니페스트는 바이트 그대로
-    # 유지된다 — 슬라이스 B 집합만 `gh pr` 를 실어야 하고, 그 집합의 argv 는
-    # `gh pr merge` 라 `git push` 행으로는 사전-인가-대조 의 exit 5 에서 먼저
-    # 멈춘다. 그 5 는 이 집합이 재려는 어떤 거절과도 구별되지 않는다.
-    [ -z "${SA_PREAUTH_EXTRA:-}" ] || \
-      printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$SA_PREAUTH_EXTRA"
-    if [ $# -gt 0 ]; then
-      printf '\n## 룰 설정\n'
-      for extra in "$@"; do printf '%s\n' "$extra"; done
-    fi
-  } > "$SA_MANIFEST"
-  sa_bd "$SA_MANIFEST" "$SA_WT"
-}
-
-sa_new() {
-  # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
-  # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
-  # `${2-…}` and NOT `${2:-…}`: an explicitly empty second argument is how a
-  # caller asks for a manifest that declares NO ceiling, and the colon form
-  # answers that request with the default instead. The one caller that asks for
-  # it is the「아무것도 움직이지 않았다」 block, whose whole claim is that a
-  # manifest without the new field keeps both digests byte-identical — under the
-  # colon form it compared a manifest carrying the field against one without.
-  local label="$1" ceil="${2-선머지후리뷰}"; shift 2 || shift $#
-  SA_N=$((SA_N + 1))
-  SA_ID="RA$SA_N"
-  SA_BASE=main
-  SA_ROOT="$WORK/sa-$SA_N"
-  SA_REPO="$SA_ROOT/repo"
-  SA_REMOTE="$SA_ROOT/remote.git"
-  SA_SEGWT="$SA_ROOT/seg"
-  SA_SEGBR="seg-$SA_ID"
-  SA_APPLY="(해당 없음)"
-  SA_PREAUTH_EXTRA=""
-  mkdir -p "$SA_REPO"
-  ( cd "$SA_REPO" \
-    && git init -q . \
-    && git config user.email t@example.invalid \
-    && git config user.name  T \
-    && mkdir -p docs/pipeline-run docs/pipeline-grant \
-    && echo one > a.txt && git add -A && git commit -qm one \
-    && git branch -M main ) >/dev/null 2>&1
-  ( git init -q --bare "$SA_REMOTE" \
-    && cd "$SA_REPO" && git remote add origin "$SA_REMOTE" \
-    && git push -q origin main ) >/dev/null 2>&1
-  # 베이스에서 끊는다. 공용 워크트리를 빌려 오면 그 팁이 베이스와 공통 조상이
-  # 없어 착지가 애초에 가능하지 않은 상태에서 시작한다.
-  ( cd "$SA_REPO" && git worktree add -q -b "$SA_SEGBR" "$SA_SEGWT" main ) >/dev/null 2>&1
-  SA_WT=$(cd "$SA_REPO" && git rev-parse --show-toplevel)
-  SA_CG=$(cd "$SA_REPO" && git rev-parse --path-format=absolute --git-common-dir)
-  SA_MANIFEST="$SA_WT/plan.md"
-  SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
-  SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
-  SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
-  sa_manifest "$ceil" "$@"
-  SA_LABEL="$label"
-}
-
-sa_commit() {
-  # sa_commit <메시지> — 세그먼트 워크트리에 커밋 하나. 팁 sha 를 찍는다.
-  ( cd "$SA_SEGWT" && printf '%s\n' "$1" >> work.txt && git add -A \
-    && git commit -qm "$1" && git rev-parse HEAD ) 2>/dev/null
-}
-
-sag() {
-  local out
-  out=$(cd "$SA_WT" && bash "$GATE" "$@" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-  # RAW, log lines and all. A passing disposition says why only in the log, so an
-  # assertion about the 미착지 sentence has nowhere else to look.
-  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-}
-SAH() { cd "$SA_WT" && bash "$GATE" snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r .H; }
-
-sa_seg_row() {
-  # sa_seg_row <id> <정책|""> [워크트리] — segment 행 하나.
-  local sid="$1" pol="$2" wt="${3:-$SA_SEGWT}"
-  if [ -n "$pol" ]; then
-    sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
-        --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
-        -- 상태=실행중 워크트리="$wt" 선행=없음 "리뷰 정책=$pol"
-  else
-    sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
-        --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
-        -- 상태=실행중 워크트리="$wt" 선행=없음
-  fi
-}
-
-sa_merge() {
-  # sa_merge <세그먼트> [refspec] — 머지 등급 행위. argv 는 `gh pr merge` 가
-  # 아니라 `git push` 다: 픽스처의 유일한 원격은 로컬 베어 경로라 `gh` 는
-  # GitHub 호스트를 찾지 못해 항상 rc=1 로 끝나고, 게이트가 통과시켜도 행위가
-  # 실패하므로 `exit 0` 을 기대하는 항목이 게이트를 아무리 고쳐도 도달 불가가
-  # 된다. `git push` 는 사전 인가에 이미 있고 축2 등급이 같다.
-  local sid="$1" spec="${2:-$SA_SEGBR:$SA_BASE}"
-  sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment "$sid" \
-      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
-      -- git push origin "$spec"
-}
-
-sa_ob_rows()  { { grep -F '`리뷰 의무`' "$SA_LEDGER" 2>/dev/null || true; }; }
-sa_ob_count() { sa_ob_rows | grep -c . || true; }
-sa_ob_id() {
-  # sa_ob_id <세그먼트> — 그 세그먼트의 마지막 의무 id.
-  sa_ob_rows | grep -F "세그먼트=$1 " | tail -1 \
-    | tr '|' '\n' | sed -n 's/^ *의무 id=//p' | sed 's/[[:space:]]*$//' | tail -1
-}
-sa_ob_last() { sa_ob_rows | grep -F "의무 id=$1 " | tail -1; }
-sa_field()   { printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
-sa_rows()    { grep -c '^- `' "$SA_LEDGER" 2>/dev/null || true; }
-
-sa_base() {
-  # 기준값. 재기 전에 원장을 열어 둔다 — 게이트는 첫 진입에서 `run` 행 하나로
-  # 원장을 열고 그것은 거절과 무관한 정상 동작이므로, 원장이 아직 없는 상태에서
-  # 찍은 기준값은 그 행을 거절의 부작용으로 잘못 센다. 빈 문자열 기준값은 그
-  # 오산을 숨기기까지 한다: 없는 파일에 대한 `grep -c` 는 아무것도 찍지 않아
-  # 「늘지 않았다」가 「'' 과 '2' 를 비교했다」로 실패한다.
-  #
-  # `snapshot` 은 이미 열린 원장에 아무것도 덧붙이지 않으므로 이 여는 행위 자체는
-  # 기준값을 움직이지 않는다. 서브셸에서 도는 덕에 `rc`·`msg` 도 새지 않는다.
-  sag snapshot --manifest "$SA_MANIFEST" >/dev/null 2>&1 || true
-  sa_rows
-}
-
-sa_fulfil() {
-  # sa_fulfil <의무 id> [--target 별칭] [추가 필드...]
-  local oid="$1"; shift
-  local tgt=main
-  if [ "${1:-}" = "--as" ]; then tgt="$2"; shift 2; fi
-  sag act --manifest "$SA_MANIFEST" --kind obligation --target "$tgt" --cutpoint 커밋 \
-      --surface 읽기 --snapshot-digest "$(SAH)" --rationale x \
-      -- "의무 id=$oid" 근거="리뷰 리포트에서 P0=0 P1=0 을 읽었다" "$@"
-}
-
-sa_names_rule() { case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 0 ;; esac; return 1; }
+# The `SA_*` state and the `sa_*` helpers are `pre_sa` in the head now, called
+# from here so the serial order is exactly what it was.
+pre_sa
 
 # --- 35-1. 음성 대조군 — 첫 머지가 아니라 두 번째 머지로 잰다 -------------------
 # --- section: 35-1 | group: sa | covers: act | anchors: 1: 룰 켬 — 정책을 실은 세그먼트 행이 통과한다 ---
@@ -10702,50 +10938,10 @@ fi
 # 워크트리를 쓰면 그 sha 가 앵커 쪽에서 해소되지 않아 판정이 `미착지` 가 아니라
 # `판정 불가` 로 갈린다.
 # ---------------------------------------------------------------------------
-SH_ID=R4
-SH_MANIFEST="$WT/plan-$SH_ID.md"
-SH_LEDGER="$WT/docs/pipeline-run/$SH_ID.md"
-SH_GRANT="$WT/docs/pipeline-grant/$SH_ID.md"
-rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
-sed "s/R1/$SH_ID/g" "$WORK/manifest-clean.md" > "$SH_MANIFEST"
-awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
-    "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
-sh_td=$( { grep -E '^- `target`' "$SH_MANIFEST" || true; } \
-         | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-awk -v td="$sh_td" '/^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next } { print }' \
-    "$SH_MANIFEST" > "$SH_MANIFEST.t" && mv "$SH_MANIFEST.t" "$SH_MANIFEST"
-cat > "$SH_GRANT" <<SHGEOF
-# 파이프라인 인가 기록 — $SH_ID
-<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
-
-## 인가 $SH_ID
-**인가 일시**: 2026-08-30T00:00:00Z
-**종료 지점**: 픽스처
-**권한 절단점**: 배포
-**말단 행위 상한**: 없음
-**직렬 웨이브 고지**: 해당 없음
-**시각 정합 마커**: 없음
-**사용자 확인 문면**: 픽스처 인가
-**설계 문서 전체 sha256**: (해당 없음)
-**보고서**: $SH_LEDGER
-SHGEOF
-sa_bd "$SH_MANIFEST" "$WT"
-
-sgate() {
-  local out
-  out=$(cd "$WT" && bash "$GATE" "$@" 2>&1); rc=$?
-  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-}
-SHH() { cd "$WT" && bash "$GATE" snapshot --manifest "$SH_MANIFEST" 2>/dev/null | jq -r .H; }
-
-ORPH="$WORK/orphan-wt"
-( cd "$REPO" && git remote set-url origin "$REMOTE" \
-  && git worktree add -q --detach "$ORPH" HEAD ) >/dev/null 2>&1
-( cd "$ORPH" && git checkout -q --orphan orph-$SH_ID \
-  && git rm -rqf . >/dev/null 2>&1
-  echo orphan > o.txt && git add -A && git commit -qm orphan ) >/dev/null 2>&1
-ORPH_TIP=$( cd "$ORPH" && git rev-parse HEAD 2>/dev/null || true )
+# The `SH_*` run, its grant, the `sgate`/`SHH` wrappers and the orphan
+# worktree are `pre_review` in the head now, called from here so the serial
+# order is exactly what it was.
+pre_review
 if [ -n "$ORPH_TIP" ]; then
   ok "32: 공용 저장소 안에 공통 조상 없는 팁을 세웠다 ($ORPH_TIP)"
 else
@@ -11238,65 +11434,9 @@ check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는�
 # 통과를 재는 단언은 rc 가 아니라 **게이트가 행위 앞에 쓴 `결정=act` 행**을
 # 읽는다 — 그 행이 곧 게이트의 판정이고, 행위의 rc 는 게이트의 답이 아니다.
 # ---------------------------------------------------------------------------
-sb_new() {
-  # sb_new <라벨> [상한] — sa_new 와 같되 `gh pr` 를 사전 인가에 싣는다.
-  sa_new "$@"
-  SA_PREAUTH_EXTRA='gh pr'
-  sa_manifest "${2-선머지후리뷰}"
-  rm -rf "$SA_RUN"
-}
-
-sb_target_field() {
-  # sb_target_field <키> <값> — 대상 행의 한 필드를 바꾸고 대상 맵 다이제스트를
-  # 다시 계산한다. 그 필드들은 대상 행에 살아 다이제스트와 함께 움직이므로,
-  # 부분 편집이 아니라 행 재작성 + 다이제스트 재계산이 유일하게 맞는 형태다
-  # (섹션 35 의 `sa_manifest` 가 같은 이유로 매니페스트를 통째로 다시 쓴다).
-  local row td
-  row=$( { grep -E '^- `target`' "$SA_MANIFEST" || true; } | sed "s/$1=[^ |]*/$1=$2/")
-  td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
-  awk -v r="$row" -v td="$td" '
-    /^\*\*대상 맵 다이제스트\*\*: / { print "**대상 맵 다이제스트**: " td; next }
-    /^- `target`/ { print r; next }
-    { print }
-  ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
-  sa_bd "$SA_MANIFEST" "$SA_WT"
-  rm -rf "$SA_RUN"
-}
-
-sb_grant_max() {
-  # sb_grant_max <절단점> — 인가 기록의 「권한 절단점」과 매니페스트의 「런 최대
-  # 절단점」을 함께 올린다.
-  #
-  # 대상 행의 절단점은 인가 기록의 권한 절단점을 넘을 수 없고, 넘으면 그 대조가
-  # 룰 루프보다 위에서 모든 호출을 exit 3 으로 세운다. 픽스처의 기본값은 `배포`
-  # 인데 사다리의 꼭대기는 `머지후착수` 이므로, 대상을 그 꼭대기에 두려면 인가
-  # 기록도 함께 올려야 한다 — 올리지 않으면 그 대상에 대한 세그먼트 행조차
-  # 기록되지 않아 아래 단언들이 「행이 없다」만 보고 공허해진다.
-  #
-  # 두 필드를 함께 옮긴다. 오늘 게이트가 읽는 것은 인가 기록 쪽뿐이지만, 두 값이
-  # 하룻밤 내내 어긋나 있는 것이 이 픽스처가 재현해야 할 상태는 아니다.
-  sed "s/^\*\*권한 절단점\*\*: .*/**권한 절단점**: $1/" "$SA_GRANT" > "$SA_GRANT.g" \
-    && mv "$SA_GRANT.g" "$SA_GRANT"
-  sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
-    && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
-  sa_bd "$SA_MANIFEST" "$SA_WT"
-  rm -rf "$SA_RUN"
-}
-
-sb_act() {
-  # sb_act <세그먼트> <신고 절단점> <kind> [--] <argv...>
-  local sid="$1" cut="$2" knd="$3"; shift 3
-  case "${1:-}" in --) shift ;; esac
-  sag act --manifest "$SA_MANIFEST" --kind "$knd" --target main --segment "$sid" \
-      --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x -- "$@"
-}
-sb_merge() { sb_act "$1" "$2" merge gh pr merge 1; }
-
-sb_row() {
-  # sb_row <세그먼트> — 그 세그먼트의 마지막 `결정=act` 자율 승인 행.
-  { grep -F '`자율 승인`' "$SA_LEDGER" 2>/dev/null || true; } \
-    | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
-}
+# The `sb_*` helpers are `pre_sb` in the head now, called from here so the
+# serial order is exactly what it was.
+pre_sb
 
 # --- 38-1. 과신고된 머지가 유도 등급으로 판정되고, 원장이 두 값을 싣는다 ---------
 # --- section: 38-1 | group: sb | covers: act | anchors: 1: 세그먼트 행이 기록된다 ---
