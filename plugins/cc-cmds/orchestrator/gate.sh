@@ -10285,9 +10285,9 @@ gate_boundaries() {
 }
 
 gate_b1_read_run() {
-  # The number of read-graded `exec` authorisations since the progress digest
-  # was last observed to move — or `-1` when that stretch holds an authorisation
-  # which is not one.
+  # Two counts over the `자율 승인` rows since the progress digest was last
+  # observed to move, printed as `<n> <m>`: `n` is the read-graded `exec`
+  # authorisations and `m` is every other authorisation row in the stretch.
   #
   # THE CREDIT IS A SUPPRESSION AND NOT A VECTOR COMPONENT, and the placement is
   # the decision rather than an implementation detail. A component would leak
@@ -10316,15 +10316,31 @@ gate_b1_read_run() {
   # forward from there. One definition, and an input added to the vector later is
   # picked up here for free.
   #
-  # A STRETCH IS A READ BURST ONLY IF EVERY AUTHORISATION IN IT IS A READ — an
-  # `exec` carrying `축2=읽기`, and nothing else. A judgment, an obligation and a
-  # handoff write `결정=act`, an auto-adopted judgment writes `결정=채택`, and a
-  # row may carry no `축2=` at all; none of those moves the vector and none of
-  # them is reconnaissance. Leaving them invisible held `nread` at whatever the
-  # reads before them had reached, so three reads followed by a night of
-  # judgments sat inside the credit for ever — and a router spinning on judgments
-  # alone is precisely the run this boundary exists for. `-1` says the stretch
-  # holds one of them, and a negative run is not forgiven.
+  # A NON-READ AUTHORISATION SPENDS THE CREDIT; IT DOES NOT VOID IT. A judgment,
+  # an obligation and a handoff write `결정=act`, an auto-adopted judgment writes
+  # `결정=채택`, a failed act writes `결정=결과`, a refused `propose-done` writes
+  # `결정=기각`, and a row may carry no `축2=` at all. None of those moves the
+  # vector and none of them is reconnaissance, so leaving them invisible held
+  # `n` at whatever the reads before them had reached and three reads followed
+  # by a night of judgments sat inside the credit for ever. The first repair
+  # answered `-1` for any such row, and that voided the credit on EVERY shift the
+  # gate launches: `act --kind router-shift` evaluates the boundaries before it
+  # writes its own `결정=act` row, so the origin is recorded ahead of that row and
+  # the launch row lands inside the next stretch; and the most common
+  # reconnaissance read — a `grep` with no match — exits 1 and writes a
+  # `결정=결과` row of its own. Replaying a recorded ledger, both launch-phase B1
+  # firings the credit exists to forgive came back at exactly the same rows.
+  #
+  # So every row is COUNTED and none is skipped: `n` reads, `m` everything else,
+  # and the caller forgives the stretch while `n + m` is under the credit. A
+  # launch burst — one launch row, two or three reads, at most one failed read —
+  # spends four or five of the eight, and a router that reads once and then
+  # spins on judgments spends the rest within a few evaluations. Skipping
+  # `결정=결과` alone was considered and rejected: an adopted judgment's row
+  # carries the router's own fields verbatim, so any exemption keyed on a field's
+  # presence can be satisfied by writing that field. With every row counted the
+  # fields decide only which of `n` and `m` a row lands in, and that matters to
+  # the `n >= 1` floor alone.
   #
   # THE TESTS ARE ANCHORED ON THE ROW'S DELIMITERS for the reason the vector's
   # `acts=` line now is: `--rationale` lands in `근거=` untransformed, and an
@@ -10338,14 +10354,13 @@ gate_b1_read_run() {
   origin=$(cat "$RUN_DIR/progress-origin" 2>/dev/null || printf '0')
   case "$origin" in ''|*[!0-9]*) origin=0 ;; esac
   { grep '^- `' "$LEDGER" 2>/dev/null || true; } | LC_ALL=C awk -v skip="$origin" '
-      BEGIN { n = 0; pure = 1 }
+      BEGIN { n = 0; m = 0 }
       NR <= skip { next }
       index($0, "- `자율 승인`") == 1 {
-        if (index($0, " | 결정=exec | ") > 0 && index($0, " | 축2=읽기 | ") > 0) {
-          n = n + 1; next }
-        pure = 0
+        if (index($0, " | 결정=exec | ") > 0 && index($0, " | 축2=읽기 | ") > 0) n = n + 1
+        else m = m + 1
       }
-      END { if (pure) printf "%d", n; else printf "%d", -1 }'
+      END { printf "%d %d\n", n, m }'
 }
 
 gate_b1_stagnation() {
@@ -10364,7 +10379,7 @@ gate_b1_stagnation() {
   # This is a suppression rather than a reset: the counter is left alone so that
   # a run which really does stop after its stages end still reaches the
   # threshold on the following judgements.
-  local h prev n nread
+  local h prev n nread nspent
   if [ "$(gate_live_stages)" != "0" ]; then
     return 0
   fi
@@ -10417,8 +10432,14 @@ gate_b1_stagnation() {
   # judgments alone is precisely the run this boundary exists for. Reading "made
   # of reads" as vacuously true of the empty stretch would silence B1 on it.
   #
-  # A NEGATIVE RUN IS NOT FORGIVEN EITHER: `-1` says the stretch holds an act
-  # whose surface grade nobody established, which is not a read.
+  # A NON-READ AUTHORISATION IN THE STRETCH SPENDS ONE UNIT, exactly as a read
+  # does, and does not void the stretch. The gate itself writes such rows on
+  # the healthy path — the launch row of every shift it starts, the `결정=결과`
+  # row of a `grep` that matched nothing — so a stretch that had to be made of
+  # reads alone was never a read burst on any run the gate launched, and the
+  # credit fired B1 at the same rows it was added to forgive. What stays is the
+  # floor: at least one read must be in the stretch, so a router spinning on
+  # judgments alone is not forgiven by rows that are nothing but judgments.
   #
   # THE CREDIT HAS NO KEY. Every key variant measured identically to a plain
   # count because the credit SATURATES at `C`, and the variants built from
@@ -10431,14 +10452,21 @@ gate_b1_stagnation() {
   # true of the function it sits in, and the claim is what argued the stretch's
   # origin into a second copy of the vector's membership rule — the copy that
   # disagreed with it in three directions.
-  nread=$(gate_b1_read_run)
-  if [ "$nread" -ge 1 ] && [ "$nread" -lt "$B1_READ_CREDIT" ]; then
+  # Two words on one line, read through a heredoc rather than `set --`: the
+  # positional parameters are the act's argv here and must not be clobbered.
+  # The read floor stands FIRST in the list so an empty value fails the test
+  # (exit 2) toward issuing, never toward suppressing.
+  nread=0; nspent=0
+  read -r nread nspent <<EOF || true
+$(gate_b1_read_run)
+EOF
+  if [ "$nread" -ge 1 ] && [ "$((nread + nspent))" -lt "$B1_READ_CREDIT" ]; then
     # THE TRACE GOES TO ITS OWN SERIES. `blocked` is read by B2, so writing there
     # would let this suppression move another boundary's input; and a suppression
     # that is frequent and silent is the one thing this boundary must not become.
     # The property the series name carries is that NO boundary reads it.
     gate_append '경계 억제' "경계=B1" "사유=읽기 크레딧" \
-      "크레딧 잔량=$((B1_READ_CREDIT - nread))" "기록 시각=$(now_iso)"
+      "크레딧 잔량=$((B1_READ_CREDIT - nread - nspent))" "기록 시각=$(now_iso)"
     # A suppression, not a reset: `progress-repeat` is left alone, so a run that
     # really does stop once the reading ends still reaches the threshold on the
     # judgments that follow. This is the shape the live-stage suppression above
