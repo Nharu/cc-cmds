@@ -3372,12 +3372,20 @@ JSON
 
 gate_resettle_settings() {
   # Re-derive the stage settings and, when they differ, rewrite + re-baseline +
-  # record. This is what lets a run reach a directory kickoff could not know
-  # about — a segment's own worktree, a repository the run added at layer 1 —
-  # without either freezing the run or making the surface comparison hollow.
+  # record. This is what lets the authorization list follow a change in what it
+  # is derived from, without either freezing the run or making the surface
+  # comparison hollow.
   #
-  # The derivation is a pure function of the manifest and the ledger, so the
-  # bytes move only when one of those moved, and both are themselves recorded.
+  # What it is derived from is the manifest's target rows (each target's main
+  # and execution worktree) and the run's own environment: the run directory,
+  # the base, the directories of the manifest, ledger and grant, the design
+  # document's directories, the plugin and hook locations, and the user config
+  # directory. NO LEDGER ROW IS AN INPUT. The `대상 추가` row appended below is a
+  # record of a widening, and nothing reads it back into a derivation. Nor is a
+  # segment's own worktree in the list — nothing here derives one. The manifest
+  # is written at kickoff and a write to it is refused, so during a run the
+  # bytes move only when the environment does.
+  #
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
   local before after tmpdir base lk="${RUN_DIR:-}/settings.lock"
@@ -3835,11 +3843,13 @@ gate_surface_digest() {
 }
 
 gate_surface_digest_raw() {
-  # The extension is re-derived on every call rather than listed once: the
-  # second element is "the project-scope settings of every worktree the manifest
-  # and the target-addition rows name", and targets are added at RUNTIME. A
-  # fixed file list would stop covering a target the moment one was added, and
-  # would not report that it had stopped.
+  # The extension is read from the manifest on every call: the second element
+  # is the project-scope settings file of each target row's main worktree. The
+  # target list CANNOT GROW DURING A RUN. It comes from the manifest alone, the
+  # manifest is written at kickoff and every later write to it is refused, and
+  # no ledger row is an input — the `대상 추가` rows this gate appends are never
+  # read back here or by any other derivation. So this digest's cost follows the
+  # number of targets, not how far the run has progressed.
   #
   # THE INSTALLED PLUGIN'S OWN FILES ARE NOT IN HERE, and that is the whole
   # reason this digest stopped ending runs for doing nothing wrong. The rule
@@ -4093,10 +4103,11 @@ gate_main() {
   #
   # What keeps the comparison meaningful is not that the surface never moves —
   # it is that it moves only through THIS writer and leaves a row when it does.
-  # An edit by anything else still lands as exit 7. So the derivation is a pure
-  # function of the manifest and the ledger's `대상 추가` rows, both of which are
-  # themselves recorded; when it yields different bytes the gate rewrites,
-  # re-baselines, and appends a row naming what widened.
+  # An edit by anything else still lands as exit 7. The derivation reads the
+  # manifest's target rows and the run's own environment and NO LEDGER ROW —
+  # the `대상 추가` row it appends is a record, not an input to the next
+  # derivation. When it yields different bytes the gate rewrites, re-baselines,
+  # and appends that row naming what widened.
   #
   # The widening is bounded by construction: every directory it can add is a
   # worktree of a target the run already acts in. Nothing here grants a cutpoint,
