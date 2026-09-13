@@ -46,13 +46,15 @@ on:
 jobs:
   lint-and-test-macos:
     runs-on: macos-latest
-    # `make lint` alone has been taking 7-8.5 minutes on this runner against the
-    # old 10-minute ceiling — 70-85% of the budget spent before the tests start,
-    # so ordinary runner variance cancelled the job with every step reporting
-    # success. One lint dominates: lint-bash-portability is 206s of the 242s the
-    # whole suite takes locally. Raising the ceiling stops a green run from
-    # reading as a failure; making that lint cheaper is separate work and is not
-    # what this number is standing in for.
+    # The first ceiling here was 10 minutes and the lint step was blamed for it
+    # — "7-8.5 minutes on this runner", most of the budget gone before the tests
+    # started. That reading does not survive measurement and is replaced rather
+    # than kept, because it pointed at the wrong half of the job: across the
+    # three most recent runs of this leg the lint step takes 1m22s, 1m59s and
+    # 3m35s, which is single-digit percent of the current budget rather than
+    # most of it. The 12m41s recorded further down belongs to the 25-minute
+    # ceiling and its tree, and is left there as the history it is. What
+    # actually consumes the job now is the test step, and inside it one script.
     # The ceiling is now 150, and the number was raised four times to get there.
     # The history is kept because each step measured something the next one
     # needed.
@@ -73,8 +75,17 @@ jobs:
     # of margin is not a budget.
     #
     # At 90 it was cancelled a fourth time, and this reading finally says where
-    # the wall clock goes. The test step is ONE SCRIPT: `make -j` starts 16
-    # suites and 15 of them are done inside the first three minutes, after which
+    # the wall clock goes. TWO COMPLETED RUNS ARE USED BELOW AND THEY ARE KEPT
+    # APART, because the first version of this correction mixed them silently
+    # and then none of its numbers could be re-derived from the run it named.
+    # The PROFILE run — job 80m33s, lint 1m22s, test step 79m05s — is where
+    # every rate and bucket below comes from. The SIZING run — job 82m05s, lint
+    # 1m59s, test step 79m54s — is this branch's own last completed run, and is
+    # what 150 is measured against. Both finished; the 86m30s further down did
+    # not.
+    #
+    # The test step is ONE SCRIPT. In the profile run `make -j` starts 16 suites
+    # and 15 of them are done inside the first three minutes, after which
     # `scripts/test-gate.sh` runs ALONE for 76 of that step's 79 minutes. The
     # parallelism is already saturated, so the ceiling is that one script's
     # serial time and nothing else. The twenty-three lint scripts are NOT part
@@ -87,11 +98,12 @@ jobs:
     # optimizing. It said the suite gets slower as it runs because each gate
     # call re-reads a growing ledger. The chain walk is flat — about 10ms over
     # 91 rows against about 14ms over 2849, because it walks the whole ledger in
-    # one process — and the assertion rate does not decay. Bucketed on
-    # five-minute boundaries across the stretch where the script runs alone, it
-    # is 118/180/205 over the first fifteen minutes, 8 to 50 over the next
-    # forty-five, and 212/177 over the last ten. The end is as fast as the
-    # start, which a ledger-size cost cannot produce.
+    # one process — and the assertion rate does not decay. Taking the whole
+    # five-minute buckets that fit inside that 76-minute stretch, which is 70 of
+    # those minutes, the rate is 118/180/205 over the first fifteen, 8 to 50
+    # over the next forty-five, and 212/177 over the last ten. The end is as
+    # fast as the start, which a ledger-size cost cannot produce. The six
+    # minutes not quoted are the partial buckets at each end.
     #
     # What is expensive is a BAND of sections rather than a trend: those middle
     # forty-five minutes carry about 260 assertions, in the area where every
@@ -100,8 +112,8 @@ jobs:
     # is that the cost is NOT superlinear in ledger size — they do not make the
     # total linear in assertion count either.
     #
-    # 150 is chosen against a COMPLETED run of 79m54s for this step, 82m05s for
-    # the job. The 90 ceiling was hit at 86m30s, and that figure is a
+    # 150 is chosen against the sizing run's completed job of 82m05s. The 90
+    # ceiling was hit at 86m30s on this branch, and that figure is a
     # cancellation point rather than a duration — that run never finished, so
     # its true cost is unknown and larger than 86m30s. Splitting the script so
     # `-j` can reach it is the real fix and is filed separately.
