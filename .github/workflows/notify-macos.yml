@@ -71,14 +71,31 @@ jobs:
     # the next one to a cancellation at 25m22s. A budget with twenty-two seconds
     # of margin is not a budget.
     #
-    # The reason it keeps recurring is that this suite does not get slower
-    # evenly, it gets slower as it runs: each gate call re-reads a ledger the
-    # suite has been appending to, so the last assertions cost far more than the
-    # first. A ceiling that fits today stops fitting after the next few
-    # assertions. 90 is chosen to stop this recurring per commit, not because
-    # the suite needs it — the superlinear cost is the real defect and is filed
-    # separately.
-    timeout-minutes: 90
+    # At 90 it was cancelled a fourth time, and this reading finally says where
+    # the wall clock goes. The whole job is ONE SCRIPT: `make -j` starts all 39
+    # suites within the first two minutes and 38 of them are done inside the
+    # first two, while `scripts/test-gate.sh` runs alone for the remaining 79
+    # minutes. The parallelism is already saturated, so the ceiling is that one
+    # script's serial time and nothing else.
+    #
+    # THE EARLIER EXPLANATION ON THIS BLOCK WAS WRONG and is corrected rather
+    # than deleted, because it named a mechanism a reader would otherwise go on
+    # optimizing. It said the suite gets slower as it runs because each gate
+    # call re-reads a growing ledger. Measured, the chain walk is flat — 9.9ms
+    # over 91 rows against 13.9ms over 2849 — and the assertion rate does not
+    # decay: bucketed over the run it is 135/118/180/205 per five minutes at the
+    # start, 8-50 through the middle, and back to 212/177 near the end. The last
+    # stretch is as fast as the first, which a ledger-size cost cannot produce.
+    # What is actually expensive is a BAND of sections, not a trend: roughly 45
+    # of the 79 minutes go to about 260 assertions in the approval-frame area,
+    # where every assertion opens and closes a real approval through the gate.
+    #
+    # So the growth is linear in assertion count, not superlinear, and the
+    # defect is that a single serial script carries the whole leg. 150 is chosen
+    # against a measured 86m30s on this branch, which is the run this number is
+    # unblocking; splitting the script so `-j` can reach it is the real fix and
+    # is filed separately.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
