@@ -3655,12 +3655,46 @@ gate_chain_verify() {
   return 1
 }
 
+# This run's grant block, read ONCE per gate call. `gate_check_grant` asks for
+# ten fields and each ask was four processes over the whole file; the block is
+# cut out once below and every ask answers from it with shell expansions. Keyed
+# to both the path and the run id so a memo can never answer for another
+# grant or another run — a mismatch falls back to the file.
+GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+
+gate_grant_block_take() {
+  GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+  [ -f "$GRANT" ] || return 0
+  # The same range the file-reading form cuts: from the line equal to this
+  # run's heading through the next `## ` line. A leading newline makes the
+  # first line addressable by the same `<newline>**key**: ` prefix as the rest.
+  GATE_GRANT_MEMO_BLOCK="
+$(sed -n "/^## 인가 ${RUN_ID}\$/,/^## /p" "$GRANT" 2>/dev/null)"
+  GATE_GRANT_MEMO_PATH="$GRANT"; GATE_GRANT_MEMO_RUN="$RUN_ID"
+}
+
 gate_grant_field() {
   # gate_grant_field <필드명> — the CANON rendering inside this run's block.
   #
   # sed and shell string equality, not awk. A Korean key fed to `awk`'s regex
   # engine is the exact construction this repository already had to rewrite once
   # after it failed on the macOS leg of CI and nowhere else.
+  #
+  # From the memo when one was taken for this grant and run: the first line of
+  # the block starting with `**<field>**: `, trailing whitespace stripped —
+  # the same bytes the four-process form below produces.
+  local v pre="
+**$1**: "
+  if [ -n "$GATE_GRANT_MEMO_PATH" ] && [ "$GATE_GRANT_MEMO_PATH" = "$GRANT" ] \
+     && [ "$GATE_GRANT_MEMO_RUN" = "$RUN_ID" ]; then
+    case "$GATE_GRANT_MEMO_BLOCK" in
+      *"$pre"*)
+        v="${GATE_GRANT_MEMO_BLOCK#*"$pre"}"; v="${v%%
+*}"; v="${v%"${v##*[![:space:]]}"}"
+        printf '%s\n' "$v" ;;
+    esac
+    return 0
+  fi
   sed -n "/^## 인가 ${RUN_ID}\$/,/^## /p" "$GRANT" 2>/dev/null \
     | sed -n "s/^\\*\\*${1}\\*\\*: //p" | sed 's/[[:space:]]*$//' | sed -n '1p'
 }
@@ -3684,6 +3718,10 @@ gate_check_grant() {
     warn "인가 기록이 없습니다: $GRANT — 킥오프가 먼저 돌아야 합니다"
     return "$GATE_EXIT_RULE"
   fi
+  # One cut of this run's block for the ten field reads below. Every check
+  # after this line runs unchanged, in the same order, with the same messages
+  # and exit codes — only the number of times the file is opened changes.
+  gate_grant_block_take
   blocks=$(grep -E '^## 인가 ' "$GRANT" 2>/dev/null | sed -E 's/^## 인가 //' | sed 's/[[:space:]]*$//' || true)
   while IFS= read -r b; do
     [ -n "$b" ] || continue
@@ -3998,6 +4036,7 @@ gate_main() {
   GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
   MANIFEST=""
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
