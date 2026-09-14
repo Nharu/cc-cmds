@@ -10477,21 +10477,46 @@ gate_b3_act_budget() {
   # nobody to answer, and each one ends the shift, so a review long enough to
   # cross this budget stops the night it is running in.
   #
-  # SUPPRESSING HERE REMOVES NO DETECTION THAT EXISTED. The case a reader will
-  # worry about is a stage that is alive but wedged, and this arm never caught
-  # it: a wedged stage authorises nothing, so `total` does not move and the
-  # budget is never reached. Nor does the liveness watcher — every one of its
-  # arms requires zero live stages before it will fire, so a process that is
-  # alive and doing nothing satisfies none of them. `autopilot/SKILL.md` says as
-  # much in its progress-channel note: a stage that is itself wedged is visible
-  # on no channel today. That hole is real, it is not this arm's, and this guard
-  # neither opens nor widens it — it trades one arm's false positives for
-  # nothing.
+  # SUPPRESSION ALONE DEFERS THE FIRING; IT DOES NOT REMOVE IT. This is the
+  # defect the first version of this guard shipped with, and it is worth stating
+  # rather than quietly fixing, because the shape recurs: a guard placed to skip
+  # an evaluation removes nothing when the value being evaluated is DERIVED at
+  # each call rather than carried across them.
   #
-  # `cc_live_stages` COUNTS PROCESSES, NOT PID FILES (`liveness.sh`, sourced at
-  # the top of this file), so a stage that died without cleaning up does not
-  # keep the boundary suppressed.
-  [ "$(cc_live_stages "$RUN_DIR")" = "0" ] || return 0
+  # `total` is re-counted from the ledger every time, while `base` is a file.
+  # Skipping the evaluation froze the file and left the count growing, so the
+  # stage's acts were still owed — and the bill arrived one act later. The
+  # sequence: the launch act records `base`, the stage authorises N acts under
+  # the guard, the stage terminates, and the ROUTER's next act is where the
+  # segment row actually moves. Boundaries are evaluated in that act BEFORE its
+  # own row is appended (`gate_boundaries` runs ahead of the append and the
+  # launch in the act path), and the rows a terminating stage does write —
+  # `stage-result`, `문서 해시`, `cost` — are none of the progress vector's
+  # inputs. So the key is unchanged, no re-baseline happens, and `n` is the
+  # stage's whole run. Reproduced on a fixture: 41 acts under a live stage, then
+  # the first router act after it ended fired with `live=0`.
+  #
+  # So the guard CARRIES THE BASELINE FORWARD instead of skipping past it. Every
+  # suppressed evaluation moves `base` to `total` and records the current key,
+  # which makes the stage's acts spent history rather than deferred debt: the
+  # window that matters reopens at the moment the stage ends. B1 needs no such
+  # move because its counter lives in a file and simply is not incremented while
+  # suppressed — same intent, different bookkeeping, and copying B1's shape
+  # without its storage is what produced the deferral.
+  #
+  # WHAT THIS COSTS IS REAL AND IS NOT NOTHING. A stage that is alive and
+  # spinning through this gate — a retry loop, say — was caught by this arm and
+  # now is not. No other arm takes it: every liveness-watcher arm requires zero
+  # live stages, and each of those acts grows the ledger so the watcher's
+  # idleness never accrues either. That blind spot is filed separately; it is
+  # bought deliberately here, because the alternative measured worse — the arm
+  # stopped an unattended night on every long review, and it could not tell a
+  # spinning stage from a working one in the first place.
+  #
+  # THE SAME SPELLING B1 USES, `gate_live_stages`, because two spellings of one
+  # predicate sitting in neighbouring arms read as two predicates. It counts
+  # PROCESSES, NOT PID FILES (`liveness.sh`, sourced at the top of this file), so
+  # a stage that died without cleaning up does not keep the boundary suppressed.
   # Positively selected, matching the progress vector: the grade must be present
   # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
   # grade at all, and here that spends budget on an act nobody established was
@@ -10516,6 +10541,15 @@ gate_b3_act_budget() {
   # open a new window — if it were, no amount of spending could ever exhaust
   # one — so the key is the vector with that line removed.
   h=$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)
+  # THE LIVE-STAGE CARRY. Placed after `total` and `h` rather than before them so
+  # the two values have ONE spelling — the suppressed path and the measuring path
+  # must agree on what they are, and a second copy of either pipeline is how they
+  # would stop agreeing.
+  if [ "$(gate_live_stages)" != "0" ]; then
+    printf '%s\n' "$h"     > "$RUN_DIR/act-budget-digest"
+    printf '%s\n' "$total" > "$RUN_DIR/act-budget-base"
+    return 0
+  fi
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it

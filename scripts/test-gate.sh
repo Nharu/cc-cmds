@@ -8088,28 +8088,56 @@ gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
 after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 check "살아 있는 스테이지가 있으면 B3 은 예산을 넘겨도 발동하지 않는다" "$after" "$before"
 
-# A DEAD STAGE DOES NOT HOLD IT SILENT. `cc_live_stages` counts processes rather
-# than pid files, and this pins that from the consumer's side: a stage that died
-# without cleaning up leaves its pid file behind, and a guard reading files would
-# leave the run unwatched for the rest of the night.
+# THE BILL IS NOT DEFERRED TO THE ACT AFTER THE STAGE. This is the assertion the
+# first version of this block got backwards, and it is the one that matters: a
+# guard that only SKIPS the evaluation leaves `base` frozen while `total` keeps
+# growing from the ledger, so the stage's whole run is charged to the router's
+# next act. The progress vector does not move when a stage ends — the rows it
+# writes are not among its inputs, and the segment row is moved by the router's
+# next act, which evaluates boundaries before appending it. So this act stands
+# exactly where the deferred firing lands.
 kill "$B3LIVE_PID" 2>/dev/null || true
 wait "$B3LIVE_PID" 2>/dev/null || true
 rm -f "$RD/B3LIVE.pid" "$RD/B3LIVE.start"
-fx_stage_dead B3DEAD
 for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
 done
 before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$(HH)" --rationale "죽은 pid 파일만 남은 상태의 예산 초과" -- touch "$WORK/t4c"
+     --snapshot-digest "$(HH)" --rationale "스테이지가 끝난 직후 라우터의 첫 행위" -- touch "$WORK/t4c"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+check "스테이지가 끝난 뒤 첫 라우터 행위에서도 B3 은 침묵한다 (청구가 미뤄지지 않는다)" "$after" "$before"
+
+# AND THE ARM IS STILL ARMED. The baseline moved to the total, so the window that
+# reopens at the stage's end is empty — but it is a window, not an off switch.
+# Spending the budget again in it must fire, or the fix above has disarmed the
+# boundary rather than re-aimed it. The budget is `B3_ACT_BUDGET`; this spends it
+# with the same one-act-per-iteration shape the first half uses.
+#
+# THE BUDGET IS SPENT THE WAY HALF ONE SPENDS IT — `결정=exec` rows appended to
+# the ledger — and the first draft of this assertion spent it by running acts
+# instead. Those write `결정=act`, which the counter's filter does not select, so
+# `total` never moved and the silence it read was its own doing rather than the
+# guard's. Same failure text, unrelated cause; the fixture has to speak the
+# counter's own vocabulary.
+b3n=0
+while [ "$b3n" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=재무장 픽스처 %s | prev=x\n' "$b3n" >> "$LEDGER"
+  b3n=$((b3n + 1))
+done
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "재무장 확인" -- touch "$WORK/t4d"
 after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
 if [ "$after" -gt "$before" ]; then
-  ok "죽은 스테이지의 pid 파일은 B3 을 억제하지 않는다 (억제는 조건부이지 스위치가 아니다)"
+  ok "스테이지 종료 뒤 새로 열린 창에서 예산을 다시 넘기면 B3 은 발동한다"
 else
-  bad "B3 억제" "살아 있는 스테이지가 없는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+  bad "B3 재무장" "새 창에서 예산을 넘겼는데 발동하지 않았다 — 겨냥을 고친 것이 아니라 끈 것이다"
 fi
-rm -f "$RD/B3DEAD.pid" "$RD/B3DEAD.start"
 
 # Half two — the regression. The same 41 acts, but progress has moved since,
 # which closes the old window and opens a new one holding none of them. A count
