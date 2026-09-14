@@ -477,6 +477,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6c. `cycles[]` carries what a delta basis is chosen from
+#
+# The router picks a segment's last FULL cycle as the basis for a delta review
+# and hands its review HEAD and report path to the review stage. With only
+# `세그먼트`/`사이클`/`P0`/`P1` on the row object it had to open the ledger to
+# find either, and the ledger is what the snapshot exists to stand in for. An
+# absent `모드` is emitted as the empty string — the reader takes it as 전체 —
+# so every row written before the field existed still parses as a full cycle.
+# ---------------------------------------------------------------------------
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=docs/reviews/s9-1.md\n' >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=0 | P1=0 | 리뷰 HEAD=def5678 | 리포트 경로=/abs/s9-2.md | 모드=델타 | 기준 사이클=1\n' >> "$LEDGER"
+SNAP_C="$WORK/cycles.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_C"
+check "모드 없는 cycle 행은 빈 모드로 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["모드"]' "$SNAP_C")" ""
+check "cycle 행이 리뷰 HEAD 를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리뷰 HEAD"]' "$SNAP_C")" "abc1234"
+check "cycle 행이 리포트 경로를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리포트 경로"]' "$SNAP_C")" "docs/reviews/s9-1.md"
+check "델타 행의 모드가 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="2") | .["모드"]' "$SNAP_C")" "델타"
+
+# ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
 # The ledger is deliberately NOT in the enforcement-surface digest: it grows on

@@ -1932,6 +1932,20 @@ gate_row_field() {
   printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
+gate_report_abs() {
+  # gate_report_abs <path> — an absolute path as-is; a relative one resolved two
+  # levels above the manifest's directory, which is the same derivation the merge
+  # rule uses (`<base>/docs/pipeline-run/<run-id>.plan.md` sits two below the base).
+  # ONE helper for every reader of a `cycle` row's `리포트 경로` in this file, so
+  # the delta checks below cannot resolve a relative path one way while the rule
+  # resolves it another.
+  case "${1:-}" in
+    '')  printf '' ;;
+    /*)  printf '%s' "$1" ;;
+    *)   printf '%s/%s' "$(cd "$(dirname "$MANIFEST")/../.." 2>/dev/null && pwd)" "$1" ;;
+  esac
+}
+
 gate_open_obligations() {
   # An obligation is closed only by a LATER cycle row for the same segment whose
   # report no longer carries the identity — a `problem` row records an attempt,
@@ -6212,6 +6226,163 @@ gate_record_row() {
         warn "cycle 행의 「리뷰 HEAD」는 해소된 커밋 sha 여야 합니다 — 7~40자 소문자 16진만 받습니다: '$rh'"
         return "$GATE_EXIT_VOCAB"
       fi
+      # --- DELTA MODE: the basis conditions are refused HERE, at write time ---
+      #
+      # A `cycle` row may claim `모드=델타` — a review that read only the files
+      # changed since this segment's last FULL cycle and re-adjudicated that
+      # cycle's P0/P1. The merge rule reads `P0`/`P1` off the newest row without
+      # knowing the mode, so everything that makes a delta claim sound has to be
+      # true before the row exists: the basis cycle is a real row of this
+      # segment, it is itself a full cycle, it is the LATEST full cycle, its
+      # review HEAD is an ancestor of this one, and its report is not a stub.
+      #
+      # ABSENCE READS AS `전체`. Making the field required would refuse every
+      # `cycle` write from a shift session assembled from the older wording —
+      # the same narrow failure shape as a rule-catalogue deploy. An absent
+      # mode is the conservative claim ("no delta is asserted"), and check 8
+      # below confirms against the report that the conservative reading is
+      # also the true one.
+      local cmode cbasis eff_mode crow cs cm brow latest bmode bhead wt rc brep
+      cmode=$(gate_field_of '모드' "$@")
+      cbasis=$(gate_field_of '기준 사이클' "$@")
+      # Check 1 — vocabulary, whenever the field is present at all.
+      case "$cmode" in
+        ''|전체|델타) ;;
+        *) warn "cycle 행의 「모드」가 어휘 밖입니다: '$cmode' — 전체 델타"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      eff_mode=${cmode:-전체}
+      # Check 2 — a full row asserts no basis; a delta row must name one.
+      if [ "$eff_mode" = 전체 ] && [ -n "$cbasis" ]; then
+        warn "모드=전체(또는 부재) 인 cycle 행은 「기준 사이클」을 실을 수 없습니다 — 전체 리뷰는 기준을 주장하지 않습니다: '$cbasis'"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      if [ "$eff_mode" = 델타 ]; then
+        case "$cbasis" in
+          ''|*[!0-9]*|0*)
+            warn "모드=델타 인 cycle 행에는 양의 정수 「기준 사이클」이 필요합니다: '${cbasis:-없음}'"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+        # Checks 3 and 5 share one pass over this segment's cycle rows. FIELD
+        # EQUALITY, not `grep -F`: `사이클=1` is a substring of `사이클=10`, so a
+        # fixed-string match would find a basis row that does not exist. Several
+        # rows with the same number → the last one, the ledger's usual rule.
+        brow=''; latest=0
+        while IFS= read -r crow; do
+          [ -n "$crow" ] || continue
+          [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
+          cs=$(gate_row_field "$crow" '사이클')
+          cm=$(gate_row_field "$crow" '모드'); [ -n "$cm" ] || cm=전체
+          if [ "$cs" = "$cbasis" ]; then brow="$crow"; fi
+          if [ "$cm" = 전체 ]; then
+            case "$cs" in
+              ''|*[!0-9]*) ;;
+              *) if [ "$cs" -gt "$latest" ]; then latest=$cs; fi ;;
+            esac
+          fi
+        done <<EOF
+$(gate_rows 'cycle')
+EOF
+        # Check 3 — the basis row exists in THIS segment.
+        if [ -z "$brow" ]; then
+          warn "기준 사이클 $cbasis 의 cycle 행이 세그먼트 $seg 에 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 4 — no delta of a delta: an inherited verdict crosses one step.
+        bmode=$(gate_row_field "$brow" '모드'); [ -n "$bmode" ] || bmode=전체
+        if [ "$bmode" != 전체 ]; then
+          warn "기준 사이클 $cbasis 은 델타 사이클입니다 — 델타의 델타는 허용하지 않습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 5 — the basis is the LATEST full cycle, and the refusal names
+        # the one that is.
+        if [ "$latest" != "$cbasis" ]; then
+          warn "기준 사이클 $cbasis 보다 최근의 전체 사이클이 있습니다: $latest — 기준은 이 세그먼트의 마지막 전체 사이클이어야 합니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 6 — ancestry, in the segment's own worktree. `is-ancestor` has
+        # THREE answers: exit 0 is "ancestor", exit 1 is "not an ancestor", and
+        # exit ≥2 (128 for a missing object) is "cannot tell". Reading the third
+        # as the second is fail-open — a sha that resolves to nothing would pass
+        # as merely unrelated. A write-time check has no "held" state to park
+        # in, so the undecidable case folds to a refusal with its own wording.
+        bhead=$(gate_row_field "$brow" '리뷰 HEAD')
+        wt=$(gate_segment_worktree "$seg")
+        if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+          warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 — 세그먼트 워크트리가 없습니다: '${wt:-없음}'"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        rc=0
+        ( cd "$wt" && git merge-base --is-ancestor "$bhead" "$rh" ) >/dev/null 2>&1 || rc=$?
+        case "$rc" in
+          0) ;;
+          1) warn "기준 리뷰 HEAD $bhead 가 이 행의 리뷰 HEAD $rh 의 조상이 아닙니다 (리베이스 등) — 델타 리뷰가 성립하지 않습니다"
+             return "$GATE_EXIT_VOCAB" ;;
+          *) warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 (git exit $rc, 워크트리 $wt)"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        # Check 7 — the basis report exists and is not a stub. The anchor is
+        # the merge rule's; the rule file is out of reach for this change, so
+        # the regex lives in two places and moves together by hand.
+        brep=$(gate_report_abs "$(gate_row_field "$brow" '리포트 경로')")
+        if [ ! -f "$brep" ] || ! grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$brep"; then
+          warn "기준 사이클 $cbasis 의 리포트가 없거나 「발견 요약」이 없습니다: $brep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      fi
+      # Check 8 — EVERY row, not only delta rows: the report is the source of
+      # the mode and the row must agree with it. The dangerous direction is
+      # under-claiming, not over-claiming. A report that says 델타 under a row
+      # that stays silent reads as 전체, gets picked as the next cycle's full
+      # basis, and a delta then stacks on a review that read part of the tree.
+      # Both absent read as the same 전체, so no row written before this field
+      # existed is refused by it. The repair for every refusal here is to
+      # rewrite the row to what the report says.
+      #
+      # ONE LINE IS ANCHORED FIRST and the values are read off that line only,
+      # so the same phrase somewhere in the report body cannot be picked up.
+      # POSIX ERE throughout: `\b` is unreliable under macOS libc regcomp and
+      # BRE `\|` is a GNU extension, both of which the portability lint names.
+      # `awk 'NR==1'` and not `head -1`: the first line is wanted, but an
+      # early-exiting reader on the right of a pipe is the pipefail trap this
+      # tree's suite refuses, and `awk` reads to the end.
+      local rep line rmode rcyc rhead r1 r2
+      rep=$(gate_report_abs "$(gate_field_of '리포트 경로' "$@")")
+      if [ -f "$rep" ]; then
+        line=$({ grep -E '^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타)( |$)' "$rep" || true; } | awk 'NR==1')
+        rmode=$(printf '%s\n' "$line" | sed -E -n 's/^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타).*/\1/p')
+        [ -n "$rmode" ] || rmode=전체
+        if [ "$rmode" != "$eff_mode" ]; then
+          warn "cycle 행의 모드($eff_mode)와 리포트의 리뷰 모드($rmode)가 다릅니다 — 행은 리포트가 말하는 모드로 다시 씁니다: $rep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        if [ "$eff_mode" = 델타 ]; then
+          rcyc=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 사이클 ([0-9]+).*/\1/p')
+          rhead=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 리뷰 HEAD `([0-9a-f]+)`.*/\1/p')
+          if [ "$rcyc" != "$cbasis" ]; then
+            warn "리포트의 기준 사이클(${rcyc:-없음})이 행의 기준 사이클($cbasis)과 다릅니다: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          # Short and long shas may be mixed between the row and the report;
+          # both are resolved to a commit and the COMMITS are compared.
+          r1=$(cd "$wt" && git rev-parse --verify "${rhead}^{commit}" 2>/dev/null || true)
+          r2=$(cd "$wt" && git rev-parse --verify "${bhead}^{commit}" 2>/dev/null || true)
+          if [ -z "$r1" ] || [ -z "$r2" ]; then
+            warn "리포트의 기준 리뷰 HEAD(${rhead:-없음})와 기준 행의 리뷰 HEAD($bhead)를 해소할 수 없습니다 — 판정 불가: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$r1" != "$r2" ]; then
+            warn "리포트의 기준 리뷰 HEAD($rhead)가 기준 행의 리뷰 HEAD($bhead)와 같은 커밋이 아닙니다: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
+      elif [ "$eff_mode" = 델타 ]; then
+        # A full row whose report cannot be opened passes here — no new refusal
+        # on the existing path; the merge rule already catches the absence at
+        # merge time. A delta row has nothing to back its claim without it.
+        warn "모드=델타 인 cycle 행의 리포트를 열 수 없습니다: $rep"
+        return "$GATE_EXIT_VOCAB"
+      fi
       # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
       # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
@@ -10144,11 +10315,17 @@ gate_snapshot_cycles_json() {
   local out row
   out=$( { gate_rows 'cycle' || true; } | tail -20 | while IFS= read -r row; do
            [ -n "$row" ] || continue
-           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s"},\n' \
+           # `모드`, `리뷰 HEAD` and `리포트 경로` are what the router needs to
+           # pick a delta basis without opening the ledger; an absent `모드`
+           # is emitted as the empty string and the reader takes it as 전체.
+           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s", "모드": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '세그먼트')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
              "$(gate_json_escape "$(gate_row_field "$row" 'P0')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" 'P1')")"
+             "$(gate_json_escape "$(gate_row_field "$row" 'P1')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '모드')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '리포트 경로')")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
