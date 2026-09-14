@@ -8682,16 +8682,16 @@ fi
 # passes against a build with no guard at all — measured, on this very block's
 # first draft. Half one has already proven this window fires, and nothing below
 # touches the two counter files, so a silence here is the guard's doing.
-for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
 fx_stage_live B3LIVE
 B3LIVE_PID="$FX_LAST_PID"
-before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
-H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
-gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "살아 있는 스테이지 아래의 예산 초과" -- touch "$WORK/t4b"
-after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 check "살아 있는 스테이지가 있으면 B3 은 예산을 넘겨도 발동하지 않는다" "$after" "$before"
 
 # A DEAD STAGE DOES NOT HOLD IT SILENT. `cc_live_stages` counts processes rather
@@ -8702,14 +8702,14 @@ kill "$B3LIVE_PID" 2>/dev/null || true
 wait "$B3LIVE_PID" 2>/dev/null || true
 rm -f "$RD/B3LIVE.pid" "$RD/B3LIVE.start"
 fx_stage_dead B3DEAD
-for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
-  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
-before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
-H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
-gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "죽은 pid 파일만 남은 상태의 예산 초과" -- touch "$WORK/t4c"
-after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 if [ "$after" -gt "$before" ]; then
   ok "죽은 스테이지의 pid 파일은 B3 을 억제하지 않는다 (억제는 조건부이지 스위치가 아니다)"
 else
