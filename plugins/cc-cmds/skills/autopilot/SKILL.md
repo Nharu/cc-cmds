@@ -326,7 +326,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
 | `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all |
 | `blocked[]` | `스코프`, `사유`, `앵커` — unresolved blocks only; a row whose cause is `해소` closes an earlier one and is not carried |
-| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1` — the review results, capped |
+| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1`, `모드`, `리뷰 HEAD`, `리포트 경로` — the review results, capped. An empty `모드` reads as `전체` |
 | `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift |
 | `handoff[]` | `교대`, `버린 선택지`, `막힌 지점`, `다음 후보` — the last three handoffs and no more. This is where a successor learns what its predecessor already tried and dropped |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
@@ -369,7 +369,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 
 ```
 act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
-act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
+act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
 act --kind judgment   -- 등급=1 '판단 부류=<열 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
 act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
@@ -422,6 +422,8 @@ Past the checks, the act's own exit status passes through. A refusal always arri
 
 ### When an approval is pending
 
+**Approvals that carry a recommendation no longer wait.** With `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` unset (the default), the gate closes a boundary approval (B1–B4, `SHIFT-FLOOR`) as `승인` — its recommendation is to continue — and closes a judgment approval by adopting the router's own recommendation, the judgment it submitted. The two classes that hand risk to the user, `팀-구성` and `시각-면제`, are closed as `거부` instead: the run still does not wait, and it does not take that risk on anyone's behalf. Each close is a ledger row carrying `처분 사유=자동 해소` and `응답 토큰=-`, so the morning report can tell it from a person's answer. What you see is an ordinary exit code — `0` for an adopted judgment, `3` for a refused one — and no exit 5. **Act approvals are not auto-resolved**: an external-state act outside the pre-authorization has no recommendation, so exit 5 below still applies to them, and to every approval when the switch is `0`/`off`/`false`/`no`.
+
 Exit 5 means the run has asked and cannot answer itself. **Ask the user in this terminal** — this session has `AskUserQuestion` and a headless stage does not, which is the whole reason the router lives here. Then call `gate.sh close --approval <id>`.
 
 **The question you ask is the gate's, verbatim — you do not write it.** Before asking, call `bash <plugin root>/orchestrator/gate.sh prompt --manifest <매니페스트> --approval <id>`. It prints one JSON object: `question` is the canonical prompt `승인 <id> — <질문>`, and `options[]` are `{label, description}` pairs from the gate's own label table. **(가) Put `question` into the `AskUserQuestion` `question` field byte-for-byte** — do not rephrase, shorten or move the id: the id riding inside the question text is how `close` finds the answer frame again, and a question that does not carry it is a question that can never be closed. **(나) For a `절단점=판단` approval, render `options[]` verbatim as the option list**, label and description both, in that order, and add nothing of your own — no extra option, no hand-written free-input entry (the tool provides one), no reworded label. The one decoration the AUQ authoring rule allows is the recommendation suffix (` ← 추천` / ` ← 에이전트 추천`) on the label at position 1; the gate strips it at comparison time. Act and boundary approvals come back with an empty `options[]`: they have no menu, so ask them as a plain yes/no question with the canonical `question` and close with the flag that matches the answer.
@@ -438,11 +440,13 @@ Exit 5 means the run has asked and cannot answer itself. **Ask the user in this 
 
 **While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
 
+**Closing a boundary approval restarts that boundary's count**, whatever the disposition and whoever closed it. Before this the count stayed where it was, the suspension lifted, and the very next act took it past the threshold again — the same question with the same number, seconds after a grant. B1's repeat count and B2's obligation count go back to zero, B3's window restarts from the exec total at the close, and B4 does not ask again until spending climbs another ten points past the share it was answered at.
+
 ### Judgment, not just acts
 
 Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`·`판단 부류`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
 
-**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second.
+**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second. **With auto-resolution on (the default) neither waits**: the gate issues the approval, closes it at once as the adoption of your recommendation, and the act exits 0 with the `자율 승인` row naming the approval in `해소 승인` — see 「When an approval is pending」. A judgment approval left open from before is closed the same way on its resubmission.
 
 **Once the answer arrives, resubmit the same judgment — that is the whole of the follow-up.** The approval's id is derived from the judgment, so the resubmission finds the closed approval rather than opening a new one, and the gate routes on its state: `승인` adopts the judgment and writes the row with `해소 승인=<id>`; `거부` and `무효` refuse the act and do **not** re-ask; `대기` is still waiting, so leave it and come back. **One answer opens one judgment** — an id already named by a `자율 승인` row is spent, and a second judgment leaning on it is refused with a request for a new question. Nothing here re-opens a closed approval: only a question whose `기준` and `근거` differ hashes to a new id.
 
@@ -506,6 +510,16 @@ What catches the mistake is the watcher, on a **two-minute** clock rather than t
 **The stage's stream is at `<run-dir>/log/<segment>.json`**, and its stderr beside it. That is where a stage's own account of itself lives when you need it.
 
 Three conditions must **all** hold before a segment is dispatchable, and reading only the first is how a router concludes it may go: **dependency** (no predecessor unfinished), **capacity** (concurrent model streams within the cap, taken from each skill's declared value rather than estimated), and **exclusion** (no live stage already holding an exclusive resource — the experiment-worktree prefix, which counts repo-wide, and one live stage per output document path).
+
+#### Dispatching a review cycle in delta mode
+
+A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. Five things, in order:
+
+1. **Basis selection.** Filter `cycles[]` to this segment and take, among the rows whose `모드` is `전체` or empty, the one with the largest `사이클`. None → dispatch a full review exactly as before. One → carry that row's `사이클`, `리뷰 HEAD` and `리포트 경로` into the `/cc-cmds:review-unattended` prompt as `--basis-cycle <n> --basis-review-head <sha> --basis-report-path <abs>`, alongside the `--report-path`, `--base-sha` and `--declared-files` you already pass. All three or none: the skill treats a partial set as absent.
+2. **Path resolution.** The basis row's `리포트 경로` may be relative to the target's base. You hold the manifest path, so build `dirname(<매니페스트>)/../../<경로>` and pass the absolute result; an absolute value goes through as-is. No new snapshot key exists for this.
+3. **The row's mode is copied from the report, never from the dispatch.** After the stage ends, read the report overview's `- **리뷰 모드**: …` line and write `모드` and `기준 사이클` on the `cycle` row from that line: `- **리뷰 모드**: 전체` → `모드=전체` (or omit both fields); `- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)` → `모드=델타 '기준 사이클=<n>'`. The skill degrades to a full review when any eligibility check fails, and only the report says whether it did. The gate compares the row against the report on every `cycle` write and refuses a mismatch with exit 2; the repair is to rewrite the row to what the report says.
+4. **No new question point.** When a basis exists, attempting delta is the default. Whether it holds is decided by the skill's eligibility checks and the gate's write-time checks, not by asking.
+5. **The snapshot window is a limit, stated rather than hidden.** `cycles[]` is the ledger's last twenty `cycle` rows, so a segment whose basis row has been pushed out of the window by other segments' cycles gets a full review. That errs toward reading more, never toward a false delta.
 
 ### Resuming after a break
 
