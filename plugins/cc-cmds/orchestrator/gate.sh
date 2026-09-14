@@ -10298,6 +10298,44 @@ gate_b3_act_budget() {
   # the companion file holds the baseline the current total is measured from
   # rather than a repeat tally.
   local n total prev base h
+  # A LIVE STAGE IS NOT A SPINNING ROUTER, and this boundary is only about the
+  # second. The preamble above says what it watches for in as many words — the
+  # ROUTER burning acts without progress — and the count cannot tell the two
+  # apart, because a dispatched stage authorises its own acts through this same
+  # gate and every one of them lands in `total`.
+  #
+  # THE MISMATCH IS BETWEEN THIS BUDGET AND A STAGE'S LIFETIME, not between a
+  # router and its budget. A stage moves the progress vector when it TERMINATES:
+  # a review holds its segment at `리뷰중` from dispatch to completion, so a
+  # multi-round review team publishes witnesses, mints nonces and drafts its
+  # report for the whole of its run with the vector frozen. The window therefore
+  # cannot close while the stage that is doing the work is doing it, and the
+  # budget is exhausted by exactly the thing whose absence the boundary exists
+  # to report.
+  #
+  # Measured on run 20260912-376f0543: the segment reached `리뷰중` at 15:01Z and
+  # the review stage had authorised 84 acts by 15:36Z with the vector unmoved —
+  # more than twice the budget, all of them the stage's own, none of them a
+  # router. Five boundary approvals were raised across that night (three B1, two
+  # B3) and a person answered every one of them `무효`. Unattended there is
+  # nobody to answer, and each one ends the shift, so a review long enough to
+  # cross this budget stops the night it is running in.
+  #
+  # SUPPRESSING HERE REMOVES NO DETECTION THAT EXISTED. The case a reader will
+  # worry about is a stage that is alive but wedged, and this arm never caught
+  # it: a wedged stage authorises nothing, so `total` does not move and the
+  # budget is never reached. Nor does the liveness watcher — every one of its
+  # arms requires zero live stages before it will fire, so a process that is
+  # alive and doing nothing satisfies none of them. `autopilot/SKILL.md` says as
+  # much in its progress-channel note: a stage that is itself wedged is visible
+  # on no channel today. That hole is real, it is not this arm's, and this guard
+  # neither opens nor widens it — it trades one arm's false positives for
+  # nothing.
+  #
+  # `cc_live_stages` COUNTS PROCESSES, NOT PID FILES (`liveness.sh`, sourced at
+  # the top of this file), so a stage that died without cleaning up does not
+  # keep the boundary suppressed.
+  [ "$(cc_live_stages "$RUN_DIR")" = "0" ] || return 0
   # Positively selected, matching the progress vector: the grade must be present
   # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
   # grade at all, and here that spends budget on an act nobody established was
