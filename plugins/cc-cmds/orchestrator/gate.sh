@@ -110,7 +110,7 @@
 #   gate.sh act --kind segment --target <alias> --segment <id> ... \\
 #               -- 상태=<계획됨|실행중|리뷰중|머지됨|완료|적용 준비|park> 워크트리=<path> [브랜치=… PR=…]
 #   gate.sh act --kind cycle   --target <alias> --segment <id> ... \\
-#               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' [리포트 경로=…]
+#               -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
 #   gate.sh act --kind obligation --target <alias> ... \\
 #               -- '의무 id=<RO-…>' 근거=<무엇을 보고 이행으로 판정했는가>
 # `obligation` takes no `--segment`: it reads one from the row it closes, so the
@@ -6069,11 +6069,20 @@ gate_record_row() {
       log "세그먼트 기록 — $seg ($st)"
       ;;
     cycle)
-      # The four the merge rule actually reads. A cycle row missing any of them
+      # The five the merge rule actually reads. A cycle row missing any of them
       # does not fail at write time under the old path either — it fails later,
       # inside the rule, as "the review record has no HEAD", which reads as a
       # broken review rather than as a row this run wrote incompletely.
-      for k in '사이클' 'P0' 'P1' '리뷰 HEAD'; do
+      #
+      # `리포트 경로` JOINED THIS LIST WITH THE RULE THAT READS IT. The rule now
+      # opens that file and looks for a findings summary, because a row claiming
+      # `P0=0 P1=0` used to pass whatever produced it — including a review stage
+      # that died in its first round and left a stub. Requiring the field only on
+      # the reading side would put the failure at the merge, hours after the row
+      # was written and in a run that can no longer repair it; requiring it here
+      # puts the refusal on the call that omitted it, which is the one place a
+      # router can still add the field.
+      for k in '사이클' 'P0' 'P1' '리뷰 HEAD' '리포트 경로'; do
         if [ -z "$(gate_field_of "$k" "$@")" ]; then
           # `${k}` and not `$k`: the closing bracket that follows is multibyte,
           # and bash reads its first byte as part of the variable NAME — the
@@ -10465,6 +10474,47 @@ gate_b3_act_budget() {
   # the companion file holds the baseline the current total is measured from
   # rather than a repeat tally.
   local n total prev base h
+  # A LIVE STAGE IS NOT A SPINNING ROUTER, and this boundary is only about the
+  # second. The preamble above says what it watches for in as many words — the
+  # ROUTER burning acts without progress. The actor filter below already keeps a
+  # stage's own rows out of `total`; what it does not do is keep a judgment made
+  # WHILE a stage is alive from firing on whatever else the window holds, and
+  # that is what this guard adds. The measurement below predates the `행위자`
+  # field — it was taken when every act a dispatched stage authorised through
+  # this gate landed in `total`, which is the count the filter now corrects.
+  #
+  # THE MISMATCH IS BETWEEN THIS BUDGET AND A STAGE'S LIFETIME, not between a
+  # router and its budget. A stage moves the progress vector when it TERMINATES:
+  # a review holds its segment at `리뷰중` from dispatch to completion, so a
+  # multi-round review team publishes witnesses, mints nonces and drafts its
+  # report for the whole of its run with the vector frozen. The window therefore
+  # cannot close while the stage that is doing the work is doing it, and the
+  # budget is exhausted by exactly the thing whose absence the boundary exists
+  # to report.
+  #
+  # Measured on run 20260912-376f0543: the segment reached `리뷰중` at 15:01Z and
+  # the review stage had authorised 84 acts by 15:36Z with the vector unmoved —
+  # more than twice the budget, all of them the stage's own, none of them a
+  # router. Five boundary approvals were raised across that night (three B1, two
+  # B3) and a person answered every one of them `무효`. Unattended there is
+  # nobody to answer, and each one ends the shift, so a review long enough to
+  # cross this budget stops the night it is running in.
+  #
+  # SUPPRESSING HERE REMOVES NO DETECTION THAT EXISTED. The case a reader will
+  # worry about is a stage that is alive but wedged, and this arm never caught
+  # it: a wedged stage authorises nothing, so `total` does not move and the
+  # budget is never reached. Nor does the liveness watcher — every one of its
+  # arms requires zero live stages before it will fire, so a process that is
+  # alive and doing nothing satisfies none of them. `autopilot/SKILL.md` says as
+  # much in its progress-channel note: a stage that is itself wedged is visible
+  # on no channel today. That hole is real, it is not this arm's, and this guard
+  # neither opens nor widens it — it trades one arm's false positives for
+  # nothing.
+  #
+  # `cc_live_stages` COUNTS PROCESSES, NOT PID FILES (`liveness.sh`, sourced at
+  # the top of this file), so a stage that died without cleaning up does not
+  # keep the boundary suppressed.
+  [ "$(cc_live_stages "$RUN_DIR")" = "0" ] || return 0
   # Positively selected, matching the progress vector: the grade must be present
   # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
   # grade at all, and here that spends budget on an act nobody established was
