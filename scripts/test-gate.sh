@@ -865,6 +865,7 @@ H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
+# --- section: 1 | anchors: 스냅숏이 유효한 JSON 객체로 나온다, 스냅숏 JSON ---
 # ---------------------------------------------------------------------------
 if (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null) | jq -e . >/dev/null; then
   ok "스냅숏이 유효한 JSON 객체로 나온다"
@@ -913,6 +914,7 @@ mkdir -p "$(dirname "$LEDGER")"
 
 # ---------------------------------------------------------------------------
 # 1b. The run settings the gate generates
+# --- section: 1b | anchors: 게이트가 런 개시에 설정 디렉터리를 만든다, 모든 변종이 유효한 JSON 이다 ---
 #
 # These files decide whether a stage has any hook coverage at all, and they are
 # GENERATED — so nothing in the tree is reviewed when they are wrong. They
@@ -1058,6 +1060,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
+# --- section: 2 | anchors: 어휘 밖 절단점 토큰은 거부된다, 미선언 대상의 push 는 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 머지후 \
      --snapshot-digest "$(HH)" --rationale x -- git push origin main
@@ -1118,6 +1121,7 @@ cp "$WORK/ledger.bak" "$LEDGER"
 
 # ---------------------------------------------------------------------------
 # 2b. A row whose `prev=` cannot be read is a BREAK, not a row to step over
+# --- section: 2b | anchors: prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다, 같은 위조 행을 중간에 끼워 넣어도 끊김으로 판정된다 ---
 #
 # This is an authorization boundary, not a performance property. The verifier
 # used to `continue` past such a row WITHOUT advancing its running `prev`, so
@@ -1234,6 +1238,7 @@ check "읽기 등급이 읽기로 나온다" "$msg" "축2=읽기"
 
 # ---------------------------------------------------------------------------
 # 3. Cutpoint adjudication is PER TARGET (#208 regression)
+# --- section: 3 | anchors: 절단점 이하의 행위는 통과한다, 절단점 PR 인 대상에 머지는 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind push --target front --cutpoint push \
      --snapshot-digest "$(HH)" --rationale x -- git push origin main
@@ -1260,6 +1265,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 4. Self-widening is refused at every cutpoint
+# --- section: 4 | anchors: --admin 은 배포 인가에서도 거부된다, 인가 기록에 쓰려는 행위는 거부된다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind merge --target infra --segment S1 --cutpoint 배포 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1 --admin
@@ -1282,6 +1288,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 5. Pre-authorization: outside the list is an APPROVAL, not a refusal
+# --- section: 5 | anchors: 사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다, 워크트리 쓰기는 사전 인가 목록을 요구하지 않는다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target infra --cutpoint 배포 \
      --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
@@ -1295,6 +1302,7 @@ check "워크트리 쓰기는 사전 인가 목록을 요구하지 않는다" "$
 
 # ---------------------------------------------------------------------------
 # 6. Snapshot binding — a stale digest is a loud re-read
+# --- section: 6 | anchors: 낡은 스냅숏 다이제스트는 거부된다, plan 은 스냅숏 다이제스트 없이도 답한다 (건드리는 것이 없다) ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest 0000000000000000000000000000000000000000000000000000000000000000 \
@@ -1528,6 +1536,7 @@ check "옛 형식이어도 값이 다르면 거부된다" "$rc" "4"
 
 # ---------------------------------------------------------------------------
 # 7. Declared grade is a CHECKED CLAIM, not a self-grant
+# --- section: 7 | anchors: 축2 자기선언이 등급과 다르면 거부된다, 선언이 등급과 같으면 통과한다 ---
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate exec --manifest "$MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
@@ -1544,6 +1553,7 @@ check "어휘 밖 축2 토큰은 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 8. Review-before-merge, and its five staleness grades
+# --- section: 8 | anchors: 리뷰 기록이 없는 머지는 거부된다, P0 가 남아 있으면 머지는 거부된다 ---
 # ---------------------------------------------------------------------------
 seg_wt="$WT"
 head0=$(cd "$WT" && git rev-parse HEAD)
@@ -1905,6 +1915,7 @@ check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
+# --- section: 8c ---
 #
 # With neither pipeline credential provisioned the gate fell through to whatever
 # the calling environment held — on a developer machine a full-scope `gh` login
@@ -1919,6 +1930,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 8d. The act runs in the TARGET's worktree
+# --- section: 8d | anchors: 행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다 (호출자의 cwd 가 아니라) ---
 #
 # `--target` is a parameter of both acting verbs and every target row carries an
 # absolute worktree, but nothing carried that value to the act's working
@@ -1941,6 +1953,7 @@ check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다
 
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
+# --- section: 9 | anchors: 절단점-준수 는 「끔」을 무시한다, 사전-인가-대조 는 「끔」을 무시한다 ---
 # ---------------------------------------------------------------------------
 # THE PRISTINE COPY IS TAKEN HERE, one line above the contamination. Everything
 # below runs against a manifest carrying `**리뷰-후-머지**: 끔`, and that setting
@@ -2008,6 +2021,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10. The ledger the gate writes — chained, capped, and its own rows
+# --- section: 10 | anchors: 통과한 행위마다 자율 승인 행이 남는다 (, 자율 승인 행 ---
 # ---------------------------------------------------------------------------
 n_rows=$(grep -cE '^- `자율 승인`' "$LEDGER" || true)
 if [ "$n_rows" -gt 0 ]; then
@@ -2039,6 +2053,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10b. MOVED — see section 31 at the end of this file.
+# --- section: 10b ---
 #
 # It used to sit here, one screen below the append above, and asserted that
 # `선머지후리뷰` defers the review. Every one of those assertions ran against a
@@ -2050,6 +2065,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10c. A dry run writes nothing, and a stage dispatch is gradeable
+# --- section: 10c | anchors: plan 이 사전 인가 밖을 승인 대기로 답한다, 그러면서 원장에는 아무것도 쓰지 않는다 ---
 #
 # All three of these were found by the FIRST act of the first real run, and they
 # composed into "the router cannot dispatch any stage at all":
@@ -2163,6 +2179,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 11. Termination — nine conditions, and the disagreement that runs both ways
+# --- section: 11 | anchors: 미충족 조건이 있으면 종료 제안이 기각된다, 기각이 원장에 남는다 (아침에 무엇이 남았는지 읽을 수 있다) ---
 # ---------------------------------------------------------------------------
 H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
@@ -2202,6 +2219,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 12. Boundaries convert to an approval, never to a park
+# --- section: 12 | anchors: B1 이 발동하면 park 이 아니라 승인 대기를 발행한다, 경계 승인은 절단점 자리에 경계 토큰을 싣는다 (행위가 없으므로 argv 다이제스트가 없다) ---
 # ---------------------------------------------------------------------------
 # Resolve everything pending first: an open approval suspends B1..B3, so a B1
 # test run against a ledger with one open would be asserting the suspension
@@ -2240,6 +2258,7 @@ check "열린 승인이 있는 동안 경계는 다시 발동하지 않는다" "
 
 # ---------------------------------------------------------------------------
 # 13. close never accepts an answer the router typed
+# --- section: 13 | anchors: 트랜스크립트가 없으면 승인은 닫히지 않는다, close 대상 ---
 # ---------------------------------------------------------------------------
 aid=$(grep -E '^- `승인`' "$LEDGER" | grep '상태=대기' | tail -1 \
       | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' || true)
@@ -2292,6 +2311,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14. A pending approval can be VOIDED, not only granted
+# --- section: 14 | anchors: 무효화는 트랜스크립트 한 줄로 성립한다, 무효화된 승인은 더 이상 대기로 세지 않는다 ---
 #
 # Before this there was one recording path, so an approval had two possible
 # ends: granted, or pending forever. Pending is not inert — it counts against
@@ -2334,6 +2354,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14b. The credential report runs at RUN OPEN, where it was never called
+# --- section: 14b ---
 #
 # `cred_check`'s own comment says a run whose cutpoint reaches `머지` should
 # learn at kickoff and not at 3am. Nothing called it, so nothing ever did.
@@ -2354,6 +2375,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14c. The act runs in the EXECUTION worktree when the row declares one
+# --- section: 14c | anchors: 행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라), 실행 워크트리 검사 ---
 #
 # One field could not carry both duties. The sidecar path has to converge on the
 # MAIN worktree so that N linked worktrees of one repository do not split the
@@ -2673,6 +2695,7 @@ check "행위 동사 밖에서는 거부된다" "$rc" "2"
 
 # ---------------------------------------------------------------------------
 # 14d. The five row kinds that had no writer
+# --- section: 14d | anchors: 생성 등급 없는 problem 행은 거부된다, problem 행이 기록된다 ---
 #
 # Five of the twelve declared series were written by nothing, and each one made
 # a check that reads it answer the same thing forever: the cost boundary read an
@@ -2814,6 +2837,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14e. exit 7 tells a STAGE what to do, because only the router can do the
+# --- section: 14e | anchors: I-bis: 표면이 움직인 상태에서 plan 도 7 을 낸다, 그 예고는 사유=강제 표면 이동 행을 남기지 않는다 ---
 # prescribed thing
 #
 # The disposition is "stop and tell the user", and a stage can do neither half:
@@ -2873,6 +2897,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14f. A documentless run does not get its base's PARENT
+# --- section: 14f | anchors: 작업 공간 확장, 문서 없는 런은 베이스의 부모를 열지 않는다 ---
 #
 # The workspace widening is for a document that belongs to no repository. A run
 # with no document sets both document variables to the run's base, so a guard
@@ -2888,6 +2913,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14g. A cut stage is RE-ATTACHED, not re-run — and the id is checked
+# --- section: 14g | anchors: 게이트가 래퍼에 --resume 을 넘길 수 있다, 재개 인자 검증이 CLI 해소보다 먼저 온다 ---
 #
 # The contract already said so and the wrapper already accepted `--resume`;
 # nothing carried the router's intent to it, so the only recovery was a full
@@ -2931,6 +2957,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14h. The launch path is actually ENTERED, with a stub CLI
+# --- section: 14h | anchors: 스텁 CLI 로 스테이지 기동이 끝까지 간다, 스텁이 실제로 실행됐다 (argv 를 남겼다) ---
 #
 # Every assertion above stops at `gate_launch_stage`'s argument checks, because
 # the fixture has no CLI binary and the function returns 127 before doing
@@ -3020,6 +3047,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 14i. The render answers "is this still going?"
+# --- section: 14i | anchors: 게이트가 종단 표시 파일을 쓴다 ---
 #
 # It did not. The heartbeat a watcher prints goes to a stdout its launching tool
 # call already closed, so it reaches nobody; the render carried no live-stage
@@ -3058,6 +3086,7 @@ rm -f "$RD_G/done"
 
 # ---------------------------------------------------------------------------
 # 14j. The grant reaches every declared worktree, and digest tools are readable
+# --- section: 14j | anchors: 실행 워크트리가 스테이지의 읽기 집합에 들어간다, 실행 워크트리 인가 ---
 #
 # `실행 워크트리` was wired to the act's cwd and not to the stage's readable set,
 # so a stage woke in a worktree it could not read. And no other target's main
@@ -3239,6 +3268,7 @@ set_exec_wt "" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 14k. The deadline is a dispatch gate, and it is read
+# --- section: 14k | anchors: 마감이 지나면 스테이지 디스패치가 거부된다, 마감 뒤 머지도 거부된다 ---
 #
 # It was frozen into the binding digest and compared at entry, and then nothing
 # read it — the field appears nowhere in this file and the driver's own helper
@@ -3280,6 +3310,7 @@ check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 14l. The authorization list can grow, and only through the gate
+# --- section: 14l | anchors: 유도의 입력이 움직이면 인가 목록이 자란다, 인가 목록 재유도 ---
 #
 # It used to be written once and never again, so a directory kickoff could not
 # know about — a segment's own worktree, a repository added at layer 1 — was
@@ -3481,6 +3512,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
+# --- section: 16 | anchors: 근거 없는 해소 행은 거부된다, 없는 막힘은 해소할 수 없다 ---
 #
 # Counting raw rows made it a one-way latch: a ledger row is never deleted, so a
 # single run-scope block — a watcher false positive included — took the run's
@@ -3541,6 +3573,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 16b. The disposition token, one fixture per value
+# --- section: 16b | anchors: 미충족이 하나도 없으면 처분은 충족이다, 무효화 줄만 남으면 처분은 무효화다 ---
 #
 # One shared helper is safer than three copies of the same test only if
 # something binds its one drifting input — a substring match on the Korean
@@ -3593,6 +3626,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 17. The authorization record is READ, on the router path
+# --- section: 17 | anchors: 인가 기록이 없으면 어떤 동사도 서지 않는다, 외래 인가 블록이 있으면 선다 ---
 #
 # `check_grant` lives on the fixed graph and the router never enters it, so a
 # run could execute with a grant that was absent, foreign, or disagreed with the
@@ -3715,6 +3749,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 19. The nine grant fields are checked for presence
+# --- section: 19 | anchors: 아홉 필드 중 하나가 빠지면 선다 ---
 #
 # The block is frozen at append and has no rewrite form, so a field omitted is
 # omitted for the life of the run. Nothing compared the set, and the kickoff
@@ -3733,6 +3768,7 @@ cp "$GBAK2" "$GRANT"
 
 # ---------------------------------------------------------------------------
 # 20. A resolved approval opens the act; a voided one closes it
+# --- section: 20 | anchors: 사전 인가 밖 행위는 승인을 발행한다, 해소된 승인이 같은 행위를 연다 ---
 #
 # Nothing consumed the resolution, so `close` moved the row to `승인` and the
 # next attempt at the same act took the same exit 5 — a loop that never closed.
@@ -3760,6 +3796,7 @@ check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 
 # ---------------------------------------------------------------------------
 # 21. A live stage suppresses the stagnation boundary
+# --- section: 21 | anchors: B1 이 살아 있는 스테이지가 있으면 판정을 건너뛴다, 진전 벡터가 cycle 행을 본다 ---
 #
 # The vector cannot move while a stage works — it is manifest-derived plus
 # segment rows plus obligations plus cycles, and a working stage writes none of
@@ -3779,6 +3816,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 22. A done proposal is not judged by the deadline's merge arm
+# --- section: 22 | anchors: 마감 게이트가 종료 제안을 면제한다 ---
 #
 # It has no act behind it, so `--cutpoint` carries no meaning there — yet the
 # deadline read it and refused, leaving a past-deadline run unable to record
@@ -3792,6 +3830,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 23. The settings directory is serialized for readers and writers alike
+# --- section: 23 | anchors: 재유도가 락 안에서 돈다, 표면 다이제스트도 같은 락을 잡는다 (반쯤 쓰인 디렉터리를 해싱하지 않는다) ---
 # ---------------------------------------------------------------------------
 if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'gate_settings_lock "$lk" || return 0'; then
   ok "재유도가 락 안에서 돈다"
@@ -3806,6 +3845,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 24. terraform is graded by its SUBCOMMAND
+# --- section: 24 ---
 #
 # The name alone graded `외부상태변경`, so `terraform plan` — which the pipeline
 # contract classifies as a read — issued an approval every time and an
@@ -3823,6 +3863,7 @@ graded_as '읽기'         'fmt -check 는 고치지 않는다'           -- ter
 
 # ---------------------------------------------------------------------------
 # 25. Termination condition 10 — the authorized clauses are read
+# --- section: 25 | anchors: 정산되지 않은 종료 절이 있으면 종료 제안이 기각된다, 기각 행이 원장 상한 안에 든다 ( ---
 #
 # The nine measured the ledger's shape and never the thing the user authorized
 # the run against, so a run with clauses unsettled ended as `충족`. The fixture
@@ -3880,6 +3921,7 @@ check "불가능으로도 정산할 수 있다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 26. Grade-1 judgments have a writer
+# --- section: 26 | anchors: 되돌리는 법이 없는 판단 행은 거부된다, 등급 0 은 판단 행으로 기록하지 않는다 ---
 # ---------------------------------------------------------------------------
 # A grade-1 judgment also carries `판단 부류`, because that is the field arm (a)
 # of the auto-adoption floor reads and the floor is consulted on every grade-1
@@ -3904,6 +3946,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 27. `완료` is a terminal segment state
+# --- section: 27 | anchors: 완료 상태가 어휘에 있다, 완료가 종단 집합에 든다 (종료 조건 1 이 이 세그먼트를 막지 않는다) ---
 #
 # A stage that produced its output and had nothing to merge could only be
 # recorded as a merge that did not happen or a blockage that was a success.
@@ -3929,6 +3972,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 28. The prose escape in the next-obligation check is gone
+# --- section: 28 | anchors: 근거 문자열만으로 다음 의무를 지목했다고 인정하지 않는다 ---
 #
 # Its own comment says prose does not count, and its last line accepted any
 # rationale containing one Korean word.
@@ -3941,6 +3985,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 29. MOVED — see section 32 at the end of this file.
+# --- section: 29 ---
 #
 # It asserted the fulfillment arm in full: evidence-less fulfillment refused, a
 # fulfillment carrying only `근거` accepted, a non-existent obligation refused,
@@ -4062,6 +4107,7 @@ graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소
 
 # ---------------------------------------------------------------------------
 # 31b. The narrowing axis reads through the same wrappers the grader does
+# --- section: 31b ---
 #
 # `gate_history_integration` is what keeps the review rule from demanding a
 # review record of every `mkdir` that shares the `워크트리쓰기` cell with a local
@@ -7934,6 +7980,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
+# --- section: 12b | anchors: B3_ACT_BUDGET 를 게이트 상수에서 읽는다 (, B3_ACT_BUDGET ---
 #
 # The budget's sentence has always said "since the last progress move" while the
 # count ran over the whole ledger, so past the bound the boundary fired on every
@@ -9140,6 +9187,7 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 
 # ---------------------------------------------------------------------------
 # 12c. B1's progress vector counts what the router actually did
+# --- section: 12c | anchors: 라우터의 읽기 초과 행위가 진전 벡터를 움직인다, 읽기 등급 행위는 진전으로 세지 않는다 ---
 #
 # The vector saw the manifest, segment rows, cycle rows and obligations — and
 # nothing the router itself performs between stages. Commits, pushes, pull
