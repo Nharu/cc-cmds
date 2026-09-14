@@ -11,16 +11,12 @@ on:
       - 'scripts/test-active-notify-*.sh'
       - 'scripts/lint-bash-portability.sh'
       - 'scripts/test-lint-bash-portability.sh'
-      # The banner-rendering layer. The oracle below is the only thing in the
-      # tree that measures the notifier's own swallowing set rather than our
-      # assumptions about it, and it needs the real binary — so it runs on this
-      # leg and nowhere else. A file this filter does not name is a file this
-      # job never sees, which would leave the test existing and never once run.
+      # The notifier oracle is the only thing in the tree that measures the
+      # notifier's own swallowing set rather than our assumptions about it,
+      # and it needs the real binary — so it runs on this leg and nowhere
+      # else. A file this filter does not name is a file this job never sees,
+      # which would leave the test existing and never once run.
       - 'scripts/test-notify-title-oracle.sh'
-      - 'scripts/lint-notify-title-render.sh'
-      - 'scripts/test-lint-notify-title-render.sh'
-      - 'scripts/lint-notify-fire-sites.sh'
-      - 'scripts/test-lint-notify-fire-sites.sh'
       # The chain-equivalence harness runs the frozen reference against the
       # candidate under a UTF-8 locale, which is the configuration the driver
       # deliberately runs in, so its verdict is only meaningful on a leg that
@@ -29,13 +25,15 @@ on:
       # and the filter is what decides whether it ever looks.
       - 'scripts/test-gate-chain-equiv.sh'
       - 'tests/fixtures/gate-chain-equiv/**'
-      - 'scripts/measure-gate-cost.sh'
-      - 'scripts/test-measure-gate-cost.sh'
+      # The gate suite's advisory-lock section and the Hangul-date fingerprint
+      # assertions check something only on this host, and both suites source
+      # the shared fixture library, so the library is named with them.
+      - 'scripts/test-gate.sh'
+      - 'scripts/test-liveness-agreement.sh'
+      - 'scripts/run-fixture.sh'
       - 'tests/fixtures/active-notify-lifecycle/**'
       - 'tests/fixtures/active-notify-hooks/**'
       - 'tests/fixtures/lint-bash-portability/**'
-      - 'tests/fixtures/lint-notify-title-render/**'
-      - 'tests/fixtures/lint-notify-fire-sites/**'
       - '.github/workflows/notify-macos.yml'
       - 'Makefile'
   push:
@@ -46,79 +44,20 @@ on:
 jobs:
   lint-and-test-macos:
     runs-on: macos-latest
-    # The first ceiling here was 10 minutes and the lint step was what blew it —
-    # "7-8.5 minutes on this runner", most of the budget gone before the tests
-    # started. That was TRUE WHEN IT WAS WRITTEN and stopped being true when the
-    # cause was fixed: `ab41653` rewrote the portability lint from two processes
-    # per line per idiom to two per file, taking a whole-tree run from 7m20.990s
-    # to 0.498s, and that commit names itself as what had been pushing this leg
-    # into the 25-minute ceiling. The 12m41s recorded further down is from
-    # before that rewrite, and is left there as the history it is. What the lint
-    # step costs today is in issue #764 and is deliberately not restated here —
-    # a figure kept in this block has no occasion to be re-checked, which is
-    # exactly how the 7-8.5 outlived the commit that invalidated it.
-    # The ceiling is now 150, and the number was raised four times to get there.
-    # The history is kept because each step measured something the next one
-    # needed.
+    # This leg runs only what the ubuntu leg cannot check — the short list in
+    # the Makefile's `test-darwin-narrow` target. It no longer runs the whole
+    # gate suite, so the old reason for a very long ceiling (that suite slowing
+    # down as it runs) no longer applies to this job.
     #
-    # EVERY FIGURE BELOW NAMES THE RUN IT CAME FROM, and that is a rule for this
-    # block rather than a courtesy. Ranges, universals and "the last N runs"
-    # have each been tried here and each was falsified within days; a
-    # superlative survived longer only because nothing had beaten it yet. The
-    # population grows with every run while nothing sends a reader back to this
-    # comment, so a figure that has to be re-checked to stay true will not stay
-    # true. A named run's numbers cannot go stale.
-    #
-    # At 25 run 33737037691 was cancelled at 25m19s with lint green at 12m41s
-    # and the darwin tests cut off at 12m25s — neither half had failed, the
-    # budget was simply sized for a smaller tree. Raised to 45.
-    #
-    # At 45 run 33778922460 was cancelled at 45m26s, still making progress and
-    # never hung: over its last ten minutes it logged 123 passing assertions, a
-    # mean of 4.9 seconds apart with the longest gap at 31.6s, and the job died
-    # 73 seconds after the last of them. Run 33765121407 had finished the job at
-    # 31m32s, which is how little headroom 45 was.
-    #
-    # Master hit the same wall independently at 25, and naming the runs makes
-    # it the sharpest reading of the three. Run 33783404550 passed at 24m58s —
-    # TWO seconds inside the 25-minute ceiling — and run 33786390084 was
-    # cancelled at 25m22s, twenty-two seconds past it. THE TWO RAN THE SAME
-    # TREE: `0fc164d` and the merge commit `beffbbd` that carried it to master
-    # both have tree 10cae49b and `git diff` between them is empty. Nothing was
-    # added; the 24 seconds came from the lint step drifting 788s to 857s on
-    # identical input. A budget with two seconds of margin is not a budget, and
-    # that is why — the same tree run twice is enough to cross it. The earlier
-    # text here read the cancelled run's overage as the passing run's headroom
-    # and blamed added assertions; both were wrong, and both only became
-    # checkable once the runs were named.
-    #
-    # At 90 run 34709583079 was cancelled — the fourth time — and the reading
-    # that followed moved the cause off the lint step for good. The whole test
-    # step is effectively ONE SCRIPT: in run 34716071374, `make -j` starts 16
-    # suites, 15 of them finish inside the first three minutes, and
-    # `scripts/test-gate.sh` then runs ALONE for 76 of that step's 79 minutes.
-    # The parallelism is already saturated, so this ceiling buys time for one
-    # script's serial stretch and nothing else. #764 carries the run-to-run
-    # variation, named run by run.
-    #
-    # The measurements behind that — and the earlier claim on this block that
-    # the cost grows with ledger size, which does not hold — are in issue #764,
-    # together with the real fix, which is to split that script so `-j` can
-    # reach it.
-    #
-    # What forced the move was run 34764405535 on master, which finished its job
-    # in 89m29s against the 90 it was given — THIRTY-ONE SECONDS inside, the
-    # same shape as the two seconds recorded above at the 25 ceiling, and that
-    # one was followed by a cancellation. The 86m30s that 34709583079 reached
-    # above is a cancellation point rather than a duration — that run never
-    # finished, so its true cost is unknown and larger.
-    #
-    # 150 is sized against run 34810284054 on this branch, which finished in
-    # 99m37s. That is the longest completed job on record here and it is nearly
-    # ten minutes past the ceiling it replaced, so the headroom this number buys
-    # is about half again, not the two-thirds a reader would get by measuring
-    # against 89m29s.
-    timeout-minutes: 150
+    # The ceiling is derived from what the job does now: twice the sum of the
+    # brew step's own 3-minute cap, the kept suites' summed durations rounded
+    # up to whole minutes, and one minute for checkout and setup. Measured on
+    # the commit this was sized against, with every suite sharing the runner,
+    # the kept suites summed to under four minutes, so 2 x (3 + 4 + 1) = 16.
+    # When the list grows, recompute by the same rule. The ceiling never goes
+    # below the brew step's cap. A ceiling far above the job's real size
+    # cannot tell a hang from a run that is still making progress.
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
 
@@ -132,12 +71,9 @@ jobs:
       - name: yq sanity check
         run: yq --version
 
-      - name: Run lint
-        run: make lint
-
       - name: Run darwin-only tests
-        # The orchestrator's darwin-only claims live here and NOWHERE else:
-        # reparenting under `set -m`, contention on the advisory lock, and the
-        # boot clock across a sleep. Everything else about the driver is
-        # seam-driven and is covered by the ubuntu leg through injection.
-        run: make -j"$(sysctl -n hw.ncpu)" test-darwin
+        # Only the suites whose assertions check something on this host that
+        # they do not check on ubuntu. The list, and the reason for each entry,
+        # sit beside the target in the Makefile. Everything else — `make lint`
+        # included — runs on the ubuntu leg in the `lint` workflow.
+        run: make -j"$(sysctl -n hw.ncpu)" test-darwin-narrow

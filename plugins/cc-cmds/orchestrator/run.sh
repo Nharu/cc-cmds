@@ -348,20 +348,186 @@ derive_paths() {
 # ---------------------------------------------------------------------------
 MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
 
+# ---------------------------------------------------------------------------
+# Manifest memo — the file parsed ONCE per process, on request.
+#
+# A gate call read the same manifest file some forty times before reaching its
+# verb — every `manifest_field` was an `awk` over the whole file, every
+# `target_field` a `grep` plus a `tr | sed | sed` chain — and that re-reading
+# was the largest single item of the fixed per-call preamble. The memo below is
+# one `awk` pass that records every value the readers extract, and the readers
+# answer from it with shell expansions and no child process.
+#
+# WHAT IS CACHED IS THE PARSE, NEVER A VERDICT. Every check in `check_manifest`
+# still runs, in the same order, on every gate entry; it merely runs on bytes
+# read at one moment instead of forty. Each reader produces the SAME BYTES the
+# file-reading form produced — first match, trailing whitespace, absence as
+# empty output — and the file-reading form is kept as the fallback so that any
+# caller which never took a snapshot (the driver itself) is unchanged.
+#
+# OPT-IN AND KEYED TO THE PATH. Nothing here fires unless `manifest_snapshot_take`
+# was called, and a reader uses the memo only while `MANIFEST_MEMO_PATH` equals
+# the current `MANIFEST`. A process that changes `MANIFEST` after the snapshot
+# falls back to the file for the new path rather than answering from the old
+# one. The gate takes the snapshot once, after it has normalized the path and
+# before `check_manifest`, which is the first reader.
+#
+# THE MEMO IS A FLAT TEXT, NOT AN ARRAY. This file runs on bash 3.2, so there
+# is no associative array to hold it; each record is one line, `<tag><TAB>…`,
+# and a lookup is a `case`/`${var#…}` on the whole text. The text starts with a
+# newline so the first record is addressable the same way as every other.
+#
+# BUILT IN A SUBSHELL, READ IN ANY. Command substitution runs in a child that
+# cannot assign the parent's variables, so the snapshot is taken by the caller
+# in its own shell; readers running inside a `$( … )` inherit the memo, which
+# is why the snapshot has to precede the first such call.
+# ---------------------------------------------------------------------------
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+
+manifest_snapshot_take() {
+  # One pass. Record tags:
+  #   K            kind token present
+  #   N <n>        count of lines equal to `## 인가`
+  #   H <text>     lines 2..8 joined by spaces (what `manifest_header` prints)
+  #   HF <k> <v>   the LAST `[; ]k=` occurrence in that header text, up to `;`
+  #   F <s> <k> <v> first `**k**: v` inside the FIRST `## s` section
+  #   T <row>      every `- \`target\`` row, in order
+  #   R <line>     every `**…**: 켬|끔` line, in order
+  #   P <row>      every `- \`사전 인가\`` row, in order
+  #   AW <row>     every `- \`자동 채택\`` row anywhere, in order
+  #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
+  #   C <row>      every `- \`종료 절\`` row, in order
+  MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
+  MANIFEST_MEMO="
+$(LC_ALL=C awk '
+    BEGIN { n_auth = 0; hdr = ""; cur = ""; ina = 0 }
+    index($0, "cc-run-manifest v1") > 0 { kind = 1 }
+    NR >= 2 && NR <= 8 { hdr = hdr $0 " " }
+    /^## / {
+      s = substr($0, 4)
+      if ($0 == "## 인가") n_auth++
+      # A duplicated section header closes the section: the per-call readers
+      # stop at the next `## ` line, so only the first instance ever answers.
+      if (s in seen) { cur = ""; ina = 0 } else { seen[s] = 1; cur = s; ina = ($0 == "## 인가") }
+      next
+    }
+    /^\*\*/ && cur != "" {
+      p = index($0, "**: ")
+      if (p > 1) {
+        k = substr($0, 3, p - 3)
+        if (!((cur SUBSEP k) in fseen)) { fseen[cur SUBSEP k] = 1; print "F\t" cur "\t" k "\t" substr($0, p + 4) }
+      }
+    }
+    /^\*\*[^*]+\*\*: (켬|끔)$/ { print "R\t" $0 }
+    index($0, "- `target`") == 1 { print "T\t" $0 }
+    index($0, "- `사전 인가`") == 1 { print "P\t" $0 }
+    index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
+    index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    END {
+      if (kind) print "K\t1"
+      print "N\t" n_auth
+      print "H\t" hdr
+      # Header fields: for each `[; ]key=` the LAST occurrence wins and the
+      # value runs to the next `;` — the same reading the sed form gives.
+      rest = hdr; pos = 0
+      while (match(rest, /[; ][A-Za-z0-9_-]+=/)) {
+        at = pos + RSTART
+        key = substr(rest, RSTART + 1, RLENGTH - 2)
+        last[key] = at + RLENGTH - 1
+        pos += RSTART; rest = substr(rest, RSTART + 1)
+      }
+      for (key in last) {
+        v = substr(hdr, last[key] + 1)
+        q = index(v, ";"); if (q > 0) v = substr(v, 1, q - 1)
+        sub(/[[:space:]]+$/, "", v)
+        print "HF\t" key "\t" v
+      }
+    }
+  ' "$MANIFEST")"
+  MANIFEST_MEMO_PATH="$MANIFEST"
+}
+
+manifest_memo_on() {
+  [ -n "$MANIFEST_MEMO_PATH" ] && [ "$MANIFEST_MEMO_PATH" = "$MANIFEST" ]
+}
+
+manifest_memo_one() {
+  # manifest_memo_one <prefix> — the rest of the first record line that starts
+  # with `<prefix>`, printed with a newline; nothing when there is none.
+  local pre="
+$1" rest
+  case "$MANIFEST_MEMO" in
+    *"$pre"*) rest="${MANIFEST_MEMO#*"$pre"}"; printf '%s\n' "${rest%%
+*}" ;;
+  esac
+}
+
+manifest_memo_all() {
+  # manifest_memo_all <prefix> — every record line starting with `<prefix>`,
+  # in file order, one per line.
+  local pre="
+$1" rest="$MANIFEST_MEMO"
+  while :; do
+    case "$rest" in *"$pre"*) ;; *) break ;; esac
+    rest="${rest#*"$pre"}"
+    printf '%s\n' "${rest%%
+*}"
+  done
+}
+
+manifest_row_fields() {
+  # manifest_row_fields <row> <key> [<terminate-last>] — the value of every
+  # `<key>=` field of one `|`-delimited row, leading spaces and trailing
+  # whitespace stripped, in order. The fork-free form of
+  # `printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *key=//p" | sed 's/[[:space:]]*$//'`.
+  #
+  # THE ROW'S LAST FIELD HAS NO TRAILING NEWLINE in that form — `printf '%s'`
+  # gives `tr` none to convert — and callers compare bytes, so the last field
+  # is printed the same way here unless the third argument asks for a newline.
+  local row="$1" key="$2" term="${3:-0}" part v n=0 i=0
+  local oldifs="$IFS"
+  IFS='|'
+  set -f
+  for part in $row; do n=$((n + 1)); done
+  for part in $row; do
+    i=$((i + 1))
+    part="${part#"${part%%[! ]*}"}"
+    case "$part" in
+      "$key="*)
+        v="${part#"$key="}"; v="${v%"${v##*[![:space:]]}"}"
+        if [ "$i" = "$n" ] && [ "$term" != "1" ]; then printf '%s' "$v"; else printf '%s\n' "$v"; fi ;;
+    esac
+  done
+  set +f
+  IFS="$oldifs"
+}
+
 # Set only by `--replan`. Default 0 so the guard below refuses by default: the
 # expensive mistake is re-planning a run that is already under way, and a
 # default that permits it makes the refusal reachable only by remembering to
 # ask for it.
 REPLAN=0
 
-manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
+manifest_header() {
+  # No trailing newline in either form: `tr` turns the last newline into a
+  # space, and the memo's record already carries that space.
+  local h
+  if manifest_memo_on; then h=$(manifest_memo_one "H	"); printf '%s' "$h"; return 0; fi
+  sed -n '2,8p' "$MANIFEST" | tr '\n' ' '
+}
 
 manifest_hdr_field() {
+  # No trailing newline either — the file form's `sed` inherits the missing
+  # newline from `manifest_header`, and callers compare the bytes.
+  local v
+  if manifest_memo_on; then v=$(manifest_memo_one "HF	$1	"); printf '%s' "$v"; return 0; fi
   manifest_header | sed -n "s/.*[; ]$1=\([^;]*\).*/\1/p" | sed 's/[[:space:]]*$//'
 }
 
 manifest_field() {
   # manifest_field <section> <key> — CANON rendering inside one `## <section>`.
+  if manifest_memo_on; then manifest_memo_one "F	$1	$2	"; return 0; fi
   awk -v want="## $1" -v key="$2" '
     $0 == want { inb=1; next }
     inb && /^## / { exit }
@@ -369,10 +535,44 @@ manifest_field() {
   ' "$MANIFEST"
 }
 
-manifest_targets() { grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true; }
+manifest_targets() {
+  if manifest_memo_on; then manifest_memo_all "T	"; return 0; fi
+  grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_rule_lines() {
+  if manifest_memo_on; then manifest_memo_all "R	"; return 0; fi
+  grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_preauth_rows() {
+  if manifest_memo_on; then manifest_memo_all "P	"; return 0; fi
+  grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_autoadopt_rows_anywhere() {
+  if manifest_memo_on; then manifest_memo_all "AW	"; return 0; fi
+  grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_clause_rows_raw() {
+  if manifest_memo_on; then manifest_memo_all "C	"; return 0; fi
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
+}
 
 target_field() {
   # target_field <alias> <key>
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
+      manifest_row_fields "$row" "$2"
+      break
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | while IFS= read -r row; do
     case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
     printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
@@ -381,6 +581,16 @@ target_field() {
 }
 
 target_aliases() {
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      manifest_row_fields "$row" '별칭' 1
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
 }
 
@@ -398,8 +608,8 @@ binding_set_bytes() {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
     canonical_targets | sed 's/^/target\t/'
-    grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
-    grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    manifest_rule_lines | sed 's/^/rule\t/'
+    manifest_preauth_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/'
     # THE `자동 채택` ROWS ARE IN THE FROZEN SET, and they were not. Arm (a) of
     # the auto-adoption floor states its safety as four reasons, and the third —
     # "the binding digest covers it" — was false: of the six things serialized
@@ -414,7 +624,7 @@ binding_set_bytes() {
     # that section is not honoured AND still moves the digest, so both spellings
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
-    grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
+    manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
     # ONE OF THEM IS CONDITIONAL AND THE OTHER MUST NOT BE, and the asymmetry is
     # the compatibility argument rather than an inconsistency left behind.
     #
@@ -447,7 +657,7 @@ binding_set_bytes() {
 manifest_clauses() {
   # The termination point decomposed into checkable clauses, frozen at kickoff.
   # A run is measured against these, so they are part of what may not move.
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
+  manifest_clause_rows_raw | sed 's/[[:space:]]\{1,\}/ /g'
 }
 
 manifest_autoadopt_rows() {
@@ -459,6 +669,7 @@ manifest_autoadopt_rows() {
   # consumer was not reading. Confining both consumers — this floor's arm (a)
   # and rule 11's freeze-time check — to that one section is what makes the
   # guarantee load-bearing rather than decorative.
+  if manifest_memo_on; then manifest_memo_all "AA	"; return 0; fi
   awk '
     $0 == "## 인가" { inb = 1; next }
     inb && /^## / { exit }
@@ -559,8 +770,14 @@ warn_once() {
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
-  # 1 — kind token, strict equality.
-  grep -q 'cc-run-manifest v1' "$MANIFEST" || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
+  # 1 — kind token, strict equality. One refusal site whichever reader answers.
+  local kind_ok=0
+  if manifest_memo_on; then
+    if [ -n "$(manifest_memo_one "K	")" ]; then kind_ok=1; fi
+  else
+    if grep -q 'cc-run-manifest v1' "$MANIFEST"; then kind_ok=1; fi
+  fi
+  [ "$kind_ok" = 1 ] || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
 
   # 10 — ownership proof, FAIL-CLOSED, and before the tie-break.
   # This kind is about a RUN, not a document, so `owner-doc=` cannot be the
@@ -597,7 +814,7 @@ check_manifest() {
   # 2 — exactly one authorization block. No append form exists, so a second is
   # not residue from a normal path; it is tampering.
   local n
-  n=$(grep -cE '^## 인가$' "$MANIFEST" || true)
+  if manifest_memo_on; then n=$(manifest_memo_one "N	"); else n=$(grep -cE '^## 인가$' "$MANIFEST" || true); fi
   [ "$n" = "1" ] || die "매니페스트에 「## 인가」 절이 ${n}개 — 정확히 하나여야 합니다"
 
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
