@@ -8659,6 +8659,64 @@ else
   bad "B3" "예산을 넘겼는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
 fi
 
+# Half one-b — A LIVE STAGE IS NOT A SPINNING ROUTER.
+#
+# The boundary watches for the ROUTER burning acts without progress, and the
+# count cannot tell that from a dispatched stage authorising its own acts
+# through the same gate. Nor can volume: a stage moves the progress vector only
+# when it TERMINATES, so a review holds its segment at `리뷰중` for its whole run
+# while publishing witnesses, minting nonces and drafting its report — every one
+# of those an act in this total.
+#
+# Measured on run 20260912-376f0543: 84 acts in 35 minutes with the vector
+# unmoved, all of them the review stage's own. Five boundary approvals were
+# raised across that night and a person answered every one `무효`. Unattended
+# there is nobody, and each firing ends the shift — so a review long enough to
+# cross this budget stops the night it is running in.
+#
+# THIS RIDES THE WINDOW HALF ONE JUST EXHAUSTED, and that is the whole of why it
+# is here rather than after half two. Faking exhaustion by writing a stale
+# digest cannot work: the function compares that file against the current window
+# key FIRST, and a mismatch re-baselines the count to the total, so `n` is 0 and
+# the boundary stays silent whatever the guard does. An assertion built that way
+# passes against a build with no guard at all — measured, on this very block's
+# first draft. Half one has already proven this window fires, and nothing below
+# touches the two counter files, so a silence here is the guard's doing.
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+fx_stage_live B3LIVE
+B3LIVE_PID="$FX_LAST_PID"
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "살아 있는 스테이지 아래의 예산 초과" -- touch "$WORK/t4b"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+check "살아 있는 스테이지가 있으면 B3 은 예산을 넘겨도 발동하지 않는다" "$after" "$before"
+
+# A DEAD STAGE DOES NOT HOLD IT SILENT. `cc_live_stages` counts processes rather
+# than pid files, and this pins that from the consumer's side: a stage that died
+# without cleaning up leaves its pid file behind, and a guard reading files would
+# leave the run unwatched for the rest of the night.
+kill "$B3LIVE_PID" 2>/dev/null || true
+wait "$B3LIVE_PID" 2>/dev/null || true
+rm -f "$RD/B3LIVE.pid" "$RD/B3LIVE.start"
+fx_stage_dead B3DEAD
+for a in $(grep -oE '승인 id=[^ |]+' "$LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$LEDGER"
+done
+before=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "죽은 pid 파일만 남은 상태의 예산 초과" -- touch "$WORK/t4c"
+after=$(grep -c '구속 튜플=B3' "$LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "죽은 스테이지의 pid 파일은 B3 을 억제하지 않는다 (억제는 조건부이지 스위치가 아니다)"
+else
+  bad "B3 억제" "살아 있는 스테이지가 없는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+fi
+rm -f "$RD/B3DEAD.pid" "$RD/B3DEAD.start"
+
 # Half two — the regression. The same 41 acts, but progress has moved since,
 # which closes the old window and opens a new one holding none of them. A count
 # that never resets fires here; a windowed one does not.
@@ -8673,7 +8731,6 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
 after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
-
 # ---------------------------------------------------------------------------
 # The banner seat, gate side.
 #

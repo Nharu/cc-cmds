@@ -337,20 +337,186 @@ derive_paths() {
 # ---------------------------------------------------------------------------
 MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
 
+# ---------------------------------------------------------------------------
+# Manifest memo — the file parsed ONCE per process, on request.
+#
+# A gate call read the same manifest file some forty times before reaching its
+# verb — every `manifest_field` was an `awk` over the whole file, every
+# `target_field` a `grep` plus a `tr | sed | sed` chain — and that re-reading
+# was the largest single item of the fixed per-call preamble. The memo below is
+# one `awk` pass that records every value the readers extract, and the readers
+# answer from it with shell expansions and no child process.
+#
+# WHAT IS CACHED IS THE PARSE, NEVER A VERDICT. Every check in `check_manifest`
+# still runs, in the same order, on every gate entry; it merely runs on bytes
+# read at one moment instead of forty. Each reader produces the SAME BYTES the
+# file-reading form produced — first match, trailing whitespace, absence as
+# empty output — and the file-reading form is kept as the fallback so that any
+# caller which never took a snapshot (the driver itself) is unchanged.
+#
+# OPT-IN AND KEYED TO THE PATH. Nothing here fires unless `manifest_snapshot_take`
+# was called, and a reader uses the memo only while `MANIFEST_MEMO_PATH` equals
+# the current `MANIFEST`. A process that changes `MANIFEST` after the snapshot
+# falls back to the file for the new path rather than answering from the old
+# one. The gate takes the snapshot once, after it has normalized the path and
+# before `check_manifest`, which is the first reader.
+#
+# THE MEMO IS A FLAT TEXT, NOT AN ARRAY. This file runs on bash 3.2, so there
+# is no associative array to hold it; each record is one line, `<tag><TAB>…`,
+# and a lookup is a `case`/`${var#…}` on the whole text. The text starts with a
+# newline so the first record is addressable the same way as every other.
+#
+# BUILT IN A SUBSHELL, READ IN ANY. Command substitution runs in a child that
+# cannot assign the parent's variables, so the snapshot is taken by the caller
+# in its own shell; readers running inside a `$( … )` inherit the memo, which
+# is why the snapshot has to precede the first such call.
+# ---------------------------------------------------------------------------
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+
+manifest_snapshot_take() {
+  # One pass. Record tags:
+  #   K            kind token present
+  #   N <n>        count of lines equal to `## 인가`
+  #   H <text>     lines 2..8 joined by spaces (what `manifest_header` prints)
+  #   HF <k> <v>   the LAST `[; ]k=` occurrence in that header text, up to `;`
+  #   F <s> <k> <v> first `**k**: v` inside the FIRST `## s` section
+  #   T <row>      every `- \`target\`` row, in order
+  #   R <line>     every `**…**: 켬|끔` line, in order
+  #   P <row>      every `- \`사전 인가\`` row, in order
+  #   AW <row>     every `- \`자동 채택\`` row anywhere, in order
+  #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
+  #   C <row>      every `- \`종료 절\`` row, in order
+  MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
+  MANIFEST_MEMO="
+$(LC_ALL=C awk '
+    BEGIN { n_auth = 0; hdr = ""; cur = ""; ina = 0 }
+    index($0, "cc-run-manifest v1") > 0 { kind = 1 }
+    NR >= 2 && NR <= 8 { hdr = hdr $0 " " }
+    /^## / {
+      s = substr($0, 4)
+      if ($0 == "## 인가") n_auth++
+      # A duplicated section header closes the section: the per-call readers
+      # stop at the next `## ` line, so only the first instance ever answers.
+      if (s in seen) { cur = ""; ina = 0 } else { seen[s] = 1; cur = s; ina = ($0 == "## 인가") }
+      next
+    }
+    /^\*\*/ && cur != "" {
+      p = index($0, "**: ")
+      if (p > 1) {
+        k = substr($0, 3, p - 3)
+        if (!((cur SUBSEP k) in fseen)) { fseen[cur SUBSEP k] = 1; print "F\t" cur "\t" k "\t" substr($0, p + 4) }
+      }
+    }
+    /^\*\*[^*]+\*\*: (켬|끔)$/ { print "R\t" $0 }
+    index($0, "- `target`") == 1 { print "T\t" $0 }
+    index($0, "- `사전 인가`") == 1 { print "P\t" $0 }
+    index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
+    index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    END {
+      if (kind) print "K\t1"
+      print "N\t" n_auth
+      print "H\t" hdr
+      # Header fields: for each `[; ]key=` the LAST occurrence wins and the
+      # value runs to the next `;` — the same reading the sed form gives.
+      rest = hdr; pos = 0
+      while (match(rest, /[; ][A-Za-z0-9_-]+=/)) {
+        at = pos + RSTART
+        key = substr(rest, RSTART + 1, RLENGTH - 2)
+        last[key] = at + RLENGTH - 1
+        pos += RSTART; rest = substr(rest, RSTART + 1)
+      }
+      for (key in last) {
+        v = substr(hdr, last[key] + 1)
+        q = index(v, ";"); if (q > 0) v = substr(v, 1, q - 1)
+        sub(/[[:space:]]+$/, "", v)
+        print "HF\t" key "\t" v
+      }
+    }
+  ' "$MANIFEST")"
+  MANIFEST_MEMO_PATH="$MANIFEST"
+}
+
+manifest_memo_on() {
+  [ -n "$MANIFEST_MEMO_PATH" ] && [ "$MANIFEST_MEMO_PATH" = "$MANIFEST" ]
+}
+
+manifest_memo_one() {
+  # manifest_memo_one <prefix> — the rest of the first record line that starts
+  # with `<prefix>`, printed with a newline; nothing when there is none.
+  local pre="
+$1" rest
+  case "$MANIFEST_MEMO" in
+    *"$pre"*) rest="${MANIFEST_MEMO#*"$pre"}"; printf '%s\n' "${rest%%
+*}" ;;
+  esac
+}
+
+manifest_memo_all() {
+  # manifest_memo_all <prefix> — every record line starting with `<prefix>`,
+  # in file order, one per line.
+  local pre="
+$1" rest="$MANIFEST_MEMO"
+  while :; do
+    case "$rest" in *"$pre"*) ;; *) break ;; esac
+    rest="${rest#*"$pre"}"
+    printf '%s\n' "${rest%%
+*}"
+  done
+}
+
+manifest_row_fields() {
+  # manifest_row_fields <row> <key> [<terminate-last>] — the value of every
+  # `<key>=` field of one `|`-delimited row, leading spaces and trailing
+  # whitespace stripped, in order. The fork-free form of
+  # `printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *key=//p" | sed 's/[[:space:]]*$//'`.
+  #
+  # THE ROW'S LAST FIELD HAS NO TRAILING NEWLINE in that form — `printf '%s'`
+  # gives `tr` none to convert — and callers compare bytes, so the last field
+  # is printed the same way here unless the third argument asks for a newline.
+  local row="$1" key="$2" term="${3:-0}" part v n=0 i=0
+  local oldifs="$IFS"
+  IFS='|'
+  set -f
+  for part in $row; do n=$((n + 1)); done
+  for part in $row; do
+    i=$((i + 1))
+    part="${part#"${part%%[! ]*}"}"
+    case "$part" in
+      "$key="*)
+        v="${part#"$key="}"; v="${v%"${v##*[![:space:]]}"}"
+        if [ "$i" = "$n" ] && [ "$term" != "1" ]; then printf '%s' "$v"; else printf '%s\n' "$v"; fi ;;
+    esac
+  done
+  set +f
+  IFS="$oldifs"
+}
+
 # Set only by `--replan`. Default 0 so the guard below refuses by default: the
 # expensive mistake is re-planning a run that is already under way, and a
 # default that permits it makes the refusal reachable only by remembering to
 # ask for it.
 REPLAN=0
 
-manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
+manifest_header() {
+  # No trailing newline in either form: `tr` turns the last newline into a
+  # space, and the memo's record already carries that space.
+  local h
+  if manifest_memo_on; then h=$(manifest_memo_one "H	"); printf '%s' "$h"; return 0; fi
+  sed -n '2,8p' "$MANIFEST" | tr '\n' ' '
+}
 
 manifest_hdr_field() {
+  # No trailing newline either — the file form's `sed` inherits the missing
+  # newline from `manifest_header`, and callers compare the bytes.
+  local v
+  if manifest_memo_on; then v=$(manifest_memo_one "HF	$1	"); printf '%s' "$v"; return 0; fi
   manifest_header | sed -n "s/.*[; ]$1=\([^;]*\).*/\1/p" | sed 's/[[:space:]]*$//'
 }
 
 manifest_field() {
   # manifest_field <section> <key> — CANON rendering inside one `## <section>`.
+  if manifest_memo_on; then manifest_memo_one "F	$1	$2	"; return 0; fi
   awk -v want="## $1" -v key="$2" '
     $0 == want { inb=1; next }
     inb && /^## / { exit }
@@ -358,10 +524,44 @@ manifest_field() {
   ' "$MANIFEST"
 }
 
-manifest_targets() { grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true; }
+manifest_targets() {
+  if manifest_memo_on; then manifest_memo_all "T	"; return 0; fi
+  grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_rule_lines() {
+  if manifest_memo_on; then manifest_memo_all "R	"; return 0; fi
+  grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_preauth_rows() {
+  if manifest_memo_on; then manifest_memo_all "P	"; return 0; fi
+  grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_autoadopt_rows_anywhere() {
+  if manifest_memo_on; then manifest_memo_all "AW	"; return 0; fi
+  grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_clause_rows_raw() {
+  if manifest_memo_on; then manifest_memo_all "C	"; return 0; fi
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
+}
 
 target_field() {
   # target_field <alias> <key>
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
+      manifest_row_fields "$row" "$2"
+      break
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | while IFS= read -r row; do
     case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
     printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
@@ -370,6 +570,16 @@ target_field() {
 }
 
 target_aliases() {
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      manifest_row_fields "$row" '별칭' 1
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
 }
 
@@ -384,8 +594,8 @@ binding_set_bytes() {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
     canonical_targets | sed 's/^/target\t/'
-    grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
-    grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    manifest_rule_lines | sed 's/^/rule\t/'
+    manifest_preauth_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/'
     # THE `자동 채택` ROWS ARE IN THE FROZEN SET, and they were not. Arm (a) of
     # the auto-adoption floor states its safety as four reasons, and the third —
     # "the binding digest covers it" — was false: of the six things serialized
@@ -400,7 +610,7 @@ binding_set_bytes() {
     # that section is not honoured AND still moves the digest, so both spellings
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
-    grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
+    manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -408,7 +618,7 @@ binding_set_bytes() {
 manifest_clauses() {
   # The termination point decomposed into checkable clauses, frozen at kickoff.
   # A run is measured against these, so they are part of what may not move.
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
+  manifest_clause_rows_raw | sed 's/[[:space:]]\{1,\}/ /g'
 }
 
 manifest_autoadopt_rows() {
@@ -420,6 +630,7 @@ manifest_autoadopt_rows() {
   # consumer was not reading. Confining both consumers — this floor's arm (a)
   # and rule 11's freeze-time check — to that one section is what makes the
   # guarantee load-bearing rather than decorative.
+  if manifest_memo_on; then manifest_memo_all "AA	"; return 0; fi
   awk '
     $0 == "## 인가" { inb = 1; next }
     inb && /^## / { exit }
@@ -520,8 +731,14 @@ warn_once() {
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
-  # 1 — kind token, strict equality.
-  grep -q 'cc-run-manifest v1' "$MANIFEST" || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
+  # 1 — kind token, strict equality. One refusal site whichever reader answers.
+  local kind_ok=0
+  if manifest_memo_on; then
+    if [ -n "$(manifest_memo_one "K	")" ]; then kind_ok=1; fi
+  else
+    if grep -q 'cc-run-manifest v1' "$MANIFEST"; then kind_ok=1; fi
+  fi
+  [ "$kind_ok" = 1 ] || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
 
   # 10 — ownership proof, FAIL-CLOSED, and before the tie-break.
   # This kind is about a RUN, not a document, so `owner-doc=` cannot be the
@@ -558,7 +775,7 @@ check_manifest() {
   # 2 — exactly one authorization block. No append form exists, so a second is
   # not residue from a normal path; it is tampering.
   local n
-  n=$(grep -cE '^## 인가$' "$MANIFEST" || true)
+  if manifest_memo_on; then n=$(manifest_memo_one "N	"); else n=$(grep -cE '^## 인가$' "$MANIFEST" || true); fi
   [ "$n" = "1" ] || die "매니페스트에 「## 인가」 절이 ${n}개 — 정확히 하나여야 합니다"
 
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
@@ -2647,6 +2864,32 @@ stage_log_path() {
   printf '%s' "$p"
 }
 
+# ---------------------------------------------------------------------------
+# The witness scratch directories of ONE attempt — the third path derived from
+# the same `RUN_DIR` plus attempt pin that `stage_log_path` and
+# `halt_record_path` come from.
+#
+# MATCHED ON THE STAMP, NOT ON THE NAME. `cc-team-witness-init.sh` sanitizes the
+# stage id into the directory NAME and writes the raw id into `.attempt` inside
+# the directory it just made. Comparing the stamp sets the bytes the driver
+# dispatched against the bytes the lead received, so a later change to the
+# sanitizing character class cannot make the match silently stop working. The
+# stamp observed in a real crash was the unsanitized original, which is what
+# makes this the comparison that holds rather than the name.
+#
+# NEITHER SORTED NOR SELECTED BY mtime. The corpus holds one logical segment
+# whose two attempts interleave across twelve hours, and mtime order lies there.
+witness_dirs_for_attempt() {
+  # witness_dirs_for_attempt <stage-id> <attempt> — one path per line.
+  local stage="$1" att="$2" d
+  for d in "$RUN_DIR"/cc-team-witness-*/; do
+    [ -d "$d" ] || continue
+    [ -f "$d.attempt" ] || continue
+    [ "$(cat "$d.attempt" 2>/dev/null)" = "$stage#$att" ] || continue
+    printf '%s\n' "${d%/}"
+  done
+}
+
 session_uuid() {
   # session_uuid <stage-id> [attempt] — derived, never stored.
   #
@@ -2924,13 +3167,20 @@ reap_orphan() {
   # A driver that died mid-stage leaves a stage still running — and still able
   # to commit and push. `implement` is re-invocation idempotent, so killing and
   # re-dispatching is safe.
+  # The `kill -0` verdict is stamped before the pid file goes away, because the
+  # pid file is the only thing `stage_alive` reads and this function destroys it.
+  # Without the stamp a later caller cannot tell "the stage was already dead"
+  # from "no reap ever ran here", and both reach the same first-line return.
   local stage="$1" pid pgid
   [ -f "$RUN_DIR/$stage.pid" ] || return 0
   pid=$(cat "$RUN_DIR/$stage.pid")
   pgid=$(cat "$RUN_DIR/$stage.pgid" 2>/dev/null || printf '')
   if kill -0 "$pid" 2>/dev/null; then
     log "고아 스테이지 회수: $stage pid=$pid pgid=$pgid"
+    printf '%s alive\n' "$pid" > "$RUN_DIR/$stage.reaped"
     [ -n "$pgid" ] && kill -- "-$pgid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  else
+    printf '%s dead\n' "$pid" > "$RUN_DIR/$stage.reaped"
   fi
   rm -f "$RUN_DIR/$stage.pid" "$RUN_DIR/$stage.pgid"
 }
@@ -3229,12 +3479,19 @@ human_reconcile() {
 
 boundary_idempotent() {
   case "$1" in
-    S2|S4|S5|S8) return 0 ;;   # audit / implement / review / merge
+    S2|S4|S5|S5R|S8) return 0 ;;   # audit / implement / review / review recovery / merge
+    # S5R belongs here for a stronger reason than the S5 it recovers. The
+    # recovery arm spawns no sub-agents at all and reads only from disk, and it
+    # publishes under an absence condition, so killing it at a boundary destroys
+    # nothing that was not already reconstructible from the same directory. A
+    # review that is mid-team has more in flight than that, and it is already on
+    # this list.
+    #
     # S9 is NEVER added here, and the reason is not that it happens to be
     # missing today. An apply is irreversible; "safe to kill at a boundary"
     # would license the driver to interrupt it, and a half-applied state is
     # exactly the outcome this whole stage is built to avoid.
-    *)           return 1 ;;   # design, re-convergence and apply are NOT
+    *)               return 1 ;;   # design, re-convergence and apply are NOT
   esac
 }
 
@@ -4138,6 +4395,111 @@ rebase_onto_base() {
 }
 
 # ---------------------------------------------------------------------------
+# Review crash recovery — dispatched BEFORE the park, and only for a crash.
+#
+# The other terminal classes are precondition stops, and crash durability and
+# precondition stops are disjoint failure classes: proposing a partial result to
+# a stage that never started is a category error. Those classes take today's
+# park unchanged.
+#
+# Three duties, and the driver is the only party that can discharge any of them.
+#
+#   (a) THE REPORT PATH TRAVELS ON THE DISPATCH LINE. It is the premise of the
+#       recovery arm's absence-conditional CAS, and the only way a recovery
+#       report lands on the path the driver actually reads. A recovery written
+#       anywhere else is invisible to the terminal predicate however correct it
+#       is, so a fully witness-resolved recovery would still read as "no
+#       artifact" and park the segment.
+#   (b) THE SCRATCH DIRECTORY IS NAMED, or nothing is dispatched. The driver is
+#       the only party that knows which attempt it observed — each retry gets its
+#       own directory and each writes `epoch 1`, so nothing inside them
+#       distinguishes the attempts. With two or more candidates this names none
+#       and parks with them enumerated; dispatching unnamed would buy a stage
+#       that is certain to refuse.
+#   (c) REACHING STEP 4 IS DECIDED BY THAT DIRECTORY'S EXISTENCE. None means the
+#       stage died before its first spawn, so there is nothing on disk to
+#       recover from and the park says exactly that.
+#
+# `predicate_review` IS NOT TOUCHED, here or anywhere else. If the recovery
+# clears it the cycle continues into triage; if it does not, the segment parks
+# and a person has somewhere to arrive. Wanting to edit the predicate is the
+# signal that one of the two clauses above was implemented wrong.
+#
+# The dispatch id is `S5R:` rather than `S5:` so that `stage_attempt`'s
+# `파견 id=` count, `stage_log_path`, `halt_record_path` and `kill_permitted`
+# all separate the recovery from the review it recovers. Both ids fall to the
+# `generic` settings variant — neither matches `stage_spawn`'s `*review*` arm —
+# so the recovery runs under exactly the hook coverage the original stage ran
+# under. `kill_permitted` normalizes on `${1%%:*}`, so `S5R` has to be its own
+# entry in `boundary_idempotent`; without it a stalled recovery burns the whole
+# backoff and lands on `human_reconcile` instead of being signalled.
+review_recover() {
+  local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
+  [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+  if predicate_review "$rp"; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
+    return 1
+  fi
+  local att dirs n=0
+  att=$(stage_attempt_pinned "$sid")
+  dirs=$(witness_dirs_for_attempt "$sid" "$att")
+  # Guarded on `-n` rather than written as the `grep -c . || printf '0'` fallback
+  # used elsewhere in this file. On empty input `grep -c` prints `0` AND exits 1,
+  # so that fallback appends a second `0` and the value matches neither branch
+  # below — the no-directory case would take the cannot-name park carrying the
+  # wrong reason, and the Step-4 verdict would be unreachable.
+  [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
+  if [ "$n" = "0" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
+    return 1
+  fi
+  if [ "$n" != "1" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
+    return 1
+  fi
+  local rsid="S5R:$seg:$cycle" rc pred rclass reaped
+  log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  # Dispatching on top of a still-running original gives the report path two
+  # writers, which is the risk the publication rule is built to close. What this
+  # call does about that is less than it looks, and the honest statement is:
+  #
+  # The call below is a no-op on every path that reaches here. Of the three
+  # `continue` arms in `stage_wait_all`'s limit-shape branch, two already called
+  # `reap_orphan` and it removed the pid file; the third parks, and it is
+  # unreachable for `S5` anyway because `kill_permitted` truncates at the first
+  # colon and `boundary_idempotent` admits `S5`. `stage_collect` also removes the
+  # pid file. So `reap_orphan` returns at its first line and signals nothing.
+  #
+  # The signal, where one was sent, therefore went at some earlier and
+  # unrecorded moment — the residual is an unconfirmed signal, not a missing
+  # one. The `.reaped` stamp carries no timestamp, so what it makes observable
+  # is the verdict at that moment and not when it fell or how long it lasted;
+  # it is read below and carried on the ledger row. The two predicate
+  # checks in the publication rule narrow the remaining window; **no upper bound
+  # on it is claimed here.** The call is kept because a future arm that does
+  # leave a pid file must be reaped, and `boundary_idempotent` already admits
+  # `S5`, so no new authorization is needed.
+  reap_orphan "$sid"
+  reaped=$(cat "$RUN_DIR/$sid.reaped" 2>/dev/null || printf '')
+  reaped="${reaped##* }"
+  [ -n "$reaped" ] || reaped=미상
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
+  stage_wait_all "$rsid"
+  rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
+  if predicate_review "$rp"; then pred=0; else pred=1; fi
+  rclass=$(classify_termination "$rsid" "$rc" "$pred")
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
+    "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
+  [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # One segment's S4..S8 cycle
 # ---------------------------------------------------------------------------
 segment_cycle() {
@@ -4312,7 +4674,9 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "종단 부류=$class"
-    [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+    if [ "$class" != "정상 완료" ]; then
+      review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
+    fi
 
     # --- S6 TRIAGE ---------------------------------------------------------
     local tri_out tri
