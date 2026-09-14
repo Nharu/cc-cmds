@@ -3146,6 +3146,72 @@ gate_settings_file() {
   printf '%s/%s.json' "$(gate_settings_dir)" "$k"
 }
 
+gate_settings_key() {
+  # A digest of everything `gate_write_settings` renders FROM. When it has not
+  # moved, that function cannot produce different bytes, so the probe render and
+  # the `diff -r` that compares it against disk are pure cost — which is what
+  # the caller below skips.
+  #
+  # NO LEDGER ROW IS AN INPUT, and that is the property the whole saving rests
+  # on. The ledger grows on every act, so a key that read it would change at
+  # moments when the settings provably cannot, and the skip would never fire.
+  # NO WALL CLOCK AND NO FILE CONTENT either, for the same reason — only the
+  # values the renderer interpolates.
+  #
+  # `gate.sh` ITSELF IS AN INPUT, because the JSON template lives here: a
+  # redeploy that changes what a variant contains must re-derive rather than
+  # match a key written by the old template.
+  #
+  # AN INPUT MISSED HERE FAILS CLOSED. The settings then fail to WIDEN, so a
+  # stage is refused a directory and the run stops with a refusal naming it —
+  # never the other direction, where an authorization silently grows.
+  local hookp plugind
+  hookp="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
+  plugind=$(cd "$(dirname "$GATE_DIR")" 2>/dev/null && pwd)
+  {
+    printf 'stage-kinds\t%s\n' "$STAGE_KINDS"
+    printf 'hook\t%s\n' "$hookp"
+    printf 'hook-exists\t%s\n' "$( [ -f "$hookp" ] && printf 'yes' || printf 'no' )"
+    printf 'plugin-dir\t%s\n' "$plugind"
+    printf 'run-dir\t%s\n' "${RUN_DIR:-}"
+    printf 'base\t%s\n' "${BASE:-}"
+    printf 'manifest-dir\t%s\n' "$(dirname "${MANIFEST:-}")"
+    printf 'ledger-dir\t%s\n' "$(dirname "${LEDGER:-}")"
+    printf 'grant-dir\t%s\n' "$(dirname "${GRANT:-}")"
+    printf 'doc\t%s\n' "${DOC:-}"
+    printf 'doc-dir\t%s\n' "${DOC_DIR:-}"
+    printf 'doc-base\t%s\n' "${DOC_BASE:-}"
+    printf 'doc-dir-phys\t%s\n' "$( [ -n "${DOC_DIR:-}" ] && cd "$DOC_DIR" 2>/dev/null && pwd -P || true)"
+    printf 'doc-base-phys\t%s\n' "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)"
+    printf 'config-dir\t%s\n' "${CLAUDE_CONFIG_DIR:-}"
+    printf 'home\t%s\n' "${HOME:-}"
+    # The target rows verbatim: both worktree fields of every declared target
+    # are interpolated into `additionalDirectories`.
+    manifest_targets | sed 's/^/target\t/'
+    printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_settings_key_record() {
+  # Written ONLY where the render and the baseline BOTH just succeeded. A key
+  # recorded on a failed path would claim settings are settled that were never
+  # written, and the next call would skip the re-derivation that repairs them.
+  #
+  # Never under the probe override: that render goes to a temporary directory
+  # and says nothing about what is on disk.
+  local k keyf
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -z "${CC_GATE_SETTINGS_OVERRIDE:-}" ] || return 0
+  k=$(gate_settings_key)
+  [ -n "$k" ] || return 0
+  keyf="$RUN_DIR/settings-key"
+  # Same directory, then rename: a reader never sees a half-written key, and a
+  # failure to write leaves the previous state rather than a truncated one.
+  printf '%s\n' "$k" > "$keyf.$$" 2>/dev/null || { rm -f "$keyf.$$"; return 0; }
+  mv "$keyf.$$" "$keyf" 2>/dev/null || rm -f "$keyf.$$"
+  return 0
+}
+
 gate_write_settings() {
   # Writes every variant. Called at run start and idempotent — a re-run after a
   # session cut must find the same bytes, because those bytes are in the
@@ -3154,7 +3220,7 @@ gate_write_settings() {
   local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
   local kind_dirs kind_allow
   dir=$(gate_settings_dir)
-  mkdir -p "$dir"
+  mkdir -p "$dir" || return 1
   hook="$(dirname "$GATE_DIR")/hooks/gate-pretool.sh"
   [ -f "$hook" ] || die "게이트 훅 스크립트가 없습니다: $hook"
 
@@ -3336,7 +3402,11 @@ $(target_field "$a" '실행 워크트리')"
       kind_allow=""
       deny_extra="${deny_extra}\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\", "
     fi
-    cat > "$f" <<JSON
+    # A VARIANT THAT FAILS TO WRITE FAILS THE FUNCTION. The loop used to swallow
+    # the status, so a caller re-baselined and recorded a settled key over files
+    # that were never rewritten. Returning here is what makes "both the rewrite
+    # and the baseline succeeded" a condition rather than a hope.
+    cat > "$f" <<JSON || return 1
 {
   "permissions": {
     "deny": [ ${deny_extra}"Bash(sudo:*)" ],
@@ -3372,16 +3442,44 @@ JSON
 
 gate_resettle_settings() {
   # Re-derive the stage settings and, when they differ, rewrite + re-baseline +
-  # record. This is what lets a run reach a directory kickoff could not know
-  # about — a segment's own worktree, a repository the run added at layer 1 —
-  # without either freezing the run or making the surface comparison hollow.
+  # record. This is what lets the authorization list follow a change in what it
+  # is derived from, without either freezing the run or making the surface
+  # comparison hollow.
   #
-  # The derivation is a pure function of the manifest and the ledger, so the
-  # bytes move only when one of those moved, and both are themselves recorded.
+  # What it is derived from is the manifest's target rows (each target's main
+  # and execution worktree) and the run's own environment: the run directory,
+  # the base, the directories of the manifest, ledger and grant, the design
+  # document's directories, the plugin and hook locations, and the user config
+  # directory. NO LEDGER ROW IS AN INPUT. The `대상 추가` row appended below is a
+  # record of a widening, and nothing reads it back into a derivation. Nor is a
+  # segment's own worktree in the list — nothing here derives one. The manifest
+  # is written at kickoff and a write to it is refused, so during a run the
+  # bytes move only when the environment does.
+  #
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
   local before after tmpdir base lk="${RUN_DIR:-}/settings.lock"
+  local key keyf
   [ -n "${RUN_DIR:-}" ] || return 0
+  # THE INPUTS HAVE NOT MOVED, SO NEITHER CAN THE OUTPUT. Everything below —
+  # the lock, two surface digests, a whole second render of the settings tree
+  # and a recursive `diff` — exists to answer "did the derivation change?", and
+  # this answers it from the derivation's own inputs instead.
+  #
+  # IT SKIPS NO DETECTION. Finding a difference here never refuses anything;
+  # `gate_surface_check` owns that verdict and runs independently on every act.
+  # A tampered settings file is still exit 7 whether or not this returned early,
+  # and the branch below would not have repaired it either — it returns
+  # untouched when the baseline has already moved.
+  #
+  # The key is recorded only after a successful render, so an absent key file —
+  # a run that started before this existed, or one whose last write failed —
+  # takes the full path.
+  keyf="$RUN_DIR/settings-key"
+  key=$(gate_settings_key)
+  if [ -n "$key" ] && [ -f "$keyf" ] && [ "$key" = "$(cat "$keyf" 2>/dev/null)" ]; then
+    return 0
+  fi
   # The WHOLE sequence is inside the lock — read, compare, rewrite, re-measure,
   # re-baseline. Guarding only the write would leave the guard below reading a
   # baseline another process is about to replace, which is the same read-then-act
@@ -3404,13 +3502,19 @@ gate_resettle_settings() {
   ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
     gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0; }
   if diff -r -q "$tmpdir" "$(gate_settings_dir)" >/dev/null 2>&1; then
-    rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0
+    # The render matches disk and the baseline matched above, so the settings
+    # are settled for these inputs: record the key so the next call can say so
+    # without rendering again. This is the arm that adopts a run which started
+    # before the key existed.
+    rm -rf "$tmpdir"; gate_settings_key_record; gate_settings_unlock "$lk"; return 0
   fi
   rm -rf "$tmpdir"
 
   gate_write_settings >/dev/null 2>&1 || { gate_settings_unlock "$lk"; return 0; }
   after=$(gate_surface_digest_raw)
   printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
+  # After BOTH the rewrite and the re-baseline, never between them.
+  gate_settings_key_record
   gate_append '대상 추가' "별칭=-" "원격 슬러그=-" \
     "메인 워크트리=-" "공통 git 디렉터리=-" "베이스 브랜치=-" "층=0" \
     "발견 경로=인가 디렉터리 재유도 (${before} → ${after})" "기록 시각=$(now_iso)"
@@ -3551,12 +3655,46 @@ gate_chain_verify() {
   return 1
 }
 
+# This run's grant block, read ONCE per gate call. `gate_check_grant` asks for
+# ten fields and each ask was four processes over the whole file; the block is
+# cut out once below and every ask answers from it with shell expansions. Keyed
+# to both the path and the run id so a memo can never answer for another
+# grant or another run — a mismatch falls back to the file.
+GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+
+gate_grant_block_take() {
+  GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
+  [ -f "$GRANT" ] || return 0
+  # The same range the file-reading form cuts: from the line equal to this
+  # run's heading through the next `## ` line. A leading newline makes the
+  # first line addressable by the same `<newline>**key**: ` prefix as the rest.
+  GATE_GRANT_MEMO_BLOCK="
+$(sed -n "/^## 인가 ${RUN_ID}\$/,/^## /p" "$GRANT" 2>/dev/null)"
+  GATE_GRANT_MEMO_PATH="$GRANT"; GATE_GRANT_MEMO_RUN="$RUN_ID"
+}
+
 gate_grant_field() {
   # gate_grant_field <필드명> — the CANON rendering inside this run's block.
   #
   # sed and shell string equality, not awk. A Korean key fed to `awk`'s regex
   # engine is the exact construction this repository already had to rewrite once
   # after it failed on the macOS leg of CI and nowhere else.
+  #
+  # From the memo when one was taken for this grant and run: the first line of
+  # the block starting with `**<field>**: `, trailing whitespace stripped —
+  # the same bytes the four-process form below produces.
+  local v pre="
+**$1**: "
+  if [ -n "$GATE_GRANT_MEMO_PATH" ] && [ "$GATE_GRANT_MEMO_PATH" = "$GRANT" ] \
+     && [ "$GATE_GRANT_MEMO_RUN" = "$RUN_ID" ]; then
+    case "$GATE_GRANT_MEMO_BLOCK" in
+      *"$pre"*)
+        v="${GATE_GRANT_MEMO_BLOCK#*"$pre"}"; v="${v%%
+*}"; v="${v%"${v##*[![:space:]]}"}"
+        printf '%s\n' "$v" ;;
+    esac
+    return 0
+  fi
   sed -n "/^## 인가 ${RUN_ID}\$/,/^## /p" "$GRANT" 2>/dev/null \
     | sed -n "s/^\\*\\*${1}\\*\\*: //p" | sed 's/[[:space:]]*$//' | sed -n '1p'
 }
@@ -3580,6 +3718,10 @@ gate_check_grant() {
     warn "인가 기록이 없습니다: $GRANT — 킥오프가 먼저 돌아야 합니다"
     return "$GATE_EXIT_RULE"
   fi
+  # One cut of this run's block for the ten field reads below. Every check
+  # after this line runs unchanged, in the same order, with the same messages
+  # and exit codes — only the number of times the file is opened changes.
+  gate_grant_block_take
   blocks=$(grep -E '^## 인가 ' "$GRANT" 2>/dev/null | sed -E 's/^## 인가 //' | sed 's/[[:space:]]*$//' || true)
   while IFS= read -r b; do
     [ -n "$b" ] || continue
@@ -3835,11 +3977,13 @@ gate_surface_digest() {
 }
 
 gate_surface_digest_raw() {
-  # The extension is re-derived on every call rather than listed once: the
-  # second element is "the project-scope settings of every worktree the manifest
-  # and the target-addition rows name", and targets are added at RUNTIME. A
-  # fixed file list would stop covering a target the moment one was added, and
-  # would not report that it had stopped.
+  # The extension is read from the manifest on every call: the second element
+  # is the project-scope settings file of each target row's main worktree. The
+  # target list CANNOT GROW DURING A RUN. It comes from the manifest alone, the
+  # manifest is written at kickoff and every later write to it is refused, and
+  # no ledger row is an input — the `대상 추가` rows this gate appends are never
+  # read back here or by any other derivation. So this digest's cost follows the
+  # number of targets, not how far the run has progressed.
   #
   # THE INSTALLED PLUGIN'S OWN FILES ARE NOT IN HERE, and that is the whole
   # reason this digest stopped ending runs for doing nothing wrong. The rule
@@ -3891,6 +4035,8 @@ gate_main() {
   # neither of them decides anything on.
   GATE_EMIT_DIGEST_TO=""; export GATE_EMIT_DIGEST_TO
   MANIFEST=""
+  MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  GATE_GRANT_MEMO_PATH=""; GATE_GRANT_MEMO_RUN=""; GATE_GRANT_MEMO_BLOCK=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3968,6 +4114,12 @@ gate_main() {
   if [ -d "$(dirname "$MANIFEST")" ]; then
     MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
   fi
+  # ONE READ OF THE MANIFEST FOR THIS WHOLE CALL. Taken after the path is
+  # settled and before the first reader, in this shell so every reader — the
+  # ones inside command substitutions included — answers from the same bytes.
+  # A missing file leaves the memo empty and `check_manifest` refuses it with
+  # the same message it always did.
+  manifest_snapshot_take
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
@@ -4093,16 +4245,20 @@ gate_main() {
   #
   # What keeps the comparison meaningful is not that the surface never moves —
   # it is that it moves only through THIS writer and leaves a row when it does.
-  # An edit by anything else still lands as exit 7. So the derivation is a pure
-  # function of the manifest and the ledger's `대상 추가` rows, both of which are
-  # themselves recorded; when it yields different bytes the gate rewrites,
-  # re-baselines, and appends a row naming what widened.
+  # An edit by anything else still lands as exit 7. The derivation reads the
+  # manifest's target rows and the run's own environment and NO LEDGER ROW —
+  # the `대상 추가` row it appends is a record, not an input to the next
+  # derivation. When it yields different bytes the gate rewrites, re-baselines,
+  # and appends that row naming what widened.
   #
   # The widening is bounded by construction: every directory it can add is a
   # worktree of a target the run already acts in. Nothing here grants a cutpoint,
   # and the cutpoint is what governs whatever leaves the machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
+    # The baseline is written inside that call, so both halves have succeeded
+    # by here and the key describes what is on disk.
+    gate_settings_key_record
     # Run open is the one moment this belongs — the comment on `cred_check`
     # already says a run whose cutpoint reaches `머지` should learn at kickoff
     # and not at 3am, and until now nothing called it, so nothing ever did. It
@@ -7868,7 +8024,7 @@ gate_clause_ids() {
   # never read these at all — `종료 절` appears zero times in it — so the nine
   # conditions measured the ledger's shape and never the thing the user actually
   # authorized the run against.
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null \
+  manifest_clause_rows_raw \
     | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//'
 }
 
