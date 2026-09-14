@@ -320,7 +320,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -332,10 +332,12 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
 | `--basis-review-head <sha>` | off (delta mode is not attempted; review runs full) | The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview. |
 | `--basis-report-path <abs-path>` | off (delta mode is not attempted; review runs full) | Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed. |
+| `--recover` | off (팀을 띄워 Steps 2~4 를 정상 수행) | Steps 2~4 를 통째로 대체해 팀을 하나도 띄우지 않고, 드라이버가 지명한 위트니스 scratch 디렉터리의 디스크 내용만으로 리포트를 합성한다. 크래시로 죽은 리뷰 스테이지의 부분 산출물을 되살리는 경로. |
+| `--scratch-dir <abs-path>` | off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다) | 드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다. |
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
@@ -348,6 +350,10 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 > _Parsing (`--basis-review-head <sha>`): `--basis-review-head` takes the next token as its value. Value missing → treated as absent; see --basis-cycle's parse_note for the joint-absence rule._
 
 > _Parsing (`--basis-report-path <abs-path>`): `--basis-report-path` takes the next token as its value. Value missing or not an absolute path → treated as absent; see --basis-cycle's parse_note for the joint-absence rule._
+
+> _Parsing (`--recover`): 값을 취하지 않는다. 이 플래그가 없으면 복구 절 전체가 발동하지 않는다._
+
+> _Parsing (`--scratch-dir <abs-path>`): `--scratch-dir` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 지명이 없는 것으로 다뤄 열거 후 거부 경로로 간다._
 
 ### /cc-cmds:review-upgrade
 
