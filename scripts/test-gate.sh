@@ -63,6 +63,12 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
+# approval lifecycle a person drives — issue, wait, close — and that lifecycle
+# is still what the gate does with the switch off. The auto-resolving path is
+# tested in `test-snapshot.sh`, on a fixture of its own, so it runs in seconds.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
@@ -2897,6 +2903,198 @@ check "7자 짧은 sha 는 통과한다 (하한이 공허하지 않다)" "$rc" "
 gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SW --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$FXREPORT"
 check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 8b-3. cycle 델타 모드 — 기준 조건은 쓰기 시점에 거부되고 모드의 원천은 리포트다
+#
+# A `cycle` row may now claim `모드=델타`: a review that read only the files
+# changed since this segment's last FULL cycle and re-adjudicated that cycle's
+# P0/P1. The merge rule reads the newest row's P0/P1 without knowing the mode,
+# so every condition that makes the claim sound is refused at write time —
+# and the report's own `리뷰 모드` line is compared against EVERY row, because
+# the dangerous direction is a delta report under a silent row: that row reads
+# as 전체 and becomes the next cycle's full basis.
+#
+# A FRESH SEGMENT `SD`. The fixtures after 8b-2 read SW's newest `cycle` row,
+# so SW is left exactly as 8b-2 left it. Commit objects are made with
+# `git commit-tree` only — no branch moves, so nothing below this section sees
+# a different HEAD.
+# ---------------------------------------------------------------------------
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+check "델타 픽스처 세그먼트 행이 기록된다" "$rc" "0"
+
+tree_b=$(cd "$WT" && git rev-parse 'HEAD^{tree}')
+head_c=$(cd "$WT" && git commit-tree "$tree_b" -p "$head_b" -m 'delta child')   # a descendant of head_b
+head_o=$(cd "$WT" && git commit-tree "$tree_b" -m 'orphan')                     # a root unrelated to head_b
+head_b7=$(printf '%s' "$head_b" | cut -c1-7)
+
+SDREP_FULL="$WORK/sd-full.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 1\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 0건\n' > "$SDREP_FULL"
+SDREP_NOMODE="$WORK/sd-nomode.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 2\n\n## 개요\n\n- **발견 요약**: P0 0건 | P1 0건\n' > "$SDREP_NOMODE"
+SDREP_BASIS="$WORK/sd-basis.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 4\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 전체\n- **발견 요약**: P0 0건 | P1 0건\n' > "$SDREP_BASIS"
+SDREP_DELTA="$WORK/sd-delta.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 5\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 4, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 0건\n' "$head_b" > "$SDREP_DELTA"
+SDREP_BADCYC="$WORK/sd-badcyc.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 5\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 3, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 0건\n' "$head_b" > "$SDREP_BADCYC"
+SDREP_BADHEAD="$WORK/sd-badhead.md"
+printf '# 코드 리뷰 리포트 — SD 사이클 5\n\n## 개요\n\n- **리뷰 대상**: x\n- **리뷰 모드**: 델타 (기준 사이클 4, 기준 리뷰 HEAD `%s`)\n- **발견 요약**: P0 0건 | P1 0건\n' "$head_o" > "$SDREP_BADHEAD"
+
+# Regression first: a `모드=전체` row and a row with no `모드` at all take the
+# path they took before this section existed — including a report that has no
+# mode line, which is every report written before the line was defined.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=1 모드=전체 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
+check "모드=전체 행은 오늘과 같은 경로로 기록된다" "$rc" "0"
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_NOMODE"
+check "모드 없는 행은 모드 줄 없는 리포트와 함께 오늘과 같은 경로로 기록된다" "$rc" "0"
+
+# Check 1 — vocabulary.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=이상 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
+check "어휘 밖 모드는 거부된다" "$rc" "2"
+case "$msg" in
+  *"「모드」"*"어휘 밖"*) ok "그 거절이 모드 필드와 어휘를 지목한다" ;;
+  *) bad "어휘 밖 모드 문면" "$msg" ;;
+esac
+
+# Check 2 — a delta row needs a positive-integer basis; a full row may not carry one.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_DELTA"
+check "기준 사이클 없는 델타 행은 거부된다" "$rc" "2"
+case "$msg" in
+  *"「기준 사이클」"*) ok "그 거절이 기준 사이클 필드를 지목한다" ;;
+  *) bad "기준 사이클 누락 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=x" P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_DELTA"
+check "비정수 기준 사이클은 거부된다" "$rc" "2"
+case "$msg" in
+  *"양의 정수"*) ok "그 거절이 정수 형식을 지목한다" ;;
+  *) bad "비정수 기준 사이클 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=전체 "기준 사이클=1" P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
+check "기준 사이클을 실은 전체 행은 거부된다" "$rc" "2"
+case "$msg" in
+  *"실을 수 없습니다"*) ok "그 거절이 전체 행의 기준 주장 모순을 말한다" ;;
+  *) bad "전체 행 기준 사이클 문면" "$msg" ;;
+esac
+
+# Check 3 — the basis row must exist in this segment, and the refusal names the number.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "없는 기준 사이클은 거부된다" "$rc" "2"
+case "$msg" in
+  *"기준 사이클 7"*"없습니다"*) ok "그 거절이 없는 번호를 문면에 싣는다" ;;
+  *) bad "기준 사이클 부재 문면" "$msg" ;;
+esac
+
+# Check 5 — the basis is the latest full cycle; cycle 2 is newer than cycle 1.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=1" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "더 최근의 전체 사이클이 있으면 거부된다" "$rc" "2"
+case "$msg" in
+  *"최근의 전체 사이클"*": 2"*) ok "그 거절이 실제 최신 전체 번호를 문면에 싣는다" ;;
+  *) bad "최신 전체 사이클 문면" "$msg" ;;
+esac
+
+# A full row whose report cannot be opened still passes here: no new refusal on
+# the existing path, and the merge rule catches the absence at merge time.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$WORK/sd-missing.md"
+check "리포트를 열 수 없는 전체 행은 쓰기 시점에 통과한다" "$rc" "0"
+
+# Check 7 — the basis report must exist and carry a findings summary. Cycle 3
+# is now the latest full cycle and its report is the missing one above.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=델타 "기준 사이클=3" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "기준 리포트가 없으면 거부된다" "$rc" "2"
+case "$msg" in
+  *"「발견 요약」"*) ok "그 거절이 기준 리포트의 발견 요약을 지목한다" ;;
+  *) bad "기준 리포트 부재 문면" "$msg" ;;
+esac
+
+# The basis proper: cycle 4, full, with a SHORT sha — the delta rows below name
+# the same commit by its long sha, so the head comparison is by commit and not
+# by string.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=전체 P0=0 P1=0 "리뷰 HEAD=$head_b7" "리포트 경로=$SDREP_BASIS"
+check "짧은 sha 를 실은 기준 전체 행이 기록된다" "$rc" "0"
+
+# Check 6 — ancestry has three answers and the two refusals read differently.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_o" "리포트 경로=$SDREP_DELTA"
+check "기준 리뷰 HEAD 가 조상이 아니면 거부된다" "$rc" "2"
+case "$msg" in
+  *"조상이 아닙니다"*) ok "그 거절이 비조상을 말한다" ;;
+  *) bad "비조상 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "리포트 경로=$SDREP_DELTA"
+check "조상 관계를 판정할 수 없으면 거부된다" "$rc" "2"
+case "$msg" in
+  *"조상이 아닙니다"*) bad "판정 불가 문면" "판정 불가가 비조상으로 읽혔다: $msg" ;;
+  *"판정할 수 없습니다"*) ok "그 거절이 비조상과 다른 문면으로 판정 불가를 말한다" ;;
+  *) bad "판정 불가 문면" "$msg" ;;
+esac
+
+# Check 8 — the report is the source of the mode, in both directions.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BASIS"
+check "리포트가 전체인데 행이 델타면 거부된다" "$rc" "2"
+case "$msg" in
+  *"리뷰 모드"*"다릅니다"*) ok "그 거절이 모드 불일치를 말한다 (행 델타·리포트 전체)" ;;
+  *) bad "모드 불일치 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "리포트가 델타인데 행이 침묵하면 거부된다" "$rc" "2"
+case "$msg" in
+  *"리뷰 모드"*) ok "그 거절이 모드 불일치를 말한다 (행 부재·리포트 델타)" ;;
+  *) bad "침묵 행 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BADCYC"
+check "리포트의 기준 사이클이 행과 다르면 거부된다" "$rc" "2"
+case "$msg" in
+  *"리뷰 모드("*) bad "기준 사이클 불일치 문면" "번호 불일치가 모드 불일치로 읽혔다: $msg" ;;
+  *"기준 사이클(3)"*) ok "그 거절이 모드 불일치와 다른 문면으로 번호를 싣는다" ;;
+  *) bad "기준 사이클 불일치 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BADHEAD"
+check "리포트의 기준 리뷰 HEAD 가 기준 행과 다른 커밋이면 거부된다" "$rc" "2"
+case "$msg" in
+  *"같은 커밋이 아닙니다"*) ok "그 거절이 번호·모드와 다른 문면으로 커밋 불일치를 말한다" ;;
+  *) bad "기준 HEAD 불일치 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$WORK/sd-nope.md"
+check "리포트를 열 수 없는 델타 행은 거부된다" "$rc" "2"
+case "$msg" in
+  *"열 수 없습니다"*) ok "그 거절이 델타 행의 리포트 부재를 말한다" ;;
+  *) bad "델타 리포트 부재 문면" "$msg" ;;
+esac
+
+# Everything holds: the row is written, with the mode and the basis on it.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "조건이 전부 맞는 델타 행은 기록된다 (짧은·긴 sha 혼합 기준 HEAD 포함)" "$rc" "0"
+n=$(grep -c '^- `cycle` | 교대=[0-9][0-9]* | 세그먼트=SD | 사이클=5 | 모드=델타 | 기준 사이클=4 ' "$FX_LEDGER" || true)
+check "그 델타 행이 모드와 기준 사이클을 싣고 원장에 있다" "$n" "1"
+
+# Check 4 — no delta of a delta: cycle 5 is a delta, so it cannot be a basis.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=6 모드=델타 "기준 사이클=5" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "델타 사이클을 기준으로 삼으면 거부된다" "$rc" "2"
+case "$msg" in
+  *"델타의 델타"*) ok "그 거절이 델타의 델타를 말한다" ;;
+  *) bad "델타의 델타 문면" "$msg" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
@@ -8948,6 +9146,64 @@ else
   bad "B3" "예산을 넘겼는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
 fi
 
+# Half one-b — A LIVE STAGE IS NOT A SPINNING ROUTER.
+#
+# The boundary watches for the ROUTER burning acts without progress, and the
+# count cannot tell that from a dispatched stage authorising its own acts
+# through the same gate. Nor can volume: a stage moves the progress vector only
+# when it TERMINATES, so a review holds its segment at `리뷰중` for its whole run
+# while publishing witnesses, minting nonces and drafting its report — every one
+# of those an act in this total.
+#
+# Measured on run 20260912-376f0543: 84 acts in 35 minutes with the vector
+# unmoved, all of them the review stage's own. Five boundary approvals were
+# raised across that night and a person answered every one `무효`. Unattended
+# there is nobody, and each firing ends the shift — so a review long enough to
+# cross this budget stops the night it is running in.
+#
+# THIS RIDES THE WINDOW HALF ONE JUST EXHAUSTED, and that is the whole of why it
+# is here rather than after half two. Faking exhaustion by writing a stale
+# digest cannot work: the function compares that file against the current window
+# key FIRST, and a mismatch re-baselines the count to the total, so `n` is 0 and
+# the boundary stays silent whatever the guard does. An assertion built that way
+# passes against a build with no guard at all — measured, on this very block's
+# first draft. Half one has already proven this window fires, and nothing below
+# touches the two counter files, so a silence here is the guard's doing.
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+fx_stage_live B3LIVE
+B3LIVE_PID="$FX_LAST_PID"
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "살아 있는 스테이지 아래의 예산 초과" -- touch "$WORK/t4b"
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+check "살아 있는 스테이지가 있으면 B3 은 예산을 넘겨도 발동하지 않는다" "$after" "$before"
+
+# A DEAD STAGE DOES NOT HOLD IT SILENT. `cc_live_stages` counts processes rather
+# than pid files, and this pins that from the consumer's side: a stage that died
+# without cleaning up leaves its pid file behind, and a guard reading files would
+# leave the run unwatched for the rest of the night.
+kill "$B3LIVE_PID" 2>/dev/null || true
+wait "$B3LIVE_PID" 2>/dev/null || true
+rm -f "$RD/B3LIVE.pid" "$RD/B3LIVE.start"
+fx_stage_dead B3DEAD
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "죽은 pid 파일만 남은 상태의 예산 초과" -- touch "$WORK/t4c"
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "죽은 스테이지의 pid 파일은 B3 을 억제하지 않는다 (억제는 조건부이지 스위치가 아니다)"
+else
+  bad "B3 억제" "살아 있는 스테이지가 없는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+fi
+rm -f "$RD/B3DEAD.pid" "$RD/B3DEAD.start"
+
 # Half two — the regression. The same 41 acts, but progress has moved since,
 # which closes the old window and opens a new one holding none of them. A count
 # that never resets fires here; a windowed one does not.
@@ -8962,7 +9218,6 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
 after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
-
 # ---------------------------------------------------------------------------
 # The banner seat, gate side.
 #
@@ -9802,14 +10057,16 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # two lines, and the second is only correct where the first is. The three lines
 # now live ONCE, in `gate_close_settle`, and every terminal of `gate_close` —
 # the act/boundary `무효`·`거부`·`승인` arms and the judgment label arm — calls
-# it; so the pin is the helper's own adjacency plus the count of its call sites.
+# it, and so does the auto-resolution close, which ends an approval nobody
+# answered; so the pin is the helper's own adjacency plus the count of its call
+# sites.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 네 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "4"
+check "닫기 함수의 네 종단과 자동 해소 닫기가 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "5"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #

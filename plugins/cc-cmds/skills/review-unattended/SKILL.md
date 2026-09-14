@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -25,11 +25,36 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
+    - name: "--basis-cycle <n>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt."
+      parse_note: "`--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv."
+    - name: "--basis-review-head <sha>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview."
+      parse_note: "`--basis-review-head` takes the next token as its value. Value missing → treated as absent; see --basis-cycle's parse_note for the joint-absence rule."
+    - name: "--basis-report-path <abs-path>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed."
+      parse_note: "`--basis-report-path` takes the next token as its value. Value missing or not an absolute path → treated as absent; see --basis-cycle's parse_note for the joint-absence rule."
+    - name: "--recover"
+      kind: flag
+      default: "off (팀을 띄워 Steps 2~4 를 정상 수행)"
+      summary: "Steps 2~4 를 통째로 대체해 팀을 하나도 띄우지 않고, 드라이버가 지명한 위트니스 scratch 디렉터리의 디스크 내용만으로 리포트를 합성한다. 크래시로 죽은 리뷰 스테이지의 부분 산출물을 되살리는 경로."
+      parse_note: "값을 취하지 않는다. 이 플래그가 없으면 복구 절 전체가 발동하지 않는다."
+    - name: "--scratch-dir <abs-path>"
+      kind: flag
+      default: "off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다)"
+      summary: "드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다."
+      parse_note: "`--scratch-dir` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 지명이 없는 것으로 다뤄 열거 후 거부 경로로 간다."
     - name: "<directive>"
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(정지 술어를 얇게 만들기 때문), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -91,6 +116,8 @@ dispositions, and says so.
 
 **CFI-U1 — Scope is never narrowed autonomously.** The large-PR gate's narrowing options are a *user's* trade, not this arm's. `P0 + P1 == 0` is the pipeline's **only** termination predicate, so thinning the review thins the very signal that decides whether the loop stops — and unlike a token saving elsewhere, that failure is silent and self-congratulating. Review the whole confirmed scope. Where the change is genuinely large, say so in the report's overview and compose for it (a Scope Coordinator is outside the team-size ceiling), but do not drop files.
 
+**Amendment — a driver-declared delta is not an autonomous narrowing.** When `--basis-cycle`, `--basis-review-head` and `--basis-report-path` are all supplied and clear every check in Step 1b′, "the whole confirmed scope" for this cycle *is* the delta file set **for new findings** — the driver, not the model, made the trade that a file untouched since the last full review does not need a fresh read to discover new issues, and it made that trade on a git-verifiable basis rather than a judgment call. This is the same category of decision `--declared-files` already lets the driver make without violating this invariant. What CFI-U1 continues to forbid, unconditionally, is the arm narrowing **within** whatever scope it was handed on its own initiative, and the arm shrinking the *set of prior findings it accounts for*. That second door is closed structurally: every basis P0/P1, whether or not its cited file lies inside the delta file set, gets a fresh evidence-backed verdict every cycle (context-package item 18), never inferred from a git fact alone. So "did not re-read a file for a new issue" and "silently dropped a known one" can never be the same event.
+
 **CFI-U2 — There is no follow-up discussion step.** The base skill's Step 6 exists to talk to a user. This arm ends at Step 5 with the report written and the team cleaned up. Routing the findings is the orchestrator's triage stage, not this stage's job, and re-spawning a team to re-argue a severity here would duplicate that stage with worse information.
 
 **CFI-U3 — Severity ties default to the higher grade, and the exception needs a record.** The shipped rule takes the higher severity *unless the lead resolved the dispute*, and unattended there is no observable event that makes "the lead resolved it" true. So the exception counts as fired **only** where this arm records the decision, the rejected alternative, both rationales, and the `finding-id` in the report's `## 자율 승인 기록` section (Step 5). With no record, the default branch applies. This enforces the rule's own "document both rationales" sentence rather than overriding it.
@@ -107,6 +134,8 @@ dispositions, and says so.
 - the **gate snapshot** — being re-derived is its entire purpose.
 
 Those four are re-read every time they are consulted.
+
+**CFI-U7 — The recovery arm spawns nothing.** Under `--recover` this arm calls `Agent` zero times and reads only from disk. Every clause that stands up a team — Steps 3 and 4, the progress-checkpoint opt-in, the task-assignment header — does not reach it, so a recovery that finds itself composing a roster has already left the arm it was dispatched into.
 
 ---
 
@@ -140,6 +169,8 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
+- **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4 and go to `## Recovery arm` below.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
 - **Anything that resolves to no target, or to more than one** — an unparseable argument, a branch carrying multiple open PRs, an empty argument — is a **halt** with `분류: precondition-failed`, listing the candidates it found.
@@ -151,6 +182,44 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 Collect exactly what the base skill collects — repository slug, PR metadata, per-file `{path,additions,deletions}`, the full diff, existing inline review comments and review decisions (`--paginate`), general PR comments, and CI check status. For a local diff target use `git diff {DEFAULT_BRANCH}...HEAD` and `git log {DEFAULT_BRANCH}..HEAD --oneline`.
 
 **A supplied `--base-sha` is verified before it is used, and its failure is a fallback rather than a halt.** Run `git merge-base --is-ancestor <supplied base> <target head>`, where `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command happens to run in. On success, take the diff against that value — `git diff <supplied base>...<target head>`, `git log <supplied base>..<target head> --oneline` — **in place of the base derivation only**; a PR target still collects its metadata and comments the way it already does, and what is replaced is which two commits the diff spans. Binding to the ambient `HEAD` would make the guard depend on the caller's working directory, which is the same class of failure the flag exists to close: an interactive caller sitting in another checkout would verify a base against a tree the review is not about. that substitution is the whole reason the flag exists, since the driver resolved this base when it created the segment and re-deriving it here only re-answers a settled question. **On failure, fall back to the derivation this step already describes and record one line in the report overview naming the rejected value and the base actually used.** The failure mode being bought off is silent: a base that is not an ancestor of `<target head>` yields a diff of a tree nobody wrote, so the reviewers produce real findings about the wrong change and the report reads exactly as it would have. Halting instead would be the wrong trade for the same reason the unknown-flag bullet gives — the segment's review is the run's only `P0 + P1` signal, and a base the driver got wrong is recoverable by deriving one, while a parked segment is not recoverable by anything this arm can do.
+
+#### 1b′: Delta eligibility — every failure degrades to a full review, none halts
+
+A delta review reads only the files changed since this segment's last full cycle for new findings and re-adjudicates that cycle's P0/P1. It is attempted only when the driver supplied all three basis flags, and it holds only when every check below passes. **Every failure is a degradation to a full review, never a halt** — the same reasoning as the `--base-sha` fallback: the segment's review is the run's only `P0 + P1` signal, a wrong basis is recovered by reading everything, and a parked segment is not recoverable by anything this arm can do.
+
+| # | Check | On failure |
+| --- | --- | --- |
+| 0 | All three flags are present | None of the three: full review, silently, no overview line — that is the default. One or two: degrade, and one overview line names which arrived |
+| 0.5 | `--basis-cycle` is a positive integer and `--basis-report-path` is an absolute path | Degrade, and one overview line names which is malformed |
+| 1 | `git rev-parse --verify <basis-review-head>^{commit}` resolves | Degrade |
+| 2 | `git merge-base --is-ancestor <basis-review-head> <target head>` — `<target head>` is the branch or the PR head named explicitly, never the bare `HEAD`; exit 1 (not an ancestor) and exit ≥2 (undecidable) get different wording | Degrade |
+| 3 | The basis report exists, is not empty, and matches the `발견 요약` anchor `^[-*[:space:]]*\*\*발견 요약\*\*` | Degrade |
+| 4 | The basis report's `리뷰 모드` line says `전체` or is absent | Degrade — `기준 사이클이 델타 사이클입니다 — 델타는 연쇄되지 않습니다` |
+
+"Is the basis this segment's **latest** full cycle" is not checked here. This arm has no view of the ledger; it takes the router's selection the way it takes `--base-sha`, and the gate refuses a stale basis at write time. That is a division of labour, not a gap.
+
+Degradation overview line, for example: `델타 조건이 성립하지 않아 전체 리뷰로 진행합니다 (사유: 기준 리뷰 HEAD 가 대상 head 의 조상이 아닙니다).`
+
+#### Delta file set
+
+The set is "files changed on the segment's side since the basis review HEAD, conflict resolutions included, intersected with the segment's own diff". Two tree diffs intersected naively do not remove files that arrived only from master — the segment's three-dot diff contains merged-in files too — and `--first-parent --no-merges` alone misses the conflict-resolution edits inside a merge commit. The two are combined:
+
+```sh
+# BASIS = --basis-review-head, TARGET = 대상 head(명시), BASE = 1b 에서 확정한 diff 베이스
+SET_A=$( { git log --first-parent --no-merges -M --name-only --format= "$BASIS..$TARGET"
+           for m in $(git log --first-parent --merges --format=%H "$BASIS..$TARGET"); do
+             git diff-tree --cc --name-only --no-commit-id "$m"
+           done; } | grep . | sort -u )
+SET_B=$(git diff -M --name-only "$BASE...$TARGET" | sort -u)
+DELTA=$(comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
+```
+
+- `--cc` emits only the paths whose merge result differs from both parents, so a conflict a person resolved by hand is included and a clean merge that took one side as-is is not.
+- A **rename inside a merge commit** is not paired by `--cc`: the old path comes out as `DD` and the new one as `AA`, separately. `SET_B` is taken with `-M`, so only the new path survives the intersection. A basis finding that cites the old path is followed by the reviewer in the re-adjudication below regardless.
+- An empty `DELTA` (nothing on the segment side since the basis but clean merges) is still a delta review: there is no new-finding scope, and the basis P0/P1 re-adjudication is all that remains.
+- 1c's `--declared-files` comparison is **still against the whole segment diff**. The scope record is independent of the reading mode. A path outside the declaration that is also outside `DELTA` has that overlap noted under `## 미검토 영역`.
+
+**What is read.** Each file in `DELTA` is read as **that file's whole diff against the base**, not as the hunks since the basis. The saving comes from which files are opened, not from slicing the ones that are — a slice loses the surrounding function, and the loss is largest in exactly the files both sides touched.
 
 #### 1c: Scope record (no confirmation, no narrowing)
 
@@ -192,6 +261,7 @@ A small, single-concern change does not need a full team. Evaluate against the s
 - **PR mode** — sum `additions + deletions` over the per-file array from 1b; the file count is that array's length.
 - **Local diff mode** — aggregate `git diff {DEFAULT_BRANCH}...HEAD --numstat` and sum the added and deleted columns.
 - **File path mode** — there is no diff input, so **the gate does not apply**; compose normally and do not substitute an estimate.
+- **Delta mode** (every 1b′ check passed) — size and the risk indicators below are evaluated over the delta file set: sum `git diff --numstat "$BASE...$TARGET" -- <DELTA files>`. The new-finding search scope is `DELTA`, so the team is sized to it. The floor still holds, so an empty `DELTA` does not yield an empty roster. The basis P0/P1 re-adjudication (context-package item 18) is **not** counted here: its cost is bounded by the number of basis findings and it asks for no additional reviewer.
 
 **Risk indicators outrank the size row.** If any of auth/authorization, DB schema or query, public API surface, external service integration, or async/concurrency fires, compose for that risk no matter how small the diff is. A security-relevant change is very often a small patch.
 
@@ -228,12 +298,14 @@ Above 50 files in scope, add a **Scope Coordinator**. It is meta/orchestration r
 
 The spawn / ledger / resume+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return; each result is delivered by its **witness file** and the return text is only an early-wake hint.
 
-**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 17-item package, role checklists, protocol rounds, and facilitator additions.
+**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the context package — items 1–17, and item 18 which exists only in delta mode — role checklists, protocol rounds, and facilitator additions.
+
+- **In delta mode, item 18 carries the full text of every basis P0/P1 finding** — not filtered to the reviewer's file scope and not filtered to the delta file set — and each one is assigned to the composed reviewer whose role/category tag is the closest match (the smallest-scoped reviewer takes the remainder). Item 2's review-scope diff is the whole-file diff of each `DELTA` file against the base, per 1b′.
 
 - **Derive the review slug** from the target: PR → `review-pr{NUMBER}`; local diff → `review-{branch-name}`; file path → `review-{short-slug}`.
 - **Resolve the report path** per CFI-U4: `--report-path` when given, else `docs/reviews/{slug}.md`. Everything below writes to the resolved path.
 - **Early-stub the report doc** at spawn time so the ledger has a home (no TMPDIR fallback): an H1 title, then a `<!-- cc-design-ledger v3 … -->` HTML-comment block after the H1 and before the first `##`. Entry schema is the protocol's ledger v3.
-- **Spawn each reviewer** as a nameless background task, with the protocol's **task-assignment header** verbatim atop each prompt followed by the self-contained context package. Record each returned `agentId` immediately (`state=running`, round 1), stamping `epoch` (`max(disk epoch, 0)+1`, re-derived from the on-disk ledger — never an in-context counter) and the round-1 `witnessNonce` on every row in the same at-spawn window.
+- **Spawn each reviewer** as a nameless background task, with the protocol's **task-assignment header** verbatim atop each prompt followed by the self-contained context package. Record each returned `agentId` immediately (`state=running`, round 1), stamping `epoch` (`max(disk epoch, 0)+1`, re-derived from the on-disk ledger — never an in-context counter) and the round-1 `witnessNonce` on every row in the same at-spawn window. **Write each row's `role/scope` so that it begins with that seat's `{role-slug}` — the same slug the witness filenames use — followed by a space and then the prose.** The recovery arm's join reads that leading slug and has nothing else to read: a row written in any other shape resolves to `absent` there even with a completed witness on disk.
 - **Witness scratch dir**: before the first spawn, run the protocol's `## Spawn` command — `<plugin root>/orchestrator/cc-team-witness-init.sh <this review's slug>` (no `bash` in front — see the protocol's note) — and record the **printed path, literally** (not `$WITNESS_DIR`) as each reviewer's `scratchDir`. Out-of-tree under either root, leaving the boundary gate untouched.
 - **Progress checkpoint — this skill opts in.** Append the protocol's checkpoint clause verbatim after the task-assignment header in every reviewer spawn and resume prompt (`## Per-skill parameter seam` → **Parameter — progress checkpoint**), alongside the CFI injections below and substituting the same four tokens the header already substitutes. Reviewers publish to `${scratchDir}/partial/`; the lead reads no checkpoint in a live run.
 - **Every reviewer prompt additionally carries CFI-U0 and CFI-U5 verbatim.** A spawned reviewer has no question surface and no notification surface, modifies no code, and reports completion and blockage to its spawner by witness file and return value only — never a banner, by any route: not the notification tools, not a script, not by asking someone else to emit one on its behalf.
@@ -249,6 +321,42 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 **Before synthesizing, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure, naming/version conventions, and the paste-ready comment section.
 
 Synthesize into the resolved report path, following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place. **The `- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건` summary line is the driver's terminal predicate** — emit it byte for byte in the template's position.
+
+The two elements below are this arm's overlay on the shared template, in the same way `## 자율 승인 기록` is: `02-review-report-template.md` is unchanged, because the interactive `review` reads it unconditionally.
+
+#### `리뷰 모드` line — always
+
+Directly after the overview's `리뷰 대상` line, in every report, full or delta:
+
+```
+- **리뷰 모드**: 전체
+- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)
+```
+
+The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
+
+#### `## 기준 사이클 재판정` — delta mode only
+
+After `핵심 요약` and before the P0 section, one entry per basis P0/P1, none omitted:
+
+```
+## 기준 사이클 재판정
+
+- **[category]** `파일:라인` (사이클 N 발견) — 원 서술 한 문장
+    - **판정**: 해결됨 | 미해결
+    - **근거**: <수정 위치와 내용, 또는 결함이 남아 있음을 확인한 근거>
+```
+
+A finding judged `해결됨` leaves this cycle's severity sections, and this entry is its only audit record. A finding judged `미해결` re-enters this cycle's section at the same severity (or at the reviewer's explicit re-grade, under the CFI-U3 rule) carrying `(사이클 N에서 상속, 미해결)`. Basis P2/P3 findings are carried into this cycle's P2/P3 sections without re-adjudication, marked `(사이클 N에서 상속)`. The basis report's `## 미검토 영역` entries are carried into this cycle's `## 미검토 영역`, marked `(사이클 N에서 상속)`.
+
+**Counting rule** — the `발견 요약` line's **form is byte for byte unchanged**; only what it counts is defined here:
+
+```
+P0 = 미해결 기준 P0 + 델타 신규 P0
+P1 = 미해결 기준 P1 + 델타 신규 P1
+P2 = 상속 기준 P2   + 델타 신규 P2
+P3 = 상속 기준 P3   + 델타 신규 P3
+```
 
 #### `## 자율 승인 기록` — the section CFI-U3 requires
 
@@ -266,6 +374,75 @@ Below each P0~P2 finding's analysis, write a self-contained, paste-ready GitHub 
 **Then clean up and stop.** Read `${CLAUDE_SKILL_DIR}/../_common/team-cleanup.md` and apply it: returned tasks already self-terminated, so normal completion is a no-op plus ledger hygiene (no `state=running` row survives); `TaskStop` any genuinely-running leftover before marking it `aborted`. Removing the witness directory is part of what that file already mandates, path-guarded to the recorded `scratchDir`; do not restate it here. The restatement that used to sit here spelled it `rm -rf "$WITNESS_DIR"`, and that variable is unset in the shell the cleanup runs in — the expansion was empty, the command removed nothing, and the ledger recorded a cleanup that had not happened.
 
 **There is no Step 6** (CFI-U2). The findings are routed by the orchestrator's triage stage.
+
+---
+
+## Recovery arm (`--recover`)
+
+The driver dispatches this arm when a review stage terminated as a crash and the attempt it observed left a witness scratch directory behind. It replaces Steps 2, 3 and 4 outright: **nothing is spawned** (CFI-U7), and the report is synthesized from what is already on disk.
+
+1. **Entry.** Step 0's tool loading runs unchanged, and Step 1 runs only as far as parsing the target and resolving the report path. Steps 2 (codebase survey), 3 (team composition) and 4 (parallel review) do **not** run. What is produced is a Step 5 synthesis whose input is a directory instead of a team.
+2. **Precondition — refuse rather than improvise.** If the named directory is absent or is not a directory, **refuse**: write no report, point at `${RUN_DIR}/halt/<stage-id>.md` when one is there, and end the turn. Crash durability and precondition stops are disjoint failure classes, and offering a partial result for a stage that never started is a category error.
+3. **Enumerate-then-refuse.** With no naming — the forensic case, where a person invoked this arm by hand — list the candidates under `${CC_PIPELINE_RUN_DIR}/cc-team-witness-*/` that carry an `.attempt` stamp, print each candidate's stamp value beside it, and **recover nothing until one of them is named.** Retries of one logical segment each get their own directory and each writes `epoch 1`, so nothing inside them tells the attempts apart. **Do not sort by mtime** — the corpus holds a segment whose two attempts interleave across twelve hours, and mtime order lies there.
+4. **Tiered synthesis, per role.** Every role descends the tiers on its own; one role resolving high says nothing about the next.
+
+    **Where the roster comes from — named here, and fail-closed.** Item 8 quantifies over "every role", so that set has to exist before the tiers mean anything. It is **not** "the roles that left a file": a role that produced nothing leaves no file, and that role is precisely what the `absent` tier is for, so a filename-derived set can never contain one and the tier would be unreachable by construction.
+
+    - **Source** — re-read from disk the `<!-- cc-design-ledger v3 … -->` block in the report path this dispatch resolved. Step 4 early-stubs that block before the first spawn and every row carries `role/scope`, so on every path that leads here it is already written. Scope the rows the way the shared protocol already scopes a roster — `_common/agent-team-protocol.md`'s dispatch-completeness gate. **Before applying `max(epoch)`, evaluate that gate's 3-way epoch-mode precondition over the non-aborted rows**, and take all three branches, not the middle of the summary:
+        - every non-aborted row carries an `epoch` → the roster is the rows whose `epoch` equals `max(epoch)`;
+        - no non-aborted row carries one → the roster is **epoch-agnostic**, every non-aborted row;
+        - **some but not all carry one → the roster cannot be obtained**, and the third suppression condition below applies.
+
+        No team scoping is invented here — all three branches are the protocol's, and writing them out is the point. A reader given only "`max(epoch)` over the non-aborted rows" computes it directly, an epoch-less row drops out of the comparison on its own, and nothing in that sentence marks the drop as a decision. The dropped row is a **dispatched seat**, so losing it shrinks the set item 8 quantifies over and removes a suppression that should have fired. Taking the third branch explicitly is also what keeps this arm off the protocol's `AskUserQuestion` terminus for that case.
+    - **A role present in the block with nothing on disk resolves to `absent`.** This is what makes that tier reachable.
+    - **The join is literal and injective.** The roster is ledger rows and the tiers resolve over filenames, so the two have to be joined, and the key is named here rather than left to the reader: match the **leading slug of the row's `role/scope`** against the **`{role-slug}` component of the filename**, by literal equality only, and **assign each file to at most one row** — a file already assigned to a row is not available to a second one, and a row left with no file resolves to `absent`. Injectivity is the load-bearing half. Without it two rows whose slugs share a prefix both resolve to `witness` off the same file, a seat that produced nothing is covered by another seat's output, item 8's universal comes out true, and the ordinary line is emitted for a recovery that lost a seat.
+
+        **The leading slug is the field's text up to its first space.** Role slugs carry no space, so the first space is the delimiter, and a field holding no space is entirely the slug. Step 4 obliges rows to be written in that shape, which is what keeps the left-hand side of this join from being free prose.
+    - **An `absent` that the join produced is marked as one.** Where a row resolved to `absent` and the directory still holds a witness file assigned to no row, write that row's tier in `## 복구 프로버넌스` as `absent (조인 미해소: {배정되지 않은 파일명})`. **The tier itself stays `absent`** — item 8's suppression is unchanged, so this adds no path and removes none. What it buys is narrow and is worth stating as narrow: the committed report names the leftover output beside the absence, so a later reader can see that something was on disk which no row claimed. It does not identify which row that file belonged to — the join is what would have done that — and it stays silent where a mis-written row happened to match some other seat's filename, because then nothing is left over to name.
+    - **"The roster could not be obtained" is a third suppression condition** standing beside `checkpoint` and `absent` (item 8). The block is missing, or does not parse, or yields zero rows — in each case the ordinary findings-summary line cannot be emitted. This is what closes the empty-directory limit: item 2 refuses only on a *missing* directory, so an empty one reaches this far, and an empty one yields no roster.
+    - **A roster derived from filenames is a lower bound and is labelled as one.** Where the block is unavailable it is still worth reading the filenames to say what was found, but the report records it as a lower bound and item 8's suppression stays in force regardless.
+
+    The third condition is not a change to the interlock's rule. The rule is that a recovery in which every role resolved to `witness` with no resolution round below the last recorded round and none below the highest round that role itself reached emits the line normally; with no roster that antecedent cannot be **evaluated** — none of its conjuncts, since the roster is what they all range over — so the rule asserts nothing about the case. Evaluating an unevaluable antecedent fail-closed leaves the condition itself untouched.
+
+    **Reading the round.** The ladder below is keyed on a round, so read the round first. Take it from the filename layout the protocol's `## Witness file` → **Layout** pins (`{role-slug}.round-N.md` for discussion rounds, `{role-slug}.{phase}.md` for phase work), and cross-read the ledger block's `round/phase` column. This is the same block read the roster already does.
+
+    **Round first, tier second.** Resolve a role's **round** before its tier. The role's **resolution round** is the round the ladder actually resolves it at: start at the highest round at which that role left anything at all — witness or checkpoint, the tiers do not compete for it — and read the tier **at that round**; where the totality clause below sends the role to a lower round, that lower round is the resolution round. Tier precedence applies only *within* one round.
+
+    Picking the highest round per tier independently inverts the interlock. A seat that reached round 2 and left only a checkpoint there, while still holding a completed round-1 witness, resolves to `witness`@1 and passes; the round-2 checkpoint is never consulted, and item 9's one-row-per-role forecloses recording both. What costs the suppression is then an **excess** of evidence rather than a shortage, which is backwards — a seat that got to round 2 and could not finish is the evidence of non-convergence. Under round-first that seat resolves to `checkpoint`@2 and item 8 suppresses.
+
+    - **`witness`** — at the resolution round, a file satisfying `witness_present` as `_common/agent-team-protocol.md`'s `## Completion predicate` defines it. Which tier a file is a *candidate* for is a separate routing question, decided by the two-token discriminator in its last non-empty line — `cc-witness` … `complete` routes here, `cc-partial` … `progress` routes to `checkpoint`; `witness_present` then decides whether the candidate holds. Where the ledger block records no nonce for that `(role, round)` and conjunct 3's nonce comparison therefore cannot be made, fall back to a self-consistency check — the filename's round key against the sentinel's — and **record `nonce 미검증` in the report**; the downgrade is tolerable only while it stays visible.
+    - **`checkpoint`** — at the resolution round, a checkpoint under `partial/` whose last non-empty line satisfies `cc-partial … progress {nonce} seq=<n>`. Record the `seq`.
+    - **`absent`** — nothing on disk for that role at any round. **Record the absence explicitly and never fabricate.**
+    - **The ladder is total, and that has to be said.** A candidate routed here by `cc-witness … complete` whose `witness_present` does not hold is not a `witness`; it is not a `checkpoint` either, because its discriminator is the other one; and it is not `absent`, because `absent` means nothing on disk. **Such a candidate contributes no tier — it is discarded, not promoted and not demoted.** Then resolve the round it sat at from whatever else is there: if that round still holds a checkpoint, the role is `checkpoint` at that round; only if the round is left holding nothing does the role **descend to the next lower round** and resolve there — **and that lower round becomes the role's resolution round, which is the value items 8 and 9 read** — and only if no round is left below does it resolve `absent`.
+
+        The discard is per candidate, never per round — a failed witness candidate must not drag the round down with it, because the checkpoint sitting beside it at that same round is exactly the non-convergence evidence the round-first rule exists to surface. Without the clause as a whole the ladder is a partial function, a role can leave item 4 carrying no tier at all, and item 8 has nothing to quantify over for that role.
+5. **`seq` records, it never adjudicates.** Put the `seq` as read into the provenance table and select nothing with it. A later reader who finds the on-disk `seq` ahead of the recorded one learns after the fact that the producer was alive during recovery, and that is the moment the fact becomes actionable — not now.
+6. **No pid liveness check.** Do not test whether the producing process is still alive. A pid is reusable and can be live on another host or process tree, so the test is insufficient; worse, it revives the "absence of signal ⇒ death" inference the reconcile ladder deliberately deleted. The authority is the driver's dispatch.
+7. **Publication — absence-conditional CAS.** Write to the path the report-path flag names. The condition is that the path does **not already hold a completed report**, and completion is decided by whether the driver's termination-predicate line appears anywhere in that file. **It is not decided by the file existing.** Step 4 early-stubs the report before the first spawn and the scratch directory is created in that same window, so on every path that leads to a recovery the report file is already there; a file-existence test would push every recovery onto the sibling path and break the requirement that a recovery land where the driver reads. If the predicate line is already present, the original stage came back and finished — write `<report>.recover.md` instead, and say so in both the report and the return value. Publish by writing the whole file to a temporary file in the same directory and renaming it with a plain `mv`.
+
+    - **Carry the ledger block over into the published file.** The rename replaces the whole file, so the block item 4 had to read is destroyed by the very act that consumes it — and then a second recovery, and a person doing forensics, have no source left to re-derive the roster or `epoch` from. The ordinary Step 5 states the same thing as "Leave the `<!-- cc-design-ledger v3 … -->` block in place"; this is that clause's counterpart on the recovery path.
+    - **Re-check immediately before the `mv`.** The first check happens before synthesis and the synthesis is the long part, so re-read the target for the predicate line as the last act before the rename. If it appeared in between, divert to `<report>.recover.md` on the same terms as the first check.
+    - **The residual that stays open, stated rather than papered over.** A read followed by a rename in user space is not atomic, and the two checks narrow the window without closing it. **No upper bound on the remaining window is claimed.** The driver does call `reap_orphan` immediately before dispatching this arm, but on every path that reaches that call the pid file is already gone, so the call returns at its first line and signals nothing; where a signal was sent it went at an earlier and unrecorded moment, and the pid file that would have confirmed the death was removed by the sending call itself. What the driver carries onto the recovery row is the `.reaped` stamp — the `kill -0` verdict as of that earlier moment, or `미상` when no reap ever ran. **The stamp carries no timestamp, so it says whether the original was still alive at that moment and nothing about when or for how long; the size of the window is not recovered by it either.** This arm is accepted with that residual open and visible. Anything stronger — a lock directory beside the report, or `mv -n` to a distinct name followed by a guarded promotion — would be a real compare-and-swap; this is not one, and calling it "CAS" is the name it was given, not a description of the primitive.
+8. **Interlock.** Follow the shape the report template pins. Emit the findings-summary line verbatim in the template's position **only when every role resolved to `witness`, no role's resolution round is below the last round the ledger block's `round/phase` column records, and no role's resolution round is below the highest round at which that role left anything at all**. If any role came back `checkpoint` or `absent`, **or if every role resolved to `witness` but any of them did so at a round below that last recorded round**, **or if the roster could not be obtained** (item 4), **or if any role's resolution round is below the highest round at which that role left anything at all**, emit the partial-recovery line the template defines instead, and put the predicate shape nowhere in the file.
+
+    The ledger-round term costs no new input — item 4's **Reading the round** already reads it, for the ladder and from the same ledger block. Tier alone is not sufficient: rounds after the first exist to cross-review and converge, so a recovery assembled entirely from round-1 witnesses is a finding set that has not yet had its self-refutations taken out of it, and under a tier-only condition it emitted the ordinary line and terminated the run.
+
+    **What the ledger-round term catches is bounded by its comparand, and the bound has to be written down because it is not the bound a reader assumes.** That term fires only where the ledger block has already recorded the higher round. The lead issues a resume before writing the flip, so a crash landing in between leaves every row at `round-1`: the comparand falls with the work, a recovery assembled entirely from round-1 witnesses sits at the comparand rather than below it, and the ordinary line goes out for exactly the corpus the paragraph above says is not publishable. The reached-round term does not rescue that case **on any corpus in which every seat resolved to `witness` at the highest round it reached** either — that term compares per role, so a seat resolving at its own highest round is not below it, whatever round the rest of the roster got to. **Only a seat whose resolution round fell below the round it reached is outside this residual, and the reached-round term fires on that one.** **Nothing on disk separates that crash from a team that legitimately finished in one round where every seat reached only round 1.** An input from outside the ledger does exist and this arm already holds it: `_common/agent-team-protocol.md`'s `### Round budget`, which Step 0 reads and which binds the team whose corpus this arm is reading, is the one place that fixes how many rounds a team drives. It is named here and **not** adopted as a comparand, for two reasons — and the numbers stay in that section, so what follows is about its standing rather than its values. It states what a team is to be driven to rather than what this stage was driven to. And a policy constant moves: that section's values are editable where they live, so a comparand read from there would move under an edit made entirely inside the protocol; and the protocol requires a skill carrying a different value to state the carve-out **in its own control-flow invariants**; the protocol already names one shipped fan-out that deliberately runs a single round, so the day this skill's team took one, this file is where it would be written. The residual therefore stays open with the alternative **named and declined**, not with the alternative denied. Both terms are real narrowings of the tier-only condition and neither is a closure of it.
+
+    **The reached-round term is what item 4's descent would otherwise throw away.** A role that reached round 2, left a candidate there that `witness_present` refuses, and had nothing else at that round descends to round 1 and resolves there — and that seat is precisely the one this arm calls the evidence of non-convergence. Under the ledger comparison alone the descent is invisible, because a crash before the round-2 flip leaves the column at `round-1` too and the descended seat is not below it. The comparand for this second term is not the ledger's at all: it is the highest round at which that role left anything, which item 4 already reads as the ladder's starting point and then overwrites. Reading it once more costs no new input and closes per role, so no `max` across the roster is taken.
+
+    **The ledger-round comparison is one-sided, and the two conditions above are exact complements over a uniformly-`witness` roster.** A resolution round *above* the last recorded round belongs on the emitting side, and that is a direction rather than a tolerance: the resolution round is read from the files on disk while the comparand is read from the ledger block's column, and `_common/agent-team-protocol.md` regulates that column as a **conservative under-claim** that may lag reality. A role resolving above it therefore left a `witness_present` file at a round the column had not caught up to — more of the ladder than the column claims, not less. What is *not* claimed is that such a round finished converging; only that the shortfall test is not what would catch it. Written with `equals`, that state satisfies neither this condition nor the suppression clause, and nothing below decides it.
+
+    **The reached-round comparison is one-sided by construction rather than by argument, and that is why adding it keeps the complement exact.** The ladder starts a role at the highest round it left anything at and only ever descends from there, so a resolution round can never exceed that comparand; `below` and `not below` exhaust it with no third state to fall through. The ledger-round comparison needed the under-claim argument above precisely because its comparand comes from a different source than the value being compared, and this one does not.
+
+    That line carries the lowest tier reached and the **lowest round** any role resolved at, in the form the template pins — a reader who has to judge whether an unconverged synthesis is worth acting on cannot do it from the tier alone. Where the tiers are uniformly `witness` and only the round fell short, the tier field reads `라운드 미달`, which is the case that had no representation before.
+
+    **`라운드 미달` does not say which of the two comparisons produced it, and the provenance table is where that is read.** Both shortfalls are round shortfalls and both leave the tiers uniformly `witness`, so one value covers them and the vocabulary of the partial-recovery line stays closed. A row whose resolution round and reached round differ fell short of its own reach; a row where they agree and both sit under the last recorded round fell short of the ledger's column. The distinction matters to the reader, not to the predicate, which is why it lives in the table rather than in the line.
+9. **`## 복구 프로버넌스`.** Emit this section in the report — one row per role carrying role / tier / resolution round / **reached round** / file / `seq` / whether `nonce 미검증` applies. **The reached round is the highest round at which that role left anything at all** — the value item 4 starts the ladder from — and it is carried so that a seat whose two rounds differ is visible as one. The tier cell carries item 4's `조인 미해소` marking wherever that marking applies.
+10. **A recovery cleans nothing up.** Under `--recover` the witness scratch directory is **never removed** and **no `TaskStop` is issued** — Step 5's terminal cleanup paragraph does not reach this arm.
+    - `_common/team-cleanup.md`'s `rm -rf` of the scratch dir is scoped to *normal workflow completion*, and it specifies retention on a workflow-level abort. What is on disk here is a crashed stage's leftovers, which is the second case, not the first. Deleting it destroys the only forensic record of a crash and the only input a second recovery could read.
+    - `TaskStop` is likewise excluded. Every row of a crashed stage's ledger is still `state=running` and those `agentId`s belong to a dead session, so this process does not own them; the crashed stage's tasks are not this process's to stop.
+    - **What this arm does inherit from Step 5** is exactly: reading the report template, the synthesis itself, the `## 자율 승인 기록` section, and the paste-ready comments. Item 1 calls the product "a Step 5 synthesis", and that phrase names the synthesis, not the step's terminal cleanup.
 
 ---
 
