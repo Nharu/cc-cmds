@@ -5397,9 +5397,10 @@ B7_LOG="$WORK/b7-appended.txt"
       sleep 0.05
     done
     if [ "$b7w" -le 20 ]; then
+      printf '%s %s\n' "$$" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
       grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
       printf '%s\n' "B7X-$i" >> "$B7_LOG"
-      rmdir "$B7_IDX.lock" 2>/dev/null || true
+      rm -rf "$B7_IDX.lock" 2>/dev/null || true
     fi
     i=$((i + 1))
     sleep 0.05
@@ -5464,6 +5465,46 @@ check "B7L 락을 놓으면 다음 패스가 그 항목을 지운다" \
 # 이후 모든 사이클이 영구히 포기하게 되고, 그 정체는 아무 데도 보고되지 않는다.
 check "B7L 프룬이 끝나며 락 디렉터리를 남기지 않는다" \
   "$(find "$BSESS" -type d -name '*.lock' 2>/dev/null | grep -c . || true)" "0"
+
+# --- B7X — 주인이 죽은 잠금은 만료한다 --------------------------------------
+#
+# 이 잠금은 못 잡으면 쓰기를 건너뛰므로, 주인이 죽어 남은 디렉터리는 그 세션의
+# 인덱스 갱신과 그 파일에 대한 프룬을 영구히 끈다. 그리고 그 정지는 아무 데도
+# 보고되지 않는다. 회수 잠금이 같은 것을 먼저 배웠고 그 모양을 그대로 쓴다 —
+# owner 줄로 나이를 재되, 읽을 수 없으면 디렉터리 자신의 mtime 으로 떨어진다.
+b_victim RV-B7X "$BAGE_OLD" 종단
+B7X_IDX="$BSESS/sess-b7x"
+fx_session_index sess-b7x RV-B7X
+# (a) owner 줄이 있고 오래된 잠금 — 만료되어 프룬이 항목을 지운다.
+mkdir "$B7X_IDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(( $(date -u +%s) - 600 ))" > "$B7X_IDX.lock/owner"
+b_trigger RB7X
+check "B7X 주인 줄이 오래된 잠금은 만료되고 프룬이 진행한다" \
+  "$(b_exists "$B7X_IDX")" "no"
+check "B7X 만료 뒤 잠금 디렉터리도 남지 않는다" \
+  "$(b_exists "$B7X_IDX.lock")" "no"
+# (b) owner 줄을 읽을 수 없는 잠금 — 디렉터리 mtime 으로 나이를 잰다. 이 팔이
+#     없으면 owner 없이 남은 잠금이 영구가 되고, 그 모양은 해제가 두 단계일 때
+#     정상 경로에서도 만들어진다.
+b_victim RV-B7X2 "$BAGE_OLD" 종단
+B7X2_IDX="$BSESS/sess-b7x2"
+fx_session_index sess-b7x2 RV-B7X2
+mkdir "$B7X2_IDX.lock" 2>/dev/null || true
+fx_age_file "$B7X2_IDX.lock" 600
+b_trigger RB7X2
+check "B7X 주인 줄 없는 오래된 잠금도 디렉터리 mtime 으로 만료된다" \
+  "$(b_exists "$B7X2_IDX")" "no"
+# (c) 대조군 — 갓 잡힌 잠금은 만료되지 않는다. 이것이 없으면 위 둘은 「만료가
+#     동작한다」가 아니라 「잠금이 아예 안 걸린다」로도 통과한다.
+b_victim RV-B7X3 "$BAGE_OLD" 종단
+B7X3_IDX="$BSESS/sess-b7x3"
+fx_session_index sess-b7x3 RV-B7X3
+mkdir "$B7X3_IDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(date -u +%s)" > "$B7X3_IDX.lock/owner"
+b_trigger RB7X3
+check "B7X 갓 잡힌 잠금은 만료되지 않는다 (위 둘이 공허하지 않다)" \
+  "$(grep -cxF 'RV-B7X3' "$B7X3_IDX" 2>/dev/null || true)" "1"
+rm -rf "$B7X3_IDX.lock" 2>/dev/null || true
 
 # 대조군 — 순진한 read-modify-write. 이 케이스가 공회전으로 통과할 수 없게 한다:
 # 같은 관용구·같은 부하에서 순진한 방식이 유실을 내야, 위의 0 이 「경합이
