@@ -114,6 +114,24 @@ Your context barely grows while a stage works, so holding costs almost nothing �
 
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
 
+#### Dispatching a review cycle in delta mode
+
+The `cycle` row you write after a review stage takes two optional fields beyond the five required ones:
+
+```
+act --kind cycle -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
+```
+
+`cycles[]` entries in the snapshot carry `세그먼트`·`사이클`·`P0`·`P1`·`모드`·`리뷰 HEAD`·`리포트 경로`; an empty `모드` reads as `전체`.
+
+A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. Five things, in order:
+
+1. **Basis selection.** Filter `cycles[]` to this segment and take, among the rows whose `모드` is `전체` or empty, the one with the largest `사이클`. None → dispatch a full review exactly as before. One → carry that row's `사이클`, `리뷰 HEAD` and `리포트 경로` into the `/cc-cmds:review-unattended` prompt as `--basis-cycle <n> --basis-review-head <sha> --basis-report-path <abs>`, alongside the `--report-path`, `--base-sha` and `--declared-files` you already pass. All three or none: the skill treats a partial set as absent.
+2. **Path resolution.** The basis row's `리포트 경로` may be relative to the target's base. You hold the manifest path, so build `dirname(<매니페스트>)/../../<경로>` and pass the absolute result; an absolute value goes through as-is. No new snapshot key exists for this.
+3. **The row's mode is copied from the report, never from the dispatch.** After the stage ends, read the report overview's `- **리뷰 모드**: …` line and write `모드` and `기준 사이클` on the `cycle` row from that line: `- **리뷰 모드**: 전체` → `모드=전체` (or omit both fields); `- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)` → `모드=델타 '기준 사이클=<n>'`. The skill degrades to a full review when any eligibility check fails, and only the report says whether it did. The gate compares the row against the report on every `cycle` write and refuses a mismatch with exit 2; the repair is to rewrite the row to what the report says.
+4. **No new question point.** When a basis exists, attempting delta is the default. Whether it holds is decided by the skill's eligibility checks and the gate's write-time checks, not by asking.
+5. **The snapshot window is a limit, stated rather than hidden.** `cycles[]` is the ledger's last twenty `cycle` rows, so a segment whose basis row has been pushed out of the window by other segments' cycles gets a full review. That errs toward reading more, never toward a false delta.
+
 ## Ending your shift
 
 Check `shift.over_soft` on every snapshot. When it is true — or when you took exit 5, or a `propose-done` was accepted — write this and then exit:
