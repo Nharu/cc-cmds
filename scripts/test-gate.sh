@@ -5702,6 +5702,22 @@ n=$(grep -c . "$SIDX" 2>/dev/null || true)
 check "한 세션에 런이 둘이면 두 줄로 남는다 (덮어쓰기가 아니다)" "$n" "2"
 sed '/^R-OTHER$/d' "$SIDX" > "$SIDX.tmp" && mv "$SIDX.tmp" "$SIDX"
 
+# 잠금이 걸린 색인에는 게이트가 쓰지 않는다. 위 단언들은 전부 무경합 경로라
+# `gate_main` 에서 잠금을 잡고 놓는 두 줄을 지워도 그대로 통과한다 — 즉 「append
+# 는 잠금을 잡고, 잡지 못하면 이번 쓰기를 건너뛴다」를 고정하는 것이 여기뿐이다.
+# 뒤의 단언은 앞의 것이 「잠금이 막았다」가 아니라 「애초에 쓰지 않는다」로 통과
+# 하는 것을 막는다.
+rm -f "$SIDX"
+mkdir "$SIDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(date -u +%s)" > "$SIDX.lock/owner"
+gate snapshot --manifest "$MANIFEST"
+check "잠금이 걸린 순방향 색인에는 게이트가 쓰지 않는다" \
+  "$(if [ -e "$SIDX" ]; then printf 'yes'; else printf 'no'; fi)" "no"
+rm -rf "$SIDX.lock"
+gate snapshot --manifest "$MANIFEST"
+check "잠금을 놓으면 같은 진입이 색인에 쓴다 (위가 공허하지 않다)" \
+  "$(grep -cxF 'R2' "$SIDX" 2>/dev/null || true)" "1"
+
 # Every `act` carries a snapshot digest, and the snapshot moves whenever a row
 # lands — so it is re-read immediately before each one rather than reused.
 snapH() {
@@ -6003,7 +6019,11 @@ B7_LOG="$WORK/b7-appended.txt"
       sleep 0.05
     done
     if [ "$b7w" -le 20 ]; then
-      printf '%s %s\n' "$$" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
+      # `$BASHPID` 이지 `$$` 가 아니다 — `( … ) &` 안에서 `$$` 는 부모 셸의 pid 로
+      # 확장된다. 파싱되는 것은 타임스탬프뿐이라 동작은 같지만, 이 블록이
+      # 「게이트의 관용구를 축자로 쓴다」고 선언했고 게이트에서 그 자리는 실제로
+      # 잠금을 쥔 프로세스다.
+      printf '%s %s\n' "$BASHPID" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
       grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
       printf '%s\n' "B7X-$i" >> "$B7_LOG"
       rm -rf "$B7_IDX.lock" 2>/dev/null || true
@@ -6069,8 +6089,11 @@ check "B7L 락을 놓으면 다음 패스가 그 항목을 지운다" \
   "$(b_exists "$B7L_IDX")" "no"
 # 그리고 프룬은 자기가 잡은 락을 반드시 놓는다. 놓지 않으면 위 단언은 통과하되
 # 이후 모든 사이클이 영구히 포기하게 되고, 그 정체는 아무 데도 보고되지 않는다.
-check "B7L 프룬이 끝나며 락 디렉터리를 남기지 않는다" \
-  "$(find "$BSESS" -type d -name '*.lock' 2>/dev/null | grep -c . || true)" "0"
+# `*.lock*` 로 넓힌다 — 해제가 rename 이 되면서 `*.lock.dead.<pid>.<epoch>` 라는
+# 두 번째 모양이 생겼고, `*.lock` 만 보면 그쪽 누수를 조용히 놓친다. 이 단언이
+# 잡던 것이 바로 누수라 좁은 채로 두면 잡던 것을 안 잡게 된다.
+check "B7L 프룬이 끝나며 락 디렉터리를 남기지 않는다 (물러난 잠금 포함)" \
+  "$(find "$BSESS" -type d -name '*.lock*' 2>/dev/null | grep -c . || true)" "0"
 
 # --- B7X — 주인이 죽은 잠금은 만료한다 --------------------------------------
 #

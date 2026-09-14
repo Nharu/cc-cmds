@@ -2936,9 +2936,15 @@ gate_index_lock() {
   # deliver that — the (size, mtime) pair is re-read BEFORE the `mv`, so an
   # append landing between the comparison and the rename is overwritten by a
   # swap that already decided nothing had moved. Check-then-act with another
-  # writer in the gap is not a guarantee, it is a narrow window, and the window
-  # was observed closing on a CI runner with nothing else competing for the
-  # disk.
+  # writer in the gap is not a guarantee, it is a narrow window, and that window
+  # has been observed closing TWICE. Once locally while eight other suites were
+  # running, which is the reading the issue was filed on and which reads as "make
+  # enough load and it reproduces". Then on a CI runner, where by the time this
+  # suite reached the assertion the job's other fifteen had been finished for
+  # twenty minutes and it was the only thing running. So load OUTSIDE this suite
+  # is not what opens it. Load inside is — the case runs a writer against the
+  # reaper on purpose, and without a concurrent writer there is no window at all,
+  # because check-then-act with nobody in the gap does nothing.
   #
   # `mkdir` because it is atomic on every filesystem this runs on and needs no
   # external tool, the same reason the settings mutex uses it. The lock is PER
@@ -2948,11 +2954,21 @@ gate_index_lock() {
   #
   # THE BUDGET IS DELIBERATELY SHORT. The appender runs on every gate entry —
   # over 875 times in the busiest run measured — so the thing that must not
-  # happen is a gate entry stalling behind a reaper. Twenty tries at 50ms caps
-  # the wait at one second, and a caller that times out is expected to skip its
+  # happen is a gate entry stalling behind a reaper. Twenty sleeps of 50ms
+  # across twenty-one `mkdir` attempts hold the wait to about a second — about,
+  # because `sleep` is a floor rather than a ceiling and the attempts fork. A
+  # caller that times out is expected to skip its
   # write rather than force it: that is exactly the self-healing the append side
   # already documented, and it is now the ONLY path that skips, instead of being
   # a property invoked to excuse a race.
+  #
+  # THAT BUDGET IS PER INDEX FILE, not per cycle, and the prune walks every file
+  # in the directory. A cycle that meets N locked indexes waits about N seconds,
+  # and nothing caps the total. At this tree's scale the prune runs on a sparse
+  # cadence and meets contention almost never, so the sum has not been worth
+  # bounding; a tree with many actively-appended session indexes would have to
+  # revisit it.
+  #
   # A LOCK THAT OUTLIVES ITS HOLDER EXPIRES, and leaving that out would have been
   # worse here than anywhere else in this file. The settings mutex can refuse
   # forever and stay safe, because a caller that cannot take it returns its
@@ -2969,17 +2985,36 @@ gate_index_lock() {
   # magnitude of headroom is what keeps the expiry from ever reaching a live
   # holder, and the reap lock's fifteen minutes would be the wrong number for
   # the same reason in the other direction: this path runs on every gate entry.
-  local lockdir="$1.lock" waited=0 owner ots now
+  local lockdir="$1.lock" waited=0 owner ots now dead
   while ! mkdir "$lockdir" 2>/dev/null; do
     waited=$(( waited + 1 ))
     if [ "$waited" -gt 20 ]; then
       owner=$(cat "$lockdir/owner" 2>/dev/null || true)
       ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
       [ -n "$ots" ] || ots=$(gate_mtime "$lockdir")
-      [ -n "$ots" ] || return 1
+      # "THE LOCK IS GONE" AND "THE LOCK CANNOT BE DATED" ARE DIFFERENT EVENTS
+      # and used to fall down the same branch. If the holder releases between
+      # the last failed `mkdir` and the `cat` above, the owner line is
+      # unreadable AND the directory has no mtime, so both reads come back
+      # empty — and giving up there skips a write against a lock that is not
+      # there any more. One attempt separates them: it succeeds exactly when the
+      # lock is gone, and fails exactly when the lock is present but undateable,
+      # which is the case that must still give up.
+      if [ -z "$ots" ]; then
+        mkdir "$lockdir" 2>/dev/null || return 1
+        break
+      fi
       now=$(date -u +%s)
       [ $((now - ots)) -ge 60 ] || return 1
-      rm -rf "$lockdir" 2>/dev/null || true
+      # THE STEAL IS A RENAME, so exactly one waiter wins it. `rm -rf` and then
+      # `mkdir` lets two waiters that timed out together both believe they hold
+      # the lock: the second `rm -rf` removes the directory the first has just
+      # created. A rename names one winner and the losers get ENOENT. Whoever
+      # loses the `mkdir` that follows returns 1 and skips this write, which is
+      # the same safe direction as any other failure to take the lock.
+      dead="$lockdir.dead.$$.$now"
+      mv "$lockdir" "$dead" 2>/dev/null || return 1
+      rm -rf "$dead" 2>/dev/null || true
       mkdir "$lockdir" 2>/dev/null || return 1
       break
     fi
@@ -2990,12 +3025,31 @@ gate_index_lock() {
 }
 
 gate_index_unlock() {
-  # ONE `rm -rf`, NOT the owner line and then the directory. The reap lock was
-  # released in two steps and every ordinary release passed through a moment
-  # where the lock existed with no owner line; any failure of the second step
-  # froze it there for good. The mtime fallback above covers that shape, but not
-  # producing it is cheaper than covering it.
-  rm -rf "$1.lock" 2>/dev/null || true
+  # THE RELEASE IS ONE RENAME, the form the reap lock already arrived at. An
+  # earlier version of this function used a single `rm -rf`, on the reasoning
+  # that not producing an owner-less lock is cheaper than covering one — but
+  # `rm -rf` on a directory unlinks the owner line and THEN removes the
+  # directory, so that version passed through the very state it claimed not to
+  # produce, on every ordinary release, and leaned entirely on the mtime
+  # fallback it was arguing against.
+  #
+  # THE DESTINATION CARRIES THE PID AND A TIMESTAMP because `mv` into a
+  # directory that already exists moves the source INSIDE it rather than
+  # failing. A fixed name would nest retired locks inside one another the first
+  # time a pid was reused and a cleanup had failed, and the nested one would
+  # never be walked again.
+  #
+  # THE RETIRED LOCK LANDS IN THE SESSION DIRECTORY, which is not where the reap
+  # lock puts its own — that one retires into a place nothing enumerates, so its
+  # comment can say no scan walks it. This one does not get to say that: the
+  # prune globs this directory every cycle. It is still harmless, because that
+  # walk takes `[ -f "$f" ]` and a retired lock is a directory. What it is not
+  # is free — an `rm -rf` that keeps failing leaves them to accumulate and the
+  # glob grows.
+  local dead="$1.lock.dead.$$.$(date -u +%s)"
+  if mv "$1.lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
 }
 
 gate_reap_prune_index() {
@@ -4367,7 +4421,8 @@ gate_main() {
   # declared a lost append the one failure it was not allowed to have. Both
   # could not be true, and it was the prune's sentence that was wrong — its
   # comparison is re-read before the rename, so an append in that gap is
-  # overwritten. Observed on a CI runner, one id of sixty.
+  # overwritten. Observed twice, one id of sixty each time — once under local
+  # load and once on a CI runner with nothing else left in the job.
   #
   # The cost argument against locking does not survive either. The measurement
   # it cited is the call count, over 875 gate entries in the busiest run, and it
