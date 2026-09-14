@@ -180,6 +180,80 @@ gate_may_raise_banner() {
   cc_caller_is_router
 }
 
+# ---------------------------------------------------------------------------
+# AUTO-RESOLUTION OF APPROVALS THAT CARRY A RECOMMENDATION.
+#
+# An unattended run has nobody to answer, so every approval that waits on a
+# person is a stop — and the measured stops were not questions a person needed
+# to answer. A stagnation boundary fired on a stage doing ordinary reads, was
+# granted, and came straight back with the same count; a router's own judgment
+# was raised to a question and the run sat on it until morning.
+#
+# Two classes carry a recommendation, and those are the classes resolved here.
+# A BOUNDARY approval (B1..B4, SHIFT-FLOOR) recommends continuing: its whole
+# disposition set is "continue" or "stop the run", and stopping is what a wall
+# clock deadline and the cost ceiling already do without a person. A JUDGMENT
+# approval carries the router's own recommendation — the judgment it submitted
+# — so resolving it is adopting that recommendation. The two classes that hand
+# risk to the user (`팀-구성`, `시각-면제`) are resolved the other way, as a
+# refusal: the run keeps moving without taking the risk on anyone's behalf.
+#
+# ACT approvals are not resolved. An external-state act outside the declared
+# pre-authorization has no recommendation — the question is whether the grant
+# covers it, and only the person who wrote the grant can say.
+#
+# EVERY AUTO-RESOLUTION IS A ROW. The closing row carries `처분 사유=자동 해소`
+# and `응답 토큰=-`, so the morning can tell it from an answer a person gave;
+# the report's audit of autonomous decisions reads exactly those rows.
+#
+# The switch is `CC_CMDS_AUTOPILOT_AUTO_RESOLVE`, with the same value grammar as
+# the banner switch. Unset means ON.
+# ---------------------------------------------------------------------------
+gate_auto_resolve_enabled() {
+  case "${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}" in
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+  esac
+  return 0
+}
+
+gate_auto_close_approval() {
+  # gate_auto_close_approval <승인 id> <승인|거부> <질문 문면> <추천 설명>
+  #
+  # The closing row has the shape a transcript close writes, with the two
+  # fields that name a person replaced by what did the closing instead.
+  local id="$1" st="$2" q="$3" rec="$4"
+  gate_append '승인' "승인 id=$id" "상태=$st" "질문 문면=$(gate_row_safe "$q" 400)" \
+    "답변 문면=자동 해소(추천: $rec)" "해소 시각=$(now_iso)" \
+    "응답 토큰=-" "답변 다이제스트=-" \
+    "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "처분 사유=자동 해소"
+  gate_close_settle "$id"
+  warn "승인 $id 을 추천($rec)대로 자동 해소했습니다 — 상태 $st (사람 대기 없음)"
+}
+
+gate_boundary_rebaseline() {
+  # gate_boundary_rebaseline <경계 이름> — restart the count a resolved boundary
+  # approval reported.
+  #
+  # A RESOLUTION THAT LEAVES THE COUNT WHERE IT WAS DOES NOT RESOLVE ANYTHING.
+  # The counters live in the run directory, and the boundaries are suspended
+  # while the approval is open, so after a close the very next evaluation took
+  # the count one past the threshold and issued the same question again — three
+  # seconds after a grant, with the same number in it. The answer means "go past
+  # this condition", so the condition's count starts over from here.
+  local total
+  case "$1" in
+    B1) printf '%s\n' "$(gate_progress_digest)" > "$RUN_DIR/progress-digest"
+        printf '0\n' > "$RUN_DIR/progress-repeat" ;;
+    B2) printf '0\n' > "$RUN_DIR/obligation-repeat" ;;
+    B3) total=$(gate_b3_exec_total)
+        printf '%s\n' "$(gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1)" \
+          > "$RUN_DIR/act-budget-digest"
+        printf '%s\n' "$total" > "$RUN_DIR/act-budget-base" ;;
+    B4) gate_b4_percent > "$RUN_DIR/cost-resolved-pct" ;;
+  esac
+  return 0
+}
+
 readonly GATE_EXIT_VOCAB=2
 readonly GATE_EXIT_RULE=3
 readonly GATE_EXIT_STALE=4
@@ -1930,6 +2004,20 @@ gate_row_field() {
   # field of a row already written, and the two are not interchangeable.
   local row="$1" key="$2"
   printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+gate_report_abs() {
+  # gate_report_abs <path> — an absolute path as-is; a relative one resolved two
+  # levels above the manifest's directory, which is the same derivation the merge
+  # rule uses (`<base>/docs/pipeline-run/<run-id>.plan.md` sits two below the base).
+  # ONE helper for every reader of a `cycle` row's `리포트 경로` in this file, so
+  # the delta checks below cannot resolve a relative path one way while the rule
+  # resolves it another.
+  case "${1:-}" in
+    '')  printf '' ;;
+    /*)  printf '%s' "$1" ;;
+    *)   printf '%s/%s' "$(cd "$(dirname "$MANIFEST")/../.." 2>/dev/null && pwd)" "$1" ;;
+  esac
 }
 
 gate_open_obligations() {
@@ -5121,7 +5209,8 @@ gate_issue_judgment_approval() {
   # THE GATE ISSUES IT AND THE ROUTER CANNOT. The router only ever submits its
   # own recommendation through `act --kind judgment`; whether that becomes a
   # question is decided here.
-  local alias="$1" seg="$2" std="$3" why="$4" id q qfull qdig
+  local alias="$1" seg="$2" std="$3" why="$4" cls="${5:-}" id q qfull qdig
+  GATE_AUTO_RESOLVED_APPROVAL=""
   # The full text goes to the sidecar and is what the row's digest is OF; the
   # row itself carries the 400-byte excerpt, and the id keeps hashing the excerpt
   # so every id issued before the sidecar existed still derives to itself.
@@ -5148,6 +5237,13 @@ gate_issue_judgment_approval() {
   st=$(gate_approval_state "$id")
   case "$st" in
     대기)
+      # An approval opened before auto-resolution existed, or while it was
+      # switched off, is resolved on the resubmission that finds it.
+      if gate_auto_resolve_enabled; then
+        local ar=0
+        gate_auto_resolve_judgment "$id" "$q" "$cls" || ar=$?
+        return "$ar"
+      fi
       log "판단 승인 $id 이 이미 열려 있습니다 — 같은 판단은 승인 하나로 모입니다"
       return 0 ;;
     무효|거부)
@@ -5188,8 +5284,32 @@ gate_issue_judgment_approval() {
     "막는 세그먼트=${seg:--}" "질문 문면=$q" "답변 문면=-" \
     "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
     "발행 시각=$(now_iso)" "해소 시각=-"
+  if gate_auto_resolve_enabled; then
+    local ar=0
+    gate_auto_resolve_judgment "$id" "$q" "$cls" || ar=$?
+    return "$ar"
+  fi
   warn "판단 승인 대기 발행 $id — 이 판단은 사람의 답을 기다립니다 (런은 그 옆으로 계속 갑니다)"
   gate_warn_canon_prompt "$id" "$q"
+}
+
+gate_auto_resolve_judgment() {
+  # gate_auto_resolve_judgment <승인 id> <질문 문면> <판단 부류>
+  #
+  # Returns the issuer's own codes, so every caller's existing translation still
+  # applies: `GATE_APPROVAL_ANSWERED` when the recommendation was adopted,
+  # `GATE_EXIT_RULE` when it was refused. `GATE_AUTO_RESOLVED_APPROVAL` names the
+  # id, which is what separates an answer closed just now from an old answer that
+  # has already been spent.
+  local id="$1" q="$2" cls="${3:-}"
+  GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
+  case "$cls" in
+    팀-구성|시각-면제)
+      gate_auto_close_approval "$id" 거부 "$q" "위험을 사용자에게 넘기는 부류라 채택하지 않음"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  gate_auto_close_approval "$id" 승인 "$q" "라우터 판단 채택"
+  return "$GATE_APPROVAL_ANSWERED"
 }
 
 gate_revert_surface() {
@@ -6212,6 +6332,163 @@ gate_record_row() {
         warn "cycle 행의 「리뷰 HEAD」는 해소된 커밋 sha 여야 합니다 — 7~40자 소문자 16진만 받습니다: '$rh'"
         return "$GATE_EXIT_VOCAB"
       fi
+      # --- DELTA MODE: the basis conditions are refused HERE, at write time ---
+      #
+      # A `cycle` row may claim `모드=델타` — a review that read only the files
+      # changed since this segment's last FULL cycle and re-adjudicated that
+      # cycle's P0/P1. The merge rule reads `P0`/`P1` off the newest row without
+      # knowing the mode, so everything that makes a delta claim sound has to be
+      # true before the row exists: the basis cycle is a real row of this
+      # segment, it is itself a full cycle, it is the LATEST full cycle, its
+      # review HEAD is an ancestor of this one, and its report is not a stub.
+      #
+      # ABSENCE READS AS `전체`. Making the field required would refuse every
+      # `cycle` write from a shift session assembled from the older wording —
+      # the same narrow failure shape as a rule-catalogue deploy. An absent
+      # mode is the conservative claim ("no delta is asserted"), and check 8
+      # below confirms against the report that the conservative reading is
+      # also the true one.
+      local cmode cbasis eff_mode crow cs cm brow latest bmode bhead wt rc brep
+      cmode=$(gate_field_of '모드' "$@")
+      cbasis=$(gate_field_of '기준 사이클' "$@")
+      # Check 1 — vocabulary, whenever the field is present at all.
+      case "$cmode" in
+        ''|전체|델타) ;;
+        *) warn "cycle 행의 「모드」가 어휘 밖입니다: '$cmode' — 전체 델타"
+           return "$GATE_EXIT_VOCAB" ;;
+      esac
+      eff_mode=${cmode:-전체}
+      # Check 2 — a full row asserts no basis; a delta row must name one.
+      if [ "$eff_mode" = 전체 ] && [ -n "$cbasis" ]; then
+        warn "모드=전체(또는 부재) 인 cycle 행은 「기준 사이클」을 실을 수 없습니다 — 전체 리뷰는 기준을 주장하지 않습니다: '$cbasis'"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      if [ "$eff_mode" = 델타 ]; then
+        case "$cbasis" in
+          ''|*[!0-9]*|0*)
+            warn "모드=델타 인 cycle 행에는 양의 정수 「기준 사이클」이 필요합니다: '${cbasis:-없음}'"
+            return "$GATE_EXIT_VOCAB" ;;
+        esac
+        # Checks 3 and 5 share one pass over this segment's cycle rows. FIELD
+        # EQUALITY, not `grep -F`: `사이클=1` is a substring of `사이클=10`, so a
+        # fixed-string match would find a basis row that does not exist. Several
+        # rows with the same number → the last one, the ledger's usual rule.
+        brow=''; latest=0
+        while IFS= read -r crow; do
+          [ -n "$crow" ] || continue
+          [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
+          cs=$(gate_row_field "$crow" '사이클')
+          cm=$(gate_row_field "$crow" '모드'); [ -n "$cm" ] || cm=전체
+          if [ "$cs" = "$cbasis" ]; then brow="$crow"; fi
+          if [ "$cm" = 전체 ]; then
+            case "$cs" in
+              ''|*[!0-9]*) ;;
+              *) if [ "$cs" -gt "$latest" ]; then latest=$cs; fi ;;
+            esac
+          fi
+        done <<EOF
+$(gate_rows 'cycle')
+EOF
+        # Check 3 — the basis row exists in THIS segment.
+        if [ -z "$brow" ]; then
+          warn "기준 사이클 $cbasis 의 cycle 행이 세그먼트 $seg 에 없습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 4 — no delta of a delta: an inherited verdict crosses one step.
+        bmode=$(gate_row_field "$brow" '모드'); [ -n "$bmode" ] || bmode=전체
+        if [ "$bmode" != 전체 ]; then
+          warn "기준 사이클 $cbasis 은 델타 사이클입니다 — 델타의 델타는 허용하지 않습니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 5 — the basis is the LATEST full cycle, and the refusal names
+        # the one that is.
+        if [ "$latest" != "$cbasis" ]; then
+          warn "기준 사이클 $cbasis 보다 최근의 전체 사이클이 있습니다: $latest — 기준은 이 세그먼트의 마지막 전체 사이클이어야 합니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # Check 6 — ancestry, in the segment's own worktree. `is-ancestor` has
+        # THREE answers: exit 0 is "ancestor", exit 1 is "not an ancestor", and
+        # exit ≥2 (128 for a missing object) is "cannot tell". Reading the third
+        # as the second is fail-open — a sha that resolves to nothing would pass
+        # as merely unrelated. A write-time check has no "held" state to park
+        # in, so the undecidable case folds to a refusal with its own wording.
+        bhead=$(gate_row_field "$brow" '리뷰 HEAD')
+        wt=$(gate_segment_worktree "$seg")
+        if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+          warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 — 세그먼트 워크트리가 없습니다: '${wt:-없음}'"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        rc=0
+        ( cd "$wt" && git merge-base --is-ancestor "$bhead" "$rh" ) >/dev/null 2>&1 || rc=$?
+        case "$rc" in
+          0) ;;
+          1) warn "기준 리뷰 HEAD $bhead 가 이 행의 리뷰 HEAD $rh 의 조상이 아닙니다 (리베이스 등) — 델타 리뷰가 성립하지 않습니다"
+             return "$GATE_EXIT_VOCAB" ;;
+          *) warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 (git exit $rc, 워크트리 $wt)"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        # Check 7 — the basis report exists and is not a stub. The anchor is
+        # the merge rule's; the rule file is out of reach for this change, so
+        # the regex lives in two places and moves together by hand.
+        brep=$(gate_report_abs "$(gate_row_field "$brow" '리포트 경로')")
+        if [ ! -f "$brep" ] || ! grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$brep"; then
+          warn "기준 사이클 $cbasis 의 리포트가 없거나 「발견 요약」이 없습니다: $brep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      fi
+      # Check 8 — EVERY row, not only delta rows: the report is the source of
+      # the mode and the row must agree with it. The dangerous direction is
+      # under-claiming, not over-claiming. A report that says 델타 under a row
+      # that stays silent reads as 전체, gets picked as the next cycle's full
+      # basis, and a delta then stacks on a review that read part of the tree.
+      # Both absent read as the same 전체, so no row written before this field
+      # existed is refused by it. The repair for every refusal here is to
+      # rewrite the row to what the report says.
+      #
+      # ONE LINE IS ANCHORED FIRST and the values are read off that line only,
+      # so the same phrase somewhere in the report body cannot be picked up.
+      # POSIX ERE throughout: `\b` is unreliable under macOS libc regcomp and
+      # BRE `\|` is a GNU extension, both of which the portability lint names.
+      # `awk 'NR==1'` and not `head -1`: the first line is wanted, but an
+      # early-exiting reader on the right of a pipe is the pipefail trap this
+      # tree's suite refuses, and `awk` reads to the end.
+      local rep line rmode rcyc rhead r1 r2
+      rep=$(gate_report_abs "$(gate_field_of '리포트 경로' "$@")")
+      if [ -f "$rep" ]; then
+        line=$({ grep -E '^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타)( |$)' "$rep" || true; } | awk 'NR==1')
+        rmode=$(printf '%s\n' "$line" | sed -E -n 's/^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타).*/\1/p')
+        [ -n "$rmode" ] || rmode=전체
+        if [ "$rmode" != "$eff_mode" ]; then
+          warn "cycle 행의 모드($eff_mode)와 리포트의 리뷰 모드($rmode)가 다릅니다 — 행은 리포트가 말하는 모드로 다시 씁니다: $rep"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        if [ "$eff_mode" = 델타 ]; then
+          rcyc=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 사이클 ([0-9]+).*/\1/p')
+          rhead=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 리뷰 HEAD `([0-9a-f]+)`.*/\1/p')
+          if [ "$rcyc" != "$cbasis" ]; then
+            warn "리포트의 기준 사이클(${rcyc:-없음})이 행의 기준 사이클($cbasis)과 다릅니다: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          # Short and long shas may be mixed between the row and the report;
+          # both are resolved to a commit and the COMMITS are compared.
+          r1=$(cd "$wt" && git rev-parse --verify "${rhead}^{commit}" 2>/dev/null || true)
+          r2=$(cd "$wt" && git rev-parse --verify "${bhead}^{commit}" 2>/dev/null || true)
+          if [ -z "$r1" ] || [ -z "$r2" ]; then
+            warn "리포트의 기준 리뷰 HEAD(${rhead:-없음})와 기준 행의 리뷰 HEAD($bhead)를 해소할 수 없습니다 — 판정 불가: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$r1" != "$r2" ]; then
+            warn "리포트의 기준 리뷰 HEAD($rhead)가 기준 행의 리뷰 HEAD($bhead)와 같은 커밋이 아닙니다: $rep"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
+      elif [ "$eff_mode" = 델타 ]; then
+        # A full row whose report cannot be opened passes here — no new refusal
+        # on the existing path; the merge rule already catches the absence at
+        # merge time. A delta row has nothing to back its claim without it.
+        warn "모드=델타 인 cycle 행의 리포트를 열 수 없습니다: $rep"
+        return "$GATE_EXIT_VOCAB"
+      fi
       # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
       # than `id`.
       gate_append 'cycle' "세그먼트=$seg" "$@"
@@ -6376,14 +6653,23 @@ gate_record_row() {
             GATE_RESOLVED_APPROVAL="$jq_id"
           else
             gate_issue_judgment_approval "$alias" "$seg" \
-              "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || jq_rc=$?
+              "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
+              "$jcls" || jq_rc=$?
             # THROUGH THE TRANSLATION, not around it. Propagating the raw value
             # sent the router exit 9 for an answered-but-spent approval, which
             # is the one code the contract does not define. `이미 닫힌 물음` and
             # `이미 쓰인 답` are both refusals of this submission, so both leave
-            # as the rule refusal the router already knows.
+            # as the rule refusal the router already knows — except an answer
+            # auto-resolution closed just now, which is unspent and adopts.
             case "$(gate_judgment_approval_disposition "$jq_rc")" in
               발행) return "$GATE_EXIT_APPROVAL" ;;
+              답있음)
+                if [ -n "${GATE_AUTO_RESOLVED_APPROVAL:-}" ] \
+                   && [ "$GATE_AUTO_RESOLVED_APPROVAL" = "$jq_id" ]; then
+                  GATE_RESOLVED_APPROVAL="$jq_id"
+                else
+                  return "$GATE_EXIT_RULE"
+                fi ;;
               *) return "$GATE_EXIT_RULE" ;;
             esac
           fi ;;
@@ -7368,15 +7654,28 @@ gate_verb_act() {
       # the judgment needs a question of its own.
       local iss_rc=0
       gate_issue_judgment_approval "$alias" "$segment" \
-        "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" || iss_rc=$?
+        "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")" \
+        "$GATE_JUDGMENT_CLASS" || iss_rc=$?
       case "$(gate_judgment_approval_disposition "$iss_rc")" in
         발행) exit "$GATE_EXIT_APPROVAL" ;;
-        답있음|닫힘) exit "$GATE_EXIT_RULE" ;;
+        답있음)
+          # AN ANSWER CLOSED JUST NOW BY AUTO-RESOLUTION IS UNSPENT, so it opens
+          # this judgment the way a person's answer would on the resubmission.
+          # An older answer arriving here was found spent above and still refuses.
+          if [ -n "${GATE_AUTO_RESOLVED_APPROVAL:-}" ] \
+             && [ "$GATE_AUTO_RESOLVED_APPROVAL" = "${GATE_LAST_JUDGMENT_APPROVAL_ID:-}" ]; then
+            GATE_RESOLVED_APPROVAL="$GATE_AUTO_RESOLVED_APPROVAL"
+            rules_rc=0
+          else
+            exit "$GATE_EXIT_RULE"
+          fi ;;
+        닫힘) exit "$GATE_EXIT_RULE" ;;
         *) exit "$iss_rc" ;;
       esac
+    else
+      gate_issue_act_approval "$alias" "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$argv"
+      exit "$GATE_EXIT_APPROVAL"
     fi
-    gate_issue_act_approval "$alias" "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$argv"
-    exit "$GATE_EXIT_APPROVAL"
   fi
   [ "$rules_rc" = "0" ] || exit "$rules_rc"
 
@@ -9321,6 +9620,12 @@ gate_close_settle() {
   cc_notify_stack_release "$1" || true
   cc_notify_clear answer "$1" || true
   gate_notify_overflow_settled || true
+  # A CLOSED BOUNDARY APPROVAL RESTARTS ITS BOUNDARY'S COUNT, whatever the
+  # disposition. Boundary ids are `<경계 이름>-<8 hex>`, and `SHIFT-FLOOR` has
+  # no count to restart.
+  case "$1" in
+    B[1-4]-*) gate_boundary_rebaseline "${1%-*}" ;;
+  esac
 }
 
 gate_close() {
@@ -10144,11 +10449,17 @@ gate_snapshot_cycles_json() {
   local out row
   out=$( { gate_rows 'cycle' || true; } | tail -20 | while IFS= read -r row; do
            [ -n "$row" ] || continue
-           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s"},\n' \
+           # `모드`, `리뷰 HEAD` and `리포트 경로` are what the router needs to
+           # pick a delta basis without opening the ledger; an absent `모드`
+           # is emitted as the empty string and the reader takes it as 전체.
+           printf '    {"세그먼트": "%s", "사이클": "%s", "P0": "%s", "P1": "%s", "모드": "%s", "리뷰 HEAD": "%s", "리포트 경로": "%s"},\n' \
              "$(gate_json_escape "$(gate_row_field "$row" '세그먼트')")" \
              "$(gate_json_escape "$(gate_row_field "$row" '사이클')")" \
              "$(gate_json_escape "$(gate_row_field "$row" 'P0')")" \
-             "$(gate_json_escape "$(gate_row_field "$row" 'P1')")"
+             "$(gate_json_escape "$(gate_row_field "$row" 'P1')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '모드')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '리뷰 HEAD')")" \
+             "$(gate_json_escape "$(gate_row_field "$row" '리포트 경로')")"
          done )
   [ -n "$out" ] || return 0
   printf '%s\n' "${out%,}"
@@ -10251,6 +10562,11 @@ gate_launch_shift() {
     gate_issue_boundary_approval SHIFT-FLOOR \
       "인수인계 바닥이 ${floor} 토큰으로 상한 ${SHIFT_FLOOR_MAX} 를 넘었습니다 — 교대가 일을 대신하고 있어 라우팅으로 풀리지 않습니다" \
       "$(gate_progress_digest)"
+  fi
+  # AUTO-RESOLVED, THE LAUNCH GOES AHEAD. Returning here would end the run's
+  # routing with nobody left to start a successor, which is the stop the
+  # auto-resolution exists to remove; the ledger keeps the issue and close rows.
+  if [ "${floor:-0}" -gt "$SHIFT_FLOOR_MAX" ] && [ -z "${GATE_BOUNDARY_AUTO_RESOLVED:-}" ]; then
     warn "교대 중단: 인수인계 바닥 ${floor} > ${SHIFT_FLOOR_MAX} — 승인을 발행했습니다"
     # AN ISSUED APPROVAL REPORTS AS ONE. Every other approval site in this file
     # answers `GATE_EXIT_APPROVAL`, and the conversion that does it for the rule
@@ -10355,7 +10671,18 @@ gate_boundaries() {
   # the 40-act budget until the wall-clock deadline. The reason recorded for the
   # suspension ("waiting, not stalled") is false for this class specifically,
   # because the design promises the run keeps going alongside the question.
-  local pending
+  local pending id
+  # A boundary approval left open — issued before auto-resolution existed, or
+  # while it was switched off — suspends B1..B3 and waits on a person. Resolving
+  # it here is what lets a run already in flight pick the hotfix up on its next
+  # act instead of carrying the stop to morning.
+  if gate_auto_resolve_enabled; then
+    for id in $(gate_pending_approval_ids act); do
+      [ "$(gate_row_field "$(gate_approval_last_row "$id")" '절단점')" = "경계" ] || continue
+      gate_auto_close_approval "$id" 승인 \
+        "$(gate_row_field "$(gate_approval_last_row "$id")" '질문 문면')" "계속"
+    done
+  fi
   pending=$(gate_pending_approval_ids act | gate_count)
 
   if [ "$pending" = "0" ]; then
@@ -10492,13 +10819,7 @@ gate_b3_act_budget() {
   # the top of this file), so a stage that died without cleaning up does not
   # keep the boundary suppressed.
   [ "$(cc_live_stages "$RUN_DIR")" = "0" ] || return 0
-  # Positively selected, matching the progress vector: the grade must be present
-  # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
-  # grade at all, and here that spends budget on an act nobody established was
-  # above a read.
-  total=$( { gate_rows '자율 승인' | grep '결정=exec' || true; } \
-         | { grep -F '축2=' || true; } \
-         | { grep -v '축2=읽기' || true; } | gate_count)
+  total=$(gate_b3_exec_total)
   # THE WINDOW KEY EXCLUDES THIS COUNTER'S OWN INPUT, and getting that wrong is
   # how the boundary was silently disarmed once already.
   #
@@ -10534,15 +10855,47 @@ gate_b3_act_budget() {
   gate_issue_boundary_approval B3 "마지막 진전 이후 읽기 초과 exec 가 ${n}회입니다" "$h"
 }
 
-gate_b4_cost() {
-  local declared spent pct
+gate_b3_exec_total() {
+  # Positively selected, matching the progress vector: the grade must be present
+  # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
+  # grade at all, and here that spends budget on an act nobody established was
+  # above a read. One function because the rebaseline after a resolved B3 has to
+  # measure the same total the boundary compares against.
+  { gate_rows '자율 승인' | grep '결정=exec' || true; } \
+    | { grep -F '축2=' || true; } \
+    | { grep -v '축2=읽기' || true; } | gate_count
+}
+
+gate_b4_percent() {
+  # The spent share of the declared cost ceiling as an integer percentage, or
+  # nothing when no ceiling is declared or nothing has been spent.
+  local declared spent
   declared=$(manifest_field '인가' '비용 천장')
   case "$declared" in ''|없음) return 0 ;; esac
   spent=$(gate_rows 'cost' | tail -1 | tr '|' '
 ' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   [ -n "$spent" ] || return 0
-  pct=$(awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }')
+  awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }'
+}
+
+gate_b4_cost() {
+  local declared spent pct resolved
+  declared=$(manifest_field '인가' '비용 천장')
+  case "$declared" in ''|없음) return 0 ;; esac
+  spent=$(gate_rows 'cost' | tail -1 | tr '|' '
+' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  [ -n "$spent" ] || return 0
+  pct=$(gate_b4_percent)
   [ "$pct" -lt 80 ] && return 0
+  # B4 has no counter to restart, so a resolution records the share it was
+  # answered at, and the same question is not asked again until spending has
+  # climbed another ten points past it. Without that, a granted B4 re-opened on
+  # the next act whose progress digest had not moved.
+  resolved=$(cat "$RUN_DIR/cost-resolved-pct" 2>/dev/null || true)
+  case "$resolved" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$pct" -lt $((resolved + 10)) ] && return 0 ;;
+  esac
   # B4 HAS NO BINDING VALUE OF ITS OWN YET. It holds one integer percentage and
   # one threshold; a bucket tier would need a bucket width, and no width can be
   # validated against a boundary that has never fired in the corpus. So the
@@ -10581,8 +10934,15 @@ gate_issue_boundary_approval() {
   # row and the row sequence says what happened to it; an OPEN id is not
   # re-appended, which is the property the existence test was really for.
   local name="$1" q="$2" binding="$3" id
+  GATE_BOUNDARY_AUTO_RESOLVED=""
   id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
-  [ "$(gate_approval_state "$id")" = "대기" ] && return 0
+  if [ "$(gate_approval_state "$id")" = "대기" ]; then
+    if gate_auto_resolve_enabled; then
+      gate_auto_close_approval "$id" 승인 "$q" "계속"
+      GATE_BOUNDARY_AUTO_RESOLVED="$id"
+    fi
+    return 0
+  fi
   gate_approval_sidecar_write "$id" issue '질문' "$q" \
     || warn "승인 사이드카에 질문을 쓰지 못했습니다 — 행은 발행되나 앵커 $(gate_approval_sidecar_anchor "$id") 가 가리키는 블록이 없습니다"
   # `유도 절단점=-` FOR THE SAME REASON THE ACT DIGEST IS `-`. A boundary has no
@@ -10595,6 +10955,15 @@ gate_issue_boundary_approval() {
     "행위 다이제스트=-" "구속 튜플=$name/$binding" "막는 세그먼트=-" \
     "질문 문면=$q" "답변 문면=-" "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" \
     "발행 시각=$(now_iso)" "해소 시각=-"
+  # THE ISSUE ROW STAYS, AND THE CLOSE FOLLOWS IT. The `대기` row is the record
+  # that the boundary fired and what it read; the closing row right after it is
+  # the record that nobody was waited on. Skipping the issue row would make an
+  # auto-resolved stagnation indistinguishable from one that never happened.
+  if gate_auto_resolve_enabled; then
+    gate_auto_close_approval "$id" 승인 "$q" "계속"
+    GATE_BOUNDARY_AUTO_RESOLVED="$id"
+    return 0
+  fi
   # The boundary approvals are the slowest class this design has, by
   # construction: they are evaluated on every act, so one opened while a long
   # stage runs waits out that whole stage — and one of them carries a dollar
