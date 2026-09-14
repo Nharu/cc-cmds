@@ -2953,16 +2953,50 @@ gate_index_lock() {
   # write rather than force it: that is exactly the self-healing the append side
   # already documented, and it is now the ONLY path that skips, instead of being
   # a property invoked to excuse a race.
-  local lockdir="$1.lock" waited=0
+  # A LOCK THAT OUTLIVES ITS HOLDER EXPIRES, and leaving that out would have been
+  # worse here than anywhere else in this file. The settings mutex can refuse
+  # forever and stay safe, because a caller that cannot take it returns its
+  # previous answer; a caller that cannot take THIS one skips its write. A
+  # lockdir left behind by a process killed between the `mkdir` and the release
+  # would therefore switch off this session's index updates permanently and the
+  # prune's pass over that file with them, with no symptom anywhere. The reap
+  # lock already had to learn this and the shape is copied from it: an owner line
+  # written straight after the `mkdir`, the directory's own mtime as the fallback
+  # when that line cannot be read, and a threshold that decides both.
+  #
+  # SIXTY SECONDS, against a critical section measured in milliseconds — one
+  # file's scan and rename, or one `grep` and one `printf`. Four orders of
+  # magnitude of headroom is what keeps the expiry from ever reaching a live
+  # holder, and the reap lock's fifteen minutes would be the wrong number for
+  # the same reason in the other direction: this path runs on every gate entry.
+  local lockdir="$1.lock" waited=0 owner ots now
   while ! mkdir "$lockdir" 2>/dev/null; do
     waited=$(( waited + 1 ))
-    [ "$waited" -gt 20 ] && return 1
+    if [ "$waited" -gt 20 ]; then
+      owner=$(cat "$lockdir/owner" 2>/dev/null || true)
+      ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+      [ -n "$ots" ] || ots=$(gate_mtime "$lockdir")
+      [ -n "$ots" ] || return 1
+      now=$(date -u +%s)
+      [ $((now - ots)) -ge 60 ] || return 1
+      rm -rf "$lockdir" 2>/dev/null || true
+      mkdir "$lockdir" 2>/dev/null || return 1
+      break
+    fi
     sleep 0.05
   done
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lockdir/owner" 2>/dev/null || true
   return 0
 }
 
-gate_index_unlock() { rmdir "$1.lock" 2>/dev/null || true; }
+gate_index_unlock() {
+  # ONE `rm -rf`, NOT the owner line and then the directory. The reap lock was
+  # released in two steps and every ordinary release passed through a moment
+  # where the lock existed with no owner line; any failure of the second step
+  # froze it there for good. The mtime fallback above covers that shape, but not
+  # producing it is cheaper than covering it.
+  rm -rf "$1.lock" 2>/dev/null || true
+}
 
 gate_reap_prune_index() {
   # gate_reap_prune_index <root> <pair-file> — drops from the forward session
