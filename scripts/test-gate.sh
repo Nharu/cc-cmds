@@ -2649,7 +2649,7 @@ check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 # `git commit-tree` only — no branch moves, so nothing below this section sees
 # a different HEAD.
 # ---------------------------------------------------------------------------
-gate act --manifest "$MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
 check "델타 픽스처 세그먼트 행이 기록된다" "$rc" "0"
 
@@ -2674,15 +2674,15 @@ printf '# 코드 리뷰 리포트 — SD 사이클 5\n\n## 개요\n\n- **리뷰 
 # Regression first: a `모드=전체` row and a row with no `모드` at all take the
 # path they took before this section existed — including a report that has no
 # mode line, which is every report written before the line was defined.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=1 모드=전체 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
 check "모드=전체 행은 오늘과 같은 경로로 기록된다" "$rc" "0"
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_NOMODE"
 check "모드 없는 행은 모드 줄 없는 리포트와 함께 오늘과 같은 경로로 기록된다" "$rc" "0"
 
 # Check 1 — vocabulary.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=이상 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
 check "어휘 밖 모드는 거부된다" "$rc" "2"
 case "$msg" in
@@ -2691,21 +2691,21 @@ case "$msg" in
 esac
 
 # Check 2 — a delta row needs a positive-integer basis; a full row may not carry one.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_DELTA"
 check "기준 사이클 없는 델타 행은 거부된다" "$rc" "2"
 case "$msg" in
   *"「기준 사이클」"*) ok "그 거절이 기준 사이클 필드를 지목한다" ;;
   *) bad "기준 사이클 누락 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=x" P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_DELTA"
 check "비정수 기준 사이클은 거부된다" "$rc" "2"
 case "$msg" in
   *"양의 정수"*) ok "그 거절이 정수 형식을 지목한다" ;;
   *) bad "비정수 기준 사이클 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=전체 "기준 사이클=1" P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$SDREP_FULL"
 check "기준 사이클을 실은 전체 행은 거부된다" "$rc" "2"
 case "$msg" in
@@ -2714,7 +2714,7 @@ case "$msg" in
 esac
 
 # Check 3 — the basis row must exist in this segment, and the refusal names the number.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "없는 기준 사이클은 거부된다" "$rc" "2"
 case "$msg" in
@@ -2723,7 +2723,7 @@ case "$msg" in
 esac
 
 # Check 5 — the basis is the latest full cycle; cycle 2 is newer than cycle 1.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=1" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "더 최근의 전체 사이클이 있으면 거부된다" "$rc" "2"
 case "$msg" in
@@ -2733,13 +2733,13 @@ esac
 
 # A full row whose report cannot be opened still passes here: no new refusal on
 # the existing path, and the merge rule catches the absence at merge time.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=3 P0=0 P1=0 "리뷰 HEAD=$head_b" "리포트 경로=$WORK/sd-missing.md"
 check "리포트를 열 수 없는 전체 행은 쓰기 시점에 통과한다" "$rc" "0"
 
 # Check 7 — the basis report must exist and carry a findings summary. Cycle 3
 # is now the latest full cycle and its report is the missing one above.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=델타 "기준 사이클=3" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "기준 리포트가 없으면 거부된다" "$rc" "2"
 case "$msg" in
@@ -2750,19 +2750,19 @@ esac
 # The basis proper: cycle 4, full, with a SHORT sha — the delta rows below name
 # the same commit by its long sha, so the head comparison is by commit and not
 # by string.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=전체 P0=0 P1=0 "리뷰 HEAD=$head_b7" "리포트 경로=$SDREP_BASIS"
 check "짧은 sha 를 실은 기준 전체 행이 기록된다" "$rc" "0"
 
 # Check 6 — ancestry has three answers and the two refusals read differently.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_o" "리포트 경로=$SDREP_DELTA"
 check "기준 리뷰 HEAD 가 조상이 아니면 거부된다" "$rc" "2"
 case "$msg" in
   *"조상이 아닙니다"*) ok "그 거절이 비조상을 말한다" ;;
   *) bad "비조상 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "리포트 경로=$SDREP_DELTA"
 check "조상 관계를 판정할 수 없으면 거부된다" "$rc" "2"
 case "$msg" in
@@ -2772,21 +2772,21 @@ case "$msg" in
 esac
 
 # Check 8 — the report is the source of the mode, in both directions.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BASIS"
 check "리포트가 전체인데 행이 델타면 거부된다" "$rc" "2"
 case "$msg" in
   *"리뷰 모드"*"다릅니다"*) ok "그 거절이 모드 불일치를 말한다 (행 델타·리포트 전체)" ;;
   *) bad "모드 불일치 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "리포트가 델타인데 행이 침묵하면 거부된다" "$rc" "2"
 case "$msg" in
   *"리뷰 모드"*) ok "그 거절이 모드 불일치를 말한다 (행 부재·리포트 델타)" ;;
   *) bad "침묵 행 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BADCYC"
 check "리포트의 기준 사이클이 행과 다르면 거부된다" "$rc" "2"
 case "$msg" in
@@ -2794,14 +2794,14 @@ case "$msg" in
   *"기준 사이클(3)"*) ok "그 거절이 모드 불일치와 다른 문면으로 번호를 싣는다" ;;
   *) bad "기준 사이클 불일치 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_BADHEAD"
 check "리포트의 기준 리뷰 HEAD 가 기준 행과 다른 커밋이면 거부된다" "$rc" "2"
 case "$msg" in
   *"같은 커밋이 아닙니다"*) ok "그 거절이 번호·모드와 다른 문면으로 커밋 불일치를 말한다" ;;
   *) bad "기준 HEAD 불일치 문면" "$msg" ;;
 esac
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$WORK/sd-nope.md"
 check "리포트를 열 수 없는 델타 행은 거부된다" "$rc" "2"
 case "$msg" in
@@ -2810,14 +2810,14 @@ case "$msg" in
 esac
 
 # Everything holds: the row is written, with the mode and the basis on it.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "조건이 전부 맞는 델타 행은 기록된다 (짧은·긴 sha 혼합 기준 HEAD 포함)" "$rc" "0"
-n=$(grep -c '^- `cycle` | 교대=[0-9][0-9]* | 세그먼트=SD | 사이클=5 | 모드=델타 | 기준 사이클=4 ' "$LEDGER" || true)
+n=$(grep -c '^- `cycle` | 교대=[0-9][0-9]* | 세그먼트=SD | 사이클=5 | 모드=델타 | 기준 사이클=4 ' "$FX_LEDGER" || true)
 check "그 델타 행이 모드와 기준 사이클을 싣고 원장에 있다" "$n" "1"
 
 # Check 4 — no delta of a delta: cycle 5 is a delta, so it cannot be a basis.
-gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=6 모드=델타 "기준 사이클=5" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "델타 사이클을 기준으로 삼으면 거부된다" "$rc" "2"
 case "$msg" in
