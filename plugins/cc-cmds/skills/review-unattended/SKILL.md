@@ -195,6 +195,12 @@ A delta review reads only the files changed since this segment's last full cycle
 | 2 | `git merge-base --is-ancestor <basis-review-head> <target head>` — `<target head>` is the branch or the PR head named explicitly, never the bare `HEAD`; exit 1 (not an ancestor) and exit ≥2 (undecidable) get different wording | Degrade |
 | 3 | The basis report exists, is not empty, and matches the `발견 요약` anchor `^[-*[:space:]]*\*\*발견 요약\*\*` | Degrade |
 | 4 | The basis report's `리뷰 모드` line says `전체` or is absent | Degrade — `기준 사이클이 델타 사이클입니다 — 델타는 연쇄되지 않습니다` |
+| 5 | The basis report's own `리뷰 HEAD` line (anchor `^[-*[:space:]]*\*\*리뷰 HEAD\*\*: `) names a sha that `git rev-parse --verify <sha>^{commit}` resolves to the **same commit** as `--basis-review-head` | Degrade — `기준 리포트가 기준 리뷰 HEAD 의 리뷰임을 확인할 수 없습니다 (리뷰 HEAD 줄 없음 또는 다른 커밋)` |
+| 6 | The basis report's P0 and P1 severity sections hold, between them, exactly as many top-level finding entries as its `발견 요약` line's P0 + P1 | Degrade — naming both counts |
+
+**Check 5 binds the file to the basis.** The three flags come off one snapshot row, but nothing else ties the report at `--basis-report-path` to that row: a path copied from a neighbouring entry — another cycle of this segment, or another segment's full report — passes checks 0–4, the wrong findings are re-adjudicated, the real basis findings are never judged, and the report still clears every gate check. The report's own `리뷰 HEAD` line (Step 5) is the only thing inside the file that says which review it records. A basis report written before that line existed carries none, so the first delta attempt against it degrades once, and the full review that runs instead writes the line.
+
+**Check 6 fixes the re-adjudication count.** The number it confirms is the number of basis verdicts this cycle owes, and Step 5 counts against it. A mismatch means the report or the extraction is incomplete, and a count taken from either would let a basis finding drop out before anyone was asked about it.
 
 "Is the basis this segment's **latest** full cycle" is not checked here. This arm has no view of the ledger; it takes the router's selection the way it takes `--base-sha`, and the gate refuses a stale basis at write time. That is a division of labour, not a gap.
 
@@ -206,13 +212,16 @@ The set is "files changed on the segment's side since the basis review HEAD, con
 
 ```sh
 # BASIS = --basis-review-head, TARGET = 대상 head(명시), BASE = 1b 에서 확정한 diff 베이스
-SET_A=$( { git log --first-parent --no-merges -M --name-only --format= "$BASIS..$TARGET"
+SET_A=$( { git -c core.quotePath=false log --first-parent --no-merges -M --name-only --format= "$BASIS..$TARGET"
            for m in $(git log --first-parent --merges --format=%H "$BASIS..$TARGET"); do
-             git diff-tree --cc --name-only --no-commit-id "$m"
-           done; } | grep . | sort -u )
-SET_B=$(git diff -M --name-only "$BASE...$TARGET" | sort -u)
-DELTA=$(comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
+             git -c core.quotePath=false diff-tree --cc --name-only --no-commit-id "$m"
+           done; } | grep . | LC_ALL=C sort -u )
+SET_B=$(git -c core.quotePath=false diff -M --name-only "$BASE...$TARGET" | LC_ALL=C sort -u)
+DELTA=$(LC_ALL=C comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
 ```
+
+- **Every `DELTA` entry is a raw repository-relative path and is used verbatim** — as the pathspec of Step 3's size sum and of Step 4's whole-file diff, and as a `Read` argument. That is why every `git` call that prints a path carries `-c core.quotePath=false`: under git's default a path holding a non-ASCII byte is printed as a double-quoted, octal-escaped string, a diff taken with that string as its pathspec is empty with exit 0, and the file is counted as in scope while no reviewer sees a line of it. This repository's own merge and apply rules have Korean filenames. `sort` and `comm` run under `LC_ALL=C` so that both sides of the intersection are ordered by bytes and not by a locale's collation.
+- **An entry that names nothing degrades the cycle to a full review.** If neither `git cat-file -e "$TARGET:<entry>"` nor `git cat-file -e "$BASE:<entry>"` succeeds for some entry, the set was mis-computed; review in full, as for any 1b′ failure, and record one overview line naming the entry.
 
 - `--cc` emits only the paths whose merge result differs from both parents, so a conflict a person resolved by hand is included and a clean merge that took one side as-is is not.
 - A **rename inside a merge commit** is not paired by `--cc`: the old path comes out as `DD` and the new one as `AA`, separately. `SET_B` is taken with `-M`, so only the new path survives the intersection. A basis finding that cites the old path is followed by the reviewer in the re-adjudication below regardless.
@@ -261,7 +270,7 @@ A small, single-concern change does not need a full team. Evaluate against the s
 - **PR mode** — sum `additions + deletions` over the per-file array from 1b; the file count is that array's length.
 - **Local diff mode** — aggregate `git diff {DEFAULT_BRANCH}...HEAD --numstat` and sum the added and deleted columns.
 - **File path mode** — there is no diff input, so **the gate does not apply**; compose normally and do not substitute an estimate.
-- **Delta mode** (every 1b′ check passed) — size and the risk indicators below are evaluated over the delta file set: sum `git diff --numstat "$BASE...$TARGET" -- <DELTA files>`. The new-finding search scope is `DELTA`, so the team is sized to it. The floor still holds, so an empty `DELTA` does not yield an empty roster. The basis P0/P1 re-adjudication (context-package item 18) is **not** counted here: its cost is bounded by the number of basis findings and it asks for no additional reviewer.
+- **Delta mode** (every 1b′ check passed) — size and the risk indicators below are evaluated over the delta file set: sum `git -c core.quotePath=false diff --numstat "$BASE...$TARGET" -- <DELTA files>`. The new-finding search scope is `DELTA`, so the team is sized to it. The floor still holds, so an empty `DELTA` does not yield an empty roster. The basis P0/P1 re-adjudication (context-package item 18) is **not** counted here: its cost is bounded by the number of basis findings and it asks for no additional reviewer.
 
 **Risk indicators outrank the size row.** If any of auth/authorization, DB schema or query, public API surface, external service integration, or async/concurrency fires, compose for that risk no matter how small the diff is. A security-relevant change is very often a small patch.
 
@@ -300,7 +309,7 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 
 **Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the context package — items 1–17, and item 18 which exists only in delta mode — role checklists, protocol rounds, and facilitator additions.
 
-- **In delta mode, item 18 carries the full text of every basis P0/P1 finding** — not filtered to the reviewer's file scope and not filtered to the delta file set — and each one is assigned to the composed reviewer whose role/category tag is the closest match (the smallest-scoped reviewer takes the remainder). Item 2's review-scope diff is the whole-file diff of each `DELTA` file against the base, per 1b′.
+- **In delta mode, item 18 carries the full text of every basis P0/P1 finding** — not filtered to the reviewer's file scope and not filtered to the delta file set — and each one is assigned to the composed reviewer whose role/category tag is the closest match (the smallest-scoped reviewer takes the remainder). Each finding carries its `basis-<k>` identifier, and the identifiers number exactly the count 1b′ check 6 fixed. Item 2's review-scope diff is the whole-file diff of each `DELTA` file against the base, per 1b′.
 
 - **Derive the review slug** from the target: PR → `review-pr{NUMBER}`; local diff → `review-{branch-name}`; file path → `review-{short-slug}`.
 - **Resolve the report path** per CFI-U4: `--report-path` when given, else `docs/reviews/{slug}.md`. Everything below writes to the resolved path.
@@ -312,7 +321,7 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 - All inter-reviewer discussion in English. **NO code modifications.**
 - **The lead facilitates** the multi-round resume loop (produce → cross-review → convergence). Round count follows the protocol's `### Round budget`.
 - **Convergence**: after cross-review, resume each reviewer once with a convergence prompt re-injecting the current consensus and open conflicts verbatim; a round is converged-and-collected only when its witness is `witness_present` and the body says "no further input".
-- **Escalation** (the protocol's reconcile ladder + failure phenotypes), with CFI-U0 applied to every terminus: **Case 1 — thin/empty witness** → re-scope + resume once; a second consecutive occurrence **halts** rather than asking, and the halt record names the reviewer, both witness bodies, and the three options the interactive arm would have offered. **Case 2 — never-returns** → the death verdict fires → `TaskStop` + same-round respawn (new `agentId`, ledger row's `agentId`/`outputFile` updated, `stallMark` reset); a respawn that also dies **halts**. **Case 3 — non-conforming witness** → re-assign once; a recurrence feeds the Case 1 counter.
+- **Escalation** (the protocol's reconcile ladder + failure phenotypes), with CFI-U0 applied to every terminus: **Case 1 — thin/empty witness** → re-scope + resume once; a second consecutive occurrence **halts** rather than asking, and the halt record names the reviewer, both witness bodies, and the three options the interactive arm would have offered. **Case 2 — never-returns** → the death verdict fires → `TaskStop` + same-round respawn (new `agentId`, ledger row's `agentId`/`outputFile` updated, `stallMark` reset); a respawn that also dies **halts**. **Case 3 — non-conforming witness** → re-assign once; a recurrence feeds the Case 1 counter. **In delta mode a witness missing the verdict for any `basis-<k>` assigned to that reviewer is non-conforming**, however well-formed the rest of it is — otherwise a witness that simply never discusses one basis finding matches no case at all, and that finding leaves the count without a symptom.
 
 ---
 
@@ -335,6 +344,14 @@ Directly after the overview's `리뷰 대상` line, in every report, full or del
 
 The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
 
+Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, as a full sha:
+
+```
+- **리뷰 HEAD**: `<sha>`
+```
+
+A later delta cycle that takes this report as its basis compares this line against the basis review HEAD it was handed (1b′ check 5). Without it nothing inside the file says which review it records.
+
 #### `## 기준 사이클 재판정` — delta mode only
 
 After `핵심 요약` and before the P0 section, one entry per basis P0/P1, none omitted:
@@ -346,6 +363,8 @@ After `핵심 요약` and before the P0 section, one entry per basis P0/P1, none
     - **판정**: 해결됨 | 미해결
     - **근거**: <수정 위치와 내용, 또는 결함이 남아 있음을 확인한 근거>
 ```
+
+**Count before the summary line is written.** The entries here number exactly the basis P0 + P1 that 1b′ check 6 fixed, one per `basis-<k>`. A basis finding still without a verdict after Case 3's re-assignment, or judged `해결됨` by one reviewer and `미해결` by another with no `## 자율 승인 기록` row settling it, is written as `**판정**: 미해결` with `**근거**: 이번 사이클에서 판정이 확정되지 않았습니다 (누락)` or `(충돌)`, and is counted at its basis severity. Unsettled reads as unfixed because the other reading lets a verdict that never happened take a known finding out of `P0`/`P1`. When the basis has no P0/P1 at all, the section still appears, holding the heading and exactly one line: `없음 — 기준 사이클 <n> 의 P0·P1 이 0건입니다.`
 
 A finding judged `해결됨` leaves this cycle's severity sections, and this entry is its only audit record. A finding judged `미해결` re-enters this cycle's section at the same severity (or at the reviewer's explicit re-grade, under the CFI-U3 rule) carrying `(사이클 N에서 상속, 미해결)`. Basis P2/P3 findings are carried into this cycle's P2/P3 sections without re-adjudication, marked `(사이클 N에서 상속)`. The basis report's `## 미검토 영역` entries are carried into this cycle's `## 미검토 영역`, marked `(사이클 N에서 상속)`.
 

@@ -2065,6 +2065,13 @@ case "$msg" in
   *"리뷰 모드"*"다릅니다"*) ok "그 거절이 모드 불일치를 말한다 (행 델타·리포트 전체)" ;;
   *) bad "모드 불일치 문면" "$msg" ;;
 esac
+# A mode mismatch is the one delta refusal a row rewrite repairs, so it must not
+# point at the re-review the other refusals point at.
+case "$msg" in
+  *"세 기준 플래그 없이"*) bad "모드 불일치 수선법" "행 재기록으로 풀리는 거절이 전체 재리뷰를 가리켰다: $msg" ;;
+  *"다시 씁니다"*) ok "모드 불일치 거절은 행 재기록을 수선법으로 남긴다" ;;
+  *) bad "모드 불일치 수선법" "$msg" ;;
+esac
 gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "리포트가 델타인데 행이 침묵하면 거부된다" "$rc" "2"
@@ -2110,6 +2117,111 @@ case "$msg" in
   *"델타의 델타"*) ok "그 거절이 델타의 델타를 말한다" ;;
   *) bad "델타의 델타 문면" "$msg" ;;
 esac
+# Rewriting that row cannot clear it — as 델타 it meets check 4 again, as 전체
+# it meets check 8 because the report still says 델타 — so the refusal has to
+# name the repair that exists: a full review without the basis flags.
+case "$msg" in
+  *"세 기준 플래그 없이 전체 리뷰로 재파견"*) ok "델타의 델타 거절은 행 재기록이 아니라 전체 재리뷰를 수선법으로 가리킨다" ;;
+  *) bad "델타 거절의 수선 문면" "$msg" ;;
+esac
+
+# A delta names an EARLIER cycle. `사이클=5 기준 사이클=5` used to pass every
+# check — a commit is its own ancestor — and the row it left was then picked by
+# check 3 as the basis of cycle 5, so check 4 refused every later delta.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "자기 사이클을 기준으로 삼는 델타 행은 거부된다" "$rc" "2"
+case "$msg" in
+  *"보다 큰 정수"*"세 기준 플래그 없이"*) ok "그 거절이 사이클 순서를 말하고 전체 재리뷰를 가리킨다" ;;
+  *) bad "자기 기준 델타 문면" "$msg" ;;
+esac
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "뒤의 사이클을 기준으로 삼는 델타 행은 거부된다" "$rc" "2"
+
+# The shape an older gate accepted is still in ledgers: a delta row under the
+# basis's own number. Injected directly, because the gate now refuses to write
+# it. Check 3 must take the FULL row numbered 4, not the last row numbered 4 —
+# with the last-row rule this write was refused as a delta of a delta.
+printf -- '- `cycle` | 세그먼트=SD | 사이클=4 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | 모드=델타 | 기준 사이클=4\n' "$head_c" "$SDREP_DELTA" >> "$LEDGER"
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=6 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "같은 번호의 델타 행이 있어도 전체 기준 행이 선택되어 기록된다" "$rc" "0"
+
+# Cycle numbers are compared by integer value. A zero-padded basis was refused
+# by check 2 as not a positive integer, and a zero-padded row number was read
+# as a number by the latest-full scan but as a string by check 5.
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=07 모드=델타 "기준 사이클=04" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "0 패딩 사이클 번호는 정수값으로 비교되어 기록된다" "$rc" "0"
+gate act --manifest "$MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=8 모드=델타 "기준 사이클=00" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "값이 0 인 기준 사이클은 거부된다" "$rc" "2"
+case "$msg" in
+  *"양의 정수"*) ok "그 거절이 정수 형식을 지목한다 (0 패딩 0)" ;;
+  *) bad "0 기준 사이클 문면" "$msg" ;;
+esac
+
+# The delta file set is computed by a snippet the review skill carries as text,
+# so the text is what runs here. Under git's default `core.quotePath` a
+# non-ASCII path came out octal-quoted, a diff taken with it as a pathspec was
+# empty with exit 0, and the file counted as reviewed while nobody saw a line
+# of it. The fixture pins `core.quotePath true` locally so an ambient global
+# setting cannot make this pass.
+SKILL_RU="$repo_root/plugins/cc-cmds/skills/review-unattended/SKILL.md"
+DSNIP="$WORK/delta-snippet.sh"
+awk '/^#### Delta file set/{f=1} f && /^```sh$/{p=1; next} p && /^```$/{exit} p' "$SKILL_RU" > "$DSNIP"
+printf '%s\n' 'printf "%s\n" "$DELTA"' >> "$DSNIP"
+QP="$WORK/quotepath"
+mkdir -p "$QP"
+( cd "$QP" && git init -q -b main . && git config user.email t@t && git config user.name t \
+    && git config core.quotePath true \
+    && printf 'a\n' > '리뷰-후-머지.sh' && printf 'b\n' > '적용.sh' && printf 'c\n' > plain.txt \
+    && git add . && git commit -qm base ) >/dev/null 2>&1
+qp_base=$(cd "$QP" && git rev-parse HEAD)
+( cd "$QP" && [ -d .git ] && printf 'c2\n' > plain.txt && git commit -qam seg1 ) >/dev/null 2>&1
+qp_basis=$(cd "$QP" && git rev-parse HEAD)
+( cd "$QP" && [ -d .git ] && printf 'a2\n' > '리뷰-후-머지.sh' && printf 'b2\n' > '적용.sh' && git commit -qam seg2 ) >/dev/null 2>&1
+qp_target=$(cd "$QP" && git rev-parse HEAD)
+qp_delta=$(cd "$QP" && BASE="$qp_base" BASIS="$qp_basis" TARGET="$qp_target" bash "$DSNIP" 2>/dev/null)
+qp_want=$(printf '%s\n' '리뷰-후-머지.sh' '적용.sh' | LC_ALL=C sort)
+check "델타 파일 집합이 비ASCII 경로를 인용 없이 원시 경로로 낸다" "$qp_delta" "$qp_want"
+qp_bad=0
+while IFS= read -r e; do
+  [ -n "$e" ] || { qp_bad=1; continue; }
+  ( cd "$QP" && git cat-file -e "$qp_target:$e" ) 2>/dev/null || qp_bad=1
+  [ -n "$(cd "$QP" && git diff "$qp_base...$qp_target" -- "$e")" ] || qp_bad=1
+done <<EOF
+$qp_delta
+EOF
+check "그 항목마다 대상 트리에 있고 그 항목으로 뽑은 파일 diff 가 비어 있지 않다" "$qp_bad" "0"
+
+# What the review skill performs as a model procedure cannot be run from here,
+# so its load-bearing sentences are pinned. Each one closes a way for a basis
+# report or a basis finding to leave the count without a symptom: the report's
+# own review HEAD line and the check that binds it to the basis row, the count
+# check, the missing-verdict rule, the unsettled-reads-as-unfixed rule, the
+# zero-finding form, and the identifiers the count is taken over.
+CP18="$repo_root/plugins/cc-cmds/skills/review/references/01-reviewer-context-package.md"
+for want in \
+  '- **리뷰 HEAD**: `<sha>`' \
+  "| 5 | The basis report's own \`리뷰 HEAD\` line" \
+  "| 6 | The basis report's P0 and P1 severity sections hold" \
+  'In delta mode a witness missing the verdict for any `basis-<k>`' \
+  '이번 사이클에서 판정이 확정되지 않았습니다' \
+  '없음 — 기준 사이클 <n> 의 P0·P1 이 0건입니다.' \
+  '-c core.quotePath=false diff --numstat'; do
+  if grep_all_q -F -- "$want" "$SKILL_RU"; then
+    ok "review-unattended 문면이 남아 있다: $want"
+  else
+    bad "review-unattended 문면" "없음: $want"
+  fi
+done
+if grep_all_q -F -- 'exactly one verdict per assigned identifier' "$CP18"; then
+  ok "컨텍스트 패키지 항목 18 이 기준 발견 식별자별 판정 하나를 요구한다"
+else
+  bad "컨텍스트 패키지 항목 18 문면" "없음: exactly one verdict per assigned identifier"
+fi
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
