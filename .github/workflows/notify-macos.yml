@@ -106,12 +106,18 @@ jobs:
     # together with the real fix, which is to split that script so `-j` can
     # reach it.
     #
-    # 150 is sized against run 34764405535 on master, which finished its job in
-    # 89m29s against the 90 it was given — THIRTY-ONE SECONDS inside, the same
-    # shape as the two seconds recorded above at the 25 ceiling, and that one
-    # was followed by a cancellation. The 86m30s that 34709583079 reached above
-    # is a cancellation point rather than a duration — that run never finished,
-    # so its true cost is unknown and larger.
+    # What forced the move was run 34764405535 on master, which finished its job
+    # in 89m29s against the 90 it was given — THIRTY-ONE SECONDS inside, the
+    # same shape as the two seconds recorded above at the 25 ceiling, and that
+    # one was followed by a cancellation. The 86m30s that 34709583079 reached
+    # above is a cancellation point rather than a duration — that run never
+    # finished, so its true cost is unknown and larger.
+    #
+    # 150 is sized against run 34810284054 on this branch, which finished in
+    # 99m37s. That is the longest completed job on record here and it is nearly
+    # ten minutes past the ceiling it replaced, so the headroom this number buys
+    # is about half again, not the two-thirds a reader would get by measuring
+    # against 89m29s.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
