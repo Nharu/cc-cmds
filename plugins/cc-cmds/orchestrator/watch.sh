@@ -330,11 +330,24 @@ shift_active() {
   # night, and this arm is disarmed for good — the safety device becomes the
   # silent hole. Reading the timestamp is what makes the marker expire on its
   # own, with no writer needed to clean up after a process that is gone.
+  #
+  # OR THE SHIFT IS DEMONSTRABLY ALIVE. The expiry above is a 300-second
+  # cold-start budget that is never renewed, and it was enough while a stage
+  # ended inside the shift's own blocking dispatch call. With the supervisor
+  # detached a stage can end at ANY point of a shift's life — six minutes in,
+  # two hours in — and on the expired marker alone the after-stage arm fires
+  # mid-shift and writes the run-scope `blocked` row this function exists to
+  # prevent. `shift.live` (pid + fingerprint, written by the gate's launcher
+  # beside the marker and removed with it) answers the question the timestamp
+  # cannot; the fingerprint is what keeps a reused pid from disarming the arm
+  # for good. Lengthening the expiry instead would reopen a hole of that length,
+  # and a shift's real length is unbounded so no number is right.
   local f="$RUN_DIR/shift.in-progress" exp
-  [ -f "$f" ] || return 1
-  exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
-  [ -n "$exp" ] || return 1
-  [ "$(now_epoch)" -lt "$exp" ]
+  if [ -f "$f" ]; then
+    exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
+    if [ -n "$exp" ] && [ "$(now_epoch)" -lt "$exp" ]; then return 0; fi
+  fi
+  cc_shift_is_live "$RUN_DIR"
 }
 
 record_blocked() {
@@ -731,10 +744,21 @@ pass() {
   # shift ends normally and its own stream carries a terminal line, so without
   # this the run's account of itself is a shift that finished and a stage that
   # never existed.
+  #
+  # THE WORDING SAYS ONLY WHAT THE PREDICATE KNOWS. The earlier tail — "look at
+  # the dispatch mode, not the stage" — named one cause, and it was wrong on a
+  # measured case (a stage killed by an account limit under a perfectly normal
+  # dispatch). With the supervisor detached from the routing session the
+  # dispatch mode can no longer produce an orphan at all, so that sentence
+  # would point at a removed cause. What remains true: the record outlived the
+  # process, no result was recorded, and a surviving orphan means the SUPERVISOR
+  # died too — a machine-level event, listed without choosing among its
+  # branches. The settlement token `외부 종료` is spelled out so a person who
+  # saw the banner at 3am has the string to grep the ledger for at 9.
   local orphans
   orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
   [ -n "$orphans" ] && \
-    printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았으니 스테이지가 아니라 파견 방식을 보세요\n' \
+    printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았습니다 — 원인은 이 술어의 입력에 없습니다. 감독자까지 사라졌다는 뜻이므로 기계 재부팅·절전·OOM, 사람이 보낸 종료가 감독자에 닿은 것, 또는 정산이 도중에 멈춘 것일 수 있습니다. 다음 게이트 호출이 이를 `외부 종료` 로 정산합니다\n' \
       "$(now_iso)" "$orphans"
   return 0
 }

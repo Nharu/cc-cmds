@@ -356,13 +356,67 @@ check "부재를 설명하는 주석이 부재의 반대로 보고되지 않는�
 check "주석으로 내려간 캡처는 살아 있는 캡처로 세어지지 않는다" \
   "$(lc_census "$_lc_fx" 'LC_ALL=C ps -o lstart=')" "1"
 
+# THE EXPECTED COUNT IS NOW ZERO FOR THE GATE AND THE DRIVER, and that is the
+# assertion rather than a relaxation. Both re-spelled the capture inline beside
+# `cc_proc_fingerprint`, so one rule had three spellings that matched by luck;
+# `.start` is written through the function in both files now, so the capture
+# exists in exactly ONE place. `run-fixture.sh` keeps its own — it is a fixture
+# writing what the product would have written, deliberately independent so a
+# broken product spelling cannot make the fixture agree with it.
+lc_expected() {
+  case "$(basename "$1")" in
+    gate.sh|run.sh) printf '0' ;;
+    *)              printf '1' ;;
+  esac
+}
 for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$LIVENESS" \
          "$repo_root/scripts/run-fixture.sh"; do
   n=$(lc_census "$f" 'LC_ALL=C ps -o lstart=')
   bad_n=$(lc_census "$f" 'LC_TIME=C ps -o lstart=')
-  check "$(basename "$f") 의 지문 캡처가 LC_ALL 로 고정돼 있다" "$n" "1"
+  check "$(basename "$f") 의 지문 캡처 수가 기대와 같다 (게이트·드라이버는 liveness.sh 한 곳으로 접혔다)" "$n" "$(lc_expected "$f")"
   check "$(basename "$f") 에 LC_TIME 만 건 캡처가 남아 있지 않다" "$bad_n" "0"
 done
+# AND THE TWO THAT DROPPED TO ZERO CALL THE FUNCTION INSTEAD. A count of zero
+# is also what deleting the write would produce, so the positive half has to be
+# asserted beside it.
+for f in "$GATE" "$repo_root/plugins/cc-cmds/orchestrator/run.sh"; do
+  check "$(basename "$f") 가 지문을 cc_proc_fingerprint 로 쓴다" \
+    "$( [ "$(lc_census "$f" 'cc_proc_fingerprint "\$[a-z]*" > "\$RUN_DIR')" -ge 1 ] && printf 'yes' || printf 'no' )" "yes"
+done
+
+# ---------------------------------------------------------------------------
+# The fifth reader — the snapshot's `live_stages[]`.
+#
+# The census answers HOW MANY and could not answer WHICH, so a successor shift
+# had no way to learn the segment it should `wait` on. `cc_live_stage_records`
+# is the census returning names, and this is the assertion that the two cannot
+# come apart: the list's length is the census.
+# ---------------------------------------------------------------------------
+# Its own run directory, carrying the same three shapes Fixture A carries, so a
+# reader that counted pid files or trusted `kill -0` alone would disagree here.
+. "$LIVENESS"
+fx_mkrun agree-records
+fx_stage_live   LR1
+fx_stage_dead   LR2
+fx_stage_reused LR3
+check "live_stages 레코드 수가 census 와 같다" \
+  "$( { cc_live_stage_records "$FX_RUN_DIR" || true; } | grep -c . || true)" "$(cc_live_stages "$FX_RUN_DIR")"
+check "그 census 가 실제로 하나를 센다 (위 단언이 0=0 으로 공허하지 않다)" "$(cc_live_stages "$FX_RUN_DIR")" "1"
+check "레코드가 이름 대는 세그먼트가 살아 있는 그 스테이지다" \
+  "$( { cc_live_stage_records "$FX_RUN_DIR" || true; } | cut -f1 | paste -sd, -)" "LR1"
+
+# AND A LIVE SHIFT IS NOT A STAGE. `shift.live` sits outside the `*.pid` glob,
+# so the guarantee is structural rather than a sibling-file check — but a
+# structural guarantee that nothing measures is one an innocent rename breaks.
+sl_before=$(cc_live_stages "$FX_RUN_DIR")
+printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$FX_RUN_DIR/shift.live"
+check "shift.live 를 심어도 스테이지 census 가 움직이지 않는다" "$(cc_live_stages "$FX_RUN_DIR")" "$sl_before"
+check "그 shift.live 는 살아 있는 교대로 읽힌다 (검사가 공허하지 않다)" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "live"
+printf '%s\n%s\n' "$$" "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/shift.live"
+check "지문이 어긋난 shift.live 는 살아 있는 교대가 아니다" \
+  "$( cc_shift_is_live "$FX_RUN_DIR" && printf 'live' || printf 'dead' )" "dead"
+rm -f "$FX_RUN_DIR/shift.live"
 
 # ---------------------------------------------------------------------------
 # The notifier channel stays off for every suite that does not assert on it.
@@ -565,7 +619,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-gate.sh test-liveness-agreement.sh test-lost-dispatch.sh test-run.sh test-snapshot.sh"
+_selected_want="test-gate.sh test-liveness-agreement.sh test-lost-dispatch.sh test-run.sh test-snapshot.sh test-stage-supervisor.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"

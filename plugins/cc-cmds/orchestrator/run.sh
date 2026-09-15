@@ -78,6 +78,15 @@ fi
 # resolves to the filesystem root and fails somewhere else entirely.
 ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The shared liveness predicates, sourced for ONE function here:
+# `cc_proc_fingerprint`. `stage_spawn` used to re-spell the fingerprint capture
+# inline — the same `ps -o lstart=` + `sed` the gate also re-spelled — and three
+# spellings of a compared string are three ways for a compare to fail silently.
+# `liveness.sh` guards its `readonly` so the gate, which sources this file and
+# then sources `liveness.sh` itself, is not aborted by a second source.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/liveness.sh"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -3149,10 +3158,11 @@ stage_spawn() {
   # and `reap_orphan` remove the pid and the group and leave this file behind,
   # and a `*.pid` glob cannot see it once the pid file is gone. `.pgid` keeps the
   # one job only it can do: the group reclaim in `reap_orphan`.
-  # `LC_ALL` rather than `LC_TIME`: the reader is a different process and only
-  # the top-ranked locale variable survives whatever it inherited.
-  { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
-    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$stage.start"
+  # THE CAPTURE IS `cc_proc_fingerprint` AND NOTHING ELSE. The locale pin
+  # (`LC_ALL`, not `LC_TIME`) and the whitespace fold live in that one function
+  # in `liveness.sh`; a hand-spelled copy here matched it by luck and would have
+  # diverged the first time either side moved.
+  cc_proc_fingerprint "$pid" > "$RUN_DIR/$stage.start"
   # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
   # its successor can find. All three go to the volatile directory only.
   printf '%s\n' "$pid"  > "$RUN_DIR/$stage.pid"
@@ -5063,8 +5073,30 @@ main_loop() {
     esac
   done < "$RUN_DIR/plan.tsv"
 
-  ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
-    "관측 시각=$(now_iso)"
+  # THE FINAL COST IS THE LEDGER'S LAST `cost` ROW OF THIS RUN, not a re-sum of
+  # the stage streams. The stream sum (`cat log/*.json | jq -s add`) was wrong in
+  # BOTH directions on measured runs — 29x under on one, 4.5x over on another —
+  # because a stream that was truncated loses its envelope and one that was
+  # appended across attempts carries several. The ledger's running `누적 usd` is
+  # the most durable of the three sources, so it is read rather than rebuilt.
+  #
+  # SCOPED TO THIS RUN'S BLOCK, NOT `ledger_last`. That helper is deliberately
+  # unscoped, and this is exactly the case where that matters: a run whose only
+  # terminations were settlements (`외부 종료` carries no envelope, so no `cost`
+  # row is written for it) has zero `cost` rows, and an unscoped read would
+  # report LAST NIGHT'S total for it. With no row in this run the figure is
+  # `비용 불명`, never `0` — the same vocabulary as the settlement count beside
+  # it, so a low total is never presented bare.
+  local last_cost settled
+  last_cost=$( { run_section_rows 'cost' || true; } | tail -1 \
+               | tr '|' '\n' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  settled=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=외부 종료' || true)
+  if [ -n "$last_cost" ]; then
+    ledger_row 'cost' "누적 usd=$last_cost" "관측 시각=$(now_iso)"
+    report_append "비용" "누적 ${last_cost} USD · 정산됨(비용 불명) ${settled:-0}건"
+  else
+    report_append "비용" "비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) ${settled:-0}건"
+  fi
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting
