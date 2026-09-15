@@ -146,6 +146,7 @@ once per run rather than on every append.
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
 **비용 천장**: <숫자만 — 통화 기호도 단위도 없이> | 없음
+**무진전 상한**: <정수 — 진전 없는 라우터 판정 연속 횟수> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
@@ -438,13 +439,25 @@ undeclared is legal, so removing the clock outright would leave those runs with
 nothing at all. That failure is silence rather than a crash, which unattended is
 the worst shape available.
 
-**`비용 천장` carries TWO thresholds and is the progress-axis bound today.** At
-80% it opens a boundary approval — a person, if there is one, decides. At 100%
-it ENDS the run, because an approval nobody answers is not a bound and the state
-this design targets is the one where nobody is awake to be asked. **Digits
-only**: a value carrying a currency symbol or a unit is not a figure the
-boundary's arithmetic can read, and the gate now says so and declines to enforce
-rather than silently treating the run as bounded.
+**`비용 천장` carries TWO thresholds.** At 80% it opens a boundary approval — a
+person, if there is one, decides. At 100% it ENDS the run, because an approval
+nobody answers is not a bound and the state this design targets is the one where
+nobody is awake to be asked. **Digits only**: a value carrying a currency symbol
+or a unit is not a figure the boundary's arithmetic can read, and the gate says
+so and declines to enforce rather than silently treating the run as bounded.
+
+**`무진전 상한` is the second progress axis, and it exists because the first
+boundary on this axis can only ask.** B1 counts consecutive router judgments over
+an unmoved progress digest and opens an approval at its threshold — and that
+approval, while it waits, suppresses B1 itself, so the counter freezes at exactly
+the value that opened the question. Unattended nobody answers, and the run spins
+against a bound that can no longer advance. The declared bound counts the same
+number outside that suppression and ENDS the run when it is reached. An integer:
+a value that will not read as one is warned about and not enforced, the same
+disposition the ceiling takes.
+
+**Both are optional, and a run that declares NEITHER keeps the wall clock** — see
+the deadline note above for why that fallback exists and why it is narrow.
 
 **`공통 git 디렉터리` is on every target row because of a hazard in this very
 tree**: two working trees here share one `.git` and one `refs/stash`. Inferring

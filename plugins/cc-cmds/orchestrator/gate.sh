@@ -8887,6 +8887,36 @@ gate_past_deadline() {
   [ "$now" -gt "$stamp" ] 2>/dev/null
 }
 
+gate_unbounded_notice() {
+  # BOTH PROGRESS-AXIS BOUNDS UNDECLARED IS A STATE, AND THE RUN HAD NO WAY TO
+  # HEAR ABOUT IT.
+  #
+  # The manifest check is asymmetric and each half of the asymmetry is a
+  # decision. It hard-fails a manifest without `벽시계 마감` — the field the
+  # fixed-graph path actually reads. It says nothing about `비용 천장` and
+  # `무진전 상한`, the two that bound a ROUTER run, because undeclared is legal
+  # for both and that legality is the whole of their backward compatibility.
+  # Both halves are right on their own; together they mean a manifest that
+  # PASSES the check reads as "the bounds were checked" while the two bounds
+  # that matter may both be absent.
+  #
+  # A REQUIRED CHECK CANNOT REPAIR THAT. The check runs on every verb against a
+  # frozen block nobody can edit, so making the field required would kill a run
+  # in flight on its next `snapshot` — in the middle of the night, for a
+  # manifest that was conforming when it was written. What can be done for a run
+  # whose manifest is already frozen is to TELL it, which is what this is: the
+  # fact, once, naming both fields and what is left unbounded.
+  #
+  # ONCE, kept with a marker file. A warning on every act is the thing that
+  # teaches a reader to skip the line that matters.
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -e "$RUN_DIR/unbounded-notice" ] && return 0
+  gate_progress_axes_unbounded || return 0
+  : > "$RUN_DIR/unbounded-notice"
+  warn "이 런은 「비용 천장」과 「무진전 상한」이 둘 다 미선언입니다 (숫자로 읽히지 않는 값도 미선언으로 셉니다) — 두 진전 축 어디에도 상한이 없습니다"
+  warn "남는 유계는 「벽시계 마감」뿐이고, 그것은 이 상태에서만 라우터 경로의 디스패치·머지 관문으로 남습니다"
+}
+
 gate_progress_axes_unbounded() {
   # True when NO progress-axis bound is in force.
   #
@@ -8896,15 +8926,19 @@ gate_progress_axes_unbounded() {
   # to report a bound it does not have. One predicate, so the boundary and its
   # readers cannot each answer this differently.
   #
-  # WRITTEN AS A PER-AXIS WALK because the tree is expected to gain axes. Today
-  # the cost ceiling is the only progress-axis bound the router path reads, so
-  # the walk has one arm; adding an axis is adding an arm here beside the
-  # boundary that enforces it, never a second predicate that can disagree.
-  local cost
+  # WRITTEN AS A PER-AXIS WALK because the tree is expected to gain axes. Adding
+  # an axis is adding an arm here beside the boundary that enforces it, never a
+  # second predicate that can disagree.
+  local cost bound
   cost=$(manifest_field '인가' '비용 천장')
+  bound=$(manifest_field '인가' '무진전 상한')
   case "$cost" in
     ''|없음|'(없음)') : ;;
     *) if gate_cost_figure_ok "$cost"; then return 1; fi ;;
+  esac
+  case "$bound" in
+    ''|없음|'(없음)') : ;;
+    *) case "$bound" in *[!0-9]*) : ;; *) return 1 ;; esac ;;
   esac
   return 0
 }
@@ -8962,9 +8996,9 @@ gate_run_ended_ok() {
   # purpose survives; the yardstick is replaced, because the clock was a poor
   # proxy for it.
   #
-  # WHAT ENDS A RUN NOW is `gate_end_run`, called from a boundary that sits
-  # outside the pending-approval suppression: the cost ceiling at 100%. This
-  # function only reads the mark it leaves.
+  # WHAT ENDS A RUN NOW is `gate_end_run`, called from the two boundaries that
+  # sit outside the pending-approval suppression: the cost ceiling at 100% and
+  # the stagnation bound. This function only reads the mark they leave.
   #
   # It gates DISPATCH and MERGE and nothing else, exactly as the deadline did —
   # a stage in flight runs to completion and is classified normally, and the run
@@ -8993,17 +9027,19 @@ gate_run_ended_ok() {
     # THE CLOCK IS KEPT FOR THE MANIFESTS THAT HAVE NOTHING ELSE.
     #
     # Moving the yardstick to a progress-axis bound is right for a manifest that
-    # declares one. Every manifest written before that field was read declares
-    # none, and undeclared is legal — so for those runs the replacement would not
-    # be a replacement but a removal, and the router path would be left with no
-    # enforced bound at all. The failure shape is the worst one available:
-    # unattended, it is silence rather than a crash.
+    # declares one. Every manifest written before those fields were read declares
+    # neither, and undeclared is legal for both — so for those runs the
+    # replacement would not be a replacement but a removal, and the router path
+    # would be left with no enforced bound at all. The failure shape is the worst
+    # one available: unattended, it is silence rather than a crash.
     #
-    # NARROW ON PURPOSE. When a bound is validly declared this arm is never
+    # NARROW ON PURPOSE. When either bound is validly declared this arm is never
     # reached and the clock has no say over the run, which is the whole of why
     # the yardstick moved — the three measured cases where it ended a run through
-    # no fault of the run's are not re-admitted here.
-    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」이 유효하게 선언되지 않아 마감이 유일한 경계입니다"
+    # no fault of the run's are not re-admitted here. The predicate above is the
+    # same one every other reader of "is this run bounded" uses, so the run that
+    # gets this gate is exactly the run that has nothing else.
+    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」과 「무진전 상한」이 둘 다 유효하게 선언되지 않아 마감이 유일한 경계입니다"
   else
     return 0
   fi
@@ -13092,15 +13128,35 @@ gate_boundaries() {
   [ "$graded" = "읽기" ] && judgment=0
   case "$kind" in skill|router-shift) judgment=0 ;; esac
 
+  # THE PROGRESS DIGEST IS COMPUTED ONCE AND HANDED TO BOTH READERS. It walks
+  # the whole ledger, so computing it per boundary doubled that walk on every
+  # judging call — measured as a suite that stopped finishing. And the two
+  # boundaries are meant to be counting THE SAME NUMBER, which is worth holding
+  # structurally rather than by two call sites happening to agree.
+  local pdig=""
+  if [ "$judgment" = "1" ]; then pdig=$(gate_progress_digest); fi
   if [ "$pending" = "0" ] && [ "$judgment" = "1" ]; then
-    gate_b1_stagnation
+    gate_b1_stagnation "$pdig"
     gate_b2_obligations
     gate_b3_act_budget
   fi
-  # B4 stays live even while waiting, and OUTSIDE the judgment predicate: a
+  # B5 IS A JUDGMENT BOUNDARY EVALUATED OUTSIDE THE SUPPRESSION, which is the
+  # only combination that can bound a run whose B1 question nobody answered —
+  # B1's own firing opens the approval that then stops B1 from counting.
+  if [ "$judgment" = "1" ]; then
+    gate_b5_stagnation_bound "$pdig"
+  fi
+  # B4 stays live even while waiting, and OUTSIDE the judgment predicate too: a
   # read-only router still spends tokens, and a boundary inside the predicate
   # would leave that spend unseen by every boundary at once.
   gate_b4_cost
+  # AND THE RUN IS TOLD WHEN IT HAS NEITHER. Said to the ROUTER, because it is
+  # the seat that can do something about it and the one whose output a person
+  # reads in the morning; a stage would carry the line into a transcript nobody
+  # opens. Once per run, by a marker.
+  if cc_caller_is_router; then
+    gate_unbounded_notice
+  fi
 }
 
 gate_b1_stagnation() {
@@ -13146,8 +13202,10 @@ gate_b1_stagnation() {
   # held again, so the answered B1 came back on the next judgment and blocked
   # the run a person had just released. The mechanism is the issuer's answered
   # arm, and it is written down there.
-  local h prev n
-  h=$(gate_progress_digest)
+  # An argument is the digest the caller already paid for; absent, this computes
+  # it itself so a direct caller (a test, a probe) still works.
+  local h="${1:-}" prev n
+  [ -n "$h" ] || h=$(gate_progress_digest)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/progress-repeat" 2>/dev/null || printf '0')
   if [ "$h" = "$prev" ]; then
@@ -13445,12 +13503,63 @@ gate_b4_percent() {
   awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }'
 }
 
+gate_b5_stagnation_bound() {
+  # THE SECOND PROGRESS AXIS, AND THE ONE B1 CANNOT BE. B1 counts exactly this —
+  # consecutive router judgments over an unmoved progress digest — and asks. This
+  # counts the same thing and ENDS the run. The two differ in disposition and in
+  # one structural way that is the whole reason for a second counter.
+  #
+  # B1..B3 ARE SUPPRESSED WHILE AN ACT-CLASS APPROVAL IS PENDING, and B1's own
+  # firing is what opens one. So under manual resolution B1 asks at its
+  # threshold, the approval stays open because nobody is awake, and from that
+  # moment `progress-repeat` stops advancing — the counter freezes at exactly the
+  # value that opened the question. A bound layered on that counter would never
+  # be reached. This one is evaluated beside B4, outside the suppression, so it
+  # keeps counting while the question waits.
+  #
+  # THE DIGEST IS B1'S, NOT A VARIANT. An earlier form of this filtered `acts=`
+  # out of the progress vector, because that component counted read-exceeding
+  # exec calls and was therefore the counter's own input — a counter inside its
+  # own hash input never advances. The vector no longer carries `acts=`; it
+  # carries `dispatches=`, which counts observed stage outcomes and is not moved
+  # by the call being judged. With the reason gone the filter is gone, and both
+  # boundaries read the same value — which is what lets "B1 asked and B5 ended"
+  # be one story about one number rather than two numbers that can disagree.
+  #
+  # THE JUDGMENT PREDICATE IS THE CALLER'S, AND SO IS THE DIGEST. `gate_boundaries`
+  # already decides what counts as a router judgment (not a stage, grade above
+  # read, kind not `skill` or `router-shift`), and it computes the progress
+  # digest once for both this boundary and B1 — a second copy of either would be
+  # a second place for them to drift apart, and the digest walk is not cheap.
+  # An absent argument falls back to computing it, so a direct caller works.
+  # An argument is the digest the caller already paid for — same arrangement
+  # as B1.
+  local bound h="${1:-}" prev n
+  bound=$(manifest_field '인가' '무진전 상한')
+  case "$bound" in ''|없음|'(없음)') return 0 ;; esac
+  # AN UNREADABLE BOUND WARNS AND DOES NOT ENFORCE, the same disposition the cost
+  # ceiling takes. Silence would leave a run believing it had a bound on the one
+  # axis still able to end it.
+  case "$bound" in *[!0-9]*)
+    warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다. 판정 횟수를 숫자로만 적으세요"
+    return 0 ;;
+  esac
+  [ -n "$h" ] || h=$(gate_progress_digest)
+  prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
+  n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
+  if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
+  printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
+  printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
+  [ "$n" -lt "$bound" ] && return 0
+  gate_end_run B5 "진전 해시가 라우터 판정 연속 ${n}회 동안 불변입니다 (상한 ${bound})"
+}
+
 gate_b4_cost() {
   # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
   # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
-  # ceiling is now the bound that keeps a router run finite: the wall clock no
-  # longer ends a run that has this field, and an approval nobody answers is not
-  # a bound.
+  # ceiling is one of the two bounds that keep a router run finite: the wall
+  # clock no longer ends a run that declares either of them, and an approval
+  # nobody answers is not a bound.
   local declared spent pct resolved
   declared=$(manifest_field '인가' '비용 천장')
   # The undeclared spellings are the same vocabulary the percentage helper uses.
