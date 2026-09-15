@@ -4475,6 +4475,25 @@ graded_as '읽기' 'openssl dgst 는 읽기다'              -- openssl dgst -sh
 graded_as '읽기' 'openssl rand 도 읽기다'              -- openssl rand -hex 8
 graded_as '워크트리쓰기' 'rand 라도 -out 이면 쓰기다'  -- openssl rand -out /tmp/secrets.bin 32
 graded_as '등급 미상' '이름 없는 하위 명령은 거부된다' -- openssl s_client -connect example.com:443
+
+# 붙여 쓴 출력 옵션. 이 표의 여러 행이 공백으로 구분된 리터럴만 맞춰, 붙여 쓴
+# 철자가 전부 `읽기` 로 떨어졌다. 방향이 나쁜 쪽이다 — 쓰기를 읽기로 세탁하면
+# 아래 세 쓰기 가드가 전부 그 호출을 건너뛴다. 각 도구마다 떨어뜨리는 형태와
+# 통과하는 형태를 함께 둬서, 어느 한쪽만 고치면 빨개진다.
+graded_as '트리밖쓰기' 'sort -o 는 쓰기다 (공백)'        -- sort -o /tmp/p /tmp/f
+graded_as '트리밖쓰기' 'sort -o 는 쓰기다 (붙여 씀)'      -- sort -o/tmp/p /tmp/f
+graded_as '트리밖쓰기' 'sort --output 은 쓰기다 (공백)'   -- sort --output /tmp/p /tmp/f
+graded_as '트리밖쓰기' 'sort --output= 도 쓰기다'         -- sort --output=/tmp/p /tmp/f
+graded_as '읽기' '출력 옵션이 없는 sort 는 읽기다'        -- sort /tmp/f
+# `--` 뒤는 피연산자다. `-o` 라는 이름의 파일을 읽는 것을 파일 이름의 힘으로
+# 쓰기로 등급하면, 고친 방향과 반대로 평범한 읽기가 막힌다.
+graded_as '읽기' '-- 뒤의 -o 는 파일 이름이지 옵션이 아니다' -- sort -- -o/tmp/p
+graded_as '워크트리쓰기' 'yq -i 는 쓰기다'                -- yq -i /tmp/x.yml
+graded_as '읽기' '-i 없는 yq 는 읽기다'                   -- yq /tmp/x.yml
+graded_as '트리밖쓰기' 'docker save -o 는 붙여 써도 쓰기다' -- docker save -o/tmp/t img
+graded_as '읽기' '-o 없는 docker save 는 읽기다'          -- docker save img
+graded_as '트리밖쓰기' 'git archive -o 는 붙여 써도 쓰기다' -- git archive -o/tmp/p HEAD
+graded_as '읽기' '-o 없는 git archive 는 읽기다'          -- git archive HEAD
 # The team witness initializer. It is the second half of a pair: the script
 # exists so that the four statements it runs stop needing `bash -c`, and this
 # row is what makes that worth doing. Without the row the script would fall to
@@ -7898,6 +7917,84 @@ case "$msg" in
     bad "매니페스트 가드 오탐" "무관한 경로에 대한 쓰기를 매니페스트 쓰기로 거절했다: $msg" ;;
   *) ok "무관한 경로 쓰기는 매니페스트 가드에 걸리지 않는다 (모든 쓰기를 거절하는 구현이 아니다)" ;;
 esac
+
+# --- 31ac-2. The run directory has the same guard through Bash as through Write
+# --- section: 31ac-2 | group: cone | covers: exec | anchors: 평문 이름의 스테이지 로그 쓰기가 거절된다 ---
+#
+# 훅은 런 디렉터리를 지키고 게이트는 지키지 않아, 같은 쓰기가 `Write` 로는 거절되고
+# `Bash` 로는 통과했다. 정직한 `--surface 트리밖쓰기` 가 그 전부에 닿았다.
+#
+# 닿는 파일 중 최악은 스테이지 로그다. 재파견 경로는 `log/<stage>.json` 을 읽는데
+# 기록하는 쪽은 `log/<stage>#<n>.json` 으로 박으므로, 평문 이름으로 거기 놓인 로그가
+# 재부착이 소비하는 것이고 그것이 싣는 세션 id 로 재개가 띄워진다.
+# `gateN` 은 자기 XDG 루트로 게이트를 돌리므로 런 디렉터리도 그 아래다. 전역
+# 루트로 잡으면 가드가 볼 경로와 다른 곳에 써서 모든 단언이 조용히 초록이 된다.
+RD3="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"
+mkdir -p "$RD3/log" "$RD3/halt" "$RD3/witness" "$RD3/team-witness"
+case "$RD3" in
+  "$STATE_CONE"/*) ok "런 디렉터리 픽스처가 gateN 의 XDG 루트 아래에 있다 (아래 단언이 공허하지 않다)" ;;
+  *) bad "런 디렉터리 픽스처" "gateN 이 보는 루트와 다르다: $RD3" ;;
+esac
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- tee "$RD3/log/SD.json"
+check "평문 이름의 스테이지 로그 쓰기가 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/SD#1.md"
+check "선언된 이름 halt/<stage-id>.md 는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/SD.plan.md"
+check "선언된 이름 <segment>.plan.md 도 통과한다" "$rc" "0"
+mkdir -p "$RD3/halt/a"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/halt/a/b.md"
+check "halt 아래 두 단계는 거절된다 (훅과 같은 팔이다)" "$rc" "3"
+# 읽기는 통과한다. 위의 거절들 때문에 그 파일이 만들어지지 않았으므로, 명령 자체가
+# 실패해 게이트 거절과 섞이지 않도록 여기서 만든다 — 재는 것은 게이트의 판정이지
+# `cat` 의 운이 아니다.
+printf '{}\n' > "$RD3/log/SD.json"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- cat "$RD3/log/SD.json"
+check "런 디렉터리를 읽기만 하는 행위는 통과한다 (오탐이 아니다)" "$rc" "0"
+
+# 위트니스 예외는 실제로 만들어지는 이름에 대고 잰다. 가드가 자기 리터럴만 확인하는
+# 단언은 두 파일이 어긋나도 초록이며, 실제로 그렇게 어긋난 적이 있다 — 가드가
+# `witness/*` 를 적는 동안 생성 스크립트는 런 루트 바로 아래 `cc-team-witness-…` 를
+# 만들고 있었고, 그 사이에서 무인 런의 팀 발행이 전부 거절됐다. 그래서 여기서는
+# 생성 스크립트를 실제로 돌려 얻은 경로로 단언한다.
+WPUB=$(CC_PIPELINE_RUN_DIR="$RD3" CC_PIPELINE_STAGE_ID='SD#1' \
+       "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-alpha 2>/dev/null)
+case "$WPUB" in
+  "$RD3"/cc-team-witness-*) ok "생성 스크립트가 런 루트 바로 아래에 디렉터리를 만든다 (아래 단언이 실제 경로를 잰다)" ;;
+  *) bad "위트니스 픽스처" "생성 스크립트가 런 디렉터리 아래 경로를 내지 않았다: ${WPUB:-(빈 값)}" ;;
+esac
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$WPUB/reviewer.round-1.md"
+check "생성 스크립트가 만든 위트니스 디렉터리로의 발행은 통과한다" "$rc" "0"
+# 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
+# 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
+# 기준선 파일 하나를 더 열어 준다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/witness/r1.md"
+check "아무도 만들지 않는 witness/ 철자는 예외가 아니다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/team-witness/r1.md"
+check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
+# 편집이 여기서 빨개져야 한다.
+if grep -qF 'cc-team-witness-*/*' "$GATE" \
+   && grep -qF 'cc-team-witness-*/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 위트니스 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "위트니스 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
 # --- section: 31ad | group: cone | covers: act | anchors: 워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다 ---
