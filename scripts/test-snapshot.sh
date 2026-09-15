@@ -503,6 +503,29 @@ check "cycle 행이 리포트 경로를 싣는다" \
 check "델타 행의 모드가 실린다" \
   "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="2") | .["모드"]' "$SNAP_C")" "델타"
 
+# The router's basis selection is one jq expression carried in both router
+# skills. `사이클` is a JSON string here, so a string maximum picks "9" over
+# "10" and offers a basis the gate refuses as stale on every re-dispatch. The
+# carried expression compares integers, and the two copies are held
+# byte-identical so a fix to one cannot leave the other behind.
+AP_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/SKILL.md"
+RS_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+sel_ap=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$AP_SKILL" || true)
+sel_rs=$(grep -oE '\[\.cycles\[\] \| select\(.*// -1\)' "$RS_SKILL" || true)
+check "기반 라우터 문서에 기준 선택 식이 한 번 실린다" "$(printf '%s\n' "$sel_ap" | grep -c '^\[')" "1"
+check "라우터 두 사본의 기준 선택 식이 바이트 동일하다" "$sel_rs" "$sel_ap"
+printf -- '- `cycle` | 세그먼트=S8 | 사이클=9 | P0=0 | P1=1 | 리뷰 HEAD=aaa0009 | 리포트 경로=/abs/s8-9.md\n' >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S8 | 사이클=10 | P0=0 | P1=1 | 리뷰 HEAD=aaa0010 | 리포트 경로=/abs/s8-10.md | 모드=전체\n' >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S8 | 사이클=11 | P0=0 | P1=0 | 리뷰 HEAD=aaa0011 | 리포트 경로=/abs/s8-11.md | 모드=델타 | 기준 사이클=10\n' >> "$LEDGER"
+SNAP_D="$WORK/cycles-basis.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_D"
+sel_s8=$(printf '%s' "$sel_ap" | sed 's/<세그먼트>/S8/')
+sel_none=$(printf '%s' "$sel_ap" | sed 's/<세그먼트>/S-none/')
+check "기준 선택 식이 문자열이 아니라 정수로 최대 전체 사이클을 고른다" \
+  "$(jq -r "($sel_s8) | if . == null then \"없음\" else .[\"사이클\"] end" "$SNAP_D" 2>/dev/null)" "10"
+check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음을 낸다" \
+  "$(jq -r "($sel_none) | if . == null then \"없음\" else .[\"사이클\"] end" "$SNAP_D" 2>/dev/null)" "없음"
+
 # ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
