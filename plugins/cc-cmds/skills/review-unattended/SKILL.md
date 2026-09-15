@@ -135,6 +135,8 @@ dispositions, and says so.
 
 Those four are re-read every time they are consulted.
 
+**CFI-U8 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상` — and `--destructive` besides on an act that deletes or destroys. Declare honestly and prefer `미상` to a guess; a script the manifest does not name is capped at read and run-local however it is declared, and rewrapping it in an interpreter, `xargs` or `sudo` does not lift that cap. Read pipeline variables by name (`printenv CC_PIPELINE_RUN_ID`), never bare `env` or bare `printenv` — this stage's environment carries the pipeline token. Where a read could print a secret the gate's list does not cover, say in `--rationale` why it does not, and where unsure do not run it: the gate does not park reads. Call external commands directly rather than inside `bash -c`. On exit 11 do not retry and do not re-declare — the `blocked` row names the cell; continue with what does not need that act, and if it was essential write a halt record with `분류: gate-unanswerable` and stop.
+
 **CFI-U7 — The recovery arm spawns nothing.** Under `--recover` this arm calls `Agent` zero times and reads only from disk. Every clause that stands up a team — Steps 3 and 4, the progress-checkpoint opt-in, the task-assignment header — does not reach it, so a recovery that finds itself composing a roster has already left the arm it was dispatched into.
 
 ---

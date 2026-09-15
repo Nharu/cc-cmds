@@ -91,6 +91,16 @@ dispositions, and says so.
 
 **CFI-U6 — The design document's write surface is exactly W1/W2.** Unchanged from the base skill, gate and all (Step 3).
 
+**CFI-U7 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상`, and `--destructive` besides on an act that deletes or destroys. Seven obligations, and each one closes a hole that was measured rather than imagined:
+
+- **Declare honestly, and prefer `미상` over a guess.** The gate parks `미상`, which is the outcome an unsure stage should get; a confident wrong `dev` is the one it must not.
+- **A script the manifest does not name is capped at read and run-local however it is declared.** Do not route around that by rewrapping the same script in an interpreter, or by moving it behind `xargs` or `sudo`: the cap is the user's decision about scripts this gate cannot read, and the wrapper spelling does not change what the script does.
+- **Read pipeline variables by name** — `printenv CC_PIPELINE_RUN_ID` — and never bare `env` or bare `printenv`. This stage's own environment carries the pipeline token, so the whole-environment forms print a credential into the transcript and are parked as `비밀출력`.
+- **Judge, record and refuse for the secret-printing forms the gate's list does not cover** (a project `.env`, `echo $VAR`, `curl -v`): say in `--rationale` why the act does not print a secret, and where you are unsure do not run it. The gate does not park reads, so declaring `미상` on a read does not stop it — only you can.
+- **Call external commands directly rather than inside `bash -c`.** The wrapper hides the verb from the grading table, so the ledger records a network act as a worktree write.
+- **On exit 11 do not retry and do not re-declare.** The `blocked` row already names the cell. Continue with the work that does not need that act; if the act was essential, write a halt record with `분류: gate-unanswerable` and stop.
+- **`gate-unanswerable` is this tree's existing classification** for a gate a person has to answer, and the driver does not branch on `분류` — the value is for the morning reader.
+
 ---
 
 ## Input Parsing

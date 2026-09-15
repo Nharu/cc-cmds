@@ -990,6 +990,83 @@ EOF
       "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
   done
 
+  # 14 — `dev 식별자` on the target rows.
+  #
+  # HARD STOP ON A MALFORMED ELEMENT, and the direction is what makes it one: a
+  # typo the checker passed over reads at runtime as "this target declared
+  # nothing", and declaring nothing means the run BELIEVES a stage's `dev` claim
+  # with nothing to compare it against. So the failure of a silent skip is
+  # open-ended, while the failure of this refusal is one line in a manifest.
+  # Absence of the field is not a violation — it is the default.
+  local dv al kindtok valtok e
+  for al in $(target_aliases); do
+    dv=$(target_field "$al" 'dev 식별자')
+    [ -n "$dv" ] || continue
+    local IFS_SAVE="$IFS"; IFS=','
+    for e in $dv; do
+      IFS="$IFS_SAVE"
+      case "$e" in
+        *:*) ;;
+        *) die "대상 '$al' 의 dev 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
+      esac
+      kindtok="${e%%:*}"; valtok="${e#*:}"
+      [ -n "$valtok" ] || die "대상 '$al' 의 dev 식별자 원소 '$e' 의 값이 비어 있습니다"
+      case "$kindtok" in
+        aws-profile|kube-context|host|domain) ;;
+        aws-account)
+          case "$valtok" in
+            *[!0-9]*) die "대상 '$al' 의 aws-account '$valtok' 가 숫자가 아닙니다" ;;
+          esac
+          [ "${#valtok}" -eq 12 ] || die "대상 '$al' 의 aws-account '$valtok' 가 12자리가 아닙니다" ;;
+        dir)
+          case "$valtok" in
+            /*) ;;
+            *) die "대상 '$al' 의 dev 식별자 dir '$valtok' 가 절대 경로가 아닙니다" ;;
+          esac ;;
+        *) die "대상 '$al' 의 dev 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" ;;
+      esac
+      IFS=','
+    done
+    IFS="$IFS_SAVE"
+  done
+
+  # 15 — `배포트리거 식별자` on the target rows. Same hard stop for the same
+  # reason; the extra arm is a WARNING rather than a refusal, because a branch
+  # trigger on a target that cannot push is inert rather than wrong — and "not
+  # checked" must not read the same as "checked and inert".
+  for al in $(target_aliases); do
+    dv=$(target_field "$al" '배포트리거 식별자')
+    [ -n "$dv" ] || continue
+    local has_branch=0
+    local IFS_SAVE2="$IFS"; IFS=','
+    for e in $dv; do
+      IFS="$IFS_SAVE2"
+      case "$e" in
+        *:*) ;;
+        *) die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
+      esac
+      kindtok="${e%%:*}"; valtok="${e#*:}"
+      [ -n "$valtok" ] || die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 의 값이 비어 있습니다"
+      case "$kindtok" in
+        branch) has_branch=1 ;;
+        workflow|jenkins-job|argv) ;;
+        *) die "대상 '$al' 의 배포트리거 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" ;;
+      esac
+      IFS=','
+    done
+    IFS="$IFS_SAVE2"
+    if [ "$has_branch" = "1" ]; then
+      local ct cti pushi
+      ct=$(target_field "$al" '절단점')
+      cti=$(cutpoint_index "$ct" 2>/dev/null) || cti=""
+      pushi=$(cutpoint_index 'push' 2>/dev/null) || pushi=""
+      if [ -n "$cti" ] && [ -n "$pushi" ] && [ "$cti" -lt "$pushi" ]; then
+        warn_once 'deploy-trigger-inert' \
+          "대상 '$al' 의 절단점이 'push' 미만인데 branch 배포 트리거를 선언했습니다 — 그 값은 이 런에서 불활성입니다"
+      fi
+    fi
+  done
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
 }
 
