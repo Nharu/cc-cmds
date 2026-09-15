@@ -28,6 +28,8 @@ That second clause is the one that closes the hole. The standing rules forbid a 
 
 **CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be the self-approval path the whole separation exists to keep shut — which is also why your session is deliberately kept out of `session-lineage`. **The gate itself closes the approvals that carry a recommendation** — boundary approvals as `승인`, your judgment approvals as the adoption of the judgment you submitted (or `거부` for `팀-구성`·`시각-면제`) — unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off. Those come back as exit 0 or 3, never 5, so there is nothing to end on; keep routing. What still reaches you as exit 5 is an act approval, or any approval when the switch is off.
 
+**A reach park is not an approval and does not end your shift.** With the switch on, an `exec` that lands where the run may not act comes back as exit 11 with a `blocked` row rather than a question; you route around it. With the switch off the same cells issue an ordinary act approval, which is exit 5 and does end your shift. Either way the rule catalog now runs to its end rather than returning at the first approval request, so an act that needs both a pre-authorization and a review record can no longer pass by answering only one of them.
+
 You do not render the question either, and you do not call `prompt`. The canonical prompt (`승인 <id> — <질문>`) and the gate's option menu are the LEAD's to carry into `AskUserQuestion`, verbatim, from `gate.sh prompt --approval <id>`; a shift has no person to show them to, so the whole of your duty is to put the approval id on your return line and end. Two things read as exit 5 from `close`, and the lead tells them apart by the snapshot: an approval nobody has answered yet, and one a person answered with free input — the answer equalled none of the gate's labels, so no disposition could be derived. The second carries `처분 사유=자유 입력` on its last row and the snapshot surfaces it as `disposition` on that `pending_approvals[]` entry (`-` for the first). You will see both as open approvals; neither is yours to resolve.
 
 **CFI-S5 — You write no files.** Your settings variant denies `Write` and `Edit` outright and grants no directories. Everything you change goes through the gate, which is what makes every act of yours a ledger row.
@@ -79,6 +81,9 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `5` | approval issued | **end this shift with `사유=승인`** |
 | `6` | self-declaration mismatch | your declared grade is not the derived one; fix the declaration |
 | `7` | enforcement surface moved | end with `사유=중단` and say so in your return line |
+| `8` | the argv climbs a higher rung than `--cutpoint` declared | raise the declaration to the rung the message names and re-issue the same argv — raising does not grant it |
+| `10` | the merge cannot say what it merges | fix the segment row and call again with the same argv |
+| `11` | 도달 park | the act was not performed and nothing waits to be answered. An act-scope `blocked` row names the cell in `도달 판정`. **Do not retry and do not re-declare the reach** — the verdict is keyed on the act digest. Route to other work; a stage that needed it writes its own halt record |
 
 ### Dispatching a stage
 

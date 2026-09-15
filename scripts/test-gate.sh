@@ -104,7 +104,9 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # THE UNCONDITIONAL REGIONS ARE TWO, and both are delimited by a marker rather
 # than by a line range. `# --- preamble-end ---` closes the head — the shared
 # helpers and the fixture repository every section stands on — and
-# `# --- epilogue-begin ---` opens the tail, which is the totals line and the
+# `CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+
+# --- epilogue-begin ---` opens the tail, which is the totals line and the
 # exit status. Line numbers move whenever a section is added or a banner is
 # edited; a marker moves only when someone moves it, which is what makes it
 # the unit a later change can carry.
@@ -2244,7 +2246,7 @@ check "읽기 등급이 읽기로 나온다" "$msg" "축2=읽기"
 # --- section: 3 | group: base | covers: act, snapshot | anchors: 절단점 이하의 행위는 통과한다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind push --target front --cutpoint push \
-     --snapshot-digest "$(HH)" --rationale x -- git push origin main
+     --snapshot-digest "$(HH)" --rationale x -- git push origin HEAD:refs/heads/feature-x
 check "절단점 이하의 행위는 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
@@ -2293,8 +2295,12 @@ esac
 # 5. Pre-authorization: outside the list is an APPROVAL, not a refusal
 # --- section: 5 | group: base | covers: act | anchors: 사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다 ---
 # ---------------------------------------------------------------------------
-gate act --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
+# 절단점을 `push` 로 두는 것이 이 절의 요점을 좁힌다. 룰 카탈로그는 이제 첫 승인
+# 요구에서 멈추지 않으므로, `배포` 로 두면 리뷰 룰이 뒤이어 거부해 exit 3 이 되고 —
+# 그것은 옳은 동작이지만 이 절이 재는 것이 아니다. 두 룰이 함께 걸릴 때 거부가
+# 이긴다는 사실은 아래 절 9 와 룰 루프 절이 따로 못박는다.
+gate act --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint push \
+     --snapshot-digest "$(HH)" --rationale x -- curl -X POST https://example.invalid
 check "사전 인가 밖 외부 상태 변경은 승인 대기를 발행한다" "$rc" "5"
 
 gate act --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 \
@@ -3177,7 +3183,7 @@ gate act --manifest "$FX_MANIFEST" --kind merge --target front --segment S9 --cu
 check "절단점-준수 는 「끔」을 무시한다" "$rc" "3"
 
 gate act --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 \
-     --snapshot-digest "$(HH)" --rationale x -- curl https://example.invalid
+     --snapshot-digest "$(HH)" --rationale x -- curl -X POST https://example.invalid
 check "사전-인가-대조 는 「끔」을 무시한다" "$rc" "5"
 
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 배포 \
@@ -3212,7 +3218,12 @@ sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self"
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
   sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)
-  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 열 그대로다" "$sa_wn" "10"
+  # 열에서 일곱으로 내려갔다. 룰 루프가 첫 승인 요구에서 멈추지 않게 되면서, 승인
+  # 발행을 재던 픽스처들이 `배포` 로 신고하면 리뷰 룰이 뒤이어 거부하게 됐다 — 그
+  # 셋을 `push` 로 낮춰 재려는 것만 재게 했고, 그래서 이 창을 떠났다. 이 수가 다시
+  # 올라갔다면 새 머지 등급 행위가 오염 창 안으로 들어온 것이고, 고칠 곳은 이 수가
+  # 아니라 그 행위의 자리다.
+  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 일곱 그대로다" "$sa_wn" "7"
 else
   bad "값싼 가드" "오염 창의 경계를 찾지 못했다 — 표제나 재배정 줄이 바뀌었다"
 fi
@@ -3276,7 +3287,7 @@ fi
 # ---------------------------------------------------------------------------
 n_before=$(grep -c '^- `승인`' "$FX_LEDGER" || true)
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
-gate plan --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 -- curl https://example.invalid
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 -- curl -X POST https://example.invalid
 check "plan 이 사전 인가 밖을 승인 대기로 답한다" "$rc" "5"
 check "그러면서 원장에는 아무것도 쓰지 않는다" "$(grep -c '^- `승인`' "$FX_LEDGER" || true)" "$n_before"
 case "$msg" in
@@ -3292,7 +3303,7 @@ esac
 n_auto=$(grep -c '^- `자율 승인`' "$FX_LEDGER" || true)
 n_appr=$(grep -c '^- `승인`' "$FX_LEDGER" || true)
 n_blk=$(grep -c '^- `blocked`' "$FX_LEDGER" || true)
-gate plan --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 -- curl https://example.invalid
+gate plan --manifest "$FX_MANIFEST" --kind x --target infra --cutpoint 배포 -- curl -X POST https://example.invalid
 check "거절하는 plan 이 자율 승인 행을 쓰지 않는다" "$(grep -c '^- `자율 승인`' "$FX_LEDGER" || true)" "$n_auto"
 check "거절하는 plan 이 승인 행을 쓰지 않는다" "$(grep -c '^- `승인`' "$FX_LEDGER" || true)" "$n_appr"
 check "거절하는 plan 이 blocked 행을 쓰지 않는다" "$(grep -c '^- `blocked`' "$FX_LEDGER" || true)" "$n_blk"
@@ -3842,7 +3853,7 @@ check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$E
 rows_before=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 rm -f "$EMITFILE"
 gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
-     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl https://example.invalid
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl -X POST https://example.invalid
 check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
 rows_after=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 if [ "$rows_after" -gt "$rows_before" ]; then
@@ -5005,8 +5016,8 @@ cp "$GBAK2" "$FX_GRANT"
 # next attempt at the same act took the same exit 5 — a loop that never closed.
 # ---------------------------------------------------------------------------
 # `aws s3` is outside the fixture's pre-authorization rows, so it issues one.
-gateL act --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 --snapshot-digest "$(HL)" --rationale x -- aws s3 ls
+gateL act --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 --snapshot-digest "$(HL)" --rationale x -- rsync --version
 check "사전 인가 밖 행위는 승인을 발행한다" "$rc" "5"
 ap=$( { grep -F '`승인`' "$FX_LEDGER" | grep -F '상태=대기' || true; } | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -5015,14 +5026,14 @@ if [ -n "$ap" ]; then ok "승인 id 가 원장에 남는다"; else bad "승인 i
 # Resolve it by hand — `close` reads a transcript this fixture has no way to
 # produce, and what is under test is the CONSUMER of the resolved row.
 printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$FX_LEDGER"
-gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 -- aws s3 ls
+gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 -- rsync --version
 check "해소된 승인이 같은 행위를 연다" "$rc" "0"
 
 # And a voided one refuses rather than re-asking.
 printf -- '- `승인` | 승인 id=%s | 상태=무효 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$FX_LEDGER"
-gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 -- aws s3 ls
+gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 -- rsync --version
 check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 
 # ---------------------------------------------------------------------------
@@ -5285,7 +5296,7 @@ graded_as '등급 미상'    '모르는 remote 하위 명령은 추측하지 않
 # the laundering the table exists to refuse, so the wrapped command decides.
 graded_as '워크트리쓰기' 'lockf 가 감싼 워크트리 쓰기는 그 등급이다' -- lockf -k -t 0 /tmp/l.lock git commit -m x
 graded_as '읽기'         'lockf 가 감싼 읽기도 그 등급이다'          -- lockf -k -t 0 /tmp/l.lock git status
-graded_as '외부상태변경' 'lockf 는 외부 행위를 워크트리 쓰기로 세탁하지 않는다' -- lockf -k -t 0 /tmp/l.lock curl https://x
+graded_as '외부상태변경' 'lockf 는 외부 행위를 워크트리 쓰기로 세탁하지 않는다' -- lockf -k -t 0 /tmp/l.lock curl -X POST https://x
 graded_as '워크트리쓰기' '감쌀 명령이 없는 lockf 는 잠금 파일을 만든다' -- lockf -k /tmp/l.lock
 graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'           -- /usr/bin/lockf -k -t 0 /tmp/l.lock git status
 
@@ -5295,7 +5306,7 @@ graded_as '읽기'         '절대경로 lockf 도 같게 등급된다'         
 # number of leading options is even — every fixture above passes `-k -t 0`, an
 # odd three, so the whole class sat under a green block.
 graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'      -- lockf /tmp/l.lock git status
-graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl https://x
+graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
 # --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
@@ -5311,7 +5322,7 @@ graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으�
 graded_as '워크트리쓰기' 'command 가 감싼 머지는 그 등급이다'       -- command git merge --no-ff seg
 graded_as '읽기'         'command 가 감싼 읽기는 계속 읽기다'        -- command git status
 graded_as '읽기'         'command -v 는 무엇이 실행될지 인쇄만 한다' -- command -v git
-graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl https://x
+graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl -X POST https://x
 graded_as '워크트리쓰기' '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
 graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
 graded_as '워크트리쓰기' 'find -delete 는 자기가 지운다'             -- find . -delete
@@ -5325,16 +5336,24 @@ graded_as '워크트리쓰기' 'find -fprint 도 같다'                      --
 graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
 graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
 graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
-# 나머지 래퍼 여덟은 해소되지 않고 `등급 미상` 으로 떨어진다 — 그 값은 거부이므로
-# 구멍이 아니라 닫힌 쪽이다. 단언으로 못박는 이유는 그 닫힘을 지키는 것이 지금까지
-# 산문뿐이었기 때문이다. 누군가 이 여덟 중 하나를 「읽기만 하는 래퍼」로 보고 읽기
-# 행에 얹으면, 그 낱말을 앞에 붙인 머지가 정직하게 `읽기` 를 신고하고 신고와 등급이
-# 일치하며 리뷰 룰은 읽기에서 조기 반환한다. 그때 붉어질 자리가 여기다.
-for _w in env xargs nice nohup time timeout stdbuf; do
-  graded_as '등급 미상' "$_w 로 감싼 머지는 해소되지 않아 거부로 떨어진다" -- "$_w" git merge --no-ff seg
+# 여섯 래퍼는 이제 자기 옵션만 소비하고 안의 명령을 등급표에 넘긴다 — 등급·표지·
+# 이력 술어·사다리·불투명 판정 다섯이 같은 풀기를 쓴다. 등급만 풀고 이력 술어를 두면
+# `env X=1 git merge seg` 가 워크트리 쓰기로 등급되면서 「이력을 통합하지 않는다」고
+# 답하고, 리뷰 룰이 바로 다음 줄에서 그 머지를 면제한다 — 초록이면서 무력한 수리다.
+# 그래서 아래 두 단언이 짝이다: 등급이 풀리는 것과, 이력 술어가 같은 자리에서 1 을
+# 답하는 것.
+for _w in env nice nohup time stdbuf; do
+  graded_as '워크트리쓰기' "$_w 로 감싼 머지는 풀려서 머지로 보인다" -- "$_w" git merge --no-ff seg
 done
 unset _w
-graded_as '외부상태변경' 'rg --pre 는 매 파일을 그 프로그램에 통과시킨다' -- rg --pre curl pattern .
+graded_as '외부상태변경' 'rg --pre 는 매 파일을 그 프로그램에 통과시킨다' -- rg --pre gcloud pattern .
+# 풀지 않는 둘. `xargs` 는 stdin 에서 인자를 조립하고 `sudo` 는 권한을 바꾸므로, 안의
+# 낱말을 그 명령으로 읽는 것이 정직하지 않다 — 둘은 표에 없는 명령으로 남고, 처분
+# 평가기가 선언과 무관하게 park 한다.
+graded_as '워크트리쓰기' 'timeout 은 기간 피연산자 뒤의 머지를 본다' -- timeout 5 git merge --no-ff seg
+graded_as '등급 미상' '기간 없는 timeout 은 해소되지 않는다' -- timeout git merge --no-ff seg
+graded_as '등급 미상' 'xargs 는 풀지 않는다' -- xargs git merge --no-ff seg
+graded_as '등급 미상' 'sudo 도 풀지 않는다' -- sudo git merge --no-ff seg
 graded_as '읽기'         '평범한 rg 검색은 읽기다'                   -- rg pattern .
 graded_as '워크트리쓰기' 'lockf 와 command 가 겹쳐도 끝까지 해소된다' -- lockf -k -t 0 /tmp/l.lock command git merge seg
 
@@ -6951,8 +6970,8 @@ case "$msg" in
   *"2 대기 중인 행위 승인"*) bad "조건 2" "절단점=판단 승인이 행위 승인으로 세어졌다: $msg" ;;
   *) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)" ;;
 esac
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- ssh -V
 check "사전 인가 밖 행위는 행위 승인을 발행한다" "$rc" "5"
 gateN act --manifest "$NM" --kind propose-done --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 절=x 근거=y
@@ -8148,8 +8167,8 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
 # carries `-` — was a sentence and not a check. An answer given at 22:00 opened
 # the same argv at 04:00 across every commit that had landed in between. Every
 # tuple assertion before this one observed the STRING.
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
 check "구속 튜플 실험용 행위가 승인을 발행한다" "$rc" "5"
 tup_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
 tup_id=$(row_field "$tup_row" '승인 id')
@@ -8174,12 +8193,12 @@ check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
 # `plan` RATHER THAN `act` for the two freshness probes: the resolution is read
 # before the dry-run arm on purpose, so `plan` reports the verdict without
 # performing anything — and this argv reaches outside the machine.
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 -- scp -V
 check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
 ( cd "$WT" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 -- scp -V
 check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
 case "$msg" in
   *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -8190,8 +8209,8 @@ esac
 # worse than the stale grant it replaced.
 tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                    | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
 check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
 tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                   | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
@@ -9083,8 +9102,8 @@ if [ -d "$EWT" ]; then
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
-  gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- aws s3 ls s3://execwt/probe
+  gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- ssh -V s3://execwt/probe
   check "실행 워크트리를 선언한 대상의 행위가 승인을 발행한다" "$rc" "5"
   ewt_row=$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
   ewt_id=$(row_field "$ewt_row" '승인 id')
@@ -9107,21 +9126,21 @@ if [ -d "$EWT" ]; then
   # `plan` for every probe below, the way 31ak does it: the resolution is read
   # before the dry-run arm, so the verdict comes back without the argv — which
   # reaches outside the machine — ever running.
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "두 트리가 다 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
   # THE FALSE-POSITIVE AXIS. Another segment landing a commit in the main
   # worktree says nothing about the tree this act runs in.
   ( cd "$WT" && git commit --allow-empty -q -m "메인만 움직이는 빈 커밋" )
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "메인 워크트리만 움직인 것은 그 승인을 낡게 하지 않는다" "$rc" "0"
   ( cd "$WT" && git reset -q --soft "$main_head" )
   check "픽스처가 옮긴 메인 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
   # THE FALSE-NEGATIVE AXIS, which is the one that let a night of commits through.
   ( cd "$EWT" && git commit --allow-empty -q -m "실행 워크트리만 움직이는 빈 커밋" )
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "실행 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
   case "$msg" in
     *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -12434,7 +12453,10 @@ sa_merge SBA
 check "A 보호: 슬라이스 A 의 머지 형태가 그대로 통과한다" "$rc" "0"
 sba=$(sb_row SBA)
 check "A 보호: 그 행의 절단점이 머지 그대로다" "$(sa_field "$sba" '절단점')" "머지"
-check "A 보호: 표가 침묵하므로 유도 절단점이 - 다" "$(sa_field "$sba" '유도 절단점')" "-"
+# push 는 사다리 표에서 여전히 침묵하지만, 대상 행이 해소된 뒤 목적지를 베이스와
+# 맞춰 칸을 다시 유도한다 — 이 refspec 의 목적지가 베이스라 머지다. 그 재유도가
+# 없으면 베이스로 미는 push 가 `push` 칸으로 남아 리뷰 요구가 서지 않는다.
+check "A 보호: 베이스로 가는 push 는 머지로 재유도된다" "$(sa_field "$sba" '유도 절단점')" "머지"
 check "A 보호: 그래서 그 머지가 여전히 리뷰 의무를 만든다" "$(sa_ob_count)" "1"
 
 # --- 「아무것도 움직이지 않았다」 (슬라이스 B) -------------------------------
@@ -12466,7 +12488,15 @@ sb_silent() {
     *) bad "무변경 B: $label" "$msg" ;;
   esac
 }
-sb_silent 'git push 는 침묵한다'       -- git push origin HEAD:refs/heads/보호1
+# `git push` 는 이 목록을 떠났다. 사다리 표는 여전히 침묵하지만, 대상 행이 해소된
+# 뒤 목적지를 베이스와 맞춰 칸을 다시 유도하므로 `커밋` 신고는 저선언이 된다 —
+# 그것이 이 축의 요점이다. 그래서 침묵이 아니라 유도된 칸을 잰다.
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SBZ \
+    --cutpoint 커밋 --rationale x -- git push origin HEAD:refs/heads/보호1
+check "무변경 B: 베이스가 아닌 push 는 커밋 신고를 저선언으로 만든다" "$rc" "8"
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SBZ \
+    --cutpoint push --rationale x -- git push origin HEAD:refs/heads/보호1
+check "무변경 B: push 로 올려 신고하면 통과한다" "$rc" "0"
 sb_silent 'git merge 는 침묵한다'      -- git merge --no-commit --no-ff HEAD
 sb_silent 'git branch 는 침묵한다'     -- git branch 곁가지-보호
 sb_silent 'gh pr view 는 침묵한다'     -- gh pr view 1
@@ -12735,6 +12765,206 @@ if [ "$(seam_mask "$seam_io2")" != "$(seam_mask "$seam_fo")" ]; then
 else
   bad "seam 4: 다른 거부의 출력은 같다고 판정되지 않는다 (대조군)" "$seam_io2"
 fi
+
+# ---------------------------------------------------------------------------
+# 50. 하위 명령 등급 — 읽기인 형태가 더는 승인을 발행하지 않는다
+# --- section: 50 | group: reach | covers: grade | anchors: gh pr view 는 읽기다 ---
+#
+# THE TABLE'S NEW ARMS, one fixture each. Every one of these was graded
+# `외부상태변경` before — which is what made 25 of the 29 act approvals this
+# pipeline ever issued be reads.
+graded_as 읽기       'gh pr view 는 읽기다'                -- gh pr view 1
+graded_as 외부상태변경 'gh pr merge 는 외부 상태 변경이다'   -- gh pr merge 1
+graded_as 읽기       'gh issue list 는 읽기다'             -- gh issue list
+graded_as 읽기       'gh run view 는 읽기다'               -- gh run view 5
+graded_as 외부상태변경 'gh run rerun 은 외부 상태 변경이다'  -- gh run rerun 5
+graded_as 읽기       'gh project item-list 는 읽기다'      -- gh project item-list 1
+graded_as 읽기       'gh auth status 는 읽기다'            -- gh auth status
+graded_as 읽기       'aws rds describe-db-instances 는 읽기다' -- aws rds describe-db-instances
+graded_as 외부상태변경 'aws rds delete-db-instance 는 외부 상태 변경이다' -- aws rds delete-db-instance --db-instance-identifier x
+graded_as 읽기       'aws 는 전역 플래그가 앞서도 하위 명령을 읽는다' -- aws --profile p ssm get-parameter --name x
+graded_as 외부상태변경 'aws s3 cp 가 s3 로 가면 외부 상태 변경이다' -- aws s3 cp ./a s3://b/c
+graded_as 트리밖쓰기  'aws s3 cp 가 로컬로 오면 트리 밖 쓰기다'    -- aws s3 cp s3://b/c ./a
+graded_as 읽기       'GET curl 은 읽기다'                  -- curl -s https://example.com/x
+graded_as 외부상태변경 'POST curl 은 외부 상태 변경이다'      -- curl -X POST https://example.com/x
+graded_as 트리밖쓰기  '출력 파일을 쓰는 GET curl 은 트리 밖 쓰기다' -- curl -o /tmp/x https://example.com/x
+graded_as 읽기       'kubectl get 은 읽기다'               -- kubectl get pods
+graded_as 외부상태변경 'kubectl delete 는 외부 상태 변경이다' -- kubectl delete pod p
+graded_as 읽기       'docker ps 는 읽기다'                 -- docker ps
+graded_as 트리밖쓰기  'docker run 은 트리 밖 쓰기다'         -- docker run --rm alpine true
+graded_as 외부상태변경 'docker push 는 외부 상태 변경이다'    -- docker push repo/img
+graded_as 읽기       'git fetch 가 원격 추적만 옮기면 읽기다' -- git fetch origin
+graded_as 워크트리쓰기 'git fetch 가 로컬 브랜치를 쓰면 워크트리 쓰기다' -- git fetch origin main:main
+graded_as 트리밖쓰기  'git clone 은 트리 밖 쓰기다'          -- git clone https://x/y.git
+graded_as 읽기       'git archive 는 표준 출력이면 읽기다'   -- git archive HEAD
+graded_as 트리밖쓰기  'git archive -o 는 트리 밖 쓰기다'     -- git archive -o /tmp/a.tar HEAD
+graded_as 읽기       'printenv 는 읽기다'                  -- printenv CC_PIPELINE_RUN_ID
+graded_as 읽기       'jq 는 읽기다'                        -- jq -r .a
+graded_as 워크트리쓰기 'env 뒤의 git merge 가 보인다'         -- env X=1 git merge seg
+graded_as 워크트리쓰기 'timeout 뒤의 git merge 가 보인다'     -- timeout 5 git merge seg
+graded_as 트리밖쓰기  'time -o 는 쓰기를 더한다'             -- time -o /tmp/t git merge seg
+
+# ---------------------------------------------------------------------------
+# 51. 형태 미상 — 표에 있는 도구의 읽을 수 없는 형태는 선언으로 넘길 수 없다
+# --- section: 51 | group: reach | covers: exec | anchors: 형태 미상은 읽기 선언으로도 통과하지 않는다 ---
+# 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
+# 하나가 정하므로, 절 밖에서 켜면 이 절을 단독으로 잘랐을 때 다른 모드로 돈다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+#
+# The token exists to separate "the table never listed this tool" from "this IS
+# a table tool and the form hides what it does". The second may not be rescued
+# by a declaration; before the split it could be.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- curl --x -X POST https://example.com/x
+check "형태 미상은 읽기 선언으로도 통과하지 않는다" "$rc" "2"
+case "$msg" in *"형태 미상"*) ok "그 거절이 형태 미상을 이름으로 말한다" ;; *) bad "그 거절이 형태 미상을 이름으로 말한다" "$msg" ;; esac
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 형태미상 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- git status
+check "형태 미상은 선언 어휘가 아니다" "$rc" "2"
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
+# 52. 도달 어휘와 필수 — 정보를 갖는 호출에만 요구한다
+# --- section: 52 | group: reach | covers: exec | anchors: 어휘 밖 도달 토큰은 exit 2 다 ---
+# 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
+# 하나가 정하므로, 절 밖에서 켜면 이 절을 단독으로 잘랐을 때 다른 모드로 돈다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 지구반대편 --snapshot-digest "$(HH)" \
+  --rationale t -- git status
+check "어휘 밖 도달 토큰은 exit 2 다" "$rc" "2"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(HH)" --rationale t -- git status
+check "로컬 읽기는 도달 없이 통과한다" "$rc" "0"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(HH)" --rationale t -- git fetch origin
+check "원격 도달 도구의 읽기는 도달 신고가 필수다" "$rc" "2"
+case "$msg" in *"--reach"*) ok "그 거절이 필요한 플래그를 이름으로 말한다" ;; *) bad "그 거절이 필요한 플래그를 이름으로 말한다" "$msg" ;; esac
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 협업 --snapshot-digest "$(HH)" --rationale t -- git fetch origin
+check "신고하면 같은 읽기가 통과한다" "$rc" "0"
+gate act --manifest "$FX_MANIFEST" --target front --segment S1 --kind segment \
+  --cutpoint 커밋 --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  -- 상태=계획됨 워크트리="$WT" 선행=없음
+check "--reach 는 exec 와 kind 없는 plan 에서만 받는다" "$rc" "2"
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
+# 53. 하한과 불투명 상한 — 셸 문자열 안에서 보이는 것이 등급을 올린다
+# --- section: 53 | group: reach | covers: exec | anchors: 정직하게 올려 신고해도 xargs 는 park 된다 ---
+# 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
+# 하나가 정하므로, 절 밖에서 켜면 이 절을 단독으로 잘랐을 때 다른 모드로 돈다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'cd x && git push origin b'
+check "셸 문자열 안의 push 가 하한을 올려 저선언이 된다" "$rc" "6"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'cat base.txt'
+check "읽기만 하는 셸 문자열은 읽기 선언이 받아들여진다" "$rc" "0"
+# 두 거절이 순서대로 선다. 하한이 먼저 보이는 것은 `xargs git push` 의 인자 목록
+# 안에서 push 가 읽히기 때문이고(저선언 → exit 6), 정직하게 올려 신고하면 그때는
+# 풀리지 않는 래퍼라는 이유로 park 된다. 둘 다 거절이지만 처방이 다르므로 둘 다
+# 못박는다 — 하나만 두면 다른 하나가 조용히 사라져도 초록이다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- xargs git push
+check "xargs 안에서 보이는 push 가 저선언을 만든다" "$rc" "6"
+gate exec --manifest "$FX_MANIFEST" --target infra --segment S1 --cutpoint push \
+  --surface 외부상태변경 --reach prod --snapshot-digest "$(HH)" \
+  --rationale t -- xargs git push
+check "정직하게 올려 신고해도 xargs 는 park 된다" "$rc" "11"
+case "$msg" in *신고등급한도*) ok "그 park 가 신고등급한도로 기록된다" ;; *) bad "그 park 가 신고등급한도로 기록된다" "$msg" ;; esac
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR"
+# ---------------------------------------------------------------------------
+# 54. 비밀값 출력 — 알려진 형태는 park 되고 이름을 준 읽기는 통과한다
+# --- section: 54 | group: reach | covers: exec | anchors: 인자 없는 printenv 는 park 된다 ---
+# 이 절은 자동 해소가 켜진 모드를 단언한다 — park 인지 승인인지는 그 스위치
+# 하나가 정하므로, 절 밖에서 켜면 이 절을 단독으로 잘랐을 때 다른 모드로 돈다.
+CC_GATE_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- printenv
+check "인자 없는 printenv 는 park 된다" "$rc" "11"
+case "$msg" in *비밀출력*) ok "그 park 가 비밀출력으로 기록된다" ;; *) bad "그 park 가 비밀출력으로 기록된다" "$msg" ;; esac
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- printenv PATH
+check "이름을 준 printenv 는 통과한다" "$rc" "0"
+n=$(grep -c '사유=도달 park' "$FX_LEDGER" 2>/dev/null || true)
+[ "${n:-0}" -ge 1 ] && ok "park 는 blocked 행으로 남는다" || bad "park 는 blocked 행으로 남는다" "n=$n"
+n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
+[ "${n:-0}" -ge 1 ] && ok "그 행의 스코프가 act 다 (런을 세우지 않는다)" || bad "그 행의 스코프가 act 다" "n=$n"
+# 상한을 넘는 행은 잘린 행이 아니라 없는 행이다 — `gate_append` 가 거절하며 그
+# 자리에서 프로세스가 끝나므로, park 판정이 가장 필요한 순간에 사라진다. 자유
+# 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
+n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
+[ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
+
+# ---------------------------------------------------------------------------
+# 55. 룰 루프 — 첫 승인 요구에서 멈추지 않는다
+# --- section: 55 | group: reach | covers: act | anchors: 승인 요구 뒤의 룰이 거부하면 거부가 이긴다 ---
+# ---------------------------------------------------------------------------
+#
+# 사전 인가 밖 머지는 순서 30 에서 승인 요구를 내고, 순서 40 의 리뷰 요구는 그 뒤에
+# 선다. 루프가 첫 5 에서 반환하던 동안에는 그 승인을 사람이 답해 주기만 하면 리뷰
+# 기록 없이 머지가 통과했다 — 초록이면서 검사되지 않은 통과다.
+# 이 절은 공유 매니페스트를 쓰지 않고 자기 것을 만든다. 절 9 가 공유 파일에 룰을
+# 꺼 둔 채 되돌리지 않기 때문이고 — 그 창 안에서는 「정책을 인지한 통과」와 「룰이
+# 꺼져 아무것도 검사되지 않은 통과」가 구별되지 않는다 — 다른 절이 만든 사본에
+# 기대면 이 절을 단독으로 잘랐을 때 그 파일이 없다.
+CC_GATE_PREV_AR55="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+M55="$WORK/plan55.md"
+G55="$WT/docs/pipeline-grant/R55.md"
+row55="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=배포 | 말단 행위 상한=없음"
+td55=$(printf '%s\n' "$row55" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+goal55='픽스처가 끝나면'
+dl55='2030-01-01T00:00:00Z'
+bd55=$( { printf 'goal\t%s\n' "$goal55"
+          printf '%s\n' "$row55" | sed 's/[[:space:]]\{1,\}/ /g' | sort | sed 's/^/target\t/'
+          printf 'deadline\t%s\n' "$dl55"; } | sort | shasum -a 256 | cut -d' ' -f1)
+{
+  printf '# 파이프라인 런 매니페스트 — R55\n'
+  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R55;\n'
+  printf '     anchor-kind=repo; anchor-key=t/infra;\n'
+  printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+  printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R55\n'
+  printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+  printf '## 의도\n```text\n테스트\n```\n\n'
+  printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td55" "$row55"
+  printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+  printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+  printf '## 인가\n**구속 다이제스트**: %s\n**런 최대 절단점**: 배포\n**종료 지점**: %s\n' "$bd55" "$goal55"
+  printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl55"
+  printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+} > "$M55"
+{
+  printf '# 파이프라인 인가 기록 — R55\n'
+  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$WT"
+  printf '## 인가 R55\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
+  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R55.md\n' "$WT"
+} > "$G55"
+H55() { cd "$WT" && bash "$GATE" snapshot --manifest "$M55" 2>/dev/null | jq -r .H; }
+gate act --manifest "$M55" --kind merge --target infra --segment S55 --cutpoint 머지 \
+     --snapshot-digest "$(H55)" --rationale x -- gh pr merge 1
+check "승인 요구 뒤의 룰이 거부하면 거부가 이긴다" "$rc" "3"
+case "$msg" in
+  *"룰 거부: 리뷰-후-머지"*) ok "그 거부가 리뷰 룰의 것이다 (사전 인가에서 멈추지 않았다)" ;;
+  *) bad "그 거부가 리뷰 룰의 것이다" "$msg" ;;
+esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 
 # --- epilogue-begin ---
 #
