@@ -145,6 +145,7 @@ once per run rather than on every append.
 **런 최대 절단점**: <token>
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
+**비용 천장**: <숫자만 — 통화 기호도 단위도 없이> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
@@ -423,6 +424,27 @@ and `authorized()` does not read it; two gates that can disagree are not built.
 accumulator. An accumulator that resets binds nothing — which is precisely the
 defect this contract watched a backoff helper ship — and only an absolute stamp
 stays correct across a reboot.
+
+**And it is now the FALLBACK bound rather than the primary one.** The clock
+measures elapsed time, and the thing worth stopping is pointless spinning. In
+three measured cases the clock ran through no fault of the run's — the machine
+was asleep for 35 hours, an external queue held it for most of 262 minutes,
+nobody resumed it; one run died having performed zero acts, and the independent
+review that forced cost 2h17m and 82.23 USD. So a run that declares a
+progress-axis bound is judged on that bound and the clock has no say over it.
+The clock still gates dispatch and merge for a manifest that declares no such
+bound — every manifest written before the field was read declares none, and
+undeclared is legal, so removing the clock outright would leave those runs with
+nothing at all. That failure is silence rather than a crash, which unattended is
+the worst shape available.
+
+**`비용 천장` carries TWO thresholds and is the progress-axis bound today.** At
+80% it opens a boundary approval — a person, if there is one, decides. At 100%
+it ENDS the run, because an approval nobody answers is not a bound and the state
+this design targets is the one where nobody is awake to be asked. **Digits
+only**: a value carrying a currency symbol or a unit is not a figure the
+boundary's arithmetic can read, and the gate now says so and declines to enforce
+rather than silently treating the run as bounded.
 
 **`공통 git 디렉터리` is on every target row because of a hazard in this very
 tree**: two working trees here share one `.git` and one `refs/stash`. Inferring
