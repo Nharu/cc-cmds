@@ -31,6 +31,16 @@ Severity and identity do different jobs: severity is the **routing input** that 
 | `reconcile` | the reviewer identified a real improvement the design never caught up with — the code is right and the document is stale. Code unchanged |
 | `accept` | false positive: an intended design choice read as an omission, not reproducible, or severity unwarranted |
 
+## Findings on landed code do not open a segment
+
+Before choosing a lane, read the reviewed segment's latest `segment` row: when its `상태=머지됨` or `상태=완료`, a P2 or P3 finding cannot take `fast` or `slow`.
+
+Those two lanes create implementation work, implementation work against a landed segment is a new segment, and the run cannot end without it. Such a finding belongs in the morning batch this file already names for P2 and P3. `reconcile` and `accept` remain available at every point — neither changes code. **P0 and P1 are unaffected**: every lane stays open to them whether the segment landed or not, because the termination predicate is theirs and a P0 against merged code is precisely the case that must not wait for the morning. The key is the merge, not a deployment — a deployment cannot be read from the ledger.
+
+**This section changes no execution, and says so rather than implying otherwise.** Two measured facts make that certain rather than likely: this judgment's inputs are the prompt and the review report, so no `segment` row reaches it; and of the consumers of `findings[]`, the one that assigns a lane sits behind a `P0`/`P1` filter, so a P2 or P3 lane is recorded and never acted on. Read the section as a hygiene rule for the person reading the record in the morning — it names a shape that would be wrong, not a branch that fires.
+
+**Do not read it as "P2 and P3 findings go nowhere."** They still produce their ledger rows and their severity-adjustment rows exactly as before. The only thing a landed segment withholds from them is a lane.
+
 ## When unsure, escalate
 
 This asymmetry is an **obligation here, not a preference**, precisely because no human confirms your call: a wrong fast-path is a bandage over a design hole that then ships; a wrong escalation costs cheap time. If you cannot decide between `fast` and `slow`, choose `slow`.
