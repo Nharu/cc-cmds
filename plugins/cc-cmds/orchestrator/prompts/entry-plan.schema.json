@@ -7,6 +7,8 @@
     "entry_rationale": { "type": "string" },
     "design_required": { "type": "boolean" },
     "design_rationale": { "type": "string" },
+    "design_tier": { "type": "string", "enum": ["lead-solo", "team-2", "team-4"] },
+    "design_tier_rationale": { "type": "string" },
     "targets": {
       "type": "array",
       "items": {
@@ -38,6 +40,6 @@
     "unresolved": { "type": "array", "items": { "type": "string" } },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "targets", "steps", "unresolved", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_rationale", "targets", "steps", "unresolved", "notes"],
   "additionalProperties": false
 }

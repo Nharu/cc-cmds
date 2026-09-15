@@ -387,6 +387,62 @@ else
 fi
 check "같은 행이 진전 다이제스트는 움직이지 않는다" "$(digest)" "$pd_before"
 
+# AN ABOVE-READ EXEC IS NOT PROGRESS EITHER. It used to be (`acts=`), and under
+# the judgment definition that made the judgment count a component of the very
+# digest the stagnation counter compares — the counter inside its own hash.
+pd_before=$(digest)
+printf -- '- `자율 승인` | kind= | 결정=exec | 대상=repo | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=x | prev=z\n' >> "$FIX_LEDGER"
+check "읽기 초과 exec 행은 진전 다이제스트를 움직이지 않는다" "$(digest)" "$pd_before"
+
+# A DISPATCH IS PROGRESS ONCE IT HAS AN OBSERVED OUTCOME, and not before. The
+# authorisation row is appended BEFORE the launch, so a component that counted
+# it moved on a dispatch that died at launch — and the failure row that follows
+# does not take the authorisation row back. The component reads `stage-result`
+# instead, for a segment the ROUTER dispatched: the seat comes from the
+# segment's `kind=skill | 결정=act` row, selected on the actor field POSITIVELY,
+# so the row a stage could forge (`행위자=스테이지`) and the row written before
+# the field existed both make their segment's outcome count for nothing.
+#
+# The outcome classes used here are the two that `stage-normal=` does NOT
+# count, so every movement below is this component's alone.
+pd_before=$(digest)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+check "파견 인가 행만으로는 진전이 아니다 (기동보다 먼저 쓰이는 행이다)" "$(digest)" "$pd_before"
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD2 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+check "리드의 파견 인가 행도 그 자체로는 진전이 아니다" "$(digest)" "$pd_before"
+# THE FAILED DISPATCH, WHOLE: authorisation, the crash the gate records, and the
+# failure row. The digest must sit where it was BEFORE the dispatch — compared
+# against the pre-dispatch value, not the post-authorisation one, so a
+# component that counts the authorisation row fails here rather than passing
+# on a value it had already moved.
+printf -- '- `stage-result` | 세그먼트=SD1 | 스테이지=SD1 | 종류=implement | 종료 코드=1 | 실행 버전=1 | 종단 부류=크래시 | 시각=2026-01-01T06:00:00Z\n' >> "$FIX_LEDGER"
+printf -- '- `자율 승인` | kind=skill | 결정=결과 | 대상=repo | 세그먼트=SD1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 행위자=교대 | 근거=rc=1 | prev=z\n' >> "$FIX_LEDGER"
+check "기동에서 죽은 파견은 인가·크래시·결과 행을 다 합쳐도 진전이 아니다 (파견 직전 값 그대로)" "$(digest)" "$pd_before"
+printf -- '- `stage-result` | 세그먼트=SD1 | 스테이지=SD1 | 종류=implement | 종료 코드=0 | 실행 버전=2 | 종단 부류=의도된 park | 시각=2026-01-01T06:10:00Z\n' >> "$FIX_LEDGER"
+pd_disp=$(digest)
+if [ "$pd_disp" != "$pd_before" ]; then
+  ok "교대가 파견한 스테이지가 관측 가능한 결과(의도된 park)를 남기면 진전이다"
+else
+  bad "파견 진전" "재파견이 park 로 끝났는데 해시가 그대로다"
+fi
+printf -- '- `stage-result` | 세그먼트=SD2 | 스테이지=SD2 | 종류=review | 종료 코드=0 | 실행 버전=1 | 종단 부류=산출물 없는 정지 | 시각=2026-01-01T06:20:00Z\n' >> "$FIX_LEDGER"
+pd_lead=$(digest)
+if [ "$pd_lead" != "$pd_disp" ]; then
+  ok "리드가 파견한 스테이지의 결과(산출물 없는 정지)도 움직인다"
+else
+  bad "파견 진전" "리드 파견의 결과 행이 들어왔는데 해시가 그대로다"
+fi
+printf -- '- `stage-result` | 세그먼트=SD2 | 스테이지=SD2 | 종류=review | 종료 코드=0 | 실행 버전=2 | 종단 부류=공허한 성공 | 시각=2026-01-01T06:30:00Z\n' >> "$FIX_LEDGER"
+check "라우터가 파견했어도 공허한 성공은 진전이 아니다 (아무것도 만들지 않은 파견)" "$(digest)" "$pd_lead"
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD3 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=파견 | prev=z\n' >> "$FIX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SD3 | 스테이지=SD3 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:40:00Z\n' >> "$FIX_LEDGER"
+check "스테이지가 파견한 세그먼트의 결과는 진전이 아니다 (구속되는 쪽은 자기 진전을 쓸 수 없다)" "$(digest)" "$pd_lead"
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=repo | 세그먼트=SD4 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=옛 행 | prev=z\n' >> "$FIX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SD4 | 스테이지=SD4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:50:00Z\n' >> "$FIX_LEDGER"
+check "행위자 필드 이전의 옛 파견 행이 낸 세그먼트의 결과는 아무것도 기여하지 않는다" "$(digest)" "$pd_lead"
+printf -- '- `stage-result` | 세그먼트=SD5 | 스테이지=SD5 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T07:00:00Z\n' >> "$FIX_LEDGER"
+check "게이트를 통해 파견된 적 없는 세그먼트의 결과는 진전이 아니다" "$(digest)" "$pd_lead"
+
 n_ob=$(jq -r '.obligations_total' "$WORK/s1.json")
 check "의무 총수가 중복 제거된 값으로 보고된다" "$n_ob" "1"
 
@@ -564,12 +620,145 @@ fi
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
-# 8. A resolved boundary approval restarts its count, and auto-resolution
-#    closes the approval instead of waiting on a person
+# 8. The judgment predicate — who moves the stagnation counter, and B4 outside it
+#
+# `gate_boundaries` is driven directly through the sourcing seam. B1..B3 are
+# evaluated on a JUDGMENT only: a call from a seat that is not a stage, graded
+# above `읽기`, whose kind is neither a dispatch nor a shift launch. All three
+# seat markers are PINNED on every call — this suite runs from inside a
+# pipeline stage too, and an inherited marker would make every row below a
+# stage call that judges nothing. A1 is resolved and A2 is `절단점=판단`, so no
+# act-class approval suspends the boundaries here.
+# ---------------------------------------------------------------------------
+printf '%s\n' "$(digest)" > "$RUN_DIR/progress-digest"
+printf '%s\n' "1" > "$RUN_DIR/progress-repeat"
+printf '%s\n' "0" > "$RUN_DIR/obligation-repeat"
+judge() {  # judge <seg> <stage> <shift> <graded> <kind>
+  ( CC_PIPELINE_SEGMENT="$1" CC_PIPELINE_STAGE_ID="$2" CC_PIPELINE_SHIFT_ID="$3"
+    export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+    gate_boundaries "$4" "$5" ) >/dev/null 2>&1
+  cat "$RUN_DIR/progress-repeat"
+}
+check "스테이지 좌석의 읽기 초과 호출은 판정이 아니다"          "$(judge S1 'S1#1' '' 워크트리쓰기 '')" "1"
+check "스테이지 마커 하나만 서 있어도 판정이 아니다"             "$(judge '' 'S1#1' '' 워크트리쓰기 '')" "1"
+check "라우터의 읽기는 판정이 아니다"                            "$(judge '' '' '' 읽기 '')" "1"
+check "기장 행위(읽기 등급)는 판정이 아니다"                     "$(judge '' '' '' 읽기 segment)" "1"
+check "파견(kind=skill)은 판정이 아니다"                         "$(judge '' '' '' 워크트리쓰기 skill)" "1"
+check "교대 기동(kind=router-shift)은 판정이 아니다"             "$(judge '' '' '' 워크트리쓰기 router-shift)" "1"
+# The control rows: without them every row above passes against a boundary
+# that never counts.
+check "리드의 읽기 초과 행위는 판정이다 (카운터 +1)"             "$(judge '' '' '' 워크트리쓰기 x)" "2"
+check "교대 샤드의 읽기 초과 행위도 판정이다 (샤드는 라우터다)"  "$(judge '' '' 'R1#1' 외부상태변경 '')" "3"
+check "여기까지 경계 승인은 없다 (N=5 미만)" "$(grep -c '절단점=경계' "$LEDGER" || true)" "0"
+
+# ---------------------------------------------------------------------------
+# 8b. An answered B1 stays answered until the digest moves
+#
+# The binding of B1 is the progress digest, an `승인` row is not in the vector,
+# and nothing the router does with its own hands moves it — so after a person
+# closes the approval, the judgment that brings the count back to the threshold
+# computes the SAME id. An issuer that re-opened any answered id the moment its
+# predicate held again put a fresh `대기` row there: "keep going" bought
+# nothing, and the run a person had just released was suspended again. What an
+# answer buys is one frozen state; the next question is earned by a structural
+# row moving the digest to a new id.
+#
+# The close goes through `gate_close_settle`, the path a real close takes, so
+# the count restarts from 0 as it does in a run. The count is then seeded one
+# below the threshold rather than marched there, which is the state the
+# intervening judgments would leave — the property under test is what the
+# issuer does AT the threshold on an answered id, not the arithmetic of getting
+# there.
+#
+# Driven through the same seam, one judgment at a time. `obligation-repeat` is
+# re-seeded before every judgment: this fixture ledger carries an open
+# obligation and B2 would otherwise fire on the third judgment and suspend the
+# very boundary under test. B1's own row is what is counted, by its id.
+# ---------------------------------------------------------------------------
+judge_b1() {  # judge_b1 — one router judgment with B2 held at zero
+  printf '%s\n' "0" > "$RUN_DIR/obligation-repeat"
+  judge '' '' '' 워크트리쓰기 x >/dev/null
+}
+b1_ids() { { grep -F '`승인`' "$LEDGER" || true; } | grep -F '구속 튜플=B1/' | grep -F '상태=대기' \
+           | sed -n 's/.*승인 id=\([^ |]*\).*/\1/p'; }
+printf '%s\n' "$(digest)" > "$RUN_DIR/progress-digest"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+judge_b1
+check "문턱에 닿은 판정이 B1 을 발화시킨다 (대기 행 1)" "$(b1_ids | grep -c . || true)" "1"
+b1_first=$(b1_ids | sed -n '1p')
+# The person answers. The row shape is the one `close` writes; the seam has no
+# transcript to read an answer from, so the row is appended directly.
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=계속 | 해소 시각=2026-01-01T05:30:00Z | prev=z\n' "$b1_first" >> "$FIX_LEDGER"
+check "답이 붙어도 진전 다이제스트는 그대로다 (같은 결속값, 같은 id)" "$(digest)" "$(cat "$RUN_DIR/progress-digest")"
+gate_close_settle "$b1_first" 2>/dev/null
+check "답을 닫으면 반복 계수가 0 으로 재기준선화된다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+judge_b1
+check "재기준선화 뒤 같은 결속값에서 카운터가 문턱에 다시 닿는다" "$(cat "$RUN_DIR/progress-repeat")" "$B1_STAGNATION_N"
+check "그러나 같은 id 로 새 대기 행을 붙이지 않는다 (「계속 가라」가 얼어붙은 상태 하나를 산다)" \
+  "$(b1_ids | grep -c "^$b1_first\$" || true)" "1"
+judge_b1
+check "판정이 거듭돼도 답한 id 는 다시 묻지 않는다" "$(b1_ids | grep -c "^$b1_first\$" || true)" "1"
+# A structural row moves the digest: the counter goes to 0 and the next
+# stagnation is a NEW id, which does ask.
+printf -- '- `종료 절` | id=C1 | 상태=충족 | 근거=픽스처 | prev=z\n' >> "$FIX_LEDGER"
+judge_b1
+check "구조적 행이 착지하면 카운터가 0 으로 돌아간다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+judge_b1
+b1_second=$(b1_ids | grep -v "^$b1_first\$" | sed -n '1p')
+if [ -n "$b1_second" ]; then
+  ok "새 다이제스트에서의 정체는 새 id 로 묻는다 (답이 경계를 끈 것이 아니다)"
+else
+  bad "B1 재발화" "다이제스트가 움직인 뒤 다시 정체했는데 새 대기 행이 없다"
+fi
+# THE RECURRENCE ARM — the reason the suppression is not "any row exists". The
+# same digest answered once and returning LATER is a new stagnation, not the
+# state that was answered. Answer the second id, march the digest away
+# (a judgment against a foreign seed resets the counter and drops the marker),
+# and the same value returning to the threshold asks again under the same id.
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=계속 | 해소 시각=2026-01-01T05:40:00Z | prev=z\n' "$b1_second" >> "$FIX_LEDGER"
+gate_close_settle "$b1_second" 2>/dev/null
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+judge_b1
+check "두 번째 답도 문턱의 같은 판정에서 다시 묻지 않는다" "$(b1_ids | grep -c "^$b1_second\$" || true)" "1"
+printf '%s\n' "다른 곳에 있었던 다이제스트" > "$RUN_DIR/progress-digest"
+judge_b1
+check "결속값이 움직였던 판정은 카운터를 0 으로 놓는다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+judge_b1
+check "같은 결속값이 떠났다가 돌아와 다시 정체하면 같은 id 로 다시 묻는다 (재발은 답한 상태가 아니다)" \
+  "$(b1_ids | grep -c "^$b1_second\$" || true)" "2"
+# Leave nothing open for the B4 rows below: an open act-class approval would
+# suspend B1..B3, and B4 is asserted to run regardless, so the two must not be
+# confused.
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=계속 | 해소 시각=2026-01-01T05:50:00Z | prev=z\n' "$b1_second" >> "$FIX_LEDGER"
+
+# B4 IS OUTSIDE THE PREDICATE: a read-only router — or a stage — still spends
+# tokens, and a cost boundary inside the predicate would leave that spend unseen
+# by every boundary at once. `## 인가` is the manifest's last section, so the
+# ceiling lands inside it; no CLI call follows this point.
+printf '**비용 천장**: 100\n' >> "$FIX_MANIFEST"
+printf -- '- `cost` | 누적 usd=90 | 스테이지 수=1 | 관측 시각=2026-01-01T05:00:00Z | prev=z\n' >> "$FIX_LEDGER"
+pr_before_b4=$(cat "$RUN_DIR/progress-repeat")
+judge S1 'S1#1' '' 읽기 '' >/dev/null
+check "스테이지의 읽기에서도 B4 는 평가된다 (술어 밖)" "$(grep -c '구속 튜플=B4' "$LEDGER" || true)" "1"
+check "그 호출이 정체 카운터는 건드리지 않았다" "$(cat "$RUN_DIR/progress-repeat")" "$pr_before_b4"
+
+# ---------------------------------------------------------------------------
+# 8c. A resolved boundary approval restarts its count, and auto-resolution
+#     closes the approval instead of waiting on a person
 #
 # The regression: the counters live in the run directory and a close left them
 # where they were, so the next evaluation after a grant issued the same question
 # again with the same count. Measured three seconds after a grant.
+#
+# The restart and the answered-id suppression of 8b hold together. So every
+# step below that expects the SAME id to be issued again first makes it a real
+# recurrence — the digest moves away (one evaluation against a foreign seed,
+# which zeroes the count and clears the marker) and comes back — rather than
+# re-seeding the count on a binding that was already answered, which 8b pins as
+# staying quiet.
 # ---------------------------------------------------------------------------
 BLEDGER="$WORK/boundary.md"
 LEDGER_SAVE="$LEDGER"
@@ -577,10 +766,16 @@ LEDGER="$BLEDGER"
 : > "$BLEDGER"
 RUN_DIR="$WORK/rundir-boundary"; mkdir -p "$RUN_DIR"
 boundary_rows() { { grep -F '`승인`' "$BLEDGER" || true; } | { grep -F "승인 id=$1-" || true; }; }
+# b1_recur — the binding moves away and comes back, one below the threshold.
+b1_recur() {
+  printf '%s\n' "다른 곳에 있었던 다이제스트" > "$RUN_DIR/progress-digest"
+  gate_b1_stagnation 2>/dev/null
+  printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+}
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 printf '%s\n' "$(gate_progress_digest)" > "$RUN_DIR/progress-digest"
-printf '2\n' > "$RUN_DIR/progress-repeat"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
 gate_b1_stagnation 2>/dev/null
 b1_id=$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
 check "수동 모드에서 B1 은 대기로 발행된다" "$(gate_approval_state "$b1_id")" "대기"
@@ -591,9 +786,13 @@ check "B1 승인을 닫으면 반복 계수가 0 으로 재기준선화된다" "
 gate_b1_stagnation 2>/dev/null
 check "해소 직후 다음 판정은 같은 질문을 다시 열지 않는다 (#363 회귀)" "$(gate_approval_state "$b1_id")" "승인"
 
-printf '2\n' > "$RUN_DIR/progress-repeat"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 n_before=$(boundary_rows B1 | gate_count)
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+gate_b1_stagnation 2>/dev/null
+check "자동 해소 모드에서도 답한 id 는 같은 결속값의 문턱에서 발행되지 않는다" \
+  "$(boundary_rows B1 | gate_count)" "$n_before"
+b1_recur
 gate_b1_stagnation 2>/dev/null
 check "자동 해소 모드에서 B1 은 발행 행과 닫는 행 둘을 남긴다" "$(boundary_rows B1 | gate_count)" "$((n_before + 2))"
 check "자동 해소된 B1 은 대기로 남지 않는다" "$(gate_approval_state "$b1_id")" "승인"
@@ -603,26 +802,51 @@ check "자동 해소도 반복 계수를 재기준선화한다" "$(cat "$RUN_DIR
 
 # A boundary approval left open from before is closed on the next evaluation.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
-printf '2\n' > "$RUN_DIR/progress-repeat"
+b1_recur
 gate_b1_stagnation 2>/dev/null
 check "수동 모드에서 다시 대기가 열린다" "$(gate_approval_state "$b1_id")" "대기"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
-gate_boundaries 2>/dev/null
+# The seat markers are pinned for the reason section 8 gives: this suite can run
+# inside a pipeline stage, and the close under test must not depend on whether
+# the predicate after it happens to hold.
+( CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SHIFT_ID=''
+  export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+  gate_boundaries ) 2>/dev/null
 check "열려 있던 경계 승인이 다음 경계 판정에서 자동 해소된다" "$(gate_approval_state "$b1_id")" "승인"
 check "대기 중인 경계 승인이 남지 않는다" "$(gate_pending_approval_ids act | gate_count)" "0"
 
 # B3 restarts from the total as of the close, not from the window start.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 printf '0\n' > "$RUN_DIR/act-budget-base"
-gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "근거=x"
+# One router row and one stage row. The rebaseline measures the same total the
+# boundary compares against, so it inherits the boundary's actor filter; without
+# the stage row a total that ignored the filter would pass every line below.
+gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "행위자=리드" "근거=x"
+gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "행위자=스테이지" "근거=x"
+check "B3 총계는 라우터의 읽기 초과 exec 만 센다 (스테이지 행 제외)" "$(gate_b3_exec_total)" "1"
 gate_boundary_rebaseline B3
 check "B3 재기준선화는 기준을 현재 총계로 옮긴다" "$(cat "$RUN_DIR/act-budget-base")" "$(gate_b3_exec_total)"
+check "B3 재기준선화는 경계가 읽는 창 키(진전 다이제스트)를 쓴다" \
+  "$(cat "$RUN_DIR/act-budget-digest")" "$(gate_progress_digest)"
+# With a key that differs from the boundary's the next evaluation sees a moved
+# window, re-bases on it and drops the answered marker — the rebaseline undone
+# by the boundary it serves.
+printf '%s\n' "답한 결속값" > "$RUN_DIR/boundary-B3.asked"
+gate_b3_act_budget 2>/dev/null
+check "재기준선화 직후의 B3 판정은 새 창을 열지 않는다 (답한 표지가 남는다)" \
+  "$(cat "$RUN_DIR/boundary-B3.asked" 2>/dev/null || printf '(없음)')" "답한 결속값"
 
 # B4 at or above the declared ceiling is NOT auto-resolved. Nothing else stops
 # spending — the ceiling is read only inside B4, and B4 only asks — so resolving
 # it every ten points let a $40 run continue at $40, $44 and $48 with nobody
 # asked, and closed the open approval that is the one signal a shift reads.
 # Below the ceiling the early warning is still resolved.
+#
+# The cost rows do not move the progress digest, so every step below computes
+# the SAME id: the 80% resolved automatically and the 100% that must wait. This
+# is the case the issuer's answered arm has to let through — an auto-resolution
+# is not a person's "keep going", and holding it quiet would leave the ceiling
+# crossing with no approval at all.
 B4_MANIFEST="$WORK/plan-b4.md"
 awk '{ print } $0 == "## 인가" { print "**비용 천장**: 40" }' "$FIX_MANIFEST" > "$B4_MANIFEST"
 B4_MANIFEST_SAVE="$MANIFEST"
@@ -662,10 +886,9 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 # A `대기` a person already answered is not auto-resolved. Free input leaves the
 # approval `대기` with `처분 사유` on its last row; closing it with the
 # recommendation replaced the person's words and then refused their real answer.
-# The B3 row above moved the progress digest, so the stagnation fires under a
-# new binding and therefore a new id — re-seed the digest and read that id.
-printf '%s\n' "$(gate_progress_digest)" > "$RUN_DIR/progress-digest"
-printf '2\n' > "$RUN_DIR/progress-repeat"
+# The stagnation is made a real recurrence first (the digest moves away and
+# comes back), so the id it fires under is not held quiet by an earlier answer.
+b1_recur
 gate_b1_stagnation 2>/dev/null
 b1_id=$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
 check "수동 모드에서 B1 대기가 다시 열린다 (자유 입력 픽스처)" "$(gate_approval_state "$b1_id")" "대기"
@@ -832,45 +1055,55 @@ check "그 승인에 자동 해소 행이 붙지 않는다" \
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 
 # ---------------------------------------------------------------------------
-# 10. The two counters, on the field boundary and over two different sets
+# 10. The two counters, over two different sets — and they are no longer even
+#     the same quantity
 #
-# They are not the same question and must not be the same selector. Progress
-# asks "did anything MOVE", so a command the table could not read is not
-# evidence of movement and is excluded; the terminal-act budget asks "how much
-# has this run spent", and an unreadable act spends exactly as much as a
-# readable one. Both are anchored on ` | 축2=… | ` rather than on a substring:
-# the exec row now carries an `argv=` excerpt, and an excerpt holding the text
-# `축2=읽기` used to move the count of a row whose own grade is a write.
+# They were never the same question. The terminal-act budget asks "how much has
+# this run spent", and an act the grading table could not read spends exactly as
+# much as a readable one, so `등급 미상` is inside that set. Progress asks "did
+# anything MOVE", and an above-read exec is not movement at all — the vector
+# counts dispatches that left an observed outcome, so NO exec row moves it,
+# whatever its grade. That is why only the budget still has a `축2` selector for
+# an excerpt to fool, and it is anchored on ` | 축2=… | ` rather than on a
+# substring: the exec row now carries an `argv=` excerpt, and an excerpt holding
+# the text `축2=읽기` used to drop a row whose own grade is a write out of the
+# budget.
+#
+# THE ROWS CARRY A SEAT. The budget is the ROUTER's, so a row with no `행위자`
+# contributes nothing and one seated at `스테이지` is filtered out — both are
+# asserted on their own elsewhere. Here the seat is present and unconstrained so
+# that the grade axis is the only thing being measured.
 # ---------------------------------------------------------------------------
 CNT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-counters.XXXXXX")
 CNT_LEDGER="$CNT_DIR/ledger.md"
 : > "$CNT_LEDGER"
 cnt_row() {   # cnt_row <축2 값> [추가 필드]
-  printf -- '- `자율 승인` | 교대=0 | kind= | 결정=exec | 대상=t | 세그먼트=S | 절단점=커밋 | 유도 절단점=- | 축2=%s | 자격=주변 | %s근거=x | prev=0\n' \
+  printf -- '- `자율 승인` | 교대=0 | kind= | 결정=exec | 대상=t | 세그먼트=S | 절단점=커밋 | 유도 절단점=- | 축2=%s | 자격=주변 | 행위자=리드 | %s근거=x | prev=0\n' \
     "$1" "${2:+$2 | }" >> "$CNT_LEDGER"
 }
-cnt_read() {  # cnt_read <acts|b3>
+cnt_read() {  # cnt_read <dispatches|b3>
   CC_GATE_SOURCE_ONLY=1 bash -c '
     . "$1" >/dev/null 2>&1; set +e +u
     LEDGER="$2"; MANIFEST=/nonexistent; RUN_ID=R; RUN_DIR="$3"
-    if [ "$4" = "acts" ]; then
-      gate_progress_vector 2>/dev/null | sed -n "s/^acts=//p"
+    if [ "$4" = "dispatches" ]; then
+      gate_progress_vector 2>/dev/null | sed -n "s/^dispatches=//p"
     else
       gate_b3_exec_total 2>/dev/null
     fi' _ "$GATE" "$CNT_LEDGER" "$CNT_DIR" "$1"
 }
-check "빈 원장의 진전 계수는 0 이다" "$(cnt_read acts)" "0"
+check "빈 원장의 진전 계수는 0 이다" "$(cnt_read dispatches)" "0"
 cnt_row '등급 미상'
-check "등급 미상 행은 진전으로 세지 않는다" "$(cnt_read acts)" "0"
-check "등급 미상 행도 행위 예산은 쓴다"     "$(cnt_read b3)"   "1"
+check "등급 미상 행은 진전으로 세지 않는다" "$(cnt_read dispatches)" "0"
+check "등급 미상 행도 행위 예산은 쓴다"     "$(cnt_read b3)"         "1"
 cnt_row '읽기'
-check "읽기 행은 둘 다 세지 않는다 (진전)"  "$(cnt_read acts)" "0"
-check "읽기 행은 둘 다 세지 않는다 (예산)"  "$(cnt_read b3)"   "1"
+check "읽기 행은 둘 다 세지 않는다 (진전)"  "$(cnt_read dispatches)" "0"
+check "읽기 행은 둘 다 세지 않는다 (예산)"  "$(cnt_read b3)"         "1"
 cnt_row '워크트리쓰기' 'argv=echo 축2=읽기'
-check "발췌에 축2=읽기 가 있어도 쓰기 행은 진전이다" "$(cnt_read acts)" "1"
-check "그 행은 예산도 쓴다"                          "$(cnt_read b3)"   "2"
+check "발췌에 축2=읽기 가 있어도 쓰기 행은 예산을 쓴다" "$(cnt_read b3)"         "2"
+check "그래도 그 쓰기 행은 진전이 아니다"               "$(cnt_read dispatches)" "0"
 cnt_row '외부상태변경'
-check "외부 상태 변경도 진전이다" "$(cnt_read acts)" "2"
+check "외부 상태 변경도 예산을 쓴다"   "$(cnt_read b3)"         "3"
+check "외부 상태 변경도 진전이 아니다" "$(cnt_read dispatches)" "0"
 rm -rf "$CNT_DIR"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
