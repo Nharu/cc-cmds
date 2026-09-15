@@ -36,6 +36,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# Auto-resolution is off except in the section that tests it, so the approval
+# fixtures above it stay pending the way they are written.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -533,6 +537,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6c. `cycles[]` carries what a delta basis is chosen from
+#
+# The router picks a segment's last FULL cycle as the basis for a delta review
+# and hands its review HEAD and report path to the review stage. With only
+# `세그먼트`/`사이클`/`P0`/`P1` on the row object it had to open the ledger to
+# find either, and the ledger is what the snapshot exists to stand in for. An
+# absent `모드` is emitted as the empty string — the reader takes it as 전체 —
+# so every row written before the field existed still parses as a full cycle.
+# ---------------------------------------------------------------------------
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=docs/reviews/s9-1.md\n' >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=0 | P1=0 | 리뷰 HEAD=def5678 | 리포트 경로=/abs/s9-2.md | 모드=델타 | 기준 사이클=1\n' >> "$LEDGER"
+SNAP_C="$WORK/cycles.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_C"
+check "모드 없는 cycle 행은 빈 모드로 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["모드"]' "$SNAP_C")" ""
+check "cycle 행이 리뷰 HEAD 를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리뷰 HEAD"]' "$SNAP_C")" "abc1234"
+check "cycle 행이 리포트 경로를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리포트 경로"]' "$SNAP_C")" "docs/reviews/s9-1.md"
+check "델타 행의 모드가 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="2") | .["모드"]' "$SNAP_C")" "델타"
+
+# ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
 # The ledger is deliberately NOT in the enforcement-surface digest: it grows on
@@ -606,12 +633,19 @@ check "여기까지 경계 승인은 없다 (N=5 미만)" "$(grep -c '절단점=
 #
 # The binding of B1 is the progress digest, an `승인` row is not in the vector,
 # and nothing the router does with its own hands moves it — so after a person
-# closes the approval the next judgment computes the SAME id. An issuer that
-# re-opened any answered id the moment its predicate held again put a fresh
-# `대기` row there on that very judgment: "keep going" bought nothing, and the
-# run a person had just released was suspended again. What an answer buys is
-# one frozen state; the next question is earned by a structural row moving the
-# digest to a new id.
+# closes the approval, the judgment that brings the count back to the threshold
+# computes the SAME id. An issuer that re-opened any answered id the moment its
+# predicate held again put a fresh `대기` row there: "keep going" bought
+# nothing, and the run a person had just released was suspended again. What an
+# answer buys is one frozen state; the next question is earned by a structural
+# row moving the digest to a new id.
+#
+# The close goes through `gate_close_settle`, the path a real close takes, so
+# the count restarts from 0 as it does in a run. The count is then seeded one
+# below the threshold rather than marched there, which is the state the
+# intervening judgments would leave — the property under test is what the
+# issuer does AT the threshold on an answered id, not the arithmetic of getting
+# there.
 #
 # Driven through the same seam, one judgment at a time. `obligation-repeat` is
 # re-seeded before every judgment: this fixture ledger carries an open
@@ -633,8 +667,11 @@ b1_first=$(b1_ids | sed -n '1p')
 # transcript to read an answer from, so the row is appended directly.
 printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=계속 | 해소 시각=2026-01-01T05:30:00Z | prev=z\n' "$b1_first" >> "$FIX_LEDGER"
 check "답이 붙어도 진전 다이제스트는 그대로다 (같은 결속값, 같은 id)" "$(digest)" "$(cat "$RUN_DIR/progress-digest")"
+gate_close_settle "$b1_first" 2>/dev/null
+check "답을 닫으면 반복 계수가 0 으로 재기준선화된다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
 judge_b1
-check "답한 뒤의 다음 판정은 카운터를 올린다" "$(cat "$RUN_DIR/progress-repeat")" "$((B1_STAGNATION_N + 1))"
+check "재기준선화 뒤 같은 결속값에서 카운터가 문턱에 다시 닿는다" "$(cat "$RUN_DIR/progress-repeat")" "$B1_STAGNATION_N"
 check "그러나 같은 id 로 새 대기 행을 붙이지 않는다 (「계속 가라」가 얼어붙은 상태 하나를 산다)" \
   "$(b1_ids | grep -c "^$b1_first\$" || true)" "1"
 judge_b1
@@ -658,8 +695,10 @@ fi
 # (a judgment against a foreign seed resets the counter and drops the marker),
 # and the same value returning to the threshold asks again under the same id.
 printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=계속 | 해소 시각=2026-01-01T05:40:00Z | prev=z\n' "$b1_second" >> "$FIX_LEDGER"
+gate_close_settle "$b1_second" 2>/dev/null
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
 judge_b1
-check "두 번째 답도 같은 판정에서 다시 묻지 않는다" "$(b1_ids | grep -c "^$b1_second\$" || true)" "1"
+check "두 번째 답도 문턱의 같은 판정에서 다시 묻지 않는다" "$(b1_ids | grep -c "^$b1_second\$" || true)" "1"
 printf '%s\n' "다른 곳에 있었던 다이제스트" > "$RUN_DIR/progress-digest"
 judge_b1
 check "결속값이 움직였던 판정은 카운터를 0 으로 놓는다" "$(cat "$RUN_DIR/progress-repeat")" "0"
@@ -682,6 +721,150 @@ pr_before_b4=$(cat "$RUN_DIR/progress-repeat")
 judge S1 'S1#1' '' 읽기 '' >/dev/null
 check "스테이지의 읽기에서도 B4 는 평가된다 (술어 밖)" "$(grep -c '구속 튜플=B4' "$LEDGER" || true)" "1"
 check "그 호출이 정체 카운터는 건드리지 않았다" "$(cat "$RUN_DIR/progress-repeat")" "$pr_before_b4"
+
+# ---------------------------------------------------------------------------
+# 8c. A resolved boundary approval restarts its count, and auto-resolution
+#     closes the approval instead of waiting on a person
+#
+# The regression: the counters live in the run directory and a close left them
+# where they were, so the next evaluation after a grant issued the same question
+# again with the same count. Measured three seconds after a grant.
+#
+# The restart and the answered-id suppression of 8b hold together. So every
+# step below that expects the SAME id to be issued again first makes it a real
+# recurrence — the digest moves away (one evaluation against a foreign seed,
+# which zeroes the count and clears the marker) and comes back — rather than
+# re-seeding the count on a binding that was already answered, which 8b pins as
+# staying quiet.
+# ---------------------------------------------------------------------------
+BLEDGER="$WORK/boundary.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$BLEDGER"
+: > "$BLEDGER"
+RUN_DIR="$WORK/rundir-boundary"; mkdir -p "$RUN_DIR"
+boundary_rows() { { grep -F '`승인`' "$BLEDGER" || true; } | { grep -F "승인 id=$1-" || true; }; }
+# b1_recur — the binding moves away and comes back, one below the threshold.
+b1_recur() {
+  printf '%s\n' "다른 곳에 있었던 다이제스트" > "$RUN_DIR/progress-digest"
+  gate_b1_stagnation 2>/dev/null
+  printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+}
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+printf '%s\n' "$(gate_progress_digest)" > "$RUN_DIR/progress-digest"
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+gate_b1_stagnation 2>/dev/null
+b1_id=$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "수동 모드에서 B1 은 대기로 발행된다" "$(gate_approval_state "$b1_id")" "대기"
+gate_append '승인' "승인 id=$b1_id" "상태=승인" "질문 문면=q" "답변 문면=트랜스크립트 판독" \
+  "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" "사이드카 앵커=-"
+gate_close_settle "$b1_id" 2>/dev/null
+check "B1 승인을 닫으면 반복 계수가 0 으로 재기준선화된다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+gate_b1_stagnation 2>/dev/null
+check "해소 직후 다음 판정은 같은 질문을 다시 열지 않는다 (#363 회귀)" "$(gate_approval_state "$b1_id")" "승인"
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+n_before=$(boundary_rows B1 | gate_count)
+printf '%s\n' "$((B1_STAGNATION_N - 1))" > "$RUN_DIR/progress-repeat"
+gate_b1_stagnation 2>/dev/null
+check "자동 해소 모드에서도 답한 id 는 같은 결속값의 문턱에서 발행되지 않는다" \
+  "$(boundary_rows B1 | gate_count)" "$n_before"
+b1_recur
+gate_b1_stagnation 2>/dev/null
+check "자동 해소 모드에서 B1 은 발행 행과 닫는 행 둘을 남긴다" "$(boundary_rows B1 | gate_count)" "$((n_before + 2))"
+check "자동 해소된 B1 은 대기로 남지 않는다" "$(gate_approval_state "$b1_id")" "승인"
+check "자동 해소 행은 처분 사유를 싣는다" \
+  "$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *처분 사유=//p' | sed 's/[[:space:]]*$//')" "자동 해소"
+check "자동 해소도 반복 계수를 재기준선화한다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+
+# A boundary approval left open from before is closed on the next evaluation.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+b1_recur
+gate_b1_stagnation 2>/dev/null
+check "수동 모드에서 다시 대기가 열린다" "$(gate_approval_state "$b1_id")" "대기"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+# The seat markers are pinned for the reason section 8 gives: this suite can run
+# inside a pipeline stage, and the close under test must not depend on whether
+# the predicate after it happens to hold.
+( CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SHIFT_ID=''
+  export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+  gate_boundaries ) 2>/dev/null
+check "열려 있던 경계 승인이 다음 경계 판정에서 자동 해소된다" "$(gate_approval_state "$b1_id")" "승인"
+check "대기 중인 경계 승인이 남지 않는다" "$(gate_pending_approval_ids act | gate_count)" "0"
+
+# B3 restarts from the total as of the close, not from the window start.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+printf '0\n' > "$RUN_DIR/act-budget-base"
+# One router row and one stage row. The rebaseline measures the same total the
+# boundary compares against, so it inherits the boundary's actor filter; without
+# the stage row a total that ignored the filter would pass every line below.
+gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "행위자=리드" "근거=x"
+gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "행위자=스테이지" "근거=x"
+check "B3 총계는 라우터의 읽기 초과 exec 만 센다 (스테이지 행 제외)" "$(gate_b3_exec_total)" "1"
+gate_boundary_rebaseline B3
+check "B3 재기준선화는 기준을 현재 총계로 옮긴다" "$(cat "$RUN_DIR/act-budget-base")" "$(gate_b3_exec_total)"
+check "B3 재기준선화는 경계가 읽는 창 키(진전 다이제스트)를 쓴다" \
+  "$(cat "$RUN_DIR/act-budget-digest")" "$(gate_progress_digest)"
+# With a key that differs from the boundary's the next evaluation sees a moved
+# window, re-bases on it and drops the answered marker — the rebaseline undone
+# by the boundary it serves.
+printf '%s\n' "답한 결속값" > "$RUN_DIR/boundary-B3.asked"
+gate_b3_act_budget 2>/dev/null
+check "재기준선화 직후의 B3 판정은 새 창을 열지 않는다 (답한 표지가 남는다)" \
+  "$(cat "$RUN_DIR/boundary-B3.asked" 2>/dev/null || printf '(없음)')" "답한 결속값"
+
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 9. With auto-resolution on, a judgment approval does not wait
+#
+# Driven through the CLI, on a run of its own: the R1 ledger above carries a
+# deliberately broken row, and an act on it would test the damage handling
+# rather than the approval. An unattended run has nobody to answer, so the
+# router's own recommendation is adopted and the ledger says so — the issue row
+# stays, and the close row carries `처분 사유=자동 해소`.
+# ---------------------------------------------------------------------------
+J_MANIFEST="$WT/plan-r2.md"
+J_LEDGER="$WT/docs/pipeline-run/R2.md"
+sed 's/R1/R2/g' "$FIX_MANIFEST" > "$J_MANIFEST"
+sed 's/R1/R2/g' "$WT/docs/pipeline-grant/R1.md" > "$WT/docs/pipeline-grant/R2.md"
+jH() { ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .H; }
+jact() {
+  ( cd "$WT" && bash "$GATE" act --manifest "$J_MANIFEST" --kind judgment --target repo \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(jH)" --rationale x -- "$@" ) \
+    >/dev/null 2>&1
+}
+j_rows() { { grep -F "\`$1\`" "$J_LEDGER" || true; } | { grep -F "$2" || true; }; }
+j_field() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+jact 등급=2 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
+check "수동 모드에서 등급 2 판단은 승인 대기로 응답한다" "$?" "5"
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+jact 등급=2 기준="밤사이 리뷰 라운드를 줄일지" 근거="사람 없이 끝까지 가야 한다"
+check "자동 해소가 켜지면 등급 2 판단이 승인 대기 없이 채택된다" "$?" "0"
+auto_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
+check "자동 해소 행은 상태=승인 이다" "$(j_field "$auto_row" '상태')" "승인"
+check "자동 해소 행은 응답 토큰이 없다 (사람의 답과 구별된다)" "$(j_field "$auto_row" '응답 토큰')" "-"
+auto_ap=$(j_field "$auto_row" '승인 id')
+check "채택 행이 자동 해소한 승인 id 를 해소 승인으로 싣는다" \
+  "$(j_rows '자율 승인' "해소 승인=$auto_ap " | gate_count)" "1"
+
+# The judgment left pending above, resubmitted, is resolved the same way — a run
+# already carrying an open question picks the auto-resolution up.
+jact 등급=2 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
+check "이미 대기 중이던 판단 승인도 재제출 때 자동 해소되어 채택된다" "$?" "0"
+
+# The two classes that hand risk to the user are resolved as a refusal: the run
+# still does not wait, and it does not take the risk on anyone's behalf.
+jact 등급=2 "판단 부류=팀-구성" 기준="팀을 소집할지" 근거="발견이 많다"
+check "사용자에게 위험을 넘기는 부류는 대기 대신 거절로 끝난다" "$?" "3"
+check "그 자동 해소 행은 상태=거부 이다" \
+  "$(j_field "$(j_rows '승인' '처분 사유=자동 해소' | tail -1)" '상태')" "거부"
+check "대기 중인 판단 승인이 남지 않는다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .pending_approvals_total)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
