@@ -2992,12 +2992,17 @@ case "$msg" in
 esac
 
 # Check 3 — the basis row must exist in this segment, and the refusal names the number.
+# The row's cycle is above the basis so the ordering check lets it through to check 3.
 gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
-     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=8 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "없는 기준 사이클은 거부된다" "$rc" "2"
 case "$msg" in
   *"기준 사이클 7"*"없습니다"*) ok "그 거절이 없는 번호를 문면에 싣는다" ;;
   *) bad "기준 사이클 부재 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"세 기준 플래그 없이 전체 리뷰로 재파견"*) ok "기준 사이클 부재 거절은 전체 재리뷰를 수선법으로 가리킨다" ;;
+  *) bad "기준 사이클 부재 수선법" "$msg" ;;
 esac
 
 # Check 5 — the basis is the latest full cycle; cycle 2 is newer than cycle 1.
