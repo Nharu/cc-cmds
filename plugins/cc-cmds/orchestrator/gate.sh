@@ -10899,6 +10899,22 @@ gate_b3_exec_total() {
   # grade at all, and here that spends budget on an act nobody established was
   # above a read. One function because the rebaseline after a resolved B3 has to
   # measure the same total the boundary compares against.
+  #
+  # CALL IT, NEVER CARRY IT. Three sites write `act-budget-base` — a resolved
+  # approval, a live stage's carry, and the window key moving — and what keeps
+  # them from fighting is not that they agree on a value but that each derives
+  # this count AT THE MOMENT IT WRITES. The ledger is append-only, so the count
+  # is monotonic, so whichever site writes last writes a watermark no lower than
+  # the others and the boundary simply counts again from there. No double
+  # subtraction, no negative `n`, and the order the sites fire in does not
+  # matter.
+  #
+  # That property is what a later change would break by hand. Compute this once
+  # and pass it across a call boundary, or narrow the population it counts, and a
+  # stale total can land after a fresh one — `base` then moves BACKWARDS and `n`
+  # jumps by the difference, stepping over the budget without ever equalling it.
+  # The three sites look like they merely share a helper; they actually share a
+  # timing discipline, and only the second one is load-bearing.
   { gate_rows '자율 승인' | grep '결정=exec' || true; } \
     | { grep -F '축2=' || true; } \
     | { grep -v '축2=읽기' || true; } | gate_count
