@@ -320,5 +320,89 @@ check "(7) wait 은 CLI 의 TERM 종료 코드를 돌려준다" "$rc_d" "143"
 check "(7) 중단 뒤에도 세그먼트별 파일이 남지 않는다" \
   "$( { ls "$RD"/D.pid "$RD"/D.sup "$RD"/D.kind 2>/dev/null || true; } | grep -c . || true)" "0"
 
+# ---------------------------------------------------------------------------
+# (9) A STAGE THAT IS ALREADY GONE WHEN THE SUPERVISOR RECORDS IT.
+#
+# Every stub above lives for a second or more, so the supervisor always captured
+# the fingerprint of a running process and this shape was never driven — which
+# is why a supervisor that died on that capture shipped green. It is also the
+# most common real failure: a wrong argument, a failed auth or a missing plugin
+# directory makes the wrapper exit before it execs, and a missing CLI makes it
+# exit 127. Measured on a Linux runner — the capture raised `ps`'s non-zero
+# status through `pipefail`, `errexit` ended the supervisor between `.pid` and
+# `.kind`, and the attempt left no row, no cleanup, and a record the settlement
+# candidate predicate skips forever while the lost-dispatch alarm keeps firing.
+# ---------------------------------------------------------------------------
+
+# (9a) THE CAPTURE ITSELF, under the shell options the supervisor inherits. A
+# pid that is gone is an answer — the empty string — not a failure of the
+# caller. The pid is one no system assigns, so the probe needs no live process.
+fp_probe=$(
+  . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+  set -euo pipefail
+  fp=$(cc_proc_fingerprint 2147483646)
+  printf 'survived:[%s]' "$fp"
+)
+check "(9) 사라진 pid 의 지문 캡처가 errexit 아래에서 호출자를 죽이지 않는다" \
+  "$fp_probe" "survived:[]"
+
+# The record is removed at termination, so "`.kind` exists" is a sampled
+# invariant rather than an end-state one: from before the dispatch until the row
+# lands, `.pid` must never be present without `.kind` beside it. The sampler
+# also reports whether it saw the record at all — an invariant nothing observed
+# is the vacuous pass this suite exists to refuse.
+sample_kind() {  # sample_kind <segment> <outfile>
+  local s="$1" out="$2" n=0 seen=0 broke=""
+  while [ "$n" -lt 3000 ]; do
+    if [ -f "$RD/$s.pid" ]; then
+      seen=1
+      if [ ! -f "$RD/$s.kind" ]; then broke=".pid 는 있는데 .kind 가 없다"; break; fi
+    fi
+    [ "$(rows_of "$s")" != "0" ] && break
+    sleep 0.01; n=$((n + 1))
+  done
+  printf '%s|%s\n' "$seen" "${broke:-ok}" > "$out"
+}
+
+assert_immediate() {  # assert_immediate <segment> <expected-rc> <label>
+  local s="$1" want="$2" label="$3" rc left f seen broke
+  sample_kind "$s" "$WORK/sample-$s" &
+  local sampler=$!
+  dispatch "$s" >/dev/null
+  g wait --manifest "$MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null; rc=$?
+  wait "$sampler" 2>/dev/null || true
+  check "(9) $label — wait 이 스테이지 rc 를 통과시킨다" "$rc" "$want"
+  check "(9) $label — stage-result 행이 정확히 하나" "$(rows_of "$s")" "1"
+  left=""
+  for f in pid start kind sup sup.start launch launch.taken; do
+    [ -e "$RD/$s.$f" ] && left="$left $s.$f"
+  done
+  check "(9) $label — 잔여 파일이 없다" "$left" ""
+  seen=""; broke=""
+  IFS='|' read -r seen broke < "$WORK/sample-$s" 2>/dev/null || true
+  check "(9) $label — .pid 가 있는 동안 .kind 도 있다" "${broke:-관측 없음}" "ok"
+  check "(9) $label — 그 관측이 실제로 파견 기록을 봤다" "${seen:-0}" "1"
+}
+
+# (9b) The CLI reports a normal result and exits at once.
+seg E
+CC_STUB_SLEEP=0
+export CC_STUB_SLEEP
+assert_immediate E 0 "즉시 정상 종료"
+unset CC_STUB_SLEEP
+
+# (9c) The wrapper's own refusal — exit 2 with no result envelope at all, the
+# shape a bad argument or a missing plugin directory produces.
+STUB_REFUSE="$WORK/claude-stub-refuse"
+cat > "$STUB_REFUSE" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 2
+STUBEOF
+chmod +x "$STUB_REFUSE"
+seg F
+export CC_CLAUDE_BIN="$STUB_REFUSE"
+assert_immediate F 2 "즉시 거부 종료"
+export CC_CLAUDE_BIN="$STUB"
+
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

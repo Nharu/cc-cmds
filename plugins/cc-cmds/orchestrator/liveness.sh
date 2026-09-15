@@ -285,7 +285,19 @@ cc_proc_fingerprint() {
   # cleared `LC_ALL` and a reader that had not produced different strings for one
   # live process. The reader then called it dead. `LC_ALL` as a command prefix
   # outranks every other locale variable and does not leak past this line.
-  LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  #
+  # A DEAD PID IS AN ANSWER, NOT A FAILURE, and the `|| true` is what says so to
+  # the caller's shell. `ps` exits 1 when the pid is gone, and under the
+  # `set -euo pipefail` this file is sourced into, `pipefail` raises that status
+  # out of the pipeline and `errexit` ends the caller on the spot. The callers
+  # are supervisors and liveness probes, and asking about a process that has
+  # already been reaped is their ordinary case — measured: a stage that exited
+  # before its supervisor reached this line took the supervisor down with it,
+  # leaving no terminal row, no cleanup and a record nothing could settle. The
+  # empty string this returns for a dead pid is what every caller already treats
+  # as "no fingerprint"; swallowing the status here covers all of them at once.
+  { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
 }
 
 cc_proc_pgid() {

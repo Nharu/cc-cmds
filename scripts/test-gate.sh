@@ -1214,6 +1214,24 @@ pre_base() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+  # THE LATE HOME'S RUN DIRECTORY IS DERIVED, NEVER SPELLED. `$FX_MANIFEST`
+  # moves from `plan.md` (run id `R1`) to `plan2.md` (`R2`) partway through the
+  # suite, so a later section that plants fixtures under a literal `R1` plants
+  # them where the gate never looks — and a whole-file run and a cut of that one
+  # section then disagree about the path. Reading the id back out of whichever
+  # manifest is current makes the two agree by construction. A definition, so it
+  # lives in the prelude: three sections stand on it and each must survive being
+  # cut on its own.
+  fx_late_run_dir() {
+    local rid
+    rid=$( { sed -n 's/^\*\*런 id\*\*: *//p' "$FX_MANIFEST" 2>/dev/null || true; } \
+             | sed -n '1p' | tr -d '[:space:]')
+    if [ -z "$rid" ]; then
+      printf 'fx_late_run_dir: %s 에서 런 id 를 읽지 못했습니다\n' "$FX_MANIFEST" >&2
+      return 1
+    fi
+    printf '%s/cc-cmds/run/%s\n' "$STATE_LATE" "$rid"
+  }
   # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
   # than only in the section that first sources them. Two base sections stand a
   # LIVE stage in a run directory (`fx_stage_live`) and one cone section does
@@ -13712,7 +13730,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 # exactly one `외부 종료` row, (c) 12 with the row count unchanged, (d) 7.
 # ---------------------------------------------------------------------------
 . "$LIVENESS"
-RD40="$STATE_LATE/cc-cmds/run/R1"
+RD40=$(fx_late_run_dir)
 mkdir -p "$RD40/log"
 sh -c 'exit 0' & DEAD40=$!; wait "$DEAD40" 2>/dev/null || true
 tip40() {  # the chain tip the next appended row must carry as `prev=`
@@ -13724,6 +13742,26 @@ n40_boundary0=$( { grep -cF '절단점=경계' "$FX_LEDGER" || true; } )
 # against this state home writes the `run` row, and that row is the
 # prelude's, not the verb's.
 HL >/dev/null
+
+# THE POSITIVE PRECONDITION, ahead of everything this section reads negatively
+# out of that directory. Four assertions below are of the form "no row was
+# written" or "nothing is left", and every one of them is GREEN when the gate
+# reads a different directory than the one these fixtures land in. Measured:
+# with the path spelled as a literal run id after the manifest had moved to the
+# next one, eight negative assertions across this section and the two below
+# passed against an empty directory while the positive ones failed — so the
+# section reported the verb working and the verb had never seen a fixture. One
+# planted orphan settled here is the proof that the gate and this section agree
+# on the path, and it is read before any absence is.
+printf '%s\n' "$DEAD40" > "$RD40/W40Z.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/W40Z.start"
+printf '1\n' > "$RD40/W40Z.attempt"
+printf 'review\n' > "$RD40/W40Z.kind"
+printf '{"type":"system","subtype":"init","session_id":"w40z-session"}\n' > "$RD40/log/W40Z#1.json"
+gateL snapshot --manifest "$FX_MANIFEST"
+check "(선행) 게이트가 이 절이 심는 런 디렉터리를 실제로 읽는다 — 정산 1건" \
+  "$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=W40Z ' || true; } | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+
 # (a) NOTHING RECORDED → 11, at once. No `.attempt`, so there is nothing to
 # wait for and nothing to grace.
 n40_rows0=$( { grep -c '^- `' "$FX_LEDGER" || true; } )
@@ -13819,7 +13857,7 @@ check "(g) 이 절의 wait 들은 경계 승인 행을 하나도 남기지 않�
 # definitions, so the run directory, the dead pid and the tip helper are
 # (re)declared here — every one of them is idempotent.
 . "$LIVENESS"
-RD40="$STATE_LATE/cc-cmds/run/R1"
+RD40=$(fx_late_run_dir)
 mkdir -p "$RD40/log"
 sh -c 'exit 0' & DEAD40=$!; wait "$DEAD40" 2>/dev/null || true
 tip40() { { grep '^- `' "$FX_LEDGER" || true; } | tail -1 | tr -d '\n' | shasum -a 256 | cut -d' ' -f1; }
@@ -13833,8 +13871,22 @@ plant41() {  # plant41 <seg> — the full gate-dispatched orphan shape
   printf '{"type":"system","subtype":"init","session_id":"%s-session"}\n' "$1" > "$RD40/log/$1#1.json"
 }
 rows41() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
+klass41() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } \
+            | { grep -cF '종단 부류=외부 종료' || true; }; }
+# THE POSITIVE PRECONDITION, one per negative case. Three cases below assert
+# that a record was NOT settled, and a `0` is exactly what a directory the gate
+# never reads also yields — measured: a literal run id left behind by a manifest
+# switch made eight such assertions pass against an empty directory. So each of
+# them is preceded by a full gate-dispatched orphan planted in the SAME
+# directory and settled, whose row proves the path before the absence is read.
+pos41() {  # pos41 <tag>
+  plant41 "$1"
+  snap41 >/dev/null
+  check "(선행 $1) 게이트가 이 절의 런 디렉터리를 실제로 읽는다 — 정산 1건" "$(klass41 "$1")" "1"
+}
 
-# A. THE CORE CASE.
+# A. THE CORE CASE. It is also the positive precondition for cases B and D: a
+# settled row here is the proof that the fixtures and the gate share a path.
 plant41 S41A
 snap_a=$(snap41)
 check "A 핵심 — 외부 종료 행이 정확히 하나" \
@@ -13857,6 +13909,7 @@ check "A 정산 행의 실행 버전은 .attempt 의 값이다" "$(printf '%s' "
 check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')" "S41A-session"
 
 # B. NO FINGERPRINT — enumerated by the alarm, settled by nobody.
+pos41 S41BP
 printf '%s\n' "$DEAD40" > "$RD40/S41B.pid"
 printf '1\n' > "$RD40/S41B.attempt"
 printf 'review\n' > "$RD40/S41B.kind"
@@ -13876,6 +13929,7 @@ check "C 그래도 기록은 정리된다" "$( [ -e "$RD40/S41C.pid" ] && printf
 
 # D. THE DRIVER'S SHAPE — `.pid`, `.start`, `.pgid`, no `.kind`. The driver's
 # own `stage_collect` owns this record; settling it would pre-empt that.
+pos41 S41DP
 printf '%s\n' "$DEAD40" > "$RD40/S41D.pid"
 printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/S41D.start"
 printf '1\n' > "$RD40/S41D.pgid"
@@ -13902,7 +13956,11 @@ check "F 회수가 나머지 기록도 치운다" \
   "$( { [ -e "$RD40/S41F.kind" ] || [ -e "$RD40/S41F.start" ]; } && printf 'left' || printf 'gone' )" "gone"
 
 # `plan` DOES NOT SETTLE — the dry-run verb writes no row by contract, and the
-# settlement would be a row.
+# settlement would be a row. The precondition matters most here: the claim is
+# that a verb does not settle, and it has to be distinguished from a directory
+# nothing settles in, so the line above proves `snapshot` settles the same shape
+# in the same place immediately before.
+pos41 S41PP
 plant41 S41P
 gateL plan --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 --rationale x -- ls
 check "plan 의 프리루드는 정산하지 않는다" "$(rows41 S41P)" "0"
@@ -13920,9 +13978,13 @@ rm -f "$RD40/S41P.pid" "$RD40/S41P.start" "$RD40/S41P.attempt" "$RD40/S41P.kind"
 # for a `행위자=스테이지` row of THIS segment after THIS attempt's dispatch
 # row. The two stubs differ in exactly that: one does nothing, one calls the
 # gate once from the stage seat.
+#
+# THIS SECTION PLANTS NOTHING ON DISK, so it names no run directory. Every
+# assertion below goes through a real `act`/`wait` and reads the ledger the gate
+# itself wrote, which is why it stayed green while its neighbours were spelling
+# the path by hand. The two lines that used to prepare a run directory here were
+# read by nothing and are gone rather than corrected.
 # ---------------------------------------------------------------------------
-RD40="$STATE_LATE/cc-cmds/run/R1"
-mkdir -p "$RD40/log"
 HL >/dev/null
 STUB42A="$WORK/bin/claude-stub-42a"
 cat > "$STUB42A" <<'STUB42AEOF'
@@ -13994,7 +14056,7 @@ check "42 (B) 의 스테이지 행에 행위자=스테이지 가 찍혀 있다" 
 # who wants to stop one needs the pid on screen. Both come from
 # `cc_live_stage_records`, so the two cannot disagree.
 # ---------------------------------------------------------------------------
-RD40="$STATE_LATE/cc-cmds/run/R1"
+RD40=$(fx_late_run_dir)
 mkdir -p "$RD40/log"
 HL >/dev/null
 snap43() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ); }
@@ -14005,13 +14067,23 @@ FX_RUN_DIR="$W43_FX_SAVE"
 printf '2\n' > "$RD40/S43.attempt"
 printf '4242\n' > "$RD40/S43.sup"
 snap43=$(snap43)
-check "스냅숏의 live_stages 가 살아 있는 세그먼트를 이름 댄다" "$(printf '%s' "$snap43" | jq -r '.live_stages[0]["세그먼트"]')" "S43"
-check "43 live_stages 의 스테이지 id 는 세그먼트#시도다" "$(printf '%s' "$snap43" | jq -r '.live_stages[0]["스테이지"]')" "S43#2"
-check "43 live_stages 가 CLI pid 를 싣는다" "$(printf '%s' "$snap43" | jq -r '.live_stages[0]["pid"]')" "$FX_LAST_PID"
-check "43 live_stages 가 감독자 pid 를 싣는다" "$(printf '%s' "$snap43" | jq -r '.live_stages[0]["감독"]')" "4242"
+# THE POSITIVE PRECONDITION — the planted stage is in the emitted list exactly
+# once. Read first, because every assertion after it selects that entry: without
+# it, a snapshot of a directory this section never wrote to answers `null` for
+# each field, and a reader of the failures could not tell "the key is wrong"
+# from "the fixture is somewhere else".
+check "(선행) 심은 살아 있는 스테이지가 live_stages 에 한 번 든다" \
+  "$(printf '%s' "$snap43" | jq -r '[.live_stages[] | select(.["세그먼트"] == "S43")] | length')" "1"
+# Selected by name rather than by position: the late home is shared with the
+# sections above and a sibling live record would move index 0.
+l43() { printf '%s' "$snap43" | jq -r --arg k "$1" '.live_stages[] | select(.["세그먼트"] == "S43") | .[$k]'; }
+check "스냅숏의 live_stages 가 살아 있는 세그먼트를 이름 댄다" "$(l43 세그먼트)" "S43"
+check "43 live_stages 의 스테이지 id 는 세그먼트#시도다" "$(l43 스테이지)" "S43#2"
+check "43 live_stages 가 CLI pid 를 싣는다" "$(l43 pid)" "$FX_LAST_PID"
+check "43 live_stages 가 감독자 pid 를 싣는다" "$(l43 감독)" "4242"
 render43=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null)
 case "$render43" in
-  *"살아 있는 스테이지: 1개 — S43(pid $FX_LAST_PID, sup 4242)"*) ok "렌더의 살아 있는 스테이지 줄이 pid 를 적는다" ;;
+  *"S43(pid $FX_LAST_PID, sup 4242)"*) ok "렌더의 살아 있는 스테이지 줄이 pid 를 적는다" ;;
   *) bad "렌더 목록" "$(printf '%s' "$render43" | grep '살아 있는 스테이지' || true)" ;;
 esac
 kill "$FX_LAST_PID" 2>/dev/null || true

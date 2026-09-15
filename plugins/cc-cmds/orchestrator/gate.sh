@@ -11483,9 +11483,20 @@ gate_verb_supervise_stage() {
   # so they have one writer and one remover; splitting the writer across two
   # processes makes a partial set expressible, and `.kind` is what tells a
   # gate-dispatched record from a driver-spawned one (`liveness.sh`).
+  #
+  # `.kind` PRECEDES `.start`, because only one of the three can come back empty.
+  # A stage that has already exited and been reaped has no start time to read, so
+  # `.start` is written empty — and `.kind` is the marker that tells this record
+  # from a driver-spawned one for every reader downstream. Written the other way
+  # round, any interruption between the two leaves the empty fingerprint and NOT
+  # the marker, which is the strictly less useful half: a record nobody can even
+  # attribute. This order is not by itself a settlement guarantee — the candidate
+  # predicate asks for a non-empty `.start` as well, deliberately — but it makes
+  # a partial set attributable, and the lenient capture below is what keeps this
+  # block from being interrupted at all.
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
-  cc_proc_fingerprint "$spid" > "$RUN_DIR/$seg.start"
   printf '%s\n' "$kind" > "$RUN_DIR/$seg.kind"
+  cc_proc_fingerprint "$spid" > "$RUN_DIR/$seg.start"
 
   # THE TERM TRAP, NEW WITH THE SUPERVISOR. A person who wants a detached stage
   # to stop kills the CLI pid; a TERM that reaches the supervisor instead is
