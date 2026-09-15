@@ -127,6 +127,10 @@ The hard stop forbids **re-review**, not editing. Once the stop is reached the d
 
 **CFI-3c — Not a round cap.** This invariant fixes the freeze and the non-recursion discipline. It carries no numeric round budget; do not add one here.
 
+### CFI-3d — Declare where each act lands, and take a park as final
+
+Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상` — and `--destructive` besides on an act that deletes or destroys. Declare honestly and prefer `미상` to a guess; a script the manifest does not name is capped at read and run-local however it is declared, and rewrapping it in an interpreter, `xargs` or `sudo` does not lift that cap. Read pipeline variables by name (`printenv CC_PIPELINE_RUN_ID`), never bare `env` or bare `printenv` — this stage's environment carries the pipeline token. Where a read could print a secret the gate's list does not cover, say in `--rationale` why it does not, and where unsure do not run it: the gate does not park reads. Call external commands directly rather than inside `bash -c`. On exit 11 do not retry and do not re-declare — the `blocked` row names the cell; continue with what does not need that act, and if it was essential write a halt record with `분류: gate-unanswerable` and stop.
+
 ### CFI-4 — Observed-result precondition (anti-fabrication)
 
 No finding, anchor verdict, count, or slot value may be recorded unless it came from a collected witness. The lead never authors a reader's witness and never infers one from a return text. Uncertain means fail closed.
