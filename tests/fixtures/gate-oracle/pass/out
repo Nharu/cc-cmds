@@ -1,0 +1,4 @@
+PASS: 1: 게이트가 잘못된 절단점을 거부한다
+PASS: 2: 원장에 행이 남는다
+
+test-gate: 178 passed, 0 failed
