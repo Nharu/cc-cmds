@@ -65,6 +65,7 @@ REVIEW="$skills_root/review/SKILL.md"
 REVIEW_UPGRADE="$skills_root/review-upgrade/SKILL.md"
 REVIEW_LITE="$skills_root/review-lite/SKILL.md"
 DESIGN="$skills_root/design/SKILL.md"
+LEG="$skills_root/design-discuss-unattended/SKILL.md"
 
 ROUND_HEADING='### Round budget'
 TEAM_HEADING='### Team size budget'
@@ -72,6 +73,7 @@ REMOVE_HEADING='### `REMOVE` (drop a role whose domain no longer needs its own s
 MERGE_HEADING='### `MERGE` (two roles → one, both parents replaced)'
 GATE_HEADING='#### Small-work gate (evaluated once on entering this step)'
 LITE_HEADING='#### Round structure (fixed — round hard-cap = 2)'
+DISPATCH_HEADING='#### Leg dispatch (after approval — the seat launches the discussion leg)'
 
 if [[ ! -f "$PROTOCOL" ]]; then
   echo "SKIP: _common/agent-team-protocol.md not found under $skills_root"
@@ -229,6 +231,54 @@ if has_heading "$DESIGN" "$GATE_HEADING"; then
   # The floor, without which the small row could be read as "no team at all".
   assert_once_in_file '**Floor.** This gate selects among composed rows that each carry at least two roster rows' "$DESIGN" \
     "design/SKILL.md (small-work gate)"
+fi
+
+# ---------- leg dispatch — pinned launch-line literals (gated on FILE existence) ----------
+
+# DELIBERATE DEPARTURE from this file's posture, with the granularity lowered.
+# Every other block above is skip-if-absent at HEADING granularity, so that
+# reverting a lever leaves the tree green. This block gates on the existence of
+# the leg skill FILE instead: when `design-discuss-unattended/SKILL.md` exists,
+# `design/SKILL.md` MUST carry the dispatch heading, and that section MUST
+# carry the two launch-line literals and the resume-line message form below,
+# each on exactly one line.
+#
+# Why not heading granularity: the leg file and the dispatch section land in
+# the same slice, but a tree in which the leg exists and the dispatch section
+# does not is not "a reverted lever" — it is a leg nobody can launch, and a
+# skip would call that green. Why not the plain skip-if-absent posture: the
+# absence of the ceiling line is not a reverted lever either, it is a launch
+# that kills its own team at the default 600 s ceiling while exiting 0.
+#
+# Why BOTH literals are pinned: the preflight is text just like the ceiling
+# line, so one edit that deletes the dispatch block removes both guards while
+# a ceiling-only pin would still read green. Pinning the pair means that edit
+# turns the tree red.
+#
+# Why the resume form sits beside them: the resume line is defined by reference
+# to the launch line, so nothing else spells how its message is passed, and the
+# only template to copy is the launch line's double-quoted `-p "…"`. Every
+# message the seat resumes with carries backticks, which the shell executes
+# inside double quotes — the leg then runs on a rewritten message and exits 0.
+if [[ -f "$LEG" ]]; then
+  checked=$((checked + 1))
+  if ! has_heading "$DESIGN" "$DISPATCH_HEADING"; then
+    echo "FAIL: design/SKILL.md — the leg skill exists but the dispatch section is missing: $DISPATCH_HEADING" >&2
+    fail=1
+  else
+    dispatch_body=$(extract_section "$DESIGN" "$DISPATCH_HEADING")
+    LEG_PINS=(
+      # the preflight assertion — an empty config dir lands the leg in an account-less config
+      ': "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"'
+      # the wait ceiling — without it print-mode wind-down kills the team at 600 s and exits 0
+      'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000'
+      # the resume message form — read from a file, never inlined into a double-quoted argument
+      '-p "$(cat "$RESUME_MSG")"'
+    )
+    for lit in "${LEG_PINS[@]}"; do
+      assert_once_in_section "$lit" "$dispatch_body" "design/SKILL.md ($DISPATCH_HEADING)"
+    done
+  fi
 fi
 
 # ---------- review-lite — section exemption + its paired positive assertion ---
