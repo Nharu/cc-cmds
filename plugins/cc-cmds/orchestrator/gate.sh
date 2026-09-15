@@ -908,7 +908,7 @@ gate_reach_disposition() {
   # 1 — a credential on stdout is not undone by anything the morning can do.
   [ "$S" = "1" ] && { printf '비밀출력'; return 0; }
 
-  local RD; RD=$(gate_reach_derived "$alias" "$@")
+  local _rd; _rd=$(gate_reach_derived "$alias" "$@")
 
   # 2 — a CLAUDE.md slot write that the review rule already passed. The rule runs
   # in the catalog, so this cell can only be read after it: `rules_rc` of 0 or 5
@@ -920,7 +920,7 @@ gate_reach_disposition() {
     esac
     # Declared as something else, the slot's own contribution to the derived
     # floor is removed and the act takes the cells its declaration asks for.
-    [ "$RD" = "기기전역" ] && RD='-'
+    [ "$_rd" = "기기전역" ] && _rd='-'
   fi
 
   # 3 — a read the table proved. Reach is recorded and nothing is refused, which
@@ -935,7 +935,7 @@ gate_reach_disposition() {
   local Reff
   case "$R" in
     미상|기기전역) Reff="$R" ;;
-    *) if [ "$RD" != "-" ]; then Reff="$RD"; else Reff="$R"; fi ;;
+    *) if [ "$_rd" != "-" ]; then Reff="$_rd"; else Reff="$R"; fi ;;
   esac
 
   local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
@@ -982,7 +982,7 @@ gate_reach_disposition() {
       C=0 ;;
     *)
       C=0
-      gate_collaboration_surface "$RD" "$@" && C=1 ;;
+      gate_collaboration_surface "$_rd" "$@" && C=1 ;;
   esac
 
   local Geff
