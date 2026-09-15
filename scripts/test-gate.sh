@@ -63,6 +63,12 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
+# approval lifecycle a person drives — issue, wait, close — and that lifecycle
+# is still what the gate does with the switch off. The auto-resolving path is
+# tested in `test-snapshot.sh`, on a fixture of its own, so it runs in seconds.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
@@ -9145,14 +9151,16 @@ check "그 멈춤의 마커가 만료된 뒤에는 대기 배너를 지운다" \
 # two lines, and the second is only correct where the first is. The three lines
 # now live ONCE, in `gate_close_settle`, and every terminal of `gate_close` —
 # the act/boundary `무효`·`거부`·`승인` arms and the judgment label arm — calls
-# it; so the pin is the helper's own adjacency plus the count of its call sites.
+# it, and so does the auto-resolution close, which ends an approval nobody
+# answered; so the pin is the helper's own adjacency plus the count of its call
+# sites.
 check "넘침 정리가 닫기 종단 도우미에 한 번 배선돼 있다" \
   "$(grep -cE '^ *gate_notify_overflow_settled \|\| true$' "$GATE" || true)" "1"
 check "그것이 개별 배너 지우기 바로 뒤에 붙어 있다" \
   "$( { grep -A1 -F 'cc_notify_clear answer "$1" || true' "$GATE" || true; } \
       | grep -cE '^ *gate_notify_overflow_settled \|\| true$' || true)" "1"
-check "닫기 함수의 네 종단이 전부 그 도우미를 부른다" \
-  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "4"
+check "닫기 함수의 네 종단과 자동 해소 닫기가 전부 그 도우미를 부른다" \
+  "$(grep -cE '^ *gate_close_settle "\$id"$' "$GATE" || true)" "5"
 
 # --- THE TOKEN TABLE IS A FILE, AND THE SUITE WALKS IT ----------------------
 #
