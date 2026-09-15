@@ -205,6 +205,22 @@ cc_caller_is_router() {
   return 0
 }
 
+cc_caller_is_stage() {
+  # A STAGE, and only a stage. `cc_caller_is_router` answers the banner question
+  # — may a banner reach the user — and refuses a routing shard along with a
+  # stage. The judgment predicate in the gate asks a different question: is
+  # this call the ROUTER judging? A shard IS the router, so its marker is
+  # deliberately not read here; either of the two markers the stage launcher
+  # exports names a stage.
+  #
+  # OWNED HERE for the reason the predicate above gives: a copy that reads one
+  # variable passes every test written against the other one. The gate's own
+  # comment says the marker reads belong to this file, not to it.
+  if [ -n "${CC_PIPELINE_SEGMENT:-}" ]; then return 0; fi
+  if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then return 0; fi
+  return 1
+}
+
 cc_notify_title() {
   # NO TITLE MAY BEGIN WITH ONE OF SIX CHARACTERS — `[ ( { < " -`. The notifier's
   # argument parser swallows such a value whole: the banner still appears, but

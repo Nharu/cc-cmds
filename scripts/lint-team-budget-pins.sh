@@ -64,6 +64,7 @@ UPGRADE_CORE="$skills_root/_common/team-upgrade-analysis.md"
 REVIEW="$skills_root/review/SKILL.md"
 REVIEW_UPGRADE="$skills_root/review-upgrade/SKILL.md"
 REVIEW_LITE="$skills_root/review-lite/SKILL.md"
+DESIGN="$skills_root/design/SKILL.md"
 
 ROUND_HEADING='### Round budget'
 TEAM_HEADING='### Team size budget'
@@ -213,6 +214,21 @@ if has_heading "$REVIEW" "$GATE_HEADING"; then
   # The threshold the gate reuses rather than inventing.
   assert_once_in_file '**Small patch** (<30 lines, single concern)' "$REVIEW" \
     "review/SKILL.md (small-work gate)"
+fi
+
+# ---------- lever 03 — small-work gate, design (skip-if-absent) --------------
+
+# The design skill carries the same gate under the same heading, transposed
+# from review: it is the default that keeps composition from filling the
+# ceiling. Skip-if-absent like the review lever — the heading's absence is a
+# revert, not a regression — but with the heading present, the two sentences
+# that carry the gate's meaning must be there.
+if has_heading "$DESIGN" "$GATE_HEADING"; then
+  assert_once_in_file '**Risk indicators outrank the size row.**' "$DESIGN" \
+    "design/SKILL.md (small-work gate)"
+  # The floor, without which the small row could be read as "no team at all".
+  assert_once_in_file '**Floor.** This gate selects among composed rows that each carry at least two roster rows' "$DESIGN" \
+    "design/SKILL.md (small-work gate)"
 fi
 
 # ---------- review-lite — section exemption + its paired positive assertion ---

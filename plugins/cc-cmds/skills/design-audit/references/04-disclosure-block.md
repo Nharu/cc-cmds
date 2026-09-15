@@ -13,6 +13,7 @@ Written into the audit report as a `## 잔여 공개` section.
 
 <!-- cc-design-audit-disclosure v1 begin -->
 **동결 문서 sha256**: <64 hex>
+**동결 문서 바이트**: <n>
 **동결 시각**: <ISO 8601 with offset>
 **리뷰어 수**: <n>
 **원시 발견 수**: <n>
@@ -31,9 +32,10 @@ Written into the audit report as a `## 잔여 공개` section.
 
 Rules (this is check (iv)):
 
-- The two HTML-comment fences are **byte-exact literals**, appear **exactly once each**, in this order, with **exactly 14 slot lines** strictly between them — in exactly this order, one per line, no blank lines, no extra keys, no missing keys.
+- The two HTML-comment fences are **byte-exact literals**, appear **exactly once each**, in this order, with **exactly 15 slot lines** strictly between them — in exactly this order, one per line, no blank lines, no extra keys, no missing keys.
 - Every slot line matches `^\*\*[^*]+\*\*: .+$` — the canonical field rendering of the shared verification contract: bold key, no leading bullet, exactly one ASCII space after the colon.
-- Value shapes: sha256 `^[0-9a-f]{64}$`; timestamps `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$`; counts `^[0-9]+$`.
+- Value shapes: sha256 `^[0-9a-f]{64}$`; timestamps `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$`; counts `^[0-9]+$`. `동결 문서 바이트` is a count — the frozen document's size in bytes as `wc -c` reports it, taken from the same bytes the sha256 was taken from.
+- `동결 문서 바이트` is in the block because finding counts alone cannot separate "a better design" from "less surface to find": a two-seat team writes a shorter document, so the findings-per-kilobyte comparison the rollback observation needs is only computable when the size travels with the count. The fence version stays `v1` — the selector, the lint pins and every already-written report keep matching.
 - The five routing lines are **fixed arity** — one line per named owner, always present, `0` when empty. Fixed arity is what makes per-owner routing machine-checkable instead of a free-form list, and it is also what makes triage collapse self-reporting: a `기각` of 0 beside a large `적용` is the signature of the failure mode this command was built to remove.
 
 **하류 흡수 가정** must be non-empty and must name the two downstream absorbers and the fact that the rate is unmeasured. The reason it is a slot rather than prose elsewhere: this whole design assumes downstream absorbs a substantial share of the standalone-detectable residuals, and an assumption recorded as prose fails exactly at the moment it is relied upon. As a slot it is re-stated on every single run.
