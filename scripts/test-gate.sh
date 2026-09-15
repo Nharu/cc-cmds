@@ -4659,8 +4659,15 @@ H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq 
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
 check "마감이 지나면 스테이지 디스패치가 거부된다" "$rc" "3"
 case "$msg" in
-  *"마감이 지났습니다"*) ok "거부가 마감을 이유로 든다" ;;
+  # 이 픽스처는 진전 축 경계를 하나도 선언하지 않으므로 시계가 유일한 경계이고,
+  # 그 팔이 거절문에 마감 값과 왜 시계가 남았는지를 함께 싣는다. 거절이 어느
+  # 경계의 것인지 말하지 않으면 아침에 읽는 사람이 무엇을 고쳐야 할지 모른다.
+  *"벽시계 마감 경과"*) ok "거부가 마감을 이유로 든다" ;;
   *) bad "마감 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
+esac
+case "$msg" in
+  *"유효하게 선언되지 않아"*) ok "그 거절이 왜 시계가 아직 경계인지도 말한다" ;;
+  *) bad "마감 폴백 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
 esac
 gate plan --manifest "$FX_MANIFEST" --kind merge --target infra --segment SD --cutpoint 머지 -- gh pr merge 1
 check "마감 뒤 머지도 거부된다" "$rc" "3"
