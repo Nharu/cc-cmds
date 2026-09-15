@@ -26,7 +26,7 @@ That second clause is the one that closes the hole. The standing rules forbid a 
 
 **CFI-S3 — You end, and ending is a row.** Three reasons end a shift: `상한` (the snapshot's `shift.over_soft` is true), `승인` (the gate answered exit 5), `종단` (a `propose-done` was accepted). Whichever it is, write the `handoff` row FIRST and then exit. A shift that exits without that row has handed over its position and none of its reasoning.
 
-**CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be the self-approval path the whole separation exists to keep shut — which is also why your session is deliberately kept out of `session-lineage`.
+**CFI-S4 — You do not answer approvals and you do not close them.** Exit 5 means a person has to decide. Your response is to end with `사유=승인`; the lead reads your return line and takes it from there. Answering one yourself would be the self-approval path the whole separation exists to keep shut — which is also why your session is deliberately kept out of `session-lineage`. **The gate itself closes the approvals that carry a recommendation** — boundary approvals as `승인`, your judgment approvals as the adoption of the judgment you submitted (or `거부` for `팀-구성`·`시각-면제`) — unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off. Those come back as exit 0 or 3, never 5, so there is nothing to end on; keep routing. What still reaches you as exit 5 is an act approval, or any approval when the switch is off.
 
 You do not render the question either, and you do not call `prompt`. The canonical prompt (`승인 <id> — <질문>`) and the gate's option menu are the LEAD's to carry into `AskUserQuestion`, verbatim, from `gate.sh prompt --approval <id>`; a shift has no person to show them to, so the whole of your duty is to put the approval id on your return line and end. Two things read as exit 5 from `close`, and the lead tells them apart by the snapshot: an approval nobody has answered yet, and one a person answered with free input — the answer equalled none of the gate's labels, so no disposition could be derived. The second carries `처분 사유=자유 입력` on its last row and the snapshot surfaces it as `disposition` on that `pending_approvals[]` entry (`-` for the first). You will see both as open approvals; neither is yours to resolve.
 
@@ -113,6 +113,24 @@ Measured, in one run, across two shifts given this same instruction: the shift t
 Your context barely grows while a stage works, so holding costs almost nothing — and it is what returns the seat to you with the stage's rows already in the ledger.
 
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
+
+#### Dispatching a review cycle in delta mode
+
+The `cycle` row you write after a review stage takes two optional fields beyond the five required ones:
+
+```
+act --kind cycle -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
+```
+
+`cycles[]` entries in the snapshot carry `세그먼트`·`사이클`·`P0`·`P1`·`모드`·`리뷰 HEAD`·`리포트 경로`; an empty `모드` reads as `전체`.
+
+A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. Five things, in order:
+
+1. **Basis selection.** Filter `cycles[]` to this segment and take, among the rows whose `모드` is `전체` or empty, the one with the largest `사이클`. None → dispatch a full review exactly as before. One → carry that row's `사이클`, `리뷰 HEAD` and `리포트 경로` into the `/cc-cmds:review-unattended` prompt as `--basis-cycle <n> --basis-review-head <sha> --basis-report-path <abs>`, alongside the `--report-path`, `--base-sha` and `--declared-files` you already pass. All three or none: the skill treats a partial set as absent.
+2. **Path resolution.** The basis row's `리포트 경로` may be relative to the target's base. You hold the manifest path, so build `dirname(<매니페스트>)/../../<경로>` and pass the absolute result; an absolute value goes through as-is. No new snapshot key exists for this.
+3. **The row's mode is copied from the report, never from the dispatch.** After the stage ends, read the report overview's `- **리뷰 모드**: …` line and write `모드` and `기준 사이클` on the `cycle` row from that line: `- **리뷰 모드**: 전체` → `모드=전체` (or omit both fields); `- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)` → `모드=델타 '기준 사이클=<n>'`. The skill degrades to a full review when any eligibility check fails, and only the report says whether it did. The gate compares the row against the report on every `cycle` write and refuses a mismatch with exit 2; the repair is to rewrite the row to what the report says.
+4. **No new question point.** When a basis exists, attempting delta is the default. Whether it holds is decided by the skill's eligibility checks and the gate's write-time checks, not by asking.
+5. **The snapshot window is a limit, stated rather than hidden.** `cycles[]` is the ledger's last twenty `cycle` rows, so a segment whose basis row has been pushed out of the window by other segments' cycles gets a full review. That errs toward reading more, never toward a false delta.
 
 ## Ending your shift
 
