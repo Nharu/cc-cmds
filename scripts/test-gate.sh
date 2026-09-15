@@ -1026,6 +1026,11 @@ cat > "$FX_GRANT" <<GRANTEOF
 **설계 문서 전체 sha256**: (해당 없음)
 **보고서**: $WT/docs/pipeline-run/R1.md
 GRANTEOF
+# A pristine copy of the record, for the sections that derive another run's
+# grant from it. Section 17 refreshes the copy before it starts rewriting the
+# record, so a full run reads the same bytes it always did; a cut that named 33
+# without 17 died on `GBAK: unbound variable`.
+GBAK="$WORK/grant.bak"; cp "$FX_GRANT" "$GBAK"
 
 # Two targets on purpose. One run maximum of `배포` with a `PR` target is the
 # only shape in which #208's defect is observable at all.
@@ -1214,17 +1219,115 @@ pre_base() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
-  # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
-  # than only in the section that first sources them. Two base sections stand a
-  # LIVE stage in a run directory (`fx_stage_live`) and one cone section does
-  # too, and a cut of any of them without the section that sources this file
-  # died on `command not found` while the suite went on reporting green totals.
-  # The file defines functions and touches nothing until one is called, so the
-  # second source in that section is harmless and stays where it is.
-  # shellcheck source=/dev/null
-  . "$repo_root/scripts/run-fixture.sh"
+
+  # The two helpers below were defined in the body of the first section that
+  # used them — `passes_review` in 8, `set_exec_wt` in 14c — and called again by
+  # later sections (9; 14j and 14l), which a cut without the defining section
+  # reached as `command not found`.
+  #
+  # `passes_review` judges by the ABSENCE of the rule's refusal line rather than
+  # by the exit code: past the checks the gate performs the act, and `gh pr merge`
+  # in a fixture with no GitHub behind it fails for reasons that have nothing to
+  # do with the rule. 리터럴은 프로덕션이 오늘 실제로 내보내는 접두사다. 검사기의
+  # 거절은 룰 이름 뒤에 콜론이 아니라 공백과 대시를 두고, 게이트의 일반 절반도
+  # 이름 뒤에 콜론을 두지 않는다. 옛 형태(`리뷰-후-머지:`)를 찾으면 어떤 문면에도
+  # 맞지 않아 이 술어가 무조건 통과를 돌려준다.
+  passes_review() {
+    case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 1 ;; *) return 0 ;; esac
+  }
+
+  # `set_exec_wt` uses a read loop and not `sed`: the target row is FULL of `|`
+  # separators, so every delimiter a substitution could pick already appears in
+  # the pattern. Shell string equality has no delimiter at all.
+  set_exec_wt() {
+    local want="$1" line out="$FX_MANIFEST.ew"
+    : > "$out"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '- `target`'*별칭=infra*)
+          case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
+          [ -z "$want" ] || line="$line | 실행 워크트리=$want"
+          ;;
+      esac
+      printf '%s\n' "$line" >> "$out"
+    done < "$FX_MANIFEST"
+    mv "$out" "$FX_MANIFEST"
+    # The row moved, so both digests move — a kickoff would rewrite them and the
+    # fixture does the same.
+    local newtd
+    newtd=$(cd "$WT" && bash -c '
+      CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+      MANIFEST="'"$FX_MANIFEST"'"
+      canonical_targets | shasum -a 256 | cut -d" " -f1')
+    : > "$out"
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $newtd" ;;
+      esac
+      printf '%s\n' "$line" >> "$out"
+    done < "$FX_MANIFEST"
+    mv "$out" "$FX_MANIFEST"
+    refresh_bd
+  }
 }
 pre_base
+
+# THE SHARED FIXTURE LIBRARIES ARE SOURCED IN THE HEAD, not in the body of the
+# section that happened to use them first. `run-fixture.sh` defines
+# `fx_stage_live` and `fx_reap`, `liveness.sh` defines `cc_live_stages`, and
+# both only define things until a function is called. Sourced inside sections 32
+# and 33 they reached 12b and 34 only in a full run, so a cut of 12b died on
+# `fx_stage_live: command not found`.
+#
+# `FX_RUN_DIR` starts at the base run directory, which is where 12b removes the
+# pid file its live stage leaves, and section 33 re-points it as before. The
+# trap reaps whatever a fixture left running, whichever sections were cut.
+# shellcheck source=/dev/null
+. "$repo_root/scripts/run-fixture.sh"
+# shellcheck source=/dev/null
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+FX_RUN_DIR="$RD"; FX_PIDS=""
+trap 'fx_reap; rm -rf "$WORK"' EXIT
+
+# Every `act` carries a snapshot digest, and the snapshot moves whenever a row
+# lands — so it is re-read immediately before each one rather than reused.
+# Defined here and not in section 33, where it was first used, because 12b calls
+# it as well; so is `TAB`, which both write stall lines with.
+snapH() {
+  # `jq`, LIKE EVERY OTHER READER OF THIS FIELD IN THIS FILE. A hand-rolled
+  # extractor pinned the value's character set from the outside — a run of hex
+  # followed by a closing quote — so the digest growing a second part made the
+  # pattern match nothing at all.
+  #
+  # AND AN EMPTY DIGEST IS NOT A WRONG DIGEST. The gate answers "--snapshot-digest
+  # 가 필요합니다" and exits 2, so every assertion downstream of here failed while
+  # reporting something about the fixture it believed it was testing — a live
+  # stage miscounted, a stop not transcribed — none of which had happened.
+  ( cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
+}
+TAB=$(printf '\t')
+# One act on the base fixture, which is what drains a stall observation into the
+# ledger — the transcription is the ledger writer's job and `snapshot` writes
+# nothing.
+drain_act() {
+  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SDR \
+    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
+}
+
+# The suite's normal execution context is INSIDE a pipeline stage — which
+# exports this whole group. The gate branches on `CC_PIPELINE_STAGE_ID` at entry
+# (a stage session is kept out of the lineage so it cannot answer the approvals
+# gating itself) and the banner seat reads the same markers, so an inherited
+# value makes every call take that branch and the assertions that read the
+# lineage or the notifier fail for a reason unrelated to what they assert.
+# Cleared here rather than in section 33, which cleared it first, because 12b's
+# banner assertions stand on the same known state; a sub-case that needs a
+# stage sets what it needs and unsets it again.
+unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
+      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
+      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
+      CC_PIPELINE_PARENT_SESSION
 
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
@@ -1425,6 +1528,37 @@ pre_cone() {
   ( cd "$REPO2" && git init -q . \
     && git config user.email t@example.invalid && git config user.name T \
     && echo x > x.txt && git add -A && git commit -qm x ) >/dev/null 2>&1
+
+  # THE TRANSCRIPT HOME AND THE FRAME PROBES live here rather than in the
+  # sections that first used them: nine cone sections after 31n write
+  # transcripts under `$NTX`, and 31an calls the probes 31am defines, so a cut
+  # of any of them died on an unbound name. The directory stays empty until a
+  # section writes into it.
+  NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
+  frame_probe() {
+    # frame_probe <세션 uuid> <기준> — open one grade-2 judgment and leave its id
+    # in `$pid`, its question in `$pq` and its row count in `$pcount`.
+    local sid="$1" std="$2" prev
+    prev=$(row_field "$(last_judgment_approval)" '승인 id')
+    gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+          --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+          -- 등급=2 기준="$std" 근거="프레임 승인 실험"
+    pid=$(row_field "$(last_judgment_approval)" '승인 id')
+    if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
+      bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
+      pid=""; return 0
+    fi
+    pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
+    pcount=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
+    : > "$NTX/$sid.jsonl"
+  }
+  probe_close() {  # probe_close <세션 uuid> [flags] — close $pid, leave rc/out/pst/pafter
+    local sid="$1"; shift
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="$sid" gate_inproc close --manifest "$NM" --approval "$pid" "$@" 2>&1); rc=$?
+    pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
+    pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
+  }
 }
 
 # `sa` — the container of section 35: the `SA_*` state and the `sa_*`/`sag`
@@ -2614,16 +2748,8 @@ check "P0 가 남아 있으면 머지는 거부된다" "$rc" "3"
 
 printf -- '- `cycle` | 세그먼트=S9 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s\n' "$head0" "$FXREPORT" >> "$FX_LEDGER"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
-# Judged by the ABSENCE of the rule's refusal line rather than by the exit code:
-# past the checks the gate performs the act, and `gh pr merge` in a fixture with
-# no GitHub behind it fails for reasons that have nothing to do with the rule.
-# 리터럴은 프로덕션이 오늘 실제로 내보내는 접두사다. 검사기의 거절은 룰 이름
-# 뒤에 콜론이 아니라 공백과 대시를 두고, 게이트의 일반 절반도 이름 뒤에 콜론을
-# 두지 않는다. 옛 형태(`리뷰-후-머지:`)를 찾으면 어떤 문면에도 맞지 않아 이
-# 술어가 무조건 통과를 돌려준다.
-passes_review() {
-  case "$msg" in *"룰 거부: 리뷰-후-머지"*) return 1 ;; *) return 0 ;; esac
-}
+# Judged by `passes_review`, defined in `pre_base` in the head — section 9 calls
+# it too.
 gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S9 --cutpoint 머지 \
      --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
 if passes_review; then ok "무이동 등급은 통과한다"; else bad "무이동 등급" "$msg"; fi
@@ -3747,44 +3873,11 @@ esac
 # time. The symptom is silent: the stage starts, the files are readable, and
 # what it reads is a different version.
 # ---------------------------------------------------------------------------
-# `LINKED` is set in `pre_base`, in the head; the worktree is made here.
+# `LINKED` and `set_exec_wt` are set in `pre_base`, in the head; the worktree is
+# made here.
 ( cd "$WT" && git worktree add -q -b linkedbr "$LINKED" ) >/dev/null 2>&1
 if [ -d "$LINKED" ]; then
   ( cd "$LINKED" && echo linked > only-here.txt && git add -A && git commit -qm linked ) >/dev/null 2>&1
-
-  # A read loop and not `sed`: the target row is FULL of `|` separators, so every
-  # delimiter a substitution could pick already appears in the pattern. Shell
-  # string equality has no delimiter at all.
-  set_exec_wt() {
-    local want="$1" line out="$FX_MANIFEST.ew"
-    : > "$out"
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        '- `target`'*별칭=infra*)
-          case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
-          [ -z "$want" ] || line="$line | 실행 워크트리=$want"
-          ;;
-      esac
-      printf '%s\n' "$line" >> "$out"
-    done < "$FX_MANIFEST"
-    mv "$out" "$FX_MANIFEST"
-    # The row moved, so both digests move — a kickoff would rewrite them and the
-    # fixture does the same.
-    local newtd
-    newtd=$(cd "$WT" && bash -c '
-      CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
-      MANIFEST="'"$FX_MANIFEST"'"
-      canonical_targets | shasum -a 256 | cut -d" " -f1')
-    : > "$out"
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $newtd" ;;
-      esac
-      printf '%s\n' "$line" >> "$out"
-    done < "$FX_MANIFEST"
-    mv "$out" "$FX_MANIFEST"
-    refresh_bd
-  }
 
   set_exec_wt "$LINKED"
   H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
@@ -5013,7 +5106,9 @@ fi
 # 40 minutes while the file did not exist at the derived path; it appeared 9
 # hours 42 minutes later.
 # ---------------------------------------------------------------------------
-GBAK="$WORK/grant.bak"; cp "$FX_GRANT" "$GBAK"
+# `GBAK` is named in the head; the copy is refreshed here, before this section
+# starts rewriting the record.
+cp "$FX_GRANT" "$GBAK"
 
 mv "$FX_GRANT" "$WORK/grant.away"
 gateL grade --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 -- ls
@@ -5613,10 +5708,8 @@ graded_as '외부상태변경' '경로로 부른 브라우저 도구도 같다' 
 # on the ORDINARY state — a ledger with no run-scope block, a segment id with no
 # rows yet, an approval id that is not in the ledger — because that is exactly
 # when the unguarded spelling returns non-zero.
+# `liveness.sh` is sourced in the head.
 # ---------------------------------------------------------------------------
-# shellcheck source=/dev/null
-. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
-
 G32="$WORK/g32-ledger.md"
 printf -- '- `run` | 시작=x\n' > "$G32"
 ( set -euo pipefail; cc_unresolved_blocked "$G32" >/dev/null )
@@ -5717,25 +5810,11 @@ esac
 # a render that counted pid FILES, a run whose termination was blocked forever
 # by a reused pid (condition 7 has no resolving verb), and a second stall that
 # never reached the ledger because the dedupe key matched the whole file.
+# `run-fixture.sh` and `liveness.sh` are sourced in the head, and the head's
+# trap reaps what the fixtures below leave running.
 # ---------------------------------------------------------------------------
-# shellcheck source=/dev/null
-. "$repo_root/scripts/run-fixture.sh"
-# shellcheck source=/dev/null
-. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
 
-# This section drives the gate directly, and the suite's normal execution
-# context is INSIDE a pipeline stage — which exports this whole group. The gate
-# branches on `CC_PIPELINE_STAGE_ID` at entry (a stage session is kept out of
-# the lineage so it cannot answer the approvals gating itself), so an inherited
-# value makes every call below take that branch, `session-lineage` is never
-# written, and the assertions that read it fail for a reason unrelated to what
-# they assert. Clear the group so the section starts from a known state; the
-# stage sub-case sets what it needs and unsets it again.
-unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
-      CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
-      CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION
-trap 'fx_reap; rm -rf "$WORK"' EXIT
+# The pipeline environment this section must not inherit is cleared in the head.
 
 # --- the predicate itself, against all three pid states at once -------------
 fx_mkrun "LIVENESS"
@@ -5921,20 +6000,7 @@ gate snapshot --manifest "$FX_MANIFEST"
 check "잠금을 놓으면 같은 진입이 색인에 쓴다 (위가 공허하지 않다)" \
   "$(grep -cxF 'R2' "$SIDX" 2>/dev/null || true)" "1"
 
-# Every `act` carries a snapshot digest, and the snapshot moves whenever a row
-# lands — so it is re-read immediately before each one rather than reused.
-snapH() {
-  # `jq`, LIKE EVERY OTHER READER OF THIS FIELD IN THIS FILE. A hand-rolled
-  # extractor pinned the value's character set from the outside — a run of hex
-  # followed by a closing quote — so the digest growing a second part made the
-  # pattern match nothing at all.
-  #
-  # AND AN EMPTY DIGEST IS NOT A WRONG DIGEST. The gate answers "--snapshot-digest
-  # 가 필요합니다" and exits 2, so every assertion downstream of here failed while
-  # reporting something about the fixture it believed it was testing — a live
-  # stage miscounted, a stop not transcribed — none of which had happened.
-  ( cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
-}
+# `snapH` is defined in the head — 12b re-reads the digest with it too.
 
 # --- B. bounded reclamation and index pruning -------------------------------
 #
@@ -6737,13 +6803,8 @@ rm -f "$RD"/D1.pid "$RD"/D1.start "$RD"/D2.pid "$RD"/D2.start "$RD"/D3.pid "$RD"
 #
 # Draining happens in the `act` path, not on `snapshot` — the transcription is
 # the ledger writer's job and `snapshot` writes nothing. So each step here
-# drives a real act.
-TAB=$(printf '\t')
-drain_act() {
-  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SDR \
-    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
-}
+# drives a real act. `drain_act` and `TAB` are defined in the head — 12b drains
+# stall lines with them too.
 printf '2026-08-31T00:00:00Z%s정체 사유 X%s재개 명령 X\n' "$TAB" "$TAB" > "$RD/stall"
 drain_act
 n=$(grep -cF '원인=불명 | 사유=정체 사유 X' "$FX_LEDGER" || true)
@@ -7179,7 +7240,7 @@ check "열린 절단점=판단 승인 id 를 지목하면 보류로 정산된다
 # A question's answer is what the next step consumes: the row carries the
 # excerpt, its digest and the anchor of the sidecar block holding the full text.
 jq_q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" '질문 문면')
-NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
+# `NCFG` and `NTX` are set in `pre_cone`, in the head.
 NSID="12121212-3434-5656-7878-909090909090"
 # The answer is one of the gate's labels, with the recommendation suffix the
 # authoring rule puts on a rendered label: closing reads the label by equality
@@ -7283,7 +7344,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 여덟 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -7291,7 +7352,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 여덟 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -7301,7 +7362,7 @@ fi
 # there and the producer was not.
 rm -f "$LR/plugins/bad.md"
 # 원장의 「값 없음」 센티널은 부류 주장이 아니다. 부류 없이 방출된 판단을 흡수기가
-# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 여덟 값 중 하나이기를
+# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 열 값 중 하나이기를
 # 요구하게 되고 실제 트리 전체 스캔이 그 자리에서 빨개진다.
 printf -- '- `자율 승인` | 판단 부류=- | 등급=- | 사유=x\n' > "$LR/plugins/sentinel.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
@@ -7310,6 +7371,33 @@ else
   bad "린트" "판단 부류=- 를 어휘 밖 값으로 잡았다"
 fi
 rm -f "$LR/plugins/sentinel.md"
+# 규칙 4 — 자리표시자 안의 수사가 어휘 크기를 말한다. 규칙 2 는 자리표시자를
+# 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
+# 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
+# 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
+else
+  bad "린트" "어휘 크기와 맞는 자리표시자 수사를 위반으로 잡았다"
+fi
+rm -f "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<여덟 값>%s\n' "'" "'" > "$LR/plugins/ph-stale.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  bad "린트" "어휘보다 낡은 자리표시자 수사를 통과시켰다"
+else
+  ok "린트 — 어휘보다 낡은 자리표시자 수사는 실패한다"
+fi
+rm -f "$LR/plugins/ph-stale.md"
+# 크기를 주장하지 않는 괄호는 규칙 4 의 대상이 아니다. 규칙 4 를 「괄호가 보이면
+# 센다」로 구현하면 이 자리가 빨개진다.
+printf -- '- `자동 채택` | 판단 부류=<값> | 사유=x\n' > "$LR/plugins/ph-bare.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 크기를 주장하지 않는 자리표시자는 건드리지 않는다"
+else
+  bad "린트" "수사가 없는 자리표시자를 위반으로 잡았다"
+fi
+rm -f "$LR/plugins/ph-bare.md"
 LRC="$LR/plugins/cc-cmds/skills/_common"
 mkdir -p "$LRC"
 cat > "$LRC/judgment-grade.md" <<'EOF'
@@ -7374,17 +7462,31 @@ if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   bad "린트 규칙 1" "어휘를 그대로 옮긴 픽스처가 이미 실패한다 — 아래 단언이 무엇 때문에 빨간지 말할 수 없다"
 fi
-sed -e 's/^\(readonly JUDGMENT_CLASSES="[^"]*\) 시각-면제"$/\1"/' \
+# THE TOKEN IS REMOVED WHEREVER IT SITS, not where it happened to sit. This
+# substitution used to anchor on the closing quote, so it only matched while
+# `시각-면제` was the LAST token in the vocabulary. Appending a token after it
+# turned the substitution into a no-op — and a no-op leaves the two sets
+# consistent, so the lint passed for the honest reason while the assertion below
+# read that pass as rule 1 being gone. The address keeps `_FORBIDDEN` out of it:
+# `=` immediately after the name does not match the longer declaration.
+sed -e '/^readonly JUDGMENT_CLASSES=/ s/ 시각-면제//' \
     "$LR/orch/run.sh" > "$LR1/orch/run.sh"
 # THE FIXTURE IS CHECKED BEFORE IT IS ASSERTED ON. A substitution that matched
 # nothing leaves the two sets consistent, and then the lint passes for the honest
 # reason while this section reads that pass as the rule being absent.
+#
+# The membership test is padded on both sides so it asks about a WHOLE TOKEN at
+# any position. The older test asked whether the vocabulary ENDED with the token,
+# which is the same end-anchoring that made the substitution silently stop
+# working, and it would have gone on agreeing with it.
 cls1=$(sed -n 's/^readonly JUDGMENT_CLASSES="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
 fb1=$(sed -n 's/^readonly JUDGMENT_CLASSES_FORBIDDEN="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
-case "$cls1:$fb1" in
-  *시각-면제:*) bad "린트 픽스처" "어휘에서 금지 부류를 빼지 못했다: $cls1" ;;
-  *:*시각-면제*) ok "픽스처가 금지 부류를 어휘에서만 뺐다 (금지 목록에는 그대로 있다)" ;;
-  *) bad "린트 픽스처" "금지 목록에서도 사라졌다 — 규칙 1 이 볼 불일치가 없다: $fb1" ;;
+case " $cls1 " in
+  *" 시각-면제 "*) bad "린트 픽스처" "어휘에서 금지 부류를 빼지 못했다: $cls1" ;;
+  *) case " $fb1 " in
+       *" 시각-면제 "*) ok "픽스처가 금지 부류를 어휘에서만 뺐다 (금지 목록에는 그대로 있다)" ;;
+       *) bad "린트 픽스처" "금지 목록에서도 사라졌다 — 규칙 1 이 볼 불일치가 없다: $fb1" ;;
+     esac ;;
 esac
 if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트 규칙 1" "금지 부류가 어휘에서 빠졌는데 통과했다 — 어휘를 줄이는 편집이 누수를 조용히 되살린다"
@@ -8746,30 +8848,9 @@ rm -f "$DONE_DIR/done"
 # ledger" cannot be reinvented unnoticed. A question whose standard contains a
 # negative word is included on purpose: with no prose scan there is nothing
 # for the question text to poison.
-frame_probe() {
-  # frame_probe <세션 uuid> <기준> — open one grade-2 judgment and leave its id
-  # in `$pid`, its question in `$pq` and its row count in `$pcount`.
-  local sid="$1" std="$2" prev
-  prev=$(row_field "$(last_judgment_approval)" '승인 id')
-  gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
-        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
-        -- 등급=2 기준="$std" 근거="프레임 승인 실험"
-  pid=$(row_field "$(last_judgment_approval)" '승인 id')
-  if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
-    bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
-    pid=""; return 0
-  fi
-  pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
-  pcount=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
-  : > "$NTX/$sid.jsonl"
-}
-probe_close() {  # probe_close <세션 uuid> [flags] — close $pid, leave rc/out/pst/pafter
-  local sid="$1"; shift
-  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        CLAUDE_CODE_SESSION_ID="$sid" gate_inproc close --manifest "$NM" --approval "$pid" "$@" 2>&1); rc=$?
-  pst=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '상태')
-  pafter=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
-}
+#
+# `frame_probe` and `probe_close` are defined in `pre_cone`, in the head — 31an
+# calls them too.
 # (a) the dismissed dialog — the harness's `is_error` frame with its text
 frame_probe "25252525-3434-5656-7878-909090909090" "이 발견을 이번 사이클에서 거절할지"
 auq_frame "$NTX/25252525-3434-5656-7878-909090909090.jsonl" "$pid" "$pq" "__DISMISS__" >/dev/null
