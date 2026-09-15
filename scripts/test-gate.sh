@@ -7283,7 +7283,7 @@ else
 fi
 printf -- '- `자동 채택` | 판단 부류=문서-신선도 | 사유=x\n' > "$LR/plugins/good.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
-  ok "린트 — 여덟 값 안의 판단 부류는 통과한다"
+  ok "린트 — 열 값 안의 판단 부류는 통과한다"
 else
   bad "린트" "어휘 안의 값을 위반으로 잡았다"
 fi
@@ -7291,7 +7291,7 @@ printf -- '- `자동 채택` | 판단 부류=없는-부류 | 사유=x\n' > "$LR/
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트" "어휘 밖의 판단 부류를 통과시켰다"
 else
-  ok "린트 — 여덟 값 밖의 판단 부류는 실패한다"
+  ok "린트 — 열 값 밖의 판단 부류는 실패한다"
 fi
 # THE PRODUCER SIDE OF THE EMITTED JUDGMENT, WHICH HAD NO DEFINITION ANYWHERE.
 # The gate parses five markers out of a stage's terminal message and absorbs the
@@ -7301,7 +7301,7 @@ fi
 # there and the producer was not.
 rm -f "$LR/plugins/bad.md"
 # 원장의 「값 없음」 센티널은 부류 주장이 아니다. 부류 없이 방출된 판단을 흡수기가
-# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 여덟 값 중 하나이기를
+# 기록할 때 그 철자를 쓰므로, 값으로 읽으면 린트가 `-` 를 열 값 중 하나이기를
 # 요구하게 되고 실제 트리 전체 스캔이 그 자리에서 빨개진다.
 printf -- '- `자율 승인` | 판단 부류=- | 등급=- | 사유=x\n' > "$LR/plugins/sentinel.md"
 if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
@@ -7310,6 +7310,33 @@ else
   bad "린트" "판단 부류=- 를 어휘 밖 값으로 잡았다"
 fi
 rm -f "$LR/plugins/sentinel.md"
+# 규칙 4 — 자리표시자 안의 수사가 어휘 크기를 말한다. 규칙 2 는 자리표시자를
+# 모양으로 건너뛰므로 그 안의 수를 보지 못한다. 그런데 그 수는 라우터에게 향한
+# 진술이라, 어휘가 여덟이라고 읽은 라우터는 아홉 번째를 방출하지 않는다. 손으로
+# 고쳐야 했고 고치지 않아도 아무것도 실패하지 않았던 자리다.
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<열 값>%s\n' "'" "'" > "$LR/plugins/ph-fresh.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 어휘 크기와 맞는 자리표시자 수사는 통과한다"
+else
+  bad "린트" "어휘 크기와 맞는 자리표시자 수사를 위반으로 잡았다"
+fi
+rm -f "$LR/plugins/ph-fresh.md"
+printf -- 'act --kind judgment -- 등급=1 %s판단 부류=<여덟 값>%s\n' "'" "'" > "$LR/plugins/ph-stale.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  bad "린트" "어휘보다 낡은 자리표시자 수사를 통과시켰다"
+else
+  ok "린트 — 어휘보다 낡은 자리표시자 수사는 실패한다"
+fi
+rm -f "$LR/plugins/ph-stale.md"
+# 크기를 주장하지 않는 괄호는 규칙 4 의 대상이 아니다. 규칙 4 를 「괄호가 보이면
+# 센다」로 구현하면 이 자리가 빨개진다.
+printf -- '- `자동 채택` | 판단 부류=<값> | 사유=x\n' > "$LR/plugins/ph-bare.md"
+if ORCH_ROOT="$LR/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
+  ok "린트 — 크기를 주장하지 않는 자리표시자는 건드리지 않는다"
+else
+  bad "린트" "수사가 없는 자리표시자를 위반으로 잡았다"
+fi
+rm -f "$LR/plugins/ph-bare.md"
 LRC="$LR/plugins/cc-cmds/skills/_common"
 mkdir -p "$LRC"
 cat > "$LRC/judgment-grade.md" <<'EOF'
@@ -7374,17 +7401,31 @@ if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
 else
   bad "린트 규칙 1" "어휘를 그대로 옮긴 픽스처가 이미 실패한다 — 아래 단언이 무엇 때문에 빨간지 말할 수 없다"
 fi
-sed -e 's/^\(readonly JUDGMENT_CLASSES="[^"]*\) 시각-면제"$/\1"/' \
+# THE TOKEN IS REMOVED WHEREVER IT SITS, not where it happened to sit. This
+# substitution used to anchor on the closing quote, so it only matched while
+# `시각-면제` was the LAST token in the vocabulary. Appending a token after it
+# turned the substitution into a no-op — and a no-op leaves the two sets
+# consistent, so the lint passed for the honest reason while the assertion below
+# read that pass as rule 1 being gone. The address keeps `_FORBIDDEN` out of it:
+# `=` immediately after the name does not match the longer declaration.
+sed -e '/^readonly JUDGMENT_CLASSES=/ s/ 시각-면제//' \
     "$LR/orch/run.sh" > "$LR1/orch/run.sh"
 # THE FIXTURE IS CHECKED BEFORE IT IS ASSERTED ON. A substitution that matched
 # nothing leaves the two sets consistent, and then the lint passes for the honest
 # reason while this section reads that pass as the rule being absent.
+#
+# The membership test is padded on both sides so it asks about a WHOLE TOKEN at
+# any position. The older test asked whether the vocabulary ENDED with the token,
+# which is the same end-anchoring that made the substitution silently stop
+# working, and it would have gone on agreeing with it.
 cls1=$(sed -n 's/^readonly JUDGMENT_CLASSES="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
 fb1=$(sed -n 's/^readonly JUDGMENT_CLASSES_FORBIDDEN="\(.*\)"$/\1/p' "$LR1/orch/run.sh")
-case "$cls1:$fb1" in
-  *시각-면제:*) bad "린트 픽스처" "어휘에서 금지 부류를 빼지 못했다: $cls1" ;;
-  *:*시각-면제*) ok "픽스처가 금지 부류를 어휘에서만 뺐다 (금지 목록에는 그대로 있다)" ;;
-  *) bad "린트 픽스처" "금지 목록에서도 사라졌다 — 규칙 1 이 볼 불일치가 없다: $fb1" ;;
+case " $cls1 " in
+  *" 시각-면제 "*) bad "린트 픽스처" "어휘에서 금지 부류를 빼지 못했다: $cls1" ;;
+  *) case " $fb1 " in
+       *" 시각-면제 "*) ok "픽스처가 금지 부류를 어휘에서만 뺐다 (금지 목록에는 그대로 있다)" ;;
+       *) bad "린트 픽스처" "금지 목록에서도 사라졌다 — 규칙 1 이 볼 불일치가 없다: $fb1" ;;
+     esac ;;
 esac
 if ORCH_ROOT="$LR1/orch" SCAN_ROOT="$LR" bash "$LINTAV" >/dev/null 2>&1; then
   bad "린트 규칙 1" "금지 부류가 어휘에서 빠졌는데 통과했다 — 어휘를 줄이는 편집이 누수를 조용히 되살린다"
