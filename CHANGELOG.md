@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.16.0] - 2026-09-15
+## [2.16.0] - 2026-09-16
 
 게이트가 사람의 답을 산문에서 찾는 대신 하네스가 남긴 전사 프레임에서 읽고, 무진전 경계가 정상적인 기동 읽기에 발화하지 않는다. 두 변경은 한 기능의 두 단계로 나뉘어 착지했고 이 릴리스가 둘을 함께 덮는다.
 
@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 결속 술어가 승인 식별자와 질문 문면이 같은 줄에 있기를 요구해, 라우터가 원장을 읽은 도구 출력이 사람이 답한 줄과 똑같이 자격을 얻었다. 고정 리터럴 질문을 쓰는 경계 승인은 그 연언 때문에 인가된 것의 절반 넘게 닫히지 않았다
 - 질문 제거가 리터럴 제거라 400바이트 클립 안에 400바이트 질문이 들어갈 수 없어 아무것도 지우지 못하고, 극성 스캔이 질문 자신의 바이트를 읽었다. 프레임 경로에서는 스캔되는 바이트에 질문이 애초에 들어오지 않는다
 - 진단 단이 원장에 아무것도 쓰지 않는다는 규칙에 검사가 붙었다 — 그것이 없으면 진단을 원장에 남기고 싶은 유혹이 재발명돼도 막는 것이 없다
+- 프레임 후보 판정이 계보 파일마다 단락해, 앞 세션 파일의 원장 반향(other)이나 중단된 이전 호출(result)이 뒤 세션에 떠 있는 미답변 질문(asked)을 가렸다. 경계 승인 철회는 other·result 를 「사람 없음」쪽으로 보내므로, 사람이 보고 있는 다이얼로그의 배너가 걷히는 철회로 이어졌다. 이제 계보 전체를 훑어 AskUserQuestion 이 있는 마지막 파일을 고르고, 어느 파일에도 질문이 없을 때만 other 로 떨어진다 — 답 프레임의 최신 우선 규칙과 같은 모양이다
 
 ### Why
 
