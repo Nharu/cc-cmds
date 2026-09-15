@@ -1,0 +1,2 @@
+# --- 1. A key the selector does not read ---
+# --- section: 1 | group: base | owner: someone | anchors: 첫 단언 ---

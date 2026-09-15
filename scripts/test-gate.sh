@@ -180,6 +180,19 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # cut inserts for a base section is a no-op; the full run calls the same
 # functions from the containers' own positions, so the serial order is
 # unchanged.
+#
+# A CUT ALSO CARRIES WHAT ITS SECTIONS NEED. A banner's `needs:` field names the
+# sections whose RESULTS this one stands on — a function an earlier section
+# defined, a manifest section it appended — and the cut takes every section
+# reachable through those edges along with the requested ones. The closure is a
+# reachable set and nothing more: the cut keeps file order as it always did, no
+# topological order is computed, and a mutual pair terminates because an id
+# already in the set is not expanded again. A pulled-in section is a full member
+# of the cut — its assertions count toward the totals and its `anchors:` are
+# checked — so `--run-one` can run more than one section, and the count on the
+# narrowed-run line is the closure's. A `needs:` id that no banner declares
+# follows the caller's escape rule: `--sections` runs everything, `--run-one`
+# stops, for the same reason an unknown requested id does.
 # ---------------------------------------------------------------------------
 SELF="$script_dir/${0##*/}"
 sections_want=""
@@ -218,6 +231,7 @@ fi
 #   EPI <line>                                        the first line of the tail
 #   SEC <start> <end> <id> <idline> <group> <title>   one addressable section
 #   ANC <id> <text>                                   one assertion that section must keep
+#   NED <id> <dep>                                    one section this one needs in its cut
 #   MKR <message>                                     a marker that no banner owns
 #
 # A section carrying no machine-readable banner reports its id as `-` and its
@@ -228,8 +242,12 @@ fi
 # produced no result. Sections that sit inside the head are not indexed at all
 # — they are not skippable, so giving them a row would invite a caller to try.
 #
-# `ANC` AND `group:` ARE THE BANNER FIELDS READ BACK; `covers:` is parsed off
-# and discarded here (it is the change-based selector's input, not this one's).
+# `ANC`, `NED` AND `group:` ARE THE BANNER FIELDS READ BACK; `covers:` is parsed
+# off and discarded here (it is the change-based selector's input, not this
+# one's). `needs:` is a comma-separated list of section ids, one `NED` row each.
+# The set of keys a banner may carry is closed, and
+# `scripts/lint-gate-banner-fields.sh` holds it: a misspelt key is skipped by the
+# patterns below without a word, which leaves a declaration nobody reads.
 # `anchors:` is a comma-separated list of assertion labels that a cut of this
 # section must still contain, and it is checked against the cut before the cut
 # runs. It exists because the id, the title and the number of assertions can
@@ -257,6 +275,13 @@ section_index() {
           sub(/^.*\|[ \t]*anchors:[ \t]*/, "", anc)
           sub(/[ \t]*\|.*$/, "", anc)
         }
+        ned = ""
+        if ($0 ~ /\|[ \t]*needs:/) {
+          ned = $0
+          sub(/[ \t]*---[ \t]*$/, "", ned)
+          sub(/^.*\|[ \t]*needs:[ \t]*/, "", ned)
+          sub(/[ \t]*\|.*$/, "", ned)
+        }
         grp = "-"
         if ($0 ~ /\|[ \t]*group:/) {
           grp = $0
@@ -266,7 +291,7 @@ section_index() {
           sub(/[ \t]+$/, "", grp)
           if (grp == "") grp = "-"
         }
-        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc; grpval[nid] = grp
+        nid = nid + 1; idline[nid] = NR; idval[nid] = id; ancval[nid] = anc; grpval[nid] = grp; nedval[nid] = ned
       }
       else if (prev ~ /^# -+$/ && $0 ~ /^# [0-9]+[a-z]*(-[0-9]+[a-z]*)?\. /) {
         nb = nb + 1; bound[nb] = NR - 1; tline[nb] = NR; title[nb] = $0
@@ -305,8 +330,8 @@ section_index() {
         if (s <= pre) continue
         e = (i < nb ? bound[i + 1] - 1 : epi - 1)
         if (e >= epi) e = epi - 1
-        id = "-"; il = 0; anc = ""; grp = "-"
-        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j]; grp = grpval[j] }
+        id = "-"; il = 0; anc = ""; grp = "-"; ned = ""
+        if (i in owner) { j = owner[i]; id = idval[j]; il = idline[j]; anc = ancval[j]; grp = grpval[j]; ned = nedval[j] }
         # THE DECLARED ID IS COMPARED WITH THE BANNER`S OWN NUMBER, by equality
         # and nothing else. Ordering is deliberately not checked — this file`s
         # banner numbers do not ascend (section 31 is followed by `# 12b.`).
@@ -325,6 +350,14 @@ section_index() {
             a = aa[k]
             sub(/^[ \t]+/, "", a); sub(/[ \t]+$/, "", a)
             if (a != "") print "ANC " id " " a
+          }
+        }
+        if (ned != "" && id != "-") {
+          nn = split(ned, nd, ",")
+          for (k = 1; k <= nn; k++) {
+            d = nd[k]
+            sub(/^[ \t]+/, "", d); sub(/[ \t]+$/, "", d)
+            if (d != "") print "NED " id " " d
           }
         }
       }
@@ -419,16 +452,77 @@ if [ -n "$sections_want" ] && [ -n "$sec_idx" ]; then
 $(printf '%s\n' "$sections_want" | tr ',' '\n')
 SECEOF
 
+  # THE `needs:` CLOSURE IS TAKEN BEFORE ANYTHING IS CUT, breadth first from the
+  # requested ids. An id already in the set is not expanded again, which is what
+  # makes a mutual pair terminate; nothing is ordered, because the cut below
+  # sorts ranges by start line as it always did. A pulled-in id is screened and
+  # looked up exactly as a requested one is — the same charset guard and the same
+  # refusal of a lookup that matches more than one row — because it reaches the
+  # same `sed` address.
+  sec_all=$(printf '%s\n' "$sections_want" | tr ',' '\n')
+  sec_pulled=""
+  sec_need_by=""
+  if [ -z "$sec_miss" ]; then
+    sec_front="$sec_all"
+    while [ -n "$sec_front" ]; do
+      sec_next=""
+      while IFS= read -r sec_w; do
+        [ -n "$sec_w" ] || continue
+        while IFS= read -r sec_d; do
+          [ -n "$sec_d" ] || continue
+          case "
+$sec_all
+" in
+            *"
+$sec_d
+"*) continue ;;
+          esac
+          case "$sec_d" in
+            -|*[!A-Za-z0-9_-]*) sec_miss="$sec_d"; sec_need_by="$sec_w"; break 3 ;;
+          esac
+          sec_r=$(printf '%s\n' "$sec_idx" \
+            | sed -n "s/^SEC \([0-9]*\) \([0-9]*\) $sec_d [0-9]* .*\$/\1 \2/p")
+          if [ -z "$sec_r" ]; then sec_miss="$sec_d"; sec_need_by="$sec_w"; break 3; fi
+          if [ "$(printf '%s\n' "$sec_r" | grep -c .)" -gt 1 ]; then
+            printf 'test-gate: 절 %s 의 needs: 가 가리키는 id 「%s」 가 여러 절에 걸립니다 — 모호한 지목은 조용히 해소되면서 더 적게 돌고 초록을 보고하므로 여기서 멈춥니다\n' "$sec_w" "$sec_d" >&2
+            exit 2
+          fi
+          sec_ranges="$sec_ranges$sec_r
+"
+          sec_all="$sec_all
+$sec_d"
+          sec_pulled="$sec_pulled${sec_pulled:+, }$sec_d"
+          sec_next="$sec_next$sec_d
+"
+        done <<NEDEOF
+$(printf '%s\n' "$sec_idx" | sed -n "s/^NED $sec_w \(.*\)\$/\1/p")
+NEDEOF
+      done <<FRONTEOF
+$sec_front
+FRONTEOF
+      sec_front="$sec_next"
+    done
+  fi
+
   if [ -n "$sec_miss" ] && [ "$sections_strict" = "1" ]; then
     # `--run-one` NEVER FALLS BACK. The full run is the safe escape for a
     # human typing `--sections`; for a dispatched worker it is the forbidden
     # direction — forty minutes of green returned under the name of the one
-    # section the reconciliation then marks as run.
+    # section the reconciliation then marks as run. An unknown id reached
+    # through `needs:` is the same pick failing one step later.
+    if [ -n "$sec_need_by" ]; then
+      printf 'test-gate: --run-one 이 끌어오는 절 id 를 모릅니다: 절 %s 의 needs: 가 가리키는 %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_need_by" "$sec_miss" >&2
+      exit 2
+    fi
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
   if [ -n "$sec_miss" ]; then
-    printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
+    if [ -n "$sec_need_by" ]; then
+      printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 전량 실행합니다\n' "$sec_need_by" "$sec_miss" >&2
+    else
+      printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
+    fi
   else
     sec_pre=$(printf '%s\n' "$sec_idx" | sed -n 's/^PRE \([0-9]*\)$/\1/p')
     sec_epi=$(printf '%s\n' "$sec_idx" | sed -n 's/^EPI \([0-9]*\)$/\1/p')
@@ -481,6 +575,10 @@ SECEOF
     # strings itself and sits at the top of every cut of that section, so leaving
     # it in would make the check pass for a section that had been truncated down
     # to nothing but its banner.
+    #
+    # The check runs over the whole `needs:` closure, not only the requested ids:
+    # a pulled-in section contributes assertions to the totals, so a truncation
+    # of it is the same loss.
     sec_body="$sec_dir/body"
     sed -n '/^# --- section: /!p' "$sec_cut" > "$sec_body"
     sec_anc_miss=""
@@ -498,7 +596,7 @@ SECEOF
 $(printf '%s\n' "$sec_idx" | sed -n "s/^ANC $sec_w \(.*\)\$/\1/p")
 ANCEOF
     done <<SECEOF
-$(printf '%s\n' "$sections_want" | tr ',' '\n')
+$sec_all
 SECEOF
     rm -f "$sec_body"
     if [ -n "$sec_anc_miss" ]; then
@@ -522,6 +620,9 @@ SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
     printf 'test-gate: 좁힌 실행 — 절 %s개, %s줄\n' "$sec_count" "$sec_span" >&2
+    if [ -n "$sec_pulled" ]; then
+      printf 'test-gate: needs 로 함께 도는 절 — %s\n' "$sec_pulled" >&2
+    fi
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
       printf '%s\n' "$sec_idx" \
@@ -1195,7 +1296,18 @@ pre_static() {
 # or a function — the commands that actually CREATE those things stay in
 # their sections, because moving one would change the world an earlier
 # section's assertions see. Lifting only the definitions means a late section
-# cut on its own no longer dies on an unbound name.
+# cut on its own no longer dies on an unbound name. `TAB` and `snapH` belong to
+# the same kind: they were defined in section 33's body and 12b calls them.
+#
+# TWO LINES HERE DO CREATE SOMETHING, and each is an exception made because a
+# cut cannot stand without it while a full run cannot tell it happened. The run
+# directory is created so the shared fixture's pid helpers have somewhere to
+# write in a cut that skips section 33 — `fx_mkrun` itself is NOT called here,
+# because it truncates the ledger it names and would move every section between
+# here and 33. And the pristine manifest copy the review prelude reads is taken
+# here as well as in section 9: in a full run section 9 overwrites it just above
+# its contamination, so the full run reads the bytes it always read, and in a
+# cut that skips 9 this is the only copy there is.
 #
 # `gateL`/`HL` run against a state home of their own. The section that moves
 # the enforcement surface and never puts it back is 14l: it appends a newline
@@ -1209,6 +1321,9 @@ pre_base() {
   PRE_BASE_DONE=1
   SETTINGS_DIR="$XDG_STATE_HOME/cc-cmds/run/R1/settings"
   RD="$XDG_STATE_HOME/cc-cmds/run/R1"
+  FX_RUN_DIR="$RD"; FX_PIDS=""
+  mkdir -p "$FX_RUN_DIR"
+  export FX_RUN_DIR FX_PIDS
   LINKED="$WORK/linked"
   STATE7="$WORK/state-surface"
   RD_L=$(dirname "$SETTINGS_DIR")
@@ -1219,6 +1334,7 @@ pre_base() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+  cp "$FX_MANIFEST" "$WORK/manifest-clean.md"
   # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
   # than only in the section that first sources them. Two base sections stand a
   # LIVE stage in a run directory (`fx_stage_live`) and one cone section does
@@ -1806,9 +1922,11 @@ SAGEOF
 # "no common ancestor" disposition in this suite, so it is BUILT here rather
 # than inherited from whatever an earlier section left the shared worktree on.
 #
-# This prelude reads `$WORK/manifest-clean.md`, which section 9 writes — a
-# coupling to the base family's ledger history rather than to a setting, so a
-# cut of 37 on its own is expected to fail on it until that coupling is broken.
+# This prelude reads `$WORK/manifest-clean.md`. `pre_base` takes that copy in
+# the head, so a cut of 37 no longer dies on a missing file; section 9 still
+# overwrites it just above its contamination, which keeps the full run reading
+# the bytes it always read. What stays coupled is the manifest's shape, not the
+# file's presence, and the review sections declare it with `needs: 9`.
 pre_review() {
   [ -n "${PRE_REVIEW_DONE:-}" ] && return 0
   PRE_REVIEW_DONE=1
@@ -1925,6 +2043,16 @@ pre_sb() {
       | grep -F "세그먼트=$1 " | grep -F '결정=act' | tail -1
   }
 }
+
+# THE SHARED RUN FIXTURE IS SOURCED IN THE HEAD, not only in the section that
+# first used it. Section 33 is where `run-fixture.sh` came in, and later sections
+# — 12b, 34 — call its `fx_*` helpers, so a cut naming one of them without 33
+# died on the first call as `command not found`, before the totals line could be
+# printed. The file only defines functions and touches nothing until one is
+# called, so sourcing it here changes nothing a full run sees; section 33 keeps
+# its own source line.
+# shellcheck source=/dev/null
+. "$repo_root/scripts/run-fixture.sh"
 
 # EVERYTHING ABOVE THIS MARKER RUNS WHATEVER `--sections` NAMES: the shared
 # helpers, the family preludes, and the fixture repository with its manifest
@@ -3445,7 +3573,7 @@ check "행위가 대상 워크트리에서 실행되고 그 stdout 만 나온다
 
 # ---------------------------------------------------------------------------
 # 9. The un-disableable rules ignore the manifest's rule settings
-# --- section: 9 | group: base | covers: snapshot, act | anchors: 절단점-준수 는 「끔」을 무시한다 ---
+# --- section: 9 | group: base | covers: snapshot, act | needs: 8 | anchors: 절단점-준수 는 「끔」을 무시한다 ---
 # ---------------------------------------------------------------------------
 # THE PRISTINE COPY IS TAKEN HERE, one line above the contamination. Everything
 # below runs against a manifest carrying `**리뷰-후-머지**: 끔`, and that setting
@@ -7704,7 +7832,7 @@ else
 fi
 
 # --- 31q. The auto-adoption floor's safety argument, made true ---------------
-# --- section: 31q | group: cone | covers: snapshot, act, exec | anchors: 픽스처 매니페스트의 사본이 얼린 집합 대조를 통과한다 ---
+# --- section: 31q | group: cone | covers: snapshot, act, exec | needs: 9 | anchors: 픽스처 매니페스트의 사본이 얼린 집합 대조를 통과한다 ---
 #
 # The code stated arm (a)'s safety as four reasons and two of them were false:
 # the binding digest did not serialize `자동 채택` rows, and the rule named as
@@ -11765,7 +11893,7 @@ SA2_ANCHOR=$(sa_field "$orow" '머지 커밋')
 if [ "$SA2_ANCHOR" = "-" ] || [ -z "$SA2_ANCHOR" ]; then
   bad "4c 머지 커밋" "의무 행이 머지될 커밋을 지목하지 않는다: '${SA2_ANCHOR:--}'"
 else
-  ok "4c: 의무 행의 머지 커밋이 `-` 가 아니다 ($SA2_ANCHOR)"
+  ok "4c: 의무 행의 머지 커밋이 \`-\` 가 아니다 ($SA2_ANCHOR)"
 fi
 check "4c: 그 값이 세그먼트 워크트리의 머지 직전 HEAD 다" \
   "$SA2_ANCHOR" "$( cd "$SA_SEGWT" && git rev-parse HEAD )"
@@ -11919,7 +12047,7 @@ M4F=$(sa_field "$(sa_ob_last "$OID4F")" '머지 커밋')
 if [ "$M4F" = "-" ] || [ -z "$M4F" ]; then
   bad "4f 앵커" "거짓 의무의 머지 커밋이 sha 가 아니다"
 else
-  ok "4f: 거짓 의무의 머지 커밋도 `-` 가 아닌 sha 다"
+  ok "4f: 거짓 의무의 머지 커밋도 \`-\` 가 아닌 sha 다"
 fi
 # --- 35-5. 재시도 — 거짓 의무가 같은 머지의 재시도를 막는다 ---------------------
 # --- section: 35-5 | group: sa | covers: act | anchors: 5: 거짓 의무가 남은 채로 같은 머지를 다시 시도하면 거절된다 ---
@@ -12715,7 +12843,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 37. 리뷰 의무는 `이행` 으로 옮겨질 수 있고, 근거에 대해서만 그렇다
-# --- section: 37 | group: review | covers: snapshot, act | anchors: 32: 세그먼트 행이 기록된다 ---
+# --- section: 37 | group: review | covers: snapshot, act | needs: 9 | anchors: 32: 세그먼트 행이 기록된다 ---
 #
 # 섹션 29 에서 옮겨 왔다. 이 섹션은 **워크트리 조항의 의도된 예외**다 — 세그먼트
 # 워크트리의 팁이 베이스와 **공통 조상이 없어야** 하고, 이 스위트에서 착지 판정의
@@ -12815,7 +12943,7 @@ case "$msg" in
   *) ok "32: 이행된 뒤에는 조건 9 가 열거되지 않는다 (런이 종료를 제안할 수 있다)" ;;
 esac
 # --- 37-33. 세그먼트를 달지 않은 머지 — 처분을 못박는다 -------------------------
-# --- section: 37-33 | group: review | covers: act | anchors: 33: 룰 켬 — 세그먼트를 생략한 머지는 거절된다 ---
+# --- section: 37-33 | group: review | covers: act | needs: 9 | anchors: 33: 룰 켬 — 세그먼트를 생략한 머지는 거절된다 ---
 #
 # 생략되거나 `-` 인 세그먼트는 가설이 아니라 도달 가능하다 — 발행 전 앵커 검사가
 # 그 모양을 명시적으로 검사한다. 그런데 두 스위트의 모든 머지가 세그먼트를
@@ -12854,7 +12982,7 @@ sag act --manifest "$SA_MANIFEST" --kind merge --target main \
 check "33: 룰 끔 — 세그먼트를 생략한 머지는 통과한다 (선택이 기록된다)" "$rc" "0"
 
 # --- 37-33b. 좁히는 축은 축2 등급이고, 워크트리쓰기 칸은 argv 가 한 번 더 가른다 --
-# --- section: 37-33b | group: review | covers: act, exec | anchors: 33b: 워크트리쓰기로 등급되는 로컬 머지도 리뷰 검사를 받는다 ---
+# --- section: 37-33b | group: review | covers: act, exec | needs: 9 | anchors: 33b: 워크트리쓰기로 등급되는 로컬 머지도 리뷰 검사를 받는다 ---
 #
 # 이 트리의 등급표는 로컬 머지·리베이스·체리픽을 워크트리쓰기로 등급한다. 그
 # 칸을 통째로 면제하면 그 머지들이 세그먼트를 정직하게 달고 가장 엄격한 정책
@@ -12919,7 +13047,7 @@ sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S33B --cu
 check "33b: 사다리 위칸으로 신고된 장부 기록은 이 룰에 걸리지 않는다" "$rc" "0"
 
 # --- 37-34. 상한을 넘게 된 세그먼트 행은 조이는 행으로 고칠 수 있다 --------------
-# --- section: 37-34 | group: review | covers: act | anchors: 34: 느슨한 상한 아래에서는 그 행이 통과한다 ---
+# --- section: 37-34 | group: review | covers: act | needs: 9 | anchors: 34: 느슨한 상한 아래에서는 그 행이 통과한다 ---
 #
 # 해소기는 룰 루프와 장부 기록자보다 앞에서 돈다. 그래서 상한이 나중에 조여져
 # 이미 기록된 실값이 상한을 넘게 되면 그 세그먼트에 대한 모든 행위가 옛 값으로
@@ -12946,7 +13074,7 @@ sa_seg_row S34 리뷰없음
 check "34: 상한을 넘겨 푸는 행은 여전히 거절된다 (탈출구가 한 방향이다)" "$rc" "2"
 
 # --- 37-35. 다시 쓰인 머지도 착지로 판정된다 ------------------------------------
-# --- section: 37-35 | group: review | covers: act | anchors: 35: 머지가 통과하고 의무를 남긴다 ---
+# --- section: 37-35 | group: review | covers: act | needs: 9 | anchors: 35: 머지가 통과하고 의무를 남긴다 ---
 #
 # 조상 검사만으로 판정하면 squash·rebase 로 머지하는 저장소에서 세그먼트 팁은
 # 베이스의 조상이 결코 되지 않는다. 그러면 미착지가 그 sha 에 대해 영구적인
@@ -12984,7 +13112,7 @@ check "35: 덮는 리뷰가 있으면 닫힌다" "$rc" "0"
 check "35: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID35")" '이행 판정')" "착지·포함"
 
 # --- 37-36. 「끔」 아래에서 팁이 다른 두 머지는 빚 둘을 남긴다 -------------------
-# --- section: 37-36 | group: review | covers: act | anchors: 36: 첫 머지가 통과한다 ---
+# --- section: 37-36 | group: review | covers: act | needs: 9 | anchors: 36: 첫 머지가 통과한다 ---
 #
 # 의무 슬롯을 (런, 세그먼트)로만 키잉하면 룰이 꺼진 창에서 두 번째 머지가 첫
 # 머지의 열린 슬롯에 접혀 행을 하나도 남기지 않는다. 그 하나를 이행하면 첫 팁
