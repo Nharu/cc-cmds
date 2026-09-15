@@ -49,7 +49,13 @@
 # record the printed path literally. Diagnostics go to stderr.
 #
 # Environment:
-#   CC_PIPELINE_RUN_DIR    — witness root when set; the system temp dir else.
+#   CC_PIPELINE_RUN_DIR    — witness root when set.
+#   XDG_STATE_HOME         — with no run dir the root is
+#                            <XDG_STATE_HOME>/cc-cmds/design, defaulting to
+#                            $HOME/.local/state, and this script creates it.
+#                            NOT the system temp dir: a collected temp dir takes
+#                            the witness with it, and the witness is the anchor
+#                            that keeps a lead from fabricating a round product.
 #   CC_PIPELINE_STAGE_ID   — stage id. Sanitized into the directory name, and
 #                            written raw into `.attempt`. Absent under an
 #                            interactive run, in which case the name carries no
@@ -71,16 +77,32 @@ fi
 # narrower one, so both halves of the name are normalized the same way.
 slug=$(printf '%s' "$slug" | tr -c 'A-Za-z0-9._-' '-')
 
+# ROOT SELECTION, AND NEITHER BRANCH IS THE SYSTEM TEMP DIR. The witness is the
+# anti-fabrication anchor: if it is gone the lead either parks forever or
+# synthesizes a round product it never observed, so the root has to outlive the
+# team. A temp directory does not — measured on this host, a team's temp witness
+# directory was collected in about an hour, while directories under the state
+# tree still held their published content three and four days later. Collection
+# interval is host policy, so the number is not the claim; the ordering is.
+#
 # The trailing slash is stripped because the printed path is not just displayed
 # — the caller records it verbatim as `scratchDir`, and the cleanup procedure
-# feeds that recorded string to a path-guarded `rm -rf`. macOS exports a
-# `TMPDIR` that ends in a slash, so the doubled separator is the ordinary
-# interactive path rather than an edge case, and an implementer who normalizes
-# it later is normalizing the input of a destructive command — which is the one
-# branch that procedure forbids. Normalize once, here, where it is only a
-# string.
-WITNESS_ROOT="${CC_PIPELINE_RUN_DIR:-${TMPDIR:-/tmp}}"
-WITNESS_ROOT="${WITNESS_ROOT%/}"
+# feeds that recorded string to a path-guarded `rm -rf`. An implementer who
+# normalizes it later is normalizing the input of a destructive command, which
+# is the one branch that procedure forbids. Normalize once, here, where it is
+# still only a string.
+if [ -n "${CC_PIPELINE_RUN_DIR:-}" ]; then
+  WITNESS_ROOT="${CC_PIPELINE_RUN_DIR%/}"
+else
+  # The fallback parent is not something this tree ships, so this branch creates
+  # it rather than assuming it. `mkdir -p` runs BEFORE the directory check
+  # below, because that check is what refuses an unusable root and it has to see
+  # the directory this branch is responsible for making. A failure is left to
+  # that check so the refusal names the variable that produced the path.
+  WITNESS_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design"
+  WITNESS_ROOT="${WITNESS_ROOT%/}"
+  mkdir -p "$WITNESS_ROOT" || true
+fi
 # The root is an environment value, so the stdout contract — exactly one line,
 # and that line is the directory — rests on it until it is checked. An empty or
 # non-directory root makes `mktemp` fail with its own message on stderr and this
@@ -89,7 +111,7 @@ WITNESS_ROOT="${WITNESS_ROOT%/}"
 # that string to a path-guarded `rm -rf`. Refuse here, where it is still only a
 # string, and say which variable produced it.
 if [ -z "$WITNESS_ROOT" ] || [ ! -d "$WITNESS_ROOT" ]; then
-  printf 'cc-team-witness-init.sh: 위트니스 루트가 디렉터리가 아닙니다: %s (CC_PIPELINE_RUN_DIR 또는 TMPDIR 를 확인하세요)\n' \
+  printf 'cc-team-witness-init.sh: 위트니스 루트가 디렉터리가 아닙니다: %s (CC_PIPELINE_RUN_DIR 또는 XDG_STATE_HOME 를 확인하세요)\n' \
     "${WITNESS_ROOT:-(빈 값)}" >&2
   exit 2
 fi
