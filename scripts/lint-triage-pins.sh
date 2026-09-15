@@ -17,8 +17,10 @@
 #
 # Rules:
 #   1. The section heading appears exactly once.
-#   2. The predicate sentence — the one line that names the two ledger states
-#      and the two lanes — appears exactly once.
+#   2. The predicate sentence — the one line that names the two ledger states,
+#      the two lanes, and what holds when no `segment` row is in the judgment's
+#      input (the rule does not fire; the landing state is not guessed from the
+#      report) — appears exactly once.
 #   3. Inside that section, the four load-bearing tokens are present:
 #      `상태=머지됨`, `상태=완료`, `P0`, `P1` (the last two because the section
 #      must say that P0 and P1 are NOT affected — dropping that clause would
@@ -44,7 +46,7 @@ prompt_dir="${PROMPT_DIR:-$repo_root/plugins/cc-cmds/orchestrator/prompts}"
 
 TRIAGE="$prompt_dir/triage.md"
 HEADING='## Findings on landed code do not open a segment'
-PREDICATE='Before choosing a lane, read the reviewed segment'"'"'s latest `segment` row: when its `상태=머지됨` or `상태=완료`, a P2 or P3 finding cannot take `fast` or `slow`.'
+PREDICATE='Before choosing a lane, read the reviewed segment'"'"'s latest `segment` row if one is in your input: when its `상태=머지됨` or `상태=완료`, a P2 or P3 finding cannot take `fast` or `slow`; if none is, this rule does not fire, and the landing state is not to be guessed from the report'"'"'s prose.'
 
 if [[ ! -f "$TRIAGE" ]]; then
   echo "FAIL: triage.md not found under $prompt_dir" >&2

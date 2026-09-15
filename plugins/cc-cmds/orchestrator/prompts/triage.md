@@ -33,7 +33,7 @@ Severity and identity do different jobs: severity is the **routing input** that 
 
 ## Findings on landed code do not open a segment
 
-Before choosing a lane, read the reviewed segment's latest `segment` row: when its `상태=머지됨` or `상태=완료`, a P2 or P3 finding cannot take `fast` or `slow`.
+Before choosing a lane, read the reviewed segment's latest `segment` row if one is in your input: when its `상태=머지됨` or `상태=완료`, a P2 or P3 finding cannot take `fast` or `slow`; if none is, this rule does not fire, and the landing state is not to be guessed from the report's prose.
 
 Those two lanes create implementation work, implementation work against a landed segment is a new segment, and the run cannot end without it. Such a finding belongs in the morning batch this file already names for P2 and P3. `reconcile` and `accept` remain available at every point — neither changes code. **P0 and P1 are unaffected**: every lane stays open to them whether the segment landed or not, because the termination predicate is theirs and a P0 against merged code is precisely the case that must not wait for the morning. The key is the merge, not a deployment — a deployment cannot be read from the ledger.
 
