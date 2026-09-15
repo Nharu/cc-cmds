@@ -7984,6 +7984,44 @@ case "$msg" in
   *) bad "매니페스트 쓰기 가드" "$msg" ;;
 esac
 
+# 런 디렉터리 쓰기 가드. 훅은 Write·Edit 로 이 디렉터리를 두 이름 외에 막는데
+# 게이트의 Bash 경로에는 같은 앵커가 없어, 정직한 `--surface 트리밖쓰기` 선언
+# 하나로 스테이지 로그·설정·다이제스트에 닿을 수 있었다. 그 중 최악이 스테이지
+# 로그다 — 재파견 쪽은 평범한 이름을 읽고, 거기 실린 세션 id 로 재개가 뜨므로
+# 재부착된 스테이지가 게이트 훅 없이 돈다.
+#
+# 허용 목록은 훅에서 그대로 옮겨 온 것이고 위트니스 디렉터리만 더했다. 두 목록이
+# 같아야 한다는 것이 이 단언들의 내용이다.
+#
+# 양쪽 철자를 다 본다는 것도 함께 고정한다. 이 플랫폼에서 `pwd -P` 는 `/var` 를
+# `/private/var` 로 풀고 행위의 argv 는 `/var` 를 싣는데, 물리 철자만 비교하면
+# 이 가드가 잡으려는 경로를 하나도 못 잡는다 — 첫 판본이 실제로 그랬다.
+rd_guard() {  # rd_guard <기대: 통과|거부> <라벨> <등급> <argv...>
+  local want="$1" lbl="$2"; shift 2
+  local out rc
+  out=$( ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+      . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      RUN_DIR="'"$RD"'"
+      set +e
+      gate_rundir_write_guard "$@"; exit $?' _ "$@" ) 2>&1 ); rc=$?
+  if [ "$want" = 통과 ]; then
+    [ "$rc" = 0 ] && ok "런 디렉터리 가드: $lbl 는 통과한다" \
+                  || bad "런 디렉터리 가드 ($lbl)" "통과해야 하는데 rc=$rc: $out"
+  else
+    [ "$rc" != 0 ] && ok "런 디렉터리 가드: $lbl 는 거부된다" \
+                   || bad "런 디렉터리 가드 ($lbl)" "거부해야 하는데 통과했다"
+  fi
+}
+rd_guard 거부 "스테이지 로그"     트리밖쓰기 mv "$RD/log/SA.json" /tmp/x
+rd_guard 거부 "런 설정"           트리밖쓰기 mv "$RD/settings/x" /tmp/x
+rd_guard 거부 "두 단계 halt"      트리밖쓰기 rm "$RD/halt/deep/x.md"
+rd_guard 거부 "다이제스트"        워크트리쓰기 cp /tmp/y "$RD/digest"
+rd_guard 통과 "한 단계 halt"      트리밖쓰기 mv /tmp/y "$RD/halt/stage-1.md"
+rd_guard 통과 "세그먼트 plan"     트리밖쓰기 mv /tmp/y "$RD/SA.plan.md"
+rd_guard 통과 "위트니스"          트리밖쓰기 mv /tmp/y "$RD/witness/r1.md"
+rd_guard 통과 "읽기 등급"         읽기 cat "$RD/log/SA.json"
+rd_guard 통과 "런 디렉터리 밖"    트리밖쓰기 mv /tmp/a /tmp/b
+
 # --- 31r. The forbidden classes are refused at RUNTIME too ------------------
 # --- section: 31r | group: cone | covers: act | anchors: 금지 부류는 실행 가능한 되돌리기로도 채택되지 않는다 (팔 b 가 금지를 본다) ---
 #

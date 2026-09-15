@@ -7763,6 +7763,77 @@ gate_claudemd_slot_guard() {
   return 0
 }
 
+gate_rundir_write_guard() {
+  # gate_rundir_write_guard <graded-surface> <argv...>
+  #
+  # THE HOOK GUARDS THE RUN DIRECTORY AND THE GATE DID NOT, so the same write
+  # was refused through `Write`/`Edit` and allowed through `Bash`. The hook lets
+  # a stage write exactly two names under the run directory — `halt/<stage-id>.md`
+  # and `<segment>.plan.md` — because everything else there is a baseline the
+  # gate re-reads on every act. A stage that edits one of those baselines makes
+  # the enforcement-surface check re-anchor on the stage's own bytes.
+  #
+  # An honest `--surface 트리밖쓰기` reached all of it. The worst reachable file
+  # is a stage log: the re-dispatch path reads `log/<stage>.json` while the
+  # writer pins `log/<stage>#<n>.json`, so a plain-named log placed there is what
+  # a re-attach consumes, and the session id it carries is what the resume is
+  # spawned with. That is how a re-attached stage ends up running without the
+  # gate hook at all.
+  #
+  # THE ALLOW-LIST IS COPIED FROM THE HOOK RATHER THAN INVENTED, and the witness
+  # scratch directory is the one addition — team members publish round products
+  # there and the hook never saw those writes because they do not go through
+  # `Write`. Two lists that are meant to be the same are stated once each here;
+  # `scripts/test-gate.sh` pins that they agree.
+  #
+  # WHAT THIS DOES NOT DO. It matches the run directory by path, so an act that
+  # reaches the same file through a symlink whose own path names nothing under
+  # the run directory is not seen — the same residual the manifest guard states,
+  # and closed by the same thing: the enforcement-surface digest is compared at
+  # the next entry.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  [ -n "${RUN_DIR:-}" ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  # BOTH SPELLINGS OF THE RUN DIRECTORY ARE NEEDED, and taking only the physical
+  # one is what made the first version of this guard refuse nothing at all on
+  # this platform. `pwd -P` resolves `/var` to `/private/var` while the argv the
+  # act carries says `/var`, so a prefix test against the physical spelling alone
+  # matches none of the paths it exists to catch. Both are compared and neither
+  # is preferred: an act may name either, and a guard that knows one spelling is
+  # a guard the other spelling walks past.
+  local a rdp rdn rdln an rel rel2
+  rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
+  [ -n "$rdp" ] || rdp="$RUN_DIR"
+  rdn=$(gate_path_spelling "$rdp")
+  rdln=$(gate_path_spelling "$RUN_DIR")
+  for a in "$@"; do
+    case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
+    an=$(gate_path_spelling "$a")
+    rel=""
+    case "$an" in
+      "$rdn") rel="." ;;
+      "$rdn"/*) rel=${an#"$rdn"/} ;;
+      "$rdln") rel="." ;;
+      "$rdln"/*) rel=${an#"$rdln"/} ;;
+      *) continue ;;
+    esac
+    case "$rel" in
+      ''|.) continue ;;
+      halt/*/*) ;;
+      halt/*) continue ;;
+      witness/*|team-witness/*) continue ;;
+      */*) ;;
+      *.plan.md) continue ;;
+    esac
+    warn "룰 거부: 런 디렉터리 쓰기 — 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 (위트니스 디렉터리 예외). 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 여기 쓰면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다: $a"
+    return "$GATE_EXIT_RULE"
+  done
+  return 0
+}
+
 gate_manifest_write_guard() {
   # gate_manifest_write_guard <graded-surface> <argv...>
   #
@@ -10066,7 +10137,8 @@ gate_verb_act() {
   # exists.
   case "$kind" in
     skill|router-shift) : ;;
-    *) gate_manifest_write_guard "$graded" "$@" || exit $? ;;
+    *) gate_manifest_write_guard "$graded" "$@" || exit $?
+       gate_rundir_write_guard "$graded" "$@" || exit $? ;;
   esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
