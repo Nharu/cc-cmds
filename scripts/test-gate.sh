@@ -5995,7 +5995,7 @@ graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으�
 graded_as '워크트리쓰기' 'command 가 감싼 머지는 그 등급이다'       -- command git merge --no-ff seg
 graded_as '읽기'         'command 가 감싼 읽기는 계속 읽기다'        -- command git status
 graded_as '읽기'         'command -v 는 무엇이 실행될지 인쇄만 한다' -- command -v git
-graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl https://x
+graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl -X POST https://x
 graded_as '등급 미상'   '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
 graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
 graded_as '등급 미상'   'find -delete 는 자기가 지운다'             -- find . -delete
