@@ -13283,7 +13283,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 
 # ---------------------------------------------------------------------------
 # 56. 읽기 크레딧·억제 흔적·철회
-# --- section: 56 | group: base | covers: act, snapshot | anchors: 56: 기동 행·결과 행이 낀 읽기 4개(크레딧 미만)로는 경계 승인이 발행되지 않는다, 56: 그 대신 억제 흔적이 남는다, 56: 철회 행이 사유를 싣는다 ---
+# --- section: 56 | group: base | covers: act, snapshot | anchors: 56: 기동 행·결과 행이 낀 읽기 4개(크레딧 미만)로는 경계 승인이 발행되지 않는다, 56: 그 대신 억제 흔적이 남는다, 56: 철회 행이 사유를 싣는다, 56: 두 세션 계보 — 앞 세션의 원장 반향 뒤에 떠 있는 질문은 철회를 막는다 ---
 #
 # 무진전 경계의 읽기 크레딧, 그 크레딧이 발화를 억제할 때 남기는 원장 흔적, 그리고
 # 조건이 사라진 경계 승인의 철회 — 셋이 여기 산다. 셋 다 동사가 없는 술어를 재므로
@@ -13737,6 +13737,72 @@ check "56: 철회 사유가 B3 에서 갈린다" "$(b56_seam 'gate_boundary_with
 # B4 는 철회 경로에 없으므로 자기 사유 문면도 갖지 않는다. 가지면 커버리지를 훑는
 # 사람이 라벨에서 B4 를 보고 멈추는데, 정작 B4 동작은 한 줄도 시험되지 않는다.
 check "56: B4 는 자기 철회 사유를 갖지 않는다" "$(b56_seam 'gate_boundary_withdraw_reason B4' 2>/dev/null | tail -1)" "조건 소멸"
+
+# --- 프레임 후보는 계보 전체에서 최신 질문을 고른다 ----------------------------
+#
+# 계보는 시간순(오래된 세션 먼저)이다. 질문을 찾는 루프가 파일마다 단락하던 동안에는
+# 앞 세션 파일이 뒤 세션 파일을 가렸다 — 앞 파일에 승인 id 를 담은 원장 반향 한 줄이나
+# 중단된 이전 호출의 결과 프레임이 있으면 뒤 세션에 떠 있는 질문을 열어 보지도 않고
+# `other`·`result` 를 냈고, 철회는 그 둘을 허용 쪽으로 흘려보내 사람이 보고 있는
+# 배너를 걷었다. 위의 철회 픽스처는 전부 단일 세션이라 그 경로를 한 번도 지나지 않는다.
+b56_echo_lines() {
+  # 라우터가 원장을 읽은 `Bash` 호출과 그 결과 — 승인 id 를 담지만 어느
+  # `AskUserQuestion` 에도 조인하지 않는 줄, `other` 의 전형이다.
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_0","name":"Bash","input":{"command":"grep %s led.md"}}]}}\n' "$B56_AID"
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_0","is_error":false,"content":"승인 id=%s | 상태=대기 | 질문 문면=%s"}]}}\n' \
+    "$B56_AID" "$B56_Q"
+}
+b56_withdraw_lineage_fixture() {
+  # b56_withdraw_lineage_fixture <반향|중단> — 두 세션 계보. 뒤 세션에는 물어졌고 아직
+  # 답이 없는 질문(`질문중`)을, 앞 세션에는 같은 id 를 담은 다른 프레임을 둔다.
+  # `중단` 은 같은 질문을 먼저 띄웠다가 끊긴 호출이라 tool_use id 가 뒤 세션과 다르다.
+  b56_withdraw_fixture 질문중
+  local early="sess-앞-$1" etr
+  etr="$B56_CFG/projects/p/$early.jsonl"
+  case "$1" in
+    반향) b56_echo_lines > "$etr" ;;
+    중단)
+      printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_0","name":"AskUserQuestion","input":{"questions":[{"question":"%s","options":[{"label":"승인"},{"label":"거부"}]}]}}]}}\n' \
+        "$B56_Q" > "$etr"
+      printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_0","is_error":true,"content":"[Request interrupted by user]"}]}}\n' >> "$etr" ;;
+  esac
+  printf '%s\n%s\n' "$early" "sess-질문중" > "$B56_RD/session-lineage"
+}
+b56_kind() { b56_seam 'gate_frame_candidate "'"$B56_AID"'"; printf "%s" "$GATE_FRAME_KIND"' 2>/dev/null | tail -1; }
+
+# (1) 앞 세션의 원장 반향. 분류 단계와 그 뒤의 처분을 따로 고정한다 — 처분만 보면
+# 다른 거부 사유로 우연히 `대기` 가 나와도 통과한다.
+b56_withdraw_lineage_fixture 반향
+check "56: 두 세션 계보 — 앞 세션의 원장 반향이 있어도 프레임 종류는 뒤 세션의 질문이다" "$(b56_kind)" "asked"
+b56_seam 'gate_withdraw_boundary_approval "'"$B56_AID"'" "진전 재개"' >/dev/null 2>&1
+check "56: 두 세션 계보 — 앞 세션의 원장 반향 뒤에 떠 있는 질문은 철회를 막는다" "$(b56_state)" "대기"
+# (2) 앞 세션의 중단된 호출. 중단은 취소가 아니라 취소 관측 술어도 허용값을 내므로,
+# 분류가 앞 파일의 결과 프레임에서 멈추면 철회를 막는 것이 아무것도 없다.
+b56_withdraw_lineage_fixture 중단
+check "56: 두 세션 계보 — 앞 세션의 중단된 호출이 있어도 프레임 종류는 뒤 세션의 질문이다" "$(b56_kind)" "asked"
+b56_seam 'gate_withdraw_boundary_approval "'"$B56_AID"'" "진전 재개"' >/dev/null 2>&1
+check "56: 두 세션 계보 — 앞 세션의 중단된 결과 뒤에 떠 있는 질문은 철회를 막는다" "$(b56_state)" "대기"
+# 이기는 것은 「id 를 담은 마지막 파일」이 아니라 「질문이 있는 마지막 파일」이다 —
+# 순서를 뒤집어 뒤 세션에 반향만 남겨도 질문 프레임이 `other` 로 떨어지지 않는다.
+b56_withdraw_lineage_fixture 반향
+printf '%s\n%s\n' "sess-질문중" "sess-앞-반향" > "$B56_RD/session-lineage"
+check "56: 두 세션 계보 — 뒤 세션에 원장 반향만 있으면 앞 세션의 질문 프레임을 유지한다" "$(b56_kind)" "asked"
+
+# (3) 분류기 자신 — 다섯 종류를 각각 고정한다. 위의 철회 단언들은 올바르게 분류된
+# 프레임 이후의 상태기계만 재므로, 분류가 틀리면 그 단언들은 틀린 입력 위에서 통과한다.
+b56_withdraw_fixture 응답
+check "56: 프레임 종류 — 답 프레임은 answers 다" "$(b56_kind)" "answers"
+b56_withdraw_fixture 질문중
+check "56: 프레임 종류 — 결과 프레임이 없는 질문은 asked 다" "$(b56_kind)" "asked"
+b56_withdraw_fixture 중단
+check "56: 프레임 종류 — 답이 없는 결과 프레임은 result 다" "$(b56_kind)" "result"
+b56_withdraw_fixture 질문중
+b56_echo_lines > "$B56_CFG/projects/p/sess-질문중.jsonl"
+check "56: 프레임 종류 — 질문에 조인하지 않는 id 줄은 other 다" "$(b56_kind)" "other"
+b56_withdraw_fixture 질문중
+printf '{"type":"user","message":{"content":[{"type":"text","text":"무관한 줄"}]}}\n' \
+  > "$B56_CFG/projects/p/sess-질문중.jsonl"
+check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b56_kind)" "none"
 
 # --- epilogue-begin ---
 #

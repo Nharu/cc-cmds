@@ -11590,7 +11590,17 @@ gate_frame_candidate() {
   # the rule a person changing their mind needs. The diagnostic kinds are looked
   # for only when no answer frame exists anywhere, so a dialog dismissed in an
   # earlier session cannot shadow the answer given in a later one.
-  local id="$1" f line tid
+  #
+  # THE DIAGNOSTIC KINDS ARE ALSO DECIDED OVER THE WHOLE LINEAGE, NOT PER FILE.
+  # The lineage is oldest first, and a loop that returned from the first file
+  # holding the id let an earlier session hide a later one: a ledger echo there
+  # came back as `other`, an interrupted earlier call as `result`, and the
+  # dialog still up in the later session was never opened. The withdrawal path
+  # permits both of those kinds, so the shadow walked past a live question and
+  # took its banner down. The last file holding an `AskUserQuestion` for this
+  # id wins, and `other` is only what remains when no file holds one — "no
+  # question bearing this id was ever put", which is the one meaning it has.
+  local id="$1" f line tid qfile="" qtid="" ofile="" oline=""
   GATE_FRAME_FILE=""; GATE_FRAME_LINE=""; GATE_FRAME_KIND="none"
   for f in $(gate_transcript_files || true); do
     [ -f "$f" ] || continue
@@ -11605,17 +11615,19 @@ gate_frame_candidate() {
       | jq -r --arg id "$id" '
           [ .message.content[]? | select(type == "object" and .type == "tool_use" and .name == "AskUserQuestion")
             | select([ .input.questions[]? | .question | tostring | contains($id) ] | any) | .id ] | last // ""' 2>/dev/null || true)
-    if [ -n "$tid" ]; then
-      line=$( { grep -F "\"tool_use_id\":\"$tid\"" "$f" 2>/dev/null || true; } | tail -1)
-      GATE_FRAME_FILE="$f"
-      if [ -n "$line" ]; then GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="result"; else GATE_FRAME_KIND="asked"; fi
-      return 0
-    fi
+    if [ -n "$tid" ]; then qfile="$f"; qtid="$tid"; fi
     line=$( { grep -F "$id" "$f" 2>/dev/null || true; } | tail -1)
-    if [ -n "$line" ]; then
-      GATE_FRAME_FILE="$f"; GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="other"; return 0
-    fi
+    if [ -n "$line" ]; then ofile="$f"; oline="$line"; fi
   done
+  if [ -n "$qtid" ]; then
+    line=$( { grep -F "\"tool_use_id\":\"$qtid\"" "$qfile" 2>/dev/null || true; } | tail -1)
+    GATE_FRAME_FILE="$qfile"
+    if [ -n "$line" ]; then GATE_FRAME_LINE="$line"; GATE_FRAME_KIND="result"; else GATE_FRAME_KIND="asked"; fi
+    return 0
+  fi
+  if [ -n "$oline" ]; then
+    GATE_FRAME_FILE="$ofile"; GATE_FRAME_LINE="$oline"; GATE_FRAME_KIND="other"; return 0
+  fi
   return 1
 }
 
