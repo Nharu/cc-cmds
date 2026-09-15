@@ -123,6 +123,8 @@ once per run rather than on every append.
             | 베이스 브랜치=<name> | 홈=예|아니오
             | 원격 슬러그=<owner>/<name> | 절단점=<token> | 말단 행위 상한=없음|<int>
             [ | 실행 워크트리=<abs> ] [ | 리뷰 정책 상한=선리뷰후머지|선머지후리뷰|리뷰없음 ]
+            [ | dev 식별자=<종류>:<값>[,<종류>:<값>…] ]
+            [ | 배포트리거 식별자=<종류>:<값>[,<종류>:<값>…] ]
 
 ## 요소
 **설계 문서**: <document key> | (없음)
@@ -363,6 +365,20 @@ never compared.
     keys already sit in frozen manifests and a manifest has no amendment form —
     refusing would make a run in flight permanently unfit with no way back.
 
+14. **`dev 식별자` on the target rows** — every element is `<종류>:<값>`, the kind
+    is one of `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` ·
+    `dir`, an `aws-account` is twelve digits and a `dir` is absolute. Each
+    violation is a **hard stop**, and absence of the field is not a violation: it
+    is the default, and it means the run believes a stage's `dev` claim because
+    there is nothing to compare it against. A typo the checker passed over reads
+    at runtime as exactly that absence, which is why this refuses rather than
+    warns.
+15. **`배포트리거 식별자` on the target rows** — same shape, kinds `branch` ·
+    `workflow` · `jenkins-job` · `argv`, a kind outside that set is a **hard
+    stop**. One arm is a **warning** instead: a `branch` trigger on a target whose
+    cutpoint is below `push` is inert rather than wrong, and "not checked" must
+    not read the same as "checked and inert".
+
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own
 repetitions. The suppression is a sentinel file per warning kind under the run
@@ -488,12 +504,12 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
 | `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) |
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
-| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` |
+| `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) |
 | `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
-| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
-| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only — written by the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer) · `관측 시각`(that same row) |
+| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `도달 판정`(도달 park 행 전용) · `세그먼트`(같음) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
+| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only — written by the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer; `자동 해소` on a closing row the gate wrote itself) · `관측 시각`(the free-input row) |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
@@ -513,6 +529,8 @@ They are written from three different places, because the three have different k
 **The terminal class the gate writes is a strict subset, and the omission is deliberate.** From outside a stage it can distinguish `크래시` (a non-zero status, or a subtype that is not success), `정상 완료` (the stage performed at least one gated act), `산출물 없는 정지` and `공허한 성공` — the last two separated by whether the stage's own transcript carries a `permission_denials` entry, which is precisely the "trace of reaching a decision point" this contract asks for. `의도된 park` and `적용 불명` are **not** written from here: both are claims about the stage's intent, they are read from its halt record, and guessing them from outside would put an unverified value in the ledger.
 
 **`segment` and `cycle` have a writer on the router path, and both are `act` kinds rather than a seventh verb.** The fixed-graph loop used to be their only writer, which the router never enters — and the absence was not a gap in bookkeeping. The merge rule reads a `cycle` row, so with no writer it refused **every** merge for want of a row no path could produce; termination condition 1 counts `segment` rows, so a run could never propose that it was done. Both read as the mechanism working. `act --kind segment` and `act --kind cycle` take **`키=값` fields after `--` instead of a command**, because what they perform *is* the row; they grade `읽기`, since a row reaches nothing a cutpoint or a credential could widen. A `segment` row is refused without a `상태` in the vocabulary below and without a `워크트리` — the merge rule enters that directory to read the branch's current HEAD, so a row missing it turns a review refusal into one that names a missing worktree. A `cycle` row is refused without `사이클`, `P0`, `P1`, `리뷰 HEAD` and `리포트 경로`, which are exactly the five that rule reads — the last one because the rule opens that file and looks for a findings summary, so a row whose report is a stub is refused rather than believed.
+
+**A `cycle` row may carry `모드` and `기준 사이클`, and a delta claim is refused at write time on eight checks.** `모드` is optional and **absence reads as `전체`** — in the gate's basis search, in the snapshot's `cycles[]` consumer, in the router and in check 8 alike. A delta review read only the files changed since this segment's last full cycle and re-adjudicated that cycle's P0/P1, while the merge rule reads `P0`/`P1` off the newest row without knowing the mode, so everything that makes the claim sound is refused before the row exists rather than believed after it. **Checks 1–7 run only on a `모드=델타` row** (check 1 whenever the field is present at all): (1) `모드` is `전체` or `델타`; (2) `기준 사이클` is present and a positive integer — and a `모드=전체` (or absent) row carrying one is refused, since a full review asserts no basis; (3) a `cycle` row of the **same segment** exists whose `사이클` **equals** `기준 사이클` as a field value — never a `grep -F` substring, since `사이클=1` is a substring of `사이클=10` — and the last such row wins when there are several; (4) that basis row's `모드` is `전체` or absent, so a delta never stacks on a delta; (5) the basis is the **largest** `전체`/absent `사이클` of this segment, and the refusal names the one that is; (6) inside the segment's last `segment` row's `워크트리`, `git merge-base --is-ancestor <기준 행 리뷰 HEAD> <이 행 리뷰 HEAD>` exits 0 — exit 1 (not an ancestor) and exit ≥2 or a missing worktree (undecidable) are refused **with different wording**, because folding 128 into "not an ancestor" would read a missing object as merely unrelated; (7) the basis row's `리포트 경로` resolves to a file that exists and matches `^[-*[:space:]]*\*\*발견 요약\*\*`. **Check 8 runs on every `cycle` row**: the row's own `리포트 경로` is opened, the one line matching `^[-*[:space:]]*\*\*리뷰 모드\*\*: (전체|델타)( |$)` is anchored first and the values are read off that line only; no such line reads as `전체`, no `모드` on the row reads as `전체`, and the two must agree; when both say `델타`, the line's `기준 사이클 <n>` must equal the row's `기준 사이클`, and the line's `` 기준 리뷰 HEAD `<sha>` `` and the basis row's `리뷰 HEAD` must resolve — `git rev-parse --verify <x>^{commit}` in the segment worktree — to the **same commit**, so a short and a long sha of one commit agree and an unresolvable one is refused as undecidable. A report that cannot be opened refuses a `델타` row and passes a `전체`/absent one: no new refusal is added to the existing path, and that absence is what the merge rule already catches at merge time. Check 8 runs on full rows because the dangerous direction is **under-claiming, not over-claiming** — a report that says `델타` under a row that stays silent reads as `전체`, is picked as the next cycle's full basis, and a delta then stacks on a review that read part of the tree. Both sides absent read as the same `전체`, so no row or report written before these fields existed is refused. Every refusal here is exit 2, and the repair is the router's ordinary one: rewrite the row to the mode the report says. A relative `리포트 경로` is resolved the way the merge rule resolves it — two directory levels above the manifest — by one helper the gate uses for checks 7 and 8 alike.
 
 **The shape table above carries the fields `gate_record_row` REQUIRES and the fields the rules READ, and it has to carry both.** It is the router's only instruction for what to put on a row, and `리뷰 HEAD` was missing from the `cycle` line while the paragraph four above enumerated it correctly — so a router following the table wrote a row the merge rule could not use. The general statement is the load-bearing part: **a field some rule reads that is absent from this table is a rule that cannot fire, and that failure is indistinguishable from the check passing.** Silence from a rule reads as consent, so a table that under-declares turns an enforcement point into a no-op with no symptom.
 
@@ -539,6 +557,8 @@ They are written from three different places, because the three have different k
 **`질문 문면` and `답변 문면` are excerpts; the full texts live in the approval sidecar.** A row must stay inside the row-length cap of §3.1a, and a question with four option descriptions does not. `질문 문면` is clipped to 400 bytes on every row that carries it; `답변 문면` on a judgment approval's `승인`·`거부`·`무효` closing row is clipped to 160 bytes (the `무효` closing row is the thinnest and keeps roughly 61 bytes of headroom); `사유` on a `철회` row to 120. Both clips are normalized before they land — `|` and newlines would splice the row grammar — and cut with a visible marker rather than silently. Beside each excerpt the row carries the sha256 of the full text (`구속 튜플`'s second component for the question, `답변 다이제스트` for the answer), and `사이드카 앵커=<run-id>#<승인 id>` names the sidecar block those digests are of — without the anchor the digests would be values recorded and compared against nothing.
 
 **For a `절단점=판단` approval, `답변 문면` carries the answer BYTES (as that excerpt); act approvals keep the fixed literal `트랜스크립트 판독`.** For an act approval the answer is binary — the act happens or it does not — so the literal lost nothing. A question's answer is what the next step consumes, and recording only that a person answered would mean the run kept the fact and threw away the content; the excerpt is on the row where the morning reader is looking, and the full text is one anchor away. Closing rows of every shape also carry `응답 토큰` — the `tool_use_id` of the answer frame — and `답변 다이제스트`.
+
+**Auto-resolution is the other closing path with no person behind it, and it says so on the row.** Unless `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` is off, the gate closes the approvals that carry a recommendation the moment it issues them: a boundary approval as `승인` (continue), a judgment approval as the adoption of the router's own submitted judgment — or as `거부` when its class is `팀-구성` or `시각-면제`, the two that hand risk to the user. Act approvals are never auto-resolved. The `대기` issue row is still written, and the closing row carries `답변 문면=자동 해소(추천: …)`, `응답 토큰=-`, `답변 다이제스트=-` and `처분 사유=자동 해소`, so a reader never mistakes it for a transcript answer. **Closing a boundary approval — by a person or by this path — restarts that boundary's count** in the run directory; without that the next evaluation re-issued the same question with the same count.
 
 **`철회` is the one closing state with no answer behind it, and it has no clock.** A boundary approval whose raising condition has gone away is withdrawn by the gate's own boundary evaluation — never by the router, which has no verb for it — with `사유=` naming the condition that lapsed; the transition is refused while an answer frame for the id exists in this run's lineage, and while a `다이얼로그 취소` was observed in the same cycle. A later real answer may still close a `철회` approval: `close` admits `철회` as the one non-`대기` starting state. The entry point that writes `철회` lands with the boundary predicates; this vocabulary accepts the token ahead of it.
 
@@ -581,8 +601,18 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `segment.리뷰 정책` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; omission on a later row inherits) |
 | `target.리뷰 정책 상한` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; absence reads `선리뷰후머지`) |
 | `대상 추가.층` | `0` \| `1` |
-| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
+| `blocked.사유` | `도달 park` \| `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
+| `자율 승인.등급 출처` | `표` \| `불투명` \| `미상` (exec rows) |
+| `자율 승인.선언` | `-` \| a `SURFACES` token — what `--surface` claimed, where it differs from the graded value or is the only grade there is |
+| `자율 승인.표지` | `-` \| `비밀출력` \| `파괴` |
+| `자율 승인.파괴 출처` | `-` \| `유도` \| `신고` \| `유도·신고` |
+| `자율 승인.도달` | a `REACHES` token \| `-` |
+| `자율 승인.유도 도달` | `-` \| `기기전역` \| `배포트리거` |
+| `자율 승인.식별자 대조` | `-` \| `미선언` \| `일치` \| `대조불가` (`불일치`·`부재` park rather than land on a row) |
+| `blocked.도달 판정` | `비밀출력` \| `신고등급한도` \| `도달미상` \| `기기전역` \| `push원격불일치` \| `도달모순` \| `dev파괴` \| `dev식별자불일치` \| `dev식별자부재` \| `dev대조불가` \| `파괴형태미명시` \| `prod인가없음` \| `배포트리거인가없음` |
+| `target.dev 식별자` | optional; `<종류>:<값>` elements separated by `,` — `aws-profile` \| `aws-account`(12 digits) \| `kube-context` \| `host` \| `domain` \| `dir`(absolute) |
+| `target.배포트리거 식별자` | optional; same shape — `branch` \| `workflow` \| `jenkins-job` \| `argv` |
 | `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
@@ -757,6 +787,12 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 - **Written with the atomic form of `sidecar.md` §1.3** (temp file in the same directory, then rename), so a partial record is never observed. The closing fence is the terminator: a record whose last non-empty line is not `<!-- /cc-pipeline-halt v1 -->` is **a crash mid-write, not a halt**.
 - **`관측 상세` is where measurement values go, and `질문 문면` is not.** A `freeze-mismatch` halt owes which assertion diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — on an assertion 1 mismatch — the intersecting paths, which `verification.md` §6.0 calls the only thing telling a later reader what ended the window. Without a field of their own those values land in `질문 문면`, which the schema defines as the verbatim question and which is the one field a human uses to audit a forged halt — so the obligation and the grammar disagreed and the misuse was the only way to satisfy both. It is **one line like every other field line in this block**, parts joined with ` / `, and every field line sits above the closing fence because that fence is the terminator. A class with no measurement values of its own writes `(없음)`.
+- **An exit 11 from the gate is a halt input, not a retry input.** 도달 park says
+  the act was not performed and will not be: the verdict is keyed on the act
+  digest, so the same argv re-declared takes the recorded answer. A stage whose
+  parked act was not essential continues without it and writes no halt record at
+  all; one whose act was essential writes this record with `분류:
+  gate-unanswerable` and the `도달 판정` value in `관측 상세`.
 - **`재호출 명령` is inert.** The driver records it and **never executes it**. Auto-running it retries a condition whose cause is still present, which makes a single pass into a bounded-only-by-budget loop — and does so precisely when the tree has been *proven* to be in motion. The field is named for its inertness because attributing that in prose is not enough: the predictable failure is a future implementer wiring it to a dispatcher.
 - **Termination discipline**: write the record atomically → take **no further step** (no cleanup beyond what the halting step already committed, no partial progress, no fallback act) → end the turn normally.
 - **The discriminator is the artifact, not the exit code.** A halt is a *clean* stop, so its terminal envelope looks like a normal completion, and a model-driven skill cannot set an exit code to mean otherwise. **Exit says the stage ended; the halt record says why.** Both are machine-read; neither is prose.
@@ -843,6 +879,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
 | `obligation-digest` · `obligation-repeat` | gate (`gate.sh`) | the same pair for open obligations |
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
+| `cost-resolved-pct` | gate (`gate.sh`) | the cost share a B4 approval was closed at; B4 stays quiet until spending climbs ten points past it |
 | `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |
 | `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
 | `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |

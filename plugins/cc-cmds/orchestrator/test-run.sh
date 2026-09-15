@@ -690,8 +690,11 @@ write_manifest() {   # write_manifest <출력> [대상맵다이제스트override
   # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
   # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
   # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
-  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}"
-  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
+  # 여섯째는 대상 행 끝에 선택 필드를 덧붙인다 — `dev 식별자`·`배포트리거 식별자`
+  # 처럼 부재가 기본인 필드를 시험하려면 행 자체가 달라져야 하고, 그 행이 두
+  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다.
+  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음${extra}"
   local plan='{ "steps": ["audit", "implement"] }'
   [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
   # An empty third argument means "omit the binding digest"; a non-empty one is
@@ -760,6 +763,65 @@ if ( check_manifest ) >/dev/null 2>&1; then
   ok "올바른 구속 다이제스트는 통과한다"
 else
   bad "구속 다이제스트" "맞는 값인데 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+
+# --- 14·15 — 대상 행의 두 선택 필드 ----------------------------------------
+#
+# ABSENCE IS THE DEFAULT AND IS NOT A VIOLATION; a malformed element is a hard
+# stop. The direction matters: a typo passed over reads at runtime as "this
+# target declared nothing", and declaring nothing means the run believes a
+# stage's `dev` claim with nothing to compare it against.
+mf_with() {   # mf_with <대상 행 뒤에 붙일 필드들>
+  write_manifest "$MF" "" "" main "(없음)" "$1"
+  local bd; bd=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+  write_manifest "$MF" "" "$bd" main "(없음)" "$1"
+}
+
+MANIFEST="$MF"
+mf_with " | dev 식별자=aws-profile:dev,host:dev-db | 배포트리거 식별자=branch:release,argv:bash scripts/deploy.sh"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "올바른 dev 식별자·배포트리거 식별자가 통과한다"
+else
+  bad "조건 14·15" "올바른 값이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+check "dev 식별자가 대상 행에서 읽힌다" "$(target_field home 'dev 식별자')" "aws-profile:dev,host:dev-db"
+
+mf_with " | dev 식별자=aws-acct:dev"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "어휘 밖 종류가 통과했다 — 오타가 조용히 「선언 없음」으로 읽힌다"
+else
+  ok "dev 식별자의 어휘 밖 종류가 거부된다"
+fi
+
+mf_with " | dev 식별자=aws-account:1234"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "12자리 아닌 계정이 통과했다"
+else
+  ok "12자리 아닌 aws-account 가 거부된다"
+fi
+
+mf_with " | dev 식별자=dir:relative/path"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "상대 경로 dir 이 통과했다"
+else
+  ok "상대 경로 dir 이 거부된다"
+fi
+
+mf_with " | 배포트리거 식별자=deploy:release"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 15" "어휘 밖 배포트리거 종류가 통과했다"
+else
+  ok "배포트리거 식별자의 어휘 밖 종류가 거부된다"
+fi
+
+# 부재가 위반이 아니라는 것 — 이 단언이 없으면 위의 거절들이 필드 자체를
+# 거부하는 것과 구별되지 않는다.
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "두 필드의 부재는 위반이 아니다 (기존 매니페스트가 그대로 적합하다)"
+else
+  bad "조건 14·15" "필드가 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
 # A goal edit must move it — otherwise the digest is over something that cannot

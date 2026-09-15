@@ -36,6 +36,10 @@ set -uo pipefail
 # turning the channel off costs it nothing.
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+# Auto-resolution is off except in the section that tests it, so the approval
+# fixtures above it stay pending the way they are written.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -477,6 +481,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6c. `cycles[]` carries what a delta basis is chosen from
+#
+# The router picks a segment's last FULL cycle as the basis for a delta review
+# and hands its review HEAD and report path to the review stage. With only
+# `세그먼트`/`사이클`/`P0`/`P1` on the row object it had to open the ledger to
+# find either, and the ledger is what the snapshot exists to stand in for. An
+# absent `모드` is emitted as the empty string — the reader takes it as 전체 —
+# so every row written before the field existed still parses as a full cycle.
+# ---------------------------------------------------------------------------
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=abc1234 | 리포트 경로=docs/reviews/s9-1.md\n' >> "$LEDGER"
+printf -- '- `cycle` | 세그먼트=S9 | 사이클=2 | P0=0 | P1=0 | 리뷰 HEAD=def5678 | 리포트 경로=/abs/s9-2.md | 모드=델타 | 기준 사이클=1\n' >> "$LEDGER"
+SNAP_C="$WORK/cycles.json"
+( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_C"
+check "모드 없는 cycle 행은 빈 모드로 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["모드"]' "$SNAP_C")" ""
+check "cycle 행이 리뷰 HEAD 를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리뷰 HEAD"]' "$SNAP_C")" "abc1234"
+check "cycle 행이 리포트 경로를 싣는다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="1") | .["리포트 경로"]' "$SNAP_C")" "docs/reviews/s9-1.md"
+check "델타 행의 모드가 실린다" \
+  "$(jq -r '.cycles[] | select(.["세그먼트"]=="S9" and .["사이클"]=="2") | .["모드"]' "$SNAP_C")" "델타"
+
+# ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
 # The ledger is deliberately NOT in the enforcement-surface digest: it grows on
@@ -512,6 +539,192 @@ else
 fi
 
 LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 8. A resolved boundary approval restarts its count, and auto-resolution
+#    closes the approval instead of waiting on a person
+#
+# The regression: the counters live in the run directory and a close left them
+# where they were, so the next evaluation after a grant issued the same question
+# again with the same count. Measured three seconds after a grant.
+# ---------------------------------------------------------------------------
+BLEDGER="$WORK/boundary.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$BLEDGER"
+: > "$BLEDGER"
+RUN_DIR="$WORK/rundir-boundary"; mkdir -p "$RUN_DIR"
+boundary_rows() { { grep -F '`승인`' "$BLEDGER" || true; } | { grep -F "승인 id=$1-" || true; }; }
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+printf '%s\n' "$(gate_progress_digest)" > "$RUN_DIR/progress-digest"
+printf '2\n' > "$RUN_DIR/progress-repeat"
+gate_b1_stagnation 2>/dev/null
+b1_id=$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "수동 모드에서 B1 은 대기로 발행된다" "$(gate_approval_state "$b1_id")" "대기"
+gate_append '승인' "승인 id=$b1_id" "상태=승인" "질문 문면=q" "답변 문면=트랜스크립트 판독" \
+  "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" "사이드카 앵커=-"
+gate_close_settle "$b1_id" 2>/dev/null
+check "B1 승인을 닫으면 반복 계수가 0 으로 재기준선화된다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+gate_b1_stagnation 2>/dev/null
+check "해소 직후 다음 판정은 같은 질문을 다시 열지 않는다 (#363 회귀)" "$(gate_approval_state "$b1_id")" "승인"
+
+printf '2\n' > "$RUN_DIR/progress-repeat"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+n_before=$(boundary_rows B1 | gate_count)
+gate_b1_stagnation 2>/dev/null
+check "자동 해소 모드에서 B1 은 발행 행과 닫는 행 둘을 남긴다" "$(boundary_rows B1 | gate_count)" "$((n_before + 2))"
+check "자동 해소된 B1 은 대기로 남지 않는다" "$(gate_approval_state "$b1_id")" "승인"
+check "자동 해소 행은 처분 사유를 싣는다" \
+  "$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *처분 사유=//p' | sed 's/[[:space:]]*$//')" "자동 해소"
+check "자동 해소도 반복 계수를 재기준선화한다" "$(cat "$RUN_DIR/progress-repeat")" "0"
+
+# A boundary approval left open from before is closed on the next evaluation.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+printf '2\n' > "$RUN_DIR/progress-repeat"
+gate_b1_stagnation 2>/dev/null
+check "수동 모드에서 다시 대기가 열린다" "$(gate_approval_state "$b1_id")" "대기"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate_boundaries 2>/dev/null
+check "열려 있던 경계 승인이 다음 경계 판정에서 자동 해소된다" "$(gate_approval_state "$b1_id")" "승인"
+check "대기 중인 경계 승인이 남지 않는다" "$(gate_pending_approval_ids act | gate_count)" "0"
+
+# B3 restarts from the total as of the close, not from the window start.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+printf '0\n' > "$RUN_DIR/act-budget-base"
+gate_append '자율 승인' "kind=exec" "결정=exec" "축2=워크트리쓰기" "근거=x"
+gate_boundary_rebaseline B3
+check "B3 재기준선화는 기준을 현재 총계로 옮긴다" "$(cat "$RUN_DIR/act-budget-base")" "$(gate_b3_exec_total)"
+
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
+# 9. With auto-resolution on, a judgment approval does not wait
+#
+# Driven through the CLI, on a run of its own: the R1 ledger above carries a
+# deliberately broken row, and an act on it would test the damage handling
+# rather than the approval. An unattended run has nobody to answer, so the
+# router's own recommendation is adopted and the ledger says so — the issue row
+# stays, and the close row carries `처분 사유=자동 해소`.
+#
+# Adoption needs a class that may be adopted: inside the judgment vocabulary and
+# not one of the two that hand risk to the user. A judgment with no class, a
+# class outside the vocabulary, or one of those two does not wait either — it
+# ends as a refusal.
+# ---------------------------------------------------------------------------
+J_MANIFEST="$WT/plan-r2.md"
+J_LEDGER="$WT/docs/pipeline-run/R2.md"
+sed 's/R1/R2/g' "$FIX_MANIFEST" > "$J_MANIFEST"
+sed 's/R1/R2/g' "$WT/docs/pipeline-grant/R1.md" > "$WT/docs/pipeline-grant/R2.md"
+jH() { ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .H; }
+jact() {
+  ( cd "$WT" && bash "$GATE" act --manifest "$J_MANIFEST" --kind judgment --target repo \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(jH)" --rationale x -- "$@" ) \
+    >/dev/null 2>&1
+}
+j_rows() { { grep -F "\`$1\`" "$J_LEDGER" || true; } | { grep -F "$2" || true; }; }
+j_field() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+jact 등급=2 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
+check "수동 모드에서 등급 2 판단은 승인 대기로 응답한다" "$?" "5"
+
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+jact 등급=2 "판단 부류=감사-발견" 기준="밤사이 리뷰 라운드를 줄일지" 근거="사람 없이 끝까지 가야 한다"
+check "자동 해소가 켜지면 채택 가능 부류의 등급 2 판단이 승인 대기 없이 채택된다" "$?" "0"
+auto_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
+check "자동 해소 행은 상태=승인 이다" "$(j_field "$auto_row" '상태')" "승인"
+check "자동 해소 행은 응답 토큰이 없다 (사람의 답과 구별된다)" "$(j_field "$auto_row" '응답 토큰')" "-"
+auto_ap=$(j_field "$auto_row" '승인 id')
+check "채택 행이 자동 해소한 승인 id 를 해소 승인으로 싣는다" \
+  "$(j_rows '자율 승인' "해소 승인=$auto_ap " | gate_count)" "1"
+
+# A grade-2 judgment with no class names nothing to adopt, so auto-resolution
+# closes it as a refusal — the floor does not demand the class at grade 2, and
+# this is the only place that keeps a classless judgment from being adopted.
+jact 등급=2 기준="검증 라운드를 건너뛸지" 근거="시간이 부족하다"
+check "부류 없는 등급 2 판단은 자동 해소가 채택하지 않고 거절로 끝난다" "$?" "3"
+noclass_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
+check "그 자동 해소 행은 상태=거부 이다" "$(j_field "$noclass_row" '상태')" "거부"
+check "부류 없는 판단의 승인 id 로 채택 행이 쓰이지 않는다" \
+  "$(j_rows '자율 승인' "해소 승인=$(j_field "$noclass_row" '승인 id') " | gate_count)" "0"
+
+# The floor does not read the class vocabulary at grade 2 either, so an
+# out-of-vocabulary class is closed by the same allow list. The value has to be
+# outside the vocabulary for this to mean anything, and the vocabulary lint
+# requires every literal class in the tree to be inside it — so the value goes
+# through a variable, which that lint reads as a shell expansion. A file-wide
+# self-skip would also switch off the check on this file's real class literals.
+bad_cls=없는-부류
+jact 등급=2 "판단 부류=$bad_cls" 기준="커밋을 합칠지" 근거="이력이 길다"
+check "어휘 밖 부류의 등급 2 판단은 자동 해소가 거절로 닫는다" "$?" "3"
+
+# The judgment left pending above, resubmitted with a class that may be adopted,
+# is resolved the same way — a run already carrying an open question picks the
+# auto-resolution up. The approval id derives from the standard and rationale
+# alone, so this is the same question.
+jact 등급=2 "판단 부류=감사-발견" 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
+check "이미 대기 중이던 판단 승인도 재제출 때 자동 해소되어 채택된다" "$?" "0"
+
+# A pending judgment resubmitted still without a class is refused on that
+# resubmission, not adopted.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
+check "수동 모드에서 부류 없는 판단이 대기로 열린다" "$?" "5"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
+check "대기 중이던 부류 없는 판단은 재제출 때 자동 해소가 거절로 닫는다" "$?" "3"
+
+# The two classes that hand risk to the user are resolved as a refusal: the run
+# still does not wait, and it does not take the risk on anyone's behalf.
+jact 등급=2 "판단 부류=팀-구성" 기준="팀을 소집할지" 근거="발견이 많다"
+check "사용자에게 위험을 넘기는 부류는 대기 대신 거절로 끝난다" "$?" "3"
+check "그 자동 해소 행은 상태=거부 이다" \
+  "$(j_field "$(j_rows '승인' '처분 사유=자동 해소' | tail -1)" '상태')" "거부"
+check "대기 중인 판단 승인이 남지 않는다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .pending_approvals_total)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
+# ---------------------------------------------------------------------------
+# 10. The two counters, on the field boundary and over two different sets
+#
+# They are not the same question and must not be the same selector. Progress
+# asks "did anything MOVE", so a command the table could not read is not
+# evidence of movement and is excluded; the terminal-act budget asks "how much
+# has this run spent", and an unreadable act spends exactly as much as a
+# readable one. Both are anchored on ` | 축2=… | ` rather than on a substring:
+# the exec row now carries an `argv=` excerpt, and an excerpt holding the text
+# `축2=읽기` used to move the count of a row whose own grade is a write.
+# ---------------------------------------------------------------------------
+CNT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-counters.XXXXXX")
+CNT_LEDGER="$CNT_DIR/ledger.md"
+: > "$CNT_LEDGER"
+cnt_row() {   # cnt_row <축2 값> [추가 필드]
+  printf -- '- `자율 승인` | 교대=0 | kind= | 결정=exec | 대상=t | 세그먼트=S | 절단점=커밋 | 유도 절단점=- | 축2=%s | 자격=주변 | %s근거=x | prev=0\n' \
+    "$1" "${2:+$2 | }" >> "$CNT_LEDGER"
+}
+cnt_read() {  # cnt_read <acts|b3>
+  CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST=/nonexistent; RUN_ID=R; RUN_DIR="$3"
+    if [ "$4" = "acts" ]; then
+      gate_progress_vector 2>/dev/null | sed -n "s/^acts=//p"
+    else
+      gate_b3_exec_total 2>/dev/null
+    fi' _ "$GATE" "$CNT_LEDGER" "$CNT_DIR" "$1"
+}
+check "빈 원장의 진전 계수는 0 이다" "$(cnt_read acts)" "0"
+cnt_row '등급 미상'
+check "등급 미상 행은 진전으로 세지 않는다" "$(cnt_read acts)" "0"
+check "등급 미상 행도 행위 예산은 쓴다"     "$(cnt_read b3)"   "1"
+cnt_row '읽기'
+check "읽기 행은 둘 다 세지 않는다 (진전)"  "$(cnt_read acts)" "0"
+check "읽기 행은 둘 다 세지 않는다 (예산)"  "$(cnt_read b3)"   "1"
+cnt_row '워크트리쓰기' 'argv=echo 축2=읽기'
+check "발췌에 축2=읽기 가 있어도 쓰기 행은 진전이다" "$(cnt_read acts)" "1"
+check "그 행은 예산도 쓴다"                          "$(cnt_read b3)"   "2"
+cnt_row '외부상태변경'
+check "외부 상태 변경도 진전이다" "$(cnt_read acts)" "2"
+rm -rf "$CNT_DIR"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

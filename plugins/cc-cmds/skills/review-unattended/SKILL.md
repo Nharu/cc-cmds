@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--recover --scratch-dir <abs-path>] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -25,6 +25,21 @@ options:
       default: "off (변경 파일 집합을 diff 에서만 유도)"
       summary: "이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다."
       parse_note: "`--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다."
+    - name: "--basis-cycle <n>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt."
+      parse_note: "`--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv."
+    - name: "--basis-review-head <sha>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview."
+      parse_note: "`--basis-review-head` takes the next token as its value. Value missing → treated as absent; see --basis-cycle's parse_note for the joint-absence rule."
+    - name: "--basis-report-path <abs-path>"
+      kind: flag
+      default: "off (delta mode is not attempted; review runs full)"
+      summary: "Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed."
+      parse_note: "`--basis-report-path` takes the next token as its value. Value missing or not an absolute path → treated as absent; see --basis-cycle's parse_note for the joint-absence rule."
     - name: "--recover"
       kind: flag
       default: "off (팀을 띄워 Steps 2~4 를 정상 수행)"
@@ -39,7 +54,7 @@ options:
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(정지 술어를 얇게 만들기 때문), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -101,6 +116,8 @@ dispositions, and says so.
 
 **CFI-U1 — Scope is never narrowed autonomously.** The large-PR gate's narrowing options are a *user's* trade, not this arm's. `P0 + P1 == 0` is the pipeline's **only** termination predicate, so thinning the review thins the very signal that decides whether the loop stops — and unlike a token saving elsewhere, that failure is silent and self-congratulating. Review the whole confirmed scope. Where the change is genuinely large, say so in the report's overview and compose for it (a Scope Coordinator is outside the team-size ceiling), but do not drop files.
 
+**Amendment — a driver-declared delta is not an autonomous narrowing.** When `--basis-cycle`, `--basis-review-head` and `--basis-report-path` are all supplied and clear every check in Step 1b′, "the whole confirmed scope" for this cycle *is* the delta file set **for new findings** — the driver, not the model, made the trade that a file untouched since the last full review does not need a fresh read to discover new issues, and it made that trade on a git-verifiable basis rather than a judgment call. This is the same category of decision `--declared-files` already lets the driver make without violating this invariant. What CFI-U1 continues to forbid, unconditionally, is the arm narrowing **within** whatever scope it was handed on its own initiative, and the arm shrinking the *set of prior findings it accounts for*. That second door is closed structurally: every basis P0/P1, whether or not its cited file lies inside the delta file set, gets a fresh evidence-backed verdict every cycle (context-package item 18), never inferred from a git fact alone. So "did not re-read a file for a new issue" and "silently dropped a known one" can never be the same event.
+
 **CFI-U2 — There is no follow-up discussion step.** The base skill's Step 6 exists to talk to a user. This arm ends at Step 5 with the report written and the team cleaned up. Routing the findings is the orchestrator's triage stage, not this stage's job, and re-spawning a team to re-argue a severity here would duplicate that stage with worse information.
 
 **CFI-U3 — Severity ties default to the higher grade, and the exception needs a record.** The shipped rule takes the higher severity *unless the lead resolved the dispute*, and unattended there is no observable event that makes "the lead resolved it" true. So the exception counts as fired **only** where this arm records the decision, the rejected alternative, both rationales, and the `finding-id` in the report's `## 자율 승인 기록` section (Step 5). With no record, the default branch applies. This enforces the rule's own "document both rationales" sentence rather than overriding it.
@@ -117,6 +134,8 @@ dispositions, and says so.
 - the **gate snapshot** — being re-derived is its entire purpose.
 
 Those four are re-read every time they are consulted.
+
+**CFI-U8 — Declare where each act LANDS, and take a park as final.** Every `gate.sh exec` carries `--reach` when the act writes outside the worktree, changes external state, or calls a remote-capable tool — `런로컬` · `기기전역` · `dev` · `prod` · `협업` · `배포트리거` · `미상` — and `--destructive` besides on an act that deletes or destroys. Declare honestly and prefer `미상` to a guess; a script the manifest does not name is capped at read and run-local however it is declared, and rewrapping it in an interpreter, `xargs` or `sudo` does not lift that cap. Read pipeline variables by name (`printenv CC_PIPELINE_RUN_ID`), never bare `env` or bare `printenv` — this stage's environment carries the pipeline token. Where a read could print a secret the gate's list does not cover, say in `--rationale` why it does not, and where unsure do not run it: the gate does not park reads. Call external commands directly rather than inside `bash -c`. On exit 11 do not retry and do not re-declare — the `blocked` row names the cell; continue with what does not need that act, and if it was essential write a halt record with `분류: gate-unanswerable` and stop.
 
 **CFI-U7 — The recovery arm spawns nothing.** Under `--recover` this arm calls `Agent` zero times and reads only from disk. Every clause that stands up a team — Steps 3 and 4, the progress-checkpoint opt-in, the task-assignment header — does not reach it, so a recovery that finds itself composing a roster has already left the arm it was dispatched into.
 
@@ -152,6 +171,7 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 - **Branch name pattern** → `gh pr list --head {branch} --json number,title --jq '.[0]'`
 - **File path** → scoped file review, no `gh` commands
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope the driver already resolved. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit this segment branched from — verified in 1b, never trusted. `--declared-files` is the comma-separated set the segment declared it would touch, quoted by the driver because it contains commas. A flag whose value is missing is dropped along with the flag: consuming the next token would swallow the following flag or the directive.
+- **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
 - **`--recover` and `--scratch-dir <abs-path>`** → the recovery dispatch. `--recover` takes no value; `--scratch-dir` takes the **next token**, and both the flag and its value are removed from the argument string before the directive is extracted. `--scratch-dir` with a missing or non-absolute value is dropped along with the flag and read as *no naming*, which routes to the enumerate-then-refuse path rather than to a halt. With `--recover` present, skip Steps 2–4 and go to `## Recovery arm` below.
 - **Any other token beginning with `--`** → not a directive, and **not a halt**. Discard it and record one line in the report overview naming the token. Halting here would park a segment over a mistyped or newly-added flag, and the loss — a whole segment's review, and the run's only termination signal for it — is far larger than the loss from proceeding without a hint whose meaning this arm does not know. Silently absorbing it into the directive is the other wrong answer: the directive reaches the reviewers as a weighting instruction, so an unknown flag would arrive as a review perspective nobody wrote, and nothing would report that it had.
 - **Directive** → propagate to Step 3 (composition weighting) and Step 4 (`User directive: …` in the context package) and Step 5 (`Review focus:` in the overview). The directive influences depth and coverage; **severity is assessed independently on technical criteria.**
@@ -164,6 +184,44 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
 Collect exactly what the base skill collects — repository slug, PR metadata, per-file `{path,additions,deletions}`, the full diff, existing inline review comments and review decisions (`--paginate`), general PR comments, and CI check status. For a local diff target use `git diff {DEFAULT_BRANCH}...HEAD` and `git log {DEFAULT_BRANCH}..HEAD --oneline`.
 
 **A supplied `--base-sha` is verified before it is used, and its failure is a fallback rather than a halt.** Run `git merge-base --is-ancestor <supplied base> <target head>`, where `<target head>` is this review's target named explicitly — the branch, or the PR's head — and never the bare `HEAD` of whatever directory the command happens to run in. On success, take the diff against that value — `git diff <supplied base>...<target head>`, `git log <supplied base>..<target head> --oneline` — **in place of the base derivation only**; a PR target still collects its metadata and comments the way it already does, and what is replaced is which two commits the diff spans. Binding to the ambient `HEAD` would make the guard depend on the caller's working directory, which is the same class of failure the flag exists to close: an interactive caller sitting in another checkout would verify a base against a tree the review is not about. that substitution is the whole reason the flag exists, since the driver resolved this base when it created the segment and re-deriving it here only re-answers a settled question. **On failure, fall back to the derivation this step already describes and record one line in the report overview naming the rejected value and the base actually used.** The failure mode being bought off is silent: a base that is not an ancestor of `<target head>` yields a diff of a tree nobody wrote, so the reviewers produce real findings about the wrong change and the report reads exactly as it would have. Halting instead would be the wrong trade for the same reason the unknown-flag bullet gives — the segment's review is the run's only `P0 + P1` signal, and a base the driver got wrong is recoverable by deriving one, while a parked segment is not recoverable by anything this arm can do.
+
+#### 1b′: Delta eligibility — every failure degrades to a full review, none halts
+
+A delta review reads only the files changed since this segment's last full cycle for new findings and re-adjudicates that cycle's P0/P1. It is attempted only when the driver supplied all three basis flags, and it holds only when every check below passes. **Every failure is a degradation to a full review, never a halt** — the same reasoning as the `--base-sha` fallback: the segment's review is the run's only `P0 + P1` signal, a wrong basis is recovered by reading everything, and a parked segment is not recoverable by anything this arm can do.
+
+| # | Check | On failure |
+| --- | --- | --- |
+| 0 | All three flags are present | None of the three: full review, silently, no overview line — that is the default. One or two: degrade, and one overview line names which arrived |
+| 0.5 | `--basis-cycle` is a positive integer and `--basis-report-path` is an absolute path | Degrade, and one overview line names which is malformed |
+| 1 | `git rev-parse --verify <basis-review-head>^{commit}` resolves | Degrade |
+| 2 | `git merge-base --is-ancestor <basis-review-head> <target head>` — `<target head>` is the branch or the PR head named explicitly, never the bare `HEAD`; exit 1 (not an ancestor) and exit ≥2 (undecidable) get different wording | Degrade |
+| 3 | The basis report exists, is not empty, and matches the `발견 요약` anchor `^[-*[:space:]]*\*\*발견 요약\*\*` | Degrade |
+| 4 | The basis report's `리뷰 모드` line says `전체` or is absent | Degrade — `기준 사이클이 델타 사이클입니다 — 델타는 연쇄되지 않습니다` |
+
+"Is the basis this segment's **latest** full cycle" is not checked here. This arm has no view of the ledger; it takes the router's selection the way it takes `--base-sha`, and the gate refuses a stale basis at write time. That is a division of labour, not a gap.
+
+Degradation overview line, for example: `델타 조건이 성립하지 않아 전체 리뷰로 진행합니다 (사유: 기준 리뷰 HEAD 가 대상 head 의 조상이 아닙니다).`
+
+#### Delta file set
+
+The set is "files changed on the segment's side since the basis review HEAD, conflict resolutions included, intersected with the segment's own diff". Two tree diffs intersected naively do not remove files that arrived only from master — the segment's three-dot diff contains merged-in files too — and `--first-parent --no-merges` alone misses the conflict-resolution edits inside a merge commit. The two are combined:
+
+```sh
+# BASIS = --basis-review-head, TARGET = 대상 head(명시), BASE = 1b 에서 확정한 diff 베이스
+SET_A=$( { git log --first-parent --no-merges -M --name-only --format= "$BASIS..$TARGET"
+           for m in $(git log --first-parent --merges --format=%H "$BASIS..$TARGET"); do
+             git diff-tree --cc --name-only --no-commit-id "$m"
+           done; } | grep . | sort -u )
+SET_B=$(git diff -M --name-only "$BASE...$TARGET" | sort -u)
+DELTA=$(comm -12 <(printf '%s\n' "$SET_A") <(printf '%s\n' "$SET_B"))
+```
+
+- `--cc` emits only the paths whose merge result differs from both parents, so a conflict a person resolved by hand is included and a clean merge that took one side as-is is not.
+- A **rename inside a merge commit** is not paired by `--cc`: the old path comes out as `DD` and the new one as `AA`, separately. `SET_B` is taken with `-M`, so only the new path survives the intersection. A basis finding that cites the old path is followed by the reviewer in the re-adjudication below regardless.
+- An empty `DELTA` (nothing on the segment side since the basis but clean merges) is still a delta review: there is no new-finding scope, and the basis P0/P1 re-adjudication is all that remains.
+- 1c's `--declared-files` comparison is **still against the whole segment diff**. The scope record is independent of the reading mode. A path outside the declaration that is also outside `DELTA` has that overlap noted under `## 미검토 영역`.
+
+**What is read.** Each file in `DELTA` is read as **that file's whole diff against the base**, not as the hunks since the basis. The saving comes from which files are opened, not from slicing the ones that are — a slice loses the surrounding function, and the loss is largest in exactly the files both sides touched.
 
 #### 1c: Scope record (no confirmation, no narrowing)
 
@@ -205,6 +263,7 @@ A small, single-concern change does not need a full team. Evaluate against the s
 - **PR mode** — sum `additions + deletions` over the per-file array from 1b; the file count is that array's length.
 - **Local diff mode** — aggregate `git diff {DEFAULT_BRANCH}...HEAD --numstat` and sum the added and deleted columns.
 - **File path mode** — there is no diff input, so **the gate does not apply**; compose normally and do not substitute an estimate.
+- **Delta mode** (every 1b′ check passed) — size and the risk indicators below are evaluated over the delta file set: sum `git diff --numstat "$BASE...$TARGET" -- <DELTA files>`. The new-finding search scope is `DELTA`, so the team is sized to it. The floor still holds, so an empty `DELTA` does not yield an empty roster. The basis P0/P1 re-adjudication (context-package item 18) is **not** counted here: its cost is bounded by the number of basis findings and it asks for no additional reviewer.
 
 **Risk indicators outrank the size row.** If any of auth/authorization, DB schema or query, public API surface, external service integration, or async/concurrency fires, compose for that risk no matter how small the diff is. A security-relevant change is very often a small patch.
 
@@ -241,7 +300,9 @@ Above 50 files in scope, add a **Scope Coordinator**. It is meta/orchestration r
 
 The spawn / ledger / resume+convergence / escalation contract and the task-assignment header come from `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md`, **read in Step 0**. Reviewers are **nameless background tasks** (`Agent` with `subagent_type:"claude"`, `run_in_background:true`, **no `name`**), resumed across rounds by `agentId`, self-terminating on return; each result is delivered by its **witness file** and the return text is only an early-wake hint.
 
-**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the 17-item package, role checklists, protocol rounds, and facilitator additions.
+**Before building each reviewer's context package, Read `${CLAUDE_SKILL_DIR}/../review/references/01-reviewer-context-package.md`** for the context package — items 1–17, and item 18 which exists only in delta mode — role checklists, protocol rounds, and facilitator additions.
+
+- **In delta mode, item 18 carries the full text of every basis P0/P1 finding** — not filtered to the reviewer's file scope and not filtered to the delta file set — and each one is assigned to the composed reviewer whose role/category tag is the closest match (the smallest-scoped reviewer takes the remainder). Item 2's review-scope diff is the whole-file diff of each `DELTA` file against the base, per 1b′.
 
 - **Derive the review slug** from the target: PR → `review-pr{NUMBER}`; local diff → `review-{branch-name}`; file path → `review-{short-slug}`.
 - **Resolve the report path** per CFI-U4: `--report-path` when given, else `docs/reviews/{slug}.md`. Everything below writes to the resolved path.
@@ -262,6 +323,42 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 **Before synthesizing, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure, naming/version conventions, and the paste-ready comment section.
 
 Synthesize into the resolved report path, following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place. **The `- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건` summary line is the driver's terminal predicate** — emit it byte for byte in the template's position.
+
+The two elements below are this arm's overlay on the shared template, in the same way `## 자율 승인 기록` is: `02-review-report-template.md` is unchanged, because the interactive `review` reads it unconditionally.
+
+#### `리뷰 모드` line — always
+
+Directly after the overview's `리뷰 대상` line, in every report, full or delta:
+
+```
+- **리뷰 모드**: 전체
+- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)
+```
+
+The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
+
+#### `## 기준 사이클 재판정` — delta mode only
+
+After `핵심 요약` and before the P0 section, one entry per basis P0/P1, none omitted:
+
+```
+## 기준 사이클 재판정
+
+- **[category]** `파일:라인` (사이클 N 발견) — 원 서술 한 문장
+    - **판정**: 해결됨 | 미해결
+    - **근거**: <수정 위치와 내용, 또는 결함이 남아 있음을 확인한 근거>
+```
+
+A finding judged `해결됨` leaves this cycle's severity sections, and this entry is its only audit record. A finding judged `미해결` re-enters this cycle's section at the same severity (or at the reviewer's explicit re-grade, under the CFI-U3 rule) carrying `(사이클 N에서 상속, 미해결)`. Basis P2/P3 findings are carried into this cycle's P2/P3 sections without re-adjudication, marked `(사이클 N에서 상속)`. The basis report's `## 미검토 영역` entries are carried into this cycle's `## 미검토 영역`, marked `(사이클 N에서 상속)`.
+
+**Counting rule** — the `발견 요약` line's **form is byte for byte unchanged**; only what it counts is defined here:
+
+```
+P0 = 미해결 기준 P0 + 델타 신규 P0
+P1 = 미해결 기준 P1 + 델타 신규 P1
+P2 = 상속 기준 P2   + 델타 신규 P2
+P3 = 상속 기준 P3   + 델타 신규 P3
+```
 
 #### `## 자율 승인 기록` — the section CFI-U3 requires
 

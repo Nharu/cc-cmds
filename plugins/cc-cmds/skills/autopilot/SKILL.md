@@ -180,6 +180,22 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 **When this run declares `적용 주체=파이프라인`, drop `리뷰없음` from the offered options** and say why in one clause: the apply would then be held by a rule the manifest cannot turn off, so it could never be performed and the run could not end. **Removing it here is shaping the question, not enforcing the answer** — the enforcement is the manifest check, which hard-stops on that combination however the manifest came to carry it.
 
+**5b (second tail) — the two identifier questions, asked per target and asked unconditionally.** A run with a low cutpoint can still run `terraform` against dev, so there is no cutpoint below which these stop mattering.
+
+**Say this once, before asking** — it is the whole of what the reach axis does, and it is the only moment a person hears it:
+
+- Local reads have nothing to declare; a read through a remote-capable tool must declare where it lands, and prod personal data, heavy queries and billed queries are **recorded rather than refused**.
+- Local execution and collaboration — issues, comments, labels, projects, and a push that is not a deploy branch — proceed on their own. **Destructive dev acts, prod writes and deploy triggers park unless a `사전 인가` row names them**, and only that act parks: the run keeps going.
+- A write run through a shell, an interpreter or a build tool is capped at read and run-local. To let one reach dev or prod, the manifest must name that form **down to the script operand** — `npm run` and `make` alone open nothing.
+- Declare `dev 식별자` and a `dev` claim is checked against argv; a mismatch or nothing to compare against parks. Declare none and the claim is believed and recorded.
+- A destructive prod act needs the authorization row to carry the destructive word itself — `aws rds` authorizes the queries, not `aws rds delete-db-instance`. A destructive word that sits AFTER the operands (`aws s3 sync ./d s3://b --delete`, a `+main` refspec) can only be authorized by spelling the whole argv in `형태`.
+- A spelling whose global flag comes first — `aws --profile x ssm …` — does not match an authorization row and parks.
+- A push needs the target's cutpoint at `push` or above, and a push to the base branch is judged as a merge.
+- A CLAUDE.md slot apply proceeds only when a review record covers it; every other slot write parks.
+- **Once frozen none of this can be edited**, and the switch that decides park-versus-approval cannot be changed mid-run.
+
+**Then ask, per target, in ONE `AskUserQuestion` call with two questions** (headers `dev 식별자` and `배포 트리거`): whether this target has dev identifiers, and whether it has deploy triggers. On a yes, take the `<종류>:<값>` elements as free text — kinds `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` · `dir` for the first, `branch` · `workflow` · `jenkins-job` · `argv` for the second — and **read them back before freezing**. The manifest check hard-stops on a malformed element at the next gate entry, which is after the person has gone; the read-back here is the only correction opportunity there is.
+
 **5c — Apply, if any target's cutpoint is `배포`.** Take the apply command verbatim, the read-only probe that decides whether an apply is needed, the actor (`파이프라인` or `사람`), and — when the actor is the pipeline — the blast radius that parks if the apply's outcome cannot be judged. The default radius is the repository and it may only be **narrowed**. State plainly that the driver executes an apply itself, with zero retries, and that an outcome it cannot judge stops the declared radius and preserves the worktree for the morning.
 
 **5d — Terminal-act cap, per target.** Default is `없음`, and say why the question is being asked at all: at this moment nobody knows how many merges the cutpoint authorizes, because segmentation happens later and a re-design can re-split it. Offer `없음` (recommended) or an integer. A number latches against the measured segment count and routes the excess to the blocked queue.
@@ -317,7 +333,7 @@ snapshot  →  decide  →  gate call  →  (repeat)
 | `disposition` | `충족`, `무효화` or `미충족` — what a `propose-done` would be recorded as right now. `무효화` means the run may record its end but only as invalid |
 | `segments[]`, `segments_total` | `id`, `상태`, `워크트리`, `선행`, `커밋`, `마지막 스테이지` — one object per segment. A shift starts with no history, so this is where it learns the run has segments at all |
 | `blocked[]` | `스코프`, `사유`, `앵커` — unresolved blocks only; a row whose cause is `해소` closes an earlier one and is not carried |
-| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1` — the review results, capped |
+| `cycles[]` | `세그먼트`, `사이클`, `P0`, `P1`, `모드`, `리뷰 HEAD`, `리포트 경로` — the review results, capped. An empty `모드` reads as `전체` |
 | `shift` | `n`, `context`, `soft`, `hard`, `over_soft`, `floor` — the session cap's state. `over_soft` true is the signal to end this shift |
 | `handoff[]` | `교대`, `버린 선택지`, `막힌 지점`, `다음 후보` — the last three handoffs and no more. This is where a successor learns what its predecessor already tried and dropped |
 | `ledger_damage`, `chain_intact` | the ledger's integrity, as a count and as a boolean |
@@ -349,7 +365,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 
 ```
 act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
-act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>'
+act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
 act --kind judgment   -- 등급=1 '판단 부류=<여덟 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
 act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
@@ -387,6 +403,7 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 | 8 | the argv climbs a HIGHER rung than `--cutpoint` declared | **raise the declaration to the rung the message names and re-issue the same argv.** But raising it does not grant it: if the raised rung passes the target's own cutpoint the act is not authorized at all, and the prescription there is **park**, not another raise — that refusal comes back as 3 from `절단점-준수`, never as another 8 |
 | 9 | *(empty slot)* | — |
 | 10 | the merge cannot say what it merges | **fix the segment row and call again with the same argv** — do not raise anything |
+| 11 | 도달 park — the act was not performed and nothing is waiting to be answered | an act-scope `blocked` row already names the cell in `도달 판정`. **Do not retry the same argv and do not re-declare its reach**; the verdict is keyed on the act digest and a second declaration takes the recorded one. Go to other work the run can still do; if that act was essential, the stage writes a halt record and ends |
 
 **9 is empty on purpose, and saying so is what keeps it empty.** A hole with no stated reason reads as a mistake and gets filled by the next person to add a code. 9 is held by an internal signal the gate uses to mean "this question already has an answer"; assigning it here would make one number both a sentinel and a contract code, falsifying the comments that defend the sentinel.
 
@@ -401,6 +418,10 @@ act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
 Past the checks, the act's own exit status passes through. A refusal always arrives with a `gate:` line and no output from the act — that, not the number, is what separates them.
 
 ### When an approval is pending
+
+**Approvals that carry a recommendation no longer wait.** With `CC_CMDS_AUTOPILOT_AUTO_RESOLVE` unset (the default), the gate closes a boundary approval (B1–B4, `SHIFT-FLOOR`) as `승인` — its recommendation is to continue — and closes a judgment approval by adopting the router's own recommendation, the judgment it submitted. The two classes that hand risk to the user, `팀-구성` and `시각-면제`, are closed as `거부` instead: the run still does not wait, and it does not take that risk on anyone's behalf. Each close is a ledger row carrying `처분 사유=자동 해소` and `응답 토큰=-`, so the morning report can tell it from a person's answer. What you see is an ordinary exit code — `0` for an adopted judgment, `3` for a refused one — and no exit 5. **Act approvals are not auto-resolved**: an external-state act outside the pre-authorization has no recommendation, so exit 5 below still applies to them, and to every approval when the switch is `0`/`off`/`false`/`no`.
+
+**A reach park never reaches exit 5 while the switch is on, and it becomes an ordinary act approval when the switch is off.** An `exec` whose declared reach the run may not act in exits 11 with a `blocked` row rather than issuing a question — there is no recommendation to auto-resolve and nobody to ask, so the act is dropped and the run continues. Turn the switch off and the same table's park cells issue the act approval this gate has always issued, which is exit 5 below. **The rule-loop fix is what makes either safe**: the catalog now runs to the end instead of returning at the first approval request, so an act that both needs a pre-authorization and lacks a review record can no longer be let through by answering only the first of the two.
 
 Exit 5 means the run has asked and cannot answer itself. **Ask the user in this terminal** — this session has `AskUserQuestion` and a headless stage does not, which is the whole reason the router lives here. Then call `gate.sh close --approval <id>`.
 
@@ -418,11 +439,13 @@ Exit 5 means the run has asked and cannot answer itself. **Ask the user in this 
 
 **While an approval is open, the stagnation boundaries are suspended.** A run waiting for a person is not a run that stopped moving, and without the suspension the boundary's own remedy would reset the counter that fired it.
 
+**Closing a boundary approval restarts that boundary's count**, whatever the disposition and whoever closed it. Before this the count stayed where it was, the suspension lifted, and the very next act took it past the threshold again — the same question with the same number, seconds after a grant. B1's repeat count and B2's obligation count go back to zero, B3's window restarts from the exec total at the close, and B4 does not ask again until spending climbs another ten points past the share it was answered at.
+
 ### Judgment, not just acts
 
 Not every decision is an act. For those, the question is **"may I choose this without asking?"** — the three grades of `_common/judgment-grade.md`. Grade 0 needs no record, grade 1 is adopted with a row carrying `등급`·`기준`·`되돌리는 법`·`판단 부류`, and grade 2 is escalated. **`팀 토론 진행` and `재설계` are never adopted as recommendations** — they are routing output, and whether to convene a team is the router's call rather than a stage's.
 
-**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second.
+**You never choose to ask.** Submit your own recommendation with `act --kind judgment`; whether it becomes a question is the gate's decision. A grade-2 judgment is raised to a `절단점=판단` approval, and so is a grade-1 judgment that does not clear the auto-adoption floor. Both come back as exit 5, and the approval's id is derived from the judgment, so resubmitting the same one finds the open approval instead of opening a second. **With auto-resolution on (the default) neither waits**: the gate issues the approval, closes it at once as the adoption of your recommendation, and the act exits 0 with the `자율 승인` row naming the approval in `해소 승인` — see 「When an approval is pending」. A judgment approval left open from before is closed the same way on its resubmission.
 
 **Once the answer arrives, resubmit the same judgment — that is the whole of the follow-up.** The approval's id is derived from the judgment, so the resubmission finds the closed approval rather than opening a new one, and the gate routes on its state: `승인` adopts the judgment and writes the row with `해소 승인=<id>`; `거부` and `무효` refuse the act and do **not** re-ask; `대기` is still waiting, so leave it and come back. **One answer opens one judgment** — an id already named by a `자율 승인` row is spent, and a second judgment leaning on it is refused with a request for a new question. Nothing here re-opens a closed approval: only a question whose `기준` and `근거` differ hashes to a new id.
 
@@ -487,6 +510,16 @@ What catches the mistake is the watcher, on a **two-minute** clock rather than t
 
 Three conditions must **all** hold before a segment is dispatchable, and reading only the first is how a router concludes it may go: **dependency** (no predecessor unfinished), **capacity** (concurrent model streams within the cap, taken from each skill's declared value rather than estimated), and **exclusion** (no live stage already holding an exclusive resource — the experiment-worktree prefix, which counts repo-wide, and one live stage per output document path).
 
+#### Dispatching a review cycle in delta mode
+
+A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. Five things, in order:
+
+1. **Basis selection.** Filter `cycles[]` to this segment and take, among the rows whose `모드` is `전체` or empty, the one with the largest `사이클`. None → dispatch a full review exactly as before. One → carry that row's `사이클`, `리뷰 HEAD` and `리포트 경로` into the `/cc-cmds:review-unattended` prompt as `--basis-cycle <n> --basis-review-head <sha> --basis-report-path <abs>`, alongside the `--report-path`, `--base-sha` and `--declared-files` you already pass. All three or none: the skill treats a partial set as absent.
+2. **Path resolution.** The basis row's `리포트 경로` may be relative to the target's base. You hold the manifest path, so build `dirname(<매니페스트>)/../../<경로>` and pass the absolute result; an absolute value goes through as-is. No new snapshot key exists for this.
+3. **The row's mode is copied from the report, never from the dispatch.** After the stage ends, read the report overview's `- **리뷰 모드**: …` line and write `모드` and `기준 사이클` on the `cycle` row from that line: `- **리뷰 모드**: 전체` → `모드=전체` (or omit both fields); `- **리뷰 모드**: 델타 (기준 사이클 <n>, 기준 리뷰 HEAD `<sha>`)` → `모드=델타 '기준 사이클=<n>'`. The skill degrades to a full review when any eligibility check fails, and only the report says whether it did. The gate compares the row against the report on every `cycle` write and refuses a mismatch with exit 2; the repair is to rewrite the row to what the report says.
+4. **No new question point.** When a basis exists, attempting delta is the default. Whether it holds is decided by the skill's eligibility checks and the gate's write-time checks, not by asking.
+5. **The snapshot window is a limit, stated rather than hidden.** `cycles[]` is the ledger's last twenty `cycle` rows, so a segment whose basis row has been pushed out of the window by other segments' cycles gets a full review. That errs toward reading more, never toward a false delta.
+
 ### Resuming after a break
 
 Five ways a run is cut, and all five resume: the terminal closes, Ctrl+C, the token limit, the network drops, a reboot. **Resume by resuming this session and saying so.** The router then does what it always does — read the snapshot and continue. There is no separate resume protocol, because the router holds no state that a snapshot does not.
@@ -538,7 +571,8 @@ Cover, in this order:
 
 - **결과 요약** — segments planned, merged, **완성-미착지**, parked; where the run stopped against its `종료 지점`. Keep 완성-미착지 separate from parked: those segments produced everything they were asked to and had exactly one terminal act blocked, and folding them into "parked" hides the difference between a night that worked and a night that did not.
 - **자율 결정 전부** — every `자율 승인` row, grouped by `kind`, carrying the decision, the rejected alternative, and the rationale as recorded. **This is the whole point of the report.** The residual it compensates for — a stage that asked in prose, answered itself, and produced output anyway — is byte-indistinguishable from a correct run through every channel the design permits, so after-the-fact auditability is the only control left. Do not summarize these rows away.
-- **보류 큐** — every `blocked` row with its `스코프`, `원인`, `사유`, and the re-invocation command line where one was recorded. Group by scope: an `act` park is one command away from finished, a `cone` park needs its premise repaired first, and a `run` park means the run could not judge a state. **Those command lines are inert**: the driver recorded them and never ran them, and neither does this step. They are for the user's hands.
+- **도달 감사** — the acts that PASSED and touched something outside this machine, which no other section reports: every exec row whose `도달` is `dev`, `prod`, `배포트리거` or `협업`, every row whose `등급 출처` is `불투명` or `미상`, every row carrying a `표지`, every `dev` row whose `식별자 대조` is `미선언` or `대조불가`, and every read whose `도달` is `prod`. List them prod first. `런로컬` and `-` are reported as a COUNT and not enumerated — they are the bulk and reading them teaches the eye to skip.
+- **보류 큐** — every `blocked` row with its `스코프`, `원인`, `사유`, and the re-invocation command line where one was recorded. Group the `act` parks by `도달 판정`: a `dev식별자부재` and a `prod인가없음` are one manifest line apart from being finished, while a `비밀출력` is a form that must be rewritten. Group by scope: an `act` park is one command away from finished, a `cone` park needs its premise repaired first, and a `run` park means the run could not judge a state. **Those command lines are inert**: the driver recorded them and never ran them, and neither does this step. They are for the user's hands.
 - **사람 대조 필요** — every report line so marked. These are the ones where the run could not tell "still working" from "stuck", or where an apply's outcome is unknown. Name the preserved worktree path for each apply of unknown outcome; it is the only reproduction of that state.
 - **스테이지 종단 부류** — per stage: 정상 완료 / 의도된 park / 산출물 없는 정지 / 공허한 성공 / 크래시 / 적용 불명. Call out every `공허한 성공` explicitly; it is a measured failure mode that used to be invisible, and the point of naming it is that it can now be counted. `산출물 없는 정지` was missing from this enumeration while the schema has carried it all along, and it is the value a stage lands on when it *correctly refused to decide for the user* — reporting it as one of the others is the same conflation the class was created to end. **A warning, because reading the gate's own source will contradict one of these values**: a comment there names `의도된 park` and `적용 불명` as values not written on that path, and the code a few lines beneath it writes `의도된 park`. The comment is wrong and is not repaired here.
 - **비용** — the accumulated `cost` rows, and the cycle count against the run's cycle budget.
