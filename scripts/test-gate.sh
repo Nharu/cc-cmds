@@ -67,6 +67,9 @@ export CC_CMDS_SESSION_NOTIFY
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
 # tested in `test-snapshot.sh`, on a fixture of its own, so it runs in seconds.
+# The one exception is section 31at: the stage emission path has no router CLI
+# to drive from that fixture, so it turns the switch on for its own forked gate
+# calls only and leaves this process-wide value alone.
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
@@ -9037,6 +9040,167 @@ if [ "${n_emit_after5:-0}" -gt "${n_emit_before5:-0}" ]; then
   ok "합집합을 통과하는 정상 방출은 여전히 채택 행을 만든다"
 else
   bad "정상 방출 회귀" "채택 행이 늘지 않았다: $n_emit_before5 → $n_emit_after5"
+fi
+
+# --- 31at. Auto-resolution on the emission path adopts only a nameable class -
+# --- section: 31at | group: cone | covers: act | anchors: 자동 해소 방출 실험용 세그먼트 행이 기록된다 ---
+#
+# The emission absorber called the approval issuer with four arguments, so the
+# class was always empty by the time auto-resolution saw it — and that
+# resolution refused only the two forbidden classes by name, adopting everything
+# else. A stage that emitted `시각-면제` exactly as the contract asks was adopted
+# with nobody asked, and the adoption row said `판단 부류=-`. Every other section
+# here runs with the switch off, so none of them could see it.
+#
+# The stubs spell the class WITHOUT backticks, so the parser reads it; 31ap's
+# backtick fixtures read as "no class" and pin a different thing. Everything
+# below stands on names `pre_cone` defines, and the switch is turned on in the
+# environment of each forked gate call only.
+emit_ar() {
+  # emit_ar <세그먼트> <스텁> — record one stage result with auto-resolution on
+  # for that forked gate alone; the gate's whole output lands in `$out` and its
+  # status in `$rc`.
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+        bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
+        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+}
+ar_stub() {
+  # ar_stub <경로> <result 문자열> — a stub CLI that prints one result line.
+  { printf '#!/usr/bin/env bash\n'
+    printf "cat <<'ARRESEOF'\n"
+    printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"emit-session-ar","num_turns":1,"result":"%s"}\n' "$2"
+    printf 'ARRESEOF\n'
+  } > "$1"
+  chmod +x "$1"
+}
+ar_approval_id() {
+  # ar_approval_id <기준 문면> — the id of the judgment approval whose question
+  # carries that standard. Each stub's standard is unique in this ledger.
+  row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F "$1" | tail -1)" '승인 id'
+}
+ar_last_row() {
+  { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1
+}
+ar_adoptions() {
+  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F '결정=채택' || true; } \
+    | { grep -F '출처=스테이지 방출' || true; } | grep -c . || true
+}
+# One refusal disposition, asserted the same way for every stub that must not
+# be adopted.
+ar_expect_refused() {
+  # ar_expect_refused <이름> <기준 문면> <채택 행 수, 방출 전>
+  local name="$1" std="$2" before="$3" id row
+  check "$name: 방출 채택 행이 늘지 않는다" "$(ar_adoptions)" "$before"
+  id=$(ar_approval_id "$std")
+  if [ -z "$id" ]; then
+    bad "$name" "그 물음의 승인이 발행되지 않았다: $out"
+    return 0
+  fi
+  row=$(ar_last_row "$id")
+  check "$name: 자동 해소가 그 물음을 거부로 닫는다" "$(row_field "$row" '상태')" "거부"
+  check "$name: 닫는 행은 자동 해소의 처분 사유를 싣는다" "$(row_field "$row" '처분 사유')" "자동 해소"
+  check "$name: 그 승인으로 열린 채택 행이 없다" \
+    "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$id " || true; } | grep -c . || true)" "0"
+  case "$out" in
+    *"스테이지 종단"*) ok "$name: 기록 함수가 끝까지 도달한다" ;;
+    *) bad "$name 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+}
+
+seg_row SAR1 "$CONE_C" 상태=실행중 선행=없음
+check "자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-visual" \
+  '**판단 부류**: 시각-면제 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 시각 검증을 생략할지 **판단 근거**: 렌더러가 없다'
+n_ar=$(ar_adoptions)
+emit_ar SAR1 "$WORK/judgment-stub-ar-visual"
+ar_expect_refused "방출된 시각-면제" "자동 해소가 켜진 채 시각 검증을 생략할지" "$n_ar"
+
+seg_row SAR2 "$CONE_C" 상태=실행중 선행=없음
+check "부류 없는 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-noclass" \
+  '**판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 부류 없이 방출한 판단 **판단 근거**: 부류를 적지 않았다'
+n_ar=$(ar_adoptions)
+emit_ar SAR2 "$WORK/judgment-stub-ar-noclass"
+ar_expect_refused "방출된 부류 없음" "자동 해소가 켜진 채 부류 없이 방출한 판단" "$n_ar"
+
+# THE PAIR THAT PROVES THE CLASS ARRIVES. A class that may be adopted is adopted
+# on the same path, and the row names it — without the class being handed to the
+# issuer this would be refused as classless, and without the row carrying it the
+# field would read `-`.
+seg_row SAR3 "$CONE_C" 상태=실행중 선행=없음
+check "채택 가능 부류 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-audit" \
+  '**판단 부류**: 감사-발견 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 감사 발견을 미룰지 **판단 근거**: 다음 런에서 본다'
+emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
+ar3_id=$(ar_approval_id "자동 해소가 켜진 채 감사 발견을 미룰지")
+if [ -n "$ar3_id" ]; then
+  check "채택 가능 부류의 방출은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar3_id")" '상태')" "승인"
+  ar3_row=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$ar3_id " || true; } | tail -1)
+  check "그 채택 행은 스테이지 방출에서 왔다고 적는다" "$(row_field "$ar3_row" '출처')" "스테이지 방출"
+  check "그 채택 행은 방출된 실제 부류를 싣는다" "$(row_field "$ar3_row" '판단 부류')" "감사-발견"
+else
+  bad "채택 가능 부류 방출" "그 물음의 승인이 발행되지 않았다: $out"
+fi
+
+# ONE ANSWER MAKES ONE ADOPTION ROW. The approval id derives from the segment
+# and the standard and rationale alone, not from the class, and an emission with
+# no standard or rationale is filled in with the same placeholder text every
+# time. So a later emission in the same segment with the same (or empty) text
+# reaches the earlier answer instead of auto-resolution, and before the absorber
+# checked that answer itself a `시각-면제` emission was adopted through the answer
+# a `감사-발견` emission had already spent. These count the rows.
+ar_spent_count() {
+  # ar_spent_count <승인 id> — adoption rows that name that approval as spent.
+  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$1 " || true; } | grep -c . || true
+}
+if [ -n "$ar3_id" ]; then
+  ar_stub "$WORK/judgment-stub-ar-audit-visual" \
+    '**판단 부류**: 시각-면제 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 감사 발견을 미룰지 **판단 근거**: 다음 런에서 본다'
+  n_ar=$(ar_adoptions)
+  emit_ar SAR3 "$WORK/judgment-stub-ar-audit-visual"
+  check "같은 문면의 두 번째 시각-면제 방출은 앞선 답으로 채택되지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "그 답을 지목하는 채택 행은 여전히 하나다" "$(ar_spent_count "$ar3_id")" "1"
+  case "$out" in
+    *"이미 한 번 채택에 쓰였습니다"*) ok "두 번째 방출은 답이 이미 쓰였다고 경고한다" ;;
+    *) bad "소진 거부 경고" "경고 문구가 없다: $out" ;;
+  esac
+  case "$out" in
+    *"스테이지 종단"*) ok "소진 거부 뒤에도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "소진 거부 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+
+  n_ar=$(ar_adoptions)
+  emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
+  check "같은 방출을 반복해도 채택 행이 늘지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "반복 뒤에도 그 답을 지목하는 채택 행은 하나다" "$(ar_spent_count "$ar3_id")" "1"
+  case "$out" in
+    *"스테이지 종단"*) ok "반복 방출도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "반복 방출 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+fi
+
+seg_row SAR4 "$CONE_C" 상태=실행중 선행=없음
+check "빈 문면 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-bare-audit" '**판단 부류**: 감사-발견 **판단 등급**: 2'
+n_ar=$(ar_adoptions)
+emit_ar SAR4 "$WORK/judgment-stub-ar-bare-audit"
+check "기준·근거 없는 채택 가능 부류 방출은 채택 행 하나를 만든다" "$(ar_adoptions)" "$((n_ar + 1))"
+ar4_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
+  | { grep -F '막는 세그먼트=SAR4 ' || true; } | tail -1)" '승인 id')
+if [ -n "$ar4_id" ]; then
+  check "빈 문면 방출의 물음은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar4_id")" '상태')" "승인"
+  ar_stub "$WORK/judgment-stub-ar-bare-visual" '**판단 부류**: 시각-면제 **판단 등급**: 2'
+  n_ar=$(ar_adoptions)
+  emit_ar SAR4 "$WORK/judgment-stub-ar-bare-visual"
+  check "빈 문면의 두 번째 시각-면제 방출은 앞선 답으로 채택되지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "빈 문면의 답을 지목하는 채택 행은 하나다" "$(ar_spent_count "$ar4_id")" "1"
+  case "$out" in
+    *"스테이지 종단"*) ok "빈 문면 소진 거부 뒤에도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "빈 문면 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+else
+  bad "빈 문면 방출" "그 물음의 승인이 발행되지 않았다: $out"
 fi
 
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------

@@ -194,9 +194,22 @@ gate_may_raise_banner() {
 # disposition set is "continue" or "stop the run", and stopping is what a wall
 # clock deadline and the cost ceiling already do without a person. A JUDGMENT
 # approval carries the router's own recommendation — the judgment it submitted
-# — so resolving it is adopting that recommendation. The two classes that hand
-# risk to the user (`팀-구성`, `시각-면제`) are resolved the other way, as a
-# refusal: the run keeps moving without taking the risk on anyone's behalf.
+# — so resolving it is adopting that recommendation, but ONLY for a class that
+# may be adopted: one inside the judgment vocabulary and not one of the two that
+# hand risk to the user (`팀-구성`, `시각-면제`). Everything else is resolved the
+# other way, as a refusal — those two classes, a class outside the vocabulary,
+# and a judgment carrying no class at all. The run keeps moving without taking
+# the risk on anyone's behalf, and a judgment whose class was lost on the way
+# here cannot be adopted by the loss.
+#
+# An emitted judgment whose question already has an answer does not reach this
+# resolution at all — the approval id carries no class, so a later emission with
+# the same (or empty) standard and rationale finds the earlier answer instead.
+# The emission absorber therefore checks that answer itself: an answer already
+# named by an adoption row opens nothing more, and an answer auto-resolution
+# closed for an earlier emission opens a later one only when that emission's
+# class may be adopted. So a forbidden class, a missing class or a class outside
+# the vocabulary is not adopted by borrowing an earlier emission's answer.
 #
 # ACT approvals are not resolved. An external-state act outside the declared
 # pre-authorization has no recommendation — the question is whether the grant
@@ -7023,6 +7036,16 @@ gate_issue_judgment_approval() {
   gate_warn_canon_prompt "$id" "$q"
 }
 
+gate_judgment_class_adoptable() {
+  # gate_judgment_class_adoptable <판단 부류> — true when the class may be
+  # adopted without a person: named, inside the vocabulary, and not one of the
+  # classes that hand risk to the user. One predicate, because auto-resolution
+  # and the emission absorber's answered branch both decide on it, and two
+  # copies of the condition would grow apart.
+  local cls="${1:-}"
+  [ -n "$cls" ] && judgment_class_ok "$cls" && ! judgment_class_forbidden "$cls"
+}
+
 gate_auto_resolve_judgment() {
   # gate_auto_resolve_judgment <승인 id> <질문 문면> <판단 부류>
   #
@@ -7031,15 +7054,27 @@ gate_auto_resolve_judgment() {
   # `GATE_EXIT_RULE` when it was refused. `GATE_AUTO_RESOLVED_APPROVAL` names the
   # id, which is what separates an answer closed just now from an old answer that
   # has already been spent.
+  #
+  # AN ALLOW LIST AND NOT A DENY LIST. Adoption needs a class that names what is
+  # being adopted, and an empty value names nothing. Matching only the two
+  # forbidden classes let every path that dropped the class on the way here fall
+  # through to adoption: a stage that emitted `시각-면제` reached this function
+  # with an empty class, and a grade-2 judgment submitted without one did too,
+  # and both were adopted in a default configuration with nobody asked.
   local id="$1" q="$2" cls="${3:-}"
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
-  case "$cls" in
-    팀-구성|시각-면제)
-      gate_auto_close_approval "$id" 거부 "$q" "위험을 사용자에게 넘기는 부류라 채택하지 않음"
-      return "$GATE_EXIT_RULE" ;;
-  esac
-  gate_auto_close_approval "$id" 승인 "$q" "라우터 판단 채택"
-  return "$GATE_APPROVAL_ANSWERED"
+  if gate_judgment_class_adoptable "$cls"; then
+    gate_auto_close_approval "$id" 승인 "$q" "라우터 판단 채택"
+    return "$GATE_APPROVAL_ANSWERED"
+  fi
+  if [ -z "$cls" ]; then
+    gate_auto_close_approval "$id" 거부 "$q" "판단 부류가 없어 채택하지 않음"
+  elif judgment_class_forbidden "$cls"; then
+    gate_auto_close_approval "$id" 거부 "$q" "위험을 사용자에게 넘기는 부류라 채택하지 않음"
+  else
+    gate_auto_close_approval "$id" 거부 "$q" "어휘 밖 부류라 채택하지 않음"
+  fi
+  return "$GATE_EXIT_RULE"
 }
 
 gate_revert_surface() {
@@ -7587,10 +7622,14 @@ gate_judgment_fields_ok() {
   # THE TWO NEW FIELDS ARE REQUIRED AT GRADE 1 AND NOWHERE ELSE. `판단 부류` has
   # exactly one consumer — arm (a) of that floor — and the floor runs only when
   # the grade is 1; `되돌리는 법` is read by arm (b) and by the morning's account
-  # of what can be undone. A grade-2 judgment reaches neither, because it goes to
-  # a person. Demanding them there would make ESCALATING a decision harder than
-  # adopting one, which is the wrong polarity, and it would strand a router
-  # mid-run for a field neither of its escalations can use.
+  # of what can be undone. A grade-2 judgment reaches neither floor arm. It does
+  # NOT necessarily reach a person: in the default configuration its question is
+  # closed by auto-resolution instead, and that resolution adopts only a class
+  # inside the vocabulary and outside the forbidden pair — so a grade-2 judgment
+  # submitted without a class is refused there rather than adopted, and not
+  # demanding the class here opens nothing. Demanding it would make ESCALATING a
+  # decision harder than adopting one, which is the wrong polarity, and it would
+  # strand a router mid-run for a field neither of its escalations can use.
   local jk jcls jgrade
   jgrade=$(gate_field_of '등급' "$@")
   for jk in '등급' '기준' '근거'; do
@@ -8420,7 +8459,9 @@ EOF
       # opened.
       # `부류` may legitimately be empty here: it is required at grade 1 alone,
       # because its only consumer is the auto-adoption floor and a grade-2
-      # judgment never reaches that floor — it reaches a person.
+      # judgment never reaches that floor. A classless grade-2 judgment that lands
+      # here was opened by a person's answer — auto-resolution refuses a question
+      # without a class, so it never sends one here.
       log "판단 등급 $jgrade 기록 — 부류 ${jcls:-없음}"
       ;;
     blocked)
@@ -11294,9 +11335,15 @@ gate_record_stage_outcome() {
 }
 
 gate_absorb_issue() {
-  # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> — issue the approval
-  # an emitted judgment needs and dispose of every one of the issuer's three
-  # returns. ALWAYS returns 0.
+  # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> <판단 부류> — issue
+  # the approval an emitted judgment needs and dispose of every one of the
+  # issuer's three returns. ALWAYS returns 0.
+  #
+  # THE CLASS TRAVELS WITH THE QUESTION. The issuer hands it to auto-resolution,
+  # which adopts only a class it can name; calling the issuer with four arguments
+  # left the class empty on every emitted judgment, so a stage that emitted
+  # `시각-면제` exactly as the contract asks was adopted with its class erased
+  # from the row. An empty value here means the stage emitted none.
   #
   # The absorber runs in the middle of recording a stage result, and this file
   # inherits `set -euo pipefail` from the driver it sources. So an unhandled
@@ -11310,24 +11357,55 @@ gate_absorb_issue() {
   # acted on the decision inside its own turn; if the gate writes neither a row
   # nor an approval nor a warning, the judgment exists only in a terminal
   # message nobody will read again.
-  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" rc=0
-  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" || rc=$?
+  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" rc=0
+  gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" || rc=$?
   case "$(gate_judgment_approval_disposition "$rc")" in
     발행) ;;
     답있음)
-      # An answer is on file for exactly this question, so the answer opens this
-      # judgment — the same disposition the acting path reaches through
-      # `GATE_RESOLVED_APPROVAL`. The row names the approval it spent, which is
-      # what makes a second use of one answer refusable.
+      # An answer is on file for this question, and the approval id derives from
+      # the segment and the `기준 — 근거` text alone — not from the class. So a
+      # later emission in the same segment with the same text reaches the same
+      # answer whatever class it carries, and every emission with no text at all
+      # shares one id, because the missing fields are filled in as
+      # `미상 — 스테이지 방출`. Naming the spent approval on the row does not by
+      # itself refuse a second use; the two checks below do, before any row is
+      # written, the same floor the acting path applies.
+      local aid="${GATE_LAST_JUDGMENT_APPROVAL_ID:-}"
+      # ONE ANSWER OPENS ONE JUDGMENT. A judgment approval carries no binding
+      # tuple and never expires, so without this an answer adopted once would
+      # adopt every later emission that hashed to the same id.
+      if [ -n "$aid" ] && gate_has_row '자율 승인' "해소 승인=$aid "; then
+        warn "스테이지가 방출한 판단의 물음 답(승인 $aid)은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다 ($ctx, 부류 ${cls:-없음})"
+        warn "같은 기준으로 다른 판단을 방출한 것이라면 기준과 근거를 달리한 새 물음이어야 합니다"
+        return 0
+      fi
+      # AN ANSWER AUTO-RESOLUTION CLOSED EARLIER DOES NOT LEND ITS ADOPTION. It
+      # was adopted for the class that emission carried; an unspent one survives
+      # only when the gate stopped between closing it and writing the adoption
+      # row. An emission whose class may not be adopted — forbidden, absent, or
+      # outside the vocabulary — is not adopted through it. An answer closed by
+      # auto-resolution just now for this very emission, and an answer a person
+      # gave, still open the judgment.
+      if [ -n "$aid" ] && [ "${GATE_AUTO_RESOLVED_APPROVAL:-}" != "$aid" ] \
+         && [ "$(gate_row_field "$(gate_approval_last_row "$aid")" '처분 사유')" = "자동 해소" ] \
+         && ! gate_judgment_class_adoptable "$cls"; then
+        warn "스테이지가 방출한 판단의 물음 답(승인 $aid)은 앞선 자동 해소가 닫은 것이라 이 방출의 부류로는 채택하지 않습니다 ($ctx, 부류 ${cls:-없음})"
+        return 0
+      fi
       gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
-        "판단 부류=-" "등급=-" \
+        "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=-" \
         "기준=$(gate_row_safe "$std" 150)" "되돌리는 법=-" \
         "근거=$(gate_row_safe "$why" 150)" \
         "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"
       log "스테이지가 방출한 판단에 이미 답이 있어 그 답으로 엽니다 — $ctx (승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
       ;;
     닫힘)
-      warn "스테이지가 방출한 판단의 물음은 이미 닫혀 있습니다 — 같은 물음을 다시 열지 않았습니다 ($ctx, 승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+      if [ -n "${GATE_AUTO_RESOLVED_APPROVAL:-}" ] \
+         && [ "$GATE_AUTO_RESOLVED_APPROVAL" = "${GATE_LAST_JUDGMENT_APPROVAL_ID:-}" ]; then
+        warn "스테이지가 방출한 판단을 자동 해소가 채택하지 않고 거부로 닫았습니다 — 부류 ${cls:-없음} ($ctx, 승인 $GATE_AUTO_RESOLVED_APPROVAL)"
+      else
+        warn "스테이지가 방출한 판단의 물음은 이미 닫혀 있습니다 — 같은 물음을 다시 열지 않았습니다 ($ctx, 승인 ${GATE_LAST_JUDGMENT_APPROVAL_ID:--})"
+      fi
       ;;
     *)
       warn "스테이지가 방출한 판단의 승인 발행이 알 수 없는 값으로 끝났습니다 ($ctx, rc=$rc) — 채택하지 않고 넘어갑니다"
@@ -11386,17 +11464,17 @@ gate_absorb_emitted_judgment() {
 
   if [ -z "$cls" ]; then
     warn "스테이지가 판단을 방출했으나 「판단 부류」가 없습니다 — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" ""
     return 0
   fi
   if ! judgment_class_ok "$cls"; then
     warn "스테이지가 방출한 「판단 부류」가 어휘 밖입니다: $cls — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls"
     return 0
   fi
   if [ "${grade:-2}" = "2" ] || ! gate_autoadopt_ok "$cls" "$revert"; then
     warn "스테이지가 방출한 판단이 자동 채택의 합집합을 통과하지 못했습니다 ($cls) — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls"
     return 0
   fi
   gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
