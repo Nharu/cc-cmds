@@ -12173,10 +12173,48 @@ n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 # 사전 인가 밖 머지는 순서 30 에서 승인 요구를 내고, 순서 40 의 리뷰 요구는 그 뒤에
 # 선다. 루프가 첫 5 에서 반환하던 동안에는 그 승인을 사람이 답해 주기만 하면 리뷰
 # 기록 없이 머지가 통과했다 — 초록이면서 검사되지 않은 통과다.
+# 이 절은 공유 매니페스트를 쓰지 않고 자기 것을 만든다. 절 9 가 공유 파일에 룰을
+# 꺼 둔 채 되돌리지 않기 때문이고 — 그 창 안에서는 「정책을 인지한 통과」와 「룰이
+# 꺼져 아무것도 검사되지 않은 통과」가 구별되지 않는다 — 다른 절이 만든 사본에
+# 기대면 이 절을 단독으로 잘랐을 때 그 파일이 없다.
 CC_GATE_PREV_AR55="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
-gate act --manifest "$FX_MANIFEST" --kind merge --target infra --segment S55 --cutpoint 머지 \
-     --snapshot-digest "$(HH)" --rationale x -- gh pr merge 1
+M55="$WORK/plan55.md"
+G55="$WT/docs/pipeline-grant/R55.md"
+row55="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=배포 | 말단 행위 상한=없음"
+td55=$(printf '%s\n' "$row55" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+goal55='픽스처가 끝나면'
+dl55='2030-01-01T00:00:00Z'
+bd55=$( { printf 'goal\t%s\n' "$goal55"
+          printf '%s\n' "$row55" | sed 's/[[:space:]]\{1,\}/ /g' | sort | sed 's/^/target\t/'
+          printf 'deadline\t%s\n' "$dl55"; } | sort | shasum -a 256 | cut -d' ' -f1)
+{
+  printf '# 파이프라인 런 매니페스트 — R55\n'
+  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R55;\n'
+  printf '     anchor-kind=repo; anchor-key=t/infra;\n'
+  printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+  printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R55\n'
+  printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+  printf '## 의도\n```text\n테스트\n```\n\n'
+  printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td55" "$row55"
+  printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+  printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n{ "steps": [] }\n```\n\n'
+  printf '## 인가\n**구속 다이제스트**: %s\n**런 최대 절단점**: 배포\n**종료 지점**: %s\n' "$bd55" "$goal55"
+  printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl55"
+  printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+} > "$M55"
+{
+  printf '# 파이프라인 인가 기록 — R55\n'
+  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$WT"
+  printf '## 인가 R55\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
+  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R55.md\n' "$WT"
+} > "$G55"
+H55() { cd "$WT" && bash "$GATE" snapshot --manifest "$M55" 2>/dev/null | jq -r .H; }
+gate act --manifest "$M55" --kind merge --target infra --segment S55 --cutpoint 머지 \
+     --snapshot-digest "$(H55)" --rationale x -- gh pr merge 1
 check "승인 요구 뒤의 룰이 거부하면 거부가 이긴다" "$rc" "3"
 case "$msg" in
   *"룰 거부: 리뷰-후-머지"*) ok "그 거부가 리뷰 룰의 것이다 (사전 인가에서 멈추지 않았다)" ;;
