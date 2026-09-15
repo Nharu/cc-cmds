@@ -93,14 +93,48 @@ slug=$(printf '%s' "$slug" | tr -c 'A-Za-z0-9._-' '-')
 # still only a string.
 if [ -n "${CC_PIPELINE_RUN_DIR:-}" ]; then
   WITNESS_ROOT="${CC_PIPELINE_RUN_DIR%/}"
+  ROOT_VAR=CC_PIPELINE_RUN_DIR
+  ROOT_IS_OURS=no
 else
   # The fallback parent is not something this tree ships, so this branch creates
-  # it rather than assuming it. `mkdir -p` runs BEFORE the directory check
-  # below, because that check is what refuses an unusable root and it has to see
-  # the directory this branch is responsible for making. A failure is left to
-  # that check so the refusal names the variable that produced the path.
+  # it rather than assuming it.
   WITNESS_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design"
   WITNESS_ROOT="${WITNESS_ROOT%/}"
+  ROOT_VAR=XDG_STATE_HOME
+  ROOT_IS_OURS=yes
+fi
+
+# THE ROOT MUST BE ABSOLUTE, AND A RELATIVE ONE IS REFUSED RATHER THAN RESOLVED.
+#
+# A relative root resolves against whatever directory the caller happens to be
+# in, and the path this script prints is not merely displayed — the caller
+# records it verbatim as `scratchDir`, and the cleanup procedure later feeds that
+# recorded string to a path-guarded `rm -rf`. The team that reads the row is not
+# guaranteed to be in the directory the writer was in, so a relative string names
+# one directory when it is written and a different one when it is deleted.
+# Resolving it here would hide that: the two callers would still disagree about
+# which directory the row meant, and only one of them would be holding the
+# witness. Refusing is the only disposition that leaves no wrong directory to
+# delete. The XDG specification independently says a relative value is to be
+# ignored, so this is also what the fallback root's own contract asks for.
+#
+# CHECKED BEFORE THE `mkdir`, because creating the directory is the thing a
+# relative root does wrong — it would leave a `cc-cmds/design` tree in whatever
+# directory the caller was standing in, and it would do it before anything
+# refused.
+case "$WITNESS_ROOT" in
+  /*) : ;;
+  *)
+    printf 'cc-team-witness-init.sh: 위트니스 루트가 절대 경로가 아닙니다: %s (%s 를 확인하세요 — 기록된 경로는 나중에 경로 가드 rm -rf 의 입력이 되므로 상대 경로는 해석하지 않고 거절합니다)\n' \
+      "$WITNESS_ROOT" "$ROOT_VAR" >&2
+    exit 2 ;;
+esac
+
+# `mkdir -p` runs BEFORE the directory check below, because that check is what
+# refuses an unusable root and it has to see the directory this branch is
+# responsible for making. A failure is left to that check so the refusal names
+# the variable that produced the path.
+if [ "$ROOT_IS_OURS" = yes ]; then
   mkdir -p "$WITNESS_ROOT" || true
 fi
 # The root is an environment value, so the stdout contract — exactly one line,
