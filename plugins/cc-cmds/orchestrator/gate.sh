@@ -8697,9 +8697,14 @@ gate_record_row() {
       # mode is the conservative claim ("no delta is asserted"), and check 8
       # below confirms against the report that the conservative reading is
       # also the true one.
-      local cmode cbasis eff_mode crow cs cm brow latest bmode bhead wt rc brep
+      local cmode cbasis cbasis_n ccyc ccyc_ok eff_mode crow cs csn cm brow brow_full latest bmode bhead wt rc brep delta_repair
       cmode=$(gate_field_of '모드' "$@")
       cbasis=$(gate_field_of '기준 사이클' "$@")
+      # Every refusal of a delta row except the mode mismatch carries this
+      # tail. Rewriting the row cannot clear those: rewritten as 델타 it meets
+      # the same check, rewritten as 전체 it meets check 8 because the report
+      # still says 델타. The only repair left is a review the gate accepts.
+      delta_repair=" — 행을 리포트의 리뷰 모드 줄과 이 세그먼트의 사이클 번호에 맞게 고쳐 써도 같은 검사에 걸리면 행으로는 풀리지 않습니다: 이 세그먼트의 리뷰를 세 기준 플래그 없이 전체 리뷰로 재파견하고, 게이트가 받는 리포트가 생길 때까지 cycle 행을 쓰지 않습니다"
       # Check 1 — vocabulary, whenever the field is present at all.
       case "$cmode" in
         ''|전체|델타) ;;
@@ -8713,46 +8718,72 @@ gate_record_row() {
         return "$GATE_EXIT_VOCAB"
       fi
       if [ "$eff_mode" = 델타 ]; then
+        # Cycle numbers are compared by INTEGER VALUE everywhere below. A
+        # string comparison read `05` and `5` as different cycles in one check
+        # and the same cycle in another, so a zero-padded basis was refused as
+        # stale by the very number it named.
         case "$cbasis" in
-          ''|*[!0-9]*|0*)
-            warn "모드=델타 인 cycle 행에는 양의 정수 「기준 사이클」이 필요합니다: '${cbasis:-없음}'"
+          ''|*[!0-9]*)
+            warn "모드=델타 인 cycle 행에는 양의 정수 「기준 사이클」이 필요합니다: '${cbasis:-없음}'$delta_repair"
             return "$GATE_EXIT_VOCAB" ;;
         esac
+        cbasis_n=$((10#$cbasis))
+        if [ "$cbasis_n" -lt 1 ]; then
+          warn "모드=델타 인 cycle 행에는 양의 정수 「기준 사이클」이 필요합니다: '$cbasis'$delta_repair"
+          return "$GATE_EXIT_VOCAB"
+        fi
+        # A delta names an EARLIER cycle. `사이클=5 기준 사이클=5` passed every
+        # check below (a commit is its own ancestor), and the row it left was
+        # then picked by check 3 as the basis for cycle 5, so check 4 refused
+        # every later delta of the segment.
+        ccyc=$(gate_field_of '사이클' "$@")
+        case "$ccyc" in
+          ''|*[!0-9]*) ccyc_ok=0 ;;
+          *) if [ "$((10#$ccyc))" -gt "$cbasis_n" ]; then ccyc_ok=1; else ccyc_ok=0; fi ;;
+        esac
+        if [ "$ccyc_ok" != 1 ]; then
+          warn "모드=델타 인 cycle 행의 「사이클」('$ccyc')은 「기준 사이클」($cbasis)보다 큰 정수여야 합니다 — 델타는 자기 자신이나 뒤의 사이클을 기준으로 삼을 수 없습니다$delta_repair"
+          return "$GATE_EXIT_VOCAB"
+        fi
         # Checks 3 and 5 share one pass over this segment's cycle rows. FIELD
         # EQUALITY, not `grep -F`: `사이클=1` is a substring of `사이클=10`, so a
-        # fixed-string match would find a basis row that does not exist. Several
-        # rows with the same number → the last one, the ledger's usual rule.
-        brow=''; latest=0
+        # fixed-string match would find a basis row that does not exist.
+        # Several rows with the same number → the last FULL one among them, and
+        # the last of them only when none is full. The plain last-row rule let a
+        # delta row an older gate accepted under its own number shadow the full
+        # row beside it, and check 4 then refused for good.
+        brow=''; brow_full=''; latest=0
         while IFS= read -r crow; do
           [ -n "$crow" ] || continue
           [ "$(gate_row_field "$crow" '세그먼트')" = "$seg" ] || continue
           cs=$(gate_row_field "$crow" '사이클')
+          case "$cs" in ''|*[!0-9]*) continue ;; esac
+          csn=$((10#$cs))
           cm=$(gate_row_field "$crow" '모드'); [ -n "$cm" ] || cm=전체
-          if [ "$cs" = "$cbasis" ]; then brow="$crow"; fi
-          if [ "$cm" = 전체 ]; then
-            case "$cs" in
-              ''|*[!0-9]*) ;;
-              *) if [ "$cs" -gt "$latest" ]; then latest=$cs; fi ;;
-            esac
+          if [ "$csn" -eq "$cbasis_n" ]; then
+            brow="$crow"
+            if [ "$cm" = 전체 ]; then brow_full="$crow"; fi
           fi
+          if [ "$cm" = 전체 ] && [ "$csn" -gt "$latest" ]; then latest=$csn; fi
         done <<EOF
 $(gate_rows 'cycle')
 EOF
+        if [ -n "$brow_full" ]; then brow="$brow_full"; fi
         # Check 3 — the basis row exists in THIS segment.
         if [ -z "$brow" ]; then
-          warn "기준 사이클 $cbasis 의 cycle 행이 세그먼트 $seg 에 없습니다"
+          warn "기준 사이클 $cbasis 의 cycle 행이 세그먼트 $seg 에 없습니다$delta_repair"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 4 — no delta of a delta: an inherited verdict crosses one step.
         bmode=$(gate_row_field "$brow" '모드'); [ -n "$bmode" ] || bmode=전체
         if [ "$bmode" != 전체 ]; then
-          warn "기준 사이클 $cbasis 은 델타 사이클입니다 — 델타의 델타는 허용하지 않습니다"
+          warn "기준 사이클 $cbasis 은 델타 사이클입니다 — 델타의 델타는 허용하지 않습니다$delta_repair"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 5 — the basis is the LATEST full cycle, and the refusal names
         # the one that is.
-        if [ "$latest" != "$cbasis" ]; then
-          warn "기준 사이클 $cbasis 보다 최근의 전체 사이클이 있습니다: $latest — 기준은 이 세그먼트의 마지막 전체 사이클이어야 합니다"
+        if [ "$latest" -ne "$cbasis_n" ]; then
+          warn "기준 사이클 $cbasis 보다 최근의 전체 사이클이 있습니다: $latest — 기준은 이 세그먼트의 마지막 전체 사이클이어야 합니다$delta_repair"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 6 — ancestry, in the segment's own worktree. `is-ancestor` has
@@ -8764,16 +8795,16 @@ EOF
         bhead=$(gate_row_field "$brow" '리뷰 HEAD')
         wt=$(gate_segment_worktree "$seg")
         if [ -z "$wt" ] || [ ! -d "$wt" ]; then
-          warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 — 세그먼트 워크트리가 없습니다: '${wt:-없음}'"
+          warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 — 세그먼트 워크트리가 없습니다: '${wt:-없음}'$delta_repair"
           return "$GATE_EXIT_VOCAB"
         fi
         rc=0
         ( cd "$wt" && git merge-base --is-ancestor "$bhead" "$rh" ) >/dev/null 2>&1 || rc=$?
         case "$rc" in
           0) ;;
-          1) warn "기준 리뷰 HEAD $bhead 가 이 행의 리뷰 HEAD $rh 의 조상이 아닙니다 (리베이스 등) — 델타 리뷰가 성립하지 않습니다"
+          1) warn "기준 리뷰 HEAD $bhead 가 이 행의 리뷰 HEAD $rh 의 조상이 아닙니다 (리베이스 등) — 델타 리뷰가 성립하지 않습니다$delta_repair"
              return "$GATE_EXIT_VOCAB" ;;
-          *) warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 (git exit $rc, 워크트리 $wt)"
+          *) warn "기준 리뷰 HEAD $bhead 와 리뷰 HEAD $rh 의 조상 관계를 판정할 수 없습니다 (git exit $rc, 워크트리 $wt)$delta_repair"
              return "$GATE_EXIT_VOCAB" ;;
         esac
         # Check 7 — the basis report exists and is not a stub. The anchor is
@@ -8781,7 +8812,7 @@ EOF
         # the regex lives in two places and moves together by hand.
         brep=$(gate_report_abs "$(gate_row_field "$brow" '리포트 경로')")
         if [ ! -f "$brep" ] || ! grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$brep"; then
-          warn "기준 사이클 $cbasis 의 리포트가 없거나 「발견 요약」이 없습니다: $brep"
+          warn "기준 사이클 $cbasis 의 리포트가 없거나 「발견 요약」이 없습니다: $brep$delta_repair"
           return "$GATE_EXIT_VOCAB"
         fi
       fi
@@ -8791,8 +8822,10 @@ EOF
       # that stays silent reads as 전체, gets picked as the next cycle's full
       # basis, and a delta then stacks on a review that read part of the tree.
       # Both absent read as the same 전체, so no row written before this field
-      # existed is refused by it. The repair for every refusal here is to
-      # rewrite the row to what the report says.
+      # existed is refused by it. Rewriting the row to what the report says
+      # repairs the MODE mismatch only; the basis-number and basis-head
+      # refusals below stand however the row is rewritten, so they carry the
+      # re-review tail instead.
       #
       # ONE LINE IS ANCHORED FIRST and the values are read off that line only,
       # so the same phrase somewhere in the report body cannot be picked up.
@@ -8814,8 +8847,8 @@ EOF
         if [ "$eff_mode" = 델타 ]; then
           rcyc=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 사이클 ([0-9]+).*/\1/p')
           rhead=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 리뷰 HEAD `([0-9a-f]+)`.*/\1/p')
-          if [ "$rcyc" != "$cbasis" ]; then
-            warn "리포트의 기준 사이클(${rcyc:-없음})이 행의 기준 사이클($cbasis)과 다릅니다: $rep"
+          if [ -z "$rcyc" ] || [ "$((10#$rcyc))" -ne "$cbasis_n" ]; then
+            warn "리포트의 기준 사이클(${rcyc:-없음})이 행의 기준 사이클($cbasis)과 다릅니다: $rep$delta_repair"
             return "$GATE_EXIT_VOCAB"
           fi
           # Short and long shas may be mixed between the row and the report;
@@ -8823,11 +8856,11 @@ EOF
           r1=$(cd "$wt" && git rev-parse --verify "${rhead}^{commit}" 2>/dev/null || true)
           r2=$(cd "$wt" && git rev-parse --verify "${bhead}^{commit}" 2>/dev/null || true)
           if [ -z "$r1" ] || [ -z "$r2" ]; then
-            warn "리포트의 기준 리뷰 HEAD(${rhead:-없음})와 기준 행의 리뷰 HEAD($bhead)를 해소할 수 없습니다 — 판정 불가: $rep"
+            warn "리포트의 기준 리뷰 HEAD(${rhead:-없음})와 기준 행의 리뷰 HEAD($bhead)를 해소할 수 없습니다 — 판정 불가: $rep$delta_repair"
             return "$GATE_EXIT_VOCAB"
           fi
           if [ "$r1" != "$r2" ]; then
-            warn "리포트의 기준 리뷰 HEAD($rhead)가 기준 행의 리뷰 HEAD($bhead)와 같은 커밋이 아닙니다: $rep"
+            warn "리포트의 기준 리뷰 HEAD($rhead)가 기준 행의 리뷰 HEAD($bhead)와 같은 커밋이 아닙니다: $rep$delta_repair"
             return "$GATE_EXIT_VOCAB"
           fi
         fi
@@ -8835,7 +8868,7 @@ EOF
         # A full row whose report cannot be opened passes here — no new refusal
         # on the existing path; the merge rule already catches the absence at
         # merge time. A delta row has nothing to back its claim without it.
-        warn "모드=델타 인 cycle 행의 리포트를 열 수 없습니다: $rep"
+        warn "모드=델타 인 cycle 행의 리포트를 열 수 없습니다: $rep$delta_repair"
         return "$GATE_EXIT_VOCAB"
       fi
       # SAME DEFERRED DECISION AS THE `segment` ARM ABOVE, for `세그먼트` rather
