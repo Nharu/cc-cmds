@@ -8172,7 +8172,7 @@ check "같은 자유 입력 프레임에 대한 재호출은 행을 더하지 �
 # same judgment with the switch on used to close this `대기` with the router's
 # recommendation, after which the label answer below could not be recorded.
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
-      bash "$GATE" act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      gate_inproc act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
       -- 등급=2 "판단 부류=감사-발견" 기준="이 발견을 이번 런에서 고칠지" 근거="비용이 크다" 2>&1); rc=$?
 check "자유 입력으로 답한 판단은 자동 해소가 켜진 재제출에도 대기로 응답한다" "$rc" "5"
@@ -9210,7 +9210,7 @@ case "$out" in
   *"스테이지 종단"*) ok "답이 있는 물음을 다시 방출해도 기록 함수가 끝까지 도달한다" ;;
   *) bad "흡수기 탈출" "$out" ;;
 esac
-_aj_rows=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$aj" || true; } )
+_aj_rows=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$aj |" || true; } )
 if [ -n "$_aj_rows" ]; then
   ok "그 답으로 열렸다는 사실이 원장에 남고 어느 승인을 썼는지 지목한다"
 else
@@ -9266,7 +9266,7 @@ ar_approval_id() {
   row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F "$1" | tail -1)" '승인 id'
 }
 ar_last_row() {
-  { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
 }
 ar_adoptions() {
   { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F '결정=채택' || true; } \
@@ -9287,7 +9287,7 @@ ar_expect_refused() {
   check "$name: 자동 해소가 그 물음을 거부로 닫는다" "$(row_field "$row" '상태')" "거부"
   check "$name: 닫는 행은 자동 해소의 처분 사유를 싣는다" "$(row_field "$row" '처분 사유')" "자동 해소"
   check "$name: 그 승인으로 열린 채택 행이 없다" \
-    "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$id " || true; } | grep -c . || true)" "0"
+    "$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$id |" || true; } | grep -c . || true)" "0"
   case "$out" in
     *"스테이지 종단"*) ok "$name: 기록 함수가 끝까지 도달한다" ;;
     *) bad "$name 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
@@ -9331,7 +9331,7 @@ emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
 ar3_id=$(ar_approval_id "자동 해소가 켜진 채 감사 발견을 미룰지")
 if [ -n "$ar3_id" ]; then
   check "채택 가능 부류의 방출은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar3_id")" '상태')" "승인"
-  ar3_row=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$ar3_id " || true; } | tail -1)
+  ar3_row=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$ar3_id |" || true; } | tail -1)
   check "그 채택 행은 스테이지 방출에서 왔다고 적는다" "$(row_field "$ar3_row" '출처')" "스테이지 방출"
   check "그 채택 행은 방출된 실제 부류를 싣는다" "$(row_field "$ar3_row" '판단 부류')" "감사-발견"
   check "그 채택 행은 방출된 판단 등급을 싣는다" "$(row_field "$ar3_row" '등급')" "2"
@@ -9348,7 +9348,7 @@ fi
 # a `감사-발견` emission had already spent. These count the rows.
 ar_spent_count() {
   # ar_spent_count <승인 id> — adoption rows that name that approval as spent.
-  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$1 " || true; } | grep -c . || true
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
 }
 if [ -n "$ar3_id" ]; then
   ar_stub "$WORK/judgment-stub-ar-audit-visual" \

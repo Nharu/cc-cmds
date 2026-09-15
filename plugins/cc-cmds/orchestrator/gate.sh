@@ -3372,7 +3372,7 @@ gate_append() {
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
         if [ -n "$5" ]; then
-          grow=$(grep -F -- "$8" "$2" 2>/dev/null | grep -F -- "승인 id=$5 " | tail -1)
+          grow=$(grep -- "$8" "$2" 2>/dev/null | grep -F -- "| 승인 id=$5 |" | tail -1)
           gst=$(printf "%s" "$grow" | tr "|" "\n" | sed -n "s/^ *상태=//p" | sed "s/[[:space:]]*\$//" | tail -1)
           [ -n "$gst" ] || exit 90
           case " $6 " in *" $gst "*) ;; *) exit 90 ;; esac
@@ -3386,7 +3386,7 @@ gate_append() {
         prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
         printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
       ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" \
-        "$guard_id" "$guard_states" "$guard_noreason" '- `승인` |' || rc=$?
+        "$guard_id" "$guard_states" "$guard_noreason" '^- `승인` ' || rc=$?
   else
     # No lock tool means no concurrency to serialize, so the same sequence is
     # correct here — it is the interleaving that the lock removes, not the order.
@@ -4244,7 +4244,7 @@ gate_pending_approvals_json() {
     # The LAST row for the id decides, and it is read once here rather than
     # re-grepped per field — three reads of the same row could straddle a
     # concurrent append and describe two different rows as one object.
-    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
     state=$(gate_row_field "$row" '상태')
     [ "$state" = "대기" ] || continue
     [ "$first" = "1" ] || printf ',\n'
@@ -7043,7 +7043,7 @@ gate_tuple_snap() {
 
 gate_approval_last_row() {
   # gate_approval_last_row <승인 id> — the last `승인` row for this id, or nothing.
-  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | tail -1
+  { gate_rows '승인' | grep -F "| 승인 id=$1 |" || true; } | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -8007,7 +8007,7 @@ gate_notify_slot_key_alive() {
   esac
   # Everything else is an approval id — the same last-row-per-id fold the pending
   # census uses, applied to one id.
-  row=$( { gate_rows '승인' | grep -F "승인 id=$key " || true; } | tail -1)
+  row=$( { gate_rows '승인' | grep -F "| 승인 id=$key |" || true; } | tail -1)
   [ -n "$row" ] || return 0
   st=$(gate_row_field "$row" '상태')
   [ "$st" = "대기" ] && return 0
@@ -8622,7 +8622,7 @@ EOF
             # applies. A judgment approval carries no binding tuple, so nothing
             # about it expires — without this the first answer would adopt every
             # later judgment that hashed to the same id.
-            if gate_has_row '자율 승인' "해소 승인=$jq_id "; then
+            if gate_has_row '자율 승인' "| 해소 승인=$jq_id |"; then
               warn "승인 $jq_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
               warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
               return "$GATE_EXIT_RULE"
@@ -9760,7 +9760,7 @@ gate_verb_act() {
         # later judgment resolving to the same id into an adoption that never
         # met the floor. Recording which approval opened which adoption is what
         # makes "already used" a question the ledger can answer.
-        if [ "$kind" = "judgment" ] && gate_has_row '자율 승인' "해소 승인=$ap_id "; then
+        if [ "$kind" = "judgment" ] && gate_has_row '자율 승인' "| 해소 승인=$ap_id |"; then
           warn "승인 $ap_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
           warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
         elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias"; then
@@ -10445,7 +10445,15 @@ gate_act_approval_id() {
 gate_approval_state() {
   # The LAST row for this id wins, the way the termination conditions already
   # read approvals and review obligations.
-  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | tail -1 \
+  #
+  # THE ID IS MATCHED AS A WHOLE FIELD, `| 승인 id=<id> |`, here and in every
+  # reader of one approval's rows. A free-text field may quote another
+  # approval's id — a router citing its own earlier decision in `기준` puts
+  # `승인 id=<id>` into that judgment's `질문 문면` — and a substring match read
+  # such a row as the last row of the id it quoted, so a closed judgment could
+  # read as `승인` and be adopted with nobody asked. No value keeps a `|` on its
+  # way into the ledger, so the two bars bound this field alone.
+  { gate_rows '승인' | grep -F "| 승인 id=$1 |" || true; } | tail -1 \
     | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1
 }
 
@@ -10458,7 +10466,7 @@ gate_approval_field() {
   # state, the question, the answer and the time, so a reader that looked at the
   # last row for `구속 튜플` found nothing on every answered approval — that is,
   # on exactly the approvals whose tuple anyone would want to check.
-  { gate_rows '승인' | grep -F "승인 id=$1 " || true; } \
+  { gate_rows '승인' | grep -F "| 승인 id=$1 |" || true; } \
     | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
@@ -11620,7 +11628,7 @@ gate_absorb_issue() {
       # ONE ANSWER OPENS ONE JUDGMENT. A judgment approval carries no binding
       # tuple and never expires, so without this an answer adopted once would
       # adopt every later emission that hashed to the same id.
-      if [ -n "$aid" ] && gate_has_row '자율 승인' "해소 승인=$aid "; then
+      if [ -n "$aid" ] && gate_has_row '자율 승인' "| 해소 승인=$aid |"; then
         warn "스테이지가 방출한 판단의 물음 답(승인 $aid)은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다 ($ctx, 부류 ${cls:-없음})"
         warn "같은 기준으로 다른 판단을 방출한 것이라면 기준과 근거를 달리한 새 물음이어야 합니다"
         return 0
@@ -12446,7 +12454,7 @@ gate_pending_approval_ids() {
   local want="${1:-}" id st row cut
   for id in $(gate_rows '승인' | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
     st=$(gate_row_field "$row" '상태')
     [ "$st" = "대기" ] || continue
     if [ -n "$want" ]; then
@@ -13543,16 +13551,21 @@ gate_issue_boundary_approval() {
   # looked the same, and the shift launch stopped with the approval exit code
   # while no approval was pending.
   #
-  # THE ANSWERED ARM IS A PERSON'S, NOT THE GATE'S OWN. An id whose last row is
-  # an auto-resolution (`처분 사유=자동 해소`) is not held quiet by the marker:
-  # nobody said "keep going" about that state, the gate merely adopted its own
-  # recommendation, and the condition can change while the binding does not —
-  # B4 binds to the progress digest, so an 80% resolved automatically and a
-  # 100% reached on the same digest compute the same id. Suppressing the
-  # second would close the ceiling's one signal with no approval ever issued.
-  # An auto-resolved id therefore re-issues as before: below the ceiling it is
-  # resolved again (ten points later, by `cost-resolved-pct`), at or above it
-  # it waits.
+  # THE ANSWERED ARM IS A PERSON'S, NOT THE GATE'S OWN — BUT ONLY WHERE THIS
+  # EVALUATION WOULD NOT RESOLVE. An id whose last row is an auto-resolution
+  # (`처분 사유=자동 해소`) is not held quiet by the marker when auto-resolution
+  # cannot close it now: nobody said "keep going" about that state, the gate
+  # merely adopted its own recommendation, and the condition can change while
+  # the binding does not — B4 binds to the progress digest, so an 80% resolved
+  # automatically and a 100% reached on the same digest compute the same id.
+  # Suppressing the second would close the ceiling's one signal with no approval
+  # ever issued, so that id re-issues and waits.
+  #
+  # Where this evaluation WOULD resolve, the auto-resolved id stays quiet like
+  # any answered one until its binding moves. Re-issuing there changes no
+  # outcome and writes an issue row and a closing row on every call: a
+  # SHIFT-FLOOR resolved once added that pair to every later launch in the same
+  # state.
   #
   # AUTO-RESOLUTION IS NARROWED TWICE HERE. A B4 at or above the declared
   # ceiling is not resolved (`gate_boundary_auto_resolvable`) and falls through
@@ -13576,7 +13589,8 @@ gate_issue_boundary_approval() {
     return 0
   fi
   if [ -n "$st" ] && [ "$(cat "$RUN_DIR/boundary-$name.asked" 2>/dev/null || true)" = "$binding" ] \
-    && [ "$(gate_row_field "$(gate_approval_last_row "$id")" '처분 사유')" != "자동 해소" ]; then
+    && { [ "$auto" = "1" ] \
+         || [ "$(gate_row_field "$(gate_approval_last_row "$id")" '처분 사유')" != "자동 해소" ]; }; then
     GATE_BOUNDARY_SUPPRESSED="$id"
     return 0
   fi
