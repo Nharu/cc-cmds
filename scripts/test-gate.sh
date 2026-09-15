@@ -3210,7 +3210,12 @@ sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self"
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
 if [ -n "$sa_ws" ] && [ -n "$sa_we" ] && [ "$sa_we" -gt "$sa_ws" ]; then
   sa_wn=$(awk -v a="$sa_ws" -v b="$sa_we" 'NR>a && NR<b' "$sa_self" | grep -cE -- "$sa_pat" || true)
-  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 열 그대로다" "$sa_wn" "10"
+  # 열에서 일곱으로 내려갔다. 룰 루프가 첫 승인 요구에서 멈추지 않게 되면서, 승인
+  # 발행을 재던 픽스처들이 `배포` 로 신고하면 리뷰 룰이 뒤이어 거부하게 됐다 — 그
+  # 셋을 `push` 로 낮춰 재려는 것만 재게 했고, 그래서 이 창을 떠났다. 이 수가 다시
+  # 올라갔다면 새 머지 등급 행위가 오염 창 안으로 들어온 것이고, 고칠 곳은 이 수가
+  # 아니라 그 행위의 자리다.
+  check "값싼 가드: 룰 끔 창 안의 머지 등급 행위가 일곱 그대로다" "$sa_wn" "7"
 else
   bad "값싼 가드" "오염 창의 경계를 찾지 못했다 — 표제나 재배정 줄이 바뀌었다"
 fi
@@ -6844,7 +6849,7 @@ case "$msg" in
   *) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)" ;;
 esac
 gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- ssh -V
 check "사전 인가 밖 행위는 행위 승인을 발행한다" "$rc" "5"
 gateN act --manifest "$NM" --kind propose-done --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 절=x 근거=y
@@ -8041,7 +8046,7 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
 # the same argv at 04:00 across every commit that had landed in between. Every
 # tuple assertion before this one observed the STRING.
 gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
 check "구속 튜플 실험용 행위가 승인을 발행한다" "$rc" "5"
 tup_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
 tup_id=$(row_field "$tup_row" '승인 id')
@@ -8067,11 +8072,11 @@ check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
 # before the dry-run arm on purpose, so `plan` reports the verdict without
 # performing anything — and this argv reaches outside the machine.
 gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 -- rsync --version
+      --surface 외부상태변경 -- scp -V
 check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
 ( cd "$WT" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
 gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 -- rsync --version
+      --surface 외부상태변경 -- scp -V
 check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
 case "$msg" in
   *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -8083,7 +8088,7 @@ esac
 tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                    | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
 gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
 check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
 tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                   | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
@@ -8976,7 +8981,7 @@ if [ -d "$EWT" ]; then
   }
   H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
   gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
-        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- rsync --version s3://execwt/probe
+        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- ssh -V s3://execwt/probe
   check "실행 워크트리를 선언한 대상의 행위가 승인을 발행한다" "$rc" "5"
   ewt_row=$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
   ewt_id=$(row_field "$ewt_row" '승인 id')
@@ -9000,20 +9005,20 @@ if [ -d "$EWT" ]; then
   # before the dry-run arm, so the verdict comes back without the argv — which
   # reaches outside the machine — ever running.
   gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
-        --surface 외부상태변경 -- rsync --version s3://execwt/probe
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "두 트리가 다 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
   # THE FALSE-POSITIVE AXIS. Another segment landing a commit in the main
   # worktree says nothing about the tree this act runs in.
   ( cd "$WT" && git commit --allow-empty -q -m "메인만 움직이는 빈 커밋" )
   gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
-        --surface 외부상태변경 -- rsync --version s3://execwt/probe
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "메인 워크트리만 움직인 것은 그 승인을 낡게 하지 않는다" "$rc" "0"
   ( cd "$WT" && git reset -q --soft "$main_head" )
   check "픽스처가 옮긴 메인 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
   # THE FALSE-NEGATIVE AXIS, which is the one that let a night of commits through.
   ( cd "$EWT" && git commit --allow-empty -q -m "실행 워크트리만 움직이는 빈 커밋" )
   gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
-        --surface 외부상태변경 -- rsync --version s3://execwt/probe
+        --surface 외부상태변경 -- ssh -V s3://execwt/probe
   check "실행 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
   case "$msg" in
     *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -12333,7 +12338,15 @@ sb_silent() {
     *) bad "무변경 B: $label" "$msg" ;;
   esac
 }
-sb_silent 'git push 는 침묵한다'       -- git push origin HEAD:refs/heads/보호1
+# `git push` 는 이 목록을 떠났다. 사다리 표는 여전히 침묵하지만, 대상 행이 해소된
+# 뒤 목적지를 베이스와 맞춰 칸을 다시 유도하므로 `커밋` 신고는 저선언이 된다 —
+# 그것이 이 축의 요점이다. 그래서 침묵이 아니라 유도된 칸을 잰다.
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SBZ \
+    --cutpoint 커밋 --rationale x -- git push origin HEAD:refs/heads/보호1
+check "무변경 B: 베이스가 아닌 push 는 커밋 신고를 저선언으로 만든다" "$rc" "8"
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SBZ \
+    --cutpoint push --rationale x -- git push origin HEAD:refs/heads/보호1
+check "무변경 B: push 로 올려 신고하면 통과한다" "$rc" "0"
 sb_silent 'git merge 는 침묵한다'      -- git merge --no-commit --no-ff HEAD
 sb_silent 'git branch 는 침묵한다'     -- git branch 곁가지-보호
 sb_silent 'gh pr view 는 침묵한다'     -- gh pr view 1
