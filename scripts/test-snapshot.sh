@@ -765,7 +765,7 @@ LEDGER_SAVE="$LEDGER"
 LEDGER="$BLEDGER"
 : > "$BLEDGER"
 RUN_DIR="$WORK/rundir-boundary"; mkdir -p "$RUN_DIR"
-boundary_rows() { { grep -F '`승인`' "$BLEDGER" || true; } | { grep -F "승인 id=$1-" || true; }; }
+boundary_rows() { { grep -E '^- `승인`' "$BLEDGER" || true; } | { grep -F "| 승인 id=$1-" || true; }; }
 # b1_recur — the binding moves away and comes back, one below the threshold.
 b1_recur() {
   printf '%s\n' "다른 곳에 있었던 다이제스트" > "$RUN_DIR/progress-digest"
@@ -836,6 +836,107 @@ gate_b3_act_budget 2>/dev/null
 check "재기준선화 직후의 B3 판정은 새 창을 열지 않는다 (답한 표지가 남는다)" \
   "$(cat "$RUN_DIR/boundary-B3.asked" 2>/dev/null || printf '(없음)')" "답한 결속값"
 
+# B4 at or above the declared ceiling is NOT auto-resolved. Nothing else stops
+# spending — the ceiling is read only inside B4, and B4 only asks — so resolving
+# it every ten points let a $40 run continue at $40, $44 and $48 with nobody
+# asked, and closed the open approval that is the one signal a shift reads.
+# Below the ceiling the early warning is still resolved.
+#
+# The cost rows do not move the progress digest, so every step below computes
+# the SAME id: the 80% resolved automatically and the 100% that must wait. This
+# is the case the issuer's answered arm has to let through — an auto-resolution
+# is not a person's "keep going", and holding it quiet would leave the ceiling
+# crossing with no approval at all.
+B4_MANIFEST="$WORK/plan-b4.md"
+awk '{ print } $0 == "## 인가" { print "**비용 천장**: 40" }' "$FIX_MANIFEST" > "$B4_MANIFEST"
+B4_MANIFEST_SAVE="$MANIFEST"
+MANIFEST="$B4_MANIFEST"
+rm -f "$RUN_DIR/cost-resolved-pct"
+b4_auto_rows() { boundary_rows B4 | { grep -F '처분 사유=자동 해소' || true; } | gate_count; }
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate_append 'cost' "누적 usd=32"
+gate_b4_cost 2>/dev/null
+b4_id=$(boundary_rows B4 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "천장의 80% 인 B4 는 자동 해소된다" "$(gate_approval_state "$b4_id")" "승인"
+check "그 해소는 자동 해소 행 하나다" "$(b4_auto_rows)" "1"
+for b4_usd in 40 44 48; do
+  gate_append 'cost' "누적 usd=$b4_usd"
+  gate_b4_cost 2>/dev/null
+  b4_id=$(boundary_rows B4 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+  check "천장의 $((b4_usd * 100 / 40))% 인 B4 는 자동 해소되지 않고 대기로 남는다" "$(gate_approval_state "$b4_id")" "대기"
+  check "천장의 $((b4_usd * 100 / 40))% 에서 자동 해소 행이 늘지 않는다" "$(b4_auto_rows)" "1"
+done
+gate_boundaries 2>/dev/null
+check "경계 판정의 열린 승인 스윕도 천장 이상의 B4 를 닫지 않는다" "$(gate_approval_state "$b4_id")" "대기"
+check "그 B4 는 대기 중인 승인으로 드러난다" \
+  "$(gate_pending_approval_ids act | { grep -F "$b4_id" || true; } | gate_count)" "1"
+
+# A ROW THAT QUOTES THIS ID IS NOT THIS ID'S ROW. A closed approval whose
+# question names the waiting B4 is appended after it; the state reader and the
+# guard inside the lock must both still take the B4's own `대기` row as its last,
+# or the close below is refused on another approval's state.
+gate_append '승인' "승인 id=B9-decoy" "상태=승인" "질문 문면=승인 id=$b4_id 을 인용한 질문" \
+  "답변 문면=트랜스크립트 판독" "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" \
+  "사이드카 앵커=-"
+check "다른 승인의 질문 문면이 이 id 를 인용해도 상태는 이 id 의 마지막 행에서 읽힌다" \
+  "$(gate_approval_state "$b4_id")" "대기"
+
+# THE TRANSITION GUARD, positive half: a close on an approval that is still
+# `대기` is written. This also takes the B4 above out of the pending set.
+b4_n=$(boundary_rows B4 | gate_count)
+b4_rc=0
+gate_append '승인' --transition "$b4_id" '대기 철회' 0 "승인 id=$b4_id" "상태=거부" "질문 문면=q" \
+  "답변 문면=트랜스크립트 판독" "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" \
+  "사이드카 앵커=-" || b4_rc=$?
+check "대기인 승인에 대한 전이 가드 닫기는 쓰인다" "$b4_rc" "0"
+check "그 닫기가 행 하나를 더한다" "$(boundary_rows B4 | gate_count)" "$((b4_n + 1))"
+MANIFEST="$B4_MANIFEST_SAVE"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
+# A `대기` a person already answered is not auto-resolved. Free input leaves the
+# approval `대기` with `처분 사유` on its last row; closing it with the
+# recommendation replaced the person's words and then refused their real answer.
+# The stagnation is made a real recurrence first (the digest moves away and
+# comes back), so the id it fires under is not held quiet by an earlier answer.
+b1_recur
+gate_b1_stagnation 2>/dev/null
+b1_id=$(boundary_rows B1 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+check "수동 모드에서 B1 대기가 다시 열린다 (자유 입력 픽스처)" "$(gate_approval_state "$b1_id")" "대기"
+gate_append '승인' "승인 id=$b1_id" "상태=대기" "대상=-" "절단점=경계" "막는 세그먼트=-" \
+  "질문 문면=q" "처분 사유=자유 입력" "응답 토큰=t-free" "사이드카 앵커=-" "관측 시각=2026-01-01T00:00:00Z"
+b1_auto_n=$(boundary_rows B1 | { grep -F '처분 사유=자동 해소' || true; } | gate_count)
+b1_n=$(boundary_rows B1 | gate_count)
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate_boundaries 2>/dev/null
+check "자유 입력으로 답한 대기 B1 은 경계 스윕이 닫지 않는다" "$(gate_approval_state "$b1_id")" "대기"
+gate_issue_boundary_approval B1 "q" "$(gate_progress_digest)" 2>/dev/null
+check "같은 B1 이 다시 발동해도 자유 입력 대기는 자동 해소되지 않는다" "$(gate_approval_state "$b1_id")" "대기"
+check "자유 입력 대기에 자동 해소 행이 붙지 않는다" \
+  "$(boundary_rows B1 | { grep -F '처분 사유=자동 해소' || true; } | gate_count)" "$b1_auto_n"
+b1_rc=0
+gate_auto_close_approval "$b1_id" 승인 "q" "계속" 2>/dev/null || b1_rc=$?
+check "자동 마감을 직접 불러도 사람이 답한 대기는 가드가 거부한다" "$([ "$b1_rc" != "0" ] && printf refused || printf written)" "refused"
+check "거부된 자동 마감은 행을 더하지 않는다" "$(boundary_rows B1 | gate_count)" "$b1_n"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
+# THE TRANSITION GUARD, refusing half: once the last row is no longer `대기`,
+# neither an auto-close nor a person's close may append another closing row —
+# the last row would otherwise win and a `거부` could land under a `승인`.
+gate_append '승인' "승인 id=$b1_id" "상태=승인" "질문 문면=q" "답변 문면=트랜스크립트 판독" \
+  "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t" "답변 다이제스트=-" "사이드카 앵커=-"
+b1_n=$(boundary_rows B1 | gate_count)
+b1_rc=0
+gate_auto_close_approval "$b1_id" 승인 "q" "계속" 2>/dev/null || b1_rc=$?
+check "이미 승인인 id 에 자동 마감을 부르면 비영으로 돌아온다" "$([ "$b1_rc" != "0" ] && printf refused || printf written)" "refused"
+check "그 자동 마감은 행을 더하지 않는다" "$(boundary_rows B1 | gate_count)" "$b1_n"
+b1_rc=0
+( gate_append '승인' --transition "$b1_id" '대기 철회' 0 "승인 id=$b1_id" "상태=거부" "질문 문면=q" \
+    "답변 문면=트랜스크립트 판독" "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t2" \
+    "답변 다이제스트=-" "사이드카 앵커=-" || gate_close_lost "$b1_id" ) 2>/dev/null || b1_rc=$?
+check "그 사이 닫힌 승인에 사람의 닫기가 쓰려 하면 실패로 드러난다" "$([ "$b1_rc" != "0" ] && printf died || printf written)" "died"
+check "사람의 닫기가 먼저 닫힌 승인을 덮어쓰지 않는다" "$(gate_approval_state "$b1_id")" "승인"
+check "실패한 사람의 닫기도 행을 더하지 않는다" "$(boundary_rows B1 | gate_count)" "$b1_n"
+
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
@@ -862,7 +963,7 @@ jact() {
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(jH)" --rationale x -- "$@" ) \
     >/dev/null 2>&1
 }
-j_rows() { { grep -F "\`$1\`" "$J_LEDGER" || true; } | { grep -F "$2" || true; }; }
+j_rows() { { grep -E "^- \`$1\`" "$J_LEDGER" || true; } | { grep -F "$2" || true; }; }
 j_field() { printf '%s\n' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1; }
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
@@ -877,7 +978,7 @@ check "자동 해소 행은 상태=승인 이다" "$(j_field "$auto_row" '상태
 check "자동 해소 행은 응답 토큰이 없다 (사람의 답과 구별된다)" "$(j_field "$auto_row" '응답 토큰')" "-"
 auto_ap=$(j_field "$auto_row" '승인 id')
 check "채택 행이 자동 해소한 승인 id 를 해소 승인으로 싣는다" \
-  "$(j_rows '자율 승인' "해소 승인=$auto_ap " | gate_count)" "1"
+  "$(j_rows '자율 승인' "| 해소 승인=$auto_ap |" | gate_count)" "1"
 
 # A grade-2 judgment with no class names nothing to adopt, so auto-resolution
 # closes it as a refusal — the floor does not demand the class at grade 2, and
@@ -887,7 +988,7 @@ check "부류 없는 등급 2 판단은 자동 해소가 채택하지 않고 거
 noclass_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
 check "그 자동 해소 행은 상태=거부 이다" "$(j_field "$noclass_row" '상태')" "거부"
 check "부류 없는 판단의 승인 id 로 채택 행이 쓰이지 않는다" \
-  "$(j_rows '자율 승인' "해소 승인=$(j_field "$noclass_row" '승인 id') " | gate_count)" "0"
+  "$(j_rows '자율 승인' "| 해소 승인=$(j_field "$noclass_row" '승인 id') |" | gate_count)" "0"
 
 # The floor does not read the class vocabulary at grade 2 either, so an
 # out-of-vocabulary class is closed by the same allow list. The value has to be
@@ -923,6 +1024,65 @@ check "그 자동 해소 행은 상태=거부 이다" \
   "$(j_field "$(j_rows '승인' '처분 사유=자동 해소' | tail -1)" '상태')" "거부"
 check "대기 중인 판단 승인이 남지 않는다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .pending_approvals_total)" "0"
+
+# THE FORBIDDEN CHECK IS AN ALLOW LIST, so spellings that merely resemble a
+# forbidden class are refused too: no separator, another separator, and a value
+# carrying a space. Through variables for the same vocabulary-lint reason as
+# `bad_cls` above.
+var_cls_a=팀구성
+var_cls_b=팀_구성
+var_cls_c="스테이지-재시도 팀-구성"
+var_n=0
+for var_cls in "$var_cls_a" "$var_cls_b" "$var_cls_c"; do
+  var_n=$((var_n + 1))
+  jact 등급=2 "판단 부류=$var_cls" 기준="철자 변형 $var_n 을 채택할지" 근거="부류 문면이 어휘와 다르다"
+  check "부류 철자 변형 $var_n 의 등급 2 판단은 자동 해소가 거절로 닫는다" "$?" "3"
+  var_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
+  check "철자 변형 $var_n 의 자동 해소 행은 상태=거부 이다" "$(j_field "$var_row" '상태')" "거부"
+  check "철자 변형 $var_n 의 승인 id 로 채택 행이 쓰이지 않는다" \
+    "$(j_rows '자율 승인' "| 해소 승인=$(j_field "$var_row" '승인 id') |" | gate_count)" "0"
+done
+
+# A `대기` judgment a person answered with free input is not closed by a
+# resubmission. The free-input row is appended in-process against this run's
+# ledger, in the shape `close` writes it.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+jact 등급=2 기준="자유 입력으로 답한 물음" 근거="사람이 라벨 밖의 말로 답했다"
+check "수동 모드에서 자유 입력 픽스처 판단이 대기로 열린다" "$?" "5"
+free_id=$(j_field "$(j_rows '승인' '자유 입력으로 답한 물음' | tail -1)" '승인 id')
+J_LEDGER_SAVE="$LEDGER"
+LEDGER="$J_LEDGER"
+gate_append '승인' "승인 id=$free_id" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=-" \
+  "질문 문면=q" "처분 사유=자유 입력" "응답 토큰=t-free" "사이드카 앵커=-" "관측 시각=2026-01-01T00:00:00Z"
+LEDGER="$J_LEDGER_SAVE"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+jact 등급=2 "판단 부류=감사-발견" 기준="자유 입력으로 답한 물음" 근거="사람이 라벨 밖의 말로 답했다"
+check "자유 입력으로 답한 대기 판단은 재제출해도 자동 해소되지 않는다 (승인 대기 유지)" "$?" "5"
+check "그 승인의 마지막 행은 여전히 대기다" \
+  "$(j_field "$(j_rows '승인' "| 승인 id=$free_id |" | tail -1)" '상태')" "대기"
+check "그 승인에 자동 해소 행이 붙지 않는다" \
+  "$(j_rows '승인' "| 승인 id=$free_id |" | { grep -F '처분 사유=자동 해소' || true; } | gate_count)" "0"
+
+# AN ID QUOTED IN ANOTHER JUDGMENT'S TEXT DOES NOT SPEAK FOR THAT ID. A router
+# citing its own earlier decision puts `승인 id=<id>` into `기준`, and the gate
+# carries it into the question on both the issue row and the closing row. Read
+# as a substring, the adoptable judgment's `승인` close became the last row of
+# the refused judgment it quoted, and resubmitting that refused judgment adopted
+# a class that hands risk to the user with nobody asked.
+jact 등급=2 "판단 부류=팀-구성" 기준="위장 대상이 되는 판단" 근거="사용자에게 넘길 위험이다"
+check "인용될 판단(위험을 넘기는 부류)은 자동 해소가 거절로 닫는다" "$?" "3"
+cite_id=$(j_field "$(j_rows '승인' '위장 대상이 되는 판단' | tail -1)" '승인 id')
+check "인용될 판단의 승인 id 가 원장에 있다" "$([ -n "$cite_id" ] && printf yes || printf no)" "yes"
+jact 등급=2 "판단 부류=감사-발견" 기준="승인 id=$cite_id 참고" 근거="앞선 결정을 인용한다"
+check "다른 판단의 id 를 기준에 담은 채택 가능 부류의 판단은 채택된다" "$?" "0"
+check "그 판단의 발행 행과 닫는 행이 인용된 id 를 질문 문면에 싣는다 (시험이 공허하지 않다)" \
+  "$(j_rows '승인' "승인 id=$cite_id 참고" | gate_count)" "2"
+jact 등급=2 "판단 부류=팀-구성" 기준="위장 대상이 되는 판단" 근거="사용자에게 넘길 위험이다"
+check "인용된 판단을 재제출해도 채택되지 않는다 (남의 닫는 행을 제 마지막 행으로 읽지 않는다)" "$?" "3"
+check "인용된 id 를 해소 승인으로 싣는 자율 승인 행이 없다" \
+  "$(j_rows '자율 승인' "| 해소 승인=$cite_id |" | gate_count)" "0"
+check "인용된 판단의 마지막 행은 거부 그대로다" \
+  "$(j_field "$(j_rows '승인' "| 승인 id=$cite_id |" | tail -1)" '상태')" "거부"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 
 # ---------------------------------------------------------------------------
