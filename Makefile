@@ -26,6 +26,7 @@ lint:
 	bash scripts/lint-reap-retention.sh
 	bash scripts/lint-macos-keepset-paths.sh
 	bash scripts/lint-recovery-interlock-pins.sh
+	bash scripts/lint-harness-global-collisions.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -101,6 +102,7 @@ LINT_TESTS := \
 	scripts/test-lint-recovery-interlock-pins.sh \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-lint-macos-keepset-paths.sh \
+	scripts/test-lint-harness-global-collisions.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh
