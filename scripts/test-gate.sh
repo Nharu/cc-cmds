@@ -63,6 +63,14 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_SESSION_NOTIFY=0
 export CC_CMDS_SESSION_NOTIFY
+# THE THREE SEAT MARKERS ARE CLEARED FOR THE WHOLE PROCESS. The stagnation
+# boundaries are evaluated only on a ROUTER's judgment, and the gate reads that
+# off `CC_PIPELINE_SEGMENT` / `CC_PIPELINE_STAGE_ID`; this suite runs from
+# whatever process starts it — including a pipeline stage, which exports both —
+# so an inherited marker would turn every B1 fixture below into a stage call
+# that judges nothing, and the suite would report the boundary as silent.
+# Sections that need a seat set it explicitly on the call.
+unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
 # AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
@@ -1206,6 +1214,26 @@ pre_base() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+  # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
+  # than only in the section that first sources them. Two base sections stand a
+  # LIVE stage in a run directory (`fx_stage_live`) and one cone section does
+  # too, and a cut of any of them without the section that sources this file
+  # died on `command not found` while the suite went on reporting green totals.
+  # The file defines functions and touches nothing until one is called, so the
+  # second source in that section is harmless and stays where it is.
+  # shellcheck source=/dev/null
+  . "$repo_root/scripts/run-fixture.sh"
+  # THE RUN DIRECTORY THOSE PRIMITIVES WRITE INTO IS A DEFINITION TOO. The
+  # liveness block points `FX_RUN_DIR` at `$RD` in line before its termination
+  # fixtures, and 12b stands a live stage up in `$RD` without setting it, so a cut
+  # of 12b without that block died on an unbound name inside `fx_stage_live` and
+  # took every section after it down with the run. The default is the same `$RD`;
+  # the in-line assignments that move it elsewhere and back stay where they are.
+  FX_RUN_DIR="${FX_RUN_DIR:-$RD}"
+  # The stall-drain block writes its fixture fields with a literal tab, and 12b
+  # writes the same shape; the name was defined only in that block's body, so a
+  # cut of 12b without it died on `TAB: unbound variable`.
+  TAB=$(printf '\t')
 }
 pre_base
 
@@ -1314,6 +1342,10 @@ pre_cone() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HN() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null | jq -r .H; }
+  # The cone run's PROGRESS digest — the same value `PD` reads for the main
+  # fixture, and for the same reason it is not `HN`: B1 compares against this one.
+  PN() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" --render 2>/dev/null \
+         | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
   seg_row() {
     # seg_row <id> <worktree> <필드>… — one `segment` act, always through the gate
     # so the write-time floors actually run.
@@ -2930,6 +2962,7 @@ check "해소된 40자 sha 는 계속 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
 # 8b-3. cycle 델타 모드 — 기준 조건은 쓰기 시점에 거부되고 모드의 원천은 리포트다
+# --- section: 8b-3 | group: base | covers: act | anchors: 조건이 전부 맞는 델타 행은 기록된다, 델타의 델타 거절은 행 재기록이 아니라 전체 재리뷰를 수선법으로 가리킨다 ---
 #
 # A `cycle` row may now claim `모드=델타`: a review that read only the files
 # changed since this segment's last FULL cycle and re-adjudicated that cycle's
@@ -3009,12 +3042,17 @@ case "$msg" in
 esac
 
 # Check 3 — the basis row must exist in this segment, and the refusal names the number.
+# The row's cycle is above the basis so the ordering check lets it through to check 3.
 gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
-     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=8 모드=델타 "기준 사이클=7" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "없는 기준 사이클은 거부된다" "$rc" "2"
 case "$msg" in
   *"기준 사이클 7"*"없습니다"*) ok "그 거절이 없는 번호를 문면에 싣는다" ;;
   *) bad "기준 사이클 부재 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"세 기준 플래그 없이 전체 리뷰로 재파견"*) ok "기준 사이클 부재 거절은 전체 재리뷰를 수선법으로 가리킨다" ;;
+  *) bad "기준 사이클 부재 수선법" "$msg" ;;
 esac
 
 # Check 5 — the basis is the latest full cycle; cycle 2 is newer than cycle 1.
@@ -3074,6 +3112,13 @@ case "$msg" in
   *"리뷰 모드"*"다릅니다"*) ok "그 거절이 모드 불일치를 말한다 (행 델타·리포트 전체)" ;;
   *) bad "모드 불일치 문면" "$msg" ;;
 esac
+# A mode mismatch is the one delta refusal a row rewrite repairs, so it must not
+# point at the re-review the other refusals point at.
+case "$msg" in
+  *"세 기준 플래그 없이"*) bad "모드 불일치 수선법" "행 재기록으로 풀리는 거절이 전체 재리뷰를 가리켰다: $msg" ;;
+  *"다시 씁니다"*) ok "모드 불일치 거절은 행 재기록을 수선법으로 남긴다" ;;
+  *) bad "모드 불일치 수선법" "$msg" ;;
+esac
 gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale x -- 사이클=5 P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
 check "리포트가 델타인데 행이 침묵하면 거부된다" "$rc" "2"
@@ -3119,6 +3164,111 @@ case "$msg" in
   *"델타의 델타"*) ok "그 거절이 델타의 델타를 말한다" ;;
   *) bad "델타의 델타 문면" "$msg" ;;
 esac
+# Rewriting that row cannot clear it — as 델타 it meets check 4 again, as 전체
+# it meets check 8 because the report still says 델타 — so the refusal has to
+# name the repair that exists: a full review without the basis flags.
+case "$msg" in
+  *"세 기준 플래그 없이 전체 리뷰로 재파견"*) ok "델타의 델타 거절은 행 재기록이 아니라 전체 재리뷰를 수선법으로 가리킨다" ;;
+  *) bad "델타 거절의 수선 문면" "$msg" ;;
+esac
+
+# A delta names an EARLIER cycle. `사이클=5 기준 사이클=5` used to pass every
+# check — a commit is its own ancestor — and the row it left was then picked by
+# check 3 as the basis of cycle 5, so check 4 refused every later delta.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=4 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "자기 사이클을 기준으로 삼는 델타 행은 거부된다" "$rc" "2"
+case "$msg" in
+  *"보다 큰 정수"*"세 기준 플래그 없이"*) ok "그 거절이 사이클 순서를 말하고 전체 재리뷰를 가리킨다" ;;
+  *) bad "자기 기준 델타 문면" "$msg" ;;
+esac
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=3 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "뒤의 사이클을 기준으로 삼는 델타 행은 거부된다" "$rc" "2"
+
+# The shape an older gate accepted is still in ledgers: a delta row under the
+# basis's own number. Injected directly, because the gate now refuses to write
+# it. Check 3 must take the FULL row numbered 4, not the last row numbered 4 —
+# with the last-row rule this write was refused as a delta of a delta.
+printf -- '- `cycle` | 세그먼트=SD | 사이클=4 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | 모드=델타 | 기준 사이클=4\n' "$head_c" "$SDREP_DELTA" >> "$FX_LEDGER"
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=6 모드=델타 "기준 사이클=4" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "같은 번호의 델타 행이 있어도 전체 기준 행이 선택되어 기록된다" "$rc" "0"
+
+# Cycle numbers are compared by integer value. A zero-padded basis was refused
+# by check 2 as not a positive integer, and a zero-padded row number was read
+# as a number by the latest-full scan but as a string by check 5.
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=07 모드=델타 "기준 사이클=04" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "0 패딩 사이클 번호는 정수값으로 비교되어 기록된다" "$rc" "0"
+gate act --manifest "$FX_MANIFEST" --kind cycle --target infra --segment SD --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 사이클=8 모드=델타 "기준 사이클=00" P0=0 P1=0 "리뷰 HEAD=$head_c" "리포트 경로=$SDREP_DELTA"
+check "값이 0 인 기준 사이클은 거부된다" "$rc" "2"
+case "$msg" in
+  *"양의 정수"*) ok "그 거절이 정수 형식을 지목한다 (0 패딩 0)" ;;
+  *) bad "0 기준 사이클 문면" "$msg" ;;
+esac
+
+# The delta file set is computed by a snippet the review skill carries as text,
+# so the text is what runs here. Under git's default `core.quotePath` a
+# non-ASCII path came out octal-quoted, a diff taken with it as a pathspec was
+# empty with exit 0, and the file counted as reviewed while nobody saw a line
+# of it. The fixture pins `core.quotePath true` locally so an ambient global
+# setting cannot make this pass.
+SKILL_RU="$repo_root/plugins/cc-cmds/skills/review-unattended/SKILL.md"
+DSNIP="$WORK/delta-snippet.sh"
+awk '/^#### Delta file set/{f=1} f && /^```sh$/{p=1; next} p && /^```$/{exit} p' "$SKILL_RU" > "$DSNIP"
+printf '%s\n' 'printf "%s\n" "$DELTA"' >> "$DSNIP"
+QP="$WORK/quotepath"
+mkdir -p "$QP"
+( cd "$QP" && git init -q -b main . && git config user.email t@t && git config user.name t \
+    && git config core.quotePath true \
+    && printf 'a\n' > '리뷰-후-머지.sh' && printf 'b\n' > '적용.sh' && printf 'c\n' > plain.txt \
+    && git add . && git commit -qm base ) >/dev/null 2>&1
+qp_base=$(cd "$QP" && git rev-parse HEAD)
+( cd "$QP" && [ -d .git ] && printf 'c2\n' > plain.txt && git commit -qam seg1 ) >/dev/null 2>&1
+qp_basis=$(cd "$QP" && git rev-parse HEAD)
+( cd "$QP" && [ -d .git ] && printf 'a2\n' > '리뷰-후-머지.sh' && printf 'b2\n' > '적용.sh' && git commit -qam seg2 ) >/dev/null 2>&1
+qp_target=$(cd "$QP" && git rev-parse HEAD)
+qp_delta=$(cd "$QP" && BASE="$qp_base" BASIS="$qp_basis" TARGET="$qp_target" bash "$DSNIP" 2>/dev/null)
+qp_want=$(printf '%s\n' '리뷰-후-머지.sh' '적용.sh' | LC_ALL=C sort)
+check "델타 파일 집합이 비ASCII 경로를 인용 없이 원시 경로로 낸다" "$qp_delta" "$qp_want"
+qp_bad=0
+while IFS= read -r e; do
+  [ -n "$e" ] || { qp_bad=1; continue; }
+  ( cd "$QP" && git cat-file -e "$qp_target:$e" ) 2>/dev/null || qp_bad=1
+  [ -n "$(cd "$QP" && git diff "$qp_base...$qp_target" -- "$e")" ] || qp_bad=1
+done <<EOF
+$qp_delta
+EOF
+check "그 항목마다 대상 트리에 있고 그 항목으로 뽑은 파일 diff 가 비어 있지 않다" "$qp_bad" "0"
+
+# What the review skill performs as a model procedure cannot be run from here,
+# so its load-bearing sentences are pinned. Each one closes a way for a basis
+# report or a basis finding to leave the count without a symptom: the report's
+# own review HEAD line and the check that binds it to the basis row, the count
+# check, the missing-verdict rule, the unsettled-reads-as-unfixed rule, the
+# zero-finding form, and the identifiers the count is taken over.
+CP18="$repo_root/plugins/cc-cmds/skills/review/references/01-reviewer-context-package.md"
+for want in \
+  '- **리뷰 HEAD**: `<sha>`' \
+  "| 5 | The basis report's own \`리뷰 HEAD\` line" \
+  "| 6 | The basis report's P0 and P1 severity sections hold" \
+  'In delta mode a witness missing the verdict for any `basis-<k>`' \
+  '이번 사이클에서 판정이 확정되지 않았습니다' \
+  '없음 — 기준 사이클 <n> 의 P0·P1 이 0건입니다.' \
+  '-c core.quotePath=false diff --numstat'; do
+  if grep_all_q -F -- "$want" "$SKILL_RU"; then
+    ok "review-unattended 문면이 남아 있다: $want"
+  else
+    bad "review-unattended 문면" "없음: $want"
+  fi
+done
+if grep_all_q -F -- 'exactly one verdict per assigned identifier' "$CP18"; then
+  ok "컨텍스트 패키지 항목 18 이 기준 발견 식별자별 판정 하나를 요구한다"
+else
+  bad "컨텍스트 패키지 항목 18 문면" "없음: exactly one verdict per assigned identifier"
+fi
 
 # ---------------------------------------------------------------------------
 # 8c. Every act records WHICH credential it ran under
@@ -3215,7 +3365,13 @@ fi
 # 기준값은 재유도한다: 아래 두 줄과 같은 창을 잘라 같은 패턴을 세면 나온다. 이
 # 수가 움직였다면 새 행위가 오염 창 안으로 들어왔다는 뜻이고, 고칠 곳은 이 수가
 # 아니라 그 행위의 자리다 — 룰이 켜진 자기 매니페스트로 옮기면 된다.
-sa_self="${BASH_SOURCE[0]:-$0}"
+# THE WINDOW IS MEASURED IN THE SOURCE FILE, NOT IN THE COPY THAT IS RUNNING. A
+# narrowed run executes a cut of this file, and the reassignment line that closes
+# the window sits in a section the cut usually leaves out — so reading the
+# running copy found no boundary and failed every `--sections` pick that named
+# this section. The count is a property of the source text, so both run modes
+# read the same file and get the same answer.
+sa_self="$repo_root/scripts/test-gate.sh"
 sa_pat='--cutpoint '"$(printf '(%s|%s|%s)' 머지 배포 머지후착수)"
 sa_ws=$(grep -n '^# 9\. The un-disableable rules ignore the manifest' "$sa_self" | head -1 | cut -d: -f1)
 sa_we=$(grep -n '^FX_MANIFEST="\$WT/plan2\.md"$' "$sa_self" | sed -n '1s/:.*$//p')
@@ -3853,10 +4009,18 @@ check "거부 뒤 방출값이 살아 있는 다이제스트다" "$(jq -r .H "$E
 # pre-authorization writes a `승인` row and leaves with exit 5 — the value the
 # caller needs is the one that row just moved, and it is exactly the value it
 # could not have known before making the call.
+#
+# THE ARGV IS THIS SECTION'S OWN. An approval is bound to the act it names, and
+# the sections before this one issue and grant approvals for `curl -X POST`
+# against the same host — so on a pick that ran one of them first, that grant
+# opened this act, `curl` really ran, and its own exit status (6, host not
+# resolved) came back where the refusal was expected. A path no other section
+# uses keeps the act outside pre-authorization AND unapproved, which is the
+# premise the assertions below stand on.
 rows_before=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 rm -f "$EMITFILE"
 gate exec --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 --surface 외부상태변경 \
-     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl -X POST https://example.invalid
+     --snapshot-digest "$(HH)" --rationale x --emit-digest -- curl -X POST https://example.invalid/14c-1
 check "사전 인가 밖 행위는 승인을 발행한다 (이 단언의 전제)" "$rc" "5"
 rows_after=$(grep -c . "$FX_LEDGER" 2>/dev/null || printf '0')
 if [ "$rows_after" -gt "$rows_before" ]; then
@@ -5040,19 +5204,53 @@ gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS 
 check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 
 # ---------------------------------------------------------------------------
-# 21. A live stage suppresses the stagnation boundary
-# --- section: 21 | group: base | covers: - | anchors: B1 이 살아 있는 스테이지가 있으면 판정을 건너뛴다 ---
+# 21. A call marked as a stage is not a judgment — it moves no counter and leaves no boundary row
+# --- section: 21 | group: base | covers: - | anchors: 스테이지로 표시된 읽기 초과 행위는 정체 카운터를 건드리지 않는다, 라우터의 읽기 초과 행위는 판정이다 ---
 #
-# The vector cannot move while a stage works — it is manifest-derived plus
-# segment rows plus obligations plus cycles, and a working stage writes none of
-# those. So every stage making four gate calls issued B1 against itself, and the
-# resulting open approval suspended B1..B3 for the rest of the night.
+# This used to be a static grep for B1's live-stage early return. That return
+# froze the counter while a stage ran and let the first judgment after the
+# stage died fire on the frozen value, so it is gone; what covers its purpose
+# (a stage firing B1 against itself) is the caller condition of the judgment
+# predicate, and a predicate is asserted by DRIVING it, in both directions.
+#
+# DRIVEN THROUGH THE LATE STATE DIRECTORY, like section 20 above. The default
+# state's run took its enforcement-surface baseline at open, and a section
+# between here and there edits that surface on purpose — so every acting verb
+# against the default state now comes back exit 7, boundaries unevaluated. On
+# that state the two "does not count" rows below pass VACUOUSLY and the control
+# row cannot pass at all, which is the reason the control row is here.
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'if [ "$(gate_live_stages)" != "0" ]; then'; then
-  ok "B1 이 살아 있는 스테이지가 있으면 판정을 건너뛴다"
-else
-  bad "B1 억제" "정상 스테이지 위에서 경계가 계속 발화한다"
-fi
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+# The late state's run directory under a name of its own. `RD_L` is `pre_base`'s
+# and names the base state's run directory; reassigning it here would hand every
+# later reader of that name this section's directory instead.
+RD_21="$STATE_LATE/cc-cmds/run/R1"
+PL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null \
+       | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'; }
+printf '%s\n' "$(PL)" > "$RD_21/progress-digest"
+printf '%s\n' "1" > "$RD_21/progress-repeat"
+printf '%s\n' "0" > "$RD_21/obligation-repeat"     # B2 must not fire inside these three judgments
+b1_21_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
+# The stage seat, pinned on the call: both markers the stage launcher exports.
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_PIPELINE_SEGMENT=SLV CC_PIPELINE_STAGE_ID='SLV#1' \
+    gate_inproc exec \
+    --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(HL)" --rationale "픽스처 — 스테이지 좌석의 읽기 초과 exec" \
+    -- touch "$WORK/t21-stage" ); rc=$?
+check "스테이지 좌석의 exec 자체는 통과한다 (아래 두 단언이 거부 위에서 공허하지 않다)" "$rc" "0"
+check "스테이지로 표시된 읽기 초과 행위는 정체 카운터를 건드리지 않는다" "$(cat "$RD_21/progress-repeat")" "1"
+check "그 호출은 경계 행도 남기지 않는다" "$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)" "$b1_21_before"
+gateL exec --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 --surface 읽기 \
+     --snapshot-digest "$(HL)" --rationale "픽스처 — 라우터의 정찰 읽기" -- ls "$WT"
+check "라우터의 읽기 exec 자체는 통과한다" "$rc" "0"
+check "라우터의 읽기는 판정이 아니다 (카운터 불변)" "$(cat "$RD_21/progress-repeat")" "1"
+# The control: the same act from the router's seat IS a judgment. Without this
+# row the two assertions above would pass against a boundary that never counts.
+gateL act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HL)" --rationale "픽스처 — 라우터의 읽기 초과 판정" -- touch "$WORK/t21-router"
+check "라우터의 읽기 초과 행위는 판정이다 (카운터 +1 — 위 두 단언이 공허하지 않다)" "$(cat "$RD_21/progress-repeat")" "2"
 if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F "gate_rows 'cycle'"; then
   ok "진전 벡터가 cycle 행을 본다"
 else
@@ -6049,11 +6247,12 @@ B7_LOG="$WORK/b7-appended.txt"
       sleep 0.05
     done
     if [ "$b7w" -le 20 ]; then
-      # `$BASHPID` 이지 `$$` 가 아니다 — `( … ) &` 안에서 `$$` 는 부모 셸의 pid 로
-      # 확장된다. 파싱되는 것은 타임스탬프뿐이라 동작은 같지만, 이 블록이
-      # 「게이트의 관용구를 축자로 쓴다」고 선언했고 게이트에서 그 자리는 실제로
-      # 잠금을 쥔 프로세스다.
-      printf '%s %s\n' "$BASHPID" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
+      # 게이트와 같은 `$$` 다. `( … ) &` 안에서 `$$` 는 부모 셸의 pid 로 확장되지만
+      # 주인 줄에서 읽히는 것은 타임스탬프뿐이라 동작은 같다. `$BASHPID` 로 바꾸면
+      # 게이트의 관용구에서 벗어나고, macOS 기본 bash 3.2 에는 그 변수가 없어
+      # `set -u` 가 이 서브셸을 첫 잠금에서 죽인다 — 남은 잠금 디렉터리가 뒤따르는
+      # B7·B7L 단언까지 실패시킨다.
+      printf '%s %s\n' "$$" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
       grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
       printf '%s\n' "B7X-$i" >> "$B7_LOG"
       rm -rf "$B7_IDX.lock" 2>/dev/null || true
@@ -8745,7 +8944,7 @@ check "형태 픽스처의 전제 — 열린 경계 승인이 하나도 없다" 
     set +e
     gate_issue_boundary_approval B1 "형태 회귀 픽스처 B1" "$(gate_progress_digest)"
     gate_issue_boundary_approval B2 "형태 회귀 픽스처 B2" "$(gate_open_obligations | sort | shasum -a 256 | cut -d" " -f1)"
-    gate_issue_boundary_approval B3 "형태 회귀 픽스처 B3" "$(gate_progress_vector | grep -v "^acts=" | shasum -a 256 | cut -d" " -f1)"
+    gate_issue_boundary_approval B3 "형태 회귀 픽스처 B3" "$(gate_progress_digest)"
     gate_issue_boundary_approval B4 "형태 회귀 픽스처 B4" "$(gate_progress_digest)"' ) >/dev/null 2>&1
 # THE BOUNDARY NAMES ARE CARRIED INTO THE VERDICT. A bare count says four rows
 # were expected and three arrived and leaves the reader to guess which boundary
@@ -9422,53 +9621,79 @@ if [ "${npend_act:-0}" = "0" ]; then
 else
   bad "경계 픽스처" "행위 승인이 ${npend_act}건 열려 있어 유예의 원인을 가릴 수 없다"
 fi
-# THE READ COUNT IS THE CREDIT, AND IT IS READ FROM THE GATE RATHER THAN TYPED.
-# `gate_b1_stagnation` skips the boundary while the no-progress stretch is made
-# of reads and is SHORTER than `B1_READ_CREDIT`, so a fixed loop of six
-# read-grade acts sits inside the credit and B1 stays quiet for a reason this
-# section is not about. The verdict below would then name the open judgment
-# approval as the culprit — the exact misattribution the note above says the
-# fixture must not produce, arriving from the other side. Driving the loop to the
-# credit is what keeps the two causes separable, and reading the constant keeps
-# the loop pointed at the credit that ships rather than at the one that shipped.
+# THE EVALUATION IS DRIVEN BY A JUDGMENT, AND THE CREDIT IS FILLED BY READS. A
+# read is not a judgment any more, so reads alone evaluate no boundary and a
+# loop of reads would leave the verdict below naming the judgment approval for a
+# silence the predicate caused. What this subsection measures is whether a
+# judgment approval SUSPENDS the boundaries — so the counter is seeded at the
+# threshold and a router judgment (an above-read exec) is what evaluates B1.
 #
-# AND THE LOOP RUNS ONE PAST THE CREDIT, WHICH IS THE BOUNDARY'S EVALUATION
-# ORDER AND NOT SLACK IN THE FIXTURE. `gate_boundaries` is called upstream of the
-# `자율 승인` row for the very act that triggered it, so the k-th read-grade act
-# is adjudicated against a ledger holding k-1 reads. A loop of exactly
-# `B1_READ_CREDIT` acts therefore leaves the last evaluation one short of the
-# credit, the suppression holds, and the verdict below blames the open judgment
-# approval for a quiet B1 that the credit was silencing — the same
-# misattribution as the loop that was too short, one act further along. One more
-# act is what puts `nread` ON the credit, which is the saturation point the
-# design names. The counts and the last credit balance ride on the verdict
-# message so the endpoint is observable in the run rather than only argued here.
+# THE READ COUNT IS STILL THE CREDIT, AND IT IS READ FROM THE GATE RATHER THAN
+# TYPED. `gate_b1_stagnation` skips the boundary while the no-progress stretch
+# holds at least one read and is SHORTER than `B1_READ_CREDIT` rows, so a
+# judgment adjudicated over a short read stretch sits inside the credit and B1
+# stays quiet for a reason this section is not about. The verdict below would
+# then name the open judgment approval as the culprit — the exact misattribution
+# the note above says the fixture must not produce, arriving from the other
+# side. Driving the stretch to the credit is what keeps the two causes
+# separable, and reading the constant keeps the fixture pointed at the credit
+# that ships rather than at the one that shipped.
+#
+# THE STRETCH IS MEASURED FROM A SEEDED ORIGIN, at the ledger's row count as of
+# now, so what the credit counts is exactly the rows this fixture writes. Two
+# judgments are driven. The FIRST is adjudicated over `B1_READ_CREDIT - 1` reads
+# — one short of the credit — so the suppression holds and leaves its trace with
+# a balance of 1; that judgment's own `자율 승인` row then lands in the stretch
+# and SPENDS the last unit (a non-read authorisation spends the credit, it does
+# not void it). The SECOND judgment is therefore adjudicated ON the credit, the
+# saturation point the design names, and B1 fires. The counts and the last
+# credit balance ride on the verdict message so the endpoint is observable in
+# the run rather than only argued here.
 B1_CREDIT_UNDER_TEST=$(sed -n 's/^readonly B1_READ_CREDIT=\([0-9][0-9]*\)$/\1/p' "$GATE")
 if [ -n "$B1_CREDIT_UNDER_TEST" ]; then
   ok "B1_READ_CREDIT 를 게이트 상수에서 읽는다 ($B1_CREDIT_UNDER_TEST)"
 else
   bad "B1_READ_CREDIT" "gate.sh 에서 readonly B1_READ_CREDIT=<n> 을 읽지 못했다"; B1_CREDIT_UNDER_TEST=8
 fi
-b1_at_credit=0
+# THE WINDOW STARTS ON A BINDING VALUE NOBODY HAS ANSWERED. B1's id is salted
+# with the progress digest, and the issuer keeps an id quiet once it carries an
+# answer while `boundary-B1.asked` still names that digest. A cone section run
+# before this one can fire B1 on the very digest seeded below, and the drain
+# above closes that approval — so on such a pick the credit-reaching judgment
+# computed an answered id, issued nothing, and the verdict blamed the open
+# judgment approval. One structural row with this section's own id moves the
+# digest the way 31ab moves it, so the seed names a value no earlier section
+# answered. It is written before the origin is taken, so it is not in the
+# stretch the credit counts.
+printf -- '- `종료 절` | id=C31aa | 상태=충족 | 근거=31aa 픽스처 — B1 결속값을 새로 연다 | prev=x\n' >> "$LEDGER2"
+printf '%s\n' "$(PN)" > "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/progress-digest"
+printf '%s\n' "9" > "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/progress-repeat"
+printf '%s\n' "$( { grep -c '^- `' "$LEDGER2" || true; } | tr -d ' ')" \
+  > "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/progress-origin"
 i=0
-while [ "$i" -lt "$((B1_CREDIT_UNDER_TEST + 1))" ]; do
-  b1_drain_acts "측정 구간에서 다른 경계가 연 행위 승인" B1-
+while [ "$i" -lt "$((B1_CREDIT_UNDER_TEST - 1))" ]; do
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 읽기 \
-        --snapshot-digest "$(HN)" --rationale "정체 경계 확인" -- ls "$CONE_A"
+        --snapshot-digest "$(HN)" --rationale "정체 경계 확인 — 크레딧을 채우는 읽기" -- ls "$CONE_A"
   i=$((i + 1))
-  if [ "$i" = "$B1_CREDIT_UNDER_TEST" ]; then
-    b1_at_credit=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
-  fi
 done
+b1_drain_acts "측정 구간에서 다른 경계가 연 행위 승인" B1-
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(HN)" --rationale "정체 경계 확인 — 판단 승인이 열린 채, 크레딧 미만 구간의 읽기 초과 판정" \
+      -- touch "$WORK/t31aa"
+b1_under_credit=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
+b1_drain_acts "측정 구간에서 다른 경계가 연 행위 승인" B1-
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(HN)" --rationale "정체 경계 확인 — 판단 승인이 열린 채, 크레딧에 닿은 구간의 읽기 초과 판정" \
+      -- touch "$WORK/t31aa"
 b1_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '구속 튜플=B1' || true)
-# `크레딧 잔량` is `B1_READ_CREDIT - nread` written at evaluation time, so the
-# last suppression row reports what the predicate actually counted on the act
-# that did not fire — the measurement the paragraph above rests on.
+# `크레딧 잔량` is `B1_READ_CREDIT - nread - nspent` written at evaluation time,
+# so the last suppression row reports what the predicate actually counted on the
+# judgment that did not fire — the measurement the paragraph above rests on.
 b1_last_balance=$(row_field "$( { grep -F '`경계 억제`' "$LEDGER2" || true; } | tail -1)" '크레딧 잔량')
 if [ "${b1_after:-0}" -gt "${b1_before:-0}" ]; then
-  ok "판단 승인이 열려 있어도 정체 경계는 살아 있다 (읽기 ${B1_CREDIT_UNDER_TEST}회 시점 발행 $((${b1_at_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--}, 한 번 더에서 발행 $((${b1_after:-0} - ${b1_before:-0}))건)"
+  ok "판단 승인이 열려 있어도 정체 경계는 살아 있다 (읽기 $((B1_CREDIT_UNDER_TEST - 1))회 위 판정에서 발행 $((${b1_under_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--}, 크레딧에 닿은 판정에서 발행 $((${b1_after:-0} - ${b1_before:-0}))건)"
 else
-  bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다 (읽기 ${B1_CREDIT_UNDER_TEST}회 시점 발행 $((${b1_at_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--})"
+  bad "경계 유예" "열린 판단 승인 하나가 B1 을 무장해제했다 (읽기 $((B1_CREDIT_UNDER_TEST - 1))회 위 판정에서 발행 $((${b1_under_credit:-0} - ${b1_before:-0}))건·마지막 유예 잔량 ${b1_last_balance:--})"
 fi
 
 # --- 31ab. 철회 배선이 실제 런에서 구동된다 -----------------------------------
@@ -9495,22 +9720,19 @@ if [ -z "$b31ab_aid" ]; then
   bad "철회 배선 픽스처" "앞 절이 열어 둔 B1 승인을 찾지 못했다"
 else
   check "31ab: 물려받은 B1 승인이 대기 상태다" "$(row_field "$(b31ab_last)" '상태')" "대기"
-  # 진전을 움직인다 — 읽기를 넘는 등급의 행위 하나면 벡터의 `acts=` 가 오른다. 원장에
-  # 남는 상태는 그 인가 행뿐이라 뒤 절들이 읽는 세그먼트·의무·절은 건드리지 않는다.
-  #
-  # 인터프리터로 감싸지 않는다. 이 행위의 첫 판본은 `bash -c "printf x >> $CONE_D/…"`
-  # 였고 exit 3 을 받았다 — 매니페스트 쓰기 가드의 인터프리터 팔은 결합한 argv 에
-  # 매니페스트의 **디렉터리**가 들어 있으면 거절하는데, 콘 워크트리는 전부 매니페스트와
-  # 같은 `$WORK` 아래 있으므로 감싼 쓰기는 경로를 어디로 잡아도 그 바늘에 걸린다. 그
-  # 거절은 31ao 가 상한으로 단언하는 설계이지 이 절이 잴 배선이 아니다. `touch` 는
-  # 인터프리터 목록 밖이라 그 팔을 지나지 않고, 경로 동일성 팔은 실제 파일을 비교한다.
-  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-        --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale "B1 결속값을 움직인다" \
-        -- touch "$CONE_D/b31ab.tmp"
-  if [ "$rc" = "0" ]; then
-    ok "31ab: 결속값을 움직인 행위가 인가 행을 남긴다"
+  # 진전을 움직인다 — 라우터의 읽기 초과 행위는 더 이상 진전이 아니므로(그 개수는
+  # 판정의 개수라 자기 해시 안에 앉는다, 12c) 벡터를 움직이는 것은 구조 행이다. 12d 와
+  # 같은 모양으로 이 절만의 id 를 단 `종료 절` 행을 원장에 직접 적는다. 매니페스트에
+  # 선언되지 않은 id 라 종료 조건은 읽지 않고, 뒤 절들이 읽는 세그먼트·의무·절도
+  # 건드리지 않는다. 체인은 `snapshot` 만 검증하고 이 콘의 어느 절도 그 값을 단언하지
+  # 않으므로 `prev=x` 는 이 파일의 다른 픽스처와 같은 자리표시자다.
+  b31ab_d0=$(PN)
+  printf -- '- `종료 절` | id=C31ab | 상태=충족 | 근거=31ab 픽스처 — B1 결속값을 움직인다 | prev=x\n' >> "$LEDGER2"
+  b31ab_d1=$(PN)
+  if [ -n "$b31ab_d1" ] && [ "$b31ab_d1" != "$b31ab_d0" ]; then
+    ok "31ab: 구조 행이 B1 결속값(진전 다이제스트)을 움직인다"
   else
-    bad "31ab: 결속값을 움직인 행위가 인가 행을 남긴다" "rc=$rc — $msg"
+    bad "31ab: 구조 행이 B1 결속값(진전 다이제스트)을 움직인다" "전 '$b31ab_d0' 후 '$b31ab_d1'"
   fi
   # 그리고 다음 행위 — 이 호출의 `gate_boundaries` 가 낡은 승인을 철회하고, 목록을
   # 다시 열거하고, 그 뒤에 유예를 센다.
@@ -9554,9 +9776,13 @@ else
   bad "B3_ACT_BUDGET" "gate.sh 에서 readonly B3_ACT_BUDGET=<n> 을 읽지 못했다"; B3_BUDGET_UNDER_TEST=40
 fi
 over_budget=$((B3_BUDGET_UNDER_TEST + 1))
+# `행위자=리드` ON EVERY HAND-WRITTEN BUDGET ROW. The spend count is the router's
+# and is filtered on that field the way the vector's `dispatches=` is, so a row
+# without it spends nothing — which is the right answer for a row from before
+# the field existed and the wrong shape for a fixture meaning to spend.
 i=0
 while [ "$i" -lt "$over_budget" ]; do
-  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$FX_LEDGER"
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$FX_LEDGER"
   i=$((i + 1))
 done
 
@@ -9580,7 +9806,7 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "B3 창 개시" -- touch "$WORK/t3b"
 i=0
 while [ "$i" -lt "$over_budget" ]; do
-  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$FX_LEDGER"
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 %s | prev=x\n' "$i" >> "$FX_LEDGER"
   i=$((i + 1))
 done
 # The window-opening act can itself trip B1, and an open approval suspends
@@ -9603,12 +9829,14 @@ fi
 
 # Half one-b — A LIVE STAGE IS NOT A SPINNING ROUTER.
 #
-# The boundary watches for the ROUTER burning acts without progress, and the
-# count cannot tell that from a dispatched stage authorising its own acts
-# through the same gate. Nor can volume: a stage moves the progress vector only
-# when it TERMINATES, so a review holds its segment at `리뷰중` for its whole run
-# while publishing witnesses, minting nonces and drafting its report — every one
-# of those an act in this total.
+# The boundary watches for the ROUTER burning acts without progress. Half three
+# pins that a stage's own rows stay out of the count; this half pins the other
+# seam — no judgment made while a stage is alive fires the boundary, whoever
+# wrote the rows, and the rows here are the lead's. Volume cannot stand in for
+# either: a stage moves the progress vector only when it TERMINATES, so a review
+# holds its segment at `리뷰중` for its whole run while publishing witnesses,
+# minting nonces and drafting its report — every one of those an act through
+# this gate.
 #
 # Measured on run 20260912-376f0543: 84 acts in 35 minutes with the vector
 # unmoved, all of them the review stage's own. Five boundary approvals were
@@ -9616,14 +9844,37 @@ fi
 # there is nobody, and each firing ends the shift — so a review long enough to
 # cross this budget stops the night it is running in.
 #
-# THIS RIDES THE WINDOW HALF ONE JUST EXHAUSTED, and that is the whole of why it
-# is here rather than after half two. Faking exhaustion by writing a stale
-# digest cannot work: the function compares that file against the current window
-# key FIRST, and a mismatch re-baselines the count to the total, so `n` is 0 and
-# the boundary stays silent whatever the guard does. An assertion built that way
-# passes against a build with no guard at all — measured, on this very block's
-# first draft. Half one has already proven this window fires, and nothing below
-# touches the two counter files, so a silence here is the guard's doing.
+# THIS OPENS ITS OWN WINDOW, and may not ride the one half one just exhausted.
+# The boundary's id is bound to the window key, and an id a person has answered
+# is not re-issued while that key stays put — so inside half one's window the
+# dead-stage judgment below could never add a row, and the live-stage assertion
+# would pass against a build with no guard at all. Faking exhaustion by writing
+# a stale digest cannot work either: the function compares that file against
+# the current window key FIRST, and a mismatch re-baselines the count to the
+# total, so `n` is 0 and the boundary stays silent whatever the guard does —
+# measured, on this very block's first draft.
+#
+# So the window is moved the way a run moves it: a lead-dispatched stage leaves
+# an observable outcome, which is a progress component, and one ordinary act
+# with no stage alive opens the new window and clears the answered marker. The
+# budget is then spent inside it and the live-stage judgment must stay silent.
+# The guard carries the baseline forward rather than skipping, so the first
+# router act after the stage ends must stay silent too, and spending the budget
+# again once the stage is gone must fire — which is what makes the silence the
+# guard's doing rather than an arm that stopped counting.
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SB3W | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=B3 창 이동 픽스처 | prev=x\n' >> "$FX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SB3W | 스테이지=SB3W | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T05:00:00Z\n' >> "$FX_LEDGER"
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "B3 억제 창 개시" -- touch "$WORK/t4a"
+i=0
+while [ "$i" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=억제 예산 픽스처 %s | prev=x\n' "$i" >> "$FX_LEDGER"
+  i=$((i + 1))
+done
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
@@ -9671,12 +9922,16 @@ check "스테이지가 끝난 뒤 첫 라우터 행위에서도 B3 은 침묵한
 # counter's own vocabulary.
 b3n=0
 while [ "$b3n" -lt "$over_budget" ]; do
-  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 근거=재무장 픽스처 %s | prev=x\n' "$b3n" >> "$FX_LEDGER"
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=재무장 픽스처 %s | prev=x\n' "$b3n" >> "$FX_LEDGER"
   b3n=$((b3n + 1))
 done
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
+# A DEAD STAGE'S PID FILE STAYS IN PLACE for this judgment. The live-stage count
+# reads processes, not pid files, so a stage that died without cleaning up must
+# not hold the re-armed boundary silent — the firing below covers both at once.
+fx_stage_dead B3DEAD
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "재무장 확인" -- touch "$WORK/t4d"
@@ -9686,6 +9941,7 @@ if [ "$after" -gt "$before" ]; then
 else
   bad "B3 재무장" "새 창에서 예산을 넘겼는데 발동하지 않았다 — 겨냥을 고친 것이 아니라 끈 것이다"
 fi
+rm -f "$RD/B3DEAD.pid" "$RD/B3DEAD.start"
 
 # Half two — the regression. The same 41 acts, but progress has moved since,
 # which closes the old window and opens a new one holding none of them. A count
@@ -9701,6 +9957,47 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "진전 뒤 첫 행위" -- touch "$WORK/t5"
 after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 check "진전이 움직이면 B3 의 창이 새로 열린다 (누적이 아니다)" "$after" "$before"
+
+# Half three — the budget is the ROUTER's. The window the act above opened is
+# still open; the same 41 rows written from the stage seat spend none of it,
+# because a stage sends every Bash line it runs through this gate and most of
+# those grade above `읽기`, so an unfiltered count fired B3 on a router that had
+# done nothing. Then the same 41 from the lead, in the same window, fire it —
+# which is what keeps the stage half from passing against a boundary that
+# simply stopped counting.
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+i=0
+while [ "$i" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=SB3 | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=스테이지 통행량 %s | prev=x\n' "$i" >> "$FX_LEDGER"
+  i=$((i + 1))
+done
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "스테이지 통행량 뒤의 판정" -- touch "$WORK/t5s"
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+check "스테이지가 쓴 읽기 초과 행은 라우터의 예산을 쓰지 않는다" "$after" "$before"
+i=0
+while [ "$i" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=예산 픽스처 재차 %s | prev=x\n' "$i" >> "$FX_LEDGER"
+  i=$((i + 1))
+done
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "리드 통행량 뒤의 판정" -- touch "$WORK/t5l"
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+if [ "$after" -gt "$before" ]; then
+  ok "같은 창에서 리드가 쓴 41행은 예산을 쓴다 (위 단언이 꺼진 경계 위에서 통과한 것이 아니다)"
+else
+  bad "B3 행위자 필터" "리드의 41행이 들어왔는데 경계가 발동하지 않았다"
+fi
+
 # ---------------------------------------------------------------------------
 # The banner seat, gate side.
 #
@@ -9915,6 +10212,19 @@ check "게이트의 배너 좌석 래퍼는 좌석 변수를 직접 읽지 않�
 # makes a night with one shift byte-identical to a night with none.
 check "샤드가 쓴 행의 교대 눈금이 자기 기동 번호다" \
   "$(grep -cF '`segment` | 교대=1 | id=SBS1 ' "$FX_LEDGER" || true)" "1"
+
+# THE ACTOR FIELD, ALL THREE SEATS, on the authorisation rows the three calls
+# above wrote. `교대=` is 0 for the lead and for a stage alike, so this field is
+# the only thing on the row that tells a stage's dispatch from the lead's — and
+# the progress vector's `dispatches=` selects on it positively, so a wrong value
+# here is a stage able to write the router's progress. The stage test has to
+# win over the shift marker (a stage a shift launched inherits it), which the
+# stage row pins from a call that carries both stage markers.
+actor_of() { { grep -F '`자율 승인`' "$FX_LEDGER" || true; } | grep -F "세그먼트=$1 " | tail -1 \
+             | tr '|' '\n' | sed -n 's/^ *행위자=//p' | sed 's/[[:space:]]*$//' | tail -1; }
+check "스테이지 호출의 인가 행은 행위자=스테이지 를 싣는다" "$(actor_of SBN1)" "스테이지"
+check "리드 호출의 인가 행은 행위자=리드 를 싣는다"        "$(actor_of SBN2)" "리드"
+check "샤드 호출의 인가 행은 행위자=교대 를 싣는다"        "$(actor_of SBS1)" "교대"
 
 # --- ONE SEGMENT THROUGH BOTH SEATS ----------------------------------------
 #
@@ -10783,16 +11093,19 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
   "$(body_utf8_verdict "$t22_ambient")" "valid"
 
 # ---------------------------------------------------------------------------
-# 12c. B1's progress vector counts what the router actually did
-# --- section: 12c | group: base | covers: - | anchors: 라우터의 읽기 초과 행위가 진전 벡터를 움직인다 ---
+# 12c. B1's progress vector counts a DISPATCH'S OUTCOME, not the router's own acts nor the authorisation row
+# --- section: 12c | group: base | covers: - | anchors: 라우터의 읽기 초과 행위는 진전이 아니다, 교대가 파견한 스테이지가 관측 가능한 결과를 남기면 진전이다 ---
 #
-# The vector saw the manifest, segment rows, cycle rows and obligations — and
-# nothing the router itself performs between stages. Commits, pushes, pull
-# requests and merges all left it unchanged, so a router landing fixes for an
-# hour read as motionless and B1 fired on it. The approval that opens then
-# suspends B1..B3 and blocks termination until a person closes it, and this
-# gate accepts no answer the router typed, so the false positive costs a night
-# rather than a line of output.
+# The router's above-read exec used to be a component of this vector (`acts=`).
+# Under the judgment definition the boundaries now apply — a judgment is a
+# router call graded above `읽기` that is not a dispatch — that count IS the
+# number of judgments, so the counter sat inside its own hash input: the digest
+# judgment k compared against had already been moved by judgment k-1's row, and
+# `n` could never climb past 0. So the count left the vector, and what entered
+# in its place is the one act that actually moves a run: a stage dispatch —
+# read from its `stage-result` outcome, because the authorisation row lands
+# BEFORE the launch and a dispatch that died at launch would otherwise reset
+# the counter with the very row its re-dispatch writes again.
 #
 # Both directions again, for the same reason as 12b: a boundary that has been
 # silenced and one that has been fixed are indistinguishable from the side
@@ -10800,17 +11113,70 @@ check "본문 절단 — 현재 로케일에서도 유효한 UTF-8 로 나온다
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
+check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
 
-# Half one — the router performed a world-changing act. The vector must move,
-# which is what makes the repeat counter reset rather than climb.
+# Half one — REVERSED. The router performed a world-changing act, and the
+# vector must NOT move: that act is a judgment, and a judgment that moved the
+# digest it is judged against would reset the counter it is meant to raise.
 before_v=$(PD)
 printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=push | 축2=외부상태변경 | 근거=진전 픽스처 | prev=x\n' >> "$FX_LEDGER"
 after_v=$(PD)
-if [ "$before_v" != "$after_v" ]; then
-  ok "라우터의 읽기 초과 행위가 진전 벡터를 움직인다"
-else
-  bad "진전 벡터" "커밋·push·PR 를 수행해도 벡터가 그대로다 — B1 이 그 위에서 발화한다"
-fi
+check "라우터의 읽기 초과 행위는 진전이 아니다 (판정의 개수가 자기 해시 안에 앉지 않는다)" "$after_v" "$before_v"
+
+# THE DISPATCH COMPONENT: AN OUTCOME, FOR A SEGMENT THE ROUTER DISPATCHED. The
+# authorisation row alone moves nothing — it is written before the launch, so
+# counting it made a launch that never produced a process reset the counter.
+# The seat is read from that row all the same, selected POSITIVELY on the actor
+# field: nothing stops a stage from calling `act --kind skill`, and `교대=` is 0
+# for the lead and for a stage alike, so an exclusion-shaped selector would let
+# the constrained side write its own progress. A stage-dispatched segment's
+# outcome must contribute NOTHING, and so must one whose row predates the
+# field. Segment ids are unique to this block — `gate_pin_attempt` counts per
+# segment, so later sections are unaffected. The outcome classes used are the
+# ones `stage-normal=` does not count, so every movement here is this
+# component's alone.
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견 픽스처 | prev=x\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "파견 인가 행만으로는 진전이 아니다 (기동보다 먼저 쓰이는 행이다)" "$after_v" "$before_v"
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP2 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=파견 픽스처 | prev=x\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "리드의 파견 인가 행도 그 자체로는 진전이 아니다" "$after_v" "$before_v"
+# THE FAILED DISPATCH, WHOLE, compared against the value from BEFORE the
+# dispatch — not after its authorisation row — so a component that counts the
+# authorisation row fails here instead of passing on a value it had already
+# moved. The gate writes `종단 부류=크래시` for a launch that never started, and
+# the failure row after it.
+printf -- '- `stage-result` | 세그먼트=SDP1 | 스테이지=SDP1 | 종류=implement | 종료 코드=1 | 실행 버전=1 | 종단 부류=크래시 | 시각=2026-01-01T06:00:00Z\n' >> "$FX_LEDGER"
+printf -- '- `자율 승인` | kind=skill | 결정=결과 | 대상=front | 세그먼트=SDP1 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 행위자=교대 | 근거=rc=1 | prev=x\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "기동에서 죽은 파견은 인가·크래시·결과 행을 다 합쳐도 진전이 아니다 (파견 직전 값 그대로)" "$after_v" "$before_v"
+printf -- '- `stage-result` | 세그먼트=SDP1 | 스테이지=SDP1 | 종류=implement | 종료 코드=0 | 실행 버전=2 | 종단 부류=의도된 park | 시각=2026-01-01T06:10:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "교대가 파견한 스테이지가 관측 가능한 결과를 남기면 진전이다" "재파견이 park 로 끝났는데 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `stage-result` | 세그먼트=SDP2 | 스테이지=SDP2 | 종류=review | 종료 코드=0 | 실행 버전=1 | 종단 부류=산출물 없는 정지 | 시각=2026-01-01T06:20:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check_ne "$before_v" "$after_v" "리드가 파견한 스테이지의 결과도 진전이다" "리드 파견의 결과 행이 들어왔는데 벡터가 그대로다"
+before_v=$(PD)
+printf -- '- `stage-result` | 세그먼트=SDP2 | 스테이지=SDP2 | 종류=review | 종료 코드=0 | 실행 버전=2 | 종단 부류=공허한 성공 | 시각=2026-01-01T06:30:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "라우터가 파견했어도 공허한 성공은 진전이 아니다" "$after_v" "$before_v"
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP3 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=스테이지 | 근거=파견 픽스처 | prev=x\n' >> "$FX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP3 | 스테이지=SDP3 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:40:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "스테이지가 파견한 세그먼트의 결과는 진전이 아니다 (구속되는 쪽은 자기 진전을 쓸 수 없다)" "$after_v" "$before_v"
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SDP4 | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=행위자 필드 이전의 옛 행 | prev=x\n' >> "$FX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP4 | 스테이지=SDP4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T06:50:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "행위자 필드가 없는 옛 파견 행이 낸 세그먼트의 결과는 아무것도 기여하지 않는다" "$after_v" "$before_v"
+before_v=$(PD)
+printf -- '- `자율 승인` | kind=x | 결정=act | 대상=front | 세그먼트=SDP5 | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=교대 | 근거=파견이 아닌 act | prev=x\n' >> "$FX_LEDGER"
+printf -- '- `stage-result` | 세그먼트=SDP5 | 스테이지=SDP5 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T07:00:00Z\n' >> "$FX_LEDGER"
+after_v=$(PD)
+check "kind 가 skill 이 아닌 act 행은 파견이 아니다 (그 세그먼트의 결과도 세지 않는다)" "$after_v" "$before_v"
 
 # The read-only counterpart, which pins the qualifier rather than the rule: if
 # reads counted, the vector would never settle and B1 could never fire at all.
@@ -10835,7 +11201,6 @@ check "등급이 없는 행위는 진전으로 세지 않는다 (모름은 진�
 before_v=$(PD)
 printf -- '- `종료 절` | id=C9 | 상태=충족 | 근거=픽스처 | prev=x\n' >> "$FX_LEDGER"
 after_v=$(PD)
-check_ne() { if [ "$1" != "$2" ]; then ok "$3"; else bad "진전 벡터" "$4"; fi; }
 check_ne "$before_v" "$after_v" "절 정산이 진전 벡터를 움직인다" "절을 정산해도 벡터가 그대로다"
 before_v=$(PD)
 printf -- '- `blocked` | 대상=- | 스코프=run | 원인=해소 | 사유=픽스처 | 근거=픽스처 | prev=x\n' >> "$FX_LEDGER"
@@ -10849,6 +11214,76 @@ before_v=$(PD)
 printf -- '- `승인` | 승인 id=B1-fixture | 상태=대기 | 절단점=경계 | 질문 문면=픽스처 | prev=x\n' >> "$FX_LEDGER"
 after_v=$(PD)
 check "경계가 발행한 승인은 진전으로 세지 않는다 (자기 카운터를 리셋하지 못한다)" "$after_v" "$before_v"
+
+# ---------------------------------------------------------------------------
+# 12d. A live stage does not hold B1 back — the router's judgment fires it
+# --- section: 12d | group: base | covers: - | anchors: 살아 있는 스테이지가 있어도 라우터의 판정에서 B1 이 발화한다 ---
+#
+# THE LIVE-STAGE EARLY RETURN IS GONE, AND THIS IS THE ONE FIXTURE THAT SAYS SO.
+# That return neither raised nor reset the counter, so the value froze while a
+# stage ran and the first judgment after the stage died fired on it — the very
+# moment a healthy run resumes routing. Its purpose (a stage firing B1 against
+# itself) is carried by the caller condition, which section 21 drives; but
+# every fixture that drives B1 does so with no pid file in the run directory,
+# so putting the early return back would leave both suites green. This one
+# writes a LIVE stage record into the run directory the boundary reads, seeds
+# the counter one short of the threshold, and drives ONE router judgment: the
+# B1 row must appear, and it appears only if the boundary evaluated with a live
+# stage present.
+#
+# NOT REACHABLE THROUGH `act --kind skill`, and that is why the record is
+# written by hand: the launcher waits on the stage it started, so the router
+# has no judgment while its own dispatch is alive. The state this pins is the
+# one the driver's spawn path and the detached supervisor produce — a stage
+# alive in the run directory while the routing seat goes on judging.
+# ---------------------------------------------------------------------------
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+B1_N_UNDER_TEST=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -n "$B1_N_UNDER_TEST" ]; then
+  ok "B1_STAGNATION_N 를 게이트 상수에서 읽는다 ($B1_N_UNDER_TEST)"
+else
+  bad "B1_STAGNATION_N" "gate.sh 에서 readonly B1_STAGNATION_N=<n> 을 읽지 못했다"; B1_N_UNDER_TEST=5
+fi
+# The live record, in the shape the gate's own launcher leaves: a pid file and
+# the start-time fingerprint beside it, for a process that is really running.
+FX_RUN_DIR_SAVE="${FX_RUN_DIR:-}"; FX_RUN_DIR="$RD"
+fx_stage_live SLIVE
+FX_RUN_DIR="$FX_RUN_DIR_SAVE"
+check "픽스처의 스테이지가 살아 있는 것으로 세어진다 (아래 단언이 공허하지 않다)" "$(cc_live_stages "$RD")" "1"
+printf '%s\n' "$(PD)" > "$RD/progress-digest"
+printf '%s\n' "$((B1_N_UNDER_TEST - 1))" > "$RD/progress-repeat"
+printf '%s\n' "0" > "$RD/obligation-repeat"
+# A NEW digest for this judgment's B1 id. Every B1 issued earlier in this file
+# was answered by a drain loop, and an answered id stays quiet while its digest
+# is unchanged — so the digest is moved by a structural row first, and the
+# counter is re-seeded after the judgment that observes the move.
+printf -- '- `종료 절` | id=C12d | 상태=충족 | 근거=12d 픽스처 | prev=x\n' >> "$FX_LEDGER"
+printf '%s\n' "$(PD)" > "$RD/progress-digest"
+b1_12d_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "12d — 살아 있는 스테이지 아래의 라우터 판정" -- touch "$WORK/t12d"
+check "살아 있는 스테이지 아래의 라우터 판정 자체는 통과한다" "$rc" "0"
+check "그 판정이 정체 카운터를 문턱까지 올린다 (살아 있는 스테이지가 카운터를 얼리지 않는다)" \
+  "$(cat "$RD/progress-repeat")" "$B1_N_UNDER_TEST"
+b1_12d_after=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
+if [ "${b1_12d_after:-0}" -gt "${b1_12d_before:-0}" ]; then
+  ok "살아 있는 스테이지가 있어도 라우터의 판정에서 B1 이 발화한다 (이른 반환이 돌아오면 여기가 빨개진다)"
+else
+  bad "B1 살아 있는 스테이지" "스테이지가 살아 있는 동안 B1 이 발화하지 않았다 — 지워진 이른 반환이 돌아왔다"
+fi
+# Nothing stays open or alive: the approval this fired would suspend B1..B3 for
+# every section below that shares this state directory, and the pid would count
+# as a live stage for termination condition 7.
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD/SLIVE.pid" "$RD/SLIVE.start"
+check "픽스처의 스테이지를 거둔 뒤 살아 있는 스테이지는 없다" "$(cc_live_stages "$RD")" "0"
 
 
 # ---------------------------------------------------------------------------
@@ -12468,6 +12903,114 @@ check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
 check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
 
+# (d) A SHIFT LAUNCHED FROM A STAGE SEAT DOES NOT INHERIT THAT SEAT. Nothing
+# refuses `--kind router-shift` from a stage, and an environment prefix adds
+# and overwrites but never unsets — so the successor arrived carrying both
+# stage markers, `cc_caller_is_stage` answered "stage" for it all night, the
+# judgment predicate evaluated no boundary on that seat, and its dispatch rows
+# stamped `행위자=스테이지` and moved no progress. The two situations "a stage a
+# shift launched" and "a shift a stage launched" have byte-identical
+# environments, so this cannot be told apart in the actor block — the launcher
+# has to clear the markers, and this fixture drives the launcher from a seat
+# that carries both.
+#
+# The stub CLI records the environment it was handed and then, as the successor
+# itself, writes one row through the gate — the assertion that matters is the
+# actor on THAT row. `SS4` is a segment id no other row in this section uses.
+cat > "$WORK/bin/claude-envstub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${CC_PIPELINE_SEGMENT:-}" "${CC_PIPELINE_STAGE_ID:-}" "${CC_PIPELINE_SHIFT_ID:-}" > "$CC_TEST_SHIFT_ENV"
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind segment --target infra \
+  --segment SS4 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 후속 교대 자신이 쓰는 행" \
+  -- "워크트리=$CC_TEST_CONE_A" 상태=실행중 선행=없음 >/dev/null 2>&1
+exit 0
+STUB
+chmod +x "$WORK/bin/claude-envstub"
+: > "$WORK/shift-env.txt"
+H5S() {  # the digest as the STAGE-SEATED act's own environment sees it
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+    CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+    CC_CLAUDE_BIN="$WORK/bin/claude-envstub" \
+    CC_PIPELINE_SEGMENT=SS9 CC_PIPELINE_STAGE_ID='SS9#1' \
+    bash "$GATE" snapshot --manifest "$NM5" 2>/dev/null ) | jq -r .H
+}
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+      CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+      CC_CLAUDE_BIN="$WORK/bin/claude-envstub" \
+      CC_TEST_SHIFT_ENV="$WORK/shift-env.txt" CC_TEST_CONE_A="$CONE_A" \
+      CC_PIPELINE_SEGMENT=SS9 CC_PIPELINE_STAGE_ID='SS9#1' \
+      bash "$GATE" act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5S)" \
+      --rationale "픽스처 — 스테이지 좌석에서 띄우는 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
+msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+check "(d) 스테이지 좌석에서 띄운 교대도 실제로 기동한다" "$rc" "0"
+check "(d) 후속자가 실제로 실행됐다 (환경 기록 한 줄)" "$(grep -c . "$WORK/shift-env.txt" || true)" "1"
+IFS='|' read -r sx_seg sx_stage sx_shift < "$WORK/shift-env.txt" || true
+check "(d) 후속자의 환경에서 CC_PIPELINE_SEGMENT 는 비어 있다"  "$sx_seg"   ""
+check "(d) 후속자의 환경에서 CC_PIPELINE_STAGE_ID 는 비어 있다" "$sx_stage" ""
+check "(d) 후속자의 환경에는 자기 교대 마커가 서 있다" "$sx_shift" "$SHIFT_RUN_ID#2"
+actor5() { { grep -F '`자율 승인`' "$LEDGER5" || true; } | grep -F "세그먼트=$1 " | tail -1 \
+           | tr '|' '\n' | sed -n 's/^ *행위자=//p' | sed 's/[[:space:]]*$//' | tail -1; }
+check "(d) 후속자 자신이 쓴 인가 행은 행위자=교대 다 (기동자의 좌석을 물려받지 않는다)" "$(actor5 SS4)" "교대"
+
+# (e) A FLOOR ALREADY ANSWERED FOR THIS SAME STATE DOES NOT STOP THE LAUNCH.
+#
+# Two arms meet here and each is right on its own. Auto-resolution closes the
+# approval the floor issues and the launch goes ahead. The issuer keeps an id a
+# person (or the auto-resolution) has ANSWERED quiet while its binding value has
+# not moved — so on the NEXT launch in the same state nothing is issued and
+# nothing is auto-resolved either. Read together as "no approval was resolved
+# here", that was reported as `GATE_EXIT_APPROVAL` with no approval pending: the
+# run's routing ended with nobody left to start a successor and nothing for a
+# person to close. The suppressed id is a settled one, so it is not a stop.
+#
+# The second call is the assertion: rc 0, and NOT ONE new floor row — the row
+# count is what tells the suppressed arm from a fresh issue-and-auto-close pair,
+# which would also answer 0 and prove nothing about the arm under test.
+#
+# PENDING IS READ PER ID, FROM ITS LAST ROW. An auto-resolved issue leaves its
+# `상태=대기` row in place and appends the close after it, so counting `대기` rows
+# grows by one for an approval that was never left waiting — and a floor whose
+# binding moved since (b) mints exactly such a fresh id here.
+floor_pending5() {
+  { grep -F '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } \
+    | sed -n 's/.*승인 id=\([^ |]*\) | 상태=\([^ |]*\).*/\1 \2/p' \
+    | awk '{ s[$1] = $2 } END { n = 0; for (k in s) if (s[k] == "대기") n++; print n }'
+}
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+e_launch0=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
+e_pend0=$(floor_pending5)
+gate5 "$SHIFT_RUN_ID#1" act --manifest "$NM5" --kind router-shift --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(H5 "$SHIFT_RUN_ID#1")" \
+      --rationale "픽스처 — 자동 해소가 켜진 채 바닥을 넘은 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5"
+check "(e) 자동 해소가 켜지면 바닥을 넘은 교대도 기동한다" "$rc" "0"
+check "(e) 그 호출은 실제로 후속자를 띄웠다" \
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$((e_launch0 + 1))"
+# Two outcomes are both right here, and which one a run takes depends on whether
+# the progress digest moved since (b): the same id (b) left waiting is closed by
+# the auto-resolution, or a fresh id is issued and closed in the same call. The
+# pending count falls by one in the first and stays put in the second, so the
+# assertion is that this launch left NO MORE waiting than there was before it.
+check "(e) 그 호출이 대기로 남는 바닥 승인을 늘리지 않는다" \
+  "$( [ "$(floor_pending5)" -le "$e_pend0" ] && printf 'yes' || printf 'no' )" "yes"
+e_rows0=$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )
+gate5 "$SHIFT_RUN_ID#1" act --manifest "$NM5" --kind router-shift --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$(H5 "$SHIFT_RUN_ID#1")" \
+      --rationale "픽스처 — 답이 달린 바닥 아래의 두 번째 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5"
+check "(e) 답이 달린 같은 바닥에서 두 번째 교대도 멈추지 않는다 (대기 승인 없는 정지가 사라졌다)" "$rc" "0"
+check "(e) 그 호출은 같은 결속값의 답한 id 를 다시 발행하지 않는다 (바닥 승인 행이 늘지 않는다)" \
+  "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "$e_rows0"
+check "(e) 억제된 채로도 후속자는 떴다" \
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$((e_launch0 + 2))"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
@@ -13375,9 +13918,17 @@ b56_balance() {
   # 마지막 억제 흔적의 크레딧 잔량, 흔적이 없으면 빈 값.
   b56_field "$( { grep -F '`경계 억제`' "$B56_LEDGER" || true; } | tail -1)" '크레딧 잔량'
 }
+# 정체 문턱도 게이트 상수에서 읽는다. 판정 횟수를 리터럴로 박으면 상수가 오른 뒤
+# 카운터가 문턱에 닿지 못해, 억제·발행 단언이 전부 「아무 일도 없었다」로 떨어진다 —
+# 문턱이 3 에서 5 로 오른 뒤 이 절이 정확히 그렇게 실패했다.
+b56_stag_n=$(sed -n 's/^readonly B1_STAGNATION_N=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -z "$b56_stag_n" ]; then
+  bad "56: B1_STAGNATION_N" "gate.sh 에서 readonly B1_STAGNATION_N=<n> 을 읽지 못했다"; b56_stag_n=5
+fi
 b56_eval4() {
-  # 판정 네 번 — 셋이 카운터를 문턱까지 올리고 넷째가 넘는다.
-  b56_seam 'gate_b1_stagnation; gate_b1_stagnation; gate_b1_stagnation; gate_b1_stagnation' >/dev/null 2>&1
+  # 판정 N+1 번 — 첫 판정이 기준선을 세우고(카운터 0) 뒤의 N 번이 카운터를 문턱까지
+  # 올린다. 함수 이름은 문턱이 3 이던 때의 네 번에서 왔다.
+  b56_seam "i=0; while [ \"\$i\" -le $b56_stag_n ]; do gate_b1_stagnation; i=\$((i + 1)); done" >/dev/null 2>&1
 }
 
 b56_seam() {
@@ -13415,7 +13966,8 @@ b56_field() {
 # 어느 하나만 있어도 `-1` 을 내어 크레딧이 게이트가 띄운 어느 교대에서도 적용되지
 # 않았는데, 픽스처에 그 행이 없어 초록이었다.
 #
-# 판정 네 번을 돌린다 — 셋이 카운터를 문턱까지 올리고 넷째가 넘는다.
+# 판정을 문턱보다 한 번 더 돌린다 — 첫 판정이 기준선을 세우고 나머지가 카운터를
+# 문턱까지 올린다.
 b56_fixture 4 '축2=읽기' 1
 b56_eval4
 check "56: 기동 행·결과 행이 낀 읽기 4개(크레딧 미만)로는 경계 승인이 발행되지 않는다" \
@@ -13423,8 +13975,8 @@ check "56: 기동 행·결과 행이 낀 읽기 4개(크레딧 미만)로는 경
 check "56: 그 대신 억제 흔적이 남는다" "$(b56_rows '경계 억제')" "1"
 check "56: 흔적은 새 계열에 남고 blocked 는 건드리지 않는다" "$(b56_rows 'blocked')" "0"
 # 억제는 리셋이 아니다. 카운터를 그대로 두므로 읽기가 끝나고 진짜 정체가 이어지면
-# 다음 판정들에서 문턱에 도달한다 — 바로 위 `gate_live_stages` 억제와 같은 모양이다.
-check "56: 억제해도 카운터는 리셋되지 않는다" "$(cat "$B56_RD/progress-repeat" 2>/dev/null || printf '?')" "3"
+# 다음 판정들에서 문턱에 도달한다 — B3 의 살아 있는 스테이지 이월과 같은 모양이다.
+check "56: 억제해도 카운터는 리셋되지 않는다" "$(cat "$B56_RD/progress-repeat" 2>/dev/null || printf '?')" "$b56_stag_n"
 check "56: 흔적 행의 크레딧 잔량은 기동 행과 결과 행을 뺀 값이다 (8-1-4-1)" "$(b56_balance)" "2"
 # 결과 행이 정확히 한 단위를 쓴다 — 같은 구간에서 결과 행만 빼면 잔량이 하나 는다.
 b56_fixture 4
@@ -13562,7 +14114,10 @@ b56_reset_case '정상 완료 stage-result' 이동 '' '- `stage-result` | 교대
 b56_reset_case '공허한 성공 stage-result' 불변 '' '- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=공허한 성공 | 관측=오라클'
 b56_reset_case '원인=해소 blocked'      이동 '' '- `blocked` | 교대=1 | 대상=- | 스코프=run | 원인=해소 | 사유=오라클 | 근거=오라클'
 b56_reset_case '원인=막힘 blocked'      불변 '' '- `blocked` | 교대=1 | 대상=- | 스코프=run | 원인=막힘 | 사유=오라클 | 근거=오라클'
-b56_reset_case '읽기 초과 exec'         이동 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 근거=오라클'
+# 읽기 초과 exec 는 더 이상 진전이 아니다. 벡터의 행위 성분이 라우터 자신의 exec 수에서
+# 파견의 관측된 결과(`dispatches=`)로 바뀌었으므로 이 행은 구간을 리셋하지 않고, 읽기가
+# 아닌 인가로 한 단위를 쓴다.
+b56_reset_case '읽기 초과 exec'         불변 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=워크트리쓰기 | 자격=주변 | 근거=오라클'
 b56_reset_case '읽기 등급 exec'         불변 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=읽기 | 자격=주변 | 근거=오라클'
 # `결정=exec` 가 아닌 인가 행은 진전도 읽기도 아니다. 위 표의 「불변」 쪽과 같은
 # 부류이되 세는 자리가 다르다 — 읽기가 아니라 그 밖의 인가로 세어 한 단위를 쓴다.
@@ -13577,9 +14132,13 @@ b56_reset_case '실패한 읽기의 결과 행'   불변 '' '- `자율 승인` |
 check "56: 결과 행은 읽기로 세이지 않고 그 밖의 인가로 소모된다 (2 2)" \
   "$(b56_seam 'gate_b1_read_run' 2>/dev/null | tail -1)" "2 2"
 # 근거 문면 위조 — `--rationale` 는 라우터가 자유롭게 쓰고 `근거=` 로 가공 없이 실린다.
-# 앵커 없는 부분 문자열 판정이면 이 한 줄이 읽기 크레딧·B3 예산·진전 다이제스트를
-# 한꺼번에 무장해제한다.
-b56_reset_case '근거= 로 위조한 읽기 등급' 이동 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 근거=축2=읽기 로 잘못 등급했다'
+# 앵커 없는 부분 문자열 판정이면 이 한 줄이 읽기 크레딧과 B3 예산을 한꺼번에
+# 무장해제한다. 벡터가 exec 를 세지 않게 된 뒤로 이 행은 다이제스트를 움직이지 않으므로,
+# 위조가 막히는지는 다이제스트가 아니라 읽기 구간의 계수로 본다 — 앵커 없이 판정하면
+# 이 행이 읽기로 세여 `3 1` 이 된다.
+b56_reset_case '근거= 로 위조한 읽기 등급' 불변 '' '- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=t | 세그먼트=S1 | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 근거=축2=읽기 로 잘못 등급했다'
+check "56: 근거= 로 위조한 읽기 등급은 읽기로 세이지 않고 그 밖의 인가로 소모된다 (2 2)" \
+  "$(b56_seam 'gate_b1_read_run' 2>/dev/null | tail -1)" "2 2"
 
 # --- 철회 회귀 — D7 의 세 규칙과 그 진입점 ------------------------------------
 #
