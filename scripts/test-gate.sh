@@ -2238,7 +2238,7 @@ check "읽기 등급이 읽기로 나온다" "$msg" "축2=읽기"
 # --- section: 3 | group: base | covers: act, snapshot | anchors: 절단점 이하의 행위는 통과한다 ---
 # ---------------------------------------------------------------------------
 gate act --manifest "$FX_MANIFEST" --kind push --target front --cutpoint push \
-     --snapshot-digest "$(HH)" --rationale x -- git push origin main
+     --snapshot-digest "$(HH)" --rationale x -- git push origin HEAD:refs/heads/feature-x
 check "절단점 이하의 행위는 통과한다" "$rc" "0"
 
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
@@ -5003,8 +5003,8 @@ cp "$GBAK2" "$FX_GRANT"
 # next attempt at the same act took the same exit 5 — a loop that never closed.
 # ---------------------------------------------------------------------------
 # `aws s3` is outside the fixture's pre-authorization rows, so it issues one.
-gateL act --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 --snapshot-digest "$(HL)" --rationale x -- aws s3 ls
+gateL act --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 --snapshot-digest "$(HL)" --rationale x -- rsync --version
 check "사전 인가 밖 행위는 승인을 발행한다" "$rc" "5"
 ap=$( { grep -F '`승인`' "$FX_LEDGER" | grep -F '상태=대기' || true; } | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -5013,14 +5013,14 @@ if [ -n "$ap" ]; then ok "승인 id 가 원장에 남는다"; else bad "승인 i
 # Resolve it by hand — `close` reads a transcript this fixture has no way to
 # produce, and what is under test is the CONSUMER of the resolved row.
 printf -- '- `승인` | 승인 id=%s | 상태=승인 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$FX_LEDGER"
-gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 -- aws s3 ls
+gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 -- rsync --version
 check "해소된 승인이 같은 행위를 연다" "$rc" "0"
 
 # And a voided one refuses rather than re-asking.
 printf -- '- `승인` | 승인 id=%s | 상태=무효 | 답변 문면=픽스처 | 해소 시각=t | prev=x\n' "$ap" >> "$FX_LEDGER"
-gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint 배포 \
-     --surface 외부상태변경 -- aws s3 ls
+gateL plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SROWLESS --cutpoint push \
+     --surface 외부상태변경 -- rsync --version
 check "무효로 닫힌 승인은 행위를 거부한다" "$rc" "3"
 
 # ---------------------------------------------------------------------------
@@ -6843,8 +6843,8 @@ case "$msg" in
   *"2 대기 중인 행위 승인"*) bad "조건 2" "절단점=판단 승인이 행위 승인으로 세어졌다: $msg" ;;
   *) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)" ;;
 esac
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
 check "사전 인가 밖 행위는 행위 승인을 발행한다" "$rc" "5"
 gateN act --manifest "$NM" --kind propose-done --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 절=x 근거=y
@@ -8040,8 +8040,8 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
 # carries `-` — was a sentence and not a check. An answer given at 22:00 opened
 # the same argv at 04:00 across every commit that had landed in between. Every
 # tuple assertion before this one observed the STRING.
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
 check "구속 튜플 실험용 행위가 승인을 발행한다" "$rc" "5"
 tup_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
 tup_id=$(row_field "$tup_row" '승인 id')
@@ -8066,12 +8066,12 @@ check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
 # `plan` RATHER THAN `act` for the two freshness probes: the resolution is read
 # before the dry-run arm on purpose, so `plan` reports the verdict without
 # performing anything — and this argv reaches outside the machine.
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 -- rsync --version
 check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
 ( cd "$WT" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 -- aws s3 ls s3://tuple/probe
+gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 -- rsync --version
 check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
 case "$msg" in
   *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -8082,8 +8082,8 @@ esac
 # worse than the stale grant it replaced.
 tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                    | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint 배포 \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- aws s3 ls s3://tuple/probe
+gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- rsync --version
 check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
 tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
                   | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
@@ -8975,8 +8975,8 @@ if [ -d "$EWT" ]; then
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   H5() { cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM5" 2>/dev/null | jq -r .H; }
-  gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- aws s3 ls s3://execwt/probe
+  gate5 act --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 --snapshot-digest "$(H5)" --rationale x -- rsync --version s3://execwt/probe
   check "실행 워크트리를 선언한 대상의 행위가 승인을 발행한다" "$rc" "5"
   ewt_row=$( { grep -F '`승인`' "$LEDGER5" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
   ewt_id=$(row_field "$ewt_row" '승인 id')
@@ -8999,21 +8999,21 @@ if [ -d "$EWT" ]; then
   # `plan` for every probe below, the way 31ak does it: the resolution is read
   # before the dry-run arm, so the verdict comes back without the argv — which
   # reaches outside the machine — ever running.
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- rsync --version s3://execwt/probe
   check "두 트리가 다 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
   # THE FALSE-POSITIVE AXIS. Another segment landing a commit in the main
   # worktree says nothing about the tree this act runs in.
   ( cd "$WT" && git commit --allow-empty -q -m "메인만 움직이는 빈 커밋" )
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- rsync --version s3://execwt/probe
   check "메인 워크트리만 움직인 것은 그 승인을 낡게 하지 않는다" "$rc" "0"
   ( cd "$WT" && git reset -q --soft "$main_head" )
   check "픽스처가 옮긴 메인 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
   # THE FALSE-NEGATIVE AXIS, which is the one that let a night of commits through.
   ( cd "$EWT" && git commit --allow-empty -q -m "실행 워크트리만 움직이는 빈 커밋" )
-  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint 배포 \
-        --surface 외부상태변경 -- aws s3 ls s3://execwt/probe
+  gate5 plan --manifest "$NM5" --kind x --target infra --segment SE1 --cutpoint push \
+        --surface 외부상태변경 -- rsync --version s3://execwt/probe
   check "실행 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
   case "$msg" in
     *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
@@ -12298,7 +12298,10 @@ sa_merge SBA
 check "A 보호: 슬라이스 A 의 머지 형태가 그대로 통과한다" "$rc" "0"
 sba=$(sb_row SBA)
 check "A 보호: 그 행의 절단점이 머지 그대로다" "$(sa_field "$sba" '절단점')" "머지"
-check "A 보호: 표가 침묵하므로 유도 절단점이 - 다" "$(sa_field "$sba" '유도 절단점')" "-"
+# push 는 사다리 표에서 여전히 침묵하지만, 대상 행이 해소된 뒤 목적지를 베이스와
+# 맞춰 칸을 다시 유도한다 — 이 refspec 의 목적지가 베이스라 머지다. 그 재유도가
+# 없으면 베이스로 미는 push 가 `push` 칸으로 남아 리뷰 요구가 서지 않는다.
+check "A 보호: 베이스로 가는 push 는 머지로 재유도된다" "$(sa_field "$sba" '유도 절단점')" "머지"
 check "A 보호: 그래서 그 머지가 여전히 리뷰 의무를 만든다" "$(sa_ob_count)" "1"
 
 # --- 「아무것도 움직이지 않았다」 (슬라이스 B) -------------------------------

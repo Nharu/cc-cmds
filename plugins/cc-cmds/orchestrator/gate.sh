@@ -846,10 +846,19 @@ gate_push_rung() {
   # use; strip a leading remote name the repository actually knows.
   case "$base" in
     */*)
-      local rn="${base%%/*}"
-      if { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote 2>/dev/null; } | grep -qxF "$rn"; then
-        base="${base#*/}"
-      fi ;;
+      # CAPTURED, NOT PIPED. Under `pipefail` a `grep -q` that finds its match
+      # closes the pipe early, and the writer's SIGPIPE becomes the status of the
+      # whole compound — so the branch that should fire on a KNOWN remote name is
+      # the one that reports failure. The suite lints for this shape.
+      local rn="${base%%/*}" _remotes
+      _remotes=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote 2>/dev/null; } || true)
+      case "
+$_remotes
+" in
+        *"
+$rn
+"*) base="${base#*/}" ;;
+      esac ;;
   esac
   case " $* " in
     *" --all "*|*" --mirror "*) printf '머지'; return 0 ;;
@@ -1376,7 +1385,7 @@ surface_of_argv0() {
     # `basename`, `jq` — fall to `등급 미상`, which refuses; a stage that needed
     # one had `bash -c` as its only way through, and that records a read as a
     # worktree write.
-    true|false|sleep|pwd|echo|printf|test|basename|dirname|realpath|du|ps|od|uname|whoami|id|seq|cut|tr|nl|comm|cmp|column|expr|shellcheck|jq|printenv)
+    true|false|sleep|pwd|echo|printf|test|basename|dirname|realpath|du|ps|uname|whoami|id|seq|cut|tr|nl|comm|cmp|column|expr|shellcheck|jq|printenv)
       printf '읽기' ;;
     # Four tools whose effect is decided by ONE option, so the row reads it
     # rather than taking the wider grade for the common case.
