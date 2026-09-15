@@ -649,8 +649,13 @@ check "부류 없는 판단의 승인 id 로 채택 행이 쓰이지 않는다" 
   "$(j_rows '자율 승인' "해소 승인=$(j_field "$noclass_row" '승인 id') " | gate_count)" "0"
 
 # The floor does not read the class vocabulary at grade 2 either, so an
-# out-of-vocabulary class is closed by the same allow list.
-jact 등급=2 "판단 부류=없는-부류" 기준="커밋을 합칠지" 근거="이력이 길다"
+# out-of-vocabulary class is closed by the same allow list. The value has to be
+# outside the vocabulary for this to mean anything, and the vocabulary lint
+# requires every literal class in the tree to be inside it — so the value goes
+# through a variable, which that lint reads as a shell expansion. A file-wide
+# self-skip would also switch off the check on this file's real class literals.
+bad_cls=없는-부류
+jact 등급=2 "판단 부류=$bad_cls" 기준="커밋을 합칠지" 근거="이력이 길다"
 check "어휘 밖 부류의 등급 2 판단은 자동 해소가 거절로 닫는다" "$?" "3"
 
 # The judgment left pending above, resubmitted with a class that may be adopted,

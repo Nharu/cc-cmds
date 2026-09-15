@@ -9002,6 +9002,66 @@ else
   bad "채택 가능 부류 방출" "그 물음의 승인이 발행되지 않았다: $out"
 fi
 
+# ONE ANSWER MAKES ONE ADOPTION ROW. The approval id derives from the segment
+# and the standard and rationale alone, not from the class, and an emission with
+# no standard or rationale is filled in with the same placeholder text every
+# time. So a later emission in the same segment with the same (or empty) text
+# reaches the earlier answer instead of auto-resolution, and before the absorber
+# checked that answer itself a `시각-면제` emission was adopted through the answer
+# a `감사-발견` emission had already spent. These count the rows.
+ar_spent_count() {
+  # ar_spent_count <승인 id> — adoption rows that name that approval as spent.
+  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$1 " || true; } | grep -c . || true
+}
+if [ -n "$ar3_id" ]; then
+  ar_stub "$WORK/judgment-stub-ar-audit-visual" \
+    '**판단 부류**: 시각-면제 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 감사 발견을 미룰지 **판단 근거**: 다음 런에서 본다'
+  n_ar=$(ar_adoptions)
+  emit_ar SAR3 "$WORK/judgment-stub-ar-audit-visual"
+  check "같은 문면의 두 번째 시각-면제 방출은 앞선 답으로 채택되지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "그 답을 지목하는 채택 행은 여전히 하나다" "$(ar_spent_count "$ar3_id")" "1"
+  case "$out" in
+    *"이미 한 번 채택에 쓰였습니다"*) ok "두 번째 방출은 답이 이미 쓰였다고 경고한다" ;;
+    *) bad "소진 거부 경고" "경고 문구가 없다: $out" ;;
+  esac
+  case "$out" in
+    *"스테이지 종단"*) ok "소진 거부 뒤에도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "소진 거부 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+
+  n_ar=$(ar_adoptions)
+  emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
+  check "같은 방출을 반복해도 채택 행이 늘지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "반복 뒤에도 그 답을 지목하는 채택 행은 하나다" "$(ar_spent_count "$ar3_id")" "1"
+  case "$out" in
+    *"스테이지 종단"*) ok "반복 방출도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "반복 방출 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+fi
+
+seg_row SAR4 "$CONE_C" 상태=실행중 선행=없음
+check "빈 문면 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-bare-audit" '**판단 부류**: 감사-발견 **판단 등급**: 2'
+n_ar=$(ar_adoptions)
+emit_ar SAR4 "$WORK/judgment-stub-ar-bare-audit"
+check "기준·근거 없는 채택 가능 부류 방출은 채택 행 하나를 만든다" "$(ar_adoptions)" "$((n_ar + 1))"
+ar4_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
+  | { grep -F '막는 세그먼트=SAR4 ' || true; } | tail -1)" '승인 id')
+if [ -n "$ar4_id" ]; then
+  check "빈 문면 방출의 물음은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar4_id")" '상태')" "승인"
+  ar_stub "$WORK/judgment-stub-ar-bare-visual" '**판단 부류**: 시각-면제 **판단 등급**: 2'
+  n_ar=$(ar_adoptions)
+  emit_ar SAR4 "$WORK/judgment-stub-ar-bare-visual"
+  check "빈 문면의 두 번째 시각-면제 방출은 앞선 답으로 채택되지 않는다" "$(ar_adoptions)" "$n_ar"
+  check "빈 문면의 답을 지목하는 채택 행은 하나다" "$(ar_spent_count "$ar4_id")" "1"
+  case "$out" in
+    *"스테이지 종단"*) ok "빈 문면 소진 거부 뒤에도 기록 함수가 끝까지 도달한다" ;;
+    *) bad "빈 문면 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
+  esac
+else
+  bad "빈 문면 방출" "그 물음의 승인이 발행되지 않았다: $out"
+fi
+
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------
 # --- section: 31aq | group: cone | covers: snapshot, close | anchors: 실행 워크트리를 선언한 대상의 행위가 승인을 발행한다 ---
 #
