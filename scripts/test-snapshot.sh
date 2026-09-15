@@ -920,6 +920,96 @@ printf -- '- `cost` | 누적 usd=101 | 스테이지 수=1 | 관측 시각=2026-0
 gate_b4_cost >/dev/null 2>&1
 check "95% 에서 답을 받아 둔 런도 천장에 닿으면 끝난다 (억제가 종료를 가리지 않는다)" "$(end_rows)" "1"
 rm -f "$RUN_DIR/cost-resolved-pct"
+
+# ---------------------------------------------------------------------------
+# 8e. 두 번째 진전 축 — 선언된 무진전 상한이 런을 끝낸다
+#
+# B1 은 같은 수를 세고 묻는다. 묻는 순간 열리는 승인이 B1 자신을 억제하므로, 답이
+# 오지 않는 밤에는 그 카운터가 질문을 연 값에서 얼어붙는다. 이 경계는 같은 수를
+# 억제 밖에서 세고 끝낸다.
+# ---------------------------------------------------------------------------
+: > "$ELEDGER"
+rm -f "$RUN_DIR/done" "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+# 선언이 없으면 이 축은 무제한이다 — 지금까지 쓰인 모든 매니페스트의 거동이다.
+sb_n=3
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "상한이 선언되지 않으면 아무것도 세지 않는다" \
+  "$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '(없음)')" "(없음)"
+check "그때 런도 끝나지 않는다" "$(end_rows)" "0"
+printf '**무진전 상한**: %s\n' "$sb_n" >> "$FIX_MANIFEST"
+check "픽스처가 실제로 상한 줄을 얻었다 (아래가 공허하지 않다)" \
+  "$( { grep -c "^\*\*무진전 상한\*\*: $sb_n\$" "$FIX_MANIFEST" || true; } )" "1"
+# 같은 원장에 대고 연속으로 판정한다 — 진전 해시가 움직이지 않는 상태다.
+i=0
+while [ "$i" -lt "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+check "상한에 닿기 전까지는 끝내지 않는다" "$(end_rows)" "0"
+check "그동안 카운터는 올라간다" "$(cat "$RUN_DIR/stagnation-repeat")" "$((sb_n - 1))"
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "상한에 닿으면 런이 끝난다" "$(end_rows)" "1"
+check "종료 행이 B5 를 이름으로 싣는다" \
+  "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B5' || true; })" "1"
+# 진전이 있으면 카운터가 0 으로 돌아간다. 이것이 없으면 이 경계는 「판정 N회면
+# 끝낸다」가 되어 건강한 런을 끝낸다.
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+printf 'x\n' > "$RUN_DIR/stagnation-digest"
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "진전이 있으면 카운터가 0 으로 돌아간다" "$(cat "$RUN_DIR/stagnation-repeat")" "0"
+check "그때 런도 끝나지 않는다" "$(end_rows)" "0"
+# 정수로 읽히지 않는 값은 경고하고 강제하지 않는다 — 비용 천장과 같은 처분이다.
+grep -v '^\*\*무진전 상한\*\*: ' "$FIX_MANIFEST" > "$FIX_MANIFEST.s" && mv "$FIX_MANIFEST.s" "$FIX_MANIFEST"
+printf '**무진전 상한**: 세 번\n' >> "$FIX_MANIFEST"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+check "정수로 읽히지 않는 상한은 강제하지 않는다" "$(end_rows)" "0"
+grep -v '^\*\*무진전 상한\*\*: ' "$FIX_MANIFEST" > "$FIX_MANIFEST.s" && mv "$FIX_MANIFEST.s" "$FIX_MANIFEST"
+
+# ---------------------------------------------------------------------------
+# 8f. 두 축이 모두 미선언인 런은 그 사실을 듣는다
+#
+# 매니페스트 검사는 마감이 없으면 하드 실패하고 이 두 필드에는 아무 말도 하지
+# 않는다. 각각은 옳지만 겹치면, 검사를 통과한 매니페스트가 「경계가 검증됐다」로
+# 읽히면서 라우터 런을 묶는 두 필드가 둘 다 비어 있을 수 있다. 필수 검사로는 고칠
+# 수 없다 — 그 연언은 모든 동사에서 돌고 블록은 얼려 있어, 진행 중인 런이 다음
+# 동사에서 죽는다. 할 수 있는 것은 말해 주는 것이다.
+# ---------------------------------------------------------------------------
+MANIFEST_SAVE="$MANIFEST"
+UB="$WORK/unbounded-plan.md"
+grep -v '^\*\*비용 천장\*\*: ' "$FIX_MANIFEST" > "$UB"
+MANIFEST="$UB"
+RUN_DIR="$WORK/rundir-unbounded"; mkdir -p "$RUN_DIR"
+ub_out=$(gate_unbounded_notice 2>&1)
+case "$ub_out" in
+  *"둘 다 미선언"*) ok "두 축이 모두 미선언이면 그 사실을 말한다" ;;
+  *) bad "미선언 고지" "아무 말도 하지 않았다: ${ub_out:-(빈 출력)}" ;;
+esac
+check "그때 표지가 남는다" "$([ -e "$RUN_DIR/unbounded-notice" ] && printf yes || printf no)" "yes"
+ub_out2=$(gate_unbounded_notice 2>&1)
+check "두 번째 호출은 아무 말도 하지 않는다 (행위마다 경고하면 읽히지 않는다)" "$ub_out2" ""
+# 숫자로 읽히지 않는 값은 미선언으로 센다. 이것이 없으면 `$50` 짜리 천장이 고지를
+# 억누르면서 경계는 하나도 서지 않는다 — 고지가 존재하는 이유인 바로 그 조합이다.
+rm -f "$RUN_DIR/unbounded-notice"
+printf '**비용 천장**: $50\n' >> "$UB"
+ub_out3=$(gate_unbounded_notice 2>&1)
+case "$ub_out3" in
+  *"둘 다 미선언"*) ok "숫자로 읽히지 않는 천장은 미선언으로 센다" ;;
+  *) bad "미선언 고지" "강제되지 않는 값을 선언으로 셌다: ${ub_out3:-(빈 출력)}" ;;
+esac
+# 대조군 — 하나라도 유효하게 선언되면 침묵한다. 이것이 없으면 위 셋은 「항상
+# 경고하는 구현」과 구별되지 않는다.
+rm -f "$RUN_DIR/unbounded-notice"
+grep -v '^\*\*비용 천장\*\*: ' "$UB" > "$UB.c" && mv "$UB.c" "$UB"
+printf '**무진전 상한**: 9\n' >> "$UB"
+ub_out4=$(gate_unbounded_notice 2>&1)
+check "한 축이라도 유효하게 선언되면 침묵한다" "$ub_out4" ""
+check "그때 표지도 남기지 않는다" "$([ -e "$RUN_DIR/unbounded-notice" ] && printf yes || printf no)" "no"
+MANIFEST="$MANIFEST_SAVE"
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
