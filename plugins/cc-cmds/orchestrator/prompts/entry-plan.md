@@ -32,6 +32,14 @@ Two of these you must not choose casually. `implement` on an unaudited document 
 
 Set it when the run needs a design document that does not exist yet. Then say plainly in `design_rationale` that this cannot happen unattended: `design` interviews through a question tool that is **absent from every headless process**, so a design stage dispatched into the night does not degrade — it cannot ask, and whatever it produces is unanchored. The design step therefore belongs to the act that has a human in it. That is a constraint, not a preference, and stating it as a preference invites someone to "just let it run".
 
+## `design_tier` sizes the design team — it is not an entry skill
+
+`design_tier` is a sibling of `design_required`, not a new `entry_skill` value. `entry_skill` names the stage the run enters; the tier is a configuration parameter of one stage. Its only runtime effect is the command string the kickoff hands to the person: `lead-solo` → no command (the kickoff conversation writes the document itself), `team-2` → `/cc-cmds:design-lite <anchor>`, `team-4` → `/cc-cmds:design <anchor>`.
+
+The judgment is the review skill's small-work gate transposed, and **risk indicators outrank the size row**: if any of these fires — a public contract or shared schema change, a public API surface, a DB schema, auth/authorization, an external service integration, async/concurrency — the tier is `team-4` no matter how small the surface is. More than one entry in `targets` is also `team-4`; that signal is already a schema field and needs no new input. Otherwise a single surface with no contract change is `lead-solo`, and everything else is `team-2`. The tier is a default the person may raise and never one the model may quietly lower — the kickoff presents the judged tier and the tiers above it, nothing below.
+
+**Write `design_tier` and `design_tier_rationale` even when `design_required` is false.** Produce the judged value and say in `design_tier_rationale` that it is inactive — the same posture the schema takes by requiring `design_rationale` unconditionally.
+
 ## Targets are proposed here and CONFIRMED by the person
 
 List every repository the work plausibly touches in `targets`, with the alias you would give it and the remote slug. You are proposing, not deciding: the repo set is declared and verified by the human in front of you, never derived. Three reasons, and none of them is about your ability — a design document contains no absolute path, the only inference available is the convention this pipeline is retiring, and a worktree-vs-repository confusion is invisible to inference while being common on disk.

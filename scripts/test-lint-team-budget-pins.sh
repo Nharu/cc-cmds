@@ -11,6 +11,15 @@
 # that removing a lever's section leaves the lint green, so `git revert` of a
 # single lever cannot turn `make check` red on its way back.
 #
+# OK-4 and FAIL-7 are the design small-work gate's pair, and they are a pair on
+# purpose. Every other fixture omits `design/SKILL.md` entirely, so the design
+# lever is skipped for file absence and its two states were never exercised.
+# FAIL-7 carries the gate heading with the floor sentence deleted (the lever
+# fires, the pin is gone → red); OK-4 carries a `design/SKILL.md` that has no
+# gate heading at all (the lever is skipped → green). Only the second one
+# distinguishes "heading reverted" from "file absent", which is the distinction
+# the lever's skip-if-absent posture rests on.
+#
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real plugin
 # skills are untouched.
 
