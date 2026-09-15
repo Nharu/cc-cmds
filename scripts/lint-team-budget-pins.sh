@@ -240,7 +240,8 @@ fi
 # reverting a lever leaves the tree green. This block gates on the existence of
 # the leg skill FILE instead: when `design-discuss-unattended/SKILL.md` exists,
 # `design/SKILL.md` MUST carry the dispatch heading, and that section MUST
-# carry the two launch-line literals below, each on exactly one line.
+# carry the two launch-line literals and the resume-line message form below,
+# each on exactly one line.
 #
 # Why not heading granularity: the leg file and the dispatch section land in
 # the same slice, but a tree in which the leg exists and the dispatch section
@@ -253,6 +254,12 @@ fi
 # line, so one edit that deletes the dispatch block removes both guards while
 # a ceiling-only pin would still read green. Pinning the pair means that edit
 # turns the tree red.
+#
+# Why the resume form sits beside them: the resume line is defined by reference
+# to the launch line, so nothing else spells how its message is passed, and the
+# only template to copy is the launch line's double-quoted `-p "…"`. Every
+# message the seat resumes with carries backticks, which the shell executes
+# inside double quotes — the leg then runs on a rewritten message and exits 0.
 if [[ -f "$LEG" ]]; then
   checked=$((checked + 1))
   if ! has_heading "$DESIGN" "$DISPATCH_HEADING"; then
@@ -265,6 +272,8 @@ if [[ -f "$LEG" ]]; then
       ': "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"'
       # the wait ceiling — without it print-mode wind-down kills the team at 600 s and exits 0
       'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000'
+      # the resume message form — read from a file, never inlined into a double-quoted argument
+      '-p "$(cat "$RESUME_MSG")"'
     )
     for lit in "${LEG_PINS[@]}"; do
       assert_once_in_section "$lit" "$dispatch_body" "design/SKILL.md ($DISPATCH_HEADING)"

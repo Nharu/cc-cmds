@@ -24,7 +24,7 @@
 # Cases (each with an OK fixture and at least one mutated FAIL fixture):
 #   T7  brief guards         check_brief       tests/fixtures/design-brief/brief/
 #   T8  gate exemption       runtime git repo  the brief path filtered out of porcelain
-#   T9  pending-leg marker   check_leg         tests/fixtures/design-brief/leg/
+#   T9  pending-leg marker   check_leg         tests/fixtures/design-brief/leg/, coherence/
 #   T10 artifact predicate   check_artifact    tests/fixtures/design-brief/artifact/
 #
 # The T10 fixtures name the design document `design-doc.md` beside its
@@ -122,6 +122,7 @@ PRESENTATION_HEADER_PREFIX='<!-- cc-design-presentation v1; writer=design-discus
 PARK_HEADER_PREFIX='<!-- cc-design-park v1; writer=design-discuss-unattended; reader=design; slug='
 PARK_TERMINATOR='<!-- /cc-design-park v1 -->'
 COHERENCE_HEADER_TOKEN='cc-design-coherence v1'
+COHERENCE_HEADER_PREFIX='<!-- cc-design-coherence v1; writer=design-discuss-unattended; reader=design; slug='
 PARK_FIELDS=('**중단 시각**' '**스킬**' '**스텝**' '**분류**' '**질문 문면**' '**선택지**' '**하네스 오류**' '**관측 상세**' '**재호출 명령**' '**후속**' '**자리 id**' '**묶인 대상**' '**원장 상태**')
 PARK_SITES=('ledger-missing' 'case2-respawn-dead' 'unavail-streak' 'empty-streak' 'growth-streak' 'case1-thin-witness' 'fidelity-case1' 'fidelity-decision-reopen' 'sweep-claim-2nd-fail')
 PARK_MAX_QUESTIONS=4
@@ -193,24 +194,45 @@ check_artifact() {
 # ---------- reference implementation: pending-leg marker (T9) ----------------
 
 # check_leg <leg.json> <current-brief-sha256> <state-dir>
-# Prints one verdict: stale-aside | parked | done | wait-or-recover
+# Prints one verdict: stale-aside | inactive | parked | done | wait-or-recover
+# `inactive` is the seat's own consumption mark: the pull-check runs only while
+# `state` is `pending` or `parked`, so a consumed completion is never read again.
 check_leg() {
   local leg="$1" cur="$2" state="$3"
-  local recorded
+  local recorded st ph h
   recorded=$(jq -r '.brief_sha256 // ""' "$leg")
   if [[ "$recorded" != "$cur" ]]; then
     echo "stale-aside"; return 0
   fi
+  st=$(jq -r '.state // ""' "$leg")
+  case "$st" in
+    pending|parked) ;;
+    *) echo "inactive"; return 0 ;;
+  esac
   if [[ -f "$state/park.md" ]]; then
-    local h
     h=$(sed -n '1p' "$state/park.md")
     case "$h" in
       "$PARK_HEADER_PREFIX"*) echo "parked"; return 0 ;;
     esac
   fi
-  if check_artifact "$state/design-doc.md" "$state/presentation.md"; then
-    echo "done"; return 0
-  fi
+  # completion is branched on phase: a discuss-phase presentation must never
+  # complete a resume turn, or the seat re-enters Step 5 after Step 7 began
+  ph=$(jq -r '.phase // ""' "$leg")
+  case "$ph" in
+    discuss)
+      if check_artifact "$state/design-doc.md" "$state/presentation.md"; then
+        echo "done"; return 0
+      fi
+      ;;
+    resume)
+      if [[ -f "$state/coherence.md" ]]; then
+        h=$(sed -n '1p' "$state/coherence.md")
+        case "$h" in
+          "$COHERENCE_HEADER_PREFIX"*) echo "done"; return 0 ;;
+        esac
+      fi
+      ;;
+  esac
   echo "wait-or-recover"
 }
 
@@ -349,6 +371,22 @@ expect_out "done" "T9 leg OK-pending + OK artifacts → done" \
 cp "$fixtures/park/OK.md" "$t9_state/park.md"
 expect_out "parked" "T9 leg OK-pending + park.md → parked" \
   check_leg "$fixtures/leg/OK-pending.json" "BRIEF_SHA_CURRENT" "$t9_state"
+# the check stays active on `parked`, which is what the leg writes after park.md
+expect_out "parked" "T9 leg OK-parked + park.md → parked" \
+  check_leg "$fixtures/leg/OK-parked.json" "BRIEF_SHA_CURRENT" "$t9_state"
+rm -f "$t9_state/park.md"
+# `done` is the seat's consumption mark: the same artifacts must not complete twice
+expect_out "inactive" "T9 leg OK-done + OK artifacts → inactive" \
+  check_leg "$fixtures/leg/OK-done.json" "BRIEF_SHA_CURRENT" "$t9_state"
+# resume phase: a leftover discuss-phase presentation must not satisfy completion
+expect_out "wait-or-recover" "T9 leg OK-resume + presentation.md, no coherence.md → wait-or-recover" \
+  check_leg "$fixtures/leg/OK-resume.json" "BRIEF_SHA_CURRENT" "$t9_state"
+cp "$fixtures/coherence/FAIL-bad-header-version.md" "$t9_state/coherence.md"
+expect_out "wait-or-recover" "T9 leg OK-resume + coherence.md FAIL-bad-header-version → wait-or-recover" \
+  check_leg "$fixtures/leg/OK-resume.json" "BRIEF_SHA_CURRENT" "$t9_state"
+cp "$fixtures/coherence/OK.md" "$t9_state/coherence.md"
+expect_out "done" "T9 leg OK-resume + coherence.md → done" \
+  check_leg "$fixtures/leg/OK-resume.json" "BRIEF_SHA_CURRENT" "$t9_state"
 rm -rf "$t9_state"
 
 # ============================================================================
@@ -374,6 +412,15 @@ expect_rc 0 "T11 park OK"                  check_park "$fixtures/park/OK.md"
 expect_rc 1 "T11 park FAIL-summarized"     check_park "$fixtures/park/FAIL-summarized.md"
 expect_rc 1 "T11 park FAIL-unknown-site"   check_park "$fixtures/park/FAIL-unknown-site.md"
 expect_rc 1 "T11 park FAIL-five-questions" check_park "$fixtures/park/FAIL-five-questions.md"
+
+# The recorded resume command passes the message by file substitution, never
+# inline: inside double quotes the shell would execute a backtick span of it.
+t11_cmd=$(grep -F -- '**재호출 명령**: ' "$fixtures/park/OK.md" || true)
+case "$t11_cmd" in
+  *'`'*) fail "T11 park OK resume command inlines a backtick" ;;
+  *'-p "$(cat "$STATE/resume.'*) pass "T11 park OK resume command passes the message by file substitution" ;;
+  *) fail "T11 park OK resume command does not pass the message by file substitution" ;;
+esac
 
 # ============================================================================
 # T13 — re-dispatch floor
@@ -438,8 +485,15 @@ $BRIEF_BLOCKS
 EOF
 pin_in 'cc-design-park v1' "$DESIGN" "design"
 pin_in 'cc-design-presentation v1' "$DESIGN" "design"
+pin_in 'presentation.rendered.' "$DESIGN" "design"
+pin_in '-p "$(cat "$RESUME_MSG")"' "$DESIGN" "design"
+pin_in 'Never write `state: done`' "$LEG" "leg"
 pin_in "$COHERENCE_HEADER_TOKEN" "$DESIGN" "design"
 pin_in 'redispatch_count' "$DESIGN" "design"
+pin_in 'permission_posture' "$DESIGN" "design"
+pin_in 'permission_posture' "$LEG" "leg"
+pin_in 'posture_approved_at' "$DESIGN" "design"
+pin_in 'posture_approved_at' "$LEG" "leg"
 
 # ============================================================================
 

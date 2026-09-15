@@ -15,7 +15,7 @@
 - `중단` — 저장하지 않고 워크플로를 끝냅니다.
 **하네스 오류**: (없음)
 **관측 상세**: thin witnesses: 2 consecutive / sweep claim: 2nd failure
-**재호출 명령**: claude -r 0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b --plugin-dir PLUGIN_DIR --model opus --permission-mode bypassPermissions --dangerously-skip-permissions --output-format json --strict-mcp-config -p "park 질문 `case1-thin-witness` 에 대한 사용자의 답은 다음과 같다: …"
+**재호출 명령**: claude -r 0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b --plugin-dir PLUGIN_DIR --model opus --permission-mode bypassPermissions --dangerously-skip-permissions --output-format json --strict-mcp-config -p "$(cat "$STATE/resume.2026-09-15T11:50:00Z.txt")"
 **후속**: 보류 큐
 **자리 id**: case1-thin-witness
 **묶인 대상**: verification (round-2) / domain (sweep claim: 제한기 재사용 가능)
