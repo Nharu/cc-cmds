@@ -2988,6 +2988,135 @@ gate_reap_sweep() {
   return 0
 }
 
+gate_index_lock() {
+  # gate_index_lock <index-file> — a mutex over ONE forward session index file,
+  # held by the appender and by the prune's swap. Returns 0 when held, 1 when
+  # the caller must go without it.
+  #
+  # WHY A LOCK AT ALL, when the append side spent a paragraph explaining that it
+  # does not take one. The two sides had written down contracts that cannot both
+  # be true: the appender said a lost id SELF-HEALS on the session's next gate
+  # entry and left the hazard to the prune, while the prune said a lost append
+  # is the one failure it is not allowed to have. Its compare-and-swap cannot
+  # deliver that — the (size, mtime) pair is re-read BEFORE the `mv`, so an
+  # append landing between the comparison and the rename is overwritten by a
+  # swap that already decided nothing had moved. Check-then-act with another
+  # writer in the gap is not a guarantee, it is a narrow window, and that window
+  # has been observed closing TWICE. Once locally while eight other suites were
+  # running, which is the reading the issue was filed on and which reads as "make
+  # enough load and it reproduces". Then on a CI runner, where by the time this
+  # suite reached the assertion the job's other fifteen had been finished for
+  # twenty minutes and it was the only thing running. So load OUTSIDE this suite
+  # is not what opens it. Load inside is — the case runs a writer against the
+  # reaper on purpose, and without a concurrent writer there is no window at all,
+  # because check-then-act with nobody in the gap does nothing.
+  #
+  # `mkdir` because it is atomic on every filesystem this runs on and needs no
+  # external tool, the same reason the settings mutex uses it. The lock is PER
+  # INDEX FILE, not over the directory: two sessions appending to their own
+  # indexes have no reason to wait on each other, and the prune walks files one
+  # at a time anyway.
+  #
+  # THE BUDGET IS DELIBERATELY SHORT. The appender runs on every gate entry —
+  # over 875 times in the busiest run measured — so the thing that must not
+  # happen is a gate entry stalling behind a reaper. Twenty sleeps of 50ms
+  # across twenty-one `mkdir` attempts hold the wait to about a second — about,
+  # because `sleep` is a floor rather than a ceiling and the attempts fork. A
+  # caller that times out is expected to skip its
+  # write rather than force it: that is exactly the self-healing the append side
+  # already documented, and it is now the ONLY path that skips, instead of being
+  # a property invoked to excuse a race.
+  #
+  # THAT BUDGET IS PER INDEX FILE, not per cycle, and the prune walks every file
+  # in the directory. A cycle that meets N locked indexes waits about N seconds,
+  # and nothing caps the total. At this tree's scale the prune runs on a sparse
+  # cadence and meets contention almost never, so the sum has not been worth
+  # bounding; a tree with many actively-appended session indexes would have to
+  # revisit it.
+  #
+  # A LOCK THAT OUTLIVES ITS HOLDER EXPIRES, and leaving that out would have been
+  # worse here than anywhere else in this file. The settings mutex can refuse
+  # forever and stay safe, because a caller that cannot take it returns its
+  # previous answer; a caller that cannot take THIS one skips its write. A
+  # lockdir left behind by a process killed between the `mkdir` and the release
+  # would therefore switch off this session's index updates permanently and the
+  # prune's pass over that file with them, with no symptom anywhere. The reap
+  # lock already had to learn this and the shape is copied from it: an owner line
+  # written straight after the `mkdir`, the directory's own mtime as the fallback
+  # when that line cannot be read, and a threshold that decides both.
+  #
+  # SIXTY SECONDS, against a critical section measured in milliseconds — one
+  # file's scan and rename, or one `grep` and one `printf`. Four orders of
+  # magnitude of headroom is what keeps the expiry from ever reaching a live
+  # holder, and the reap lock's fifteen minutes would be the wrong number for
+  # the same reason in the other direction: this path runs on every gate entry.
+  local lockdir="$1.lock" waited=0 owner ots now dead
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    waited=$(( waited + 1 ))
+    if [ "$waited" -gt 20 ]; then
+      owner=$(cat "$lockdir/owner" 2>/dev/null || true)
+      ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+      [ -n "$ots" ] || ots=$(gate_mtime "$lockdir")
+      # "THE LOCK IS GONE" AND "THE LOCK CANNOT BE DATED" ARE DIFFERENT EVENTS
+      # and used to fall down the same branch. If the holder releases between
+      # the last failed `mkdir` and the `cat` above, the owner line is
+      # unreadable AND the directory has no mtime, so both reads come back
+      # empty — and giving up there skips a write against a lock that is not
+      # there any more. One attempt separates them: it succeeds exactly when the
+      # lock is gone, and fails exactly when the lock is present but undateable,
+      # which is the case that must still give up.
+      if [ -z "$ots" ]; then
+        mkdir "$lockdir" 2>/dev/null || return 1
+        break
+      fi
+      now=$(date -u +%s)
+      [ $((now - ots)) -ge 60 ] || return 1
+      # THE STEAL IS A RENAME, so exactly one waiter wins it. `rm -rf` and then
+      # `mkdir` lets two waiters that timed out together both believe they hold
+      # the lock: the second `rm -rf` removes the directory the first has just
+      # created. A rename names one winner and the losers get ENOENT. Whoever
+      # loses the `mkdir` that follows returns 1 and skips this write, which is
+      # the same safe direction as any other failure to take the lock.
+      dead="$lockdir.dead.$$.$now"
+      mv "$lockdir" "$dead" 2>/dev/null || return 1
+      rm -rf "$dead" 2>/dev/null || true
+      mkdir "$lockdir" 2>/dev/null || return 1
+      break
+    fi
+    sleep 0.05
+  done
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lockdir/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_index_unlock() {
+  # THE RELEASE IS ONE RENAME, the form the reap lock already arrived at. An
+  # earlier version of this function used a single `rm -rf`, on the reasoning
+  # that not producing an owner-less lock is cheaper than covering one — but
+  # `rm -rf` on a directory unlinks the owner line and THEN removes the
+  # directory, so that version passed through the very state it claimed not to
+  # produce, on every ordinary release, and leaned entirely on the mtime
+  # fallback it was arguing against.
+  #
+  # THE DESTINATION CARRIES THE PID AND A TIMESTAMP because `mv` into a
+  # directory that already exists moves the source INSIDE it rather than
+  # failing. A fixed name would nest retired locks inside one another the first
+  # time a pid was reused and a cleanup had failed, and the nested one would
+  # never be walked again.
+  #
+  # THE RETIRED LOCK LANDS IN THE SESSION DIRECTORY, which is not where the reap
+  # lock puts its own — that one retires into a place nothing enumerates, so its
+  # comment can say no scan walks it. This one does not get to say that: the
+  # prune globs this directory every cycle. It is still harmless, because that
+  # walk takes `[ -f "$f" ]` and a retired lock is a directory. What it is not
+  # is free — an `rm -rf` that keeps failing leaves them to accumulate and the
+  # glob grows.
+  local dead="$1.lock.dead.$$.$(date -u +%s)"
+  if mv "$1.lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+}
+
 gate_reap_prune_index() {
   # gate_reap_prune_index <root> <pair-file> — drops from the forward session
   # index every entry whose run directory is gone, and appends one
@@ -3039,6 +3168,14 @@ gate_reap_prune_index() {
       [ -d "$root/run/$line" ] || { dropped="있음"; break; }
     done < "$f"
     [ -n "$dropped" ] || continue
+    # THE SWAP RUNS UNDER THE INDEX LOCK, and everything from the stamp to the
+    # rename is inside it. Without the lock the comparison below is a
+    # check-then-act: it is re-read before the `mv`, so an append arriving in
+    # the gap between them is silently overwritten by a rename that has already
+    # decided the file did not move. Failing to take the lock means giving this
+    # file up for this cycle, which costs nothing — the criterion is re-derived
+    # from disk next cycle, and an unpruned entry is one the reader skips.
+    gate_index_lock "$f" || continue
     # THE STAMP IS TAKEN BEFORE THE READ IT GUARDS, and that order is the whole
     # of what makes the comparison below mean anything. Reading first and
     # stamping afterwards leaves a window — from the last line read to the
@@ -3060,25 +3197,38 @@ gate_reap_prune_index() {
 "
       fi
     done < "$f"
-    [ -n "$dropped" ] || continue
+    [ -n "$dropped" ] || { gate_index_unlock "$f"; continue; }
     # The temp file is in the SAME directory, so the swap is one `rename(2)`.
     tmp="$f.reap-tmp.$$"
-    printf '%s' "$kept" > "$tmp" 2>/dev/null || { continue; }
+    printf '%s' "$kept" > "$tmp" 2>/dev/null || { gate_index_unlock "$f"; continue; }
     n_after=$(grep -c . "$tmp" 2>/dev/null || true)
     [ -n "$n_after" ] || n_after=0
+    # THE COMPARISON STAYS even though the lock now excludes the appender, and
+    # it is not redundant. The lock has a give-up budget, so a writer that could
+    # not take it is free to proceed without one; and a file left behind by an
+    # interrupted reaper leaves a stale lockdir that the next cycle will take.
+    # Keeping the stamp means the swap refuses whenever the file moved, whoever
+    # moved it, and the lock turns that refusal from the common case into the
+    # rare one.
     size_after=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
     mtime_after=$(gate_mtime "$f")
     if [ "$size_after" != "$size_before" ] || [ "$mtime_after" != "$mtime_before" ]; then
       # Give this file up FOR THIS CYCLE and leave no state behind.
       rm -f "$tmp" 2>/dev/null || true
+      gate_index_unlock "$f"
       continue
     fi
     if [ "$n_after" -eq 0 ]; then
       # An index with nothing left in it is REMOVED, not emptied.
       rm -f "$f" "$tmp" 2>/dev/null || true
     else
-      mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
+      mv "$tmp" "$f" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        gate_index_unlock "$f"
+        continue
+      }
     fi
+    gate_index_unlock "$f"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       printf '%s %s\n' "$line" "$(basename "$f")" >> "$pairs" 2>/dev/null || true
@@ -4328,11 +4478,28 @@ gate_main() {
   # way (run → its session ids) and answering "which run belongs to this
   # session?" from it means scanning every run directory. One session can hold
   # several runs, so this is a LIST — one run id per line, appended, deduped.
-  # NO LOCK HERE, and that is a decision rather than an omission. This path runs
-  # on every gate entry (over 875 times in the busiest run), and the one failure
-  # the lock would close SELF-HEALS: the append is unconditional, so the session's
-  # next gate entry puts a lost id back. The prune side carries the
-  # compare-and-swap instead.
+  # THIS PATH TAKES THE INDEX LOCK, and the paragraph that used to stand here
+  # saying it deliberately did not is replaced rather than amended, because its
+  # reasoning was load-bearing for a guarantee the other side could not keep.
+  # It argued that a lost id SELF-HEALS on the session's next gate entry and
+  # that the prune's compare-and-swap carried the hazard; the prune meanwhile
+  # declared a lost append the one failure it was not allowed to have. Both
+  # could not be true, and it was the prune's sentence that was wrong — its
+  # comparison is re-read before the rename, so an append in that gap is
+  # overwritten. Observed twice, one id of sixty each time — once under local
+  # load and once on a CI runner with nothing else left in the job.
+  #
+  # The cost argument against locking does not survive either. The measurement
+  # it cited is the call count, over 875 gate entries in the busiest run, and it
+  # never priced the lock: an uncontended `mkdir` and `rmdir` is a fraction of a
+  # millisecond, so the whole run pays well under a tenth of a second for it.
+  #
+  # A WRITER THAT CANNOT TAKE THE LOCK SKIPS ITS APPEND rather than forcing it.
+  # Forcing would reinstate exactly the window the lock exists to close, with
+  # the added harm of looking locked. Skipping is the self-healing the old
+  # paragraph described — the append is unconditional, so this session's next
+  # gate entry puts the id back — and that property is now a fallback for a
+  # bounded wait instead of an excuse for a race.
   #
   # Entries for runs whose directory is gone stay put until a reap cycle removes
   # them: the reader filters with `[ -d ]`, and that filter is what makes an entry
@@ -4340,10 +4507,13 @@ gate_main() {
   # sparse schedule instead of tracking every deletion.
   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session"
-    grep -qxF "$RUN_ID" \
-      "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID" 2>/dev/null \
-      || printf '%s\n' "$RUN_ID" \
-           >> "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID"
+    _idx="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$CLAUDE_CODE_SESSION_ID"
+    if gate_index_lock "$_idx"; then
+      grep -qxF "$RUN_ID" "$_idx" 2>/dev/null \
+        || printf '%s\n' "$RUN_ID" >> "$_idx"
+      gate_index_unlock "$_idx"
+    fi
+    unset _idx
   fi
 
   # Lineage is recorded here rather than only where it is consumed. Its one
@@ -11005,21 +11175,50 @@ gate_b3_act_budget() {
   # nobody to answer, and each one ends the shift, so a review long enough to
   # cross this budget stops the night it is running in.
   #
-  # SUPPRESSING HERE REMOVES NO DETECTION THAT EXISTED. The case a reader will
-  # worry about is a stage that is alive but wedged, and this arm never caught
-  # it: a wedged stage authorises nothing, so `total` does not move and the
-  # budget is never reached. Nor does the liveness watcher — every one of its
-  # arms requires zero live stages before it will fire, so a process that is
-  # alive and doing nothing satisfies none of them. `autopilot/SKILL.md` says as
-  # much in its progress-channel note: a stage that is itself wedged is visible
-  # on no channel today. That hole is real, it is not this arm's, and this guard
-  # neither opens nor widens it — it trades one arm's false positives for
-  # nothing.
+  # SUPPRESSION ALONE DEFERS THE FIRING; IT DOES NOT REMOVE IT. This is the
+  # defect the first version of this guard shipped with, and it is worth stating
+  # rather than quietly fixing, because the shape recurs: a guard placed to skip
+  # an evaluation removes nothing when the value being evaluated is DERIVED at
+  # each call rather than carried across them.
   #
-  # `cc_live_stages` COUNTS PROCESSES, NOT PID FILES (`liveness.sh`, sourced at
-  # the top of this file), so a stage that died without cleaning up does not
-  # keep the boundary suppressed.
-  [ "$(cc_live_stages "$RUN_DIR")" = "0" ] || return 0
+  # `total` is re-counted from the ledger every time, while `base` is a file.
+  # Skipping the evaluation froze the file and left the count growing, so the
+  # stage's acts were still owed — and the bill arrived one act later. The
+  # sequence: the launch act records `base`, the stage authorises N acts under
+  # the guard, the stage terminates, and the ROUTER's next act is where the
+  # segment row actually moves. Boundaries are evaluated in that act BEFORE its
+  # own row is appended (`gate_boundaries` runs ahead of the append and the
+  # launch in the act path), and the rows a terminating stage does write —
+  # `stage-result`, `문서 해시`, `cost` — are none of the progress vector's
+  # inputs. So the key is unchanged, no re-baseline happens, and `n` is the
+  # stage's whole run. Reproduced on a fixture: 41 acts under a live stage, then
+  # the first router act after it ended fired with `live=0`.
+  #
+  # So the guard CARRIES THE BASELINE FORWARD instead of skipping past it. Every
+  # suppressed evaluation moves `base` to `total` and records the current key,
+  # which makes the stage's acts spent history rather than deferred debt: the
+  # window that matters reopens at the moment the stage ends. B1 needs no such
+  # move because its counter lives in a file and simply is not incremented while
+  # suppressed — same intent, different bookkeeping, and copying B1's shape
+  # without its storage is what produced the deferral.
+  #
+  # WHAT THIS COSTS IS REAL AND IS NOT NOTHING. A stage that is alive and
+  # spinning through this gate — a retry loop, say — was caught by this arm and
+  # now is not. No other arm takes it: every liveness-watcher arm requires zero
+  # live stages, and each of those acts grows the ledger so the watcher's
+  # idleness never accrues either. That blind spot is filed separately; it is
+  # bought deliberately here, because the alternative measured worse — the arm
+  # stopped an unattended night on every long review, and it could not tell a
+  # spinning stage from a working one in the first place.
+  #
+  # THE SAME SPELLING B1 USES, `gate_live_stages`, because two spellings of one
+  # predicate sitting in neighbouring arms read as two predicates. It counts
+  # PROCESSES, NOT PID FILES (`liveness.sh`, sourced at the top of this file), so
+  # a stage that died without cleaning up does not keep the boundary suppressed.
+  # Positively selected, matching the progress vector: the grade must be present
+  # and must not be `읽기`. Excluding `읽기` alone also counts a row carrying no
+  # grade at all, and here that spends budget on an act nobody established was
+  # above a read.
   total=$(gate_b3_exec_total)
   # THE WINDOW KEY IS THE WHOLE PROGRESS DIGEST, and it can be only because the
   # exec count is no longer a component of the vector. While `acts=` sat there
@@ -11033,6 +11232,23 @@ gate_b3_act_budget() {
   # value and the full digest is the one spelled here. Spending budget is still
   # not the kind of progress that opens a new window.
   h=$(gate_progress_digest)
+  # THE LIVE-STAGE CARRY. Placed after `total` and `h` rather than before them so
+  # the two values have ONE spelling — the suppressed path and the measuring path
+  # must agree on what they are, and a second copy of either pipeline is how they
+  # would stop agreeing.
+  #
+  # A key that moved while the stage ran opens a new window exactly as it does
+  # on the measuring path below, so the answered marker is cleared here too.
+  # Writing the new key without clearing it would leave the measuring path
+  # nothing to compare against once the stage ends, and a marker from the old
+  # window would outlive the window it belonged to.
+  if [ "$(gate_live_stages)" != "0" ]; then
+    prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
+    [ "$h" = "$prev" ] || rm -f "$RUN_DIR/boundary-B3.asked"
+    printf '%s\n' "$h"     > "$RUN_DIR/act-budget-digest"
+    printf '%s\n' "$total" > "$RUN_DIR/act-budget-base"
+    return 0
+  fi
   prev=$(cat "$RUN_DIR/act-budget-digest" 2>/dev/null || true)
   base=$(cat "$RUN_DIR/act-budget-base" 2>/dev/null || printf '0')
   # Progress moved: this act is the first of a new window, so the acts before it
@@ -11077,6 +11293,24 @@ gate_b3_exec_total() {
   # the field existed carry no `행위자` and contribute nothing — the same safe
   # direction as the vector, and it means a ledger from before the field cannot
   # fire this boundary on history.
+  #
+  # CALL IT, NEVER CARRY IT. Three sites write `act-budget-base` — a resolved
+  # approval, a live stage's carry, and the window key moving — and what keeps
+  # them from fighting is not that they agree on a value but that each derives
+  # this count AT THE MOMENT IT WRITES. The ledger is append-only, so the count
+  # is monotonic, so whichever site writes last writes a watermark no lower than
+  # the others and the boundary simply counts again from there. No double
+  # subtraction, no negative `n`, and the order the sites fire in does not
+  # matter.
+  #
+  # That property is what a later change would break by hand. Compute this once
+  # and pass it across a call boundary, or narrow the population it counts, and a
+  # stale total can land after a fresh one — `base` then moves BACKWARDS and `n`
+  # jumps by the difference, stepping over the budget without ever equalling it.
+  # The three sites look like they merely share a helper; they actually share a
+  # timing discipline, and only the second one is load-bearing. The actor filter
+  # above is part of this one population, not a narrowing any site applies on
+  # its own, so all three still count the same rows.
   { gate_rows '자율 승인' | grep '결정=exec' || true; } \
     | { grep -F '축2=' || true; } \
     | { grep -v '축2=읽기' || true; } \

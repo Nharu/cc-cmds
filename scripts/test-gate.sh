@@ -772,6 +772,14 @@ FX_GRANT="$WT/docs/pipeline-grant/R1.md"
 # call stays `bash "$GATE"`; the banner seats and the stub-CLI launches below are
 # exactly that, and each carries a note saying so.
 # ---------------------------------------------------------------------------
+# `BASH_MONOSECONDS` is in it for the same reason its siblings are: bash 5.3
+# added it, it advances once a second, and the comparison snapshots the caller
+# before and after a sourcing that can straddle a second boundary under load.
+# Every other clock and generator here — EPOCHSECONDS, EPOCHREALTIME, SECONDS,
+# RANDOM, SRANDOM — was already listed; this one arrived with a newer bash and
+# was missed, so the assertion failed on a full suite run under load while
+# passing five times out of five in isolation.
+#
 # The roster is the shell's own variables, not the gate's. `BASH_COMPAT` is in it
 # for a reason worth writing down: it does not exist in a fresh shell, and the
 # seam itself brings it into being. Restoring the caller's options means
@@ -779,7 +787,7 @@ FX_GRANT="$WT/docs/pipeline-grant/R1.md"
 # bash 5.3 evaluating even `shopt -u compat44` materialises `BASH_COMPAT=53`.
 # Without this entry the comparator reads that as the gate having changed the
 # caller, which is the one thing the seam promises it does not do.
-GATE_SEAM_SPECIAL=" BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_EXECUTION_STRING BASH_LINENO BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS DIRSTACK EPOCHREALTIME EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HISTFILE HISTFILESIZE HISTSIZE HOSTNAME HOSTTYPE IFS LINENO LINES MACHTYPE MAILCHECK OLDPWD OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PS1 PS2 PS3 PS4 PWD RANDOM SECONDS SHELL SHELLOPTS SHLVL SRANDOM UID _ "
+GATE_SEAM_SPECIAL=" BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_EXECUTION_STRING BASH_LINENO BASH_MONOSECONDS BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS DIRSTACK EPOCHREALTIME EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HISTFILE HISTFILESIZE HISTSIZE HOSTNAME HOSTTYPE IFS LINENO LINES MACHTYPE MAILCHECK OLDPWD OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PS1 PS2 PS3 PS4 PWD RANDOM SECONDS SHELL SHELLOPTS SHLVL SRANDOM UID _ "
 GATE_SEAM_INPUTS="PATH CC_CLAUDE_BIN CC_CMDS_ORCH_HOST_OS CC_GATE_KEYCHAIN TERMINAL_SEGMENT_STATES LANG LC_ALL LC_CTYPE"
 GATE_SEAM_HANDLES="FX_MANIFEST FX_LEDGER FX_GRANT"
 
@@ -5757,6 +5765,22 @@ n=$(grep -c . "$SIDX" 2>/dev/null || true)
 check "한 세션에 런이 둘이면 두 줄로 남는다 (덮어쓰기가 아니다)" "$n" "2"
 sed '/^R-OTHER$/d' "$SIDX" > "$SIDX.tmp" && mv "$SIDX.tmp" "$SIDX"
 
+# 잠금이 걸린 색인에는 게이트가 쓰지 않는다. 위 단언들은 전부 무경합 경로라
+# `gate_main` 에서 잠금을 잡고 놓는 두 줄을 지워도 그대로 통과한다 — 즉 「append
+# 는 잠금을 잡고, 잡지 못하면 이번 쓰기를 건너뛴다」를 고정하는 것이 여기뿐이다.
+# 뒤의 단언은 앞의 것이 「잠금이 막았다」가 아니라 「애초에 쓰지 않는다」로 통과
+# 하는 것을 막는다.
+rm -f "$SIDX"
+mkdir "$SIDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(date -u +%s)" > "$SIDX.lock/owner"
+gate snapshot --manifest "$FX_MANIFEST"
+check "잠금이 걸린 순방향 색인에는 게이트가 쓰지 않는다" \
+  "$(if [ -e "$SIDX" ]; then printf 'yes'; else printf 'no'; fi)" "no"
+rm -rf "$SIDX.lock"
+gate snapshot --manifest "$FX_MANIFEST"
+check "잠금을 놓으면 같은 진입이 색인에 쓴다 (위가 공허하지 않다)" \
+  "$(grep -cxF 'R2' "$SIDX" 2>/dev/null || true)" "1"
+
 # Every `act` carries a snapshot digest, and the snapshot moves whenever a row
 # lands — so it is re-read immediately before each one rather than reused.
 snapH() {
@@ -6035,9 +6059,13 @@ B7_IDX="$BSESS/sess-b7"
 fx_session_index sess-b7 RV-B7-1 RV-B7-2
 B7_LOG="$WORK/b7-appended.txt"
 : > "$B7_LOG"
-# 게이트의 append 관용구를 축자로 쓴다 — 락 없는 `grep -qxF … || printf … >>`.
-# 다른 관용구로 쓰면 이 케이스는 게이트가 실제로 하는 일이 아니라 이 파일이
-# 상상한 일을 시험한다.
+# 게이트의 append 관용구를 축자로 쓴다 — 인덱스 락을 잡고, 스무 번 안에 못
+# 잡으면 이번 append 를 건너뛴다. 다른 관용구로 쓰면 이 케이스는 게이트가 실제로
+# 하는 일이 아니라 이 파일이 상상한 일을 시험한다.
+#
+# 건너뛴 것은 `$B7_LOG` 에 적지 않는다. 이 로그가 뜻하는 것은 「쓰려고 했다」가
+# 아니라 「실제로 인덱스에 들어갔다」이고, 아래 단언이 세는 것이 바로 그것이기
+# 때문이다. 건너뛴 것까지 적으면 게이트가 스스로 포기한 쓰기를 유실로 세게 된다.
 (
   i=1
   while [ "$i" -le 60 ]; do
@@ -6047,8 +6075,23 @@ B7_LOG="$WORK/b7-appended.txt"
     # precisely what the prune exists to remove, so a fixture that skips this
     # watches the prune do its job and calls the result a lost append.
     mkdir -p "$BRUNS/B7X-$i" 2>/dev/null || true
-    grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
-    printf '%s\n' "B7X-$i" >> "$B7_LOG"
+    b7w=0
+    while ! mkdir "$B7_IDX.lock" 2>/dev/null; do
+      b7w=$((b7w + 1))
+      [ "$b7w" -gt 20 ] && break
+      sleep 0.05
+    done
+    if [ "$b7w" -le 20 ]; then
+      # 게이트와 같은 `$$` 다. `( … ) &` 안에서 `$$` 는 부모 셸의 pid 로 확장되지만
+      # 주인 줄에서 읽히는 것은 타임스탬프뿐이라 동작은 같다. `$BASHPID` 로 바꾸면
+      # 게이트의 관용구에서 벗어나고, macOS 기본 bash 3.2 에는 그 변수가 없어
+      # `set -u` 가 이 서브셸을 첫 잠금에서 죽인다 — 남은 잠금 디렉터리가 뒤따르는
+      # B7·B7L 단언까지 실패시킨다.
+      printf '%s %s\n' "$$" "$(date -u +%s)" > "$B7_IDX.lock/owner" 2>/dev/null || true
+      grep -qxF "B7X-$i" "$B7_IDX" 2>/dev/null || printf '%s\n' "B7X-$i" >> "$B7_IDX"
+      printf '%s\n' "B7X-$i" >> "$B7_LOG"
+      rm -rf "$B7_IDX.lock" 2>/dev/null || true
+    fi
     i=$((i + 1))
     sleep 0.05
   done
@@ -6064,6 +6107,15 @@ while IFS= read -r b7id; do
   grep -qxF "$b7id" "$B7_IDX" 2>/dev/null || b7_missing=$((b7_missing + 1))
 done < "$B7_LOG"
 check "B7 동시 append 가 하나도 유실되지 않는다" "$b7_missing" "0"
+# 공허한 통과를 막는다. writer 가 락을 한 번도 못 잡으면 `$B7_LOG` 가 비고 위
+# 단언은 셀 것이 없어 통과한다 — 유실이 없어서가 아니라 쓴 것이 없어서다.
+b7_written=$(grep -c . "$B7_LOG" 2>/dev/null || true)
+[ -n "$b7_written" ] || b7_written=0
+if [ "$b7_written" -gt 0 ]; then
+  ok "B7 writer 가 실제로 인덱스에 썼다 (위 단언이 공허하지 않다): $b7_written 건"
+else
+  bad "B7 공허성" "writer 가 락을 한 번도 잡지 못해 아무것도 쓰지 않았다"
+fi
 # 스플라이스는 개수가 아니라 모양으로 드러난다.
 n=$(grep -cvE '^[A-Za-z0-9._-]+$' "$B7_IDX" 2>/dev/null || true)
 check "B7 남은 줄이 전부 잘리지 않은 온전한 id 다" "$n" "0"
@@ -6075,6 +6127,77 @@ b_trigger RB7b
 n=$(( $(grep -cxF 'RV-B7-1' "$B7_IDX" 2>/dev/null || true) \
     + $(grep -cxF 'RV-B7-2' "$B7_IDX" 2>/dev/null || true) ))
 check "B7 경합 없는 후속 패스가 회수 대상 항목을 지운다" "$n" "0"
+
+# --- B7L — 인덱스 락이 실제로 스왑을 막는다 (결정적) -------------------------
+#
+# 위의 B7 은 경쟁이 실제로 일어나기를 기다리는 확률적 케이스라, 통과해도 락이
+# 걸렸는지 창이 우연히 안 열렸는지 구별하지 못한다. 아래 둘은 락을 손으로 잡아
+# 그 구별을 결정적으로 만든다.
+b_victim RV-B7L "$BAGE_OLD" 종단
+B7L_IDX="$BSESS/sess-b7l"
+fx_session_index sess-b7l RV-B7L
+# 다른 행위자가 락을 들고 있는 동안에는 프룬이 이 파일을 포기한다. 포기는
+# 실패가 아니다 — 기준이 디스크에서 다시 유도되므로 다음 사이클이 같은 판단을
+# 처음부터 내린다.
+mkdir "$B7L_IDX.lock" 2>/dev/null || true
+b_trigger RB7L
+check "B7L 락이 잡혀 있으면 프룬이 그 인덱스를 건드리지 않는다" \
+  "$(grep -cxF 'RV-B7L' "$B7L_IDX" 2>/dev/null || true)" "1"
+check "B7L 그 사이 임시 파일을 남기지 않는다" \
+  "$(find "$BSESS" -name 'sess-b7l.reap-tmp.*' 2>/dev/null | grep -c . || true)" "0"
+# 락을 놓아 주면 다음 패스가 같은 항목을 지운다. 이것이 「이번 사이클 포기」와
+# 「영구 정체」를 가르는 자리이며, 락이 그 성질을 바꾸지 않았음을 고정한다.
+rmdir "$B7L_IDX.lock" 2>/dev/null || true
+b_trigger RB7Lb
+check "B7L 락을 놓으면 다음 패스가 그 항목을 지운다" \
+  "$(b_exists "$B7L_IDX")" "no"
+# 그리고 프룬은 자기가 잡은 락을 반드시 놓는다. 놓지 않으면 위 단언은 통과하되
+# 이후 모든 사이클이 영구히 포기하게 되고, 그 정체는 아무 데도 보고되지 않는다.
+# `*.lock*` 로 넓힌다 — 해제가 rename 이 되면서 `*.lock.dead.<pid>.<epoch>` 라는
+# 두 번째 모양이 생겼고, `*.lock` 만 보면 그쪽 누수를 조용히 놓친다. 이 단언이
+# 잡던 것이 바로 누수라 좁은 채로 두면 잡던 것을 안 잡게 된다.
+check "B7L 프룬이 끝나며 락 디렉터리를 남기지 않는다 (물러난 잠금 포함)" \
+  "$(find "$BSESS" -type d -name '*.lock*' 2>/dev/null | grep -c . || true)" "0"
+
+# --- B7X — 주인이 죽은 잠금은 만료한다 --------------------------------------
+#
+# 이 잠금은 못 잡으면 쓰기를 건너뛰므로, 주인이 죽어 남은 디렉터리는 그 세션의
+# 인덱스 갱신과 그 파일에 대한 프룬을 영구히 끈다. 그리고 그 정지는 아무 데도
+# 보고되지 않는다. 회수 잠금이 같은 것을 먼저 배웠고 그 모양을 그대로 쓴다 —
+# owner 줄로 나이를 재되, 읽을 수 없으면 디렉터리 자신의 mtime 으로 떨어진다.
+b_victim RV-B7X "$BAGE_OLD" 종단
+B7X_IDX="$BSESS/sess-b7x"
+fx_session_index sess-b7x RV-B7X
+# (a) owner 줄이 있고 오래된 잠금 — 만료되어 프룬이 항목을 지운다.
+mkdir "$B7X_IDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(( $(date -u +%s) - 600 ))" > "$B7X_IDX.lock/owner"
+b_trigger RB7X
+check "B7X 주인 줄이 오래된 잠금은 만료되고 프룬이 진행한다" \
+  "$(b_exists "$B7X_IDX")" "no"
+check "B7X 만료 뒤 잠금 디렉터리도 남지 않는다" \
+  "$(b_exists "$B7X_IDX.lock")" "no"
+# (b) owner 줄을 읽을 수 없는 잠금 — 디렉터리 mtime 으로 나이를 잰다. 이 팔이
+#     없으면 owner 없이 남은 잠금이 영구가 되고, 그 모양은 해제가 두 단계일 때
+#     정상 경로에서도 만들어진다.
+b_victim RV-B7X2 "$BAGE_OLD" 종단
+B7X2_IDX="$BSESS/sess-b7x2"
+fx_session_index sess-b7x2 RV-B7X2
+mkdir "$B7X2_IDX.lock" 2>/dev/null || true
+fx_age_file "$B7X2_IDX.lock" 600
+b_trigger RB7X2
+check "B7X 주인 줄 없는 오래된 잠금도 디렉터리 mtime 으로 만료된다" \
+  "$(b_exists "$B7X2_IDX")" "no"
+# (c) 대조군 — 갓 잡힌 잠금은 만료되지 않는다. 이것이 없으면 위 둘은 「만료가
+#     동작한다」가 아니라 「잠금이 아예 안 걸린다」로도 통과한다.
+b_victim RV-B7X3 "$BAGE_OLD" 종단
+B7X3_IDX="$BSESS/sess-b7x3"
+fx_session_index sess-b7x3 RV-B7X3
+mkdir "$B7X3_IDX.lock" 2>/dev/null || true
+printf '%s %s\n' "99999" "$(date -u +%s)" > "$B7X3_IDX.lock/owner"
+b_trigger RB7X3
+check "B7X 갓 잡힌 잠금은 만료되지 않는다 (위 둘이 공허하지 않다)" \
+  "$(grep -cxF 'RV-B7X3' "$B7X3_IDX" 2>/dev/null || true)" "1"
+rm -rf "$B7X3_IDX.lock" 2>/dev/null || true
 
 # 대조군 — 순진한 read-modify-write. 이 케이스가 공회전으로 통과할 수 없게 한다:
 # 같은 관용구·같은 부하에서 순진한 방식이 유실을 내야, 위의 0 이 「경합이
@@ -9246,9 +9369,11 @@ fi
 # So the window is moved the way a run moves it: a lead-dispatched stage leaves
 # an observable outcome, which is a progress component, and one ordinary act
 # with no stage alive opens the new window and clears the answered marker. The
-# budget is then spent inside it, the live-stage judgment must stay silent, and
-# the dead-stage judgment in the SAME window must fire — which is what makes the
-# silence the guard's doing rather than the window's.
+# budget is then spent inside it and the live-stage judgment must stay silent.
+# The guard carries the baseline forward rather than skipping, so the first
+# router act after the stage ends must stay silent too, and spending the budget
+# again once the stage is gone must fire — which is what makes the silence the
+# guard's doing rather than an arm that stopped counting.
 printf -- '- `자율 승인` | kind=skill | 결정=act | 대상=front | 세그먼트=SB3W | 절단점=배포 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 행위자=리드 | 근거=B3 창 이동 픽스처 | prev=x\n' >> "$FX_LEDGER"
 printf -- '- `stage-result` | 세그먼트=SB3W | 스테이지=SB3W | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 시각=2026-01-01T05:00:00Z\n' >> "$FX_LEDGER"
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
@@ -9274,26 +9399,59 @@ gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
 after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 check "살아 있는 스테이지가 있으면 B3 은 예산을 넘겨도 발동하지 않는다" "$after" "$before"
 
-# A DEAD STAGE DOES NOT HOLD IT SILENT. `cc_live_stages` counts processes rather
-# than pid files, and this pins that from the consumer's side: a stage that died
-# without cleaning up leaves its pid file behind, and a guard reading files would
-# leave the run unwatched for the rest of the night.
+# THE BILL IS NOT DEFERRED TO THE ACT AFTER THE STAGE. This is the assertion the
+# first version of this block got backwards, and it is the one that matters: a
+# guard that only SKIPS the evaluation leaves `base` frozen while `total` keeps
+# growing from the ledger, so the stage's whole run is charged to the router's
+# next act. The progress vector does not move when a stage ends — the rows it
+# writes are not among its inputs, and the segment row is moved by the router's
+# next act, which evaluates boundaries before appending it. So this act stands
+# exactly where the deferred firing lands.
 kill "$B3LIVE_PID" 2>/dev/null || true
 wait "$B3LIVE_PID" 2>/dev/null || true
 rm -f "$RD/B3LIVE.pid" "$RD/B3LIVE.start"
-fx_stage_dead B3DEAD
 for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
   printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
 done
 before=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
-     --snapshot-digest "$(HH)" --rationale "죽은 pid 파일만 남은 상태의 예산 초과" -- touch "$WORK/t4c"
+     --snapshot-digest "$(HH)" --rationale "스테이지가 끝난 직후 라우터의 첫 행위" -- touch "$WORK/t4c"
+after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
+check "스테이지가 끝난 뒤 첫 라우터 행위에서도 B3 은 침묵한다 (청구가 미뤄지지 않는다)" "$after" "$before"
+
+# AND THE ARM IS STILL ARMED. The baseline moved to the total, so the window that
+# reopens at the stage's end is empty — but it is a window, not an off switch.
+# Spending the budget again in it must fire, or the fix above has disarmed the
+# boundary rather than re-aimed it. The budget is `B3_ACT_BUDGET`; this spends it
+# with the same one-act-per-iteration shape the first half uses.
+#
+# THE BUDGET IS SPENT THE WAY HALF ONE SPENDS IT — `결정=exec` rows appended to
+# the ledger — and the first draft of this assertion spent it by running acts
+# instead. Those write `결정=act`, which the counter's filter does not select, so
+# `total` never moved and the silence it read was its own doing rather than the
+# guard's. Same failure text, unrelated cause; the fixture has to speak the
+# counter's own vocabulary.
+b3n=0
+while [ "$b3n" -lt "$over_budget" ]; do
+  printf -- '- `자율 승인` | kind= | 결정=exec | 대상=front | 세그먼트=- | 절단점=커밋 | 축2=외부상태변경 | 자격=주변 | 행위자=리드 | 근거=재무장 픽스처 %s | prev=x\n' "$b3n" >> "$FX_LEDGER"
+  b3n=$((b3n + 1))
+done
+for a in $(grep -oE '승인 id=[^ |]+' "$FX_LEDGER" | sed 's/승인 id=//' | sort -u); do
+  printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER"
+done
+# A DEAD STAGE'S PID FILE STAYS IN PLACE for this judgment. The live-stage count
+# reads processes, not pid files, so a stage that died without cleaning up must
+# not hold the re-armed boundary silent — the firing below covers both at once.
+fx_stage_dead B3DEAD
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale "재무장 확인" -- touch "$WORK/t4d"
 after=$(grep -c '구속 튜플=B3' "$FX_LEDGER" || true)
 if [ "$after" -gt "$before" ]; then
-  ok "죽은 스테이지의 pid 파일은 B3 을 억제하지 않는다 (억제는 조건부이지 스위치가 아니다)"
+  ok "스테이지 종료 뒤 새로 열린 창에서 예산을 다시 넘기면 B3 은 발동한다"
 else
-  bad "B3 억제" "살아 있는 스테이지가 없는데 경계가 발동하지 않았다 — 고친 것이 아니라 끈 것이다"
+  bad "B3 재무장" "새 창에서 예산을 넘겼는데 발동하지 않았다 — 겨냥을 고친 것이 아니라 끈 것이다"
 fi
 rm -f "$RD/B3DEAD.pid" "$RD/B3DEAD.start"
 
@@ -12337,7 +12495,13 @@ gate5 "$SHIFT_RUN_ID#1" act --manifest "$NM5" --kind router-shift --target infra
 check "(e) 자동 해소가 켜지면 바닥을 넘은 교대도 기동한다" "$rc" "0"
 check "(e) 그 호출은 실제로 후속자를 띄웠다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$((e_launch0 + 1))"
-check "(e) 대기로 남은 바닥 승인은 없다" "$(floor_pending5)" "$e_pend0"
+# Two outcomes are both right here, and which one a run takes depends on whether
+# the progress digest moved since (b): the same id (b) left waiting is closed by
+# the auto-resolution, or a fresh id is issued and closed in the same call. The
+# pending count falls by one in the first and stays put in the second, so the
+# assertion is that this launch left NO MORE waiting than there was before it.
+check "(e) 그 호출이 대기로 남는 바닥 승인을 늘리지 않는다" \
+  "$( [ "$(floor_pending5)" -le "$e_pend0" ] && printf 'yes' || printf 'no' )" "yes"
 e_rows0=$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )
 gate5 "$SHIFT_RUN_ID#1" act --manifest "$NM5" --kind router-shift --target infra \
       --cutpoint 커밋 --surface 워크트리쓰기 \
