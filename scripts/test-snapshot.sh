@@ -605,6 +605,11 @@ LEDGER="$LEDGER_SAVE"
 # rather than the approval. An unattended run has nobody to answer, so the
 # router's own recommendation is adopted and the ledger says so — the issue row
 # stays, and the close row carries `처분 사유=자동 해소`.
+#
+# Adoption needs a class that may be adopted: inside the judgment vocabulary and
+# not one of the two that hand risk to the user. A judgment with no class, a
+# class outside the vocabulary, or one of those two does not wait either — it
+# ends as a refusal.
 # ---------------------------------------------------------------------------
 J_MANIFEST="$WT/plan-r2.md"
 J_LEDGER="$WT/docs/pipeline-run/R2.md"
@@ -624,8 +629,8 @@ jact 등급=2 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비�
 check "수동 모드에서 등급 2 판단은 승인 대기로 응답한다" "$?" "5"
 
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
-jact 등급=2 기준="밤사이 리뷰 라운드를 줄일지" 근거="사람 없이 끝까지 가야 한다"
-check "자동 해소가 켜지면 등급 2 판단이 승인 대기 없이 채택된다" "$?" "0"
+jact 등급=2 "판단 부류=감사-발견" 기준="밤사이 리뷰 라운드를 줄일지" 근거="사람 없이 끝까지 가야 한다"
+check "자동 해소가 켜지면 채택 가능 부류의 등급 2 판단이 승인 대기 없이 채택된다" "$?" "0"
 auto_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
 check "자동 해소 행은 상태=승인 이다" "$(j_field "$auto_row" '상태')" "승인"
 check "자동 해소 행은 응답 토큰이 없다 (사람의 답과 구별된다)" "$(j_field "$auto_row" '응답 토큰')" "-"
@@ -633,10 +638,41 @@ auto_ap=$(j_field "$auto_row" '승인 id')
 check "채택 행이 자동 해소한 승인 id 를 해소 승인으로 싣는다" \
   "$(j_rows '자율 승인' "해소 승인=$auto_ap " | gate_count)" "1"
 
-# The judgment left pending above, resubmitted, is resolved the same way — a run
-# already carrying an open question picks the auto-resolution up.
-jact 등급=2 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
+# A grade-2 judgment with no class names nothing to adopt, so auto-resolution
+# closes it as a refusal — the floor does not demand the class at grade 2, and
+# this is the only place that keeps a classless judgment from being adopted.
+jact 등급=2 기준="검증 라운드를 건너뛸지" 근거="시간이 부족하다"
+check "부류 없는 등급 2 판단은 자동 해소가 채택하지 않고 거절로 끝난다" "$?" "3"
+noclass_row=$(j_rows '승인' '처분 사유=자동 해소' | tail -1)
+check "그 자동 해소 행은 상태=거부 이다" "$(j_field "$noclass_row" '상태')" "거부"
+check "부류 없는 판단의 승인 id 로 채택 행이 쓰이지 않는다" \
+  "$(j_rows '자율 승인' "해소 승인=$(j_field "$noclass_row" '승인 id') " | gate_count)" "0"
+
+# The floor does not read the class vocabulary at grade 2 either, so an
+# out-of-vocabulary class is closed by the same allow list. The value has to be
+# outside the vocabulary for this to mean anything, and the vocabulary lint
+# requires every literal class in the tree to be inside it — so the value goes
+# through a variable, which that lint reads as a shell expansion. A file-wide
+# self-skip would also switch off the check on this file's real class literals.
+bad_cls=없는-부류
+jact 등급=2 "판단 부류=$bad_cls" 기준="커밋을 합칠지" 근거="이력이 길다"
+check "어휘 밖 부류의 등급 2 판단은 자동 해소가 거절로 닫는다" "$?" "3"
+
+# The judgment left pending above, resubmitted with a class that may be adopted,
+# is resolved the same way — a run already carrying an open question picks the
+# auto-resolution up. The approval id derives from the standard and rationale
+# alone, so this is the same question.
+jact 등급=2 "판단 부류=감사-발견" 기준="리뷰 스테이지를 몇 개로 나눌지" 근거="비용과 커버리지가 상충한다"
 check "이미 대기 중이던 판단 승인도 재제출 때 자동 해소되어 채택된다" "$?" "0"
+
+# A pending judgment resubmitted still without a class is refused on that
+# resubmission, not adopted.
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
+check "수동 모드에서 부류 없는 판단이 대기로 열린다" "$?" "5"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+jact 등급=2 기준="픽스처를 다시 만들지" 근거="오래된 픽스처가 있다"
+check "대기 중이던 부류 없는 판단은 재제출 때 자동 해소가 거절로 닫는다" "$?" "3"
 
 # The two classes that hand risk to the user are resolved as a refusal: the run
 # still does not wait, and it does not take the risk on anyone's behalf.
@@ -647,6 +683,48 @@ check "그 자동 해소 행은 상태=거부 이다" \
 check "대기 중인 판단 승인이 남지 않는다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$J_MANIFEST" 2>/dev/null ) | jq -r .pending_approvals_total)" "0"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+
+# ---------------------------------------------------------------------------
+# 10. The two counters, on the field boundary and over two different sets
+#
+# They are not the same question and must not be the same selector. Progress
+# asks "did anything MOVE", so a command the table could not read is not
+# evidence of movement and is excluded; the terminal-act budget asks "how much
+# has this run spent", and an unreadable act spends exactly as much as a
+# readable one. Both are anchored on ` | 축2=… | ` rather than on a substring:
+# the exec row now carries an `argv=` excerpt, and an excerpt holding the text
+# `축2=읽기` used to move the count of a row whose own grade is a write.
+# ---------------------------------------------------------------------------
+CNT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-counters.XXXXXX")
+CNT_LEDGER="$CNT_DIR/ledger.md"
+: > "$CNT_LEDGER"
+cnt_row() {   # cnt_row <축2 값> [추가 필드]
+  printf -- '- `자율 승인` | 교대=0 | kind= | 결정=exec | 대상=t | 세그먼트=S | 절단점=커밋 | 유도 절단점=- | 축2=%s | 자격=주변 | %s근거=x | prev=0\n' \
+    "$1" "${2:+$2 | }" >> "$CNT_LEDGER"
+}
+cnt_read() {  # cnt_read <acts|b3>
+  CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST=/nonexistent; RUN_ID=R; RUN_DIR="$3"
+    if [ "$4" = "acts" ]; then
+      gate_progress_vector 2>/dev/null | sed -n "s/^acts=//p"
+    else
+      gate_b3_exec_total 2>/dev/null
+    fi' _ "$GATE" "$CNT_LEDGER" "$CNT_DIR" "$1"
+}
+check "빈 원장의 진전 계수는 0 이다" "$(cnt_read acts)" "0"
+cnt_row '등급 미상'
+check "등급 미상 행은 진전으로 세지 않는다" "$(cnt_read acts)" "0"
+check "등급 미상 행도 행위 예산은 쓴다"     "$(cnt_read b3)"   "1"
+cnt_row '읽기'
+check "읽기 행은 둘 다 세지 않는다 (진전)"  "$(cnt_read acts)" "0"
+check "읽기 행은 둘 다 세지 않는다 (예산)"  "$(cnt_read b3)"   "1"
+cnt_row '워크트리쓰기' 'argv=echo 축2=읽기'
+check "발췌에 축2=읽기 가 있어도 쓰기 행은 진전이다" "$(cnt_read acts)" "1"
+check "그 행은 예산도 쓴다"                          "$(cnt_read b3)"   "2"
+cnt_row '외부상태변경'
+check "외부 상태 변경도 진전이다" "$(cnt_read acts)" "2"
+rm -rf "$CNT_DIR"
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

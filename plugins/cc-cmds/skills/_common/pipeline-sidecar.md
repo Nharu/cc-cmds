@@ -123,6 +123,8 @@ once per run rather than on every append.
             | 베이스 브랜치=<name> | 홈=예|아니오
             | 원격 슬러그=<owner>/<name> | 절단점=<token> | 말단 행위 상한=없음|<int>
             [ | 실행 워크트리=<abs> ] [ | 리뷰 정책 상한=선리뷰후머지|선머지후리뷰|리뷰없음 ]
+            [ | dev 식별자=<종류>:<값>[,<종류>:<값>…] ]
+            [ | 배포트리거 식별자=<종류>:<값>[,<종류>:<값>…] ]
 
 ## 요소
 **설계 문서**: <document key> | (없음)
@@ -389,6 +391,20 @@ never compared.
     keys already sit in frozen manifests and a manifest has no amendment form —
     refusing would make a run in flight permanently unfit with no way back.
 
+14. **`dev 식별자` on the target rows** — every element is `<종류>:<값>`, the kind
+    is one of `aws-profile` · `aws-account` · `kube-context` · `host` · `domain` ·
+    `dir`, an `aws-account` is twelve digits and a `dir` is absolute. Each
+    violation is a **hard stop**, and absence of the field is not a violation: it
+    is the default, and it means the run believes a stage's `dev` claim because
+    there is nothing to compare it against. A typo the checker passed over reads
+    at runtime as exactly that absence, which is why this refuses rather than
+    warns.
+15. **`배포트리거 식별자` on the target rows** — same shape, kinds `branch` ·
+    `workflow` · `jenkins-job` · `argv`, a kind outside that set is a **hard
+    stop**. One arm is a **warning** instead: a `branch` trigger on a target whose
+    cutpoint is below `push` is inert rather than wrong, and "not checked" must
+    not read the same as "checked and inert".
+
 **Both warnings fire at most once per run.** This whole conjunction re-runs on
 every gate entry, so a per-entry warning buries the morning report under its own
 repetitions. The suppression is a sentinel file per warning kind under the run
@@ -512,9 +528,9 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드` · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모` · `종단 부류` |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) |
 | `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `payload`(근본 원인 문구) |
-| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) |
+| `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
-| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` |
+| `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `도달 판정`(도달 park 행 전용) · `세그먼트`(같음) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only; writer pending — the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer; `자동 해소` on a closing row the gate wrote itself) · `관측 시각`(the free-input row) |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
@@ -606,8 +622,18 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `segment.리뷰 정책` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; omission on a later row inherits) |
 | `target.리뷰 정책 상한` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; absence reads `선리뷰후머지`) |
 | `대상 추가.층` | `0` \| `1` |
-| `blocked.사유` | `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
+| `blocked.사유` | `도달 park` \| `인가 한도` \| `사다리 R4` \| `사다리 단 부재` \| `사이클 예산 소진` \| `자동 채택 미달` \| `자동 채택 불성립` \| `예산·벽시계` \| `게이트 park` \| `시각 정합 park` \| `외부 상태 불확정` \| `대상 미선언` \| `강제 표면 이동` \| `라이브니스 침묵` |
 | `blocked.스코프` | `act` \| `cone` \| `run` |
+| `자율 승인.등급 출처` | `표` \| `불투명` \| `미상` (exec rows) |
+| `자율 승인.선언` | `-` \| a `SURFACES` token — what `--surface` claimed, where it differs from the graded value or is the only grade there is |
+| `자율 승인.표지` | `-` \| `비밀출력` \| `파괴` |
+| `자율 승인.파괴 출처` | `-` \| `유도` \| `신고` \| `유도·신고` |
+| `자율 승인.도달` | a `REACHES` token \| `-` |
+| `자율 승인.유도 도달` | `-` \| `기기전역` \| `배포트리거` |
+| `자율 승인.식별자 대조` | `-` \| `미선언` \| `일치` \| `대조불가` (`불일치`·`부재` park rather than land on a row) |
+| `blocked.도달 판정` | `비밀출력` \| `신고등급한도` \| `도달미상` \| `기기전역` \| `push원격불일치` \| `도달모순` \| `dev파괴` \| `dev식별자불일치` \| `dev식별자부재` \| `dev대조불가` \| `파괴형태미명시` \| `prod인가없음` \| `배포트리거인가없음` |
+| `target.dev 식별자` | optional; `<종류>:<값>` elements separated by `,` — `aws-profile` \| `aws-account`(12 digits) \| `kube-context` \| `host` \| `domain` \| `dir`(absolute) |
+| `target.배포트리거 식별자` | optional; same shape — `branch` \| `workflow` \| `jenkins-job` \| `argv` |
 | `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
@@ -782,6 +808,12 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 - **Written with the atomic form of `sidecar.md` §1.3** (temp file in the same directory, then rename), so a partial record is never observed. The closing fence is the terminator: a record whose last non-empty line is not `<!-- /cc-pipeline-halt v1 -->` is **a crash mid-write, not a halt**.
 - **`관측 상세` is where measurement values go, and `질문 문면` is not.** A `freeze-mismatch` halt owes which assertion diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — on an assertion 1 mismatch — the intersecting paths, which `verification.md` §6.0 calls the only thing telling a later reader what ended the window. Without a field of their own those values land in `질문 문면`, which the schema defines as the verbatim question and which is the one field a human uses to audit a forged halt — so the obligation and the grammar disagreed and the misuse was the only way to satisfy both. It is **one line like every other field line in this block**, parts joined with ` / `, and every field line sits above the closing fence because that fence is the terminator. A class with no measurement values of its own writes `(없음)`.
+- **An exit 11 from the gate is a halt input, not a retry input.** 도달 park says
+  the act was not performed and will not be: the verdict is keyed on the act
+  digest, so the same argv re-declared takes the recorded answer. A stage whose
+  parked act was not essential continues without it and writes no halt record at
+  all; one whose act was essential writes this record with `분류:
+  gate-unanswerable` and the `도달 판정` value in `관측 상세`.
 - **`재호출 명령` is inert.** The driver records it and **never executes it**. Auto-running it retries a condition whose cause is still present, which makes a single pass into a bounded-only-by-budget loop — and does so precisely when the tree has been *proven* to be in motion. The field is named for its inertness because attributing that in prose is not enough: the predictable failure is a future implementer wiring it to a dispatcher.
 - **Termination discipline**: write the record atomically → take **no further step** (no cleanup beyond what the halting step already committed, no partial progress, no fallback act) → end the turn normally.
 - **The discriminator is the artifact, not the exit code.** A halt is a *clean* stop, so its terminal envelope looks like a normal completion, and a model-driven skill cannot set an exit code to mean otherwise. **Exit says the stage ended; the halt record says why.** Both are machine-read; neither is prose.
