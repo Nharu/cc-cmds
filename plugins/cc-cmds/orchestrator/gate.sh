@@ -9696,11 +9696,31 @@ gate_verb_act() {
       warn "이미 park 된 행위입니다 (행위 다이제스트=$_ad) — 재신고로 처분이 바뀌지 않습니다"
       exit "$GATE_EXIT_PARK"
     fi
+    # THE THREE FREE-TEXT FIELDS ARE SIZED FROM WHAT IS LEFT, not from three
+    # constants. A row that exceeds the cap is not a truncated row — `gate_append`
+    # refuses it and the process ends, so the park verdict this block exists to
+    # record would vanish exactly when it is most needed. The fixed part is
+    # measured here rather than assumed: an alias, a segment id and a stage id
+    # are caller-shaped and nothing bounds their length.
+    local _seg55="${CC_PIPELINE_SEGMENT:-$segment}" _stg="${CC_PIPELINE_STAGE_ID:--}"
+    local _fixed _free _rb _ob _cb
+    _fixed=$(printf -- '- `blocked` | 교대=999 | 대상=%s | 스코프=act | 원인=막힘 | 사유=도달 park | 도달 판정=%s | 세그먼트=%s | 스테이지=%s | 축2=%s | 도달=%s | 행위 다이제스트=%s | 근거= | 관측= | 재개 명령= | prev=%064d\n' \
+              "$alias" "$GATE_PARK_CELL" "$_seg55" "$_stg" "$graded" "${GATE_REACH:--}" "$_ad" 0 \
+            | wc -c | tr -d ' ')
+    _free=$(( GATE_ROW_MAX - _fixed - 8 ))
+    [ "$_free" -lt 0 ] && _free=0
+    # The rationale first — it is the one a person reads in the morning — then the
+    # act excerpt, then the re-invocation line, each capped at its own ceiling.
+    _rb=$(( _free / 2 )); [ "$_rb" -gt 160 ] && _rb=160
+    _free=$(( _free - _rb ))
+    _ob=$(( _free / 3 )); [ "$_ob" -gt 60 ] && _ob=60
+    _free=$(( _free - _ob ))
+    _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
-      "도달 판정=$GATE_PARK_CELL" "세그먼트=${CC_PIPELINE_SEGMENT:-$segment}" \
-      "스테이지=${CC_PIPELINE_STAGE_ID:--}" "축2=$graded" "도달=${GATE_REACH:--}" \
-      "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" 160)" \
-      "관측=$(gate_row_safe "$1" 60)" "재개 명령=$(gate_row_safe "$*" 240)"
+      "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
+      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+      "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
+      "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "도달 park — 판정 '$GATE_PARK_CELL'. 이 행위는 수행되지 않았고, 재시도하거나 도달을 바꿔 다시 신고해도 같은 판정입니다. 필수가 아니면 이 행위 없이 할 수 있는 일을 계속하고, 필수였다면 분류 'gate-unanswerable' 로 halt 기록을 쓰고 끝내세요"
     case "$GATE_PARK_CELL" in
       dev식별자부재|dev식별자불일치|dev대조불가)

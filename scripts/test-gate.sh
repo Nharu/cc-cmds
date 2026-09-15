@@ -12164,6 +12164,11 @@ n=$(grep -c '사유=도달 park' "$FX_LEDGER" 2>/dev/null || true)
 [ "${n:-0}" -ge 1 ] && ok "park 는 blocked 행으로 남는다" || bad "park 는 blocked 행으로 남는다" "n=$n"
 n=$(grep -c '스코프=act' "$FX_LEDGER" 2>/dev/null || true)
 [ "${n:-0}" -ge 1 ] && ok "그 행의 스코프가 act 다 (런을 세우지 않는다)" || bad "그 행의 스코프가 act 다" "n=$n"
+# 상한을 넘는 행은 잘린 행이 아니라 없는 행이다 — `gate_append` 가 거절하며 그
+# 자리에서 프로세스가 끝나므로, park 판정이 가장 필요한 순간에 사라진다. 자유
+# 텍스트 셋은 고정부를 실제로 재고 남는 바이트로 자른다.
+n=$(awk 'index($0, "- `blocked`") == 1 { n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' "$FX_LEDGER")
+[ "${n:-0}" -le 1024 ] && ok "park blocked 행이 원장 행 상한 안이다 (최장 ${n}B)" || bad "park blocked 행 길이" "최장 ${n}B > 1024"
 
 # ---------------------------------------------------------------------------
 # 55. 룰 루프 — 첫 승인 요구에서 멈추지 않는다
