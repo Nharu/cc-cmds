@@ -190,11 +190,23 @@ gate_may_raise_banner() {
 # was raised to a question and the run sat on it until morning.
 #
 # Two classes carry a recommendation, and those are the classes resolved here.
-# A BOUNDARY approval (B1..B4, SHIFT-FLOOR) recommends continuing: its whole
-# disposition set is "continue" or "stop the run", and stopping is what a wall
-# clock deadline and the cost ceiling already do without a person. A JUDGMENT
-# approval carries the router's own recommendation — the judgment it submitted
-# — so resolving it is adopting that recommendation, but ONLY for a class that
+# A BOUNDARY approval (B1..B3, SHIFT-FLOOR, and B4 below the declared ceiling)
+# recommends continuing: its whole disposition set is "continue" or "stop the
+# run", and for a stagnation or budget count the wall clock deadline is what
+# ends a run that keeps going.
+#
+# B4 AT OR ABOVE THE DECLARED CEILING IS NOT RESOLVED, and the reason is that
+# nothing else stops spending. The ceiling is read in exactly two places, both
+# inside B4, and B4 only issues an approval; the deadline stops new dispatches
+# and merges, not cost. So "continue" past 100% was a recommendation with no
+# floor under it, re-taken every ten points — $40, $44, $48 on a $40 ceiling —
+# while the one signal a shift reads to see the run is held on a person, the
+# open approval, was closed the moment it appeared. Below the ceiling the
+# warning is early and continuing is what the ceiling was declared to allow;
+# at or above it the approval stays `대기` and is surfaced like any other.
+#
+# A JUDGMENT approval carries the router's own recommendation — the judgment it
+# submitted — so resolving it is adopting that recommendation, but ONLY for a class that
 # may be adopted: one inside the judgment vocabulary and not one of the two that
 # hand risk to the user (`팀-구성`, `시각-면제`). Everything else is resolved the
 # other way, as a refusal — those two classes, a class outside the vocabulary,
@@ -219,6 +231,25 @@ gate_may_raise_banner() {
 # and `응답 토큰=-`, so the morning can tell it from an answer a person gave;
 # the report's audit of autonomous decisions reads exactly those rows.
 #
+# A `대기` A PERSON HAS ALREADY ANSWERED IS NOT RESOLVED. `대기` has more than
+# one history: an approval issued while the switch was off, and an approval a
+# person answered with free input (or through a frame with no slot for it),
+# which stays `대기` with `처분 사유` on its last row because no disposition
+# could be derived. Closing the second with the router's recommendation
+# replaced the person's words with the router's, and then refused the person's
+# real answer as "already closed". So a last row carrying `처분 사유` keeps the
+# approval open for a person.
+#
+# AND THE CLOSE CHECKS THE TRANSITION UNDER THE LEDGER LOCK. Reading the state
+# and appending the closing row were two steps with no lock between them, so a
+# person's `close` and an auto-close that both read `대기` both wrote, and the
+# last row won — a person's `거부` could land under an automatic `승인`. Both
+# paths now append with `gate_append '승인' --transition …`, which re-reads the
+# last row for the id inside the lock and writes nothing when the transition is
+# no longer allowed: an auto-close needs `대기` with no `처분 사유`, a person's
+# close needs `대기` or `철회`. The auto-close reports that as a non-zero return;
+# a person's close dies saying another close finished first.
+#
 # The switch is `CC_CMDS_AUTOPILOT_AUTO_RESOLVE`, with the same value grammar as
 # the banner switch. Unset means ON.
 # ---------------------------------------------------------------------------
@@ -234,13 +265,42 @@ gate_auto_close_approval() {
   #
   # The closing row has the shape a transcript close writes, with the two
   # fields that name a person replaced by what did the closing instead.
-  local id="$1" st="$2" q="$3" rec="$4"
-  gate_append '승인' "승인 id=$id" "상태=$st" "질문 문면=$(gate_row_safe "$q" 400)" \
+  #
+  # Returns non-zero and writes nothing when the transition guard refuses —
+  # the approval is no longer an unanswered `대기` by the time the lock is held.
+  # Every caller runs under `set -e`, so every caller takes the value.
+  local id="$1" st="$2" q="$3" rec="$4" rc=0
+  gate_append '승인' --transition "$id" '대기' 1 "승인 id=$id" "상태=$st" \
+    "질문 문면=$(gate_row_safe "$q" 400)" \
     "답변 문면=자동 해소(추천: $rec)" "해소 시각=$(now_iso)" \
     "응답 토큰=-" "답변 다이제스트=-" \
-    "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "처분 사유=자동 해소"
+    "사이드카 앵커=$(gate_approval_sidecar_anchor "$id")" "처분 사유=자동 해소" || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "승인 $id 은 자동 해소 직전에 더 이상 답 없는 대기가 아니었습니다 — 닫지 않았습니다 (현재 상태 $(gate_approval_state "$id"))"
+    return 1
+  fi
   gate_close_settle "$id"
   warn "승인 $id 을 추천($rec)대로 자동 해소했습니다 — 상태 $st (사람 대기 없음)"
+}
+
+gate_approval_person_answered() {
+  # gate_approval_person_answered <승인 id> — true when the approval's last row
+  # records an answer a person gave that derived no disposition (`자유 입력`,
+  # `슬롯 부재`). Auto-resolution does not close such an approval.
+  local r
+  r=$(gate_row_field "$(gate_approval_last_row "$1")" '처분 사유')
+  case "$r" in ''|-|'자동 해소') return 1 ;; esac
+  return 0
+}
+
+gate_boundary_auto_resolvable() {
+  # gate_boundary_auto_resolvable <경계 이름> — false only for B4 at or above
+  # the declared cost ceiling. See the auto-resolution header for why.
+  local pct
+  [ "$1" = "B4" ] || return 0
+  pct=$(gate_b4_percent)
+  case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$pct" -lt 100 ]
 }
 
 gate_boundary_rebaseline() {
@@ -3209,6 +3269,22 @@ gate_append() {
   # Rotated through the positional parameters rather than collected into an
   # array: the interpreter floor is bash 3.2 and the argument list is the one
   # ordered container available without one.
+  #
+  # `--transition <승인 id> <허용 상태…> <처분 사유 금지 0|1>` RIGHT AFTER THE
+  # SERIES makes the append conditional on that approval's last row, re-read
+  # INSIDE the lock: its `상태` must be one of the space-separated allowed
+  # states, and with the third value `1` its `처분 사유` must be empty or `-`.
+  # When it is not, nothing is written and this returns 90 instead of dying — a
+  # refused transition is an answer the caller acts on, not a lost row. Taken as
+  # arguments rather than read from variables so a value in the environment can
+  # never turn an ordinary append into a conditional one; placed after the
+  # series so every call site still opens with the literal series name the
+  # field table lint reads.
+  local guard_id="" guard_states="" guard_noreason="0"
+  if [ "${1:-}" = "--transition" ]; then
+    guard_id="$2"; guard_states="$3"; guard_noreason="$4"
+    shift 4
+  fi
   local n_args=$# i=0
   while [ "$i" -lt "$n_args" ]; do
     f="$1"; shift; i=$((i + 1))
@@ -3290,17 +3366,44 @@ gate_append() {
   if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
     "$tool" -k "$RUN_DIR/ledger.lock" \
       /bin/sh -c '
+        if [ -n "$5" ]; then
+          grow=$(grep -F -- "$8" "$2" 2>/dev/null | grep -F -- "승인 id=$5 " | tail -1)
+          gst=$(printf "%s" "$grow" | tr "|" "\n" | sed -n "s/^ *상태=//p" | sed "s/[[:space:]]*\$//" | tail -1)
+          [ -n "$gst" ] || exit 90
+          case " $6 " in *" $gst "*) ;; *) exit 90 ;; esac
+          if [ "$7" = "1" ]; then
+            grsn=$(printf "%s" "$grow" | tr "|" "\n" | sed -n "s/^ *처분 사유=//p" | sed "s/[[:space:]]*\$//" | tail -1)
+            case "$grsn" in ""|-) ;; *) exit 90 ;; esac
+          fi
+        fi
         last=$(grep "$3" "$2" 2>/dev/null | tail -1)
         [ -n "$last" ] || last="$4"
         prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
         printf "%s | prev=%s\n" "$1" "$prev" >> "$2"
-      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" || rc=$?
+      ' _ "$body" "$LEDGER" '^- `' "## 실행 $RUN_ID" \
+        "$guard_id" "$guard_states" "$guard_noreason" '- `승인` |' || rc=$?
   else
     # No lock tool means no concurrency to serialize, so the same sequence is
     # correct here — it is the interleaving that the lock removes, not the order.
-    local prev
-    prev=$(gate_chain_tip)
-    printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    local prev gst grsn
+    if [ -n "$guard_id" ]; then
+      gst=$(gate_approval_state "$guard_id")
+      case " $guard_states " in
+        *" ${gst:-미상} "*) ;;
+        *) rc=90 ;;
+      esac
+      if [ "$rc" = "0" ] && [ "$guard_noreason" = "1" ]; then
+        grsn=$(gate_row_field "$(gate_approval_last_row "$guard_id")" '처분 사유')
+        case "$grsn" in ''|-) ;; *) rc=90 ;; esac
+      fi
+    fi
+    if [ "$rc" = "0" ]; then
+      prev=$(gate_chain_tip)
+      printf '%s | prev=%s\n' "$body" "$prev" >> "$LEDGER" || rc=$?
+    fi
+  fi
+  if [ "$rc" = "90" ] && [ -n "$guard_id" ]; then
+    return 90
   fi
   # A LOST ROW IS NOT A WARNING. The whole design forbids an act with no row, so
   # an append that fails — an unwritable lock path, a full disk, a bad ledger
@@ -6981,8 +7084,9 @@ gate_issue_judgment_approval() {
   case "$st" in
     대기)
       # An approval opened before auto-resolution existed, or while it was
-      # switched off, is resolved on the resubmission that finds it.
-      if gate_auto_resolve_enabled; then
+      # switched off, is resolved on the resubmission that finds it — unless a
+      # person already answered it and no disposition could be derived.
+      if gate_auto_resolve_enabled && ! gate_approval_person_answered "$id"; then
         local ar=0
         gate_auto_resolve_judgment "$id" "$q" "$cls" || ar=$?
         return "$ar"
@@ -7061,19 +7165,32 @@ gate_auto_resolve_judgment() {
   # through to adoption: a stage that emitted `시각-면제` reached this function
   # with an empty class, and a grade-2 judgment submitted without one did too,
   # and both were adopted in a default configuration with nobody asked.
-  local id="$1" q="$2" cls="${3:-}"
+  #
+  # A CLOSE THE TRANSITION GUARD REFUSED IS NOT THIS CALL'S RESOLUTION. Another
+  # close reached the approval first, so the id is cleared and the code is
+  # derived from the state that close left — the same three answers the issuer
+  # gives for an approval it finds already closed or still open.
+  local id="$1" q="$2" cls="${3:-}" st rec rc=0
   GATE_AUTO_RESOLVED_APPROVAL="$id"; export GATE_AUTO_RESOLVED_APPROVAL
   if gate_judgment_class_adoptable "$cls"; then
-    gate_auto_close_approval "$id" 승인 "$q" "라우터 판단 채택"
-    return "$GATE_APPROVAL_ANSWERED"
-  fi
-  if [ -z "$cls" ]; then
-    gate_auto_close_approval "$id" 거부 "$q" "판단 부류가 없어 채택하지 않음"
+    st=승인; rec="라우터 판단 채택"
+  elif [ -z "$cls" ]; then
+    st=거부; rec="판단 부류가 없어 채택하지 않음"
   elif judgment_class_forbidden "$cls"; then
-    gate_auto_close_approval "$id" 거부 "$q" "위험을 사용자에게 넘기는 부류라 채택하지 않음"
+    st=거부; rec="위험을 사용자에게 넘기는 부류라 채택하지 않음"
   else
-    gate_auto_close_approval "$id" 거부 "$q" "어휘 밖 부류라 채택하지 않음"
+    st=거부; rec="어휘 밖 부류라 채택하지 않음"
   fi
+  gate_auto_close_approval "$id" "$st" "$q" "$rec" || rc=$?
+  if [ "$rc" != "0" ]; then
+    GATE_AUTO_RESOLVED_APPROVAL=""; export GATE_AUTO_RESOLVED_APPROVAL
+    case "$(gate_approval_state "$id")" in
+      승인) return "$GATE_APPROVAL_ANSWERED" ;;
+      무효|거부) return "$GATE_EXIT_RULE" ;;
+    esac
+    return 0
+  fi
+  [ "$st" = "승인" ] && return "$GATE_APPROVAL_ANSWERED"
   return "$GATE_EXIT_RULE"
 }
 
@@ -11368,15 +11485,17 @@ gate_record_stage_outcome() {
 }
 
 gate_absorb_issue() {
-  # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> <판단 부류> — issue
-  # the approval an emitted judgment needs and dispose of every one of the
-  # issuer's three returns. ALWAYS returns 0.
+  # gate_absorb_issue <alias> <segment> <기준> <근거> <문맥> <판단 부류>
+  # <판단 등급> — issue the approval an emitted judgment needs and dispose of
+  # every one of the issuer's three returns. ALWAYS returns 0.
   #
   # THE CLASS TRAVELS WITH THE QUESTION. The issuer hands it to auto-resolution,
   # which adopts only a class it can name; calling the issuer with four arguments
   # left the class empty on every emitted judgment, so a stage that emitted
   # `시각-면제` exactly as the contract asks was adopted with its class erased
-  # from the row. An empty value here means the stage emitted none.
+  # from the row. An empty value here means the stage emitted none. The grade
+  # travels for the same reason: an adoption row written with `등급=-` leaves the
+  # morning unable to tell which grade was adopted without a person.
   #
   # The absorber runs in the middle of recording a stage result, and this file
   # inherits `set -euo pipefail` from the driver it sources. So an unhandled
@@ -11390,7 +11509,7 @@ gate_absorb_issue() {
   # acted on the decision inside its own turn; if the gate writes neither a row
   # nor an approval nor a warning, the judgment exists only in a terminal
   # message nobody will read again.
-  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" rc=0
+  local alias="$1" seg="$2" std="$3" why="$4" ctx="$5" cls="${6:-}" grade="${7:-}" rc=0
   gate_issue_judgment_approval "$alias" "$seg" "$std" "$why" "$cls" || rc=$?
   case "$(gate_judgment_approval_disposition "$rc")" in
     발행) ;;
@@ -11426,7 +11545,7 @@ gate_absorb_issue() {
         return 0
       fi
       gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
-        "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=-" \
+        "판단 부류=$(gate_row_safe "${cls:--}" 60)" "등급=${grade:--}" \
         "기준=$(gate_row_safe "$std" 150)" "되돌리는 법=-" \
         "근거=$(gate_row_safe "$why" 150)" \
         "출처=스테이지 방출" "해소 승인=${GATE_LAST_JUDGMENT_APPROVAL_ID:--}"
@@ -11497,17 +11616,17 @@ gate_absorb_emitted_judgment() {
 
   if [ -z "$cls" ]; then
     warn "스테이지가 판단을 방출했으나 「판단 부류」가 없습니다 — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" ""
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "판단 부류 없음" "" "$grade"
     return 0
   fi
   if ! judgment_class_ok "$cls"; then
     warn "스테이지가 방출한 「판단 부류」가 어휘 밖입니다: $cls — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "어휘 밖 부류 $cls" "$cls" "$grade"
     return 0
   fi
   if [ "${grade:-2}" = "2" ] || ! gate_autoadopt_ok "$cls" "$revert"; then
     warn "스테이지가 방출한 판단이 자동 채택의 합집합을 통과하지 못했습니다 ($cls) — 행을 쓰지 않고 승인을 발행합니다"
-    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls"
+    gate_absorb_issue "$alias" "$seg" "${std:-미상}" "${why:-스테이지 방출}" "자동 채택 불성립 $cls" "$cls" "$grade"
     return 0
   fi
   gate_append '자율 승인' "kind=judgment" "결정=채택" "세그먼트=$seg" \
@@ -11754,6 +11873,21 @@ gate_close_settle() {
   esac
 }
 
+gate_close_lost() {
+  # gate_close_lost <승인 id> — the `close` row was refused by the transition
+  # guard: the approval was still `대기` or `철회` when this verb read it, and
+  # is not by the time the lock is held.
+  #
+  # The state check at the top of `close` runs long before the row is written —
+  # the transcript is read and parsed in between — and an auto-close landing in
+  # that window used to be overwritten by this row, or to overwrite it. A
+  # person's answer is not quietly lost to either order: the close fails and
+  # says why. Every closing append in `close` carries `--transition` and lands
+  # here on refusal; the appends stay literal `gate_append '승인'` calls so the
+  # field table lint keeps reading them.
+  die "승인 '$1' 은 이 닫기가 답을 읽는 사이 다른 닫기가 먼저 해소했습니다 (현재 '$(gate_approval_state "$1")') — 이 답은 기록하지 않았습니다"
+}
+
 gate_close() {
   # Resolving an approval reads the HARNESS-WRITTEN transcript rather than the
   # router's prose, so the entity that asks is not the entity that records. The
@@ -11897,24 +12031,24 @@ gate_close() {
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
       || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
     if [ "$void" = "1" ]; then
-      gate_append '승인' "승인 id=$id" "상태=무효" "질문 문면=$q" \
+      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=무효" "질문 문면=$q" \
         "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)" \
-        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
       gate_close_settle "$id"
       log "승인 무효 — $id (행위는 수행되지 않습니다)"
       return 0
     fi
     if [ "$reject" = "1" ]; then
-      gate_append '승인' "승인 id=$id" "상태=거부" "질문 문면=$q" \
+      gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=거부" "질문 문면=$q" \
         "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
-        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+        "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
       gate_close_settle "$id"
       log "승인 거부 — $id (물었고 답이 아니오입니다)"
       return 0
     fi
-    gate_append '승인' "승인 id=$id" "상태=승인" "질문 문면=$q" \
+    gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=승인" "질문 문면=$q" \
       "답변 문면=트랜스크립트 판독" "해소 시각=$(now_iso)" \
-      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
     gate_close_settle "$id"
     log "승인 해소 — $id"
     return 0
@@ -11953,9 +12087,9 @@ gate_close() {
     aex=$(gate_row_safe "$afull" "$GATE_A_EXCERPT")
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
       || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
-    gate_append '승인' "승인 id=$id" "상태=$label" "질문 문면=$q" \
+    gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=$label" "질문 문면=$q" \
       "답변 문면=$aex" "해소 시각=$(now_iso)" \
-      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
+      "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor" || gate_close_lost "$id"
     gate_close_settle "$id"
     case "$label" in
       승인) log "승인 해소 — $id" ;;
@@ -11990,9 +12124,9 @@ gate_close() {
   else
     warn "승인 $id 의 답 프레임에 그 id 를 담은 질문 슬롯이 없습니다 (슬롯 부재) — 처분은 유도되지 않았고 대기로 둡니다"
   fi
-  gate_append '승인' "승인 id=$id" "상태=대기" "대상=$(gate_row_field "$row" '대상')" "절단점=$cutp" \
+  gate_append '승인' --transition "$id" '대기 철회' 0 "승인 id=$id" "상태=대기" "대상=$(gate_row_field "$row" '대상')" "절단점=$cutp" \
     "막는 세그먼트=$(gate_row_field "$row" '막는 세그먼트')" "질문 문면=$q" \
-    "처분 사유=$reason" "응답 토큰=$tok" "사이드카 앵커=$anchor" "관측 시각=$(now_iso)"
+    "처분 사유=$reason" "응답 토큰=$tok" "사이드카 앵커=$anchor" "관측 시각=$(now_iso)" || gate_close_lost "$id"
   exit "$GATE_EXIT_APPROVAL"
 }
 
@@ -12802,12 +12936,16 @@ gate_boundaries() {
   # A boundary approval left open — issued before auto-resolution existed, or
   # while it was switched off — suspends B1..B3 and waits on a person. Resolving
   # it here is what lets a run already in flight pick the hotfix up on its next
-  # act instead of carrying the stop to morning.
+  # act instead of carrying the stop to morning. Not a B4 at or above the
+  # ceiling, not one a person already answered, and a close another writer
+  # reached first is left as that writer left it.
   if gate_auto_resolve_enabled; then
     for id in $(gate_pending_approval_ids act); do
       [ "$(gate_row_field "$(gate_approval_last_row "$id")" '절단점')" = "경계" ] || continue
+      gate_boundary_auto_resolvable "${id%-*}" || continue
+      gate_approval_person_answered "$id" && continue
       gate_auto_close_approval "$id" 승인 \
-        "$(gate_row_field "$(gate_approval_last_row "$id")" '질문 문면')" "계속"
+        "$(gate_row_field "$(gate_approval_last_row "$id")" '질문 문면')" "계속" || true
     done
   fi
   pending=$(gate_pending_approval_ids act | gate_count)
@@ -13120,13 +13258,23 @@ gate_issue_boundary_approval() {
   # again, because the id had a row. A resolved id re-opens with a fresh `대기`
   # row and the row sequence says what happened to it; an OPEN id is not
   # re-appended, which is the property the existence test was really for.
-  local name="$1" q="$2" binding="$3" id
+  #
+  # AUTO-RESOLUTION IS NARROWED TWICE HERE. A B4 at or above the declared
+  # ceiling is not resolved (`gate_boundary_auto_resolvable`) and falls through
+  # to the notice below; an open approval a person already answered is not
+  # resolved either. A close the transition guard refuses leaves
+  # `GATE_BOUNDARY_AUTO_RESOLVED` empty, so the SHIFT-FLOOR caller does not
+  # launch on a resolution that did not happen.
+  local name="$1" q="$2" binding="$3" id auto=0 rc=0
   GATE_BOUNDARY_AUTO_RESOLVED=""
   id="${name}-$(printf '%s' "$RUN_ID$name$binding" | shasum -a 256 | cut -c1-8)"
+  if gate_auto_resolve_enabled && gate_boundary_auto_resolvable "$name"; then
+    auto=1
+  fi
   if [ "$(gate_approval_state "$id")" = "대기" ]; then
-    if gate_auto_resolve_enabled; then
-      gate_auto_close_approval "$id" 승인 "$q" "계속"
-      GATE_BOUNDARY_AUTO_RESOLVED="$id"
+    if [ "$auto" = "1" ] && ! gate_approval_person_answered "$id"; then
+      gate_auto_close_approval "$id" 승인 "$q" "계속" || rc=$?
+      [ "$rc" != "0" ] || GATE_BOUNDARY_AUTO_RESOLVED="$id"
     fi
     return 0
   fi
@@ -13146,9 +13294,9 @@ gate_issue_boundary_approval() {
   # that the boundary fired and what it read; the closing row right after it is
   # the record that nobody was waited on. Skipping the issue row would make an
   # auto-resolved stagnation indistinguishable from one that never happened.
-  if gate_auto_resolve_enabled; then
-    gate_auto_close_approval "$id" 승인 "$q" "계속"
-    GATE_BOUNDARY_AUTO_RESOLVED="$id"
+  if [ "$auto" = "1" ]; then
+    gate_auto_close_approval "$id" 승인 "$q" "계속" || rc=$?
+    [ "$rc" != "0" ] || GATE_BOUNDARY_AUTO_RESOLVED="$id"
     return 0
   fi
   # The boundary approvals are the slowest class this design has, by
