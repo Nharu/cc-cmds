@@ -178,7 +178,7 @@ the digest check runs on every verb. `무진전 상한` is new, so the compatibi
 argument runs the other way: an undeclared new field must contribute nothing, or
 the digest of every in-flight manifest moves the moment the field exists. The
 compatibility argument for a conditional line is needed by **new** fields only.
-`비용 천장` is in neither list — it is not serialized at all.
+`비용 천장` is serialized conditionally, on the same terms as `무진전 상한`. It was in neither list while it was only a figure a boundary asked about; this slice made it one of the two bounds that END a run, and a value that can end a run has to be in the set the next gate entry compares — the manifest write guard runs only on the `exec` path, and the hook's Write/Edit arm allows without calling the gate. What the line buys is detection at the next entry rather than prevention of the edit.
 
 **The three boundary fields are `벽시계 마감`, `비용 천장` and `무진전 상한`, and
 only the first is required.** The other two are legal undeclared, and the gate

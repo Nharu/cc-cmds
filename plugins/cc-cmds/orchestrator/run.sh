@@ -601,9 +601,10 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
-  local dl sb
+  local dl sb cc
   dl=$(manifest_field '인가' '벽시계 마감')
   sb=$(manifest_field '인가' '무진전 상한')
+  cc=$(manifest_field '인가' '비용 천장')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -645,6 +646,23 @@ binding_set_bytes() {
     # items above already use.
     printf 'deadline\t%s\n' "$dl"
     [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    # THE COST CEILING IS IN THE FROZEN SET BECAUSE IT NOW ENDS THE RUN. It used
+    # to be a figure a boundary asked about, so leaving it out cost nothing; this
+    # slice made it one of the two bounds that terminate a run at 100 percent and
+    # made it decide whether the wall-clock fallback applies. A value that can
+    # end a run and is not in this serialization can be edited in the manifest
+    # with nothing to catch it: the manifest write guard runs only on the `exec`
+    # path, and the hook's Write/Edit arm allows without calling the gate at all.
+    #
+    # WHAT THIS BUYS IS DETECTION, NOT PREVENTION, and the difference is worth
+    # naming. An edit still lands; what changes is that the next gate entry
+    # compares digests and refuses. Blocking the write itself would need a
+    # manifest anchor in the hook's Write/Edit arm, which is a different repair.
+    #
+    # CONDITIONAL FOR THE SAME REASON `stagnation` IS. A manifest that declares
+    # no ceiling contributes zero bytes, so adding this line does not move the
+    # digest of any manifest already frozen without the field.
+    [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
     # THE BARE `true` IS LOAD-BEARING, not leftover scaffolding. When `$sb` is
     # empty the line above is an AND-list whose second command never runs, so
     # the block's last command has failed; `pipefail` promotes that to the whole

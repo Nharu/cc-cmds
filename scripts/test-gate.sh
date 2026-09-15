@@ -4888,9 +4888,9 @@ rm -f "$RD/unbounded-notice" "$RD/stagnation-digest" "$RD/stagnation-repeat"
 # 그 명령의 등급을 답한다. 답이 더 정확해진 것이지 이 절의 질문이 바뀐 것이 아니므로
 # 기대값만 옮긴다 — 셋 다 여전히 `읽기` 가 아니고, 그것이 이 절의 하중이다.
 graded_as 읽기 "순수 find 는 읽기다" -- find . -name x
-graded_as 워크트리쓰기 "실행 술어가 붙은 find 는 읽기가 아니라 감싼 명령의 등급이다" -- find . -exec rm -rf {} +
-graded_as 워크트리쓰기 "삭제 술어가 붙은 find 도 읽기가 아니다" -- find . -delete
-graded_as 워크트리쓰기 "파일을 쓰는 find 술어도 읽기가 아니다" -- find . -fprintf /tmp/x %p
+graded_as 등급\ 미상 "실행 술어가 붙은 find 는 감싼 명령의 등급을 빌리지 않는다" -- find . -exec rm -rf {} +
+graded_as 등급\ 미상 "삭제 술어가 붙은 find 는 이름만으로 등급을 알 수 없다" -- find . -delete
+graded_as 등급\ 미상 "파일을 쓰는 find 술어도 이름만으로는 알 수 없다" -- find . -fprintf /tmp/x %p
 graded_as 읽기 "command -v 는 읽기다 (해소만 하고 실행하지 않는다)" -- command -v ls
 graded_as 워크트리쓰기 "command 는 감싼 명령의 등급을 받는다" -- command touch x
 graded_as 트리밖쓰기 "command 로 감싸도 트리 밖 쓰기는 트리 밖 쓰기다" -- command mv a /private/tmp/b
@@ -5982,18 +5982,18 @@ graded_as '워크트리쓰기' 'command 가 감싼 머지는 그 등급이다'  
 graded_as '읽기'         'command 가 감싼 읽기는 계속 읽기다'        -- command git status
 graded_as '읽기'         'command -v 는 무엇이 실행될지 인쇄만 한다' -- command -v git
 graded_as '외부상태변경' 'command 는 외부 행위를 읽기로 세탁하지 않는다' -- command curl https://x
-graded_as '워크트리쓰기' '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+graded_as '등급 미상'   '-exec 로 넘긴 머지는 find 의 이름에 가려지지 않는다' -- find . -maxdepth 0 -exec git merge --no-ff seg \;
 graded_as '읽기'         '실행 primary 없는 find 는 계속 읽기다'     -- find . -name '*.md'
-graded_as '워크트리쓰기' 'find -delete 는 자기가 지운다'             -- find . -delete
+graded_as '등급 미상'   'find -delete 는 자기가 지운다'             -- find . -delete
 # GNU find 의 파일 쓰기 프리미티브 넷. `-exec` 처럼 남에게 넘기지도, `-delete` 처럼
 # 지우지도 않고 argv 에 적힌 파일을 열어 거기 쓴다. BSD 인 개발 호스트에서는 find 가
 # 인자 자체를 거절하므로 잠복하고, Linux 러너에서는 argv0 만 보면 읽기인 명령으로
 # 매니페스트를 덮어쓰는 가장 싼 길이 된다. 넷을 개별로 심는 이유는 한 낱말만 빠져도
 # 그 낱말이 곧 구멍이기 때문이다.
-graded_as '워크트리쓰기' 'find -fprintf 는 argv 의 파일에 쓴다'      -- find . -fprintf /tmp/out.md '%p'
-graded_as '워크트리쓰기' 'find -fprint 도 같다'                      -- find . -fprint /tmp/out.md
-graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
-graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
+graded_as '등급 미상'   'find -fprintf 는 argv 의 파일에 쓴다'      -- find . -fprintf /tmp/out.md '%p'
+graded_as '등급 미상'   'find -fprint 도 같다'                      -- find . -fprint /tmp/out.md
+graded_as '등급 미상'   'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
+graded_as '등급 미상'   'find -fls 도 같다'                         -- find . -fls /tmp/out.md
 graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
 # 나머지 래퍼 여덟은 해소되지 않고 `등급 미상` 으로 떨어진다 — 그 값은 거부이므로
 # 구멍이 아니라 닫힌 쪽이다. 단언으로 못박는 이유는 그 닫힘을 지키는 것이 지금까지

@@ -1384,8 +1384,13 @@ gate_unwrap_rg() {
 # below already sets: this table answers `등급 미상` to what it does not
 # understand and the gate refuses, while the predicate answers `1` and keeps the
 # act under the check.
-surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
-surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$@"; }
+# `surface_of_command` AND `surface_of_find` ARE DEFINED ABOVE, and the one-line
+# forms that stood here are gone rather than moved. bash takes the LAST
+# definition of a name, so while both spellings existed the long ones were dead
+# code and the grades that ran were these — which let `find . -exec cat {} \; -delete`
+# follow the `cat` row to `읽기`, so a deletion was recorded in the ledger as a
+# read. The comment on the long definition said the hole was closed while the
+# hole was open, and the suite pinned the open behaviour.
 surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
 
 gate_history_integration() {
