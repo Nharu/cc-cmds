@@ -782,6 +782,14 @@ FX_GRANT="$WT/docs/pipeline-grant/R1.md"
 # call stays `bash "$GATE"`; the banner seats and the stub-CLI launches below are
 # exactly that, and each carries a note saying so.
 # ---------------------------------------------------------------------------
+# `BASH_MONOSECONDS` is in it for the same reason its siblings are: bash 5.3
+# added it, it advances once a second, and the comparison snapshots the caller
+# before and after a sourcing that can straddle a second boundary under load.
+# Every other clock and generator here — EPOCHSECONDS, EPOCHREALTIME, SECONDS,
+# RANDOM, SRANDOM — was already listed; this one arrived with a newer bash and
+# was missed, so the assertion failed on a full suite run under load while
+# passing five times out of five in isolation.
+#
 # The roster is the shell's own variables, not the gate's. `BASH_COMPAT` is in it
 # for a reason worth writing down: it does not exist in a fresh shell, and the
 # seam itself brings it into being. Restoring the caller's options means
@@ -789,7 +797,7 @@ FX_GRANT="$WT/docs/pipeline-grant/R1.md"
 # bash 5.3 evaluating even `shopt -u compat44` materialises `BASH_COMPAT=53`.
 # Without this entry the comparator reads that as the gate having changed the
 # caller, which is the one thing the seam promises it does not do.
-GATE_SEAM_SPECIAL=" BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_EXECUTION_STRING BASH_LINENO BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS DIRSTACK EPOCHREALTIME EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HISTFILE HISTFILESIZE HISTSIZE HOSTNAME HOSTTYPE IFS LINENO LINES MACHTYPE MAILCHECK OLDPWD OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PS1 PS2 PS3 PS4 PWD RANDOM SECONDS SHELL SHELLOPTS SHLVL SRANDOM UID _ "
+GATE_SEAM_SPECIAL=" BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_EXECUTION_STRING BASH_LINENO BASH_MONOSECONDS BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS DIRSTACK EPOCHREALTIME EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HISTFILE HISTFILESIZE HISTSIZE HOSTNAME HOSTTYPE IFS LINENO LINES MACHTYPE MAILCHECK OLDPWD OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PS1 PS2 PS3 PS4 PWD RANDOM SECONDS SHELL SHELLOPTS SHLVL SRANDOM UID _ "
 GATE_SEAM_INPUTS="PATH CC_CLAUDE_BIN CC_CMDS_ORCH_HOST_OS CC_GATE_KEYCHAIN TERMINAL_SEGMENT_STATES LANG LC_ALL LC_CTYPE"
 GATE_SEAM_HANDLES="FX_MANIFEST FX_LEDGER FX_GRANT"
 
