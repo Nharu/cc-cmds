@@ -1321,6 +1321,275 @@ gate_argv_has_opt() {
   return 1
 }
 
+# Two rows below ask "is this operand inside or outside the tree" for every path
+# in an argv, and asking git per operand would spawn a subprocess per word for a
+# question whose answer cannot change inside one act. So both answers are cached
+# in a process global.
+#
+# The `cd`-then-ask shape is what this file already uses to read a worktree's
+# HEAD and its common git dir, and the fixture suite runs the gate from inside
+# its throwaway repository for exactly the reason `check_manifest` needs — the
+# gate answers from its OWN cwd. With no repository to answer, `$PWD` is what
+# the question degenerates to, which keeps the two rows gradeable rather than
+# dropping them to `등급 미상` outside a checkout.
+GATE_TREE_ROOT=''
+GATE_GRADE_CWD=''
+
+surface_of_mv() {
+  # surface_of_mv [options] <source>... <dest>   (argv0 already dropped)
+  #
+  # WHY THIS ROW EXISTS. The shared agent-team contract publishes every witness
+  # file with an atomic `mv -n` into an out-of-tree scratch directory, and the
+  # name-level grade for `mv` was `워크트리쓰기`. The declaration comparator is
+  # strict equality, so the honest `트리밖쓰기` came back refused while the false
+  # spelling ran — leaving the caller to choose between a false ledger row and
+  # not publishing at all. Reading the operands takes the choice away.
+  #
+  # SOURCES ARE GRADED TOO, NOT JUST THE DESTINATION. `mv` REMOVES what it
+  # moves, so carrying a file out of the tree and carrying one in are both
+  # out-of-tree writes, and both are the effect this is measuring.
+  #
+  # An unrecognized dash option ends the scan as `등급 미상` rather than a guess,
+  # for the reason `surface_of_git` states at length: skipping an option that
+  # actually eats a value leaves that value standing in an operand slot, and a
+  # wrong grade performs where an unknown one refuses.
+  local endopt=0 w c
+  local -a opnd
+  opnd=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$endopt" = 1 ]; then
+      opnd[${#opnd[@]}]="$1"; shift; continue
+    fi
+    case "$1" in
+      --) endopt=1; shift ;;
+      --target-directory=*)
+        opnd[${#opnd[@]}]="${1#--target-directory=}"; shift ;;
+      --target-directory)
+        [ "$#" -ge 2 ] || { printf '등급 미상'; return 0; }
+        opnd[${#opnd[@]}]="$2"; shift 2 ;;
+      --suffix=*) shift ;;
+      --suffix)
+        [ "$#" -ge 2 ] || { printf '등급 미상'; return 0; }
+        shift 2 ;;
+      --force|--interactive|--no-clobber|--verbose|--no-target-directory|--update)
+        shift ;;
+      --*) printf '등급 미상'; return 0 ;;
+      -?*)
+        # A SHORT CLUSTER IS READ CHARACTER BY CHARACTER, because the spellings
+        # the shared contracts mandate really are clustered (`rm -rf` next door)
+        # and because `-t` and `-S` carry a value that may be attached to the
+        # cluster or sit in the next word. `-t`'s value IS a destination and
+        # joins the operands; `-S`'s is a filename suffix and is only consumed.
+        w="${1#-}"; shift
+        while [ -n "$w" ]; do
+          c="${w%"${w#?}"}"; w="${w#?}"
+          case "$c" in
+            f|i|n|v|h|u|T|Z) ;;
+            t)
+              if [ -n "$w" ]; then opnd[${#opnd[@]}]="$w"; w=''
+              else
+                [ "$#" -ge 1 ] || { printf '등급 미상'; return 0; }
+                opnd[${#opnd[@]}]="$1"; shift
+              fi ;;
+            S)
+              if [ -n "$w" ]; then w=''
+              else
+                [ "$#" -ge 1 ] || { printf '등급 미상'; return 0; }
+                shift
+              fi ;;
+            *) printf '등급 미상'; return 0 ;;
+          esac
+        done ;;
+      *) opnd[${#opnd[@]}]="$1"; shift ;;
+    esac
+  done
+  # Fewer than two operands is not a move this gate can read.
+  [ "${#opnd[@]}" -ge 2 ] || { printf '등급 미상'; return 0; }
+  surface_of_write_paths "${opnd[@]}"
+}
+surface_of_rm() {
+  # surface_of_rm [options] <path>...   (argv0 already dropped)
+  #
+  # Same reason as `surface_of_mv` above, one contract further along: the team
+  # cleanup rule tears the out-of-tree witness directory down with `rm -rf`, and
+  # the name-level `워크트리쓰기` left that mandated act with no honest spelling
+  # either. Measured in the same review run, the lead declared the out-of-tree
+  # `rm -rf` truthfully and was refused with exit 6.
+  #
+  # Every option `rm` takes is valueless, so the cluster scan only has to know
+  # which letters exist — nothing here can swallow a path out of the operands.
+  local endopt=0 w c
+  local -a opnd
+  opnd=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$endopt" = 1 ]; then
+      opnd[${#opnd[@]}]="$1"; shift; continue
+    fi
+    case "$1" in
+      --) endopt=1; shift ;;
+      --recursive|--force|--interactive|--verbose|--dir|--one-file-system)
+        shift ;;
+      --preserve-root|--no-preserve-root|--interactive=*|--preserve-root=*)
+        shift ;;
+      --*) printf '등급 미상'; return 0 ;;
+      -?*)
+        w="${1#-}"; shift
+        while [ -n "$w" ]; do
+          c="${w%"${w#?}"}"; w="${w#?}"
+          case "$c" in
+            r|R|f|i|I|d|v|P|W) ;;
+            *) printf '등급 미상'; return 0 ;;
+          esac
+        done ;;
+      *) opnd[${#opnd[@]}]="$1"; shift ;;
+    esac
+  done
+  [ "${#opnd[@]}" -ge 1 ] || { printf '등급 미상'; return 0; }
+  surface_of_write_paths "${opnd[@]}"
+}
+surface_of_write_paths() {
+  # Grade a set of paths an act writes: OUTSIDE WINS. One operand outside the
+  # tree root makes the whole act `트리밖쓰기`; every operand inside makes it
+  # `워크트리쓰기`; no operand at all makes it `등급 미상`.
+  #
+  # Outside-wins is the direction the rest of this table already takes wherever
+  # it cannot be sure — `mktemp` takes the higher of two spellings, and the
+  # database clients take the wider grade. Guessing low is the laundering the
+  # table exists to refuse; guessing high costs a line in the manifest.
+  local root p abs base
+  [ "$#" -gt 0 ] || { printf '등급 미상'; return 0; }
+  root=$(gate_tree_root)
+  # ONE VALUE FOR BOTH RESOLVERS. The root above and the base below used to be
+  # taken from two different places, so the prefix test compared a git-reported
+  # real path against a shell-reported logical one and simply did not match
+  # whenever any component was a symlink.
+  base=$(gate_grade_cwd)
+  for p in "$@"; do
+    # THE OPERAND IS NORMALIZED THE SAME WAY THE ROOT IS. `gate_lexical_abs`
+    # answers without touching the filesystem, which is right for it — the
+    # destination of an `mv` need not exist — but it therefore preserves whatever
+    # spelling the caller used, and an absolute operand spelled logically then
+    # failed a prefix test against a physically spelled root.
+    abs=$(gate_real_prefix "$(gate_lexical_abs "$p" "$base")")
+    case "$abs" in
+      "$root"|"$root"/*) ;;
+      *) printf '트리밖쓰기'; return 0 ;;
+    esac
+  done
+  printf '워크트리쓰기'
+}
+gate_grade_cwd() {
+  # The directory the act being graded will actually RUN IN, in its physical
+  # spelling. Both path resolvers below answer from this and from nothing else.
+  #
+  # WHY NOT `$PWD`. The gate runs in the router's directory while the act runs
+  # in the target's worktree, and `gate_verb_act` used to resolve that worktree
+  # AFTER grading — so a relative operand was measured against a directory the
+  # command never enters. It went wrong in both directions at once: an effect
+  # that leaves the tree graded as a worktree write, and an effect genuinely
+  # inside the worktree refused because the outside-wins rule matched it against
+  # the wrong root. The second direction is the one that was actually costing
+  # callers, since a segment worktree is a same-depth sibling and an escape
+  # upward resolves the same way under either base.
+  #
+  # PHYSICAL, because the two resolvers are compared against each other.
+  # `gate_tree_root` takes its answer from git, which reports a real path, while
+  # `gate_lexical_abs` used to prefix the shell's logical one — so a single
+  # symlinked component made the prefix test miss entirely rather than merely
+  # answer differently. A path under this host's temp directory has exactly that
+  # shape.
+  # THE INHERITED `GATE_ACT_CWD` IS NOT READ HERE, AND THAT IS THE POINT. That
+  # variable is EXPORTED to stage children, so a gate running inside a gate
+  # inherits a directory this invocation never resolved — the outer run's
+  # worktree — and every relative operand of the inner call is then measured
+  # against a tree it has nothing to do with. Measured: a suite running under an
+  # outer gate graded an in-tree destination `트리밖쓰기`, because the root came
+  # from the outer run and the operand from the inner one. `gate_verb_act` sets
+  # this variable directly when it resolves the act's worktree, so the value is
+  # always one THIS process computed; anything else falls back to the caller's
+  # own directory.
+  if [ -z "$GATE_GRADE_CWD" ]; then
+    GATE_GRADE_CWD=$(gate_real_prefix "$PWD")
+  fi
+  printf '%s' "$GATE_GRADE_CWD"
+}
+gate_lexical_abs() {
+  # Absolutize and normalize a path WITHOUT touching the filesystem: relative
+  # paths are taken against `$PWD`, `/./` collapses, and `..` rewinds one
+  # segment lexically.
+  #
+  # NOT EXISTING IS THE NORMAL CASE HERE, not an edge one. The destination of an
+  # `mv` is a name that is about to be created, and so is the directory a
+  # witness temp is renamed into — a resolver that needed the path to exist
+  # would answer `등급 미상` for precisely the acts these rows were added to
+  # spell honestly. `readlink -f` is also refused for a second reason: it is a
+  # BSD/GNU divergence the portability lint scans this directory for.
+  # THE BASE IS A PARAMETER, and its default is the grading directory rather
+  # than `$PWD`. Reading the shell's own directory here is what made this
+  # resolver answer about a directory the act never runs in; taking it as an
+  # argument is also what lets one caller hand the SAME value to this and to
+  # `gate_tree_root`, which is the other half of the same defect.
+  local p="$1" base="${2:-}" out='' seg
+  [ -n "$base" ] || base=$(gate_grade_cwd)
+  case "$p" in
+    /*) ;;
+    *)  p="$base/$p" ;;
+  esac
+  while [ -n "$p" ]; do
+    seg="${p%%/*}"
+    if [ "$seg" = "$p" ]; then p=''; else p="${p#*/}"; fi
+    case "$seg" in
+      ''|.) ;;
+      ..)   out="${out%/*}" ;;
+      *)    out="$out/$seg" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
+}
+gate_real_prefix() {
+  # gate_real_prefix <절대 경로> — the deepest EXISTING ancestor resolved
+  # physically, with the not-yet-existing tail appended after it.
+  #
+  # WHY NOT `gate_physical_path`. That one needs the path's own directory to
+  # exist, and on this grading path it usually does not: the destination of an
+  # `mv` is a name about to be created, sometimes two levels below a directory
+  # that is also about to be created. Handed such a path it returns the input
+  # unchanged — which is the one answer that must not happen here, because the
+  # comparison this feeds is a PREFIX test and one side coming back unnormalized
+  # makes the test miss rather than answer differently.
+  #
+  # BOTH SIDES GO THROUGH THIS, and that is the whole point. Normalizing only the
+  # tree root turned every absolute operand spelled the logical way — which is how
+  # a caller spells one, because that is what the shell handed them — into an
+  # out-of-tree write. Normalizing only the operand has the mirror failure. The
+  # rule is one function, called on the root, on the base, and on every operand.
+  local p="$1" tail='' d
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    if [ -d "$p" ]; then
+      d=$(cd "$p" 2>/dev/null && pwd -P) || d=''
+      [ -n "$d" ] || d="$p"
+      printf '%s%s' "$d" "$tail"
+      return 0
+    fi
+    tail="/${p##*/}$tail"
+    p="${p%/*}"
+  done
+  printf '%s' "${tail:-/}"
+}
+gate_tree_root() {
+  local base
+  if [ -z "$GATE_TREE_ROOT" ]; then
+    base=$(gate_grade_cwd)
+    GATE_TREE_ROOT=$(cd "$base" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$GATE_TREE_ROOT" ]; then
+      GATE_TREE_ROOT=$(gate_real_prefix "$GATE_TREE_ROOT")
+    else
+      GATE_TREE_ROOT="$base"
+    fi
+  fi
+  printf '%s' "$GATE_TREE_ROOT"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -1439,8 +1708,16 @@ surface_of_argv0() {
     lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
-    mkdir|touch|cp|mv|rm|sed|tee|install)
+    mkdir|touch|cp|sed|tee|install)
       printf '워크트리쓰기' ;;
+    # `mv` AND `rm` ARE GRADED BY WHAT THEY TOUCH, not by their name. The shared
+    # agent-team contract publishes every witness with an atomic `mv -n` into an
+    # out-of-tree scratch directory, and a name-level `워크트리쓰기` made the
+    # honest `트리밖쓰기` declaration come back refused while the false spelling
+    # ran — leaving the caller to choose between a wrong ledger row and not
+    # publishing at all. Reading the operands takes the choice away.
+    mv) surface_of_mv "$@" ;;
+    rm) surface_of_rm "$@" ;;
     terraform)
       surface_of_terraform "$@" ;;
     # FOUR OF THESE ARE SUBCOMMAND TABLES NOW, and the reason is the measured
@@ -9361,6 +9638,15 @@ gate_verb_act() {
   # mismatch is exit 6 — the same idiom the slicing declaration's `슬라이스 수`
   # already uses, where a value the writer supplies is compared against one the
   # reader derives instead of being trusted.
+  # THE GRADING BASE IS THE DIRECTORY THE ACT ACTUALLY RUNS IN, and it is handed
+  # over IN-PROCESS rather than through the environment: the exported copy is
+  # visible to children too, and a child must not grade against its parent's
+  # tree. `plan` is not excluded — it forecasts what `act` would do, so it has to
+  # resolve what `act` would resolve.
+  if [ "$verb" != "grade" ] && [ -n "${GATE_ACT_CWD:-}" ]; then
+    GATE_GRADE_CWD=$(gate_real_prefix "$GATE_ACT_CWD")
+  fi
+
   local graded
   case "$kind" in
     propose-done)
