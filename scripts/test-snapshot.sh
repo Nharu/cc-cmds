@@ -859,6 +859,40 @@ check "소수점이 둘이면 값이 아니다" "$(gate_cost_figure_ok '1.2.3' &
 check "소수점으로 끝나면 값이 아니다" "$(gate_cost_figure_ok '50.' && printf yes || printf no)" "no"
 check "빈 값은 값이 아니다" "$(gate_cost_figure_ok '' && printf yes || printf no)" "no"
 
+# ---------------------------------------------------------------------------
+# 8c-2. 비용 누적은 읽기와 쓰기가 한 임계구역 안에 있다
+#
+# 누적 행을 맞게 만드는 값은 앞 행의 총계다. 그 읽기가 잠금 밖에 있으면 read-then-act
+# 이고, 동시에 종단한 두 스테이지가 같은 총계를 읽어 둘 다 `앞 총계 + 자기 것` 을
+# 쓴다. 두 번째가 첫 번째를 지운다 — 깨진 행이 아니라 조용한 행이다. 런의 유일한
+# 비용 수치가 아무도 그렇다고 말해 주지 않는 하한이 되고, 그 수치로 밤이 언제
+# 끝나는지를 정하는 경계가 판정한다.
+# ---------------------------------------------------------------------------
+CLEDGER2="$WORK/cost-accum.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$CLEDGER2"
+: > "$CLEDGER2"
+cost_total() { { grep -F '`cost`' "$CLEDGER2" || true; } | tail -1 | tr '|' '\n' \
+                 | sed -n 's/^ *누적 usd=//p' | tr -d ' ' | tail -1; }
+gate_append_cost 1.5 1 2026-01-01T00:00:00Z
+check "첫 비용 행은 자기 값만 싣는다" "$(cost_total)" "1.5000"
+gate_append_cost 2.25 2 2026-01-01T00:01:00Z
+check "다음 행이 앞 총계에 더한다" "$(cost_total)" "3.7500"
+gate_append_cost 0.001 3 2026-01-01T00:02:00Z
+check "소수 넷째 자리까지 누적한다" "$(cost_total)" "3.7510"
+check "행 셋이 남는다 (덮어쓰지 않는다)" "$( { grep -cF '`cost`' "$CLEDGER2" || true; } )" "3"
+# 그리고 누적 계산이 그 함수 밖에 남아 있지 않다. 경계가 총계를 비교하려고 읽는
+# 자리는 잠금이 필요 없다 — 낡은 값을 읽어도 판정이 한 행위 늦어질 뿐이다. 잠금이
+# 덮어야 하는 것은 앞 총계를 읽어 거기에 더하는 자리이고, 그것이 밖에 하나라도
+# 남으면 그만큼 read-then-act 가 남는다.
+cost_gate="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+cost_add_all=$( { grep -cF '%.4f' "$cost_gate" || true; } )
+cost_add_fn=$(awk '/^gate_append_cost\(\) \{/{on=1} on{print} on && /^}$/{exit}' "$cost_gate" \
+              | { grep -cF '%.4f' || true; } )
+check "누적 계산이 게이트에 두 자리뿐이다 (잠긴 갈래와 잠기지 않은 갈래)" "$cost_add_all" "2"
+check "그 두 자리가 모두 누적 함수 안이다" "$cost_add_fn" "$cost_add_all"
+LEDGER="$LEDGER_SAVE"
+
 ELEDGER="$WORK/endrun.md"
 LEDGER_SAVE="$LEDGER"
 LEDGER="$ELEDGER"

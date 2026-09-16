@@ -885,8 +885,14 @@ check_manifest() {
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
-  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
-    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
+  # THE ZONE IS REQUIRED AND THE MATCH IS ANCHORED AT BOTH ENDS. Without the tail
+  # this accepted `…T18:00:00` with no zone at all, and the reader takes the
+  # offset from the characters after the seconds — absent, it reads as UTC. A
+  # deadline a person wrote in local time is then enforced hours from where they
+  # meant it, in the direction nothing announces. Anchoring only the head also
+  # let trailing bytes ride along into a value the comparison never sees.
+  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
+    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
