@@ -9742,11 +9742,21 @@ gate_run_ended_ok() {
   local kind="$1" cut="$2" mark idx merge_idx row
   if [ -s "$RUN_DIR/done" ]; then
     mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
-  elif gate_has_row '자율 승인' '결정=종료 '; then
+  elif gate_has_row '자율 승인' '| 결정=종료 |'; then
     # The mark is gone and the row is not, so the reason is rebuilt from the
     # ending row's own fields. Both refusals below interpolate it, and an empty
     # parenthesis would tell the morning nothing about why the night stopped.
-    row=$( { gate_rows '자율 승인' | grep -F '결정=종료 ' || true; } | tail -1)
+    #
+    # MATCHED ON THE FIELD, NOT ON THE LINE. The bare substring `결정=종료 `
+    # appears in free-text values too — `argv` and `근거` carry whatever a stage
+    # typed, and a stage auditing this very code types the marker it is looking
+    # for. Measured: two rows across every ledger in this repository contain it
+    # and NEITHER is an ending row; one killed a live run, whose ledger then
+    # pinned it forever because the row is authority and the chain is immutable.
+    # Surrounding separators are the exact test rather than a tighter guess:
+    # `gate_append` maps `|` out of every key and value, so a separator on both
+    # sides cannot occur inside a value and appears only at a real boundary.
+    row=$( { gate_rows '자율 승인' | grep -F '| 결정=종료 |' || true; } | tail -1)
     mark="경계 $(gate_row_field "$row" '기준') · 근거 $(gate_row_field "$row" '근거') (원장 종료 행 — 종단 표시는 수거됐습니다)"
   elif gate_progress_axes_unbounded && gate_past_deadline; then
     # THE CLOCK IS KEPT FOR THE MANIFESTS THAT HAVE NOTHING ELSE.
