@@ -9016,7 +9016,7 @@ case " $vocab " in *" 철회 "*) ok "APPROVAL_STATES 가 철회 를 담는다" ;
 # when this section arrives. Draining first is what keeps the expectation at
 # four; relaxing it to "three or four" would stop pinning the fourth shape at
 # all, which is the whole assertion.
-for bid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+for bid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
              | jq -r '.pending_approvals[].id' | grep -E '^B[1-4]-' || true); do
   ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
       . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
@@ -9025,7 +9025,7 @@ for bid in $(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --ma
       gate_append "승인" "승인 id='"$bid"'" "상태=무효" "질문 문면=앞 절이 남긴 경계 승인" "답변 문면=트랜스크립트 판독(무효)" "해소 시각=$(now_iso)"' ) >/dev/null 2>&1
 done
 check "형태 픽스처의 전제 — 열린 경계 승인이 하나도 없다" \
-      "$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" bash "$GATE" snapshot --manifest "$NM" 2>/dev/null \
+      "$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null \
          | jq -r '.pending_approvals[].id' | grep -cE '^B[1-4]-' || true)" "0"
 ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 CC_CMDS_AUTOPILOT_NOTIFY=0 bash -c '
     . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
@@ -9800,7 +9800,7 @@ gateNT() {
   # 읽고, 판독할 수 없으면 보류하므로, 이 절에서는 그것이 픽스처의 전제다.
   local out
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-        bash "$GATE" "$@" 2>&1); rc=$?
+        gate_inproc "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 b31ab_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '구속 튜플=B1/' | tail -1)
