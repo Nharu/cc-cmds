@@ -65,7 +65,7 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'";
 alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null && printf 'alive' || printf 'dead'; }
 
 # ---------------------------------------------------------------------------
-# Fixture — a repository outside this checkout, one target, one run.
+# Fixture — a repository outside this checkout, one target, one run at a time.
 # ---------------------------------------------------------------------------
 REPO="$WORK/repo"; mkdir -p "$REPO"
 ( cd "$REPO" && git init -q . && git config user.email t@example.invalid && git config user.name T \
@@ -73,31 +73,51 @@ REPO="$WORK/repo"; mkdir -p "$REPO"
   && git commit -qm one && git branch -M main ) >/dev/null 2>&1
 WT=$(cd "$REPO" && git rev-parse --show-toplevel)
 CG=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir)
-RUN=SUP1
-MANIFEST="$WT/plan.md"
-LEDGER="$WT/docs/pipeline-run/$RUN.md"
 row="- \`target\` | 별칭=repo | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/t | 절단점=배포 | 말단 행위 상한=없음"
 TD=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
 PLAN='{ "steps": [] }'; PD0=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
-{
-  printf '# 파이프라인 런 매니페스트 — %s\n' "$RUN"
-  printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$RUN"
-  printf '     anchor-kind=repo; anchor-key=t/t;\n'
-  printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
-  printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
-  printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$RUN"
-  printf '**앵커 종류**: repo\n**앵커 키**: t/t\n**사용자 확인 문면**: 테스트 픽스처\n\n'
-  printf '## 의도\n```text\n테스트\n```\n\n'
-  printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$TD" "$row"
-  printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
-  printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$PD0" "$PLAN"
-  printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
-  printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
-  printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
-} > "$MANIFEST"
-cat > "$WT/docs/pipeline-grant/$RUN.md" <<GRANTEOF
+
+# mk_run <run-id> <document key> — one manifest, one grant, one empty ledger and
+# one run directory, all keyed by the run id, and the globals every helper below
+# reads (`RUN`, `MANIFEST`, `LEDGER`, `RD`) pointed at them. The document key is
+# the manifest's `설계 문서` value: `(없음)`, a repo-relative path, or an absolute
+# path with the leading `/` removed — the three shapes the shared contract
+# defines. The header's `owner-doc=` must equal the body's value or the
+# manifest is refused, so one argument fills both. The grant's frozen digest is
+# the real one when the document exists, because the gate reads that field for
+# presence and the recorder copies it into the `문서 해시` row.
+mk_run() {
+  local run="$1" key="$2" docfile="" dsha='(해당 없음)'
+  RUN="$run"
+  MANIFEST="$WT/plan-$RUN.md"
+  LEDGER="$WT/docs/pipeline-run/$RUN.md"
+  RD="$XDG_STATE_HOME/cc-cmds/run/$RUN"
+  case "$key" in
+    '(없음)') : ;;
+    *) if [ -f "$WT/$key" ]; then docfile="$WT/$key"; elif [ -f "/$key" ]; then docfile="/$key"; fi ;;
+  esac
+  [ -z "$docfile" ] || dsha=$(shasum -a 256 "$docfile" | cut -d' ' -f1)
+  {
+    printf '# 파이프라인 런 매니페스트 — %s\n' "$RUN"
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$RUN"
+    printf '     anchor-kind=repo; anchor-key=t/t;\n'
+    printf '     owner-doc=%s; origin-worktree=%s;\n' "$key" "$WT"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$RUN"
+    printf '**앵커 종류**: repo\n**앵커 키**: t/t\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+    printf '## 의도\n```text\n테스트\n```\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$TD" "$row"
+    printf '## 요소\n**설계 문서**: %s\n' "$key"
+    [ -z "$docfile" ] || printf '**설계 문서 전체 sha256**: %s\n' "$dsha"
+    printf '**적용 주체**: (해당 없음)\n\n'
+    printf '## 실행 계획\n**계획 다이제스트**: %s\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$PD0" "$PLAN"
+    printf '## 인가\n**런 최대 절단점**: 배포\n**종료 지점**: 픽스처가 끝나면\n'
+    printf '**벽시계 마감**: 2030-01-01T00:00:00Z\n**시각 정합 마커**: 없음\n'
+    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  } > "$MANIFEST"
+  cat > "$WT/docs/pipeline-grant/$RUN.md" <<GRANTEOF
 # 파이프라인 인가 기록 — $RUN
-<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
+<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=$key; origin-worktree=$WT; NOT a design doc; mechanism-local, never staged by a skill -->
 
 ## 인가 $RUN
 **인가 일시**: 2026-01-01T00:00:00Z
@@ -107,10 +127,16 @@ cat > "$WT/docs/pipeline-grant/$RUN.md" <<GRANTEOF
 **직렬 웨이브 고지**: 해당 없음
 **시각 정합 마커**: 없음
 **사용자 확인 문면**: 테스트 픽스처
-**설계 문서 전체 sha256**: (해당 없음)
+**설계 문서 전체 sha256**: $dsha
 **보고서**: $WT/docs/pipeline-run/$RUN.md
 GRANTEOF
-: > "$LEDGER"
+  : > "$LEDGER"
+  g snapshot --manifest "$MANIFEST" >/dev/null
+  if [ ! -d "$RD" ]; then
+    printf 'fixture: 런 디렉터리가 만들어지지 않았습니다 — %s\n' "$RD" >&2
+    exit 1
+  fi
+}
 
 # The stub CLI. Runs for CC_STUB_SLEEP seconds and reports a normal result; a
 # TERM ends it at once with 143 and no result line — the shape of a stage
@@ -161,12 +187,7 @@ treekill() {
   for p in $all; do kill -TERM "$p" 2>/dev/null || true; done
 }
 
-g snapshot --manifest "$MANIFEST" >/dev/null
-RD="$XDG_STATE_HOME/cc-cmds/run/$RUN"
-if [ ! -d "$RD" ]; then
-  printf 'fixture: 런 디렉터리가 만들어지지 않았습니다 — %s\n' "$RD" >&2
-  exit 1
-fi
+mk_run SUP1 '(없음)'
 
 # ---------------------------------------------------------------------------
 # (1)–(3), (5), (8) — one dispatch, issued from a launcher the enemy then kills.
@@ -403,6 +424,66 @@ seg F
 export CC_CLAUDE_BIN="$STUB_REFUSE"
 assert_immediate F 2 "즉시 거부 종료"
 export CC_CLAUDE_BIN="$STUB"
+
+# ---------------------------------------------------------------------------
+# (10) A RUN THAT DECLARES A DESIGN DOCUMENT, in each shape the key can take.
+#
+# Every manifest above says `(없음)`, so the recorder's document-hash branch
+# had never run in any process context. It is reached only when the run names
+# a document, and what it did there depended on the caller: inside the old
+# blocking dispatch the recorder sat on the left of `|| rc=$?`, where bash
+# ignores errexit for the whole function body; the detached supervisor calls
+# it plainly under `set -euo pipefail`, so a bare assignment whose substitution
+# failed under `pipefail` ended the supervisor before the `stage-result` row,
+# the `cost` row and the cleanup. An absolute-path key — the contract's normal
+# shape for a document outside the repository — made that deterministic at
+# every termination, and a re-dispatch died at the same line.
+#
+# Only this suite drives the recorder across a process boundary; the gate suite
+# calls it in-process, where the failure never surfaces. One run per shape,
+# because the run id keys the ledger, the grant and the run directory.
+# ---------------------------------------------------------------------------
+assert_doc_run() {  # assert_doc_run <run-id> <document key> <want 문서 해시 rows> <label>
+  local run="$1" key="$2" want_hash="$3" label="$4" rc klass left f
+  mk_run "$run" "$key"
+  seg G
+  CC_STUB_SLEEP=0 dispatch G >/dev/null
+  g wait --manifest "$MANIFEST" --segment G --interval 1 --timeout 60 >/dev/null; rc=$?
+  check "(10) $label — wait 이 스테이지 rc 0 으로 끝난다" "$rc" "0"
+  check "(10) $label — stage-result 행이 정확히 하나" "$(rows_of G)" "1"
+  klass=$( { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F '세그먼트=G ' || true; } \
+           | sed -n 's/.*종단 부류=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sed -n '1p')
+  if [ -n "$klass" ] && [ "$klass" != "외부 종료" ]; then
+    ok "(10) $label — 그 행은 감독자가 썼다 (종단 부류=$klass)"
+  else
+    bad "(10) $label — 그 행은 감독자가 썼다" "종단 부류='${klass:-없음}' — 정산이 쓴 행이거나 행이 없다"
+  fi
+  check "(10) $label — cost 행이 정확히 하나" \
+    "$( { grep -cF '`cost`' "$LEDGER" || true; } )" "1"
+  check "(10) $label — 문서 해시 행 수" \
+    "$( { grep -cF '`문서 해시`' "$LEDGER" || true; } )" "$want_hash"
+  check "(10) $label — 감독자 로그에 종단 줄이 있다" \
+    "$( grep -q '스테이지 종단' "$RD/log/G#1.sup.log" 2>/dev/null && printf 'yes' || printf 'no')" "yes"
+  left=""
+  for f in pid start kind sup sup.start launch launch.taken; do
+    [ -e "$RD/G.$f" ] && left="$left G.$f"
+  done
+  check "(10) $label — 종단 뒤 세그먼트별 파일이 남지 않는다" "$left" ""
+}
+
+# (10a) Repo-relative key, document present.
+printf '# design\n' > "$WT/docs/design.md"
+assert_doc_run SUP2 'docs/design.md' 1 "저장소 상대 키"
+
+# (10b) Absolute-path key, document present outside the repository — the
+# shape that fired deterministically.
+mkdir -p "$WORK/outside"
+printf '# design\n' > "$WORK/outside/design.md"
+assert_doc_run SUP3 "${WORK#/}/outside/design.md" 1 "절대 경로 키"
+
+# (10c) Declared, but the file is not there — a document moved or removed
+# during the run.
+assert_doc_run SUP4 'docs/gone.md' 0 "선언됐으나 없는 문서"
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

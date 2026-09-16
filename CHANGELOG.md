@@ -12,12 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `orchestrator/detach.sh` 의 `cc_detach_exec` — perl(없으면 python3)로 setsid 와 이중 포크를 해 손자를 init 에 재부모시키고, 그 pid 를 명령 치환으로 돌려준다. 손자는 `exec` 전에 stdio 를 다시 연다. 두 인터프리터가 모두 없으면 파견을 거부한다.
-- 내부 동사 `gate.sh supervise-stage` — 파견 act 가 쓴 일회용 기동 토큰(`<seg>.launch`, 난스)을 `mv -n` 으로 소비하고, 스테이지를 띄워 `.pid`·`.start`·`.kind` 를 한 블록에서 쓰며, TERM 을 받으면 CLI 에 전달한 뒤 같은 종단 경로로 행을 쓰고, 행을 쓴 **뒤에** 세그먼트별 파일을 지운다. 토큰이 없거나 난스가 다르면 exit 3 이고 행도 기동도 없다.
+- 내부 동사 `gate.sh supervise-stage` — 파견 act 가 쓴 일회용 기동 토큰(`<seg>.launch`, 난스)을 `mv -n` 으로 소비하고, 스테이지를 띄워 `.pid`·`.start`·`.kind` 를 한 블록에서 쓰며, TERM 을 받으면 CLI 에 전달한 뒤 같은 종단 경로로 행을 쓰고, 행을 쓴 **뒤에** — 그 시도의 `stage-result` 행이 원장에 있을 때만 — 세그먼트별 파일을 지운다(행이 없으면 기록을 남겨 프리루드 정산이 받는다). 결과 기록기는 `|| rec_rc=$?` 로 불려 설계 문서 해시나 결과 줄 추출의 치환 실패가 감독자를 끝내지 않는다. 토큰이 없거나 난스가 다르면 exit 3 이고 행도 기동도 없다.
 - 동사 `gate.sh wait --segment <id> [--interval <초>] [--timeout <초>]` — 행을 쓰지 않고 경계를 평가하지 않으며 `--snapshot-digest` 를 받지 않는다. 스테이지 자신의 rc 를 돌려주고, 새 종료 코드 11(파견 기록 없음) · 12(고아였고 정산됨) · 13(`--timeout` 만료) · 14(기동 실패 — 시도 번호는 찍혔는데 행이 없음)를 쓴다. 14 로 끝나는 길에서 잔여 `<seg>.sup`·`<seg>.sup.start`·`<seg>.launch` 를 지운다. 기본 `--interval` 은 300초, 기본 `--timeout` 은 21600초다.
 - 프리루드 정산 — `plan` 을 뺀 모든 동사의 프리루드가, 게이트가 파견한 기록(`.kind` 존재 · 비어 있지 않은 지문 · `.attempt` 존재)의 CLI 와 감독자가 모두 사라졌으면 `mv` 로 선점한 뒤 `종단 부류=외부 종료`·`종료 코드=-`·`부모=-`·`관측` 을 실은 `stage-result` 행을 시도당 하나만 쓴다. `cost` 행은 쓰지 않고, 드라이버가 띄운 기록(`.kind` 없음)은 건드리지 않는다.
 - 스냅숏의 `live_stages[]`(세그먼트·스테이지·pid·감독·시작)와 렌더의 살아 있는 스테이지 이름·pid 목록. 리드 스킬의 스냅숏 키 표에 `orphan_stages`·`live_stages[]`.
 - `liveness.sh` 의 `cc_live_stage_records`·`cc_supervisor_is_live`·`cc_shift_is_live`, 교대 기동이 쓰는 `shift.live`(pid 와 지문).
-- `scripts/test-stage-supervisor.sh` — 트리 워크 적(대조군 포함) 앞의 감독자 생존, 파견의 즉시 반환, 기동 토큰의 일회성, 감독자 TERM 전달, 기록-후-삭제 순서.
+- `scripts/test-stage-supervisor.sh` — 트리 워크 적(대조군 포함) 앞의 감독자 생존, 파견의 즉시 반환, 기동 토큰의 일회성, 감독자 TERM 전달, 기록-후-삭제 순서, 그리고 설계 문서 키 세 형태(저장소 상대 · 절대 경로 · 선언됐으나 없음)에서 감독자가 `stage-result`·`cost`·`문서 해시` 행을 남기고 끝까지 가는 것.
 
 ### Changed
 

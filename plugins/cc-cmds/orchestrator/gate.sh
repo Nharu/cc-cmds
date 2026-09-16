@@ -12400,12 +12400,32 @@ gate_verb_supervise_stage() {
   # no attempt, or its row is already in the ledger" — true only in this order.
   # The window this opens (CLI dead, row being written) is closed on the reader
   # side by `cc_orphan_stages`' `.sup` condition.
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out"
+  #
+  # THE RECORDER'S STATUS IS TAKEN, NOT ASSUMED. The blocking dispatch this
+  # supervisor replaced called the recorder on the left of `|| rc=$?`, and bash
+  # ignores errexit inside a function body called there; a plain call under
+  # this process's `set -euo pipefail` gave every unguarded substitution in the
+  # recorder the power to end the supervisor before the row. `|| rec_rc=$?`
+  # restores that posture for the whole body and keeps the status for the log.
+  local rec_rc=0
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" || rec_rc=$?
+  [ "$rec_rc" = "0" ] || warn "스테이지 결과 기록기가 비영으로 끝났습니다 ($seg#$attempt rc=$rec_rc)"
   # THE SAME SET THE SETTLEMENT PATH REMOVES, including the three files the
   # dispatch act wrote hours ago — that act returned long since, so this is the
-  # only process that can remove them.
-  rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
-        "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+  # only process that can remove them. Removed ONLY when this attempt's
+  # `stage-result` row is in the ledger — the same `(세그먼트, 실행 버전)` key the
+  # settlement and `wait` read. A recorder that returned without the row must
+  # leave the record in place: the invariant above says a present record is an
+  # unsettled attempt, and the prelude settlement closes it as `외부 종료` on
+  # the next gate call. Removing the files without the row is the other shape —
+  # no row and no record — which nothing settles and every re-dispatch repeats.
+  if [ -n "$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+              | { grep -F "실행 버전=$attempt " || true; } )" ]; then
+    rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
+          "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+  else
+    warn "이 시도의 stage-result 행이 없어 세그먼트 파일을 남깁니다 ($seg#$attempt) — 프리루드 정산이 받습니다"
+  fi
   log "스테이지 종단 — $seg#$attempt (rc=$rc)"
   return "$rc"
 }
@@ -12683,9 +12703,13 @@ gate_record_stage_outcome() {
     [ -n "$psha" ] || psha=$(printf '%s' "$res" | jq -r '.plan_sha256 // empty' 2>/dev/null || true)
     # The stage's own terminal text. `[0-9a-f]\{64\}` rather than a looser
     # match so a sentence mentioning the field cannot be mistaken for a value.
+    # `|| true` like the two siblings above: this function runs under the
+    # supervisor's `set -euo pipefail`, where a bare assignment whose pipeline
+    # failed ends the process — before the row. A result line that is not JSON
+    # is an absent value, not a reason to leave no record.
     if [ -z "$psha" ]; then
-      psha=$(printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null \
-             | sed -n 's/.*plan_sha256[^0-9a-f]*\([0-9a-f]\{64\}\).*/\1/p' | sed -n '1p')
+      psha=$( { printf '%s' "$res" | jq -r '.result // empty' 2>/dev/null \
+             | sed -n 's/.*plan_sha256[^0-9a-f]*\([0-9a-f]\{64\}\).*/\1/p' | sed -n '1p'; } || true)
     fi
     # And the plan file, at the name the stage actually uses — `<segment>.plan.md`
     # in the run directory, not `implement-<segment>.plan.md`.
@@ -12708,19 +12732,36 @@ gate_record_stage_outcome() {
   # is whether post-audit bytes should be re-audited before implementation —
   # that question is open (#307) and this row is what makes it answerable, since
   # until now nothing recorded that the bytes had moved at all.
-  local dkey dcur
-  dkey=$(manifest_field '요소' '설계 문서')
-  case "$dkey" in
-    ''|'(없음)') : ;;
-    *)
-      dcur=$( { [ -f "$BASE/$dkey" ] && shasum -a 256 "$BASE/$dkey"; } 2>/dev/null | cut -d' ' -f1)
-      [ -n "$dcur" ] || dcur=$( { [ -f "/$dkey" ] && shasum -a 256 "/$dkey"; } 2>/dev/null | cut -d' ' -f1)
-      if [ -n "$dcur" ]; then
-        gate_has_row '문서 해시' "스테이지=$seg 이후 sha256=$dcur" \
-          || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
-               "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
-      fi ;;
-  esac
+  #
+  # THE PATH IS `DOC`, RESOLVED ONCE BY THE PRELUDE. `derive_paths_from_manifest`
+  # already turns the manifest key into a path by the contract's rule —
+  # repo-relative under `BASE`, then the absolute form, then the composed form
+  # when neither exists — and every gate verb runs it before reaching here.
+  # This block used to spell two of those three branches again, inline, as bare
+  # assignments: `dcur=$( { [ -f "$BASE/$dkey" ] && shasum … ; } | cut … )`.
+  # With the file absent the group exits 1, `pipefail` carries that out of the
+  # pipeline, and under the supervisor's `set -euo pipefail` the process ended
+  # on that line — before the `stage-result` row, the `cost` row, the emitted
+  # judgment and the cleanup. Inside the old blocking dispatch the recorder sat
+  # on the left of `|| rc=$?`, where errexit is off for the whole body, so the
+  # same line was harmless there; the detached supervisor calls it plainly. An
+  # absolute-path key — the contract's normal shape for a document outside the
+  # repository — made the death deterministic at every termination, and the
+  # re-dispatch died on the same line. Measured on three key shapes.
+  #
+  # An `if`, not `[ … ] && dcur=…`: when the condition is false that compound
+  # command's own status is non-zero, which is the same failure in a different
+  # spelling. A run without a document leaves `DOC` empty (its `DOC_KEY` is the
+  # anchor key, so the key is not the discriminator).
+  local dcur=""
+  if [ -n "${DOC:-}" ] && [ -f "$DOC" ]; then
+    dcur=$( { shasum -a 256 "$DOC" 2>/dev/null || true; } | cut -d' ' -f1)
+  fi
+  if [ -n "$dcur" ]; then
+    gate_has_row '문서 해시' "스테이지=$seg 이후 sha256=$dcur" \
+      || gate_append '문서 해시' "스테이지=$seg 이후" "sha256=$dcur" \
+           "동결값=$(manifest_field '요소' '설계 문서 전체 sha256')" "관측=$(now_iso)"
+  fi
 
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
