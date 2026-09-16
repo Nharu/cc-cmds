@@ -4028,14 +4028,23 @@ gate_row_ids() {
   # unsatisfiable for the rest of that run.
   #
   # Splitting the row on its own separators is what the readers already do
-  # (`gate_row_field`), so this reuses that rather than tightening the pattern:
-  # a tightened pattern would still be one expression away from the same class
-  # of bug, while a field split cannot read a value as a key at all.
-  local row
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    gate_row_field "$row" 'id'
-  done
+  # (`gate_row_field`), so this reads the key the same way rather than tightening
+  # the pattern: a tightened pattern would still be one expression away from the
+  # same class of bug, while a field split cannot read a value as a key at all.
+  #
+  # ONE PROCESS FOR THE WHOLE STREAM, which is why this is `awk` and not a shell
+  # loop calling `gate_row_field` per row. That loop is the obvious spelling and
+  # it costs four processes per row: measured, it took the per-segment-id cost
+  # from 14 processes to 18, which `test-measure-gate-cost.sh` pins exactly. The
+  # expression it replaces was also a single pass, so the cost is unchanged.
+  awk -F'|' '{
+    for (i = 1; i <= NF; i++) {
+      f = $i
+      sub(/^[[:space:]]+/, "", f)
+      sub(/[[:space:]]+$/, "", f)
+      if (f ~ /^id=/) { print substr(f, 4); break }
+    }
+  }'
 }
 
 gate_report_abs() {
