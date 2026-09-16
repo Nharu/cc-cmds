@@ -940,6 +940,90 @@ check "실패한 사람의 닫기도 행을 더하지 않는다" "$(boundary_row
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
+# 8d. The cost ceiling's second threshold ENDS the run, and an unreadable
+#     ceiling is not a ceiling
+#
+# 80% opens a boundary approval — a person, if there is one, decides. 100% ends
+# the run, and it has to: an approval nobody answers is not a bound, and the
+# state this targets is the one where nobody is awake to be asked.
+#
+# The figure check is asserted as a table rather than through the boundary,
+# because the boundary's silence on a bad value is exactly what it used to do
+# and a run cannot tell that silence from "not yet at the threshold".
+# ---------------------------------------------------------------------------
+check "숫자만 있는 천장은 값으로 읽힌다" "$(gate_cost_figure_ok 100 && printf yes || printf no)" "yes"
+check "소수점 하나는 값으로 읽힌다" "$(gate_cost_figure_ok 12.5 && printf yes || printf no)" "yes"
+check "통화 기호가 붙으면 값이 아니다" "$(gate_cost_figure_ok '$50' && printf yes || printf no)" "no"
+check "단위가 뒤에 붙으면 값이 아니다 (앞자리가 숫자여도)" "$(gate_cost_figure_ok '50 USD' && printf yes || printf no)" "no"
+check "한글이 섞이면 값이 아니다" "$(gate_cost_figure_ok '약 50' && printf yes || printf no)" "no"
+check "소수점이 둘이면 값이 아니다" "$(gate_cost_figure_ok '1.2.3' && printf yes || printf no)" "no"
+check "소수점으로 끝나면 값이 아니다" "$(gate_cost_figure_ok '50.' && printf yes || printf no)" "no"
+check "빈 값은 값이 아니다" "$(gate_cost_figure_ok '' && printf yes || printf no)" "no"
+
+ELEDGER="$WORK/endrun.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$ELEDGER"
+: > "$ELEDGER"
+RUN_DIR="$WORK/rundir-endrun"; mkdir -p "$RUN_DIR"
+end_rows() { { grep -F '`자율 승인`' "$ELEDGER" || true; } | { grep -cF '결정=종료' || true; }; }
+# The ceiling is 100 — appended to `## 인가` above, which is the manifest's last
+# section — so the spend in each row below IS the percentage.
+printf -- '- `cost` | 누적 usd=95 | 스테이지 수=1 | 관측 시각=2026-01-01T06:00:00Z | prev=z\n' >> "$ELEDGER"
+gate_b4_cost >/dev/null 2>&1
+check "95% 는 런을 끝내지 않는다 (아래 단언이 공허하지 않다)" "$(end_rows)" "0"
+check "95% 에서는 종단 표시도 없다" "$([ -s "$RUN_DIR/done" ] && printf yes || printf no)" "no"
+printf -- '- `cost` | 누적 usd=100 | 스테이지 수=1 | 관측 시각=2026-01-01T06:10:00Z | prev=z\n' >> "$ELEDGER"
+gate_b4_cost >/dev/null 2>&1
+check "천장에 닿으면 런이 끝난다 (종료 행 하나)" "$(end_rows)" "1"
+check "그때 종단 표시가 남는다" "$([ -s "$RUN_DIR/done" ] && printf yes || printf no)" "yes"
+check "종료 행이 어느 경계였는지 이름으로 말한다" \
+  "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B4' || true; })" "1"
+# IDEMPOTENT BY THE MARK. A second evaluation past the ceiling must not write a
+# second ending row: the first reason is the morning's account of why the night
+# stopped, and a run does not end twice.
+gate_b4_cost >/dev/null 2>&1
+check "천장을 넘긴 두 번째 판정은 종료 행을 다시 쓰지 않는다" "$(end_rows)" "1"
+
+# WHAT THE ENDING GATES. Dispatch and merge and nothing else — a stage in
+# flight runs to completion and is classified normally, and the run may still
+# record rows, close approvals and propose that it is done. An ending that
+# stopped everything would strand the run instead of ending it, and the run
+# could not record that it had ended: the snapshot would render it in flight
+# forever and the watcher would never reap itself.
+er_rc=0; gate_run_ended_ok skill 커밋 >/dev/null 2>&1 || er_rc=$?
+check "종단한 런은 새 스테이지 파견을 거절한다" "$er_rc" "$GATE_EXIT_RULE"
+er_rc=0; gate_run_ended_ok act 머지 >/dev/null 2>&1 || er_rc=$?
+check "종단한 런은 머지를 거절한다" "$er_rc" "$GATE_EXIT_RULE"
+er_rc=0; gate_run_ended_ok act 커밋 >/dev/null 2>&1 || er_rc=$?
+check "종단한 런도 머지 아래 행위는 지나간다" "$er_rc" "0"
+er_rc=0; gate_run_ended_ok propose-done 머지 >/dev/null 2>&1 || er_rc=$?
+check "종단한 런도 종료 제안은 지나간다 (제안 뒤에 행위가 없다)" "$er_rc" "0"
+# THE MARK IS A CACHE AND THE LEDGER ROW IS THE AUTHORITY. The run directory is
+# volatile — a reaper, a temp sweep or a hand `rm -rf` takes it — so a predicate
+# that read only the mark would answer "not ended" for a run that had ended, and
+# the end would not be a refusal but a state the next gate call silently
+# repaired.
+rm -f "$RUN_DIR/done"
+er_rc=0; er_out=$(gate_run_ended_ok skill 커밋 2>&1) || er_rc=$?
+check "종단 표시가 수거돼도 원장 종료 행이 그 런을 막는다" "$er_rc" "$GATE_EXIT_RULE"
+case "$er_out" in
+  *B4*) ok "그 거절이 어느 경계였는지 원장에서 되살린다" ;;
+  *) bad "종단 사유 복원" "원장 행에서 경계 이름을 되살리지 못했다: $er_out" ;;
+esac
+# THE 100% ARM SITS BEFORE THE RE-ASK SUPPRESSION. A granted B4 records the
+# share it was answered at and suppresses the question for the next ten points;
+# if ending were downstream of that, one grant at 95% would switch the bound off
+# through 105% and beyond.
+rm -f "$RUN_DIR/done"
+: > "$ELEDGER"
+printf '95\n' > "$RUN_DIR/cost-resolved-pct"
+printf -- '- `cost` | 누적 usd=101 | 스테이지 수=1 | 관측 시각=2026-01-01T06:20:00Z | prev=z\n' >> "$ELEDGER"
+gate_b4_cost >/dev/null 2>&1
+check "95% 에서 답을 받아 둔 런도 천장에 닿으면 끝난다 (억제가 종료를 가리지 않는다)" "$(end_rows)" "1"
+rm -f "$RUN_DIR/cost-resolved-pct"
+LEDGER="$LEDGER_SAVE"
+
+# ---------------------------------------------------------------------------
 # 9. With auto-resolution on, a judgment approval does not wait
 #
 # Driven through the CLI, on a run of its own: the R1 ledger above carries a
