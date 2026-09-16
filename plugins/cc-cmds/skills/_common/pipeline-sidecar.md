@@ -229,8 +229,11 @@ anchor outside it: a coordinated rewrite of the row and the digest field is
 detected by nothing here. That residual is real and is stated rather than
 covered by a fourth reason.
 
-`판단 부류` is checked against the closed eight at freeze time, and the two that
-hand risk to the user — `팀-구성` and `시각-면제` — are a **hard stop** here.
+`판단 부류` is checked against the closed vocabulary at freeze time, and the ones
+that hand risk to the user — `팀-구성`, `시각-면제` and `설계-골격` — are a **hard
+stop** here. The count is deliberately not written down: `JUDGMENT_CLASSES` is
+the single source, a lint compares every placeholder numeral in this tree against
+it, and a number spelled here in prose is a number that lint cannot reach.
 Deciding mechanically at the moment a judgment is made whether it hands risk to
 the user is impossible, because the only inputs available (the option labels and
 the question text) are authored by the party the check would bind. At freeze time
@@ -334,8 +337,8 @@ never compared.
     **fail-closed**: `origin-worktree=`'s fail-open tie-break is only sound
     *between* files that have already proven ownership, so removing the proof
     and keeping the tie-break inverts the order.
-11. **Every `자동 채택` row's `판단 부류` is one of the closed eight**, and the two
-    that hand risk to the user are a hard stop (see §2b.1). This condition was in
+11. **Every `자동 채택` row's `판단 부류` is in the closed vocabulary**, and the
+    ones that hand risk to the user are a hard stop (see §2b.1). This condition was in
     the code and not in this list, so the list said ten while the implementation
     checked eleven — a contract that under-reports its own checks teaches the next
     reader that an unlisted check is an absent one.
