@@ -322,6 +322,30 @@ if [ "$NATIVE_OS" = "Darwin" ] && [ -n "$LOCK_TOOL" ] && [ -x "$LOCK_TOOL" ]; th
   # -k is required: without it lockf removes the lock file on exit and the next
   # acquirer sees no contention at all.
   if [ -e "$RUN_DIR/designdoc.lock" ]; then ok "-k 로 잠금 파일이 보존된다"; else bad "-k 보존" "잠금 파일이 사라짐"; fi
+
+  # 선택은 관측이 아니다. `lock_tool` 은 플랫폼 술어만 보고 답하므로, 이 스위트가
+  # 어느 러너에서든 darwin 갈래를 태우는 한 실재하지 않는 경로가 이 자리에 들어온다.
+  # 검사가 없으면 잠긴 명령이 잠금의 것도 명령의 것도 아닌 종료 코드로 실패하고,
+  # 호출자는 「바쁨」과 「도구 없음」을 구별하지 못한다.
+  lock_tool_save=$(declare -f lock_tool)
+  lock_tool() { printf '%s' "$RUN_DIR/does-not-exist-lockf"; }
+  set +e
+  miss_out=$(with_doc_lock true 2>&1)
+  miss_rc=$?
+  set +e
+  check "호스트에 없는 잠금 도구는 1 로 실패한다 (정체 모를 종료 코드가 아니다)" "$miss_rc" "1"
+  case "$miss_out" in
+    *"이 호스트에 없습니다"*) ok "그 실패가 사유를 적는다" ;;
+    *) bad "잠금 도구 부재 문면" "사유를 적지 않았다: ${miss_out:-(빈 출력)}" ;;
+  esac
+  eval "$lock_tool_save"
+  # 대조군 — 되돌린 뒤에는 같은 호출이 다시 선다. 위 둘이 「항상 실패하는 구현」을
+  # 재고 있지 않다.
+  set +e
+  with_doc_lock true
+  back_rc=$?
+  set +e
+  check "대조군: 실재하는 도구로는 같은 호출이 통과한다" "$back_rc" "0"
 else
   ok "잠금 경합 확인은 macOS 레그 담당 (이 러너에서는 건너뜀)"
 fi

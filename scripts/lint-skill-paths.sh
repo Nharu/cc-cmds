@@ -26,6 +26,42 @@
 #     `~/\.claude` branch. The lint enforces the policy by behavior, not
 #     just by documentation.
 #
+# Second rule — the team witness directory's ROOT.
+#   The witness dir must never be rooted at `${TMPDIR}`. It is
+#   `${CC_PIPELINE_RUN_DIR}/…` when that variable is set and a `mktemp -d` under
+#   `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design/` otherwise. Nine
+#   consumer SKILL.md files once kept spelling a `${TMPDIR:-/tmp}` root, so the
+#   move never reached the stages that actually run: a `${TMPDIR}` directory is
+#   collected within about an hour on this host, and the witness is the
+#   anti-fabrication anchor — gone, the lead either parks forever or synthesizes
+#   a round product it never observed. Hand-fixing the nine files does not stop
+#   the tenth from being written with the old root, which is what this rule is
+#   for.
+#
+#   THE BASENAME HALF OF THIS RULE IS RETIRED, and what retired it is that the
+#   ban had come to forbid the one name the tree produces. The rule used to ban
+#   the `cc-team-witness-` basename outright, because two spellings mean the
+#   cleanup contract's path guard knows a name nothing creates while the created
+#   one is never swept. Minting has since moved into a single script, and the
+#   spelling that script mints carries the `cc-` prefix — so the ban now fires on
+#   the correct name and stays silent about an incorrect one. That is the whole
+#   of the reason it is gone, and it stands on its own.
+#
+#   WHAT IS NOT THE REASON, and used to be written here as if it were: "minting
+#   moved into a single script that is now the only thing that creates the
+#   directory, so the spelling cannot diverge by construction." That premise is
+#   false of this tree today. Consumer prose still tells a lead that a fresh team
+#   takes its own nested `mktemp -d`, so the directory is minted by hand in a
+#   spelling nothing checks — and the surviving root branch cannot speak to those
+#   lines either, because a bare `mktemp -d` names no root for it to match. A
+#   retired branch is a claim about what no longer needs checking, so resting it
+#   on an unverified sentence is how a rule comes to be retired for a reason that
+#   was never true.
+#
+#   The root half stands on its own and is unaffected: fixing the name while
+#   keeping `${TMPDIR}` leaves the lifetime defect, which is the half that loses
+#   the witness.
+#
 # Usage:
 #   bash scripts/lint-skill-paths.sh                  # lint all runtime markdown
 #   bash scripts/lint-skill-paths.sh path/to/file.md  # lint specific files
@@ -52,6 +88,13 @@ BANNED_RE='(~/\.claude|\$HOME/\.claude|\$[{]HOME[}]/\.claude|/Users/[^/[:space:]
 # unrelated violation) need both strips applied to surface only the violation.
 STRIP_SED_BARE='s/[$][{]CLAUDE_CONFIG_DIR:-[$]HOME[^}]*[}]//g'
 STRIP_SED_BRACED='s/[$][{]CLAUDE_CONFIG_DIR:-[$][{]HOME[}][^}]*[}]//g'
+
+# Witness-directory rule (POSIX ERE). One branch, the root: a witness path
+# ROOTED AT `${TMPDIR}` / `$TMPDIR`. The `/` after the expansion is required, so
+# prose that merely names the variable — the protocol's own paragraph explaining
+# why the system temp dir cannot hold this — is not a hit. The basename branch
+# that used to lead this alternation was retired; see the header for why.
+WITNESS_BANNED_RE='([$][{]TMPDIR[^}]*[}]/[^[:space:]]*team-witness|[$]TMPDIR/[^[:space:]]*team-witness)'
 
 # Resolve skills root (allow SKILLS_ROOT env override for tests).
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -102,6 +145,15 @@ for file in "${FILES[@]}"; do
     banned_hit=$(printf '%s\n' "$stripped" | grep -cE "$BANNED_RE" || true)
     if [[ "${banned_hit:-0}" != "0" ]]; then
       echo "FAIL: $file — line $line_no: $line" >&2
+      file_violations=$((file_violations + 1))
+    fi
+    # The RAW line, not the stripped one: the `${CLAUDE_CONFIG_DIR:-…}` strips
+    # above exist to hide a permitted fallback from the `.claude` rule and have
+    # nothing to say about a witness path, so running this branch on the
+    # stripped text would only add a way for the two rules to interfere.
+    witness_hit=$(printf '%s\n' "$line" | grep -cE "$WITNESS_BANNED_RE" || true)
+    if [[ "${witness_hit:-0}" != "0" ]]; then
+      echo "FAIL: $file — line $line_no (위트니스 경로): $line" >&2
       file_violations=$((file_violations + 1))
     fi
   done < "$file"
