@@ -1394,6 +1394,275 @@ gate_argv_has_opt() {
   return 1
 }
 
+# Two rows below ask "is this operand inside or outside the tree" for every path
+# in an argv, and asking git per operand would spawn a subprocess per word for a
+# question whose answer cannot change inside one act. So both answers are cached
+# in a process global.
+#
+# The `cd`-then-ask shape is what this file already uses to read a worktree's
+# HEAD and its common git dir, and the fixture suite runs the gate from inside
+# its throwaway repository for exactly the reason `check_manifest` needs — the
+# gate answers from its OWN cwd. With no repository to answer, `$PWD` is what
+# the question degenerates to, which keeps the two rows gradeable rather than
+# dropping them to `등급 미상` outside a checkout.
+GATE_TREE_ROOT=''
+GATE_GRADE_CWD=''
+
+surface_of_mv() {
+  # surface_of_mv [options] <source>... <dest>   (argv0 already dropped)
+  #
+  # WHY THIS ROW EXISTS. The shared agent-team contract publishes every witness
+  # file with an atomic `mv -n` into an out-of-tree scratch directory, and the
+  # name-level grade for `mv` was `워크트리쓰기`. The declaration comparator is
+  # strict equality, so the honest `트리밖쓰기` came back refused while the false
+  # spelling ran — leaving the caller to choose between a false ledger row and
+  # not publishing at all. Reading the operands takes the choice away.
+  #
+  # SOURCES ARE GRADED TOO, NOT JUST THE DESTINATION. `mv` REMOVES what it
+  # moves, so carrying a file out of the tree and carrying one in are both
+  # out-of-tree writes, and both are the effect this is measuring.
+  #
+  # An unrecognized dash option ends the scan as `등급 미상` rather than a guess,
+  # for the reason `surface_of_git` states at length: skipping an option that
+  # actually eats a value leaves that value standing in an operand slot, and a
+  # wrong grade performs where an unknown one refuses.
+  local endopt=0 w c
+  local -a opnd
+  opnd=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$endopt" = 1 ]; then
+      opnd[${#opnd[@]}]="$1"; shift; continue
+    fi
+    case "$1" in
+      --) endopt=1; shift ;;
+      --target-directory=*)
+        opnd[${#opnd[@]}]="${1#--target-directory=}"; shift ;;
+      --target-directory)
+        [ "$#" -ge 2 ] || { printf '등급 미상'; return 0; }
+        opnd[${#opnd[@]}]="$2"; shift 2 ;;
+      --suffix=*) shift ;;
+      --suffix)
+        [ "$#" -ge 2 ] || { printf '등급 미상'; return 0; }
+        shift 2 ;;
+      --force|--interactive|--no-clobber|--verbose|--no-target-directory|--update)
+        shift ;;
+      --*) printf '등급 미상'; return 0 ;;
+      -?*)
+        # A SHORT CLUSTER IS READ CHARACTER BY CHARACTER, because the spellings
+        # the shared contracts mandate really are clustered (`rm -rf` next door)
+        # and because `-t` and `-S` carry a value that may be attached to the
+        # cluster or sit in the next word. `-t`'s value IS a destination and
+        # joins the operands; `-S`'s is a filename suffix and is only consumed.
+        w="${1#-}"; shift
+        while [ -n "$w" ]; do
+          c="${w%"${w#?}"}"; w="${w#?}"
+          case "$c" in
+            f|i|n|v|h|u|T|Z) ;;
+            t)
+              if [ -n "$w" ]; then opnd[${#opnd[@]}]="$w"; w=''
+              else
+                [ "$#" -ge 1 ] || { printf '등급 미상'; return 0; }
+                opnd[${#opnd[@]}]="$1"; shift
+              fi ;;
+            S)
+              if [ -n "$w" ]; then w=''
+              else
+                [ "$#" -ge 1 ] || { printf '등급 미상'; return 0; }
+                shift
+              fi ;;
+            *) printf '등급 미상'; return 0 ;;
+          esac
+        done ;;
+      *) opnd[${#opnd[@]}]="$1"; shift ;;
+    esac
+  done
+  # Fewer than two operands is not a move this gate can read.
+  [ "${#opnd[@]}" -ge 2 ] || { printf '등급 미상'; return 0; }
+  surface_of_write_paths "${opnd[@]}"
+}
+surface_of_rm() {
+  # surface_of_rm [options] <path>...   (argv0 already dropped)
+  #
+  # Same reason as `surface_of_mv` above, one contract further along: the team
+  # cleanup rule tears the out-of-tree witness directory down with `rm -rf`, and
+  # the name-level `워크트리쓰기` left that mandated act with no honest spelling
+  # either. Measured in the same review run, the lead declared the out-of-tree
+  # `rm -rf` truthfully and was refused with exit 6.
+  #
+  # Every option `rm` takes is valueless, so the cluster scan only has to know
+  # which letters exist — nothing here can swallow a path out of the operands.
+  local endopt=0 w c
+  local -a opnd
+  opnd=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$endopt" = 1 ]; then
+      opnd[${#opnd[@]}]="$1"; shift; continue
+    fi
+    case "$1" in
+      --) endopt=1; shift ;;
+      --recursive|--force|--interactive|--verbose|--dir|--one-file-system)
+        shift ;;
+      --preserve-root|--no-preserve-root|--interactive=*|--preserve-root=*)
+        shift ;;
+      --*) printf '등급 미상'; return 0 ;;
+      -?*)
+        w="${1#-}"; shift
+        while [ -n "$w" ]; do
+          c="${w%"${w#?}"}"; w="${w#?}"
+          case "$c" in
+            r|R|f|i|I|d|v|P|W) ;;
+            *) printf '등급 미상'; return 0 ;;
+          esac
+        done ;;
+      *) opnd[${#opnd[@]}]="$1"; shift ;;
+    esac
+  done
+  [ "${#opnd[@]}" -ge 1 ] || { printf '등급 미상'; return 0; }
+  surface_of_write_paths "${opnd[@]}"
+}
+surface_of_write_paths() {
+  # Grade a set of paths an act writes: OUTSIDE WINS. One operand outside the
+  # tree root makes the whole act `트리밖쓰기`; every operand inside makes it
+  # `워크트리쓰기`; no operand at all makes it `등급 미상`.
+  #
+  # Outside-wins is the direction the rest of this table already takes wherever
+  # it cannot be sure — `mktemp` takes the higher of two spellings, and the
+  # database clients take the wider grade. Guessing low is the laundering the
+  # table exists to refuse; guessing high costs a line in the manifest.
+  local root p abs base
+  [ "$#" -gt 0 ] || { printf '등급 미상'; return 0; }
+  root=$(gate_tree_root)
+  # ONE VALUE FOR BOTH RESOLVERS. The root above and the base below used to be
+  # taken from two different places, so the prefix test compared a git-reported
+  # real path against a shell-reported logical one and simply did not match
+  # whenever any component was a symlink.
+  base=$(gate_grade_cwd)
+  for p in "$@"; do
+    # THE OPERAND IS NORMALIZED THE SAME WAY THE ROOT IS. `gate_lexical_abs`
+    # answers without touching the filesystem, which is right for it — the
+    # destination of an `mv` need not exist — but it therefore preserves whatever
+    # spelling the caller used, and an absolute operand spelled logically then
+    # failed a prefix test against a physically spelled root.
+    abs=$(gate_real_prefix "$(gate_lexical_abs "$p" "$base")")
+    case "$abs" in
+      "$root"|"$root"/*) ;;
+      *) printf '트리밖쓰기'; return 0 ;;
+    esac
+  done
+  printf '워크트리쓰기'
+}
+gate_grade_cwd() {
+  # The directory the act being graded will actually RUN IN, in its physical
+  # spelling. Both path resolvers below answer from this and from nothing else.
+  #
+  # WHY NOT `$PWD`. The gate runs in the router's directory while the act runs
+  # in the target's worktree, and `gate_verb_act` used to resolve that worktree
+  # AFTER grading — so a relative operand was measured against a directory the
+  # command never enters. It went wrong in both directions at once: an effect
+  # that leaves the tree graded as a worktree write, and an effect genuinely
+  # inside the worktree refused because the outside-wins rule matched it against
+  # the wrong root. The second direction is the one that was actually costing
+  # callers, since a segment worktree is a same-depth sibling and an escape
+  # upward resolves the same way under either base.
+  #
+  # PHYSICAL, because the two resolvers are compared against each other.
+  # `gate_tree_root` takes its answer from git, which reports a real path, while
+  # `gate_lexical_abs` used to prefix the shell's logical one — so a single
+  # symlinked component made the prefix test miss entirely rather than merely
+  # answer differently. A path under this host's temp directory has exactly that
+  # shape.
+  # THE INHERITED `GATE_ACT_CWD` IS NOT READ HERE, AND THAT IS THE POINT. That
+  # variable is EXPORTED to stage children, so a gate running inside a gate
+  # inherits a directory this invocation never resolved — the outer run's
+  # worktree — and every relative operand of the inner call is then measured
+  # against a tree it has nothing to do with. Measured: a suite running under an
+  # outer gate graded an in-tree destination `트리밖쓰기`, because the root came
+  # from the outer run and the operand from the inner one. `gate_verb_act` sets
+  # this variable directly when it resolves the act's worktree, so the value is
+  # always one THIS process computed; anything else falls back to the caller's
+  # own directory.
+  if [ -z "$GATE_GRADE_CWD" ]; then
+    GATE_GRADE_CWD=$(gate_real_prefix "$PWD")
+  fi
+  printf '%s' "$GATE_GRADE_CWD"
+}
+gate_lexical_abs() {
+  # Absolutize and normalize a path WITHOUT touching the filesystem: relative
+  # paths are taken against `$PWD`, `/./` collapses, and `..` rewinds one
+  # segment lexically.
+  #
+  # NOT EXISTING IS THE NORMAL CASE HERE, not an edge one. The destination of an
+  # `mv` is a name that is about to be created, and so is the directory a
+  # witness temp is renamed into — a resolver that needed the path to exist
+  # would answer `등급 미상` for precisely the acts these rows were added to
+  # spell honestly. `readlink -f` is also refused for a second reason: it is a
+  # BSD/GNU divergence the portability lint scans this directory for.
+  # THE BASE IS A PARAMETER, and its default is the grading directory rather
+  # than `$PWD`. Reading the shell's own directory here is what made this
+  # resolver answer about a directory the act never runs in; taking it as an
+  # argument is also what lets one caller hand the SAME value to this and to
+  # `gate_tree_root`, which is the other half of the same defect.
+  local p="$1" base="${2:-}" out='' seg
+  [ -n "$base" ] || base=$(gate_grade_cwd)
+  case "$p" in
+    /*) ;;
+    *)  p="$base/$p" ;;
+  esac
+  while [ -n "$p" ]; do
+    seg="${p%%/*}"
+    if [ "$seg" = "$p" ]; then p=''; else p="${p#*/}"; fi
+    case "$seg" in
+      ''|.) ;;
+      ..)   out="${out%/*}" ;;
+      *)    out="$out/$seg" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
+}
+gate_real_prefix() {
+  # gate_real_prefix <절대 경로> — the deepest EXISTING ancestor resolved
+  # physically, with the not-yet-existing tail appended after it.
+  #
+  # WHY NOT `gate_physical_path`. That one needs the path's own directory to
+  # exist, and on this grading path it usually does not: the destination of an
+  # `mv` is a name about to be created, sometimes two levels below a directory
+  # that is also about to be created. Handed such a path it returns the input
+  # unchanged — which is the one answer that must not happen here, because the
+  # comparison this feeds is a PREFIX test and one side coming back unnormalized
+  # makes the test miss rather than answer differently.
+  #
+  # BOTH SIDES GO THROUGH THIS, and that is the whole point. Normalizing only the
+  # tree root turned every absolute operand spelled the logical way — which is how
+  # a caller spells one, because that is what the shell handed them — into an
+  # out-of-tree write. Normalizing only the operand has the mirror failure. The
+  # rule is one function, called on the root, on the base, and on every operand.
+  local p="$1" tail='' d
+  while [ -n "$p" ] && [ "$p" != "/" ]; do
+    if [ -d "$p" ]; then
+      d=$(cd "$p" 2>/dev/null && pwd -P) || d=''
+      [ -n "$d" ] || d="$p"
+      printf '%s%s' "$d" "$tail"
+      return 0
+    fi
+    tail="/${p##*/}$tail"
+    p="${p%/*}"
+  done
+  printf '%s' "${tail:-/}"
+}
+gate_tree_root() {
+  local base
+  if [ -z "$GATE_TREE_ROOT" ]; then
+    base=$(gate_grade_cwd)
+    GATE_TREE_ROOT=$(cd "$base" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$GATE_TREE_ROOT" ]; then
+      GATE_TREE_ROOT=$(gate_real_prefix "$GATE_TREE_ROOT")
+    else
+      GATE_TREE_ROOT="$base"
+    fi
+  fi
+  printf '%s' "$GATE_TREE_ROOT"
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -1512,8 +1781,16 @@ surface_of_argv0() {
     lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
-    mkdir|touch|cp|mv|rm|sed|tee|install)
+    mkdir|touch|cp|sed|tee|install)
       printf '워크트리쓰기' ;;
+    # `mv` AND `rm` ARE GRADED BY WHAT THEY TOUCH, not by their name. The shared
+    # agent-team contract publishes every witness with an atomic `mv -n` into an
+    # out-of-tree scratch directory, and a name-level `워크트리쓰기` made the
+    # honest `트리밖쓰기` declaration come back refused while the false spelling
+    # ran — leaving the caller to choose between a wrong ledger row and not
+    # publishing at all. Reading the operands takes the choice away.
+    mv) surface_of_mv "$@" ;;
+    rm) surface_of_rm "$@" ;;
     terraform)
       surface_of_terraform "$@" ;;
     # FOUR OF THESE ARE SUBCOMMAND TABLES NOW, and the reason is the measured
@@ -3290,6 +3567,74 @@ gate_ancestry_window() {
   { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$GATE_ANCESTRY_WINDOW"
 }
 
+gate_append_cost() {
+  # gate_append_cost <이번 스테이지 usd> <스테이지 수> <관측 시각>
+  #
+  # THE ACCUMULATION IS READ AND WRITTEN INSIDE ONE LOCK, and it used to be a
+  # read outside the lock followed by a write inside one. `gate_append`'s own
+  # header records the same defect for the chain tip and the same repair; this
+  # is that repair applied to the other read-then-act in this file.
+  #
+  # The cost row accumulates, so the value that makes it correct is the previous
+  # row's total. Two stages terminating together both read the same previous
+  # total and both wrote `prev + own`, and the second write erased the first —
+  # not a corrupt row, a QUIET one. The run's only cost figure is then a lower
+  # bound that nothing announces as one, and the cost ceiling is a boundary that
+  # decides when the night ends. Measured: 80 cost rows written and a final
+  # accumulation of roughly half the sum of what they carried.
+  #
+  # `gate_append` CANNOT ABSORB THIS, and that is why there is a second writer.
+  # Its critical section starts after the body is assembled, and the body is
+  # what depends on the read — widening it would mean handing `gate_append` a
+  # per-series accumulation rule.
+  #
+  # The locked command is `/bin/sh` and cannot see this shell's functions, so
+  # `gate_rows` and `gate_chain_tip` are re-spelled inline against `$LEDGER`,
+  # exactly as the chain tip already is. Both row prefixes travel as positional
+  # arguments so the backticks in them are parsed by neither shell.
+  #
+  # The row is fixed-shape — two numbers and a timestamp — so it cannot approach
+  # the row cap `gate_append` checks, and no value in it can carry a separator.
+  local cost="$1" n_stage="$2" at="$3" tool rc=0
+  tool=$(lock_tool)
+  # The same selection-versus-observation rule `gate_append` states above: a
+  # platform-selected path is used only if the file is actually there.
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+    "$tool" -k "$RUN_DIR/ledger.lock" \
+      /bin/sh -c '
+        led=$2
+        prevusd=$(grep "$7" "$led" 2>/dev/null | tail -1 | tr "|" "\n" \
+                  | sed -n "s/^ *누적 usd=//p" | tr -d " " | tail -1)
+        total=$(awk -v a="${prevusd:-0}" -v b="$1" "BEGIN{ printf \"%.4f\", a + b }")
+        body="$8 | 누적 usd=$total | 스테이지 수=$3 | 관측 시각=$4"
+        last=$(grep "$5" "$led" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last=$6
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$body" "$prev" >> "$led"
+      ' _ "$cost" "$LEDGER" "$n_stage" "$at" '^- `' "## 실행 $RUN_ID" '^- `cost`' '- `cost`' || rc=$?
+  else
+    # THIS BRANCH IS NOT SERIALIZED, and the comment here used to claim it did
+    # not need to be — "no lock tool means no concurrency to serialize", which
+    # is a statement about the platform rather than about this code. The
+    # accurate statement is narrower: the branch is reached only where
+    # `lock_tool` yields an empty string, the refusal that keeps the pipeline
+    # off such a host lives in `run.sh`'s `main`, and the gate sources that file
+    # for its definitions without ever executing `main`. So the protection is
+    # real but it is somewhere else, and two concurrent writers arriving here
+    # would lose an accumulation exactly as the header describes. The sequence
+    # below is the locked one with the lock removed; behaviour is unchanged.
+    local prevusd total
+    prevusd=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
+              | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    total=$(awk -v a="${prevusd:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    printf '%s | prev=%s\n' \
+      "- \`cost\` | 누적 usd=$total | 스테이지 수=$n_stage | 관측 시각=$at" \
+      "$(gate_chain_tip)" >> "$LEDGER" || rc=$?
+  fi
+  [ "$rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=$rc) — 기록 없는 행위는 수행하지 않습니다: cost"
+  return 0
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -4068,6 +4413,16 @@ gate_snapshot() {
 
   printf '  "pending_approvals": [\n'
   gate_pending_approvals_json
+  printf '  ],\n'
+
+  # ANSWERED AND NOT YET CONSUMED — the array a ROUTER-driven run reads, and the
+  # only consumer it has. The fixed-graph traversal reaches the same answers
+  # through its own relay; a run the router drives never enters that loop, so
+  # without this key an answered judgment reaches nobody there. Both readings
+  # compute from the same ledger facts so they cannot disagree about which
+  # answers are outstanding.
+  printf '  "answered_judgments": [\n'
+  gate_answered_judgments_json
   printf '  ],\n'
 
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
@@ -5445,7 +5800,7 @@ $(target_field "$a" '실행 워크트리')"
         "hooks": [
           {
             "type": "command",
-            "command": "bash '$hook' --run-dir '$RUN_DIR' --gate '$GATE_DIR/gate.sh' --ledger '$LEDGER' --grant '$GRANT'"
+            "command": "bash '$hook' --run-dir '$RUN_DIR' --gate '$GATE_DIR/gate.sh' --ledger '$LEDGER' --grant '$GRANT' --manifest '$MANIFEST'"
           }
         ]
       }
@@ -6490,9 +6845,195 @@ gate_main() {
       [ -n "$approval" ] || { printf 'gate: prompt 는 --approval 이 필요합니다\n' >&2; exit 2; }
       gate_prompt "$approval"
       ;;
+    answers)
+      # Reading, and the reader is a STAGE rather than the router: it picks up
+      # what the person said in answer to the judgment it raised. With an id it
+      # prints that answer, without one it lists the ids that have one.
+      gate_answers "$approval"
+      ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
   esac
+}
+
+gate_answered_judgments_json() {
+  # The judgments a person has ANSWERED and no stage has yet used.
+  #
+  # THE SNAPSHOT USED TO SHOW ONLY `대기`, and it carries no `절단점` either — so
+  # a judgment that had been answered left the pending list and appeared nowhere
+  # else. The answer was in the ledger, in the sidecar and in the approval's
+  # state, and the run still could not move: the router's declared input is the
+  # snapshot, and the snapshot had stopped mentioning it. That is the same
+  # broken-consumer shape this whole change exists to close, one field later.
+  #
+  # WHAT THE ROUTER DOES WITH AN ELEMENT is decided by the router — the gate says
+  # what is true, not what to run next. Each element is a RE-DISPATCH CANDIDATE
+  # for the stage that emitted the judgment, which is why `segment` is on it;
+  # without that field the router would know an answer exists and not know whom
+  # to hand it to.
+  #
+  # THE SPENT TEST REUSES THE PREDICATE THAT ALREADY EXISTS. A `자율 승인` row
+  # naming `해소 승인=<id>` is what "this answer opened an adoption" already
+  # means in two other places. A second bookkeeping of consumption would be a
+  # second floor, and two floors disagree.
+  #
+  # `막는 세그먼트` IS READ OFF THE ISSUING ROW, not the last one. The rows that
+  # close an approval carry the question and the answer and no segment, so a
+  # `tail -1` — which is right for state — yields an empty segment here. The
+  # narrowing to `절단점=판단` picks the issuing row for both duties at once.
+  local ids id row st iss seg first=1
+  # Pinned for the same reason as `gate_pending_approvals_json` above, and the
+  # note there about `sort -u` applies here unchanged: the order is decided by
+  # `LC_COLLATE`, which the driver has already fixed to C, and `LC_CTYPE` does
+  # not enter into it. This function emits INTO the snapshot object too, so a
+  # `tr`/`sed` that dies on an invalid byte does not merely lose this array — it
+  # truncates the JSON at that point and every field after it, `chain_intact`
+  # included, never reaches the reader. The ledger a reader most needs a verdict
+  # about is precisely the malformed one.
+  local LC_CTYPE=C; export LC_CTYPE
+  ids=$(gate_rows '승인' \
+        | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
+  for id in $ids; do
+    [ -n "$id" ] || continue
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    if gate_has_row '자율 승인' "해소 승인=$id "; then continue; fi
+    seg=$(gate_row_field "$iss" '막는 세그먼트')
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    # A MISSING SIDECAR IS REPORTED AS `null`, NOT AS A MISSING ELEMENT. The
+    # path was emitted unconditionally, so a run whose `$RUN_DIR` had been
+    # collected handed the router a path to a file that is not there — and the
+    # obvious repair, dropping the element, is worse: an element that vanishes
+    # is indistinguishable from one a stage consumed, which is the state the
+    # spent test above is the sole owner of. `null` keeps the candidate visible
+    # and says the bytes are gone, and the ledger's `답변 문면` still holds the
+    # clipped copy.
+    if [ -f "$RUN_DIR/answer/$id.md" ]; then
+      printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")" \
+        "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
+    else
+      printf '    {"id": "%s", "segment": "%s", "answer": null}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")"
+    fi
+  done
+  [ "$first" = "1" ] || printf '\n'
+}
+
+gate_answer_servable() {
+  # gate_answer_servable <승인 id> — the predicate BOTH forms of `answers` ask,
+  # written once. It warns on the way out naming which fact is missing; the
+  # listing form silences that stream rather than keeping a second, quieter copy
+  # of the same tests, because two copies is how one of them comes to be fixed
+  # alone.
+  #
+  # FOUR FACTS: the three ledger facts `gate_answered_judgments_json` computes,
+  # plus the sidecar being on disk. The STATE test is the one that used to be
+  # missing on this side, and its absence is not cosmetic. `gate_close` writes
+  # the answer sidecar BEFORE it branches on a refusal, so a judgment closed as
+  # 거부 or 무효 leaves a fully formed file behind — and without this test the
+  # door handed a re-dispatched stage the text of a REFUSAL to act on as if it
+  # were an instruction.
+  #
+  # The sidecar write is left where it is. A refusal's own words are a durable
+  # record of why the answer was no, and that record has value; what was wrong
+  # is the reader, so the reader is where the test goes.
+  local id="$1" row iss st
+  row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+  [ -n "$row" ] || { warn "그 승인 id 가 원장에 없습니다: $id"; return 1; }
+  st=$(gate_row_field "$row" '상태')
+  [ "$st" = "승인" ] || { warn "그 승인은 답으로 닫히지 않았습니다 (상태=${st:-없음}) — 거부·무효로 닫힌 판단의 거절문은 답이 아닙니다: $id"; return 1; }
+  iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+         | { grep -F '절단점=판단 ' || true; } | tail -1)
+  [ -n "$iss" ] || { warn "그 승인은 판단 물음이 아닙니다 — 답 사이드카는 절단점=판단 에만 있습니다: $id"; return 1; }
+  [ -f "$RUN_DIR/answer/$id.md" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
+  # THE FILE IS COMPARED AGAINST THE ROW'S DIGEST. The row carries the sha256 of
+  # the answer the gate wrote; the file lives in the volatile run directory,
+  # which the four ledger facts above say nothing about. Serving it without the
+  # comparison means the three ledger tests establish that a person answered and
+  # then the bytes handed over are whatever is at that path now — and what reads
+  # them is a stage, acting on them as an instruction.
+  #
+  # A MISSING DIGEST IS NOT A PASS. The field is `-` on rows written before the
+  # gate carried it, and treating that as "nothing to compare" would make every
+  # such row servable on the strength of its path alone. There is no answer
+  # sidecar for those rows either, so this arm is unreachable for them today;
+  # it is written as a refusal so that stays true if the store outlives a format.
+  local adig afile
+  adig=$(gate_row_field "$row" '답변 다이제스트')
+  case "$adig" in
+    ''|'-') warn "그 승인 행에 답변 다이제스트가 없습니다 — 파일을 대조할 기준이 없으므로 내주지 않습니다: $id"; return 1 ;;
+  esac
+  # The writer stores the answer with a trailing newline that the digest does not
+  # cover, so the file is compared with that byte removed — the same bytes the
+  # row hashed.
+  afile=$(printf '%s' "$(cat "$RUN_DIR/answer/$id.md")" | shasum -a 256 | cut -d' ' -f1)
+  [ "$afile" = "$adig" ] || {
+    warn "답 파일이 원장의 답변 다이제스트와 다릅니다 — 내주지 않습니다: $id (행 $adig · 파일 $afile)"
+    return 1
+  }
+  return 0
+}
+
+gate_answers() {
+  # gate.sh answers [<승인 id>] — the read-only door onto the answer sidecars.
+  #
+  # READ-ONLY AND SEPARATE FROM `close` because the readers are different
+  # entities: `close` is the router recording a resolution, and this is the
+  # re-dispatched STAGE picking up what the person said. A stage that had to
+  # call `close` to see an answer would be a stage holding a recording verb.
+  #
+  # With an id it prints that answer's bytes; without one it lists the ids that
+  # pass the same tests, one per line, which is what a reader with no id needs
+  # to get one. Neither form fails when the directory is absent — "no answers
+  # yet" is the ordinary state of a run and is not an error.
+  #
+  # THE LEDGER IS ASKED FIRST AND THE FILESYSTEM SECOND. What this verb hands
+  # out is the bytes a person typed, and it used to decide on a path existing
+  # under `$RUN_DIR/answer/` and nothing else — so any file that landed in that
+  # directory was served as an answer, with no row behind it saying a person had
+  # ever been asked. The predicate is the one `gate_answered_judgments_json`
+  # already computes, and it is THREE ledger facts: a `승인` row carries this id,
+  # that row's latest `상태` is `승인`, and the row that ISSUED it has
+  # `절단점=판단`. This comment used to name the first and the third while
+  # calling them three, and the middle one — the state — was the one the code
+  # was missing too. An enumeration that miscounts itself is how the gap got
+  # past a reader.
+  #
+  # No new state, and the two readers of an answer cannot disagree about whether
+  # it is one.
+  local id="${1:-}"
+  # THE CHARACTER-TYPE PIN, for the `gate_row_field` call the predicate makes.
+  # `tr` and `sed` abort on a byte that is not valid in the locale's encoding,
+  # and a ledger row is the input most likely to hold one. `local` is dynamic
+  # scope in this shell, so this covers the extractor as called from the helper
+  # below without touching the shared extractor itself — that one has other
+  # callers and a pin of its own to earn.
+  local LC_CTYPE=C; export LC_CTYPE
+  if [ -n "$id" ]; then
+    gate_answer_servable "$id" || return 1
+    cat "$RUN_DIR/answer/$id.md"
+    return 0
+  fi
+  [ -d "$RUN_DIR/answer" ] || return 0
+  # THE LISTING GOES THROUGH THE SAME PREDICATE. It used to be a bare `find`
+  # with no ledger question in it at all, while the comment above calls the
+  # id-less form an intended use — so it handed a reader the ids the id form
+  # would then refuse, one line at a time, and the reader had no way to tell
+  # which of them were answers.
+  find "$RUN_DIR/answer" -maxdepth 1 -type f -name '*.md' 2>/dev/null \
+    | sed 's#.*/##;s#\.md$##' | sort \
+    | while IFS= read -r aid; do
+        [ -n "$aid" ] || continue
+        gate_answer_servable "$aid" 2>/dev/null || continue
+        printf '%s\n' "$aid"
+      done
 }
 
 gate_field_of() {
@@ -9217,6 +9758,36 @@ gate_past_deadline() {
   [ "$now" -gt "$stamp" ] 2>/dev/null
 }
 
+gate_unbounded_notice() {
+  # BOTH PROGRESS-AXIS BOUNDS UNDECLARED IS A STATE, AND THE RUN HAD NO WAY TO
+  # HEAR ABOUT IT.
+  #
+  # The manifest check is asymmetric and each half of the asymmetry is a
+  # decision. It hard-fails a manifest without `벽시계 마감` — the field the
+  # fixed-graph path actually reads. It says nothing about `비용 천장` and
+  # `무진전 상한`, the two that bound a ROUTER run, because undeclared is legal
+  # for both and that legality is the whole of their backward compatibility.
+  # Both halves are right on their own; together they mean a manifest that
+  # PASSES the check reads as "the bounds were checked" while the two bounds
+  # that matter may both be absent.
+  #
+  # A REQUIRED CHECK CANNOT REPAIR THAT. The check runs on every verb against a
+  # frozen block nobody can edit, so making the field required would kill a run
+  # in flight on its next `snapshot` — in the middle of the night, for a
+  # manifest that was conforming when it was written. What can be done for a run
+  # whose manifest is already frozen is to TELL it, which is what this is: the
+  # fact, once, naming both fields and what is left unbounded.
+  #
+  # ONCE, kept with a marker file. A warning on every act is the thing that
+  # teaches a reader to skip the line that matters.
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -e "$RUN_DIR/unbounded-notice" ] && return 0
+  gate_progress_axes_unbounded || return 0
+  : > "$RUN_DIR/unbounded-notice"
+  warn "이 런은 「비용 천장」과 「무진전 상한」이 둘 다 미선언입니다 (숫자로 읽히지 않는 값도 미선언으로 셉니다) — 두 진전 축 어디에도 상한이 없습니다"
+  warn "남는 유계는 「벽시계 마감」뿐이고, 그것은 이 상태에서만 라우터 경로의 디스패치·머지 관문으로 남습니다"
+}
+
 gate_progress_axes_unbounded() {
   # True when NO progress-axis bound is in force.
   #
@@ -9226,17 +9797,42 @@ gate_progress_axes_unbounded() {
   # to report a bound it does not have. One predicate, so the boundary and its
   # readers cannot each answer this differently.
   #
-  # WRITTEN AS A PER-AXIS WALK because the tree is expected to gain axes. Today
-  # the cost ceiling is the only progress-axis bound the router path reads, so
-  # the walk has one arm; adding an axis is adding an arm here beside the
-  # boundary that enforces it, never a second predicate that can disagree.
-  local cost
+  # WRITTEN AS A PER-AXIS WALK because the tree is expected to gain axes. Adding
+  # an axis is adding an arm here beside the boundary that enforces it, never a
+  # second predicate that can disagree.
+  local cost bound
   cost=$(manifest_field '인가' '비용 천장')
+  bound=$(manifest_field '인가' '무진전 상한')
   case "$cost" in
     ''|없음|'(없음)') : ;;
     *) if gate_cost_figure_ok "$cost"; then return 1; fi ;;
   esac
+  case "$bound" in
+    ''|없음|'(없음)') : ;;
+    *) case "$bound" in *[!0-9]*) : ;; *) return 1 ;; esac ;;
+  esac
   return 0
+}
+
+gate_done_note() {
+  # gate_done_note <한 줄> — record a terminal line WITHOUT erasing one that is
+  # already there.
+  #
+  # A boundary can end the run and the router can still propose termination
+  # afterwards — the ending gate exempts `propose-done` on purpose, because a run
+  # that cannot record that it ended is a run the snapshot renders in flight
+  # forever. So both writers reach this file, and the proposal used to arrive
+  # with a truncating `>`: the morning then read "종료 조건 성립" for a night that
+  # was actually stopped by a cost ceiling, and the boundary's reason was gone.
+  #
+  # THE FIRST LINE STAYS FIRST. Readers `cat` the whole file, so appending costs
+  # nothing and keeps both accounts; the operative reason is the one that ended
+  # the run, and it is the one on top.
+  if [ -s "$RUN_DIR/done" ]; then
+    printf '%s\n' "$1" >> "$RUN_DIR/done"
+  else
+    printf '%s\n' "$1" > "$RUN_DIR/done"
+  fi
 }
 
 gate_end_run() {
@@ -9253,19 +9849,30 @@ gate_end_run() {
   # replace the morning's account of why the night stopped.
   local name="$1" why="$2"
   [ -s "$RUN_DIR/done" ] && return 0
+  # PUBLISHED BY HARD LINK, AND THE ROW IS WRITTEN ONLY BY THE WINNER.
+  #
+  # `mv -n` was the wrong primitive for this. It is `stat` then `rename`, so two
+  # boundaries firing together can both see an absent target and the second's
+  # rename replaces the first's file — the same read-then-act the bare `>` had,
+  # one layer down. `ln` is a single `link(2)`: it fails atomically when the
+  # target exists, so exactly one caller can win and the loser learns it did not.
+  #
+  # AND THE LEDGER ROW MOVED BELOW THE RACE. It used to be appended before the
+  # publish, by every caller — so two boundaries firing together left two
+  # `결정=종료` rows for a run that ended once, and the morning could not tell
+  # which one the mark belongs to. The row now records the decision that actually
+  # took effect, and a loser writes nothing anywhere.
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
+  if ! ln "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null; then
+    # Lost the race, or the filesystem cannot hard-link. Either way something
+    # else owns the mark now; the loser leaves no row and no leftover file.
+    rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
+    return 0
+  fi
+  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
     "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
     "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
-  # PUBLISHED BY RENAME, so the filesystem decides who was first. The check
-  # above and a bare `>` are a read-then-act with no lock around them, and two
-  # boundaries firing together both read an absent mark and both truncate the
-  # file — leaving the morning whichever reason happened to be written last,
-  # while this function's own header calls the FIRST reason the true one.
-  # `mv -n` refuses to replace an existing target, so a loser writes nothing;
-  # its leftover temp file is removed rather than left in the run directory.
-  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
-  mv -n "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null || true
-  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   warn "경계 $name 이 런을 끝냅니다 — $why"
   if cc_caller_is_router; then
     # `ended` is the event kind the run's other terminal points already use. A
@@ -9292,9 +9899,9 @@ gate_run_ended_ok() {
   # purpose survives; the yardstick is replaced, because the clock was a poor
   # proxy for it.
   #
-  # WHAT ENDS A RUN NOW is `gate_end_run`, called from a boundary that sits
-  # outside the pending-approval suppression: the cost ceiling at 100%. This
-  # function only reads the mark it leaves.
+  # WHAT ENDS A RUN NOW is `gate_end_run`, called from the two boundaries that
+  # sit outside the pending-approval suppression: the cost ceiling at 100% and
+  # the stagnation bound. This function only reads the mark they leave.
   #
   # It gates DISPATCH and MERGE and nothing else, exactly as the deadline did —
   # a stage in flight runs to completion and is classified normally, and the run
@@ -9323,17 +9930,19 @@ gate_run_ended_ok() {
     # THE CLOCK IS KEPT FOR THE MANIFESTS THAT HAVE NOTHING ELSE.
     #
     # Moving the yardstick to a progress-axis bound is right for a manifest that
-    # declares one. Every manifest written before that field was read declares
-    # none, and undeclared is legal — so for those runs the replacement would not
-    # be a replacement but a removal, and the router path would be left with no
-    # enforced bound at all. The failure shape is the worst one available:
-    # unattended, it is silence rather than a crash.
+    # declares one. Every manifest written before those fields were read declares
+    # neither, and undeclared is legal for both — so for those runs the
+    # replacement would not be a replacement but a removal, and the router path
+    # would be left with no enforced bound at all. The failure shape is the worst
+    # one available: unattended, it is silence rather than a crash.
     #
-    # NARROW ON PURPOSE. When a bound is validly declared this arm is never
+    # NARROW ON PURPOSE. When either bound is validly declared this arm is never
     # reached and the clock has no say over the run, which is the whole of why
     # the yardstick moved — the three measured cases where it ended a run through
-    # no fault of the run's are not re-admitted here.
-    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」이 유효하게 선언되지 않아 마감이 유일한 경계입니다"
+    # no fault of the run's are not re-admitted here. The predicate above is the
+    # same one every other reader of "is this run bounded" uses, so the run that
+    # gets this gate is exactly the run that has nothing else.
+    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」과 「무진전 상한」이 둘 다 유효하게 선언되지 않아 마감이 유일한 경계입니다"
   else
     return 0
   fi
@@ -9660,6 +10269,15 @@ gate_verb_act() {
   # mismatch is exit 6 — the same idiom the slicing declaration's `슬라이스 수`
   # already uses, where a value the writer supplies is compared against one the
   # reader derives instead of being trusted.
+  # THE GRADING BASE IS THE DIRECTORY THE ACT ACTUALLY RUNS IN, and it is handed
+  # over IN-PROCESS rather than through the environment: the exported copy is
+  # visible to children too, and a child must not grade against its parent's
+  # tree. `plan` is not excluded — it forecasts what `act` would do, so it has to
+  # resolve what `act` would resolve.
+  if [ "$verb" != "grade" ] && [ -n "${GATE_ACT_CWD:-}" ]; then
+    GATE_GRADE_CWD=$(gate_real_prefix "$GATE_ACT_CWD")
+  fi
+
   local graded
   case "$kind" in
     propose-done)
@@ -10308,7 +10926,7 @@ gate_verb_act() {
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
         "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
-      printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
       # left for a person is to read the result rather than to re-open anything.
       # The instruction to kick off again belongs to the site that anchors the
@@ -10366,11 +10984,11 @@ gate_verb_act() {
     # carry what is actually outstanding.
     held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     if [ -n "$qids" ]; then
-      printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s\n' \
-        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
+        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale")"
     else
-      printf '%s 종단 — 종료 조건 성립%s · 근거 %s\n' \
-        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
+        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale")"
     fi
     # The notification seat is carried over from the other parent; its own
     # `done` write is not. That write spelled the same file with the older
@@ -11963,7 +12581,7 @@ gate_record_stage_outcome() {
   # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
   # Re-deriving is how the writer and the reader came apart once already; the
   # unsuffixed name stays as the fallback for a caller that predates the argument.
-  local out="${7:-}" res cost subtype sid klass after denials prev total n_stage psha iserr
+  local out="${7:-}" res cost subtype sid klass after denials n_stage psha iserr
   [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
@@ -12198,11 +12816,13 @@ gate_record_stage_outcome() {
   # the boundary compares one number against the declared ceiling rather than
   # summing the file on every act.
   if [ -n "$cost" ]; then
-    prev=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
-           | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    total=$(awk -v a="${prev:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    # THE READ AND THE WRITE GO IN ONE CRITICAL SECTION. The previous total is
+    # the value that makes this row correct, and reading it outside the lock is
+    # a read-then-act: two stages terminating together both read the same total
+    # and both write `prev + own`, and the second erases the first. Not a corrupt
+    # row — a QUIET one. `gate_append_cost` owns both halves.
     n_stage=$(gate_rows 'stage-result' | gate_count)
-    gate_append 'cost' "누적 usd=$total" "스테이지 수=${n_stage:-1}" "관측 시각=$(now_iso)"
+    gate_append_cost "$cost" "${n_stage:-1}" "$(now_iso)"
   fi
 
   gate_absorb_emitted_judgment "$alias" "$seg" "$res"
@@ -12808,6 +13428,26 @@ gate_close() {
     aex=$(gate_row_safe "$afull" "$GATE_A_EXCERPT")
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
       || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
+    # THE ANSWER STORE, BESIDE THE APPROVAL SIDECAR AND NOT INSTEAD OF IT. The
+    # sidecar under `docs/` is the tracked record a PERSON reads in the morning;
+    # this copy is what the STAGE that asked reads when it comes back. Two
+    # readers, two lifetimes — so neither replaces the other, and this one lives
+    # in the volatile run directory precisely because a stage picking up its own
+    # answer must not make a tracked-tree write.
+    #
+    # WRITTEN FOR EVERY LABEL, before the disposition is branched on. A refusal's
+    # own words are a durable record of why the answer was no, and that record
+    # has value; what must not happen is handing those words to a stage as an
+    # instruction. `gate_answer_servable` is what refuses that, and the test
+    # belongs to the READER rather than here — a writer that decided which
+    # answers are worth keeping would be deciding it once, at the only moment
+    # the text exists.
+    #
+    # `절단점=판단` ONLY, which is where this line sits: an act approval's answer
+    # is a disposition with nothing for a stage to resume from, and serving one
+    # would make the listing show entries that are not answers.
+    mkdir -p "$RUN_DIR/answer"
+    printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
     gate_append '승인' "승인 id=$id" "상태=$label" "질문 문면=$q" \
       "답변 문면=$aex" "해소 시각=$(now_iso)" \
       "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"
@@ -13725,7 +14365,9 @@ gate_boundary_binding() {
   # against a boundary that has never fired. It passes the progress digest until
   # a width is decided, so its shape is its siblings' and its value is today's.
   case "$1" in
-    B1|B4) gate_progress_digest ;;
+    # B5 counts what B1 counts and disposes of it differently, so it reads the
+    # same value by name rather than by a second call to the same helper.
+    B1|B4|B5) gate_progress_digest ;;
     B2)    gate_open_obligations | sort | shasum -a 256 | cut -d' ' -f1 ;;
     B3)    gate_progress_vector | grep -v '^acts=' | shasum -a 256 | cut -d' ' -f1 ;;
     *)     return 1 ;;
@@ -13803,15 +14445,35 @@ gate_boundaries() {
   [ "$graded" = "읽기" ] && judgment=0
   case "$kind" in skill|router-shift) judgment=0 ;; esac
 
+  # THE PROGRESS DIGEST IS COMPUTED ONCE AND HANDED TO BOTH READERS. It walks
+  # the whole ledger, so computing it per boundary doubled that walk on every
+  # judging call — measured as a suite that stopped finishing. And the two
+  # boundaries are meant to be counting THE SAME NUMBER, which is worth holding
+  # structurally rather than by two call sites happening to agree.
+  local pdig=""
+  if [ "$judgment" = "1" ]; then pdig=$(gate_boundary_binding B1); fi
   if [ "$pending" = "0" ] && [ "$judgment" = "1" ]; then
-    gate_b1_stagnation
+    gate_b1_stagnation "$pdig"
     gate_b2_obligations
     gate_b3_act_budget
   fi
-  # B4 stays live even while waiting, and OUTSIDE the judgment predicate: a
+  # B5 IS A JUDGMENT BOUNDARY EVALUATED OUTSIDE THE SUPPRESSION, which is the
+  # only combination that can bound a run whose B1 question nobody answered —
+  # B1's own firing opens the approval that then stops B1 from counting.
+  if [ "$judgment" = "1" ]; then
+    gate_b5_stagnation_bound "$pdig"
+  fi
+  # B4 stays live even while waiting, and OUTSIDE the judgment predicate too: a
   # read-only router still spends tokens, and a boundary inside the predicate
   # would leave that spend unseen by every boundary at once.
   gate_b4_cost
+  # AND THE RUN IS TOLD WHEN IT HAS NEITHER. Said to the ROUTER, because it is
+  # the seat that can do something about it and the one whose output a person
+  # reads in the morning; a stage would carry the line into a transcript nobody
+  # opens. Once per run, by a marker.
+  if cc_caller_is_router; then
+    gate_unbounded_notice
+  fi
 }
 
 gate_b1_read_run() {
@@ -13941,8 +14603,13 @@ gate_b1_stagnation() {
   # itself, and `gate_boundary_binding B1` returns exactly that value, so the
   # rebaseline and the `boundary-B1.asked` marker compare against the same
   # bytes `progress-digest` holds.
-  local h prev n nread nspent
-  h=$(gate_boundary_binding B1)
+  #
+  # An argument is that same value when the CALLER already paid for the walk —
+  # `gate_boundaries` computes it once for this boundary and for B5, which walk
+  # the same ledger. Absent, this computes it itself so a direct caller (a test,
+  # a probe) still works.
+  local h="${1:-}" prev n nread nspent
+  [ -n "$h" ] || h=$(gate_boundary_binding B1)
   prev=$(cat "$RUN_DIR/progress-digest" 2>/dev/null || true)
   n=$(cat "$RUN_DIR/progress-repeat" 2>/dev/null || printf '0')
   if [ "$h" = "$prev" ]; then
@@ -14332,12 +14999,63 @@ gate_b4_percent() {
   awk -v s="$spent" -v d="$declared" 'BEGIN{ if (d+0==0) print 0; else printf "%d", (s/d)*100 }'
 }
 
+gate_b5_stagnation_bound() {
+  # THE SECOND PROGRESS AXIS, AND THE ONE B1 CANNOT BE. B1 counts exactly this —
+  # consecutive router judgments over an unmoved progress digest — and asks. This
+  # counts the same thing and ENDS the run. The two differ in disposition and in
+  # one structural way that is the whole reason for a second counter.
+  #
+  # B1..B3 ARE SUPPRESSED WHILE AN ACT-CLASS APPROVAL IS PENDING, and B1's own
+  # firing is what opens one. So under manual resolution B1 asks at its
+  # threshold, the approval stays open because nobody is awake, and from that
+  # moment `progress-repeat` stops advancing — the counter freezes at exactly the
+  # value that opened the question. A bound layered on that counter would never
+  # be reached. This one is evaluated beside B4, outside the suppression, so it
+  # keeps counting while the question waits.
+  #
+  # THE DIGEST IS B1'S, NOT A VARIANT. An earlier form of this filtered `acts=`
+  # out of the progress vector, because that component counted read-exceeding
+  # exec calls and was therefore the counter's own input — a counter inside its
+  # own hash input never advances. The vector no longer carries `acts=`; it
+  # carries `dispatches=`, which counts observed stage outcomes and is not moved
+  # by the call being judged. With the reason gone the filter is gone, and both
+  # boundaries read the same value — which is what lets "B1 asked and B5 ended"
+  # be one story about one number rather than two numbers that can disagree.
+  #
+  # THE JUDGMENT PREDICATE IS THE CALLER'S, AND SO IS THE DIGEST. `gate_boundaries`
+  # already decides what counts as a router judgment (not a stage, grade above
+  # read, kind not `skill` or `router-shift`), and it computes the progress
+  # digest once for both this boundary and B1 — a second copy of either would be
+  # a second place for them to drift apart, and the digest walk is not cheap.
+  # An absent argument falls back to computing it, so a direct caller works.
+  # An argument is the digest the caller already paid for — same arrangement
+  # as B1.
+  local bound h="${1:-}" prev n
+  bound=$(manifest_field '인가' '무진전 상한')
+  case "$bound" in ''|없음|'(없음)') return 0 ;; esac
+  # AN UNREADABLE BOUND WARNS AND DOES NOT ENFORCE, the same disposition the cost
+  # ceiling takes. Silence would leave a run believing it had a bound on the one
+  # axis still able to end it.
+  case "$bound" in *[!0-9]*)
+    warn "무진전 상한을 정수로 읽지 못했습니다 ($bound) — 이 경계를 강제하지 않습니다. 판정 횟수를 숫자로만 적으세요"
+    return 0 ;;
+  esac
+  [ -n "$h" ] || h=$(gate_boundary_binding B5)
+  prev=$(cat "$RUN_DIR/stagnation-digest" 2>/dev/null || true)
+  n=$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '0')
+  if [ "$h" = "$prev" ]; then n=$((n + 1)); else n=0; fi
+  printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
+  printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
+  [ "$n" -lt "$bound" ] && return 0
+  gate_end_run B5 "진전 해시가 라우터 판정 연속 ${n}회 동안 불변입니다 (상한 ${bound})"
+}
+
 gate_b4_cost() {
   # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
   # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
-  # ceiling is now the bound that keeps a router run finite: the wall clock no
-  # longer ends a run that has this field, and an approval nobody answers is not
-  # a bound.
+  # ceiling is one of the two bounds that keep a router run finite: the wall
+  # clock no longer ends a run that declares either of them, and an approval
+  # nobody answers is not a bound.
   local declared spent pct resolved
   declared=$(manifest_field '인가' '비용 천장')
   # The undeclared spellings are the same vocabulary the percentage helper uses.

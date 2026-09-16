@@ -199,6 +199,11 @@ readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
 # impact is that an envelope-less stall makes an unbounded backoff mandatory to
 # bound. Adopting the cap up front covers both branches of that item, so the
 # ladder terminates whichever way the envelope turns out to behave.
+# How many times ONE answered judgment may drive a re-attachment. The answer
+# leaves the candidate list only when a stage re-submits the judgment, and that
+# re-submission is instructed in prose — a stage that reads the instruction and
+# does not act on it comes back as the same candidate next cycle, forever.
+readonly REDISPATCH_MAX=2
 readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
 # Consecutive silent polls before a live stage is classed as the limit shape.
 #
@@ -599,8 +604,9 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
-  local cc
+  local cc sb
   cc=$(manifest_field '인가' '비용 천장')
+  sb=$(manifest_field '인가' '무진전 상한')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -634,6 +640,9 @@ binding_set_bytes() {
     # An unconditional line would re-digest every such manifest at once, and the
     # run finds out on its next `snapshot` — in the middle of the night.
     [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
+    # The stagnation bound joins on the same terms and for the same reason: it
+    # ends the run, so a value anything can raise mid-run is not a bound.
+    [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -885,8 +894,14 @@ check_manifest() {
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
-  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
-    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
+  # THE ZONE IS REQUIRED AND THE MATCH IS ANCHORED AT BOTH ENDS. Without the tail
+  # this accepted `…T18:00:00` with no zone at all, and the reader takes the
+  # offset from the characters after the seconds — absent, it reads as UTC. A
+  # deadline a person wrote in local time is then enforced hours from where they
+  # meant it, in the direction nothing announces. Anchoring only the head also
+  # let trailing bytes ride along into a value the comparison never sees.
+  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
+    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
@@ -3157,6 +3172,27 @@ stage_spawn() {
   # and the classifier then read the first attempt's record for the second. The
   # gate's launcher already hands down `<segment>#<attempt>`; this is the same
   # spelling, so one reader resolves both.
+  # RE-ATTACH, NOT RE-RUN, when the caller has a session to continue. The wrapper
+  # has taken `--resume` since it was written and nothing here reached it, so the
+  # only way to bring an answer back to the stage that asked for it was a fresh
+  # session that had never seen the question. `STAGE_RESUME` is caller-owned and
+  # read once here; the two flags are mutually exclusive at the wrapper, so this
+  # is a choice rather than an addition.
+  #
+  # AN ARRAY, NOT A STRING. Splicing `--resume $STAGE_RESUME` into one word and
+  # letting it word-split is how a value read off disk becomes ARGUMENTS: a
+  # planted stage log carrying `<uuid> --settings /evil.json` would append a
+  # second `--settings`, the harness takes the last one, and the re-attached
+  # stage runs without the gate hook. `"${id_flag[@]}"` cannot do that whatever
+  # the value holds. `stage_session_id_strict` checks the shape as well, and both
+  # are kept on purpose — see its note.
+  local -a id_flag
+  if [ -n "${STAGE_RESUME:-}" ]; then
+    id_flag=(--resume "$STAGE_RESUME")
+    log "$stage: 세션 $STAGE_RESUME 재부착"
+  else
+    id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
+  fi
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -3165,7 +3201,7 @@ stage_spawn() {
       exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
-        --session-id "$(session_uuid "$stage" "$attempt")" \
+        "${id_flag[@]}" \
         -- -p "$prompt" "$@" \
         >> "$out" 2>> "$err" < /dev/null ) &
   pid=$!
@@ -3414,6 +3450,124 @@ stage_session_id() {
   fi
   [ -n "$sid" ] || sid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
   printf '%s' "$sid"
+}
+
+stage_session_id_strict() {
+  # stage_session_id_strict <스테이지 id> — the id the HARNESS assigned, and
+  # NOTHING ELSE. Empty when the stage left no stream, when the stream carries
+  # no id, or when what it carries is not the shape a session id has.
+  #
+  # THE FALLBACK ABOVE IS RIGHT FOR ITS CALLER AND WRONG FOR THIS ONE. A
+  # `stage-result` row wants the field filled, so a derived id there beats a
+  # blank. A RE-ATTACHMENT wants a session the harness actually opened: handed a
+  # derived id, `--resume` names a session that never existed, and the failure is
+  # silent in the worst direction — the stage comes up with none of the context
+  # the re-attachment exists to preserve while the driver's log says it was
+  # resumed. An empty value falls through to a fresh dispatch, which is honest.
+  #
+  # THE SHAPE IS CHECKED, and that check is load-bearing rather than tidiness.
+  # This value is read out of a file under the run directory and then handed to
+  # the harness as an argument. The extractor's `[^"]*` accepts a space, so a
+  # planted log could carry `<uuid> --settings /somewhere/evil.json` — and the
+  # harness takes the LAST `--settings`, which is the file carrying the gate
+  # hook. A re-attached stage would then run with no gate at all. Two things
+  # stop that and both are kept: this shape check, and the caller passing the
+  # flag as array elements rather than splicing a string. Either alone would do
+  # today; the pair is what keeps a later edit to one of them from re-opening it.
+  local stage="$1" out sid=""
+  out=$(stage_log_path "$stage")
+  if [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+  fi
+  case "$sid" in
+    ????????-????-????-????-????????????) ;;
+    *) sid="" ;;
+  esac
+  case "$sid" in
+    *[!0-9a-fA-F-]*) sid="" ;;
+  esac
+  printf '%s' "$sid"
+}
+
+answered_judgment_stage() {
+  # answered_judgment_stage <세그먼트> <스테이지 종류> — `<승인 id> <스테이지 id>`
+  # for one judgment this segment raised that a person has ANSWERED and no stage
+  # has used yet. Empty when there is none, which is the ordinary case.
+  #
+  # THE ARRAY THE GATE EMITS AND THIS PREDICATE ARE THE SAME QUESTION asked from
+  # the two sides that need it: the gate's snapshot is what the ROUTER reads to
+  # decide what to do next, and this is what the fixed-graph loop reads to
+  # actually re-dispatch. They are computed from the same three ledger facts —
+  # the approval's state is `승인`, its issuing row's `절단점` is `판단`, and no
+  # `자율 승인` row names `해소 승인=<id>` — rather than one calling the other,
+  # because the driver reads the ledger directly everywhere else and a shell-out
+  # here would be the only place it did not.
+  #
+  # SPENT-NESS IS THE EXISTING PREDICATE AND NOT A NEW STATE. An answer that a
+  # stage consumed leaves a row naming it; an answer that no stage consumed
+  # stays a candidate on the next cycle. That is the intended behaviour and the
+  # cycle cap is what bounds it.
+  #
+  # `막는 세그먼트` HOLDS THE STAGE ID, not the segment id: the gate learns it
+  # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
+  # id when it spawns. So the field already names the re-dispatch candidate.
+  #
+  # THE STAGE KIND IS PART OF THE MEMBERSHIP TEST, and the `:<segment>:` infix
+  # alone was not. A stage id is `<종류>:<세그먼트>:<사이클>`, so the kind sits in
+  # the PREFIX and a test that only looked at the infix matched every kind this
+  # segment had ever run: an answer to a judgment a review stage raised came
+  # back as a candidate in the implement slot, and the implement stage was then
+  # re-attached to a session that had been reviewing. A candidate whose kind
+  # does not match is left in the list rather than discarded — the router
+  # dispatches that kind later and consumes it there.
+  local seg="$1" kind="$2" id row st iss stg spent
+  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$st" = "승인" ] || continue
+    iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
+    # — under `pipefail` — report the whole pipeline as failed. The value is
+    # captured instead and tested as a string, which is the spelling the rest of
+    # this file uses for exactly this reason.
+    spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
+             | { grep -F "해소 승인=$id " || true; } | tail -1)
+    [ -z "$spent" ] || continue
+    stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$stg" in "$kind:$seg:"*) ;; *) continue ;; esac
+    # A session that left no stream cannot be re-attached, and a derived id
+    # would name a session the harness never opened. Falling through to a fresh
+    # dispatch is the honest outcome; claiming a resume that cannot happen is not.
+    [ -f "$RUN_DIR/log/$stg.json" ] || continue
+    printf '%s %s' "$id" "$stg"
+    return 0
+  done
+  return 0
+}
+
+redispatch_spend() {
+  # redispatch_spend <승인 id> <스테이지 종류> — how many times this run has
+  # re-attached that stage kind on the strength of this one answer, counting the
+  # attempt being asked about.
+  #
+  # ON DISK UNDER `$RUN_DIR`, not in a shell variable. A driver that was cut and
+  # resumed starts a fresh process, so an in-memory counter would reset — and the
+  # loop this bounds is precisely one that survives a resume, since its inputs
+  # are ledger rows the new process reads back.
+  local id="$1" kind="$2" f n
+  mkdir -p "$RUN_DIR/redispatch"
+  f="$RUN_DIR/redispatch/$kind.$id"
+  n=$(cat "$f" 2>/dev/null || printf '0')
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$f"
+  printf '%s' "$n"
 }
 
 stage_parent_id() {
@@ -4673,7 +4827,36 @@ segment_cycle() {
       park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
       return 1
     }
-    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    # THIS RELAY BELONGS TO THE FIXED-GRAPH TRAVERSAL, and it is not the only
+    # consumer of an answered judgment. A run driven by the router never enters
+    # this loop at all; there the live consumer is the snapshot's answered-
+    # judgment array. Both readings compute from the same ledger facts, so they
+    # cannot disagree about which answers are outstanding — but only one of them
+    # is reached on any given run.
+    local aj aj_id aj_stage prompt
+    aj=$(answered_judgment_stage "$seg" S4)
+    prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    STAGE_RESUME=""
+    if [ -n "$aj" ]; then
+      aj_id=${aj%% *}; aj_stage=${aj#* }
+      # THE CAP IS ON THIS SIDE BECAUSE THE PROMPT ALONE CANNOT CLOSE THE LOOP.
+      # An answer leaves the candidate list only when a stage re-submits the
+      # judgment, and that re-submission is instructed in prose. Counting here
+      # bounds it without touching `answered_judgment_stage`, whose selection
+      # must stay identical to what the snapshot emits; a fourth term there
+      # would split the two readings apart.
+      if [ "$(redispatch_spend "$aj_id" S4)" -gt "$REDISPATCH_MAX" ]; then
+        warn "$seg: 판단 $aj_id 재부착이 상한 ${REDISPATCH_MAX}회를 넘어 평범한 디스패치로 떨어졌다"
+        aj=""
+      fi
+    fi
+    if [ -n "$aj" ]; then
+      STAGE_RESUME=$(stage_session_id_strict "$aj_stage")
+      prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
+      log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
+    fi
+    stage_spawn "$sid" "$wt" "$prompt"
+    STAGE_RESUME=""
     stage_wait_all "$sid"
     quiet_window_end
     local rc pred class

@@ -866,6 +866,40 @@ check "소수점이 둘이면 값이 아니다" "$(gate_cost_figure_ok '1.2.3' &
 check "소수점으로 끝나면 값이 아니다" "$(gate_cost_figure_ok '50.' && printf yes || printf no)" "no"
 check "빈 값은 값이 아니다" "$(gate_cost_figure_ok '' && printf yes || printf no)" "no"
 
+# ---------------------------------------------------------------------------
+# 8c-2. 비용 누적은 읽기와 쓰기가 한 임계구역 안에 있다
+#
+# 누적 행을 맞게 만드는 값은 앞 행의 총계다. 그 읽기가 잠금 밖에 있으면 read-then-act
+# 이고, 동시에 종단한 두 스테이지가 같은 총계를 읽어 둘 다 `앞 총계 + 자기 것` 을
+# 쓴다. 두 번째가 첫 번째를 지운다 — 깨진 행이 아니라 조용한 행이다. 런의 유일한
+# 비용 수치가 아무도 그렇다고 말해 주지 않는 하한이 되고, 그 수치로 밤이 언제
+# 끝나는지를 정하는 경계가 판정한다.
+# ---------------------------------------------------------------------------
+CLEDGER2="$WORK/cost-accum.md"
+LEDGER_SAVE="$LEDGER"
+LEDGER="$CLEDGER2"
+: > "$CLEDGER2"
+cost_total() { { grep -F '`cost`' "$CLEDGER2" || true; } | tail -1 | tr '|' '\n' \
+                 | sed -n 's/^ *누적 usd=//p' | tr -d ' ' | tail -1; }
+gate_append_cost 1.5 1 2026-01-01T00:00:00Z
+check "첫 비용 행은 자기 값만 싣는다" "$(cost_total)" "1.5000"
+gate_append_cost 2.25 2 2026-01-01T00:01:00Z
+check "다음 행이 앞 총계에 더한다" "$(cost_total)" "3.7500"
+gate_append_cost 0.001 3 2026-01-01T00:02:00Z
+check "소수 넷째 자리까지 누적한다" "$(cost_total)" "3.7510"
+check "행 셋이 남는다 (덮어쓰지 않는다)" "$( { grep -cF '`cost`' "$CLEDGER2" || true; } )" "3"
+# 그리고 누적 계산이 그 함수 밖에 남아 있지 않다. 경계가 총계를 비교하려고 읽는
+# 자리는 잠금이 필요 없다 — 낡은 값을 읽어도 판정이 한 행위 늦어질 뿐이다. 잠금이
+# 덮어야 하는 것은 앞 총계를 읽어 거기에 더하는 자리이고, 그것이 밖에 하나라도
+# 남으면 그만큼 read-then-act 가 남는다.
+cost_gate="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+cost_add_all=$( { grep -cF '%.4f' "$cost_gate" || true; } )
+cost_add_fn=$(awk '/^gate_append_cost\(\) \{/{on=1} on{print} on && /^}$/{exit}' "$cost_gate" \
+              | { grep -cF '%.4f' || true; } )
+check "누적 계산이 게이트에 두 자리뿐이다 (잠긴 갈래와 잠기지 않은 갈래)" "$cost_add_all" "2"
+check "그 두 자리가 모두 누적 함수 안이다" "$cost_add_fn" "$cost_add_all"
+LEDGER="$LEDGER_SAVE"
+
 ELEDGER="$WORK/endrun.md"
 LEDGER_SAVE="$LEDGER"
 LEDGER="$ELEDGER"
@@ -889,6 +923,19 @@ check "종료 행이 어느 경계였는지 이름으로 말한다" \
 # stopped, and a run does not end twice.
 gate_b4_cost >/dev/null 2>&1
 check "천장을 넘긴 두 번째 판정은 종료 행을 다시 쓰지 않는다" "$(end_rows)" "1"
+# 표시는 하드 링크로 발행되고 원장 행은 경합을 이긴 쪽만 쓴다. 앞 판본은 모든
+# 호출자가 행을 먼저 쓴 뒤 발행을 시도해, 한 번 끝난 런에 종료 행이 둘 남고 아침에
+# 표시가 어느 쪽 것인지 말할 수 없었다.
+end_mark_first=$(cat "$RUN_DIR/done")
+gate_end_run B9 "다른 경계가 뒤늦게 발화했다" >/dev/null 2>&1
+check "이미 끝난 런에 다른 경계가 발화해도 종료 행은 하나다" "$(end_rows)" "1"
+check "표시의 첫 사유가 그대로다 (첫 사유가 참인 사유다)" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+# 그리고 뒤에 오는 종료 제안이 그 사유를 지우지 않는다. 종단 게이트는 종료 제안을
+# 면제하므로 두 기록자가 같은 파일에 닿는다 — 앞 판본의 절단 `>` 는 「종료 조건
+# 성립」으로 덮어써, 사실은 비용 천장이 멈춘 밤을 아침이 그렇게 읽었다.
+gate_done_note "$(printf '%s 종단 — 종료 조건 성립 · 근거 시험' "$(now_iso)")"
+check "종료 제안이 경계의 사유를 지우지 않는다" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+check "그 제안도 함께 남는다" "$( { grep -cF '종료 조건 성립' "$RUN_DIR/done" || true; } )" "1"
 
 # WHAT THE ENDING GATES. Dispatch and merge and nothing else — a stage in
 # flight runs to completion and is classified normally, and the run may still
@@ -927,6 +974,128 @@ printf -- '- `cost` | 누적 usd=101 | 스테이지 수=1 | 관측 시각=2026-0
 gate_b4_cost >/dev/null 2>&1
 check "95% 에서 답을 받아 둔 런도 천장에 닿으면 끝난다 (억제가 종료를 가리지 않는다)" "$(end_rows)" "1"
 rm -f "$RUN_DIR/cost-resolved-pct"
+
+# ---------------------------------------------------------------------------
+# 8e. 두 번째 진전 축 — 선언된 무진전 상한이 런을 끝낸다
+#
+# B1 은 같은 수를 세고 묻는다. 묻는 순간 열리는 승인이 B1 자신을 억제하므로, 답이
+# 오지 않는 밤에는 그 카운터가 질문을 연 값에서 얼어붙는다. 이 경계는 같은 수를
+# 억제 밖에서 세고 끝낸다.
+# ---------------------------------------------------------------------------
+: > "$ELEDGER"
+rm -f "$RUN_DIR/done" "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+# 선언이 없으면 이 축은 무제한이다 — 지금까지 쓰인 모든 매니페스트의 거동이다.
+sb_n=3
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "상한이 선언되지 않으면 아무것도 세지 않는다" \
+  "$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '(없음)')" "(없음)"
+check "그때 런도 끝나지 않는다" "$(end_rows)" "0"
+printf '**무진전 상한**: %s\n' "$sb_n" >> "$FIX_MANIFEST"
+check "픽스처가 실제로 상한 줄을 얻었다 (아래가 공허하지 않다)" \
+  "$( { grep -c "^\*\*무진전 상한\*\*: $sb_n\$" "$FIX_MANIFEST" || true; } )" "1"
+# 같은 원장에 대고 연속으로 판정한다 — 진전 해시가 움직이지 않는 상태다.
+i=0
+while [ "$i" -lt "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+check "상한에 닿기 전까지는 끝내지 않는다" "$(end_rows)" "0"
+check "그동안 카운터는 올라간다" "$(cat "$RUN_DIR/stagnation-repeat")" "$((sb_n - 1))"
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "상한에 닿으면 런이 끝난다" "$(end_rows)" "1"
+# 스테이지 좌석의 호출은 라우터 판정이 아니므로 이 경계를 움직이지 않는다. 그 판별이
+# 없으면 구속되는 쪽의 통행량이 라우터의 상한을 채운다 — 그리고 이 경계는 묻는 것이
+# 아니라 끝내므로, 잘못 세면 건강한 런이 스테이지가 도는 동안 끝난다.
+#
+# 쓰기 등급으로 잰다. 읽기 호출은 등급만으로도 판정에서 빠지므로 읽기로만 시험하면
+# 좌석 판별을 지워도 통과한다.
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  judge S9 'S9#1' '' 워크트리쓰기 x >/dev/null
+  i=$((i + 1))
+done
+check "스테이지 좌석의 쓰기 판정은 정체 카운터를 움직이지 않는다" \
+  "$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '(없음)')" "(없음)"
+check "그래서 스테이지가 도는 동안 런이 끝나지 않는다" "$(end_rows)" "0"
+# 대조군 — 같은 횟수를 라우터 좌석에서 부르면 끝난다. 위 둘이 「아무것도 세지 않는
+# 구현」을 재고 있지 않다.
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  judge '' '' '' 워크트리쓰기 x >/dev/null
+  i=$((i + 1))
+done
+check "대조군: 라우터 좌석의 같은 호출은 상한에 닿아 끝낸다" "$(end_rows)" "1"
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -lt "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "종료 행이 B5 를 이름으로 싣는다" \
+  "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B5' || true; })" "1"
+# 진전이 있으면 카운터가 0 으로 돌아간다. 이것이 없으면 이 경계는 「판정 N회면
+# 끝낸다」가 되어 건강한 런을 끝낸다.
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+printf 'x\n' > "$RUN_DIR/stagnation-digest"
+gate_b5_stagnation_bound >/dev/null 2>&1
+check "진전이 있으면 카운터가 0 으로 돌아간다" "$(cat "$RUN_DIR/stagnation-repeat")" "0"
+check "그때 런도 끝나지 않는다" "$(end_rows)" "0"
+# 정수로 읽히지 않는 값은 경고하고 강제하지 않는다 — 비용 천장과 같은 처분이다.
+grep -v '^\*\*무진전 상한\*\*: ' "$FIX_MANIFEST" > "$FIX_MANIFEST.s" && mv "$FIX_MANIFEST.s" "$FIX_MANIFEST"
+printf '**무진전 상한**: 세 번\n' >> "$FIX_MANIFEST"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+check "정수로 읽히지 않는 상한은 강제하지 않는다" "$(end_rows)" "0"
+grep -v '^\*\*무진전 상한\*\*: ' "$FIX_MANIFEST" > "$FIX_MANIFEST.s" && mv "$FIX_MANIFEST.s" "$FIX_MANIFEST"
+
+# ---------------------------------------------------------------------------
+# 8f. 두 축이 모두 미선언인 런은 그 사실을 듣는다
+#
+# 매니페스트 검사는 마감이 없으면 하드 실패하고 이 두 필드에는 아무 말도 하지
+# 않는다. 각각은 옳지만 겹치면, 검사를 통과한 매니페스트가 「경계가 검증됐다」로
+# 읽히면서 라우터 런을 묶는 두 필드가 둘 다 비어 있을 수 있다. 필수 검사로는 고칠
+# 수 없다 — 그 연언은 모든 동사에서 돌고 블록은 얼려 있어, 진행 중인 런이 다음
+# 동사에서 죽는다. 할 수 있는 것은 말해 주는 것이다.
+# ---------------------------------------------------------------------------
+MANIFEST_SAVE="$MANIFEST"
+UB="$WORK/unbounded-plan.md"
+grep -v '^\*\*비용 천장\*\*: ' "$FIX_MANIFEST" > "$UB"
+MANIFEST="$UB"
+RUN_DIR="$WORK/rundir-unbounded"; mkdir -p "$RUN_DIR"
+ub_out=$(gate_unbounded_notice 2>&1)
+case "$ub_out" in
+  *"둘 다 미선언"*) ok "두 축이 모두 미선언이면 그 사실을 말한다" ;;
+  *) bad "미선언 고지" "아무 말도 하지 않았다: ${ub_out:-(빈 출력)}" ;;
+esac
+check "그때 표지가 남는다" "$([ -e "$RUN_DIR/unbounded-notice" ] && printf yes || printf no)" "yes"
+ub_out2=$(gate_unbounded_notice 2>&1)
+check "두 번째 호출은 아무 말도 하지 않는다 (행위마다 경고하면 읽히지 않는다)" "$ub_out2" ""
+# 숫자로 읽히지 않는 값은 미선언으로 센다. 이것이 없으면 `$50` 짜리 천장이 고지를
+# 억누르면서 경계는 하나도 서지 않는다 — 고지가 존재하는 이유인 바로 그 조합이다.
+rm -f "$RUN_DIR/unbounded-notice"
+printf '**비용 천장**: $50\n' >> "$UB"
+ub_out3=$(gate_unbounded_notice 2>&1)
+case "$ub_out3" in
+  *"둘 다 미선언"*) ok "숫자로 읽히지 않는 천장은 미선언으로 센다" ;;
+  *) bad "미선언 고지" "강제되지 않는 값을 선언으로 셌다: ${ub_out3:-(빈 출력)}" ;;
+esac
+# 대조군 — 하나라도 유효하게 선언되면 침묵한다. 이것이 없으면 위 셋은 「항상
+# 경고하는 구현」과 구별되지 않는다.
+rm -f "$RUN_DIR/unbounded-notice"
+grep -v '^\*\*비용 천장\*\*: ' "$UB" > "$UB.c" && mv "$UB.c" "$UB"
+printf '**무진전 상한**: 9\n' >> "$UB"
+ub_out4=$(gate_unbounded_notice 2>&1)
+check "한 축이라도 유효하게 선언되면 침묵한다" "$ub_out4" ""
+check "그때 표지도 남기지 않는다" "$([ -e "$RUN_DIR/unbounded-notice" ] && printf yes || printf no)" "no"
+MANIFEST="$MANIFEST_SAVE"
 LEDGER="$LEDGER_SAVE"
 
 # ---------------------------------------------------------------------------
