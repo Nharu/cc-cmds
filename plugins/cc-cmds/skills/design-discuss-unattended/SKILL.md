@@ -90,11 +90,13 @@ CFI-2 and CFI-3 of the base skill (Step 5 → 6 → 7 and the freeze) are the se
 
 `ToolSearch("select:SendMessage,TaskStop")`. `Agent` is built-in. **`AskUserQuestion` is deliberately absent**: it is absent from every headless process anyway, and enumerating it would make this skill fail-loud at Step 0 forever.
 
-**Fail-loud, durably — through one site.** If a Step-0 tool cannot be loaded, if the brief fails a guard below, or if the ledger stub cannot be created, park **before spawning** with `자리 id: ledger-missing`; `분류` (`tool-unavailable` / `precondition-failed`) and `관측 상세` carry the specifics. No tenth site is minted for a pre-spawn failure.
+**Fail-loud, durably — through one site.** If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target document already exists, or if the ledger stub cannot be created, park **before spawning** with `자리 id: ledger-missing`; `분류` (`tool-unavailable` / `precondition-failed`) and `관측 상세` carry the specifics. No tenth site is minted for a pre-spawn failure.
 
 ### Step 1: Read the brief and guard it
 
 `$ARGUMENTS` is the brief path, as given. Read it whole and Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1`. Guards, every one a pre-spawn park on failure: the header's version token is exactly `cc-design-brief v1` (§1.5 strict equality); the `## 대상` block's `**문서 키**` equals the header's `owner-doc=` (§1.2 — the document may not exist yet, the key is derived from the path); all eight blocks are present in order — `## 요구사항`, `## 제약`, `## 배포 형상`, `## 탐색 결과`, `## 재현`, `## 팀 구성`, `## 기준선`, `## 대상`; `## 배포 형상` carries all five field lines — `**레포**`, `**슬라이스 수**`, `**적용 위치**`, `**적용 주체**`, `**실패 시 파킹**` — where `없음` is a value and an omitted line is not; the last non-empty line is `<!-- cc-design-brief: end -->`. The brief is never edited and never staged.
+
+**Target-document guard.** Resolve `docs/{topic-slug}.md` from `## 대상` and `stat` it. This dispatch has saved nothing yet, so a file that already exists is always an earlier run's — a first dispatch whose leg died after the save, or a re-dispatch that should never have been issued — and Step 4's save would overwrite it, carrying off whatever Step 5 walkthrough decisions and Step 6 refinements it already holds. Park before spawning (`자리 id: ledger-missing`, `분류: precondition-failed`, with the path, its byte count and its mtime in `관측 상세`) rather than run Step 3 and Step 4 over it. The boundary gate is no backstop here: Step 2 below exempts that exact path, so the overwrite would satisfy every assertion it makes.
 
 ### Step 2: State root and baseline
 
