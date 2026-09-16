@@ -26,6 +26,14 @@
 # origin-worktree, so nothing here touches the checkout the tests run from.
 #
 # Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
+#
+# The three-signal oracle below wraps both run forms. Its own entry points exist
+# for `scripts/test-gate-oracle.sh` and run no assertion of this suite:
+#
+#   --oracle-judge <dir>            judge a captured transcript (out/err/rc/map/
+#                                   script/scope) and exit with the verdict code
+#   --oracle-probe                  run the message-catalogue self-test only
+#   --oracle-wrap <script> <map>    run an arbitrary script through the wrapper
 
 set -uo pipefail
 
@@ -198,6 +206,9 @@ SELF="$script_dir/${0##*/}"
 sections_want=""
 sections_list=0
 sections_strict=0
+oracle_mode=""
+oracle_arg1=""
+oracle_arg2=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -212,8 +223,16 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --run-one=*)
       sections_want="${1#--run-one=}"; sections_strict=1; shift ;;
+    --oracle-judge)
+      oracle_mode="judge"; oracle_arg1="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --oracle-probe)
+      oracle_mode="probe"; shift ;;
+    --oracle-wrap)
+      oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
+      if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -224,6 +243,340 @@ if [ "$sections_strict" = "1" ]; then
       exit 2 ;;
   esac
 fi
+
+# ---------------------------------------------------------------------------
+# THE THREE-SIGNAL ORACLE — totals, FAIL reconciliation, noise
+#
+# The suite's own exit status is not an honest report of whether it RAN. Six
+# shapes of failure were enumerated against this file and no single signal
+# covers them; three of the six are each caught by exactly one of the signals
+# below, so all three are wired and none of them is optional.
+#
+#   1  TOTALS   the epilogue's last two lines are the totals `printf` and
+#               `[ "$failed" = "0" ]`, so "totals present and failed=0" implies
+#               rc 0. The converse is the detector: a missing totals line is an
+#               abort before the epilogue, and seeing it needs no pattern and no
+#               message catalogue, which makes it the one crash signal with no
+#               false positives at all.
+#   2  FAIL     `bad()` increments a counter AND writes `FAIL:` to stderr. Called
+#               inside a command substitution the increment is lost with the
+#               subshell and only the text escapes, so a disagreement between the
+#               two counts is a failure the totals swallowed. Nothing else sees
+#               that shape: it is green, complete, and quiet.
+#   3  NOISE    `command not found` / `unbound variable` on stderr is a cut that
+#               broke or a symbol that moved. It is the only signal that catches
+#               a run which is green, has totals, and covered nothing.
+#
+# THE EXCLUSION SET IS `^FAIL:` ALONE, AND THE STREAM IS stderr — the two have to
+# be said together or neither means anything. `ok()` writes to stdout and `bad()`
+# to stderr, so a stderr-only scan can never match `^PASS:` and excluding it
+# would be excluding nothing. The asymmetry is made by the API shape: `ok()` takes
+# a label and `bad()` takes a label plus a diagnostic, so the calls that carry a
+# captured variable into their text are all on the `bad` side.
+#
+# WHY THE WRAPPER RE-ENTERS THIS FILE AS A CHILD instead of judging in place: the
+# signals are properties of the whole transcript, and the transcript does not
+# exist until the process that produced it has exited. In-place judging would be
+# judging before the last assertion ran — and, for the crash shapes, in a shell
+# that has already aborted.
+#
+# THE LOCALE IS NORMALISED FOR MESSAGES ONLY. `LC_ALL=C` would take CTYPE and
+# COLLATE with it and this suite is saturated with Korean, so `LC_MESSAGES=C` is
+# what makes the two English patterns above the right ones. Because that makes
+# the detector depend on a message catalogue, a SELF-TEST runs first and the
+# suite is not run at all when the catalogue does not say what the patterns
+# expect. A detector that quietly stops matching is precisely the failure this
+# whole block exists to catch, so it has to fail loudly rather than pass
+# silently.
+# ---------------------------------------------------------------------------
+
+# The groups whose sections FAIL on noise; every other group warns. This single
+# list is where the rollout widens — the last step replaces it with every group.
+# ENFORCEMENT IS A PROPERTY OF THE SECTION, NOT OF THE RUN. Sharding is by
+# `needs:` component and a component crosses groups, so a cut holding an enforced
+# and a warned section at once is ordinary and a run-level rule has no answer for
+# it.
+oracle_noise_enforced=" static sb sa review "
+# Set by the narrowed call site only. A full run must NOT hand the child a
+# `CC_TEST_GATE_REPO_ROOT`: the child there is this file at its real path and
+# derives the root from it, which is what the variable's own contract says.
+oracle_child_repo_root=""
+
+# `LC_ALL` overrides every category, so on a host that sets it the other
+# variables say nothing about what is in effect. Its value is therefore MOVED
+# into the categories the design wants preserved before it is unset — plain
+# `unset LC_ALL` would drop CTYPE and COLLATE to C and break the very thing
+# choosing `LC_MESSAGES` over `LC_ALL` was for.
+oracle_locale() {
+  if [ -n "${LC_ALL:-}" ]; then
+    LC_CTYPE="$LC_ALL"
+    LC_COLLATE="$LC_ALL"
+    LC_NUMERIC="$LC_ALL"
+    LC_TIME="$LC_ALL"
+    LC_MONETARY="$LC_ALL"
+    export LC_CTYPE LC_COLLATE LC_NUMERIC LC_TIME LC_MONETARY
+    unset LC_ALL
+  fi
+  LC_MESSAGES=C
+  export LC_MESSAGES
+}
+
+# The catalogue self-test. Both probes are taken through COMMAND SUBSTITUTION
+# rather than the pipeline the design sketches: this file runs under `pipefail`,
+# both probes exit non-zero by construction, and `probe | grep -q …` would then
+# report failure on a catalogue that is perfectly correct.
+oracle_probe() {
+  local got
+  got=$(bash -c 'cc_gate_probe_missing_xyz' 2>&1 || true)
+  case "$got" in
+    *'command not found'*) ;;
+    *)
+      printf 'test-gate: 판정=probe — 탐침 자가시험 실패: 없는 명령이 「command not found」를 내지 않습니다 (받은 것: 「%s」)\n' \
+        "$(printf '%s' "$got" | tr '\n' ' ')" >&2
+      return 1 ;;
+  esac
+  got=$(bash -uc ': "${CC_GATE_PROBE_UNSET_XYZ}"' 2>&1 || true)
+  case "$got" in
+    *'unbound variable'*) ;;
+    *)
+      printf 'test-gate: 판정=probe — 탐침 자가시험 실패: 미바인딩 변수가 「unbound variable」을 내지 않습니다 (받은 것: 「%s」)\n' \
+        "$(printf '%s' "$got" | tr '\n' ' ')" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
+# CLEANING HAPPENS BEFORE THE RUN AND NEVER AFTER IT. The rollout deliberately
+# produces runs that abort, so a wrapper that tidied up on the way out would be
+# racing whatever sibling shard is running beside it. Cleaning on the way in
+# makes each run answerable for its own leftovers only.
+#
+# The age predicate is the part the design does not spell out and it is
+# load-bearing: the census runs sections in PARALLEL on one machine, so deleting
+# every `cc-gate-*` would delete a live sibling's `WORK` and re-create exactly the
+# contention the "clean in front" rule was written to avoid. 120 minutes is 2.5x
+# the full run measured on this host.
+oracle_clean() {
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cc-gate-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+}
+
+# Judge a captured transcript. The capture directory is the whole input — `out`,
+# `err`, `rc`, `map`, `script`, `scope` — which is also the fixture format, so the
+# unit suite and the live wrapper exercise one code path rather than two.
+#
+# `map` is `<start> <end> <id> <group>` per line in the line numbering OF THE
+# SCRIPT THAT RAN: original lines for a full run, cut-copy lines for a narrowed
+# one. A noise line is attributed only when its `<script>: line <N>:` prefix names
+# that script exactly; anything else — the head, the epilogue, a `bash -c`, a
+# sourced file — is unattributed and takes the strictest disposition any section
+# in this run would take. Guessing the other way would let a broken cut warn its
+# way past the check on the strength of a prefix nobody parsed.
+oracle_judge() {
+  local cap="$1" script="$2" map="$3" scope="$4"
+  local out="$cap/out" err="$cap/err"
+  local rc tot passed_n failed_n faillines totshow noisef
+  local verdict code reason
+  local n_enf=0 n_warn=0 has_enf=0
+
+  rc=""
+  if [ -f "$cap/rc" ]; then rc=$(cat "$cap/rc"); fi
+  case "$rc" in ''|*[!0-9]*) rc=0 ;; esac
+  [ -f "$out" ] || out=/dev/null
+  [ -f "$err" ] || err=/dev/null
+
+  tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$out" | tail -1 || true)
+  if [ -n "$tot" ]; then
+    passed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\1/')
+    failed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\2/')
+    totshow="$passed_n passed, $failed_n failed"
+  else
+    passed_n=""; failed_n=""; totshow="없음"
+  fi
+
+  faillines=$(grep -c '^FAIL:' "$err" || true)
+  case "$faillines" in ''|*[!0-9]*) faillines=0 ;; esac
+
+  if [ -n "$map" ] && [ -s "$map" ]; then
+    while read -r m_a m_b m_id m_grp; do
+      [ -n "${m_grp:-}" ] || continue
+      case "$oracle_noise_enforced" in
+        *" $m_grp "*) has_enf=1; break ;;
+      esac
+    done < "$map"
+  else
+    case "$oracle_noise_enforced" in
+      *[![:space:]]*) has_enf=1 ;;
+    esac
+  fi
+
+  # The scratch file is OUTSIDE the capture directory so that `--oracle-judge`
+  # can be pointed at a checked-in fixture without writing into the tree.
+  noisef=$(mktemp "${TMPDIR:-/tmp}/cc-gate-oracle-noise.XXXXXX")
+  grep -Ev '^(FAIL|test-gate):' "$err" \
+    | grep -E 'command not found|unbound variable' > "$noisef" || true
+
+  while IFS= read -r nline; do
+    [ -n "$nline" ] || continue
+    local num="" hit="" nid="" ngrp=""
+    case "$nline" in
+      "$script: line "*)
+        num=${nline#"$script: line "}
+        num=${num%%:*}
+        case "$num" in ''|*[!0-9]*) num="" ;; esac ;;
+    esac
+    if [ -n "$num" ] && [ -n "$map" ] && [ -s "$map" ]; then
+      hit=$(awk -v n="$num" '$1 <= n && n <= $2 { print $3 " " $4; exit }' "$map")
+    fi
+    if [ -n "$hit" ]; then
+      nid=${hit%% *}; ngrp=${hit##* }
+      case "$oracle_noise_enforced" in
+        *" $ngrp "*)
+          n_enf=$((n_enf + 1))
+          printf 'test-gate: 노이즈 — id=%s group=%s: %s\n' "$nid" "$ngrp" "$nline" >&2 ;;
+        *)
+          n_warn=$((n_warn + 1))
+          printf 'test-gate: 노이즈 경고 — id=%s group=%s: %s\n' "$nid" "$ngrp" "$nline" >&2 ;;
+      esac
+    elif [ "$has_enf" = "1" ]; then
+      n_enf=$((n_enf + 1))
+      printf 'test-gate: 노이즈 — 절에 귀속되지 않음(이 실행에 강제 대상 절이 있어 강제합니다): %s\n' "$nline" >&2
+    else
+      n_warn=$((n_warn + 1))
+      printf 'test-gate: 노이즈 경고 — 절에 귀속되지 않음: %s\n' "$nline" >&2
+    fi
+  done < "$noisef"
+  rm -f "$noisef"
+
+  # THE ORDER OF THESE ARMS IS THE VERDICT LATTICE and it is not arbitrary. A
+  # crash outranks everything because its totals are missing, which makes every
+  # other count meaningless. A swallowed failure outranks a plain failure because
+  # it says the count itself is wrong. Noise sits last among the reds so that an
+  # ordinary assertion failure keeps the exit code it has always had.
+  if [ -z "$tot" ]; then
+    verdict="crash"; code=5
+    reason="총계 줄이 없습니다 — 스위트가 에필로그에 닿지 못했습니다"
+  elif [ "$failed_n" = "0" ] && [ "$rc" != "0" ]; then
+    verdict="crash"; code=5
+    reason="총계는 0 failed 인데 rc=$rc 입니다 — 에필로그를 지나 중단됐습니다"
+  elif [ "$faillines" != "$failed_n" ]; then
+    if [ "$failed_n" != "0" ] && [ "$faillines" -gt "$failed_n" ]; then
+      # The two cannot be told apart here: a `bad()` diagnostic can carry captured
+      # output that itself begins with `FAIL:`. Either way the run is red, so it
+      # is reported as the failure it already is and the discrepancy is named.
+      verdict="fail"; code=1
+      reason="단언이 실패했습니다 (FAIL 줄 $faillines 개와 총계의 failed $failed_n 이 다릅니다 — bad 진단에 실린 캡처가 FAIL: 로 시작할 수 있습니다)"
+    else
+      verdict="swallowed"; code=4
+      reason="FAIL 줄은 $faillines 개인데 총계의 failed 는 $failed_n 입니다 — 서브셸에 갇혀 집계되지 않은 실패입니다"
+    fi
+  elif [ "$failed_n" != "0" ]; then
+    verdict="fail"; code=1
+    reason="단언이 실패했습니다"
+  elif [ "$n_enf" -gt 0 ]; then
+    verdict="noise"; code=3
+    reason="강제 대상 절에서 노이즈 $n_enf 줄이 났습니다 — 총계는 초록이지만 컷이나 심볼이 깨졌습니다"
+  else
+    verdict="pass"; code=0
+    reason="세 신호 모두 조용합니다"
+  fi
+
+  # ONE LINE, LAST, ON stderr. A red shard has to be sorted into "an assertion
+  # failed" / "the cut broke" / "the suite crashed" from the CI summary alone; if
+  # that split only exists inside the wrapper, somebody has to open the log in the
+  # morning to learn which one it was.
+  printf 'test-gate: 판정=%s 범위=%s — %s (rc=%s, 총계=%s, FAIL 줄=%s, 노이즈 강제=%s, 경고=%s)\n' \
+    "$verdict" "$scope" "$reason" "$rc" "$totshow" "$faillines" "$n_enf" "$n_warn" >&2
+  if [ "$code" != "0" ]; then
+    printf 'test-gate: 캡처 — %s (out·err·rc·map 이 그대로 있습니다; `--oracle-judge %s` 로 판정만 다시 낼 수 있습니다)\n' \
+      "$cap" "$cap" >&2
+  fi
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    if [ "$code" != "0" ]; then
+      printf '::error::test-gate 판정=%s 범위=%s — %s\n' "$verdict" "$scope" "$reason"
+    elif [ "$n_warn" -gt 0 ]; then
+      printf '::warning::test-gate 범위=%s — 노이즈 경고 %s 줄 (강제 대상 절이 아닙니다)\n' "$scope" "$n_warn"
+    fi
+  fi
+  return "$code"
+}
+
+# Run a script through the wrapper and judge what it produced.
+#
+# The child's streams are teed through FIFOs rather than collected into files and
+# printed at the end: a full run is forty minutes and a wrapper that shows
+# nothing until it finishes is a wrapper people work around. The explicit `wait`
+# on each tee is what makes the capture complete before it is read — process
+# substitution has no such handle, and reading a half-flushed capture would
+# invent exactly the "totals line missing" crash this is meant to detect.
+oracle_run() {
+  local script="$1" map="$2" scope="$3"
+  shift 3
+  local cap fo fe rc tpo tpe verdict_rc
+
+  oracle_clean
+  oracle_locale
+  if ! oracle_probe; then
+    return 6
+  fi
+
+  cap=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-oracle.XXXXXX")
+  printf '%s\n' "$script" > "$cap/script"
+  printf '%s\n' "$scope" > "$cap/scope"
+  if [ -n "$map" ] && [ -f "$map" ]; then cp "$map" "$cap/map"; else : > "$cap/map"; fi
+
+  fo="$cap/fifo.out"; fe="$cap/fifo.err"
+  mkfifo "$fo" "$fe"
+  tee "$cap/out" < "$fo" &
+  tpo=$!
+  tee "$cap/err" < "$fe" >&2 &
+  tpe=$!
+  if [ -n "$oracle_child_repo_root" ]; then
+    CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$oracle_child_repo_root" \
+      bash "$script" "$@" > "$fo" 2> "$fe"
+  else
+    CC_TEST_GATE_ORACLE_INNER=1 \
+      bash "$script" "$@" > "$fo" 2> "$fe"
+  fi
+  rc=$?
+  wait "$tpo" 2>/dev/null || true
+  wait "$tpe" 2>/dev/null || true
+  rm -f "$fo" "$fe"
+  printf '%s\n' "$rc" > "$cap/rc"
+
+  oracle_judge "$cap" "$script" "$cap/map" "$scope"
+  verdict_rc=$?
+  return "$verdict_rc"
+}
+
+# The oracle's own entry points, answered before the section index is built: none
+# of them runs an assertion of this suite, and two of them must work on a tree
+# whose banners are deliberately broken.
+case "$oracle_mode" in
+  probe)
+    oracle_locale
+    oracle_probe
+    exit $? ;;
+  judge)
+    if [ -z "$oracle_arg1" ] || [ ! -d "$oracle_arg1" ]; then
+      printf 'test-gate: --oracle-judge 는 캡처 디렉터리를 받습니다 (받은 것: 「%s」)\n' "$oracle_arg1" >&2
+      exit 2
+    fi
+    oracle_judge_script=""
+    if [ -f "$oracle_arg1/script" ]; then oracle_judge_script=$(cat "$oracle_arg1/script"); fi
+    oracle_judge_scope="전량"
+    if [ -f "$oracle_arg1/scope" ]; then oracle_judge_scope=$(cat "$oracle_arg1/scope"); fi
+    oracle_judge "$oracle_arg1" "$oracle_judge_script" "$oracle_arg1/map" "$oracle_judge_scope"
+    exit $? ;;
+  wrap)
+    if [ -z "$oracle_arg1" ] || [ ! -f "$oracle_arg1" ]; then
+      printf 'test-gate: --oracle-wrap 은 실행할 스크립트와 맵 파일을 받습니다 (받은 것: 「%s」 「%s」)\n' \
+        "$oracle_arg1" "$oracle_arg2" >&2
+      exit 2
+    fi
+    oracle_child_repo_root=""
+    oracle_run "$oracle_arg1" "$oracle_arg2" "래퍼 시험"
+    exit $? ;;
+esac
 
 # The index, one record per line:
 #
@@ -538,6 +891,16 @@ FRONTEOF
     # groups have none, because the fixture itself is their prelude. One call
     # per group per cut: the functions are idempotent as well, so a serial
     # caller that meets both the container's own call and this one runs it once.
+    # THE ORACLE'S MAP IS BUILT AS THE COPY IS, because it is the only moment the
+    # two line numberings are both known. A noise line names a line of the CUT,
+    # and the section it belongs to is a range of the ORIGINAL; deriving one from
+    # the other afterwards would mean re-deriving every insertion this loop makes.
+    # The running counter starts at the head, which the copy takes verbatim, and
+    # the three lines a prelude insert adds are counted but attributed to no
+    # section — they are the selector's own text, not the group's.
+    sec_map="$sec_dir/oracle-map"
+    : > "$sec_map"
+    sec_cur="$sec_pre"
     sec_pre_done=" "
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
@@ -552,10 +915,17 @@ FRONTEOF
               sec_pre_done="$sec_pre_done$sec_grp "
               if [ "$(grep -cE "^pre_${sec_grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
                 printf '\n# --- prelude: %s (inserted by the selector) ---\npre_%s\n' "$sec_grp" "$sec_grp" >> "$sec_cut"
+                sec_cur=$(( sec_cur + 3 ))
               fi ;;
           esac ;;
       esac
       sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
+      sec_id=$(printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* .*\$/\1/p")
+      printf '%s %s %s %s\n' \
+        "$(( sec_cur + 1 ))" "$(( sec_cur + sec_b - sec_a + 1 ))" \
+        "${sec_id:--}" "${sec_grp:--}" >> "$sec_map"
+      sec_cur=$(( sec_cur + sec_b - sec_a + 1 ))
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
@@ -631,11 +1001,47 @@ SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
 
-    CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
-    sec_rc=$?
+    # A NESTED CALL RUNS EXACTLY AS IT DID BEFORE THE WRAPPER EXISTED. Sections of
+    # this suite invoke the selector again and assert its output and its exit
+    # code; wrapping those would have them asserting the wrapper's verdict line
+    # and the wrapper's lattice instead of the selector's own answer.
+    if [ -n "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+      CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
+      sec_rc=$?
+    else
+      oracle_child_repo_root="$repo_root"
+      oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
+      sec_rc=$?
+    fi
     rm -rf "$sec_dir"
     exit "$sec_rc"
   fi
+fi
+
+# THE FULL RUN GOES THROUGH THE SAME WRAPPER, and it reaches it here rather than
+# at the top because everything above may still exit 2 on a selector refusal —
+# those refusals are the selector's answer and must keep their own code.
+#
+# The index is built even though a bare full run never needed one: without it
+# every noise line is unattributed and the whole run takes the strict side, which
+# is correct but says nothing about WHICH section broke. Building it costs one awk
+# pass over this file.
+if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+  oracle_full_idx="$sec_idx"
+  if [ -z "$oracle_full_idx" ]; then
+    oracle_full_idx=$(section_index)
+    case "$oracle_full_idx" in ERR*) oracle_full_idx="" ;; esac
+  fi
+  oracle_full_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-oraclemap.XXXXXX")
+  oracle_full_map="$oracle_full_dir/map"
+  printf '%s\n' "$oracle_full_idx" \
+    | sed -n 's/^SEC \([0-9]*\) \([0-9]*\) \([^ ]*\) [0-9]* \([^ ]*\) .*$/\1 \2 \3 \4/p' \
+    > "$oracle_full_map"
+  oracle_child_repo_root=""
+  oracle_run "$SELF" "$oracle_full_map" "전량"
+  oracle_full_rc=$?
+  rm -rf "$oracle_full_dir"
+  exit "$oracle_full_rc"
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")

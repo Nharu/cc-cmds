@@ -1,0 +1,2 @@
+FAIL: 38-2: PR 로 저신고된 머지는 exit 8 이다 — got '1', want '8'
+FAIL: 38-2: 원장에 blocked 행이 남는다 — got '0', want '1'
