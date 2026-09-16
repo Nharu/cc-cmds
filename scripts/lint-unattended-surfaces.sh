@@ -23,6 +23,16 @@
 #     both directions: an undispositioned question point is a surface the arm
 #     claims not to have, and a disposition for a file carrying none is a
 #     clause pointing at nothing.
+#   Rule 5 (CFI-U0 sentence pin) — an arm that Reads its base skill's step
+#     bodies at runtime instead of carrying them applies one substitution
+#     sentence to every question terminus it meets there. That sentence is
+#     the whole of the arm's park mechanism, so its deletion is a silent
+#     regression Rules 1 and 2 cannot see: the file still contains no call
+#     form, and the question points live in the base file the arm Reads. The
+#     sentence is therefore pinned as a fixed literal. It is pinned HERE and
+#     not in `lint-skill-invariants.sh` because that script's rule (B) is a
+#     base<->lite phrase-sync over a pair and is dormant; asserting one
+#     sentence's presence in one file is this script's shape, not that one's.
 #
 # Why these are checkable here and not in general: each unattended arm lives
 # in its OWN file and carries exactly one arm, so a whole-file predicate is
@@ -85,6 +95,7 @@ UNATTENDED_SKILLS=(
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
+  "design-discuss-unattended"
 )
 
 # Fork parity pairs: "<fork>|<base>". Only pairs whose base pins constants
@@ -111,6 +122,10 @@ REFERENCE_TREES=(
   "design-audit-unattended|design-audit"
   "review-unattended|review"
   "design-reconverge|design-reconverge"
+  # The discuss leg Reads `design/SKILL.md`'s own step bodies, not a
+  # references/ tree; `design/references/` does not exist today, so this entry
+  # is a SKIP until one appears, and Rule 5 below is what covers the leg.
+  "design-discuss-unattended|design"
 )
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
@@ -121,6 +136,14 @@ REF_QUESTION_RE='AskUserQuestion|EnterPlanMode|ExitPlanMode'
 # point. Fixed prefix plus the file's own name in backticks, so the check is a
 # byte comparison rather than a guess at how the disposition was worded.
 DISPOSITION_PREFIX='**Inherited question point** — '
+
+# Rule 5 — the substitution sentence, byte-exact, and the arms that owe it. An
+# arm on this list that is present on disk must carry the sentence on at least
+# one line; an absent arm is the same silent skip as everywhere else here.
+U0_PIN='this arm resolves that terminus to `park`'
+U0_PINNED_SKILLS=(
+  "design-discuss-unattended"
+)
 
 fail=0
 checked=0
@@ -247,10 +270,26 @@ $disp_files
 EOF
 done
 
+pins_checked=0
+for skill in ${U0_PINNED_SKILLS[@]+"${U0_PINNED_SKILLS[@]}"}; do
+  file="$skills_root/$skill/SKILL.md"
+  [[ -f "$file" ]] || continue
+  pins_checked=$((pins_checked + 1))
+  # CAPTURED, NOT `grep -qF` — same SIGPIPE-under-pipefail reasoning as Rule 4.
+  n_pin=$(grep -cF -- "$U0_PIN" "$file" || true)
+  if [[ "${n_pin:-0}" = "0" ]]; then
+    echo "FAIL: $skill — CFI-U0 치환 문장이 없다: $U0_PIN" >&2
+    echo "       이 팔은 base 의 스텝 본문을 Read 해 따르므로 이 한 문장이 park 기전의 전부다" >&2
+    fail=1
+  else
+    echo "OK:   $skill — CFI-U0 substitution sentence present"
+  fi
+done
+
 if [[ "$fail" -ne 0 ]]; then
   echo "lint-unattended-surfaces: violations found" >&2
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked"
 exit 0
