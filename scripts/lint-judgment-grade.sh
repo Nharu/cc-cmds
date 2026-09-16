@@ -53,7 +53,15 @@ skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 # deliberately an explicit list rather than a glob for the same reason: the scan
 # set is the skills the pipeline dispatches as a stage, and a rename must fail
 # rather than silently drop an arm.
-PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge"
+#
+# `design` has TWO unattended arms with different scopes — `design-reconverge`
+# is the narrow tool the router reaches on the re-convergence rung, and
+# `design-discuss-unattended` is the discussion leg the seat and the driver both
+# dispatch. Two entries with the same left side are two independent iterations
+# of the loop below (this is a space-separated list, not a map), and the
+# sibling lint's Rule 6 reads this line back to check that every right side
+# here is also in its allowlist.
+PAIRS="implement|implement-unattended review|review-unattended design-audit|design-audit-unattended design|design-reconverge design|design-discuss-unattended"
 
 GRADE_RE='등급 [0-9]'
 VALID_RE='등급 [012]'

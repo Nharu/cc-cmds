@@ -1756,13 +1756,22 @@ RUN_DIR="$RUN_DIR_SAVE"; LEDGER="$LEDGER_SAVE"; BASE="$BASE_SAVE"
 # 21. 장식 삭제와 미배선 탐지기
 # ---------------------------------------------------------------------------
 # 이 절이 지키는 것은 「지금 깨끗하다」가 아니라 「다시 더러워지면 실패한다」다.
-for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mode predicate_design; do
+# `predicate_design` 은 이 목록에서 나갔다 — 이 목록이 금하는 것은 이름이 아니라
+# **부르는 이 없는 장식**이고, 그 술어는 설계 스테이지가 착지하면서 실제로 배선됐다.
+# 그래서 아래에 부재 대신 배선을 단언한다: 정의와 호출이 둘 다 있어야 한다.
+for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mode; do
   if grep -q "$gone" "$DRIVER"; then
     bad "장식 삭제" "$gone 이 남았다"
   else
     ok "삭제됨: $gone"
   fi
 done
+if grep -q '^predicate_design()' "$DRIVER" \
+   && sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep -q 'predicate_design '; then
+  ok "배선됨: predicate_design (정의와 main_loop 호출이 둘 다 있다)"
+else
+  bad "미배선 탐지기" "predicate_design 이 정의만 있고 불리지 않거나 그 반대다 — 장식으로 되돌아갔다"
+fi
 if sed 's/#.*//' "$DRIVER" | grep_all_q '형제'; then
   bad "웨이브 어휘" "형제 팔이 남았다 — 도달 불가한 분기이고 그 플래그는 참이 될 수 없다"
 else
@@ -1891,6 +1900,75 @@ else
   ok "DOC_SLUG 가 비면 감사 술어는 통과하지 않는다"
 fi
 RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
+
+# --- 21b 설계 스테이지의 술어와 발화 조건 ------------------------------------
+# 설계 스테이지는 문서만 내므로 위조 불가능한 술어가 없다. 그래서 저작된 사실
+# **둘**을 교차한다 — 스트림의 동결 리터럴과 문서의 동결 상태 줄. 하나만 보면
+# 「동결했다고 말하고 쓰지 않은」 스테이지와 「쓰고 말하기 전에 죽은」 스테이지가
+# 둘 다 통과한다. 그리고 그 문서 쪽 절반이 재실행 가드이기도 하다 — 동결된 문서
+# 위로 다시 디스패치하면 워크스루·리파인먼트 결정을 덮어쓰기 때문이다.
+DOC_SAVE21b="$DOC"; RUN_DIR_SAVE21b="${RUN_DIR:-}"
+RUN_DIR="$WORK/design-pred"; mkdir -p "$RUN_DIR/log"
+DOC="$WORK/design-pred/doc.md"; mkdir -p "$(dirname "$DOC")"
+printf '# 문서\n\n**상태**: 수렴중\n' > "$DOC"
+if doc_is_frozen "$DOC"; then
+  bad "설계 술어" "동결되지 않은 문서를 동결로 읽었다"
+else
+  ok "동결 상태 줄이 없으면 문서는 동결이 아니다"
+fi
+printf '%s\n' "$LIT_DESIGN_TERMINAL" > "$RUN_DIR/log/S1design.json"
+if predicate_design S1design; then
+  bad "설계 술어" "스트림만 동결을 말하는데 통과했다 — 문서 쪽 절반을 보지 않는다"
+else
+  ok "스트림이 동결을 말해도 문서가 동결이 아니면 통과하지 않는다"
+fi
+printf '# 문서\n\n**상태**: 동결됨\n' > "$DOC"
+if doc_is_frozen "$DOC"; then
+  ok "동결 상태 줄이 있으면 문서는 동결이다 (재실행 가드가 서는 자리)"
+else
+  bad "설계 술어" '동결 상태 줄을 읽지 못했다'
+fi
+if predicate_design S1design; then
+  ok "스트림과 문서가 둘 다 동결을 말하면 술어가 통과한다"
+else
+  bad "설계 술어" "두 사실이 다 있는데 통과하지 않았다"
+fi
+: > "$RUN_DIR/log/S1design.json"
+if predicate_design S1design; then
+  bad "설계 술어" "문서만 동결인데 통과했다 — 스트림 쪽 절반을 보지 않는다"
+else
+  ok "문서가 동결이어도 스트림이 동결을 말하지 않으면 통과하지 않는다"
+fi
+DOC="$DOC_SAVE21b"; RUN_DIR="$RUN_DIR_SAVE21b"
+
+# 발화 조건의 나머지 절반은 매니페스트의 얼린 실행 계획이다. `design_required` 는
+# `false` 가 유의미한 값이라 `// ` 기본값으로 접으면 안 된다 — jq 의 `//` 는
+# `false` 를 부재로 다루므로 그 접기가 곧 「선언된 false 를 못 읽음」이다.
+MFDSG="$WORK/mf-design.md"
+write_manifest "$MFDSG" "" "" main "docs/x.md"
+MANIFEST_SAVE21b="$MANIFEST"; MANIFEST="$MFDSG"
+check "실행 계획 JSON 이 통째로 읽힌다" \
+  "$(manifest_plan_json | tr -d ' \n')" '{"steps":["audit","implement"]}'
+check "선언되지 않은 design_required 는 null 이다" \
+  "$(manifest_plan_field '.design_required')" "null"
+MFDSG2="$WORK/mf-design2.md"
+sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": false, "steps": ["audit"] }/' "$MFDSG" > "$MFDSG2"
+MANIFEST="$MFDSG2"
+check "선언된 false 는 false 로 읽힌다 (부재로 접히지 않는다)" \
+  "$(manifest_plan_field '.design_required')" "false"
+MANIFEST="$MANIFEST_SAVE21b"
+
+# 존재하지 않는 스킬로 디스패치하면 CLI 가 조용히 종단할 수 있고 게이트는 스킬
+# 파일 존재를 검사하지 않는다. 그 관측과 무관하게 파견 앞의 하드스톱이 그 분기를
+# 닫는다 — 있는 것을 단언한다.
+if sed -n '/^main_loop()/,/^}/p' "$DRIVER" \
+     | grep -q 'skills/design-discuss-unattended/SKILL.md'; then
+  ok "설계 파견 앞에 스킬 파일 존재 하드스톱이 있다"
+else
+  bad "설계 파견" "존재하지 않는 스킬로 디스패치할 수 있다 — 조용한 실패가 열려 있다"
+fi
+check "설계 스테이지는 홈 별칭 루트에서 돈다" \
+  "$( { grep -cF 'dispatch_stage S1design "$(alias_root "$(home_alias)")"' "$DRIVER" || true; } )" "1"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -2356,11 +2434,12 @@ check "리뷰 스테이지가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "재수렴 스테이지가 접근자를 쓴다" \
   "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "1"
-# 감사와 계획, 두 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
+# 설계·감사·계획, 세 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
 # 지점을 지나고 다음 지점에서 같은 이유로 멈춘다 — 감사만 고쳤을 때가 정확히
-# 그랬다.
-check "main_loop 이 감사와 계획 두 지점에서 문서 부재를 분기한다" \
-  "$( sed -n '/^main_loop()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "2"
+# 그랬다. 설계 지점이 셋째이고, 그 자리에서 문서 경로가 없다는 것은 스테이지가
+# 쓸 자리가 없다는 뜻이라 같은 부류의 분기다.
+check "main_loop 이 설계·감사·계획 세 지점에서 문서 부재를 분기한다" \
+  "$( sed -n '/^main_loop()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "3"
 
 # --- 25d 베이스 브랜치는 얼기 전에 대조된다 ---------------------------------
 # 이 필드만 디스크와 대조되지 않은 채 구속 다이제스트에 얼었다. 그래서 오타나 다른

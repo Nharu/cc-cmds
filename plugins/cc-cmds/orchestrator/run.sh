@@ -224,6 +224,9 @@ readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
 # emit, which are model-authored prose.
 readonly LIT_AUDIT_TERMINAL='이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.'
 readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.'
+# The first sentence of the attended `design` skill's freeze notice, byte for
+# byte — so the same literal marks a freeze whether a seat or a stage did it.
+readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -526,6 +529,40 @@ manifest_field() {
     $0 == want { inb=1; next }
     inb && /^## / { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
+  ' "$MANIFEST"
+}
+
+manifest_plan_json() {
+  # The kickoff freezes its step graph as ONE fenced JSON block under
+  # `## 실행 계획`. The driver read none of it until the design arm needed a
+  # single field; the extractor returns the whole block so the next field is a
+  # jq path and not a second scanner. Read from the file, not the memo — the
+  # memo indexes CANON field lines and rows, and a fenced block is neither.
+  awk '
+    $0 == "## 실행 계획" { inb=1; next }
+    inb && /^## / { exit }
+    inb && !fence && /^```json/ { fence=1; next }
+    inb && fence && /^```/ { exit }
+    inb && fence { print }
+  ' "$MANIFEST"
+}
+
+manifest_plan_field() {
+  # manifest_plan_field <jq-path> — the raw jq value (`true`/`false`/`null`/…).
+  # `null` for an absent key and an empty string for an absent block, so the
+  # caller compares against a literal rather than testing truthiness: jq's `//`
+  # treats `false` as absent, which is the one value this reader must not lose.
+  manifest_plan_json | jq -r "$1" 2>/dev/null || printf 'null'
+}
+
+manifest_intent_line() {
+  # The first non-empty line of the fenced text block under `## 의도` — the
+  # task sentence the design stage receives as its second positional argument.
+  awk '
+    $0 == "## 의도" { inb=1; next }
+    inb && /^## / { exit }
+    inb && /^```/ { if (fence) exit; fence=1; next }
+    inb && fence && NF { print; exit }
   ' "$MANIFEST"
 }
 
@@ -3359,6 +3396,18 @@ machine_slept_since() {
 predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null; }
+# The frozen-status line the attended skill writes at its freeze. It is both
+# the design stage's artifact predicate and the guard that keeps a resumed run
+# from designing twice: the answer is read from the DOCUMENT, never from this
+# run's own ledger, because a fresh run id shares no ledger with the run that
+# froze it.
+doc_is_frozen()         { [ -n "$1" ] && [ -f "$1" ] && grep -qE '^\*\*상태\*\*: 동결됨$' "$1"; }
+# A stage whose only output is a document has no un-fabricable predicate (see
+# the note above). Two authored facts are crossed anyway — the freeze literal in
+# the stage's own stream and the frozen-status line in the document — so a stage
+# that SAID it froze without writing it fails, and one that wrote it and died
+# before saying so fails too.
+predicate_design()      { grep -qF "$LIT_DESIGN_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && doc_is_frozen "$DOC"; }
 
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
@@ -5117,6 +5166,72 @@ main_loop() {
     "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
     "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
+
+  # S1 DESIGN — headless, one pass, BEFORE the audit: the audit reads a frozen
+  # document and this is the stage that freezes it. It fires on exactly two
+  # conditions and both must hold — the kickoff's frozen step graph says a
+  # design is required (`design_required: true` under `## 실행 계획`), and the
+  # document at the declared path is not already frozen (absent, or present
+  # without the `**상태**: 동결됨` line). The second is the ONLY guard against
+  # designing twice on a resumed run: a re-dispatch over a frozen document would
+  # save over the walkthrough and refinement decisions already in it, so
+  # "already frozen" is read from the document itself, which every run id sees,
+  # and never from this run's ledger, which a fresh run id does not share.
+  #
+  # NO DOCUMENT PATH, NO DESIGN. The stage takes the document path as its first
+  # positional argument and writes there; a manifest that requires a design but
+  # declares no document gives it nowhere to land. Skipping is recorded as an
+  # autonomous decision, same shape as the audit skip below, so the morning sees
+  # that the graph asked for a stage the run could not place.
+  if [ "$(manifest_plan_field '.design_required')" = "true" ]; then
+    if [ -z "$DOC" ]; then
+      log "S1 설계 건너뜀 — 설계가 필요하다고 선언됐으나 이 런에는 설계 문서 경로가 없다 (앵커 종류 $ANCHOR_KIND)"
+      ledger_row '자율 승인' "kind=design-composition" "결정=설계 스테이지를 띄우지 않는다" \
+        "기각된 대안=빈 문서 인자로 설계를 띄운다" "등급=1" \
+        "기준=이 런의 매니페스트가 설계 문서 경로를 선언하지 않아 스테이지가 쓸 자리가 없다" \
+        "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
+        "근거=design_required=true · 앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
+    elif doc_is_frozen "$DOC"; then
+      log "S1 설계 건너뜀 — 문서가 이미 동결돼 있다 ($DOC_KEY)"
+    else
+      # THE SKILL FILE IS CHECKED BEFORE THE DISPATCH. The gate verifies nothing
+      # about a skill's existence, and whether the CLI fails loudly on an unknown
+      # slash command has not been observed — so a misspelled arm here would be a
+      # stage that ran, billed, produced nothing and was classified a hollow
+      # success. A missing file is a park, not a dispatch; that is the whole cost
+      # of the check, and it does not depend on the observation.
+      local plugin_dir1 skill_file1
+      plugin_dir1=$(cd "$ORCH_DIR/.." && pwd)
+      skill_file1="$plugin_dir1/skills/design-discuss-unattended/SKILL.md"
+      if [ ! -f "$skill_file1" ]; then
+        park "S1design" run 막힘 "스킬 파일 부재" "$skill_file1 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
+        return 0
+      fi
+      # Home alias root, document path first, task sentence second — the same
+      # shape as the reconverge arm: a design stage has no segment worktree and
+      # writes only the document, so the alias root is the right cwd. The stage
+      # id contains `design` and neither `audit` nor `reconverge`, which is what
+      # selects the `design` settings variant in `stage_spawn`.
+      quiet_window_begin
+      dispatch_stage S1design "$(alias_root "$(home_alias)")" \
+        "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\""
+      quiet_window_end
+      local rc1 pred1 class1
+      rc1=$(cat "$RUN_DIR/S1design.rc" 2>/dev/null || printf '1')
+      if predicate_design S1design; then pred1=0; else pred1=1; fi
+      class1=$(classify_termination S1design "$rc1" "$pred1")
+      ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
+        "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+        "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" "종단 부류=$class1"
+      # An unfrozen document does not go on to the audit or the segment plan —
+      # both read the freeze as a precondition.
+      case "$class1" in
+        '정상 완료') report_append "설계" "문서 동결 — $DOC_KEY" ;;
+        '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 0 ;;
+        *) park "S1design" run 무효화 "게이트 park" "종단 부류 $class1"; return 0 ;;
+      esac
+    fi
+  fi
 
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
   # never overlaps a sibling worktree creation on the first pass; only a
