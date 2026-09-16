@@ -1,0 +1,15 @@
+{
+  "slug": "docs-x",
+  "session_id": "0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b",
+  "phase": "resume",
+  "state": "pending",
+  "dispatched_at": "2026-09-15T10:00:00Z",
+  "heartbeat_at": "2026-09-15T15:05:00Z",
+  "redispatch_count": 0,
+  "brief_sha256": "BRIEF_SHA_CURRENT",
+  "leg_out": "STATE/leg.0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b.out",
+  "leg_err": "STATE/leg.0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b.err",
+  "prior_session_ids": [],
+  "transcript_bytes": 0,
+  "leg_json_mtime_at_dispatch": 1757930400
+}
