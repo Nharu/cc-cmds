@@ -4621,6 +4621,45 @@ graded_as '트리밖쓰기' 'docker save -o 는 붙여 써도 쓰기다' -- dock
 graded_as '읽기' '-o 없는 docker save 는 읽기다'          -- docker save img
 graded_as '트리밖쓰기' 'git archive -o 는 붙여 써도 쓰기다' -- git archive -o/tmp/p HEAD
 graded_as '읽기' '-o 없는 git archive 는 읽기다'          -- git archive HEAD
+
+# `mv` 와 `rm` 은 이름이 아니라 만지는 것으로 등급한다. 공용 팀 규약이 모든 위트니스를
+# 트리 밖 스크래치 디렉터리로 원자적 `mv -n` 해 발행하는데, 이름 기준 `워크트리쓰기`
+# 아래에서는 정직한 `트리밖쓰기` 선언이 거절되고 거짓 철자만 통과했다 — 발행하는
+# 쪽에게 「틀린 원장 행」과 「발행하지 않음」 중 하나를 고르게 하는 상태였다.
+MVOUT="$WORK/mv-outside"
+mkdir -p "$MVOUT"
+graded_as '워크트리쓰기' '트리 안 mv 는 워크트리쓰기다'     -- mv a.md b.md
+graded_as '트리밖쓰기' '트리 밖으로 나가는 mv 는 트리밖쓰기다' -- mv -n a.md "$MVOUT/r1.md"
+graded_as '트리밖쓰기' '디렉터리 목적지도 같다'             -- mv a.md "$MVOUT/"
+graded_as '트리밖쓰기' '-t 목적지도 읽는다'                 -- mv --target-directory="$MVOUT" a.md
+# mv 는 옮긴 것을 지우므로 트리 밖에서 들여오는 것도 트리 밖 쓰기다. 목적지만 보는
+# 구현은 이 줄에서 빨개진다.
+graded_as '트리밖쓰기' '트리 밖에서 들여오는 mv 도 트리밖쓰기다' -- mv "$MVOUT/r1.md" a.md
+graded_as '워크트리쓰기' '트리 안 rm 은 워크트리쓰기다'     -- rm -f a.md
+graded_as '트리밖쓰기' '트리 밖 rm 은 트리밖쓰기다'         -- rm -rf "$MVOUT/x"
+# 모르는 옵션은 추측하지 않는다. 값을 먹는 옵션을 건너뛰면 그 값이 피연산자 자리에
+# 남고, 틀린 등급은 수행하는데 모르는 등급은 거절한다.
+graded_as '등급 미상' '모르는 긴 옵션의 mv 는 등급 미상이다'  -- mv --bogus a.md b.md
+# 대조군 — 같은 행에 있던 다른 이름들은 그대로 이름으로 등급한다. 이 행 전체를
+# 목적지 기반으로 바꾼 구현이 아니다.
+graded_as '워크트리쓰기' '대조군: cp 는 목적지와 무관하게 워크트리쓰기다' -- cp a.md "$MVOUT/b.md"
+# 평범한 철자가 등급 미상으로 떨어지면 그 행위는 승인 대기로 밀리거나 인터프리터로
+# 우회한다 — 후자는 통과하면서 원장에 거짓을 남긴다. 옵션 표를 나중에 좁히면 이
+# 묶음이 빨개진다.
+mv_ok=0; mv_bad=""
+for spell in "rm -f a.md" "rm -rf sub" "rm -r sub" "rm a.md" "rm -i a.md" "rm -v a.md" \
+             "rm --force a.md" "rm --recursive sub" "rm -fr sub" \
+             "mv a.md b.md" "mv -f a.md b.md" "mv -n a.md b.md" "mv -v a.md b.md" \
+             "mv -i a.md b.md" "mv -T a.md b.md" "mv -t sub a.md" "mv --force a.md b.md" \
+             "mv -fn a.md b.md"; do
+  # shellcheck disable=SC2086
+  gate grade --manifest "$FX_MANIFEST" -- $spell
+  case "$msg" in
+    *'축2=워크트리쓰기'*) mv_ok=$((mv_ok + 1)) ;;
+    *) mv_bad="$mv_bad [$spell → $msg]" ;;
+  esac
+done
+check "mv·rm 의 평범한 철자 18가지가 모두 워크트리쓰기로 등급된다" "$mv_ok:$mv_bad" "18:"
 # The team witness initializer. It is the second half of a pair: the script
 # exists so that the four statements it runs stop needing `bash -c`, and this
 # row is what makes that worth doing. Without the row the script would fall to
