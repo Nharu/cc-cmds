@@ -3597,9 +3597,12 @@ gate_append() {
   # `|`. A pipe inside one argv element is invisible to the first and is a new
   # field to the second, so `사유=… | 스코프=run` passed the cone check as
   # `cone` and then enumerated as an unresolved run-scope block in termination
-  # condition 5. The same splice reaches `gate_segment_ids`, whose greedy `id=`
-  # extraction takes the LAST match and therefore changes which segment a row is
-  # about.
+  # condition 5. The same splice reached `gate_segment_ids`, which extracted the
+  # id with a greedy `id=` pattern and therefore took the LAST match, changing
+  # which segment a row is about. That extraction now splits the row on its own
+  # separators (`gate_row_ids`), so neither a splice nor a value that merely ends
+  # in `id=` can be read as the key — the normalization below and that split are
+  # two independent reasons the id field is now the only thing answering for it.
   #
   # Normalizing before the body is assembled collapses the two views into one:
   # after this loop no field value can contain a separator, so reading the argv
@@ -3744,8 +3747,7 @@ gate_progress_vector() {
     printf 'target=%s|%s|%s\n' "$a" \
       "$(target_field "$a" '원격 슬러그')" "$(target_field "$a" '절단점')"
   done | sort
-  gate_rows 'segment' \
-    | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u \
+  gate_rows 'segment' | gate_row_ids | sort -u \
     | while IFS= read -r sid; do
         [ -n "$sid" ] || continue
         printf 'segment=%s|%s|%s\n' "$sid" \
@@ -4009,6 +4011,40 @@ gate_row_field() {
   # field of a row already written, and the two are not interchangeable.
   local row="$1" key="$2"
   printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+gate_row_ids() {
+  # stdin: rows. Prints each row's `id` FIELD value, one per line.
+  #
+  # THE GREEDY EXPRESSION THIS REPLACES READ THE WRONG FIELD. Every caller used
+  # `sed -n 's/.*id=\([^|]*\).*/\1/p'`, whose `.*` is greedy and therefore takes
+  # the LAST `id=` in the row rather than the id field, which sits near the
+  # front. Pipes are stripped from every value before a row is assembled, so a
+  # spliced field can no longer do this — but a value that merely ENDS in `id=`
+  # still can, and `headRefOid=` does. Measured: a `segment` row whose `근거`
+  # quoted a PR head as `headRefOid=<sha>, 체크 … 모두 SUCCESS` produced four
+  # segment ids that no row was ever written for, and since a segment that does
+  # not exist can never reach a terminal state, termination condition 1 was
+  # unsatisfiable for the rest of that run.
+  #
+  # Splitting the row on its own separators is what the readers already do
+  # (`gate_row_field`), so this reads the key the same way rather than tightening
+  # the pattern: a tightened pattern would still be one expression away from the
+  # same class of bug, while a field split cannot read a value as a key at all.
+  #
+  # ONE PROCESS FOR THE WHOLE STREAM, which is why this is `awk` and not a shell
+  # loop calling `gate_row_field` per row. That loop is the obvious spelling and
+  # it costs four processes per row: measured, it took the per-segment-id cost
+  # from 14 processes to 18, which `test-measure-gate-cost.sh` pins exactly. The
+  # expression it replaces was also a single pass, so the cost is unchanged.
+  awk -F'|' '{
+    for (i = 1; i <= NF; i++) {
+      f = $i
+      sub(/^[[:space:]]+/, "", f)
+      sub(/[[:space:]]+$/, "", f)
+      if (f ~ /^id=/) { print substr(f, 4); break }
+    }
+  }'
 }
 
 gate_report_abs() {
@@ -6880,7 +6916,7 @@ gate_field_of() {
 # below recomputes from the ledger and the live worktrees each time it is asked.
 # ---------------------------------------------------------------------------
 gate_segment_ids() {
-  gate_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u
+  gate_rows 'segment' | gate_row_ids | sort -u
 }
 
 gate_segment_count_including() {
@@ -11348,7 +11384,7 @@ gate_names_next_obligation() {
   for o in $(gate_open_obligations | sed 's/^obligation=//'); do
     case "$why" in *"$o"*) return 0 ;; esac
   done
-  for sid in $(gate_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
+  for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
     st=$(gate_segment_field "$sid" '상태')
     case " $TERMINAL_SEGMENT_STATES " in *" $st "*) continue ;; esac
@@ -11371,8 +11407,7 @@ gate_clause_ids() {
   # never read these at all — `종료 절` appears zero times in it — so the nine
   # conditions measured the ledger's shape and never the thing the user actually
   # authorized the run against.
-  manifest_clause_rows_raw \
-    | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//'
+  manifest_clause_rows_raw | gate_row_ids
 }
 
 gate_clause_evidence_ids() {
@@ -13099,7 +13134,7 @@ gate_done_conditions() {
   local n_seg
   n_seg=$(gate_rows 'segment' | gate_count)
   [ "$n_seg" = "0" ] && printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
-  for sid in $(gate_rows 'segment' | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
+  for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
     st=$(gate_segment_field "$sid" '상태')
     case " $TERMINAL_SEGMENT_STATES " in

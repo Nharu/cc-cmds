@@ -12006,6 +12006,28 @@ check "6: S10 의 의무가 하나 생긴다" "$(sa_ob_rows | grep -cF '세그�
 sa_merge S1
 check "6: S1 의 두 번째 머지는 여전히 거절이다" "$rc" "3"
 
+# --- 35-6b. 근거 문구 속 `headRefOid=` 는 세그먼트 id 가 아니다 ------------------
+# --- section: 35-6b | group: sa | covers: act,snapshot | anchors: 6b: 세그먼트는 하나다 ---
+#
+# 행의 id 는 키로 읽는다. 값이 `id=` 로 끝나는 문자열을 품고 있어도 그것은 키가
+# 아니다. 탐욕 매치 구현은 행 하나를 세그먼트 여럿으로 읽고, 그렇게 생긴 id 는
+# 어떤 행도 갖지 못해 종단 상태에 이를 수 없으므로 종료 조건 1 이 영구 미충족이
+# 된다. 아래 문면은 실제로 그 상태를 만든 행의 근거를 그대로 쓴 것이다.
+sa_new '근거 속 id=' 선머지후리뷰
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S6B \
+    --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=실행중 워크트리="$SA_SEGWT" 선행=없음 \
+       '근거=gh pr view 842 — mergeCommit=ad406dc headRefOid=a5cf50c, 체크 lint-and-readme 모두 SUCCESS'
+check "6b: 그 행이 기록된다" "$rc" "0"
+sa_ids=$(cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null \
+  | jq -r '.segments[].id' | sort | tr '\n' ' ')
+check "6b: 세그먼트는 하나다" "$sa_ids" "S6B "
+sa_unmet1=$(cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null \
+  | jq -r '[.unmet_conditions[] | select(startswith("1 "))] | length')
+check "6b: 조건 1 이 드는 세그먼트도 하나다" "$sa_unmet1" "1"
+sa_srow=$( { grep -F '`segment`' "$SA_LEDGER" || true; } | tail -1)
+check "6b: 그 행의 상태는 실재 id 로 읽힌다" "$(sa_field "$sa_srow" '상태')" "실행중"
+
 # --- 35-7. 상속된 리뷰 정책이 뒤따르는 세그먼트 행에서도 살아남는다 -------------
 # --- section: 35-7 | group: sa | covers: act | anchors: 7: 정책을 실은 첫 행이 기록된다 ---
 #
