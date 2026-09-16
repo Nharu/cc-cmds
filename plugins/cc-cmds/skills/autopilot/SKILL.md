@@ -218,9 +218,17 @@ At or below the chosen point the run acts on its own; the first act above it sen
 
 The deadline rests on the same assumption 5a just qualified: the user picks a time believing the implementation happens overnight. If an audit stands first in the graph, what exists at that hour may be the audit's output and nothing else. Say so while they choose the time, not afterwards.
 
-**5f — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+**Say which bound will actually end this run, because it may not be this one.** The clock measures elapsed time and the thing worth stopping is pointless spinning; measured, it has ended runs through no fault of theirs — a machine asleep for 35 hours, an external queue holding one for most of 262 minutes, and one that died having performed zero acts. So the clock is now the bound for a run that declares no cost ceiling, and **5f below is where a run gets one**. A user who answers both should hear, in one line, that the ceiling is what will stop the night and the timestamp is the outer edge.
 
-**5g — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
+**5f — Cost ceiling.** A plain number in USD — **no currency symbol and no unit**, because the boundary's arithmetic reads digits and a value it cannot read is not a ceiling. `없음` is allowed and means this axis is unbounded.
+
+Say both thresholds out loud, because they do different things and only one of them involves the user: at **80%** the run opens a boundary approval and waits for a person; at **100%** it **ends the run** without asking. The second one is not a harsher version of the first — an approval nobody answers is not a bound at all, and the state this whole design targets is the one where nobody is awake to be asked.
+
+Offer a number the user can reason about. The runs this pipeline has actually billed sit in the tens of dollars per review cycle, so a ceiling is a decision about how many cycles a night may spend, not a round number picked for comfort.
+
+**5g — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+
+**5h — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
 
 Say all three of these:
 
@@ -381,7 +389,7 @@ Measured: a review stage completed and produced its report; the router recorded 
 act --kind segment    -- 상태=<…> 워크트리=<path> 선행=<세그먼트 id CSV>|없음 '선언 파일 집합=<CSV>' ['리뷰 정책=<선리뷰후머지|선머지후리뷰|리뷰없음>']
 act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포트 경로=<path>' ['모드=전체|델타'] ['기준 사이클=<n>']
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
-act --kind judgment   -- 등급=1 '판단 부류=<여덟 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
+act --kind judgment   -- 등급=1 '판단 부류=<열 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
 act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
 act --kind blocked    -- 스코프=run  원인=해소 사유=<선행 막힘의 사유> 근거=<…>
 act --kind blocked    -- 스코프=cone 원인=막힘 사유=<…> 근거=<…> '앵커 세그먼트=<id>' ['의존 세그먼트=<CSV>']
