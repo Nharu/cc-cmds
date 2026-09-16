@@ -35,6 +35,17 @@
 
 set -uo pipefail
 
+# THE RUN NOTIFIER IS OFF FOR THIS WHOLE PROCESS. The PLUMBING cases run the
+# wrapper in `scripts/test-gate.sh`, and the gate family's fire path prepends
+# the Homebrew directories to PATH itself — so a stub on PATH is shadowed by
+# whatever is really installed, and an ordinary `make test` reaches the user.
+#
+# Exported rather than set per call, because the call sites cannot be made
+# exhaustive. This suite asserts nothing about banner content, so turning the
+# channel off costs it nothing.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 TG="$repo_root/scripts/test-gate.sh"
