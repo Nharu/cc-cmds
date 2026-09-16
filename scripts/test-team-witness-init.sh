@@ -126,6 +126,12 @@ run_init() {
   "$INIT" "$@"
 }
 
+# The fallback root is derived from `XDG_STATE_HOME`, so it is pointed into the
+# work dir. Left at the real value this suite would create — and leave behind —
+# directories under the user's own state tree.
+XDG_STATE_HOME="$WORK/state"; export XDG_STATE_HOME
+STATE_ROOT="$XDG_STATE_HOME/cc-cmds/design"
+
 # ---------------------------------------------------------------------------
 # Root selection
 # ---------------------------------------------------------------------------
@@ -134,8 +140,25 @@ mkdir -p "$TMPDIR"
 RUNDIR="$WORK/rundir"
 mkdir -p "$RUNDIR"
 
+# THE FALLBACK IS THE STATE DIRECTORY, NOT THE SYSTEM TEMP DIR. A temp root is
+# collected out from under a live team, and the witness is the one artifact a
+# lead cannot re-derive — losing it leaves parking or fabrication as the only
+# moves. `$TMPDIR` is exported and non-empty here precisely so that a regression
+# to the old root shows up as a wrong parent rather than as an absent one.
+if [ -d "$STATE_ROOT" ]; then
+  bad "폴백 부모는 스크립트가 만든다" "$STATE_ROOT 가 호출 전부터 있었다 — 이 단언이 무의미해진다"
+fi
 d=$(run_init '' '' review-alpha)
-check "실행 디렉터리가 없으면 임시 디렉터리 아래에 만든다" "$(dirname "$d")" "$TMPDIR"
+check "실행 디렉터리가 없으면 상태 디렉터리 아래에 만든다" "$(dirname "$d")" "$STATE_ROOT"
+case "$(dirname "$d")" in
+  "$TMPDIR"|"$TMPDIR"/*) bad "폴백이 임시 디렉터리가 아니다" "$d" ;;
+  *) ok "폴백이 임시 디렉터리가 아니다" ;;
+esac
+if [ -d "$STATE_ROOT" ]; then
+  ok "없던 폴백 부모를 스크립트가 만든다"
+else
+  bad "없던 폴백 부모를 스크립트가 만든다" "$STATE_ROOT"
+fi
 if [ -d "$d" ]; then ok "만들어진 디렉터리가 실재한다"; else bad "만들어진 디렉터리가 실재한다" "$d"; fi
 
 d=$(run_init "$RUNDIR" '' review-alpha)
@@ -230,6 +253,39 @@ printf 'x\n' > "$WORK/a-file-not-a-dir"
 out=$(run_init "$WORK/a-file-not-a-dir" '' review-alpha 2>/dev/null)
 rc=$?
 check "루트가 파일이어도 거부한다" "$rc" "2"
+
+# ---------------------------------------------------------------------------
+# A relative root is refused rather than resolved, on BOTH roots
+#
+# The printed path is recorded verbatim as `scratchDir` and the cleanup
+# procedure later feeds that string to a path-guarded `rm -rf`. A relative
+# string names one directory when it is written and another when it is read from
+# a different working directory, so resolving it here would only hide the
+# disagreement — and leave a wrong directory to delete.
+# ---------------------------------------------------------------------------
+here_before=$(ls -A "$WORK/relcwd" 2>/dev/null | wc -l | tr -d ' ')
+mkdir -p "$WORK/relcwd"
+out=$( cd "$WORK/relcwd" && run_init 'rel/run-dir' '' review-alpha 2>/dev/null )
+rc=$?
+check "상대 CC_PIPELINE_RUN_DIR 은 2 로 거부한다" "$rc" "2"
+check "그때 표준출력에 아무것도 내지 않는다" "$out" ""
+out=$( cd "$WORK/relcwd" && XDG_STATE_HOME='rel/state' run_init '' '' review-alpha 2>/dev/null )
+rc=$?
+check "상대 XDG_STATE_HOME 도 2 로 거부한다" "$rc" "2"
+check "그때도 표준출력에 아무것도 내지 않는다" "$out" ""
+# 거절이 검사보다 앞에 서는지 — 상대 루트로 디렉터리를 만들어 버리면 호출자가
+# 서 있던 자리에 트리가 남는다. 거절만 하고 아무것도 만들지 않아야 한다.
+check "상대 루트로는 호출자 작업 디렉터리에 아무것도 만들지 않는다" \
+  "$(ls -A "$WORK/relcwd" 2>/dev/null | wc -l | tr -d ' ')" "$here_before"
+# 대조군: 같은 호출이 절대 루트에서는 통과한다 — 위 넷이 다른 이유로 거절된
+# 것이 아니다.
+out=$( cd "$WORK/relcwd" && XDG_STATE_HOME="$WORK/abs-state" run_init '' '' review-alpha )
+rc=$?
+check "대조군: 절대 XDG_STATE_HOME 은 통과한다" "$rc" "0"
+case "$out" in
+  /*) ok "대조군: 그 경로는 절대 경로다" ;;
+  *) bad "대조군" "절대 경로가 아니다: $out" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # A missing slug is refused, and refused without printing a path

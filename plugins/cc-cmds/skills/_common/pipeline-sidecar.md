@@ -145,11 +145,12 @@ once per run rather than on every append.
 **런 최대 절단점**: <token>
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
+**비용 천장**: <숫자만 — 통화 기호도 단위도 없이> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
 - `사전 인가` | 형태=<argv 접두 형태> | 사유=<왜 이 형태가 예측 가능한가>
-- `자동 채택` | 판단 부류=<여덟 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
+- `자동 채택` | 판단 부류=<열 값 중 하나> | 상한=없음|<정수> | 심각도 상한=<critical|major|minor|trivial> | 사유=<왜 이 부류가 미리 안전한가>
 
 ## 룰 설정        ← 선택. 절 전체를 생략할 수 있고, 생략이 기본이다.
 **<룰 이름>**: 켬 | 끔
@@ -424,6 +425,27 @@ accumulator. An accumulator that resets binds nothing — which is precisely the
 defect this contract watched a backoff helper ship — and only an absolute stamp
 stays correct across a reboot.
 
+**And it is now the FALLBACK bound rather than the primary one.** The clock
+measures elapsed time, and the thing worth stopping is pointless spinning. In
+three measured cases the clock ran through no fault of the run's — the machine
+was asleep for 35 hours, an external queue held it for most of 262 minutes,
+nobody resumed it; one run died having performed zero acts, and the independent
+review that forced cost 2h17m and 82.23 USD. So a run that declares a
+progress-axis bound is judged on that bound and the clock has no say over it.
+The clock still gates dispatch and merge for a manifest that declares no such
+bound — every manifest written before the field was read declares none, and
+undeclared is legal, so removing the clock outright would leave those runs with
+nothing at all. That failure is silence rather than a crash, which unattended is
+the worst shape available.
+
+**`비용 천장` carries TWO thresholds and is the progress-axis bound today.** At
+80% it opens a boundary approval — a person, if there is one, decides. At 100%
+it ENDS the run, because an approval nobody answers is not a bound and the state
+this design targets is the one where nobody is awake to be asked. **Digits
+only**: a value carrying a currency symbol or a unit is not a figure the
+boundary's arithmetic can read, and the gate now says so and declines to enforce
+rather than silently treating the run as bounded.
+
 **`공통 git 디렉터리` is on every target row because of a hazard in this very
 tree**: two working trees here share one `.git` and one `refs/stash`. Inferring
 identity from a basename hands one namespace to two aliases silently, and the
@@ -480,7 +502,9 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at sixteen
+### 3.2 The row series is closed at seventeen
+
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at sixteen` — `경계 억제` arrived as the seventeenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
 > **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fifteen` — `교대 기동` arrived as the sixteenth kind, and a heading that states a count states a falsehood the moment the count moves.
 
@@ -491,6 +515,8 @@ Two consequences the schema carries rather than leaving to callers. Long values 
 The count moved from nine to eleven when the gate acquired two records the existing series could not carry: an approval is not a decision the run made (`자율 승인`) and not a stop (`blocked`), and a deferred review obligation is neither. Both are **non-terminal states with their own lifecycle**, which is precisely what no existing kind models — every one of the nine is either a fact about something that already happened or a stop. Extending the definition rather than overloading a kind is what this section's own rule requires, and the two additions are stated here rather than improvised at the call site.
 
 **The sixteenth exists because a launch and an attempt to launch had no way to be told apart.** `handoff` names a shift that ENDED and the authorisation row names one that was DECIDED ON, and neither says a successor actually started — the authorisation row is written before the dispatch and survives a launcher that turns back. `교대 기동` is the record of the start itself, written immediately before it, and it is what the shift ordinal is counted from. Its `서수` is the number of the shift being launched, which is deliberately not the same quantity as the `교대` seat every row carries: the seat says who did the launching.
+
+**The seventeenth exists because a suppression is frequent and silent, and nothing else could hold it.** The stagnation boundary now forgives a short stretch of reads before it fires, and a suppression that leaves no row is the one event in this ledger that happens often and cannot be seen afterwards — so a morning reader cannot tell a boundary that stayed quiet because the run was healthy from one that stayed quiet because it was suppressed. `blocked` is the series the trace would otherwise belong to, and it is the one series it may not use: the obligation boundary reads `blocked`, so a trace written there would make one boundary's suppression move another boundary's input. That is why the name is fixed here rather than at the call site — **the load-bearing property is a property of the NAME**: no boundary reads it. Choosing it during implementation would mean choosing it without that constraint written down, and a name that collides with a series some boundary does read reintroduces exactly the coupling this separation avoids. `크레딧 잔량` is on the row because the suppression is bounded, and a reader who cannot see how much of the allowance is left cannot tell a burst that is about to be interrupted from one that just started.
 
 **The last two are a reconciliation rather than an extension, and the difference matters.** `종료 절` and `문서 해시` were already being written by the gate while this table did not list them — so the table was not a closed definition at all, it was a partial inventory that read like one. A contract that under-reports what its writer emits is worse than one that over-reports: a reader checking whether a series exists gets "no" for something the ledger is full of. They are listed now with the fields the gate actually writes.
 
@@ -505,15 +531,16 @@ The count moved from nine to eleven when the gate acquired two records the exist
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `관측` · `재개 명령` · `도달 판정`(도달 park 행 전용) · `세그먼트`(같음) · `스테이지`(같음) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) |
-| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only; writer pending — the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer; `자동 해소` on a closing row the gate wrote itself) · `관측 시각`(the free-input row) |
+| `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `질문 문면` · `답변 문면` · `사이드카 앵커` · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only — written by the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer; `자동 해소` on a closing row the gate wrote itself) · `관측 시각`(the free-input row) |
 | `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
 | `종료 절` | `id` · `상태`(충족\|불가능\|보류) · `근거` |
 | `문서 해시` | `스테이지` · `sha256` · `동결값` · `관측` |
 | `handoff` | `교대` · `대상` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` · `기록 시각` |
 | `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
+| `경계 억제` | `경계` · `사유` · `크레딧 잔량` · `기록 시각` |
 
-**This table is held equal to the gate's call sites by `scripts/lint-sidecar-field-table.sh`, and the first run of that lint was a reconciliation.** Per series, the union of literal `<키>=` names across every `gate_append '<계열>' …` call must be listed here; where no call site forwards `"$@"`, the listed set must also be written by some call site. `교대` and `prev` are outside the comparison — `gate_append` adds both to every row itself. What that first run found and this table now says: `run` also carries `강제 코드` and `베이스 청결`; `problem` carries `세그먼트`; `자율 승인` carries `대상`·`세그먼트`·`절단점`·`축2` on the acting path and `출처` when absorbed from a stage's terminal line; `handoff` carries `대상` and `기록 시각`; and `stage-result` never spelled `아티팩트 술어 결과` — the predicate's result is folded into `종단 부류` — so that name is gone from the row rather than kept as a field nothing writes. One field is listed ahead of its writer on purpose and says so in its cell: `사유` on a `철회` row is written by the boundary evaluation that withdraws an approval, which lands after this table did — a cell marked `writer pending` is the one shape the lint's reverse direction passes over, and it reports the field by name rather than silently, so the marker cannot outlive the writer's arrival unnoticed.
+**This table is held equal to the gate's call sites by `scripts/lint-sidecar-field-table.sh`, and the first run of that lint was a reconciliation.** Per series, the union of literal `<키>=` names across every `gate_append '<계열>' …` call must be listed here; where no call site forwards `"$@"`, the listed set must also be written by some call site. `교대` and `prev` are outside the comparison — `gate_append` adds both to every row itself. What that first run found and this table now says: `run` also carries `강제 코드` and `베이스 청결`; `problem` carries `세그먼트`; `자율 승인` carries `대상`·`세그먼트`·`절단점`·`축2` on the acting path and `출처` when absorbed from a stage's terminal line; `handoff` carries `대상` and `기록 시각`; and `stage-result` never spelled `아티팩트 술어 결과` — the predicate's result is folded into `종단 부류` — so that name is gone from the row rather than kept as a field nothing writes. **No cell carries the `writer pending` marker today, and the mechanism stays written down anyway.** `사유` on a `철회` row was listed one landing ahead of its writer and said so in its cell; the boundary evaluation that withdraws an approval now writes it, so the marker came off with the writer's arrival rather than being left standing. The mechanism is documented because the next field listed early will need it: a cell marked `writer pending` is the one shape the lint's reverse direction passes over, and it reports that field by name rather than skipping it silently — which is what keeps such a marker from outliving the writer's arrival unnoticed.
 
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
@@ -620,7 +647,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
 
-**`승인.상태` has six values and the gate's `APPROVAL_STATES` constant is their single source of truth; `scripts/lint-approval-state-vocabulary.sh` holds the two equal.** `기각` is written by nothing today and stays in the set — the table is the authority and does not drop a value for being unobserved (the paragraph below says why). `철회` is accepted by the gate's row check and written by nothing yet: the transition into it lands with the boundary predicates, and the vocabulary admits the token ahead of its writer so that writer finds a token instead of improvising one. The dismissed-dialog transcript event is called `다이얼로그 취소` precisely so it is never confused with `기각`.
+**`승인.상태` has six values and the gate's `APPROVAL_STATES` constant is their single source of truth; `scripts/lint-approval-state-vocabulary.sh` holds the two equal.** `기각` is written by nothing today and stays in the set — the table is the authority and does not drop a value for being unobserved (the paragraph below says why). `철회` is written by the boundary evaluation that withdraws an approval whose raising condition went away — there is no clock and no router verb reaching it. The vocabulary admitted the token one landing ahead of that writer so the writer would find a token instead of improvising one, and the writer has since arrived. The dismissed-dialog transcript event is called `다이얼로그 취소` precisely so it is never confused with `기각`.
 
 **Three of the values above are a reconciliation with the artifacts, not a widening.** `blocked.사유=강제 표면 이동` and `=라이브니스 침묵` are written by the gate's surface check and by the watcher's stall transcription, and `segment.상태=완료` is accepted by the gate as a terminal state — all three were in the ledger while this table said they were outside the vocabulary. **Nothing is REMOVED from the table for being unobserved**, and that asymmetry is deliberate: a declared value that no artifact carries means "not seen yet", not "does not exist", and deleting it would make the next writer improvise a synonym.
 
@@ -628,7 +655,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`자율 승인.판단 부류` is where a classification actually lives, and it is a new field for a reason that is not tidiness.** The auto-adoption floor's first arm asks whether the manifest declared this class in advance; on a field that also carries the act kind, one manifest line reading `종류=skill` would pre-adopt every stage dispatch there is. Moving values onto a polluted field inherits the pollution. And the ledger is append-only with deletion forbidden, so the rows already written can never be repaired — a new field has zero legacy rows, which is what lets the lint assert the closed set with no exception.
 
-**The two forbidden values are IN the vocabulary and forbidden there, rather than left out.** A class with no token does not stop being decided; it forces whoever records the decision to borrow a permitted token, and the borrowing is the leak. Named and forbidden, the leak arrives as a refusal. The refusal is at **freeze time**: `check_manifest` compares every `자동 채택` row's class against the eight and hard-stops on either of the two, which is a check that runs while a person is present and rests on nothing the run says about itself at runtime. Recording a judgment OF that class is still permitted — what is forbidden is pre-adopting it.
+**The three forbidden values are IN the vocabulary and forbidden there, rather than left out.** A class with no token does not stop being decided; it forces whoever records the decision to borrow a permitted token, and the borrowing is the leak. Named and forbidden, the leak arrives as a refusal. The refusal is at **freeze time**: `check_manifest` compares every `자동 채택` row's class against the ten and hard-stops on any of the three, which is a check that runs while a person is present and rests on nothing the run says about itself at runtime. Recording a judgment OF that class is still permitted — what is forbidden is pre-adopting it.
 
 **`segment.선행` and `segment.선언 파일 집합` are carried by the router and consumed by the gate; neither is authored by either.** The authority is the design document's slice declaration. `선행` is the cone's declared axis — the only axis that sees a dependency before the predecessor merges — and `선언 파일 집합` is the sole input to "did this segment reach outside what it declared", a question git cannot answer at all.
 
@@ -870,6 +897,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |
 | `halt/<stage-id>.md` | **the halting stage** | the halt record of §4 — the one file a stage writes here |
 | `<segment>.plan.md` | the `implement` stage | the plan emitted by that segment's first process, and the admission token its second one is checked against |
+| `cc-team-witness-<slug>[.<stage-id>].XXXXXX/` | **a team member (stage)** | the witness scratch directory — where a member publishes its round product, minted by `orchestrator/cc-team-witness-init.sh` and recorded verbatim as that member's `scratchDir`. The row is here because the Writer column is an enforcement rule: without it a member's publish is denied, and a lead that cannot read its team's witness either parks forever or synthesizes a round product it never observed |
 | `settings/` | gate (`gate.sh`) | the per-run settings the stage wrapper launches with, hook included |
 | `settings.lock` | gate (`gate.sh`) | `mkdir` mutex over the settings directory, held by readers and writer alike |
 | `ledger.lock` | gate (`gate.sh`) | the ledger's advisory lock |
@@ -897,7 +925,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 
 **What that asymmetry demands of a reader is the sibling's CONTENT, not its presence, and reading only its presence is the same bug one level down.** The gate's `<stage>.start` is the output redirection target of a `ps | sed` pipeline, so the shell creates and truncates the file before `ps` emits a byte — an EMPTY sibling is on disk for the whole of that window (measured: 300 samples out of 300, about 3.9 ms wide), and if `ps` prints nothing at all, which it may since it runs with stderr discarded and its output unchecked, the file stays empty for the stage's entire lifetime. A reader that accepts the file's existence therefore admits a record the census then declines to count, and an uncounted live stage publishes as the count `0` — the answer that authorizes a swap, arriving for a run the gate has just started. The test has to be that one of the two handles is **non-empty**, and it has to be the UNION of them rather than `<stage>.start` alone: a driver-spawned directory can carry an empty `<stage>.start` beside a valid `<stage>.pgid`, and the census calls that alive.
 
-**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md` and `<segment>.plan.md` are permitted, and every other path **this arm judges** is denied. **It does not judge every path under `RUN_DIR`**: the arm is entered by walking the edit target's own spelling upward until an ancestor's inode matches the run directory, so a spelling whose ancestors never meet it is never judged here — whatever the bytes finally land on. That is this table read back as an enforcement rule — those two rows are exactly the ones naming a stage as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
+**The Writer column also decides who may WRITE here with an editing tool, not merely who does.** The run hook the gate installs treats this directory as an allow-list for `Write`/`Edit`: `halt/<stage-id>.md`, `<segment>.plan.md` and anything under a `cc-team-witness-*/` directory are permitted, and every other path **this arm judges** is denied. **The gate's `Bash` path carries the same three**, so a write is not refused through one tool and allowed through the other; the two lists are stated once each and `scripts/test-gate.sh` pins that they agree. **It does not judge every path under `RUN_DIR`**: the arm is entered by walking the edit target's own spelling upward until an ancestor's inode matches the run directory, so a spelling whose ancestors never meet it is never judged here — whatever the bytes finally land on. That is this table read back as an enforcement rule — those rows are exactly the ones naming a stage, or a member of one, as the writer. It matters most for the gate-owned rows: `surface-digest`, `act-budget-*`, `progress-*`, `obligation-*`, `ledger-path`, `session-lineage` and `done` are re-read as the baseline of each act, so a stage able to write one of them re-baselines the enforcement check against itself — and the `Write`/`Edit` path carries no ledger requirement, so that write would leave no row either.
 
 **Both permitted names are narrower than they read, and the hook enforces the narrower reading.** `halt/<stage-id>.md` is a **direct child and one level only** — a path burrowing below it, `halt/<anything>/<anything>.md`, is not on this list and is denied, because the halt record is one file per stage and a subtree under that name is a second storage area nothing declared. And what the list permits is **the file sitting at that name, not the name itself**: a leaf that is a symlink is denied even where its name matches — whether or not the link resolves — since a name-only match lands wherever the link points and every gate-owned row above sits one `ln -s` away. **That sentence is narrower than it reads. The gaps below are the ones known today, and this is not a claim that the list is complete — an earlier revision made that claim in this position and it was false when it was written.**
 

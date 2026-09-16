@@ -27,6 +27,8 @@ lint:
 	bash scripts/lint-macos-keepset-paths.sh
 	bash scripts/lint-recovery-interlock-pins.sh
 	bash scripts/lint-harness-global-collisions.sh
+	bash scripts/lint-prompt-schemas.sh
+	bash scripts/lint-triage-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a

@@ -599,6 +599,8 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local cc
+  cc=$(manifest_field '인가' '비용 천장')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -620,6 +622,18 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
+    # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
+    # a report — it is a bound that ENDS the run, and a ceiling anything can
+    # raise mid-run is not a ceiling. It sits here for the same reason the
+    # cutpoint and the deadline do.
+    #
+    # EMITTED ONLY WHEN PRESENT, by the same argument the auto-adoption rows
+    # above make: a manifest written before this field was frozen contributes
+    # zero bytes, so its digest does not move and an in-flight run does not
+    # become non-conforming because the gate learned to freeze one more field.
+    # An unconditional line would re-digest every such manifest at once, and the
+    # run finds out on its next `snapshot` — in the middle of the night.
+    [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -648,7 +662,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — eight values, closed, two of them named and
+# The judgment-class vocabulary — ten values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -662,7 +676,7 @@ manifest_autoadopt_rows() {
 # legacy rows, which is what lets a lint assert the closed set without an
 # exception.
 #
-# THE TWO FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# THE THREE FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
 # stop the decision from being made — it forces whoever records it to borrow a
 # permitted token, and that is the leak. Named and forbidden, the leak arrives
 # as a refusal instead.
@@ -672,14 +686,14 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
-readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
 # hole rather than narrowing it. Both used to be a space-padded substring test
 # over the vocabulary string, so a value carrying a space matched whenever the
-# tokens it named happened to be ADJACENT in that string. The vocabulary ends
-# `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
+# tokens it named happened to be ADJACENT in that string. The vocabulary then
+# ended `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
 # the vocabulary; the forbidden string is `팀-구성 시각-면제`, which does not
 # contain it, so the same value was also not forbidden. One value passed the
 # permission check and escaped the prohibition at once, and `팀-구성` — a class
@@ -2627,6 +2641,15 @@ with_doc_lock() {
   local rc=0 tool
   tool=$(lock_tool)
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  # SELECTION NAMES THE PLATFORM'S LOCK; IT DOES NOT OBSERVE THE FILE. `lock_tool`
+  # answers "what does this platform use" from the platform predicate alone, and
+  # the suite drives the darwin branches on any runner by injecting the host OS —
+  # so on a linux runner this line is reached with a BSD path that is not there.
+  # Without the check the locked command fails with an exit code that belongs to
+  # neither the lock nor the command, and the caller cannot tell "busy" from
+  # "the tool is missing". The ledger writers already make this exact check;
+  # this is the same one, so the three places agree.
+  [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was

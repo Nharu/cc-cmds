@@ -1,0 +1,20 @@
+# population: *.md directly under the reports directory, basename without 'reader-'; values read only between the v1 disclosure fences (no prose fallback); defects_per_kb = unique_defects / (frozen_bytes / 1000)
+# fenced  n=8  median=27.5  range=23~32
+doc	unique_defects	frozen_bytes	defects_per_kb
+docs-a-alpha.md	23	-	-
+docs-b-bravo.md	24	-	-
+docs-c-charlie.md	24	-	-
+docs-d-delta.md	27	54000	0.50
+docs-e-echo.md	28	-	-
+docs-f-foxtrot.md	29	-	-
+docs-g-golf.md	30	-	-
+docs-h-hotel.md	32	-	-
+# missing-fence  n=8
+docs-m-eight.md
+docs-m-five.md
+docs-m-four.md
+docs-m-one.md
+docs-m-seven.md
+docs-m-six.md
+docs-m-three.md
+docs-m-two.md

@@ -1,7 +1,10 @@
-# Files present in docs/pipeline-run/ when the approval-provenance lint landed
-# (2026-09-12, run 20260911-df234c44). Ledgers written before the frame-based
-# close existed may carry transcript-envelope answer rows; any file that
-# appears after this list must carry zero. One basename per line.
+# Files present in docs/pipeline-run/ as of 2026-09-14 00:06 (local time). The
+# approval-provenance lint landed 2026-09-12 (run 20260911-df234c44); the first
+# version of this list missed seven runs dated up to that cutoff, and they were
+# added when the list was reconciled against the directory. Ledgers written
+# before the frame-based close existed may carry transcript-envelope answer
+# rows; any file that appears after this list must carry zero. One basename per
+# line.
 20260828-0a93df9b.md
 20260828-0a93df9b.plan.md
 20260828-376b0457.md
@@ -37,6 +40,8 @@
 20260902-eb076ff9.plan.md
 20260903-9e98b775.md
 20260903-9e98b775.plan.md
+20260903-f5864eab.md
+20260903-f5864eab.plan.md
 20260904-20e4431f.md
 20260904-20e4431f.plan.md
 20260904-8034b38c.md
@@ -159,4 +164,16 @@
 20260911-df234c44.plan.md
 20260911-e1712676.md
 20260911-e1712676.plan.md
+20260912-376f0543.md
+20260912-376f0543.plan.md
+20260912-4b71c3ae.md
+20260912-4b71c3ae.plan.md
+20260912-4e45b5c0.md
+20260912-4e45b5c0.plan.md
+20260913-2c9dfee4.md
+20260913-2c9dfee4.plan.md
+20260913-8c2d91f7.md
+20260913-8c2d91f7.plan.md
+20260914-2d9f04b1.md
+20260914-2d9f04b1.plan.md
 HANDOFF-20260903-9e98b775.md
