@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.17.0] - 2026-09-16
+## [2.18.0] - 2026-09-16
 
 무인 런에서 스테이지의 수명을 그것을 파견한 라우팅 세션에서 떼어낸다. 파견은 즉시 반환하고, 프로세스 혈통이 끊긴 감독자가 스테이지를 기다려 `stage-result` 를 쓰며, 기다리는 일은 새 동사 `gate.sh wait` 이 맡는다. 그럼에도 잃어버린 파견은 다음 게이트 호출이 새 종단 부류 `외부 종료` 로 정산한다. 함께 다루는 이슈는 #529(수명 절반) · #698 · #690 · #715 · #680 이다.
 
