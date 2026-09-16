@@ -10626,8 +10626,16 @@ check "F2 — 세그먼트 행 기록 자리가 발사한다" \
 # two lines past the old window and this assertion read `silent` while both arms
 # were still there. The window measures nothing about the property; it is the
 # helper's reach.
+#
+# THE ANCHOR IS THE RECORDER'S ROW, NOT THE FIRST `stage-result` APPEND. The
+# prelude's settlement writes the same series, earlier in the file, and stays
+# silent on purpose — a dispatch nobody waited on is the watcher's alarm, not
+# this channel's. Anchoring on the series name therefore landed on the
+# settlement and read `silent` for a property that still holds where it is
+# owned. `plan_sha256` is written only by the recorder, so it names that site
+# and no other.
 check "F1 — 스테이지 결과 행 자리가 발사한다" \
-  "$( [ "$(site_fires "gate_append 'stage-result'" 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
   "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
 check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
