@@ -6350,6 +6350,31 @@ gate_answer_servable() {
          | { grep -F '절단점=판단 ' || true; } | tail -1)
   [ -n "$iss" ] || { warn "그 승인은 판단 물음이 아닙니다 — 답 사이드카는 절단점=판단 에만 있습니다: $id"; return 1; }
   [ -f "$RUN_DIR/answer/$id.md" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
+  # THE FILE IS COMPARED AGAINST THE ROW'S DIGEST. The row carries the sha256 of
+  # the answer the gate wrote; the file lives in the volatile run directory,
+  # which the four ledger facts above say nothing about. Serving it without the
+  # comparison means the three ledger tests establish that a person answered and
+  # then the bytes handed over are whatever is at that path now — and what reads
+  # them is a stage, acting on them as an instruction.
+  #
+  # A MISSING DIGEST IS NOT A PASS. The field is `-` on rows written before the
+  # gate carried it, and treating that as "nothing to compare" would make every
+  # such row servable on the strength of its path alone. There is no answer
+  # sidecar for those rows either, so this arm is unreachable for them today;
+  # it is written as a refusal so that stays true if the store outlives a format.
+  local adig afile
+  adig=$(gate_row_field "$row" '답변 다이제스트')
+  case "$adig" in
+    ''|'-') warn "그 승인 행에 답변 다이제스트가 없습니다 — 파일을 대조할 기준이 없으므로 내주지 않습니다: $id"; return 1 ;;
+  esac
+  # The writer stores the answer with a trailing newline that the digest does not
+  # cover, so the file is compared with that byte removed — the same bytes the
+  # row hashed.
+  afile=$(printf '%s' "$(cat "$RUN_DIR/answer/$id.md")" | shasum -a 256 | cut -d' ' -f1)
+  [ "$afile" = "$adig" ] || {
+    warn "답 파일이 원장의 답변 다이제스트와 다릅니다 — 내주지 않습니다: $id (행 $adig · 파일 $afile)"
+    return 1
+  }
   return 0
 }
 

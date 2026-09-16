@@ -7364,6 +7364,23 @@ case "$ans_out" in
   *) ok "목록도 같은 술어를 지난다 (id 형태가 거절할 것을 목록이 내주지 않는다)" ;;
 esac
 rm -f "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/심은-id.md"
+# 파일은 원장의 답변 다이제스트와 대조된다. 세 원장 사실은 사람이 답했다는 것을
+# 세울 뿐이고, 건네지는 바이트는 지금 그 경로에 있는 것이다 — 그리고 그것을 읽는
+# 것은 스테이지이며 지시로 받아 행동한다.
+CANSF="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/$jid.md"
+cp "$CANSF" "$CANSF.keep"
+printf '%s\n' "바꿔치기된 답" > "$CANSF"
+ans "$jid"
+check "원장의 다이제스트와 다른 답 파일은 내주지 않는다" "$ans_rc" "1"
+check "그때 바이트도 내주지 않는다" "$ans_out" ""
+ans ""
+case "$ans_out" in
+  *"$jid"*) bad "답 목록" "다이제스트가 어긋난 답이 목록에 남았다: $ans_out" ;;
+  *) ok "목록에서도 빠진다 (두 형태가 같은 술어를 지난다)" ;;
+esac
+mv "$CANSF.keep" "$CANSF"
+ans "$jid"
+check "되돌리면 다시 내준다 (항상 거절하는 구현이 아니다)" "$ans_out" "$ANSWER"
 
 # The act approval keeps the fixed literal, so no existing reader changes.
 aidN=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)" '승인 id')
