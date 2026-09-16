@@ -774,7 +774,15 @@ gate_deploy_trigger_match() {
           case "$a" in
             "$val"|*":$val"|"+$val"|*":refs/heads/$val") return 0 ;;
           esac
-        done ;;
+        done
+        # A PULL-REQUEST MERGE DOES NOT SPELL ITS BASE. `gh pr merge 5` and a
+        # `PUT …/pulls/5/merge` land on whatever branch the pull request targets,
+        # and argv holds no word to compare — so a `branch:` trigger never
+        # matched one, and the merge the user named as a deploy took the
+        # collaboration cell instead of the one that asks for pre-authorization.
+        # Reading the base would be a remote call this gate does not make, so an
+        # unreadable base is taken to be the declared one.
+        gate_merge_names_no_base "$@" && return 0 ;;
       workflow)
         case " $* " in
           *" workflow run $val "*|*"/actions/workflows/$val/dispatches"*) return 0 ;;
@@ -790,6 +798,20 @@ gate_deploy_trigger_match() {
 $(printf '%s' "$ids" | tr ',' '\n')
 EOF
   return 1
+}
+
+gate_merge_names_no_base() {
+  # gate_merge_names_no_base <argv...> — 0 when this argv merges a pull request
+  # whose base branch it does not name: `gh pr merge` in any spelling, and a
+  # `gh api` call the ladder reads as a merge.
+  [ "${1##*/}" = gh ] || return 1
+  shift
+  local _g; _g=$(gate_global_opts_len gh "$@")
+  [ "$_g" = "-" ] && return 1
+  shift "$_g"
+  case "${1:-}:${2:-}" in pr:merge) return 0 ;; esac
+  [ "${1:-}" = api ] || return 1
+  [ "$(ladder_of_gh_api "$@")" = "머지" ]
 }
 
 gate_collaboration_surface() {
@@ -826,6 +848,7 @@ gate_collaboration_surface() {
           esac ;;
         api)
           gate_gh_api_scan "$@"
+          [ "$GATE_GHAPI_UNREAD" = "1" ] && return 1
           case "${GATE_GHAPI_PATH#/}" in
             graphql)
               gate_graphql_collaborative && return 0 ;;
@@ -895,8 +918,16 @@ gate_graphql_collaborative() {
   [ -n "$q" ] || return 1
   case "$q" in *mutation*) ;; *) return 1 ;; esac
   local names n seen=0
+  # THE DOCUMENT IS ONE TOKEN STREAM, NOT LINES. GraphQL ignores newlines,
+  # commas and `#` comments between a field name and its `(`, and an extraction
+  # that matched within one line saw none of `mergePullRequest` + newline + `(`,
+  # `mergePullRequest ,(` or `mergePullRequest #c` + newline + `(` — so a merge
+  # written beside an allowed mutation read as collaboration. String literals go
+  # first, so a `#` or a comma inside one is not taken for syntax.
   names=$(printf '%s\n' "$q" \
-    | sed -E -e 's/"([^"\\]|\\.)*"//g' -e 's/(mutation|query|subscription)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*//g' \
+    | sed -E -e 's/"([^"\\]|\\.)*"//g' -e 's/#.*$//' \
+    | tr '\n,' '  ' \
+    | sed -E -e 's/(mutation|query|subscription)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*//g' \
     | grep -oE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' | sed -E 's/[[:space:]]*\($//' || true)
   while IFS= read -r n; do
     [ -n "$n" ] || continue
@@ -1059,17 +1090,64 @@ gate_push_remote_match() {
     fi
     [ -n "$rname" ] || rname=origin
   fi
+  # A URL SPELLED IN ARGV IS REWRITTEN BY GIT TOO. `url.<base>.insteadOf` and
+  # `pushInsteadOf` apply to it exactly as they apply to a named remote's URL,
+  # and comparing the spelling instead of the destination let an honest-looking
+  # `git push https://github.com/o/r.git` match `o/r` while the repository's own
+  # configuration sent it to another host. The same keys given with `-c` never
+  # reach here: the grading table refuses `url.*` on the command line as a form.
   case "$rname" in
-    *://*|*@*:*) url="$rname" ;;
+    *://*|*@*:*) url=$(gate_push_url_rewrite "$rname") ;;
     *) url=$(gate_push_git remote get-url --push "$rname") ;;
   esac
   [ -n "$url" ] || return 1
-  local slug
-  slug=$(printf '%s' "$url" \
-    | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
-          -e 's#^[^/:]*[:/]##' \
-    | tr '[:upper:]' '[:lower:]')
-  [ "$slug" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  # THE HOST IS PART OF THE DESTINATION. Comparing `owner/repo` alone matched
+  # `https://evil.example/o/r.git` against `o/r`. A slug that names no host is
+  # read against GitHub's, which is what an `owner/repo` slug means everywhere
+  # else this pipeline uses one.
+  local got wanted
+  got=$(gate_remote_host_path "$url")
+  case "$want" in
+    */*/*) wanted=$(gate_remote_host_path "$want") ;;
+    *) wanted="github.com/$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+  [ -n "$got" ] && [ "$got" = "$wanted" ]
+}
+
+gate_remote_host_path() {
+  # gate_remote_host_path <url> — `host/owner/repo`, lower-cased, from the
+  # spellings a remote takes: `https://[user@]host[:port]/o/r[.git]`,
+  # `ssh://git@host[:port]/o/r`, `git@host:o/r` and a bare `host/o/r`.
+  printf '%s' "$1" \
+    | sed -e 's#/*$##' -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' \
+          -e 's#^www\.##' -e 's#^\([^/:]*\):[0-9][0-9]*/#\1/#' -e 's#^\([^/:]*\):#\1/#' \
+    | tr '[:upper:]' '[:lower:]'
+}
+
+gate_push_url_rewrite() {
+  # gate_push_url_rewrite <url> — the URL git pushes to when handed <url>. The
+  # longest `pushInsteadOf` prefix wins; without one, `ls-remote --get-url`
+  # applies `insteadOf`. Both are asked with the push's own global options in
+  # front, so the repository a `-C` or `--git-dir` names is the one whose
+  # configuration is read. The spelling is kept only when git gives no answer.
+  local u="$1" line key pfx base best='' bestbase='' r
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%% *}"; pfx="${line#* }"
+    base="${key#url.}"; base="${base%.pushinsteadof}"
+    case "$u" in
+      "$pfx"*)
+        if [ "${#pfx}" -gt "${#best}" ]; then best="$pfx"; bestbase="$base"; fi ;;
+    esac
+  done <<EOF
+$(gate_push_git config --get-regexp '^url\..*\.pushinsteadof$')
+EOF
+  if [ -n "$best" ]; then
+    printf '%s%s' "$bestbase" "${u#"$best"}"
+    return 0
+  fi
+  r=$(gate_push_git ls-remote --get-url "$u")
+  if [ -n "$r" ]; then printf '%s' "$r"; else printf '%s' "$u"; fi
 }
 
 gate_push_rung() {
@@ -2790,6 +2868,7 @@ surface_of_gh_api() {
   # (`POST …/pulls/{n}/reviews`; `gh pr review` carries no comments array), and
   # every read of a value `gh pr view --json` does not expose along with it.
   gate_gh_api_scan "$@"
+  [ "$GATE_GHAPI_UNREAD" = "1" ] && { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
   case "$GATE_GHAPI_METHOD" in
     GET|HEAD) printf '읽기' ;;
     *) printf '외부상태변경' ;;
@@ -2805,33 +2884,69 @@ gate_gh_api_scan() {
   # Sets GATE_GHAPI_METHOD (explicit, else POST when a body rides along — the
   # signal gh itself switches on — else GET; upper-cased), GATE_GHAPI_PATH (the
   # first bare word), GATE_GHAPI_INPUT (a body from `--input`),
-  # GATE_GHAPI_QUERY (graphql text given in argv) and GATE_GHAPI_QFILE (a query
-  # given as `query=@<file>`).
+  # GATE_GHAPI_QUERY (graphql text given in argv), GATE_GHAPI_QFILE (a query
+  # given as `query=@<file>`) and GATE_GHAPI_UNREAD (a word this reading could
+  # not place, which every consumer answers as a form it cannot vouch for).
+  #
+  # A SHORT OPTION IS A LETTER IN A BUNDLE, NOT A WORD. gh parses with pflag, so
+  # `-iXDELETE` is `--include --method DELETE`, `-iX DELETE` takes the method
+  # from the next word and `-X=DELETE` drops one `=` before the value. Read as
+  # whole words, all three skipped the method: the first graded a repository
+  # deletion as a read, the second took `DELETE` for the endpoint, and the third
+  # stored `=DELETE`, which no mark compares equal to.
   shift
-  local m="" body=0 v
+  local m="" body=0 v _fl _vl _vv
   GATE_GHAPI_PATH=''; GATE_GHAPI_INPUT=0; GATE_GHAPI_QUERY=''; GATE_GHAPI_QFILE=0
+  GATE_GHAPI_UNREAD=0
   while [ $# -gt 0 ]; do
     v=''
     case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
+      --method)
+        [ $# -ge 2 ] || { GATE_GHAPI_UNREAD=1; break; }
         m="$2"; shift 2; continue ;;
       --method=*) m="${1#--method=}"; shift; continue ;;
-      -X*)        m="${1#-X}"; shift; continue ;;
       --input)
         body=1; GATE_GHAPI_INPUT=1
         [ $# -ge 2 ] || break
         shift 2; continue ;;
       --input=*) body=1; GATE_GHAPI_INPUT=1; shift; continue ;;
-      -f|-F|--field|--raw-field)
+      --field|--raw-field)
         body=1
-        [ $# -ge 2 ] || break
+        [ $# -ge 2 ] || { GATE_GHAPI_UNREAD=1; break; }
         v="$2"; shift 2 ;;
       --field=*|--raw-field=*) body=1; v="${1#*=}"; shift ;;
-      -f*|-F*)    body=1; v="${1#-?}"; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview)
-        [ $# -ge 2 ] || break
+      --header|--jq|--template|--hostname|--cache|--preview)
+        [ $# -ge 2 ] || { GATE_GHAPI_UNREAD=1; break; }
         shift 2; continue ;;
+      -[!-]*)
+        # Letter by letter, as pflag reads it. `i` takes no value; each value
+        # letter takes the rest of the word (less one leading `=`) or, when
+        # nothing is left, the next word — and ends the bundle. A letter gh api
+        # does not have is not skipped: skipping is how the method went unread.
+        _fl="${1#-}"; _vl=''; _vv=''
+        shift
+        while [ -n "$_fl" ]; do
+          case "$_fl" in
+            i*) _fl="${_fl#?}" ;;
+            [XFfHpqt]*)
+              _vl="${_fl%"${_fl#?}"}"
+              _fl="${_fl#?}"; _fl="${_fl#=}"
+              if [ -n "$_fl" ]; then
+                _vv="$_fl"
+              elif [ $# -ge 1 ]; then
+                _vv="$1"; shift
+              else
+                GATE_GHAPI_UNREAD=1
+              fi
+              _fl='' ;;
+            *) GATE_GHAPI_UNREAD=1; _fl='' ;;
+          esac
+        done
+        case "$_vl" in
+          X) m="$_vv"; continue ;;
+          f|F) body=1; v="$_vv" ;;
+          *) continue ;;
+        esac ;;
       # The first bare word is the endpoint. Anything later is a positional no
       # consumer has a use for, so the first one wins and the scan continues —
       # stopping here would leave a trailing `-X` unread.
@@ -2847,6 +2962,13 @@ gate_gh_api_scan() {
     if [ "$body" = "1" ]; then m=POST; else m=GET; fi
   fi
   GATE_GHAPI_METHOD=$(printf '%s' "$m" | tr '[:lower:]' '[:upper:]')
+  # A method outside the verbs gh sends is not guessed at either: the grade
+  # would call it an external change, and the mark, which compares against
+  # `DELETE`, would call it nothing.
+  case "$GATE_GHAPI_METHOD" in
+    GET|HEAD|POST|PUT|PATCH|DELETE) ;;
+    *) GATE_GHAPI_UNREAD=1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -3125,7 +3247,35 @@ surface_of_docker() {
   local _g; _g=$(gate_global_opts_len docker "$@")
   [ "$_g" = "-" ] && { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
   shift "$_g"
-  case " $* " in *" --push "*) printf '외부상태변경'; return 0 ;; esac
+  # A REGISTRY PUSH HAS MORE SPELLINGS THAN `--push`. `--push=true`, an
+  # `-o`/`--output` exporter of `type=registry` or carrying `push=true`, and a
+  # bake `--set <target>.output=…`/`<target>.push=true` all send the image out,
+  # and matching the one literal graded every other spelling a local write. An
+  # exporter type this table does not know is not guessed at.
+  local _da _dw='' _dk=''
+  for _da in "$@"; do
+    if [ -n "$_dw" ]; then
+      case "$_dw" in
+        o) _dk="$_dk $(gate_docker_output_kind "$_da")" ;;
+        s) _dk="$_dk $(gate_docker_set_kind "$_da")" ;;
+      esac
+      _dw=''; continue
+    fi
+    case "$_da" in
+      --push) _dk="$_dk reg" ;;
+      --push=false|--push=0) ;;
+      --push=*) _dk="$_dk reg" ;;
+      -o|--output) _dw=o ;;
+      --set) _dw=s ;;
+      --output=*) _dk="$_dk $(gate_docker_output_kind "${_da#--output=}")" ;;
+      -o?*) _dk="$_dk $(gate_docker_output_kind "${_da#-o}")" ;;
+      --set=*) _dk="$_dk $(gate_docker_set_kind "${_da#--set=}")" ;;
+    esac
+  done
+  case " $_dk " in
+    *" reg "*) printf '외부상태변경'; return 0 ;;
+    *" unknown "*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+  esac
   case "${1:-}" in
     ps|images|inspect|logs|top|history|port|diff|events|search|stats|version|info)
       printf '읽기' ;;
@@ -3177,6 +3327,30 @@ surface_of_docker() {
       printf '트리밖쓰기' ;;
     '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
     *) printf '등급 미상' ;;
+  esac
+}
+
+gate_docker_output_kind() {
+  # gate_docker_output_kind <exporter> — `reg` when the exporter sends the image
+  # to a registry, `local` for the exporters that stay on this machine and for a
+  # plain destination path, `unknown` for a `type=` this list does not name.
+  case ",$1," in *",push=true,"*|*",push=1,"*) printf 'reg'; return 0 ;; esac
+  case ",$1," in
+    *",type=registry,"*) printf 'reg' ;;
+    *",type=local,"*|*",type=tar,"*|*",type=docker,"*|*",type=oci,"*|*",type=image,"*|*",type=cacheonly,"*)
+      printf 'local' ;;
+    *",type="*) printf 'unknown' ;;
+    *) printf 'local' ;;
+  esac
+}
+
+gate_docker_set_kind() {
+  # gate_docker_set_kind <target.key=value> — a bake override's exporter kind,
+  # or nothing when the override does not set an output.
+  local k="${1%%=*}" v="${1#*=}"
+  case "$k" in
+    output|*.output) gate_docker_output_kind "$v" ;;
+    push|*.push) case "$v" in true|1) printf 'reg' ;; esac ;;
   esac
 }
 
@@ -3232,7 +3406,19 @@ gate_act_mark() {
         ssm)
           case "${2:-}" in
             get-parameter|get-parameters|get-parameters-by-path|get-parameter-history)
-              case "$all" in *" --with-decryption "*) printf '비밀출력\t--with-decryption'; return 0 ;; esac ;;
+              # `--with-decryption=true` is one word. Only an explicit false
+              # leaves the value encrypted.
+              local _wd
+              for _wd in "$@"; do
+                case "$_wd" in
+                  --with-decryption) printf '비밀출력\t--with-decryption'; return 0 ;;
+                  --with-decryption=*)
+                    case "$(printf '%s' "${_wd#*=}" | tr '[:upper:]' '[:lower:]')" in
+                      false|0) ;;
+                      *) printf '비밀출력\t--with-decryption'; return 0 ;;
+                    esac ;;
+                esac
+              done ;;
           esac ;;
         secretsmanager)
           case "${2:-}" in
@@ -3276,12 +3462,27 @@ gate_act_mark() {
         get)
           # `secret/<name>` and `secrets,configmaps` are the same read spelled
           # as one operand, and a plain equality against `secret` saw neither.
-          case "${2:-}" in
-            secret|secrets|secret/*|secrets/*|secret.*|secrets.*|secret,*|secrets,*|*,secret|*,secrets|*,secret,*|*,secrets,*)
-              # `-ojson` is the spelling people actually type, and the literal
-              # match this replaces did not see it.
-              if gate_argv_has_opt -o output "$@"; then printf '비밀출력\tsecret'; return 0; fi ;;
-          esac ;;
+          #
+          # THE RESOURCE IS ANY OPERAND, NOT THE WORD AFTER `get`. `kubectl get
+          # -o yaml secret app` put the output option in that slot and the mark
+          # looked no further. The values of the options that take one are
+          # skipped, so a namespace or a selector is not read as the resource.
+          local _kw='' _ka _ks=0
+          for _ka in "${@:2}"; do
+            if [ -n "$_kw" ]; then _kw=''; continue; fi
+            case "$_ka" in
+              -o|--output|-n|--namespace|-l|--selector|--field-selector|-L|--label-columns|--sort-by|--template|-f|--filename|-k|--kustomize|--chunk-size|--subresource|--context|--cluster|--user|--kubeconfig|--server|--token|--as|--request-timeout)
+                _kw=1 ;;
+              -*) ;;
+              secret|secrets|secret/*|secrets/*|secret.*|secrets.*|secret,*|secrets,*|*,secret|*,secrets|*,secret,*|*,secrets,*)
+                _ks=1 ;;
+            esac
+          done
+          # `-ojson` is the spelling people actually type, and the literal
+          # match this replaces did not see it.
+          if [ "$_ks" = "1" ] && gate_argv_has_opt -o output "$@"; then
+            printf '비밀출력\tsecret'; return 0
+          fi ;;
         config)
           case "${2:-}" in
             view) case "$all" in *" --raw "*) printf '비밀출력\t--raw'; return 0 ;; esac ;;
@@ -3497,6 +3698,17 @@ gate_argv_opaque() {
           esac ;;
         *) printf 0 ;;
       esac ;;
+    # The two delegating forms the wrapper strip cannot turn into a suffix. A
+    # `find` with several executing primaries runs more than one command line,
+    # and `rg --pre` runs a program over file contents this gate never sees.
+    find)
+      if [ "$(gate_find_exec_count "$@")" -gt 1 ]; then printf 1; else printf 0; fi ;;
+    rg)
+      local _ra
+      for _ra in "$@"; do
+        case "$_ra" in --pre|--pre=*) printf 1; return 0 ;; esac
+      done
+      printf 0 ;;
     *) printf 0 ;;
   esac
 }
@@ -3522,16 +3734,21 @@ gate_argv_opaque() {
 # ---------------------------------------------------------------------------
 gate_opaque_floor() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
-  local payload="" fmax=0
+  local payload="" fmax=0 depth="${GATE_FLOOR_DEPTH:-0}"
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
       # ONLY the `-c` string. A script FILE operand is not scanned — its bytes
       # are not in argv, and pretending to have read them would be the kind of
       # confident wrong answer this whole table refuses.
       payload=$(gate_shell_c_payload "$@") ;;
-    # The wrappers that assemble a command line out of their own arguments, and
-    # the table-less argv0 whose operands may name one.
-    xargs|sudo|npx) payload="$*" ;;
+    # The launchers and delegating words KEEP THEIR OWN NAME in the payload, so
+    # the scan below unwraps them the way the table does. Dropped, their options
+    # stood in the command position — `xargs -n1 gh repo delete` read `-n1` and
+    # raised nothing.
+    xargs|sudo|env|timeout|nice|nohup|stdbuf|time|command|lockf|find)
+      payload="$cmd $*" ;;
+    # The table-less argv0 whose operands may name a command.
+    npx) payload="$*" ;;
     # `docker run|exec|create` — the operands PAST the image or container. The
     # image name is a word like `mysql` and reading it as a database client
     # would park every container the pipeline starts, so it is skipped by
@@ -3577,14 +3794,52 @@ $_dc" ;;
   esac
   [ "$fmax" = "1" ] && { printf '외부상태변경\t\t'; return 0; }
   [ -n "$payload" ] || { printf '읽기\t\t'; return 0; }
+  local acc g m t f
+  acc=$(gate_floor_scan "$depth" "$payload")
+  g="${acc%%	*}"; acc="${acc#*	}"
+  m="${acc%%	*}"; acc="${acc#*	}"
+  t="${acc%%	*}"; f="${acc#*	}"
+  [ "$f" = "1" ] && g='외부상태변경'
+  [ -n "$g" ] || g='읽기'
+  printf '%s\t%s\t%s' "$g" "$m" "$t"
+}
 
+# The floor's four-field accumulator: `<grade>\t<mark>\t<trigger>\t<unreadable>`.
+# An empty grade is "nothing this position could grade", which is not `읽기` —
+# the bottom is only filled in once, at the end, so a position that raised
+# nothing cannot lower one that did.
+gate_floor_merge() {
+  local a="$1" b="$2" ag am at af bg bm bt bf g m t f=0
+  ag="${a%%	*}"; a="${a#*	}"; am="${a%%	*}"; a="${a#*	}"; at="${a%%	*}"; af="${a#*	}"
+  bg="${b%%	*}"; b="${b#*	}"; bm="${b%%	*}"; b="${b#*	}"; bt="${b%%	*}"; bf="${b#*	}"
+  g="$ag"
+  if [ -n "$bg" ]; then
+    if [ -n "$ag" ]; then g=$(gate_surface_max "$ag" "$bg"); else g="$bg"; fi
+  fi
+  # `비밀출력` outranks `파괴`: a disclosure cannot be taken back once printed.
+  m="$am"; t="$at"
+  case "$bm" in
+    비밀출력) [ "$am" = "비밀출력" ] || { m="$bm"; t="$bt"; } ;;
+    파괴) [ -n "$am" ] || { m="$bm"; t="$bt"; } ;;
+  esac
+  { [ "$af" = "1" ] || [ "$bf" = "1" ]; } && f=1
+  printf '%s\t%s\t%s\t%s' "$g" "$m" "$t" "$f"
+}
+
+gate_floor_scan() {
+  # gate_floor_scan <depth> <payload> — every command position in a shell text,
+  # folded into one accumulator.
+  local depth="$1" payload="$2" acc line first r
   # Heredoc bodies are dropped before the split: their text is DATA, and a SQL
   # heredoc naming `drop table` is not the shell running `drop`.
-  payload=$(printf '%s' "$payload" | sed 's/<<[-~]*[A-Za-z_'"'"'"]*//g')
-
-  local floor='읽기' mark='' trig='' fi_ fidx
-  fidx=$(surface_index '읽기')
-  local line first
+  #
+  # A FILE-DESCRIPTOR DUPLICATION IS NOT A SEPARATOR. `2>&1` and `>&2` carry an
+  # `&`, and the split below would have left `1` or `2` standing where the
+  # program name is read — so `2>&1 gh repo delete` graded the digit. They are
+  # removed whole, and `&>` becomes the plain redirection it is.
+  payload=$(printf '%s' "$payload" \
+    | sed -e 's/<<[-~]*[A-Za-z_'"'"'"]*//g' -e 's/[0-9]*[<>]&[^[:space:]]*//g' -e 's/&>/>/g')
+  acc=$(printf '\t\t\t0')
   # Command POSITIONS only — the word after a separator. `grep "gh pr merge"` is
   # an argument to grep and does not raise anything.
   while IFS= read -r line; do
@@ -3592,19 +3847,32 @@ $_dc" ;;
     # and so do the shell KEYWORDS: `if gh …`, `do gh …` and `for i in …; do`
     # put a keyword where this scan read the program name, so the chunk graded
     # `등급 미상` and fell out of the filter entirely.
+    #
+    # So does a REDIRECTION. `>/dev/null gh repo delete` is the delete with its
+    # output discarded, and the operator word used to take the command position.
+    # `time` is not a keyword here: its `-p` stood in the slot after it, and the
+    # wrapper reading below consumes both.
     set -f
     # shellcheck disable=SC2086
     set -- $line
     set +f
     while [ $# -gt 0 ]; do
       case "$1" in
+        '>'|'>>'|'<'|[0-9]'>'|[0-9]'>>'|[0-9]'<')
+          shift; [ $# -gt 0 ] && shift ;;
+        '>'*|'<'*|[0-9]'>'*|[0-9]'<'*) shift ;;
+        # A `find` terminator splits its second executing primary into a chunk
+        # of its own, and the command after that primary is still a command.
+        -exec|-execdir|-ok|-okdir) shift ;;
         -*) break ;;
         # An assignment naming a program git, curl or the loader will RUN is
         # the same act as spelling that program out.
         *=*)
-          if gate_env_name_execs "${1%%=*}"; then fmax=1; fi
+          if gate_env_name_execs "${1%%=*}"; then
+            acc=$(gate_floor_merge "$acc" "$(printf '\t\t\t1')")
+          fi
           shift ;;
-        if|then|else|elif|fi|do|done|while|until|'!'|time|exec|esac) shift ;;
+        if|then|else|elif|fi|do|done|while|until|'!'|exec|esac) shift ;;
         *) break ;;
       esac
     done
@@ -3620,29 +3888,122 @@ $_dc" ;;
     [ -n "$first" ] || continue
     shift
     set -- "$first" "$@"
-    # What the gate cannot follow at all. `eval` and `source` run text this scan
-    # never sees, so they take the top of the scale rather than the bottom.
-    case "${first##*/}" in eval|source|.) fmax=1; continue ;; esac
-    local g; g=$(surface_of_argv0 "$@")
-    case "$g" in
-      읽기|워크트리쓰기|트리밖쓰기|외부상태변경)
-        fi_=$(surface_index "$g" 2>/dev/null) || fi_=""
-        if [ -n "$fi_" ] && [ "$fi_" -gt "$fidx" ]; then fidx="$fi_"; floor="$g"; fi ;;
-      # A TABLE TOOL IN A FORM THE PARSER COULD NOT READ. Spelled directly it is
-      # refused outright, so leaving it at the bottom of the floor made the
-      # inside of a shell string MORE permissive than the outside.
-      "$GATE_FORM_UNKNOWN") fmax=1 ;;
-    esac
-    local mk; mk=$(gate_act_mark "$@")
-    case "$mk" in
-      비밀출력*) mark='비밀출력'; trig="${mk#*	}" ;;
-      파괴*) [ "$mark" = "비밀출력" ] || { mark='파괴'; trig="${mk#*	}"; } ;;
-    esac
+    r=$(gate_floor_chunk "$depth" "$@")
+    acc=$(gate_floor_merge "$acc" "$r")
   done <<EOF
 $(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
 EOF
-  [ "$fmax" = "1" ] && floor='외부상태변경'
-  printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+  printf '%s' "$acc"
+}
+
+gate_floor_chunk() {
+  # gate_floor_chunk <depth> <argv...> — one command position: the table's own
+  # reading of it, then whatever it runs in turn.
+  #
+  # THE TOP-LEVEL UNWRAPS, APPLIED INSIDE THE STRING. The launchers, `command`,
+  # `lockf` and `find -exec` go through the same wrapper strip exec uses, and a
+  # nested shell's `-c` text is scanned again. Read only at the top level, each of
+  # them was a way to put an external act one layer down: `bash -c 'bash -c "…"'`,
+  # `bash -c 'sudo -u root gh …'` and `bash -c 'env aws secretsmanager …'` all
+  # floored below what they did.
+  local depth="$1"; shift
+  local w="${1##*/}" acc g mk f=0 r
+  # What the gate cannot follow at all. `eval` and `source` run text this scan
+  # never sees, so they take the top of the scale rather than the bottom.
+  case "$w" in eval|source|.) printf '\t\t\t1'; return 0 ;; esac
+  g=$(surface_of_argv0 "$@")
+  case "$g" in
+    읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
+    # A TABLE TOOL IN A FORM THE PARSER COULD NOT READ. Spelled directly it is
+    # refused outright, so leaving it at the bottom of the floor made the
+    # inside of a shell string MORE permissive than the outside.
+    "$GATE_FORM_UNKNOWN") g=''; f=1 ;;
+    *) g='' ;;
+  esac
+  mk=$(gate_act_mark "$@")
+  acc=$(printf '%s\t%s\t%s' "$g" "$mk" "$f")
+  case "$w" in
+    bash|sh|zsh|dash|ksh)
+      # The `-c` text was cut into words by the scan, quotes included, so the
+      # words after the option are joined back and read as one more payload. A
+      # nesting deeper than any honest command reaches is not followed further.
+      local _cw=0 _a _in=''
+      shift
+      for _a in "$@"; do
+        if [ "$_cw" = "1" ]; then _in="$_in $_a"; continue; fi
+        case "$_a" in --*) ;; -*c*) _cw=1 ;; esac
+      done
+      if [ -n "$_in" ]; then
+        if [ "$depth" -ge 4 ]; then
+          r=$(printf '\t\t\t1')
+        else
+          r=$(gate_floor_scan $((depth + 1)) "$(printf '%s' "$_in" | tr -d "\"'")")
+        fi
+        acc=$(gate_floor_merge "$acc" "$r")
+      fi ;;
+    docker)
+      if [ "$depth" -ge 4 ]; then
+        r=$(printf '\t\t\t1')
+      else
+        r="$(GATE_FLOOR_DEPTH=$((depth + 1)) gate_opaque_floor "$@")$(printf '\t0')"
+      fi
+      acc=$(gate_floor_merge "$acc" "$r") ;;
+    xargs|sudo)
+      local n; n=$(gate_floor_launcher_len "$w" "$@")
+      case "$n" in
+        -) acc=$(gate_floor_merge "$acc" "$(printf '\t\t\t1')") ;;
+        *)
+          shift "$n"
+          if [ $# -gt 0 ]; then
+            r=$(gate_floor_chunk "$depth" "$@")
+            acc=$(gate_floor_merge "$acc" "$r")
+          fi ;;
+      esac ;;
+    env|timeout|nice|nohup|stdbuf|time|command|lockf|find)
+      gate_wrap_strip "$@"
+      case "$GATE_WRAP_N" in
+        -) acc=$(gate_floor_merge "$acc" "$(printf '\t\t\t1')") ;;
+        ''|0) ;;
+        *)
+          shift "$GATE_WRAP_N"
+          if [ $# -gt 0 ]; then
+            r=$(gate_floor_chunk "$depth" "$@")
+            acc=$(gate_floor_merge "$acc" "$r")
+          fi ;;
+      esac ;;
+  esac
+  printf '%s' "$acc"
+}
+
+gate_floor_launcher_len() {
+  # gate_floor_launcher_len <xargs|sudo> <argv...> — how many leading words,
+  # argv0 included, belong to the launcher, or `-` for an option it cannot read.
+  # The exec path does not need this: there the two words park outright. Inside a
+  # shell string nothing parks them, so the command they run has to be found.
+  local w="$1" n=1; shift 2
+  while [ $# -gt 0 ]; do
+    case "$w:$1" in
+      *:--) n=$((n + 1)); break ;;
+      xargs:-0|xargs:-o|xargs:-p|xargs:-r|xargs:-t|xargs:-x|xargs:-i|xargs:-e|xargs:--null|xargs:--no-run-if-empty|xargs:--verbose|xargs:--interactive|xargs:--exit|xargs:--open-tty|xargs:--show-limits|xargs:--replace|xargs:--eof)
+        n=$((n + 1)); shift ;;
+      xargs:-[EIJLnPRSsad])
+        [ $# -ge 2 ] || { printf -- '-'; return 0; }
+        n=$((n + 2)); shift 2 ;;
+      xargs:-[EIJLnPRSsadie]?*|xargs:--*=*) n=$((n + 1)); shift ;;
+      sudo:-[ugpCDrtUTR]|sudo:--user|sudo:--group|sudo:--prompt|sudo:--close-from|sudo:--chdir|sudo:--role|sudo:--type|sudo:--other-user|sudo:--command-timeout|sudo:--chroot|sudo:--host)
+        [ $# -ge 2 ] || { printf -- '-'; return 0; }
+        n=$((n + 2)); shift 2 ;;
+      sudo:-[ugpCDrtUTR]?*|sudo:--*=*) n=$((n + 1)); shift ;;
+      sudo:--preserve-env|sudo:--login|sudo:--shell|sudo:--non-interactive|sudo:--background|sudo:--stdin|sudo:--askpass|sudo:--set-home|sudo:--preserve-groups|sudo:--reset-timestamp|sudo:--remove-timestamp)
+        n=$((n + 1)); shift ;;
+      sudo:-[AbEHiKklnPSsVvhe]*)
+        case "${1#-}" in *[!AbEHiKklnPSsVvhe]*) printf -- '-'; return 0 ;; esac
+        n=$((n + 1)); shift ;;
+      *:-*) printf -- '-'; return 0 ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$n"
 }
 
 gate_shell_c_payload() {
@@ -3875,6 +4236,16 @@ gate_env_name_execs() {
 
 gate_count_rest() { printf '%s' "$#"; }
 
+gate_find_exec_count() {
+  # gate_find_exec_count <find argv...> — how many primaries hand a match to
+  # another command.
+  local a n=0
+  for a in "$@"; do
+    case "$a" in -exec|-execdir|-ok|-okdir) n=$((n + 1)) ;; esac
+  done
+  printf '%s' "$n"
+}
+
 # ---------------------------------------------------------------------------
 # 래퍼 풀기, ONCE, FOR EVERY CONSUMER.
 #
@@ -3885,11 +4256,22 @@ gate_count_rest() { printf '%s' "$#"; }
 # worktree write — no mark, no floor, no reach declaration, and a ledger row
 # saying the act stayed in the tree.
 #
+# THE DELEGATING WORDS THE TABLE READS THROUGH ARE HERE TOO. `command`, `lockf`
+# and a `find` with one executing primary are graded by what they wrap, and while
+# only the table knew that, `lockf <file> bash -c '<external act>'` — the very
+# spelling the unattended skills require around a document write — was graded
+# through the lock while every other consumer read the word `lockf`. `rg --pre`
+# is not unwrapped: its program is handed file paths, not argv, so there is no
+# command line to read, and the opaque classifier answers for it instead.
+#
 # `GATE_WRAP_N` is how many leading words the launchers take, or `-` when the
-# form cannot be read (which the grading table already answers `형태 미상` to,
-# so no consumer invents a second verdict). `GATE_ARGV_ENV` keeps the
-# assignments `env` carried, because the identifier check reads a profile or a
-# host out of them and the unwrapped argv no longer holds them.
+# form cannot be read (which the grading table already answers `형태 미상` or
+# `등급 미상` to, so no consumer invents a second verdict). A delegating word
+# with nothing to delegate to — `command -v`, a bare lock, a walk with no
+# executing primary — ends the strip where it stands and keeps what was
+# already unwrapped. `GATE_ARGV_ENV` keeps the assignments `env` carried,
+# because the identifier check reads a profile or a host out of them and the
+# unwrapped argv no longer holds them.
 # ---------------------------------------------------------------------------
 GATE_WRAP_N=0
 GATE_ARGV_ENV=''
@@ -3902,12 +4284,24 @@ gate_wrap_strip() {
       # THE SAME UNWRAPS THE TABLES USE, asked for a count instead of a grade.
       # A second skip loop here would be a second chance to disagree about which
       # word is the command — the failure `gate_unwrap_lockf` records.
-      env)     r=$(shift; gate_unwrap_env gate_count_rest '-' '-' "$@") ;;
+      env)     r=$(shift; gate_unwrap_env gate_count_rest 'stop' '-' "$@") ;;
       timeout|nice|nohup|stdbuf)
-               r=$(shift; gate_unwrap_wrapper "$w" gate_count_rest '-' '-' "$@") ;;
-      time)    r=$(shift; gate_unwrap_time gate_count_rest '-' '-' "$@") ;;
+               r=$(shift; gate_unwrap_wrapper "$w" gate_count_rest 'stop' '-' "$@") ;;
+      time)    r=$(shift; gate_unwrap_time gate_count_rest 'stop' '-' "$@") ;;
+      command) r=$(shift; gate_unwrap_command gate_count_rest 'stop' '-' "$@") ;;
+      lockf)   r=$(shift; gate_unwrap_lockf gate_count_rest 'stop' '-' "$@") ;;
+      find)
+        # A SECOND EXECUTING PRIMARY IS NOT A SUFFIX. The strip hands consumers
+        # the words after the first `-exec`, and a later `-exec` would ride in
+        # them as an argument of the first command — read by nothing.
+        if [ "$(gate_find_exec_count "$@")" -gt 1 ]; then
+          r='-'
+        else
+          r=$(shift; gate_unwrap_find gate_count_rest 'stop' 'stop' "$@")
+        fi ;;
       *) break ;;
     esac
+    [ "$r" = "stop" ] && break
     case "$r" in ''|*[!0-9]*) GATE_WRAP_N='-'; GATE_ARGV_ENV=''; return 0 ;; esac
     used=$(( $# - r ))
     [ "$used" -ge 1 ] || { GATE_WRAP_N='-'; GATE_ARGV_ENV=''; return 0; }
@@ -4032,11 +4426,26 @@ ladder_of_gh_api() {
   # with the grading table so the two cannot part company over an option
   # spelling — `--field=` fell through both loops alike and took the merge rung
   # off a merge call.
+  #
+  # THE PATH IS READ THE WAY THE COLLABORATION SURFACE READS IT. That surface
+  # drops a query and admits a trailing `/`, and while this matched the raw path,
+  # `…/pulls/1/merge?merge_method=squash` was a merge to the surface and no rung
+  # to the ladder — so the review rule and the merge anchor stood aside for the
+  # act they exist to hold. A path the surface will not vouch for still takes the
+  # rung when its query-less form names a merge: guessing high here costs a
+  # refusal, guessing low costs an unreviewed merge. A method the scanner could
+  # not read is not taken for a GET.
   gate_gh_api_scan "$@"
-  case "$GATE_GHAPI_METHOD" in GET|HEAD) return 0 ;; esac
-  case "$GATE_GHAPI_PATH" in
-    */pulls/*/merge) printf '머지' ;;
-    *) : ;;
+  if [ "$GATE_GHAPI_UNREAD" != "1" ]; then
+    case "$GATE_GHAPI_METHOD" in GET|HEAD) return 0 ;; esac
+  fi
+  case "$(gate_gh_collab_endpoint "$GATE_GHAPI_PATH")" in
+    머지) printf '머지'; return 0 ;;
+  esac
+  local _p="${GATE_GHAPI_PATH%%\?*}"
+  while [ "${_p%/}" != "$_p" ]; do _p="${_p%/}"; done
+  case "$_p" in
+    *pulls/*/merge) printf '머지' ;;
   esac
   return 0
 }

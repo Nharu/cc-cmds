@@ -204,7 +204,7 @@ Record the `조정 시작` timestamp as the **first** act of this step. In one n
 
 Severity is re-assigned here, by one labeller, in one pass. It is **never** aggregated across readers by taking a maximum — per-reader severity labels are not comparable, so a maximum is a ratchet rather than a measurement.
 
-**This pass edits the design document, so it takes the document lock.** Wrap each write in `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document, which is a planning violation rather than a queue: do not wait, do not retry — halt with `분류: precondition-failed` naming both writers.
+**This pass edits the design document, so it takes the document lock.** Wrap each write in `/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock" <command>` (absolute path; `-k` and `-t 0` both required). `EX_TEMPFAIL` (75) means another writer holds the document, which is a planning violation rather than a queue: do not wait, do not retry — halt with `분류: precondition-failed` naming both writers. The gate reads through the lock: the command inside it is graded, marked and floored as itself, so a `bash -c` inside the lock is an opaque runner and its `gate.sh exec` carries `--reach` like any other shell write.
 
 ### Step 7: Residual disclosure + HARD STOP
 
