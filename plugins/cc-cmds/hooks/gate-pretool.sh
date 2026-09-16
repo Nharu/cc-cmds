@@ -50,7 +50,7 @@
 
 set -uo pipefail
 
-RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""
+RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""; MANIFEST=""
 
 # THE DIGEST PATH IS EXPANDED HERE, NOT HANDED OVER AS A VARIABLE. The messages
 # below tell a stage to open this file with `Read`, and `Read` takes a literal
@@ -65,6 +65,12 @@ while [ $# -gt 0 ]; do
     --gate)    GATE="$2"; shift 2 ;;
     --ledger)  LEDGER="$2"; shift 2 ;;
     --grant)   GRANT="$2"; shift 2 ;;
+    # HANDED OVER RATHER THAN READ FROM THE ENVIRONMENT. `CC_PIPELINE_MANIFEST`
+    # is exported into the stage's own process tree, so a stage can change what
+    # it says; this argument comes from the settings the gate generated and the
+    # stage does not get to edit those. The ledger and the grant are handed over
+    # for the same reason and this is the third file of that kind.
+    --manifest) MANIFEST="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -589,6 +595,15 @@ hook_folded_verdict() {
   fi
   if [ -n "$GRANT" ] && hook_leaf_under "$fp" "$GRANT" && [ -z "$HOOK_LEAF_TAIL" ]; then
     deny "$(jstr 'gate: 인가 기록은 킥오프만 씁니다 — 런 중에는 읽기 전용입니다')"
+  fi
+  # THE MANIFEST IS AN AUTHORIZATION RECORD AND THE HOOK DID NOT KNOW IT. The
+  # gate's Bash path refuses a write to it; this path did not, so the same edit
+  # was refused through one tool and allowed through the other. `## 인가` carries
+  # `자동 채택` rows, and one more of those means every judgment of that class is
+  # adopted with no person and no reversibility requirement — the same KIND of
+  # value the grant holds, and the grant has had this arm all along.
+  if [ -n "$MANIFEST" ] && hook_leaf_under "$fp" "$MANIFEST" && [ -z "$HOOK_LEAF_TAIL" ]; then
+    deny "$(jstr 'gate: 매니페스트는 킥오프만 씁니다 — 런 중에는 읽기 전용입니다. 「## 인가」의 자동 채택 행은 사람 없이 채택되는 판단 부류를 정하므로, 여기 한 줄 더하는 것은 이 런의 인가를 스스로 넓히는 것입니다')"
   fi
   if [ -n "$cfg" ] && hook_leaf_under "$fp" "$cfg"; then
     hook_cfg_tail_verdict "$HOOK_LEAF_TAIL"
