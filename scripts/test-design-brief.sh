@@ -542,15 +542,22 @@ pin_in 'posture_approved_at' "$LEG" "leg"
 # ----------------------------------------------------------------------------
 # Load-bearing sentences — section-scoped, count-exact
 #
-# These six decide where a re-dispatch may go and what the leg does with a file
+# These seven decide where a re-dispatch may go and what the leg does with a file
 # it finds at the target path. Each literal carries a word of polarity
 # (`forbidden`, `does not reach`, `neither … nor`, `never by existence`,
-# `passed; … parked`) so that reversing the rule's MEANING, and not only
-# deleting its text, turns this suite red. A pin whose literal reads the same
-# either way is a pin against typos, not against a change of mind.
+# `passed; … parked`, `guard below parks`) so that reversing the rule's MEANING,
+# and not only deleting its text, turns this suite red. A pin whose literal
+# reads the same either way is a pin against typos, not against a change of mind.
+#
+# The Step 0 pin holds the whole pre-spawn failure list as one literal. That
+# list once named the target document by existence while Step 1 judged the same
+# file by content, so a stub was parked by one sentence and passed by the other.
+# The list may only defer to Step 1's guard; restoring an existence clause, or
+# inserting one beside the deferral, breaks the literal.
 # ----------------------------------------------------------------------------
 
 LADDER_SECTION='#### Leg pull-check (the first act of every turn while the check is active — CFI-1b)'
+LEG_STEP0_SECTION='### Step 0: Tool loading'
 LEG_GUARD_SECTION='### Step 1: Read the brief and guard it'
 
 pin_once_in_section '**On `phase: resume` rung 1r is forbidden.**' \
@@ -559,6 +566,9 @@ pin_once_in_section '**The `brief_sha256` identical guard of dispatch item 2 doe
   "$DESIGN" "$LADDER_SECTION" "design (ladder)"
 pin_once_in_section "**What keeps a re-dispatch away from a saved document is neither the phase guard alone nor the leg's guard alone.**" \
   "$DESIGN" "$LADDER_SECTION" "design (ladder)"
+
+pin_once_in_section 'If a Step-0 tool cannot be loaded, if the brief fails a guard below, if the target-document guard below parks, or if the ledger stub cannot be created, park **before spawning**' \
+  "$LEG" "$LEG_STEP0_SECTION" "leg (Step 0)"
 
 pin_once_in_section '**Target-document guard.**' \
   "$LEG" "$LEG_GUARD_SECTION" "leg (Step 1 guard)"
