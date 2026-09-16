@@ -1325,6 +1325,12 @@ pre_cone() {
   # `command not found` while the suite still reports green — the trap 9e1be1b
   # closed, in the file that closed it.
   STATE_CONE="$WORK/state-cone"
+  # THE TRANSCRIPT DIRECTORY IS PREAMBLE AND NOT SECTION BODY. Several sections
+  # in this family close an approval by writing a harness frame under it, and the
+  # one that happened to need it first defined it inline — so a cut that takes any
+  # of the others alone died on an unbound variable while the whole-file run
+  # stayed green. Anything a second section will call belongs here from the start.
+  NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
   gateN() {
     local out
     out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
@@ -7179,7 +7185,6 @@ check "열린 절단점=판단 승인 id 를 지목하면 보류로 정산된다
 # A question's answer is what the next step consumes: the row carries the
 # excerpt, its digest and the anchor of the sidecar block holding the full text.
 jq_q=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$jid " | tail -1)" '질문 문면')
-NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
 NSID="12121212-3434-5656-7878-909090909090"
 # The answer is one of the gate's labels, with the recommendation suffix the
 # authoring rule puts on a rendered label: closing reads the label by equality
@@ -9397,6 +9402,95 @@ if [ -n "$ar4_id" ]; then
   esac
 else
   bad "빈 문면 방출" "그 물음의 승인이 발행되지 않았다: $out"
+fi
+
+# --- 31au. An answer auto-resolution closed is not lent to another class ----
+# --- section: 31au | group: cone | covers: act | anchors: 부류 대여 실험용 세그먼트 행이 기록된다 ---
+#
+# The approval id is a hash of `기준 — 근거` and carries no class, so a
+# resubmission with a different class reaches the same answer. Auto-resolution
+# judges the class only on the submission that OPENS the question — a submission
+# finding the approval already `승인` never enters it — so an answer closed for a
+# class that may be adopted, whose adoption row never got written, opened a class
+# that hands risk to the user with nobody asked.
+#
+# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
+# whole field list on that row with no key allowlist and no length cap, so one
+# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
+# approval in a separate, already-completed append. The ledger is append-only and
+# there is no compensating write, so what survives is "answered and unspent".
+#
+# THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
+# resubmission is refused would stay green under a repair that puts the class
+# into the approval id instead: the resubmission would compute a DIFFERENT id,
+# reach no answer at all, and be refused for a reason this section is not about.
+# So the state is pinned first — the approval's last row is `승인`, it was closed
+# by auto-resolution, and no adoption row names it.
+au_seg=SAU1
+seg_row "$au_seg" "$CONE_C" 상태=실행중 선행=없음
+check "부류 대여 실험용 세그먼트 행이 기록된다" "$rc" "0"
+au_std="자동 해소가 닫은 답이 다른 부류에 빌려지는가"
+au_why="채택 행이 상한으로 죽은 뒤를 잰다"
+# 900 bytes with no separator, no multibyte and no substitution — the value only
+# has to be long.
+au_pad=$(printf '%0900d' 0)
+au_act() {
+  # au_act <등급> <판단 부류> <추가 필드>… — one judgment act with auto-resolution
+  # on for that forked gate alone, so the question is closed without a person.
+  local au_g="$1" au_c="$2"; shift 2
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+        bash "$GATE" act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급="$au_g" 기준="$au_std" 근거="$au_why" "판단 부류=$au_c" "$@" 2>&1); rc=$?
+}
+au_last_row() {
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
+}
+au_spent_count() {
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
+}
+
+au_act 2 감사-발견 "메모=$au_pad"
+case "$rc" in
+  0) bad "상한 초과 채택 행" "채택 행이 행 상한을 넘었는데 0 으로 끝났다: $out" ;;
+  *) ok "상한 초과 채택 행을 실은 판단 제출이 비영으로 끝난다 (rc=$rc)" ;;
+esac
+au_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
+  | { grep -F "$au_std" || true; } | tail -1)" '승인 id')
+if [ -z "$au_id" ]; then
+  bad "부류 대여" "그 물음의 승인이 발행되지 않았다: $out"
+else
+  check "그 물음의 마지막 상태는 승인이다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
+  check "그 답은 자동 해소가 닫은 것이다" "$(row_field "$(au_last_row "$au_id")" '처분 사유')" "자동 해소"
+  check "그런데 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+
+  # THE RESUBMISSION. Same standard and rationale, so the same id — and a class
+  # the answer was never given about.
+  au_act 2 팀-구성
+  check "다른 부류를 붙인 재제출은 거절된다" "$rc" "3"
+  check "재제출 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$out" in
+    *"이 판단의 부류로는 채택하지 않습니다"*) ok "그 거절이 부류를 이유로 든다고 말한다" ;;
+    *) bad "부류 대여 거절 문면" "$out" ;;
+  esac
+
+  # THE SECOND ARM, ON THE SAME ANSWER. A grade-1 judgment whose class the
+  # auto-adoption floor will not take is escalated to an approval BEFORE the
+  # recording arm runs, and that escalation resolves against this same id. So the
+  # answer is reachable twice within one act, through two arms, and refusing it in
+  # one of them leaves the other open. Auto-resolution is OFF for this call so the
+  # escalation survives to the resolution block rather than being folded to a
+  # park cell.
+  gateN act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=1 기준="$au_std" 근거="$au_why" "판단 부류=팀-구성" "되돌리는 법=git checkout -- ."
+  check "같은 답을 등급 1 로 노리는 제출도 거절된다" "$rc" "3"
+  check "등급 1 재시도 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$msg" in
+    *"이 행위의 부류로는 채택하지 않습니다"*) ok "행위 경로의 거절도 부류를 이유로 든다" ;;
+    *) bad "등급 1 부류 대여 거절 문면" "$msg" ;;
+  esac
+  check "그 재시도가 승인을 다시 대기로 열지 않는다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
 fi
 
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------

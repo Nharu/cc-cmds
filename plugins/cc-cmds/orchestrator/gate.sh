@@ -7795,17 +7795,27 @@ gate_judgment_fields_ok() {
   # for a question nobody asked. The most fundamental reason that holds must
   # win, and a missing field is more fundamental than an unmet floor.
   #
-  # THE TWO NEW FIELDS ARE REQUIRED AT GRADE 1 AND NOWHERE ELSE. `판단 부류` has
-  # exactly one consumer — arm (a) of that floor — and the floor runs only when
-  # the grade is 1; `되돌리는 법` is read by arm (b) and by the morning's account
-  # of what can be undone. A grade-2 judgment reaches neither floor arm. It does
-  # NOT necessarily reach a person: in the default configuration its question is
-  # closed by auto-resolution instead, and that resolution adopts only a class
-  # inside the vocabulary and outside the forbidden pair — so a grade-2 judgment
-  # submitted without a class is refused there rather than adopted, and not
-  # demanding the class here opens nothing. Demanding it would make ESCALATING a
-  # decision harder than adopting one, which is the wrong polarity, and it would
-  # strand a router mid-run for a field neither of its escalations can use.
+  # THE TWO NEW FIELDS ARE REQUIRED AT GRADE 1 AND NOWHERE ELSE. `판단 부류` is
+  # what arm (a) of that floor matches on and `되돌리는 법` is what arm (b) grades
+  # and what the morning reads as the account of what can be undone, and the
+  # floor runs only when the grade is 1. A grade-2 judgment reaches neither floor
+  # arm. It does NOT necessarily reach a person: in the default configuration its
+  # question is closed by auto-resolution instead, and that resolution adopts only
+  # a class inside the vocabulary and outside the forbidden pair — so a grade-2
+  # judgment submitted without a class is refused there rather than adopted.
+  # Demanding the class here would make ESCALATING a decision harder than adopting
+  # one, which is the wrong polarity, and it would strand a router mid-run for a
+  # field neither of its escalations can use.
+  #
+  # THAT LAST ARGUMENT HAD A WAY AROUND IT AND NO LONGER CARRIES THE WEIGHT ON ITS
+  # OWN. Auto-resolution judges the class only on the submission that OPENS the
+  # question; a submission that finds the approval already `승인` never enters it.
+  # The approval id is a hash of `기준 — 근거` with no class in it, so a
+  # resubmission carrying a class that resolution would have refused reached an
+  # answer given about a different one. What makes leaving the field optional here
+  # open nothing is that both acting arms now ask, before spending an answer
+  # auto-resolution closed, whether THIS submission's class may be adopted with
+  # nobody asked.
   local jk jcls jgrade
   jgrade=$(gate_field_of '등급' "$@")
   for jk in '등급' '기준' '근거'; do
@@ -8625,6 +8635,24 @@ EOF
             if gate_has_row '자율 승인' "| 해소 승인=$jq_id |"; then
               warn "승인 $jq_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
               warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
+              return "$GATE_EXIT_RULE"
+            fi
+            # AN ANSWER AUTO-RESOLUTION CLOSED IS NOT LENT TO A CLASS IT NEVER
+            # SAW. The approval id is a hash of `기준 — 근거` and carries no
+            # class, so a resubmission with a different class reaches the same
+            # answer — and auto-resolution judges the class only on the
+            # submission that OPENS the question, which a submission finding the
+            # approval already `승인` never is. An answer it closed for an
+            # adoptable class, whose adoption row never got written because the
+            # gate stopped between the two appends, survives as answered and
+            # unspent; without this it opened a class that hands risk to the
+            # user with nobody asked. An answer closed just now for this very
+            # submission, and an answer a person gave, still open the judgment.
+            if [ "${GATE_AUTO_RESOLVED_APPROVAL:-}" != "$jq_id" ] \
+               && [ "$(gate_row_field "$(gate_approval_last_row "$jq_id")" '처분 사유')" = "자동 해소" ] \
+               && ! gate_judgment_class_adoptable "$jcls"; then
+              warn "승인 $jq_id 은 앞선 자동 해소가 닫은 답이라 이 판단의 부류로는 채택하지 않습니다 (부류 ${jcls:-없음})"
+              warn "이 부류로 올리려면 기준과 근거를 달리한 새 물음으로 다시 물어야 합니다"
               return "$GATE_EXIT_RULE"
             fi
             log "승인 $jq_id 이 해소되어 이 판단을 채택으로 엽니다"
@@ -9763,6 +9791,27 @@ gate_verb_act() {
         if [ "$kind" = "judgment" ] && gate_has_row '자율 승인' "| 해소 승인=$ap_id |"; then
           warn "승인 $ap_id 은 이미 한 번 채택에 쓰였습니다 — 답 하나는 판단 하나를 엽니다"
           warn "같은 기준으로 다른 판단을 올리는 것이라면 새 질문으로 다시 물어야 합니다"
+        elif [ "$kind" = "judgment" ] \
+             && [ "${GATE_AUTO_RESOLVED_APPROVAL:-}" != "$ap_id" ] \
+             && [ "$(gate_row_field "$(gate_approval_last_row "$ap_id")" '처분 사유')" = "자동 해소" ] \
+             && ! gate_judgment_class_adoptable "$GATE_JUDGMENT_CLASS"; then
+          # THE SAME FLOOR THE RECORDING ARM APPLIES, because both run inside one
+          # act and closing only one of them leaves the other open. A grade-1
+          # judgment the auto-adoption floor will not take is escalated to an
+          # approval here, and that escalation resolves against the id the
+          # recording arm would have resolved against — `기준 — 근거` and nothing
+          # else — so the class this submission carries is not the class the
+          # answer was given about.
+          #
+          # A REFUSAL AND NOT A RE-ISSUE. Leaving `rules_rc` at
+          # `GATE_EXIT_APPROVAL` drops through to the issuing path below and
+          # re-opens the very question, putting the same standard and rationale in
+          # front of a person with nothing in the text to tell the two classes
+          # apart. The `무효` and `거부` arms below refuse outright for the same
+          # reason.
+          warn "승인 $ap_id 은 앞선 자동 해소가 닫은 답이라 이 행위의 부류로는 채택하지 않습니다 (부류 ${GATE_JUDGMENT_CLASS:-없음})"
+          warn "이 부류로 올리려면 기준과 근거를 달리한 새 물음으로 다시 물어야 합니다"
+          exit "$GATE_EXIT_RULE"
         elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias"; then
           # THE TUPLE IS WHAT MAKES AN ACT APPROVAL EXPIRE. A question's answer
           # is durable and carries no tuple; an act's answer was given about a
