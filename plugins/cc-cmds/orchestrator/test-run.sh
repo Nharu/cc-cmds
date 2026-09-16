@@ -868,6 +868,22 @@ else
   ok "12자리 아닌 aws-account 가 거부된다"
 fi
 
+# 계정 번호만 선언한 대상은 거부가 아니라 경고다 — 그 값은 argv 에서 대조할 수
+# 없어 aws 의 dev 신고가 park 되므로, 선언한 사람이 그 사실을 킥오프에서 알아야 한다.
+mf_with " | dev 식별자=aws-account:123456789012"
+acct_out=$( ( check_manifest ) 2>&1 ); acct_rc=$?
+check "aws-account 만 선언한 대상은 거부되지 않는다" "$acct_rc" "0"
+case "$acct_out" in
+  *"aws-account 만 선언했습니다"*) ok "그 대상에 aws-profile 을 함께 선언하라는 경고가 선다" ;;
+  *) bad "조건 14" "aws-account 단독 선언에 경고가 없다: $acct_out" ;;
+esac
+mf_with " | dev 식별자=aws-account:123456789012,aws-profile:dev"
+acct_out=$( ( check_manifest ) 2>&1 )
+case "$acct_out" in
+  *"aws-account 만 선언했습니다"*) bad "조건 14" "aws-profile 과 함께 선언했는데도 경고가 섰다" ;;
+  *) ok "aws-profile 과 함께 선언하면 그 경고가 서지 않는다" ;;
+esac
+
 mf_with " | dev 식별자=dir:relative/path"
 if ( check_manifest ) >/dev/null 2>&1; then
   bad "조건 14" "상대 경로 dir 이 통과했다"

@@ -377,7 +377,11 @@ never compared.
     is the default, and it means the run believes a stage's `dev` claim because
     there is nothing to compare it against. A typo the checker passed over reads
     at runtime as exactly that absence, which is why this refuses rather than
-    warns.
+    warns. One arm is a **warning**: an `aws-account` with no `aws-profile` on the
+    same target. The gate cannot read an account number out of argv, so every
+    `aws` act declared `dev` on that target answers `대조불가` and parks unless a
+    `사전 인가` row names its form — the declaration is not wrong, it is not enough
+    on its own. `domain` needs no companion: a host tool compares against it alone.
 15. **`배포트리거 식별자` on the target rows** — same shape, kinds `branch` ·
     `workflow` · `jenkins-job` · `argv`, a kind outside that set is a **hard
     stop**. One arm is a **warning** instead: a `branch` trigger on a target whose
@@ -652,7 +656,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.유도 도달` | `-` \| `기기전역` \| `배포트리거` |
 | `자율 승인.식별자 대조` | `-` \| `미선언` \| `일치` \| `대조불가` (`불일치`·`부재` park rather than land on a row) |
 | `blocked.도달 판정` | `비밀출력` \| `신고등급한도` \| `도달미상` \| `기기전역` \| `push원격불일치` \| `도달모순` \| `dev파괴` \| `dev식별자불일치` \| `dev식별자부재` \| `dev대조불가` \| `파괴형태미명시` \| `prod인가없음` \| `배포트리거인가없음` |
-| `target.dev 식별자` | optional; `<종류>:<값>` elements separated by `,` — `aws-profile` \| `aws-account`(12 digits) \| `kube-context` \| `host` \| `domain` \| `dir`(absolute) |
+| `target.dev 식별자` | optional; `<종류>:<값>` elements separated by `,` — `aws-profile` \| `aws-account`(12 digits; passes an `aws` dev claim only beside `aws-profile`) \| `kube-context` \| `host` \| `domain`(compared on its own by host tools) \| `dir`(absolute) |
 | `target.배포트리거 식별자` | optional; same shape — `branch` \| `workflow` \| `jenkins-job` \| `argv` |
 | `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
