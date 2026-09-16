@@ -4275,6 +4275,16 @@ gate_snapshot() {
   gate_pending_approvals_json
   printf '  ],\n'
 
+  # ANSWERED AND NOT YET CONSUMED — the array a ROUTER-driven run reads, and the
+  # only consumer it has. The fixed-graph traversal reaches the same answers
+  # through its own relay; a run the router drives never enters that loop, so
+  # without this key an answered judgment reaches nobody there. Both readings
+  # compute from the same ledger facts so they cannot disagree about which
+  # answers are outstanding.
+  printf '  "answered_judgments": [\n'
+  gate_answered_judgments_json
+  printf '  ],\n'
+
   # WHAT IS KEEPING THE RUN FROM ENDING, in the object the router is contracted
   # to read every turn. The top-level keys carried the goal, the targets, the
   # obligations, the approvals, the damage count and the two digests — and
@@ -6598,6 +6608,76 @@ gate_main() {
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
   esac
+}
+
+gate_answered_judgments_json() {
+  # The judgments a person has ANSWERED and no stage has yet used.
+  #
+  # THE SNAPSHOT USED TO SHOW ONLY `대기`, and it carries no `절단점` either — so
+  # a judgment that had been answered left the pending list and appeared nowhere
+  # else. The answer was in the ledger, in the sidecar and in the approval's
+  # state, and the run still could not move: the router's declared input is the
+  # snapshot, and the snapshot had stopped mentioning it. That is the same
+  # broken-consumer shape this whole change exists to close, one field later.
+  #
+  # WHAT THE ROUTER DOES WITH AN ELEMENT is decided by the router — the gate says
+  # what is true, not what to run next. Each element is a RE-DISPATCH CANDIDATE
+  # for the stage that emitted the judgment, which is why `segment` is on it;
+  # without that field the router would know an answer exists and not know whom
+  # to hand it to.
+  #
+  # THE SPENT TEST REUSES THE PREDICATE THAT ALREADY EXISTS. A `자율 승인` row
+  # naming `해소 승인=<id>` is what "this answer opened an adoption" already
+  # means in two other places. A second bookkeeping of consumption would be a
+  # second floor, and two floors disagree.
+  #
+  # `막는 세그먼트` IS READ OFF THE ISSUING ROW, not the last one. The rows that
+  # close an approval carry the question and the answer and no segment, so a
+  # `tail -1` — which is right for state — yields an empty segment here. The
+  # narrowing to `절단점=판단` picks the issuing row for both duties at once.
+  local ids id row st iss seg first=1
+  # Pinned for the same reason as `gate_pending_approvals_json` above, and the
+  # note there about `sort -u` applies here unchanged: the order is decided by
+  # `LC_COLLATE`, which the driver has already fixed to C, and `LC_CTYPE` does
+  # not enter into it. This function emits INTO the snapshot object too, so a
+  # `tr`/`sed` that dies on an invalid byte does not merely lose this array — it
+  # truncates the JSON at that point and every field after it, `chain_intact`
+  # included, never reaches the reader. The ledger a reader most needs a verdict
+  # about is precisely the malformed one.
+  local LC_CTYPE=C; export LC_CTYPE
+  ids=$(gate_rows '승인' \
+        | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
+  for id in $ids; do
+    [ -n "$id" ] || continue
+    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
+    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    if gate_has_row '자율 승인' "해소 승인=$id "; then continue; fi
+    seg=$(gate_row_field "$iss" '막는 세그먼트')
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    # A MISSING SIDECAR IS REPORTED AS `null`, NOT AS A MISSING ELEMENT. The
+    # path was emitted unconditionally, so a run whose `$RUN_DIR` had been
+    # collected handed the router a path to a file that is not there — and the
+    # obvious repair, dropping the element, is worse: an element that vanishes
+    # is indistinguishable from one a stage consumed, which is the state the
+    # spent test above is the sole owner of. `null` keeps the candidate visible
+    # and says the bytes are gone, and the ledger's `답변 문면` still holds the
+    # clipped copy.
+    if [ -f "$RUN_DIR/answer/$id.md" ]; then
+      printf '    {"id": "%s", "segment": "%s", "answer": "%s"}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")" \
+        "$(gate_json_escape "$RUN_DIR/answer/$id.md")"
+    else
+      printf '    {"id": "%s", "segment": "%s", "answer": null}' \
+        "$(gate_json_escape "$id")" \
+        "$(gate_json_escape "${seg:--}")"
+    fi
+  done
+  [ "$first" = "1" ] || printf '\n'
 }
 
 gate_answer_servable() {

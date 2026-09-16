@@ -7387,6 +7387,18 @@ ans() {
 ans "$jid"
 check "답 채널이 그 승인의 답을 내준다" "$ans_rc" "0"
 check "그 바이트가 사람이 고른 것 그대로다" "$ans_out" "$ANSWER"
+# 라우터가 도는 런은 고정 그래프 루프에 들어가지 않으므로, 그 런에서 답이 온 판단에
+# 닿는 유일한 표면이 스냅숏의 이 배열이다. 두 읽기가 같은 원장 사실로 계산되므로
+# 어느 답이 미소비인지를 두고 서로 다른 답을 낼 수 없다.
+snap_aj=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null)
+case "$(printf '%s' "$snap_aj" | jq -r --arg i "$jid" '.answered_judgments[]? | select(.id==$i) | .id')" in
+  "$jid") ok "스냅숏의 답이 온 판단 배열이 그 승인을 싣는다" ;;
+  *) bad "스냅숏 배열" "$(printf '%s' "$snap_aj" | jq -c '.answered_judgments' 2>/dev/null)" ;;
+esac
+case "$(printf '%s' "$snap_aj" | jq -r --arg i "$jid" '.answered_judgments[]? | select(.id==$i) | .answer')" in
+  */answer/*) ok "그 항목이 답 파일의 경로를 싣는다" ;;
+  *) bad "스냅숏 배열" "답 경로가 없다: $(printf '%s' "$snap_aj" | jq -c '.answered_judgments' 2>/dev/null)" ;;
+esac
 ans ""
 case "$ans_out" in
   *"$jid"*) ok "id 없는 형태가 답을 가진 승인 id 를 목록으로 낸다" ;;
