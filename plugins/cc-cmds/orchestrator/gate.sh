@@ -6241,9 +6241,100 @@ gate_main() {
       [ -n "$approval" ] || { printf 'gate: prompt 는 --approval 이 필요합니다\n' >&2; exit 2; }
       gate_prompt "$approval"
       ;;
+    answers)
+      # Reading, and the reader is a STAGE rather than the router: it picks up
+      # what the person said in answer to the judgment it raised. With an id it
+      # prints that answer, without one it lists the ids that have one.
+      gate_answers "$approval"
+      ;;
     *)
       printf 'gate: 알 수 없는 동사: %s\n' "$verb" >&2; exit 2 ;;
   esac
+}
+
+gate_answer_servable() {
+  # gate_answer_servable <승인 id> — the predicate BOTH forms of `answers` ask,
+  # written once. It warns on the way out naming which fact is missing; the
+  # listing form silences that stream rather than keeping a second, quieter copy
+  # of the same tests, because two copies is how one of them comes to be fixed
+  # alone.
+  #
+  # FOUR FACTS: the three ledger facts `gate_answered_judgments_json` computes,
+  # plus the sidecar being on disk. The STATE test is the one that used to be
+  # missing on this side, and its absence is not cosmetic. `gate_close` writes
+  # the answer sidecar BEFORE it branches on a refusal, so a judgment closed as
+  # 거부 or 무효 leaves a fully formed file behind — and without this test the
+  # door handed a re-dispatched stage the text of a REFUSAL to act on as if it
+  # were an instruction.
+  #
+  # The sidecar write is left where it is. A refusal's own words are a durable
+  # record of why the answer was no, and that record has value; what was wrong
+  # is the reader, so the reader is where the test goes.
+  local id="$1" row iss st
+  row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+  [ -n "$row" ] || { warn "그 승인 id 가 원장에 없습니다: $id"; return 1; }
+  st=$(gate_row_field "$row" '상태')
+  [ "$st" = "승인" ] || { warn "그 승인은 답으로 닫히지 않았습니다 (상태=${st:-없음}) — 거부·무효로 닫힌 판단의 거절문은 답이 아닙니다: $id"; return 1; }
+  iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
+         | { grep -F '절단점=판단 ' || true; } | tail -1)
+  [ -n "$iss" ] || { warn "그 승인은 판단 물음이 아닙니다 — 답 사이드카는 절단점=판단 에만 있습니다: $id"; return 1; }
+  [ -f "$RUN_DIR/answer/$id.md" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
+  return 0
+}
+
+gate_answers() {
+  # gate.sh answers [<승인 id>] — the read-only door onto the answer sidecars.
+  #
+  # READ-ONLY AND SEPARATE FROM `close` because the readers are different
+  # entities: `close` is the router recording a resolution, and this is the
+  # re-dispatched STAGE picking up what the person said. A stage that had to
+  # call `close` to see an answer would be a stage holding a recording verb.
+  #
+  # With an id it prints that answer's bytes; without one it lists the ids that
+  # pass the same tests, one per line, which is what a reader with no id needs
+  # to get one. Neither form fails when the directory is absent — "no answers
+  # yet" is the ordinary state of a run and is not an error.
+  #
+  # THE LEDGER IS ASKED FIRST AND THE FILESYSTEM SECOND. What this verb hands
+  # out is the bytes a person typed, and it used to decide on a path existing
+  # under `$RUN_DIR/answer/` and nothing else — so any file that landed in that
+  # directory was served as an answer, with no row behind it saying a person had
+  # ever been asked. The predicate is the one `gate_answered_judgments_json`
+  # already computes, and it is THREE ledger facts: a `승인` row carries this id,
+  # that row's latest `상태` is `승인`, and the row that ISSUED it has
+  # `절단점=판단`. This comment used to name the first and the third while
+  # calling them three, and the middle one — the state — was the one the code
+  # was missing too. An enumeration that miscounts itself is how the gap got
+  # past a reader.
+  #
+  # No new state, and the two readers of an answer cannot disagree about whether
+  # it is one.
+  local id="${1:-}"
+  # THE CHARACTER-TYPE PIN, for the `gate_row_field` call the predicate makes.
+  # `tr` and `sed` abort on a byte that is not valid in the locale's encoding,
+  # and a ledger row is the input most likely to hold one. `local` is dynamic
+  # scope in this shell, so this covers the extractor as called from the helper
+  # below without touching the shared extractor itself — that one has other
+  # callers and a pin of its own to earn.
+  local LC_CTYPE=C; export LC_CTYPE
+  if [ -n "$id" ]; then
+    gate_answer_servable "$id" || return 1
+    cat "$RUN_DIR/answer/$id.md"
+    return 0
+  fi
+  [ -d "$RUN_DIR/answer" ] || return 0
+  # THE LISTING GOES THROUGH THE SAME PREDICATE. It used to be a bare `find`
+  # with no ledger question in it at all, while the comment above calls the
+  # id-less form an intended use — so it handed a reader the ids the id form
+  # would then refuse, one line at a time, and the reader had no way to tell
+  # which of them were answers.
+  find "$RUN_DIR/answer" -maxdepth 1 -type f -name '*.md' 2>/dev/null \
+    | sed 's#.*/##;s#\.md$##' | sort \
+    | while IFS= read -r aid; do
+        [ -n "$aid" ] || continue
+        gate_answer_servable "$aid" 2>/dev/null || continue
+        printf '%s\n' "$aid"
+      done
 }
 
 gate_field_of() {
@@ -12047,6 +12138,26 @@ gate_close() {
     aex=$(gate_row_safe "$afull" "$GATE_A_EXCERPT")
     gate_approval_sidecar_write "$id" answer '답변' "$afull" \
       || warn "승인 사이드카에 답변 전문을 쓰지 못했습니다 — 행은 종결되나 앵커 $anchor 의 답변 구간이 비어 있습니다"
+    # THE ANSWER STORE, BESIDE THE APPROVAL SIDECAR AND NOT INSTEAD OF IT. The
+    # sidecar under `docs/` is the tracked record a PERSON reads in the morning;
+    # this copy is what the STAGE that asked reads when it comes back. Two
+    # readers, two lifetimes — so neither replaces the other, and this one lives
+    # in the volatile run directory precisely because a stage picking up its own
+    # answer must not make a tracked-tree write.
+    #
+    # WRITTEN FOR EVERY LABEL, before the disposition is branched on. A refusal's
+    # own words are a durable record of why the answer was no, and that record
+    # has value; what must not happen is handing those words to a stage as an
+    # instruction. `gate_answer_servable` is what refuses that, and the test
+    # belongs to the READER rather than here — a writer that decided which
+    # answers are worth keeping would be deciding it once, at the only moment
+    # the text exists.
+    #
+    # `절단점=판단` ONLY, which is where this line sits: an act approval's answer
+    # is a disposition with nothing for a stage to resume from, and serving one
+    # would make the listing show entries that are not answers.
+    mkdir -p "$RUN_DIR/answer"
+    printf '%s\n' "$afull" > "$RUN_DIR/answer/$id.md"
     gate_append '승인' "승인 id=$id" "상태=$label" "질문 문면=$q" \
       "답변 문면=$aex" "해소 시각=$(now_iso)" \
       "응답 토큰=$tok" "답변 다이제스트=$adig" "사이드카 앵커=$anchor"

@@ -7247,6 +7247,16 @@ NSID="12121212-3434-5656-7878-909090909090"
 # in NORMAL form. What this fixture measures is that the answer BYTES — the
 # label as chosen — reach the row, and its digest and anchor beside them.
 ANSWER="승인 ← 추천"
+# 상태 검사 — 닫히지 않은 판단의 자리에 파일이 있어도 답이 아니다. `close` 는 답
+# 사이드카를 처분 분기보다 먼저 쓰므로, 거부·무효로 닫힌 판단도 완전한 파일을 남긴다.
+# 그 검사가 없으면 문이 재파견된 스테이지에게 거절문을 지시로 건넨다.
+CANS="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer"
+mkdir -p "$CANS"
+printf '%s\n' "아직 답이 아니다" > "$CANS/$jid.md"
+ans_pre=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" --approval "$jid" 2>/dev/null); ans_pre_rc=$?
+check "닫히지 않은 판단은 파일이 있어도 답으로 내주지 않는다" "$ans_pre_rc" "1"
+check "그때 바이트도 내주지 않는다" "$ans_pre" ""
+rm -f "$CANS/$jid.md"
 : > "$NTX/$NSID.jsonl"
 ntok=$(auq_frame "$NTX/$NSID.jsonl" "$jid" "$jq_q" "$ANSWER" "$ANSWER" 거부 무효)
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
@@ -7266,6 +7276,35 @@ if [ -f "$NSC" ] && grep -qxF "## 승인 $jid" "$NSC" && grep -qxF "$ANSWER" "$N
 else
   bad "승인 사이드카" "$(sed -n '1,3p' "$NSC" 2>/dev/null)"
 fi
+# 답 채널 — 답을 집어 가는 것은 라우터가 아니라 그 판단을 낸 스테이지다. 그래서
+# `close` 와 따로 있는 읽기 동사다: 답을 보려고 `close` 를 불러야 하는 스테이지는
+# 기록 동사를 쥔 스테이지다.
+ans() {
+  # 표준출력만 잡는다. 이 동사가 내주는 것은 사람이 친 바이트이고 경고는 표준오류로
+  # 가므로, 둘을 섞으면 답에 진단이 딸려 나온 것을 답으로 읽는다.
+  ans_out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" ${1:+--approval "$1"} 2>/dev/null)
+  ans_rc=$?
+}
+ans "$jid"
+check "답 채널이 그 승인의 답을 내준다" "$ans_rc" "0"
+check "그 바이트가 사람이 고른 것 그대로다" "$ans_out" "$ANSWER"
+ans ""
+case "$ans_out" in
+  *"$jid"*) ok "id 없는 형태가 답을 가진 승인 id 를 목록으로 낸다" ;;
+  *) bad "답 목록" "${ans_out:-(빈 출력)}" ;;
+esac
+# 원장이 먼저이고 파일시스템이 나중이다. 행 없이 디렉터리에 떨어진 파일은 답이
+# 아니다 — 사람이 물음을 받은 적이 없다는 뜻이다.
+printf '%s\n' "심어진 것" > "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/심은-id.md"
+ans "심은-id"
+check "원장에 행이 없는 파일은 답으로 내주지 않는다" "$ans_rc" "1"
+ans ""
+case "$ans_out" in
+  *심은-id*) bad "답 목록" "행 없는 파일이 목록에 올랐다: $ans_out" ;;
+  *) ok "목록도 같은 술어를 지난다 (id 형태가 거절할 것을 목록이 내주지 않는다)" ;;
+esac
+rm -f "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/심은-id.md"
+
 # The act approval keeps the fixed literal, so no existing reader changes.
 aidN=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)" '승인 id')
 if [ -n "$aidN" ]; then
@@ -7280,6 +7319,12 @@ if [ -n "$aidN" ]; then
     *"답변 문면=트랜스크립트 판독"*) ok "행위 승인은 기존 리터럴을 유지한다 (기존 시험과 원장 독자가 깨지지 않는다)" ;;
     *) bad "행위 승인 문면" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aidN " | tail -1)" ;;
   esac
+  # 행위 승인의 답은 처분이지 스테이지가 이어서 할 것이 아니다. 닫힌 뒤에 재도
+  # 이유가 하나로 좁혀진다 — 상태는 승인이고 절단점만 판단이 아니다.
+  printf '%s\n' "행위 승인의 답" > "$CANS/$aidN.md"
+  ans_act=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" --approval "$aidN" 2>/dev/null); ans_act_rc=$?
+  check "행위 승인은 답 채널이 내주지 않는다 (절단점=판단 만 있다)" "$ans_act_rc" "1"
+  rm -f "$CANS/$aidN.md"
 else
   bad "행위 승인" "닫을 대기 중 행위 승인을 찾지 못했다"
 fi
