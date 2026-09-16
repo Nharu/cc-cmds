@@ -1334,6 +1334,24 @@ pre_base() {
     msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
   HL() { cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+  # 14m's state home, for the same reason as `STATE_LATE`: 14l leaves the base
+  # home's surface moved, and 14m asserts on a settings tree it can trust. A home
+  # of its own rather than `STATE_LATE`, because the sections that use that one
+  # take its first call as their run open.
+  STATE_SEG="$WORK/state-seg"
+  SETTINGS_SEG="$STATE_SEG/cc-cmds/run/R1/settings"
+  gateM() {
+    local out
+    out=$(cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc "$@" 2>&1); rc=$?
+    msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  }
+  HM() { cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+  # seg_wt_row <id> <worktree> [<state>] — a `segment` row for target infra
+  # naming that worktree, written through the gate like a router would.
+  seg_wt_row() {
+    gateM act --manifest "$FX_MANIFEST" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HM)" --rationale x -- 상태="${3:-계획됨}" 워크트리="$2" 선행=없음
+  }
   cp "$FX_MANIFEST" "$WORK/manifest-clean.md"
   # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
   # than only in the section that first sources them. Two base sections stand a
@@ -5075,6 +5093,154 @@ out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --se
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1); rc=$?
 check "남이 고친 표면은 여전히 종료 코드 7 이다" "$rc" "7"
 set_exec_wt ""
+
+# ---------------------------------------------------------------------------
+# 14m. A segment's own worktree reaches the settings and the act's directory
+# --- section: 14m | group: base | covers: snapshot, act, exec, plan | needs: 14c | anchors: 세그먼트 행의 워크트리가 다음 게이트 호출에서 인가 목록에 들어간다 ---
+#
+# The router makes one worktree per segment after kickoff and names it on the
+# `segment` row, and the gate read that row nowhere: the settings listed only the
+# manifest's worktrees and every act ran in the target's tree. Measured: stages
+# worked in the shared main worktree, and the router switched that tree onto the
+# segment's branch to make anything land.
+#
+# `LINKED` is the fixture repository's linked worktree made by 14c, whose HEAD
+# is one commit apart from `WT`; `STATE_SEG`, `gateM`, `HM` and `seg_wt_row` are
+# set in `pre_base`, in the head.
+# ---------------------------------------------------------------------------
+if [ -d "$LINKED" ]; then
+  # Run open for this home first, so the widening below is a re-derivation.
+  HM >/dev/null
+  if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+       "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
+    bad "세그먼트 워크트리 전제" "행을 쓰기 전부터 목록에 들어 있다 — 아래 단언이 공허하다"
+  else
+    ok "세그먼트 행을 쓰기 전에는 그 워크트리가 목록에 없다"
+  fi
+  n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
+  seg_wt_row SM "$LINKED"
+  check "세그먼트 행이 기록된다" "$rc" "0"
+  HM >/dev/null
+  if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+       "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
+    ok "세그먼트 행의 워크트리가 다음 게이트 호출에서 인가 목록에 들어간다"
+  else
+    bad "세그먼트 워크트리 인가" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  check "라우팅 좌석의 목록은 여전히 비어 있다" \
+        "$(jq '.permissions.additionalDirectories | length' "$SETTINGS_SEG/shift.json")" "0"
+  n_rows_after=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
+  if [ "${n_rows_after:-0}" -gt "${n_rows_before:-0}" ]; then
+    ok "세그먼트 워크트리로 넓힌 것이 원장에 행으로 남는다"
+  else
+    bad "세그먼트 워크트리 확장 기록" "행이 늘지 않았다: $n_rows_before → $n_rows_after"
+  fi
+  # The key reads the segment worktree SET, not the ledger: a row that names no
+  # new worktree must not re-derive.
+  d_seg=$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")
+  n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
+  seg_wt_row SM "$LINKED" 실행중
+  HM >/dev/null
+  check "새 워크트리가 없는 세그먼트 행은 목록을 다시 쓰지 않는다" \
+        "$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_rows_before"
+  check "그때 표면 기준선도 그대로다" "$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")" "$d_seg"
+
+  # NOT A WORKTREE OF THE TARGET: another repository, and a path that does not
+  # exist. Neither widens anything, and a dispatch into either is refused before
+  # the stage starts rather than falling back to the target's own tree.
+  OTHER_SEG="$WORK/other-seg"
+  ( git init -q "$OTHER_SEG" && cd "$OTHER_SEG" \
+    && git -c user.email=t@example.invalid -c user.name=T commit -q --allow-empty -m one ) >/dev/null 2>&1
+  NOWHERE_SEG="$WORK/nowhere"
+  seg_wt_row SO "$OTHER_SEG"
+  seg_wt_row SN "$NOWHERE_SEG"
+  HM >/dev/null
+  for d in "$OTHER_SEG" "$NOWHERE_SEG"; do
+    if jq -e --arg d "$d" '.permissions.additionalDirectories | index($d)' \
+         "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
+      bad "세그먼트 워크트리 한정" "대상의 워크트리가 아닌 '$d' 가 목록에 들어갔다"
+    else
+      ok "대상의 워크트리가 아닌 세그먼트 워크트리는 목록에 들지 않는다 ($(basename "$d"))"
+    fi
+  done
+  for s in SO SN; do
+    case "$s" in SO) d="$OTHER_SEG" ;; *) d="$NOWHERE_SEG" ;; esac
+    gateM act --manifest "$FX_MANIFEST" --kind skill --target infra --segment "$s" --cutpoint 커밋 \
+          --surface 워크트리쓰기 --snapshot-digest "$(HM)" --rationale x -- review x
+    check "대상의 워크트리가 아닌 세그먼트로의 디스패치는 종료 코드 10 이다 ($s)" "$rc" "10"
+    case "$msg" in
+      *"$d"*) ok "그 거절이 세그먼트 행의 워크트리 값을 이름 짓는다 ($s)" ;;
+      *) bad "디스패치 거절 문면 ($s)" "$msg" ;;
+    esac
+  done
+
+  # THE ACT RUNS THERE. `LINKED` holds a file `WT` does not, so the listing
+  # tells the two trees apart.
+  want_ls=$(cd "$LINKED" && ls)
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
+        --segment SM --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HM)" --rationale x -- ls 2>/dev/null)
+  check "세그먼트를 단 행위는 그 세그먼트의 워크트리에서 돈다" "$out" "$want_ls"
+
+  # AND THE APPROVAL IS FROZEN AND COMPARED AGAINST THAT SAME TREE. Three readers
+  # share one resolution; if only the act moved, an answer would stay "fresh"
+  # through commits landing in the tree the act runs in.
+  main_head=$(cd "$WT" && git rev-parse HEAD)
+  seg_head=$(cd "$LINKED" && git rev-parse HEAD)
+  if [ "$main_head" != "$seg_head" ]; then
+    ok "두 트리의 HEAD 가 다르다 (아래 동결 단언이 공허하지 않다)"
+  else
+    bad "픽스처 전제" "메인 워크트리와 세그먼트 워크트리의 HEAD 가 같다"
+  fi
+  gateM act --manifest "$FX_MANIFEST" --kind x --target infra --segment SM --cutpoint push \
+        --surface 외부상태변경 --snapshot-digest "$(HM)" --rationale x -- scp -V
+  check "구속 튜플 실험용 행위가 승인을 발행한다 (세그먼트 워크트리)" "$rc" "5"
+  sm_row=$(grep -E '^- `승인`' "$FX_LEDGER" | grep -F '상태=대기' | grep -F '막는 세그먼트=SM ' | tail -1)
+  sm_id=$(printf '%s' "$sm_row" | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+  sm_frag=$(printf '%s' "$sm_row" | tr '|' '\n' | sed -n 's/^ *구속 튜플=//p' | sed 's/[[:space:]]*$//')
+  sm_frag=${sm_frag%/*}
+  sm_frag=${sm_frag##*/}
+  if [ -n "$sm_frag" ] && [ "$sm_frag" = "${seg_head:0:${#sm_frag}}" ] \
+     && [ "$sm_frag" != "${main_head:0:${#sm_frag}}" ]; then
+    ok "구속 튜플이 세그먼트 워크트리의 HEAD 를 얼린다 (메인 워크트리가 아니라)"
+  else
+    bad "구속 튜플 동결" "조각 '$sm_frag' · 세그먼트 '$seg_head' · 메인 '$main_head'"
+  fi
+  if [ -n "$sm_id" ]; then
+    printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$sm_id" "테스트" >> "$FX_LEDGER"
+  fi
+  gateM plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SM --cutpoint push \
+        --surface 외부상태변경 -- scp -V
+  check "두 트리가 그대로면 해소된 승인이 그 행위를 연다 (세그먼트 워크트리)" "$rc" "0"
+  ( cd "$WT" && git commit --allow-empty -q -m "메인만 움직이는 빈 커밋" )
+  gateM plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SM --cutpoint push \
+        --surface 외부상태변경 -- scp -V
+  check "메인 워크트리만 움직인 것은 세그먼트 행위의 승인을 낡게 하지 않는다" "$rc" "0"
+  ( cd "$WT" && git reset -q --soft "$main_head" )
+  check "픽스처가 옮긴 메인 HEAD 를 되돌린다 (14m)" "$(cd "$WT" && git rev-parse HEAD)" "$main_head"
+  ( cd "$LINKED" && git commit --allow-empty -q -m "세그먼트 워크트리만 움직이는 빈 커밋" )
+  gateM plan --manifest "$FX_MANIFEST" --kind x --target infra --segment SM --cutpoint push \
+        --surface 외부상태변경 -- scp -V
+  check "세그먼트 워크트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
+  case "$msg" in
+    *"트리가 움직였습니다"*) ok "거절이 세그먼트 워크트리의 불일치를 원인으로 지목한다" ;;
+    *) bad "세그먼트 워크트리 대조" "$msg" ;;
+  esac
+  ( cd "$LINKED" && git reset -q --soft "$seg_head" )
+  check "픽스처가 옮긴 세그먼트 HEAD 를 되돌린다" "$(cd "$LINKED" && git rev-parse HEAD)" "$seg_head"
+
+  # THE LEDGER IS APPEND-ONLY, so the section leaves its segments terminal and
+  # back on the main worktree — the segment worktree set is what it was before,
+  # and no later section inherits an open segment.
+  for s in SM SO SN; do seg_wt_row "$s" "$WT" park; done
+  for a in $(grep -E '^- `승인`' "$FX_LEDGER" | grep -F '막는 세그먼트=SM ' \
+             | grep -oE '승인 id=[^ |]+' | sed 's/승인 id=//' | sort -u); do
+    case "$(grep -E '^- `승인`' "$FX_LEDGER" | grep -F "승인 id=$a " | tail -1)" in
+      *"상태=대기"*) printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$a" "테스트" >> "$FX_LEDGER" ;;
+    esac
+  done
+else
+  bad "픽스처 전제" "14c 의 링크된 워크트리가 없다"
+fi
 
 # ---------------------------------------------------------------------------
 # 15. The grading table reads the ACT, not the spelling
@@ -8833,7 +8999,11 @@ tup_id=$(row_field "$tup_row" '승인 id')
 tup_head=$(row_field "$tup_row" '구속 튜플')
 tup_head=${tup_head%/*}
 tup_head=${tup_head##*/}
-head_before=$(cd "$WT" && git rev-parse HEAD)
+# THE TREE IT NAMED IS SD's OWN WORKTREE. A segment act runs in the worktree its
+# segment row names when that is a worktree of the target, and the tuple is
+# frozen there — so this section moves that tree, not the main worktree.
+tup_wt=$(row_field "$( { grep -E '^- `segment`' "$LEDGER2" || true; } | grep -F 'id=SD ' | tail -1)" '워크트리')
+head_before=$(cd "$tup_wt" && git rev-parse HEAD)
 # THE FIXTURE PROVES IT REACHES THE COMPARISON. The freshness check reads an
 # unmeasurable tuple as fresh, so a fixture whose tuple held no head fragment
 # would pass every assertion below without the compared branch ever running.
@@ -8854,7 +9024,7 @@ check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
 gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
       --surface 외부상태변경 -- scp -V
 check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
-( cd "$WT" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
+( cd "$tup_wt" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
 gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
       --surface 외부상태변경 -- scp -V
 check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
@@ -8880,8 +9050,8 @@ fi
 # THE FIXTURE PUTS THE TREE BACK. `--soft` and not `--hard`: the commit above is
 # empty, so the index and the working tree already match the target and a hard
 # reset would only be a chance to discard something another subsection left.
-( cd "$WT" && git reset -q --soft "$head_before" )
-check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$WT" && git rev-parse HEAD)" "$head_before"
+( cd "$tup_wt" && git reset -q --soft "$head_before" )
+check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$tup_wt" && git rev-parse HEAD)" "$head_before"
 
 # --- 31al. The `done` file names every held clause and every question -------
 # --- section: 31al | group: cone | covers: snapshot, close | anchors: 종료 픽스처의 세그먼트 행이 기록된다 ---
@@ -12096,6 +12266,10 @@ OID4G=$(sa_ob_id S4G)
   git reflog expire --expire=now --all || true
   git gc --prune=now -q || true
 ) >/dev/null 2>&1
+# The segment's worktree is gone, so the NEXT gate call narrows the stage
+# settings and appends a re-derivation row in its preamble. That row is not the
+# refusal's, so the count is taken after it.
+SAH >/dev/null
 nb=$(sa_rows)
 sa_fulfil "$OID4G"
 check "4g: 해소되지 않는 앵커의 이행은 거절된다 (판정 불가는 통과가 아니다)" "$rc" "2"
@@ -12432,6 +12606,10 @@ check "14: 워크트리 없는 segment 행은 exit 2 로 거절된다" "$rc" "2"
 check "14: 거절이므로 원장이 늘지 않는다" "$(sa_rows)" "$nb"
 sa_seg_row S14 선머지후리뷰
 check "14: 완전한 행을 먼저 쓴 뒤에도" "$rc" "0"
+# The row just written names a worktree, so the NEXT gate call widens the stage
+# settings and appends a `대상 추가` row in its preamble. That row belongs to
+# the re-derivation, not to the refusal below, so the count is taken after it.
+SAH >/dev/null
 nb=$(sa_rows)
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S14 \
     --cutpoint 커밋 --snapshot-digest "$(SAH)" --rationale x -- 상태=완료
