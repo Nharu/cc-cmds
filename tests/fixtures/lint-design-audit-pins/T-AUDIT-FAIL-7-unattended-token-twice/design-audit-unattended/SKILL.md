@@ -30,3 +30,5 @@ Custody: the two boundary baselines are persisted out-of-tree at
 assertion 2a's creation record lives beside them; and when `CODE_ROOT` is
 not a repository both baselines are undefined, so they are skipped and the
 skip is reported.
+
+The loop used `consecutive_no_major` to decide, and that is gone.

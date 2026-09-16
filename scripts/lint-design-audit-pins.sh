@@ -12,8 +12,15 @@
 #         that lives only in prose evaporates at call time, and this clause is
 #         what makes readers open the files the document cites instead of
 #         grading the document against itself.
-#   (iii) the fixed-constants block. A hook reads the reader count from SKILL.md
-#         directly rather than trusting a spawn prompt, because a copy drifts.
+#   (iii) the fixed-constants block. This script and
+#         `scripts/lint-team-budget-pins.sh` read the reader count from
+#         SKILL.md directly rather than trusting a spawn prompt, because a copy
+#         drifts. (An earlier wording here said a HOOK reads it. No hook does —
+#         measured against every file under `plugins/cc-cmds/hooks/` — and the
+#         claim had already propagated from one arm's prose into this header.)
+#   (iv)  the three custody duties, pinned in BOTH arms. They are prose the
+#         contract delegates to the caller, and nothing else checks that a duty
+#         stated in one arm was stated in the other.
 #
 # It also carries a NEGATIVE fence: the loop machinery the overhaul deleted must
 # not reappear under this skill. Each forbidden token is asserted to occur on
@@ -109,21 +116,50 @@ CONSTANTS=(
   'PASS_TOKEN = fanout'
 )
 
-invariants_body=$(extract_invariants_body "$SKILL")
-if [[ -z "$invariants_body" ]]; then
-  echo "FAIL: design-audit/SKILL.md — '## Control-Flow Invariants' section body not found" >&2
-  fail=1
-fi
+# THE SKILL.md-LEVEL PINS RUN OVER BOTH ARMS, and the reference-tree pins do
+# not. That split is not symmetry for its own sake — it follows from which file
+# each pin targets. Of this file's pins, the reader-prompt and disclosure sets
+# live in `design-audit/references/`, a tree the unattended arm SHARES rather
+# than copies (Rule 4 of `lint-unattended-surfaces.sh` asserts that sharing),
+# so scanning them twice would check the same bytes twice. The constants'
+# PLACEMENT and the denylist's exactly-one-line rule target `SKILL.md`, and
+# each arm has its own — so before this loop existed they were checked on the
+# base arm while the arm that actually runs unattended was unchecked.
+#
+# The constants' byte-identity across the pair is separately covered by
+# `lint-unattended-surfaces.sh` Rule 3; what this loop adds is that each arm
+# carries them exactly once and inside its own invariants body.
+ARM_SKILLS=(
+  "design-audit"
+  "design-audit-unattended"
+)
 
-for lit in "${CONSTANTS[@]}"; do
-  n=$(count_lines "$lit" "$SKILL")
-  if [[ "$n" != "1" ]]; then
-    echo "FAIL: design-audit/SKILL.md (constants) — '$lit' must appear on exactly 1 line, found $n" >&2
-    fail=1
+for arm in "${ARM_SKILLS[@]}"; do
+  arm_skill="$skills_root/$arm/SKILL.md"
+  if [[ ! -f "$arm_skill" ]]; then
+    echo "SKIP: $arm/SKILL.md — arm absent" >&2
+    continue
   fi
-  assert_in_text "$lit" "$invariants_body" \
-    "design-audit/SKILL.md (constants)" "the '## Control-Flow Invariants' body"
+
+  arm_body=$(extract_invariants_body "$arm_skill")
+  if [[ -z "$arm_body" ]]; then
+    echo "FAIL: $arm/SKILL.md — '## Control-Flow Invariants' section body not found" >&2
+    fail=1
+    continue
+  fi
+
+  for lit in "${CONSTANTS[@]}"; do
+    n=$(count_lines "$lit" "$arm_skill")
+    if [[ "$n" != "1" ]]; then
+      echo "FAIL: $arm/SKILL.md (constants) — '$lit' must appear on exactly 1 line, found $n" >&2
+      fail=1
+    fi
+    assert_in_text "$lit" "$arm_body" \
+      "$arm/SKILL.md (constants)" "the '## Control-Flow Invariants' body"
+  done
 done
+
+invariants_body=$(extract_invariants_body "$SKILL")
 
 # ---------- (i) round/pass token + (ii) repo-measurement clause — reader prompt
 
@@ -189,14 +225,44 @@ FORBIDDEN=(
   'INNER_TEMP_DIR'
 )
 
-for lit in "${FORBIDDEN[@]}"; do
-  # Exactly one line in SKILL.md: its own denylist entry. 0 means the denylist
-  # lost the token; >1 means the token is in use somewhere besides the denylist.
-  n=$(count_lines "$lit" "$SKILL")
-  if [[ "$n" != "1" ]]; then
-    echo "FAIL: design-audit/SKILL.md (denylist) — '$lit' must appear on exactly 1 line (its denylist entry), found $n" >&2
-    fail=1
-  fi
+for arm in "${ARM_SKILLS[@]}"; do
+  arm_skill="$skills_root/$arm/SKILL.md"
+  [[ -f "$arm_skill" ]] || continue
+  for lit in "${FORBIDDEN[@]}"; do
+    # Exactly one line: its own denylist entry. 0 means the denylist lost the
+    # token; >1 means the token is in use somewhere besides the denylist.
+    n=$(count_lines "$lit" "$arm_skill")
+    if [[ "$n" != "1" ]]; then
+      echo "FAIL: $arm/SKILL.md (denylist) — '$lit' must appear on exactly 1 line (its denylist entry), found $n" >&2
+      fail=1
+    fi
+  done
+done
+
+# ---------- custody pins — BOTH arms, or the duty lands on one and ships green
+#
+# The three custody duties are prose in each arm, and nothing else checks that
+# any of them landed in BOTH. That gap is what the parity rule this design
+# withdrew would have covered: with it gone, a one-arm landing passes every
+# other check here, and the arm that gets left out is the one that runs
+# overnight with nobody reading its report. Each literal below is the anchor of
+# one duty, not the whole sentence — pinning prose would fail on any legitimate
+# rewording, while an anchor fails only when the duty itself is gone.
+CUSTODY_PINS=(
+  'baseline.status'
+  'baseline.worktree'
+  'creation record'
+)
+
+for arm in "${ARM_SKILLS[@]}"; do
+  arm_skill="$skills_root/$arm/SKILL.md"
+  [[ -f "$arm_skill" ]] || continue
+  for lit in "${CUSTODY_PINS[@]}"; do
+    if ! grep -Fq -- "$lit" "$arm_skill"; then
+      echo "FAIL: $arm/SKILL.md (custody) — '$lit' absent; a custody duty stated in one arm only is the asymmetry nothing else here catches" >&2
+      fail=1
+    fi
+  done
 done
 
 # Zero occurrences anywhere under references/.
@@ -219,7 +285,7 @@ if [[ -d "$skills_root/design-audit/references" ]]; then
 fi
 
 if (( fail == 0 )); then
-  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure + ${#FORBIDDEN[@]} denylist all intact"
+  echo "OK:   design-audit pins — ${#CONSTANTS[@]} constants (CFI body) + ${#FORBIDDEN[@]} denylist + ${#CUSTODY_PINS[@]} custody over ${#ARM_SKILLS[@]} arm(s), ${#PROMPT_PINS[@]} reader-prompt + ${#DISCLOSURE_PINS[@]} disclosure over the shared reference tree — all intact"
 fi
 
 exit "$fail"

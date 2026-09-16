@@ -15,6 +15,37 @@
 #     fenced block must be byte-identical to the base's. A forked spine's one
 #     real drift risk is a budget that quietly diverges, so it is pinned
 #     rather than trusted.
+#   Rule 5 (assertion-label parity, extracted) — the boundary-gate assertion
+#     labels are EXTRACTED from the contract's own bullets, never retyped
+#     here, and asserted in both directions: every extracted label is
+#     referenced by both arms of the pair, and every label-shaped token in
+#     either arm is in the extracted set. Catches a label added to the
+#     contract and wired into one arm only, and a stale reference to a label
+#     the contract no longer defines. Writing the label set into this file
+#     would make it a third copy of the vocabulary, which is the thing the
+#     rule exists to prevent.
+#   Rule 6 (no assertion gloss in an arm) — an arm names an assertion and
+#     never explains it. Two fences, and the first is why this is not a
+#     denylist of today's wording: a SHAPE fence forbids the ACT of glossing
+#     (a label immediately followed by a parenthetical or an em-dash), so a
+#     gloss nobody has written yet is already covered; a literal list is the
+#     cheaper second tripwire for a gloss carrying no adjacent label. The
+#     rule is region-scoped to the '## Control-Flow Invariants' body, which
+#     is what lets a custody sentence in a Step use the same words freely.
+#
+#     WHY THIS IS NOT A PARITY RULE. Parity is the wrong invariant for
+#     definitional content: two arms can be IDENTICALLY wrong, and measured,
+#     they were — the same three glosses sat once in each arm, so every
+#     parity-shaped check passed them while all three were about to become
+#     false in both arms at once. Forbidding the gloss catches that; comparing
+#     the arms cannot.
+#
+#     WHAT IT DOES NOT CATCH, said here because the header is where this file
+#     admits its own limits: a one-sided FACTUAL claim about the mechanism
+#     that carries no gloss literal and no label adjacency. One was measured
+#     (an arm claiming a hook reads a constant that no hook reads) and fixed
+#     as an instance rather than fenced, because the device that catches a
+#     false claim is checking the claim, not comparing or forbidding text.
 #   Rule 4 (inherited question points are dispositioned) — an arm does not
 #     copy its `references/`, it SHARES the base skill's tree, and the two
 #     shipped question points in this repo are in exactly that tree. The arm
@@ -126,6 +157,8 @@ fail=0
 checked=0
 skipped=0
 refs_checked=0
+gloss_checked=0
+label_count=0
 
 for skill in "${UNATTENDED_SKILLS[@]}"; do
   file="$skills_root/$skill/SKILL.md"
@@ -247,10 +280,127 @@ $disp_files
 EOF
 done
 
+# --- Rules 5 and 6 — the assertion labels and the absence of their glosses ----
+#
+# THE LABEL SET IS EXTRACTED, NEVER RETYPED. It comes from the contract's own
+# one-bullet-per-assertion shape, which is why that shape is load-bearing and
+# not cosmetic: converting the three bullets to a paragraph, a table or a
+# blockquote removes the extraction source and this rule degrades to a hand
+# list — the third copy the header says it exists to prevent.
+CONTRACT="$skills_root/_common/verification.md"
+
+extract_assertion_labels() {
+  # The bullets live between '## 6.' and the first '### 6.' subsection.
+  awk '/^### 6\./ { exit } /^## 6\./ { c = 1 } c' "$1" \
+    | sed -n 's/^- \*\*\(2[a-z]\) — [^.]*\.\*\*.*/\1/p'
+}
+
+cfi_body() {
+  # The '## Control-Flow Invariants' body, up to the next '## ' heading.
+  awk '
+    /^## Control-Flow Invariants[[:space:]]*$/ { inb = 1; next }
+    inb && /^## / { exit }
+    inb { print }
+  ' "$1"
+}
+
+# Rule 6's literal tripwire. These are glosses, not vocabulary: each one is a
+# thing the CONTRACT may say and an ARM may not, which is the partition the
+# three-slot rule draws. `own entry` is deliberately here even though it is a
+# live short name in the contract — the domain of this list is the arm.
+GLOSS_LITERALS=(
+  'path set'
+  'own entry'
+  'count is 0'
+  'exception pattern'
+  'creation record'
+  'owner token'
+  'tree sha'
+  'HEAD^{tree}'
+)
+
+if [[ ! -f "$CONTRACT" ]]; then
+  echo "SKIP: assertion labels — $CONTRACT not present" >&2
+else
+  labels=$(extract_assertion_labels "$CONTRACT")
+
+  if [[ -z "$labels" ]]; then
+    echo "FAIL: _common/verification.md — no assertion bullets matched '- **2x — <short name>.**' under '## 6.'" >&2
+    echo "       Rule 5 extracts its label set from that shape; without it the set would have to be retyped here" >&2
+    fail=1
+  else
+    for pair in ${PARITY_PAIRS[@]+"${PARITY_PAIRS[@]}"}; do
+      fork="${pair%%|*}"
+      base="${pair##*|}"
+
+      for arm in "$fork" "$base"; do
+        arm_skill="$skills_root/$arm/SKILL.md"
+        [[ -f "$arm_skill" ]] || continue
+        body=$(cfi_body "$arm_skill")
+
+        if [[ -z "$body" ]]; then
+          echo "FAIL: $arm — no '## Control-Flow Invariants' body; Rules 5 and 6 are region-scoped to it" >&2
+          fail=1
+          continue
+        fi
+
+        # Rule 5, forward: every extracted label is referenced by this arm.
+        missing=""
+        while IFS= read -r label; do
+          [[ -n "$label" ]] || continue
+          if ! printf '%s\n' "$body" | grep -qE "(^|[^0-9A-Za-z])${label}([^0-9A-Za-z]|\$)"; then
+            missing="$missing $label"
+          fi
+        done <<EOF
+$labels
+EOF
+        if [[ -n "$missing" ]]; then
+          echo "FAIL: $arm — the contract defines assertion(s)${missing} that this arm never references" >&2
+          echo "       a label wired into one arm only is the divergence this rule exists to catch" >&2
+          fail=1
+        fi
+
+        # Rule 5, reverse: every label-shaped token in this arm is defined.
+        stale=$(printf '%s\n' "$body" | grep -oE '(^|[^0-9A-Za-z])2[a-z]([^0-9A-Za-z]|$)' \
+                  | grep -oE '2[a-z]' | sort -u | while IFS= read -r tok; do
+                    printf '%s\n' "$labels" | grep -qxF -- "$tok" || printf '%s ' "$tok"
+                  done)
+        if [[ -n "$stale" ]]; then
+          echo "FAIL: $arm — references assertion label(s) the contract does not define: $stale" >&2
+          fail=1
+        fi
+
+        # Rule 6, shape fence: a label immediately followed by a gloss.
+        shaped=$(printf '%s\n' "$body" | grep -nE '2[a-z][[:space:]]*(\(|—)' || true)
+        if [[ -n "$shaped" ]]; then
+          echo "FAIL: $arm — assertion label followed by a gloss inside the invariants body" >&2
+          printf '%s\n' "$shaped" | sed 's/^/       /' >&2
+          echo "       an arm names an assertion and never explains it — the definition lives in the contract" >&2
+          fail=1
+        fi
+
+        # Rule 6, literal tripwire: a gloss carrying no adjacent label.
+        for lit in "${GLOSS_LITERALS[@]}"; do
+          hits=$(printf '%s\n' "$body" | grep -nF -- "$lit" || true)
+          if [[ -n "$hits" ]]; then
+            echo "FAIL: $arm — gloss literal '$lit' inside the invariants body" >&2
+            printf '%s\n' "$hits" | sed 's/^/       /' >&2
+            fail=1
+          fi
+        done
+
+        gloss_checked=$((gloss_checked + 1))
+      done
+    done
+
+    label_count=$(printf '%s\n' "$labels" | grep -c . || true)
+  fi
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "lint-unattended-surfaces: violations found" >&2
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
 exit 0
