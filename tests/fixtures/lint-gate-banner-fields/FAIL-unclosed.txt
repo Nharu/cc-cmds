@@ -1,0 +1,2 @@
+# --- 1. A banner that never closes ---
+# --- section: 1 | group: base | anchors: 첫 단언

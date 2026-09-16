@@ -1,0 +1,2 @@
+# --- 1. `needs:` naming its own section ---
+# --- section: 1 | group: base | needs: 1 | anchors: 첫 단언 ---
