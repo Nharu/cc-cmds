@@ -836,17 +836,19 @@ gate_b3_act_budget 2>/dev/null
 check "재기준선화 직후의 B3 판정은 새 창을 열지 않는다 (답한 표지가 남는다)" \
   "$(cat "$RUN_DIR/boundary-B3.asked" 2>/dev/null || printf '(없음)')" "답한 결속값"
 
-# B4 at or above the declared ceiling is NOT auto-resolved. Nothing else stops
-# spending — the ceiling is read only inside B4, and B4 only asks — so resolving
-# it every ten points let a $40 run continue at $40, $44 and $48 with nobody
-# asked, and closed the open approval that is the one signal a shift reads.
-# Below the ceiling the early warning is still resolved.
+# B4 at or above the declared ceiling is NOT auto-resolved. The ceiling's own
+# evaluation ends the run there instead of asking (section 8d), so no approval is
+# issued at 100% — but one issued below the ceiling can still be open when
+# spending crosses it, and the open-approval sweep must not close it: that would
+# write an automatic "keep going" onto the one open question a shift reads, on
+# the very evaluations that end the night on cost. Below the ceiling the early
+# warning is still resolved.
 #
 # The cost rows do not move the progress digest, so every step below computes
-# the SAME id: the 80% resolved automatically and the 100% that must wait. This
-# is the case the issuer's answered arm has to let through — an auto-resolution
-# is not a person's "keep going", and holding it quiet would leave the ceiling
-# crossing with no approval at all.
+# the SAME id: the 80% resolved automatically, then the 90% re-opened with the
+# switch off. That re-open is the case the issuer's answered arm has to let
+# through — an auto-resolution is not a person's "keep going", and holding it
+# quiet would leave nothing open for the ceiling crossing to keep waiting.
 B4_MANIFEST="$WORK/plan-b4.md"
 awk '{ print } $0 == "## 인가" { print "**비용 천장**: 40" }' "$FIX_MANIFEST" > "$B4_MANIFEST"
 B4_MANIFEST_SAVE="$MANIFEST"
@@ -859,10 +861,16 @@ gate_b4_cost 2>/dev/null
 b4_id=$(boundary_rows B4 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
 check "천장의 80% 인 B4 는 자동 해소된다" "$(gate_approval_state "$b4_id")" "승인"
 check "그 해소는 자동 해소 행 하나다" "$(b4_auto_rows)" "1"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate_append 'cost' "누적 usd=36"
+gate_b4_cost 2>/dev/null
+check "자동 해소가 꺼진 천장의 90% 에서 같은 B4 id 가 다시 발행된다" \
+  "$(boundary_rows B4 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')" "$b4_id"
+check "그 B4 는 대기로 열린다" "$(gate_approval_state "$b4_id")" "대기"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 for b4_usd in 40 44 48; do
   gate_append 'cost' "누적 usd=$b4_usd"
-  gate_b4_cost 2>/dev/null
-  b4_id=$(boundary_rows B4 | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+  gate_boundaries 2>/dev/null
   check "천장의 $((b4_usd * 100 / 40))% 인 B4 는 자동 해소되지 않고 대기로 남는다" "$(gate_approval_state "$b4_id")" "대기"
   check "천장의 $((b4_usd * 100 / 40))% 에서 자동 해소 행이 늘지 않는다" "$(b4_auto_rows)" "1"
 done

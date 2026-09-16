@@ -9684,10 +9684,10 @@ au_why="채택 행이 상한으로 죽은 뒤를 잰다"
 au_pad=$(printf '%0900d' 0)
 au_act() {
   # au_act <등급> <판단 부류> <추가 필드>… — one judgment act with auto-resolution
-  # on for that forked gate alone, so the question is closed without a person.
+  # on for that gate call alone, so the question is closed without a person.
   local au_g="$1" au_c="$2"; shift 2
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
-        bash "$GATE" act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
+        gate_inproc act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
         -- 등급="$au_g" 기준="$au_std" 근거="$au_why" "판단 부류=$au_c" "$@" 2>&1); rc=$?
 }
