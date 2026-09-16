@@ -949,6 +949,38 @@ check "상한에 닿기 전까지는 끝내지 않는다" "$(end_rows)" "0"
 check "그동안 카운터는 올라간다" "$(cat "$RUN_DIR/stagnation-repeat")" "$((sb_n - 1))"
 gate_b5_stagnation_bound >/dev/null 2>&1
 check "상한에 닿으면 런이 끝난다" "$(end_rows)" "1"
+# 스테이지 좌석의 호출은 라우터 판정이 아니므로 이 경계를 움직이지 않는다. 그 판별이
+# 없으면 구속되는 쪽의 통행량이 라우터의 상한을 채운다 — 그리고 이 경계는 묻는 것이
+# 아니라 끝내므로, 잘못 세면 건강한 런이 스테이지가 도는 동안 끝난다.
+#
+# 쓰기 등급으로 잰다. 읽기 호출은 등급만으로도 판정에서 빠지므로 읽기로만 시험하면
+# 좌석 판별을 지워도 통과한다.
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  judge S9 'S9#1' '' 워크트리쓰기 x >/dev/null
+  i=$((i + 1))
+done
+check "스테이지 좌석의 쓰기 판정은 정체 카운터를 움직이지 않는다" \
+  "$(cat "$RUN_DIR/stagnation-repeat" 2>/dev/null || printf '(없음)')" "(없음)"
+check "그래서 스테이지가 도는 동안 런이 끝나지 않는다" "$(end_rows)" "0"
+# 대조군 — 같은 횟수를 라우터 좌석에서 부르면 끝난다. 위 둘이 「아무것도 세지 않는
+# 구현」을 재고 있지 않다.
+i=0
+while [ "$i" -le "$sb_n" ]; do
+  judge '' '' '' 워크트리쓰기 x >/dev/null
+  i=$((i + 1))
+done
+check "대조군: 라우터 좌석의 같은 호출은 상한에 닿아 끝낸다" "$(end_rows)" "1"
+rm -f "$RUN_DIR/done"; : > "$ELEDGER"
+rm -f "$RUN_DIR/stagnation-digest" "$RUN_DIR/stagnation-repeat"
+i=0
+while [ "$i" -lt "$sb_n" ]; do
+  gate_b5_stagnation_bound >/dev/null 2>&1
+  i=$((i + 1))
+done
+gate_b5_stagnation_bound >/dev/null 2>&1
 check "종료 행이 B5 를 이름으로 싣는다" \
   "$({ grep -F '결정=종료' "$ELEDGER" || true; } | { grep -c '기준=B5' || true; })" "1"
 # 진전이 있으면 카운터가 0 으로 돌아간다. 이것이 없으면 이 경계는 「판정 N회면
