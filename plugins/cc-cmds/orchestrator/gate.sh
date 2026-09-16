@@ -1194,6 +1194,18 @@ surface_of_openssl() {
   # `dgst` both accept it, so an arm that graded `rand` as a read on the
   # strength of its name alone would let `openssl rand -out secrets.bin 32`
   # through as one.
+  #
+  # THIS ROW KEEPS THE LITERAL MATCH AND DOES NOT USE `gate_argv_has_opt`.
+  # Nothing is lost by staying literal: openssl spells its writer flag as
+  # `-out <file>` and accepts no attached form, so there is no attached spelling
+  # here to miss.
+  #
+  # AND THE HELPER WOULD BE A TRAP HERE LATER. Its short arm is a prefix match,
+  # and openssl has `-outform` sharing the `-out` prefix. That option belongs to
+  # `x509`, `req`, `rsa` and friends, every one of which this row already
+  # refuses with `등급 미상`, so today the prefix would mis-grade nothing. The
+  # day a subcommand carrying `-outform` is added to the read list below, it
+  # would — and the failure would look like an unrelated row's problem.
   case " $* " in *" -out "*|*" -keyout "*) printf '워크트리쓰기'; return 0 ;; esac
   case "${1:-}" in
     rand|dgst|sha256|sha1|version|list|help) printf '읽기' ;;
@@ -1261,6 +1273,53 @@ gate_orchestrator_script_hint() {
   if [ -z "$hit" ] && [ -f "$GATE_DIR/$b" ]; then hit="$GATE_DIR/$b"; fi
   [ -n "$hit" ] || return 0
   warn "그 이름은 이 플러그인이 싣는 오케스트레이터 스크립트입니다 ($hit) — 모르는 도구가 아니라 이 게이트 사본이 그 등급 행을 실은 트리보다 낡았다는 뜻입니다. 판정에 쓰이는 게이트는 $GATE_DIR/gate.sh 이고, 다른 사본의 등급표를 고쳐도 이 판정은 바뀌지 않습니다. 인터프리터를 앞에 붙이거나 더 낮은 철자로 우회하지 마세요 — 전자는 통과하면서 그 행이 막으려던 것을 되살리고, 후자는 산출물을 잃습니다"
+}
+
+gate_argv_has_opt() {
+  # gate_argv_has_opt <단옵션 접두|-> <장옵션 이름|-> <argv...> — true when the
+  # option is present in ANY of its spellings.
+  #
+  # THE TABLE BELOW MATCHED SPACE-DELIMITED LITERALS, SO THE ATTACHED SPELLINGS
+  # WERE INVISIBLE. `case " $* " in *" -o "*` sees `sort -o /p` and does not see
+  # `sort -o/p` or `sort --output=/p`; the same shape hid `docker save -o/p` and
+  # `kubectl get secret -ojson`. The direction of the miss is the bad one: a
+  # write graded `읽기` is laundered, and every write guard downstream skips a
+  # read grade, so the mis-grade does not merely lose a row — it removes the
+  # guards.
+  #
+  # `--` ENDS THE OPTIONS, and after it a file literally named `-o` is an
+  # operand rather than a flag. Reading past it would grade an ordinary read as
+  # a write on the strength of a filename.
+  #
+  # SHORT MATCHING IS PREFIX-ONLY, deliberately. `-o*` catches `-o` and `-o/p`
+  # and nothing else; it does not try to find the letter inside a cluster like
+  # `-bo`. Cluster parsing needs to know which letters take arguments — that is
+  # per-tool knowledge this helper does not have — and guessing it wrong grades
+  # `sort -to file` (separator `o`) as a write. The cluster form is no worse off
+  # than it was: the literal match this replaces missed it too.
+  #
+  # AND THE PREFIX IS WHY THIS HELPER IS NOT FOR EVERY ROW. It may only be used
+  # where NO LONGER OPTION OF THAT TOOL SHARES THE PREFIX, because the prefix
+  # would swallow it. Checked for each row that uses it: `sort -o`, `yq -i`,
+  # `docker save -o`, `git archive -o` and `kubectl get -o` each have no other
+  # option starting with those two characters. `openssl` is the row that does
+  # not qualify — `-outform` shares the `-out` prefix — and the note beside it
+  # says what that costs and why it costs nothing today.
+  local short="$1" long="$2" a
+  shift 2
+  for a in "$@"; do
+    case "$a" in --) break ;; esac
+    if [ "$long" != "-" ]; then
+      case "$a" in --"$long"|--"$long"=*) return 0 ;; esac
+    fi
+    if [ "$short" != "-" ]; then
+      case "$a" in
+        --*) : ;;
+        "$short"*) return 0 ;;
+      esac
+    fi
+  done
+  return 1
 }
 
 surface_of_argv0() {
@@ -1408,8 +1467,8 @@ surface_of_argv0() {
       printf '읽기' ;;
     # Four tools whose effect is decided by ONE option, so the row reads it
     # rather than taking the wider grade for the common case.
-    yq)   case " $* " in *" -i "*|*" --inplace "*) printf '워크트리쓰기' ;; *) printf '읽기' ;; esac ;;
-    sort) case " $* " in *" -o "*|*" --output "*) printf '트리밖쓰기' ;; *) printf '읽기' ;; esac ;;
+    yq)   if gate_argv_has_opt -i inplace "$@"; then printf '워크트리쓰기'; else printf '읽기'; fi ;;
+    sort) if gate_argv_has_opt -o output "$@";  then printf '트리밖쓰기'; else printf '읽기'; fi ;;
     tsc)  case " $* " in *" --noEmit "*|*" --version "*|*" --showConfig "*) printf '읽기' ;; *) printf '워크트리쓰기' ;; esac ;;
     chmod|ln) printf '워크트리쓰기' ;;
     # Browser automation. With no row here every spelling fell to `등급 미상`,
@@ -1863,8 +1922,7 @@ surface_of_git() {
       case " $* " in
         *" --remote "*|*" --remote="*|*" --exec "*|*" --exec="*)
           printf '%s' "$GATE_FORM_UNKNOWN" ;;
-        *" -o "*|*" --output "*|*" --output="*) printf '트리밖쓰기' ;;
-        *) printf '읽기' ;;
+        *) if gate_argv_has_opt -o output "$@"; then printf '트리밖쓰기'; else printf '읽기'; fi ;;
       esac ;;
     fetch) surface_of_git_fetch "$@" ;;
     # `clone` writes a tree out of the current one, so it is a write rather than
@@ -2453,7 +2511,7 @@ surface_of_docker() {
       esac ;;
     save)
       # Writes only where told to; with no `-o` it goes to stdout.
-      case " $* " in *" -o "*|*" --output "*) printf '트리밖쓰기' ;; *) printf '읽기' ;; esac ;;
+      if gate_argv_has_opt -o output "$@"; then printf '트리밖쓰기'; else printf '읽기'; fi ;;
     push) printf '외부상태변경' ;;
     '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
     *) printf '트리밖쓰기' ;;
@@ -2538,7 +2596,9 @@ gate_act_mark() {
         get)
           case "${2:-}" in
             secret|secrets)
-              case "$all" in *" -o "*|*" --output "*|*" -o="*|*" --output="*) printf '비밀출력\tsecret'; return 0 ;; esac ;;
+              # `-ojson` is the spelling people actually type, and the literal
+              # match this replaces did not see it.
+              if gate_argv_has_opt -o output "$@"; then printf '비밀출력\tsecret'; return 0; fi ;;
           esac ;;
         config)
           case "${2:-}" in
@@ -7324,6 +7384,87 @@ gate_claudemd_slot_guard() {
   return 0
 }
 
+gate_rundir_write_guard() {
+  # gate_rundir_write_guard <graded-surface> <argv...>
+  #
+  # THE HOOK GUARDS THE RUN DIRECTORY AND THE GATE DID NOT, so the same write
+  # was refused through `Write`/`Edit` and allowed through `Bash`. The hook lets
+  # a stage write exactly two names under the run directory — `halt/<stage-id>.md`
+  # and `<segment>.plan.md` — because everything else there is a baseline the
+  # gate re-reads on every act. A stage that edits one of those baselines makes
+  # the enforcement-surface check re-anchor on the stage's own bytes.
+  #
+  # An honest `--surface 트리밖쓰기` reached all of it. The worst reachable file
+  # is a stage log: the re-dispatch path reads `log/<stage>.json` while the
+  # writer pins `log/<stage>#<n>.json`, so a plain-named log placed there is what
+  # a re-attach consumes, and the session id it carries is what the resume is
+  # spawned with.
+  #
+  # THE ALLOW-LIST IS COPIED FROM THE HOOK RATHER THAN INVENTED, and the witness
+  # scratch directory is the one addition — team members publish round products
+  # there and the hook never saw those writes because they do not go through
+  # `Write`. The same exception is added to the hook in this change, so the two
+  # lists still say the same thing; `scripts/test-gate.sh` pins that they agree.
+  #
+  # THE WITNESS EXCEPTION NAMES WHAT IS ACTUALLY MINTED. `cc-team-witness-init.sh`
+  # creates `cc-team-witness-<slug>[.<stage-id>].XXXXXX` DIRECTLY under the run
+  # root, so a published product's relative path is `cc-team-witness-…/<file>`.
+  # An exception spelled `witness/` or `team-witness/` matches none of that and
+  # falls through to the `*/*` refusal — and nothing in this tree creates either
+  # of those two names, so such an exception is not a wider allow-list, it is a
+  # dead one. With it the unattended run's team stages are refused outright:
+  # publishing a witness is `mv -n` into that directory, a lead that cannot
+  # publish cannot observe, and a lead that cannot observe either parks forever
+  # or synthesizes a round product it never saw.
+  #
+  # WHAT THIS DOES NOT DO. It matches the run directory by path, so an act that
+  # reaches the same file through a symlink whose own path names nothing under
+  # the run directory is not seen — the same residual the manifest guard states,
+  # and closed by the same thing: the enforcement-surface digest is compared at
+  # the next entry.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  [ -n "${RUN_DIR:-}" ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  # BOTH SPELLINGS OF THE RUN DIRECTORY ARE NEEDED, and taking only the physical
+  # one is what made the first version of this guard refuse nothing at all on
+  # this platform. `pwd -P` resolves `/var` to `/private/var` while the argv the
+  # act carries says `/var`, so a prefix test against the physical spelling alone
+  # matches none of the paths it exists to catch. Both are compared and neither
+  # is preferred: an act may name either, and a guard that knows one spelling is
+  # a guard the other spelling walks past.
+  local a rdp rdn rdln an rel
+  rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
+  [ -n "$rdp" ] || rdp="$RUN_DIR"
+  rdn=$(gate_path_spelling "$rdp")
+  rdln=$(gate_path_spelling "$RUN_DIR")
+  for a in "$@"; do
+    case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
+    an=$(gate_path_spelling "$a")
+    rel=""
+    case "$an" in
+      "$rdn") rel="." ;;
+      "$rdn"/*) rel=${an#"$rdn"/} ;;
+      "$rdln") rel="." ;;
+      "$rdln"/*) rel=${an#"$rdln"/} ;;
+      *) continue ;;
+    esac
+    case "$rel" in
+      ''|.) continue ;;
+      halt/*/*) ;;
+      halt/*) continue ;;
+      cc-team-witness-*/*) continue ;;
+      */*) ;;
+      *.plan.md) continue ;;
+    esac
+    warn "룰 거부: 런 디렉터리 쓰기 — 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 (위트니스 디렉터리 cc-team-witness-*/ 예외). 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 여기 쓰면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다: $a"
+    return "$GATE_EXIT_RULE"
+  done
+  return 0
+}
+
 gate_manifest_write_guard() {
   # gate_manifest_write_guard <graded-surface> <argv...>
   #
@@ -9510,7 +9651,8 @@ gate_verb_act() {
   # exists.
   case "$kind" in
     skill|router-shift) : ;;
-    *) gate_manifest_write_guard "$graded" "$@" || exit $? ;;
+    *) gate_manifest_write_guard "$graded" "$@" || exit $?
+       gate_rundir_write_guard "$graded" "$@" || exit $? ;;
   esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
