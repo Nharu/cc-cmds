@@ -53,12 +53,12 @@ CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
 # The staleness mark, and why it is not the watcher's.
 #
 # 180 seconds is now the ORDER BOUNDARY, and it stopped being free to get wrong.
-# It separates rank 3 from rank 5 — a run whose ledger moved inside the mark
-# stands above every finished run in this session, and one that did not stands
-# below them. Set it too low and a run in flight loses the screen to something
-# that ended yesterday; too high and the reverse. That is a different cost from
-# the one this comment used to record, which was a render mark that the next
-# tick erased.
+# It separates rank 3 from rank 4 — a run whose ledger moved inside the mark
+# stands above one that did not, and BOTH of them stand above every finished run
+# in this session. What getting it wrong costs is therefore no longer the
+# screen: it is the order and the glyph among the runs that are still going.
+# `CC_SL_ABANDON` is the mark that hands the line to a finished run, and this
+# one is not.
 #
 # The watcher's stall arm still sits at 1200 because what IT writes is a ledger
 # row that only a person's resolving row takes back. Two different costs, two
@@ -66,10 +66,10 @@ CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
 # accept, and the boundary above makes that more true rather than less.
 CC_SL_STALL=180
 
-# Past this, a quiet run is not stalled but abandoned. It is the RENDER
-# boundary, not the order boundary: 정지경고 and 버려짐 share a rank, so
-# crossing this mark changes the glyph and the wording and nothing about who
-# wins the line. Passed explicitly on every call so this consumer and the
+# Past this, a quiet run is not stalled but abandoned. It is the render boundary
+# AND the order boundary: 정지경고 ranks above 종단 and 버려짐 ranks below it, so
+# crossing this mark is precisely what drops a quiet run beneath every finished
+# run in the session. Passed explicitly on every call so this consumer and the
 # watcher cannot grade one run by two thresholds; the default lives beside
 # `cc_run_state` in `liveness.sh` and is the same number.
 #
@@ -161,16 +161,19 @@ idx="$CC_SL_STATE/session/$sid"
 [ -f "$idx" ] || { emit_fallback; exit 0; }
 
 # The index is a LIST — one run id per line, appended and deduped by the gate.
-# A session holds several runs across a night, and the order is a FIVE-RANK
+# A session holds several runs across a night, and the order is a SIX-RANK
 # GRADE rather than the two classes this comment used to describe. It ranked on
 # "shows no sign of having finished", which sounds like liveness and is not: a
 # run that never opened a segment can never satisfy the derived terminal test
 # and has no `done` file either, so it was permanently non-terminal and held its
 # session forever. `cc_run_grade` ranks on evidence instead — live stage, then
-# waiting approval, then a ledger that moved inside `CC_SL_STALL`, then
-# finished, then gone quiet. Recency is the tie-break INSIDE a rank and never
-# across two. Entries whose directory is gone are skipped rather than pruned;
-# pruning would put a write on a path that has none.
+# waiting approval, then a ledger that moved inside `CC_SL_STALL`, then one that
+# passed `CC_SL_STALL` but not `CC_SL_ABANDON`, then finished, then gone quiet
+# past `CC_SL_ABANDON`. Recency is the tie-break INSIDE a rank and never
+# across two. Entries whose directory is gone are skipped HERE rather than
+# pruned, because this file writes nothing by contract; the pruning belongs to
+# the gate, which does it on a sparse cycle beside the reclamation that removed
+# those directories in the first place.
 best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9
 while IFS= read -r rid; do
   [ -n "$rid" ] || continue
@@ -252,10 +255,12 @@ fi
 
 case "$best_state" in
   종단)
-    # TERMINAL OUTRANKS THE STALL WARNING. A finished run has no live stage and
-    # a ledger that stopped growing, which is also the exact shape of a stalled
-    # one — judged the other way round, every clean finish would show as a
-    # warning from the moment it ended and never stop.
+    # TERMINAL IS JUDGED BEFORE THE STALL WARNING — a test order, not a rank. A
+    # finished run has no live stage and a ledger that stopped growing, which is
+    # also the exact shape of a stalled one; judged the other way round, every
+    # clean finish would show as a warning from the moment it ended and never
+    # stop. In the GRADE the direction is the opposite: 정지경고 outranks 종단,
+    # because a run between two stages is still a run.
     line="✓ ${best_rid} 종료"
     ;;
   승인대기)
@@ -264,8 +269,9 @@ case "$best_state" in
     ;;
   정지경고)
     # The glyph and the wording stay. `CC_SL_ABANDON` is what separates this arm
-    # from the one below, and it is the render boundary — the two states share a
-    # rank, so nothing about the selection turns on which side a run falls.
+    # from the one below, and it is now a SELECTION boundary too: this arm ranks
+    # above 종단 and the one below ranks beneath it, so which side of the mark a
+    # quiet run falls on decides whether it holds the line at all.
     line="⚠ ${best_rid} 스테이지 0${age_slot}"
     ;;
   버려짐)
@@ -331,8 +337,10 @@ case "$best_state" in
   진행중)
     # NOT A STATE OF ITS OWN, and not the running row either. This is the
     # residual: the run is in flight but no stage is up at this instant —
-    # between two of them, with the ledger still fresh. And it outranks a
-    # finished run for exactly that reason: the ledger moved inside the mark.
+    # between two of them, with the ledger still fresh. It outranks a finished
+    # run, and so does the stall row below — beating a finished run is no longer
+    # what `CC_SL_STALL` decides. What the mark still decides is the order
+    # between THIS row and that one, and the glyph.
     # It says `스테이지 0` for the same reason
     # the stall row does, because that is the true and load-bearing fact: a pid
     # file whose process died, or whose pid was reused, must never render as a

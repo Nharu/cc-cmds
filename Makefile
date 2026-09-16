@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin
+.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -20,6 +20,15 @@ lint:
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
+	bash scripts/lint-approval-state-vocabulary.sh
+	bash scripts/lint-sidecar-field-table.sh
+	bash scripts/lint-approval-answer-provenance.sh
+	bash scripts/lint-reap-retention.sh
+	bash scripts/lint-macos-keepset-paths.sh
+	bash scripts/lint-recovery-interlock-pins.sh
+	bash scripts/lint-harness-global-collisions.sh
+	bash scripts/lint-prompt-schemas.sh
+	bash scripts/lint-triage-pins.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -44,6 +53,7 @@ lint:
 	@grep -qE "terminal-notifier[[:space:]].*-group[[:space:]]['\"]cc-cmds-active-notify['\"]" plugins/cc-cmds/skills/active-notify/SKILL.md || (echo "lint: SKILL.md §7 bypass single-line contract violated (terminal-notifier + -group [quoted]cc-cmds-active-notify[quoted] must be on the same line for bypass_re to match)" >&2; exit 1)
 	@jq -e 'has("version")' plugins/cc-cmds/.claude-plugin/plugin.json >/dev/null || (echo "lint: plugin.json must have a .version field (it is the single version SOT)" >&2; exit 1)
 	@jq -e '[.plugins[] | has("version")] | any | not' .claude-plugin/marketplace.json >/dev/null || (echo "lint: marketplace.json plugin entries must NOT declare .version (plugin.json is the version SOT)" >&2; exit 1)
+	@grep -qE '선리뷰후머지.*선머지후리뷰.*리뷰없음' plugins/cc-cmds/skills/_common/pipeline-sidecar.md || (echo "lint: the review-policy axis must be written strict-to-loose in the contract (선리뷰후머지 -> 선머지후리뷰 -> 리뷰없음); a reader who takes the axis backwards picks the opposite end, which is the human form of the defect this axis exists to remove. No lint script is added for this: the token vocabulary has exactly one enumeration in the tree so there is no second copy to drift, and a bad token fails hard on its first call at runtime -- document ORDER is the one thing no runtime detector sees" >&2; exit 1)
 
 readme:
 	bash scripts/generate-readme.sh
@@ -87,7 +97,14 @@ LINT_TESTS := \
 	scripts/test-lint-notify-fire-sites.sh \
 	scripts/test-lint-watch-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
+	scripts/test-lint-approval-state-vocabulary.sh \
+	scripts/test-lint-sidecar-field-table.sh \
+	scripts/test-lint-approval-answer-provenance.sh \
+	scripts/test-lint-reap-retention.sh \
+	scripts/test-lint-recovery-interlock-pins.sh \
 	scripts/test-lint-ci-scope-binding.sh \
+	scripts/test-lint-macos-keepset-paths.sh \
+	scripts/test-lint-harness-global-collisions.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh
@@ -104,7 +121,8 @@ ORCH_TESTS := \
 	scripts/test-watch.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
-	scripts/test-lost-dispatch.sh
+	scripts/test-lost-dispatch.sh \
+	scripts/test-design-brief.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh
@@ -130,6 +148,51 @@ test-orchestrator: $(ORCH_TESTS:%=run/%)
 # sleep, and terminal-notifier delivery. Naming it for the platform rather than
 # for one skill is what keeps a future darwin-dependent suite from having to
 # re-wire the workflow to be seen.
+#
+# CI's macOS leg does not run this target; it runs `test-darwin-narrow` below.
 test-darwin: test-active-notify test-orchestrator \
 	run/scripts/test-lint-bash-portability.sh \
 	$(DARWIN_TESTS:%=run/%)
+
+# The darwin leg in CI. `test-darwin` above stays the whole darwin run for a
+# local machine; this is the short list the macOS runner actually needs. A
+# suite is on it only because the ubuntu leg cannot check what it checks — and
+# the same assertion NAMES on both legs is not enough to say so, because a
+# suite that silently tests nothing on one host prints the same names there.
+# What each entry covers that no ubuntu run does:
+#
+#   test-run.sh                   the bash 3.2 floor actually exercised, the
+#                                 boot clock, and the data-volume spelling of
+#                                 a path, which ubuntu skips with a note.
+#   test-gate-chain-equiv.sh      the enumerated divergences of the frozen
+#                                 reference, which classify differently here.
+#   test-lint-bash-portability.sh the multibyte-space case.
+#   test-liveness-agreement.sh    the Hangul-date fingerprint assertions; the
+#                                 ubuntu runner has no ko_KR.UTF-8 locale, so
+#                                 there they pass without testing anything.
+#   test-notify-title-oracle.sh   the real terminal-notifier's swallowing set.
+#   test-gate.sh, section 18      the advisory-lock arm, which is darwin-only
+#                                 for real.
+#
+# The two active-notify suites print the same assertions on both legs and are
+# kept anyway: taking them off does not move the PR's critical path, which the
+# ubuntu leg sets.
+#
+# Anything added here must also be matched by that workflow's `paths` filter,
+# together with every file it sources, and nothing may stay in the filter that
+# this list does not run, source or refer to. scripts/lint-macos-keepset-paths.sh
+# checks both directions.
+DARWIN_GATE_SECTIONS := 18
+
+.PHONY: run-gate-darwin-sections
+
+run-gate-darwin-sections:
+	bash scripts/test-gate.sh --sections $(DARWIN_GATE_SECTIONS)
+
+test-darwin-narrow: test-active-notify \
+	run/plugins/cc-cmds/orchestrator/test-run.sh \
+	run/scripts/test-gate-chain-equiv.sh \
+	run/scripts/test-lint-bash-portability.sh \
+	run/scripts/test-liveness-agreement.sh \
+	$(DARWIN_TESTS:%=run/%) \
+	run-gate-darwin-sections

@@ -15,6 +15,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
 | `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · design-apply의 impl-design.md · implement 직전) |
 | `/cc-cmds:design-audit-unattended` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (무인 — 사람 확인 없이 park) | 자율 파이프라인 드라이버가 감사 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:design-audit`를 쓸 것 |
+| `/cc-cmds:design-discuss-unattended` | 설계 세션의 Step 3 토론과 Step 4 종합·저장을 좌석 없이 돌리는 다리 (무인 — 질문은 park 기록으로) | autopilot 드라이버가 아니라 `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견할 때. 사람이 직접 부르지 않는다 |
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
@@ -123,6 +124,7 @@ npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-gu
 - [/cc-cmds:design-apply](#cc-cmdsdesign-apply)
 - [/cc-cmds:design-audit](#cc-cmdsdesign-audit)
 - [/cc-cmds:design-audit-unattended](#cc-cmdsdesign-audit-unattended)
+- [/cc-cmds:design-discuss-unattended](#cc-cmdsdesign-discuss-unattended)
 - [/cc-cmds:design-ingest](#cc-cmdsdesign-ingest)
 - [/cc-cmds:design-lite](#cc-cmdsdesign-lite)
 - [/cc-cmds:design-prompt](#cc-cmdsdesign-prompt)
@@ -198,6 +200,14 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | `<design-doc-path>` | (required) | 감사 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. 첫 리더 spawn 직전의 sha256으로 동결된다. |
 | `<note>` | _(optional)_ | 문서 경로 뒤 자유 텍스트. 전 리더에게 **축어로 동일하게** 주입되는 초점 메모. |
 | `--base` | off | base 설계 문서 모드 — 기존 내용의 정합·완결만 감사하고 신규 구현 세부 제안을 금지한다. |
+
+### /cc-cmds:design-discuss-unattended
+
+**Usage**: `/cc-cmds:design-discuss-unattended <brief-path>`
+
+| Option | Default | Summary |
+| --- | --- | --- |
+| `<brief-path>` | (required) | `docs/design-brief/{slug}.md` — 좌석이 쓴 인터뷰 브리프. 메인 워크트리 기준 경로. |
 
 ### /cc-cmds:design-ingest
 
@@ -320,7 +330,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--recover --scratch-dir <abs-path>] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -329,16 +339,31 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--report-path <abs-path>` | off (리포트를 cwd 상대 `docs/reviews/{slug}.md`에 기록) | 뒤에 오는 **메인 워크트리 절대 경로**에 리포트를 기록한다. 세그먼트 워크트리에서 실행될 때 리포트가 그 트리에 떨어져 철거와 함께 파괴되는 것을 막는 유일한 수단. |
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
+| `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
+| `--basis-review-head <sha>` | off (delta mode is not attempted; review runs full) | The 리뷰 HEAD of the cycle named by --basis-cycle. Verified with git merge-base --is-ancestor against the target head named explicitly, never the caller's ambient HEAD. On failure, or when the three-flag set is incomplete or malformed, the arm falls back to a full review and records why in the report overview. |
+| `--basis-report-path <abs-path>` | off (delta mode is not attempted; review runs full) | Main-worktree absolute path to the --basis-cycle report — the source of the prior findings this cycle re-adjudicates. Read-only; never written by this arm. Must be absolute or it is treated as malformed. |
+| `--recover` | off (팀을 띄워 Steps 2~4 를 정상 수행) | Steps 2~4 를 통째로 대체해 팀을 하나도 띄우지 않고, 드라이버가 지명한 위트니스 scratch 디렉터리의 디스크 내용만으로 리포트를 합성한다. 크래시로 죽은 리뷰 스테이지의 부분 산출물을 되살리는 경로. |
+| `--scratch-dir <abs-path>` | off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다) | 드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다. |
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--recover`·`--scratch-dir`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
 > _Parsing (`--base-sha <sha>`): `--base-sha` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 무시하고 기존 유도를 쓴다 — 정지하지 않는다._
 
 > _Parsing (`--declared-files <csv>`): `--declared-files` 다음 토큰을 값으로 취한다. 쉼표·공백을 포함할 수 있어 드라이버가 인용 부호로 감싸 넘긴다. 값이 없으면 플래그를 무시한다 — 정지하지 않는다._
+
+> _Parsing (`--basis-cycle <n>`): `--basis-cycle` takes the next token as its value. Missing, or not a positive integer, or either companion flag itself missing or malformed → all three are treated as absent for this call; full review, no halt. One overview line records the attempt only when at least one of the three was actually supplied on argv._
+
+> _Parsing (`--basis-review-head <sha>`): `--basis-review-head` takes the next token as its value. Value missing → treated as absent; see --basis-cycle's parse_note for the joint-absence rule._
+
+> _Parsing (`--basis-report-path <abs-path>`): `--basis-report-path` takes the next token as its value. Value missing or not an absolute path → treated as absent; see --basis-cycle's parse_note for the joint-absence rule._
+
+> _Parsing (`--recover`): 값을 취하지 않는다. 이 플래그가 없으면 복구 절 전체가 발동하지 않는다._
+
+> _Parsing (`--scratch-dir <abs-path>`): `--scratch-dir` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 지명이 없는 것으로 다뤄 열거 후 거부 경로로 간다._
 
 ### /cc-cmds:review-upgrade
 

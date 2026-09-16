@@ -50,7 +50,7 @@
 
 set -uo pipefail
 
-RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""
+RUN_DIR=""; GATE=""; LEDGER=""; GRANT=""; MANIFEST=""
 
 # THE DIGEST PATH IS EXPANDED HERE, NOT HANDED OVER AS A VARIABLE. The messages
 # below tell a stage to open this file with `Read`, and `Read` takes a literal
@@ -65,6 +65,12 @@ while [ $# -gt 0 ]; do
     --gate)    GATE="$2"; shift 2 ;;
     --ledger)  LEDGER="$2"; shift 2 ;;
     --grant)   GRANT="$2"; shift 2 ;;
+    # HANDED OVER RATHER THAN READ FROM THE ENVIRONMENT. `CC_PIPELINE_MANIFEST`
+    # is exported into the stage's own process tree, so a stage can change what
+    # it says; this argument comes from the settings the gate generated and the
+    # stage does not get to edit those. The ledger and the grant are handed over
+    # for the same reason and this is the third file of that kind.
+    --manifest) MANIFEST="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -440,6 +446,11 @@ hook_run_dir_verdict() {
     halt/*)
       hook_leaf_is_symlink "$ap" \
         && deny "$(jstr 'gate: 런 디렉터리의 허용 이름이라도 말단이 심링크면 판정할 수 없습니다 — 허용된 것은 이름이 아니라 그 자리에 있는 파일입니다')" ;;
+    # 위트니스 스크래치 디렉터리. 팀 멤버가 라운드 산출물을 여기 발행하는데 그
+    # 경로에 대한 쓰기가 거부돼, 우회로를 스스로 찾아낸 멤버에게서만 코퍼스가
+    # 만들어졌다. 이름은 `cc-team-witness-init.sh` 가 실제로 만드는 접두다 —
+    # 런 루트 바로 아래 `cc-team-witness-<slug>[.<stage-id>].XXXXXX` 이다.
+    cc-team-witness-*/*) ;;
     */*)
       deny "$(jstr 'gate: 런 디렉터리에서 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 — 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 스테이지가 고치면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
@@ -526,7 +537,7 @@ hook_suffix_verdict() {
     # it is the same channel under a different name, and leaving it out would make
     # the arm a one-rename bypass.
     */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
-      deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <스냅숏 해시> --emit-digest --rationale '리뷰 채택본 적용' -- cp <제안본> ${p} — <스냅숏 해시> 는 직전 게이트 호출이 ${DIGEST_FILE} 에 방출한 H 필드이고(Read 도구로 열면 됩니다), 그 파일이 없으면 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 로 받습니다. --emit-digest 가 '알 수 없는 인자' 로 거부되면 그 플래그만 빼고 다시 실행하세요")" ;;
+      deny "$(jstr "gate: CLAUDE.md 는 git 이 추적하지 않는 라이브 프리픽스라, Write/Edit 로 고치면 원장에 아무 행도 남지 않습니다. 적용은 게이트를 거쳐야 합니다 — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest <스냅숏 해시> --emit-digest --rationale '리뷰 채택본 적용' -- cp <제안본> ${p} — 도달은 기기전역이 기본이고, 리뷰를 통과한 슬롯 적용만 진행됩니다 — <스냅숏 해시> 는 직전 게이트 호출이 ${DIGEST_FILE} 에 방출한 H 필드이고(Read 도구로 열면 됩니다), 그 파일이 없으면 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 로 받습니다. --emit-digest 가 '알 수 없는 인자' 로 거부되면 그 플래그만 빼고 다시 실행하세요")" ;;
   esac
   return 0
 }
@@ -584,6 +595,15 @@ hook_folded_verdict() {
   fi
   if [ -n "$GRANT" ] && hook_leaf_under "$fp" "$GRANT" && [ -z "$HOOK_LEAF_TAIL" ]; then
     deny "$(jstr 'gate: 인가 기록은 킥오프만 씁니다 — 런 중에는 읽기 전용입니다')"
+  fi
+  # THE MANIFEST IS AN AUTHORIZATION RECORD AND THE HOOK DID NOT KNOW IT. The
+  # gate's Bash path refuses a write to it; this path did not, so the same edit
+  # was refused through one tool and allowed through the other. `## 인가` carries
+  # `자동 채택` rows, and one more of those means every judgment of that class is
+  # adopted with no person and no reversibility requirement — the same KIND of
+  # value the grant holds, and the grant has had this arm all along.
+  if [ -n "$MANIFEST" ] && hook_leaf_under "$fp" "$MANIFEST" && [ -z "$HOOK_LEAF_TAIL" ]; then
+    deny "$(jstr 'gate: 매니페스트는 킥오프만 씁니다 — 런 중에는 읽기 전용입니다. 「## 인가」의 자동 채택 행은 사람 없이 채택되는 판단 부류를 정하므로, 여기 한 줄 더하는 것은 이 런의 인가를 스스로 넓히는 것입니다')"
   fi
   if [ -n "$cfg" ] && hook_leaf_under "$fp" "$cfg"; then
     hook_cfg_tail_verdict "$HOOK_LEAF_TAIL"
@@ -1177,7 +1197,7 @@ case "$tool" in
       # 문면을 뽑는 단언은 없지만, 한 문면은 통과하고 다른 문면은 통과하지 못하는
       # 상태를 같은 파일 안에 새로 만들지 않는다.
       [ "$HOOK_NLINK" -le 1 ] \
-        || deny "$(jstr "gate: 편집 대상이 하드링크입니다 — 같은 파일을 가리키는 다른 이름이 강제 표면 안인지 이 철자로는 판정할 수 없습니다. 판정 불가는 허용이 아닙니다. 쓰기 자체를 포기할 필요는 없습니다. 게이트를 경유하면 같은 쓰기가 원장에 행을 남기면서 통과합니다. 다만 그것이 모호성을 해소하지는 않습니다 — 다른 이름이 강제 표면 안인지는 그대로 판정할 수 없고, 바뀌는 것은 그 쓰기가 감사 가능해진다는 것뿐입니다. --surface 에는 실제 표면을 적으세요. 그 경로는 이 형태입니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest '스냅숏이 낸 H 값' --rationale '이 파일을 이 자리에 써야 하는 이유' -- cp '원본 경로' '대상 경로'")"
+        || deny "$(jstr "gate: 편집 대상이 하드링크입니다 — 같은 파일을 가리키는 다른 이름이 강제 표면 안인지 이 철자로는 판정할 수 없습니다. 판정 불가는 허용이 아닙니다. 쓰기 자체를 포기할 필요는 없습니다. 게이트를 경유하면 같은 쓰기가 원장에 행을 남기면서 통과합니다. 다만 그것이 모호성을 해소하지는 않습니다 — 다른 이름이 강제 표면 안인지는 그대로 판정할 수 없고, 바뀌는 것은 그 쓰기가 감사 가능해진다는 것뿐입니다. --surface 에는 실제 표면을 적으세요. 그 경로는 이 형태입니다: ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest '스냅숏이 낸 H 값' --rationale '이 파일을 이 자리에 써야 하는 이유' -- cp '원본 경로' '대상 경로'")"
     fi
     allow "$(jstr 'gate: 강제 표면 아님')"
     ;;
@@ -1389,4 +1409,4 @@ fi
 # like — the exemption would be a real hole opened to make prose typecheck.
 # Quoting closes it with no hole at all, and it is the spelling the hardlink
 # refusal above already hands out.
-deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface '읽기·워크트리쓰기·트리밖쓰기·외부상태변경 중 하나' --snapshot-digest '방출 파일의 H 값' --emit-digest --rationale '왜 이 명령이 필요한가' -- ${cmd} 』 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"
+deny "$(jstr "gate: 이 런의 배시는 게이트를 거쳐야 원장에 남습니다. --snapshot-digest 값은 직전 게이트 호출이 방출해 둔 파일에서 가져오세요 — Read 도구로 ${DIGEST_FILE} 을 열어 H 필드를 그대로 적습니다(Read 는 배시가 아니라 이 훅에 걸리지 않습니다). 그 파일의 actor 필드가 \$CC_PIPELINE_STAGE_ID 와 다르면 남의 방출을 읽은 것이므로 쓰지 말고 아래 snapshot 명령으로 값을 받으세요. 실행할 형태는 이것 하나입니다: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface '읽기·워크트리쓰기·트리밖쓰기·외부상태변경 중 하나' --reach '런로컬·기기전역·dev·prod·협업·배포트리거·미상 중 하나' [--destructive] --snapshot-digest '방출 파일의 H 값' --emit-digest --rationale '왜 이 명령이 필요한가' -- ${cmd} 』 --reach 는 쓰기와 원격 도구 호출에 필수이고, 로컬 읽기와 불투명하지 않은 워크트리 쓰기에서는 생략할 수 있습니다. 되돌릴 수 없는 삭제·파기에는 --destructive 를 붙이세요. git push 는 --cutpoint push 로(목적지가 대상 베이스 브랜치면 머지), --reach 협업 으로 신고합니다. 방출 파일이 없으면(이 런의 첫 호출이거나 방출이 실패한 경우) 먼저 이 명령을 따로 실행해 값을 받으세요(『 』 안쪽만 명령입니다) — 한 줄로 합치거나 \$( ) 로 감싸면 첫 토큰이 게이트 경로가 아니게 되어 이 훅이 다시 거부합니다: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 그리고 --emit-digest 가 '알 수 없는 인자' 로 거부되면 게이트 사본이 이 플래그보다 낡은 것이므로, 그 플래그만 빼고 다시 실행하고 이후로는 계속 snapshot 명령으로 값을 받으세요")"

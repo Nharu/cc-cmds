@@ -322,6 +322,30 @@ if [ "$NATIVE_OS" = "Darwin" ] && [ -n "$LOCK_TOOL" ] && [ -x "$LOCK_TOOL" ]; th
   # -k is required: without it lockf removes the lock file on exit and the next
   # acquirer sees no contention at all.
   if [ -e "$RUN_DIR/designdoc.lock" ]; then ok "-k 로 잠금 파일이 보존된다"; else bad "-k 보존" "잠금 파일이 사라짐"; fi
+
+  # 선택은 관측이 아니다. `lock_tool` 은 플랫폼 술어만 보고 답하므로, 이 스위트가
+  # 어느 러너에서든 darwin 갈래를 태우는 한 실재하지 않는 경로가 이 자리에 들어온다.
+  # 검사가 없으면 잠긴 명령이 잠금의 것도 명령의 것도 아닌 종료 코드로 실패하고,
+  # 호출자는 「바쁨」과 「도구 없음」을 구별하지 못한다.
+  lock_tool_save=$(declare -f lock_tool)
+  lock_tool() { printf '%s' "$RUN_DIR/does-not-exist-lockf"; }
+  set +e
+  miss_out=$(with_doc_lock true 2>&1)
+  miss_rc=$?
+  set +e
+  check "호스트에 없는 잠금 도구는 1 로 실패한다 (정체 모를 종료 코드가 아니다)" "$miss_rc" "1"
+  case "$miss_out" in
+    *"이 호스트에 없습니다"*) ok "그 실패가 사유를 적는다" ;;
+    *) bad "잠금 도구 부재 문면" "사유를 적지 않았다: ${miss_out:-(빈 출력)}" ;;
+  esac
+  eval "$lock_tool_save"
+  # 대조군 — 되돌린 뒤에는 같은 호출이 다시 선다. 위 둘이 「항상 실패하는 구현」을
+  # 재고 있지 않다.
+  set +e
+  with_doc_lock true
+  back_rc=$?
+  set +e
+  check "대조군: 실재하는 도구로는 같은 호출이 통과한다" "$back_rc" "0"
 else
   ok "잠금 경합 확인은 macOS 레그 담당 (이 러너에서는 건너뜀)"
 fi
@@ -617,6 +641,50 @@ if [ "$uu_r1" != "$uu_r2" ]; then
 else
   bad "session_uuid" "런 id 가 달라도 같은 id — 같은 문서의 두 번째 런이 첫 스테이지에서 죽는다"
 fi
+
+# ---------------------------------------------------------------------------
+# 재부착이 읽는 세션 id — 모양을 검사하고, 그 값이 인자가 되지 않는다
+#
+# 이 값은 런 디렉터리 아래 파일에서 읽혀 하네스에 인자로 넘어간다. 추출기의
+# `[^"]*` 는 공백을 받으므로, 심어진 로그가 `<uuid> --settings /어딘가/evil.json`
+# 을 실을 수 있다. 하네스는 마지막 `--settings` 를 쓰므로 그것이 게이트 훅을 싣는
+# 런 설정 파일을 대체하고, 재부착된 스테이지는 게이트 없이 돈다.
+#
+# 그것을 막는 것이 둘이고 둘 다 잰다 — 이 모양 검사, 그리고 호출부가 플래그를
+# 문자열로 이어 붙이지 않고 배열 원소로 넘기는 것. 오늘은 어느 하나로도 충분하지만,
+# 한쪽을 나중에 고치는 편집이 구멍을 다시 열지 못하게 둘 다 둔다.
+# ---------------------------------------------------------------------------
+SSR_RD="$WORK/ssr-rundir"; mkdir -p "$SSR_RD/log"
+ssr() {
+  printf '%s\n' "$2" > "$SSR_RD/log/$1.json"
+  RUN_DIR="$SSR_RD" stage_session_id_strict "$1"
+}
+# 기댓값을 변수에 담지 않고 리터럴로 둔다. 변수에 담으면 그것이 어떤 이유로든 비었을
+# 때 관측값이 마침 같이 비어 있는 동안 단언이 공허하게 통과하고, 한쪽만 비는 호스트에
+# 가서야 빨개진다 — 그때 읽히는 실패는 재려던 성질과 무관해 보인다.
+ssr_out=$(ssr SA '{"session_id":"12121212-3434-5656-7878-909090909090","x":1}')
+check "제대로 된 세션 id 는 그대로 나온다" \
+  "$ssr_out" "12121212-3434-5656-7878-909090909090"
+check "공백으로 플래그를 이어 붙인 값은 비운다" \
+  "$(ssr SB '{"session_id":"12121212-3434-5656-7878-909090909090 --settings /tmp/evil.json"}')" ""
+check "UUID 모양이 아닌 값도 비운다" \
+  "$(ssr SC '{"session_id":"not-a-uuid"}')" ""
+check "16진수가 아닌 글자가 섞이면 비운다" \
+  "$(ssr SD '{"session_id":"1212121z-3434-5656-7878-909090909090"}')" ""
+check "스트림이 없으면 비운다 (유도값으로 메우지 않는다)" \
+  "$(RUN_DIR="$SSR_RD" stage_session_id_strict SE)" ""
+# 그리고 호출부는 문자열이 아니라 배열로 넘긴다. 이 단언은 구현의 모양을 고정한다 —
+# 위 검사를 통과한 값이라도 이어 붙이면 그 순간 다시 인자가 된다.
+if grep -qF '"${id_flag[@]}"' "$repo_root/plugins/cc-cmds/orchestrator/run.sh"; then
+  ok "스테이지 기동이 id 플래그를 배열 원소로 넘긴다"
+else
+  bad "기동 형태" "id 플래그가 배열로 넘어가지 않는다 — 값이 낱말로 쪼개져 인자가 된다"
+fi
+if grep -qE '^[^#]*--resume \$STAGE_RESUME' "$repo_root/plugins/cc-cmds/orchestrator/run.sh"; then
+  bad "기동 형태" "--resume 가 따옴표 없는 확장으로 이어 붙는다"
+else
+  ok "따옴표 없는 --resume 확장이 없다"
+fi
 # 시도 항이 실제로 값을 가른다. 스테이지가 결과를 남기기 전에 죽으면 그 세션 id 는
 # 점유된 채 남고, 시도 항이 늘 같은 값이면 같은 세그먼트의 재시도가 CLI 에서
 # 「already in use」로 즉사한다 — 게이트를 통과하고 원장에 행을 남긴 뒤에.
@@ -690,8 +758,11 @@ write_manifest() {   # write_manifest <출력> [대상맵다이제스트override
   # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
   # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
   # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
-  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}"
-  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음"
+  # 여섯째는 대상 행 끝에 선택 필드를 덧붙인다 — `dev 식별자`·`배포트리거 식별자`
+  # 처럼 부재가 기본인 필드를 시험하려면 행 자체가 달라져야 하고, 그 행이 두
+  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다.
+  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음${extra}"
   local plan='{ "steps": ["audit", "implement"] }'
   [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
   # An empty third argument means "omit the binding digest"; a non-empty one is
@@ -762,6 +833,65 @@ else
   bad "구속 다이제스트" "맞는 값인데 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
 fi
 
+# --- 14·15 — 대상 행의 두 선택 필드 ----------------------------------------
+#
+# ABSENCE IS THE DEFAULT AND IS NOT A VIOLATION; a malformed element is a hard
+# stop. The direction matters: a typo passed over reads at runtime as "this
+# target declared nothing", and declaring nothing means the run believes a
+# stage's `dev` claim with nothing to compare it against.
+mf_with() {   # mf_with <대상 행 뒤에 붙일 필드들>
+  write_manifest "$MF" "" "" main "(없음)" "$1"
+  local bd; bd=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+  write_manifest "$MF" "" "$bd" main "(없음)" "$1"
+}
+
+MANIFEST="$MF"
+mf_with " | dev 식별자=aws-profile:dev,host:dev-db | 배포트리거 식별자=branch:release,argv:bash scripts/deploy.sh"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "올바른 dev 식별자·배포트리거 식별자가 통과한다"
+else
+  bad "조건 14·15" "올바른 값이 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+check "dev 식별자가 대상 행에서 읽힌다" "$(target_field home 'dev 식별자')" "aws-profile:dev,host:dev-db"
+
+mf_with " | dev 식별자=aws-acct:dev"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "어휘 밖 종류가 통과했다 — 오타가 조용히 「선언 없음」으로 읽힌다"
+else
+  ok "dev 식별자의 어휘 밖 종류가 거부된다"
+fi
+
+mf_with " | dev 식별자=aws-account:1234"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "12자리 아닌 계정이 통과했다"
+else
+  ok "12자리 아닌 aws-account 가 거부된다"
+fi
+
+mf_with " | dev 식별자=dir:relative/path"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 14" "상대 경로 dir 이 통과했다"
+else
+  ok "상대 경로 dir 이 거부된다"
+fi
+
+mf_with " | 배포트리거 식별자=deploy:release"
+if ( check_manifest ) >/dev/null 2>&1; then
+  bad "조건 15" "어휘 밖 배포트리거 종류가 통과했다"
+else
+  ok "배포트리거 식별자의 어휘 밖 종류가 거부된다"
+fi
+
+# 부재가 위반이 아니라는 것 — 이 단언이 없으면 위의 거절들이 필드 자체를
+# 거부하는 것과 구별되지 않는다.
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+if ( check_manifest ) >/dev/null 2>&1; then
+  ok "두 필드의 부재는 위반이 아니다 (기존 매니페스트가 그대로 적합하다)"
+else
+  bad "조건 14·15" "필드가 없는 매니페스트가 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"
+fi
+
 # A goal edit must move it — otherwise the digest is over something that cannot
 # change and the check is vacuous.
 bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
@@ -771,6 +901,43 @@ if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_before" ]; th
 else
   ok "종료 지점이 바뀌면 구속 다이제스트가 움직인다"
 fi
+write_manifest "$MF"
+
+# 비용 천장은 이제 런을 끝내는 경계이므로 얼린 집합에 든다 — 런 도중에 올릴 수 있는
+# 천장은 천장이 아니다. 그리고 그 편입이 기존 매니페스트를 부적합으로 만들지 않아야
+# 한다: 필드가 없으면 바이트를 하나도 내지 않는다는 것이 그 조건이고, 아래 마지막
+# 단언이 정확히 그것을 잰다 — 필드를 뺀 뒤의 다이제스트가 넣기 전과 같은 값이다.
+bd_nocost=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+awk '/^\*\*벽시계 마감\*\*: /{print; print "**비용 천장**: 100"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "픽스처가 실제로 천장 줄을 얻었다 (아래 셋이 공허하지 않다)" \
+  "$( { grep -c '^\*\*비용 천장\*\*: 100$' "$MF" || true; } )" "1"
+bd_cost=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_cost" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "비용 천장을 선언했는데 다이제스트가 그대로다"
+else
+  ok "비용 천장이 생기면 구속 다이제스트가 움직인다"
+fi
+sed 's/^\*\*비용 천장\*\*: 100$/**비용 천장**: 200/' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_cost" ]; then
+  bad "구속 집합 감도" "천장 값을 바꿨는데 다이제스트가 그대로다 — 런 도중 천장을 올릴 수 있다"
+else
+  ok "비용 천장 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+grep -v '^\*\*비용 천장\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "천장 필드가 없으면 그 필드를 얼리기 전과 같은 바이트다 (기존 매니페스트가 그대로 적합하다)" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
+awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
+  "$( { grep -c '^\*\*무진전 상한\*\*: 7$' "$MF" || true; } )" "1"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "무진전 상한을 선언했는데 다이제스트가 그대로다"
+else
+  ok "무진전 상한이 생기면 구속 다이제스트가 움직인다"
+fi
+grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 write_manifest "$MF"
 
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
@@ -2186,7 +2353,7 @@ DOC=""
 check "구현 스테이지 두 자리가 접근자를 쓴다" \
   "$( { grep -cF 'implement-unattended $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "리뷰 스테이지가 접근자를 쓴다" \
-  "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "1"
+  "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "재수렴 스테이지가 접근자를 쓴다" \
   "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "1"
 # 감사와 계획, 두 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
@@ -3517,6 +3684,138 @@ fi
 # 스폰은 둘이어야 하고, 셋이 되면 어느 갈래가 예산을 넘긴 것이다.
 check "재시도 스폰은 갈래당 1회 (전체 2회)" \
   "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+
+# ---------------------------------------------------------------------------
+# 리뷰 정책 축 — 어휘, 조기 진단, 전파
+#
+# 이 파일의 초록은 수용 기준이 아니다. 이 경로에는 프로덕션 진입점이 없다 —
+# 어떤 shipped 스킬도 `run.sh` 를 프로그램으로 실행하지 않고, 아래 함수들은
+# 게이트가 소싱해 쓰는 정의이거나 도달 불가한 드라이버 팔이다. 수용 기준은
+# `gate.sh act --kind segment` 픽스처이며 그것은 `scripts/test-gate.sh` 에 있다.
+# 여기서 재는 것은 그 정의들이 존재하고 순서가 맞다는 것뿐이다.
+# ---------------------------------------------------------------------------
+check "리뷰 정책 어휘가 엄격 → 느슨 순서다" "$REVIEW_POLICIES" "선리뷰후머지 선머지후리뷰 리뷰없음"
+check "가장 엄격한 값이 0 이다"   "$(review_policy_index 선리뷰후머지)" "0"
+check "가운데 값이 1 이다"        "$(review_policy_index 선머지후리뷰)" "1"
+check "가장 느슨한 값이 2 다"     "$(review_policy_index 리뷰없음)"     "2"
+rp_rc=0; review_policy_index '없는토큰' >/dev/null 2>&1 || rp_rc=$?
+if [ "$rp_rc" = "0" ]; then
+  bad "리뷰 정책 색인" "어휘 밖 토큰이 0 으로 성공했다 — 조용한 부인이다"
+else
+  ok "어휘 밖 토큰은 비영 종료로 답한다 (die 가 아니라 반환 상태다)"
+fi
+
+# 조기 진단 — 상한 초과 슬라이스는 거절되고, 무관한 사전 인가 행만으로는 더 이상
+# `리뷰없음` 이 통과하지 않는다. 옛 가드는 매니페스트가 아무 `사전 인가` 행이라도
+# 가지고 있으면 통과시켰다: 그 행이 이 슬라이스에 대한 것인지도, 리뷰에 대한
+# 것인지도 묻지 않았으므로 장식이었다.
+RP_DIR="$WORK/review-policy"; mkdir -p "$RP_DIR"
+RP_MF="$RP_DIR/plan.md"
+{
+  printf '# 파이프라인 런 매니페스트 — RP\n\n'
+  printf '## 대상\n'
+  printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 공통 git 디렉터리=%s/.git | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선머지후리뷰\n\n' "$RP_DIR" "$RP_DIR"
+  printf '## 인가\n'
+  printf -- '- `사전 인가` | 형태=npm test | 사유=무관한 항목\n'
+} > "$RP_MF"
+RP_MANIFEST_SAVE="${MANIFEST:-}"
+MANIFEST="$RP_MF"
+
+rp_doc() {
+  # rp_doc <파일> <정책> — 한 슬라이스짜리 선언 문서.
+  #
+  # 필드 줄에 앞 대시를 두지 않는다. `slice_field` 의 패턴은 `^**키**: ` 로
+  # 앵커되어 있어 대시가 붙으면 어떤 필드도 읽히지 않고, 그러면 이 절의 거절
+  # 단언들이 상한이 아니라 「필수 필드 없음」으로 만족돼 상한 가드를 통째로
+  # 지워도 초록으로 남는다. 표준 표기는 형제 픽스처와 계약 문서의 것과 같다.
+  {
+    printf '## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 A\n'
+    printf '**스킬**: `implement`\n'
+    printf '**레포**: `o/r`\n'
+    printf '**선언 파일**: `a.txt`\n'
+    printf '**선행**: 없음\n'
+    printf '**절단점**: 머지\n'
+    printf '**리뷰 정책**: %s\n' "$2"
+  } > "$1"
+}
+
+# 카탈로그 전수 — 모든 선언이 파싱 가능한 `끌 수 있는가` 값을 낸다.
+#
+# 이 판별이 조용히 실패하면 게이트가 실제로 읽고 있는 룰이 「끌 수 없는」 집합에
+# 합류하고, 운영자는 아침 로그에서 자기 「끔」이 무력하다고 읽는다 — 실제로는
+# 그 「끔」이 머지 검사를 끄고 있는데도. 오늘 이 값을 세우는 것이 트리에 이
+# 단언뿐이다.
+rs_rules_dir=$(dirname "$DRIVER")/rules
+rs_bad=""
+for rs_f in "$rs_rules_dir"/*.rule; do
+  [ -f "$rs_f" ] || continue
+  case "$(rule_switchable_value "$rs_f")" in
+    예*|아니오*) : ;;
+    *) rs_bad="$rs_bad $(basename "$rs_f")" ;;
+  esac
+done
+if [ -z "$rs_bad" ]; then
+  ok "모든 룰 선언이 파싱 가능한 「끌 수 있는가」 값을 낸다"
+else
+  bad "끌 수 있는가 파싱" "값을 읽지 못한 선언:$rs_bad"
+fi
+# 비공허성 — 값을 블록으로 적은 선언이 실재해야 이 단언이 옛 한 줄 판별과
+# 구별된다. 전부 한 줄이면 고치기 전의 grep 으로도 초록이다.
+if grep -qE '^끌 수 있는가:[[:space:]]*$' "$rs_rules_dir"/*.rule; then
+  ok "값을 블록으로 적은 선언이 실재한다 (이 단언이 한 줄 판별과 구별된다)"
+else
+  bad "끌 수 있는가 픽스처" "모든 선언이 한 줄이라 이 단언이 옛 판별과 구별되지 않는다"
+fi
+
+rp_doc "$RP_DIR/ok.md" 선머지후리뷰
+rp_rc=0; slicing_fields_ok "$RP_DIR/ok.md" >/dev/null 2>&1 || rp_rc=$?
+check "상한과 같은 값을 선언한 슬라이스는 통과한다" "$rp_rc" "0"
+
+# 두 거절은 종료 상태가 아니라 **이유**로 판정한다. 상태만 재면 앞선 무관한
+# 거절 — 필드를 못 읽어 생기는 「필수 필드 없음」 같은 것 — 이 같은 1 을 내어
+# 단언이 재려던 가드가 사라져도 통과한다.
+rp_doc "$RP_DIR/over.md" 리뷰없음
+rp_rc=0; rp_err=$(slicing_fields_ok "$RP_DIR/over.md" 2>&1 >/dev/null) || rp_rc=$?
+check "상한을 넘는 슬라이스는 거절된다 (무관한 사전 인가 행이 있어도)" "$rp_rc" "1"
+case "$rp_err" in
+  *상한*) ok "그 거절이 상한을 지목한다 (앞선 무관한 거절이 아니다)" ;;
+  *) bad "상한 거절 이유" "$rp_err" ;;
+esac
+
+rp_doc "$RP_DIR/bad.md" 없는정책
+rp_rc=0; rp_err=$(slicing_fields_ok "$RP_DIR/bad.md" 2>&1 >/dev/null) || rp_rc=$?
+check "어휘 밖 정책 토큰은 거절된다" "$rp_rc" "1"
+case "$rp_err" in
+  *어휘*) ok "그 거절이 어휘를 지목한다 (앞선 무관한 거절이 아니다)" ;;
+  *) bad "어휘 거절 이유" "$rp_err" ;;
+esac
+
+if grep -q '사전 인가' "$RP_MF"; then
+  ok "그 매니페스트가 여전히 사전 인가 행을 갖고 있다 (거절이 그 행의 부재 때문이 아니다)"
+else
+  bad "픽스처" "사전 인가 행이 없어 이 단언이 옛 가드와 구별되지 않는다"
+fi
+MANIFEST="$RP_MANIFEST_SAVE"
+
+# 전파 — 슬라이스 선언의 값이 세그먼트 행 argv 로 넘어가고, 쓰기 시점에 앞 행에서
+# 옮겨 적힌다. 두 자리 다 `CC_ORCH_SOURCE_ONLY=1` 아래 도달 불가한 드라이버 팔이라
+# 정적으로만 잰다 — 그것이 이 파일이 이 축에 대해 세울 수 있는 전부다.
+if grep -qF "_rp=\$(slice_field \"\$doc\" \"\$id\" '리뷰 정책')" "$DRIVER"; then
+  ok "드라이버가 슬라이스의 리뷰 정책을 읽는다"
+else
+  bad "슬라이스 전파" "드라이버가 슬라이스 선언의 리뷰 정책을 읽지 않는다"
+fi
+if grep -qF "_segargs+=( \"리뷰 정책=\$_rp\" )" "$DRIVER"; then
+  ok "그 값을 세그먼트 행 argv 로 넘긴다"
+else
+  bad "슬라이스 전파" "읽기만 하고 세그먼트 행으로 넘기지 않는다"
+fi
+if grep -qF "set -- \"\$@\" \"리뷰 정책=\$_pv\"" "$DRIVER"; then
+  ok "세그먼트 행 writer 가 앞 행의 값을 새 행에 옮겨 적는다 (읽기 시점 폴백이 아니다)"
+else
+  bad "carry-forward" "앞 행의 값을 새 행에 적지 않는다 — 두 번째 리더가 생긴다"
+fi
 
 # ---------------------------------------------------------------------------
 # 22. 레인 지속화 — 4단 리졸버, 런 상태 프로브, 형제 레인 훅 구멍
@@ -5004,6 +5303,243 @@ if grep -q '\*/orchestrator/rules/\*|\*/orchestrator/\*' "$FX2/hooks/gate-pretoo
 else
   bad "T17 픽스처" "훅의 룰 분기를 합집합으로 넓히지 못했다 — 대조가 성립하지 않는다"
 fi
+
+# 30. 리뷰 복구의 읽기 측 — 픽스처 위의 행위 단언
+# ---------------------------------------------------------------------------
+# 이 절이 파일 끝에 앉는 것은 배치가 아니라 제약이다. 20절의 `unset -f reap_orphan`
+# 이 드라이버의 정의를 복원이 아니라 제거하고(배시에 함수 섀도잉이 없다),
+# `review_recover` 는 파견 직전에 `reap_orphan` 을 부른다 — 그 줄 이후의 어느
+# 자리에서 `review_recover` 를 부르든 미정의 함수를 부르게 된다. 그래서 여기서
+# 자기 감시 스텁을 다시 정의하며, 그 스텁은 회수 호출을 관측하는 수단이기도 하다.
+#
+# 읽기 측은 스테이지를 실제로 띄우지 않고는 구동할 수 없는 것이 아니다 — 호출
+# 대상을 전부 스텁으로 갈아 끼우면 분기가 순수 셸이 된다. 그래서 소스 문면 핀이
+# 아니라 행위로 고정한다. 핀은 파견 줄에 무엇이 실렸는지를 원리적으로 셀 수 없다.
+REC_DIR="$WORK/recover"; mkdir -p "$REC_DIR"
+REC_RUN_SAVE="$RUN_DIR"; RUN_DIR="$REC_DIR/run"; mkdir -p "$RUN_DIR/log"
+REC_LEDGER_SAVE="$LEDGER"; LEDGER="$REC_DIR/ledger.md"; : > "$LEDGER"
+REC_BASE_SAVE="$BASE"; BASE="$REC_DIR/base"; mkdir -p "$BASE/docs"
+
+SIDR="S5:segR:0"; ATTR="4"
+REC_RP="$REC_DIR/report.md"; : > "$REC_RP"
+
+mk_wit() {  # mk_wit <디렉터리 이름> <.attempt 내용, 또는 - 로 스탬프 없음>
+  mkdir -p "$RUN_DIR/$1"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$RUN_DIR/$1/.attempt"
+}
+
+# --- (1) witness_dirs_for_attempt — 네 경우와 두 방향의 대조군 --------------
+mk_wit "cc-team-witness-hit"     "$SIDR#$ATTR"
+mk_wit "cc-team-witness-nostamp" -
+# 이름은 대상 시도의 것처럼 지었으나 스탬프가 다른 후보. 이름 비교였다면 잡혔다.
+mk_wit "cc-team-witness-review-seg-r.S5-segR-0-4" "$SIDR#3"
+: > "$RUN_DIR/cc-team-witness-plainfile"   # 이름은 맞지만 디렉터리가 아니다
+
+REC_WD=$(witness_dirs_for_attempt "$SIDR" "$ATTR")
+check "스탬프가 맞는 디렉터리만 나온다" "$REC_WD" "$RUN_DIR/cc-team-witness-hit"
+check "스탬프 없는 후보는 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'nostamp' || true; } )" "0"
+check "이름이 맞고 스탬프가 다른 후보는 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'seg-r' || true; } )" "0"
+check "cc-team-witness-* 이름의 파일은 건너뛴다" \
+  "$( { printf '%s\n' "$REC_WD" | grep -c 'plainfile' || true; } )" "0"
+check "일치하는 스탬프가 없으면 빈 출력" "$(witness_dirs_for_attempt "$SIDR" 99)" ""
+
+# 주석이 주장하는 「이름이 아니라 스탬프로 맞춘다」를 반대 방향에서 단언한다 —
+# 이름은 전혀 다른 시도의 것이고 `.attempt` 내용만 맞는 후보가 잡혀야 한다.
+mk_wit "cc-team-witness-unrelated-name.SX-9" "$SIDR#$ATTR"
+check "이름이 어긋나도 스탬프가 맞으면 잡힌다" \
+  "$( { witness_dirs_for_attempt "$SIDR" "$ATTR" | grep -c . || true; } )" "2"
+rm -rf "$RUN_DIR/cc-team-witness-unrelated-name.SX-9"
+
+# --- (2) review_recover 의 다섯 분기 ----------------------------------------
+REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_ROWS=""; REC_REAPED=""
+REC_PRED=1                 # predicate_review 의 반환값 (0 = 술어 줄이 이미 있음)
+REC_RCLASS="정상 완료"
+
+rec_reset() { REC_PARK=""; REC_SPAWN=""; REC_CALLS=""; REC_ROWS=""; REC_REAPED=""; }
+
+# --- (2a) reap_orphan 의 효과 — 진짜 함수를 구동한다 -------------------------
+# 아래 (3) 의 단언들은 스파이가 설치된 뒤의 관측이라 호출 지점의 위치만 고정할 수
+# 있다. 효과는 여기서 고정한다. 이 자리가 스파이 설치보다 앞이라는 것이 요점이며
+# 20절과 같은 이유다 — `rec_install_spies` 아래로 내려가는 순간 `reap_orphan` 은
+# 무조건 기록하는 스텁이 되어 진짜 함수가 무엇을 하든 통과한다.
+#
+# 20절의 `unset -f reap_orphan` 은 복원이 아니라 제거이므로 이 자리에는 진짜
+# 정의가 없다. 드라이버에서 그 함수만 다시 읽어 온다 — `watch.sh` 의 두 함수를
+# 가져오는 자리와 같은 형태다. `log` 도 같은 이유로 없을 수 있어 스텁을 둔다.
+eval "$(sed -n '/^reap_orphan()/,/^}/p' "$DRIVER")"
+log() { :; }
+
+# pid 파일이 없는 경우를 **조용한 무동작으로서** 단언한다. 이번 사이클의 발견이
+# 정확히 「도달 가능한 모든 경로가 이 형상이다」이므로, 그 삼킴 가드가 스위트에
+# 보이지 않으면 다음 사람이 같은 자리를 다시 연다.
+REC_ORPH_NONE="S5:orph-none:0"
+rm -f "$RUN_DIR/$REC_ORPH_NONE.pid" "$RUN_DIR/$REC_ORPH_NONE.reaped"
+reap_orphan "$REC_ORPH_NONE"; REC_RC=$?
+check "pid 파일이 없으면 reap_orphan 은 0 으로 반환한다" "$REC_RC" "0"
+check "pid 파일이 없으면 스탬프도 남지 않는다 (조용한 무동작)" \
+  "$( { [ -e "$RUN_DIR/$REC_ORPH_NONE.reaped" ] && printf 'yes' || printf 'no'; } )" "no"
+
+# pid 파일이 있고 그 pid 가 이미 죽은 경우 — 판정이 스탬프로 남고 pid 는 지워진다.
+# 스탬프가 없으면 「이미 죽어 있었다」와 「회수가 아예 없었다」가 구별되지 않는다.
+REC_ORPH_DEAD="S5:orph-dead:0"; REC_DEAD_PID=999999
+rm -f "$RUN_DIR/$REC_ORPH_DEAD.reaped"
+printf '%s\n' "$REC_DEAD_PID" > "$RUN_DIR/$REC_ORPH_DEAD.pid"
+reap_orphan "$REC_ORPH_DEAD"
+check "죽은 pid 는 dead 로 스탬프된다" \
+  "$( { cat "$RUN_DIR/$REC_ORPH_DEAD.reaped" 2>/dev/null || true; } )" "$REC_DEAD_PID dead"
+check "회수 뒤 pid 파일은 사라진다 (이후의 생존성 오라클이 없어진다)" \
+  "$( { [ -e "$RUN_DIR/$REC_ORPH_DEAD.pid" ] && printf 'yes' || printf 'no'; } )" "no"
+
+# 살아 있는 경우 — 이 스위트가 직접 띄운 자식이라 신호가 밖으로 나가지 않는다.
+REC_ORPH_LIVE="S5:orph-live:0"
+rm -f "$RUN_DIR/$REC_ORPH_LIVE.reaped"
+sleep 30 &
+REC_LIVE_PID=$!
+printf '%s\n' "$REC_LIVE_PID" > "$RUN_DIR/$REC_ORPH_LIVE.pid"
+reap_orphan "$REC_ORPH_LIVE" 2>/dev/null
+check "살아 있는 pid 는 alive 로 스탬프된다" \
+  "$( { cat "$RUN_DIR/$REC_ORPH_LIVE.reaped" 2>/dev/null || true; } )" "$REC_LIVE_PID alive"
+wait "$REC_LIVE_PID" 2>/dev/null || true
+check "살아 있던 자식은 실제로 종료했다" \
+  "$( { kill -0 "$REC_LIVE_PID" 2>/dev/null && printf 'yes' || printf 'no'; } )" "no"
+rm -f "$RUN_DIR/$REC_ORPH_LIVE.reaped" "$RUN_DIR/$REC_ORPH_DEAD.reaped"
+
+# THE SPIES ARE INSTALLED FROM INSIDE A FUNCTION, and the indentation is the
+# whole reason. Two of these names — `park` and `ledger_row` — are real
+# functions this file sources from the driver and calls at top level in earlier
+# sections. A column-zero definition of either down here reads, to the
+# called-before-defined check, as a call above its own definition: that check
+# scans column zero precisely because a top-level call runs where it is written,
+# and it cannot see that the earlier calls resolve to the sourced originals.
+# Defining them one level in keeps the check honest — it still catches the shape
+# it exists for — while bash installs them globally the moment this runs.
+rec_install_spies() {
+  park()                { REC_PARK="$REC_PARK|$*"; REC_CALLS="$REC_CALLS park"; return 0; }
+  predicate_review()    { return "$REC_PRED"; }
+  stage_attempt_pinned(){ printf '%s' "$ATTR"; }
+  stage_spawn()         { REC_SPAWN="$REC_SPAWN|$*"; REC_CALLS="$REC_CALLS stage_spawn"; return 0; }
+  stage_wait_all()      { REC_CALLS="$REC_CALLS stage_wait_all"; return 0; }
+  classify_termination(){ printf '%s' "$REC_RCLASS"; }
+  # 인자를 버리면 행에 무엇이 실렸는지 원리적으로 셀 수 없다 — 누산한다.
+  ledger_row()          { REC_ROWS="$REC_ROWS|$*"; REC_CALLS="$REC_CALLS ledger_row"; return 0; }
+  stage_session_id()    { printf 'SID'; }
+  stage_parent_id()     { printf 'PID'; }
+  log()                 { :; }
+  doc_arg()             { printf '%s/docs/x.md' "$BASE"; }
+  reap_orphan()         { REC_REAPED="$REC_REAPED $1"; REC_CALLS="$REC_CALLS reap_orphan"; }
+}
+rec_install_spies
+
+# 1. 비크래시 종단 부류 — 아무것도 띄우지 않고 park 한다.
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "정상 완료"; REC_RC=$?
+check "비크래시 종단 부류는 반환 1" "$REC_RC" "1"
+check "비크래시 종단 부류는 파견 0회" "$REC_SPAWN" ""
+
+# 2. 술어 줄이 이미 있는 크래시 — 원 스테이지가 리포트를 남기고 죽은 경우.
+rec_reset; REC_PRED=0
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "술어 줄 선재는 반환 1" "$REC_RC" "1"
+check "술어 줄 선재는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q '종료 술어 줄이 이미 있어'; then
+  ok "술어 줄 선재의 park 사유가 그 사실을 지명한다"
+else
+  bad "park 사유" "술어 줄 선재인데 사유가 그것을 말하지 않는다: $REC_PARK"
+fi
+REC_PRED=1
+
+# 3. 위트니스 디렉터리 0개 — Step 4 에 닿기 전에 죽었다.
+rec_reset; ATTR=99
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "디렉터리 0개는 반환 1" "$REC_RC" "1"
+check "디렉터리 0개는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q 'Step 4 미도달'; then
+  ok "디렉터리 0개의 park 사유가 Step 4 미도달이다"
+else
+  bad "park 사유" "디렉터리 0개인데 Step 4 미도달을 말하지 않는다: $REC_PARK"
+fi
+ATTR=4
+
+# 4. 디렉터리 2개 이상 — 지명할 수 없고, 후보가 전부 사유에 실린다.
+rec_reset; mk_wit "cc-team-witness-second" "$SIDR#$ATTR"
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "디렉터리 2개는 반환 1" "$REC_RC" "1"
+check "디렉터리 2개는 파견 0회" "$REC_SPAWN" ""
+if printf '%s' "$REC_PARK" | grep_all_q 'cc-team-witness-hit' \
+   && printf '%s' "$REC_PARK" | grep_all_q 'cc-team-witness-second'; then
+  ok "지명 불가 park 사유에 후보가 전부 열거된다"
+else
+  bad "park 사유" "후보 열거가 빠졌다: $REC_PARK"
+fi
+rm -rf "$RUN_DIR/cc-team-witness-second"
+
+# 5. 디렉터리 1개 — 행복 경로. 파견 줄에 세 인자가 전부 실렸는가.
+# 앞선 회수가 남겼을 스탬프를 픽스처로 깐다. 실제 런에서 이 값을 쓰는 것은
+# `stage_wait_all` 안의 회수이고, 여기 스파이는 그것을 대신하지 않으므로 파일로
+# 세운다 — 단언 대상은 「분기가 스탬프를 읽어 행에 싣는가」다.
+printf '4242 dead\n' > "$RUN_DIR/$SIDR.reaped"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시"; REC_RC=$?
+check "행복 경로는 반환 0" "$REC_RC" "0"
+check "행복 경로는 정확히 1회 파견한다" \
+  "$( { printf '%s' "$REC_SPAWN" | grep -c 'review-unattended' || true; } )" "1"
+for want in '--recover' "--scratch-dir $RUN_DIR/cc-team-witness-hit" "--report-path $REC_RP"; do
+  if printf '%s' "$REC_SPAWN" | grep_all_q -F -- "$want"; then
+    ok "파견 줄이 $want 를 싣는다"
+  else
+    bad "파견 줄" "$want 가 없다: $REC_SPAWN"
+  fi
+done
+
+# --- (3) 회수 호출 지점과 허용 목록 ------------------------------------------
+# 5번과 같은 픽스처의 관측이다 — `rec_reset` 을 사이에 두지 않는다.
+# **이 절이 고정하는 것은 호출 지점의 위치이지 회수의 효과가 아니다.** 스파이가
+# pid 파일을 보지 않고 무조건 기록하므로 진짜 `reap_orphan` 이 무엇을 하든 아래
+# 두 단언은 통과한다. 효과는 (2a) 가 진짜 함수 위에서 고정한다.
+check "원 스테이지를 정확히 한 번 회수 호출한다" "$REC_REAPED" " $SIDR"
+if printf '%s' "$REC_CALLS" | grep_all_q -F 'reap_orphan stage_spawn'; then
+  ok "회수 호출이 파견보다 앞선다"
+else
+  bad "회수 순서" "reap_orphan 이 stage_spawn 앞에 오지 않는다: $REC_CALLS"
+fi
+
+# 행에 실리는 것 — 스파이가 인자를 누산하므로 이제 셀 수 있다.
+for want in "복구 scratch=$RUN_DIR/cc-team-witness-hit" '원회수=dead' '종단 부류=정상 완료'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+
+# 스탬프가 없으면 행은 `미상` 을 싣는다 — 「모른다」가 원장에 남아야 한다.
+rm -f "$RUN_DIR/$SIDR.reaped"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
+  ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
+else
+  bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
+fi
+if kill_permitted "S5R:segR:0"; then
+  ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"
+else
+  bad "허용 목록" "S5R 이 목록 밖이라 정체한 복구가 백오프를 전소한다"
+fi
+if kill_permitted "S9:segR:0"; then
+  bad "허용 목록" "목록 밖 접두까지 허용됐다 — 넓힌 것이 S5R 하나가 아니다"
+else
+  ok "대조군: 목록 밖 접두는 여전히 거부된다"
+fi
+
+# 20절과 같은 이유로 `unset -f` 는 복원이 아니라 제거다. 이 절이 마지막이라
+# 이후에 이 이름들을 부르는 단언이 없고, 아래 요약 출력만 남는다.
+unset -f park predicate_review stage_attempt_pinned stage_spawn stage_wait_all \
+         classify_termination ledger_row stage_session_id stage_parent_id log \
+         doc_arg reap_orphan mk_wit rec_reset
+RUN_DIR="$REC_RUN_SAVE"; LEDGER="$REC_LEDGER_SAVE"; BASE="$REC_BASE_SAVE"
 
 printf '\ntest-run: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

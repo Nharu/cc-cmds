@@ -190,6 +190,11 @@ readonly BACKOFF_MAX_SLEEP_SECONDS=1800  # per-sleep ceiling
 # impact is that an envelope-less stall makes an unbounded backoff mandatory to
 # bound. Adopting the cap up front covers both branches of that item, so the
 # ladder terminates whichever way the envelope turns out to behave.
+# How many times ONE answered judgment may drive a re-attachment. The answer
+# leaves the candidate list only when a stage re-submits the judgment, and that
+# re-submission is instructed in prose — a stage that reads the instruction and
+# does not act on it comes back as the same candidate next cycle, forever.
+readonly REDISPATCH_MAX=2
 readonly BACKOFF_WALLCLOCK_CAP_SECONDS=21600   # 6h, then park
 # Consecutive silent polls before a live stage is classed as the limit shape.
 #
@@ -337,20 +342,186 @@ derive_paths() {
 # ---------------------------------------------------------------------------
 MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
 
+# ---------------------------------------------------------------------------
+# Manifest memo — the file parsed ONCE per process, on request.
+#
+# A gate call read the same manifest file some forty times before reaching its
+# verb — every `manifest_field` was an `awk` over the whole file, every
+# `target_field` a `grep` plus a `tr | sed | sed` chain — and that re-reading
+# was the largest single item of the fixed per-call preamble. The memo below is
+# one `awk` pass that records every value the readers extract, and the readers
+# answer from it with shell expansions and no child process.
+#
+# WHAT IS CACHED IS THE PARSE, NEVER A VERDICT. Every check in `check_manifest`
+# still runs, in the same order, on every gate entry; it merely runs on bytes
+# read at one moment instead of forty. Each reader produces the SAME BYTES the
+# file-reading form produced — first match, trailing whitespace, absence as
+# empty output — and the file-reading form is kept as the fallback so that any
+# caller which never took a snapshot (the driver itself) is unchanged.
+#
+# OPT-IN AND KEYED TO THE PATH. Nothing here fires unless `manifest_snapshot_take`
+# was called, and a reader uses the memo only while `MANIFEST_MEMO_PATH` equals
+# the current `MANIFEST`. A process that changes `MANIFEST` after the snapshot
+# falls back to the file for the new path rather than answering from the old
+# one. The gate takes the snapshot once, after it has normalized the path and
+# before `check_manifest`, which is the first reader.
+#
+# THE MEMO IS A FLAT TEXT, NOT AN ARRAY. This file runs on bash 3.2, so there
+# is no associative array to hold it; each record is one line, `<tag><TAB>…`,
+# and a lookup is a `case`/`${var#…}` on the whole text. The text starts with a
+# newline so the first record is addressable the same way as every other.
+#
+# BUILT IN A SUBSHELL, READ IN ANY. Command substitution runs in a child that
+# cannot assign the parent's variables, so the snapshot is taken by the caller
+# in its own shell; readers running inside a `$( … )` inherit the memo, which
+# is why the snapshot has to precede the first such call.
+# ---------------------------------------------------------------------------
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+
+manifest_snapshot_take() {
+  # One pass. Record tags:
+  #   K            kind token present
+  #   N <n>        count of lines equal to `## 인가`
+  #   H <text>     lines 2..8 joined by spaces (what `manifest_header` prints)
+  #   HF <k> <v>   the LAST `[; ]k=` occurrence in that header text, up to `;`
+  #   F <s> <k> <v> first `**k**: v` inside the FIRST `## s` section
+  #   T <row>      every `- \`target\`` row, in order
+  #   R <line>     every `**…**: 켬|끔` line, in order
+  #   P <row>      every `- \`사전 인가\`` row, in order
+  #   AW <row>     every `- \`자동 채택\`` row anywhere, in order
+  #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
+  #   C <row>      every `- \`종료 절\`` row, in order
+  MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
+  MANIFEST_MEMO="
+$(LC_ALL=C awk '
+    BEGIN { n_auth = 0; hdr = ""; cur = ""; ina = 0 }
+    index($0, "cc-run-manifest v1") > 0 { kind = 1 }
+    NR >= 2 && NR <= 8 { hdr = hdr $0 " " }
+    /^## / {
+      s = substr($0, 4)
+      if ($0 == "## 인가") n_auth++
+      # A duplicated section header closes the section: the per-call readers
+      # stop at the next `## ` line, so only the first instance ever answers.
+      if (s in seen) { cur = ""; ina = 0 } else { seen[s] = 1; cur = s; ina = ($0 == "## 인가") }
+      next
+    }
+    /^\*\*/ && cur != "" {
+      p = index($0, "**: ")
+      if (p > 1) {
+        k = substr($0, 3, p - 3)
+        if (!((cur SUBSEP k) in fseen)) { fseen[cur SUBSEP k] = 1; print "F\t" cur "\t" k "\t" substr($0, p + 4) }
+      }
+    }
+    /^\*\*[^*]+\*\*: (켬|끔)$/ { print "R\t" $0 }
+    index($0, "- `target`") == 1 { print "T\t" $0 }
+    index($0, "- `사전 인가`") == 1 { print "P\t" $0 }
+    index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
+    index($0, "- `종료 절`") == 1 { print "C\t" $0 }
+    END {
+      if (kind) print "K\t1"
+      print "N\t" n_auth
+      print "H\t" hdr
+      # Header fields: for each `[; ]key=` the LAST occurrence wins and the
+      # value runs to the next `;` — the same reading the sed form gives.
+      rest = hdr; pos = 0
+      while (match(rest, /[; ][A-Za-z0-9_-]+=/)) {
+        at = pos + RSTART
+        key = substr(rest, RSTART + 1, RLENGTH - 2)
+        last[key] = at + RLENGTH - 1
+        pos += RSTART; rest = substr(rest, RSTART + 1)
+      }
+      for (key in last) {
+        v = substr(hdr, last[key] + 1)
+        q = index(v, ";"); if (q > 0) v = substr(v, 1, q - 1)
+        sub(/[[:space:]]+$/, "", v)
+        print "HF\t" key "\t" v
+      }
+    }
+  ' "$MANIFEST")"
+  MANIFEST_MEMO_PATH="$MANIFEST"
+}
+
+manifest_memo_on() {
+  [ -n "$MANIFEST_MEMO_PATH" ] && [ "$MANIFEST_MEMO_PATH" = "$MANIFEST" ]
+}
+
+manifest_memo_one() {
+  # manifest_memo_one <prefix> — the rest of the first record line that starts
+  # with `<prefix>`, printed with a newline; nothing when there is none.
+  local pre="
+$1" rest
+  case "$MANIFEST_MEMO" in
+    *"$pre"*) rest="${MANIFEST_MEMO#*"$pre"}"; printf '%s\n' "${rest%%
+*}" ;;
+  esac
+}
+
+manifest_memo_all() {
+  # manifest_memo_all <prefix> — every record line starting with `<prefix>`,
+  # in file order, one per line.
+  local pre="
+$1" rest="$MANIFEST_MEMO"
+  while :; do
+    case "$rest" in *"$pre"*) ;; *) break ;; esac
+    rest="${rest#*"$pre"}"
+    printf '%s\n' "${rest%%
+*}"
+  done
+}
+
+manifest_row_fields() {
+  # manifest_row_fields <row> <key> [<terminate-last>] — the value of every
+  # `<key>=` field of one `|`-delimited row, leading spaces and trailing
+  # whitespace stripped, in order. The fork-free form of
+  # `printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *key=//p" | sed 's/[[:space:]]*$//'`.
+  #
+  # THE ROW'S LAST FIELD HAS NO TRAILING NEWLINE in that form — `printf '%s'`
+  # gives `tr` none to convert — and callers compare bytes, so the last field
+  # is printed the same way here unless the third argument asks for a newline.
+  local row="$1" key="$2" term="${3:-0}" part v n=0 i=0
+  local oldifs="$IFS"
+  IFS='|'
+  set -f
+  for part in $row; do n=$((n + 1)); done
+  for part in $row; do
+    i=$((i + 1))
+    part="${part#"${part%%[! ]*}"}"
+    case "$part" in
+      "$key="*)
+        v="${part#"$key="}"; v="${v%"${v##*[![:space:]]}"}"
+        if [ "$i" = "$n" ] && [ "$term" != "1" ]; then printf '%s' "$v"; else printf '%s\n' "$v"; fi ;;
+    esac
+  done
+  set +f
+  IFS="$oldifs"
+}
+
 # Set only by `--replan`. Default 0 so the guard below refuses by default: the
 # expensive mistake is re-planning a run that is already under way, and a
 # default that permits it makes the refusal reachable only by remembering to
 # ask for it.
 REPLAN=0
 
-manifest_header() { sed -n '2,8p' "$MANIFEST" | tr '\n' ' '; }
+manifest_header() {
+  # No trailing newline in either form: `tr` turns the last newline into a
+  # space, and the memo's record already carries that space.
+  local h
+  if manifest_memo_on; then h=$(manifest_memo_one "H	"); printf '%s' "$h"; return 0; fi
+  sed -n '2,8p' "$MANIFEST" | tr '\n' ' '
+}
 
 manifest_hdr_field() {
+  # No trailing newline either — the file form's `sed` inherits the missing
+  # newline from `manifest_header`, and callers compare the bytes.
+  local v
+  if manifest_memo_on; then v=$(manifest_memo_one "HF	$1	"); printf '%s' "$v"; return 0; fi
   manifest_header | sed -n "s/.*[; ]$1=\([^;]*\).*/\1/p" | sed 's/[[:space:]]*$//'
 }
 
 manifest_field() {
   # manifest_field <section> <key> — CANON rendering inside one `## <section>`.
+  if manifest_memo_on; then manifest_memo_one "F	$1	$2	"; return 0; fi
   awk -v want="## $1" -v key="$2" '
     $0 == want { inb=1; next }
     inb && /^## / { exit }
@@ -358,10 +529,44 @@ manifest_field() {
   ' "$MANIFEST"
 }
 
-manifest_targets() { grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true; }
+manifest_targets() {
+  if manifest_memo_on; then manifest_memo_all "T	"; return 0; fi
+  grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_rule_lines() {
+  if manifest_memo_on; then manifest_memo_all "R	"; return 0; fi
+  grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_preauth_rows() {
+  if manifest_memo_on; then manifest_memo_all "P	"; return 0; fi
+  grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_autoadopt_rows_anywhere() {
+  if manifest_memo_on; then manifest_memo_all "AW	"; return 0; fi
+  grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_clause_rows_raw() {
+  if manifest_memo_on; then manifest_memo_all "C	"; return 0; fi
+  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
+}
 
 target_field() {
   # target_field <alias> <key>
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
+      manifest_row_fields "$row" "$2"
+      break
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | while IFS= read -r row; do
     case "$row" in *"별칭=$1 "*|*"별칭=$1|"*|*"별칭=$1") ;; *) continue ;; esac
     printf '%s' "$row" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//'
@@ -370,6 +575,16 @@ target_field() {
 }
 
 target_aliases() {
+  if manifest_memo_on; then
+    local row
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      manifest_row_fields "$row" '별칭' 1
+    done <<EOF
+$(manifest_targets)
+EOF
+    return 0
+  fi
   manifest_targets | tr '|' '\n' | sed -n 's/^ *별칭=//p' | sed 's/[[:space:]]*$//'
 }
 
@@ -380,12 +595,15 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local cc sb
+  cc=$(manifest_field '인가' '비용 천장')
+  sb=$(manifest_field '인가' '무진전 상한')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
     canonical_targets | sed 's/^/target\t/'
-    grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null | sed 's/^/rule\t/' || true
-    grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/' || true
+    manifest_rule_lines | sed 's/^/rule\t/'
+    manifest_preauth_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/preauth\t/'
     # THE `자동 채택` ROWS ARE IN THE FROZEN SET, and they were not. Arm (a) of
     # the auto-adoption floor states its safety as four reasons, and the third —
     # "the binding digest covers it" — was false: of the six things serialized
@@ -400,7 +618,22 @@ binding_set_bytes() {
     # that section is not honoured AND still moves the digest, so both spellings
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
-    grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/' || true
+    manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
+    # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
+    # a report — it is a bound that ENDS the run, and a ceiling anything can
+    # raise mid-run is not a ceiling. It sits here for the same reason the
+    # cutpoint and the deadline do.
+    #
+    # EMITTED ONLY WHEN PRESENT, by the same argument the auto-adoption rows
+    # above make: a manifest written before this field was frozen contributes
+    # zero bytes, so its digest does not move and an in-flight run does not
+    # become non-conforming because the gate learned to freeze one more field.
+    # An unconditional line would re-digest every such manifest at once, and the
+    # run finds out on its next `snapshot` — in the middle of the night.
+    [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
+    # The stagnation bound joins on the same terms and for the same reason: it
+    # ends the run, so a value anything can raise mid-run is not a bound.
+    [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -408,7 +641,7 @@ binding_set_bytes() {
 manifest_clauses() {
   # The termination point decomposed into checkable clauses, frozen at kickoff.
   # A run is measured against these, so they are part of what may not move.
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g' || true
+  manifest_clause_rows_raw | sed 's/[[:space:]]\{1,\}/ /g'
 }
 
 manifest_autoadopt_rows() {
@@ -420,6 +653,7 @@ manifest_autoadopt_rows() {
   # consumer was not reading. Confining both consumers — this floor's arm (a)
   # and rule 11's freeze-time check — to that one section is what makes the
   # guarantee load-bearing rather than decorative.
+  if manifest_memo_on; then manifest_memo_all "AA	"; return 0; fi
   awk '
     $0 == "## 인가" { inb = 1; next }
     inb && /^## / { exit }
@@ -428,7 +662,7 @@ manifest_autoadopt_rows() {
 }
 
 # ---------------------------------------------------------------------------
-# The judgment-class vocabulary — eight values, closed, two of them named and
+# The judgment-class vocabulary — ten values, closed, three of them named and
 # forbidden.
 #
 # It is NOT `자율 승인.kind`. That field has never carried a classification: its
@@ -442,7 +676,7 @@ manifest_autoadopt_rows() {
 # legacy rows, which is what lets a lint assert the closed set without an
 # exception.
 #
-# THE TWO FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
+# THE THREE FORBIDDEN VALUES STAY IN THE VOCABULARY. Leaving them out does not
 # stop the decision from being made — it forces whoever records it to borrow a
 # permitted token, and that is the leak. Named and forbidden, the leak arrives
 # as a refusal instead.
@@ -452,14 +686,14 @@ manifest_autoadopt_rows() {
 # inside the gate, and `gate_record_row` runs only inside the gate. gate.sh
 # sources this file for its definitions, so one declaration reaches both — the
 # same arrangement `CUTPOINTS` already has, and for the same reason.
-readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제"
-readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제"
+readonly JUDGMENT_CLASSES="문서-신선도 감사-발견 심각도-조정 잔여-항목 인용-갱신 스테이지-재시도 팀-구성 시각-면제 설계-쟁점 설계-골격"
+readonly JUDGMENT_CLASSES_FORBIDDEN="팀-구성 시각-면제 설계-골격"
 
 # THE TWO COMPARISONS FAIL IN OPPOSITE DIRECTIONS, and that is what closes the
 # hole rather than narrowing it. Both used to be a space-padded substring test
 # over the vocabulary string, so a value carrying a space matched whenever the
-# tokens it named happened to be ADJACENT in that string. The vocabulary ends
-# `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
+# tokens it named happened to be ADJACENT in that string. The vocabulary then
+# ended `… 스테이지-재시도 팀-구성 시각-면제`, so `스테이지-재시도 팀-구성` was inside
 # the vocabulary; the forbidden string is `팀-구성 시각-면제`, which does not
 # contain it, so the same value was also not forbidden. One value passed the
 # permission check and escaped the prohibition at once, and `팀-구성` — a class
@@ -490,11 +724,44 @@ judgment_class_forbidden() {
 
 # The conjunction. Order matters: the ownership proof comes before anything that
 # would act on the file's contents.
+# A warning that fires ONCE PER RUN rather than once per gate entry.
+#
+# `check_manifest` re-runs on every gate entry, so a warning emitted there lands
+# in the morning report once per act — hundreds of identical lines, which buries
+# the report and makes the warning stop being read. A warning nobody reads is
+# not a warning, and the distinction it was placed there to draw ("not checked"
+# vs "checked and inert") is exactly what is lost.
+#
+# The sentinel is a DIRECTORY and `mkdir` is both the test and the claim, in one
+# atomic step. A `[ -e ]` test followed by a create is two steps, and two gate
+# entries racing through the gap both pass the test.
+#
+# FAIL-OPEN when the sentinel cannot be made. This runs BEFORE the run directory
+# is initialized, so on the first entry this is the writer that creates it; if
+# there is no run id yet, or the state root is not writable, the warning goes out
+# unsuppressed. A duplicated warning is a nuisance and a lost one is the failure
+# the warning exists to prevent, so the tie goes to speaking.
+warn_once() {
+  # warn_once <slug> <message>
+  local slug="$1" msg="$2" d
+  d="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/${RUN_ID:-}/warn-once"
+  if [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
+    mkdir "$d/$slug" 2>/dev/null || return 0
+  fi
+  warn "$msg"
+}
+
 check_manifest() {
   [ -f "$MANIFEST" ] || die "매니페스트가 없습니다: $MANIFEST"
 
-  # 1 — kind token, strict equality.
-  grep -q 'cc-run-manifest v1' "$MANIFEST" || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
+  # 1 — kind token, strict equality. One refusal site whichever reader answers.
+  local kind_ok=0
+  if manifest_memo_on; then
+    if [ -n "$(manifest_memo_one "K	")" ]; then kind_ok=1; fi
+  else
+    if grep -q 'cc-run-manifest v1' "$MANIFEST"; then kind_ok=1; fi
+  fi
+  [ "$kind_ok" = 1 ] || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
 
   # 10 — ownership proof, FAIL-CLOSED, and before the tie-break.
   # This kind is about a RUN, not a document, so `owner-doc=` cannot be the
@@ -531,7 +798,7 @@ check_manifest() {
   # 2 — exactly one authorization block. No append form exists, so a second is
   # not residue from a normal path; it is tampering.
   local n
-  n=$(grep -cE '^## 인가$' "$MANIFEST" || true)
+  if manifest_memo_on; then n=$(manifest_memo_one "N	"); else n=$(grep -cE '^## 인가$' "$MANIFEST" || true); fi
   [ "$n" = "1" ] || die "매니페스트에 「## 인가」 절이 ${n}개 — 정확히 하나여야 합니다"
 
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
@@ -618,8 +885,14 @@ check_manifest() {
   local dl
   dl=$(manifest_field '인가' '벽시계 마감')
   [ -n "$dl" ] && [ "$dl" != "없음" ] || die "벽시계 마감이 없습니다 — 「없음」은 받지 않습니다"
-  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' >/dev/null \
-    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl"
+  # THE ZONE IS REQUIRED AND THE MATCH IS ANCHORED AT BOTH ENDS. Without the tail
+  # this accepted `…T18:00:00` with no zone at all, and the reader takes the
+  # offset from the characters after the seconds — absent, it reads as UTC. A
+  # deadline a person wrote in local time is then enforced hours from where they
+  # meant it, in the direction nothing announces. Anchoring only the head also
+  # let trailing bytes ride along into a value the comparison never sees.
+  printf '%s' "$dl" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' >/dev/null \
+    || die "벽시계 마감이 절대 타임스탬프로 파싱되지 않습니다: $dl (받는 형태는 …T00:00:00Z 또는 …T00:00:00+09:00 입니다)"
 
   # 9 — an apply with no probe is refused at kickoff.
   if [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
@@ -665,7 +938,190 @@ check_manifest() {
 $(manifest_autoadopt_rows)
 EOF
 
+  # 12 — the review policy ceiling on the target rows, in three branches.
+  #
+  # The ceiling lives on the target row because that is one of the few surfaces
+  # where a NEW key actually enters the frozen set. A plain `**키**: 값` line
+  # inside `## 인가` moves neither digest, so a ceiling written in the most
+  # natural-looking place would freeze nothing and the tamper-evidence argument
+  # for it would be false.
+  local rc_tok rc_i rc_cut rc_merge rc_any_none=0
+  rc_merge=$(cutpoint_index '머지') || die "절단점 어휘에 '머지' 가 없습니다"
+  for a in $(target_aliases); do
+    rc_tok=$(target_field "$a" '리뷰 정책 상한')
+    # ABSENCE IS NOT A VIOLATION. The field is optional and its absence means the
+    # strictest value, which is what keeps every manifest written before this
+    # field existed valid without a migration.
+    [ -n "$rc_tok" ] || continue
+    # (a) HARD STOP on a token outside the vocabulary. A typo read as "the
+    # strictest value" is a declaration the operator made and the machine
+    # ignored, and that is the symptom this whole axis exists to remove.
+    rc_i=$(review_policy_index "$rc_tok") \
+      || die "대상 '$a' 의 리뷰 정책 상한 토큰이 어휘에 없습니다: '$rc_tok' — 허용 토큰: $REVIEW_POLICIES"
+    # (b) WARNING when the target cannot reach a merge at all. The value is
+    # harmlessly inert there, so refusing would make a manifest unfit for having
+    # declared something it will never use — but "not checked" and "checked and
+    # inert" must not read the same in the log.
+    rc_cut=$(cutpoint_index "$(target_field "$a" '절단점')") || rc_cut=""
+    if [ -n "$rc_cut" ] && [ "$rc_cut" -lt "$rc_merge" ]; then
+      warn_once 'ceiling-below-merge' \
+        "대상 '$a' 의 절단점이 「머지」 미만인데 리뷰 정책 상한 '$rc_tok' 을 선언했습니다 — 그 값은 불활성입니다"
+    fi
+    [ "$rc_tok" = "리뷰없음" ] && rc_any_none=1
+  done
+  # (c) HARD STOP on the one combination that cannot terminate. A run whose
+  # apply is performed BY THE PIPELINE, against a target free to skip review
+  # altogether, is stopped by a rule the manifest cannot turn off — so the apply
+  # is never performed and the run has no ending it can propose. That failure
+  # only becomes visible in the morning, which is why it is judged here, at
+  # kickoff, from two frozen declarations.
+  #
+  # CONSERVATIVE BY NECESSITY AND NOT BY CHOICE. All three apply declarations
+  # are run-scope and none of them carries a target alias, and no target row
+  # carries an apply field — so "which target receives the apply" is not
+  # derivable at this point. Refusing when ANY target holds the loose ceiling is
+  # the only implementable shape. The price is over-refusal: a sibling target
+  # with nothing to do with the apply can stop the run. That price is paid
+  # because the error in the other direction is a run that cannot end.
+  if [ "$rc_any_none" = "1" ] && [ "$(manifest_field '요소' '적용 주체')" = "파이프라인" ]; then
+    die "적용 주체가 파이프라인인데 리뷰 정책 상한이 「리뷰없음」인 대상이 있습니다 — 그 조합은 끌 수 없는 룰에 막혀 적용을 수행할 수 없고 런이 종단하지 못합니다"
+  fi
+
+  # 13 — `## 룰 설정` keys naming rules that cannot be turned off.
+  #
+  # A SEPARATE numbered condition rather than a fourth branch of 12: it reads a
+  # different section entirely and has nothing to do with the ceiling, so folded
+  # under the ceiling's name the next reader would not find it.
+  #
+  # WARNING RATHER THAN A HARD STOP, because such keys already sit in frozen
+  # manifests and a manifest has no amendment form — refusing would make a run
+  # in flight permanently unfit with no way back. The key is INERT (the enable
+  # check returns for these names before it reads any setting) and yet HASHED
+  # (the binding digest scans the whole file for `켬`/`끔` values, not just the
+  # section), so it freezes a line that means nothing. That is worth saying once.
+  #
+  # THE KEY SET IS DERIVED FROM THE DECLARATIONS and never from a list written
+  # here. A list goes stale the moment the catalog grows, which is exactly how
+  # the count in the prose fell behind the count in the code.
+  #
+  # THE VALUE IS NOT ASSUMED TO SIT ON THE KEY LINE. A declaration may answer in a
+  # block, and a one-line predicate reads that as no answer at all — so the rule
+  # joins the un-switchable set, and the operator is told the setting is inert
+  # while the gate is in fact reading it. That misinforms in the direction that
+  # leaves a merge gate believed to be on after it was switched off.
+  local rf rname
+  for rf in "$ORCH_DIR"/rules/*.rule; do
+    [ -f "$rf" ] || continue
+    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
+    rname=$(basename "$rf" .rule)
+    [ -n "$(manifest_field '룰 설정' "$rname")" ] || continue
+    warn_once 'rule-setting-inert' \
+      "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
+  done
+
+  # 14 — `dev 식별자` on the target rows.
+  #
+  # HARD STOP ON A MALFORMED ELEMENT, and the direction is what makes it one: a
+  # typo the checker passed over reads at runtime as "this target declared
+  # nothing", and declaring nothing means the run BELIEVES a stage's `dev` claim
+  # with nothing to compare it against. So the failure of a silent skip is
+  # open-ended, while the failure of this refusal is one line in a manifest.
+  # Absence of the field is not a violation — it is the default.
+  local dv al kindtok valtok e
+  for al in $(target_aliases); do
+    dv=$(target_field "$al" 'dev 식별자')
+    [ -n "$dv" ] || continue
+    local IFS_SAVE="$IFS"; IFS=','
+    for e in $dv; do
+      IFS="$IFS_SAVE"
+      case "$e" in
+        *:*) ;;
+        *) die "대상 '$al' 의 dev 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
+      esac
+      kindtok="${e%%:*}"; valtok="${e#*:}"
+      [ -n "$valtok" ] || die "대상 '$al' 의 dev 식별자 원소 '$e' 의 값이 비어 있습니다"
+      case "$kindtok" in
+        aws-profile|kube-context|host|domain) ;;
+        aws-account)
+          case "$valtok" in
+            *[!0-9]*) die "대상 '$al' 의 aws-account '$valtok' 가 숫자가 아닙니다" ;;
+          esac
+          [ "${#valtok}" -eq 12 ] || die "대상 '$al' 의 aws-account '$valtok' 가 12자리가 아닙니다" ;;
+        dir)
+          case "$valtok" in
+            /*) ;;
+            *) die "대상 '$al' 의 dev 식별자 dir '$valtok' 가 절대 경로가 아닙니다" ;;
+          esac ;;
+        *) die "대상 '$al' 의 dev 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: aws-profile aws-account kube-context host domain dir" ;;
+      esac
+      IFS=','
+    done
+    IFS="$IFS_SAVE"
+  done
+
+  # 15 — `배포트리거 식별자` on the target rows. Same hard stop for the same
+  # reason; the extra arm is a WARNING rather than a refusal, because a branch
+  # trigger on a target that cannot push is inert rather than wrong — and "not
+  # checked" must not read the same as "checked and inert".
+  for al in $(target_aliases); do
+    dv=$(target_field "$al" '배포트리거 식별자')
+    [ -n "$dv" ] || continue
+    local has_branch=0
+    local IFS_SAVE2="$IFS"; IFS=','
+    for e in $dv; do
+      IFS="$IFS_SAVE2"
+      case "$e" in
+        *:*) ;;
+        *) die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 에 종류가 없습니다 — <종류>:<값> 형태여야 합니다" ;;
+      esac
+      kindtok="${e%%:*}"; valtok="${e#*:}"
+      [ -n "$valtok" ] || die "대상 '$al' 의 배포트리거 식별자 원소 '$e' 의 값이 비어 있습니다"
+      case "$kindtok" in
+        branch) has_branch=1 ;;
+        workflow|jenkins-job|argv) ;;
+        *) die "대상 '$al' 의 배포트리거 식별자 종류 '$kindtok' 가 어휘 밖입니다 — 허용: branch workflow jenkins-job argv" ;;
+      esac
+      IFS=','
+    done
+    IFS="$IFS_SAVE2"
+    if [ "$has_branch" = "1" ]; then
+      local ct cti pushi
+      ct=$(target_field "$al" '절단점')
+      cti=$(cutpoint_index "$ct" 2>/dev/null) || cti=""
+      pushi=$(cutpoint_index 'push' 2>/dev/null) || pushi=""
+      if [ -n "$cti" ] && [ -n "$pushi" ] && [ "$cti" -lt "$pushi" ]; then
+        warn_once 'deploy-trigger-inert' \
+          "대상 '$al' 의 절단점이 'push' 미만인데 branch 배포 트리거를 선언했습니다 — 그 값은 이 런에서 불활성입니다"
+      fi
+    fi
+  done
+
   log "매니페스트 검사 통과 — run-id=$RUN_ID anchor=$ANCHOR_KIND:$ANCHOR_KEY 대상 $(target_aliases | grep -c .)개"
+}
+
+# The value of a declaration's `끌 수 있는가`, wherever the declaration put it:
+# on the key line, or as the first non-empty line of an indented block under it.
+# Prints the empty string when the key is absent or answers nothing.
+#
+# ONE READER FOR THE FIELD. The condition above and the assertion that every
+# declaration answers parseably both go through here, so a declaration that
+# reformats its answer breaks loudly in the suite rather than silently flipping
+# one rule into the un-switchable set.
+rule_switchable_value() {
+  awk '
+    /^끌 수 있는가:/ {
+      sub(/^끌 수 있는가:[[:space:]]*/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+      inblock = 1
+      next
+    }
+    inblock {
+      # An unindented line ends the block: that is the next key, not this value.
+      if ($0 ~ /^[^[:space:]]/) exit
+      sub(/^[[:space:]]+/, "")
+      if ($0 ~ /[^[:space:]]/) { print; exit }
+    }
+  ' "$1"
 }
 
 # The BASE BRANCH, which the binding digest freezes and nothing verified. Every
@@ -1024,18 +1480,39 @@ slicing_fields_ok() {
     # how far a slice may go and cannot say when review happens, which is a
     # different axis entirely — a slice may be authorized to merge and still owe
     # its review afterwards.
+    # THIS WHOLE FUNCTION IS AN EARLY DIAGNOSTIC AND NOT AN ACCEPTANCE CRITERION —
+    # nothing in production calls it, so a green answer here proves the
+    # declaration is readable and proves nothing about the gate.
+    #
+    # The vocabulary goes through `review_policy_index` rather than through a
+    # second literal list. A copy here would be the drift surface the single
+    # enumeration exists to remove.
     v=$(slice_field "$doc" "$id" '리뷰 정책')
-    case "$v" in
-      ''|선리뷰후머지|선머지후리뷰|리뷰없음) : ;;
-      *) warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1 ;;
-    esac
-    # `리뷰없음` is expressible only against a matching pre-authorization entry,
-    # which is what stops a router from choosing it for itself. `선머지후리뷰`
-    # does not remove the obligation, it defers it — the gate leaves a
-    # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
-    if [ "$v" = "리뷰없음" ]; then
-      [ -n "${MANIFEST:-}" ] && grep -q '`사전 인가`' "$MANIFEST" 2>/dev/null \
-        || { warn "슬라이스 $id: 리뷰없음 은 대응하는 사전 인가 항목이 있을 때만 표현 가능"; return 1; }
+    if [ -n "$v" ]; then
+      review_policy_index "$v" >/dev/null \
+        || { warn "슬라이스 $id: 리뷰 정책 토큰이 어휘에 없음: '$v'"; return 1; }
+      # THE CEILING REPLACES THE PRE-AUTHORIZATION GUARD that used to stand here.
+      # That guard asked whether the manifest carried ANY `사전 인가` row — not one
+      # about this slice, not one about review — so any authorization for anything
+      # let `리뷰없음` through, and a manifest with none refused it however it was
+      # declared. It was decoration, and the real predicate is the target's own
+      # ceiling: a slice may declare no looser than the target it runs against.
+      # `선머지후리뷰` does not remove the review, it defers it — the gate leaves a
+      # `리뷰 의무` row and the run cannot terminate while one is `미이행`.
+      local sl_al sl_ceil
+      # Backticks stripped, the same way `plan_repo` strips them: the declaration
+      # writes the slug as inline code, and an unstripped value matches no target
+      # so the lookup falls back to the home alias and compares against the wrong
+      # ceiling — silently, and in the loosening direction.
+      sl_al=$(alias_for_slug "$(slice_field "$doc" "$id" '레포' | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" 2>/dev/null) || sl_al=""
+      [ -n "$sl_al" ] || sl_al=$(home_alias)
+      sl_ceil=$(target_field "$sl_al" '리뷰 정책 상한')
+      [ -n "$sl_ceil" ] || sl_ceil='선리뷰후머지'
+      if review_policy_index "$sl_ceil" >/dev/null 2>&1 \
+         && [ "$(review_policy_index "$v")" -gt "$(review_policy_index "$sl_ceil")" ]; then
+        warn "슬라이스 $id: 리뷰 정책 '$v' 이 대상 '$sl_al' 의 상한 '$sl_ceil' 을 넘습니다"
+        return 1
+      fi
     fi
     v=$(slice_field "$doc" "$id" '적용 명령')
     if [ -n "$v" ]; then
@@ -1236,6 +1713,38 @@ authorized() {
   [ "$act_i" -le "$grant_i" ]
 }
 
+# The ordered review policy, strict → loose. The order is load-bearing: a
+# ceiling is "at or below", so the comparison only means anything if the axis
+# runs one way. Reading the axis backwards and picking the far end is the human
+# version of the defect this axis exists to close, and it is the one error a
+# runtime check cannot catch — hence the assertion in the lint target.
+#
+# THIS LITERAL IS THE ONLY ENUMERATION OF THE VOCABULARY IN THE TREE. The rule
+# checkers are separate `/bin/sh` processes and receive resolved integers rather
+# than tokens, so there is no second copy to drift out of step with this one. A
+# typo surfaces as a runtime hard failure on the first call, exactly the way an
+# unrecognized cutpoint does. That is why this axis gets no lint script of its
+# own: there is nothing for one to compare.
+readonly REVIEW_POLICIES="선리뷰후머지 선머지후리뷰 리뷰없음"
+
+# 0-based index, non-zero exit on anything outside the vocabulary. There is no
+# display form to map — unlike the cutpoint ladder, the stored token is the only
+# spelling this axis has, so no `review_policy_display` exists to drift from it.
+#
+# Same signalling discipline as `cutpoint_index`: the error is the RETURN
+# STATUS and never a `die` here, because this runs inside `$( )` where `exit`
+# kills only the subshell and leaves the caller carrying on with an empty
+# string — which is the silent denial the status exists to prevent.
+review_policy_index() {
+  local want="$1" i=0 p
+  for p in $REVIEW_POLICIES; do
+    [ "$p" = "$want" ] && { printf '%s' "$i"; return 0; }
+    i=$((i + 1))
+  done
+  warn "미인식 리뷰 정책 토큰: '${want}' — 허용 토큰: ${REVIEW_POLICIES}"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Ledger. Single writer, main worktree, append-only.
 # ---------------------------------------------------------------------------
@@ -1410,6 +1919,35 @@ ledger_row() {
   # asymmetry is in the safe direction: the two writers cannot disagree about
   # what fits.
   local series="$1"; shift
+  # `리뷰 정책` IS INHERITED AND NOT DEFAULTED, so this writer carries it forward
+  # the way the gate's segment arm does. Without the carry, one ordinary state
+  # transition erases a value an earlier row set, every later resolution falls to
+  # the strict default, and no surface says why the merge was refused.
+  #
+  # THE CARRY IS ON THIS FIELD ONLY. `워크트리` is required on every row the gate
+  # accepts and therefore cannot be erased, and putting a required field into an
+  # inheritance loop creates a branch that never runs — whose existence teaches
+  # the next reader that the field is optional.
+  #
+  # THIS PATH IS UNREACHABLE TODAY and nothing may be accepted on the strength of
+  # it: the driver is loaded definitions-only under the source-only seam and no
+  # shipped skill runs it as a program. It is corrected anyway, because leaving
+  # one writer of this field behind is how the field goes missing on the day the
+  # path comes back.
+  if [ "$series" = "segment" ]; then
+    local _rid="" _has=0 _prev _pv _a
+    for _a in "$@"; do
+      case "$_a" in
+        id=*) _rid="${_a#id=}" ;;
+        '리뷰 정책='*) _has=1 ;;
+      esac
+    done
+    if [ "$_has" = "0" ] && [ -n "$_rid" ] && [ -n "${LEDGER:-}" ]; then
+      _prev=$( { grep -E '^- `segment`' "$LEDGER" 2>/dev/null | grep -F "id=$_rid " || true; } | tail -1)
+      _pv=$(printf '%s' "$_prev" | tr '|' '\n' | sed -n 's/^ *리뷰 정책=//p' | sed 's/[[:space:]]*$//' | tail -1)
+      [ -n "$_pv" ] && set -- "$@" "리뷰 정책=$_pv"
+    fi
+  fi
   local line="- \`$series\`"
   local f k v n longest lmax fl idx side
   for f in "$@"; do
@@ -2109,6 +2647,15 @@ with_doc_lock() {
   local rc=0 tool
   tool=$(lock_tool)
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  # SELECTION NAMES THE PLATFORM'S LOCK; IT DOES NOT OBSERVE THE FILE. `lock_tool`
+  # answers "what does this platform use" from the platform predicate alone, and
+  # the suite drives the darwin branches on any runner by injecting the host OS —
+  # so on a linux runner this line is reached with a BSD path that is not there.
+  # Without the check the locked command fails with an exit code that belongs to
+  # neither the lock nor the command, and the caller cannot tell "busy" from
+  # "the tool is missing". The ledger writers already make this exact check;
+  # this is the same one, so the three places agree.
+  [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was
@@ -2432,6 +2979,32 @@ stage_log_path() {
   printf '%s' "$p"
 }
 
+# ---------------------------------------------------------------------------
+# The witness scratch directories of ONE attempt — the third path derived from
+# the same `RUN_DIR` plus attempt pin that `stage_log_path` and
+# `halt_record_path` come from.
+#
+# MATCHED ON THE STAMP, NOT ON THE NAME. `cc-team-witness-init.sh` sanitizes the
+# stage id into the directory NAME and writes the raw id into `.attempt` inside
+# the directory it just made. Comparing the stamp sets the bytes the driver
+# dispatched against the bytes the lead received, so a later change to the
+# sanitizing character class cannot make the match silently stop working. The
+# stamp observed in a real crash was the unsanitized original, which is what
+# makes this the comparison that holds rather than the name.
+#
+# NEITHER SORTED NOR SELECTED BY mtime. The corpus holds one logical segment
+# whose two attempts interleave across twelve hours, and mtime order lies there.
+witness_dirs_for_attempt() {
+  # witness_dirs_for_attempt <stage-id> <attempt> — one path per line.
+  local stage="$1" att="$2" d
+  for d in "$RUN_DIR"/cc-team-witness-*/; do
+    [ -d "$d" ] || continue
+    [ -f "$d.attempt" ] || continue
+    [ "$(cat "$d.attempt" 2>/dev/null)" = "$stage#$att" ] || continue
+    printf '%s\n' "${d%/}"
+  done
+}
+
 session_uuid() {
   # session_uuid <stage-id> [attempt] — derived, never stored.
   #
@@ -2590,6 +3163,27 @@ stage_spawn() {
   # and the classifier then read the first attempt's record for the second. The
   # gate's launcher already hands down `<segment>#<attempt>`; this is the same
   # spelling, so one reader resolves both.
+  # RE-ATTACH, NOT RE-RUN, when the caller has a session to continue. The wrapper
+  # has taken `--resume` since it was written and nothing here reached it, so the
+  # only way to bring an answer back to the stage that asked for it was a fresh
+  # session that had never seen the question. `STAGE_RESUME` is caller-owned and
+  # read once here; the two flags are mutually exclusive at the wrapper, so this
+  # is a choice rather than an addition.
+  #
+  # AN ARRAY, NOT A STRING. Splicing `--resume $STAGE_RESUME` into one word and
+  # letting it word-split is how a value read off disk becomes ARGUMENTS: a
+  # planted stage log carrying `<uuid> --settings /evil.json` would append a
+  # second `--settings`, the harness takes the last one, and the re-attached
+  # stage runs without the gate hook. `"${id_flag[@]}"` cannot do that whatever
+  # the value holds. `stage_session_id_strict` checks the shape as well, and both
+  # are kept on purpose — see its note.
+  local -a id_flag
+  if [ -n "${STAGE_RESUME:-}" ]; then
+    id_flag=(--resume "$STAGE_RESUME")
+    log "$stage: 세션 $STAGE_RESUME 재부착"
+  else
+    id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
+  fi
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -2598,7 +3192,7 @@ stage_spawn() {
       exec nohup bash "$ORCH_DIR/stage-wrapper.sh" \
         --settings "$stage_settings" \
         --plugin-dir "$plugin_dir" \
-        --session-id "$(session_uuid "$stage" "$attempt")" \
+        "${id_flag[@]}" \
         -- -p "$prompt" "$@" \
         >> "$out" 2>> "$err" < /dev/null ) &
   pid=$!
@@ -2709,13 +3303,20 @@ reap_orphan() {
   # A driver that died mid-stage leaves a stage still running — and still able
   # to commit and push. `implement` is re-invocation idempotent, so killing and
   # re-dispatching is safe.
+  # The `kill -0` verdict is stamped before the pid file goes away, because the
+  # pid file is the only thing `stage_alive` reads and this function destroys it.
+  # Without the stamp a later caller cannot tell "the stage was already dead"
+  # from "no reap ever ran here", and both reach the same first-line return.
   local stage="$1" pid pgid
   [ -f "$RUN_DIR/$stage.pid" ] || return 0
   pid=$(cat "$RUN_DIR/$stage.pid")
   pgid=$(cat "$RUN_DIR/$stage.pgid" 2>/dev/null || printf '')
   if kill -0 "$pid" 2>/dev/null; then
     log "고아 스테이지 회수: $stage pid=$pid pgid=$pgid"
+    printf '%s alive\n' "$pid" > "$RUN_DIR/$stage.reaped"
     [ -n "$pgid" ] && kill -- "-$pgid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  else
+    printf '%s dead\n' "$pid" > "$RUN_DIR/$stage.reaped"
   fi
   rm -f "$RUN_DIR/$stage.pid" "$RUN_DIR/$stage.pgid"
 }
@@ -2839,6 +3440,124 @@ stage_session_id() {
   fi
   [ -n "$sid" ] || sid=$(session_uuid "$stage" "$(stage_attempt_pinned "$stage")")
   printf '%s' "$sid"
+}
+
+stage_session_id_strict() {
+  # stage_session_id_strict <스테이지 id> — the id the HARNESS assigned, and
+  # NOTHING ELSE. Empty when the stage left no stream, when the stream carries
+  # no id, or when what it carries is not the shape a session id has.
+  #
+  # THE FALLBACK ABOVE IS RIGHT FOR ITS CALLER AND WRONG FOR THIS ONE. A
+  # `stage-result` row wants the field filled, so a derived id there beats a
+  # blank. A RE-ATTACHMENT wants a session the harness actually opened: handed a
+  # derived id, `--resume` names a session that never existed, and the failure is
+  # silent in the worst direction — the stage comes up with none of the context
+  # the re-attachment exists to preserve while the driver's log says it was
+  # resumed. An empty value falls through to a fresh dispatch, which is honest.
+  #
+  # THE SHAPE IS CHECKED, and that check is load-bearing rather than tidiness.
+  # This value is read out of a file under the run directory and then handed to
+  # the harness as an argument. The extractor's `[^"]*` accepts a space, so a
+  # planted log could carry `<uuid> --settings /somewhere/evil.json` — and the
+  # harness takes the LAST `--settings`, which is the file carrying the gate
+  # hook. A re-attached stage would then run with no gate at all. Two things
+  # stop that and both are kept: this shape check, and the caller passing the
+  # flag as array elements rather than splicing a string. Either alone would do
+  # today; the pair is what keeps a later edit to one of them from re-opening it.
+  local stage="$1" out sid=""
+  out=$(stage_log_path "$stage")
+  if [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+  fi
+  case "$sid" in
+    ????????-????-????-????-????????????) ;;
+    *) sid="" ;;
+  esac
+  case "$sid" in
+    *[!0-9a-fA-F-]*) sid="" ;;
+  esac
+  printf '%s' "$sid"
+}
+
+answered_judgment_stage() {
+  # answered_judgment_stage <세그먼트> <스테이지 종류> — `<승인 id> <스테이지 id>`
+  # for one judgment this segment raised that a person has ANSWERED and no stage
+  # has used yet. Empty when there is none, which is the ordinary case.
+  #
+  # THE ARRAY THE GATE EMITS AND THIS PREDICATE ARE THE SAME QUESTION asked from
+  # the two sides that need it: the gate's snapshot is what the ROUTER reads to
+  # decide what to do next, and this is what the fixed-graph loop reads to
+  # actually re-dispatch. They are computed from the same three ledger facts —
+  # the approval's state is `승인`, its issuing row's `절단점` is `판단`, and no
+  # `자율 승인` row names `해소 승인=<id>` — rather than one calling the other,
+  # because the driver reads the ledger directly everywhere else and a shell-out
+  # here would be the only place it did not.
+  #
+  # SPENT-NESS IS THE EXISTING PREDICATE AND NOT A NEW STATE. An answer that a
+  # stage consumed leaves a row naming it; an answer that no stage consumed
+  # stays a candidate on the next cycle. That is the intended behaviour and the
+  # cycle cap is what bounds it.
+  #
+  # `막는 세그먼트` HOLDS THE STAGE ID, not the segment id: the gate learns it
+  # from `CC_PIPELINE_SEGMENT`, and this driver sets that variable to the stage
+  # id when it spawns. So the field already names the re-dispatch candidate.
+  #
+  # THE STAGE KIND IS PART OF THE MEMBERSHIP TEST, and the `:<segment>:` infix
+  # alone was not. A stage id is `<종류>:<세그먼트>:<사이클>`, so the kind sits in
+  # the PREFIX and a test that only looked at the infix matched every kind this
+  # segment had ever run: an answer to a judgment a review stage raised came
+  # back as a candidate in the implement slot, and the implement stage was then
+  # re-attached to a session that had been reviewing. A candidate whose kind
+  # does not match is left in the list rather than discarded — the router
+  # dispatches that kind later and consumes it there.
+  local seg="$1" kind="$2" id row st iss stg spent
+  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+               | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } | tail -1)
+    st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    [ "$st" = "승인" ] || continue
+    iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+           | { grep -F "승인 id=$id " || true; } \
+           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    [ -n "$iss" ] || continue
+    # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
+    # — under `pipefail` — report the whole pipeline as failed. The value is
+    # captured instead and tested as a string, which is the spelling the rest of
+    # this file uses for exactly this reason.
+    spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
+             | { grep -F "해소 승인=$id " || true; } | tail -1)
+    [ -z "$spent" ] || continue
+    stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    case "$stg" in "$kind:$seg:"*) ;; *) continue ;; esac
+    # A session that left no stream cannot be re-attached, and a derived id
+    # would name a session the harness never opened. Falling through to a fresh
+    # dispatch is the honest outcome; claiming a resume that cannot happen is not.
+    [ -f "$RUN_DIR/log/$stg.json" ] || continue
+    printf '%s %s' "$id" "$stg"
+    return 0
+  done
+  return 0
+}
+
+redispatch_spend() {
+  # redispatch_spend <승인 id> <스테이지 종류> — how many times this run has
+  # re-attached that stage kind on the strength of this one answer, counting the
+  # attempt being asked about.
+  #
+  # ON DISK UNDER `$RUN_DIR`, not in a shell variable. A driver that was cut and
+  # resumed starts a fresh process, so an in-memory counter would reset — and the
+  # loop this bounds is precisely one that survives a resume, since its inputs
+  # are ledger rows the new process reads back.
+  local id="$1" kind="$2" f n
+  mkdir -p "$RUN_DIR/redispatch"
+  f="$RUN_DIR/redispatch/$kind.$id"
+  n=$(cat "$f" 2>/dev/null || printf '0')
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$f"
+  printf '%s' "$n"
 }
 
 stage_parent_id() {
@@ -3014,12 +3733,19 @@ human_reconcile() {
 
 boundary_idempotent() {
   case "$1" in
-    S2|S4|S5|S8) return 0 ;;   # audit / implement / review / merge
+    S2|S4|S5|S5R|S8) return 0 ;;   # audit / implement / review / review recovery / merge
+    # S5R belongs here for a stronger reason than the S5 it recovers. The
+    # recovery arm spawns no sub-agents at all and reads only from disk, and it
+    # publishes under an absence condition, so killing it at a boundary destroys
+    # nothing that was not already reconstructible from the same directory. A
+    # review that is mid-team has more in flight than that, and it is already on
+    # this list.
+    #
     # S9 is NEVER added here, and the reason is not that it happens to be
     # missing today. An apply is irreversible; "safe to kill at a boundary"
     # would license the driver to interrupt it, and a half-applied state is
     # exactly the outcome this whole stage is built to avoid.
-    *)           return 1 ;;   # design, re-convergence and apply are NOT
+    *)               return 1 ;;   # design, re-convergence and apply are NOT
   esac
 }
 
@@ -3872,6 +4598,26 @@ base_fetch_note() {
   esac
 }
 
+# The status-preserving sibling of `base_fetch`, and a sibling rather than a
+# change to it: `base_fetch`'s callers want a best-effort refresh and its `|| true`
+# with `2>/dev/null` is the right contract there. It is the wrong contract for a
+# caller that has to tell a refreshed tracking ref from a stale one — a failed
+# fetch leaves the old ref in place, and an ancestor test run against it answers
+# confidently and answers wrongly.
+#
+# THE REFSPEC IS EXPLICIT. Fetching the whole repository moves tracking refs that
+# other decisions read, and moving them as a side effect of one landing test is a
+# change nobody asked for. `GIT_TERMINAL_PROMPT=0` keeps a credential prompt from
+# turning an unattended night into a wait nobody is there to answer; git's own
+# slow-connection abort is the only other bound, because `timeout(1)` is not on
+# stock macOS and an obligation cannot rest on a binary that may not be there.
+base_fetch_ref() {
+  local al="$1" br="$2" root
+  root=$(alias_root "$al") || return 1
+  ( cd "$root" && GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags origin \
+      "+refs/heads/${br}:refs/remotes/origin/${br}" )
+}
+
 # Resolve from the REMOTE-TRACKING ref, not the stripped local name.
 #
 # This is the sequential-base premise, and without it the premise is false. The
@@ -3900,6 +4646,111 @@ rebase_onto_base() {
   # ladder and let the rest of the run keep going.
   warn "$seg: 외부 드리프트와 충돌 — 이 세그먼트만 사다리로"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Review crash recovery — dispatched BEFORE the park, and only for a crash.
+#
+# The other terminal classes are precondition stops, and crash durability and
+# precondition stops are disjoint failure classes: proposing a partial result to
+# a stage that never started is a category error. Those classes take today's
+# park unchanged.
+#
+# Three duties, and the driver is the only party that can discharge any of them.
+#
+#   (a) THE REPORT PATH TRAVELS ON THE DISPATCH LINE. It is the premise of the
+#       recovery arm's absence-conditional CAS, and the only way a recovery
+#       report lands on the path the driver actually reads. A recovery written
+#       anywhere else is invisible to the terminal predicate however correct it
+#       is, so a fully witness-resolved recovery would still read as "no
+#       artifact" and park the segment.
+#   (b) THE SCRATCH DIRECTORY IS NAMED, or nothing is dispatched. The driver is
+#       the only party that knows which attempt it observed — each retry gets its
+#       own directory and each writes `epoch 1`, so nothing inside them
+#       distinguishes the attempts. With two or more candidates this names none
+#       and parks with them enumerated; dispatching unnamed would buy a stage
+#       that is certain to refuse.
+#   (c) REACHING STEP 4 IS DECIDED BY THAT DIRECTORY'S EXISTENCE. None means the
+#       stage died before its first spawn, so there is nothing on disk to
+#       recover from and the park says exactly that.
+#
+# `predicate_review` IS NOT TOUCHED, here or anywhere else. If the recovery
+# clears it the cycle continues into triage; if it does not, the segment parks
+# and a person has somewhere to arrive. Wanting to edit the predicate is the
+# signal that one of the two clauses above was implemented wrong.
+#
+# The dispatch id is `S5R:` rather than `S5:` so that `stage_attempt`'s
+# `파견 id=` count, `stage_log_path`, `halt_record_path` and `kill_permitted`
+# all separate the recovery from the review it recovers. Both ids fall to the
+# `generic` settings variant — neither matches `stage_spawn`'s `*review*` arm —
+# so the recovery runs under exactly the hook coverage the original stage ran
+# under. `kill_permitted` normalizes on `${1%%:*}`, so `S5R` has to be its own
+# entry in `boundary_idempotent`; without it a stalled recovery burns the whole
+# backoff and lands on `human_reconcile` instead of being signalled.
+review_recover() {
+  local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
+  [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+  if predicate_review "$rp"; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
+    return 1
+  fi
+  local att dirs n=0
+  att=$(stage_attempt_pinned "$sid")
+  dirs=$(witness_dirs_for_attempt "$sid" "$att")
+  # Guarded on `-n` rather than written as the `grep -c . || printf '0'` fallback
+  # used elsewhere in this file. On empty input `grep -c` prints `0` AND exits 1,
+  # so that fallback appends a second `0` and the value matches neither branch
+  # below — the no-directory case would take the cannot-name park carrying the
+  # wrong reason, and the Step-4 verdict would be unreachable.
+  [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
+  if [ "$n" = "0" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
+    return 1
+  fi
+  if [ "$n" != "1" ]; then
+    park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
+    return 1
+  fi
+  local rsid="S5R:$seg:$cycle" rc pred rclass reaped
+  log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  # Dispatching on top of a still-running original gives the report path two
+  # writers, which is the risk the publication rule is built to close. What this
+  # call does about that is less than it looks, and the honest statement is:
+  #
+  # The call below is a no-op on every path that reaches here. Of the three
+  # `continue` arms in `stage_wait_all`'s limit-shape branch, two already called
+  # `reap_orphan` and it removed the pid file; the third parks, and it is
+  # unreachable for `S5` anyway because `kill_permitted` truncates at the first
+  # colon and `boundary_idempotent` admits `S5`. `stage_collect` also removes the
+  # pid file. So `reap_orphan` returns at its first line and signals nothing.
+  #
+  # The signal, where one was sent, therefore went at some earlier and
+  # unrecorded moment — the residual is an unconfirmed signal, not a missing
+  # one. The `.reaped` stamp carries no timestamp, so what it makes observable
+  # is the verdict at that moment and not when it fell or how long it lasted;
+  # it is read below and carried on the ledger row. The two predicate
+  # checks in the publication rule narrow the remaining window; **no upper bound
+  # on it is claimed here.** The call is kept because a future arm that does
+  # leave a pid file must be reaped, and `boundary_idempotent` already admits
+  # `S5`, so no new authorization is needed.
+  reap_orphan "$sid"
+  reaped=$(cat "$RUN_DIR/$sid.reaped" 2>/dev/null || printf '')
+  reaped="${reaped##* }"
+  [ -n "$reaped" ] || reaped=미상
+  stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp \"설계는 $(doc_arg)\""
+  stage_wait_all "$rsid"
+  rc=$(cat "$RUN_DIR/$rsid.rc" 2>/dev/null || printf '1')
+  if predicate_review "$rp"; then pred=0; else pred=1; fi
+  rclass=$(classify_termination "$rsid" "$rc" "$pred")
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
+    "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
+  [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
+      "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -3966,7 +4817,36 @@ segment_cycle() {
       park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
       return 1
     }
-    stage_spawn "$sid" "$wt" "/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    # THIS RELAY BELONGS TO THE FIXED-GRAPH TRAVERSAL, and it is not the only
+    # consumer of an answered judgment. A run driven by the router never enters
+    # this loop at all; there the live consumer is the snapshot's answered-
+    # judgment array. Both readings compute from the same ledger facts, so they
+    # cannot disagree about which answers are outstanding — but only one of them
+    # is reached on any given run.
+    local aj aj_id aj_stage prompt
+    aj=$(answered_judgment_stage "$seg" S4)
+    prompt="/cc-cmds:implement-unattended $(doc_arg) \"세그먼트 $seg (사이클 $cycle) · 선언 파일: $files\""
+    STAGE_RESUME=""
+    if [ -n "$aj" ]; then
+      aj_id=${aj%% *}; aj_stage=${aj#* }
+      # THE CAP IS ON THIS SIDE BECAUSE THE PROMPT ALONE CANNOT CLOSE THE LOOP.
+      # An answer leaves the candidate list only when a stage re-submits the
+      # judgment, and that re-submission is instructed in prose. Counting here
+      # bounds it without touching `answered_judgment_stage`, whose selection
+      # must stay identical to what the snapshot emits; a fourth term there
+      # would split the two readings apart.
+      if [ "$(redispatch_spend "$aj_id" S4)" -gt "$REDISPATCH_MAX" ]; then
+        warn "$seg: 판단 $aj_id 재부착이 상한 ${REDISPATCH_MAX}회를 넘어 평범한 디스패치로 떨어졌다"
+        aj=""
+      fi
+    fi
+    if [ -n "$aj" ]; then
+      STAGE_RESUME=$(stage_session_id_strict "$aj_stage")
+      prompt="판단 승인 $aj_id 에 사람의 답이 도착했다. \`$ORCH_DIR/gate.sh answers --manifest \"\$CC_PIPELINE_MANIFEST\" --approval $aj_id\` 로 무삭제 전문을 읽고, 그 답에 따라 남은 일을 이어서 하라. 그리고 끝내기 전에 반드시 같은 판단을 다시 방출하라 — 같은 \`판단 기준\`·\`판단 근거\`로 재제출해야 게이트가 닫힌 승인의 상태를 읽어 \`해소 승인=$aj_id\` 를 담은 \`자율 승인\` 행을 남긴다. 그 행이 없으면 이 답은 소비되지 않은 것으로 남아 다음 사이클에 같은 스테이지가 같은 답을 다시 받는다. 선언 파일: $files"
+      log "$seg: 답이 온 판단 $aj_id — 방출한 스테이지 $aj_stage 를 재부착한다"
+    fi
+    stage_spawn "$sid" "$wt" "$prompt"
+    STAGE_RESUME=""
     stage_wait_all "$sid"
     quiet_window_end
     local rc pred class
@@ -4077,7 +4957,9 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "종단 부류=$class"
-    [ "$class" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+    if [ "$class" != "정상 완료" ]; then
+      review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
+    fi
 
     # --- S6 TRIAGE ---------------------------------------------------------
     local tri_out tri
@@ -4613,12 +5495,23 @@ plan_from_declaration() {
   done
   plan_dep_floor_or_park || return 1
   for id in $(slice_ids "$doc"); do
-    ledger_row 'segment' "id=$id" "상태=계획됨" \
+    # SLICE → SEGMENT. The slice declaration is where a person writes the review
+    # policy, and the segment row is the only carrier that reaches the gate — so
+    # a declaration that stops at the document changes nothing. The field is
+    # OMITTED when the slice declares none, because an empty field would be a row
+    # asserting a value it does not hold, and absence on this row means
+    # inheritance.
+    local -a _segargs
+    _segargs=( "id=$id" "상태=계획됨" \
       "선언 파일 집합=$(declared_field_for_row "$id" "$(slice_field "$doc" "$id" '선언 파일')")" \
       "레포=$(slice_field "$doc" "$id" '레포')" \
       "선행=$(slice_field "$doc" "$id" '선행')" \
-      "절단점=$(slice_field "$doc" "$id" '절단점')" \
-      "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")"
+      "절단점=$(slice_field "$doc" "$id" '절단점')" )
+    local _rp
+    _rp=$(slice_field "$doc" "$id" '리뷰 정책')
+    [ -n "$_rp" ] && _segargs+=( "리뷰 정책=$_rp" )
+    _segargs+=( "plan-binding-digest=$(binding_digest)" "워크트리=$(wt_path "$id")" )
+    ledger_row 'segment' "${_segargs[@]}"
   done
   return 0
 }

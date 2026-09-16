@@ -167,5 +167,32 @@ else
   bad "교대 스킬" "파견 방식 지시가 없다 — 지시는 킥오프 스킬에만 있고 교대는 그 파일을 읽지 않는다"
 fi
 
+# THE OTHER HALF, and it is a separate assertion because it was a separate hole.
+# Two shifts in one run were given the dispatch-form instruction. One opened a
+# monitor on the background task and completed two stages; the other dispatched
+# identically, announced it would hold the seat, and ended its turn — zero rows,
+# one lost dispatch. The form was the same. What differed was whether anything of
+# theirs was still running, and the file said nothing about that.
+#
+# So a prohibition is not enough here: in a print-mode session the obvious way to
+# "wait" IS ending the turn. The instruction has to name an action.
+if grep -q 'HOLD THE SESSION with an active tool call' "$SHIFT_SKILL"; then
+  ok "교대 스킬이 파견 뒤 활성 도구 호출로 세션을 붙들라고 적고 있다"
+else
+  bad "교대 스킬" "파견 뒤 붙드는 법이 없다 — 「턴을 끝내지 마라」는 금지이고 인쇄 모드에서 기다림의 자연스러운 실행이 곧 턴 종료다"
+fi
+if grep -q 'ending your turn ends your session' "$SHIFT_SKILL"; then
+  ok "그 지시가 인쇄 모드에서 턴 종료가 세션 종료임을 이름 대고 있다"
+else
+  bad "교대 스킬" "왜 그래야 하는지가 없다 — 이유 없는 규칙은 다음 저자가 지운다"
+fi
+# The worked form, not just the requirement. A reader told to "keep something
+# running" and given no example invents one or does nothing.
+if grep -q 'Monitor(command: "tail -f' "$SHIFT_SKILL"; then
+  ok "붙드는 구체적 형태가 적혀 있다"
+else
+  bad "교대 스킬" "붙드는 형태가 없다 — 관측된 두 교대 중 찾아낸 쪽은 스스로 찾았고 못 찾은 쪽은 스테이지를 잃었다"
+fi
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
