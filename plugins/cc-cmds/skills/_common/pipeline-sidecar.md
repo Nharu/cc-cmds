@@ -146,6 +146,7 @@ once per run rather than on every append.
 **종료 지점**: <자유 텍스트>
 **벽시계 마감**: <ISO8601 절대>
 **비용 천장**: <숫자만 — 통화 기호도 단위도 없이> | 없음
+**무진전 상한**: <정수 — 진전 없는 라우터 판정 연속 횟수> | 없음
 **시각 정합 마커**: 없음 | 있음(인가) | 있음(park)
 **사다리 가용 단 수**: 4 | 2
 **미선언 상황 처분**: park | 선언된 기본값 진행
@@ -228,8 +229,11 @@ anchor outside it: a coordinated rewrite of the row and the digest field is
 detected by nothing here. That residual is real and is stated rather than
 covered by a fourth reason.
 
-`판단 부류` is checked against the closed eight at freeze time, and the two that
-hand risk to the user — `팀-구성` and `시각-면제` — are a **hard stop** here.
+`판단 부류` is checked against the closed vocabulary at freeze time, and the ones
+that hand risk to the user — `팀-구성`, `시각-면제` and `설계-골격` — are a **hard
+stop** here. The count is deliberately not written down: `JUDGMENT_CLASSES` is
+the single source, a lint compares every placeholder numeral in this tree against
+it, and a number spelled here in prose is a number that lint cannot reach.
 Deciding mechanically at the moment a judgment is made whether it hands risk to
 the user is impossible, because the only inputs available (the option labels and
 the question text) are authored by the party the check would bind. At freeze time
@@ -333,8 +337,8 @@ never compared.
     **fail-closed**: `origin-worktree=`'s fail-open tie-break is only sound
     *between* files that have already proven ownership, so removing the proof
     and keeping the tie-break inverts the order.
-11. **Every `자동 채택` row's `판단 부류` is one of the closed eight**, and the two
-    that hand risk to the user are a hard stop (see §2b.1). This condition was in
+11. **Every `자동 채택` row's `판단 부류` is in the closed vocabulary**, and the
+    ones that hand risk to the user are a hard stop (see §2b.1). This condition was in
     the code and not in this list, so the list said ten while the implementation
     checked eleven — a contract that under-reports its own checks teaches the next
     reader that an unlisted check is an absent one.
@@ -438,13 +442,25 @@ undeclared is legal, so removing the clock outright would leave those runs with
 nothing at all. That failure is silence rather than a crash, which unattended is
 the worst shape available.
 
-**`비용 천장` carries TWO thresholds and is the progress-axis bound today.** At
-80% it opens a boundary approval — a person, if there is one, decides. At 100%
-it ENDS the run, because an approval nobody answers is not a bound and the state
-this design targets is the one where nobody is awake to be asked. **Digits
-only**: a value carrying a currency symbol or a unit is not a figure the
-boundary's arithmetic can read, and the gate now says so and declines to enforce
-rather than silently treating the run as bounded.
+**`비용 천장` carries TWO thresholds.** At 80% it opens a boundary approval — a
+person, if there is one, decides. At 100% it ENDS the run, because an approval
+nobody answers is not a bound and the state this design targets is the one where
+nobody is awake to be asked. **Digits only**: a value carrying a currency symbol
+or a unit is not a figure the boundary's arithmetic can read, and the gate says
+so and declines to enforce rather than silently treating the run as bounded.
+
+**`무진전 상한` is the second progress axis, and it exists because the first
+boundary on this axis can only ask.** B1 counts consecutive router judgments over
+an unmoved progress digest and opens an approval at its threshold — and that
+approval, while it waits, suppresses B1 itself, so the counter freezes at exactly
+the value that opened the question. Unattended nobody answers, and the run spins
+against a bound that can no longer advance. The declared bound counts the same
+number outside that suppression and ENDS the run when it is reached. An integer:
+a value that will not read as one is warned about and not enforced, the same
+disposition the ceiling takes.
+
+**Both are optional, and a run that declares NEITHER keeps the wall clock** — see
+the deadline note above for why that fallback exists and why it is narrow.
 
 **`공통 git 디렉터리` is on every target row because of a hazard in this very
 tree**: two working trees here share one `.git` and one `refs/stash`. Inferring

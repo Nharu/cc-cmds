@@ -232,7 +232,7 @@ fx_segment S1 실행중
 fx_done
 fx_heartbeat 0 900
 has "8a done 존재 — 종료" "$(sl sess-8a)" "✓"
-hasnt "8a 종단이 정지 경고보다 앞선다" "$(sl sess-8a)" "⚠"
+hasnt "8a done 이 있으면 원장이 멎어도 정지 경고가 아니다" "$(sl sess-8a)" "⚠"
 
 fx_mkrun run-8b; fx_ledger_path; fx_session_index sess-8b run-8b
 fx_segment S1 머지됨
@@ -379,7 +379,7 @@ out=$(sl sess-e2)
 has "E2 둘 다 종단 — 더 최근 쪽의 종료가 남는다" "$out" "✓ run-e2-new 종료"
 
 # ---------------------------------------------------------------------------
-# A1-A10. The five-rank grade, and the render for the bottom rank
+# A1-A11. The six-rank grade, and the render for the bottom rank
 # ---------------------------------------------------------------------------
 #
 # THE AXIS THESE CASES PIN IS EVIDENCE, NOT ABSENCE. Selection used to rank on
@@ -575,11 +575,31 @@ fx_mkrun run-a10; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 180
 fx_session_index sess-a10-solo run-a10
 has "A10 원장 유휴가 정확히 stall — 정지 경고 쪽" "$(sl sess-a10-solo)" "⚠"
 
+# AND THE SECOND BLOCK READS THE BOUNDARY'S OTHER SIDE. It used to assert that
+# the run at the mark lost to a finished one; 정지경고 now outranks 종단, so it
+# asserts the win instead. The discrimination is the glyph and the ABSENCE of the
+# loser's id — `has … "run-a10"` would be satisfied by `run-a10-term`, which
+# contains it, so the losing run would pass this case by winning it.
 fx_mkrun run-a10-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
 fx_session_index sess-a10 run-a10 run-a10-term
 out=$(sl sess-a10)
-has "A10 그 런은 종단 런 아래 단이다" "$out" "run-a10-term"
-hasnt "A10 경계의 런이 종단을 이기지 않는다" "$out" "⚠"
+has "A10 경계의 정지경고 런이 종단 런을 이긴다" "$out" "⚠"
+hasnt "A10 더 최근이어도 종단을 표시하지 않는다" "$out" "run-a10-term"
+
+# A11. Issue 825's own shape, and the rank boundary A8 cannot reach. Between two
+# stages the ledger goes quiet, and a gap longer than `CC_SL_STALL` is ordinary
+# rather than a sign the run died — A8 measures INSIDE the mark (진행중), so the
+# band this measures, past `CC_SL_STALL` and short of `CC_SL_ABANDON`, was the
+# one no case walked. While 정지경고 ranked below 종단 a run in that band handed
+# the line to a run that finished yesterday.
+fx_mkrun run-a11-stall; fx_ledger_path; fx_segment S1 실행중; fx_heartbeat 0 900
+fx_age_file "$FX_LEDGER" 7200
+fx_mkrun run-a11-term; fx_ledger_path; fx_segment S1 머지됨; fx_heartbeat 0 5
+fx_session_index sess-a11 run-a11-stall run-a11-term
+out=$(sl sess-a11)
+has   "A11 스테이지 사이에서 멎은 정지경고 런이 더 최근의 종단 런을 이긴다" "$out" "run-a11-stall"
+hasnt "A11 더 최근이어도 종단을 표시하지 않는다" "$out" "run-a11-term"
+has   "A11 그 런은 정지 경고 글리프로 렌더된다" "$out" "⚠"
 
 # ---------------------------------------------------------------------------
 # The branch the isolation cannot reach

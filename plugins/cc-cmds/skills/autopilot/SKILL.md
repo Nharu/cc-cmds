@@ -226,9 +226,15 @@ Say both thresholds out loud, because they do different things and only one of t
 
 Offer a number the user can reason about. The runs this pipeline has actually billed sit in the tens of dollars per review cycle, so a ceiling is a decision about how many cycles a night may spend, not a round number picked for comfort.
 
-**5g — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+**5g — Stagnation bound.** An integer, or `없음`. It counts consecutive router judgments over an unmoved progress digest, and when the count reaches it the run **ends**.
 
-**5h — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
+Say why the question is separate from the boundary that already watches this. A boundary at this axis fires at a fixed threshold and **asks**, and the approval it opens suppresses that boundary while it waits — so unattended, the counter freezes at the value that opened the question and the run spins against a bound that can no longer advance. This one is the disposition nobody has to be awake for, and it is why the axis gets a number the user chooses rather than one the code fixes.
+
+Offer `없음` only alongside the ceiling: a run that declares neither progress-axis bound falls back to the wall clock, which is what 5e just said is the weaker yardstick.
+
+**5h — Ladder rungs.** `4` (the full ladder: local fix, scoped re-convergence, root re-design, human) or `2` (stop after the scoped re-convergence). Say what `2` buys — a run that never re-designs on its own — and what it costs: more parks in the morning.
+
+**5i — The banner kill switch, announced rather than asked.** There is no question here any more: the two seats of CFI-4 raise a banner whenever the run cannot pass a point without a person, and that is on by default. What this step owes the user is the **resolved state, said out loud** — because the value can only be chosen before the run starts, and this is the last moment anyone can notice that what they meant to set and what is actually in force are different things.
 
 Say all three of these:
 

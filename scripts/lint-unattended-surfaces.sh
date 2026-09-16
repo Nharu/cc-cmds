@@ -15,7 +15,25 @@
 #     fenced block must be byte-identical to the base's. A forked spine's one
 #     real drift risk is a budget that quietly diverges, so it is pinned
 #     rather than trusted.
-#   Rule 5 (assertion-label parity, extracted) — the boundary-gate assertion
+#   Rule 4 (inherited question points are dispositioned) — an arm does not
+#     copy its `references/`, it SHARES the base skill's tree, and the two
+#     shipped question points in this repo are in exactly that tree. The arm
+#     cannot delete them, because the interactive arm needs them, so what it
+#     owes is a statement of what it does instead, naming the file. Checked in
+#     both directions: an undispositioned question point is a surface the arm
+#     claims not to have, and a disposition for a file carrying none is a
+#     clause pointing at nothing.
+#   Rule 5 (CFI-U0 sentence pin) — an arm that Reads its base skill's step
+#     bodies at runtime instead of carrying them applies one substitution
+#     sentence to every question terminus it meets there. That sentence is
+#     the whole of the arm's park mechanism, so its deletion is a silent
+#     regression Rules 1 and 2 cannot see: the file still contains no call
+#     form, and the question points live in the base file the arm Reads. The
+#     sentence is therefore pinned as a fixed literal. It is pinned HERE and
+#     not in `lint-skill-invariants.sh` because that script's rule (B) is a
+#     base<->lite phrase-sync over a pair and is dormant; asserting one
+#     sentence's presence in one file is this script's shape, not that one's.
+#   Rule 6 (assertion-label parity, extracted) — the boundary-gate assertion
 #     labels are EXTRACTED from the contract's own bullets, never retyped
 #     here, and asserted in both directions: every extracted label is
 #     referenced by both arms of the pair, and every label-shaped token in
@@ -24,7 +42,7 @@
 #     the contract no longer defines. Writing the label set into this file
 #     would make it a third copy of the vocabulary, which is the thing the
 #     rule exists to prevent.
-#   Rule 6 (no assertion gloss in an arm) — an arm names an assertion and
+#   Rule 7 (no assertion gloss in an arm) — an arm names an assertion and
 #     never explains it. Two fences, and the first is why this is not a
 #     denylist of today's wording: a SHAPE fence forbids the ACT of glossing
 #     (a label immediately followed by a parenthetical or an em-dash), so a
@@ -46,14 +64,6 @@
 #     (an arm claiming a hook reads a constant that no hook reads) and fixed
 #     as an instance rather than fenced, because the device that catches a
 #     false claim is checking the claim, not comparing or forbidding text.
-#   Rule 4 (inherited question points are dispositioned) — an arm does not
-#     copy its `references/`, it SHARES the base skill's tree, and the two
-#     shipped question points in this repo are in exactly that tree. The arm
-#     cannot delete them, because the interactive arm needs them, so what it
-#     owes is a statement of what it does instead, naming the file. Checked in
-#     both directions: an undispositioned question point is a surface the arm
-#     claims not to have, and a disposition for a file carrying none is a
-#     clause pointing at nothing.
 #
 # Why these are checkable here and not in general: each unattended arm lives
 # in its OWN file and carries exactly one arm, so a whole-file predicate is
@@ -116,6 +126,7 @@ UNATTENDED_SKILLS=(
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
+  "design-discuss-unattended"
 )
 
 # Fork parity pairs: "<fork>|<base>". Only pairs whose base pins constants
@@ -142,6 +153,10 @@ REFERENCE_TREES=(
   "design-audit-unattended|design-audit"
   "review-unattended|review"
   "design-reconverge|design-reconverge"
+  # The discuss leg Reads `design/SKILL.md`'s own step bodies, not a
+  # references/ tree; `design/references/` does not exist today, so this entry
+  # is a SKIP until one appears, and Rule 5 below is what covers the leg.
+  "design-discuss-unattended|design"
 )
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
@@ -152,6 +167,14 @@ REF_QUESTION_RE='AskUserQuestion|EnterPlanMode|ExitPlanMode'
 # point. Fixed prefix plus the file's own name in backticks, so the check is a
 # byte comparison rather than a guess at how the disposition was worded.
 DISPOSITION_PREFIX='**Inherited question point** — '
+
+# Rule 5 — the substitution sentence, byte-exact, and the arms that owe it. An
+# arm on this list that is present on disk must carry the sentence on at least
+# one line; an absent arm is the same silent skip as everywhere else here.
+U0_PIN='this arm resolves that terminus to `park`'
+U0_PINNED_SKILLS=(
+  "design-discuss-unattended"
+)
 
 fail=0
 checked=0
@@ -280,7 +303,23 @@ $disp_files
 EOF
 done
 
-# --- Rules 5 and 6 — the assertion labels and the absence of their glosses ----
+pins_checked=0
+for skill in ${U0_PINNED_SKILLS[@]+"${U0_PINNED_SKILLS[@]}"}; do
+  file="$skills_root/$skill/SKILL.md"
+  [[ -f "$file" ]] || continue
+  pins_checked=$((pins_checked + 1))
+  # CAPTURED, NOT `grep -qF` — same SIGPIPE-under-pipefail reasoning as Rule 4.
+  n_pin=$(grep -cF -- "$U0_PIN" "$file" || true)
+  if [[ "${n_pin:-0}" = "0" ]]; then
+    echo "FAIL: $skill — CFI-U0 치환 문장이 없다: $U0_PIN" >&2
+    echo "       이 팔은 base 의 스텝 본문을 Read 해 따르므로 이 한 문장이 park 기전의 전부다" >&2
+    fail=1
+  else
+    echo "OK:   $skill — CFI-U0 substitution sentence present"
+  fi
+done
+
+# --- Rules 6 and 7 — the assertion labels and the absence of their glosses ----
 #
 # THE LABEL SET IS EXTRACTED, NEVER RETYPED. It comes from the contract's own
 # one-bullet-per-assertion shape, which is why that shape is load-bearing and
@@ -304,7 +343,7 @@ cfi_body() {
   ' "$1"
 }
 
-# Rule 6's literal tripwire. These are glosses, not vocabulary: each one is a
+# Rule 7's literal tripwire. These are glosses, not vocabulary: each one is a
 # thing the CONTRACT may say and an ARM may not, which is the partition the
 # three-slot rule draws. `own entry` is deliberately here even though it is a
 # live short name in the contract — the domain of this list is the arm.
@@ -326,7 +365,7 @@ else
 
   if [[ -z "$labels" ]]; then
     echo "FAIL: _common/verification.md — no assertion bullets matched '- **2x — <short name>.**' under '## 6.'" >&2
-    echo "       Rule 5 extracts its label set from that shape; without it the set would have to be retyped here" >&2
+    echo "       Rule 6 extracts its label set from that shape; without it the set would have to be retyped here" >&2
     fail=1
   else
     for pair in ${PARITY_PAIRS[@]+"${PARITY_PAIRS[@]}"}; do
@@ -339,12 +378,12 @@ else
         body=$(cfi_body "$arm_skill")
 
         if [[ -z "$body" ]]; then
-          echo "FAIL: $arm — no '## Control-Flow Invariants' body; Rules 5 and 6 are region-scoped to it" >&2
+          echo "FAIL: $arm — no '## Control-Flow Invariants' body; Rules 6 and 7 are region-scoped to it" >&2
           fail=1
           continue
         fi
 
-        # Rule 5, forward: every extracted label is referenced by this arm.
+        # Rule 6, forward: every extracted label is referenced by this arm.
         #
         # The containment tests here and below are bash string matches rather
         # than pipes into `grep -q`. An early-exiting reader on the right of a
@@ -371,7 +410,7 @@ EOF
           fail=1
         fi
 
-        # Rule 5, reverse: every label-shaped token in this arm is defined.
+        # Rule 6, reverse: every label-shaped token in this arm is defined.
         # The label set is newline-delimited on both sides of the comparison so
         # the match is whole-line, the way `grep -x` was: `2a` must not be found
         # inside a longer label.
@@ -385,7 +424,7 @@ EOF
           fail=1
         fi
 
-        # Rule 6, shape fence: a label immediately followed by a gloss.
+        # Rule 7, shape fence: a label immediately followed by a gloss.
         shaped=$(printf '%s\n' "$body" | grep -nE '2[a-z][[:space:]]*(\(|—)' || true)
         if [[ -n "$shaped" ]]; then
           echo "FAIL: $arm — assertion label followed by a gloss inside the invariants body" >&2
@@ -394,7 +433,7 @@ EOF
           fail=1
         fi
 
-        # Rule 6, literal tripwire: a gloss carrying no adjacent label.
+        # Rule 7, literal tripwire: a gloss carrying no adjacent label.
         for lit in "${GLOSS_LITERALS[@]}"; do
           hits=$(printf '%s\n' "$body" | grep -nF -- "$lit" || true)
           if [[ -n "$hits" ]]; then
@@ -417,5 +456,5 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
 exit 0

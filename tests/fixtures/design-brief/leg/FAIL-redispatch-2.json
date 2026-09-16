@@ -1,0 +1,15 @@
+{
+  "slug": "docs-x",
+  "session_id": "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
+  "phase": "discuss",
+  "state": "pending",
+  "dispatched_at": "2026-09-15T12:00:00Z",
+  "heartbeat_at": "2026-09-15T12:00:00Z",
+  "redispatch_count": 2,
+  "brief_sha256": "BRIEF_SHA_CURRENT",
+  "leg_out": "STATE/leg.c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f.out",
+  "leg_err": "STATE/leg.c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f.err",
+  "prior_session_ids": ["0f2b9a4e-3c1d-4e5f-8a6b-7c8d9e0f1a2b", "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"],
+  "transcript_bytes": 0,
+  "leg_json_mtime_at_dispatch": 1757937600
+}

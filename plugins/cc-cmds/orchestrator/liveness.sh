@@ -365,14 +365,25 @@ cc_run_grade() {
   # and a twelve-run session already spends 1.5s on one render. So the caller
   # grades the token it already has, and this function does no I/O.
   #
-  # FIVE RANKS, NOT TWO CLASSES. The old comparison ranked on "no sign of having
+  # SIX RANKS, NOT TWO CLASSES. The old comparison ranked on "no sign of having
   # finished", which let a run that never opened a segment — permanently
   # non-terminal by construction — hold a session forever. Ranking on evidence
   # instead: a live stage beats a waiting approval, which beats a ledger that
-  # moved inside `stall`, which beats a finished run, which beats one that has
-  # gone quiet past `abandon`. 정지경고 and 버려짐 share the bottom rank because
-  # the decision is "the ledger did NOT move inside stall" for both of them;
-  # what `abandon` separates is the glyph and the wording, not the order.
+  # moved inside `stall`, which beats a ledger that passed `stall` but not
+  # `abandon`, which beats a finished run, which beats one that has gone quiet
+  # past `abandon`.
+  #
+  # 정지경고 OUTRANKS 종단, and that is the rank this table exists to get right.
+  # A run between two stages is still a run, and the gap between one stage ending
+  # and the next being dispatched routinely passes `stall` — so while 정지경고 sat
+  # below 종단, every one of those gaps handed the line to a run that finished
+  # yesterday. Quiet is not finished. The still-going run keeps the screen and the
+  # glyph is what says it has gone quiet.
+  #
+  # 버려짐 STAYS BELOW 종단, so `abandon` now separates the ORDER as well as the
+  # glyph and the wording. Crossing that mark is exactly what drops a quiet run
+  # beneath every finished one, which is the difference between "nobody has
+  # written for three minutes" and "nobody has written for an hour".
   #
   # THE DEFAULT ARM IS THE WORST RANK ON PURPOSE — an unknown token must not
   # take the screen. It is also SILENT, so a token added to `cc_run_state`
@@ -389,9 +400,9 @@ cc_run_grade() {
     도는중)   printf '1' ;;
     승인대기) printf '2' ;;
     진행중)   printf '3' ;;
-    종단)     printf '4' ;;
-    정지경고) printf '5' ;;
-    버려짐)   printf '5' ;;
+    정지경고) printf '4' ;;
+    종단)     printf '5' ;;
+    버려짐)   printf '6' ;;
     *)        printf '9' ;;
   esac
 }
@@ -405,6 +416,12 @@ cc_run_state() {
   # live stage and a ledger that stopped growing, which is also exactly the
   # shape of a stalled one; ordering the tests the other way labels every clean
   # finish a stall.
+  #
+  # THAT IS A TEST ORDER AND NOT A RANK. `cc_run_grade` puts 정지경고 ABOVE 종단,
+  # which is the opposite direction, and the two do not conflict: this block
+  # decides which token a run gets, the grade decides which of two runs holds the
+  # line. Reading one as the other is what the two headings are spelled out to
+  # prevent.
   #
   # AND 버려짐 IS JUDGED AFTER BOTH, for a sharper reason than tidiness. The
   # watcher decides whether to announce a finished run by comparing this token
