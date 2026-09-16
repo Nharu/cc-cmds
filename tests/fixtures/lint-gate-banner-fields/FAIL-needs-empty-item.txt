@@ -1,0 +1,5 @@
+# --- 1. The producer ---
+# --- section: 1 | group: base | anchors: 첫 단언 ---
+
+# --- 2. A trailing comma leaves an empty item ---
+# --- section: 2 | group: base | needs: 1, | anchors: 둘째 단언 ---

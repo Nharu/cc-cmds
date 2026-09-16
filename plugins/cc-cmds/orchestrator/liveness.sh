@@ -316,12 +316,16 @@ cc_open_approvals() {
   # cc_open_approvals <ledger> — count of approvals still waiting.
   # Last row per id wins: the ledger is append-only, so a resolution is a later
   # row rather than an edit of the earlier one.
+  #
+  # The id is matched as a whole field, `| 승인 id=<id> |`. A later row that
+  # quotes a waiting id in its question text belongs to another approval, and
+  # read as a substring it became the waiting id's last row and hid it.
   local ledger="$1" id st n=0
   [ -n "$ledger" ] || { printf '0'; return 0; }
   for id in $( { grep -E '^- `승인`' "$ledger" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    st=$( { grep -E '^- `승인`' "$ledger" 2>/dev/null | grep -F "승인 id=$id " || true; } | tail -1 \
+    st=$( { grep -E '^- `승인`' "$ledger" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     [ "$st" = "대기" ] && n=$((n + 1))
   done
