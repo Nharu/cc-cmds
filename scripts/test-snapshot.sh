@@ -916,6 +916,19 @@ check "종료 행이 어느 경계였는지 이름으로 말한다" \
 # stopped, and a run does not end twice.
 gate_b4_cost >/dev/null 2>&1
 check "천장을 넘긴 두 번째 판정은 종료 행을 다시 쓰지 않는다" "$(end_rows)" "1"
+# 표시는 하드 링크로 발행되고 원장 행은 경합을 이긴 쪽만 쓴다. 앞 판본은 모든
+# 호출자가 행을 먼저 쓴 뒤 발행을 시도해, 한 번 끝난 런에 종료 행이 둘 남고 아침에
+# 표시가 어느 쪽 것인지 말할 수 없었다.
+end_mark_first=$(cat "$RUN_DIR/done")
+gate_end_run B9 "다른 경계가 뒤늦게 발화했다" >/dev/null 2>&1
+check "이미 끝난 런에 다른 경계가 발화해도 종료 행은 하나다" "$(end_rows)" "1"
+check "표시의 첫 사유가 그대로다 (첫 사유가 참인 사유다)" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+# 그리고 뒤에 오는 종료 제안이 그 사유를 지우지 않는다. 종단 게이트는 종료 제안을
+# 면제하므로 두 기록자가 같은 파일에 닿는다 — 앞 판본의 절단 `>` 는 「종료 조건
+# 성립」으로 덮어써, 사실은 비용 천장이 멈춘 밤을 아침이 그렇게 읽었다.
+gate_done_note "$(printf '%s 종단 — 종료 조건 성립 · 근거 시험' "$(now_iso)")"
+check "종료 제안이 경계의 사유를 지우지 않는다" "$(head -1 "$RUN_DIR/done")" "$end_mark_first"
+check "그 제안도 함께 남는다" "$( { grep -cF '종료 조건 성립' "$RUN_DIR/done" || true; } )" "1"
 
 # WHAT THE ENDING GATES. Dispatch and merge and nothing else — a stage in
 # flight runs to completion and is classified normally, and the run may still

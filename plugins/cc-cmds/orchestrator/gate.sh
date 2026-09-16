@@ -9636,6 +9636,27 @@ gate_progress_axes_unbounded() {
   return 0
 }
 
+gate_done_note() {
+  # gate_done_note <한 줄> — record a terminal line WITHOUT erasing one that is
+  # already there.
+  #
+  # A boundary can end the run and the router can still propose termination
+  # afterwards — the ending gate exempts `propose-done` on purpose, because a run
+  # that cannot record that it ended is a run the snapshot renders in flight
+  # forever. So both writers reach this file, and the proposal used to arrive
+  # with a truncating `>`: the morning then read "종료 조건 성립" for a night that
+  # was actually stopped by a cost ceiling, and the boundary's reason was gone.
+  #
+  # THE FIRST LINE STAYS FIRST. Readers `cat` the whole file, so appending costs
+  # nothing and keeps both accounts; the operative reason is the one that ended
+  # the run, and it is the one on top.
+  if [ -s "$RUN_DIR/done" ]; then
+    printf '%s\n' "$1" >> "$RUN_DIR/done"
+  else
+    printf '%s\n' "$1" > "$RUN_DIR/done"
+  fi
+}
+
 gate_end_run() {
   # gate_end_run <경계 이름> <사유> — a boundary ENDS the run.
   #
@@ -9650,19 +9671,30 @@ gate_end_run() {
   # replace the morning's account of why the night stopped.
   local name="$1" why="$2"
   [ -s "$RUN_DIR/done" ] && return 0
+  # PUBLISHED BY HARD LINK, AND THE ROW IS WRITTEN ONLY BY THE WINNER.
+  #
+  # `mv -n` was the wrong primitive for this. It is `stat` then `rename`, so two
+  # boundaries firing together can both see an absent target and the second's
+  # rename replaces the first's file — the same read-then-act the bare `>` had,
+  # one layer down. `ln` is a single `link(2)`: it fails atomically when the
+  # target exists, so exactly one caller can win and the loser learns it did not.
+  #
+  # AND THE LEDGER ROW MOVED BELOW THE RACE. It used to be appended before the
+  # publish, by every caller — so two boundaries firing together left two
+  # `결정=종료` rows for a run that ended once, and the morning could not tell
+  # which one the mark belongs to. The row now records the decision that actually
+  # took effect, and a loser writes nothing anywhere.
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
+  if ! ln "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null; then
+    # Lost the race, or the filesystem cannot hard-link. Either way something
+    # else owns the mark now; the loser leaves no row and no leftover file.
+    rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
+    return 0
+  fi
+  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
     "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
     "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
-  # PUBLISHED BY RENAME, so the filesystem decides who was first. The check
-  # above and a bare `>` are a read-then-act with no lock around them, and two
-  # boundaries firing together both read an absent mark and both truncate the
-  # file — leaving the morning whichever reason happened to be written last,
-  # while this function's own header calls the FIRST reason the true one.
-  # `mv -n` refuses to replace an existing target, so a loser writes nothing;
-  # its leftover temp file is removed rather than left in the run directory.
-  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
-  mv -n "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null || true
-  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
   warn "경계 $name 이 런을 끝냅니다 — $why"
   if cc_caller_is_router; then
     # `ended` is the event kind the run's other terminal points already use. A
@@ -10716,7 +10748,7 @@ gate_verb_act() {
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
         "축2=$graded" "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
-      printf '%s 종단 — 무효화 · 근거 %s\n' "$(now_iso)" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
       # left for a person is to read the result rather than to re-open anything.
       # The instruction to kick off again belongs to the site that anchors the
@@ -10774,11 +10806,11 @@ gate_verb_act() {
     # carry what is actually outstanding.
     held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     if [ -n "$qids" ]; then
-      printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s\n' \
-        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s · 근거 %s' \
+        "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "$rationale")"
     else
-      printf '%s 종단 — 종료 조건 성립%s · 근거 %s\n' \
-        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale" > "$RUN_DIR/done"
+      gate_done_note "$(printf '%s 종단 — 종료 조건 성립%s · 근거 %s' \
+        "$(now_iso)" "${held:+ · 보류 절 $held}" "$rationale")"
     fi
     # The notification seat is carried over from the other parent; its own
     # `done` write is not. That write spelled the same file with the older
