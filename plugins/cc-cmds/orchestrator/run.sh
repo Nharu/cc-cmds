@@ -590,6 +590,8 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local cc
+  cc=$(manifest_field '인가' '비용 천장')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -611,6 +613,18 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
+    # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
+    # a report — it is a bound that ENDS the run, and a ceiling anything can
+    # raise mid-run is not a ceiling. It sits here for the same reason the
+    # cutpoint and the deadline do.
+    #
+    # EMITTED ONLY WHEN PRESENT, by the same argument the auto-adoption rows
+    # above make: a manifest written before this field was frozen contributes
+    # zero bytes, so its digest does not move and an in-flight run does not
+    # become non-conforming because the gate learned to freeze one more field.
+    # An unconditional line would re-digest every such manifest at once, and the
+    # run finds out on its next `snapshot` — in the middle of the night.
+    [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -2618,6 +2632,15 @@ with_doc_lock() {
   local rc=0 tool
   tool=$(lock_tool)
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  # SELECTION NAMES THE PLATFORM'S LOCK; IT DOES NOT OBSERVE THE FILE. `lock_tool`
+  # answers "what does this platform use" from the platform predicate alone, and
+  # the suite drives the darwin branches on any runner by injecting the host OS —
+  # so on a linux runner this line is reached with a BSD path that is not there.
+  # Without the check the locked command fails with an exit code that belongs to
+  # neither the lock nor the command, and the caller cannot tell "busy" from
+  # "the tool is missing". The ledger writers already make this exact check;
+  # this is the same one, so the three places agree.
+  [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was

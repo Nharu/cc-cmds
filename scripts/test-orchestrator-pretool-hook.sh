@@ -557,5 +557,37 @@ done
 decide_cfg "$(write_json "$WORK/unrelated/backups/x.md")"
 check "다른 트리의 같은 이름 디렉터리는 대상이 아니다" "$dec" "allow"
 
+# ---------------------------------------------------------------------------
+# 런 디렉터리 판정 — 이 팔에는 단언이 하나도 없었다
+#
+# 스테이지가 쓰도록 선언된 것은 `halt/<stage-id>.md` 와 `<segment>.plan.md` 뿐이고
+# 나머지는 게이트가 매 행위마다 되읽는 기준선이다. 여기에 더해 팀 위트니스
+# 디렉터리가 예외인데, 그 이름은 `cc-team-witness-init.sh` 가 실제로 만드는 접두여야
+# 한다 — 실재하지 않는 이름으로 예외를 적으면 발행이 전부 거부되고, 위트니스를
+# 관측하지 못한 리드는 멈추거나 보지 못한 산출물을 합성하게 된다.
+# ---------------------------------------------------------------------------
+decide "$(write_json "$RUN_DIR/log/SD.json")"
+check "런 디렉터리의 스테이지 로그 쓰기는 거부된다" "$dec" "deny"
+decide "$(write_json "$RUN_DIR/settings/generic.json")"
+check "런 설정 디렉터리 쓰기는 거부된다" "$dec" "deny"
+decide "$(write_json "$RUN_DIR/halt/a/b.md")"
+check "halt 아래 두 단계는 거부된다" "$dec" "deny"
+decide "$(write_json "$RUN_DIR/halt/SD#1.md")"
+check "선언된 이름 halt/<stage-id>.md 는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide "$(write_json "$RUN_DIR/SD.plan.md")"
+check "선언된 이름 <segment>.plan.md 도 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+# 예외 이름은 생성 스크립트를 실제로 돌려 얻는다. 훅의 리터럴만 확인하는 단언은
+# 두 파일이 어긋나도 초록이다.
+HWPUB=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" \
+        "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-alpha 2>/dev/null)
+case "$HWPUB" in
+  "$RUN_DIR"/cc-team-witness-*) ok "생성 스크립트가 런 루트 바로 아래에 디렉터리를 만든다 (아래 단언이 실제 경로를 잰다)" ;;
+  *) bad "위트니스 픽스처" "생성 스크립트가 런 디렉터리 아래 경로를 내지 않았다: ${HWPUB:-(빈 값)}" ;;
+esac
+decide "$(write_json "$HWPUB/reviewer.round-1.md")"
+check "생성 스크립트가 만든 위트니스 디렉터리로의 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide "$(write_json "$RUN_DIR/witness/r1.md")"
+check "아무도 만들지 않는 witness/ 철자는 예외가 아니다" "$dec" "deny"
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
