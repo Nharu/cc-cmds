@@ -69,8 +69,11 @@ INVARIANT_HEADING='^## Control-Flow Invariants[[:space:]]*$'
 #     puts `description` + `when_to_use` in every session's listing, which is
 #     precisely why these files stay short rather than growing a ritual heading.
 # In effect, the non-exempt members are `design` (whose phase-transition
-# invariants live in its top `## Control-Flow Invariants`), `design-audit`, and
-# `design-analyze`. `design-audit` is non-exempt for the
+# invariants live in its top `## Control-Flow Invariants`), `design-audit`,
+# `design-analyze`, and the unattended arms — `implement-unattended`,
+# `review-unattended`, `design-audit-unattended`, `design-reconverge`,
+# `design-discuss-unattended` — whose halt/park termini are exactly the
+# summarize-away class this rule protects. `design-audit` is non-exempt for the
 # core reason: its termination state is NOT recoverable from the ledger, so it
 # does not qualify for the multi-round agent-team exemption above. A ledger
 # whose rows all read `done` at the fan-out phase is byte-identical whether the
