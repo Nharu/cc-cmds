@@ -5687,7 +5687,7 @@ $(target_field "$a" '실행 워크트리')"
         "hooks": [
           {
             "type": "command",
-            "command": "bash '$hook' --run-dir '$RUN_DIR' --gate '$GATE_DIR/gate.sh' --ledger '$LEDGER' --grant '$GRANT'"
+            "command": "bash '$hook' --run-dir '$RUN_DIR' --gate '$GATE_DIR/gate.sh' --ledger '$LEDGER' --grant '$GRANT' --manifest '$MANIFEST'"
           }
         ]
       }
