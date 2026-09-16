@@ -659,11 +659,14 @@ ssr() {
   printf '%s\n' "$2" > "$SSR_RD/log/$1.json"
   RUN_DIR="$SSR_RD" stage_session_id_strict "$1"
 }
-GOODSID="12121212-3434-5656-7878-909090909090"
+# 기댓값을 변수에 담지 않고 리터럴로 둔다. 변수에 담으면 그것이 어떤 이유로든 비었을
+# 때 관측값이 마침 같이 비어 있는 동안 단언이 공허하게 통과하고, 한쪽만 비는 호스트에
+# 가서야 빨개진다 — 그때 읽히는 실패는 재려던 성질과 무관해 보인다.
+ssr_out=$(ssr SA '{"session_id":"12121212-3434-5656-7878-909090909090","x":1}')
 check "제대로 된 세션 id 는 그대로 나온다" \
-  "$(ssr SA "{\"session_id\":\"$GOODSID\",\"x\":1}")" "$GOODSID"
+  "$ssr_out" "12121212-3434-5656-7878-909090909090"
 check "공백으로 플래그를 이어 붙인 값은 비운다" \
-  "$(ssr SB "{\"session_id\":\"$GOODSID --settings /tmp/evil.json\"}")" ""
+  "$(ssr SB '{"session_id":"12121212-3434-5656-7878-909090909090 --settings /tmp/evil.json"}')" ""
 check "UUID 모양이 아닌 값도 비운다" \
   "$(ssr SC '{"session_id":"not-a-uuid"}')" ""
 check "16진수가 아닌 글자가 섞이면 비운다" \
