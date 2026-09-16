@@ -3218,6 +3218,74 @@ gate_ancestry_window() {
   { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$GATE_ANCESTRY_WINDOW"
 }
 
+gate_append_cost() {
+  # gate_append_cost <이번 스테이지 usd> <스테이지 수> <관측 시각>
+  #
+  # THE ACCUMULATION IS READ AND WRITTEN INSIDE ONE LOCK, and it used to be a
+  # read outside the lock followed by a write inside one. `gate_append`'s own
+  # header records the same defect for the chain tip and the same repair; this
+  # is that repair applied to the other read-then-act in this file.
+  #
+  # The cost row accumulates, so the value that makes it correct is the previous
+  # row's total. Two stages terminating together both read the same previous
+  # total and both wrote `prev + own`, and the second write erased the first —
+  # not a corrupt row, a QUIET one. The run's only cost figure is then a lower
+  # bound that nothing announces as one, and the cost ceiling is a boundary that
+  # decides when the night ends. Measured: 80 cost rows written and a final
+  # accumulation of roughly half the sum of what they carried.
+  #
+  # `gate_append` CANNOT ABSORB THIS, and that is why there is a second writer.
+  # Its critical section starts after the body is assembled, and the body is
+  # what depends on the read — widening it would mean handing `gate_append` a
+  # per-series accumulation rule.
+  #
+  # The locked command is `/bin/sh` and cannot see this shell's functions, so
+  # `gate_rows` and `gate_chain_tip` are re-spelled inline against `$LEDGER`,
+  # exactly as the chain tip already is. Both row prefixes travel as positional
+  # arguments so the backticks in them are parsed by neither shell.
+  #
+  # The row is fixed-shape — two numbers and a timestamp — so it cannot approach
+  # the row cap `gate_append` checks, and no value in it can carry a separator.
+  local cost="$1" n_stage="$2" at="$3" tool rc=0
+  tool=$(lock_tool)
+  # The same selection-versus-observation rule `gate_append` states above: a
+  # platform-selected path is used only if the file is actually there.
+  if [ -n "$tool" ] && [ -x "$tool" ] && [ -n "${RUN_DIR:-}" ]; then
+    "$tool" -k "$RUN_DIR/ledger.lock" \
+      /bin/sh -c '
+        led=$2
+        prevusd=$(grep "$7" "$led" 2>/dev/null | tail -1 | tr "|" "\n" \
+                  | sed -n "s/^ *누적 usd=//p" | tr -d " " | tail -1)
+        total=$(awk -v a="${prevusd:-0}" -v b="$1" "BEGIN{ printf \"%.4f\", a + b }")
+        body="$8 | 누적 usd=$total | 스테이지 수=$3 | 관측 시각=$4"
+        last=$(grep "$5" "$led" 2>/dev/null | tail -1)
+        [ -n "$last" ] || last=$6
+        prev=$(printf "%s" "$last" | shasum -a 256 | cut -d" " -f1)
+        printf "%s | prev=%s\n" "$body" "$prev" >> "$led"
+      ' _ "$cost" "$LEDGER" "$n_stage" "$at" '^- `' "## 실행 $RUN_ID" '^- `cost`' '- `cost`' || rc=$?
+  else
+    # THIS BRANCH IS NOT SERIALIZED, and the comment here used to claim it did
+    # not need to be — "no lock tool means no concurrency to serialize", which
+    # is a statement about the platform rather than about this code. The
+    # accurate statement is narrower: the branch is reached only where
+    # `lock_tool` yields an empty string, the refusal that keeps the pipeline
+    # off such a host lives in `run.sh`'s `main`, and the gate sources that file
+    # for its definitions without ever executing `main`. So the protection is
+    # real but it is somewhere else, and two concurrent writers arriving here
+    # would lose an accumulation exactly as the header describes. The sequence
+    # below is the locked one with the lock removed; behaviour is unchanged.
+    local prevusd total
+    prevusd=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
+              | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    total=$(awk -v a="${prevusd:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    printf '%s | prev=%s\n' \
+      "- \`cost\` | 누적 usd=$total | 스테이지 수=$n_stage | 관측 시각=$at" \
+      "$(gate_chain_tip)" >> "$LEDGER" || rc=$?
+  fi
+  [ "$rc" = "0" ] || die "원장 행을 쓰지 못했습니다 (rc=$rc) — 기록 없는 행위는 수행하지 않습니다: cost"
+  return 0
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -11490,7 +11558,7 @@ gate_record_stage_outcome() {
   # THE STREAM THIS DISPATCH ACTUALLY WROTE, handed down rather than re-derived.
   # Re-deriving is how the writer and the reader came apart once already; the
   # unsuffixed name stays as the fallback for a caller that predates the argument.
-  local out="${7:-}" res cost subtype sid klass after denials prev total n_stage psha iserr
+  local out="${7:-}" res cost subtype sid klass after denials n_stage psha iserr
   [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
@@ -11712,11 +11780,13 @@ gate_record_stage_outcome() {
   # the boundary compares one number against the declared ceiling rather than
   # summing the file on every act.
   if [ -n "$cost" ]; then
-    prev=$(gate_rows 'cost' | tail -1 | tr '|' '\n' \
-           | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    total=$(awk -v a="${prev:-0}" -v b="$cost" 'BEGIN{ printf "%.4f", a + b }')
+    # THE READ AND THE WRITE GO IN ONE CRITICAL SECTION. The previous total is
+    # the value that makes this row correct, and reading it outside the lock is
+    # a read-then-act: two stages terminating together both read the same total
+    # and both write `prev + own`, and the second erases the first. Not a corrupt
+    # row — a QUIET one. `gate_append_cost` owns both halves.
     n_stage=$(gate_rows 'stage-result' | gate_count)
-    gate_append 'cost' "누적 usd=$total" "스테이지 수=${n_stage:-1}" "관측 시각=$(now_iso)"
+    gate_append_cost "$cost" "${n_stage:-1}" "$(now_iso)"
   fi
 
   gate_absorb_emitted_judgment "$alias" "$seg" "$res"
