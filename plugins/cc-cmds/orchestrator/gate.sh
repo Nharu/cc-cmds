@@ -6816,16 +6816,23 @@ gate_answered_judgments_json() {
   # included, never reaches the reader. The ledger a reader most needs a verdict
   # about is precisely the malformed one.
   local LC_CTYPE=C; export LC_CTYPE
+  # ALL THREE LOOKUPS ARE WHOLE FIELDS — `| 승인 id=<id> |`, `| 절단점=판단 |`
+  # and `| 해소 승인=<id> |` — the way every other reader of these series is.
+  # A judgment that cites another's id in its `기준` carries that text into its
+  # own issue and close rows, and read as a substring those rows spoke for the
+  # cited id: a refused judgment came out as an answered candidate behind the
+  # citing judgment's `승인`, and an answered one vanished behind a citing
+  # judgment's `거부`.
   ids=$(gate_rows '승인' \
         | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u)
   for id in $ids; do
     [ -n "$id" ] || continue
-    row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+    row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
     [ "$(gate_row_field "$row" '상태')" = "승인" ] || continue
-    iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
-           | { grep -F '절단점=판단 ' || true; } | tail -1)
+    iss=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } \
+           | { grep -F '| 절단점=판단 |' || true; } | tail -1)
     [ -n "$iss" ] || continue
-    if gate_has_row '자율 승인' "해소 승인=$id "; then continue; fi
+    if gate_has_row '자율 승인' "| 해소 승인=$id |"; then continue; fi
     seg=$(gate_row_field "$iss" '막는 세그먼트')
     [ "$first" = "1" ] || printf ',\n'
     first=0
@@ -6869,13 +6876,15 @@ gate_answer_servable() {
   # The sidecar write is left where it is. A refusal's own words are a durable
   # record of why the answer was no, and that record has value; what was wrong
   # is the reader, so the reader is where the test goes.
+  #
+  # The lookups are pinned to whole fields for the reason given there.
   local id="$1" row iss st
-  row=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } | tail -1)
+  row=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } | tail -1)
   [ -n "$row" ] || { warn "그 승인 id 가 원장에 없습니다: $id"; return 1; }
   st=$(gate_row_field "$row" '상태')
   [ "$st" = "승인" ] || { warn "그 승인은 답으로 닫히지 않았습니다 (상태=${st:-없음}) — 거부·무효로 닫힌 판단의 거절문은 답이 아닙니다: $id"; return 1; }
-  iss=$( { gate_rows '승인' | grep -F "승인 id=$id " || true; } \
-         | { grep -F '절단점=판단 ' || true; } | tail -1)
+  iss=$( { gate_rows '승인' | grep -F "| 승인 id=$id |" || true; } \
+         | { grep -F '| 절단점=판단 |' || true; } | tail -1)
   [ -n "$iss" ] || { warn "그 승인은 판단 물음이 아닙니다 — 답 사이드카는 절단점=판단 에만 있습니다: $id"; return 1; }
   [ -f "$RUN_DIR/answer/$id.md" ] || { warn "그 승인의 답 사이드카가 없습니다: $id"; return 1; }
   # THE FILE IS COMPARED AGAINST THE ROW'S DIGEST. The row carries the sha256 of

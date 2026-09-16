@@ -1347,6 +1347,89 @@ check "인용된 판단의 마지막 행은 거부 그대로다" \
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 
 # ---------------------------------------------------------------------------
+# 9b. A quoted id does not answer for that id either
+#
+# The readers that list ANSWERED judgments — the snapshot array, the answer
+# door and the driver's re-dispatch pick — ask three things of the ledger: the
+# approval's last row is `승인`, its issuing row is `절단점=판단`, and no
+# `자율 승인` row spends it. Each of the three was a substring match, so a
+# judgment that cites another's id in its `기준` spoke for the cited id on all
+# three. Both polarities are pinned, on a ledger of their own, with the rows in
+# the shape the issuer and `close` write them:
+#
+#   - a REFUSED judgment cited by a later judgment that closed `승인` must not
+#     become an answered candidate;
+#   - an ANSWERED judgment cited by a later judgment that closed `거부`, and by
+#     a spent row whose free text quotes `해소 승인=<id>`, must stay one.
+# ---------------------------------------------------------------------------
+QLEDGER="$WORK/quoted-answers.md"
+LEDGER_SAVE="$LEDGER"
+RUN_DIR_SAVE="${RUN_DIR:-}"
+LEDGER="$QLEDGER"
+: > "$QLEDGER"
+RUN_DIR="$WORK/rundir-quoted"; mkdir -p "$RUN_DIR/answer" "$RUN_DIR/log"
+qj_issue() {
+  # qj_issue <승인 id> <막는 세그먼트> <질문 문면>
+  gate_append '승인' "승인 id=$1" "상태=대기" "대상=repo" "절단점=판단" "막는 세그먼트=$2" \
+    "질문 문면=$3"
+}
+qj_close() {
+  # qj_close <승인 id> <상태> <질문 문면> <답> — `close` writes the answer file
+  # before it branches on the disposition, so a refusal leaves one too.
+  printf '%s\n' "$4" > "$RUN_DIR/answer/$1.md"
+  gate_append '승인' "승인 id=$1" "상태=$2" "질문 문면=$3" "답변 문면=$4" \
+    "해소 시각=2026-01-01T00:00:00Z" "응답 토큰=t-$1" \
+    "답변 다이제스트=$(printf '%s' "$4" | shasum -a 256 | cut -d' ' -f1)" "사이드카 앵커=-"
+}
+qj_ids() { printf '[%s]' "$(gate_answered_judgments_json)" | jq -r '.[].id' 2>/dev/null; }
+
+qj_issue QJ-REFUSED "S4:QS:1" "거부될 물음"
+qj_close QJ-REFUSED 거부 "거부될 물음" "하지 않는다"
+qj_issue QJ-CITING "S4:QT:1" "승인 id=QJ-REFUSED 참고"
+qj_close QJ-CITING 승인 "승인 id=QJ-REFUSED 참고" "진행한다"
+qj_issue QJ-ANSWERED "S4:QU:1" "답이 올 물음"
+qj_close QJ-ANSWERED 승인 "답이 올 물음" "그렇게 한다"
+qj_issue QJ-QUOTER "S4:QV:1" "승인 id=QJ-ANSWERED 참고"
+qj_close QJ-QUOTER 거부 "승인 id=QJ-ANSWERED 참고" "하지 않는다"
+# The citing judgment's answer is spent, by a row whose free text quotes the
+# answered id's spend field — so neither citing judgment is itself a candidate,
+# and the only candidates left are the ones the quoting decides.
+gate_append '자율 승인' "기준=해소 승인=QJ-ANSWERED 참고" "해소 승인=QJ-CITING"
+: > "$RUN_DIR/log/S4:QT:1.json"
+: > "$RUN_DIR/log/S4:QU:1.json"
+
+check "인용하는 판단의 두 행이 인용된 id 를 문면에 싣는다 (시험이 공허하지 않다)" \
+  "$( { grep -F '질문 문면=승인 id=QJ-REFUSED 참고' "$QLEDGER" || true; } | gate_count)" "2"
+check "소진 행의 자유 문면이 답한 판단의 소진 필드를 인용한다 (시험이 공허하지 않다)" \
+  "$( { grep -F '기준=해소 승인=QJ-ANSWERED 참고' "$QLEDGER" || true; } | gate_count)" "1"
+
+# Polarity one: a refusal is not an answer because a later judgment quoted it.
+check "거부된 판단은 그것을 인용한 판단이 승인으로 닫혀도 답이 온 판단 배열에 오르지 않는다" \
+  "$(qj_ids | { grep -xF QJ-REFUSED || true; } | gate_count)" "0"
+if declare -F answered_judgment_stage >/dev/null; then
+  ok "드라이버의 재파견 선택 함수가 소싱으로 로드됐다"
+else
+  bad "재파견 선택" "answered_judgment_stage 가 정의되지 않았다 — 아래 행들은 잴 것이 없다"
+fi
+check "드라이버도 인용한 판단의 스테이지에 거부된 판단을 답으로 다시 붙이지 않는다" \
+  "$(answered_judgment_stage QT S4 2>/dev/null)" ""
+
+# Polarity two: an answer is not hidden because a later judgment quoted it.
+check "답한 판단은 그것을 인용한 판단이 거부로 닫혀도 답이 온 판단 배열에 남는다" \
+  "$(qj_ids | { grep -xF QJ-ANSWERED || true; } | gate_count)" "1"
+qj_rc=0
+gate_answer_servable QJ-ANSWERED 2>/dev/null || qj_rc=$?
+check "답 문도 인용한 판단의 거부를 그 답의 상태로 읽지 않는다" "$qj_rc" "0"
+check "드라이버도 답한 판단을 그 스테이지에 다시 붙인다" \
+  "$(answered_judgment_stage QU S4 2>/dev/null)" "QJ-ANSWERED S4:QU:1"
+# Spent-ness is still read — the whole-field pin did not turn the test off.
+check "실제로 소진된 판단은 여전히 배열에 오르지 않는다" \
+  "$(qj_ids | { grep -xF QJ-CITING || true; } | gate_count)" "0"
+
+LEDGER="$LEDGER_SAVE"
+RUN_DIR="$RUN_DIR_SAVE"
+
+# ---------------------------------------------------------------------------
 # 10. The two counters, over two different sets — and they are no longer even
 #     the same quantity
 #

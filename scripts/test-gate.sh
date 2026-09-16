@@ -6000,6 +6000,25 @@ fx_approval AP-1 승인
 n=$(cc_open_approvals "$FX_LEDGER")
 check "cc_open_approvals 가 id 별 마지막 행으로 접는다" "$n" "1"
 
+# A ROW THAT QUOTES A WAITING ID IS NOT THAT ID'S ROW. A closed approval whose
+# question text names the waiting AP-2 is appended after it — the shape a router
+# citing its own earlier decision leaves. Read as a substring, that close became
+# AP-2's last row: the run-state classifier saw nothing waiting and the watcher
+# raised no banner for it, while the gate's own census still counted it open.
+fx_row '승인' "승인 id=AP-3" "상태=승인" "대상=-" "절단점=경계" \
+  "질문 문면=승인 id=AP-2 을 인용한 질문" "답변 문면=-" "해소 시각=-"
+check "인용 행이 대기 id 를 문면에 싣는다 (시험이 공허하지 않다)" \
+  "$( { grep -F '질문 문면=승인 id=AP-2 ' "$FX_LEDGER" || true; } | wc -l | tr -d ' ')" "1"
+n=$(cc_open_approvals "$FX_LEDGER")
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 닫지 않는다 (cc_open_approvals)" "$n" "1"
+# The watcher's enumerator, taken as source text and run on its own the way
+# test-watch.sh lifts its time conversion: driving the watcher would need a run
+# directory and a banner stub, and neither is what this row is about.
+oai_fn=$(sed -n '/^open_approval_ids() {/,/^}/p' "$repo_root/plugins/cc-cmds/orchestrator/watch.sh")
+check "watch.sh 에서 열린 승인 id 열거 함수를 떼어냈다" "$([ -n "$oai_fn" ] && printf yes || printf no)" "yes"
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 열거에서 빼지 않는다 (open_approval_ids)" \
+  "$(CC_OAI_FN="$oai_fn" LEDGER="$FX_LEDGER" bash -c 'eval "$CC_OAI_FN"; open_approval_ids')" "AP-2"
+
 fx_segment SX 계획됨
 fx_segment SY 머지됨
 fx_segment SX park
