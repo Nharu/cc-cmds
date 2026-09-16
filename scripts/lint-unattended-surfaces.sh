@@ -345,10 +345,21 @@ else
         fi
 
         # Rule 5, forward: every extracted label is referenced by this arm.
+        #
+        # The containment tests here and below are bash string matches rather
+        # than pipes into `grep -q`. An early-exiting reader on the right of a
+        # pipe leaves the writer on the left with a SIGPIPE, and under
+        # `set -o pipefail` that failure becomes the pipeline's status — so the
+        # `if !` would invert on a MATCH, which is the direction that reads as
+        # green. `$body` is multiline, and the `[^0-9A-Za-z]` classes carry the
+        # newlines: a label at the start of a line is preceded by one and a
+        # label at the end of a line is followed by one, so the anchors only
+        # have to cover the ends of the whole string.
         missing=""
         while IFS= read -r label; do
           [[ -n "$label" ]] || continue
-          if ! printf '%s\n' "$body" | grep -qE "(^|[^0-9A-Za-z])${label}([^0-9A-Za-z]|\$)"; then
+          label_re="(^|[^0-9A-Za-z])${label}([^0-9A-Za-z]|\$)"
+          if ! [[ $body =~ $label_re ]]; then
             missing="$missing $label"
           fi
         done <<EOF
@@ -361,9 +372,13 @@ EOF
         fi
 
         # Rule 5, reverse: every label-shaped token in this arm is defined.
+        # The label set is newline-delimited on both sides of the comparison so
+        # the match is whole-line, the way `grep -x` was: `2a` must not be found
+        # inside a longer label.
+        labels_nl=$'\n'"$labels"$'\n'
         stale=$(printf '%s\n' "$body" | grep -oE '(^|[^0-9A-Za-z])2[a-z]([^0-9A-Za-z]|$)' \
                   | grep -oE '2[a-z]' | sort -u | while IFS= read -r tok; do
-                    printf '%s\n' "$labels" | grep -qxF -- "$tok" || printf '%s ' "$tok"
+                    [[ $labels_nl == *$'\n'"$tok"$'\n'* ]] || printf '%s ' "$tok"
                   done)
         if [[ -n "$stale" ]]; then
           echo "FAIL: $arm — references assertion label(s) the contract does not define: $stale" >&2
