@@ -595,8 +595,9 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
-  local cc
+  local cc sb
   cc=$(manifest_field '인가' '비용 천장')
+  sb=$(manifest_field '인가' '무진전 상한')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -630,6 +631,9 @@ binding_set_bytes() {
     # An unconditional line would re-digest every such manifest at once, and the
     # run finds out on its next `snapshot` — in the middle of the night.
     [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
+    # The stagnation bound joins on the same terms and for the same reason: it
+    # ends the run, so a value anything can raise mid-run is not a bound.
+    [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }

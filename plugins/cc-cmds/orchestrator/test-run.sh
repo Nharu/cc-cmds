@@ -926,6 +926,18 @@ fi
 grep -v '^\*\*비용 천장\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "천장 필드가 없으면 그 필드를 얼리기 전과 같은 바이트다 (기존 매니페스트가 그대로 적합하다)" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
+awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
+  "$( { grep -c '^\*\*무진전 상한\*\*: 7$' "$MF" || true; } )" "1"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "무진전 상한을 선언했는데 다이제스트가 그대로다"
+else
+  ok "무진전 상한이 생기면 구속 다이제스트가 움직인다"
+fi
+grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 write_manifest "$MF"
 
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
