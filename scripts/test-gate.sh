@@ -4627,6 +4627,45 @@ graded_as '트리밖쓰기' 'docker save -o 는 붙여 써도 쓰기다' -- dock
 graded_as '읽기' '-o 없는 docker save 는 읽기다'          -- docker save img
 graded_as '트리밖쓰기' 'git archive -o 는 붙여 써도 쓰기다' -- git archive -o/tmp/p HEAD
 graded_as '읽기' '-o 없는 git archive 는 읽기다'          -- git archive HEAD
+
+# `mv` 와 `rm` 은 이름이 아니라 만지는 것으로 등급한다. 공용 팀 규약이 모든 위트니스를
+# 트리 밖 스크래치 디렉터리로 원자적 `mv -n` 해 발행하는데, 이름 기준 `워크트리쓰기`
+# 아래에서는 정직한 `트리밖쓰기` 선언이 거절되고 거짓 철자만 통과했다 — 발행하는
+# 쪽에게 「틀린 원장 행」과 「발행하지 않음」 중 하나를 고르게 하는 상태였다.
+MVOUT="$WORK/mv-outside"
+mkdir -p "$MVOUT"
+graded_as '워크트리쓰기' '트리 안 mv 는 워크트리쓰기다'     -- mv a.md b.md
+graded_as '트리밖쓰기' '트리 밖으로 나가는 mv 는 트리밖쓰기다' -- mv -n a.md "$MVOUT/r1.md"
+graded_as '트리밖쓰기' '디렉터리 목적지도 같다'             -- mv a.md "$MVOUT/"
+graded_as '트리밖쓰기' '-t 목적지도 읽는다'                 -- mv --target-directory="$MVOUT" a.md
+# mv 는 옮긴 것을 지우므로 트리 밖에서 들여오는 것도 트리 밖 쓰기다. 목적지만 보는
+# 구현은 이 줄에서 빨개진다.
+graded_as '트리밖쓰기' '트리 밖에서 들여오는 mv 도 트리밖쓰기다' -- mv "$MVOUT/r1.md" a.md
+graded_as '워크트리쓰기' '트리 안 rm 은 워크트리쓰기다'     -- rm -f a.md
+graded_as '트리밖쓰기' '트리 밖 rm 은 트리밖쓰기다'         -- rm -rf "$MVOUT/x"
+# 모르는 옵션은 추측하지 않는다. 값을 먹는 옵션을 건너뛰면 그 값이 피연산자 자리에
+# 남고, 틀린 등급은 수행하는데 모르는 등급은 거절한다.
+graded_as '등급 미상' '모르는 긴 옵션의 mv 는 등급 미상이다'  -- mv --bogus a.md b.md
+# 대조군 — 같은 행에 있던 다른 이름들은 그대로 이름으로 등급한다. 이 행 전체를
+# 목적지 기반으로 바꾼 구현이 아니다.
+graded_as '워크트리쓰기' '대조군: cp 는 목적지와 무관하게 워크트리쓰기다' -- cp a.md "$MVOUT/b.md"
+# 평범한 철자가 등급 미상으로 떨어지면 그 행위는 승인 대기로 밀리거나 인터프리터로
+# 우회한다 — 후자는 통과하면서 원장에 거짓을 남긴다. 옵션 표를 나중에 좁히면 이
+# 묶음이 빨개진다.
+mv_ok=0; mv_bad=""
+for spell in "rm -f a.md" "rm -rf sub" "rm -r sub" "rm a.md" "rm -i a.md" "rm -v a.md" \
+             "rm --force a.md" "rm --recursive sub" "rm -fr sub" \
+             "mv a.md b.md" "mv -f a.md b.md" "mv -n a.md b.md" "mv -v a.md b.md" \
+             "mv -i a.md b.md" "mv -T a.md b.md" "mv -t sub a.md" "mv --force a.md b.md" \
+             "mv -fn a.md b.md"; do
+  # shellcheck disable=SC2086
+  gate grade --manifest "$FX_MANIFEST" -- $spell
+  case "$msg" in
+    *'축2=워크트리쓰기'*) mv_ok=$((mv_ok + 1)) ;;
+    *) mv_bad="$mv_bad [$spell → $msg]" ;;
+  esac
+done
+check "mv·rm 의 평범한 철자 18가지가 모두 워크트리쓰기로 등급된다" "$mv_ok:$mv_bad" "18:"
 # The team witness initializer. It is the second half of a pair: the script
 # exists so that the four statements it runs stop needing `bash -c`, and this
 # row is what makes that worth doing. Without the row the script would fall to
@@ -7313,6 +7352,16 @@ NSID="12121212-3434-5656-7878-909090909090"
 # in NORMAL form. What this fixture measures is that the answer BYTES — the
 # label as chosen — reach the row, and its digest and anchor beside them.
 ANSWER="승인 ← 추천"
+# 상태 검사 — 닫히지 않은 판단의 자리에 파일이 있어도 답이 아니다. `close` 는 답
+# 사이드카를 처분 분기보다 먼저 쓰므로, 거부·무효로 닫힌 판단도 완전한 파일을 남긴다.
+# 그 검사가 없으면 문이 재파견된 스테이지에게 거절문을 지시로 건넨다.
+CANS="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer"
+mkdir -p "$CANS"
+printf '%s\n' "아직 답이 아니다" > "$CANS/$jid.md"
+ans_pre=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" --approval "$jid" 2>/dev/null); ans_pre_rc=$?
+check "닫히지 않은 판단은 파일이 있어도 답으로 내주지 않는다" "$ans_pre_rc" "1"
+check "그때 바이트도 내주지 않는다" "$ans_pre" ""
+rm -f "$CANS/$jid.md"
 : > "$NTX/$NSID.jsonl"
 ntok=$(auq_frame "$NTX/$NSID.jsonl" "$jid" "$jq_q" "$ANSWER" "$ANSWER" 거부 무효)
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
@@ -7332,6 +7381,64 @@ if [ -f "$NSC" ] && grep -qxF "## 승인 $jid" "$NSC" && grep -qxF "$ANSWER" "$N
 else
   bad "승인 사이드카" "$(sed -n '1,3p' "$NSC" 2>/dev/null)"
 fi
+# 답 채널 — 답을 집어 가는 것은 라우터가 아니라 그 판단을 낸 스테이지다. 그래서
+# `close` 와 따로 있는 읽기 동사다: 답을 보려고 `close` 를 불러야 하는 스테이지는
+# 기록 동사를 쥔 스테이지다.
+ans() {
+  # 표준출력만 잡는다. 이 동사가 내주는 것은 사람이 친 바이트이고 경고는 표준오류로
+  # 가므로, 둘을 섞으면 답에 진단이 딸려 나온 것을 답으로 읽는다.
+  ans_out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" ${1:+--approval "$1"} 2>/dev/null)
+  ans_rc=$?
+}
+ans "$jid"
+check "답 채널이 그 승인의 답을 내준다" "$ans_rc" "0"
+check "그 바이트가 사람이 고른 것 그대로다" "$ans_out" "$ANSWER"
+# 라우터가 도는 런은 고정 그래프 루프에 들어가지 않으므로, 그 런에서 답이 온 판단에
+# 닿는 유일한 표면이 스냅숏의 이 배열이다. 두 읽기가 같은 원장 사실로 계산되므로
+# 어느 답이 미소비인지를 두고 서로 다른 답을 낼 수 없다.
+snap_aj=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc snapshot --manifest "$NM" 2>/dev/null)
+case "$(printf '%s' "$snap_aj" | jq -r --arg i "$jid" '.answered_judgments[]? | select(.id==$i) | .id')" in
+  "$jid") ok "스냅숏의 답이 온 판단 배열이 그 승인을 싣는다" ;;
+  *) bad "스냅숏 배열" "$(printf '%s' "$snap_aj" | jq -c '.answered_judgments' 2>/dev/null)" ;;
+esac
+case "$(printf '%s' "$snap_aj" | jq -r --arg i "$jid" '.answered_judgments[]? | select(.id==$i) | .answer')" in
+  */answer/*) ok "그 항목이 답 파일의 경로를 싣는다" ;;
+  *) bad "스냅숏 배열" "답 경로가 없다: $(printf '%s' "$snap_aj" | jq -c '.answered_judgments' 2>/dev/null)" ;;
+esac
+ans ""
+case "$ans_out" in
+  *"$jid"*) ok "id 없는 형태가 답을 가진 승인 id 를 목록으로 낸다" ;;
+  *) bad "답 목록" "${ans_out:-(빈 출력)}" ;;
+esac
+# 원장이 먼저이고 파일시스템이 나중이다. 행 없이 디렉터리에 떨어진 파일은 답이
+# 아니다 — 사람이 물음을 받은 적이 없다는 뜻이다.
+printf '%s\n' "심어진 것" > "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/심은-id.md"
+ans "심은-id"
+check "원장에 행이 없는 파일은 답으로 내주지 않는다" "$ans_rc" "1"
+ans ""
+case "$ans_out" in
+  *심은-id*) bad "답 목록" "행 없는 파일이 목록에 올랐다: $ans_out" ;;
+  *) ok "목록도 같은 술어를 지난다 (id 형태가 거절할 것을 목록이 내주지 않는다)" ;;
+esac
+rm -f "$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/심은-id.md"
+# 파일은 원장의 답변 다이제스트와 대조된다. 세 원장 사실은 사람이 답했다는 것을
+# 세울 뿐이고, 건네지는 바이트는 지금 그 경로에 있는 것이다 — 그리고 그것을 읽는
+# 것은 스테이지이며 지시로 받아 행동한다.
+CANSF="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID/answer/$jid.md"
+cp "$CANSF" "$CANSF.keep"
+printf '%s\n' "바꿔치기된 답" > "$CANSF"
+ans "$jid"
+check "원장의 다이제스트와 다른 답 파일은 내주지 않는다" "$ans_rc" "1"
+check "그때 바이트도 내주지 않는다" "$ans_out" ""
+ans ""
+case "$ans_out" in
+  *"$jid"*) bad "답 목록" "다이제스트가 어긋난 답이 목록에 남았다: $ans_out" ;;
+  *) ok "목록에서도 빠진다 (두 형태가 같은 술어를 지난다)" ;;
+esac
+mv "$CANSF.keep" "$CANSF"
+ans "$jid"
+check "되돌리면 다시 내준다 (항상 거절하는 구현이 아니다)" "$ans_out" "$ANSWER"
+
 # The act approval keeps the fixed literal, so no existing reader changes.
 aidN=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)" '승인 id')
 if [ -n "$aidN" ]; then
@@ -7346,6 +7453,12 @@ if [ -n "$aidN" ]; then
     *"답변 문면=트랜스크립트 판독"*) ok "행위 승인은 기존 리터럴을 유지한다 (기존 시험과 원장 독자가 깨지지 않는다)" ;;
     *) bad "행위 승인 문면" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$aidN " | tail -1)" ;;
   esac
+  # 행위 승인의 답은 처분이지 스테이지가 이어서 할 것이 아니다. 닫힌 뒤에 재도
+  # 이유가 하나로 좁혀진다 — 상태는 승인이고 절단점만 판단이 아니다.
+  printf '%s\n' "행위 승인의 답" > "$CANS/$aidN.md"
+  ans_act=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc answers --manifest "$NM" --approval "$aidN" 2>/dev/null); ans_act_rc=$?
+  check "행위 승인은 답 채널이 내주지 않는다 (절단점=판단 만 있다)" "$ans_act_rc" "1"
+  rm -f "$CANS/$aidN.md"
 else
   bad "행위 승인" "닫을 대기 중 행위 승인을 찾지 못했다"
 fi
