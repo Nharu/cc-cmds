@@ -15,7 +15,13 @@
 #   (2) It PINS the literals the two SKILL.md files must share — the header
 #       version strings, the brief's block names and the five delivery-shape
 #       field names, the nine park site ids, the `redispatch_count` field —
-#       so a rename on one side without the other is a failing build.
+#       so a rename on one side without the other is a failing build. A second
+#       form of pin, section-scoped and count-exact, covers the sentences that
+#       decide behaviour rather than spelling; those literals carry a word of
+#       polarity so that reversing the rule turns this red, not only deleting
+#       it. What neither form reaches: a contradicting sentence ADDED in some
+#       other paragraph, and the question of whether a reference implementation
+#       here agrees with the prose it sits beside.
 #
 # If the prose changes, (2) goes red; if a fixture contract changes, (1) goes
 # red. Neither proves that a running seat or leg applies the predicate — that
@@ -461,6 +467,44 @@ pin_in() {
   fi
 }
 
+# extract_section <file> <exact-heading-line> — the heading plus its body, up to
+# the next heading of the same level or higher. Same shape as the helper of the
+# same name in scripts/lint-team-budget-pins.sh, which is where this idiom lives.
+extract_section() {
+  local file="$1" heading="$2"
+  awk -v h="$heading" '
+    function hlevel(s,   n) { n = 0; while (substr(s, n + 1, 1) == "#") n++; return n }
+    !incap && $0 == h { incap = 1; lvl = hlevel($0); print; next }
+    incap && substr($0, 1, 1) == "#" {
+      n = hlevel($0)
+      if (n >= 2 && n <= lvl) exit
+    }
+    incap { print }
+  ' "$file"
+}
+
+# pin_once_in_section <literal> <file> <heading> <label>
+# Section-scoped and count-exact, which `pin_in` above is neither. A rule that
+# decides behaviour has to sit in the section that carries the decision, and sit
+# there once: a file-wide existence check stays green when the sentence is moved
+# to a paragraph that governs nothing, and stays green when a second copy states
+# the opposite a few sections down. Both are the shapes this suite failed to
+# catch before, so the load-bearing sentences use this form and not that one.
+pin_once_in_section() {
+  local lit="$1" file="$2" heading="$3" label="$4" body n
+  body=$(extract_section "$file" "$heading")
+  if [[ -z "$body" ]]; then
+    fail "pin: $label has no section $heading"
+    return
+  fi
+  n=$(printf '%s\n' "$body" | grep -Fc -- "$lit" 2>/dev/null || true)
+  if [[ "$n" == "1" ]]; then
+    pass "pin: $label carries once in its section: $lit"
+  else
+    fail "pin: $label must carry on exactly 1 line of $heading, found $n: $lit"
+  fi
+}
+
 for s in "${PARK_SITES[@]}"; do
   pin_in "\`$s\`" "$LEG" "leg"
 done
@@ -494,6 +538,34 @@ pin_in 'permission_posture' "$DESIGN" "design"
 pin_in 'permission_posture' "$LEG" "leg"
 pin_in 'posture_approved_at' "$DESIGN" "design"
 pin_in 'posture_approved_at' "$LEG" "leg"
+
+# ----------------------------------------------------------------------------
+# Load-bearing sentences — section-scoped, count-exact
+#
+# These six decide where a re-dispatch may go and what the leg does with a file
+# it finds at the target path. Each literal carries a word of polarity
+# (`forbidden`, `does not reach`, `neither … nor`, `never by existence`,
+# `passed; … parked`) so that reversing the rule's MEANING, and not only
+# deleting its text, turns this suite red. A pin whose literal reads the same
+# either way is a pin against typos, not against a change of mind.
+# ----------------------------------------------------------------------------
+
+LADDER_SECTION='#### Leg pull-check (the first act of every turn while the check is active — CFI-1b)'
+LEG_GUARD_SECTION='### Step 1: Read the brief and guard it'
+
+pin_once_in_section '**On `phase: resume` rung 1r is forbidden.**' \
+  "$DESIGN" "$LADDER_SECTION" "design (ladder)"
+pin_once_in_section '**The `brief_sha256` identical guard of dispatch item 2 does not reach this ladder.**' \
+  "$DESIGN" "$LADDER_SECTION" "design (ladder)"
+pin_once_in_section "**What keeps a re-dispatch away from a saved document is neither the phase guard alone nor the leg's guard alone.**" \
+  "$DESIGN" "$LADDER_SECTION" "design (ladder)"
+
+pin_once_in_section '**Target-document guard.**' \
+  "$LEG" "$LEG_GUARD_SECTION" "leg (Step 1 guard)"
+pin_once_in_section '**Judge by content, never by existence.**' \
+  "$LEG" "$LEG_GUARD_SECTION" "leg (Step 1 guard)"
+pin_once_in_section '**An early ledger stub is passed; a saved document is parked.**' \
+  "$LEG" "$LEG_GUARD_SECTION" "leg (Step 1 guard)"
 
 # ============================================================================
 
