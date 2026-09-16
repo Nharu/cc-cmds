@@ -859,6 +859,31 @@ else
 fi
 write_manifest "$MF"
 
+# 비용 천장은 이제 런을 끝내는 경계이므로 얼린 집합에 든다 — 런 도중에 올릴 수 있는
+# 천장은 천장이 아니다. 그리고 그 편입이 기존 매니페스트를 부적합으로 만들지 않아야
+# 한다: 필드가 없으면 바이트를 하나도 내지 않는다는 것이 그 조건이고, 아래 마지막
+# 단언이 정확히 그것을 잰다 — 필드를 뺀 뒤의 다이제스트가 넣기 전과 같은 값이다.
+bd_nocost=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+awk '/^\*\*벽시계 마감\*\*: /{print; print "**비용 천장**: 100"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "픽스처가 실제로 천장 줄을 얻었다 (아래 셋이 공허하지 않다)" \
+  "$( { grep -c '^\*\*비용 천장\*\*: 100$' "$MF" || true; } )" "1"
+bd_cost=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_cost" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "비용 천장을 선언했는데 다이제스트가 그대로다"
+else
+  ok "비용 천장이 생기면 구속 다이제스트가 움직인다"
+fi
+sed 's/^\*\*비용 천장\*\*: 100$/**비용 천장**: 200/' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_cost" ]; then
+  bad "구속 집합 감도" "천장 값을 바꿨는데 다이제스트가 그대로다 — 런 도중 천장을 올릴 수 있다"
+else
+  ok "비용 천장 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+grep -v '^\*\*비용 천장\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "천장 필드가 없으면 그 필드를 얼리기 전과 같은 바이트다 (기존 매니페스트가 그대로 적합하다)" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+write_manifest "$MF"
+
 # 10 — 소유 증명은 여전히 fail-closed 다. 증명을 바꾼 것이지 뺀 것이 아니다.
 write_manifest "$MF"; sed 's/run-id=20260825-deadbeef;//' "$MF" > "$MF.x" && mv "$MF.x" "$MF"
 if ( check_manifest ) >/dev/null 2>&1; then

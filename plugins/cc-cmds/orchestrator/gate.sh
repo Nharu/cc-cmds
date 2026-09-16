@@ -9009,31 +9009,21 @@ gate_drain_notify_state() {
   return 0
 }
 
-gate_deadline_ok() {
-  # gate_deadline_ok <kind> <cutpoint>
+gate_past_deadline() {
+  # `벽시계 마감` read the way the driver reads it, for the one narrow purpose
+  # `gate_run_ended_ok` states below. True when the clock has passed it.
   #
-  # THE DEADLINE IS A DISPATCH GATE, and until now nothing read it. It is frozen
-  # into the binding digest and compared at entry, but `gate.sh` mentioned
-  # neither the field nor a comparison, and the only callers of the driver's own
-  # helper sit in the fixed-graph loop the router never enters. The value a user
-  # answered for at kickoff did not reach execution — the same shape #208
-  # recorded for the cutpoint. Measured: a run past its deadline had `plan
-  # --kind skill` answer "통과 예상".
+  # THE COMPARISON IS MADE IN THE DEADLINE'S OWN ZONE, and that is a portability
+  # fact rather than a style choice. `date -d` is GNU and `date -j -f` is BSD, so
+  # neither parses an offset-bearing stamp; what both have is `date +FMT` under a
+  # TZ. Render now there, and compare digit strings.
   #
-  # Checked on every acting call, not only at entry: a deadline that was in the
-  # future when the run started is the normal case, so entry alone is half.
-  #
-  # It gates DISPATCH and MERGE and nothing else, per the contract — a stage in
-  # flight runs to completion and is classified normally, and the run may still
-  # record rows, close approvals and propose that it is done. A deadline that
-  # stopped everything would strand the run instead of ending it.
-  local kind="$1" cut="$2" dl stamp off now idx merge_idx
+  # AN UNREADABLE DEADLINE WARNS AND DOES NOT ENFORCE. Discarding it in silence
+  # is how a run comes to report a boundary it does not have.
+  local dl stamp off now
+  [ -n "${MANIFEST:-}" ] || return 1
   dl=$(manifest_field '인가' '벽시계 마감')
-  case "$dl" in ''|'없음'|'(없음)') return 0 ;; esac
-
-  # `date -d` is GNU and `date -j -f` is BSD, so neither parses this. What both
-  # do have is `date +FMT` under a TZ, so the comparison is made in the
-  # deadline's OWN zone: render now there, and compare digit strings.
+  [ -n "$dl" ] && [ "$dl" != "없음" ] && [ "$dl" != "(없음)" ] || return 1
   stamp=$(printf '%s' "$dl" | cut -c1-19 | tr -cd '0-9')
   off=$(printf '%s' "$dl" | cut -c20-)
   case "$off" in
@@ -9042,30 +9032,150 @@ gate_deadline_ok() {
     +*:*)      now=$(TZ="UTC-${off#+}" date +%Y%m%d%H%M%S) ;;
     -*:*)      now=$(TZ="UTC+${off#-}" date +%Y%m%d%H%M%S) ;;
     *)
-      # An offset this cannot read must NOT silently block every act — a
-      # deadline the gate cannot compare is a reason to say so, not to refuse.
       warn "벽시계 마감의 시간대를 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"
-      return 0 ;;
+      return 1 ;;
   esac
-  [ ${#stamp} -eq 14 ] || { warn "벽시계 마감의 형식을 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"; return 0; }
-  [ "$now" -le "$stamp" ] 2>/dev/null && return 0
+  [ ${#stamp} -eq 14 ] || { warn "벽시계 마감의 형식을 읽지 못했습니다 ($dl) — 마감을 강제하지 않습니다"; return 1; }
+  [ "$now" -gt "$stamp" ] 2>/dev/null
+}
+
+gate_progress_axes_unbounded() {
+  # True when NO progress-axis bound is in force.
+  #
+  # Undeclared counts, and so does declared in a spelling its own boundary
+  # refuses to enforce — a value `gate_b4_percent` warns about and walks away
+  # from bounds exactly nothing, and counting it as declared is how a run comes
+  # to report a bound it does not have. One predicate, so the boundary and its
+  # readers cannot each answer this differently.
+  #
+  # WRITTEN AS A PER-AXIS WALK because the tree is expected to gain axes. Today
+  # the cost ceiling is the only progress-axis bound the router path reads, so
+  # the walk has one arm; adding an axis is adding an arm here beside the
+  # boundary that enforces it, never a second predicate that can disagree.
+  local cost
+  cost=$(manifest_field '인가' '비용 천장')
+  case "$cost" in
+    ''|없음|'(없음)') : ;;
+    *) if gate_cost_figure_ok "$cost"; then return 1; fi ;;
+  esac
+  return 0
+}
+
+gate_end_run() {
+  # gate_end_run <경계 이름> <사유> — a boundary ENDS the run.
+  #
+  # THE DIFFERENCE BETWEEN THIS AND `gate_issue_boundary_approval` IS THE WHOLE
+  # POINT. An approval asks a person; ending needs no one, and the state this
+  # design targets is precisely the one where nobody is awake to be asked. A
+  # boundary that could only ask is a boundary that does nothing at 4am.
+  #
+  # Idempotent by the mark itself: `done` already written means some earlier
+  # decision — this boundary, another one, or an accepted proposal — already
+  # ended the run, and the first reason is the true one. Rewriting it would
+  # replace the morning's account of why the night stopped.
+  local name="$1" why="$2"
+  [ -s "$RUN_DIR/done" ] && return 0
+  gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
+    "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
+  # PUBLISHED BY RENAME, so the filesystem decides who was first. The check
+  # above and a bare `>` are a read-then-act with no lock around them, and two
+  # boundaries firing together both read an absent mark and both truncate the
+  # file — leaving the morning whichever reason happened to be written last,
+  # while this function's own header calls the FIRST reason the true one.
+  # `mv -n` refuses to replace an existing target, so a loser writes nothing;
+  # its leftover temp file is removed rather than left in the run directory.
+  printf '%s 종단 — 경계 %s · 근거 %s\n' "$(now_iso)" "$name" "$why" > "$RUN_DIR/done.$$"
+  mv -n "$RUN_DIR/done.$$" "$RUN_DIR/done" 2>/dev/null || true
+  rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
+  warn "경계 $name 이 런을 끝냅니다 — $why"
+  if cc_caller_is_router; then
+    # `ended` is the event kind the run's other terminal points already use. A
+    # kind outside the notifier's closed set raises nothing at all, so a banner
+    # spelled for this one caller would be a banner that never arrives.
+    cc_notify_fire ended "경계 $name 이 런을 끝냈습니다 — 아침 보고서를 확인하세요" || true
+  fi
+  return 0
+}
+
+gate_run_ended_ok() {
+  # gate_run_ended_ok <kind> <cutpoint>
+  #
+  # THE WALL CLOCK IS NO LONGER THE YARDSTICK AND THE GATE IT HELD IS NOT GONE.
+  # What used to sit here was a dispatch-and-merge gate keyed on `벽시계 마감`;
+  # this is the same gate keyed on whether a progress-based boundary has ENDED
+  # the run.
+  #
+  # The clock measured elapsed time and the thing worth stopping is pointless
+  # spinning. In three measured cases the clock ran through no fault of the
+  # run's — the machine was asleep for 35 hours, an external queue held it for
+  # most of 262 minutes, nobody resumed it. One run died having performed ZERO
+  # acts, and the independent review it forced cost 2h17m and 82.23 USD. The
+  # purpose survives; the yardstick is replaced, because the clock was a poor
+  # proxy for it.
+  #
+  # WHAT ENDS A RUN NOW is `gate_end_run`, called from a boundary that sits
+  # outside the pending-approval suppression: the cost ceiling at 100%. This
+  # function only reads the mark it leaves.
+  #
+  # It gates DISPATCH and MERGE and nothing else, exactly as the deadline did —
+  # a stage in flight runs to completion and is classified normally, and the run
+  # may still record rows, close approvals and propose that it is done. A
+  # boundary that stopped everything would strand the run instead of ending it.
+  #
+  # THE MARK IS A CACHE AND THE LEDGER ROW IS THE AUTHORITY. `$RUN_DIR` is
+  # volatile — a reaper, a temp sweep or a hand `rm -rf` takes it — and
+  # `gate_main` calls `rundir_init` on every entry, which RE-CREATES the
+  # directory empty. A run whose directory had been collected would come back
+  # with no `done` file, this function would answer "not ended", and the end
+  # would not be a refusal but a state the very next gate call silently
+  # repaired: a run past its cost ceiling resuming dispatch. The ledger lives
+  # OUTSIDE `$RUN_DIR` and is covered by the hash chain, so the row survives
+  # everything the mark does not.
+  local kind="$1" cut="$2" mark idx merge_idx row
+  if [ -s "$RUN_DIR/done" ]; then
+    mark=$(cat "$RUN_DIR/done" 2>/dev/null || true)
+  elif gate_has_row '자율 승인' '결정=종료 '; then
+    # The mark is gone and the row is not, so the reason is rebuilt from the
+    # ending row's own fields. Both refusals below interpolate it, and an empty
+    # parenthesis would tell the morning nothing about why the night stopped.
+    row=$( { gate_rows '자율 승인' | grep -F '결정=종료 ' || true; } | tail -1)
+    mark="경계 $(gate_row_field "$row" '기준') · 근거 $(gate_row_field "$row" '근거') (원장 종료 행 — 종단 표시는 수거됐습니다)"
+  elif gate_progress_axes_unbounded && gate_past_deadline; then
+    # THE CLOCK IS KEPT FOR THE MANIFESTS THAT HAVE NOTHING ELSE.
+    #
+    # Moving the yardstick to a progress-axis bound is right for a manifest that
+    # declares one. Every manifest written before that field was read declares
+    # none, and undeclared is legal — so for those runs the replacement would not
+    # be a replacement but a removal, and the router path would be left with no
+    # enforced bound at all. The failure shape is the worst one available:
+    # unattended, it is silence rather than a crash.
+    #
+    # NARROW ON PURPOSE. When a bound is validly declared this arm is never
+    # reached and the clock has no say over the run, which is the whole of why
+    # the yardstick moved — the three measured cases where it ended a run through
+    # no fault of the run's are not re-admitted here.
+    mark="벽시계 마감 경과 ($(manifest_field '인가' '벽시계 마감')) — 「비용 천장」이 유효하게 선언되지 않아 마감이 유일한 경계입니다"
+  else
+    return 0
+  fi
 
   if [ "$kind" = "skill" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
+    warn "런이 이미 종단했습니다 ($mark) — 새 스테이지를 띄우지 않습니다. 도는 스테이지는 끝까지 갑니다"
     return "$GATE_EXIT_RULE"
   fi
   # A DONE PROPOSAL HAS NO ACT BEHIND IT, so the merge arm below must not judge
   # it. `--cutpoint` is required of every acting call and carries no meaning
-  # here — there is nothing for it to authorize — yet the deadline read it and
-  # refused the proposal as if it were a merge. The consequence is the worst
-  # available one: a run past its deadline could not record that it had ended,
-  # so no `done` file was written, the snapshot rendered it in flight forever,
-  # and the watcher never reaped itself.
-  [ "$kind" = "propose-done" ] && return 0
+  # here — there is nothing for it to authorize — yet the deadline this replaces
+  # read it and refused the proposal as if it were a merge. The consequence was
+  # the worst available one: a run past its bound could not record that it had
+  # ended, so the snapshot rendered it in flight forever and the watcher never
+  # reaped itself.
+  case "$kind" in propose-done) return 0 ;; esac
   merge_idx=$(cutpoint_index '머지') || return 0
   idx=$(cutpoint_index "$cut") || return 0
   if [ "$idx" -ge "$merge_idx" ]; then
-    warn "벽시계 마감이 지났습니다 ($dl) — 마감 뒤로 머지는 없습니다"
+    warn "런이 이미 종단했습니다 ($mark) — 종단 뒤로 머지는 없습니다"
     return "$GATE_EXIT_RULE"
   fi
   return 0
@@ -9552,7 +9662,7 @@ gate_verb_act() {
   # record, close and propose. Checking only at entry would be half — a deadline
   # that was in the future when the run started is the normal case.
   if [ "$verb" != "grade" ]; then
-    gate_deadline_ok "$kind" "$GATE_ACT_EFFECTIVE" || exit $?
+    gate_run_ended_ok "$kind" "$GATE_ACT_EFFECTIVE" || exit $?
   fi
 
   # THE PUSH RUNG IS RE-DERIVED HERE, and here is the earliest it can be: the
@@ -13695,12 +13805,44 @@ gate_b3_exec_total() {
     | { grep -vF '| 행위자=스테이지 |' || true; } | gate_count
 }
 
+gate_cost_figure_ok() {
+  # gate_cost_figure_ok <값> — true when the value reads as a plain decimal
+  # figure, which is the only form `gate_b4_percent`'s arithmetic can consume.
+  #
+  # `awk` coerces a string with a non-numeric head to 0, the percentage comes
+  # out 0, and the boundary returns without a word — so `$50`, `USD 50`, `약 50`
+  # and `50달러` were ceilings in name only, while `50 USD` survived on its
+  # numeric prefix. One field deciding differently by spelling is worse than one
+  # deciding not at all, because nothing in the run distinguishes the two.
+  #
+  # Spelled once so the boundary and every reader of "is this axis bounded"
+  # cannot disagree about which values are figures.
+  case "$1" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  case "$1" in
+    *.*.*|*.) return 1 ;;
+  esac
+  return 0
+}
+
 gate_b4_percent() {
   # The spent share of the declared cost ceiling as an integer percentage, or
   # nothing when no ceiling is declared or nothing has been spent.
   local declared spent
   declared=$(manifest_field '인가' '비용 천장')
-  case "$declared" in ''|없음) return 0 ;; esac
+  # `(없음)` joins the undeclared spellings because the kickoff template writes
+  # a field it has no value for that way, and a parenthesised placeholder is not
+  # a ceiling.
+  case "$declared" in ''|없음|'(없음)') return 0 ;; esac
+  # A VALUE THAT WILL NOT READ IS NOT A CEILING, AND SAYING SO IS THE POINT.
+  # Returning in silence is what this arm used to do, and it left a run believing
+  # it had a bound on an axis that has since become one of the things that can
+  # end it.
+  if ! gate_cost_figure_ok "$declared"; then
+    warn "비용 천장을 숫자로 읽지 못했습니다 ($declared) — 이 경계를 강제하지 않습니다. 통화 기호나 단위 없이 숫자만 적으세요"
+    return 0
+  fi
   spent=$(gate_rows 'cost' | tail -1 | tr '|' '
 ' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   [ -n "$spent" ] || return 0
@@ -13708,14 +13850,31 @@ gate_b4_percent() {
 }
 
 gate_b4_cost() {
+  # TWO THRESHOLDS ON ONE FIGURE. 80% opens a boundary approval — a person, if
+  # there is one, gets to decide. 100% ENDS THE RUN, and it must, because the
+  # ceiling is now the bound that keeps a router run finite: the wall clock no
+  # longer ends a run that has this field, and an approval nobody answers is not
+  # a bound.
   local declared spent pct resolved
   declared=$(manifest_field '인가' '비용 천장')
-  case "$declared" in ''|없음) return 0 ;; esac
+  # The undeclared spellings are the same vocabulary the percentage helper uses.
+  case "$declared" in ''|없음|'(없음)') return 0 ;; esac
   spent=$(gate_rows 'cost' | tail -1 | tr '|' '
 ' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
   [ -n "$spent" ] || return 0
   pct=$(gate_b4_percent)
+  # AN UNREADABLE CEILING YIELDS NO PERCENTAGE, and comparing an empty string
+  # here is a shell error rather than a decision. The helper already warned.
+  [ -n "$pct" ] || return 0
   [ "$pct" -lt 80 ] && return 0
+  # 100% ENDS THE RUN RATHER THAN ASKING, and it is checked BEFORE the re-ask
+  # suppression below. Suppression exists so a granted B4 is not asked again
+  # every act; ending the run is not a question, so letting suppression reach it
+  # would turn a bound into a thing a single grant switches off for good.
+  if [ "$pct" -ge 100 ]; then
+    gate_end_run B4 "비용이 선언 천장에 닿았습니다 (${spent}/${declared})"
+    return 0
+  fi
   # B4 has no counter to restart, so a resolution records the share it was
   # answered at, and the same question is not asked again until spending has
   # climbed another ten points past it. Without that, a granted B4 re-opened on

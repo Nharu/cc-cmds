@@ -590,6 +590,8 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
+  local cc
+  cc=$(manifest_field '인가' '비용 천장')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -611,6 +613,18 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
+    # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
+    # a report — it is a bound that ENDS the run, and a ceiling anything can
+    # raise mid-run is not a ceiling. It sits here for the same reason the
+    # cutpoint and the deadline do.
+    #
+    # EMITTED ONLY WHEN PRESENT, by the same argument the auto-adoption rows
+    # above make: a manifest written before this field was frozen contributes
+    # zero bytes, so its digest does not move and an in-flight run does not
+    # become non-conforming because the gate learned to freeze one more field.
+    # An unconditional line would re-digest every such manifest at once, and the
+    # run finds out on its next `snapshot` — in the middle of the night.
+    [ -n "$cc" ] && printf 'cost\t%s\n' "$cc"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
