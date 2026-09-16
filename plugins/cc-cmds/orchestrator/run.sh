@@ -2618,6 +2618,15 @@ with_doc_lock() {
   local rc=0 tool
   tool=$(lock_tool)
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
+  # SELECTION NAMES THE PLATFORM'S LOCK; IT DOES NOT OBSERVE THE FILE. `lock_tool`
+  # answers "what does this platform use" from the platform predicate alone, and
+  # the suite drives the darwin branches on any runner by injecting the host OS —
+  # so on a linux runner this line is reached with a BSD path that is not there.
+  # Without the check the locked command fails with an exit code that belongs to
+  # neither the lock nor the command, and the caller cannot tell "busy" from
+  # "the tool is missing". The ledger writers already make this exact check;
+  # this is the same one, so the three places agree.
+  [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was
