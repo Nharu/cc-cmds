@@ -5,6 +5,29 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-09-16
+
+설계 세션의 Step 3 토론과 Step 4 종합·저장이 좌석에서 떨어져 별도 헤드리스 세션(무인 다리)에서 돈다. 좌석은 인터뷰 브리프를 써서 다리를 파견한 뒤 매 턴 산출물을 끌어와 확인한다.
+
+### Added
+
+- **`design-discuss-unattended` 스킬(무인 토론 다리)** — 브리프를 읽고 팀을 띄워 설계 문서 저장까지 돌리며, 질문이 필요한 자리는 전부 닫힌 아홉 자리 id 의 park 기록으로 돌린다. 아홉 중 여덟은 2차 실패·debounce 임계이고 하나는 스폰 전 검사라 정상 실행은 park 0회다. 권한 자세는 `bypassPermissions` 이고, 확인 없이 가능한 쓰기·Bash·웹 조회·에이전트 생성의 범위와 파이프라인 게이트가 걸리지 않는다는 사실을 스킬 본문에 적었다. 타깃 문서 가드는 존재가 아니라 내용(원장 블록 파싱 여부 × `##` 절 유무)으로 판정해 이른 스텁은 통과시키고 저장본은 park 한다 (#833)
+- **설계 브리프 사이드카 `cc-design-brief v1`** — `docs/design-brief/{slug}.md` 를 writer=design · reader=design-discuss-unattended 로 공용 사이드카 규약의 소비 행렬에 등록한다. 페이로드(여덟 블록·배포 형상 다섯 필드·종결자)는 두 SKILL.md 가 나른다
+- **`scripts/test-design-brief.sh` 와 `tests/fixtures/design-brief/`** — 브리프 가드·게이트 면제·`leg.json`(state·phase)·산출물 술어·park 기록·재파견 바닥의 참조 구현을 픽스처에 대고 돌리고, 두 SKILL.md 가 같은 리터럴을 나르는지 교차 핀한다. 판단을 지는 문장은 구간 한정·정확 횟수 핀으로 고정해 삭제뿐 아니라 의미 반전도 붉어진다. `Makefile` 의 시험 목록에 등록했다
+- **린트 핀** — `lint-unattended-surfaces.sh` 규칙 5 가 무인 팔의 park 치환 문장을 핀한다. 그 팔은 base 스텝 본문을 Read 해 따르므로 그 한 문장이 park 기전의 전부다. `lint-team-budget-pins.sh` 는 다리 기동 줄의 설정 디렉터리 프리플라이트·백그라운드 대기 천장 문면과 재개 메시지 전달 형태를 핀한다
+
+### Changed
+
+- **`design/SKILL.md` 가 좌석과 다리로 층을 나눈다** — CFI-1 을 파견(CFI-1a)과 완료 깨움(CFI-1b)으로 가르고 CFI-4 를 더한다. Step 2 승인 뒤 브리프 쓰기·파견 블록과 매 턴 pull-check 절차가 들어가고(활성 조건: `leg.json` 이 있고 state 가 pending 또는 parked), 두 명령 게이트 면제에 브리프 경로가 더해진다. permitted-resume 둘째를 다리 안으로, 셋째를 재개된 다리의 팀 재개와 코퍼스 폴백으로 다시 쓰고, Step 7 에 선행조건·직렬화 절·동결 시 제어면 삭제를 넣는다. Step 3·4 본문은 아직 `design/SKILL.md` 에 남아 있고 다리가 그것을 Read 해 치환을 적용해 따른다
+- **다리 권한 자세를 Step 2 제안에서 고지한다** — 승인이 자세와 영향 범위를 포함하게 하고 `leg.json` 의 `permission_posture`·`posture_approved_at` 에 기록한다
+- **재개 메시지를 명령줄에 인라인하지 않는다** — 상태 루트의 `resume.<시각>.txt` 에 원자적으로 쓴 뒤 파일에서 읽어 넘긴다. 큰따옴표 안 백틱이 명령으로 실행돼 자리 id 가 사라진 메시지로 다리가 exit 0 진행하던 경로를 막는다
+- **회복 사다리의 재파견이 재개 페이즈에서 금지된다** — 그 시점 문서에는 워크스루 결정이 들어 있어 처음부터 도는 재파견이 그 위에 저장하므로, 새 epoch 의 fresh respawn 폴백으로 보낸다. 재파견 프롬프트는 코퍼스 경로와 복구 맥락을 담아야 하므로 첫 파견과 바이트 동일해서는 안 된다
+- **정합 점검의 충돌 발견은 좌석의 유일한 채널로 곧바로 올린다** — 인용하던 재수렴 사이클의 첫 단계 주체(다리 세션의 팀원)는 그 턴이 이미 끝나 실행할 수 없었다
+
+### Why
+
+설계 리드 좌석의 턴당 컨텍스트 첨두를 compact 임계 아래로 내리기 위함이다. 경계가 Step 3·4 인 이유는 비용이 아니라 능력이다 — 에이전트 id 는 그것을 띄운 세션에서만 주소 지정되므로 Step 3 과 충실도 패스는 세션을 가를 수 없다. 완료를 푸시 알림이 아니라 pull-check 로 받는 이유는, 알림은 떨어지고 중복되고 잘못 라우팅되며 좌석이 재시작하면 백그라운드 핸들이 고아가 되기 때문이다.
+
 ## [2.17.1] - 2026-09-16
 
 상태줄이 스테이지와 스테이지 사이에서 조용해진 살아 있는 런을 어제 끝난 런 아래에 두던 순위를 바로잡는다. 정지경고만 종단 위로 올리고 버려짐은 종단 아래에 그대로 둔다.
