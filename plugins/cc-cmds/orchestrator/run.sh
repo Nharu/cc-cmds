@@ -3510,24 +3510,29 @@ answered_judgment_stage() {
   # re-attached to a session that had been reviewing. A candidate whose kind
   # does not match is left in the list rather than discarded — the router
   # dispatches that kind later and consumes it there.
+  #
+  # THE LOOKUPS ARE WHOLE FIELDS, as they are in the gate's array. A judgment
+  # citing another's id in its `기준` carries that text into its own rows, and
+  # a substring match let them speak for the cited id — re-dispatching a refusal
+  # as an answer, or never re-dispatching an answer a person gave.
   local seg="$1" kind="$2" id row st iss stg spent
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
     row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
-           | { grep -F "승인 id=$id " || true; } | tail -1)
+           | { grep -F "| 승인 id=$id |" || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     [ "$st" = "승인" ] || continue
     iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
-           | { grep -F "승인 id=$id " || true; } \
-           | { grep -F '절단점=판단 ' || true; } | tail -1)
+           | { grep -F "| 승인 id=$id |" || true; } \
+           | { grep -F '| 절단점=판단 |' || true; } | tail -1)
     [ -n "$iss" ] || continue
     # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
     # — under `pipefail` — report the whole pipeline as failed. The value is
     # captured instead and tested as a string, which is the spelling the rest of
     # this file uses for exactly this reason.
     spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
-             | { grep -F "해소 승인=$id " || true; } | tail -1)
+             | { grep -F "| 해소 승인=$id |" || true; } | tail -1)
     [ -z "$spent" ] || continue
     stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
     case "$stg" in "$kind:$seg:"*) ;; *) continue ;; esac
