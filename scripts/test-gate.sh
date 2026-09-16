@@ -1564,6 +1564,12 @@ pre_cone() {
   # `command not found` while the suite still reports green — the trap 9e1be1b
   # closed, in the file that closed it.
   STATE_CONE="$WORK/state-cone"
+  # THE TRANSCRIPT DIRECTORY IS PREAMBLE AND NOT SECTION BODY. Several sections
+  # in this family close an approval by writing a harness frame under it, and the
+  # one that happened to need it first defined it inline — so a cut that takes any
+  # of the others alone died on an unbound variable while the whole-file run
+  # stayed green. Anything a second section will call belongs here from the start.
+  NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
   gateN() {
     local out
     out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
@@ -6122,6 +6128,25 @@ fx_approval AP-1 승인
 n=$(cc_open_approvals "$FX_LEDGER")
 check "cc_open_approvals 가 id 별 마지막 행으로 접는다" "$n" "1"
 
+# A ROW THAT QUOTES A WAITING ID IS NOT THAT ID'S ROW. A closed approval whose
+# question text names the waiting AP-2 is appended after it — the shape a router
+# citing its own earlier decision leaves. Read as a substring, that close became
+# AP-2's last row: the run-state classifier saw nothing waiting and the watcher
+# raised no banner for it, while the gate's own census still counted it open.
+fx_row '승인' "승인 id=AP-3" "상태=승인" "대상=-" "절단점=경계" \
+  "질문 문면=승인 id=AP-2 을 인용한 질문" "답변 문면=-" "해소 시각=-"
+check "인용 행이 대기 id 를 문면에 싣는다 (시험이 공허하지 않다)" \
+  "$( { grep -F '질문 문면=승인 id=AP-2 ' "$FX_LEDGER" || true; } | wc -l | tr -d ' ')" "1"
+n=$(cc_open_approvals "$FX_LEDGER")
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 닫지 않는다 (cc_open_approvals)" "$n" "1"
+# The watcher's enumerator, taken as source text and run on its own the way
+# test-watch.sh lifts its time conversion: driving the watcher would need a run
+# directory and a banner stub, and neither is what this row is about.
+oai_fn=$(sed -n '/^open_approval_ids() {/,/^}/p' "$repo_root/plugins/cc-cmds/orchestrator/watch.sh")
+check "watch.sh 에서 열린 승인 id 열거 함수를 떼어냈다" "$([ -n "$oai_fn" ] && printf yes || printf no)" "yes"
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 열거에서 빼지 않는다 (open_approval_ids)" \
+  "$(CC_OAI_FN="$oai_fn" LEDGER="$FX_LEDGER" bash -c 'eval "$CC_OAI_FN"; open_approval_ids')" "AP-2"
+
 fx_segment SX 계획됨
 fx_segment SY 머지됨
 fx_segment SX park
@@ -8649,6 +8674,18 @@ check "스냅숏이 그 승인을 disposition=자유 입력 으로 표면화한�
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NEGSID" gate_inproc close --manifest "$NM" --approval "$nid" 2>&1); rc=$?
 check "같은 자유 입력 프레임에 대한 재호출은 행을 더하지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$nid " || true)" "$((nbefore + 1))"
+# A PERSON'S FREE INPUT IS NOT OVERWRITTEN BY AUTO-RESOLUTION. Resubmitting the
+# same judgment with the switch on used to close this `대기` with the router's
+# recommendation, after which the label answer below could not be recorded.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+      gate_inproc act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 "판단 부류=감사-발견" 기준="이 발견을 이번 런에서 고칠지" 근거="비용이 크다" 2>&1); rc=$?
+check "자유 입력으로 답한 판단은 자동 해소가 켜진 재제출에도 대기로 응답한다" "$rc" "5"
+check "그 재제출은 자동 해소 행을 붙이지 않는다" \
+  "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | grep -cF '처분 사유=자동 해소' || true)" "0"
+check "그 재제출 뒤에도 마지막 행은 자유 입력 대기다" \
+  "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '처분 사유')" "자유 입력"
 # THEN THE LABEL: the person chooses `거부`. The label decides; a flag that
 # disagrees is refused; a flag that agrees is accepted; no flag is fine.
 auq_frame "$NTX/$NEGSID.jsonl" "$nid" "$nq" "거부" >/dev/null
@@ -9686,7 +9723,7 @@ case "$out" in
   *"스테이지 종단"*) ok "답이 있는 물음을 다시 방출해도 기록 함수가 끝까지 도달한다" ;;
   *) bad "흡수기 탈출" "$out" ;;
 esac
-_aj_rows=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$aj" || true; } )
+_aj_rows=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$aj |" || true; } )
 if [ -n "$_aj_rows" ]; then
   ok "그 답으로 열렸다는 사실이 원장에 남고 어느 승인을 썼는지 지목한다"
 else
@@ -9742,7 +9779,7 @@ ar_approval_id() {
   row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F "$1" | tail -1)" '승인 id'
 }
 ar_last_row() {
-  { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
 }
 ar_adoptions() {
   { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F '결정=채택' || true; } \
@@ -9763,7 +9800,7 @@ ar_expect_refused() {
   check "$name: 자동 해소가 그 물음을 거부로 닫는다" "$(row_field "$row" '상태')" "거부"
   check "$name: 닫는 행은 자동 해소의 처분 사유를 싣는다" "$(row_field "$row" '처분 사유')" "자동 해소"
   check "$name: 그 승인으로 열린 채택 행이 없다" \
-    "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$id " || true; } | grep -c . || true)" "0"
+    "$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$id |" || true; } | grep -c . || true)" "0"
   case "$out" in
     *"스테이지 종단"*) ok "$name: 기록 함수가 끝까지 도달한다" ;;
     *) bad "$name 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
@@ -9786,6 +9823,15 @@ n_ar=$(ar_adoptions)
 emit_ar SAR2 "$WORK/judgment-stub-ar-noclass"
 ar_expect_refused "방출된 부류 없음" "자동 해소가 켜진 채 부류 없이 방출한 판단" "$n_ar"
 
+# The other class that hands risk to the user, on the same emission path.
+seg_row SAR4 "$CONE_C" 상태=실행중 선행=없음
+check "팀-구성 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-team" \
+  '**판단 부류**: 팀-구성 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 리뷰 팀을 소집할지 **판단 근거**: 발견이 많다'
+n_ar=$(ar_adoptions)
+emit_ar SAR4 "$WORK/judgment-stub-ar-team"
+ar_expect_refused "방출된 팀-구성" "자동 해소가 켜진 채 리뷰 팀을 소집할지" "$n_ar"
+
 # THE PAIR THAT PROVES THE CLASS ARRIVES. A class that may be adopted is adopted
 # on the same path, and the row names it — without the class being handed to the
 # issuer this would be refused as classless, and without the row carrying it the
@@ -9798,9 +9844,10 @@ emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
 ar3_id=$(ar_approval_id "자동 해소가 켜진 채 감사 발견을 미룰지")
 if [ -n "$ar3_id" ]; then
   check "채택 가능 부류의 방출은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar3_id")" '상태')" "승인"
-  ar3_row=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$ar3_id " || true; } | tail -1)
+  ar3_row=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$ar3_id |" || true; } | tail -1)
   check "그 채택 행은 스테이지 방출에서 왔다고 적는다" "$(row_field "$ar3_row" '출처')" "스테이지 방출"
   check "그 채택 행은 방출된 실제 부류를 싣는다" "$(row_field "$ar3_row" '판단 부류')" "감사-발견"
+  check "그 채택 행은 방출된 판단 등급을 싣는다" "$(row_field "$ar3_row" '등급')" "2"
 else
   bad "채택 가능 부류 방출" "그 물음의 승인이 발행되지 않았다: $out"
 fi
@@ -9814,7 +9861,7 @@ fi
 # a `감사-발견` emission had already spent. These count the rows.
 ar_spent_count() {
   # ar_spent_count <승인 id> — adoption rows that name that approval as spent.
-  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$1 " || true; } | grep -c . || true
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
 }
 if [ -n "$ar3_id" ]; then
   ar_stub "$WORK/judgment-stub-ar-audit-visual" \
@@ -9863,6 +9910,95 @@ if [ -n "$ar4_id" ]; then
   esac
 else
   bad "빈 문면 방출" "그 물음의 승인이 발행되지 않았다: $out"
+fi
+
+# --- 31au. An answer auto-resolution closed is not lent to another class ----
+# --- section: 31au | group: cone | covers: act | anchors: 부류 대여 실험용 세그먼트 행이 기록된다 ---
+#
+# The approval id is a hash of `기준 — 근거` and carries no class, so a
+# resubmission with a different class reaches the same answer. Auto-resolution
+# judges the class only on the submission that OPENS the question — a submission
+# finding the approval already `승인` never enters it — so an answer closed for a
+# class that may be adopted, whose adoption row never got written, opened a class
+# that hands risk to the user with nobody asked.
+#
+# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
+# whole field list on that row with no key allowlist and no length cap, so one
+# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
+# approval in a separate, already-completed append. The ledger is append-only and
+# there is no compensating write, so what survives is "answered and unspent".
+#
+# THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
+# resubmission is refused would stay green under a repair that puts the class
+# into the approval id instead: the resubmission would compute a DIFFERENT id,
+# reach no answer at all, and be refused for a reason this section is not about.
+# So the state is pinned first — the approval's last row is `승인`, it was closed
+# by auto-resolution, and no adoption row names it.
+au_seg=SAU1
+seg_row "$au_seg" "$CONE_C" 상태=실행중 선행=없음
+check "부류 대여 실험용 세그먼트 행이 기록된다" "$rc" "0"
+au_std="자동 해소가 닫은 답이 다른 부류에 빌려지는가"
+au_why="채택 행이 상한으로 죽은 뒤를 잰다"
+# 900 bytes with no separator, no multibyte and no substitution — the value only
+# has to be long.
+au_pad=$(printf '%0900d' 0)
+au_act() {
+  # au_act <등급> <판단 부류> <추가 필드>… — one judgment act with auto-resolution
+  # on for that gate call alone, so the question is closed without a person.
+  local au_g="$1" au_c="$2"; shift 2
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+        gate_inproc act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급="$au_g" 기준="$au_std" 근거="$au_why" "판단 부류=$au_c" "$@" 2>&1); rc=$?
+}
+au_last_row() {
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
+}
+au_spent_count() {
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
+}
+
+au_act 2 감사-발견 "메모=$au_pad"
+case "$rc" in
+  0) bad "상한 초과 채택 행" "채택 행이 행 상한을 넘었는데 0 으로 끝났다: $out" ;;
+  *) ok "상한 초과 채택 행을 실은 판단 제출이 비영으로 끝난다 (rc=$rc)" ;;
+esac
+au_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
+  | { grep -F "$au_std" || true; } | tail -1)" '승인 id')
+if [ -z "$au_id" ]; then
+  bad "부류 대여" "그 물음의 승인이 발행되지 않았다: $out"
+else
+  check "그 물음의 마지막 상태는 승인이다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
+  check "그 답은 자동 해소가 닫은 것이다" "$(row_field "$(au_last_row "$au_id")" '처분 사유')" "자동 해소"
+  check "그런데 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+
+  # THE RESUBMISSION. Same standard and rationale, so the same id — and a class
+  # the answer was never given about.
+  au_act 2 팀-구성
+  check "다른 부류를 붙인 재제출은 거절된다" "$rc" "3"
+  check "재제출 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$out" in
+    *"이 판단의 부류로는 채택하지 않습니다"*) ok "그 거절이 부류를 이유로 든다고 말한다" ;;
+    *) bad "부류 대여 거절 문면" "$out" ;;
+  esac
+
+  # THE SECOND ARM, ON THE SAME ANSWER. A grade-1 judgment whose class the
+  # auto-adoption floor will not take is escalated to an approval BEFORE the
+  # recording arm runs, and that escalation resolves against this same id. So the
+  # answer is reachable twice within one act, through two arms, and refusing it in
+  # one of them leaves the other open. Auto-resolution is OFF for this call so the
+  # escalation survives to the resolution block rather than being folded to a
+  # park cell.
+  gateN act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=1 기준="$au_std" 근거="$au_why" "판단 부류=팀-구성" "되돌리는 법=git checkout -- ."
+  check "같은 답을 등급 1 로 노리는 제출도 거절된다" "$rc" "3"
+  check "등급 1 재시도 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$msg" in
+    *"이 행위의 부류로는 채택하지 않습니다"*) ok "행위 경로의 거절도 부류를 이유로 든다" ;;
+    *) bad "등급 1 부류 대여 거절 문면" "$msg" ;;
+  esac
+  check "그 재시도가 승인을 다시 대기로 열지 않는다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
 fi
 
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------

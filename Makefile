@@ -175,6 +175,13 @@ test-darwin: test-active-notify test-orchestrator \
 #   test-notify-title-oracle.sh   the real terminal-notifier's swallowing set.
 #   test-gate.sh, section 18      the advisory-lock arm, which is darwin-only
 #                                 for real.
+#   test-gate.sh, section 31ai    the transition guard INSIDE that lock. The
+#                                 lock tool is yielded on darwin alone, so the
+#                                 ubuntu leg takes the unlocked fallback and
+#                                 never runs the guard body; section 18 drives
+#                                 the lock but passes no transition argument, so
+#                                 it skips that body too. 31ai runs a real
+#                                 `close`, which is how the guard gets reached.
 #
 # The two active-notify suites print the same assertions on both legs and are
 # kept anyway: taking them off does not move the PR's critical path, which the
@@ -184,7 +191,7 @@ test-darwin: test-active-notify test-orchestrator \
 # together with every file it sources, and nothing may stay in the filter that
 # this list does not run, source or refer to. scripts/lint-macos-keepset-paths.sh
 # checks both directions.
-DARWIN_GATE_SECTIONS := 18
+DARWIN_GATE_SECTIONS := 18,31ai
 
 .PHONY: run-gate-darwin-sections
 
