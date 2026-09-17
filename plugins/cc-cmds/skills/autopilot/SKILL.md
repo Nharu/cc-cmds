@@ -23,11 +23,11 @@ The user is present exactly once — here. Everything the run is allowed to do w
 
 ## The kickoff is two acts, and the seam between them is where the human leaves
 
-**Act 1 — a person is here.** Intent, entry judgment, target declaration and verification, the plan, its approval, and — if the plan needs a design document that does not exist — writing it, inline, right now.
+**Act 1 — a person is here.** Intent, entry judgment, target declaration and verification, the plan, the boundaries (cutpoints, deadline, ladder, banners), and — if the plan needs a design document that does not exist — the requirements interview and the design team's roster, then the plan's approval and the frozen interview record.
 
 **Act 2 — the person may leave.** Freeze the manifest, start the watcher, and enter the router loop. Nobody has to stay, but the terminal keeps showing what happens, and an approval waits for them rather than guessing.
 
-**The design step is in Act 1 because of a tool, not because of taste.** `design` interviews through `AskUserQuestion`, and that tool is **absent from every headless process**. A design stage dispatched into the night does not degrade into a worse design — it cannot ask at all, and whatever it emits is anchored to nothing. Anyone who reads this as a preference will eventually try to "just let it run", so it is written here as what it is: a constraint.
+**What a design needs from a person is taken in Act 1 because of a tool, not because of taste.** `design` interviews through `AskUserQuestion`, and that tool is **absent from every headless process**. A design stage dispatched into the night cannot ask at all, so the two things only a person can give it — the answers to the requirements interview and the approval of the team that will discuss — are taken here and frozen before the person leaves. The design itself is then the run's first stage (`design-discuss-unattended`), and this conversation neither writes it nor waits for it. Anyone who reads this as a preference will eventually try to "just let it run" without the interview, so it is written here as what it is: a constraint on the design's inputs, not on where the document is written.
 
 ## Control-Flow Invariants
 
@@ -55,11 +55,17 @@ The morning report stays a **separate invocation** (`--report`), because a run t
 
 **CFI-6 — Act 2 starts only when Act 1 has nothing left to ask.** Every entry in the judgment's `unresolved` is answered, every target is confirmed by the user, and the plan is approved, before a single byte of the manifest is written. A question carried across the seam is a question nobody will answer.
 
+**The seam is a boundary in the other direction too: when Act 1 has nothing left to ask, it does not stop.** There is no waiting for a document to be written somewhere else. Once the plan is approved and the interview record is frozen, Act 2 starts in the same turn. A kickoff that halts with no question pending is the same leak seen from the other side — the person leaves believing the run started, and nothing on disk says it did not.
+
 **CFI-7 — A channel event is not a turn to route in.** Under CFI-3's shape the run is routed by a `claude -p` shift that holds the run's only routing seat; what remains here is the seat where a person is. The progress channel wakes this session even when its turn has ended — measured: an idle lead with no user input took a turn 94 seconds after arming, on the event alone, with the emitting process still running — and it wakes it roughly once every ten minutes all night. **On a wake caused by a channel event, relay the line and stop.** Do not call the gate, do not read the snapshot, do not dispatch a stage, do not launch or close a shift, do not answer an approval, do not decide anything.
 
 **Read the envelope before acting. Every arrival carries a `<task-id>`, so the task id alone settles nothing — and which id is which is recall, which a compaction erases.** What separates them is whether `<summary>` carries the channel's own `description` (`autopilot <run-id>`), whether `<status>` is present, and what the body says. With **no `<status>`** and a body the feed could have written: **relay it, and that is the whole of the turn.** With no `<status>` and a body of `[Monitor timed out — re-arm if needed.]`: the channel is dead — **re-arm it, relay nothing.** With no `<status>` and a body of `[N events suppressed]`: lines were lost and the channel is alive — relay nothing, re-arm nothing. **With a `<status>`** the task has ended: if `<summary>` is the channel's, the channel is dead — **re-arm it, relay nothing, and do not route**, because a dead channel is not progress; if `<summary>` is not the channel's, the shift has ended and **routing resumes** — this is the only notification that resumes it. The last thing that resumes routing is a message the human actually typed, and it is the only arrival you did not launch yourself.
 
 A lead that routes on a channel event is a second router, and two routers disagree in the dark. That is why `watch.sh` resumes nothing, retries nothing and decides nothing, and why the shift is kept out of `session-lineage`.
+
+**CFI-8 — The design is a stage of the run, and what only a person can give it is taken here.** The kickoff never hands a person a design command to run and never waits for one to come back. What an unattended design stage cannot ask for — the requirements interview and the team composition — is taken in Act 1 and frozen: the interview, verbatim, into the interview record (Step 5m), whose digest enters `구속 다이제스트` through a `사전 인가` row; the approved roster into the manifest's `설계 로스터` rows (Step 5k), which enter it directly. **Taking the roster here is a constraint, not a convenience.** `팀-구성` is a class the gate never adopts on its own, so a stage that composed its own team would stop on a person every time; a roster approved here is read by the stage, never chosen by it.
+
+**Numbered 8 because 7 is taken.** CFI-7 belongs to the progress channel, and on the precedent CFI-3 and CFI-4 state, an existing number is never moved to make room — citations to it live outside this file.
 
 ---
 
@@ -107,7 +113,7 @@ Exactly one target is `홈=예`. If the judgment could not tell which, ask.
 
 ### Step 3: Entry checks that must happen while a human is present
 
-**Visual-fidelity marker.** If there is a design document, search it for a `## 시각 정합 기준` section.
+**Visual-fidelity marker.** If there is a design document, search it for a `## 시각 정합 기준` section. A document the design stage has yet to write has nothing to search, so a `design_required` run skips this check; if the frozen document turns out to carry the section, the implementing stage halts on it rather than implementing that segment.
 
 If it is present, tell the user plainly and get a decision. The reason this belongs *here* rather than at runtime is that it is the only moment a human can answer it: that gate's cap clause forbids both auto-abandon and auto-advance, and those are the only two moves an unattended executor has, so the gate is unattended-ineligible by construction. **Ignoring the marker is explicitly rejected** — the gate writes zero bytes, so skipping it leaves no trace at all and work the user asked to be visually verified merges without it.
 
@@ -119,7 +125,7 @@ Ask with `AskUserQuestion` (header chip `시각 정합`):
 
 Record the answer in the manifest's `시각 정합 마커` field.
 
-**Residual verification items — and the access they need, TAKEN not just announced.** Count the `### R<n>` entries under `## 구현 시 검증 항목` whose grade is the save-time residual token. Tell the user how many there are and which will run unattended: an external probe, a worktree recipe, or an execution-caution item **cannot** get consent overnight, so a pre-implementation one of those will stop the run.
+**Residual verification items — and the access they need, TAKEN not just announced.** **This applies only when the design document already exists.** When `design_required` is true there is no document at this point, so there are no items to count and no recipe to read a requirement from. Say so in one line — 「이 런에서는 무엇이 런을 멈출지 떠나시기 전에 알려 드릴 수 없습니다 — 설계 스테이지가 동결 직전에 잔여 항목마다 사다리를 스스로 내려가고, 거기서 풀리지 않은 것만 승인으로 올라옵니다.」 — and move on; the stage walks that ladder when the items first exist, which is at its own freeze. With a document in hand, count the `### R<n>` entries under `## 구현 시 검증 항목` whose grade is the save-time residual token. Tell the user how many there are and which will run unattended: an external probe, a worktree recipe, or an execution-caution item **cannot** get consent overnight, so a pre-implementation one of those will stop the run.
 
 Then — for each item that would stop it — **read what that item's own recipe says it needs, and ask the user for it here.** Every residual item already writes down its requirement; nothing in Act 1 used to collect it, so the person was told "this will stop the run" and then allowed to leave without being asked the one thing that would prevent it. Take the credential, the profile name, the tunnel, the endpoint — whatever the recipe names — verbatim, and record it against that `R<n>`. Where the answer is "that item does not need to run", record that too: it is the cheapest possible resolution and it is invisible to every later stage.
 
@@ -129,37 +135,29 @@ This is the difference the measurement showed. A run stopped at 04:32 on three p
 
 **Cross-repository stacking.** If more than one target was confirmed, say this out loud: **segments in different repositories cannot stack on each other's commits.** A dependency between them buys ordering and nothing more, because there is no commit in repository B that contains repository A's merge. It is the most likely place a first multi-repo run diverges from what the user pictured, and it costs one sentence here.
 
-### Step 4: The plan, and the design if one is needed
+### Step 4: The plan, and what a design stage needs from a person
 
-Present the judgment's step graph as the plan, in Korean, and take an approval. Read out every `unresolved` entry and settle each one — CFI-6.
+Present the judgment's step graph as the plan, in Korean. Read out every `unresolved` entry and settle each one — CFI-6. **Do not take the approval here** — it is Step 5l, after the cutpoints, because the check the approval rests on reads them.
 
-**If `design_required` is true, the design is written now, in this conversation — and YOU CANNOT INVOKE IT.** `design` carries `disable-model-invocation`, so the Skill tool refuses it and the refusal forbids reproducing the workflow by other means. That is deliberate: `design` is reserved for explicit user invocation. So the handoff is explicit rather than implied.
+**If `design_required` is true, this conversation does not hand the person a design command and does not wait for one.** The document is written by the run's first stage, `design-discuss-unattended`, which the router dispatches onto the absent document (Act 2b, 「Dispatching the design stage」) and which freezes it before anything reads it. What this kickoff owes that stage are the two inputs it cannot ask for — Step 5j's requirements interview and, for a team tier, Step 5k's roster — and CFI-8 is why they are taken here.
 
-**What those two lines forbid is reproducing `design`'s workflow by other means — not this conversation writing a design document at all.** What they protect is the multi-round agent team and its ledger: standing roles up out of `Task` calls, re-deriving the round structure from the reference files, running the same discussion under another name. A `lead-solo` kickoff does none of that. It writes the document straight out of the interview it has just held, with the user in front of it — which is the input the refusal exists to protect, not to withhold — and it stands up no team at all. Without this sentence the `lead-solo` row below reads as an instruction to do the thing the paragraph above just refused, and the tier becomes unexecutable at the moment it is chosen.
+**`design` still carries `disable-model-invocation`, and this skill still does not invoke it or reproduce its workflow by other means** — no roles stood up out of `Task` calls, no round structure re-derived from its reference files, no discussion run under another name. The one document this conversation writes is a `lead-solo` one, straight out of the interview it has just held, with the user in front of it and no team at all. That is the input the refusal exists to protect, not to withhold.
 
-**The judgment's `design_tier` decides what the handoff asks for.** The tier changes nothing this skill *does* — it cannot invoke any design skill — only what it *requests*, and that request is one command string:
+**The judgment's `design_tier` decides who writes the document.**
 
-| `design_tier` | what Step 4 asks for | Korean line |
+| `design_tier` | who writes the document | Korean line |
 | --- | --- | --- |
-| `lead-solo` | no command — the kickoff conversation writes the document itself | *"설계 문서는 이 대화에서 바로 쓰겠습니다 — 표면이 하나이고 계약 변경이 없어 팀을 띄우지 않습니다."* |
-| `team-2` | `/cc-cmds:design-lite <anchor>` | *"`/cc-cmds:design-lite <anchor>` 를 실행해주세요 — 2인 팀으로 충분한 범위입니다."* |
-| `team-4` | `/cc-cmds:design <anchor>` | *"`/cc-cmds:design <anchor>` 를 실행해주세요 — 계약·스키마 변경이 걸려 전체 팀이 필요합니다."* |
+| `lead-solo` | this conversation, after Step 5m — the graph carries no design stage | *"설계 문서는 이 대화에서 바로 쓰겠습니다 — 표면이 하나이고 계약 변경이 없어 팀을 띄우지 않습니다."* |
+| `team-2` | the design stage, with the roster approved in Step 5k | *"설계는 런의 첫 스테이지가 무인 토론 팀으로 씁니다 — 팀 구성은 잠시 뒤에 확인받겠습니다."* |
+| `team-4` | the design stage, with the roster approved in Step 5k | *"설계는 런의 첫 스테이지가 무인 토론 팀으로 씁니다 — 계약·스키마 변경이 걸려 있어 팀 구성을 잠시 뒤에 함께 살펴 주세요."* |
 
-**For `team-4`, tell them, in the same breath, that `design` will end by pointing at `/cc-cmds:design-audit` — and that they should not follow it.** That skill's handoff does not know it was called from here, and the audit is already a stage in the graph they just approved. Following it runs the audit twice, once by hand and once as the stage; *not* returning here is worse — the manifest, the grant and the ledger are all still unwritten, so a kickoff abandoned at that line leaves nothing on disk and cannot be told apart from one that never started.
+**A team tier's graph starts at the design stage.** The document is nobody's input until it is frozen, so the stage comes first and every later step, the audit included, depends on it. A `lead-solo` graph starts at the step after the design, because the document exists before Act 2 does — and neither dispatcher designs over a document that exists.
 
-Ask the user to run the tier's command themselves, and say why in one line — the design step interviews, and the tool that interviews is absent from every headless process, so it belongs to the act with a human in it. **Then wait.** When they come back, resume this kickoff and continue from Step 5 with the saved document as the run's `doc` element; the return differs by tier. `team-4`: take the path of the document `design` froze and record its whole-file `sha256`. `team-2`: `design-lite` ends at its own refinement step with no freeze notice, no audit pointer and no `sha256` of its own, so take the `docs/{topic-slug}.md` path it saved and record the whole-file `sha256` here. `lead-solo`: once this conversation has written the document, record its `sha256` the same way. In every case, do not re-run Act 1 from the top; the targets and the entry judgment already hold.
+**What a `lead-solo` document owes, stated here because no skill is present to shape it.** The other two tiers inherit a document contract from the skill that wrote them; this one inherits nothing, so the contract is written out rather than assumed. (a) **Section floor** — `## 합의된 아키텍처`, `## 주요 결정사항과 근거`, `## 미해결 이슈 / 트레이드오프`, `## 권장 구현 순서`, in that order; length is unconstrained. (b) **Verification sections** — `## 검증 기록` and `## 구현 시 검증 항목` carry the **same schema as the team tiers** (`_common/verification.md`, the V-ledger and residual-item contracts, including the field-line rendering), each included only when it has content and each placed where that contract places it. A `lead-solo` document that settles claims inline still owes the V-ledger rows, because `implement` cannot tell which skill emitted a marker and reads them identically. (c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment this kickoff, having written the document after Step 5m, takes the saved path and records its whole-file `sha256`; nothing else marks it, and the document must not be edited after that record without a new one. (d) **`## 구현 슬라이싱`** — present only when Step 5j's delivery-shape answers exist. The tier is chosen for single-surface, single-repository work, so its usual absence is the same meaningful omission the section's own rule describes, and downstream grouping falls back to one segment, which is the answer the declaration would have given. (e) **No ledger block** — a `lead-solo` document has no roster, so it carries no `<!-- cc-design-ledger v3 … -->` block, and **that absence is the tier's definition rather than a defect.** Downstream must not read it as one: the fail-closed reads of a missing ledger belong to a team skill re-reading **its own** document mid-run, and none of them is a reader of a finished `lead-solo` document.
 
-**What a `lead-solo` document owes, stated here because no skill is present to shape it.** The other two tiers inherit a document contract from the skill that wrote them; this one inherits nothing, so the contract is written out rather than assumed. (a) **Section floor** — `## 합의된 아키텍처`, `## 주요 결정사항과 근거`, `## 미해결 이슈 / 트레이드오프`, `## 권장 구현 순서`, in that order; length is unconstrained. (b) **Verification sections** — `## 검증 기록` and `## 구현 시 검증 항목` carry the **same schema as the team tiers** (`_common/verification.md`, the V-ledger and residual-item contracts, including the field-line rendering), each included only when it has content and each placed where that contract places it. A `lead-solo` document that settles claims inline still owes the V-ledger rows, because `implement` cannot tell which skill emitted a marker and reads them identically. (c) **Freeze and `sha256`** — no skill emits a freeze notice on this path, so the freeze *is* the moment this kickoff takes the saved path and records the whole-file `sha256` above; nothing else marks it, and the document must not be edited after that record without a new one. (d) **`## 구현 슬라이싱`** — present only when Step 1's delivery-shape answers exist. The tier is chosen for single-surface, single-repository work, so its usual absence is the same meaningful omission the section's own rule describes, and downstream grouping falls back to one segment, which is the answer the declaration would have given. (e) **No ledger block** — a `lead-solo` document has no roster, so it carries no `<!-- cc-design-ledger v3 … -->` block, and **that absence is the tier's definition rather than a defect.** Downstream must not read it as one: the fail-closed reads of a missing ledger belong to a team skill re-reading **its own** document mid-run, and none of them is a reader of a finished `lead-solo` document.
+**The tier is a default the user may raise, never one this skill lowers.** When `design_required` is true and the judged tier is not `team-4`, ask once with `AskUserQuestion` (header chip `설계 티어`), offering the judged tier as the recommended option and only the tiers **above** it — never a lower one. The asymmetry is `prompts/triage.md`'s own: over-staffing spends tokens, under-staffing ships a contract change nobody modelled. Labels are `"lead-solo — 이 대화에서 직접 작성"`, `"team-2 — 무인 설계 스테이지(로스터 승인)"`, `"team-4 — 무인 설계 스테이지(로스터 승인)"`, whichever apply, each with a one-line description of what that tier buys. When the judged tier is `team-4` there is no higher tier and a single option is not a question, so do not ask — write the judged value and its rationale into the tier's Korean line. When `design_required` is false the judgment still carries a tier, and there is no question either.
 
-**The tier is a default the user may raise, never one this skill lowers.** When `design_required` is true and the judged tier is not `team-4`, ask once with `AskUserQuestion` (header chip `설계 티어`), offering the judged tier as the recommended option and only the tiers **above** it — never a lower one. The asymmetry is `prompts/triage.md`'s own: over-staffing spends tokens, under-staffing ships a contract change nobody modelled. Labels are `"lead-solo — 이 대화에서 직접 작성"`, `"team-2 — /cc-cmds:design-lite"`, `"team-4 — /cc-cmds:design"`, whichever apply, each with a one-line description of what that tier buys. When the judged tier is `team-4` there is no higher tier and a single option is not a question, so do not ask — write the judged value and its rationale into the handoff line. When `design_required` is false the judgment still carries a tier, and there is no question either.
-
-Do not plan to "let the run design it" — see the two-acts note above. If the user does not want to run it now, the honest move is to stop: a run whose first stage cannot ask questions and has no document to implement produces nothing but a park.
-
-**Before presenting, check the graph against the cutpoints — the gate will.** Where any target's cutpoint reaches `머지`, two rules fire at the merge that the graph must already satisfy: a review record covering the branch's current HEAD with P0·P1 at zero, and a review session whose ancestry is disjoint from the implementation's. A graph that runs `implement` and then merges is **not executable**, and the schema accepts it, so nothing else catches this — the user approves a plan that cannot run and the mismatch surfaces at the merge, in the middle of the night. Add the review step, and say out loud that it is a separate stage rather than a phase of the implement one.
-
-**Present what each step will actually DO, not just its name.** A one-line-per-step graph reads far shallower than the work is: a `review` step is a multi-round agent team with a reconciliation pass, an `implement` step is two processes split across a plan-emission gate. Approving "S1 review" is not the same as approving that. One clause per step is enough — the point is that the person refusing has seen the shape.
-
-**The approval utterance is captured verbatim.** It approves the STEP GRAPH, which is not the same thing as granting authority — that is Step 5. Collapsing the two promotes plan approval into permission approval silently, so the manifest carries them as two separate fields.
+**Present what each step will actually DO, not just its name.** A one-line-per-step graph reads far shallower than the work is: a `design` step is an unattended discussion team followed by a walkthrough whose dispositions the stage takes and records, a coherence pass, the residual-item ladder and the freeze; a `review` step is a multi-round agent team with a reconciliation pass, an `implement` step is two processes split across a plan-emission gate. Approving "S1 review" is not the same as approving that. One clause per step is enough — the point is that the person refusing has seen the shape.
 
 ### Step 5: The interview
 
@@ -244,13 +242,40 @@ Say all three of these:
 
 **Say what cannot be promised.** Before writing anything, state the two limits in one line each. First: 「이 채널이 파는 것은 「깨우기」가 아니라 「처음 보는 화면」입니다 — 돌아와서 보실 때 답을 기다리는 멈춤이 한눈에 들어오는 것. 개별 배너 자리는 런 전체에 걸쳐 여덟이고 그 뒤는 묶여서 보이며, 넘어간 항목은 자리가 비어도 되돌아오지 않습니다. 전수를 보장하는 것은 배너가 아니라 디스크의 보고서입니다.」 **Say the two halves of that separately**, because they are a measurement and an ordinary fact rather than one observation: this notifier has no permission to override a focus mode, and a focus or sleep schedule suppresses banners and sounds together. "No banner wakes a sleeping person" is the *sum* of those two, and someone who reads only the first will over- or under-trust the channel. Second: **a stage that improvises past a decision point is not detectable**, which is why the report enumerates every autonomous decision the run recorded, for you to audit in the morning.
 
+**5j — The requirements interview, when `design_required` is true.** This is the interview `design` would have held, taken here because the stage that writes the document cannot hold one (CFI-8). Ask with `AskUserQuestion` until the requirement is settled — what the work must do, what it must leave unchanged, and what would count as done. **Keep every question and every answer verbatim.** The interview record's whole value is that it is not a summary: a paraphrase is this conversation's reading of the person, and the record exists so that their own words survive on disk after this session has been compacted. Take, alongside:
+
+- **the five delivery-shape answers**, under the five field names the `design` brief uses — `**레포**`, `**슬라이스 수**`, `**적용 위치**`, `**적용 주체**`, `**실패 시 파킹**` — writing `없음` where one does not apply, because an omitted answer and a negative one are different facts;
+- **the reproduction evidence** the person can point at — the steps and what was observed — or `없음`;
+- **the verification preconditions** — what must be confirmed true before a design is worth writing — or `없음`;
+- and, **only when the person offers one, a skeleton pre-judgment** — something they say the design must not change. Do not prompt a list out of them; an invented constraint binds the design as hard as a real one.
+
+**5k — The design team's roster, when the tier is `team-2` or `team-4`.** Propose the rows of `### Default roster (driver dispatch)` in `design-discuss-unattended/SKILL.md`, **read from that file and quoted verbatim** — never retyped from memory — and let the person remove a row, add one, or change a row's scope or model. Read the approved rows back in their frozen spelling, one member per row,
+
+```
+- `설계 로스터` | 역할=<슬러그> | 범위=<한 줄, 탐색 범위> | 모델=<opus|sonnet|haiku>
+```
+
+and take the confirmation with `AskUserQuestion` (header chip `설계 팀`). Say in one line what a malformed row costs: the stage halts before it spawns anyone when a row lacks a field, names a model outside the three aliases, or repeats a `역할` — and that halt happens after the person has left. **Write the approved rows even when they equal the default.** A manifest with no row falls back to the same default, but only a row is inside `구속 다이제스트`, and only what the person approved here is authority for a class the gate never adopts on its own.
+
+**5l — The plan's approval.** Taken here rather than in Step 4, because the first check below reads 5b's cutpoints.
+
+**Before asking, check the graph against the cutpoints — the gate will.** Where any target's cutpoint reaches `머지`, two rules fire at the merge that the graph must already satisfy: a review record covering the branch's current HEAD with P0·P1 at zero, and a review session whose ancestry is disjoint from the implementation's. A graph that runs `implement` and then merges is **not executable**, and the schema accepts it, so nothing else catches this — the user approves a plan that cannot run and the mismatch surfaces at the merge, in the middle of the night. Add the review step, and say out loud that it is a separate stage rather than a phase of the implement one.
+
+**When the graph carries a design stage, say in one clause what it does before asking** — the discussion team from 5k, a walkthrough whose dispositions the stage takes and records, a coherence pass, the residual-item ladder, and the freeze — and that nothing downstream reads the document until it is frozen.
+
+**The approval utterance is captured verbatim.** It approves the STEP GRAPH, which is not the same thing as granting authority — that is what the rest of Step 5 took. Collapsing the two promotes plan approval into permission approval silently, so the manifest carries them as two separate fields.
+
+**5m — Freeze the interview record, when 5j ran.** Assign `<run-id>` here rather than in Step 6 — the record's path carries it — and resolve `<base>` the way Step 6 does. Write `<base>/docs/pipeline-run/<run-id>.interview.md` **whole, once** — creation-only, no append form — in the shape of `pipeline-sidecar.md` `### 2b.5`, byte for byte. Then take its whole-file `sha256` (`shasum -a 256`); Step 6 writes the path and that value into the manifest. The record does not carry the roster — it refers to the manifest's `설계 로스터` rows. **Do not edit it after the hash is taken.** Nothing re-hashes the file at runtime, so an edit after that point is seen by no gate, and the manifest goes on vouching for bytes that are gone.
+
+**A `lead-solo` document is written after 5m**, in this conversation, out of the interview it has just held, under the contract in Step 4 (「What a `lead-solo` document owes」). Take its path and whole-file `sha256`; that record is its freeze.
+
 ---
 
 ## Act 2 — freeze, then start routing
 
 ### Step 6: Write the manifest and the authorization record
 
-Assign `<run-id>`: a short, collision-free identifier for this run. It, not the document, is what every path below is derived from — which is what stops two runs of one document from aliasing onto one ledger, one report, one worktree path and one session id.
+Assign `<run-id>` — or keep the one Step 5m assigned: a short, collision-free identifier for this run. It, not the document, is what every path below is derived from — which is what stops two runs of one document from aliasing onto one ledger, one report, one worktree path and one session id.
 
 **Resolve `<base>` first, the way the driver does, and never assume it equals the worktree you are standing in.** From the home target's worktree, take the **parent of the common git directory**:
 
@@ -269,7 +294,14 @@ In an ordinary checkout that is the same string as `git rev-parse --show-topleve
 Two digests are computed here and **compared at entry**, so they are not decoration:
 
 - `대상 맵 다이제스트` — sha256 over the canonical serialization of every `target` row (whitespace runs collapsed to one space, then sorted).
-- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
+- `구속 다이제스트` — sha256 over the whole frozen set: the goal, the termination point decomposed into checkable `종료 절` rows, the target rows, the rule-catalog settings, the `사전 인가` rows, the `자동 채택` rows, the `설계 로스터` rows, the cost ceiling and the stagnation bound when declared, and the deadline. Both are kept rather than merged, so that a target-row edit is reported as a target-row edit instead of as "something in the frozen set moved".
+
+**Two row kinds exist only when Step 5 took their input**, and both go under `## 인가`:
+
+- when 5m ran, one `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>` row. It carries no `형태=`, so it authorizes no act — the pre-authorization rule skips a row without one — and what it buys is that the record's hash is inside the frozen set;
+- when 5k ran, the approved `설계 로스터` rows, one per member, in the order the person approved them.
+
+**When the graph carries a design stage, the document does not exist yet, and the manifest says so rather than inventing a value.** `## 요소` → `설계 문서` is the path the stage will write (it is where the router dispatches the stage and what the audit later reads), and `설계 문서 전체 sha256` — here and in the authorization record — is `(해당 없음)`. The document's hash at each stage's end is recorded by the gate as it lands, not frozen here.
 
 **The example in that contract is fenced with four backticks because it contains three-backtick fences of its own.** Any document that explains this grammar has the same shape, which is why the parser reading it skips fenced spans and survives nesting — and why you must not "simplify" the nesting when you copy it.
 
@@ -547,6 +579,25 @@ This replaced an instruction measured to cause the loss it was written against. 
 
 Three conditions must **all** hold before a segment is dispatchable, and reading only the first is how a router concludes it may go: **dependency** (no predecessor unfinished), **capacity** (concurrent model streams within the cap, taken from each skill's declared value rather than estimated), and **exclusion** (no live stage already holding an exclusive resource — the experiment-worktree prefix, which counts repo-wide, and one live stage per output document path).
 
+#### Dispatching the design stage
+
+When the manifest's plan says `design_required` and the graph's step is a `design` skill, this loop is the only thing that dispatches it — the fixed-graph driver's design arm is not on the router's path. **Two guards, and the document's freeze line is neither of them.** Every read below goes through the gate and is answered only by a call whose output carries `게이트 통과`, on the same terms as 「Recovering a review stage that crashed」.
+
+1. **Resume is decided by the ledger.** Read this run's rows for the step: `gate.sh exec … --surface 읽기 -- grep -nF '| 세그먼트=<step id> | 스테이지=<step id> | 종류=design' <원장 경로>`. If a row exists the stage was dispatched already and is **not dispatched again**: `종단 부류=정상 완료` goes to item 4's freeze check, and anything else stops the design there. A stage that halted or died left a document partway through its walkthrough, and neither a second design nor the audit may take that document.
+
+   **Stopping the design is not a `blocked` row.** A design step has no `segment` row, and a cone is refused without one; run scope is only ever resolved by this loop. What stops is everything that depends on the step: dispatch none of it, and once nothing else in the graph is dispatchable, propose done with each clause that needs the document marked `불가능` and the `stage-result` row — plus the halt record's path when one exists — as its evidence. A clause held by an approval the stage's emitted judgment opened is `보류` naming that approval id instead.
+2. **It fires only on an absent document.** `ls <설계 문서 메인 워크트리 절대 경로>` through the gate. A document that exists is not this run's to design, whatever it contains — a person's unfrozen document lacks the freeze line too, and a dispatch keyed on that line would write over it. Do not dispatch; the graph goes on to its next step with that document as it stands. **Record no judgment row for it**: the judgment vocabulary has no class for this decision, and borrowing a class meant for something else would put a mislabelled row where the morning audit reads classes.
+3. **The dispatch.** Stage kind `design`, home alias, the step's id as `--segment`, document path first and task sentence second — the fixed-graph arm's shape:
+
+   ```
+   gate.sh act --manifest <매니페스트> --kind skill --target <home alias> --segment <step id> \
+     --cutpoint <token> --surface 워크트리쓰기 --snapshot-digest <H> --emit-digest \
+     -- design -p "/cc-cmds:design-discuss-unattended <설계 문서 메인 워크트리 절대 경로> \"<## 의도 의 첫 비어 있지 않은 줄>\""
+   ```
+
+   The path is the one `## 요소` names, made absolute against the home target's main worktree. The task sentence is the first non-empty line inside `## 의도`'s fence, copied verbatim. Wait on it with `gate.sh wait` like any stage.
+4. **`정상 완료` on the row is not the freeze.** On this path the gate classifies a stage by its exit, its halt record and whether it wrote a gate row, and none of those says the document was frozen. So check both authored facts before anything reads the document: the freeze literal `설계 문서를 동결했습니다.` in the stage's stream (`gate.sh exec … --surface 읽기 -- grep -rlF --include='<step id>*.json' '설계 문서를 동결했습니다.' <절대 run-dir>/log`) **and** a line reading exactly `**상태**: 동결됨` in the document (`grep -qxF '**상태**: 동결됨' <문서>`). Both → the next step of the graph; the stage names no next step, by contract. Either missing → stop the design as item 1 says, naming which of the two is absent in the evidence. **An unfrozen document never goes on to the audit or to segment planning.**
+
 #### Dispatching a review cycle in delta mode
 
 A segment's second and later review cycles re-read almost everything the first one read. A **delta** cycle reads only the files changed since the segment's last full cycle for new findings and re-adjudicates every P0/P1 that cycle raised; the review skill and the gate decide whether it holds, and this loop only offers it. **If the segment's last `stage-result` row reads `종류=review` with `종단 부류=크래시`, go to 「Recovering a review stage that crashed」 before dispatching anything from here** — a fresh dispatch early-stubs the report path that subsection reads its roster from. Five things, in order:
@@ -659,8 +710,8 @@ Cover, in this order:
 
 ## Constraints
 
-- **Never write the run ledger.** The driver is its sole writer. This skill writes the manifest, the grant and the report stub, and nothing else under `docs/pipeline-run/` after that stub.
-- **Never edit a design document from this skill.** Writing one through `design` in Act 1 is a different act with a human in it; editing an existing one from here is not.
+- **Never write the run ledger.** The driver is its sole writer. This skill writes the manifest, the grant, the interview record and the report stub, and nothing else under `docs/pipeline-run/` after that stub.
+- **Never edit a design document from this skill.** The one document this skill writes is a new `lead-solo` one, after Step 5m, with a human in front of it; editing an existing one from here is a different act. There is no handoff that asks a person to run a design skill in this skill's place — a team tier's design is the run's first stage.
 - **Never `arm` or `cancel` the notification helper from this skill** (CFI-4). The run's banners come from the two seats named there, and that helper stays an independent skill for use in conversation — what was removed is autopilot's dependency on it, not the helper. This is stated as a prohibition rather than as "do not infer the arming" on purpose: the older wording implied that a user utterance would make arming correct, and after this change there is no path here that arms it at all.
 - **Never run a `재호출 명령`** recorded by a halted stage. It is recorded precisely because re-running it would retry a condition whose cause is still present.
 - **The router's input is the snapshot** (CFI-3). Never act on a remembered decision, a remembered obligation, or a previous turn's plan.
