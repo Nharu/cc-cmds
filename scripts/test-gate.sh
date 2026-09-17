@@ -4456,6 +4456,14 @@ esac
 # check a branch out twice — so a stage woke on the main worktree's branch every
 # time. The symptom is silent: the stage starts, the files are readable, and
 # what it reads is a different version.
+#
+# THE ACTS HERE CARRY NO SEGMENT, on purpose. A segment row that names a
+# worktree of this target is resolved BEFORE the execution worktree, and 8e
+# writes segment SW with the main worktree as its worktree. These acts used to
+# borrow SW, so in a full run they resolved to the main worktree and failed,
+# while a narrowed run without 8e had no SW row, fell through to the execution
+# worktree and passed. Without a segment the assertion depends on no other
+# section's rows.
 # ---------------------------------------------------------------------------
 # `LINKED` and `set_exec_wt` are set in `pre_base`, in the head; the worktree is
 # made here.
@@ -4466,7 +4474,7 @@ if [ -d "$LINKED" ]; then
   set_exec_wt "$LINKED"
   H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
   want_ls=$(cd "$LINKED" && ls)
-  out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+  out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
   check "행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라)" "$out" "$want_ls"
 
@@ -4485,7 +4493,7 @@ if [ -d "$LINKED" ]; then
   set_exec_wt ""
   H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
   want_ls=$(cd "$WT" && ls)
-  out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SW \
+  out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
   check "필드가 없으면 메인 워크트리로 되돌아간다 (선언은 선택이다)" "$out" "$want_ls"
 else
