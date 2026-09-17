@@ -16,6 +16,16 @@
 # watcher remembers it in `watch.state`, and a write is exactly what a status
 # line may not do.
 #
+# THE SETTLEMENT CANDIDATE PREDICATE AND THE `.settling` RECLAIM live in
+# `cc_orphan_stages` below, and they are here rather than in the gate's prelude
+# because three readers — the watcher's alarm, the snapshot's `orphan_stages[]`
+# and the prelude that settles a lost dispatch as `외부 종료` — must see one
+# list. A settler that pre-empts a record by renaming `<seg>.pid` to
+# `<seg>.pid.settling.<pid>` and then dies leaves a name no `*.pid` glob walks,
+# so a visible orphan would become an invisible one; the reclaim rule (a
+# `.settling` marker older than 60 seconds is listed again) sits inside the
+# enumeration so every reader inherits it without spelling it a second time.
+#
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 
 # Sibling resolution uses `$BASH_SOURCE` and not `$0`, because under a
@@ -143,7 +153,25 @@ cc_orphan_stages() {
   # pid, or a live pid that is now somebody else. An unverifiable record is left
   # out; under-reporting costs a render, over-reporting teaches its reader to
   # ignore the alarm.
-  local run_dir="$1" f seg pid rec now
+  #
+  # NARROWER AGAIN WHERE A SUPERVISOR IS RECORDED. The gate's supervisor writes
+  # the `stage-result` row FIRST and removes the record afterwards, so there is a
+  # window — the CLI is gone, the row is being written — in which the pid alone
+  # reads as an orphan, and a settler acting on that reading would write a false
+  # `외부 종료` beside the real row about to land. So where `<seg>.sup` names a
+  # supervisor, the record is an orphan only when the supervisor is gone too:
+  # its pid dead, or — when `<seg>.sup.start` holds a fingerprint — reused. A
+  # `.sup` with an empty or missing fingerprint is judged on `kill -0` alone,
+  # the same reading the `.start` compare below applies to a CLI pid. A run
+  # directory with no `.sup` at all behaves exactly as before.
+  #
+  # AND THE `.settling` RECLAIM. A settler pre-empts a record by renaming its
+  # pid file to `<seg>.pid.settling.<pid>`; if it dies before appending its row
+  # the record survives under a name no `*.pid` glob reaches. Those markers are
+  # walked here too and listed once their mtime is older than 60 seconds — the
+  # question for them is "is this PRE-EMPTION still alive", not "is the CLI",
+  # so neither the pid nor the `.sup` condition applies to a reclaimed entry.
+  local run_dir="$1" f seg pid rec now sup sup_rec sup_now mt nowts
   [ -n "$run_dir" ] || return 0
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
@@ -152,16 +180,97 @@ cc_orphan_stages() {
     [ "$seg" = "watch" ] && continue
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
-    if ! kill -0 "$pid" 2>/dev/null; then printf '%s\n' "$seg"; continue; fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      cc_supervisor_is_live "$run_dir" "$seg" || printf '%s\n' "$seg"
+      continue
+    fi
     # Alive, so the only remaining orphan is pid reuse — that pid is a different
     # process now. Judged only where a fingerprint was recorded to judge against.
     rec=$(cat "$run_dir/$seg.start" 2>/dev/null || true)
     if [ -n "$rec" ]; then
       now=$(cc_proc_fingerprint "$pid")
-      [ "$rec" = "$now" ] || printf '%s\n' "$seg"
+      if [ "$rec" != "$now" ]; then
+        cc_supervisor_is_live "$run_dir" "$seg" || printf '%s\n' "$seg"
+      fi
     fi
   done
+  nowts=$(date -u +%s)
+  for f in "$run_dir"/*.pid.settling*; do
+    [ -f "$f" ] || continue
+    seg=${f##*/}; seg=${seg%%.pid.settling*}
+    [ -n "$seg" ] || continue
+    mt=$(cc_mtime "$f")
+    [ -n "$mt" ] || continue
+    [ $((nowts - mt)) -gt 60 ] || continue
+    printf '%s\n' "$seg"
+  done
   return 0
+}
+
+cc_supervisor_is_live() {
+  # cc_supervisor_is_live <run-dir> <segment> — succeeds when `<seg>.sup` names
+  # a supervisor that is still the process the dispatch started.
+  #
+  # NO `.sup` IS "NO SUPERVISOR", i.e. failure: the caller asks this only after
+  # the CLI pid has been judged gone, and a record without a supervisor is then
+  # exactly what an orphan is. A `.sup` whose fingerprint file is empty or
+  # absent is judged on `kill -0` alone — a supervisor that exited between pid
+  # capture and fingerprint capture (a launch token it was refused, say) leaves
+  # the file empty, and that is a recorded fact rather than a defect to hide.
+  local run_dir="$1" seg="$2" sup rec now
+  [ -f "$run_dir/$seg.sup" ] || return 1
+  sup=$( { cat "$run_dir/$seg.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ -n "$sup" ] || return 1
+  kill -0 "$sup" 2>/dev/null || return 1
+  rec=$(cat "$run_dir/$seg.sup.start" 2>/dev/null || true)
+  [ -n "$rec" ] || return 0
+  now=$(cc_proc_fingerprint "$sup")
+  [ "$rec" = "$now" ]
+}
+
+cc_live_stage_records() {
+  # cc_live_stage_records <run-dir> — one line per stage `cc_stage_is_live`
+  # accepts: `<segment>\t<stage-id>\t<pid>\t<sup>\t<start>`.
+  #
+  # THE ONE SOURCE for the snapshot's `live_stages[]` and the render's list of
+  # names beside "살아 있는 스테이지: N개". The census (`cc_live_stages`) is a
+  # count and could not tell a router WHICH segment to `wait` on; this is the
+  # same predicate returning the names, so the two cannot disagree. The stage id
+  # is `<seg>#<attempt>` when `<seg>.attempt` exists and the bare segment when
+  # it does not (a driver-spawned stage has no pin); `sup` is the supervisor's
+  # pid from `<seg>.sup`, or `-` for a record the driver wrote.
+  local run_dir="$1" f seg pid att sup start
+  [ -n "$run_dir" ] || return 0
+  for f in "$run_dir"/*.pid; do
+    [ -f "$f" ] || continue
+    seg=${f##*/}; seg=${seg%.pid}
+    cc_stage_is_live "$run_dir" "$seg" || continue
+    pid=$( { cat "$f" 2>/dev/null || true; } | tr -d '[:space:]')
+    att=$( { cat "$run_dir/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
+    sup=$( { cat "$run_dir/$seg.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+    start=$( { cat "$run_dir/$seg.start" 2>/dev/null || true; } | tr -d '\n')
+    printf '%s\t%s\t%s\t%s\t%s\n' "$seg" "$seg${att:+#$att}" "$pid" "${sup:--}" "$start"
+  done
+  return 0
+}
+
+cc_shift_is_live() {
+  # cc_shift_is_live <run-dir> — succeeds when `shift.live` names a shift child
+  # that is still the process the launcher started.
+  #
+  # `shift.live` holds the pid on line 1 and its fingerprint on line 2. BOTH
+  # ARE REQUIRED: without the fingerprint, pid reuse after the shift ends would
+  # keep the watcher's `shift_active` true forever and permanently disarm its
+  # after-stage arm. The name is outside the `*.pid` glob on purpose, so a live
+  # shift is never counted as a live stage.
+  local run_dir="$1" pid rec now
+  [ -f "$run_dir/shift.live" ] || return 1
+  pid=$(sed -n '1p' "$run_dir/shift.live" 2>/dev/null | tr -d '[:space:]')
+  rec=$(sed -n '2p' "$run_dir/shift.live" 2>/dev/null || true)
+  [ -n "$pid" ] && [ -n "$rec" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  now=$(cc_proc_fingerprint "$pid")
+  [ "$rec" = "$now" ]
 }
 
 cc_proc_fingerprint() {
@@ -176,7 +285,19 @@ cc_proc_fingerprint() {
   # cleared `LC_ALL` and a reader that had not produced different strings for one
   # live process. The reader then called it dead. `LC_ALL` as a command prefix
   # outranks every other locale variable and does not leak past this line.
-  LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  #
+  # A DEAD PID IS AN ANSWER, NOT A FAILURE, and the `|| true` is what says so to
+  # the caller's shell. `ps` exits 1 when the pid is gone, and under the
+  # `set -euo pipefail` this file is sourced into, `pipefail` raises that status
+  # out of the pipeline and `errexit` ends the caller on the spot. The callers
+  # are supervisors and liveness probes, and asking about a process that has
+  # already been reaped is their ordinary case — measured: a stage that exited
+  # before its supervisor reached this line took the supervisor down with it,
+  # leaving no terminal row, no cleanup and a record nothing could settle. The
+  # empty string this returns for a dead pid is what every caller already treats
+  # as "no fingerprint"; swallowing the status here covers all of them at once.
+  { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
 }
 
 cc_proc_pgid() {

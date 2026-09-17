@@ -314,6 +314,13 @@ fi
 printf -- '- `stage-result` | 세그먼트=SN3 | 스테이지=SN3 | 종류=implement | 종료 코드=0 | 종단 부류=공허한 성공\n' >> "$LEDGER"
 check "공허한 성공은 진전이 아니다 (제외 기반 구현이 여기서 실패한다)" "$(digest)" "$sn3"
 
+# `외부 종료` IS ITS OWN CASE, not a reading of the one above. It comes from a
+# different writer — the gate's prelude settling a lost dispatch — and it
+# carries `종료 코드=-` rather than a number, so a selector that took "not a
+# crash" or "no failing code" as progress would move on exactly this row.
+printf -- '- `stage-result` | 세그먼트=SN7 | 스테이지=SN7 | 종류=implement | 종료 코드=- | 부모=- | 종단 부류=외부 종료 | 관측=픽스처\n' >> "$LEDGER"
+check "외부 종료는 진전이 아니다 (정산 행은 다이제스트를 움직이지 않는다)" "$(digest)" "$sn3"
+
 printf -- '- `stage-result` | 세그먼트=SN4 | 스테이지=SN4 | 종류=implement | 종료 코드=0 | 종단 부류=아직 이름 없는 부류\n' >> "$LEDGER"
 check "정의되지 않은 종단 부류는 진전이 아니다" "$(digest)" "$sn3"
 

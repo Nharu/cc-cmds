@@ -394,6 +394,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4c. A shift that is demonstrably alive holds the after-stage arm back
+#
+# `shift.in-progress` is a 300-second cold-start expiry that nobody renews. That
+# was enough while a stage ended inside its shift's own blocking dispatch call;
+# with the supervisor detached, a stage can end at ANY point of a shift's life,
+# and on the expired marker alone the after-stage arm fires mid-shift and writes
+# a run-scope `blocked` row — an input to the termination condition, so the run
+# cannot finish until a person clears it. `shift.live` (pid + fingerprint) is
+# what answers "is the shift still running" once the expiry has passed.
+#
+# BOTH HALVES, because either alone is vacuous: the live half passes on an arm
+# that never fires at all, and the dead half is what shows the arm was armed in
+# this exact fixture and that a reused or dead pid does not disarm it for good.
+# ---------------------------------------------------------------------------
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+shift_fixture() {
+  # shift_fixture — a stage's terminal row as the last row, a non-terminal
+  # segment, no live stage, and a `shift.in-progress` whose expiry has passed.
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=review | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$LG"
+  printf '%s\n' "$(( $(date +%s) - 10 ))" > "$RD/shift.in-progress"
+}
+
+shift_fixture
+sleep 120 & SHIFT_LIVE_PID=$!
+FX_PIDS="${FX_PIDS:-}$SHIFT_LIVE_PID "
+printf '%s\n%s\n' "$SHIFT_LIVE_PID" "$(cc_proc_fingerprint "$SHIFT_LIVE_PID")" > "$RD/shift.live"
+run --after-stage 0 >/dev/null
+check "4c 만료된 shift.in-progress 옆에 살아 있는 shift.live 가 있으면 after-stage 팔이 발화하지 않는다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 'fired' || printf 'quiet' )" "quiet"
+# A quiet pass writes no `stall` file at all, and `grep -c` on a missing file
+# prints nothing — so the count is defaulted rather than compared raw.
+n_4c_stall=$( { grep -c '스테이지 종단 후 라우터 무응답' "$RD/stall" 2>/dev/null || true; } | tail -1 )
+check "4c 그 패스는 stall 에 행을 남기지 않는다" "${n_4c_stall:-0}" "0"
+kill "$SHIFT_LIVE_PID" 2>/dev/null || true
+
+shift_fixture
+sh -c 'exit 0' & SHIFT_DEAD_PID=$!; wait "$SHIFT_DEAD_PID" 2>/dev/null || true
+printf '%s\n%s\n' "$SHIFT_DEAD_PID" "Fri Sep 4 00:00:00 2026" > "$RD/shift.live"
+run --after-stage 0 >/dev/null
+check "4c shift.live 의 pid 가 죽었으면 오늘처럼 after-stage 팔이 발화한다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 'fired' || printf 'quiet' )" "fired"
+if grep -q '스테이지 종단 후 라우터 무응답' "$RD/stall" 2>/dev/null; then
+  ok "4c 그 발화가 stall 에 관측을 남긴다 (대조군이 실제로 무장돼 있었다)"
+else
+  bad "4c 대조군" "shift.live 가 죽었는데 stall 관측이 없다 — 위 침묵 단언이 공허할 수 있다"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. It decides nothing and resumes nothing
 # ---------------------------------------------------------------------------
 # The emitter is SOURCED, not launched, and its filename ends in `run.sh` — so

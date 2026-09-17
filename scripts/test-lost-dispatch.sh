@@ -92,6 +92,71 @@ printf 'Fri Sep 4 00:00:00 2026\n'  > "$RD/watch.start"
 
 check "죽은 프로세스와 pid 재사용만 고아로 잡힌다" "$(orphans_of "$RD")" "SA,SC"
 
+# --- the supervisor condition -----------------------------------------------
+#
+# THE SUPERVISOR WRITES THE ROW FIRST AND REMOVES THE RECORD AFTER, so there is
+# a window in which the CLI is gone and the row is being written. Read on the
+# pid alone that window is an orphan, and a settler acting on it writes a false
+# `외부 종료` beside the real row about to land. Where `<seg>.sup` names a live
+# supervisor the record is therefore NOT an orphan; where both are gone it is,
+# and a directory with no `.sup` at all behaves exactly as it did before.
+
+RD_SUP="$WORK/run-sup"; mkdir -p "$RD_SUP"
+
+# (f) dead CLI, LIVE supervisor with a matching fingerprint — not an orphan.
+printf '%s\n' "$DEAD" > "$RD_SUP/SF.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SF.start"
+printf '%s\n' "$$"               > "$RD_SUP/SF.sup"
+cc_proc_fingerprint "$$"         > "$RD_SUP/SF.sup.start"
+
+# (g) dead CLI, dead supervisor — an orphan.
+printf '%s\n' "$DEAD" > "$RD_SUP/SG.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SG.start"
+printf '%s\n' "$DEAD"            > "$RD_SUP/SG.sup"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SG.sup.start"
+
+# (h) dead CLI, no `.sup` at all — the old directory shape, unchanged.
+printf '%s\n' "$DEAD" > "$RD_SUP/SH.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SH.start"
+
+check ".sup 조건 — 살아 있는 감독자 옆의 죽은 CLI 는 고아가 아니다" "$(orphans_of "$RD_SUP")" "SG,SH"
+
+# (i) A SUPERVISOR PID THAT WAS REUSED is not a supervisor. Without the
+# fingerprint compare, any live process holding that number would keep the
+# record out of the alarm for good.
+printf '%s\n' "$DEAD" > "$RD_SUP/SI.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SI.start"
+printf '%s\n' "$$"               > "$RD_SUP/SI.sup"
+printf 'Mon Jan 1 00:00:00 2020\n' > "$RD_SUP/SI.sup.start"
+check "감독자 pid 가 재사용됐으면 감독자가 아니다" "$(orphans_of "$RD_SUP")" "SG,SH,SI"
+rm -f "$RD_SUP/SI.pid" "$RD_SUP/SI.start" "$RD_SUP/SI.sup" "$RD_SUP/SI.sup.start"
+
+# (j) AN EMPTY FINGERPRINT FALLS BACK TO `kill -0` ALONE. A supervisor that
+# exited between pid capture and fingerprint capture leaves the file empty;
+# demanding a fingerprint there would call a live supervisor dead.
+printf '%s\n' "$DEAD" > "$RD_SUP/SJ.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_SUP/SJ.start"
+printf '%s\n' "$$"               > "$RD_SUP/SJ.sup"
+: > "$RD_SUP/SJ.sup.start"
+check "지문이 비어 있으면 kill -0 만으로 판정한다" "$(orphans_of "$RD_SUP")" "SG,SH"
+rm -f "$RD_SUP/SJ.pid" "$RD_SUP/SJ.start" "$RD_SUP/SJ.sup" "$RD_SUP/SJ.sup.start"
+
+# --- the stalled pre-emption reclaim -----------------------------------------
+#
+# A settler pre-empts a record by renaming its pid file to
+# `<seg>.pid.settling.<pid>`; a settler that dies before its append leaves that
+# name behind, and no `*.pid` glob walks it — so a VISIBLE orphan silently
+# becomes an invisible one. The reclaim lives inside the enumeration so the
+# alarm, the snapshot and the settlement all inherit it; the mtime is what asks
+# "is this PRE-EMPTION alive", so a fresh marker is left alone.
+RD_RC="$WORK/run-reclaim"; mkdir -p "$RD_RC"
+printf '%s\n' "$DEAD" > "$RD_RC/SK.pid.settling.99999"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD_RC/SK.start"
+check "갓 찍힌 선점 표식은 회수하지 않는다" "$(orphans_of "$RD_RC")" ""
+perl -e 'my ($f, $s) = @ARGV; my $t = time() - $s; utime $t, $t, $f or die "utime: $!";' \
+  "$RD_RC/SK.pid.settling.99999" 120
+check "60초를 넘긴 선점 표식은 다시 열거된다" "$(orphans_of "$RD_RC")" "SK"
+
 # AND THE SET, not just its membership. "contains SA" survives a detector that
 # reports everything, which is the failure this suite's negative half exists to
 # catch — so the assertion is the whole list and its order.
@@ -143,6 +208,23 @@ case "$out_bad" in
   *SA*) ok "그 보고가 세그먼트를 지목한다" ;;
   *)    bad "감시자 경보" "경보에 세그먼트 이름이 없다 — 어느 파견인지 알 수 없다" ;;
 esac
+# THE WORDING SAYS ONLY WHAT THE PREDICATE KNOWS. The old tail named one cause
+# ("look at the dispatch mode, not the stage") and was wrong on a measured case;
+# with the supervisor detached that cause cannot produce an orphan at all, so
+# the sentence would point at a removed cause. And the settlement token has to
+# be IN the banner — it is the string a person who saw it at 3am greps for.
+case "$out_bad" in
+  *"원인은 이 술어의 입력에 없습니다"*) ok "경보가 원인을 단정하지 않는다" ;;
+  *) bad "경보 문면" "원인 미상 절이 없다: $(printf '%s' "$out_bad" | grep '잃어버린 파견' || true)" ;;
+esac
+case "$out_bad" in
+  *"외부 종료"*) ok "경보가 정산 토큰을 문면에 싣는다 (아침에 grep 할 문자열)" ;;
+  *) bad "경보 문면" "외부 종료 토큰이 없다" ;;
+esac
+case "$out_bad" in
+  *"파견 방식을 보세요"*) bad "경보 문면" "제거된 원인(파견 방식)을 여전히 지목한다" ;;
+  *) ok "제거된 원인을 지목하지 않는다" ;;
+esac
 case "$out_ok" in
   *"잃어버린 파견"*) bad "감시자 침묵" "고아가 없는데 경보가 났다" ;;
   *) ok "고아가 없으면 그 줄은 아예 나오지 않는다" ;;
@@ -154,44 +236,53 @@ case "$out_ok" in
   *) bad "감시자 침묵" "하트비트 줄이 없다 — 감시자가 돌지 않았으므로 위 침묵은 증거가 아니다" ;;
 esac
 
-# --- the instruction that prevents it ---------------------------------------
+# --- the instruction that no longer has to prevent it ------------------------
 #
-# The alarm reports the loss; only the dispatch instruction stops it happening.
-# It lived in the kickoff skill, which the shift never reads, and that gap is
-# the whole root cause — so the assertion is that the shift's own file carries
-# it.
+# THESE FOUR ASSERTIONS ARE INVERTED, AND THE INVERSION IS THE POINT. The
+# dispatch instruction used to carry the stage's survival: dispatch as a
+# HARNESS-TRACKED BACKGROUND task, then hold the session with an active tool
+# call, because ending the turn ends the session. Measured afterwards, that
+# was the mode that DIES — the harness reaps a tracked task's process tree —
+# while an ordinary background child survived. The gate now cuts the
+# supervisor's lineage before the dispatch returns, so no instruction governs
+# the stage's survival, and therefore no instruction can kill it.
+#
+# The requirement is asserted on the DISPATCH SENTENCE rather than on the file:
+# `HARNESS-TRACKED` legitimately survives in the `wait` instruction, where a
+# tracked background job is exactly right — `wait` must die with its shift.
 SHIFT_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
-if grep -q 'HARNESS-TRACKED BACKGROUND' "$SHIFT_SKILL"; then
-  ok "교대 스킬이 파견을 하네스 추적 백그라운드로 내라고 적고 있다"
+dispatch_lines() { { grep -n -- '--kind skill' "$SHIFT_SKILL" || true; }; }
+dl=$(dispatch_lines)
+if [ -n "$dl" ]; then
+  ok "교대 스킬에 파견 문장이 있다 (반전 단언의 대상이 실재한다)"
 else
-  bad "교대 스킬" "파견 방식 지시가 없다 — 지시는 킥오프 스킬에만 있고 교대는 그 파일을 읽지 않는다"
+  bad "교대 스킬" "파견 문장을 찾지 못했다 — 아래 반전 단언이 전부 공허하다"
 fi
-
-# THE OTHER HALF, and it is a separate assertion because it was a separate hole.
-# Two shifts in one run were given the dispatch-form instruction. One opened a
-# monitor on the background task and completed two stages; the other dispatched
-# identically, announced it would hold the seat, and ended its turn — zero rows,
-# one lost dispatch. The form was the same. What differed was whether anything of
-# theirs was still running, and the file said nothing about that.
-#
-# So a prohibition is not enough here: in a print-mode session the obvious way to
-# "wait" IS ending the turn. The instruction has to name an action.
-if grep -q 'HOLD THE SESSION with an active tool call' "$SHIFT_SKILL"; then
-  ok "교대 스킬이 파견 뒤 활성 도구 호출로 세션을 붙들라고 적고 있다"
+for lit in 'HARNESS-TRACKED BACKGROUND' 'HOLD THE SESSION'; do
+  if printf '%s' "$dl" | grep -qF "$lit"; then
+    bad "교대 스킬" "파견 문장에 「${lit}」 가 남아 있다 — 그것이 실측상 죽는 모드다"
+  else
+    ok "파견 문장에 「${lit}」 가 없다"
+  fi
+done
+for lit in 'ending your turn ends your session' 'Monitor(command: "tail -f'; do
+  if grep -qF "$lit" "$SHIFT_SKILL"; then
+    bad "교대 스킬" "「${lit}」 가 남아 있다 — 스테이지 생존을 산문에 거는 지시다"
+  else
+    ok "「${lit}」 가 파일에서 사라졌다"
+  fi
+done
+# AND THE REPLACEMENT IS THERE. Deleting the old instruction without the new
+# one leaves a shift that dispatches and then has nothing to do but poll.
+if grep -q 'gate.sh wait' "$SHIFT_SKILL"; then
+  ok "교대 스킬이 gate.sh wait 발행 문단을 갖고 있다"
 else
-  bad "교대 스킬" "파견 뒤 붙드는 법이 없다 — 「턴을 끝내지 마라」는 금지이고 인쇄 모드에서 기다림의 자연스러운 실행이 곧 턴 종료다"
+  bad "교대 스킬" "wait 발행 형태가 없다 — 파견 뒤 기다리는 경로가 문서에 없다"
 fi
-if grep -q 'ending your turn ends your session' "$SHIFT_SKILL"; then
-  ok "그 지시가 인쇄 모드에서 턴 종료가 세션 종료임을 이름 대고 있다"
+if grep -q 'HARNESS-TRACKED' "$SHIFT_SKILL" && grep -q 'Monitor' "$SHIFT_SKILL"; then
+  ok "그 wait 은 하네스 추적 백그라운드로 내고 Monitor 를 건다 (교대와 함께 죽어야 하는 것)"
 else
-  bad "교대 스킬" "왜 그래야 하는지가 없다 — 이유 없는 규칙은 다음 저자가 지운다"
-fi
-# The worked form, not just the requirement. A reader told to "keep something
-# running" and given no example invents one or does nothing.
-if grep -q 'Monitor(command: "tail -f' "$SHIFT_SKILL"; then
-  ok "붙드는 구체적 형태가 적혀 있다"
-else
-  bad "교대 스킬" "붙드는 형태가 없다 — 관측된 두 교대 중 찾아낸 쪽은 스스로 찾았고 못 찾은 쪽은 스테이지를 잃었다"
+  bad "교대 스킬" "wait 을 어떻게 내는지가 없다"
 fi
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
