@@ -11865,7 +11865,7 @@ else
 fi
 
 # --- 31ab-2. 철회 배선이 실제 런에서 구동된다 ---------------------------------
-# --- section: 31ab-2 | group: cone | covers: exec | needs: 31aa,31w | anchors: 31ab: 물려받은 B1 승인이 대기 상태다 ---
+# --- section: 31ab-2 | group: cone | covers: exec | needs: 31aa,31w,31aq | anchors: 31ab: 물려받은 B1 승인이 대기 상태다 ---
 #
 # `gate_boundaries` 를 호출하는 자리가 `scripts/` 트리 전체에 없었다. 그래서 대기
 # 목록의 열거, 철회가 실제로 일어났을 때만 도는 조건부 재열거, 그 뒤의 유예 계수,
