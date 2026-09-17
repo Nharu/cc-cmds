@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow
+.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -107,6 +107,7 @@ LINT_TESTS := \
 	scripts/test-lint-macos-keepset-paths.sh \
 	scripts/test-lint-harness-global-collisions.sh \
 	tests/fixtures/lint-gate-banner-fields/run.sh \
+	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh
@@ -124,6 +125,7 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \
+	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh
 
 DARWIN_TESTS := \
@@ -137,7 +139,23 @@ TEST_GOALS := $(ALL_TESTS:%=run/%)
 $(TEST_GOALS): run/%:
 	bash $*
 
-test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%)
+test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
+	run-gate-shard-selftest run-gate-census-selftest
+
+# The partitioner and the census are driven by flags, so they cannot sit in the
+# argument-less `bash <script>` lists above; their self-tests run no suite and
+# take seconds.
+run-gate-shard-selftest:
+	bash scripts/gate-shard.sh --self-test
+
+run-gate-census-selftest:
+	bash scripts/gate-census.sh --self-test
+
+# Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
+# every section alone, the whole suite once and every shard once — about an hour
+# on an idle machine — and what it writes is a file to review and commit.
+census:
+	bash scripts/gate-census.sh --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 
