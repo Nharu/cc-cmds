@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.21.0] - 2026-09-17
+## [2.21.0] - 2026-09-18
 
 무인 런이 설계를 스스로 돈다. 지금까지 `autopilot` 킥오프는 설계가 필요한 런에서 사람에게 `/cc-cmds:design` 이나 `/cc-cmds:design-lite` 를 대신 실행하라고 넘기고 기다렸다. 이제 설계 스테이지가 물을 수 없는 두 입력(요구사항 문답, 설계 팀 구성)만 킥오프에서 받아 얼리고, 설계 문서는 런의 첫 스테이지인 `design-discuss-unattended` 가 동결까지 쓴다. 두 묶음으로 나뉘어 들어왔다 — 무인 설계 팔을 드라이버가 파견할 수 있게 넓힌 쪽(#861)과 킥오프를 그에 맞춰 다시 짠 쪽이다.
 
@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`credentials.sh store-has`**(#861) — 선언된 자격 저장소에 파일이 있는지만 확인하고 값은 읽지도 출력하지도 않는다. 잔여 항목 사다리 2단이 쓰는 철자이고, 그 결과를 문서에 적는 세 번째 쓰기 형태 W3 를 `implement-unattended` 에 정의했다.
 - **킥오프의 요구사항 인터뷰·로스터 승인·인터뷰 기록 동결** — `autopilot` Step 5 에 5j(요구사항 문답 축자, 배포 형상 다섯 답, 재현 근거, 검증 선결, 선택적 골격 사전 판정) · 5k(기본 로스터를 스킬 파일에서 축자로 제안하고 승인받은 행을 매니페스트에 쓴다) · 5l(계획 승인) · 5m(인터뷰 기록 동결)을 더했다.
 - **인터뷰 기록 `cc-run-interview v1`** — `<base>/docs/pipeline-run/<run-id>.interview.md`. 킥오프가 한 번에 통째로 쓰는 생성 전용 파일이고, 그 전체 sha256 은 매니페스트 `## 인가` 의 `- \`사전 인가\` | 인터뷰 기록=<경로> | sha256=<해시>` 행으로 `구속 다이제스트` 에 들어간다. `형태=` 가 없어 어떤 행위도 인가하지 않는다.
-- **라우터 경로의 설계 스테이지 파견 규약** — 고정 그래프 드라이버의 설계 팔은 라우터가 구동하는 런에서 돌지 않으므로, 리드·교대가 읽는 Act 2b 에 같은 두 가드(문서 부재 · 원장의 기존 `stage-result` 행)와 파견 형태, 동결 확인을 적었다.
+- **라우터 경로의 설계 스테이지 파견 규약** — 고정 그래프 드라이버의 설계 팔은 라우터가 구동하는 런에서 돌지 않으므로, 실제로 라우팅하는 교대 스킬(`autopilot-router-shift`)과 리드의 Act 2b 양쪽에 세 가드(원장의 기존 `stage-result` 행 · 실행 중인 설계 스테이지 · 문서 부재)와 파견 형태, 동결 확인, 멈춤 처리를 적었다. 설계 스테이지가 아직 돌고 있으면(단계 id 가 `live_stages[]`·`orphan_stages[]` 에 있거나 행 없는 시도 핀이 있으면) 기다리고 아무것도 진행하지 않으며, 문서가 이미 있어도 동결 줄이 없으면 그 문서에 기대는 단계를 멈춘다.
+- **게이트의 런 범위 설계 단계 파견** — `gate.sh act --kind skill --segment - -- design …` 을 `segment` 행 전제조건과 선행 검사에서 면제한다. 설계 단계는 워크트리·선행·선언 파일 집합이 없는 단계라 `segment` 행을 두지 않는다. 스테이지의 런 디렉터리 파일은 얼린 실행 계획의 유일한 `design` 단계 id 로 이름 붙고, 원장 행은 드라이버 설계 팔과 같은 `세그먼트=- | 스테이지=<단계 id>` 모양이다. `gate.sh wait --segment <단계 id>` 로 기다린다. 계획이 설계를 요구하지 않거나 `design` 단계가 하나가 아니면 exit 3 으로 거부한다.
+- **스냅숏의 `design_required`·`steps[]`** — 얼린 실행 계획의 설계 요구 값(`true`·`false`·`null`)과 단계 그래프(`id`·`skill`·`depends_on`). 교대는 스냅숏 말고 입력이 없으므로, 세그먼트가 아닌 설계 단계를 이 두 키로 안다.
 - **CFI-8** — 설계는 런의 스테이지이고 사람만 줄 수 있는 입력은 킥오프에서 받는다. CFI-7 은 진행 채널이 이미 쓰고 있어 번호를 옮기지 않았다.
 - `_common/pipeline-sidecar.md` — 매니페스트 템플릿의 인터뷰 기록 행과 `설계 로스터` 행, 인터뷰 기록 절, 산출물 술어 표의 무인 설계 스테이지 행.
 
