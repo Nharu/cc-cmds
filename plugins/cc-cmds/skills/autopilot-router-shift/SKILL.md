@@ -46,6 +46,12 @@ bash <plugin root>/orchestrator/gate.sh snapshot --manifest <매니페스트>
 
 Then read, in this order: `unmet_condition_numbers` (what is keeping the run from ending), `pending_approvals` (whether it is already stopped on a person), `blocked` (unresolved blocks), `segments` (what exists and what state it is in), and `handoff` (the last three shifts — what was tried and dropped, so you do not re-walk it).
 
+**Then place every segment you might route in one of three branches, using `live_stages[]` and `orphan_stages[]`.** A stage your predecessor dispatched did not end with your predecessor: its supervisor is detached from every routing session and keeps running, and recording, after the shift that launched it is gone.
+
+- **In `live_stages[]`** — it is running. Never dispatch it again. If you need its result before your next act, wait on it (see *Waiting on a stage*).
+- **In `orphan_stages[]`** — its record outlived both its process and its supervisor. Do nothing to it directly: the prelude of the next gate call — any verb but `plan`, your next `snapshot` included — settles it with a `stage-result` row of `종단 부류=외부 종료`, and a dispatch after that takes the next attempt number on its own.
+- **In neither, with no record** — it may be dispatched, under the three conditions in the dispatch section.
+
 `segments_total` against `segments[]` and `obligations_total` against `obligations[]` are the same comparison twice: the arrays are capped and the totals are not, so a difference means the list lost its tail.
 
 ## The loop
@@ -67,6 +73,7 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `plan` | dry run — would this act pass? changes nothing |
 | `act` | perform a decision the run is authorized for |
 | `exec` | perform a shell act under the gate |
+| `wait` | block until a dispatched stage terminates; exits with the stage's own rc or 11–14. Writes no row, evaluates no boundary, takes no `--snapshot-digest` |
 | `close` | resolve an approval a person has answered — **not yours to call** |
 | `prompt` | the canonical question and menu for one approval — **the lead's to call**; you have nobody to ask |
 
@@ -84,6 +91,12 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `8` | the argv climbs a higher rung than `--cutpoint` declared | raise the declaration to the rung the message names and re-issue the same argv — raising does not grant it |
 | `10` | the merge cannot say what it merges, or the dispatch cannot say where it runs | fix the segment row and call again with the same argv |
 | `11` | 도달 park | the act was not performed and nothing waits to be answered. An act-scope `blocked` row names the cell in `도달 판정`. **Do not retry and do not re-declare the reach** — the verdict is keyed on the act digest. Route to other work; a stage that needed it writes its own halt record |
+| `11` from `wait` | no dispatch record for that segment — it was never dispatched | dispatch it if it is dispatchable |
+| `12` from `wait` | the stage was an orphan and has been settled as `외부 종료`; there is no rc | treat it as a stage that produced nothing observable; re-dispatch if the segment still needs the work |
+| `13` from `wait` | `--timeout` elapsed with the stage still alive | the stage is still running — wait again or route other work; never re-dispatch a live stage |
+| `14` from `wait` | launch failure — an attempt was pinned but no supervisor ever wrote its row; `wait` removed the leftover `.sup`, `.sup.start` and `.launch` | re-dispatch; the dispatch takes a fresh attempt number |
+
+**`11` means two things, and the verb you issued tells them apart.** From `act` or `exec` it is 도달 park; from `wait` it is "never dispatched". `wait` performs no act, so it cannot park, and `act`/`exec` never report a missing dispatch.
 
 ### Dispatching a stage
 
@@ -97,27 +110,23 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 
 **An act carrying `--segment` runs in that segment row's worktree** — the value the row's `워크트리` names, when it is an absolute existing directory sharing the target's common git directory; otherwise the target row's execution worktree, then its main worktree. The stage's settings list that worktree too, from the call after the segment row is written. An act that must run in the main worktree (updating the base branch, for instance) does not carry `--segment`. A `--kind skill` dispatch whose segment row names a worktree that fails that predicate is refused with exit `10` before the stage starts.
 
-**Issue that call as a HARNESS-TRACKED BACKGROUND command. Never in the foreground, never with a bare `&`.** This is not a preference and it is the single most expensive thing to get wrong in this loop.
+**Issue that call in the foreground. It returns within seconds.** The gate starts the stage under a supervisor whose process lineage is cut from yours before the call returns, and that supervisor — not your session — waits on the stage and writes its `stage-result` row. So the dispatch's exit status says whether the LAUNCH succeeded, never how the stage ended, and nothing you do afterwards can kill the stage: ending your turn, reaching the cap, taking exit 5 or crashing all leave it running and recording.
 
-`gate_launch_stage` starts the wrapper, **blocks on it**, and only then writes the `stage-result` row — so the call does not return until the stage is finished, and stages run for minutes to hours. Issued in the foreground it exceeds the tool's timeout, and what happens next looks like success from every angle: the harness moves the process to a background task and hands you a result whose `is_error` is **false**. You read that as "the stage is running", finish your turn, and your session ends — taking the moved process and its stage with it. The gate never reaches the line after its `wait`, so **no `stage-result` row is ever written** and the stage's stream has no `type=result` line. Your own stream still ends with one, so the ledger records a shift that ended normally and a stage that never existed.
+This replaced an instruction that was measured to cause the loss it was written to prevent. The old dispatch ran the stage inside the call itself, and the harness reaps a tracked background job by walking its process tree, so the stage died with the session that dispatched it and no row was ever written. No instruction governs a stage's survival any more, and therefore no instruction can end it.
 
-Measured on one run: three shifts, three dispatches, three stages killed this way. The tool result each time was the literal string `Command did not complete within its 120s timeout and was moved to the background`. Zero commits, zero `stage-result` rows, zero worktree changes, and every layer reporting success. Raising the timeout does not close this — the ceiling is ten minutes and this repository has a recorded stage that ran one hour fifty-three minutes.
+### Waiting on a stage
 
-Use the mechanism that **re-invokes you when the command completes**. That notification is the only thing that makes your next turn happen.
-
-**Then HOLD THE SESSION with an active tool call until it arrives. Do not end your turn.** This is the half that has to be spelled out, because "wait for the notification" has an obvious reading that is fatal here: you are a print-mode session, so **ending your turn ends your session**, and the background task your session owns dies with it. A shift that writes "I will hold the seat until the completion notification" and then stops producing output has done exactly the thing it said it would not.
-
-What holding looks like — this is the form that was measured to work:
+When the snapshot's `live_stages[]` holds a segment whose result you need before your next act, issue
 
 ```
-Monitor(command: "tail -f <the background task's output file>", ...)
+gate.sh wait --manifest <매니페스트> --segment <id>
 ```
 
-The output path comes back in the dispatch's own tool result. `Monitor` keeps producing turns for you while the stage runs, so the session stays up; when the stage's stream shows it is finished, stop the monitor and go back to the loop. Any active tool call that keeps the turn alive serves — the requirement is that **something of yours is still running**, not that it is this particular tool.
+as a **HARNESS-TRACKED background** command and put `Monitor` on its output. `wait` prints one heartbeat line every 300 seconds (`--interval` changes that) and one final line. When it exits, the completion notification carries its exit status, which is the stage's own rc — or 11–14 from the table above — so the event that wakes you is also the one that tells you how the stage ended. `--timeout` defaults to six hours and ends the wait with 13, never the stage.
 
-Measured, in one run, across two shifts given this same instruction: the shift that opened a `Monitor` on the task output completed **two** stages and left two `stage-result` rows. The shift that dispatched correctly, announced it would hold the seat, and ended its turn left **zero** rows and one lost dispatch. The dispatch form was identical in both. What separated them was only whether anything of theirs was still running.
+Tracked is right here and was fatal for the dispatch, and the difference is the whole rule: **what must die with your shift belongs in a tracked background job; what must outlive your shift must never be one.** A `wait` left behind after you end would heartbeat into a file nobody reads, so it goes down with you; the stage keeps going, and your successor finds it in `live_stages[]` and waits on it with its own `wait`.
 
-Your context barely grows while a stage works, so holding costs almost nothing — and it is what returns the seat to you with the stage's rows already in the ledger.
+`Monitor` goes on the `wait` output rather than on the stage's own stream because a stage's stream has been measured at over half a megabyte, while the heartbeat is one line per interval.
 
 Three conditions must **all** hold before a segment is dispatchable: **dependency** (no predecessor unfinished), **capacity** (concurrent streams within the cap), and **exclusion** (no live stage already holding an exclusive resource).
 
@@ -195,11 +204,7 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
 
 **`버린 선택지` is the field nothing else in the ledger can hold.** The snapshot records what LANDED — never what was considered and dropped. Leave it empty and your successor pays again for every dead end you already walked, and the morning report's request for the rejected alternative has no source at all.
 
-**A live stage holds back `상한` and nothing else.** If a stage is running, do not end on the cap — the router's context barely grows while a stage works, so waiting costs nothing. But `승인` and `종단` are NOT held: a shift kept waiting on an approval means that approval waits out the stage, and overnight that is the whole night.
-
-**「A stage is running」 means the dispatch has not notified you yet — not that a tool result told you it went to the background.** Those two readings look identical and only one is true. A dispatch that was moved to the background because it timed out is a stage that dies the moment you stop, so treating it as live and then ending your turn is precisely the failure this section exists to prevent. If you did not launch it as a harness-tracked background command, you have no live stage; you have a dispatch that is about to be lost.
-
-**And a live stage holds back the cap only while YOU are still running.** "Waiting" is not a state your session can be in — either something of yours is executing, or your session has ended. So the rule reads in one direction only: while a stage is live, keep an active tool call going (see the dispatch section). Ending the turn is not waiting; it is the end of the shift, and it takes the stage with it.
+**A live stage holds back none of the three.** Its supervisor is detached from your session, so ending on `상한`, `승인` or `종단` while it runs costs the stage nothing: it finishes, writes its row, and your successor finds it in `live_stages[]` or in the ledger. Holding the cap open for it would keep exactly the context the cap exists to end.
 
 ## Your return line
 

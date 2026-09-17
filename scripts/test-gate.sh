@@ -1759,6 +1759,24 @@ pre_base() {
       --surface 읽기 --snapshot-digest "$(HM)" --rationale x -- 상태="${3:-계획됨}" 워크트리="$2" 선행=없음
   }
   cp "$FX_MANIFEST" "$WORK/manifest-clean.md"
+  # THE LATE HOME'S RUN DIRECTORY IS DERIVED, NEVER SPELLED. `$FX_MANIFEST`
+  # moves from `plan.md` (run id `R1`) to `plan2.md` (`R2`) partway through the
+  # suite, so a later section that plants fixtures under a literal `R1` plants
+  # them where the gate never looks — and a whole-file run and a cut of that one
+  # section then disagree about the path. Reading the id back out of whichever
+  # manifest is current makes the two agree by construction. A definition, so it
+  # lives in the prelude: three sections stand on it and each must survive being
+  # cut on its own.
+  fx_late_run_dir() {
+    local rid
+    rid=$( { sed -n 's/^\*\*런 id\*\*: *//p' "$FX_MANIFEST" 2>/dev/null || true; } \
+             | sed -n '1p' | tr -d '[:space:]')
+    if [ -z "$rid" ]; then
+      printf 'fx_late_run_dir: %s 에서 런 id 를 읽지 못했습니다\n' "$FX_MANIFEST" >&2
+      return 1
+    fi
+    printf '%s/cc-cmds/run/%s\n' "$STATE_LATE" "$rid"
+  }
   # THE STAGE-PID FIXTURE PRIMITIVES ARE DEFINITIONS, so they belong here rather
   # than only in the section that first sources them. Two base sections stand a
   # LIVE stage in a run directory (`fx_stage_live`) and one cone section does
@@ -4980,7 +4998,12 @@ fi
 # continue somebody's transcript, so an unchecked value would let one segment
 # continue another segment's — or another run's — session.
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $GATE_RESUME"'; then
+# TWO HALVES NOW, because the dispatch no longer runs the wrapper itself. The
+# dispatch act carries the router's `--resume` into the launch token's second
+# line, and the detached supervisor reads it back and hands it to the wrapper.
+# Either half alone is a resume path that ends in the middle.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"${GATE_RESUME:-}" > "$tmp"' \
+   && grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $resume"'; then
   ok "게이트가 래퍼에 --resume 을 넘길 수 있다"
 else
   bad "재개 경로" "라우터가 끊긴 스테이지를 이어붙일 수단이 없다"
@@ -5054,6 +5077,12 @@ case "$out" in
     bad "기동 경로" "unbound variable: $(printf '%s' "$out" | tr '\n' ' ')" ;;
   *) ok "기동 경로에 미정의 변수가 없다" ;;
 esac
+# THE DISPATCH RETURNS BEFORE THE STAGE ENDS, so everything below that reads
+# the stage's outcome waits for it first. `wait` blocks on the detached
+# supervisor and answers the stage's own rc — the stub's 0.
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "wait 이 파견된 스테이지의 rc 를 그대로 돌려준다" "$wait_rc" "0"
 # The plugin root actually reaches the wrapper, and it is the directory that
 # contains the skills — not the orchestrator directory.
 if [ -f "$WORK/stub-argv.txt" ]; then
@@ -5076,6 +5105,15 @@ if [ -f "$(dirname "$SETTINGS_DIR")/SL.pid" ]; then
 else
   ok "스테이지가 끝나면 pid 기록이 지워진다"
 fi
+# AND THE WHOLE PER-SEGMENT SET WITH IT — the supervisor's own record and the
+# files the dispatch act wrote. The dispatch returned long before the stage
+# ended, so the supervisor is the only process that can remove them; a set
+# that survives here is a set that survives every night.
+sl_left=""
+for sl_f in SL.sup SL.sup.start SL.kind SL.start SL.launch SL.launch.taken; do
+  [ -e "$(dirname "$SETTINGS_DIR")/$sl_f" ] && sl_left="$sl_left $sl_f"
+done
+check "스테이지가 끝나면 감독자·기동 토큰·종류 기록도 함께 지워진다" "$sl_left" ""
 # THE PIN AND THE TRANSCRIPT NAME, measured from what the launcher left on disk.
 #
 # The seam between `gate_launch_stage` and the two functions it derives those
@@ -7915,6 +7953,10 @@ case "$msg" in
   *"선행 세그먼트"*) bad "순서 판정" "선행이 착지했는데도 그 이유로 막는다: $msg" ;;
   *) ok "선행이 머지됨·완료가 되면 그 이유로는 더 이상 막지 않는다 (검사가 공허하지 않다)" ;;
 esac
+# The dispatch above detached a supervisor running the no-op CLI; its
+# `stage-result` row lands asynchronously, so it is waited for here rather
+# than left to race the rows the sections below count.
+gateN wait --manifest "$NM" --segment SD --interval 1 --timeout 60
 
 # --- 31i. Grade 2 becomes the approval its own refusal used to promise ------
 # --- section: 31i | group: cone | covers: act | anchors: 등급 2 판단은 절단점=판단 승인으로 응답한다 ---
@@ -8213,6 +8255,10 @@ n_emit_before=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | 
   bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment SJ --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
   -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+# The dispatch returns at once; the absorber runs in the detached supervisor
+# when the stage ends, so the row is waited for before it is counted.
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB" \
+  bash "$GATE" wait --manifest "$NM" --segment SJ --interval 1 --timeout 60 ) >/dev/null 2>&1
 n_emit_after=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
 check "합집합을 통과하지 못한 방출 판단은 자율 승인 행을 쓰지 않는다" "$n_emit_after" "$n_emit_before"
 case "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | tail -1)" in
@@ -8762,6 +8808,8 @@ n_emit_before2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } |
   bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment SJ2 --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
   -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB2" \
+  bash "$GATE" wait --manifest "$NM" --segment SJ2 --interval 1 --timeout 60 ) >/dev/null 2>&1
 n_emit_after2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
 if [ "${n_emit_after2:-0}" -gt "${n_emit_before2:-0}" ]; then
   ok "합집합을 통과한 방출 판단은 출처=스테이지 방출 행을 만든다 (흡수기를 지우면 이 단언이 실패한다)"
@@ -8804,6 +8852,8 @@ napp_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=
   bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment SJ3 --cutpoint 커밋 \
   --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
   -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB3" \
+  bash "$GATE" wait --manifest "$NM" --segment SJ3 --interval 1 --timeout 60 ) >/dev/null 2>&1
 napp_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' || true)
 if [ "${napp_after:-0}" -gt "${napp_before:-0}" ]; then
   ok "부류 없는 방출 판단은 조용히 버려지지 않고 승인으로 올라간다"
@@ -10255,6 +10305,31 @@ emit_torn() {
         bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
         --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
         -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+  # The dispatch returns at once and the recorder runs in the detached
+  # supervisor; `emit_collect` is what makes "record one stage result" true of
+  # this helper. The stage's rc replaces the dispatch's, which is what the
+  # callers were reading before the split.
+  if [ "$rc" = "0" ]; then emit_collect "$1" "$2"; fi
+}
+emit_collect() {
+  # emit_collect <세그먼트> <스텁> — wait for the stage the preceding dispatch
+  # detached, then fold its supervisor's log into `$out` and the stage's rc into
+  # `$rc`.
+  #
+  # THE RECORDER'S OWN OUTPUT MOVED WITH IT. The absorber and the outcome
+  # recorder run in the detached supervisor, so what they print — each
+  # disposition's warning and the stage-terminal line — lands in that attempt's
+  # supervisor log beside the stream, not on the dispatching call's stderr.
+  # Folding the log in keeps the assertions below reading the same text they
+  # read while the dispatch blocked, rather than weakening them to the rows.
+  local _w _rd _att
+  _w=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" \
+       bash "$GATE" wait --manifest "$NM" --segment "$1" --interval 1 --timeout 60 2>&1); rc=$?
+  _rd="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"
+  _att=$( { cat "$_rd/$1.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
+  out="$out
+$_w
+$( { cat "$_rd/log/$1#$_att.sup.log" 2>/dev/null || true; } )"
 }
 seg_row SJ4 "$CONE_C" 상태=실행중 선행=없음
 check "형식 깨진 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
@@ -10347,6 +10422,11 @@ emit_ar() {
         bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
         --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
         -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+  # Same shape as `emit_torn`: the recorder runs in the detached supervisor, so
+  # the result is waited for, its log folded in, and the stage's rc comes back.
+  # The switch does not ride on the wait — the supervisor inherited it from
+  # this dispatch's environment, and `wait` adjudicates nothing.
+  if [ "$rc" = "0" ]; then emit_collect "$1" "$2"; fi
 }
 ar_stub() {
   # ar_stub <경로> <result 문자열> — a stub CLI that prints one result line.
@@ -11507,8 +11587,16 @@ check "F2 — 세그먼트 행 기록 자리가 발사한다" \
 # two lines past the old window and this assertion read `silent` while both arms
 # were still there. The window measures nothing about the property; it is the
 # helper's reach.
+#
+# THE ANCHOR IS THE RECORDER'S ROW, NOT THE FIRST `stage-result` APPEND. The
+# prelude's settlement writes the same series, earlier in the file, and stays
+# silent on purpose — a dispatch nobody waited on is the watcher's alarm, not
+# this channel's. Anchoring on the series name therefore landed on the
+# settlement and read `silent` for a property that still holds where it is
+# owned. `plan_sha256` is written only by the recorder, so it names that site
+# and no other.
 check "F1 — 스테이지 결과 행 자리가 발사한다" \
-  "$( [ "$(site_fires "gate_append 'stage-result'" 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$( [ "$(site_fires '"plan_sha256=$psha" "종단 부류=$klass"' 80)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
 check "금지 — 라우터의 해소 쓰기는 발사하지 않는다" \
   "$(site_fires "gate_append 'blocked' \"대상=-\" \"스코프=run\" \"\$@\"" 12)" "0"
 check "금지 — 감시자 정체 파일의 전사는 발사하지 않는다" \
@@ -13889,16 +13977,22 @@ check "36: 팁이 그대로인 세 번째 머지는 새 슬롯을 열지 않는�
 ( cd "$REPO" && git worktree remove --force "$ORPH" ) >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-# 34. The shift launcher's three outcomes, and the number it launches under.
+# 34. The shift launcher's two outcomes, and the number it launches under.
 # --- section: 34 | group: cone | covers: snapshot | anchors: 교대 픽스처의 세그먼트 행이 기록된다 ---
 #
-# Nothing in this suite ever RAN `gate_launch_shift`. Its three results — held
-# behind a live stage, an approval issued on the handoff floor, and an actual
-# launch — all answered 0, which in this system means "the successor ran to
-# completion"; and the guard that issues that approval measured the session
-# CALLING it, which is the lead, whose opening context does not move all night.
-# Neither is visible in a fragment, so this section drives the launcher on an
-# isolated ledger of its own.
+# Nothing in this suite ever RAN `gate_launch_shift`. Its results — an approval
+# issued on the handoff floor, and an actual launch — both answered 0, which in
+# this system means "the successor ran to completion"; and the guard that
+# issues that approval measured the session CALLING it, which is the lead,
+# whose opening context does not move all night. Neither is visible in a
+# fragment, so this section drives the launcher on an isolated ledger of its
+# own.
+#
+# THERE USED TO BE A THIRD OUTCOME — held behind a live stage, exit 10 — and
+# (a) below is its INVERSION. The hold rested on "a live stage is the router's
+# child"; the stage supervisor is detached from the routing session now, so a
+# cap shift under a live stage launches like any other, and the ordinal
+# assertions in (c) count two launches rather than one launch and one hold.
 # ---------------------------------------------------------------------------
 SHIFT_RUN_ID=R5
 if [ "$SHIFT_RUN_ID" = "$CONE_RUN_ID" ] || [ "$SHIFT_RUN_ID" = "$DONE_RUN_ID" ]; then
@@ -13966,10 +14060,13 @@ gate5 '' act --manifest "$NM5" --kind segment --target infra --segment SS1 --cut
       -- 워크트리="$CONE_A" 상태=실행중 선행=없음
 check "교대 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
 
-# (a) A LIVE STAGE HOLDS THE CAP SHIFT, AND SAYS SO WITH A CODE OF ITS OWN.
-# Reported as 0 the caller cannot tell "held, nothing started" from "the successor
-# ran and came back", and those two demand opposite next moves.
-SHIFT_FX_SAVE="$FX_RUN_DIR"
+# (a) A LIVE STAGE NO LONGER HOLDS THE CAP SHIFT — THE INVERSION. The hold
+# answered exit 10 on the premise that the stage was the routing session's
+# child and would die with it; with the supervisor detached the premise is
+# false, so the launch goes ahead under a live stage and the successor's own
+# rc (the stub's 0) is what comes back. A hold here would keep a shift alive
+# for the whole life of a stage that no longer needs it.
+SHIFT_FX_SAVE="${FX_RUN_DIR:-}"
 mkdir -p "$SHIFT_DIR"
 FX_RUN_DIR="$SHIFT_DIR"
 fx_stage_live SS1
@@ -13978,15 +14075,10 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
       --surface 워크트리쓰기 --snapshot-digest "$(H5)" \
       --rationale "픽스처 — 살아 있는 스테이지 아래의 상한 교대" \
       -- 상한 -p "/cc-cmds:autopilot-router-shift $NM5"
-check "(a) 살아 있는 스테이지가 있으면 상한 교대는 0 이 아닌 코드로 보류된다" "$rc" "10"
-check "(a) 보류는 아무것도 기동하지 않는다" \
-  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "0"
-# AND THE TWO RECORDS OF THAT ONE ATTEMPT DISAGREE, WHICH IS THE WHOLE POINT.
-# `gate_verb_act` appends the authorisation row BEFORE the dispatch, so the hold
-# above leaves it behind having started nothing. Asserting both halves here is
-# what makes the ordinal assertion after (c) mean something: an ordinal counted
-# from the act row would already have been moved by this turned-back attempt.
-check "(a) 보류해도 인가 행은 이미 원장에 있다" \
+check "(a) 살아 있는 스테이지가 있어도 상한 교대는 보류되지 않고 기동한다" "$rc" "0"
+check "(a) 그 기동이 실제로 후속자를 띄웠다 (shift-1.json)" \
+  "$( [ -f "$SHIFT_DIR/log/shift-1.json" ] && printf 'yes' || printf 'no' )" "yes"
+check "(a) 인가 행이 원장에 있다" \
   "$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )" "1"
 # THE PATTERN DOES NOT CARRY THE ROW'S LEADING `- `, and that is not a style
 # choice. An argument beginning with `-` is read as an option, so `grep -cF '- …'`
@@ -13994,8 +14086,12 @@ check "(a) 보류해도 인가 행은 이미 원장에 있다" \
 # that into an empty string, and `check` reports an empty value rather than a
 # count. Measured here — the assertion below read `''` where `0` and `1` are the
 # only honest answers, so it could neither pass nor fail for the right reason.
-check "(a) 그러나 기동 행은 남지 않는다" \
-  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "0"
+check "(a) 그리고 기동 행도 남는다 — 보류가 사라졌으므로 인가와 기동이 일치한다" \
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+# THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
+# stage's liveness is the supervisor's business, not the shift launcher's.
+check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
+  "$( [ -f "$SHIFT_DIR/SS1.pid" ] && kill -0 "$(cat "$SHIFT_DIR/SS1.pid")" 2>/dev/null && printf 'alive' || printf 'gone' )" "alive"
 rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
 
 # (c) THE LEAD'S OWN CONTEXT IS NOT THE HANDOFF FLOOR. The transcript above is
@@ -14003,8 +14099,7 @@ rm -f "$SHIFT_DIR"/SS1.pid "$SHIFT_DIR"/SS1.pgid "$SHIFT_DIR"/SS1.start
 # silent — under the old measurement this very call issued an approval and
 # returned without a successor, taking the run's routing seat away on the FIRST
 # launch of the night. And the number it launches under has to be the launch
-# ordinal: (a) put a `router-shift` row on the ledger without a `handoff` beside
-# it, so a scale counting ENDED handoffs and one counting launches now disagree.
+# ordinal, counted from the `교대 기동` rows and not from the act rows.
 gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
       --surface 워크트리쓰기 --snapshot-digest "$(H5)" \
       --rationale "픽스처 — 리드가 띄우는 승인 사유 교대" \
@@ -14012,32 +14107,31 @@ gate5 '' act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커
 check "(c) 리드가 띄우는 교대는 바닥 가드에 걸리지 않고 실제로 기동한다" "$rc" "0"
 check "(c) 리드 컨텍스트로는 인수인계 바닥 승인이 발행되지 않는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "0"
-# THE TWO SCALES ARE READ TOGETHER, AND THEIR DIVERGING IS THE ASSERTION.
-#
-# This is the sequence (a) set up: two attempts have written authorisation rows
-# and exactly one successor has ever started. The check that stood here derived
-# the expected ordinal from the act rows, which is the same expression the
-# launcher used — so it recomputed the launcher's error and agreed with it, and
-# `shift-1.json` could go permanently unwritten with the suite green. An expected
-# value has to come from somewhere other than the code under test.
+# THE TWO SCALES ARE READ TOGETHER. Two attempts have written authorisation
+# rows and — now that (a) launches — two successors have started, so the two
+# scales agree here; what the assertions below guard is that the ordinal is
+# taken from the launch rows and lands on the file the morning reader walks
+# to. An expected value has to come from somewhere other than the code under
+# test, so the ordinals are asserted against the files on disk.
 shift_act=$( { grep -F 'kind=router-shift' "$LEDGER5" || true; } | { grep -cF '결정=act' || true; } )
 shift_run=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
 check "(c) 기동을 시도한 인가 행은 둘이다" "$shift_act" "2"
-check "(c) 그 중 실제로 기동한 것은 하나다" "$shift_run" "1"
-check "(c) 그래서 이 기동의 로그는 첫 번째 번호를 쓴다" \
+check "(c) 둘 다 실제로 기동했다" "$shift_run" "2"
+check "(c) 첫 기동의 로그는 첫 번째 번호를 쓴다" \
   "$( [ -f "$SHIFT_DIR/log/shift-1.json" ] && printf 'yes' || printf 'no' )" "yes"
-check "(c) 보류가 먹어 버렸던 번호로는 로그가 생기지 않는다" \
-  "$( [ -f "$SHIFT_DIR/log/shift-2.json" ] && printf 'yes' || printf 'no' )" "no"
+check "(c) 둘째 기동의 로그는 두 번째 번호를 쓴다" \
+  "$( [ -f "$SHIFT_DIR/log/shift-2.json" ] && printf 'yes' || printf 'no' )" "yes"
 check "(c) 다른 번호의 교대 로그는 생기지 않는다" \
-  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
+  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "2"
 # The correspondence a morning reader actually walks — a launch row's ordinal to
 # a file on disk — so the two are asserted against each other rather than each
-# against a literal that could drift apart from the other.
-shift_ord=$( { grep -F '`교대 기동`' "$LEDGER5" || true; } \
-             | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } | sed -n '1p')
-check "(c) 기동 행의 서수가 그 기동 로그 파일의 번호다" \
-  "$( [ -n "$shift_ord" ] && [ -f "$SHIFT_DIR/log/shift-$shift_ord.json" ] \
-       && printf 'yes' || printf 'no' )" "yes"
+# against a literal that could drift apart from the other. Every launch row.
+shift_ord_ok=yes
+for shift_ord in $( { grep -F '`교대 기동`' "$LEDGER5" || true; } \
+                    | { sed -n 's/.*서수=\([0-9]*\).*/\1/p' || true; } ); do
+  [ -f "$SHIFT_DIR/log/shift-$shift_ord.json" ] || shift_ord_ok=no
+done
+check "(c) 기동 행의 서수마다 그 번호의 기동 로그 파일이 있다" "$shift_ord_ok" "yes"
 
 # --- THE LEAD'S SEAT SURVIVES A LAUNCH -------------------------------------
 #
@@ -14080,13 +14174,13 @@ check "(b) 후임의 바닥이 상한을 넘으면 승인 발행이 exit 5 로 �
 check "(b) 그 승인이 원장에 실제로 남는다" \
   "$( { grep -cF '승인 id=SHIFT-FLOOR' "$LEDGER5" || true; } )" "1"
 check "(b) 승인을 낸 호출은 아무것도 기동하지 않는다" \
-  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "1"
-# The floor arm is the second early return, and it must not move the scale
-# either. Asserted on the ROW rather than on the log directory because that is
-# what the ordinal is now counted from — a log file left uncreated says nothing
-# about whether the number was consumed.
+  "$( { ls "$SHIFT_DIR"/log/shift-*.json 2>/dev/null || true; } | grep -c . || true)" "2"
+# The floor arm is the early return that remains, and it must not move the
+# scale either. Asserted on the ROW rather than on the log directory because
+# that is what the ordinal is now counted from — a log file left uncreated says
+# nothing about whether the number was consumed.
 check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는다" \
-  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+  "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "2"
 
 # (d) A SHIFT LAUNCHED FROM A STAGE SEAT DOES NOT INHERIT THAT SEAT. Nothing
 # refuses `--kind router-shift` from a stage, and an environment prefix adds
@@ -14136,7 +14230,7 @@ check "(d) 후속자가 실제로 실행됐다 (환경 기록 한 줄)" "$(grep 
 IFS='|' read -r sx_seg sx_stage sx_shift < "$WORK/shift-env.txt" || true
 check "(d) 후속자의 환경에서 CC_PIPELINE_SEGMENT 는 비어 있다"  "$sx_seg"   ""
 check "(d) 후속자의 환경에서 CC_PIPELINE_STAGE_ID 는 비어 있다" "$sx_stage" ""
-check "(d) 후속자의 환경에는 자기 교대 마커가 서 있다" "$sx_shift" "$SHIFT_RUN_ID#2"
+check "(d) 후속자의 환경에는 자기 교대 마커가 서 있다" "$sx_shift" "$SHIFT_RUN_ID#3"
 actor5() { { grep -F '`자율 승인`' "$LEDGER5" || true; } | grep -F "세그먼트=$1 " | tail -1 \
            | tr '|' '\n' | sed -n 's/^ *행위자=//p' | sed 's/[[:space:]]*$//' | tail -1; }
 check "(d) 후속자 자신이 쓴 인가 행은 행위자=교대 다 (기동자의 좌석을 물려받지 않는다)" "$(actor5 SS4)" "교대"
@@ -15086,6 +15180,380 @@ case "$msg" in
   *) bad "그 거부가 리뷰 룰의 것이다" "$msg" ;;
 esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
+
+# ---------------------------------------------------------------------------
+# 40. `wait` 의 종료 코드와 무행·무경계 성질
+# --- section: 40 | group: base | covers: gate_main | anchors: (a) 파견 기록이 없는 세그먼트는 11, (b) 고아를 정산하고 12, (c) 같은 시도를 다시 기다려도 12 이고 행은 늘지 않는다, (d) 정상 행의 종료 코드를 그대로 돌려준다, (e) 시도는 찍혔는데 행이 없으면 14, (f) 살아 있는 스테이지에서 timeout 은 13 ---
+#
+# THE RE-ATTACHMENT VERB, and the four outcomes that have no stage rc to pass
+# through. 11 and 12 look identical on disk — the settlement that runs in this
+# verb's own prelude has already removed `<seg>.pid` — so the verb resolves
+# them from the ledger and from `<seg>.attempt`, and (c) is what pins that the
+# LEDGER row is the authority: a second `wait` on a settled attempt answers 12
+# again from the row's `종단 부류`, not from a second settlement.
+#
+# THIS SECTION IS THE MEASUREMENT OF THE DESIGN'S R2 ITEM: (a) 11, (b) 12 with
+# exactly one `외부 종료` row, (c) 12 with the row count unchanged, (d) 7.
+# ---------------------------------------------------------------------------
+. "$LIVENESS"
+RD40=$(fx_late_run_dir)
+mkdir -p "$RD40/log"
+sh -c 'exit 0' & DEAD40=$!; wait "$DEAD40" 2>/dev/null || true
+tip40() {  # the chain tip the next appended row must carry as `prev=`
+  { grep '^- `' "$FX_LEDGER" || true; } | tail -1 | tr -d '\n' | shasum -a 256 | cut -d' ' -f1
+}
+n40_boundary0=$( { grep -cF '절단점=경계' "$FX_LEDGER" || true; } )
+
+# The run is opened first — in a cut of this section alone the first call
+# against this state home writes the `run` row, and that row is the
+# prelude's, not the verb's.
+HL >/dev/null
+
+# THE POSITIVE PRECONDITION, ahead of everything this section reads negatively
+# out of that directory. Four assertions below are of the form "no row was
+# written" or "nothing is left", and every one of them is GREEN when the gate
+# reads a different directory than the one these fixtures land in. Measured:
+# with the path spelled as a literal run id after the manifest had moved to the
+# next one, eight negative assertions across this section and the two below
+# passed against an empty directory while the positive ones failed — so the
+# section reported the verb working and the verb had never seen a fixture. One
+# planted orphan settled here is the proof that the gate and this section agree
+# on the path, and it is read before any absence is.
+printf '%s\n' "$DEAD40" > "$RD40/W40Z.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/W40Z.start"
+printf '1\n' > "$RD40/W40Z.attempt"
+printf 'review\n' > "$RD40/W40Z.kind"
+printf '{"type":"system","subtype":"init","session_id":"w40z-session"}\n' > "$RD40/log/W40Z#1.json"
+gateL snapshot --manifest "$FX_MANIFEST"
+check "(선행) 게이트가 이 절이 심는 런 디렉터리를 실제로 읽는다 — 정산 1건" \
+  "$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=W40Z ' || true; } | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+
+# (a) NOTHING RECORDED → 11, at once. No `.attempt`, so there is nothing to
+# wait for and nothing to grace.
+n40_rows0=$( { grep -c '^- `' "$FX_LEDGER" || true; } )
+gateL wait --manifest "$FX_MANIFEST" --segment W40A --timeout 30
+check "(a) 파견 기록이 없는 세그먼트는 11" "$rc" "11"
+check "(a) 그 wait 은 원장에 아무 행도 쓰지 않는다" "$( { grep -c '^- `' "$FX_LEDGER" || true; } )" "$n40_rows0"
+
+# (b) AN ORPHAN — dead pid, a fingerprint, the pin, the kind, a stream with its
+# init line — is settled by this call's own prelude and answered 12.
+printf '%s\n' "$DEAD40" > "$RD40/W40B.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/W40B.start"
+printf '1\n' > "$RD40/W40B.attempt"
+printf 'review\n' > "$RD40/W40B.kind"
+printf '{"type":"system","subtype":"init","session_id":"w40b-session"}\n' > "$RD40/log/W40B#1.json"
+gateL wait --manifest "$FX_MANIFEST" --segment W40B --timeout 30
+check "(b) 고아를 정산하고 12" "$rc" "12"
+check "(b) 그 호출 뒤 종단 부류=외부 종료 행이 정확히 하나" \
+  "$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=W40B ' || true; } | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+check "(b) 정산이 pid 기록을 치웠다" "$( [ -e "$RD40/W40B.pid" ] && printf 'yes' || printf 'no' )" "no"
+
+# (c) THE SAME ATTEMPT, WAITED FOR AGAIN. Nothing is left to settle, so the
+# answer has to come from the row — `종단 부류=외부 종료` reads as 12, and its
+# `종료 코드=-` is never used as a code.
+n40_rows1=$( { grep -c '^- `' "$FX_LEDGER" || true; } )
+gateL wait --manifest "$FX_MANIFEST" --segment W40B --timeout 30
+check "(c) 같은 시도를 다시 기다려도 12 이고 행은 늘지 않는다" "$rc" "12"
+check "(c) 외부 종료 행은 여전히 하나" \
+  "$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=W40B ' || true; } | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+check "(c) 두 번째 wait 도 행을 쓰지 않는다" "$( { grep -c '^- `' "$FX_LEDGER" || true; } )" "$n40_rows1"
+
+# (d) A NORMAL ROW passes its own exit code through. The row is planted with
+# the chain's real tip so the ledger stays intact for whatever follows.
+printf '1\n' > "$RD40/W40D.attempt"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=W40D | 스테이지=W40D | 종류=review | 종료 코드=7 | 실행 버전=1 | 세션 id=w40d | 부모=w40d-parent | 종단 부류=크래시 | prev=%s\n' "$(tip40)" >> "$FX_LEDGER"
+gateL wait --manifest "$FX_MANIFEST" --segment W40D --timeout 30
+check "(d) 정상 행의 종료 코드를 그대로 돌려준다" "$rc" "7"
+
+# (e) PINNED, NOTHING ALIVE, NO ROW — a launch that never produced a supervisor
+# row. After one grace period the verb answers 14 and removes the three files
+# the dispatch act wrote, so the next dispatch starts clean; the pin stays, so
+# the attempt number is not reused.
+printf '1\n' > "$RD40/W40E.attempt"
+printf '99999\n' > "$RD40/W40E.sup"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/W40E.sup.start"
+printf 'deadbeef\n\n' > "$RD40/W40E.launch"
+gateL wait --manifest "$FX_MANIFEST" --segment W40E --interval 1 --timeout 60
+check "(e) 시도는 찍혔는데 행이 없으면 14" "$rc" "14"
+w40e_left=""
+for w40e_f in W40E.sup W40E.sup.start W40E.launch; do
+  [ -e "$RD40/$w40e_f" ] && w40e_left="$w40e_left $w40e_f"
+done
+check "(e) 14 로 끝나는 길에서 잔여 sup·sup.start·launch 가 지워진다" "$w40e_left" ""
+check "(e) 시도 핀은 남는다 (번호 비재사용)" "$( [ -f "$RD40/W40E.attempt" ] && printf 'yes' || printf 'no' )" "yes"
+case "$msg" in
+  *"기동 실패"*) ok "(e) 종료 줄이 기동 실패를 이름 댄다" ;;
+  *) bad "(e) 종료 줄" "$msg" ;;
+esac
+
+# (f) A LIVE STAGE AND A ONE-SECOND TIMEOUT → 13, with a heartbeat printed
+# before it. The stage is a `sleep` with a matching fingerprint, so the
+# liveness predicate — not the verb's own guess — is what keeps it waiting.
+W40_FX_SAVE="${FX_RUN_DIR:-}"
+FX_RUN_DIR="$RD40"
+fx_stage_live W40F
+FX_RUN_DIR="$W40_FX_SAVE"
+printf '1\n' > "$RD40/W40F.attempt"
+n40_rows2=$( { grep -c '^- `' "$FX_LEDGER" || true; } )
+gateL wait --manifest "$FX_MANIFEST" --segment W40F --interval 1 --timeout 1
+check "(f) 살아 있는 스테이지에서 timeout 은 13" "$rc" "13"
+case "$msg" in
+  *"살아 있음"*) ok "(f) timeout 앞에 하트비트가 한 줄 이상 찍혔다" ;;
+  *) bad "(f) 하트비트" "$msg" ;;
+esac
+check "(f) timeout 으로 끝난 wait 도 행을 쓰지 않는다" "$( { grep -c '^- `' "$FX_LEDGER" || true; } )" "$n40_rows2"
+kill "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD40/W40F.pid" "$RD40/W40F.start" "$RD40/W40F.attempt"
+
+# (g) NO BOUNDARY WAS EVALUATED BY ANY OF THE SIX — `wait` is not an act.
+check "(g) 이 절의 wait 들은 경계 승인 행을 하나도 남기지 않았다" \
+  "$( { grep -cF '절단점=경계' "$FX_LEDGER" || true; } )" "$n40_boundary0"
+
+# ---------------------------------------------------------------------------
+# 41. 프리루드 정산 전수
+# --- section: 41 | group: base | covers: snapshot, plan | anchors: A 핵심 — 외부 종료 행이 정확히 하나, B 지문 없는 기록은 열거만 되고 정산되지 않는다, C 진짜 행이 이미 있으면 이중 정산이 없다, D 드라이버 기록은 정산하지 않는다, F 죽은 정산자가 append 한 뒤의 회수, plan 의 프리루드는 정산하지 않는다 ---
+#
+# The settlement runs in the prelude of every verb but `plan`, on the subset of
+# `cc_orphan_stages` the gate itself dispatched: `.kind` present, `.start`
+# non-empty, `.attempt` present. Each case below stands on exactly one of
+# those conditions, and `snapshot` is the verb that drives it — the one a
+# blocked run keeps issuing when nothing else moves.
+# ---------------------------------------------------------------------------
+# Self-contained: a cut of this section alone must not lean on section 40's
+# definitions, so the run directory, the dead pid and the tip helper are
+# (re)declared here — every one of them is idempotent.
+. "$LIVENESS"
+RD40=$(fx_late_run_dir)
+mkdir -p "$RD40/log"
+sh -c 'exit 0' & DEAD40=$!; wait "$DEAD40" 2>/dev/null || true
+tip40() { { grep '^- `' "$FX_LEDGER" || true; } | tail -1 | tr -d '\n' | shasum -a 256 | cut -d' ' -f1; }
+HL >/dev/null
+snap41() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ); }
+plant41() {  # plant41 <seg> — the full gate-dispatched orphan shape
+  printf '%s\n' "$DEAD40" > "$RD40/$1.pid"
+  printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/$1.start"
+  printf '1\n' > "$RD40/$1.attempt"
+  printf 'review\n' > "$RD40/$1.kind"
+  printf '{"type":"system","subtype":"init","session_id":"%s-session"}\n' "$1" > "$RD40/log/$1#1.json"
+}
+rows41() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
+klass41() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } \
+            | { grep -cF '종단 부류=외부 종료' || true; }; }
+# THE POSITIVE PRECONDITION, one per negative case. Three cases below assert
+# that a record was NOT settled, and a `0` is exactly what a directory the gate
+# never reads also yields — measured: a literal run id left behind by a manifest
+# switch made eight such assertions pass against an empty directory. So each of
+# them is preceded by a full gate-dispatched orphan planted in the SAME
+# directory and settled, whose row proves the path before the absence is read.
+pos41() {  # pos41 <tag>
+  plant41 "$1"
+  snap41 >/dev/null
+  check "(선행 $1) 게이트가 이 절의 런 디렉터리를 실제로 읽는다 — 정산 1건" "$(klass41 "$1")" "1"
+}
+
+# A. THE CORE CASE. It is also the positive precondition for cases B and D: a
+# settled row here is the proof that the fixtures and the gate share a path.
+plant41 S41A
+snap_a=$(snap41)
+check "A 핵심 — 외부 종료 행이 정확히 하나" \
+  "$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=S41A ' || true; } | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+check "A 정산 뒤 pid 기록이 사라진다" "$( [ -e "$RD40/S41A.pid" ] && printf 'yes' || printf 'no' )" "no"
+check "A 정산 뒤 .kind·.start 도 사라진다" \
+  "$( { [ -e "$RD40/S41A.kind" ] || [ -e "$RD40/S41A.start" ]; } && printf 'left' || printf 'gone' )" "gone"
+check "A 같은 snapshot 의 orphan_stages 에 그 세그먼트가 없다 (정산이 열거보다 먼저 끝난다)" \
+  "$(printf '%s' "$snap_a" | jq -r '.orphan_stages | index("S41A") // "absent"')" "absent"
+snap41 >/dev/null
+check "A 두 번째 호출에 둘째 행은 없다" "$(rows41 S41A)" "1"
+row41a=$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F '세그먼트=S41A ' | tail -1)
+check "A 정산 행의 종료 코드는 값 없음(-)" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *종료 코드=//p' | sed 's/[[:space:]]*$//')" "-"
+check "A 정산 행의 부모는 값 없음(-) — 정산자는 파견한 세션이 아니다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *부모=//p' | sed 's/[[:space:]]*$//')" "-"
+case "$row41a" in
+  *"| 관측=파견 기록이 프로세스보다 오래 살았고"*) ok "A 정산 행이 관측을 산문으로 나른다" ;;
+  *) bad "A 관측 필드" "$row41a" ;;
+esac
+check "A 정산 행의 실행 버전은 .attempt 의 값이다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')" "1"
+check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')" "S41A-session"
+
+# B. NO FINGERPRINT — enumerated by the alarm, settled by nobody.
+pos41 S41BP
+printf '%s\n' "$DEAD40" > "$RD40/S41B.pid"
+printf '1\n' > "$RD40/S41B.attempt"
+printf 'review\n' > "$RD40/S41B.kind"
+snap_b=$(snap41)
+check "B 지문 없는 기록은 열거만 되고 정산되지 않는다" "$(rows41 S41B)" "0"
+check "B 그 기록의 pid 파일은 그대로다 (선점도 없다)" "$( [ -e "$RD40/S41B.pid" ] && printf 'yes' || printf 'no' )" "yes"
+check "B 경보(orphan_stages)는 여전히 그 세그먼트를 이름 댄다" \
+  "$(printf '%s' "$snap_b" | jq -r '.orphan_stages | index("S41B") | if . == null then "absent" else "listed" end')" "listed"
+rm -f "$RD40/S41B.pid" "$RD40/S41B.attempt" "$RD40/S41B.kind"
+
+# C. A REAL ROW ALREADY THERE — cleanup only, no second row.
+printf -- '- `stage-result` | 교대=0 | 세그먼트=S41C | 스테이지=S41C | 종류=review | 종료 코드=1 | 실행 버전=1 | 세션 id=s41c | 부모=x | 종단 부류=크래시 | prev=%s\n' "$(tip40)" >> "$FX_LEDGER"
+plant41 S41C
+snap41 >/dev/null
+check "C 진짜 행이 이미 있으면 이중 정산이 없다" "$(rows41 S41C)" "1"
+check "C 그래도 기록은 정리된다" "$( [ -e "$RD40/S41C.pid" ] && printf 'yes' || printf 'no' )" "no"
+
+# D. THE DRIVER'S SHAPE — `.pid`, `.start`, `.pgid`, no `.kind`. The driver's
+# own `stage_collect` owns this record; settling it would pre-empt that.
+pos41 S41DP
+printf '%s\n' "$DEAD40" > "$RD40/S41D.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/S41D.start"
+printf '1\n' > "$RD40/S41D.pgid"
+printf '1\n' > "$RD40/S41D.attempt"
+snap41 >/dev/null
+check "D 드라이버 기록은 정산하지 않는다" "$(rows41 S41D)" "0"
+check "D 드라이버 기록에는 mv 도 없다 (pid 파일이 그 이름 그대로다)" "$( [ -e "$RD40/S41D.pid" ] && printf 'yes' || printf 'no' )" "yes"
+rm -f "$RD40/S41D.pid" "$RD40/S41D.start" "$RD40/S41D.pgid" "$RD40/S41D.attempt"
+
+# F. A SETTLER THAT DIED AFTER ITS APPEND. The marker it left is outside the
+# `*.pid` glob; once its mtime passes 60 seconds the enumeration reclaims it,
+# the settlement finds the row already present and only cleans up.
+printf -- '- `stage-result` | 교대=0 | 세그먼트=S41F | 스테이지=S41F | 종류=review | 종료 코드=- | 실행 버전=1 | 세션 id=s41f | 부모=- | 종단 부류=외부 종료 | 관측=픽스처 | prev=%s\n' "$(tip40)" >> "$FX_LEDGER"
+printf '%s\n' "$DEAD40" > "$RD40/S41F.pid.settling.99999"
+fx_age_file "$RD40/S41F.pid.settling.99999" 120
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/S41F.start"
+printf '1\n' > "$RD40/S41F.attempt"
+printf 'review\n' > "$RD40/S41F.kind"
+snap41 >/dev/null
+check "F 죽은 정산자가 append 한 뒤의 회수 — 행은 하나 그대로" "$(rows41 S41F)" "1"
+check "F 회수가 멈춘 표식을 치운다" \
+  "$( { ls "$RD40"/S41F.pid.settling* 2>/dev/null || true; } | grep -c . || true)" "0"
+check "F 회수가 나머지 기록도 치운다" \
+  "$( { [ -e "$RD40/S41F.kind" ] || [ -e "$RD40/S41F.start" ]; } && printf 'left' || printf 'gone' )" "gone"
+
+# `plan` DOES NOT SETTLE — the dry-run verb writes no row by contract, and the
+# settlement would be a row. The precondition matters most here: the claim is
+# that a verb does not settle, and it has to be distinguished from a directory
+# nothing settles in, so the line above proves `snapshot` settles the same shape
+# in the same place immediately before.
+pos41 S41PP
+plant41 S41P
+gateL plan --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 --rationale x -- ls
+check "plan 의 프리루드는 정산하지 않는다" "$(rows41 S41P)" "0"
+check "plan 뒤에도 그 기록은 그대로다" "$( [ -e "$RD40/S41P.pid" ] && printf 'yes' || printf 'no' )" "yes"
+rm -f "$RD40/S41P.pid" "$RD40/S41P.start" "$RD40/S41P.attempt" "$RD40/S41P.kind"
+
+# ---------------------------------------------------------------------------
+# 42. 라우터 행만 늘어난 스테이지는 `정상 완료` 가 아니다
+# --- section: 42 | group: base | covers: act, gate_main | anchors: 라우터 행만 늘어난 스테이지는 정상 완료가 아니다, 스테이지 자신이 게이트를 한 번 부르면 정상 완료다 ---
+#
+# The outcome recorder's fourth condition. While the dispatch blocked, "the
+# global `자율 승인` count grew" meant "the stage itself called the gate" —
+# nobody else could write in that window. With the supervisor detached the
+# router writes rows for the stage's whole lifetime, so the recorder now looks
+# for a `행위자=스테이지` row of THIS segment after THIS attempt's dispatch
+# row. The two stubs differ in exactly that: one does nothing, one calls the
+# gate once from the stage seat.
+#
+# THIS SECTION PLANTS NOTHING ON DISK, so it names no run directory. Every
+# assertion below goes through a real `act`/`wait` and reads the ledger the gate
+# itself wrote, which is why it stayed green while its neighbours were spelling
+# the path by hand. The two lines that used to prepare a run directory here were
+# read by nothing and are gone rather than corrected.
+# ---------------------------------------------------------------------------
+HL >/dev/null
+STUB42A="$WORK/bin/claude-stub-42a"
+cat > "$STUB42A" <<'STUB42AEOF'
+#!/usr/bin/env bash
+sleep 1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s42a-session","num_turns":1}\n'
+exit 0
+STUB42AEOF
+chmod +x "$STUB42A"
+STUB42B="$WORK/bin/claude-stub-42b"
+cat > "$STUB42B" <<'STUB42BEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s42b-session","num_turns":1}\n'
+exit 0
+STUB42BEOF
+chmod +x "$STUB42B"
+klass42() { { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F "세그먼트=$1 " | tail -1 \
+            | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1; }
+
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42A --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+check "42 실험용 세그먼트 행 (A) 이 기록된다" "$rc" "0"
+# Forked: the stub CLI is read while the gate is sourced (see the 14h launch).
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
+  bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42A --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
+  -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+# THE ROUTER'S OWN ABOVE-READ ACT, after the dispatch row and before the stage
+# ends. Under the old count this alone made the stage `정상 완료`.
+gateL exec --manifest "$FX_MANIFEST" --target infra --segment S42A --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale "픽스처 — 라우터의 읽기 초과 행위" \
+      -- touch "$WT/s42-router.txt"
+check "42 라우터의 읽기 초과 exec 가 통과한다" "$rc" "0"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
+  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42A --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "42 (A) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
+k42a=$(klass42 S42A)
+if [ -n "$k42a" ] && [ "$k42a" != "정상 완료" ]; then
+  ok "라우터 행만 늘어난 스테이지는 정상 완료가 아니다 ($k42a)"
+else
+  bad "넷째 조건" "종단 부류=${k42a:-없음} — 라우터의 행이 스테이지의 것으로 세어졌다"
+fi
+rm -f "$WT/s42-router.txt"
+
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment S42B --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+check "42 실험용 세그먼트 행 (B) 이 기록된다" "$rc" "0"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
+  bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment S42B --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
+  -- review "/cc-cmds:review-unattended x" ) >/dev/null 2>&1
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
+  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
+check "스테이지 자신이 게이트를 한 번 부르면 정상 완료다" "$(klass42 S42B)" "정상 완료"
+check "42 (B) 의 스테이지 행에 행위자=스테이지 가 찍혀 있다" \
+  "$( { grep -F '`자율 승인`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=S42B ' || true; } | { grep -cF '| 행위자=스테이지 |' || true; } )" "1"
+
+# ---------------------------------------------------------------------------
+# 43. 스냅숏 `live_stages[]` 와 렌더의 이름 목록
+# --- section: 43 | group: base | covers: snapshot | anchors: 스냅숏의 live_stages 가 살아 있는 세그먼트를 이름 댄다, 렌더의 살아 있는 스테이지 줄이 pid 를 적는다 ---
+#
+# `마지막 스테이지` names a stage that has ENDED. A successor shift deciding
+# whether to `wait` or dispatch needs the ones RUNNING, by name, and a person
+# who wants to stop one needs the pid on screen. Both come from
+# `cc_live_stage_records`, so the two cannot disagree.
+# ---------------------------------------------------------------------------
+RD40=$(fx_late_run_dir)
+mkdir -p "$RD40/log"
+HL >/dev/null
+snap43() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ); }
+W43_FX_SAVE="${FX_RUN_DIR:-}"
+FX_RUN_DIR="$RD40"
+fx_stage_live S43
+FX_RUN_DIR="$W43_FX_SAVE"
+printf '2\n' > "$RD40/S43.attempt"
+printf '4242\n' > "$RD40/S43.sup"
+snap43=$(snap43)
+# THE POSITIVE PRECONDITION — the planted stage is in the emitted list exactly
+# once. Read first, because every assertion after it selects that entry: without
+# it, a snapshot of a directory this section never wrote to answers `null` for
+# each field, and a reader of the failures could not tell "the key is wrong"
+# from "the fixture is somewhere else".
+check "(선행) 심은 살아 있는 스테이지가 live_stages 에 한 번 든다" \
+  "$(printf '%s' "$snap43" | jq -r '[.live_stages[] | select(.["세그먼트"] == "S43")] | length')" "1"
+# Selected by name rather than by position: the late home is shared with the
+# sections above and a sibling live record would move index 0.
+l43() { printf '%s' "$snap43" | jq -r --arg k "$1" '.live_stages[] | select(.["세그먼트"] == "S43") | .[$k]'; }
+check "스냅숏의 live_stages 가 살아 있는 세그먼트를 이름 댄다" "$(l43 세그먼트)" "S43"
+check "43 live_stages 의 스테이지 id 는 세그먼트#시도다" "$(l43 스테이지)" "S43#2"
+check "43 live_stages 가 CLI pid 를 싣는다" "$(l43 pid)" "$FX_LAST_PID"
+check "43 live_stages 가 감독자 pid 를 싣는다" "$(l43 감독)" "4242"
+render43=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$FX_MANIFEST" --render 2>/dev/null)
+case "$render43" in
+  *"S43(pid $FX_LAST_PID, sup 4242)"*) ok "렌더의 살아 있는 스테이지 줄이 pid 를 적는다" ;;
+  *) bad "렌더 목록" "$(printf '%s' "$render43" | grep '살아 있는 스테이지' || true)" ;;
+esac
+kill "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD40/S43.pid" "$RD40/S43.start" "$RD40/S43.attempt" "$RD40/S43.sup"
 
 # ---------------------------------------------------------------------------
 # 56. 읽기 크레딧·억제 흔적·철회

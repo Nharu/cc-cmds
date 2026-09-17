@@ -33,6 +33,16 @@
 #     not in `lint-skill-invariants.sh` because that script's rule (B) is a
 #     base<->lite phrase-sync over a pair and is dormant; asserting one
 #     sentence's presence in one file is this script's shape, not that one's.
+#   Rule 6 (the two enumerations agree) — this script's allowlist and the
+#     sibling `lint-judgment-grade.sh`'s `PAIRS` are BOTH explicit lists, and
+#     their membership rules differ: this one is "every skill the pipeline
+#     dispatches headlessly", that one is "every attended/unattended pair".
+#     An arm registered in one and not the other is not a failure anywhere —
+#     it is a false all-clear from the lint that never saw it. So the
+#     unattended half of every `PAIRS` entry must appear in `UNATTENDED_SKILLS`.
+#     The inclusion is one-directional on purpose: an arm with no attended
+#     counterpart (`autopilot-router-shift`) is rightly absent from `PAIRS`,
+#     so the reverse containment does not hold and is not asserted.
 #
 # Why these are checkable here and not in general: each unattended arm lives
 # in its OWN file and carries exactly one arm, so a whole-file predicate is
@@ -87,15 +97,27 @@ repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
 # Explicit allowlist. Deliberately NOT a `*-unattended` glob: the scan set is
-# the set of skills the pipeline dispatches as a stage, and `design-reconverge`
-# is one of those without carrying the suffix. A glob would also silently drop
-# a renamed arm instead of failing.
+# the set of skills the pipeline dispatches headlessly — as a stage from the
+# driver, or as a shard from the gate — and `design-reconverge` is one of those
+# without carrying the suffix. A glob would also silently drop a renamed arm
+# instead of failing.
+#
+# Membership was taken against the tree rather than by suffix, and the census
+# is written here so the next arm is checked the same way: the driver's stage
+# dispatch names `implement-unattended`, `review-unattended`,
+# `design-audit-unattended`, `design-reconverge` and `design-discuss-unattended`;
+# the gate's `act --kind router-shift` launches `autopilot-router-shift` as a
+# headless shard. That last one carries no `-unattended` suffix and has no
+# attended counterpart, which is exactly the shape a suffix rule or the sibling
+# lint's pair table would miss — it was absent from this list when the census
+# was first taken.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
   "design-discuss-unattended"
+  "autopilot-router-shift"
 )
 
 # Fork parity pairs: "<fork>|<base>". Only pairs whose base pins constants
@@ -126,7 +148,13 @@ REFERENCE_TREES=(
   # references/ tree; `design/references/` does not exist today, so this entry
   # is a SKIP until one appears, and Rule 5 below is what covers the leg.
   "design-discuss-unattended|design"
+  # The router shard shares nobody's tree and has none of its own.
+  "autopilot-router-shift|autopilot-router-shift"
 )
+
+# Rule 6 — the sibling lint whose `PAIRS` line is read back. The line is parsed
+# rather than duplicated here so the two lists cannot drift apart silently.
+SIBLING_PAIRS_LINT="$script_dir/lint-judgment-grade.sh"
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
 # no call form required; see the asymmetry note in the header.
@@ -286,10 +314,38 @@ for skill in ${U0_PINNED_SKILLS[@]+"${U0_PINNED_SKILLS[@]}"}; do
   fi
 done
 
+# Rule 6 — every unattended half of the sibling lint's `PAIRS` is in this
+# allowlist. Read from the sibling's source line, not re-typed: the whole point
+# is that the two enumerations are maintained in two files by two rules, and a
+# copy here would be a third.
+pairs_checked=0
+if [[ -f "$SIBLING_PAIRS_LINT" ]]; then
+  sibling_pairs=$(sed -n 's/^PAIRS="\(.*\)"$/\1/p' "$SIBLING_PAIRS_LINT" | sed -n '1p')
+  if [[ -z "$sibling_pairs" ]]; then
+    echo "FAIL: $SIBLING_PAIRS_LINT — PAIRS=\"…\" 줄을 찾지 못했다 — 두 열거의 교차 검사가 읽을 것이 없다" >&2
+    fail=1
+  fi
+  for pair in $sibling_pairs; do
+    una="${pair##*|}"
+    pairs_checked=$((pairs_checked + 1))
+    found=0
+    for skill in "${UNATTENDED_SKILLS[@]}"; do
+      [[ "$skill" == "$una" ]] && { found=1; break; }
+    done
+    if [[ "$found" -eq 0 ]]; then
+      echo "FAIL: $una — lint-judgment-grade.sh 의 PAIRS 에는 있는데 이 파일의 UNATTENDED_SKILLS 에는 없다" >&2
+      echo "       한쪽에만 등록된 팔은 실패가 아니라 거짓 all-clear 로 나타난다 — 두 열거에 함께 더해야 한다" >&2
+      fail=1
+    fi
+  done
+else
+  echo "SKIP: Rule 6 — $SIBLING_PAIRS_LINT 가 없다"
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "lint-unattended-surfaces: violations found" >&2
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${pairs_checked} sibling pair(s) cross-checked"
 exit 0
