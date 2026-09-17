@@ -188,7 +188,7 @@ open_approval_ids() {
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "승인 id=$id " || true; } | tail -1 \
+    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     if [ "$st" = "대기" ]; then printf '%s\n' "$id"; fi
   done

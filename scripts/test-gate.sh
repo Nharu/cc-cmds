@@ -26,6 +26,14 @@
 # origin-worktree, so nothing here touches the checkout the tests run from.
 #
 # Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
+#
+# The three-signal oracle below wraps both run forms. Its own entry points exist
+# for `scripts/test-gate-oracle.sh` and run no assertion of this suite:
+#
+#   --oracle-judge <dir>            judge a captured transcript (out/err/rc/map/
+#                                   script/scope) and exit with the verdict code
+#   --oracle-probe                  run the message-catalogue self-test only
+#   --oracle-wrap <script> <map>    run an arbitrary script through the wrapper
 
 set -uo pipefail
 
@@ -198,6 +206,9 @@ SELF="$script_dir/${0##*/}"
 sections_want=""
 sections_list=0
 sections_strict=0
+oracle_mode=""
+oracle_arg1=""
+oracle_arg2=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -212,8 +223,16 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --run-one=*)
       sections_want="${1#--run-one=}"; sections_strict=1; shift ;;
+    --oracle-judge)
+      oracle_mode="judge"; oracle_arg1="${2-}"
+      if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --oracle-probe)
+      oracle_mode="probe"; shift ;;
+    --oracle-wrap)
+      oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
+      if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -224,6 +243,340 @@ if [ "$sections_strict" = "1" ]; then
       exit 2 ;;
   esac
 fi
+
+# ---------------------------------------------------------------------------
+# THE THREE-SIGNAL ORACLE — totals, FAIL reconciliation, noise
+#
+# The suite's own exit status is not an honest report of whether it RAN. Six
+# shapes of failure were enumerated against this file and no single signal
+# covers them; three of the six are each caught by exactly one of the signals
+# below, so all three are wired and none of them is optional.
+#
+#   1  TOTALS   the epilogue's last two lines are the totals `printf` and
+#               `[ "$failed" = "0" ]`, so "totals present and failed=0" implies
+#               rc 0. The converse is the detector: a missing totals line is an
+#               abort before the epilogue, and seeing it needs no pattern and no
+#               message catalogue, which makes it the one crash signal with no
+#               false positives at all.
+#   2  FAIL     `bad()` increments a counter AND writes `FAIL:` to stderr. Called
+#               inside a command substitution the increment is lost with the
+#               subshell and only the text escapes, so a disagreement between the
+#               two counts is a failure the totals swallowed. Nothing else sees
+#               that shape: it is green, complete, and quiet.
+#   3  NOISE    `command not found` / `unbound variable` on stderr is a cut that
+#               broke or a symbol that moved. It is the only signal that catches
+#               a run which is green, has totals, and covered nothing.
+#
+# THE EXCLUSION SET IS `^FAIL:` ALONE, AND THE STREAM IS stderr — the two have to
+# be said together or neither means anything. `ok()` writes to stdout and `bad()`
+# to stderr, so a stderr-only scan can never match `^PASS:` and excluding it
+# would be excluding nothing. The asymmetry is made by the API shape: `ok()` takes
+# a label and `bad()` takes a label plus a diagnostic, so the calls that carry a
+# captured variable into their text are all on the `bad` side.
+#
+# WHY THE WRAPPER RE-ENTERS THIS FILE AS A CHILD instead of judging in place: the
+# signals are properties of the whole transcript, and the transcript does not
+# exist until the process that produced it has exited. In-place judging would be
+# judging before the last assertion ran — and, for the crash shapes, in a shell
+# that has already aborted.
+#
+# THE LOCALE IS NORMALISED FOR MESSAGES ONLY. `LC_ALL=C` would take CTYPE and
+# COLLATE with it and this suite is saturated with Korean, so `LC_MESSAGES=C` is
+# what makes the two English patterns above the right ones. Because that makes
+# the detector depend on a message catalogue, a SELF-TEST runs first and the
+# suite is not run at all when the catalogue does not say what the patterns
+# expect. A detector that quietly stops matching is precisely the failure this
+# whole block exists to catch, so it has to fail loudly rather than pass
+# silently.
+# ---------------------------------------------------------------------------
+
+# The groups whose sections FAIL on noise; every other group warns. This single
+# list is where the rollout widens — the last step replaces it with every group.
+# ENFORCEMENT IS A PROPERTY OF THE SECTION, NOT OF THE RUN. Sharding is by
+# `needs:` component and a component crosses groups, so a cut holding an enforced
+# and a warned section at once is ordinary and a run-level rule has no answer for
+# it.
+oracle_noise_enforced=" static sb sa review "
+# Set by the narrowed call site only. A full run must NOT hand the child a
+# `CC_TEST_GATE_REPO_ROOT`: the child there is this file at its real path and
+# derives the root from it, which is what the variable's own contract says.
+oracle_child_repo_root=""
+
+# `LC_ALL` overrides every category, so on a host that sets it the other
+# variables say nothing about what is in effect. Its value is therefore MOVED
+# into the categories the design wants preserved before it is unset — plain
+# `unset LC_ALL` would drop CTYPE and COLLATE to C and break the very thing
+# choosing `LC_MESSAGES` over `LC_ALL` was for.
+oracle_locale() {
+  if [ -n "${LC_ALL:-}" ]; then
+    LC_CTYPE="$LC_ALL"
+    LC_COLLATE="$LC_ALL"
+    LC_NUMERIC="$LC_ALL"
+    LC_TIME="$LC_ALL"
+    LC_MONETARY="$LC_ALL"
+    export LC_CTYPE LC_COLLATE LC_NUMERIC LC_TIME LC_MONETARY
+    unset LC_ALL
+  fi
+  LC_MESSAGES=C
+  export LC_MESSAGES
+}
+
+# The catalogue self-test. Both probes are taken through COMMAND SUBSTITUTION
+# rather than the pipeline the design sketches: this file runs under `pipefail`,
+# both probes exit non-zero by construction, and `probe | grep -q …` would then
+# report failure on a catalogue that is perfectly correct.
+oracle_probe() {
+  local got
+  got=$(bash -c 'cc_gate_probe_missing_xyz' 2>&1 || true)
+  case "$got" in
+    *'command not found'*) ;;
+    *)
+      printf 'test-gate: 판정=probe — 탐침 자가시험 실패: 없는 명령이 「command not found」를 내지 않습니다 (받은 것: 「%s」)\n' \
+        "$(printf '%s' "$got" | tr '\n' ' ')" >&2
+      return 1 ;;
+  esac
+  got=$(bash -uc ': "${CC_GATE_PROBE_UNSET_XYZ}"' 2>&1 || true)
+  case "$got" in
+    *'unbound variable'*) ;;
+    *)
+      printf 'test-gate: 판정=probe — 탐침 자가시험 실패: 미바인딩 변수가 「unbound variable」을 내지 않습니다 (받은 것: 「%s」)\n' \
+        "$(printf '%s' "$got" | tr '\n' ' ')" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
+# CLEANING HAPPENS BEFORE THE RUN AND NEVER AFTER IT. The rollout deliberately
+# produces runs that abort, so a wrapper that tidied up on the way out would be
+# racing whatever sibling shard is running beside it. Cleaning on the way in
+# makes each run answerable for its own leftovers only.
+#
+# The age predicate is the part the design does not spell out and it is
+# load-bearing: the census runs sections in PARALLEL on one machine, so deleting
+# every `cc-gate-*` would delete a live sibling's `WORK` and re-create exactly the
+# contention the "clean in front" rule was written to avoid. 120 minutes is 2.5x
+# the full run measured on this host.
+oracle_clean() {
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cc-gate-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+}
+
+# Judge a captured transcript. The capture directory is the whole input — `out`,
+# `err`, `rc`, `map`, `script`, `scope` — which is also the fixture format, so the
+# unit suite and the live wrapper exercise one code path rather than two.
+#
+# `map` is `<start> <end> <id> <group>` per line in the line numbering OF THE
+# SCRIPT THAT RAN: original lines for a full run, cut-copy lines for a narrowed
+# one. A noise line is attributed only when its `<script>: line <N>:` prefix names
+# that script exactly; anything else — the head, the epilogue, a `bash -c`, a
+# sourced file — is unattributed and takes the strictest disposition any section
+# in this run would take. Guessing the other way would let a broken cut warn its
+# way past the check on the strength of a prefix nobody parsed.
+oracle_judge() {
+  local cap="$1" script="$2" map="$3" scope="$4"
+  local out="$cap/out" err="$cap/err"
+  local rc tot passed_n failed_n faillines totshow noisef
+  local verdict code reason
+  local n_enf=0 n_warn=0 has_enf=0
+
+  rc=""
+  if [ -f "$cap/rc" ]; then rc=$(cat "$cap/rc"); fi
+  case "$rc" in ''|*[!0-9]*) rc=0 ;; esac
+  [ -f "$out" ] || out=/dev/null
+  [ -f "$err" ] || err=/dev/null
+
+  tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$out" | tail -1 || true)
+  if [ -n "$tot" ]; then
+    passed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\1/')
+    failed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\2/')
+    totshow="$passed_n passed, $failed_n failed"
+  else
+    passed_n=""; failed_n=""; totshow="없음"
+  fi
+
+  faillines=$(grep -c '^FAIL:' "$err" || true)
+  case "$faillines" in ''|*[!0-9]*) faillines=0 ;; esac
+
+  if [ -n "$map" ] && [ -s "$map" ]; then
+    while read -r m_a m_b m_id m_grp; do
+      [ -n "${m_grp:-}" ] || continue
+      case "$oracle_noise_enforced" in
+        *" $m_grp "*) has_enf=1; break ;;
+      esac
+    done < "$map"
+  else
+    case "$oracle_noise_enforced" in
+      *[![:space:]]*) has_enf=1 ;;
+    esac
+  fi
+
+  # The scratch file is OUTSIDE the capture directory so that `--oracle-judge`
+  # can be pointed at a checked-in fixture without writing into the tree.
+  noisef=$(mktemp "${TMPDIR:-/tmp}/cc-gate-oracle-noise.XXXXXX")
+  grep -Ev '^(FAIL|test-gate):' "$err" \
+    | grep -E 'command not found|unbound variable' > "$noisef" || true
+
+  while IFS= read -r nline; do
+    [ -n "$nline" ] || continue
+    local num="" hit="" nid="" ngrp=""
+    case "$nline" in
+      "$script: line "*)
+        num=${nline#"$script: line "}
+        num=${num%%:*}
+        case "$num" in ''|*[!0-9]*) num="" ;; esac ;;
+    esac
+    if [ -n "$num" ] && [ -n "$map" ] && [ -s "$map" ]; then
+      hit=$(awk -v n="$num" '$1 <= n && n <= $2 { print $3 " " $4; exit }' "$map")
+    fi
+    if [ -n "$hit" ]; then
+      nid=${hit%% *}; ngrp=${hit##* }
+      case "$oracle_noise_enforced" in
+        *" $ngrp "*)
+          n_enf=$((n_enf + 1))
+          printf 'test-gate: 노이즈 — id=%s group=%s: %s\n' "$nid" "$ngrp" "$nline" >&2 ;;
+        *)
+          n_warn=$((n_warn + 1))
+          printf 'test-gate: 노이즈 경고 — id=%s group=%s: %s\n' "$nid" "$ngrp" "$nline" >&2 ;;
+      esac
+    elif [ "$has_enf" = "1" ]; then
+      n_enf=$((n_enf + 1))
+      printf 'test-gate: 노이즈 — 절에 귀속되지 않음(이 실행에 강제 대상 절이 있어 강제합니다): %s\n' "$nline" >&2
+    else
+      n_warn=$((n_warn + 1))
+      printf 'test-gate: 노이즈 경고 — 절에 귀속되지 않음: %s\n' "$nline" >&2
+    fi
+  done < "$noisef"
+  rm -f "$noisef"
+
+  # THE ORDER OF THESE ARMS IS THE VERDICT LATTICE and it is not arbitrary. A
+  # crash outranks everything because its totals are missing, which makes every
+  # other count meaningless. A swallowed failure outranks a plain failure because
+  # it says the count itself is wrong. Noise sits last among the reds so that an
+  # ordinary assertion failure keeps the exit code it has always had.
+  if [ -z "$tot" ]; then
+    verdict="crash"; code=5
+    reason="총계 줄이 없습니다 — 스위트가 에필로그에 닿지 못했습니다"
+  elif [ "$failed_n" = "0" ] && [ "$rc" != "0" ]; then
+    verdict="crash"; code=5
+    reason="총계는 0 failed 인데 rc=$rc 입니다 — 에필로그를 지나 중단됐습니다"
+  elif [ "$faillines" != "$failed_n" ]; then
+    if [ "$failed_n" != "0" ] && [ "$faillines" -gt "$failed_n" ]; then
+      # The two cannot be told apart here: a `bad()` diagnostic can carry captured
+      # output that itself begins with `FAIL:`. Either way the run is red, so it
+      # is reported as the failure it already is and the discrepancy is named.
+      verdict="fail"; code=1
+      reason="단언이 실패했습니다 (FAIL 줄 $faillines 개와 총계의 failed $failed_n 이 다릅니다 — bad 진단에 실린 캡처가 FAIL: 로 시작할 수 있습니다)"
+    else
+      verdict="swallowed"; code=4
+      reason="FAIL 줄은 $faillines 개인데 총계의 failed 는 $failed_n 입니다 — 서브셸에 갇혀 집계되지 않은 실패입니다"
+    fi
+  elif [ "$failed_n" != "0" ]; then
+    verdict="fail"; code=1
+    reason="단언이 실패했습니다"
+  elif [ "$n_enf" -gt 0 ]; then
+    verdict="noise"; code=3
+    reason="강제 대상 절에서 노이즈 $n_enf 줄이 났습니다 — 총계는 초록이지만 컷이나 심볼이 깨졌습니다"
+  else
+    verdict="pass"; code=0
+    reason="세 신호 모두 조용합니다"
+  fi
+
+  # ONE LINE, LAST, ON stderr. A red shard has to be sorted into "an assertion
+  # failed" / "the cut broke" / "the suite crashed" from the CI summary alone; if
+  # that split only exists inside the wrapper, somebody has to open the log in the
+  # morning to learn which one it was.
+  printf 'test-gate: 판정=%s 범위=%s — %s (rc=%s, 총계=%s, FAIL 줄=%s, 노이즈 강제=%s, 경고=%s)\n' \
+    "$verdict" "$scope" "$reason" "$rc" "$totshow" "$faillines" "$n_enf" "$n_warn" >&2
+  if [ "$code" != "0" ]; then
+    printf 'test-gate: 캡처 — %s (out·err·rc·map 이 그대로 있습니다; `--oracle-judge %s` 로 판정만 다시 낼 수 있습니다)\n' \
+      "$cap" "$cap" >&2
+  fi
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    if [ "$code" != "0" ]; then
+      printf '::error::test-gate 판정=%s 범위=%s — %s\n' "$verdict" "$scope" "$reason"
+    elif [ "$n_warn" -gt 0 ]; then
+      printf '::warning::test-gate 범위=%s — 노이즈 경고 %s 줄 (강제 대상 절이 아닙니다)\n' "$scope" "$n_warn"
+    fi
+  fi
+  return "$code"
+}
+
+# Run a script through the wrapper and judge what it produced.
+#
+# The child's streams are teed through FIFOs rather than collected into files and
+# printed at the end: a full run is forty minutes and a wrapper that shows
+# nothing until it finishes is a wrapper people work around. The explicit `wait`
+# on each tee is what makes the capture complete before it is read — process
+# substitution has no such handle, and reading a half-flushed capture would
+# invent exactly the "totals line missing" crash this is meant to detect.
+oracle_run() {
+  local script="$1" map="$2" scope="$3"
+  shift 3
+  local cap fo fe rc tpo tpe verdict_rc
+
+  oracle_clean
+  oracle_locale
+  if ! oracle_probe; then
+    return 6
+  fi
+
+  cap=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-oracle.XXXXXX")
+  printf '%s\n' "$script" > "$cap/script"
+  printf '%s\n' "$scope" > "$cap/scope"
+  if [ -n "$map" ] && [ -f "$map" ]; then cp "$map" "$cap/map"; else : > "$cap/map"; fi
+
+  fo="$cap/fifo.out"; fe="$cap/fifo.err"
+  mkfifo "$fo" "$fe"
+  tee "$cap/out" < "$fo" &
+  tpo=$!
+  tee "$cap/err" < "$fe" >&2 &
+  tpe=$!
+  if [ -n "$oracle_child_repo_root" ]; then
+    CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$oracle_child_repo_root" \
+      bash "$script" "$@" > "$fo" 2> "$fe"
+  else
+    CC_TEST_GATE_ORACLE_INNER=1 \
+      bash "$script" "$@" > "$fo" 2> "$fe"
+  fi
+  rc=$?
+  wait "$tpo" 2>/dev/null || true
+  wait "$tpe" 2>/dev/null || true
+  rm -f "$fo" "$fe"
+  printf '%s\n' "$rc" > "$cap/rc"
+
+  oracle_judge "$cap" "$script" "$cap/map" "$scope"
+  verdict_rc=$?
+  return "$verdict_rc"
+}
+
+# The oracle's own entry points, answered before the section index is built: none
+# of them runs an assertion of this suite, and two of them must work on a tree
+# whose banners are deliberately broken.
+case "$oracle_mode" in
+  probe)
+    oracle_locale
+    oracle_probe
+    exit $? ;;
+  judge)
+    if [ -z "$oracle_arg1" ] || [ ! -d "$oracle_arg1" ]; then
+      printf 'test-gate: --oracle-judge 는 캡처 디렉터리를 받습니다 (받은 것: 「%s」)\n' "$oracle_arg1" >&2
+      exit 2
+    fi
+    oracle_judge_script=""
+    if [ -f "$oracle_arg1/script" ]; then oracle_judge_script=$(cat "$oracle_arg1/script"); fi
+    oracle_judge_scope="전량"
+    if [ -f "$oracle_arg1/scope" ]; then oracle_judge_scope=$(cat "$oracle_arg1/scope"); fi
+    oracle_judge "$oracle_arg1" "$oracle_judge_script" "$oracle_arg1/map" "$oracle_judge_scope"
+    exit $? ;;
+  wrap)
+    if [ -z "$oracle_arg1" ] || [ ! -f "$oracle_arg1" ]; then
+      printf 'test-gate: --oracle-wrap 은 실행할 스크립트와 맵 파일을 받습니다 (받은 것: 「%s」 「%s」)\n' \
+        "$oracle_arg1" "$oracle_arg2" >&2
+      exit 2
+    fi
+    oracle_child_repo_root=""
+    oracle_run "$oracle_arg1" "$oracle_arg2" "래퍼 시험"
+    exit $? ;;
+esac
 
 # The index, one record per line:
 #
@@ -538,6 +891,16 @@ FRONTEOF
     # groups have none, because the fixture itself is their prelude. One call
     # per group per cut: the functions are idempotent as well, so a serial
     # caller that meets both the container's own call and this one runs it once.
+    # THE ORACLE'S MAP IS BUILT AS THE COPY IS, because it is the only moment the
+    # two line numberings are both known. A noise line names a line of the CUT,
+    # and the section it belongs to is a range of the ORIGINAL; deriving one from
+    # the other afterwards would mean re-deriving every insertion this loop makes.
+    # The running counter starts at the head, which the copy takes verbatim, and
+    # the three lines a prelude insert adds are counted but attributed to no
+    # section — they are the selector's own text, not the group's.
+    sec_map="$sec_dir/oracle-map"
+    : > "$sec_map"
+    sec_cur="$sec_pre"
     sec_pre_done=" "
     while read -r sec_a sec_b; do
       [ -n "$sec_a" ] || continue
@@ -552,10 +915,17 @@ FRONTEOF
               sec_pre_done="$sec_pre_done$sec_grp "
               if [ "$(grep -cE "^pre_${sec_grp}\(\) *\{" "$SELF" || true)" != "0" ]; then
                 printf '\n# --- prelude: %s (inserted by the selector) ---\npre_%s\n' "$sec_grp" "$sec_grp" >> "$sec_cut"
+                sec_cur=$(( sec_cur + 3 ))
               fi ;;
           esac ;;
       esac
       sed -n "${sec_a},${sec_b}p" "$SELF" >> "$sec_cut"
+      sec_id=$(printf '%s\n' "$sec_idx" \
+        | sed -n "s/^SEC $sec_a $sec_b \([^ ]*\) [0-9]* .*\$/\1/p")
+      printf '%s %s %s %s\n' \
+        "$(( sec_cur + 1 ))" "$(( sec_cur + sec_b - sec_a + 1 ))" \
+        "${sec_id:--}" "${sec_grp:--}" >> "$sec_map"
+      sec_cur=$(( sec_cur + sec_b - sec_a + 1 ))
     done <<SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
@@ -631,11 +1001,47 @@ SECEOF
 $(printf '%s' "$sec_ranges" | sort -n -u)
 SECEOF
 
-    CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
-    sec_rc=$?
+    # A NESTED CALL RUNS EXACTLY AS IT DID BEFORE THE WRAPPER EXISTED. Sections of
+    # this suite invoke the selector again and assert its output and its exit
+    # code; wrapping those would have them asserting the wrapper's verdict line
+    # and the wrapper's lattice instead of the selector's own answer.
+    if [ -n "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+      CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$sec_cut"
+      sec_rc=$?
+    else
+      oracle_child_repo_root="$repo_root"
+      oracle_run "$sec_cut" "$sec_map" "좁힌 실행"
+      sec_rc=$?
+    fi
     rm -rf "$sec_dir"
     exit "$sec_rc"
   fi
+fi
+
+# THE FULL RUN GOES THROUGH THE SAME WRAPPER, and it reaches it here rather than
+# at the top because everything above may still exit 2 on a selector refusal —
+# those refusals are the selector's answer and must keep their own code.
+#
+# The index is built even though a bare full run never needed one: without it
+# every noise line is unattributed and the whole run takes the strict side, which
+# is correct but says nothing about WHICH section broke. Building it costs one awk
+# pass over this file.
+if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+  oracle_full_idx="$sec_idx"
+  if [ -z "$oracle_full_idx" ]; then
+    oracle_full_idx=$(section_index)
+    case "$oracle_full_idx" in ERR*) oracle_full_idx="" ;; esac
+  fi
+  oracle_full_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-oraclemap.XXXXXX")
+  oracle_full_map="$oracle_full_dir/map"
+  printf '%s\n' "$oracle_full_idx" \
+    | sed -n 's/^SEC \([0-9]*\) \([0-9]*\) \([^ ]*\) [0-9]* \([^ ]*\) .*$/\1 \2 \3 \4/p' \
+    > "$oracle_full_map"
+  oracle_child_repo_root=""
+  oracle_run "$SELF" "$oracle_full_map" "전량"
+  oracle_full_rc=$?
+  rm -rf "$oracle_full_dir"
+  exit "$oracle_full_rc"
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-test.XXXXXX")
@@ -1582,6 +1988,12 @@ pre_cone() {
   # `command not found` while the suite still reports green — the trap 9e1be1b
   # closed, in the file that closed it.
   STATE_CONE="$WORK/state-cone"
+  # THE TRANSCRIPT DIRECTORY IS PREAMBLE AND NOT SECTION BODY. Several sections
+  # in this family close an approval by writing a harness frame under it, and the
+  # one that happened to need it first defined it inline — so a cut that takes any
+  # of the others alone died on an unbound variable while the whole-file run
+  # stayed green. Anything a second section will call belongs here from the start.
+  NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
   gateN() {
     local out
     out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" gate_inproc "$@" 2>&1); rc=$?
@@ -6288,6 +6700,25 @@ fx_approval AP-1 승인
 n=$(cc_open_approvals "$FX_LEDGER")
 check "cc_open_approvals 가 id 별 마지막 행으로 접는다" "$n" "1"
 
+# A ROW THAT QUOTES A WAITING ID IS NOT THAT ID'S ROW. A closed approval whose
+# question text names the waiting AP-2 is appended after it — the shape a router
+# citing its own earlier decision leaves. Read as a substring, that close became
+# AP-2's last row: the run-state classifier saw nothing waiting and the watcher
+# raised no banner for it, while the gate's own census still counted it open.
+fx_row '승인' "승인 id=AP-3" "상태=승인" "대상=-" "절단점=경계" \
+  "질문 문면=승인 id=AP-2 을 인용한 질문" "답변 문면=-" "해소 시각=-"
+check "인용 행이 대기 id 를 문면에 싣는다 (시험이 공허하지 않다)" \
+  "$( { grep -F '질문 문면=승인 id=AP-2 ' "$FX_LEDGER" || true; } | wc -l | tr -d ' ')" "1"
+n=$(cc_open_approvals "$FX_LEDGER")
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 닫지 않는다 (cc_open_approvals)" "$n" "1"
+# The watcher's enumerator, taken as source text and run on its own the way
+# test-watch.sh lifts its time conversion: driving the watcher would need a run
+# directory and a banner stub, and neither is what this row is about.
+oai_fn=$(sed -n '/^open_approval_ids() {/,/^}/p' "$repo_root/plugins/cc-cmds/orchestrator/watch.sh")
+check "watch.sh 에서 열린 승인 id 열거 함수를 떼어냈다" "$([ -n "$oai_fn" ] && printf yes || printf no)" "yes"
+check "대기 승인의 id 를 인용한 나중 행이 그 승인을 열거에서 빼지 않는다 (open_approval_ids)" \
+  "$(CC_OAI_FN="$oai_fn" LEDGER="$FX_LEDGER" bash -c 'eval "$CC_OAI_FN"; open_approval_ids')" "AP-2"
+
 fx_segment SX 계획됨
 fx_segment SY 머지됨
 fx_segment SX park
@@ -8815,6 +9246,18 @@ check "스냅숏이 그 승인을 disposition=자유 입력 으로 표면화한�
 out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
       CLAUDE_CODE_SESSION_ID="$NEGSID" gate_inproc close --manifest "$NM" --approval "$nid" 2>&1); rc=$?
 check "같은 자유 입력 프레임에 대한 재호출은 행을 더하지 않는다" "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$nid " || true)" "$((nbefore + 1))"
+# A PERSON'S FREE INPUT IS NOT OVERWRITTEN BY AUTO-RESOLUTION. Resubmitting the
+# same judgment with the switch on used to close this `대기` with the router's
+# recommendation, after which the label answer below could not be recorded.
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+      gate_inproc act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+      -- 등급=2 "판단 부류=감사-발견" 기준="이 발견을 이번 런에서 고칠지" 근거="비용이 크다" 2>&1); rc=$?
+check "자유 입력으로 답한 판단은 자동 해소가 켜진 재제출에도 대기로 응답한다" "$rc" "5"
+check "그 재제출은 자동 해소 행을 붙이지 않는다" \
+  "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | grep -cF '처분 사유=자동 해소' || true)" "0"
+check "그 재제출 뒤에도 마지막 행은 자유 입력 대기다" \
+  "$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$nid " | tail -1)" '처분 사유')" "자유 입력"
 # THEN THE LABEL: the person chooses `거부`. The label decides; a flag that
 # disagrees is refused; a flag that agrees is accepted; no flag is fine.
 auq_frame "$NTX/$NEGSID.jsonl" "$nid" "$nq" "거부" >/dev/null
@@ -9856,7 +10299,7 @@ case "$out" in
   *"스테이지 종단"*) ok "답이 있는 물음을 다시 방출해도 기록 함수가 끝까지 도달한다" ;;
   *) bad "흡수기 탈출" "$out" ;;
 esac
-_aj_rows=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$aj" || true; } )
+_aj_rows=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$aj |" || true; } )
 if [ -n "$_aj_rows" ]; then
   ok "그 답으로 열렸다는 사실이 원장에 남고 어느 승인을 썼는지 지목한다"
 else
@@ -9912,7 +10355,7 @@ ar_approval_id() {
   row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | grep -F "$1" | tail -1)" '승인 id'
 }
 ar_last_row() {
-  { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F "승인 id=$1 " || true; } | tail -1
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
 }
 ar_adoptions() {
   { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F '결정=채택' || true; } \
@@ -9933,7 +10376,7 @@ ar_expect_refused() {
   check "$name: 자동 해소가 그 물음을 거부로 닫는다" "$(row_field "$row" '상태')" "거부"
   check "$name: 닫는 행은 자동 해소의 처분 사유를 싣는다" "$(row_field "$row" '처분 사유')" "자동 해소"
   check "$name: 그 승인으로 열린 채택 행이 없다" \
-    "$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$id " || true; } | grep -c . || true)" "0"
+    "$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$id |" || true; } | grep -c . || true)" "0"
   case "$out" in
     *"스테이지 종단"*) ok "$name: 기록 함수가 끝까지 도달한다" ;;
     *) bad "$name 흡수기 탈출" "스테이지 종단 줄이 없다: $out" ;;
@@ -9956,6 +10399,15 @@ n_ar=$(ar_adoptions)
 emit_ar SAR2 "$WORK/judgment-stub-ar-noclass"
 ar_expect_refused "방출된 부류 없음" "자동 해소가 켜진 채 부류 없이 방출한 판단" "$n_ar"
 
+# The other class that hands risk to the user, on the same emission path.
+seg_row SAR4 "$CONE_C" 상태=실행중 선행=없음
+check "팀-구성 자동 해소 방출 실험용 세그먼트 행이 기록된다" "$rc" "0"
+ar_stub "$WORK/judgment-stub-ar-team" \
+  '**판단 부류**: 팀-구성 **판단 등급**: 2 **판단 기준**: 자동 해소가 켜진 채 리뷰 팀을 소집할지 **판단 근거**: 발견이 많다'
+n_ar=$(ar_adoptions)
+emit_ar SAR4 "$WORK/judgment-stub-ar-team"
+ar_expect_refused "방출된 팀-구성" "자동 해소가 켜진 채 리뷰 팀을 소집할지" "$n_ar"
+
 # THE PAIR THAT PROVES THE CLASS ARRIVES. A class that may be adopted is adopted
 # on the same path, and the row names it — without the class being handed to the
 # issuer this would be refused as classless, and without the row carrying it the
@@ -9968,9 +10420,10 @@ emit_ar SAR3 "$WORK/judgment-stub-ar-audit"
 ar3_id=$(ar_approval_id "자동 해소가 켜진 채 감사 발견을 미룰지")
 if [ -n "$ar3_id" ]; then
   check "채택 가능 부류의 방출은 자동 해소가 승인으로 닫는다" "$(row_field "$(ar_last_row "$ar3_id")" '상태')" "승인"
-  ar3_row=$( { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$ar3_id " || true; } | tail -1)
+  ar3_row=$( { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$ar3_id |" || true; } | tail -1)
   check "그 채택 행은 스테이지 방출에서 왔다고 적는다" "$(row_field "$ar3_row" '출처')" "스테이지 방출"
   check "그 채택 행은 방출된 실제 부류를 싣는다" "$(row_field "$ar3_row" '판단 부류')" "감사-발견"
+  check "그 채택 행은 방출된 판단 등급을 싣는다" "$(row_field "$ar3_row" '등급')" "2"
 else
   bad "채택 가능 부류 방출" "그 물음의 승인이 발행되지 않았다: $out"
 fi
@@ -9984,7 +10437,7 @@ fi
 # a `감사-발견` emission had already spent. These count the rows.
 ar_spent_count() {
   # ar_spent_count <승인 id> — adoption rows that name that approval as spent.
-  { grep -F '`자율 승인`' "$LEDGER2" || true; } | { grep -F "해소 승인=$1 " || true; } | grep -c . || true
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
 }
 if [ -n "$ar3_id" ]; then
   ar_stub "$WORK/judgment-stub-ar-audit-visual" \
@@ -10033,6 +10486,95 @@ if [ -n "$ar4_id" ]; then
   esac
 else
   bad "빈 문면 방출" "그 물음의 승인이 발행되지 않았다: $out"
+fi
+
+# --- 31au. An answer auto-resolution closed is not lent to another class ----
+# --- section: 31au | group: cone | covers: act | anchors: 부류 대여 실험용 세그먼트 행이 기록된다 ---
+#
+# The approval id is a hash of `기준 — 근거` and carries no class, so a
+# resubmission with a different class reaches the same answer. Auto-resolution
+# judges the class only on the submission that OPENS the question — a submission
+# finding the approval already `승인` never enters it — so an answer closed for a
+# class that may be adopted, whose adoption row never got written, opened a class
+# that hands risk to the user with nobody asked.
+#
+# THE ADOPTION ROW IS WHERE THE GATE DIES. The judgment arm puts the router's
+# whole field list on that row with no key allowlist and no length cap, so one
+# 900-byte field pushes it past the row cap AFTER auto-resolution has closed the
+# approval in a separate, already-completed append. The ledger is append-only and
+# there is no compensating write, so what survives is "answered and unspent".
+#
+# THE MIDDLE ASSERTIONS ARE WHAT KEEP THIS HONEST. Asserting only that the
+# resubmission is refused would stay green under a repair that puts the class
+# into the approval id instead: the resubmission would compute a DIFFERENT id,
+# reach no answer at all, and be refused for a reason this section is not about.
+# So the state is pinned first — the approval's last row is `승인`, it was closed
+# by auto-resolution, and no adoption row names it.
+au_seg=SAU1
+seg_row "$au_seg" "$CONE_C" 상태=실행중 선행=없음
+check "부류 대여 실험용 세그먼트 행이 기록된다" "$rc" "0"
+au_std="자동 해소가 닫은 답이 다른 부류에 빌려지는가"
+au_why="채택 행이 상한으로 죽은 뒤를 잰다"
+# 900 bytes with no separator, no multibyte and no substitution — the value only
+# has to be long.
+au_pad=$(printf '%0900d' 0)
+au_act() {
+  # au_act <등급> <판단 부류> <추가 필드>… — one judgment act with auto-resolution
+  # on for that gate call alone, so the question is closed without a person.
+  local au_g="$1" au_c="$2"; shift 2
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
+        gate_inproc act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" \
+        --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급="$au_g" 기준="$au_std" 근거="$au_why" "판단 부류=$au_c" "$@" 2>&1); rc=$?
+}
+au_last_row() {
+  { grep -E '^- `승인`' "$LEDGER2" || true; } | { grep -F "| 승인 id=$1 |" || true; } | tail -1
+}
+au_spent_count() {
+  { grep -E '^- `자율 승인`' "$LEDGER2" || true; } | { grep -F "| 해소 승인=$1 |" || true; } | grep -c . || true
+}
+
+au_act 2 감사-발견 "메모=$au_pad"
+case "$rc" in
+  0) bad "상한 초과 채택 행" "채택 행이 행 상한을 넘었는데 0 으로 끝났다: $out" ;;
+  *) ok "상한 초과 채택 행을 실은 판단 제출이 비영으로 끝난다 (rc=$rc)" ;;
+esac
+au_id=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | { grep -F '절단점=판단' || true; } \
+  | { grep -F "$au_std" || true; } | tail -1)" '승인 id')
+if [ -z "$au_id" ]; then
+  bad "부류 대여" "그 물음의 승인이 발행되지 않았다: $out"
+else
+  check "그 물음의 마지막 상태는 승인이다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
+  check "그 답은 자동 해소가 닫은 것이다" "$(row_field "$(au_last_row "$au_id")" '처분 사유')" "자동 해소"
+  check "그런데 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+
+  # THE RESUBMISSION. Same standard and rationale, so the same id — and a class
+  # the answer was never given about.
+  au_act 2 팀-구성
+  check "다른 부류를 붙인 재제출은 거절된다" "$rc" "3"
+  check "재제출 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$out" in
+    *"이 판단의 부류로는 채택하지 않습니다"*) ok "그 거절이 부류를 이유로 든다고 말한다" ;;
+    *) bad "부류 대여 거절 문면" "$out" ;;
+  esac
+
+  # THE SECOND ARM, ON THE SAME ANSWER. A grade-1 judgment whose class the
+  # auto-adoption floor will not take is escalated to an approval BEFORE the
+  # recording arm runs, and that escalation resolves against this same id. So the
+  # answer is reachable twice within one act, through two arms, and refusing it in
+  # one of them leaves the other open. Auto-resolution is OFF for this call so the
+  # escalation survives to the resolution block rather than being folded to a
+  # park cell.
+  gateN act --manifest "$NM" --kind judgment --target infra --segment "$au_seg" --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HN)" --rationale x \
+        -- 등급=1 기준="$au_std" 근거="$au_why" "판단 부류=팀-구성" "되돌리는 법=git checkout -- ."
+  check "같은 답을 등급 1 로 노리는 제출도 거절된다" "$rc" "3"
+  check "등급 1 재시도 뒤에도 그 답을 지목하는 채택 행은 없다" "$(au_spent_count "$au_id")" "0"
+  case "$msg" in
+    *"이 행위의 부류로는 채택하지 않습니다"*) ok "행위 경로의 거절도 부류를 이유로 든다" ;;
+    *) bad "등급 1 부류 대여 거절 문면" "$msg" ;;
+  esac
+  check "그 재시도가 승인을 다시 대기로 열지 않는다" "$(row_field "$(au_last_row "$au_id")" '상태')" "승인"
 fi
 
 # --- 31aq. An act approval is bound to the tree the act RUNS IN -------------
