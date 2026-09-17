@@ -5655,6 +5655,139 @@ case "$msg" in
 esac
 
 # ---------------------------------------------------------------------------
+# 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다 ---
+#
+# A design step has no worktree, no predecessor and no declared file set, so a
+# `segment` row for it would be a segment termination condition 1 counts. The
+# router dispatches it with `--segment -`, the gate keys its run-directory files
+# on the plan's design step id, and the row lands as `세그먼트=- | 스테이지=<id>` —
+# the shape the driver's design arm already writes. This section builds its own
+# manifest with `design_required: true` and NO segment rows, which is the only
+# shape in which the old refusal was observable: every shared fixture already
+# carries segment rows by here.
+# ---------------------------------------------------------------------------
+M15C="$WORK/plan15c.md"
+G15C="$WT/docs/pipeline-grant/R15C.md"
+L15C="$WT/docs/pipeline-run/R15C.md"
+row15c="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=배포 | 말단 행위 상한=없음"
+td15c=$(printf '%s\n' "$row15c" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+goal15c='픽스처가 끝나면'
+dl15c='2030-01-01T00:00:00Z'
+bd15c=$( { printf 'goal\t%s\n' "$goal15c"
+           printf '%s\n' "$row15c" | sed 's/[[:space:]]\{1,\}/ /g' | sort | sed 's/^/target\t/'
+           printf 'deadline\t%s\n' "$dl15c"; } | sort | shasum -a 256 | cut -d' ' -f1)
+plan15c='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ] }'
+write15c() {
+  # write15c <manifest path> <plan json>
+  {
+    printf '# 파이프라인 런 매니페스트 — R15C\n'
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R15C;\n'
+    printf '     anchor-kind=repo; anchor-key=t/infra;\n'
+    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R15C\n'
+    printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+    printf '## 의도\n```text\n테스트\n```\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td15c" "$row15c"
+    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+    printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$2"
+    printf '## 인가\n**구속 다이제스트**: %s\n**런 최대 절단점**: 배포\n**종료 지점**: %s\n' "$bd15c" "$goal15c"
+    printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl15c"
+    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  } > "$1"
+}
+write15c "$M15C" "$plan15c"
+{
+  printf '# 파이프라인 인가 기록 — R15C\n'
+  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$WT"
+  printf '## 인가 R15C\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
+  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R15C.md\n' "$WT"
+} > "$G15C"
+H15C() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null | jq -r .H ); }
+snap15c=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null )
+check "15c 픽스처 매니페스트가 검사를 통과한다 (아래가 공허하지 않다)" \
+  "$(printf '%s' "$snap15c" | jq -r '.run_id' 2>/dev/null)" "R15C"
+check "15c 픽스처의 원장에 segment 행이 없다" \
+  "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# The snapshot carries the two facts a shift needs to find the design step — a
+# shift has no other input, so without them the section below has no source.
+check "15c: 스냅숏이 design_required 와 단계 그래프를 싣는다" \
+  "$(printf '%s' "$snap15c" | jq -r '[.design_required, .steps[0].id, .steps[0].skill, .steps[1].depends_on[0]] | map(tostring) | join(",")')" \
+  "true,D1,design,D1"
+
+design15c='/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다" "$rc" "0"
+# Not vacuous in the other direction: `-` with any other stage kind is still the
+# segment it names, and that segment has no row.
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- review -p "/cc-cmds:review-unattended x"
+check "15c: 같은 - 라도 설계가 아닌 스테이지 종류는 거부된다" "$rc" "3"
+case "$msg" in
+  *"segment 행이 없습니다"*) ok "15c: 그 거절은 빠진 segment 행을 든다" ;;
+  *) bad "15c 비설계 문면" "$msg" ;;
+esac
+# And the exemption reads the plan: a plan that does not require a design names
+# no step to key the stage on.
+M15C_OFF="$WORK/plan15c-off.md"
+write15c "$M15C_OFF" '{ "design_required": false, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_OFF" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 설계를 요구하지 않는 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 그 거절은 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 계획 문면" "$msg" ;;
+esac
+write15c "$M15C" "$plan15c"
+
+# The launch, through a stub that calls the gate once from the stage seat. That
+# call carries `CC_PIPELINE_SEGMENT`, so the terminal class `정상 완료` is also
+# the proof that the stage's rows and the outcome recorder agree on `-`.
+STUB15C="$WORK/bin/claude-stub-15c"
+cat > "$STUB15C" <<'STUB15CEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 설계 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '%s|%s\n' "$CC_PIPELINE_SEGMENT" "$CC_PIPELINE_STAGE_ID" > "$CC_PIPELINE_RUN_DIR/stub15c-env.txt"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15c-session","num_turns":1}\n'
+exit 0
+STUB15CEOF
+chmod +x "$STUB15C"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" act --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(H15C)" --rationale x \
+  -- design -p "$design15c" ) >/dev/null 2>&1; rc=$?
+check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견이 기동한다" "$rc" "0"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0"
+rows15c() { { grep -F '`stage-result`' "$L15C" 2>/dev/null || true; } | { grep -F "$1" || true; }; }
+check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다" \
+  "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
+check "15c: 단계 id 를 세그먼트로 쓴 행은 없다" \
+  "$(rows15c '세그먼트=D1 ' | grep -c . || true)" "0"
+check "15c: 그 행의 종단 부류가 정상 완료다 (스테이지 행과 기록기가 - 로 맞는다)" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+RD15C="$STATE_LATE/cc-cmds/run/R15C"
+check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 를 받는다" \
+  "$(cat "$RD15C/stub15c-env.txt" 2>/dev/null)" "-|D1#1"
+# The prelude of the next call must not read the finished record as a lost
+# dispatch: a second wait answers from the same row and adds none.
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않는다" \
+  "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
+check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
+  "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
 # --- section: 16 | group: base | covers: act, exec | anchors: 근거 없는 해소 행은 거부된다 ---
 #

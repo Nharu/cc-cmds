@@ -4180,6 +4180,61 @@ gate_segment_field() {
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
+# ---------------------------------------------------------------------------
+# The run-scope design step — a step of the graph that is not a segment.
+#
+# A design step has no worktree, no predecessor and no declared file set, so a
+# `segment` row for it would be counted by termination condition 1 as a segment
+# and carried into the morning report as one. The router dispatches it with
+# `--segment -` instead, and the driver's design arm already writes its row as
+# `세그먼트=-`; the two paths converge on ONE row shape, `세그먼트=- | 스테이지=<step
+# id> | 종류=design`, so a reader never has to reconcile two.
+#
+# THE STEP ID IS DERIVED, NOT PASSED. The dispatch argv carries `-` where a
+# segment id would be, and the run directory still needs a key for the pin, the
+# stream, the pid record and the halt record. The frozen plan names exactly one
+# step whose skill is `design`; that id is the key. A flag carrying the id would
+# let a router type a key the plan never named, and zero or several design steps
+# is a plan this exemption does not know how to read, so both are refused.
+# ---------------------------------------------------------------------------
+gate_run_scope_design_step() {
+  # Prints the plan's single design step id and returns 0, or returns 1.
+  local req ids
+  req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
+  [ "$req" = "true" ] || return 1
+  ids=$( { manifest_plan_json 2>/dev/null \
+           | jq -r '.steps[]? | select(type == "object" and .skill == "design") | .id // empty' 2>/dev/null \
+           || true; } | grep -v '^$' || true)
+  [ -n "$ids" ] || return 1
+  [ "$(printf '%s\n' "$ids" | grep -c .)" = "1" ] || return 1
+  printf '%s' "$ids"
+}
+
+gate_stage_row_segment() {
+  # gate_stage_row_segment <stage-key> <stage-kind> — the `세그먼트` value every
+  # ledger row about this stage carries: `-` for the run-scope design step, the
+  # key itself for everything else. Decided from facts the gate re-reads (the
+  # kind, the absence of a `segment` row, the plan), so the dispatch half, the
+  # supervisor and the settlement agree without handing the answer across.
+  local key="$1" skind="$2" dstep
+  if [ "$skind" = "design" ] && [ -z "$(gate_segment_field "$key" '상태')" ] \
+     && dstep=$(gate_run_scope_design_step) && [ "$dstep" = "$key" ]; then
+    printf '%s' '-'
+  else
+    printf '%s' "$key"
+  fi
+}
+
+gate_stage_result_rows_of() {
+  # gate_stage_result_rows_of <stage-key> — this stage's `stage-result` rows in
+  # either shape: a segment's (`세그먼트=<key>`) or the run-scope design step's
+  # (`세그먼트=- | 스테이지=<key> | 종류=design`). `종류=design` is part of the second
+  # pattern so a driver row of another run-scope stage, which carries no `종류`,
+  # is never read as this one.
+  { gate_rows 'stage-result' || true; } \
+    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=design " || true; }
+}
+
 gate_row_field() {
   # gate_row_field <row-text> <key> — the last value with that key in ONE row.
   # `gate_field_of` reads an argv field LIST; carrying a value forward needs a
@@ -4606,6 +4661,17 @@ gate_snapshot() {
   # Every block is BOUNDED. The point of the shift is a smaller starting
   # context, and an unbounded resume payload spends on the first turn exactly
   # what the mechanism exists to save.
+  #
+  # THE STEP GRAPH, because one step of it is not a segment. A design step has no
+  # `segment` row, so `segments[]` cannot name it, and a shift has no other input
+  # than this object — reading `## 실행 계획` itself would be a second input, and
+  # the first exception opened makes the next one free. So the two facts a shift
+  # needs to dispatch the design stage travel here: whether the plan requires a
+  # design, and the graph with each step's id, skill and dependencies. `summary`
+  # stays out — it is free prose a routing decision does not branch on, and the
+  # object is bounded on purpose.
+  printf '  "design_required": %s,\n' "$(gate_snapshot_design_required_json)"
+  printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   printf '  "segments": [\n'
   gate_snapshot_segments_json
   printf '  ],\n'
@@ -4641,6 +4707,33 @@ gate_snapshot() {
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
   printf '}\n'
+}
+
+gate_snapshot_design_required_json() {
+  # `true`, `false` or `null` — never folded. jq's `//` reads `false` as absent,
+  # and a declared `false` is the one value a shift must not lose. A plan block
+  # that is absent or does not parse is `null`.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -c '.design_required' 2>/dev/null; } || true)
+  case "$v" in
+    true|false) printf '%s' "$v" ;;
+    *) printf 'null' ;;
+  esac
+}
+
+gate_snapshot_steps_json() {
+  # The plan's steps as `{id, skill, depends_on}`, one JSON array on one line. A
+  # step written as a bare skill string (an older plan shape) keeps its skill and
+  # has a `null` id, so a shift can see it exists and cannot key anything on it.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -c '
+        [ .steps[]? | if type == "object"
+            then {id: (.id // null), skill: (.skill // null), depends_on: (.depends_on // [])}
+            else {id: null, skill: ., depends_on: []} end ]' 2>/dev/null; } || true)
+  case "$v" in
+    '['*) printf '%s' "$v" ;;
+    *) printf '[]' ;;
+  esac
 }
 
 gate_snapshot_live_stages_json() {
@@ -11055,7 +11148,24 @@ gate_verb_act() {
   # effect: moving the early return alone leaves this arm still keyed on `act`,
   # so `plan --kind skill` would go on answering "통과 예상" for a segment with no
   # row and for a predecessor that has not landed.
-  if [ "$kind" = "skill" ]; then
+  #
+  # THE ONE EXEMPTION: the run-scope design step. `--segment -` with stage kind
+  # `design` names no segment, so there is no row to require and no `선행` to
+  # land; the stage is keyed on the plan's design step id instead (see
+  # `gate_run_scope_design_step`). The exemption is keyed on all three facts —
+  # the kind, the `-`, and a plan that requires a design and names exactly one
+  # design step — so `-` with any other stage kind, or with a plan that does not
+  # say this, still meets the refusal below. Writing a `segment` row for the
+  # design step was the other way out and was dropped: that row is what
+  # termination condition 1 counts, and a design step is not a segment.
+  local stage_key="$segment"
+  if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "${1:-}" = "design" ]; then
+    if ! stage_key=$(gate_run_scope_design_step); then
+      warn "설계 스테이지를 --segment - 로 띄우려면 실행 계획이 design_required=true 이고 skill 이 design 인 단계를 정확히 하나 가져야 합니다"
+      warn "세그먼트가 아닌 설계 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+  elif [ "$kind" = "skill" ]; then
     if [ -z "$(gate_segment_field "$segment" '상태')" ]; then
       warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
       warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
@@ -11498,7 +11608,9 @@ gate_verb_act() {
       case "$kind" in
         # The return is LAUNCH success — the supervisor was detached and the
         # token consumed — and not the stage's rc, which `wait` reports.
-        skill) gate_launch_stage "$alias" "$segment" "$@" || rc=$? ;;
+        # `stage_key` is the segment id, or the plan's design step id when the
+        # dispatch named `-` (the exemption above set it).
+        skill) gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
         # The first token after `--` is the HANDOFF REASON here, the way it is
         # the stage kind for `skill`. Same shape, different layer: this one
         # decides whether the suppressor below applies, and the settings variant
@@ -12324,7 +12436,7 @@ gate_launch_stage() {
   # to a bad resume id and the refusal never named the real fault.
   if [ -n "${GATE_RESUME:-}" ]; then
     local known
-    known=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    known=$( gate_stage_result_rows_of "$seg" \
              | { grep -cF "세션 id=$GATE_RESUME " || true; } )
     if [ "${known:-0}" = "0" ]; then
       warn "재개 대상 세션이 이 세그먼트의 원장 기록에 없습니다: $GATE_RESUME"
@@ -12530,10 +12642,16 @@ gate_verb_supervise_stage() {
   # blocking — nobody else could write a row in that window. Now the router
   # writes rows for the stage's whole lifetime, so the recorder looks instead
   # for a `행위자=스테이지` row of this segment AFTER this line.
-  local dispatch_line
+  #
+  # `rowseg` IS WHAT THE ROWS CARRY, `seg` IS WHAT THE FILES ARE NAMED BY. They are
+  # the same string for a segment and differ for the run-scope design step, whose
+  # dispatch row, stage rows and `stage-result` all say `세그먼트=-` while its pin,
+  # stream and pid record are named by the step id.
+  local dispatch_line rowseg
+  rowseg=$(gate_stage_row_segment "$seg" "$kind")
   dispatch_line=$( { grep -n '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
                    | { grep -F 'kind=skill ' || true; } | { grep -F '결정=act' || true; } \
-                   | { grep -F "세그먼트=$seg " || true; } | tail -1 | cut -d: -f1)
+                   | { grep -F "세그먼트=$rowseg " || true; } | tail -1 | cut -d: -f1)
 
   local rc=0 spid
   # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT. Layer 1 routes every
@@ -12576,7 +12694,7 @@ gate_verb_supervise_stage() {
   CC_PIPELINE_GRANT="$GRANT" \
   CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
   CC_PIPELINE_TARGET="$alias" \
-  CC_PIPELINE_SEGMENT="$seg" \
+  CC_PIPELINE_SEGMENT="$rowseg" \
   CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
   bash "$wrapper" \
@@ -12647,7 +12765,7 @@ gate_verb_supervise_stage() {
   # unsettled attempt, and the prelude settlement closes it as `외부 종료` on
   # the next gate call. Removing the files without the row is the other shape —
   # no row and no record — which nothing settles and every re-dispatch repeats.
-  if [ -n "$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+  if [ -n "$( gate_stage_result_rows_of "$seg" \
               | { grep -F "실행 버전=$attempt " || true; } )" ]; then
     rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
           "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
@@ -12700,10 +12818,10 @@ gate_settle_lost_dispatches() {
     fi
     kind=$( { cat "$RUN_DIR/$seg.kind" 2>/dev/null || true; } | tr -d '[:space:]')
     attempt=$( { cat "$RUN_DIR/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
-    if [ -z "$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
-      gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=${kind:-미상}" \
+      gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "종단 부류=외부 종료" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
@@ -12774,7 +12892,7 @@ gate_verb_wait() {
       printf '%s [wait] %s 파견 기록 없음 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_NONE"
       return "$GATE_EXIT_WAIT_NONE"
     fi
-    row=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    row=$( gate_stage_result_rows_of "$seg" \
            | { grep -F "실행 버전=$attempt " || true; } | tail -1)
     if [ -n "$row" ]; then
       klass=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -12864,10 +12982,14 @@ gate_record_stage_outcome() {
   # none. `awk 'NR>n'` reads the ledger from that line on; an empty or
   # non-numeric `before` reads the whole file.
   case "$before" in ''|*[!0-9]*) before=0 ;; esac
+  # The stage's rows carry `rowseg`, which is `-` for the run-scope design step
+  # (see `gate_stage_row_segment`); its `stage-result` row below carries the same.
+  local rowseg
+  rowseg=$(gate_stage_row_segment "$seg" "$kind")
   after=$( { awk -v n="$before" 'NR>n' "$LEDGER" 2>/dev/null || true; } \
            | { grep -E '^- `자율 승인`' || true; } \
            | { grep -F '| 행위자=스테이지 |' || true; } \
-           | { grep -F "세그먼트=$seg " || true; } | gate_count)
+           | { grep -F "세그먼트=$rowseg " || true; } | gate_count)
   # `is_error` is read as well as the status and the subtype. Measured: a stage
   # that slept mid-response returned `subtype: success` WITH `is_error: true`,
   # and only the non-zero status caught it — the same object with a zero status
@@ -12992,11 +13114,11 @@ gate_record_stage_outcome() {
   fi
 
   if [ -n "$psha" ]; then
-    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+    gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "plan_sha256=$psha" "종단 부류=$klass"
   else
-    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+    gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
   fi
