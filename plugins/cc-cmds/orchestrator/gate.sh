@@ -415,6 +415,10 @@ readonly GATE_EXIT_LADDER=8
 # refusal is not in the catalog and survives `**리뷰-후-머지**: 끔` — reporting
 # it as 3 would cancel, on the surface the router actually reads, the property
 # that turning the rule off does not turn this off.
+#
+# The dispatch that cannot say where it runs shares it: a `--kind skill` act
+# whose segment row names a worktree that is not the target's has the same
+# repair — the row is wrong, the argv is right.
 readonly GATE_EXIT_ANCHOR=10
 
 # 도달 park — the act was not performed, and nothing is waiting to be answered.
@@ -5671,9 +5675,12 @@ gate_settings_key() {
   # the `diff -r` that compares it against disk are pure cost — which is what
   # the caller below skips.
   #
-  # NO LEDGER ROW IS AN INPUT, and that is the property the whole saving rests
-  # on. The ledger grows on every act, so a key that read it would change at
-  # moments when the settings provably cannot, and the skip would never fire.
+  # THE LEDGER'S GROWTH IS NOT AN INPUT, and that is the property the whole
+  # saving rests on. The ledger grows on every act, so a key that read it whole
+  # would change at moments when the settings provably cannot, and the skip
+  # would never fire. What IS an input is the set of worktrees the `segment`
+  # rows name, because those are interpolated — and that set moves only when a
+  # new value appears, which is exactly when the settings move too.
   # NO WALL CLOCK AND NO FILE CONTENT either, for the same reason — only the
   # values the renderer interpolates.
   #
@@ -5707,6 +5714,8 @@ gate_settings_key() {
     # The target rows verbatim: both worktree fields of every declared target
     # are interpolated into `additionalDirectories`.
     manifest_targets | sed 's/^/target\t/'
+    # The segment worktrees, sorted so row order cannot move the key.
+    gate_segment_worktrees_for_settings | LC_ALL=C sort -u | sed 's/^/segment-worktree\t/'
     printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
   } | shasum -a 256 | cut -d' ' -f1
 }
@@ -5820,6 +5829,12 @@ gate_write_settings() {
 $(target_field "$a" '메인 워크트리')
 $(target_field "$a" '실행 워크트리')"
   done
+  # EVERY SEGMENT'S OWN WORKTREE, from the ledger. The router creates one per
+  # segment after kickoff and records it on the `segment` row; without this the
+  # only tree a stage could write was the shared main worktree, so segment
+  # isolation existed on the row and nowhere else.
+  wt_all="$wt_all
+$(gate_segment_worktrees_for_settings)"
   extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
@@ -5966,14 +5981,15 @@ gate_resettle_settings() {
   # comparison hollow.
   #
   # What it is derived from is the manifest's target rows (each target's main
-  # and execution worktree) and the run's own environment: the run directory,
+  # and execution worktree), the set of worktrees the ledger's `segment` rows
+  # name (last row per segment id, only those sharing a declared target's
+  # common git directory), and the run's own environment: the run directory,
   # the base, the directories of the manifest, ledger and grant, the design
   # document's directories, the plugin and hook locations, and the user config
-  # directory. NO LEDGER ROW IS AN INPUT. The `대상 추가` row appended below is a
-  # record of a widening, and nothing reads it back into a derivation. Nor is a
-  # segment's own worktree in the list — nothing here derives one. The manifest
-  # is written at kickoff and a write to it is refused, so during a run the
-  # bytes move only when the environment does.
+  # directory. The `대상 추가` row appended below is a record of a widening, and
+  # nothing reads it back into a derivation. The manifest is written at kickoff
+  # and a write to it is refused, so during a run the bytes move only when the
+  # environment does or a segment row names a new worktree.
   #
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
@@ -6840,8 +6856,8 @@ gate_main() {
   # ground that a surface which changes because the gate touched it is a surface
   # whose comparison means nothing. That ground is real but the remedy was too
   # wide: it also froze the list of directories a stage may read, and kickoff
-  # happens BEFORE segmentation — so a segment's own worktree is, by
-  # construction, a directory the authorization list cannot contain. Measured: a
+  # happens BEFORE segmentation — so a segment's own worktree is never in the
+  # manifest, and a list frozen at kickoff could not contain it. Measured: a
   # run produced its review and then could not remediate, because the only
   # writable tree in its list was the live plugin checkout; it ended with the
   # goal marked unreachable for want of a directory rather than for want of work.
@@ -6849,14 +6865,18 @@ gate_main() {
   # What keeps the comparison meaningful is not that the surface never moves —
   # it is that it moves only through THIS writer and leaves a row when it does.
   # An edit by anything else still lands as exit 7. The derivation reads the
-  # manifest's target rows and the run's own environment and NO LEDGER ROW —
-  # the `대상 추가` row it appends is a record, not an input to the next
-  # derivation. When it yields different bytes the gate rewrites, re-baselines,
-  # and appends that row naming what widened.
+  # manifest's target rows, the worktrees the ledger's `segment` rows name, and
+  # the run's own environment — the `대상 추가` row it appends is a record, not
+  # an input to the next derivation. When it yields different bytes the gate
+  # rewrites, re-baselines, and appends that row naming what widened. So the
+  # call after the one that wrote a segment row — normally that segment's
+  # dispatch — widens the list before the stage starts.
   #
   # The widening is bounded by construction: every directory it can add is a
-  # worktree of a target the run already acts in. Nothing here grants a cutpoint,
-  # and the cutpoint is what governs whatever leaves the machine.
+  # worktree of a target the run already acts in — a segment row's path is
+  # admitted only when it shares that target's common git directory. Nothing
+  # here grants a cutpoint, and the cutpoint is what governs whatever leaves the
+  # machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
     # The baseline is written inside that call, so both halves have succeeded
@@ -7240,6 +7260,54 @@ gate_segment_common_git() {
   out=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
   [ -n "$out" ] || return 1
   printf '%s' "$out"
+}
+
+gate_segment_worktree_of_target() {
+  # gate_segment_worktree_of_target <segment> <alias> — prints the segment row's
+  # `워크트리` and returns 0 only when it is a worktree OF THAT TARGET: an
+  # absolute path, an existing directory, and a common git directory equal to
+  # the target row's. The same predicate the manifest check puts on
+  # `실행 워크트리`.
+  #
+  # ONE PREDICATE FOR BOTH THINGS A SEGMENT ROW NOW WIDENS — the stage settings'
+  # directory list and the directory a segment act runs in. The contract bounds
+  # every widening to a worktree of a target the run already acts in, and a
+  # router writing a path from another repository, or one that does not exist,
+  # must widen neither. Status only: which condition failed is the caller's
+  # message to write, because only the caller knows what the refusal means.
+  local wt cg want
+  wt=$(gate_segment_worktree "$1")
+  case "$wt" in /*) : ;; *) return 1 ;; esac
+  [ -d "$wt" ] || return 1
+  want=$(target_field "$2" '공통 git 디렉터리')
+  [ -n "$want" ] || return 1
+  cg=$(gate_segment_common_git "$1") || return 1
+  [ "$cg" = "$want" ] || return 1
+  printf '%s' "$wt"
+}
+
+gate_segment_worktrees_for_settings() {
+  # The worktrees the ledger's `segment` rows name, one per line — the last row
+  # per segment id, kept only when it passes gate_segment_worktree_of_target for
+  # some declared target.
+  #
+  # AN INPUT OF THE SETTINGS DERIVATION. Kickoff happens before segmentation, so
+  # a segment's own worktree is never in the manifest; this is the only way it
+  # reaches `additionalDirectories`. The set moves only when a new value
+  # appears, so the settings key built from it stays still while the ledger
+  # merely grows.
+  local sid a wt
+  [ -f "${LEDGER:-}" ] || return 0
+  for sid in $(gate_segment_ids); do
+    [ -n "$sid" ] || continue
+    for a in $(target_aliases); do
+      if wt=$(gate_segment_worktree_of_target "$sid" "$a"); then
+        printf '%s\n' "$wt"
+        break
+      fi
+    done
+  done
+  return 0
 }
 
 gate_segment_tip() {
@@ -10169,10 +10237,17 @@ gate_run_ended_ok() {
 }
 
 gate_act_worktree() {
-  # gate_act_worktree <별칭> — the directory this target's acts actually run in.
+  # gate_act_worktree <별칭> [<세그먼트>] — the directory this target's acts
+  # actually run in.
   #
-  # `실행 워크트리` FIRST, the main worktree as the fallback. One field could not
-  # carry both duties: the sidecar path has to converge on the main worktree so
+  # THE SEGMENT'S OWN WORKTREE FIRST, when the act carries a segment and that
+  # segment row's `워크트리` passes gate_segment_worktree_of_target. A segment
+  # act used to ignore the row entirely and run in the target's tree, so every
+  # stage worked in the shared main worktree and the router had to switch that
+  # tree onto the segment's branch to make anything land.
+  #
+  # Then `실행 워크트리`, the main worktree as the last fallback. One field could
+  # not carry both duties: the sidecar path has to converge on the main worktree so
   # that N linked worktrees of one repository do not split the state a single
   # writer owns, while the act has to run where the branch actually is. For a pr
   # or branch anchor those are never the same directory — git refuses to check a
@@ -10186,8 +10261,17 @@ gate_act_worktree() {
   # landing in the tree the act was actually run in, and a sibling segment moving
   # the main worktree expired approvals about a tree that had not moved. Freezing
   # and comparing must resolve identically or every approval already issued goes
-  # stale at once and a person is asked the same question all over again.
+  # stale at once and a person is asked the same question all over again. The
+  # segment argument is part of that one resolution: all three readers pass it,
+  # and one that did not would bind an approval to a different tree.
   local wt
+  case "${2:-}" in
+    ''|-) : ;;
+    *) if wt=$(gate_segment_worktree_of_target "$2" "$1"); then
+         printf '%s' "$wt"
+         return 0
+       fi ;;
+  esac
   wt=$(target_field "$1" '실행 워크트리')
   case "$wt" in
     ''|'(없음)') wt=$(target_field "$1" '메인 워크트리') ;;
@@ -10689,7 +10773,7 @@ gate_verb_act() {
     # resolution itself lives in gate_act_worktree, which the approval's freeze
     # and staleness comparison call too — a stage woke on the main worktree's
     # branch every time until this was resolved in one place.
-    GATE_ACT_CWD=$(gate_act_worktree "$alias")
+    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
     export GATE_ACT_CWD
   fi
   # WHAT THE RULES SEE IS THE GRADE argv PROVED, RAISED BY AN HONEST DECLARATION
@@ -10926,7 +11010,7 @@ gate_verb_act() {
           warn "승인 $ap_id 은 앞선 자동 해소가 닫은 답이라 이 행위의 부류로는 채택하지 않습니다 (부류 ${GATE_JUDGMENT_CLASS:-없음})"
           warn "이 부류로 올리려면 기준과 근거를 달리한 새 물음으로 다시 물어야 합니다"
           exit "$GATE_EXIT_RULE"
-        elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias"; then
+        elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias" "$segment"; then
           # THE TUPLE IS WHAT MAKES AN ACT APPROVAL EXPIRE. A question's answer
           # is durable and carries no tuple; an act's answer was given about a
           # tree, and this arm is the only place that says so. `rules_rc` is left
@@ -11061,6 +11145,31 @@ gate_verb_act() {
       warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
       exit "$GATE_EXIT_RULE"
     fi
+
+    # WHERE THE STAGE WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
+    # worktree that is not this target's would send the stage to the target's
+    # own tree instead — which is exactly how every stage ended up in the shared
+    # main worktree. The repair is the merge's repair (fix the segment row, call
+    # again with the same argv), so the code is the merge's too.
+    local seg_wt seg_why
+    seg_wt=$(gate_segment_worktree "$segment")
+    case "$seg_wt" in
+      ''|-|'(없음)') : ;;
+      *)
+        if ! gate_segment_worktree_of_target "$segment" "$alias" >/dev/null; then
+          case "$seg_wt" in
+            /*) if [ ! -d "$seg_wt" ]; then
+                  seg_why="디렉터리가 없습니다"
+                else
+                  seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
+                fi ;;
+            *)  seg_why="절대 경로가 아닙니다" ;;
+          esac
+          warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
+          warn "스테이지가 어디서 도는지 말할 수 없어 띄우지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
+          exit "$GATE_EXIT_ANCHOR"
+        fi ;;
+    esac
 
     # ORDER, AND THE SECOND CONSUMER OF `선행`.
     #
@@ -11656,8 +11765,8 @@ gate_act_tuple_head() {
 }
 
 gate_act_approval_fresh() {
-  # gate_act_approval_fresh <승인 id> <별칭> — 0 when the tree this approval was
-  # answered against is still the tree in front of us.
+  # gate_act_approval_fresh <승인 id> <별칭> [<세그먼트>] — 0 when the tree this
+  # approval was answered against is still the tree in front of us.
   #
   # THE BINDING TUPLE FINALLY HAS A READER. It was written at issue time and read
   # by nothing anywhere in the tree, so the property stated beside it — an act
@@ -11682,7 +11791,7 @@ gate_act_approval_fresh() {
   local frag cur
   frag=$(gate_act_tuple_head "$1")
   [ -n "$frag" ] || return 0
-  cur=$(cd "$(gate_act_worktree "$2")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  cur=$(cd "$(gate_act_worktree "$2" "${3:-}")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   [ -n "$cur" ] || {
     warn "승인 $1 의 구속 튜플을 대조할 HEAD 를 읽지 못했습니다 — 움직인 트리가 아니므로 신선한 것으로 봅니다"
     return 0
@@ -11717,7 +11826,7 @@ gate_issue_act_approval() {
     *) return 0 ;;
   esac
   base=$(target_field "$alias" '베이스 브랜치')
-  head=$(cd "$(gate_act_worktree "$alias")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  head=$(cd "$(gate_act_worktree "$alias" "$seg")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   # THE QUESTION IS A FIXED LITERAL AND THE BLOCK IS STILL WRITTEN: the anchor on
   # the row has to name something, and the close path fills the answer region
   # of this block the same way it does a judgment's.

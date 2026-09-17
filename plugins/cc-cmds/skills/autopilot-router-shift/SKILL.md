@@ -89,7 +89,7 @@ snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat
 | `6` | self-declaration mismatch | your declared grade is not the derived one; fix the declaration |
 | `7` | enforcement surface moved | end with `사유=중단` and say so in your return line |
 | `8` | the argv climbs a higher rung than `--cutpoint` declared | raise the declaration to the rung the message names and re-issue the same argv — raising does not grant it |
-| `10` | the merge cannot say what it merges | fix the segment row and call again with the same argv |
+| `10` | the merge cannot say what it merges, or the dispatch cannot say where it runs | fix the segment row and call again with the same argv |
 | `11` | 도달 park | the act was not performed and nothing waits to be answered. An act-scope `blocked` row names the cell in `도달 판정`. **Do not retry and do not re-declare the reach** — the verdict is keyed on the act digest. Route to other work; a stage that needed it writes its own halt record |
 | `11` from `wait` | no dispatch record for that segment — it was never dispatched | dispatch it if it is dispatchable |
 | `12` from `wait` | the stage was an orphan and has been settled as `외부 종료`; there is no rc | treat it as a stage that produced nothing observable; re-dispatch if the segment still needs the work |
@@ -107,6 +107,8 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 ```
 
 **The first token after `--` is the STAGE KIND** and is consumed before the CLI sees the rest, so a form starting with `-p` hands `-p` over as the kind and the stage runs under settings that are not its own. The kind is one of `audit`·`design`·`implement`·`review`·`reconverge`·`generic`. `-p` is required — without it the prompt is never delivered and the stage wakes with an empty first message, reads something, and terminates as a success having produced nothing. The prompt is a slash command with its leading `/`, and it must be the `-unattended` variant: the plain skills carry `disable-model-invocation: true` and a headless stage naming one resolves nothing.
+
+**An act carrying `--segment` runs in that segment row's worktree** — the value the row's `워크트리` names, when it is an absolute existing directory sharing the target's common git directory; otherwise the target row's execution worktree, then its main worktree. The stage's settings list that worktree too, from the call after the segment row is written. An act that must run in the main worktree (updating the base branch, for instance) does not carry `--segment`. A `--kind skill` dispatch whose segment row names a worktree that fails that predicate is refused with exit `10` before the stage starts.
 
 **Issue that call in the foreground. It returns within seconds.** The gate starts the stage under a supervisor whose process lineage is cut from yours before the call returns, and that supervisor — not your session — waits on the stage and writes its `stage-result` row. So the dispatch's exit status says whether the LAUNCH succeeded, never how the stage ended, and nothing you do afterwards can kill the stage: ending your turn, reaching the cap, taking exit 5 or crashing all leave it running and recording.
 
