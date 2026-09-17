@@ -13881,7 +13881,7 @@ sa_merge S1
 check "6: S1 의 두 번째 머지는 여전히 거절이다" "$rc" "3"
 
 # --- 35-6b. 근거 문구 속 `headRefOid=` 는 세그먼트 id 가 아니다 ------------------
-# --- section: 35-6b | group: sa | covers: act,snapshot | anchors: 6b: 세그먼트는 하나다 ---
+# --- section: 35-6b | group: sa | covers: act, snapshot | anchors: 6b: 세그먼트는 하나다 ---
 #
 # 행의 id 는 키로 읽는다. 값이 `id=` 로 끝나는 문자열을 품고 있어도 그것은 키가
 # 아니다. 탐욕 매치 구현은 행 하나를 세그먼트 여럿으로 읽고, 그렇게 생긴 id 는
