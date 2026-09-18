@@ -14,7 +14,7 @@ The shipped pipeline could only start from a design document, so a run that begi
 | `branch` | `<owner>/<name>@<branch>` | continue work already on a branch |
 | `intent` | a short slug you derive from their words | a goal with no artifact yet |
 
-Pick the **most specific kind the evidence supports**, and never invent specificity. If they named a document, it is `doc`. If they described a goal and no artifact exists for it, it is `intent` — resolving that to a document is what the design step is *for*, and pre-empting it here writes a path nothing will create.
+Pick the **most specific kind the evidence supports**, and never invent specificity. If they named a document, it is `doc`. If they described a goal and no artifact exists for it, it is `intent` — resolving that to a document is what the design step is *for*, and pre-empting it here writes a path nothing will create. **The name is the kickoff's to choose, not this judgment's**: the kickoff derives the document path from the intent while the person is still there, reads it back alongside the design roster, and freezes it into the manifest. Give the intent; give no path.
 
 ## Entry skill: what already exists decides it
 

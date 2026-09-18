@@ -5854,7 +5854,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -5866,7 +5866,6 @@ esac
 # carries segment rows by here.
 # ---------------------------------------------------------------------------
 M15C="$WORK/plan15c.md"
-G15C="$WT/docs/pipeline-grant/R15C.md"
 L15C="$WT/docs/pipeline-run/R15C.md"
 row15c="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=배포 | 말단 행위 상한=없음"
 td15c=$(printf '%s\n' "$row15c" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
@@ -5877,33 +5876,47 @@ bd15c=$( { printf 'goal\t%s\n' "$goal15c"
            printf 'deadline\t%s\n' "$dl15c"; } | sort | shasum -a 256 | cut -d' ' -f1)
 plan15c='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ] }'
 write15c() {
-  # write15c <manifest path> <plan json>
+  # write15c <manifest path> <plan json> [설계 문서 값] [런 id]
+  # The document defaults to a real-looking path because a `design_required`
+  # run may not carry `(없음)` there — the gate refuses the dispatch on that
+  # value. The file need not exist: the document is what the stage is being
+  # dispatched to write, and nothing in `check_manifest` reads this field.
+  # Pass `(없음)` to exercise that refusal, and pass a run id along with it —
+  # the header's `owner-doc=` must equal the body's `설계 문서` and the grant's
+  # must equal the header's, so a fixture naming a different document needs its
+  # own grant, and the grant is keyed on the run id.
+  local doc15c="${3:-docs/fixture-design.md}" rid15c="${4:-R15C}"
   {
-    printf '# 파이프라인 런 매니페스트 — R15C\n'
-    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=R15C;\n'
+    printf '# 파이프라인 런 매니페스트 — %s\n' "$rid15c"
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$rid15c"
     printf '     anchor-kind=repo; anchor-key=t/infra;\n'
-    printf '     owner-doc=(없음); origin-worktree=%s;\n' "$WT"
+    printf '     owner-doc=%s; origin-worktree=%s;\n' "$doc15c" "$WT"
     printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
-    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: R15C\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$rid15c"
     printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
     printf '## 의도\n```text\n테스트\n```\n\n'
     printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td15c" "$row15c"
-    printf '## 요소\n**설계 문서**: (없음)\n**적용 주체**: (해당 없음)\n\n'
+    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc15c"
     printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$2"
     printf '## 인가\n**구속 다이제스트**: %s\n**런 최대 절단점**: 배포\n**종료 지점**: %s\n' "$bd15c" "$goal15c"
     printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl15c"
     printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
   } > "$1"
 }
+grant15c() {
+  # grant15c <run id> <owner-doc> — the grant's `owner-doc=` is compared against
+  # the manifest header's, so it is written from the same value.
+  {
+    printf '# 파이프라인 인가 기록 — %s\n' "$1"
+    printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=%s; origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$2" "$WT"
+    printf '## 인가 %s\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n' "$1"
+    printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+    printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+    printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/%s.md\n' "$WT" "$1"
+  } > "$WT/docs/pipeline-grant/$1.md"
+}
 write15c "$M15C" "$plan15c"
-{
-  printf '# 파이프라인 인가 기록 — R15C\n'
-  printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=(없음); origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$WT"
-  printf '## 인가 R15C\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n'
-  printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
-  printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
-  printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/R15C.md\n' "$WT"
-} > "$G15C"
+grant15c R15C 'docs/fixture-design.md'
 H15C() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null | jq -r .H ); }
 snap15c=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null )
 check "15c 픽스처 매니페스트가 검사를 통과한다 (아래가 공허하지 않다)" \
@@ -5940,6 +5953,21 @@ check "15c: 설계를 요구하지 않는 계획에서는 면제가 서지 않�
 case "$msg" in
   *"design_required=true"*) ok "15c: 그 거절은 계획이 설계 단계를 정하지 못한 것을 든다" ;;
   *) bad "15c 계획 문면" "$msg" ;;
+esac
+# And the exemption reads `## 요소`: the document is named by the kickoff, in
+# front of the person, so a design-requiring plan that reaches the gate with
+# `(없음)` has no name anything downstream can resolve. The gate refuses rather
+# than composing one — this fixture used to carry `(없음)` and pass a path into
+# the argv from outside, which is the very move the refusal closes.
+M15C_NODOC="$WORK/plan15c-nodoc.md"
+write15c "$M15C_NODOC" "$plan15c" '(없음)' R15D
+grant15c R15D '(없음)'
+gateL plan --manifest "$M15C_NODOC" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다" "$rc" "3"
+case "$msg" in
+  *"설계 문서 가 실제 경로여야 합니다"*) ok "15c: 그 거절은 설계 문서 값이 비었음을 든다" ;;
+  *) bad "15c 설계 문서 문면" "$msg" ;;
 esac
 write15c "$M15C" "$plan15c"
 

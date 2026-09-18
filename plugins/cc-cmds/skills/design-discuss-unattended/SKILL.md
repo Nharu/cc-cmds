@@ -33,7 +33,7 @@ It follows the landed `design-audit` / `design-audit-unattended` pair: a separat
 
 | | seat dispatch (leg) | driver dispatch (stage) |
 | --- | --- | --- |
-| input | interview brief (`docs/design-brief/{slug}.md`) | design-document path (may not exist yet) + task sentence |
+| input | interview brief (`docs/design-brief/{slug}.md`) | design-document path (may not exist yet) + task sentence + the interview record, when the run has one (Step 1) |
 | state root | `$STATE` (Step 2) | `${CC_PIPELINE_RUN_DIR}/design/{slug}/` |
 | a question | park record (`park.md`) | halt record (`${CC_PIPELINE_RUN_DIR}/halt/${CC_PIPELINE_STAGE_ID}.md`) |
 | terminal | `presentation.md`, end of turn | freeze literal + path + whole-file `sha256`, end of turn |
@@ -147,7 +147,15 @@ The roster this stage instantiates when the manifest carries no `설계 로스�
 
 ### Step 1: Read the brief and guard it
 
-Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document path followed by the task sentence, and the interview product is the task sentence plus the manifest's `## 의도` block; exploration findings and reproduction data are gathered by the Step 3 team's own reading of the tree (the base skill's Step 3 already has them do this against the codebase); the roster is the one instantiated at Step 0; the baseline is `git status --porcelain` + `git worktree list --porcelain` taken **now**, before any spawn. Skip the brief guards below and the target-document guard — the document-present guard at Step 0 is its driver-dispatch form — and proceed to Step 2.
+Under **driver dispatch there is no brief**: `$ARGUMENTS` is the design-document path followed by the task sentence, and the interview product is the interview record when this run has one and otherwise the task sentence plus the manifest's `## 의도` block; exploration findings and reproduction data are gathered by the Step 3 team's own reading of the tree (the base skill's Step 3 already has them do this against the codebase); the roster is the one instantiated at Step 0; the baseline is `git status --porcelain` + `git worktree list --porcelain` taken **now**, before any spawn. Skip the brief guards below and the target-document guard — the document-present guard at Step 0 is its driver-dispatch form — and proceed to Step 2.
+
+**The interview record, when this run has one.** The kickoff holds the requirements interview while the person is still there and freezes their words verbatim; this stage is its reader. A record nothing reads is an interview held for nobody, and the words would be re-invented here by a process that cannot ask. Resolve it by **path convention** — `$(dirname "$CC_PIPELINE_MANIFEST")/${CC_PIPELINE_RUN_ID}.interview.md`, the same `<base>/docs/pipeline-run/` directory the manifest sits in — and not from the row, so that the resolution does not depend on the very row it is about to be checked against. Then:
+
+- **File present** — read it whole and take its six content sections as the requirement input in place of the task sentence: `## 과제`, `## 요구사항 문답`, `## 배포 형상`, `## 재현 근거`, `## 검증 선결`, `## 골격 사전 판정`. `없음` is a value in each of them and an omitted section is not. `## 로스터` is **not** read here — the roster was instantiated at Step 0 from the manifest, and reading a second source for it is how a stage starts composing a team. Measure the file with `shasum -a 256` and compare it against the manifest `## 인가` row `- \`사전 인가\` | 인터뷰 기록=<base 기준 경로> | sha256=<전체 해시>`.
+- **The hash disagrees, or the row exists with no file, or the file exists with no row** → **halt before spawning**, `자리 id: ledger-missing`, `분류: precondition-failed`, with the resolved path, the expected hash and the observed hash in `관측 상세`. The record's hash sits inside the frozen set precisely so that a change to it is visible; reading the record while ignoring that hash spends the freeze and buys nothing back.
+- **Neither row nor file** → this run held no design interview. Proceed on the task sentence and `## 의도`, exactly as before.
+
+The manifest's `## 의도` block stays in force either way. It is the run's intent, decided by the entry judgment; the record is the person's answers. They are not the same sentence and neither replaces the other.
 
 Under seat dispatch `$ARGUMENTS` is the brief path, as given. Read it whole and Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1`. Guards, every one a pre-spawn park on failure: the header's version token is exactly `cc-design-brief v1` (§1.5 strict equality); the `## 대상` block's `**문서 키**` equals the header's `owner-doc=` (§1.2 — the document may not exist yet, the key is derived from the path); all eight blocks are present in order — `## 요구사항`, `## 제약`, `## 배포 형상`, `## 탐색 결과`, `## 재현`, `## 팀 구성`, `## 기준선`, `## 대상`; `## 배포 형상` carries all five field lines — `**레포**`, `**슬라이스 수**`, `**적용 위치**`, `**적용 주체**`, `**실패 시 파킹**` — where `없음` is a value and an omitted line is not; the last non-empty line is `<!-- cc-design-brief: end -->`. The brief is never edited and never staged.
 
@@ -175,7 +183,7 @@ Under driver dispatch `STATE="${CC_PIPELINE_RUN_DIR}/design/{slug}"` with `{slug
 4. the post-save Korean notices, the aggregate line and the presentation are **not** emitted — they become the three blocks of `presentation.md` (Step 5 below);
 5. before `team-cleanup.md` is applied, and inside the window in which each ledger row is flipped to `done`, the witness corpus is made durable (below).
 
-Under driver dispatch substitutions 2 and 3 read their inputs from Step 0 and Step 1 above instead of a brief, and substitution 4 does not apply: after the save the stage writes no `presentation.md` and continues into Step 5U.
+Under driver dispatch substitutions 2 and 3 read their inputs from Step 0 and Step 1 above instead of a brief — substitution 2's interview product is the interview record's six content sections when Step 1 resolved one, and the task sentence plus `## 의도` when it did not — and substitution 4 does not apply: after the save the stage writes no `presentation.md` and continues into Step 5U.
 
 When that body is relocated into this file, this section is replaced by it.
 

@@ -590,6 +590,56 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
   "$(jq -r "($sel_none) | if . == null then \"없음\" else .[\"사이클\"] end" "$SNAP_D" 2>/dev/null)" "없음"
 
 # ---------------------------------------------------------------------------
+# 6d. The design dispatch is carried by BOTH router copies
+#
+# The lead's loop and the shift skill each carry their own prose for dispatching
+# the design stage, and that duplication is deliberate: the shift decides from
+# the snapshot and nothing else, so factoring the section into a shared file
+# would open a second read path for it. What the duplication costs is that a
+# section landing in one file only is a section the other path never reads — a
+# shipped router already lost the design dispatch that way, with nothing to
+# catch it. The two sections are not byte-identical prose, so what is asserted
+# is the load-bearing literals: without any one of them the dispatch cannot be
+# issued, waited on, or held back while the stage runs.
+# ---------------------------------------------------------------------------
+design_section() {
+  # design_section <skill file> — the design-dispatch subsection body, read up
+  # to the next heading of any level.
+  awk '/^#### Dispatching the design stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
+}
+design_sel=""
+design_sel_rs=""
+for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
+  who=${pair%%:*}
+  sec=$(design_section "${pair#*:}")
+  if [ -n "$sec" ]; then
+    ok "$who 사본에 설계 파견 절이 있다"
+  else
+    bad "$who 사본의 설계 파견 절" "표제가 없거나 본문이 비었다"
+  fi
+  for lit in \
+    '--segment -' \
+    'live_stages[]' \
+    'orphan_stages[]' \
+    'gate.sh wait --manifest <매니페스트> --segment <step id>'
+  do
+    if printf '%s\n' "$sec" | grep -qF -- "$lit"; then
+      ok "$who 사본의 설계 파견 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 설계 파견 절" "「${lit}」이 없다"
+    fi
+  done
+  # The step id selector is the one literal both copies must agree on to the
+  # byte: it reads the frozen plan's graph, and two spellings of it are two
+  # answers to "which step is the design" on the two paths that dispatch it.
+  sel=$(printf '%s\n' "$sec" | grep -oE '\.steps\[\] \| select\([^)]*\) \| \.id' | sort -u)
+  check "$who 사본의 설계 파견 절에 설계 단계 id 선택식이 한 벌 실린다" \
+    "$(printf '%s\n' "$sel" | grep -c '^\.steps')" "1"
+  if [ -z "$design_sel" ]; then design_sel="$sel"; else design_sel_rs="$sel"; fi
+done
+check "두 사본의 설계 단계 id 선택식이 바이트 동일하다" "$design_sel_rs" "$design_sel"
+
+# ---------------------------------------------------------------------------
 # 7. The chain is what covers the ledger
 #
 # The ledger is deliberately NOT in the enforcement-surface digest: it grows on

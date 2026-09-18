@@ -11407,6 +11407,25 @@ gate_verb_act() {
       warn "세그먼트가 아닌 설계 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     fi
+
+    # AND THE DOCUMENT MUST ALREADY HAVE A NAME. `## 요소` → `설계 문서` is what
+    # the dispatch, every guard standing around it and the later audit all
+    # resolve the document through, and the kickoff is what names it — in front
+    # of the person, before the freeze. A run that requires a design and still
+    # arrives here with `(없음)` has no name anything downstream can agree on,
+    # so the act is refused rather than that value being read as a path. The
+    # gate does not compose one either: a path invented at dispatch names a
+    # document no guard is watching and no audit will read, and the run would
+    # go on around it.
+    local design_doc
+    design_doc=$(manifest_field '요소' '설계 문서')
+    case "$design_doc" in
+      '' | '없음' | '(없음)')
+        warn "설계 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
+        warn "이 값은 킥오프가 사람 앞에서 정해 동결하는 것이며, 게이트는 경로를 지어내지 않습니다"
+        exit "$GATE_EXIT_RULE"
+        ;;
+    esac
   elif [ "$kind" = "skill" ]; then
     if [ -z "$(gate_segment_field "$segment" '상태')" ]; then
       warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"

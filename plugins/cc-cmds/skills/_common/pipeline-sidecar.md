@@ -160,6 +160,18 @@ once per run rather than on every append.
 **<룰 이름>**: 켬 | 끔
 ````
 
+**`설계 문서` is the kickoff's to name, and on a design run `(없음)` is a refused
+value.** That field is what the dispatch, its guards and the audit all resolve the
+document through, so a run whose frozen plan requires a design must carry a real
+path in it — the kickoff derives one from the intent when it reads the roster
+back to the person, and writes it before the freeze. `(없음)` stays legitimate on
+a run that requires no design. Two checks hold the line and **neither of them
+invents a path**: the kickoff's own pre-freeze self-check refuses to write a
+manifest pairing a design-requiring plan with `(없음)`, and the gate's
+design-dispatch exemption refuses the act rather than reading that value as a
+path. A router that composed a path here instead would name a document no guard
+and no audit is looking for.
+
 **The manifest freezes the GOAL AND THE CONSTRAINTS, not the plan.** The plan
 digest is gone, and its absence is the point rather than an omission: the step
 graph is now decided one act at a time by a router reading a snapshot, so a
@@ -526,7 +538,7 @@ correcting it.
 
 ````
 # 파이프라인 런 인터뷰 기록 — <run-id>
-<!-- cc-run-interview v1; writer=autopilot; reader=design stage and the morning report; run-id=<run-id>;
+<!-- cc-run-interview v1; writer=autopilot; reader=design-discuss-unattended (driver dispatch) and the morning report; run-id=<run-id>;
      NOT a design doc; mechanism-local, never staged by a skill -->
 
 ## 과제
@@ -578,11 +590,24 @@ under two digests can disagree, and nothing decides which of them is the
 authorization — so the authorization lives where every other one does, and this
 record only refers to it.
 
-**What reads it today, stated as it is.** A design stage dispatched by the run
-receives the document path and the task sentence taken from `## 의도`, and it
-does **not** open this file. What the record buys now is that the person's words
-exist on disk under a frozen hash for any later reader to open; wiring the stage
-to read them is a change to that stage's skill file, not to this contract.
+**What reads it, and how it finds it.** A design stage dispatched by the run
+opens this file and takes it as the requirement input for the discussion. It is
+found by **path convention, not by argv**: the stage already holds
+`CC_PIPELINE_RUN_ID` and the manifest's path, and this record sits beside the
+manifest's own directory under that run id. Nothing is added to the dispatch, so
+the driver's design arm and the gate's `--segment -` dispatch both reach it
+without a second shape — an argv slot would have had to be added to two callers
+and kept in step forever.
+
+**The hash is re-taken and compared, and a disagreement is a halt.** The stage
+takes the whole-file `sha256` and compares it against the interview-record row of
+§2b.1. Three states stop it before the team spawns: the two values differ, the
+row exists and the file does not, or the file exists and the row does not. A
+record whose bytes have moved is no longer the record the manifest vouches for,
+and the requirement is the one input the stage cannot re-derive from anything
+else. When **neither** the row nor the file is there the stage runs from the task
+sentence and `## 의도` alone, which is what every run did before this reader
+existed.
 
 ## 3. `cc-pipeline-run v1` — the run ledger
 
