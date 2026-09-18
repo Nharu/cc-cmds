@@ -3691,14 +3691,43 @@ FEED_SH="$(dirname "$DRIVER")/feed.sh"
 if [ -f "$FEED_SH" ]; then
   ok "진행 채널 스크립트가 있다"
   # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
-  # the door that is already named; asking "is `liveness.sh` the only thing it
-  # sources" also closes the one a future emitter under another name would use.
+  # the door that is already named; asking which files it may source at all also
+  # closes the one a future emitter under another name would use.
+  #
+  # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
+  # it because the feed has to hop into the run's pinned copy before it writes
+  # anything, and the predicate that decides that is shared with the gate and the
+  # watcher rather than re-implemented here. Widening a whitelist weakens it
+  # unless the new entry is fenced too, so the assertions after this one hold
+  # `pin.sh` to the same rule: it sources nothing and names no emitter.
   feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
-                    | { grep -v 'liveness\.sh' || true; } )
+                    | { grep -v 'liveness\.sh' || true; } \
+                    | { grep -v 'pin\.sh' || true; } )
   if [ -n "$feed_src_other" ]; then
-    bad "피드 울타리" "feed.sh 가 liveness.sh 밖의 것을 소스한다: $feed_src_other"
+    bad "피드 울타리" "feed.sh 가 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $feed_src_other"
   else
-    ok "feed.sh 가 소스하는 것은 liveness.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "feed.sh 가 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+  fi
+  PIN_SH="$(dirname "$DRIVER")/pin.sh"
+  if [ -f "$PIN_SH" ]; then
+    pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
+    if [ -n "$pin_src_any" ]; then
+      bad "피드 울타리" "pin.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $pin_src_any"
+    else
+      ok "pin.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
+    fi
+    # THE NOTIFIER'S NAME IS SPLIT ACROSS TWO LITERALS. `lint-notify-fire-sites.sh`
+    # counts the lines under `orchestrator/` that name the binary and expects
+    # exactly the emitter's two, so a pattern that spells it whole turns this
+    # fence into a lint violation — the check would be reported as the thing it
+    # is checking against.
+    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$PIN_SH"; then
+      bad "피드 울타리" "pin.sh 가 방출 경로를 이름으로 담고 있다"
+    else
+      ok "pin.sh 의 어디에도 방출 경로가 없다"
+    fi
+  else
+    bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
   # And the name reaches no executable line. A header sentence explaining the
   # fence is not a breach of it, so the comment lines are excluded rather than
@@ -4913,6 +4942,17 @@ check "형제 런의 중단 기록도 거부 (허용 이름은 이 런의 것일
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/halt/impl.md")" "deny"
 check "형제 런의 계획 파일도 거부" \
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/x.plan.md")" "deny"
+# 판본 고정이 런 디렉터리 안에 **실행되는 코드**를 놓는다. 그 런의 모든 게이트
+# 호출·감시자·피드가 그 사본으로 건너뛰므로, 사본에 쓸 수 있는 스테이지는 자기
+# 런을 강제하는 코드를 고쳐 쓸 수 있다. 자기 런과 형제 런 양쪽을 함께 잰다.
+check "자기 런의 고정 사본은 거부 (이 런을 강제하는 코드다)" \
+  "$(hook_decide_rr "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh")" "deny"
+check "자기 런의 핀도 거부" \
+  "$(hook_decide_rr "$MYRUN/plugin-pin")" "deny"
+check "형제 런의 고정 사본 안 룰 파일도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/rules/x.rule")" "deny"
+check "형제 런의 핀도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin-pin")" "deny"
 # 아직 열리지 않은 런. 글롭도 아이노드도 없는 자리이고, 그 창이야말로 이 결정이
 # 덮겠다고 선언한 것이다 — 열리지 않은 런에 기록을 심어 두면 그 런의 초기화가
 # 그것을 보존한 채 시작한다.
@@ -4939,6 +4979,43 @@ case "$(hook_reason_rr "$MYRUN/config-dir")" in
   *'다른 런의 디렉터리'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
   *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
 esac
+
+# --- 배시 경로 가드도 같은 답을 내는가 -----------------------------------------
+# 훅은 `Write`/`Edit` 만 본다. 같은 쓰기가 `Bash` 로 오면 판정하는 것은
+# `gate_rundir_write_guard` 이고, 그 함수는 자기 런만 알아 형제 런에는 rc 0 을
+# 주고 있었다(실측). 고정 사본이 그 구멍에 실행되는 코드를 놓으므로, 여기서 두
+# 경로가 같은 답을 내는지 함께 잰다 — 한쪽만 닫히면 닫힌 쪽의 초록이 다른 쪽의
+# 열림을 가린다.
+rr_guard() {
+  # rr_guard <등급> <argv…> — 게이트를 소싱해 배시 경로 가드만 직접 물린다.
+  # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다.
+  rr_guard_msg=$( RR_G_RUNDIR="$MYRUN" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
+    bash -c '
+      g_surface="$1"; shift
+      CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+      . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+      unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      set +e
+      RUN_DIR="$RR_G_RUNDIR"
+      gate_rundir_write_guard "$g_surface" "$@" 2>&1
+      exit $?
+    ' _ "$@" )
+  rr_guard_rc=$?
+}
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 자기 런의 고정 사본 쓰기는 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 cp x "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 형제 런의 고정 사본 쓰기도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'다른 런의 디렉터리'*) ok "배시 가드: 형제 런 거부가 다른 런을 지목한다" ;;
+  *) bad "배시 가드: 형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
+check "배시 가드: 음성 대조군 — 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$WORK/outside.txt"
+check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
+check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은

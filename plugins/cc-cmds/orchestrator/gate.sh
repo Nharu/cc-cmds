@@ -192,6 +192,12 @@ export CC_ORCH_SOURCE_ONLY
 # measured kill shape.
 # shellcheck source=/dev/null
 . "$GATE_DIR/detach.sh"
+# The version pin and the hop it feeds. Sourced here rather than inlined for the
+# same reason as the four above: `watch.sh` and `feed.sh` hop with the same
+# predicate, and a second implementation of "where is this run pinned" is how
+# the watcher ends up running different code from the gate that started it.
+# shellcheck source=/dev/null
+. "$GATE_DIR/pin.sh"
 
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
@@ -6556,7 +6562,57 @@ gate_usage() {
   sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+gate_pin_hop() {
+  # gate_pin_hop <orchestrator-dir> — re-run this whole call from the pinned
+  # copy. Does not return.
+  #
+  # THE CAPTURED ARGV, NOT `"$@"`. The two hop points sit after the argument
+  # loop has already consumed the array, and the test harness enters through
+  # `gate_main` directly rather than through the file's trailing call — so the
+  # only copy of the original argument vector is the one the first statement of
+  # `gate_main` put aside. The bash 3.2 spelling below is what keeps an empty
+  # array from tripping `set -u`.
+  #
+  # `CC_GATE_SOURCE_ONLY` IS STRIPPED. The copy's trailing guard returns rc 0
+  # without calling `gate_main` when that variable is set, and the source-only
+  # seam (`scripts/test-gate.sh`) exports it — so a value inherited across the
+  # hop would turn every gate call in a pinned run into a silent no-op.
+  # `CC_ORCH_SOURCE_ONLY` needs no such care: the copy's own sourcing block sets
+  # it again before it sources the driver.
+  local dir="$1"
+  unset CC_GATE_SOURCE_ONLY
+  exec "${BASH:-/bin/bash}" "$dir/gate.sh" ${GATE_HOP_ARGV[@]+"${GATE_HOP_ARGV[@]}"}
+}
+
+gate_pin_version_field() {
+  # gate_pin_version_field <commit|tree|digest> — the value of one of the `run`
+  # row's three version fields, read from this run's pin.
+  #
+  # An unpinned run answers `(고정 안 함)` for all three: the seeded test runs
+  # and every run opened before pinning existed are unpinned, and a morning
+  # reader has to be able to tell that apart from a pin whose value is unknown.
+  # A dirty subtree answers `(미커밋)` for the tree, because there is no tree
+  # object naming the bytes that were copied — the copy in the run directory is
+  # then the only one there is, which the restore recipe says out loud.
+  local rd="${RUN_DIR:-}" v d
+  { [ -n "$rd" ] && [ -f "$(pin_file "$rd")" ]; } || { printf '(고정 안 함)'; return 0; }
+  case "$1" in
+    commit)
+      v=$(pin_read "$rd" 'commit'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    tree)
+      d=$(pin_read "$rd" 'dirty')
+      if [ "$d" = '예' ]; then printf '(미커밋)'; return 0; fi
+      v=$(pin_read "$rd" 'tree'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    digest)
+      printf '%s' "$(pin_read "$rd" 'digest')" ;;
+  esac
+}
+
 gate_main() {
+  # FIRST STATEMENT, ahead of even the arity check. The harness calls this
+  # function directly, so the file's trailing `gate_main "$@"` is not a place
+  # the capture could live.
+  GATE_HOP_ARGV=("$@")
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
@@ -6719,9 +6775,60 @@ gate_main() {
   # A missing file leaves the memo empty and `check_manifest` refuses it with
   # the same message it always did.
   manifest_snapshot_take
+
+  # HOP (A) — AN ALREADY PINNED RUN, AT THE EARLIEST POINT IT CAN BE DETECTED.
+  #
+  # Nothing above this line writes: the manifest read is a memo in this shell.
+  # That matters because `exec` carries the pid and the start-time fingerprint
+  # forward but DROPS every EXIT trap, so a marker or a lock taken before a hop
+  # is a ghost that passes its own liveness check. The placement is the
+  # invariant, not a convenience.
+  #
+  # The run id comes from the manifest header, which the memo above already
+  # answers, and the run directory from the one helper `rundir_init` uses. The
+  # header/body cross-check has not run yet; the copy's own `check_manifest`
+  # performs it a moment later, so nothing is skipped.
+  local hop_rid hop_rd hop_t hop_rc
+  hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || hop_rid=""
+  if [ -n "$hop_rid" ]; then
+    hop_rd=$(rundir_of_run_id "$hop_rid")
+    hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+    case "$hop_rc" in
+      0) gate_pin_hop "$hop_t" ;;
+      2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+    esac
+  fi
+
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
+
+  # HOP (B) — A RUN OPENING RIGHT NOW. Still above `rundir_init`, and for the
+  # same reason: everything that leaves a trace in the run directory is below it.
+  #
+  # "New run" is the pair of absences, and both halves are needed. `settings/`
+  # alone would re-pin a run opened before this code existed — those runs are
+  # deliberately left unpinned rather than retrofitted, because their watcher and
+  # their in-flight shift are already running the old file. `plugin-pin` alone
+  # would say nothing about a run that opened seconds ago on the older gate.
+  #
+  # `CC_GATE_PIN_DISABLE` is a TEST SEAM AND ONLY THAT: it suppresses pinning a
+  # new run and never makes hop (A) ignore an existing pin. A stage cannot set it
+  # — the stage hook refuses a leading assignment in front of the gate path — so
+  # it cannot be used to escape a pinned run's copy.
+  if [ "${CC_GATE_PIN_DISABLE:-0}" != "1" ]; then
+    hop_rd=$(rundir_of_run_id "$RUN_ID")
+    if [ ! -d "$hop_rd/settings" ] && [ ! -f "$hop_rd/plugin-pin" ]; then
+      pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" \
+        || die "판본 고정 실패 — 동시 체크아웃 폭주로 찢어지지 않은 사본을 얻지 못했습니다"
+      hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+      case "$hop_rc" in
+        0) gate_pin_hop "$hop_t" ;;
+        2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+      esac
+    fi
+  fi
+
   rundir_init
 
   # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
@@ -6899,19 +7006,29 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
-    # `강제 코드` and `베이스 청결` are the two the morning reads. The surface
-    # digest above deliberately excludes the plugin files — a redeploy that
-    # rewrites a rule must not kill a running run, and that exclusion is what
-    # makes it safe. The cost is that the code actually enforcing this run is
-    # unrecorded, so these two record it instead of detecting it: the base HEAD
-    # at kickoff, and whether that tree had uncommitted changes. A run opened on
-    # a dirty tree ran enforcement code no review saw, and without this field the
-    # morning cannot tell that apart from a clean night.
+    # `강제 코드` and `베이스 청결` DESCRIBE THE TARGET BASE, NOT THE JUDGE.
+    # They are the base's HEAD at kickoff and whether that worktree had
+    # uncommitted changes — a run opened on a dirty base ran against code no
+    # review saw, and without these the morning cannot tell that apart from a
+    # clean night. What enforced the run is a different question and has its own
+    # answer now: `plugin-pin` and the three version fields below. The surface
+    # digest still excludes the plugin files on purpose — a redeploy that
+    # rewrites a rule must not kill a running run — and pinning is what makes
+    # that exclusion cost nothing, because the enforcing bytes no longer move.
+    #
+    # `--no-optional-locks` ON THE PROBE, and this is a requirement rather than
+    # a tidy-up. A plain `git status` rewrites the index and holds `index.lock`
+    # for 0.24–0.47s; this probe runs inside the very call that takes the pin,
+    # and the command it would lock out is `git pull --ff-only`, which is how
+    # every slice of this design is applied.
     gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
       "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
       "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
-      "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "판본=$(gate_pin_version_field commit)" \
+      "판본 트리=$(gate_pin_version_field tree)" \
+      "판본 다이제스트=$(gate_pin_version_field digest)" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
@@ -8333,6 +8450,29 @@ gate_claudemd_slot_guard() {
   return 0
 }
 
+gate_rundir_is_foreign_run() {
+  # gate_rundir_is_foreign_run <folded-path> <run-root> <run-root-physical> \
+  #                            <own-physical> <own-logical>
+  # rc 0 when the path names a run directory that is not this run's.
+  #
+  # OWN IS TESTED FIRST, so a legitimate write to this run's own `halt/` or
+  # `<segment>.plan.md` never reaches the foreign arm and keeps its exception.
+  # The run root is compared in both spellings for the same reason the run
+  # directory is: `/var` is a symlink on this platform, so one directory has two
+  # names and a test against either alone walks past half the paths.
+  local an="$1" own="$4" ownl="$5" r
+  case "$an" in
+    "$own"|"$own"/*|"$ownl"|"$ownl"/*) return 1 ;;
+  esac
+  for r in "$2" "$3"; do
+    [ -n "$r" ] || continue
+    case "$an" in
+      "$r"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -8384,14 +8524,32 @@ gate_rundir_write_guard() {
   # matches none of the paths it exists to catch. Both are compared and neither
   # is preferred: an act may name either, and a guard that knows one spelling is
   # a guard the other spelling walks past.
-  local a rdp rdn rdln an rel
+  #
+  # A SIBLING RUN'S DIRECTORY IS REFUSED BEFORE THIS RUN'S IS TESTED. The hook
+  # already refuses both — it compares against the state root and not against one
+  # run — while this guard only ever knew its own `RUN_DIR`, so the same write
+  # was denied through `Write` and allowed through `Bash` whenever the target
+  # belonged to another run. Measured: `cp` into a sibling's `settings/` returned
+  # rc 0 here and `deny` from the hook. Pinning makes that gap worth closing
+  # rather than merely inconsistent, because it puts executable code — the copy
+  # every call of that run hops into — at a path under the sibling's directory.
+  # There is no legitimate case: a stage writing into a run that is not its own
+  # is either confused or hostile, and the refusal text says so.
+  local a rdp rdn rdln an rel root rootp
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
   rdln=$(gate_path_spelling "$RUN_DIR")
+  root=$(gate_path_spelling "$(gate_reap_root)/run")
+  rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
+  if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$a")
+    if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
+      warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
+      return "$GATE_EXIT_RULE"
+    fi
     rel=""
     case "$an" in
       "$rdn") rel="." ;;
