@@ -9484,7 +9484,7 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
       "거부"
 
 # --- 31ak. An act approval EXPIRES when the tree it named moves -------------
-# --- section: 31ak | group: cone | covers: act, close, plan | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
+# --- section: 31ak | group: cone | covers: act, close, plan | needs: 31b, 31c | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
 #
 # `구속 튜플` was written at issue time and read by NOTHING in the tree, so the
 # property stated beside it — an act approval's answer is valid only against the
@@ -9504,55 +9504,68 @@ tup_head=${tup_head##*/}
 # segment row names when that is a worktree of the target, and the tuple is
 # frozen there — so this section moves that tree, not the main worktree.
 tup_wt=$(row_field "$( { grep -E '^- `segment`' "$LEDGER2" || true; } | grep -F 'id=SD ' | tail -1)" '워크트리')
-head_before=$(cd "$tup_wt" && git rev-parse HEAD)
-# THE FIXTURE PROVES IT REACHES THE COMPARISON. The freshness check reads an
-# unmeasurable tuple as fresh, so a fixture whose tuple held no head fragment
-# would pass every assertion below without the compared branch ever running.
-if [ -n "$tup_head" ] && [ "$tup_head" = "${head_before:0:${#tup_head}}" ]; then
-  ok "구속 튜플이 발행 시점 HEAD 의 앞자리를 담는다 (대조가 공허하지 않다)"
+# THE TREE THIS SECTION COMMITS IN IS GUARDED BEFORE IT IS ENTERED, the way 14c
+# and 14m guard `$LINKED`. The `id=SD ` row is written by 31c and rests on the
+# rows 31b writes — neither of them by the group preamble — so a cut that carries
+# neither leaves this empty, and `cd ""` is a SUCCEEDING no-op in bash. The `&&`
+# chains below then ran `git commit --allow-empty` and `git reset --soft` in the
+# suite process's own directory, normally the developer's real checkout, and the
+# `--soft` reset put the tip back quietly enough that nothing said so. `bad`
+# rather than a silent skip: an empty value means the cut was wrong, and
+# reporting `ok` would let a narrowed run claim it exercised this section.
+if [ -z "$tup_wt" ] || [ ! -d "$tup_wt" ]; then
+  bad "픽스처 전제" "SD 의 세그먼트 행이 쓸 수 있는 워크트리를 이름 짓지 않는다: '$tup_wt'"
 else
-  bad "구속 튜플" "튜플의 head 조각 '$tup_head' 가 발행 시점 HEAD '$head_before' 와 맞지 않는다"
+  head_before=$(cd "$tup_wt" && git rev-parse HEAD)
+  # THE FIXTURE PROVES IT REACHES THE COMPARISON. The freshness check reads an
+  # unmeasurable tuple as fresh, so a fixture whose tuple held no head fragment
+  # would pass every assertion below without the compared branch ever running.
+  if [ -n "$tup_head" ] && [ "$tup_head" = "${head_before:0:${#tup_head}}" ]; then
+    ok "구속 튜플이 발행 시점 HEAD 의 앞자리를 담는다 (대조가 공허하지 않다)"
+  else
+    bad "구속 튜플" "튜플의 head 조각 '$tup_head' 가 발행 시점 HEAD '$head_before' 와 맞지 않는다"
+  fi
+  TUPSID="22222222-3434-5656-7878-909090909090"
+  tup_q=$(row_field "$tup_row" '질문 문면')
+  : > "$NTX/$TUPSID.jsonl"; auq_frame "$NTX/$TUPSID.jsonl" "$tup_id" "$tup_q" "승인" 승인 거부 >/dev/null
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+        CLAUDE_CODE_SESSION_ID="$TUPSID" gate_inproc close --manifest "$NM" --approval "$tup_id" 2>&1); rc=$?
+  check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
+  # `plan` RATHER THAN `act` for the two freshness probes: the resolution is read
+  # before the dry-run arm on purpose, so `plan` reports the verdict without
+  # performing anything — and this argv reaches outside the machine.
+  gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+        --surface 외부상태변경 -- scp -V
+  check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
+  ( cd "$tup_wt" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
+  gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+        --surface 외부상태변경 -- scp -V
+  check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
+  case "$msg" in
+    *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
+    *) bad "구속 튜플 대조" "$msg" ;;
+  esac
+  # AND THE RE-ISSUE ACTUALLY LANDS. A staleness finding with no new pending row
+  # leaves the act exiting 5 forever with nothing for anyone to answer, which is
+  # worse than the stale grant it replaced.
+  tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                     | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
+  gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
+        --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
+  check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
+  tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
+                    | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
+  if [ "${tup_wait_after:-0}" -gt "${tup_wait_before:-0}" ]; then
+    ok "같은 id 아래 새 대기 행이 붙는다 (승인이 갱신되지 폐기되지 않는다)"
+  else
+    bad "승인 재발행" "대기 행이 늘지 않았다: $tup_wait_before → $tup_wait_after"
+  fi
+  # THE FIXTURE PUTS THE TREE BACK. `--soft` and not `--hard`: the commit above is
+  # empty, so the index and the working tree already match the target and a hard
+  # reset would only be a chance to discard something another subsection left.
+  ( cd "$tup_wt" && git reset -q --soft "$head_before" )
+  check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$tup_wt" && git rev-parse HEAD)" "$head_before"
 fi
-TUPSID="22222222-3434-5656-7878-909090909090"
-tup_q=$(row_field "$tup_row" '질문 문면')
-: > "$NTX/$TUPSID.jsonl"; auq_frame "$NTX/$TUPSID.jsonl" "$tup_id" "$tup_q" "승인" 승인 거부 >/dev/null
-out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
-      CLAUDE_CODE_SESSION_ID="$TUPSID" gate_inproc close --manifest "$NM" --approval "$tup_id" 2>&1); rc=$?
-check "구속 튜플 실험용 승인이 닫힌다" "$rc" "0"
-# `plan` RATHER THAN `act` for the two freshness probes: the resolution is read
-# before the dry-run arm on purpose, so `plan` reports the verdict without
-# performing anything — and this argv reaches outside the machine.
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 -- scp -V
-check "트리가 그대로면 해소된 승인이 그 행위를 연다" "$rc" "0"
-( cd "$tup_wt" && git commit --allow-empty -q -m "구속 튜플 대조용 빈 커밋" )
-gateN plan --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 -- scp -V
-check "트리가 움직이면 같은 답으로 그 행위가 열리지 않는다" "$rc" "5"
-case "$msg" in
-  *"트리가 움직였습니다"*) ok "거절이 구속 튜플의 불일치를 원인으로 지목한다" ;;
-  *) bad "구속 튜플 대조" "$msg" ;;
-esac
-# AND THE RE-ISSUE ACTUALLY LANDS. A staleness finding with no new pending row
-# leaves the act exiting 5 forever with nothing for anyone to answer, which is
-# worse than the stale grant it replaced.
-tup_wait_before=$( { grep -F '`승인`' "$LEDGER2" || true; } \
-                   | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
-gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
-      --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- scp -V
-check "낡은 승인은 새 승인 발행으로 이어진다" "$rc" "5"
-tup_wait_after=$( { grep -F '`승인`' "$LEDGER2" || true; } \
-                  | grep -F "승인 id=$tup_id " | grep -cF '상태=대기' || true)
-if [ "${tup_wait_after:-0}" -gt "${tup_wait_before:-0}" ]; then
-  ok "같은 id 아래 새 대기 행이 붙는다 (승인이 갱신되지 폐기되지 않는다)"
-else
-  bad "승인 재발행" "대기 행이 늘지 않았다: $tup_wait_before → $tup_wait_after"
-fi
-# THE FIXTURE PUTS THE TREE BACK. `--soft` and not `--hard`: the commit above is
-# empty, so the index and the working tree already match the target and a hard
-# reset would only be a chance to discard something another subsection left.
-( cd "$tup_wt" && git reset -q --soft "$head_before" )
-check "픽스처가 옮긴 HEAD 를 되돌린다" "$(cd "$tup_wt" && git rev-parse HEAD)" "$head_before"
 
 # --- 31al. The `done` file names every held clause and every question -------
 # --- section: 31al | group: cone | covers: snapshot, close | anchors: 종료 픽스처의 세그먼트 행이 기록된다 ---

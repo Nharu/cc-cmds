@@ -10264,6 +10264,15 @@ gate_act_worktree() {
   # stale at once and a person is asked the same question all over again. The
   # segment argument is part of that one resolution: all three readers pass it,
   # and one that did not would bind an approval to a different tree.
+  #
+  # A PREDICATE FAILURE FALLS BACK HERE AND IS REFUSED BY THE CALLER. Returning
+  # non-zero instead would read better and cannot be done: two of the three
+  # readers compose this as `cd "$(gate_act_worktree …)"`, where an empty stdout
+  # sends the `cd` to the caller's directory rather than stopping anything. So
+  # the refusal lives in gate_verb_act's pre-check, which runs before any rule or
+  # approval and names both the offending value and the condition it failed. The
+  # two must stay in step: a caller that resolves through here without that
+  # pre-check in front of it gets the silent fallback back.
   local wt
   case "${2:-}" in
     ''|-) : ;;
@@ -10553,6 +10562,107 @@ gate_verb_act() {
   # mismatch is exit 6 — the same idiom the slicing declaration's `슬라이스 수`
   # already uses, where a value the writer supplies is compared against one the
   # reader derives instead of being trusted.
+
+  # Where the act runs. A declared target names its own worktree and the act
+  # belongs there; an undeclared one has no row to read, so the act stays in
+  # the caller's directory and is bounded by the layers above instead. The
+  # resolution itself lives in gate_act_worktree, which the approval's freeze
+  # and staleness comparison call too — a stage woke on the main worktree's
+  # branch every time until this was resolved in one place.
+  #
+  # RESOLVED HERE, AHEAD OF THE GRADING BASE THAT READS IT. This assignment used
+  # to sit far below the grade, so the only value the grade could reach was the
+  # one a parent gate exported — the parent's tree, never this act's. Once a
+  # `--segment` act started running in the segment's worktree the two parted:
+  # paths outside the segment tree but inside the caller's graded `워크트리쓰기`
+  # and paths inside it graded `트리밖쓰기`, so the axis that decides which rules
+  # apply was answering about a directory the act does not enter.
+  if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
+    export GATE_ACT_CWD
+  fi
+
+  # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
+  #
+  # The progress vector is built from the goal digest, the target rows, the
+  # `segment` rows and the open obligations — and from nothing a running stage
+  # emits. So a run whose segments were never written has a vector that cannot
+  # move: the stagnation boundary counts three identical digests and issues an
+  # approval while a stage is working normally, and its question text says only
+  # that the progress hash has not changed. Reading that line, "the router
+  # stopped", "the stage is slow" and "nobody wrote the row" are the same
+  # sentence. Measured: an audit stage worked 16 minutes, produced its report
+  # and three independent witnesses, terminated as `정상 완료` — and the
+  # boundary fired in the middle of it, with 38 `자율 승인` rows in the ledger
+  # and not one of them an input to the vector.
+  #
+  # The kickoff already says to write these rows. That is prose, and prose is
+  # what the omission got past; the same omission also silently costs the run
+  # termination condition 1, which counts `segment` rows, so a run that skips
+  # them cannot merge anything and cannot propose it is done — a debt taken on
+  # here and presented much later wearing a different face.
+  #
+  # NO `act` CONJUNCT. Both checks here are pure reads of rows already written,
+  # and excluding the dry run from them was the mechanism rather than a side
+  # effect: moving the early return alone leaves this arm still keyed on `act`,
+  # so `plan --kind skill` would go on answering "통과 예상" for a segment with no
+  # row and for a predecessor that has not landed.
+  #
+  # AHEAD OF THE RULE CATALOG AND THE APPROVAL BLOCK, and that ordering is half
+  # of what these two checks are worth. They used to sit below both, so a
+  # dispatch that lay outside the pre-authorization was answered with an approval
+  # instead of with this refusal: the run issued a pending question, froze its
+  # binding tuple against the FALLBACK tree nobody had chosen, and exited 5. An
+  # open approval stops the run, so a person answered it in the morning, the
+  # segment row was then repaired, and the same argv — now resolving to the
+  # segment's own tree — read that answer as stale and threw it away. A refusal
+  # that names the field to fix has to come before anything writes an approval
+  # about the same act.
+  if [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
+    warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
+    warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
+    exit "$GATE_EXIT_RULE"
+  fi
+
+  # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
+  # worktree that is not this target's would send the act to the target's own
+  # tree instead — which is exactly how every stage ended up in the shared main
+  # worktree. The repair is the merge's repair (fix the segment row, call again
+  # with the same argv), so the code is the merge's too.
+  #
+  # `exec` AND NOT ONLY A STAGE DISPATCH. The dispatch got this refusal first and
+  # `exec` was left on the fallback, which put the original defect back on the
+  # one verb that runs `git commit`, `git push` and `gh pr create`. There the
+  # fallback is silent end to end: both candidate directories exist, so the `cd`
+  # succeeds and the act simply lands in the main worktree with nothing said.
+  #
+  # RECORDING KINDS ARE DELIBERATELY OUT. `act --kind segment` is the only way to
+  # repair a segment row, so refusing it on the strength of that same row would
+  # brick the run at precisely the command the message below tells the reader to
+  # run. The verbs left out reach nothing outside the ledger anyway.
+  if [ -n "$segment" ] && [ "$segment" != "-" ] \
+     && { [ "$kind" = "skill" ] || [ "$verb" = "exec" ]; }; then
+    local seg_wt seg_why
+    seg_wt=$(gate_segment_worktree "$segment")
+    case "$seg_wt" in
+      ''|-|'(없음)') : ;;
+      *)
+        if ! gate_segment_worktree_of_target "$segment" "$alias" >/dev/null; then
+          case "$seg_wt" in
+            /*) if [ ! -d "$seg_wt" ]; then
+                  seg_why="디렉터리가 없습니다"
+                else
+                  seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
+                fi ;;
+            *)  seg_why="절대 경로가 아닙니다" ;;
+          esac
+          warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
+          warn "이 행위가 어디서 도는지 말할 수 없어 수행하지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
+          exit "$GATE_EXIT_ANCHOR"
+        fi ;;
+    esac
+  fi
+
   # THE GRADING BASE IS THE DIRECTORY THE ACT ACTUALLY RUNS IN, and it is handed
   # over IN-PROCESS rather than through the environment: the exported copy is
   # visible to children too, and a child must not grade against its parent's
@@ -10765,16 +10875,11 @@ gate_verb_act() {
     esac
   fi
 
+  # The cutpoint export stays here and the worktree resolution does not: this one
+  # needs `GATE_ACT_EFFECTIVE`, which the ladder above only settles by this point,
+  # while the worktree needs nothing the target row has not already supplied.
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     gate_export_cutpoints "$alias" "$GATE_ACT_EFFECTIVE" || exit $?
-    # Where the act runs. A declared target names its own worktree and the act
-    # belongs there; an undeclared one has no row to read, so the act stays in
-    # the caller's directory and is bounded by the layers above instead. The
-    # resolution itself lives in gate_act_worktree, which the approval's freeze
-    # and staleness comparison call too — a stage woke on the main worktree's
-    # branch every time until this was resolved in one place.
-    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
-    export GATE_ACT_CWD
   fi
   # WHAT THE RULES SEE IS THE GRADE argv PROVED, RAISED BY AN HONEST DECLARATION
   # — never lowered by one. The three classes give three inputs, and the reason
@@ -10975,7 +11080,9 @@ gate_verb_act() {
       ap_id=$(gate_judgment_approval_id "$segment" \
               "$(gate_judgment_question "$(gate_field_of '기준' "$@")" "$(gate_field_of '근거' "$@")")")
     else
-      ap_id=$(gate_act_approval_id "$alias" "$argv")
+      # THE SAME RESOLUTION THE ISSUER USES. Asking for the id with a tree the
+      # issuer did not key it on looks up an approval that was never written.
+      ap_id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$segment")")
     fi
     ap_st=$(gate_approval_state "$ap_id")
     case "$ap_st" in
@@ -11115,62 +11222,7 @@ gate_verb_act() {
     gate_surface_check "$verb" || exit $?
   fi
 
-  # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
-  #
-  # The progress vector is built from the goal digest, the target rows, the
-  # `segment` rows and the open obligations — and from nothing a running stage
-  # emits. So a run whose segments were never written has a vector that cannot
-  # move: the stagnation boundary counts three identical digests and issues an
-  # approval while a stage is working normally, and its question text says only
-  # that the progress hash has not changed. Reading that line, "the router
-  # stopped", "the stage is slow" and "nobody wrote the row" are the same
-  # sentence. Measured: an audit stage worked 16 minutes, produced its report
-  # and three independent witnesses, terminated as `정상 완료` — and the
-  # boundary fired in the middle of it, with 38 `자율 승인` rows in the ledger
-  # and not one of them an input to the vector.
-  #
-  # The kickoff already says to write these rows. That is prose, and prose is
-  # what the omission got past; the same omission also silently costs the run
-  # termination condition 1, which counts `segment` rows, so a run that skips
-  # them cannot merge anything and cannot propose it is done — a debt taken on
-  # here and presented much later wearing a different face.
-  # NO `act` CONJUNCT. Both checks below are pure reads of rows already written,
-  # and excluding the dry run from them was the mechanism rather than a side
-  # effect: moving the early return alone leaves this arm still keyed on `act`,
-  # so `plan --kind skill` would go on answering "통과 예상" for a segment with no
-  # row and for a predecessor that has not landed.
   if [ "$kind" = "skill" ]; then
-    if [ -z "$(gate_segment_field "$segment" '상태')" ]; then
-      warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
-      warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
-      exit "$GATE_EXIT_RULE"
-    fi
-
-    # WHERE THE STAGE WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
-    # worktree that is not this target's would send the stage to the target's
-    # own tree instead — which is exactly how every stage ended up in the shared
-    # main worktree. The repair is the merge's repair (fix the segment row, call
-    # again with the same argv), so the code is the merge's too.
-    local seg_wt seg_why
-    seg_wt=$(gate_segment_worktree "$segment")
-    case "$seg_wt" in
-      ''|-|'(없음)') : ;;
-      *)
-        if ! gate_segment_worktree_of_target "$segment" "$alias" >/dev/null; then
-          case "$seg_wt" in
-            /*) if [ ! -d "$seg_wt" ]; then
-                  seg_why="디렉터리가 없습니다"
-                else
-                  seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
-                fi ;;
-            *)  seg_why="절대 경로가 아닙니다" ;;
-          esac
-          warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
-          warn "스테이지가 어디서 도는지 말할 수 없어 띄우지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
-          exit "$GATE_EXIT_ANCHOR"
-        fi ;;
-    esac
-
     # ORDER, AND THE SECOND CONSUMER OF `선행`.
     #
     # With only the cone's declared axis reading it, declaring narrowly would be
@@ -11710,13 +11762,30 @@ gate_undeclared_target() {
 }
 
 gate_act_approval_id() {
-  # gate_act_approval_id <alias> <argv>
+  # gate_act_approval_id <alias> <argv> [<해소된 워크트리>]
   #
   # Factored out because TWO places must agree on it: the one that issues the
   # approval and the one that asks whether it has since been answered. They were
-  # one expression in one place, so nothing could ask.
-  printf 'A-%s' "$(printf '%s|%s|%s' "$RUN_ID" "$1" \
-    "$(printf '%s' "$2" | shasum -a 256 | cut -d' ' -f1)" | shasum -a 256 | cut -c1-8)"
+  # one expression in one place, so nothing could ask. They must also agree on
+  # the THIRD argument, which means both have to resolve the tree through
+  # gate_act_worktree with the same segment — the same requirement the freeze and
+  # the staleness comparison already carry, and this is its fourth reader.
+  #
+  # THE TREE IS PART OF THE IDENTITY, NOT ONLY OF THE FRESHNESS PROBE. The
+  # binding tuple records the tree as a 12-character head fragment and staleness
+  # compares that fragment, which identified the tree only while a target had one
+  # of them. Two segment worktrees branched from the same base have the SAME
+  # head, and that is exactly the moment a run dispatches its first stage into
+  # each — so a person's answer about segment A's act opened segment B's
+  # identical argv, because B computed A's id and read A's head out of B's tree.
+  # Keyed on the tree, the two acts are two approvals and the question is asked
+  # about the tree it is answered for. It also ends the mirror case: once the two
+  # trees diverge, A and B each saw the other's answer as stale and superseded it
+  # under the shared id, putting the same question in front of a person on a
+  # loop.
+  printf 'A-%s' "$(printf '%s|%s|%s|%s' "$RUN_ID" "$1" \
+    "$(printf '%s' "$2" | shasum -a 256 | cut -d' ' -f1)" "${3:-}" \
+    | shasum -a 256 | cut -c1-8)"
 }
 
 gate_approval_state() {
@@ -11808,7 +11877,7 @@ gate_issue_act_approval() {
   # produces one pending approval instead of a queue of duplicates.
   local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head st
   ad=$(printf '%s' "$argv" | shasum -a 256 | cut -d' ' -f1)
-  id=$(gate_act_approval_id "$alias" "$argv")
+  id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$seg")")
   # PRESENCE WAS THE WRONG GUARD ONCE THE TUPLE GOT A READER. The id is derived
   # from the alias and the argv and holds no sha, so an approval that has gone
   # stale keeps its id — and a presence check then refused to issue the very
