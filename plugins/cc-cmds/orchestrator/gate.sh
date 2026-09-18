@@ -6584,6 +6584,23 @@ gate_pin_hop() {
   exec "${BASH:-/bin/bash}" "$dir/gate.sh" ${GATE_HOP_ARGV[@]+"${GATE_HOP_ARGV[@]}"}
 }
 
+gate_hop_or_die() {
+  # gate_hop_or_die <run-dir> — hop into that run's pinned copy if there is one.
+  # Returns only when there is nothing to hop into; every refusal is a `die`.
+  #
+  # ONE SPELLING FOR BOTH HOP POINTS. The two sites carried the same call and the
+  # same `case` in two copies, which is a refusal text that gets fixed on one
+  # side and a new return code that gets handled on one side.
+  local t rc=0
+  t=$(pin_hop_target "$1" "$GATE_DIR") || rc=$?
+  case "$rc" in
+    0) gate_pin_hop "$t" ;;
+    2) die "plugin-pin 은 있는데 사본이 없습니다: $1/plugin-pin — 회복: rm \"$1/plugin-pin\"" ;;
+    3) die "plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: $1/plugin-pin — 이 런이 발행한 핀이 아니므로 실행하지 않습니다" ;;
+  esac
+  return 0
+}
+
 gate_pin_version_field() {
   # gate_pin_version_field <commit|tree|digest> — the value of one of the `run`
   # row's three version fields, read from this run's pin.
@@ -6788,15 +6805,17 @@ gate_main() {
   # answers, and the run directory from the one helper `rundir_init` uses. The
   # header/body cross-check has not run yet; the copy's own `check_manifest`
   # performs it a moment later, so nothing is skipped.
-  local hop_rid hop_rd hop_t hop_rc
+  #
+  # THE HEADER VALUE IS NOT TRUSTED, AND THE REFUSAL IS FAIL-CLOSED. These are
+  # caller-supplied bytes read before the header/body cross-check, so the one
+  # helper that builds the path refuses an id carrying a path component and the
+  # call dies rather than continuing with an unchecked directory.
+  local hop_rid hop_rd
   hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || hop_rid=""
   if [ -n "$hop_rid" ]; then
-    hop_rd=$(rundir_of_run_id "$hop_rid")
-    hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
-    case "$hop_rc" in
-      0) gate_pin_hop "$hop_t" ;;
-      2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
-    esac
+    hop_rd=$(rundir_of_run_id "$hop_rid") \
+      || die "매니페스트 헤더의 런 id 에 경로 성분이 있습니다: $hop_rid"
+    gate_hop_or_die "$hop_rd"
   fi
 
   check_manifest
@@ -6816,17 +6835,25 @@ gate_main() {
   # new run and never makes hop (A) ignore an existing pin. A stage cannot set it
   # — the stage hook refuses a leading assignment in front of the gate path — so
   # it cannot be used to escape a pinned run's copy.
+  #
+  # THE HOP IS UNCONDITIONAL; ONLY THE PINNING IS CONDITIONAL. It used to sit
+  # INSIDE the pair of absences, so a second opener that arrived after the pin was
+  # published — the window between hop (A) and here holds `check_manifest`,
+  # `derive_paths_from_manifest` and `gate_check_grant`, which is the widest of
+  # the three races in this path — skipped the block entirely: it did not pin
+  # (right, one exists) and did not hop either (wrong, the copy exists). It then
+  # ran its verb from the shared checkout while the `run` row it wrote reported
+  # the winner's pin, so the ledger claimed a pinned run that was not one. A run
+  # that opened before this code exists still passes through untouched: it has no
+  # pin, so `pin_hop_target` answers rc 1 and nothing happens.
   if [ "${CC_GATE_PIN_DISABLE:-0}" != "1" ]; then
-    hop_rd=$(rundir_of_run_id "$RUN_ID")
+    hop_rd=$(rundir_of_run_id "$RUN_ID") \
+      || die "런 id 에 경로 성분이 있습니다: $RUN_ID"
     if [ ! -d "$hop_rd/settings" ] && [ ! -f "$hop_rd/plugin-pin" ]; then
       pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" \
         || die "판본 고정 실패 — 동시 체크아웃 폭주로 찢어지지 않은 사본을 얻지 못했습니다"
-      hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
-      case "$hop_rc" in
-        0) gate_pin_hop "$hop_t" ;;
-        2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
-      esac
     fi
+    gate_hop_or_die "$hop_rd"
   fi
 
   rundir_init
@@ -8535,7 +8562,16 @@ gate_rundir_write_guard() {
   # every call of that run hops into — at a path under the sibling's directory.
   # There is no legitimate case: a stage writing into a run that is not its own
   # is either confused or hostile, and the refusal text says so.
-  local a rdp rdn rdln an rel root rootp
+  #
+  # THE ARGUMENT IS NORMALIZED BEFORE ANY COMPARISON, and folding separators was
+  # not enough for it. `gate_path_spelling` collapses `//` and `/./` and stops
+  # there — it does not rewind `..` and it does not absolutize — so two spellings
+  # walked past every prefix test below: `<이 런>/cc-team-witness-x/../plugin/…`
+  # was allowed by the witness exception it re-entered through, and a relative
+  # path matched no arm at all because none of them are relative. `gate_lexical_abs`
+  # answers both without touching the filesystem, which is what a guard over
+  # not-yet-created destinations needs.
+  local a rdp rdn rdln an rel root rootp r
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
@@ -8545,7 +8581,7 @@ gate_rundir_write_guard() {
   if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
-    an=$(gate_path_spelling "$a")
+    an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
       warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
       return "$GATE_EXIT_RULE"
@@ -8556,7 +8592,33 @@ gate_rundir_write_guard() {
       "$rdn"/*) rel=${an#"$rdn"/} ;;
       "$rdln") rel="." ;;
       "$rdln"/*) rel=${an#"$rdln"/} ;;
-      *) continue ;;
+      # THE PATH THAT IS NOT AN ARGUMENT OF ITS OWN. Every arm above is a prefix
+      # test on a WHOLE argument, so a run directory carried inside a larger
+      # token walks past all of them: `git diff --output=<피해자>/…` spells the
+      # path behind an option token, and `bash -c '… > <피해자>/…'` hands the
+      # whole program text as one argument. Both are graded as writes and both
+      # reach the file. Reading the command line as the operand is how the
+      # CLAUDE.md slot guard and arm 2 of the manifest guard already treat a
+      # wrapper; this guard was the one that followed neither.
+      #
+      # ONLY AFTER THE PREFIX ARMS, and the order carries the weight. Ahead of
+      # them this would refuse this run's own `halt/<stage-id>.md`,
+      # `<segment>.plan.md` and witness publications, which are spelled as plain
+      # paths under the run root and are exactly what those exceptions allow.
+      #
+      # RESIDUAL, and it fails in the safe direction: a non-read act that merely
+      # MENTIONS a run directory without writing there — a commit message
+      # quoting the path — is refused as well. Passing the path as its own
+      # argument, or dropping the wrapper, is the way through.
+      *) for r in "$root" "$rootp"; do
+           [ -n "$r" ] || continue
+           case "$an" in
+             *"$r"*)
+               warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
+               return "$GATE_EXIT_RULE" ;;
+           esac
+         done
+         continue ;;
     esac
     case "$rel" in
       ''|.) continue ;;
@@ -8568,6 +8630,78 @@ gate_rundir_write_guard() {
     esac
     warn "룰 거부: 런 디렉터리 쓰기 — 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 (위트니스 디렉터리 cc-team-witness-*/ 예외). 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 여기 쓰면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다: $a"
     return "$GATE_EXIT_RULE"
+  done
+  return 0
+}
+
+gate_plugin_root_write_guard() {
+  # gate_plugin_root_write_guard <graded-surface> <argv...>
+  #
+  # PINNING FREEZES THE BYTES A RUN *ENDS* ON, NOT THE ONES IT *STARTS* ON. Every
+  # entry — the seat's call, the watcher, the feed, and any call of a run that is
+  # not pinned — runs the SHARED checkout's `orchestrator/gate.sh` first, reads
+  # that whole file and walks its argument loop, and only then reaches the hop.
+  # Whoever controls those bytes controls every gate entry on the host, pinned
+  # runs included, from above the hop. Recording a version digest on the `run`
+  # row without this makes that worse rather than better: a reader who checks the
+  # pin sees an integrity the executing bytes do not have.
+  #
+  # THE PERMISSION LAYER DOES NOT COVER IT. The plugin root is the first element
+  # of the extra directories every settings variant grants, and when the target
+  # of the run is this repository the checkout is inside the base worktree
+  # anyway. So the refusal has to be a guard, and this is the Bash half of it.
+  #
+  # THE SEGMENT WORKTREE IS NOT THIS ROOT, and that negative control is the
+  # safety condition of the whole guard: a run implementing a change to these
+  # very files edits them in its own worktree, whose path shares no prefix with
+  # the installed root. Without that distinction every implementation stage in
+  # this repository would be unable to do its work.
+  #
+  # RESIDUAL, stated rather than hidden, and it fails in the safe direction: an
+  # act that merely RUNS one of these files while declaring a write surface is
+  # refused along with one that writes it, because the argument looks the same
+  # either way. Running the harness out of a worktree, or declaring the read it
+  # is, are both available; a hole here would not be.
+  local graded="$1"; shift
+  [ "$#" -ge 1 ] || return 0
+  case "$graded" in
+    읽기) return 0 ;;
+  esac
+  # TWO ROOTS, BECAUSE A PINNED CALL IS NOT RUNNING FROM THE INSTALLED ONE. The
+  # pin's `source` field is the physical path of the directory the run was opened
+  # from, which is precisely the installed root a pinned call can no longer see
+  # from `GATE_DIR`. Both spellings of each are kept for the reason the run
+  # directory guard keeps both: `/var` is a symlink on this platform and an act
+  # may name either.
+  local a an r src here rl rp hl hp t
+  rl=""; rp=""; hl=""; hp=""; src=""
+  if [ -n "${RUN_DIR:-}" ]; then src=$(pin_read "$RUN_DIR" 'source'); fi
+  if [ -n "$src" ]; then
+    rl=$(gate_path_spelling "$src")
+    t=$(cd "$src" 2>/dev/null && pwd -P) || t=""
+    if [ -n "$t" ]; then rp=$(gate_path_spelling "$t"); fi
+  fi
+  here=$(dirname "$GATE_DIR")
+  if [ -n "$here" ]; then
+    hl=$(gate_path_spelling "$here")
+    t=$(cd "$here" 2>/dev/null && pwd -P) || t=""
+    if [ -n "$t" ]; then hp=$(gate_path_spelling "$t"); fi
+  fi
+  for a in "$@"; do
+    case "$a" in */*) ;; *) continue ;; esac
+    an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
+    for r in "$rl" "$rp" "$hl" "$hp"; do
+      [ -n "$r" ] || continue
+      # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
+      # run directory guard's last arm gives: an option token and an interpreter
+      # program string both carry the path inside a larger argument, and a
+      # prefix test over arguments sees neither.
+      case "$an" in
+        *"$r"/orchestrator/*|*"$r"/hooks/*)
+          warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트입니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
+          return "$GATE_EXIT_RULE" ;;
+      esac
+    done
   done
   return 0
 }
@@ -11000,7 +11134,8 @@ gate_verb_act() {
   case "$kind" in
     skill|router-shift) : ;;
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
-       gate_rundir_write_guard "$graded" "$@" || exit $? ;;
+       gate_rundir_write_guard "$graded" "$@" || exit $?
+       gate_plugin_root_write_guard "$graded" "$@" || exit $? ;;
   esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
