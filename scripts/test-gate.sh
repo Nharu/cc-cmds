@@ -5854,7 +5854,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -5953,6 +5953,21 @@ check "15c: 설계를 요구하지 않는 계획에서는 면제가 서지 않�
 case "$msg" in
   *"design_required=true"*) ok "15c: 그 거절은 계획이 설계 단계를 정하지 못한 것을 든다" ;;
   *) bad "15c 계획 문면" "$msg" ;;
+esac
+# And "a design step" means one the readers can key on: an object with a
+# non-empty `id`. A step carrying `skill` `design` and no `id` is not a design
+# step with a blank name — the selector yields nothing for it, so the exemption
+# does not stand and the gate refuses instead of keying the stage on `null`.
+# Without this case the suite stays green even if that reading is inverted, and
+# the inverted reading is what stalls a run overnight with no row to say why.
+M15C_NULLID="$WORK/plan15c-nullid.md"
+write15c "$M15C_NULLID" '{ "design_required": true, "steps": [ { "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_NULLID" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 그 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c null-id 문면" "$msg" ;;
 esac
 # And the exemption reads `## 요소`: the document is named by the kickoff, in
 # front of the person, so a design-requiring plan that reaches the gate with

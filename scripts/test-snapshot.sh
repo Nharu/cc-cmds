@@ -632,7 +632,12 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   # The step id selector is the one literal both copies must agree on to the
   # byte: it reads the frozen plan's graph, and two spellings of it are two
   # answers to "which step is the design" on the two paths that dispatch it.
-  sel=$(printf '%s\n' "$sec" | grep -oE '\.steps\[\] \| select\([^)]*\) \| \.id' | sort -u)
+  # And that one spelling is the gate's own — the `type == "object"` guard and
+  # the `// empty` fallback are what make a step carrying no `id` read as "no
+  # design step" on every path instead of resolving to `null` on one of them.
+  # The pattern below therefore matches only the aligned form, so a copy that
+  # drifts back to the bare spelling extracts nothing and fails here loudly.
+  sel=$(printf '%s\n' "$sec" | grep -oE '\.steps\[\][?] \| select\([^)]*\) \| \.id // empty' | sort -u)
   check "$who 사본의 설계 파견 절에 설계 단계 id 선택식이 한 벌 실린다" \
     "$(printf '%s\n' "$sel" | grep -c '^\.steps')" "1"
   if [ -z "$design_sel" ]; then design_sel="$sel"; else design_sel_rs="$sel"; fi
