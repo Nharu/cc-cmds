@@ -10417,7 +10417,7 @@ check "그 재제출도 승인을 다시 대기로 열지 않는다" \
       "거부"
 
 # --- 31ak. An act approval EXPIRES when the tree it named moves -------------
-# --- section: 31ak | group: cone | covers: act, close, plan | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
+# --- section: 31ak | group: cone | covers: act, close, plan | needs: 31c | anchors: 구속 튜플 실험용 행위가 승인을 발행한다 ---
 #
 # `구속 튜플` was written at issue time and read by NOTHING in the tree, so the
 # property stated beside it — an act approval's answer is valid only against the
@@ -11334,7 +11334,7 @@ else
 fi
 
 # --- 31at. Auto-resolution on the emission path adopts only a nameable class -
-# --- section: 31at | group: cone | covers: act | anchors: 자동 해소 방출 실험용 세그먼트 행이 기록된다 ---
+# --- section: 31at | group: cone | covers: act | needs: 31ap | anchors: 자동 해소 방출 실험용 세그먼트 행이 기록된다 ---
 #
 # The emission absorber called the approval issuer with four arguments, so the
 # class was always empty by the time auto-resolution saw it — and that
