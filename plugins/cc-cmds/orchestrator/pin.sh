@@ -90,16 +90,37 @@ pin_hop_target() {
   #   rc 0  print the target; the caller `exec`s into it
   #   rc 1  nothing to do — no pin, or this process is ALREADY the copy
   #   rc 2  the pin names a copy that is not there; the caller stops
+  #   rc 3  the pin names somewhere that is not this run's copy; the caller stops
+  #
+  # THE PIN MAY ONLY NAME THIS RUN'S OWN COPY, AND THAT IS A CONFINEMENT AND NOT
+  # A TIDINESS CHECK. This function chooses which `gate.sh` executes, and it is
+  # consulted before the manifest is validated, before the paths are derived and
+  # before the grant is checked — so a pin planted anywhere a caller can point a
+  # run directory at would replace the very program that performs all of those
+  # checks, and the ledger row, the grading and the cutpoint comparison would go
+  # with it. `pin_take` always writes the literal `<run-dir>/plugin/cc-cmds`, so
+  # requiring that value back is the whole of the check.
+  #
+  # COMPARED BY SPELLING FIRST, PHYSICALLY ONLY AS A FALLBACK. The physical
+  # comparison needs both sides to exist, and "the copy is gone" is the state rc 2
+  # already names; resolving first would fold that distinct, recoverable state
+  # into this one and change what its refusal tells the reader to do.
   #
   # THE LOOP GUARD IS rc 1 AND NOT AN ERROR. The copy's own gate re-enters this
   # function on every call, and a target equal to where we already are would be
   # an `exec` into ourselves forever. Compared physically: the run directory sits
   # under `/var` on this platform, which is a symlink, so the two spellings of
   # one directory are different strings.
-  local rd="$1" here="$2" pd tp hp
+  local rd="$1" here="$2" pd tp hp ep pp epp
   [ -f "$(pin_file "$rd")" ] || return 1
   pd=$(pin_plugin_dir "$rd")
   [ -n "$pd" ] || return 1
+  ep="$rd/plugin/cc-cmds"
+  if [ "$pd" != "$ep" ]; then
+    pp=$(cd "$pd" 2>/dev/null && pwd -P) || pp=""
+    epp=$(cd "$ep" 2>/dev/null && pwd -P) || epp=""
+    if [ -z "$pp" ] || [ -z "$epp" ] || [ "$pp" != "$epp" ]; then return 3; fi
+  fi
   tp=$(cd "$pd/orchestrator" 2>/dev/null && pwd -P) || tp=""
   hp=$(cd "$here" 2>/dev/null && pwd -P) || hp="$here"
   if [ -n "$tp" ] && [ "$tp" = "$hp" ]; then return 1; fi
