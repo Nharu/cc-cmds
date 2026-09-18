@@ -5540,7 +5540,7 @@ si_allow=$(jq -r '.permissions.allow[]? | select(startswith("Read(/"))' "$SETTIN
   | sed -e 's#^Read(/##' -e 's#/CLAUDE\.md)$##' | grep -v -x -F -- "$si_cfg" | LC_ALL=C sort)
 si_anc=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs "$2"' _ "$GATE" "$WT" | LC_ALL=C sort)
 check "합성의 조상 순회와 설정의 CLAUDE.md 읽기 목록이 같은 디렉터리 집합이다" "$si_anc" "$si_allow"
-si_first=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs "$2"' _ "$GATE" "$WT" | head -1)
+si_first=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs "$2"' _ "$GATE" "$WT"); si_first=${si_first%%$'\n'*}
 check "조상 순회는 루트 우선이고 / 자체는 빼며 상대 경로에는 아무것도 내지 않는다" \
   "$si_first:$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs rel/x; gate_ancestor_dirs /' _ "$GATE" | grep -c . || true)" \
   "/$(printf '%s' "$WT" | cut -d/ -f2):0"
