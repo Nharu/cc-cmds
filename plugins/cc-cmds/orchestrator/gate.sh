@@ -7286,6 +7286,28 @@ gate_segment_worktree_of_target() {
   printf '%s' "$wt"
 }
 
+gate_segment_worktree_other_target() {
+  # gate_segment_worktree_other_target <segment> <own alias> — prints the alias
+  # of some OTHER declared target whose worktree the segment row names, and
+  # returns 0; returns 1 when no declared target owns that path.
+  #
+  # Separates the two things a failed predicate can mean. A row naming a path in
+  # no declared repository, a path that is gone, or a relative one is a row that
+  # has to be repaired, and the caller refuses. A row naming a worktree of
+  # another target THIS RUN DECLARES is a true row read through the wrong target:
+  # the run does act in that tree, just not through this act, so telling the
+  # reader to fix the row would be telling them to break it. What was actually
+  # wrong there is that the fallback said nothing, so the caller warns instead.
+  local a
+  for a in $(target_aliases); do
+    if [ "$a" != "$2" ] && gate_segment_worktree_of_target "$1" "$a" >/dev/null; then
+      printf '%s' "$a"
+      return 0
+    fi
+  done
+  return 1
+}
+
 gate_segment_worktrees_for_settings() {
   # The worktrees the ledger's `segment` rows name, one per line — the last row
   # per segment id, kept only when it passes gate_segment_worktree_of_target for
@@ -10577,10 +10599,21 @@ gate_verb_act() {
   # paths outside the segment tree but inside the caller's graded `워크트리쓰기`
   # and paths inside it graded `트리밖쓰기`, so the axis that decides which rules
   # apply was answering about a directory the act does not enter.
+  #
+  # THE UNDECLARED ARM ASSIGNS TOO, and leaving it out was not a smaller version
+  # of the same thing. With no assignment the variable keeps whatever a parent
+  # gate exported — the parent's tree, never this act's — and both readers below
+  # take it, so "skip the resolution" quietly became "use the parent's tree". An
+  # undeclared alias has no row to resolve, so the `--worktree` the caller named
+  # is the only answer there is; the registration above already required it to be
+  # a directory holding a git tree, and checking that twice would only let the
+  # two spellings drift apart.
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
-    export GATE_ACT_CWD
+  else
+    GATE_ACT_CWD="$worktree"
   fi
+  export GATE_ACT_CWD
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #
@@ -10640,25 +10673,48 @@ gate_verb_act() {
   # repair a segment row, so refusing it on the strength of that same row would
   # brick the run at precisely the command the message below tells the reader to
   # run. The verbs left out reach nothing outside the ledger anyway.
+  #
+  # NOT ON AN UNDECLARED TARGET, AND THE GUARD IS THE SAME ONE THE RESOLUTION
+  # CARRIES. This refusal exists to protect that resolution, so the two must ask
+  # about the same tree; they did not. An undeclared alias has no target row, so
+  # its `공통 git 디렉터리` is the empty string and the predicate fails for every
+  # segment row however correct that row is — and the act does not enter the
+  # row's tree anyway, because the arm above sends it to the caller's
+  # `--worktree`. What went out was exit 10 telling the reader to repair a row
+  # that was already right, which is a refusal with no repair behind it.
+  #
+  # A ROW NAMING ANOTHER DECLARED TARGET'S WORKTREE IS WARNED ABOUT, NOT REFUSED.
+  # That tree is one this run already acts in, so the prescribed repair would be
+  # breaking a true row; what was wrong in that case was only that the fallback
+  # was silent. So the act still falls back to this target's own tree and two
+  # lines name who owns the row's tree and where the act really runs. The values
+  # that name no declared target's tree at all — another repository, a path that
+  # is gone, a relative one — are refused exactly as before.
   if [ -n "$segment" ] && [ "$segment" != "-" ] \
+     && [ "${GATE_UNDECLARED:-0}" != "1" ] \
      && { [ "$kind" = "skill" ] || [ "$verb" = "exec" ]; }; then
-    local seg_wt seg_why
+    local seg_wt seg_why seg_other
     seg_wt=$(gate_segment_worktree "$segment")
     case "$seg_wt" in
       ''|-|'(없음)') : ;;
       *)
         if ! gate_segment_worktree_of_target "$segment" "$alias" >/dev/null; then
-          case "$seg_wt" in
-            /*) if [ ! -d "$seg_wt" ]; then
-                  seg_why="디렉터리가 없습니다"
-                else
-                  seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
-                fi ;;
-            *)  seg_why="절대 경로가 아닙니다" ;;
-          esac
-          warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
-          warn "이 행위가 어디서 도는지 말할 수 없어 수행하지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
-          exit "$GATE_EXIT_ANCHOR"
+          if seg_other=$(gate_segment_worktree_other_target "$segment" "$alias"); then
+            warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 이 아니라 대상 '${seg_other}' 의 워크트리입니다"
+            warn "이 행위는 대상 '$alias' 의 트리 '${GATE_ACT_CWD}' 에서 돕니다 — 세그먼트 행이 가리키는 트리가 아닙니다"
+          else
+            case "$seg_wt" in
+              /*) if [ ! -d "$seg_wt" ]; then
+                    seg_why="디렉터리가 없습니다"
+                  else
+                    seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
+                  fi ;;
+              *)  seg_why="절대 경로가 아닙니다" ;;
+            esac
+            warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
+            warn "이 행위가 어디서 도는지 말할 수 없어 수행하지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
+            exit "$GATE_EXIT_ANCHOR"
+          fi
         fi ;;
     esac
   fi

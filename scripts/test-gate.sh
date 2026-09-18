@@ -14524,6 +14524,67 @@ sag act --manifest "$SA_MANIFEST" --kind x --target 미선언 --segment SB6 \
 check "6: 배포 로 과신고된 커밋은 유도값으로 층 1 에 든다 (오늘은 rc 3 이다)" "$rc" "0"
 check "6: 그때는 등록 행이 하나 늘어난다" "$(sb6_rows)" "$((n6 + 1))"
 
+# --- 38-6b. 미선언 대상 — 세그먼트 행이 이 행위의 워크트리를 정하지 않는다 -------
+# --- section: 38-6b | group: sb | covers: exec, plan | anchors: 6b: 미선언 대상의 세그먼트 행위가 워크트리 술어로 거부되지 않는다 ---
+#
+# 해소와 거부의 정의역이 어긋나 있었다. 해소는 `GATE_UNDECLARED` 로 가드되는데
+# 그 해소를 지키려고 놓인 술어 검사는 같은 가드를 받지 않았다. 미선언 별칭에는
+# 대상 행이 없어 `공통 git 디렉터리` 가 빈 문자열이므로 술어가 무조건 실패하고,
+# 세그먼트 행이 정확해도 exit 10 과 「세그먼트 행의 워크트리를 고쳐 같은 argv 로
+# 다시 부르세요」가 나갔다 — 그 행은 옳고 행위는 그 트리에 들어가지도 않으므로
+# 수행할 수 없는 복구를 지시하는 거부다.
+#
+# 부모 게이트가 내보낸 `GATE_ACT_CWD` 를 물려받지 않는다는 방향은 이 하네스에
+# 직접 심을 수 없다 — 인프로세스 시임이 호출마다 환경을 훑어 내리고, 게이트를
+# 새 프로세스로 띄우는 형태는 stub 을 이름 대는 문장에만 허용된다(아래 fork
+# 센서스). 그래서 그 자리를 대입이 아예 없을 때 남는 값, 곧 게이트를 부른
+# 디렉터리와 다름을 단언하는 것으로 덮는다.
+#
+# 선언 대상 쪽 음성 대조(다른 레포 / 없는 경로 → exit 10)는 14m 의 SO·SN 이 이미
+# 고정하므로 여기서 복제하지 않는다. 절마다 자기 픽스처 런을 새로 여는 그룹이라
+# 원장을 종단 상태로 되돌릴 것도 없다.
+#
+# 세그먼트 행에 리뷰 정책을 싣지 않는다. 미선언 대상의 상한은 선언 대상의 것이
+# 아니라 `선리뷰후머지` 로 고정돼 있어, 픽스처의 기본 정책을 실으면 그 상한을
+# 넘었다는 rc=2 가 워크트리 술어보다 먼저 서서 이 절이 재려는 것을 가린다.
+sb_new '6b 미선언 대상의 세그먼트 워크트리' 선머지후리뷰
+sa_base >/dev/null
+sa_seg_row SB6W ""
+check "6b: 이 절의 세그먼트 행이 기록된다 (아래 단언이 공허하지 않다)" "$rc" "0"
+sag exec --manifest "$SA_MANIFEST" --target 미선언 --segment SB6W --cutpoint 커밋 \
+    --surface 읽기 --worktree "$SA_SEGWT" --snapshot-digest "$(SAH)" --rationale x \
+    -- pwd
+if [ "$rc" = "10" ]; then
+  bad "6b: 미선언 대상의 세그먼트 행위가 워크트리 술어로 거부되지 않는다" "$msg"
+else
+  ok "6b: 미선언 대상의 세그먼트 행위가 워크트리 술어로 거부되지 않는다"
+fi
+if [ "$rc" = "0" ]; then
+  ok "6b: 그 행위가 실제로 수행된다 (거부가 다른 종료 코드로 옮겨 가지 않았다)"
+else
+  bad "6b: 그 행위가 실제로 수행된다 (거부가 다른 종료 코드로 옮겨 가지 않았다)" "rc=$rc $msg"
+fi
+seg_pwd=$(cd "$SA_WT" && gate_inproc exec --manifest "$SA_MANIFEST" --target 미선언 \
+      --segment SB6W --cutpoint 커밋 --surface 읽기 --worktree "$SA_SEGWT" \
+      --snapshot-digest "$(SAH)" --rationale x -- pwd 2>/dev/null)
+# 비교 대상은 같은 자리에서 `pwd` 가 찍는 값이다. 물리 경로(`pwd -P`)가 아닌 것은
+# 래퍼가 그 값으로 `cd` 한 뒤 `pwd` 를 돌리기 때문이고, 변수 철자 그대로가 아닌
+# 것은 픽스처의 뿌리가 끝에 슬래시를 단 `TMPDIR` 에서 와 이중 슬래시를 품기
+# 때문이다 — 둘 다 같은 디렉터리를 다른 문자열로 적는다.
+check "6b: 그 행위는 호출자가 지목한 워크트리에서 돈다" "$seg_pwd" "$(cd "$SA_SEGWT" && pwd)"
+if [ -n "$seg_pwd" ] && [ "$seg_pwd" != "$(cd "$SA_WT" && pwd)" ]; then
+  ok "6b: 미선언 갈래가 작업 디렉터리를 스스로 정한다 (대입이 없을 때 남는 값이 아니다)"
+else
+  bad "6b: 미선언 갈래가 작업 디렉터리를 스스로 정한다" "게이트를 부른 트리에서 돌았다: '$seg_pwd'"
+fi
+sag plan --manifest "$SA_MANIFEST" --kind skill --target 미선언 --segment SB6W \
+    --cutpoint 커밋 --surface 워크트리쓰기 --worktree "$SA_SEGWT" \
+    --snapshot-digest "$(SAH)" --rationale x -- review x
+case "$msg" in
+  *"의 워크트리가 아닙니다"*) bad "6b: 미선언 대상 디스패치 예보도 세그먼트 행으로 거부되지 않는다" "$msg" ;;
+  *) ok "6b: 미선언 대상 디스패치 예보도 세그먼트 행으로 거부되지 않는다" ;;
+esac
+
 # --- 38-7. 말단 행위 상한의 계수가 접두 일치로 부풀지 않는다 ---------------------
 # --- section: 38-7 | group: sb | covers: act, plan, exec | anchors: 7: 그 머지가 절단점=머지 로 기록된다 ---
 #
