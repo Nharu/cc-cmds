@@ -5182,6 +5182,21 @@ case "$out" in
   *) bad "옛 방식 log" "$(printf '%s' "$out" | grep -i 'legacy\|stage instructions' | tr '\n' ' ')" ;;
 esac
 check "재개는 새 세션 기록을 만들지 않는다" "$( [ -e "$RD/instructions/session/$sg_sid" ] && printf 'written' || printf 'none' )" "none"
+# The assertion above runs in a shell where the switch was never set, so it
+# cannot see the channel that actually carries it. The wrapper `export`s the
+# variable on its injecting branches and `exec`s the CLI, and the CLI hands its
+# own environment to every child it spawns — so a seat that was itself launched
+# with instructions passes the variable down to an old-style resume it
+# dispatches. Argv alone cannot tell the two apart: both legacy launches expand
+# no `--append-...` flag, and only the environment says whether discovery is off.
+# Run the same legacy resume with the variable exported by the caller.
+export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+sg_launch "$WORK/sg-argv-5.txt" "$WORK/sg-env-5.txt" --resume "$sg_sid"
+unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+check "물려받은 끄기 변수가 서 있어도 옛 방식 재개가 끝까지 간다" "$rc" "0"
+check "옛 방식 재개는 물려받은 끄기 변수를 지운다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-5.txt")" "unset"
+check "그 재개도 append 플래그를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-system-prompt-file)" "0"
+check "그 재개도 서브에이전트 append 를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-subagent-system-prompt-file)" "0"
 rm -f "$WT/CLAUDE.md"
 
 # ---------------------------------------------------------------------------

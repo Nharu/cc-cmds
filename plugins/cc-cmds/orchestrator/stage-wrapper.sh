@@ -160,6 +160,22 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 # moves the per-machine sections (cwd, git status) out of the system prompt so
 # the injected block stays cacheable across stages. Automatic memory is left on:
 # only CLAUDE.md discovery is switched off here.
+#
+# The two NON-injecting branches `unset` the switch instead of letting it be
+# inherited, and that is what keeps the unexpressible state unexpressible on the
+# other channel. The injecting branches `export` it and `exec` the CLI, which
+# hands its own environment to everything it spawns; a seat launched that way
+# passes the variable down to an old-style resume it dispatches, and that resume
+# expands no `--append-...` flag at all. Without the unset it would run with
+# discovery off and nothing appended — the measured "neither one visible" state,
+# arriving through the environment rather than through argv.
+#
+# It is unset INSIDE the two branches rather than at the head of this file on
+# purpose. `stage-policy.md` says an agent started some other way (a `claude -p`
+# from a script, a Workflow) receives neither the policy nor the target's
+# CLAUDE.md, and part of why that is true today is this very inheritance. A
+# head-of-file unset would make that sentence false in one direction by letting
+# such a child silently read the target's CLAUDE.md instead.
 if [ -n "$RESUME" ]; then
   if [ -n "$INSTRUCTIONS" ]; then
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
@@ -169,6 +185,7 @@ if [ -n "$RESUME" ]; then
            --append-subagent-system-prompt-file "$INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
   else
+    unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            -r "$RESUME" --strict-mcp-config "$@"
   fi
@@ -181,6 +198,7 @@ else
            --append-subagent-system-prompt-file "$INSTRUCTIONS" \
            --exclude-dynamic-system-prompt-sections "$@"
   else
+    unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
     set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
            --session-id "$SESSION_ID" --strict-mcp-config "$@"
   fi

@@ -18,12 +18,24 @@
 # with. The checker's contract says the manifest sits NEXT TO the script and
 # the user-scope source is `${CLAUDE_CONFIG_DIR}/CLAUDE.md`, so the test copies
 # the checker into a scratch directory beside the case's manifest and points
-# `CLAUDE_CONFIG_DIR` at the case's `cfg/`. The workspace source is reached
-# only through a host map, which must hold an ABSOLUTE path; the map is
-# therefore written at run time into the scratch directory, naming the case's
-# `ws/CLAUDE.md` when the case has one. A case carrying `map.malformed` gets
+# `CLAUDE_CONFIG_DIR` at a `cfg/` it builds there. The workspace source is
+# reached only through a host map, which must hold an ABSOLUTE path; the map is
+# therefore written at run time into the scratch directory, naming the staged
+# workspace file when the case has one. A case carrying `map.malformed` gets
 # that file as its map instead. A case with neither gets a map path that does
 # not exist. The person's real global files are never read.
+#
+# THE FIXTURE SOURCES ARE STORED AS `source.md` AND STAGED UNDER THE NAME THE
+# CHECKER LOOKS FOR. They used to be stored as `cfg/CLAUDE.md` and `ws/CLAUDE.md`
+# and read in place, and this repository's own `.gitignore` carries a bare-name
+# `CLAUDE.md` line — so all thirteen of them were silently left out of the
+# commit while staying on the author's disk. Ten of the twelve cases then passed
+# locally and failed on a clean checkout, and the committed manifests collapsed
+# to four distinct blobs because every byte that told the cases apart lived in
+# the ignored files. Storing them under a name no ignore rule matches is what
+# makes the committed tree self-sufficient; copying them into the scratch
+# directory as `CLAUDE.md` is what keeps the checker's real filename resolution
+# under test.
 #
 # Expected per case: the exit code, the verdict on the last line, and — where
 # a finding is the point — the finding line itself, asserted verbatim.
@@ -74,16 +86,26 @@ run_drift() {
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/cc-policy-drift.XXXXXX")
   cp "$checker" "$scratch/stage-policy-drift.sh"
   cp "$case_dir/stage-policy.sources.tsv" "$scratch/stage-policy.sources.tsv"
+  # `cfg/` is created even when the case has no user-scope source, so that the
+  # "source file not found" branch is reached through a real config directory
+  # rather than through a missing one — the checker tests the file, not the
+  # directory, and the case that has no source is asserting exactly that.
+  mkdir -p "$scratch/cfg"
+  if [[ -f "$case_dir/cfg/source.md" ]]; then
+    cp "$case_dir/cfg/source.md" "$scratch/cfg/CLAUDE.md"
+  fi
   if [[ -f "$case_dir/map.malformed" ]]; then
     map="$case_dir/map.malformed"
-  elif [[ -f "$case_dir/ws/CLAUDE.md" ]]; then
+  elif [[ -f "$case_dir/ws/source.md" ]]; then
+    mkdir -p "$scratch/ws"
+    cp "$case_dir/ws/source.md" "$scratch/ws/CLAUDE.md"
     map="$scratch/map"
-    printf 'workspace\t%s\n' "$case_dir/ws/CLAUDE.md" > "$map"
+    printf 'workspace\t%s\n' "$scratch/ws/CLAUDE.md" > "$map"
   else
     map="$scratch/no-such-map"
   fi
   set +e
-  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$case_dir/cfg" bash "$scratch/stage-policy-drift.sh" --sources-map "$map" 2>/dev/null)
+  DRIFT_OUT=$(CLAUDE_CONFIG_DIR="$scratch/cfg" bash "$scratch/stage-policy-drift.sh" --sources-map "$map" 2>/dev/null)
   DRIFT_EC=$?
   set -e
   rm -rf "$scratch"
