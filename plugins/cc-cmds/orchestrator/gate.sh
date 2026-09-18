@@ -6913,6 +6913,16 @@ gate_main() {
       "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
       "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+    # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
+    # the gate injects into every stage was distilled from files a person edits
+    # by hand, and the checker beside this file reports whether they still
+    # agree. It is advisory: nobody reads it at runtime, and a ledger field
+    # would widen the sidecar contract for a signal the morning reads from the
+    # log anyway. Exit status ignored, no refusal, no row — a drifted source is
+    # a reason to update the policy, never a reason to stop a run.
+    local pd
+    pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" 2>/dev/null || true; } | tail -1)
+    log "stage policy sources: ${pd:-skipped}"
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
     # that runs once per run rather than once per gate entry.
@@ -10236,6 +10246,289 @@ gate_run_ended_ok() {
   return 0
 }
 
+gate_ancestor_dirs() {
+  # gate_ancestor_dirs <abs-dir> — every directory from the filesystem root down
+  # to <abs-dir> itself, one per line, ROOT FIRST, `/` excluded.
+  #
+  # The walk is the same one the CLAUDE.md read allow-list takes in
+  # `gate_write_settings`, with the same two termination bounds: the value has
+  # to keep changing under `dirname`, and it has to be absolute to contribute
+  # anything (`dirname .` is `.`, so a relative or empty input would otherwise
+  # loop forever). That loop is deliberately NOT refactored onto this helper —
+  # it renders settings bytes that enter the enforcement-surface digest — and
+  # the two are held together by a test asserting the same directory SET
+  # instead. The order is reversed here because the harness loads an
+  # instruction chain outermost first, so the deepest file wins on conflicts.
+  local adir="$1" aprev
+  case "$adir" in /*) : ;; *) return 0 ;; esac
+  {
+    while [ -n "$adir" ] && [ "$adir" != "/" ]; do
+      printf '%s\n' "$adir"
+      aprev="$adir"
+      adir=$(dirname "$adir")
+      [ "$adir" != "$aprev" ] || break
+    done
+  } | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) print a[i] }'
+}
+
+gate_stage_policy_sources_map() {
+  # The host map that names instruction files to leave OUT of a stage's chain,
+  # `<source-id><TAB><absolute path>` per line. Host-local on purpose: the paths
+  # are absolute and differ per machine, so a list shipped in the repository
+  # would be right on its author's box and silently empty everywhere else.
+  # `CC_GATE_STAGE_POLICY_SOURCES` is the test seam, the same shape as
+  # `CC_GATE_SETTINGS_OVERRIDE` — the suite does not isolate `HOME`, so every
+  # test that touches the map points this at a fixture (or at nothing).
+  printf '%s' "${CC_GATE_STAGE_POLICY_SOURCES:-${HOME:-}/.config/cc-cmds/stage-policy-sources}"
+}
+
+gate_stage_instructions() {
+  # gate_stage_instructions <alias> — synthesize the instruction file a stage of
+  # this target is launched with; print its absolute path, or `warn` and return
+  # 127 (the same code as a missing wrapper — a launch precondition).
+  #
+  # WHAT REPLACES AUTOMATIC CLAUDE.md LOADING. A stage launched with these
+  # instructions runs with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so nothing it
+  # would have loaded on its own reaches it; this file is the whole of what it
+  # gets, and its team members get the same bytes through the subagent append.
+  # It is `stage-policy.md` (the English stage policy, byte-identical for every
+  # target, kind and segment — the cache-stable head), then the target's
+  # instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
+  # every ancestor of the target's MAIN worktree, root first, whichever exist.
+  #
+  # THE MAIN WORKTREE, NOT THE STAGE'S. The launchers never `cd` into a stage
+  # worktree (the automatic loader read the router's cwd chain, which for a
+  # non-home target was not even the target's), a review of a PR that edits
+  # `CLAUDE.md` must not be judged by the rule that PR proposes, and orderbook's
+  # repository-root file is gitignored and exists only in the main worktree. The
+  # chain is the ANCESTOR chain because that is where the orderbook rules live —
+  # in a file outside git, above the repository — so "the target's CLAUDE.md"
+  # read literally would drop them without a trace.
+  #
+  # CONTENT-ADDRESSED AND FREE OF VOLATILE TOKENS: no run id, time, segment,
+  # attempt or worktree path goes in, the name is the sha256 of the bytes, and
+  # so every stage and team member of one target in one run shares one file —
+  # and one prompt-cache head. `umask 077` because an ancestor file may carry
+  # a credential line: the automatic loader sent those bytes too, but the disk
+  # copy must not be readable by another user, and the hook denies a stage every
+  # write under `instructions/`.
+  #
+  # REFUSALS FAIL CLOSED. An empty or non-directory main worktree would make the
+  # chain empty and the stage would run on the policy alone, having quietly
+  # lost every repository rule; a missing policy file would put it back on
+  # automatic loading, which is the state this replaces. Both refuse rather than
+  # degrade. A `.claude/rules/` directory anywhere in the chain refuses because
+  # `paths:`-conditioned rules cannot be flattened without either widening them
+  # to always-on or dropping them, and both are silent; an `@import` line
+  # outside a fenced block refuses because verbatim injection does not expand
+  # it. Today no target or ancestor has either, so nothing is stopped.
+  #
+  # THE USER-SCOPE SETTINGS DIRECTORY IS NOT AN ANCESTOR. The chain excludes
+  # only `/`, so a main worktree under the home directory walks through it, and
+  # on a host without `CLAUDE_CONFIG_DIR` the home `.claude/` IS the user-scope
+  # directory — its `CLAUDE.md` is the global instruction file this policy
+  # declares itself a replacement for, and its `rules/` are user-scope rules,
+  # not repository ones. So a chain directory whose `.claude` resolves to that
+  # directory contributes neither; its plain `CLAUDE.md` and `CLAUDE.local.md`
+  # are included as usual. The derivation is the settings renderer's own.
+  #
+  # THE HOST MAP EXCLUDES ANCESTOR FILES, guards evaluated in this order per
+  # line: a malformed line (no TAB, path not absolute) refuses, naming the line
+  # — a typo must not switch an exclusion off silently; a path not on disk logs
+  # one line and excludes nothing; a path equal to one of the target root's own
+  # three instruction files refuses — repository rules cannot be excluded; any
+  # other path joins the exclusion set, and one outside this chain simply never
+  # matches (the map is host-wide, so the cc-cmds workspace file is not in an
+  # orderbook chain, and refusing it would stop every orderbook launch). Every
+  # comparison is between PHYSICAL paths on both sides: with one side left as
+  # spelled, a symlinked spelling (`/var` vs `/private/var`) would judge a real
+  # ancestor as "outside the chain" and the exclusion would vanish silently.
+  # No map at all excludes nothing — fail-open toward today's behaviour.
+  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' n line id p pp
+  local d f name label fence_hit i tmp sha dst
+  local chain_files=() labels=()
+  root=$(target_field "$alias" '메인 워크트리')
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    warn "stage instructions: target '$alias' has no usable main worktree ('${root:-}') — refusing to launch; an empty chain would drop every repository rule"
+    return 127
+  fi
+  slug=$(target_field "$alias" '원격 슬러그')
+  if [ -z "$slug" ]; then
+    warn "stage instructions: target '$alias' has no remote slug in the manifest — refusing to launch; the chain labels need it"
+    return 127
+  fi
+  policy="$GATE_DIR/stage-policy.md"
+  if [ ! -f "$policy" ]; then
+    warn "stage instructions: stage policy not found: $policy — refusing to launch; automatic CLAUDE.md loading is not a fallback"
+    return 127
+  fi
+  rootp=$(cd "$root" && pwd -P)
+  cfgdir="${CLAUDE_CONFIG_DIR:-}"
+  [ -n "$cfgdir" ] || cfgdir="${HOME:-}${HOME:+/.claude}"
+  cfgp=""
+  [ -n "$cfgdir" ] && [ -d "$cfgdir" ] && cfgp=$(cd "$cfgdir" && pwd -P)
+
+  map=$(gate_stage_policy_sources_map)
+  if [ -n "$map" ] && [ -f "$map" ]; then
+    n=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      n=$((n + 1))
+      case "$line" in ''|'#'*) continue ;; esac
+      case "$line" in
+        *"	"*) : ;;
+        *) warn "stage instructions: host map line $n has no TAB (expected <source-id><TAB><absolute path>): $map"
+           return 127 ;;
+      esac
+      id="${line%%	*}"
+      p="${line#*	}"
+      case "$p" in
+        /*) : ;;
+        *) warn "stage instructions: host map line $n names a path that is not absolute: $map"
+           return 127 ;;
+      esac
+      if [ ! -e "$p" ]; then
+        log "stage instructions: source $id is not on disk, nothing excluded: $p"
+        continue
+      fi
+      pp="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+      case "$pp" in
+        "$rootp/CLAUDE.md"|"$rootp/.claude/CLAUDE.md"|"$rootp/CLAUDE.local.md")
+          warn "stage instructions: host map line $n names a target root instruction file, which cannot be excluded: $p"
+          return 127 ;;
+      esac
+      excl="$excl$pp"$'\n'
+    done < "$map"
+  fi
+
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if [ -d "$d/.claude/rules" ]; then
+      if [ -z "$cfgp" ] || [ "$(cd "$d/.claude" && pwd -P)" != "$cfgp" ]; then
+        warn "stage instructions: $d/.claude/rules/ exists — refusing to launch; conditional rules cannot be injected verbatim, and a person decides whether to flatten or drop them"
+        return 127
+      fi
+    fi
+    for name in CLAUDE.md .claude/CLAUDE.md CLAUDE.local.md; do
+      f="$d/$name"
+      [ -f "$f" ] || continue
+      if [ "$name" = ".claude/CLAUDE.md" ] && [ -n "$cfgp" ] \
+        && [ "$(cd "$d/.claude" && pwd -P)" = "$cfgp" ]; then
+        continue
+      fi
+      pp="$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")"
+      case "$excl" in
+        *$'\n'"$pp"$'\n'*) log "stage instructions: excluding $pp by the host map"; continue ;;
+      esac
+      # An `@import` line outside a fenced block: verbatim injection does not
+      # expand it, so the imported rules would be lost silently. The shape
+      # requires a path (`@~`, `@.`, `@/`, or `@name/`), so an annotation line
+      # such as `@Transactional` in a Java target's notes is not refused.
+      fence_hit=$(awk '
+        /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+        !fence && /^[[:space:]]*@(~|\.|\/|[A-Za-z0-9_.-]+\/)/ { print NR; exit }
+      ' "$f")
+      if [ -n "$fence_hit" ]; then
+        warn "stage instructions: $f:$fence_hit is an @import line outside a code fence — refusing to launch; verbatim injection cannot expand it"
+        return 127
+      fi
+      if [ "$d" = "$rootp" ]; then
+        label="$slug/$name"
+      else
+        label="$f"
+      fi
+      chain_files[${#chain_files[@]}]="$f"
+      labels[${#labels[@]}]="$label"
+    done
+  done < <(gate_ancestor_dirs "$rootp")
+
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/instructions" || exit 1
+    tmp=$(mktemp "$RUN_DIR/instructions/.stage.XXXXXX") || exit 1
+    {
+      cat "$policy"
+      printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file.\n'
+      i=0
+      while [ "$i" -lt "${#chain_files[@]}" ]; do
+        printf '\n---\n# %s\n\n' "${labels[$i]}"
+        cat "${chain_files[$i]}"
+        i=$((i + 1))
+      done
+    } > "$tmp" || { rm -f "$tmp"; exit 1; }
+    sha=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
+    dst="$RUN_DIR/instructions/$sha.md"
+    # `mv -n` publishes atomically and refuses an existing target; the name is
+    # the content hash, so an existing target holds these same bytes. But `mv -n`
+    # leaves its source behind on refusal, and that source holds the same
+    # credential-bearing bytes — remove it, or one copy accumulates per launch.
+    mv -n "$tmp" "$dst" 2>/dev/null || true
+    [ ! -e "$tmp" ] || rm -f "$tmp"
+    [ -f "$dst" ] || exit 1
+    printf '%s' "$dst"
+  ) || {
+    warn "stage instructions: could not publish the synthesized file under $RUN_DIR/instructions — refusing to launch"
+    return 127
+  }
+}
+
+gate_stage_instructions_for_launch() {
+  # gate_stage_instructions_for_launch <alias> <resume-session-id|''> — the
+  # `--instructions` file for this launch, printed; empty means "launch in
+  # legacy mode, without the option". Synthesis refusals propagate (127).
+  #
+  # EVERY LAUNCH LOGS THE DIGEST, resume or not, so the run log alone says
+  # which synthesis each launch ran on — no ledger field carries it.
+  #
+  # RESUME FOLLOWS THE SESSION'S OWN RECORD. A session born under automatic
+  # loading and resumed with the switch-off plus a new append sees NEITHER the
+  # old CLAUDE.md nor the new policy (measured; `--system-prompt-snapshot off`
+  # does not repair it), so a session with no record — born before this
+  # mechanism — resumes in legacy mode, exactly as it was born. A session with
+  # a record resumes on the RECORDED file even when the current synthesis
+  # differs: the resumed main session keeps the append it was born with while
+  # members spawned after the resume receive the new subagent append, so
+  # passing the new file would put the lead and its team on different policies.
+  # Only when the recorded file is gone from disk does the current synthesis
+  # stand in, and the log says so.
+  local alias="$1" resume="$2" now rec recf
+  now=$(gate_stage_instructions "$alias") || return $?
+  log "stage instructions: $alias sha256=$(basename "$now" .md)"
+  if [ -z "$resume" ]; then
+    printf '%s' "$now"
+    return 0
+  fi
+  rec="$RUN_DIR/instructions/session/$resume"
+  if [ ! -f "$rec" ]; then
+    log "resuming a session launched before stage instructions; launching in legacy mode"
+    printf ''
+    return 0
+  fi
+  recf="$RUN_DIR/instructions/$(tr -d '[:space:]' < "$rec").md"
+  if [ ! -f "$recf" ]; then
+    log "stage instructions: recorded file $(basename "$recf") is gone; passing the current synthesis"
+    printf '%s' "$now"
+    return 0
+  fi
+  if [ "$recf" != "$now" ]; then
+    log "stage instructions: session $resume was launched with $(basename "$recf" .md); current synthesis is $(basename "$now" .md) — keeping the recorded file"
+  fi
+  printf '%s' "$recf"
+}
+
+gate_stage_instructions_record() {
+  # gate_stage_instructions_record <session-id> <file> — remember which
+  # synthesis a NEW session was launched with, so a later resume can follow it.
+  # Same umask as the files themselves; a stage cannot write here.
+  local sid="$1" f="$2" tmp
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/instructions/session" || exit 1
+    tmp=$(mktemp "$RUN_DIR/instructions/session/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$(basename "$f" .md)" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/instructions/session/$sid"
+  ) || warn "stage instructions: could not record the synthesis for session $sid"
+}
+
 gate_act_worktree() {
   # gate_act_worktree <별칭> [<세그먼트>] — the directory this target's acts
   # actually run in.
@@ -12493,7 +12786,8 @@ gate_launch_stage() {
   # THE LAUNCH TOKEN. A verb that starts a stage with no authorization row and
   # no boundary evaluation is an authorization bypass if a router can spell it.
   # So the dispatch writes `<seg>.launch` (line 1 the nonce, line 2 the resume
-  # id or empty) and the supervisor CONSUMES it with `mv -n` and compares the
+  # id or empty, line 3 the instructions file or empty for legacy mode) and the
+  # supervisor CONSUMES it with `mv -n` and compares the
   # nonce; a second caller cannot take a consumed token. A stale
   # `<seg>.launch.taken` from the previous attempt — that attempt has already
   # terminated, settled or been refused — is removed first, because `mv -n`
@@ -12505,8 +12799,18 @@ gate_launch_stage() {
     warn "감독자를 띄울 인터프리터(perl 또는 python3)가 없습니다 — 파견을 거부합니다 ($seg)"
     return "$GATE_EXIT_RULE"
   fi
+  # THE STAGE INSTRUCTIONS, SYNTHESIZED BEFORE ANY SIDE EFFECT. A refusal here
+  # (127, like a missing wrapper) is a launch precondition — a host or
+  # repository state a person has to change — so it must not consume an
+  # attempt number or leave a session record behind: the pin below and the
+  # record after it both come later on purpose.
+  local instr
+  instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
   local attempt out suplog nonce tmp sup
   attempt=$(gate_pin_attempt "$seg")
+  if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
+    gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
+  fi
   # THE STREAM IS SCOPED BY ATTEMPT; the supervisor derives the same name from
   # the same pin through `stage_log_path`, so the supervisor's own log sits
   # beside the stage's stream under the same attempt.
@@ -12517,7 +12821,7 @@ gate_launch_stage() {
   nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   [ -n "$nonce" ] || { warn "기동 난스를 만들지 못했습니다 ($seg)"; return 1; }
   tmp=$(mktemp "$RUN_DIR/.launch.$seg.XXXXXX")
-  printf '%s\n%s\n' "$nonce" "${GATE_RESUME:-}" > "$tmp"
+  printf '%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "$instr" > "$tmp"
   mv "$tmp" "$RUN_DIR/$seg.launch"
   # THE SUPERVISOR'S PID COMES FROM THE COMMAND SUBSTITUTION AND NEVER FROM
   # `$!`. After a double fork `$!` names the middle process, already dead; the
@@ -12602,6 +12906,12 @@ gate_verb_supervise_stage() {
     return "$GATE_EXIT_RULE"
   fi
   resume=$(sed -n '2p' "$taken" 2>/dev/null | tr -d '[:space:]')
+  # The instructions file rides on the token's third line: the dispatch half
+  # synthesized it (and refused before pinning an attempt if it could not), so
+  # the supervisor passes it through rather than deriving it again. It is a
+  # path, so no whitespace stripping; empty means legacy mode.
+  local instr
+  instr=$(sed -n '3p' "$taken" 2>/dev/null)
 
   # THE PIN IS READ, NEVER WRITTEN, HERE. The dispatch half wrote it; a second
   # writer would let the two halves disagree about which attempt this is.
@@ -12691,6 +13001,7 @@ gate_verb_supervise_stage() {
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
+    ${instr:+--instructions "$instr"} \
     $id_flag \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
   # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
@@ -14589,6 +14900,15 @@ gate_launch_shift() {
     return "$GATE_EXIT_APPROVAL"
   fi
 
+  # THE SHIFT'S INSTRUCTIONS — the same policy file and the same synthesis as a
+  # stage of the home target, never a narrower variant (that would be a second
+  # drift surface and a second cache head). Synthesized BEFORE the `교대 기동`
+  # row and the in-progress marker, so a refusal (127) leaves no shift on record
+  # that never started. A shift is always a new session, so there is no resume
+  # arm here.
+  local instr
+  instr=$(gate_stage_instructions_for_launch "$alias" "") || return $?
+
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
   # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` counts the rows written
@@ -14605,6 +14925,7 @@ gate_launch_shift() {
   n=$(( $(gate_shift_launches) + 1 ))
   [ "${n:-0}" -ge 1 ] || n=1
   mkdir -p "$RUN_DIR/log"
+  gate_stage_instructions_record "$(session_uuid "shift" "$n")" "$instr"
 
   # AN EXPIRY TIMESTAMP AND NOT AN EMPTY MARKER. The watcher's after-stage arm
   # reads this file to keep from calling a shift "router silent after a stage
@@ -14663,6 +14984,7 @@ gate_launch_shift() {
   bash "$wrapper" \
     --settings "$(gate_settings_file shift)" \
     --plugin-dir "$plugin_dir" \
+    --instructions "$instr" \
     --session-id "$(session_uuid "shift" "$n")" \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &
   # BACKGROUNDED SO THERE IS A PID TO RECORD, then waited on — the call still
