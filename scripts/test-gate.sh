@@ -16120,7 +16120,7 @@ check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b
 
 # ---------------------------------------------------------------------------
 # 57. 판본 고정 — 새 런은 사본으로 hop 한다
-# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다 ---
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다 ---
 #
 # 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
 # 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
@@ -16454,6 +16454,84 @@ p57_tr_before=$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/
 check "57G: 양성 대조군 — 내보낸 GATE_ACT_CWD 아래에서는 커밋이 하나 는다" \
   "$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
   "$((p57_tr_before + 1))"
+
+# (11) 심어 둔 핀은 쓰이지 않는다 -------------------------------------------------
+# hop 은 매니페스트 검사·경로 유도·인가 확인보다 **위에서** 무엇을 실행할지 고른다.
+# 그래서 핀이 가리키는 자리를 확인하지 않으면 심어 둔 핀 하나가 그 검사들을 수행할
+# 프로그램 자체를 갈아 끼우고, 원장 행·등급 판정·컷포인트 대조가 함께 사라진다.
+# 미끼를 실제로 실행 가능한 스텁으로 두는 것이 이 케이스의 핵심이다 — 거부가 아니라
+# 통과했다면 그 사실이 출력으로 드러나야 한다.
+p57_fixture R57X
+P57DECOY="$P57ROOT/decoy/cc-cmds"
+mkdir -p "$P57DECOY/orchestrator" "$P57_RD"
+printf '#!/usr/bin/env bash\nprintf "PINNED-DECOY %%s\\n" "$*"\nexit 0\n' \
+  > "$P57DECOY/orchestrator/gate.sh"
+chmod +x "$P57DECOY/orchestrator/gate.sh"
+printf 'schema\t1\nplugin-dir\t%s\n' "$P57DECOY" > "$P57_RD/plugin-pin"
+p57_gate snapshot --manifest "$P57_MAN"
+# `case` 를 명령 치환 안에 두지 않는다 — bash 3.2 는 `$( )` 안의 `case` 패턴이 닫는
+# 괄호를 치환의 끝으로 읽어 구문 오류를 낸다.
+p57_decoy_hit=0
+case "$(cat "$WORK/last-output.txt")" in *PINNED-DECOY*) p57_decoy_hit=1 ;; esac
+check "57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다" "$p57_decoy_hit" "0"
+check "57X: 그 호출은 통과하지 않는다" \
+  "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+case "$msg" in
+  *'이 런의 사본이 아닌 곳'*) ok "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" ;;
+  *) bad "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" "$msg" ;;
+esac
+
+# (12) 경로 성분을 담은 런 id 는 hop 전에 거부된다 --------------------------------
+# 매니페스트 헤더의 값은 헤더·본문 대조를 거치기 전의 호출자 바이트다. 양쪽을 다 쓴
+# 매니페스트에서는 그 대조가 자동으로 성립하므로, 경로 공식을 만드는 헬퍼 자신이
+# 거부하지 않으면 런 디렉터리가 호스트의 아무 자리나 가리킨다.
+p57_fixture R57Y
+P57Y_ESC='../../escape'
+P57Y_MAN="$P57ROOT/escape.plan.md"
+sed -e "s|run-id=R57Y;|run-id=$P57Y_ESC;|" \
+    -e "s|^\*\*런 id\*\*: R57Y\$|**런 id**: $P57Y_ESC|" "$P57_MAN" > "$P57Y_MAN"
+P57Y_DIR="$P57_STATE/cc-cmds/run/$P57Y_ESC"
+p57_gate snapshot --manifest "$P57Y_MAN"
+check "57Y: 상위 참조를 담은 런 id 는 비정상 종료한다" \
+  "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+check "57Y: 그 경로에 아무것도 만들어지지 않는다" \
+  "$( [ -e "$P57Y_DIR" ] && printf yes || printf no )" "no"
+case "$msg" in
+  *'경로 성분'*) ok "57Y: 문면이 런 id 의 경로 성분을 지목한다" ;;
+  *) bad "57Y: 문면이 런 id 의 경로 성분을 지목한다" "$msg" ;;
+esac
+
+# (13) 고정을 수행하지 않은 호출도 hop 한다 ---------------------------------------
+# 「`settings/` 가 있고 핀도 있다」는 상태는 동시 첫 진입에서 진 쪽이 보는 것이다.
+# hop 이 고정 조건 안에 중첩돼 있던 동안 그 호출은 고정도 hop 도 하지 않고 통과해,
+# 고정됐다고 원장에 적힌 런이 고정되지 않은 코드로 돌았다. 두 프로세스의 실제 경쟁
+# 으로는 결정적으로 재현할 수 없다 — 헤더 `run-id` 부재를 `check_manifest` 가
+# fail-closed 로 죽이므로 hop (A) 를 합성으로 비껴갈 수 없고, 창은 두 hop 지점
+# 사이에만 있다. 그래서 그 창에서 도는 헬퍼를 직접 구동한다.
+p57_fixture R57H
+p57_gate snapshot --manifest "$P57_MAN"
+check "57H: 고정이 섰다" "$rc" "0"
+check "57H: 그 런에 settings 와 핀이 함께 있다 (다음 단언이 공허하지 않다)" \
+  "$( [ -d "$P57_RD/settings" ] && [ -f "$P57_RD/plugin-pin" ] && printf yes || printf no )" "yes"
+printf '#!/usr/bin/env bash\nprintf "PINNED-STUB %%s\\n" "$*"\nexit 0\n' \
+  > "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+chmod +x "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+# `gate_hop_or_die` 는 `exec` 다. 반드시 서브셸 안에서 부른다 — 57B 가 못 박은 것과
+# 같은 전제이며, 명령 치환이 그 서브셸이다. `GATE_DIR` 은 본체가 자기 실행 경로에서
+# 채우는 값이라 소싱만 한 이 자리에는 없다 — 설치본 자리를 직접 준다.
+p57_h_out=$( GATE_DIR="$repo_root/plugins/cc-cmds/orchestrator"; gate_hop_or_die "$P57_RD" 2>&1 )
+case "$p57_h_out" in
+  PINNED-STUB*) ok "57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다" ;;
+  *) bad "57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다" "$p57_h_out" ;;
+esac
+# 구조 단언 — 들여쓰기가 소속을 말한다. 바깥 `if` 의 본문은 네 칸, 새 런 판정 `if` 의
+# 본문은 여섯 칸이다.
+check "57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다" \
+  "$(sed -n '/CC_GATE_PIN_DISABLE:-0/,/^  fi$/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+     | grep -c '^    gate_hop_or_die "\$hop_rd"$' || true)" "1"
+check "57H2: 그 호출이 새 런 판정 if 안에는 없다" \
+  "$(sed -n '/CC_GATE_PIN_DISABLE:-0/,/^  fi$/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+     | grep -c '^      gate_hop_or_die' || true)" "0"
 
 # --- epilogue-begin ---
 #

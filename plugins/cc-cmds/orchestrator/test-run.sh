@@ -4990,6 +4990,7 @@ rr_guard() {
   # rr_guard <등급> <argv…> — 게이트를 소싱해 배시 경로 가드만 직접 물린다.
   # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다.
   rr_guard_msg=$( RR_G_RUNDIR="$MYRUN" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" \
     bash -c '
       g_surface="$1"; shift
       CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
@@ -4997,6 +4998,9 @@ rr_guard() {
       unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
       set +e
       RUN_DIR="$RR_G_RUNDIR"
+      # 상대 경로 철자를 재려면 등급 기준 디렉터리가 있어야 한다 — 가드가 인자를
+      # `gate_lexical_abs` 로 절대화하고, 그 기준이 이 값이다.
+      GATE_GRADE_CWD="$RR_G_CWD"
       gate_rundir_write_guard "$g_surface" "$@" 2>&1
       exit $?
     ' _ "$@" )
@@ -5016,6 +5020,66 @@ rr_guard 워크트리쓰기 cp x "$WORK/outside.txt"
 check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc" "0"
 rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
 check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
+
+# --- 네 가지 철자. 위 다섯 호출은 전부 평범한 절대 경로를 별도 인자로 넘긴다 -----
+# 인자별 루프가 구분자만 접고 `..` 를 풀지 않으며 상대 경로를 절대화하지 않고 더 큰
+# 토큰 안의 경로를 꺼내지 않았으므로, 아래 넷은 모두 통과했다. 첫째는 위트니스 허용
+# 예외를 거쳐 자기 런의 **고정 사본** 자신에 닿는다 — 훅이 거부를 단언하는 그 파일이다.
+rr_guard 워크트리쓰기 cp x "$MYRUN/cc-team-witness-x/../plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 위트니스 예외를 거친 상위 참조도 rc 3" "$rr_guard_rc" "3"
+RR_G_CWD="$MYRUN"
+rr_guard 워크트리쓰기 cp x ../victim/settings/x.json
+check "배시 가드: 상대 경로로 가리킨 형제 런도 rc 3" "$rr_guard_rc" "3"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 git diff "--output=$RR/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 옵션 토큰 안의 경로도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cat > $RR/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 인터프리터 포장 안의 경로도 rc 3" "$rr_guard_rc" "3"
+rr_guard 읽기 bash -c "cat $RR/cc-cmds/run/victim/plugin-pin"
+check "배시 가드: 음성 대조군 — 포장된 읽기는 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
+check "배시 가드: 음성 대조군 — 정규화 뒤에도 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+
+# --- hop 을 수행하는 설치본 진입점 ----------------------------------------------
+# 고정은 hop **이후** 의 바이트를 굳힌다. hop 을 수행하는 설치본 `orchestrator/*.sh`
+# 와 `hooks/*.sh` 는 고정이 굳히지 못하면서 모든 스테이지에 쓰기 가능했고, 훅의 어느
+# 팔도 그 이름을 거부하지 않는다. 세그먼트 워크트리의 같은 이름 파일이 허용되는 것이
+# 이 가드의 안전 조건이다 — 이 레포를 고치는 구현 스테이지는 자기 워크트리에서 바로
+# 그 파일들을 고치기 때문이다.
+RRP_INST="$WORK/installed/plugins/cc-cmds"
+RRP_WT="$WORK/segwt/plugins/cc-cmds"
+mkdir -p "$RRP_INST/orchestrator" "$RRP_INST/hooks" "$RRP_WT/orchestrator"
+rr_pguard() {
+  # rr_pguard <등급> <argv…> — 설치본 루트 가드만 직접 물린다. 고정되지 않은 런의
+  # 모양, 즉 `GATE_DIR` 이 설치본 사본의 `orchestrator/` 인 상태를 만든다.
+  rr_pguard_msg=$( RR_G_GATE="$script_dir/gate.sh" RR_P_DIR="$RRP_INST/orchestrator" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" \
+    bash -c '
+      g_surface="$1"; shift
+      CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+      . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+      unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      set +e
+      RUN_DIR=""
+      GATE_DIR="$RR_P_DIR"
+      GATE_GRADE_CWD="$RR_G_CWD"
+      gate_plugin_root_write_guard "$g_surface" "$@" 2>&1
+      exit $?
+    ' _ "$@" )
+  rr_pguard_rc=$?
+}
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 설치본 orchestrator 스크립트 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/hooks/gate-pretool.sh"
+check "설치본 가드: 설치본 훅 스크립트 쓰기도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "cat > $RRP_INST/orchestrator/run.sh"
+check "설치본 가드: 인터프리터 포장 안의 경로도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git diff "--output=$RRP_INST/orchestrator/pin.sh"
+check "설치본 가드: 옵션 토큰 안의 경로도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같은 이름은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 읽기 cat "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — 같은 경로 읽기는 rc 0" "$rr_pguard_rc" "0"
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
