@@ -192,6 +192,12 @@ export CC_ORCH_SOURCE_ONLY
 # measured kill shape.
 # shellcheck source=/dev/null
 . "$GATE_DIR/detach.sh"
+# The version pin and the hop it feeds. Sourced here rather than inlined for the
+# same reason as the four above: `watch.sh` and `feed.sh` hop with the same
+# predicate, and a second implementation of "where is this run pinned" is how
+# the watcher ends up running different code from the gate that started it.
+# shellcheck source=/dev/null
+. "$GATE_DIR/pin.sh"
 
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
@@ -415,6 +421,10 @@ readonly GATE_EXIT_LADDER=8
 # refusal is not in the catalog and survives `**리뷰-후-머지**: 끔` — reporting
 # it as 3 would cancel, on the surface the router actually reads, the property
 # that turning the rule off does not turn this off.
+#
+# The dispatch that cannot say where it runs shares it: a `--kind skill` act
+# whose segment row names a worktree that is not the target's has the same
+# repair — the row is wrong, the argv is right.
 readonly GATE_EXIT_ANCHOR=10
 
 # 도달 park — the act was not performed, and nothing is waiting to be answered.
@@ -5764,9 +5774,12 @@ gate_settings_key() {
   # the `diff -r` that compares it against disk are pure cost — which is what
   # the caller below skips.
   #
-  # NO LEDGER ROW IS AN INPUT, and that is the property the whole saving rests
-  # on. The ledger grows on every act, so a key that read it would change at
-  # moments when the settings provably cannot, and the skip would never fire.
+  # THE LEDGER'S GROWTH IS NOT AN INPUT, and that is the property the whole
+  # saving rests on. The ledger grows on every act, so a key that read it whole
+  # would change at moments when the settings provably cannot, and the skip
+  # would never fire. What IS an input is the set of worktrees the `segment`
+  # rows name, because those are interpolated — and that set moves only when a
+  # new value appears, which is exactly when the settings move too.
   # NO WALL CLOCK AND NO FILE CONTENT either, for the same reason — only the
   # values the renderer interpolates.
   #
@@ -5800,6 +5813,8 @@ gate_settings_key() {
     # The target rows verbatim: both worktree fields of every declared target
     # are interpolated into `additionalDirectories`.
     manifest_targets | sed 's/^/target\t/'
+    # The segment worktrees, sorted so row order cannot move the key.
+    gate_segment_worktrees_for_settings | LC_ALL=C sort -u | sed 's/^/segment-worktree\t/'
     printf 'gate\t%s\n' "$(shasum -a 256 "$GATE_DIR/gate.sh" 2>/dev/null | cut -d' ' -f1)"
   } | shasum -a 256 | cut -d' ' -f1
 }
@@ -5913,6 +5928,12 @@ gate_write_settings() {
 $(target_field "$a" '메인 워크트리')
 $(target_field "$a" '실행 워크트리')"
   done
+  # EVERY SEGMENT'S OWN WORKTREE, from the ledger. The router creates one per
+  # segment after kickoff and records it on the `segment` row; without this the
+  # only tree a stage could write was the shared main worktree, so segment
+  # isolation existed on the row and nowhere else.
+  wt_all="$wt_all
+$(gate_segment_worktrees_for_settings)"
   extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
@@ -6059,14 +6080,15 @@ gate_resettle_settings() {
   # comparison hollow.
   #
   # What it is derived from is the manifest's target rows (each target's main
-  # and execution worktree) and the run's own environment: the run directory,
+  # and execution worktree), the set of worktrees the ledger's `segment` rows
+  # name (last row per segment id, only those sharing a declared target's
+  # common git directory), and the run's own environment: the run directory,
   # the base, the directories of the manifest, ledger and grant, the design
   # document's directories, the plugin and hook locations, and the user config
-  # directory. NO LEDGER ROW IS AN INPUT. The `대상 추가` row appended below is a
-  # record of a widening, and nothing reads it back into a derivation. Nor is a
-  # segment's own worktree in the list — nothing here derives one. The manifest
-  # is written at kickoff and a write to it is refused, so during a run the
-  # bytes move only when the environment does.
+  # directory. The `대상 추가` row appended below is a record of a widening, and
+  # nothing reads it back into a derivation. The manifest is written at kickoff
+  # and a write to it is refused, so during a run the bytes move only when the
+  # environment does or a segment row names a new worktree.
   #
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
@@ -6633,7 +6655,57 @@ gate_usage() {
   sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+gate_pin_hop() {
+  # gate_pin_hop <orchestrator-dir> — re-run this whole call from the pinned
+  # copy. Does not return.
+  #
+  # THE CAPTURED ARGV, NOT `"$@"`. The two hop points sit after the argument
+  # loop has already consumed the array, and the test harness enters through
+  # `gate_main` directly rather than through the file's trailing call — so the
+  # only copy of the original argument vector is the one the first statement of
+  # `gate_main` put aside. The bash 3.2 spelling below is what keeps an empty
+  # array from tripping `set -u`.
+  #
+  # `CC_GATE_SOURCE_ONLY` IS STRIPPED. The copy's trailing guard returns rc 0
+  # without calling `gate_main` when that variable is set, and the source-only
+  # seam (`scripts/test-gate.sh`) exports it — so a value inherited across the
+  # hop would turn every gate call in a pinned run into a silent no-op.
+  # `CC_ORCH_SOURCE_ONLY` needs no such care: the copy's own sourcing block sets
+  # it again before it sources the driver.
+  local dir="$1"
+  unset CC_GATE_SOURCE_ONLY
+  exec "${BASH:-/bin/bash}" "$dir/gate.sh" ${GATE_HOP_ARGV[@]+"${GATE_HOP_ARGV[@]}"}
+}
+
+gate_pin_version_field() {
+  # gate_pin_version_field <commit|tree|digest> — the value of one of the `run`
+  # row's three version fields, read from this run's pin.
+  #
+  # An unpinned run answers `(고정 안 함)` for all three: the seeded test runs
+  # and every run opened before pinning existed are unpinned, and a morning
+  # reader has to be able to tell that apart from a pin whose value is unknown.
+  # A dirty subtree answers `(미커밋)` for the tree, because there is no tree
+  # object naming the bytes that were copied — the copy in the run directory is
+  # then the only one there is, which the restore recipe says out loud.
+  local rd="${RUN_DIR:-}" v d
+  { [ -n "$rd" ] && [ -f "$(pin_file "$rd")" ]; } || { printf '(고정 안 함)'; return 0; }
+  case "$1" in
+    commit)
+      v=$(pin_read "$rd" 'commit'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    tree)
+      d=$(pin_read "$rd" 'dirty')
+      if [ "$d" = '예' ]; then printf '(미커밋)'; return 0; fi
+      v=$(pin_read "$rd" 'tree'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    digest)
+      printf '%s' "$(pin_read "$rd" 'digest')" ;;
+  esac
+}
+
 gate_main() {
+  # FIRST STATEMENT, ahead of even the arity check. The harness calls this
+  # function directly, so the file's trailing `gate_main "$@"` is not a place
+  # the capture could live.
+  GATE_HOP_ARGV=("$@")
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
@@ -6796,9 +6868,60 @@ gate_main() {
   # A missing file leaves the memo empty and `check_manifest` refuses it with
   # the same message it always did.
   manifest_snapshot_take
+
+  # HOP (A) — AN ALREADY PINNED RUN, AT THE EARLIEST POINT IT CAN BE DETECTED.
+  #
+  # Nothing above this line writes: the manifest read is a memo in this shell.
+  # That matters because `exec` carries the pid and the start-time fingerprint
+  # forward but DROPS every EXIT trap, so a marker or a lock taken before a hop
+  # is a ghost that passes its own liveness check. The placement is the
+  # invariant, not a convenience.
+  #
+  # The run id comes from the manifest header, which the memo above already
+  # answers, and the run directory from the one helper `rundir_init` uses. The
+  # header/body cross-check has not run yet; the copy's own `check_manifest`
+  # performs it a moment later, so nothing is skipped.
+  local hop_rid hop_rd hop_t hop_rc
+  hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || hop_rid=""
+  if [ -n "$hop_rid" ]; then
+    hop_rd=$(rundir_of_run_id "$hop_rid")
+    hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+    case "$hop_rc" in
+      0) gate_pin_hop "$hop_t" ;;
+      2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+    esac
+  fi
+
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
+
+  # HOP (B) — A RUN OPENING RIGHT NOW. Still above `rundir_init`, and for the
+  # same reason: everything that leaves a trace in the run directory is below it.
+  #
+  # "New run" is the pair of absences, and both halves are needed. `settings/`
+  # alone would re-pin a run opened before this code existed — those runs are
+  # deliberately left unpinned rather than retrofitted, because their watcher and
+  # their in-flight shift are already running the old file. `plugin-pin` alone
+  # would say nothing about a run that opened seconds ago on the older gate.
+  #
+  # `CC_GATE_PIN_DISABLE` is a TEST SEAM AND ONLY THAT: it suppresses pinning a
+  # new run and never makes hop (A) ignore an existing pin. A stage cannot set it
+  # — the stage hook refuses a leading assignment in front of the gate path — so
+  # it cannot be used to escape a pinned run's copy.
+  if [ "${CC_GATE_PIN_DISABLE:-0}" != "1" ]; then
+    hop_rd=$(rundir_of_run_id "$RUN_ID")
+    if [ ! -d "$hop_rd/settings" ] && [ ! -f "$hop_rd/plugin-pin" ]; then
+      pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" \
+        || die "판본 고정 실패 — 동시 체크아웃 폭주로 찢어지지 않은 사본을 얻지 못했습니다"
+      hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+      case "$hop_rc" in
+        0) gate_pin_hop "$hop_t" ;;
+        2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+      esac
+    fi
+  fi
+
   rundir_init
 
   # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
@@ -6933,8 +7056,8 @@ gate_main() {
   # ground that a surface which changes because the gate touched it is a surface
   # whose comparison means nothing. That ground is real but the remedy was too
   # wide: it also froze the list of directories a stage may read, and kickoff
-  # happens BEFORE segmentation — so a segment's own worktree is, by
-  # construction, a directory the authorization list cannot contain. Measured: a
+  # happens BEFORE segmentation — so a segment's own worktree is never in the
+  # manifest, and a list frozen at kickoff could not contain it. Measured: a
   # run produced its review and then could not remediate, because the only
   # writable tree in its list was the live plugin checkout; it ended with the
   # goal marked unreachable for want of a directory rather than for want of work.
@@ -6942,14 +7065,18 @@ gate_main() {
   # What keeps the comparison meaningful is not that the surface never moves —
   # it is that it moves only through THIS writer and leaves a row when it does.
   # An edit by anything else still lands as exit 7. The derivation reads the
-  # manifest's target rows and the run's own environment and NO LEDGER ROW —
-  # the `대상 추가` row it appends is a record, not an input to the next
-  # derivation. When it yields different bytes the gate rewrites, re-baselines,
-  # and appends that row naming what widened.
+  # manifest's target rows, the worktrees the ledger's `segment` rows name, and
+  # the run's own environment — the `대상 추가` row it appends is a record, not
+  # an input to the next derivation. When it yields different bytes the gate
+  # rewrites, re-baselines, and appends that row naming what widened. So the
+  # call after the one that wrote a segment row — normally that segment's
+  # dispatch — widens the list before the stage starts.
   #
   # The widening is bounded by construction: every directory it can add is a
-  # worktree of a target the run already acts in. Nothing here grants a cutpoint,
-  # and the cutpoint is what governs whatever leaves the machine.
+  # worktree of a target the run already acts in — a segment row's path is
+  # admitted only when it shares that target's common git directory. Nothing
+  # here grants a cutpoint, and the cutpoint is what governs whatever leaves the
+  # machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
     # The baseline is written inside that call, so both halves have succeeded
@@ -6972,19 +7099,29 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
-    # `강제 코드` and `베이스 청결` are the two the morning reads. The surface
-    # digest above deliberately excludes the plugin files — a redeploy that
-    # rewrites a rule must not kill a running run, and that exclusion is what
-    # makes it safe. The cost is that the code actually enforcing this run is
-    # unrecorded, so these two record it instead of detecting it: the base HEAD
-    # at kickoff, and whether that tree had uncommitted changes. A run opened on
-    # a dirty tree ran enforcement code no review saw, and without this field the
-    # morning cannot tell that apart from a clean night.
+    # `강제 코드` and `베이스 청결` DESCRIBE THE TARGET BASE, NOT THE JUDGE.
+    # They are the base's HEAD at kickoff and whether that worktree had
+    # uncommitted changes — a run opened on a dirty base ran against code no
+    # review saw, and without these the morning cannot tell that apart from a
+    # clean night. What enforced the run is a different question and has its own
+    # answer now: `plugin-pin` and the three version fields below. The surface
+    # digest still excludes the plugin files on purpose — a redeploy that
+    # rewrites a rule must not kill a running run — and pinning is what makes
+    # that exclusion cost nothing, because the enforcing bytes no longer move.
+    #
+    # `--no-optional-locks` ON THE PROBE, and this is a requirement rather than
+    # a tidy-up. A plain `git status` rewrites the index and holds `index.lock`
+    # for 0.24–0.47s; this probe runs inside the very call that takes the pin,
+    # and the command it would lock out is `git pull --ff-only`, which is how
+    # every slice of this design is applied.
     gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
       "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
       "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
-      "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "판본=$(gate_pin_version_field commit)" \
+      "판본 트리=$(gate_pin_version_field tree)" \
+      "판본 다이제스트=$(gate_pin_version_field digest)" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
@@ -7333,6 +7470,54 @@ gate_segment_common_git() {
   out=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
   [ -n "$out" ] || return 1
   printf '%s' "$out"
+}
+
+gate_segment_worktree_of_target() {
+  # gate_segment_worktree_of_target <segment> <alias> — prints the segment row's
+  # `워크트리` and returns 0 only when it is a worktree OF THAT TARGET: an
+  # absolute path, an existing directory, and a common git directory equal to
+  # the target row's. The same predicate the manifest check puts on
+  # `실행 워크트리`.
+  #
+  # ONE PREDICATE FOR BOTH THINGS A SEGMENT ROW NOW WIDENS — the stage settings'
+  # directory list and the directory a segment act runs in. The contract bounds
+  # every widening to a worktree of a target the run already acts in, and a
+  # router writing a path from another repository, or one that does not exist,
+  # must widen neither. Status only: which condition failed is the caller's
+  # message to write, because only the caller knows what the refusal means.
+  local wt cg want
+  wt=$(gate_segment_worktree "$1")
+  case "$wt" in /*) : ;; *) return 1 ;; esac
+  [ -d "$wt" ] || return 1
+  want=$(target_field "$2" '공통 git 디렉터리')
+  [ -n "$want" ] || return 1
+  cg=$(gate_segment_common_git "$1") || return 1
+  [ "$cg" = "$want" ] || return 1
+  printf '%s' "$wt"
+}
+
+gate_segment_worktrees_for_settings() {
+  # The worktrees the ledger's `segment` rows name, one per line — the last row
+  # per segment id, kept only when it passes gate_segment_worktree_of_target for
+  # some declared target.
+  #
+  # AN INPUT OF THE SETTINGS DERIVATION. Kickoff happens before segmentation, so
+  # a segment's own worktree is never in the manifest; this is the only way it
+  # reaches `additionalDirectories`. The set moves only when a new value
+  # appears, so the settings key built from it stays still while the ledger
+  # merely grows.
+  local sid a wt
+  [ -f "${LEDGER:-}" ] || return 0
+  for sid in $(gate_segment_ids); do
+    [ -n "$sid" ] || continue
+    for a in $(target_aliases); do
+      if wt=$(gate_segment_worktree_of_target "$sid" "$a"); then
+        printf '%s\n' "$wt"
+        break
+      fi
+    done
+  done
+  return 0
 }
 
 gate_segment_tip() {
@@ -8358,6 +8543,29 @@ gate_claudemd_slot_guard() {
   return 0
 }
 
+gate_rundir_is_foreign_run() {
+  # gate_rundir_is_foreign_run <folded-path> <run-root> <run-root-physical> \
+  #                            <own-physical> <own-logical>
+  # rc 0 when the path names a run directory that is not this run's.
+  #
+  # OWN IS TESTED FIRST, so a legitimate write to this run's own `halt/` or
+  # `<segment>.plan.md` never reaches the foreign arm and keeps its exception.
+  # The run root is compared in both spellings for the same reason the run
+  # directory is: `/var` is a symlink on this platform, so one directory has two
+  # names and a test against either alone walks past half the paths.
+  local an="$1" own="$4" ownl="$5" r
+  case "$an" in
+    "$own"|"$own"/*|"$ownl"|"$ownl"/*) return 1 ;;
+  esac
+  for r in "$2" "$3"; do
+    [ -n "$r" ] || continue
+    case "$an" in
+      "$r"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -8409,14 +8617,32 @@ gate_rundir_write_guard() {
   # matches none of the paths it exists to catch. Both are compared and neither
   # is preferred: an act may name either, and a guard that knows one spelling is
   # a guard the other spelling walks past.
-  local a rdp rdn rdln an rel
+  #
+  # A SIBLING RUN'S DIRECTORY IS REFUSED BEFORE THIS RUN'S IS TESTED. The hook
+  # already refuses both — it compares against the state root and not against one
+  # run — while this guard only ever knew its own `RUN_DIR`, so the same write
+  # was denied through `Write` and allowed through `Bash` whenever the target
+  # belonged to another run. Measured: `cp` into a sibling's `settings/` returned
+  # rc 0 here and `deny` from the hook. Pinning makes that gap worth closing
+  # rather than merely inconsistent, because it puts executable code — the copy
+  # every call of that run hops into — at a path under the sibling's directory.
+  # There is no legitimate case: a stage writing into a run that is not its own
+  # is either confused or hostile, and the refusal text says so.
+  local a rdp rdn rdln an rel root rootp
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
   rdln=$(gate_path_spelling "$RUN_DIR")
+  root=$(gate_path_spelling "$(gate_reap_root)/run")
+  rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
+  if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$a")
+    if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
+      warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
+      return "$GATE_EXIT_RULE"
+    fi
     rel=""
     case "$an" in
       "$rdn") rel="." ;;
@@ -10262,10 +10488,17 @@ gate_run_ended_ok() {
 }
 
 gate_act_worktree() {
-  # gate_act_worktree <별칭> — the directory this target's acts actually run in.
+  # gate_act_worktree <별칭> [<세그먼트>] — the directory this target's acts
+  # actually run in.
   #
-  # `실행 워크트리` FIRST, the main worktree as the fallback. One field could not
-  # carry both duties: the sidecar path has to converge on the main worktree so
+  # THE SEGMENT'S OWN WORKTREE FIRST, when the act carries a segment and that
+  # segment row's `워크트리` passes gate_segment_worktree_of_target. A segment
+  # act used to ignore the row entirely and run in the target's tree, so every
+  # stage worked in the shared main worktree and the router had to switch that
+  # tree onto the segment's branch to make anything land.
+  #
+  # Then `실행 워크트리`, the main worktree as the last fallback. One field could
+  # not carry both duties: the sidecar path has to converge on the main worktree so
   # that N linked worktrees of one repository do not split the state a single
   # writer owns, while the act has to run where the branch actually is. For a pr
   # or branch anchor those are never the same directory — git refuses to check a
@@ -10279,8 +10512,17 @@ gate_act_worktree() {
   # landing in the tree the act was actually run in, and a sibling segment moving
   # the main worktree expired approvals about a tree that had not moved. Freezing
   # and comparing must resolve identically or every approval already issued goes
-  # stale at once and a person is asked the same question all over again.
+  # stale at once and a person is asked the same question all over again. The
+  # segment argument is part of that one resolution: all three readers pass it,
+  # and one that did not would bind an approval to a different tree.
   local wt
+  case "${2:-}" in
+    ''|-) : ;;
+    *) if wt=$(gate_segment_worktree_of_target "$2" "$1"); then
+         printf '%s' "$wt"
+         return 0
+       fi ;;
+  esac
   wt=$(target_field "$1" '실행 워크트리')
   case "$wt" in
     ''|'(없음)') wt=$(target_field "$1" '메인 워크트리') ;;
@@ -10782,7 +11024,7 @@ gate_verb_act() {
     # resolution itself lives in gate_act_worktree, which the approval's freeze
     # and staleness comparison call too — a stage woke on the main worktree's
     # branch every time until this was resolved in one place.
-    GATE_ACT_CWD=$(gate_act_worktree "$alias")
+    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
     export GATE_ACT_CWD
   fi
   # WHAT THE RULES SEE IS THE GRADE argv PROVED, RAISED BY AN HONEST DECLARATION
@@ -11019,7 +11261,7 @@ gate_verb_act() {
           warn "승인 $ap_id 은 앞선 자동 해소가 닫은 답이라 이 행위의 부류로는 채택하지 않습니다 (부류 ${GATE_JUDGMENT_CLASS:-없음})"
           warn "이 부류로 올리려면 기준과 근거를 달리한 새 물음으로 다시 물어야 합니다"
           exit "$GATE_EXIT_RULE"
-        elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias"; then
+        elif [ "$kind" != "judgment" ] && ! gate_act_approval_fresh "$ap_id" "$alias" "$segment"; then
           # THE TUPLE IS WHAT MAKES AN ACT APPROVAL EXPIRE. A question's answer
           # is durable and carries no tuple; an act's answer was given about a
           # tree, and this arm is the only place that says so. `rules_rc` is left
@@ -11171,6 +11413,31 @@ gate_verb_act() {
       warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
       exit "$GATE_EXIT_RULE"
     fi
+
+    # WHERE THE STAGE WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
+    # worktree that is not this target's would send the stage to the target's
+    # own tree instead — which is exactly how every stage ended up in the shared
+    # main worktree. The repair is the merge's repair (fix the segment row, call
+    # again with the same argv), so the code is the merge's too.
+    local seg_wt seg_why
+    seg_wt=$(gate_segment_worktree "$segment")
+    case "$seg_wt" in
+      ''|-|'(없음)') : ;;
+      *)
+        if ! gate_segment_worktree_of_target "$segment" "$alias" >/dev/null; then
+          case "$seg_wt" in
+            /*) if [ ! -d "$seg_wt" ]; then
+                  seg_why="디렉터리가 없습니다"
+                else
+                  seg_why="대상 '$alias' 의 공통 git 디렉터리와 다릅니다"
+                fi ;;
+            *)  seg_why="절대 경로가 아닙니다" ;;
+          esac
+          warn "세그먼트 ${segment} 의 워크트리 '${seg_wt}' 는 대상 '$alias' 의 워크트리가 아닙니다 — ${seg_why}"
+          warn "스테이지가 어디서 도는지 말할 수 없어 띄우지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
+          exit "$GATE_EXIT_ANCHOR"
+        fi ;;
+    esac
 
     # ORDER, AND THE SECOND CONSUMER OF `선행`.
     #
@@ -11768,8 +12035,8 @@ gate_act_tuple_head() {
 }
 
 gate_act_approval_fresh() {
-  # gate_act_approval_fresh <승인 id> <별칭> — 0 when the tree this approval was
-  # answered against is still the tree in front of us.
+  # gate_act_approval_fresh <승인 id> <별칭> [<세그먼트>] — 0 when the tree this
+  # approval was answered against is still the tree in front of us.
   #
   # THE BINDING TUPLE FINALLY HAS A READER. It was written at issue time and read
   # by nothing anywhere in the tree, so the property stated beside it — an act
@@ -11794,7 +12061,7 @@ gate_act_approval_fresh() {
   local frag cur
   frag=$(gate_act_tuple_head "$1")
   [ -n "$frag" ] || return 0
-  cur=$(cd "$(gate_act_worktree "$2")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  cur=$(cd "$(gate_act_worktree "$2" "${3:-}")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   [ -n "$cur" ] || {
     warn "승인 $1 의 구속 튜플을 대조할 HEAD 를 읽지 못했습니다 — 움직인 트리가 아니므로 신선한 것으로 봅니다"
     return 0
@@ -11829,7 +12096,7 @@ gate_issue_act_approval() {
     *) return 0 ;;
   esac
   base=$(target_field "$alias" '베이스 브랜치')
-  head=$(cd "$(gate_act_worktree "$alias")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  head=$(cd "$(gate_act_worktree "$alias" "$seg")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   # THE QUESTION IS A FIXED LITERAL AND THE BLOCK IS STILL WRITTEN: the anchor on
   # the row has to name something, and the close path fills the answer region
   # of this block the same way it does a judgment's.

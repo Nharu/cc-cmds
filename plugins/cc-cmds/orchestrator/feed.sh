@@ -57,6 +57,11 @@ set -uo pipefail
 FEED_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$FEED_DIR/liveness.sh"
+# The run's version pin, for the same hop the gate and the watcher take.
+# shellcheck source=/dev/null
+. "$FEED_DIR/pin.sh"
+
+FEED_ARGV=("$@")
 
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0
 while [ $# -gt 0 ]; do
@@ -71,6 +76,17 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$RUN_DIR" ] || { printf 'feed: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'feed: --ledger 는 필수입니다\n' >&2; exit 2; }
+
+# THE HOP, ahead of the cursor, the state file, the heartbeat and the lock — the
+# same ordering rule the watcher and the gate follow, and for the same reason:
+# `exec` keeps the pid and the fingerprint but drops EXIT traps, so a lock taken
+# before it would be held by a record nothing can release.
+feed_hop_t=""; feed_hop_rc=0
+feed_hop_t=$(pin_hop_target "$RUN_DIR" "$FEED_DIR") || feed_hop_rc=$?
+case "$feed_hop_rc" in
+  0) exec "${BASH:-/bin/bash}" "$feed_hop_t/feed.sh" ${FEED_ARGV[@]+"${FEED_ARGV[@]}"} ;;
+  2) printf 'feed: plugin-pin 은 있는데 사본이 없습니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+esac
 
 CURSOR="$RUN_DIR/feed.cursor"
 STATEF="$RUN_DIR/feed.state"
