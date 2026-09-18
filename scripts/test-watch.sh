@@ -1688,5 +1688,57 @@ runb >/dev/null
 sleep 0.2
 check "게이트가 이미 알린 승인 id 를 감시자가 존중한다" "$(notify_lines)" "0"
 
+# ---------------------------------------------------------------------------
+# 판본 고정 — 감시자의 hop 은 첫 쓰기보다 앞서고 pid 를 보존한다
+#
+# `exec` 는 pid 와 시작 시각 지문을 그대로 넘기고 EXIT 트랩은 잃는다. 그래서 hop
+# 앞에서 쓴 표지는 「검증에 성공하는 유령」이 되고, hop 뒤에 쓴 것만 정상이다. 여기서
+# 재는 것은 두 가지다 — 사본이 **같은 pid 로** 이어받는가, 그리고 설치본 쪽이 hop
+# 전에 `watch.pid`·`watch.state`·`watch.heartbeat` 중 하나라도 남기지 않는가.
+# ---------------------------------------------------------------------------
+HOPRD="$WORK/hop-run"
+HOPPLUG="$HOPRD/plugin/cc-cmds"
+mkdir -p "$HOPPLUG/orchestrator"
+for hopf in liveness.sh notify-run.sh pin.sh; do
+  cp "$repo_root/plugins/cc-cmds/orchestrator/$hopf" "$HOPPLUG/orchestrator/$hopf"
+done
+# `pin_hop_target` 은 사본의 `gate.sh` 가 있어야 표적을 낸다 — 사본이 실재하는지의
+# 대리 검사다. 이 케이스는 감시자만 재므로 그 자리는 빈 파일로 채운다.
+: > "$HOPPLUG/orchestrator/gate.sh"
+cat > "$HOPPLUG/orchestrator/watch.sh" <<'HOPEOF'
+#!/usr/bin/env bash
+# 고정 사본의 감시자 스텁 — 자기 pid 만 적고 끝낸다.
+HOP_RD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run-dir) HOP_RD="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$$" > "$HOP_RD/hop.pid"
+exit 0
+HOPEOF
+printf 'schema\t1\nplugin-dir\t%s\n' "$HOPPLUG" > "$HOPRD/plugin-pin"
+HOPLG="$WORK/hop-ledger.md"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$HOPLG"
+bash "$WATCH" --run-dir "$HOPRD" --ledger "$HOPLG" --once &
+hop_pid=$!
+wait "$hop_pid"
+check "감시자 hop — 사본이 원래 pid 그대로 이어받는다" \
+  "$(sed -n '1p' "$HOPRD/hop.pid" 2>/dev/null)" "$hop_pid"
+check "감시자 hop — hop 앞에서 watch.pid 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.pid" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.state 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.state" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.heartbeat 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.heartbeat" ] && printf yes || printf no )" "no"
+# 음성 대조군 — 핀이 없으면 설치본 감시자가 그대로 돌고 표지를 남긴다. 없으면 위
+# 세 단언이 「이 픽스처에서는 원래 아무것도 안 쓴다」와 구별되지 않는다.
+HOPRD2="$WORK/hop-run-nopin"
+mkdir -p "$HOPRD2"
+bash "$WATCH" --run-dir "$HOPRD2" --ledger "$HOPLG" --once >/dev/null 2>&1
+check "음성 대조군 — 핀이 없으면 설치본 감시자가 watch.pid 를 남긴다" \
+  "$( [ -e "$HOPRD2/watch.pid" ] && printf yes || printf no )" "yes"
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

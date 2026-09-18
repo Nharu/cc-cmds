@@ -931,5 +931,38 @@ check "새로 만든 파일은 키 하나뿐이다" "$(jq -r '[keys[]] | join(",
 bash "$APPLY" --probe --settings "$S6F" --plugin-dir "$APLUG" --expect "$EXPECT1" >/dev/null 2>&1
 check "새로 만든 뒤 사후 프로브 — 0(수렴)" "$?" "0"
 
+# ---------------------------------------------------------------------------
+# 상태 루트 아래를 가리키는 --plugin-dir — 런의 고정 사본이다
+# ---------------------------------------------------------------------------
+# 고정 런의 apply 스테이지는 `--plugin-dir` 을 `GATE_DIR` 에서 파생하는데, hop 뒤의
+# 그 값은 런 디렉터리 안 사본이다. 사본은 존재하고 스크립트를 담고 실행 비트도
+# 서 있어 아래 모든 검사를 통과하지만, 리퍼가 런 디렉터리를 걷어 가는 순간 설치된
+# 가드는 영구히 거짓이 된다 — 임시 워크트리 케이스와 같은 부류이고, 같은 자리에서
+# 같은 방식으로 막아야 한다.
+SLST="$WORK/xstate"
+SLST_PLUG="$SLST/cc-cmds/run/R/plugin/cc-cmds"
+mkdir -p "$SLST_PLUG/orchestrator"
+cp "$SL" "$SLST_PLUG/orchestrator/statusline.sh"
+chmod +x "$SLST_PLUG/orchestrator/statusline.sh"
+SSTF="$WORK/settings-state-root.json"
+printf '{ "statusLine": { "type": "command", "command": "orig" } }\n' > "$SSTF"
+EST=$(shasum -a 256 "$SSTF" | cut -d' ' -f1)
+SST_BEFORE=$(shasum -a 256 "$SSTF" | cut -d' ' -f1)
+sl_state_out=$(XDG_STATE_HOME="$SLST" bash "$APPLY" --apply --settings "$SSTF" \
+  --plugin-dir "$SLST_PLUG" --expect "$EST" 2>&1)
+check "상태 루트 아래를 가리키는 --plugin-dir — 쓰기 전에 park 한다" "$?" "1"
+check "그때 설정 파일은 한 바이트도 바뀌지 않는다" \
+  "$(shasum -a 256 "$SSTF" | cut -d' ' -f1)" "$SST_BEFORE"
+case "$sl_state_out" in
+  *'상태 루트'*) ok "문면이 상태 루트를 지목한다" ;;
+  *) bad "문면이 상태 루트를 지목한다" "$sl_state_out" ;;
+esac
+# 음성 대조군 — 상태 루트를 다른 곳으로 옮기면 같은 디렉터리가 통과한다. 없으면
+# 위 단언이 「그 경로는 원래 통과하지 않는다」와 구별되지 않는다.
+printf '{ "statusLine": { "type": "command", "command": "orig" } }\n' > "$SSTF"
+XDG_STATE_HOME="$WORK/elsewhere" bash "$APPLY" --apply --settings "$SSTF" \
+  --plugin-dir "$SLST_PLUG" --expect "$EST" >/dev/null 2>&1
+check "음성 대조군 — 상태 루트 밖이면 같은 디렉터리가 통과한다" "$?" "0"
+
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
 [ "$failed" -eq 0 ]
