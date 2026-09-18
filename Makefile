@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow
+.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -29,6 +29,7 @@ lint:
 	bash scripts/lint-harness-global-collisions.sh
 	bash scripts/lint-prompt-schemas.sh
 	bash scripts/lint-triage-pins.sh
+	bash scripts/lint-gate-banner-fields.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -105,6 +106,8 @@ LINT_TESTS := \
 	scripts/test-lint-ci-scope-binding.sh \
 	scripts/test-lint-macos-keepset-paths.sh \
 	scripts/test-lint-harness-global-collisions.sh \
+	tests/fixtures/lint-gate-banner-fields/run.sh \
+	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
 	scripts/test-readme-gen-parity.sh
@@ -122,6 +125,7 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \
+	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh
 
 DARWIN_TESTS := \
@@ -135,7 +139,23 @@ TEST_GOALS := $(ALL_TESTS:%=run/%)
 $(TEST_GOALS): run/%:
 	bash $*
 
-test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%)
+test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
+	run-gate-shard-selftest run-gate-census-selftest
+
+# The partitioner and the census are driven by flags, so they cannot sit in the
+# argument-less `bash <script>` lists above; their self-tests run no suite and
+# take seconds.
+run-gate-shard-selftest:
+	bash scripts/gate-shard.sh --self-test
+
+run-gate-census-selftest:
+	bash scripts/gate-census.sh --self-test
+
+# Regenerate scripts/gate-census.tsv. Run by hand, never from `test`: it runs
+# every section alone, the whole suite once and every shard once — about an hour
+# on an idle machine — and what it writes is a file to review and commit.
+census:
+	bash scripts/gate-census.sh --out scripts/gate-census.tsv
 
 test-active-notify: $(NOTIFY_TESTS:%=run/%)
 
@@ -173,6 +193,13 @@ test-darwin: test-active-notify test-orchestrator \
 #   test-notify-title-oracle.sh   the real terminal-notifier's swallowing set.
 #   test-gate.sh, section 18      the advisory-lock arm, which is darwin-only
 #                                 for real.
+#   test-gate.sh, section 31ai    the transition guard INSIDE that lock. The
+#                                 lock tool is yielded on darwin alone, so the
+#                                 ubuntu leg takes the unlocked fallback and
+#                                 never runs the guard body; section 18 drives
+#                                 the lock but passes no transition argument, so
+#                                 it skips that body too. 31ai runs a real
+#                                 `close`, which is how the guard gets reached.
 #
 # The two active-notify suites print the same assertions on both legs and are
 # kept anyway: taking them off does not move the PR's critical path, which the
@@ -182,7 +209,7 @@ test-darwin: test-active-notify test-orchestrator \
 # together with every file it sources, and nothing may stay in the filter that
 # this list does not run, source or refer to. scripts/lint-macos-keepset-paths.sh
 # checks both directions.
-DARWIN_GATE_SECTIONS := 18
+DARWIN_GATE_SECTIONS := 18,31ai
 
 .PHONY: run-gate-darwin-sections
 

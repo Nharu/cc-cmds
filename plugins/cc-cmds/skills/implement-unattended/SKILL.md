@@ -210,11 +210,23 @@ Process A ends here. Emit, do not implement.
 
 ---
 
+## W3 — the unattended design arm's write form (defined here, never written by this arm)
+
+W1 and W2 above are the two byte-enumerated forms this arm may write into a `### R<n>`. **W3 is a third form of the same family, and it lives in this file because the family lives here** — the snapshot-diff gate that makes W1/W2 safe is the same device that makes W3 safe, and one definition site keeps the three from drifting into three-and-a-half. **This arm never writes W3.** CFI-U6 stands unchanged: this arm's write surface is exactly W1/W2. The writer of W3 is `design-discuss-unattended` when the autopilot driver dispatches it as a stage, on the second rung of its residual-item ladder.
+
+- **What W3 records.** That a verification item's declared credential *exists* in the operator's credential store — and nothing else. The ladder's second rung asks the store by name (`credentials.sh store-has <name>`) and receives 있음/없음; a 있음 is written as W3, a 없음 is written nowhere.
+- **W3 form.** Inside the `### R<n>` of `## 구현 시 검증 항목`, locate `^(- )?(\*\*필요한 것\*\*|필요한 것): .*$` (`grep -E`/`sed -E` only — never perl) and rewrite that whole line to the canonical `**필요한 것**: 저장소 <경로> · 프로필 <이름> — 존재 확인 <YYYY-MM-DD>` (bold key, no leading bullet; no line creation or deletion). If the item carries no such line, append exactly one line of that form immediately after its `**차단 사유**` line.
+- **The slots are a path and a name, and that is the credential fence.** `<경로>` is the store directory as the caller resolved it (`~/.config/cc-cmds` by default) and `<이름>` is the file's bare name. There is no slot for a value, a status string or a free-text note, so a secret cannot be written through W3 by any spelling — the restraint is structural, not a rule the writer is asked to follow. **Widening W3 with a free-text slot is what removes that fence** and is not done: the ladder's first and third rungs (self-document contradiction, reachability) produce evidence for an escalation and write nothing.
+- **Diff gate.** The same snapshot-based gate as W1/W2, with two more accepted line shapes: `^-(- )?(\*\*필요한 것\*\*|필요한 것): .*$` (removed side, tolerant) and `^\+\*\*필요한 것\*\*: 저장소 [^ ]+ · 프로필 [^ ]+ — 존재 확인 [0-9]{4}-[0-9]{2}-[0-9]{2}$` (added side, strict-canonical). Any other changed line → revert this batch's non-matching changes against the snapshot, then halt. The lock (`/usr/bin/lockf -k -t 0 "${RUN_DIR}/designdoc.lock"`) and the `git diff` prohibition apply as written for W1/W2.
+- **W3 does not flip the grade.** It records that a blocker is gone; the item's `검증 등급` stays `구현 시 검증` and is flipped by W1 when the recipe actually runs in an implementation stage. Retiring an item or re-grading it is covered by no W form, which is why the skeleton predicate routes those to a person.
+
+---
+
 ## Constraints
 
 - **Binding tiers (section identity, not content inspection).** A design document is both a faithful record of a discussion and an instruction set, and those two jobs do not agree byte for byte. The contract is keyed to **which section a sentence sits in**:
-    - **Binding** — `## 합의된 아키텍처`; the *decision* sentences of `## 주요 결정사항과 근거`; entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`; `## 구현 시 검증 항목`; and a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`.
-    - **Reference** — the rationale prose of `## 주요 결정사항과 근거`; unresolved entries of `## 미해결 이슈 / 트레이드오프`; `## 권장 구현 순서`; examples and illustrations anywhere; and completed `### V<n>` entries of `## 검증 기록`.
+    - **Binding** — `## 합의된 아키텍처`; the *decision* sentences of `## 주요 결정사항과 근거`; entries of `## 미해결 이슈 / 트레이드오프` whose `상태` is `해결`; `## 구현 시 검증 항목`; `## 구현 슬라이싱` (the driver parses it mechanically and cannot ask what was meant, so its declared files, precedence and cutpoints bind exactly as an architecture sentence does); and a `## 재현·근본원인` whose `근거 등급` is `확인됨(재현·관측)`.
+    - **Reference** — the rationale prose of `## 주요 결정사항과 근거`; unresolved entries of `## 미해결 이슈 / 트레이드오프`; `## 권장 구현 순서` (the heading a document carries when it has **no** `## 구현 슬라이싱` — the two are mutually exclusive: a document with a slicing section has no ordering prose to bind, and one without it has only prose, which informs and does not bind); examples and illustrations anywhere; and completed `### V<n>` entries of `## 검증 기록`.
 - **Do NOT deviate from the binding tier.** Where the interactive skill would ask, this arm applies **CFI-U3 (BT-STOP)**: stop before the edit and halt. Deviating from the **reference** tier needs no approval — but record it: append an entry to `docs/design-drift/{slug}.md` per `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1` + `## 3`, with `티어: 참고` and `승인: 불요(참고 티어)`.
 - **The drift sidecar is a report, not a self-assessment.** This arm records *that* it diverged and *why*; whether the divergence was acceptable is judged downstream by a reviewer who did not write the code.
 - **Do NOT modify the design document** outside W1/W2. No other byte may change.

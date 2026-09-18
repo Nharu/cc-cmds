@@ -33,7 +33,17 @@
 #     not in `lint-skill-invariants.sh` because that script's rule (B) is a
 #     base<->lite phrase-sync over a pair and is dormant; asserting one
 #     sentence's presence in one file is this script's shape, not that one's.
-#   Rule 6 (assertion-label parity, extracted) — the boundary-gate assertion
+#   Rule 6 (the two enumerations agree) — this script's allowlist and the
+#     sibling `lint-judgment-grade.sh`'s `PAIRS` are BOTH explicit lists, and
+#     their membership rules differ: this one is "every skill the pipeline
+#     dispatches headlessly", that one is "every attended/unattended pair".
+#     An arm registered in one and not the other is not a failure anywhere —
+#     it is a false all-clear from the lint that never saw it. So the
+#     unattended half of every `PAIRS` entry must appear in `UNATTENDED_SKILLS`.
+#     The inclusion is one-directional on purpose: an arm with no attended
+#     counterpart (`autopilot-router-shift`) is rightly absent from `PAIRS`,
+#     so the reverse containment does not hold and is not asserted.
+#   Rule 7 (assertion-label parity, extracted) — the boundary-gate assertion
 #     labels are EXTRACTED from the contract's own bullets, never retyped
 #     here, and asserted in both directions: every extracted label is
 #     referenced by both arms of the pair, and every label-shaped token in
@@ -42,7 +52,7 @@
 #     the contract no longer defines. Writing the label set into this file
 #     would make it a third copy of the vocabulary, which is the thing the
 #     rule exists to prevent.
-#   Rule 7 (no assertion gloss in an arm) — an arm names an assertion and
+#   Rule 8 (no assertion gloss in an arm) — an arm names an assertion and
 #     never explains it. Two fences, and the first is why this is not a
 #     denylist of today's wording: a SHAPE fence forbids the ACT of glossing
 #     (a label immediately followed by a parenthetical or an em-dash), so a
@@ -118,15 +128,27 @@ repo_root=$(cd "$script_dir/.." && pwd)
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 
 # Explicit allowlist. Deliberately NOT a `*-unattended` glob: the scan set is
-# the set of skills the pipeline dispatches as a stage, and `design-reconverge`
-# is one of those without carrying the suffix. A glob would also silently drop
-# a renamed arm instead of failing.
+# the set of skills the pipeline dispatches headlessly — as a stage from the
+# driver, or as a shard from the gate — and `design-reconverge` is one of those
+# without carrying the suffix. A glob would also silently drop a renamed arm
+# instead of failing.
+#
+# Membership was taken against the tree rather than by suffix, and the census
+# is written here so the next arm is checked the same way: the driver's stage
+# dispatch names `implement-unattended`, `review-unattended`,
+# `design-audit-unattended`, `design-reconverge` and `design-discuss-unattended`;
+# the gate's `act --kind router-shift` launches `autopilot-router-shift` as a
+# headless shard. That last one carries no `-unattended` suffix and has no
+# attended counterpart, which is exactly the shape a suffix rule or the sibling
+# lint's pair table would miss — it was absent from this list when the census
+# was first taken.
 UNATTENDED_SKILLS=(
   "implement-unattended"
   "design-audit-unattended"
   "review-unattended"
   "design-reconverge"
   "design-discuss-unattended"
+  "autopilot-router-shift"
 )
 
 # Fork parity pairs: "<fork>|<base>". Only pairs whose base pins constants
@@ -157,7 +179,13 @@ REFERENCE_TREES=(
   # references/ tree; `design/references/` does not exist today, so this entry
   # is a SKIP until one appears, and Rule 5 below is what covers the leg.
   "design-discuss-unattended|design"
+  # The router shard shares nobody's tree and has none of its own.
+  "autopilot-router-shift|autopilot-router-shift"
 )
+
+# Rule 6 — the sibling lint whose `PAIRS` line is read back. The line is parsed
+# rather than duplicated here so the two lists cannot drift apart silently.
+SIBLING_PAIRS_LINT="$script_dir/lint-judgment-grade.sh"
 
 # Rule 4 — the question-surface pattern used INSIDE a reference tree. Bare name,
 # no call form required; see the asymmetry note in the header.
@@ -319,7 +347,35 @@ for skill in ${U0_PINNED_SKILLS[@]+"${U0_PINNED_SKILLS[@]}"}; do
   fi
 done
 
-# --- Rules 6 and 7 — the assertion labels and the absence of their glosses ----
+# Rule 6 — every unattended half of the sibling lint's `PAIRS` is in this
+# allowlist. Read from the sibling's source line, not re-typed: the whole point
+# is that the two enumerations are maintained in two files by two rules, and a
+# copy here would be a third.
+pairs_checked=0
+if [[ -f "$SIBLING_PAIRS_LINT" ]]; then
+  sibling_pairs=$(sed -n 's/^PAIRS="\(.*\)"$/\1/p' "$SIBLING_PAIRS_LINT" | sed -n '1p')
+  if [[ -z "$sibling_pairs" ]]; then
+    echo "FAIL: $SIBLING_PAIRS_LINT — PAIRS=\"…\" 줄을 찾지 못했다 — 두 열거의 교차 검사가 읽을 것이 없다" >&2
+    fail=1
+  fi
+  for pair in $sibling_pairs; do
+    una="${pair##*|}"
+    pairs_checked=$((pairs_checked + 1))
+    found=0
+    for skill in "${UNATTENDED_SKILLS[@]}"; do
+      [[ "$skill" == "$una" ]] && { found=1; break; }
+    done
+    if [[ "$found" -eq 0 ]]; then
+      echo "FAIL: $una — lint-judgment-grade.sh 의 PAIRS 에는 있는데 이 파일의 UNATTENDED_SKILLS 에는 없다" >&2
+      echo "       한쪽에만 등록된 팔은 실패가 아니라 거짓 all-clear 로 나타난다 — 두 열거에 함께 더해야 한다" >&2
+      fail=1
+    fi
+  done
+else
+  echo "SKIP: Rule 6 — $SIBLING_PAIRS_LINT 가 없다"
+fi
+
+# --- Rules 7 and 8 — the assertion labels and the absence of their glosses ----
 #
 # THE LABEL SET IS EXTRACTED, NEVER RETYPED. It comes from the contract's own
 # one-bullet-per-assertion shape, which is why that shape is load-bearing and
@@ -343,7 +399,7 @@ cfi_body() {
   ' "$1"
 }
 
-# Rule 7's literal tripwire. These are glosses, not vocabulary: each one is a
+# Rule 8's literal tripwire. These are glosses, not vocabulary: each one is a
 # thing the CONTRACT may say and an ARM may not, which is the partition the
 # three-slot rule draws. `own entry` is deliberately here even though it is a
 # live short name in the contract — the domain of this list is the arm.
@@ -365,7 +421,7 @@ else
 
   if [[ -z "$labels" ]]; then
     echo "FAIL: _common/verification.md — no assertion bullets matched '- **2x — <short name>.**' under '## 6.'" >&2
-    echo "       Rule 6 extracts its label set from that shape; without it the set would have to be retyped here" >&2
+    echo "       Rule 7 extracts its label set from that shape; without it the set would have to be retyped here" >&2
     fail=1
   else
     for pair in ${PARITY_PAIRS[@]+"${PARITY_PAIRS[@]}"}; do
@@ -378,12 +434,12 @@ else
         body=$(cfi_body "$arm_skill")
 
         if [[ -z "$body" ]]; then
-          echo "FAIL: $arm — no '## Control-Flow Invariants' body; Rules 6 and 7 are region-scoped to it" >&2
+          echo "FAIL: $arm — no '## Control-Flow Invariants' body; Rules 7 and 8 are region-scoped to it" >&2
           fail=1
           continue
         fi
 
-        # Rule 6, forward: every extracted label is referenced by this arm.
+        # Rule 7, forward: every extracted label is referenced by this arm.
         #
         # The containment tests here and below are bash string matches rather
         # than pipes into `grep -q`. An early-exiting reader on the right of a
@@ -410,7 +466,7 @@ EOF
           fail=1
         fi
 
-        # Rule 6, reverse: every label-shaped token in this arm is defined.
+        # Rule 7, reverse: every label-shaped token in this arm is defined.
         # The label set is newline-delimited on both sides of the comparison so
         # the match is whole-line, the way `grep -x` was: `2a` must not be found
         # inside a longer label.
@@ -424,7 +480,7 @@ EOF
           fail=1
         fi
 
-        # Rule 7, shape fence: a label immediately followed by a gloss.
+        # Rule 8, shape fence: a label immediately followed by a gloss.
         shaped=$(printf '%s\n' "$body" | grep -nE '2[a-z][[:space:]]*(\(|—)' || true)
         if [[ -n "$shaped" ]]; then
           echo "FAIL: $arm — assertion label followed by a gloss inside the invariants body" >&2
@@ -433,7 +489,7 @@ EOF
           fail=1
         fi
 
-        # Rule 7, literal tripwire: a gloss carrying no adjacent label.
+        # Rule 8, literal tripwire: a gloss carrying no adjacent label.
         for lit in "${GLOSS_LITERALS[@]}"; do
           hits=$(printf '%s\n' "$body" | grep -nF -- "$lit" || true)
           if [[ -n "$hits" ]]; then
@@ -456,5 +512,5 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
+echo "lint-unattended-surfaces: ${checked} skill(s) checked, ${skipped} absent, ${refs_checked} shared reference tree(s) checked, ${pins_checked} CFI-U0 pin(s) checked, ${pairs_checked} sibling pair(s) cross-checked, ${gloss_checked:-0} arm(s) checked against ${label_count:-0} extracted assertion label(s)"
 exit 0

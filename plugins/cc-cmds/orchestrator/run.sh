@@ -78,6 +78,15 @@ fi
 # resolves to the filesystem root and fails somewhere else entirely.
 ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The shared liveness predicates, sourced for ONE function here:
+# `cc_proc_fingerprint`. `stage_spawn` used to re-spell the fingerprint capture
+# inline — the same `ps -o lstart=` + `sed` the gate also re-spelled — and three
+# spellings of a compared string are three ways for a compare to fail silently.
+# `liveness.sh` guards its `readonly` so the gate, which sources this file and
+# then sources `liveness.sh` itself, is not aborted by a second source.
+# shellcheck source=/dev/null
+. "$ORCH_DIR/liveness.sh"
+
 CLI_BIN="${CC_CLAUDE_BIN:-}"
 if [ -z "$CLI_BIN" ]; then
   CLI_BIN=$(command -v claude 2>/dev/null || true)
@@ -224,6 +233,9 @@ readonly LOCK_BUSY_EXIT=75               # EX_TEMPFAIL from lockf -t 0
 # emit, which are model-authored prose.
 readonly LIT_AUDIT_TERMINAL='이 명령은 여기서 종료합니다. 추가 리뷰 라운드는 없습니다.'
 readonly LIT_RECONVERGE_TERMINAL='재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다.'
+# The first sentence of the attended `design` skill's freeze notice, byte for
+# byte — so the same literal marks a freeze whether a seat or a stage did it.
+readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
 
 # ---------------------------------------------------------------------------
 # Logging. Redirection is not about survival — a driver without it survives a
@@ -390,6 +402,7 @@ manifest_snapshot_take() {
   #   P <row>      every `- \`사전 인가\`` row, in order
   #   AW <row>     every `- \`자동 채택\`` row anywhere, in order
   #   AA <row>     `- \`자동 채택\`` rows inside the first `## 인가` only
+  #   DR <row>     every `- \`설계 로스터\`` row anywhere, in order
   #   C <row>      every `- \`종료 절\`` row, in order
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
@@ -417,6 +430,7 @@ $(LC_ALL=C awk '
     index($0, "- `target`") == 1 { print "T\t" $0 }
     index($0, "- `사전 인가`") == 1 { print "P\t" $0 }
     index($0, "- `자동 채택`") == 1 { print "AW\t" $0; if (ina) print "AA\t" $0 }
+    index($0, "- `설계 로스터`") == 1 { print "DR\t" $0 }
     index($0, "- `종료 절`") == 1 { print "C\t" $0 }
     END {
       if (kind) print "K\t1"
@@ -529,6 +543,40 @@ manifest_field() {
   ' "$MANIFEST"
 }
 
+manifest_plan_json() {
+  # The kickoff freezes its step graph as ONE fenced JSON block under
+  # `## 실행 계획`. The driver read none of it until the design arm needed a
+  # single field; the extractor returns the whole block so the next field is a
+  # jq path and not a second scanner. Read from the file, not the memo — the
+  # memo indexes CANON field lines and rows, and a fenced block is neither.
+  awk '
+    $0 == "## 실행 계획" { inb=1; next }
+    inb && /^## / { exit }
+    inb && !fence && /^```json/ { fence=1; next }
+    inb && fence && /^```/ { exit }
+    inb && fence { print }
+  ' "$MANIFEST"
+}
+
+manifest_plan_field() {
+  # manifest_plan_field <jq-path> — the raw jq value (`true`/`false`/`null`/…).
+  # `null` for an absent key and an empty string for an absent block, so the
+  # caller compares against a literal rather than testing truthiness: jq's `//`
+  # treats `false` as absent, which is the one value this reader must not lose.
+  manifest_plan_json | jq -r "$1" 2>/dev/null || printf 'null'
+}
+
+manifest_intent_line() {
+  # The first non-empty line of the fenced text block under `## 의도` — the
+  # task sentence the design stage receives as its second positional argument.
+  awk '
+    $0 == "## 의도" { inb=1; next }
+    inb && /^## / { exit }
+    inb && /^```/ { if (fence) exit; fence=1; next }
+    inb && fence && NF { print; exit }
+  ' "$MANIFEST"
+}
+
 manifest_targets() {
   if manifest_memo_on; then manifest_memo_all "T	"; return 0; fi
   grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true
@@ -547,6 +595,11 @@ manifest_preauth_rows() {
 manifest_autoadopt_rows_anywhere() {
   if manifest_memo_on; then manifest_memo_all "AW	"; return 0; fi
   grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_design_roster_rows_anywhere() {
+  if manifest_memo_on; then manifest_memo_all "DR	"; return 0; fi
+  grep -E '^- `설계 로스터`' "$MANIFEST" 2>/dev/null || true
 }
 
 manifest_clause_rows_raw() {
@@ -619,6 +672,16 @@ binding_set_bytes() {
     # of the tampering are visible. A manifest carrying no such row contributes
     # zero bytes, so this does not make an in-flight run non-conforming.
     manifest_autoadopt_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/autoadopt\t/'
+    # THE DESIGN ROSTER IS IN THE FROZEN SET, on the same terms as the rows
+    # above. The unattended design stage builds its team from these rows with
+    # nothing chosen, and `팀-구성` is a class no stage may adopt — so a roster
+    # row any act could append mid-run would be a team composed without a person,
+    # through the manifest instead of through a judgment. Scanned over the whole
+    # file for the reason the `자동 채택` rows are, and conditional for the reason
+    # the cost ceiling below is: a manifest with no such row contributes zero
+    # bytes, so no in-flight run's digest moves, and the stage then uses the
+    # default roster frozen in its own skill file.
+    manifest_design_roster_rows_anywhere | sed 's/[[:space:]]\{1,\}/ /g;s/^/roster\t/'
     # THE COST CEILING IS IN THE FROZEN SET, because it is no longer a number in
     # a report — it is a bound that ENDS the run, and a ceiling anything can
     # raise mid-run is not a ceiling. It sits here for the same reason the
@@ -3208,10 +3271,11 @@ stage_spawn() {
   # and `reap_orphan` remove the pid and the group and leave this file behind,
   # and a `*.pid` glob cannot see it once the pid file is gone. `.pgid` keeps the
   # one job only it can do: the group reclaim in `reap_orphan`.
-  # `LC_ALL` rather than `LC_TIME`: the reader is a different process and only
-  # the top-ranked locale variable survives whatever it inherited.
-  { LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null || true; } \
-    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$RUN_DIR/$stage.start"
+  # THE CAPTURE IS `cc_proc_fingerprint` AND NOTHING ELSE. The locale pin
+  # (`LC_ALL`, not `LC_TIME`) and the whitespace fold live in that one function
+  # in `liveness.sh`; a hand-spelled copy here matched it by luck and would have
+  # diverged the first time either side moved.
+  cc_proc_fingerprint "$pid" > "$RUN_DIR/$stage.start"
   # Recorded BEFORE any wait, so a driver that dies mid-stage leaves a handle
   # its successor can find. All three go to the volatile directory only.
   printf '%s\n' "$pid"  > "$RUN_DIR/$stage.pid"
@@ -3359,6 +3423,19 @@ machine_slept_since() {
 predicate_audit()       { [ -n "$DOC_SLUG" ] && grep -qF "$LIT_AUDIT_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && ls "$DOC_BASE/docs/design-audit/$DOC_SLUG".reader-*.md >/dev/null 2>&1; }
 predicate_review()      { local rp="$1"; [ -f "$rp" ] && grep -qE '^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 [0-9]+건 \| 🟢 P3 [0-9]+건' "$rp"; }
 predicate_reconverge()  { grep -qF "$LIT_RECONVERGE_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null; }
+# The frozen-status line the unattended design stage writes at its freeze. It is
+# the document half of that stage's artifact predicate and NOTHING ELSE — in
+# particular it is not a guard against designing twice. The attended `design`
+# skill, `design-lite` and a conversation-written document all freeze without
+# writing this line, so "no such line" describes nearly every document a person
+# wrote, and reading it as "not designed yet" aimed the design arm at those.
+doc_is_frozen()         { [ -n "$1" ] && [ -f "$1" ] && grep -qE '^\*\*상태\*\*: 동결됨$' "$1"; }
+# A stage whose only output is a document has no un-fabricable predicate (see
+# the note above). Two authored facts are crossed anyway — the freeze literal in
+# the stage's own stream and the frozen-status line in the document — so a stage
+# that SAID it froze without writing it fails, and one that wrote it and died
+# before saying so fails too.
+predicate_design()      { grep -qF "$LIT_DESIGN_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && doc_is_frozen "$DOC"; }
 
 predicate_implement() {
   # The git-state ladder, evaluated in the MAIN tree, in cutpoint order. A run
@@ -3510,24 +3587,29 @@ answered_judgment_stage() {
   # re-attached to a session that had been reviewing. A candidate whose kind
   # does not match is left in the list rather than discarded — the router
   # dispatches that kind later and consumes it there.
+  #
+  # THE LOOKUPS ARE WHOLE FIELDS, as they are in the gate's array. A judgment
+  # citing another's id in its `기준` carries that text into its own rows, and
+  # a substring match let them speak for the cited id — re-dispatching a refusal
+  # as an answer, or never re-dispatching an answer a person gave.
   local seg="$1" kind="$2" id row st iss stg spent
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
     row=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
-           | { grep -F "승인 id=$id " || true; } | tail -1)
+           | { grep -F "| 승인 id=$id |" || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     [ "$st" = "승인" ] || continue
     iss=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
-           | { grep -F "승인 id=$id " || true; } \
-           | { grep -F '절단점=판단 ' || true; } | tail -1)
+           | { grep -F "| 승인 id=$id |" || true; } \
+           | { grep -F '| 절단점=판단 |' || true; } | tail -1)
     [ -n "$iss" ] || continue
     # `grep -q` on the right of a pipe would exit early, SIGPIPE the writer and
     # — under `pipefail` — report the whole pipeline as failed. The value is
     # captured instead and tested as a string, which is the spelling the rest of
     # this file uses for exactly this reason.
     spent=$( { grep -E '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
-             | { grep -F "해소 승인=$id " || true; } | tail -1)
+             | { grep -F "| 해소 승인=$id |" || true; } | tail -1)
     [ -z "$spent" ] || continue
     stg=$(printf '%s' "$iss" | tr '|' '\n' | sed -n 's/^ *막는 세그먼트=//p' | sed 's/[[:space:]]*$//' | tail -1)
     case "$stg" in "$kind:$seg:"*) ;; *) continue ;; esac
@@ -4748,6 +4830,7 @@ review_recover() {
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
     "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
+  absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
       "리뷰 복구 종단 부류 $rclass — 부분 계층 복구는 종료 술어 줄을 내지 않는다"; return 1; }
   return 0
@@ -4859,6 +4942,7 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
+    absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
     stash_attribution_check "$stash_before" "$branch" "$seg_repo" || { park "$seg" cone 무효화 "게이트 park" "세그먼트 브랜치 귀속 stash 항목"; return 1; }
@@ -4957,6 +5041,7 @@ segment_cycle() {
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
       "종단 부류=$class"
+    absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
     if [ "$class" != "정상 완료" ]; then
       review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" || return 1
     fi
@@ -5102,6 +5187,161 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# A dispatched stage's emitted judgment, absorbed into the ledger.
+#
+# A stage holds no gate verb, so a decision it made inside its own turn reaches
+# the ledger only as the five judgment markers in its terminal message — and the
+# gate reads those only for a stage the GATE recorded (`act --kind skill`). Every
+# stage this driver dispatches is recorded by the driver instead, so their
+# judgments were acted on and written nowhere: no `자율 승인` row, no approval,
+# and the auto-adoption floor never evaluated.
+#
+# A SEPARATE PROCESS, NEVER A SOURCE INTO THIS SHELL. The gate sources this
+# driver from its own head, and loading it re-initializes `RUN_DIR`, `LEDGER`,
+# `MANIFEST` and `PATH` — so bringing the gate into the driver's shell would
+# quietly overwrite the run state of the very process that called it. The child
+# receives the driver's values as arguments and assigns them AFTER sourcing,
+# because sourcing is what empties them.
+#
+# CALLED RIGHT AFTER EVERY `stage-result` ROW OF A DISPATCHED STAGE, not on one
+# arm. A judgment lost on an arm that was left out is a failure with no symptom,
+# which is the whole of what this closes.
+#
+# NEVER FATAL. The decision was already applied inside the stage; a child that
+# failed to record it is reported, and the caller goes on to the classification
+# it would have reached anyway. The absorber reads one judgment per terminal
+# message — the stage contract says a stage emits no more than that.
+# ---------------------------------------------------------------------------
+absorb_stage_judgment() {
+  # absorb_stage_judgment <stage-id> <segment> <alias>
+  local stage="$1" seg="$2" alias="$3" out gate rc=0
+  out=$(stage_log_path "$stage")
+  [ -s "$out" ] || return 0
+  gate="$ORCH_DIR/gate.sh"
+  if [ ! -f "$gate" ]; then
+    warn "$stage: 게이트 파일이 없어 스테이지가 방출한 판단을 흡수하지 못했다 — $gate"
+    return 0
+  fi
+  CC_GATE_SOURCE_ONLY=1 bash -c '
+    g=$1; out=$2; al=$3; sg=$4; mf=$5; rid=$6; rd=$7; led=$8; gr=$9
+    set --
+    . "$g" >/dev/null 2>&1 || exit 9
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    MANIFEST=$mf; RUN_ID=$rid; RUN_DIR=$rd; LEDGER=$led; GRANT=$gr
+    res=$( { grep "\"type\":\"result\"" "$out" 2>/dev/null || true; } | tail -1)
+    [ -n "$res" ] || exit 0
+    gate_absorb_emitted_judgment "$al" "$sg" "$res"
+  ' _ "$gate" "$out" "$alias" "$seg" "$MANIFEST" "$RUN_ID" "$RUN_DIR" "$LEDGER" "$GRANT" || rc=$?
+  [ "$rc" = "0" ] || warn "$stage: 스테이지가 방출한 판단을 흡수하는 프로세스가 rc=$rc 로 끝났다 — 판단이 원장에 남지 않았을 수 있다"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# S1 DESIGN — headless, one pass, BEFORE the audit: the audit reads a frozen
+# document and this is the stage that writes and freezes one. Returns 0 when the
+# run goes on to the audit and 1 when it was parked here.
+#
+# IT FIRES ONLY ON AN ABSENT DOCUMENT. The earlier condition was "the document
+# lacks the stage's freeze line", which is the negation of an artifact
+# predicate and not a statement about who wrote the document — every document a
+# person wrote before the run lacks that line, so the arm aimed at them, and a
+# stage that saves over its target would have saved over theirs. A document
+# that exists is not this run's to design, whatever it contains; it is recorded
+# as an autonomous decision and handed to the audit as it stands.
+#
+# A RESUMED RUN IS JUDGED BY ITS OWN LEDGER. A `stage-result` row for this stage
+# in this run means it was dispatched already, and it is not dispatched again:
+# a completed stage froze the document, and one that halted or died left a
+# document partway through its walkthrough, which neither a second design nor
+# the audit may take. The row is the evidence because the driver already
+# writes it — marking the document instead would add a write form to the stage.
+#
+# Two guards, then, and the freeze line is neither of them.
+# ---------------------------------------------------------------------------
+design_arm() {
+  [ "$(manifest_plan_field '.design_required')" = "true" ] || return 0
+
+  # NO DOCUMENT PATH, NO DESIGN. The stage takes the document path as its first
+  # positional argument and writes there; a manifest that requires a design but
+  # declares no document gives it nowhere to land. Skipping is recorded as an
+  # autonomous decision, same shape as the audit skip, so the morning sees that
+  # the graph asked for a stage the run could not place.
+  if [ -z "$DOC" ]; then
+    log "S1 설계 건너뜀 — 설계가 필요하다고 선언됐으나 이 런에는 설계 문서 경로가 없다 (앵커 종류 $ANCHOR_KIND)"
+    ledger_row '자율 승인' "kind=design-composition" "결정=설계 스테이지를 띄우지 않는다" \
+      "기각된 대안=빈 문서 인자로 설계를 띄운다" "등급=1" \
+      "기준=이 런의 매니페스트가 설계 문서 경로를 선언하지 않아 스테이지가 쓸 자리가 없다" \
+      "되돌리는 법=매니페스트에 설계 문서를 적고 런을 다시 킥오프한다" \
+      "근거=design_required=true · 앵커 종류 $ANCHOR_KIND · 앵커 키 $ANCHOR_KEY"
+    return 0
+  fi
+
+  local prior prior_class
+  prior=$(run_section_rows 'stage-result' | { grep -F '스테이지=S1design ' || true; } | tail -1)
+  if [ -n "$prior" ]; then
+    prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if [ "$prior_class" = "정상 완료" ]; then
+      log "S1 설계 건너뜀 — 이 런의 설계 스테이지가 이미 완주했다 ($DOC_KEY)"
+      return 0
+    fi
+    park "S1design" run 무효화 "게이트 park" \
+      "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \
+      "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"
+    return 1
+  fi
+
+  if [ -e "$DOC" ]; then
+    log "S1 설계 건너뜀 — 설계 문서가 이미 있다 ($DOC_KEY)"
+    ledger_row '자율 승인' "kind=design-composition" "결정=설계 스테이지를 띄우지 않는다" \
+      "기각된 대안=있는 문서 위로 설계를 띄운다" "등급=1" \
+      "기준=문서가 이미 있다" \
+      "되돌리는 법=문서를 지우고 런을 다시 킥오프한다" \
+      "근거=design_required=true · $DOC_KEY · 동결 줄 $(doc_is_frozen "$DOC" && printf '있음' || printf '없음')"
+    return 0
+  fi
+
+  # THE SKILL FILE IS CHECKED BEFORE THE DISPATCH. The gate verifies nothing
+  # about a skill's existence, and whether the CLI fails loudly on an unknown
+  # slash command has not been observed — so a misspelled arm here would be a
+  # stage that ran, billed, produced nothing and was classified a hollow
+  # success. A missing file is a park, not a dispatch; that is the whole cost
+  # of the check, and it does not depend on the observation.
+  local plugin_dir1 skill_file1
+  plugin_dir1=$(cd "$ORCH_DIR/.." && pwd)
+  skill_file1="$plugin_dir1/skills/design-discuss-unattended/SKILL.md"
+  if [ ! -f "$skill_file1" ]; then
+    park "S1design" run 막힘 "스킬 파일 부재" "$skill_file1 가 없다 — 존재하지 않는 스킬로 디스패치하지 않는다"
+    return 1
+  fi
+  # Home alias root, document path first, task sentence second — the same
+  # shape as the reconverge arm: a design stage has no segment worktree and
+  # writes only the document, so the alias root is the right cwd. The stage
+  # id contains `design` and neither `audit` nor `reconverge`, which is what
+  # selects the `design` settings variant in `stage_spawn`.
+  quiet_window_begin
+  dispatch_stage S1design "$(alias_root "$(home_alias)")" \
+    "/cc-cmds:design-discuss-unattended $DOC \"$(manifest_intent_line)\""
+  quiet_window_end
+  local rc1 pred1 class1
+  rc1=$(cat "$RUN_DIR/S1design.rc" 2>/dev/null || printf '1')
+  if predicate_design S1design; then pred1=0; else pred1=1; fi
+  class1=$(classify_termination S1design "$rc1" "$pred1")
+  ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
+    "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
+    "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" "종단 부류=$class1"
+  absorb_stage_judgment S1design - "$(home_alias)"
+  # An unfrozen document does not go on to the audit or the segment plan —
+  # both read the freeze as a precondition.
+  case "$class1" in
+    '정상 완료') report_append "설계" "문서 동결 — $DOC_KEY" ;;
+    '의도된 park') park "S1design" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S1design")" 2>/dev/null)"; return 1 ;;
+    *) park "S1design" run 무효화 "게이트 park" "종단 부류 $class1"; return 1 ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
 main_loop() {
@@ -5117,6 +5357,10 @@ main_loop() {
     "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
     "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
+
+  # S1 DESIGN — see `design_arm`. A non-zero return means the run was parked
+  # there and goes no further.
+  design_arm || return 0
 
   # S2 AUDIT — headless, one pass. Runs before any segment, so the freeze window
   # never overlaps a sibling worktree creation on the first pass; only a
@@ -5168,6 +5412,7 @@ main_loop() {
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
+  absorb_stage_judgment S2 - "$(home_alias)"
   case "$class2" in
     '정상 완료') : ;;
     '의도된 park') park "S2" run 무효화 "게이트 park" "중단 기록 존재" "$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$(halt_record_path "S2")" 2>/dev/null)"; return 0 ;;
@@ -5269,8 +5514,30 @@ main_loop() {
     esac
   done < "$RUN_DIR/plan.tsv"
 
-  ledger_row 'cost' "누적 usd=$(cat "$RUN_DIR"/log/*.json 2>/dev/null | jq -s 'map(.total_cost_usd // 0) | add // 0' 2>/dev/null || printf '0')" \
-    "관측 시각=$(now_iso)"
+  # THE FINAL COST IS THE LEDGER'S LAST `cost` ROW OF THIS RUN, not a re-sum of
+  # the stage streams. The stream sum (`cat log/*.json | jq -s add`) was wrong in
+  # BOTH directions on measured runs — 29x under on one, 4.5x over on another —
+  # because a stream that was truncated loses its envelope and one that was
+  # appended across attempts carries several. The ledger's running `누적 usd` is
+  # the most durable of the three sources, so it is read rather than rebuilt.
+  #
+  # SCOPED TO THIS RUN'S BLOCK, NOT `ledger_last`. That helper is deliberately
+  # unscoped, and this is exactly the case where that matters: a run whose only
+  # terminations were settlements (`외부 종료` carries no envelope, so no `cost`
+  # row is written for it) has zero `cost` rows, and an unscoped read would
+  # report LAST NIGHT'S total for it. With no row in this run the figure is
+  # `비용 불명`, never `0` — the same vocabulary as the settlement count beside
+  # it, so a low total is never presented bare.
+  local last_cost settled
+  last_cost=$( { run_section_rows 'cost' || true; } | tail -1 \
+               | tr '|' '\n' | sed -n 's/^ *누적 usd=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  settled=$( { run_section_rows 'stage-result' || true; } | grep -cF '종단 부류=외부 종료' || true)
+  if [ -n "$last_cost" ]; then
+    ledger_row 'cost' "누적 usd=$last_cost" "관측 시각=$(now_iso)"
+    report_append "비용" "누적 ${last_cost} USD · 정산됨(비용 불명) ${settled:-0}건"
+  else
+    report_append "비용" "비용 불명 — 이 런의 cost 행이 없다 · 정산됨(비용 불명) ${settled:-0}건"
+  fi
   report_run_residual
   # `park` AND NOT `보류`. The two words were one: this counter holds segments the
   # driver parked, while `보류` is the disposition of a termination clause waiting

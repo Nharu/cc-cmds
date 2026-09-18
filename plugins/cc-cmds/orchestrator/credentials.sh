@@ -31,19 +31,24 @@
 #   cred_readonly_env                      # print `KEY=VALUE` lines for a stage
 #   cred_gate_env                          # print them for a gate-performed act
 #   cred_check                             # report what is available, change nothing
+#   cred_store_has <name>                  # does the declared store hold <name>? existence only
+#   credentials.sh store-has <name>        # the same, as a command — prints 있음/없음
 #
 # Env override:
 #   CC_GATE_TOKEN_RO     read-scoped token; falls back to the keychain lookup
 #   CC_GATE_TOKEN_RW     write-scoped token; falls back to the keychain lookup
 #   CC_GATE_KEYCHAIN     keychain service name (default `cc-cmds-autopilot`)
+#   CC_CMDS_CRED_STORE   directory of the declared credential store (default `~/.config/cc-cmds`)
 #
 # Exit codes (when run rather than sourced):
-#   0  both credentials resolve
+#   0  both credentials resolve            (no subcommand)
 #   1  a credential is missing — reported, never invented
+#   `store-has`: 0 the store holds the name · 1 it does not · 2 the name is not a bare name
 #
 # Compatibility: bash 3.2 — no associative arrays, no mapfile.
 
 CRED_KEYCHAIN="${CC_GATE_KEYCHAIN:-cc-cmds-autopilot}"
+CRED_STORE="${CC_CMDS_CRED_STORE:-$HOME/.config/cc-cmds}"
 
 cred_from_keychain() {
   # cred_from_keychain <account>
@@ -100,7 +105,46 @@ cred_check() {
   [ "$ro" = "1" ] && [ "$rw" = "1" ]
 }
 
-# Running the file rather than sourcing it performs the report and nothing else.
+cred_store_has() {
+  # cred_store_has <name> — the declared store holds a regular file of that
+  # name with mode 600. EXISTENCE ONLY, and the shape is what enforces it: the
+  # file is never opened, so no value can reach stdout, a ledger row or a
+  # transcript through this function. Same posture as `cred_check` above, which
+  # answers 있음/없음 and prints neither secret.
+  #
+  # This is the second rung of the unattended design stage's residual-item
+  # ladder: a verification item that names a credential is settled without a
+  # person when the store already holds it. The gate grades commands by their
+  # first word and `test -f` / `[ -f ]` have no row, so the stage cannot spell
+  # this check inline — it calls this script by name, and that spelling is what
+  # a manifest's `사전 인가` row targets.
+  #
+  # The slot is a NAME, not a path. A name carrying `/` or `..` would let the
+  # caller probe an arbitrary path with the same authorization, so it is
+  # refused (exit 2) rather than resolved.
+  local name="$1" f perm
+  case "$name" in ''|*/*|*..*) return 2 ;; esac
+  f="$CRED_STORE/$name"
+  [ -f "$f" ] || return 1
+  # `ls -l`'s mode column is the one spelling BSD and GNU share; `stat` differs.
+  perm=$(ls -ld "$f" 2>/dev/null | cut -c1-10) || return 1
+  [ "$perm" = "-rw-------" ]
+}
+
+# Running the file rather than sourcing it performs the report and nothing else —
+# or, with `store-has`, the existence check and nothing else.
 case "${0##*/}" in
-  credentials.sh) cred_check ;;
+  credentials.sh)
+    case "${1:-}" in
+      '') cred_check ;;
+      store-has)
+        rc=0; cred_store_has "${2:-}" || rc=$?
+        case "$rc" in
+          0) printf '있음\n' ;;
+          1) printf '없음\n' ;;
+          *) printf 'credentials: 저장소 이름은 경로 구분자와 `..` 없는 이름이어야 합니다\n' >&2 ;;
+        esac
+        exit "$rc" ;;
+      *) printf 'credentials: 알 수 없는 서브커맨드: %s\n' "$1" >&2; exit 2 ;;
+    esac ;;
 esac
