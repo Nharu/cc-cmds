@@ -1090,10 +1090,11 @@ EOF
   # with nothing to compare it against. So the failure of a silent skip is
   # open-ended, while the failure of this refusal is one line in a manifest.
   # Absence of the field is not a violation — it is the default.
-  local dv al kindtok valtok e
+  local dv al kindtok valtok e hasprof hasacct
   for al in $(target_aliases); do
     dv=$(target_field "$al" 'dev 식별자')
     [ -n "$dv" ] || continue
+    hasprof=0; hasacct=0
     local IFS_SAVE="$IFS"; IFS=','
     for e in $dv; do
       IFS="$IFS_SAVE"
@@ -1104,8 +1105,10 @@ EOF
       kindtok="${e%%:*}"; valtok="${e#*:}"
       [ -n "$valtok" ] || die "대상 '$al' 의 dev 식별자 원소 '$e' 의 값이 비어 있습니다"
       case "$kindtok" in
-        aws-profile|kube-context|host|domain) ;;
+        aws-profile) hasprof=1 ;;
+        kube-context|host|domain) ;;
         aws-account)
+          hasacct=1
           case "$valtok" in
             *[!0-9]*) die "대상 '$al' 의 aws-account '$valtok' 가 숫자가 아닙니다" ;;
           esac
@@ -1120,6 +1123,15 @@ EOF
       IFS=','
     done
     IFS="$IFS_SAVE"
+    # AN ACCOUNT NUMBER IS NOT COMPARABLE FROM argv. The gate reads a profile
+    # name out of the act; the account behind that profile is only knowable by
+    # calling AWS, which the gate does not do. So an `aws` act on a target that
+    # named only the account parks as `dev대조불가` — a warning rather than a
+    # refusal, because the declaration is not wrong, it is just not enough on
+    # its own.
+    if [ "$hasacct" = "1" ] && [ "$hasprof" = "0" ]; then
+      warn "대상 '$al' 은 dev 식별자로 aws-account 만 선언했습니다 — aws 행위의 dev 신고는 대조할 수 없어 park 됩니다. aws-profile 을 함께 선언하세요"
+    fi
   done
 
   # 15 — `배포트리거 식별자` on the target rows. Same hard stop for the same
