@@ -10355,6 +10355,36 @@ gate_kind_is_bookkeeping() {
   return 1
 }
 
+gate_act_enters_resolved_tree() {
+  # gate_act_enters_resolved_tree <verb> <kind> — whether this act will `cd` into
+  # the tree the segment resolution picked. The dispatch switch below is the one
+  # that decides it, so this answers with the switch's own classification rather
+  # than with a second list of names.
+  #
+  # NAMING THE VERBS INSTEAD WAS THE DEFECT. The worktree predicate used to fire
+  # for `kind = skill` and `verb = exec` only, while the switch sends everything
+  # but the bookkeeping kinds, `propose-done` and `router-shift` to the read-only
+  # runner — which `cd`s into the same resolved tree. So the kinds left out USED
+  # that resolution without passing the predicate that protects it, and `merge`
+  # is one of them: a segment row naming another repository's worktree sent a
+  # `git push` to the target's main tree with nothing said.
+  #
+  # AND `merge` IS NOT RECOGNISED BY ITS KIND. The anchor check and the review
+  # obligation issuer both key on `--cutpoint 머지`, so any kind at all wearing
+  # that cutpoint is a merge. "The router does not emit `--kind merge`" is
+  # therefore no defence, and any enumeration of names has the same hole one
+  # kind later.
+  #
+  # `plan` IS CLASSIFIED WITH `act`. A forecast has to answer for the act it
+  # names, and splitting them here would recreate the band where `plan` says
+  # 통과 예상 and the `act` behind it exits. `exec` takes no `--kind`, so its
+  # second argument is always empty and falls through to the general answer.
+  case "$1" in exec) return 0 ;; esac
+  case "$2" in propose-done|router-shift) return 1 ;; esac
+  gate_kind_is_bookkeeping "$2" && return 1
+  return 0
+}
+
 gate_verb_act() {
   local verb="$1" kind="$2" alias="$3" segment="$4" cutpoint="$5" surface="$6"
   local snapdig="$7" rationale="$8" worktree="$9"
@@ -10672,7 +10702,16 @@ gate_verb_act() {
   # RECORDING KINDS ARE DELIBERATELY OUT. `act --kind segment` is the only way to
   # repair a segment row, so refusing it on the strength of that same row would
   # brick the run at precisely the command the message below tells the reader to
-  # run. The verbs left out reach nothing outside the ledger anyway.
+  # run. What is left out is exactly that: the bookkeeping kinds, `propose-done`
+  # and `router-shift`, none of which enters the resolved tree at all.
+  #
+  # AND THE DOMAIN IS THE DISPATCH SWITCH'S OWN CLASSIFICATION, not a list of
+  # verb names. This block used to name `skill` and `exec`, which left every
+  # other kind using the resolution without passing through here — `merge` among
+  # them, and a merge is recognised by its CUTPOINT rather than by its kind, so
+  # no enumeration of names ever closed it. `gate_act_enters_resolved_tree`
+  # answers from the switch itself, so the two cannot drift apart when a kind is
+  # added.
   #
   # NOT ON AN UNDECLARED TARGET, AND THE GUARD IS THE SAME ONE THE RESOLUTION
   # CARRIES. This refusal exists to protect that resolution, so the two must ask
@@ -10692,7 +10731,7 @@ gate_verb_act() {
   # is gone, a relative one — are refused exactly as before.
   if [ -n "$segment" ] && [ "$segment" != "-" ] \
      && [ "${GATE_UNDECLARED:-0}" != "1" ] \
-     && { [ "$kind" = "skill" ] || [ "$verb" = "exec" ]; }; then
+     && gate_act_enters_resolved_tree "$verb" "$kind"; then
     local seg_wt seg_why seg_other
     seg_wt=$(gate_segment_worktree "$segment")
     case "$seg_wt" in
@@ -11481,7 +11520,7 @@ gate_verb_act() {
   # them is the one wrong way to do it: both narrow on `= 머지`, so leaving the
   # anchor check on the declared value lets an under-declared merge skip the
   # anchor and reach the issuer anyway — a row with no commit to close it.
-  gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" || exit $?
+  gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" "$alias" || exit $?
 
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
@@ -12131,7 +12170,7 @@ gate_unmet_clause_ids() {
   done
 }
 
-# gate_check_merge_anchor <segment> <cutpoint>
+# gate_check_merge_anchor <segment> <cutpoint> <alias>
 #
 # A merge that cannot say WHAT IT MERGES is refused before it happens. The
 # obligation this act is about to issue carries the tip of the segment worktree
@@ -12140,14 +12179,25 @@ gate_unmet_clause_ids() {
 # termination condition 9 then holds the run open on it forever. Refusing at the
 # issuing point costs one merge; writing the unanchorable row costs the run.
 #
-# THE THREE FAILURES GET THREE DIFFERENT SENTENCES, and none of the three uses
+# THE FOUR FAILURES GET FOUR DIFFERENT SENTENCES, and none of the four uses
 # the word 「룰」. That is a load-bearing prohibition rather than a matter of
 # style: a refusal phrased as a rule refusal is folded into the rule catalog by
 # the next reader, and every entry of that catalog is switchable — so the fold
 # would quietly bring this refusal inside the range of `끔`, which is precisely
-# what its own exit code exists to deny.
+# what its own exit code exists to deny. The fourth sentence inherits that
+# prohibition unchanged.
+#
+# THE FOURTH ASKS WHO OWNS THE WORKTREE. The other three settle for a row, a
+# directory and a readable HEAD, and a perfectly good worktree of ANOTHER
+# REPOSITORY clears all three — absolute, present, holding commits. Its tip then
+# went out as the anchor and keyed the review obligation, while the push itself
+# ran in this target's own tree: the obligation's commit and the pushed commit
+# sat in different ref spaces, so the containment check at fulfilment time could
+# never hold and the unclosable row held the run open. Asking
+# `gate_segment_worktree_of_target` here is what puts this check, the widening
+# and the resolution on ONE predicate instead of three different questions.
 gate_check_merge_anchor() {
-  local seg="$1" cut="$2" wt tip
+  local seg="$1" cut="$2" alias="$3" wt tip
   [ "${GATE_REVIEW_POLICY:-}" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
 
@@ -12162,6 +12212,18 @@ gate_check_merge_anchor() {
   if [ -z "$wt" ] || [ ! -d "$wt" ]; then
     warn "세그먼트 '$seg' 의 워크트리 디렉터리가 없습니다: '${wt:--}'"
     warn "그 자리에서 머지될 커밋을 읽을 수 없으므로 이 머지는 발행되지 않습니다"
+    return "$GATE_EXIT_ANCHOR"
+  fi
+  # NOT ON AN UNDECLARED TARGET, AND THE GUARD IS THE ONE THE RESOLUTION CARRIES.
+  # An undeclared alias has no target row, so its `공통 git 디렉터리` is empty and
+  # the predicate fails for every segment row however correct that row is. Without
+  # this conjunct every merge on an undeclared target would be told to repair a row
+  # that is already right — a refusal with no repair behind it, which is the same
+  # shape the resolution and the worktree predicate already had to take out.
+  if [ "${GATE_UNDECLARED:-0}" != "1" ] \
+     && ! gate_segment_worktree_of_target "$seg" "$alias" >/dev/null; then
+    warn "세그먼트 '$seg' 의 워크트리 '$wt' 는 대상 '$alias' 의 워크트리가 아닙니다"
+    warn "그 자리의 HEAD 는 이 머지가 미는 커밋과 다른 ref 공간에 있어 리뷰 의무의 앵커가 될 수 없습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
     return "$GATE_EXIT_ANCHOR"
   fi
   tip=$(gate_segment_tip "$seg") || tip=""

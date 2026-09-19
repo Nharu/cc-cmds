@@ -5621,6 +5621,14 @@ if [ -d "$LINKED" ]; then
       ok "대상의 워크트리가 아닌 세그먼트 워크트리는 목록에 들지 않는다 ($(basename "$d"))"
     fi
   done
+  # A KIND THE LEDGER DOES NOT RECORD GETS THE SAME REFUSAL. The predicate used to
+  # name `skill` and `exec`, while the dispatch switch sends every other kind to
+  # the read-only runner, which enters the SAME resolved tree — so those kinds used
+  # the resolution without passing the check that protects it. `merge` is one of
+  # them, and the suite's own merge helper is exactly that shape. Grade, surface and
+  # argv are held identical to the dispatch above on purpose: moving any of them
+  # lets the self-declaration comparison or the under-declaration refusal answer
+  # first, and this pair would then be measuring those instead of the predicate.
   for s in SO SN; do
     case "$s" in SO) d="$OTHER_SEG" ;; *) d="$NOWHERE_SEG" ;; esac
     gateM act --manifest "$FX_MANIFEST" --kind skill --target infra --segment "$s" --cutpoint 커밋 \
@@ -5629,6 +5637,13 @@ if [ -d "$LINKED" ]; then
     case "$msg" in
       *"$d"*) ok "그 거절이 세그먼트 행의 워크트리 값을 이름 짓는다 ($s)" ;;
       *) bad "디스패치 거절 문면 ($s)" "$msg" ;;
+    esac
+    gateM act --manifest "$FX_MANIFEST" --kind merge --target infra --segment "$s" --cutpoint 커밋 \
+          --surface 워크트리쓰기 --snapshot-digest "$(HM)" --rationale x -- review x
+    check "기록되지 않는 종류의 세그먼트 행위도 같은 거절을 받는다 ($s)" "$rc" "10"
+    case "$msg" in
+      *"$d"*) ok "그 거절도 세그먼트 행의 워크트리 값을 이름 짓는다 ($s, merge)" ;;
+      *) bad "비기록 종류 거절 문면 ($s)" "$msg" ;;
     esac
   done
 
@@ -13318,6 +13333,38 @@ sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S15 --cut
 check "15: 그 머지 커밋을 덮는 cycle 행이 기록된다" "$rc" "0"
 sa_fulfil "$OID15"
 check "15: 그 행의 대상으로 다시 부르면 닫힌다" "$rc" "0"
+
+# --- 35-15b. 다른 대상의 워크트리를 이름 댄 세그먼트의 머지는 앵커 검사가 막는다 ---
+# --- section: 35-15b | group: sa | covers: act | needs: 35-15 | anchors: 15b: 그 세그먼트의 머지는 종료 코드 10 이다, 15b: 앵커를 싣기 전에 거절하므로 리뷰 의무가 발행되지 않는다 ---
+#
+# 앵커 검사는 세그먼트 워크트리에 대해 행·디렉터리·HEAD 셋만 보았고, 다른
+# 저장소의 멀쩡한 워크트리는 셋을 모두 통과했다. 통과하면 남의 저장소 팁이
+# 의무의 `머지 커밋` 이 되고 정작 push 는 대상 자기 트리에서 돌아, 이행 시점의
+# 포함 검사가 성립할 수 없는 의무 하나가 런을 열어 둔 채로 남는다.
+#
+# 이 항목이 술어와 별개로 하중을 지는 이유는 하나다 — 세그먼트 행이 **다른 선언
+# 대상의** 워크트리를 이름 대면 술어는 exit 하지 않고 경고 두 줄로 빠지므로, 그
+# 구간에서 유일한 방어가 앵커 검사다. 공통 git 디렉터리가 다른 두 대상을 세우는
+# 매니페스트는 바로 위 항목이 만드는 것이 스위트에서 유일하므로 그것을 잇는다.
+nb15b=$(sa_ob_count)
+sa_seg_row S15B 선머지후리뷰 "$SA15_BWT"
+check "15b: 다른 대상의 워크트리를 적은 세그먼트 행이 기록된다" "$rc" "0"
+sa_merge S15B
+check "15b: 그 세그먼트의 머지는 종료 코드 10 이다" "$rc" "10"
+case "$msg" in
+  *"대상 'other' 의 워크트리입니다"*)
+    ok "15b: 술어는 거절하지 않고 소유 대상을 이름 짓는 경고로 빠진다" ;;
+  *) bad "15b 술어 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"세그먼트 'S15B' 의 워크트리 '$SA15_BWT' 는 대상 'main' 의 워크트리가 아닙니다"*)
+    ok "15b: 앵커 검사가 그 워크트리를 이름 지어 거절한다" ;;
+  *) bad "15b 앵커 거절 문면" "$msg" ;;
+esac
+check "15b: 앵커를 싣기 전에 거절하므로 리뷰 의무가 발행되지 않는다" "$(sa_ob_count)" "$nb15b"
+# 원장은 덧붙이기만 하므로, 다음 항목이 이 행을 물려받지 않도록 자기 대상의
+# 워크트리로 되돌린다.
+sa_seg_row S15B 선머지후리뷰
 
 # --- 35-16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
 # --- section: 35-16 | group: sa | covers: act | anchors: 16: 원격 베이스로 민 머지가 통과한다 ---
