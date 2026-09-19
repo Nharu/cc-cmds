@@ -12972,6 +12972,11 @@ check "4g: 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 #
 # `S1` 과 `S10` 이 같은 원장 안에 서로 반대 결과의 행을 갖고 각각 독립적으로
 # 판정된다. 필드 종결자(후행 공백) 규율을 쓰지 않은 구현은 여기서 깨진다.
+#
+# 두 행은 한 워크트리를 가리키므로 S10 은 머지 전에 자기 커밋을 하나 더 쌓는다.
+# 쌓지 않으면 S10 의 팁은 S1 의 푸시 머지가 이미 원격 베이스에 올린 커밋이고,
+# 앵커 검사가 그 팁을 「이미 베이스에 담김」으로 exit 10 으로 막는다(35-15e) —
+# 그러면 이 절은 접두 충돌이 아니라 앵커를 잰다.
 sa_new '접두 충돌' 선머지후리뷰
 sa_seg_row S1  선머지후리뷰
 sa_seg_row S10 선머지후리뷰
@@ -12982,6 +12987,7 @@ n_s1=$(sa_ob_rows | grep -cF '세그먼트=S1 ' || true)
 n_s10=$(sa_ob_rows | grep -cF '세그먼트=S10 ' || true)
 check "6: S1 의 의무가 하나다" "$n_s1" "1"
 check "6: S10 은 아직 의무가 없다 (접두가 겹쳐도 섞이지 않는다)" "$n_s10" "0"
+sa_commit '작업 S10' >/dev/null
 sa_merge S10
 check "6: S10 의 머지는 S1 의 열린 의무에 막히지 않는다" "$rc" "0"
 check "6: S10 의 의무가 하나 생긴다" "$(sa_ob_rows | grep -cF '세그먼트=S10 ' || true)" "1"
@@ -13543,6 +13549,59 @@ check "15c: 그 의무의 머지 커밋이 그 워크트리의 HEAD 다" \
 ( cd "$SA_WT" && git checkout -q "$SA_BASE" ) >/dev/null 2>&1
 sa_seg_row S15S 선머지후리뷰
 
+# --- 35-15e. 원격 베이스에 이미 착지한 형제 트리를 가리키는 둘째 행 ---------------
+# --- section: 35-15e | group: sa | covers: act | needs: 35-15 | anchors: 15e: 그 팁은 로컬 베이스 브랜치에는 없다, 15e: 원격 베이스에 이미 착지한 트리를 가리키는 둘째 행의 머지는 exit 10 이다 ---
+#
+# 35-15d 가 픽스처를 새로 열므로 35-15 의 픽스처를 쓰는 이 절은 그보다 앞에 선다.
+#
+# 이 파이프라인에서 머지는 서버에서 일어나고 세그먼트 트리는 원격 추적 ref 에서
+# 끊긴다. 그래서 앵커 저장소의 로컬 베이스 브랜치는 런 동안 한 번도 전진하지
+# 않는다 — 35-15 의 푸시 머지도 bare 원격과 공유 저장소의 `refs/remotes/origin/`
+# 만 움직였다. 35-15c 가 잰 위상(워크트리 HEAD 가 로컬 베이스 팁 자체)은 로컬
+# 비교로도 보이는 유일한 위상이고, 이 절은 그 밖의 위상, 곧 형제 세그먼트가 이미
+# 원격 베이스로 머지한 트리를 둘째 행이 가리키는 칸을 잰다.
+#
+# 수리 전에는 이 머지가 rc 0 으로 통과해 형제의 팁을 앵커로 한 의무 하나를
+# 발행했고, 이행이 추적 ref 를 읽으므로 그 의무는 형제의 리뷰로 곧바로 닫혔다.
+# 아래 세 전제가 그 위상을 못박는다 — 셋째가 깨지면 로컬 비교도 거절하므로 이
+# 절은 수리와 옛 코드를 구별하지 못한다.
+sa15e_tip=$(cd "$SA_SEGWT" && git rev-parse HEAD)
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$sa15e_tip" "refs/remotes/origin/$SA_BASE" ) >/dev/null 2>&1; then
+  ok "15e: 형제의 팁은 원격 추적 베이스에 담겨 있다"
+else
+  bad "15e 전제" "35-15 의 푸시 머지가 추적 ref 를 전진시키지 않았다: '$sa15e_tip'"
+fi
+if git --git-dir="$SA_REMOTE" merge-base --is-ancestor "$sa15e_tip" "refs/heads/$SA_BASE" >/dev/null 2>&1; then
+  ok "15e: 그 팁은 bare 원격의 베이스 브랜치에도 착지했다"
+else
+  bad "15e 전제" "bare 원격의 베이스가 형제의 팁을 담지 않는다: '$sa15e_tip'"
+fi
+if ( cd "$SA_WT" && git merge-base --is-ancestor "$sa15e_tip" "refs/heads/$SA_BASE" ) >/dev/null 2>&1; then
+  bad "15e 전제" "로컬 베이스가 형제의 팁을 담는다 — 로컬 비교로도 보이는 위상이라 이 절이 공허하다"
+else
+  ok "15e: 그 팁은 로컬 베이스 브랜치에는 없다"
+fi
+nb15e=$(sa_ob_count)
+sa_seg_row S15X 선머지후리뷰 "$SA_SEGWT"
+check "15e: 이미 이행된 형제의 트리를 적은 둘째 행이 기록된다" "$rc" "0"
+sa_merge S15X
+check "15e: 원격 베이스에 이미 착지한 트리를 가리키는 둘째 행의 머지는 exit 10 이다" "$rc" "10"
+case "$msg" in
+  *"의 팁 '$sa15e_tip' 은"*) ok "15e: 막힌 앵커는 형제가 이미 머지한 팁이다" ;;
+  *) bad "15e 막힌 앵커" "$msg" ;;
+esac
+case "$msg" in
+  *"베이스 브랜치 '$SA_BASE' 에 담겨 있습니다"*)
+    ok "15e: 거절의 근거는 그 팁이 이미 베이스에 담겨 있다는 것이다" ;;
+  *) bad "15e 앵커 문면" "$msg" ;;
+esac
+case "$msg" in
+  *룰*) bad "15e 낱말" "이 거절도 룰을 자칭한다 — 카탈로그로 접히면 끔 이 이것까지 끈다" ;;
+  *) ok "15e: 이 문면도 「룰」이라는 낱말을 쓰지 않는다" ;;
+esac
+check "15e: 형제의 팁으로 된 의무는 발행되지 않는다" "$(sa_ob_count)" "$nb15e"
+sa_seg_row S15X 선머지후리뷰
+
 # --- 35-15d. 승인 id 는 해소된 워크트리를 싣는다 --------------------------------
 # --- section: 35-15d | group: sa | covers: act, plan | needs: 35-15 | anchors: 15d: 두 워크트리는 같은 베이스에서 끊겨 HEAD 가 동일하다, 15d: 같은 argv 라도 두 세그먼트의 승인 id 가 다르다 ---
 #
@@ -13584,7 +13643,22 @@ else
 fi
 # A 의 승인만 닫는다. `close` 가 아니라 이 파일이 이미 쓰는 원장 덧붙이기 관용구다 —
 # 재려는 것은 답의 경로가 아니라 답이 **어느 id 에 붙는가** 이기 때문이다.
-printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$sa_apA" "테스트" >> "$SA_LEDGER"
+#
+# 닫기 행은 A 의 `대기` 행이 실은 `절단점`·`유도 절단점` 을 그대로 싣는다. 이
+# 원장은 38-8 이 훑는 `sa-*` 원장이고 38-8 은 모든 `승인` 행에 두 필드를 요구하므로,
+# 두 필드 없이 덧붙인 행은 두 절을 함께 도는 모든 실행을 빨갛게 만들었다. 게이트의
+# 실제 `close` 로 닫는 것은 이 자리에서 답이 되지 못한다 — 그 전이 행도 두 필드를
+# 싣지 않아 38-8 이 같은 한 건을 센다.
+sa_apArow=$( { grep -F '`승인`' "$SA_LEDGER" || true; } | grep -F "승인 id=$sa_apA " | grep -F '상태=대기' | tail -1)
+sa_apAcut=$(sa_field "$sa_apArow" '절단점')
+sa_apAder=$(sa_field "$sa_apArow" '유도 절단점')
+if [ -n "$sa_apAcut" ] && [ -n "$sa_apAder" ]; then
+  ok "15d: A 의 대기 행이 두 절단점 필드를 싣는다 (닫기 행이 옮겨 실을 값이 있다)"
+else
+  bad "15d 대기 행" "절단점='$sa_apAcut' 유도 절단점='$sa_apAder'"
+fi
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 절단점=%s | 유도 절단점=%s | 해소 시각=%s | prev=x\n' \
+  "$sa_apA" "$sa_apAcut" "$sa_apAder" "테스트" >> "$SA_LEDGER"
 sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SIDA --cutpoint push \
     --surface 외부상태변경 -- scp -V
 check "15d: 닫은 답이 A 의 같은 argv 를 연다 (닫기가 공허하지 않다)" "$rc" "0"

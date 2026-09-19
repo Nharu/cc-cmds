@@ -7337,7 +7337,11 @@ gate_segment_tip() {
   wt=$(gate_segment_worktree "$1")
   [ -n "$wt" ] || return 1
   [ -d "$wt" ] || return 1
-  out=$( { cd "$wt" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || true)
+  # `--verify` AND `^{commit}`: on an unborn branch a bare `git rev-parse HEAD`
+  # exits 128 but still prints the literal `HEAD`, and the `|| true` below kept
+  # that word as the tip — a later `is-ancestor HEAD …` then resolved it in
+  # whatever repository it ran in rather than in this worktree.
+  out=$( { cd "$wt" 2>/dev/null && git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null; } || true)
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }
@@ -12208,14 +12212,30 @@ gate_unmet_clause_ids() {
 # descendant of the base tip" — which a `cycle` row about an unrelated segment
 # satisfies. The other-repository case failed loudly with a row nobody could
 # close; this one closes as if it had been reviewed, and no warning goes out on
-# the way. The comparison is the SAME ONE the fulfilment arm runs, so this adds a
-# question and not a second copy of an answer.
+# the way.
 #
-# It FAILS OPEN. An anchor root, a base branch or a `refs/heads/<베이스>` that
-# does not resolve leaves the merge alone: the sentence fires on a positive
-# observation that the anchor is hollow, and folding "could not look" into
-# "looked and found" would break a freshly cloned repository that never had the
-# local ref. It also skips an undeclared target, for the reason the fourth gives.
+# IT COMPARES AGAINST THE REF THE FULFILMENT ARM FINALLY DECIDES ON, NOT THE ONE IT
+# LOOKS AT FIRST: `refs/remotes/origin/<베이스>` when the anchor repository has an
+# origin, `refs/heads/<베이스>` only when it has none. The local branch is not
+# asked on a target with an origin, because in this pipeline merges happen on
+# the server and every segment tree is cut from the tracking ref, so the local
+# branch never advances during a run. Asked alone, it let the tip of a SIBLING
+# segment that had already merged to the remote base pass — its obligation was
+# issued on the sibling's tip and closed at once on the sibling's review — and
+# it refused a tip that was only on the local branch and not yet on the remote,
+# which is new work rather than a hollow anchor. It is NOT byte-for-byte the
+# fulfilment arm's comparison: that arm fetches first, and this one does not.
+# A stale tracking ref can only be BEHIND the remote, so it errs toward letting
+# the merge through and never adds a refusal the fetched answer would not give.
+#
+# It FAILS OPEN. An anchor root, a base branch, or a compared ref (the tracking
+# ref, or the local branch on a target with no origin) that does not resolve
+# leaves the merge alone: the sentence fires on a positive observation that the
+# anchor is hollow, and folding "could not look" into "looked and found" would
+# break a freshly cloned repository that never had the ref. A target with an
+# origin but no tracking ref does NOT fall back to the local branch — that
+# branch is frozen at kickoff here, so it is no stand-in for the remote. It also
+# skips an undeclared target, for the reason the fourth gives.
 #
 # AND IT EXEMPTS A TIP THAT ALREADY HAS AN OPEN OBLIGATION ON THIS SEGMENT. What
 # it refuses is ISSUING an obligation nothing can distinguish; a second merge at
@@ -12235,13 +12255,14 @@ gate_unmet_clause_ids() {
 # function and covers `--kind merge` too, so it answers first for every worktree
 # value it inspects. The second sentence's live domain is therefore the two
 # spellings that pre-check's `case` skips — `-` and `(없음)` — and 35-13c is the
-# clause that measures exactly that. The third (an unreadable HEAD) is in
-# practice unreachable, because the fourth has already settled that the path is a
-# git tree of this target; it is kept as a defensive residue rather than removed,
-# since the alternative to a sentence for an impossible state is no sentence at
-# all if the impossibility ever stops holding.
+# clause that measures exactly that. The third (an unreadable HEAD) is reached
+# only by a worktree whose branch is unborn: `gate_segment_tip` asks for the
+# commit with `--verify`, so such a HEAD resolves to nothing and this sentence
+# answers. Before that it asked without `--verify`, and the literal word `HEAD`
+# leaked out as the tip. The reach is rare because `wt_create` never builds an
+# unborn tree, and the sentence is kept for the tree something else built.
 gate_check_merge_anchor() {
-  local seg="$1" cut="$2" alias="$3" wt tip aroot abr oid open_id slot_open
+  local seg="$1" cut="$2" alias="$3" wt tip aroot abr bref oid open_id slot_open
   [ "${GATE_REVIEW_POLICY:-}" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
 
@@ -12282,9 +12303,20 @@ gate_check_merge_anchor() {
   if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
     aroot=$(alias_root "$alias" 2>/dev/null) || aroot=""
     abr=$(base_branch "$alias" 2>/dev/null) || abr=""
-    if [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ] \
-       && ( cd "$aroot" && git rev-parse --verify --quiet "refs/heads/$abr" >/dev/null 2>&1 ) \
-       && ( cd "$aroot" && git merge-base --is-ancestor "$tip" "refs/heads/$abr" >/dev/null 2>&1 ); then
+    # The ref the fulfilment arm finally decides on: the tracking ref when the
+    # anchor repository has an origin, the local branch only when it has none.
+    # No fetch — see the head comment for why a stale tracking ref is harmless.
+    bref=""
+    if [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ]; then
+      if ( cd "$aroot" && git remote get-url origin >/dev/null 2>&1 ); then
+        bref="refs/remotes/origin/$abr"
+      else
+        bref="refs/heads/$abr"
+      fi
+    fi
+    if [ -n "$bref" ] \
+       && ( cd "$aroot" && git rev-parse --verify --quiet "$bref" >/dev/null 2>&1 ) \
+       && ( cd "$aroot" && git merge-base --is-ancestor "$tip" "$bref" >/dev/null 2>&1 ); then
       # Keyed exactly as the issuer keys it, so "this tip's slot" means the same
       # thing in both places. Re-deriving it rather than sharing a helper would
       # let the two drift into agreeing about different slots.
@@ -12294,7 +12326,7 @@ gate_check_merge_anchor() {
         if [ "$open_id" = "$oid" ]; then slot_open=1; break; fi
       done
       if [ -z "$slot_open" ]; then
-        warn "세그먼트 '$seg' 의 팁 '$tip' 은 이미 대상 '$alias' 의 베이스 브랜치 '$abr' 에 담겨 있습니다"
+        warn "세그먼트 '$seg' 의 팁 '$tip' 은 이미 대상 '$alias' 의 베이스 브랜치 '$abr' 에 담겨 있습니다 ($bref)"
         warn "이 의무는 어떤 리뷰로도 구별되지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
         return "$GATE_EXIT_ANCHOR"
       fi
