@@ -10637,7 +10637,8 @@ gate_rundir_write_guard() {
   # every call of that run hops into — at a path under the sibling's directory.
   # There is no legitimate case: a stage writing into a run that is not its own
   # is either confused or hostile, and the refusal text says so.
-  local a rdp rdn rdln an rel root rootp
+  local a rdp rdn rdln an rel root rootp argi
+  argi=0
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
@@ -10646,12 +10647,32 @@ gate_rundir_write_guard() {
   rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
   if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
   for a in "$@"; do
+    argi=$((argi + 1))
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$a")
     if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
       warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
       return "$GATE_EXIT_RULE"
     fi
+    # ARGV0 NAMES WHAT RUNS, NOT WHAT IS WRITTEN, and conflating the two closed
+    # the run to its own pinned code. Pinning puts the copy every call hops into
+    # at `<RUN_DIR>/plugin/cc-cmds/`, so a stage invoking one of those scripts by
+    # its documented path hands this loop an argv0 under the run directory. It
+    # matches no allow-list branch — `plugin/…` falls to `*/*` — and the act is
+    # refused although nothing is written there. Measured: an unattended design
+    # stage was refused at `cc-team-witness-init.sh`, spawned no team member, and
+    # the run closed with all five termination clauses settled impossible.
+    #
+    # The allow-list loses no coverage by skipping this element. A file is not
+    # written by being executed, and where a script does write under the run
+    # directory it computes that path internally — which this loop never saw for
+    # any argv0, before or after this change.
+    #
+    # THE FOREIGN-RUN REFUSAL ABOVE STILL READS ARGV0, deliberately: running a
+    # sibling run's pinned copy is the confusion that check exists to name, and
+    # it is the one judgment about argv0 that does not rest on it being a write
+    # target.
+    [ "$argi" = 1 ] && continue
     rel=""
     case "$an" in
       "$rdn") rel="." ;;
