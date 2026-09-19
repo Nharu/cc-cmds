@@ -17350,6 +17350,279 @@ check "57G: 양성 대조군 — 내보낸 GATE_ACT_CWD 아래에서는 커밋�
   "$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
   "$((p57_tr_before + 1))"
 
+# ---------------------------------------------------------------------------
+# 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
+# --- section: 58 | group: parse | covers: parse | anchors: 58: 재현 행 1 은 ok 다, 58: 재현 행 7 은 form 이다, 58: 다섯 철자의 -R 이 같은 옵션을 남긴다, 58: 표 함수는 heredoc 이다, 58: gate_main 다음 줄이 exit 다 ---
+#
+# 파서는 아직 아무도 부르지 않는다. 그래서 이 절은 등급을 보지 않고, 게이트를
+# 소싱한 셸에서 `gp_parse` 와 접근자를 직접 불러 `GP_*` 를 읽는다.
+#
+# 소싱은 /bin/bash 로 한다. macOS 의 /bin/bash 는 3.2 이고, 파서가 지켜야 하는
+# 제약 — 연관 배열이 없고 빈 배열을 가드 없이 펼치면 `set -u` 아래에서 죽는다 —
+# 이 거기서 실제로 걸린다. 본문은 `set -u` 를 켠 채로 돈다.
+# ---------------------------------------------------------------------------
+s57() {
+  # s57 <본문> — 게이트를 소싱한 셸에서 본문을 돈다. `S <argv...>` 는 상태와
+  # 사유를 `상태|사유` 한 줄로, `W <words...>` 는 단어를 `/` 로 이어 찍는다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S57_GATE="$GATE" S57_BODY="$1" /bin/bash -c '
+      . "$S57_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      S() { gp_parse "$@"; printf "%s|%s\n" "$GP_STATUS" "$GP_REASON"; }
+      W() { local IFS=/; printf "%s\n" "$*"; }
+      eval "$S57_BODY"' 2>/dev/null )
+}
+
+# (1) 다섯 상태. 같은 행위가 철자에 따라 다른 답을 받던 일곱 행이다.
+check "58: 재현 행 1 은 ok 다" "$(s57 'S gh repo delete o/r --yes')" "ok|"
+# `repo` 그룹은 `-R` 을 아래로 내려주지 않으므로 `repo delete` 앞의 `-R` 은 실물 gh 도
+# `unknown shorthand flag: 'R'` 로 거부한다. 분리형과 붙임형이 같은 답을 받는다.
+check "58: 재현 행 2 — 분리형 -R 도 repo delete 잎에서는 form 이다" \
+  "$(s57 'S gh -R o/r repo delete --yes')" "form|gh:flag-not-on-leaf:-R"
+check "58: 재현 행 3 은 잎에 없는 플래그로 form 이다" \
+  "$(s57 'S gh -Ro/r repo delete --yes')" "form|gh:flag-not-on-leaf:-R"
+check "58: 재현 행 4 는 가족이 모르는 플래그로 form 이다" \
+  "$(s57 'S gh -qRo/r pr merge 1')" "form|gh:unknown-flag:-q"
+check "58: 재현 행 5 는 list 다" "$(s57 "S sh -c 'gh repo delete o/r --yes'")" "list|"
+check "58: 재현 행 6 은 list 다" "$(s57 "S bash -c 'gh repo delete o/r --yes'")" "list|"
+check "58: 재현 행 7 은 form 이다" \
+  "$(s57 "S env --split-string='gh repo delete o/r --yes' true")" "form|env:split-string-expansion"
+check "58: 조각 안의 gh 가 GP_SUB 에 실린다" \
+  "$(s57 "gp_parse sh -c 'gh repo delete o/r --yes'; gp_each_sub W")" "gh/repo/delete/o/r/--yes"
+
+# (2) tool 의 세 경계. 최상위 argv0 이 미등록일 때만 행위가 tool 이다.
+check "58: 최상위 미등록 도구는 tool 이다" "$(s57 'S unknowntool --wipe')" "tool|"
+check "58: 래퍼 안쪽의 미등록 도구도 tool 이다" "$(s57 'S timeout 5 unknowntool')" "tool|"
+check "58: 조각의 미등록 도구는 행위를 tool 로 만들지 않는다" "$(s57 "S sh -c 'unknowntool; true'")" "list|"
+check "58: xargs·sudo·caffeinate·최상위 exec 는 래퍼가 아니라 tool 이다" \
+  "$(s57 'S xargs rm; S sudo rm x; S caffeinate -i make; S exec ls')" "tool|
+tool|
+tool|
+tool|"
+
+# (3) pflag 등가. 철자만 다른 옵션은 같은 기록을 남긴다.
+check "58: 다섯 철자의 -R 이 같은 옵션을 남긴다" "$(s57 '
+for sp in "-R o/r" "-Ro/r" "-R=o/r" "--repo o/r" "--repo=o/r"; do
+  gp_parse gh pr view $sp 1
+  printf "%s=%s@%s;" "${GP_OK[*]}" "${GP_OV[*]}" "${GP_OS[*]}"
+done')" "repo=o/r@group;repo=o/r@group;repo=o/r@group;repo=o/r@group;repo=o/r@group;"
+check "58: 마지막 -R 이 이긴다" "$(s57 'gp_parse gh pr view -R a/b -R o/r 1; gp_opt repo')" "o/r"
+check "58: -- 뒤는 위치 인자다" \
+  "$(s57 'gp_parse gh pr view 1 -- -R x; printf "%s|%s|%s" "${GP_POS[*]}" "$GP_DDASH" "${#GP_OK[@]}"')" "1 -R x|1|0"
+check "58: 장플래그 축약은 받지 않는다" "$(s57 'S gh pr view --rep o/r 1')" "form|gh:unknown-flag:--rep"
+check "58: 묶음 -cw 는 두 bool 이다" \
+  "$(s57 'gp_parse gh pr view -cw 1; printf "%s=%s" "${GP_OK[*]}" "${GP_OV[*]}"')" "comments web=true true"
+check "58: --web=true 는 ok 다" "$(s57 'S gh pr view --web=true 1')" "ok|"
+check "58: --web=yes 는 bool 리터럴이 아니다" "$(s57 'S gh pr view --web=yes 1')" "form|gh:bool-literal:--web=yes"
+check "58: --web=0 은 false 로 정규화된다" "$(s57 'gp_parse gh pr view --web=0 1; gp_opt web')" "false"
+# gh 2.100.0 의 표에는 선택값 플래그가 없다. 기전은 표를 갈아 끼워서 본다.
+check "58: 선택값 플래그는 = 없이 쓰면 기본값을 받는다" "$(s57 '
+gp_gh_flag_table() { printf "%s\n" "gh-version=2.100.0" "-|:help:b" "x|:help:b :opt:o=dflt"; }
+_GP_GH_N=0
+gp_parse gh x --opt; a=$(gp_opt opt)
+gp_parse gh x --opt=v; b=$(gp_opt opt)
+gp_parse gh x --opt v; printf "%s,%s,%s|%s" "$a" "$b" "$(gp_opt opt)" "${GP_POS[*]}"')" "dflt,v,dflt|v"
+check "58: 내장 별칭 co 는 pr checkout 이다" \
+  "$(s57 'gp_parse gh co 1; printf "%s|%s|%s" "$GP_ALIAS" "${GP_PATH[*]}" "${GP_POS[*]}"')" "co|pr checkout|1"
+check "58: 모르는 하위 명령은 form 이다" "$(s57 'S gh nosuch thing')" "form|gh:unknown-path:nosuch"
+check "58: 붙임 -XDELETE 와 묶음 -i 가 읽힌다" \
+  "$(s57 'gp_parse gh api -iXDELETE repos/o/r; gp_opt method; printf "|"; gp_opt include')" "DELETE|true"
+
+# (4) -R 은 잎마다 다르다.
+check "58: gh -R o/r repo delete x 는 form 이다" "$(s57 'S gh -R o/r repo delete x')" "form|gh:flag-not-on-leaf:-R"
+check "58: gh -R o/r release delete v1 --yes 는 ok 다" \
+  "$(s57 'gp_parse gh -R o/r release delete v1 --yes; printf "%s|%s|%s" "$GP_STATUS" "$(gp_opt repo)" "${GP_OS[0]}"')" "ok|o/r|group"
+check "58: gh api 에는 -R 이 없다" "$(s57 'S gh api -R o/r x')" "form|gh:flag-not-on-leaf:-R"
+
+# (5) 래퍼 사슬. 가족을 고르기 전에 벗긴다.
+check "58: env -i 는 환경을 비운다" \
+  "$(s57 'gp_parse env -i gh pr view 1; printf "%s|%s|" "$GP_STATUS" "$GP_ENV_CLEAR"; gp_wrap_has env && printf y')" "ok|1|y"
+check "58: env -u NAME 은 지움으로 기록된다" \
+  "$(s57 'gp_parse env -u NAME gh pr view 1; printf "%s|" "${GP_ENV[*]}"; gp_env_get NAME || printf "rc%s" "$?"')" "-NAME|rc1"
+check "58: env NAME=v 는 대입으로 기록된다" "$(s57 'gp_parse env NAME=v gh pr view 1; gp_env_get NAME')" "v"
+check "58: env -i 뒤의 대입만 실효다" \
+  "$(s57 'gp_parse env A=1 env -i B=2 gh pr view 1; gp_env_get A || printf "none"; printf "|"; gp_env_get B')" "none|2"
+check "58: env -S 분리형·붙임형·장옵션이 옵션 루프로 재진입한다" "$(s57 "
+gp_parse env -S 'gh pr view 1'; printf '%s %s;' \"\$GP_STATUS\" \"\${GP_PATH[*]}\"
+gp_parse env -S'gh pr view 1'; printf '%s %s;' \"\$GP_STATUS\" \"\${GP_PATH[*]}\"
+gp_parse env --split-string='gh pr view 1'; printf '%s %s;' \"\$GP_STATUS\" \"\${GP_PATH[*]}\"")" "ok pr view;ok pr view;ok pr view;"
+check "58: env -S 뒤에 피연산자가 있으면 form 이다" "$(s57 "S env -S 'gh pr view 1' true")" "form|env:split-string-expansion"
+check "58: env -S 문자열에 확장 문자가 있으면 form 이다" "$(s57 "S env -S 'gh pr view \$X'")" "form|env:split-string-expansion"
+check "58: env '-SX=1 gh pr merge 1' true 는 form 이다" \
+  "$(s57 "S env '-SX=1 gh pr merge 1 --subject' true")" "form|env:split-string-expansion"
+check "58: env -a 는 argv0 을 바꾸므로 form 이다" "$(s57 'S env -a x gh pr view 1; S env --argv0=x gh pr view 1')" "form|env:argv0-override
+form|env:argv0-override"
+check "58: timeout·nohup·nice·command -p·lockf 를 벗긴다" "$(s57 '
+for w in "timeout 5" "timeout -s KILL 5" "nohup" "nice -n 5" "nice -5" "command -p" "lockf -t 0 /tmp/l" "gtimeout 5" "gnice" "stdbuf -oL" "time -p"; do
+  gp_parse $w gh pr view 1; printf "%s:%s:%s;" "$GP_STATUS" "$GP_ARGV0" "${#GP_WRAP[@]}"
+done')" "ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;ok:gh:1;"
+check "58: command -v 는 벗기지 않는다" "$(s57 'gp_parse command -v gh; printf "%s|%s" "$GP_ARGV0" "${#GP_WRAP[@]}"')" "command|0"
+check "58: 여덟 겹은 ok, 아홉 겹은 wrap:depth 로 form 이다" "$(s57 '
+S nohup nohup nohup nohup nohup nohup nohup nohup gh pr view 1
+S nohup nohup nohup nohup nohup nohup nohup nohup nohup gh pr view 1')" "ok|
+form|wrap:depth"
+check "58: 래퍼의 모르는 옵션은 form 이다" "$(s57 'gp_parse timeout --nosuch 5 gh pr view 1; printf "%s" "$GP_STATUS"')" "form"
+
+# (6) 셸 -c 토크나이저.
+check "58: 따옴표와 이스케이프가 단어 경계를 지킨다" "$(s57 "$(cat <<'B57'
+gp_parse sh -c "gh pr view 'a b' \"c\\\"d\" e\\ f"; gp_each_sub W
+B57
+)")" 'gh/pr/view/a b/c"d/e f'
+check "58: 구분자가 단순 명령을 나눈다" \
+  "$(s57 "gp_parse sh -c 'git status; git log && git diff || true | cat'; printf '%s|%s' \"\$GP_STATUS\" \"\${#GP_SUB[@]}\"")" "list|5"
+check "58: /dev/null 과 fd 복제 리다이렉션은 기록만 한다" "$(s57 "$(cat <<'B57'
+gp_parse sh -c 'git status 2>/dev/null >&2'; printf '%s|%s|' "$GP_STATUS" "${#GP_REDIR[@]}"
+printf '%s' "${GP_REDIR[0]}" | tr '\t' ,
+B57
+)")" "list|2|2,>,/dev/null"
+check "58: 파일 리다이렉션은 opaque 다" "$(s57 "S sh -c 'ls > out.txt'")" "opaque|"
+check "58: cd 는 GP_CWD 를 남긴다" "$(s57 "gp_parse sh -c 'cd /x && git status'; printf '%s' \"\$GP_CWD\"")" "/x"
+check "58: 키워드는 opaque 이고 안쪽 명령은 실린다" "$(s57 "$(cat <<'B57'
+gp_parse sh -c 'if true; then rm x; fi'; printf '%s|' "$GP_STATUS"; gp_each_sub W
+B57
+)")" "opaque|true
+rm/x"
+check "58: eval 은 form 이다" "$(s57 "S sh -c 'eval ls'")" "form|sh:non-literal-command-word"
+check "58: 명령 치환은 어느 자리든 form 이다" "$(s57 "S sh -c 'echo \$(rm x)'")" "form|sh:non-literal-command-word"
+check "58: 명령어 자리의 매개변수는 form 이다" "$(s57 "S sh -c '\$X arg'")" "form|sh:non-literal-command-word"
+check "58: awk 의 system() 은 opaque 다" "$(s57 "$(cat <<'B57'
+S sh -c "awk 'BEGIN{system(\"rm x\")}'"
+S sh -c "awk '{print \$1}' f"
+B57
+)")" "opaque|
+list|"
+check "58: bash -lc 는 -c 본문을 읽는다" "$(s57 "S bash -lc 'git status'")" "list|"
+check "58: bash -- -c 는 -c 라는 파일을 도는 것이다" \
+  "$(s57 "gp_parse bash -- -c 'git status'; printf '%s|%s|%s' \"\$GP_STATUS\" \"\$GP_FAMILY\" \"\${#GP_WRAP[@]}\"")" "ok|raw|0"
+check "58: here-document 는 opaque 다" "$(s57 "$(cat <<'B57'
+S sh -c 'cat <<EOF
+hi
+EOF'
+B57
+)")" "opaque|"
+
+# (7) env 변수 표. 대입 꼴만 등급에 닿고, 지움 꼴은 기록으로 족하다.
+check "58: PATH= 는 실행 정체성이라 form 이다" "$(s57 'S env PATH=/x gh pr view 1')" "form|env:exec-identity:PATH"
+check "58: GIT_CONFIG_COUNT= 는 form 이다" "$(s57 'S env GIT_CONFIG_COUNT=1 git status')" "form|env:exec-identity:GIT_CONFIG_COUNT"
+check "58: GIT_SSH_COMMAND 의 값이 조각으로 실린다" \
+  "$(s57 "gp_parse env GIT_SSH_COMMAND='ssh -i k' git fetch; printf '%s|' \"\$GP_STATUS\"; gp_each_sub W")" "ok|ssh/-i/k"
+check "58: 읽을 수 없는 명령 값은 form 이다" "$(s57 "S env GIT_SSH_COMMAND='\$(rm x)' git fetch")" "form|sh:non-literal-command-word"
+check "58: GH_REPO= 는 기록된다" "$(s57 'gp_parse env GH_REPO=o/r gh pr view 1; gp_env_get GH_REPO')" "o/r"
+check "58: env -u PATH 와 env -i 는 form 이 아니다" "$(s57 'S env -u PATH gh pr view 1; S env -i gh pr view 1')" "ok|
+ok|"
+check "58: 조각의 export 는 이름을 가리지 않고 기록된다" \
+  "$(s57 "gp_parse sh -c 'export AWS_PROFILE=prod; aws s3 ls'; gp_env_get AWS_PROFILE")" "prod"
+
+# (8) 접근자.
+check "58: gp_opt_count·gp_opt_at 이 출현을 센다" \
+  "$(s57 'gp_parse gh pr view -R a/b -R o/r 1; gp_opt_count repo; printf "|"; gp_opt_at repo 0; printf "|"; gp_opt_at repo 2 || printf "rc%s" "$?"')" "2|a/b|rc1"
+check "58: gp_has 는 이긴 값이 true 일 때만 참이다" \
+  "$(s57 'gp_parse gh pr view -w --web=false 1; gp_has web && printf y || printf n; gp_parse gh pr view -w 1; gp_has web && printf y || printf n')" "ny"
+check "58: gp_gh_repo 가 URL 철자를 환원한다" "$(s57 '
+gp_parse gh pr view -R https://github.com/o/r.git 1; gp_gh_repo; printf "|%s;" "$?"
+gp_parse gh pr view -R git@ghe.example:o/r.git 1; gp_gh_repo; printf "|%s;" "$?"
+gp_parse env GH_REPO=h.example/o/r gh pr view 1; gp_gh_repo; printf "|%s;" "$?"
+gp_parse gh pr view 1; gp_gh_repo; printf "|%s;" "$?"' | tr '\t' ,)" "o/r,1,github.com|0;o/r,1,ghe.example|0;o/r,1,h.example|0;,0,|0;"
+check "58: 환원할 수 없는 저장소는 rc 2 다" \
+  "$(s57 "gp_parse gh pr view -R 'bad repo' 1; gp_gh_repo >/dev/null; printf '%s' \"\$?\"")" "2"
+check "58: gp_canon 이 공백·TAB·역슬래시를 이스케이프한다" "$(s57 "$(cat <<'B57'
+gp_parse cp 'a b' "$(printf 'c\td')" 'e\f' --x=1 g; gp_canon
+B57
+)")" 'cp a\x20b c\td e\\f g'
+check "58: gp_canon 의 단어는 되돌리면 원래 단어다" "$(s57 "$(cat <<'B57'
+w1='a b'; w2=$(printf 'c\td\re'); w3='x\y'
+gp_parse cp "$w1" "$w2" "$w3"
+set -- $(gp_canon)
+ok=1
+for pair in "2:$w1" "3:$w2" "4:$w3"; do
+  i=${pair%%:*}; want=${pair#*:}
+  eval "got=\${$i}"; _gp_unesc "$got"
+  [ "$_GP_UNESC" = "$want" ] || ok=0
+done
+printf '%s' "$ok"
+B57
+)")" "1"
+check "58: form 은 gp_canon 이 아무것도 찍지 않고 rc 1 이다" \
+  "$(s57 'gp_parse gh -Ro/r repo delete --yes; o=$(gp_canon); printf "%s|%s" "$?" "$o"')" "1|"
+check "58: gh 가족의 gp_canon 은 옵션을 뺀다" "$(s57 'gp_parse gh pr merge 1 -R o/r --squash; gp_canon')" "gh pr merge 1"
+check "58: raw 가족의 gp_canon 은 -*=* 단어만 뺀다" "$(s57 'gp_parse git -C /x --no-pager=1 status; gp_canon')" "git -C /x status"
+check "58: list 의 gp_canon 은 쓰기 조각마다 한 줄이다" "$(s57 "gp_parse sh -c 'rm x; echo hi; gh pr merge 1'; gp_canon")" "rm x
+gh pr merge 1"
+check "58: 빈 배열 접근자가 set -u 아래에서 죽지 않는다" "$(s57 '
+gp_parse true
+gp_opt x || printf "a%s " "$?"
+printf "c%s " "$(gp_opt_count x)"
+gp_opt_at x 0 || printf "t%s " "$?"
+gp_has x || printf "h "
+gp_wrap_has env || printf "w "
+gp_env_get X || printf "e "
+gp_each_sub W
+gp_path_prefix pr || printf "p "
+gp_canon
+printf "end"')" "a1 c0 t1 h w e p true
+end"
+
+# (9) 차등 오라클. 표가 옳은지는 표 자신이 말할 수 없으므로 실물 gh 에 묻는다 —
+# 고정 판본의 gh 가 있을 때만. 집합 대조는 생성기의 --check 가 하고, 그것만으로는
+# 도움말을 잘못 읽은 arity 가 표와 재생성 결과에 똑같이 들어가 통과하므로, 값 자리에
+# 값을 붙여 실물이 bool 로 거부하는지 값으로 받는지를 따로 읽는다. 요청은 무효
+# 호스트·빈 토큰·임시 config 로 가고, 플래그 파싱이 인증 확인보다 먼저라 어느
+# 호출도 네트워크나 상태에 닿지 않는다. 호스트에 쓰는 `auth` 잎은 표본에서 뺀다.
+s57_gh_ver=$(gh --version 2>/dev/null | sed -n '1s/^gh version \([^ ]*\).*/\1/p')
+if [ "$s57_gh_ver" = "2.100.0" ]; then
+  s57_chk=$(bash "$repo_root/scripts/gen-gh-flag-table.sh" --check 2>&1); s57_chk_rc=$?
+  check "58: 생성기 --check 가 내장 표와 재생성 결과를 같다고 본다" "$s57_chk_rc" "0"
+  s57_d=$(mktemp -d "${TMPDIR:-/tmp}/test-gate-58.XXXXXX")
+  s57_table=$(s57 'gp_gh_flag_table')
+  s57_bad=""
+  s57_n=0
+  s57_nl='
+'
+  for s57_path in "pr view" "pr merge" "pr checkout" "pr create" "repo delete" "repo view" \
+      "release delete" "api" "cache delete" "run view" "issue list" "workflow run" "project delete"; do
+    s57_row=$(printf '%s\n' "$s57_table" | awk -F'|' -v p="$s57_path" '$1 == p { print $2 }')
+    for s57_e in $s57_row; do
+      s57_long=${s57_e#*:}; s57_ar=${s57_long#*:}; s57_long=${s57_long%%:*}
+      [ "$s57_long" != help ] || continue
+      # shellcheck disable=SC2086
+      s57_out=$(GH_CONFIG_DIR="$s57_d" GH_TOKEN='' GITHUB_TOKEN='' GH_ENTERPRISE_TOKEN='' \
+        GITHUB_ENTERPRISE_TOKEN='' GH_HOST=invalid.invalid GH_NO_UPDATE_NOTIFIER=1 \
+        GH_PROMPT_DISABLED=1 GH_PAGER='' PAGER='' NO_COLOR=1 \
+        gh $s57_path "--$s57_long=zz9" </dev/null 2>&1)
+      # 첫 줄만 본다 — 플래그 오류는 그 줄에 있고, 뒤따르는 사용법에는 다른
+      # 플래그의 설명이 섞인다.
+      s57_out=${s57_out%%"$s57_nl"*}
+      case "$s57_out" in
+        *'unknown flag'*) s57_got=absent ;;
+        *ParseBool*) s57_got=b ;;
+        *) s57_got=v ;;
+      esac
+      [ "$s57_got" = "$s57_ar" ] || s57_bad="$s57_bad $s57_path/--$s57_long(표 $s57_ar, 실물 $s57_got)"
+      s57_n=$((s57_n + 1))
+    done
+  done
+  rm -rf "$s57_d"
+  # 표를 못 읽으면 루프가 한 번도 돌지 않고 아래 대조가 빈 문자열끼리 통과한다.
+  if [ "$s57_n" -ge 100 ]; then
+    ok "58: 차등 오라클이 플래그 ${s57_n}개를 실물 gh 에 물었다"
+  else
+    bad "58: 차등 오라클이 플래그 ${s57_n}개를 실물 gh 에 물었다" "100개 미만 — 표본 잎의 행을 표에서 찾지 못했다"
+  fi
+  check "58: 실물 gh 의 수용 반응이 표의 arity 와 같다" "$s57_bad" ""
+else
+  printf 'SKIP: 58: 차등 오라클 — 표는 gh 2.100.0 에 고정돼 있고 이 머신의 gh 는 %s 입니다\n' "${s57_gh_ver:-없음}"
+fi
+
+# (10) 표는 함수 안 heredoc 이고, 파일 끝은 소스 전용 가드 · gate_main · exit 다.
+check "58: 표 함수는 heredoc 이다" \
+  "$(awk '/^gp_gh_flag_table\(\) \{$/ { getline; print; exit }' "$GATE")" "  cat <<'GP_GH_FLAG_TABLE'"
+check "58: gate_main 다음 줄이 exit 다" \
+  "$(awk '/^[[:space:]]*$/ || /^[[:space:]]*#/ { next } { a = b; b = c; c = $0 } END { print a "|" b "|" c }' "$GATE")" 'fi|gate_main "$@"|exit'
+check "58: 소스 전용 가드는 gate_main 앞에 있다" \
+  "$(awk '/CC_GATE_SOURCE_ONLY:-0/ { g = NR } /^gate_main "\$@"$/ { m = NR } END { print (g > 0 && g < m) ? "앞" : "아님" }' "$GATE")" "앞"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
