@@ -78,7 +78,31 @@ export CC_CMDS_SESSION_NOTIFY
 # so an inherited marker would turn every B1 fixture below into a stage call
 # that judges nothing, and the suite would report the boundary as silent.
 # Sections that need a seat set it explicitly on the call.
-unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+#
+# `GATE_ACT_CWD` GOES WITH THEM, and it is the one whose absence was MEASURED as
+# a defect rather than reasoned about. A target-undeclared `act` does not choose
+# a working directory, so it runs in whatever `GATE_ACT_CWD` it inherited — and
+# an outer `gate.sh exec` exports that variable pointing at the main worktree.
+# The result was 35 empty commits on the installed checkout's local `master`
+# since 09-12, which left it ahead of `origin` 70% of the time and broke the
+# `git pull --ff-only` every apply in this tree uses. The value is captured
+# first so a failure can say what was inherited.
+GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
+unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID GATE_ACT_CWD
+# VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
+# the taking of a NEW pin — it can never make the gate ignore one that exists.
+# Every fixture run below would otherwise copy the plugin root into its fixture
+# run directory and hop into it, which changes nothing the existing sections
+# assert and costs a copy each. Section 57 unsets it for its own calls, which is
+# the only place pinning is exercised.
+#
+# THE HOP IS AN `exec`, SO `gate_inproc` MUST STAY A SUBSHELL. It is one today —
+# the body is wrapped in `( … )` — which is what keeps a pinned run's hop from
+# replacing this harness process itself. Do not add a non-subshell direct call to
+# `gate_main` to this file; section 57 asserts the subshell so the day somebody
+# does, a test says so rather than the suite vanishing mid-run.
+CC_GATE_PIN_DISABLE=1
+export CC_GATE_PIN_DISABLE
 # AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
@@ -1905,7 +1929,7 @@ drain_act() {
 unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
       CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
       CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION
+      CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
@@ -1926,7 +1950,7 @@ pre_cone() {
   unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
         CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
         CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-        CC_PIPELINE_PARENT_SESSION
+        CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 
   CONE_RUN_ID=R3
   prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
@@ -4495,6 +4519,42 @@ if [ -d "$LINKED" ]; then
   out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
   check "행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라)" "$out" "$want_ls"
+
+  # THE GRADING BASE IS THAT SAME DIRECTORY, AND IT IS RESOLVED HERE. The act's
+  # directory and the base its relative operands are measured against used to be
+  # two different answers: `gate_verb_act` seeded the grading base from an
+  # INHERITED `GATE_ACT_CWD` two hundred lines before this process resolved its
+  # own, so a gate running inside a gate graded against the outer run's tree and
+  # the two write guards went no-op on every relative operand with no visible
+  # failure. The inherited value is planted as a SUBDIRECTORY of the execution
+  # worktree here, which is what makes one `../` operand resolve to the run
+  # directory under the right base and to a harmless name under the wrong one.
+  # THE OBSERVABLE IS THE GUARD, NOT WHERE THE COMMAND RAN. The act's own cwd was
+  # already the execution worktree before this was fixed, so a case that only
+  # watches where `cp` puts its bytes answers the same either way and proves
+  # nothing. What moved is the base the guards measure their operands against.
+  mkdir -p "$LINKED/sub"
+  out14c=$( export GATE_ACT_CWD="$LINKED/sub"
+            cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
+              --cutpoint 커밋 --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+              --rationale x -- cp only-here.txt ../state/cc-cmds/run/R1/probe.json 2>&1 )
+  rc14c=$?
+  rd14c=0
+  case "$out14c" in *'런 디렉터리 쓰기'*) rd14c=1 ;; esac
+  check "14c: 상대 경로 피연산자가 실행 워크트리 기준으로 절대화돼 런 디렉터리 가드에 걸린다" "$rd14c" "1"
+  check "14c: 그 호출은 통과하지 않는다" \
+    "$( [ "$rc14c" = 0 ] && printf pass || printf fail )" "fail"
+  check "14c: 런 디렉터리에 아무것도 착지하지 않았다" \
+    "$( [ -e "$XDG_STATE_HOME/cc-cmds/run/R1/probe.json" ] && printf yes || printf no )" "no"
+  # 음성 대조군. 없으면 위 셋의 통과가 「이 형태가 통째로 거부된다」와 구별되지
+  # 않고, 통째 거부는 실행 워크트리 안의 정당한 상대 경로 쓰기를 함께 막는다.
+  ( export GATE_ACT_CWD="$LINKED/sub"
+    cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" \
+      --rationale x -- cp only-here.txt sub/copied.txt ) >/dev/null 2>&1
+  check "14c: 음성 대조군 — 실행 워크트리 안의 같은 상대 경로 쓰기는 통과한다" \
+    "$( [ -f "$LINKED/sub/copied.txt" ] && printf yes || printf no )" "yes"
+  rm -rf "$LINKED/sub"
 
   # A declared execution worktree in ANOTHER repository is refused — that would
   # be a second target wearing the first one's cutpoint.
@@ -9015,6 +9075,21 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$WPUB/reviewer.round-1.md"
 check "생성 스크립트가 만든 위트니스 디렉터리로의 발행은 통과한다" "$rc" "0"
+# 위 생성은 게이트를 거치지 않고 스크립트를 직접 불렀다. 스킬이 규정한 형태는 게이트
+# 아래의 `<plugin root>/orchestrator/cc-team-witness-init.sh <slug>` 이고, 등급표가
+# 이 스크립트를 이름으로 `트리밖쓰기` 로 고정하므로 두 쓰기 가드가 argv0 까지 본다.
+# 가드를 직접 부르는 행으로는 `gate_verb_act` 에서 가드로 이어지는 배선이 재지지
+# 않아, 이 호출이 rc 3 으로 막혀도 스위트는 초록이었다. 그래서 여기서 게이트 경유로
+# 실제로 돌리고, 생성된 경로가 런 디렉터리 아래인지까지 본다.
+CC_PIPELINE_RUN_DIR="$RD3" CC_PIPELINE_STAGE_ID='SD#1' \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-beta
+check "설치본 루트의 위트니스 생성 스크립트를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"$RD3"/cc-team-witness-review-beta*) ok "게이트 경유 생성이 런 디렉터리 아래 위트니스 경로를 낸다" ;;
+  *) bad "게이트 경유 위트니스 생성" "런 디렉터리 아래 경로가 출력에 없다: $msg" ;;
+esac
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
 # 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
 # 기준선 파일 하나를 더 열어 준다.
@@ -16093,6 +16168,456 @@ b56_withdraw_fixture 질문중
 printf '{"type":"user","message":{"content":[{"type":"text","text":"무관한 줄"}]}}\n' \
   > "$B56_CFG/projects/p/sess-질문중.jsonl"
 check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b56_kind)" "none"
+
+# ---------------------------------------------------------------------------
+# 57. 판본 고정 — 새 런은 사본으로 hop 한다
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다, 57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다, 57Y: 상위 참조를 담은 런 id 는 비정상 종료한다, 57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다, 57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다 ---
+#
+# 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
+# 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
+# 헬퍼의 `unset` 은 `gate_inproc` 과 같은 문장에 두지 않는다 — 39 절의 fork 센서스는
+# 이 구간을 건너뛰지만, 같은 문장에 씨앗 이름과 인프로세스 토큰이 함께 있는 모양은
+# 나중에 그 센서스 범위가 넓어지는 날 곧바로 붉어진다.
+#
+# 이 절은 픽스처를 자기가 만든다 — run-id 마다 매니페스트·인가·원장·상태 루트를
+# 새로 뜬다. 앞 절의 것을 물려받으면 `--sections 57` 로 잘라 돌릴 때 그 변수가 없다.
+# ---------------------------------------------------------------------------
+P57ROOT=$(mktemp -d "$WORK/pin57.XXXXXX")
+P57_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P57_PREV" ]; then
+  printf '57: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+
+p57_fixture() {
+  # p57_fixture <run-id> — 이 절의 자기 픽스처. 매니페스트는 앞 절의 것에서 id 만
+  # 바꾸고 구속 다이제스트는 지운다(그 검사는 여기서 재는 대상이 아니다).
+  local rid="$1"
+  P57_MAN="$P57ROOT/$rid.plan.md"
+  P57_GRANT="$WT/docs/pipeline-grant/$rid.md"
+  P57_LEDGER="$WT/docs/pipeline-run/$rid.md"
+  P57_STATE="$P57ROOT/state-$rid"
+  P57_RD="$P57_STATE/cc-cmds/run/$rid"
+  if [ "$P57_MAN" = "$FX_MANIFEST" ] || [ "$P57_GRANT" = "$FX_GRANT" ] || [ "$P57_LEDGER" = "$FX_LEDGER" ]; then
+    printf '57: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 (%s · %s · %s)\n' \
+      "$P57_MAN" "$P57_GRANT" "$P57_LEDGER" >&2
+    exit 1
+  fi
+  sed -e "s/run-id=$P57_PREV;/run-id=$rid;/" \
+      -e "s/^\*\*런 id\*\*: $P57_PREV\$/**런 id**: $rid/" "$FX_MANIFEST" > "$P57_MAN"
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$P57_MAN" && rm -f "$P57_MAN.bak"
+  sed "s/R1/$rid/g" "$GBAK" > "$P57_GRANT"
+  {
+    printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
+    printf '런 id %s · 판본 고정 픽스처\n' "$rid"
+  } > "$P57_LEDGER"
+  rm -rf "$P57_STATE"
+  mkdir -p "$P57_STATE"
+}
+
+p57_gate() {
+  # 인프로세스 호출. 씨앗을 벗긴 뒤 부르며, 두 이름은 서로 다른 문장에 있다.
+  local out
+  out=$( cd "$WT" || exit 1
+         unset CC_GATE_PIN_DISABLE
+         XDG_STATE_HOME="$P57_STATE" gate_inproc "$@" 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  printf '%s' "$out" > "$WORK/last-output.txt"
+}
+
+p57_pin() {  # p57_pin <run-dir> <키>
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1/plugin-pin" 2>/dev/null
+}
+p57_run_row() {  # p57_run_row <ledger>
+  grep -F -- '- `run`' "$1" 2>/dev/null | sed -n '1p'
+}
+p57_field() {  # p57_field <row> <키>
+  printf '%s' "$1" | sed -n "s/.*| $2=\\([^|]*\\).*/\\1/p" | sed 's/[[:space:]]*$//'
+}
+p57_tmp_count() {  # p57_tmp_count <run-dir> — 임시 이름이 남았는가
+  ls -d "$1"/plugin.* "$1"/plugin-pin.* 2>/dev/null | grep -c . || true
+}
+p57_fold() {
+  # p57_fold <경로> — 이어진 `/` 를 하나로 접는다. `TMPDIR` 이 `/` 로 끝나는 호스트에서
+  # `mktemp -d "$TMPDIR/x.XXXXXX"` 는 `…/T//x.abc` 를 돌려주는데, 게이트가 기록하는
+  # 값은 `cd`+`pwd` 를 지나 접힌 철자다. 접지 않으면 같은 디렉터리가 두 문자열이 된다.
+  printf '%s' "$1" | sed 's://*:/:g'
+}
+
+# 이 트리의 플러그인 서브트리가 깨끗한지에 따라 고정 방식이 갈린다 — 깨끗하면
+# `archive`(트리 객체 단위라 동시 체크아웃이 찢지 못한다), 더러우면 잠금·HEAD
+# 브래킷 안의 `copy` 다. 단언을 한쪽으로 고정하면 이 파일을 고치는 동안에는 늘
+# 붉고 커밋한 뒤에는 늘 초록인, 트리 상태를 재는 테스트가 된다.
+P57_CLEAN=0
+if [ -z "$(cd "$repo_root" && git --no-optional-locks status --porcelain -- plugins/cc-cmds 2>/dev/null)" ]; then
+  P57_CLEAN=1
+fi
+
+# (1) 새 런의 첫 호출이 고정한다 -------------------------------------------------
+p57_fixture R57
+p57_gate snapshot --manifest "$P57_MAN"
+check "57: 새 런의 첫 호출이 통과한다" "$rc" "0"
+check "57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다" \
+  "$( [ -f "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh" ] && [ -f "$P57_RD/plugin-pin" ] \
+      && printf yes || printf no )" "yes"
+check "57: plugin-pin 의 schema 는 1 이다" "$(p57_pin "$P57_RD" schema)" "1"
+check "57: plugin-pin 의 plugin-dir 이 사본을 가리킨다" \
+  "$(p57_pin "$P57_RD" 'plugin-dir')" "$P57_RD/plugin/cc-cmds"
+check "57: plugin-pin 의 다이제스트가 사본을 다시 재도 같다" \
+  "$(p57_pin "$P57_RD" digest)" \
+  "$( . "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
+check "57: plugin-pin 이 version 을 싣는다" \
+  "$( [ -n "$(p57_pin "$P57_RD" version)" ] && printf yes || printf no )" "yes"
+check "57: plugin-pin 이 pinned-at 을 싣는다" \
+  "$( [ -n "$(p57_pin "$P57_RD" 'pinned-at')" ] && printf yes || printf no )" "yes"
+check "57: orchestrator-dir 이 사본의 orchestrator 다" \
+  "$(p57_fold "$(sed -n '1p' "$P57_RD/orchestrator-dir" 2>/dev/null)")" \
+  "$(p57_fold "$P57_RD/plugin/cc-cmds/orchestrator")"
+# 설정 파일의 훅 명령과 `--gate` 경로가 전부 사본 아래여야 한다 — 하나라도 설치본을
+# 가리키면 고정 런의 스테이지가 고정되지 않은 코드를 태운다.
+P57_NSET=$( ls "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )
+check "57: 런 설정이 하나 이상 쓰였다 (다음 두 단언이 공허하지 않다)" \
+  "$( [ "${P57_NSET:-0}" -ge 1 ] && printf yes || printf no )" "yes"
+check "57: 런 설정의 어느 경로도 설치본 orchestrator 를 가리키지 않는다" \
+  "$( grep -l -F "$repo_root/plugins/cc-cmds/orchestrator" "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )" "0"
+check "57: 런 설정이 전부 사본 아래 경로를 싣는다" \
+  "$( grep -l -F "$(p57_fold "$P57_RD/plugin/cc-cmds/")" "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )" \
+  "${P57_NSET:-0}"
+p57_row=$(p57_run_row "$P57_LEDGER")
+check "57: run 행이 판본을 싣는다" \
+  "$( [ -n "$(p57_field "$p57_row" 판본)" ] && printf yes || printf no )" "yes"
+check "57: run 행의 판본이 (고정 안 함) 이 아니다" \
+  "$( [ "$(p57_field "$p57_row" 판본)" = '(고정 안 함)' ] && printf yes || printf no )" "no"
+check "57: run 행의 판본 다이제스트가 핀과 같다" \
+  "$(p57_field "$p57_row" '판본 다이제스트')" "$(p57_pin "$P57_RD" digest)"
+if [ "$P57_CLEAN" = 1 ]; then
+  check "57: 깨끗한 서브트리는 archive 로 뜬다" "$(p57_pin "$P57_RD" method)" "archive"
+  check "57: 그때 판본 트리가 서브트리의 git 트리다" \
+    "$(p57_field "$p57_row" '판본 트리')" \
+    "$(cd "$repo_root" && git --no-optional-locks rev-parse 'HEAD:plugins/cc-cmds' 2>/dev/null)"
+else
+  check "57: 더러운 서브트리는 copy 로 뜬다" "$(p57_pin "$P57_RD" method)" "copy"
+  check "57: 그때 dirty 는 예 다" "$(p57_pin "$P57_RD" dirty)" "예"
+  check "57: 그때 판본 트리는 (미커밋) 이다" "$(p57_field "$p57_row" '판본 트리')" "(미커밋)"
+fi
+
+# (2) 설치본 경로로 부른 두 번째 호출이 사본을 실행한다 ---------------------------
+# 사본의 gate.sh 를 스텁으로 갈아 끼우면 「어느 파일이 돌았는가」가 출력으로 드러난다.
+p57_fixture R57B
+p57_gate snapshot --manifest "$P57_MAN"
+check "57B: 고정이 섰다" "$rc" "0"
+printf '#!/usr/bin/env bash\nprintf "PINNED-STUB %%s\\n" "$*"\nexit 0\n' \
+  > "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+chmod +x "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+p57_bytes_before=$(wc -c < "$P57_LEDGER" | tr -d ' ')
+p57_ls_before=$(ls "$P57_RD" | LC_ALL=C sort)
+p57_forked=$( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+                bash "$GATE" snapshot --manifest "$P57_MAN" 2>&1 )
+case "$p57_forked" in
+  PINNED-STUB*) ok "57B: 설치본 경로로 부른 포크가 사본을 실행한다" ;;
+  *) bad "57B: 설치본 경로로 부른 포크가 사본을 실행한다" "$p57_forked" ;;
+esac
+p57_gate snapshot --manifest "$P57_MAN"
+case "$(cat "$WORK/last-output.txt")" in
+  PINNED-STUB*) ok "57B: 인프로세스 호출도 사본을 실행한다" ;;
+  *) bad "57B: 인프로세스 호출도 사본을 실행한다" "$(cat "$WORK/last-output.txt")" ;;
+esac
+check "57B: hop 앞 구간이 원장에 한 바이트도 더하지 않는다" \
+  "$(wc -c < "$P57_LEDGER" | tr -d ' ')" "$p57_bytes_before"
+check "57B: hop 앞 구간이 런 디렉터리에 새 이름을 만들지 않는다" \
+  "$(ls "$P57_RD" | LC_ALL=C sort)" "$p57_ls_before"
+# hop 은 `exec` 다. 인프로세스 시임이 서브셸이 아니게 되는 날 이 하네스 자신이
+# 사본 게이트로 대체되므로, 그 전제를 여기서 못 박는다.
+check "57B: gate_inproc 본문이 서브셸이다" \
+  "$(sed -n '/^gate_inproc()/,/^}/p' "$repo_root/scripts/test-gate.sh" | grep -c '^  ($' || true)" "1"
+# 씨앗을 export 한 채 hop 해도 사본 게이트가 no-op 이 되지 않는다.
+p57_fixture R57S
+p57_gate snapshot --manifest "$P57_MAN"
+check "57S: 고정이 섰다" "$rc" "0"
+p57_srconly=$( export CC_GATE_SOURCE_ONLY=1
+               p57_gate snapshot --manifest "$P57_MAN"
+               cat "$WORK/last-output.txt" )
+case "$p57_srconly" in
+  *'"H"'*) ok "57S: CC_GATE_SOURCE_ONLY 를 export 한 채 hop 해도 사본이 no-op 이 아니다" ;;
+  *) bad "57S: CC_GATE_SOURCE_ONLY 를 export 한 채 hop 해도 사본이 no-op 이 아니다" "$p57_srconly" ;;
+esac
+
+# (3) 기존 런(settings 있음·핀 없음)은 소급 고정하지 않는다 -----------------------
+# 「기존 런」은 `settings/` 가 이미 있고 핀이 없는 상태다. 그 상태에서는 게이트가
+# 런 개시 분기를 타지 않으므로 `run` 행도 쓰지 않는다 — 여기서 재는 것은 소급
+# 고정이 일어나지 않는다는 것 하나이고, `(고정 안 함)` 문면은 (3b) 가 씨앗 켠
+# 새 런에서 따로 잰다.
+p57_fixture R57E
+mkdir -p "$P57_RD/settings"
+p57_gate snapshot --manifest "$P57_MAN"
+check "57E: 기존 런에서도 호출은 통과한다" "$rc" "0"
+check "57E: 기존 런은 핀을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin-pin" ] && printf yes || printf no )" "no"
+check "57E: 기존 런은 사본을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin" ] && printf yes || printf no )" "no"
+
+# (3b) 씨앗이 켜진 런은 고정되지 않고, run 행이 그렇게 적는다 --------------------
+p57_fixture R57P
+( cd "$WT" && XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" ) >/dev/null 2>&1
+check "57P: 씨앗이 켜진 런은 핀을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin-pin" ] && printf yes || printf no )" "no"
+check "57P: 씨앗이 켜진 런의 run 행은 판본=(고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" 판본)" "(고정 안 함)"
+check "57P: 판본 트리도 (고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" '판본 트리')" "(고정 안 함)"
+check "57P: 판본 다이제스트도 (고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" '판본 다이제스트')" "(고정 안 함)"
+
+# (4) 핀은 있는데 사본이 없으면 멈춘다 -------------------------------------------
+p57_fixture R57C
+p57_gate snapshot --manifest "$P57_MAN"
+check "57C: 고정이 섰다" "$rc" "0"
+rm -rf "$P57_RD/plugin"
+p57_bytes_before=$(wc -c < "$P57_LEDGER" | tr -d ' ')
+p57_gate snapshot --manifest "$P57_MAN"
+check "57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다" \
+  "$rc/$(wc -c < "$P57_LEDGER" | tr -d ' ')" "1/$p57_bytes_before"
+case "$msg" in
+  *'plugin-pin 은 있는데 사본이 없습니다'*) ok "57C: 문면이 회복 방법을 적는다" ;;
+  *) bad "57C: 문면이 회복 방법을 적는다" "$msg" ;;
+esac
+
+# (5) pin_take 자체 — 세 갈래와 한글 이름 보존 -----------------------------------
+# 트리 밖 합성 소스. 실물 플러그인 트리를 쓰지 않는 이유는 이 묶음이 재는 것이
+# 「git 상태에 따라 어느 갈래로 뜨는가」뿐이고, 그 답은 트리 크기와 무관하기 때문이다.
+P57SRC="$P57ROOT/src"
+P57SRCP="$P57SRC/plugins/cc-cmds"
+mkdir -p "$P57SRCP/orchestrator/rules" "$P57SRCP/.claude-plugin"
+printf 'x\n' > "$P57SRCP/orchestrator/rules/한글-룰-이름.rule"
+printf '{ "version": "9.9.9" }\n' > "$P57SRCP/.claude-plugin/plugin.json"
+printf 'y\n' > "$P57SRCP/orchestrator/gate.sh"
+( cd "$P57SRC" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git add -A && git commit -qm src ) >/dev/null 2>&1
+p57_take() {  # p57_take <run-dir> <src> — pin_take 를 직접 구동한다
+  ( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$1" "$2" )
+}
+P57T1="$P57ROOT/take-clean"
+p57_take "$P57T1" "$P57SRCP"
+check "57T: 깨끗한 소스는 archive 로 뜬다" "$(p57_pin "$P57T1" method)" "archive"
+check "57T: 그 다이제스트가 재계산과 같다" "$(p57_pin "$P57T1" digest)" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57T1/plugin/cc-cmds" )"
+check "57T: archive 사본이 한글 룰 이름을 바이트 그대로 보존한다" \
+  "$( diff <(ls "$P57SRCP/orchestrator/rules") <(ls "$P57T1/plugin/cc-cmds/orchestrator/rules") >/dev/null 2>&1 \
+      && printf same || printf differ )" "same"
+check "57T: version 이 plugin.json 에서 온다" "$(p57_pin "$P57T1" version)" "9.9.9"
+printf 'z\n' >> "$P57SRCP/orchestrator/rules/한글-룰-이름.rule"
+P57T2="$P57ROOT/take-dirty"
+p57_take "$P57T2" "$P57SRCP"
+check "57T: 더러운 소스는 copy 로 뜬다" "$(p57_pin "$P57T2" method)" "copy"
+check "57T: 그때 dirty 는 예 다" "$(p57_pin "$P57T2" dirty)" "예"
+check "57T: copy 사본도 한글 룰 이름을 보존한다" \
+  "$( diff <(ls "$P57SRCP/orchestrator/rules") <(ls "$P57T2/plugin/cc-cmds/orchestrator/rules") >/dev/null 2>&1 \
+      && printf same || printf differ )" "same"
+P57SRC2="$P57ROOT/nogit"; mkdir -p "$P57SRC2/orchestrator"
+printf 'y\n' > "$P57SRC2/orchestrator/gate.sh"
+P57T3="$P57ROOT/take-nogit"
+p57_take "$P57T3" "$P57SRC2"
+check "57T: git 아닌 디렉터리는 copy 다" "$(p57_pin "$P57T3" method)" "copy"
+check "57T: 그때 commit 은 (미상) 이다" "$(p57_pin "$P57T3" commit)" "(미상)"
+check "57T: 그때 tree 는 (미상) 이다" "$(p57_pin "$P57T3" tree)" "(미상)"
+check "57T: 그때 dirty 는 미상 이다" "$(p57_pin "$P57T3" dirty)" "미상"
+
+# (6) hop 루프 가드 — 사본의 게이트를 직접 불러도 다시 뜨지 않는다 ----------------
+p57_fixture R57L
+p57_gate snapshot --manifest "$P57_MAN"
+check "57L: 고정이 섰다" "$rc" "0"
+p57_dig_before=$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )
+p57_loop=$( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+              bash "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh" snapshot --manifest "$P57_MAN" 2>&1 )
+p57_loop_rc=$?
+check "57L: 사본의 게이트를 직접 불러도 통과한다" "$p57_loop_rc" "0"
+check "57L: 사본이 다시 만들어지지 않는다" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )" \
+  "$p57_dig_before"
+check "57L: 임시 이름이 남지 않는다" "$(p57_tmp_count "$P57_RD")" "0"
+
+# (7) 런 디렉터리 경로 공식은 헬퍼 한 곳에만 있다 ---------------------------------
+check "57: rundir_of_run_id 가 상태 루트 아래 그 id 를 낸다" \
+  "$( XDG_STATE_HOME="$P57ROOT/x" rundir_of_run_id R57 )" "$P57ROOT/x/cc-cmds/run/R57"
+check "57: run.sh 에 경로 공식 리터럴이 하나뿐이다" \
+  "$(grep -c 'cc-cmds/run/\$' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true)" "1"
+
+# (8) 동시 첫 진입 두 개 → 핀 1개·사본 1개 ---------------------------------------
+p57_fixture R57D
+( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+    bash "$GATE" snapshot --manifest "$P57_MAN" >/dev/null 2>&1 ) &
+p57_p1=$!
+( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+    bash "$GATE" snapshot --manifest "$P57_MAN" >/dev/null 2>&1 ) &
+p57_p2=$!
+wait "$p57_p1"; p57_rc1=$?
+wait "$p57_p2"; p57_rc2=$?
+check "57D: 동시 진입 첫째가 통과한다" "$p57_rc1" "0"
+check "57D: 동시 진입 둘째가 통과한다" "$p57_rc2" "0"
+check "57: 동시 첫 진입 두 개 → 핀 1개·사본 1개" \
+  "$( ls -d "$P57_RD"/plugin-pin 2>/dev/null | grep -c . || true )/$( ls -d "$P57_RD"/plugin/cc-cmds 2>/dev/null | grep -c . || true )" \
+  "1/1"
+check "57D: 임시 이름이 남지 않는다" "$(p57_tmp_count "$P57_RD")" "0"
+
+# (9) 사본 파일은 강제 표면 다이제스트에 들지 않는다 ------------------------------
+# `#742` 의 배제를 유지한다 — exit 7 은 회복 불가라 거짓 양성이 곧 그 사고의 재발이다.
+p57_fixture R57F
+p57_gate snapshot --manifest "$P57_MAN"
+check "57F: 고정이 섰다" "$rc" "0"
+p57_sd_before=$(sed -n '1p' "$P57_RD/surface-digest" 2>/dev/null)
+printf '\n# 사본을 건드린다\n' >> "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"
+p57_gate snapshot --manifest "$P57_MAN"
+check "57F: 사본을 고쳐도 호출이 서지 않는다" "$rc" "0"
+check "57F: 강제 표면 다이제스트가 그대로다" \
+  "$(sed -n '1p' "$P57_RD/surface-digest" 2>/dev/null)" "$p57_sd_before"
+
+# (10) GATE_ACT_CWD 자기 점검 — 누수가 관측 가능하고, 이 스위트에는 없다 ----------
+check "57G: 이 프로세스에 GATE_ACT_CWD 가 없다 (물려받은 값 ${GATE_ACT_CWD_INHERITED:-없음})" \
+  "${GATE_ACT_CWD+set}" ""
+p57_fixture R57G
+p57_gate snapshot --manifest "$P57_MAN"
+p57_installed_before=$(cd "$repo_root" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
+p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57 \
+  --cutpoint 배포 --worktree "$WT" --snapshot-digest \
+  "$( cd "$WT" || exit 1
+      unset CC_GATE_PIN_DISABLE
+      XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" 2>/dev/null | jq -r .H )" \
+  --rationale '픽스처 — 대상 미선언 act' -- git commit --allow-empty -m 미선언커밋
+check "57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다" \
+  "$(cd "$repo_root" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" "$p57_installed_before"
+# 양성 대조군 — 같은 행위가 내보낸 GATE_ACT_CWD 아래에서는 정말로 커밋을 남긴다.
+# 이것이 없으면 위의 단언은 「누수가 원래 불가능하다」와 구별되지 않는다.
+P57TR="$P57ROOT/throwaway"
+mkdir -p "$P57TR"
+( cd "$P57TR" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git commit -q --allow-empty -m base ) >/dev/null 2>&1
+p57_tr_before=$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
+( export GATE_ACT_CWD="$P57TR"
+  p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57B \
+    --cutpoint 배포 --worktree "$WT" --snapshot-digest \
+    "$( cd "$WT" || exit 1
+        unset CC_GATE_PIN_DISABLE
+        XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" 2>/dev/null | jq -r .H )" \
+    --rationale '픽스처 — 누수 양성 대조군' -- git commit --allow-empty -m 미선언커밋 ) >/dev/null 2>&1
+check "57G: 양성 대조군 — 내보낸 GATE_ACT_CWD 아래에서는 커밋이 하나 는다" \
+  "$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
+  "$((p57_tr_before + 1))"
+
+# (11) 심어 둔 핀은 쓰이지 않는다 -------------------------------------------------
+# hop 은 매니페스트 검사·경로 유도·인가 확인보다 **위에서** 무엇을 실행할지 고른다.
+# 그래서 핀이 가리키는 자리를 확인하지 않으면 심어 둔 핀 하나가 그 검사들을 수행할
+# 프로그램 자체를 갈아 끼우고, 원장 행·등급 판정·컷포인트 대조가 함께 사라진다.
+# 미끼를 실제로 실행 가능한 스텁으로 두는 것이 이 케이스의 핵심이다 — 거부가 아니라
+# 통과했다면 그 사실이 출력으로 드러나야 한다.
+p57_fixture R57X
+P57DECOY="$P57ROOT/decoy/cc-cmds"
+mkdir -p "$P57DECOY/orchestrator" "$P57_RD"
+printf '#!/usr/bin/env bash\nprintf "PINNED-DECOY %%s\\n" "$*"\nexit 0\n' \
+  > "$P57DECOY/orchestrator/gate.sh"
+chmod +x "$P57DECOY/orchestrator/gate.sh"
+printf 'schema\t1\nplugin-dir\t%s\n' "$P57DECOY" > "$P57_RD/plugin-pin"
+p57_gate snapshot --manifest "$P57_MAN"
+# `case` 를 명령 치환 안에 두지 않는다 — bash 3.2 는 `$( )` 안의 `case` 패턴이 닫는
+# 괄호를 치환의 끝으로 읽어 구문 오류를 낸다.
+p57_decoy_hit=0
+case "$(cat "$WORK/last-output.txt")" in *PINNED-DECOY*) p57_decoy_hit=1 ;; esac
+check "57X: 런 디렉터리 밖을 가리키는 핀으로는 hop 하지 않는다" "$p57_decoy_hit" "0"
+check "57X: 그 호출은 통과하지 않는다" \
+  "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+case "$msg" in
+  *'이 런의 사본이 아닌 곳'*) ok "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" ;;
+  *) bad "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" "$msg" ;;
+esac
+
+# (11b) 철자가 맞는 핀도 물리 자리를 대조한다 -------------------------------------
+# 57X 가 거부하는 미끼는 철자를 **틀리게** 쓴 쪽, 즉 봉쇄가 어휘 비교 하나로 서는
+# 쉬운 경우다. 그 비교 안에 봉쇄가 통째로 들어 있으면, 핀이 기대 리터럴을 그대로
+# 적었을 때 파일시스템에 아무것도 묻지 않는다 — `<run-dir>/plugin` 을 트리 밖으로
+# 향한 심볼릭 링크로 바꾸면 그 자리의 바이트가 hop 으로 실행된다. 확인이 자기가
+# 멈추려던 공격에 가장 약했던 자리이고, 이 케이스가 없으면 구멍이 다시 시험을
+# 통과한다. 양쪽을 해소해 비교하는 것으로는 잡히지 않는다 — 여기서 두 값은 같은
+# 문자열이라 어느 쪽을 해소해도 같은 답이 나온다. 성립해야 하는 성질은 일치가
+# 아니라 런 디렉터리 안에 있다는 **봉쇄**다.
+p57_fixture R57Z
+P57ZOUT="$P57ROOT/outside/cc-cmds"
+mkdir -p "$P57ZOUT/orchestrator" "$P57_RD"
+printf '#!/usr/bin/env bash\nprintf "PINNED-LINK %%s\\n" "$*"\nexit 0\n' \
+  > "$P57ZOUT/orchestrator/gate.sh"
+chmod +x "$P57ZOUT/orchestrator/gate.sh"
+# 핀은 기대 리터럴을 **맞게** 적는다. 트리 밖으로 새는 것은 링크 쪽이다.
+printf 'schema\t1\nplugin-dir\t%s\n' "$P57_RD/plugin/cc-cmds" > "$P57_RD/plugin-pin"
+rm -rf "$P57_RD/plugin"
+ln -sfn "$P57ROOT/outside" "$P57_RD/plugin" 2>/dev/null
+if [ -L "$P57_RD/plugin" ] && [ -d "$P57_RD/plugin" ]; then
+  p57_gate snapshot --manifest "$P57_MAN"
+  p57_link_hit=0
+  case "$(cat "$WORK/last-output.txt")" in *PINNED-LINK*) p57_link_hit=1 ;; esac
+  check "57Z: 철자가 맞아도 물리 자리가 런 디렉터리 밖이면 hop 하지 않는다" "$p57_link_hit" "0"
+  check "57Z: 그 호출은 통과하지 않는다" \
+    "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+  case "$msg" in
+    *'이 런의 사본이 아닌 곳'*) ok "57Z: 문면이 핀이 남의 자리를 가리킨다고 적는다" ;;
+    *) bad "57Z: 문면이 핀이 남의 자리를 가리킨다고 적는다" "$msg" ;;
+  esac
+else
+  printf 'NOTE: 57Z 심볼릭 링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+# 음성 대조군은 아래 57H 계열이다 — 링크가 아닌 정상 사본은 여전히 hop 한다.
+
+# (12) 경로 성분을 담은 런 id 는 hop 전에 거부된다 --------------------------------
+# 매니페스트 헤더의 값은 헤더·본문 대조를 거치기 전의 호출자 바이트다. 양쪽을 다 쓴
+# 매니페스트에서는 그 대조가 자동으로 성립하므로, 경로 공식을 만드는 헬퍼 자신이
+# 거부하지 않으면 런 디렉터리가 호스트의 아무 자리나 가리킨다.
+p57_fixture R57Y
+P57Y_ESC='../../escape'
+P57Y_MAN="$P57ROOT/escape.plan.md"
+sed -e "s|run-id=R57Y;|run-id=$P57Y_ESC;|" \
+    -e "s|^\*\*런 id\*\*: R57Y\$|**런 id**: $P57Y_ESC|" "$P57_MAN" > "$P57Y_MAN"
+P57Y_DIR="$P57_STATE/cc-cmds/run/$P57Y_ESC"
+p57_gate snapshot --manifest "$P57Y_MAN"
+check "57Y: 상위 참조를 담은 런 id 는 비정상 종료한다" \
+  "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+check "57Y: 그 경로에 아무것도 만들어지지 않는다" \
+  "$( [ -e "$P57Y_DIR" ] && printf yes || printf no )" "no"
+case "$msg" in
+  *'경로 성분'*) ok "57Y: 문면이 런 id 의 경로 성분을 지목한다" ;;
+  *) bad "57Y: 문면이 런 id 의 경로 성분을 지목한다" "$msg" ;;
+esac
+
+# (13) 고정을 수행하지 않은 호출도 hop 한다 ---------------------------------------
+# 「`settings/` 가 있고 핀도 있다」는 상태는 동시 첫 진입에서 진 쪽이 보는 것이다.
+# hop 이 고정 조건 안에 중첩돼 있던 동안 그 호출은 고정도 hop 도 하지 않고 통과해,
+# 고정됐다고 원장에 적힌 런이 고정되지 않은 코드로 돌았다. 두 프로세스의 실제 경쟁
+# 으로는 결정적으로 재현할 수 없다 — 헤더 `run-id` 부재를 `check_manifest` 가
+# fail-closed 로 죽이므로 hop (A) 를 합성으로 비껴갈 수 없고, 창은 두 hop 지점
+# 사이에만 있다. 그래서 그 창에서 도는 헬퍼를 직접 구동한다.
+p57_fixture R57H
+p57_gate snapshot --manifest "$P57_MAN"
+check "57H: 고정이 섰다" "$rc" "0"
+check "57H: 그 런에 settings 와 핀이 함께 있다 (다음 단언이 공허하지 않다)" \
+  "$( [ -d "$P57_RD/settings" ] && [ -f "$P57_RD/plugin-pin" ] && printf yes || printf no )" "yes"
+printf '#!/usr/bin/env bash\nprintf "PINNED-STUB %%s\\n" "$*"\nexit 0\n' \
+  > "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+chmod +x "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+# `gate_hop_or_die` 는 `exec` 다. 반드시 서브셸 안에서 부른다 — 57B 가 못 박은 것과
+# 같은 전제이며, 명령 치환이 그 서브셸이다. `GATE_DIR` 은 본체가 자기 실행 경로에서
+# 채우는 값이라 소싱만 한 이 자리에는 없다 — 설치본 자리를 직접 준다.
+p57_h_out=$( GATE_DIR="$repo_root/plugins/cc-cmds/orchestrator"; gate_hop_or_die "$P57_RD" 2>&1 )
+case "$p57_h_out" in
+  PINNED-STUB*) ok "57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다" ;;
+  *) bad "57H: 고정을 수행하지 않은 호출도 사본으로 hop 한다" "$p57_h_out" ;;
+esac
+# 구조 단언 — 들여쓰기가 소속을 말한다. 바깥 `if` 의 본문은 네 칸, 새 런 판정 `if` 의
+# 본문은 여섯 칸이다.
+check "57H2: hop (B) 의 hop 호출이 새 런 판정 if 바깥에 있다" \
+  "$(sed -n '/CC_GATE_PIN_DISABLE:-0/,/^  fi$/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+     | grep -c '^    gate_hop_or_die "\$hop_rd"$' || true)" "1"
+check "57H2: 그 호출이 새 런 판정 if 안에는 없다" \
+  "$(sed -n '/CC_GATE_PIN_DISABLE:-0/,/^  fi$/p' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" \
+     | grep -c '^      gate_hop_or_die' || true)" "0"
 
 # --- epilogue-begin ---
 #

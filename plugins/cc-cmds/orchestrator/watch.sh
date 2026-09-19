@@ -88,6 +88,13 @@ WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # — and a group is a slot, so two spellings mean two runs erasing each other.
 # shellcheck source=/dev/null
 . "$WATCH_DIR/notify-run.sh"
+# The run's version pin. The watcher hops into the pinned copy for the same
+# reason the gate does — and the hop needs the original argument vector, which
+# the parse loop below consumes.
+# shellcheck source=/dev/null
+. "$WATCH_DIR/pin.sh"
+
+WATCH_ARGV=("$@")
 
 # `RUN_OPEN` is the run-age arm's threshold, and it sits between the other two on
 # purpose: the window it names is bounded below by how long a healthy router
@@ -113,6 +120,24 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$RUN_DIR" ] || { printf 'watch: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'watch: --ledger 는 필수입니다\n' >&2; exit 2; }
+
+# THE HOP, AND IT IS AHEAD OF EVERY WRITE. `watch.pid`, `watch.state`,
+# `watch.heartbeat` and the single-holder record all land below this line: `exec`
+# preserves the pid and the start-time fingerprint but drops EXIT traps, so a
+# marker written before the hop would outlive the process that could clean it up
+# while still passing its own identity check.
+#
+# A pin that names a missing copy is a WARNING here and not a stop. The gate
+# refuses outright in that state, which is what actually halts the run; a watcher
+# that killed itself as well would take the reporting surface down with it at the
+# exact moment somebody needs to read why.
+watch_hop_t=""; watch_hop_rc=0
+watch_hop_t=$(pin_hop_target "$RUN_DIR" "$WATCH_DIR") || watch_hop_rc=$?
+case "$watch_hop_rc" in
+  0) exec "${BASH:-/bin/bash}" "$watch_hop_t/watch.sh" ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} ;;
+  2) printf 'watch: plugin-pin 은 있는데 사본이 없습니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+  3) printf 'watch: plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+esac
 
 # The run id is the run directory's own name — the driver names it that way and
 # nothing else has to be read to get it. The banner group below is keyed on it.

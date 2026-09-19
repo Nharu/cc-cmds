@@ -807,8 +807,13 @@ judgment_class_forbidden() {
 warn_once() {
   # warn_once <slug> <message>
   local slug="$1" msg="$2" d
-  d="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/${RUN_ID:-}/warn-once"
-  if [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
+  # A REFUSED RUN ID LOSES THE SUPPRESSION, NOT THE WARNING. `rundir_of_run_id`
+  # refuses an id that is not a single directory name, and here that has to fall
+  # through to speaking: dying on this path would let a warning kill the run, and
+  # the suppression directory is only a deduplication.
+  d=""
+  d="$(rundir_of_run_id "${RUN_ID:-}")/warn-once" || d=""
+  if [ -n "$d" ] && [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
     mkdir "$d/$slug" 2>/dev/null || return 0
   fi
   warn "$msg"
@@ -2225,8 +2230,40 @@ check_inflight() {
 # TMPDIR because /var/folders is swept without a reboot, and "no record implies
 # no process" must not be falsified by a sweep.
 # ---------------------------------------------------------------------------
+rundir_of_run_id() {
+  # rundir_of_run_id <run-id> — the run directory for that id, or rc 2 when the
+  # id is not a single directory name.
+  #
+  # THE FORMULA IS SPELLED ONCE, HERE. It used to be spelled at each of its two
+  # uses, which was harmless while both ran after `RUN_ID` was assigned. The pin
+  # hop changed that: it has to find `<run-dir>/plugin-pin` BEFORE `rundir_init`
+  # has run, from a run id it read out of the manifest, so a third spelling
+  # would have appeared in `gate.sh` — and the day two of the three drift, a run
+  # pins one directory and reads another. `scripts/test-gate.sh` asserts that
+  # this file holds exactly one occurrence of the literal.
+  #
+  # ONE FORMULA MEANS ONE PLACE TO CHECK THE INPUT, and the input stopped being
+  # trusted when the hop started reading it. The id the hop passes comes from a
+  # manifest header, which is caller-supplied bytes the header/body cross-check
+  # has not yet compared and which no reader constrains to a character set — so
+  # an id carrying `../` would concatenate into a directory anywhere on the host,
+  # and the pin found there would choose the program that runs next.
+  #
+  # ONLY PATH ESCAPE IS REFUSED, NOT A SHAPE. The fixtures in this tree open runs
+  # under ids like `R57` and `victim`, and a pattern for the ids the driver mints
+  # would refuse those along with the attack. Rejecting `/`, `.` and `..` is
+  # complete against escape on its own terms: `/` is the only component separator,
+  # so an id without one names exactly one entry under the run root.
+  case "$1" in
+    ''|.|..) return 2 ;;
+    */*) return 2 ;;
+  esac
+  printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$1"
+}
+
 rundir_init() {
-  RUN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$RUN_ID"
+  RUN_DIR=$(rundir_of_run_id "$RUN_ID") \
+    || die "런 id 에 경로 성분이 있습니다 — 런 디렉터리 이름은 한 칸이어야 합니다: $RUN_ID"
   # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest`
   # write is graded by nothing, guarded by nothing and recorded in no ledger
   # field — so the directory it lands in is the whole of its containment. The
@@ -5346,15 +5383,20 @@ design_arm() {
 # ---------------------------------------------------------------------------
 main_loop() {
   log "런 시작 run-id=$RUN_ID doc=$DOC slug=$SLUG base=$BASE"
-  # The two the morning reads. The surface digest excludes the plugin files on
-  # purpose — a redeploy must not kill a running run — so the code that actually
-  # enforced this run is otherwise unrecorded. These do not detect a mid-run
-  # change; they record what it started from, which is what lets the morning tell
-  # a clean night apart from one that ran unreviewed working-copy enforcement.
+  # The two the morning reads. They describe the TARGET BASE — its HEAD at
+  # kickoff and whether that worktree was clean — not the code that judged the
+  # run; the gate's `run` row records that separately in its three version
+  # fields. These do not detect a mid-run change either; they record what the
+  # run started from, which is what lets the morning tell a clean night apart
+  # from one that ran against an unreviewed working copy.
+  #
+  # `--no-optional-locks`: a plain `git status` rewrites the index and locks it
+  # for a quarter of a second, which is enough to fail a concurrent
+  # `git pull --ff-only` — the command every apply in this tree uses.
   ledger_row 'run' "run-id=$RUN_ID" "시작=$(now_iso)" "설계 문서=$DOC_KEY" \
     "전체 sha256=$(whole_digest)" \
-    "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-    "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+    "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+    "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
     "RUN_DIR=$RUN_DIR" "보고서=$(report_path)"
   report_append "개시" "run-id=$RUN_ID · 문서 $DOC_KEY · 권한 절단점 $(grant_field "$RUN_ID" '권한 절단점')"
 

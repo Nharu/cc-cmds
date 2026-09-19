@@ -81,6 +81,22 @@ case "$PLUGIN_DIR" in
   *)  die "--plugin-dir 이 절대경로가 아닙니다: $PLUGIN_DIR" ;;
 esac
 
+# A RUN'S PINNED COPY IS THE OTHER TREE THAT PASSES EVERY CHECK BELOW AND STILL
+# DISAPPEARS. It exists, it holds the script, the bit is set — and the reaper
+# collects the whole run directory on its own schedule, so the guard this apply
+# installs is true now and false for the rest of the machine's life. A pinned
+# run's apply stage derives its `--plugin-dir` from `GATE_DIR`, which after the
+# hop is inside the copy, so this is reachable by ordinary means rather than by
+# a mistake nobody makes. The refusal is here, before anything is written.
+SL_STATE_ROOT=$( cd "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds" 2>/dev/null && pwd -P )
+SL_PD_PHYS=$( cd "$PLUGIN_DIR" 2>/dev/null && pwd -P )
+if [ -n "$SL_STATE_ROOT" ] && [ -n "$SL_PD_PHYS" ]; then
+  case "$SL_PD_PHYS" in
+    "$SL_STATE_ROOT"|"$SL_STATE_ROOT"/*)
+      die "--plugin-dir 이 상태 루트 아래(런의 플러그인 사본)를 가리킵니다: $PLUGIN_DIR — 리퍼가 걷어 가는 트리라 설치되는 가드가 곧 영구히 거짓이 됩니다" ;;
+  esac
+fi
+
 command -v jq >/dev/null 2>&1 || die "jq 가 없습니다 — 아무것도 쓰지 않고 멈춥니다"
 
 SL_PATH="$PLUGIN_DIR/orchestrator/statusline.sh"
