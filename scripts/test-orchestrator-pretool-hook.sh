@@ -441,10 +441,17 @@ check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어�
 # prescriptions with a marker rather than a sentence period, because a period
 # copied along with the command reaches the shell as a word — `jq -r .H .` asks
 # jq to read a file named `.` and the documented fallback fails on first use.
-case "$reason" in
-  *'jq -r .H .'*) bad "처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
-  *)              ok "처방된 명령이 문장 마침표로 끝나지 않는다" ;;
-esac
+# A period glued to the filter is the same failure in another spelling —
+# `jq -r .H.` is a jq syntax error — so both shapes are refused, here and on
+# every other denial that prescribes this fallback.
+assert_no_period_after_jq() {
+  case "$2" in
+    *'jq -r .H .'*) bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
+    *'jq -r .H.'*)  bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "jq 필터에 . 이 붙어 .H. 가 된다" ;;
+    *)              ok "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" ;;
+  esac
+}
+assert_no_period_after_jq "Bash 거부" "$reason"
 
 # THE HOOK DOES NOT BUILD THE PATH; IT ASKS. Two programs agreeing on one
 # string disagreed for every stage in the pipeline — the gate sanitizes the
@@ -531,6 +538,11 @@ case "$reason" in
   *"$GATE exec"*) ok "CLAUDE.md 거부 문면이 게이트 exec 로 유도한다" ;;
   *) bad "CLAUDE.md 에스컬레이션 문면" "'$reason'" ;;
 esac
+case "$reason" in
+  *'jq -r .H'*) ok "CLAUDE.md 거부 문면이 스냅숏 폴백 명령을 싣는다 (아래 단언이 공허하지 않다)" ;;
+  *) bad "CLAUDE.md 거부 문면의 스냅숏 폴백" "'$reason'" ;;
+esac
+assert_no_period_after_jq "CLAUDE.md 거부" "$reason"
 
 # A file merely NAMED like one of these somewhere unrelated is still the same
 # channel, but a file that only CONTAINS the name is not — asserted so the arm
