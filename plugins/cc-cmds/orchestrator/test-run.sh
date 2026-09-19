@@ -5229,6 +5229,73 @@ check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 플�
 rr_pguard 워크트리쓰기 git commit -m "a / b"
 check "설치본 가드: 음성 대조군 — 복합 토큰에는 조상 팔이 걸리지 않는다" "$rr_pguard_rc" "0"
 
+# --- 조상의 나머지 두 철자 — `/` 없는 한 토큰과 포장 안 ------------------------
+# 위 조상 팔은 `/` 를 담은 비복합 인자에만 닿았다. 두 갈래가 남아 있었다. (i) 루프
+# 첫머리의 `/` 사전 거름이 `..`·맨 디렉터리 이름을 아무 팔에도 닿기 전에 버렸고,
+# 이 배치에서는 세그먼트 워크트리가 설치본 체크아웃의 형제라 `..` 가 곧 설치본
+# 루트의 조상이다. (ii) 조상 팔이 복합 토큰을 제외하고, 복합 토큰을 맡는 단어 판정
+# 팔은 「보호 디렉터리 아래」만 대조해서 포장 안과 옵션 대입 값 안의 조상이 통과했다.
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $RRP_INST"
+check "설치본 가드: 포장 안의 플러그인 루트 자신도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "rm -rf $RRP_INST"
+check "설치본 가드: 포장 안의 루트 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $RRP_INST/.."
+check "설치본 가드: 포장 안의 조상도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp -R /tmp/e $RR/cc-cmds"
+check "배시 가드: 포장 안의 런 루트 조상도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'조상'*) ok "배시 가드: 포장 안 조상의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: 포장 안 조상의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+# `/` 하나로 해소되는 단어. 이것을 억제하면 루트 자신을 목적지로 한 포장이 열린다.
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/evil/x /"
+check "설치본 가드: 포장 안에서 루트 하나로 해소되는 단어도 rc 3" "$rr_pguard_rc" "3"
+# 옵션 대입 토큰의 값은 셸이 한 덩어리로 넘기는 경로다 — 토큰 전체가 복합이라고
+# 조상 검사에서 빠지면 `--directory=<루트>` 가 그대로 지난다.
+rr_pguard 워크트리쓰기 tar -xf e "--directory=$RRP_INST"
+check "설치본 가드: 옵션 대입 값의 루트도 rc 3" "$rr_pguard_rc" "3"
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e .."
+check "설치본 가드: 포장 안의 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 tar -xf e "--directory=.."
+check "설치본 가드: 옵션 대입 값의 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp -R x ..
+check "설치본 가드: 구분자 없는 맨 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 세그먼트 워크트리의 현재 디렉터리는 설치본 루트의 조상이 아니다.
+rr_pguard 워크트리쓰기 git add .
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 현재 디렉터리는 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp x README.md
+check "설치본 가드: 음성 대조군 — 맨 파일 이름은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp -R x --
+check "설치본 가드: 음성 대조군 — 옵션 토큰은 건너뛴다" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+RR_G_CWD="$WORK/installed"
+rr_pguard 워크트리쓰기 cp -R x plugins
+check "설치본 가드: 맨 디렉터리 이름으로 지명한 조상도 rc 3" "$rr_pguard_rc" "3"
+# 메인 워크트리에서 현재 디렉터리는 설치본 루트의 조상이다. 이 선택의 대가는
+# 거기서 git add . 가 막히는 것이고, 우회로는 경로를 지정하는 것이다.
+rr_pguard 워크트리쓰기 git add .
+check "설치본 가드: 메인 워크트리의 현재 디렉터리는 조상으로 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 인터프리터가 아닌 복합 토큰의 단어에는 조상 검사가 걸리지 않는다.
+rr_pguard 워크트리쓰기 git commit -m "docs: touch plugins/ only"
+check "설치본 가드: 음성 대조군 — 커밋 메시지 속 상대 조상은 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+RR_G_CWD="$MYRUN"
+rr_guard 워크트리쓰기 cp -R x ..
+check "배시 가드: 구분자 없는 맨 상위 참조도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'조상'*) ok "배시 가드: 맨 상위 참조의 거부가 조상 검사의 것이다" ;;
+  *) bad "배시 가드: 맨 상위 참조의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+# 음성 대조군 — 맨 이름을 해소하게 돼도 자기 런의 계획 파일 예외는 그대로다.
+rr_guard 워크트리쓰기 cp x slice-D.plan.md
+check "배시 가드: 음성 대조군 — 자기 런의 계획 파일은 맨 이름이라도 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 git commit -m "a / b"
+check "배시 가드: 음성 대조군 — 복합 토큰에는 조상 팔이 걸리지 않는다" "$rr_guard_rc" "0"
+rr_pguard 워크트리쓰기 bash -c "cp -R /tmp/e $WORK/elsewhere"
+check "설치본 가드: 음성 대조군 — 포장 안이라도 보호 루트와 무관한 목적지는 rc 0" "$rr_pguard_rc" "0"
+
 # --- 말단 파일 링크 -----------------------------------------------------------
 # 조상 물리화는 실재하는 가장 깊은 디렉터리에서만 접으므로, 파일을 가리키는 말단
 # 링크는 링크 이름 그대로 남아 두 가드를 모두 지났다.
