@@ -192,6 +192,12 @@ export CC_ORCH_SOURCE_ONLY
 # measured kill shape.
 # shellcheck source=/dev/null
 . "$GATE_DIR/detach.sh"
+# The version pin and the hop it feeds. Sourced here rather than inlined for the
+# same reason as the four above: `watch.sh` and `feed.sh` hop with the same
+# predicate, and a second implementation of "where is this run pinned" is how
+# the watcher ends up running different code from the gate that started it.
+# shellcheck source=/dev/null
+. "$GATE_DIR/pin.sh"
 
 # ---------------------------------------------------------------------------
 # THE SEAT QUESTION HAS ONE OWNER, AND IT IS NOT THIS FILE.
@@ -4184,6 +4190,61 @@ gate_segment_field() {
     | tr '|' '\n' | sed -n "s/^ *$key=//p" | sed 's/[[:space:]]*$//' | tail -1
 }
 
+# ---------------------------------------------------------------------------
+# The run-scope design step — a step of the graph that is not a segment.
+#
+# A design step has no worktree, no predecessor and no declared file set, so a
+# `segment` row for it would be counted by termination condition 1 as a segment
+# and carried into the morning report as one. The router dispatches it with
+# `--segment -` instead, and the driver's design arm already writes its row as
+# `세그먼트=-`; the two paths converge on ONE row shape, `세그먼트=- | 스테이지=<step
+# id> | 종류=design`, so a reader never has to reconcile two.
+#
+# THE STEP ID IS DERIVED, NOT PASSED. The dispatch argv carries `-` where a
+# segment id would be, and the run directory still needs a key for the pin, the
+# stream, the pid record and the halt record. The frozen plan names exactly one
+# step whose skill is `design`; that id is the key. A flag carrying the id would
+# let a router type a key the plan never named, and zero or several design steps
+# is a plan this exemption does not know how to read, so both are refused.
+# ---------------------------------------------------------------------------
+gate_run_scope_design_step() {
+  # Prints the plan's single design step id and returns 0, or returns 1.
+  local req ids
+  req=$(manifest_plan_json 2>/dev/null | jq -r '.design_required' 2>/dev/null || true)
+  [ "$req" = "true" ] || return 1
+  ids=$( { manifest_plan_json 2>/dev/null \
+           | jq -r '.steps[]? | select(type == "object" and .skill == "design") | .id // empty' 2>/dev/null \
+           || true; } | grep -v '^$' || true)
+  [ -n "$ids" ] || return 1
+  [ "$(printf '%s\n' "$ids" | grep -c .)" = "1" ] || return 1
+  printf '%s' "$ids"
+}
+
+gate_stage_row_segment() {
+  # gate_stage_row_segment <stage-key> <stage-kind> — the `세그먼트` value every
+  # ledger row about this stage carries: `-` for the run-scope design step, the
+  # key itself for everything else. Decided from facts the gate re-reads (the
+  # kind, the absence of a `segment` row, the plan), so the dispatch half, the
+  # supervisor and the settlement agree without handing the answer across.
+  local key="$1" skind="$2" dstep
+  if [ "$skind" = "design" ] && [ -z "$(gate_segment_field "$key" '상태')" ] \
+     && dstep=$(gate_run_scope_design_step) && [ "$dstep" = "$key" ]; then
+    printf '%s' '-'
+  else
+    printf '%s' "$key"
+  fi
+}
+
+gate_stage_result_rows_of() {
+  # gate_stage_result_rows_of <stage-key> — this stage's `stage-result` rows in
+  # either shape: a segment's (`세그먼트=<key>`) or the run-scope design step's
+  # (`세그먼트=- | 스테이지=<key> | 종류=design`). `종류=design` is part of the second
+  # pattern so a driver row of another run-scope stage, which carries no `종류`,
+  # is never read as this one.
+  { gate_rows 'stage-result' || true; } \
+    | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=design " || true; }
+}
+
 gate_row_field() {
   # gate_row_field <row-text> <key> — the last value with that key in ONE row.
   # `gate_field_of` reads an argv field LIST; carrying a value forward needs a
@@ -4610,6 +4671,17 @@ gate_snapshot() {
   # Every block is BOUNDED. The point of the shift is a smaller starting
   # context, and an unbounded resume payload spends on the first turn exactly
   # what the mechanism exists to save.
+  #
+  # THE STEP GRAPH, because one step of it is not a segment. A design step has no
+  # `segment` row, so `segments[]` cannot name it, and a shift has no other input
+  # than this object — reading `## 실행 계획` itself would be a second input, and
+  # the first exception opened makes the next one free. So the two facts a shift
+  # needs to dispatch the design stage travel here: whether the plan requires a
+  # design, and the graph with each step's id, skill and dependencies. `summary`
+  # stays out — it is free prose a routing decision does not branch on, and the
+  # object is bounded on purpose.
+  printf '  "design_required": %s,\n' "$(gate_snapshot_design_required_json)"
+  printf '  "steps": %s,\n' "$(gate_snapshot_steps_json)"
   printf '  "segments": [\n'
   gate_snapshot_segments_json
   printf '  ],\n'
@@ -4645,6 +4717,33 @@ gate_snapshot() {
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
   printf '}\n'
+}
+
+gate_snapshot_design_required_json() {
+  # `true`, `false` or `null` — never folded. jq's `//` reads `false` as absent,
+  # and a declared `false` is the one value a shift must not lose. A plan block
+  # that is absent or does not parse is `null`.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -c '.design_required' 2>/dev/null; } || true)
+  case "$v" in
+    true|false) printf '%s' "$v" ;;
+    *) printf 'null' ;;
+  esac
+}
+
+gate_snapshot_steps_json() {
+  # The plan's steps as `{id, skill, depends_on}`, one JSON array on one line. A
+  # step written as a bare skill string (an older plan shape) keeps its skill and
+  # has a `null` id, so a shift can see it exists and cannot key anything on it.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -c '
+        [ .steps[]? | if type == "object"
+            then {id: (.id // null), skill: (.skill // null), depends_on: (.depends_on // [])}
+            else {id: null, skill: ., depends_on: []} end ]' 2>/dev/null; } || true)
+  case "$v" in
+    '['*) printf '%s' "$v" ;;
+    *) printf '[]' ;;
+  esac
 }
 
 gate_snapshot_live_stages_json() {
@@ -6556,7 +6655,57 @@ gate_usage() {
   sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+gate_pin_hop() {
+  # gate_pin_hop <orchestrator-dir> — re-run this whole call from the pinned
+  # copy. Does not return.
+  #
+  # THE CAPTURED ARGV, NOT `"$@"`. The two hop points sit after the argument
+  # loop has already consumed the array, and the test harness enters through
+  # `gate_main` directly rather than through the file's trailing call — so the
+  # only copy of the original argument vector is the one the first statement of
+  # `gate_main` put aside. The bash 3.2 spelling below is what keeps an empty
+  # array from tripping `set -u`.
+  #
+  # `CC_GATE_SOURCE_ONLY` IS STRIPPED. The copy's trailing guard returns rc 0
+  # without calling `gate_main` when that variable is set, and the source-only
+  # seam (`scripts/test-gate.sh`) exports it — so a value inherited across the
+  # hop would turn every gate call in a pinned run into a silent no-op.
+  # `CC_ORCH_SOURCE_ONLY` needs no such care: the copy's own sourcing block sets
+  # it again before it sources the driver.
+  local dir="$1"
+  unset CC_GATE_SOURCE_ONLY
+  exec "${BASH:-/bin/bash}" "$dir/gate.sh" ${GATE_HOP_ARGV[@]+"${GATE_HOP_ARGV[@]}"}
+}
+
+gate_pin_version_field() {
+  # gate_pin_version_field <commit|tree|digest> — the value of one of the `run`
+  # row's three version fields, read from this run's pin.
+  #
+  # An unpinned run answers `(고정 안 함)` for all three: the seeded test runs
+  # and every run opened before pinning existed are unpinned, and a morning
+  # reader has to be able to tell that apart from a pin whose value is unknown.
+  # A dirty subtree answers `(미커밋)` for the tree, because there is no tree
+  # object naming the bytes that were copied — the copy in the run directory is
+  # then the only one there is, which the restore recipe says out loud.
+  local rd="${RUN_DIR:-}" v d
+  { [ -n "$rd" ] && [ -f "$(pin_file "$rd")" ]; } || { printf '(고정 안 함)'; return 0; }
+  case "$1" in
+    commit)
+      v=$(pin_read "$rd" 'commit'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    tree)
+      d=$(pin_read "$rd" 'dirty')
+      if [ "$d" = '예' ]; then printf '(미커밋)'; return 0; fi
+      v=$(pin_read "$rd" 'tree'); [ -n "$v" ] || v='(미상)'; printf '%s' "$v" ;;
+    digest)
+      printf '%s' "$(pin_read "$rd" 'digest')" ;;
+  esac
+}
+
 gate_main() {
+  # FIRST STATEMENT, ahead of even the arity check. The harness calls this
+  # function directly, so the file's trailing `gate_main "$@"` is not a place
+  # the capture could live.
+  GATE_HOP_ARGV=("$@")
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
   local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
@@ -6719,9 +6868,60 @@ gate_main() {
   # A missing file leaves the memo empty and `check_manifest` refuses it with
   # the same message it always did.
   manifest_snapshot_take
+
+  # HOP (A) — AN ALREADY PINNED RUN, AT THE EARLIEST POINT IT CAN BE DETECTED.
+  #
+  # Nothing above this line writes: the manifest read is a memo in this shell.
+  # That matters because `exec` carries the pid and the start-time fingerprint
+  # forward but DROPS every EXIT trap, so a marker or a lock taken before a hop
+  # is a ghost that passes its own liveness check. The placement is the
+  # invariant, not a convenience.
+  #
+  # The run id comes from the manifest header, which the memo above already
+  # answers, and the run directory from the one helper `rundir_init` uses. The
+  # header/body cross-check has not run yet; the copy's own `check_manifest`
+  # performs it a moment later, so nothing is skipped.
+  local hop_rid hop_rd hop_t hop_rc
+  hop_rid=$(manifest_hdr_field 'run-id' 2>/dev/null) || hop_rid=""
+  if [ -n "$hop_rid" ]; then
+    hop_rd=$(rundir_of_run_id "$hop_rid")
+    hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+    case "$hop_rc" in
+      0) gate_pin_hop "$hop_t" ;;
+      2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+    esac
+  fi
+
   check_manifest
   derive_paths_from_manifest
   gate_check_grant || exit $?
+
+  # HOP (B) — A RUN OPENING RIGHT NOW. Still above `rundir_init`, and for the
+  # same reason: everything that leaves a trace in the run directory is below it.
+  #
+  # "New run" is the pair of absences, and both halves are needed. `settings/`
+  # alone would re-pin a run opened before this code existed — those runs are
+  # deliberately left unpinned rather than retrofitted, because their watcher and
+  # their in-flight shift are already running the old file. `plugin-pin` alone
+  # would say nothing about a run that opened seconds ago on the older gate.
+  #
+  # `CC_GATE_PIN_DISABLE` is a TEST SEAM AND ONLY THAT: it suppresses pinning a
+  # new run and never makes hop (A) ignore an existing pin. A stage cannot set it
+  # — the stage hook refuses a leading assignment in front of the gate path — so
+  # it cannot be used to escape a pinned run's copy.
+  if [ "${CC_GATE_PIN_DISABLE:-0}" != "1" ]; then
+    hop_rd=$(rundir_of_run_id "$RUN_ID")
+    if [ ! -d "$hop_rd/settings" ] && [ ! -f "$hop_rd/plugin-pin" ]; then
+      pin_take "$hop_rd" "$(cd "$(dirname "$GATE_DIR")" && pwd -P)" \
+        || die "판본 고정 실패 — 동시 체크아웃 폭주로 찢어지지 않은 사본을 얻지 못했습니다"
+      hop_rc=0; hop_t=$(pin_hop_target "$hop_rd" "$GATE_DIR") || hop_rc=$?
+      case "$hop_rc" in
+        0) gate_pin_hop "$hop_t" ;;
+        2) die "plugin-pin 은 있는데 사본이 없습니다: $hop_rd/plugin-pin — 회복: rm \"$hop_rd/plugin-pin\"" ;;
+      esac
+    fi
+  fi
+
   rundir_init
 
   # THE GATE CHOOSES THE PATH. THE CALLER DOES NOT NAME ONE.
@@ -6899,20 +7099,40 @@ gate_main() {
     # all lived in memory or in a file beside the ledger rather than in it. This
     # is also the row that makes the chain's first anchor a row rather than the
     # stub's prose.
-    # `강제 코드` and `베이스 청결` are the two the morning reads. The surface
-    # digest above deliberately excludes the plugin files — a redeploy that
-    # rewrites a rule must not kill a running run, and that exclusion is what
-    # makes it safe. The cost is that the code actually enforcing this run is
-    # unrecorded, so these two record it instead of detecting it: the base HEAD
-    # at kickoff, and whether that tree had uncommitted changes. A run opened on
-    # a dirty tree ran enforcement code no review saw, and without this field the
-    # morning cannot tell that apart from a clean night.
+    # `강제 코드` and `베이스 청결` DESCRIBE THE TARGET BASE, NOT THE JUDGE.
+    # They are the base's HEAD at kickoff and whether that worktree had
+    # uncommitted changes — a run opened on a dirty base ran against code no
+    # review saw, and without these the morning cannot tell that apart from a
+    # clean night. What enforced the run is a different question and has its own
+    # answer now: `plugin-pin` and the three version fields below. The surface
+    # digest still excludes the plugin files on purpose — a redeploy that
+    # rewrites a rule must not kill a running run — and pinning is what makes
+    # that exclusion cost nothing, because the enforcing bytes no longer move.
+    #
+    # `--no-optional-locks` ON THE PROBE, and this is a requirement rather than
+    # a tidy-up. A plain `git status` rewrites the index and holds `index.lock`
+    # for 0.24–0.47s; this probe runs inside the very call that takes the pin,
+    # and the command it would lock out is `git pull --ff-only`, which is how
+    # every slice of this design is applied.
     gate_append 'run' "run-id=$RUN_ID" "시작=$(now_iso)" \
       "설계 문서=${DOC_KEY:-(없음)}" "전체 sha256=$(whole_digest 2>/dev/null || printf '(해당 없음)')" \
       "구속면 다이제스트=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || printf '(미기록)')" \
-      "강제 코드=$( { cd "$BASE" 2>/dev/null && git rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
-      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "강제 코드=$( { cd "$BASE" 2>/dev/null && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || printf '(미상)')" \
+      "베이스 청결=$( { cd "$BASE" 2>/dev/null && [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; } && printf '예' || printf '아니오')" \
+      "판본=$(gate_pin_version_field commit)" \
+      "판본 트리=$(gate_pin_version_field tree)" \
+      "판본 다이제스트=$(gate_pin_version_field digest)" \
       "RUN_DIR=$RUN_DIR" "보고서=$LEDGER"
+    # THE STAGE-POLICY DRIFT VERDICT, AS A LOG LINE AND NOTHING MORE. The policy
+    # the gate injects into every stage was distilled from files a person edits
+    # by hand, and the checker beside this file reports whether they still
+    # agree. It is advisory: nobody reads it at runtime, and a ledger field
+    # would widen the sidecar contract for a signal the morning reads from the
+    # log anyway. Exit status ignored, no refusal, no row — a drifted source is
+    # a reason to update the policy, never a reason to stop a run.
+    local pd
+    pd=$( { bash "$GATE_DIR/stage-policy-drift.sh" --sources-map "$(gate_stage_policy_sources_map)" 2>/dev/null || true; } | tail -1)
+    log "stage policy sources: ${pd:-skipped}"
     # AFTER the `run` row, and only here. Before it, a reap that died would leave
     # the run without so much as its own opening row; and this is the one branch
     # that runs once per run rather than once per gate entry.
@@ -8359,6 +8579,29 @@ gate_claudemd_slot_guard() {
   return 0
 }
 
+gate_rundir_is_foreign_run() {
+  # gate_rundir_is_foreign_run <folded-path> <run-root> <run-root-physical> \
+  #                            <own-physical> <own-logical>
+  # rc 0 when the path names a run directory that is not this run's.
+  #
+  # OWN IS TESTED FIRST, so a legitimate write to this run's own `halt/` or
+  # `<segment>.plan.md` never reaches the foreign arm and keeps its exception.
+  # The run root is compared in both spellings for the same reason the run
+  # directory is: `/var` is a symlink on this platform, so one directory has two
+  # names and a test against either alone walks past half the paths.
+  local an="$1" own="$4" ownl="$5" r
+  case "$an" in
+    "$own"|"$own"/*|"$ownl"|"$ownl"/*) return 1 ;;
+  esac
+  for r in "$2" "$3"; do
+    [ -n "$r" ] || continue
+    case "$an" in
+      "$r"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -8410,14 +8653,32 @@ gate_rundir_write_guard() {
   # matches none of the paths it exists to catch. Both are compared and neither
   # is preferred: an act may name either, and a guard that knows one spelling is
   # a guard the other spelling walks past.
-  local a rdp rdn rdln an rel
+  #
+  # A SIBLING RUN'S DIRECTORY IS REFUSED BEFORE THIS RUN'S IS TESTED. The hook
+  # already refuses both — it compares against the state root and not against one
+  # run — while this guard only ever knew its own `RUN_DIR`, so the same write
+  # was denied through `Write` and allowed through `Bash` whenever the target
+  # belonged to another run. Measured: `cp` into a sibling's `settings/` returned
+  # rc 0 here and `deny` from the hook. Pinning makes that gap worth closing
+  # rather than merely inconsistent, because it puts executable code — the copy
+  # every call of that run hops into — at a path under the sibling's directory.
+  # There is no legitimate case: a stage writing into a run that is not its own
+  # is either confused or hostile, and the refusal text says so.
+  local a rdp rdn rdln an rel root rootp
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
   rdln=$(gate_path_spelling "$RUN_DIR")
+  root=$(gate_path_spelling "$(gate_reap_root)/run")
+  rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
+  if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$a")
+    if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
+      warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
+      return "$GATE_EXIT_RULE"
+    fi
     rel=""
     case "$an" in
       "$rdn") rel="." ;;
@@ -9574,6 +9835,16 @@ EOF
           # answer, and it cannot verify that a free-text question is ABOUT a
           # clause. What it refuses is the amplification — one answer excusing
           # many obligations — which is the whole of the failure.
+          #
+          # EXCEPT A QUESTION ABOUT THE DESIGN STEP. Its answer is not an excuse
+          # for several obligations but the common precondition of every clause
+          # that needs the document, so one answer releasing all of them is the
+          # plain fact. And the design stage emits one judgment for the whole
+          # document, so there is no path on which it could raise one question
+          # per clause. The exception keys on what the approval is about (its
+          # `막는 세그먼트` is the design step id), which the gate can verify; the
+          # two floors above — at least one id, every id an open `판단`
+          # approval — still apply to it.
           for other in $(gate_clause_ids); do
             [ -n "$other" ] || continue
             [ "$other" = "$cid" ] && continue
@@ -9584,6 +9855,7 @@ EOF
             for jid in $cev_ids; do
               for ojid in $other_ids; do
                 [ "$jid" = "$ojid" ] || continue
+                gate_approval_keyed_on_design_step "$jid" && continue
                 warn "승인 ${jid} 은 이미 종료 절 ${other} 을 보류시키고 있습니다 — 답 하나가 여러 절을 정산할 수 없습니다"
                 warn "이 절을 보류하려면 이 절에 대한 물음을 따로 올리세요 (조건 10 은 사용자가 인가한 것을 재는 유일한 조건입니다)"
                 return "$GATE_EXIT_VOCAB"
@@ -10262,6 +10534,289 @@ gate_run_ended_ok() {
   return 0
 }
 
+gate_ancestor_dirs() {
+  # gate_ancestor_dirs <abs-dir> — every directory from the filesystem root down
+  # to <abs-dir> itself, one per line, ROOT FIRST, `/` excluded.
+  #
+  # The walk is the same one the CLAUDE.md read allow-list takes in
+  # `gate_write_settings`, with the same two termination bounds: the value has
+  # to keep changing under `dirname`, and it has to be absolute to contribute
+  # anything (`dirname .` is `.`, so a relative or empty input would otherwise
+  # loop forever). That loop is deliberately NOT refactored onto this helper —
+  # it renders settings bytes that enter the enforcement-surface digest — and
+  # the two are held together by a test asserting the same directory SET
+  # instead. The order is reversed here because the harness loads an
+  # instruction chain outermost first, so the deepest file wins on conflicts.
+  local adir="$1" aprev
+  case "$adir" in /*) : ;; *) return 0 ;; esac
+  {
+    while [ -n "$adir" ] && [ "$adir" != "/" ]; do
+      printf '%s\n' "$adir"
+      aprev="$adir"
+      adir=$(dirname "$adir")
+      [ "$adir" != "$aprev" ] || break
+    done
+  } | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) print a[i] }'
+}
+
+gate_stage_policy_sources_map() {
+  # The host map that names instruction files to leave OUT of a stage's chain,
+  # `<source-id><TAB><absolute path>` per line. Host-local on purpose: the paths
+  # are absolute and differ per machine, so a list shipped in the repository
+  # would be right on its author's box and silently empty everywhere else.
+  # `CC_GATE_STAGE_POLICY_SOURCES` is the test seam, the same shape as
+  # `CC_GATE_SETTINGS_OVERRIDE` — the suite does not isolate `HOME`, so every
+  # test that touches the map points this at a fixture (or at nothing).
+  printf '%s' "${CC_GATE_STAGE_POLICY_SOURCES:-${HOME:-}/.config/cc-cmds/stage-policy-sources}"
+}
+
+gate_stage_instructions() {
+  # gate_stage_instructions <alias> — synthesize the instruction file a stage of
+  # this target is launched with; print its absolute path, or `warn` and return
+  # 127 (the same code as a missing wrapper — a launch precondition).
+  #
+  # WHAT REPLACES AUTOMATIC CLAUDE.md LOADING. A stage launched with these
+  # instructions runs with `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, so nothing it
+  # would have loaded on its own reaches it; this file is the whole of what it
+  # gets, and its team members get the same bytes through the subagent append.
+  # It is `stage-policy.md` (the English stage policy, byte-identical for every
+  # target, kind and segment — the cache-stable head), then the target's
+  # instruction chain: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` of
+  # every ancestor of the target's MAIN worktree, root first, whichever exist.
+  #
+  # THE MAIN WORKTREE, NOT THE STAGE'S. The launchers never `cd` into a stage
+  # worktree (the automatic loader read the router's cwd chain, which for a
+  # non-home target was not even the target's), a review of a PR that edits
+  # `CLAUDE.md` must not be judged by the rule that PR proposes, and orderbook's
+  # repository-root file is gitignored and exists only in the main worktree. The
+  # chain is the ANCESTOR chain because that is where the orderbook rules live —
+  # in a file outside git, above the repository — so "the target's CLAUDE.md"
+  # read literally would drop them without a trace.
+  #
+  # CONTENT-ADDRESSED AND FREE OF VOLATILE TOKENS: no run id, time, segment,
+  # attempt or worktree path goes in, the name is the sha256 of the bytes, and
+  # so every stage and team member of one target in one run shares one file —
+  # and one prompt-cache head. `umask 077` because an ancestor file may carry
+  # a credential line: the automatic loader sent those bytes too, but the disk
+  # copy must not be readable by another user, and the hook denies a stage every
+  # write under `instructions/`.
+  #
+  # REFUSALS FAIL CLOSED. An empty or non-directory main worktree would make the
+  # chain empty and the stage would run on the policy alone, having quietly
+  # lost every repository rule; a missing policy file would put it back on
+  # automatic loading, which is the state this replaces. Both refuse rather than
+  # degrade. A `.claude/rules/` directory anywhere in the chain refuses because
+  # `paths:`-conditioned rules cannot be flattened without either widening them
+  # to always-on or dropping them, and both are silent; an `@import` line
+  # outside a fenced block refuses because verbatim injection does not expand
+  # it. Today no target or ancestor has either, so nothing is stopped.
+  #
+  # THE USER-SCOPE SETTINGS DIRECTORY IS NOT AN ANCESTOR. The chain excludes
+  # only `/`, so a main worktree under the home directory walks through it, and
+  # on a host without `CLAUDE_CONFIG_DIR` the home `.claude/` IS the user-scope
+  # directory — its `CLAUDE.md` is the global instruction file this policy
+  # declares itself a replacement for, and its `rules/` are user-scope rules,
+  # not repository ones. So a chain directory whose `.claude` resolves to that
+  # directory contributes neither; its plain `CLAUDE.md` and `CLAUDE.local.md`
+  # are included as usual. The derivation is the settings renderer's own.
+  #
+  # THE HOST MAP EXCLUDES ANCESTOR FILES, guards evaluated in this order per
+  # line: a malformed line (no TAB, path not absolute) refuses, naming the line
+  # — a typo must not switch an exclusion off silently; a path not on disk logs
+  # one line and excludes nothing; a path equal to one of the target root's own
+  # three instruction files refuses — repository rules cannot be excluded; any
+  # other path joins the exclusion set, and one outside this chain simply never
+  # matches (the map is host-wide, so the cc-cmds workspace file is not in an
+  # orderbook chain, and refusing it would stop every orderbook launch). Every
+  # comparison is between PHYSICAL paths on both sides: with one side left as
+  # spelled, a symlinked spelling (`/var` vs `/private/var`) would judge a real
+  # ancestor as "outside the chain" and the exclusion would vanish silently.
+  # No map at all excludes nothing — fail-open toward today's behaviour.
+  local alias="$1" root slug policy rootp cfgdir cfgp map excl=$'\n' n line id p pp
+  local d f name label fence_hit i tmp sha dst
+  local chain_files=() labels=()
+  root=$(target_field "$alias" '메인 워크트리')
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    warn "stage instructions: target '$alias' has no usable main worktree ('${root:-}') — refusing to launch; an empty chain would drop every repository rule"
+    return 127
+  fi
+  slug=$(target_field "$alias" '원격 슬러그')
+  if [ -z "$slug" ]; then
+    warn "stage instructions: target '$alias' has no remote slug in the manifest — refusing to launch; the chain labels need it"
+    return 127
+  fi
+  policy="$GATE_DIR/stage-policy.md"
+  if [ ! -f "$policy" ]; then
+    warn "stage instructions: stage policy not found: $policy — refusing to launch; automatic CLAUDE.md loading is not a fallback"
+    return 127
+  fi
+  rootp=$(cd "$root" && pwd -P)
+  cfgdir="${CLAUDE_CONFIG_DIR:-}"
+  [ -n "$cfgdir" ] || cfgdir="${HOME:-}${HOME:+/.claude}"
+  cfgp=""
+  [ -n "$cfgdir" ] && [ -d "$cfgdir" ] && cfgp=$(cd "$cfgdir" && pwd -P)
+
+  map=$(gate_stage_policy_sources_map)
+  if [ -n "$map" ] && [ -f "$map" ]; then
+    n=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      n=$((n + 1))
+      case "$line" in ''|'#'*) continue ;; esac
+      case "$line" in
+        *"	"*) : ;;
+        *) warn "stage instructions: host map line $n has no TAB (expected <source-id><TAB><absolute path>): $map"
+           return 127 ;;
+      esac
+      id="${line%%	*}"
+      p="${line#*	}"
+      case "$p" in
+        /*) : ;;
+        *) warn "stage instructions: host map line $n names a path that is not absolute: $map"
+           return 127 ;;
+      esac
+      if [ ! -e "$p" ]; then
+        log "stage instructions: source $id is not on disk, nothing excluded: $p"
+        continue
+      fi
+      pp="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+      case "$pp" in
+        "$rootp/CLAUDE.md"|"$rootp/.claude/CLAUDE.md"|"$rootp/CLAUDE.local.md")
+          warn "stage instructions: host map line $n names a target root instruction file, which cannot be excluded: $p"
+          return 127 ;;
+      esac
+      excl="$excl$pp"$'\n'
+    done < "$map"
+  fi
+
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if [ -d "$d/.claude/rules" ]; then
+      if [ -z "$cfgp" ] || [ "$(cd "$d/.claude" && pwd -P)" != "$cfgp" ]; then
+        warn "stage instructions: $d/.claude/rules/ exists — refusing to launch; conditional rules cannot be injected verbatim, and a person decides whether to flatten or drop them"
+        return 127
+      fi
+    fi
+    for name in CLAUDE.md .claude/CLAUDE.md CLAUDE.local.md; do
+      f="$d/$name"
+      [ -f "$f" ] || continue
+      if [ "$name" = ".claude/CLAUDE.md" ] && [ -n "$cfgp" ] \
+        && [ "$(cd "$d/.claude" && pwd -P)" = "$cfgp" ]; then
+        continue
+      fi
+      pp="$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")"
+      case "$excl" in
+        *$'\n'"$pp"$'\n'*) log "stage instructions: excluding $pp by the host map"; continue ;;
+      esac
+      # An `@import` line outside a fenced block: verbatim injection does not
+      # expand it, so the imported rules would be lost silently. The shape
+      # requires a path (`@~`, `@.`, `@/`, or `@name/`), so an annotation line
+      # such as `@Transactional` in a Java target's notes is not refused.
+      fence_hit=$(awk '
+        /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+        !fence && /^[[:space:]]*@(~|\.|\/|[A-Za-z0-9_.-]+\/)/ { print NR; exit }
+      ' "$f")
+      if [ -n "$fence_hit" ]; then
+        warn "stage instructions: $f:$fence_hit is an @import line outside a code fence — refusing to launch; verbatim injection cannot expand it"
+        return 127
+      fi
+      if [ "$d" = "$rootp" ]; then
+        label="$slug/$name"
+      else
+        label="$f"
+      fi
+      chain_files[${#chain_files[@]}]="$f"
+      labels[${#labels[@]}]="$label"
+    done
+  done < <(gate_ancestor_dirs "$rootp")
+
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/instructions" || exit 1
+    tmp=$(mktemp "$RUN_DIR/instructions/.stage.XXXXXX") || exit 1
+    {
+      cat "$policy"
+      printf '\n# Repository instructions\n\nThe files below are the instruction chain of the target repository, root first. Each begins with a heading naming its file.\n'
+      i=0
+      while [ "$i" -lt "${#chain_files[@]}" ]; do
+        printf '\n---\n# %s\n\n' "${labels[$i]}"
+        cat "${chain_files[$i]}"
+        i=$((i + 1))
+      done
+    } > "$tmp" || { rm -f "$tmp"; exit 1; }
+    sha=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
+    dst="$RUN_DIR/instructions/$sha.md"
+    # `mv -n` publishes atomically and refuses an existing target; the name is
+    # the content hash, so an existing target holds these same bytes. But `mv -n`
+    # leaves its source behind on refusal, and that source holds the same
+    # credential-bearing bytes — remove it, or one copy accumulates per launch.
+    mv -n "$tmp" "$dst" 2>/dev/null || true
+    [ ! -e "$tmp" ] || rm -f "$tmp"
+    [ -f "$dst" ] || exit 1
+    printf '%s' "$dst"
+  ) || {
+    warn "stage instructions: could not publish the synthesized file under $RUN_DIR/instructions — refusing to launch"
+    return 127
+  }
+}
+
+gate_stage_instructions_for_launch() {
+  # gate_stage_instructions_for_launch <alias> <resume-session-id|''> — the
+  # `--instructions` file for this launch, printed; empty means "launch in
+  # legacy mode, without the option". Synthesis refusals propagate (127).
+  #
+  # EVERY LAUNCH LOGS THE DIGEST, resume or not, so the run log alone says
+  # which synthesis each launch ran on — no ledger field carries it.
+  #
+  # RESUME FOLLOWS THE SESSION'S OWN RECORD. A session born under automatic
+  # loading and resumed with the switch-off plus a new append sees NEITHER the
+  # old CLAUDE.md nor the new policy (measured; `--system-prompt-snapshot off`
+  # does not repair it), so a session with no record — born before this
+  # mechanism — resumes in legacy mode, exactly as it was born. A session with
+  # a record resumes on the RECORDED file even when the current synthesis
+  # differs: the resumed main session keeps the append it was born with while
+  # members spawned after the resume receive the new subagent append, so
+  # passing the new file would put the lead and its team on different policies.
+  # Only when the recorded file is gone from disk does the current synthesis
+  # stand in, and the log says so.
+  local alias="$1" resume="$2" now rec recf
+  now=$(gate_stage_instructions "$alias") || return $?
+  log "stage instructions: $alias sha256=$(basename "$now" .md)"
+  if [ -z "$resume" ]; then
+    printf '%s' "$now"
+    return 0
+  fi
+  rec="$RUN_DIR/instructions/session/$resume"
+  if [ ! -f "$rec" ]; then
+    log "resuming a session launched before stage instructions; launching in legacy mode"
+    printf ''
+    return 0
+  fi
+  recf="$RUN_DIR/instructions/$(tr -d '[:space:]' < "$rec").md"
+  if [ ! -f "$recf" ]; then
+    log "stage instructions: recorded file $(basename "$recf") is gone; passing the current synthesis"
+    printf '%s' "$now"
+    return 0
+  fi
+  if [ "$recf" != "$now" ]; then
+    log "stage instructions: session $resume was launched with $(basename "$recf" .md); current synthesis is $(basename "$now" .md) — keeping the recorded file"
+  fi
+  printf '%s' "$recf"
+}
+
+gate_stage_instructions_record() {
+  # gate_stage_instructions_record <session-id> <file> — remember which
+  # synthesis a NEW session was launched with, so a later resume can follow it.
+  # Same umask as the files themselves; a stage cannot write here.
+  local sid="$1" f="$2" tmp
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/instructions/session" || exit 1
+    tmp=$(mktemp "$RUN_DIR/instructions/session/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$(basename "$f" .md)" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/instructions/session/$sid"
+  ) || warn "stage instructions: could not record the synthesis for session $sid"
+}
+
 gate_act_worktree() {
   # gate_act_worktree <별칭> [<세그먼트>] — the directory this target's acts
   # actually run in.
@@ -10685,7 +11240,51 @@ gate_verb_act() {
   # segment's own tree — read that answer as stale and threw it away. A refusal
   # that names the field to fix has to come before anything writes an approval
   # about the same act.
-  if [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
+  # THE ONE EXEMPTION: the run-scope design step. `--segment -` with stage kind
+  # `design` names no segment, so there is no row to require and no `선행` to
+  # land; the stage is keyed on the plan's design step id instead (see
+  # `gate_run_scope_design_step`). The exemption is keyed on all three facts —
+  # the kind, the `-`, and a plan that requires a design and names exactly one
+  # design step — so `-` with any other stage kind, or with a plan that does not
+  # say this, still meets the refusal below. Writing a `segment` row for the
+  # design step was the other way out and was dropped: that row is what
+  # termination condition 1 counts, and a design step is not a segment.
+  #
+  # THE EXEMPTION SITS UP HERE FOR THE SAME REASON THE REFUSAL IT EXEMPTS DOES.
+  # It carries two refusals of its own — a plan that does not name exactly one
+  # design step, and a design run whose `설계 문서` is still `(없음)` — and both
+  # are refusals about THIS act, so they have to be reached before anything
+  # writes an approval about it. Left at the old site below the approval block,
+  # the exemption would also have arrived too late to be one: the row check above
+  # would already have refused the design dispatch it exists to let through.
+  local stage_key="$segment" stage_is_run_scope_design=0
+  if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "${1:-}" = "design" ]; then
+    if ! stage_key=$(gate_run_scope_design_step); then
+      warn "설계 스테이지를 --segment - 로 띄우려면 실행 계획이 design_required=true 이고 skill 이 design 인 단계를 정확히 하나 가져야 합니다"
+      warn "세그먼트가 아닌 설계 단계의 파일 키는 그 단계 id 이며, 계획이 그것을 하나로 정하지 못하면 게이트가 고르지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
+    stage_is_run_scope_design=1
+
+    # AND THE DOCUMENT MUST ALREADY HAVE A NAME. `## 요소` → `설계 문서` is what
+    # the dispatch, every guard standing around it and the later audit all
+    # resolve the document through, and the kickoff is what names it — in front
+    # of the person, before the freeze. A run that requires a design and still
+    # arrives here with `(없음)` has no name anything downstream can agree on,
+    # so the act is refused rather than that value being read as a path. The
+    # gate does not compose one either: a path invented at dispatch names a
+    # document no guard is watching and no audit will read, and the run would
+    # go on around it.
+    local design_doc
+    design_doc=$(manifest_field '요소' '설계 문서')
+    case "$design_doc" in
+      '' | '없음' | '(없음)')
+        warn "설계 스테이지를 --segment - 로 띄우려면 매니페스트 ## 요소 의 설계 문서 가 실제 경로여야 합니다 — 지금은 비었거나 (없음) 입니다"
+        warn "이 값은 킥오프가 사람 앞에서 정해 동결하는 것이며, 게이트는 경로를 지어내지 않습니다"
+        exit "$GATE_EXIT_RULE"
+        ;;
+    esac
+  elif [ "$kind" = "skill" ] && [ -z "$(gate_segment_field "$segment" '상태')" ]; then
     warn "세그먼트 ${segment} 의 segment 행이 없습니다 — 스테이지를 띄우기 전에 act --kind segment 로 그 행을 먼저 쓰세요"
     warn "그 행이 없으면 진전 벡터가 움직일 수 없어 정상 스테이지 위에서 정체 경계가 발화하고, 종료 조건 1 도 이 세그먼트를 세지 못합니다"
     exit "$GATE_EXIT_RULE"
@@ -11321,7 +11920,15 @@ gate_verb_act() {
     gate_surface_check "$verb" || exit $?
   fi
 
-  if [ "$kind" = "skill" ]; then
+  # THE ROW CHECK AND THE WORKTREE PRE-CHECK USED TO SIT HERE, and they are now
+  # above the rule catalog and the approval block — a refusal naming the field to
+  # fix has to come before anything writes an approval about the same act. The
+  # run-scope design step's exemption moved up with them, because an exemption
+  # reached after the refusal it exempts is not one.
+  #
+  # `선행` STAYED, and the design step is exempt from it for the reason stated
+  # up there: `--segment -` names no segment, so it has no predecessor to land.
+  if [ "$kind" = "skill" ] && [ "$stage_is_run_scope_design" = "0" ]; then
     # ORDER, AND THE SECOND CONSUMER OF `선행`.
     #
     # With only the cone's declared axis reading it, declaring narrowly would be
@@ -11398,6 +12005,8 @@ gate_verb_act() {
     # reaches disk. So when the invalidation is the ONLY thing left unmet, the
     # proposal is accepted and the `done` file records the run as invalidated
     # rather than as satisfied — the two must not read alike in the morning.
+    # Condition 1's line for a run whose design step will not be dispatched
+    # again reaches this arm on the same footing: no segment can ever exist.
     # Tested by POSITIVE equality against the token, and the arm below tests the
     # other accepted value the same way. Everything the function did not name —
     # including a value it never printed — falls through to the refusing arm.
@@ -11421,6 +12030,12 @@ gate_verb_act() {
       warn "종료 제안 기각 — 미충족 조건:"
       case "$unmet" in
         *"종료 절"*) warn "미정산 절은 act --kind clause 로 근거를 남기거나 불가능으로 표시하세요" ;;
+      esac
+      # A separate `case`: the one above stops at its first match, and a run
+      # blocked at design carries both lines at once.
+      case "$unmet" in
+        *"1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 "*)
+          warn "설계가 막혀 세그먼트가 생길 수 없는 런입니다 — 문서에 기대는 종료 절을 불가능으로(설계 스테이지가 연 판단 승인이 붙든 절은 그 승인 id 를 지목한 보류로) 정산하면 이 제안은 무효화 종료로 기록됩니다" ;;
       esac
       printf '%s\n' "$unmet" >&2
       # THE ROW CARRIES A SUMMARY, NOT THE WHOLE LIST. Joining every unmet
@@ -11758,7 +12373,9 @@ gate_verb_act() {
       case "$kind" in
         # The return is LAUNCH success — the supervisor was detached and the
         # token consumed — and not the stage's rc, which `wait` reports.
-        skill) gate_launch_stage "$alias" "$segment" "$@" || rc=$? ;;
+        # `stage_key` is the segment id, or the plan's design step id when the
+        # dispatch named `-` (the exemption above set it).
+        skill) gate_launch_stage "$alias" "$stage_key" "$@" || rc=$? ;;
         # The first token after `--` is the HANDOFF REASON here, the way it is
         # the stage kind for `skill`. Same shape, different layer: this one
         # decides whether the suppressor below applies, and the settings variant
@@ -12089,6 +12706,24 @@ gate_judgment_approval_open() {
     *" $1 "*) return 0 ;;
   esac
   return 1
+}
+
+gate_approval_keyed_on_design_step() {
+  # gate_approval_keyed_on_design_step <승인 id> — 0 when that approval is a
+  # question about the run-scope design step: its issuing row's `막는 세그먼트`
+  # is the plan's single design step id, and that id is not also a segment.
+  #
+  # The key is what the approval is ABOUT, not who wrote it, because that is
+  # the one fact the gate can check: the emission absorber passes the stage key
+  # through to the issuing row, and a design step never has a `segment` row.
+  # The FIRST row is read because it is the issuing one; a transition row need
+  # not carry the field.
+  local dstep first
+  dstep=$(gate_run_scope_design_step) || return 1
+  [ -z "$(gate_segment_field "$dstep" '상태')" ] || return 1
+  first=$( { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | sed -n '1p')
+  [ -n "$first" ] || return 1
+  [ "$(gate_row_field "$first" '막는 세그먼트')" = "$dstep" ]
 }
 
 gate_clause_settled() {
@@ -12720,7 +13355,7 @@ gate_launch_stage() {
   # to a bad resume id and the refusal never named the real fault.
   if [ -n "${GATE_RESUME:-}" ]; then
     local known
-    known=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    known=$( gate_stage_result_rows_of "$seg" \
              | { grep -cF "세션 id=$GATE_RESUME " || true; } )
     if [ "${known:-0}" = "0" ]; then
       warn "재개 대상 세션이 이 세그먼트의 원장 기록에 없습니다: $GATE_RESUME"
@@ -12780,7 +13415,8 @@ gate_launch_stage() {
   # THE LAUNCH TOKEN. A verb that starts a stage with no authorization row and
   # no boundary evaluation is an authorization bypass if a router can spell it.
   # So the dispatch writes `<seg>.launch` (line 1 the nonce, line 2 the resume
-  # id or empty) and the supervisor CONSUMES it with `mv -n` and compares the
+  # id or empty, line 3 the instructions file or empty for legacy mode) and the
+  # supervisor CONSUMES it with `mv -n` and compares the
   # nonce; a second caller cannot take a consumed token. A stale
   # `<seg>.launch.taken` from the previous attempt — that attempt has already
   # terminated, settled or been refused — is removed first, because `mv -n`
@@ -12792,8 +13428,18 @@ gate_launch_stage() {
     warn "감독자를 띄울 인터프리터(perl 또는 python3)가 없습니다 — 파견을 거부합니다 ($seg)"
     return "$GATE_EXIT_RULE"
   fi
+  # THE STAGE INSTRUCTIONS, SYNTHESIZED BEFORE ANY SIDE EFFECT. A refusal here
+  # (127, like a missing wrapper) is a launch precondition — a host or
+  # repository state a person has to change — so it must not consume an
+  # attempt number or leave a session record behind: the pin below and the
+  # record after it both come later on purpose.
+  local instr
+  instr=$(gate_stage_instructions_for_launch "$alias" "${GATE_RESUME:-}") || return $?
   local attempt out suplog nonce tmp sup
   attempt=$(gate_pin_attempt "$seg")
+  if [ -z "${GATE_RESUME:-}" ] && [ -n "$instr" ]; then
+    gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
+  fi
   # THE STREAM IS SCOPED BY ATTEMPT; the supervisor derives the same name from
   # the same pin through `stage_log_path`, so the supervisor's own log sits
   # beside the stage's stream under the same attempt.
@@ -12804,7 +13450,7 @@ gate_launch_stage() {
   nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   [ -n "$nonce" ] || { warn "기동 난스를 만들지 못했습니다 ($seg)"; return 1; }
   tmp=$(mktemp "$RUN_DIR/.launch.$seg.XXXXXX")
-  printf '%s\n%s\n' "$nonce" "${GATE_RESUME:-}" > "$tmp"
+  printf '%s\n%s\n%s\n' "$nonce" "${GATE_RESUME:-}" "$instr" > "$tmp"
   mv "$tmp" "$RUN_DIR/$seg.launch"
   # THE SUPERVISOR'S PID COMES FROM THE COMMAND SUBSTITUTION AND NEVER FROM
   # `$!`. After a double fork `$!` names the middle process, already dead; the
@@ -12889,6 +13535,12 @@ gate_verb_supervise_stage() {
     return "$GATE_EXIT_RULE"
   fi
   resume=$(sed -n '2p' "$taken" 2>/dev/null | tr -d '[:space:]')
+  # The instructions file rides on the token's third line: the dispatch half
+  # synthesized it (and refused before pinning an attempt if it could not), so
+  # the supervisor passes it through rather than deriving it again. It is a
+  # path, so no whitespace stripping; empty means legacy mode.
+  local instr
+  instr=$(sed -n '3p' "$taken" 2>/dev/null)
 
   # THE PIN IS READ, NEVER WRITTEN, HERE. The dispatch half wrote it; a second
   # writer would let the two halves disagree about which attempt this is.
@@ -12926,10 +13578,16 @@ gate_verb_supervise_stage() {
   # blocking — nobody else could write a row in that window. Now the router
   # writes rows for the stage's whole lifetime, so the recorder looks instead
   # for a `행위자=스테이지` row of this segment AFTER this line.
-  local dispatch_line
+  #
+  # `rowseg` IS WHAT THE ROWS CARRY, `seg` IS WHAT THE FILES ARE NAMED BY. They are
+  # the same string for a segment and differ for the run-scope design step, whose
+  # dispatch row, stage rows and `stage-result` all say `세그먼트=-` while its pin,
+  # stream and pid record are named by the step id.
+  local dispatch_line rowseg
+  rowseg=$(gate_stage_row_segment "$seg" "$kind")
   dispatch_line=$( { grep -n '^- `자율 승인`' "$LEDGER" 2>/dev/null || true; } \
                    | { grep -F 'kind=skill ' || true; } | { grep -F '결정=act' || true; } \
-                   | { grep -F "세그먼트=$seg " || true; } | tail -1 | cut -d: -f1)
+                   | { grep -F "세그먼트=$rowseg " || true; } | tail -1 | cut -d: -f1)
 
   local rc=0 spid
   # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT. Layer 1 routes every
@@ -12972,12 +13630,13 @@ gate_verb_supervise_stage() {
   CC_PIPELINE_GRANT="$GRANT" \
   CC_PIPELINE_GATE="$GATE_DIR/gate.sh" \
   CC_PIPELINE_TARGET="$alias" \
-  CC_PIPELINE_SEGMENT="$seg" \
+  CC_PIPELINE_SEGMENT="$rowseg" \
   CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
+    ${instr:+--instructions "$instr"} \
     $id_flag \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
   # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
@@ -13043,7 +13702,7 @@ gate_verb_supervise_stage() {
   # unsettled attempt, and the prelude settlement closes it as `외부 종료` on
   # the next gate call. Removing the files without the row is the other shape —
   # no row and no record — which nothing settles and every re-dispatch repeats.
-  if [ -n "$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+  if [ -n "$( gate_stage_result_rows_of "$seg" \
               | { grep -F "실행 버전=$attempt " || true; } )" ]; then
     rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
           "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
@@ -13096,10 +13755,10 @@ gate_settle_lost_dispatches() {
     fi
     kind=$( { cat "$RUN_DIR/$seg.kind" 2>/dev/null || true; } | tr -d '[:space:]')
     attempt=$( { cat "$RUN_DIR/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
-    if [ -z "$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
-      gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=${kind:-미상}" \
+      gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
         "종단 부류=외부 종료" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
@@ -13170,7 +13829,7 @@ gate_verb_wait() {
       printf '%s [wait] %s 파견 기록 없음 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_NONE"
       return "$GATE_EXIT_WAIT_NONE"
     fi
-    row=$( { gate_rows 'stage-result' | grep -F "세그먼트=$seg " || true; } \
+    row=$( gate_stage_result_rows_of "$seg" \
            | { grep -F "실행 버전=$attempt " || true; } | tail -1)
     if [ -n "$row" ]; then
       klass=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -13260,10 +13919,14 @@ gate_record_stage_outcome() {
   # none. `awk 'NR>n'` reads the ledger from that line on; an empty or
   # non-numeric `before` reads the whole file.
   case "$before" in ''|*[!0-9]*) before=0 ;; esac
+  # The stage's rows carry `rowseg`, which is `-` for the run-scope design step
+  # (see `gate_stage_row_segment`); its `stage-result` row below carries the same.
+  local rowseg
+  rowseg=$(gate_stage_row_segment "$seg" "$kind")
   after=$( { awk -v n="$before" 'NR>n' "$LEDGER" 2>/dev/null || true; } \
            | { grep -E '^- `자율 승인`' || true; } \
            | { grep -F '| 행위자=스테이지 |' || true; } \
-           | { grep -F "세그먼트=$seg " || true; } | gate_count)
+           | { grep -F "세그먼트=$rowseg " || true; } | gate_count)
   # `is_error` is read as well as the status and the subtype. Measured: a stage
   # that slept mid-response returned `subtype: success` WITH `is_error: true`,
   # and only the non-zero status caught it — the same object with a zero status
@@ -13388,11 +14051,11 @@ gate_record_stage_outcome() {
   fi
 
   if [ -n "$psha" ]; then
-    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+    gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "plan_sha256=$psha" "종단 부류=$klass"
   else
-    gate_append 'stage-result' "세그먼트=$seg" "스테이지=$seg" "종류=$kind" \
+    gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
       "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
   fi
@@ -14220,7 +14883,16 @@ gate_done_disposition() {
   # genuine unmet cause from this verdict, and a run with conditions actually
   # outstanding recorded itself as invalidated and stopped. Anchoring makes the
   # only line this can drop the one the gate itself writes.
-  other=$(printf '%s' "$unmet" | grep -v '^5 런 스코프 blocked 가 해소 불가입니다 ' || true)
+  #
+  # Condition 1's design-step line is dropped on the same footing, and the
+  # anchoring applies to both heads. It is the zero-segment line of a run whose
+  # design step will not be dispatched again: no segment can come into being, so
+  # the path forward is closed by construction just as condition 5's is, and
+  # what the run may record is its invalidation, never its satisfaction. The
+  # plain zero-segment line — a run that has not begun — is not dropped.
+  other=$(printf '%s' "$unmet" \
+    | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
+              -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
   printf '미충족'
 }
@@ -14264,9 +14936,57 @@ gate_done_conditions() {
   # nine — which made the very first act of every run trip the rule below that
   # demands a next obligation when everything is already done. A run with no
   # segments has not finished; it has not begun.
-  local n_seg
+  #
+  # EXCEPT IN A DESIGN-FIRST GRAPH, where that sentence is only half true. Its
+  # segments come from the frozen document's slicing, and the design step is not
+  # a segment, so a run whose design never froze has no segments and never will.
+  # Such a run is not "not begun": its design step will not be dispatched again,
+  # because its last `stage-result` row is of any class but `외부 종료`, or a
+  # document already sits at the path (a document that exists is not dispatched
+  # over), or the manifest names no document (the dispatch refuses that value).
+  # Any of the three prints a different line with its own fixed head, and
+  # `gate_done_disposition` drops that head the way it drops condition 5's — the
+  # run may then record its end, as invalidated and never as satisfied.
+  #
+  # `외부 종료` IS LEFT OUT because the routers dispatch that step again onto an
+  # absent document. The prelude's settlement writes the class about a dispatch
+  # whose process and supervisor both vanished, without looking at the document,
+  # so a stage ended before its team placed a file at the path lands here having
+  # written nothing. Reading that row as "not dispatched again" dropped this line
+  # in the one window where a retry was safe, and the run closed as invalidated
+  # instead of retrying. A file at the path still names the design step through
+  # the second reason. The LAST row decides because a step dispatched again
+  # carries one row per attempt, and only the latest says how it stands now.
+  #
+  # This does not open an empty end. The line only decides the disposition when
+  # it is the last one left: condition 7 still holds the run while the design
+  # stage is live, and condition 10 still holds it until every termination
+  # clause is settled, which on the normal path means the segments the frozen
+  # document goes on to produce. Only a router that settles the document's
+  # clauses as impossible, with evidence, leaves this line standing alone.
+  local n_seg dstep dwhy dname drows dlast
   n_seg=$(gate_rows 'segment' | gate_count)
-  [ "$n_seg" = "0" ] && printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
+  if [ "$n_seg" = "0" ]; then
+    dwhy=""
+    if dstep=$(gate_run_scope_design_step); then
+      dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
+      drows=$(gate_stage_result_rows_of "$dstep")
+      dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
+      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ]; then
+        dwhy='종단 행 있음'
+      else
+        case "$dname" in
+          '' | '없음' | '(없음)') dwhy='설계 문서 이름 없음' ;;
+          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ]; then dwhy='설계 문서가 이미 있음'; fi ;;
+        esac
+      fi
+    fi
+    if [ -n "$dwhy" ]; then
+      printf '1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$dstep" "$dwhy"
+    else
+      printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
+    fi
+  fi
   for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
     st=$(gate_segment_field "$sid" '상태')
@@ -14876,6 +15596,15 @@ gate_launch_shift() {
     return "$GATE_EXIT_APPROVAL"
   fi
 
+  # THE SHIFT'S INSTRUCTIONS — the same policy file and the same synthesis as a
+  # stage of the home target, never a narrower variant (that would be a second
+  # drift surface and a second cache head). Synthesized BEFORE the `교대 기동`
+  # row and the in-progress marker, so a refusal (127) leaves no shift on record
+  # that never started. A shift is always a new session, so there is no resume
+  # arm here.
+  local instr
+  instr=$(gate_stage_instructions_for_launch "$alias" "") || return $?
+
   local plugin_dir n rc=0
   plugin_dir=$(cd "$(dirname "$GATE_DIR")" && pwd)
   # ONE EXPRESSION OWNS THE SCALE. `gate_shift_launches` counts the rows written
@@ -14892,6 +15621,7 @@ gate_launch_shift() {
   n=$(( $(gate_shift_launches) + 1 ))
   [ "${n:-0}" -ge 1 ] || n=1
   mkdir -p "$RUN_DIR/log"
+  gate_stage_instructions_record "$(session_uuid "shift" "$n")" "$instr"
 
   # AN EXPIRY TIMESTAMP AND NOT AN EMPTY MARKER. The watcher's after-stage arm
   # reads this file to keep from calling a shift "router silent after a stage
@@ -14950,6 +15680,7 @@ gate_launch_shift() {
   bash "$wrapper" \
     --settings "$(gate_settings_file shift)" \
     --plugin-dir "$plugin_dir" \
+    --instructions "$instr" \
     --session-id "$(session_uuid "shift" "$n")" \
     -- "$@" > "$RUN_DIR/log/shift-$n.json" 2> "$RUN_DIR/log/shift-$n.err" < /dev/null &
   # BACKGROUNDED SO THERE IS A PID TO RECORD, then waited on — the call still

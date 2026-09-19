@@ -78,7 +78,31 @@ export CC_CMDS_SESSION_NOTIFY
 # so an inherited marker would turn every B1 fixture below into a stage call
 # that judges nothing, and the suite would report the boundary as silent.
 # Sections that need a seat set it explicitly on the call.
-unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+#
+# `GATE_ACT_CWD` GOES WITH THEM, and it is the one whose absence was MEASURED as
+# a defect rather than reasoned about. A target-undeclared `act` does not choose
+# a working directory, so it runs in whatever `GATE_ACT_CWD` it inherited — and
+# an outer `gate.sh exec` exports that variable pointing at the main worktree.
+# The result was 35 empty commits on the installed checkout's local `master`
+# since 09-12, which left it ahead of `origin` 70% of the time and broke the
+# `git pull --ff-only` every apply in this tree uses. The value is captured
+# first so a failure can say what was inherited.
+GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
+unset CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID GATE_ACT_CWD
+# VERSION PINNING IS OFF FOR THE WHOLE SUITE, and this seam only ever turns off
+# the taking of a NEW pin — it can never make the gate ignore one that exists.
+# Every fixture run below would otherwise copy the plugin root into its fixture
+# run directory and hop into it, which changes nothing the existing sections
+# assert and costs a copy each. Section 57 unsets it for its own calls, which is
+# the only place pinning is exercised.
+#
+# THE HOP IS AN `exec`, SO `gate_inproc` MUST STAY A SUBSHELL. It is one today —
+# the body is wrapped in `( … )` — which is what keeps a pinned run's hop from
+# replacing this harness process itself. Do not add a non-subshell direct call to
+# `gate_main` to this file; section 57 asserts the subshell so the day somebody
+# does, a test says so rather than the suite vanishing mid-run.
+CC_GATE_PIN_DISABLE=1
+export CC_GATE_PIN_DISABLE
 # AUTO-RESOLUTION IS OFF FOR THIS WHOLE PROCESS. Most assertions here pin the
 # approval lifecycle a person drives — issue, wait, close — and that lifecycle
 # is still what the gate does with the switch off. The auto-resolving path is
@@ -1078,6 +1102,14 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/claude-noop"
 chmod +x "$WORK/bin/claude-noop"
 export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 
+# THE HOST MAP IS OFF FOR THIS WHOLE PROCESS, for the same reason as the CLI
+# above: every stage launch synthesizes the target's instruction chain and reads
+# `~/.config/cc-cmds/stage-policy-sources` to decide what to leave out, and this
+# suite does not isolate `HOME`. A map on the developer's machine would change
+# what a launch injects and make a fixture pass or fail by host. The sections
+# that test the map name their own fixture map on the call, which wins over this.
+export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -1847,6 +1879,66 @@ pre_base() {
     mv "$out" "$FX_MANIFEST"
     refresh_bd
   }
+
+  # THE CLI-SHAPED STUB IS A DEFINITION, so it lives here: 14h launches through
+  # it and 14g resumes through it, and a cut of 14g alone died on `STUB: unbound
+  # variable` while it sat in 14h's body. It records the argv it was handed and
+  # the two discovery switches in its environment, then emits one result line.
+  # With `CC_STUB_ECHO_SID=1` the result's `session_id` is the `--session-id` or
+  # `-r` value on the argv, which is what the real CLI answers — the resume
+  # fixtures need the ledger's session id to be the one the gate recorded its
+  # instructions under. What is under test is the gate's launch path, not the CLI.
+  STUB="$WORK/stub-cli"
+  cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
+{ printf 'MDS=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}"
+  printf 'MEM=%s\n' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-unset}"; } > "${CC_STUB_ENV_OUT:-/dev/null}"
+sid=stub-session
+if [ "${CC_STUB_ECHO_SID:-}" = 1 ]; then
+  prev=""
+  for a in "$@"; do
+    case "$prev" in --session-id|-r) sid="$a" ;; esac
+    prev="$a"
+  done
+fi
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"session_id":"%s","num_turns":1}\n' "$sid"
+exit 0
+STUBEOF
+  chmod +x "$STUB"
+
+  # si_argv_value <argv-file> <flag> — the token after <flag> in a recorded argv.
+  si_argv_value() {
+    tr ' ' '\n' < "$1" | awk -v k="$2" '$0 == k { getline; print; exit }'
+  }
+  # si_argv_has <argv-file> <token> — count of that exact token in the argv.
+  si_argv_has() {
+    tr ' ' '\n' < "$1" | grep -cx -F -- "$2" || true
+  }
+  # si_gate_nopolicy — a copy of the orchestrator directory WITHOUT
+  # `stage-policy.md`, printed. A launcher that reaches the wrapper without the
+  # policy is the failure both 14h and 34 refuse, and the only way to reach it
+  # through the real launch path is a gate whose own directory lacks the file.
+  si_gate_nopolicy() {
+    if [ ! -f "$WORK/gate-nopolicy/gate.sh" ]; then
+      rm -rf "$WORK/gate-nopolicy"
+      cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$WORK/gate-nopolicy"
+      rm -f "$WORK/gate-nopolicy/stage-policy.md"
+    fi
+    printf '%s/gate.sh' "$WORK/gate-nopolicy"
+  }
+  # si_synth <manifest> <run-dir> <alias> [VAR=value ...] — call the gate's
+  # synthesis function directly in a fresh gate process. Prints the file path;
+  # the gate's log and warn lines go to stderr; the status is the function's.
+  # `SI_GATE_DIR` re-points the policy lookup after sourcing.
+  si_synth() {
+    local m="$1" rd="$2" a="$3"; shift 3
+    ( cd "$WT" && env "$@" bash -c '
+        CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+        MANIFEST="$2"; RUN_DIR="$3"
+        [ -z "${SI_GATE_DIR:-}" ] || GATE_DIR="$SI_GATE_DIR"
+        gate_stage_instructions "$4"' _ "$GATE" "$m" "$rd" "$a" )
+  }
 }
 pre_base
 
@@ -1905,7 +1997,7 @@ drain_act() {
 unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
       CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
       CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-      CC_PIPELINE_PARENT_SESSION
+      CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
@@ -1926,10 +2018,16 @@ pre_cone() {
   unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST \
         CC_PIPELINE_LEDGER CC_PIPELINE_GRANT CC_PIPELINE_GATE \
         CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID \
-        CC_PIPELINE_PARENT_SESSION
+        CC_PIPELINE_PARENT_SESSION GATE_ACT_CWD
 
   CONE_RUN_ID=R3
   prev_run_id=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+  # The DONE run's id is a DEFINITION as well: 31al assigns it in its body and
+  # 34's collision guard reads it, so a cut naming 34 without 31al died on
+  # `DONE_RUN_ID: unbound variable` before its first assertion. 31al keeps its
+  # own assignment; the two must agree, and the guard below 31al's is what says
+  # so when they do not.
+  DONE_RUN_ID=R4
   # A BROKEN FIXTURE EXITS RATHER THAN ASSERTING — the idiom `nm_add_auth_row` and
   # `refresh_bd` already use. The id has to differ because the id is what splits
   # the ledger: an inherited one would merge this section's rows into the previous
@@ -5002,7 +5100,7 @@ fi
 # dispatch act carries the router's `--resume` into the launch token's second
 # line, and the detached supervisor reads it back and hands it to the wrapper.
 # Either half alone is a resume path that ends in the middle.
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"${GATE_RESUME:-}" > "$tmp"' \
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"${GATE_RESUME:-}" "$instr" > "$tmp"' \
    && grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F '"--resume $resume"'; then
   ok "게이트가 래퍼에 --resume 을 넘길 수 있다"
 else
@@ -5034,6 +5132,97 @@ case "$msg" in
   *) bad "재개 거부 문면" "$(printf '%s' "$msg" | tr '\n' ' ')" ;;
 esac
 
+# --- A RESUME FOLLOWS THE SESSION'S OWN INSTRUCTIONS RECORD -------------------
+#
+# A session born under automatic CLAUDE.md loading and resumed with the
+# switch-off plus a new append sees neither the old CLAUDE.md nor the new
+# policy (measured; `--system-prompt-snapshot off` does not repair it), and a
+# resumed main session keeps the append it was born with while members spawned
+# after the resume take the new subagent append. So the gate records, per new
+# session, which synthesis it was launched with, and a resume follows that
+# record: the recorded file when it exists (even after the synthesis moved),
+# the current synthesis when the recorded file is gone, and legacy mode — no
+# option at all — for a session with no record. Driven through the real launch
+# path with the stub CLI echoing the session id the gate handed it, so the
+# ledger's `세션 id` is the name the record was written under.
+printf '# resume fixture root\n\nSG-ROOT-CANARY-4T\n' > "$WT/CLAUDE.md"
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SG --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+sg_launch() {  # sg_launch <argv-out> <env-out> [--resume <id>] — a stub launch of SG, waited on
+  local argv_out="$1" env_out="$2"; shift 2
+  out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ECHO_SID=1 \
+        CC_STUB_ARGV_OUT="$argv_out" CC_STUB_ENV_OUT="$env_out" \
+        bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SG \
+        --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x "$@" \
+        -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+  ( cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SG --interval 1 --timeout 60 >/dev/null 2>&1 )
+}
+sg_launch "$WORK/sg-argv-0.txt" "$WORK/sg-env-0.txt"
+check "재개 픽스처의 첫 기동이 끝까지 간다" "$rc" "0"
+sg_sid=$( { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | grep -F '세그먼트=SG ' | tail -1 \
+          | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
+sg_f0=$(si_argv_value "$WORK/sg-argv-0.txt" --append-system-prompt-file)
+check "첫 기동의 세션 id 가 게이트가 넘긴 것이다 (스텁이 되돌려 준다)" "$(si_argv_value "$WORK/sg-argv-0.txt" --session-id)" "$sg_sid"
+sg_sha0=$(cat "$RD/instructions/session/$sg_sid" 2>/dev/null | tr -d '[:space:]')
+check "그 세션의 기록이 합성 sha256 을 담는다" "$sg_sha0" "$(basename "$sg_f0" .md)"
+# Record present, synthesis unchanged: the resume carries the same file.
+sg_launch "$WORK/sg-argv-1.txt" "$WORK/sg-env-1.txt" --resume "$sg_sid"
+check "기록 있는 세션의 재개가 끝까지 간다" "$rc" "0"
+check "재개 argv 가 -r 로 그 세션을 잇는다" "$(si_argv_value "$WORK/sg-argv-1.txt" -r)" "$sg_sid"
+check "기록 있는 세션의 재개는 append 플래그를 받는다 — 기록된 파일로" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-system-prompt-file)" "$sg_f0"
+check "서브에이전트 append 도 같은 파일이다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_f0"
+check "재개 환경에도 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-1.txt")" "1"
+# The synthesis moved since the session was born: the resume still carries the
+# RECORDED file, and says so beside the per-launch digest line.
+printf 'a rule added after the session was born\n' >> "$WT/CLAUDE.md"
+sg_launch "$WORK/sg-argv-2.txt" "$WORK/sg-env-2.txt" --resume "$sg_sid"
+check "합성본이 바뀐 뒤의 재개도 끝까지 간다" "$rc" "0"
+check "합성본이 바뀌어도 재개는 기록된 파일을 넘긴다" "$(si_argv_value "$WORK/sg-argv-2.txt" --append-system-prompt-file)" "$sg_f0"
+case "$out" in
+  *"stage instructions: infra sha256="*"keeping the recorded file"*) ok "다이제스트 log 와 「기록된 파일 유지」 log 두 줄이 남는다" ;;
+  *) bad "재개 log" "$(printf '%s' "$out" | grep 'stage instructions' | tr '\n' ' ')" ;;
+esac
+# The recorded file is gone from disk: the current synthesis stands in.
+sg_cur=$(si_synth "$FX_MANIFEST" "$RD" infra 2>/dev/null)
+printf '%s\n' "0000000000000000000000000000000000000000000000000000000000000000" > "$RD/instructions/session/$sg_sid"
+sg_launch "$WORK/sg-argv-3.txt" "$WORK/sg-env-3.txt" --resume "$sg_sid"
+check "기록된 파일이 디스크에 없으면 현재 합성본을 넘긴다" "$(si_argv_value "$WORK/sg-argv-3.txt" --append-system-prompt-file)" "$sg_cur"
+case "$out" in
+  *"is gone; passing the current synthesis"*) ok "그 사실을 log 한다" ;;
+  *) bad "기록 파일 부재 log" "$(printf '%s' "$out" | grep 'stage instructions' | tr '\n' ' ')" ;;
+esac
+# No record at all — a session born before this mechanism: legacy mode.
+rm -f "$RD/instructions/session/$sg_sid"
+sg_launch "$WORK/sg-argv-4.txt" "$WORK/sg-env-4.txt" --resume "$sg_sid"
+check "기록 없는 세션의 재개가 끝까지 간다" "$rc" "0"
+check "기록 없는 세션의 재개는 append 플래그를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-4.txt" --append-system-prompt-file)" "0"
+check "서브에이전트 append 도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --append-subagent-system-prompt-file)" "0"
+check "동적 절 제외도 없다" "$(si_argv_has "$WORK/sg-argv-4.txt" --exclude-dynamic-system-prompt-sections)" "0"
+check "그 환경에는 끄기 변수가 없다 — 옛 방식 그대로" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-4.txt")" "unset"
+case "$out" in
+  *"launching in legacy mode"*) ok "옛 방식 재개를 log 한다" ;;
+  *) bad "옛 방식 log" "$(printf '%s' "$out" | grep -i 'legacy\|stage instructions' | tr '\n' ' ')" ;;
+esac
+check "재개는 새 세션 기록을 만들지 않는다" "$( [ -e "$RD/instructions/session/$sg_sid" ] && printf 'written' || printf 'none' )" "none"
+# The assertion above runs in a shell where the switch was never set, so it
+# cannot see the channel that actually carries it. The wrapper `export`s the
+# variable on its injecting branches and `exec`s the CLI, and the CLI hands its
+# own environment to every child it spawns — so a seat that was itself launched
+# with instructions passes the variable down to an old-style resume it
+# dispatches. Argv alone cannot tell the two apart: both legacy launches expand
+# no `--append-...` flag, and only the environment says whether discovery is off.
+# Run the same legacy resume with the variable exported by the caller.
+export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+sg_launch "$WORK/sg-argv-5.txt" "$WORK/sg-env-5.txt" --resume "$sg_sid"
+unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+check "물려받은 끄기 변수가 서 있어도 옛 방식 재개가 끝까지 간다" "$rc" "0"
+check "옛 방식 재개는 물려받은 끄기 변수를 지운다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-5.txt")" "unset"
+check "그 재개도 append 플래그를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-system-prompt-file)" "0"
+check "그 재개도 서브에이전트 append 를 받지 않는다" "$(si_argv_has "$WORK/sg-argv-5.txt" --append-subagent-system-prompt-file)" "0"
+rm -f "$WT/CLAUDE.md"
+
 # ---------------------------------------------------------------------------
 # 14h. The launch path is actually ENTERED, with a stub CLI
 # --- section: 14h | group: base | covers: snapshot, act | anchors: 스텁 CLI 로 스테이지 기동이 끝까지 간다 ---
@@ -5046,18 +5235,22 @@ esac
 # leaving `--plugin-dir "$plugin_dir"` behind. Under `set -u` that killed every
 # stage dispatch, and the suite stayed green.
 #
-# The stub is a CLI-shaped script: it prints one stream-json result line and
-# exits. What is under test is the gate's launch path, not the CLI.
+# The stub is a CLI-shaped script (`$STUB`, defined in the prelude): it records
+# its argv and environment, prints one stream-json result line and exits. What
+# is under test is the gate's launch path, not the CLI.
+#
+# THE INSTRUCTION CHAIN THE LAUNCH SYNTHESIZES needs something to find: the
+# fixture repository has no `CLAUDE.md`, and a chain with no repository file
+# cannot show the root label, the ancestor order or the exclusion. So the
+# target's main worktree gets a root file and its parent an ancestor file, each
+# with a canary, BEFORE the launch; the block at the end of this section removes
+# both. `WORKP` is the physical spelling of `$WORK`, because the chain labels
+# ancestors by physical path and on macOS `mktemp -d` under `TMPDIR` answers the
+# `/var/…` symlink spelling.
 # ---------------------------------------------------------------------------
-STUB="$WORK/stub-cli"
-cat > "$STUB" <<'STUBEOF'
-#!/usr/bin/env bash
-# A CLI-shaped stub. Records the argv it was handed, then emits one result line.
-printf '%s\n' "$*" > "${CC_STUB_ARGV_OUT:-/dev/null}"
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"session_id":"stub-session","num_turns":1}\n'
-exit 0
-STUBEOF
-chmod +x "$STUB"
+WORKP=$(cd "$WORK" && pwd -P)
+printf '# fixture root instructions\n\nSI-ROOT-CANARY-7Q\n' > "$WT/CLAUDE.md"
+printf '# fixture ancestor instructions\n\nSI-ANCESTOR-CANARY-3K\n' > "$WORK/CLAUDE.md"
 
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
@@ -5068,6 +5261,7 @@ H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq 
 # gate sourced at the head. `gate_inproc` refuses the call rather than launching
 # the wrong binary; a process reads it fresh.
 out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv.txt" \
+      CC_STUB_ENV_OUT="$WORK/stub-env.txt" \
       bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL \
       --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
       -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
@@ -5142,6 +5336,284 @@ case "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" in
   *"세션 id=stub-session"*) ok "결과 기록기가 이 파견이 실제로 쓴 전사에서 세션 id 를 읽는다" ;;
   *) bad "종단 기록" "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" ;;
 esac
+
+# --- STAGE INSTRUCTIONS: what the launch injected in place of CLAUDE.md -------
+#
+# The launch above ran with automatic CLAUDE.md discovery switched off and the
+# gate's synthesized instructions appended in its place; the stub's recorded
+# argv and environment are the evidence, and the file the argv names is read
+# back. Every assertion here is on what reached the CLI, not on the gate's text.
+SI_POLICY="$repo_root/plugins/cc-cmds/orchestrator/stage-policy.md"
+SI_F=$(si_argv_value "$WORK/stub-argv.txt" --append-system-prompt-file)
+SI_SUB=$(si_argv_value "$WORK/stub-argv.txt" --append-subagent-system-prompt-file)
+check "기동 argv 의 메인·서브에이전트 append 플래그가 같은 파일을 가리킨다" "$SI_SUB" "$SI_F"
+case "$SI_F" in
+  "$RD_SL/instructions/"*.md)
+    si_base=$(basename "$SI_F" .md)
+    if [[ "$si_base" =~ ^[0-9a-f]{64}$ ]]; then
+      ok "합성 파일은 런 디렉터리 instructions/ 아래 내용 주소(<sha256>.md)다"
+    else
+      bad "합성 파일 이름" "$SI_F"
+    fi ;;
+  *) bad "합성 파일 위치" "$SI_F — \$RUN_DIR/instructions/ 아래가 아니다" ;;
+esac
+check "동적 절 제외 플래그가 argv 에 있다" "$(si_argv_has "$WORK/stub-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
+check "스텁 환경에 CLAUDE.md 자동 로딩 끄기가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/stub-env.txt")" "1"
+check "자동 메모리는 끄지 않는다 (환경에 그 변수가 없다)" "$(sed -n 's/^MEM=//p' "$WORK/stub-env.txt")" "unset"
+if [ -f "$SI_F" ] && head -c "$(wc -c < "$SI_POLICY" | tr -d ' ')" "$SI_F" | cmp -s - "$SI_POLICY"; then
+  ok "합성 파일은 정책 바이트로 시작한다"
+else
+  bad "합성 파일 머리" "정책 바이트로 시작하지 않는다: $SI_F"
+fi
+check "합성 파일이 대상 루트 CLAUDE.md 를 담는다" "$(grep -c 'SI-ROOT-CANARY-7Q' "$SI_F" 2>/dev/null || true)" "1"
+check "합성 파일이 조상 CLAUDE.md 도 담는다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$SI_F" 2>/dev/null || true)" "1"
+check "대상 루트 파일의 라벨은 매니페스트의 원격 슬러그로 만든다" \
+  "$(grep -c -x -F '# t/infra/CLAUDE.md' "$SI_F" 2>/dev/null || true)" "1"
+si_anc_ln=$(grep -n -x -F "# $WORKP/CLAUDE.md" "$SI_F" | cut -d: -f1 | head -1)
+si_root_ln=$(grep -n -x -F '# t/infra/CLAUDE.md' "$SI_F" | cut -d: -f1 | head -1)
+if [ -n "$si_anc_ln" ] && [ -n "$si_root_ln" ] && [ "$si_anc_ln" -lt "$si_root_ln" ]; then
+  ok "조상이 루트 우선으로 앞에 오고 대상 루트 파일이 마지막이다"
+else
+  bad "체인 순서" "조상 $si_anc_ln · 루트 $si_root_ln"
+fi
+case "$out" in
+  *"stage instructions: infra sha256=$si_base"*) ok "기동마다 합성 다이제스트를 log 한 줄로 남긴다" ;;
+  *) bad "다이제스트 log" "$(printf '%s' "$out" | grep 'stage instructions' | tr '\n' ' ')" ;;
+esac
+si_sid=$(si_argv_value "$WORK/stub-argv.txt" --session-id)
+check "새 기동은 세션별 기록에 합성 sha256 을 남긴다" \
+  "$(cat "$RD_SL/instructions/session/$si_sid" 2>/dev/null | tr -d '[:space:]')" "$si_base"
+check "게시 뒤 instructions/ 에 임시 파일이 남지 않는다" \
+  "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
+# No volatile token: the same bytes for every stage of this target in this run.
+check "합성 파일에 런 id·세그먼트·시도가 들어 있지 않다" \
+  "$(grep -cE 'R1|SL#|세그먼트|attempt' "$SI_F" 2>/dev/null || true)" "0"
+
+# --- THE SYNTHESIS CALLED DIRECTLY: determinism, the host map, the refusals ---
+#
+# The launch path above shows one synthesis; the cases below drive the function
+# itself in a fresh gate process (`si_synth`) so that each map guard and each
+# refusal can be exercised without a dispatch per case.
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "직접 호출한 합성이 기동이 넘긴 것과 같은 파일이다 (결정성)" "$si_out" "$SI_F"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>/dev/null); si_rc=$?
+check "같은 별칭의 두 번째 합성도 같은 경로다" "$si_out" "$SI_F"
+check "두 번째 합성 뒤에도 임시 파일이 남지 않는다 (mv -n 이 건너뛴 사본을 지운다)" \
+  "$( { ls "$RD_SL"/instructions/.stage.* 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# Host map, guard by guard. `WORKP` spellings in the map, because the map is
+# compared physically; the chain-side normalization gets its own case below.
+printf 'workspace\t%s/CLAUDE.md\n' "$WORKP" > "$WORK/map-anc"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-anc" 2>"$WORK/si-err.txt"); si_rc=$?
+check "맵이 조상 파일을 지목하면 합성이 성공한다" "$si_rc" "0"
+check "그 조상 파일이 합성에서 빠진다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$si_out" 2>/dev/null || true)" "0"
+check "루트 파일은 그대로 들어 있다" "$(grep -c 'SI-ROOT-CANARY-7Q' "$si_out" 2>/dev/null || true)" "1"
+mkdir -p "$WORK/elsewhere"; printf 'not in any chain\n' > "$WORK/elsewhere/CLAUDE.md"
+printf 'other\t%s/elsewhere/CLAUDE.md\n' "$WORKP" > "$WORK/map-outside"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-outside" 2>/dev/null); si_rc=$?
+check "체인 밖 경로를 지목한 맵은 무시된다 (합성이 맵 없을 때와 같다)" "$si_out" "$SI_F"
+printf 'root\t%s/CLAUDE.md\n' "$WT" > "$WORK/map-root"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-root" 2>"$WORK/si-err.txt"); si_rc=$?
+check "대상 루트 파일을 지목한 맵은 거부된다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *"cannot be excluded"*) ok "거부가 레포 규칙은 제외할 수 없다고 말한다" ;;
+  *) bad "루트 제외 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+printf 'nope %s/CLAUDE.md\n' "$WORKP" > "$WORK/map-bad"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-bad" 2>"$WORK/si-err.txt"); si_rc=$?
+check "TAB 없는 맵 줄은 거부된다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *"line 1 has no TAB"*) ok "거부가 줄 번호를 지목한다" ;;
+  *) bad "형식 오류 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+printf 'ws\t%s/no/such/CLAUDE.md\n' "$WORKP" > "$WORK/map-gone"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-gone" 2>"$WORK/si-err.txt"); si_rc=$?
+check "디스크에 없는 경로는 거부하지 않는다" "$si_rc" "0"
+check "그때 합성은 맵 없을 때와 같다 (추가 제외 없음)" "$si_out" "$SI_F"
+case "$(cat "$WORK/si-err.txt")" in
+  *"is not on disk, nothing excluded"*) ok "디스크 부재는 log 한 줄로만 남는다" ;;
+  *) bad "디스크 부재 log" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map" 2>/dev/null); si_rc=$?
+check "맵이 없으면 아무것도 제외하지 않는다" "$si_out" "$SI_F"
+# Physical-path normalization on BOTH sides: a map spelled through a symlink
+# still excludes the ancestor, and a chain reached through a symlinked main
+# worktree is still matched by a physically spelled map line. A fixture of its
+# own: `anc/real/wt` is the main worktree, `anc/real/CLAUDE.md` the ancestor,
+# and `anc/link` a symlink to `anc/real`.
+mkdir -p "$WORK/anc/real/wt"
+printf 'SI-SYMANC-CANARY-8R\n' > "$WORK/anc/real/CLAUDE.md"
+ln -s "$WORKP/anc/real" "$WORK/anc/link"
+sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트리=$WORK/anc/real/wt #" "$FX_MANIFEST" > "$WORK/plan-symanc.md"
+printf 'workspace\t%s/anc/link/CLAUDE.md\n' "$WORK" > "$WORK/map-sym"
+si_out=$(si_synth "$WORK/plan-symanc.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map" 2>/dev/null); si_rc=$?
+check "대조군: 맵 없이는 그 조상이 들어간다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "1"
+si_out=$(si_synth "$WORK/plan-symanc.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-sym" 2>/dev/null); si_rc=$?
+check "심링크 철자의 맵 줄도 그 조상을 제외한다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "0"
+sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트리=$WORK/anc/link/wt #" "$FX_MANIFEST" > "$WORK/plan-symroot.md"
+printf 'workspace\t%s/anc/real/CLAUDE.md\n' "$WORKP" > "$WORK/map-physanc"
+si_out=$(si_synth "$WORK/plan-symroot.md" "$RD_SL" infra CC_GATE_STAGE_POLICY_SOURCES="$WORK/map-physanc" 2>/dev/null); si_rc=$?
+check "심링크를 거친 메인 워크트리의 체인도 물리 철자의 맵 줄에 맞는다" "$(grep -c 'SI-SYMANC-CANARY-8R' "$si_out" 2>/dev/null || true)" "0"
+
+# Refusals, each restoring the fixture afterwards.
+mkdir -p "$WORK/.claude/rules"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "체인 안 .claude/rules/ 는 기동을 거부한다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *".claude/rules/ exists"*) ok "거부가 rules 디렉터리를 지목한다" ;;
+  *) bad "rules 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# A refused launch through the REAL path: no attempt pin, no session record, no
+# stub, rc 127 — the synthesis runs before every side effect of the dispatch.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL2 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl2.txt"
+si_rec0=$( { ls "$RD_SL"/instructions/session 2>/dev/null || true; } | grep -c . || true)
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl2.txt" \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL2 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "거부된 기동은 127 로 돌아온다" "$rc" "127"
+check "거부된 기동은 시도 번호 핀을 남기지 않는다" "$( [ -e "$RD_SL/SL2.attempt" ] && printf 'pinned' || printf 'none' )" "none"
+check "거부된 기동은 세션 기록을 남기지 않는다" \
+  "$( { ls "$RD_SL"/instructions/session 2>/dev/null || true; } | grep -c . || true)" "$si_rec0"
+check "거부된 기동은 스텁 CLI 를 실행하지 않는다" "$( [ -e "$WORK/stub-argv-sl2.txt" ] && printf 'ran' || printf 'not run' )" "not run"
+rmdir "$WORK/.claude/rules" "$WORK/.claude"
+cp "$WORK/CLAUDE.md" "$WORK/CLAUDE.md.keep"
+printf '@./x.md\n' >> "$WORK/CLAUDE.md"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "펜스 밖 @import 줄은 기동을 거부한다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *"@import line outside a code fence"*) ok "거부가 파일과 줄을 지목한다" ;;
+  *) bad "@import 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+cp "$WORK/CLAUDE.md.keep" "$WORK/CLAUDE.md"
+printf '@Transactional is an annotation\n\n```\n@./x.md\n```\n' >> "$WORK/CLAUDE.md"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "@Transactional 과 펜스 안의 @import 는 통과한다" "$si_rc" "0"
+cp "$WORK/CLAUDE.md.keep" "$WORK/CLAUDE.md"; rm -f "$WORK/CLAUDE.md.keep"
+# The user-scope settings directory sitting IN the chain: `HOME` is made an
+# ancestor and `CLAUDE_CONFIG_DIR` cleared, so `$HOME/.claude` is the user-scope
+# directory. Its `CLAUDE.md` is what the policy replaces and its `rules/` are
+# user rules, so neither is injected and neither refuses.
+mkdir -p "$WORK/.claude/rules"
+printf 'SI-USERSCOPE-CANARY-5M\n' > "$WORK/.claude/CLAUDE.md"
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra HOME="$WORK" CLAUDE_CONFIG_DIR= 2>"$WORK/si-err.txt"); si_rc=$?
+check "홈이 체인 조상일 때 사용자 범위 rules/ 는 거부하지 않는다" "$si_rc" "0"
+check "그 사용자 범위 CLAUDE.md 는 합성에 들어가지 않는다" "$(grep -c 'SI-USERSCOPE-CANARY-5M' "$si_out" 2>/dev/null || true)" "0"
+check "같은 디렉터리의 평범한 CLAUDE.md 는 평소대로 들어간다" "$(grep -c 'SI-ANCESTOR-CANARY-3K' "$si_out" 2>/dev/null || true)" "1"
+rm -rf "$WORK/.claude"
+
+# Fail closed: a missing policy, an empty or non-directory main worktree.
+si_out=$(si_synth "$FX_MANIFEST" "$RD_SL" infra SI_GATE_DIR="$WORK/no-such-gate-dir" 2>"$WORK/si-err.txt"); si_rc=$?
+check "정책 파일이 없으면 합성을 거부한다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *"automatic CLAUDE.md loading is not a fallback"*) ok "거부가 자동 로딩으로 되돌아가지 않는다고 말한다" ;;
+  *) bad "정책 부재 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# And through the real launch path with a gate copy that lacks the policy: the
+# stub is never run and no pin is left.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL3 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl3.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl3.txt" \
+      bash "$(si_gate_nopolicy)" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL3 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "정책 파일 없는 게이트의 기동은 127 이다" "$rc" "127"
+check "그 기동은 스텁 CLI 를 실행하지 않는다" "$( [ -e "$WORK/stub-argv-sl3.txt" ] && printf 'ran' || printf 'not run' )" "not run"
+check "그 기동은 시도 번호 핀을 남기지 않는다" "$( [ -e "$RD_SL/SL3.attempt" ] && printf 'pinned' || printf 'none' )" "none"
+sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트리= #" "$FX_MANIFEST" > "$WORK/plan-nomain.md"
+si_out=$(si_synth "$WORK/plan-nomain.md" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "메인 워크트리가 빈 대상은 거부한다 (127)" "$si_rc" "127"
+sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트리=$WORK/not-a-dir #" "$FX_MANIFEST" > "$WORK/plan-nodir.md"
+si_out=$(si_synth "$WORK/plan-nodir.md" "$RD_SL" infra 2>"$WORK/si-err.txt"); si_rc=$?
+check "메인 워크트리가 디렉터리가 아닌 대상은 거부한다 (127)" "$si_rc" "127"
+case "$(cat "$WORK/si-err.txt")" in
+  *"no usable main worktree"*) ok "거부가 빈 체인의 위험을 말한다" ;;
+  *) bad "메인 워크트리 거부 문면" "$(tr '\n' ' ' < "$WORK/si-err.txt")" ;;
+esac
+# The chain is read from the MAIN worktree, so an edit to the execution
+# worktree's file changes nothing. Measured with a manifest whose main worktree
+# is a separate directory, because in this fixture the two coincide.
+mkdir -p "$WORK/mainx"; printf 'SI-MAINX-CANARY-2Z\n' > "$WORK/mainx/CLAUDE.md"
+sed "s#별칭=infra | 메인 워크트리=$WT #별칭=infra | 메인 워크트리=$WORK/mainx #" "$FX_MANIFEST" > "$WORK/plan-mainx.md"
+si_mx0=$(si_synth "$WORK/plan-mainx.md" "$RD_SL" infra 2>/dev/null)
+printf 'edited in the execution worktree\n' >> "$WT/CLAUDE.md"
+si_mx1=$(si_synth "$WORK/plan-mainx.md" "$RD_SL" infra 2>/dev/null)
+check "실행 워크트리의 CLAUDE.md 를 고쳐도 합성은 바뀌지 않는다" "$si_mx1" "$si_mx0"
+check "그 합성은 메인 워크트리의 파일을 담는다" "$(grep -c 'SI-MAINX-CANARY-2Z' "$si_mx0" 2>/dev/null || true)" "1"
+# The enforcement-surface digest does not move when a synthesis lands: the
+# file sits under `instructions/`, outside every digest input.
+si_dig=$(cd "$WT" && bash -c '
+  CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null
+  MANIFEST="$2"; RUN_DIR="$3"
+  d0=$(gate_surface_digest_raw); printf "x\n" >> "$4/CLAUDE.md"
+  gate_stage_instructions infra >/dev/null 2>&1
+  d1=$(gate_surface_digest_raw)
+  [ "$d0" = "$d1" ] && printf same || printf moved' _ "$GATE" "$FX_MANIFEST" "$RD_SL" "$WORK")
+check "합성 파일 생성은 강제 표면 다이제스트를 움직이지 않는다" "$si_dig" "same"
+
+# Traversal equivalence with the CLAUDE.md read allow-list: the rendered
+# `Read(/<d>/CLAUDE.md)` set minus the user-scope entry equals the ancestor set
+# the synthesis walks (the two loops run in opposite orders, so sets compare).
+si_cfg="${CLAUDE_CONFIG_DIR:-}"; [ -n "$si_cfg" ] || si_cfg="${HOME:-}/.claude"; si_cfg="${si_cfg%/}"
+si_allow=$(jq -r '.permissions.allow[]? | select(startswith("Read(/"))' "$SETTINGS_DIR/generic.json" 2>/dev/null \
+  | sed -e 's#^Read(/##' -e 's#/CLAUDE\.md)$##' | grep -v -x -F -- "$si_cfg" | LC_ALL=C sort)
+si_anc=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs "$2"' _ "$GATE" "$WT" | LC_ALL=C sort)
+check "합성의 조상 순회와 설정의 CLAUDE.md 읽기 목록이 같은 디렉터리 집합이다" "$si_anc" "$si_allow"
+si_first=$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs "$2"' _ "$GATE" "$WT"); si_first=${si_first%%$'\n'*}
+check "조상 순회는 루트 우선이고 / 자체는 빼며 상대 경로에는 아무것도 내지 않는다" \
+  "$si_first:$(cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_ancestor_dirs rel/x; gate_ancestor_dirs /' _ "$GATE" | grep -c . || true)" \
+  "/$(printf '%s' "$WT" | cut -d/ -f2):0"
+
+# The wrapper on its own: the option and the reserved flags.
+SI_WRAP="$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh"
+SI_SET="$SETTINGS_DIR/generic.json"
+si_wrap() {
+  ( cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/wrap-argv.txt" \
+    bash "$SI_WRAP" "$@" >/dev/null 2>"$WORK/wrap-err.txt" )
+}
+si_reserved_ok=0; si_reserved_bad=""
+for si_flag in --append-system-prompt --append-system-prompt-file --append-subagent-system-prompt \
+               --append-subagent-system-prompt-file --system-prompt --system-prompt-file \
+               --setting-sources --bare --exclude-dynamic-system-prompt-sections; do
+  si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag" y; si_rc=$?
+  [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag=$si_rc"
+  si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag=z"; si_rc=$?
+  [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag==$si_rc"
+done
+check "래퍼는 --instructions 와 함께 온 예약 플래그 9종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "18:"
+case "$(cat "$WORK/wrap-err.txt")" in
+  *"reserved flag after --"*) ok "거부가 예약 플래그라고 말한다" ;;
+  *) bad "예약 플래그 거부 문면" "$(tr '\n' ' ' < "$WORK/wrap-err.txt")" ;;
+esac
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$WORK/no-such-instructions" -- -p a; si_rc=$?
+check "없는 지침 파일은 exit 2 다" "$si_rc" "2"
+: > "$WORK/empty-instructions"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$WORK/empty-instructions" -- -p a; si_rc=$?
+check "빈 지침 파일도 exit 2 다" "$si_rc" "2"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x -- -p a b; si_rc=$?
+check "--instructions 없는 래퍼 argv 는 오늘과 바이트 동일하다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config -p a b"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p a b; si_rc=$?
+check "--instructions 가 있으면 두 append 와 동적 절 제외가 --strict-mcp-config 뒤에 붙는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a b"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" -- -p a; si_rc=$?
+check "재개 분기도 같은 플래그를 받는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+# Source order in the launcher: the synthesis sits before the attempt pin, so a
+# refusal consumes no attempt number.
+ord_synth=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'gate_stage_instructions_for_launch' | sed 's/:.*//' | tail -1)
+ord_pin=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'attempt=$(gate_pin_attempt' | sed 's/:.*//' | tail -1)
+if [ -n "$ord_synth" ] && [ -n "$ord_pin" ] && [ "$ord_synth" -lt "$ord_pin" ]; then
+  ok "합성이 시도 번호 핀보다 먼저 온다"
+else
+  bad "합성 순서" "합성 $ord_synth · 핀 $ord_pin"
+fi
+rm -f "$WT/CLAUDE.md" "$WORK/CLAUDE.md"
 
 # ---------------------------------------------------------------------------
 # 14i. The render answers "is this still going?"
@@ -5842,6 +6314,394 @@ case "$msg" in
   *"아직 착지하지 않았습니다"*) ok "그 거절이 선행 착지를 이유로 든다" ;;
   *) bad "G 문면" "$msg" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
+#
+# A design step has no worktree, no predecessor and no declared file set, so a
+# `segment` row for it would be a segment termination condition 1 counts. The
+# router dispatches it with `--segment -`, the gate keys its run-directory files
+# on the plan's design step id, and the row lands as `세그먼트=- | 스테이지=<id>` —
+# the shape the driver's design arm already writes. This section builds its own
+# manifest with `design_required: true` and NO segment rows, which is the only
+# shape in which the old refusal was observable: every shared fixture already
+# carries segment rows by here.
+# ---------------------------------------------------------------------------
+M15C="$WORK/plan15c.md"
+L15C="$WT/docs/pipeline-run/R15C.md"
+row15c="- \`target\` | 별칭=infra | 메인 워크트리=$WT | 공통 git 디렉터리=$CG | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/infra | 절단점=배포 | 말단 행위 상한=없음"
+td15c=$(printf '%s\n' "$row15c" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+goal15c='픽스처가 끝나면'
+dl15c='2030-01-01T00:00:00Z'
+bd15c=$( { printf 'goal\t%s\n' "$goal15c"
+           printf '%s\n' "$row15c" | sed 's/[[:space:]]\{1,\}/ /g' | sort | sed 's/^/target\t/'
+           printf 'deadline\t%s\n' "$dl15c"; } | sort | shasum -a 256 | cut -d' ' -f1)
+plan15c='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ] }'
+write15c() {
+  # write15c <manifest path> <plan json> [설계 문서 값] [런 id]
+  # The document defaults to a real-looking path because a `design_required`
+  # run may not carry `(없음)` there — the gate refuses the dispatch on that
+  # value. The file need not exist: the document is what the stage is being
+  # dispatched to write, and nothing in `check_manifest` reads this field.
+  # Pass `(없음)` to exercise that refusal, and pass a run id along with it —
+  # the header's `owner-doc=` must equal the body's `설계 문서` and the grant's
+  # must equal the header's, so a fixture naming a different document needs its
+  # own grant, and the grant is keyed on the run id.
+  local doc15c="${3:-docs/fixture-design.md}" rid15c="${4:-R15C}"
+  {
+    printf '# 파이프라인 런 매니페스트 — %s\n' "$rid15c"
+    printf '<!-- cc-run-manifest v1; writer=autopilot; reader=orchestrator; run-id=%s;\n' "$rid15c"
+    printf '     anchor-kind=repo; anchor-key=t/infra;\n'
+    printf '     owner-doc=%s; origin-worktree=%s;\n' "$doc15c" "$WT"
+    printf '     NOT a design doc; mechanism-local, never staged by a skill -->\n\n'
+    printf '## 런 정체\n**킥오프 일시**: 2026-01-01T00:00:00Z\n**런 id**: %s\n' "$rid15c"
+    printf '**앵커 종류**: repo\n**앵커 키**: t/infra\n**사용자 확인 문면**: 테스트 픽스처\n\n'
+    printf '## 의도\n```text\n테스트\n```\n\n'
+    printf '## 대상\n**대상 맵 다이제스트**: %s\n%s\n\n' "$td15c" "$row15c"
+    printf '## 요소\n**설계 문서**: %s\n**적용 주체**: (해당 없음)\n\n' "$doc15c"
+    printf '## 실행 계획\n**승인 문면**: 테스트\n```json\n%s\n```\n\n' "$2"
+    printf '## 인가\n**구속 다이제스트**: %s\n**런 최대 절단점**: 배포\n**종료 지점**: %s\n' "$bd15c" "$goal15c"
+    printf '**벽시계 마감**: %s\n**시각 정합 마커**: 없음\n' "$dl15c"
+    printf '**사다리 가용 단 수**: 4\n**미선언 상황 처분**: park\n'
+  } > "$1"
+}
+grant15c() {
+  # grant15c <run id> <owner-doc> — the grant's `owner-doc=` is compared against
+  # the manifest header's, so it is written from the same value.
+  {
+    printf '# 파이프라인 인가 기록 — %s\n' "$1"
+    printf '<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=%s; origin-worktree=%s; NOT a design doc; mechanism-local, never staged by a skill -->\n\n' "$2" "$WT"
+    printf '## 인가 %s\n**인가 일시**: 2026-08-30T00:00:00Z\n**종료 지점**: 픽스처\n' "$1"
+    printf '**권한 절단점**: 배포\n**말단 행위 상한**: 없음\n**직렬 웨이브 고지**: 해당 없음\n'
+    printf '**시각 정합 마커**: 없음\n**사용자 확인 문면**: 픽스처 인가\n'
+    printf '**설계 문서 전체 sha256**: (해당 없음)\n**보고서**: %s/docs/pipeline-run/%s.md\n' "$WT" "$1"
+  } > "$WT/docs/pipeline-grant/$1.md"
+}
+write15c "$M15C" "$plan15c"
+grant15c R15C 'docs/fixture-design.md'
+H15C() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null | jq -r .H ); }
+snap15c=$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$M15C" 2>/dev/null )
+check "15c 픽스처 매니페스트가 검사를 통과한다 (아래가 공허하지 않다)" \
+  "$(printf '%s' "$snap15c" | jq -r '.run_id' 2>/dev/null)" "R15C"
+check "15c 픽스처의 원장에 segment 행이 없다" \
+  "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# The snapshot carries the two facts a shift needs to find the design step — a
+# shift has no other input, so without them the section below has no source.
+check "15c: 스냅숏이 design_required 와 단계 그래프를 싣는다" \
+  "$(printf '%s' "$snap15c" | jq -r '[.design_required, .steps[0].id, .steps[0].skill, .steps[1].depends_on[0]] | map(tostring) | join(",")')" \
+  "true,D1,design,D1"
+
+design15c='/cc-cmds:design-discuss-unattended /nonexistent/doc.md "테스트"'
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다" "$rc" "0"
+# Not vacuous in the other direction: `-` with any other stage kind is still the
+# segment it names, and that segment has no row.
+gateL plan --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- review -p "/cc-cmds:review-unattended x"
+check "15c: 같은 - 라도 설계가 아닌 스테이지 종류는 거부된다" "$rc" "3"
+case "$msg" in
+  *"segment 행이 없습니다"*) ok "15c: 그 거절은 빠진 segment 행을 든다" ;;
+  *) bad "15c 비설계 문면" "$msg" ;;
+esac
+# And the exemption reads the plan: a plan that does not require a design names
+# no step to key the stage on.
+M15C_OFF="$WORK/plan15c-off.md"
+write15c "$M15C_OFF" '{ "design_required": false, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_OFF" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 설계를 요구하지 않는 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 그 거절은 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 계획 문면" "$msg" ;;
+esac
+# And "a design step" means one the readers can key on: an object with a
+# non-empty `id`. A step carrying `skill` `design` and no `id` is not a design
+# step with a blank name — the selector yields nothing for it, so the exemption
+# does not stand and the gate refuses instead of keying the stage on `null`.
+# Without this case the suite stays green even if that reading is inverted, and
+# the inverted reading is what stalls a run overnight with no row to say why.
+M15C_NULLID="$WORK/plan15c-nullid.md"
+write15c "$M15C_NULLID" '{ "design_required": true, "steps": [ { "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_NULLID" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 그 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c null-id 문면" "$msg" ;;
+esac
+# The two shapes below are settled by the shell wrapped around the selector, not
+# by the selector itself, and nothing asserted either of them until here. The
+# first differs from the `null`-id case above inside jq: `.id // empty` falls
+# through on `null` and `false` only, so an `id` of `""` SURVIVES the selector
+# and arrives as a blank line rather than as nothing. What makes the two shapes
+# converge is the shell around it — `grep -v '^$'` erases the blank line and the
+# emptiness check then reads "no design step". Teach the gate to keep that empty
+# string as a name and this assertion goes red, which is why it is here: a
+# run-directory file and a `| 스테이지= |` ledger grep keyed on an empty name
+# point at real things that are not this stage.
+M15C_EMPTYID="$WORK/plan15c-emptyid.md"
+write15c "$M15C_EMPTYID" '{ "design_required": true, "steps": [ { "id": "", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_EMPTYID" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 빈 문자열 id 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 빈 문자열 id 문면" "$msg" ;;
+esac
+# And two `design` steps: the selector emits both ids and only the gate's
+# "exactly one line" count refuses them. Delete that count and this assertion
+# goes red — the exemption would stand with the stage keyed on a two-line id,
+# while both routers' prose says "that step's id" in the singular.
+M15C_TWODESIGN="$WORK/plan15c-twodesign.md"
+write15c "$M15C_TWODESIGN" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "D2", "skill": "design", "summary": "설계 2", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_TWODESIGN" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: design 단계가 둘인 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 복수 설계 단계 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 복수 설계 단계 문면" "$msg" ;;
+esac
+# And the exemption reads `## 요소`: the document is named by the kickoff, in
+# front of the person, so a design-requiring plan that reaches the gate with
+# `(없음)` has no name anything downstream can resolve. The gate refuses rather
+# than composing one — this fixture used to carry `(없음)` and pass a path into
+# the argv from outside, which is the very move the refusal closes.
+M15C_NODOC="$WORK/plan15c-nodoc.md"
+write15c "$M15C_NODOC" "$plan15c" '(없음)' R15D
+grant15c R15D '(없음)'
+gateL plan --manifest "$M15C_NODOC" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다" "$rc" "3"
+case "$msg" in
+  *"설계 문서 가 실제 경로여야 합니다"*) ok "15c: 그 거절은 설계 문서 값이 비었음을 든다" ;;
+  *) bad "15c 설계 문서 문면" "$msg" ;;
+esac
+write15c "$M15C" "$plan15c"
+
+# The launch, through a stub that calls the gate once from the stage seat. That
+# call carries `CC_PIPELINE_SEGMENT`, so the terminal class `정상 완료` is also
+# the proof that the stage's rows and the outcome recorder agree on `-`.
+STUB15C="$WORK/bin/claude-stub-15c"
+cat > "$STUB15C" <<'STUB15CEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 설계 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '%s|%s\n' "$CC_PIPELINE_SEGMENT" "$CC_PIPELINE_STAGE_ID" > "$CC_PIPELINE_RUN_DIR/stub15c-env.txt"
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15c-session","num_turns":1}\n'
+exit 0
+STUB15CEOF
+chmod +x "$STUB15C"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" act --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(H15C)" --rationale x \
+  -- design -p "$design15c" ) >/dev/null 2>&1; rc=$?
+check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견이 기동한다" "$rc" "0"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0"
+rows15c() { { grep -F '`stage-result`' "$L15C" 2>/dev/null || true; } | { grep -F "$1" || true; }; }
+check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다" \
+  "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
+check "15c: 단계 id 를 세그먼트로 쓴 행은 없다" \
+  "$(rows15c '세그먼트=D1 ' | grep -c . || true)" "0"
+check "15c: 그 행의 종단 부류가 정상 완료다 (스테이지 행과 기록기가 - 로 맞는다)" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+RD15C="$STATE_LATE/cc-cmds/run/R15C"
+check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 를 받는다" \
+  "$(cat "$RD15C/stub15c-env.txt" 2>/dev/null)" "-|D1#1"
+# The prelude of the next call must not read the finished record as a lost
+# dispatch: a second wait answers from the same row and adds none.
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않는다" \
+  "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
+check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
+  "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# A run whose design is blocked must still be able to record its end — as
+# invalidated, never as satisfied. The two halves above were each green on
+# their own: no `segment` row after the dispatch, and condition 1 refusing any
+# run without one. Together they left a design-first run that could not end.
+# R15C carries no termination clause, so condition 10 never settles there;
+# each case below builds its own run with clauses. Three runs, because a clause
+# settled as impossible can no longer be held, and the "not begun" reading has
+# to be measured on a run that has not begun.
+H15X() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .H ); }
+clauses15x() {
+  # clauses15x <manifest> <clause id>... — the binding digest no longer matches
+  # once clauses are added, so it is removed rather than recomputed, as in 25.
+  local m="$1" k; shift
+  for k in "$@"; do
+    printf -- '- `종료 절` | id=%s | 문면=설계 문서가 동결된다 (%s)\n' "$k" "$k" >> "$m"
+  done
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$m" && rm -f "$m.bak"
+}
+fresh15x() {
+  # fresh15x <run id> <doc> <clause id>... — manifest, grant and clauses.
+  local rid="$1" doc="$2"; shift 2
+  write15c "$WORK/plan-$rid.md" "$plan15c" "$doc" "$rid"
+  grant15c "$rid" "$doc"
+  clauses15x "$WORK/plan-$rid.md" "$@"
+}
+launch15x() {
+  # launch15x <manifest> <stub> — dispatch the design step and wait on it.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x \
+    -- design -p "$design15c" ) >/dev/null 2>&1 || true
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+}
+settle15x() {
+  # settle15x <manifest> <clause id> <상태> <근거>
+  gateL act --manifest "$1" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(H15X "$1")" --rationale x -- id="$2" 상태="$3" "근거=$4"
+}
+propose15x() {
+  # propose15x <plan|act> <manifest>
+  gateL "$1" --manifest "$2" --kind propose-done --target infra --segment - --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H15X "$2")" --rationale '설계 막힘 후 종료 도달성' -- 절=x 근거=y
+}
+design_rows15x() {
+  # design_rows15x <run id> — the design step's `stage-result` rows, counted.
+  { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+    | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } | grep -c . || true
+}
+
+# R15E — the design stage parks with its one bundled judgment open, and every
+# clause that needs the document is held by that one approval. The gate's
+# amplification floor refuses one approval on a second clause, and the design
+# stage cannot raise a question per clause; an approval keyed on the design step
+# is the exception. Auto-resolution is off process-wide, so the approval stays
+# open — with it on, a `설계-골격` judgment closes at once and there is nothing
+# to hold a clause with.
+STUB15E="$WORK/bin/claude-stub-15e"
+cat > "$STUB15E" <<'STUB15EEOF'
+#!/usr/bin/env bash
+cat <<'RES15EEOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15e-session","num_turns":1,"result":"**판단 부류**: 설계-골격 **판단 등급**: 2 **판단 기준**: 골격을 사람이 정해야 한다 **판단 되돌리는 법**: 다음 런에서 다시 설계한다 **판단 근거**: 문서의 골격이 결정되지 않았다"}
+RES15EEOF
+exit 0
+STUB15EEOF
+chmod +x "$STUB15E"
+fresh15x R15E 'docs/fixture-design-15e.md' K1 K2
+launch15x "$WORK/plan-R15E.md" "$STUB15E"
+check "15c: 판단을 방출한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15E)" "1"
+jid15e=$( { grep -F '`승인`' "$WT/docs/pipeline-run/R15E.md" 2>/dev/null || true; } \
+  | { grep -F '막는 세그먼트=D1 ' || true; } | sed -n '1p' \
+  | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+if [ -n "$jid15e" ]; then
+  ok "15c: 설계 단계의 방출이 그 단계를 막는 판단 승인을 연다 ($jid15e)"
+else
+  bad "15c 설계 단계 판단 승인" "막는 세그먼트=D1 인 승인 행이 없다"
+fi
+settle15x "$WORK/plan-R15E.md" K1 보류 "열린 판단 승인 $jid15e"
+check "15c: 설계 단계가 연 승인으로 첫 절을 보류시킨다" "$rc" "0"
+settle15x "$WORK/plan-R15E.md" K2 보류 "열린 판단 승인 $jid15e"
+check "15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다" "$rc" "0"
+propose15x plan "$WORK/plan-R15E.md"
+check "15c: 절을 보류로 정산한 설계 막힘 런의 종료 제안이 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 그 종료는 충족이 아니라 무효화로 예상된다" ;;
+  *) bad "15c 보류 경로 종료 문면" "$msg" ;;
+esac
+
+# R15G — the design stage crashes. A run that has not begun is measured first,
+# on the same run before the dispatch, so what flips afterwards is condition 1
+# alone: its clause is already settled.
+STUB15G="$WORK/bin/claude-stub-15g"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB15G"
+chmod +x "$STUB15G"
+fresh15x R15G 'docs/fixture-design-15g.md' K1
+check "15c: 크래시 픽스처의 설계 문서 경로가 비어 있다 (아래가 공허하지 않다)" \
+  "$([ -e "$WT/docs/fixture-design-15g.md" ] && echo 있음 || echo 없음)" "없음"
+settle15x "$WORK/plan-R15G.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 파견 전에 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 설계를 파견하지 않은 0-세그먼트 런의 종료 제안은 여전히 기각된다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 시작 안 한 런 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 그 기각은 런이 아직 시작하지 않았음을 든다" ;;
+  *) bad "15c 시작 안 한 런 문면" "$msg" ;;
+esac
+launch15x "$WORK/plan-R15G.md" "$STUB15G"
+check "15c: 크래시한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15G)" "1"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 크래시 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 크래시 경로 종료 문면" "$msg" ;;
+esac
+propose15x act "$WORK/plan-R15G.md"
+check "15c: 그 종료 제안을 act 로 내면 받아들여진다" "$rc" "0"
+check "15c: 원장에 무효화 종료 행이 하나 남는다" \
+  "$( { grep -F 'kind=propose-done' "$WT/docs/pipeline-run/R15G.md" 2>/dev/null || true; } \
+      | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
+check "15c: done 파일이 런을 무효화로 기록한다" \
+  "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+
+# R15H — the design stage ended unobserved before its team placed a file at the
+# path. The prelude settles such a dispatch as `외부 종료` without looking at the
+# document, and the routers dispatch that step again onto the absent document, so
+# condition 1 must not name the design step as never dispatched again in that
+# window: read that way, the one run whose retry was safe closed as invalidated.
+# A file at the path closes the window, and the design-step line stands again.
+# The orphan is planted in the shape the gate itself dispatches — declared here
+# rather than borrowed from section 41, which a narrowed run may not include.
+fresh15x R15H 'docs/fixture-design-15h.md' K1
+RD15H="$STATE_LATE/cc-cmds/run/R15H"
+mkdir -p "$RD15H/log"
+sh -c 'exit 0' & dead15h=$!; wait "$dead15h" 2>/dev/null || true
+printf '%s\n' "$dead15h" > "$RD15H/D1.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD15H/D1.start"
+printf '1\n' > "$RD15H/D1.attempt"
+printf 'design\n' > "$RD15H/D1.kind"
+printf '{"type":"system","subtype":"init","session_id":"D1-session"}\n' > "$RD15H/log/D1#1.json"
+H15X "$WORK/plan-R15H.md" >/dev/null
+check "15c: 외부 종료로 정산된 설계 단계의 stage-result 행이 하나 있다" \
+  "$( { grep -F '`stage-result`' "$WT/docs/pipeline-run/R15H.md" 2>/dev/null || true; } \
+      | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } \
+      | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+check "15c: 외부 종료 픽스처의 설계 문서 경로가 비어 있다 (아래가 공허하지 않다)" \
+  "$([ -e "$WT/docs/fixture-design-15h.md" ] && echo 있음 || echo 없음)" "없음"
+settle15x "$WORK/plan-R15H.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 외부 종료 런의 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15H.md"
+check "15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 외부 종료 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 외부 종료 재파견 창 문면" "$msg" ;;
+esac
+printf '# 스테이지가 중간까지 쓴 설계 문서\n' > "$WT/docs/fixture-design-15h.md"
+propose15x plan "$WORK/plan-R15H.md"
+check "15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 문서가 놓인 외부 종료 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 외부 종료 문서 있음 문면" "$msg" ;;
+esac
+rm -f "$WT/docs/fixture-design-15h.md"
+
+# R15F — a person already wrote an unfrozen document at the path, so the design
+# step is never dispatched at all. The stage never runs and there is no row,
+# which makes this the cheapest way into a design-blocked run.
+fresh15x R15F 'docs/fixture-design-15f.md' K1
+printf '# 사람이 손으로 쓴 설계 초안\n' > "$WT/docs/fixture-design-15f.md"
+settle15x "$WORK/plan-R15F.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 문서만 있는 런의 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15F.md"
+check "15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다" \
+  "$rc/$(design_rows15x R15F)" "0/0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 문서만 있는 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 문서만 있는 경로 종료 문면" "$msg" ;;
+esac
+rm -f "$WT/docs/fixture-design-15f.md"
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
@@ -14650,6 +15510,65 @@ check "(e) 억제된 채로도 후속자는 떴다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$((e_launch0 + 2))"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 
+# (f) THE SHIFT IS LAUNCHED WITH THE SAME INSTRUCTIONS AS A STAGE. The routing
+# seat merges, opens PRs and files issues, so every section of the policy binds
+# it, and a narrower variant would be a second drift surface and a second cache
+# head. The stub records what reached it; the record under `instructions/
+# session/` is what a later resume would follow. And a gate whose directory
+# lacks the policy refuses BEFORE the launch row and the in-progress marker,
+# with the wrapper's own 127.
+H5F() {
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+    CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+    CC_CLAUDE_BIN="$STUB" \
+    bash "$GATE" snapshot --manifest "$NM5" 2>/dev/null ) | jq -r .H
+}
+f_launch0=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+      CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+      CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/shift-argv.txt" CC_STUB_ENV_OUT="$WORK/shift-env.txt" \
+      bash "$GATE" act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5F)" \
+      --rationale "픽스처 — 지침 주입을 재는 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
+check "(f) 지침 주입 픽스처의 교대가 기동한다" "$rc" "0"
+f_shift_f=$(si_argv_value "$WORK/shift-argv.txt" --append-system-prompt-file)
+check "(f) 교대 argv 의 두 append 플래그가 같은 파일을 가리킨다" "$(si_argv_value "$WORK/shift-argv.txt" --append-subagent-system-prompt-file)" "$f_shift_f"
+case "$f_shift_f" in
+  "$SHIFT_DIR/instructions/"*.md) ok "(f) 교대의 합성 파일도 런 디렉터리 instructions/ 아래다" ;;
+  *) bad "(f) 교대 합성 파일 위치" "$f_shift_f" ;;
+esac
+check "(f) 교대 argv 에 동적 절 제외가 있다" "$(si_argv_has "$WORK/shift-argv.txt" --exclude-dynamic-system-prompt-sections)" "1"
+check "(f) 교대 환경에 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/shift-env.txt")" "1"
+check "(f) 교대도 자동 메모리는 끄지 않는다" "$(sed -n 's/^MEM=//p' "$WORK/shift-env.txt")" "unset"
+f_shift_sid=$(si_argv_value "$WORK/shift-argv.txt" --session-id)
+check "(f) 교대 세션의 기록이 합성 sha256 을 담는다" \
+  "$(cat "$SHIFT_DIR/instructions/session/$f_shift_sid" 2>/dev/null | tr -d '[:space:]')" "$(basename "$f_shift_f" .md)"
+case "$out" in
+  *"stage instructions: infra sha256=$(basename "$f_shift_f" .md)"*) ok "(f) 교대 기동도 다이제스트 log 줄을 남긴다" ;;
+  *) bad "(f) 교대 다이제스트 log" "$(printf '%s' "$out" | grep 'stage instructions' | tr '\n' ' ')" ;;
+esac
+f_launch1=$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )
+check "(f) 그 기동은 기동 행 하나를 남겼다" "$f_launch1" "$((f_launch0 + 1))"
+# The refusal: a gate copy without the policy, driven from the lead's seat.
+rm -f "$WORK/shift-argv-np.txt"
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" \
+      CLAUDE_CONFIG_DIR="$NCFG" CLAUDE_CODE_SESSION_ID="$SHIFT_SID" \
+      CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/shift-argv-np.txt" \
+      bash "$(si_gate_nopolicy)" act --manifest "$NM5" --kind router-shift --target infra --cutpoint 커밋 \
+      --surface 워크트리쓰기 --snapshot-digest "$(H5F)" \
+      --rationale "픽스처 — 정책 파일 없는 게이트의 교대" \
+      -- 승인 -p "/cc-cmds:autopilot-router-shift $NM5" 2>&1); rc=$?
+msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+check "(f) 정책 파일 없는 게이트의 교대 기동은 127 이다" "$rc" "127"
+case "$msg" in
+  *"stage policy not found"*) ok "(f) 거부가 정책 파일 부재를 말한다" ;;
+  *) bad "(f) 정책 부재 거부 문면" "$msg" ;;
+esac
+check "(f) 거부된 교대는 기동 행을 남기지 않는다" "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "$f_launch1"
+check "(f) 거부된 교대는 진행 표지를 남기지 않는다" "$( [ -e "$SHIFT_DIR/shift.in-progress" ] && printf 'left' || printf 'none' )" "none"
+check "(f) 거부된 교대는 후속자를 실행하지 않는다" "$( [ -e "$WORK/shift-argv-np.txt" ] && printf 'ran' || printf 'not run' )" "not run"
+
 # ---------------------------------------------------------------------------
 # 38. 슬라이스 B 회귀 집합 — argv 사다리 등급 유도와 신고 대조
 #
@@ -16514,6 +17433,343 @@ b56_withdraw_fixture 질문중
 printf '{"type":"user","message":{"content":[{"type":"text","text":"무관한 줄"}]}}\n' \
   > "$B56_CFG/projects/p/sess-질문중.jsonl"
 check "56: 프레임 종류 — id 를 담은 줄이 없으면 none 이다" "$(b56_kind)" "none"
+
+# ---------------------------------------------------------------------------
+# 57. 판본 고정 — 새 런은 사본으로 hop 한다
+# --- section: 57 | group: base | covers: gate_main, pin | anchors: 57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다, 57: 동시 첫 진입 두 개 → 핀 1개·사본 1개, 57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다, 57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다 ---
+#
+# 고정은 프리앰블의 씨앗 `CC_GATE_PIN_DISABLE=1` 로 이 스위트 전체에서 꺼져 있고,
+# 이 절만 그것을 벗긴다. 그래서 여기의 게이트 호출은 전부 자기 헬퍼를 지나며,
+# 헬퍼의 `unset` 은 `gate_inproc` 과 같은 문장에 두지 않는다 — 39 절의 fork 센서스는
+# 이 구간을 건너뛰지만, 같은 문장에 씨앗 이름과 인프로세스 토큰이 함께 있는 모양은
+# 나중에 그 센서스 범위가 넓어지는 날 곧바로 붉어진다.
+#
+# 이 절은 픽스처를 자기가 만든다 — run-id 마다 매니페스트·인가·원장·상태 루트를
+# 새로 뜬다. 앞 절의 것을 물려받으면 `--sections 57` 로 잘라 돌릴 때 그 변수가 없다.
+# ---------------------------------------------------------------------------
+P57ROOT=$(mktemp -d "$WORK/pin57.XXXXXX")
+P57_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P57_PREV" ]; then
+  printf '57: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+
+p57_fixture() {
+  # p57_fixture <run-id> — 이 절의 자기 픽스처. 매니페스트는 앞 절의 것에서 id 만
+  # 바꾸고 구속 다이제스트는 지운다(그 검사는 여기서 재는 대상이 아니다).
+  local rid="$1"
+  P57_MAN="$P57ROOT/$rid.plan.md"
+  P57_GRANT="$WT/docs/pipeline-grant/$rid.md"
+  P57_LEDGER="$WT/docs/pipeline-run/$rid.md"
+  P57_STATE="$P57ROOT/state-$rid"
+  P57_RD="$P57_STATE/cc-cmds/run/$rid"
+  if [ "$P57_MAN" = "$FX_MANIFEST" ] || [ "$P57_GRANT" = "$FX_GRANT" ] || [ "$P57_LEDGER" = "$FX_LEDGER" ]; then
+    printf '57: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 (%s · %s · %s)\n' \
+      "$P57_MAN" "$P57_GRANT" "$P57_LEDGER" >&2
+    exit 1
+  fi
+  sed -e "s/run-id=$P57_PREV;/run-id=$rid;/" \
+      -e "s/^\*\*런 id\*\*: $P57_PREV\$/**런 id**: $rid/" "$FX_MANIFEST" > "$P57_MAN"
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$P57_MAN" && rm -f "$P57_MAN.bak"
+  sed "s/R1/$rid/g" "$GBAK" > "$P57_GRANT"
+  {
+    printf '# 파이프라인 런 보고서 — %s\n\n' "$rid"
+    printf '런 id %s · 판본 고정 픽스처\n' "$rid"
+  } > "$P57_LEDGER"
+  rm -rf "$P57_STATE"
+  mkdir -p "$P57_STATE"
+}
+
+p57_gate() {
+  # 인프로세스 호출. 씨앗을 벗긴 뒤 부르며, 두 이름은 서로 다른 문장에 있다.
+  local out
+  out=$( cd "$WT" || exit 1
+         unset CC_GATE_PIN_DISABLE
+         XDG_STATE_HOME="$P57_STATE" gate_inproc "$@" 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  printf '%s' "$out" > "$WORK/last-output.txt"
+}
+
+p57_pin() {  # p57_pin <run-dir> <키>
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1/plugin-pin" 2>/dev/null
+}
+p57_run_row() {  # p57_run_row <ledger>
+  grep -F -- '- `run`' "$1" 2>/dev/null | sed -n '1p'
+}
+p57_field() {  # p57_field <row> <키>
+  printf '%s' "$1" | sed -n "s/.*| $2=\\([^|]*\\).*/\\1/p" | sed 's/[[:space:]]*$//'
+}
+p57_tmp_count() {  # p57_tmp_count <run-dir> — 임시 이름이 남았는가
+  ls -d "$1"/plugin.* "$1"/plugin-pin.* 2>/dev/null | grep -c . || true
+}
+p57_fold() {
+  # p57_fold <경로> — 이어진 `/` 를 하나로 접는다. `TMPDIR` 이 `/` 로 끝나는 호스트에서
+  # `mktemp -d "$TMPDIR/x.XXXXXX"` 는 `…/T//x.abc` 를 돌려주는데, 게이트가 기록하는
+  # 값은 `cd`+`pwd` 를 지나 접힌 철자다. 접지 않으면 같은 디렉터리가 두 문자열이 된다.
+  printf '%s' "$1" | sed 's://*:/:g'
+}
+
+# 이 트리의 플러그인 서브트리가 깨끗한지에 따라 고정 방식이 갈린다 — 깨끗하면
+# `archive`(트리 객체 단위라 동시 체크아웃이 찢지 못한다), 더러우면 잠금·HEAD
+# 브래킷 안의 `copy` 다. 단언을 한쪽으로 고정하면 이 파일을 고치는 동안에는 늘
+# 붉고 커밋한 뒤에는 늘 초록인, 트리 상태를 재는 테스트가 된다.
+P57_CLEAN=0
+if [ -z "$(cd "$repo_root" && git --no-optional-locks status --porcelain -- plugins/cc-cmds 2>/dev/null)" ]; then
+  P57_CLEAN=1
+fi
+
+# (1) 새 런의 첫 호출이 고정한다 -------------------------------------------------
+p57_fixture R57
+p57_gate snapshot --manifest "$P57_MAN"
+check "57: 새 런의 첫 호출이 통과한다" "$rc" "0"
+check "57: 새 런의 첫 호출이 plugin/cc-cmds 와 plugin-pin 을 만든다" \
+  "$( [ -f "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh" ] && [ -f "$P57_RD/plugin-pin" ] \
+      && printf yes || printf no )" "yes"
+check "57: plugin-pin 의 schema 는 1 이다" "$(p57_pin "$P57_RD" schema)" "1"
+check "57: plugin-pin 의 plugin-dir 이 사본을 가리킨다" \
+  "$(p57_pin "$P57_RD" 'plugin-dir')" "$P57_RD/plugin/cc-cmds"
+check "57: plugin-pin 의 다이제스트가 사본을 다시 재도 같다" \
+  "$(p57_pin "$P57_RD" digest)" \
+  "$( . "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
+check "57: plugin-pin 이 version 을 싣는다" \
+  "$( [ -n "$(p57_pin "$P57_RD" version)" ] && printf yes || printf no )" "yes"
+check "57: plugin-pin 이 pinned-at 을 싣는다" \
+  "$( [ -n "$(p57_pin "$P57_RD" 'pinned-at')" ] && printf yes || printf no )" "yes"
+check "57: orchestrator-dir 이 사본의 orchestrator 다" \
+  "$(p57_fold "$(sed -n '1p' "$P57_RD/orchestrator-dir" 2>/dev/null)")" \
+  "$(p57_fold "$P57_RD/plugin/cc-cmds/orchestrator")"
+# 설정 파일의 훅 명령과 `--gate` 경로가 전부 사본 아래여야 한다 — 하나라도 설치본을
+# 가리키면 고정 런의 스테이지가 고정되지 않은 코드를 태운다.
+P57_NSET=$( ls "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )
+check "57: 런 설정이 하나 이상 쓰였다 (다음 두 단언이 공허하지 않다)" \
+  "$( [ "${P57_NSET:-0}" -ge 1 ] && printf yes || printf no )" "yes"
+check "57: 런 설정의 어느 경로도 설치본 orchestrator 를 가리키지 않는다" \
+  "$( grep -l -F "$repo_root/plugins/cc-cmds/orchestrator" "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )" "0"
+check "57: 런 설정이 전부 사본 아래 경로를 싣는다" \
+  "$( grep -l -F "$(p57_fold "$P57_RD/plugin/cc-cmds/")" "$P57_RD"/settings/*.json 2>/dev/null | grep -c . || true )" \
+  "${P57_NSET:-0}"
+p57_row=$(p57_run_row "$P57_LEDGER")
+check "57: run 행이 판본을 싣는다" \
+  "$( [ -n "$(p57_field "$p57_row" 판본)" ] && printf yes || printf no )" "yes"
+check "57: run 행의 판본이 (고정 안 함) 이 아니다" \
+  "$( [ "$(p57_field "$p57_row" 판본)" = '(고정 안 함)' ] && printf yes || printf no )" "no"
+check "57: run 행의 판본 다이제스트가 핀과 같다" \
+  "$(p57_field "$p57_row" '판본 다이제스트')" "$(p57_pin "$P57_RD" digest)"
+if [ "$P57_CLEAN" = 1 ]; then
+  check "57: 깨끗한 서브트리는 archive 로 뜬다" "$(p57_pin "$P57_RD" method)" "archive"
+  check "57: 그때 판본 트리가 서브트리의 git 트리다" \
+    "$(p57_field "$p57_row" '판본 트리')" \
+    "$(cd "$repo_root" && git --no-optional-locks rev-parse 'HEAD:plugins/cc-cmds' 2>/dev/null)"
+else
+  check "57: 더러운 서브트리는 copy 로 뜬다" "$(p57_pin "$P57_RD" method)" "copy"
+  check "57: 그때 dirty 는 예 다" "$(p57_pin "$P57_RD" dirty)" "예"
+  check "57: 그때 판본 트리는 (미커밋) 이다" "$(p57_field "$p57_row" '판본 트리')" "(미커밋)"
+fi
+
+# (2) 설치본 경로로 부른 두 번째 호출이 사본을 실행한다 ---------------------------
+# 사본의 gate.sh 를 스텁으로 갈아 끼우면 「어느 파일이 돌았는가」가 출력으로 드러난다.
+p57_fixture R57B
+p57_gate snapshot --manifest "$P57_MAN"
+check "57B: 고정이 섰다" "$rc" "0"
+printf '#!/usr/bin/env bash\nprintf "PINNED-STUB %%s\\n" "$*"\nexit 0\n' \
+  > "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+chmod +x "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh"
+p57_bytes_before=$(wc -c < "$P57_LEDGER" | tr -d ' ')
+p57_ls_before=$(ls "$P57_RD" | LC_ALL=C sort)
+p57_forked=$( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+                bash "$GATE" snapshot --manifest "$P57_MAN" 2>&1 )
+case "$p57_forked" in
+  PINNED-STUB*) ok "57B: 설치본 경로로 부른 포크가 사본을 실행한다" ;;
+  *) bad "57B: 설치본 경로로 부른 포크가 사본을 실행한다" "$p57_forked" ;;
+esac
+p57_gate snapshot --manifest "$P57_MAN"
+case "$(cat "$WORK/last-output.txt")" in
+  PINNED-STUB*) ok "57B: 인프로세스 호출도 사본을 실행한다" ;;
+  *) bad "57B: 인프로세스 호출도 사본을 실행한다" "$(cat "$WORK/last-output.txt")" ;;
+esac
+check "57B: hop 앞 구간이 원장에 한 바이트도 더하지 않는다" \
+  "$(wc -c < "$P57_LEDGER" | tr -d ' ')" "$p57_bytes_before"
+check "57B: hop 앞 구간이 런 디렉터리에 새 이름을 만들지 않는다" \
+  "$(ls "$P57_RD" | LC_ALL=C sort)" "$p57_ls_before"
+# hop 은 `exec` 다. 인프로세스 시임이 서브셸이 아니게 되는 날 이 하네스 자신이
+# 사본 게이트로 대체되므로, 그 전제를 여기서 못 박는다.
+check "57B: gate_inproc 본문이 서브셸이다" \
+  "$(sed -n '/^gate_inproc()/,/^}/p' "$repo_root/scripts/test-gate.sh" | grep -c '^  ($' || true)" "1"
+# 씨앗을 export 한 채 hop 해도 사본 게이트가 no-op 이 되지 않는다.
+p57_fixture R57S
+p57_gate snapshot --manifest "$P57_MAN"
+check "57S: 고정이 섰다" "$rc" "0"
+p57_srconly=$( export CC_GATE_SOURCE_ONLY=1
+               p57_gate snapshot --manifest "$P57_MAN"
+               cat "$WORK/last-output.txt" )
+case "$p57_srconly" in
+  *'"H"'*) ok "57S: CC_GATE_SOURCE_ONLY 를 export 한 채 hop 해도 사본이 no-op 이 아니다" ;;
+  *) bad "57S: CC_GATE_SOURCE_ONLY 를 export 한 채 hop 해도 사본이 no-op 이 아니다" "$p57_srconly" ;;
+esac
+
+# (3) 기존 런(settings 있음·핀 없음)은 소급 고정하지 않는다 -----------------------
+# 「기존 런」은 `settings/` 가 이미 있고 핀이 없는 상태다. 그 상태에서는 게이트가
+# 런 개시 분기를 타지 않으므로 `run` 행도 쓰지 않는다 — 여기서 재는 것은 소급
+# 고정이 일어나지 않는다는 것 하나이고, `(고정 안 함)` 문면은 (3b) 가 씨앗 켠
+# 새 런에서 따로 잰다.
+p57_fixture R57E
+mkdir -p "$P57_RD/settings"
+p57_gate snapshot --manifest "$P57_MAN"
+check "57E: 기존 런에서도 호출은 통과한다" "$rc" "0"
+check "57E: 기존 런은 핀을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin-pin" ] && printf yes || printf no )" "no"
+check "57E: 기존 런은 사본을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin" ] && printf yes || printf no )" "no"
+
+# (3b) 씨앗이 켜진 런은 고정되지 않고, run 행이 그렇게 적는다 --------------------
+p57_fixture R57P
+( cd "$WT" && XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" ) >/dev/null 2>&1
+check "57P: 씨앗이 켜진 런은 핀을 얻지 않는다" \
+  "$( [ -e "$P57_RD/plugin-pin" ] && printf yes || printf no )" "no"
+check "57P: 씨앗이 켜진 런의 run 행은 판본=(고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" 판본)" "(고정 안 함)"
+check "57P: 판본 트리도 (고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" '판본 트리')" "(고정 안 함)"
+check "57P: 판본 다이제스트도 (고정 안 함) 이다" \
+  "$(p57_field "$(p57_run_row "$P57_LEDGER")" '판본 다이제스트')" "(고정 안 함)"
+
+# (4) 핀은 있는데 사본이 없으면 멈춘다 -------------------------------------------
+p57_fixture R57C
+p57_gate snapshot --manifest "$P57_MAN"
+check "57C: 고정이 섰다" "$rc" "0"
+rm -rf "$P57_RD/plugin"
+p57_bytes_before=$(wc -c < "$P57_LEDGER" | tr -d ' ')
+p57_gate snapshot --manifest "$P57_MAN"
+check "57: 핀은 있는데 사본이 없으면 exit 1 이고 원장은 그대로다" \
+  "$rc/$(wc -c < "$P57_LEDGER" | tr -d ' ')" "1/$p57_bytes_before"
+case "$msg" in
+  *'plugin-pin 은 있는데 사본이 없습니다'*) ok "57C: 문면이 회복 방법을 적는다" ;;
+  *) bad "57C: 문면이 회복 방법을 적는다" "$msg" ;;
+esac
+
+# (5) pin_take 자체 — 세 갈래와 한글 이름 보존 -----------------------------------
+# 트리 밖 합성 소스. 실물 플러그인 트리를 쓰지 않는 이유는 이 묶음이 재는 것이
+# 「git 상태에 따라 어느 갈래로 뜨는가」뿐이고, 그 답은 트리 크기와 무관하기 때문이다.
+P57SRC="$P57ROOT/src"
+P57SRCP="$P57SRC/plugins/cc-cmds"
+mkdir -p "$P57SRCP/orchestrator/rules" "$P57SRCP/.claude-plugin"
+printf 'x\n' > "$P57SRCP/orchestrator/rules/한글-룰-이름.rule"
+printf '{ "version": "9.9.9" }\n' > "$P57SRCP/.claude-plugin/plugin.json"
+printf 'y\n' > "$P57SRCP/orchestrator/gate.sh"
+( cd "$P57SRC" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git add -A && git commit -qm src ) >/dev/null 2>&1
+p57_take() {  # p57_take <run-dir> <src> — pin_take 를 직접 구동한다
+  ( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$1" "$2" )
+}
+P57T1="$P57ROOT/take-clean"
+p57_take "$P57T1" "$P57SRCP"
+check "57T: 깨끗한 소스는 archive 로 뜬다" "$(p57_pin "$P57T1" method)" "archive"
+check "57T: 그 다이제스트가 재계산과 같다" "$(p57_pin "$P57T1" digest)" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57T1/plugin/cc-cmds" )"
+check "57T: archive 사본이 한글 룰 이름을 바이트 그대로 보존한다" \
+  "$( diff <(ls "$P57SRCP/orchestrator/rules") <(ls "$P57T1/plugin/cc-cmds/orchestrator/rules") >/dev/null 2>&1 \
+      && printf same || printf differ )" "same"
+check "57T: version 이 plugin.json 에서 온다" "$(p57_pin "$P57T1" version)" "9.9.9"
+printf 'z\n' >> "$P57SRCP/orchestrator/rules/한글-룰-이름.rule"
+P57T2="$P57ROOT/take-dirty"
+p57_take "$P57T2" "$P57SRCP"
+check "57T: 더러운 소스는 copy 로 뜬다" "$(p57_pin "$P57T2" method)" "copy"
+check "57T: 그때 dirty 는 예 다" "$(p57_pin "$P57T2" dirty)" "예"
+check "57T: copy 사본도 한글 룰 이름을 보존한다" \
+  "$( diff <(ls "$P57SRCP/orchestrator/rules") <(ls "$P57T2/plugin/cc-cmds/orchestrator/rules") >/dev/null 2>&1 \
+      && printf same || printf differ )" "same"
+P57SRC2="$P57ROOT/nogit"; mkdir -p "$P57SRC2/orchestrator"
+printf 'y\n' > "$P57SRC2/orchestrator/gate.sh"
+P57T3="$P57ROOT/take-nogit"
+p57_take "$P57T3" "$P57SRC2"
+check "57T: git 아닌 디렉터리는 copy 다" "$(p57_pin "$P57T3" method)" "copy"
+check "57T: 그때 commit 은 (미상) 이다" "$(p57_pin "$P57T3" commit)" "(미상)"
+check "57T: 그때 tree 는 (미상) 이다" "$(p57_pin "$P57T3" tree)" "(미상)"
+check "57T: 그때 dirty 는 미상 이다" "$(p57_pin "$P57T3" dirty)" "미상"
+
+# (6) hop 루프 가드 — 사본의 게이트를 직접 불러도 다시 뜨지 않는다 ----------------
+p57_fixture R57L
+p57_gate snapshot --manifest "$P57_MAN"
+check "57L: 고정이 섰다" "$rc" "0"
+p57_dig_before=$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )
+p57_loop=$( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+              bash "$P57_RD/plugin/cc-cmds/orchestrator/gate.sh" snapshot --manifest "$P57_MAN" 2>&1 )
+p57_loop_rc=$?
+check "57L: 사본의 게이트를 직접 불러도 통과한다" "$p57_loop_rc" "0"
+check "57L: 사본이 다시 만들어지지 않는다" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )" \
+  "$p57_dig_before"
+check "57L: 임시 이름이 남지 않는다" "$(p57_tmp_count "$P57_RD")" "0"
+
+# (7) 런 디렉터리 경로 공식은 헬퍼 한 곳에만 있다 ---------------------------------
+check "57: rundir_of_run_id 가 상태 루트 아래 그 id 를 낸다" \
+  "$( XDG_STATE_HOME="$P57ROOT/x" rundir_of_run_id R57 )" "$P57ROOT/x/cc-cmds/run/R57"
+check "57: run.sh 에 경로 공식 리터럴이 하나뿐이다" \
+  "$(grep -c 'cc-cmds/run/\$' "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || true)" "1"
+
+# (8) 동시 첫 진입 두 개 → 핀 1개·사본 1개 ---------------------------------------
+p57_fixture R57D
+( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+    bash "$GATE" snapshot --manifest "$P57_MAN" >/dev/null 2>&1 ) &
+p57_p1=$!
+( cd "$WT" && env -u CC_GATE_PIN_DISABLE XDG_STATE_HOME="$P57_STATE" \
+    bash "$GATE" snapshot --manifest "$P57_MAN" >/dev/null 2>&1 ) &
+p57_p2=$!
+wait "$p57_p1"; p57_rc1=$?
+wait "$p57_p2"; p57_rc2=$?
+check "57D: 동시 진입 첫째가 통과한다" "$p57_rc1" "0"
+check "57D: 동시 진입 둘째가 통과한다" "$p57_rc2" "0"
+check "57: 동시 첫 진입 두 개 → 핀 1개·사본 1개" \
+  "$( ls -d "$P57_RD"/plugin-pin 2>/dev/null | grep -c . || true )/$( ls -d "$P57_RD"/plugin/cc-cmds 2>/dev/null | grep -c . || true )" \
+  "1/1"
+check "57D: 임시 이름이 남지 않는다" "$(p57_tmp_count "$P57_RD")" "0"
+
+# (9) 사본 파일은 강제 표면 다이제스트에 들지 않는다 ------------------------------
+# `#742` 의 배제를 유지한다 — exit 7 은 회복 불가라 거짓 양성이 곧 그 사고의 재발이다.
+p57_fixture R57F
+p57_gate snapshot --manifest "$P57_MAN"
+check "57F: 고정이 섰다" "$rc" "0"
+p57_sd_before=$(sed -n '1p' "$P57_RD/surface-digest" 2>/dev/null)
+printf '\n# 사본을 건드린다\n' >> "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"
+p57_gate snapshot --manifest "$P57_MAN"
+check "57F: 사본을 고쳐도 호출이 서지 않는다" "$rc" "0"
+check "57F: 강제 표면 다이제스트가 그대로다" \
+  "$(sed -n '1p' "$P57_RD/surface-digest" 2>/dev/null)" "$p57_sd_before"
+
+# (10) GATE_ACT_CWD 자기 점검 — 누수가 관측 가능하고, 이 스위트에는 없다 ----------
+check "57G: 이 프로세스에 GATE_ACT_CWD 가 없다 (물려받은 값 ${GATE_ACT_CWD_INHERITED:-없음})" \
+  "${GATE_ACT_CWD+set}" ""
+p57_fixture R57G
+p57_gate snapshot --manifest "$P57_MAN"
+p57_installed_before=$(cd "$repo_root" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
+p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57 \
+  --cutpoint 배포 --worktree "$WT" --snapshot-digest \
+  "$( cd "$WT" || exit 1
+      unset CC_GATE_PIN_DISABLE
+      XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" 2>/dev/null | jq -r .H )" \
+  --rationale '픽스처 — 대상 미선언 act' -- git commit --allow-empty -m 미선언커밋
+check "57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다" \
+  "$(cd "$repo_root" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" "$p57_installed_before"
+# 양성 대조군 — 같은 행위가 내보낸 GATE_ACT_CWD 아래에서는 정말로 커밋을 남긴다.
+# 이것이 없으면 위의 단언은 「누수가 원래 불가능하다」와 구별되지 않는다.
+P57TR="$P57ROOT/throwaway"
+mkdir -p "$P57TR"
+( cd "$P57TR" && git init -q . \
+  && git config user.email t@example.invalid && git config user.name T \
+  && git commit -q --allow-empty -m base ) >/dev/null 2>&1
+p57_tr_before=$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
+( export GATE_ACT_CWD="$P57TR"
+  p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57B \
+    --cutpoint 배포 --worktree "$WT" --snapshot-digest \
+    "$( cd "$WT" || exit 1
+        unset CC_GATE_PIN_DISABLE
+        XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" 2>/dev/null | jq -r .H )" \
+    --rationale '픽스처 — 누수 양성 대조군' -- git commit --allow-empty -m 미선언커밋 ) >/dev/null 2>&1
+check "57G: 양성 대조군 — 내보낸 GATE_ACT_CWD 아래에서는 커밋이 하나 는다" \
+  "$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
+  "$((p57_tr_before + 1))"
 
 # --- epilogue-begin ---
 #
