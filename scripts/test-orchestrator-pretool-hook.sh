@@ -305,27 +305,27 @@ wrun() { wout=$(bash "$WRAP" "$@" 2>&1); }
 mkdir -p "$WORK/plug"; : > "$WORK/s.json"
 
 wrun --plugin-dir "$WORK/plug" --session-id x -- -p x
-case "$wout" in *"--settings 는 필수"*) ok "래퍼: 설정 없이 스테이지를 띄우지 않는다" ;;
+case "$wout" in *"--settings is required"*) ok "래퍼: 설정 없이 스테이지를 띄우지 않는다" ;;
   *) bad "래퍼 설정 필수" "$wout" ;; esac
 
 wrun --settings "$WORK/s.json" --session-id x -- -p x
-case "$wout" in *"--plugin-dir 는 필수"*) ok "래퍼: 플러그인 디렉터리 없이 띄우지 않는다" ;;
+case "$wout" in *"--plugin-dir is required"*) ok "래퍼: 플러그인 디렉터리 없이 띄우지 않는다" ;;
   *) bad "래퍼 플러그인 필수" "$wout" ;; esac
 
 wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" -- -p x
-case "$wout" in *"--session-id 또는 --resume"*) ok "래퍼: 세션 식별 없이 띄우지 않는다" ;;
+case "$wout" in *"--session-id or --resume is required"*) ok "래퍼: 세션 식별 없이 띄우지 않는다" ;;
   *) bad "래퍼 세션 필수" "$wout" ;; esac
 
 wrun --settings "$WORK/absent.json" --plugin-dir "$WORK/plug" --session-id x -- -p x
-case "$wout" in *"설정 파일이 없습니다"*) ok "래퍼: 존재하지 않는 설정은 하드 스톱" ;;
+case "$wout" in *"settings file not found"*) ok "래퍼: 존재하지 않는 설정은 하드 스톱" ;;
   *) bad "래퍼 설정 존재" "$wout" ;; esac
 
 wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x --mode Z -- -p x
-case "$wout" in *"알 수 없는 모드"*) ok "래퍼: 어휘 밖 모드는 거부" ;;
+case "$wout" in *"unknown mode"*) ok "래퍼: 어휘 밖 모드는 거부" ;;
   *) bad "래퍼 모드 어휘" "$wout" ;; esac
 
 wrun --settings "$WORK/s.json" --plugin-dir "$WORK/plug" --session-id x
-case "$wout" in *"-- 뒤에 CLI 인자"*) ok "래퍼: CLI 인자 없이 띄우지 않는다" ;;
+case "$wout" in *"CLI arguments are required after --"*) ok "래퍼: CLI 인자 없이 띄우지 않는다" ;;
   *) bad "래퍼 argv 필수" "$wout" ;; esac
 
 # The stage must be HANDED what the hook will demand of it. Layer 1 routes every
