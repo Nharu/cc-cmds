@@ -2936,7 +2936,7 @@ else
   bad "park 사유" "미선언 대상의 park 이 기록되지 않았거나 다른 사유를 쓴다"
 fi
 case "$msg" in
-  *재인가*) ok "거부 문면이 재인가가 필요하다고 말한다" ;;
+  *re-authorization*) ok "거부 문면이 재인가가 필요하다고 말한다" ;;
   *) bad "거부 문면" "'$msg'" ;;
 esac
 
@@ -4448,7 +4448,7 @@ if [ -n "$aid" ]; then
   gate close --manifest "$FX_MANIFEST" --approval "$aid"
   check "트랜스크립트가 없으면 승인은 닫히지 않는다" "$rc" "5"
   case "$msg" in
-    *트랜스크립트*) ok "닫지 못한 이유가 판독 채널의 부재로 보고된다" ;;
+    *transcript*) ok "닫지 못한 이유가 판독 채널의 부재로 보고된다" ;;
     *) bad "close 사유" "'$msg'" ;;
   esac
 
@@ -8286,7 +8286,7 @@ check "「선행」은 나중 행에서 더할 수 있다" "$rc" "0"
 seg_row SD "$CONE_D" 상태=실행중 선행=SA
 check "「선행」은 나중 행에서 뺄 수 없다" "$rc" "2"
 case "$msg" in
-  *단조*) ok "거절이 단조성을 이유로 든다" ;;
+  *monotone*) ok "거절이 단조성을 이유로 든다" ;;
   *) bad "단조 문면" "$msg" ;;
 esac
 
@@ -10311,7 +10311,7 @@ gate4 plan --manifest "$NM4" --kind propose-done --target infra --segment SN1 --
       --surface 읽기 --rationale "무효화된 채로 끝났는지 물어만 본다"
 check "P-bis: 무효화 전용 상태에서도 plan 이 0 을 낸다" "$rc" "0"
 case "$msg" in
-  *"stands as void"*) ok "그 예고가 충족이 아니라 무효로 기록될 것임을 말한다" ;;
+  *"무효"*) ok "그 예고가 충족이 아니라 무효로 기록될 것임을 말한다" ;;
   *) bad "무효화 예고 문면" "$msg" ;;
 esac
 # Every other passing `plan` names the axes it did not evaluate before it
@@ -14858,7 +14858,7 @@ if [ -n "$sb1" ]; then ok "1: 게이트가 그 머지를 통과시켜 행을 남
 check "1: 그 행의 절단점이 유도 등급 머지 다 (오늘은 배포 다)" "$(sa_field "$sb1" '절단점')" "머지"
 check "1: 그리고 유도 절단점 필드가 머지 를 싣는다" "$(sa_field "$sb1" '유도 절단점')" "머지"
 case "$raw" in
-  *과신고*) ok "1: 실행 로그가 눌렸다는 사실을 남긴다 (두 필드가 같은 값이라 원장만으로는 구별되지 않는다)" ;;
+  *over-declared*) ok "1: 실행 로그가 눌렸다는 사실을 남긴다 (두 필드가 같은 값이라 원장만으로는 구별되지 않는다)" ;;
   *) bad "1 과신고 문면" "$raw" ;;
 esac
 
@@ -14893,7 +14893,7 @@ if [ -n "$sb3" ]; then ok "3: 동치로 신고된 머지가 행을 남긴다"; e
 check "3: 절단점이 머지 그대로다" "$(sa_field "$sb3" '절단점')" "머지"
 check "3: 유도 절단점도 머지다" "$(sa_field "$sb3" '유도 절단점')" "머지"
 case "$raw" in
-  *과신고*|*저신고*) bad "3 무경고" "동치인데 경고가 났다: $raw" ;;
+  *over-declared*|*under-declared*) bad "3 무경고" "동치인데 경고가 났다: $raw" ;;
   *) ok "3: 동치는 조용히 통과한다" ;;
 esac
 
