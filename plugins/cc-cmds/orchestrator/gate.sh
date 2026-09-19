@@ -9799,6 +9799,16 @@ EOF
           # answer, and it cannot verify that a free-text question is ABOUT a
           # clause. What it refuses is the amplification — one answer excusing
           # many obligations — which is the whole of the failure.
+          #
+          # EXCEPT A QUESTION ABOUT THE DESIGN STEP. Its answer is not an excuse
+          # for several obligations but the common precondition of every clause
+          # that needs the document, so one answer releasing all of them is the
+          # plain fact. And the design stage emits one judgment for the whole
+          # document, so there is no path on which it could raise one question
+          # per clause. The exception keys on what the approval is about (its
+          # `막는 세그먼트` is the design step id), which the gate can verify; the
+          # two floors above — at least one id, every id an open `판단`
+          # approval — still apply to it.
           for other in $(gate_clause_ids); do
             [ -n "$other" ] || continue
             [ "$other" = "$cid" ] && continue
@@ -9809,6 +9819,7 @@ EOF
             for jid in $cev_ids; do
               for ojid in $other_ids; do
                 [ "$jid" = "$ojid" ] || continue
+                gate_approval_keyed_on_design_step "$jid" && continue
                 warn "승인 ${jid} 은 이미 종료 절 ${other} 을 보류시키고 있습니다 — 답 하나가 여러 절을 정산할 수 없습니다"
                 warn "이 절을 보류하려면 이 절에 대한 물음을 따로 올리세요 (조건 10 은 사용자가 인가한 것을 재는 유일한 조건입니다)"
                 return "$GATE_EXIT_VOCAB"
@@ -11534,6 +11545,8 @@ gate_verb_act() {
     # reaches disk. So when the invalidation is the ONLY thing left unmet, the
     # proposal is accepted and the `done` file records the run as invalidated
     # rather than as satisfied — the two must not read alike in the morning.
+    # Condition 1's line for a run whose design step will not be dispatched
+    # again reaches this arm on the same footing: no segment can ever exist.
     # Tested by POSITIVE equality against the token, and the arm below tests the
     # other accepted value the same way. Everything the function did not name —
     # including a value it never printed — falls through to the refusing arm.
@@ -11557,6 +11570,12 @@ gate_verb_act() {
       warn "종료 제안 기각 — 미충족 조건:"
       case "$unmet" in
         *"종료 절"*) warn "미정산 절은 act --kind clause 로 근거를 남기거나 불가능으로 표시하세요" ;;
+      esac
+      # A separate `case`: the one above stops at its first match, and a run
+      # blocked at design carries both lines at once.
+      case "$unmet" in
+        *"1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 "*)
+          warn "설계가 막혀 세그먼트가 생길 수 없는 런입니다 — 문서에 기대는 종료 절을 불가능으로(설계 스테이지가 연 판단 승인이 붙든 절은 그 승인 id 를 지목한 보류로) 정산하면 이 제안은 무효화 종료로 기록됩니다" ;;
       esac
       printf '%s\n' "$unmet" >&2
       # THE ROW CARRIES A SUMMARY, NOT THE WHOLE LIST. Joining every unmet
@@ -12210,6 +12229,24 @@ gate_judgment_approval_open() {
     *" $1 "*) return 0 ;;
   esac
   return 1
+}
+
+gate_approval_keyed_on_design_step() {
+  # gate_approval_keyed_on_design_step <승인 id> — 0 when that approval is a
+  # question about the run-scope design step: its issuing row's `막는 세그먼트`
+  # is the plan's single design step id, and that id is not also a segment.
+  #
+  # The key is what the approval is ABOUT, not who wrote it, because that is
+  # the one fact the gate can check: the emission absorber passes the stage key
+  # through to the issuing row, and a design step never has a `segment` row.
+  # The FIRST row is read because it is the issuing one; a transition row need
+  # not carry the field.
+  local dstep first
+  dstep=$(gate_run_scope_design_step) || return 1
+  [ -z "$(gate_segment_field "$dstep" '상태')" ] || return 1
+  first=$( { gate_rows '승인' | grep -F "승인 id=$1 " || true; } | sed -n '1p')
+  [ -n "$first" ] || return 1
+  [ "$(gate_row_field "$first" '막는 세그먼트')" = "$dstep" ]
 }
 
 gate_clause_settled() {
@@ -14232,7 +14269,16 @@ gate_done_disposition() {
   # genuine unmet cause from this verdict, and a run with conditions actually
   # outstanding recorded itself as invalidated and stopped. Anchoring makes the
   # only line this can drop the one the gate itself writes.
-  other=$(printf '%s' "$unmet" | grep -v '^5 런 스코프 blocked 가 해소 불가입니다 ' || true)
+  #
+  # Condition 1's design-step line is dropped on the same footing, and the
+  # anchoring applies to both heads. It is the zero-segment line of a run whose
+  # design step will not be dispatched again: no segment can come into being, so
+  # the path forward is closed by construction just as condition 5's is, and
+  # what the run may record is its invalidation, never its satisfaction. The
+  # plain zero-segment line — a run that has not begun — is not dropped.
+  other=$(printf '%s' "$unmet" \
+    | grep -v -e '^5 런 스코프 blocked 가 해소 불가입니다 ' \
+              -e '^1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 ' || true)
   [ -n "$other" ] || { printf '무효화'; return 0; }
   printf '미충족'
 }
@@ -14276,9 +14322,46 @@ gate_done_conditions() {
   # nine — which made the very first act of every run trip the rule below that
   # demands a next obligation when everything is already done. A run with no
   # segments has not finished; it has not begun.
-  local n_seg
+  #
+  # EXCEPT IN A DESIGN-FIRST GRAPH, where that sentence is only half true. Its
+  # segments come from the frozen document's slicing, and the design step is not
+  # a segment, so a run whose design never froze has no segments and never will.
+  # Such a run is not "not begun": its design step will not be dispatched again,
+  # because it already has a `stage-result` row (a stage with a row is not
+  # re-dispatched), or a document already sits at the path (a document that
+  # exists is not dispatched over), or the manifest names no document (the
+  # dispatch refuses that value). Any of the three prints a different line with
+  # its own fixed head, and `gate_done_disposition` drops that head the way it
+  # drops condition 5's — the run may then record its end, as invalidated and
+  # never as satisfied.
+  #
+  # This does not open an empty end. The line only decides the disposition when
+  # it is the last one left: condition 7 still holds the run while the design
+  # stage is live, and condition 10 still holds it until every termination
+  # clause is settled, which on the normal path means the segments the frozen
+  # document goes on to produce. Only a router that settles the document's
+  # clauses as impossible, with evidence, leaves this line standing alone.
+  local n_seg dstep dwhy dname
   n_seg=$(gate_rows 'segment' | gate_count)
-  [ "$n_seg" = "0" ] && printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
+  if [ "$n_seg" = "0" ]; then
+    dwhy=""
+    if dstep=$(gate_run_scope_design_step); then
+      dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
+      if [ -n "$(gate_stage_result_rows_of "$dstep")" ]; then
+        dwhy='종단 행 있음'
+      else
+        case "$dname" in
+          '' | '없음' | '(없음)') dwhy='설계 문서 이름 없음' ;;
+          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ]; then dwhy='설계 문서가 이미 있음'; fi ;;
+        esac
+      fi
+    fi
+    if [ -n "$dwhy" ]; then
+      printf '1 세그먼트가 하나도 없고 설계 단계가 더는 파견되지 않습니다 — %s · %s · 남은 종료 절을 정산하면 런은 무효로 끝납니다\n' "$dstep" "$dwhy"
+    else
+      printf '1 세그먼트가 하나도 없습니다 — 런이 아직 아무것도 만들지 않았습니다\n'
+    fi
+  fi
   for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
     st=$(gate_segment_field "$sid" '상태')

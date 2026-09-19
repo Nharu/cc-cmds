@@ -622,9 +622,14 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'live_stages[]' \
     'orphan_stages[]' \
     'gate.sh wait --manifest <매니페스트> --segment <step id>' \
-    'no single design step'
+    'no single design step' \
+    'The gate records that proposal as `무효화`, never as satisfied.' \
+    'only when it was opened by the design step'
   do
-    if printf '%s\n' "$sec" | grep -qF -- "$lit"; then
+    # A count, not `grep -q`: the early exit on the right of a pipe SIGPIPEs the
+    # left under pipefail. `case` would drop the pipe but reads `[]` as a glob.
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
       ok "$who 사본의 설계 파견 절이 「${lit}」을 싣는다"
     else
       bad "$who 사본의 설계 파견 절" "「${lit}」이 없다"

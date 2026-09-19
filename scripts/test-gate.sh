@@ -5854,7 +5854,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -6059,6 +6059,144 @@ check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않�
   "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
 check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# A run whose design is blocked must still be able to record its end — as
+# invalidated, never as satisfied. The two halves above were each green on
+# their own: no `segment` row after the dispatch, and condition 1 refusing any
+# run without one. Together they left a design-first run that could not end.
+# R15C carries no termination clause, so condition 10 never settles there;
+# each case below builds its own run with clauses. Three runs, because a clause
+# settled as impossible can no longer be held, and the "not begun" reading has
+# to be measured on a run that has not begun.
+H15X() { ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$1" 2>/dev/null | jq -r .H ); }
+clauses15x() {
+  # clauses15x <manifest> <clause id>... — the binding digest no longer matches
+  # once clauses are added, so it is removed rather than recomputed, as in 25.
+  local m="$1" k; shift
+  for k in "$@"; do
+    printf -- '- `종료 절` | id=%s | 문면=설계 문서가 동결된다 (%s)\n' "$k" "$k" >> "$m"
+  done
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$m" && rm -f "$m.bak"
+}
+fresh15x() {
+  # fresh15x <run id> <doc> <clause id>... — manifest, grant and clauses.
+  local rid="$1" doc="$2"; shift 2
+  write15c "$WORK/plan-$rid.md" "$plan15c" "$doc" "$rid"
+  grant15c "$rid" "$doc"
+  clauses15x "$WORK/plan-$rid.md" "$@"
+}
+launch15x() {
+  # launch15x <manifest> <stub> — dispatch the design step and wait on it.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" act --manifest "$1" --kind skill --target infra --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x \
+    -- design -p "$design15c" ) >/dev/null 2>&1 || true
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+}
+settle15x() {
+  # settle15x <manifest> <clause id> <상태> <근거>
+  gateL act --manifest "$1" --kind clause --target infra --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(H15X "$1")" --rationale x -- id="$2" 상태="$3" "근거=$4"
+}
+propose15x() {
+  # propose15x <plan|act> <manifest>
+  gateL "$1" --manifest "$2" --kind propose-done --target infra --segment - --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(H15X "$2")" --rationale '설계 막힘 후 종료 도달성' -- 절=x 근거=y
+}
+design_rows15x() {
+  # design_rows15x <run id> — the design step's `stage-result` rows, counted.
+  { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+    | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } | grep -c . || true
+}
+
+# R15E — the design stage parks with its one bundled judgment open, and every
+# clause that needs the document is held by that one approval. The gate's
+# amplification floor refuses one approval on a second clause, and the design
+# stage cannot raise a question per clause; an approval keyed on the design step
+# is the exception. Auto-resolution is off process-wide, so the approval stays
+# open — with it on, a `설계-골격` judgment closes at once and there is nothing
+# to hold a clause with.
+STUB15E="$WORK/bin/claude-stub-15e"
+cat > "$STUB15E" <<'STUB15EEOF'
+#!/usr/bin/env bash
+cat <<'RES15EEOF'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15e-session","num_turns":1,"result":"**판단 부류**: 설계-골격 **판단 등급**: 2 **판단 기준**: 골격을 사람이 정해야 한다 **판단 되돌리는 법**: 다음 런에서 다시 설계한다 **판단 근거**: 문서의 골격이 결정되지 않았다"}
+RES15EEOF
+exit 0
+STUB15EEOF
+chmod +x "$STUB15E"
+fresh15x R15E 'docs/fixture-design-15e.md' K1 K2
+launch15x "$WORK/plan-R15E.md" "$STUB15E"
+check "15c: 판단을 방출한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15E)" "1"
+jid15e=$( { grep -F '`승인`' "$WT/docs/pipeline-run/R15E.md" 2>/dev/null || true; } \
+  | { grep -F '막는 세그먼트=D1 ' || true; } | sed -n '1p' \
+  | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//')
+if [ -n "$jid15e" ]; then
+  ok "15c: 설계 단계의 방출이 그 단계를 막는 판단 승인을 연다 ($jid15e)"
+else
+  bad "15c 설계 단계 판단 승인" "막는 세그먼트=D1 인 승인 행이 없다"
+fi
+settle15x "$WORK/plan-R15E.md" K1 보류 "열린 판단 승인 $jid15e"
+check "15c: 설계 단계가 연 승인으로 첫 절을 보류시킨다" "$rc" "0"
+settle15x "$WORK/plan-R15E.md" K2 보류 "열린 판단 승인 $jid15e"
+check "15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다" "$rc" "0"
+propose15x plan "$WORK/plan-R15E.md"
+check "15c: 절을 보류로 정산한 설계 막힘 런의 종료 제안이 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 그 종료는 충족이 아니라 무효화로 예상된다" ;;
+  *) bad "15c 보류 경로 종료 문면" "$msg" ;;
+esac
+
+# R15G — the design stage crashes. A run that has not begun is measured first,
+# on the same run before the dispatch, so what flips afterwards is condition 1
+# alone: its clause is already settled.
+STUB15G="$WORK/bin/claude-stub-15g"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB15G"
+chmod +x "$STUB15G"
+fresh15x R15G 'docs/fixture-design-15g.md' K1
+check "15c: 크래시 픽스처의 설계 문서 경로가 비어 있다 (아래가 공허하지 않다)" \
+  "$([ -e "$WT/docs/fixture-design-15g.md" ] && echo 있음 || echo 없음)" "없음"
+settle15x "$WORK/plan-R15G.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 파견 전에 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 설계를 파견하지 않은 0-세그먼트 런의 종료 제안은 여전히 기각된다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 시작 안 한 런 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 그 기각은 런이 아직 시작하지 않았음을 든다" ;;
+  *) bad "15c 시작 안 한 런 문면" "$msg" ;;
+esac
+launch15x "$WORK/plan-R15G.md" "$STUB15G"
+check "15c: 크래시한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15G)" "1"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 크래시 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 크래시 경로 종료 문면" "$msg" ;;
+esac
+propose15x act "$WORK/plan-R15G.md"
+check "15c: 그 종료 제안을 act 로 내면 받아들여진다" "$rc" "0"
+check "15c: 원장에 무효화 종료 행이 하나 남는다" \
+  "$( { grep -F 'kind=propose-done' "$WT/docs/pipeline-run/R15G.md" 2>/dev/null || true; } \
+      | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
+check "15c: done 파일이 런을 무효화로 기록한다" \
+  "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+
+# R15F — a person already wrote an unfrozen document at the path, so the design
+# step is never dispatched at all. The stage never runs and there is no row,
+# which makes this the cheapest way into a design-blocked run.
+fresh15x R15F 'docs/fixture-design-15f.md' K1
+printf '# 사람이 손으로 쓴 설계 초안\n' > "$WT/docs/fixture-design-15f.md"
+settle15x "$WORK/plan-R15F.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 문서만 있는 런의 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15F.md"
+check "15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다" \
+  "$rc/$(design_rows15x R15F)" "0/0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 문서만 있는 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 문서만 있는 경로 종료 문면" "$msg" ;;
+esac
+rm -f "$WT/docs/fixture-design-15f.md"
 
 # ---------------------------------------------------------------------------
 # 16. Termination condition 5 has a resolution path, and one block that has none
