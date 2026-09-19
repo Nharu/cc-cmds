@@ -621,7 +621,8 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     '--segment -' \
     'live_stages[]' \
     'orphan_stages[]' \
-    'gate.sh wait --manifest <매니페스트> --segment <step id>'
+    'gate.sh wait --manifest <매니페스트> --segment <step id>' \
+    'no single design step'
   do
     if printf '%s\n' "$sec" | grep -qF -- "$lit"; then
       ok "$who 사본의 설계 파견 절이 「${lit}」을 싣는다"
@@ -637,6 +638,13 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
   # design step" on every path instead of resolving to `null` on one of them.
   # The pattern below therefore matches only the aligned form, so a copy that
   # drifts back to the bare spelling extracts nothing and fails here loudly.
+  # But the selector is only the front half of the gate's decision: the blank
+  # line filter and the "exactly one" count are shell, not jq, and they are what
+  # settle an empty-string `id` and a plan with two `design` steps. Each copy
+  # carries that back half as prose instead, and the `no single design step`
+  # literal in the loop above is what measures it — reading selector equality by
+  # itself as "aligned" is the mechanism that left those two shapes unstated in
+  # both copies after the spellings had already been matched.
   sel=$(printf '%s\n' "$sec" | grep -oE '\.steps\[\][?] \| select\([^)]*\) \| \.id // empty' | sort -u)
   check "$who 사본의 설계 파견 절에 설계 단계 id 선택식이 한 벌 실린다" \
     "$(printf '%s\n' "$sel" | grep -c '^\.steps')" "1"

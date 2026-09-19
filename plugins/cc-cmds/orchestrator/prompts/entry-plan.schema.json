@@ -28,7 +28,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
+          "id": { "type": "string", "minLength": 1 },
           "skill": { "type": "string", "enum": ["design", "design-audit", "implement", "review", "apply"] },
           "summary": { "type": "string" },
           "depends_on": { "type": "array", "items": { "type": "string" } }

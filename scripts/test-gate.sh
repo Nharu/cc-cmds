@@ -5854,7 +5854,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -5968,6 +5968,38 @@ check "15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 �
 case "$msg" in
   *"design_required=true"*) ok "15c: 그 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
   *) bad "15c null-id 문면" "$msg" ;;
+esac
+# The two shapes below are settled by the shell wrapped around the selector, not
+# by the selector itself, and nothing asserted either of them until here. The
+# first differs from the `null`-id case above inside jq: `.id // empty` falls
+# through on `null` and `false` only, so an `id` of `""` SURVIVES the selector
+# and arrives as a blank line rather than as nothing. What makes the two shapes
+# converge is the shell around it — `grep -v '^$'` erases the blank line and the
+# emptiness check then reads "no design step". Teach the gate to keep that empty
+# string as a name and this assertion goes red, which is why it is here: a
+# run-directory file and a `| 스테이지= |` ledger grep keyed on an empty name
+# point at real things that are not this stage.
+M15C_EMPTYID="$WORK/plan15c-emptyid.md"
+write15c "$M15C_EMPTYID" '{ "design_required": true, "steps": [ { "id": "", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_EMPTYID" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 빈 문자열 id 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 빈 문자열 id 문면" "$msg" ;;
+esac
+# And two `design` steps: the selector emits both ids and only the gate's
+# "exactly one line" count refuses them. Delete that count and this assertion
+# goes red — the exemption would stand with the stage keyed on a two-line id,
+# while both routers' prose says "that step's id" in the singular.
+M15C_TWODESIGN="$WORK/plan15c-twodesign.md"
+write15c "$M15C_TWODESIGN" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "D2", "skill": "design", "summary": "설계 2", "depends_on": [] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+gateL plan --manifest "$M15C_TWODESIGN" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- design -p "$design15c"
+check "15c: design 단계가 둘인 계획에서는 면제가 서지 않는다" "$rc" "3"
+case "$msg" in
+  *"design_required=true"*) ok "15c: 복수 설계 단계 거절도 계획이 설계 단계를 정하지 못한 것을 든다" ;;
+  *) bad "15c 복수 설계 단계 문면" "$msg" ;;
 esac
 # And the exemption reads `## 요소`: the document is named by the kickoff, in
 # front of the person, so a design-requiring plan that reaches the gate with

@@ -1462,6 +1462,14 @@ for pair in entry-plan; do
   else
     bad "스키마" "$pair.schema.json 가 유효한 JSON 이 아님"
   fi
+  # 단계 id 의 하한은 세 자리에 흩어진 산문 술어(「비어 있지 않은 id」)가 기대는 성질이다.
+  # 하한이 빠지면 빈 문자열 id 가 스키마를 통과해 계획이 그대로 얼고, 그 계획에서 두 판독기가
+  # 갈린다 — 게이트는 빈 줄을 지워 「설계 단계 없음」으로 거절하고 라우터는 값 하나를 받는다.
+  if [ "$(jq -r '.properties.steps.items.properties.id.minLength' "$script_dir/prompts/$pair.schema.json" 2>/dev/null)" = "1" ]; then
+    ok "킥오프 스키마의 단계 id 에 최소 길이 1 이 있다: $pair"
+  else
+    bad "스키마" "$pair.schema.json 의 steps[].id 에 minLength 1 이 없음"
+  fi
 done
 
 # ---------------------------------------------------------------------------
