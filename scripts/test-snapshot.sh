@@ -1252,7 +1252,7 @@ MANIFEST="$UB"
 RUN_DIR="$WORK/rundir-unbounded"; mkdir -p "$RUN_DIR"
 ub_out=$(gate_unbounded_notice 2>&1)
 case "$ub_out" in
-  *"둘 다 미선언"*) ok "두 축이 모두 미선언이면 그 사실을 말한다" ;;
+  *"declares neither"*) ok "두 축이 모두 미선언이면 그 사실을 말한다" ;;
   *) bad "미선언 고지" "아무 말도 하지 않았다: ${ub_out:-(빈 출력)}" ;;
 esac
 check "그때 표지가 남는다" "$([ -e "$RUN_DIR/unbounded-notice" ] && printf yes || printf no)" "yes"
@@ -1264,7 +1264,7 @@ rm -f "$RUN_DIR/unbounded-notice"
 printf '**비용 천장**: $50\n' >> "$UB"
 ub_out3=$(gate_unbounded_notice 2>&1)
 case "$ub_out3" in
-  *"둘 다 미선언"*) ok "숫자로 읽히지 않는 천장은 미선언으로 센다" ;;
+  *"declares neither"*) ok "숫자로 읽히지 않는 천장은 미선언으로 센다" ;;
   *) bad "미선언 고지" "강제되지 않는 값을 선언으로 셌다: ${ub_out3:-(빈 출력)}" ;;
 esac
 # 대조군 — 하나라도 유효하게 선언되면 침묵한다. 이것이 없으면 위 셋은 「항상
