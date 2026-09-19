@@ -5854,7 +5854,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -6181,6 +6181,48 @@ check "15c: 원장에 무효화 종료 행이 하나 남는다" \
       | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
 check "15c: done 파일이 런을 무효화로 기록한다" \
   "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+
+# R15H — the design stage ended unobserved before its team placed a file at the
+# path. The prelude settles such a dispatch as `외부 종료` without looking at the
+# document, and the routers dispatch that step again onto the absent document, so
+# condition 1 must not name the design step as never dispatched again in that
+# window: read that way, the one run whose retry was safe closed as invalidated.
+# A file at the path closes the window, and the design-step line stands again.
+# The orphan is planted in the shape the gate itself dispatches — declared here
+# rather than borrowed from section 41, which a narrowed run may not include.
+fresh15x R15H 'docs/fixture-design-15h.md' K1
+RD15H="$STATE_LATE/cc-cmds/run/R15H"
+mkdir -p "$RD15H/log"
+sh -c 'exit 0' & dead15h=$!; wait "$dead15h" 2>/dev/null || true
+printf '%s\n' "$dead15h" > "$RD15H/D1.pid"
+printf 'Fri Sep 4 00:00:00 2026\n' > "$RD15H/D1.start"
+printf '1\n' > "$RD15H/D1.attempt"
+printf 'design\n' > "$RD15H/D1.kind"
+printf '{"type":"system","subtype":"init","session_id":"D1-session"}\n' > "$RD15H/log/D1#1.json"
+H15X "$WORK/plan-R15H.md" >/dev/null
+check "15c: 외부 종료로 정산된 설계 단계의 stage-result 행이 하나 있다" \
+  "$( { grep -F '`stage-result`' "$WT/docs/pipeline-run/R15H.md" 2>/dev/null || true; } \
+      | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } \
+      | { grep -cF '종단 부류=외부 종료' || true; } )" "1"
+check "15c: 외부 종료 픽스처의 설계 문서 경로가 비어 있다 (아래가 공허하지 않다)" \
+  "$([ -e "$WT/docs/fixture-design-15h.md" ] && echo 있음 || echo 없음)" "없음"
+settle15x "$WORK/plan-R15H.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 외부 종료 런의 절을 불가능으로 정산한다" "$rc" "0"
+propose15x plan "$WORK/plan-R15H.md"
+check "15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 외부 종료 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 외부 종료 재파견 창 문면" "$msg" ;;
+esac
+printf '# 스테이지가 중간까지 쓴 설계 문서\n' > "$WT/docs/fixture-design-15h.md"
+propose15x plan "$WORK/plan-R15H.md"
+check "15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 문서가 놓인 외부 종료 경로의 예상도 무효화 종료다" ;;
+  *) bad "15c 외부 종료 문서 있음 문면" "$msg" ;;
+esac
+rm -f "$WT/docs/fixture-design-15h.md"
 
 # R15F — a person already wrote an unfrozen document at the path, so the design
 # step is never dispatched at all. The stage never runs and there is no row,

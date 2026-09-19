@@ -600,7 +600,8 @@ check "전체 사이클이 없는 세그먼트에서는 그 식이 기준 없음
 # shipped router already lost the design dispatch that way, with nothing to
 # catch it. The two sections are not byte-identical prose, so what is asserted
 # is the load-bearing literals: without any one of them the dispatch cannot be
-# issued, waited on, or held back while the stage runs.
+# issued, waited on, held back while the stage runs, or dispatched again after a
+# stage ended unobserved before it placed the document.
 # ---------------------------------------------------------------------------
 design_section() {
   # design_section <skill file> — the design-dispatch subsection body, read up
@@ -624,7 +625,9 @@ for pair in "리드:$AP_SKILL" "교대:$RS_SKILL"; do
     'gate.sh wait --manifest <매니페스트> --segment <step id>' \
     'no single design step' \
     'The gate records that proposal as `무효화`, never as satisfied.' \
-    'only when it was opened by the design step'
+    'only when it was opened by the design step' \
+    'the last such row decides' \
+    '`종단 부류=외부 종료` is the one class that may be dispatched again, and only onto an absent document.'
   do
     # A count, not `grep -q`: the early exit on the right of a pipe SIGPIPEs the
     # left under pipefail. `case` would drop the pipe but reads `[]` as a glob.

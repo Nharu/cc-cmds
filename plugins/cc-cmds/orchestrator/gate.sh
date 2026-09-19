@@ -14327,13 +14327,22 @@ gate_done_conditions() {
   # segments come from the frozen document's slicing, and the design step is not
   # a segment, so a run whose design never froze has no segments and never will.
   # Such a run is not "not begun": its design step will not be dispatched again,
-  # because it already has a `stage-result` row (a stage with a row is not
-  # re-dispatched), or a document already sits at the path (a document that
-  # exists is not dispatched over), or the manifest names no document (the
-  # dispatch refuses that value). Any of the three prints a different line with
-  # its own fixed head, and `gate_done_disposition` drops that head the way it
-  # drops condition 5's — the run may then record its end, as invalidated and
-  # never as satisfied.
+  # because its last `stage-result` row is of any class but `외부 종료`, or a
+  # document already sits at the path (a document that exists is not dispatched
+  # over), or the manifest names no document (the dispatch refuses that value).
+  # Any of the three prints a different line with its own fixed head, and
+  # `gate_done_disposition` drops that head the way it drops condition 5's — the
+  # run may then record its end, as invalidated and never as satisfied.
+  #
+  # `외부 종료` IS LEFT OUT because the routers dispatch that step again onto an
+  # absent document. The prelude's settlement writes the class about a dispatch
+  # whose process and supervisor both vanished, without looking at the document,
+  # so a stage ended before its team placed a file at the path lands here having
+  # written nothing. Reading that row as "not dispatched again" dropped this line
+  # in the one window where a retry was safe, and the run closed as invalidated
+  # instead of retrying. A file at the path still names the design step through
+  # the second reason. The LAST row decides because a step dispatched again
+  # carries one row per attempt, and only the latest says how it stands now.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -14341,13 +14350,15 @@ gate_done_conditions() {
   # clause is settled, which on the normal path means the segments the frozen
   # document goes on to produce. Only a router that settles the document's
   # clauses as impossible, with evidence, leaves this line standing alone.
-  local n_seg dstep dwhy dname
+  local n_seg dstep dwhy dname drows dlast
   n_seg=$(gate_rows 'segment' | gate_count)
   if [ "$n_seg" = "0" ]; then
     dwhy=""
     if dstep=$(gate_run_scope_design_step); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
-      if [ -n "$(gate_stage_result_rows_of "$dstep")" ]; then
+      drows=$(gate_stage_result_rows_of "$dstep")
+      dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
+      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ]; then
         dwhy='종단 행 있음'
       else
         case "$dname" in
