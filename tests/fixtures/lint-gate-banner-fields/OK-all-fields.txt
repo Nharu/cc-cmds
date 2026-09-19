@@ -1,0 +1,18 @@
+# ---------------------------------------------------------------------------
+# 8. A producer section
+# --- section: 8 | group: base | covers: snapshot, act | anchors: 리뷰 기록이 없는 머지는 거부된다 ---
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 9. A section that needs the one above
+# --- section: 9 | group: base | covers: snapshot, act | needs: 8 | anchors: 절단점-준수 는 「끔」을 무시한다 ---
+# ---------------------------------------------------------------------------
+
+# --- 31q. A dashed sub-block naming two producers, one declared below ---------
+# --- section: 31q | group: cone | covers: - | needs: 9, 34 | anchors: 첫 단언, 둘째 단언 ---
+
+# --- 34. A mutual pair is legal: the closure is a reachable set -------------
+# --- section: 34 | group: cone | needs: 31q ---
+
+# --- 0a. A banner with no optional field ----------------------------------------
+# --- section: 0a ---

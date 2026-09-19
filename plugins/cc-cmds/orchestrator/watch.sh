@@ -88,6 +88,13 @@ WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # — and a group is a slot, so two spellings mean two runs erasing each other.
 # shellcheck source=/dev/null
 . "$WATCH_DIR/notify-run.sh"
+# The run's version pin. The watcher hops into the pinned copy for the same
+# reason the gate does — and the hop needs the original argument vector, which
+# the parse loop below consumes.
+# shellcheck source=/dev/null
+. "$WATCH_DIR/pin.sh"
+
+WATCH_ARGV=("$@")
 
 # `RUN_OPEN` is the run-age arm's threshold, and it sits between the other two on
 # purpose: the window it names is bounded below by how long a healthy router
@@ -142,6 +149,23 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$RUN_DIR" ] || { printf 'watch: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'watch: --ledger 는 필수입니다\n' >&2; exit 2; }
+
+# THE HOP, AND IT IS AHEAD OF EVERY WRITE. `watch.pid`, `watch.state`,
+# `watch.heartbeat` and the single-holder record all land below this line: `exec`
+# preserves the pid and the start-time fingerprint but drops EXIT traps, so a
+# marker written before the hop would outlive the process that could clean it up
+# while still passing its own identity check.
+#
+# A pin that names a missing copy is a WARNING here and not a stop. The gate
+# refuses outright in that state, which is what actually halts the run; a watcher
+# that killed itself as well would take the reporting surface down with it at the
+# exact moment somebody needs to read why.
+watch_hop_t=""; watch_hop_rc=0
+watch_hop_t=$(pin_hop_target "$RUN_DIR" "$WATCH_DIR") || watch_hop_rc=$?
+case "$watch_hop_rc" in
+  0) exec "${BASH:-/bin/bash}" "$watch_hop_t/watch.sh" ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} ;;
+  2) printf 'watch: plugin-pin 은 있는데 사본이 없습니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+esac
 
 # The run id is the run directory's own name — the driver names it that way and
 # nothing else has to be read to get it. The banner group below is keyed on it.
@@ -217,7 +241,7 @@ open_approval_ids() {
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "승인 id=$id " || true; } | tail -1 \
+    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     if [ "$st" = "대기" ]; then printf '%s\n' "$id"; fi
   done
@@ -359,11 +383,24 @@ shift_active() {
   # night, and this arm is disarmed for good — the safety device becomes the
   # silent hole. Reading the timestamp is what makes the marker expire on its
   # own, with no writer needed to clean up after a process that is gone.
+  #
+  # OR THE SHIFT IS DEMONSTRABLY ALIVE. The expiry above is a 300-second
+  # cold-start budget that is never renewed, and it was enough while a stage
+  # ended inside the shift's own blocking dispatch call. With the supervisor
+  # detached a stage can end at ANY point of a shift's life — six minutes in,
+  # two hours in — and on the expired marker alone the after-stage arm fires
+  # mid-shift and writes the run-scope `blocked` row this function exists to
+  # prevent. `shift.live` (pid + fingerprint, written by the gate's launcher
+  # beside the marker and removed with it) answers the question the timestamp
+  # cannot; the fingerprint is what keeps a reused pid from disarming the arm
+  # for good. Lengthening the expiry instead would reopen a hole of that length,
+  # and a shift's real length is unbounded so no number is right.
   local f="$RUN_DIR/shift.in-progress" exp
-  [ -f "$f" ] || return 1
-  exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
-  [ -n "$exp" ] || return 1
-  [ "$(now_epoch)" -lt "$exp" ]
+  if [ -f "$f" ]; then
+    exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
+    if [ -n "$exp" ] && [ "$(now_epoch)" -lt "$exp" ]; then return 0; fi
+  fi
+  cc_shift_is_live "$RUN_DIR"
 }
 
 record_blocked() {
@@ -840,10 +877,21 @@ pass() {
   # shift ends normally and its own stream carries a terminal line, so without
   # this the run's account of itself is a shift that finished and a stage that
   # never existed.
+  #
+  # THE WORDING SAYS ONLY WHAT THE PREDICATE KNOWS. The earlier tail — "look at
+  # the dispatch mode, not the stage" — named one cause, and it was wrong on a
+  # measured case (a stage killed by an account limit under a perfectly normal
+  # dispatch). With the supervisor detached from the routing session the
+  # dispatch mode can no longer produce an orphan at all, so that sentence
+  # would point at a removed cause. What remains true: the record outlived the
+  # process, no result was recorded, and a surviving orphan means the SUPERVISOR
+  # died too — a machine-level event, listed without choosing among its
+  # branches. The settlement token `외부 종료` is spelled out so a person who
+  # saw the banner at 3am has the string to grep the ledger for at 9.
   local orphans
   orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
   [ -n "$orphans" ] && \
-    printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았으니 스테이지가 아니라 파견 방식을 보세요\n' \
+    printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았습니다 — 원인은 이 술어의 입력에 없습니다. 감독자까지 사라졌다는 뜻이므로 기계 재부팅·절전·OOM, 사람이 보낸 종료가 감독자에 닿은 것, 또는 정산이 도중에 멈춘 것일 수 있습니다. 다음 게이트 호출이 이를 `외부 종료` 로 정산합니다\n' \
       "$(now_iso)" "$orphans"
   return 0
 }

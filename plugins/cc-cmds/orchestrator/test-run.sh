@@ -1756,13 +1756,23 @@ RUN_DIR="$RUN_DIR_SAVE"; LEDGER="$LEDGER_SAVE"; BASE="$BASE_SAVE"
 # 21. 장식 삭제와 미배선 탐지기
 # ---------------------------------------------------------------------------
 # 이 절이 지키는 것은 「지금 깨끗하다」가 아니라 「다시 더러워지면 실패한다」다.
-for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mode predicate_design; do
+# `predicate_design` 은 이 목록에서 나갔다 — 이 목록이 금하는 것은 이름이 아니라
+# **부르는 이 없는 장식**이고, 그 술어는 설계 스테이지가 착지하면서 실제로 배선됐다.
+# 그래서 아래에 부재 대신 배선을 단언한다: 정의와 호출이 둘 다 있어야 한다.
+for gone in STAGE_IDS CRASH_RETRIES HOLLOW_SUCCESS_RETRIES WAVE_DEMOTED wave_mode; do
   if grep -q "$gone" "$DRIVER"; then
     bad "장식 삭제" "$gone 이 남았다"
   else
     ok "삭제됨: $gone"
   fi
 done
+if grep -q '^predicate_design()' "$DRIVER" \
+   && sed -n '/^design_arm()/,/^}/p' "$DRIVER" | grep_all_q 'predicate_design ' \
+   && sed -n '/^main_loop()/,/^}/p' "$DRIVER" | grep_all_q 'design_arm '; then
+  ok "배선됨: predicate_design (정의가 있고 main_loop 이 부르는 설계 팔이 그것을 부른다)"
+else
+  bad "미배선 탐지기" "predicate_design 이 정의만 있고 불리지 않거나 그 반대다 — 장식으로 되돌아갔다"
+fi
 if sed 's/#.*//' "$DRIVER" | grep_all_q '형제'; then
   bad "웨이브 어휘" "형제 팔이 남았다 — 도달 불가한 분기이고 그 플래그는 참이 될 수 없다"
 else
@@ -1891,6 +1901,248 @@ else
   ok "DOC_SLUG 가 비면 감사 술어는 통과하지 않는다"
 fi
 RUN_DIR="$RUN_DIR_SAVE"; BASE="$BASE_SAVE"
+
+# --- 21b 설계 스테이지의 술어와 발화 조건 ------------------------------------
+# 설계 스테이지는 문서만 내므로 위조 불가능한 술어가 없다. 그래서 저작된 사실
+# **둘**을 교차한다 — 스트림의 동결 리터럴과 문서의 동결 상태 줄. 하나만 보면
+# 「동결했다고 말하고 쓰지 않은」 스테이지와 「쓰고 말하기 전에 죽은」 스테이지가
+# 둘 다 통과한다. 그리고 그 문서 쪽 절반이 재실행 가드이기도 하다 — 동결된 문서
+# 위로 다시 디스패치하면 워크스루·리파인먼트 결정을 덮어쓰기 때문이다.
+DOC_SAVE21b="$DOC"; RUN_DIR_SAVE21b="${RUN_DIR:-}"
+RUN_DIR="$WORK/design-pred"; mkdir -p "$RUN_DIR/log"
+DOC="$WORK/design-pred/doc.md"; mkdir -p "$(dirname "$DOC")"
+printf '# 문서\n\n**상태**: 수렴중\n' > "$DOC"
+if doc_is_frozen "$DOC"; then
+  bad "설계 술어" "동결되지 않은 문서를 동결로 읽었다"
+else
+  ok "동결 상태 줄이 없으면 문서는 동결이 아니다"
+fi
+printf '%s\n' "$LIT_DESIGN_TERMINAL" > "$RUN_DIR/log/S1design.json"
+if predicate_design S1design; then
+  bad "설계 술어" "스트림만 동결을 말하는데 통과했다 — 문서 쪽 절반을 보지 않는다"
+else
+  ok "스트림이 동결을 말해도 문서가 동결이 아니면 통과하지 않는다"
+fi
+printf '# 문서\n\n**상태**: 동결됨\n' > "$DOC"
+if doc_is_frozen "$DOC"; then
+  ok "동결 상태 줄이 있으면 문서는 동결이다 (재실행 가드가 서는 자리)"
+else
+  bad "설계 술어" '동결 상태 줄을 읽지 못했다'
+fi
+if predicate_design S1design; then
+  ok "스트림과 문서가 둘 다 동결을 말하면 술어가 통과한다"
+else
+  bad "설계 술어" "두 사실이 다 있는데 통과하지 않았다"
+fi
+: > "$RUN_DIR/log/S1design.json"
+if predicate_design S1design; then
+  bad "설계 술어" "문서만 동결인데 통과했다 — 스트림 쪽 절반을 보지 않는다"
+else
+  ok "문서가 동결이어도 스트림이 동결을 말하지 않으면 통과하지 않는다"
+fi
+DOC="$DOC_SAVE21b"; RUN_DIR="$RUN_DIR_SAVE21b"
+
+# 발화 조건의 나머지 절반은 매니페스트의 얼린 실행 계획이다. `design_required` 는
+# `false` 가 유의미한 값이라 `// ` 기본값으로 접으면 안 된다 — jq 의 `//` 는
+# `false` 를 부재로 다루므로 그 접기가 곧 「선언된 false 를 못 읽음」이다.
+MFDSG="$WORK/mf-design.md"
+write_manifest "$MFDSG" "" "" main "docs/x.md"
+MANIFEST_SAVE21b="$MANIFEST"; MANIFEST="$MFDSG"
+check "실행 계획 JSON 이 통째로 읽힌다" \
+  "$(manifest_plan_json | tr -d ' \n')" '{"steps":["audit","implement"]}'
+check "선언되지 않은 design_required 는 null 이다" \
+  "$(manifest_plan_field '.design_required')" "null"
+MFDSG2="$WORK/mf-design2.md"
+sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": false, "steps": ["audit"] }/' "$MFDSG" > "$MFDSG2"
+MANIFEST="$MFDSG2"
+check "선언된 false 는 false 로 읽힌다 (부재로 접히지 않는다)" \
+  "$(manifest_plan_field '.design_required')" "false"
+MANIFEST="$MANIFEST_SAVE21b"
+
+# 구속 집합의 설계 로스터 행. 무인 설계 스테이지가 이 행으로 팀을 기계적으로 짜므로
+# 런 도중 행을 덧붙일 수 있으면 사람 없이 팀을 짠 것과 같다 — 그래서 다이제스트가
+# 움직여야 한다. 그리고 행이 없는 매니페스트는 0바이트여야 진행 중인 런이 부적합이
+# 되지 않는다. 메모 판독기와 파일 판독기가 같은 바이트를 내는지도 함께 잰다 — 메모
+# 태그의 구분자가 탭이 아니면 메모 쪽만 조용히 빈 값을 낸다.
+MFROS="$WORK/mf-roster.md"
+write_manifest "$MFROS"
+MANIFEST_SAVE21r="$MANIFEST"; MANIFEST="$MFROS"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+bd_noros=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+printf -- '- `설계 로스터` | 역할=architecture | 범위=구조 | 모델=opus\n' >> "$MFROS"
+check "픽스처가 실제로 로스터 행을 얻었다 (아래가 공허하지 않다)" \
+  "$(manifest_design_roster_rows_anywhere | grep -c .)" "1"
+bd_ros=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_ros" = "$bd_noros" ]; then
+  bad "구속 집합 감도" "설계 로스터 행을 더했는데 다이제스트가 그대로다 — 런 도중 팀을 바꿀 수 있다"
+else
+  ok "설계 로스터 행이 생기면 구속 다이제스트가 움직인다"
+fi
+manifest_snapshot_take
+check "메모 판독기가 파일 판독기와 같은 로스터 행을 낸다" \
+  "$(manifest_design_roster_rows_anywhere)" "$(grep -E '^- `설계 로스터`' "$MFROS")"
+check "메모가 켜진 상태의 다이제스트가 파일 판독과 같다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_ros"
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+grep -v '^- `설계 로스터`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
+check "로스터 행이 없으면 그 행을 얼리기 전과 같은 바이트다 (진행 중인 런이 부적합이 되지 않는다)" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+MANIFEST="$MANIFEST_SAVE21r"
+
+# --- 21c 설계 팔의 발화 조건과 재개 판별 — 팔을 태운다 ------------------------
+# 발화 조건은 문서 부재이고, 재개 판별은 이 런 원장의 설계 스테이지 stage-result
+# 행이다. 동결 줄은 둘 중 어느 쪽도 아니다 — 사람이 쓴 문서에도 그 줄이 없어서, 그
+# 줄의 부재를 가드로 읽던 판본은 기존 문서마다 발화했다. 앞 판본의 단언은 문자열
+# grep 이라 분기 순서가 바뀌어도 초록이었으므로, 여기서는 파견을 스텁하고 팔을
+# 실제로 부른다. 스텁이 하네스의 정의를 덮지 않도록 한 케이스를 한 서브셸에서 돈다.
+ARM21="$WORK/design-arm"; mkdir -p "$ARM21"
+MFARM="$ARM21/manifest.md"
+write_manifest "$MFARM" "" "" main "docs/x.md"
+sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": true, "steps": ["design", "audit"] }/' \
+  "$MFARM" > "$MFARM.t" && mv "$MFARM.t" "$MFARM"
+MFARM_OFF="$ARM21/manifest-off.md"
+write_manifest "$MFARM_OFF" "" "" main "docs/x.md"
+check "팔 픽스처가 실제로 design_required=true 를 얻었다 (아래가 공허하지 않다)" \
+  "$(MANIFEST="$MFARM"; manifest_plan_field '.design_required')" "true"
+
+arm21_case() {
+  # arm21_case <라벨> <매니페스트> <문서: 없음|사람|동결> <앞선 행 종단 부류 | -> <스테이지 종단 부류> [오케스트레이터 디렉터리]
+  local d="$ARM21/$1" mf="$2" docst="$3" prior="$4"
+  ARM21_CLASS="$5"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=armrun
+    MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds
+    : > "$LEDGER"
+    case "$docst" in
+      사람) printf '# 사람이 쓴 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$DOC" ;;
+      동결) printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC" ;;
+    esac
+    [ "$prior" = "-" ] || printf -- '- `stage-result` | 세그먼트=- | 스테이지=S1design | 파견 id=S1design | 종단 부류=%s\n' "$prior" >> "$LEDGER"
+    [ -z "${6:-}" ] || ORCH_DIR="$6"
+    CLI_BIN=true
+    dispatch_stage() { printf '%s\t%s\n' "$1" "$2" >> "$d/dispatched"; printf '0' > "$RUN_DIR/$1.rc"; }
+    classify_termination() { printf '%s' "$ARM21_CLASS"; }
+    predicate_design() { return 0; }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { :; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    # 흡수 호출이 행을 쓴 **뒤에** 오는지를 호출 시점의 원장으로 잰다.
+    absorb_stage_judgment() {
+      printf '%s %s\n' "$1" "$( { grep -F '스테이지=S1design ' "$LEDGER" || true; } | grep -c .)" >> "$d/absorbed"
+    }
+    design_arm; printf 'rc=%s\n' "$?"
+  ) > "$d/out" 2>/dev/null
+}
+arm21_rc()   { sed -n 's/^rc=//p' "$ARM21/$1/out" | tail -1; }
+arm21_disp() { [ -f "$ARM21/$1/dispatched" ] && grep -c . "$ARM21/$1/dispatched" || printf '0'; }
+
+arm21_case off "$MFARM_OFF" 없음 - '정상 완료'
+check "design_required 가 없으면 팔은 아무것도 하지 않는다" \
+  "$(arm21_rc off)/$(arm21_disp off)/$(grep -c . "$ARM21/off/ledger.md" || true)" "0/0/0"
+
+# P0 의 실측 형태 — 사람이 쓴 동결 줄 없는 문서가 있는 매니페스트.
+arm21_case human "$MFARM" 사람 - '정상 완료'
+check "사람이 쓴 미동결 문서가 있으면 파견하지 않고 감사로 넘긴다" \
+  "$(arm21_rc human)/$(arm21_disp human)" "0/0"
+if grep_all_q -F 'kind=design-composition' "$ARM21/human/ledger.md" \
+   && grep_all_q -F '기준=문서가 이미 있다' "$ARM21/human/ledger.md" \
+   && grep_all_q -F '등급=1' "$ARM21/human/ledger.md"; then
+  ok "있는 문서를 건너뛴 결정이 등급 1 자율 승인 행으로 남는다"
+else
+  bad "설계 팔" "있는 문서를 건너뛰었는데 자율 승인 행이 없다 — 아침에 「설계 불요」와 구별되지 않는다"
+fi
+arm21_case frozen "$MFARM" 동결 - '정상 완료'
+check "동결된 문서도 같은 부재 가드로 건너뛴다 (동결 줄은 가드가 아니다)" \
+  "$(arm21_rc frozen)/$(arm21_disp frozen)" "0/0"
+
+arm21_case fresh "$MFARM" 없음 - '정상 완료'
+check "문서가 없고 앞선 행이 없으면 한 번 파견한다" \
+  "$(arm21_rc fresh)/$(arm21_disp fresh)" "0/1"
+check "설계 스테이지는 홈 별칭 루트에서 돈다" \
+  "$(cut -f2 "$ARM21/fresh/dispatched" 2>/dev/null)" "$(MANIFEST="$MFARM"; alias_root "$(home_alias)")"
+check "파견 뒤 흡수 호출이 stage-result 행이 쓰인 다음에 온다" \
+  "$(cat "$ARM21/fresh/absorbed" 2>/dev/null)" "S1design 1"
+
+arm21_case resumed-ok "$MFARM" 동결 '정상 완료' '정상 완료'
+check "이 런이 설계를 완주했으면 재개에서 다시 파견하지 않고 이어간다" \
+  "$(arm21_rc resumed-ok)/$(arm21_disp resumed-ok)" "0/0"
+
+# P1 의 형태 — 앞선 시도가 중단해 반쯤 진행된 문서를 남겼다. 부재 가드만으로는 이
+# 문서가 감사로 넘어간다.
+arm21_case resumed-halt "$MFARM" 사람 '의도된 park' '정상 완료'
+check "앞선 시도가 중단한 런은 다시 설계하지도 감사로 넘기지도 않고 park 한다" \
+  "$(arm21_rc resumed-halt)/$(arm21_disp resumed-halt)/$(grep -c 'S1design run' "$ARM21/resumed-halt/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+arm21_case halted "$MFARM" 없음 - '의도된 park'
+check "파견한 스테이지가 중단하면 런을 park 한다" \
+  "$(arm21_rc halted)/$(arm21_disp halted)/$(grep -c 'S1design run' "$ARM21/halted/parked" 2>/dev/null || printf 0)" "1/1/1"
+
+# 존재하지 않는 스킬로 디스패치하면 CLI 가 조용히 종단할 수 있고 게이트는 스킬
+# 파일 존재를 검사하지 않는다. 파견 앞의 하드스톱이 그 분기를 닫는지 태워서 본다.
+mkdir -p "$ARM21/noskill/orchestrator"
+arm21_case noskill "$MFARM" 없음 - '정상 완료' "$ARM21/noskill/orchestrator"
+check "스킬 파일이 없으면 파견하지 않고 park 한다" \
+  "$(arm21_rc noskill)/$(arm21_disp noskill)/$(grep -c '스킬 파일 부재' "$ARM21/noskill/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# --- 21d 드라이버가 파견한 스테이지의 판단 흡수 --------------------------------
+# 흡수는 별도 프로세스가 게이트를 소싱해 한다. 드라이버 셸에 게이트를 들이면 게이트가
+# 드라이버를 다시 소싱하며 RUN_DIR·LEDGER·MANIFEST 를 비운다 — 그래서 부른 뒤에도
+# 부른 쪽의 값이 그대로인지를 함께 단언한다.
+AB21="$WORK/absorb"; mkdir -p "$AB21/log"
+MFAB="$AB21/manifest.md"; write_manifest "$MFAB"
+printf -- '- `자동 채택` | 판단 부류=설계-쟁점 | 근거=픽스처\n' >> "$MFAB"
+ab21_txt='설계 문서를 동결했습니다.
+**판단 부류**: 설계-쟁점
+**판단 등급**: 1
+**판단 기준**: 골격 술어 통과
+**판단 되돌리는 법**: cp /tmp/pre.md /tmp/doc.md
+**판단 근거**: 항목 3·7 해결'
+jq -cn --arg r "$ab21_txt" '{type:"result",subtype:"success",is_error:false,result:$r}' > "$AB21/log/S2ab.json"
+jq -cn --arg r '설계 문서를 동결했습니다.' '{type:"result",subtype:"success",is_error:false,result:$r}' > "$AB21/log/S2none.json"
+AB21_OUT=$(
+  RUN_DIR="$AB21"; LEDGER="$AB21/ledger.md"; MANIFEST="$MFAB"; RUN_ID=abrun; GRANT="$AB21/grant.md"
+  : > "$LEDGER"
+  absorb_stage_judgment S2none - home >/dev/null 2>&1
+  printf 'N %s\n' "$( { grep -F '`자율 승인`' "$LEDGER" || true; } | grep -c .)"
+  absorb_stage_judgment S2ab - home >/dev/null 2>&1
+  printf 'R %s\n' "$RUN_DIR"
+  printf 'L %s\n' "$( { grep -F '`자율 승인`' "$LEDGER" || true; } | tail -1)"
+)
+check "판단 마커가 없는 종단 메시지는 행을 남기지 않는다" \
+  "$(printf '%s\n' "$AB21_OUT" | sed -n 's/^N //p')" "0"
+ab21_row=$(printf '%s\n' "$AB21_OUT" | sed -n 's/^L //p')
+case "$ab21_row" in
+  *kind=judgment*판단\ 부류=설계-쟁점*출처=스테이지\ 방출*)
+    ok "드라이버 경로에서 스테이지가 방출한 판단이 자율 승인 행으로 흡수된다" ;;
+  *) bad "판단 흡수" "흡수 행이 없거나 모양이 다르다: ${ab21_row:-없음}" ;;
+esac
+check "흡수 뒤에도 부른 쪽의 RUN_DIR 이 그대로다 (게이트를 드라이버 셸에 들이지 않았다)" \
+  "$(printf '%s\n' "$AB21_OUT" | sed -n 's/^R //p')" "$AB21"
+if sed 's/#.*//' "$DRIVER" | grep_all_q -E '^[[:space:]]*(\.|source)[[:space:]]+"?\$(ORCH_DIR|GATE_DIR)/gate\.sh'; then
+  bad "판단 흡수" "드라이버가 게이트를 자기 셸에 소싱한다 — 런 상태가 조용히 덮인다"
+else
+  ok "드라이버는 게이트를 자기 셸에 소싱하지 않는다"
+fi
+
+# 흡수는 한 팔이 아니라 파견된 스테이지의 stage-result 행 **전부** 바로 다음에 선다.
+# 한 팔에서 빠지면 그 팔의 판단은 증상 없이 사라진다. S9 는 스테이지를 띄우지 않는
+# 셸 적용이라 대상이 아니다.
+AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
+  pend && !cont {
+    if ($0 ~ /^[[:space:]]*$/) next
+    if (index($0, "absorb_stage_judgment") == 0) print "MISS " prevln
+    pend = 0
+  }
+  index($0, needle) && index($0, "스테이지=S9") == 0 { pend = 1; prevln = NR; n++ }
+  pend { cont = ($0 ~ /\\$/) }
+  END { print "N " n+0 }
+' "$DRIVER")
+check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
+check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
+  "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -2356,11 +2608,15 @@ check "리뷰 스테이지가 접근자를 쓴다" \
   "$( { grep -cF '설계는 $(doc_arg)' "$DRIVER" || true; } )" "2"
 check "재수렴 스테이지가 접근자를 쓴다" \
   "$( { grep -cF 'design-reconverge $(doc_arg)' "$DRIVER" || true; } )" "1"
-# 감사와 계획, 두 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
+# 설계·감사·계획, 세 지점 모두가 문서 부재를 분기해야 한다. 하나만 있으면 런은 앞
 # 지점을 지나고 다음 지점에서 같은 이유로 멈춘다 — 감사만 고쳤을 때가 정확히
-# 그랬다.
-check "main_loop 이 감사와 계획 두 지점에서 문서 부재를 분기한다" \
+# 그랬다. 설계 지점이 셋째이고, 그 자리에서 문서 경로가 없다는 것은 스테이지가
+# 쓸 자리가 없다는 뜻이라 같은 부류의 분기다. 설계 지점은 main_loop 이 부르는 팔
+# 함수 안에 있다.
+check "main_loop 이 감사·계획 두 지점에서 문서 부재를 분기한다" \
   "$( sed -n '/^main_loop()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "2"
+check "설계 팔이 셋째 지점에서 문서 부재를 분기한다" \
+  "$( sed -n '/^design_arm()/,/^}/p' "$DRIVER" | { grep -cF 'if [ -z "$DOC" ]; then' || true; } )" "1"
 
 # --- 25d 베이스 브랜치는 얼기 전에 대조된다 ---------------------------------
 # 이 필드만 디스크와 대조되지 않은 채 구속 다이제스트에 얼었다. 그래서 오타나 다른
@@ -2791,23 +3047,31 @@ else
 fi
 # 아래 두 줄은 형상 단언으로 남고, 이유는 둘이 서로 다르다.
 #
+# **두 줄이 사는 함수가 바뀌었다.** 스테이지의 수명이 라우팅 세션에서 떨어져 나가면서
+# 래퍼 기동과 결과 기록은 파견 절반이 아니라 분리된 감독자(`gate_verb_supervise_stage`)
+# 안에 있다. 추출 범위를 옮기지 않으면 두 grep 은 바뀐 코드를 보지 못해 **결정적으로**
+# 빨개지고, 그것이 지키던 성질은 아무도 지키지 않는다. 그래서 지우지 않고 옮긴다 —
+# 성질 자체는 옮겨간 자리에서 그대로 유효하다.
+#
 # 리다이렉션 연산자 — 태워도 갈리지 않는다. 전진 루프가 이미 있는 `.json`·`.err` 를
-# 건너뛰므로 런처가 여는 것은 언제나 **아직 없는 경로**이고, 없는 파일에 대해 잘림과
+# 건너뛰므로 감독자가 여는 것은 언제나 **아직 없는 경로**이고, 없는 파일에 대해 잘림과
 # 덧붙임의 관측 결과는 같다. 덧붙임은 핀이 틀렸을 때를 위한 두 번째 방어선이라 소스 문면
 # 말고는 증인이 없다.
 #
 # 결과 기록기 인자 — 이쪽은 태울 수 있고, 게이트 스위트가 스텁 CLI 로 실제로 태운다.
 # 인자를 빼면 기록기가 무스코프 이름으로 되돌아가 결과 줄을 못 읽고 세션 id 가 `미상` 이
-# 되며, 그 자리에서 빨개진다. 여기 남는 형상 단언은 인자 나열 자체를 이름으로 집을 뿐
-# 하중은 그 실행 단언이 진다.
-if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" | grep_all_q -F '>> "$out" 2>> "$err"'; then
-  ok "게이트 런처가 덧붙임으로 연다"
+# 되며, 그 자리에서 빨개진다. 여섯째 인자는 「기동 전 행 수」가 아니라 이 시도의 파견
+# 인가 행 줄 번호(`$dispatch_line`)이며, 파견이 즉시 반환하게 된 뒤로는 그것만이
+# 「스테이지 자신이 게이트를 불렀다」를 뜻한다. 여기 남는 형상 단언은 인자 나열 자체를
+# 이름으로 집을 뿐 하중은 그 실행 단언이 진다.
+if sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE25" | grep_all_q -F '>> "$out" 2>> "$err"'; then
+  ok "감독자가 스테이지 스트림을 덧붙임으로 연다"
 else
-  bad "스테이지 스트림" "게이트 런처가 잘림 모드로 연다"
+  bad "스테이지 스트림" "감독자가 잘림 모드로 연다"
 fi
-if sed -n '/^gate_launch_stage()/,/^}/p' "$GATE25" \
-     | grep_all_q -F 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$n_rows_before" "$out"'; then
-  ok "게이트의 결과 기록기가 이 파견이 실제로 쓴 스트림을 받는다"
+if sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE25" \
+     | grep_all_q -F 'gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out"'; then
+  ok "감독자의 결과 기록기가 이 파견이 실제로 쓴 스트림을 받는다"
 else
   bad "스테이지 스트림" "결과 기록기가 스트림 경로를 다시 유도한다"
 fi
@@ -3427,14 +3691,43 @@ FEED_SH="$(dirname "$DRIVER")/feed.sh"
 if [ -f "$FEED_SH" ]; then
   ok "진행 채널 스크립트가 있다"
   # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
-  # the door that is already named; asking "is `liveness.sh` the only thing it
-  # sources" also closes the one a future emitter under another name would use.
+  # the door that is already named; asking which files it may source at all also
+  # closes the one a future emitter under another name would use.
+  #
+  # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
+  # it because the feed has to hop into the run's pinned copy before it writes
+  # anything, and the predicate that decides that is shared with the gate and the
+  # watcher rather than re-implemented here. Widening a whitelist weakens it
+  # unless the new entry is fenced too, so the assertions after this one hold
+  # `pin.sh` to the same rule: it sources nothing and names no emitter.
   feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
-                    | { grep -v 'liveness\.sh' || true; } )
+                    | { grep -v 'liveness\.sh' || true; } \
+                    | { grep -v 'pin\.sh' || true; } )
   if [ -n "$feed_src_other" ]; then
-    bad "피드 울타리" "feed.sh 가 liveness.sh 밖의 것을 소스한다: $feed_src_other"
+    bad "피드 울타리" "feed.sh 가 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $feed_src_other"
   else
-    ok "feed.sh 가 소스하는 것은 liveness.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "feed.sh 가 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+  fi
+  PIN_SH="$(dirname "$DRIVER")/pin.sh"
+  if [ -f "$PIN_SH" ]; then
+    pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
+    if [ -n "$pin_src_any" ]; then
+      bad "피드 울타리" "pin.sh 가 무언가를 소스한다 — 허용 목록이 그만큼 넓어진다: $pin_src_any"
+    else
+      ok "pin.sh 는 아무것도 소스하지 않는다 (허용 목록이 이 한 파일로 닫힌다)"
+    fi
+    # THE NOTIFIER'S NAME IS SPLIT ACROSS TWO LITERALS. `lint-notify-fire-sites.sh`
+    # counts the lines under `orchestrator/` that name the binary and expects
+    # exactly the emitter's two, so a pattern that spells it whole turns this
+    # fence into a lint violation — the check would be reported as the thing it
+    # is checking against.
+    if grep -qE 'notify-run\.sh|cc_notify_fire|cc_notify_clear|terminal-''notifier' "$PIN_SH"; then
+      bad "피드 울타리" "pin.sh 가 방출 경로를 이름으로 담고 있다"
+    else
+      ok "pin.sh 의 어디에도 방출 경로가 없다"
+    fi
+  else
+    bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
   # And the name reaches no executable line. A header sentence explaining the
   # fence is not a breach of it, so the comment lines are excluded rather than
@@ -4649,6 +4942,17 @@ check "형제 런의 중단 기록도 거부 (허용 이름은 이 런의 것일
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/halt/impl.md")" "deny"
 check "형제 런의 계획 파일도 거부" \
   "$(hook_decide_rr "$RR/cc-cmds/run/victim/x.plan.md")" "deny"
+# 판본 고정이 런 디렉터리 안에 **실행되는 코드**를 놓는다. 그 런의 모든 게이트
+# 호출·감시자·피드가 그 사본으로 건너뛰므로, 사본에 쓸 수 있는 스테이지는 자기
+# 런을 강제하는 코드를 고쳐 쓸 수 있다. 자기 런과 형제 런 양쪽을 함께 잰다.
+check "자기 런의 고정 사본은 거부 (이 런을 강제하는 코드다)" \
+  "$(hook_decide_rr "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh")" "deny"
+check "자기 런의 핀도 거부" \
+  "$(hook_decide_rr "$MYRUN/plugin-pin")" "deny"
+check "형제 런의 고정 사본 안 룰 파일도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/rules/x.rule")" "deny"
+check "형제 런의 핀도 거부" \
+  "$(hook_decide_rr "$RR/cc-cmds/run/victim/plugin-pin")" "deny"
 # 아직 열리지 않은 런. 글롭도 아이노드도 없는 자리이고, 그 창이야말로 이 결정이
 # 덮겠다고 선언한 것이다 — 열리지 않은 런에 기록을 심어 두면 그 런의 초기화가
 # 그것을 보존한 채 시작한다.
@@ -4675,6 +4979,43 @@ case "$(hook_reason_rr "$MYRUN/config-dir")" in
   *'다른 런의 디렉터리'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
   *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
 esac
+
+# --- 배시 경로 가드도 같은 답을 내는가 -----------------------------------------
+# 훅은 `Write`/`Edit` 만 본다. 같은 쓰기가 `Bash` 로 오면 판정하는 것은
+# `gate_rundir_write_guard` 이고, 그 함수는 자기 런만 알아 형제 런에는 rc 0 을
+# 주고 있었다(실측). 고정 사본이 그 구멍에 실행되는 코드를 놓으므로, 여기서 두
+# 경로가 같은 답을 내는지 함께 잰다 — 한쪽만 닫히면 닫힌 쪽의 초록이 다른 쪽의
+# 열림을 가린다.
+rr_guard() {
+  # rr_guard <등급> <argv…> — 게이트를 소싱해 배시 경로 가드만 직접 물린다.
+  # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다.
+  rr_guard_msg=$( RR_G_RUNDIR="$MYRUN" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
+    bash -c '
+      g_surface="$1"; shift
+      CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+      . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
+      unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+      set +e
+      RUN_DIR="$RR_G_RUNDIR"
+      gate_rundir_write_guard "$g_surface" "$@" 2>&1
+      exit $?
+    ' _ "$@" )
+  rr_guard_rc=$?
+}
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 자기 런의 고정 사본 쓰기는 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 cp x "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 형제 런의 고정 사본 쓰기도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'다른 런의 디렉터리'*) ok "배시 가드: 형제 런 거부가 다른 런을 지목한다" ;;
+  *) bad "배시 가드: 형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
+check "배시 가드: 음성 대조군 — 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$WORK/outside.txt"
+check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
+check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은

@@ -15,6 +15,18 @@
 # CLI. A wrapper that also decided things would be a second policy layer beside
 # the gate, and the two would disagree.
 #
+# `--instructions <file>` is the same kind of non-decision. The gate synthesizes
+# the stage instructions (its own policy plus the target repository's instruction
+# chain) and this wrapper only puts them on the command line: it turns automatic
+# CLAUDE.md discovery off and appends the file to the main and subagent system
+# prompts IN ONE CONDITIONAL, so a stage that is switched off but not injected —
+# a stage with no rules at all, ending in `subtype: "success"` — cannot be
+# expressed. The reserved-flag refusal below is not a policy judgment either: a
+# repeated `--append-system-prompt-file` silently lets the later one win, so a
+# caller passing one after `--` would replace the policy without a trace. Both
+# checks are contract-violation stops of the same kind as the required-argument
+# checks — the wrapper still decides nothing.
+#
 # WHY IT IS A SEPARATE FILE AND WHO MAY CALL IT. `"$CLI_BIN" "$@"` is an argv
 # LAUNDERING TOOL for anyone holding an allow-list entry: whatever it is handed,
 # it runs. So the set of legitimate callers is stated rather than left implied —
@@ -36,7 +48,17 @@
 # Usage:
 #   stage-wrapper.sh --settings <file> --plugin-dir <dir> --session-id <uuid>
 #                    [--mode A|B] [--fifo <path>] [--resume <session-id>]
+#                    [--instructions <file>]
 #                    -- <cli args...>
+#
+# With `--instructions`, the arguments after `--` must not contain any of the
+# flags the gate owns when it injects instructions (`--append-system-prompt`,
+# `--append-system-prompt-file`, `--append-subagent-system-prompt`,
+# `--append-subagent-system-prompt-file`, `--system-prompt`,
+# `--system-prompt-file`, `--setting-sources`, `--bare`,
+# `--exclude-dynamic-system-prompt-sections`), bare or in `<flag>=` form.
+# Without `--instructions` the argv is byte-identical to what it was before the
+# option existed.
 #
 # Exit codes: the CLI's own, transparently — this process `exec`s in Mode A and
 # is not in the exit path at all.
@@ -45,7 +67,7 @@
 
 set -uo pipefail
 
-SETTINGS=""; PLUGIN_DIR=""; SESSION_ID=""; MODE="A"; FIFO=""; RESUME=""
+SETTINGS=""; PLUGIN_DIR=""; SESSION_ID=""; MODE="A"; FIFO=""; RESUME=""; INSTRUCTIONS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --settings)   SETTINGS="$2"; shift 2 ;;
@@ -54,6 +76,7 @@ while [ $# -gt 0 ]; do
     --mode)       MODE="$2"; shift 2 ;;
     --fifo)       FIFO="$2"; shift 2 ;;
     --resume)     RESUME="$2"; shift 2 ;;
+    --instructions) INSTRUCTIONS="$2"; shift 2 ;;
     --)           shift; break ;;
     *) printf 'stage-wrapper: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -71,6 +94,31 @@ done
 [ -n "$SESSION_ID" ] || [ -n "$RESUME" ] \
   || { printf 'stage-wrapper: --session-id 또는 --resume 이 필요합니다 — 트랜스크립트가 진행 오라클이고, 호출자가 고른 id 없이는 찾을 방법이 없습니다\n' >&2; exit 2; }
 [ $# -ge 1 ]          || { printf 'stage-wrapper: -- 뒤에 CLI 인자가 필요합니다\n' >&2; exit 2; }
+# `--instructions` names the synthesized stage instructions. An absent or empty
+# file is a stop for the same reason as a missing `--settings`: the launch would
+# switch automatic CLAUDE.md discovery off and inject nothing, and that stage
+# runs with no rules and ends as a success. The reserved flags are refused
+# because the CLI lets a repeated `--append-system-prompt-file` win silently
+# (rc 0), so one after `--` would replace the gate's policy without a trace.
+if [ -n "$INSTRUCTIONS" ]; then
+  [ -s "$INSTRUCTIONS" ] \
+    || { printf 'stage-wrapper: --instructions file is missing or empty: %s\n' "$INSTRUCTIONS" >&2; exit 2; }
+  for arg in "$@"; do
+    case "$arg" in
+      --append-system-prompt|--append-system-prompt=*|\
+      --append-system-prompt-file|--append-system-prompt-file=*|\
+      --append-subagent-system-prompt|--append-subagent-system-prompt=*|\
+      --append-subagent-system-prompt-file|--append-subagent-system-prompt-file=*|\
+      --system-prompt|--system-prompt=*|\
+      --system-prompt-file|--system-prompt-file=*|\
+      --setting-sources|--setting-sources=*|\
+      --bare|--bare=*|\
+      --exclude-dynamic-system-prompt-sections|--exclude-dynamic-system-prompt-sections=*)
+        printf 'stage-wrapper: reserved flag after --: %s (the gate owns the system prompt when --instructions is given)\n' "$arg" >&2
+        exit 2 ;;
+    esac
+  done
+fi
 # The mode belongs HERE and not at the dispatch below. Validated late, an
 # unknown mode was reported as "binary not found" on a machine with no CLI —
 # the same masking the resolution order above exists to remove.
@@ -101,12 +149,59 @@ CLI_BIN="${CC_CLAUDE_BIN:-}"
 #
 # `--session-id` and `--resume` are mutually exclusive: the first names a NEW
 # session, the second names an existing one.
+#
+# The instruction injection and the discovery switch-off live in ONE
+# conditional on both branches. `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` reaches every
+# agent the stage spawns, so a stage that is switched off without being injected
+# would leave its team with no rules either; keeping the two in one `if` makes
+# that state unexpressible. `--append-system-prompt-file` reaches only the main
+# session and `--append-subagent-system-prompt-file` reaches the Agent-tool
+# members, so both carry the same file. `--exclude-dynamic-system-prompt-sections`
+# moves the per-machine sections (cwd, git status) out of the system prompt so
+# the injected block stays cacheable across stages. Automatic memory is left on:
+# only CLAUDE.md discovery is switched off here.
+#
+# The two NON-injecting branches `unset` the switch instead of letting it be
+# inherited, and that is what keeps the unexpressible state unexpressible on the
+# other channel. The injecting branches `export` it and `exec` the CLI, which
+# hands its own environment to everything it spawns; a seat launched that way
+# passes the variable down to an old-style resume it dispatches, and that resume
+# expands no `--append-...` flag at all. Without the unset it would run with
+# discovery off and nothing appended — the measured "neither one visible" state,
+# arriving through the environment rather than through argv.
+#
+# It is unset INSIDE the two branches rather than at the head of this file on
+# purpose. `stage-policy.md` says an agent started some other way (a `claude -p`
+# from a script, a Workflow) receives neither the policy nor the target's
+# CLAUDE.md, and part of why that is true today is this very inheritance. A
+# head-of-file unset would make that sentence false in one direction by letting
+# such a child silently read the target's CLAUDE.md instead.
 if [ -n "$RESUME" ]; then
-  set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
-         -r "$RESUME" --strict-mcp-config "$@"
+  if [ -n "$INSTRUCTIONS" ]; then
+    export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+    set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
+           -r "$RESUME" --strict-mcp-config \
+           --append-system-prompt-file "$INSTRUCTIONS" \
+           --append-subagent-system-prompt-file "$INSTRUCTIONS" \
+           --exclude-dynamic-system-prompt-sections "$@"
+  else
+    unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
+           -r "$RESUME" --strict-mcp-config "$@"
+  fi
 else
-  set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
-         --session-id "$SESSION_ID" --strict-mcp-config "$@"
+  if [ -n "$INSTRUCTIONS" ]; then
+    export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+    set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
+           --session-id "$SESSION_ID" --strict-mcp-config \
+           --append-system-prompt-file "$INSTRUCTIONS" \
+           --append-subagent-system-prompt-file "$INSTRUCTIONS" \
+           --exclude-dynamic-system-prompt-sections "$@"
+  else
+    unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    set -- --settings "$SETTINGS" --plugin-dir "$PLUGIN_DIR" \
+           --session-id "$SESSION_ID" --strict-mcp-config "$@"
+  fi
 fi
 
 case "$MODE" in

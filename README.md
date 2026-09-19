@@ -15,7 +15,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-apply` | Claude Design (claude.ai/design) 산출물을 타깃 코드베이스에 통합하는 구현 상세 설계를 agent team으로 작성 | design-ingest가 ACCEPT한 핸드오프 추출본을 기반으로 실제 코드베이스에 적용할 구현 상세 설계(impl-design.md)가 필요할 때 |
 | `/cc-cmds:design-audit` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (반복 루프 없음) | 설계 문서 작성이 끝나 더 이상 수정하지 않을 시점에, 문서를 동결한 뒤 레포 실측 기반 독립 감사로 잔여 결함을 드러내고 이름 붙은 하류 소유자에게 인계하고자 할 때 (design 종단 이후 · design-apply의 impl-design.md · implement 직전) |
 | `/cc-cmds:design-audit-unattended` | 동결된 설계 문서를 독립 리더 팬아웃으로 1회 감사하고 정합 조정 1회 후 정지 (무인 — 사람 확인 없이 park) | 자율 파이프라인 드라이버가 감사 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:design-audit`를 쓸 것 |
-| `/cc-cmds:design-discuss-unattended` | 설계 세션의 Step 3 토론과 Step 4 종합·저장을 좌석 없이 돌리는 다리 (무인 — 질문은 park 기록으로) | autopilot 드라이버가 아니라 `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견할 때. 사람이 직접 부르지 않는다 |
+| `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
@@ -203,11 +203,16 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 
 ### /cc-cmds:design-discuss-unattended
 
-**Usage**: `/cc-cmds:design-discuss-unattended <brief-path>`
+**Usage**: `/cc-cmds:design-discuss-unattended <brief-or-doc-path> [<task-sentence>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
-| `<brief-path>` | (required) | `docs/design-brief/{slug}.md` — 좌석이 쓴 인터뷰 브리프. 메인 워크트리 기준 경로. |
+| `<brief-or-doc-path>` | (required) | 좌석 파견: `docs/design-brief/{slug}.md` — 좌석이 쓴 인터뷰 브리프. 드라이버 파견: 설계 문서 경로(메인 워크트리 절대 경로, 드라이버가 준다 — 아직 없을 수 있다). |
+| `<task-sentence>` | _(optional)_ | 드라이버 파견에서만 — 매니페스트 `## 의도` 의 첫 줄. 인터뷰 브리프가 없을 때 과제 문면이 되는 한 문장. |
+
+> _Parsing (`<brief-or-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰. 어느 파견인지는 이 인자가 아니라 `CC_PIPELINE_RUN_ID` 의 유무로 가른다._
+
+> _Parsing (`<task-sentence>`): 첫 `.md` 토큰 이후의 모든 내용. 좌석 파견에서는 무시한다._
 
 ### /cc-cmds:design-ingest
 

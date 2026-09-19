@@ -394,6 +394,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4c. A shift that is demonstrably alive holds the after-stage arm back
+#
+# `shift.in-progress` is a 300-second cold-start expiry that nobody renews. That
+# was enough while a stage ended inside its shift's own blocking dispatch call;
+# with the supervisor detached, a stage can end at ANY point of a shift's life,
+# and on the expired marker alone the after-stage arm fires mid-shift and writes
+# a run-scope `blocked` row — an input to the termination condition, so the run
+# cannot finish until a person clears it. `shift.live` (pid + fingerprint) is
+# what answers "is the shift still running" once the expiry has passed.
+#
+# BOTH HALVES, because either alone is vacuous: the live half passes on an arm
+# that never fires at all, and the dead half is what shows the arm was armed in
+# this exact fixture and that a reused or dead pid does not disarm it for good.
+# ---------------------------------------------------------------------------
+. "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"
+shift_fixture() {
+  # shift_fixture — a stage's terminal row as the last row, a non-terminal
+  # segment, no live stage, and a `shift.in-progress` whose expiry has passed.
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=review | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$LG"
+  printf '%s\n' "$(( $(date +%s) - 10 ))" > "$RD/shift.in-progress"
+}
+
+shift_fixture
+sleep 120 & SHIFT_LIVE_PID=$!
+FX_PIDS="${FX_PIDS:-}$SHIFT_LIVE_PID "
+printf '%s\n%s\n' "$SHIFT_LIVE_PID" "$(cc_proc_fingerprint "$SHIFT_LIVE_PID")" > "$RD/shift.live"
+run --after-stage 0 >/dev/null
+check "4c 만료된 shift.in-progress 옆에 살아 있는 shift.live 가 있으면 after-stage 팔이 발화하지 않는다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 'fired' || printf 'quiet' )" "quiet"
+# A quiet pass writes no `stall` file at all, and `grep -c` on a missing file
+# prints nothing — so the count is defaulted rather than compared raw.
+n_4c_stall=$( { grep -c '스테이지 종단 후 라우터 무응답' "$RD/stall" 2>/dev/null || true; } | tail -1 )
+check "4c 그 패스는 stall 에 행을 남기지 않는다" "${n_4c_stall:-0}" "0"
+kill "$SHIFT_LIVE_PID" 2>/dev/null || true
+
+shift_fixture
+sh -c 'exit 0' & SHIFT_DEAD_PID=$!; wait "$SHIFT_DEAD_PID" 2>/dev/null || true
+printf '%s\n%s\n' "$SHIFT_DEAD_PID" "Fri Sep 4 00:00:00 2026" > "$RD/shift.live"
+run --after-stage 0 >/dev/null
+check "4c shift.live 의 pid 가 죽었으면 오늘처럼 after-stage 팔이 발화한다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 'fired' || printf 'quiet' )" "fired"
+if grep -q '스테이지 종단 후 라우터 무응답' "$RD/stall" 2>/dev/null; then
+  ok "4c 그 발화가 stall 에 관측을 남긴다 (대조군이 실제로 무장돼 있었다)"
+else
+  bad "4c 대조군" "shift.live 가 죽었는데 stall 관측이 없다 — 위 침묵 단언이 공허할 수 있다"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. It decides nothing and resumes nothing
 # ---------------------------------------------------------------------------
 # The emitter is SOURCED, not launched, and its filename ends in `run.sh` — so
@@ -1851,6 +1901,58 @@ if grep -vE '^[[:space:]]*#' "$WATCH" | grep_all_q -F 'cc_mtime "$RUN_DIR/$sseg.
 else
   bad "헬퍼 지목" "워처 팔이 cc_mtime 을 읽지 않는다 — 위 단언이 다른 사본을 재고 있다"
 fi
+
+# ---------------------------------------------------------------------------
+# 판본 고정 — 감시자의 hop 은 첫 쓰기보다 앞서고 pid 를 보존한다
+#
+# `exec` 는 pid 와 시작 시각 지문을 그대로 넘기고 EXIT 트랩은 잃는다. 그래서 hop
+# 앞에서 쓴 표지는 「검증에 성공하는 유령」이 되고, hop 뒤에 쓴 것만 정상이다. 여기서
+# 재는 것은 두 가지다 — 사본이 **같은 pid 로** 이어받는가, 그리고 설치본 쪽이 hop
+# 전에 `watch.pid`·`watch.state`·`watch.heartbeat` 중 하나라도 남기지 않는가.
+# ---------------------------------------------------------------------------
+HOPRD="$WORK/hop-run"
+HOPPLUG="$HOPRD/plugin/cc-cmds"
+mkdir -p "$HOPPLUG/orchestrator"
+for hopf in liveness.sh notify-run.sh pin.sh; do
+  cp "$repo_root/plugins/cc-cmds/orchestrator/$hopf" "$HOPPLUG/orchestrator/$hopf"
+done
+# `pin_hop_target` 은 사본의 `gate.sh` 가 있어야 표적을 낸다 — 사본이 실재하는지의
+# 대리 검사다. 이 케이스는 감시자만 재므로 그 자리는 빈 파일로 채운다.
+: > "$HOPPLUG/orchestrator/gate.sh"
+cat > "$HOPPLUG/orchestrator/watch.sh" <<'HOPEOF'
+#!/usr/bin/env bash
+# 고정 사본의 감시자 스텁 — 자기 pid 만 적고 끝낸다.
+HOP_RD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run-dir) HOP_RD="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$$" > "$HOP_RD/hop.pid"
+exit 0
+HOPEOF
+printf 'schema\t1\nplugin-dir\t%s\n' "$HOPPLUG" > "$HOPRD/plugin-pin"
+HOPLG="$WORK/hop-ledger.md"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$HOPLG"
+bash "$WATCH" --run-dir "$HOPRD" --ledger "$HOPLG" --once &
+hop_pid=$!
+wait "$hop_pid"
+check "감시자 hop — 사본이 원래 pid 그대로 이어받는다" \
+  "$(sed -n '1p' "$HOPRD/hop.pid" 2>/dev/null)" "$hop_pid"
+check "감시자 hop — hop 앞에서 watch.pid 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.pid" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.state 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.state" ] && printf yes || printf no )" "no"
+check "감시자 hop — hop 앞에서 watch.heartbeat 를 쓰지 않는다" \
+  "$( [ -e "$HOPRD/watch.heartbeat" ] && printf yes || printf no )" "no"
+# 음성 대조군 — 핀이 없으면 설치본 감시자가 그대로 돌고 표지를 남긴다. 없으면 위
+# 세 단언이 「이 픽스처에서는 원래 아무것도 안 쓴다」와 구별되지 않는다.
+HOPRD2="$WORK/hop-run-nopin"
+mkdir -p "$HOPRD2"
+bash "$WATCH" --run-dir "$HOPRD2" --ledger "$HOPLG" --once >/dev/null 2>&1
+check "음성 대조군 — 핀이 없으면 설치본 감시자가 watch.pid 를 남긴다" \
+  "$( [ -e "$HOPRD2/watch.pid" ] && printf yes || printf no )" "yes"
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
