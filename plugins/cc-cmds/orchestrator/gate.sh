@@ -8890,12 +8890,13 @@ gate_rundir_write_guard() {
     done
     # A COMPOUND TOKEN IS JUDGED WORD BY WORD, because a path the shell resolves
     # RELATIVE to the grading directory never spells the run root at all:
-    # `bash -c "cp e ../victim/settings/x.json"` run from inside this run, or
-    # `--output=../../<다른 런>/…`. `gate_arg_words` gives each word with a `/`
-    # and each is resolved the way the shell will — lexically, physically, and
-    # through a final link. A word at or under the run root is refused with the
-    # buried-path text. This run's own exceptions are not given to words, the
-    # same rule the buried arm above applies to a wrapped path of this run.
+    # `bash -c "cp e run/victim/settings/x.json"` graded from the run root's
+    # parent, or `--output=../../<다른 런>/…`. `gate_arg_words` gives each word
+    # with a `/` and each is resolved the way the shell will — lexically,
+    # physically, and through a final link. A word at or under the run root is
+    # refused with the buried-path text. This run's own exceptions are not given
+    # to words, the same rule the buried arm above applies to a wrapped path of
+    # this run.
     #
     # WORDS, NOT A TAIL MATCH ON THE ROOT'S NAME AND NOT A BAN ON `..`. A tail
     # match refuses every text that merely names such a path relative to a

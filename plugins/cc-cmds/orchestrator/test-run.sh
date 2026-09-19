@@ -5177,9 +5177,17 @@ RR_G_CWD="$WORK/segwt/plugins"
 rr_pguard 워크트리쓰기 git diff "--output=../../installed/plugins/cc-cmds/orchestrator/pin.sh"
 check "설치본 가드: 옵션 토큰 안의 상대 철자도 rc 3" "$rr_pguard_rc" "3"
 unset RR_G_CWD
-RR_G_CWD="$MYRUN"
-rr_guard 워크트리쓰기 bash -c "cp /tmp/e ../victim/settings/x.json"
-check "배시 가드: 포장 안의 상대 철자로 가리킨 형제 런도 rc 3" "$rr_guard_rc" "3"
+# 런 루트의 부모에서 채점한다 — 토큰 전체의 어휘 정규화도 원문도 런 루트 철자를
+# 담지 않으므로, 답할 수 있는 것은 단어 판정 팔뿐이다. 런 안에서 채점하면 정규화가
+# 자기 런 접두로 시작해 자기 런 팔이 먼저 답하고, 그 행은 단어 판정 팔을 지워도
+# 초록이었다.
+RR_G_CWD="$RR/cc-cmds"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e run/victim/settings/x.json"
+check "배시 가드: 런 루트 밖에서 채점해도 포장 안의 상대 단어가 형제 런으로 해소되면 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'묻혀'*) ok "배시 가드: 포장 안 상대 단어의 거부가 단어 판정 팔의 것이다" ;;
+  *) bad "배시 가드: 포장 안 상대 단어의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
 unset RR_G_CWD
 # 단어는 등급 기준 디렉터리에 대해 해소된다 — 같은 문면이 설치본 안에서는 거부되고
 # 세그먼트 워크트리에서는 통과해야 이것이 꼬리 대조가 아니라는 증거다.
