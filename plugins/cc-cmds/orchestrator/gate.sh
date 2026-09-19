@@ -11063,7 +11063,7 @@ gate_verb_act() {
   # declared `읽기` and performed. Unlike `등급 미상`, no declaration rescues it;
   # the repair is to respell the command so its verb and options are visible.
   if [ "$graded" = "$GATE_FORM_UNKNOWN" ]; then
-    warn "axis 2 shape unknown — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
+    warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
     exit "$GATE_EXIT_VOCAB"
   fi
   # --- 부류·표지·하한 -----------------------------------------------------
