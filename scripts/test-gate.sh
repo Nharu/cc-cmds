@@ -2700,6 +2700,18 @@ while IFS= read -r f; do
     [ -n "$name" ] || continue
     callline=$(grep -nE "^$name([[:space:]]|\$)" "$f" | sed -n '1s/:.*$//p')
     [ -n "$callline" ] || continue
+    # A NAME THE GATE ALREADY DEFINES IS NOT THIS DEFECT. What this check is
+    # about is a call that vanishes into nothing because the name does not exist
+    # yet — the assertion then reads as covered while covering nothing. A suite
+    # that sources the gate has those names bound before its first line, so a
+    # call above a later definition runs the REAL one, which is exactly what a
+    # fixture that shadows a gate function for a few assertions and restores it
+    # afterwards intends. Treating that as an offence would push the fix toward
+    # indenting the shadow out of the pattern's reach, which hides the shadow
+    # from the reader without changing anything the check cares about.
+    if grep -qE "^$name\(\) *\{" "$GATE"; then
+      continue
+    fi
     if [ "$callline" -lt "$defline" ]; then
       offenders="$offenders $name(호출 $callline < 정의 $defline)"
     fi
@@ -7220,6 +7232,335 @@ fi
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# 29b. A PROBLEM obligation can be closed, by one of two verbs that differ in
+# --- section: 29b | group: base | covers: act | anchors: 근거를 실은 종결이 통과한다 (등급 미상 의무도 닫힌다), 포기로 닫힌 의무는 세그먼트를 되돌리면 열린 의무로 돌아온다 (제외 시점 재검증) ---
+#      tense
+#
+# Until these verbs the open set could only grow. The list emitted every problem
+# identity and nothing subtracted; `act --kind obligation` refuses everything
+# outside the review-obligation series; and the one exit — the excusal — opens
+# only for a creating grade at or below `워크트리쓰기`, while a REFUSED act
+# structurally carries `등급 미상`. Refusal is the dominant way problem rows come
+# to exist, so the narrow excuse missed the common case by construction and
+# termination condition 3 could not be satisfied at all.
+#
+# THE TWO VERBS ARE DRIVEN AS A PAIR, never one at a time. `종결` cites a past act
+# and the past cannot be rewritten, so it is never re-verified; `포기` cites a
+# segment being terminal, which the run CAN rewrite, so it is re-verified where it
+# is used. A suite driving one verb pins neither tense — the distinction only
+# shows in what happens when the segment comes back out of terminal, and that
+# needs both closures standing side by side.
+# ---------------------------------------------------------------------------
+last_anchor() {
+  # The row anchor of the ledger's LAST row — the first 8 hex of its `prev=`.
+  # `gate_evidence_row_line` resolves `A-<8자리>` by finding the row whose `prev=`
+  # carries that value, so this addresses the row just written and therefore a
+  # line AFTER any problem row already in the file. Captured immediately before
+  # each closing call rather than once: a refused act still appends its rejection
+  # row, so a value taken earlier stops naming the last row.
+  #
+  # `FX_LEDGER` AND NOT `LEDGER`. The gate's own global leaks into this process
+  # through the in-process seam, so `LEDGER` happened to hold the fixture path in
+  # a full run — and was unbound in a cut of this section alone. The fixture name
+  # is the one every sibling section reads.
+  { grep '^- `' "$FX_LEDGER" || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *prev=//p' | sed 's/[[:space:]]*$//' | cut -c1-8
+}
+oid_of() {
+  # The derived obligation id, spelled the way the gate derives it — the run id
+  # and the free-text identity joined by a pipe. Used only to show that the
+  # collision fixture below really does collide.
+  printf '%s|%s' "R1" "$1" | shasum -a 256 | cut -c1-8
+}
+unmet_now() {
+  # The termination-condition enumeration, which lists open obligations UNCAPPED.
+  # The snapshot's `obligations` array is capped, so a membership test against it
+  # would answer "closed" for an obligation that is merely past the cap.
+  gateL act --manifest "$FX_MANIFEST" --kind propose-done --target front --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HL)" --rationale "열린 의무 목록을 읽는다" -- true
+  printf '%s' "$msg"
+}
+
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- 상태=park 워크트리="$WT" 선행=없음
+check "처분 픽스처의 세그먼트가 park 로 기록된다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "비종단 세그먼트도 하나 둔다 (포기의 종단 요구를 잴 자리)" "$rc" "0"
+
+# CAPTURED BEFORE THE PROBLEM ROWS, and that is its whole purpose: this anchor
+# names a row that already existed when the obligation was opened, which is the
+# cheapest forgery there is — reaching up the ledger for any identifier lying
+# around.
+anchor_early=$(last_anchor)
+
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-종결대상" "현재 단=1" "생성 등급=등급 미상"
+check "생성 등급이 「등급 미상」인 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-포기대상" "현재 단=1" "생성 등급=외부상태변경"
+check "종단 세그먼트 위의 둘째 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-포기불가" "현재 단=1" "생성 등급=외부상태변경"
+check "비종단 세그먼트 위의 셋째 의무가 열린다" "$rc" "0"
+
+# --- the refusals, in the order the arm evaluates them ----------------------
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x -- "근거=A-$anchor_early"
+check "동일성 없는 종결 행은 거부된다" "$rc" "2"
+
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-원장에없다" "근거=A-$anchor_early"
+check "problem 행이 없는 동일성은 닫을 수 없다" "$rc" "2"
+
+# PROSE ALONE YIELDS NOTHING, which is the point. "확인했다" is the most
+# convincing sentence a person can read and is nothing at all to the gate;
+# admitting it would make the whole evidence requirement decorative.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-종결대상" "근거=확인했다"
+check "산문만인 근거는 통과하지 못한다" "$rc" "2"
+case "$msg" in
+  *"원장에서 찾을 수 있는 객체"*) ok "거절이 인정되는 지목 형태를 열거한다" ;;
+  *) bad "근거 1층" "$msg" ;;
+esac
+
+# THE ORDER CHECK IS THE ONE THAT CARRIES WEIGHT AT LAYER 1: without it a freshly
+# opened obligation is closed by something that existed before it.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-종결대상" "근거=A-$anchor_early 를 근거로 든다"
+check "닫으려는 문제 행보다 앞선 앵커를 지목하면 거절된다" "$rc" "3"
+case "$msg" in
+  *"원장에서 앞에 있습니다"*) ok "거절이 근거 행과 문제 행의 번호를 함께 지목한다" ;;
+  *) bad "순서 검사" "$msg" ;;
+esac
+
+# --- 종결, and what it leaves behind ----------------------------------------
+# `--segment SW` IS DELIBERATELY WRONG. The closing row's segment is inherited
+# from the row being closed and never taken from argv — a router that could
+# restate it could also restate it wrongly, and the morning would then read the
+# obligation as belonging to a merge it has nothing to do with.
+anchor_done=$(last_anchor)
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --segment SW \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-종결대상" "근거=A-$anchor_done 에서 그 결함을 실제로 고쳤다"
+check "근거를 실은 종결이 통과한다 (등급 미상 의무도 닫힌다)" "$rc" "0"
+
+doneid=$(oid_of "P0-종결대상")
+donerow=$( { grep '^- `의무 종결`' "$FX_LEDGER" || true; } | grep -F "의무 id=PO-$doneid " | tail -1)
+case "$donerow" in
+  *"처분=종결"*) ok "종결 행이 처분을 축자로 싣는다" ;;
+  *) bad "종결 행" "$donerow" ;;
+esac
+case "$donerow" in
+  *"세그먼트=SOB "*) ok "세그먼트를 닫히는 problem 행에서 승계한다 (argv 의 SW 가 아니다)" ;;
+  *) bad "필드 승계" "$donerow" ;;
+esac
+case "$donerow" in
+  *"표시 동일성=P0-종결대상"*) ok "사람이 읽을 표시 동일성이 함께 실린다" ;;
+  *) bad "표시 동일성" "$donerow" ;;
+esac
+# APPEND, NOT EDIT. The problem row that opened the obligation has to survive, or
+# the morning cannot tell an obligation that was discharged from one that was
+# never issued.
+check "발행된 문제 행이 원장에 그대로 남는다 (편집이 아니라 append)" \
+  "$( { grep '^- `problem`' "$FX_LEDGER" || true; } | grep -cF '동일성=P0-종결대상 ' || true)" "1"
+
+u_after_done=$(unmet_now)
+case "$u_after_done" in
+  *"P0-종결대상"*) bad "열린 의무" "닫았는데 여전히 미해결 의무로 열거된다" ;;
+  *) ok "닫힌 동일성이 열린 의무 목록에서 사라진다" ;;
+esac
+case "$u_after_done" in
+  *"P0-포기대상"*) ok "아직 닫지 않은 의무는 그대로 열거된다 (위 침묵이 공허하지 않다)" ;;
+  *) bad "열린 의무 대조" "$u_after_done" ;;
+esac
+
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-종결대상" "근거=A-$(last_anchor) 두 번째 시도"
+check "이미 처분된 의무는 다시 닫지 못한다" "$rc" "2"
+
+# 증폭 방지 — one anchor closes one obligation. What is refused is the
+# amplification, not the single answer.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-drop --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-포기대상" "근거=A-$anchor_done 이 이것도 닫는다"
+check "한 근거 앵커가 두 의무를 닫지 못한다" "$rc" "3"
+case "$msg" in
+  *"여러 의무를 닫을 수 없습니다"*) ok "거절이 그 앵커가 이미 닫은 의무를 지목한다" ;;
+  *) bad "증폭 방지" "$msg" ;;
+esac
+
+# --- 포기, and the tense it stands on ---------------------------------------
+gateL act --manifest "$FX_MANIFEST" --kind obligation-drop --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-포기불가" "근거=A-$(last_anchor) 이번 런에서는 하지 않는다"
+check "세그먼트가 종단이 아니면 포기가 거절된다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 전부 종단일 것을 요구"*) ok "거절이 종단 요구를 이유로 든다" ;;
+  *) bad "포기 종단 요구" "$msg" ;;
+esac
+
+gateL act --manifest "$FX_MANIFEST" --kind obligation-drop --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-포기대상" "근거=A-$(last_anchor) 이번 런에서는 하지 않기로 한다"
+check "종단 세그먼트 위의 의무는 포기로 닫힌다" "$rc" "0"
+u_after_drop=$(unmet_now)
+case "$u_after_drop" in
+  *"P0-포기대상"*) bad "포기" "포기했는데 여전히 열린 의무로 열거된다" ;;
+  *) ok "포기한 동일성도 열린 의무 목록에서 사라진다" ;;
+esac
+
+# THE PAIR. Both obligations were closed while the segment was `park`; the single
+# fact that changes here is that the segment comes back out of terminal. `포기`
+# leans on that state and must lapse; `종결` cites a past act and must not. Driven
+# apart this way rather than as two separate cases, because one toggle producing
+# two opposite answers is the only shape that pins the tense distinction — a
+# suite asserting each verb alone passes against an implementation that
+# re-verifies both or neither.
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "그 세그먼트를 종단에서 되돌린다" "$rc" "0"
+u_reverted=$(unmet_now)
+case "$u_reverted" in
+  *"P0-포기대상"*) ok "포기로 닫힌 의무는 세그먼트를 되돌리면 열린 의무로 돌아온다 (제외 시점 재검증)" ;;
+  *) bad "포기 재검증" "$u_reverted" ;;
+esac
+case "$u_reverted" in
+  *"P0-종결대상"*) bad "종결 재검증" "종결로 닫힌 의무가 돌아왔다 — 과거 행위를 다시 쓸 수 있다는 뜻이 된다" ;;
+  *) ok "종결로 닫힌 의무는 돌아오지 않는다 (짝 단언)" ;;
+esac
+
+# --- 의무 id 주입 -----------------------------------------------------------
+# The disposition lookup used to be a substring match over the whole closing row,
+# so an `의무 id=PO-…` written into the free-text `근거` closed THAT obligation
+# too — with none of the evidence, order, collision or reuse checks run for it.
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-주입매개" "현재 단=1" "생성 등급=외부상태변경"
+check "주입 매개로 쓸 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-주입매개" "근거=A-$(last_anchor) 의무 id=PO-$(oid_of "P0-포기불가") 도 함께 닫는다"
+check "근거에 다른 의무 id 를 적은 종결 행 자체는 쓰인다" "$rc" "0"
+u_inject=$(unmet_now)
+case "$u_inject" in
+  *"P0-포기불가"*) ok "닫는 행의 근거에 적은 의무 id 가 다른 의무를 닫지 못한다" ;;
+  *) bad "의무 id 주입" "근거에 적힌 의무 id 로 P0-포기불가 가 닫혔다" ;;
+esac
+case "$u_inject" in
+  *"P0-주입매개"*) bad "의무 id 주입 대조" "지목한 의무가 닫히지 않았다 — 위 단언이 공허하다" ;;
+  *) ok "지목한 의무는 닫혔다 (위 단언이 공허하지 않다)" ;;
+esac
+
+# --- 재언급된 옛 앵커 --------------------------------------------------------
+# An anchor resolves to the row that DECLARES the object — for `A-`, the row whose
+# own chain field carries those digits. It used to resolve to the LAST line
+# mentioning them, so a row older than the problem passed the order check as soon
+# as any later row merely quoted it.
+anchor_old=$(last_anchor)
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-재언급" "현재 단=1" "생성 등급=외부상태변경"
+check "재언급 사례의 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" \
+      --rationale "prev=$anchor_old 를 다시 적는다" \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "옛 앵커의 체인 값을 자유 텍스트로 다시 적는 행이 쓰인다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-재언급" "근거=A-$anchor_old 를 근거로 든다"
+check "문제 행보다 앞선 앵커는 뒤에서 다시 언급돼도 거절된다" "$rc" "3"
+case "$msg" in
+  *"원장에서 앞에 있습니다"*) ok "그 거절이 순서 검사에서 나온다" ;;
+  *) bad "재언급 앵커" "$msg" ;;
+esac
+
+# --- 세그먼트의 두 철자 --------------------------------------------------------
+# A segment is one object whether the rationale names it by its id or by an `A-`
+# on one of its `segment` rows. Keyed by id for the first and by line for the
+# second, the two spellings never collided, so one segment row closed two
+# obligations.
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-1" "현재 단=1" "생성 등급=외부상태변경"
+check "세그먼트 두 철자 사례의 첫 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "현재 단=1" "생성 등급=외부상태변경"
+check "세그먼트 두 철자 사례의 둘째 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "두 의무 뒤에 그 세그먼트의 segment 행이 쓰인다" "$rc" "0"
+seg_anchor=$( { grep '^- `segment`' "$FX_LEDGER" || true; } | { grep -F '| id=SOB2 |' || true; } \
+  | tail -1 | tr '|' '\n' | sed -n 's/^ *prev=//p' | sed 's/[[:space:]]*$//' | cut -c1-8)
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-1" "근거=SOB2 에서 고쳤다"
+check "세그먼트 id 를 근거로 든 종결이 통과한다 (기준선)" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "근거=A-$seg_anchor 에서 고쳤다"
+check "같은 segment 행을 A- 철자로 다시 지목하면 둘째 의무를 닫지 못한다" "$rc" "3"
+case "$msg" in
+  *"여러 의무를 닫을 수 없습니다"*) ok "그 거절이 증폭 방지에서 나온다" ;;
+  *) bad "세그먼트 두 철자" "$msg" ;;
+esac
+# The control: the same obligation closes on an anchor naming a different row,
+# so the refusal above is about the reused object and not about the obligation.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "근거=A-$(last_anchor) 에서 고쳤다"
+check "다른 행을 지목하면 그 의무가 닫힌다 (위 거절이 공허하지 않다)" "$rc" "0"
+
+# --- 충돌 거절 --------------------------------------------------------------
+# THE TWO IDENTITIES REALLY COLLIDE, and they were found by search rather than
+# invented: the id is eight hex digits derived from `<런 id>|<동일성>`, so a
+# birthday search over a few tens of thousands of candidates finds a pair under
+# this fixture's run id. They are pinned as literals because searching at test
+# time would make the case's cost unbounded — and the equality is asserted first,
+# so a change to the derivation makes this case say so instead of passing
+# vacuously on two ids that no longer collide.
+COL_A="P0-충돌후보-5907"
+COL_B="P0-충돌후보-69264"
+check "픽스처의 두 동일성이 같은 의무 식별자로 유도된다 (충돌 거절이 잴 것이 있다)" \
+  "$(oid_of "$COL_A")" "$(oid_of "$COL_B")"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=$COL_A" "현재 단=1" "생성 등급=외부상태변경"
+check "충돌 쌍의 첫째 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=$COL_B" "현재 단=1" "생성 등급=외부상태변경"
+check "충돌 쌍의 둘째 의무가 열린다" "$rc" "0"
+# THE RATIONALE IS PROSE ON PURPOSE. Prose alone is refused with exit 2 and the
+# collision with exit 3, so the code separates the two arms — a case passing a
+# valid anchor could not say which refusal it had measured.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=$COL_A" "근거=확인했다"
+check "같은 값으로 유도되는 열린 의무가 둘이면 종결이 거절된다" "$rc" "3"
+case "$msg" in
+  *"$COL_A"*) ok "거절 문면이 지목된 쪽을 싣는다" ;;
+  *) bad "충돌 거절 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"$COL_B"*) ok "거절 문면이 충돌하는 쪽도 함께 싣는다 (둘 다 지목한다)" ;;
+  *) bad "충돌 거절 문면" "$msg" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 30. git is graded by its SUBCOMMAND, not by the word `git`
 # --- section: 30 | group: base | covers: grade, exec | anchors: 정직하게 선언한 워크트리 생성이 exit 6 으로 거절되지 않는다 ---
 #
@@ -8923,7 +9264,7 @@ else
 fi
 
 # --- 31l. Termination condition 2 excludes the question approval ------------
-# --- section: 31l | group: cone | covers: act | anchors: 조건 2 는 절단점=판단 승인을 세지 않는다 (행위 승인 1건만 센다) ---
+# --- section: 31l | group: cone | covers: act | anchors: 픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다) ---
 #
 # An act approval's answer is valid NOW and its window closes with the night; a
 # question's answer is an input to work that has not begun, so it is durable and
@@ -8931,16 +9272,57 @@ fi
 # question a run that could never say it was done.
 gateN act --manifest "$NM" --kind propose-done --target infra --segment SD --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 절=x 근거=y
-# The fixture legitimately holds ONE pending act approval by this point — the
-# auto-adoption arms above escalate rather than adopt, and an escalation issues
-# one. So the property is not "condition 2 is silent"; it is that the question
-# approval does not ADD to the count. Asserting on the mere presence of the
-# string fails on that legitimate act approval and says nothing about the
+# The fixture legitimately holds pending act-class approvals by this point — the
+# auto-adoption arms above escalate rather than adopt, and the boundaries are
+# live here too. So the property is not "condition 2 is silent"; it is that the
+# question approval does not ADD to the count. Asserting on the mere presence of
+# the string fails on those legitimate approvals and says nothing about the
 # exclusion being tested.
+#
+# THE EXPECTED NUMBER IS DERIVED FROM THE LEDGER, NOT WRITTEN DOWN. A literal
+# pinned the count of everything else the fixture happens to open, so a change
+# anywhere upstream — a boundary that stops suppressing its siblings, say —
+# broke this assertion for a reason that has nothing to do with the axis it
+# tests. Deriving it leaves exactly one thing pinned: that the `판단` approvals
+# are the ones missing from the total.
+pend_by_cut() {
+  # pend_by_cut <ledger> <cutpoint|!판단> — pending approvals, by cutpoint. The
+  # state is read from the LAST row bearing each id, because an approval is
+  # closed by a later row rather than by editing the one that opened it.
+  local lg="$1" want="$2" id row cut n=0
+  for id in $( { grep -F '`승인`' "$lg" 2>/dev/null || true; } \
+               | sed -n 's/.*승인 id=\([^ |]*\).*/\1/p' | LC_ALL=C sort -u); do
+    [ -n "$id" ] || continue
+    row=$( { grep -F "승인 id=$id " "$lg" 2>/dev/null || true; } | tail -1)
+    case "$row" in *"상태=대기"*) ;; *) continue ;; esac
+    # BY FIELD, NOT BY SUBSTRING. The approval row also carries `유도 절단점`,
+    # and a greedy `.*절단점=` lands on that later field's `-`, which files
+    # every question approval under the act side — the count it feeds then
+    # disagrees with the gate for a reason the gate never had.
+    cut=$(row_field "$row" '절단점')
+    case "$want" in
+      '!판단') [ "$cut" = "판단" ] || n=$((n + 1)) ;;
+      *)       [ "$cut" = "$want" ] && n=$((n + 1)) ;;
+    esac
+  done
+  printf '%s' "$n"
+}
+n_q=$(pend_by_cut "$LEDGER2" 판단)
+n_a=$(pend_by_cut "$LEDGER2" '!판단')
+if [ "$n_q" -ge 1 ]; then
+  ok "픽스처가 대기 중인 절단점=판단 승인을 실제로 들고 있다 (아래 단언이 공허하지 않다)"
+else
+  bad "조건 2 픽스처" "제외를 잴 판단 승인이 대기 중이 아니다 — 아래 단언은 아무것도 재지 않는다"
+fi
 case "$msg" in
-  *"2 대기 중인 행위 승인이 1건"*) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (행위 승인 1건만 센다)" ;;
-  *"2 대기 중인 행위 승인"*) bad "조건 2" "절단점=판단 승인이 행위 승인으로 세어졌다: $msg" ;;
-  *) ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)" ;;
+  *"2 대기 중인 행위 승인이 ${n_a}건"*) ok "조건 2 가 판단 승인을 뺀 수만 센다 (원장 유도 ${n_a}건, 제외된 판단 ${n_q}건)" ;;
+  *"2 대기 중인 행위 승인"*) bad "조건 2" "행위 승인 수가 원장에서 유도한 ${n_a} 와 다르다 — 판단 ${n_q}건이 섞였을 수 있다: $msg" ;;
+  *)
+    if [ "$n_a" = "0" ]; then
+      ok "조건 2 는 절단점=판단 승인을 세지 않는다 (대기 중인 행위 승인 없음)"
+    else
+      bad "조건 2" "행위 승인 ${n_a}건이 대기 중인데 조건 2 가 침묵한다: $msg"
+    fi ;;
 esac
 gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push \
       --surface 외부상태변경 --snapshot-digest "$(HN)" --rationale x -- ssh -V
@@ -10667,12 +11049,24 @@ held_k2b=$(printf '%s' "$done_line2" | sed -n 's/.*K2(\([^)]*\)).*/\1/p')
 check "답이 온 승인의 상태가 종단 줄에 축자로 실린다" "$held_k1b" "$ja:승인"
 check "아직 답이 없는 승인은 대기로 실려 둘이 한 줄에서 갈린다" "$held_k2b" "$jb:대기"
 
-# Q3 · Q4 — the other corner, where there IS something to name. An obligation on
-# a parked segment whose creating act graded at or below `워크트리쓰기` is
-# excused, so condition 3 still holds and the run stays all-met — but the
-# obligation is open and therefore admissible as the next thing to do. Both verbs
-# must accept the same rationale here, or `plan` is under-promising in exactly
-# the state a router consults it in.
+# Q3 · Q4 — the excused corner, and the axis is that both verbs answer it the
+# SAME WAY. An excusal is a disposition, so an excused identity is not an open
+# obligation and naming it is not naming the next thing to do — both verbs must
+# refuse, or `plan` is over-promising in exactly the state a router consults it
+# in. The refusal is what leaves `propose-done` as the only move once every
+# condition holds, which is the behaviour the run wants there.
+#
+# THIS PAIR USED TO ASSERT THE OPPOSITE and the flip is the point. Excusal was
+# applied only where condition 3 was computed, so the identity stayed in the open
+# list and stayed nameable — an obligation that was simultaneously disposed of
+# and outstanding, depending on which caller asked. Making the open list subtract
+# all three dispositions removes that split reading, and this pair is where the
+# removal is pinned: an implementation that puts excusal back at condition 3
+# alone passes everything else and fails here.
+#
+# The `accept` direction is not tested here any more because it no longer exists
+# in the all-met state: nothing nameable can survive into it. It is covered where
+# obligations are actually open, above.
 # A boundary firing between here and the assertions below would open an ACT
 # approval, which condition 2 counts — and Q3/Q4 would then fail for a reason
 # that has nothing to do with the axis they test. Draining is what the fixture
@@ -10680,10 +11074,10 @@ check "아직 답이 없는 승인은 대기로 실려 둘이 한 줄에서 갈�
 drain4 "면제 구석 단언 전의"
 gate4 plan --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커밋 \
       --surface 읽기 --rationale "다음 의무는 P0-면제구석 이다" -- ls
-check "Q3: 면제된 의무를 지목한 plan 이 0 이다" "$rc" "0"
+check "Q3: 면제된 의무는 지목 대상이 아니라 plan 이 거절한다" "$rc" "3"
 gate4 act --manifest "$NM4" --kind x --target infra --segment SN1 --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(H4)" --rationale "다음 의무는 P0-면제구석 이다" -- ls
-check "Q4: 같은 구석에서 act 도 0 이다" "$rc" "0"
+check "Q4: 같은 구석에서 act 도 같은 코드로 거절한다 (두 동사가 갈리지 않는다)" "$rc" "3"
 
 # P-bis — the same property in the one state a run can ONLY end from. Condition 5
 # counts an invalidation block as permanently unmet, so the disposition is
@@ -12433,14 +12827,43 @@ site_fires() {
   if [ -z "$ln" ]; then printf 'anchor-missing'; return 0; fi
   sed -n "${ln},$((ln + $2))p" "$GATE" | grep -cE 'cc_notify_fire|gate_notify_' || true
 }
+fires_at() {
+  # fires_at <anchor-fixed-string> <lines-after> — `fires`, `silent`, or
+  # `anchor-missing`, and the third value is why this helper exists.
+  #
+  # A SITE THAT IS NOT THERE MUST NOT READ AS A SITE THAT FIRES. `site_fires`
+  # already answers with a word when it cannot find the anchor, but the callers
+  # below only asked "is it not zero", so `anchor-missing` satisfied them — and
+  # an anchor that drifted out of the file passed the table green while
+  # measuring nothing. That is not hypothetical: the satisfied-termination
+  # anchor named a condition count the line had stopped spelling, so that row
+  # of this table had been vacuous for as long as the two spellings disagreed.
+  # The silence assertions further down were never exposed to it, because they
+  # compare against `0` and a missing anchor fails them.
+  local n; n=$(site_fires "$1" "$2")
+  case "$n" in
+    anchor-missing) printf 'anchor-missing' ;;
+    0)              printf 'silent' ;;
+    *)              printf 'fires' ;;
+  esac
+}
 check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
-  "$( [ "$(site_fires '사유=강제 표면 이동' 24)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$(fires_at '사유=강제 표면 이동' 24)" "fires"
+# The window is 16 rather than 8 for the same reason the 80 below is not 60: the
+# itemised disposition report now lands between the `done` write and the notice,
+# and it carries the paragraph explaining why it is beside that file rather than
+# inside it. The arm did not move; the helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
-  "$( [ "$(site_fires '종단 — 무효화 · 근거' 8)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$(fires_at '종단 — 무효화 · 근거' 16)" "fires"
+# The anchor is the literal the line actually prints. It used to name a
+# condition count the line does not spell, so it matched nothing — and the
+# window is 20 because the reach was never measured against a live anchor: the
+# two terminal spellings share one notice below the disposition report, and the
+# arm sits fifteen lines past the `done` write that names it.
 check "F4 — 충족 종료의 done 표시가 발사한다" \
-  "$( [ "$(site_fires '종단 — 종료 조건 아홉 성립 · 근거' 10)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$(fires_at '종단 — 종료 조건 성립' 20)" "fires"
 check "F2 — 세그먼트 행 기록 자리가 발사한다" \
-  "$( [ "$(site_fires "gate_append 'segment' \"id=\$seg\" \"\$@\"" 6)" != "0" ] && printf 'fires' || printf 'silent')" "fires"
+  "$(fires_at "gate_append 'segment' \"id=\$seg\" \"\$@\"" 6)" "fires"
 # The window is 80 rather than 60. Removing the class that fired on no evidence
 # meant rewriting the rationale beside it — the reasoning for staying silent is
 # longer than the reasoning for firing was — so the surviving firing arms moved
@@ -16757,7 +17180,10 @@ b56_reset_case '새 sid segment'        이동 '' "$b56_seg_row"
 b56_reset_case '중복 sid segment'      불변 "$b56_seg_row" "$b56_seg_row"
 b56_reset_case '세그먼트= 가 있는 cycle' 이동 '' '- `cycle` | 교대=1 | 세그먼트=S1 | 회차=1 | 결과=완료'
 b56_reset_case '세그먼트= 가 없는 cycle' 불변 '' '- `cycle` | 교대=1 | 회차=1 | 결과=완료'
-b56_reset_case '새 동일성 problem'      이동 '' "$b56_prob_row"
+# 새 동일성의 문제 행도 진전이 아니다. 벡터가 열린 의무 집합을 싣던 동안에는 이
+# 행이 구간을 리셋했고, 의무를 닫을 수 있게 된 뒤로는 열고 닫는 `읽기` 두 행으로
+# 정체 계수를 되돌릴 수 있었다. 의무의 진전은 B2 가 자기 창에 대해 판정한다.
+b56_reset_case '새 동일성 problem'      불변 '' "$b56_prob_row"
 b56_reset_case '기존 동일성 problem'    불변 "$b56_prob_row" "$b56_prob_row"
 b56_reset_case '종료 절'               이동 '' '- `종료 절` | 교대=1 | id=C1 | 상태=충족 | 근거=오라클'
 b56_reset_case '정상 완료 stage-result' 이동 '' '- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | 관측=오라클'
