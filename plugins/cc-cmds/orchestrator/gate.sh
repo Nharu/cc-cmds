@@ -6093,8 +6093,9 @@ gate_chain_verify() {
   # the difference between "verified intact" and "not verified".
   #
   # This sentence is not translated: scripts/test-gate-chain-equiv.sh compares
-  # the verifier's stderr byte for byte with the digest-pinned Korean reference,
-  # so rewording it reads as a divergence in the verifier itself.
+  # the verifier's stderr with the digest-pinned Korean reference sentence for
+  # sentence after normalization (`normalize_err` drops the timestamp prefix and
+  # rewrites paths), so rewording it reads as a divergence in the verifier itself.
   if [ ! -f "$LEDGER" ]; then
     warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
     return 1
@@ -6191,10 +6192,17 @@ gate_chain_verify() {
   # stay exactly as they were, and the two consumers go on reading non-zero as a
   # break. What the number selects is the sentence.
   #
-  # These three sentences are not translated: `live_verdict` in
-  # scripts/test-gate-chain-equiv.sh reads the row number out of them as a
-  # value (`체인이 N번째 행에서`) and compares it with the digest-pinned Korean
-  # reference, so rewording them makes that suite read every break as row 0.
+  # These three sentences are not translated, and what holds them is the
+  # reference, not the suite's regex. tests/fixtures/gate-chain-equiv/reference-v1.sh
+  # is pinned by digest and cannot be updated, and whenever its verdict tuple
+  # agrees with this verifier's, `compare_impl` in
+  # scripts/test-gate-chain-equiv.sh compares the two stderr sentences whole
+  # (after normalization) — so translating even the tail of the unreadable
+  # `prev=` sentence or the splice sentence fails that suite. The row number the
+  # suite reads out of the head (`체인이 N번째 행에서`) is a second reader, but a
+  # test regex can change with the sentence; the pinned reference cannot. The
+  # no-newline sentence has no counterpart in the reference, which predates that
+  # cause, so only its head is pinned, by that row-number extraction.
   if [ "$cause" = "2" ]; then
     warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행이 개행으로 끝나지 않습니다 (게이트가 쓴 원장은 언제나 개행으로 끝나므로 게이트 밖에서 덧붙여진 행입니다)"
   elif [ "$cause" = "1" ]; then
@@ -14509,11 +14517,11 @@ gate_done_conditions() {
   # The fold itself lives in `liveness.sh` so that this condition and the status
   # line read one rule rather than two copies of it. What stays here is the
   # RENDERING: these two sentences are the only place a person is told how to
-  # clear the block, so they are not the shared function's business. They are
-  # also read as a value: `gate_done_disposition` anchors on the invalidation
-  # line's fixed head (`5 런 스코프 blocked 가 해소 불가입니다 `) to tell an
-  # invalidated run from an unmet one, so that head and its grep there change
-  # together or an invalidated run can no longer record its end.
+  # clear the block, so they are not the shared function's business. The first
+  # of them is also read as a value: `gate_done_disposition` anchors on the
+  # invalidation line's fixed head (`5 런 스코프 blocked 가 해소 불가입니다 `) to
+  # tell an invalidated run from an unmet one, so that head and its grep there
+  # change together or an invalidated run can no longer record its end.
   local reason cause
   cc_unresolved_blocked "$LEDGER" \
     | while IFS="$(printf '\t')" read -r cause reason; do
