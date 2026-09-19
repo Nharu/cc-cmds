@@ -1462,6 +1462,14 @@ for pair in entry-plan; do
   else
     bad "스키마" "$pair.schema.json 가 유효한 JSON 이 아님"
   fi
+  # 단계 id 의 하한은 세 자리에 흩어진 산문 술어(「비어 있지 않은 id」)가 기대는 성질이다.
+  # 하한이 빠지면 빈 문자열 id 가 스키마를 통과해 계획이 그대로 얼고, 그 계획에서 두 판독기가
+  # 갈린다 — 게이트는 빈 줄을 지워 「설계 단계 없음」으로 거절하고 라우터는 값 하나를 받는다.
+  if [ "$(jq -r '.properties.steps.items.properties.id.minLength' "$script_dir/prompts/$pair.schema.json" 2>/dev/null)" = "1" ]; then
+    ok "킥오프 스키마의 단계 id 에 최소 길이 1 이 있다: $pair"
+  else
+    bad "스키마" "$pair.schema.json 의 steps[].id 에 minLength 1 이 없음"
+  fi
 done
 
 # ---------------------------------------------------------------------------
@@ -2085,6 +2093,55 @@ mkdir -p "$ARM21/noskill/orchestrator"
 arm21_case noskill "$MFARM" 없음 - '정상 완료' "$ARM21/noskill/orchestrator"
 check "스킬 파일이 없으면 파견하지 않고 park 한다" \
   "$(arm21_rc noskill)/$(arm21_disp noskill)/$(grep -c '스킬 파일 부재' "$ARM21/noskill/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# --- 21c-2 라우터 경로가 같은 계획을 읽는 자리 — 스냅숏 직렬화와 설계 단계 id ------
+# 라우터가 구동하는 런에서는 위 팔이 돌지 않고, 교대는 스냅숏 말고 입력이 없다. 그래서
+# 드라이버가 `manifest_plan_field` 로 읽는 같은 얼린 계획을 게이트가 스냅숏의
+# `design_required`·`steps` 로 싣고, `--segment -` 설계 파견의 파일 키를 그 계획의 설계
+# 단계 id 로 정한다. 드라이버와 게이트가 한 계획을 서로 다르게 읽으면 두 경로가 한 행
+# 모양으로 모이지 않으므로, 여기서는 위 팔이 읽은 바로 그 픽스처들을 게이트에 넣는다.
+# 선언된 `false` 가 부재로 접히지 않는지도 같은 이유로 잰다.
+# 별도 프로세스인 이유는 25h 와 같다 — 게이트를 소싱하면 드라이버가 다시 소싱되며 이
+# 하네스의 경로 변수가 초기화된다.
+SER21="$WORK/plan-serialize"; mkdir -p "$SER21"
+MFOBJ="$SER21/manifest-obj.md"
+write_manifest "$MFOBJ" "" "" main "docs/x.md"
+sed 's/{ "steps": \["audit", "implement"\] }/{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "A2", "skill": "design-audit", "summary": "s", "depends_on": ["D1"] } ] }/' \
+  "$MFOBJ" > "$MFOBJ.t" && mv "$MFOBJ.t" "$MFOBJ"
+MFTWO="$SER21/manifest-two.md"
+sed 's/"id": "A2", "skill": "design-audit"/"id": "D2", "skill": "design"/' "$MFOBJ" > "$MFTWO"
+cat > "$SER21/burn.sh" <<'SEREOF'
+#!/usr/bin/env bash
+set -uo pipefail
+GATE="$1"; shift
+HP="$PATH"
+CC_GATE_SOURCE_ONLY=1
+export CC_GATE_SOURCE_ONLY
+# shellcheck disable=SC1090
+. "$GATE" || exit 9
+PATH="$HP"
+unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+set +e
+for mf in "$@"; do
+  MANIFEST="$mf"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  step=$(gate_run_scope_design_step) || step="(없음)"
+  printf '%s\t%s\t%s\n' "$(gate_snapshot_design_required_json)" "$(gate_snapshot_steps_json)" "$step"
+done
+SEREOF
+ser21=$(bash "$SER21/burn.sh" "$script_dir/gate.sh" "$MFDSG" "$MFDSG2" "$MFARM" "$MFOBJ" "$MFTWO" 2>/dev/null)
+ser21_line() { printf '%s\n' "$ser21" | sed -n "${1}p"; }
+check "스냅숏 직렬화 — 선언되지 않은 design_required 는 null, 단계는 이름만 있고 id 가 없다" \
+  "$(ser21_line 1)" "$(printf 'null\t[{"id":null,"skill":"audit","depends_on":[]},{"id":null,"skill":"implement","depends_on":[]}]\t(없음)')"
+check "스냅숏 직렬화 — 선언된 false 는 false 로 실린다 (부재로 접히지 않는다)" \
+  "$(ser21_line 2 | cut -f1)" "false"
+check "드라이버 팔이 설계를 요구한다고 읽은 픽스처를 게이트도 true 로 싣는다" \
+  "$(ser21_line 3 | cut -f1)" "true"
+check "id 없는 옛 모양의 설계 단계로는 --segment - 의 파일 키를 정하지 않는다" \
+  "$(ser21_line 3 | cut -f3)" "(없음)"
+check "스냅숏 직렬화 — 객체 단계의 id·skill·depends_on 이 그대로 실리고 설계 단계 id 가 정해진다" \
+  "$(ser21_line 4)" "$(printf 'true\t[{"id":"D1","skill":"design","depends_on":[]},{"id":"A2","skill":"design-audit","depends_on":["D1"]}]\tD1')"
+check "설계 단계가 둘인 계획에서는 게이트가 하나를 고르지 않는다" \
+  "$(ser21_line 5 | cut -f3)" "(없음)"
 
 # --- 21d 드라이버가 파견한 스테이지의 판단 흡수 --------------------------------
 # 흡수는 별도 프로세스가 게이트를 소싱해 한다. 드라이버 셸에 게이트를 들이면 게이트가
