@@ -8571,7 +8571,24 @@ gate_rundir_write_guard() {
   # path matched no arm at all because none of them are relative. `gate_lexical_abs`
   # answers both without touching the filesystem, which is what a guard over
   # not-yet-created destinations needs.
-  local a rdp rdn rdln an rel root rootp r
+  # THE ARGUMENT IS ALSO RESOLVED PHYSICALLY, because every comparison below is
+  # lexical and a symlinked ancestor defeats all of them at once. An argument
+  # reaching a run directory through `ln -s <run root> /tmp/L` carries no `..`,
+  # is not relative, is already in lexical normal form, and SHARES NO SUBSTRING
+  # with either root — so the four prefix arms and the buried-path arm below all
+  # miss it and the write lands. The hook's `Write`/`Edit` half already carries a
+  # device+inode layer for exactly this vector and says in its own comment that
+  # the layer is required rather than belt-and-braces; this is the Bash half of
+  # the same closure. `gate_real_prefix` is the resolver rather than
+  # `gate_physical_path` for the reason that function states: the destination of
+  # an `mv` normally does not exist yet, and a resolver that needs it to exist
+  # returns the input unchanged, which makes a prefix test miss rather than
+  # answer differently. One `cd`+`pwd -P` per candidate argument.
+  #
+  # BOTH SPELLINGS ARE CLASSIFIED AND A REFUSAL FROM EITHER WINS. Taking only the
+  # physical one re-opens the `/var` gap the two run-directory spellings exist to
+  # close, and taking only the lexical one is today's hole.
+  local a rdp rdn rdln an ap sp rel root rootp r matched
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
@@ -8582,54 +8599,97 @@ gate_rundir_write_guard() {
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
-    if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
-      warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
+    ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+    # OWN IS STILL TESTED FIRST, AND IT IS TESTED PER SPELLING. Deciding "is this
+    # mine" from the lexical spelling and "is this a sibling's" from the physical
+    # one would read a symlink pointing at THIS run as a foreign run, so each
+    # spelling goes through the whole predicate and keeps its own exemption.
+    for sp in "$an" "$ap"; do
+      if gate_rundir_is_foreign_run "$sp" "$root" "$rootp" "$rdn" "$rdln"; then
+        warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
+        return "$GATE_EXIT_RULE"
+      fi
+    done
+    matched=0
+    for sp in "$an" "$ap"; do
+      rel=""
+      case "$sp" in
+        "$rdn") rel="." ;;
+        "$rdn"/*) rel=${sp#"$rdn"/} ;;
+        "$rdln") rel="." ;;
+        "$rdln"/*) rel=${sp#"$rdln"/} ;;
+        # This spelling names nothing under a run directory. The other one may
+        # still, so try it before falling through to the buried-path arm.
+        *) continue ;;
+      esac
+      matched=1
+      # THE RUN DIRECTORY ITSELF IS A DESTINATION, AND IT IS REFUSED. `rel` is `.`
+      # when the argument names the run directory and nothing under it, and
+      # letting that through was the whole of the hole: a verb whose destination
+      # is a DIRECTORY takes the created name from the source's basename, so the
+      # name never appears in the argv this guard inspects.
+      # `mv /tmp/plugin "$RUN_DIR"` and `mv /tmp/plugin-pin "$RUN_DIR"` plant both
+      # halves of a pin that way, and the confinement check downstream asks only
+      # where the pin POINTS, never who wrote it. `Write`/`Edit` cannot name a
+      # directory as a destination, so this form exists only through Bash and
+      # this guard is its only layer.
+      #
+      # NO EXEMPTION IS CARVED FOR THE NON-DESTINATION USES, and that is a
+      # decision rather than an oversight. A guard cannot tell
+      # `mv x "$RUN_DIR"` from `cd "$RUN_DIR"` — the argv is the same — so an
+      # exemption for the second is a re-entry for the first. Every legitimate
+      # write already passes by naming its own destination: `halt/<stage-id>.md`,
+      # a witness publication, and `<segment>.plan.md` are all spelled as paths
+      # of their own.
+      #
+      # RESIDUAL, in the same shape the buried-path arm below states: a non-read
+      # act that merely NAMES the run directory without writing there is refused
+      # too. The way through is to spell the destination as its own argument or
+      # to declare the read it is.
+      #
+      # `rel=''` is unreachable today — `gate_lexical_abs` drops the empty last
+      # segment a trailing slash makes, so `an` is never `"$rdn"/` — and it is
+      # refused beside `.` anyway, because splitting them lets an empty string
+      # pass quietly on the day that normalization changes.
+      case "$rel" in
+        halt/*/*) ;;
+        halt/*) continue ;;
+        cc-team-witness-*/*) continue ;;
+        */*) ;;
+        *.plan.md) continue ;;
+      esac
+      warn "룰 거부: 런 디렉터리 쓰기 — 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 (위트니스 디렉터리 cc-team-witness-*/ 예외). 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 여기 쓰면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다: $a"
       return "$GATE_EXIT_RULE"
-    fi
-    rel=""
-    case "$an" in
-      "$rdn") rel="." ;;
-      "$rdn"/*) rel=${an#"$rdn"/} ;;
-      "$rdln") rel="." ;;
-      "$rdln"/*) rel=${an#"$rdln"/} ;;
-      # THE PATH THAT IS NOT AN ARGUMENT OF ITS OWN. Every arm above is a prefix
-      # test on a WHOLE argument, so a run directory carried inside a larger
-      # token walks past all of them: `git diff --output=<피해자>/…` spells the
-      # path behind an option token, and `bash -c '… > <피해자>/…'` hands the
-      # whole program text as one argument. Both are graded as writes and both
-      # reach the file. Reading the command line as the operand is how the
-      # CLAUDE.md slot guard and arm 2 of the manifest guard already treat a
-      # wrapper; this guard was the one that followed neither.
-      #
-      # ONLY AFTER THE PREFIX ARMS, and the order carries the weight. Ahead of
-      # them this would refuse this run's own `halt/<stage-id>.md`,
-      # `<segment>.plan.md` and witness publications, which are spelled as plain
-      # paths under the run root and are exactly what those exceptions allow.
-      #
-      # RESIDUAL, and it fails in the safe direction: a non-read act that merely
-      # MENTIONS a run directory without writing there — a commit message
-      # quoting the path — is refused as well. Passing the path as its own
-      # argument, or dropping the wrapper, is the way through.
-      *) for r in "$root" "$rootp"; do
-           [ -n "$r" ] || continue
-           case "$an" in
-             *"$r"*)
-               warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
-               return "$GATE_EXIT_RULE" ;;
-           esac
-         done
-         continue ;;
-    esac
-    case "$rel" in
-      ''|.) continue ;;
-      halt/*/*) ;;
-      halt/*) continue ;;
-      cc-team-witness-*/*) continue ;;
-      */*) ;;
-      *.plan.md) continue ;;
-    esac
-    warn "룰 거부: 런 디렉터리 쓰기 — 스테이지가 쓰도록 선언된 것은 halt/<stage-id>.md 와 <segment>.plan.md 뿐입니다 (위트니스 디렉터리 cc-team-witness-*/ 예외). 나머지는 게이트가 매 행위마다 되읽는 기준선이라, 여기 쓰면 강제 표면 검사가 자기 자신을 기준으로 다시 잡힙니다: $a"
-    return "$GATE_EXIT_RULE"
+    done
+    if [ "$matched" = 1 ]; then continue; fi
+    # THE PATH THAT IS NOT AN ARGUMENT OF ITS OWN. Every arm above is a prefix
+    # test on a WHOLE argument, so a run directory carried inside a larger token
+    # walks past all of them: `git diff --output=<피해자>/…` spells the path
+    # behind an option token, and `bash -c '… > <피해자>/…'` hands the whole
+    # program text as one argument. Both are graded as writes and both reach the
+    # file. Reading the command line as the operand is how the CLAUDE.md slot
+    # guard and arm 2 of the manifest guard already treat a wrapper; this guard
+    # was the one that followed neither.
+    #
+    # ONLY AFTER THE PREFIX ARMS, and the order carries the weight. Ahead of them
+    # this would refuse this run's own `halt/<stage-id>.md`, `<segment>.plan.md`
+    # and witness publications, which are spelled as plain paths under the run
+    # root and are exactly what those exceptions allow.
+    #
+    # RESIDUAL, and it fails in the safe direction: a non-read act that merely
+    # MENTIONS a run directory without writing there — a commit message quoting
+    # the path — is refused as well. Passing the path as its own argument, or
+    # dropping the wrapper, is the way through.
+    for r in "$root" "$rootp"; do
+      [ -n "$r" ] || continue
+      for sp in "$an" "$ap"; do
+        case "$sp" in
+          *"$r"*)
+            warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+      done
+    done
   done
   return 0
 }
@@ -8673,7 +8733,13 @@ gate_plugin_root_write_guard() {
   # from `GATE_DIR`. Both spellings of each are kept for the reason the run
   # directory guard keeps both: `/var` is a symlink on this platform and an act
   # may name either.
-  local a an r src here rl rp hl hp t
+  # THE ARGUMENT IS RESOLVED PHYSICALLY AS WELL, for the reason the run directory
+  # guard states at the same place: every comparison here is lexical, `pwd -P` is
+  # applied to the ROOTS and never to the argument, and an argument reaching this
+  # root through a symlinked ancestor shares no substring with either spelling of
+  # either root. The hook's `Write`/`Edit` half closed that vector with a
+  # device+inode layer and this is the Bash half of the same closure.
+  local a an ap sp r src here rl rp hl hp t
   rl=""; rp=""; hl=""; hp=""; src=""
   if [ -n "${RUN_DIR:-}" ]; then src=$(pin_read "$RUN_DIR" 'source'); fi
   if [ -n "$src" ]; then
@@ -8690,17 +8756,43 @@ gate_plugin_root_write_guard() {
   for a in "$@"; do
     case "$a" in */*) ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
+    ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
     for r in "$rl" "$rp" "$hl" "$hp"; do
       [ -n "$r" ] || continue
-      # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
-      # run directory guard's last arm gives: an option token and an interpreter
-      # program string both carry the path inside a larger argument, and a
-      # prefix test over arguments sees neither.
-      case "$an" in
-        *"$r"/orchestrator/*|*"$r"/hooks/*)
-          warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트입니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
-          return "$GATE_EXIT_RULE" ;;
-      esac
+      for sp in "$an" "$ap"; do
+        # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
+        # run directory guard's last arm gives: an option token and an interpreter
+        # program string both carry the path inside a larger argument, and a
+        # prefix test over arguments sees neither.
+        #
+        # THE CONTAINER IS MATCHED BESIDE ITS CONTENTS. Requiring a component
+        # AFTER the directory name let the directory itself through, and a verb
+        # whose destination is a directory takes the created name from the
+        # source's basename — `cp /tmp/gate.sh <root>/orchestrator` replaces the
+        # gate outright and `mv evil.sh <root>/hooks`, `tar -x -C
+        # <root>/orchestrator` and `rm -rf <root>/orchestrator` have the same
+        # shape. The trailing-slash spelling is NOT a second arm to add: it never
+        # reaches this `case`, because `gate_lexical_abs` drops the empty last
+        # segment first. Both spellings arrive here as `<root>/orchestrator`, so
+        # the container arm is what closes both and a trailing-slash pattern
+        # would change nothing.
+        #
+        # THE CONTAINER ARM ANCHORS AT THE END, deliberately. `*"$r"/orchestrator`
+        # requires the argument to STOP there, so a sibling named
+        # `<root>/orchestrator-backup` is not swallowed. Widening it to
+        # `*"$r"/orchestrator*` would catch the residual below at the price of
+        # refusing unrelated names, and that trade is not taken.
+        #
+        # RESIDUAL, stated rather than hidden: a spelling that carries more text
+        # AFTER the bare directory — `bash -c "rm -rf <root>/orchestrator; echo
+        # done"` — matches no arm. The wrapper is what hides it, and declaring the
+        # payload honestly is what surfaces it.
+        case "$sp" in
+          *"$r"/orchestrator|*"$r"/orchestrator/*|*"$r"/hooks|*"$r"/hooks/*)
+            warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트입니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+      done
     done
   done
   return 0

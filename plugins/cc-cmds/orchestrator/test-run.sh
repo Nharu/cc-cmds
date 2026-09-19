@@ -5040,6 +5040,30 @@ check "배시 가드: 음성 대조군 — 포장된 읽기는 rc 0" "$rr_guard_
 rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
 check "배시 가드: 음성 대조군 — 정규화 뒤에도 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
 
+# --- 다섯째 철자. 목적지가 런 디렉터리 **자신** 인 쓰기 -------------------------
+# 위 아홉 호출은 전부 만들어질 파일을 argv 에 적는다. 목적지가 디렉터리인 동사는
+# 만들어지는 이름이 소스의 basename 에서 오므로 그 이름이 argv 에 아예 나타나지
+# 않고, 분류기가 런 디렉터리 자신을 통과시키면 두 줄로 고정의 양쪽 절반이 심긴다.
+# `Write`/`Edit` 는 디렉터리를 목적지로 지명할 수 없어 이 형태는 오직 Bash 로만
+# 존재하고, 따라서 이 가드가 두 층 중 하나가 아니라 유일한 층이다.
+rr_guard 워크트리쓰기 mv x "$MYRUN"
+check "배시 가드: 런 디렉터리 자신을 목적지로 한 쓰기는 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 mv x "$RR/cc-cmds/run/victim"
+check "배시 가드: 형제 런 디렉터리 자신을 목적지로 한 쓰기도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'다른 런의 디렉터리'*) ok "배시 가드: 형제 런 디렉터리 자신의 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 형제 런 디렉터리 자신의 거부 사유" "다른 팔이 먼저 거부했다 — 새 팔이 형제 런 팔을 앞질렀다: $rr_guard_msg" ;;
+esac
+rr_guard 읽기 ls "$MYRUN"
+check "배시 가드: 음성 대조군 — 런 디렉터리 자신을 읽는 것은 rc 0" "$rr_guard_rc" "0"
+# 위트니스 디렉터리 **생성** 은 이 변경 이전에도 거부됐다(`rel` 이 예외 어느 팔에도
+# 매치하지 않는다). 새 팔이 그 답을 바꾸지 않는다는 것을 같이 못박는다 — 바뀌면
+# 무인 런의 팀 스테이지가 발행을 못 하게 되고, 그 손해는 조용히 나타난다.
+rr_guard 워크트리쓰기 mv x "$MYRUN/cc-team-witness-x.AbCdEf"
+check "배시 가드: 위트니스 디렉터리 생성은 이 변경 전후로 같은 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 mv x "$MYRUN/cc-team-witness-x.AbCdEf/round-2.md"
+check "배시 가드: 음성 대조군 — 위트니스 산출물 발행은 그대로 rc 0" "$rr_guard_rc" "0"
+
 # --- hop 을 수행하는 설치본 진입점 ----------------------------------------------
 # 고정은 hop **이후** 의 바이트를 굳힌다. hop 을 수행하는 설치본 `orchestrator/*.sh`
 # 와 `hooks/*.sh` 는 고정이 굳히지 못하면서 모든 스테이지에 쓰기 가능했고, 훅의 어느
@@ -5081,6 +5105,28 @@ check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같�
 rr_pguard 읽기 cat "$RRP_INST/orchestrator/gate.sh"
 check "설치본 가드: 음성 대조군 — 같은 경로 읽기는 rc 0" "$rr_pguard_rc" "0"
 
+# --- 같은 결함의 두 번째 인스턴스 — 컨테이너를 지명한 철자 ----------------------
+# 위 여섯 행은 전부 디렉터리 **아래** 파일을 지명한다. 바늘이 디렉터리 이름 뒤에
+# 성분을 요구하면 디렉터리 자신을 지명한 인자는 매치하지 않고, `cp x <root>/orchestrator`
+# 한 줄이 게이트를 통째로 교체한다. 후행 슬래시 행이 재는 것은 바늘이 아니라
+# `gate_lexical_abs` 의 마지막 성분 버리기다 — 그 철자는 `case` 에 닿기 전에 이미
+# 후행 슬래시를 잃으므로, 바늘에 후행 슬래시 형태를 더하는 수정은 아무것도 바꾸지
+# 않는다. 이 주석이 없으면 뒤에 정규화가 바뀌어도 이 행이 계속 초록이다.
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator"
+check "설치본 가드: orchestrator 디렉터리 자신을 목적지로 한 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/"
+check "설치본 가드: 후행 슬래시 철자도 rc 3 (바늘이 아니라 정규화를 못박는다)" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 mv x "$RRP_INST/hooks"
+check "설치본 가드: hooks 디렉터리 자신을 목적지로 한 쓰기도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 rm -rf "$RRP_INST/orchestrator"
+check "설치본 가드: 디렉터리 자신의 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같은 디렉터리는 rc 0" "$rr_pguard_rc" "0"
+# 컨테이너 팔은 문자열 **끝** 을 요구한다. 형제 이름을 함께 삼키면 정당한 편집이
+# 막히므로, 넓히지 않았다는 것을 음성 대조군으로 고정한다.
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator-backup/gate.sh"
+check "설치본 가드: 음성 대조군 — 접두가 같은 형제 이름은 삼키지 않는다" "$rr_pguard_rc" "0"
+
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
 # 조상 성분을 아이노드로 비교하되 사슬을 거슬러 오르는 것은 **어휘적**이라, 앵커된
@@ -5119,6 +5165,46 @@ if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
     *'다른 런의 디렉터리'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
     *) ok "자기 런 심링크 거부는 종전 팔이 낸다" ;;
   esac
+
+  # --- 그리고 배시 절반은 그 링크 셋에 대해 한 행도 갖지 않았다 -----------------
+  # 위 여덟 단언은 전부 `hook_decide_rr` 에 대한 것이다. 같은 벡터를 `Bash` 로
+  # 보내면 판정하는 것은 두 배시 가드이고, 둘 다 경로를 어휘적으로만 해소했다 —
+  # `pwd -P` 는 루트에만 쓰고 인자에는 쓰지 않으며 `stat` 이 없다. 심링크 조상을
+  # 거친 인자는 `..` 도 없고 상대 경로도 아니며 어휘적으로 정규형인 데다 어느
+  # 루트와도 부분 문자열을 공유하지 않아 모든 팔을 빗나간다. 한쪽만 닫히면 닫힌
+  # 쪽의 초록이 다른 쪽의 열림을 가린다(이 파일 위쪽의 같은 규범).
+  rr_guard 워크트리쓰기 cp x "$WORK/L-victim/settings/x.json"
+  check "배시 가드: 형제 런을 가리키는 심링크 조상도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'다른 런의 디렉터리'*) ok "배시 가드: 심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+  rr_guard 워크트리쓰기 cp x "$WORK/L-root/victim/settings/x.json"
+  check "배시 가드: 런 루트를 가리키는 심링크 조상도 rc 3" "$rr_guard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/config-dir"
+  check "배시 가드: 자기 런을 가리키는 심링크의 기준선은 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'다른 런의 디렉터리'*) bad "배시 가드: 자기 런 심링크 거부 사유" "물리 철자가 자기 런 배제를 지나치고 형제 런으로 읽혔다" ;;
+    *) ok "배시 가드: 자기 런 심링크 거부는 종전 팔이 낸다" ;;
+  esac
+  # 음성 대조군 둘. 없으면 위 셋의 통과가 「링크를 통째로 거부한다」와 구별되지
+  # 않고, 통째 거부는 이 파이프라인 자신이 쓰는 두 이름을 함께 막는다.
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/halt/x.md"
+  check "배시 가드: 음성 대조군 — 자기 런 심링크의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+  rr_guard 워크트리쓰기 cp x "$WORK/L-self/slice-D.plan.md"
+  check "배시 가드: 음성 대조군 — 자기 런 심링크의 계획 파일도 rc 0" "$rr_guard_rc" "0"
+
+  ln -sfn "$RRP_INST" "$WORK/L-inst" 2>/dev/null
+  if [ -L "$WORK/L-inst" ] && [ -d "$WORK/L-inst" ]; then
+    rr_pguard 워크트리쓰기 cp x "$WORK/L-inst/orchestrator/gate.sh"
+    check "설치본 가드: 심링크 조상을 통한 설치본 스크립트도 rc 3" "$rr_pguard_rc" "3"
+    rr_pguard 워크트리쓰기 cp x "$WORK/L-inst/orchestrator"
+    check "설치본 가드: 심링크 조상 + 컨테이너 철자도 rc 3" "$rr_pguard_rc" "3"
+    rr_pguard 워크트리쓰기 cp x "$RRP_WT/orchestrator/gate.sh"
+    check "설치본 가드: 음성 대조군 — 세그먼트 워크트리는 링크 팔 뒤에도 rc 0" "$rr_pguard_rc" "0"
+  else
+    printf 'NOTE: 설치본 심링크 픽스처를 만들지 못해 건너뛴다\n'
+  fi
 else
   printf 'NOTE: 형제 런 심링크 픽스처를 만들지 못해 건너뛴다\n'
 fi
