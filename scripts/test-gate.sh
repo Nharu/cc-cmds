@@ -8118,7 +8118,7 @@ gate act --manifest "$FX_MANIFEST" --kind propose-done --target infra --segment 
   --rationale "픽스처 — 미충족 조건 열거"
 case "$msg" in
   *"7 살아 있는 스테이지"*) bad "조건 7" "죽은 pid 를 살아 있다고 셌다" ;;
-  *"미충족 조건"*) ok "조건 7 이 죽은 pid 를 세지 않는다" ;;
+  *"unmet conditions"*) ok "조건 7 이 죽은 pid 를 세지 않는다" ;;
   *) bad "조건 7" "조건 열거에 닿지 못했다: $msg" ;;
 esac
 fx_stage_reused D2
@@ -8127,7 +8127,7 @@ gate act --manifest "$FX_MANIFEST" --kind propose-done --target infra --segment 
   --rationale "픽스처 — 미충족 조건 열거"
 case "$msg" in
   *"7 살아 있는 스테이지"*) bad "조건 7" "재사용 pid 를 살아 있다고 셌다 — 종료를 영구히 막는 경로다" ;;
-  *"미충족 조건"*) ok "조건 7 이 재사용 pid 를 세지 않는다" ;;
+  *"unmet conditions"*) ok "조건 7 이 재사용 pid 를 세지 않는다" ;;
   *) bad "조건 7" "조건 열거에 닿지 못했다: $msg" ;;
 esac
 fx_stage_live D3
