@@ -1779,13 +1779,17 @@ pre_static() {
 # its contamination, so the full run reads the bytes it always read, and in a
 # cut that skips 9 this is the only copy there is.
 #
-# `gateL`/`HL` run against a state home of their own. The section that moves
-# the enforcement surface and never puts it back is 14l: it appends a newline
-# to the base home's `generic.json` to stand in for somebody else's edit,
-# asserts exit 7, and its closing `set_exec_wt ""` restores only the
-# declaration — so every later `act` against the base home gets exit 7 for
-# reasons unrelated to what it tests. A fresh state home gives the sections
-# after it their own baseline while keeping the same ledger.
+# `gateL`/`HL` run against a state home of their own, so that 14l's own
+# baseline experiments — emptying the digest file, removing it, putting it back
+# — never reach the home every other section acts against.
+#
+# 14l ALSO forges an edit on the base home's `generic.json` to stand in for
+# somebody else's, and it puts that byte back before it ends. It did not use
+# to, and the cost was invisible in a full run: some later section re-baselined
+# the home, so only a cut that carried 14l and a base-home act with nothing
+# between them saw every act exit 7 for a reason unrelated to what it tested.
+# Leaving a deliberately broken surface behind is the section's own debt to
+# settle, not a fact the reader of a later section should have to know.
 pre_base() {
   [ -n "${PRE_BASE_DONE:-}" ] && return 0
   PRE_BASE_DONE=1
@@ -5966,6 +5970,12 @@ else
   bad "대상 워크트리 인가" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
 fi
 set_exec_wt "" >/dev/null 2>&1 || true
+# CLEARING THE DECLARATION IS ONLY HALF THE STATE. The derived directory list
+# keeps the worktree until something re-derives, so a later section asserting
+# that the list GROWS reads an already-grown one and fails. In a full run an
+# intervening section happened to re-derive and hid the coupling; a shard that
+# puts the two together with nothing between them does not.
+( cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" >/dev/null 2>&1 )
 
 # ---------------------------------------------------------------------------
 # 14k. The deadline is a dispatch gate, and it is read
@@ -6090,11 +6100,24 @@ printf '%s\n' "$d1" > "$RD_L/surface-digest"
 # THE OTHER HALF: an edit this writer did not make is still exit 7. The
 # re-derivation must not repair it — repairing would erase the evidence the
 # surface check reads, which is the whole detection.
+#
+# THE FORGERY IS PUT BACK, because the gate is right not to repair it. Nothing
+# else re-derives this home in a way that rewrites the file, so the stray byte
+# survives to the end of the process and every later act against this home
+# exits 7 for a reason unrelated to what it tests. A full run happened to reach
+# such an act only after another section had re-baselined the home; a shard that
+# does not carry that section reaches it directly. Restoring here is the same
+# discipline this section already applies to its own state home above.
+cp "$SETTINGS_DIR/generic.json" "$WORK/14l-generic.before"
 printf '\n' >> "$SETTINGS_DIR/generic.json"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SR \
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1); rc=$?
 check "남이 고친 표면은 여전히 종료 코드 7 이다" "$rc" "7"
+cp "$WORK/14l-generic.before" "$SETTINGS_DIR/generic.json"
+out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SR \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1); rc=$?
+check "위조를 되돌리면 같은 행위가 다시 통과한다 (이 절은 홈을 깨진 채 남기지 않는다)" "$rc" "0"
 set_exec_wt ""
 
 # ---------------------------------------------------------------------------
