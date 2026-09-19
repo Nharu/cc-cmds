@@ -846,6 +846,7 @@ fi
 # binding the pairs could move would hand the reset back one step later. Bound
 # to the whole latch it moved on every pair, because each closed identity
 # latches.
+gate_b2_window_observe
 check "여닫이 쌍은 B2 의 결속값을 움직이지 않는다 (대기 중인 B2 질문이 철회되지 않는다)" \
   "$(gate_boundary_binding B2)" "$b2_bind0"
 # The positive control: closing the obligation the count was waiting on IS
@@ -853,8 +854,10 @@ check "여닫이 쌍은 B2 의 결속값을 움직이지 않는다 (대기 중�
 # that never restarts.
 printf -- '- `의무 종결` | 의무 id=%s | 표시 동일성=P0-막힘 | 처분=종결 | 세그먼트=SQ1 | 근거=A-deadbeef | 처분 시각=t | prev=x\n' \
   "$(gate_obligation_id 'P0-막힘')" >> "$LEDGER"
-# Read where the withdrawal reads it: after the latch update, before the count.
+# Read where the withdrawal reads it: after the latch update and the window
+# record, before the count.
 gate_disposition_latch_update
+gate_b2_window_observe
 if [ "$(gate_boundary_binding B2)" = "$b2_bind0" ]; then
   bad "B2 결속값 대조" "기다리던 의무가 닫혔는데 결속값이 그대로다 — 위 단언이 상수 위에서 통과했다"
 else
@@ -863,6 +866,82 @@ fi
 b2_eval
 check "기다리던 의무가 닫히면 B2 계수가 다시 시작한다 (위 두 단언이 멈춘 계수 위에서 통과한 것이 아니다)" \
   "$(b2_rep)" "0"
+
+o_close() {
+  # o_close <동일성> — one `의무 종결` row for it, with an anchor no check reads.
+  printf -- '- `의무 종결` | 의무 id=%s | 표시 동일성=%s | 처분=종결 | 세그먼트=SQ1 | 근거=A-deadbeef | 처분 시각=t | prev=x\n' \
+    "$(gate_obligation_id "$1")" "$1" >> "$LEDGER"
+}
+b2_ids() {
+  # Distinct B2 approval ids — an issue and its auto-resolution are two rows of
+  # one question.
+  { grep -o '승인 id=B2-[0-9a-f]*' "$LEDGER" 2>/dev/null || true; } | LC_ALL=C sort -u | gate_count
+}
+
+# A PAIR OUT OF STEP BY ONE JUDGMENT. The pairs above open and close inside one
+# judgment, so the new identity is never open when the count restarts. Here each
+# judgment closes the identity the PREVIOUS one opened: when the window was
+# retaken from the open set on progress, the identity opened just before went
+# into it, and the next judgment closing that one was progress again — the count
+# went back to 0 on every judgment while `P0-막힘` stayed blocked.
+LEDGER="$WORK/b2c.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b2c-run"; mkdir -p "$RUN_DIR"
+o_segment SQ1 실행중
+o_problem SQ1 P0-막힘 외부상태변경
+o_problem SQ1 P0-어긋남-0 외부상태변경
+b2_eval
+i=0; b2c_reset=""; b2c_bind=""
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do
+  o_problem SQ1 "P0-어긋남-$((i + 1))" 외부상태변경
+  o_close "P0-어긋남-$i"
+  if [ "$i" -ge 1 ]; then
+    gate_disposition_latch_update; gate_b2_window_observe
+    [ "$(gate_boundary_binding B2)" = "$b2c_bind" ] || b2c_reset="${b2c_reset}결속@$i "
+  fi
+  b2_eval
+  [ "$i" -ge 1 ] && [ "$(b2_rep)" = "0" ] && b2c_reset="${b2c_reset}계수@$i "
+  [ "$i" -eq 0 ] && b2c_bind=$(gate_boundary_binding B2)
+  i=$((i + 1))
+done
+check "한 판정씩 어긋난 여닫이 쌍이 첫 쌍 뒤로 계수도 결속값도 되돌리지 못한다" "$b2c_reset" ""
+if [ "$(n_b2)" != "0" ]; then
+  ok "어긋난 여닫이 쌍을 되풀이해도 막힌 의무 앞에서 B2 가 발화한다"
+else
+  bad "B2 어긋난 쌍 리셋" "어긋난 쌍 $((B2_OBLIGATION_M + 1))회 동안 B2 가 침묵했다 (계수=$(b2_rep))"
+fi
+check "창이 막힌 의무만 기다린다 (새로 연 동일성이 창에 들어가지 않는다)" \
+  "$(gate_b2_waiting | tr '\n' ' ')" "P0-막힘 "
+
+# A WINDOW MADE ONLY OF AN IDENTITY THE RUN LATCH ALREADY HOLDS. An excusal
+# latches, and the segment resuming reopens the obligation with its latch line
+# still there. Progress read off "newly latched" could never come from it again,
+# so a window taken at that moment froze: closing the obligation with `종결` was
+# not progress, the binding (window less the latch) was the empty set for good,
+# and after one answer every later B2 question carried that same value.
+LEDGER="$WORK/b2d.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b2d-run"; mkdir -p "$RUN_DIR"
+o_segment SQ3 park
+o_problem SQ3 P0-풀린면제 읽기
+b2_eval
+o_segment SQ3 실행중
+b2_eval
+check "창에 든 의무가 이미 런 래치에 들어 있다 (이 사례가 잴 모양이다)" \
+  "$( { gate_disposition_latch | cut -f2- | grep -cxF 'P0-풀린면제' || true; } )" "1"
+check "그 창의 결속값이 빈 집합이 아니라 기다리는 의무다" \
+  "$(gate_b2_waiting | tr '\n' ' ')" "P0-풀린면제 "
+o_segment SQ4 실행중
+o_problem SQ4 P0-새의무 외부상태변경
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do b2_eval; i=$((i + 1)); done
+check "래치된 의무의 창 위에서 B2 가 한 번 발행된다 (기준선)" "$(b2_ids)" "1"
+o_close P0-풀린면제
+b2_eval
+check "래치된 창 구성원을 종결로 닫으면 B2 계수가 다시 시작한다" "$(b2_rep)" "0"
+check "창이 다 비워지면 지금 열린 의무로 다시 잡힌다" \
+  "$(gate_b2_waiting | tr '\n' ' ')" "P0-새의무 "
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do b2_eval; i=$((i + 1)); done
+check "새 창 위에서 B2 가 다시 묻는다 (한 번 답한 결속값이 뒤의 질문을 막지 않는다)" "$(b2_ids)" "2"
 
 # A review-obligation id has the issuer's shape, `RO-` and eight hex digits. With
 # no shape check a bare `RO-`, or any extension of a real id, was admitted as an

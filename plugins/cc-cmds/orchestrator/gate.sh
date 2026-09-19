@@ -4485,6 +4485,9 @@ gate_evidence_row_line() {
   # check for free. The row that declares the object is the `segment` row
   # carrying it as `id=`; its LAST such row stays the answer, because a segment's
   # later state row is the segment advancing, which is what that anchor cites.
+  # The id is compared as the row's `id` FIELD, split the way `gate_row_ids`
+  # splits it, not as a substring: `id=S1 ` also sits inside a value that merely ends in `id=`, such
+  # as a quoted `headRefOid=`, and that row is not the segment's.
   #
   # A RESIDUAL THIS DOES NOT CLOSE. The rows a closing act itself writes — the
   # `의무 종결`/`의무 포기` row and the `자율 승인` row after it — are rows like any
@@ -4506,7 +4509,14 @@ gate_evidence_row_line() {
          hits=$( { grep -n '^- `리뷰 의무`' "$LEDGER" 2>/dev/null || true; } \
                 | { grep -F "| 의무 id=$tok |" || true; } | sed -n 1p) ;;
     *)   hits=$( { grep -n '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
-                | { grep -F "id=$tok " || true; } | tail -1) ;;
+                | LC_ALL=C awk -F'|' -v t="$tok" '{
+                    for (i = 1; i <= NF; i++) {
+                      f = $i
+                      sub(/^[[:space:]]+/, "", f)
+                      sub(/[[:space:]]+$/, "", f)
+                      if (f ~ /^id=/) { if (substr(f, 4) == t) print; break }
+                    }
+                  }' | tail -1) ;;
   esac
   printf '%s\n' "$hits" | { grep '^[0-9][0-9]*:- `' || true; } | cut -d: -f1
 }
@@ -4520,9 +4530,28 @@ gate_evidence_object_key() {
   # same row — an `A-` and a `J-` for one approval row, say — collide as they
   # should. A segment answers with its id, because its resolved row is the LAST
   # segment row and would move as the segment advances.
+  #
+  # AN `A-` THAT LANDS ON A `segment` ROW ANSWERS WITH THAT ROW'S SEGMENT ID, so
+  # it collides with the bare segment token. Keyed by line it did not: `근거=S1`
+  # closed one obligation and `A-<prefix of an S1 segment row>` closed another,
+  # two spellings of one object, each passing the reuse check against the other.
+  local line row
   case "$1" in
-    A-*|J-*|RO-*) printf 'L%s' "$(gate_evidence_row_line "$1")" ;;
-    *)            printf 'S%s' "$1" ;;
+    A-*|J-*|RO-*)
+      line=$(gate_evidence_row_line "$1")
+      case "$1" in
+        A-*)
+          if [ -n "$line" ]; then
+            row=$(sed -n "${line}p" "$LEDGER" 2>/dev/null || true)
+            case "$row" in
+              '- `segment` '*)
+                printf 'S%s' "$(printf '%s\n' "$row" | gate_row_ids)"
+                return 0 ;;
+            esac
+          fi ;;
+      esac
+      printf 'L%s' "$line" ;;
+    *) printf 'S%s' "$1" ;;
   esac
 }
 
@@ -10486,7 +10515,9 @@ EOF
         # second spelling of the same row through, and refused `S1` because an
         # earlier row cited `S1-x`. Each earlier closing row's anchors are resolved
         # again here; the id arms resolve to a first declaration, so the answer is
-        # the one they got when that row was written.
+        # the one they got when that row was written. A segment is keyed by its id
+        # whichever spelling names it — the bare id, or an `A-` on one of its
+        # `segment` rows — so those two spellings collide as well.
         okey=$(gate_evidence_object_key "$oanchor")
         oprior=$( { gate_rows '의무 종결'; gate_rows '의무 포기'; } \
                   | while IFS= read -r orow; do
@@ -15823,9 +15854,9 @@ gate_boundary_binding() {
     # parked segment — so a binding on it withdrew a standing B2 question the
     # moment the run did either, and the withdrawal restarts the count. The whole
     # latch is no better: a new identity opened and closed again latches, so it
-    # would withdraw the question just the same. What moves this value is an
-    # obligation of the window being disposed for the first time, which is the
-    # one event `gate_b2_obligations` counts as progress.
+    # would withdraw the question just the same. What moves this value is a
+    # member of the window being seen disposed, which is the one event
+    # `gate_b2_obligations` counts as progress.
     B2)    gate_b2_waiting | shasum -a 256 | cut -d' ' -f1 ;;
     B3)    gate_progress_vector \
              | { grep -v '^acts=' || true; } | shasum -a 256 | cut -d' ' -f1 ;;
@@ -15872,10 +15903,13 @@ gate_boundaries() {
   # is the one case where the first answer has gone stale.
   #
   # THE DISPOSITION LATCH IS UPDATED FIRST, on every act and outside the judgment
-  # predicate. B2's binding and progress, B1's vector and the withdrawal below all
-  # read it, and a disposition that holds only between two judgments — an
-  # excusal walked back before the next one — is latched only if every act looks.
+  # predicate, and B2's window record beside it. The morning counts read the
+  # latch, B2's binding and progress read the window record, and the withdrawal
+  # below reads that binding; a disposition that holds only between two
+  # judgments — an excusal walked back before the next one — is recorded only if
+  # every act looks.
   gate_disposition_latch_update
+  gate_b2_window_observe
   ids=$(gate_pending_approval_ids act)
   if gate_withdraw_stale_boundaries "$ids"; then
     ids=$(gate_pending_approval_ids act)
@@ -16180,23 +16214,62 @@ EOF
 
 gate_b2_waiting() {
   # The obligations B2's current count is waiting on and that have not been
-  # disposed yet — the window `gate_b2_obligations` last took, less every
-  # latched identity — one per line, sorted. B2's binding value.
+  # seen disposed since that count started — the window `gate_b2_obligations`
+  # keeps, less `obligation-window-done` — one per line, sorted. B2's binding
+  # value.
   #
   # Read from the files rather than recomputed from the open set, because the
-  # open set is exactly the value a run can move for free; the window changes
-  # only when the count restarts and the latch only grows.
-  local window latched nl ident
+  # open set is exactly the value a run can move for free. Between two restarts
+  # the window is fixed and the done list only grows, so this value only
+  # shrinks, and it shrinks exactly when a member of the window is seen disposed
+  # — the event the count takes as progress. A member disposed and reopened
+  # stays out: a value that could return to an earlier one would match the
+  # marker an answered question left and hold the re-issue quiet.
+  #
+  # NOT LESS THE RUN LATCH, which is what it used to subtract. The latch keeps
+  # an identity's first disposition for the whole run, so a window holding only
+  # identities latched before it was taken — an excusal that lapsed when its
+  # segment resumed — bound to the digest of the empty set for good. Once that
+  # constant had been answered, every later B2 question carried it too and was
+  # held quiet by the answered marker.
+  local window wdone nl ident
   nl=$(printf '\n_'); nl=${nl%_}
   window=$(cat "${RUN_DIR:-}/obligation-window" 2>/dev/null || true)
-  latched=$(gate_disposition_latch | cut -f2-)
+  wdone=$(cat "${RUN_DIR:-}/obligation-window-done" 2>/dev/null || true)
   while IFS= read -r ident; do
     [ -n "$ident" ] || continue
-    case "$nl$latched$nl" in *"$nl$ident$nl"*) continue ;; esac
+    case "$nl$wdone$nl" in *"$nl$ident$nl"*) continue ;; esac
     printf '%s\n' "$ident"
   done <<GATE_B2_WAITING | LC_ALL=C sort
 $window
 GATE_B2_WAITING
+}
+
+gate_b2_window_observe() {
+  # Append to `obligation-window-done` every member of B2's window that has a
+  # disposition now. Called on every act from `gate_boundaries`, right after the
+  # latch, and again at the head of `gate_b2_obligations`.
+  #
+  # PER ACT for the reason the latch gives: a disposition that holds only between
+  # two judgments — an excusal walked back before the next one — is seen only if
+  # every act looks. PER WINDOW, unlike the latch, so an obligation disposed once
+  # before this window was taken still counts when it is disposed again inside
+  # it. The list is emptied whenever the window is rewritten.
+  #
+  # The check-then-append takes no lock, as the latch's does not; a duplicate
+  # line is harmless because every reader tests membership.
+  local f wdone nl ident
+  [ -n "${RUN_DIR:-}" ] && [ -s "$RUN_DIR/obligation-window" ] || return 0
+  f="$RUN_DIR/obligation-window-done"
+  nl=$(printf '\n_'); nl=${nl%_}
+  wdone=$(cat "$f" 2>/dev/null || true)
+  while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    case "$nl$wdone$nl" in *"$nl$ident$nl"*) continue ;; esac
+    [ -n "$(gate_obligation_disposition "$ident")" ] || continue
+    printf '%s\n' "$ident" >> "$f"
+  done < "$RUN_DIR/obligation-window"
+  return 0
 }
 
 gate_b2_obligations() {
@@ -16215,56 +16288,62 @@ gate_b2_obligations() {
   # verbs a reset cost the run its termination condition 3; after them it cost
   # nothing.
   #
-  # So progress is read off the disposition LATCH, which only grows and keeps the
-  # first disposition of each identity, against the WINDOW — the obligations that
-  # were open when this count last started. The count restarts only when one of
-  # those has been latched since the previous evaluation and is not open now.
-  # A new identity is not progress, and neither is closing one: it was not in the
-  # window, so it is not what this counter was waiting on, and an open-and-close
-  # pair repeated every cycle would otherwise restart the count every cycle. A
-  # toggled excusal was latched the first time and is never "newly" latched
-  # again. An empty window restarts the count and takes the current open set, so
-  # counting begins when there is something to wait on — which is also what the
-  # first evaluation of a run does.
+  # So progress is read against the WINDOW — the obligations this count is
+  # waiting on — and the count restarts when a member of the window has been
+  # seen disposed since the count started (`gate_b2_window_observe`). A new
+  # identity is not progress, and neither is closing one: it is not in the
+  # window, so it is not what this counter was waiting on.
   #
-  # A RESIDUAL, AND IT ERRS TOWARDS ASKING. The latch keeps the FIRST disposition
-  # only, so an obligation latched before the window started — an excusal that
-  # lapsed, say — is never "newly" latched again, and closing it later with
-  # `종결` is not progress here. The count runs on and B2 can ask about a set
-  # that did in fact move; it cannot stay silent over one that did not.
-  local latched seen window curopen fresh ident n progress=0 nl cur
+  # ON PROGRESS THE WINDOW SHRINKS TO ITS REMAINDER; it is not retaken from the
+  # open set. Retaking it let a pair out of step by one judgment reset the count
+  # on every judgment: open a new identity, close the window member left over
+  # from the previous pair, and the restart put the new identity into the window
+  # for the next judgment to close. The open set is taken only when the
+  # remainder is empty — every obligation the count was waiting on has been
+  # disposed, which is the progress this boundary exists to see — and when the
+  # window is empty, which is also what the first evaluation of a run does. So
+  # the resets a run can buy between two such points are bounded by the window's
+  # size, whatever it opens and closes in between.
+  #
+  # A member is counted the first time it is seen disposed and leaves the
+  # window then; walking its excusal back and forth afterwards moves nothing.
+  # The run latch is not read here: it keeps an identity's first disposition for
+  # the whole run, so an obligation excused once, resumed, and taken into a later
+  # window could never count as progress however it was disposed — the window
+  # froze, and with the answered marker never cleared B2 asked once per run.
+  local window wdone curopen remain ident n progress=0 nl cur nwin=0 nrem=0
   nl=$(printf '\n_'); nl=${nl%_}
-  latched=$(gate_disposition_latch | cut -f2-)
+  gate_b2_window_observe
   curopen=$(gate_open_obligations | sed 's/^obligation=//')
   n=$(cat "$RUN_DIR/obligation-repeat" 2>/dev/null || printf '0')
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  seen=$(cat "$RUN_DIR/obligation-latch-seen" 2>/dev/null || printf '0')
-  case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
   window=$(cat "$RUN_DIR/obligation-window" 2>/dev/null || true)
-  if [ -z "$(printf '%s' "$window" | tr -d '\n')" ]; then
-    progress=1
-  else
-    fresh=$(printf '%s\n' "$latched" | awk -v s="$seen" 'length($0) > 0 && ++i > s')
-    while IFS= read -r ident; do
-      [ -n "$ident" ] || continue
-      case "$nl$window$nl" in
-        *"$nl$ident$nl"*)
-          case "$nl$curopen$nl" in *"$nl$ident$nl"*) : ;; *) progress=1 ;; esac ;;
-      esac
-    done <<GATE_B2_FRESH
-$fresh
-GATE_B2_FRESH
-  fi
+  wdone=$(cat "$RUN_DIR/obligation-window-done" 2>/dev/null || true)
+  remain=""
+  while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    nwin=$((nwin + 1))
+    case "$nl$wdone$nl" in *"$nl$ident$nl"*) continue ;; esac
+    nrem=$((nrem + 1))
+    remain="$remain$ident$nl"
+  done <<GATE_B2_WINDOW
+$window
+GATE_B2_WINDOW
+  if [ "$nwin" -eq 0 ] || [ "$nrem" -lt "$nwin" ]; then progress=1; fi
   # The marker is cleared on progress, for the reason B1 gives: once the run has
   # moved, the same condition coming back is a recurrence the issuer must be
   # allowed to ask about again.
   if [ "$progress" = "1" ]; then
     n=0; rm -f "$RUN_DIR/boundary-B2.asked"
-    printf '%s\n' "$curopen" > "$RUN_DIR/obligation-window"
+    if [ "$nrem" -eq 0 ]; then
+      remain=$(printf '%s\n' "$curopen" | awk 'length($0) > 0')
+      [ -z "$remain" ] || remain="$remain$nl"
+    fi
+    printf '%s' "$remain" > "$RUN_DIR/obligation-window"
+    : > "$RUN_DIR/obligation-window-done"
   else
     n=$((n + 1))
   fi
-  printf '%s\n' "$latched" | awk 'length($0) > 0' | gate_count > "$RUN_DIR/obligation-latch-seen"
   printf '%s\n' "$n" > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
   [ -z "$(printf '%s' "$curopen" | tr -d '\n')" ] && return 0
@@ -16276,9 +16355,9 @@ GATE_B2_FRESH
   # sentence a person reads state a unit nothing counts. The sibling above
   # already spells it 판정.
   #
-  # Bound to the window less the latch (`gate_b2_waiting`), which moves exactly
-  # when this predicate's progress arm can fire; the progress digest can move
-  # under an unchanged obligation set.
+  # Bound to the window less the members seen disposed (`gate_b2_waiting`),
+  # which moves exactly when this predicate's progress arm can fire; the
+  # progress digest can move under an unchanged obligation set.
   gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다" "$cur"
 }
 

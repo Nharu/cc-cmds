@@ -935,7 +935,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `session-lineage` | gate (`gate.sh`) | session id → run id, the ancestry index |
 | `surface-digest` | gate (`gate.sh`) | the enforcement-surface baseline compared at each act |
 | `progress-digest` · `progress-repeat` | gate (`gate.sh`) | the stagnation boundary's previous value and its repeat count |
-| `obligation-latch-seen` · `obligation-window` · `obligation-repeat` | gate (`gate.sh`) | the obligation boundary's state — how many latched dispositions its previous evaluation had seen, which obligations were open when its count last started — and its repeat count |
+| `obligation-window` · `obligation-window-done` · `obligation-repeat` | gate (`gate.sh`) | the obligation boundary's state — the obligations its count is waiting on, and which of them have been seen disposed since that count started — and its repeat count |
 | `act-budget-base` · `act-budget-digest` | gate (`gate.sh`) | the terminal-act budget's baseline and its input digest |
 | `cost-resolved-pct` | gate (`gate.sh`) | the cost share a B4 approval was closed at; B4 stays quiet until spending climbs ten points past it |
 | `done` | gate (`gate.sh`) | written when the run proposes termination; **its absence is not evidence of activity** |

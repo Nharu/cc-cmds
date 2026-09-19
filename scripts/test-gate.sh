@@ -7098,6 +7098,44 @@ case "$msg" in
   *) bad "재언급 앵커" "$msg" ;;
 esac
 
+# --- 세그먼트의 두 철자 --------------------------------------------------------
+# A segment is one object whether the rationale names it by its id or by an `A-`
+# on one of its `segment` rows. Keyed by id for the first and by line for the
+# second, the two spellings never collided, so one segment row closed two
+# obligations.
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-1" "현재 단=1" "생성 등급=외부상태변경"
+check "세그먼트 두 철자 사례의 첫 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "현재 단=1" "생성 등급=외부상태변경"
+check "세그먼트 두 철자 사례의 둘째 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "두 의무 뒤에 그 세그먼트의 segment 행이 쓰인다" "$rc" "0"
+seg_anchor=$( { grep '^- `segment`' "$FX_LEDGER" || true; } | { grep -F '| id=SOB2 |' || true; } \
+  | tail -1 | tr '|' '\n' | sed -n 's/^ *prev=//p' | sed 's/[[:space:]]*$//' | cut -c1-8)
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-1" "근거=SOB2 에서 고쳤다"
+check "세그먼트 id 를 근거로 든 종결이 통과한다 (기준선)" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "근거=A-$seg_anchor 에서 고쳤다"
+check "같은 segment 행을 A- 철자로 다시 지목하면 둘째 의무를 닫지 못한다" "$rc" "3"
+case "$msg" in
+  *"여러 의무를 닫을 수 없습니다"*) ok "그 거절이 증폭 방지에서 나온다" ;;
+  *) bad "세그먼트 두 철자" "$msg" ;;
+esac
+# The control: the same obligation closes on an anchor naming a different row,
+# so the refusal above is about the reused object and not about the obligation.
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-세그철자-2" "근거=A-$(last_anchor) 에서 고쳤다"
+check "다른 행을 지목하면 그 의무가 닫힌다 (위 거절이 공허하지 않다)" "$rc" "0"
+
 # --- 충돌 거절 --------------------------------------------------------------
 # THE TWO IDENTITIES REALLY COLLIDE, and they were found by search rather than
 # invented: the id is eight hex digits derived from `<런 id>|<동일성>`, so a
