@@ -246,17 +246,18 @@ else
   ok "세그먼트 상태가 전진하면 해시가 움직인다"
 fi
 
+# OPENING AN OBLIGATION IS NOT PROGRESS, and it used to be. The vector carried
+# the open set, so a new problem row moved this digest — and once obligations
+# could be closed, opening one and closing it again reset the stagnation count
+# for two `읽기` rows while another obligation stayed blocked. Obligation progress
+# is B2's to judge; the two sensitivity assertions above are what keep this one
+# from passing on a constant.
 printf -- '- `problem` | 세그먼트=S1 | 동일성=P0-누수 | 시각=2026-01-01T03:00:00Z\n' >> "$LEDGER"
 d3=$(digest)
-if [ "$d3" = "$d2" ]; then
-  bad "미해결 의무" "의무가 열렸는데 해시가 그대로다"
-else
-  ok "미해결 의무가 열리면 해시가 움직인다"
-fi
+check "새 동일성의 문제 행은 진전이 아니다 (여닫이로 정체 계수를 되돌리지 못한다)" "$d3" "$d2"
 
-# A repeat of the SAME identity is not new information — the obligation set is
-# deduplicated, so a stage retrying the same failure all night cannot pass for
-# progress.
+# A repeat of the SAME identity is not new information either, so a stage
+# retrying the same failure all night cannot pass for progress.
 printf -- '- `problem` | 세그먼트=S1 | 동일성=P0-누수 | 시각=2026-01-01T04:00:00Z\n' >> "$LEDGER"
 check "같은 동일성의 재시도는 진전이 아니다" "$(digest)" "$d3"
 
@@ -697,28 +698,51 @@ fi
 # the same defect, so the regression assertion above pins only half of it. The
 # bundle crosses segments: reading one row's segment lets a later row naming a
 # parked segment decide for rows that are not parked at all.
+#
+# THE ROW ORDER IS THE DISCRIMINATOR. The removed implementation read the LAST
+# problem row's segment, so the rows go running-segment first and parked-segment
+# LAST: that is the order in which the last row answers "excused" for a bundle
+# that is not parked. The other order passes against the removed code too.
 o_segment SP3 park
 o_segment SP4 실행중
-o_problem SP3 P0-세그먼트축 읽기
-if gate_obligation_excused "P0-세그먼트축"; then
-  ok "park 세그먼트 위의 낮은 등급 의무는 면제된다 (기준선)"
-else
-  bad "면제 기준선" "면제되어야 할 구석이 면제되지 않는다 — 아래 두 단언이 공허해진다"
-fi
 o_problem SP4 P0-세그먼트축 읽기
 if gate_obligation_excused "P0-세그먼트축"; then
-  bad "면제 세그먼트 축" "비종단 세그먼트를 지목하는 행이 있는데도 면제됐다 — 마지막 행이 이긴다"
+  bad "면제 기준선" "실행중 세그먼트 위의 의무가 면제됐다"
 else
-  ok "한 행이라도 park 밖이면 면제되지 않는다 (전칭 규칙)"
+  ok "실행중 세그먼트 위의 의무는 면제되지 않는다 (기준선)"
+fi
+o_problem SP3 P0-세그먼트축 읽기
+if gate_obligation_excused "P0-세그먼트축"; then
+  bad "면제 세그먼트 축" "park 세그먼트를 지목하는 행이 뒤에 붙자 면제됐다 — 마지막 행이 이긴다"
+else
+  ok "뒤에 붙은 park 행이 앞선 실행중 행을 대신 결정하지 못한다 (전칭 규칙)"
 fi
 # The pair. Terminal is re-read at call time rather than carried, so moving the
 # segment must move the answer back — without this the assertion above is also
-# satisfied by an implementation that latched the first refusal.
+# satisfied by an implementation that never excuses a two-segment bundle.
 o_segment SP4 park
 if gate_obligation_excused "P0-세그먼트축"; then
   ok "그 세그먼트가 park 로 옮겨 가면 다시 면제된다 (판정 시점에 다시 읽는다)"
 else
   bad "면제 세그먼트 축 짝" "모든 행이 park 인데도 면제되지 않는다"
+fi
+
+# The same shape for `포기`, whose terminal requirement is the same universal
+# over the bundle's segments.
+o_segment SP5 park
+o_segment SP6 실행중
+o_problem SP6 P0-포기축 외부상태변경
+o_problem SP5 P0-포기축 외부상태변경
+if gate_obligation_segments_terminal "P0-포기축"; then
+  bad "포기 세그먼트 축" "park 세그먼트를 지목하는 행이 뒤에 붙자 묶음 전체가 종단으로 읽혔다"
+else
+  ok "포기의 종단 요구도 뒤에 붙은 park 행 하나로 채워지지 않는다"
+fi
+o_segment SP6 park
+if gate_obligation_segments_terminal "P0-포기축"; then
+  ok "모든 세그먼트가 종단이 되면 포기의 종단 요구가 채워진다 (짝)"
+else
+  bad "포기 세그먼트 축 짝" "모든 행이 park 인데도 종단으로 읽히지 않는다"
 fi
 
 # --- 7b-d. The latch — the exemption count cannot be walked back --------------
@@ -727,14 +751,124 @@ fi
 # reversible state, so its count can FALL. Unlatched, the boundary below is
 # evaded by walking a parked segment back to `실행중` one row before the
 # threshold and parking it again.
-gate_disposition_latch_update
-check "면제된 동일성이 래치에 적재된다" \
+#
+# THROUGH `gate_boundaries`, NOT THE UPDATE FUNCTION. The update used to be
+# called only from the terminal report, and a fixture calling it directly passed
+# all the same — so the render's counts read `0 · 0 · 0` for the whole run and an
+# excusal walked back before the end was never latched. One ordinary `읽기` act
+# from the router's seat is what latches here; every seat marker is pinned
+# because this suite also runs from inside a stage.
+o_act() {
+  ( CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SHIFT_ID=''
+    export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID
+    gate_boundaries 읽기 segment ) >/dev/null 2>&1
+}
+o_act
+check "면제된 동일성이 행위 하나로 래치에 적재된다 (종단 전)" \
   "$( { gate_disposition_latch | grep -cF 'P0-세그먼트축' || true; } )" "1"
+check "아침 렌더의 처분별 집계가 런 도중에도 그 처분을 센다" \
+  "$(gate_disposition_counts)" "종결 0 · 포기 0 · 면제 1"
 o_segment SP3 실행중
 check "면제가 풀려도 래치는 그 처분을 잊지 않는다" \
   "$( { gate_disposition_latch | grep -cF 'P0-세그먼트축' || true; } )" "1"
 check "그 되돌림으로 현재 처분이 실제로 비었다 (위 단언이 공허하지 않다)" \
   "$(gate_obligation_disposition 'P0-세그먼트축')" ""
+
+# MEMBERSHIP IS THE WHOLE IDENTITY. With a start-anchored `grep -F` the shorter
+# identity read as already latched once the longer one was, and its disposition
+# vanished from the counts and the terminal enumeration.
+o_segment SP7 park
+o_problem SP7 P0-접두긴것 읽기
+o_act
+o_problem SP7 P0-접두 읽기
+o_act
+check "긴 동일성이 먼저 래치돼도 그 접두인 짧은 동일성이 따로 래치된다" \
+  "$( { gate_disposition_latch | cut -f2- | grep -cxF 'P0-접두' || true; } )" "1"
+# The writer's check-then-append takes no lock, so two seats can append the
+# same identity; the reader keeps the first line per identity.
+printf '종결\tP0-접두\n' >> "$RUN_DIR/obligation-latch"
+check "같은 동일성의 중복 줄은 첫 처분 하나로 읽힌다" \
+  "$( { gate_disposition_latch | cut -f2- | grep -cxF 'P0-접두' || true; } )" "1"
+
+# --- 7b-e. B2 — what restarts the obligation count ---------------------------
+#
+# The count used to restart on ANY change of the open set's digest. The closing
+# verbs made that set cheap to move both ways: a parked segment walked to
+# `실행중` and back makes an excusal lapse and return, and a new identity can be
+# opened and closed again — each resetting the count while another obligation
+# stayed blocked for good. Both are driven for more than `B2_OBLIGATION_M`
+# evaluations, and the boundary must still fire.
+b2_eval() { gate_disposition_latch_update; gate_b2_obligations >/dev/null 2>&1; }
+n_b2()    { { grep -c '승인 id=B2-' "$LEDGER" 2>/dev/null || true; } ; }
+b2_rep()  { cat "$RUN_DIR/obligation-repeat" 2>/dev/null || true; }
+
+LEDGER="$WORK/b2a.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b2a-run"; mkdir -p "$RUN_DIR"
+o_segment SQ1 실행중
+o_problem SQ1 P0-막힘 외부상태변경
+o_segment SQ2 park
+o_problem SQ2 P0-토글 읽기
+b2_eval
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do
+  if [ $((i % 2)) -eq 0 ]; then o_segment SQ2 실행중; else o_segment SQ2 park; fi
+  b2_eval
+  i=$((i + 1))
+done
+if [ "$(n_b2)" != "0" ]; then
+  ok "면제 가능한 의무의 세그먼트를 토글해도 막힌 의무 앞에서 B2 가 발화한다"
+else
+  bad "B2 토글 리셋" "세그먼트 토글 $((B2_OBLIGATION_M + 1))회 동안 B2 가 침묵했다 (계수=$(b2_rep))"
+fi
+
+LEDGER="$WORK/b2b.md"; : > "$LEDGER"
+RUN_DIR="$WORK/b2b-run"; mkdir -p "$RUN_DIR"
+o_segment SQ1 실행중
+o_problem SQ1 P0-막힘 외부상태변경
+b2_eval
+b2_bind0=$(gate_boundary_binding B2)
+i=0
+while [ "$i" -le "$B2_OBLIGATION_M" ]; do
+  o_problem SQ1 "P0-여닫이-$i" 외부상태변경
+  b2_eval
+  printf -- '- `의무 종결` | 의무 id=%s | 표시 동일성=P0-여닫이-%s | 처분=종결 | 세그먼트=SQ1 | 근거=A-deadbeef | 처분 시각=t | prev=x\n' \
+    "$(gate_obligation_id "P0-여닫이-$i")" "$i" >> "$LEDGER"
+  b2_eval
+  i=$((i + 1))
+done
+if [ "$(n_b2)" != "0" ]; then
+  ok "새 동일성을 열고 닫는 쌍을 되풀이해도 막힌 의무 앞에서 B2 가 발화한다"
+else
+  bad "B2 여닫이 리셋" "여닫이 $((B2_OBLIGATION_M + 1))쌍 동안 B2 가 침묵했다 (계수=$(b2_rep))"
+fi
+# THE BINDING DOES NOT MOVE ON THOSE PAIRS EITHER. A standing B2 question is
+# withdrawn when its binding moves, and the withdrawal restarts the count — so a
+# binding the pairs could move would hand the reset back one step later. Bound
+# to the whole latch it moved on every pair, because each closed identity
+# latches.
+check "여닫이 쌍은 B2 의 결속값을 움직이지 않는다 (대기 중인 B2 질문이 철회되지 않는다)" \
+  "$(gate_boundary_binding B2)" "$b2_bind0"
+# The positive control: closing the obligation the count was waiting on IS
+# progress. Without it the two assertions above also pass against a counter
+# that never restarts.
+printf -- '- `의무 종결` | 의무 id=%s | 표시 동일성=P0-막힘 | 처분=종결 | 세그먼트=SQ1 | 근거=A-deadbeef | 처분 시각=t | prev=x\n' \
+  "$(gate_obligation_id 'P0-막힘')" >> "$LEDGER"
+# Read where the withdrawal reads it: after the latch update, before the count.
+gate_disposition_latch_update
+if [ "$(gate_boundary_binding B2)" = "$b2_bind0" ]; then
+  bad "B2 결속값 대조" "기다리던 의무가 닫혔는데 결속값이 그대로다 — 위 단언이 상수 위에서 통과했다"
+else
+  ok "기다리던 의무가 닫히면 B2 의 결속값이 움직인다 (위 단언이 공허하지 않다)"
+fi
+b2_eval
+check "기다리던 의무가 닫히면 B2 계수가 다시 시작한다 (위 두 단언이 멈춘 계수 위에서 통과한 것이 아니다)" \
+  "$(b2_rep)" "0"
+
+# A review-obligation id has the issuer's shape, `RO-` and eight hex digits. With
+# no shape check a bare `RO-`, or any extension of a real id, was admitted as an
+# anchor and then resolved by a substring search.
+check "근거 앵커의 RO- 형태는 8자리 16진만 인정한다 (맨 RO- 와 연장 철자는 앵커가 아니다)" \
+  "$(gate_obligation_evidence_anchors 'RO- 와 RO-deadbeefx 와 RO-deadbeef' | tr '\n' ' ')" "RO-deadbeef "
 
 # --- 7b-f. The terminal enumeration names each disposed obligation -------------
 #

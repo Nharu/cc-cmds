@@ -7052,6 +7052,52 @@ case "$u_reverted" in
   *) ok "종결로 닫힌 의무는 돌아오지 않는다 (짝 단언)" ;;
 esac
 
+# --- 의무 id 주입 -----------------------------------------------------------
+# The disposition lookup used to be a substring match over the whole closing row,
+# so an `의무 id=PO-…` written into the free-text `근거` closed THAT obligation
+# too — with none of the evidence, order, collision or reuse checks run for it.
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-주입매개" "현재 단=1" "생성 등급=외부상태변경"
+check "주입 매개로 쓸 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-주입매개" "근거=A-$(last_anchor) 의무 id=PO-$(oid_of "P0-포기불가") 도 함께 닫는다"
+check "근거에 다른 의무 id 를 적은 종결 행 자체는 쓰인다" "$rc" "0"
+u_inject=$(unmet_now)
+case "$u_inject" in
+  *"P0-포기불가"*) ok "닫는 행의 근거에 적은 의무 id 가 다른 의무를 닫지 못한다" ;;
+  *) bad "의무 id 주입" "근거에 적힌 의무 id 로 P0-포기불가 가 닫혔다" ;;
+esac
+case "$u_inject" in
+  *"P0-주입매개"*) bad "의무 id 주입 대조" "지목한 의무가 닫히지 않았다 — 위 단언이 공허하다" ;;
+  *) ok "지목한 의무는 닫혔다 (위 단언이 공허하지 않다)" ;;
+esac
+
+# --- 재언급된 옛 앵커 --------------------------------------------------------
+# An anchor resolves to the row that DECLARES the object — for `A-`, the row whose
+# own chain field carries those digits. It used to resolve to the LAST line
+# mentioning them, so a row older than the problem passed the order check as soon
+# as any later row merely quoted it.
+anchor_old=$(last_anchor)
+gateL act --manifest "$FX_MANIFEST" --kind problem --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-재언급" "현재 단=1" "생성 등급=외부상태변경"
+check "재언급 사례의 의무가 열린다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SOB2 --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" \
+      --rationale "prev=$anchor_old 를 다시 적는다" \
+      -- 상태=실행중 워크트리="$WT" 선행=없음
+check "옛 앵커의 체인 값을 자유 텍스트로 다시 적는 행이 쓰인다" "$rc" "0"
+gateL act --manifest "$FX_MANIFEST" --kind obligation-done --target infra --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(HL)" --rationale x \
+      -- "동일성=P0-재언급" "근거=A-$anchor_old 를 근거로 든다"
+check "문제 행보다 앞선 앵커는 뒤에서 다시 언급돼도 거절된다" "$rc" "3"
+case "$msg" in
+  *"원장에서 앞에 있습니다"*) ok "그 거절이 순서 검사에서 나온다" ;;
+  *) bad "재언급 앵커" "$msg" ;;
+esac
+
 # --- 충돌 거절 --------------------------------------------------------------
 # THE TWO IDENTITIES REALLY COLLIDE, and they were found by search rather than
 # invented: the id is eight hex digits derived from `<런 id>|<동일성>`, so a
@@ -16708,7 +16754,10 @@ b56_reset_case '새 sid segment'        이동 '' "$b56_seg_row"
 b56_reset_case '중복 sid segment'      불변 "$b56_seg_row" "$b56_seg_row"
 b56_reset_case '세그먼트= 가 있는 cycle' 이동 '' '- `cycle` | 교대=1 | 세그먼트=S1 | 회차=1 | 결과=완료'
 b56_reset_case '세그먼트= 가 없는 cycle' 불변 '' '- `cycle` | 교대=1 | 회차=1 | 결과=완료'
-b56_reset_case '새 동일성 problem'      이동 '' "$b56_prob_row"
+# 새 동일성의 문제 행도 진전이 아니다. 벡터가 열린 의무 집합을 싣던 동안에는 이
+# 행이 구간을 리셋했고, 의무를 닫을 수 있게 된 뒤로는 열고 닫는 `읽기` 두 행으로
+# 정체 계수를 되돌릴 수 있었다. 의무의 진전은 B2 가 자기 창에 대해 판정한다.
+b56_reset_case '새 동일성 problem'      불변 '' "$b56_prob_row"
 b56_reset_case '기존 동일성 problem'    불변 "$b56_prob_row" "$b56_prob_row"
 b56_reset_case '종료 절'               이동 '' '- `종료 절` | 교대=1 | id=C1 | 상태=충족 | 근거=오라클'
 b56_reset_case '정상 완료 stage-result' 이동 '' '- `stage-result` | 교대=1 | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료 | 관측=오라클'

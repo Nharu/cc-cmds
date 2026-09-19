@@ -4131,7 +4131,15 @@ gate_progress_vector() {
   printf 'clauses=%s\n' "$( { gate_rows '종료 절' || true; } | gate_count)"
   printf 'unblocks=%s\n' \
     "$( { gate_rows 'blocked' | grep -F '원인=해소' || true; } | gate_count)"
-  gate_open_obligations | sort
+  # THERE IS NO OBLIGATION COMPONENT, and there used to be the open set here. The
+  # open set moved on a new problem row, on a closing act, and on a parked segment
+  # walked to `실행중` and back — so once obligations could be closed, opening one
+  # and closing it again reset this stagnation count for the price of two `읽기`
+  # rows, while another obligation stayed blocked. A monotone replacement (the
+  # disposition latch) still moves on that pair, and this vector has no window
+  # to tell a disposal the run was waiting on from one it staged. Obligation
+  # progress is B2's to judge, against its window; B3's key already drops the
+  # component for the same reason.
 }
 
 gate_progress_digest() {
@@ -4322,7 +4330,14 @@ gate_obligation_display() {
 gate_obligation_disposed() {
   # gate_obligation_disposed <identity> <series> — a closing row of that series
   # names this obligation.
-  gate_has_row "$2" "의무 id=$(gate_obligation_id "$1") "
+  #
+  # MATCHED AS A WHOLE FIELD, `| 의무 id=<id> |`, the same discipline the approval
+  # id lookups hold. A substring match read the closing row's free-text `근거` as
+  # well: writing `근거=A-<유효> 의무 id=PO-<다른 의무>` closed that other
+  # obligation too, with none of the evidence, order, collision or reuse checks
+  # run for it. `gate_append` strips pipes from every value, so a `|`-bounded
+  # match can only land on the field the gate itself wrote.
+  gate_has_row "$2" "| 의무 id=$(gate_obligation_id "$1") |"
 }
 
 gate_obligation_disposition() {
@@ -4398,8 +4413,8 @@ gate_open_obligations() {
 gate_obligation_evidence_anchors() {
   # gate_obligation_evidence_anchors <근거> — the pointers a rationale names, from
   # a CLOSED SET of four forms: a row anchor `A-<8 hex>`, an approval id
-  # `J-<8 hex>`, a review-obligation id `RO-…`, and a segment id declared in this
-  # ledger.
+  # `J-<8 hex>`, a review-obligation id `RO-<8 hex>`, and a segment id declared in
+  # this ledger.
   #
   # PROSE ALONE YIELDS NOTHING, which is the point. "확인했다" is the most
   # convincing sentence a person can read and is nothing at all to the gate;
@@ -4428,7 +4443,13 @@ gate_obligation_evidence_anchors() {
             printf '%s\n' "$t" ;;
         esac ;;
       RO-*)
-        printf '%s\n' "$t" ;;
+        # The same shape the issuer derives (`RO-` plus eight hex digits). With
+        # no shape check a bare `RO-` or any extension of a real id passed here
+        # and was then resolved by a substring search.
+        case "${t#RO-}" in
+          [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+            printf '%s\n' "$t" ;;
+        esac ;;
       *)
         case "$segs" in *" $t "*) printf '%s\n' "$t" ;; esac ;;
     esac
@@ -4437,27 +4458,72 @@ gate_obligation_evidence_anchors() {
 }
 
 gate_evidence_row_line() {
-  # gate_evidence_row_line <anchor> — the ledger line of the LAST row the anchor
-  # points at, or empty when it points at nothing.
+  # gate_evidence_row_line <anchor> — the ledger line of the row that DECLARES
+  # the object the anchor names, or empty when it names nothing.
   #
   # A row anchor addresses by the chain predecessor every row already carries, so
   # every row in the ledger is addressable with no schema change at all.
+  #
+  # EVERY ARM RESOLVES TO A DECLARING ROW, never to wherever the token happens to
+  # appear. The three id arms used to search the whole ledger and take the LAST
+  # match, so an object older than the problem row passed the order check the
+  # moment any later row — a `근거`, a payload — merely mentioned it. The anchor
+  # is supposed to name an OBJECT:
+  #   - `A-` is the row whose own chain field (`| prev=` at the end of the row)
+  #     begins with those digits;
+  #   - `J-` is the `승인` row carrying it as `| 승인 id=… |`;
+  #   - `RO-` is the `리뷰 의무` row carrying it as `| 의무 id=… |`.
+  # For those three the FIRST declaring row is taken: an approval or a review
+  # obligation is born on its first row, and its later transition rows are the
+  # object being re-stated, not re-created. Taking the first also makes the answer
+  # a fixed function of an append-only file, which the reuse check below relies on.
   #
   # THE SEGMENT ARM RESOLVES TO THE SEGMENT'S OWN ROW, not to the last line the
   # identifier happens to appear on. A segment id is stamped on nearly every row
   # of that segment, so a whole-ledger match answered with the identifier's LAST
   # occurrence — which is later than almost anything, and so satisfied the order
-  # check for free. The anchor is supposed to name an OBJECT; the row that
-  # declares the object is the `segment` row carrying it as `id=`.
+  # check for free. The row that declares the object is the `segment` row
+  # carrying it as `id=`; its LAST such row stays the answer, because a segment's
+  # later state row is the segment advancing, which is what that anchor cites.
+  #
+  # A RESIDUAL THIS DOES NOT CLOSE. The rows a closing act itself writes — the
+  # `의무 종결`/`의무 포기` row and the `자율 승인` row after it — are rows like any
+  # other, so an `A-` anchor on them is well formed and later than an older
+  # problem row. One closing act can therefore supply the anchor for the next.
+  # Excluding them would change which rows the layer-1 contract admits, and that
+  # contract says every row is addressable; the chain is instead visible in the
+  # terminal enumeration, where each closing row's anchor sits beside it.
+  #
+  # `sed -n 1p` AND NOT `head -1` for the first match: `head` exits early, the
+  # writer takes SIGPIPE, and `pipefail` then reports a found row as a failure.
   local tok="$1" hits
   case "$tok" in
-    A-*) hits=$( { grep -n "prev=${tok#A-}" "$LEDGER" 2>/dev/null || true; } ) ;;
-    RO-*|J-*)
-         hits=$( { grep -nF "$tok" "$LEDGER" 2>/dev/null || true; } ) ;;
+    A-*) hits=$( { grep -nE " \\| prev=${tok#A-}[0-9a-f]*\$" "$LEDGER" 2>/dev/null || true; } \
+                | { grep '^[0-9][0-9]*:- `' || true; } | sed -n 1p) ;;
+    J-*) hits=$( { grep -n '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+                | { grep -F "| 승인 id=$tok |" || true; } | sed -n 1p) ;;
+    RO-*)
+         hits=$( { grep -n '^- `리뷰 의무`' "$LEDGER" 2>/dev/null || true; } \
+                | { grep -F "| 의무 id=$tok |" || true; } | sed -n 1p) ;;
     *)   hits=$( { grep -n '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
-                | { grep -F "id=$tok " || true; } ) ;;
+                | { grep -F "id=$tok " || true; } | tail -1) ;;
   esac
-  printf '%s\n' "$hits" | { grep '^[0-9][0-9]*:- `' || true; } | tail -1 | cut -d: -f1
+  printf '%s\n' "$hits" | { grep '^[0-9][0-9]*:- `' || true; } | cut -d: -f1
+}
+
+gate_evidence_object_key() {
+  # gate_evidence_object_key <anchor> — what the anchor names, as a value two
+  # spellings of the same object compare equal on.
+  #
+  # The three id arms answer with their declaring row's line: first declaration
+  # in an append-only file, so the answer never moves, and two anchors naming the
+  # same row — an `A-` and a `J-` for one approval row, say — collide as they
+  # should. A segment answers with its id, because its resolved row is the LAST
+  # segment row and would move as the segment advances.
+  case "$1" in
+    A-*|J-*|RO-*) printf 'L%s' "$(gate_evidence_row_line "$1")" ;;
+    *)            printf 'S%s' "$1" ;;
+  esac
 }
 
 gate_problem_last_line() {
@@ -10334,7 +10400,7 @@ EOF
       # is mounted by OPENING obligations, so a toll on closing them is a
       # defence on the wrong axis.
       local odisp oseries oident ooid owhy oanchors oanchor oaline opline
-      local oother oprior oseg orow
+      local oother oprior oseg orow okey ot
       case "$kind" in
         obligation-done) odisp='종결'; oseries='의무 종결' ;;
         *)               odisp='포기'; oseries='의무 포기' ;;
@@ -10414,10 +10480,27 @@ EOF
         # same discipline for a held termination clause, and the comment there
         # names the reason: what is refused is the amplification, not the single
         # answer.
+        #
+        # COMPARED BY THE OBJECT RESOLVED, NOT BY THE SPELLING. A `grep -F` of the
+        # token over earlier closing rows let an extension (`RO-f` → `RO-foo`) or a
+        # second spelling of the same row through, and refused `S1` because an
+        # earlier row cited `S1-x`. Each earlier closing row's anchors are resolved
+        # again here; the id arms resolve to a first declaration, so the answer is
+        # the one they got when that row was written.
+        okey=$(gate_evidence_object_key "$oanchor")
         oprior=$( { gate_rows '의무 종결'; gate_rows '의무 포기'; } \
-                  | { grep -F "$oanchor" || true; } | tail -1)
+                  | while IFS= read -r orow; do
+                      [ -n "$orow" ] || continue
+                      gate_obligation_evidence_anchors "$(gate_row_field "$orow" '근거')" \
+                        | while IFS= read -r ot; do
+                            [ -n "$ot" ] || continue
+                            if [ "$(gate_evidence_object_key "$ot")" = "$okey" ]; then
+                              printf '%s\n' "$orow"
+                            fi
+                          done
+                    done | tail -1)
         if [ -n "$oprior" ]; then
-          warn "근거 앵커 ${oanchor} 은 이미 의무 $(gate_row_field "$oprior" '의무 id') 을 닫는 데 쓰였습니다 — 근거 하나가 여러 의무를 닫을 수 없습니다"
+          warn "근거 앵커 ${oanchor} 이 가리키는 객체는 이미 의무 $(gate_row_field "$oprior" '의무 id') 을 닫는 데 쓰였습니다 — 근거 하나가 여러 의무를 닫을 수 없습니다"
           return "$GATE_EXIT_RULE"
         fi
       done <<GATE_OBL_ANCHORS
@@ -15719,24 +15802,33 @@ gate_boundary_binding() {
   # threshold, and a bucket tier would need a width no observation can validate
   # against a boundary that has never fired. It passes the progress digest until
   # a width is decided, so its shape is its siblings' and its value is today's.
-  # B3 DROPS THE OBLIGATION COMPONENT AS WELL AS ITS OWN COUNTER'S INPUT, and the
-  # two exclusions are there for different reasons. `acts=` was this counter's own
-  # input; the obligation set is the component a run can move for free — opening a
+  # B3's KEY IS FREE OF THE OBLIGATION COMPONENT AS WELL AS ITS OWN COUNTER'S
+  # INPUT, and the two exclusions are there for different reasons. `acts=` was
+  # this counter's own input, and is filtered here; the obligation set is the
+  # component a run can move for free — opening a
   # problem row under a new identity changes the open set and therefore this key,
   # and the act that opens it grades `읽기`, so a fresh window costs nothing at
   # all. Measured: one problem row per cycle mixed with reads kept the boundaries
   # silent past 122 acts with termination condition 3 holding throughout. With the
   # component removed the three evasion shapes fire again at the control value of
-  # 41. `B1`'s `gate_progress_digest` is deliberately NOT changed — this is about
-  # B3's window key alone.
+  # 41. The vector itself has since lost the component (`gate_progress_vector`
+  # says why), so B1 no longer moves on it either and this key needs no filter
+  # for it.
   case "$1" in
     # B5 counts what B1 counts and disposes of it differently, so it reads the
     # same value by name rather than by a second call to the same helper.
     B1|B4|B5) gate_progress_digest ;;
-    B2)    gate_open_obligations | sort | shasum -a 256 | cut -d' ' -f1 ;;
+    # B2 IS BOUND TO WHAT ITS COUNT IS WAITING ON, not to the open set. The open
+    # set moves both ways for free — open and close a new identity, or toggle a
+    # parked segment — so a binding on it withdrew a standing B2 question the
+    # moment the run did either, and the withdrawal restarts the count. The whole
+    # latch is no better: a new identity opened and closed again latches, so it
+    # would withdraw the question just the same. What moves this value is an
+    # obligation of the window being disposed for the first time, which is the
+    # one event `gate_b2_obligations` counts as progress.
+    B2)    gate_b2_waiting | shasum -a 256 | cut -d' ' -f1 ;;
     B3)    gate_progress_vector \
-             | { grep -v '^acts=' || true; } \
-             | { grep -v '^obligation=' || true; } | shasum -a 256 | cut -d' ' -f1 ;;
+             | { grep -v '^acts=' || true; } | shasum -a 256 | cut -d' ' -f1 ;;
     *)     return 1 ;;
   esac
 }
@@ -15778,6 +15870,12 @@ gate_boundaries() {
   # pay that cost twice for the overwhelmingly common case of nothing being open.
   # The second enumeration happens only when a withdrawal actually landed, which
   # is the one case where the first answer has gone stale.
+  #
+  # THE DISPOSITION LATCH IS UPDATED FIRST, on every act and outside the judgment
+  # predicate. B2's binding and progress, B1's vector and the withdrawal below all
+  # read it, and a disposition that holds only between two judgments — an
+  # excusal walked back before the next one — is latched only if every act looks.
+  gate_disposition_latch_update
   ids=$(gate_pending_approval_ids act)
   if gate_withdraw_stale_boundaries "$ids"; then
     ids=$(gate_pending_approval_ids act)
@@ -16080,24 +16178,97 @@ EOF
   gate_issue_boundary_approval B1 "진전 해시가 연속 ${n}회 판정 동안 불변입니다" "$h"
 }
 
+gate_b2_waiting() {
+  # The obligations B2's current count is waiting on and that have not been
+  # disposed yet — the window `gate_b2_obligations` last took, less every
+  # latched identity — one per line, sorted. B2's binding value.
+  #
+  # Read from the files rather than recomputed from the open set, because the
+  # open set is exactly the value a run can move for free; the window changes
+  # only when the count restarts and the latch only grows.
+  local window latched nl ident
+  nl=$(printf '\n_'); nl=${nl%_}
+  window=$(cat "${RUN_DIR:-}/obligation-window" 2>/dev/null || true)
+  latched=$(gate_disposition_latch | cut -f2-)
+  while IFS= read -r ident; do
+    [ -n "$ident" ] || continue
+    case "$nl$latched$nl" in *"$nl$ident$nl"*) continue ;; esac
+    printf '%s\n' "$ident"
+  done <<GATE_B2_WAITING | LC_ALL=C sort
+$window
+GATE_B2_WAITING
+}
+
 gate_b2_obligations() {
   # B2 catches the repeat defect B1 cannot. Fixing the same fault a different
   # way each time moves `head_sha`, so B1 never fires — but the obligation
   # multiset's elements are defined by IDENTITY, so however the patch differs
   # the element stays put. Progress means `|O|` genuinely fell, or an element
   # left and no element of the same identity came back.
-  local cur prev n
-  cur=$(gate_boundary_binding B2)
-  prev=$(cat "$RUN_DIR/obligation-digest" 2>/dev/null || true)
+  #
+  # THAT DEFINITION IS NOW WHAT THE CODE DOES, and it was a digest equality. Any
+  # change of the open set reset the counter — a set that GREW as well as one
+  # that shrank — and once obligations could be closed the set became cheap to
+  # move both ways: a new identity opened and closed again, or a parked segment
+  # walked to `실행중` and back so its excusal lapsed and returned, reset the
+  # count while another obligation stayed blocked for good. Before the closing
+  # verbs a reset cost the run its termination condition 3; after them it cost
+  # nothing.
+  #
+  # So progress is read off the disposition LATCH, which only grows and keeps the
+  # first disposition of each identity, against the WINDOW — the obligations that
+  # were open when this count last started. The count restarts only when one of
+  # those has been latched since the previous evaluation and is not open now.
+  # A new identity is not progress, and neither is closing one: it was not in the
+  # window, so it is not what this counter was waiting on, and an open-and-close
+  # pair repeated every cycle would otherwise restart the count every cycle. A
+  # toggled excusal was latched the first time and is never "newly" latched
+  # again. An empty window restarts the count and takes the current open set, so
+  # counting begins when there is something to wait on — which is also what the
+  # first evaluation of a run does.
+  #
+  # A RESIDUAL, AND IT ERRS TOWARDS ASKING. The latch keeps the FIRST disposition
+  # only, so an obligation latched before the window started — an excusal that
+  # lapsed, say — is never "newly" latched again, and closing it later with
+  # `종결` is not progress here. The count runs on and B2 can ask about a set
+  # that did in fact move; it cannot stay silent over one that did not.
+  local latched seen window curopen fresh ident n progress=0 nl cur
+  nl=$(printf '\n_'); nl=${nl%_}
+  latched=$(gate_disposition_latch | cut -f2-)
+  curopen=$(gate_open_obligations | sed 's/^obligation=//')
   n=$(cat "$RUN_DIR/obligation-repeat" 2>/dev/null || printf '0')
-  # The marker is cleared when the set moves, for the reason B1 gives: an
-  # obligation set can genuinely return to an earlier value, and that return
-  # is a recurrence the issuer must be allowed to ask about again.
-  if [ "$cur" = "$prev" ]; then n=$((n + 1)); else n=0; rm -f "$RUN_DIR/boundary-B2.asked"; fi
-  printf '%s\n' "$cur" > "$RUN_DIR/obligation-digest"
-  printf '%s\n' "$n"   > "$RUN_DIR/obligation-repeat"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  seen=$(cat "$RUN_DIR/obligation-latch-seen" 2>/dev/null || printf '0')
+  case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
+  window=$(cat "$RUN_DIR/obligation-window" 2>/dev/null || true)
+  if [ -z "$(printf '%s' "$window" | tr -d '\n')" ]; then
+    progress=1
+  else
+    fresh=$(printf '%s\n' "$latched" | awk -v s="$seen" 'length($0) > 0 && ++i > s')
+    while IFS= read -r ident; do
+      [ -n "$ident" ] || continue
+      case "$nl$window$nl" in
+        *"$nl$ident$nl"*)
+          case "$nl$curopen$nl" in *"$nl$ident$nl"*) : ;; *) progress=1 ;; esac ;;
+      esac
+    done <<GATE_B2_FRESH
+$fresh
+GATE_B2_FRESH
+  fi
+  # The marker is cleared on progress, for the reason B1 gives: once the run has
+  # moved, the same condition coming back is a recurrence the issuer must be
+  # allowed to ask about again.
+  if [ "$progress" = "1" ]; then
+    n=0; rm -f "$RUN_DIR/boundary-B2.asked"
+    printf '%s\n' "$curopen" > "$RUN_DIR/obligation-window"
+  else
+    n=$((n + 1))
+  fi
+  printf '%s\n' "$latched" | awk 'length($0) > 0' | gate_count > "$RUN_DIR/obligation-latch-seen"
+  printf '%s\n' "$n" > "$RUN_DIR/obligation-repeat"
   [ "$n" -lt "$B2_OBLIGATION_M" ] && return 0
-  [ "$(gate_open_obligations | gate_count)" = "0" ] && return 0
+  [ -z "$(printf '%s' "$curopen" | tr -d '\n')" ] && return 0
+  cur=$(gate_boundary_binding B2)
   # THE QUESTION TEXT SAYS 판정, NOT 사이클, and that is not cosmetic. `사이클` is
   # a declared row series in this contract, and `n` counts evaluations of this
   # function — the single production caller of the boundary set is the `act`
@@ -16105,8 +16276,9 @@ gate_b2_obligations() {
   # sentence a person reads state a unit nothing counts. The sibling above
   # already spells it 판정.
   #
-  # Bound to the open-obligation digest, which is what this predicate reads;
-  # the progress digest can move under an unchanged obligation set.
+  # Bound to the window less the latch (`gate_b2_waiting`), which moves exactly
+  # when this predicate's progress arm can fire; the progress digest can move
+  # under an unchanged obligation set.
   gate_issue_boundary_approval B2 "의무 집합이 연속 ${n}회 판정 동안 진전 없이 그대로입니다" "$cur"
 }
 
@@ -16780,21 +16952,38 @@ gate_disposition_latch() {
   # READ ONLY. The writer is `gate_disposition_latch_update` and the split is
   # deliberate: the morning status render reads this, and a render that latched
   # would be a read verb with a side effect on the state it reports.
-  { cat "$RUN_DIR/obligation-latch" 2>/dev/null || true; } | grep -v '^$' || true
+  #
+  # FIRST LINE PER IDENTITY. The writer's check-then-append is not under a lock,
+  # and it now runs on every act, so a router and a stage acting at once can both
+  # append the same identity. Reading only the first line for each keeps "first
+  # disposition wins" true and keeps the counts from doubling.
+  { cat "${RUN_DIR:-}/obligation-latch" 2>/dev/null || true; } \
+    | LC_ALL=C awk '{ i = index($0, "\t"); k = (i > 0) ? substr($0, i + 1) : $0
+                      if (length($0) > 0 && !seen[k]++) print }'
 }
 
 gate_disposition_latch_update() {
   # Append any identity that now has a disposition and is not already latched.
-  # Called from the boundary — which runs on every act — and once more when the
-  # run writes its terminal marker.
-  local latch="$RUN_DIR/obligation-latch" ident d tab
-  [ -d "$RUN_DIR" ] || return 0
-  # Spelled rather than typed: a literal tab in a `grep -F` pattern is invisible
-  # in review and one stray edit turns the membership test into a prefix match.
+  # Called from `gate_boundaries` — which runs on every act, ahead of the
+  # boundaries that read the latch — and once more when the run writes its
+  # terminal marker.
+  #
+  # PER ACT, AND IT USED TO BE TERMINAL ONLY. The sentence above was here while
+  # the only production caller was the terminal report, so the morning render's
+  # disposition counts read `0 · 0 · 0` for the whole run, and an excusal that
+  # held mid-run and lapsed before the end was never latched — the walk-back
+  # this file exists to stop.
+  local latch="${RUN_DIR:-}/obligation-latch" ident d tab latched nl
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
   tab=$(printf '\t')
+  nl=$(printf '\n_'); nl=${nl%_}
+  # MEMBERSHIP IS THE WHOLE IDENTITY. `grep -F "<tab><identity>"` anchored the
+  # start and not the end, so once `P0-ab` was latched `P0-a` read as latched too
+  # and its disposition never reached the counts or the terminal enumeration.
+  latched=$(gate_disposition_latch | cut -f2-)
   gate_problem_identities | while IFS= read -r ident; do
     [ -n "$ident" ] || continue
-    if grep -qF "${tab}${ident}" "$latch" 2>/dev/null; then continue; fi
+    case "$nl$latched$nl" in *"$nl$ident$nl"*) continue ;; esac
     d=$(gate_obligation_disposition "$ident")
     if [ -n "$d" ]; then printf '%s%s%s\n' "$d" "$tab" "$ident" >> "$latch"; fi
   done
@@ -16873,7 +17062,7 @@ gate_write_disposition_report() {
         *)
           printf '%s | 처분=%s | 근거=%s | 동일성=%s\n' "$oid" "$d" \
             "$(gate_row_field \
-                "$( { gate_rows "의무 $d" | grep -F "의무 id=$oid " || true; } | tail -1)" '근거')" \
+                "$( { gate_rows "의무 $d" | grep -F "| 의무 id=$oid |" || true; } | tail -1)" '근거')" \
             "$(gate_obligation_display "$ident")" ;;
       esac
       # The latch records the FIRST disposition and never rewrites it, so a
@@ -16899,9 +17088,8 @@ gate_issue_boundary_approval() {
   #
   # THE BINDING VALUE IS THE CALLER'S, AND IT IS THE VALUE THE CALLER'S OWN
   # PREDICATE READ. This function used to salt every boundary's id with the
-  # progress digest, while B2 decides on the open-obligation digest and B3 on
-  # its window key (the vector with `acts=` and the obligation component
-  # stripped) — so two of the four were deduplicated on a value their predicate
+  # progress digest, while B2 decides on the obligations its window still waits
+  # on and B3 on its window key (the vector with `acts=` stripped) — so two of the four were deduplicated on a value their predicate
   # never looks at, and the progress digest moving underneath an unchanged
   # obligation set minted a fresh id per evaluation (measured: 27 distinct ids
   # over 30 B2 cycles, 50 over 90 B3 acts). B1's binding IS the progress digest,
@@ -16932,12 +17120,11 @@ gate_issue_boundary_approval() {
   # WHY NOT "ANY ROW EXISTS", the form this replaced earlier: that swallowed
   # every recurrence after the first answer for good — a condition answered at
   # 22:00 whose binding value moved away and RETURNED at 03:00 could never ask
-  # again, because the id had a row. B2's binding is the open-obligation set and
-  # an identical set can genuinely come back. So the answered arm reads a marker
+  # again, because the id had a row. So the answered arm reads a marker
   # beside the counters: `boundary-<name>.asked` holds the binding this boundary
   # was last issued for, and the predicate that owns the counter CLEARS it the
-  # moment its binding moves (B1 and B3 when the digest changes, B2 when the
-  # obligation digest changes). An answered id with the marker still equal to
+  # moment its binding moves (B1 and B3 when the digest changes, B2 when an
+  # obligation it was waiting on is disposed). An answered id with the marker still equal to
   # the binding has been in the same state continuously since the answer, and
   # stays suppressed; one whose marker is gone is a recurrence, and asks. B4 and
   # the handoff floor bind to the progress digest and clear nothing — their
