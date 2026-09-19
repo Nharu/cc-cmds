@@ -8823,7 +8823,11 @@ pend_by_cut() {
     [ -n "$id" ] || continue
     row=$( { grep -F "승인 id=$id " "$lg" 2>/dev/null || true; } | tail -1)
     case "$row" in *"상태=대기"*) ;; *) continue ;; esac
-    cut=$(printf '%s' "$row" | sed -n 's/.*절단점=\([^ |]*\).*/\1/p')
+    # BY FIELD, NOT BY SUBSTRING. The approval row also carries `유도 절단점`,
+    # and a greedy `.*절단점=` lands on that later field's `-`, which files
+    # every question approval under the act side — the count it feeds then
+    # disagrees with the gate for a reason the gate never had.
+    cut=$(row_field "$row" '절단점')
     case "$want" in
       '!판단') [ "$cut" = "판단" ] || n=$((n + 1)) ;;
       *)       [ "$cut" = "$want" ] && n=$((n + 1)) ;;
