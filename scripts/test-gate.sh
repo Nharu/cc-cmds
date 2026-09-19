@@ -9075,6 +9075,21 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$WPUB/reviewer.round-1.md"
 check "생성 스크립트가 만든 위트니스 디렉터리로의 발행은 통과한다" "$rc" "0"
+# 위 생성은 게이트를 거치지 않고 스크립트를 직접 불렀다. 스킬이 규정한 형태는 게이트
+# 아래의 `<plugin root>/orchestrator/cc-team-witness-init.sh <slug>` 이고, 등급표가
+# 이 스크립트를 이름으로 `트리밖쓰기` 로 고정하므로 두 쓰기 가드가 argv0 까지 본다.
+# 가드를 직접 부르는 행으로는 `gate_verb_act` 에서 가드로 이어지는 배선이 재지지
+# 않아, 이 호출이 rc 3 으로 막혀도 스위트는 초록이었다. 그래서 여기서 게이트 경유로
+# 실제로 돌리고, 생성된 경로가 런 디렉터리 아래인지까지 본다.
+CC_PIPELINE_RUN_DIR="$RD3" CC_PIPELINE_STAGE_ID='SD#1' \
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-beta
+check "설치본 루트의 위트니스 생성 스크립트를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"$RD3"/cc-team-witness-review-beta*) ok "게이트 경유 생성이 런 디렉터리 아래 위트니스 경로를 낸다" ;;
+  *) bad "게이트 경유 위트니스 생성" "런 디렉터리 아래 경로가 출력에 없다: $msg" ;;
+esac
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
 # 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
 # 기준선 파일 하나를 더 열어 준다.

@@ -4988,9 +4988,11 @@ esac
 # 열림을 가린다.
 rr_guard() {
   # rr_guard <등급> <argv…> — 게이트를 소싱해 배시 경로 가드만 직접 물린다.
-  # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다.
-  rr_guard_msg=$( RR_G_RUNDIR="$MYRUN" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
-    RR_G_CWD="${RR_G_CWD:-$PWD}" \
+  # rc 는 `rr_guard_rc`, 문면은 `rr_guard_msg` 에 남는다. `RR_G_RUN` 은 런
+  # 디렉터리(기본 `$MYRUN`), `RR_G_GATEDIR` 는 주면 `GATE_DIR` 을 그 값으로 둔다 —
+  # 고정된 런에서 게이트가 사본 안에서 도는 모양을 만든다.
+  rr_guard_msg=$( RR_G_RUNDIR="${RR_G_RUN:-$MYRUN}" RR_G_GATE="$script_dir/gate.sh" XDG_STATE_HOME="$RR" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" RR_G_GATEDIR="${RR_G_GATEDIR:-}" \
     bash -c '
       g_surface="$1"; shift
       CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
@@ -4998,6 +5000,7 @@ rr_guard() {
       unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
       set +e
       RUN_DIR="$RR_G_RUNDIR"
+      if [ -n "$RR_G_GATEDIR" ]; then GATE_DIR="$RR_G_GATEDIR"; fi
       # 상대 경로 철자를 재려면 등급 기준 디렉터리가 있어야 한다 — 가드가 인자를
       # `gate_lexical_abs` 로 절대화하고, 그 기준이 이 값이다.
       GATE_GRADE_CWD="$RR_G_CWD"
@@ -5076,15 +5079,18 @@ mkdir -p "$RRP_INST/orchestrator" "$RRP_INST/hooks" "$RRP_WT/orchestrator"
 rr_pguard() {
   # rr_pguard <등급> <argv…> — 설치본 루트 가드만 직접 물린다. 고정되지 않은 런의
   # 모양, 즉 `GATE_DIR` 이 설치본 사본의 `orchestrator/` 인 상태를 만든다.
-  rr_pguard_msg=$( RR_G_GATE="$script_dir/gate.sh" RR_P_DIR="$RRP_INST/orchestrator" \
-    RR_G_CWD="${RR_G_CWD:-$PWD}" \
+  # `RR_P_RUNDIR` 를 주면 그것이 `RUN_DIR` 이 되어 그 런 핀의 `source` 가 루트로
+  # 잡힌다(기본은 빈 값 — 핀 없음). `RR_P_GATEDIR` 는 `GATE_DIR` 을 바꾼다 — 고정된
+  # 런의 게이트가 사본에서 돌아 설치본 루트를 핀으로만 아는 모양이다.
+  rr_pguard_msg=$( RR_G_GATE="$script_dir/gate.sh" RR_P_DIR="${RR_P_GATEDIR:-$RRP_INST/orchestrator}" \
+    RR_G_CWD="${RR_G_CWD:-$PWD}" RR_P_RUNDIR="${RR_P_RUNDIR:-}" \
     bash -c '
       g_surface="$1"; shift
       CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
       . "$RR_G_GATE" >/dev/null 2>&1 || exit 9
       unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
       set +e
-      RUN_DIR=""
+      RUN_DIR="$RR_P_RUNDIR"
       GATE_DIR="$RR_P_DIR"
       GATE_GRADE_CWD="$RR_G_CWD"
       gate_plugin_root_write_guard "$g_surface" "$@" 2>&1
@@ -5126,6 +5132,73 @@ check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 같�
 # 막히므로, 넓히지 않았다는 것을 음성 대조군으로 고정한다.
 rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator-backup/gate.sh"
 check "설치본 가드: 음성 대조군 — 접두가 같은 형제 이름은 삼키지 않는다" "$rr_pguard_rc" "0"
+
+# --- 실행은 쓰기가 아니다 — 직접 실행된 argv0 --------------------------------
+# 스킬이 규정한 위트니스 생성은 `<plugin root>/orchestrator/cc-team-witness-init.sh
+# <slug>` 이고, 등급표가 그 헬퍼를 이름으로 `트리밖쓰기` 로 고정하므로 두 가드가
+# argv0 까지 본다. 두 가드 모두 argv0 를 쓰기 피연산자로 읽어, 비고정 런에서는
+# 설치본 가드가, 고정 런에서는 사본 경로가 런 디렉터리 가드에도 걸려 rc 3 이었다.
+# 면제는 절대 경로로 직접 실행된 argv0 하나뿐이다 — 인터프리터로 감싸거나 뒤따르는
+# 피연산자로 지명하면 쓰기 목적지와 구별되지 않으므로 계속 거부된다.
+PRUN="$RR/cc-cmds/run/pinself"
+mkdir -p "$PRUN/plugin/cc-cmds/orchestrator" "$PRUN/halt"
+printf 'schema\t1\nplugin-dir\t%s\nsource\t%s\n' "$PRUN/plugin/cc-cmds" "$RRP_INST" > "$PRUN/plugin-pin"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 설치본 orchestrator 스크립트를 argv0 로 직접 실행하면 rc 0" "$rr_pguard_rc" "0"
+RR_P_RUNDIR="$PRUN"; RR_P_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 핀의 source 로만 아는 루트의 직접 실행도 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 cp x "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 같은 고정 런에서 핀 source 루트에 쓰는 것은 rc 3" "$rr_pguard_rc" "3"
+unset RR_P_RUNDIR RR_P_GATEDIR
+RR_G_RUN="$PRUN"; RR_G_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_guard 트리밖쓰기 "$PRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" review-x
+check "배시 가드: 고정 런 사본의 스크립트를 argv0 로 직접 실행하면 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 cp x "$PRUN/plugin/cc-cmds/orchestrator/gate.sh"
+check "배시 가드: 같은 사본을 쓰기 피연산자로 지명하면 rc 3" "$rr_guard_rc" "3"
+unset RR_G_RUN RR_G_GATEDIR
+rr_pguard 트리밖쓰기 bash "$RRP_INST/orchestrator/cc-team-witness-init.sh" review-x
+check "설치본 가드: 인터프리터로 감싼 실행은 면제되지 않는다 (rc 3)" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" "$RRP_INST/orchestrator/gate.sh"
+check "설치본 가드: 면제는 argv0 하나뿐이다 — 뒤의 피연산자는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/../hooks/gate-pretool.sh"
+check "설치본 가드: 상위 참조로 orchestrator 밖을 가리킨 argv0 는 면제되지 않는다" "$rr_pguard_rc" "3"
+
+# --- 포장 안의 경로 — 원문 철자와 단어 단위 평가 -----------------------------
+# 두 가드는 어휘 정규화 결과와 그 물리 철자만 봤다. 정규화는 경로가 아닌 토큰에도
+# 기준을 붙이고 `..` 를 되감으므로, 프로그램 문자열 끝의 `: /../../..` 가 루트를
+# 지우고 `--output=../../…` 의 `..` 는 디렉터리가 아니라 토큰 조각을 지운다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e $RRP_INST/orchestrator/gate.sh; : /../../.."
+check "설치본 가드: 꼬리의 상위 참조로 루트를 지운 포장도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e $RR/cc-cmds/run/victim/settings/x.json; : /../../../.."
+check "배시 가드: 꼬리의 상위 참조로 런 루트를 지운 포장도 rc 3" "$rr_guard_rc" "3"
+mkdir -p "$WORK/segwt/plugins" "$WORK/installed" "$WORK/elsewhere"
+RR_G_CWD="$WORK/segwt/plugins"
+rr_pguard 워크트리쓰기 git diff "--output=../../installed/plugins/cc-cmds/orchestrator/pin.sh"
+check "설치본 가드: 옵션 토큰 안의 상대 철자도 rc 3" "$rr_pguard_rc" "3"
+unset RR_G_CWD
+RR_G_CWD="$MYRUN"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e ../victim/settings/x.json"
+check "배시 가드: 포장 안의 상대 철자로 가리킨 형제 런도 rc 3" "$rr_guard_rc" "3"
+unset RR_G_CWD
+# 단어는 등급 기준 디렉터리에 대해 해소된다 — 같은 문면이 설치본 안에서는 거부되고
+# 세그먼트 워크트리에서는 통과해야 이것이 꼬리 대조가 아니라는 증거다.
+RR_G_CWD="$WORK/installed"
+rr_pguard 워크트리쓰기 git commit -m "fix: plugins/cc-cmds/orchestrator/gate.sh 를 고친다"
+check "설치본 가드: 설치본 안에서 해소되는 단어는 rc 3" "$rr_pguard_rc" "3"
+unset RR_G_CWD
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git commit -m "fix: plugins/cc-cmds/orchestrator/gate.sh 를 고친다"
+check "설치본 가드: 음성 대조군 — 같은 문면도 세그먼트 워크트리에서는 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+rr_guard 워크트리쓰기 bash -c "cat > $WORK/elsewhere/x.json"
+check "배시 가드: 음성 대조군 — 보호 루트 밖을 쓰는 포장은 rc 0" "$rr_guard_rc" "0"
+rr_guard 워크트리쓰기 git diff "--output=$WORK/elsewhere/x.json"
+check "배시 가드: 음성 대조군 — 보호 루트 밖을 쓰는 옵션 토큰은 rc 0" "$rr_guard_rc" "0"
+rr_pguard 워크트리쓰기 bash -c "cat > $WORK/elsewhere/x.json"
+check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 포장은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 git diff "--output=$WORK/elsewhere/x.json"
+check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 옵션 토큰은 rc 0" "$rr_pguard_rc" "0"
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은

@@ -8500,6 +8500,124 @@ gate_rundir_is_foreign_run() {
   return 1
 }
 
+gate_plugin_roots() {
+  # gate_plugin_roots — the plugin roots the plugin-root write guard protects,
+  # in four globals: `GATE_PR_RL`/`GATE_PR_RP` are the pin's `source` in its
+  # lexical and physical spellings, `GATE_PR_HL`/`GATE_PR_HP` the same pair for
+  # `dirname "$GATE_DIR"`. Any of the four may be empty.
+  #
+  # GLOBALS, NOT STANDARD OUTPUT. A root is a path and a path may carry a
+  # newline, so a multi-line return would split one root into two wrong ones.
+  # Both write guards need the same four values — the plugin guard to refuse,
+  # the run directory guard to recognise a directly executed plugin script —
+  # and computing them in two places is how the two lists drift apart.
+  local src here t
+  GATE_PR_RL=""; GATE_PR_RP=""; GATE_PR_HL=""; GATE_PR_HP=""; src=""
+  if [ -n "${RUN_DIR:-}" ]; then src=$(pin_read "$RUN_DIR" 'source'); fi
+  if [ -n "$src" ]; then
+    GATE_PR_RL=$(gate_path_spelling "$src")
+    t=$(cd "$src" 2>/dev/null && pwd -P) || t=""
+    if [ -n "$t" ]; then GATE_PR_RP=$(gate_path_spelling "$t"); fi
+  fi
+  here=$(dirname "$GATE_DIR")
+  if [ -n "$here" ]; then
+    GATE_PR_HL=$(gate_path_spelling "$here")
+    t=$(cd "$here" 2>/dev/null && pwd -P) || t=""
+    if [ -n "$t" ]; then GATE_PR_HP=$(gate_path_spelling "$t"); fi
+  fi
+  return 0
+}
+
+gate_argv0_is_plugin_exec() {
+  # gate_argv0_is_plugin_exec <argv0> — rc 0 when the act's argv0 is a file
+  # directly inside `<plugin root>/orchestrator/`, spelled as an absolute path.
+  #
+  # RUNNING A FILE IS NOT WRITING IT, and the two write guards could not tell
+  # the difference. The skills prescribe `<plugin root>/orchestrator/
+  # cc-team-witness-init.sh <slug>`, the grading table pins that helper to
+  # `트리밖쓰기` by name so no declaration moves it off the write path, and both
+  # guards then read argv0 as a write operand: the plugin guard refused it
+  # through its `orchestrator/` arm, and in a pinned run the run directory guard
+  # refused the copy under `$RUN_DIR/plugin/` as well. Every team stage of an
+  # unattended run was refused its witness directory, and the suite was green
+  # because no row drove the guards through `gate_verb_act`.
+  #
+  # THE EXEMPTION IS EXACTLY THE PRESCRIBED SHAPE AND NO WIDER. Absolute, so a
+  # relative spelling resolved against some other directory is not exempt. The
+  # parent must EQUAL `<root>/orchestrator` as a string, so a spelling carrying
+  # `..` (`<root>/orchestrator/../hooks/x`) or one level deeper
+  # (`<root>/orchestrator/sub/x`) falls out without a separate arm. Only argv0,
+  # so an interpreter-wrapped run (`bash <root>/orchestrator/x`) is not exempt:
+  # there the script is an operand, and an operand is indistinguishable from a
+  # write destination. `hooks/`, `env`/`lockf` wrappers and relative spellings
+  # are not exempted either — each would re-open, through this exemption, a
+  # wrapping the guards refuse elsewhere.
+  local s d b r
+  case "${1:-}" in /*) ;; *) return 1 ;; esac
+  s=$(gate_path_spelling "$1")
+  b=${s##*/}; d=${s%/*}
+  case "$b" in ''|.|..) return 1 ;; esac
+  gate_plugin_roots
+  for r in "$GATE_PR_RL" "$GATE_PR_RP" "$GATE_PR_HL" "$GATE_PR_HP"; do
+    [ -n "$r" ] || continue
+    [ "$d" = "$r/orchestrator" ] && return 0
+  done
+  return 1
+}
+
+# The characters that make one argv element carry more than one path: shell
+# metacharacters of an interpreter program string, the `=` of an option token,
+# and the list separators `:` and `,`.
+GATE_ARG_SEP='[=;&|<>()`"$:,[:space:]'"'"']'
+
+gate_arg_is_compound() {
+  # gate_arg_is_compound <arg> — rc 0 when the argument is a compound token
+  # (see `GATE_ARG_SEP`) rather than a single path.
+  # shellcheck disable=SC2254
+  case "$1" in
+    *$GATE_ARG_SEP*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_arg_words() {
+  # gate_arg_words <compound token> — the words of the token that carry a `/`,
+  # in the global array `GATE_ARG_WORDS`.
+  #
+  # WORDS, BECAUSE NORMALIZING THE WHOLE TOKEN DESTROYS THE PATH IN IT.
+  # `gate_lexical_abs` prefixes a base to anything not starting with `/` and
+  # rewinds every `..` it meets, so `bash -c "cp e <root>/orchestrator/gate.sh;
+  # : /../../.."` normalizes to a string with the root rewound away, and
+  # `--output=../../<다른 런>/…` rewinds `--output=..` instead of a directory
+  # and never produces an absolute root spelling at all. Split at the
+  # separators first and each word is resolved the way the shell will resolve
+  # it — against the grading directory.
+  #
+  # `$HOME`/`${HOME}` and a leading `~` are expanded because they are the two
+  # spellings of a home path a program string routinely carries. The split does
+  # not glob: `read -a` fills the array without the pathname expansion an
+  # unquoted `for w in $x` would do.
+  local x="$1" w i
+  local -a raw
+  GATE_ARG_WORDS=()
+  x=${x//'${HOME}'/$HOME}
+  x=${x//'$HOME'/$HOME}
+  # shellcheck disable=SC2295
+  x=${x//$GATE_ARG_SEP/ }
+  read -r -a raw <<< "$x"
+  i=0
+  while [ "$i" -lt "${#raw[@]}" ]; do
+    w=${raw[$i]}; i=$((i + 1))
+    case "$w" in
+      '~') w=$HOME ;;
+      '~/'*) w="$HOME/${w#'~/'}" ;;
+    esac
+    case "$w" in */*) ;; *) continue ;; esac
+    GATE_ARG_WORDS[${#GATE_ARG_WORDS[@]}]="$w"
+  done
+  return 0
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -8583,12 +8701,13 @@ gate_rundir_write_guard() {
   # `gate_physical_path` for the reason that function states: the destination of
   # an `mv` normally does not exist yet, and a resolver that needs it to exist
   # returns the input unchanged, which makes a prefix test miss rather than
-  # answer differently. One `cd`+`pwd -P` per candidate argument.
+  # answer differently. One `cd`+`pwd -P` per candidate argument, and per
+  # `/`-bearing word of a compound token.
   #
   # BOTH SPELLINGS ARE CLASSIFIED AND A REFUSAL FROM EITHER WINS. Taking only the
   # physical one re-opens the `/var` gap the two run-directory spellings exist to
   # close, and taking only the lexical one is today's hole.
-  local a rdp rdn rdln an ap sp rel root rootp r matched
+  local a rdp rdn rdln an ap ar sp rel root rootp r matched first w wn wp i
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
@@ -8596,7 +8715,17 @@ gate_rundir_write_guard() {
   root=$(gate_path_spelling "$(gate_reap_root)/run")
   rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
   if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
+  first=1
   for a in "$@"; do
+    # A DIRECTLY EXECUTED PLUGIN SCRIPT IS NOT A DESTINATION. In a pinned run
+    # the prescribed `<plugin root>/orchestrator/cc-team-witness-init.sh` is the
+    # copy under `$RUN_DIR/plugin/`, which the `*/*` arm below refuses as a
+    # baseline write. `gate_argv0_is_plugin_exec` states the exact shape
+    # exempted; every other element is still read.
+    if [ "$first" = 1 ]; then
+      first=0
+      if gate_argv0_is_plugin_exec "$a"; then continue; fi
+    fi
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
@@ -8680,9 +8809,17 @@ gate_rundir_write_guard() {
     # MENTIONS a run directory without writing there — a commit message quoting
     # the path — is refused as well. Passing the path as its own argument, or
     # dropping the wrapper, is the way through.
+    #
+    # THE ARGUMENT AS WRITTEN IS SEARCHED TOO. `an` has already rewound every
+    # `..` in the token, and a trailing `; : /../../../..` in a program string
+    # rewinds the run root out of it; `ar` folds separators only, so the root
+    # it carries is still there to find. It is searched here and nowhere else:
+    # as a PREFIX spelling it would let `<이 런>/cc-team-witness-x/../plugin/…`
+    # back in through the witness exception.
+    ar=$(gate_path_spelling "$a")
     for r in "$root" "$rootp"; do
       [ -n "$r" ] || continue
-      for sp in "$an" "$ap"; do
+      for sp in "$an" "$ap" "$ar"; do
         case "$sp" in
           *"$r"*)
             warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
@@ -8690,6 +8827,46 @@ gate_rundir_write_guard() {
         esac
       done
     done
+    # A COMPOUND TOKEN IS JUDGED WORD BY WORD, because a path the shell resolves
+    # RELATIVE to the grading directory never spells the run root at all:
+    # `bash -c "cp e ../victim/settings/x.json"` run from inside this run, or
+    # `--output=../../<다른 런>/…`. `gate_arg_words` gives each word with a `/`
+    # and each is resolved the way the shell will — lexically and physically. A
+    # word at or under the run root is refused with the buried-path text. This
+    # run's own exceptions are not given to words, the same rule the buried arm
+    # above applies to a wrapped path of this run.
+    #
+    # WORDS, NOT A TAIL MATCH ON THE ROOT'S NAME AND NOT A BAN ON `..`. A tail
+    # match refuses every text that merely names such a path relative to a
+    # directory where it is an ordinary file; a `..` ban misses a relative
+    # spelling that needs no `..` from where the act runs. Resolving the word
+    # answers both the way the shell does.
+    #
+    # RESIDUAL, stated rather than hidden: a `cd` inside the wrapper, variable
+    # expansion other than `$HOME`, command substitution, concatenation and
+    # globs are not interpreted — that needs a shell parser. This closes paths
+    # written LITERALLY; the rest is left to the grading table ranking
+    # `bash -c` as a write and to the stage convention of not wrapping external
+    # commands in `bash -c`.
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a"
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        w=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+        wn=$(gate_path_spelling "$(gate_lexical_abs "$w")")
+        wp=$(gate_path_spelling "$(gate_real_prefix "$wn")")
+        for r in "$root" "$rootp"; do
+          [ -n "$r" ] || continue
+          for sp in "$wn" "$wp"; do
+            case "$sp" in
+              "$r"|"$r"/*)
+                warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
+                return "$GATE_EXIT_RULE" ;;
+            esac
+          done
+        done
+      done
+    fi
   done
   return 0
 }
@@ -8717,11 +8894,14 @@ gate_plugin_root_write_guard() {
   # the installed root. Without that distinction every implementation stage in
   # this repository would be unable to do its work.
   #
-  # RESIDUAL, stated rather than hidden, and it fails in the safe direction: an
-  # act that merely RUNS one of these files while declaring a write surface is
-  # refused along with one that writes it, because the argument looks the same
-  # either way. Running the harness out of a worktree, or declaring the read it
-  # is, are both available; a hole here would not be.
+  # RUNNING ONE OF THESE FILES DIRECTLY IS EXEMPT; NAMING ONE IS NOT. argv0
+  # spelled as `<root>/orchestrator/<file>` is skipped (`gate_argv0_is_plugin_exec`
+  # states the exact shape), because the skills prescribe running
+  # `cc-team-witness-init.sh` that way and the grading table pins that helper
+  # to a write grade no declaration can lower. RESIDUAL, in the safe
+  # direction: an interpreter-wrapped run (`bash <root>/orchestrator/x`) and a
+  # path named as any later operand are still refused, because there the
+  # argument looks the same as a write destination.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   case "$graded" in
@@ -8739,27 +8919,24 @@ gate_plugin_root_write_guard() {
   # root through a symlinked ancestor shares no substring with either spelling of
   # either root. The hook's `Write`/`Edit` half closed that vector with a
   # device+inode layer and this is the Bash half of the same closure.
-  local a an ap sp r src here rl rp hl hp t
-  rl=""; rp=""; hl=""; hp=""; src=""
-  if [ -n "${RUN_DIR:-}" ]; then src=$(pin_read "$RUN_DIR" 'source'); fi
-  if [ -n "$src" ]; then
-    rl=$(gate_path_spelling "$src")
-    t=$(cd "$src" 2>/dev/null && pwd -P) || t=""
-    if [ -n "$t" ]; then rp=$(gate_path_spelling "$t"); fi
-  fi
-  here=$(dirname "$GATE_DIR")
-  if [ -n "$here" ]; then
-    hl=$(gate_path_spelling "$here")
-    t=$(cd "$here" 2>/dev/null && pwd -P) || t=""
-    if [ -n "$t" ]; then hp=$(gate_path_spelling "$t"); fi
-  fi
+  local a an ap ar sp r rl rp hl hp first w wn wp i
+  gate_plugin_roots
+  rl=$GATE_PR_RL; rp=$GATE_PR_RP; hl=$GATE_PR_HL; hp=$GATE_PR_HP
+  first=1
   for a in "$@"; do
+    if [ "$first" = 1 ]; then
+      first=0
+      if gate_argv0_is_plugin_exec "$a"; then continue; fi
+    fi
     case "$a" in */*) ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+    ar=$(gate_path_spelling "$a")
     for r in "$rl" "$rp" "$hl" "$hp"; do
       [ -n "$r" ] || continue
-      for sp in "$an" "$ap"; do
+      # `ar` is the argument before `..` is rewound — the spelling in which a
+      # program string's trailing `: /../../..` has not yet erased the root.
+      for sp in "$an" "$ap" "$ar"; do
         # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
         # run directory guard's last arm gives: an option token and an interpreter
         # program string both carry the path inside a larger argument, and a
@@ -8783,10 +8960,9 @@ gate_plugin_root_write_guard() {
         # `*"$r"/orchestrator*` would catch the residual below at the price of
         # refusing unrelated names, and that trade is not taken.
         #
-        # RESIDUAL, stated rather than hidden: a spelling that carries more text
-        # AFTER the bare directory — `bash -c "rm -rf <root>/orchestrator; echo
-        # done"` — matches no arm. The wrapper is what hides it, and declaring the
-        # payload honestly is what surfaces it.
+        # A spelling that carries more text AFTER the bare directory — `bash -c
+        # "rm -rf <root>/orchestrator; echo done"` — matches no arm here; the
+        # word-by-word pass below the loop is what reaches it.
         case "$sp" in
           *"$r"/orchestrator|*"$r"/orchestrator/*|*"$r"/hooks|*"$r"/hooks/*)
             warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트입니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
@@ -8794,6 +8970,31 @@ gate_plugin_root_write_guard() {
         esac
       done
     done
+    # A COMPOUND TOKEN IS JUDGED WORD BY WORD, for the reason and with the
+    # residual the run directory guard states at the same place. A word
+    # resolves against the grading directory, so `git commit -m "…
+    # plugins/cc-cmds/orchestrator/gate.sh …"` is refused where that relative
+    # path lands in the installed root and passes in a segment worktree, where
+    # it is the worktree's own file.
+    if gate_arg_is_compound "$a"; then
+      gate_arg_words "$a"
+      i=0
+      while [ "$i" -lt "${#GATE_ARG_WORDS[@]}" ]; do
+        w=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
+        wn=$(gate_path_spelling "$(gate_lexical_abs "$w")")
+        wp=$(gate_path_spelling "$(gate_real_prefix "$wn")")
+        for r in "$rl" "$rp" "$hl" "$hp"; do
+          [ -n "$r" ] || continue
+          for sp in "$wn" "$wp"; do
+            case "$sp" in
+              *"$r"/orchestrator|*"$r"/orchestrator/*|*"$r"/hooks|*"$r"/hooks/*)
+                warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트가 인자 안에 묻혀 있습니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
+                return "$GATE_EXIT_RULE" ;;
+            esac
+          done
+        done
+      done
+    fi
   done
   return 0
 }
