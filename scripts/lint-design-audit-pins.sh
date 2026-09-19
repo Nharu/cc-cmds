@@ -18,7 +18,8 @@
 #         drifts. (An earlier wording here said a HOOK reads it. No hook does —
 #         measured against every file under `plugins/cc-cmds/hooks/` — and the
 #         claim had already propagated from one arm's prose into this header.)
-#   (iv)  the three custody duties, pinned in BOTH arms. They are prose the
+#   (iv)  the three custody duties, pinned in BOTH arms by four anchors (two
+#         for the first duty, one each for the second and third). They are prose the
 #         contract delegates to the caller, and nothing else checks that a duty
 #         stated in one arm was stated in the other.
 #
@@ -245,13 +246,19 @@ done
 # any of them landed in BOTH. That gap is what the parity rule this design
 # withdrew would have covered: with it gone, a one-arm landing passes every
 # other check here, and the arm that gets left out is the one that runs
-# overnight with nobody reading its report. Each literal below is the anchor of
-# one duty, not the whole sentence — pinning prose would fail on any legitimate
-# rewording, while an anchor fails only when the duty itself is gone.
+# overnight with nobody reading its report. Each literal below is an anchor
+# inside one duty, not the whole sentence — pinning prose would fail on any
+# legitimate rewording, while an anchor fails only when the duty itself is
+# gone. The mapping is not one literal per duty: the first duty (persist both
+# boundary baselines out of tree) has two anchors, and the second (where the
+# creation record lives) and the third (skip the baselines when `CODE_ROOT` is
+# not a repository, and report that skip) have one each. Every duty needs at
+# least one, or deleting it passes both lints.
 CUSTODY_PINS=(
   'baseline.status'
   'baseline.worktree'
   'creation record'
+  'report the skip'
 )
 
 for arm in "${ARM_SKILLS[@]}"; do

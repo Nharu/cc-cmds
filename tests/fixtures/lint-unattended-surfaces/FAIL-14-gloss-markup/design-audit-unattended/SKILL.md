@@ -8,7 +8,7 @@ READER_COUNT = 3
 ```
 
 ### CFI-1 — The freeze window
-The worktree half is the gate's three scoped assertions — 2a — the registry of made trees, `2b`, `2c`, and
+The worktree half is the gate's three scoped assertions — `2a` — the registry of made trees, `2b`, `2c`, and
 assertion `1` within the surface it declares, all as the contract defines them.
 Do not re-derive them here, and do not gloss them.
 

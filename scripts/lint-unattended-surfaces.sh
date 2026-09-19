@@ -449,11 +449,13 @@ else
         # green. `$body` is multiline, and the `[^0-9A-Za-z]` classes carry the
         # newlines: a label at the start of a line is preceded by one and a
         # label at the end of a line is followed by one, so the anchors only
-        # have to cover the ends of the whole string.
+        # have to cover the ends of the whole string. The left class also
+        # excludes `-`, here and in the two matches below, so the `2b` of a
+        # `### CFI-2b` heading is not read as an assertion label.
         missing=""
         while IFS= read -r label; do
           [[ -n "$label" ]] || continue
-          label_re="(^|[^0-9A-Za-z])${label}([^0-9A-Za-z]|\$)"
+          label_re="(^|[^0-9A-Za-z-])${label}([^0-9A-Za-z]|\$)"
           if ! [[ $body =~ $label_re ]]; then
             missing="$missing $label"
           fi
@@ -471,7 +473,7 @@ EOF
         # the match is whole-line, the way `grep -x` was: `2a` must not be found
         # inside a longer label.
         labels_nl=$'\n'"$labels"$'\n'
-        stale=$(printf '%s\n' "$body" | grep -oE '(^|[^0-9A-Za-z])2[a-z]([^0-9A-Za-z]|$)' \
+        stale=$(printf '%s\n' "$body" | grep -oE '(^|[^0-9A-Za-z-])2[a-z]([^0-9A-Za-z]|$)' \
                   | grep -oE '2[a-z]' | sort -u | while IFS= read -r tok; do
                     [[ $labels_nl == *$'\n'"$tok"$'\n'* ]] || printf '%s ' "$tok"
                   done)
@@ -481,7 +483,7 @@ EOF
         fi
 
         # Rule 8, shape fence: a label immediately followed by a gloss.
-        shaped=$(printf '%s\n' "$body" | grep -nE '2[a-z][[:space:]]*(\(|—)' || true)
+        shaped=$(printf '%s\n' "$body" | grep -nE '(^|[^0-9A-Za-z-])2[a-z][`*]*[[:space:]]*(\(|—)' || true)
         if [[ -n "$shaped" ]]; then
           echo "FAIL: $arm — assertion label followed by a gloss inside the invariants body" >&2
           printf '%s\n' "$shaped" | sed 's/^/       /' >&2

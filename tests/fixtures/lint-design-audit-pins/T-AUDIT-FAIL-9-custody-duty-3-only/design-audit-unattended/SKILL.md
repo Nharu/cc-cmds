@@ -27,8 +27,4 @@ Step 0 through Step 7, then stop.
 
 Custody: the two boundary baselines are persisted out-of-tree at
 `${WITNESS_DIR}/baseline.status` and `${WITNESS_DIR}/baseline.worktree`;
-assertion 2a's creation record lives beside them; and when `CODE_ROOT` is
-not a repository both baselines are undefined, so skip them and
-report the skip.
-
-The loop used `consecutive_no_major` to decide, and that is gone.
+assertion 2a's creation record lives beside them.
