@@ -1,0 +1,54 @@
+source	anchor	sha256	disposition	note
+user-scope	본 CLAUDE.md 는	1b1e574e2e8ce07127987b0eb7268a6e849d04a1dd8022b47c9bae85251cb068	policy:Conduct	only the re-read-at-citation half; the self-edit half is interactive and the CLAUDE.md apply gate handles it
+user-scope	개발 문서를 보면서	71b2647195f7cd41a6078794454da4a9db64cec50520da6082dac85ccec5b584	policy:Conduct	
+user-scope	따로 지시가 있지 않으면	2929638a06dd9458d0b1cf70798b5aed93b9439dc5957f9f87b97e607f726ce5	policy:Artifacts	narrowed to human-facing prose in Korean; the conversation-language half has no reader
+user-scope	모든 산출물(코드 주석	3b76d9887e30ed0ab739835a832ce71907eaacd524994f04ca2ac3262b24eb94	policy:Artifacts	
+user-scope	새로운 코드를 작성할 때는	722c379fa93a39277dba387d6b3348c92e7be188d02bc7acb165fbd964ff4e96	policy:Code and tools	
+user-scope	특정 라이브러리를 설치	ca9be2e468628734ab31c3e095afd638ff5a8704b597b6bc38875dc2038661b0	excluded:mcp-unavailable	stages run with --strict-mcp-config and have no MCP
+user-scope	cli 명령어 사용중	a3c0ad96f392abee5ec76f8523edc161d09f86b04203b00b399c1b0dc2cdb78b	excluded:host-mutation	package installation is a host mutation the gate grades
+user-scope	AWS CLI 사용 시	818facde9e05b21e17fdb676afb50bd300b1b3bb4187a59602a2fd1433ba2707	policy:Code and tools	orderbook infra stages
+user-scope	playwright(-cli) 는 `-s=	6c0c0d75c139113fdf6ff2fab09cc77ba3823971da61d2dbc1e5de9185751931	skill:browser-policy	
+user-scope	playwright(-cli) `open`	0cfcf9046df1abf5fb93d651ff78c6925d9124e1d99acebffc78a0032e631356	policy:Code and tools	only the stay-headless clause is in the policy; the rest is the skill:browser-policy pointer
+user-scope	terraform 의	c2e55dff5ca01f63357c052df54f3883b4721435887bff004610f54aac54b703	policy:Code and tools	
+user-scope	sed를 사용한 파일 수정은	f51068eff7b4dbc7dc5f6f7bb30831552144906444bfe0681cb33018e8b99b6b	policy:Code and tools	
+user-scope	한 요청에 독립적인 여러 파일을	63ae069bb4f5425ebfe8d7ca4c3746ab267489508d880005a228fb25c758a46e	excluded:interactive-only	batching shape for the interactive permission flow
+user-scope	Dynamic Workflow(	3171420787c275780ff79d8808c02ed6db58f675b39c61eda2951a0f969e1350	policy:Delegation	
+user-scope	팬아웃의 경계	04ccf5dc9ac62e318aaa8370d115ee889151373137c07be89e3199e10e0211ab	policy:Delegation	with no human present every spawned agent resolves to read-only
+user-scope	새 기능 기획·구현이 필요하면	6d3f50e51dfa6209abf900435ecf0b452609292be02509f936240738b05992bf	excluded:interactive-only	AskUserQuestion interview
+user-scope	이슈 트래커 티켓(ClickUp	1a391db01cbf8f36563fb0b7b7ce995e47df72ed688d15678e95823ccc3cedc7	excluded:interactive-only	kickoff AskUserQuestion
+user-scope	설계·개발 문서 등 산출물에서 "우산"	bb77b0e28cb189b99390c9018f5f1212964845d2dd6110fef7a24f2bf78d5936	policy:Artifacts	
+user-scope	HTML 문서는 Artifact 가 아니라	d670c1e148f13fbfb8a9f6ebcc5607a44905e588f5b408260d53805e3b9463e8	skill:local-html	
+user-scope	그 로컬 HTML 은 경로만	cd97c4abb6ea1a9a50cef91eac3ab5c1edb814546b3cb646919ae4dfcb1df76b	skill:local-html	
+user-scope	그 로컬 HTML 은 본문 전체 폭을	0403d0eae97818acf56d6117b67eb1578e231d1a1b71459a1204d78b41a0bdbf	skill:local-html	
+user-scope	이슈 트래커에 이슈를 등록할 때는	be50be6b5a8b3c841944940a0a8cc099fa4b10883c51a99249d98400ef231d15	policy:Git and GitHub	
+user-scope	GitHub 이슈 생성 시 Assignee	df17d3bd8cee6f70792af0642c23e4a9e00e20df1c986785599f5813873f6298	policy:Git and GitHub	
+user-scope	git 명령어 실행 시 `-C	4ef1744f1ae44952b3626621613ac4043248daba583292fe8f22fa8e2eb08136	policy:Git and GitHub	
+user-scope	gh CLI 활성 계정 기본값은	e30eb329fdb47b3759faa342e7ae6805bf1dfaa3b0a01ea69264e62a68a93dd1	policy:Git and GitHub	
+user-scope	git commit은 사용자가	bddb6bb068cdd5b2eb93c43344259eb717cb50f582dec86a2b428978f7e6bf87	policy:Git and GitHub	restated as: only when the stage instructions call for a commit
+user-scope	커밋 메시지·PR 제목/본문	e4d55d484fa0130501f373583df5b55e29073a63ee02c70c3585025c86bf9808	policy:Artifacts	
+user-scope	git commit 시 기억에 의존하지	b8889ae8165005ef0776caf6a80102e441d07366ce3808de3275ff3a1bb8a78f	policy:Git and GitHub	
+user-scope	git commit 메시지 규칙:	c3e6180060f1e33e9800c9ef9850cc7c0047f87c36554f5c3b911bae5b8e319f	policy:Git and GitHub	the three sub-bullets are hashed with it
+user-scope	사용자가 git worktree(워크트리) 생성을	a559fbef05b9989b5fd7671e3be0c2692500ff769158a9b603c1497e0cb4a51d	excluded:driver-owned	the driver creates worktrees
+user-scope	PR 발행 시 항상 Assignee	911316b371f80b0a3f229b8f5483d9c67c1c06044a4c76e3c0db01886ae10811	policy:Git and GitHub	
+user-scope	PR 머지는 명시적 요청 시만	d3775a21f2dd59f9d394754f44457682f6c71b3f2b6b5b2a83b411dcb2040ffd	policy:Git and GitHub	router shifts and apply stages merge
+user-scope	커밋 메시지·PR/이슈 본문·PR/이슈 코멘트에 내부	abf45d3125cd839164567ca6909493fc554aff2851afc2d0cb3ebcd248442609	policy:Artifacts	
+user-scope	PR 에 인라인 리뷰 코멘트를	d5111f3e83eb6cef103e25177d1a563608419d32b47b59688408e885e5fdd360	policy:Git and GitHub	
+user-scope	코드 주석 및 spec/test 주석에	5b979c565c2ba741700a9ed404eb98080c7033d864134092f85a4bbd5b5b783d	policy:Artifacts	
+user-scope	코드 주석 스타일은	5aee405bcbbb42fb84851cf9163c65cb005c7991ca07c322b1e46057e279cf75	policy:Code and tools	only the judge-by-rules-and-neighbours half; the memory-saving half is not a stage act
+user-scope	도구 결과가 지연·공백이어도	6bec55663223216c5baf0de9d3f2b47bf77c44fdfa8cc5fe62fc6c524700c186	policy:Conduct	waiting for the next instruction is restated as: record where blocked and end the turn
+user-scope	사용자에게 알림을 보낼 때는	6e5eb70062f9370407d432c76f93a1923c067713326f4eef40c04a1ecb5b0efe	excluded:superseded	replaced by the Delegation section ban on any notification
+user-scope	이 파일이 사용자에게 알림 배너를	87202602dbc75c8829f5a15bd55058ee081542b1b5fd252cb18cfbf24f58a687	policy:Delegation	compressed to: no notification by any route
+user-scope	다른 에이전트에게 일을 시키는 경로는	e7ff283a47e50b5f3c460a74fba42399d4154454548c7cbe8cbb739e1cce059e	policy:Delegation	Agent-tool members receive it from the harness; other agents get it written into their prompt
+user-scope	자격증명은 레포·	277555db27c1384b5756eeb347999773d390531f2f1d289754e5cb54d656154c	policy:Artifacts	
+workspace	# /Users/ian/dev — 작업 공간 안내	76e73a0c84d002c16515d0b655ad709eccdf86ae87bb47635396f4e2df4948ea	excluded:workspace-local	
+workspace	## 이슈 트래킹 (로컬 파일)	11231724cee656b5fb239c9fd06ed90b958c0d62d3dc302f87b8b3adaf0b8622	excluded:workspace-local	
+workspace	## 외부 사이트 자격 정보 (자동화용)	f987e94d7a2c6c298c0a29c6e2e81c28d7a2614b10e0fc8e1026682a4da43cc2	excluded:no-stage-login	
+workspace	## 결정의 소유와 인용 (2026-08-11)	a95d702326e9495b58e7715d2833b7ef667ecf99b147694500b68e7b64c9171b	policy:Citations in documents	
+memory	feedback_no_detached_background	-	policy:Code and tools	
+memory	feedback_source_comments	-	policy:Artifacts	the no-memorial-comment clause
+memory	feedback_prompt_language	-	repo:CLAUDE.md	
+memory	feedback_version_bump_timing	-	repo:CLAUDE.md	
+memory	feedback_econ_heading_scope	-	repo:CLAUDE.md	
+memory	feedback_delegated_judgment_residual	-	repo:CLAUDE.md	
+memory	feedback_no_standing_trackers	-	repo:CLAUDE.md	
+memory	project_unattended_observation_restaging	-	repo:CLAUDE.md	

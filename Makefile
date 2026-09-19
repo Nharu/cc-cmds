@@ -1,4 +1,4 @@
-.PHONY: lint readme check test test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
+.PHONY: lint readme check policy-drift test test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -30,6 +30,7 @@ lint:
 	bash scripts/lint-prompt-schemas.sh
 	bash scripts/lint-triage-pins.sh
 	bash scripts/lint-gate-banner-fields.sh
+	bash scripts/lint-stage-policy-sources.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -61,6 +62,15 @@ readme:
 
 check: lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
+
+# The source half of the stage-policy drift check: does the policy the gate
+# injects into unattended stages still say what the user-scope CLAUDE.md and
+# the workspace instruction file say? Deliberately NOT part of `lint` — those
+# sources are a person's global files, and editing them must not turn an
+# unrelated unattended stage's `make check` red. Run by hand, at autopilot
+# kickoff, and logged at run open.
+policy-drift:
+	bash plugins/cc-cmds/orchestrator/stage-policy-drift.sh
 
 # Each suite is a LIST of scripts rather than a block of recipe lines, so that
 # the scripts become prerequisites and `make -j` can run them at once. As recipe
@@ -110,7 +120,8 @@ LINT_TESTS := \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-generate-readme.sh \
-	scripts/test-readme-gen-parity.sh
+	scripts/test-readme-gen-parity.sh \
+	scripts/test-lint-stage-policy-sources.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \

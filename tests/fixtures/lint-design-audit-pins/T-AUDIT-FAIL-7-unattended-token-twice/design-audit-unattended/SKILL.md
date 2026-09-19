@@ -1,0 +1,34 @@
+---
+name: design-audit
+---
+
+Audit a FROZEN design document. Single pass, hard stop.
+
+## Control-Flow Invariants
+
+### CFI-0 — Fixed constants
+
+```
+READER_COUNT = 3
+ROUNDS_PER_READER = 1
+OUTER_ITERATIONS = 0
+ADJUSTMENT_PASSES = 1
+ROUND_TOKEN = 1
+PASS_TOKEN = fanout
+```
+
+### CFI-6 — Forbidden imports
+
+None of the following may appear anywhere under this skill: `consecutive_no_major`, `COUNT_APPLIED`, `escalate_applied`, `INNER_EXIT_REASON`, `inner_round`, `outer_iter`, `outer_log.md`, `ack_items.md`, `pending_applies.md`, `INNER_TEMP_DIR`.
+
+## Workflow
+
+Step 0 through Step 7, then stop.
+
+Custody: the two boundary baselines are persisted out-of-tree at
+`${WITNESS_DIR}/baseline.status` and `${WITNESS_DIR}/baseline.worktree`;
+assertion 2a's creation record lives beside them; and when `CODE_ROOT` is
+not a repository both baselines are undefined, so skip them and
+report the skip.
+
+The loop used `consecutive_no_major` to decide, and that is gone.

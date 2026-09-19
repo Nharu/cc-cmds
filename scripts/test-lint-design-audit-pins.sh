@@ -32,16 +32,29 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SKILLS_ROOT="$fixture" bash "$script_dir/lint-design-audit-pins.sh" >/dev/null 2>&1
+  out=$(SKILLS_ROOT="$fixture" bash "$script_dir/lint-design-audit-pins.sh" 2>&1)
   ec=$?
   set -e
 
-  if [[ "$ec" == "$want" ]]; then
+  # An OK fixture must also reach the lint's success banner, so a run that
+  # exits 0 without checking anything (e.g. the skill-absent skip) does not
+  # count. The lint prints no failure banner, so FAIL fixtures are judged on
+  # the exit code alone. A string match, not a pipe into `grep -q`, so an early
+  # exit cannot SIGPIPE the writer and invert the result under `pipefail`.
+  has_banner=1
+  if [[ "$want" == 0 && $'\n'"$out" != *$'\n''OK:   design-audit pins'* ]]; then
+    has_banner=0
+  fi
+
+  if [[ "$ec" == "$want" && "$has_banner" == 1 ]]; then
     passed=$((passed + 1))
     echo "PASS: $fixture_name (exit=$ec, expected=$want)"
-  else
+  elif [[ "$ec" != "$want" ]]; then
     failures=$((failures + 1))
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
+  else
+    failures=$((failures + 1))
+    echo "FAIL: $fixture_name (exit=$ec as expected, but the 'OK:   design-audit pins' banner is missing)" >&2
   fi
 done
 
