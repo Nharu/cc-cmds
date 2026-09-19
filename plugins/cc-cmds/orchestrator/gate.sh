@@ -12179,13 +12179,13 @@ gate_unmet_clause_ids() {
 # termination condition 9 then holds the run open on it forever. Refusing at the
 # issuing point costs one merge; writing the unanchorable row costs the run.
 #
-# THE FOUR FAILURES GET FOUR DIFFERENT SENTENCES, and none of the four uses
+# THE FIVE FAILURES GET FIVE DIFFERENT SENTENCES, and none of the five uses
 # the word 「룰」. That is a load-bearing prohibition rather than a matter of
 # style: a refusal phrased as a rule refusal is folded into the rule catalog by
 # the next reader, and every entry of that catalog is switchable — so the fold
 # would quietly bring this refusal inside the range of `끔`, which is precisely
-# what its own exit code exists to deny. The fourth sentence inherits that
-# prohibition unchanged.
+# what its own exit code exists to deny. The fourth and fifth sentences inherit
+# that prohibition unchanged.
 #
 # THE FOURTH ASKS WHO OWNS THE WORKTREE. The other three settle for a row, a
 # directory and a readable HEAD, and a perfectly good worktree of ANOTHER
@@ -12196,8 +12196,52 @@ gate_unmet_clause_ids() {
 # never hold and the unclosable row held the run open. Asking
 # `gate_segment_worktree_of_target` here is what puts this check, the widening
 # and the resolution on ONE predicate instead of three different questions.
+#
+# THE FIFTH ASKS WHETHER THE TIP IS ALREADY ON THE BASE BRANCH, because the
+# fourth cannot ask it. Ownership is `--git-common-dir` equality and nothing
+# else, and kickoff pins the target row's value to the one read in THAT TARGET'S
+# OWN MAIN WORKTREE — so a segment row naming that target's main or exec worktree
+# makes the two values equal by construction and the fourth answers yes. The tip
+# resolved under that yes is the base branch tip, the landing test at fulfilment
+# time (`git merge-base --is-ancestor <머지 커밋> refs/heads/<베이스>`) then holds
+# unconditionally, and the covering axis degenerates to "is the review HEAD a
+# descendant of the base tip" — which a `cycle` row about an unrelated segment
+# satisfies. The other-repository case failed loudly with a row nobody could
+# close; this one closes as if it had been reviewed, and no warning goes out on
+# the way. The comparison is the SAME ONE the fulfilment arm runs, so this adds a
+# question and not a second copy of an answer.
+#
+# It FAILS OPEN. An anchor root, a base branch or a `refs/heads/<베이스>` that
+# does not resolve leaves the merge alone: the sentence fires on a positive
+# observation that the anchor is hollow, and folding "could not look" into
+# "looked and found" would break a freshly cloned repository that never had the
+# local ref. It also skips an undeclared target, for the reason the fourth gives.
+#
+# AND IT EXEMPTS A TIP THAT ALREADY HAS AN OPEN OBLIGATION ON THIS SEGMENT. What
+# it refuses is ISSUING an obligation nothing can distinguish; a second merge at
+# a tip whose slot is already open issues nothing — the duplicate guard in
+# `gate_issue_review_obligation` returns without a row — so the harm is absent
+# and the refusal would only take out the idempotence the duplicate guard exists
+# to provide.
+#
+# THE PREDICATE ITSELF IS NOT NARROWED to "and not the target's own main or exec
+# worktree". In a run that uses no linked worktree a segment row naming the main
+# worktree is the normal state and its tip is real work, so that narrowing
+# refuses every single-tree run. The hollowness is a property of the TIP, which
+# is why it is asked about the tip.
+#
+# WHERE THE SECOND AND THIRD SENTENCES ACTUALLY STAND TODAY. The dispatch-time
+# worktree pre-check (`이 행위가 어디서 도는지 말할 수 없어`) runs above this
+# function and covers `--kind merge` too, so it answers first for every worktree
+# value it inspects. The second sentence's live domain is therefore the two
+# spellings that pre-check's `case` skips — `-` and `(없음)` — and 35-13c is the
+# clause that measures exactly that. The third (an unreadable HEAD) is in
+# practice unreachable, because the fourth has already settled that the path is a
+# git tree of this target; it is kept as a defensive residue rather than removed,
+# since the alternative to a sentence for an impossible state is no sentence at
+# all if the impossibility ever stops holding.
 gate_check_merge_anchor() {
-  local seg="$1" cut="$2" alias="$3" wt tip
+  local seg="$1" cut="$2" alias="$3" wt tip aroot abr oid open_id slot_open
   [ "${GATE_REVIEW_POLICY:-}" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
 
@@ -12231,6 +12275,30 @@ gate_check_merge_anchor() {
     warn "세그먼트 '$seg' 의 워크트리 '$wt' 에서 HEAD 를 해소하지 못했습니다"
     warn "머지될 커밋을 적을 수 없으므로 이 머지는 발행되지 않습니다"
     return "$GATE_EXIT_ANCHOR"
+  fi
+  # The fifth sentence. See the head comment for why it is asked about the tip
+  # and not about the worktree, and for each of the three conjuncts that keep it
+  # from firing where the harm it names is absent.
+  if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+    aroot=$(alias_root "$alias" 2>/dev/null) || aroot=""
+    abr=$(base_branch "$alias" 2>/dev/null) || abr=""
+    if [ -n "$aroot" ] && [ -d "$aroot" ] && [ -n "$abr" ] \
+       && ( cd "$aroot" && git rev-parse --verify --quiet "refs/heads/$abr" >/dev/null 2>&1 ) \
+       && ( cd "$aroot" && git merge-base --is-ancestor "$tip" "refs/heads/$abr" >/dev/null 2>&1 ); then
+      # Keyed exactly as the issuer keys it, so "this tip's slot" means the same
+      # thing in both places. Re-deriving it rather than sharing a helper would
+      # let the two drift into agreeing about different slots.
+      slot_open=""
+      oid="RO-$(printf '%s|%s|%s' "$RUN_ID" "$seg" "$tip" | shasum -a 256 | cut -c1-8)"
+      for open_id in $(gate_unfulfilled_review_obligations "$seg"); do
+        if [ "$open_id" = "$oid" ]; then slot_open=1; break; fi
+      done
+      if [ -z "$slot_open" ]; then
+        warn "세그먼트 '$seg' 의 팁 '$tip' 은 이미 대상 '$alias' 의 베이스 브랜치 '$abr' 에 담겨 있습니다"
+        warn "이 의무는 어떤 리뷰로도 구별되지 않습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
+        return "$GATE_EXIT_ANCHOR"
+      fi
+    fi
   fi
   # Resolved once and reused by the issuer below, so the value on the row is the
   # same one this check passed on. Re-reading it there would open a window in

@@ -9512,6 +9512,13 @@ gateN act --manifest "$NM" --kind x --target infra --segment SD --cutpoint push 
 check "구속 튜플 실험용 행위가 승인을 발행한다" "$rc" "5"
 tup_row=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '상태=대기' | grep -vF '절단점=판단' | tail -1)
 tup_id=$(row_field "$tup_row" '승인 id')
+# 최소 감시. 산식의 **내용**은 35-15d 가 잰다 — 이 한 줄이 잡는 것은 필드가 늘거나
+# 줄어 id 의 **모양**이 달라지는 변경이고, 그때 원장에 이미 앉은 옛 `대기` 행들이
+# 새 id 로 조회되지 않아 고아가 된다.
+case "$tup_id" in
+  A-????????) ok "act 승인 id 가 'A-' + 8자 꼴이다" ;;
+  *) bad "승인 id 모양" "$tup_id" ;;
+esac
 tup_head=$(row_field "$tup_row" '구속 튜플')
 tup_head=${tup_head%/*}
 tup_head=${tup_head##*/}
@@ -12682,10 +12689,15 @@ pre_sa
 # 이 픽스처와 4b-i 의 것이 이 블록에서 `끔` 을 싣는 유일한 매니페스트이며, 그것은
 # 이 절의 수리 대상이 아니라 선언된 예외다 — 룰이 켜진 창에서는 두 항목이 재려는
 # 것이 아예 도달 불가이기 때문이다.
+#
+# 두 픽스처 모두 머지 전에 세그먼트에 커밋 하나를 쌓는다. 커밋이 없는 세그먼트의
+# 팁은 베이스 팁 그 자체이고, 그 팁으로 발행될 의무는 착지 검사가 무조건 성립해
+# 어떤 리뷰로도 구별되지 않으므로 앵커 검사가 먼저 exit 10 으로 막는다(35-15c).
 sa_new '음성 대조군' 선머지후리뷰
 SA_OFF_ROOT="$SA_ROOT"
 sa_seg_row S1 선머지후리뷰
 check "1: 룰 켬 — 정책을 실은 세그먼트 행이 통과한다" "$rc" "0"
+sa_commit '작업' >/dev/null
 sa_merge S1
 check "1: 룰 켬 — 첫 머지가 통과한다" "$rc" "0"
 n1=$(sa_ob_count)
@@ -12696,6 +12708,7 @@ check "1: 거절이므로 의무 행이 늘지 않는다" "$(sa_ob_count)" "$n1"
 
 sa_new '음성 대조군 (끔)' 선머지후리뷰 '**리뷰-후-머지**: 끔'
 sa_seg_row S1 선머지후리뷰
+sa_commit '작업' >/dev/null
 sa_merge S1
 check "1: 룰 끔 — 첫 머지가 통과한다" "$rc" "0"
 n1=$(sa_ob_count)
@@ -12713,6 +12726,7 @@ check "4b-i: 통과했는데도 열린 의무 위에 중복 발행하지 않는�
 # --- section: 35-2 | group: sa | covers: act | anchors: 2: 룰이 켜진 채 cycle 행 0 건의 선머지후리뷰 머지가 통과한다 (오늘은 exit 3) ---
 sa_new '#569 핵심' 선머지후리뷰
 sa_seg_row S2 선머지후리뷰
+sa_commit '작업' >/dev/null
 nb=$(sa_ob_count); ncyc=$( { grep -cF '`cycle`' "$SA_LEDGER" || true; } )
 sa_merge S2
 check "2: 룰이 켜진 채 cycle 행 0 건의 선머지후리뷰 머지가 통과한다 (오늘은 exit 3)" "$rc" "0"
@@ -13180,8 +13194,19 @@ esac
 # 그래도 그대로 막힌다 — 오히려 더 위에서, 발행 지점에 닿기도 전에.
 #
 # 그 결과 (i) 의 문면은 룰의 것이라 「룰」이라는 낱말을 싣는다. 아래 음성 단언은
-# 그래서 (ii)·(iii) 두 앵커 문면에만 건다 — 그 둘이 카탈로그로 접혀 `끔` 의
-# 사정거리에 들어가는 것을 막는 것이 그 단언의 일이고, (i) 은 애초에 룰이다.
+# 그래서 (ii)·(iii) 두 문면에만 건다 — 그 둘이 카탈로그로 접혀 `끔` 의 사정거리에
+# 들어가는 것을 막는 것이 그 단언의 일이고, (i) 은 애초에 룰이다.
+#
+# (ii)·(iii) 이 받는 것은 **더 이상 앵커 문면이 아니다.** 디스패치 사전 검사가
+# `gate_act_enters_resolved_tree` 로 정의역을 잡아 `--kind merge` 까지 덮고 앵커
+# 검사보다 위에서 돌므로, 디렉터리가 없는 값도 git 트리가 아닌 값도 거기서 먼저
+# exit 10 을 받는다. 두 거절의 종료 코드가 같고 문면도 서로 구별되므로 이 절은
+# 초록인 채 측정 대상만 조용히 바뀌었고, 앵커 검사의 그 두 문장을 지워도 초록이
+# 유지됐다. 그래서 아래 (ii)·(iii) 에 **지금 실제로 서는 문면**을 함께 단언한다 —
+# 사전 검사가 빠지거나 정의역에서 `merge` 가 빠지면 그 줄들이 빨개진다. 앵커 검사
+# 둘째 문장에 남은 정의역(`-`·`(없음)` 두 철자)은 항목 35-13c 가 따로 잰다.
+# 음성 단언은 그대로 유효하다 — 사전 검사의 문면도 「룰」이라는 낱말을 쓰지 않고,
+# 그 성질을 지키는 것이 문면이 어느 자리에서 오든 이 단언의 일이다.
 sa_new '앵커 불가 셋' 선머지후리뷰
 # (i) 세그먼트 행이 아예 없다 — 정책이 해소될 곳이 없어 엄격으로 떨어진다.
 nb=$(sa_base)
@@ -13203,6 +13228,15 @@ nb=$(sa_rows)
 sa_merge S13B
 check "13(ii): 워크트리 디렉터리가 없는 머지는 exit 10 이다" "$rc" "10"
 m13b="$msg"
+case "$m13b" in
+  *"이 행위가 어디서 도는지 말할 수 없어"*)
+    ok "13(ii): 이 10 을 내는 것은 앵커 검사가 아니라 디스패치 사전 검사다" ;;
+  *) bad "13(ii) 서는 자리" "$m13b" ;;
+esac
+case "$m13b" in
+  *"디렉터리가 없습니다"*) ok "13(ii): 그 문면이 실패한 조건을 이름 짓는다" ;;
+  *) bad "13(ii) 실패 조건 문면" "$m13b" ;;
+esac
 check "13(ii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 
 # (iii) 디렉터리는 있으나 그 안에서 HEAD 가 해소되지 않는다.
@@ -13212,6 +13246,15 @@ nb=$(sa_rows)
 sa_merge S13C
 check "13(iii): HEAD 를 해소하지 못하는 머지는 exit 10 이다" "$rc" "10"
 m13c="$msg"
+case "$m13c" in
+  *"이 행위가 어디서 도는지 말할 수 없어"*)
+    ok "13(iii): 이 10 을 내는 것도 앵커 검사가 아니라 디스패치 사전 검사다" ;;
+  *) bad "13(iii) 서는 자리" "$m13c" ;;
+esac
+case "$m13c" in
+  *"공통 git 디렉터리와 다릅니다"*) ok "13(iii): 그 문면이 실패한 조건을 이름 짓는다" ;;
+  *) bad "13(iii) 실패 조건 문면" "$m13c" ;;
+esac
 check "13(iii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 
 if [ "$m13a" != "$m13b" ] && [ "$m13b" != "$m13c" ] && [ "$m13a" != "$m13c" ]; then
@@ -13258,6 +13301,55 @@ for sa_l in "$WORK"/sa-*/repo/docs/pipeline-run/*.md; do
   sa_anchorless=$((sa_anchorless + $( { grep -F '`리뷰 의무`' "$sa_l" || true; } | grep -cF '앵커 불가' || true)))
 done
 check "13b: 앵커 불가 를 실은 리뷰 의무 행이 어디에도 없다" "$sa_anchorless" "0"
+
+# --- 35-13c. 앵커 검사 둘째 문장의 실제 정의역은 `-` 와 `(없음)` 두 철자다 -------
+# --- section: 35-13c | group: sa | covers: act | needs: 35-13 | anchors: 13c: 앵커 검사 둘째 문장의 남은 정의역 두 철자를 모두 쟀다, 13c: 그 두 철자 모두에서 사전 검사가 아니라 앵커 검사가 답했다 ---
+#
+# 항목 13 의 (ii)·(iii) 은 이제 디스패치 사전 검사가 먼저 답한다. 그 사전 검사의
+# `case` 첫 팔이 `''|-|'(없음)'` 을 무동작으로 건너뛰므로, **그 두 철자만이** 앵커
+# 검사의 둘째 문장(워크트리 디렉터리 부재)에 도달한다 — 곧 이 절이 그 문장에 남은
+# 정의역 전부다. 정의역이 좁아졌다는 사실 자체에 하중이 걸리므로, 두 자리가 서로
+# 다른 문면으로 구별된다는 것까지 함께 잰다. 구별을 재지 않으면 사전 검사가 이
+# 문장을 통째로 삼켜도 이 절이 초록으로 남는다 — 항목 13 에서 실제로 일어난 일이
+# 정확히 그것이다.
+#
+# `-` 는 이 원장이 미설정 필드에 관용적으로 쓰는 값이고 `(없음)` 은 워크트리 해소가
+# 스스로 쓰는 폴백 어휘라, 둘 다 라우터가 실제로 쓸 법한 철자다.
+#
+# 두 철자를 한 루프로 돌므로 절 단언의 문면에 그 값이 들어간다. 배너의 앵커는
+# 문자 그대로 본문에 있어야 하므로, 루프가 센 값을 루프 밖의 고정 문면으로 닫는다.
+sa13c_seen=0
+sa13c_anchored=0
+for sa13c in - '(없음)'; do
+  case "$sa13c" in -) sa13cid=S13D ;; *) sa13cid=S13E ;; esac
+  sa_seg_row "$sa13cid" 선머지후리뷰 "$sa13c"
+  check "13c: 워크트리를 '$sa13c' 로 적은 행 자체는 기록된다" "$rc" "0"
+  # 방금 쓴 행은 술어를 통과하지 못해 설정을 넓히지 않지만, 재유도 프리앰블을
+  # 거절과 같은 호출에서 세지 않도록 기준값은 한 번 진입한 뒤에 찍는다.
+  SAH >/dev/null
+  nb=$(sa_rows)
+  nob=$(sa_ob_count)
+  sa_merge "$sa13cid"
+  check "13c: 워크트리가 '$sa13c' 인 머지는 exit 10 이다" "$rc" "10"
+  sa13c_seen=$((sa13c_seen + 1))
+  sa13c_hit=0
+  case "$msg" in
+    *"의 워크트리 디렉터리가 없습니다: '$sa13c'"*)
+      ok "13c: 답하는 것은 앵커 검사의 둘째 문장이다 ('$sa13c')"; sa13c_hit=1 ;;
+    *) bad "13c 앵커 문면 ($sa13c)" "$msg" ;;
+  esac
+  case "$msg" in
+    *"이 행위가 어디서 도는지 말할 수 없어"*)
+      bad "13c 자리 구별 ($sa13c)" "사전 검사가 답했다 — 앵커 검사 둘째 문장의 정의역이 비었다"
+      sa13c_hit=0 ;;
+    *) ok "13c: 사전 검사의 문면은 서지 않는다 ('$sa13c')" ;;
+  esac
+  sa13c_anchored=$((sa13c_anchored + sa13c_hit))
+  check "13c: 원장 행이 늘지 않는다 ('$sa13c')" "$(sa_rows)" "$nb"
+  check "13c: 닫을 수 없는 의무가 서지 않는다 ('$sa13c')" "$(sa_ob_count)" "$nob"
+done
+check "13c: 앵커 검사 둘째 문장의 남은 정의역 두 철자를 모두 쟀다" "$sa13c_seen" "2"
+check "13c: 그 두 철자 모두에서 사전 검사가 아니라 앵커 검사가 답했다" "$sa13c_anchored" "2"
 
 # --- 35-14. writer 는 여전히 워크트리 를 요구한다 -------------------------------
 # --- section: 35-14 | group: sa | covers: act | anchors: 14: 워크트리 없는 segment 행은 exit 2 로 거절된다 ---
@@ -13365,6 +13457,140 @@ check "15b: 앵커를 싣기 전에 거절하므로 리뷰 의무가 발행되�
 # 원장은 덧붙이기만 하므로, 다음 항목이 이 행을 물려받지 않도록 자기 대상의
 # 워크트리로 되돌린다.
 sa_seg_row S15B 선머지후리뷰
+
+# --- 35-15c. 세그먼트 행이 그 대상 **자신의** 다른 워크트리를 이름 대는 칸 -------
+# --- section: 35-15c | group: sa | covers: act | needs: 35-15 | anchors: 15c: 자기 대상의 워크트리를 적은 세그먼트 행이 기록된다, 15c: 그 팁이 이미 베이스에 담겨 있어 머지가 exit 10 이다 ---
+#
+# 소유 술어의 참/거짓이 갈리는 경계는 셋이다 — **같은 대상 소유** / 다른 대상 소유
+# (15b) / 무소유(13). 첫째 칸이 통째로 비어 있었고, 단순 공백도 아니었다: 세그먼트
+# 행이 대상 자기 트리를 가리키는 자리가 이 스위트에 스무 곳 넘게 **정상 픽스처**로
+# 있고 14m 의 종결 처리는 그 값으로 되돌리며 그것을 「정리」라 적는다. 그래서 「이
+# 상태는 이상이다」라는 진술이 트리 어디에도 없었고, 소유 검사를 어느 방향으로
+# 움직여도 스위트가 답하지 않았다.
+#
+# 이 칸에서 소유 술어는 **참이고, 참인 것이 맞다.** 킥오프가 대상 행의 `공통 git
+# 디렉터리` 를 그 대상의 메인 워크트리에서 읽은 값으로 고정하므로 두 값은 정의상
+# 같고, 링크 워크트리를 쓰지 않는 단일 트리 런에서는 이 상태가 정상이다 — 술어를
+# 「메인·실행 워크트리가 아닐 것」으로 좁히면 그런 런이 전부 깨진다.
+#
+# 막는 것은 **앵커**다. 그 팁은 이미 베이스 브랜치에 담겨 있고, 그 앵커로 발행될
+# 의무는 이행 시점 착지 검사가 무조건 성립하며 덮기 축도 무관한 세그먼트의 `cycle`
+# 행으로 닫힌다 — 어떤 리뷰로도 구별되지 않는 빚이다. 남의 저장소 케이스(15b)는
+# 닫을 수 없는 행으로 시끄럽게 실패했는데 이 칸은 성공한 것처럼 닫혔다. 이 절은
+# 술어가 참이라는 것과 앵커가 그럼에도 막는다는 것을 한 자리에서 잰다.
+#
+# 그 앵커가 무엇이었는지도 함께 못박는다. 수리 전에는 이 머지가 통과해 의무의
+# `머지 커밋` 에 `$SA_WT` 의 HEAD 가 실렸고, 그 값이 곧 베이스 팁이었다 — 거절
+# 문면이 지목하는 팁이 정확히 그 값이라는 것이 「막힌 것이 바로 그 앵커다」의
+# 증거다. 그리고 같은 대상 소유 칸이라도 워크트리가 베이스 밖 커밋을 가진 단일
+# 트리 런이면 머지가 통과하고 의무가 그 HEAD 를 싣는다는 것을 뒤에서 잰다 — 막는
+# 근거가 워크트리가 아니라 팁이라는 것은 그 대조로만 드러난다.
+nb15c=$(sa_ob_count)
+sa15c_head=$(cd "$SA_WT" && git rev-parse HEAD)
+check "15c: 자기 대상 워크트리의 HEAD 가 곧 베이스 팁이다 (이 칸의 전제)" \
+      "$sa15c_head" "$(cd "$SA_WT" && git rev-parse "refs/heads/$SA_BASE")"
+sa_seg_row S15C 선머지후리뷰 "$SA_WT"
+check "15c: 자기 대상의 워크트리를 적은 세그먼트 행이 기록된다" "$rc" "0"
+sa_merge S15C
+check "15c: 그 팁이 이미 베이스에 담겨 있어 머지가 exit 10 이다" "$rc" "10"
+case "$msg" in
+  *"의 팁 '$sa15c_head' 은"*)
+    ok "15c: 막힌 앵커는 그 워크트리의 HEAD, 곧 베이스 팁이다" ;;
+  *) bad "15c 막힌 앵커" "$msg" ;;
+esac
+case "$msg" in
+  *"대상 'other' 의 워크트리입니다"*|*"이 행위가 어디서 도는지 말할 수 없어"*)
+    bad "15c 술어" "소유 술어가 이 칸에서 거짓을 냈다 — 단일 트리 런이 함께 깨진다" ;;
+  *) ok "15c: 소유 술어는 이 칸에서 참이다 (경고도 사전 검사 거절도 서지 않는다)" ;;
+esac
+case "$msg" in
+  *"는 대상 'main' 의 워크트리가 아닙니다"*)
+    bad "15c 거절 근거" "앵커가 소유를 근거로 거절했다 — 이 칸의 술어는 참이어야 한다" ;;
+  *) ok "15c: 앵커도 소유를 근거로는 거절하지 않는다" ;;
+esac
+case "$msg" in
+  *"이미 대상 'main' 의 베이스 브랜치 '$SA_BASE' 에 담겨 있습니다"*)
+    ok "15c: 거절의 근거는 그 팁이 이미 베이스에 담겨 있다는 것이다" ;;
+  *) bad "15c 앵커 문면" "$msg" ;;
+esac
+case "$msg" in
+  *"어떤 리뷰로도 구별되지 않습니다"*)
+    ok "15c: 문면이 그 의무가 구별 불가능해지는 이유를 적는다" ;;
+  *) bad "15c 문면 둘째 줄" "$msg" ;;
+esac
+case "$msg" in
+  *룰*) bad "15c 낱말" "이 거절도 룰을 자칭한다 — 카탈로그로 접히면 끔 이 이것까지 끈다" ;;
+  *) ok "15c: 이 문면도 「룰」이라는 낱말을 쓰지 않는다" ;;
+esac
+check "15c: 공허한 앵커의 의무는 발행되지 않는다" "$(sa_ob_count)" "$nb15c"
+# 15b 와 같은 위생. 원장은 덧붙이기만 하므로 자기 세그먼트 워크트리로 되돌린다.
+sa_seg_row S15C 선머지후리뷰
+
+# 대조 — 링크 워크트리를 쓰지 않는 단일 트리 런. 세그먼트 행은 같은 `$SA_WT` 를
+# 이름 대지만 그 트리가 베이스 밖 브랜치에서 커밋을 쌓았다. 매니페스트와 원장이
+# 추적되지 않는 파일로 그 트리에 있으므로 커밋은 파일 하나만 담는다.
+sa15s_br="single-$SA_ID"
+( cd "$SA_WT" && git checkout -q -b "$sa15s_br" && echo single > single.txt \
+  && git add single.txt && git commit -qm single ) >/dev/null 2>&1
+sa15s_head=$(cd "$SA_WT" && git rev-parse HEAD)
+nb15s=$(sa_ob_count)
+sa_seg_row S15S 선머지후리뷰 "$SA_WT"
+sa_merge S15S "$sa15s_br:refs/heads/$sa15s_br"
+check "15c: 단일 트리 런에서 베이스 밖 커밋을 가진 같은 워크트리의 머지는 통과한다" "$rc" "0"
+check "15c: 그 머지는 의무 하나를 남긴다" "$(sa_ob_count)" "$((nb15s + 1))"
+check "15c: 그 의무의 머지 커밋이 그 워크트리의 HEAD 다" \
+      "$(sa_field "$(sa_ob_last "$(sa_ob_id S15S)")" '머지 커밋')" "$sa15s_head"
+( cd "$SA_WT" && git checkout -q "$SA_BASE" ) >/dev/null 2>&1
+sa_seg_row S15S 선머지후리뷰
+
+# --- 35-15d. 승인 id 는 해소된 워크트리를 싣는다 --------------------------------
+# --- section: 35-15d | group: sa | covers: act, plan | needs: 35-15 | anchors: 15d: 두 워크트리는 같은 베이스에서 끊겨 HEAD 가 동일하다, 15d: 같은 argv 라도 두 세그먼트의 승인 id 가 다르다 ---
+#
+# 승인 id 산식이 3필드에서 4필드로 바뀌었는데 회귀 보호가 셋 다 0 이었다 — 표제
+# 동기를 재는 절도, id 의 모양을 고정하는 단언도, 이행 경로를 재는 절도 없어서
+# 셋째 인자를 지우고 되돌려도 스위트가 전부 초록이었다.
+#
+# 표제 동기가 이 절의 전부다. 구속 튜플의 12자 head 조각은 **같은 베이스에서 끊은
+# 두 워크트리를 구별하지 못하고**, 그 상태가 바로 런이 첫 스테이지를 각 세그먼트에
+# 파견하는 순간이다. 그때 한 사람의 답이 다른 세그먼트의 바이트 동일한 argv 를
+# 열었다. 그래서 HEAD 동일성을 먼저 단언한다 — 그것이 깨지면 이 절은 공허해지고,
+# 공허한 채로 초록이 된다.
+sa_new '승인 id 트리 축' 선머지후리뷰
+SA_SEG2="$SA_ROOT/seg2"
+( cd "$SA_REPO" && git worktree add -q -b "seg2-$SA_ID" "$SA_SEG2" "$SA_BASE" ) >/dev/null 2>&1
+check "15d: 두 워크트리는 같은 베이스에서 끊겨 HEAD 가 동일하다" \
+      "$(cd "$SA_SEGWT" && git rev-parse HEAD)" "$(cd "$SA_SEG2" && git rev-parse HEAD)"
+sa_seg_row SIDA 선머지후리뷰 "$SA_SEGWT"
+check "15d: 세그먼트 A 의 행이 기록된다" "$rc" "0"
+sa_seg_row SIDB 선머지후리뷰 "$SA_SEG2"
+check "15d: 세그먼트 B 의 행이 기록된다" "$rc" "0"
+# 바이트 동일한 argv. 사전 인가에는 `git push` 만 있으므로 이 형태는 승인을 연다.
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment SIDA --cutpoint push \
+    --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- scp -V
+check "15d: 세그먼트 A 의 행위가 승인을 발행한다" "$rc" "5"
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment SIDB --cutpoint push \
+    --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- scp -V
+check "15d: 같은 argv 인 세그먼트 B 의 행위도 승인을 발행한다" "$rc" "5"
+sa_apA=$(sa_field "$( { grep -F '`승인`' "$SA_LEDGER" || true; } | grep -F '막는 세그먼트=SIDA' | tail -1)" '승인 id')
+sa_apB=$(sa_field "$( { grep -F '`승인`' "$SA_LEDGER" || true; } | grep -F '막는 세그먼트=SIDB' | tail -1)" '승인 id')
+case "$sa_apA" in
+  A-????????) ok "15d: act 승인 id 가 'A-' + 8자 꼴이다" ;;
+  *) bad "15d 승인 id 모양" "$sa_apA" ;;
+esac
+if [ -n "$sa_apA" ] && [ -n "$sa_apB" ] && [ "$sa_apA" != "$sa_apB" ]; then
+  ok "15d: 같은 argv 라도 두 세그먼트의 승인 id 가 다르다"
+else
+  bad "15d 승인 id" "산식이 해소된 워크트리를 싣지 않는다: A='$sa_apA' B='$sa_apB'"
+fi
+# A 의 승인만 닫는다. `close` 가 아니라 이 파일이 이미 쓰는 원장 덧붙이기 관용구다 —
+# 재려는 것은 답의 경로가 아니라 답이 **어느 id 에 붙는가** 이기 때문이다.
+printf -- '- `승인` | 승인 id=%s | 상태=승인 | 해소 시각=%s | prev=x\n' "$sa_apA" "테스트" >> "$SA_LEDGER"
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SIDA --cutpoint push \
+    --surface 외부상태변경 -- scp -V
+check "15d: 닫은 답이 A 의 같은 argv 를 연다 (닫기가 공허하지 않다)" "$rc" "0"
+sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SIDB --cutpoint push \
+    --surface 외부상태변경 -- scp -V
+check "15d: 그 답으로 B 의 같은 argv 는 여전히 막힌다" "$rc" "5"
 
 # --- 35-16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
 # --- section: 35-16 | group: sa | covers: act | anchors: 16: 원격 베이스로 민 머지가 통과한다 ---
