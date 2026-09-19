@@ -10942,8 +10942,35 @@ gate_verb_act() {
   # visible to children too, and a child must not grade against its parent's
   # tree. `plan` is not excluded — it forecasts what `act` would do, so it has to
   # resolve what `act` would resolve.
-  if [ "$verb" != "grade" ] && [ -n "${GATE_ACT_CWD:-}" ]; then
-    GATE_GRADE_CWD=$(gate_real_prefix "$GATE_ACT_CWD")
+  #
+  # THE BASE IS RESOLVED HERE, NOT INHERITED. Reading `GATE_ACT_CWD` at this point
+  # could only ever pick up an EXPORTED value, because this process does not
+  # assign it until 200-odd lines below — so the two write guards measured their
+  # relative operands against the OUTER run's worktree and a stage reached a
+  # fail-open with ordinary flags: `--segment` defaults to `-`, so a stage running
+  # in a segment worktree that names only a target gets the main worktree as the
+  # act's directory while the operand is absolutized against the segment's, and
+  # `cp /tmp/evil plugins/cc-cmds/orchestrator/gate.sh` then passes both guards
+  # and lands on the live installed gate. The comment on `gate_grade_cwd()`
+  # already claims the value is always one THIS process computed; this line is
+  # what makes that claim true.
+  #
+  # THE SAME RESOLVER, THE SAME ARGUMENTS, so this and the assignment below cannot
+  # disagree — `gate_act_worktree` is a pure resolver and `gate_act_worktree`'s own
+  # comment requires its three readers to resolve identically.
+  #
+  # `grade` AND AN UNDECLARED TARGET KEEP TODAY'S BEHAVIOUR, and that is the
+  # correct base for both rather than a fallback failure. `grade` answers about
+  # the caller, and an undeclared target's act stays in the caller's directory
+  # because there is no row to read — both leave `GATE_GRADE_CWD` empty and fall
+  # to `$PWD` in `gate_grade_cwd()`. Refusing when the value is absent would refuse
+  # every undeclared act instead, which is a different decision than this one.
+  if [ "$verb" != "grade" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+    local actwt
+    actwt=$(gate_act_worktree "$alias" "$segment")
+    if [ -n "$actwt" ]; then
+      GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
+    fi
   fi
 
   local graded

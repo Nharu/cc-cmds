@@ -4520,6 +4520,42 @@ if [ -d "$LINKED" ]; then
         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>/dev/null)
   check "행위가 실행 워크트리에서 실행되고 그 stdout 만 나온다 (메인 워크트리가 아니라)" "$out" "$want_ls"
 
+  # THE GRADING BASE IS THAT SAME DIRECTORY, AND IT IS RESOLVED HERE. The act's
+  # directory and the base its relative operands are measured against used to be
+  # two different answers: `gate_verb_act` seeded the grading base from an
+  # INHERITED `GATE_ACT_CWD` two hundred lines before this process resolved its
+  # own, so a gate running inside a gate graded against the outer run's tree and
+  # the two write guards went no-op on every relative operand with no visible
+  # failure. The inherited value is planted as a SUBDIRECTORY of the execution
+  # worktree here, which is what makes one `../` operand resolve to the run
+  # directory under the right base and to a harmless name under the wrong one.
+  # THE OBSERVABLE IS THE GUARD, NOT WHERE THE COMMAND RAN. The act's own cwd was
+  # already the execution worktree before this was fixed, so a case that only
+  # watches where `cp` puts its bytes answers the same either way and proves
+  # nothing. What moved is the base the guards measure their operands against.
+  mkdir -p "$LINKED/sub"
+  out14c=$( export GATE_ACT_CWD="$LINKED/sub"
+            cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
+              --cutpoint 커밋 --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+              --rationale x -- cp only-here.txt ../state/cc-cmds/run/R1/probe.json 2>&1 )
+  rc14c=$?
+  rd14c=0
+  case "$out14c" in *'런 디렉터리 쓰기'*) rd14c=1 ;; esac
+  check "14c: 상대 경로 피연산자가 실행 워크트리 기준으로 절대화돼 런 디렉터리 가드에 걸린다" "$rd14c" "1"
+  check "14c: 그 호출은 통과하지 않는다" \
+    "$( [ "$rc14c" = 0 ] && printf pass || printf fail )" "fail"
+  check "14c: 런 디렉터리에 아무것도 착지하지 않았다" \
+    "$( [ -e "$XDG_STATE_HOME/cc-cmds/run/R1/probe.json" ] && printf yes || printf no )" "no"
+  # 음성 대조군. 없으면 위 셋의 통과가 「이 형태가 통째로 거부된다」와 구별되지
+  # 않고, 통째 거부는 실행 워크트리 안의 정당한 상대 경로 쓰기를 함께 막는다.
+  ( export GATE_ACT_CWD="$LINKED/sub"
+    cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" \
+      --rationale x -- cp only-here.txt sub/copied.txt ) >/dev/null 2>&1
+  check "14c: 음성 대조군 — 실행 워크트리 안의 같은 상대 경로 쓰기는 통과한다" \
+    "$( [ -f "$LINKED/sub/copied.txt" ] && printf yes || printf no )" "yes"
+  rm -rf "$LINKED/sub"
+
   # A declared execution worktree in ANOTHER repository is refused — that would
   # be a second target wearing the first one's cutpoint.
   OTHER="$WORK/other"; ( git init -q "$OTHER" ) >/dev/null 2>&1
@@ -16480,6 +16516,41 @@ case "$msg" in
   *'이 런의 사본이 아닌 곳'*) ok "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" ;;
   *) bad "57X: 문면이 핀이 남의 자리를 가리킨다고 적는다" "$msg" ;;
 esac
+
+# (11b) 철자가 맞는 핀도 물리 자리를 대조한다 -------------------------------------
+# 57X 가 거부하는 미끼는 철자를 **틀리게** 쓴 쪽, 즉 봉쇄가 어휘 비교 하나로 서는
+# 쉬운 경우다. 그 비교 안에 봉쇄가 통째로 들어 있으면, 핀이 기대 리터럴을 그대로
+# 적었을 때 파일시스템에 아무것도 묻지 않는다 — `<run-dir>/plugin` 을 트리 밖으로
+# 향한 심볼릭 링크로 바꾸면 그 자리의 바이트가 hop 으로 실행된다. 확인이 자기가
+# 멈추려던 공격에 가장 약했던 자리이고, 이 케이스가 없으면 구멍이 다시 시험을
+# 통과한다. 양쪽을 해소해 비교하는 것으로는 잡히지 않는다 — 여기서 두 값은 같은
+# 문자열이라 어느 쪽을 해소해도 같은 답이 나온다. 성립해야 하는 성질은 일치가
+# 아니라 런 디렉터리 안에 있다는 **봉쇄**다.
+p57_fixture R57Z
+P57ZOUT="$P57ROOT/outside/cc-cmds"
+mkdir -p "$P57ZOUT/orchestrator" "$P57_RD"
+printf '#!/usr/bin/env bash\nprintf "PINNED-LINK %%s\\n" "$*"\nexit 0\n' \
+  > "$P57ZOUT/orchestrator/gate.sh"
+chmod +x "$P57ZOUT/orchestrator/gate.sh"
+# 핀은 기대 리터럴을 **맞게** 적는다. 트리 밖으로 새는 것은 링크 쪽이다.
+printf 'schema\t1\nplugin-dir\t%s\n' "$P57_RD/plugin/cc-cmds" > "$P57_RD/plugin-pin"
+rm -rf "$P57_RD/plugin"
+ln -sfn "$P57ROOT/outside" "$P57_RD/plugin" 2>/dev/null
+if [ -L "$P57_RD/plugin" ] && [ -d "$P57_RD/plugin" ]; then
+  p57_gate snapshot --manifest "$P57_MAN"
+  p57_link_hit=0
+  case "$(cat "$WORK/last-output.txt")" in *PINNED-LINK*) p57_link_hit=1 ;; esac
+  check "57Z: 철자가 맞아도 물리 자리가 런 디렉터리 밖이면 hop 하지 않는다" "$p57_link_hit" "0"
+  check "57Z: 그 호출은 통과하지 않는다" \
+    "$( [ "$rc" = 0 ] && printf pass || printf fail )" "fail"
+  case "$msg" in
+    *'이 런의 사본이 아닌 곳'*) ok "57Z: 문면이 핀이 남의 자리를 가리킨다고 적는다" ;;
+    *) bad "57Z: 문면이 핀이 남의 자리를 가리킨다고 적는다" "$msg" ;;
+  esac
+else
+  printf 'NOTE: 57Z 심볼릭 링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+# 음성 대조군은 아래 57H 계열이다 — 링크가 아닌 정상 사본은 여전히 hop 한다.
 
 # (12) 경로 성분을 담은 런 id 는 hop 전에 거부된다 --------------------------------
 # 매니페스트 헤더의 값은 헤더·본문 대조를 거치기 전의 호출자 바이트다. 양쪽을 다 쓴

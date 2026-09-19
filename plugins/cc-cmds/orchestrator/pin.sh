@@ -101,17 +101,22 @@ pin_hop_target() {
   # with it. `pin_take` always writes the literal `<run-dir>/plugin/cc-cmds`, so
   # requiring that value back is the whole of the check.
   #
-  # COMPARED BY SPELLING FIRST, PHYSICALLY ONLY AS A FALLBACK. The physical
-  # comparison needs both sides to exist, and "the copy is gone" is the state rc 2
-  # already names; resolving first would fold that distinct, recoverable state
-  # into this one and change what its refusal tells the reader to do.
+  # SPELLING IS A FAST REFUSAL; THE PHYSICAL CHECK IS UNCONDITIONAL. A pin whose
+  # text differs from the expected literal is answered by the spelling comparison
+  # and, failing that, by resolving both sides. But a pin whose text is RIGHT
+  # still has to be confined, because the path it names can be diverted by a
+  # symlink under the run directory — so the target is resolved and required to
+  # sit at the run directory's own physical path in every branch. The physical
+  # comparison needs the target to exist, and "the copy is gone" is the state rc 2
+  # already names; that state is therefore left to rc 2 rather than folded in
+  # here, which would change what the refusal tells the reader to do.
   #
   # THE LOOP GUARD IS rc 1 AND NOT AN ERROR. The copy's own gate re-enters this
   # function on every call, and a target equal to where we already are would be
   # an `exec` into ourselves forever. Compared physically: the run directory sits
   # under `/var` on this platform, which is a symlink, so the two spellings of
   # one directory are different strings.
-  local rd="$1" here="$2" pd tp hp ep pp epp
+  local rd="$1" here="$2" pd tp hp ep pp epp rdp
   [ -f "$(pin_file "$rd")" ] || return 1
   pd=$(pin_plugin_dir "$rd")
   [ -n "$pd" ] || return 1
@@ -121,6 +126,29 @@ pin_hop_target() {
     epp=$(cd "$ep" 2>/dev/null && pwd -P) || epp=""
     if [ -z "$pp" ] || [ -z "$epp" ] || [ "$pp" != "$epp" ]; then return 3; fi
   fi
+  # THE CONFINEMENT ALSO HOLDS WHEN THE SPELLING IS RIGHT, and that is the branch
+  # it was missing. The block above runs only when the pin's text already DIFFERS
+  # from the expected literal, so a pin that writes `<run-dir>/plugin/cc-cmds`
+  # exactly asked the filesystem nothing — and `<run-dir>/plugin` being a symlink
+  # to an outside tree was enough to make the `cd` below follow it, find a
+  # `gate.sh` beyond the link, and return rc 0 for bytes that live nowhere near
+  # this run. The check was weakest against the attacker it exists to stop: the
+  # one who spells the pin correctly.
+  #
+  # RESOLVING BOTH SIDES WOULD NOT CATCH IT — `pd` and `ep` are the SAME STRING
+  # there, so resolving each gives the same answer whatever the link does. The
+  # property that actually has to hold is CONTAINMENT: the pin's target must
+  # resolve to the run directory's own physical path plus the literal tail. That
+  # is derived from `$rd` here rather than from `$ep`, because `$ep` is exactly
+  # the path the link diverts.
+  #
+  # AN ABSENT COPY IS LEFT TO rc 2. `pp` is empty when the target does not exist,
+  # and that state is the distinct, recoverable one rc 2 already names below —
+  # folding it in here would change what the refusal tells the reader to do.
+  rdp=$(cd "$rd" 2>/dev/null && pwd -P) || rdp=""
+  [ -n "$rdp" ] || rdp="$rd"
+  pp=$(cd "$pd" 2>/dev/null && pwd -P) || pp=""
+  if [ -n "$pp" ] && [ "$pp" != "$rdp/plugin/cc-cmds" ]; then return 3; fi
   tp=$(cd "$pd/orchestrator" 2>/dev/null && pwd -P) || tp=""
   hp=$(cd "$here" 2>/dev/null && pwd -P) || hp="$here"
   if [ -n "$tp" ] && [ "$tp" = "$hp" ]; then return 1; fi
