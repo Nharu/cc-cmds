@@ -13461,6 +13461,18 @@ printf '%s\n' "0" > "$RD/obligation-repeat"
 # counter is re-seeded after the judgment that observes the move.
 printf -- '- `종료 절` | id=C12d | 상태=충족 | 근거=12d 픽스처 | prev=x\n' >> "$FX_LEDGER"
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
+# THE THIRD INPUT, PINNED HERE FOR THE SAME REASON THE OTHER TWO ARE. The
+# predicate reads a stretch origin as well as the digest and the counter, and
+# the read credit SILENCES the firing while that stretch holds at least one
+# read and stays under the credit. Seeding two of three left the origin to
+# whatever an earlier section put there: run alone the file is absent, the
+# stretch is the whole fixture ledger, it holds no read-graded act and the
+# credit does not apply — but one section ahead of this one that reads (8d is
+# the shortest) puts a single read in a short stretch and the boundary goes
+# quiet, so the assertion below fails for a reason it does not test. Taken
+# after the structural row, the stretch this judgment measures is its own.
+printf '%s\n' "$( { grep -c '^- `' "$FX_LEDGER" || true; } | tr -d ' ')" \
+  > "$RD/progress-origin"
 b1_12d_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
