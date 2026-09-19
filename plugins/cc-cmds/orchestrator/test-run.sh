@@ -5200,6 +5200,57 @@ check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 포장
 rr_pguard 워크트리쓰기 git diff "--output=$WORK/elsewhere/x.json"
 check "설치본 가드: 음성 대조군 — 보호 루트 밖을 쓰는 옵션 토큰은 rc 0" "$rr_pguard_rc" "0"
 
+# --- 보호 디렉터리 자신과 그 조상 --------------------------------------------
+# 모든 팔이 보호 디렉터리 이름에 앵커돼 있어 루트 자신과 그 위는 어느 팔에도
+# 걸리지 않았다. 디렉터리를 목적지로 받는 동사는 원본 이름으로 그 아래를 만들거나
+# 병합하므로(macOS `cp -R`) 루트 전체에 닿는다.
+rr_pguard 워크트리쓰기 cp -R x "$RRP_INST"
+check "설치본 가드: 플러그인 루트 자신을 목적지로 한 쓰기는 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 rm -rf "$RRP_INST"
+check "설치본 가드: 플러그인 루트 자신의 삭제도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 cp -R x "$RRP_INST/.."
+check "설치본 가드: 플러그인 루트의 조상도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 cp -R x "$RR/cc-cmds"
+check "배시 가드: 런 루트의 부모를 목적지로 한 쓰기는 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'조상'*) ok "배시 가드: 런 루트 부모의 거부가 조상 팔의 것이다" ;;
+  *) bad "배시 가드: 런 루트 부모의 거부 사유" "조상 팔이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 cp -R x "$RRP_WT"
+check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 플러그인 루트는 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 워크트리쓰기 git commit -m "a / b"
+check "설치본 가드: 음성 대조군 — 복합 토큰에는 조상 팔이 걸리지 않는다" "$rr_pguard_rc" "0"
+
+# --- 말단 파일 링크 -----------------------------------------------------------
+# 조상 물리화는 실재하는 가장 깊은 디렉터리에서만 접으므로, 파일을 가리키는 말단
+# 링크는 링크 이름 그대로 남아 두 가드를 모두 지났다.
+: > "$RRP_INST/orchestrator/gate.sh"
+mkdir -p "$RR/cc-cmds/run/victim/settings" "$WORK/lk"
+: > "$RR/cc-cmds/run/victim/settings/x.json"
+: > "$WORK/plain.txt"
+ln -sfn "$RRP_INST/orchestrator/gate.sh" "$WORK/Lf" 2>/dev/null
+ln -sfn "$RR/cc-cmds/run/victim/settings/x.json" "$WORK/Lr" 2>/dev/null
+ln -sfn ../installed/plugins/cc-cmds/orchestrator/gate.sh "$WORK/lk/Lrel" 2>/dev/null
+ln -sfn "$WORK/plain.txt" "$WORK/Lok" 2>/dev/null
+if [ -L "$WORK/Lf" ] && [ -L "$WORK/Lr" ] && [ -L "$WORK/lk/Lrel" ] && [ -L "$WORK/Lok" ]; then
+  rr_pguard 워크트리쓰기 cp x "$WORK/Lf"
+  check "설치본 가드: 설치본 스크립트를 가리키는 말단 링크는 rc 3" "$rr_pguard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/Lr"
+  check "배시 가드: 형제 런 파일을 가리키는 말단 링크는 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'다른 런의 디렉터리'*) ok "배시 가드: 말단 링크 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 말단 링크 거부 사유" "다른 팔이 먼저 거부했다: $rr_guard_msg" ;;
+  esac
+  rr_pguard 워크트리쓰기 cp x "$WORK/lk/Lrel"
+  check "설치본 가드: 상대 링크 문면은 링크가 있는 디렉터리 기준으로 해소된다 (rc 3)" "$rr_pguard_rc" "3"
+  rr_pguard 워크트리쓰기 cp x "$WORK/Lok"
+  check "설치본 가드: 음성 대조군 — 평범한 파일을 가리키는 말단 링크는 rc 0" "$rr_pguard_rc" "0"
+  rr_guard 워크트리쓰기 cp x "$WORK/Lok"
+  check "배시 가드: 음성 대조군 — 평범한 파일을 가리키는 말단 링크는 rc 0" "$rr_guard_rc" "0"
+else
+  printf 'NOTE: 말단 파일 링크 픽스처를 만들지 못해 건너뛴다\n'
+fi
+
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
 # 조상 성분을 아이노드로 비교하되 사슬을 거슬러 오르는 것은 **어휘적**이라, 앵커된

@@ -8618,6 +8618,33 @@ gate_arg_words() {
   return 0
 }
 
+gate_path_is_at_or_above() {
+  # gate_path_is_at_or_above <path> <protected dir> — rc 0 when the path is the
+  # protected directory itself or one of its ancestors. `/` is answered apart
+  # because `"/"/*` is `//*` and matches nothing.
+  [ "$1" = "/" ] && return 0
+  case "$2/" in
+    "$1"/*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_leaf_spelling() {
+  # gate_leaf_spelling <physical-prefix spelling> — when the path's last
+  # component is a symlink, the path it resolves to; otherwise nothing.
+  #
+  # `gate_real_prefix` folds only the deepest existing DIRECTORY, so a final
+  # component that is a link to a FILE stays the link's own name, and
+  # `cp e <tmp>/L` wrote through a link to `<root>/orchestrator/gate.sh` past
+  # both guards. `gate_physical_path` already follows a final link — relative
+  # link text against the link's own directory, `pwd -P` at every step, at
+  # most eight hops — so it is reused rather than a third resolver written.
+  # `gate_real_prefix` itself is not changed: it also grades every operand,
+  # and following links there would move grades outside these two guards.
+  [ -L "$1" ] || return 0
+  gate_path_spelling "$(gate_physical_path "$1")"
+}
+
 gate_rundir_write_guard() {
   # gate_rundir_write_guard <graded-surface> <argv...>
   #
@@ -8651,11 +8678,12 @@ gate_rundir_write_guard() {
   # publish cannot observe, and a lead that cannot observe either parks forever
   # or synthesizes a round product it never saw.
   #
-  # WHAT THIS DOES NOT DO. It matches the run directory by path, so an act that
-  # reaches the same file through a symlink whose own path names nothing under
-  # the run directory is not seen — the same residual the manifest guard states,
-  # and closed by the same thing: the enforcement-surface digest is compared at
-  # the next entry.
+  # WHAT THIS DOES NOT DO. It matches the run directory by path, after
+  # resolving a symlinked ancestor and a symlinked final component (eight hops
+  # at most). A path built by a `cd` inside a wrapper, and a link swapped
+  # between this check and the act running, are not seen — the same residual
+  # the manifest guard states, and closed by the same thing: the
+  # enforcement-surface digest is compared at the next entry.
   local graded="$1"; shift
   [ "$#" -ge 1 ] || return 0
   [ -n "${RUN_DIR:-}" ] || return 0
@@ -8694,20 +8722,23 @@ gate_rundir_write_guard() {
   # reaching a run directory through `ln -s <run root> /tmp/L` carries no `..`,
   # is not relative, is already in lexical normal form, and SHARES NO SUBSTRING
   # with either root — so the four prefix arms and the buried-path arm below all
-  # miss it and the write lands. The hook's `Write`/`Edit` half already carries a
-  # device+inode layer for exactly this vector and says in its own comment that
-  # the layer is required rather than belt-and-braces; this is the Bash half of
-  # the same closure. `gate_real_prefix` is the resolver rather than
-  # `gate_physical_path` for the reason that function states: the destination of
-  # an `mv` normally does not exist yet, and a resolver that needs it to exist
-  # returns the input unchanged, which makes a prefix test miss rather than
-  # answer differently. One `cd`+`pwd -P` per candidate argument, and per
-  # `/`-bearing word of a compound token.
+  # miss it and the write lands. The hook's `Write`/`Edit` half carries a
+  # device+inode layer for this vector; this is the Bash half, and it closes
+  # less than that layer: a symlinked ancestor and a symlinked final component
+  # are resolved, a path assembled by a `cd` inside a wrapper and a link
+  # changed between this check and the act are not. `gate_real_prefix` is the
+  # ancestor resolver rather than `gate_physical_path` for the reason that
+  # function states: the destination of an `mv` normally does not exist yet,
+  # and a resolver that needs it to exist returns the input unchanged, which
+  # makes a prefix test miss rather than answer differently. The final
+  # component is then followed by `gate_leaf_spelling` only when it is a link.
+  # One `cd`+`pwd -P` per candidate argument, and per `/`-bearing word of a
+  # compound token.
   #
   # BOTH SPELLINGS ARE CLASSIFIED AND A REFUSAL FROM EITHER WINS. Taking only the
   # physical one re-opens the `/var` gap the two run-directory spellings exist to
   # close, and taking only the lexical one is today's hole.
-  local a rdp rdn rdln an ap ar sp rel root rootp r matched first w wn wp i
+  local a rdp rdn rdln an ap al ar sp rel root rootp r matched first w wn wp wl i
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
   rdn=$(gate_path_spelling "$rdp")
@@ -8729,18 +8760,21 @@ gate_rundir_write_guard() {
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+    al=$(gate_leaf_spelling "$ap")
     # OWN IS STILL TESTED FIRST, AND IT IS TESTED PER SPELLING. Deciding "is this
     # mine" from the lexical spelling and "is this a sibling's" from the physical
     # one would read a symlink pointing at THIS run as a foreign run, so each
     # spelling goes through the whole predicate and keeps its own exemption.
-    for sp in "$an" "$ap"; do
+    for sp in "$an" "$ap" "$al"; do
+      [ -n "$sp" ] || continue
       if gate_rundir_is_foreign_run "$sp" "$root" "$rootp" "$rdn" "$rdln"; then
         warn "룰 거부: 다른 런의 디렉터리입니다 — 스테이지가 자기 런이 아닌 런의 디렉터리에 쓰는 정당한 경우는 없습니다 (그 런의 고정 사본과 기준선이 거기 있습니다): $a"
         return "$GATE_EXIT_RULE"
       fi
     done
     matched=0
-    for sp in "$an" "$ap"; do
+    for sp in "$an" "$ap" "$al"; do
+      [ -n "$sp" ] || continue
       rel=""
       case "$sp" in
         "$rdn") rel="." ;;
@@ -8791,6 +8825,32 @@ gate_rundir_write_guard() {
       return "$GATE_EXIT_RULE"
     done
     if [ "$matched" = 1 ]; then continue; fi
+    # AN ANCESTOR OF THE RUN ROOT IS A DESTINATION TOO. Every arm above is
+    # anchored at a run directory, so the directories ABOVE the run root matched
+    # none of them — and a verb whose destination is a directory creates or
+    # merges the source's basename under it: macOS `cp -R <evil>/run
+    # <state>/cc-cmds` merges into every run at once, and `rm -rf <state>` takes
+    # them all. The test is "the run root is at or below this path".
+    #
+    # ONLY A WHOLE-PATH ARGUMENT. A compound token's lexical normalization is a
+    # rewound string rather than a path, and a string that happens to rewind to
+    # `/` or to the grading directory would be refused for naming nothing.
+    #
+    # RESIDUAL, in the safe direction: in a pinned run the run directory and its
+    # ancestors cannot be named whole by a write-graded act either, and `.`/`..`
+    # carry no `/` so the filter at the top of this loop never shows them here.
+    if ! gate_arg_is_compound "$a"; then
+      for r in "$root" "$rootp"; do
+        [ -n "$r" ] || continue
+        for sp in "$an" "$ap" "$al"; do
+          [ -n "$sp" ] || continue
+          if gate_path_is_at_or_above "$sp" "$r"; then
+            warn "룰 거부: 런 루트의 조상 디렉터리를 쓰기 대상으로 지명했습니다 — 디렉터리를 목적지로 받는 동사는 원본 이름으로 그 아래를 만들거나 병합하므로 런 루트 전체에 닿습니다: $a"
+            return "$GATE_EXIT_RULE"
+          fi
+        done
+      done
+    fi
     # THE PATH THAT IS NOT AN ARGUMENT OF ITS OWN. Every arm above is a prefix
     # test on a WHOLE argument, so a run directory carried inside a larger token
     # walks past all of them: `git diff --output=<피해자>/…` spells the path
@@ -8819,7 +8879,8 @@ gate_rundir_write_guard() {
     ar=$(gate_path_spelling "$a")
     for r in "$root" "$rootp"; do
       [ -n "$r" ] || continue
-      for sp in "$an" "$ap" "$ar"; do
+      for sp in "$an" "$ap" "$al" "$ar"; do
+        [ -n "$sp" ] || continue
         case "$sp" in
           *"$r"*)
             warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
@@ -8831,10 +8892,10 @@ gate_rundir_write_guard() {
     # RELATIVE to the grading directory never spells the run root at all:
     # `bash -c "cp e ../victim/settings/x.json"` run from inside this run, or
     # `--output=../../<다른 런>/…`. `gate_arg_words` gives each word with a `/`
-    # and each is resolved the way the shell will — lexically and physically. A
-    # word at or under the run root is refused with the buried-path text. This
-    # run's own exceptions are not given to words, the same rule the buried arm
-    # above applies to a wrapped path of this run.
+    # and each is resolved the way the shell will — lexically, physically, and
+    # through a final link. A word at or under the run root is refused with the
+    # buried-path text. This run's own exceptions are not given to words, the
+    # same rule the buried arm above applies to a wrapped path of this run.
     #
     # WORDS, NOT A TAIL MATCH ON THE ROOT'S NAME AND NOT A BAN ON `..`. A tail
     # match refuses every text that merely names such a path relative to a
@@ -8855,9 +8916,11 @@ gate_rundir_write_guard() {
         w=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
         wn=$(gate_path_spelling "$(gate_lexical_abs "$w")")
         wp=$(gate_path_spelling "$(gate_real_prefix "$wn")")
+        wl=$(gate_leaf_spelling "$wp")
         for r in "$root" "$rootp"; do
           [ -n "$r" ] || continue
-          for sp in "$wn" "$wp"; do
+          for sp in "$wn" "$wp" "$wl"; do
+            [ -n "$sp" ] || continue
             case "$sp" in
               "$r"|"$r"/*)
                 warn "룰 거부: 런 디렉터리 경로가 인자 안에 묻혀 있습니다 — 옵션 토큰이나 인터프리터 문자열 안의 경로는 접두 검사가 보지 못해 통째로 거부합니다. 경로를 별도 인자로 넘기고 포장을 벗기세요: $a"
@@ -8917,9 +8980,12 @@ gate_plugin_root_write_guard() {
   # guard states at the same place: every comparison here is lexical, `pwd -P` is
   # applied to the ROOTS and never to the argument, and an argument reaching this
   # root through a symlinked ancestor shares no substring with either spelling of
-  # either root. The hook's `Write`/`Edit` half closed that vector with a
-  # device+inode layer and this is the Bash half of the same closure.
-  local a an ap ar sp r rl rp hl hp first w wn wp i
+  # either root. The hook's `Write`/`Edit` half has a device+inode layer for that
+  # vector; this Bash half resolves a symlinked ancestor and a symlinked final
+  # component, and leaves a `cd` inside a wrapper and a link changed between
+  # this check and the act — the same closure and residual the run directory
+  # guard states.
+  local a an ap al ar sp r rl rp hl hp first w wn wp wl i
   gate_plugin_roots
   rl=$GATE_PR_RL; rp=$GATE_PR_RP; hl=$GATE_PR_HL; hp=$GATE_PR_HP
   first=1
@@ -8931,12 +8997,33 @@ gate_plugin_root_write_guard() {
     case "$a" in */*) ;; *) continue ;; esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
+    al=$(gate_leaf_spelling "$ap")
     ar=$(gate_path_spelling "$a")
     for r in "$rl" "$rp" "$hl" "$hp"; do
       [ -n "$r" ] || continue
+      # THE ROOT ITSELF AND EVERY ANCESTOR OF IT, for a whole-path argument.
+      # Every needle below is anchored at `orchestrator` or `hooks`, so
+      # `cp -R <evil>/orchestrator <root>` — which macOS `cp -R` merges into
+      # the existing directory — and `rm -rf <root>/..` named nothing they
+      # match. A compound token is excluded for the reason the run directory
+      # guard gives at its ancestor arm.
+      #
+      # RESIDUAL, in the safe direction: a stage in the main worktree cannot
+      # name that worktree's root, `plugins/`, `$HOME` or `/` whole as the
+      # operand of a write-graded act.
+      if ! gate_arg_is_compound "$a"; then
+        for sp in "$an" "$ap" "$al"; do
+          [ -n "$sp" ] || continue
+          if gate_path_is_at_or_above "$sp" "$r"; then
+            warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트입니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
+            return "$GATE_EXIT_RULE"
+          fi
+        done
+      fi
       # `ar` is the argument before `..` is rewound — the spelling in which a
       # program string's trailing `: /../../..` has not yet erased the root.
-      for sp in "$an" "$ap" "$ar"; do
+      for sp in "$an" "$ap" "$al" "$ar"; do
+        [ -n "$sp" ] || continue
         # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
         # run directory guard's last arm gives: an option token and an interpreter
         # program string both carry the path inside a larger argument, and a
@@ -8983,9 +9070,11 @@ gate_plugin_root_write_guard() {
         w=${GATE_ARG_WORDS[$i]}; i=$((i + 1))
         wn=$(gate_path_spelling "$(gate_lexical_abs "$w")")
         wp=$(gate_path_spelling "$(gate_real_prefix "$wn")")
+        wl=$(gate_leaf_spelling "$wp")
         for r in "$rl" "$rp" "$hl" "$hp"; do
           [ -n "$r" ] || continue
-          for sp in "$wn" "$wp"; do
+          for sp in "$wn" "$wp" "$wl"; do
+            [ -n "$sp" ] || continue
             case "$sp" in
               *"$r"/orchestrator|*"$r"/orchestrator/*|*"$r"/hooks|*"$r"/hooks/*)
                 warn "룰 거부: 설치본 플러그인의 오케스트레이터·훅 스크립트가 인자 안에 묻혀 있습니다 — 이 바이트가 모든 게이트 진입을 수행하므로 런이 자기를 강제하는 코드를 고치는 자리가 됩니다. 고치려면 워크트리에서 고치고 배포로 적용하세요: $a"
