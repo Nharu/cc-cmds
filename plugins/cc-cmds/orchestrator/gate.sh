@@ -1727,6 +1727,2005 @@ gate_tree_root() {
   printf '%s' "$GATE_TREE_ROOT"
 }
 
+# --- argv parse layer ---
+#
+# ONE PARSE, READ BY EVERY CONSUMER. Each reader of an argv in this file walks it
+# by hand and knows only the spellings its author met: one skips a leading `-R`,
+# the next reads `${2}` as the verb, a third matches `*=*` before `-*` and takes
+# `--split-string=<payload>` for an assignment. The same act is then graded,
+# marked and routed differently depending on how it was spelled. This block
+# parses once, the way the real tools parse, and leaves the result in `GP_*`
+# globals that a consumer reads through the accessors below instead of walking
+# the words again.
+#
+# NOTHING CALLS IT YET. The block lands with no caller so that it can be tested
+# on its own and cannot move a grade, a mark, a ladder or a reach answer on the
+# day it arrives. Moving the consumers onto it is a separate change.
+#
+# `gp_parse` ALWAYS RETURNS 0 AND PRINTS NOTHING. Its consumers run inside `$( )`
+# under `set -e`, where a helper's rc 1 kills the subshell and the caller reads
+# an empty string — a silent downgrade, not a refusal. The verdict is
+# `GP_STATUS` instead, and it does not grade anything:
+#   ok      one command, fully parsed
+#   list    a shell `-c` body split into simple commands, every one readable
+#   opaque  a body whose command words are literal but whose structure is outside
+#           that grammar — keywords, a `$param` argument, a file redirection, `&`,
+#           a subshell, a here-document
+#   tool    the innermost argv0 is neither a family this layer decomposes nor a
+#           row of the grading table
+#   form    a spelling of a family this layer knows and cannot read
+# A body is as bad as its worst piece, in the order form > opaque > list. `tool`
+# is NOT in that order: a piece naming an unregistered tool leaves the body
+# `list` or `opaque`, and `tool` is the act's state only when the TOP-LEVEL
+# argv0 is the unregistered one. Promoting a piece's `tool` would turn the act
+# into `등급 미상`, which a declaration can rescue — reopening exactly the gap a
+# floor over the pieces exists to close.
+#
+# `GP_REASON` CARRIES A CODE FROM A CLOSED SET — `gh:unknown-flag:<word>`,
+# `gh:flag-not-on-leaf:<word>`, `gh:unknown-path:<word>`, `gh:bool-literal:<word>`,
+# `env:split-string-expansion`, `env:argv0-override`, `env:exec-identity:<name>`,
+# `sh:non-literal-command-word`, `wrap:depth` — or is empty when none of them
+# names the cause. A new code goes into this list before anything emits it.
+#
+# BASH 3.2. No associative arrays, no `mapfile`, no case-conversion expansions:
+# parallel indexed arrays instead, because a value may carry a newline and a
+# `key=value` line store cannot hold one. Every expansion of an array that can be
+# empty goes through `${A[@]+"${A[@]}"}`, because the unguarded form aborts under
+# `set -u` on 3.2. Everything here also runs under the driver's `set -euo
+# pipefail`, so no function ends on a test that may be false.
+_GP_TAB=$(printf '\t')
+_GP_CR=$(printf '\r')
+_GP_US=$(printf '\037')
+_GP_LF='
+'
+
+gp_reset() {
+  GP_STATUS=''
+  GP_REASON=''
+  GP_WRAP=()
+  GP_ENV=()
+  GP_ENV_CLEAR=0
+  GP_ARGV0=''
+  GP_ARGV0_RAW=''
+  GP_FAMILY=''
+  GP_INNER=()
+  GP_PATH=()
+  GP_ALIAS=''
+  GP_OK=()
+  GP_OV=()
+  GP_OS=()
+  GP_POS=()
+  GP_DDASH=-1
+  GP_OPEN=0
+  GP_SUB=()
+  GP_REDIR=()
+  GP_CWD=''
+  GP_DEPTH=0
+  # Where the effective environment starts. `env -i` and `exec -c` discard what
+  # was assigned before them, but the record of those assignments is kept.
+  _GP_ENV_BASE=0
+  return 0
+}
+gp_reset
+_GP_GH_N=0
+
+# `gp_parse <argv...>` — see the block comment above. A piece of a shell body is
+# parsed by re-entering this in a subshell one level deeper; `_GP_ENTRY_DEPTH`
+# is how that level is handed down, and nothing outside this block sets it.
+gp_parse() {
+  local depth="${_GP_ENTRY_DEPTH:-0}"
+  gp_reset
+  GP_DEPTH="$depth"
+  if [ "$#" -eq 0 ]; then
+    GP_STATUS=form
+    return 0
+  fi
+  if [ "$GP_DEPTH" -gt 8 ]; then
+    _gp_form wrap:depth
+    return 0
+  fi
+  _gp_walk "$@"
+  if [ -z "$GP_STATUS" ]; then
+    GP_STATUS=form
+  fi
+  return 0
+}
+
+_gp_form() {
+  if [ "$GP_STATUS" != form ]; then
+    GP_STATUS=form
+    GP_REASON="${1:-}"
+  fi
+  return 0
+}
+
+_gp_wrap_add() {
+  GP_WRAP[${#GP_WRAP[@]}]="$1"
+  return 0
+}
+
+# THE TRANSPARENT WRAPPERS ARE PEELED BEFORE ANY FAMILY IS CHOSEN. Each peel
+# leaves `_GP_PEEL` at `peeled` (the wrapped argv is in `_GP_REST`), `stop` (no
+# command follows, so the wrapper itself is the act) or `form`. `caffeinate`,
+# `xargs` and `sudo` are deliberately not here: they run what they wrap in ways
+# this layer does not model, so they stay `tool`. A top-level `exec` stays `tool`
+# too — there is no `exec` binary, only the shell builtin, which the body parser
+# handles.
+_gp_walk() {
+  local w
+  while [ "$#" -gt 0 ]; do
+    w="${1##*/}"
+    _GP_PEEL=stop
+    _GP_PEEL_REASON=''
+    _GP_REST=()
+    case "$w" in
+      env|genv)             _gp_peel_env "$@" ;;
+      command)              _gp_peel_command "$@" ;;
+      nice|gnice)           _gp_peel_nice "$@" ;;
+      nohup|gnohup)         _gp_peel_plain "$@" ;;
+      timeout|gtimeout)     _gp_peel_timeout "$@" ;;
+      stdbuf|gstdbuf)       _gp_peel_stdbuf "$@" ;;
+      time|gtime)           _gp_peel_time "$@" ;;
+      lockf)                _gp_peel_lockf "$@" ;;
+      sh|bash|zsh|dash|ksh) _gp_shell "$@"; return 0 ;;
+    esac
+    case "$_GP_PEEL" in
+      form) _gp_form "$_GP_PEEL_REASON"; return 0 ;;
+      peeled) ;;
+      *) break ;;
+    esac
+    GP_DEPTH=$((GP_DEPTH + 1))
+    if [ "$GP_DEPTH" -gt 8 ]; then
+      _gp_form wrap:depth
+      return 0
+    fi
+    set -- "${_GP_REST[@]}"
+  done
+  _gp_leaf "$@"
+  return 0
+}
+
+_gp_leaf() {
+  GP_ARGV0_RAW="$1"
+  GP_ARGV0="${1##*/}"
+  GP_INNER=("$@")
+  if [ "$GP_ARGV0" = gh ]; then
+    GP_FAMILY=gh
+    shift
+    _gp_gh "$@"
+    return 0
+  fi
+  GP_FAMILY=raw
+  if [ "$GP_STATUS" != form ]; then
+    if _gp_is_tool "$@"; then GP_STATUS=tool; else GP_STATUS=ok; fi
+  fi
+  return 0
+}
+
+# MEMBERSHIP, NOT A GRADE. `tool` means "the grading table has no row for this",
+# and the table is the only place that knows its rows, so the question is put to
+# it and only the `등급 미상` answer is read back. The grade itself is not kept.
+_gp_is_tool() {
+  local g
+  declare -F surface_of_argv0 >/dev/null 2>&1 || return 1
+  g=$(surface_of_argv0 "$@" 2>/dev/null) || g=''
+  [ "$g" = '등급 미상' ]
+}
+
+# `_gp_getopt <short-bool> <short-value> <long-bool> <long-value> <argv...>` —
+# the getopt grammar the wrappers share: clustered short options, a short value
+# attached or separate, `--name=value` or `--name value`, `--` ending options.
+# An option the wrapper does not have is `form`: the wrapper is a family this
+# layer knows, and an unreadable spelling of it is exactly that state.
+_gp_getopt() {
+  local sb="$1" sv="$2" lb=" $3 " lv=" $4 " a name j c
+  shift 4
+  _GP_OPTN=()
+  _GP_OPTV=()
+  _GP_PEEL=''
+  while [ "$#" -gt 0 ]; do
+    a="$1"
+    case "$a" in
+      --) shift; break ;;
+      --*=*)
+        name="${a%%=*}"; name="${name#--}"
+        case "$lv" in
+          *" $name "*) _gp_optrec "$name" "${a#*=}" ;;
+          *) _GP_PEEL=form; return 0 ;;
+        esac ;;
+      --*)
+        name="${a#--}"
+        case "$lb" in
+          *" $name "*) _gp_optrec "$name" '' ;;
+          *)
+            case "$lv" in
+              *" $name "*)
+                if [ "$#" -lt 2 ]; then _GP_PEEL=form; return 0; fi
+                _gp_optrec "$name" "$2"; shift ;;
+              *) _GP_PEEL=form; return 0 ;;
+            esac ;;
+        esac ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          c="${a:j:1}"
+          if [ -n "$sb" ] && _gp_has_char "$sb" "$c"; then
+            _gp_optrec "$c" ''
+            j=$((j + 1))
+            continue
+          fi
+          if [ -n "$sv" ] && _gp_has_char "$sv" "$c"; then
+            if [ $((j + 1)) -lt "${#a}" ]; then
+              _gp_optrec "$c" "${a:j+1}"
+            else
+              if [ "$#" -lt 2 ]; then _GP_PEEL=form; return 0; fi
+              _gp_optrec "$c" "$2"; shift
+            fi
+            break
+          fi
+          _GP_PEEL=form
+          return 0
+        done ;;
+      *) break ;;
+    esac
+    shift
+  done
+  _GP_REST=("$@")
+  return 0
+}
+
+_gp_has_char() {
+  case "$1" in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+
+_gp_optrec() {
+  _GP_OPTN[${#_GP_OPTN[@]}]="$1"
+  _GP_OPTV[${#_GP_OPTV[@]}]="$2"
+  return 0
+}
+
+# `_gp_optlast <name...>` — the last value recorded under any of the names.
+_gp_optlast() {
+  local k="${#_GP_OPTN[@]}" n
+  _GP_OPTVAL=''
+  while [ "$k" -gt 0 ]; do
+    k=$((k - 1))
+    for n in "$@"; do
+      if [ "${_GP_OPTN[$k]}" = "$n" ]; then
+        _GP_OPTVAL="${_GP_OPTV[$k]}"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+_gp_peel_plain() {
+  local w="${1##*/}"
+  shift
+  _gp_getopt '' '' '' '' "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if [ "${#_GP_REST[@]}" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add "${w#g}"
+  _GP_PEEL=peeled
+  return 0
+}
+
+# GNU `nice` also takes the adjustment as `-N`, in the first position only.
+_gp_peel_nice() {
+  local adj=''
+  shift
+  case "${1:-}" in
+    -[0-9]*|--[0-9]*) adj="${1#-}"; shift ;;
+  esac
+  _gp_getopt '' n '' adjustment "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if _gp_optlast n adjustment; then adj="$_GP_OPTVAL"; fi
+  if [ "${#_GP_REST[@]}" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add "nice${adj:+${_GP_TAB}adjust=$adj}"
+  _GP_PEEL=peeled
+  return 0
+}
+
+# `timeout [options] DURATION command` — the duration is an operand, not an
+# option, so a command needs two words after the options.
+_gp_peel_timeout() {
+  shift
+  _gp_getopt fpv sk 'foreground preserve-status verbose' 'signal kill-after' "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if [ "${#_GP_REST[@]}" -lt 2 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add "timeout${_GP_TAB}duration=${_GP_REST[0]}"
+  _GP_REST=("${_GP_REST[@]:1}")
+  _GP_PEEL=peeled
+  return 0
+}
+
+_gp_peel_stdbuf() {
+  shift
+  _gp_getopt '' ioe '' 'input output error' "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if [ "${#_GP_REST[@]}" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add stdbuf
+  _GP_PEEL=peeled
+  return 0
+}
+
+# BSD `time [-al] [-h|-p] [-o file]` and GNU `time [-apqv] [-f fmt] [-o file]`,
+# as one grammar. `-o` is the one option with an effect of its own — it writes.
+_gp_peel_time() {
+  local rec=time
+  shift
+  _gp_getopt ahlpqv fo 'append portability quiet verbose' 'format output' "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if _gp_optlast o output; then rec="time${_GP_TAB}output=$_GP_OPTVAL"; fi
+  if [ "${#_GP_REST[@]}" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add "$rec"
+  _GP_PEEL=peeled
+  return 0
+}
+
+# BSD `lockf [-knsw] [-t seconds] file command [arguments]`.
+_gp_peel_lockf() {
+  shift
+  _gp_getopt knsw t '' '' "$@"
+  [ "$_GP_PEEL" != form ] || return 0
+  if [ "${#_GP_REST[@]}" -lt 2 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add "lockf${_GP_TAB}file=${_GP_REST[0]}"
+  _GP_REST=("${_GP_REST[@]:1}")
+  _GP_PEEL=peeled
+  return 0
+}
+
+# `command -v`/`-V` LOOKS A NAME UP and runs nothing, so it is not peeled: the
+# act stays `command -v …` and the grading table answers it as a read.
+_gp_peel_command() {
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      -p) shift ;;
+      -v|-V|-pv|-pV|-vp|-Vp) _GP_PEEL=stop; return 0 ;;
+      -*) _GP_PEEL=form; return 0 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$#" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  _gp_wrap_add command
+  _GP_REST=("$@")
+  _GP_PEEL=peeled
+  return 0
+}
+
+# `env` — BSD and GNU grammar together. THE OPTION ARMS COME BEFORE THE
+# ASSIGNMENT ARM: `--split-string=gh repo delete …` contains a `=`, and reading
+# it as an assignment is how the payload used to vanish while the trailing
+# operand was graded instead.
+#
+# `-S` RE-ENTERS THE OPTION LOOP ONLY WHEN IT CAN BE READ WHOLE. Both
+# implementations split the string and parse the pieces as further options and
+# the command. That is followed only if the string has no shell-expansion or
+# quote character AND nothing follows it; otherwise what runs is the split plus
+# the trailing operands, spelled in a way this parser does not reproduce, and
+# the act is `form`.
+#
+# `-P` (BSD's utility search path) and `-L`/`-U` (login-class environments) change
+# which binary runs, so they are the execution-identity form the variable table
+# gives `PATH=`.
+_gp_peel_env() {
+  local a j c v split='' have_split=0 chdir='' cleared=0 rec=env
+  local -a args
+  shift
+  args=("$@")
+  while [ "${#args[@]}" -gt 0 ]; do
+    a="${args[0]}"
+    case "$a" in
+      --) args=("${args[@]:1}"); break ;;
+      -|--ignore-environment) _gp_env_clear; cleared=1 ;;
+      --null|--debug|--list-signal-handling) ;;
+      --block-signal|--default-signal|--ignore-signal) ;;
+      --block-signal=*|--default-signal=*|--ignore-signal=*) ;;
+      --unset=*) _gp_env_unset "${a#--unset=}" ;;
+      --chdir=*) chdir="${a#--chdir=}" ;;
+      --split-string=*) split="${a#--split-string=}"; have_split=1 ;;
+      --argv0|--argv0=*) _GP_PEEL=form; _GP_PEEL_REASON=env:argv0-override; return 0 ;;
+      --unset|--chdir|--split-string)
+        if [ "${#args[@]}" -lt 2 ]; then _GP_PEEL=form; return 0; fi
+        v="${args[1]}"
+        args=("${args[@]:1}")
+        case "$a" in
+          --unset) _gp_env_unset "$v" ;;
+          --chdir) chdir="$v" ;;
+          *) split="$v"; have_split=1 ;;
+        esac ;;
+      --*) _GP_PEEL=form; return 0 ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          c="${a:j:1}"
+          case "$c" in
+            i) _gp_env_clear; cleared=1 ;;
+            0|v) ;;
+            u|C|S)
+              if [ $((j + 1)) -lt "${#a}" ]; then
+                v="${a:j+1}"
+              elif [ "${#args[@]}" -ge 2 ]; then
+                v="${args[1]}"
+                args=("${args[@]:1}")
+              else
+                _GP_PEEL=form; return 0
+              fi
+              case "$c" in
+                u) _gp_env_unset "$v" ;;
+                C) chdir="$v" ;;
+                *) split="$v"; have_split=1 ;;
+              esac
+              break ;;
+            a) _GP_PEEL=form; _GP_PEEL_REASON=env:argv0-override; return 0 ;;
+            P|L|U) _GP_PEEL=form; _GP_PEEL_REASON=env:exec-identity:PATH; return 0 ;;
+            *) _GP_PEEL=form; return 0 ;;
+          esac
+          j=$((j + 1))
+        done ;;
+      =*) _GP_PEEL=form; return 0 ;;
+      *=*) _gp_env_assign "${a%%=*}" "${a#*=}" ;;
+      *) break ;;
+    esac
+    args=("${args[@]:1}")
+    if [ "$have_split" = 1 ]; then
+      have_split=0
+      if [ "${#args[@]}" -gt 0 ]; then
+        _GP_PEEL=form; _GP_PEEL_REASON=env:split-string-expansion; return 0
+      fi
+      case "$split" in
+        *'$'*|*'`'*|*'\'*|*"'"*|*'"'*)
+          _GP_PEEL=form; _GP_PEEL_REASON=env:split-string-expansion; return 0 ;;
+      esac
+      _gp_split_ws "$split"
+      args=(${_GP_WORDS[@]+"${_GP_WORDS[@]}"})
+    fi
+  done
+  if [ "$GP_STATUS" = form ]; then _GP_PEEL=form; return 0; fi
+  if [ "${#args[@]}" -eq 0 ]; then _GP_PEEL=stop; return 0; fi
+  if [ "$cleared" = 1 ]; then rec="$rec${_GP_TAB}clear=1"; fi
+  if [ -n "$chdir" ]; then
+    rec="$rec${_GP_TAB}chdir=$chdir"
+    GP_CWD="$chdir"
+  fi
+  _gp_wrap_add "$rec"
+  _GP_REST=("${args[@]}")
+  _GP_PEEL=peeled
+  return 0
+}
+
+_gp_split_ws() {
+  local s="$1" w='' c i=0
+  _GP_WORDS=()
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"
+    case "$c" in
+      ' '|"$_GP_TAB"|"$_GP_LF")
+        if [ -n "$w" ]; then
+          _GP_WORDS[${#_GP_WORDS[@]}]="$w"
+          w=''
+        fi ;;
+      *) w="$w$c" ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ -n "$w" ]; then _GP_WORDS[${#_GP_WORDS[@]}]="$w"; fi
+  return 0
+}
+
+_gp_env_clear() {
+  GP_ENV_CLEAR=1
+  _GP_ENV_BASE="${#GP_ENV[@]}"
+  return 0
+}
+
+_gp_env_unset() {
+  GP_ENV[${#GP_ENV[@]}]="-$1"
+  return 0
+}
+
+# EVERY ASSIGNMENT IS RECORDED, WHATEVER ITS NAME. The table below decides only
+# what an assignment does to the verdict; filtering the record by name would let
+# `sh -c 'export AWS_PROFILE=prod; aws …'` leave no trace anywhere. Removals
+# (`-NAME`) are not assignments and never reach the table — `env -u PATH` leaves
+# the gate's own resolution PATH standing, so it is recorded and nothing more.
+#
+#   execution identity   PATH, BASH_ENV, ENV, DYLD_*, LD_*, GIT_EXEC_PATH,
+#                        GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*
+#                        — the binary that runs changes, so the act is `form`
+#   command value        GIT_SSH_COMMAND, GIT_EDITOR, EDITOR, VISUAL, PAGER,
+#                        GIT_PAGER, GIT_SEQUENCE_EDITOR, GIT_ASKPASS, SSH_ASKPASS
+#                        — a shell runs the value later, so it is parsed as a
+#                        body; its pieces join `GP_SUB`, and a value that is not
+#                        a plain list makes the act `form`
+#   target selector      GH_REPO, GH_HOST, GH_ENTERPRISE_TOKEN, GH_TOKEN, GIT_DIR,
+#                        GIT_WORK_TREE — recorded; `gp_gh_repo` reads them
+#   everything else      recorded only
+_gp_env_assign() {
+  local name="$1" value="$2"
+  GP_ENV[${#GP_ENV[@]}]="$name=$value"
+  case "$name" in
+    '') _gp_form '' ;;
+    PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+      _gp_form "env:exec-identity:$name" ;;
+    GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
+      _gp_body "$value"
+      if [ "$_GP_BODY_ST" != list ]; then _gp_form "$_GP_BODY_RS"; fi ;;
+  esac
+  return 0
+}
+
+# `sh`/`bash`/`zsh`/`dash`/`ksh` are a wrapper only with `-c`. Without it the
+# first operand is a script file this layer cannot read, and the act is the
+# shell itself — raw, answered by the grading table's constant row as before.
+# `bash -- -c x` names a FILE called `-c`, which is why `--` ends the scan.
+_gp_shell() {
+  local name="${1##*/}" a j c mode_c=0 noexec=0 i=1 n="$#"
+  local -a args
+  args=("$@")
+  while [ "$i" -lt "$n" ]; do
+    a="${args[$i]}"
+    case "$a" in
+      --|-|+) i=$((i + 1)); break ;;
+      --norc|--noprofile|--login|--posix|--restricted|--verbose|--noediting) ;;
+      --rcfile|--init-file) i=$((i + 1)) ;;
+      --*) _gp_form ''; return 0 ;;
+      -o|+o|-O|+O) i=$((i + 1)) ;;
+      -?*|+?*)
+        j=1
+        while [ "$j" -lt "${#a}" ]; do
+          c="${a:j:1}"
+          case "$c" in
+            c) [ "${a:0:1}" = + ] || mode_c=1 ;;
+            n) [ "${a:0:1}" = + ] || noexec=1 ;;
+            o|O) i=$((i + 1)) ;;
+            a|b|e|f|h|k|m|p|t|u|v|x|B|C|E|H|P|T|i|l|r|s) ;;
+            *) _gp_form ''; return 0 ;;
+          esac
+          j=$((j + 1))
+        done ;;
+      *) break ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$mode_c" = 0 ] || [ "$i" -ge "$n" ]; then
+    _gp_leaf "$@"
+    return 0
+  fi
+  GP_DEPTH=$((GP_DEPTH + 1))
+  if [ "$GP_DEPTH" -gt 8 ]; then
+    _gp_form wrap:depth
+    return 0
+  fi
+  _gp_wrap_add "sh${_GP_TAB}name=$name${_GP_TAB}noexec=$noexec${_GP_TAB}script_from=argv"
+  GP_ARGV0_RAW="$1"
+  GP_ARGV0="$name"
+  GP_FAMILY=raw
+  GP_INNER=("$@")
+  _gp_body "${args[$i]}"
+  if [ "$GP_STATUS" != form ]; then
+    GP_STATUS="$_GP_BODY_ST"
+    GP_REASON="$_GP_BODY_RS"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The shell body. A restricted POSIX tokenizer: single quotes, double quotes
+# whose content has no special character beyond an escape, backslash escapes;
+# `;`, `&&`, `||`, `|` and newline separate simple commands; `NAME=v` before a
+# command word is an assignment; `N>&M` and redirections to `/dev/null` are
+# recorded and change nothing. Every simple command lands in `GP_SUB` as one
+# string of words joined by US, and every one of them that is not a builtin is
+# parsed again, one level deeper, in a subshell.
+#
+# A NON-LITERAL COMMAND WORD IS `form`, not `opaque`: `$x`, a glob, `eval`,
+# `source`, `.`, `alias`, a function definition, and command substitution
+# anywhere — `$(…)` and backticks run a command this parser cannot see, whatever
+# position they sit in.
+#
+# The helpers below read and write the tokenizer's locals through bash's dynamic
+# scoping, which is also what makes the whole thing re-entrant: a command-value
+# variable inside a body is tokenized by a nested call with locals of its own.
+# ---------------------------------------------------------------------------
+_gp_body() {
+  local s="$1" n="${#1}" i=0 c d st=list rs='' w='' f='' inw=0 rop='' rfd=''
+  local -a cw cf hdl hdx hds
+  cw=(); cf=(); hdl=(); hdx=(); hds=()
+  while [ "$i" -lt "$n" ]; do
+    [ "$st" != form ] || break
+    c="${s:i:1}"
+    case "$c" in
+      "'")
+        d="${s:i+1}"
+        case "$d" in
+          *"'"*)
+            d=${d%%"'"*}
+            w="$w$d"; f="${f}q"; inw=1
+            i=$((i + ${#d} + 2)) ;;
+          *) _gpb_form '' ;;
+        esac ;;
+      '"') _gpb_dq ;;
+      '\')
+        d="${s:i+1:1}"
+        if [ "$d" = "$_GP_LF" ]; then
+          i=$((i + 2))
+        elif [ $((i + 1)) -lt "$n" ]; then
+          w="$w$d"; f="${f}q"; inw=1; i=$((i + 2))
+        else
+          w="$w\\"; inw=1; i=$((i + 1))
+        fi ;;
+      '$') _gpb_dollar 0 ;;
+      '`') _gpb_form sh:non-literal-command-word ;;
+      ' '|"$_GP_TAB") _gpb_endword; i=$((i + 1)) ;;
+      "$_GP_LF") _gpb_endcmd; i=$((i + 1)); _gpb_heredocs ;;
+      ';')
+        _gpb_endcmd
+        case "${s:i+1:1}" in
+          ';'|'&')
+            _gpb_opaque
+            i=$((i + 2))
+            [ "${s:i:1}" != '&' ] || i=$((i + 1)) ;;
+          *) i=$((i + 1)) ;;
+        esac ;;
+      '&')
+        case "${s:i+1:1}" in
+          '&') _gpb_endcmd; i=$((i + 2)) ;;
+          '>') _gpb_redirop ;;
+          *) _gpb_endcmd; _gpb_opaque; i=$((i + 1)) ;;
+        esac ;;
+      '|')
+        case "${s:i+1:1}" in
+          '|') _gpb_endcmd; i=$((i + 2)) ;;
+          '&') _gpb_endcmd; _gpb_opaque; i=$((i + 2)) ;;
+          *) _gpb_endcmd; i=$((i + 1)) ;;
+        esac ;;
+      '<'|'>') _gpb_redirop ;;
+      '(')
+        if [ "$inw" = 1 ] || [ "${#cw[@]}" -gt 0 ]; then
+          _gpb_endword
+          if [ "${s:i+1:1}" = ')' ]; then _gpb_form sh:non-literal-command-word; else _gpb_opaque; fi
+        else
+          _gpb_opaque
+        fi
+        _gpb_endcmd
+        i=$((i + 1)) ;;
+      ')') _gpb_opaque; _gpb_endcmd; i=$((i + 1)) ;;
+      '#')
+        if [ "$inw" = 0 ]; then
+          d="${s:i}"
+          case "$d" in
+            *"$_GP_LF"*) d=${d%%"$_GP_LF"*}; i=$((i + ${#d})) ;;
+            *) i="$n" ;;
+          esac
+        else
+          w="$w#"; i=$((i + 1))
+        fi ;;
+      *)
+        case "$c" in
+          '*'|'?'|'[') f="${f}g" ;;
+        esac
+        w="$w$c"; inw=1; i=$((i + 1)) ;;
+    esac
+  done
+  if [ "$st" != form ]; then
+    _gpb_endcmd
+    if [ "${#hdl[@]}" -gt 0 ]; then _gpb_form ''; fi
+  fi
+  _GP_BODY_ST="$st"
+  _GP_BODY_RS="$rs"
+  return 0
+}
+
+_gpb_opaque() {
+  [ "$st" = form ] || st=opaque
+  return 0
+}
+
+_gpb_form() {
+  if [ "$st" != form ]; then
+    st=form
+    rs="${1:-}"
+  fi
+  return 0
+}
+
+# Inside double quotes only `$`, backtick, `"`, `\` and newline follow a
+# backslash as escapes; any other backslash stays literal.
+_gpb_dq() {
+  i=$((i + 1)); inw=1; f="${f}q"
+  while :; do
+    if [ "$i" -ge "$n" ]; then _gpb_form ''; return 0; fi
+    c="${s:i:1}"
+    case "$c" in
+      '"') i=$((i + 1)); return 0 ;;
+      '\')
+        d="${s:i+1:1}"
+        case "$d" in
+          '$'|'`'|'"'|'\') w="$w$d"; i=$((i + 2)) ;;
+          "$_GP_LF") i=$((i + 2)) ;;
+          *) w="$w\\"; i=$((i + 1)) ;;
+        esac ;;
+      '$') _gpb_dollar 1; [ "$st" != form ] || return 0 ;;
+      '`') _gpb_form sh:non-literal-command-word; return 0 ;;
+      *) w="$w$c"; i=$((i + 1)) ;;
+    esac
+  done
+}
+
+# `_gpb_dollar <in-double-quotes>` — a parameter or arithmetic expansion marks
+# the word `d` (its value is not known here); command substitution is `form`.
+_gpb_dollar() {
+  local j e
+  d="${s:i+1:1}"
+  inw=1
+  case "$d" in
+    '(')
+      if [ "${s:i+2:1}" = '(' ]; then
+        e="${s:i+3}"
+        case "$e" in
+          *'))'*) e=${e%%'))'*} ;;
+          *) _gpb_form ''; return 0 ;;
+        esac
+        case "$e" in
+          *'$('*|*'`'*) _gpb_form sh:non-literal-command-word; return 0 ;;
+        esac
+        w="$w\$(($e))"; f="${f}d"; i=$((i + 3 + ${#e} + 2))
+      else
+        _gpb_form sh:non-literal-command-word
+      fi ;;
+    '{')
+      e="${s:i+2}"
+      case "$e" in
+        *'}'*) e=${e%%'}'*} ;;
+        *) _gpb_form ''; return 0 ;;
+      esac
+      case "$e" in
+        *'$('*|*'`'*) _gpb_form sh:non-literal-command-word; return 0 ;;
+      esac
+      w="$w\${$e}"; f="${f}d"; i=$((i + 2 + ${#e} + 1)) ;;
+    [A-Za-z_])
+      j=$((i + 1))
+      while [ "$j" -lt "$n" ]; do
+        case "${s:j:1}" in
+          [A-Za-z0-9_]) j=$((j + 1)) ;;
+          *) break ;;
+        esac
+      done
+      w="$w${s:i:j-i}"; f="${f}d"; i="$j" ;;
+    [0-9]|'@'|'*'|'#'|'?'|'$'|'!'|'-')
+      w="$w\$$d"; f="${f}d"; i=$((i + 2)) ;;
+    "'")
+      if [ "$1" = 1 ]; then
+        w="$w\$"; i=$((i + 1))
+      else
+        j=$((i + 2))
+        while [ "$j" -lt "$n" ]; do
+          case "${s:j:1}" in
+            '\') j=$((j + 2)) ;;
+            "'") break ;;
+            *) j=$((j + 1)) ;;
+          esac
+        done
+        if [ "$j" -ge "$n" ]; then _gpb_form ''; return 0; fi
+        w="$w${s:i:j-i+1}"; f="${f}d"; i=$((j + 1))
+      fi ;;
+    '"')
+      if [ "$1" = 1 ]; then w="$w\$"; fi
+      i=$((i + 1)) ;;
+    *) w="$w\$"; i=$((i + 1)) ;;
+  esac
+  return 0
+}
+
+_gpb_endword() {
+  if [ "$inw" = 1 ]; then
+    if [ -n "$rop" ]; then
+      _gpb_redir "$rfd" "$rop" "$w" "$f"
+      rop=''; rfd=''
+    else
+      cw[${#cw[@]}]="$w"
+      cf[${#cf[@]}]="$f"
+    fi
+  fi
+  w=''; f=''; inw=0
+  return 0
+}
+
+# A digit-only word right before the operator is its file descriptor.
+# Process substitution (`<(…)`, `>(…)`) runs a command and is `form`.
+_gpb_redirop() {
+  local fd='' op
+  if [ "$c" = '&' ]; then
+    _gpb_endword
+    fd='&'; op='&>'; i=$((i + 2))
+    if [ "${s:i:1}" = '>' ]; then op='&>>'; i=$((i + 1)); fi
+  else
+    if [ "$inw" = 1 ]; then
+      case "$w" in
+        ''|*[!0-9]*) _gpb_endword ;;
+        *)
+          if [ -z "$f" ]; then fd="$w"; w=''; inw=0; else _gpb_endword; fi ;;
+      esac
+    fi
+    op="$c"; i=$((i + 1))
+    d="${s:i:1}"
+    if [ "$c" = '>' ]; then
+      case "$d" in
+        '>'|'&'|'|') op="$op$d"; i=$((i + 1)) ;;
+        '(') _gpb_form sh:non-literal-command-word; return 0 ;;
+      esac
+    else
+      case "$d" in
+        '<')
+          op='<<'; i=$((i + 1))
+          case "${s:i:1}" in
+            '<') op='<<<'; i=$((i + 1)) ;;
+            '-') op='<<-'; i=$((i + 1)) ;;
+          esac ;;
+        '&'|'>') op="$op$d"; i=$((i + 1)) ;;
+        '(') _gpb_form sh:non-literal-command-word; return 0 ;;
+      esac
+    fi
+    if [ -z "$fd" ]; then
+      case "$op" in
+        '<'*) fd=0 ;;
+        *) fd=1 ;;
+      esac
+    fi
+  fi
+  if [ -n "$rop" ]; then _gpb_form ''; return 0; fi
+  rop="$op"; rfd="$fd"
+  return 0
+}
+
+# `_gpb_redir <fd> <op> <target> <word-flags>` — record `fd TAB op TAB target`.
+# Duplicating a descriptor and redirecting to `/dev/null` touch no file; any
+# other target is a file write or read this parser does not follow, and a
+# here-document or here-string is data the body carries inline.
+_gpb_redir() {
+  GP_REDIR[${#GP_REDIR[@]}]="$1$_GP_TAB$2$_GP_TAB$3"
+  case "$4" in
+    *d*|*g*) _gpb_opaque ;;
+  esac
+  case "$2" in
+    '<<'|'<<-')
+      hdl[${#hdl[@]}]="$3"
+      case "$4" in
+        *q*) hdx[${#hdx[@]}]=0 ;;
+        *) hdx[${#hdx[@]}]=1 ;;
+      esac
+      if [ "$2" = '<<-' ]; then hds[${#hds[@]}]=1; else hds[${#hds[@]}]=0; fi
+      _gpb_opaque ;;
+    '<<<') _gpb_opaque ;;
+    '>&'|'<&')
+      case "$3" in
+        [0-9]|[0-9][0-9]|-|/dev/null) ;;
+        *) _gpb_opaque ;;
+      esac ;;
+    *) [ "$3" = /dev/null ] || _gpb_opaque ;;
+  esac
+  return 0
+}
+
+# The bodies of pending here-documents start on the line after their operator.
+# An unquoted delimiter lets the body expand, so a command substitution inside
+# it runs a command.
+_gpb_heredocs() {
+  local k=0 line cmp adv found
+  while [ "$k" -lt "${#hdl[@]}" ]; do
+    found=0
+    while [ "$i" -lt "$n" ]; do
+      line="${s:i}"
+      case "$line" in
+        *"$_GP_LF"*) line=${line%%"$_GP_LF"*}; adv=$((${#line} + 1)) ;;
+        *) adv="${#line}" ;;
+      esac
+      i=$((i + adv))
+      cmp="$line"
+      if [ "${hds[$k]}" = 1 ]; then
+        while :; do
+          case "$cmp" in
+            "$_GP_TAB"*) cmp="${cmp#"$_GP_TAB"}" ;;
+            *) break ;;
+          esac
+        done
+      fi
+      if [ "$cmp" = "${hdl[$k]}" ]; then found=1; break; fi
+      if [ "${hdx[$k]}" = 1 ]; then
+        case "$line" in
+          *'$('*|*'`'*) _gpb_form sh:non-literal-command-word; return 0 ;;
+        esac
+      fi
+    done
+    if [ "$found" = 0 ]; then _gpb_form ''; return 0; fi
+    k=$((k + 1))
+  done
+  hdl=(); hdx=(); hds=()
+  return 0
+}
+
+# One simple command: its assignments, then keywords and prefixes, then the
+# command word and its arguments.
+_gpb_endcmd() {
+  local k=0 m a fl name x el first
+  local -a frag
+  _gpb_endword
+  if [ -n "$rop" ]; then _gpb_form ''; rop=''; rfd=''; fi
+  m="${#cw[@]}"
+  while [ "$k" -lt "$m" ]; do
+    a="${cw[$k]}"
+    case "$a" in
+      [A-Za-z_]*=*)
+        name="${a%%=*}"
+        case "$name" in
+          *[!A-Za-z0-9_]*) break ;;
+        esac
+        _gp_env_assign "$name" "${a#*=}" ;;
+      *) break ;;
+    esac
+    k=$((k + 1))
+  done
+  # A KEYWORD MAKES THE BODY `opaque` and is stripped, so the command it leads
+  # (`then rm x`) is still recorded and parsed. A quoted word is never a
+  # keyword. `!` only negates a status and is stripped without changing anything.
+  while [ "$k" -lt "$m" ]; do
+    case "${cf[$k]}" in
+      *q*) break ;;
+    esac
+    case "${cw[$k]}" in
+      if|then|elif|else|while|until|do|'{'|fi|done|esac|'}') _gpb_opaque ;;
+      for|case|select|in) _gpb_opaque; k="$m"; break ;;
+      '!') ;;
+      function) _gpb_form sh:non-literal-command-word; k="$m"; break ;;
+      *) break ;;
+    esac
+    k=$((k + 1))
+  done
+  # `exec` as a prefix: `-c` clears the environment, `-l` changes nothing that
+  # matters here, `-a NAME` replaces argv0 and is `form`.
+  if [ "$k" -lt "$m" ] && [ "${cw[$k]}" = exec ]; then
+    k=$((k + 1))
+    while [ "$k" -lt "$m" ]; do
+      case "${cw[$k]}" in
+        --) k=$((k + 1)); break ;;
+        -a*) _gpb_form env:argv0-override; k="$m"; break ;;
+        -c|-cl|-lc) _gp_env_clear; _gp_wrap_add "exec${_GP_TAB}clear=1" ;;
+        -l) ;;
+        -*) _gpb_form ''; k="$m"; break ;;
+        *) break ;;
+      esac
+      k=$((k + 1))
+    done
+  fi
+  if [ "$k" -ge "$m" ] || [ "$st" = form ]; then
+    cw=(); cf=()
+    return 0
+  fi
+  a="${cw[$k]}"
+  fl="${cf[$k]}"
+  case "$a" in
+    '['|'[[') ;;
+    *)
+      case "$fl" in
+        *d*|*g*) _gpb_form sh:non-literal-command-word; cw=(); cf=(); return 0 ;;
+      esac ;;
+  esac
+  case "$a" in
+    eval|source|.|alias) _gpb_form sh:non-literal-command-word; cw=(); cf=(); return 0 ;;
+  esac
+  frag=("${cw[@]:k}")
+  x=$((k + 1))
+  while [ "$x" -lt "$m" ]; do
+    case "${cf[$x]}" in
+      *d*) _gpb_opaque ;;
+    esac
+    x=$((x + 1))
+  done
+  el=''; first=1
+  for x in "${frag[@]}"; do
+    case "$x" in
+      *"$_GP_US"*) _gpb_form ''; cw=(); cf=(); return 0 ;;
+    esac
+    if [ "$first" = 1 ]; then el="$x"; first=0; else el="$el$_GP_US$x"; fi
+  done
+  GP_SUB[${#GP_SUB[@]}]="$el"
+  case "$a" in
+    cd) _gpb_cd ;;
+    export)
+      x=$((k + 1))
+      while [ "$x" -lt "$m" ]; do
+        case "${cw[$x]}" in
+          [A-Za-z_]*=*) _gp_env_assign "${cw[$x]%%=*}" "${cw[$x]#*=}" ;;
+        esac
+        x=$((x + 1))
+      done ;;
+    awk)
+      for x in "${frag[@]}"; do
+        case "$x" in
+          *'system('*|*'|'*|*'>'*|-f|-f?*) _gpb_opaque ;;
+        esac
+      done ;;
+    echo|printf|pwd|true|false|:|test|'['|'[['|set|unset|shift|read|local|wait|return|exit|type|hash|compgen|trap|ulimit|umask) ;;
+    *) _gpb_recurse ;;
+  esac
+  cw=(); cf=()
+  return 0
+}
+
+# `cd` records where later pieces run. A target that is not a literal — an
+# expansion, a glob, or no operand at all (home) — records `-`.
+_gpb_cd() {
+  local x=$((k + 1)) t='-'
+  while [ "$x" -lt "$m" ]; do
+    case "${cw[$x]}" in
+      -L|-P|-e|-@|-LP|-PL) x=$((x + 1)); continue ;;
+    esac
+    case "${cf[$x]}" in
+      *d*|*g*) t='-' ;;
+      *) t="${cw[$x]}" ;;
+    esac
+    break
+  done
+  GP_CWD="$t"
+  return 0
+}
+
+# A piece that is not a builtin is parsed again, in a subshell so that its
+# `GP_*` do not overwrite the body's. Its status folds into the body's, and the
+# assignments it recorded are carried back.
+_gpb_recurse() {
+  local out head fst frs line
+  out=$(_gp_frag_parse "${frag[@]}") || out=''
+  head=${out%%"$_GP_LF"*}
+  fst=${head%%"$_GP_TAB"*}
+  frs=${head#*"$_GP_TAB"}
+  case "$fst" in
+    form) _gpb_form "$frs" ;;
+    opaque) _gpb_opaque ;;
+  esac
+  case "$out" in
+    *"$_GP_LF"*)
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        _gp_unesc "$line"
+        GP_ENV[${#GP_ENV[@]}]="$_GP_UNESC"
+      done <<GP_FRAG_ENV
+${out#*"$_GP_LF"}
+GP_FRAG_ENV
+      ;;
+  esac
+  return 0
+}
+
+_gp_frag_parse() {
+  (
+    _GP_ENTRY_DEPTH=$((GP_DEPTH + 1))
+    gp_parse "$@"
+    printf '%s%s%s\n' "$GP_STATUS" "$_GP_TAB" "$GP_REASON"
+    for e in ${GP_ENV[@]+"${GP_ENV[@]}"}; do
+      _gp_esc "$e"
+      printf '%s\n' "$_GP_ESC"
+    done
+  )
+}
+
+# ---------------------------------------------------------------------------
+# The gh family. Two passes, because gh itself works in two: cobra first finds
+# the command node by walking the words that are not flags — using the flag set
+# of each node it passes to decide whether a flag swallows the next word — and
+# then pflag parses every flag against the flag set of the node it found. So a
+# flag BEFORE the subcommand is judged by the leaf, which is how `gh -R o/r pr
+# merge 1` works and `gh -R o/r repo delete x` does not: `-R` is a flag of the
+# `pr` group, and `repo delete` never had it.
+#
+# The table is generated from each node's own `--help` (see
+# `scripts/gen-gh-flag-table.sh`) and embedded as a heredoc. One row per node,
+# `path|short:long:arity ...`, every row self-contained — it lists the node's
+# own flags and the ones it inherits, because which ancestors lend a flag is the
+# thing a path does not predict. Arity is `b` (bool), `v` (a value, attached or
+# separate) or `o=<default>` (an optional value, given only after `=`). `!alias`
+# rows are gh's built-in aliases.
+#
+# EMBEDDED, NOT READ AT RUN TIME. bash reads a function's body, heredoc included,
+# when it defines the function, so rewriting this file in place does not change
+# the table a running gate already holds. A table in a separate file would let an
+# old parser read a new table — this repository's install is its own worktree.
+# ---------------------------------------------------------------------------
+gp_gh_flag_table() {
+  cat <<'GP_GH_FLAG_TABLE'
+gh-version=2.100.0
+-|:help:b :version:b
+!alias co|pr checkout
+auth|:help:b
+browse|:blame:b :help:b R:repo:v a:actions:b b:branch:v c:commit:v n:no-browser:b p:projects:b r:releases:b s:settings:b w:wiki:b
+codespace|:help:b
+discussion|:help:b R:repo:v
+gist|:help:b
+issue|:help:b R:repo:v
+org|:help:b
+pr|:help:b R:repo:v
+project|:help:b
+release|:help:b R:repo:v
+repo|:help:b
+skill|:help:b
+cache|:help:b R:repo:v
+run|:help:b R:repo:v
+workflow|:help:b R:repo:v
+agent-task|:help:b
+alias|:help:b
+api|:allow-escape-sequences:b :cache:v :help:b :hostname:v :input:v :paginate:b :silent:b :slurp:b :verbose:b F:field:v H:header:v X:method:v f:raw-field:v i:include:b p:preview:v q:jq:v t:template:v
+attestation|:help:b
+completion|:help:b s:shell:v
+config|:help:b
+copilot|:help:b :remove:b
+extension|:help:b
+gpg-key|:help:b
+label|:help:b R:repo:v
+licenses|:help:b
+preview|:help:b
+ruleset|:help:b R:repo:v
+search|:help:b
+secret|:help:b R:repo:v
+ssh-key|:help:b
+status|:help:b e:exclude:v o:org:v
+variable|:help:b R:repo:v
+auth login|:help:b :insecure-storage:b :skip-ssh-key:b :with-token:b c:clipboard:b h:hostname:v p:git-protocol:v s:scopes:v w:web:b
+auth logout|:help:b h:hostname:v u:user:v
+auth refresh|:help:b :insecure-storage:b :reset-scopes:b c:clipboard:b h:hostname:v r:remove-scopes:v s:scopes:v
+auth setup-git|:help:b f:force:b h:hostname:v
+auth status|:help:b :jq:v :json:v :template:v a:active:b h:hostname:v t:show-token:b
+auth switch|:help:b h:hostname:v u:user:v
+auth token|:help:b h:hostname:v u:user:v
+codespace code|:help:b :insiders:b :repo-owner:v R:repo:v c:codespace:v w:web:b
+codespace cp|:help:b :repo-owner:v R:repo:v c:codespace:v e:expand:b p:profile:v r:recursive:b
+codespace create|:default-permissions:b :devcontainer-path:v :help:b :idle-timeout:v :retention-period:v R:repo:v b:branch:v d:display-name:v l:location:v m:machine:v s:status:b w:web:b
+codespace delete|:all:b :days:v :help:b :repo-owner:v R:repo:v c:codespace:v f:force:b o:org:v u:user:v
+codespace edit|:help:b :repo-owner:v R:repo:v c:codespace:v d:display-name:v m:machine:v
+codespace jupyter|:help:b :repo-owner:v R:repo:v c:codespace:v
+codespace list|:help:b :json:v L:limit:v R:repo:v o:org:v q:jq:v t:template:v u:user:v w:web:b
+codespace logs|:help:b :repo-owner:v R:repo:v c:codespace:v f:follow:b
+codespace ports|:help:b :json:v :repo-owner:v R:repo:v c:codespace:v q:jq:v t:template:v
+codespace rebuild|:full:b :help:b :repo-owner:v R:repo:v c:codespace:v
+codespace ssh|:config:b :debug-file:v :help:b :profile:v :repo-owner:v :server-port:v R:repo:v c:codespace:v d:debug:b
+codespace stop|:help:b :repo-owner:v R:repo:v c:codespace:v o:org:v u:user:v
+codespace view|:help:b :json:v :repo-owner:v R:repo:v c:codespace:v q:jq:v t:template:v
+discussion create|:help:b F:body-file:v R:repo:v b:body:v c:category:v l:label:v t:title:v
+discussion list|:after:v :answered:b :help:b :json:v :order:v :sort:v A:author:v L:limit:v R:repo:v S:search:v c:category:v l:label:v q:jq:v s:state:v t:template:v w:web:b
+discussion comment|:delete:b :edit:b :help:b :yes:b F:body-file:v R:repo:v b:body:v
+discussion edit|:add-label:v :help:b :remove-label:v F:body-file:v R:repo:v b:body:v c:category:v t:title:v
+discussion view|:after:v :help:b :json:v :order:v L:limit:v R:repo:v c:comments:b q:jq:v t:template:v w:web:b
+gist clone|:help:b
+gist create|:help:b d:desc:v f:filename:v p:public:b w:web:b
+gist delete|:help:b :yes:b
+gist edit|:help:b a:add:v d:desc:v f:filename:v r:remove:v
+gist list|:filter:v :help:b :include-content:b :public:b :secret:b L:limit:v
+gist rename|:help:b
+gist view|:allow-escape-sequences:b :files:b :help:b f:filename:v r:raw:b w:web:b
+issue create|:attach:v :blocked-by:v :blocking:v :help:b :parent:v :recover:v :type:v F:body-file:v R:repo:v T:template:v a:assignee:v b:body:v e:editor:b l:label:v m:milestone:v p:project:v t:title:v w:web:b
+issue list|:app:v :help:b :json:v :mention:v :type:v A:author:v L:limit:v R:repo:v S:search:v a:assignee:v l:label:v m:milestone:v q:jq:v s:state:v t:template:v w:web:b
+issue status|:help:b :json:v R:repo:v q:jq:v t:template:v
+issue close|:duplicate-of:v :help:b R:repo:v c:comment:v r:reason:v
+issue comment|:attach:v :create-if-none:b :delete-last:b :edit-last:b :help:b :yes:b F:body-file:v R:repo:v b:body:v e:editor:b w:web:b
+issue delete|:help:b :yes:b R:repo:v
+issue develop|:branch-repo:v :help:b :worktree:v R:repo:v b:base:v c:checkout:b l:list:b n:name:v
+issue edit|:add-assignee:v :add-blocked-by:v :add-blocking:v :add-label:v :add-project:v :add-sub-issue:v :attach:v :help:b :parent:v :remove-assignee:v :remove-blocked-by:v :remove-blocking:v :remove-label:v :remove-milestone:b :remove-parent:b :remove-project:v :remove-sub-issue:v :remove-type:b :type:v F:body-file:v R:repo:v b:body:v m:milestone:v t:title:v
+issue lock|:help:b R:repo:v r:reason:v
+issue pin|:help:b R:repo:v
+issue reopen|:help:b R:repo:v c:comment:v
+issue transfer|:help:b R:repo:v
+issue unlock|:help:b R:repo:v
+issue unpin|:help:b R:repo:v
+issue view|:help:b :json:v R:repo:v c:comments:b q:jq:v t:template:v w:web:b
+org list|:help:b L:limit:v
+pr create|:attach:v :dry-run:b :fill-first:b :fill-verbose:b :help:b :no-maintainer-edit:b :recover:v B:base:v F:body-file:v H:head:v R:repo:v T:template:v a:assignee:v b:body:v d:draft:b e:editor:b f:fill:b l:label:v m:milestone:v p:project:v r:reviewer:v t:title:v w:web:b
+pr list|:app:v :help:b :json:v A:author:v B:base:v H:head:v L:limit:v R:repo:v S:search:v a:assignee:v d:draft:b l:label:v q:jq:v s:state:v t:template:v w:web:b
+pr status|:help:b :json:v R:repo:v c:conflict-status:b q:jq:v t:template:v
+pr checkout|:detach:b :help:b :recurse-submodules:b :worktree:v R:repo:v b:branch:v f:force:b
+pr checks|:fail-fast:b :help:b :json:v :required:b :watch:b R:repo:v i:interval:v q:jq:v t:template:v w:web:b
+pr close|:help:b R:repo:v c:comment:v d:delete-branch:b
+pr comment|:attach:v :create-if-none:b :delete-last:b :edit-last:b :help:b :yes:b F:body-file:v R:repo:v b:body:v e:editor:b w:web:b
+pr diff|:allow-escape-sequences:b :color:v :help:b :name-only:b :patch:b R:repo:v e:exclude:v w:web:b
+pr edit|:add-assignee:v :add-label:v :add-project:v :add-reviewer:v :attach:v :help:b :remove-assignee:v :remove-label:v :remove-milestone:b :remove-project:v :remove-reviewer:v B:base:v F:body-file:v R:repo:v b:body:v m:milestone:v t:title:v
+pr lock|:help:b R:repo:v r:reason:v
+pr merge|:admin:b :auto:b :disable-auto:b :help:b :match-head-commit:v A:author-email:v F:body-file:v R:repo:v b:body:v d:delete-branch:b m:merge:b r:rebase:b s:squash:b t:subject:v
+pr ready|:help:b :undo:b R:repo:v
+pr reopen|:help:b R:repo:v c:comment:v
+pr revert|:help:b F:body-file:v R:repo:v b:body:v d:draft:b t:title:v
+pr review|:help:b F:body-file:v R:repo:v a:approve:b b:body:v c:comment:b r:request-changes:b
+pr unlock|:help:b R:repo:v
+pr update-branch|:help:b :rebase:b R:repo:v
+pr view|:help:b :json:v R:repo:v c:comments:b q:jq:v t:template:v w:web:b
+project close|:format:v :help:b :owner:v :undo:b q:jq:v t:template:v
+project copy|:drafts:b :format:v :help:b :source-owner:v :target-owner:v :title:v q:jq:v t:template:v
+project create|:format:v :help:b :owner:v :title:v q:jq:v t:template:v
+project delete|:format:v :help:b :owner:v q:jq:v t:template:v
+project edit|:format:v :help:b :owner:v :readme:v :title:v :visibility:v d:description:v q:jq:v t:template:v
+project field-create|:data-type:v :format:v :help:b :name:v :owner:v :single-select-options:v q:jq:v t:template:v
+project field-delete|:format:v :help:b :id:v q:jq:v t:template:v
+project field-list|:format:v :help:b :owner:v L:limit:v q:jq:v t:template:v
+project item-add|:format:v :help:b :owner:v :url:v q:jq:v t:template:v
+project item-archive|:format:v :help:b :id:v :owner:v :undo:b q:jq:v t:template:v
+project item-create|:body:v :format:v :help:b :owner:v :title:v q:jq:v t:template:v
+project item-delete|:format:v :help:b :id:v :owner:v q:jq:v t:template:v
+project item-edit|:body:v :clear:b :date:v :field-id:v :field:v :format:v :help:b :id:v :iteration-id:v :number:v :owner:v :project-id:v :single-select-option-id:v :text:v :title:v :url:v :value:b q:jq:v t:template:v
+project item-list|:field-id:v :field:v :format:v :help:b :owner:v :query:v L:limit:v q:jq:v t:template:v
+project link|:help:b :owner:v R:repo:v T:team:v
+project list|:closed:b :format:v :help:b :owner:v L:limit:v q:jq:v t:template:v w:web:b
+project mark-template|:format:v :help:b :owner:v :undo:b q:jq:v t:template:v
+project unlink|:help:b :owner:v R:repo:v T:team:v
+project view|:format:v :help:b :owner:v q:jq:v t:template:v w:web:b
+release create|:discussion-category:v :fail-on-no-commits:b :generate-notes:b :help:b :latest:b :notes-from-tag:b :notes-start-tag:v :target:v :verify-tag:b F:notes-file:v R:repo:v d:draft:b n:notes:v p:prerelease:b t:title:v
+release list|:exclude-drafts:b :exclude-pre-releases:b :help:b :json:v L:limit:v O:order:v R:repo:v q:jq:v t:template:v
+release delete|:cleanup-tag:b :help:b R:repo:v y:yes:b
+release delete-asset|:help:b R:repo:v y:yes:b
+release download|:allow-escape-sequences:b :clobber:b :help:b :skip-existing:b A:archive:v D:dir:v O:output:v R:repo:v p:pattern:v
+release edit|:discussion-category:v :draft:b :help:b :latest:b :prerelease:b :tag:v :target:v :verify-tag:b F:notes-file:v R:repo:v n:notes:v t:title:v
+release upload|:clobber:b :help:b R:repo:v
+release verify|:format:v :help:b R:repo:v q:jq:v t:template:v
+release verify-asset|:format:v :help:b R:repo:v q:jq:v t:template:v
+release view|:help:b :json:v R:repo:v q:jq:v t:template:v w:web:b
+repo create|:add-readme:b :disable-issues:b :disable-wiki:b :help:b :include-all-branches:b :internal:b :private:b :public:b :push:b c:clone:b d:description:v g:gitignore:v h:homepage:v l:license:v p:template:v r:remote:v s:source:v t:team:v
+repo list|:archived:b :fork:b :help:b :json:v :no-archived:b :source:b :topic:v :visibility:v L:limit:v l:language:v q:jq:v t:template:v
+repo archive|:help:b y:yes:b
+repo autolink|:help:b R:repo:v
+repo clone|:help:b :no-upstream:b u:upstream-remote-name:v
+repo delete|:help:b :yes:b
+repo deploy-key|:help:b R:repo:v
+repo edit|:accept-visibility-change-consequences:b :add-topic:v :allow-forking:b :allow-update-branch:b :default-branch:v :delete-branch-on-merge:b :enable-advanced-security:b :enable-auto-merge:b :enable-discussions:b :enable-issues:b :enable-merge-commit:b :enable-projects:b :enable-rebase-merge:b :enable-secret-scanning-push-protection:b :enable-secret-scanning:b :enable-squash-merge:b :enable-wiki:b :help:b :remove-topic:v :squash-merge-commit-message:v :template:b :visibility:v d:description:v h:homepage:v
+repo fork|:clone:b :default-branch-only:b :fork-name:v :help:b :org:v :remote-name:v :remote:b
+repo gitignore|:help:b
+repo license|:help:b
+repo read-dir|:help:b :json:v :ref:v R:repo:v q:jq:v t:template:v
+repo read-file|:allow-escape-sequences:b :clobber:b :help:b :json:v :ref:v R:repo:v o:output:v q:jq:v t:template:v
+repo rename|:help:b R:repo:v y:yes:b
+repo set-default|:help:b u:unset:b v:view:b
+repo sync|:force:b :help:b b:branch:v s:source:v
+repo unarchive|:help:b y:yes:b
+repo view|:help:b :json:v b:branch:v q:jq:v t:template:v w:web:b
+skill install|:agent:v :all:b :allow-hidden-dirs:b :dir:v :from-local:b :help:b :pin:v :scope:v :upstream:b f:force:b
+skill list|:agent:v :dir:v :help:b :json:v :scope:v q:jq:v t:template:v
+skill preview|:allow-hidden-dirs:b :help:b
+skill publish|:dry-run:b :fix:b :help:b :tag:v
+skill search|:help:b :json:v :owner:v :page:v L:limit:v q:jq:v t:template:v
+skill update|:all:b :dir:v :dry-run:b :force:b :help:b :unpin:b
+cache delete|:help:b :succeed-on-no-caches:b R:repo:v a:all:b r:ref:v
+cache list|:help:b :json:v L:limit:v O:order:v R:repo:v S:sort:v k:key:v q:jq:v r:ref:v t:template:v
+run cancel|:force:b :help:b R:repo:v
+run delete|:help:b R:repo:v
+run download|:help:b D:dir:v R:repo:v n:name:v p:pattern:v
+run list|:created:v :help:b :json:v L:limit:v R:repo:v a:all:b b:branch:v c:commit:v e:event:v q:jq:v s:status:v t:template:v u:user:v w:workflow:v
+run rerun|:failed:b :help:b R:repo:v d:debug:b j:job:v
+run view|:exit-status:b :help:b :json:v :log-failed:b :log:b R:repo:v a:attempt:v j:job:v q:jq:v t:template:v v:verbose:b w:web:b
+run watch|:compact:b :exit-status:b :help:b R:repo:v i:interval:v
+workflow disable|:help:b R:repo:v
+workflow enable|:help:b R:repo:v
+workflow list|:help:b :json:v L:limit:v R:repo:v a:all:b q:jq:v t:template:v
+workflow run|:help:b :json:b F:field:v R:repo:v f:raw-field:v r:ref:v
+workflow view|:help:b R:repo:v r:ref:v w:web:b y:yaml:b
+agent-task create|:follow:b :help:b F:from-file:v R:repo:v a:custom-agent:v b:base:v
+agent-task list|:help:b :json:v L:limit:v q:jq:v t:template:v w:web:b
+agent-task view|:follow:b :help:b :json:v :log:b R:repo:v q:jq:v t:template:v w:web:b
+alias delete|:all:b :help:b
+alias import|:clobber:b :help:b
+alias list|:help:b
+alias set|:clobber:b :help:b s:shell:b
+attestation download|:help:b :hostname:v :predicate-type:v L:limit:v R:repo:v d:digest-alg:v o:owner:v
+attestation trusted-root|:help:b :hostname:v :tuf-root:v :tuf-url:v :verify-only:b
+attestation verify|:bundle-from-oci:b :cert-identity:v :cert-oidc-issuer:v :custom-trusted-root:v :deny-self-hosted-runners:b :format:v :help:b :hostname:v :no-public-good:b :predicate-type:v :signer-digest:v :signer-repo:v :signer-workflow:v :source-digest:v :source-ref:v L:limit:v R:repo:v b:bundle:v d:digest-alg:v i:cert-identity-regex:v o:owner:v q:jq:v t:template:v
+config clear-cache|:help:b
+config get|:help:b h:host:v
+config list|:help:b h:host:v
+config set|:help:b h:host:v
+extension browse|:debug:b :help:b s:single-column:b
+extension create|:help:b :precompiled:v
+extension exec|
+extension install|:force:b :help:b :pin:v
+extension list|:help:b
+extension remove|:help:b
+extension search|:help:b :json:v :license:v :order:v :owner:v :sort:v L:limit:v q:jq:v t:template:v w:web:b
+extension upgrade|:all:b :dry-run:b :force:b :help:b
+gpg-key add|:help:b t:title:v
+gpg-key delete|:help:b y:yes:b
+gpg-key list|:help:b
+label clone|:help:b R:repo:v f:force:b
+label create|:help:b R:repo:v c:color:v d:description:v f:force:b
+label delete|:help:b :yes:b R:repo:v
+label edit|:help:b R:repo:v c:color:v d:description:v n:name:v
+label list|:help:b :json:v :order:v :sort:v L:limit:v R:repo:v S:search:v q:jq:v t:template:v w:web:b
+preview prompter|:help:b
+ruleset check|:default:b :help:b R:repo:v w:web:b
+ruleset list|:help:b L:limit:v R:repo:v o:org:v p:parents:b w:web:b
+ruleset view|:help:b R:repo:v o:org:v p:parents:b w:web:b
+search code|:extension:v :filename:v :help:b :json:v :language:v :match:v :owner:v :size:v L:limit:v R:repo:v q:jq:v t:template:v w:web:b
+search commits|:author-date:v :author-email:v :author-name:v :author:v :committer-date:v :committer-email:v :committer-name:v :committer:v :hash:v :help:b :json:v :merge:b :order:v :owner:v :parent:v :sort:v :tree:v :visibility:v L:limit:v R:repo:v q:jq:v t:template:v w:web:b
+search issues|:app:v :archived:b :assignee:v :author:v :closed:v :commenter:v :comments:v :created:v :help:b :include-prs:b :interactions:v :involves:v :json:v :label:v :language:v :locked:b :match:v :mentions:v :milestone:v :no-assignee:b :no-label:b :no-milestone:b :no-project:b :order:v :owner:v :project:v :reactions:v :search-type:v :sort:v :state:v :team-mentions:v :updated:v :visibility:v L:limit:v R:repo:v q:jq:v t:template:v w:web:b
+search prs|:app:v :archived:b :assignee:v :author:v :checks:v :closed:v :commenter:v :comments:v :created:v :draft:b :help:b :interactions:v :involves:v :json:v :label:v :language:v :locked:b :match:v :mentions:v :merged-at:v :merged:b :milestone:v :no-assignee:b :no-label:b :no-milestone:b :no-project:b :order:v :owner:v :project:v :reactions:v :review-requested:v :review:v :reviewed-by:v :sort:v :state:v :team-mentions:v :updated:v :visibility:v B:base:v H:head:v L:limit:v R:repo:v q:jq:v t:template:v w:web:b
+search repos|:archived:b :created:v :followers:v :forks:v :good-first-issues:v :help-wanted-issues:v :help:b :include-forks:v :json:v :language:v :license:v :match:v :number-topics:v :order:v :owner:v :size:v :sort:v :stars:v :topic:v :updated:v :visibility:v L:limit:v q:jq:v t:template:v w:web:b
+secret delete|:help:b R:repo:v a:app:v e:env:v o:org:v u:user:b
+secret list|:help:b :json:v R:repo:v a:app:v e:env:v o:org:v q:jq:v t:template:v u:user:b
+secret set|:help:b :no-repos-selected:b :no-store:b R:repo:v a:app:v b:body:v e:env:v f:env-file:v o:org:v r:repos:v u:user:b v:visibility:v
+ssh-key add|:help:b :type:v t:title:v
+ssh-key delete|:help:b y:yes:b
+ssh-key list|:help:b
+variable delete|:help:b R:repo:v e:env:v o:org:v
+variable get|:help:b :json:v R:repo:v e:env:v o:org:v q:jq:v t:template:v
+variable list|:help:b :json:v R:repo:v e:env:v o:org:v q:jq:v t:template:v
+variable set|:help:b R:repo:v b:body:v e:env:v f:env-file:v o:org:v r:repos:v v:visibility:v
+codespace ports forward|:all-interfaces:b :help:b :repo-owner:v R:repo:v c:codespace:v
+codespace ports visibility|:help:b :repo-owner:v R:repo:v c:codespace:v
+repo autolink create|:help:b R:repo:v n:numeric:b
+repo autolink delete|:help:b :yes:b R:repo:v
+repo autolink list|:help:b :json:v R:repo:v q:jq:v t:template:v w:web:b
+repo autolink view|:help:b :json:v R:repo:v q:jq:v t:template:v
+repo deploy-key add|:help:b R:repo:v t:title:v w:allow-write:b
+repo deploy-key delete|:help:b R:repo:v
+repo deploy-key list|:help:b :json:v R:repo:v q:jq:v t:template:v
+repo gitignore list|:help:b
+repo gitignore view|:help:b
+repo license list|:help:b
+repo license view|:help:b w:web:b
+GP_GH_FLAG_TABLE
+}
+
+_gp_gh_load() {
+  local p r ap='!alias '
+  if [ "$_GP_GH_N" -gt 0 ]; then return 0; fi
+  _GP_GH_P=(); _GP_GH_S=(); _GP_GH_AN=(); _GP_GH_AT=()
+  while IFS='|' read -r p r; do
+    case "$p" in
+      gh-version=*|'') ;;
+      "$ap"*)
+        _GP_GH_AN[${#_GP_GH_AN[@]}]="${p#"$ap"}"
+        _GP_GH_AT[${#_GP_GH_AT[@]}]="$r" ;;
+      -)
+        _GP_GH_P[${#_GP_GH_P[@]}]=''
+        _GP_GH_S[${#_GP_GH_S[@]}]="$r" ;;
+      *)
+        _GP_GH_P[${#_GP_GH_P[@]}]="$p"
+        _GP_GH_S[${#_GP_GH_S[@]}]="$r" ;;
+    esac
+  done <<GP_GH_LOAD
+$(gp_gh_flag_table)
+GP_GH_LOAD
+  _GP_GH_N="${#_GP_GH_P[@]}"
+  return 0
+}
+
+# `_gp_gh_row <path>` — the row index of that node in `_GP_GH_I`, -1 if none.
+_gp_gh_row() {
+  local k=0
+  _GP_GH_I=-1
+  while [ "$k" -lt "$_GP_GH_N" ]; do
+    if [ "${_GP_GH_P[$k]}" = "$1" ]; then
+      _GP_GH_I="$k"
+      return 0
+    fi
+    k=$((k + 1))
+  done
+  return 0
+}
+
+_gp_gh_has_children() {
+  local k=0 pre="${1:+$1 }"
+  while [ "$k" -lt "$_GP_GH_N" ]; do
+    case "${_GP_GH_P[$k]}" in
+      "$pre"?*)
+        if [ -n "$1" ] || [ -n "${_GP_GH_P[$k]}" ]; then return 0; fi ;;
+    esac
+    k=$((k + 1))
+  done
+  return 1
+}
+
+# `_gp_spec_find <spec> <long> <short>` — find a flag in one row by its long or
+# its short name; its long name lands in `_GP_FL` and its arity in `_GP_FA`.
+_gp_spec_find() {
+  local rest="$1 " e s l a
+  _GP_FL=''
+  _GP_FA=''
+  while [ -n "$rest" ]; do
+    e="${rest%% *}"
+    rest="${rest#* }"
+    [ -n "$e" ] || continue
+    s="${e%%:*}"
+    a="${e#*:}"
+    l="${a%%:*}"
+    a="${a#*:}"
+    if { [ -n "$2" ] && [ "$l" = "$2" ]; } || { [ -n "$3" ] && [ "$s" = "$3" ]; }; then
+      _GP_FL="$l"
+      _GP_FA="$a"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Whether a flag takes no following word at this node: a bool, or an optional
+# value (which only `=` supplies). An unknown flag does take one — that is what
+# cobra assumes while it looks for the subcommand.
+_gp_gh_novalue() {
+  if _gp_spec_find "$1" "$2" "$3"; then
+    case "$_GP_FA" in
+      b|o=*) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+# Whether some group lends the flag to the commands under it: the group's row
+# and a row below it both carry it. That is what `-R` is — gh attaches it per
+# group, so `pr` and `pr view` have it while `repo` and `repo delete` do not. A
+# flag only some leaves declare for themselves, like `-q/--jq`, is not lent by
+# anything.
+_gp_gh_known() {
+  local k=0 m p
+  while [ "$k" -lt "$_GP_GH_N" ]; do
+    p="${_GP_GH_P[$k]}"
+    if [ -n "$p" ] && _gp_spec_find "${_GP_GH_S[$k]}" "$1" "$2"; then
+      m=0
+      while [ "$m" -lt "$_GP_GH_N" ]; do
+        case "${_GP_GH_P[$m]}" in
+          "$p "?*)
+            if _gp_spec_find "${_GP_GH_S[$m]}" "$1" "$2"; then return 0; fi ;;
+        esac
+        m=$((m + 1))
+      done
+    fi
+    k=$((k + 1))
+  done
+  return 1
+}
+
+# A flag this leaf does not take is `flag-not-on-leaf` when the family lends it
+# to other commands — a spelling that is right one level over — and
+# `unknown-flag` when nothing in the family lends it.
+_gp_gh_flag_err() {
+  if _gp_gh_known "$2" "$3"; then
+    _gp_form "gh:flag-not-on-leaf:$1"
+  else
+    _gp_form "gh:unknown-flag:$1"
+  fi
+  return 0
+}
+
+_gp_bool() {
+  case "$1" in
+    1|t|T|TRUE|true|True) _GP_BOOL=true ;;
+    0|f|F|FALSE|false|False) _GP_BOOL=false ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# Record one option with its scope: `root` when the root node declares it,
+# `group` when a group on the path lends it, `leaf` otherwise.
+_gp_gh_opt_add() {
+  local sc=leaf k=0 p=''
+  _gp_gh_row ''
+  if [ "$_GP_GH_I" -ge 0 ] && _gp_spec_find "${_GP_GH_S[$_GP_GH_I]}" "$1" ''; then
+    sc=root
+  else
+    while [ $((k + 1)) -lt "${#GP_PATH[@]}" ]; do
+      p="${p:+$p }${GP_PATH[$k]}"
+      _gp_gh_row "$p"
+      if [ "$_GP_GH_I" -ge 0 ] && _gp_spec_find "${_GP_GH_S[$_GP_GH_I]}" "$1" ''; then
+        sc=group
+        break
+      fi
+      k=$((k + 1))
+    done
+  fi
+  GP_OK[${#GP_OK[@]}]="$1"
+  GP_OV[${#GP_OV[@]}]="$2"
+  GP_OS[${#GP_OS[@]}]="$sc"
+  return 0
+}
+
+_gp_gh() {
+  local -a av used
+  local n i k w cand path='' spec child name val hasval j c ddash=0
+  av=("$@")
+  _gp_gh_load
+  # A built-in alias expands only in the first position, which is the only
+  # place gh looks for one.
+  if [ "${#av[@]}" -gt 0 ]; then
+    k=0
+    while [ "$k" -lt "${#_GP_GH_AN[@]}" ]; do
+      if [ "${av[0]}" = "${_GP_GH_AN[$k]}" ]; then
+        GP_ALIAS="${av[0]}"
+        _gp_split_ws "${_GP_GH_AT[$k]}"
+        av=("${_GP_WORDS[@]}" "${av[@]:1}")
+        break
+      fi
+      k=$((k + 1))
+    done
+  fi
+  n="${#av[@]}"
+  used=()
+  i=0
+  while [ "$i" -lt "$n" ]; do used[$i]=0; i=$((i + 1)); done
+
+  # Pass one — the node.
+  while :; do
+    _gp_gh_row "$path"
+    spec="${_GP_GH_S[$_GP_GH_I]}"
+    cand=-1
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      if [ "${used[$i]}" = 1 ]; then i=$((i + 1)); continue; fi
+      w="${av[$i]}"
+      case "$w" in
+        --) break ;;
+        --*=*) ;;
+        --*) _gp_gh_novalue "$spec" "${w#--}" '' || _gp_gh_skip ;;
+        -?) _gp_gh_novalue "$spec" '' "${w#-}" || _gp_gh_skip ;;
+        -*|'') ;;
+        *) cand="$i"; break ;;
+      esac
+      i=$((i + 1))
+    done
+    [ "$cand" -ge 0 ] || break
+    if [ -n "$path" ]; then child="$path ${av[$cand]}"; else child="${av[$cand]}"; fi
+    _gp_gh_row "$child"
+    if [ "$_GP_GH_I" -lt 0 ]; then
+      if _gp_gh_has_children "$path"; then
+        _gp_form "gh:unknown-path:${av[$cand]}"
+        return 0
+      fi
+      break
+    fi
+    used[$cand]=1
+    path="$child"
+    GP_PATH[${#GP_PATH[@]}]="${av[$cand]}"
+  done
+
+  # Pass two — every flag against the node found.
+  _gp_gh_row "$path"
+  spec="${_GP_GH_S[$_GP_GH_I]}"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "${used[$i]}" = 1 ]; then i=$((i + 1)); continue; fi
+    w="${av[$i]}"
+    if [ "$ddash" = 1 ]; then
+      GP_POS[${#GP_POS[@]}]="$w"
+      i=$((i + 1))
+      continue
+    fi
+    case "$w" in
+      --)
+        ddash=1
+        GP_DDASH="${#GP_POS[@]}" ;;
+      --*)
+        name="${w#--}"; hasval=0; val=''
+        case "$name" in
+          *=*) val="${name#*=}"; name="${name%%=*}"; hasval=1 ;;
+        esac
+        if ! _gp_spec_find "$spec" "$name" ''; then
+          _gp_gh_flag_err "--$name" "$name" ''
+          return 0
+        fi
+        case "$_GP_FA" in
+          b)
+            if [ "$hasval" = 1 ]; then
+              _gp_bool "$val" || { _gp_form "gh:bool-literal:$w"; return 0; }
+              val="$_GP_BOOL"
+            else
+              val=true
+            fi ;;
+          v)
+            if [ "$hasval" = 0 ]; then
+              _gp_gh_skip
+              if [ "$i" -ge "$n" ]; then _gp_form ''; return 0; fi
+              val="${av[$i]}"
+            fi ;;
+          *)
+            [ "$hasval" = 1 ] || val="${_GP_FA#o=}" ;;
+        esac
+        _gp_gh_opt_add "$_GP_FL" "$val" ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#w}" ]; do
+          c="${w:j:1}"
+          if ! _gp_spec_find "$spec" '' "$c"; then
+            _gp_gh_flag_err "-$c" '' "$c"
+            return 0
+          fi
+          if [ "$_GP_FA" = v ]; then
+            if [ "${w:j+1:1}" = '=' ]; then
+              val="${w:j+2}"
+            elif [ $((j + 1)) -lt "${#w}" ]; then
+              val="${w:j+1}"
+            else
+              _gp_gh_skip
+              if [ "$i" -ge "$n" ]; then _gp_form ''; return 0; fi
+              val="${av[$i]}"
+            fi
+            _gp_gh_opt_add "$_GP_FL" "$val"
+            break
+          fi
+          if [ "${w:j+1:1}" = '=' ]; then
+            val="${w:j+2}"
+            if [ "$_GP_FA" = b ]; then
+              _gp_bool "$val" || { _gp_form "gh:bool-literal:$w"; return 0; }
+              val="$_GP_BOOL"
+            fi
+            _gp_gh_opt_add "$_GP_FL" "$val"
+            break
+          fi
+          if [ "$_GP_FA" = b ]; then val=true; else val="${_GP_FA#o=}"; fi
+          _gp_gh_opt_add "$_GP_FL" "$val"
+          j=$((j + 1))
+        done ;;
+      *) GP_POS[${#GP_POS[@]}]="$w" ;;
+    esac
+    i=$((i + 1))
+  done
+  GP_STATUS=ok
+  return 0
+}
+
+# Advance `i` to the next word that is not a path word — the word a value flag
+# takes, in the argv cobra hands pflag with the path words removed.
+_gp_gh_skip() {
+  i=$((i + 1))
+  while [ "$i" -lt "$n" ] && [ "${used[$i]}" = 1 ]; do i=$((i + 1)); done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Accessors. Pure, and they answer by rc.
+# ---------------------------------------------------------------------------
+
+# `gp_opt NAME` — NAME's last value (pflag lets the last one win); rc 1 if absent.
+gp_opt() {
+  local k="${#GP_OK[@]}"
+  while [ "$k" -gt 0 ]; do
+    k=$((k - 1))
+    if [ "${GP_OK[$k]}" = "$1" ]; then
+      printf '%s' "${GP_OV[$k]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+gp_opt_count() {
+  local k=0 c=0
+  while [ "$k" -lt "${#GP_OK[@]}" ]; do
+    if [ "${GP_OK[$k]}" = "$1" ]; then c=$((c + 1)); fi
+    k=$((k + 1))
+  done
+  printf '%s' "$c"
+  return 0
+}
+
+# `gp_opt_at NAME I` — NAME's I-th value, from 0; rc 1 past the end.
+gp_opt_at() {
+  local k=0 c=0
+  while [ "$k" -lt "${#GP_OK[@]}" ]; do
+    if [ "${GP_OK[$k]}" = "$1" ]; then
+      if [ "$c" = "$2" ]; then
+        printf '%s' "${GP_OV[$k]}"
+        return 0
+      fi
+      c=$((c + 1))
+    fi
+    k=$((k + 1))
+  done
+  return 1
+}
+
+# `gp_has NAME` — rc 0 when NAME's winning value is true.
+gp_has() {
+  local v
+  v=$(gp_opt "$1") || return 1
+  [ "$v" = true ]
+}
+
+gp_path_is() {
+  [ "$#" -eq "${#GP_PATH[@]}" ] || return 1
+  gp_path_prefix "$@"
+}
+
+gp_path_prefix() {
+  local k=0 w
+  [ "$#" -le "${#GP_PATH[@]}" ] || return 1
+  for w in "$@"; do
+    [ "${GP_PATH[$k]}" = "$w" ] || return 1
+    k=$((k + 1))
+  done
+  return 0
+}
+
+gp_wrap_has() {
+  local r
+  for r in ${GP_WRAP[@]+"${GP_WRAP[@]}"}; do
+    if [ "${r%%"$_GP_TAB"*}" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+
+# `gp_env_get NAME` — NAME's value after the chain: the last assignment since
+# the last clear, unless a later `-NAME` removed it. rc 1 when the chain leaves
+# it unset; what the process environment holds is the caller's to consult.
+gp_env_get() {
+  local k="$_GP_ENV_BASE" e set=0 val=''
+  while [ "$k" -lt "${#GP_ENV[@]}" ]; do
+    e="${GP_ENV[$k]}"
+    case "$e" in
+      "-$1") set=0; val='' ;;
+      "$1="*) set=1; val="${e#*=}" ;;
+    esac
+    k=$((k + 1))
+  done
+  [ "$set" = 1 ] || return 1
+  printf '%s' "$val"
+  return 0
+}
+
+# `gp_each_sub FN [A...]` — call `FN A... <words>` for each piece of the body.
+gp_each_sub() {
+  local fn="$1" el rest
+  local -a pre words
+  shift
+  pre=("$@")
+  for el in ${GP_SUB[@]+"${GP_SUB[@]}"}; do
+    words=()
+    rest="$el"
+    while :; do
+      case "$rest" in
+        *"$_GP_US"*)
+          words[${#words[@]}]="${rest%%"$_GP_US"*}"
+          rest="${rest#*"$_GP_US"}" ;;
+        *)
+          words[${#words[@]}]="$rest"
+          break ;;
+      esac
+    done
+    "$fn" ${pre[@]+"${pre[@]}"} "${words[@]}" || true
+  done
+  return 0
+}
+
+# `gp_gh_repo` — `<repo> TAB <explicit> TAB <host>`. The repository is the last
+# `-R`/`--repo`, else `GH_REPO` from the chain; `explicit` is 1 when either
+# named it. The host is `--hostname`, else `GH_HOST`, else the host a
+# `HOST/OWNER/REPO` or URL spelling carries. A named value that does not reduce
+# to `[host/]owner/repo` is rc 2.
+gp_gh_repo() {
+  local repo='' explicit=0 host='' rc=0 r
+  if r=$(gp_opt repo); then
+    repo="$r"; explicit=1
+  elif r=$(gp_env_get GH_REPO); then
+    repo="$r"; explicit=1
+  fi
+  if r=$(gp_opt hostname); then
+    host="$r"
+  elif r=$(gp_env_get GH_HOST); then
+    host="$r"
+  fi
+  if [ "$explicit" = 1 ]; then
+    if _gp_repo_reduce "$repo"; then
+      repo="$_GP_RR"
+      if [ -n "$_GP_RH" ]; then host="$_GP_RH"; fi
+    else
+      rc=2
+    fi
+  fi
+  printf '%s%s%s%s%s' "$repo" "$_GP_TAB" "$explicit" "$_GP_TAB" "$host"
+  return "$rc"
+}
+
+_gp_repo_reduce() {
+  local v="$1" host='' rest owner repo url=0
+  _GP_RR=''
+  _GP_RH=''
+  case "$v" in
+    *://*)
+      url=1
+      rest="${v#*://}"
+      host="${rest%%/*}"
+      host="${host#*@}"
+      host="${host%%:*}"
+      case "$rest" in
+        */*) rest="${rest#*/}" ;;
+        *) return 1 ;;
+      esac ;;
+    *@*:*)
+      url=1
+      host="${v%%:*}"
+      host="${host#*@}"
+      rest="${v#*:}" ;;
+    *) rest="$v" ;;
+  esac
+  rest="${rest%/}"
+  if [ "$url" = 0 ]; then
+    case "$rest" in
+      */*/*/*) return 1 ;;
+      */*/*) host="${rest%%/*}"; rest="${rest#*/}" ;;
+    esac
+    owner="${rest%%/*}"
+    repo="${rest#*/}"
+  else
+    owner="${rest%%/*}"
+    repo="${rest#*/}"
+    repo="${repo%%/*}"
+  fi
+  [ "$owner" != "$rest" ] || return 1
+  repo="${repo%.git}"
+  case "$owner" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$repo" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$host" in
+    *[!A-Za-z0-9.:-]*) return 1 ;;
+  esac
+  _GP_RR="$owner/$repo"
+  _GP_RH="$host"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# `gp_canon` — the act as one line of escaped words, for comparing against a
+# pre-authorized shape. Words are separated by one space; inside a word `\`,
+# space, TAB, LF and CR are written `\\`, `\x20`, `\t`, `\n`, `\r`, so a word
+# boundary and a line boundary survive the trip. `form` prints nothing, rc 1.
+#
+# THE FIRST WORD IS WHAT WILL RUN, NOT WHAT WAS SPELLED. A bare argv0 is itself.
+# A path argv0 is compared with what the gate's PATH resolves the bare name to:
+# the same file prints the bare name, a different one prints its physical path —
+# so `<dir>/evil/gh` can match only a shape that names that path.
+#
+# A decomposed family continues with its path words and positionals and leaves
+# the options out; a raw argv continues with every word after argv0 except
+# `-*=*` ones, which is the normalization the pre-authorization rule's awk
+# applies. `list` and `opaque` print one line per piece whose grade is above a
+# read, so that each of them is compared on its own.
+# ---------------------------------------------------------------------------
+gp_canon() {
+  local line k w
+  case "$GP_STATUS" in
+    form|'') return 1 ;;
+    list|opaque)
+      gp_each_sub _gp_canon_frag
+      return 0 ;;
+  esac
+  _gp_esc "$(_gp_argv0_ident)"
+  line="$_GP_ESC"
+  if [ "$GP_FAMILY" = raw ]; then
+    k=1
+    while [ "$k" -lt "${#GP_INNER[@]}" ]; do
+      case "${GP_INNER[$k]}" in
+        -*=*) ;;
+        *) _gp_esc "${GP_INNER[$k]}"; line="$line $_GP_ESC" ;;
+      esac
+      k=$((k + 1))
+    done
+  else
+    for w in ${GP_PATH[@]+"${GP_PATH[@]}"} ${GP_POS[@]+"${GP_POS[@]}"}; do
+      _gp_esc "$w"
+      line="$line $_GP_ESC"
+    done
+  fi
+  printf '%s\n' "$line"
+  return 0
+}
+
+_gp_argv0_ident() {
+  local raw="$GP_ARGV0_RAW" dir pdir spelled resolved
+  case "$raw" in
+    */*) ;;
+    *) printf '%s' "$GP_ARGV0"; return 0 ;;
+  esac
+  dir="${raw%/*}"
+  [ -n "$dir" ] || dir=/
+  pdir=$(cd "$dir" 2>/dev/null && pwd -P) || pdir=''
+  if [ -z "$pdir" ]; then
+    printf '%s' "$raw"
+    return 0
+  fi
+  spelled="${pdir%/}/${raw##*/}"
+  resolved=$(command -v "$GP_ARGV0" 2>/dev/null) || resolved=''
+  case "$resolved" in
+    /*)
+      if [ -e "$spelled" ] && [ "$spelled" -ef "$resolved" ]; then
+        printf '%s' "$GP_ARGV0"
+        return 0
+      fi ;;
+  esac
+  printf '%s' "$spelled"
+  return 0
+}
+
+# A piece's grade decides whether it is a write piece: the builtins read, and
+# anything else is answered by the grading table.
+_gp_frag_grade() {
+  local a
+  case "$1" in
+    cd|echo|printf|pwd|true|false|:|test|'['|'[['|set|export|unset|shift|read|local|wait|return|exit|type|hash|compgen|trap|ulimit|umask)
+      printf '읽기'
+      return 0 ;;
+    awk)
+      shift
+      for a in "$@"; do
+        case "$a" in
+          *'system('*|*'|'*|*'>'*|-f|-f?*) printf '등급 미상'; return 0 ;;
+        esac
+      done
+      printf '읽기'
+      return 0 ;;
+  esac
+  if declare -F surface_of_argv0 >/dev/null 2>&1; then
+    surface_of_argv0 "$@"
+  else
+    printf '등급 미상'
+  fi
+  return 0
+}
+
+_gp_canon_frag() {
+  local g
+  g=$(_gp_frag_grade "$@") || g=''
+  [ "$g" != '읽기' ] || return 0
+  ( _GP_ENTRY_DEPTH=$((GP_DEPTH + 1)); gp_parse "$@"; gp_canon ) || true
+  return 0
+}
+
+_gp_esc() {
+  local s="$1" c i=0
+  _GP_ESC=''
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"
+    case "$c" in
+      '\') _GP_ESC="$_GP_ESC\\\\" ;;
+      ' ') _GP_ESC="$_GP_ESC\\x20" ;;
+      "$_GP_TAB") _GP_ESC="$_GP_ESC\\t" ;;
+      "$_GP_LF") _GP_ESC="$_GP_ESC\\n" ;;
+      "$_GP_CR") _GP_ESC="$_GP_ESC\\r" ;;
+      *) _GP_ESC="$_GP_ESC$c" ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+_gp_unesc() {
+  local s="$1" c d i=0
+  _GP_UNESC=''
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"
+    if [ "$c" = '\' ]; then
+      d="${s:i+1:1}"
+      case "$d" in
+        '\') _GP_UNESC="$_GP_UNESC\\"; i=$((i + 2)) ;;
+        t) _GP_UNESC="$_GP_UNESC$_GP_TAB"; i=$((i + 2)) ;;
+        n) _GP_UNESC="$_GP_UNESC$_GP_LF"; i=$((i + 2)) ;;
+        r) _GP_UNESC="$_GP_UNESC$_GP_CR"; i=$((i + 2)) ;;
+        x)
+          if [ "${s:i+2:2}" = 20 ]; then
+            _GP_UNESC="$_GP_UNESC "; i=$((i + 4))
+          else
+            _GP_UNESC="$_GP_UNESC$c"; i=$((i + 1))
+          fi ;;
+        *) _GP_UNESC="$_GP_UNESC$c"; i=$((i + 1)) ;;
+      esac
+    else
+      _GP_UNESC="$_GP_UNESC$c"
+      i=$((i + 1))
+    fi
+  done
+  return 0
+}
+
 surface_of_argv0() {
   local cmd="${1##*/}"
   shift
@@ -15900,4 +17899,8 @@ if [ "${CC_GATE_SOURCE_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# bash reads a script as it runs it, so a file rewritten in place under a gate
+# that is still in `gate_main` would have its bytes past this point executed.
+# The `exit` on the next line ends the read here, whatever comes after.
 gate_main "$@"
+exit
