@@ -6091,8 +6091,12 @@ gate_chain_verify() {
   # never opened — so deleting the ledger outright was quieter than editing one
   # row of it. Nothing can be said about a chain that was not read, and this is
   # the difference between "verified intact" and "not verified".
+  #
+  # This sentence is not translated: scripts/test-gate-chain-equiv.sh compares
+  # the verifier's stderr byte for byte with the digest-pinned Korean reference,
+  # so rewording it reads as a divergence in the verifier itself.
   if [ ! -f "$LEDGER" ]; then
-    warn "the ledger file is missing, so the hash chain was not verified — this is unverified, not intact: $LEDGER"
+    warn "원장 파일이 없어 해시 체인을 검증하지 못했습니다 — 무결이 아니라 미검증입니다: $LEDGER"
     return 1
   fi
   # The whole walk, in one pass. Four behaviours are decided deliberately here
@@ -6186,12 +6190,17 @@ gate_chain_verify() {
   # function — the 0/1 return contract and the boolean `chain_intact` field both
   # stay exactly as they were, and the two consumers go on reading non-zero as a
   # break. What the number selects is the sentence.
+  #
+  # These three sentences are not translated: `live_verdict` in
+  # scripts/test-gate-chain-equiv.sh reads the row number out of them as a
+  # value (`체인이 N번째 행에서`) and compares it with the digest-pinned Korean
+  # reference, so rewording them makes that suite read every break as row 0.
   if [ "$cause" = "2" ]; then
-    warn "the ledger hash chain breaks at row ${broke} — that row does not end with a newline (a ledger the gate wrote always ends with one, so this row was appended from outside the gate)"
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행이 개행으로 끝나지 않습니다 (게이트가 쓴 원장은 언제나 개행으로 끝나므로 게이트 밖에서 덧붙여진 행입니다)"
   elif [ "$cause" = "1" ]; then
-    warn "the ledger hash chain breaks at row ${broke} — the prev= of that row cannot be read (the field is missing, is not hex, or carries invalid bytes)"
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 그 행의 prev= 를 읽을 수 없습니다 (필드가 없거나 hex 가 아니거나 무효 바이트가 섞였습니다)"
   else
-    warn "the ledger hash chain breaks at row ${broke} — it is a splice, a deletion or a reordering"
+    warn "원장 해시 체인이 ${broke}번째 행에서 끊겼습니다 — 스플라이스·삭제·재배열 중 하나입니다"
   fi
   return 1
 }
@@ -14500,7 +14509,11 @@ gate_done_conditions() {
   # The fold itself lives in `liveness.sh` so that this condition and the status
   # line read one rule rather than two copies of it. What stays here is the
   # RENDERING: these two sentences are the only place a person is told how to
-  # clear the block, so they are not the shared function's business.
+  # clear the block, so they are not the shared function's business. They are
+  # also read as a value: `gate_done_disposition` anchors on the invalidation
+  # line's fixed head (`5 런 스코프 blocked 가 해소 불가입니다 `) to tell an
+  # invalidated run from an unmet one, so that head and its grep there change
+  # together or an invalidated run can no longer record its end.
   local reason cause
   cc_unresolved_blocked "$LEDGER" \
     | while IFS="$(printf '\t')" read -r cause reason; do

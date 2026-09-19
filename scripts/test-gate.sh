@@ -3034,7 +3034,7 @@ check "prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판
 # be read" costs them the morning.
 out=$(chain_render_now)
 case "$out" in
-  *"the prev= of that row cannot be read"*) ok "그 끊김의 사유가 읽을 수 없는 prev= 로 보고된다" ;;
+  *"prev= 를 읽을 수 없습니다"*) ok "그 끊김의 사유가 읽을 수 없는 prev= 로 보고된다" ;;
   *) bad "끊김 사유" "$(printf '%s' "$out" | grep '해시 체인' || true)" ;;
 esac
 cp "$WORK/ledger.bak" "$FX_LEDGER"
