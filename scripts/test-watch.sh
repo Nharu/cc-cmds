@@ -1739,6 +1739,23 @@ mkdir -p "$HOPRD2"
 bash "$WATCH" --run-dir "$HOPRD2" --ledger "$HOPLG" --once >/dev/null 2>&1
 check "음성 대조군 — 핀이 없으면 설치본 감시자가 watch.pid 를 남긴다" \
   "$( [ -e "$HOPRD2/watch.pid" ] && printf yes || printf no )" "yes"
+# 핀이 **이 런의 사본이 아닌 곳**을 가리키는 경우. 게이트는 이 상태에서 멈추지만
+# 감시자는 경고하고 계속한다 — 감시자까지 죽으면 왜 멈췄는지 읽을 표면이 함께
+# 사라진다. 여기 심는 핀은 앞 케이스의 사본을 가리키므로 실행 가능한 표적이 실재하고,
+# 그래서 hop 하지 않았다는 단언이 「표적이 없어서 못 했다」와 구별된다.
+HOPRD3="$WORK/hop-run-foreign"
+mkdir -p "$HOPRD3"
+printf 'schema\t1\nplugin-dir\t%s\n' "$HOPPLUG" > "$HOPRD3/plugin-pin"
+hop_foreign=$(bash "$WATCH" --run-dir "$HOPRD3" --ledger "$HOPLG" --once 2>&1)
+check "감시자 hop — 남의 사본을 가리키는 핀으로는 hop 하지 않는다" \
+  "$( [ -e "$HOPRD3/hop.pid" ] && printf yes || printf no )" "no"
+check "감시자 hop — 그때도 감시자는 계속 돈다" \
+  "$( [ -e "$HOPRD3/watch.pid" ] && printf yes || printf no )" "yes"
+# `case` 를 명령 치환 안에 두지 않는다 — bash 3.2 는 `$( )` 안의 `case` 패턴이 닫는
+# 괄호를 치환의 끝으로 읽어 구문 오류를 낸다.
+hop_foreign_hit=no
+case "$hop_foreign" in *'이 런의 사본이 아닌 곳'*) hop_foreign_hit=yes ;; esac
+check "감시자 hop — 경고가 핀이 남의 자리를 가리킨다고 적는다" "$hop_foreign_hit" "yes"
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

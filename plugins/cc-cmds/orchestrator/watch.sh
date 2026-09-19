@@ -136,6 +136,7 @@ watch_hop_t=$(pin_hop_target "$RUN_DIR" "$WATCH_DIR") || watch_hop_rc=$?
 case "$watch_hop_rc" in
   0) exec "${BASH:-/bin/bash}" "$watch_hop_t/watch.sh" ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} ;;
   2) printf 'watch: plugin-pin 은 있는데 사본이 없습니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+  3) printf 'watch: plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
 esac
 
 # The run id is the run directory's own name — the driver names it that way and
