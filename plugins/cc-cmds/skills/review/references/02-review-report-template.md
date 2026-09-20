@@ -222,9 +222,14 @@ conditions as written let it emit the ordinary line.
 - **리뷰 대상**: [files/directories/commit range]
 - **변경 규모**: 파일 X개, +Y줄 / -Z줄
 - **리뷰 팀 구성**:
-    - [role] ([model]): [scope]
+    - [role] ([opus|sonnet]): [scope]
+    - ...
+- **모델 티어**:
+    - <role-slug> | 부류=<class id> | 모델=<opus|sonnet> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
     - ...
 - **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
+
+`모델 티어` 블록은 `_common/team-model-tier.md` 에 구속되는 스킬(`review`·`review-unattended`)만 채운다. 모델을 리터럴로 쓰는 `review-lite` 는 고르는 것이 없으므로 이 블록을 생략한다. 행 문법은 그 티어 파일이 소유하며 여기서 다시 적지 않는다.
 
 각 P0·P1·P2 항목은 분석(근거/제안) 아래에 `💬 붙여넣기용 코멘트` 블록을 두어 GitHub 인라인 코멘트로 그대로 복사할 수 있게 했다(톤: 분석은 단정, 코멘트는 정중). P3는 항목 한 줄이 곧 코멘트다.
 

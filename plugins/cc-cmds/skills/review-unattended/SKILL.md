@@ -154,6 +154,8 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 **Fail-loud, durably.** If a `ToolSearch` for a Step-0-enumerated tool returns no result, or a later call to one fails because its schema was never loaded, **halt** with `분류: tool-unavailable`, carrying the harness error string verbatim.
 
+**Read `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` here too.** It owns the seat class table, the promotion triggers and the record syntax, and Step 3 is where a seat's model is chosen — so it is read in the same place and for the same reason as the dispatch contract below. Like that contract it is a file and not a tool, so failing to read it produces no `tool-unavailable` halt.
+
 **Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md` here, not at Step 4.** It carries the spawn / ledger / resume+convergence / escalation contract, the task-assignment header, and the `### Team size budget` ceiling that Step 3 reads — so the shipped placement had Step 3 depending on a file Step 4 was told to open. Reading the dispatch contract in the same place as the tools it governs removes that inversion, and CFI-U0's substitution of `park` for every `AskUserQuestion` terminus in that file is unchanged by where it is read. **This Read is not covered by the fail-loud rule above**, which is scoped to the tools this step enumerates: a contract document is a file and not a tool, so a failure to read it produces no `tool-unavailable` halt and no new halt class is created here.
 
 ---
@@ -297,7 +299,7 @@ A small, single-concern change does not need a full team. Evaluate against the s
 | **Small patch** (<30 lines, single concern) | Logic reviewer + Code quality reviewer |
 | **Large refactoring** (many files, no new features) | Code quality reviewer + Performance reviewer + Security reviewer |
 
-Each reviewer's model is chosen from size, complexity, and the depth the role needs; record the rationale in the report rather than fixing defaults.
+Each reviewer's model comes from `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`, read in Step 0: assign the seat exactly one class id and pass that class's model as the `Agent()` call's `model`. Evaluate that file's promotion triggers here too — once per seat, per seat and never per team, from what Steps 1–2 already collected. The classes, the triggers, the demotion rule and the limit-error exception stay in the tier file rather than being restated here. There is no user directive to override the table unattended, so the table and its triggers decide every seat.
 
 #### Large-scope additional strategy
 
@@ -332,6 +334,8 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 **Before synthesizing, Read `${CLAUDE_SKILL_DIR}/../review/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure, naming/version conventions, and the paste-ready comment section.
 
 Synthesize into the resolved report path, following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place. **The `- **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건` summary line is the driver's terminal predicate** — emit it byte for byte in the template's position.
+
+**Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the template's `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here. This block is part of the shared template rather than an overlay, so it is filled the same way in both arms.
 
 The two elements below are this arm's overlay on the shared template, in the same way `## 자율 승인 기록` is: `02-review-report-template.md` is unchanged, because the interactive `review` reads it unconditionally.
 
