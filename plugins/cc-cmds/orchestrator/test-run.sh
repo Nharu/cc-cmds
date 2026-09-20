@@ -5029,11 +5029,11 @@ check "음성 대조군: 런 루트 밖의 평범한 경로는 그대로 허용"
 check "자기 런의 레인 기록은 그대로 거부" \
   "$(hook_decide_rr "$MYRUN/config-dir")" "deny"
 case "$(hook_reason_rr "$RR/cc-cmds/run/victim/config-dir")" in
-  *'다른 런의 디렉터리'*) ok "형제 런 거부가 다른 런을 지목한다" ;;
+  *'this is another run directory'*) ok "형제 런 거부가 다른 런을 지목한다" ;;
   *) bad "형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
 esac
 case "$(hook_reason_rr "$MYRUN/config-dir")" in
-  *'다른 런의 디렉터리'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
+  *'this is another run directory'*) bad "자기 런 거부 사유" "새 팔이 자기 런까지 삼켰다 — 순서가 뒤집혔다" ;;
   *) ok "자기 런 거부는 종전 팔이 낸다 (새 팔이 앞으로 오지 않았다)" ;;
 esac
 
@@ -5064,7 +5064,7 @@ check "배시 가드: 자기 런의 고정 사본 쓰기는 rc 3" "$rr_guard_rc"
 rr_guard 워크트리쓰기 cp x "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/gate.sh"
 check "배시 가드: 형제 런의 고정 사본 쓰기도 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'다른 런의 디렉터리'*) ok "배시 가드: 형제 런 거부가 다른 런을 지목한다" ;;
+  *'this is another run directory'*) ok "배시 가드: 형제 런 거부가 다른 런을 지목한다" ;;
   *) bad "배시 가드: 형제 런 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
 esac
 rr_guard 워크트리쓰기 cp x "$MYRUN/halt/x.md"
@@ -5073,6 +5073,27 @@ rr_guard 워크트리쓰기 cp x "$WORK/outside.txt"
 check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc" "0"
 rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
 check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
+
+# --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
+# 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
+# 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어진다.
+# 그것을 쓰기 대상으로 읽으면 `plugin/…` 이 어느 허용 가지에도 맞지 않아 거부되고,
+# 실측으로 무인 설계 스테이지가 팀원을 하나도 못 띄운 채 런이 닫혔다. 파일은
+# 실행된다고 쓰이지 않으므로 이 원소를 건너뛰어도 허용 목록이 잃는 것은 없다.
+rr_guard 트리밖쓰기 "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 자기 런 고정 사본의 스크립트를 실행하는 것은 rc 0" "$rr_guard_rc" "0"
+# 음성 대조군 — 같은 경로가 쓰기 **대상** 자리에 오면 그대로 거부다. 없으면 위
+# 단언의 초록이 「고정 사본이 통째로 열렸다」와 구별되지 않는다.
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh"
+check "배시 가드: 음성 대조군 — 같은 경로가 쓰기 대상이면 rc 3" "$rr_guard_rc" "3"
+# 그리고 형제 런의 고정 사본을 **실행**하는 것은 argv0 이라도 거부다 — 그 팔은
+# 쓰기 대상 판정에 기대지 않는다.
+rr_guard 트리밖쓰기 "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 형제 런 고정 사본의 실행은 argv0 이어도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 그 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 형제 런 argv0 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
 
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
@@ -5097,7 +5118,7 @@ if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
   # `deny` 만 재면 어느 팔이 답했는지 모른다. 사이클 2 가 실측으로 확정한 것이
   # 정확히 이것이다 — 한쪽 팔은 `deny` 단언으로 잡히지 않고 사유 문면 단언만이 잡는다.
   case "$(hook_reason_rr "$WORK/L-victim/config-dir")" in
-    *'다른 런의 디렉터리'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
+    *'this is another run directory'*) ok "심링크 조상 거부가 형제 런 팔의 것이다" ;;
     *) bad "심링크 조상 거부 사유" "다른 팔이 먼저 거부했다 — 이 단언들이 공허하다" ;;
   esac
   # 음성 대조군 넷. 없으면 위 넷의 통과가 「런 루트 밖 링크를 통째로 거부한다」와
@@ -5109,7 +5130,7 @@ if [ -L "$WORK/L-victim" ] && [ -d "$WORK/L-victim" ]; then
   check "음성 대조군: 자기 런을 가리키는 심링크의 기준선은 그대로 거부" \
     "$(hook_decide_rr "$WORK/L-self/config-dir")" "deny"
   case "$(hook_reason_rr "$WORK/L-self/config-dir")" in
-    *'다른 런의 디렉터리'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
+    *'this is another run directory'*) bad "자기 런 심링크 거부 사유" "새 팔이 자기 런까지 삼켰다" ;;
     *) ok "자기 런 심링크 거부는 종전 팔이 낸다" ;;
   esac
 else
@@ -5171,16 +5192,16 @@ leaf_row() {
     *) bad "두 철자 발산: $nm" "직접 철자와 링크 철자가 다른 팔에 답해진다 — 앵커 목록이 갈렸다" ;;
   esac
 }
-leaf_row "형제 런의 레인 기록"        "$RR/cc-cmds/run/victim/config-dir"        '다른 런의 디렉터리'
-leaf_row "형제 런의 스테이지 설정"    "$RR/cc-cmds/run/victim/settings/impl.json" '다른 런의 디렉터리'
-leaf_row "자기 런의 레인 기록"        "$MYRUN/config-dir"                        '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
-leaf_row "자기 레인의 트랜스크립트"   "$HH/.claude-x/projects/p/a.jsonl"         '세션 트랜스크립트는 승인 판독 채널'
-leaf_row "형제 레인의 트랜스크립트"   "$HH/.claude-y/projects/a.jsonl"           '형제 레인의 세션 트랜스크립트'
-leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.json"         '운영자 스코프 설정 디렉터리'
+leaf_row "형제 런의 레인 기록"        "$RR/cc-cmds/run/victim/config-dir"        'this is another run directory'
+leaf_row "형제 런의 스테이지 설정"    "$RR/cc-cmds/run/victim/settings/impl.json" 'this is another run directory'
+leaf_row "자기 런의 레인 기록"        "$MYRUN/config-dir"                        'the only paths in the run directory a stage is declared to write'
+leaf_row "자기 레인의 트랜스크립트"   "$HH/.claude-x/projects/p/a.jsonl"         'session transcripts are the approval-reading channel'
+leaf_row "형제 레인의 트랜스크립트"   "$HH/.claude-y/projects/a.jsonl"           'the session transcripts of a sibling lane'
+leaf_row "운영자 스코프의 레인 기록"  "$HH/.config/cc-cmds/lanes/x.json"         'the operator-scope configuration directory'
 # 일곱째. 이것만 종전에도 `deny` 였고 — 그 자리에 파일 앵커가 있었기 때문이다 —
 # 이번 변경 뒤에도 **같은 문면**이어야 한다. 2차 패스를 1차 **뒤**에 두는 것이
 # 그것을 보장하고, 앞에 두면 이 행의 사유 단언이 함께 붉어진다.
-leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              '사용자 스코프 설정은 훅 설치 채널'
+leaf_row "사용자 스코프 설정"         "$HH/.claude-x/settings.json"              'user-scope settings are the hook installation channel'
 # 여덟째부터 열째. 이 셋은 1차 패스에만 팔이 있고 2차 말단 패스에는 없어서, 병합
 # 트리에서 **직접 철자는 `deny`, 말단 심링크는 `allow`** 로 갈렸던 자리다. 어느 쪽
 # 브랜치 단독으로도 성립하지 않고 오직 병합에서만 성립하는 부류라 양쪽 스위트가
@@ -5190,13 +5211,13 @@ mkdir -p "$HH/.claude-x/backups" "$HH/.claude-x/file-history" "$WORK/proj"
 : > "$HH/.claude-x/backups/b.md"
 : > "$HH/.claude-x/file-history/h.md"
 : > "$WORK/proj/CLAUDE.md"
-leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               '롤백 기준선과 판본 이력'
-leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          '롤백 기준선과 판본 이력'
-leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'git 이 추적하지 않는 라이브 프리픽스'
+leaf_row "롤백 기준선"                "$HH/.claude-x/backups/b.md"               'the rollback baseline and the version history'
+leaf_row "판본 이력"                  "$HH/.claude-x/file-history/h.md"          'the rollback baseline and the version history'
+leaf_row "라이브 프리픽스"            "$WORK/proj/CLAUDE.md"                     'a live prefix git does not track'
 # 자기 런 거부가 형제 런 팔에 삼켜지지 않았는지. `$RUN_DIR` 이 런 루트 아래라
 # 순서가 뒤집히면 이 런의 허용 이름까지 형제 런 문면으로 거부된다.
 case "$(hook_reason_rr "$WORK/LEAF-3")" in
-  *'다른 런의 디렉터리'*) bad "말단 링크 순서" "자기 런의 말단 링크가 형제 런 문면으로 거부됐다 — 2차 패스의 순서가 뒤집혔다" ;;
+  *'this is another run directory'*) bad "말단 링크 순서" "자기 런의 말단 링크가 형제 런 문면으로 거부됐다 — 2차 패스의 순서가 뒤집혔다" ;;
   *) ok "말단 링크: 자기 런 거부가 형제 런 팔에 삼켜지지 않는다" ;;
 esac
 
@@ -5274,13 +5295,13 @@ anc_row() {
 mkdir -p "$HH/.claude-x/projects/p/deep" "$HH/.claude-y/projects" \
          "$HH/.config/cc-cmds/lanes"
 anc_row "사용자 스코프 projects 1단"  "$HH/.claude-x/projects/p"        "a.jsonl" \
-  '세션 트랜스크립트는 승인 판독 채널'
+  'session transcripts are the approval-reading channel'
 anc_row "사용자 스코프 projects 2단"  "$HH/.claude-x/projects/p/deep"   "a.jsonl" \
-  '세션 트랜스크립트는 승인 판독 채널'
+  'session transcripts are the approval-reading channel'
 anc_row "운영자 스코프 1단"           "$HH/.config/cc-cmds/lanes"       "x.json" \
-  '운영자 스코프 설정 디렉터리'
+  'the operator-scope configuration directory'
 anc_row "형제 레인 projects 1단"      "$HH/.claude-y/projects"          "a.jsonl" \
-  '형제 레인의 세션 트랜스크립트'
+  'the session transcripts of a sibling lane'
 # 거짓 양성 대조군 둘. 물리 접기를 넓히면 「링크를 조상으로 지나면 통째로 거부」로
 # 퇴화하기 쉽고, 그 퇴화는 이 파이프라인 자신이 쓰는 경로를 함께 막는다.
 mkdir -p "$WORK/anc-plain/sub"
@@ -5336,17 +5357,17 @@ hard_row() {
 # 그대로이고 문면만 갈리므로, 이 행의 하중은 전적으로 문면 단언이 진다. 그리고
 # 하드링크에서 런 디렉터리 안의 이 넷만 앵커로 닫히는 것이 이 커밋의 실질 이득이라,
 # 다음 사이클에 누가 「스위트가 안 재니 중복이다」로 읽고 지우면 여기서 붉어진다.
-hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" '런 디렉터리에서 스테이지가 쓰도록 선언된 것은'
+hard_row "자기 런의 레인 기록" "$MYRUN/config-dir" 'the only paths in the run directory a stage is declared to write'
 # 파일 앵커가 **없는** 이름. 런 디렉터리 안의 이름 집합은 유한하지 않아 열거로
 # 닫을 수 없고, 그 나머지를 링크 수 술어가 받는다.
 : > "$MYRUN/surface-digest"
-hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" '하드링크입니다'
+hard_row "런 디렉터리의 미앵커 파일" "$MYRUN/surface-digest" 'the edit target is a hard link'
 # 운영자 스코프의 레인 기록. 여기 쓰면 이 런이 끝난 뒤의 모든 런의 레인이 정해지고,
 # 앵커할 이름 집합이 무한해 열거가 애초에 서지 않는 자리다.
-hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" '하드링크입니다'
+hard_row "운영자 스코프의 레인 기록" "$HH/.config/cc-cmds/lanes/x.json" 'the edit target is a hard link'
 # 그리고 형제 레인의 세션 트랜스크립트. 이름이 무한한 두 번째 자리이고, 실측된
 # 관통 세 자리 중 하나다.
-hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" '하드링크입니다'
+hard_row "형제 레인의 트랜스크립트" "$HH/.claude-y/projects/a.jsonl" 'the edit target is a hard link'
 # 거짓 양성 대조군 셋. 없으면 위 넷의 통과가 「실재하는 말단은 통째로 거부한다」와
 # 구별되지 않고, 통째 거부는 이 파이프라인 자신의 스테이지가 아무것도 못 하게 만든다.
 : > "$WORK/hard-plain.txt"
@@ -5384,7 +5405,7 @@ else
   # 판정만 재면 말단 패스가 답했는지 링크 수 술어가 답했는지 갈리지 않는다. 사유
   # 조각까지 재야 이 단언이 공허해지지 않는다 — `hard_row` 와 같은 이유다.
   case "$(hook_reason_rr "$hardw_link")" in
-    *'하드링크입니다'*) ok "하드링크: 감싼 형태의 거부 문면이 그 자리의 것이다" ;;
+    *'the edit target is a hard link'*) ok "하드링크: 감싼 형태의 거부 문면이 그 자리의 것이다" ;;
     *) bad "하드링크 거부 사유: 감싼 형태" "다른 팔이 답했다 — 이 단언이 공허하다: $(hook_reason_rr "$hardw_link")" ;;
   esac
 fi
@@ -5452,7 +5473,7 @@ case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
           bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'인용되지 않은 셸 제어 연산자'*) ok "체인 거부가 새 검사의 것이다" ;;
+  *'unquoted shell control operator'*) ok "체인 거부가 새 검사의 것이다" ;;
   *) bad "체인 거부 사유" "다른 팔이 먼저 거부했다 — 위 체인 단언들이 공허하다" ;;
 esac
 
@@ -5510,7 +5531,7 @@ case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
           XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
           bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
         | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'인용되지 않은 셸 제어 연산자'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
+  *'unquoted shell control operator'*) ok "ANSI-C 라이더 거부가 새 검사의 것이다" ;;
   *) bad "ANSI-C 라이더 거부 사유" "다른 팔이 먼저 거부했다 — 위 단언들이 공허하다" ;;
 esac
 
@@ -5531,7 +5552,7 @@ check "stat 이 dev:ino 를 내지 못하면 판정하지 않고 거부한다" \
 # 그리고 그 거부가 이 분기의 것인지 확인한다. 다른 분기가 먼저 거부하면 위
 # 단언은 통과하면서 아무것도 검증하지 않는다.
 case "$(printf '%s' "$stat_probe_out" | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
-  *'디바이스:아이노드'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
+  *'device:inode'*) ok "그 거부가 stat 철자 확정 실패를 지목한다" ;;
   *) bad "stat 부재 거부 사유" "다른 분기가 먼저 거부했다 — 위 단언이 공허하다" ;;
 esac
 
@@ -5624,7 +5645,7 @@ if [ -d "$LK/dirlink" ] && [ -L "$LK/dirlink" ]; then
   check "어휘 해소와 커널 해소가 다른 파일을 가리키면 거부" \
     "$(hook_decide "$LK/dirlink/../plain.txt")" "deny"
   case "$(hook_reason "$LK/dirlink/../plain.txt")" in
-    *'어휘 해소와 커널 해소가 다른 파일'*) ok "그 거부가 말단 해소 대조의 것이다" ;;
+    *'the lexical resolution and the kernel resolution of this path point at different files'*) ok "그 거부가 말단 해소 대조의 것이다" ;;
     *) bad "말단 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
   esac
   # 상위 대조용. 같은 철자에서 말단만 양쪽 다 부재하게 하면 위 팔은 두 값이 함께
@@ -5632,7 +5653,7 @@ if [ -d "$LK/dirlink" ] && [ -L "$LK/dirlink" ]; then
   check "상위 디렉터리가 어휘 해소와 커널 해소에서 다르면 거부" \
     "$(hook_decide "$LK/dirlink/../absent.txt")" "deny"
   case "$(hook_reason "$LK/dirlink/../absent.txt")" in
-    *'상위 디렉터리가 어휘 해소와 커널 해소'*) ok "그 거부가 상위 해소 대조의 것이다" ;;
+    *'the parent directory of this path differs between the lexical resolution and the kernel resolution'*) ok "그 거부가 상위 해소 대조의 것이다" ;;
     *) bad "상위 해소 대조 사유" "다른 팔이 먼저 거부했다 — 위 단언이 공허하다" ;;
   esac
   # 음성 대조군. 링크를 끼지 않은 같은 자리의 파일은 그대로 허용돼야 한다 —

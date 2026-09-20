@@ -26,6 +26,7 @@ lint:
 	bash scripts/lint-reap-retention.sh
 	bash scripts/lint-macos-keepset-paths.sh
 	bash scripts/lint-recovery-interlock-pins.sh
+	bash scripts/lint-checkpoint-round-scope.sh
 	bash scripts/lint-harness-global-collisions.sh
 	bash scripts/lint-prompt-schemas.sh
 	bash scripts/lint-triage-pins.sh
