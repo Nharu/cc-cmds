@@ -2590,6 +2590,27 @@ pre_sb() {
   }
 }
 
+# `parse` — the sections that read the argv parser. They stand on no fixture
+# state, so their prelude is one helper: the minimal manifest the two rules that
+# read argv take as input. It lives here rather than in the first section that
+# used it because a second section now calls it, and a helper defined inside a
+# section dies as `command not found` in a cut that does not name that section.
+pre_parse() {
+  [ -n "${PRE_PARSE_DONE:-}" ] && return 0
+  PRE_PARSE_DONE=1
+
+  sp_man() {
+    # sp_man <파일> <형태...> — 사전 인가 행만 담은 최소 매니페스트. 대조 룰은
+    # 그 행만 읽으므로 런 정체도 대상도 필요하지 않다.
+    local f="$1" shape
+    shift
+    : > "$f"
+    for shape in "$@"; do
+      printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$shape" >> "$f"
+    done
+  }
+}
+
 # THE SHARED RUN FIXTURE IS SOURCED IN THE HEAD, not only in the section that
 # first used it. Section 33 is where `run-fixture.sh` came in, and later sections
 # — 12b, 34 — call its `fx_*` helpers, so a cut naming one of them without 33
@@ -17638,16 +17659,8 @@ check "58: 소스 전용 가드는 gate_main 앞에 있다" \
 S59_DIR="$WORK/s59"
 mkdir -p "$S59_DIR"
 
-s59_man() {
-  # s59_man <파일> <형태...> — 사전 인가 행만 담은 최소 매니페스트. 대조 룰은
-  # 그 행만 읽으므로 런 정체도 대상도 필요하지 않다.
-  local f="$1" shape
-  shift
-  : > "$f"
-  for shape in "$@"; do
-    printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$shape" >> "$f"
-  done
-}
+# 매니페스트 헬퍼는 절 60 도 부르므로 머리의 `pre_parse` 에 있다.
+pre_parse
 
 s59() {
   # s59 <모드> <룰> <매니페스트> <argv...> — 모드는 canon·off·empty,
@@ -17691,7 +17704,7 @@ s59() {
 # `-*=*` 단어 버리기, 그리고 공백을 품은 operand — 마지막 것은 두 경로가 서로
 # 다른 단어열을 보면서도 같은 답에 닿아야 하는 자리다.
 S59_MAN_CLAUDE="$S59_DIR/claude.md"
-s59_man "$S59_MAN_CLAUDE" 'claude -p'
+sp_man "$S59_MAN_CLAUDE" 'claude -p'
 s59_i=0
 for s59_argv in \
   'claude -p /cc-cmds:autopilot-router-shift RA1' \
@@ -17724,7 +17737,7 @@ done
 # (2) #812 재현 2 — 두 줄 본문. 옛 경로는 둘째 줄을 둘째 명령으로 읽어 자기
 # 매니페스트의 `gh pr` 행을 놓쳤다. 이 한 줄이 그 이슈의 닫힘이다.
 S59_MAN_GH="$S59_DIR/gh.md"
-s59_man "$S59_MAN_GH" 'gh pr'
+sp_man "$S59_MAN_GH" 'gh pr'
 s59_body='첫 줄
 둘째 줄'
 check "59: 두 줄 본문이 정규 전송에서 형태에 맞는다" \
@@ -17748,7 +17761,7 @@ check "59: RT-B-preauth2 — 옛 경로는 basename 으로 통과시켰다 (이 
 # (4) RT-B-preauth3 — 상대 경로로 부른 스크립트. 형태가 파일 이름만 적으면 옛
 # 경로에서는 어느 디렉터리의 동명 스크립트든 완전 형태로 맞았다.
 S59_MAN_SCRIPT="$S59_DIR/script.md"
-s59_man "$S59_MAN_SCRIPT" 'dasee-jenkins-trigger.sh'
+sp_man "$S59_MAN_SCRIPT" 'dasee-jenkins-trigger.sh'
 : > "$S59_DIR/dasee-jenkins-trigger.sh"
 chmod +x "$S59_DIR/dasee-jenkins-trigger.sh"
 check "59: RT-B-preauth3 — 상대 경로 스크립트는 목록 밖이다" \
@@ -17762,7 +17775,7 @@ check "59: RT-B-preauth3 — 옛 경로는 완전 형태로 읽었다 (이 고�
 # 문면으로 적는 것은 흔한 철자이고, 벗기지 않으면 첫 단어가 `` `gh `` 이 되어
 # 아무것과도 맞지 않았다. 두 경로 모두에서 같아야 한다.
 S59_MAN_TICK="$S59_DIR/tick.md"
-s59_man "$S59_MAN_TICK" '`gh pr`'
+sp_man "$S59_MAN_TICK" '`gh pr`'
 check "59: 백틱으로 감싼 형태도 맞는다 (정규 전송)" \
   "$(s59 canon preauth "$S59_MAN_TICK" gh pr view 1)" "P=1 형태=완전 Pd=0"
 check "59: 백틱으로 감싼 형태도 맞는다 (옛 경로)" \
@@ -17791,7 +17804,7 @@ S59_GRANT=
 # 규율이 한 군데에만 있는지를 본다: 등급된 argv 에만 싣는 분기가 `gate_verb_act`
 # 안에 있고, 그 뒤에 도는 도달 판정기는 다시 싣지 않는다.
 check "59: 게이트는 등급된 argv 에만 전송을 싣는다" \
-  "$(awk '/^gate_verb_act\(\) \{$/ { f = 1 } f && /argv_graded" = "1" \]; then$/ { g = NR } f && /gate_preauth_export "\$@"/ { print (g > 0 && NR == g + 1) ? "분기 안" : "분기 밖"; exit }' "$GATE")" \
+  "$(awk '/^gate_verb_act\(\) \{$/ { f = 1 } f && /argv_graded" = "1" \]; then$/ { g = NR } f && /gate_preauth_export "\$alias" "\$@"/ { print (g > 0 && NR == g + 1) ? "분기 안" : "분기 밖"; exit }' "$GATE")" \
   "분기 안"
 check "59: 도달 판정기는 전송을 다시 싣지 않는다" \
   "$(awk '/^gate_reach_disposition\(\) \{$/ { f = 1 } f && /^\}$/ { f = 0 } f && /gate_preauth_export/ { n++ } END { print n + 0 }' "$GATE")" "0"
@@ -17804,6 +17817,202 @@ check "59: 전송을 만드는 자리는 하나다" \
 gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint PR \
      -- gh pr create --title x --body "$s59_body"
 check "59: 두 줄 본문 행위가 게이트를 통과한다" "$rc" "0"
+
+# ---------------------------------------------------------------------------
+# 60. The gh consumers read the parse
+# --- section: 60 | group: parse | covers: act | anchors: 60: 여섯 철자의 DELETE 가 모두 파괴다, 60: 세 철자의 --web 이 같은 값이다, 60: 남의 저장소는 협업이 아니다, 60: 배포 트리거는 요소별로 맞는다, 60: 남의 저장소는 형태가 맞아도 목록 밖이다 ---
+#
+# 이 절은 gh argv 를 읽는 네 소비자(등급·표식·사다리·협업)와 배포 트리거를 한
+# 자리에서 잰다. 넷 다 예전에는 각자 `" $* "` 를 훑었고, 그래서 **같은 행위가
+# 철자에 따라 다른 답을 받았다** — 이 절의 단언 대부분이 「철자 N 개가 한 값」
+# 꼴인 것은 그 때문이다.
+#
+# 절 58·59 와 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래에서 돈다.
+# ---------------------------------------------------------------------------
+s60() {
+  # s60 <본문> — 게이트를 소싱한 셸에서 본문을 돈다. 대상 행을 읽는 소비자를
+  # 부르려고 `target_field` 를 덮어쓴다: 이 절이 재는 것은 대상 행을 어떻게
+  # 읽어 오는가가 아니라 읽어 온 값으로 무엇을 판정하는가다.
+  #
+  # `G <argv...>` 는 축2 등급, `M <argv...>` 는 표지, `L <argv...>` 는 사다리
+  # 칸, `C <argv...>` 는 협업 여부(1·0), `D <argv...>` 는 배포 트리거 여부다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S60_GATE="$GATE" S60_BODY="$1" S60_SLUG="${S60_SLUG:-o/r}" S60_IDS="${S60_IDS:-}" \
+      /bin/bash -c '
+      . "$S60_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() {
+        case "$2" in
+          "원격 슬러그")       printf "%s" "$S60_SLUG" ;;
+          "배포트리거 식별자") printf "%s" "$S60_IDS" ;;
+          *) return 1 ;;
+        esac
+      }
+      GATE_GRADE_SOURCE=표
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      M() { printf "%s\n" "$(gate_act_mark "$@" | tr "\t" "/")"; }
+      L() { printf "%s\n" "$(ladder_of_argv0 "$@")"; }
+      C() { if gate_collaboration_surface tgt - "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      D() { if gate_deploy_trigger_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      eval "$S60_BODY"' 2>/dev/null )
+}
+
+# (1) 등급 — 한 행위의 여러 철자가 한 값이다.
+check "60: 세 철자의 --web 이 같은 값이다" \
+  "$(s60 'G gh pr view 1 --web; G gh pr view 1 -wR o/r; G gh pr view 1 --web=true')" \
+  "형태 미상
+형태 미상
+형태 미상"
+# 오늘 실물 gh 는 `repo delete` 잎에서 선행 `-R` 을 거부한다. 표가 그 거부를
+# 따라가지 않으면 실물이 실행하지 않을 형태에 등급이 붙는다.
+check "60: 잎이 받지 않는 -R 은 형태 미상이다" \
+  "$(s60 'G gh -R o/r repo delete x; G gh -R o/r auth token')" \
+  "형태 미상
+형태 미상"
+# 미등록 동사는 등급 미상이 아니다 — 등급 미상은 선언으로 구제되는 칸이라,
+# 파서가 실재를 확인해 준 명령이 그 칸에 떨어지면 선언 한 줄로 읽기가 된다.
+check "60: 별칭은 자기 본체의 행을 받는다" "$(s60 'G gh co 1')" "워크트리쓰기"
+check "60: 브라우저를 여는 동사는 형태 미상이다" "$(s60 'G gh browse')" "형태 미상"
+check "60: 확장 설치는 트리 밖 쓰기다" "$(s60 'G gh extension install e/x')" "트리밖쓰기"
+check "60: 확장 실행은 형태 미상이다" "$(s60 'G gh extension exec x')" "형태 미상"
+# 본문 플래그는 gh 자신이 GET 을 POST 로 바꾸는 신호다. 옛 훑기는 `--field=`
+# 붙임 꼴을 못 보고 그 요청을 읽기로 등급했다.
+check "60: 본문 플래그의 세 철자가 모두 쓰기다" \
+  "$(s60 'G gh api --field=body=x /repos/o/r/issues; G gh api -f body=x /r; G gh api --input=/tmp/f /x')" \
+  "외부상태변경
+외부상태변경
+외부상태변경"
+check "60: 본문도 메서드도 없으면 읽기다" "$(s60 'G gh api /repos/o/r')" "읽기"
+
+# (2) 표식 — 같은 요청의 여섯 철자.
+check "60: 여섯 철자의 DELETE 가 모두 파괴다" \
+  "$(s60 '
+for a in "-X DELETE" "-XDELETE" "-X=DELETE" "--method DELETE" "--method=DELETE" "-iXDELETE"; do
+  M gh api $a /repos/o/r
+done')" \
+  "파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE
+파괴/DELETE"
+check "60: 묶인 -at 와 --show-token=true 가 모두 비밀출력이다" \
+  "$(s60 'M gh auth status -at; M gh auth status --show-token=true; M gh auth status -t')" \
+  "비밀출력/--show-token
+비밀출력/--show-token
+비밀출력/--show-token"
+check "60: 선행 -R 을 받는 잎은 파괴 표식을 유지한다" \
+  "$(s60 'M gh -R o/r release delete v1 --yes')" "파괴/delete"
+# 읽을 수 없는 형태에는 표식을 달지 않는다 — 등급이 이미 형태 미상으로 park 한다.
+# 표식 없음의 문면은 빈 출력이 아니라 빈 칸 둘(`<표지>\t<트리거>`)이라, `M` 의
+# 탭 치환을 거치면 `/` 하나로 온다.
+check "60: 읽을 수 없는 형태에는 표식이 없다" "$(s60 'M gh -R o/r auth token')" "/"
+
+# (3) 사다리 — 선행 플래그가 있어도 같은 칸이다.
+check "60: 선행 -R 이 있어도 머지 칸이다" \
+  "$(s60 'L gh pr merge 1; L gh -R o/r pr merge 1; L gh -Ro/r pr merge 1')" \
+  "머지
+머지
+머지"
+check "60: 다른 문으로 들어온 머지도 머지 칸이다" \
+  "$(s60 'L gh api -X PUT repos/o/r/pulls/1/merge')" "머지"
+check "60: 읽을 수 없는 형태는 칸을 주장하지 않는다" "$(s60 'L gh -R o/r repo delete x')" ""
+
+# (4) 협업 — 대상의 저장소일 때만이다. 저장소를 적지 않은 행위는 워크트리의
+# 원격을 쓰므로 대상 행이 이미 고정한다.
+check "60: 대상의 저장소를 향한 이슈 작성은 협업이다" \
+  "$(s60 'C gh issue create --title x; C gh -R o/r issue create --title x')" \
+  "1
+1"
+check "60: 남의 저장소는 협업이 아니다" \
+  "$(s60 'C gh -R evil/x issue create --title x; C gh --repo=evil/x pr merge 1')" \
+  "0
+0"
+# 환경 변수도 저장소를 바꾸는 철자다. 파서는 이미 그것을 읽지만 이 셀은 아직
+# argv0 의 맨 이름으로 갈라서 `env …` 는 gh 팔에 닿지 못한다 — 남의 저장소가
+# 협업이 아닌 것은 맞은 답이되 아직 맞은 이유가 아니고, 그 증거로 대상의 저장소를
+# 적은 같은 철자도 함께 떨어진다. 둘째 줄은 래퍼를 벗기는 자리에서 뒤집힌다.
+check "60: 환경 변수로 바꾼 남의 저장소는 협업이 아니다" \
+  "$(s60 'C env GH_REPO=evil/x gh pr merge 1')" "0"
+check "60: 래퍼를 안 벗긴 오늘은 대상의 저장소도 gh 팔에 못 닿는다 (래퍼 벗김의 전제)" \
+  "$(s60 'C env GH_REPO=o/r gh pr merge 1')" "0"
+# 엔드포인트는 첫 위치 인자다 — 헤더 값이나 jq 식이 「/issues」 를 품었다고
+# 그 요청이 이슈에 대한 것은 아니다.
+check "60: 엔드포인트 아닌 자리의 문면은 협업을 만들지 않는다" \
+  "$(s60 'C gh api --jq .x/issues /repos/o/r/actions/runs; C gh api /repos/o/r/issues')" \
+  "0
+1"
+
+# (5) 배포 트리거 — 요소별 대조.
+S60_IDS='workflow:deploy.yml'
+check "60: 배포 트리거는 요소별로 맞는다" \
+  "$(s60 'D gh workflow run deploy.yml; D gh -R o/r workflow run deploy.yml')" \
+  "1
+1"
+check "60: 남의 저장소의 같은 이름 워크플로는 이 대상의 배포가 아니다" \
+  "$(s60 'D gh -R evil/x workflow run deploy.yml')" "0"
+S60_IDS='argv:deploy prod'
+check "60: 여러 단어 요소는 연속한 단어열로 맞는다" \
+  "$(s60 'D ./run.sh deploy prod; D ./run.sh deploy staging; D ./run.sh deployprod')" \
+  "1
+0
+0"
+S60_IDS='argv:make deploy'
+check "60: 다른 이름의 같은 첫 단어는 배포가 아니다" \
+  "$(s60 'D make deploy; D make build')" \
+  "1
+0"
+# 도는 런이 실제로 쓰는 철자. 요소가 argv0 를 포함하고 행위가 그 뒤에 피연산자를
+# 더 붙인 꼴이라, 요소별 대조가 머리 단어열을 맞추는지가 여기서 갈린다.
+S60_IDS='argv:git pull --ff-only'
+check "60: 도는 런의 배포 트리거 철자가 계속 맞는다" \
+  "$(s60 'D git pull --ff-only origin master; D git pull origin master')" \
+  "1
+0"
+S60_IDS='branch:release'
+check "60: 브랜치 요소는 단어 안쪽에서 맞지 않는다" \
+  "$(s60 'D git push origin HEAD:release; D git push origin HEAD:release-candidate')" \
+  "1
+0"
+S60_IDS=
+
+# (6) 사전 인가의 저장소 필드. 형태는 명령을 적지 저장소를 적지 않으므로, 형태가
+# 맞는 것과 그 행위가 이 런의 저장소를 향하는 것은 다른 사실이다.
+S60_MAN="$WORK/s60-gh.md"
+pre_parse
+sp_man "$S60_MAN" 'gh pr'
+s60_rule() {
+  # s60_rule <행위 저장소> <대상 저장소> — 형태는 맞는 argv 로 탐침을 돌린다.
+  ( GATE_PREAUTH_PROBE=1 GATE_SURFACE=트리밖쓰기 GATE_MANIFEST="$S60_MAN" \
+    GATE_ARGV='gh pr merge 1' GATE_MARK=일반 GATE_MARK_TRIGGER='' GATE_GRANT='' \
+    GATE_ARGV_REPO="$1" GATE_TARGET_REPO="$2" \
+    /bin/sh "$(dirname "$GATE")/rules/사전-인가-대조.sh" 2>/dev/null )
+}
+check "60: 저장소를 적지 않은 행위는 형태만으로 인가된다" \
+  "$(s60_rule '' '')" "P=1 형태=완전 Pd=0"
+check "60: 대상의 저장소를 적은 행위도 인가된다" \
+  "$(s60_rule 'o/r' 'o/r')" "P=1 형태=완전 Pd=0"
+check "60: 남의 저장소는 형태가 맞아도 목록 밖이다" \
+  "$(s60_rule 'evil/x' 'o/r')" "P=0 형태=없음 Pd=0"
+check "60: 대상 저장소를 못 읽으면 명시된 저장소는 목록 밖이다" \
+  "$(s60_rule 'evil/x' '')" "P=0 형태=없음 Pd=0"
+
+# 게이트가 그 두 필드를 실제로 싣는지. 룰이 옳아도 필드가 오지 않으면 위 단언은
+# 아무것도 지키지 못한다.
+check "60: 게이트는 명시된 저장소를 필드로 싣는다" \
+  "$(s60 'gate_preauth_export tgt gh --repo=evil/x pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "evil/x|o/r"
+check "60: 저장소를 적지 않으면 필드를 내지 않는다" \
+  "$(s60 'gate_preauth_export tgt gh pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "|"
+# 해소되지 않는 철자는 필드를 안 내는 것이 아니라 대상 없이 그대로 실린다 —
+# 안 내면 「저장소를 적지 않았다」로 읽혀 통과한다.
+check "60: 해소되지 않는 저장소는 대조 없이 실린다" \
+  "$(s60 'gate_preauth_export tgt gh --repo=garbage pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
+  "garbage|"
 
 # --- epilogue-begin ---
 #

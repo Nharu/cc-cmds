@@ -808,60 +808,137 @@ gate_deploy_trigger_match() {
   # here RAISES the reach rather than being the only thing that can.
   local ids; ids=$(target_field "$alias" '배포트리거 식별자' 2>/dev/null) || return 1
   [ -n "$ids" ] || return 1
-  local IFS=','; local id rest kind val a
-  for id in $ids; do
+
+  # ELEMENT-WISE, AND NEVER A SUBSTRING OF THE FLATTENED ARGV. `" $* "` matches
+  # inside a word and across word boundaries at once, so it answered both ways
+  # wrong: a `workflow` element matched only when the act happened to spell
+  # `workflow run <val>` with exactly those words adjacent — which `gh -R o/r
+  # workflow run <val>` does not — and an `argv` element written as several
+  # words matched a longer word that merely contained it.
+  local _words=()
+  gate_gp_ensure "$@"
+  if [ "$GP_STATUS" != form ] && [ "${#GP_INNER[@]}" -gt 0 ]; then
+    _words=("${GP_INNER[@]}")
+  elif [ "$#" -gt 0 ]; then
+    _words=("$@")
+  fi
+
+  local _oldifs="$IFS"
+  IFS=','
+  # shellcheck disable=SC2086
+  set -- $ids
+  IFS="$_oldifs"
+
+  local id kind val a _vw _i _j _k _ok _n _wn="${#_words[@]}"
+  for id in "$@"; do
     kind="${id%%:*}"; val="${id#*:}"
     [ -n "$val" ] || continue
     case "$kind" in
       branch)
-        for a in "$@"; do
+        for a in ${_words[@]+"${_words[@]}"}; do
           case "$a" in
             "$val"|*":$val"|"+$val"|*":refs/heads/$val") return 0 ;;
           esac
         done ;;
       workflow)
-        case " $* " in
-          *" workflow run $val "*|*"/actions/workflows/$val/dispatches"*) return 0 ;;
+        # The verb path and the first operand, not two words that happened to
+        # sit next to each other. The repository has to be the target's own:
+        # another repository's workflow of the same name is not this target's
+        # deploy, and the cells that judge a stranger's repository are elsewhere.
+        if [ "${GP_PATH[*]:-}" = "workflow run" ] && [ "${GP_POS[0]:-}" = "$val" ] \
+           && gate_gh_repo_is_target "$alias"; then
+          return 0
+        fi
+        case "${GP_POS[0]:-}" in
+          *"/actions/workflows/$val/dispatches"*)
+            gate_gh_repo_is_target "$alias" && return 0 ;;
         esac ;;
       jenkins-job)
-        for a in "$@"; do
+        for a in ${_words[@]+"${_words[@]}"}; do
           case "$a" in "$val"|*"/job/$val/"*) return 0 ;; esac
         done ;;
       argv)
-        case " $* " in *" $val "*|*" $val") return 0 ;; esac ;;
+        # A value of several words matches a run of CONSECUTIVE words, so the
+        # element keeps the boundaries the manifest wrote it with.
+        IFS=' '
+        # shellcheck disable=SC2206
+        _vw=($val)
+        IFS="$_oldifs"
+        _n="${#_vw[@]}"
+        [ "$_n" -gt 0 ] || continue
+        _i=0
+        while [ "$_i" -le $((_wn - _n)) ]; do
+          _ok=1; _j=0
+          while [ "$_j" -lt "$_n" ]; do
+            _k=$((_i + _j))
+            [ "${_words[$_k]}" = "${_vw[$_j]}" ] || { _ok=0; break; }
+            _j=$((_j + 1))
+          done
+          [ "$_ok" = "1" ] && return 0
+          _i=$((_i + 1))
+        done ;;
     esac
   done
   return 1
 }
 
+gate_gh_repo_is_target() {
+  # gate_gh_repo_is_target <alias> — 0 when the repository this gh act names is
+  # the target's own, or is not named at all and therefore comes from the
+  # worktree the target row already fixes. A spelling the accessor cannot
+  # resolve answers no: an unreadable repository is not the target's.
+  local _r _rrc=0 _want
+  _r=$(gp_gh_repo) || _rrc=$?
+  [ "$_rrc" = "0" ] || return 1
+  [ "$(printf '%s' "$_r" | cut -f2)" = "1" ] || return 0
+  _want=$(target_field "$1" '원격 슬러그' 2>/dev/null) || return 1
+  [ -n "$_want" ] || return 1
+  [ "$(printf '%s' "$_r" | cut -f1)" = "$_want" ]
+}
+
 gate_collaboration_surface() {
-  # gate_collaboration_surface <derived-reach> <argv...> — 1 when this act is the
-  # collaboration surface the user authorized to proceed unattended: issues,
-  # comments, labels, projects, and a push that is not a deploy trigger.
+  # gate_collaboration_surface <alias> <derived-reach> <argv...> — 1 when this
+  # act is the collaboration surface the user authorized to proceed unattended:
+  # issues, comments, labels, projects, and a push that is not a deploy trigger.
   #
   # `gh run rerun`/`cancel` are NOT here. Re-running CI can start the very deploy
   # workflow the deploy-trigger cell exists to hold, so they take that cell.
+  #
+  # THE ALIAS ARRIVES BECAUSE THE CELL IS ABOUT A REPOSITORY, not about a verb.
+  # Filing an issue is collaboration on the repository the run was authorized
+  # for; the same verb aimed somewhere else is an act on a stranger's repository
+  # that this cell was reading as authorized. Without the alias there is nothing
+  # to compare the spelled repository against.
+  local alias="$1"; shift
   local rd="$1"; shift
   local cmd="${1##*/}"; shift
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
   case "$cmd" in
     gh)
-      case "${1:-}" in
+      gate_gp_ensure gh "$@"
+      case "$GP_STATUS" in form) return 1 ;; esac
+      # An EXPLICIT repository (`-R`, `--repo`, `GH_REPO`) has to be the target's
+      # own. Collaboration is a claim about WHERE the act lands, and every verb
+      # below reached this cell without anyone asking — so `gh -R stranger/x
+      # issue create` was the authorized collaboration surface.
+      gate_gh_repo_is_target "$alias" || return 1
+      case "${GP_PATH[0]:-}" in
         issue|label) return 0 ;;
         project) return 0 ;;
         pr)
-          case "${2:-}" in
+          case "${GP_PATH[1]:-}" in
             merge) [ "$rd" != "배포트리거" ] && return 0 ;;
             *) return 0 ;;
           esac ;;
         api)
-          case " $* " in
+          # The endpoint is the first positional, not any word that looks like
+          # one: a header value or a `--jq` expression mentioning `/issues` used
+          # to answer for the request it was not the target of.
+          case "${GP_POS[0]:-}" in
             *"/issues"*|*"/comments"*|*"/reviews"*|*"/requested_reviewers"*|*"/labels"*) return 0 ;;
             *"/pulls/"*"/merge"*) [ "$rd" != "배포트리거" ] && return 0 ;;
-          esac
-          case " $* " in
-            *" graphql "*)
-              case " $* " in
+            graphql)
+              case " ${GP_OV[*]:-} ${GP_POS[*]:-} " in
                 *"enablePullRequestAutoMerge"*|*"createDeployment"*) return 1 ;;
                 *) return 0 ;;
               esac ;;
@@ -1157,7 +1234,7 @@ gate_reach_disposition() {
       C=0 ;;
     *)
       C=0
-      gate_collaboration_surface "$_rd" "$@" && C=1 ;;
+      gate_collaboration_surface "$alias" "$_rd" "$@" && C=1 ;;
   esac
 
   local Geff
@@ -3774,15 +3851,43 @@ gate_gp_ensure() {
 # parser split into pieces (`list`, `opaque`) stays on the flat path for now:
 # the runner rows a manifest carries today match the shell word, and moving
 # those onto the pieces belongs with the shell unwrap.
+#
+# THE REPOSITORY RIDES BESIDE THE ARGV, NOT INSIDE IT. A shape names a command,
+# never a repository, so `gh --repo=stranger/x pr merge 1` matches the row `gh
+# pr` word for word — the authorization was for this run's repository and the
+# act is aimed at another one, and nothing in the comparison can see that. The
+# option is deliberately absent from the canonical form (the shape would never
+# match if it were there), so the resolved repository is carried as its own
+# field and compared as its own thing. It is exported only when the act spells
+# a repository: an implicit one is the worktree's remote, which the target row
+# already fixes.
 gate_preauth_export() {
-  local canon
-  unset GATE_ARGV_CANON
+  # gate_preauth_export <alias> <argv...>
+  local alias="$1"; shift
+  local canon r rrc=0
+  unset GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO
   gate_gp_ensure "$@"
   case "$GP_STATUS" in
     ok|tool)
       if canon=$(gp_canon); then
         GATE_ARGV_CANON="$canon"
         export GATE_ARGV_CANON
+      fi ;;
+  esac
+  case "$GP_FAMILY" in
+    gh)
+      r=$(gp_gh_repo) || rrc=$?
+      if [ "$rrc" != "0" ]; then
+        # An unresolvable spelling is carried VERBATIM with no target to match
+        # it, so the rule finds them unequal and issues an approval. Dropping
+        # the field instead would read as "no repository was named", which is
+        # the one thing this argv did do.
+        GATE_ARGV_REPO=$(printf '%s' "$r" | cut -f1)
+        export GATE_ARGV_REPO
+      elif [ "$(printf '%s' "$r" | cut -f2)" = "1" ]; then
+        GATE_ARGV_REPO=$(printf '%s' "$r" | cut -f1)
+        GATE_TARGET_REPO=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || GATE_TARGET_REPO=''
+        export GATE_ARGV_REPO GATE_TARGET_REPO
       fi ;;
   esac
   return 0
@@ -4552,127 +4657,150 @@ surface_of_git_config() {
 }
 
 surface_of_gh() {
-  # `-R/--repo` rides BEFORE the verb, so it is skipped by name — otherwise
-  # `gh -R o/r pr view` reads `-R` as the group and grades unknown.
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -R|--repo)
-        [ $# -ge 2 ] || { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; }
-        shift 2 ;;
-      --repo=*) shift ;;
-      *) break ;;
-    esac
-  done
+  # THE FORM IS READ BY THE PARSER, NOT BY A SCAN OF `$*`. The rows below are
+  # the same rows; what changed is what reaches them. Skipping `-R` by name
+  # answered for the one spelling it was written against and left `-Ro/r`,
+  # `-R=o/r` and every bundled short flag arriving as a different argv shape —
+  # `gh -qRo/r pr merge` put `-qRo/r` in the slot the group is read from. And a
+  # substring scan of `" $* "` cannot tell a flag from an operand that happens
+  # to spell one, so `--web` inside a pull request's body refused the act.
+  #
+  # `gh` is spelled literally rather than taken from argv0: the family is chosen
+  # by basename and the gh grammar does not change with where the binary sits.
+  # WHICH path argv0 named is the pre-authorization rule's question, and it is
+  # answered there — putting it here would grade two runs of the same command
+  # differently for a reason this axis does not measure.
+  gate_gp_ensure gh "$@"
+  case "$GP_STATUS" in
+    # An unreadable form is not an unknown tool. The parser refuses a verb gh
+    # itself does not have, so everything that reaches the rows below is a real
+    # command and the unknown arm keeps its old meaning: a command with no row,
+    # which a declaration may still rescue.
+    form) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+  esac
+  local grp="${GP_PATH[0]:-}" leaf="${GP_PATH[1]:-}"
   # `--web` and its short spelling open a BROWSER, which is a program this table
   # cannot answer for. Refused as a form wherever it appears, before the verb is
-  # read: `gh pr view -w` is not the read that `gh pr view` is.
-  case " $* " in
-    *" --web "*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-  esac
-  case "${1:-}" in
-    pr|issue|run|workflow|repo|release|project|label|cache|secret|ssh-key|gpg-key|variable|gist|config|alias|ruleset|org|search|status|browse|codespace|extension)
-      case " $* " in
-        *" -w "*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-      esac ;;
-  esac
-  case "${1:-}" in
+  # read: `gh pr view -w` is not the read that `gh pr view` is. All three
+  # spellings — `-w`, `--web`, `--web=true` — are one option to the parser, so
+  # the same act no longer takes three different grades.
+  if gp_has web; then printf '%s' "$GATE_FORM_UNKNOWN"; return 0; fi
+  case "$grp" in
     api) surface_of_gh_api "$@" ;;
     # THE READ VERBS OF EACH GROUP, enumerated positively. Blanket-grading a
     # group by its noun is what made `gh pr view`, `gh issue list` and `gh run
     # view` issue approvals — 12 of the 13 recoverable act approvals in the
     # corpus were exactly these three shapes.
     pr)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|status|diff|checks) printf '읽기' ;;
         checkout) printf '워크트리쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     issue)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|status) printf '읽기' ;;
-        develop) case " $* " in *" --list "*) printf '읽기' ;; *) printf '외부상태변경' ;; esac ;;
+        develop) if gp_has list; then printf '읽기'; else printf '외부상태변경'; fi ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     run)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|watch) printf '읽기' ;;
         download) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     workflow)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     repo)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
-        set-default) case " $* " in *" --view "*) printf '읽기' ;; *) printf '워크트리쓰기' ;; esac ;;
+        set-default) if gp_has view; then printf '읽기'; else printf '워크트리쓰기'; fi ;;
         clone) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     release)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         download) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     project)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|field-list|item-list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     label|cache|secret|ssh-key|gpg-key)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     variable)
-      case "${2:-}" in
+      case "$leaf" in
         list|get) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     gist)
-      case "${2:-}" in
+      case "$leaf" in
         list|view) printf '읽기' ;;
         clone) printf '트리밖쓰기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     config)
-      case "${2:-}" in
+      case "$leaf" in
         get|list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '트리밖쓰기' ;;
       esac ;;
     alias)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '트리밖쓰기' ;;
       esac ;;
     ruleset)
-      case "${2:-}" in
+      case "$leaf" in
         list|view|check) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     org)
-      case "${2:-}" in
+      case "$leaf" in
         list) printf '읽기' ;;
         '') printf '%s' "$GATE_FORM_UNKNOWN" ;;
         *) printf '외부상태변경' ;;
       esac ;;
     search|status) printf '읽기' ;;
+    # TWO GROUPS THAT USED TO FALL THROUGH TO THE UNKNOWN ARM, and falling
+    # through was the wrong direction for both. `등급 미상` is rescuable by a
+    # declaration, so a run could declare either of these a read and perform it.
+    #
+    # `browse` opens a browser for the same reason `--web` does, and the arm
+    # above already refuses that as a form — the bare spelling has to give the
+    # same answer or the refusal depends on which flag the caller reached for.
+    browse) printf '%s' "$GATE_FORM_UNKNOWN" ;;
+    # An extension is third-party code installed outside the worktree and then
+    # RUN by gh. `exec` takes no row at all: what it runs is not in this argv,
+    # so nothing here can answer for it, and the form token is the answer that
+    # no declaration widens.
+    extension)
+      case "$leaf" in
+        list) printf '읽기' ;;
+        install|upgrade|remove|create) printf '트리밖쓰기' ;;
+        *) printf '%s' "$GATE_FORM_UNKNOWN" ;;
+      esac ;;
     # `project` sits beside `issue` because filing an issue and putting it on the
     # board are one obligation, not two. A run that files the issue and then
     # cannot reach the board leaves the tracking half-done in the direction that
@@ -4685,7 +4813,7 @@ surface_of_gh() {
     # rewrites the credential the whole separation rests on, so it stays unknown:
     # an act that reached it would be editing the thing that limits it.
     auth)
-      case "${2:-}" in
+      case "$leaf" in
         status|token) printf '읽기' ;;
         *) printf '등급 미상' ;;
       esac ;;
@@ -4700,26 +4828,24 @@ surface_of_gh_api() {
   # spelling that submits several inline comments as ONE review
   # (`POST …/pulls/{n}/reviews`; `gh pr review` carries no comments array), and
   # every read of a value `gh pr view --json` does not expose along with it.
-  shift
-  local m="" body=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
-        body=1
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      *) shift ;;
-    esac
-  done
+  # THE OPTIONS COME FROM THE PARSE, and the caller has already made it — this
+  # is reached from the row above, which parsed the same argv. The loop this
+  # replaces read `-X DELETE` and `-XDELETE` and missed `-X=DELETE`,
+  # `--method=DELETE` bundled behind another short flag, and `-iXDELETE`
+  # entirely; every one of those is the same request to gh.
+  #
+  # The same loop also walked past `--field=body=x` into the `*) shift` arm, so
+  # a request that gh sends as a POST was graded as the GET it is not.
+  # `gp_has` asks whether a BOOL option is true, which is not the question here:
+  # a body flag carries a value, so what matters is that it was given at all.
+  # `gp_opt` answering rc 0 is that presence.
+  local m body=0
+  m=$(gp_opt method) || m=''
+  if gp_opt field >/dev/null 2>&1 \
+     || gp_opt raw-field >/dev/null 2>&1 \
+     || gp_opt input >/dev/null 2>&1; then
+    body=1
+  fi
   # An explicit method wins. Otherwise a field or an input body is exactly what
   # makes gh itself switch from GET to POST, so the table reads the same signal
   # the tool does rather than a second, divergent one.
@@ -5012,14 +5138,18 @@ gate_act_mark() {
   # ---- 비밀출력 -----------------------------------------------------------
   case "$cmd" in
     gh)
-      case "${1:-}:${2:-}" in
-        auth:token) printf '비밀출력\ttoken'; return 0 ;;
-      esac
-      case "${1:-}:${2:-}" in
-        auth:status)
-          case "$all" in
-            *" -t "*|*" --show-token "*) printf '비밀출력\t--show-token'; return 0 ;;
-          esac ;;
+      # READ FROM THE PARSE for the same reason the grading table does: `-at` is
+      # how the flag is actually typed and the substring scan below saw neither
+      # half of it, nor `--show-token=true`. A form the parser refuses takes no
+      # mark — the grade already answers `형태 미상` there, and a mark on an argv
+      # nobody could read would be a claim about words that were not understood.
+      gate_gp_ensure gh "$@"
+      case "$GP_STATUS" in form) ;; *)
+        case "${GP_PATH[*]:-}" in
+          'auth token') printf '비밀출력\ttoken'; return 0 ;;
+          'auth status')
+            if gp_has show-token; then printf '비밀출력\t--show-token'; return 0; fi ;;
+        esac ;;
       esac ;;
     aws)
       case "${1:-}" in
@@ -5186,11 +5316,23 @@ gate_act_mark() {
         [ "$g" = "delete" ] && { printf '파괴\tdelete'; return 0; }
       done ;;
     gh)
-      case "${2:-}" in
-        delete|item-delete|field-delete) printf '파괴\t%s' "$2"; return 0 ;;
-      esac
-      case "${1:-}" in
-        api) case "$all" in *" -X DELETE "*|*" --method DELETE "*) printf '파괴\tDELETE'; return 0 ;; esac ;;
+      gate_gp_ensure gh "$@"
+      case "$GP_STATUS" in form) ;; *)
+        case "${GP_PATH[1]:-}" in
+          delete|item-delete|field-delete)
+            printf '파괴\t%s' "${GP_PATH[1]}"; return 0 ;;
+        esac
+        # `gh api` deletes by METHOD, and the method has six spellings. The
+        # scan this replaces knew two of them, so `-XDELETE`, `-X=DELETE`,
+        # `--method=DELETE` and a DELETE bundled behind another short flag all
+        # reached the ledger with no mark at all — the same request, four ways,
+        # and only one of them declared destructive.
+        case "${GP_PATH[0]:-}" in
+          api)
+            case "$(gp_opt method)" in
+              DELETE|delete) printf '파괴\tDELETE'; return 0 ;;
+            esac ;;
+        esac ;;
       esac ;;
     curl)
       case "$all" in
@@ -5526,10 +5668,16 @@ ladder_of_git() {
 }
 
 ladder_of_gh() {
-  case "${1:-}" in
+  # SILENCE ON AN UNREADABLE FORM, not a rung. This table's default is already
+  # the empty string, and a form the parser refused is exactly the case where
+  # asserting a rung would be guessing from words nobody could read. The grading
+  # table answers `형태 미상` for the same argv and that is what parks it.
+  gate_gp_ensure gh "$@"
+  case "$GP_STATUS" in form) return 0 ;; esac
+  case "${GP_PATH[0]:-}" in
     api) ladder_of_gh_api "$@" ;;
     pr)
-      case "${2:-}" in
+      case "${GP_PATH[1]:-}" in
         merge)  printf '머지' ;;
         create) printf 'PR' ;;
         # `view`, `list`, `review`, `comment` and everything else this row does
@@ -5549,30 +5697,18 @@ ladder_of_gh_api() {
   # method resolution `surface_of_gh_api` does is done here, and the PATH decides
   # on top of it: a non-GET against `…/pulls/<n>/merge` is a merge, and every
   # other endpoint asserts nothing.
-  shift
-  local m="" body=0 path=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -X|--method)
-        [ $# -ge 2 ] || break
-        m="$2"; shift 2 ;;
-      --method=*) m="${1#--method=}"; shift ;;
-      -X*)        m="${1#-X}"; shift ;;
-      -f|-F|--field|--raw-field|--input)
-        body=1
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      -f*|-F*)    body=1; shift ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache)
-        [ $# -ge 2 ] || break
-        shift 2 ;;
-      # The first bare word is the endpoint. Anything later is a positional this
-      # table has no use for, so the first one wins and the scan continues —
-      # stopping here would leave a trailing `-X` unread.
-      -*) shift ;;
-      *)  [ -n "$path" ] || path="$1"; shift ;;
-    esac
-  done
+  # The caller parsed this argv; the endpoint is the first positional and the
+  # method is an option, both already separated from each other. The loop this
+  # replaces had to decide which bare word was the endpoint while skipping
+  # option VALUES by a hand-kept list of flag names — a list that went stale
+  # against gh's own and then read an option's value as the endpoint.
+  local m body=0 path="${GP_POS[0]:-}"
+  m=$(gp_opt method) || m=''
+  if gp_opt field >/dev/null 2>&1 \
+     || gp_opt raw-field >/dev/null 2>&1 \
+     || gp_opt input >/dev/null 2>&1; then
+    body=1
+  fi
   if [ -z "$m" ]; then
     if [ "$body" = "1" ]; then m=POST; else m=GET; fi
   fi
@@ -13511,9 +13647,9 @@ gate_verb_act() {
   # a kind fixed (a bookkeeping row, a stage dispatch) was never graded from its
   # words and is not compared on them either.
   if [ "$argv_graded" = "1" ]; then
-    gate_preauth_export "$@"
+    gate_preauth_export "$alias" "$@"
   else
-    unset GATE_ARGV_CANON
+    unset GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO
   fi
   # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
   # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
