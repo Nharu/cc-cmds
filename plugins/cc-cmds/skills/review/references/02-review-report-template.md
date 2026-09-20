@@ -222,10 +222,10 @@ conditions as written let it emit the ordinary line.
 - **리뷰 대상**: [files/directories/commit range]
 - **변경 규모**: 파일 X개, +Y줄 / -Z줄
 - **리뷰 팀 구성**:
-    - [role] ([opus|sonnet]): [scope]
+    - [role] ([opus|sonnet|haiku]): [scope]
     - ...
 - **모델 티어**:
-    - <role-slug> | 부류=<class id> | 모델=<opus|sonnet> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
+    - <role-slug> | 부류=<class id> | 모델=<opus|sonnet|haiku> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
     - ...
 - **발견 요약**: 🔴 P0 N건 | 🟠 P1 N건 | 🟡 P2 N건 | 🟢 P3 N건
 

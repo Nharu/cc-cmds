@@ -46,15 +46,15 @@ The seat's model is recorded so that the requested model can be compared against
 
 ```
 - **리뷰 팀 구성**:
-    - [role] ([opus|sonnet]): [scope]
+    - [role] ([opus|sonnet|haiku]): [scope]
 - **모델 티어**:
-    - <role-slug> | 부류=<class id> | 모델=<opus|sonnet> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
+    - <role-slug> | 부류=<class id> | 모델=<opus|sonnet|haiku> | 출처=<표|승격|사용자> | 지표=<trigger id[,trigger id]|-> | 재기동=<-|sonnet (한도 오류)>
 ```
 
 - `<role-slug>` is the ledger row's leading slug and the same slug the witness filenames use.
 - `출처=승격` requires `지표≠-`.
 - `재기동` is other than `-` only when the limit-error exception fired.
-- The parenthesis in `리뷰 팀 구성` and `모델=` carry the **requested** model the table (promotion included) chose. A model a limit-error respawn actually used belongs in `재기동=` and nowhere else.
+- The parenthesis in `리뷰 팀 구성` and `모델=` carry the **requested** model — the one the table chose, promotion included, or the one a person chose where the instruction exception above applies. `haiku` reaches these two slots only through that exception, and always alongside `출처=사용자`. A model a limit-error respawn actually used belongs in `재기동=` and nowhere else.
 
 The `리뷰 팀 구성` parenthesis holds one bare lowercase alias and nothing else, so that a later pass can read it mechanically.
 

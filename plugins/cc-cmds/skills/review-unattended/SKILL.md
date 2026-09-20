@@ -299,7 +299,7 @@ A small, single-concern change does not need a full team. Evaluate against the s
 | **Small patch** (<30 lines, single concern) | Logic reviewer + Code quality reviewer |
 | **Large refactoring** (many files, no new features) | Code quality reviewer + Performance reviewer + Security reviewer |
 
-Each reviewer's model comes from `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`, read in Step 0: assign the seat exactly one class id and pass that class's model as the `Agent()` call's `model`. Evaluate that file's promotion triggers here too — once per seat, per seat and never per team, from what Steps 1–2 already collected. The classes, the triggers, the demotion rule and the limit-error exception stay in the tier file rather than being restated here. There is no user directive to override the table unattended, so the table and its triggers decide every seat.
+Each reviewer's model comes from `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`, read in Step 0: assign the seat exactly one class id and pass that class's model as the `Agent()` call's `model`. Evaluate that file's promotion triggers here too — once per seat, per seat and never per team, from what Steps 1–2 already collected. The classes, the triggers, the demotion rule and the limit-error exception stay in the tier file rather than being restated here. No person is present at approval time here, so the tier file's user-instruction exception never applies; the table and all of its triggers, `directive` included, decide every seat.
 
 #### Large-scope additional strategy
 
