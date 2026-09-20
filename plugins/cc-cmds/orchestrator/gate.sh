@@ -742,6 +742,11 @@ gate_reach_required() {
   # to say, and forcing a formal `런로컬` onto it would make the field noise in
   # the one place the morning report reads it.
   local graded="$1"; shift
+  # THE FLOOR RAISES THE GRADE THIS ASKS ABOUT, and it can only raise it. An
+  # opaque runner's table grade says a shell ran; the floor says what the shell
+  # was going to do, and a body that deletes a repository has somewhere to land
+  # whatever the word `bash` implies.
+  [ -n "${GATE_FLOOR:-}" ] && graded=$(gate_surface_max "$graded" "$GATE_FLOOR")
   case "$GATE_GRADE_SOURCE" in
     불투명|미상) [ "${GATE_DECLARED:-}" != "읽기" ] && return 0 ;;
   esac
@@ -889,7 +894,16 @@ gate_gh_repo_is_target() {
   local _r _rrc=0 _want
   _r=$(gp_gh_repo) || _rrc=$?
   [ "$_rrc" = "0" ] || return 1
-  [ "$(printf '%s' "$_r" | cut -f2)" = "1" ] || return 0
+  if [ "$(printf '%s' "$_r" | cut -f2)" != "1" ]; then
+    # AN IMPLICIT REPOSITORY IS THE ONE THE ACT IS STANDING IN, and the target
+    # row fixes that directory only while nothing has moved. `env --chdir=/x gh
+    # pr merge 1` names no repository and used to answer yes on the strength of
+    # a worktree it had already left. Where the parser recorded a change of
+    # directory, the repository is not knowable from here and the cell says no
+    # rather than guessing the target's.
+    [ -z "${GP_CWD:-}" ] || return 1
+    return 0
+  fi
   _want=$(target_field "$1" '원격 슬러그' 2>/dev/null) || return 1
   [ -n "$_want" ] || return 1
   [ "$(printf '%s' "$_r" | cut -f1)" = "$_want" ]
@@ -4028,8 +4042,16 @@ gate_preauth_export() {
   unset GATE_ARGV_CANON GATE_ARGV_REPO GATE_TARGET_REPO
   gate_gp_ensure "$@"
   case "$GP_STATUS" in
-    ok|tool)
-      if canon=$(gp_canon); then
+    # A BODY IS CARRIED PIECE BY PIECE, one line per piece that writes, and the
+    # rule requires every line to match a shape of its own. Carrying only the
+    # highest-graded piece would let a manifest that authorized `git push`
+    # carry a release deletion standing next to it through on the same shape.
+    #
+    # A body of nothing but reads produces no lines at all, and that is left
+    # UNSET rather than exported empty: the rule reads an empty value as a
+    # refusal, and "this act wrote nothing" is not a refusal.
+    ok|tool|list|opaque)
+      if canon=$(gp_canon) && [ -n "$canon" ]; then
         GATE_ARGV_CANON="$canon"
         export GATE_ARGV_CANON
       fi ;;
@@ -5642,6 +5664,29 @@ gate_argv_opaque() {
 # Output is `<하한>\t<표지>\t<트리거>`.
 # ---------------------------------------------------------------------------
 gate_opaque_floor() {
+  # THE PIECES THE PARSER ALREADY CUT, WHEN IT COULD CUT ANY. The hand scan
+  # below splits on separator bytes and then hopes the first word of each piece
+  # is a command; the parser knows which words are command positions, which are
+  # assignments and which are data, so where it produced pieces they are what
+  # the floor is computed over. The scan stays for what the parser leaves
+  # whole — `xargs`, `sudo`, a table-less argv0 whose operands name a command.
+  #
+  # A PIECE WITH NO ROW CONTRIBUTES `외부상태변경`, and that is the fail-open
+  # this changes. The old loop promoted only the four real grades, so a piece
+  # naming a tool the table has never heard of was skipped in silence and a
+  # body of nothing but unregistered tools floored at `읽기` — the widest
+  # possible answer for the case where the gate knows the least.
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque)
+      if [ "${#GP_SUB[@]}" -gt 0 ]; then
+        _GATE_FLOOR_G='읽기'; _GATE_FLOOR_I=$(surface_index '읽기')
+        _GATE_FLOOR_M=''; _GATE_FLOOR_T=''
+        gp_each_sub gate_opaque_floor_frag
+        printf '%s\t%s\t%s' "$_GATE_FLOOR_G" "$_GATE_FLOOR_M" "$_GATE_FLOOR_T"
+        return 0
+      fi ;;
+  esac
   local cmd="${1##*/}"; shift 2>/dev/null || true
   local payload="" a next_is_c=0
   case "$cmd" in
@@ -5703,6 +5748,50 @@ $a"; next_is_c=0; continue; fi
 $(printf '%s' "$payload" | tr ';&|(){}`\n' '\n\n\n\n\n\n\n\n' | sed 's/\$//g')
 EOF
   printf '%s\t%s\t%s' "$floor" "$mark" "$trig"
+}
+
+_GATE_FLOOR_G=''
+_GATE_FLOOR_I=''
+_GATE_FLOOR_M=''
+_GATE_FLOOR_T=''
+gate_opaque_floor_frag() {
+  # `gp_each_sub` callback — one simple command out of the body. Builtins and
+  # keywords answer `읽기` through `_gp_frag_grade`, which is the same helper
+  # the canonical form uses, so the two cannot disagree about which piece is a
+  # write.
+  [ "$#" -ge 1 ] || return 0
+  local g fi_ mk
+  g=$(_gp_frag_grade "$@") || g=''
+  case "$g" in
+    읽기|워크트리쓰기|트리밖쓰기|외부상태변경) ;;
+    # A piece with no row, and a piece whose own spelling the parser refused.
+    # The second cannot normally arrive — a body holding one parses `form` as a
+    # whole and is refused before any floor is asked for — so it is answered
+    # here the same way rather than left to fall through to a read.
+    *) g='외부상태변경' ;;
+  esac
+  fi_=$(surface_index "$g" 2>/dev/null) || fi_=''
+  if [ -n "$fi_" ] && [ "$fi_" -gt "$_GATE_FLOOR_I" ]; then
+    _GATE_FLOOR_I="$fi_"; _GATE_FLOOR_G="$g"
+  fi
+  mk=$(gate_act_mark "$@")
+  case "$mk" in
+    비밀출력*) _GATE_FLOOR_M='비밀출력'; _GATE_FLOOR_T="${mk#*	}" ;;
+    파괴*) [ "$_GATE_FLOOR_M" = "비밀출력" ] || { _GATE_FLOOR_M='파괴'; _GATE_FLOOR_T="${mk#*	}"; } ;;
+  esac
+  return 0
+}
+
+# `gate_floor_defined <argv...>` — 0 when this act HAS pieces, which is the
+# domain the floor is defined on. An act the parser left whole (`ok`, `tool`)
+# has one thing in it and the grading table already answered about that thing;
+# printing a floor beside that answer would be printing the answer twice.
+gate_floor_defined() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    list|opaque) [ "${#GP_SUB[@]}" -gt 0 ] && return 0 ;;
+  esac
+  return 1
 }
 
 gate_unwrap_env() {
@@ -9578,6 +9667,14 @@ gate_main() {
       local g
       g=$(surface_of_argv0 "$@")
       printf '축2=%s\n' "$g"
+      # THE SECOND LINE, FOR ACTS THAT HAVE PIECES. `grade` is what a caller
+      # runs to find out what to declare, and for a shell body the answer it
+      # needs is not the shell's row — it is the floor the comparator will hold
+      # the declaration to. Printed only where the floor is defined, so a caller
+      # never has to tell an empty field from an absent one.
+      if gate_floor_defined "$@"; then
+        printf '하한=%s\n' "$(gate_opaque_floor "$@" | cut -f1)"
+      fi
       # `[ … ] && exit` as the arm's last command hands the FALSE test's status
       # to the caller — a successful grade then exits 1 and reads as a refusal.
       #
@@ -13583,7 +13680,7 @@ gate_verb_act() {
   # and `미상` is a command with no row at all. The three take different
   # comparators and leave different marks on the row, and collapsing any two of
   # them loses exactly the distinction the axis was added for.
-  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''
+  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''; GATE_FLOOR_FIELD=''
   GATE_MARK=''; GATE_MARK_TRIGGER=''
   export GATE_GRADE_SOURCE GATE_OPAQUE GATE_FLOOR GATE_MARK GATE_MARK_TRIGGER
   if [ "$argv_graded" = "1" ]; then
@@ -13602,6 +13699,11 @@ gate_verb_act() {
       if [ -z "$GATE_MARK" ] || { [ "$GATE_MARK" = "파괴" ] && [ "$_fmark" = "비밀출력" ]; }; then
         [ -n "$_fmark" ] && { GATE_MARK="$_fmark"; GATE_MARK_TRIGGER="$_ftrig"; }
       fi
+      # THE ROWS CARRY IT ONLY WHERE IT MEANS SOMETHING. An act the parser left
+      # whole has no floor, and a field spelled with an empty value there would
+      # read as "the floor was computed and it was nothing" — which is the one
+      # reading the morning report must not be able to make.
+      gate_floor_defined "$@" && GATE_FLOOR_FIELD="하한=$GATE_FLOOR"
     fi
     [ "$GATE_OPAQUE" = "1" ] && GATE_GRADE_SOURCE='불투명'
     [ "$graded" = "등급 미상" ] && GATE_GRADE_SOURCE='미상'
@@ -13620,8 +13722,15 @@ gate_verb_act() {
   if [ -n "$surface" ]; then
     surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
     local _bound="$graded" _bi _si
-    if [ "$GATE_GRADE_SOURCE" = "불투명" ] && gate_auto_resolve_enabled; then
-      _bound="${GATE_FLOOR:-읽기}"
+    # THE FLOOR IS NOT A COURTESY OF THE AUTO-RESOLVE MODE. It used to be read
+    # only where auto-resolve was on, so turning that mode off handed an opaque
+    # act the SHELL's table grade as its bound — `bash -c 'gh repo delete …'`
+    # compared against `워크트리쓰기` and a declaration of exactly that passed,
+    # in the one mode a run chooses when it wants the gate to be stricter. An
+    # empty floor falls back to the grade rather than to a read: the default
+    # that used to sit here answered `읽기` for an act nobody had read.
+    if [ "$GATE_GRADE_SOURCE" = "불투명" ]; then
+      _bound="${GATE_FLOOR:-$graded}"
     elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
       _bound="${GATE_FLOOR:-읽기}"
     fi
@@ -13745,7 +13854,11 @@ gate_verb_act() {
   # exemptions — the review rule returns early on a read, so a `merge-seg.sh`
   # declared as a local read would merge with no review record at all.
   case "$GATE_GRADE_SOURCE" in
-    불투명) GATE_SURFACE=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}") ;;
+    # The floor joins the maximum here, which is the whole of what the rules
+    # were missing: the part of the payload the gate could actually read never
+    # left the comparator, so a rule narrowing on the surface saw a shell's
+    # worktree write where the body deleted a repository.
+    불투명) GATE_SURFACE=$(gate_surface_max "$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}")" "${GATE_FLOOR:-읽기}") ;;
     미상)   GATE_SURFACE=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기') ;;
     *)      GATE_SURFACE="$graded" ;;
   esac
@@ -14259,7 +14372,7 @@ gate_verb_act() {
       warn "런이 무효화된 채로 종료를 기록합니다 — 충족이 아니라 무효로 남습니다"
       gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-        "축2=$graded" "등급=1" "기준=무효화 종료" \
+        "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "등급=1" "기준=무효화 종료" \
         "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
       gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
@@ -14295,7 +14408,7 @@ gate_verb_act() {
       # many, bounded by construction.
       gate_append '자율 승인' "kind=$kind" "결정=기각" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-        "축2=$graded" "등급=0" "기준=종료 조건 아홉" \
+        "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "등급=0" "기준=종료 조건 아홉" \
         "되돌리는 법=해당 없음(거부)" \
         "근거=$(gate_unmet_summary "$unmet")"
       exit "$GATE_EXIT_RULE"
@@ -14430,7 +14543,7 @@ gate_verb_act() {
     _cb="$_free"; [ "$_cb" -gt 240 ] && _cb=240
     gate_append 'blocked' "대상=$alias" "스코프=act" "원인=막힘" "사유=도달 park" \
       "도달 판정=$GATE_PARK_CELL" "세그먼트=$_seg55" \
-      "스테이지=$_stg" "축2=$graded" "도달=${GATE_REACH:--}" \
+      "스테이지=$_stg" "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "도달=${GATE_REACH:--}" \
       "행위 다이제스트=$_ad" "근거=$(gate_row_safe "$rationale" "$_rb")" \
       "관측=$(gate_row_safe "$1" "$_ob")" "재개 명령=$(gate_row_safe "$*" "$_cb")"
     warn "도달 park — 판정 '$GATE_PARK_CELL'. 이 행위는 수행되지 않았고, 재시도하거나 도달을 바꿔 다시 신고해도 같은 판정입니다. 필수가 아니면 이 행위 없이 할 수 있는 일을 계속하고, 필수였다면 분류 'gate-unanswerable' 로 halt 기록을 쓰고 끝내세요"
@@ -14559,7 +14672,7 @@ gate_verb_act() {
     [ "$_argv_budget" -lt 0 ] && _argv_budget=0
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" \
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "자격=$credmode" "행위자=$actor" \
       "등급 출처=$GATE_GRADE_SOURCE" "선언=${GATE_DECLARED:--}" \
       "표지=${GATE_MARK:--}" "파괴 출처=$(gate_destructive_source)" \
       "도달=${GATE_REACH:--}" "유도 도달=$(gate_reach_derived "$alias" "$@")" \
@@ -14570,7 +14683,7 @@ gate_verb_act() {
   else
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" "근거=$rationale"
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "자격=$credmode" "행위자=$actor" "근거=$rationale"
   fi
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
 
@@ -14645,7 +14758,7 @@ gate_verb_act() {
     warn "행위가 실패했습니다 (rc=$rc) — 행은 이미 원장에 있습니다"
     gate_append '자율 승인' "kind=$kind" "결정=결과" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "근거=rc=$rc"
+      "축2=$graded" ${GATE_FLOOR_FIELD:+"$GATE_FLOOR_FIELD"} "근거=rc=$rc"
   fi
   return "$rc"
 }

@@ -16122,6 +16122,109 @@ esac
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR55"
 
 # ---------------------------------------------------------------------------
+# 62. 하한이 비교기 밖으로 나온다 — grade 둘째 줄·표면·도달·원장
+# --- section: 62 | group: reach | covers: grade, exec | anchors: 62: grade 가 하한을 둘째 줄에 찍는다, 62: 조각이 없는 행위는 하한 줄을 찍지 않는다, 62: 자동 해소를 꺼도 하한이 비교기에 선다, 62: 행 없는 도구 조각이 하한을 올린다, 62: 원장 행이 하한을 싣는다 ---
+#
+# 하한은 몸통에서 게이트가 실제로 읽어낸 부분이고, 오늘까지 그 값은 비교기
+# 지역 변수 밖으로 한 번도 나가지 않았다. 그래서 `bash -c 'gh repo delete …'`
+# 는 룰에게 셸의 워크트리 쓰기로 보였다. 이 절은 그 값이 나가는 네 자리를
+# 각각 못박는다 — `grade` 둘째 줄, 비교기, 도달 필요, 원장 행.
+# ---------------------------------------------------------------------------
+s62() {
+  # s62 <본문> — 절 61 과 같은 틀. 소싱만 하고 픽스처는 쓰지 않는다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S62_GATE="$GATE" S62_BODY="$1" \
+      /bin/bash -c '
+      . "$S62_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      F() { printf "%s\n" "$(gate_opaque_floor "$@" | cut -f1)"; }
+      D() { if gate_floor_defined "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      R() { GATE_FLOOR="$1"; shift; GATE_GRADE_SOURCE=표
+            if gate_reach_required "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      eval "$S62_BODY"' 2>/dev/null )
+}
+
+# (1) `grade` 의 둘째 줄. 호출자가 무엇을 신고해야 하는지 물어보는 자리이므로,
+# 셸 본문에 대해서는 셸의 행이 아니라 비교기가 들이댈 하한이 답이다.
+g62=$(cd "$WT" && bash "$GATE" grade --manifest "$FX_MANIFEST" --target front \
+        -- sh -c 'gh repo delete o/r --yes' 2>/dev/null)
+check "62: grade 가 하한을 둘째 줄에 찍는다" "$g62" "축2=워크트리쓰기
+하한=외부상태변경"
+# 조각이 없는 행위에는 필드 자체가 없다 — 빈 값으로 두면 「계산했는데 아무것도
+# 아니었다」로 읽히고, 그 독해가 아침 보고에서 가장 비싸다.
+g62=$(cd "$WT" && bash "$GATE" grade --manifest "$FX_MANIFEST" --target front \
+        -- gh repo delete o/r --yes 2>/dev/null)
+check "62: 조각이 없는 행위는 하한 줄을 찍지 않는다" "$g62" "축2=외부상태변경"
+check "62: 스크립트 파일 피연산자는 조각이 아니다" \
+  "$(s62 'D sh foo.sh; D sh -c "gh repo delete o/r --yes"')" "0
+1"
+
+# (2) 행 없는 도구 조각. 옛 승격 루프는 네 실등급만 올리고 `등급 미상` 조각을
+# 조용히 건너뛰어, 등록되지 않은 도구만으로 된 몸통이 `읽기` 로 바닥났다 —
+# 게이트가 가장 모르는 경우에 가장 넓은 답을 주던 자리다.
+check "62: 행 없는 도구 조각이 하한을 올린다" \
+  "$(s62 'F sh -c "unknowntool --wipe; true"')" "외부상태변경"
+check "62: 내장 명령 조각은 하한을 올리지 않는다" \
+  "$(s62 'F sh -c "cd wt && echo hi"')" "읽기"
+check "62: 쓰는 조각이 하나라도 있으면 그 최대가 하한이다" \
+  "$(s62 'F sh -c "echo hi && git push origin HEAD"')" "외부상태변경"
+
+# 몸통 안에서 디렉터리를 옮긴 행위도 같은 하한을 받고, 옮겼다는 사실 자체가
+# 파서에 남는다 — 암묵 저장소가 대상의 것인지는 그 자리에서 알 수 없다.
+check "62: 디렉터리를 옮긴 몸통도 하한과 옮김을 함께 남긴다" \
+  "$(s62 'gp_parse bash -c "cd /x && gh repo delete o/r --yes"; printf "%s\n" "$GP_CWD"; F bash -c "cd /x && gh repo delete o/r --yes"')" \
+  "/x
+외부상태변경"
+check "62: 옮긴 뒤의 암묵 저장소는 대상의 것으로 치지 않는다" \
+  "$(s62 'target_field(){ printf o/r; }
+          gp_parse env --chdir=/x gh pr merge 1
+          if gate_gh_repo_is_target tgt; then printf "1\n"; else printf "0\n"; fi
+          gp_parse gh pr merge 1
+          if gate_gh_repo_is_target tgt; then printf "1\n"; else printf "0\n"; fi')" \
+  "0
+1"
+
+# (3) 비교기. 하한이 자동 해소 모드의 호의가 아니라는 것 — 끈 모드는 런이
+# 게이트를 더 엄하게 하려고 고르는 모드인데, 거기서만 셸의 표 등급이 상한으로
+# 서서 `워크트리쓰기` 신고가 그대로 통과했다.
+CC_GATE_PREV_AR62="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'gh repo delete o/r --yes'
+check "62: 자동 해소를 꺼도 하한이 비교기에 선다" "$rc" "6"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'gh repo delete o/r --yes'
+check "62: 켠 모드도 같은 하한을 쓴다" "$rc" "6"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR62"
+
+# (4) 도달 필요. 셸의 행은 셸이 돌았다고만 말하고, 저장소를 지우는 몸통은
+# 어디에 떨어지는지 적을 자리가 있어야 한다.
+check "62: 하한이 도달 필요를 끌어올린다" \
+  "$(s62 'R 외부상태변경 워크트리쓰기 sh -c "gh repo delete o/r --yes"; R 읽기 워크트리쓰기 sh -c "cat x"')" \
+  "1
+0"
+
+# (5) 원장. 하한이 있는 행위의 행에만 실리고, 없는 행위의 행에는 필드가 없다.
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(HH)" \
+  --rationale t -- sh -c 'git add .'
+n=$(grep -c '하한=워크트리쓰기' "$FX_LEDGER" 2>/dev/null || true)
+[ "${n:-0}" -ge 1 ] && ok "62: 원장 행이 하한을 싣는다" || bad "62: 원장 행이 하한을 싣는다" "n=$n rc=$rc"
+gate exec --manifest "$FX_MANIFEST" --target front --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --reach 런로컬 --snapshot-digest "$(HH)" --rationale t -- cat base.txt
+n=$(grep -c 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null || true)
+m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || true)
+[ "${n:-0}" -ge 1 ] && [ "${m:-0}" = "0" ] \
+  && ok "62: 조각 없는 행위의 행에는 하한 필드가 없다" \
+  || bad "62: 조각 없는 행위의 행에는 하한 필드가 없다" "n=$n m=$m"
+
+# ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
 # --- section: 40 | group: base | covers: gate_main | anchors: (a) 파견 기록이 없는 세그먼트는 11, (b) 고아를 정산하고 12, (c) 같은 시도를 다시 기다려도 12 이고 행은 늘지 않는다, (d) 정상 행의 종료 코드를 그대로 돌려준다, (e) 시도는 찍혔는데 행이 없으면 14, (f) 살아 있는 스테이지에서 timeout 은 13 ---
 #
