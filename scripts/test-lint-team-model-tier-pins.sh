@@ -11,12 +11,25 @@
 # that the whole lint skips, so reverting the lever cannot turn `make check`
 # red on its way back.
 #
-# The six FAIL fixtures are one per failure mode the lint claims to catch —
-# a duplicated class row, a missing class row, a skill that stopped pointing
-# at the tier file, a retired model-choice sentence coming back, and the
-# report template carrying the record block zero or two times. Without one
-# fixture each, a check that silently stopped firing would look identical to
-# a tree with nothing wrong in it.
+# The eight FAIL fixtures are one per failure mode the lint claims to catch —
+# a duplicated class row, a missing class row, a class bound to the wrong
+# model, a skill that stopped pointing at the tier file, a retired
+# model-choice sentence coming back at either search depth, and the report
+# template carrying the record block zero or two times. Without one fixture
+# each, a check that silently stopped firing would look identical to a tree
+# with nothing wrong in it.
+#
+# FAIL-4 and FAIL-8 are a pair, not a duplicate: the fence walks two `find`
+# branches (a skill's own `*.md` at depth 2, a `references/*.md` at depth 3)
+# and one fixture per branch is what keeps either branch from being deleted
+# unnoticed. Planting a second sentence in FAIL-4 instead would have traded
+# one blind spot for the other — that fixture already fails at depth 2, so the
+# depth-3 hit would change nothing about its exit code.
+#
+# The exit code alone cannot see a check that stopped running: every fixture
+# keeps its expected code when a class row, a bound skill or a fence branch
+# is dropped from the lint. The banner's check COUNT is what notices, so
+# T-TIER-OK-1 asserts it.
 #
 # The test invokes the lint with `SKILLS_ROOT=<fixture-dir>` so the real
 # plugin skills are untouched.
@@ -26,6 +39,11 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 fixtures="$repo_root/tests/fixtures/lint-team-model-tier-pins"
+
+# What a whole tree costs the lint: 13 class ids × (row + model) + 4 bound
+# skills + 1 fence + 1 template block. Update this deliberately when a check
+# is added; a drop means one stopped running.
+OK1_EXPECTED_CHECKS=32
 
 failures=0
 passed=0
@@ -43,7 +61,7 @@ for fixture in "$fixtures"/*/; do
   esac
 
   set +e
-  SKILLS_ROOT="$fixture" bash "$script_dir/lint-team-model-tier-pins.sh" >/dev/null 2>&1
+  out=$(SKILLS_ROOT="$fixture" bash "$script_dir/lint-team-model-tier-pins.sh" 2>&1)
   ec=$?
   set -e
 
@@ -53,6 +71,18 @@ for fixture in "$fixtures"/*/; do
   else
     failures=$((failures + 1))
     echo "FAIL: $fixture_name (exit=$ec, expected=$want)" >&2
+  fi
+
+  # The intact tree is the only fixture that reaches every check, so it is the
+  # only one whose count is meaningful.
+  if [[ "$fixture_name" == "T-TIER-OK-1" ]]; then
+    if printf '%s\n' "$out" | grep -qF -- "$OK1_EXPECTED_CHECKS check(s) intact"; then
+      passed=$((passed + 1))
+      echo "PASS: $fixture_name banner (checks=$OK1_EXPECTED_CHECKS)"
+    else
+      failures=$((failures + 1))
+      echo "FAIL: $fixture_name banner — expected '$OK1_EXPECTED_CHECKS check(s) intact', got: $out" >&2
+    fi
   fi
 done
 

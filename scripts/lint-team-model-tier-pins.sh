@@ -6,10 +6,16 @@
 # the same model anyway. Collapsing the choice to one table only helps if the
 # collapse is held in place, so four things are pinned here:
 #
-#   (i)   every class id occurs on exactly ONE row of the tier file's table.
-#         A duplicate row is how a class quietly acquires two models, and a
-#         missing row is how a seat falls through to the unclassified
-#         fallback while looking classified.
+#   (i)   every class id occurs on exactly ONE row of the tier file's table,
+#         AND that row's model cell holds the model the class is supposed to
+#         get. A duplicate row is how a class quietly acquires two models, and
+#         a missing row is how a seat falls through to the unclassified
+#         fallback while looking classified. Pinning the id alone leaves the
+#         binding this whole lever exists for unpinned: flipping `security` to
+#         `sonnet`, or deleting the model column outright, keeps every class id
+#         on exactly one row. So the expected model is restated here. The
+#         duplication is the point — a pin that reads the same file it guards
+#         guards nothing.
 #   (ii)  each of the four skills that CHOOSE a seat model carries a Read
 #         pointer to the tier file. A skill that stops reading it keeps
 #         choosing — just from nothing.
@@ -58,20 +64,21 @@ BOUND_SKILLS=(
   design-audit-unattended
 )
 
-CLASS_IDS=(
-  security
-  contract
-  data
-  concurrency
-  integration
-  coordinator
-  logic
-  performance
-  tests
-  conformance
-  quality
-  portability
-  audit-reader
+# `<class id> <model>` — the binding the tier file exists to hold still.
+CLASS_ROWS=(
+  'security opus'
+  'contract opus'
+  'data opus'
+  'concurrency opus'
+  'integration opus'
+  'coordinator opus'
+  'logic sonnet'
+  'performance sonnet'
+  'tests sonnet'
+  'conformance sonnet'
+  'quality sonnet'
+  'portability sonnet'
+  'audit-reader opus'
 )
 
 # The sentences the tier replaced. Each one told a lead to pick the model on
@@ -99,14 +106,33 @@ count_in_file() {
   grep -Fc -- "$1" "$2" 2>/dev/null || true
 }
 
-# ---------- (i) one table row per class id -----------------------------------
+# ---------- (i) one table row per class id, carrying that class's model ------
 
-for cid in "${CLASS_IDS[@]}"; do
+# row_model <class id> — the last non-empty cell of that class's table row.
+# A markdown row splits on `|` into a leading empty field, the cells, and a
+# trailing empty field, so the model is $(NF-1). Deleting the model column
+# shifts `covers` into that slot, which is why this catches the deletion too.
+row_model() {
+  grep -F -- "| \`$1\` |" "$TIER" 2>/dev/null \
+    | awk -F'|' 'NR == 1 { cell = $(NF-1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell); print cell }'
+}
+
+for row in "${CLASS_ROWS[@]}"; do
+  cid=${row%% *}
+  want=${row##* }
+
   checked=$((checked + 1))
   # The row anchor is the first cell verbatim, which no prose line carries.
   n=$(count_in_file "| \`$cid\` |" "$TIER")
   if [[ "$n" != "1" ]]; then
     echo "FAIL: _common/team-model-tier.md — class id '$cid' must occupy exactly 1 table row, found $n" >&2
+    fail=1
+  fi
+
+  checked=$((checked + 1))
+  got=$(row_model "$cid")
+  if [[ "$got" != "$want" ]]; then
+    echo "FAIL: _common/team-model-tier.md — class '$cid' must bind model '$want', found '$got'" >&2
     fail=1
   fi
 done
