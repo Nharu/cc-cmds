@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.0] - 2026-09-20
+
+설계 스킬이 런타임 분류 지점을 알아보고 부품을 고른다. 설계 대상 제품이 런타임에 비정형 입력을 닫힌 결과 집합으로 판정하는 자리를 가지면, 이제 설계 문서가 그 자리를 규칙 트리가 아니라 타입 결정 전용 분류 모델로 채우라고 결정하고, 벤더 리스크와 실제 코퍼스 정확도를 각각 미해결 항목과 잔여 검증 항목으로 남긴다.
+
+### Added
+
+- **`_common/runtime-classification.md`** — 런타임 분류 기본값의 공유 계약. 세 절 술어(입력이 미리 구조화되지 않음 · 출력이 설계 시점에 닫힌 집합 · 경계를 유한 조건으로 진술할 수 없음), 배치 위상으로 거는 자기설계 배제절(설계·리뷰·운영 세션이 자기 작업에 매기는 판단은 제외, 설계 대상 제품 자신의 배포된 런타임은 요청 처리·배치·스케줄·큐·스트림·CLI 어디서 돌든 포함), 먼저 확인하는 두 출구(규칙·검증기, 자유 형식 LLM), 결정 문장·`Category: UR` 항목(`상태: 대기`)·`### R<n>` 잔여 항목의 착지 규칙, 벤더 이름 전사 금지, 한국어 템플릿 셋. R 템플릿은 필드 키와 열거 값을 싣지 않고 `_common/verification.md` §5 의 CANON 을 가리킨다.
+- **`design`·`design-lite` Step 4 의 스텁** — 후보 지점이 보일 때만 위 파일을 조건부로 Read 하게 하는 같은 문단 하나. `design-discuss-unattended` 는 `design` 의 Step 4 를 그대로 읽으므로 따로 고치지 않고 상속한다.
+- **`autopilot` `lead-solo` 문서 계약 (f)·(g)** — (f) 는 같은 기본값을 적용하고, 그 기본값이 더한 `Category: UR` 항목도 (g) 가 해소한다고 적는다. (g) 는 술어 발동 여부와 무관한 무조건 항목이다 — 이 티어에는 미해결 이슈 워크스루가 없으므로 (c) 의 `sha256` 기록 전에 `상태: 대기` 인 모든 `Category: UR` 항목을 같은 대화에서 사람에게 물어 해소한다. `대기` 인 채로 2막에 넘기지 않는다.
+
+### Changed
+
+- `design-lite` Constraints 의 「네 번째 `_common` Read」 서수를 「네 개의 무조건 `_common` Read 중 하나」로 고쳐, Step 4 의 조건부 Read 가 그 수에 들지 않음을 적었다.
+
 ## [2.21.2] - 2026-09-20
 
 런 디렉터리 쓰기 가드가 argv0 을 쓰기 대상으로 읽어, 런이 자기 고정 사본의 코드를 실행하지 못했다. 판본 핀이 플러그인 사본을 `<RUN_DIR>/plugin/cc-cmds/` 에 두므로 스테이지가 그 사본의 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어지고, `plugin/…` 이 어느 허용 가지에도 맞지 않아 거부됐다. 아무것도 쓰지 않는 행위가 막힌 것이다.
