@@ -2712,6 +2712,19 @@ while IFS= read -r f; do
     if grep -qE "^$name\(\) *\{" "$GATE"; then
       continue
     fi
+    # THE SAME HOLDS FOR THE SCRIPT A SUITE SOURCES INSTEAD OF THE GATE. The
+    # driver suite binds every driver name at its `. "$DRIVER"` line before its
+    # first assertion, so a column-zero shadow of a driver function written
+    # below a column-zero call is the fixture shape the paragraph above
+    # describes — the call above ran the real one — and not the vanishing call.
+    # Wiring the exemption to the gate alone made the check push that suite
+    # toward exactly the indentation the paragraph refuses.
+    case "$f" in
+      */orchestrator/test-run.sh)
+        if grep -qE "^$name\(\) *\{" "$RUNSH"; then
+          continue
+        fi ;;
+    esac
     if [ "$callline" -lt "$defline" ]; then
       offenders="$offenders $name(호출 $callline < 정의 $defline)"
     fi
@@ -18390,7 +18403,10 @@ check "59: 거절된 act 는 승인 행을 남기지 않는다" "$(p59_rows '자
 p59_act_on "$P59_RD/shared/1/snapshot.json"
 check "59: (대조) 리드 좌석의 act 는 같은 샤드를 읽는다" "$rc" "0"
 # 울타리는 `additionalDirectories` 를 넓히지 않는다 — 교대 변형은 그대로 비어 있다.
-p59_shift_settings=$(ls "$P59_RD"/settings/*shift*.json 2>/dev/null | head -1)
+# The variant file is `settings/<kind>.json` and the shift kind is one name, so
+# the path is written out rather than globbed through a pipe.
+p59_shift_settings="$P59_RD/settings/shift.json"
+[ -f "$p59_shift_settings" ] || p59_shift_settings=""
 if [ -n "$p59_shift_settings" ]; then
   check "59: 교대 설정 변형의 additionalDirectories 는 여전히 비어 있다" \
     "$(jq -c '.permissions.additionalDirectories // []' "$p59_shift_settings")" "[]"

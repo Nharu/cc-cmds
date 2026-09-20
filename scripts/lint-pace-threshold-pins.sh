@@ -148,7 +148,14 @@ for c in "${CONSUMERS[@]}"; do
       [[ -n "$ln" ]] || continue
       lineno="${ln%%:*}"
       text="${ln#*:}"
-      got=$(printf '%s' "$text" | LC_ALL=C sed -n -E "s/.*$name\`?=([0-9]+).*/\1/p; s/.*$name\`?[[:space:]]*\(([0-9]+)s?\).*/\1/p" | head -1)
+      # The two spellings are joined by `t`: once the first substitution has
+      # fired the second is skipped, so at most one value comes out and no
+      # early-exit reader sits on the right of the pipe. The three steps are
+      # separate `-e` arguments because BSD sed reads everything after `t` on
+      # the same line — semicolon included — as its label.
+      got=$(printf '%s' "$text" | LC_ALL=C sed -n -E \
+        -e "s/.*$name\`?=([0-9]+).*/\1/p" -e t \
+        -e "s/.*$name\`?[[:space:]]*\(([0-9]+)s?\).*/\1/p")
       [[ -n "$got" ]] || continue
       mentions_total=$((mentions_total + 1))
       if [[ "$got" != "$want" ]]; then
