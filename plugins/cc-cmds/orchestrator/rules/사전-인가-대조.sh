@@ -24,14 +24,14 @@ if [ "$probe" != "1" ]; then
       # 내려갔고, 그 조합이 스테이지 디스패치를 전부 승인 대기로 만들었다.
       # fail-closed 자체는 옳으므로 처분은 같지만, 흘러내려 그렇게 된 것과
       # 그러기로 정한 것은 다르다 — 전자는 읽는 사람이 의도를 볼 수 없다.
-      echo "사전-인가-대조: 축2 등급이 미상입니다 — 판정 불가는 통과가 아닙니다" >&2
+      echo "사전-인가-대조: the axis-2 grade is unknown — undecidable is not a pass" >&2
       exit 5 ;;
   esac
 fi
 
 [ -f "$GATE_MANIFEST" ] || {
   [ "$probe" = "1" ] && { echo "P=0 형태=없음 Pd=0"; exit 0; }
-  echo "사전-인가-대조: 매니페스트를 읽을 수 없습니다" >&2; exit 1; }
+  echo "사전-인가-대조: cannot read the manifest" >&2; exit 1; }
 
 # 불투명 러너 — 게이트의 등급표가 `워크트리쓰기` 로 고정하는 이름들과 같다.
 # 이 목록이 하는 일은 하나뿐이다: 형태가 「러너만 적힌 것」인지 가른다.
@@ -120,5 +120,5 @@ fi
 if [ "$matched" = "1" ]; then
   exit 0
 fi
-echo "사전-인가-대조: '$argv0 $sub' 가 사전 인가 목록 밖입니다 — 승인 대기를 발행합니다" >&2
+echo "사전-인가-대조: '$argv0 $sub' is outside the preauthorization list — issuing an approval request" >&2
 exit 5
