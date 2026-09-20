@@ -374,6 +374,23 @@ fi
 check "스냅숏의 H 가 직접 잰 스냅숏 다이제스트와 같다" \
   "$(jq -r .H "$WORK/s1.json")" "$(snapdigest)"
 
+# THE PACE BLOCK SITS BESIDE `shift`, AND `H` STAYS LAST. It is read from the
+# pacing sensor's state file and never computed here, so on a host with no
+# sensor under this suite's state root it is `null` with the reason beside it.
+# The key order is a contract: the router reads the object positionally through
+# `--fields`, and the default projection below is the list the hook prescribes.
+check "pace 블록이 shift 바로 뒤에 온다" \
+  "$(jq -r 'keys_unsorted | (index("pace") - index("shift"))' "$WORK/s1.json")" "1"
+check "H 는 스냅숏의 마지막 키다" "$(jq -r 'keys_unsorted | last' "$WORK/s1.json")" "H"
+check "센서가 없는 상태 루트에서 pace 는 null 이다" "$(jq -c .pace "$WORK/s1.json")" "null"
+check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$WORK/s1.json")" "센서 미등록"
+check "--fields 의 기본 목록은 라우터가 읽는 일곱 필드를 그 순서로 낸다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
+  "$(jq -r .H "$WORK/s1.json")"
+
 # And it is NOT the progress digest — the separation is the fix, so assert it
 # rather than leaving the two free to converge again.
 if [ "$(snapdigest)" = "$(digest)" ]; then

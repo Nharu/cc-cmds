@@ -74,6 +74,8 @@
 # Usage:
 #   bash lane-probe.sh              # one line per run
 #   bash lane-probe.sh --resolve    # the resolver's answer with no run in hand
+#   LANE_PROBE_HORIZON_SECONDS=<n> bash lane-probe.sh
+#                                   # only run directories modified within <n>s
 #
 # Compatibility: bash 3.2 — no associative arrays, no mapfile.
 
@@ -110,6 +112,34 @@ set +e
 command -v cc_live_stages >/dev/null && command -v resolve_account >/dev/null || exit 3
 
 RUN_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run"
+
+# THE ENUMERATION HORIZON IS THE CALLER'S NUMBER, NOT THIS FILE'S. The pacing
+# sensor counts only run directories whose mtime falls inside a horizon — the
+# probe's cost is linear in directories (about 3.7ms each) and the full root on
+# this host already spends a quarter of the sensor's tick budget — and it hands
+# that horizon in as `LANE_PROBE_HORIZON_SECONDS`, in seconds. The value is
+# declared once, in `fleet.sh`, and is not restated here: unset or empty means
+# no horizon, which keeps the full census every other consumer has always read.
+# A non-numeric value is a usage error rather than a silent full census, because
+# a silently widened census is exactly the cost the horizon exists to bound.
+PROBE_HORIZON="${LANE_PROBE_HORIZON_SECONDS:-}"
+case "$PROBE_HORIZON" in
+  '') ;;
+  *[!0-9]*) printf 'lane-probe.sh: LANE_PROBE_HORIZON_SECONDS 는 초 단위 정수여야 합니다: %s\n' "$PROBE_HORIZON" >&2; exit 2 ;;
+esac
+
+probe_within_horizon() {
+  # probe_within_horizon <run-dir> — true when no horizon is set or the
+  # directory's mtime is inside it. `date -u -r <file>` is the mtime spelling
+  # both platforms share; a directory it cannot date is kept, because dropping
+  # what cannot be measured is the direction that hides a live run.
+  local d="$1" mt now
+  [ -n "$PROBE_HORIZON" ] || return 0
+  mt=$(date -u -r "$d" +%s 2>/dev/null) || return 0
+  case "$mt" in ''|*[!0-9]*) return 0 ;; esac
+  now=$(date -u +%s)
+  [ $(( now - mt )) -le "$PROBE_HORIZON" ]
+}
 
 probe_shape_ok() {
   # probe_shape_ok <run-dir> — false when this directory holds a record whose
@@ -211,6 +241,7 @@ probe_runs() {
   { [ -r "$RUN_ROOT" ] && [ -x "$RUN_ROOT" ]; } || return 3
   for d in "$RUN_ROOT"/*; do
     [ -d "$d" ] || continue
+    probe_within_horizon "$d" || continue
     rid=${d##*/}
     # THE NAME IS ENUMERATED, NOT AUTHORED, so it is not trusted to be a field.
     # A directory name may hold anything but `/` and NUL, and the two characters

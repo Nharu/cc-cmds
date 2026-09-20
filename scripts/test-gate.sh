@@ -6472,7 +6472,7 @@ write15c "$M15C" "$plan15c"
 STUB15C="$WORK/bin/claude-stub-15c"
 cat > "$STUB15C" <<'STUB15CEOF'
 #!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 설계 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
@@ -9886,13 +9886,35 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 공유 세대 디렉터리는 둘째 예외이고, 한 단계 아래만이다. 교대가 산출물을 발행하는
+# 자리는 `shared/<gen>/` 이며 `shared/` 바로 아래의 파일은 세대가 없으므로 `*/*`
+# 거절로 떨어진다 — 예외를 `shared/*` 로 넓게 적으면 그 한 층이 조용히 열린다.
+mkdir -p "$RD3/shared/1"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/snapshot.json"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/loose.json"
+check "shared/ 바로 아래의 파일은 예외가 아니다" "$rc" "3"
+case "$msg" in
+  *"a file directly under shared/ is not"*) ok "거절 문면이 shared/ 바로 아래를 예외 밖으로 지목한다" ;;
+  *) bad "shared/ 거절 문면" "$msg" ;;
+esac
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
-# 편집이 여기서 빨개져야 한다.
+# 편집이 여기서 빨개져야 한다. 예외는 둘이고 둘 다 양쪽에 있어야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
    && grep -qF 'cc-team-witness-*/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
   ok "게이트와 훅이 같은 위트니스 예외를 싣는다"
 else
   bad "가드·훅 불일치" "위트니스 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+if grep -qF 'shared/*/*' "$GATE" \
+   && grep -qF 'shared/*/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 shared/<gen>/ 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "shared/<gen>/ 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
@@ -15059,7 +15081,7 @@ check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는�
 cat > "$WORK/bin/claude-envstub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${CC_PIPELINE_SEGMENT:-}" "${CC_PIPELINE_STAGE_ID:-}" "${CC_PIPELINE_SHIFT_ID:-}" > "$CC_TEST_SHIFT_ENV"
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind segment --target infra \
   --segment SS4 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 후속 교대 자신이 쓰는 행" \
@@ -16382,7 +16404,7 @@ chmod +x "$STUB42A"
 STUB42B="$WORK/bin/claude-stub-42b"
 cat > "$STUB42B" <<'STUB42BEOF'
 #!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
@@ -17622,6 +17644,267 @@ check "58: gate_main 다음 줄이 exit 다" \
   "$(awk '/^[[:space:]]*$/ || /^[[:space:]]*#/ { next } { a = b; b = c; c = $0 } END { print a "|" b "|" c }' "$GATE")" 'fi|gate_main "$@"|exit'
 check "58: 소스 전용 가드는 gate_main 앞에 있다" \
   "$(awk '/CC_GATE_SOURCE_ONLY:-0/ { g = NR } /^gate_main "\$@"$/ { m = NR } END { print (g > 0 && g < m) ? "앞" : "아님" }' "$GATE")" "앞"
+
+# ---------------------------------------------------------------------------
+# 59. 페이싱 이음매 — pace 블록·pace 행·--fields·근거 예산·라우팅 좌석의 shared/ 울타리
+# --- section: 59 | group: base | covers: snapshot, act, exec | anchors: 59: pace 블록이 shift 바로 뒤에 온다, 59: pace 가 있든 없든 H 는 같다, 59: 첫 act 가 (미상) 판정의 pace 행 하나를 남긴다, 59: --fields H 가 값 하나를 한 줄로 낸다, 59: 교대의 exec 는 절대 경로로 shared/ 를 이름 대면 거절된다 ---
+#
+# 센서(`fleet.sh sensor`)가 발행한 `pace/state.json` 을 게이트가 어떻게 읽는지 —
+# 스냅숏의 `pace` 블록, 원장의 `pace` 행, `--fields` 투영 — 와, 같은 변경에 함께
+# 들어온 두 이음매(자유 문면의 행 예산, 라우팅 좌석의 shared/ 울타리)를 잰다. 센서
+# 자체는 여기서 돌리지 않는다: 이 절이 재는 것은 읽는 쪽이므로 state.json 은 손으로
+# 쓰고, 센서 쪽은 `scripts/test-fleet.sh` 가 잰다.
+#
+# 이 절은 픽스처를 자기가 만든다 — run-id R59 의 매니페스트·인가·원장·상태 루트·
+# pace 루트를 새로 뜬다. 앞 절의 것을 물려받으면 `--sections 59` 로 잘라 돌릴 때
+# 그 변수가 없다.
+# ---------------------------------------------------------------------------
+P59ROOT=$(mktemp -d "$WORK/pace59.XXXXXX")
+P59_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P59_PREV" ]; then
+  printf '59: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P59_RID=R59
+P59_MAN="$P59ROOT/$P59_RID.plan.md"
+P59_GRANT="$WT/docs/pipeline-grant/$P59_RID.md"
+P59_LEDGER="$WT/docs/pipeline-run/$P59_RID.md"
+P59_STATE="$P59ROOT/state"
+P59_RD="$P59_STATE/cc-cmds/run/$P59_RID"
+P59_PACE="$P59ROOT/pace"
+if [ "$P59_MAN" = "$FX_MANIFEST" ] || [ "$P59_GRANT" = "$FX_GRANT" ] || [ "$P59_LEDGER" = "$FX_LEDGER" ]; then
+  printf '59: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 (%s · %s · %s)\n' \
+    "$P59_MAN" "$P59_GRANT" "$P59_LEDGER" >&2
+  exit 1
+fi
+# 매니페스트는 앞 절의 것에서 id 만 바꾸고 구속 다이제스트는 지운다(그 검사는 여기서
+# 재는 대상이 아니다).
+sed -e "s/run-id=$P59_PREV;/run-id=$P59_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P59_PREV\$/**런 id**: $P59_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P59_MAN"
+sed "s/R1/$P59_RID/g" "$GBAK" > "$P59_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P59_RID"
+  printf '런 id %s · 페이싱 이음매 픽스처\n' "$P59_RID"
+} > "$P59_LEDGER"
+rm -rf "$P59_STATE" "$P59_PACE"
+mkdir -p "$P59_STATE" "$P59_PACE"
+
+p59_gate() {
+  # 인프로세스 호출. pace 루트는 환경으로 넘긴다 — 게이트는 `GATE_PACE_ROOT` 를
+  # 호출 시점에 읽으므로 소싱 시점 입력 검사에 걸리지 않는다.
+  local out
+  out=$( cd "$WT" && XDG_STATE_HOME="$P59_STATE" GATE_PACE_ROOT="$P59_PACE" gate_inproc "$@" 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+p59_snap() {
+  # p59_snap [스냅숏 인자…] — stdout 만.
+  ( cd "$WT" && XDG_STATE_HOME="$P59_STATE" GATE_PACE_ROOT="$P59_PACE" \
+    gate_inproc snapshot --manifest "$P59_MAN" "$@" 2>/dev/null )
+}
+p59_h() { p59_snap | jq -r .H; }
+p59_state() {
+  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] — 센서가 쓰는
+  # 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만 채운다.
+  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" now
+  now=$(( $(date -u +%s) - off ))
+  jq -cn --arg schema "$schema" --arg v "$verdict" --arg r "$reason" --arg t "$tracker" \
+     --argjson now "$now" \
+     '{schema: $schema, tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
+       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}' > "$P59_PACE/state.json"
+}
+p59_rows() { { grep -cF "\`$1\`" "$P59_LEDGER" || true; }; }
+p59_last() { { grep -F "\`$1\`" "$P59_LEDGER" || true; } | tail -1; }
+p59_field() {
+  # p59_field <행> <키> — 파이프 필드 분해로 그 행의 값 하나.
+  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+p59_act() {
+  # p59_act [근거] — 읽기 등급의 대조 act 하나. pace 행은 승인 행에 올라타므로 이것이
+  # 원장에 판정을 싣는 유일한 길이다.
+  p59_gate act --manifest "$P59_MAN" --kind x --target infra --cutpoint 배포 \
+    --snapshot-digest "$(p59_h)" --rationale "${1:-x}" -- cat "$P59_MAN"
+}
+
+# (1) 스냅숏의 모양 — pace 는 shift 바로 뒤, H 는 마지막 ----------------------------
+p59_snap0=$(p59_snap); p59_rc=$?
+check "59: 픽스처 런의 첫 스냅숏이 답한다" "$p59_rc" "0"
+check "59: pace 블록이 shift 바로 뒤에 온다" \
+  "$(printf '%s' "$p59_snap0" | jq -r 'keys_unsorted | (index("pace") - index("shift"))')" "1"
+check "59: H 는 마지막 키다" "$(printf '%s' "$p59_snap0" | jq -r 'keys_unsorted | last')" "H"
+# 부재의 세 상태는 하트비트 파일만으로 갈린다 — launchctl 은 부르지 않는다.
+check "59: state.json 이 없으면 pace 는 null 이다" "$(printf '%s' "$p59_snap0" | jq -c .pace)" "null"
+check "59: 하트비트도 없으면 부재 사유는 센서 미등록이다" \
+  "$(printf '%s' "$p59_snap0" | jq -r .pace_absent_reason)" "센서 미등록"
+touch -t 202001010000 "$P59_PACE/sensor.heartbeat"
+check "59: 하트비트가 세 주기보다 오래됐으면 센서 정지다" \
+  "$(p59_snap | jq -r .pace_absent_reason)" "센서 정지"
+touch "$P59_PACE/sensor.heartbeat"
+check "59: 하트비트는 신선한데 state.json 이 없으면 센서 기동 실패다" \
+  "$(p59_snap | jq -r .pace_absent_reason)" "센서 기동 실패"
+# 낡은 state.json 과 다른 판본의 state.json 은 둘 다 부재다 — 판본은 등호로 비교한다.
+p59_state 가속 idle 400
+check "59: 세 주기보다 오래된 state.json 은 부재로 읽힌다" "$(p59_snap | jq -c .pace)" "null"
+p59_state 가속 idle 0 'cc-pace-state v2'
+check "59: 판본이 다른 state.json 은 부재로 읽힌다 (더 새롭다고 읽지 않는다)" \
+  "$(p59_snap | jq -c .pace)" "null"
+p59_state 가속 idle
+check "59: 신선한 state.json 의 판정이 pace 블록에 실린다" "$(p59_snap | jq -r .pace.verdict)" "가속"
+check "59: 판정 사유도 함께 실린다" "$(p59_snap | jq -r .pace.verdict_reason)" "idle"
+check "59: pace 가 있으면 부재 사유 키는 없다" \
+  "$(p59_snap | jq -r 'has("pace_absent_reason")')" "false"
+# 트래커 부재는 센서가 판정 안에 적는 상태이지 state.json 의 부재가 아니다 — 게이트는
+# 그것을 접지 않고 그대로 싣는다.
+p59_state 유지 tracker-skip 0 'cc-pace-state v1' unavailable
+check "59: tracker=unavailable 인 틱도 그대로 실린다 (부재로 접지 않는다)" \
+  "$(p59_snap | jq -r '.pace.tracker + "/" + .pace.verdict + "/" + .pace.verdict_reason')" \
+  "unavailable/유지/tracker-skip"
+
+# (2) 다이제스트 중립 — pace 는 H 를 움직이지 않는다 ---------------------------------
+p59_state 가속 idle
+p59_h_with=$(p59_h)
+rm -f "$P59_PACE/state.json"
+p59_h_without=$(p59_h)
+check "59: pace 가 있든 없든 H 는 같다" "$p59_h_without" "$p59_h_with"
+p59_state 제동 brake
+check "59: 판정이 바뀌어도 H 는 같다" "$(p59_h)" "$p59_h_with"
+rm -f "$P59_PACE/state.json"
+
+# (3) `--fields` 투영 --------------------------------------------------------------
+p59_hf=$(p59_snap --fields H)
+check "59: --fields H 가 값 하나를 한 줄로 낸다" "$(printf '%s\n' "$p59_hf" | grep -c '' || true)" "1"
+check "59: 그 값은 스냅숏의 H 와 같다" "$p59_hf" "$(p59_h)"
+check "59: 필드 하나는 JSON 이 아니라 날값이다" "$(printf '%s' "$p59_hf" | grep -c '"' || true)" "0"
+check "59: 맨 --fields 는 기본 목록을 그 순서대로 낸다" \
+  "$(p59_snap --fields | jq -r 'keys_unsorted | join(",")')" \
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+check "59: 필드 둘 이상은 요청한 순서의 JSON 객체다" \
+  "$(p59_snap --fields pace,H | jq -r 'keys_unsorted | join(",")')" "pace,H"
+check "59: 그 객체의 pace 는 스냅숏과 같은 값이다 (부재면 null)" \
+  "$(p59_snap --fields pace,H | jq -c .pace)" "null"
+p59_gate snapshot --manifest "$P59_MAN" --fields 없는필드
+check "59: 모르는 필드는 null 이 아니라 exit 2 다" "$rc" "2"
+case "$msg" in
+  *"알 수 없는 필드 없는필드"*) ok "59: 그 거절이 필드 이름을 든다" ;;
+  *) bad "59: --fields 거절 문면" "$msg" ;;
+esac
+p59_gate exec --manifest "$P59_MAN" --target infra --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(p59_h)" --rationale x --fields H -- ls
+check "59: --fields 는 snapshot 에만 붙는다 (exec 에 주면 exit 2)" "$rc" "2"
+
+# (4) pace 행 — 승인 행에 올라타고, 판정이 바뀔 때만, 이 런의 원장을 기준으로 -------
+check "59: (선행) 아직 pace 행이 없다" "$(p59_rows pace)" "0"
+p59_act
+check "59: 대조 act 가 통과한다" "$rc" "0"
+check "59: 첫 act 가 (미상) 판정의 pace 행 하나를 남긴다" "$(p59_rows pace)" "1"
+p59_row=$(p59_last pace)
+check "59: 부재는 판정=(미상) 으로 적힌다" "$(p59_field "$p59_row" 판정)" "(미상)"
+check "59: 첫 행의 이전도 (미상) 이다" "$(p59_field "$p59_row" 이전)" "(미상)"
+check "59: 부재 행의 기준 틱은 - 다" "$(p59_field "$p59_row" '기준 틱')" "-"
+check "59: 부재 행의 관측도 - 다" "$(p59_field "$p59_row" 관측)" "-"
+check "59: 부재 행의 사유는 (미상) 이다" "$(p59_field "$p59_row" 사유)" "(미상)"
+p59_act
+check "59: 판정이 그대로면(여전히 부재) 행이 늘지 않는다" "$(p59_rows pace)" "1"
+p59_state 가속 idle
+p59_act
+check "59: 판정이 움직이면 행이 하나 는다" "$(p59_rows pace)" "2"
+p59_row=$(p59_last pace)
+check "59: 새 행의 판정이 센서의 것이다" "$(p59_field "$p59_row" 판정)" "가속"
+check "59: 새 행의 이전은 앞 행의 판정이다" "$(p59_field "$p59_row" 이전)" "(미상)"
+check "59: 기준 틱은 센서의 tick_seq 다" "$(p59_field "$p59_row" '기준 틱')" "7"
+check "59: 관측은 센서의 computed_at 이다" \
+  "$(p59_field "$p59_row" 관측)" "$(jq -r .computed_at "$P59_PACE/state.json")"
+check "59: 사유는 센서의 verdict_reason 이다" "$(p59_field "$p59_row" 사유)" "idle"
+# 비교 기준은 판정 하나다 — 사유만 바뀐 틱은 행을 만들지 않는다.
+p59_state 가속 lanes-below-target
+p59_act
+check "59: 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
+# snapshot 은 읽기이므로 판정이 바뀌어도 쓰지 않는다 — 다음 act 가 쓴다.
+p59_state 제동 brake
+p59_snap >/dev/null
+check "59: snapshot 은 판정이 바뀌어도 pace 행을 쓰지 않는다" "$(p59_rows pace)" "2"
+p59_act
+check "59: 그다음 act 가 그 변화를 쓴다" "$(p59_rows pace)" "3"
+check "59: 이전 필드가 직전 행의 판정을 잇는다" "$(p59_field "$(p59_last pace)" 이전)" "가속"
+# 낡음도 변화다 — 센서가 멈추면 다음 act 가 (미상) 으로 돌아간 것을 적는다.
+p59_state 제동 brake 400
+p59_act
+check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "4"
+check "59: 그 행의 판정은 (미상) 이고 이전은 제동이다" \
+  "$(p59_field "$(p59_last pace)" 판정)/$(p59_field "$(p59_last pace)" 이전)" "(미상)/제동"
+rm -f "$P59_PACE/state.json"
+
+# (5) 자유 문면의 행 예산 — 근거가 길어도 행은 상한 아래고 잘림 표지가 남는다 ---------
+p59_long=$(LC_ALL=C awk 'BEGIN { while (n++ < 1500) printf "a" }')
+p59_act "$p59_long"
+check "59: 1500 바이트 근거의 act 가 행 상한에 막히지 않고 통과한다" "$rc" "0"
+p59_row=$(p59_last '자율 승인')
+p59_cap=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+p59_len=$(printf '%s\n' "$p59_row" | wc -c | tr -d ' ')
+if [ -n "$p59_cap" ] && [ "$p59_len" -le "$p59_cap" ]; then
+  ok "59: 그 승인 행이 GATE_ROW_MAX 아래다 (${p59_len}B <= ${p59_cap})"
+else
+  bad "59: 승인 행 길이" "행 ${p59_len}B · 상한 '${p59_cap}'"
+fi
+case "$(p59_field "$p59_row" 근거)" in
+  *'…(잘림)') ok "59: 근거가 잘림 표지로 끝난다" ;;
+  *) bad "59: 근거 잘림" "$(p59_field "$p59_row" 근거 | LC_ALL=C cut -c1-40)…" ;;
+esac
+# 셋 다 같은 예산을 쓴다 — 자유 문면을 싣는 세 자리(act 승인·무효화 종단·경계 종단)의
+# 근거는 전부 `gate_free_budget` 이 잰 값으로 잘린다. 리터럴 240 으로 되돌아간 자리가
+# 생기면 여기서 잡힌다.
+check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
+  "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
+check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
+  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+
+# (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
+#
+# 교대 설정 변형에는 `additionalDirectories` 가 없어 `Read` 로는 샤드에 닿지 못하지만,
+# 명령은 전부 이 게이트를 지나므로 `cat "$RUN_DIR/shared/1/…"` 는 그 층이 보지 못하는
+# 읽기다. 울타리는 exec 경로에 있고, 행위자가 스테이지가 아니면서 교대 표지를 들 때만
+# 선다. 스테이지는 교대가 띄웠더라도 스테이지가 먼저다.
+mkdir -p "$P59_RD/shared/1" "$P59ROOT/shared/1"
+printf '{}\n' > "$P59_RD/shared/1/snapshot.json"
+printf '{}\n' > "$P59ROOT/shared/1/decoy.json"
+ln -sf "$P59_RD/shared/1/snapshot.json" "$P59ROOT/alias.json"
+p59_exec() {
+  # p59_exec <경로> — 읽기 등급 exec 하나. 표지는 호출자가 환경으로 얹는다.
+  p59_gate exec --manifest "$P59_MAN" --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(p59_h)" --rationale x -- cat "$1"
+}
+p59_fenced() {
+  # p59_fenced <경로> — 교대 표지 아래의 같은 exec. 스테이지 표지는 프리앰블이 비웠다.
+  CC_PIPELINE_SHIFT_ID="$P59_RID#1" p59_exec "$1"
+}
+p59_exec "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 리드 좌석의 shared/<gen>/ 읽기는 통과한다" "$rc" "0"
+p59_fenced "$P59_RD/shared/1/snapshot.json"
+check "59: 교대의 exec 는 절대 경로로 shared/ 를 이름 대면 거절된다" "$rc" "3"
+case "$msg" in
+  *"the routing seat does not reach the shard directory"*) ok "59: 거절 문면이 라우팅 좌석과 샤드 디렉터리를 든다" ;;
+  *) bad "59: 샤드 거절 문면" "$msg" ;;
+esac
+p59_fenced "../${P59ROOT##*/}/state/cc-cmds/run/$P59_RID/shared/1/snapshot.json"
+check "59: 행위 디렉터리 기준 상대 경로도 거절된다" "$rc" "3"
+p59_fenced "$P59ROOT/alias.json"
+check "59: 울타리 밖 이름의 심링크 잎도 따라가 거절된다" "$rc" "3"
+p59_fenced "$P59_RD/shared/9/not-yet.json"
+check "59: 아직 없는 이름도 어휘적으로 풀어 거절된다" "$rc" "3"
+p59_fenced "$P59ROOT/shared/1/decoy.json"
+check "59: (대조) 런 디렉터리 밖의 shared/ 라는 이름은 거절되지 않는다" "$rc" "0"
+p59_fenced "$P59_MAN"
+check "59: (대조) 교대의 다른 읽기는 그대로 통과한다" "$rc" "0"
+CC_PIPELINE_SHIFT_ID="$P59_RID#1" CC_PIPELINE_STAGE_ID="S59#1" p59_exec "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 교대가 띄운 스테이지는 스테이지가 먼저라 샤드를 읽는다" "$rc" "0"
+# 울타리는 `additionalDirectories` 를 넓히지 않는다 — 교대 변형은 그대로 비어 있다.
+p59_shift_settings=$(ls "$P59_RD"/settings/*shift*.json 2>/dev/null | head -1)
+if [ -n "$p59_shift_settings" ]; then
+  check "59: 교대 설정 변형의 additionalDirectories 는 여전히 비어 있다" \
+    "$(jq -c '.permissions.additionalDirectories // []' "$p59_shift_settings")" "[]"
+else
+  bad "59: 교대 설정 변형" "settings/ 아래에 shift 변형이 없다 — 위 단언이 공허하다"
+fi
 
 # --- epilogue-begin ---
 #

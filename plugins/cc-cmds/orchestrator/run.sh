@@ -2253,7 +2253,14 @@ rundir_init() {
   # ledger's mutual exclusion hold. Nothing owns this
   # subdirectory but the emission, so an ungraded write inside it can destroy
   # only a value the next caller re-derives anyway.
-  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest"
+  #
+  # `shared/` IS CREATED EMPTY AND NEVER FILLED HERE. The lead seat publishes a
+  # generation under it (`shared/<gen>/`) by building it in a sibling temp
+  # directory and renaming it in; the reader verifies each generation against
+  # its own manifest on every read. Making the parent exist is the driver's
+  # whole part — a publisher that had to `mkdir -p` its parent would be writing
+  # one level above what the run directory guards allow it.
+  mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
   # The lane this run opened in, and the orchestrator directory it actually
@@ -2611,7 +2618,64 @@ resolve_account() {
 
   printf '%s' "$HOME/.claude"
 }
-account_has_headroom() { return 1; }   # trivial resolver: no alternate account
+
+# ---------------------------------------------------------------------------
+# Headroom, read from the pacing sensor and never computed here.
+#
+# `fleet.sh sensor` publishes `pace/state.json` once a minute with one entry
+# per seat: the allowance the tracker grants that seat (`allow`, %p/h), how far
+# into its five-hour session window it is (`session_pct`), and — at the top —
+# the burn one stage costs over the four-hour window (`burn_per_stage_4h`).
+# This reader joins the seat this run dispatches on to that entry and answers
+# ONE question: is there room for one more stage on this seat right now.
+#
+# THE SEAT IS RE-RESOLVED ON EVERY CALL, for the same reason `resolve_account`
+# itself is called per dispatch and not per run: the setting file is editable
+# while the run is going, and an answer cached at run start would be about a
+# seat the run may no longer be on.
+#
+# UNKNOWN IS "NO HEADROOM". A state that is absent, unreadable, on another
+# schema, older than three sensor periods, or missing this seat answers 1 — the
+# same value the trivial resolver this replaces always returned, so a machine
+# without the sensor keeps the behaviour it had. The threshold is the sensor's
+# own (`FLEET_STATE_STALE_SECONDS`), and `scripts/lint-pace-threshold-pins.sh`
+# refuses the two drifting apart.
+#
+# WHAT THIS DOES NOT CHANGE. The `kill_permitted` conjunction at the call site
+# and the set of stages the reap path may take are untouched: this function only
+# widens the branch that used to be unreachable, and it does so only when the
+# sensor has positively said there is room.
+# ---------------------------------------------------------------------------
+readonly RUN_PACE_STALE_SECONDS=180
+readonly RUN_PACE_SCHEMA='cc-pace-state v1'
+readonly RUN_PACE_SESSION_WINDOW_PCT_MAX=80
+
+run_pace_root() {
+  printf '%s' "${RUN_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}"
+}
+
+account_has_headroom() {
+  local home f now verdict
+  home=$(resolve_account 2>/dev/null) || return 1
+  [ -n "$home" ] || return 1
+  f="$(run_pace_root)/state.json"
+  [ -r "$f" ] || return 1
+  now=$(date -u +%s)
+  verdict=$(jq -r \
+    --arg schema "$RUN_PACE_SCHEMA" --arg home "$home" \
+    --argjson now "$now" --argjson stale "$RUN_PACE_STALE_SECONDS" \
+    --argjson pctmax "$RUN_PACE_SESSION_WINDOW_PCT_MAX" '
+    if .schema != $schema then "unknown"
+    elif (($now - (.computed_at_epoch // 0)) > $stale) then "unknown"
+    else
+      (.burn_per_stage_4h) as $need
+      | ([.seats[]? | select(.home == $home)] | first) as $seat
+      | if ($seat == null) or ($seat.allow == null) or ($seat.session_pct == null) or ($need == null) then "unknown"
+        elif ($seat.allow >= $need) and ($seat.session_pct < $pctmax) then "room"
+        else "full" end
+    end' "$f" 2>/dev/null) || return 1
+  [ "$verdict" = "room" ]
+}
 
 # ---------------------------------------------------------------------------
 # Notification seat. Three operations. `can_send` is a ONE-TIME adapter choice
@@ -3338,13 +3402,13 @@ stage_wait_all() {
             # alone would hand a live SIGKILL to the first stage that goes
             # quiet for a few minutes.
             if kill_permitted "$s" && account_has_headroom; then
-              log "$s: 한도 형상 + 여유 계정 — 경계에서 재실행"
+              log "$s: 한도 형상 + 여유 계정 — 회수(reap)하고 종료 기록 없이 버린다; 소비자는 크래시로 분류한다"
               reap_orphan "$s"; backoff_reset "$s"
               continue
             fi
             if backoff_wait "$s"; then still="$still $s"; continue; fi
             if kill_permitted "$s"; then
-              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수 후 경계에서 재실행"
+              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수(reap)하고 종료 기록 없이 버린다; 소비자는 크래시로 분류한다"
               reap_orphan "$s"; backoff_reset "$s"
             else
               # No signal, at all. The stage keeps running; the run stops

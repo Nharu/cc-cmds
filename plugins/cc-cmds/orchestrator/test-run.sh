@@ -1753,6 +1753,37 @@ else
   bad "kill 가드" "경계 멱등 스테이지까지 막았다 — 가드가 과도하다"
 fi
 
+# (5) 여유 좌석 판정 — 센서가 발행한 상태를 읽을 뿐 여기서 계산하지 않는다.
+# 모름은 「여유 없음」이다: 상태가 없거나, 오래됐거나, 스키마가 다르거나, 이 좌석
+# 항목이 없으면 1 — 센서 없는 기기가 이 함수를 두기 전과 같은 답을 받는다. 좌석은
+# 호출마다 다시 풀리므로 1층(환경)으로 고정해 어느 항목과 결합하는지를 정한다.
+ACC_PACE="$ACC_DIR/pace"; mkdir -p "$ACC_PACE"
+acc_state() {  # acc_state <오프셋 초> <allow> <session_pct> [schema] [home]
+  jq -cn --arg schema "${4:-cc-pace-state v1}" --arg home "${5:-$ACC_DIR/seat}" \
+     --argjson now "$(( $(date -u +%s) - $1 ))" --argjson allow "$2" --argjson pct "$3" \
+     '{schema: $schema, computed_at_epoch: $now, burn_per_stage_4h: 0.5,
+       seats: [{home: $home, allow: $allow, session_pct: $pct}]}' > "$ACC_PACE/state.json"
+}
+acc_room() {
+  ( CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" account_has_headroom; printf '%s' "$?" )
+}
+rm -f "$ACC_PACE/state.json"
+check "센서 상태가 없으면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 400 1 10
+check "세 주기(180초)보다 오래된 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10
+check "신선한 상태에서 allow 가 한 스테이지 소모 이상이고 창이 80% 미만이면 여유(0)" "$(acc_room)" "0"
+acc_state 0 1 80
+check "세션 창이 80% 에 닿으면 allow 가 남아도 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 0.1 10
+check "allow 가 한 스테이지 소모(0.5)에 못 미치면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v1' "$ACC_DIR/other-seat"
+check "이 좌석 항목이 없는 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v2'
+check "다른 스키마의 상태는 여유 없음(1)" "$(acc_room)" "1"
+check "정지 임계가 센서의 것과 같은 값으로 박혀 있다" "$RUN_PACE_STALE_SECONDS" "180"
+unset -f acc_state acc_room
+
 # `unset -f` REMOVES the watcher rather than restoring the driver's definition —
 # bash has no function shadowing, so the original is gone for the rest of this
 # process. That is why this block sits last: a later assertion calling it would
@@ -4460,6 +4491,11 @@ RUN_ID="lane-init"
 RI="$LD/state/cc-cmds/run/lane-init"
 check "rundir_init 이 레인을 기록한다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
 check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(cat "$RI/orchestrator-dir" 2>/dev/null)" "$ORCH_DIR"
+# 공유 세대 디렉터리는 런 개시에 리드 좌석이 빈 채로 만든다 — 교대는 그 아래
+# `shared/<gen>/` 에만 쓸 수 있고 `shared/` 자체를 만들 권한이 없으므로, 여기서
+# 만들어 두지 않으면 첫 교대의 첫 발행이 그 자리에서 거부된다.
+check "rundir_init 이 공유 세대 디렉터리 shared/ 를 빈 채로 만든다" \
+  "$( [ -d "$RI/shared" ] && printf '%s' "$(ls -A "$RI/shared" | grep -c . || true)" )" "0"
 # 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
 printf '%s\n' "$LD/runrec" > "$RI/config-dir"
 ( unset CLAUDE_CONFIG_DIR
@@ -4917,6 +4953,15 @@ check "런 매니페스트 plan.md 는 계획 파일이 아니다" \
   "$(hook_decide_rd "$FRD" "$FRD/plan.md")" "deny"
 check "하위 디렉터리의 계획 파일은 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/sub/x.plan.md")" "deny"
+# 공유 세대 디렉터리는 둘째 예외이고 한 단계 아래만이다 — 교대의 산출물이 놓이는
+# `shared/<gen>/` 이 예외이고, 세대 없이 `shared/` 바로 아래 놓인 파일은 `*/*` 거부로
+# 떨어진다. 게이트의 Bash 가드가 같은 두 갈래를 싣고, `scripts/test-gate.sh` 가
+# 두 파일의 리터럴이 같은지를 핀한다.
+mkdir -p "$FRD/shared/1"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/1/snapshot.json")" "allow"
+check "shared/ 바로 아래의 파일은 예외가 아니다" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/loose.json")" "deny"
 check "상위 참조를 낀 런 디렉터리 철자도 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/../fixrun/surface-digest")" "deny"
 if [ -d "$WORK/rd-link" ]; then
@@ -5414,23 +5459,37 @@ hook_decide_bash() {
 BNL='
 '
 check "맨 게이트 호출은 허용" "$(hook_decide_bash "$GATEP snapshot --manifest m")" "allow"
-# 특례는 하나뿐이고 꼬리에서만 성립한다. 거부 문면이 처방하는 1번 명령이 이
-# 파이프를 쓰므로, 전면 거부하면 허용 목록이 자기 처방을 다시 거부한다.
-check "특례 파이프 '| jq -r .H' 는 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "allow"
-check "특례 파이프의 후행 공백도 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "allow"
+# 파이프 특례는 없다. 예전에는 `| jq -r .H` 꼬리 하나를 허용했는데, 그 처방이 필요로
+# 하던 값은 이제 `snapshot --fields H` 가 파이프 없이 한 줄로 내므로 허용 목록이
+# 자기 처방을 거부하는 일이 없고, 특례의 자리는 모든 파이프 거부로 닫힌다.
+check "옛 특례 파이프 '| jq -r .H' 도 이제 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "deny"
+check "후행 공백을 붙인 옛 특례도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "deny"
+check "특례를 대신하는 --fields H 는 맨 게이트 호출이라 허용" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m --fields H")" "allow"
 check "세미콜론 체인은 거부" "$(hook_decide_bash "$GATEP snapshot; touch $WORK/rider")" "deny"
 check "AND 체인은 거부" "$(hook_decide_bash "$GATEP snapshot && touch $WORK/rider")" "deny"
 check "백그라운드+체인은 거부" "$(hook_decide_bash "$GATEP snapshot & touch $WORK/rider")" "deny"
 check "개행 체인은 거부" "$(hook_decide_bash "$GATEP snapshot${BNL}touch $WORK/rider")" "deny"
 check "명령 치환 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \$(whoami) -- ls")" "deny"
 check "백틱 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \`whoami\` -- ls")" "deny"
-check "특례가 아닌 파이프는 거부" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
+check "모든 파이프 거부 — grep 꼬리" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
 check "리다이렉션도 거부 (원장 없이 셸이 파일을 여는 자리다)" \
   "$(hook_decide_bash "$GATEP snapshot > $WORK/rider")" "deny"
-check "특례 뒤에 이어 붙인 체인은 거부 (특례는 꼬리에서 한 번뿐이다)" \
+check "모든 파이프 거부 — 옛 특례 뒤에 체인을 이어 붙인 형태" \
   "$(hook_decide_bash "$GATEP snapshot | jq -r .H; touch $WORK/rider")" "deny"
+# 거부 문면이 처방하는 대체 명령은 파이프가 아니라 `--fields H` 다 — 처방이 옛 특례로
+# 되돌아가면 훅이 자기 처방을 거부하는 모양이 다시 생기므로 문면을 함께 고정한다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot --manifest m | jq -r .H" | jq -Rs .)" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'--fields H'*) ok "파이프 거부 문면이 --fields H 를 처방한다" ;;
+  *) bad "파이프 거부 문면" "대체 명령 --fields H 를 처방하지 않는다" ;;
+esac
 # 인용된 제어 문자는 게이트의 정당한 인자다. 이 둘이 없으면 위 거부들의 통과가
 # 「세미콜론을 통째로 거부한다」와 구별되지 않고, 통째 거부는 이 훅이 처방하는
 # `--rationale` 을 스테이지가 쓸 수 없게 만든다.

@@ -122,7 +122,7 @@
 # and the digest is still compared against live state. `plan` emits nothing (it
 # writes no row and performs nothing), and a caller that finds no file — an
 # emission that failed, or a gate older than this flag — falls back to
-# `gate.sh snapshot … | jq -r .H`. The flag is not passed unconditionally for
+# `gate.sh snapshot … --fields H`. The flag is not passed unconditionally for
 # that second reason: a gate that predates it exits 2 on the unknown argument.
 #
 # `act --kind skill` also takes `--resume <session-id>` to RE-ATTACH a stage that
@@ -543,7 +543,9 @@ gate_menu_normalize() {
 }
 
 # EXCERPT LENGTHS, DERIVED BY ARITHMETIC AGAINST `GATE_ROW_MAX` and not chosen
-# for readability. Measured worst rows: issue 738B, close(승인) 993B, close(무효)
+# for readability. Measured worst rows: issue 738B, close(승인) 1019B (the
+# non-exec `자율 승인` row, whose `근거` alone ran 757B before `gate_free_budget`
+# started clipping it to the width the fixed fields leave), close(무효)
 # 635B. With the fields this design adds — a filled binding tuple, a sidecar
 # anchor, a response token, an answer digest — a 256-byte answer excerpt puts a
 # `승인` close row at 1034B, over the cap. 160 leaves the thinnest row (`무효`
@@ -681,6 +683,27 @@ gate_row_safe() {
   # where the morning reader is already looking, and the row-length cap of 1024
   # is honoured by construction.
   gate_clip "$(printf '%s' "$1" | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ')" "$2"
+}
+
+gate_free_budget() {
+  # gate_free_budget <field>... — the bytes left for ONE trailing free-text
+  # field on a `자율 승인` row after the fixed fields given, measured rather
+  # than assumed, in the `_free` pattern the park block below uses.
+  #
+  # WHY A BUDGET AND NOT A CONSTANT. Three call sites handed a caller's
+  # rationale to the row unclipped. The longest such row on record is 1019
+  # bytes against a cap of 1024, and 757 of those bytes were the rationale —
+  # the fixed skeleton was 262. A row over the cap is not truncated,
+  # `gate_append` refuses it and the process ends, so an approval that could
+  # not record itself would die exactly when the act it approved was about to
+  # run. The fixed part is measured from the same fields the row will carry, with
+  # the widest shift number and the prev hash stood in, and 8 bytes of slack.
+  local _fixed _free
+  _fixed=$(printf -- '- `자율 승인` | 교대=999 | %s근거= | prev=%064d\n' "$(printf '%s | ' "$@")" 0 \
+           | wc -c | tr -d ' ')
+  _free=$(( GATE_ROW_MAX - _fixed - 8 ))
+  [ "$_free" -lt 0 ] && _free=0
+  printf '%s' "$_free"
 }
 
 # ---------------------------------------------------------------------------
@@ -6692,6 +6715,20 @@ gate_snapshot() {
   gate_snapshot_cycles_json
   printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
+  # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
+  # sensor's last published tick and never computed here. Absent, stale or of
+  # another schema it is `null` with the reason beside it — three reasons from
+  # file evidence alone, so this read never calls `launchctl`. The block does
+  # not move `H`: the digest hashes the progress vector and the chain tip.
+  local pace_obj pace_why
+  pace_obj=$(gate_pace_state)
+  if [ -n "$pace_obj" ]; then
+    printf '  "pace": %s,\n' "$pace_obj"
+  else
+    pace_why=$(gate_pace_absent_reason)
+    printf '  "pace": null,\n'
+    printf '  "pace_absent_reason": "%s",\n' "$(gate_json_escape "$pace_why")"
+  fi
   printf '  "handoff": [\n'
   gate_snapshot_handoff_json
   printf '  ],\n'
@@ -6716,6 +6753,37 @@ gate_snapshot() {
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
   printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
   printf '}\n'
+}
+
+# `snapshot --fields` — a projection of the snapshot object, and the hook's
+# prescribed replacement for `snapshot | jq -r .H`. ONE field prints its raw
+# value on one line (so `--fields H` is a drop-in for the pipe it retires); two
+# or more print a JSON object in the order asked. A name the snapshot does not
+# carry is refused with exit 2 rather than answered `null`, because `null` is
+# also what an absent `pace` block legitimately reads as.
+readonly GATE_SNAPSHOT_FIELDS_DEFAULT='H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace'
+
+gate_snapshot_fields() {
+  # gate_snapshot_fields <comma-list>
+  local list="$1" snap keys f n=0 hit
+  snap=$(gate_snapshot)
+  keys=$(printf '%s' "$snap" | jq -r 'keys_unsorted[]')
+  for f in $(printf '%s' "$list" | tr ',' ' '); do
+    hit=$(printf '%s\n' "$keys" | grep -cFx -- "$f" || true)
+    if [ "${hit:-0}" -eq 0 ]; then
+      printf 'gate: snapshot --fields: 알 수 없는 필드 %s — 스냅숏이 가진 키: %s\n' "$f" "$(printf '%s' "$keys" | tr '\n' ',' | sed 's/,$//')" >&2
+      exit 2
+    fi
+    n=$(( n + 1 ))
+  done
+  [ "$n" -gt 0 ] || { printf 'gate: snapshot --fields: 필드가 비어 있습니다\n' >&2; exit 2; }
+  if [ "$n" -eq 1 ]; then
+    printf '%s' "$snap" | jq -r --arg k "$list" '.[$k]'
+    return 0
+  fi
+  # shellcheck disable=SC2046
+  printf '%s' "$snap" | jq -c --args '. as $s | $ARGS.positional | map({key: ., value: $s[.]}) | from_entries' \
+    $(printf '%s' "$list" | tr ',' ' ')
 }
 
 gate_snapshot_design_required_json() {
@@ -6792,7 +6860,7 @@ EOF
 #
 # BEST EFFORT, and deliberately so. This runs after the act and after its ledger
 # row; refusing here would report a failure that did not happen. A caller that
-# finds no file falls back to `snapshot | jq -r .H`, which is the same path a
+# finds no file falls back to `snapshot --fields H`, which is the same path a
 # gate too old to know this flag already leaves it on.
 # ---------------------------------------------------------------------------
 gate_digest_path() {
@@ -7036,6 +7104,103 @@ gate_mtime() {
   # case rather than changing one.
   [ -e "$1" ] || return 0
   date -u -r "$1" +%s 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# The pacing sensor's published tick, READ AND NEVER COMPUTED.
+#
+# `fleet.sh sensor` is the single writer of `pace/state.json`; this file reads
+# it for the snapshot's `pace` block and for the `pace` ledger row, and does
+# nothing else with it. No inline computation — the sensor joins the seat
+# binding and the tracker's allowance table in ONE tick, and a consumer that
+# re-read either on its own clock would tear that join at the moment a seat is
+# re-bound. Read-only is a coupling requirement, not a performance choice.
+#
+# STALENESS IS MEASURED IN SENSOR PERIODS, NOT IN THE BURN CACHE'S TTL. The
+# sensor fires every `FLEET_START_INTERVAL` (55s) and caps its own runtime at
+# `FLEET_TICK_BUDGET_SECONDS` (5s), so three periods is 3 x (55 + 5) = 180s —
+# the same number `fleet.sh` declares as `FLEET_STATE_STALE_SECONDS`, and
+# `scripts/lint-pace-threshold-pins.sh` refuses the two drifting apart. The
+# schema is compared by EQUALITY: an unknown version is treated as absence, not
+# read as "newer and probably compatible".
+#
+# A `state.json` THAT NEVER EXISTED falls into the same branch as one older than
+# three periods. There is no `computed_at` to compare, so it is not "stale",
+# but the disposition is identical and the invariant underneath it is that the
+# pacing sensor can never stop dispatch by being absent — a consumer reads no
+# verdict as `유지`.
+# ---------------------------------------------------------------------------
+readonly GATE_PACE_STALE_SECONDS=180
+readonly GATE_PACE_SCHEMA='cc-pace-state v1'
+
+gate_pace_root() {
+  printf '%s' "${GATE_PACE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace}"
+}
+
+gate_pace_state() {
+  # gate_pace_state — the published state object on one line, or nothing.
+  # Nothing for: file absent, unparseable, schema not equal, or
+  # `computed_at_epoch` older than GATE_PACE_STALE_SECONDS.
+  local f s age now
+  f="$(gate_pace_root)/state.json"
+  [ -r "$f" ] || return 0
+  s=$(jq -c --arg schema "$GATE_PACE_SCHEMA" 'select(.schema == $schema)' "$f" 2>/dev/null) || return 0
+  [ -n "$s" ] || return 0
+  now=$(date -u +%s)
+  age=$(printf '%s' "$s" | jq -r --argjson now "$now" '($now - (.computed_at_epoch // 0)) | floor' 2>/dev/null || true)
+  case "$age" in ''|*[!0-9-]*) return 0 ;; esac
+  [ "$age" -le "$GATE_PACE_STALE_SECONDS" ] || return 0
+  printf '%s' "$s"
+}
+
+gate_pace_absent_reason() {
+  # gate_pace_absent_reason — which of three states the absence is, from the
+  # heartbeat file alone (never `launchctl`):
+  #   no heartbeat                         -> 센서 미등록
+  #   heartbeat older than three periods   -> 센서 정지
+  #   heartbeat fresh, state.json not      -> 센서 기동 실패
+  local hb mt now age
+  hb="$(gate_pace_root)/sensor.heartbeat"
+  [ -e "$hb" ] || { printf '센서 미등록'; return 0; }
+  mt=$(gate_mtime "$hb")
+  now=$(date -u +%s)
+  age=$(( now - ${mt:-0} ))
+  if [ -z "$mt" ] || [ "$age" -gt "$GATE_PACE_STALE_SECONDS" ]; then printf '센서 정지'; return 0; fi
+  printf '센서 기동 실패'
+}
+
+gate_pace_row_if_changed() {
+  # gate_pace_row_if_changed — one `pace` row per CHANGE of verdict, run-scoped.
+  #
+  # THE COMPARISON BASIS IS THIS RUN'S LEDGER, NOT THE SENSOR'S OWN MEMORY. The
+  # sensor keeps `prev_verdict` across every run on the machine, so keying on it
+  # would make a run whose verdict never moved write nothing at all — and the
+  # ancestry window would then have no `pace` row to show for the night. Keying
+  # on the last `pace` row here bounds the series at one row per run plus one
+  # per change, which is what an 8-row window can absorb.
+  #
+  # ABSENCE IS WRITTEN, NOT SKIPPED. A state that is missing, unreadable, on
+  # another schema or older than three periods becomes `판정=(미상)` with the
+  # tick and observation fields `-`: the row says the gate looked and found no
+  # verdict, which the morning reader needs to tell apart from "the gate never
+  # looked". Only `snapshot` never reaches here — it is a read and stays one.
+  local state verdict reason tick obs last prev
+  state=$(gate_pace_state)
+  if [ -n "$state" ]; then
+    verdict=$(printf '%s' "$state" | jq -r '.verdict // "(미상)"')
+    reason=$(printf '%s' "$state" | jq -r '.verdict_reason // "(미상)"')
+    tick=$(printf '%s' "$state" | jq -r '.tick_seq // "-"')
+    obs=$(printf '%s' "$state" | jq -r '.computed_at // "-"')
+  else
+    verdict='(미상)'; reason='(미상)'; tick='-'; obs='-'
+  fi
+  last=$(gate_rows pace | tail -1)
+  prev='(미상)'
+  if [ -n "$last" ]; then
+    prev=$(gate_row_field "$last" '판정')
+    [ "$prev" = "$verdict" ] && return 0
+  fi
+  gate_append 'pace' "판정=$verdict" "이전=$prev" "기준 틱=$tick" "관측=$obs" "사유=$reason"
 }
 
 # ---------------------------------------------------------------------------
@@ -8729,6 +8894,7 @@ gate_main() {
   local emit_digest_seen=0 emit_digest_dir=""
   local reach="" destructive=0
   local wait_interval="" wait_timeout="" nonce=""
+  local fields="" fields_seen=0
   GATE_RESUME=""; export GATE_RESUME
   # The emit path travels to `gate_verb_act` as a global rather than as an
   # eleventh positional argument, the same way `GATE_RESUME`, `GATE_ACT_CWD` and
@@ -8767,10 +8933,21 @@ gate_main() {
       --interval)        wait_interval="$2"; shift 2 ;;
       --timeout)         wait_timeout="$2"; shift 2 ;;
       --nonce)           nonce="$2"; shift 2 ;;
+      # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
+      # token is another flag or the `--` separator) selects the default list;
+      # the value is never read as a filename, so `--fields --` cannot swallow
+      # the argv separator.
+      --fields)          fields_seen=1
+                         case "${2:-}" in ''|--*) fields=""; shift ;; *) fields="$2"; shift 2 ;; esac ;;
       --)                shift; break ;;
       *) printf 'gate: unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
+
+  if [ "$fields_seen" = "1" ] && [ "$verb" != "snapshot" ]; then
+    printf 'gate: --fields is used only with snapshot (verb received: %s)\n' "$verb" >&2
+    exit 2
+  fi
 
   # ACCEPTED ONLY WHERE THEY DECIDE SOMETHING — the `--reach` precedent below.
   # `--interval`/`--timeout` govern one verb's loop and `--nonce` is the launch
@@ -9183,7 +9360,9 @@ gate_main() {
       # nothing. The hook calls this instead of rebuilding the path.
       gate_digest_path; printf '\n' ;;
     snapshot)
-      if [ "$render" = "1" ]; then gate_render_snapshot; else gate_snapshot; fi
+      if [ "$render" = "1" ]; then gate_render_snapshot
+      elif [ "$fields_seen" = "1" ]; then gate_snapshot_fields "${fields:-$GATE_SNAPSHOT_FIELDS_DEFAULT}"
+      else gate_snapshot; fi
       ;;
     grade)
       [ $# -ge 1 ] || { printf 'gate: grade needs an argv after --\n' >&2; exit 2; }
@@ -10682,10 +10861,64 @@ gate_rundir_write_guard() {
       halt/*/*) ;;
       halt/*) continue ;;
       cc-team-witness-*/*) continue ;;
+      # THE SHARED GENERATION DIRECTORY, ONE LEVEL DOWN ONLY. Shifts publish
+      # their products under `shared/<gen>/`; a file sitting directly under
+      # `shared/` has no generation and falls through to the `*/*` refusal.
+      shared/*/*) continue ;;
       */*) ;;
       *.plan.md) continue ;;
     esac
-    warn "rule refused: run directory write — the only paths a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ excepted). The rest are the baseline the gate re-reads on every act, so writing here re-baselines the enforcement-surface check against itself: $a"
+    warn "rule refused: run directory write — the only paths a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not). The rest are the baseline the gate re-reads on every act, so writing here re-baselines the enforcement-surface check against itself: $a"
+    return "$GATE_EXIT_RULE"
+  done
+  return 0
+}
+
+gate_shard_exec_guard() {
+  # gate_shard_exec_guard <argv...> — the routing seat never reaches `shared/`.
+  #
+  # THE FENCE IS THE EXEC PATH, NOT THE SETTINGS FILE. The shift settings
+  # variant carries no `additionalDirectories` at all, so a shift cannot read a
+  # shard through `Read` — but every command it runs goes through this gate's
+  # bash path, and `cat "$RUN_DIR/shared/3/…"` is a read the settings layer
+  # never sees. Adding a `shared/` row to that layer would widen the surface an
+  # `exit 7` is measured against; refusing here widens nothing.
+  #
+  # WHO IS FENCED. The actor test is the same one the approval row uses: a
+  # caller that is not a stage and carries `CC_PIPELINE_SHIFT_ID` is the
+  # routing seat. A stage a shift launched inherits the variable and is a stage
+  # first, so it is not fenced — the lead seat publishes the shards and the
+  # stages read them; only the routing seat is kept out.
+  #
+  # FOUR SPELLINGS ARE RESOLVED, and only the fourth is the interesting one:
+  # absolute, relative to the act's directory, a symlink whose own path names
+  # nothing under the fence, and a name that does not exist yet. The lexical
+  # resolver handles the second and fourth, the real-prefix resolver folds a
+  # symlinked ancestor, and a symlinked LEAF is read once with `readlink` —
+  # `readlink -f` is a BSD/GNU divergence the portability lint refuses.
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ "$#" -ge 1 ] || return 0
+  cc_caller_is_stage && return 0
+  [ -n "${CC_PIPELINE_SHIFT_ID:-}" ] || return 0
+  local fence fencep a abs real tgt
+  fence=$(gate_lexical_abs "$RUN_DIR/shared")
+  fencep=$(gate_real_prefix "$fence")
+  for a in "$@"; do
+    case "$a" in */*|shared) ;; *) continue ;; esac
+    abs=$(gate_lexical_abs "$a")
+    if [ -L "$abs" ]; then
+      tgt=$(readlink "$abs" 2>/dev/null || true)
+      if [ -n "$tgt" ]; then
+        case "$tgt" in /*) ;; *) tgt="${abs%/*}/$tgt" ;; esac
+        abs=$(gate_lexical_abs "$tgt")
+      fi
+    fi
+    real=$(gate_real_prefix "$abs")
+    case "$abs" in
+      "$fence"|"$fence"/*) ;;
+      *) case "$real" in "$fencep"|"$fencep"/*) ;; *) continue ;; esac ;;
+    esac
+    warn "rule refused: the routing seat does not reach the shard directory — shared/<gen>/ under the run directory is the shared snapshot the lead seat publishes for stages, the shift settings variant was narrowed to keep it out, and an exec that names it walks past that layer (fence: $fence): $a"
     return "$GATE_EXIT_RULE"
   done
   return 0
@@ -12416,9 +12649,13 @@ gate_end_run() {
     return 0
   fi
   rm -f "$RUN_DIR/done.$$" 2>/dev/null || true
+  # The rationale is clipped to what the row has left; see `gate_free_budget`.
+  local _why_free
+  _why_free=$(gate_free_budget "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
+    "절단점=경계" "축2=읽기" "등급=1" "기준=$name" "되돌리는 법=새 런으로 다시 킥오프")
   gate_append '자율 승인' "kind=boundary" "결정=종료" "대상=-" "세그먼트=-" \
     "절단점=경계" "축2=읽기" "등급=1" "기준=$name" \
-    "되돌리는 법=새 런으로 다시 킥오프" "근거=$why"
+    "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$why" "$_why_free")"
   warn "boundary $name ends the run — $why"
   if cc_caller_is_router; then
     # `ended` is the event kind the run's other terminal points already use. A
@@ -13413,7 +13650,8 @@ gate_verb_act() {
   case "$kind" in
     skill|router-shift) : ;;
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
-       gate_rundir_write_guard "$graded" "$@" || exit $? ;;
+       gate_rundir_write_guard "$graded" "$@" || exit $?
+       if [ "$verb" = "exec" ]; then gate_shard_exec_guard "$@" || exit $?; fi ;;
   esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two
@@ -13861,10 +14099,14 @@ gate_verb_act() {
     # including a value it never printed — falls through to the refusing arm.
     if [ "$disposition" = "무효화" ]; then
       warn "termination is recorded while the run is invalidated — it stands as void, not as satisfied"
+      local _void_free
+      _void_free=$(gate_free_budget "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
+        "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+        "축2=$graded" "등급=1" "기준=무효화 종료" "되돌리는 법=새 런으로 다시 킥오프")
       gate_append '자율 승인' "kind=$kind" "결정=act" "대상=$alias" "세그먼트=$segment" \
         "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
         "축2=$graded" "등급=1" "기준=무효화 종료" \
-        "되돌리는 법=새 런으로 다시 킥오프" "근거=$rationale"
+        "되돌리는 법=새 런으로 다시 킥오프" "근거=$(gate_row_safe "$rationale" "$_void_free")"
       gate_done_note "$(printf '%s 종단 — 무효화 · 근거 %s' "$(now_iso)" "$rationale")"
       # `ended` and not `rekick`: the run has WRITTEN its ending here, so what is
       # left for a person is to read the result rather than to re-open anything.
@@ -14172,11 +14414,21 @@ gate_verb_act() {
       "argv=$(gate_row_safe "$*" "$_argv_budget")" \
       "근거=$(gate_row_safe "$rationale" 240)"
   else
+    local _act_free
+    _act_free=$(gate_free_budget "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
+      "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
+      "축2=$graded" "자격=$credmode" "행위자=$actor")
     gate_append '자율 승인' "kind=$kind" "결정=$verb" "대상=$alias" "세그먼트=$segment" \
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
-      "축2=$graded" "자격=$credmode" "행위자=$actor" "근거=$rationale"
+      "축2=$graded" "자격=$credmode" "행위자=$actor" \
+      "근거=$(gate_row_safe "$rationale" "$_act_free")"
   fi
   log "게이트 통과 — $verb $GATE_ACT_EFFECTIVE ($alias)"
+
+  # THE PACE ROW RIDES ON THE APPROVAL ROW AND ON NOTHING ELSE. `snapshot` is a
+  # read and must stay one, so the only place the ledger learns that the sensor's
+  # verdict moved is here, once per approved act or exec, and only when it moved.
+  gate_pace_row_if_changed
 
   # The RESOLVED policy and not a flag value. What decides whether a merge defers
   # its review is the segment row bounded by the target's ceiling, and a caller

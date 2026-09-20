@@ -439,19 +439,32 @@ done
 check "뽑아낸 조각이 전부 실제 게이트 명령이다 (자름이 어긋나지 않았다)" "$n_thin" "0"
 # A BARE `.` MUST NOT SIT WHERE AN ARGUMENT WOULD. The message ends its
 # prescriptions with a marker rather than a sentence period, because a period
-# copied along with the command reaches the shell as a word — `jq -r .H .` asks
-# jq to read a file named `.` and the documented fallback fails on first use.
-# A period glued to the filter is the same failure in another spelling —
-# `jq -r .H.` is a jq syntax error — so both shapes are refused, here and on
-# every other denial that prescribes this fallback.
-assert_no_period_after_jq() {
+# copied along with the command reaches the shell as a word — `--fields H .`
+# hands the gate a stray positional and the documented fallback fails on first
+# use. A period glued to the field name is the same failure in another spelling
+# — `--fields H.` names a field that does not exist — so both shapes are
+# refused, here and on every other denial that prescribes this fallback.
+assert_no_period_after_fields() {
   case "$2" in
-    *'jq -r .H .'*) bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "jq 뒤에 홑 . 이 인자로 붙는다" ;;
-    *'jq -r .H.'*)  bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "jq 필터에 . 이 붙어 .H. 가 된다" ;;
-    *)              ok "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" ;;
+    *'--fields H .'*) bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "--fields H 뒤에 홑 . 이 인자로 붙는다" ;;
+    *'--fields H.'*)  bad "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" "필드 이름에 . 이 붙어 H. 가 된다" ;;
+    *)                ok "$1 — 처방된 명령이 문장 마침표로 끝나지 않는다" ;;
   esac
 }
-assert_no_period_after_jq "Bash 거부" "$reason"
+assert_no_period_after_fields "Bash 거부" "$reason"
+# THE FALLBACK IS A BARE GATE CALL, NOT A PIPE. The previous prescription piped
+# the snapshot into `jq -r .H`, and the hook carried a special case to let that
+# one pipe through; `snapshot --fields H` prints the value alone, so the special
+# case retired with it. A message that still prescribes the pipe hands out a
+# command this hook refuses.
+case "$reason" in
+  *'--fields H'*) ok "Bash 거부 문면이 --fields H 로 스냅숏 폴백을 처방한다" ;;
+  *) bad "Bash 거부 문면의 스냅숏 폴백" "--fields H 가 문면에 없다" ;;
+esac
+case "$reason" in
+  *'jq -r .H'*) bad "Bash 거부 문면이 옛 파이프 폴백을 처방하지 않는다" "'| jq -r .H' 가 남아 있다" ;;
+  *) ok "Bash 거부 문면이 옛 파이프 폴백을 처방하지 않는다" ;;
+esac
 
 # THE HOOK DOES NOT BUILD THE PATH; IT ASKS. Two programs agreeing on one
 # string disagreed for every stage in the pipeline — the gate sanitizes the
@@ -496,11 +509,19 @@ else
 fi
 check "그 명령들이 전부 이 훅을 통과한다" "$n_denied" "0"
 
-# The first line pipes into jq, and a pipe is fine — what is matched is the
-# FIRST token. Asserted directly so nobody "fixes" the matcher into scanning the
-# whole line and quietly breaks the shape the message hands out.
+# NO PIPE RIDES ON THE GATE, the retired special case included. `| jq -r .H`
+# was the one pipe the hook used to let through; now that the fallback is
+# `--fields H` the pipe is refused like any other, and the refusal names the
+# replacement so the stage that copied an old message can fix its command.
 decide "$(bash_json "$GATE snapshot --manifest /tmp/m.md | jq -r .H")"
-check "파이프가 붙어도 첫 토큰이 게이트면 통과한다" "$dec" "allow"
+check "옛 특례 파이프 '| jq -r .H' 도 이제 거부된다" "$dec" "deny"
+reason_pipe=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason_pipe" in
+  *'--fields H'*) ok "파이프 거부 문면이 --fields H 를 처방한다" ;;
+  *) bad "파이프 거부 문면" "'$reason_pipe'" ;;
+esac
+decide "$(bash_json "$GATE snapshot --manifest /tmp/m.md --fields H")"
+check "특례를 대신하는 --fields H 는 맨 게이트 호출이라 통과한다" "$dec" "allow"
 
 # And the laundering shapes stay denied.
 decide "$(bash_json "H=\$($GATE snapshot --manifest /tmp/m.md)")"
@@ -539,10 +560,14 @@ case "$reason" in
   *) bad "CLAUDE.md 에스컬레이션 문면" "'$reason'" ;;
 esac
 case "$reason" in
-  *'jq -r .H'*) ok "CLAUDE.md 거부 문면이 스냅숏 폴백 명령을 싣는다 (아래 단언이 공허하지 않다)" ;;
+  *'--fields H'*) ok "CLAUDE.md 거부 문면이 스냅숏 폴백 명령을 싣는다 (아래 단언이 공허하지 않다)" ;;
   *) bad "CLAUDE.md 거부 문면의 스냅숏 폴백" "'$reason'" ;;
 esac
-assert_no_period_after_jq "CLAUDE.md 거부" "$reason"
+case "$reason" in
+  *'jq -r .H'*) bad "CLAUDE.md 거부 문면이 옛 파이프 폴백을 처방하지 않는다" "'| jq -r .H' 가 남아 있다" ;;
+  *) ok "CLAUDE.md 거부 문면이 옛 파이프 폴백을 처방하지 않는다" ;;
+esac
+assert_no_period_after_fields "CLAUDE.md 거부" "$reason"
 
 # A file merely NAMED like one of these somewhere unrelated is still the same
 # channel, but a file that only CONTAINS the name is not — asserted so the arm
@@ -621,6 +646,22 @@ decide "$(write_json "$HWPUB/reviewer.round-1.md")"
 check "생성 스크립트가 만든 위트니스 디렉터리로의 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
 decide "$(write_json "$RUN_DIR/witness/r1.md")"
 check "아무도 만들지 않는 witness/ 철자는 예외가 아니다" "$dec" "deny"
+# 공유 세대 디렉터리 — 교대가 산출물을 `shared/<gen>/` 아래에 발행한다. 예외는 한
+# 세대 아래에만 열리고, `shared/` 바로 밑의 파일은 세대가 없으므로 기준선으로 돌아간다.
+decide "$(write_json "$RUN_DIR/shared/1/snapshot.json")"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide "$(write_json "$RUN_DIR/shared/loose.json")"
+check "shared/ 바로 아래의 파일은 예외가 아니다" "$dec" "deny"
+reason_shared=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+case "$reason_shared" in
+  *'a file directly under shared/ is not'*) ok "shared/ 거부 문면이 바로 아래를 예외 밖으로 지목한다" ;;
+  *) bad "shared/ 거부 문면" "'$reason_shared'" ;;
+esac
+if grep -qF 'shared/*/*' "$HOOK" && grep -qF 'shared/*/*' "$repo_root/plugins/cc-cmds/orchestrator/gate.sh"; then
+  ok "훅과 게이트가 같은 shared/<gen>/ 예외를 싣는다"
+else
+  bad "shared/ 예외 합의" "훅과 게이트의 shared/*/* 철자가 어긋난다"
+fi
 
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
