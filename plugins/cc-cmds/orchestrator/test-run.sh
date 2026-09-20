@@ -5091,7 +5091,7 @@ check "배시 가드: 음성 대조군 — 같은 경로가 쓰기 대상이면 
 rr_guard 트리밖쓰기 "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
 check "배시 가드: 형제 런 고정 사본의 실행은 argv0 이어도 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'다른 런의 디렉터리'*) ok "배시 가드: 그 거부가 형제 런 팔의 것이다" ;;
+  *'this is another run directory'*) ok "배시 가드: 그 거부가 형제 런 팔의 것이다" ;;
   *) bad "배시 가드: 형제 런 argv0 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
 esac
 
