@@ -10833,17 +10833,30 @@ gate_rundir_write_guard() {
   # every call of that run hops into — at a path under the sibling's directory.
   # There is no legitimate case: a stage writing into a run that is not its own
   # is either confused or hostile, and the refusal text says so.
+  #
+  # `..` IS FOLDED BEFORE THE ALLOW-LIST IS CONSULTED, and folding only the
+  # separators was a hole the shared-generation arm turned into a write. The
+  # relative path the arms match is taken from the folded absolute spelling —
+  # the same lexical fold the hook applies and `gate_shard_exec_guard` already
+  # uses — because bash `case`'s `*` matches `/` and `..` alike, so an unfolded
+  # `shared/../surface-digest` satisfies `shared/*/*` while naming a file the
+  # gate re-reads on every act. `rundir_init` creates `shared/` on every run, so
+  # that spelling always resolves in the kernel; the hook folds `..` before it
+  # judges, which left `Write` refusing exactly the path `Bash` allowed. A
+  # relative argument is absolutized against the grading directory for the same
+  # reason: `../../.local/state/…/run/<id>/surface-digest` from the worktree is
+  # one more spelling of the same file.
   local a rdp rdn rdln an rel root rootp
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
-  rdn=$(gate_path_spelling "$rdp")
-  rdln=$(gate_path_spelling "$RUN_DIR")
-  root=$(gate_path_spelling "$(gate_reap_root)/run")
+  rdn=$(gate_lexical_abs "$rdp")
+  rdln=$(gate_lexical_abs "$RUN_DIR")
+  root=$(gate_lexical_abs "$(gate_reap_root)/run")
   rootp=$(cd "$(gate_reap_root)/run" 2>/dev/null && pwd -P) || rootp=""
-  if [ -n "$rootp" ]; then rootp=$(gate_path_spelling "$rootp"); fi
+  if [ -n "$rootp" ]; then rootp=$(gate_lexical_abs "$rootp"); fi
   for a in "$@"; do
     case "$a" in */*|"$RUN_DIR"|"$rdp") ;; *) continue ;; esac
-    an=$(gate_path_spelling "$a")
+    an=$(gate_lexical_abs "$a")
     if gate_rundir_is_foreign_run "$an" "$root" "$rootp" "$rdn" "$rdln"; then
       warn "rule refused: this is another run directory — there is no legitimate case for a stage writing into the directory of a run that is not its own (the pinned copy and the baseline of that run sit there): $a"
       return "$GATE_EXIT_RULE"
@@ -10882,7 +10895,10 @@ gate_shard_exec_guard() {
   # shard through `Read` — but every command it runs goes through this gate's
   # bash path, and `cat "$RUN_DIR/shared/3/…"` is a read the settings layer
   # never sees. Adding a `shared/` row to that layer would widen the surface an
-  # `exit 7` is measured against; refusing here widens nothing.
+  # `exit 7` is measured against; refusing here widens nothing. "The exec path"
+  # is the argv-running path and not the `exec` verb: an `act` of a general
+  # kind runs its argv through the same `gate_run_readonly`, so the caller
+  # applies this fence to both verbs.
   #
   # WHO IS FENCED. The actor test is the same one the approval row uses: a
   # caller that is not a stage and carries `CC_PIPELINE_SHIFT_ID` is the
@@ -13647,11 +13663,18 @@ gate_verb_act() {
   # manifest is not caught here. It is caught where it becomes an act — the
   # successor's own gate call — which is the only place the write actually
   # exists.
+  #
+  # THE SHARD FENCE STANDS ON BOTH VERBS, the way the two guards beside it do.
+  # An `act` of any kind but the two dispatch kinds hands its argv to the same
+  # `gate_run_readonly` an `exec` does, so a fence keyed on the verb left
+  # `act --kind x -- cat "$RUN_DIR/shared/1/…"` open to the routing seat with
+  # no refusal and an approval row that does not say a shard was read. The
+  # outer `case` already sets aside the two kinds whose argv is a prompt.
   case "$kind" in
     skill|router-shift) : ;;
     *) gate_manifest_write_guard "$graded" "$@" || exit $?
        gate_rundir_write_guard "$graded" "$@" || exit $?
-       if [ "$verb" = "exec" ]; then gate_shard_exec_guard "$@" || exit $?; fi ;;
+       gate_shard_exec_guard "$@" || exit $? ;;
   esac
 
   # Layer 2 of the CLAUDE.md audit. It refuses nothing; it publishes the two

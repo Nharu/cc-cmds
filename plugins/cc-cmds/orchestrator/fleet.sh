@@ -13,11 +13,26 @@
 # QUIETLY, which is indistinguishable from having no pacing at all.
 #
 # THE SENSOR IS THE SINGLE WRITER OF `state.json`, AND LAUNCHD IS WHAT ENFORCES
-# IT. Two instances of one launchd label never overlap, so there is no lock
-# directory here: a lock would be a second mechanism guarding nothing. What the
+# IT. Two instances of one launchd label never overlap, so `state.json` has no
+# lock directory: a lock would be a second mechanism guarding nothing. What the
 # sensor does carry is a monotonic `tick_seq`, and it discards its own result
 # rather than publish over a newer one. That comparison is not atomic with the
 # rename that follows it; the residue is stated where the guard lives.
+#
+# THE BACKLOG HAS TWO WRITERS, AND THAT IS WHY IT HAS A LOCK. One dispatch label
+# per lane shares one `backlog.jsonl`, and the two labels are bootstrapped in
+# one loop with the same `StartInterval`, so their timers fire together. Without
+# a lock both read the same `pending` head, both pass admission (the other
+# lane's run directory does not exist yet), the first flips the record and the
+# second's flip finds no line to flip — and a rewrite that returns 0 on "no such
+# line" lets the second lane start the same manifest on a second seat. The
+# claim, from head selection to the `dispatched` flip, runs under
+# `backlog.lock` (a `mkdir`, the one atomic primitive bash 3.2 has), and the
+# rewrite is a compare-and-swap that fails when the line it was asked to replace
+# is gone. The lock is held for the admission block only — never across the
+# foreground `run.sh` — so a lane that cannot take it within the wait simply
+# ends this tick with nothing started; a lock older than the stale ceiling is a
+# dead holder's and is broken.
 #
 # THE TICK'S OWN CEILING IS DEGRADATION, NOT ABORT. A tick that reaches its
 # budget drops ONLY the lane census and still publishes, marked `tick_overrun`
@@ -72,6 +87,9 @@
 #   backlog.jsonl          deferred launches (`cc-pace-backlog v1`); enqueuer
 #                          appends, dispatcher rewrites status — never this
 #                          sensor
+#   backlog.lock/          the dispatcher's claim lock (mkdir), held from head
+#                          selection to the `dispatched` flip and around every
+#                          later status rewrite; contains the holder's pid
 #   sensor.heartbeat       one UTC timestamp line, rewritten every tick
 #   burn.cache             the 4h burn scan, reused for FLEET_BURN_CACHE_TTL_SECONDS
 #   refusals.tsv           dispatcher-written refusal log the night summary counts
@@ -116,6 +134,8 @@ readonly FLEET_TRACKER_STALE_SECONDS=1800       # no lastUpdated within 30 min -
 readonly FLEET_LANE_HORIZON_SECONDS=172800      # lane census mtime horizon, 48h
 readonly FLEET_TRUNCATED_STREAK=3               # consecutive unavailable censuses -> truncated record
 readonly FLEET_BACKLOG_RECORD_MAX=4096          # a longer backlog record is skipped, never parked
+readonly FLEET_BACKLOG_LOCK_WAIT_SECONDS=10     # a lane waits this long for backlog.lock, then ends its tick
+readonly FLEET_BACKLOG_LOCK_STALE_SECONDS=60    # a backlog.lock older than this is a dead holder's and is broken
 readonly FLEET_SESSION_WINDOW_PCT_MAX=80        # 5h session window ceiling, admission and reseat alike
 readonly FLEET_COCOA_EPOCH_OFFSET=978307200     # tracker times are seconds since 2001-01-01
 readonly FLEET_IDLE_SECONDS=1200                # fleet idle for 20 min -> 가속 rung
@@ -655,11 +675,60 @@ fleet_backlog_rewrite() {
   # fleet_backlog_rewrite <original-line> <new-line> — replace exactly that
   # line, byte for byte, in a whole-file rewrite published by rename. Every
   # other line, including records this reader skips, is copied verbatim.
+  #
+  # A COMPARE-AND-SWAP, NOT A BLIND REWRITE. When the original line is not in
+  # the file this returns 3 and writes nothing: the record was already flipped
+  # by the other lane (or rewritten by hand), and a caller that reads 0 here
+  # would go on to start work on a premise that no longer holds. The exact-line
+  # test is `grep -x -F`, the same comparison the loop below makes.
   local f="$PACE_ROOT/backlog.jsonl" orig="$1" new="$2" line
   [ -r "$f" ] || return 1
+  grep -qxF -- "$orig" "$f" || return 3
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "$orig" ]; then printf '%s\n' "$new"; else printf '%s\n' "$line"; fi
   done < "$f" | fleet_write_atomic "$f"
+}
+
+FLEET_BACKLOG_LOCKED=""
+fleet_backlog_lock() {
+  # Take `backlog.lock` or return 1 after FLEET_BACKLOG_LOCK_WAIT_SECONDS. A
+  # lock directory older than FLEET_BACKLOG_LOCK_STALE_SECONDS is broken: the
+  # lock is only ever held across the admission block, so a holder that old is
+  # a job launchd tore down mid-claim. The stale age is measured against the
+  # real clock, not `fleet_now` — a fixture that pins "now" must still see a
+  # live holder as live.
+  local d="$PACE_ROOT/backlog.lock" waited=0 mt age
+  mkdir -p "$PACE_ROOT"
+  while ! mkdir "$d" 2>/dev/null; do
+    mt=$(fleet_mtime "$d")
+    age=$(( $(date -u +%s) - ${mt:-0} ))
+    if [ -n "$mt" ] && [ "$age" -gt "$FLEET_BACKLOG_LOCK_STALE_SECONDS" ]; then
+      fleet_log "backlog.lock 이 ${age}초 묵었다 — 죽은 소유자의 것으로 보고 깬다"
+      rm -rf "$d"
+      continue
+    fi
+    [ "$waited" -lt "$FLEET_BACKLOG_LOCK_WAIT_SECONDS" ] || return 1
+    sleep 1; waited=$(( waited + 1 ))
+  done
+  printf '%s\n' "$$" > "$d/pid" 2>/dev/null || true
+  FLEET_BACKLOG_LOCKED=1
+}
+fleet_backlog_unlock() {
+  # Only the holder releases. An EXIT trap calls this too, and a process that
+  # already released must not remove the lock the other lane has since taken.
+  [ -n "$FLEET_BACKLOG_LOCKED" ] || return 0
+  FLEET_BACKLOG_LOCKED=""
+  rm -rf "$PACE_ROOT/backlog.lock"
+}
+fleet_backlog_rewrite_locked() {
+  # fleet_backlog_rewrite under the lock, for the rewrites made after the claim
+  # was released (the `done` flip). Returns the rewrite's own status; a lock
+  # that cannot be taken is 1, and the caller logs rather than retries.
+  local rc=0
+  fleet_backlog_lock || return 1
+  fleet_backlog_rewrite "$1" "$2" || rc=$?
+  fleet_backlog_unlock
+  return "$rc"
 }
 
 fleet_backlog_head() {
@@ -732,15 +801,28 @@ fleet_dispatch() {
   [ -n "$state" ] || state='null'
   verdict=$(printf '%s' "$state" | jq -r '.verdict // "유지"')
 
+  # THE CLAIM IS ONE CRITICAL SECTION: head selection, the park and refusal
+  # rewrites, and the `dispatched` flip all happen under `backlog.lock`, so the
+  # other lane cannot pick the same head between this lane's read and its flip.
+  # Every exit from the section releases the lock, and the EXIT trap covers a
+  # `fleet_die` inside it. The lock is released BEFORE `run.sh` runs: the claim
+  # is seconds, the run is hours, and a lock held across the run would serialize
+  # the two lanes this file exists to run side by side.
+  trap fleet_backlog_unlock EXIT
+  if ! fleet_backlog_lock; then
+    fleet_log "dispatch $lane: backlog.lock 을 ${FLEET_BACKLOG_LOCK_WAIT_SECONDS}초 안에 잡지 못했다 — 다른 레인이 집는 중이므로 이번 틱은 시작하지 않는다"
+    return 0
+  fi
   head=$(fleet_backlog_head)
-  if [ -z "$head" ]; then fleet_log "dispatch $lane: 백로그에 pending 레코드가 없다"; return 0; fi
+  if [ -z "$head" ]; then fleet_backlog_unlock; fleet_log "dispatch $lane: 백로그에 pending 레코드가 없다"; return 0; fi
   rec="$head"
   id=$(printf '%s' "$rec" | jq -r '.id // "?"')
 
   park=$(fleet_dispatch_park_reason "$rec")
   if [ -n "$park" ]; then
     line=$(printf '%s' "$rec" | jq -c --arg r "$park" '.status = "parked" | .park_reason = $r')
-    fleet_backlog_rewrite "$head" "$line"
+    fleet_backlog_rewrite "$head" "$line" || fleet_log "dispatch $lane: $id 의 park 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_backlog_unlock
     fleet_log "dispatch $lane: $id park — $park"
     return 0
   fi
@@ -779,14 +861,25 @@ fleet_dispatch() {
   if [ -n "$clause" ]; then
     line=$(printf '%s' "$rec" | jq -c --arg at "$iso" --arg v "$verdict" --arg c "$clause" \
             '.last_refusal_at = $at | .last_refusal_verdict = $v | .last_refusal_clause = $c')
-    fleet_backlog_rewrite "$head" "$line"
+    fleet_backlog_rewrite "$head" "$line" || fleet_log "dispatch $lane: $id 의 거부 재작성이 원본 줄을 찾지 못했다 (rc=$?)"
+    fleet_backlog_unlock
     printf '%s\t%s\t%s\t%s\t%s\n' "$iso" "$lane" "$clause" "$verdict" "$id" >> "$PACE_ROOT/refusals.tsv"
     fleet_log "dispatch $lane: $id 거부 — 절 $clause (판정 $verdict)"
     return 0
   fi
 
-  line=$(printf '%s' "$rec" | jq -c '.status = "dispatched"')
-  fleet_backlog_rewrite "$head" "$line"
+  # THE FLIP IS THE CLAIM. The record says which lane took it and when, so a
+  # `dispatched` record can be told apart from the other lane's, and a failed
+  # swap means the head was taken between this lane's read and now — nothing is
+  # started on it.
+  line=$(printf '%s' "$rec" | jq -c --arg l "$lane" --arg at "$iso" \
+          '.status = "dispatched" | .dispatched_lane = $l | .dispatched_at = $at')
+  if ! fleet_backlog_rewrite "$head" "$line"; then
+    fleet_backlog_unlock
+    fleet_log "dispatch $lane: $id 는 이미 다른 레인이 집었다 (원본 줄이 없다) — 기동하지 않는다"
+    return 0
+  fi
+  fleet_backlog_unlock
 
   # THE THREE PREPARATION STEPS, IN THIS ORDER: the report stub, then one
   # snapshot so the run directory exists, THEN the watcher — a watcher started
@@ -808,7 +901,7 @@ fleet_dispatch() {
   fleet_log "dispatch $lane: $id 기동 — run $run_id (매니페스트 $manifest)"
   CLAUDE_CONFIG_DIR="$home" bash "$FLEET_DIR/run.sh" --manifest "$manifest" || rc=$?
   line2=$(printf '%s' "$line" | jq -c '.status = "done"')
-  fleet_backlog_rewrite "$line" "$line2"
+  fleet_backlog_rewrite_locked "$line" "$line2" || fleet_log "dispatch $lane: $id 의 done 재작성이 실패했다 (rc=$?) — 레코드는 dispatched 로 남는다"
   fleet_log "dispatch $lane: $id 종료 rc=$rc"
   return 0
 }

@@ -9902,6 +9902,52 @@ case "$msg" in
   *"a file directly under shared/ is not"*) ok "거절 문면이 shared/ 바로 아래를 예외 밖으로 지목한다" ;;
   *) bad "shared/ 거절 문면" "$msg" ;;
 esac
+# `..` 은 예외 팔에 닿기 전에 접힌다. bash `case` 의 `*` 는 `/` 와 `..` 을 가리지 않고
+# 매치하므로 접지 않은 `shared/../surface-digest` 는 `shared/*/*` 를 만족하면서 게이트가
+# 매 행위마다 다시 읽는 기준선 파일을 이름 댄다 — 훅은 접은 뒤 판정하므로 같은 철자가
+# `Write` 로는 거절되고 `Bash` 로는 통과했다. 세 철자를 잰다: 예외 디렉터리 둘을 각각
+# 거쳐 되돌아가는 절대 경로와, 세대 디렉터리 아래에서 두 단계 되돌아가는 절대 경로.
+mkdir -p "$RD3/cc-team-witness-x"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/../surface-digest"
+check "shared/ 를 거쳐 되돌아가는 기준선 파일 쓰기는 거절된다 (.. 을 접은 뒤 판정한다)" "$rc" "3"
+case "$msg" in
+  *"run directory write"*) ok "그 거절이 런 디렉터리 쓰기 가드의 것이다 (커널 실패가 아니다)" ;;
+  *) bad "shared/.. 거절 문면" "$msg" ;;
+esac
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/cc-team-witness-x/../surface-digest"
+check "위트니스 디렉터리를 거쳐 되돌아가는 기준선 파일 쓰기도 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/../../surface-digest"
+check "shared/<gen>/ 아래에서 두 단계 되돌아가는 철자도 거절된다" "$rc" "3"
+# 효과까지 잰다 — 그런데 `surface-digest` 는 게이트 자신이 런 개시에 쓰는 파일이라
+# 이미 있고, `touch` 는 바이트를 바꾸지 않으므로 그 이름으로는 「거절이 실제로 아무
+# 것도 하지 않았다」를 구별할 수 없다. 그래서 같은 세 철자를 아무도 만들지 않는
+# 이름에 대고 한 번 더 걸어 파일이 생기지 않았음을 본다. 가드에 닿는 판정은 동일하고
+# (런 루트 바로 아래의 이름), 달라지는 것은 관측 가능성뿐이다.
+fold_n=0
+for fold_spell in "$RD3/shared/../fold-probe" "$RD3/cc-team-witness-x/../fold-probe" "$RD3/shared/1/../../fold-probe"; do
+  fold_n=$(( fold_n + 1 ))
+  rm -f "$RD3/fold-probe"
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- touch "$fold_spell"
+  check "접힌 철자 ${fold_n} 은 런 루트 바로 아래 새 이름에도 거절된다" "$rc" "3"
+  if [ ! -e "$RD3/fold-probe" ]; then
+    ok "접힌 철자 ${fold_n} 의 거절이 파일을 만들지 않았다"
+  else
+    bad "접힌 철자 ${fold_n}" "거절된 쓰기가 실제로 파일을 만들었다: $RD3/fold-probe"
+  fi
+done
+# 접은 뒤에도 선언된 이름은 그대로 통과한다 — 접기는 예외를 좁히지 않는다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/./snapshot.json"
+check "(대조) /./ 를 낀 shared/<gen>/ 철자는 접힌 뒤 예외로 통과한다" "$rc" "0"
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
 # 편집이 여기서 빨개져야 한다. 예외는 둘이고 둘 다 양쪽에 있어야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
@@ -17862,8 +17908,9 @@ check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
 #
 # 교대 설정 변형에는 `additionalDirectories` 가 없어 `Read` 로는 샤드에 닿지 못하지만,
 # 명령은 전부 이 게이트를 지나므로 `cat "$RUN_DIR/shared/1/…"` 는 그 층이 보지 못하는
-# 읽기다. 울타리는 exec 경로에 있고, 행위자가 스테이지가 아니면서 교대 표지를 들 때만
-# 선다. 스테이지는 교대가 띄웠더라도 스테이지가 먼저다.
+# 읽기다. 울타리는 argv 를 수행하는 경로에 있고 — `exec` 과 일반 kind 의 `act` 둘 다 —
+# 행위자가 스테이지가 아니면서 교대 표지를 들 때만 선다. 스테이지는 교대가 띄웠더라도
+# 스테이지가 먼저다.
 mkdir -p "$P59_RD/shared/1" "$P59ROOT/shared/1"
 printf '{}\n' > "$P59_RD/shared/1/snapshot.json"
 printf '{}\n' > "$P59ROOT/shared/1/decoy.json"
@@ -17897,6 +17944,25 @@ p59_fenced "$P59_MAN"
 check "59: (대조) 교대의 다른 읽기는 그대로 통과한다" "$rc" "0"
 CC_PIPELINE_SHIFT_ID="$P59_RID#1" CC_PIPELINE_STAGE_ID="S59#1" p59_exec "$P59_RD/shared/1/snapshot.json"
 check "59: (대조) 교대가 띄운 스테이지는 스테이지가 먼저라 샤드를 읽는다" "$rc" "0"
+# 동사가 울타리를 가르지 않는다. 일반 kind 의 `act` 는 `exec` 과 같은 경로로 argv 를
+# 수행하므로, 교대 표지 아래의 `act --kind x -- cat <샤드>` 도 같은 문면으로 거절된다 —
+# 동사 조건이 붙어 있던 동안 이 철자는 펜스를 지나지 않았고 남는 승인 행도 샤드를
+# 읽었다고 적지 않았다.
+p59_act_on() {
+  # p59_act_on <경로> — p59_act 와 같은 act 인데 argv 만 그 경로를 읽는다.
+  p59_gate act --manifest "$P59_MAN" --kind x --target infra --cutpoint 배포 \
+    --snapshot-digest "$(p59_h)" --rationale x -- cat "$1"
+}
+p59_act_rows_before=$(p59_rows '자율 승인')
+CC_PIPELINE_SHIFT_ID="$P59_RID#1" p59_act_on "$P59_RD/shared/1/snapshot.json"
+check "59: 교대의 act 도 shared/<gen>/ 를 이름 대면 거절된다 (동사 조건 없음)" "$rc" "3"
+case "$msg" in
+  *"the routing seat does not reach the shard directory"*) ok "59: act 거절 문면도 같은 펜스의 것이다" ;;
+  *) bad "59: act 샤드 거절 문면" "$msg" ;;
+esac
+check "59: 거절된 act 는 승인 행을 남기지 않는다" "$(p59_rows '자율 승인')" "$p59_act_rows_before"
+p59_act_on "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 리드 좌석의 act 는 같은 샤드를 읽는다" "$rc" "0"
 # 울타리는 `additionalDirectories` 를 넓히지 않는다 — 교대 변형은 그대로 비어 있다.
 p59_shift_settings=$(ls "$P59_RD"/settings/*shift*.json 2>/dev/null | head -1)
 if [ -n "$p59_shift_settings" ]; then

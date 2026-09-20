@@ -3216,7 +3216,9 @@ stage_spawn() {
   cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
-  rm -f "$RUN_DIR/$stage.rc"
+  # Both are verdicts about the PREVIOUS holder of this id; a re-spawn under
+  # the same id must not inherit either.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.reap-cause"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -3397,18 +3399,42 @@ stage_wait_all() {
             # anything, and `reap_orphan` kills a process group on the strength
             # of a COMMENT ("`implement` is re-invocation idempotent"), which is
             # a comment and not a check. Guarding one branch and shipping is
-            # strictly worse than shipping neither: today the backoff bug
-            # accidentally protects a long apply, and repairing the backoff
-            # alone would hand a live SIGKILL to the first stage that goes
-            # quiet for a few minutes.
-            if kill_permitted "$s" && account_has_headroom; then
-              log "$s: 한도 형상 + 여유 계정 — 회수(reap)하고 종료 기록 없이 버린다; 소비자는 크래시로 분류한다"
+            # strictly worse than shipping neither: while the backoff accumulator
+            # was being discarded, that bug accidentally protected a long apply,
+            # and repairing the backoff alone would have handed a live SIGKILL to
+            # the first stage that went quiet for a few minutes. The accumulator
+            # persists now, so what stands in that bug's place is the rung the
+            # next paragraph requires.
+            #
+            # THE SENSOR SHORTENS THE LADDER; IT DOES NOT REMOVE IT. The shape
+            # this arm reacts to is transcript silence, not a 429 — a stage
+            # inside one long tool call looks exactly like a stage that hit a
+            # limit. With `account_has_headroom` answering from a real sensor,
+            # consulting it on the FIRST observation reaps a live stage about
+            # sixty seconds after its transcript last grew, and the reap goes
+            # to a stage that was doing what it was told. So headroom is
+            # consulted only once the stage has already sat out at least one
+            # backoff rung: `backoff_served` is true only after `backoff_wait`
+            # has slept once and written the accumulator, and a `진행중` verdict
+            # in between resets it. The cap branch below is unchanged.
+            #
+            # THE REAP LEAVES A CLASS, NOT A CRASH. Nothing runs `stage_collect`
+            # for a reaped stage, so no `.rc` is written and every consumer
+            # reads the absence as 1 — which `classify_termination` turned into
+            # `크래시` and the crash arms re-bought the whole stage under the
+            # wrong name. `reap_mark` writes the reason down before the signal
+            # goes out; the classifier reads it and answers `한도-형상 회수`, and
+            # the consumers dispose of that class under its own name.
+            if backoff_served "$s" && kill_permitted "$s" && account_has_headroom; then
+              log "$s: 한도 형상이 백오프 한 단을 넘겨 지속 + 여유 계정 — 회수(reap)하고 종단 부류 「한도-형상 회수」로 남긴다; 소비자가 그 부류로 처분한다"
+              reap_mark "$s" "여유 계정"
               reap_orphan "$s"; backoff_reset "$s"
               continue
             fi
             if backoff_wait "$s"; then still="$still $s"; continue; fi
             if kill_permitted "$s"; then
-              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수(reap)하고 종료 기록 없이 버린다; 소비자는 크래시로 분류한다"
+              warn "$s: 백오프 벽시계 상한 — 경계 멱등이므로 회수(reap)하고 종단 부류 「한도-형상 회수」로 남긴다; 소비자가 그 부류로 처분한다"
+              reap_mark "$s" "백오프 상한"
               reap_orphan "$s"; backoff_reset "$s"
             else
               # No signal, at all. The stage keeps running; the run stops
@@ -3729,6 +3755,10 @@ classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
   local stage="$1" exit_rc="$2" pred_rc="$3"
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
+  # A stage the driver signalled from the limit-shape arm never reaches
+  # `stage_collect`, so its `.rc` is the consumer's default and not an
+  # observation. The mark the arm left is; it outranks the rc rows below.
+  if reap_marked "$stage"; then printf '한도-형상 회수'; return 0; fi
   if [ "$exit_rc" = "0" ] && [ "$pred_rc" = "0" ]; then printf '정상 완료'; return 0; fi
   # A stage that REACHED a decision point and declined to decide for the user is
   # not a stage that attempted nothing, and until this class existed the two
@@ -3873,6 +3903,18 @@ backoff_wait() {
 }
 
 backoff_reset() { rm -f "$RUN_DIR/$1.backoff"; }
+
+# True once this stage has sat out at least one rung. The accumulator file is
+# written only after a sleep completes and is removed by `backoff_reset`, so
+# its presence is exactly "one full rung since the last sign of progress".
+backoff_served() { [ -f "$RUN_DIR/$1.backoff" ]; }
+
+# reap_mark <stage-id> <reason> — written by the limit-shape arm BEFORE it
+# signals, so the classifier can tell a reap from a process that died on its
+# own. The file carries the reason for the driver log's reader; the class it
+# produces is one value, `한도-형상 회수`, for both reap branches.
+reap_mark()   { printf '%s\n' "$2" > "$RUN_DIR/$1.reap-cause"; }
+reap_marked() { [ -f "$RUN_DIR/$1.reap-cause" ]; }
 
 # The single predicate every signalling path must consult.
 #
@@ -4848,10 +4890,18 @@ rebase_onto_base() {
 # backoff and lands on `human_reconcile` instead of being signalled.
 review_recover() {
   local seg="$1" cycle="$2" sid="$3" rp="$4" cwd="$5" branch="$6" class="$7"
-  [ "$class" = "크래시" ] || { park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1; }
+  # A review the driver reaped from the limit-shape arm is in the same state a
+  # crashed one is — gone mid-flight, witness directory possibly on disk — and
+  # it was reaped BECAUSE `S5` is boundary idempotent, so the recovery dispatch
+  # is its disposition too. It arrives under its own class rather than as a
+  # crash, which is what keeps the two countable apart on the ledger.
+  case "$class" in
+    '크래시'|'한도-형상 회수') : ;;
+    *) park "$seg" cone 무효화 "게이트 park" "리뷰 종단 부류 $class"; return 1 ;;
+  esac
   if predicate_review "$rp"; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
+      "리뷰 $class — 리포트에 종료 술어 줄이 이미 있어 복구를 파견하지 않는다"
     return 1
   fi
   local att dirs n=0
@@ -4865,16 +4915,16 @@ review_recover() {
   [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
   if [ "$n" = "0" ]; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
+      "리뷰 $class — 시도 $att 의 위트니스 디렉터리가 없어 Step 4 미도달, 복구를 파견하지 않는다"
     return 1
   fi
   if [ "$n" != "1" ]; then
     park "$seg" cone 무효화 "게이트 park" \
-      "리뷰 크래시 — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
+      "리뷰 $class — 시도 $att 에 위트니스 디렉터리 ${n}개, 지명 불가: $(printf '%s' "$dirs" | tr '\n' ' ')"
     return 1
   fi
   local rsid="S5R:$seg:$cycle" rc pred rclass reaped
-  log "$seg: 리뷰 크래시 — 복구 스테이지 파견 (scratch $dirs)"
+  log "$seg: 리뷰 $class — 복구 스테이지 파견 (scratch $dirs)"
   # Dispatching on top of a still-running original gives the report path two
   # writers, which is the risk the publication rule is built to close. What this
   # call does about that is less than it looks, and the honest statement is:
@@ -5058,6 +5108,20 @@ segment_cycle() {
         stage_wait_all "$sid.retry"
         if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
           park "$seg" cone 무효화 "게이트 park" "크래시 2회 — 산출물 없음"; return 1
+        fi ;;
+      '한도-형상 회수')
+        # The driver itself signalled this stage, from the limit-shape arm,
+        # because it is boundary idempotent and re-dispatching it is what that
+        # arm exists for. One re-dispatch under its own name, and it does not
+        # spend the crash retry: a reap is a decision the driver made, not a
+        # process that died, and the two must stay countable apart. A second
+        # reap parks under the same name rather than falling through to any
+        # other arm.
+        log "$seg: 한도-형상 회수 ($(cat "$RUN_DIR/$sid.reap-cause" 2>/dev/null)) — 경계에서 1회 재파견"
+        stage_spawn "$sid.retry" "$wt" "/cc-cmds:implement-unattended $DOC \"세그먼트 $seg (사이클 $cycle 한도-형상 회수 후 재파견) · 선언 파일: $files\""
+        stage_wait_all "$sid.retry"
+        if predicate_implement "$branch" "$pre_head" "$seg"; then : ; else
+          park "$seg" cone 무효화 "게이트 park" "한도-형상 회수 후 재파견 — 산출물 없음"; return 1
         fi ;;
       *) park "$seg" cone 무효화 "게이트 park" "종단 부류 $class"; return 1 ;;
     esac

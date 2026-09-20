@@ -790,7 +790,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `handoff.사유` | `상한` \| `승인` \| `종단` \| `중단` |
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
-| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` \| `외부 종료` |
+| `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` \| `외부 종료` \| `한도-형상 회수` |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
 
@@ -1007,8 +1007,11 @@ Exit status and the artifact predicate are **independent axes**, and the halt re
 | success | false | present | `의도된 park` | blocked queue, no retry |
 | success | false | absent | `공허한 성공` | retry **once**, then blocked queue under a distinct reason |
 | non-zero | false | — | `크래시` | retry at the boundary, `시도+1` |
+| (none) | — | absent | `한도-형상 회수` | one re-dispatch under its own name (implement), the recovery dispatch (review), or blocked queue |
 
-Priority on read: **a halt record present ⇒ halt.** Absent and terminated ⇒ judge by the predicate.
+Priority on read: **a halt record present ⇒ halt.** Then a reap mark present ⇒ `한도-형상 회수`. Absent and terminated ⇒ judge by the predicate.
+
+The fifth row has no exit status because the driver itself ended the stage: the limit-shape arm of its wait loop signalled a boundary-idempotent stage whose transcript had been silent through at least one backoff rung, and it wrote a reap mark (`<stage>.reap-cause`, carrying `여유 계정` or `백오프 상한`) before the signal went out. Nothing collects such a stage, so it has no `.rc`; without the mark the consumer's default of 1 would read as `크래시` and the stage would be re-bought under the wrong name and out of the crash retry. The mark is what keeps the two countable apart. The sensor's headroom verdict can shorten that arm's ladder; it cannot make it zero — the first limit-shape observation always waits one rung, because transcript silence alone cannot tell a stage at a limit from a stage inside one long tool call.
 
 The third row is a measured failure mode, and its retry count is argued in both directions: not zero, because one observation cannot rule out a transient cause; not the full retry budget, because a clean exit with no artifact is itself evidence that the next attempt does the same. Improvisation is deterministic, so a blind retry loop would reproduce it identically and burn the whole budget before reaching the ladder. **This does not restore the stop that the unattended arm removed** — nothing on the skill side can. It converts an unobservable failure into an observable one, which is the most the driver can do from outside.
 
@@ -1040,13 +1043,16 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `<stage>.pgid` | driver (`run.sh`) | its process-group id — the **fallback** identity handle |
 | `<stage>.start` | driver (`run.sh`) | its start-time fingerprint; `(pid, start time)` is the identity and the pid alone is not |
 | `<stage>.rc` | driver (`run.sh`) | the collected exit status |
+| `<stage>.backoff` | driver (`run.sh`) | the limit ladder's accumulator for a stage in the limit shape — `elapsed sleep_s`, written after each rung and removed on the next sign of progress; its presence is what admits the sensor's headroom verdict to the reap decision |
+| `<stage>.reap-cause` | driver (`run.sh`) | written before the limit-shape arm signals a stage (`여유 계정` or `백오프 상한`); the classifier reads it as `한도-형상 회수` so the reaped stage does not land as `크래시` |
+| `<stage>.reaped` | driver (`run.sh`) | `<pid> alive` or `<pid> dead` — the `kill -0` verdict stamped by `reap_orphan` before it removes the pid file |
 | `<stage>.transcript` | driver (`run.sh`) | cached path of the stage's session transcript |
 | `log/driver.log` · `log/<stage>.json` | driver (`run.sh`) | driver log, and each stage's result envelope |
 | `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |
 | `halt/<stage-id>.md` | **the halting stage** | the halt record of §4 — the one file a stage writes here |
 | `<segment>.plan.md` | the `implement` stage | the plan emitted by that segment's first process, and the admission token its second one is checked against |
 | `cc-team-witness-<slug>[.<stage-id>].XXXXXX/` | **a team member (stage)** | the witness scratch directory — where a member publishes its round product, minted by `orchestrator/cc-team-witness-init.sh` and recorded verbatim as that member's `scratchDir`. The row is here because the Writer column is an enforcement rule: without it a member's publish is denied, and a lead that cannot read its team's witness either parks forever or synthesizes a round product it never observed |
-| `shared/<gen>/` | **the lead seat** (the directory itself: driver, `run.sh`, created empty at run open) | a generation of the shared snapshot the seats read instead of each collecting its own — `manifest.tsv`, `blob/<id>`, `diff/<target>.patch`. Built in a sibling temp directory and renamed in, so a generation is either whole or absent, and never edited once published: an invalidation is a new generation. The row is here because the Writer column is an enforcement rule — the run hook and the gate's Bash-path guard both except exactly one level below `shared/` (`shared/<gen>/…`), and a file directly under `shared/` is refused by both. The routing seat's `exec` is refused any path under here by a separate gate arm; its settings variant carries no directory grant, so that arm is what keeps the Bash path as narrow as the tool path |
+| `shared/<gen>/` | **the lead seat** (the directory itself: driver, `run.sh`, created empty at run open) | a generation of the shared snapshot the seats read instead of each collecting its own — `manifest.tsv`, `blob/<id>`, `diff/<target>.patch`. Built in a sibling temp directory and renamed in, so a generation is either whole or absent, and never edited once published: an invalidation is a new generation. The row is here because the Writer column is an enforcement rule — the run hook and the gate's Bash-path guard both except exactly one level below `shared/` (`shared/<gen>/…`), and a file directly under `shared/` is refused by both, with `..` folded before either list is consulted. The routing seat is refused any argv element naming a path under here by a separate gate arm that stands on both argv-running verbs (`exec`, and `act` of every kind but the two dispatch kinds); its settings variant carries no directory grant, so that arm is what keeps the Bash path as narrow as the tool path |
 | `plugin/cc-cmds/` | gate (`gate.sh`) | this run's own copy of the plugin root, taken once at run open. Every later gate call, watcher and feed `exec`s into it, so it is the code that actually enforces this run. **Stages read it and never write it** — the run-directory allow-list refuses every name under here, on the hook path and on the Bash path alike |
 | `plugin-pin` | gate (`gate.sh`) | written once and never overwritten; `키<TAB>값` lines: `schema` · `plugin-dir` · `source` · `method`(`archive` \| `copy`) · `commit` · `tree` · `dirty` · `digest` · `version` · `pinned-at`, plus the optional diagnostic `commit-on-origin`. Published by a single `link(2)`, so simultaneous run-open entries yield exactly one pin and one copy |
 | `settings/` | gate (`gate.sh`) | the per-run settings the stage wrapper launches with, hook included |

@@ -1782,6 +1782,82 @@ check "이 좌석 항목이 없는 상태는 여유 없음(1)" "$(acc_room)" "1"
 acc_state 0 1 10 'cc-pace-state v2'
 check "다른 스키마의 상태는 여유 없음(1)" "$(acc_room)" "1"
 check "정지 임계가 센서의 것과 같은 값으로 박혀 있다" "$RUN_PACE_STALE_SECONDS" "180"
+
+# (6) 조인이 성립하는 상태에서 `stage_wait_all` 을 실제로 지난다 — 센서는 사다리를
+#     줄일 수 있을 뿐 0 으로 만들지 못한다.
+# 위 (5) 는 술어만 잰다. 술어가 참을 내는 순간 회수 갈래가 살아나므로, 여기서는
+# 좌석 조인(`CLAUDE_CONFIG_DIR` = `seats[].home`)과 여유 있는 상태를 그대로 두고
+# 대기 루프를 돌린다. `resume_verdict` 는 「한도-형상」 만 내고, `stage_alive` 는
+# 정해진 횟수만 살아 있다고 답하며, `sleep` 은 함수로 가려 백오프 단이 벽시계를
+# 쓰지 않게 한다. `reap_orphan` 은 (2) 의 감시 스텁이 그대로 관측한다.
+eval "swa_real_backoff_wait() $(declare -f backoff_wait | sed 1d)"
+SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=0
+backoff_wait()    { SWA_BW=$(( SWA_BW + 1 )); swa_real_backoff_wait "$@"; }
+resume_verdict()  { printf '한도-형상'; }
+stage_alive()     { SWA_POLLS=$(( SWA_POLLS + 1 )); [ "$SWA_POLLS" -le "$SWA_ALIVE_FOR" ]; }
+stage_collect()   { SWA_COLLECTED="$SWA_COLLECTED $1"; rm -f "$RUN_DIR/$1.pid"; }
+sleep()           { :; }
+swa_run() {  # swa_run <stage> <살아 있는 폴 수>
+  REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR="$2"; SWA_COLLECTED=""
+  rm -f "$RUN_DIR/$1.backoff" "$RUN_DIR/$1.reap-cause" "$RUN_DIR/$1.reaped"
+  printf '99999\n' > "$RUN_DIR/$1.pid"
+  CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$1" 2>/dev/null
+}
+SWA_STAGE="S4:acc:1"
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+if kill_permitted "$SWA_STAGE"; then ok "전제: $SWA_STAGE 는 경계 멱등이라 회수 대상이다"; else bad "전제" "$SWA_STAGE 가 회수 대상이 아니다"; fi
+
+# 첫 관측: 여유가 있어도 죽이지 않고 백오프 한 단을 잔다.
+swa_run "$SWA_STAGE" 1
+check "첫 한도-형상 관측은 여유 계정이라도 회수하지 않는다" "$REAPED" ""
+check "대신 백오프 한 단을 잔다" "$SWA_BW" "1"
+check "그 뒤 스테이지가 스스로 끝나면 수거된다" "$SWA_COLLECTED" " $SWA_STAGE"
+if [ -e "$RUN_DIR/$SWA_STAGE.reap-cause" ]; then bad "회수 표시" "회수하지 않았는데 reap-cause 가 있다"; else ok "회수하지 않은 스테이지에는 reap-cause 가 없다"; fi
+
+# 둘째 관측: 한 단을 지속한 뒤에야 여유 계정이 회수 근거가 된다.
+swa_run "$SWA_STAGE" 2
+check "백오프 한 단을 넘겨 지속된 한도-형상은 여유 계정에서 회수된다" "$REAPED" " $SWA_STAGE"
+check "회수는 둘째 단을 자기 전에 일어난다" "$SWA_BW" "1"
+check "회수 사유가 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "여유 계정"
+check "회수된 스테이지의 종단 부류는 크래시가 아니다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+check "회수는 백오프 누산기를 비운다" "$(ls "$RUN_DIR/$SWA_STAGE.backoff" 2>/dev/null)" ""
+if [ -e "$RUN_DIR/$SWA_STAGE.rc" ]; then bad "rc" "회수 경로가 .rc 를 썼다"; else ok "회수 경로는 .rc 를 쓰지 않는다 — 부류는 표시 파일이 진다"; fi
+
+# 대조군: 여유가 없으면 한 단을 넘겨도 사다리를 계속 오른다.
+acc_state 0 1 80
+check "전제: 세션 창이 80% 라 여유 없음" "$(acc_room)" "1"
+swa_run "$SWA_STAGE" 2
+check "여유 없는 좌석은 한 단을 넘겨도 회수하지 않는다" "$REAPED" ""
+check "사다리는 둘째 단으로 오른다" "$SWA_BW" "2"
+check "회수하지 않은 스테이지는 종단 부류가 rc 로 정해진다" "$(classify_termination "$SWA_STAGE" 1 1)" "크래시"
+
+# 대조군: 상한 갈래도 같은 표시를 남긴다 — 누산기를 상한에 두고 여유 없는 상태로 한 번 관측.
+printf '%s 1\n' "$BACKOFF_WALLCLOCK_CAP_SECONDS" > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "백오프 상한에서는 경계 멱등 스테이지를 회수한다" "$REAPED" " $SWA_STAGE"
+check "상한 회수의 사유도 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "백오프 상한"
+check "상한 회수의 종단 부류도 한도-형상 회수다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+
+# 대조군: 비멱등 스테이지는 여유가 있고 한 단을 넘겨도 회수되지 않는다.
+acc_state 0 1 10
+swa_run "$ACC_STAGE" 3
+check "비멱등 스테이지는 여유 계정에서도 회수되지 않는다" "$REAPED" ""
+check "비멱등 스테이지는 사다리만 오른다" "$SWA_BW" "3"
+
+# 재기동은 앞 점유자의 표시를 물려받지 않는다.
+printf '%s\n' '여유 계정' > "$RUN_DIR/$SWA_STAGE.reap-cause"
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '.reap-cause'; then
+  ok "stage_spawn 이 .rc 와 함께 .reap-cause 를 지운다"
+else
+  bad "표시 상속" "stage_spawn 이 .reap-cause 를 지우지 않는다 — 같은 id 의 재기동이 앞 회수로 분류된다"
+fi
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.pid" "$RUN_DIR/$SWA_STAGE.backoff" "$RUN_DIR/$ACC_STAGE.pid" "$RUN_DIR/$ACC_STAGE.backoff"
+unset -f swa_run backoff_wait resume_verdict stage_alive stage_collect sleep
+eval "backoff_wait() $(declare -f swa_real_backoff_wait | sed 1d)"
+unset -f swa_real_backoff_wait
 unset -f acc_state acc_room
 
 # `unset -f` REMOVES the watcher rather than restoring the driver's definition —
@@ -4061,10 +4137,18 @@ if printf '%s' "$crash_arm" | grep_all_q '크래시 2회'; then
 else
   bad "park 사유" "크래시 2회의 park 사유가 첫 실패와 구별되지 않는다"
 fi
-# 재시도는 정확히 1회다. 두 갈래가 각각 하나씩이라 드라이버 전체에서 `.retry`
-# 스폰은 둘이어야 하고, 셋이 되면 어느 갈래가 예산을 넘긴 것이다.
-check "재시도 스폰은 갈래당 1회 (전체 2회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+# 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
+# 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
+# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
+for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+  # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
+  # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
+  check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+done
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파

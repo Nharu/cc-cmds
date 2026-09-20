@@ -28,6 +28,9 @@
 #   dispatch: five parks      — each park token from its own evidence
 #   dispatch: oversize skip   — a >4 KiB record is skipped, never parked
 #   dispatch: launch shape    — stub, snapshot, ONE watcher line, run.sh, done
+#   dispatch: one head, two   — two lanes racing for one pending record start
+#             lanes             run.sh once; a stale claim lock is broken; a
+#                               status flip whose line is gone does not overwrite
 #   agent: idempotent install, half-installed refuse, running refuse,
 #          per-label bootout on uninstall
 #   source greps              — no detach helper, no notifier, one watcher line
@@ -69,6 +72,12 @@ EOF
 cat > "$FX/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'run %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/run.log"
+# With TEST_RUN_STEAL set the stub rewrites the dispatched record under the
+# driver's feet, so the dispatcher's `done` flip finds no line to flip.
+if [ -n "${TEST_RUN_STEAL:-}" ]; then
+  sed 's/"dispatched"/"stolen"/' "$FLEET_PACE_ROOT/backlog.jsonl" > "$FLEET_PACE_ROOT/backlog.jsonl.new"
+  mv -f "$FLEET_PACE_ROOT/backlog.jsonl.new" "$FLEET_PACE_ROOT/backlog.jsonl"
+fi
 exit 0
 EOF
 # The lane probe stub: prints $TEST_PROBE_OUT, sleeps $TEST_PROBE_SLEEP first,
@@ -329,6 +338,39 @@ check "워처 인자는 autopilot 의 기동 줄과 같은 네 임계를 싣는�
 check "run.sh 는 앞단에서 좌석 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$HCC"
 [ -s "$WT/docs/pipeline-run/R1.md" ] && ok "보고서 스텁이 없으면 만든다" || bad "보고서 스텁이 없으면 만든다" "absent"
 [ -s "$WORK/xdg/cc-cmds/run/R1/watch.log" ] || [ -e "$WORK/xdg/cc-cmds/run/R1/watch.log" ] && ok "워처 로그는 런 디렉터리 아래로 리디렉션된다" || bad "워처 로그는 런 디렉터리 아래로 리디렉션된다" "absent"
+
+# --- two lanes, one head: the claim is locked and the flip is a CAS -----------
+#
+# The two dispatch labels fire together, so both read the same `pending` head
+# unless the claim is serialized. The probe stub sleeps inside the first lane's
+# admission block while the second lane arrives; with the lock the second lane
+# waits, then finds no `pending` head, and `run.sh` is invoked exactly once.
+fresh_pace d-race; write_state 가속 10 null null true; set_backlog "$(backlog_record r1)"; clear_logs
+: > "$TEST_PROBE_OUT"
+TEST_PROBE_SLEEP=1 fleet dispatch cc >/dev/null 2>"$WORK/race-cc.err" &
+race_pid=$!
+sleep 0.2
+fleet dispatch cci >/dev/null 2>"$WORK/race-cci.err"
+wait "$race_pid" || true
+check "같은 pending 을 두 레인이 동시에 집어도 run.sh 는 한 번만 돈다" "$(count_lines "$TEST_LOG_DIR/run.log")" "1"
+check "기동한 쪽은 먼저 잠금을 잡은 레인이다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$HCC"
+check "레코드는 하나이고 done 이다" "$(backlog_status r1 | tr '\n' ' ')" "done "
+check "집은 레인이 레코드에 적힌다" "$(backlog_field r1 .dispatched_lane)" "cc"
+check "집은 시각이 레코드에 적힌다" "$(backlog_field r1 .dispatched_at)" "$(iso "$NOW")"
+check "둘째 레인은 pending 이 없다고 끝난다" "$(grep -c 'pending 레코드가 없다' "$WORK/race-cci.err" || true)" "1"
+[ -d "$PACE/backlog.lock" ] && bad "잠금은 파견 뒤 풀려 있다" "backlog.lock 이 남아 있다" || ok "잠금은 파견 뒤 풀려 있다"
+# A stale lock is a dead holder's: it is broken, not waited on.
+fresh_pace d-stale-lock; write_state 가속 10 null null true; set_backlog "$(backlog_record k1)"; clear_logs
+mkdir -p "$PACE/backlog.lock"; touch -t 202001010000 "$PACE/backlog.lock"
+fleet dispatch cc >/dev/null 2>"$WORK/stale-lock.err"
+check "묵은 backlog.lock 은 깨고 기동한다" "$(backlog_status k1)" "done"
+check "깬 사실을 로그에 남긴다" "$(grep -c '죽은 소유자' "$WORK/stale-lock.err" || true)" "1"
+# The flip after the run is a CAS too: a record rewritten under the driver's
+# feet is not blindly overwritten, and the failed swap is logged.
+fresh_pace d-steal; write_state 가속 10 null null true; set_backlog "$(backlog_record t1)"; clear_logs
+TEST_RUN_STEAL=1 fleet dispatch cc >/dev/null 2>"$WORK/steal.err"
+check "원본 줄이 사라진 done 재작성은 덮어쓰지 않는다" "$(backlog_status t1)" "stolen"
+check "실패한 교환은 로그에 남는다" "$(grep -c 'done 재작성이 실패했다' "$WORK/steal.err" || true)" "1"
 
 # --- five parks ----------------------------------------------------------------
 fresh_pace d-park; write_state 가속 10 null null true
