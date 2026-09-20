@@ -456,6 +456,18 @@ hook_run_dir_verdict() {
     # 게이트의 `gate_rundir_write_guard()` 도 같은 팔을 갖고, 두 파일의 거부 문면이
     # 같다는 것을 `scripts/test-gate.sh` 가 핀한다.
     shared/*/*) ;;
+    # 무인 설계 스테이지의 상태 루트와 사전 이미지. 스킬 본문이 이 둘을 자기가
+    # 쓰는 경로로 선언하는데 이 목록이 몰라서, 설계 스테이지가 팀을 하나도 띄우지
+    # 못하고 멈췄다 — 사전 이미지가 없으면 워크스루의 어떤 해결도 되돌리는 법을
+    # 가질 수 없어 채택 가능한 형태가 되지 못한다. 위트니스 예외와 같은 근거로
+    # 안전하다: 둘 다 런 시작 시점에 존재하지 않으므로 게이트가 매 행위마다 되읽는
+    # 기준선이 아니고, 강제 표면 검사가 읽는 자리도 아니다. 깊이를 제한하지 않는
+    # 것은 상태 루트 아래에 `witness/` 가 한 단계 더 있기 때문이다.
+    design|design/*|preimage|preimage/*) ;;
+    # `mkdir -p` 는 자기가 만들 디렉터리를 인자로 적으므로 `halt` 자신도 이름에
+    # 오른다. 디렉터리를 허용해도 그 안에서 열리는 것은 `halt/*` 뿐이고 `halt/*/*`
+    # 는 위에서 이미 거부된다.
+    halt) ;;
     */*)
       deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not) — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
