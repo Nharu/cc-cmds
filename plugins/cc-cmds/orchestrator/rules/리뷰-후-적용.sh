@@ -9,19 +9,19 @@
 # 슬롯을 지목하지 못한 적용은 거부한다. 어느 파일이 움직이는지 모르면 원장
 # 행도 롤백도 대상이 없다.
 if [ "$GATE_CLAUDEMD_SLOT" = "(세탁됨)" ]; then
-  echo "리뷰-후-적용: 적용 대상을 argv 원소로 적어야 합니다 — 인터프리터 안에 숨은 경로는 원장이 지목할 수 없습니다" >&2
+  echo "리뷰-후-적용: the apply target must be written as an argv element — a path hidden inside an interpreter cannot be named by the ledger" >&2
   exit 1
 fi
 
-[ -f "$GATE_LEDGER" ] || { echo "리뷰-후-적용: 원장을 읽을 수 없습니다" >&2; exit 1; }
+[ -f "$GATE_LEDGER" ] || { echo "리뷰-후-적용: cannot read the ledger" >&2; exit 1; }
 [ -n "$GATE_SEGMENT" ] && [ "$GATE_SEGMENT" != "-" ] || {
-  echo "리뷰-후-적용: 적용 행위에 세그먼트가 지정되지 않았습니다 — 어느 리뷰가 덮는지 판정할 수 없습니다" >&2
+  echo "리뷰-후-적용: no 세그먼트 was given for the apply act — cannot judge which review covers it" >&2
   exit 1
 }
 
 row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT " | tail -1)
 [ -n "$row" ] || {
-  echo "리뷰-후-적용: 세그먼트 '$GATE_SEGMENT' 의 리뷰 기록이 없습니다" >&2
+  echo "리뷰-후-적용: no review record for 세그먼트 '$GATE_SEGMENT'" >&2
   exit 1
 }
 
@@ -32,23 +32,23 @@ p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '적용 대상')
 [ -n "$p1" ] || p1=0
 
 if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
-  echo "리뷰-후-적용: 미해결 지적이 남아 있습니다 (P0=$p0 P1=$p1)" >&2
+  echo "리뷰-후-적용: unresolved findings remain (P0=$p0 P1=$p1)" >&2
   exit 1
 fi
 
 [ -n "$reviewed" ] || {
-  echo "리뷰-후-적용: 리뷰 기록에 「적용 대상」이 없어 신선도를 판정할 수 없습니다 — 리뷰 스테이지가 승인한 제안본의 sha256 을 그 행에 남겨야 합니다" >&2
+  echo "리뷰-후-적용: the review record has no 「적용 대상」, so freshness cannot be judged — the review stage must leave the sha256 of the proposal it approved on that row" >&2
   exit 1
 }
 
 now="${GATE_CLAUDEMD_DIGEST:-}"
 [ -n "$now" ] || {
-  echo "리뷰-후-적용: 적용될 제안본의 다이제스트를 게이트가 넘기지 않았습니다 — 판정 불가는 허용이 아닙니다" >&2
+  echo "리뷰-후-적용: the gate did not pass the digest of the proposal to be applied — undecidable is not an allow" >&2
   exit 1
 }
 
 if [ "$reviewed" != "$now" ]; then
-  echo "리뷰-후-적용: 리뷰가 승인한 제안본과 지금 적용될 제안본이 다릅니다 (리뷰=$reviewed · 현재=$now)" >&2
+  echo "리뷰-후-적용: the proposal the review approved differs from the one about to be applied (reviewed=$reviewed · now=$now)" >&2
   exit 1
 fi
 
