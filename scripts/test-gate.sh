@@ -10413,6 +10413,30 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 무인 설계 스테이지의 상태 루트와 사전 이미지. 스킬이 자기 쓰기로 선언한 두 경로를
+# 이 목록이 몰라서 설계 스테이지가 팀을 하나도 못 띄우고 멈췄다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir -p "$RD3/design/slug/witness" "$RD3/preimage" "$RD3/halt"
+check "설계 상태 루트·사전 이미지·중단 디렉터리 생성은 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/design/slug/witness/r1.md"
+check "상태 루트 아래 한 단계 더 깊은 위트니스 산출물도 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/preimage/slug.1.md"
+check "사전 이미지 파일도 통과한다" "$rc" "0"
+# 음성 대조군 — 넓힌 것이 이 두 이름뿐임을 고정한다. 없으면 위 셋의 초록이
+# 「런 디렉터리가 통째로 열렸다」와 구별되지 않는다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designs/slug/r1.md"
+check "음성 대조군: 비슷하지만 다른 이름 designs/ 는 여전히 거부" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/settings/impl.json"
+check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
 # 편집이 여기서 빨개져야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
@@ -10420,6 +10444,14 @@ if grep -qF 'cc-team-witness-*/*' "$GATE" \
   ok "게이트와 훅이 같은 위트니스 예외를 싣는다"
 else
   bad "가드·훅 불일치" "위트니스 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+# 같은 이유로 설계 예외도 양쪽에 있어야 한다. 위 단언들은 게이트만 물리므로, 훅만
+# 빠진 편집은 그 초록에 가려 보이지 않는다.
+if grep -qF 'design|design/*|preimage|preimage/*' "$GATE" \
+   && grep -qF 'design|design/*|preimage|preimage/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 설계 상태·사전 이미지 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "설계 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
