@@ -1854,7 +1854,53 @@ if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '.reap-cause'; then
 else
   bad "표시 상속" "stage_spawn 이 .reap-cause 를 지우지 않는다 — 같은 id 의 재기동이 앞 회수로 분류된다"
 fi
-rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.pid" "$RUN_DIR/$SWA_STAGE.backoff" "$RUN_DIR/$ACC_STAGE.pid" "$RUN_DIR/$ACC_STAGE.backoff"
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 파견 경계의 한 단 보장 — 「첫 한도-형상 관측은 언제나 한 단을 기다린다」가 두
+# 번째 파견에서도 성립한다.
+#
+# 위 (6) 의 단언들은 이것을 재지 못한다. `swa_run` 이 자기 전제로 `.backoff` 를
+# 지우므로 거기서 성립하는 한 단 보장은 **단일 파견 수명 안**의 것이고, 실제로
+# 깨지는 자리는 파견 경계다. 앞 파견이 누산기를 남기는 경로는 실재한다 — 비멱등
+# 갈래(`human_reconcile`)는 신호를 보내지 않고 빠지면서 누산기를 지우지 않는다.
+# 그래서 여기서는 그 잔여를 전제로 두고, 대조군으로 빨간불을 먼저 확인한 뒤,
+# `stage_spawn` 이 실제로 선적한 청소 줄만 돌려 보장이 회복되는지 잰다.
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+
+# 대조군 — 누산기가 남아 있으면 첫 관측이 한 단도 자지 않고 곧바로 회수된다.
+# 이 블록이 없으면 아래 단언이 「청소가 듣는다」가 아니라 「원래 회수되지
+# 않는다」로도 통과해 공허해진다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "대조군: 앞 파견의 누산기가 남으면 첫 관측이 곧바로 회수된다" "$REAPED" " $SWA_STAGE"
+check "대조군: 그때는 한 단도 자지 않는다" "$SWA_BW" "0"
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 같은 잔여를 다시 두고, 이번에는 그 사이에 파견이 일어난다. 선적된 청소 줄을
+# 원문에서 뽑아 그대로 돌리므로 이 단언은 소스 문자열 대조가 아니라 그 줄의
+# 효과를 잰다 — 목록에서 `.backoff` 가 빠지면 뽑힌 줄이 그것을 남기고 아래 둘이
+# 함께 뒤집힌다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+spawn_cleanup=$(sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep -E '^[[:space:]]*rm -f "\$RUN_DIR/\$stage\.rc"')
+check "stage_spawn 의 청소 줄을 정확히 하나 뽑았다" "$(printf '%s' "$spawn_cleanup" | grep -c .)" "1"
+( stage="$SWA_STAGE"; eval "$spawn_cleanup" )
+if backoff_served "$SWA_STAGE"; then
+  bad "파견 경계" "stage_spawn 청소가 .backoff 를 남긴다 — 두 번째 파견의 첫 관측이 앞 파견의 사다리 위에서 판정된다"
+else
+  ok "stage_spawn 이 파견마다 .backoff 를 비운다"
+fi
+
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "두 번째 파견의 첫 한도-형상 관측도 회수하지 않는다" "$REAPED" ""
+check "두 번째 파견의 첫 관측도 백오프 한 단을 잔다" "$SWA_BW" "1"
+
+unset spawn_cleanup
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.pid" "$RUN_DIR/$SWA_STAGE.backoff" "$RUN_DIR/$ACC_STAGE.pid" "$RUN_DIR/$ACC_STAGE.backoff"
 unset -f swa_run backoff_wait resume_verdict stage_alive stage_collect sleep
 eval "backoff_wait() $(declare -f swa_real_backoff_wait | sed 1d)"
 unset -f swa_real_backoff_wait

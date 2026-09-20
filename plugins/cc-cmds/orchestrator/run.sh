@@ -3216,9 +3216,21 @@ stage_spawn() {
   cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
-  # Both are verdicts about the PREVIOUS holder of this id; a re-spawn under
-  # the same id must not inherit either.
-  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.reap-cause"
+  # All three are verdicts about the PREVIOUS holder of this id; a re-spawn
+  # under the same id must not inherit any of them.
+  #
+  # THE BACKOFF ACCUMULATOR IS CLEARED HERE BECAUSE THE ONE-RUNG GUARANTEE IS A
+  # PROPERTY OF A DISPATCH, NOT OF A STAGE ID. `backoff_served` reads the file's
+  # presence as "this stage has already sat out a rung", and the limit-shape arm
+  # consults it on its FIRST observation — so a dispatch that inherits the file
+  # reaps at once, which is exactly the live-stage kill the rung exists to
+  # prevent. Every teardown path did call `backoff_reset`, and relying on that
+  # was the defect: the guarantee then held only as long as every future exit
+  # remembered to reset, and one already did not — the non-idempotent branch
+  # parks the stage and hands it to `human_reconcile` with the accumulator still
+  # on disk. Clearing at spawn makes the guarantee hold by construction, so a
+  # teardown that forgets costs nothing.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -3904,9 +3916,13 @@ backoff_wait() {
 
 backoff_reset() { rm -f "$RUN_DIR/$1.backoff"; }
 
-# True once this stage has sat out at least one rung. The accumulator file is
-# written only after a sleep completes and is removed by `backoff_reset`, so
-# its presence is exactly "one full rung since the last sign of progress".
+# True once this stage has sat out at least one rung IN THIS DISPATCH. The
+# accumulator file is written only after a sleep completes, is removed by
+# `backoff_reset`, and is cleared again by `stage_spawn`, so its presence is
+# exactly "one full rung since the last sign of progress, within the dispatch
+# now running". The dispatch scope is what the sidecar's "the first limit-shape
+# observation always waits one rung" means: without the spawn-time clear the
+# sentence would be true of a stage's first dispatch only.
 backoff_served() { [ -f "$RUN_DIR/$1.backoff" ]; }
 
 # reap_mark <stage-id> <reason> — written by the limit-shape arm BEFORE it
