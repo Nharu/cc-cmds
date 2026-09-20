@@ -1109,6 +1109,11 @@ gate_reach_disposition() {
   esac
 
   local C=0 lift=0 P=0 Pd=0 pkind='없음' probe=''
+  # The probe below reads the same parsed argv the catalog's copy of the rule
+  # read: the caller set or cleared `GATE_ARGV_CANON` before running the rules
+  # and this runs after them, so the two see one value. Exporting it again here
+  # would undo that — the caller clears it for an argv no grading read, and a
+  # second export would hand the probe words the rule never compared.
   probe=$(GATE_PREAUTH_PROBE=1 GATE_MARK="$GATE_MARK" GATE_MARK_TRIGGER="$GATE_MARK_TRIGGER" \
           GATE_ARGV="$*" GATE_MANIFEST="$MANIFEST" \
           /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null) || probe=''
@@ -3729,6 +3734,57 @@ _gp_unesc() {
       i=$((i + 1))
     fi
   done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE CONSUMERS' ENTRY POINT. One parse per act: the first caller parses and
+# every later caller with the same argv reads what is already in `GP_*`. The key
+# is a length-prefixed join of the words, so two argvs that flatten to the same
+# string (`a b`+`c` against `a`+`b c`) do not share a parse. A `$( )` subshell
+# inherits the globals and the key together, so a grader running inside one
+# does not parse again either.
+#
+# The key is written BEFORE the parse, not after: a probe the parser itself runs
+# for the same argv (membership of the innermost argv0 in the grading table)
+# lands back here, and finding the key already set is what keeps that from
+# descending forever.
+# ---------------------------------------------------------------------------
+_GATE_GP_KEY=''
+gate_gp_ensure() {
+  local key="$#" w
+  for w in "$@"; do key="$key ${#w}:$w"; done
+  if [ "$key" != "$_GATE_GP_KEY" ]; then
+    _GATE_GP_KEY="$key"
+    gp_parse "$@"
+  fi
+  return 0
+}
+
+# WHAT THE PRE-AUTHORIZATION RULE COMPARES. The rule is a `/bin/sh` process and
+# reads `GATE_ARGV` as one flat string, so a word that carries a space or a
+# newline is split again there: a two-line `--body` made `gh pr create` miss its
+# own `gh pr` row, because the rule saw the second line as a second command.
+# `GATE_ARGV_CANON` is the parsed argv instead — one escaped word per column,
+# one line per command — and the rule compares that whenever it is set.
+#
+# SET OR UNSET ON EVERY ACT. An exported value left over from the previous act
+# would be inherited by the next one and compared in place of its own argv, so
+# the variable is cleared first and set only for the argv in hand. A body the
+# parser split into pieces (`list`, `opaque`) stays on the flat path for now:
+# the runner rows a manifest carries today match the shell word, and moving
+# those onto the pieces belongs with the shell unwrap.
+gate_preauth_export() {
+  local canon
+  unset GATE_ARGV_CANON
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    ok|tool)
+      if canon=$(gp_canon); then
+        GATE_ARGV_CANON="$canon"
+        export GATE_ARGV_CANON
+      fi ;;
+  esac
   return 0
 }
 
@@ -13451,6 +13507,14 @@ gate_verb_act() {
   export GATE_SEGMENT_OPEN_OBLIGATIONS
 
   local rules_rc=0
+  # The parsed argv the pre-authorization checker compares, or nothing: an argv
+  # a kind fixed (a bookkeeping row, a stage dispatch) was never graded from its
+  # words and is not compared on them either.
+  if [ "$argv_graded" = "1" ]; then
+    gate_preauth_export "$@"
+  else
+    unset GATE_ARGV_CANON
+  fi
   # THE CHECKERS ARE NOT TOUCHED BY THIS AXIS AT ALL, and that is the point of
   # putting the seam upstream: `GATE_ACT` arrives already corrected, so not one
   # line of the catalog changes and no checker acquires a second copy of the

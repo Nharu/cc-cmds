@@ -17623,6 +17623,188 @@ check "58: gate_main 다음 줄이 exit 다" \
 check "58: 소스 전용 가드는 gate_main 앞에 있다" \
   "$(awk '/CC_GATE_SOURCE_ONLY:-0/ { g = NR } /^gate_main "\$@"$/ { m = NR } END { print (g > 0 && g < m) ? "앞" : "아님" }' "$GATE")" "앞"
 
+# ---------------------------------------------------------------------------
+# 59. The parsed argv reaches the two rules that read argv
+# --- section: 59 | group: parse | covers: act, plan | anchors: 59: 두 줄 본문이 정규 전송에서 형태에 맞는다, 59: RT-B-preauth3 — 상대 경로 스크립트는 목록 밖이다, 59: --admin 은 정규 전송에서도 거부된다, 59: 게이트는 등급된 argv 에만 전송을 싣는다, 59: 두 줄 본문 행위가 게이트를 통과한다 ---
+#
+# 이 절이 재는 것은 룰 두 개의 **판정**이지 게이트의 등급이 아니다. 그래서
+# 대부분의 단언은 룰을 직접 돌린다 — 게이트를 소싱해 `gp_canon` 으로 전송값을
+# 만들고, 그 값을 실은 채·안 실은 채·빈 값으로 실은 채 세 번 돌린다. 세 번인
+# 이유는 폴백이 두 갈래가 아니라 세 갈래이기 때문이다: 부재는 옛 경로, 빈 값은
+# 게이트의 버그이고, 둘을 같게 다루면 버그가 모든 행위를 통과시킨다.
+#
+# 절 58 과 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래에서 돈다.
+# ---------------------------------------------------------------------------
+S59_DIR="$WORK/s59"
+mkdir -p "$S59_DIR"
+
+s59_man() {
+  # s59_man <파일> <형태...> — 사전 인가 행만 담은 최소 매니페스트. 대조 룰은
+  # 그 행만 읽으므로 런 정체도 대상도 필요하지 않다.
+  local f="$1" shape
+  shift
+  : > "$f"
+  for shape in "$@"; do
+    printf -- '- `사전 인가` | 형태=%s | 사유=테스트\n' "$shape" >> "$f"
+  done
+}
+
+s59() {
+  # s59 <모드> <룰> <매니페스트> <argv...> — 모드는 canon·off·empty,
+  # 룰은 preauth·selfext. preauth 는 탐침 한 줄을, selfext 는 `rc=<n>` 을 찍는다.
+  local mode="$1" rule="$2" man="$3"
+  shift 3
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S59_GATE="$GATE" S59_MODE="$mode" S59_RULE="$rule" S59_MAN="$man" \
+      S59_GRANT="${S59_GRANT:-}" S59_SURFACE="${S59_SURFACE:-트리밖쓰기}" \
+      /bin/bash -c '
+        . "$S59_GATE" </dev/null
+        unset CC_GATE_SOURCE_ONLY
+        trap - EXIT ERR INT TERM
+        set +e
+        set -u
+        case "$S59_MODE" in
+          canon)
+            gp_parse "$@"
+            case "$GP_STATUS" in
+              ok|tool)
+                if _c=$(gp_canon); then GATE_ARGV_CANON="$_c"; export GATE_ARGV_CANON; fi ;;
+            esac ;;
+          empty) GATE_ARGV_CANON=""; export GATE_ARGV_CANON ;;
+        esac
+        GATE_ARGV="$*"; export GATE_ARGV
+        GATE_MANIFEST="$S59_MAN"; export GATE_MANIFEST
+        GATE_SURFACE="$S59_SURFACE"; export GATE_SURFACE
+        GATE_MARK=일반; export GATE_MARK
+        GATE_MARK_TRIGGER=""; export GATE_MARK_TRIGGER
+        GATE_GRANT="$S59_GRANT"; export GATE_GRANT
+        if [ "$S59_RULE" = preauth ]; then
+          GATE_PREAUTH_PROBE=1 /bin/sh "$(gate_rules_dir)/사전-인가-대조.sh" 2>/dev/null
+        else
+          /bin/sh "$(gate_rules_dir)/인가-자기확장-금지.sh" >/dev/null 2>&1
+          printf "rc=%s\n" "$?"
+        fi' _ "$@" )
+}
+
+# (1) R1 — `claude -p` 형태 셋에서 전송 있음과 없음이 바이트 동일하고, 빈 값은
+# 어느 형태에서도 목록 밖이다. 셋은 옛 awk 의 세 갈래를 하나씩 지난다: 맨 형태,
+# `-*=*` 단어 버리기, 그리고 공백을 품은 operand — 마지막 것은 두 경로가 서로
+# 다른 단어열을 보면서도 같은 답에 닿아야 하는 자리다.
+S59_MAN_CLAUDE="$S59_DIR/claude.md"
+s59_man "$S59_MAN_CLAUDE" 'claude -p'
+s59_i=0
+for s59_argv in \
+  'claude -p /cc-cmds:autopilot-router-shift RA1' \
+  'claude -p --permission-mode=bypassPermissions /cc-cmds:x' \
+  'claude -p /cc-cmds:x␣--flag'
+do
+  s59_i=$((s59_i + 1))
+  # `␣` 는 공백 한 칸의 자리표시자다 — 이 루프는 argv 를 공백으로 쪼개 넘기므로
+  # 공백을 품은 한 단어를 리터럴로는 적을 수 없다.
+  # shellcheck disable=SC2086
+  set -- $s59_argv
+  s59_words=()
+  for s59_w in "$@"; do s59_words+=("${s59_w//␣/ }"); done
+  check "59: claude 형태 $s59_i — 전송 있음과 없음의 판정이 같다" \
+    "$(s59 canon preauth "$S59_MAN_CLAUDE" "${s59_words[@]}")" \
+    "$(s59 off preauth "$S59_MAN_CLAUDE" "${s59_words[@]}")"
+  check "59: claude 형태 $s59_i — 전송 있음은 목록 안이다" \
+    "$(s59 canon preauth "$S59_MAN_CLAUDE" "${s59_words[@]}")" "P=1 형태=완전 Pd=0"
+  check "59: claude 형태 $s59_i — 빈 값은 어느 형태에서도 P=0 이다" \
+    "$(s59 empty preauth "$S59_MAN_CLAUDE" "${s59_words[@]}")" "P=0 형태=없음 Pd=0"
+  # 같은 세 실행을 자기확장 금지 룰에도 돌린다. 이 argv 에는 관리자 플래그도
+  # 인가 기록 경로도 없으므로 통과가 옳고, 빈 값만 거부다.
+  check "59: claude 형태 $s59_i — 자기확장 금지도 전송 있음과 없음이 같다" \
+    "$(s59 canon selfext "$S59_MAN_CLAUDE" "${s59_words[@]}")" \
+    "$(s59 off selfext "$S59_MAN_CLAUDE" "${s59_words[@]}")"
+  check "59: claude 형태 $s59_i — 자기확장 금지는 빈 값을 거부한다" \
+    "$(s59 empty selfext "$S59_MAN_CLAUDE" "${s59_words[@]}")" "rc=1"
+done
+
+# (2) #812 재현 2 — 두 줄 본문. 옛 경로는 둘째 줄을 둘째 명령으로 읽어 자기
+# 매니페스트의 `gh pr` 행을 놓쳤다. 이 한 줄이 그 이슈의 닫힘이다.
+S59_MAN_GH="$S59_DIR/gh.md"
+s59_man "$S59_MAN_GH" 'gh pr'
+s59_body='첫 줄
+둘째 줄'
+check "59: 두 줄 본문이 정규 전송에서 형태에 맞는다" \
+  "$(s59 canon preauth "$S59_MAN_GH" gh pr create --title x --body "$s59_body")" \
+  "P=1 형태=완전 Pd=0"
+check "59: 두 줄 본문은 옛 경로에서 목록 밖이었다 (이 고침의 전제)" \
+  "$(s59 off preauth "$S59_MAN_GH" gh pr create --title x --body "$s59_body")" \
+  "P=0 형태=없음 Pd=0"
+
+# (3) RT-B-preauth2 — argv0 정체성. basename 만 보던 옛 경로는 아무 디렉터리의
+# `gh` 나 자기 매니페스트의 `gh pr` 행으로 인가했다.
+S59_EVIL="$S59_DIR/evil"
+mkdir -p "$S59_EVIL"
+: > "$S59_EVIL/gh"
+chmod +x "$S59_EVIL/gh"
+check "59: RT-B-preauth2 — 남의 디렉터리의 gh 는 목록 밖이다" \
+  "$(s59 canon preauth "$S59_MAN_GH" "$S59_EVIL/gh" pr merge 1)" "P=0 형태=없음 Pd=0"
+check "59: RT-B-preauth2 — 옛 경로는 basename 으로 통과시켰다 (이 고침의 전제)" \
+  "$(s59 off preauth "$S59_MAN_GH" "$S59_EVIL/gh" pr merge 1)" "P=1 형태=완전 Pd=0"
+
+# (4) RT-B-preauth3 — 상대 경로로 부른 스크립트. 형태가 파일 이름만 적으면 옛
+# 경로에서는 어느 디렉터리의 동명 스크립트든 완전 형태로 맞았다.
+S59_MAN_SCRIPT="$S59_DIR/script.md"
+s59_man "$S59_MAN_SCRIPT" 'dasee-jenkins-trigger.sh'
+: > "$S59_DIR/dasee-jenkins-trigger.sh"
+chmod +x "$S59_DIR/dasee-jenkins-trigger.sh"
+check "59: RT-B-preauth3 — 상대 경로 스크립트는 목록 밖이다" \
+  "$(cd "$S59_DIR" && s59 canon preauth "$S59_MAN_SCRIPT" ./dasee-jenkins-trigger.sh)" \
+  "P=0 형태=없음 Pd=0"
+check "59: RT-B-preauth3 — 옛 경로는 완전 형태로 읽었다 (이 고침의 전제)" \
+  "$(cd "$S59_DIR" && s59 off preauth "$S59_MAN_SCRIPT" ./dasee-jenkins-trigger.sh)" \
+  "P=1 형태=완전 Pd=0"
+
+# (5) 결정 6 — 형태를 감싼 backtick 한 쌍은 벗긴다. 매니페스트가 형태를 코드
+# 문면으로 적는 것은 흔한 철자이고, 벗기지 않으면 첫 단어가 `` `gh `` 이 되어
+# 아무것과도 맞지 않았다. 두 경로 모두에서 같아야 한다.
+S59_MAN_TICK="$S59_DIR/tick.md"
+s59_man "$S59_MAN_TICK" '`gh pr`'
+check "59: 백틱으로 감싼 형태도 맞는다 (정규 전송)" \
+  "$(s59 canon preauth "$S59_MAN_TICK" gh pr view 1)" "P=1 형태=완전 Pd=0"
+check "59: 백틱으로 감싼 형태도 맞는다 (옛 경로)" \
+  "$(s59 off preauth "$S59_MAN_TICK" gh pr view 1)" "P=1 형태=완전 Pd=0"
+
+# (6) 자기확장 금지의 두 형태 — 정규형은 명령 가족을 알아보는 자리에서 옵션을
+# 빼므로 그것만 보면 관리자 플래그가 사라지고, 평탄 분리는 공백을 품은 경로를
+# 조각내 인가 기록과 대조할 수 없다. 룰이 두 목록을 모두 보는 이유가 이 네 줄이다.
+check "59: --admin 은 정규 전송에서도 거부된다" \
+  "$(s59 canon selfext "$S59_MAN_GH" gh pr merge --admin 1)" "rc=1"
+check "59: --admin 은 옛 경로에서도 거부된다" \
+  "$(s59 off selfext "$S59_MAN_GH" gh pr merge --admin 1)" "rc=1"
+S59_GRANT="$S59_DIR/a b/grant.md"
+check "59: 공백 든 인가 기록 경로에 쓰는 것이 정규 전송에서 거부된다" \
+  "$(s59 canon selfext "$S59_MAN_GH" tee "$S59_GRANT")" "rc=1"
+check "59: 공백 든 인가 기록 경로를 옛 경로는 놓쳤다 (이 고침의 전제)" \
+  "$(s59 off selfext "$S59_MAN_GH" tee "$S59_GRANT")" "rc=0"
+S59_SURFACE=읽기
+check "59: 인가 기록을 읽는 것은 정규 전송에서도 통과한다" \
+  "$(s59 canon selfext "$S59_MAN_GH" cat "$S59_GRANT")" "rc=0"
+S59_SURFACE=트리밖쓰기
+S59_GRANT=
+
+# (7) 게이트가 싣는 자리. 전송은 **행위마다** 설정되거나 지워져야 한다 — 남은
+# 값을 다음 행위가 물려받으면 자기 argv 가 아닌 것으로 인가되기 때문이다. 그
+# 규율이 한 군데에만 있는지를 본다: 등급된 argv 에만 싣는 분기가 `gate_verb_act`
+# 안에 있고, 그 뒤에 도는 도달 판정기는 다시 싣지 않는다.
+check "59: 게이트는 등급된 argv 에만 전송을 싣는다" \
+  "$(awk '/^gate_verb_act\(\) \{$/ { f = 1 } f && /argv_graded" = "1" \]; then$/ { g = NR } f && /gate_preauth_export "\$@"/ { print (g > 0 && NR == g + 1) ? "분기 안" : "분기 밖"; exit }' "$GATE")" \
+  "분기 안"
+check "59: 도달 판정기는 전송을 다시 싣지 않는다" \
+  "$(awk '/^gate_reach_disposition\(\) \{$/ { f = 1 } f && /^\}$/ { f = 0 } f && /gate_preauth_export/ { n++ } END { print n + 0 }' "$GATE")" "0"
+check "59: 전송을 만드는 자리는 하나다" \
+  "$(grep -c '^gate_preauth_export() {$' "$GATE")" "1"
+
+# (8) 끝에서 끝까지. 룰만 돌리는 위 단언들과 달리 이것은 게이트를 통과시킨다 —
+# 배선이 빠지면 룰이 아무리 옳아도 승인 대기가 그대로 발행되므로, 그 둘을 가르는
+# 것은 이 한 줄뿐이다. `plan` 은 답만 내고 행위를 수행하지 않는다.
+gate plan --manifest "$FX_MANIFEST" --kind x --target front --cutpoint PR \
+     -- gh pr create --title x --body "$s59_body"
+check "59: 두 줄 본문 행위가 게이트를 통과한다" "$rc" "0"
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry
