@@ -5041,11 +5041,23 @@ check "프로젝트 로컬 파일이 프로젝트 파일보다 앞선다" "$(ac_
 rm -f "$AC/proj/.claude/settings.local.json"
 printf '{"autoCompactEnabled": false, "autoCompactWindow": 300000}\n' > "$AC/off.json"
 check "가장 앞선 층이 끄면 (꺼짐) 이고 값을 남기지 않는다" "$(ac_probe '' "$AC/off.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+check "끄는 층 위에서는 argv 값이 있어도 (꺼짐) 이고 300000(argv) 로 남지 않는다" "$(ac_probe 300000 "$AC/off.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+# Per-key merge: `autoCompactEnabled` and `autoCompactWindow` are each taken
+# from the highest layer that defines them, so a layer that only sets a window
+# does not hide a disable below it, and a layer that only enables does not hide
+# a window below it.
+printf '{"autoCompactWindow": 150000}\n' > "$AC/win.json"
+printf '{"autoCompactEnabled": false}\n' > "$AC/proj/.claude/settings.local.json"
+check "런설정 창 150000 위에 프로젝트로컬 enabled:false 는 (꺼짐) 이다 (150000(런설정) 이 아니다)" "$(ac_probe '' "$AC/win.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+printf '{"autoCompactEnabled": true}\n' > "$AC/on.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 90000}\n' > "$AC/proj/.claude/settings.local.json"
+check "런설정 enabled:true 위에 프로젝트로컬 false+90000 은 90000(프로젝트) 다 ((꺼짐) 이 아니다)" "$(ac_probe '' "$AC/on.json" "$AC/proj" "$AC/cfg")" "90000(프로젝트)"
+rm -f "$AC/proj/.claude/settings.local.json"
 printf '{"autoCompactWindow": "300k"}\n' > "$AC/fmt.json"
 check "정수 아닌 창은 그 층을 건너뛰고 다음 층을 읽는다 ((미상) 이 아니다)" "$(ac_probe '' "$AC/fmt.json" "$AC/empty" "$AC/cfg")" "100000(레인)"
 printf '{not json\n' > "$AC/broken.json"
 check "깨진 JSON 은 (미상) 이고 - 로 접히지 않는다" "$(ac_probe '' "$AC/broken.json" "$AC/proj" "$AC/cfg")" "(미상)"
-check "argv 층은 설정 파일을 읽기 전에 답한다 (깨진 파일 위에서도 (argv))" "$(ac_probe 300000 "$AC/broken.json" "$AC/proj" "$AC/cfg")" "300000(argv)"
+check "argv 층은 설정 층을 다 읽은 뒤에야 답한다 (깨진 파일 위에서는 (미상) 이고 (argv) 가 아니다)" "$(ac_probe 300000 "$AC/broken.json" "$AC/proj" "$AC/cfg")" "(미상)"
 # The injection table and its kill switch.
 ac_kind() {
   cd "$WT" && CC_GATE_SOURCE_ONLY=1 env "$@" bash -c '. "'"$GATE"'"; gate_autocompact_argv_value "$AC_KIND"' _

@@ -8086,16 +8086,18 @@ gate_settings_file() {
 # the row, in one closed grammar:
 #
 #   `-`                        no layer sets a window
-#   `(꺼짐)`                   the winning layer disables auto-compaction
+#   `(꺼짐)`                   the highest layer that says anything about
+#                              `autoCompactEnabled` says false
 #   `(미상)`                   a layer's file exists but could not be read
 #   `<정수>(argv|런설정|프로젝트|레인)`  the window and the layer that won
 #
 # The layers, highest priority first: the argv the gate injects, the run's
 # per-kind settings file, the stage cwd's project settings
 # (`.claude/settings.local.json`, then `.claude/settings.json`), the lane's
-# `<config home>/settings.json`. THIS ORDER IS THE CLI'S DOCUMENTED ORDER AND
-# NOT YET A MEASURED ONE — which is why argv injection is switched on for one
-# stage kind only and carries a kill switch.
+# `<config home>/settings.json`. The two keys are resolved per key across the
+# layers, the way the CLI merges settings, not per layer. THIS ORDER IS THE
+# CLI'S DOCUMENTED ORDER AND NOT YET A MEASURED ONE — which is why argv
+# injection is switched on for one stage kind only and carries a kill switch.
 
 gate_autocompact_argv_value() {
   # gate_autocompact_argv_value <stage-kind> — the window the gate injects on
@@ -8151,16 +8153,22 @@ gate_autocompact_layer() {
 
 gate_autocompact_effective() {
   # gate_autocompact_effective <argv-value> <settings-file> <project-dir>
-  # The effective window in the grammar above. The argv layer exists only when
-  # <argv-value> is non-empty; a window that is not a plain integer is treated
-  # as "this layer sets none" (a format the CLI may accept is not a read
-  # failure), while an unreadable file is `(미상)` at once.
+  # The effective window in the grammar above. THE TWO KEYS ARE MERGED PER KEY,
+  # NOT PER LAYER: `autoCompactEnabled` is taken from the highest layer that
+  # defines it and `autoCompactWindow` from the highest layer that holds a
+  # plain integer, each on its own — a layer that only disables does not hide
+  # a window below it, and a layer that only sets a window does not hide a
+  # disable below it. Every layer is read before anything is decided, so an
+  # unreadable file anywhere is `(미상)` and the argv value never stands in
+  # for a reading that failed. Then: disabled wins over everything, argv
+  # included, since a flag on a disabled session is a value the CLI throws
+  # away and the row must not claim it; otherwise the argv layer exists only
+  # when <argv-value> is non-empty and beats the settings window; a window
+  # that is not a plain integer is "this layer sets none" (a format the CLI
+  # may accept is not a read failure).
   local argv_val="$1" settings="$2" proj="$3"
-  local f tok reading enabled window
-  if [ -n "$argv_val" ]; then
-    printf '%s(argv)' "$argv_val"
-    return 0
-  fi
+  local f tok reading layer_enabled layer_window
+  local enabled="" window="" window_tok=""
   for tok in 런설정 프로젝트로컬 프로젝트 레인; do
     case "$tok" in
       런설정) f="$settings" ;;
@@ -8171,18 +8179,28 @@ gate_autocompact_effective() {
     [ -n "$f" ] || continue
     reading=$(gate_autocompact_layer "$f") || { printf '(미상)'; return 0; }
     [ -n "$reading" ] || continue
-    enabled="${reading%%	*}"
-    window="${reading#*	}"
-    if [ "$enabled" = "false" ]; then
-      printf '(꺼짐)'
-      return 0
+    layer_enabled="${reading%%	*}"
+    layer_window="${reading#*	}"
+    [ -n "$enabled" ] || enabled="$layer_enabled"
+    if [ -z "$window_tok" ]; then
+      case "$layer_window" in
+        ''|*[!0-9]*) : ;;
+        *) window="$layer_window"; window_tok="$tok" ;;
+      esac
     fi
-    case "$window" in
-      ''|*[!0-9]*) continue ;;
-    esac
-    printf '%s(%s)' "$window" "$tok"
-    return 0
   done
+  if [ "$enabled" = "false" ]; then
+    printf '(꺼짐)'
+    return 0
+  fi
+  if [ -n "$argv_val" ]; then
+    printf '%s(argv)' "$argv_val"
+    return 0
+  fi
+  if [ -n "$window_tok" ]; then
+    printf '%s(%s)' "$window" "$window_tok"
+    return 0
+  fi
   printf '%s' '-'
 }
 

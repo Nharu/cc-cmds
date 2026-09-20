@@ -3166,11 +3166,17 @@ stage_window_layer() {
 
 stage_window_read() {
   # stage_window_read <settings-file> <project-dir> <config-dir>
-  # `-` | `(꺼짐)` | `(미상)` | `<정수>(런설정|프로젝트|레인)`. A window that is
-  # not a plain integer means "this layer sets none"; an unreadable file is
-  # `(미상)` at once.
+  # `-` | `(꺼짐)` | `(미상)` | `<정수>(런설정|프로젝트|레인)`. The same per-key
+  # merge as the gate's `gate_autocompact_effective`, minus the injected-flag
+  # layer the driver does not have:
+  # `autoCompactEnabled` comes from the highest layer that defines it and the
+  # window from the highest layer holding a plain integer, each on its own, so
+  # a layer that only disables does not hide a window below it and vice
+  # versa. All layers are read first; an unreadable file anywhere is `(미상)`.
+  # A window that is not a plain integer means "this layer sets none".
   local settings="$1" proj="$2" cfg="${3%/}"
-  local f tok reading enabled window
+  local f tok reading layer_enabled layer_window
+  local enabled="" window="" window_tok=""
   for tok in 런설정 프로젝트로컬 프로젝트 레인; do
     case "$tok" in
       런설정) f="$settings" ;;
@@ -3181,18 +3187,24 @@ stage_window_read() {
     [ -n "$f" ] || continue
     reading=$(stage_window_layer "$f") || { printf '(미상)'; return 0; }
     [ -n "$reading" ] || continue
-    enabled="${reading%%	*}"
-    window="${reading#*	}"
-    if [ "$enabled" = "false" ]; then
-      printf '(꺼짐)'
-      return 0
+    layer_enabled="${reading%%	*}"
+    layer_window="${reading#*	}"
+    [ -n "$enabled" ] || enabled="$layer_enabled"
+    if [ -z "$window_tok" ]; then
+      case "$layer_window" in
+        ''|*[!0-9]*) : ;;
+        *) window="$layer_window"; window_tok="$tok" ;;
+      esac
     fi
-    case "$window" in
-      ''|*[!0-9]*) continue ;;
-    esac
-    printf '%s(%s)' "$window" "$tok"
-    return 0
   done
+  if [ "$enabled" = "false" ]; then
+    printf '(꺼짐)'
+    return 0
+  fi
+  if [ -n "$window_tok" ]; then
+    printf '%s(%s)' "$window" "$window_tok"
+    return 0
+  fi
   printf '%s' '-'
 }
 
