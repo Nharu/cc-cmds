@@ -5242,7 +5242,7 @@ RR_G_CWD="$RR/cc-cmds"
 rr_guard 워크트리쓰기 bash -c "cp /tmp/e run/victim/settings/x.json"
 check "배시 가드: 런 루트 밖에서 채점해도 포장 안의 상대 단어가 형제 런으로 해소되면 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'묻혀'*) ok "배시 가드: 포장 안 상대 단어의 거부가 단어 판정 팔의 것이다" ;;
+  *'buried inside an argument'*) ok "배시 가드: 포장 안 상대 단어의 거부가 단어 판정 팔의 것이다" ;;
   *) bad "배시 가드: 포장 안 상대 단어의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
 esac
 unset RR_G_CWD
@@ -5278,7 +5278,7 @@ check "설치본 가드: 플러그인 루트의 조상도 rc 3" "$rr_pguard_rc" 
 rr_guard 워크트리쓰기 cp -R x "$RR/cc-cmds"
 check "배시 가드: 런 루트의 부모를 목적지로 한 쓰기는 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'조상'*) ok "배시 가드: 런 루트 부모의 거부가 조상 팔의 것이다" ;;
+  *'ancestor directory of the run root'*) ok "배시 가드: 런 루트 부모의 거부가 조상 팔의 것이다" ;;
   *) bad "배시 가드: 런 루트 부모의 거부 사유" "조상 팔이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
 esac
 rr_pguard 워크트리쓰기 cp -R x "$RRP_WT"
@@ -5301,7 +5301,7 @@ check "설치본 가드: 포장 안의 조상도 rc 3" "$rr_pguard_rc" "3"
 rr_guard 워크트리쓰기 bash -c "cp -R /tmp/e $RR/cc-cmds"
 check "배시 가드: 포장 안의 런 루트 조상도 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'조상'*) ok "배시 가드: 포장 안 조상의 거부가 조상 검사의 것이다" ;;
+  *'ancestor directory of the run root'*) ok "배시 가드: 포장 안 조상의 거부가 조상 검사의 것이다" ;;
   *) bad "배시 가드: 포장 안 조상의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
 esac
 # `/` 하나로 해소되는 단어. 이것을 억제하면 루트 자신을 목적지로 한 포장이 열린다.
@@ -5341,7 +5341,7 @@ RR_G_CWD="$MYRUN"
 rr_guard 워크트리쓰기 cp -R x ..
 check "배시 가드: 구분자 없는 맨 상위 참조도 rc 3" "$rr_guard_rc" "3"
 case "$rr_guard_msg" in
-  *'조상'*) ok "배시 가드: 맨 상위 참조의 거부가 조상 검사의 것이다" ;;
+  *'ancestor directory of the run root'*) ok "배시 가드: 맨 상위 참조의 거부가 조상 검사의 것이다" ;;
   *) bad "배시 가드: 맨 상위 참조의 거부 사유" "조상이 아닌 다른 팔이 답했다: $rr_guard_msg" ;;
 esac
 # 음성 대조군 — 맨 이름을 해소하게 돼도 자기 런의 계획 파일 예외는 그대로다.
@@ -5382,6 +5382,184 @@ if [ -L "$WORK/Lf" ] && [ -L "$WORK/Lr" ] && [ -L "$WORK/lk/Lrel" ] && [ -L "$WO
 else
   printf 'NOTE: 말단 파일 링크 픽스처를 만들지 못해 건너뛴다\n'
 fi
+
+# --- 사후 리뷰 수리 1. 구분자가 없는 포장 토큰 ---------------------------------
+# 맨 이름 검사를 복합 토큰에 물으면 `[ -e "<등급 기준>/rm -rf .." ]` 를 재게 되어
+# 항상 거짓이다. 그래서 `/` 를 하나도 갖지 않은 프로그램 문자열은 단어 팔에 닿기
+# 전에 통째로 건너뛰어졌고, 같은 프로그램에 `/` 가 하나만 있으면 거부됐다. 위쪽의
+# 「포장 안의 맨 상위 참조」 행이 초록인 것은 피연산자 `/tmp/e` 가 토큰에 `/` 를
+# 넣어 주기 때문이라 이 부류를 재지 못한다 — 그 피연산자 없는 행을 나란히 둔다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 bash -c "rm -rf .."
+check "설치본 가드: 구분자 없는 포장 토큰의 상위 참조도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'ancestor of it is buried inside an interpreter program string'*)
+    ok "설치본 가드: 구분자 없는 포장의 거부가 단어 팔의 조상 검사의 것이다" ;;
+  *) bad "설치본 가드: 구분자 없는 포장의 거부 사유" "단어 팔이 아닌 다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 bash -c "cp -R x .."
+check "설치본 가드: 구분자 없는 포장의 복사 목적지도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 경로를 가리키지 않는 구분자 없는 포장은 그대로 지난다. 없으면 위
+# 둘의 초록이 「구분자 없는 포장을 통째로 거부한다」와 구별되지 않는다.
+rr_pguard 워크트리쓰기 bash -c "echo hi"
+check "설치본 가드: 음성 대조군 — 경로 없는 구분자 없는 포장은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 bash -c "echo hi"
+check "배시 가드: 음성 대조군 — 경로 없는 구분자 없는 포장은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+# 런 루트의 **부모**에서 채점한다. 런 루트 안에서 채점하면 토큰의 어휘 절대화가
+# 등급 기준 디렉터리를 앞에 달아 그 문자열 자체가 런 루트를 담게 되고, 묻힌 경로
+# 팔이 단어 팔보다 먼저 답해 이 행이 공허해진다. 여기서는 토큰도 그 절대화도 런
+# 루트 문면을 담지 않으므로, rc 3 을 낼 수 있는 팔은 단어 팔뿐이다.
+RR_G_CWD="$RR/cc-cmds"
+rr_guard 워크트리쓰기 bash -c "rm -rf run"
+check "배시 가드: 구분자 없는 포장 안의 맨 이름이 런 루트로 해소되면 rc 3" "$rr_guard_rc" "3"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 2. 대소문자를 구별하지 않는 파일 시스템 ---------------------
+# 두 가드의 비교는 전부 바이트 검사였다. APFS 는 기본이 대소문자 비구별이고
+# `pwd -P` 는 호출자가 적은 대소문자를 그대로 보존하므로, 철자만 다른 같은 파일이
+# 어느 팔에도 맞지 않고 실제 설치본·형제 런 파일에 썼다. 파일 시스템이 대소문자를
+# 구별하면 이 부류가 존재하지 않으므로 통째로 건너뛴다 — 그 조건이 없으면 Linux
+# 레그가 붉어진다.
+mkdir -p "$WORK/CIPROBE"
+if [ -d "$WORK/ciprobe" ]; then
+  rr_pguard 워크트리쓰기 cp x "$RRP_INST/Orchestrator/gate.sh"
+  check "설치본 가드: 대소문자만 다른 설치본 철자도 rc 3" "$rr_pguard_rc" "3"
+  # 루트 접두 자신을 변형한다. 마지막 성분만 바꾸면 기존 바이트 검사가 접두로
+  # 이미 잡아 이 행이 공허해진다.
+  rr_guard 워크트리쓰기 cp x "$WORK/Runroot/cc-cmds/run/victim/settings/x.json"
+  check "배시 가드: 루트 접두를 변형한 형제 런 철자도 rc 3" "$rr_guard_rc" "3"
+  case "$rr_guard_msg" in
+    *'this is another run directory'*) ok "배시 가드: 대소문자 변형 거부가 형제 런 팔의 것이다" ;;
+    *) bad "배시 가드: 대소문자 변형 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+  esac
+  # 음성 대조군 둘. 동일성 비교가 자기 런의 예외와 워크트리를 함께 삼키면 이
+  # 수리는 파이프라인 자신을 멈춘다.
+  rr_guard 워크트리쓰기 cp x "$WORK/Runroot/cc-cmds/run/mine/halt/x.md"
+  check "배시 가드: 음성 대조군 — 대소문자 변형이라도 자기 런의 중단 기록은 rc 0" "$rr_guard_rc" "0"
+  rr_pguard 워크트리쓰기 cp x "$RRP_WT/Orchestrator/gate.sh"
+  check "설치본 가드: 음성 대조군 — 세그먼트 워크트리의 대소문자 변형은 rc 0" "$rr_pguard_rc" "0"
+else
+  printf 'NOTE: 대소문자를 구별하는 파일 시스템이라 대소문자 변형 행을 건너뛴다\n'
+fi
+
+# --- 사후 리뷰 수리 3. 링크 홉 상한은 닫힌 쪽으로 실패한다 ----------------------
+# 물리화는 여덟 홉에서 멈추고 자기가 멈춘 링크를 그대로 돌려줬다. 그래서 아홉 걸음
+# 이상의 사슬은 해소되지 않은 링크 **이름** 으로 돌아와 어느 팔에도 걸리지 않았고,
+# 커널은 그것을 끝까지 따라가(맥 32홉·리눅스 40홉) 쓰기를 수행했다. 이제 넘침은
+# 철자로 지워지지 않고 보고되며 두 가드가 거부한다 — 훅의 Write/Edit 절반이 자기
+# 걷기가 넘칠 때 이미 내는 답과 같다.
+mkdir -p "$WORK/hopc"
+: > "$RRP_INST/orchestrator/gate.sh"
+: > "$WORK/plain.txt"
+hop_ok=1
+ln -sfn "$RRP_INST/orchestrator/gate.sh" "$WORK/hopc/g0" 2>/dev/null || hop_ok=0
+ln -sfn "$WORK/plain.txt" "$WORK/hopc/p0" 2>/dev/null || hop_ok=0
+hop_i=1
+while [ "$hop_i" -le 12 ]; do
+  ln -sfn "g$((hop_i - 1))" "$WORK/hopc/g$hop_i" 2>/dev/null || hop_ok=0
+  ln -sfn "p$((hop_i - 1))" "$WORK/hopc/p$hop_i" 2>/dev/null || hop_ok=0
+  hop_i=$((hop_i + 1))
+done
+if [ "$hop_ok" = 1 ] && [ -L "$WORK/hopc/g12" ] && [ -L "$WORK/hopc/p12" ]; then
+  # 상한 **안쪽** 대조군이 먼저다. 이것이 없으면 수리가 링크를 전부 막아 버려도
+  # 아래 넘침 행이 초록이라, 이 절 전체가 「모든 링크 거부」로 만족된다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/g2"
+  check "설치본 가드: 상한 안쪽 사슬은 말단 팔이 해소해 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'orchestrator or hook script of the installed plugin'*)
+      ok "설치본 가드: 상한 안쪽 사슬의 거부가 해소된 말단 팔의 것이다" ;;
+    *) bad "설치본 가드: 상한 안쪽 사슬의 거부 사유" "해소되지 않은 채 거부됐다 — 수리가 링크를 통째로 막았다: $rr_pguard_msg" ;;
+  esac
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/p2"
+  check "설치본 가드: 음성 대조군 — 상한 안쪽에서 평범한 파일을 가리키는 사슬은 rc 0" "$rr_pguard_rc" "0"
+  # 그리고 넘침은 거부다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/g12"
+  check "설치본 가드: 상한을 넘는 사슬은 rc 3" "$rr_pguard_rc" "3"
+  case "$rr_pguard_msg" in
+    *'could not resolve'*) ok "설치본 가드: 넘침 거부가 판정 불가 문면으로 나온다" ;;
+    *) bad "설치본 가드: 넘침 거부 사유" "다른 팔이 답했다 — 상한이 여전히 열린 쪽으로 실패한다: $rr_pguard_msg" ;;
+  esac
+  # 넘침은 가리키는 곳과 무관하게 거부다 — 판정 불가는 허용이 아니고, 어디를
+  # 가리키는지 알 수 없다는 것이 바로 거부의 사유다.
+  rr_pguard 워크트리쓰기 cp x "$WORK/hopc/p12"
+  check "설치본 가드: 평범한 파일을 가리키더라도 넘치면 rc 3" "$rr_pguard_rc" "3"
+  # 배시 가드도 같은 답을 내는가.
+  rr_guard 워크트리쓰기 cp x "$WORK/hopc/g12"
+  check "배시 가드: 상한을 넘는 사슬은 rc 3" "$rr_guard_rc" "3"
+  rr_guard 워크트리쓰기 cp x "$WORK/hopc/p2"
+  check "배시 가드: 음성 대조군 — 상한 안쪽에서 평범한 파일을 가리키는 사슬은 rc 0" "$rr_guard_rc" "0"
+else
+  printf 'NOTE: 홉 사슬 픽스처를 만들지 못해 건너뛴다\n'
+fi
+
+# --- 사후 리뷰 수리 4. 프로그램 문자열 안의 나머지 물결 철자 --------------------
+# 전개되는 것은 `~` 와 `~/` 뿐이었다. 다섯 중 둘이다 — `~<사용자>/…` 와 `~+/…` 는
+# 적힌 그대로 남아 `/` 로 시작하지 않으므로 등급 기준 디렉터리가 앞에 붙었고, 그
+# 결과 형제 런의 설정 파일과 설치본 스크립트를 가리키는 문면이 두 가드의 모든 팔을
+# 지났다. `~-` 와 디렉터리 스택 물결은 이 프로세스가 갖지 않은 디렉터리를 가리키므로
+# 해소 불가로 보고되고 호출자가 거부한다 — 추측하지 않는다.
+RR_G_CWD="$WORK/segwt/plugins"
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~+/../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: 포장 안의 ~+ 는 등급 기준 디렉터리로 전개돼 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 철자로 보호 루트 밖을 가리키면 지난다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~+/../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — ~+ 가 보호 루트 밖으로 해소되면 rc 0" "$rr_pguard_rc" "0"
+unset RR_G_CWD
+# 해소할 수 없는 물결 철자는 거부다. 계정이 없는 이름과 이전 디렉터리 물결 둘 다
+# 「어디에 떨어지는지 미정」이고, 쓰기 등급에서 미정은 허용이 아니다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~no-such-account-9x7/x"
+check "설치본 가드: 계정 없는 ~<이름> 은 해소 불가로 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'home-directory spelling this gate cannot resolve'*)
+    ok "설치본 가드: 물결 거부가 해소 불가 문면으로 나온다" ;;
+  *) bad "설치본 가드: 물결 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~-/x"
+check "설치본 가드: 이전 디렉터리 물결도 해소 불가로 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 bash -c "cp /tmp/e ~-/x"
+check "배시 가드: 이전 디렉터리 물결도 해소 불가로 rc 3" "$rr_guard_rc" "3"
+# 기존 `~` 전개에도 핀을 둔다 — 이 절 이전에는 `~` 를 쓰는 행이 스위트에 하나도
+# 없었으므로, 수리가 기존 두 철자를 깨뜨려도 아무 행도 붉어지지 않았다.
+rr_pguard 워크트리쓰기 bash -c "cp /tmp/e ~/some-ordinary-name"
+check "설치본 가드: 음성 대조군 — ~/ 는 홈으로 전개되고 보호 루트 밖이면 rc 0" "$rr_pguard_rc" "0"
+# `~<사용자>/…` 가 보호 루트에 닿는 것은 픽스처가 홈 아래 있을 때만 잴 수 있다.
+# 임시 디렉터리는 보통 홈 밖이므로 그때는 건너뛴다 — 건너뛰는 사실을 적는다.
+case "$RR" in
+  "$HOME"/*)
+    rr_guard 워크트리쓰기 bash -c "cp /tmp/e ~$USER${RR#"$HOME"}/cc-cmds/run/victim/settings/x.json"
+    check "배시 가드: 포장 안의 ~<사용자> 도 전개돼 rc 3" "$rr_guard_rc" "3" ;;
+  *) printf 'NOTE: 픽스처가 홈 아래가 아니라 ~<사용자> 행을 건너뛴다\n' ;;
+esac
+
+# --- 사후 리뷰 수리 5. argv 수준 chdir 옵션 뒤의 상대 경로 ----------------------
+# `-C <dir>` 는 허용된 전역 옵션이라 등급표가 두 토큰으로 건너뛰고 `diff --output=`
+# 는 트리밖쓰기로 등급된다. 선언도 등급도 정직한데, 가드는 상대 경로를 등급 기준
+# 디렉터리에서 해소하고 git 은 `-C` 디렉터리에서 해소해 **기준이 어긋났다** — 그
+# 상대 철자가 실제로 설치본 gate.sh 를 0바이트로 잘랐다. 선언된 잔여인 「포장 안의
+# `cd`」 와는 다른 모양이다: 포장이 필요 없고 형제 디렉터리와 상대 경로 두 토큰이면
+# 된다.
+#
+# 두 기준의 **깊이를 다르게** 둔다. 같은 깊이면 한 기준에서 보호 루트에 닿는 상대
+# 철자가 다른 기준에서도 닿아, 수리 없이도 초록이 된다.
+mkdir -p "$WORK/other/deep" "$WORK/elsewhere"
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: -C 디렉터리 기준으로 해소되는 상대 옵션값도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 모양인데 보호 루트 밖을 가리키면 지난다. 없으면 위 행의 초록이
+# 「-C 가 있으면 통째로 거부한다」와 구별되지 않는다.
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — -C 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: -C 디렉터리 기준으로 해소되는 상대 옵션값도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — -C 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+# 그리고 `-C` 가 없으면 둘째 기준이 아예 서지 않는다 — 같은 상대 철자가 등급 기준
+# 디렉터리에서만 해소돼 지난다. 이 행이 없으면 둘째 기준이 `-C` 와 무관하게 늘
+# 서는 변경도 위 둘을 초록으로 만족시킨다.
+rr_guard 워크트리쓰기 git diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 음성 대조군 — -C 가 없으면 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
 
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
 # 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
