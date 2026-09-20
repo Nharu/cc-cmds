@@ -659,7 +659,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `run` | `run-id` · `시작` · `설계 문서` · `전체 sha256` · `구속면 다이제스트` · `강제 코드` · `베이스 청결` · `판본` · `판본 트리` · `판본 다이제스트` · `RUN_DIR` · `보고서` |
 | `generation` | `세대` · `전체 sha256` · `구속면 다이제스트` · `세그먼트 계획` · `segmentation`(`ok` \| `low-confidence`) |
 | `segment` | `id` · `선행` · `선언 파일 집합` · `plan-binding-digest` · `상태` · `브랜치` · `PR` · `커밋` · `사전 HEAD` · `베이스 sha` · `워크트리` · `리뷰 정책`(optional) |
-| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드`(`-` on a settlement row) · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모`(`-` on a settlement row) · `종단 부류` · `관측`(settlement row only) |
+| `stage-result` | `세그먼트` · `스테이지`(S-id) · `종류`(stage kind) · `종료 코드`(`-` on a settlement row) · `plan_sha256`(`implement` only) · `실행 버전` · `세션 id` · `부모`(`-` on a settlement row) · `압축 창`(effective compaction window and its source: `-` \| `(꺼짐)` \| `(미상)` \| `<정수>(argv\|런설정\|프로젝트\|레인)`) · `레인`(config home, tilde form) · `기록자`(`게이트` \| `드라이버`) · `종단 부류` · `관측`(settlement row only) |
 | `cycle` | `세그먼트` · `사이클` · `리포트 경로` · `리뷰 HEAD` · `P0` · `P1` · `P2` · `P3` · `lane 결정` · `모드`(optional: `전체` \| `델타`; absent reads as `전체`) · `기준 사이클`(optional; required iff `모드=델타`, refused otherwise) |
 | `problem` | `세그먼트` · `동일성`(`정규화 경로` + `카테고리 태그`) · `현재 단` · `단 이력` · `생성 등급`(축 2) · `payload`(근본 원인 문구) |
 | `자율 승인` | `kind` · `판단 부류` · `결정` · `대상` · `세그먼트` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `축2` · `기각된 대안` · `근거` · `등급` · `기준` · `되돌리는 법` · `자격`(`분리` \| `주변`) · `행위자`(`리드` \| `교대` \| `스테이지`) · `해소 승인`(승인 id \| `-`) · `출처`(`스테이지 방출` when absorbed from a stage's terminal line) · `finding-id`(required iff `kind=severity`) · **exec only**: `등급 출처` · `선언` · `표지` · `파괴 출처` · `도달` · `유도 도달` · `식별자 대조` · `행위 다이제스트` · `argv`(excerpt, remainder-sized) |
@@ -673,7 +673,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `handoff` | `교대` · `대상` · `사유` · `버린 선택지` · `막힌 지점` · `다음 후보` · `기록 시각` |
 | `의무 종결` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`종결`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 | `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
-| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` |
+| `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` · `세션 id` · `레인` · `압축 창` |
 | `경계 억제` | `경계` · `사유` · `크레딧 잔량` · `기록 시각` |
 
 **The `run` row's three version fields say what code JUDGED the run, and the two beside them say what code was being judged.** `판본` is the pinned commit (`<40hex>` \| `(미상)` \| `(고정 안 함)`), `판본 트리` the pinned plugin subtree's git tree (`<40hex>` \| `(미커밋)` \| `(미상)` \| `(고정 안 함)`), and `판본 다이제스트` the content digest of the copy itself (`<sha256>` \| `(고정 안 함)`). `(고정 안 함)` is not a failure: a run opened before pinning existed, or one opened under the test seam, is deliberately left unpinned, and a reader has to be able to tell that apart from a pin whose value could not be determined. `(미커밋)` means the plugin subtree was dirty when the copy was taken, so no tree object names those bytes.
@@ -689,6 +689,8 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 **Every declared series has a writer, except one — and that exception is the rule holding rather than an omission.** Five of the twelve were written by nothing, and the cost of that was not untidy bookkeeping: each series that nothing writes turns the check reading it into a constant. `cost` is the only input the cost boundary has, so it read an empty set, took its fail-open guard — a guard whose whole shape assumes a missing value is temporary — and could never fire however low the declared ceiling was. `problem` is what every open obligation is derived from, so obligations were always zero and the termination condition asking whether they are empty held vacuously; the narrow excuse rule beside it could not be reached at all. `stage-result` is where the terminal classes are counted and where the implementation-review separation rule reads ancestry, so that rule returned early and passed on every run it exists to catch.
 
 They are written from three different places, because the three have different knowledge. `run` is written once at run open, by the gate. `stage-result` and `cost` are written by the gate's detached stage supervisor when a stage terminates, from the stage's **own** terminal result line — its cost, its subtype, its session id — so nothing here depends on a stage reporting anything about itself. `problem` is an `act` kind like `segment` and `cycle`: recognising that a finding is the same finding as last cycle's is a judgment, and the router is where judgment lives.
+
+**`stage-result` has two writers, and the row says which.** The gate's supervisor writes the rows of stages it dispatched (and its prelude the settlement rows), the driver writes the rows of stages it spawned itself and the stage-less apply rows; `기록자=게이트` or `기록자=드라이버` names the one that wrote this row. Both carry `압축 창` — the compaction window the launch read, with the layer it came from — and `레인`, the CLI config home the stage ran under, so a reader can tell a stage compacted under the lane's default from one the gate handed a window on its argv. The layers are read in one fixed order on both paths: the window the gate injects on the argv (`argv`; the driver injects none, so a driver row never says it), the run's per-kind settings file (`런설정`), the stage cwd's `.claude/settings.local.json` then `.claude/settings.json` (`프로젝트`), the lane's `settings.json` (`레인`). `(꺼짐)` is a winning layer that disables compaction, `(미상)` a layer whose file exists but could not be read, `-` no layer at all. The launch leaves the two values in `<seg>.window` beside the pid record so a settlement that runs after the supervisor is gone can still put them on the row — **and that file is never a precondition of anything**: a settlement or a collection that finds it absent writes `압축 창=(미상)` and proceeds, and its presence is not a liveness input. A row with none of the three keys was written before they existed; that absence is a third state and is not read as `(미상)`. The gate injects a window for one stage kind (`review`) today, and `CC_ORCH_STAGE_AUTOCOMPACT=off` switches that injection off for every kind without touching the settings layers. `교대 기동` carries the same `레인` and `압축 창` for the successor routing session, with its `세션 id` to join on; a shift is not a stage kind, so it never gets an argv window.
 
 **`generation` is deliberately still unwritten.** Nothing reads it. A writer for it would put a value in the ledger that is recorded and never compared, which is the exact defect class this contract exists to remove — so the writer arrives with the reader or not at all.
 
@@ -788,6 +790,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `blocked.원인` | `막힘` \| `무효화` \| `불명` \| `판정 불가` |
 | `종료 절.상태` | `충족` \| `불가능` \| `보류` |
 | `stage-result.종단 부류` | `정상 완료` \| `의도된 park` \| `공허한 성공` \| `크래시` \| `적용 불명` \| `산출물 없는 정지` \| `외부 종료` |
+| `stage-result.기록자` | `게이트` \| `드라이버` |
+| `압축 창.출처` | `argv` \| `런설정` \| `프로젝트` \| `레인` \| `꺼짐` \| `미상` (the parenthesised token of `압축 창` on `stage-result` and `교대 기동`; `-` carries no source) |
 | `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `park` |
 | `generation.segmentation` | `ok` \| `low-confidence` |
 
@@ -1037,6 +1041,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `<stage>.pgid` | driver (`run.sh`) | its process-group id — the **fallback** identity handle |
 | `<stage>.start` | driver (`run.sh`) | its start-time fingerprint; `(pid, start time)` is the identity and the pid alone is not |
 | `<stage>.rc` | driver (`run.sh`) | the collected exit status |
+| `<stage>.window` | driver (`run.sh`) · gate (`gate.sh`) | two lines — the effective compaction window in the `압축 창` grammar and the lane in tilde form — written at launch and copied onto the `stage-result` row; **a record, never a liveness input or a settlement precondition** (absent → `(미상)`) |
 | `<stage>.transcript` | driver (`run.sh`) | cached path of the stage's session transcript |
 | `log/driver.log` · `log/<stage>.json` | driver (`run.sh`) | driver log, and each stage's result envelope |
 | `gh.err` | driver (`run.sh`) | captured stderr of the last `gh` call |

@@ -3131,6 +3131,91 @@ transcript_path() {
   printf '%s' "$p"
 }
 
+# --- compaction window: what a driver-spawned stage runs under ---------------
+#
+# The driver does not source the gate, so the gate's reading of the same three
+# settings layers is spelled again here, same grammar and same order: the run's
+# per-kind settings file, the stage cwd's `.claude/settings.local.json` then
+# `.claude/settings.json`, the lane's `settings.json`. There is no argv layer on
+# this path — the driver injects no window — so a driver row can never say
+# `(argv)`. The value is written to `<stage>.window` (two lines: the window,
+# the lane in tilde form) beside the pid record, and read back onto the
+# `stage-result` row; a row for a stage that was never spawned reads `(미상)`.
+lane_label_of() {
+  # lane_label_of <config-dir> — `$HOME` prefix as `~`, anything else as is.
+  local d="${1%/}"
+  case "$d" in
+    "${HOME:-/nonexistent}") printf '~' ;;
+    "${HOME:-/nonexistent}"/*) printf '~%s' "${d#"$HOME"}" ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
+stage_window_layer() {
+  # stage_window_layer <settings-file> — `<enabled>\t<window>` for one layer,
+  # nothing for a missing file, return 1 when the file exists and cannot be
+  # read (no jq, or the JSON refuses to parse). `has(…)` rather than `//`: a
+  # `false` on the right of `//` reads as absent, and an explicit "disabled"
+  # is the value this layer must not lose.
+  local f="$1" out
+  [ -f "$f" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 1
+  out=$(jq -r '[(if has("autoCompactEnabled") then .autoCompactEnabled | tostring else "" end), (if has("autoCompactWindow") then .autoCompactWindow | tostring else "" end)] | join("\t")' "$f" 2>/dev/null) || return 1
+  printf '%s\n' "$out"
+}
+
+stage_window_read() {
+  # stage_window_read <settings-file> <project-dir> <config-dir>
+  # `-` | `(꺼짐)` | `(미상)` | `<정수>(런설정|프로젝트|레인)`. A window that is
+  # not a plain integer means "this layer sets none"; an unreadable file is
+  # `(미상)` at once.
+  local settings="$1" proj="$2" cfg="${3%/}"
+  local f tok reading enabled window
+  for tok in 런설정 프로젝트로컬 프로젝트 레인; do
+    case "$tok" in
+      런설정) f="$settings" ;;
+      프로젝트로컬) f="$proj/.claude/settings.local.json"; tok=프로젝트 ;;
+      프로젝트) f="$proj/.claude/settings.json" ;;
+      레인) f="$cfg/settings.json" ;;
+    esac
+    [ -n "$f" ] || continue
+    reading=$(stage_window_layer "$f") || { printf '(미상)'; return 0; }
+    [ -n "$reading" ] || continue
+    enabled="${reading%%	*}"
+    window="${reading#*	}"
+    if [ "$enabled" = "false" ]; then
+      printf '(꺼짐)'
+      return 0
+    fi
+    case "$window" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    printf '%s(%s)' "$window" "$tok"
+    return 0
+  done
+  printf '%s' '-'
+}
+
+stage_window_of() {
+  # stage_window_of <stage-id> — line 1 of `<stage>.window`, or `(미상)`.
+  local f="$RUN_DIR/$1.window" v=""
+  [ -f "$f" ] && v=$(sed -n '1p' "$f" 2>/dev/null || true)
+  printf '%s' "${v:-(미상)}"
+}
+
+stage_lane_of() {
+  # stage_lane_of <stage-id> — line 2 of `<stage>.window`, or the lane this
+  # driver resolves now. `|| true` on the resolver: a refusal here must not
+  # stop a row from being written, so the lane falls to the default label.
+  local f="$RUN_DIR/$1.window" v="" cfg
+  [ -f "$f" ] && v=$(sed -n '2p' "$f" 2>/dev/null || true)
+  if [ -z "$v" ]; then
+    cfg=$(resolve_account 2>/dev/null || true)
+    v=$(lane_label_of "${cfg:-$HOME/.claude}")
+  fi
+  printf '%s' "$v"
+}
+
 stage_spawn() {
   # stage_spawn <stage-id> <cwd> <prompt> [extra-cli-args...] — returns at once.
   # Spawn and collect are separate so the driver can hold a stage open while it
@@ -3152,7 +3237,10 @@ stage_spawn() {
   cfg=$(resolve_account) || die "계정 리졸버가 정지했습니다 — $stage 를 띄우지 않습니다"
 
   [ -n "$CLI_BIN" ] || { warn "CLI 바이너리를 찾지 못했습니다"; return 127; }
-  rm -f "$RUN_DIR/$stage.rc"
+  # `.window` goes with `.rc`, not with `.pid`: the `stage-result` row is written
+  # after `stage_collect` has removed the pid record, so the window record must
+  # outlive collection and is replaced here, at the next spawn of the same stage.
+  rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -3260,6 +3348,11 @@ stage_spawn() {
   else
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
   fi
+  # The window this launch will run under, read from the same settings file
+  # and cwd the wrapper is about to be handed, and recorded before the launch so
+  # the row can carry it whatever the stage does next.
+  printf '%s\n%s\n' "$(stage_window_read "$stage_settings" "$cwd" "$cfg")" "$(lane_label_of "$cfg")" \
+    > "$RUN_DIR/$stage.window"
   ( cd "$cwd" && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -4188,8 +4281,11 @@ apply_stage() {
   # A handover, not a degradation. The pipeline finished at merge and the
   # command travels to the morning report as an opaque string — reporting a
   # command is not performing it, so no new authorization vocabulary is needed.
+  # S9 spawns no CLI session, so no `.window` record exists for it and the
+  # three window fields read `(미상)` — a stage-less row, spelled the same way.
   if [ "$actor" != "파이프라인" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=적용 주체가 사람 — 인계"
     report_append "적용 인계" "$seg — 사람이 실행할 명령: $cmd"
     return 0
@@ -4219,6 +4315,7 @@ apply_stage() {
   apply_probe "$wt" "$probe"; pre=$?
   case "$pre" in
     0) ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+         "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
          "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 프로브 0 — 적용할 변경 없음"
        apply_teardown "$seg" "$wt"
        return 0 ;;
@@ -4236,6 +4333,7 @@ apply_stage() {
   apply_probe "$wt" "$probe"; post=$?
   if [ "$rc" = "0" ] && [ "$post" = "0" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
+      "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
       "아티팩트 술어 결과=0" "종단 부류=정상 완료" "관측=사전 2 → 사후 0, 수렴"
     apply_teardown "$seg" "$wt"
     return 0
@@ -4246,6 +4344,7 @@ apply_stage() {
   # A normal teardown here would delete the only reproduction of a half-applied
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
+    "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" "기록자=드라이버" \
     "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 2 → 사후 $post"
   park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
@@ -4842,6 +4941,7 @@ review_recover() {
   rclass=$(classify_termination "$rsid" "$rc" "$pred")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" "기록자=드라이버" \
     "종단 부류=$rclass" "복구 scratch=$dirs" "원회수=$reaped"
   absorb_stage_judgment "$rsid" "$seg" "$(seg_alias "$seg")"
   [ "$rclass" = "정상 완료" ] || { park "$seg" cone 무효화 "게이트 park" \
@@ -4954,7 +5054,9 @@ segment_cycle() {
     # id it actually dispatched, and nothing else in the row carries it.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" "종단 부류=$class"
+      "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
+      "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
 
     fileset_escape "$seg" "$files" "$wt" || return 1
@@ -5053,6 +5155,7 @@ segment_cycle() {
     # re-attached and had to be paid for again.
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
       "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" "기록자=드라이버" \
       "종단 부류=$class"
     absorb_stage_judgment "$sid" "$seg" "$(seg_alias "$seg")"
     if [ "$class" != "정상 완료" ]; then
@@ -5342,7 +5445,9 @@ design_arm() {
   class1=$(classify_termination S1design "$rc1" "$pred1")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S1design" "파견 id=S1design" "종료 코드=$rc1" \
     "아티팩트 술어 결과=$pred1" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-    "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" "종단 부류=$class1"
+    "세션 id=$(stage_session_id "S1design")" "부모=$(stage_parent_id)" \
+    "압축 창=$(stage_window_of S1design)" "레인=$(stage_lane_of S1design)" "기록자=드라이버" \
+    "종단 부류=$class1"
   absorb_stage_judgment S1design - "$(home_alias)"
   # An unfrozen document does not go on to the audit or the segment plan —
   # both read the freeze as a precondition.
@@ -5429,7 +5534,9 @@ main_loop() {
   class2=$(classify_termination S2 "$rc2" "$pred2")
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종료 코드=$rc2" \
     "아티팩트 술어 결과=$pred2" "실행 버전=$("$CLI_BIN" --version 2>/dev/null | sed -n '1p')" \
-      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" "종단 부류=$class2"
+      "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
+      "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" "기록자=드라이버" \
+      "종단 부류=$class2"
   absorb_stage_judgment S2 - "$(home_alias)"
   case "$class2" in
     '정상 완료') : ;;

@@ -37,6 +37,9 @@ export CC_CMDS_SESSION_NOTIFY
 unset CC_PIPELINE_RUN_ID CC_PIPELINE_RUN_DIR CC_PIPELINE_MANIFEST CC_PIPELINE_LEDGER \
       CC_PIPELINE_GRANT CC_PIPELINE_GATE CC_PIPELINE_TARGET CC_PIPELINE_SEGMENT \
       CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_PARENT_SESSION
+# The compaction-window kill switch would turn the `(argv)` assertions below
+# into a property of the caller's shell rather than of the gate.
+unset CC_ORCH_STAGE_AUTOCOMPACT
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -225,9 +228,14 @@ SUP_A=$( { cat "$RD/A.sup" 2>/dev/null || true; } | tr -d '[:space:]')
 check "(2) 반환 직후 감독자가 살아 있다" "$(alive "$SUP_A")" "alive"
 check "(2) 감독자의 부모는 init 이다 (혈통이 끊겼다)" \
   "$(ps -o ppid= -p "${SUP_A:-0}" 2>/dev/null | tr -d '[:space:]')" "1"
-for f in pid start kind; do
+for f in pid start kind window; do
   check "(2) 반환 직후 A.$f 가 있다" "$( [ -f "$RD/A.$f" ] && printf 'yes' || printf 'no')" "yes"
 done
+# The window record is the recorder's fallback: two lines, the effective window
+# and the lane, written before the CLI is launched.
+check "(2) A.window 의 첫 줄이 argv 출처의 창이다" \
+  "$(sed -n '1p' "$RD/A.window" 2>/dev/null)" "300000(argv)"
+check "(2) A.window 는 두 줄이다" "$(wc -l < "$RD/A.window" 2>/dev/null | tr -d '[:space:]')" "2"
 PID_A=$( { cat "$RD/A.pid" 2>/dev/null || true; } | tr -d '[:space:]')
 
 # (3) THE ENEMY, pointed at the process that issued the dispatch.
@@ -280,8 +288,25 @@ check "(8) 그 관측이 실제로 pid 기록을 본 뒤의 것이다" "$seen_pi
 g wait --manifest "$MANIFEST" --segment A --interval 1 --timeout 60 >/dev/null; wait_rc=$?
 check "(3) 적 뒤에도 wait 이 스테이지 rc 0 으로 끝난다" "$wait_rc" "0"
 check "(3) stage-result 행이 정확히 하나" "$(rows_of A)" "1"
+# The row names its writer and carries the window the launch actually got. This
+# is the only suite in which the supervisor writes that row across a process
+# boundary, so the field must be read off the real row rather than an in-process
+# recorder call.
+row_a=$( { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F '세그먼트=A ' || true; } | sed -n '1p')
+case "$row_a" in
+  *"기록자=게이트 "*|*"기록자=게이트") ok "(3) 감독자가 쓴 행은 기록자=게이트 다" ;;
+  *) bad "(3) 감독자가 쓴 행은 기록자=게이트 다" "$row_a" ;;
+esac
+case "$row_a" in
+  *"압축 창=300000(argv) "*) ok "(3) 감독자가 쓴 행은 기동에 실린 창을 적는다" ;;
+  *) bad "(3) 감독자가 쓴 행은 기동에 실린 창을 적는다" "$row_a" ;;
+esac
+case "$row_a" in
+  *"레인=~"*|*"레인=/"*) ok "(3) 감독자가 쓴 행은 레인을 적는다" ;;
+  *) bad "(3) 감독자가 쓴 행은 레인을 적는다" "$row_a" ;;
+esac
 left=""
-for f in pid start kind sup sup.start launch launch.taken; do
+for f in pid start kind sup sup.start launch launch.taken window; do
   [ -e "$RD/A.$f" ] && left="$left A.$f"
 done
 check "(3) 종단 뒤 세그먼트별 파일이 남지 않는다" "$left" ""
@@ -395,7 +420,7 @@ assert_immediate() {  # assert_immediate <segment> <expected-rc> <label>
   check "(9) $label — wait 이 스테이지 rc 를 통과시킨다" "$rc" "$want"
   check "(9) $label — stage-result 행이 정확히 하나" "$(rows_of "$s")" "1"
   left=""
-  for f in pid start kind sup sup.start launch launch.taken; do
+  for f in pid start kind sup sup.start launch launch.taken window; do
     [ -e "$RD/$s.$f" ] && left="$left $s.$f"
   done
   check "(9) $label — 잔여 파일이 없다" "$left" ""
@@ -465,7 +490,7 @@ assert_doc_run() {  # assert_doc_run <run-id> <document key> <want 문서 해시
   check "(10) $label — 감독자 로그에 종단 줄이 있다" \
     "$( grep -q '스테이지 종단' "$RD/log/G#1.sup.log" 2>/dev/null && printf 'yes' || printf 'no')" "yes"
   left=""
-  for f in pid start kind sup sup.start launch launch.taken; do
+  for f in pid start kind sup sup.start launch launch.taken window; do
     [ -e "$RD/G.$f" ] && left="$left G.$f"
   done
   check "(10) $label — 종단 뒤 세그먼트별 파일이 남지 않는다" "$left" ""
@@ -484,6 +509,61 @@ assert_doc_run SUP3 "${WORK#/}/outside/design.md" 1 "절대 경로 키"
 # (10c) Declared, but the file is not there — a document moved or removed
 # during the run.
 assert_doc_run SUP4 'docs/gone.md' 0 "선언됐으나 없는 문서"
+
+# ---------------------------------------------------------------------------
+# (11) THE WRAPPER OWNS THE COMPACTION WINDOW ONLY WHEN IT OWNS THE PROMPT.
+#
+# The gate hands the window to the wrapper as an option before `--`, and the
+# wrapper puts it on the CLI argv itself. A caller that also puts `--autocompact`
+# after `--` would let the CLI's last-wins rule replace the gate's value without
+# a trace, so under `--instructions` the wrapper refuses it like the other
+# reserved flags. Without `--instructions` the argv is the caller's own — the
+# old driver path — and the flag must pass through untouched. Both arms are
+# driven against a stub that records its argv, which no stub above does.
+# ---------------------------------------------------------------------------
+WRAP="$repo_root/plugins/cc-cmds/orchestrator/stage-wrapper.sh"
+STUB_ARGV="$WORK/claude-stub-argv"
+cat > "$STUB_ARGV" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CC_STUB_ARGV_OUT"
+exit 0
+STUBEOF
+chmod +x "$STUB_ARGV"
+printf '{}\n' > "$WORK/wrap-settings.json"
+printf 'policy\n' > "$WORK/wrap-instructions.md"
+mkdir -p "$WORK/wrap-plugin"
+
+: > "$WORK/wrap-argv.out"
+wrap_err=$(CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" \
+    -- --autocompact 300000 -p x 2>&1 >/dev/null); wrap_rc=$?
+check "(11) --instructions 아래에서 -- 뒤의 --autocompact 는 exit 2" "$wrap_rc" "2"
+case "$wrap_err" in
+  *"reserved flag after --: --autocompact"*) ok "(11) 그 거부는 예약 플래그 문면을 낸다" ;;
+  *) bad "(11) 그 거부는 예약 플래그 문면을 낸다" "$wrap_err" ;;
+esac
+check "(11) 거부된 기동은 CLI 에 닿지 않는다" \
+  "$(wc -c < "$WORK/wrap-argv.out" | tr -d '[:space:]')" "0"
+
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x -- --autocompact 300000 -p x >/dev/null 2>&1; wrap_rc2=$?
+check "(11) --instructions 없이는 같은 argv 가 exit 0" "$wrap_rc2" "0"
+check "(11) 그 기동의 CLI argv 에 호출자의 --autocompact 가 남는다" \
+  "$( { grep -cx -- '--autocompact' "$WORK/wrap-argv.out" || true; } )" "1"
+
+# The gate's own form — the option before `--` — lands on the CLI argv once,
+# directly after `--strict-mcp-config`, under `--instructions` too.
+: > "$WORK/wrap-argv.out"
+CC_CLAUDE_BIN="$STUB_ARGV" CC_STUB_ARGV_OUT="$WORK/wrap-argv.out" \
+  bash "$WRAP" --settings "$WORK/wrap-settings.json" --plugin-dir "$WORK/wrap-plugin" \
+    --session-id x --instructions "$WORK/wrap-instructions.md" --autocompact 300000 \
+    -- -p x >/dev/null 2>&1; wrap_rc3=$?
+check "(11) -- 앞의 --autocompact 옵션은 --instructions 아래에서도 exit 0" "$wrap_rc3" "0"
+check "(11) 그 옵션은 CLI argv 에 --strict-mcp-config 바로 뒤에 한 번 실린다" \
+  "$(tr '\n' ' ' < "$WORK/wrap-argv.out" | { grep -o -- '--strict-mcp-config --autocompact 300000 ' || true; } | { grep -c . || true; })" "1"
 
 printf '\ntest-stage-supervisor: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

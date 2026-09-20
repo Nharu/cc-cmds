@@ -4983,6 +4983,81 @@ case "$row" in
   *) bad "종단 부류" "$row" ;;
 esac
 
+# --- THE WINDOW FIELDS on the row, and the reading they come from -------------
+#
+# The six-argument call above hands the recorder no window, so it falls back to
+# the `.window` record the launch would have left; planted, the row carries the
+# planted values verbatim, and absent, the row says `(미상)` and is still
+# written — the record is never a precondition.
+printf '%s\n%s\n' '300000(argv)' '~/x' > "$RD/SP.window"
+outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"압축 창=300000(argv) "*) ok ".window 1행이 압축 창으로 행에 옮겨진다" ;;
+  *) bad "압축 창" "$row" ;;
+esac
+case "$row" in
+  *"레인=~"*) ok "행의 레인이 물결 표기다" ;;
+  *) bad "레인" "$row" ;;
+esac
+case "$row" in
+  *"기록자=게이트 "*) ok "게이트의 기록기는 기록자=게이트 를 적는다" ;;
+  *) bad "기록자" "$row" ;;
+esac
+rm -f "$RD/SP.window"
+outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"압축 창=(미상) "*) ok ".window 가 없으면 압축 창=(미상) 이고 행은 그대로 쓰인다" ;;
+  *) bad "압축 창 부재" "$row" ;;
+esac
+
+# The effective reading itself, in-process, one layer at a time. Each fixture
+# stands one layer up alone under a temporary directory — the run's settings
+# directory and the target's `.claude/` are inputs of the enforcement-surface
+# digest, so neither is touched after run open.
+ac_probe() {
+  # ac_probe <argv-val> <settings-file> <project-dir> <config-dir>
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 CLAUDE_CONFIG_DIR="$4" bash -c '
+    . "'"$GATE"'"
+    RUN_DIR="'"$RD"'"
+    gate_autocompact_effective "$1" "$2" "$3"
+  ' _ "$1" "$2" "$3"
+}
+AC="$WORK/ac"; rm -rf "$AC"; mkdir -p "$AC/proj/.claude" "$AC/cfg" "$AC/empty"
+check "네 층이 전부 비면 -" "$(ac_probe '' "$AC/none.json" "$AC/empty" "$AC/cfg")" "-"
+check "argv 층만 서면 <n>(argv)" "$(ac_probe 300000 "$AC/none.json" "$AC/empty" "$AC/cfg")" "300000(argv)"
+printf '{"autoCompactWindow": 200000}\n' > "$AC/run.json"
+check "런설정 층만 서면 <n>(런설정)" "$(ac_probe '' "$AC/run.json" "$AC/empty" "$AC/cfg")" "200000(런설정)"
+printf '{"autoCompactWindow": 150000}\n' > "$AC/proj/.claude/settings.json"
+check "프로젝트 층만 서면 <n>(프로젝트)" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 100000}\n' > "$AC/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(ac_probe '' "$AC/none.json" "$AC/empty" "$AC/cfg")" "100000(레인)"
+check "네 층이 다 서면 argv 가 이긴다" "$(ac_probe 300000 "$AC/run.json" "$AC/proj" "$AC/cfg")" "300000(argv)"
+check "argv 없이 셋이 서면 런설정이 이긴다" "$(ac_probe '' "$AC/run.json" "$AC/proj" "$AC/cfg")" "200000(런설정)"
+check "런설정 없이 둘이 서면 프로젝트가 레인을 이긴다" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 120000}\n' > "$AC/proj/.claude/settings.local.json"
+check "프로젝트 로컬 파일이 프로젝트 파일보다 앞선다" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "120000(프로젝트)"
+rm -f "$AC/proj/.claude/settings.local.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 300000}\n' > "$AC/off.json"
+check "가장 앞선 층이 끄면 (꺼짐) 이고 값을 남기지 않는다" "$(ac_probe '' "$AC/off.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+printf '{"autoCompactWindow": "300k"}\n' > "$AC/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛰고 다음 층을 읽는다 ((미상) 이 아니다)" "$(ac_probe '' "$AC/fmt.json" "$AC/empty" "$AC/cfg")" "100000(레인)"
+printf '{not json\n' > "$AC/broken.json"
+check "깨진 JSON 은 (미상) 이고 - 로 접히지 않는다" "$(ac_probe '' "$AC/broken.json" "$AC/proj" "$AC/cfg")" "(미상)"
+check "argv 층은 설정 파일을 읽기 전에 답한다 (깨진 파일 위에서도 (argv))" "$(ac_probe 300000 "$AC/broken.json" "$AC/proj" "$AC/cfg")" "300000(argv)"
+# The injection table and its kill switch.
+ac_kind() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env "$@" bash -c '. "'"$GATE"'"; gate_autocompact_argv_value "$AC_KIND"' _
+}
+check "review 는 300000 을 낸다" "$(ac_kind AC_KIND=review)" "300000"
+check "표 밖 종류는 빈 값을 낸다" "$(ac_kind AC_KIND=implement):$(ac_kind AC_KIND=generic):$(ac_kind AC_KIND=shift)" "::"
+check "끄기 스위치는 review 도 빈 값으로 만든다" "$(ac_kind AC_KIND=review CC_ORCH_STAGE_AUTOCOMPACT=off)" ""
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
+check "HOME 밖의 레인은 그대로 적는다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC/empty" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "$AC/cfg"
+
 # `plan_sha256` — the implement arm splits into two processes and process B
 # enters ONLY when this field is on the row; its admission predicate says so and
 # forbids re-deriving a plan instead. Nothing wrote it, so every dispatch
@@ -5186,6 +5261,10 @@ check "재개 argv 가 -r 로 그 세션을 잇는다" "$(si_argv_value "$WORK/s
 check "기록 있는 세션의 재개는 append 플래그를 받는다 — 기록된 파일로" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-system-prompt-file)" "$sg_f0"
 check "서브에이전트 append 도 같은 파일이다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_f0"
 check "재개 환경에도 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-1.txt")" "1"
+# The re-attachment passes through the same injection block as a fresh launch,
+# so a `review` resume carries the window beside `-r` — read anew, not copied.
+check "재개 argv 에 -r 와 --autocompact 300000 이 함께 있다" \
+  "$(si_argv_value "$WORK/sg-argv-1.txt" -r):$(si_argv_value "$WORK/sg-argv-1.txt" --autocompact)" "$sg_sid:300000"
 # The synthesis moved since the session was born: the resume still carries the
 # RECORDED file, and says so beside the per-launch digest line.
 printf 'a rule added after the session was born\n' >> "$WT/CLAUDE.md"
@@ -5316,10 +5395,10 @@ fi
 # ended, so the supervisor is the only process that can remove them; a set
 # that survives here is a set that survives every night.
 sl_left=""
-for sl_f in SL.sup SL.sup.start SL.kind SL.start SL.launch SL.launch.taken; do
+for sl_f in SL.sup SL.sup.start SL.kind SL.start SL.launch SL.launch.taken SL.window; do
   [ -e "$(dirname "$SETTINGS_DIR")/$sl_f" ] && sl_left="$sl_left $sl_f"
 done
-check "스테이지가 끝나면 감독자·기동 토큰·종류 기록도 함께 지워진다" "$sl_left" ""
+check "스테이지가 끝나면 감독자·기동 토큰·종류·창 기록도 함께 지워진다" "$sl_left" ""
 # THE PIN AND THE TRANSCRIPT NAME, measured from what the launcher left on disk.
 #
 # The seam between `gate_launch_stage` and the two functions it derives those
@@ -5348,6 +5427,69 @@ case "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" in
   *"세션 id=stub-session"*) ok "결과 기록기가 이 파견이 실제로 쓴 전사에서 세션 id 를 읽는다" ;;
   *) bad "종단 기록" "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" ;;
 esac
+
+# --- THE COMPACTION WINDOW: injected for one kind, recorded on every row -----
+#
+# The launch above was a `review` stage, the one kind the gate hands a window
+# on the argv today. The flag and the row's `압축 창` come from one variable in
+# the supervisor, so the argv the stub recorded and the row must agree: the flag
+# is there exactly once with the table's value, and the row says `(argv)`.
+check "review 기동의 argv 에 --autocompact 300000 이 있다" "$(si_argv_value "$WORK/stub-argv.txt" --autocompact)" "300000"
+check "--autocompact 는 argv 에 한 번만 있다 (래퍼가 넘긴 것 하나)" "$(si_argv_has "$WORK/stub-argv.txt" --autocompact)" "1"
+sl_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL ' | tail -1)
+case "$sl_row" in
+  *"압축 창=300000(argv) "*) ok "그 행의 압축 창이 300000(argv) 다 — argv 와 행이 한 판독에서 나온다" ;;
+  *) bad "압축 창 기록" "$sl_row" ;;
+esac
+case "$sl_row" in
+  *"레인=~"*|*"레인=/"*) ok "행의 레인이 물결 표기 또는 절대 경로다" ;;
+  *) bad "레인 기록" "$sl_row" ;;
+esac
+case "$sl_row" in
+  *"기록자=게이트 "*) ok "게이트가 쓴 행은 기록자=게이트 다" ;;
+  *) bad "기록자 기록" "$sl_row" ;;
+esac
+# A kind outside the injection table gets no flag, and the same `review` kind
+# under the kill switch gets none either — and its row then says so, because
+# the row is derived from the same reading rather than from the table.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL4 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl4.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl4.txt" \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL4 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- generic "/cc-cmds:x" 2>&1); rc=$?
+check "표 밖 종류(generic)의 기동도 끝까지 간다" "$rc" "0"
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL4 --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "표 밖 종류의 argv 에는 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl4.txt" --autocompact)" "0"
+sl4_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL4 ' | tail -1)
+case "$sl4_row" in
+  *"압축 창="*"(argv)"*) bad "압축 창 기록" "플래그가 나가지 않았는데 (argv) 를 적었다: $sl4_row" ;;
+  *"압축 창="*) ok "표 밖 종류의 행도 압축 창을 싣되 (argv) 가 아니다" ;;
+  *) bad "압축 창 기록" "$sl4_row" ;;
+esac
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL5 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl5.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl5.txt" CC_ORCH_STAGE_AUTOCOMPACT=off \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL5 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "끄기 스위치 아래의 review 기동도 끝까지 간다" "$rc" "0"
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL5 --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "CC_ORCH_STAGE_AUTOCOMPACT=off 면 review 의 argv 에도 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl5.txt" --autocompact)" "0"
+sl5_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL5 ' | tail -1)
+case "$sl5_row" in
+  *"압축 창="*"(argv)"*) bad "압축 창 기록" "끄기 스위치 아래에서 (argv) 를 적었다: $sl5_row" ;;
+  *"압축 창="*"기록자=게이트 "*) ok "끄기 스위치 아래의 행은 (argv) 가 아닌 압축 창을 싣는다" ;;
+  *) bad "압축 창 기록" "$sl5_row" ;;
+esac
+check "두 review 기동의 압축 창 값이 스위치에서 갈린다" \
+  "$( [ "$(printf '%s' "$sl_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" != "$(printf '%s' "$sl5_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" ] && printf differ || printf same )" "differ"
 
 # --- STAGE INSTRUCTIONS: what the launch injected in place of CLAUDE.md -------
 #
@@ -5591,13 +5733,13 @@ si_wrap() {
 si_reserved_ok=0; si_reserved_bad=""
 for si_flag in --append-system-prompt --append-system-prompt-file --append-subagent-system-prompt \
                --append-subagent-system-prompt-file --system-prompt --system-prompt-file \
-               --setting-sources --bare --exclude-dynamic-system-prompt-sections; do
+               --setting-sources --bare --exclude-dynamic-system-prompt-sections --autocompact; do
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag" y; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag=$si_rc"
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag=z"; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag==$si_rc"
 done
-check "래퍼는 --instructions 와 함께 온 예약 플래그 9종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "18:"
+check "래퍼는 --instructions 와 함께 온 예약 플래그 10종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "20:"
 case "$(cat "$WORK/wrap-err.txt")" in
   *"reserved flag after --"*) ok "거부가 예약 플래그라고 말한다" ;;
   *) bad "예약 플래그 거부 문면" "$(tr '\n' ' ' < "$WORK/wrap-err.txt")" ;;
@@ -5616,6 +5758,14 @@ check "--instructions 가 있으면 두 append 와 동적 절 제외가 --strict
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" -- -p a; si_rc=$?
 check "재개 분기도 같은 플래그를 받는다" "$(cat "$WORK/wrap-argv.txt")" \
   "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+# The wrapper's own `--autocompact <n>` lands on the CLI argv after
+# `--strict-mcp-config`, on both id branches, and only when given.
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --autocompact 300000 --instructions "$SI_F" -- -p a; si_rc=$?
+check "래퍼의 --autocompact 는 --strict-mcp-config 뒤, append 앞에 놓인다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --autocompact 300000 --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --autocompact 300000 -- -p a; si_rc=$?
+check "재개·지침 없는 분기도 --autocompact 를 같은 자리에 받는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --autocompact 300000 -p a"
 # Source order in the launcher: the synthesis sits before the attempt pin, so a
 # refusal consumes no attempt number.
 ord_synth=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'gate_stage_instructions_for_launch' | sed 's/:.*//' | tail -1)
@@ -15371,6 +15521,24 @@ check "(a) 인가 행이 원장에 있다" \
 # only honest answers, so it could neither pass nor fail for the right reason.
 check "(a) 그리고 기동 행도 남는다 — 보류가 사라졌으므로 인가와 기동이 일치한다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+# THE LAUNCH ROW CARRIES THE SUCCESSOR'S SESSION ID, LANE AND WINDOW. The
+# session id is the derived uuid the wrapper was handed; the lane is the config
+# home in tilde form; the window is the reading with no argv layer — a shift is
+# not a stage kind — so it can never say `(argv)`.
+a_shift_row=$( { grep -F '`교대 기동`' "$LEDGER5" || true; } | tail -1)
+case "$a_shift_row" in
+  *"세션 id="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*) ok "(a) 기동 행이 uuid 꼴의 세션 id 를 싣는다" ;;
+  *) bad "(a) 교대 기동 세션 id" "$a_shift_row" ;;
+esac
+case "$a_shift_row" in
+  *"레인=~"*|*"레인=/"*) ok "(a) 기동 행이 레인을 싣는다" ;;
+  *) bad "(a) 교대 기동 레인" "$a_shift_row" ;;
+esac
+case "$a_shift_row" in
+  *"압축 창="*"(argv)"*) bad "(a) 교대 기동 압축 창" "교대에는 argv 층이 없는데 (argv) 를 적었다: $a_shift_row" ;;
+  *"압축 창="*) ok "(a) 기동 행이 (argv) 아닌 압축 창을 싣는다" ;;
+  *) bad "(a) 교대 기동 압축 창" "$a_shift_row" ;;
+esac
 # THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
 # stage's liveness is the supervisor's business, not the shift launcher's.
 check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
@@ -16715,6 +16883,19 @@ case "$row41a" in
 esac
 check "A 정산 행의 실행 버전은 .attempt 의 값이다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')" "1"
 check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')" "S41A-session"
+# `plant41` plants no `.window`, so the settlement above ran WITHOUT the record
+# and still settled: its absence is not a precondition, and the row says so.
+check "A .window 없는 정산 행의 압축 창은 (미상) 이고 정산은 정상 진행했다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "(미상)"
+check "A 정산 행의 기록자는 게이트다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *기록자=//p' | sed 's/[[:space:]]*$//')" "게이트"
+# A2. THE SAME SHAPE WITH THE RECORD PLANTED: the two lines are copied onto the
+# row verbatim, and the record is removed with the rest.
+plant41 S41A2
+printf '%s\n%s\n' '300000(레인)' '~/lane41' > "$RD40/S41A2.window"
+snap41 >/dev/null
+row41a2=$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F '세그먼트=S41A2 ' | tail -1)
+check "A2 .window 가 있으면 그 1행이 정산 행의 압축 창이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "300000(레인)"
+check "A2 그 2행이 정산 행의 레인이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "~/lane41"
+check "A2 정산 뒤 .window 도 사라진다" "$( [ -e "$RD40/S41A2.window" ] && printf 'left' || printf 'gone' )" "gone"
 
 # B. NO FINGERPRINT — enumerated by the alarm, settled by nobody.
 pos41 S41BP
@@ -16935,7 +17116,7 @@ b56_fixture() {
   printf '## 인가\n- **종료 지점**: 테스트\n- **비용 천장**: 없음\n' > "$B56_MAN"
   printf -- '- `자율 승인` | 교대=0 | kind=router-shift | 결정=act | 대상=t | 세그먼트=- | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=첫 교대\n' \
     > "$B56_LEDGER"
-  printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z\n' \
+  printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z | 세션 id=00000000-0000-0000-0000-000000000001 | 레인=~/.claude | 압축 창=300000(레인)\n' \
     >> "$B56_LEDGER"
   local i=1 gf="${2-축2=읽기}" nfail="${3:-0}"
   while [ "$i" -le "$1" ]; do
@@ -16965,8 +17146,8 @@ b56_launch_rows() {
     "$(($1 - 1))" >> "$B56_LEDGER"
   printf -- '- `자율 승인` | 교대=0 | kind=router-shift | 결정=act | 대상=t | 세그먼트=- | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=라우팅 재개\n' \
     >> "$B56_LEDGER"
-  printf -- '- `교대 기동` | 교대=0 | 서수=%s | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z\n' \
-    "$1" >> "$B56_LEDGER"
+  printf -- '- `교대 기동` | 교대=0 | 서수=%s | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z | 세션 id=00000000-0000-0000-0000-00000000000%s | 레인=~/.claude | 압축 창=300000(레인)\n' \
+    "$1" "$1" >> "$B56_LEDGER"
 }
 
 b56_judgment_rows() {

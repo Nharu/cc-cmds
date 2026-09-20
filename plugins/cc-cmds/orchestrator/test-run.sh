@@ -2201,6 +2201,21 @@ check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 �
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
+# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
+  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
+  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  END { print "N " n+0 }
+' "$DRIVER")
+check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
+check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+  "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
+check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
+
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
 # started from a document, so a manifest run's arm could not reach the grant it
@@ -5941,6 +5956,75 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
   ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
 else
   bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
+fi
+
+# --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
+# 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
+# 두 줄을 파일로 세운다. 단언 대상은 「행이 그 파일을 읽어 싣는가」와 「파일이 없을
+# 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
+# 소스 핀이 잡는다.
+REC_RSID="S5R:segR:0"
+printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+rm -f "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
+  ok ".window 가 없으면 행이 압축 창=(미상) 을 싣고 그대로 쓰인다"
+else
+  bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
+fi
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
+  ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
+else
+  bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
+fi
+
+# --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
+WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
+check "세 층이 전부 비면 -" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "-"
+printf '{"autoCompactWindow": 100000}\n' > "$WR/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{"autoCompactWindow": 150000}\n' > "$WR/proj/.claude/settings.json"
+check "프로젝트 층이 레인을 이긴다" "$(stage_window_read "$WR/none.json" "$WR/proj" "$WR/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 200000}\n' > "$WR/run.json"
+check "런설정 층이 프로젝트를 이긴다" "$(stage_window_read "$WR/run.json" "$WR/proj" "$WR/cfg")" "200000(런설정)"
+printf '{"autoCompactEnabled": false}\n' > "$WR/off.json"
+check "가장 앞선 층이 끄면 (꺼짐)" "$(stage_window_read "$WR/off.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+printf '{"autoCompactWindow": "300k"}\n' > "$WR/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛴다" "$(stage_window_read "$WR/fmt.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{not json\n' > "$WR/broken.json"
+check "깨진 JSON 은 (미상)" "$(stage_window_read "$WR/broken.json" "$WR/proj" "$WR/cfg")" "(미상)"
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" "$(lane_label_of "$HOME/.claude-x")" "~/.claude-x"
+check "HOME 밖의 레인은 그대로다" "$(lane_label_of "$WR/cfg")" "$WR/cfg"
+check "드라이버의 판독은 (argv) 를 낼 수 없다 (argv 층이 없다)" \
+  "$(sed -n '/^stage_window_read()/,/^}/p' "$DRIVER" | grep -c 'argv' || true)" "0"
+
+# --- (4) 기동이 `.window` 를 쓴다 — 소스 핀 --------------------------------------
+# 이 스위트는 진짜 CLI 를 띄우지 않으므로 기동 본문의 두 줄을 문면으로 잡는다:
+# 기동 직전에 두 줄 파일을 쓰고, 다음 기동이 앞의 것을 `.rc` 와 함께 지운다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '> "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 .window 를 쓴다"
+else
+  bad "stage_spawn" ".window 를 쓰는 줄이 없다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 앞 기동의 .window 를 .rc 와 함께 지운다 (수집이 아니라 다음 기동에서)"
+else
+  bad "stage_spawn" ".window 를 .rc 옆에서 지우는 줄이 없다"
+fi
+if sed -n '/^stage_collect()/,/^}/p' "$DRIVER" | grep_all_q -F '.window'; then
+  bad "stage_collect" "수집이 .window 를 지운다 — stage-result 행은 수집 뒤에 쓰이므로 값이 사라진다"
+else
+  ok "stage_collect 는 .window 를 건드리지 않는다 (행이 수집 뒤에 읽는다)"
 fi
 if kill_permitted "S5R:segR:0"; then
   ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"
