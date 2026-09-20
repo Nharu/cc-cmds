@@ -11012,10 +11012,26 @@ gate_rundir_write_guard() {
       halt/*/*) ;;
       halt/*) continue ;;
       cc-team-witness-*/*) continue ;;
+      # THE UNATTENDED DESIGN STAGE DECLARES TWO MORE SUBTREES AND THIS LIST DID
+      # NOT KNOW THEM, so the stage was refused before it spawned anyone and the
+      # run closed with every termination clause impossible. `design/<slug>/` is
+      # the stage state root the driver dispatch resolves to, and `preimage/`
+      # holds the copy taken before each walkthrough transition — every
+      # `되돌리는 법` that stage emits points into it, so a stage that cannot
+      # write there cannot move an item to resolved or held at all, and the only
+      # path left is freezing a document nobody walked.
+      #
+      # Both match at any depth on purpose: the state root carries `witness/` and
+      # `INDEX.md` beneath it. Neither name collides with a baseline value — the
+      # files this guard exists to protect all sit at the run root — so the
+      # widening opens the two subtrees the contract already names and nothing
+      # else.
+      design|design/*) continue ;;
+      preimage|preimage/*) continue ;;
       */*) ;;
       *.plan.md) continue ;;
     esac
-    warn "rule refused: run directory write — the only paths a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ excepted). The rest are the baseline the gate re-reads on every act, so writing here re-baselines the enforcement-surface check against itself: $a"
+    warn "rule refused: run directory write — the only paths a stage is declared to write are halt/<stage-id>.md, <segment>.plan.md, design/<slug>/ and preimage/ (the witness directory cc-team-witness-*/ excepted). The rest are the baseline the gate re-reads on every act, so writing here re-baselines the enforcement-surface check against itself: $a"
     return "$GATE_EXIT_RULE"
   done
   return 0

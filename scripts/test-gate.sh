@@ -10268,6 +10268,30 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+
+# 무인 설계 스테이지가 선언하는 두 하위 트리. 이것이 없어서 그 스테이지는 팀을
+# 하나도 띄우기 전에 거부됐고 런이 종료 절 전부 불가능으로 닫혔다. 첫 단언은 그때
+# 실제로 거부된 argv 를 그대로 먹인다 — 상태 루트는 `mkdir -p` 로 만들어진다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mkdir -p "$RD3/design/docs-some-slug/witness" "$RD3/preimage"
+check "설계 스테이지의 상태 루트와 전 이미지 디렉터리 생성이 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/preimage/docs-some-slug.001.md"
+check "워크스루 전 이미지 쓰기가 통과한다" "$rc" "0"
+# 상태 루트는 깊이를 가리지 않는다 — 증인 색인이 두 단계 아래에 온다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/design/docs-some-slug/witness/INDEX.md"
+check "상태 루트 아래 두 단계 쓰기가 통과한다" "$rc" "0"
+# 대조군 — 넓힌 것은 선언된 두 이름이지 그 이웃이 아니다.
+mkdir -p "$RD3/preimages"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/preimages/x.md"
+check "이웃 철자 preimages/ 는 예외가 아니다" "$rc" "3"
+
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
 # 편집이 여기서 빨개져야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
@@ -10275,6 +10299,13 @@ if grep -qF 'cc-team-witness-*/*' "$GATE" \
   ok "게이트와 훅이 같은 위트니스 예외를 싣는다"
 else
   bad "가드·훅 불일치" "위트니스 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+if grep -qF 'design/*)' "$GATE" && grep -qF 'preimage/*)' "$GATE" \
+   && grep -qF 'design/*)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" \
+   && grep -qF 'preimage/*)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 설계 스테이지의 두 하위 트리를 같이 싣는다"
+else
+  bad "가드·훅 불일치" "design/ 또는 preimage/ 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----

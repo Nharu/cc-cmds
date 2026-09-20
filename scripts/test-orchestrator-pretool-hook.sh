@@ -593,7 +593,8 @@ fi
 # ---------------------------------------------------------------------------
 # 런 디렉터리 판정 — 이 팔에는 단언이 하나도 없었다
 #
-# 스테이지가 쓰도록 선언된 것은 `halt/<stage-id>.md` 와 `<segment>.plan.md` 뿐이고
+# 스테이지가 쓰도록 선언된 것은 `halt/<stage-id>.md`·`<segment>.plan.md` 와 무인
+# 설계 스테이지의 `design/<슬러그>/`·`preimage/` 뿐이고
 # 나머지는 게이트가 매 행위마다 되읽는 기준선이다. 여기에 더해 팀 위트니스
 # 디렉터리가 예외인데, 그 이름은 `cc-team-witness-init.sh` 가 실제로 만드는 접두여야
 # 한다 — 실재하지 않는 이름으로 예외를 적으면 발행이 전부 거부되고, 위트니스를
@@ -621,6 +622,15 @@ decide "$(write_json "$HWPUB/reviewer.round-1.md")"
 check "생성 스크립트가 만든 위트니스 디렉터리로의 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
 decide "$(write_json "$RUN_DIR/witness/r1.md")"
 check "아무도 만들지 않는 witness/ 철자는 예외가 아니다" "$dec" "deny"
+# 무인 설계 스테이지가 선언하는 두 하위 트리. 훅과 게이트가 여기서 갈리면 같은
+# 쓰기가 Bash 로는 통과하고 Write 로는 거부돼, 스테이지가 도구를 바꾼 곳에서만
+# 멈춘다 — 그 모양이 가장 읽기 어렵다.
+decide "$(write_json "$RUN_DIR/preimage/docs-some-slug.001.md")"
+check "워크스루 전 이미지 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide "$(write_json "$RUN_DIR/design/docs-some-slug/witness/INDEX.md")"
+check "설계 상태 루트 아래 두 단계 쓰기는 거부되지 않는다" "$([ "$dec" = deny ] && printf deny || printf 'not-deny')" "not-deny"
+decide "$(write_json "$RUN_DIR/preimages/x.md")"
+check "이웃 철자 preimages/ 는 예외가 아니다" "$dec" "deny"
 
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

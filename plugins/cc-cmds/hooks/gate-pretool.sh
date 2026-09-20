@@ -451,15 +451,24 @@ hook_run_dir_verdict() {
     # 만들어졌다. 이름은 `cc-team-witness-init.sh` 가 실제로 만드는 접두다 —
     # 런 루트 바로 아래 `cc-team-witness-<slug>[.<stage-id>].XXXXXX` 이다.
     cc-team-witness-*/*) ;;
+    # 무인 설계 스테이지가 선언하는 두 하위 트리. `design/<슬러그>/` 는 드라이버
+    # 파견이 잡는 상태 루트이고 `preimage/` 는 워크스루가 항목을 옮기기 전에 문서
+    # 원본을 복사해 두는 자리다 — 그 스테이지가 내는 `되돌리는 법` 이 전부 이 안을
+    # 가리키므로, 여기 못 쓰면 어떤 항목도 해결·보류로 옮길 수 없다. 둘 다 깊이를
+    # 가리지 않는 것은 상태 루트 아래에 `witness/` 와 `INDEX.md` 가 오기 때문이고,
+    # 두 이름 다 이 가드가 지키는 기준선 값과 겹치지 않는다(기준선은 전부 런 루트
+    # 바로 아래에 있다). 게이트 쪽 같은 목록과 한 쌍으로 움직인다.
+    design/*) ;;
+    preimage/*) ;;
     */*)
-      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
+      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md, <segment>.plan.md, design/<slug>/ and preimage/ — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
     # 이 디렉터리의 다른 어떤 파일로도 향할 수 있으므로 거부한다.
     *.plan.md)
       hook_leaf_is_symlink "$ap" \
         && deny "$(jstr 'gate: even an allowed name in the run directory cannot be judged when its leaf is a symlink — what is allowed is the file sitting in that place, not the name')" ;;
     *)
-      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
+      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md, <segment>.plan.md, design/<slug>/ and preimage/ — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
   esac
   return 0
 }
@@ -870,7 +879,7 @@ case "$tool" in
     # `cfg`·`lane` 이 이미 이 짝을 지키고 있고, 런 디렉터리에만 그 짝이 없었다.
     if hook_is "$RUN_DIR/config-dir" || hook_is "$RUN_DIR/orchestrator-dir" \
        || hook_is "$RUN_DIR/ledger-path" || hook_is "$RUN_DIR/started-at"; then
-      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')"
+      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md, <segment>.plan.md, design/<slug>/ and preimage/ — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')"
     fi
 
     # THE RUN DIRECTORY IS AN ALLOW-LIST, NOT A DENY-LIST — the same inversion
