@@ -237,6 +237,10 @@ SELF="$script_dir/${0##*/}"
 sections_want=""
 sections_list=0
 sections_strict=0
+# WHETHER THE FLAG WAS GIVEN, WHICH ITS VALUE CANNOT SAY. The default is the
+# empty string and so is an empty operand, so the guard below needs a second
+# bit to tell `--sections ''` from no flag at all.
+sections_given=0
 oracle_mode=""
 oracle_arg1=""
 oracle_arg2=""
@@ -245,10 +249,10 @@ while [ "$#" -gt 0 ]; do
     --list)
       sections_list=1; shift ;;
     --sections)
-      sections_want="${2-}"
+      sections_want="${2-}"; sections_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --sections=*)
-      sections_want="${1#--sections=}"; shift ;;
+      sections_want="${1#--sections=}"; sections_given=1; shift ;;
     --run-one)
       sections_want="${2-}"; sections_strict=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -273,6 +277,18 @@ if [ "$sections_strict" = "1" ]; then
       printf 'test-gate: --run-one 은 절 id 정확히 하나를 받습니다 (받은 것: 「%s」)\n' "${sections_want}" >&2
       exit 2 ;;
   esac
+fi
+# AN EMPTY SELECTION IS THE ONE FALLBACK THIS FILE TAKES IN SILENCE. An unknown
+# id says so and runs everything; `--run-one ''` stops just above. An empty
+# `--sections` printed nothing and ran all of it, so a dispatcher whose id list
+# came back empty billed the whole suite while believing it had asked for a
+# slice. The escape rule is not weakened: it governs ids nobody declared, and an
+# empty operand is not an id. It does not replace the partitioner's own empty
+# shard either — that exits 4 first on the normal path, and this closes the
+# direct call that goes around it.
+if [ "$sections_given" = "1" ] && [ -z "$sections_want" ]; then
+  printf 'test-gate: --sections 에 빈 값이 왔습니다 — 전량을 원하면 플래그를 주지 마세요\n' >&2
+  exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -2791,6 +2807,39 @@ check "같은 파일의 --run-one 도 다른 절을 지목해도 exit 2 다" "$o
 bash "$SELF" --list >/dev/null 2>&1; orp_rc=$?
 check "마커가 제자리인 이 파일은 --list 가 exit 0 이다" "$orp_rc" "0"
 rm -rf "$orp_dir"
+
+# ---------------------------------------------------------------------------
+# 0d. An empty selection stops instead of quietly becoming the whole suite
+# --- section: 0d | group: static | covers: - | anchors: 빈 --sections 는 exit 2 로 멈춘다 ---
+# ---------------------------------------------------------------------------
+# This was the file's only silent fallback. An id nobody declared says so and
+# runs everything; `--run-one ''` stops one guard above. An empty `--sections`
+# printed nothing and ran all of it — so a dispatcher whose id list came back
+# empty billed the whole suite while believing it had asked for a slice, and the
+# bill is the only place it showed.
+#
+# The escape rule is not weakened and the control below is what says so: the
+# rule governs ids nobody declared, and an empty operand is not an id. Both
+# spellings are asserted because they take different arms of the parser and a
+# guard on one of them leaves the other open.
+emp_rc=0; bash "$SELF" --sections '' >/dev/null 2>&1 || emp_rc=$?
+check "빈 --sections 는 exit 2 로 멈춘다" "$emp_rc" "2"
+emp_rc=0; bash "$SELF" --sections= >/dev/null 2>&1 || emp_rc=$?
+check "등호 철자의 빈 --sections 도 exit 2 다" "$emp_rc" "2"
+emp_err=$(bash "$SELF" --sections '' 2>&1 >/dev/null || true)
+emp_hit=$(printf '%s\n' "$emp_err" | grep -c -- '--sections 에 빈 값이 왔습니다' || true)
+if [ "${emp_hit:-0}" -ge 1 ]; then
+  ok "거절 문면이 빈 값을 받은 플래그를 지목한다"
+else
+  bad "빈 선택 거절 문면" "$(printf '%s' "$emp_err" | awk 'NR<=2' | tr '\n' ' ')"
+fi
+# THE CONTROL, AND IT IS NOT OPTIONAL. Without it the three assertions above are
+# also satisfied by a guard that refuses every `--sections`, which would take
+# the shard dispatch down with it. `--list` is what makes the control cheap: it
+# is reached after the guard, so a non-empty operand proves the guard let go
+# without running a single section inside this one.
+emp_rc=0; bash "$SELF" --sections=0a --list >/dev/null 2>&1 || emp_rc=$?
+check "비지 않은 --sections 는 가드를 지나간다" "$emp_rc" "0"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
