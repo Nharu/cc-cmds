@@ -17752,14 +17752,22 @@ p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57 \
   --rationale '픽스처 — 대상 미선언 act' -- git commit --allow-empty -m 미선언커밋
 check "57: 외부로 내보낸 GATE_ACT_CWD 가 다른 저장소를 움직이지 않는다" \
   "$(cd "$repo_root" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" "$p57_installed_before"
-# 양성 대조군 — 같은 행위가 내보낸 GATE_ACT_CWD 아래에서는 정말로 커밋을 남긴다.
+# 양성 대조군 — 같은 행위가 게이트의 해소가 고른 트리에서 정말로 커밋을 남긴다.
 # 이것이 없으면 위의 단언은 「누수가 원래 불가능하다」와 구별되지 않는다.
+#
+# 겨냥이 던지기 레포에서 `$WT` 로 옮겨간 이유: 미선언 팔도 `GATE_ACT_CWD` 에
+# 대입하므로 바깥에서 내보낸 값은 행위에 닿지 못하고, 행위는 `--worktree` 가
+# 이름 지은 트리에서 돈다. 그래서 던지기 레포는 이제 겨냥이 아니라 대조 항이다 —
+# 내보낸 값을 그대로 둔 채 두 방향을 함께 재야 겨냥이 옮겨간 뒤에도 「행위가
+# 아무 데서도 돌지 않았다」가 통과하지 못한다. 한쪽만 재면 되돌아간 게이트가
+# 던지기 레포에 커밋을 떨구는 것을 두 단언 중 하나도 잡지 못한다.
 P57TR="$P57ROOT/throwaway"
 mkdir -p "$P57TR"
 ( cd "$P57TR" && git init -q . \
   && git config user.email t@example.invalid && git config user.name T \
   && git commit -q --allow-empty -m base ) >/dev/null 2>&1
 p57_tr_before=$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
+p57_wt_before=$(cd "$WT" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)
 ( export GATE_ACT_CWD="$P57TR"
   p57_gate act --manifest "$P57_MAN" --kind x --target 미선언 --segment SP57B \
     --cutpoint 배포 --worktree "$WT" --snapshot-digest \
@@ -17767,9 +17775,12 @@ p57_tr_before=$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/
         unset CC_GATE_PIN_DISABLE
         XDG_STATE_HOME="$P57_STATE" gate_inproc snapshot --manifest "$P57_MAN" 2>/dev/null | jq -r .H )" \
     --rationale '픽스처 — 누수 양성 대조군' -- git commit --allow-empty -m 미선언커밋 ) >/dev/null 2>&1
-check "57G: 양성 대조군 — 내보낸 GATE_ACT_CWD 아래에서는 커밋이 하나 는다" \
+check "57G: 양성 대조군 — 행위가 해소된 트리에서 커밋을 하나 남긴다" \
+  "$(cd "$WT" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
+  "$((p57_wt_before + 1))"
+check "57G: 내보낸 GATE_ACT_CWD 가 이름 지은 트리는 움직이지 않는다" \
   "$(cd "$P57TR" && git --no-optional-locks rev-list --count HEAD 2>/dev/null)" \
-  "$((p57_tr_before + 1))"
+  "$p57_tr_before"
 
 # --- epilogue-begin ---
 #
