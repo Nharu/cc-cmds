@@ -807,8 +807,13 @@ judgment_class_forbidden() {
 warn_once() {
   # warn_once <slug> <message>
   local slug="$1" msg="$2" d
-  d="$(rundir_of_run_id "${RUN_ID:-}")/warn-once"
-  if [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
+  # A REFUSED RUN ID LOSES THE SUPPRESSION, NOT THE WARNING. `rundir_of_run_id`
+  # refuses an id that is not a single directory name, and here that has to fall
+  # through to speaking: dying on this path would let a warning kill the run, and
+  # the suppression directory is only a deduplication.
+  d=""
+  d="$(rundir_of_run_id "${RUN_ID:-}")/warn-once" || d=""
+  if [ -n "$d" ] && [ -n "${RUN_ID:-}" ] && mkdir -p "$d" 2>/dev/null; then
     mkdir "$d/$slug" 2>/dev/null || return 0
   fi
   warn "$msg"
@@ -2226,7 +2231,8 @@ check_inflight() {
 # no process" must not be falsified by a sweep.
 # ---------------------------------------------------------------------------
 rundir_of_run_id() {
-  # rundir_of_run_id <run-id> — the run directory for that id.
+  # rundir_of_run_id <run-id> — the run directory for that id, or rc 2 when the
+  # id is not a single directory name.
   #
   # THE FORMULA IS SPELLED ONCE, HERE. It used to be spelled at each of its two
   # uses, which was harmless while both ran after `RUN_ID` was assigned. The pin
@@ -2235,11 +2241,29 @@ rundir_of_run_id() {
   # would have appeared in `gate.sh` — and the day two of the three drift, a run
   # pins one directory and reads another. `scripts/test-gate.sh` asserts that
   # this file holds exactly one occurrence of the literal.
+  #
+  # ONE FORMULA MEANS ONE PLACE TO CHECK THE INPUT, and the input stopped being
+  # trusted when the hop started reading it. The id the hop passes comes from a
+  # manifest header, which is caller-supplied bytes the header/body cross-check
+  # has not yet compared and which no reader constrains to a character set — so
+  # an id carrying `../` would concatenate into a directory anywhere on the host,
+  # and the pin found there would choose the program that runs next.
+  #
+  # ONLY PATH ESCAPE IS REFUSED, NOT A SHAPE. The fixtures in this tree open runs
+  # under ids like `R57` and `victim`, and a pattern for the ids the driver mints
+  # would refuse those along with the attack. Rejecting `/`, `.` and `..` is
+  # complete against escape on its own terms: `/` is the only component separator,
+  # so an id without one names exactly one entry under the run root.
+  case "$1" in
+    ''|.|..) return 2 ;;
+    */*) return 2 ;;
+  esac
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$1"
 }
 
 rundir_init() {
-  RUN_DIR=$(rundir_of_run_id "$RUN_ID")
+  RUN_DIR=$(rundir_of_run_id "$RUN_ID") \
+    || die "런 id 에 경로 성분이 있습니다 — 런 디렉터리 이름은 한 칸이어야 합니다: $RUN_ID"
   # `digest/` IS A QUARANTINE, not a tidier layout. The gate's `--emit-digest`
   # write is graded by nothing, guarded by nothing and recorded in no ledger
   # field — so the directory it lands in is the whole of its containment. The
