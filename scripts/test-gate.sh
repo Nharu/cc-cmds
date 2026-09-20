@@ -4554,6 +4554,18 @@ done
 # `RD` is set in `pre_base`, in the head.
 printf '%s\n' "$(PD)" > "$RD/progress-digest"
 printf '%s\n' "9" > "$RD/progress-repeat"
+# THE READ-CREDIT STRETCH IS SEEDED EMPTY, at the ledger's row count as of now.
+# B1 forgives a short stretch of reads since the digest last moved, and with no
+# origin recorded that stretch is the whole ledger — so whichever sections ran
+# before this one decide whether the boundary fires. In a whole-file run the
+# stretch is long and spent; on a shard that puts one read-graded `exec` (8d)
+# directly in front of this section it holds one read and nothing else, the
+# credit suppresses the firing, and the four assertions that stand on this
+# approval (here, 13 and 14) fail against a ledger that is correct. An empty
+# stretch is the one the design refuses to forgive, and it is the state this
+# section is about: a router spinning on judgments with nothing read between.
+# Same seed as 31aa's.
+printf '%s\n' "$( { grep -c '^- `' "$FX_LEDGER" || true; } | tr -d ' ')" > "$RD/progress-origin"
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind x --target front --cutpoint 커밋 \
      --snapshot-digest "$(HH)" --rationale "S9" -- touch "$WORK/t2"
@@ -6104,6 +6116,20 @@ past_dl() {
   mv "$out" "$FX_MANIFEST"
   refresh_bd
 }
+# SD'S `segment` ROW IS WRITTEN FIRST, before the clock is moved. The stage
+# dispatch meets the segment-row existence check AHEAD of the rule catalog the
+# deadline sits in, so a probe for SD with no row is refused for the missing row
+# and never reaches the clock — rc=3 either way, and the two message assertions
+# below then read the wrong refusal. A whole-file run had the row from an
+# earlier section; a shard that cuts this section on its own does not. A
+# segment row is a bookkeeping act the deadline lets through, which the
+# assertion further down proves, so writing it here does not touch what this
+# section measures.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SD --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale "SD 의 행을 마감 프로브보다 먼저 쓴다" \
+     -- 상태=계획됨 워크트리="$WT" 선행=없음
+check "SD 의 segment 행이 마감 프로브 전에 기록된다" "$rc" "0"
 past_dl '2020-01-01T00:00:00Z'
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --cutpoint 커밋 -- review
