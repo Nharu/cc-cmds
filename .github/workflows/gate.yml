@@ -55,12 +55,21 @@ jobs:
       # count. They are two places, so they are compared here — a matrix that
       # drifted short would leave the missing shard's sections owned by nobody
       # while every job still passed.
-      - name: Matrix length agrees with GATE_SHARDS
+      #
+      # THE VALUES ARE COMPARED, NOT THE LENGTH. A duplicate entry keeps the
+      # length right and produces exactly the outcome the length check exists to
+      # catch: `[1 2 3 4 5 6 7 7]` runs shard 7 twice, never runs shard 8, and
+      # every job is green. The union check does not see it either — it asks the
+      # partitioner whether the shards cover the list, not whether the matrix
+      # asked for all of them. One sorted comparison closes short, long,
+      # duplicated and out-of-range together.
+      - name: Matrix shard numbers are exactly 1..GATE_SHARDS
         run: |
           want=$(make -s print-gate-shards)
-          got=$(yq '.jobs.gate-shards.strategy.matrix.shard | length' .github/workflows/gate.yml)
-          if [ "$want" != "$got" ]; then
-            echo "matrix 의 샤드 수 $got 가 GATE_SHARDS $want 와 다릅니다" >&2
+          got=$(yq '.jobs.gate-shards.strategy.matrix.shard[]' .github/workflows/gate.yml | sort -n | tr '\n' ' ')
+          expect=$(seq 1 "$want" | tr '\n' ' ')
+          if [ "$got" != "$expect" ]; then
+            echo "matrix 의 샤드 번호 [$got] 가 1..$want [$expect] 와 다릅니다" >&2
             exit 1
           fi
           echo "샤드 $want 개"
