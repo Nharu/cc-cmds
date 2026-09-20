@@ -170,7 +170,9 @@ done < <(
     find "$skills_root" -mindepth 3 -maxdepth 3 -path '*/references/*.md'
   } | sort
 )
-checked=$((checked + 1))
+# One check per retired phrase, not one for the fence: a phrase dropped from
+# the array would otherwise leave the banner count untouched.
+checked=$((checked + ${#RETIRED_PHRASES[@]}))
 
 # ---------- (iv) the report template's record block --------------------------
 
