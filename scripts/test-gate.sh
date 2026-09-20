@@ -6320,6 +6320,15 @@ fi
 # means a vanished path stays in the list until the NEXT non-terminal row,
 # which is the direction that does not widen anything (the directory is gone).
 #
+# THE BOUNDARY IS A CHECK ON A DIRECTORY, so what it does not cover is pinned
+# here beside it: a subdirectory of an admitted worktree passes all three
+# conditions, and a name carrying a newline, a double quote or a backslash
+# would then reach the settings file as list syntax rather than as one entry.
+# Three spellings are driven, the list is compared byte for byte across them,
+# and the shape of the whole list — every entry a directory that exists — is
+# asserted once after a widening, so a pin on a message is not the only thing
+# standing between an admitted name and an invented one.
+#
 # `STATE_SEG`, `seg_wt_row`, `seg_last`, `seg_field` and `in_dirs` are set in
 # `pre_base`, in the head.
 # ---------------------------------------------------------------------------
@@ -6340,6 +6349,78 @@ if [ -d "$PAIR_WT" ]; then
     *"| 인가면="*) ok "넓힌 행이 인가면을 싣는다" ;;
     *) bad "짝 사례 (비종단·실재)" "인가면이 없다: $(seg_last SP)" ;;
   esac
+  # EVERY ENTRY OF THE LIST IS A DIRECTORY THAT EXISTS. The list is the stage's
+  # whole read and write authorization, so an entry that is not a directory is
+  # either a path the derivation invented or a fragment of one that was split;
+  # asserting the shape once, right after a widening, is what makes the two
+  # injection pins below more than pins on their own messages.
+  n_bad=0
+  while IFS= read -r ad; do
+    [ -d "$ad" ] || { n_bad=$((n_bad + 1)); bad "인가 목록의 항목" "디렉터리가 아니다: '$ad'"; }
+  done <<EOF
+$(jq -r '.permissions.additionalDirectories[]' "$SETTINGS_SEG/generic.json")
+EOF
+  [ "$n_bad" = "0" ] && ok "인가 목록의 모든 항목이 실재하는 디렉터리다"
+
+  # A NAME THE ROW AND THE SETTINGS FILE CANNOT CARRY IS REFUSED AT THE ROW.
+  # These subdirectories sit INSIDE the admitted worktree, so the three
+  # boundary conditions (absolute, exists, same common git directory) all hold
+  # — only the byte check stands between them and the list. Three spellings,
+  # three different ways they would have broken something downstream: a newline
+  # becomes a list separator in the renderer's line-delimited input, a double
+  # quote closes the JSON string and opens a second entry, and a backslash
+  # makes a string no JSON parser accepts. `generic.json` is compared BYTE FOR
+  # BYTE rather than by list length, because an entry substituted for another
+  # keeps the length and changes the authorization.
+  q_sha=$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)
+  q_len=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_SEG/generic.json")
+  n_seg_q=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+  HOSTILE_NL="$PAIR_WT/nl
+$WORK"
+  HOSTILE_DQ="$PAIR_WT/dq\", \"$WORK"
+  HOSTILE_BS="$PAIR_WT/bs\\dir"
+  mkdir -p "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS" 2>/dev/null || true
+  if [ -d "$HOSTILE_NL" ] && [ -d "$HOSTILE_DQ" ] && [ -d "$HOSTILE_BS" ]; then
+    i_h=0
+    for h in "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS"; do
+      i_h=$((i_h + 1))
+      seg_wt_row "SQ$i_h" "$h" 계획됨
+      check "인가된 워크트리 안이어도 위험 바이트를 담은 비종단 행은 exit 2 다 (#$i_h)" "$rc" "2"
+      case "$msg" in
+        *"큰따옴표·백슬래시·제어 문자"*) ok "그 거절이 바이트를 이유로 든다 (#$i_h)" ;;
+        *) bad "주입 거부 문면 (#$i_h)" "$msg" ;;
+      esac
+    done
+    check "그 거절들은 인가 목록을 바이트 하나도 바꾸지 않는다" \
+          "$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)" "$q_sha"
+    check "그 거절들은 항목 수를 바꾸지 않는다" \
+          "$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_SEG/generic.json")" "$q_len"
+    check "거절된 세 행은 원장에 남지 않는다" \
+          "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg_q"
+  else
+    bad "픽스처 전제" "주입 시험용 하위 디렉터리를 만들지 못했다"
+  fi
+  rm -rf "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS"
+
+  # THE RENDERER ESCAPES ON ITS OWN, and that half is pinned separately from
+  # the row's refusal. The list also carries paths that never pass through a
+  # `segment` row — the manifest's directory, the design document's, the run
+  # directory — so a renderer that is safe only because the row arm checked
+  # first is safe for one of its inputs. Two pins: the escaper round-trips the
+  # hostile spelling through `jq`, and the list construction is the caller.
+  ESC_DIR="$WORK/esc\\d\"ir"
+  esc_out=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c \
+    '. "$1" >/dev/null 2>&1; gate_json_escape "$2"' _ "$GATE" "$ESC_DIR" 2>/dev/null)
+  check "이스케이프가 큰따옴표와 백슬래시를 지나 원문으로 되돌아온다" \
+        "$(printf '{"d":"%s"}' "$esc_out" | jq -r .d)" "$ESC_DIR"
+  # The count is taken over the list-building expression ALONE, not over the
+  # whole file: `sed 's/.*/"&"/'` has another caller that quotes stage ids for
+  # the snapshot, and a file-wide count would read that one as this defect.
+  esc_block=$(awk '/extra_dirs=\$\(printf/,/tr .\\n. .,./' "$GATE")
+  check "인가 목록을 조립하는 자리가 그 이스케이프를 부르고 맨 감싸기는 남지 않았다" \
+        "$({ printf '%s\n' "$esc_block" | grep -c 'gate_json_escape' || true; }):$({ printf '%s\n' "$esc_block" | grep -cF "sed 's/.*/\"&\"/'" || true; })" \
+        "1:0"
+
   d_pair=$(cat "$RD_SEG/surface-digest")
   seg_wt_row SP "$PAIR_WT" 완료
   check "같은 워크트리를 실은 종단 행이 기록된다" "$rc" "0"

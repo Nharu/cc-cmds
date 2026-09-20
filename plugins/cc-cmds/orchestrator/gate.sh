@@ -7894,7 +7894,7 @@ gate_write_settings() {
   # session cut must find the same bytes, because those bytes are in the
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
-  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
+  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all d
   local kind_dirs kind_allow
   dir=$(gate_settings_dir)
   mkdir -p "$dir" || return 1
@@ -7984,6 +7984,17 @@ $(target_field "$a" '실행 워크트리')"
   # isolation existed on the row and nowhere else.
   wt_all="$wt_all
 $(gate_segment_worktrees_for_settings)"
+  # EVERY ENTRY GOES THROUGH `gate_json_escape`, the same escaper every other
+  # JSON string this file emits goes through. The list is interpolated into
+  # the settings file as JSON source, so a `"` or a `\` in a directory name
+  # would otherwise close the string early and let the rest of the name stand
+  # as syntax — one more entry, or a file the harness cannot parse. The
+  # `segment` arm refuses those bytes before a worktree reaches the ledger,
+  # but this renderer also reads the manifest and the document paths, and a
+  # renderer that is safe only because every caller was checked first is not
+  # safe; each half holds on its own. Newlines are the one byte escaping
+  # cannot mend here, because the list is line-delimited by the time it is
+  # read — that is the arm's refusal, not this line's.
   extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
@@ -7992,7 +8003,9 @@ $(gate_segment_worktrees_for_settings)"
       "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)" \
       "$wt_all" \
     | sed '/^$/d' | sed 's/^(없음)$//' | sed '/^$/d' \
-    | LC_ALL=C sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
+    | LC_ALL=C sort -u \
+    | while IFS= read -r d; do printf '"%s"\n' "$(gate_json_escape "$d")"; done \
+    | tr '\n' ',' | sed 's/,$//')
 
   # THE READ ALLOW-LIST, AND WHY IT IS NOT A DIRECTORY WIDENING. A stage that
   # builds a CLAUDE.md proposal has to read the live file, and the live slots sit
@@ -11647,6 +11660,29 @@ gate_record_row() {
       # because the value is a measurement this arm takes, and a row carrying
       # the caller's number would read as a widening that never happened.
       #
+      # A BYTE NEITHER THE ROW NOR THE SETTINGS FILE CAN CARRY IS REFUSED, NOT
+      # MAPPED. The boundary below is a check on a DIRECTORY — absolute,
+      # existing, inside a declared target's common git directory — and a
+      # subdirectory of an admitted worktree passes it whatever its name is.
+      # The value then travels two ways that read it as TEXT: the row grammar
+      # maps a newline to a space, so the ledger can never repeat the name it
+      # admitted; and the pending pair hands the raw value to the renderer,
+      # which splits the list on newlines and quotes each line. Measured on the
+      # shape: `<wt>/x<LF>/Users/ian` rendered as TWO `additionalDirectories`
+      # entries, the second one a directory no target declares, and every
+      # consumer downstream — the surface digest, the hook, `jq` — accepted the
+      # file as well-formed. A double quote or a backslash in the name does the
+      # same through the JSON syntax instead of through the line structure. So
+      # the closed set is the one the renderer's JSON string and the row's line
+      # cannot spell: control bytes (`[:cntrl:]`, which is 0x00–0x1F and 0x7F
+      # in the C locale, so a multibyte path is untouched), `"` and `\`. The
+      # renderer escapes as well, so that either half alone still holds.
+      #
+      # `tr -d` under `LC_ALL=C` compares BYTES, which is the point: a UTF-8
+      # path is made of bytes ≥ 0x80 and none of them is in the set, so a
+      # Korean worktree name passes unchanged, and an invalid sequence cannot
+      # make the filter fail open the way a locale-aware one might.
+      #
       # THE ROW IS NEVER LOST TO THE FIELD. The field is two sha256s, and the
       # row cap is `GATE_ROW_MAX`; a row that would cross it with the field
       # carries `인가면=생략(행 길이)` instead — and if even that crosses, no
@@ -11660,6 +11696,10 @@ gate_record_row() {
         *)
           if [ -n "$(gate_field_of '인가면' "$@")" ]; then
             warn "segment 행의 「인가면」은 게이트가 재유도 결과로 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$wt" != "$(printf '%s' "$wt" | LC_ALL=C tr -d '[:cntrl:]"\\')" ]; then
+            warn "segment 행의 「워크트리」에 큰따옴표·백슬래시·제어 문자를 담을 수 없습니다: '$(printf '%s' "$wt" | LC_ALL=C tr -d '[:cntrl:]')' — 비종단 상태(${st})의 행은 원장과 인가 목록이 그대로 실을 수 있는 경로만 가리킬 수 있습니다"
             return "$GATE_EXIT_VOCAB"
           fi
           case "$wt" in
