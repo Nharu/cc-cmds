@@ -5203,6 +5203,27 @@ check "배시 가드: 음성 대조군 — 런 루트 밖은 rc 0" "$rr_guard_rc
 rr_guard 읽기 cat "$RR/cc-cmds/run/victim/plugin-pin"
 check "배시 가드: 형제 런이라도 읽기는 그대로 통과한다" "$rr_guard_rc" "0"
 
+# --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
+# 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
+# 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어진다.
+# 그것을 쓰기 대상으로 읽으면 `plugin/…` 이 어느 허용 가지에도 맞지 않아 거부되고,
+# 실측으로 무인 설계 스테이지가 팀원을 하나도 못 띄운 채 런이 닫혔다. 파일은
+# 실행된다고 쓰이지 않으므로 이 원소를 건너뛰어도 허용 목록이 잃는 것은 없다.
+rr_guard 트리밖쓰기 "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 자기 런 고정 사본의 스크립트를 실행하는 것은 rc 0" "$rr_guard_rc" "0"
+# 음성 대조군 — 같은 경로가 쓰기 **대상** 자리에 오면 그대로 거부다. 없으면 위
+# 단언의 초록이 「고정 사본이 통째로 열렸다」와 구별되지 않는다.
+rr_guard 워크트리쓰기 cp x "$MYRUN/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh"
+check "배시 가드: 음성 대조군 — 같은 경로가 쓰기 대상이면 rc 3" "$rr_guard_rc" "3"
+# 그리고 형제 런의 고정 사본을 **실행**하는 것은 argv0 이라도 거부다 — 그 팔은
+# 쓰기 대상 판정에 기대지 않는다.
+rr_guard 트리밖쓰기 "$RR/cc-cmds/run/victim/plugin/cc-cmds/orchestrator/cc-team-witness-init.sh" some-slug
+check "배시 가드: 형제 런 고정 사본의 실행은 argv0 이어도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'다른 런의 디렉터리'*) ok "배시 가드: 그 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 형제 런 argv0 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+
 # --- 그리고 그 앵커는 심링크 **조상**으로 통째로 우회됐다 --------------------
 # 위 열두 단언은 전부 직접 철자이고 이 절에 `ln -s` 가 한 줄도 없었다. 아이노드 팔은
 # 조상 성분을 아이노드로 비교하되 사슬을 거슬러 오르는 것은 **어휘적**이라, 앵커된
