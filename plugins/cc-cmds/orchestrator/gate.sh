@@ -11617,6 +11617,22 @@ gate_rundir_write_guard() {
         halt/*/*) ;;
         halt/*) continue ;;
         cc-team-witness-*/*) continue ;;
+        # THE UNATTENDED DESIGN STAGE'S STATE ROOT AND PRE-IMAGES. The skill
+        # declares both as paths it writes, and this list did not know them — so
+        # the stage stopped before spawning a single team member. It stops THERE
+        # rather than mid-discussion because a walkthrough resolution needs an undo
+        # to be adoptable at all, and the undo is restored from the pre-image.
+        #
+        # Safe on the witness exception's own terms: neither exists when the run
+        # opens, so neither is a baseline the gate re-reads on every act, and
+        # neither is read by the enforcement-surface check. Depth is deliberately
+        # unrestricted — the state root carries a `witness/` directory one level
+        # further down — which is why these branches are not spelled like `halt/*`.
+        design|design/*|preimage|preimage/*) continue ;;
+        # `mkdir -p` names the directories it creates, so `halt` itself appears as
+        # an argument. Allowing the directory opens nothing beyond `halt/*`, which
+        # is already allowed, and `halt/*/*` is refused above.
+        halt) continue ;;
         */*) ;;
         *.plan.md) continue ;;
       esac
