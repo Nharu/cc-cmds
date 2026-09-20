@@ -17931,14 +17931,13 @@ check "60: 남의 저장소는 협업이 아니다" \
   "$(s60 'C gh -R evil/x issue create --title x; C gh --repo=evil/x pr merge 1')" \
   "0
 0"
-# 환경 변수도 저장소를 바꾸는 철자다. 파서는 이미 그것을 읽지만 이 셀은 아직
-# argv0 의 맨 이름으로 갈라서 `env …` 는 gh 팔에 닿지 못한다 — 남의 저장소가
-# 협업이 아닌 것은 맞은 답이되 아직 맞은 이유가 아니고, 그 증거로 대상의 저장소를
-# 적은 같은 철자도 함께 떨어진다. 둘째 줄은 래퍼를 벗기는 자리에서 뒤집힌다.
+# 환경 변수도 저장소를 바꾸는 철자다. 두 줄이 함께 있어야 첫 줄이 맞은 이유로
+# 맞았음이 드러난다 — 둘째 줄까지 0 이면 셀이 저장소를 본 것이 아니라 `env` 라는
+# 이름에서 갈려 나간 것이다.
 check "60: 환경 변수로 바꾼 남의 저장소는 협업이 아니다" \
   "$(s60 'C env GH_REPO=evil/x gh pr merge 1')" "0"
-check "60: 래퍼를 안 벗긴 오늘은 대상의 저장소도 gh 팔에 못 닿는다 (래퍼 벗김의 전제)" \
-  "$(s60 'C env GH_REPO=o/r gh pr merge 1')" "0"
+check "60: 환경 변수로 바꾼 대상의 저장소는 협업이다" \
+  "$(s60 'C env GH_REPO=o/r gh pr merge 1')" "1"
 # 엔드포인트는 첫 위치 인자다 — 헤더 값이나 jq 식이 「/issues」 를 품었다고
 # 그 요청이 이슈에 대한 것은 아니다.
 check "60: 엔드포인트 아닌 자리의 문면은 협업을 만들지 않는다" \
@@ -18013,6 +18012,143 @@ check "60: 저장소를 적지 않으면 필드를 내지 않는다" \
 check "60: 해소되지 않는 저장소는 대조 없이 실린다" \
   "$(s60 'gate_preauth_export tgt gh --repo=garbage pr merge 1; printf "%s|%s\n" "${GATE_ARGV_REPO:-}" "${GATE_TARGET_REPO:-}"')" \
   "garbage|"
+
+# ---------------------------------------------------------------------------
+# 61. The wrapper chain comes off once, for every table
+# --- section: 61 | group: parse | covers: act | anchors: 61: 분할 문자열이 대입으로 읽히지 않는다, 61: 실행할 바이너리를 바꾸는 대입은 형태 미상이다, 61: 래퍼를 쓴 머지가 모든 표에서 머지다, 61: 조각이 놓은 대입도 대조된다, 61: 지워진 변수는 게이트의 값을 빌리지 않는다 ---
+#
+# 래퍼를 벗기던 표는 셋, 벗기지 않던 표는 넷이었고 벗기던 셋도 서로 다른
+# 손글씨 옵션 문법을 썼다. 그래서 **같은 행위가 표마다 다른 답을 받았다** —
+# 이 절은 한 행위를 다섯 표에 동시에 물어 답이 하나인지를 본다.
+#
+# 절 58·59·60 과 같은 이유로 소싱은 /bin/bash 로 하고 본문은 `set -u` 아래서 돈다.
+# ---------------------------------------------------------------------------
+s61() {
+  # s61 <본문> — s60 과 같은 틀이되 dev 식별자와 게이트 자신의 env 를 더 준다.
+  # `G` 등급, `M` 표식, `L` 사다리 칸, `C` 협업, `D` 배포 트리거, `V` dev 식별자.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 \
+      S61_GATE="$GATE" S61_BODY="$1" S61_SLUG="${S61_SLUG:-o/r}" S61_IDS="${S61_IDS:-}" \
+      S61_DEV="${S61_DEV:-}" AWS_PROFILE="${S61_AWS:-}" PGHOST="" \
+      /bin/bash -c '
+      . "$S61_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() {
+        case "$2" in
+          "원격 슬러그")       printf "%s" "$S61_SLUG" ;;
+          "배포트리거 식별자") printf "%s" "$S61_IDS" ;;
+          "dev 식별자")        printf "%s" "$S61_DEV" ;;
+          *) return 1 ;;
+        esac
+      }
+      GATE_GRADE_SOURCE=표
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      M() { printf "%s\n" "$(gate_act_mark "$@" | tr "\t" "/")"; }
+      L() { printf "%s\n" "$(ladder_of_argv0 "$@")"; }
+      C() { if gate_collaboration_surface tgt - "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      D() { if gate_deploy_trigger_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      V() { printf "%s\n" "$(gate_dev_identifier_check tgt "$@")"; }
+      H() { printf "%s\n" "$(gate_history_integration "$@")"; }
+      eval "$S61_BODY"' 2>/dev/null )
+}
+
+# (1) 못 읽는 철자는 등급이 형태 미상이다. 옛 벗김은 `--split-string=` 를 `*=*`
+# 가지에서 먼저 잡아 **대입으로** 읽었고, 그래서 옵션을 삼킨 뒤 뒤에 남은 `true`
+# 를 실행 정체로 잡아 저장소 삭제가 `읽기` 로 통과했다.
+check "61: 분할 문자열이 대입으로 읽히지 않는다" \
+  "$(s61 'G env --split-string="gh repo delete o/r --yes" true; G env "-SX=1 gh repo delete o/r --yes" true')" \
+  "형태 미상
+형태 미상"
+# 실행 정체 부류. 게이트가 실행할 바이너리가 실제로 바뀐다.
+check "61: 실행할 바이너리를 바꾸는 대입은 형태 미상이다" \
+  "$(s61 'G env PATH=/tmp/evil gh pr view 1')" "형태 미상"
+# 지움 꼴은 실행 정체를 바꾸지 않는다 — argv0 해소 PATH 는 그대로 서 있다.
+check "61: 변수를 지우는 꼴은 형태 미상이 아니다" \
+  "$(s61 'G env -u PATH gh pr view 1; G env -i gh pr view 1')" \
+  "읽기
+읽기"
+# 뒤에 피연산자가 없는 `-S` 는 옵션 루프 재진입이라 안쪽 명령이 그대로 보인다.
+check "61: 뒤가 빈 분할 문자열은 안쪽 명령을 드러낸다" \
+  "$(s61 'G env -S"-i gh pr merge 1"')" "외부상태변경"
+
+# (2) 한 행위, 다섯 표, 한 답. 옛 코드에서 이 줄의 다섯 답은 등급만 맞고
+# 표식·사다리·협업·배포는 `env` 라는 이름에서 갈려 아무것도 주장하지 못했다.
+S61_IDS='workflow:deploy.yml'
+check "61: 래퍼를 쓴 머지가 모든 표에서 머지다" \
+  "$(s61 'G env GH_REPO=o/r gh pr merge 1; L env GH_REPO=o/r gh pr merge 1; C env GH_REPO=o/r gh pr merge 1; G timeout 5 gh pr merge 1; L nohup gh pr merge 1; C nice -n 5 gh pr merge 1')" \
+  "외부상태변경
+머지
+1
+외부상태변경
+머지
+1"
+check "61: 래퍼 안의 남의 저장소도 대조된다" \
+  "$(s61 'C env GH_REPO=evil/x gh pr merge 1; C timeout 5 gh -R evil/x pr merge 1')" \
+  "0
+0"
+check "61: 래퍼를 쓴 비밀 읽기도 표식을 받는다" \
+  "$(s61 'M env AWS_REGION=x aws secretsmanager get-secret-value --secret-id s; M timeout 5 gh auth token')" \
+  "비밀출력/get-secret-value
+비밀출력/token"
+check "61: 래퍼를 쓴 워크플로 기동도 배포 트리거다" \
+  "$(s61 'D nohup gh workflow run deploy.yml; D env GH_REPO=evil/x gh workflow run deploy.yml')" \
+  "1
+0"
+S61_IDS=
+# 못 읽는 철자에 표식도 칸도 협업도 없다 — 등급이 이미 형태 미상으로 park 한다.
+check "61: 못 읽는 철자는 어느 표도 주장하지 않는다" \
+  "$(s61 'M env PATH=/tmp/evil gh auth token; L env PATH=/tmp/evil gh pr merge 1; C env PATH=/tmp/evil gh issue create --title x')" \
+  "/
+
+0"
+
+# (3) `time -o` 의 자기 쓰기. 래퍼가 분기에서 사라지므로 그 파일 피연산자도 함께
+# 사라질 뻔한 자리다.
+check "61: 시간 파일을 쓰는 래퍼는 바닥을 올린다" \
+  "$(s61 'G time -o /tmp/f cat x; G time cat x; G time -o /tmp/f gh pr merge 1')" \
+  "트리밖쓰기
+읽기
+외부상태변경"
+
+# (4) dev 식별자 — 벗김이 오늘의 우연한 fail-closed 를 없애므로 같은 커밋에서
+# 사슬을 읽어야 한다. 게이트 자신의 프로필은 `dev` 이고, 행위가 자기 것을 적으면
+# 그것이 이긴다.
+S61_DEV='aws-profile:dev'
+S61_AWS=dev
+check "61: 행위가 적은 프로필이 게이트의 것을 이긴다" \
+  "$(s61 'V env AWS_PROFILE=prod aws s3 rm s3://x; V aws --profile prod s3 rm s3://x; V aws s3 rm s3://x')" \
+  "불일치
+불일치
+일치"
+# 지워진 변수는 「아무 말도 안 한 것」이 아니다 — 도구가 자기 기본값으로 가므로
+# 게이트의 값을 빌려 답하면 이 프로세스가 아닌 것에 대해 답하게 된다.
+check "61: 지워진 변수는 게이트의 값을 빌리지 않는다" \
+  "$(s61 'V env -u AWS_PROFILE aws s3 rm s3://x; V env -i aws s3 rm s3://x')" \
+  "부재
+부재"
+# 조각이 `export` 로 놓은 대입도 사슬에 남는다. 옛 코드는 argv0 가 `sh` 라는
+# 이유만으로 대조불가였다.
+check "61: 조각이 놓은 대입도 대조된다" \
+  "$(s61 'V sh -c "export AWS_PROFILE=prod; aws s3 rm s3://x"')" "불일치"
+# 이력 합류 술어도 같은 벗김을 쓴다. 자기 손글씨 벗김을 쓰던 동안 분할 문자열은
+# 여기서도 대입으로 읽혀 `true` 에 대해 답했고, 그러면 리뷰 규칙이 그 머지를
+# 다음 줄에서 면제한다 — 등급만 고쳐 두면 녹색이면서 아무 일도 안 하는 수리다.
+check "61: 이력 합류 술어도 래퍼 너머를 본다" \
+  "$(s61 'H env --split-string="git merge seg" true; H env X=1 git merge seg; H timeout 5 git merge seg; H mkdir x')" \
+  "1
+1
+1
+0"
+# 조각이 여럿이면 가장 엄한 답이 이긴다 — 앞 조각이 맞았다고 뒤 조각이 면제되지
+# 않는다. 도구를 안 부르는 조각은 건너뛴다.
+check "61: 여러 조각 중 가장 엄한 답이 이긴다" \
+  "$(s61 'V sh -c "aws --profile dev s3 ls; aws --profile prod s3 rm s3://x"; V sh -c "echo hi; ls"')" \
+  "불일치
+대조불가"
+S61_DEV=
+S61_AWS=
 
 # --- epilogue-begin ---
 #

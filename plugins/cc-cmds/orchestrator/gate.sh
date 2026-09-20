@@ -816,9 +816,8 @@ gate_deploy_trigger_match() {
   # workflow run <val>` does not — and an `argv` element written as several
   # words matched a longer word that merely contained it.
   local _words=()
-  gate_gp_ensure "$@"
-  if [ "$GP_STATUS" != form ] && [ "${#GP_INNER[@]}" -gt 0 ]; then
-    _words=("${GP_INNER[@]}")
+  if gate_peel_argv "$@"; then
+    _words=(${GATE_PEELED[@]+"${GATE_PEELED[@]}"})
   elif [ "$#" -gt 0 ]; then
     _words=("$@")
   fi
@@ -911,11 +910,21 @@ gate_collaboration_surface() {
   # to compare the spelled repository against.
   local alias="$1"; shift
   local rd="$1"; shift
-  local cmd="${1##*/}"; shift
   [ "$GATE_GRADE_SOURCE" = "표" ] || return 1
+  # The cell is about where the act lands, and a launcher's name says nothing
+  # about that. `env GH_REPO=o/r gh pr merge 1` dispatched on `env` and fell out
+  # of the cell, so the same merge was collaboration or not depending on whether
+  # anyone had written `env` in front of it.
+  gate_peel_argv "$@" || return 1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || return 1
+  local cmd="${1##*/}"; shift
   case "$cmd" in
     gh)
-      gate_gp_ensure gh "$@"
+      # THE PARSE IS THE ACT'S, NOT THIS ARM'S. Re-parsing the peeled words here
+      # would throw the wrapper chain away, and the chain is where `GH_REPO=` was
+      # spelled — `env GH_REPO=evil/x gh pr merge 1` came back with no explicit
+      # repository at all and passed as collaboration on the target.
       case "$GP_STATUS" in form) return 1 ;; esac
       # An EXPLICIT repository (`-R`, `--repo`, `GH_REPO`) has to be the target's
       # own. Collaboration is a claim about WHERE the act lands, and every verb
@@ -965,16 +974,76 @@ gate_dev_identifier_check() {
   local alias="$1"; shift
   local ids; ids=$(target_field "$alias" 'dev 식별자' 2>/dev/null) || ids=""
   [ -n "$ids" ] || { printf '미선언'; return 0; }
-  local cmd="${1##*/}" a val="" primary="" next=""
-  case "$cmd" in
-    aws)                      primary=aws-profile ;;
-    kubectl|helm)             primary=kube-context ;;
-    terraform)                primary=dir ;;
-    curl|wget)                primary=host ;;
-    ssh|scp|rsync)            primary=host ;;
-    psql|pg_dump|pg_restore|mysql|mysqldump|redis-cli|mongosh|mongo) primary=host ;;
-    *) printf '대조불가'; return 0 ;;
+  # THE PEEL CHANGES WHAT FAILURE LOOKS LIKE HERE, so the environment has to be
+  # read in the same change. Before it, `env AWS_PROFILE=prod aws s3 rm …`
+  # dispatched on `env`, fell to `대조불가`, and parked — accidentally safe.
+  # Peeled, the same act reaches the `aws` row, finds no `--profile` in argv,
+  # and would fall through to the gate's OWN environment, answering with the
+  # orchestrator's profile about an act that set its own. So the chain's
+  # assignments are consulted between the two, and a variable the chain cleared
+  # answers `부재` rather than borrowing the gate's.
+  gate_peel_argv "$@" || { printf '대조불가'; return 0; }
+  local _cleared=0
+  [ "${GP_ENV_CLEAR:-0}" = "1" ] && _cleared=1
+  # A SHELL FRAGMENT RUNS THE TOOL TOO. `sh -c 'export AWS_PROFILE=prod; aws s3
+  # rm …'` has `sh` for its argv0 and answered `대조불가` on that alone, while
+  # the assignment it makes is already recorded on the chain. Every fragment
+  # that names a tool with a primary kind is checked and the strictest answer
+  # wins — a second fragment that contradicts the target is not excused by a
+  # first one that agreed with it.
+  if [ "${GP_STATUS:-}" = list ] && [ -z "$(gate_dev_primary_of "${GATE_PEELED[0]##*/}")" ]; then
+    _GATE_DEV_ANS=""
+    gp_each_sub gate_dev_identifier_frag "$ids" "$_cleared"
+    [ -n "$_GATE_DEV_ANS" ] || _GATE_DEV_ANS=대조불가
+    printf '%s' "$_GATE_DEV_ANS"
+    return 0
+  fi
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || { printf '대조불가'; return 0; }
+  gate_dev_identifier_of "$ids" "$_cleared" "$@"
+}
+
+gate_dev_primary_of() {
+  # The kind of identifier a tool's own spelling carries. Split out because the
+  # fragment path has to ask the question before it commits to an answer.
+  case "$1" in
+    aws)                      printf 'aws-profile' ;;
+    kubectl|helm)             printf 'kube-context' ;;
+    terraform)                printf 'dir' ;;
+    curl|wget)                printf 'host' ;;
+    ssh|scp|rsync)            printf 'host' ;;
+    psql|pg_dump|pg_restore|mysql|mysqldump|redis-cli|mongosh|mongo) printf 'host' ;;
   esac
+  return 0
+}
+
+_GATE_DEV_ANS=''
+gate_dev_identifier_frag() {
+  # `gp_each_sub` callback — one fragment of a shell body. Keeps the strictest
+  # answer seen so far; fragments that name no tool are passed over, so an
+  # `echo` beside an `aws` does not turn the act uncomparable.
+  local ids="$1" cleared="$2"; shift 2
+  [ "$#" -ge 1 ] || return 0
+  [ -n "$(gate_dev_primary_of "${1##*/}")" ] || return 0
+  local got; got=$(gate_dev_identifier_of "$ids" "$cleared" "$@")
+  case "$_GATE_DEV_ANS" in
+    불일치) return 0 ;;
+    부재) [ "$got" = 불일치 ] || return 0 ;;
+    일치) case "$got" in 불일치|부재) ;; *) return 0 ;; esac ;;
+  esac
+  _GATE_DEV_ANS="$got"
+  return 0
+}
+
+gate_dev_identifier_of() {
+  # gate_dev_identifier_of <ids> <cleared> <argv...> — the resolution itself,
+  # with no parsing of its own: it reads `GP_ENV` through the accessors, which
+  # the caller has already filled for the act as a whole. That is what lets a
+  # fragment be answered without re-parsing it out of its own body.
+  local ids="$1" _cleared="$2"; shift 2
+  local cmd="${1##*/}" a val="" primary="" next=""
+  primary=$(gate_dev_primary_of "$cmd")
+  [ -n "$primary" ] || { printf '대조불가'; return 0; }
   [ "$GATE_GRADE_SOURCE" = "표" ] || { printf '대조불가'; return 0; }
   # Does the target declare this tool's primary kind at all?
   case ",$ids," in
@@ -997,22 +1066,41 @@ gate_dev_identifier_check() {
       host:*://*) val=$(printf '%s' "$a" | sed -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#[/:].*$##') ;;
     esac
   done
-  if [ -z "$val" ]; then
-    # `env NAME=VAL` riding in the same argv, then the gate's own environment.
-    for a in "$@"; do
-      case "$primary:$a" in
-        aws-profile:AWS_PROFILE=*|aws-profile:AWS_DEFAULT_PROFILE=*) val="${a#*=}" ;;
-        host:PGHOST=*) val="${a#*=}" ;;
-      esac
+  # The assignments the chain carries, whichever spelling put them there — an
+  # `env NAME=VAL` operand, a shell prefix assignment, an `export` inside a
+  # fragment. The parser records them all, which is why this reads the chain
+  # rather than scanning the words again for `NAME=` the way it used to: that
+  # scan saw only the first spelling, and it also matched the word wherever it
+  # sat, so `aws s3 cp AWS_PROFILE=prod s3://x` was read as a profile.
+  local _names=""
+  case "$primary" in
+    aws-profile) _names="AWS_PROFILE AWS_DEFAULT_PROFILE" ;;
+    host)        _names="PGHOST" ;;
+  esac
+  if [ -z "$val" ] && [ -n "$_names" ]; then
+    for a in $_names; do
+      val=$(gp_env_get "$a") && break
+      val=""
     done
   fi
-  if [ -z "$val" ]; then
+  # THE GATE'S OWN ENVIRONMENT IS LAST, AND ONLY WHERE THE CHAIN SAID NOTHING.
+  # A chain that cleared the variable (`env -u NAME`, `env -i`) said something:
+  # the act runs without it, so the tool will reach for its own default. Reading
+  # the gate's value there would answer about a process that is not this one.
+  if [ -z "$val" ] && [ -n "$_names" ] && [ "$_cleared" = "0" ]; then
+    for a in $_names; do
+      gate_env_chain_cleared "$a" && { _cleared=1; break; }
+    done
+  fi
+  if [ -z "$val" ] && [ "$_cleared" = "0" ]; then
     case "$primary" in
       aws-profile) val="${AWS_PROFILE:-${AWS_DEFAULT_PROFILE:-}}" ;;
       host) val="${PGHOST:-}" ;;
-      dir) val="${GATE_ACT_CWD:-}" ;;
     esac
   fi
+  # `dir` never rode in the environment; its widest source is the act's own
+  # working directory, which no chain can clear.
+  if [ -z "$val" ] && [ "$primary" = dir ]; then val="${GATE_ACT_CWD:-}"; fi
   [ -n "$val" ] || { printf '부재'; return 0; }
   local IFS=','; local id kind dval
   for id in $ids; do
@@ -1043,6 +1131,11 @@ gate_push_remote_match() {
   local alias="$1"; shift
   local want; want=$(target_field "$alias" '원격 슬러그' 2>/dev/null) || want=""
   [ -n "$want" ] || return 0
+  # The same peel as every other cell: a push is a push whatever launcher was
+  # written in front of it, and an argv the parser could not read is not a push
+  # this check may pass.
+  gate_peel_argv "$@" || return 1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
   local a rname="" seen_push=0 url=""
   for a in "$@"; do
     case "$a" in
@@ -3543,6 +3636,23 @@ gp_wrap_has() {
 # `gp_env_get NAME` — NAME's value after the chain: the last assignment since
 # the last clear, unless a later `-NAME` removed it. rc 1 when the chain leaves
 # it unset; what the process environment holds is the caller's to consult.
+gate_env_chain_cleared() {
+  # 0 when the chain REMOVED NAME and nothing put it back. `gp_env_get` answers
+  # rc 1 for this and for "the chain never mentioned it", and the two are not
+  # the same fact: one says the act runs without the variable, the other says
+  # the act says nothing and whatever the gate holds still applies.
+  local k="$_GP_ENV_BASE" e cleared=0
+  while [ "$k" -lt "${#GP_ENV[@]}" ]; do
+    e="${GP_ENV[$k]}"
+    case "$e" in
+      "-$1") cleared=1 ;;
+      "$1="*) cleared=0 ;;
+    esac
+    k=$((k + 1))
+  done
+  [ "$cleared" = 1 ]
+}
+
 gp_env_get() {
   local k="$_GP_ENV_BASE" e set=0 val=''
   while [ "$k" -lt "${#GP_ENV[@]}" ]; do
@@ -3838,6 +3948,56 @@ gate_gp_ensure() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE WRAPPER CHAIN COMES OFF IN ONE PLACE. `env X=1 gh pr merge 1` is a merge,
+# and the tables that answer for an act have to see the merge rather than the
+# launcher's name. Three tables used to peel it themselves and four did not, so
+# the same act got different answers depending on which table asked: the mark,
+# the ladder rung, the collaboration cell and the deploy trigger all dispatched
+# on `env` and never reached the command inside.
+#
+# THE THREE THAT DID PEEL DISAGREED WITH EACH OTHER TOO, because each rewrote
+# the launcher's option grammar by hand. `env --split-string='gh repo delete
+# o/r --yes' true` was read as an ASSIGNMENT — the `*=*` arm stood above the
+# `-*` arm — so the option was consumed as if it were `NAME=VAL`, the scan moved
+# on to `true`, and a repository deletion graded `읽기`.
+#
+# rc 1 IS A REFUSAL TO GUESS, NOT AN ANSWER. A spelling the parser could not
+# read leaves `GATE_PEELED` empty and the caller decides what its own table says
+# about an argv nobody understood — the grade answers `형태 미상`, the mark and
+# the ladder stay silent, the cells answer no. Choosing one value here would
+# hand every caller the grading table's answer.
+#
+# In `list`, `opaque` and `tool` the parser leaves `GP_INNER` verbatim, so a
+# shell fragment and an unregistered wrapper arrive as the same words they do
+# today.
+# ---------------------------------------------------------------------------
+GATE_PEELED=()
+gate_peel_argv() {
+  gate_gp_ensure "$@"
+  case "$GP_STATUS" in
+    form) GATE_PEELED=(); return 1 ;;
+  esac
+  if [ "${#GP_INNER[@]}" -gt 0 ]; then
+    GATE_PEELED=(${GP_INNER[@]+"${GP_INNER[@]}"})
+  else
+    GATE_PEELED=("$@")
+  fi
+  return 0
+}
+
+gate_peel_wrote() {
+  # 0 when the chain that was just peeled WRITES on its own account, so the
+  # grade may not fall below a write. `time -o <file>` is the whole of it today:
+  # the wrapper is gone from the dispatch after the peel and its file operand
+  # would go with it.
+  local r
+  for r in ${GP_WRAP[@]+"${GP_WRAP[@]}"}; do
+    case "$r" in *"${_GP_TAB}output="*) return 0 ;; esac
+  done
+  return 1
+}
+
 # WHAT THE PRE-AUTHORIZATION RULE COMPARES. The rule is a `/bin/sh` process and
 # reads `GATE_ARGV` as one flat string, so a word that carries a space or a
 # newline is split again there: a two-line `--body` made `gh pr create` miss its
@@ -3894,6 +4054,30 @@ gate_preauth_export() {
 }
 
 surface_of_argv0() {
+  # THE PEEL IS THE FIRST THING, so every row below answers about the command
+  # that actually runs. What used to happen here instead was a launcher row per
+  # name, each delegating to a hand-written option scan, and the grade a
+  # launcher produced was only as good as that scan — see `gate_peel_argv`.
+  if ! gate_peel_argv "$@"; then printf '%s' "$GATE_FORM_UNKNOWN"; return 0; fi
+  local _wrote=0
+  gate_peel_wrote && _wrote=1
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ $# -gt 0 ] || { printf '읽기'; return 0; }
+  if [ "$_wrote" = "1" ]; then
+    # The wrapper's own write floors the answer. The inner grade still wins when
+    # it is higher — a wrapper that writes a timing file does not make a merge
+    # smaller than a merge.
+    local _inner; _inner=$(_surface_of_argv0_table "$@")
+    case "$_inner" in
+      읽기|워크트리쓰기) printf '트리밖쓰기' ;;
+      *) printf '%s' "$_inner" ;;
+    esac
+    return 0
+  fi
+  _surface_of_argv0_table "$@"
+}
+
+_surface_of_argv0_table() {
   local cmd="${1##*/}"
   shift
   case "$cmd" in
@@ -4295,6 +4479,19 @@ gate_history_integration() {
   # unwraps so the two tables cannot disagree about which word was wrapped. IF A
   # WRAPPER IS ESCAPING THIS CHECK, LOOK AT ITS GRADE FIRST — the grade decides
   # whether the rule ever gets here.
+  #
+  # THE LAUNCHER CHAIN COMES OFF THE SAME WAY THE GRADE TAKES IT OFF, and for
+  # the same reason the arms below give: two spellings of one skip loop are two
+  # chances to disagree about which word is the command. They did disagree —
+  # `env --split-string='… git merge …' true` was read as an assignment here and
+  # the predicate answered about `true`. An argv the parser could not read
+  # answers 1, which is this table's own direction: over-check, never exempt.
+  if gate_peel_argv "$@"; then
+    set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+    [ "$#" -ge 1 ] || { printf '0'; return 0; }
+  else
+    printf '1'; return 0
+  fi
   local cmd="${1##*/}"
   case "$cmd" in
     # `lockf` wraps, so unwrap it with the same routine the grader uses and ask
@@ -4670,7 +4867,10 @@ surface_of_gh() {
   # WHICH path argv0 named is the pre-authorization rule's question, and it is
   # answered there — putting it here would grade two runs of the same command
   # differently for a reason this axis does not measure.
-  gate_gp_ensure gh "$@"
+  #
+  # The parse already in `GP_*` is the whole act's, wrapper chain included, and
+  # this row does not make another one: a second parse of the peeled words alone
+  # would drop everything the chain carried.
   case "$GP_STATUS" in
     # An unreadable form is not an unknown tool. The parser refuses a verb gh
     # itself does not have, so everything that reaches the rows below is a real
@@ -5132,6 +5332,14 @@ surface_of_docker() {
 # word is not authorization for this one.
 # ---------------------------------------------------------------------------
 gate_act_mark() {
+  # A mark is a claim about what the act DOES, so it is made about the peeled
+  # command. Before the peel `env AWS_PROFILE=x aws secretsmanager
+  # get-secret-value` dispatched on `env`, found no row, and the credential read
+  # carried no mark at all. An unreadable argv takes no mark, for the reason the
+  # gh arm below already states.
+  gate_peel_argv "$@" || { printf '\t'; return 0; }
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || { printf '\t'; return 0; }
   local cmd="${1##*/}"; shift 2>/dev/null || true
   local all=" $* "
 
@@ -5143,7 +5351,7 @@ gate_act_mark() {
       # half of it, nor `--show-token=true`. A form the parser refuses takes no
       # mark — the grade already answers `형태 미상` there, and a mark on an argv
       # nobody could read would be a claim about words that were not understood.
-      gate_gp_ensure gh "$@"
+      # The parse is the act's, made once at the peel above.
       case "$GP_STATUS" in form) ;; *)
         case "${GP_PATH[*]:-}" in
           'auth token') printf '비밀출력\ttoken'; return 0 ;;
@@ -5316,7 +5524,7 @@ gate_act_mark() {
         [ "$g" = "delete" ] && { printf '파괴\tdelete'; return 0; }
       done ;;
     gh)
-      gate_gp_ensure gh "$@"
+      # Same parse as the mark above, made once at the peel.
       case "$GP_STATUS" in form) ;; *)
         case "${GP_PATH[1]:-}" in
           delete|item-delete|field-delete)
@@ -5607,6 +5815,11 @@ surface_of_time()    { gate_unwrap_time            surface_of_argv0 '읽기' "$G
 
 ladder_of_argv0() {
   [ "$#" -ge 1 ] || return 0
+  # Same peel, same reason as the grading table: the rung belongs to the command
+  # that runs, and an argv the parser could not read claims no rung at all.
+  gate_peel_argv "$@" || return 0
+  set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  [ "$#" -ge 1 ] || return 0
   local cmd="${1##*/}"
   shift
   case "$cmd" in
@@ -5672,7 +5885,7 @@ ladder_of_gh() {
   # the empty string, and a form the parser refused is exactly the case where
   # asserting a rung would be guessing from words nobody could read. The grading
   # table answers `형태 미상` for the same argv and that is what parks it.
-  gate_gp_ensure gh "$@"
+  # The parse is the act's, made once at the peel in `ladder_of_argv0`.
   case "$GP_STATUS" in form) return 0 ;; esac
   case "${GP_PATH[0]:-}" in
     api) ladder_of_gh_api "$@" ;;
