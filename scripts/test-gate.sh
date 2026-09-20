@@ -3116,7 +3116,16 @@ cp "$WORK/ledger.bak" "$FX_LEDGER"
 
 # ---------------------------------------------------------------------------
 # 2b. A row whose `prev=` cannot be read is a BREAK, not a row to step over
-# --- section: 2b | group: base | covers: snapshot, act, grade | anchors: prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다 ---
+# --- section: 2b | group: base | covers: snapshot, act, grade | needs: 2 | anchors: prev= 없는 위조 승인 행을 마지막에 붙이면 끊김으로 판정된다 ---
+#
+# `needs: 2` IS THE MIDDLE SPLICE'S PRECONDITION. That splice puts the forged
+# row in front of the FIRST genuine row, so the ledger has to carry at least one
+# row when this section starts — and section 1 ends by rewriting it as a
+# row-less kickoff stub. The rows this section splices around are the ones
+# section 2 writes (the `대상 미선언` park and the `대상 추가` row). A cut that
+# carried 1 and skipped 2 — shard 8 did exactly that — handed this section an
+# empty ledger, the awk below inserted nothing, and the chain read intact: red
+# for a reason unrelated to the verifier, and only in that cut.
 #
 # This is an authorization boundary, not a performance property. The verifier
 # used to `continue` past such a row WITHOUT advancing its running `prev`, so
