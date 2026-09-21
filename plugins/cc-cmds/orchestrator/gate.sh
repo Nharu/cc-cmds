@@ -19391,9 +19391,11 @@ gate_done_conditions() {
   # segments come from the frozen document's slicing, and the design step is not
   # a segment, so a run whose design never froze has no segments and never will.
   # Such a run is not "not begun": its design step will not be dispatched again,
-  # because its last `stage-result` row is of any class but `외부 종료`, or a
-  # document already sits at the path (a document that exists is not dispatched
-  # over), or the manifest names no document (the dispatch refuses that value).
+  # because its last `stage-result` row is of any class but `외부 종료` and it
+  # is not a crash that saved nothing, or a SAVED document already sits at the
+  # path (a saved document is not dispatched over, while the stage's own
+  # spawn-time stub is), or the manifest names no document (the dispatch
+  # refuses that value).
   # Any of the three prints a different line with its own fixed head, and
   # `gate_done_disposition` drops that head the way it drops condition 5's — the
   # run may then record its end, as invalidated and never as satisfied.
@@ -19404,9 +19406,27 @@ gate_done_conditions() {
   # so a stage ended before its team placed a file at the path lands here having
   # written nothing. Reading that row as "not dispatched again" dropped this line
   # in the one window where a retry was safe, and the run closed as invalidated
-  # instead of retrying. A file at the path still names the design step through
-  # the second reason. The LAST row decides because a step dispatched again
-  # carries one row per attempt, and only the latest says how it stands now.
+  # instead of retrying. A saved file at the path still names the design step
+  # through the second reason. The LAST row decides because a step dispatched
+  # again carries one row per attempt, and only the latest says how it stands
+  # now.
+  #
+  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. Every non-zero
+  # exit is classified `크래시`, so an API usage limit — which resets on its own
+  # — lands in the same bucket as a stage that is genuinely broken, and this
+  # line then declares the run dead minutes after a transient error. Measured:
+  # a design stage died on HTTP 429 with the limit's own reset time in the
+  # result envelope, and the next router settled all five termination clauses
+  # as `불가능` on that one row, three minutes later, with the limit already
+  # due to clear. What actually bars a retry is a document a retry would write
+  # over; the stage's spawn-time stub is not one, and the stage's own
+  # target-document guard passes that stub rather than parking on it. So the
+  # class is not read alone — it is read together with what sits at the path.
+  #
+  # THE RETRY BUDGET IS NOT HERE. This function reports whether the run can
+  # still produce a segment; how many times the step is dispatched is the
+  # router's ladder, which has its own declared depth. Putting a cap here would
+  # give one run two of them that cannot see each other.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -19422,12 +19442,16 @@ gate_done_conditions() {
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
       dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
-      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ]; then
+      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
+         && ! { [ "$dlast" = '크래시' ] \
+                && { [ -z "${DOC:-}" ] || [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; }; then
         dwhy='종단 행 있음'
       else
         case "$dname" in
           '' | '없음' | '(없음)') dwhy='설계 문서 이름 없음' ;;
-          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ]; then dwhy='설계 문서가 이미 있음'; fi ;;
+          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ] && ! doc_is_early_stub "$DOC"; then
+               dwhy='설계 문서가 이미 있음'
+             fi ;;
         esac
       fi
     fi

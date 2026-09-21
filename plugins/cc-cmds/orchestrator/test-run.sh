@@ -2178,6 +2178,7 @@ arm21_case() {
     case "$docst" in
       사람) printf '# 사람이 쓴 설계\n\n## 합의된 아키텍처\n\n본문\n' > "$DOC" ;;
       동결) printf '# 설계\n\n**상태**: 동결됨\n' > "$DOC" ;;
+      스텁) printf '# 설계\n\n<!-- cc-design-ledger v3\nrow: agentId | state\n- a1 | running\n-->\n' > "$DOC" ;;
     esac
     [ "$prior" = "-" ] || printf -- '- `stage-result` | 세그먼트=- | 스테이지=S1design | 파견 id=S1design | 종단 부류=%s\n' "$prior" >> "$LEDGER"
     [ -z "${6:-}" ] || ORCH_DIR="$6"
@@ -2235,6 +2236,24 @@ check "이 런이 설계를 완주했으면 재개에서 다시 파견하지 않
 arm21_case resumed-halt "$MFARM" 사람 '의도된 park' '정상 완료'
 check "앞선 시도가 중단한 런은 다시 설계하지도 감사로 넘기지도 않고 park 한다" \
   "$(arm21_rc resumed-halt)/$(arm21_disp resumed-halt)/$(grep -c 'S1design run' "$ARM21/resumed-halt/parked" 2>/dev/null || printf 0)" "1/0/1"
+
+# 스폰 시점 스텁은 앞의 셋과 다른 부류다 — 설계가 스스로 만든 파일이고 아직
+# 아무 내용도 없다. 존재만으로 건너뛰면 스폰 뒤 죽은 설계가 자기 스텁 때문에
+# 다시 파견되지 않으므로, 그 한 부류만 통과시키는지 잰다.
+arm21_case stub "$MFARM" 스텁 - '정상 완료'
+check "스폰 시점 스텁만 있으면 건너뛰지 않고 파견한다" \
+  "$(arm21_rc stub)/$(arm21_disp stub)" "0/1"
+
+# 한도 소진 같은 런 밖 원인이 크래시로 기록되는데, 그 크래시가 남긴 것이 스텁뿐
+# 이면 덮어쓸 것이 없다. park 하면 런이 그 자리에서 끝난다.
+arm21_case resumed-crash "$MFARM" 스텁 '크래시' '정상 완료'
+check "앞선 시도가 크래시로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-crash)/$(arm21_disp resumed-crash)/$(grep -c 'S1design run' "$ARM21/resumed-crash/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+# 반대쪽 — 크래시라도 저장된 문서가 남았으면 덮어쓸 것이 있으므로 park 그대로다.
+arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
+check "크래시라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
 arm21_case halted "$MFARM" 없음 - '의도된 park'
 check "파견한 스테이지가 중단하면 런을 park 한다" \

@@ -7541,7 +7541,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -7838,6 +7838,14 @@ esac
 # R15G — the design stage crashes. A run that has not begun is measured first,
 # on the same run before the dispatch, so what flips afterwards is condition 1
 # alone: its clause is already settled.
+#
+# A CRASH THAT SAVED NOTHING LEAVES THE RETRY WINDOW OPEN, the same window
+# R15H measures for `외부 종료`. Every non-zero exit is classified `크래시`, so
+# an API usage limit that resets by itself is filed beside a genuinely broken
+# stage; closing the run on that class alone ended a night three minutes after
+# a transient error. What closes the window is a SAVED document at the path,
+# because a retry would write over it — and the stage's own spawn-time stub is
+# not one, which is the arm measured in between.
 STUB15G="$WORK/bin/claude-stub-15g"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB15G"
 chmod +x "$STUB15G"
@@ -7856,9 +7864,21 @@ esac
 launch15x "$WORK/plan-R15G.md" "$STUB15G"
 check "15c: 크래시한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15G)" "1"
 propose15x plan "$WORK/plan-R15G.md"
-check "15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다" "$rc" "0"
+check "15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
 case "$msg" in
-  *"통과 예상: 무효화 종료"*) ok "15c: 크래시 경로의 예상도 무효화 종료다" ;;
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 크래시 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 크래시 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 크래시 재파견 창 문면" "$msg" ;;
+esac
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$WT/docs/fixture-design-15g.md"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다" "$rc" "3"
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 아키텍처\n\n본문\n' \
+  > "$WT/docs/fixture-design-15g.md"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 저장된 문서가 놓인 크래시 경로의 예상도 무효화 종료다" ;;
   *) bad "15c 크래시 경로 종료 문면" "$msg" ;;
 esac
 propose15x act "$WORK/plan-R15G.md"
@@ -7868,6 +7888,7 @@ check "15c: 원장에 무효화 종료 행이 하나 남는다" \
       | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
 check "15c: done 파일이 런을 무효화로 기록한다" \
   "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+rm -f "$WT/docs/fixture-design-15g.md"
 
 # R15H — the design stage ended unobserved before its team placed a file at the
 # path. The prelude settles such a dispatch as `외부 종료` without looking at the
