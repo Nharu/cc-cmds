@@ -262,9 +262,14 @@ esac
 # supervisor's lineage before the dispatch returns, so no instruction governs
 # the stage's survival, and therefore no instruction can kill it.
 #
-# The requirement is asserted on the DISPATCH SENTENCE rather than on the file:
-# `HARNESS-TRACKED` legitimately survives in the `wait` instruction, where a
-# tracked background job is exactly right — `wait` must die with its shift.
+# The requirement is asserted on the DISPATCH SENTENCE rather than on the file.
+# The `wait` instruction used to be the one place a tracked background job was
+# right, on the ground that a `wait` must die with its shift. Measured, it dies
+# BEFORE it reports: a print-mode shift ends the moment it stops producing
+# output, the harness reaps the tracked job with it, and no shift ever observes
+# a stage terminate — so the seat starts successor after successor, each dying
+# in the same place. That instruction is now a bounded FOREGROUND wait, and the
+# two assertions at the end of this file hold that shape.
 SHIFT_SKILL="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
 dispatch_lines() { { grep -n -- '--kind skill' "$SHIFT_SKILL" || true; }; }
 dl=$(dispatch_lines)
@@ -294,10 +299,17 @@ if grep -q 'gate.sh wait' "$SHIFT_SKILL"; then
 else
   bad "교대 스킬" "wait 발행 형태가 없다 — 파견 뒤 기다리는 경로가 문서에 없다"
 fi
-if grep -q 'HARNESS-TRACKED' "$SHIFT_SKILL" && grep -q 'Monitor' "$SHIFT_SKILL"; then
-  ok "그 wait 은 하네스 추적 백그라운드로 내고 Monitor 를 건다 (교대와 함께 죽어야 하는 것)"
+if grep -q 'in the FOREGROUND, and never as a background job' "$SHIFT_SKILL"; then
+  ok "그 wait 은 전경으로 낸다 (print-mode 교대는 출력을 멈추는 순간 끝난다)"
 else
   bad "교대 스킬" "wait 을 어떻게 내는지가 없다"
+fi
+# AND IT IS BOUNDED. A foreground call over the harness's own ceiling never
+# returns a usable result, so the loop only works with a timeout under it.
+if grep -q -- '--timeout 540' "$SHIFT_SKILL"; then
+  ok "그 wait 은 하네스 전경 상한 아래로 끊긴다 (13 을 받고 다시 기다리는 루프)"
+else
+  bad "교대 스킬" "전경 wait 에 상한이 없다 — 하네스 상한에 걸려 결과를 못 읽는다"
 fi
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
