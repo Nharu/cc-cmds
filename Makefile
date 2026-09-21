@@ -1,4 +1,4 @@
-.PHONY: lint readme check policy-drift test test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
+.PHONY: lint readme check policy-drift test test-rest gate-shard print-gate-shards test-active-notify test-orchestrator test-darwin test-darwin-narrow census run-gate-shard-selftest run-gate-census-selftest
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -10,6 +10,7 @@ lint:
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
 	bash scripts/lint-team-budget-pins.sh
+	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -19,6 +20,8 @@ lint:
 	bash scripts/lint-notify-title-render.sh
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
+	bash scripts/lint-pace-threshold-pins.sh
+	bash scripts/lint-fleet-agent-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
 	bash scripts/lint-approval-state-vocabulary.sh
 	bash scripts/lint-sidecar-field-table.sh
@@ -99,6 +102,7 @@ LINT_TESTS := \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
 	scripts/test-lint-team-budget-pins.sh \
+	scripts/test-lint-team-model-tier-pins.sh \
 	scripts/test-lint-unattended-surfaces.sh \
 	scripts/test-lint-cutpoint-vocabulary.sh \
 	scripts/test-lint-autoadopt-vocabulary.sh \
@@ -108,6 +112,7 @@ LINT_TESTS := \
 	scripts/test-lint-notify-title-render.sh \
 	scripts/test-lint-notify-fire-sites.sh \
 	scripts/test-lint-watch-threshold-pins.sh \
+	scripts/test-lint-pace-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
 	scripts/test-lint-approval-state-vocabulary.sh \
 	scripts/test-lint-sidecar-field-table.sh \
@@ -134,6 +139,7 @@ ORCH_TESTS := \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-watch.sh \
+	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \
@@ -153,6 +159,34 @@ $(TEST_GOALS): run/%:
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-gate-census-selftest
+
+# How many shards the gate suite is cut into. CI reads it so the matrix, the
+# per-shard dispatch and the union check all take their N from one place; a
+# workflow that spelled the number itself would let the matrix and the check
+# disagree, and the sections in the gap would belong to nobody.
+GATE_SHARDS ?= 8
+
+# So CI can read the number instead of spelling it a second time.
+print-gate-shards:
+	@echo $(GATE_SHARDS)
+
+# `test` minus the gate suite. CI runs this in the always-on leg because the
+# gate suite runs sharded in its own workflow, and running it in both places
+# would put the forty minutes back that the sharding removes. Locally `test`
+# is still the whole thing.
+ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
+
+test-rest: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
+	run-gate-shard-selftest run-gate-census-selftest
+
+# One shard of the gate suite. SHARD is 1-based. An empty assignment is a
+# success and not a failure — the partitioner exits 4 when the requested shard
+# drew nothing, which happens whenever the components outnumber no shard.
+gate-shard:
+	@ids=$$(bash scripts/gate-shard.sh --shards $(GATE_SHARDS) --shard $(SHARD)); rc=$$?; \
+	if [ "$$rc" = "4" ]; then echo "shard $(SHARD)/$(GATE_SHARDS): 배정된 절이 없습니다"; exit 0; fi; \
+	[ "$$rc" = "0" ] || exit "$$rc"; \
+	bash scripts/test-gate.sh --sections "$$ids"
 
 # The partitioner and the census are driven by flags, so they cannot sit in the
 # argument-less `bash <script>` lists above; their self-tests run no suite and

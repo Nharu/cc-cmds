@@ -451,15 +451,32 @@ hook_run_dir_verdict() {
     # 만들어졌다. 이름은 `cc-team-witness-init.sh` 가 실제로 만드는 접두다 —
     # 런 루트 바로 아래 `cc-team-witness-<slug>[.<stage-id>].XXXXXX` 이다.
     cc-team-witness-*/*) ;;
+    # 공유 세대 디렉터리. 교대가 산출물을 `shared/<gen>/` 아래에 발행한다 — 한 세대
+    # 아래만 허용하고, `shared/` 바로 밑의 파일은 세대가 없으므로 `*/*` 거부로 떨어진다.
+    # 게이트의 `gate_rundir_write_guard()` 도 같은 팔을 갖고, 두 파일의 거부 문면이
+    # 같다는 것을 `scripts/test-gate.sh` 가 핀한다.
+    shared/*/*) ;;
+    # 무인 설계 스테이지의 상태 루트와 사전 이미지. 스킬 본문이 이 둘을 자기가
+    # 쓰는 경로로 선언하는데 이 목록이 몰라서, 설계 스테이지가 팀을 하나도 띄우지
+    # 못하고 멈췄다 — 사전 이미지가 없으면 워크스루의 어떤 해결도 되돌리는 법을
+    # 가질 수 없어 채택 가능한 형태가 되지 못한다. 위트니스 예외와 같은 근거로
+    # 안전하다: 둘 다 런 시작 시점에 존재하지 않으므로 게이트가 매 행위마다 되읽는
+    # 기준선이 아니고, 강제 표면 검사가 읽는 자리도 아니다. 깊이를 제한하지 않는
+    # 것은 상태 루트 아래에 `witness/` 가 한 단계 더 있기 때문이다.
+    design|design/*|preimage|preimage/*) ;;
+    # `mkdir -p` 는 자기가 만들 디렉터리를 인자로 적으므로 `halt` 자신도 이름에
+    # 오른다. 디렉터리를 허용해도 그 안에서 열리는 것은 `halt/*` 뿐이고 `halt/*/*`
+    # 는 위에서 이미 거부된다.
+    halt) ;;
     */*)
-      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
+      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not) — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는
     # 이 디렉터리의 다른 어떤 파일로도 향할 수 있으므로 거부한다.
     *.plan.md)
       hook_leaf_is_symlink "$ap" \
         && deny "$(jstr 'gate: even an allowed name in the run directory cannot be judged when its leaf is a symlink — what is allowed is the file sitting in that place, not the name')" ;;
     *)
-      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
+      deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not) — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
   esac
   return 0
 }
@@ -537,7 +554,7 @@ hook_suffix_verdict() {
     # it is the same channel under a different name, and leaving it out would make
     # the arm a one-rename bypass.
     */CLAUDE.md|CLAUDE.md|*/CLAUDE.local.md|CLAUDE.local.md)
-      deny "$(jstr "gate: CLAUDE.md is a live prefix git does not track, so fixing it with Write/Edit leaves no ledger row at all. Applying it has to go through the gate — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest <snapshot hash> --emit-digest --rationale 'applying the reviewed copy' -- cp <proposed copy> ${p} — reach defaults to \`기기전역\`, and only a slot application that has passed review proceeds — <snapshot hash> is the H field the previous gate call emitted into ${DIGEST_FILE} (open it with the Read tool), and when that file is absent take it from 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 (only what is inside 『 』 is the command). If --emit-digest comes back refused as 'unknown argument', drop just that flag and run it again")" ;;
+      deny "$(jstr "gate: CLAUDE.md is a live prefix git does not track, so fixing it with Write/Edit leaves no ledger row at all. Applying it has to go through the gate — ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest <snapshot hash> --emit-digest --rationale 'applying the reviewed copy' -- cp <proposed copy> ${p} — reach defaults to \`기기전역\`, and only a slot application that has passed review proceeds — <snapshot hash> is the H field the previous gate call emitted into ${DIGEST_FILE} (open it with the Read tool), and when that file is absent take it from 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 (only what is inside 『 』 is the command). If --emit-digest comes back refused as 'unknown argument', drop just that flag and run it again")" ;;
   esac
   return 0
 }
@@ -1323,21 +1340,12 @@ esac
 # the opposite of what any other advice would tell it.
 first=$(printf '%s' "$first" | sed -e "s/^['\"]//" -e "s/['\"]$//")
 if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
-  # `| jq -r .H` 는 단 하나의 특례다. 특례는 **명령 끝의 축자 연속 한 번**에만
-  # 성립한다 — 잘라 낸 뒤 남은 문자열에 제어 연산자가 있으면 그대로 거부한다.
-  #
-  # 근거가 바뀌었다. 앞선 판본은 「아래 거부 문면이 처방하는 1번 명령이 그
-  # 파이프를 쓰므로」라 적었는데, 그것이 오히려 문면을 자기 스캐너에 걸리게 했다 —
-  # 아래 불변식 C 의 후보 1은 **1번 명령부터 문면 끝까지**라 파이프가 문자열
-  # 중간에 놓이고, 접미 특례는 끝에서 한 번만 성립하므로 걸리지 않았다. 그래서
-  # 문면에서는 파이프를 뺐다. 특례가 남는 근거는 이제 둘이다 — 스위트가 이 형태를
-  # **직접** 붙드는 단언을 갖고 있고(첫 토큰이 게이트면 파이프가 붙어도 통과한다),
-  # 스냅숏 출력이 JSON 이라 손으로 필드를 고르는 것이 실제로 쓰이는 형태다.
-  # 문면은 그것을 산문으로 안내하고 명령 자체에는 넣지 않는다.
-  #
-  # 파이프 자체가 필요 없게 만드는 더 깔끔한 형태(스냅숏에 필드 선택 플래그를
-  # 주어 `jq` 를 없애고 이 특례를 지우는 것)는 게이트 스크립트를 고쳐야 하는데,
-  # 그 파일은 이 변경의 선언 파일 집합 밖이라 채택하지 않았다.
+  # 게이트 뒤에는 파이프가 하나도 허용되지 않는다. 앞선 판본은 `| jq -r .H` 를
+  # 명령 끝의 축자 연속 한 번에 한해 특례로 잘라 냈는데, 그 특례가 있던 이유 —
+  # 스냅숏 출력이 JSON 이라 `H` 를 손으로 골라야 했다는 것 — 는 게이트가
+  # `snapshot --fields H` 로 값만 한 줄 내면서 사라졌다. 특례를 남기면 「파이프
+  # 하나는 된다」는 형태를 모델이 계속 배우고, 그 다음 파이프는 이 훅이 거부해야
+  # 하는 바로 그 형태다. 그래서 스트립 팔을 지우고, 거부 문면이 대체 형태를 처방한다.
   scan="$cmd"
   while :; do
     case "$scan" in
@@ -1345,12 +1353,8 @@ if [ -n "$GATE" ] && [ "$first" = "$GATE" ]; then
       *)            break ;;
     esac
   done
-  case "$scan" in
-    *'| jq -r .H') scan="${scan%'| jq -r .H'}" ;;
-    *'|jq -r .H')  scan="${scan%'|jq -r .H'}" ;;
-  esac
   if hook_unquoted_shell_op "$scan"; then
-    deny "$(jstr "gate: the first token is the gate path, but what follows it carries an unquoted shell control operator (\`;\` \`&\` \`|\` a newline, a backtick, \$( ), \`>\`, \`<\`), or a quoting this hook cannot judge such as ANSI-C quoting (\$'…'). A command riding on the right of the gate runs without leaving a row in the ledger, which voids the one property this hook guarantees. The only pipe allowed is '| jq -r .H' at the end of the command. The first choice is to split the commands and run each one through the gate. If the pipeline itself has to be passed, use the ${GATE} exec … -- bash -c '<pipeline>' form, and only when every command in that pipeline has a row in the grading table — the gate does not look inside the -c string, so an unlisted argv0 in there launders the \`등급 미상\` refusal the gate would have raised into the grade of bash, and the surface axis of the ledger keeps a value that differs from the act. Refused command: ${cmd}")"
+    deny "$(jstr "gate: the first token is the gate path, but what follows it carries an unquoted shell control operator (\`;\` \`&\` \`|\` a newline, a backtick, \$( ), \`>\`, \`<\`), or a quoting this hook cannot judge such as ANSI-C quoting (\$'…'). A command riding on the right of the gate runs without leaving a row in the ledger, which voids the one property this hook guarantees. No pipe is allowed after the gate — if only H is needed, use ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H, which prints the value alone on one line. The first choice is to split the commands and run each one through the gate. If the pipeline itself has to be passed, use the ${GATE} exec … -- bash -c '<pipeline>' form, and only when every command in that pipeline has a row in the grading table — the gate does not look inside the -c string, so an unlisted argv0 in there launders the \`등급 미상\` refusal the gate would have raised into the grade of bash, and the surface axis of the ledger keeps a value that differs from the act. Refused command: ${cmd}")"
   fi
   allow "$(jstr 'gate: a gate call')"
 fi
@@ -1409,4 +1413,4 @@ fi
 # like — the exemption would be a real hole opened to make prose typecheck.
 # Quoting closes it with no hole at all, and it is the spelling the hardlink
 # refusal above already hands out.
-deny "$(jstr "gate: bash in this run reaches the ledger only by going through the gate. Take the --snapshot-digest value from the file the previous gate call emitted — open ${DIGEST_FILE} with the Read tool and copy the H field verbatim (Read is not bash and this hook does not see it). If the actor field of that file differs from \$CC_PIPELINE_STAGE_ID you have read the emission of another actor, so do not use it; take the value from the snapshot command below instead. There is exactly one form to run: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' [--destructive] --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why this command is needed' -- ${cmd} 』 --reach is required for a write and for a remote-capable tool call, and may be omitted for a local read and for a worktree write that is not opaque. Add --destructive for a deletion or destruction that cannot be undone. Declare git push with --cutpoint push (\`머지\` when the destination is the base branch of the target) and --reach 협업. If the emitted file is absent (the first call of this run, or an emission that failed), run this command on its own first to get the value (only what is inside 『 』 is the command) — joining it onto one line or wrapping it in \$( ) makes the first token something other than the gate path, and this hook refuses again: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" | jq -r .H 』 And if --emit-digest comes back refused as 'unknown argument', the gate copy is older than this flag: drop just that flag, run it again, and keep taking the value from the snapshot command from then on")"
+deny "$(jstr "gate: bash in this run reaches the ledger only by going through the gate. Take the --snapshot-digest value from the file the previous gate call emitted — open ${DIGEST_FILE} with the Read tool and copy the H field verbatim (Read is not bash and this hook does not see it). If the actor field of that file differs from \$CC_PIPELINE_STAGE_ID you have read the emission of another actor, so do not use it; take the value from the snapshot command below instead. There is exactly one form to run: 『 ${GATE} exec --manifest \"\$CC_PIPELINE_MANIFEST\" --target \"\$CC_PIPELINE_TARGET\" --segment \"\$CC_PIPELINE_SEGMENT\" --cutpoint 커밋 --surface 'one of 읽기·워크트리쓰기·트리밖쓰기·외부상태변경' --reach 'one of 런로컬·기기전역·dev·prod·협업·배포트리거·미상' [--destructive] --snapshot-digest 'the H value from the emitted file' --emit-digest --rationale 'why this command is needed' -- ${cmd} 』 --reach is required for a write and for a remote-capable tool call, and may be omitted for a local read and for a worktree write that is not opaque. Add --destructive for a deletion or destruction that cannot be undone. Declare git push with --cutpoint push (\`머지\` when the destination is the base branch of the target) and --reach 협업. If the emitted file is absent (the first call of this run, or an emission that failed), run this command on its own first to get the value (only what is inside 『 』 is the command) — joining it onto one line or wrapping it in \$( ) makes the first token something other than the gate path, and this hook refuses again: 『 ${GATE} snapshot --manifest \"\$CC_PIPELINE_MANIFEST\" --fields H 』 And if --emit-digest comes back refused as 'unknown argument', the gate copy is older than this flag: drop just that flag, run it again, and keep taking the value from the snapshot command from then on")"
