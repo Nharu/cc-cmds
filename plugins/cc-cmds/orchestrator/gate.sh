@@ -16290,7 +16290,10 @@ gate_verb_act() {
   # THIS SITE AND THE ISSUER BELOW TAKE THE EFFECTIVE RUNG TOGETHER, and splitting
   # them is the one wrong way to do it: both narrow on `= 머지`, so leaving the
   # anchor check on the declared value lets an under-declared merge skip the
-  # anchor and reach the issuer anyway — a row with no commit to close it.
+  # anchor and reach the issuer anyway — a row with no commit to close it. The
+  # same pairing holds for the kind: both skip a bookkeeping act, because a
+  # row write labelled `머지` by the router merges nothing, and an issuer that
+  # still saw it would reopen a slot the segment already fulfilled.
   gate_check_merge_anchor "$segment" "$GATE_ACT_EFFECTIVE" "$alias" "$kind" || exit $?
 
   # WHAT THE ORDER PREDICATE READS. The checker is a separate `/bin/sh` and
@@ -16949,7 +16952,10 @@ gate_verb_act() {
   # reach it and this call site is corrected on its own. Left reading the declared
   # rung it would go on comparing `= 머지` against a word the caller chose, and
   # "an under-declared merge issues no obligation" would survive the whole repair.
-  gate_issue_review_obligation "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$GATE_REVIEW_POLICY" "$alias"
+  # THE KIND TRAVELS WITH IT: a bookkeeping act reaches this line before its own
+  # return below, and the issuer must know it is one so as not to reopen a slot
+  # the segment already fulfilled.
+  gate_issue_review_obligation "$segment" "$GATE_ACT_EFFECTIVE" "$graded" "$GATE_REVIEW_POLICY" "$alias" "$kind"
 
   [ -n "$bookkeeping" ] && return 0
 
@@ -17517,26 +17523,35 @@ gate_unmet_clause_ids() {
 # and the refusal would only take out the idempotence the duplicate guard exists
 # to provide.
 #
-# THE FOURTH DOES NOT ASK IT OF A `segment` ACT, because that act is its repair.
-# Every sentence here reads the segment row AS IT STANDS, and a `segment` act's
-# payload is the row that will replace it. The router labels an act with the
-# target's cutpoint, so on a `머지` target the row write is spelled `--cutpoint
-# 머지` and reaches this check — where the fourth refused it on the very row it
-# was writing to repair, and prescribed writing the row again. Exit 10's only
-# prescribed repair is that act, so the router had no way out. The exemption is
-# that one kind and not the whole bookkeeping set: the other bookkeeping kinds
-# do not rewrite the row this check reads, and a bookkeeping act still reaches
-# the obligation issuer, which needs an anchor. The question is not dropped for
-# a `segment` act, it is asked of the right row: the row writer refuses a
-# non-terminal row whose worktree belongs to another repository, by the same
-# ownership predicate, before anything is written.
+# NONE OF THE FIVE IS ASKED OF A BOOKKEEPING ACT, AND THE ISSUER IS NOT EITHER.
+# A bookkeeping kind appends a row and performs nothing, so it merges nothing;
+# it arrives in this window only because the router labels every act with the
+# target's cutpoint, so on a `머지` target a `segment`, `cycle` or park row is
+# spelled `--cutpoint 머지`. Every sentence here reads the segment row AS IT
+# STANDS, and that reading is wrong for every bookkeeping act at once: for a
+# `segment` act the payload is the row that will replace the one read, so the
+# fourth refused the repair it had itself prescribed; and once a segment's
+# obligation is fulfilled its tip is on the base branch with no open slot, so
+# the fifth refused the closing `segment` row, the park row the router is told
+# to write after a repeated 10, and the `cycle` row of a single-tree run whose
+# sibling had moved the shared tip. Exit 10's only prescribed repair is a row
+# write, so the router had no way out and the run could not end.
 #
-# AND A `segment` ACT DOES NOT PUBLISH THE OLD ROW'S TIP AS THE ANCHOR. The
-# issuer runs after the new row is written and takes `GATE_MERGE_ANCHOR` first.
-# Left set to the tip read here, it would key the obligation on the replaced
-# row's worktree — for the fourth sentence's case, a commit in another
-# repository, which is the harm the fourth exists to prevent. Unset, the issuer
-# falls back to reading the tip of the row as it now stands.
+# EXEMPTING THIS CHECK ALONE IS THE WRONG HALF. The issuer keys an obligation
+# on (run, segment, tip) and its duplicate guard walks the UNFULFILLED ids only,
+# so a bookkeeping act at `머지` on a segment whose slot was already fulfilled
+# would append a second `미이행` row under the same id — reopening termination
+# condition 9 on a merge that never happened. That reopening was silent before
+# the fifth sentence existed, and the fifth turned it into a loud 10: the
+# refusal was the symptom of the issuer's reach, not a defect of its own. So
+# both sites test `gate_kind_is_bookkeeping` and return before reading a row.
+# A merge act itself — `--kind merge`, or `exec` at the `머지` rung — still
+# passes through both, so the other-repository anchoring the fourth sentence
+# exists to refuse is not let back in.
+#
+# THE OWNERSHIP QUESTION IS NOT DROPPED for a `segment` act, it moves to the
+# row being written: the row writer refuses a non-terminal row whose worktree
+# lies outside every declared target's repository, before anything is written.
 #
 # THE PREDICATE ITSELF IS NOT NARROWED to "and not the target's own main or exec
 # worktree". In a run that uses no linked worktree a segment row naming the main
@@ -17559,6 +17574,13 @@ gate_check_merge_anchor() {
   local seg="$1" cut="$2" alias="$3" kind="${4:-}" wt tip aroot abr bref oid open_id slot_open
   [ "${GATE_REVIEW_POLICY:-}" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
+  # A bookkeeping act merges nothing — see the head comment. The `unset` drops
+  # any anchor the environment carried in, so a value a parent gate exported
+  # cannot outlive the act that resolved it.
+  if gate_kind_is_bookkeeping "$kind"; then
+    unset GATE_MERGE_ANCHOR
+    return 0
+  fi
 
   # `상태` is required on every segment row, so its absence is the absence of the
   # row rather than of one field.
@@ -17579,7 +17601,7 @@ gate_check_merge_anchor() {
   # this conjunct every merge on an undeclared target would be told to repair a row
   # that is already right — a refusal with no repair behind it, which is the same
   # shape the resolution and the worktree predicate already had to take out.
-  if [ "${GATE_UNDECLARED:-0}" != "1" ] && [ "$kind" != "segment" ] \
+  if [ "${GATE_UNDECLARED:-0}" != "1" ] \
      && ! gate_segment_worktree_of_target "$seg" "$alias" >/dev/null; then
     warn "세그먼트 '$seg' 의 워크트리 '$wt' 는 대상 '$alias' 의 워크트리가 아닙니다"
     warn "그 자리의 HEAD 는 이 머지가 미는 커밋과 다른 ref 공간에 있어 리뷰 의무의 앵커가 될 수 없습니다 — 세그먼트 행의 워크트리를 고쳐 같은 argv 로 다시 부르세요"
@@ -17625,13 +17647,6 @@ gate_check_merge_anchor() {
         return "$GATE_EXIT_ANCHOR"
       fi
     fi
-  fi
-  # A `segment` act replaces the row this tip was read from, so it publishes
-  # nothing — see the head comment. The `unset` also drops any value the
-  # environment carried in, which the issuer would otherwise take first.
-  if [ "$kind" = "segment" ]; then
-    unset GATE_MERGE_ANCHOR
-    return 0
   fi
   # Resolved once and reused by the issuer below, so the value on the row is the
   # same one this check passed on. Re-reading it there would open a window in
@@ -17846,7 +17861,7 @@ gate_obligation_covers() {
 }
 
 gate_issue_review_obligation() {
-  # gate_issue_review_obligation <segment> <cutpoint> <grade> <policy> <alias>
+  # gate_issue_review_obligation <segment> <cutpoint> <grade> <policy> <alias> [<kind>]
   #
   # `선머지후리뷰` does not REMOVE the review, it defers it — and a deferral with
   # no record is a removal that nobody wrote down. The row is what makes the
@@ -17881,9 +17896,18 @@ gate_issue_review_obligation() {
   # question is narrowed to THIS segment: asked run-wide, a sibling segment's
   # open obligation suppresses this one's, trading a defect inside a segment for
   # the guarantee between segments.
-  local seg="$1" cut="$2" grade="$3" policy="$4" alias="$5" id tip
+  #
+  # AND IT ISSUES NOTHING FOR A BOOKKEEPING ACT. Such an act merges nothing;
+  # it carries `머지` only because the router labels acts with the target's
+  # cutpoint. The guard above walks the unfulfilled ids only, so a row write
+  # on a segment whose slot was already fulfilled would append a second
+  # `미이행` row under the same id and hold the run open on a merge that never
+  # happened. The anchor check skips the same set for the same reason — the two
+  # exemptions are one decision, spelled at both sites.
+  local seg="$1" cut="$2" grade="$3" policy="$4" alias="$5" kind="${6:-}" id tip
   [ "$policy" = "선머지후리뷰" ] || return 0
   [ "$cut" = "머지" ] || return 0
+  gate_kind_is_bookkeeping "$kind" && return 0
   [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
   # THE ANCHOR IS RESOLVED BEFORE THE ID, because the id is keyed on it. The
   # order is safe: this issuer runs only under `선머지후리뷰` at cutpoint `머지`,

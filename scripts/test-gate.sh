@@ -16453,6 +16453,67 @@ sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment SIDB --cutpo
     --surface 외부상태변경 -- scp -V
 check "15d: 그 답으로 B 의 같은 argv 는 여전히 막힌다" "$rc" "5"
 
+# --- 35-15f. 기록 kind 는 머지 앵커 검사도 리뷰 의무 발급기도 지나지 않는다 ---------
+# --- section: 35-15f | group: sa | covers: act | anchors: 15f: 같은 머지 행위는 여전히 앵커에 막힌다 (exit 10), 15f: 의무를 이행한 뒤의 종료 segment 행은 머지 절단점에서도 기록된다 ---
+#
+# 라우터는 행위를 대상의 절단점으로 라벨하므로 `머지` 대상에서는 segment·cycle 같은
+# 기록 행위도 `--cutpoint 머지` 로 적힌다. 기록 행위는 아무것도 머지하지 않는데,
+# 앵커 검사와 발급기는 kind 를 보지 않고 세그먼트 행을 있는 그대로 읽었다. 의무를
+# 이행한 세그먼트의 팁은 베이스에 담겨 있고 그 슬롯은 더 이상 열려 있지 않으므로,
+# 이행 뒤의 종료 행(상태=완료)·park 행·cycle 행이 전부 exit 10 을 받았고, 처방된
+# 수리가 바로 그 행 기록이라 라우터에 출구가 없었다.
+#
+# 앵커만 면제하면 절반이다. 발급기의 중복 가드는 미이행 id 만 순회하므로 이행 완료된
+# 슬롯에 같은 id 의 `미이행` 행을 다시 붙여, 일어나지 않은 머지로 종료 조건 9 를
+# 다시 연다. 그래서 이 절은 종료 코드와 의무 행 수를 함께 잰다 — 행 수가 늘면
+# 발급기가 기록 행위를 여전히 머지로 읽는 것이다.
+#
+# 대조는 같은 상태의 진짜 머지 행위다. 같은 팁·같은 슬롯에서 `--kind merge` 는
+# 여전히 10 이어야 한다 — 그것이 깨지면 면제가 kind 가 아니라 창 전체를 끈 것이다.
+sa_new '기록 kind 와 머지 창' 선머지후리뷰
+sa_seg_row S15F 선머지후리뷰
+sa_commit '작업' >/dev/null
+sa_merge S15F
+check "15f: 첫 머지가 통과한다" "$rc" "0"
+OID15F=$(sa_ob_id S15F)
+M15F=$(sa_field "$(sa_ob_last "$OID15F")" '머지 커밋')
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S15F --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$M15F" "리포트 경로=$FXREPORT"
+sa_fulfil "$OID15F"
+check "15f: 그 의무가 이행된다 (이 절의 전제 — 슬롯이 닫힌다)" "$rc" "0"
+check "15f: 이행 판정이 착지·포함이다" "$(sa_field "$(sa_ob_last "$OID15F")" '이행 판정')" "착지·포함"
+nb15f=$(sa_ob_count)
+sa_merge S15F
+check "15f: 같은 머지 행위는 여전히 앵커에 막힌다 (exit 10)" "$rc" "10"
+case "$msg" in
+  *"이미 대상 'main' 의 베이스 브랜치 '$SA_BASE' 에 담겨 있습니다"*)
+    ok "15f: 머지 행위를 막은 것은 다섯째 문장이다 (면제가 kind 에 한정된다)" ;;
+  *) bad "15f 머지 대조 문면" "$msg" ;;
+esac
+check "15f: 그 거절은 의무를 발행하지 않는다" "$(sa_ob_count)" "$nb15f"
+# 종료 행. 이행 뒤의 워크트리는 실재하므로 행은 워크트리를 그대로 싣는다.
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S15F \
+    --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+    -- 상태=완료 워크트리="$SA_SEGWT" 선행=없음 '리뷰 정책=선머지후리뷰'
+check "15f: 의무를 이행한 뒤의 종료 segment 행은 머지 절단점에서도 기록된다" "$rc" "0"
+case "$msg" in
+  *"베이스 브랜치"*|*"워크트리가 아닙니다"*)
+    bad "15f: 종료 행이 앵커 문면으로 거절되지 않는다" "$msg" ;;
+  *) ok "15f: 종료 행이 앵커 문면으로 거절되지 않는다" ;;
+esac
+check "15f: 그 행 기록은 이행된 슬롯을 다시 열지 않는다 (의무 행 수 불변)" "$(sa_ob_count)" "$nb15f"
+check "15f: 이행된 의무의 마지막 행이 여전히 이행이다" \
+      "$(sa_field "$(sa_ob_last "$OID15F")" '상태')" "이행"
+# cycle 행도 같은 창을 지난다.
+sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment S15F --cutpoint 머지 \
+    --snapshot-digest "$(SAH)" --rationale x -- 사이클=2 P0=0 P1=0 "리뷰 HEAD=$M15F" "리포트 경로=$FXREPORT"
+check "15f: 머지 절단점의 cycle 행도 기록된다" "$rc" "0"
+check "15f: cycle 행도 의무를 발행하지 않는다" "$(sa_ob_count)" "$nb15f"
+# 세그먼트 행이 아직 없는 id 의 첫 행. 첫째 문장은 「행이 없다」로 거절했었다.
+sa_seg_row_at 머지 S15G 선머지후리뷰
+check "15f: 행이 아직 없는 id 의 첫 segment 행도 머지 절단점에서 기록된다" "$rc" "0"
+check "15f: 그 첫 행도 의무를 발행하지 않는다" "$(sa_ob_count)" "$nb15f"
+
 # --- 35-16. 원격을 통해 실제로 착지한 머지는 「착지」로 판정된다 -----------------
 # --- section: 35-16 | group: sa | covers: act | anchors: 16: 원격 베이스로 민 머지가 통과한다 ---
 #
