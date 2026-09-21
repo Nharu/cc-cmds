@@ -11699,17 +11699,88 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       -- touch "$RD3/settings/impl.json"
 check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
 # 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름으로 `lockf` 를 잡는데 목록이
-# 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 가드는 명령이 아니라
-# 경로 인자로 판정하므로, 리눅스 러너에 없는 `lockf` 대신 `touch` 로 같은 이름을 건다.
+# 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 연 것은 이름 하나가
+# 아니라 **이름 하나와 자리 하나**다 — `lockf` 가 락으로 잡는 그 피연산자 자리.
+# 그래서 양성은 실제 호출 형태로 잰다. 예전의 이 자리는 `touch` 를 양성으로 두고
+# 「가드는 명령이 아니라 경로 인자로 판정한다」고 적었는데, 그 문장 자체가 결함의
+# 진술이었다 — 그 판정이면 스테이지가 워크트리에서 만든 상대 심링크를 이 자리로
+# `mv` 할 수 있고, 게이트 밖에서 도는 드라이버의 `lockf` 가 그것을 따라간다.
+#
+# `lockf` 로 감싼 형태는 게이트 경유가 아니라 이 가드를 직접 불러 잰다. 이 픽스처에서는
+# 매니페스트와 런 디렉터리가 같은 `$WORK` 아래 있어서, 매니페스트 쓰기 가드의 래퍼 팔
+# (래퍼 argv0 의 명령줄 전체에 매니페스트 디렉터리가 들어 있으면 거부)이 `lockf` 로
+# 감싼 행위를 이 가드보다 먼저 전부 거부한다. 실측: 게이트 경유로 재면 런 밖의 락으로
+# 감싼 무해한 쓰기까지 rc 3 이었고, 그러면 양성은 빨갛고 같은 형태의 음성은 공허하게
+# 초록이다. 실제 런에서는 매니페스트가 레포의 `docs/` 아래, 런 디렉터리가 상태 루트
+# 아래라 두 경로가 갈라져 그 팔에 걸리지 않는다. 가드는 argv 를 읽기만 하고 실행하지
+# 않으므로 이 단언들은 `lockf` 가 없는 러너에서도 돈다. 게이트까지의 배선은 아래의
+# 게이트 경유 `touch`·`mv` 단언이 잰다.
+rdguard_rc() {
+  # rdguard_rc <argv...> — 쓰기로 매겨진 행위에 대한 런 디렉터리 가드의 판정만.
+  ( set +e
+    gate_seam_init >/dev/null 2>&1 || exit 99
+    gate_seam_enter
+    cd "$WT" || exit 98
+    XDG_STATE_HOME="$STATE_CONE"; export XDG_STATE_HOME
+    RUN_DIR="$RD3"
+    gate_rundir_write_guard 트리밖쓰기 "$@" ) >/dev/null 2>&1
+}
+# 대조군이 먼저다. 이 형태 자체가 가드를 통과한다는 것을 고정하지 않으면, 아래 음성의
+# 초록이 「`lockf` 로 감싼 행위가 통째로 거부된다」와 구별되지 않는다.
+rdguard_rc lockf -k -t 0 "$WORK/other.lock" touch "$RD3/halt/SD#1.md"
+check "(대조) 런 밖의 락으로 감싼 같은 쓰기는 가드를 통과한다" "$?" "0"
+rdguard_rc /usr/bin/lockf -k -t 0 "$RD3/designdoc.lock" touch "$RD3/halt/SD#1.md"
+check "설계 문서 락은 실제 호출 형태 lockf -k -t 0 <락> <명령> 의 락 자리에서 통과한다" "$?" "0"
+rdguard_rc lockf -k -t5 "$RD3/designdoc.lock" touch "$RD3/halt/SD#1.md"
+check "붙여 쓴 -t<초> 뒤의 락 자리도 통과한다 (옵션 표가 grader 와 같다)" "$?" "0"
+# 자리 조건이 이름 조건이 아님을 고정한다. 같은 argv 안에서 락 피연산자는 통과하고
+# 안쪽 목적지로 다시 나온 같은 이름은 거부된다.
+rdguard_rc lockf -k -t 0 "$RD3/designdoc.lock" cp "$RD3/halt/SD#1.md" "$RD3/designdoc.lock"
+check "음성: 같은 argv 의 안쪽 목적지로 나온 락 이름은 거부된다 (자리 조건이다)" "$?" "3"
+# argv0 가 `lockf` 가 아닌 래퍼면 자리가 계산되지 않아 거부로 떨어진다.
+rdguard_rc env lockf -k -t 0 "$RD3/designdoc.lock" true
+check "음성: argv0 가 래퍼(env)면 락 이름은 거부된다 (닫히는 쪽)" "$?" "3"
+rdguard_rc lockf -x "$RD3/designdoc.lock" true
+check "음성: 표에 없는 lockf 옵션이면 자리를 세우지 않고 거부한다" "$?" "3"
+# 음성 — 동사가 `lockf` 가 아니면 같은 이름도 거부된다. 이쪽은 게이트 경유로 재어
+# 배선까지 본다. 문면까지 물리는 것은 이 거부가 다른 가드의 것이 아님을 보이려는 것이다.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/designdoc.lock"
-check "설계 문서 락 파일 쓰기는 통과한다" "$rc" "0"
-# 음성 대조군 — 연 것이 정확히 그 이름 하나임을 고정한다.
+check "음성: touch 로 락 이름을 거는 것은 거부된다 (락 피연산자 자리가 아니다)" "$rc" "3"
+case "$msg" in
+  *"allowed only as the operand"*) ok "그 거부가 런 디렉터리 가드의 락 자리 팔의 것이다" ;;
+  *) bad "touch 거부 문면" "락 자리 팔의 문면이 아니다: $msg" ;;
+esac
+# 음성 — 실측된 연쇄 그대로. 워크트리에서 만든 상대 심링크를 락 자리로 옮기는 `mv`.
+# 거부 여부만이 아니라 효과까지 잰다: 이 `mv` 가 통과하면 락은 `done` 을 가리키는
+# 매달린 링크가 되고, 드라이버의 다음 `lockf` 가 빈 `done` 을 만들어 런 종료를
+# 조용히 무력화한다.
+mkdir -p "$WORK/lockmv"
+rm -f "$WORK/lockmv/L" "$RD3/done"
+ln -s done "$WORK/lockmv/L"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- mv "$WORK/lockmv/L" "$RD3/designdoc.lock"
+check "음성: 상대 심링크를 락 자리로 옮기는 mv 는 거부된다" "$rc" "3"
+case "$msg" in
+  *"allowed only as the operand"*) ok "그 mv 거부가 런 디렉터리 가드의 락 자리 팔의 것이다" ;;
+  *) bad "mv 거부 문면" "락 자리 팔의 문면이 아니다: $msg" ;;
+esac
+if [ ! -L "$RD3/designdoc.lock" ] && [ ! -e "$RD3/done" ]; then
+  ok "그 거부가 락 자리를 심링크로 바꾸지도, done 을 만들지도 않았다"
+else
+  bad "락 자리 치환" "거부된 mv 뒤에 락이 심링크이거나 done 이 생겼다: $RD3"
+fi
+# 음성 대조군 — 연 것이 정확히 그 이름 하나임을 고정한다. 접미사도, 그 아래도 아니다.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/designdoc.lock.bak"
 check "음성 대조군: 락 이름에 접미사를 붙인 파일은 여전히 거부" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designdoc.lock/x"
+check "음성 대조군: 락 이름 아래의 경로도 거부" "$rc" "3"
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
 # 편집이 여기서 빨개져야 한다. 예외는 둘이고 둘 다 양쪽에 있어야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
@@ -11732,11 +11803,22 @@ if grep -qF 'design|design/*|preimage|preimage/*' "$GATE" \
 else
   bad "가드·훅 불일치" "설계 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
+# 설계 문서 락만은 두 파일이 같은 이름을 알되 **판정이 반대**다. 게이트의 팔은
+# `lockf` 가 잡는 피연산자 자리에서만 통과시키고, 훅의 같은 팔은 거부한다 — 훅은
+# `Write`/`Edit` 경로에서만 돌고, 편집 도구가 이 파일을 여는 것은 어떤 경우에도 락
+# 획득이 아니기 때문이다. 「양쪽에 같은 팔이 있다」는 어휘 grep 으로 두면 한쪽만
+# 고친 편집이 그대로 초록이 되므로, 각 쪽의 판정을 따로 물린다.
 if grep -qE '^[[:space:]]*designdoc\.lock\)' "$GATE" \
-   && grep -qE '^[[:space:]]*designdoc\.lock\)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
-  ok "게이트와 훅이 같은 설계 문서 락 예외를 싣는다"
+   && grep -qF 'gate_lockf_operand_index' "$GATE"; then
+  ok "게이트의 설계 문서 락 팔이 lockf 락 피연산자 자리에 조건부다"
 else
-  bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+  bad "가드 자리 조건 부재" "게이트가 designdoc.lock 을 자리 조건 없이 연다 — 다른 동사의 목적지로도 열린다"
+fi
+if grep -A2 -E '^[[:space:]]*designdoc\.lock\)' \
+     "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh" | grep -qF 'deny'; then
+  ok "훅의 설계 문서 락 팔은 거부한다 (편집 도구로는 열리지 않는다)"
+else
+  bad "가드·훅 불일치" "훅이 designdoc.lock 을 거부하지 않는다 — Write/Edit 로 락 자리의 바이트를 바꿀 수 있다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
