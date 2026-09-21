@@ -213,11 +213,21 @@ seed_table() {
   # re-emit the current state of every pair as if it were a transition, and the
   # ledger would carry a duplicate row per pair per restart.
   #
-  # THREE SOURCES, OLDEST FIRST. The ledger holds what the gate has already
-  # transcribed; `checks.observed` holds what it has not drained yet; and a
+  # THREE SOURCES, OLDEST FIRST — and the order is the point, not a tidiness.
+  # The ledger holds what the gate has already transcribed; a
   # `checks.observed.draining.*` file holds what a drain renamed aside and has
-  # not finished reading. Omitting the last two would make the observations in
-  # flight invisible and re-emit them.
+  # not finished reading; and `checks.observed` holds what has not been drained
+  # at all, which is the newest of the three. `tbl_get` takes the LAST value put,
+  # so reading them out of age order seeds a stale state over a fresh one and the
+  # poller then judges its next transition against a state that was already
+  # superseded. The loop below used to read `checks.observed` before the
+  # temporaries, against what this very comment said.
+  #
+  # Omitting the last two would make the observations in flight invisible and
+  # re-emit them. Seeding from them is NOT what keeps a dead drain's lines from
+  # being lost — the gate's own sweep of those files is what does that, and it
+  # has to, because seeding here is precisely what stops this poller from
+  # re-emitting them.
   local row f line ts seg pr sha st req fail
   [ "$SEEDED" = "0" ] || return 0
   SEEDED=1
@@ -232,13 +242,19 @@ seed_table() {
   done <<EOF
 $( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } )
 EOF
-  for f in "$OBSERVED" "$RUN_DIR"/checks.observed.draining.*; do
+  # `ls -tr` orders the temporaries by mtime, which `mv` carried across from the
+  # file each was renamed from — so it is the order the lines were observed in.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     while IFS="$TAB" read -r ts seg pr sha st req fail; do
       [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || continue
       tbl_put "$pr" "$sha" "$st"
     done < "$f"
-  done
+  done <<EOF
+$( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
+$OBSERVED
+EOF
 }
 
 # ---------------------------------------------------------------------------

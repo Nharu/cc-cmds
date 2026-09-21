@@ -4035,29 +4035,69 @@ fi
 # silence. The verb pairs are EXTRACTED and the SET DIFFERENCE against the
 # allowlist must be empty, and a `gh` call this extractor cannot parse counts as
 # a violation too — otherwise an unparsable spelling is a hole of its own.
+#
+# RECOGNITION IS WHERE THE FIRST VERSION OF THIS FENCE WAS OPEN, and the shape of
+# the fix is that the extractor and the unparsable-detector now look at the SAME
+# lines. That version picked a token that was exactly `gh` or ended in `gh`
+# behind a shell character, and both halves of that test were anchored at the END
+# of the token — so `"gh" -R "$slug" pr merge "$n"` (quoted command word, ending
+# in `h"`) was neither, the line produced NO output at all, not even the
+# unparsable marker, and the set difference was empty on a file that merges PRs.
+# `'gh'`, `"$GH"` after a quoted assignment and `$(command -v gh)` behaved the
+# same. It failed CLOSED on shape and OPEN on recognition, and its negative
+# control planted a spelling recognition already handled, so it tested the
+# closed half twice and the open half never.
+#
+# Now every well-formed call `gh -R "$slug" pr <verb>` is extracted — whatever
+# the verb, so a fourth one reaches the set difference — and then taken OUT of
+# its line. Whatever still looks like a call afterwards is unparsable:
+#
+#   - `gh` as a word, or the repo flag `-R`. TWO RECOGNITION TOKENS, because the
+#     command word is the part an indirect call hides and the repo flag is the
+#     part it cannot: `"$GH" -R "$slug" pr merge` has no `gh` on it anywhere;
+#   - a `pr <verb>` behind a quote or a `)` — argument position, which is where a
+#     subcommand goes. This catches `"$GH" pr merge "$n"`, which carries neither
+#     token. The preceding quote is what keeps it off `local ts seg pr sha st`
+#     and `read -r ts seg pr sha st`, where `pr` is a variable name in a bare
+#     identifier run;
+#   - `eval`, or a `command -v`/`which`/`type` resolution of the binary, because
+#     indirection defeats any line-based rule and banning it is cheaper than
+#     parsing it.
+#
+# WHAT IS STILL NOT COVERED, stated rather than implied: a command word assembled
+# from pieces, or read out of a file or the environment. That is deliberate
+# obfuscation rather than the accident this fence is for — someone adding a
+# fourth verb — and every spelling that writes the binary's name down is caught.
 # ---------------------------------------------------------------------------
+# `gh` AS A WORD. A plain substring search reports every English word ending in
+# those letters — `through`, `high` — so the character before `gh` must be a
+# non-word one, which is what `$(gh`, `(gh`, `"gh` and a line-leading `gh` are.
+GH_FORM_RE='(^|[^A-Za-z0-9_-])gh -R "\$slug" pr [a-z][a-z-]*'
+GH_WORD_RE='(^|[^A-Za-z0-9_-])(gh|-R)([^A-Za-z0-9_-]|$)'
+GH_PR_RE="[\"')][[:space:]]+pr[[:space:]]+[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+GH_INDIRECT_RE='(^|[^A-Za-z0-9_-])(eval|command[[:space:]]+-v|which|type)[[:space:]]+[^[:space:]]*gh([^A-Za-z0-9_-]|$)'
+GH_EVAL_RE='(^|[^A-Za-z0-9_-])eval([^A-Za-z0-9_-]|$)'
+
 gh_verbs_of() {
-  # gh_verbs_of <file> — one `pr <verb>` pair per `gh` call on a non-comment
-  # line, or the literal `(추출 실패)` for a call that does not have that shape.
-  #
-  # TOKENS, NOT A SUBSTRING SEARCH. Matching `gh ` inside the line reports every
-  # English word ending in those letters — `through`, `high` — as an unparsable
-  # call, so the assertion would fail on prose and be switched off. A token is
-  # the invocation when it is exactly `gh` or ends in `gh` behind a shell
-  # character, which is what `$(gh` and `(gh` look like.
-  { grep -vE '^[[:space:]]*#' "$1" || true; } \
-    | LC_ALL=C awk '{
-        n = split($0, w, /[ \t]+/)
-        for (i = 1; i <= n; i++) {
-          if (w[i] != "gh" && w[i] !~ /[^A-Za-z0-9_-]gh$/) continue
-          if (w[i+1] == "-R" && w[i+3] == "pr" && w[i+4] ~ /^[a-z][a-z-]*$/) {
-            print "pr " w[i+4]
-          } else {
-            print "(추출 실패)"
-          }
-        }
-      }' \
-    | sort -u
+  # gh_verbs_of <file> — one `pr <verb>` pair per well-formed `gh` call on a
+  # non-comment line, and the literal `(추출 실패)` for any line that still looks
+  # like a call once those are removed, or that resolves the binary indirectly.
+  # WHOLE-LINE COMMENTS ONLY are dropped; a trailing comment stays attached to
+  # its code, which errs toward reporting rather than hiding.
+  local src
+  src=$({ grep -vE '^[[:space:]]*#' "$1" || true; })
+  {
+    printf '%s\n' "$src" \
+      | { grep -oE "$GH_FORM_RE" || true; } \
+      | sed -E 's/.* pr ([a-z][a-z-]*)$/pr \1/'
+    printf '%s\n' "$src" \
+      | sed -E "s/$GH_FORM_RE/\\1 /g" \
+      | { grep -E "$GH_WORD_RE|$GH_PR_RE" || true; } \
+      | sed 's/.*/(추출 실패)/'
+    printf '%s\n' "$src" \
+      | { grep -E "$GH_INDIRECT_RE|$GH_EVAL_RE" || true; } \
+      | sed 's/.*/(추출 실패)/'
+  } | sort -u
 }
 if [ -f "$CHECKS_SH" ]; then
   gh_allowed=$(printf '%s\n' 'pr list' 'pr view' 'pr checks' | sort -u)
@@ -4069,19 +4109,43 @@ if [ -f "$CHECKS_SH" ]; then
   else
     ok "checks.sh 의 gh 호출이 전부 허용 집합 안이다 (차집합이 비었다)"
   fi
-  # THE NEGATIVE CONTROL, out of tree. An assertion whose only evidence is that
-  # the real file passes cannot tell "the fence holds" from "the extractor finds
-  # nothing" — which is the failure mode of every whitelist written as a grep.
-  GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX")
-  { cat "$CHECKS_SH"; printf '  gh -R "$slug" pr merge "$n" --squash\n'; } > "$GH_FX"
-  gh_fx_extra=$(gh_verbs_of "$GH_FX" | { grep -v '^$' || true; } \
-                | { grep -vxF "$gh_allowed" || true; } )
-  if [ -n "$gh_fx_extra" ]; then
-    ok "오염 사본의 넷째 동사를 차집합이 잡아낸다 ($(printf '%s' "$gh_fx_extra" | tr '\n' ' '))"
+  # THE EXTRACTOR MUST HAVE SEEN SOMETHING. An empty extraction also gives an
+  # empty difference, and "the fence holds" and "the extractor saw nothing" are
+  # exactly the two states this section exists to tell apart.
+  if [ -n "$(printf '%s\n' "$gh_seen" | { grep -xF "$gh_allowed" || true; })" ]; then
+    ok "추출기가 진짜 파일에서 허용 동사를 실제로 읽었다 ($(printf '%s' "$gh_seen" | tr '\n' ' '))"
   else
-    bad "폴러 울타리" "오염 사본에 pr merge 를 넣었는데 차집합이 비었다 — 이 단언은 아무것도 지키지 않는다"
+    bad "폴러 울타리" "진짜 checks.sh 에서 동사를 하나도 추출하지 못했다 — 위의 빈 차집합은 아무것도 증명하지 않는다"
   fi
-  rm -f "$GH_FX"
+  # THE NEGATIVE CONTROL, out of tree, AND IT PLANTS THE SPELLINGS THAT BROKE THE
+  # FIRST VERSION — not only the one it already handled. An assertion whose only
+  # evidence is that the real file passes cannot tell "the fence holds" from "the
+  # extractor finds nothing", and a control that plants only the easy spelling
+  # cannot tell the recognition gate from the shape gate. The last case puts an
+  # allowed call and a forbidden one on the same line, so extraction has to take
+  # every call on a line rather than the first.
+  for gh_fx_case in \
+    '  gh -R "$slug" pr merge "$n" --squash' \
+    '  "gh" -R "$slug" pr merge "$n" --squash' \
+    "  'gh' -R \"\$slug\" pr merge \"\$n\" --squash" \
+    '  "$GH" -R "$slug" pr merge "$n" --squash' \
+    '  GH_BIN=$(command -v gh); "$GH_BIN" -R "$slug" pr merge "$n"' \
+    '  eval "$cmd -R \"$slug\" pr merge \"$n\""' \
+    '  "$GH" pr merge "$n" --squash' \
+    '  out=$(gh -R "$slug" pr checks "$n"); gh -R "$slug" pr merge "$n"'
+  do
+    GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX") \
+      || { bad "폴러 울타리" "음성 대조군 임시 파일을 만들지 못했다"; break; }
+    { cat "$CHECKS_SH"; printf '%s\n' "$gh_fx_case"; } > "$GH_FX"
+    gh_fx_extra=$(gh_verbs_of "$GH_FX" | { grep -v '^$' || true; } \
+                  | { grep -vxF "$gh_allowed" || true; } )
+    if [ -n "$gh_fx_extra" ]; then
+      ok "오염 사본을 차집합이 잡아낸다 ($(printf '%s' "$gh_fx_extra" | tr '\n' ' ')— $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//'))"
+    else
+      bad "폴러 울타리" "오염 사본의 차집합이 비었다 — 이 철자에 대해 단언이 아무것도 지키지 않는다: $(printf '%s' "$gh_fx_case" | sed 's/^[[:space:]]*//')"
+    fi
+    rm -f "$GH_FX"
+  done
 fi
 
 # ---------------------------------------------------------------------------

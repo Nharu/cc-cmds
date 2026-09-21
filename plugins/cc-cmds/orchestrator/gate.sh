@@ -15095,9 +15095,33 @@ gate_drain_checks() {
   # appends on its own schedule, so a `: > "$f"` after the read throws away every
   # line that landed while this loop was running. A rename inside the same
   # directory is atomic and sends the poller's next `>>` to a fresh file, which
-  # is the only ordering that loses nothing. The poller seeds its memory table
-  # from these temporaries too, so a drain that dies mid-read does not make the
-  # observations in flight invisible.
+  # is the only ordering that loses nothing.
+  #
+  # A DRAIN THAT DIES BETWEEN THE RENAME AND THE `rm` LEAVES A FILE, AND THIS
+  # FUNCTION IS THE ONLY THING THAT READS IT BACK. Nothing else in the tree opens
+  # a `checks.observed.draining.*`, so without the sweep below those lines never
+  # reach the ledger — and the loss is permanent rather than merely likely,
+  # because the poller seeds its transition table from exactly those files and so
+  # treats the stranded states as ALREADY RECORDED. It writes on transitions
+  # only, so it never re-emits them; restarting it re-seeds the same state out of
+  # the ledger. A `실패` that died in a drain would stop refusing merges forever.
+  # The comment that used to sit here claimed the poller's seeding is what kept
+  # those observations visible. Seeding is what closed the door, not what opened
+  # it, and that inversion is why this path read as covered.
+  #
+  # The abort path is not hypothetical: `gate_append` calls `die` when an append
+  # fails — an unwritable lock path, a full disk, a wrong ledger path — and that
+  # `die` has no data precondition at all. The sweep also closes the `$$` reuse
+  # window, where a later gate with a recycled pid renamed over a file a dead
+  # drain had left behind: the file is consumed before that rename is attempted.
+  #
+  # OLDEST FIRST, AND IT CARRIES WEIGHT. Both consumers of this series take the
+  # LAST record — the poller's `tbl_get` and `gate_check_merge_checks` both end
+  # in `tail -1` — so the producer has to emit in age order at both layers.
+  # Draining the newest stranded file first would land a stale `통과` after a
+  # real `실패` and disarm the merge refusal, which is the exact outcome the
+  # recovery exists to prevent. `ls -tr` orders by mtime, and `mv` carries the
+  # original's mtime across, so the ordering is the order the lines were observed.
   #
   # NO DEDUPE HERE — IT IS THE POLLER'S JOB. What `gate_drain_stall` dedupes
   # against is the ledger's RESOLUTION state, and a `checks` row has no such
@@ -15120,10 +15144,28 @@ gate_drain_checks() {
   # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
   # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
   # concurrent-stage cap rather than with anything here.
-  local f="$RUN_DIR/checks.observed" t line ts seg pr sha st req fail
+  local f="$RUN_DIR/checks.observed" t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    gate_drain_checks_file "$t"
+    rm -f "$t"
+  done <<EOF
+$( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
+EOF
   [ -s "$f" ] || return 0
   t="$f.draining.$$"
   mv "$f" "$t" 2>/dev/null || return 0
+  gate_drain_checks_file "$t"
+  rm -f "$t"
+}
+
+gate_drain_checks_file() {
+  # gate_drain_checks_file <path> — transcribe one drained file into `checks`
+  # rows. Split out of its caller because TWO sources feed it and they must be
+  # transcribed identically: the file this act renamed aside, and any file a
+  # previous drain left behind when it died before its `rm`.
+  local src="$1" ts seg pr sha st req fail
+  [ -f "$src" ] || return 0
   while IFS="$(printf '\t')" read -r ts seg pr sha st req fail; do
     [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || {
       warn "a line of \`checks.observed\` is missing required columns and is not transcribed: '${ts:-}'"
@@ -15142,8 +15184,7 @@ gate_drain_checks() {
       "필수 집합=$(gate_row_safe "$req" "$GATE_CHECKS_REQ_MAX")" \
       "실패 체크=$(gate_row_safe "$fail" "$GATE_CHECKS_FAIL_MAX")" \
       "관측=$ts" "세그먼트=${seg:--}"
-  done < "$t"
-  rm -f "$t"
+  done < "$src"
 }
 
 gate_drain_notify_state() {
