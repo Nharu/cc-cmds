@@ -19,7 +19,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-ingest` | Claude Design (claude.ai/design) 핸드오프 번들을 파싱·리뷰하고 ACCEPT/REFINE 판정으로 개선 루프 진행 | claude.ai/design 에서 받은 HTML 핸드오프 번들을 검토·수용·재프롬프트할 때 (단일 호출 또는 외부 재실행 사이 반복) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
 | `/cc-cmds:design-prompt` | Claude Design (claude.ai/design) 실행용 프롬프트+컨텍스트를 base 설계 문서에 authoring하고 붙여넣기 블록 emit (standalone + idempotent, HANDOFF CONTRACT 포함) | base 설계 작성 후, claude.ai/design 에 보낼 의도 중심 프롬프트와 DS 참조를 base 설계 문서에 추가하거나 리뷰 반영본으로 붙여넣기 블록을 재조립할 때 |
-| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
+| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 전 잔여 항목 반증(implement-unattended Step 1.5d 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
 | `/cc-cmds:design-system` | Claude Design (claude.ai/design) DS 생성 프롬프트 emit + DS 번들 ingest로 docs/design-system/ 워크스페이스 구축 (2-phase) | FE 파이프라인 시작 전 프로젝트 전역 design system을 claude.ai/design으로 생성·도입할 때 (1회성 또는 재ingest) |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -244,7 +244,7 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 
 | Option | Default | Summary |
 | --- | --- | --- |
-| `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다. |
+| `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다. |
 | `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자이거나, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
