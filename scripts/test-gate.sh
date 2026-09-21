@@ -20916,6 +20916,220 @@ else
   bad "59: 교대 설정 변형" "settings/ 아래에 shift 변형이 없다 — 위 단언이 공허하다"
 fi
 
+# ---------------------------------------------------------------------------
+# 60. CI 체크 계열 — 전사·행 예산·진전 벡터, 그리고 머지 거절의 아홉 갈래
+# --- section: 60 | group: sa | covers: act, plan | anchors: 60: 관측 세 줄이 checks 행 세 개로 전사된다, 60: 어휘 밖 상태의 줄은 전사되지 않는다, 60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다, 60: 진전 해시가 checks 드레인에 불변이다, 60: 실패+이름 목록은 거절한다, 60: 그 행의 도달 판정이 CI실패 다 ---
+#
+# 폴러(`checks.sh`)가 쓰는 것은 파일이고 원장의 writer 는 게이트 하나이므로, 관측이
+# 행이 되는 자리는 `gate_drain_checks` 다. 이 절은 그 전사와, 전사가 건드리면 안 되는
+# 두 가지(행 예산·진전 벡터), 그리고 전사된 행을 읽는 유일한 소비자
+# (`gate_check_merge_checks`)를 잰다. 폴러 자신의 폴링 논리는 여기가 아니라
+# `plugins/cc-cmds/orchestrator/test-run.sh` 가 잰다 — 그쪽이 `gh` 를 스텁으로 세운다.
+#
+# 픽스처는 전부 `pre_sa` 의 것 하나로 선다. 머지 갈래가 어차피 세그먼트 워크트리와
+# 리뷰 정책을 요구하고, 그 픽스처의 런 디렉터리(`SA_RUN`)가 곧 폴러가 관측 파일을
+# 두는 자리라, 앞 절이 남긴 베이스 픽스처(`FX_MANIFEST`·`RD`)를 빌리지 않아도 된다.
+# 빌렸다면 이 절은 그 두 이름이 어느 절에서 어떤 런을 가리키게 됐는지에 매여 있었을
+# 것이다.
+# ---------------------------------------------------------------------------
+ck60_drain() {
+  # 관측을 행으로 만드는 유일한 길 — 값싼 act 하나. 전사는 `snapshot` 이 아니라
+  # act 경로에서 일어난다(원장을 쓰는 것은 이 동사뿐이다).
+  sag act --manifest "$SA_MANIFEST" --kind x --target main --segment CK --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 관측 전사" -- true
+}
+ck60_line() {
+  # ck60_line <상태> <필수 집합> <head sha> <실패 체크> — 폴러가 쓰는 모양의 관측 한 줄.
+  # 일곱 열, 탭 구분, 순서는 `관측·세그먼트·PR·head sha·상태·필수 집합·실패 체크`.
+  mkdir -p "$SA_RUN"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    '2026-09-01T00:00:00Z' CK "t/$SA_ID#1" "$3" "$1" "$2" "$4" >> "$SA_RUN/checks.observed"
+}
+ck60_obs() { ck60_line "$@"; ck60_drain; }
+ck60_plan() {
+  # 같은 머지를 `plan` 으로. 예보는 아무것도 쓰지 않으므로 아홉 갈래를 한 픽스처
+  # 위에서 차례로 태울 수 있고, 갈래마다 원격을 실제로 움직이지 않는다.
+  sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment CK \
+      --cutpoint 머지 --snapshot-digest "$(SAH)" --rationale x \
+      -- git push origin "$SA_SEGBR:$SA_BASE"
+}
+ck60_pd() {
+  # 진전 해시. `SAH` 의 H 와는 다른 값이고, 경계(B1)가 보는 것이 이쪽이다.
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" --render 2>/dev/null ) \
+    | sed -n 's/^진전 해시 : //p' | sed 's/[[:space:]]*$//'
+}
+ck60_checks() { { grep -cF '`checks`' "$SA_LEDGER" || true; }; }
+ck60_bytes() {
+  # 관측 파일에 남은 바이트. 전사는 파일을 비우는 것이 아니라 옆으로 옮겨 지우므로,
+  # 「비었다」와 「없다」가 같은 답이어야 한다.
+  if [ -f "$SA_RUN/checks.observed" ]; then wc -c < "$SA_RUN/checks.observed" | tr -d ' '; else printf 0; fi
+}
+ck60_new() {
+  # ck60_new <리뷰 정책> — 그 정책 하나를 위한 픽스처. 상한은 어휘의 가장 느슨한
+  # 값으로 두어 세 정책이 전부 선언 가능하게 하고, 룰은 켠 채로 둔다 — 끄면 아래
+  # 아홉 갈래가 전부 「룰이 검사하지 않아서 통과」와 구별되지 않는다.
+  sa_new "CI 체크 ($1)" 리뷰없음
+  CK60_SHA=$(sa_commit '작업')
+  sa_seg_row CK "$1"
+  # `선리뷰후머지` 만 머지 앞에 기록을 요구한다. 없으면 머지가 룰 루프에서 먼저
+  # 거절되고, 그 거절은 이 절이 재려는 CI 거절과 구별되지 않는다.
+  if [ "$1" = "선리뷰후머지" ]; then
+    sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment CK --cutpoint 커밋 \
+        --snapshot-digest "$(SAH)" --rationale x \
+        -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$CK60_SHA" "리포트 경로=$FXREPORT"
+    {
+      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S4 | 종류=implement | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-impl | 부모=router-1 | 종단 부류=정상 완료\n'
+      printf -- '- `stage-result` | 세그먼트=CK | 스테이지=S5 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sess-rev | 부모=router-1 | 종단 부류=정상 완료\n'
+    } >> "$SA_LEDGER"
+  fi
+}
+
+# (1) 전사 — 관측 N 줄이 checks 행 N 개가 되고, 어휘 밖 줄은 전사되지 않는다 --------
+ck60_new 선머지후리뷰
+ck60_n0=$(ck60_checks)
+ck60_rows0=$(sa_rows)
+ck60_h=$(SAH)
+ck60_line 대기 없음 "$CK60_SHA" -
+ck60_line 통과 lint "$CK60_SHA" -
+ck60_line 실패 lint "$CK60_SHA" lint
+# 어휘 밖. 드레인은 이것을 행으로 만들지 않고 경고 하나로 흘려야 한다 — 만들면
+# 원장의 `상태` 자리에 어떤 소비자도 읽을 수 없는 값이 앉는다.
+ck60_line 엉뚱 없음 "$CK60_SHA" -
+ck60_drain
+check "60: 관측 세 줄이 checks 행 세 개로 전사된다" "$(ck60_checks)" "$((ck60_n0 + 3))"
+check "60: 전사 뒤 관측 파일에 남은 바이트가 없다" "$(ck60_bytes)" "0"
+check "60: 어휘 밖 상태의 줄은 전사되지 않는다" \
+  "$( { grep -cF '상태=엉뚱' "$SA_LEDGER" || true; } )" "0"
+# 조상 창 안이라는 것이 전제다 — 창(8)보다 많이 늘었다면 아래 단언은 창을 재는 것이
+# 아니라 창이 넉넉했다는 우연을 재는 것이 된다.
+ck60_grew=$(( $(sa_rows) - ck60_rows0 ))
+if [ "$ck60_grew" -gt 0 ] && [ "$ck60_grew" -lt 8 ]; then
+  ok "60: 이 드레인이 조상 창 안에서 행을 늘렸다 (${ck60_grew}행 < 8)"
+else
+  bad "60 드레인 증가분" "행이 ${ck60_grew} 늘었다 — 아래 다이제스트 단언이 창을 재지 못한다"
+fi
+sag act --manifest "$SA_MANIFEST" --kind x --target main --segment CK --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$ck60_h" --rationale "픽스처 — 드레인 앞 다이제스트" -- true
+check "60: 드레인 앞에서 뜬 다이제스트가 드레인 뒤에도 받아들여진다" "$rc" "0"
+
+# (2) 행 예산 — 상한까지 채운 두 자유 필드로도 행이 GATE_ROW_MAX 안에 든다 ----------
+#
+# 두 상한은 리터럴이 아니라 게이트에서 읽는다. 값이 움직이면 이 단언이 새 값을
+# 따라가고, 따라간 값이 행 상한을 깨면 그때 여기서 깨진다.
+ck60_reqmax=$(sed -n 's/^readonly GATE_CHECKS_REQ_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+ck60_failmax=$(sed -n 's/^readonly GATE_CHECKS_FAIL_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+ck60_cap=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+if [ -n "$ck60_reqmax" ] && [ -n "$ck60_failmax" ] && [ -n "$ck60_cap" ]; then
+  ok "60: 두 필드 상한과 행 상한을 게이트에서 읽었다 ($ck60_reqmax · $ck60_failmax · $ck60_cap)"
+else
+  bad "60 상한 판독" "상한 셋 중 읽지 못한 것이 있다 ('$ck60_reqmax' · '$ck60_failmax' · '$ck60_cap')"
+fi
+# 한 글자가 3바이트인 한국어로 채운다 — 바이트로 자르는 코드를 글자로 자르는 코드와
+# 구별하는 유일한 입력이고, 잘못 자르면 잘린 조각이 유효한 UTF-8 이 아니게 된다.
+ck60_long() { LC_ALL=C awk -v n="$1" 'BEGIN { while (length(s) < n + 60) s = s "검사"; print s }'; }
+ck60_obs 실패 "$(ck60_long "$ck60_reqmax")" "$CK60_SHA" "$(ck60_long "$ck60_failmax")"
+ck60_row=$( { grep -F '`checks`' "$SA_LEDGER" || true; } | tail -1)
+ck60_len=$(printf '%s\n' "$ck60_row" | wc -c | tr -d ' ')
+if [ "$ck60_len" -le "$ck60_cap" ]; then
+  ok "60: 상한까지 채운 관측의 checks 행이 행 상한 안에 든다 (${ck60_len}B <= ${ck60_cap})"
+else
+  bad "60 행 예산" "checks 행이 ${ck60_len}B 다 — 상한 ${ck60_cap} 을 넘으면 그 행은 잘리는 것이 아니라 거절돼 관측이 사라진다"
+fi
+case "$(sa_field "$ck60_row" '필수 집합')" in
+  *'…(잘림)') ok "60: 필수 집합이 잘림 표지로 끝난다" ;;
+  *) bad "60 필수 집합 잘림" "$(sa_field "$ck60_row" '필수 집합' | LC_ALL=C cut -c1-40)…" ;;
+esac
+case "$(sa_field "$ck60_row" '실패 체크')" in
+  *'…(잘림)') ok "60: 실패 체크가 잘림 표지로 끝난다" ;;
+  *) bad "60 실패 체크 잘림" "$(sa_field "$ck60_row" '실패 체크' | LC_ALL=C cut -c1-40)…" ;;
+esac
+
+# (3) 진전 벡터 — checks 전사는 그것을 움직이지 않는다 -------------------------------
+#
+# `gate_progress_vector` 는 계열을 이름으로 **골라** 담으므로 새 계열은 한 줄도 고치지
+# 않은 채로 그 밖에 있다. 그것이 설계가 요구한 자리다: CI 를 기다리는 동안 폴러가
+# 쓰는 행이 진전으로 읽히면 아무 일도 일어나지 않는 밤이 진전하는 밤으로 보이고
+# 경계가 영영 발화하지 않는다.
+#
+# 대조를 먼저 뜨는 이유. 드레인은 자기 act 의 행도 함께 남기므로, 관측이 있는 드레인
+# 하나만 재면 그 act 의 몫과 checks 행의 몫이 섞인다. 관측 0 줄의 드레인을 한 번
+# 돌려 그 몫을 앞뒤 양쪽에 똑같이 넣고 잰다.
+ck60_drain
+ck60_pd0=$(ck60_pd)
+ck60_nb=$(ck60_checks)
+ck60_line 대기 없음 "$CK60_SHA" -
+ck60_line 통과 없음 "$CK60_SHA" -
+ck60_line 실패 없음 "$CK60_SHA" ci
+ck60_drain
+check "60: 그 드레인이 실제로 checks 행 셋을 더했다 (아래가 공허하지 않다)" \
+  "$(ck60_checks)" "$((ck60_nb + 3))"
+check "60: 진전 해시가 checks 드레인에 불변이다" "$(ck60_pd)" "$ck60_pd0"
+if [ -n "$ck60_pd0" ]; then
+  ok "60: 그 진전 해시가 빈 값이 아니다 (같다 가 둘 다 비어서 같은 것이 아니다)"
+else
+  bad "60 진전 해시" "렌더에서 진전 해시를 읽지 못했다 — 위 비교가 '' 과 '' 을 비교했다"
+fi
+
+# (4) 머지 거절의 아홉 갈래 — 리뷰 정책 세 값 모두에서 같은 답 ----------------------
+#
+# 이 검사는 리뷰 정책을 입력으로 읽지 않는다. 그 사실은 코드를 보면 알 수 있지만,
+# 코드를 보고 아는 것과 세 값 모두에서 관측되는 것은 다르다 — 이 검사가 앵커 검사의
+# 형제로 놓인 이유가 바로 앵커 검사는 `선머지후리뷰` 에서만 깨어난다는 것이라,
+# 형제까지 같은 조건을 물려받았는지는 재 봐야 한다.
+#
+# 라벨은 정책을 **뒤에** 단다. 배너의 `anchors:` 는 컷에 축자로 남아 있어야 하는
+# 문면이고, 라벨 앞머리에 `$ck60_pol` 이 들어가면 그 문면이 파일 안에 리터럴로
+# 존재하지 않아 잘린 절 판정에 걸린다.
+for ck60_pol in 선리뷰후머지 선머지후리뷰 리뷰없음; do
+  ck60_new "$ck60_pol"
+  ck60_plan
+  if [ "$rc" = "0" ]; then
+    ok "60: 행이 없으면 거절하지 않는다 ($ck60_pol)"
+  else
+    bad "60 행 없음 ($ck60_pol)" "rc=$rc — ${raw:-(출력 없음)}"
+  fi
+  for ck60_st in 대기 미등록 '판정 불가' 통과; do
+    ck60_obs "$ck60_st" 없음 "$CK60_SHA" -
+    ck60_plan
+    check "60: 그 상태는 거절하지 않는다 ($ck60_pol · $ck60_st)" "$rc" "0"
+  done
+  # 깨진 질문은 답이 아니다 — 필수 집합이 `판정 불가` 면 실패 행이라도 거절하지 않는다.
+  ck60_obs 실패 '판정 불가' "$CK60_SHA" lint
+  ck60_plan
+  check "60: 실패라도 필수 집합이 판정 불가면 거절하지 않는다 ($ck60_pol)" "$rc" "0"
+  # head 가 어긋난 실패 행. 강제 푸시는 새 CI 수명을 열고, 이 검사는 `gh` 를 부르지
+  # 않으므로 옛 head 의 실패에 대해 아무 말도 하지 않아야 한다.
+  ck60_obs 실패 lint 0000000000000000000000000000000000000000 lint
+  ck60_plan
+  check "60: head 가 어긋난 실패 행은 거절하지 않는다 ($ck60_pol)" "$rc" "0"
+  # 필수 여부를 묻지 않는다 — 무인 런은 필수가 아닌 체크의 실패에도 선다.
+  ck60_obs 실패 없음 "$CK60_SHA" lint
+  ck60_plan
+  check "60: 실패면 필수 집합이 없음 이어도 거절한다 ($ck60_pol)" "$rc" "11"
+  ck60_obs 실패 lint "$CK60_SHA" lint
+  ck60_plan
+  check "60: 실패+이름 목록은 거절한다 ($ck60_pol)" "$rc" "11"
+  case "$msg" in
+    *'park 예상: 도달 판정=CI실패'*) ok "60: plan 이 같은 코드와 같은 칸으로 예보한다 ($ck60_pol)" ;;
+    *) bad "60 예보 문면 ($ck60_pol)" "$msg" ;;
+  esac
+  # 그리고 같은 것을 `act` 로. 예보가 아무것도 쓰지 않았으므로 아래 계수는 이 머지
+  # 하나의 몫이다.
+  ck60_nblk=$( { grep -cF '`blocked`' "$SA_LEDGER" || true; } )
+  ck60_napr=$( { grep -cF '`자율 승인`' "$SA_LEDGER" || true; } )
+  ck60_nob=$(sa_ob_count)
+  sa_merge CK
+  check "60: 그 머지가 exit 11 로 park 된다 ($ck60_pol)" "$rc" "11"
+  check "60: blocked 행이 정확히 하나 는다 ($ck60_pol)" \
+    "$( { grep -cF '`blocked`' "$SA_LEDGER" || true; } )" "$((ck60_nblk + 1))"
+  check "60: 자율 승인 행은 늘지 않는다 ($ck60_pol)" \
+    "$( { grep -cF '`자율 승인`' "$SA_LEDGER" || true; } )" "$ck60_napr"
+  check "60: 리뷰 의무 행도 늘지 않는다 ($ck60_pol)" "$(sa_ob_count)" "$ck60_nob"
+  ck60_blk=$( { grep -F '`blocked`' "$SA_LEDGER" || true; } | tail -1)
+  check "60: 그 행의 도달 판정이 CI실패 다 ($ck60_pol)" "$(sa_field "$ck60_blk" '도달 판정')" "CI실패"
+  check "60: 그 행의 스코프가 act 다 ($ck60_pol)" "$(sa_field "$ck60_blk" '스코프')" "act"
+done
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals and carry

@@ -3936,34 +3936,64 @@ fi
 RUN_DIR="$SHIFT_SAVE"
 
 # ---------------------------------------------------------------------------
-# 28. The feed's fence, which no lint can hold.
+# 28. The detached run-scope processes' fence, which no lint can hold.
 #
-# `feed.sh` cannot raise a banner because it does not source the emitter and
-# does not name its two functions. The banner-site lint counts occurrences of
-# the notifier BINARY, so a sourcing path is invisible to it — these two
-# assertions are the fence itself rather than a supplement to one.
+# Neither `feed.sh` nor `checks.sh` can raise a banner, because neither sources
+# the emitter and neither names its two functions. The banner-site lint counts
+# occurrences of the notifier BINARY, so a sourcing path is invisible to it —
+# these assertions are the fence itself rather than a supplement to one.
+#
+# THE ASSERTIONS WALK A FILE LIST RATHER THAN NAMING ONE FILE. A fence written
+# for one file has to be copied for the next one, and a copy that is not made is
+# a seat that quietly opens. `checks.sh` carries the same fence for the same
+# reason and additionally needs the verb allowlist below, because it is the first
+# detached process in this tree that calls the network at all.
 # ---------------------------------------------------------------------------
 FEED_SH="$(dirname "$DRIVER")/feed.sh"
-if [ -f "$FEED_SH" ]; then
-  ok "진행 채널 스크립트가 있다"
+CHECKS_SH="$(dirname "$DRIVER")/checks.sh"
+for fence_f in "$FEED_SH" "$CHECKS_SH"; do
+  fence_n=$(basename "$fence_f")
+  if [ ! -f "$fence_f" ]; then
+    bad "울타리" "$fence_n 이 없다 — 이 펜스가 지킬 대상이 실재하지 않는다"
+    continue
+  fi
+  ok "$fence_n 이 있다"
   # A WHITELIST, NOT A DENYLIST. Asking "does it source the emitter" only closes
   # the door that is already named; asking which files it may source at all also
   # closes the one a future emitter under another name would use.
   #
   # THE LIST IS TWO NAMES, AND THE SECOND ONE PAYS ITS WAY BELOW. `pin.sh` joined
-  # it because the feed has to hop into the run's pinned copy before it writes
-  # anything, and the predicate that decides that is shared with the gate and the
-  # watcher rather than re-implemented here. Widening a whitelist weakens it
-  # unless the new entry is fenced too, so the assertions after this one hold
+  # it because these processes have to hop into the run's pinned copy before they
+  # write anything, and the predicate that decides that is shared with the gate
+  # and the watcher rather than re-implemented here. Widening a whitelist weakens
+  # it unless the new entry is fenced too, so the assertions after this one hold
   # `pin.sh` to the same rule: it sources nothing and names no emitter.
-  feed_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$FEED_SH" || true; } \
+  fence_src_other=$( { grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$fence_f" || true; } \
                     | { grep -v 'liveness\.sh' || true; } \
                     | { grep -v 'pin\.sh' || true; } )
-  if [ -n "$feed_src_other" ]; then
-    bad "피드 울타리" "feed.sh 가 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $feed_src_other"
+  if [ -n "$fence_src_other" ]; then
+    bad "울타리" "$fence_n 이 허용 목록(liveness.sh · pin.sh) 밖의 것을 소스한다: $fence_src_other"
   else
-    ok "feed.sh 가 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
+    ok "$fence_n 이 소스하는 것은 liveness.sh 와 pin.sh 뿐이다 — notify-run.sh 를 소스하지 않는다"
   fi
+  # And the name reaches no executable line. A header sentence explaining the
+  # fence is not a breach of it, so the comment lines are excluded rather than
+  # the file being required never to mention what it refuses to load.
+  fence_notify_code=$( { grep -n 'notify-run\.sh' "$fence_f" || true; } \
+                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
+  if [ -n "$fence_notify_code" ]; then
+    bad "울타리" "$fence_n 의 주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $fence_notify_code"
+  else
+    ok "$fence_n 의 실행 줄 어디에도 notify-run.sh 가 없다"
+  fi
+  if grep -q 'cc_notify_fire\|cc_notify_clear' "$fence_f"; then
+    bad "울타리" "$fence_n 이 방출 함수를 이름으로 담고 있다"
+  else
+    ok "$fence_n 이 방출 함수를 이름으로도 부르지 않는다"
+  fi
+done
+
+if [ -f "$FEED_SH" ]; then
   PIN_SH="$(dirname "$DRIVER")/pin.sh"
   if [ -f "$PIN_SH" ]; then
     pin_src_any=$( grep -nE '^[[:space:]]*(\.|source)[[:space:]]' "$PIN_SH" || true )
@@ -3985,23 +4015,273 @@ if [ -f "$FEED_SH" ]; then
   else
     bad "피드 울타리" "pin.sh 가 없다 — 피드가 소스하는 파일이 실재하지 않는다"
   fi
-  # And the name reaches no executable line. A header sentence explaining the
-  # fence is not a breach of it, so the comment lines are excluded rather than
-  # the file being required never to mention what it refuses to load.
-  feed_notify_code=$( { grep -n 'notify-run\.sh' "$FEED_SH" || true; } \
-                      | { grep -vE '^[0-9]+:[[:space:]]*#' || true; } )
-  if [ -n "$feed_notify_code" ]; then
-    bad "피드 울타리" "주석이 아닌 줄이 notify-run.sh 를 이름으로 담는다: $feed_notify_code"
-  else
-    ok "feed.sh 의 실행 줄 어디에도 notify-run.sh 가 없다"
-  fi
-  if grep -q 'cc_notify_fire\|cc_notify_clear' "$FEED_SH"; then
-    bad "피드 울타리" "feed.sh 가 방출 함수를 이름으로 담고 있다"
-  else
-    ok "feed.sh 가 방출 함수를 이름으로도 부르지 않는다"
-  fi
 else
   bad "진행 채널" "feed.sh 가 없다 — 라우팅이 리드를 떠난 밤에 사람이 볼 것이 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 28b. The CI poller's `gh` verb allowlist.
+#
+# The gate's enforcement is a `PreToolUse` hook matching TOOL CALLS, so a command
+# run inside a detached `bash checks.sh &` is not matched and no axis-2 grade is
+# ever consulted. That is not a bypass — the grade is simply not asked for — but
+# it means one `pr merge` added to that file would merge on an unattended night
+# with neither a record nor an approval. This assertion is the only control left.
+#
+# THE SHAPE OF THE ASSERTION CARRIES THE WEIGHT, and it is not the shape of the
+# banner fence above. That one counts an emitter name and expects zero — a check
+# for something ABSENT. Here the dangerous thing is a verb nobody has thought of,
+# so grepping for the three allowed spellings would let a fourth through in
+# silence. The verb pairs are EXTRACTED and the SET DIFFERENCE against the
+# allowlist must be empty, and a `gh` call this extractor cannot parse counts as
+# a violation too — otherwise an unparsable spelling is a hole of its own.
+# ---------------------------------------------------------------------------
+gh_verbs_of() {
+  # gh_verbs_of <file> — one `pr <verb>` pair per `gh` call on a non-comment
+  # line, or the literal `(추출 실패)` for a call that does not have that shape.
+  #
+  # TOKENS, NOT A SUBSTRING SEARCH. Matching `gh ` inside the line reports every
+  # English word ending in those letters — `through`, `high` — as an unparsable
+  # call, so the assertion would fail on prose and be switched off. A token is
+  # the invocation when it is exactly `gh` or ends in `gh` behind a shell
+  # character, which is what `$(gh` and `(gh` look like.
+  { grep -vE '^[[:space:]]*#' "$1" || true; } \
+    | LC_ALL=C awk '{
+        n = split($0, w, /[ \t]+/)
+        for (i = 1; i <= n; i++) {
+          if (w[i] != "gh" && w[i] !~ /[^A-Za-z0-9_-]gh$/) continue
+          if (w[i+1] == "-R" && w[i+3] == "pr" && w[i+4] ~ /^[a-z][a-z-]*$/) {
+            print "pr " w[i+4]
+          } else {
+            print "(추출 실패)"
+          }
+        }
+      }' \
+    | sort -u
+}
+if [ -f "$CHECKS_SH" ]; then
+  gh_allowed=$(printf '%s\n' 'pr list' 'pr view' 'pr checks' | sort -u)
+  gh_seen=$(gh_verbs_of "$CHECKS_SH")
+  gh_extra=$(printf '%s\n' "$gh_seen" | { grep -v '^$' || true; } \
+             | { grep -vxF "$gh_allowed" || true; } )
+  if [ -n "$gh_extra" ]; then
+    bad "폴러 울타리" "checks.sh 의 gh 호출이 허용 집합 {pr list, pr view, pr checks} 밖이다: $(printf '%s' "$gh_extra" | tr '\n' ' ')"
+  else
+    ok "checks.sh 의 gh 호출이 전부 허용 집합 안이다 (차집합이 비었다)"
+  fi
+  # THE NEGATIVE CONTROL, out of tree. An assertion whose only evidence is that
+  # the real file passes cannot tell "the fence holds" from "the extractor finds
+  # nothing" — which is the failure mode of every whitelist written as a grep.
+  GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX")
+  { cat "$CHECKS_SH"; printf '  gh -R "$slug" pr merge "$n" --squash\n'; } > "$GH_FX"
+  gh_fx_extra=$(gh_verbs_of "$GH_FX" | { grep -v '^$' || true; } \
+                | { grep -vxF "$gh_allowed" || true; } )
+  if [ -n "$gh_fx_extra" ]; then
+    ok "오염 사본의 넷째 동사를 차집합이 잡아낸다 ($(printf '%s' "$gh_fx_extra" | tr '\n' ' '))"
+  else
+    bad "폴러 울타리" "오염 사본에 pr merge 를 넣었는데 차집합이 비었다 — 이 단언은 아무것도 지키지 않는다"
+  fi
+  rm -f "$GH_FX"
+fi
+
+# ---------------------------------------------------------------------------
+# 28c. The poller's pid record is not an orphan.
+#
+# `cc_orphan_stages` asks only "is the process this record names still here", so
+# nothing about `checks.pid` exempts it structurally the way the live census's
+# sibling requirement does. Left unnamed there, every normal exit of the poller
+# raises a false orphan alarm — once per run, every run.
+# ---------------------------------------------------------------------------
+# `cc_orphan_stages` lives in `liveness.sh`. Sourced here rather than relied on
+# from the driver's own sourcing, so this section stands when it is run alone.
+# shellcheck source=/dev/null
+. "$(dirname "$DRIVER")/liveness.sh"
+ORPH_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-orphan-checks.XXXXXX")
+orph_dead=99999
+while kill -0 "$orph_dead" 2>/dev/null; do orph_dead=$((orph_dead - 1)); done
+printf '%s' "$orph_dead" > "$ORPH_RD/checks.pid"
+orph_out=$(cc_orphan_stages "$ORPH_RD")
+# COUNTED, NOT `grep -q` ON THE RIGHT OF A PIPE. An early-exiting reader kills the
+# writer with SIGPIPE and `pipefail` then reports the whole pipeline as failed —
+# the same trap the suite's own static check refuses everywhere else in this tree.
+orph_hit=$( { printf '%s\n' "$orph_out" | grep -cx 'checks' || true; } | tr -d ' ')
+if [ "$orph_hit" != "0" ]; then
+  bad "고아 탐지" "죽은 checks.pid 가 고아로 보고된다 — 폴러가 정상 종료할 때마다 매 런 거짓 경보가 난다"
+else
+  ok "죽은 checks.pid 는 고아로 보고되지 않는다 (이름 면제)"
+fi
+# THE POSITIVE CONTROL, so the exemption is not read as the detector being
+# broken: a record of the same shape under a stage-like name IS reported.
+printf '%s' "$orph_dead" > "$ORPH_RD/S1.pid"
+orph_out2=$(cc_orphan_stages "$ORPH_RD")
+orph_hit2=$( { printf '%s\n' "$orph_out2" | grep -cx 'S1' || true; } | tr -d ' ')
+if [ "$orph_hit2" != "0" ]; then
+  ok "같은 모양의 스테이지 이름은 그대로 고아로 보고된다 (양성 대조)"
+else
+  bad "고아 탐지" "죽은 S1.pid 가 고아로 보고되지 않는다 — 면제가 이름을 넘어 번졌다"
+fi
+rm -rf "$ORPH_RD"
+
+# ---------------------------------------------------------------------------
+# 28d. The poller, driven for real against a `gh` stub.
+#
+# `--once` runs exactly one pass, so the loop's own exits are not exercised here
+# — what is exercised is every judgment inside a pass: deriving the branch from
+# the worktree, skipping a detached HEAD, writing nothing when there is no PR,
+# writing only on a transition, surviving a restart without duplicating, and
+# keeping a broken call out of `미등록`.
+# ---------------------------------------------------------------------------
+if [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
+  CK_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-checks-run.XXXXXX")
+  CK_BIN="$CK_RD/bin"; mkdir -p "$CK_BIN"
+  CK_WT="$CK_RD/wt"; mkdir -p "$CK_WT"
+  CK_LG="$CK_RD/ledger.md"
+  CK_MF="$CK_RD/manifest.md"
+  CK_OB="$CK_RD/checks.observed"
+  CK_LONG=$(LC_ALL=C awk 'BEGIN { s = ""; for (i = 0; i < 400; i++) s = s "x"; print s }')
+
+  cat > "$CK_BIN/gh" <<'GHSTUB'
+#!/bin/sh
+# A stand-in for `gh`, driven by the `mode` file the section writes. It accepts
+# only the one call shape the poller is allowed to make.
+mode=$(cat "$GH_STUB_DIR/mode" 2>/dev/null || printf 'empty')
+[ "$1" = "-R" ] || exit 2
+shift 2
+[ "$1" = "pr" ] || exit 2
+verb="$2"; shift 2
+case "$verb" in
+  list)
+    [ "$mode" = "empty" ] && { printf '[]\n'; exit 0; }
+    printf '[{"number":7,"headRefOid":"0123456789abcdef0123456789abcdef01234567"}]\n'
+    exit 0 ;;
+  checks)
+    req=0
+    for a in "$@"; do [ "$a" = "--required" ] && req=1; done
+    if [ "$mode" = "broken" ]; then
+      printf 'HTTP 502\n' >&2; exit 4
+    fi
+    if [ "$req" = "1" ]; then
+      printf 'no required checks reported on the branch\n' >&2; exit 1
+    fi
+    case "$mode" in
+      pending) exit 8 ;;
+      pass)    printf 'lint\tpass\t1s\thttp://x\n'; exit 0 ;;
+      fail)    printf 'lint\tfail\t1s\thttp://x\n'; exit 1 ;;
+      faillong) printf '%s\tfail\t1s\thttp://x\n' "$GH_STUB_LONG"; exit 1 ;;
+    esac
+    exit 1 ;;
+esac
+exit 2
+GHSTUB
+  chmod +x "$CK_BIN/gh"
+
+  ( cd "$CK_WT" \
+    && git init -q . >/dev/null 2>&1 \
+    && git config user.email 't@example.invalid' \
+    && git config user.name 'checks test' \
+    && git config remote.origin.url 'https://github.com/Nharu/cc-cmds.git' \
+    && git commit -q --allow-empty -m 'x' \
+    && git checkout -q -b 'seg/ck' ) >/dev/null 2>&1
+
+  printf -- '- `run` | 교대=0 | run-id=ck | prev=aaaa\n' > "$CK_LG"
+  printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$CK_WT" >> "$CK_LG"
+  printf -- '- `target` | 별칭=home | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' > "$CK_MF"
+
+  ck_run() {
+    printf '%s' "$1" > "$CK_RD/mode"
+    GH_STUB_DIR="$CK_RD" GH_STUB_LONG="$CK_LONG" PATH="$CK_BIN:$PATH" \
+      bash "$CHECKS_SH" --run-dir "$CK_RD" --ledger "$CK_LG" --manifest "$CK_MF" --once \
+      > "$CK_RD/out" 2> "$CK_RD/err"
+  }
+  # THE ABSENT FILE IS A REAL ANSWER HERE — the first pass has no PR and writes
+  # nothing, so the file does not exist yet. `2>/dev/null` on the reader does not
+  # cover that: the redirection is the SHELL's, and its "No such file or
+  # directory" goes to the section's own stderr, printing a spurious error line
+  # in the middle of a passing run.
+  ck_lines() {
+    if [ -f "$CK_OB" ]; then { grep -c '' < "$CK_OB" || true; } | tr -d ' '; else printf '0'; fi
+  }
+
+  ck_run empty
+  if [ "$(ck_lines)" = "0" ] || [ ! -f "$CK_OB" ]; then
+    ok "PR 이 없으면 폴러가 한 줄도 쓰지 않는다 (기동 직후의 정상 상태)"
+  else
+    bad "폴러 패스" "PR 이 없는데 줄이 생겼다: $(cat "$CK_OB")"
+  fi
+
+  ck_run pending
+  if [ "$(ck_lines)" = "1" ] && { grep -q "$(printf '\t대기\t')" "$CK_OB"; }; then
+    ok "첫 관측이 전이로 기록된다 (상태=대기, 한 줄)"
+  else
+    bad "폴러 패스" "첫 대기 전이가 한 줄로 기록되지 않았다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+  # The branch came from the worktree, not from a row — the segment row above
+  # carries no `브랜치` field at all, which is the router path.
+  if grep -q 'Nharu/cc-cmds#7' "$CK_OB"; then
+    ok "브랜치와 슬러그가 워크트리에서 유도된다 (행에 브랜치 필드가 없는 라우터 경로)"
+  else
+    bad "폴러 패스" "워크트리 유도가 PR 신원을 만들지 못했다"
+  fi
+
+  ck_run pending
+  if [ "$(ck_lines)" = "1" ]; then
+    ok "같은 상태의 두 번째 패스는 줄을 늘리지 않는다 (전이에서만 쓴다)"
+  else
+    bad "폴러 패스" "같은 상태가 두 줄이 됐다 — 40분 대기가 40행을 남긴다: $(cat "$CK_OB")"
+  fi
+
+  ck_run faillong
+  if [ "$(ck_lines)" = "2" ]; then
+    ok "상태 전이가 새 줄을 만든다 (대기 → 실패)"
+  else
+    bad "폴러 패스" "전이가 새 줄을 만들지 않았다: $(cat "$CK_OB")"
+  fi
+  ck_cols=$(LC_ALL=C awk -F'\t' '{ if (NF != 7) c++ } END { print c + 0 }' "$CK_OB")
+  if [ "$ck_cols" = "0" ]; then
+    ok "관측 파일의 모든 줄이 정확히 일곱 열이다 (탭이 열을 밀지 않는다)"
+  else
+    bad "폴러 패스" "열 수가 일곱이 아닌 줄이 ${ck_cols}개다 — 원장 행의 상태 자리에 엉뚱한 값이 앉는다"
+  fi
+  ck_fail_bytes=$(LC_ALL=C awk -F'\t' 'END { print length($7) }' "$CK_OB")
+  if [ "${ck_fail_bytes:-0}" -le 300 ]; then
+    ok "실패 체크 필드가 300 바이트 이하로 클립된다 (${ck_fail_bytes} 바이트)"
+  else
+    bad "폴러 패스" "실패 체크 필드가 ${ck_fail_bytes} 바이트다 — 행 예산을 넘긴다"
+  fi
+
+  # THE RESTART. The observations are transcribed into the ledger and the file is
+  # emptied, exactly as a drain leaves things; a poller that did not seed from the
+  # ledger would re-emit the current state as if it were a transition.
+  printf -- '- `checks` | 교대=0 | PR=Nharu/cc-cmds#7 | head sha=0123456789abcdef0123456789abcdef01234567 | 상태=실패 | 필수 집합=없음 | 실패 체크=lint | 관측=t | 세그먼트=S1 | prev=cccc\n' >> "$CK_LG"
+  : > "$CK_OB"
+  ck_run fail
+  if [ "$(ck_lines)" = "0" ]; then
+    ok "재시작 시 원장 시드가 중복을 막는다 (드레인된 상태가 다시 전이로 읽히지 않는다)"
+  else
+    bad "폴러 패스" "재시작이 이미 드레인된 상태를 다시 썼다: $(cat "$CK_OB")"
+  fi
+
+  : > "$CK_OB"
+  ck_run broken
+  if grep -q "$(printf '\t판정 불가\t')" "$CK_OB" 2>/dev/null; then
+    ok "깨진 호출이 미등록이 아니라 판정 불가로 떨어진다"
+  else
+    bad "폴러 패스" "깨진 호출의 상태가 판정 불가가 아니다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+
+  # DETACHED HEAD. `git rev-parse --abbrev-ref HEAD` prints `HEAD` and exits 0,
+  # so a `|| fallback` never fires and the segment would be polled for a branch
+  # named `HEAD`.
+  ( cd "$CK_WT" && git checkout -q --detach HEAD ) >/dev/null 2>&1
+  : > "$CK_OB"
+  ck_run pending
+  if [ "$(ck_lines)" = "0" ]; then
+    ok "detached HEAD 워크트리는 핸들 없음으로 건너뛴다"
+  else
+    bad "폴러 패스" "detached HEAD 에서도 폴링했다: $(cat "$CK_OB")"
+  fi
+
+  rm -rf "$CK_RD"
 fi
 
 # ---------------------------------------------------------------------------

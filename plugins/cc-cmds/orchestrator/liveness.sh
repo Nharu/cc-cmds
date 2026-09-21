@@ -176,8 +176,21 @@ cc_orphan_stages() {
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
     seg=${f##*/}; seg=${seg%.pid}
-    # The watcher's own record lives here too and is not a stage.
-    [ "$seg" = "watch" ] && continue
+    # THE RUN-SCOPE PROCESSES' OWN RECORDS LIVE HERE TOO AND ARE NOT STAGES.
+    # `watch.pid` and `checks.pid` are written by loops the gate never dispatched
+    # and never blocks on, so the reasoning above — "the line after the block
+    # never ran" — has no counterpart for them. Left in, each normal exit of
+    # either loop raises a false orphan alarm on every single run.
+    #
+    # THIS EXEMPTION IS BY NAME, AND IT IS A DIFFERENT MECHANISM FROM THE ONE
+    # THE LIVE CENSUS USES. `cc_live_stages`/`cc_stage_is_live` above exempt the
+    # same two files STRUCTURALLY — they require a `.start`/`.pgid` sibling and
+    # neither loop writes one — so nothing there needs a name. Here the question
+    # is only "is this pid still here", which any pid file answers, so the name
+    # is the only handle there is. Reading the two exemptions as one mechanism
+    # leads to deleting this line on the grounds that the structural check
+    # already covers it, and then the alarm returns.
+    case "$seg" in watch|checks) continue ;; esac
     pid=$(cat "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     if ! kill -0 "$pid" 2>/dev/null; then

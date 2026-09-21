@@ -617,6 +617,23 @@ readonly GATE_ANCESTRY_WINDOW=8
 # field that inherited the shape.
 readonly GATE_CONE_LIST_MAX=200
 
+# The two free-text fields of a `checks` row, and the derivation is written down
+# rather than the number being asserted.
+#
+# The fixed skeleton of that row — the series marker, `교대`, `PR`, `head sha`,
+# `상태`, `관측`, `세그먼트`, the `| prev=` and its 64 hex, and the newline — is
+# 277 bytes. `GATE_ROW_MAX` less that leaves 747 for the two free fields to share,
+# and only 500 of it is handed out here. The 247 left over is deliberate: the next
+# field added to this series must not have to re-dig the same pit.
+#
+# A ROW OVER THE CAP IS NOT TRUNCATED — `gate_append` refuses it and the process
+# ends — so the assertion that holds this is in `scripts/test-gate.sh` and it
+# burns a REAL drain rather than a fixture's field list. A fixture that supplies
+# the list passes while disagreeing with the implementation, which is the same
+# failure as a hardcoded number one layer up.
+readonly GATE_CHECKS_REQ_MAX=200
+readonly GATE_CHECKS_FAIL_MAX=300
+
 # ---------------------------------------------------------------------------
 # The park-scope vocabulary, on the gate side.
 #
@@ -15068,6 +15085,67 @@ gate_drain_stall() {
   : > "$f"
 }
 
+gate_drain_checks() {
+  # Move each transition the CI poller observed into the ledger as a `checks`
+  # row. Same arrangement as the stall drain above and for the same reason: the
+  # poller is a detached process and therefore not the ledger's writer, and an
+  # unchained append from there reads as a broken chain from that row on.
+  #
+  # THE FILE IS RENAMED ASIDE, NOT READ IN PLACE AND TRUNCATED. The poller
+  # appends on its own schedule, so a `: > "$f"` after the read throws away every
+  # line that landed while this loop was running. A rename inside the same
+  # directory is atomic and sends the poller's next `>>` to a fresh file, which
+  # is the only ordering that loses nothing. The poller seeds its memory table
+  # from these temporaries too, so a drain that dies mid-read does not make the
+  # observations in flight invisible.
+  #
+  # NO DEDUPE HERE — IT IS THE POLLER'S JOB. What `gate_drain_stall` dedupes
+  # against is the ledger's RESOLUTION state, and a `checks` row has no such
+  # concept; no termination clause attaches to this series. The rule this series
+  # actually needs is "write only on a transition", and a transition is a
+  # property of two consecutive OBSERVATIONS. This function runs on gate acts —
+  # rare and irregular — so deciding it here would mean a reverse scan of the
+  # whole ledger on every act path. The poller holds the previous state in memory
+  # and answers in O(1).
+  #
+  # NO BANNER. A CI result is an input for the router, not news for a person.
+  #
+  # THE ANCESTRY WINDOW IS THIS SERIES' ONE REAL EXPOSURE, and it is worth naming
+  # because it is invisible from here. A snapshot digest compares its chain tip
+  # against the last `GATE_ANCESTRY_WINDOW` rows' `prev`, and those rows are
+  # counted by DISTANCE, not by kind — so a drain that appends that many rows at
+  # once can make a sibling seat's held digest read as stale even though nothing
+  # it cares about moved. The two rules above bound it: rows are written only on
+  # transitions, and one `(PR, head sha)` lifecycle transitions a handful of
+  # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
+  # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
+  # concurrent-stage cap rather than with anything here.
+  local f="$RUN_DIR/checks.observed" t line ts seg pr sha st req fail
+  [ -s "$f" ] || return 0
+  t="$f.draining.$$"
+  mv "$f" "$t" 2>/dev/null || return 0
+  while IFS="$(printf '\t')" read -r ts seg pr sha st req fail; do
+    [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || {
+      warn "a line of \`checks.observed\` is missing required columns and is not transcribed: '${ts:-}'"
+      continue
+    }
+    case "$st" in
+      대기|통과|실패|미등록|'판정 불가') : ;;
+      *) warn "the \`상태\` of a \`checks.observed\` line is out of vocabulary and is not transcribed: '$st'"
+         continue ;;
+    esac
+    # EVERY FIELD SPELLED AS A LITERAL, never forwarded as `"$@"`. The field-table
+    # lint compares this call site against the contract in both directions, and a
+    # forwarded list switches off the direction that catches a field which exists
+    # in the table and is written by nobody — which is the defect that lint is for.
+    gate_append 'checks' "PR=$pr" "head sha=$sha" "상태=$st" \
+      "필수 집합=$(gate_row_safe "$req" "$GATE_CHECKS_REQ_MAX")" \
+      "실패 체크=$(gate_row_safe "$fail" "$GATE_CHECKS_FAIL_MAX")" \
+      "관측=$ts" "세그먼트=${seg:--}"
+  done < "$t"
+  rm -f "$t"
+}
+
 gate_drain_notify_state() {
   # The emitter's own active state, moved from the run directory into the report
   # as one line of prose.
@@ -16408,6 +16486,13 @@ gate_verb_act() {
   # records them as a file precisely because it is not the ledger's writer; this
   # is the writer, so this is where they become rows.
   gate_drain_stall
+  # The CI poller's observations, on the same seat and for the same reason. IT IS
+  # HERE AND NOT IN THE PRELUDE, and the position is the whole of its safety: the
+  # caller's digest has already passed the staleness test above, so an append
+  # made now cannot retroactively invalidate the very call that made it.
+  # "Simplifying" this up into the prelude brings the #592 ordering defect back to
+  # life in a new series, which is why the reason is written down beside the call.
+  gate_drain_checks
   # This seat's own state, then the watcher's — both go through the same file, so
   # whichever wrote it first is the one line the report carries and the two seats
   # cannot leave two lines for one fact.
@@ -17057,6 +17142,19 @@ gate_verb_act() {
     fi
   fi
 
+  # THE CI VERDICT, AND ITS SEAT IS THREE PROPERTIES AT ONCE: after the rule
+  # loop so a CI refusal is not confused with a rule refusal, upstream of both
+  # appends — the `자율 승인` row below and the obligation row the issuer writes —
+  # so a refused merge leaves no obligation nothing can close, and above the
+  # forecast arm so `plan` answers with the same code `act` would. The merge
+  # anchor check moved above the approval block; this one does not follow it,
+  # because up there it would run before the rule loop. It refuses by setting
+  # the park cell rather than by returning, so the block immediately below
+  # writes the row — no new exit code is minted for it. It takes the effective
+  # rung for the same reason the anchor check does: an under-declared merge
+  # must not skip it.
+  gate_check_merge_checks "$segment" "$GATE_ACT_EFFECTIVE"
+
   # --- park 디스패치 -------------------------------------------------------
   # THE JUDGMENT WAS MADE ABOVE; ONLY THE WRITE IS HERE. Everything between the
   # two is a refusal axis that would have stopped this act anyway, and a park row
@@ -17120,6 +17218,8 @@ gate_verb_act() {
         warn "repair: push to the same remote as the \`원격 슬러그\` of the target row — the origin of this worktree may not be that slug" ;;
       도달모순)
         warn "repair: the reach you declared and where this act actually lands differ — fix the declaration or change the act" ;;
+      CI실패)
+        warn "repair: fix the failing check and push a new head — a force-push opens a new CI lifecycle, the poller records it, and this merge is no longer refused" ;;
     esac
     exit "$GATE_EXIT_PARK"
   fi
@@ -17986,6 +18086,72 @@ gate_check_merge_anchor() {
   # which the refusal and the row disagree about the same worktree.
   GATE_MERGE_ANCHOR="$tip"
   export GATE_MERGE_ANCHOR
+  return 0
+}
+
+gate_check_merge_checks() {
+  # gate_check_merge_checks <segment> <cutpoint> — refuse a merge whose PR has a
+  # recorded CI failure. THE SIBLING, and the sibling-ness is load-bearing.
+  #
+  # WHY IT IS NOT FOLDED INTO `gate_check_merge_anchor`. That check returns at
+  # once unless the review policy is `선머지후리뷰`, and every slice this design
+  # ships is `선리뷰후머지` — folded in, this would be dead code in 5 of 5. It
+  # would reproduce, one layer down, the very defect this design named elsewhere:
+  # a reader that does not exist. For the same reason it is not a rule in the
+  # catalogue either — every entry there can be switched off by configuration.
+  #
+  # THE POLARITY IS REFUSAL, NOT SKIPPING, AND SILENCE IS THE DEFAULT. There is
+  # no wait here to skip and there must not be one: a gate holding the router's
+  # turn has no path back to wakefulness either. So a run with no poller behaves
+  # exactly as it does today, and that co-existence costs nothing.
+  #
+  # NO `gh` CALL IS MADE HERE. The head being compared is the worktree's local
+  # `git rev-parse`, so a force-push — which opens a new CI lifecycle — makes the
+  # recorded row mismatch and this check says nothing about it.
+  #
+  # A STALE `통과` ROW CANNOT CAUSE A BAD MERGE: all it can do is fail to refuse,
+  # which is the behaviour of a run with no poller at all. The only stale value
+  # that could matter is `실패`, and the poller writes a new row on the
+  # `실패 → 통과` transition while this reads the LAST row of the pair.
+  local seg="$1" cut="$2" row tip st req
+  [ "$cut" = "머지" ] || return 0
+  [ -n "$seg" ] && [ "$seg" != "-" ] || return 0
+
+  # The trailing space is not cosmetic: without it segment `D` also matches a row
+  # written for `D2`, and the merge of one segment would be refused by another's
+  # CI failure. `세그먼트` is the last field this series writes, so `gate_append`'s
+  # own ` | prev=` guarantees the space is there.
+  # BOTH GREPS CARRY `|| true`, and the second one is the load-bearing half. This
+  # file runs under `set -e` with `pipefail`, so a pipeline whose last failing
+  # stage is an unmatched `grep` makes the assignment itself fail and the process
+  # ends at exit 1 with nothing printed. The state that reaches it is the ordinary
+  # one: a run with no poller has no `checks` row at all, so the match is empty and
+  # EVERY merge on such a run died — the exact opposite of the co-existence this
+  # function is built to have. Measured on the first merge of a fresh fixture.
+  row=$( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "세그먼트=$seg " || true; } | tail -1)
+  # NOTHING RECORDED IS NOT A VERDICT. The gate has nothing to say, so it says
+  # nothing — that is what makes the poller optional rather than a new dependency.
+  [ -n "$row" ] || return 0
+
+  tip=$(gate_segment_tip "$seg") || tip=""
+  [ -n "$tip" ] || return 0
+  [ "$(gate_row_field "$row" 'head sha')" = "$tip" ] || return 0
+
+  st=$(gate_row_field "$row" '상태')
+  case "$st" in 실패) : ;; *) return 0 ;; esac
+  req=$(gate_row_field "$row" '필수 집합')
+  # A BROKEN QUESTION IS NOT READ AS AN ANSWER — that is the whole reason
+  # `판정 불가` exists as a value of its own on both fields.
+  [ "$req" = "판정 불가" ] && return 0
+
+  warn "CI on the PR of segment '$seg' failed at this very head ($tip) — 필수 집합 '$req', 실패 체크 '$(gate_row_field "$row" '실패 체크')'"
+  warn "an unattended run parks on a failing check whether or not it is required; fix the failing check and push a new head, and the poller opens a new lifecycle for it"
+  # NO NEW EXIT CODE. The refusal leaves through the park dispatch immediately
+  # below, so it becomes an act-scope `blocked` row like every other reach park
+  # and `plan` forecasts it with the same code.
+  [ -n "${GATE_PARK_CELL:-}" ] || GATE_PARK_CELL="CI실패"
+  export GATE_PARK_CELL
   return 0
 }
 

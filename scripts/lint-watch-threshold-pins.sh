@@ -149,6 +149,7 @@ for CONSUMER in "${CONSUMERS[@]}"; do
   if [[ "$nlaunch" != "1" ]]; then
     echo "FAIL: $cname — 워처 기동 줄이 정확히 1개여야 하는데 ${nlaunch}개다" >&2
     echo "       이 대조는 기동 줄 하나를 그 런의 설정으로 읽는다 — 둘이면 어느 쪽인지 정할 수 없다" >&2
+    echo "       다른 스크립트(예: checks.sh)의 기동 줄이나 산문도, 감시자 스크립트 이름과 그 뒤의 --run-dir 를 한 줄에 함께 담으면 기동 줄로 세어진다 — 그런 줄은 자기 스크립트 이름만 적어야 한다" >&2
     fail=1
     continue
   fi
