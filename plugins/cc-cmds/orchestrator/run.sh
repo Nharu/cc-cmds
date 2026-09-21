@@ -5605,8 +5605,16 @@ design_arm() {
     # that is genuinely broken, and parking on it ends the run for a cause that
     # clears by itself. The document decides instead: nothing at the path, or
     # the spawn-time stub, means the crash carried nothing off.
-    if [ "$prior_class" = "크래시" ] && { [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; then
-      log "S1 설계 재파견 — 앞선 시도가 크래시로 끝났고 저장된 문서가 없다 ($DOC_KEY)"
+    # A HOLLOW SUCCESS IS THE SAME SHAPE FROM THE OTHER SIDE. The stage exited 0
+    # and the artifact predicate said no document — a team member that ended its
+    # turn with no witness left, a save that never happened before the turn
+    # boundary, a background-wait ceiling reached mid-discussion. Nothing about
+    # those is more permanent than a crash, and the test is identical: the
+    # document decides, so a retry that would overwrite saved work is still
+    # refused and one that would overwrite nothing is allowed.
+    if { [ "$prior_class" = "크래시" ] || [ "$prior_class" = "공허한 성공" ]; } \
+       && { [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; then
+      log "S1 설계 재파견 — 앞선 시도가 $prior_class 로 끝났고 저장된 문서가 없다 ($DOC_KEY)"
     else
       park "S1design" run 무효화 "게이트 park" \
         "이 런의 설계 스테이지가 이미 종단 부류 ${prior_class:-미상} 로 끝났다 — 다시 설계하지도 감사로 넘기지도 않는다" \

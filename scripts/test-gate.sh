@@ -7541,7 +7541,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -7706,8 +7706,16 @@ esac
 write15c "$M15C" "$plan15c"
 
 # The launch, through a stub that calls the gate once from the stage seat. That
-# call carries `CC_PIPELINE_SEGMENT`, so the terminal class `정상 완료` is also
-# the proof that the stage's rows and the outcome recorder agree on `-`.
+# call carries `CC_PIPELINE_SEGMENT`, which is what the row assertions below
+# measure; the stage's own view of the pair is read back out of `stub15c-env.txt`.
+#
+# THE CLASS IS NOT THAT PROOF, and it used to be read as one. This stub writes a
+# row and exits 0 with `subtype: success`, and the row-count arm filed that as
+# `정상 완료` — for a design stage, whose artifact is a frozen document it never
+# wrote. Measured three times in production: a team member ended its turn with
+# no witness left to wait for, a stage said what it would sweep next and ended
+# at that turn boundary, and a stage was killed at the background-wait ceiling
+# mid-discussion. All three were `정상 완료`, and the run was closed on it.
 STUB15C="$WORK/bin/claude-stub-15c"
 cat > "$STUB15C" <<'STUB15CEOF'
 #!/usr/bin/env bash
@@ -7733,8 +7741,8 @@ check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=
   "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
 check "15c: 단계 id 를 세그먼트로 쓴 행은 없다" \
   "$(rows15c '세그먼트=D1 ' | grep -c . || true)" "0"
-check "15c: 그 행의 종단 부류가 정상 완료다 (스테이지 행과 기록기가 - 로 맞는다)" \
-  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+check "15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "공허한 성공"
 RD15C="$STATE_LATE/cc-cmds/run/R15C"
 check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 를 받는다" \
   "$(cat "$RD15C/stub15c-env.txt" 2>/dev/null)" "-|D1#1"
@@ -7746,6 +7754,32 @@ check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않�
   "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
 check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# THE OTHER SIDE OF THE SAME ARM, so the fix is not a blanket downgrade of every
+# design stage. The two authored facts are supplied this time — the freeze
+# literal in the stage's own stream and the frozen status line in the document —
+# and the class is a normal completion again.
+printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/docs/fixture-design.md"
+STUB15CF="$WORK/bin/claude-stub-15cf"
+cat > "$STUB15CF" <<'STUB15CFEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 동결까지 마친 설계 스테이지의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15cf-session","num_turns":1,"result":"설계 문서를 동결했습니다."}\n'
+exit 0
+STUB15CFEOF
+chmod +x "$STUB15CF"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15CF" \
+  bash "$GATE" act --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(H15C)" --rationale x \
+  -- design -p "$design15c" ) >/dev/null 2>&1
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15CF" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1
+check "15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+rm -f "$WT/docs/fixture-design.md"
 
 # A run whose design is blocked must still be able to record its end — as
 # invalidated, never as satisfied. The two halves above were each green on
@@ -7829,6 +7863,11 @@ check "15c: 설계 단계가 연 승인으로 첫 절을 보류시킨다" "$rc" 
 settle15x "$WORK/plan-R15E.md" K2 보류 "열린 판단 승인 $jid15e"
 check "15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다" "$rc" "0"
 propose15x plan "$WORK/plan-R15E.md"
+# AND THIS IS THE COUNTERWEIGHT TO R15J. This stage also exits 0 and also leaves
+# no document, so it is `공허한 성공` too — but it emitted a judgment and the
+# absorber opened an approval on the step, so a person owes it an answer and
+# redispatching would ask the same question again. The window stays shut here,
+# and the proposal passes; R15J is the same class with no approval open.
 check "15c: 절을 보류로 정산한 설계 막힘 런의 종료 제안이 통과한다" "$rc" "0"
 case "$msg" in
   *"통과 예상: 무효화 종료"*) ok "15c: 그 종료는 충족이 아니라 무효화로 예상된다" ;;
@@ -7889,6 +7928,39 @@ check "15c: 원장에 무효화 종료 행이 하나 남는다" \
 check "15c: done 파일이 런을 무효화로 기록한다" \
   "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
 rm -f "$WT/docs/fixture-design-15g.md"
+
+# R15J — the design stage EXITS ZERO and produces no document. Every arm on this
+# path so far asked whether the process died; this one did not. It wrote rows all
+# through its discussion, returned `subtype: success`, and left the path empty —
+# and the run was closed on that. The window is R15G's window and it closes the
+# same way, on a saved document rather than on the class.
+dclass15x() {
+  # dclass15x <run id> — the design step's last `stage-result` class.
+  { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+    | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//'
+}
+fresh15x R15J 'docs/fixture-design-15j.md' K1
+settle15x "$WORK/plan-R15J.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 공허한 성공 픽스처의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15J.md" "$STUB15C"
+check "15c: 행을 쓰고 rc 0 으로 끝났지만 문서가 없는 설계 단계의 종단 부류는 공허한 성공이다" \
+  "$(dclass15x R15J)" "공허한 성공"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 공허한 성공 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 공허한 성공 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 공허한 성공 재파견 창 문면" "$msg" ;;
+esac
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$WT/docs/fixture-design-15j.md"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 스폰 시점 스텁이 놓여도 공허한 성공의 재파견 창은 열려 있다" "$rc" "3"
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 아키텍처\n\n본문\n' \
+  > "$WT/docs/fixture-design-15j.md"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+rm -f "$WT/docs/fixture-design-15j.md"
 
 # R15H — the design stage ended unobserved before its team placed a file at the
 # path. The prelude settles such a dispatch as `외부 종료` without looking at the
