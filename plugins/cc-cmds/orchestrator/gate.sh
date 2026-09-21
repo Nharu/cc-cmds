@@ -1806,7 +1806,8 @@ gate_tree_root() {
 # `GP_REASON` CARRIES A CODE FROM A CLOSED SET — `gh:unknown-flag:<word>`,
 # `gh:flag-not-on-leaf:<word>`, `gh:unknown-path:<word>`, `gh:bool-literal:<word>`,
 # `env:split-string-expansion`, `env:argv0-override`, `env:exec-identity:<name>`,
-# `sh:non-literal-command-word`, `wrap:depth` — or is empty when none of them
+# `env:repo-selector:<name>`, `sh:non-literal-command-word`, `wrap:depth` — or
+# is empty when none of them
 # names the cause. A new code goes into this list before anything emits it.
 #
 # BASH 3.2. No associative arrays, no `mapfile`, no case-conversion expansions:
@@ -2286,8 +2287,21 @@ _gp_env_unset() {
 #                        — a shell runs the value later, so it is parsed as a
 #                        body; its pieces join `GP_SUB`, and a value that is not
 #                        a plain list makes the act `form`
-#   target selector      GH_REPO, GH_HOST, GH_ENTERPRISE_TOKEN, GH_TOKEN, GIT_DIR,
-#                        GIT_WORK_TREE — recorded; `gp_gh_repo` reads them
+#   repository selector  GIT_DIR, GIT_COMMON_DIR, GIT_WORK_TREE — the
+#                        repository every git call answers for is no longer
+#                        the directory the act runs in, so the act is `form`.
+#                        Measured: a `bash -c` body prefixed `GIT_DIR=<a
+#                        declared target's .git>` made `git rev-parse
+#                        --git-common-dir` for `/` answer the declared common
+#                        directory, and a `segment` row naming `워크트리=/`
+#                        passed the worktree boundary on it. The boundary
+#                        itself now asks git with those names unset
+#                        (`gate_common_git_of_dir`), so this row is the half
+#                        that names the act for the ledger rather than the
+#                        half that keeps the root off the list.
+#   target selector      GH_REPO, GH_HOST, GH_ENTERPRISE_TOKEN, GH_TOKEN —
+#                        recorded; `gp_gh_repo` reads GH_REPO and GH_HOST
+#                        from the recorded chain
 #   everything else      recorded only
 _gp_env_assign() {
   local name="$1" value="$2"
@@ -2296,6 +2310,8 @@ _gp_env_assign() {
     '') _gp_form '' ;;
     PATH|BASH_ENV|ENV|DYLD_*|LD_*|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
       _gp_form "env:exec-identity:$name" ;;
+    GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
+      _gp_form "env:repo-selector:$name" ;;
     GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
       _gp_body "$value"
       if [ "$_GP_BODY_ST" != list ]; then _gp_form "$_GP_BODY_RS"; fi ;;
@@ -5740,6 +5756,58 @@ gate_append_cost() {
   return 0
 }
 
+gate_row_body() {
+  # gate_row_body <계열> <field=value> ... — the row text `gate_append` will write
+  # for these arguments, minus the ` | prev=<sha256>` tail: separators mapped
+  # out of every key and value, the shift number added unless the caller
+  # supplied one. THE ONE DEFINITION OF THE ROW GRAMMAR — `gate_append` builds
+  # its body through this, and a caller that has to know a row's length before
+  # deciding what goes on it (`gate_row_projected_bytes`) reads the same
+  # function, so the two cannot disagree about what a row looks like.
+  #
+  # `%%=*` cuts the key at the first `=`, so reassembling cannot change how many
+  # fields the row has. Rotated through the positional parameters rather than an
+  # array: the interpreter floor is bash 3.2 and the argument list is the one
+  # ordered container available without one.
+  local series="$1"; shift
+  local body f k v has_shift=0
+  local n_args=$# i=0
+  while [ "$i" -lt "$n_args" ]; do
+    f="$1"; shift; i=$((i + 1))
+    case "$f" in
+      *=*) k="${f%%=*}"; v="${f#*=}"
+           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+           f="$k=$v" ;;
+    esac
+    set -- "$@" "$f"
+  done
+  for f in "$@"; do case "$f" in 교대=*) has_shift=1 ;; esac; done
+  body="- \`$series\`"
+  [ "$has_shift" = "1" ] || body="$body | 교대=$(gate_shift_number)"
+  for f in "$@"; do body="$body | $f"; done
+  printf '%s' "$body"
+}
+
+gate_row_bytes_of_body() {
+  # gate_row_bytes_of_body <body> — the byte count `gate_append` compares
+  # against `GATE_ROW_MAX`: the body, a 64-character stand-in for `prev` (a
+  # sha256 in every case, so its width is known before its value is) and the
+  # newline. BYTES, BY `wc -c`, never characters: the rows are Korean, a
+  # character count reads three to four times under the byte count, and the cap
+  # is what the ledger reader's line buffer holds.
+  printf '%s | prev=%s\n' "$1" "0000000000000000000000000000000000000000000000000000000000000000" \
+    | wc -c | tr -d ' '
+}
+
+gate_row_projected_bytes() {
+  # gate_row_projected_bytes <계열> <field=value> ... — the byte count the row
+  # these arguments would produce will be measured at, by the same ruler
+  # `gate_append` uses. For a writer that may drop an optional field to keep a
+  # row under the cap: project with the field, and without it if that is over.
+  gate_row_bytes_of_body "$(gate_row_body "$@")"
+}
+
 gate_append() {
   # gate_append <계열> <field=value> ...
   #
@@ -5865,18 +5933,17 @@ gate_append() {
   # shift that is ENDING, which is the number as of before this row — the same
   # value this function would derive, stated by the writer that knows why.
   # Deriving it a second time would put two spellings of one field on one row.
-  local has_shift=0
-  for f in "$@"; do case "$f" in 교대=*) has_shift=1 ;; esac; done
-  body="- \`$series\`"
-  [ "$has_shift" = "1" ] || body="$body | 교대=$(gate_shift_number)"
-  for f in "$@"; do body="$body | $f"; done
+  body=$(gate_row_body "$series" "$@")
 
   # The length check runs on the body plus a 64-character stand-in, because
   # `prev` is a sha256 in every case and its width is therefore known before the
   # value is. Deferring the whole check into the lock would put a `die` inside
-  # the critical section.
+  # the critical section. THE MEASUREMENT IS `gate_row_bytes_of_body`, shared
+  # with `gate_row_projected_bytes`: a caller that decides what to put on a row
+  # by how long the row will be has to be measuring with this ruler, and two
+  # rulers is how a projection passes and the append dies.
   local n
-  n=$(printf '%s | prev=%s\n' "$body" "0000000000000000000000000000000000000000000000000000000000000000" | wc -c | tr -d ' ')
+  n=$(gate_row_bytes_of_body "$body")
   if [ "$n" -gt "$GATE_ROW_MAX" ]; then
     die "the ledger row is over the cap (${n} > ${GATE_ROW_MAX} bytes) — a long value has to be moved out to a sidecar: ${series}"
   fi
@@ -7178,15 +7245,24 @@ gate_digest_path() {
     "$(printf '%s' "${CC_PIPELINE_STAGE_ID:-router}" | tr -c 'A-Za-z0-9._-' '-')"
 }
 
-gate_emit_digest() {
+gate_on_exit() {
   # THE EXIT STATUS ON THE WAY OUT IS NOT THIS FUNCTION'S TO CHANGE. This runs
   # from an EXIT trap, and a trap body that fails under `errexit` REPLACES the
   # status the script was exiting with — so a hiccup here could turn a refusal
   # into a success, which is the one outcome this whole file exists to make
   # impossible. The status is captured first and restored last, and the body
   # runs with `errexit` off so no single command can short-circuit that.
+  #
+  # ONE TRAP, TWO DUTIES, IN THIS ORDER. Bash keeps a single EXIT trap per
+  # shell, so a second `trap … EXIT` anywhere in the verb would silently
+  # replace the first — the segment arm of `gate_record_row` learned this
+  # when it wanted its own trap for `settings.lock`. The lock is released
+  # first because the digest emission is a write the next re-derivation may
+  # be waiting behind; the digest is emitted last so the value the caller
+  # reads is the state at exit, appends included.
   local __rc=$?
   set +e
+  gate_settings_lock_release
   gate_emit_digest_body
   set -e
   return "$__rc"
@@ -8463,7 +8539,7 @@ gate_write_settings() {
   # session cut must find the same bytes, because those bytes are in the
   # enforcement-surface digest set and a regenerated-but-different file would
   # read as tampering.
-  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all
+  local dir hook k f deny_extra plugin_dir extra_dirs doc_ws a wt_all d
   local kind_dirs kind_allow
   dir=$(gate_settings_dir)
   mkdir -p "$dir" || return 1
@@ -8553,6 +8629,17 @@ $(target_field "$a" '실행 워크트리')"
   # isolation existed on the row and nowhere else.
   wt_all="$wt_all
 $(gate_segment_worktrees_for_settings)"
+  # EVERY ENTRY GOES THROUGH `gate_json_escape`, the same escaper every other
+  # JSON string this file emits goes through. The list is interpolated into
+  # the settings file as JSON source, so a `"` or a `\` in a directory name
+  # would otherwise close the string early and let the rest of the name stand
+  # as syntax — one more entry, or a file the harness cannot parse. The
+  # `segment` arm refuses those bytes before a worktree reaches the ledger,
+  # but this renderer also reads the manifest and the document paths, and a
+  # renderer that is safe only because every caller was checked first is not
+  # safe; each half holds on its own. Newlines are the one byte escaping
+  # cannot mend here, because the list is line-delimited by the time it is
+  # read — that is the arm's refusal, not this line's.
   extra_dirs=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
       "$plugin_dir" "$RUN_DIR" "$BASE" \
       "$(dirname "$MANIFEST")" "$(dirname "$LEDGER")" "$(dirname "$GRANT")" \
@@ -8561,7 +8648,9 @@ $(gate_segment_worktrees_for_settings)"
       "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)" \
       "$wt_all" \
     | sed '/^$/d' | sed 's/^(없음)$//' | sed '/^$/d' \
-    | LC_ALL=C sort -u | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')
+    | LC_ALL=C sort -u \
+    | while IFS= read -r d; do printf '"%s"\n' "$(gate_json_escape "$d")"; done \
+    | tr '\n' ',' | sed 's/,$//')
 
   # THE READ ALLOW-LIST, AND WHY IT IS NOT A DIRECTORY WIDENING. A stage that
   # builds a CLAUDE.md proposal has to read the live file, and the live slots sit
@@ -8692,32 +8781,92 @@ JSON
   fi
 }
 
-gate_resettle_settings() {
-  # Re-derive the stage settings and, when they differ, rewrite + re-baseline +
-  # record. This is what lets the authorization list follow a change in what it
-  # is derived from, without either freezing the run or making the surface
-  # comparison hollow.
+gate_resettle_settings_for_segment() {
+  # gate_resettle_settings_for_segment <세그먼트> <워크트리> — re-derive the
+  # stage settings as they will stand once the non-terminal `segment` row
+  # naming <워크트리> is on the ledger, and when they differ from disk rewrite +
+  # re-baseline. Prints the field the caller puts on that row, and the print
+  # says which of THREE things happened:
   #
-  # What it is derived from is the manifest's target rows (each target's main
-  # and execution worktree), the set of worktrees the ledger's `segment` rows
-  # name (last row per segment id, only those sharing a declared target's
-  # common git directory), and the run's own environment: the run directory,
-  # the base, the directories of the manifest, ledger and grant, the design
-  # document's directories, the plugin and hook locations, and the user config
-  # directory. The `대상 추가` row appended below is a record of a widening, and
-  # nothing reads it back into a derivation. The manifest is written at kickoff
-  # and a write to it is refused, so during a run the bytes move only when the
-  # environment does or a segment row names a new worktree.
+  #   (nothing)                the settings did not move — the derivation's
+  #                            inputs are the ones already settled, or the
+  #                            render matched disk byte for byte
+  #   인가면=<before>→<after>  rewritten and re-baselined
+  #   인가면=실패(<사유>)      the re-derivation did not land: `기준선 불일치`,
+  #                            `프로브 렌더` or `렌더` (the caller adds `락 대기
+  #                            초과` and `런 디렉터리 없음` for the two arms it
+  #                            decides before calling here)
+  #
+  # A FAILURE ARM IS NEVER SILENT. Every one of them used to print nothing and
+  # return 0, which the caller then wrote as a row WITHOUT the field — and the
+  # field's contract reads absence as "this row widened nothing". So a lock
+  # that timed out, a render that failed and a row that genuinely had nothing
+  # to widen were one and the same on the ledger, and since the row itself is
+  # the only trigger there is (the prelude re-derivation is gone), a widening
+  # missed here stayed missed for the stage's whole life with nothing saying
+  # so. Now each arm prints a marker naming itself and `warn`s, and the caller
+  # keeps the row: a refused row would lose the state transition the router
+  # was recording, which costs more than the widening. What the marker buys is
+  # the repair path — THE KEY IS NOT RECORDED ON ANY FAILURE ARM, so the next
+  # non-terminal `segment` row from ANY segment misses the settled-key return
+  # below, takes the full path, and renders this worktree from the ledger row
+  # that carries the marker.
+  #
+  # `settings.lock` IS HELD BY THE CALLER, from before this call until after
+  # the row is appended, and this function never takes or drops it. The lock
+  # used to be taken and released in here, which put the row's append OUTSIDE
+  # it: a sibling segment writing its own row could take the lock between this
+  # function's return and the caller's append, and its render read the ledger
+  # without this row and `GATE_SEGMENT_WT_PENDING` without this pair — so it
+  # wrote a list that lacked the worktree this row had just admitted, and the
+  # earlier writer's stage ran unadmitted until the next non-terminal row from
+  # anyone. Parallel dispatch is the ordinary case for this pipeline, so that
+  # interleaving is not a corner. Holding the lock across the append is what
+  # makes "the pending pair and the row" one atomic step to every other
+  # writer, and the settled-key read moved inside the lock with it, so the key
+  # it compares is the one the last writer recorded and not a value another
+  # writer is about to replace.
+  #
+  # THIS RUNS AT ROW-WRITE TIME, FROM THE ROW ITSELF. The set it derives from
+  # is the manifest's target rows (each target's main and execution worktree),
+  # the worktrees the ledger's non-terminal `segment` rows name (last row per
+  # segment id, only those sharing a declared target's common git directory),
+  # PLUS THE ROW ABOUT TO BE WRITTEN — carried in through
+  # `GATE_SEGMENT_WT_PENDING`, because the row is not on the ledger yet and the
+  # render has to see the worktree it is authorizing before the row that names
+  # it exists. Deriving before the append is what closes the window the old
+  # prelude-time re-derivation left open: the first act from a new worktree
+  # used to be the one that re-rendered, so the row that named the worktree
+  # landed before the settings that admit it, and a stale `settings-key` from a
+  # sibling could leave them unadmitted for the whole stage.
+  #
+  # THE `대상 추가` ROW THE OLD FORM APPENDED IS GONE, for two reasons that can
+  # each be checked in this file. The prelude re-derivation ran AFTER the
+  # caller's snapshot digest had been taken and BEFORE the staleness check in
+  # `gate_verb_act` read it, so on the call that widened, the gate invalidated
+  # its own caller's digest — the same ordering hazard that check's own comment
+  # records for target registration. And the row landed under a series whose
+  # meaning is "a repository joined the run" (`gate_undeclared_target` writes
+  # it with an actual alias and remote): the re-derivation's rows carried
+  # `별칭=-` and every target field as `-`, which no reader of the series — the
+  # dedup guard in `gate_undeclared_target`, the renderer in `feed.sh` —
+  # refuses, but which put a non-target on the target-shaped series. The
+  # manifest census (`manifest_targets` in `run.sh`) reads the manifest alone
+  # and never saw those rows. Recording the widening on the segment row that
+  # caused it is what that row was for and keeps the series to actual targets.
   #
   # An edit by anything that is not this function still lands as exit 7, which
   # is the property the digest exists for.
-  local before after tmpdir base lk="${RUN_DIR:-}/settings.lock"
+  local seg="$1" wt="$2"
+  local before after tmpdir base
   local key keyf
-  [ -n "${RUN_DIR:-}" ] || return 0
+  GATE_SEGMENT_WT_PENDING="$(printf '%s\t%s' "$seg" "$wt")"
   # THE INPUTS HAVE NOT MOVED, SO NEITHER CAN THE OUTPUT. Everything below —
-  # the lock, two surface digests, a whole second render of the settings tree
-  # and a recursive `diff` — exists to answer "did the derivation change?", and
-  # this answers it from the derivation's own inputs instead.
+  # two surface digests, a whole second render of the settings tree and a
+  # recursive `diff` — exists to answer "did the derivation change?", and this
+  # answers it from the derivation's own inputs instead. The key includes the
+  # pending pair, so a row that re-names a worktree already admitted is settled
+  # here without a render.
   #
   # IT SKIPS NO DETECTION. Finding a difference here never refuses anything;
   # `gate_surface_check` owns that verdict and runs independently on every act.
@@ -8731,13 +8880,8 @@ gate_resettle_settings() {
   keyf="$RUN_DIR/settings-key"
   key=$(gate_settings_key)
   if [ -n "$key" ] && [ -f "$keyf" ] && [ "$key" = "$(cat "$keyf" 2>/dev/null)" ]; then
-    return 0
+    GATE_SEGMENT_WT_PENDING=""; return 0
   fi
-  # The WHOLE sequence is inside the lock — read, compare, rewrite, re-measure,
-  # re-baseline. Guarding only the write would leave the guard below reading a
-  # baseline another process is about to replace, which is the same read-then-act
-  # with the lock on the wrong half.
-  gate_settings_lock "$lk" || return 0
   before=$(gate_surface_digest_raw)
 
   # ONLY FROM A KNOWN-GOOD BASELINE. If the surface has already moved, this is
@@ -8747,32 +8891,60 @@ gate_resettle_settings() {
   # anything at all, which is exactly the detection the digest exists for.
   base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
   if [ -z "$base" ] || [ "$before" != "$base" ]; then
-    gate_settings_unlock "$lk"; return 0
+    GATE_SEGMENT_WT_PENDING=""
+    warn "인가 디렉터리를 재유도하지 못했습니다 — 강제 표면 기준선이 이미 옮겨져 있어 손대지 않습니다 (기준선 ${base:0:12}… · 관측 ${before:0:12}…); 세그먼트 $seg 의 행은 인가면=실패(기준선 불일치) 로 남기고, 다음 비종단 segment 행이 다시 유도합니다"
+    printf '인가면=실패(기준선 불일치)'
+    return 0
   fi
 
   tmpdir="$(gate_settings_dir).probe.$$"
   rm -rf "$tmpdir"
-  ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
-    gate_write_settings >/dev/null 2>&1 ) || { rm -rf "$tmpdir"; gate_settings_unlock "$lk"; return 0; }
+  if ! ( CC_GATE_SETTINGS_OVERRIDE="$tmpdir"; export CC_GATE_SETTINGS_OVERRIDE
+         gate_write_settings >/dev/null 2>&1 ); then
+    rm -rf "$tmpdir"; GATE_SEGMENT_WT_PENDING=""
+    warn "인가 디렉터리를 재유도하지 못했습니다 — 프로브 렌더가 실패해 디스크와 비교할 수 없습니다; 세그먼트 $seg 의 행은 인가면=실패(프로브 렌더) 로 남기고, 다음 비종단 segment 행이 다시 유도합니다"
+    printf '인가면=실패(프로브 렌더)'
+    return 0
+  fi
   if diff -r -q "$tmpdir" "$(gate_settings_dir)" >/dev/null 2>&1; then
     # The render matches disk and the baseline matched above, so the settings
     # are settled for these inputs: record the key so the next call can say so
     # without rendering again. This is the arm that adopts a run which started
     # before the key existed.
-    rm -rf "$tmpdir"; gate_settings_key_record; gate_settings_unlock "$lk"; return 0
+    rm -rf "$tmpdir"; gate_settings_key_record
+    GATE_SEGMENT_WT_PENDING=""; return 0
   fi
   rm -rf "$tmpdir"
 
-  gate_write_settings >/dev/null 2>&1 || { gate_settings_unlock "$lk"; return 0; }
+  if ! gate_write_settings >/dev/null 2>&1; then
+    GATE_SEGMENT_WT_PENDING=""
+    warn "인가 디렉터리를 재유도하지 못했습니다 — 실제 렌더가 실패했습니다 ($(gate_settings_dir)); 세그먼트 $seg 의 행은 인가면=실패(렌더) 로 남기고, 다음 비종단 segment 행이 다시 유도합니다. 표면 검사가 exit 7 을 내면 반쯤 쓰인 설정 파일이 남은 것입니다"
+    printf '인가면=실패(렌더)'
+    return 0
+  fi
   after=$(gate_surface_digest_raw)
   printf '%s\n' "$after" > "$RUN_DIR/surface-digest"
   # After BOTH the rewrite and the re-baseline, never between them.
   gate_settings_key_record
-  gate_append '대상 추가' "별칭=-" "원격 슬러그=-" \
-    "메인 워크트리=-" "공통 git 디렉터리=-" "베이스 브랜치=-" "층=0" \
-    "발견 경로=인가 디렉터리 재유도 (${before} → ${after})" "기록 시각=$(now_iso)"
-  gate_settings_unlock "$lk"
-  log "인가 디렉터리를 다시 유도했습니다 — 강제 표면 기준선을 갱신하고 원장에 남겼습니다"
+  GATE_SEGMENT_WT_PENDING=""
+  log "인가 디렉터리를 다시 유도했습니다 — 강제 표면 기준선을 갱신하고 세그먼트 행에 남깁니다"
+  printf '인가면=%s→%s' "$before" "$after"
+}
+
+gate_settings_lock_release() {
+  # Drops the settings lock the `segment` arm holds across its re-derivation
+  # and append, if it still holds one. Called by the arm after its append and
+  # by `gate_on_exit` — the one EXIT trap `act`/`exec` install — because
+  # `gate_append` ends the process on a failed write (`die`) and a lock
+  # directory left behind by a dead holder would make every later
+  # re-derivation wait out the timeout and land as `인가면=실패(락 대기 초과)`
+  # for the rest of the run. `mkdir`-based, so releasing is `rmdir`, and a lock
+  # this process does not hold is never touched.
+  if [ -n "${GATE_SETTINGS_LOCK_HELD:-}" ]; then
+    gate_settings_unlock "$GATE_SETTINGS_LOCK_HELD"
+    GATE_SETTINGS_LOCK_HELD=""
+  fi
+  return 0
 }
 
 gate_chain_verify() {
@@ -9099,14 +9271,35 @@ gate_surface_check() {
   # comparing anything, silently, while the surrounding documentation promises
   # the opposite — that a run whose surface moved does not recover. Lost signal
   # takes the same exit as a moved surface, which is what fail-closed means here.
-  local verb="${1:-act}" base now
+  local verb="${1:-act}" base now lk
   [ -f "$RUN_DIR/surface-digest" ] || return 0
-  base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+  # THE BASELINE AND THE DIGEST ARE READ UNDER ONE HOLD OF `settings.lock`.
+  # The `segment` arm rewrites the settings AND the baseline file under that
+  # lock, so a check that read the baseline, then took the lock for the
+  # digest, could straddle a sibling's re-derivation: an old baseline against
+  # a new digest, on a surface nobody outside the gate had touched, and the
+  # act took exit 7 and a `blocked` row for it. Two parallel segments writing
+  # their first non-terminal rows is the ordinary case for this pipeline. A
+  # process that already holds the lock (the arm itself) reads raw; a lock
+  # that cannot be taken falls back to the unlocked read, which is the
+  # fail-closed direction — a stale-but-consistent pair refuses rather than
+  # permits.
+  lk="$RUN_DIR/settings.lock"
+  if [ -n "${GATE_SETTINGS_LOCK_HELD:-}" ]; then
+    base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+    now=$(gate_surface_digest_raw)
+  elif gate_settings_lock "$lk"; then
+    base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+    now=$(gate_surface_digest_raw)
+    gate_settings_unlock "$lk"
+  else
+    base=$(cat "$RUN_DIR/surface-digest" 2>/dev/null || true)
+    now=$(gate_surface_digest_raw)
+  fi
   if [ -z "$base" ]; then
     warn "the enforcement-surface baseline file is empty — the value disappeared after the baseline was recorded, so there is nothing to compare against"
     base='(비어 있음)'
   fi
-  now=$(gate_surface_digest)
   [ "$now" = "$base" ] && return 0
   warn "the enforcement surface changed after the run started (baseline ${base}, now ${now}) — one of the settings, the rules, the hook or the project settings was edited"
 
@@ -9237,7 +9430,12 @@ gate_settings_unlock() { rmdir "$1" 2>/dev/null || true; }
 
 gate_surface_digest() {
   local lk="${RUN_DIR:-}/settings.lock" out
-  if [ -n "${RUN_DIR:-}" ] && gate_settings_lock "$lk"; then
+  # A process already holding the lock (the `segment` arm, across its
+  # re-derivation and append) reads raw; taking it again would wait out the
+  # timeout against itself.
+  if [ -n "${GATE_SETTINGS_LOCK_HELD:-}" ]; then
+    gate_surface_digest_raw
+  elif [ -n "${RUN_DIR:-}" ] && gate_settings_lock "$lk"; then
     out=$(gate_surface_digest_raw)
     gate_settings_unlock "$lk"
     printf '%s' "$out"
@@ -9251,9 +9449,10 @@ gate_surface_digest_raw() {
   # is the project-scope settings file of each target row's main worktree. The
   # target list CANNOT GROW DURING A RUN. It comes from the manifest alone, the
   # manifest is written at kickoff and every later write to it is refused, and
-  # no ledger row is an input — the `대상 추가` rows this gate appends are never
-  # read back here or by any other derivation. So this digest's cost follows the
-  # number of targets, not how far the run has progressed.
+  # no ledger row is an input — the `대상 추가` rows the layer-1 enrolment
+  # appends are never read back here or by any other derivation. So this
+  # digest's cost follows the number of targets, not how far the run has
+  # progressed.
   #
   # THE INSTALLED PLUGIN'S OWN FILES ARE NOT IN HERE, and that is the whole
   # reason this digest stopped ending runs for doing nothing wrong. The rule
@@ -9618,21 +9817,29 @@ gate_main() {
     emit_digest_dir="$RUN_DIR/digest"
     mkdir -p "$emit_digest_dir" 2>/dev/null || true
     GATE_EMIT_DIGEST_TO=$(gate_digest_path)
-    # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
-    # and an enumeration of exit points is the wrong shape for it — the first
-    # enumeration missed four refusals that append a row and then exit, and a
-    # caller reading no file there falls back to the round trip forever, which
-    # looks exactly like the flag working and saving nothing. A trap states the
-    # rule once and cannot fall behind a new exit.
-    #
-    # Emitting on a path that appended nothing is harmless: the value is the
-    # current digest either way, and a caller holding a correct digest is the
-    # point. `plan` is excluded because it is excluded by contract, not because
-    # it happens to write no row.
-    case "$verb" in
-      act|exec) trap 'gate_emit_digest' EXIT ;;
-    esac
   fi
+  # THE RULE IS "EVERY PATH THAT APPENDS A ROW EMITS AFTER ITS LAST APPEND",
+  # and an enumeration of exit points is the wrong shape for it — the first
+  # enumeration missed four refusals that append a row and then exit, and a
+  # caller reading no file there falls back to the round trip forever, which
+  # looks exactly like the flag working and saving nothing. A trap states the
+  # rule once and cannot fall behind a new exit.
+  #
+  # Emitting on a path that appended nothing is harmless: the value is the
+  # current digest either way, and a caller holding a correct digest is the
+  # point. `plan` is excluded because it is excluded by contract, not because
+  # it happens to write no row.
+  #
+  # THE TRAP IS INSTALLED WHETHER OR NOT A DIGEST WAS ASKED FOR, because it
+  # carries a second duty that does not depend on the flag: `gate_record_row`'s
+  # segment arm holds `settings.lock` across its re-derivation and append, and
+  # `gate_append` exits the process on a failed write. Without the trap that
+  # exit would leave the lock directory behind and every later re-derivation
+  # would time out on it. `gate_on_exit` releases the lock first and emits the
+  # digest only when `GATE_EMIT_DIGEST_TO` was set above.
+  case "$verb" in
+    act|exec) trap 'gate_on_exit' EXIT ;;
+  esac
 
   # THE HANDLES A LATER READER NEEDS, written on EVERY entry rather than at run
   # open. A run that was cut and resumed still has to be findable, and the run
@@ -9726,32 +9933,36 @@ gate_main() {
 
   # Run start is "the settings directory does not exist yet".
   #
-  # AND the settings are RE-DERIVED afterwards, whenever what they are derived
-  # FROM has moved. The earlier form wrote them once and never again, on the
-  # ground that a surface which changes because the gate touched it is a surface
-  # whose comparison means nothing. That ground is real but the remedy was too
-  # wide: it also froze the list of directories a stage may read, and kickoff
-  # happens BEFORE segmentation — so a segment's own worktree is never in the
-  # manifest, and a list frozen at kickoff could not contain it. Measured: a
-  # run produced its review and then could not remediate, because the only
-  # writable tree in its list was the live plugin checkout; it ended with the
-  # goal marked unreachable for want of a directory rather than for want of work.
+  # THIS IS THE ONE CALL THAT RENDERS THE SETTINGS FROM THE PRELUDE, and it runs
+  # once per run. The settings used to be RE-DERIVED here as well, on every
+  # other entry, whenever what they derive from had moved — and what moves
+  # during a run is the set of worktrees the ledger's `segment` rows name, since
+  # kickoff happens BEFORE segmentation and a segment's own worktree is never in
+  # the manifest. That re-derivation lives in `gate_record_row`'s `segment` arm
+  # now, at the moment the row that names a new worktree is written, and the
+  # record of the widening is a field ON THAT ROW (`인가면=<before>→<after>`)
+  # rather than a `대상 추가` row appended by whichever call came next.
   #
-  # What keeps the comparison meaningful is not that the surface never moves —
-  # it is that it moves only through THIS writer and leaves a row when it does.
-  # An edit by anything else still lands as exit 7. The derivation reads the
-  # manifest's target rows, the worktrees the ledger's `segment` rows name, and
-  # the run's own environment — the `대상 추가` row it appends is a record, not
-  # an input to the next derivation. When it yields different bytes the gate
-  # rewrites, re-baselines, and appends that row naming what widened. So the
-  # call after the one that wrote a segment row — normally that segment's
-  # dispatch — widens the list before the stage starts.
+  # Two things that form removed. The prelude re-derivation ran AFTER the
+  # caller's snapshot digest had been taken and BEFORE the staleness check read
+  # it, so on the call that widened, the gate invalidated its own caller's
+  # digest — the ancestry window hides that only while the tip stays inside the
+  # window. And the `대상 추가` row it appended reported a widening under the
+  # series whose meaning is "a repository joined the run": every such row in the
+  # local ledgers carried an empty alias, because the enrolment path that series
+  # exists for has never fired. Moving the trigger past the staleness check
+  # closes the first; putting the record on the segment row closes the second.
   #
-  # The widening is bounded by construction: every directory it can add is a
-  # worktree of a target the run already acts in — a segment row's path is
-  # admitted only when it shares that target's common git directory. Nothing
-  # here grants a cutpoint, and the cutpoint is what governs whatever leaves the
-  # machine.
+  # BEFORE THE FIRST `segment` ROW the surface is exactly what this branch
+  # renders: the declared targets' worktrees, the run directory, the document
+  # directories and the plugin directory — zero segment worktrees. Kickoff, a
+  # shift launch and a run that never segments all run on that set.
+  #
+  # The widening is bounded by construction: every directory the segment arm
+  # can add is a worktree of a target the run already acts in — a row whose
+  # path does not share a declared target's common git directory is REFUSED at
+  # write time rather than silently dropped from the list. Nothing here grants a
+  # cutpoint, and the cutpoint is what governs whatever leaves the machine.
   if [ ! -d "$(gate_settings_dir)" ]; then
     gate_write_settings
     # The baseline is written inside that call, so both halves have succeeded
@@ -9816,13 +10027,11 @@ gate_main() {
     # must not fail to open because a directory somewhere else could not be
     # removed.
     gate_reap_cycle || true
-  else
-    gate_resettle_settings
   fi
 
   # LOST DISPATCHES ARE SETTLED HERE, ON EVERY VERB BUT `plan`. The prelude is
-  # already where every verb writes its `run` and `대상 추가` rows; a lost
-  # dispatch (a record that outlived its process) is settled in the same place
+  # already where every verb writes the `run` row; a lost dispatch (a record
+  # that outlived its process) is settled in the same place
   # so that a blocked run whose only activity is `snapshot` reads, or a `wait`
   # that spends its whole turn inside one call, still gets the `외부 종료` row.
   # `plan` is excluded by CONTRACT — it is the verb that writes no row, and the
@@ -10149,62 +10358,161 @@ gate_segment_terminal() {
   return 1
 }
 
-gate_segment_common_git() {
-  local wt out
-  wt=$(gate_segment_worktree "$1")
-  [ -n "$wt" ] || return 1
-  [ -d "$wt" ] || return 1
-  out=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+gate_common_git_of_dir() {
+  # gate_common_git_of_dir <dir> — the absolute common git directory of the
+  # repository <dir> is a worktree of, decided FROM THE DIRECTORY ALONE; status
+  # 1 when it is not one. The one place this file asks git that question, so
+  # the environment it asks in is spelled once.
+  #
+  # THE INHERITED GIT ENVIRONMENT IS DROPPED FIRST. `git rev-parse` honours
+  # `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE` and `GIT_CEILING_DIRECTORIES`
+  # over the working directory, and the gate runs a stage's command with the
+  # stage's environment. Measured: a `bash -c` body prefixed `GIT_DIR=<a
+  # declared target's .git>` made this answer the declared common directory
+  # for `/`, so a non-terminal `segment` row naming `워크트리=/` passed
+  # `gate_path_of_some_target` and the root landed on the stage's directory
+  # list. The boundary is "is this directory a worktree of a declared target",
+  # and a variable can answer that for any directory whatever — so the
+  # variables are removed for this one call rather than trusted. `env -u` is
+  # POSIX and does nothing when the name is unset. The same four names are on
+  # `_gp_env_assign`'s refusal row as an exec form, which catches the prefix
+  # on the way in; this is the half that holds when the assignment arrived by
+  # some route the grammar did not see.
+  local out
+  [ -n "$1" ] || return 1
+  [ -d "$1" ] || return 1
+  out=$( { cd "$1" 2>/dev/null \
+           && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+                git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }
 
-gate_segment_worktree_of_target() {
-  # gate_segment_worktree_of_target <segment> <alias> — prints the segment row's
-  # `워크트리` and returns 0 only when it is a worktree OF THAT TARGET: an
-  # absolute path, an existing directory, and a common git directory equal to
-  # the target row's. The same predicate the manifest check puts on
-  # `실행 워크트리`.
+gate_segment_common_git() {
+  local wt
+  wt=$(gate_segment_worktree "$1")
+  [ -n "$wt" ] || return 1
+  gate_common_git_of_dir "$wt"
+}
+
+gate_path_common_git() {
+  # gate_path_common_git <path> — the absolute common git directory of the
+  # repository <path> is a worktree of; status 1 when it is not one.
+  gate_common_git_of_dir "$1"
+}
+
+gate_path_of_target() {
+  # gate_path_of_target <path> <alias> — 0 only when <path> is a worktree OF
+  # THAT TARGET: an absolute path, an existing directory, and a common git
+  # directory equal to the target row's. The same predicate the manifest check
+  # puts on `실행 워크트리`.
   #
-  # ONE PREDICATE FOR BOTH THINGS A SEGMENT ROW NOW WIDENS — the stage settings'
-  # directory list and the directory a segment act runs in. The contract bounds
+  # ONE PREDICATE FOR EVERYTHING A SEGMENT ROW WIDENS — the stage settings'
+  # directory list, the directory a segment act runs in, and now the row itself:
+  # a non-terminal `segment` row is refused at write time unless its `워크트리`
+  # passes this for some declared target, so the ledger never carries a live
+  # row naming a directory the settings could not admit. The contract bounds
   # every widening to a worktree of a target the run already acts in, and a
   # router writing a path from another repository, or one that does not exist,
-  # must widen neither. Status only: which condition failed is the caller's
+  # must widen nothing. Status only: which condition failed is the caller's
   # message to write, because only the caller knows what the refusal means.
-  local wt cg want
-  wt=$(gate_segment_worktree "$1")
+  #
+  # THE COMMON DIRECTORY IS COMPARED IN BOTH SPELLINGS. The manifest records
+  # `공통 git 디렉터리` as git printed it at kickoff, and git prints the path it
+  # stored when the worktree was added — which for a worktree reached through
+  # a symlink is the physical one. A target declared by its link spelling
+  # would then never match its own worktrees; resolving both sides with
+  # `pwd -P` before the second comparison admits either spelling and nothing
+  # a plain string comparison would have refused for a reason other than
+  # spelling.
+  local wt="$1" cg want cg_p want_p
   case "$wt" in /*) : ;; *) return 1 ;; esac
   [ -d "$wt" ] || return 1
   want=$(target_field "$2" '공통 git 디렉터리')
   [ -n "$want" ] || return 1
-  cg=$(gate_segment_common_git "$1") || return 1
-  [ "$cg" = "$want" ] || return 1
+  cg=$(gate_path_common_git "$wt") || return 1
+  [ "$cg" = "$want" ] && return 0
+  cg_p=$(cd "$cg" 2>/dev/null && pwd -P) || return 1
+  want_p=$(cd "$want" 2>/dev/null && pwd -P) || return 1
+  [ "$cg_p" = "$want_p" ]
+}
+
+gate_path_of_some_target() {
+  # gate_path_of_some_target <path> — 0 when <path> passes
+  # `gate_path_of_target` for at least one declared target.
+  local a
+  for a in $(target_aliases); do
+    gate_path_of_target "$1" "$a" && return 0
+  done
+  return 1
+}
+
+gate_segment_worktree_of_target() {
+  # gate_segment_worktree_of_target <segment> <alias> — prints the segment row's
+  # `워크트리` and returns 0 only when it passes `gate_path_of_target` for that
+  # target. The segment-id form of the same predicate, for callers that start
+  # from a row already on the ledger.
+  local wt
+  wt=$(gate_segment_worktree "$1")
+  gate_path_of_target "$wt" "$2" || return 1
   printf '%s' "$wt"
 }
 
 gate_segment_worktrees_for_settings() {
-  # The worktrees the ledger's `segment` rows name, one per line — the last row
-  # per segment id, kept only when it passes gate_segment_worktree_of_target for
-  # some declared target.
+  # The worktrees the ledger's `segment` rows name — the last row per segment
+  # id, kept only when it passes gate_path_of_target for some declared target —
+  # each as spelled on the row AND as `pwd -P` resolves it, one per line.
   #
   # AN INPUT OF THE SETTINGS DERIVATION. Kickoff happens before segmentation, so
   # a segment's own worktree is never in the manifest; this is the only way it
   # reaches `additionalDirectories`. The set moves only when a new value
   # appears, so the settings key built from it stays still while the ledger
   # merely grows.
-  local sid a wt
-  [ -f "${LEDGER:-}" ] || return 0
-  for sid in $(gate_segment_ids); do
-    [ -n "$sid" ] || continue
-    for a in $(target_aliases); do
-      if wt=$(gate_segment_worktree_of_target "$sid" "$a"); then
-        printf '%s\n' "$wt"
-        break
-      fi
+  #
+  # THE PENDING ROW IS PART OF THE SET. `gate_record_row` re-derives the
+  # settings BEFORE it appends a non-terminal `segment` row, so the worktree
+  # that row names is not on the ledger when the render runs; it arrives in
+  # `GATE_SEGMENT_WT_PENDING` as `<segment>\t<worktree>` and stands in for
+  # whatever the ledger says about that segment, because once appended it is
+  # that segment's last row. Read here and nowhere else, and set only for the
+  # duration of that one re-derivation.
+  #
+  # BOTH SPELLINGS, for the same reason `DOC_DIR` goes in twice: the harness
+  # compares the directory a tool touches against the list as strings, a
+  # worktree reached through a symlink is touched by the resolved path as often
+  # as by the link, and a row that spelled the link would otherwise admit only
+  # one of the two.
+  local sid a wt pseg="" pwt="" tab
+  tab=$(printf '\t')
+  if [ -n "${GATE_SEGMENT_WT_PENDING:-}" ]; then
+    pseg="${GATE_SEGMENT_WT_PENDING%%${tab}*}"
+    pwt="${GATE_SEGMENT_WT_PENDING#*${tab}}"
+  fi
+  if [ -f "${LEDGER:-}" ]; then
+    for sid in $(gate_segment_ids); do
+      [ -n "$sid" ] || continue
+      [ "$sid" != "$pseg" ] || continue
+      for a in $(target_aliases); do
+        if wt=$(gate_segment_worktree_of_target "$sid" "$a"); then
+          gate_emit_worktree_spellings "$wt"
+          break
+        fi
+      done
     done
-  done
+  fi
+  if [ -n "$pseg" ] && gate_path_of_some_target "$pwt"; then
+    gate_emit_worktree_spellings "$pwt"
+  fi
   return 0
+}
+
+gate_emit_worktree_spellings() {
+  # gate_emit_worktree_spellings <path> — <path> as given and, when it differs,
+  # as `pwd -P` resolves it, one per line.
+  local p
+  printf '%s\n' "$1"
+  p=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+  [ "$p" = "$1" ] || printf '%s\n' "$p"
 }
 
 gate_segment_tip() {
@@ -13292,7 +13600,159 @@ gate_record_row() {
       # rather than assumed. One of those pins carries a note saying so; the
       # others are footing that rests on it. Counting them here would go stale
       # the moment one is added, so the shapes are named and the count is not.
-      gate_append 'segment' "id=$seg" "$@"
+      #
+      # THE BOUNDARY AND THE RE-DERIVATION HAPPEN HERE, AT THE ROW — and only
+      # for the states in which the segment still acts. A `segment` row is the
+      # one input of the settings derivation the ledger supplies, so the moment
+      # it is written is the moment the authorization surface can move, and
+      # this is where the move is recorded: `인가면=<before>→<after>` on the row
+      # that caused it. Re-deriving at the next act's prelude, as this used to,
+      # ordered the two the wrong way round — the row naming a worktree landed
+      # before the settings that admit it, and a sibling's `settings-key` could
+      # then report the surface settled with the new worktree still outside it.
+      #
+      # TERMINAL STATES ARE EXEMPT FROM ALL THREE — the boundary check, the
+      # re-derivation and the field. `완료`, `머지됨` and `park` are the states
+      # in which nothing acts in the worktree any more, and the worktree is
+      # routinely gone by then: a merged segment's tree is removed by the merge,
+      # and refusing the row that says so would leave the segment live on the
+      # ledger forever. A vanished worktree leaves the settings on the next
+      # non-terminal row's re-derivation, because the derivation keeps only
+      # directories that exist.
+      #
+      # NON-TERMINAL STATES ARE REFUSED OUTSIDE THE BOUNDARY, rather than
+      # silently widening nothing as the derivation used to do for them. The
+      # boundary is the one `gate_path_of_target` states: an absolute path, an
+      # existing directory, a common git directory equal to some declared
+      # target's. A row that fails it would put the segment's acts in a tree the
+      # settings could not admit, and every act from that segment would then be
+      # refused with a message naming a directory instead of this row.
+      #
+      # THE FIELD IS THE GATE'S ALONE. A caller-supplied `인가면=` is refused
+      # because the value is a measurement this arm takes, and a row carrying
+      # the caller's number would read as a widening that never happened.
+      #
+      # A BYTE NEITHER THE ROW NOR THE SETTINGS FILE CAN CARRY IS REFUSED, NOT
+      # MAPPED. The boundary below is a check on a DIRECTORY — absolute,
+      # existing, inside a declared target's common git directory — and a
+      # subdirectory of an admitted worktree passes it whatever its name is.
+      # The value then travels two ways that read it as TEXT: the row grammar
+      # maps a newline to a space and a pipe to a slash, so the ledger can
+      # never repeat the name it admitted; and the pending pair hands the raw
+      # value to the renderer, which splits the list on newlines and quotes
+      # each line. Measured on the shape: `<wt>/x<LF>/Users/ian` rendered as
+      # TWO `additionalDirectories` entries, the second one a directory no
+      # target declares, and every consumer downstream — the surface digest,
+      # the hook, `jq` — accepted the file as well-formed. A double quote or a
+      # backslash in the name does the same through the JSON syntax instead of
+      # through the line structure. A pipe does it through the ROW instead:
+      # `gate_row_body` maps `|` to `/` in every field, so `<wt>/a|b` was
+      # admitted by the renderer as `<wt>/a|b` and recorded on the row as
+      # `워크트리=<wt>/a/b` — a different directory, one this segment never
+      # named, which the next re-derivation read back from the ledger and the
+      # merge rule would `cd` into. So the closed set is the one the renderer's
+      # JSON string and the row's grammar cannot spell: control bytes
+      # (`[:cntrl:]`, which is 0x00–0x1F and 0x7F in the C locale, so a
+      # multibyte path is untouched), `"`, `\` and `|`. The renderer escapes
+      # as well, so that either half alone still holds — and the row half is
+      # asserted as an invariant rather than as a list of bytes: the fixtures
+      # compare the `워크트리` the row carries against the entry the settings
+      # admit, byte for byte, on every accepted non-terminal row.
+      #
+      # `tr -d` under `LC_ALL=C` compares BYTES, which is the point: a UTF-8
+      # path is made of bytes ≥ 0x80 and none of them is in the set, so a
+      # Korean worktree name passes unchanged, and an invalid sequence cannot
+      # make the filter fail open the way a locale-aware one might.
+      #
+      # THE ROW IS NEVER LOST TO THE FIELD. The field is two sha256s, and the
+      # row cap is `GATE_ROW_MAX`; a row that would cross it with the field
+      # carries `인가면=생략(행 길이)` instead — and if even that crosses, no
+      # field at all. The projection uses `gate_row_projected_bytes`, the same
+      # ruler `gate_append` measures with, so a row that passes here cannot die
+      # there over length. Only this field is relaxed; every other field on the
+      # row is the caller's and is measured as written. A failure marker
+      # (`인가면=실패(<사유>)`) is short and is never rewritten as `생략(행
+      # 길이)` — that spelling means the rewrite happened, and a failure did
+      # not — so a marker that would not fit is dropped and the `warn` the arm
+      # already emitted is the record.
+      #
+      # THE FAILURE ARMS LAND ON THE ROW, NOT AS A REFUSAL. A row in one of
+      # these states is a state transition the router is recording, and
+      # refusing it would lose that transition to a condition — a lock held by
+      # a sibling, a render that failed — the router did not cause and cannot
+      # repair by re-spelling the row. The row lands with a marker that names
+      # the arm, the settings key stays unrecorded so the next non-terminal
+      # row from any segment re-derives from the ledger, and the `warn` is on
+      # the stage's stderr. What is refused is only what the row itself got
+      # wrong: a path the settings could not admit.
+      #
+      # `settings.lock` IS HELD FROM BEFORE THE RE-DERIVATION UNTIL AFTER THE
+      # APPEND. The function used to take and drop it around the render alone,
+      # which left the append outside: a sibling segment could take the lock
+      # in that gap and render from a ledger that did not yet carry this row,
+      # so its list lacked the worktree this row had just admitted. The trap
+      # covers `gate_append`'s `die` — a lock left by a dead holder would turn
+      # every later re-derivation into a timeout.
+      local surf_field="" surf_lk=""
+      case "$st" in
+        완료|머지됨|park) : ;;
+        *)
+          if [ -n "$(gate_field_of '인가면' "$@")" ]; then
+            warn "segment 행의 「인가면」은 게이트가 재유도 결과로 적는 필드입니다 — 호출자가 넘길 수 없습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ "$wt" != "$(printf '%s' "$wt" | LC_ALL=C tr -d '[:cntrl:]"\\|')" ]; then
+            warn "segment 행의 「워크트리」에 큰따옴표·백슬래시·파이프·제어 문자를 담을 수 없습니다: '$(printf '%s' "$wt" | LC_ALL=C tr -d '[:cntrl:]')' — 비종단 상태(${st})의 행은 원장과 인가 목록이 그대로 실을 수 있는 경로만 가리킬 수 있습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          case "$wt" in
+            /*) : ;;
+            *) warn "segment 행의 「워크트리」는 절대 경로여야 합니다: '$wt'"
+               return "$GATE_EXIT_VOCAB" ;;
+          esac
+          if [ ! -d "$wt" ]; then
+            warn "segment 행의 「워크트리」가 존재하지 않음: '$wt' — 비종단 상태(${st})의 행은 실재하는 워크트리만 가리킬 수 있습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if ! gate_path_of_some_target "$wt"; then
+            warn "segment 행의 「워크트리」가 어느 선언 대상의 워크트리도 아닙니다: '$wt' — 공통 git 디렉터리가 매니페스트의 어느 대상 행과도 같지 않습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ -z "${RUN_DIR:-}" ]; then
+            warn "인가 디렉터리를 재유도하지 못했습니다 — 런 디렉터리가 없어 인가 목록도 락도 없습니다; 세그먼트 $seg 의 행은 인가면=실패(런 디렉터리 없음) 로 남깁니다"
+            surf_field='인가면=실패(런 디렉터리 없음)'
+          else
+            surf_lk="$RUN_DIR/settings.lock"
+            if gate_settings_lock "$surf_lk"; then
+              GATE_SETTINGS_LOCK_HELD="$surf_lk"
+              surf_field=$(gate_resettle_settings_for_segment "$seg" "$wt")
+            else
+              warn "인가 디렉터리를 재유도하지 못했습니다 — settings.lock 을 기다리다 시간이 넘었습니다 ($surf_lk); 세그먼트 $seg 의 행은 인가면=실패(락 대기 초과) 로 남기고 워크트리 $wt 는 다음 비종단 segment 행이 다시 유도할 때까지 인가 목록에 오르지 않습니다"
+              surf_field='인가면=실패(락 대기 초과)'
+            fi
+          fi
+          if [ -n "$surf_field" ] \
+             && [ "$(gate_row_projected_bytes 'segment' "id=$seg" "$@" "$surf_field")" -gt "$GATE_ROW_MAX" ]; then
+            case "$surf_field" in
+              '인가면=실패('*) surf_field="" ;;
+              *) surf_field='인가면=생략(행 길이)' ;;
+            esac
+            if [ -n "$surf_field" ] \
+               && [ "$(gate_row_projected_bytes 'segment' "id=$seg" "$@" "$surf_field")" -gt "$GATE_ROW_MAX" ]; then
+              surf_field=""
+            fi
+          fi
+          ;;
+      esac
+      if [ -n "$surf_field" ]; then
+        gate_append 'segment' "id=$seg" "$@" "$surf_field"
+      else
+        gate_append 'segment' "id=$seg" "$@"
+      fi
+      # The lock taken above outlives the append and nothing else: released
+      # here on the ordinary path, and by `gate_on_exit` when `gate_append`
+      # exits the process instead of returning.
+      gate_settings_lock_release
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
       elif [ -n "${RUN_DIR:-}" ]; then
@@ -16325,7 +16785,7 @@ gate_undeclared_target() {
     return "$GATE_EXIT_VOCAB"
   }
   [ -d "$wt" ] || { warn "the worktree of undeclared target '$alias' does not exist: $wt"; return "$GATE_EXIT_VOCAB"; }
-  cg=$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  cg=$(gate_common_git_of_dir "$wt" || true)
   [ -n "$cg" ] || { warn "could not read the common git directory of undeclared target '$alias'"; return "$GATE_EXIT_VOCAB"; }
 
   # Layer 0 is read-only; anything at `커밋` or above is a local write.
