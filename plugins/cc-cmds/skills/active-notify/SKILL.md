@@ -27,9 +27,10 @@ notes: |
 Read `_common/notify.md` once per session to load the shared procedure
 (preconditions, fire copy synthesis, failure handling, Control-Flow
 Invariants). The model owns the entire ARM / FIRE-NOW / CANCEL lifecycle —
-there is no turn-end auto-fire. The plugin's PreToolUse hook self-approves
-the dispatcher's Bash invocations so the Bash permission dialog never
-surfaces.
+this helper has no turn-end auto-fire (the ordinary session's hook banner
+seats are a separate system and are not part of this lifecycle). The
+plugin's PreToolUse hook self-approves the dispatcher's Bash invocations
+so the Bash permission dialog never surfaces.
 
 ## 1. Calling convention
 
