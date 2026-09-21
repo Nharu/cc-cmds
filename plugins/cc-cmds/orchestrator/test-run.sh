@@ -2354,6 +2354,21 @@ check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 �
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
+# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
+  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
+  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  END { print "N " n+0 }
+' "$DRIVER")
+check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
+check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+  "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
+check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
+
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
 # started from a document, so a manifest run's arm could not reach the grant it
@@ -5736,6 +5751,126 @@ rr_guard 워크트리쓰기 git diff "--output=../../runroot/cc-cmds/run/victim/
 check "배시 가드: 음성 대조군 — -C 가 없으면 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
 unset RR_G_CWD
 
+# --- 사후 리뷰 수리 6. 분리 토큰과 전체 경로 피연산자도 둘째 기준에서 잰다 --------
+# 위 절은 `--output=<상대>` 한 철자만 닫았다. 둘째 기준은 옵션의 `=` 값과 복합
+# 토큰의 단어에만 적용됐고, 전체 인수는 등급 기준 디렉터리에서만 절대화됐다 — 그래서
+# 같은 경로를 `--output <상대>`(두 토큰), `archive -o <상대>`, `checkout HEAD -- <상대>`
+# 로 적으면 두 가드를 그대로 지났다(실측, 세 리뷰어 독립 재현). 가드에는 옵션 표가
+# 없어 `--output` 의 피연산자와 경로 지정을 가르지 못하지만 가를 필요도 없다 — git 은
+# 둘 다 `-C` 디렉터리에서 푼다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 분리 토큰 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../installed/plugins/cc-cmds/orchestrator/gate.sh HEAD
+check "설치본 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" restore --source=HEAD~3 ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: restore 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 모양인데 보호 루트 밖을 가리키면 지난다.
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "설치본 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 분리 토큰 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../runroot/cc-cmds/run/victim/settings/x.json HEAD
+check "배시 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "배시 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+# `-C` 가 없으면 분리 토큰에도 둘째 기준이 서지 않는다 — 위 절의 마지막 행과 같은
+# 이유로, 둘째 기준이 `-C` 와 무관하게 늘 서는 변경을 막는다.
+rr_guard 워크트리쓰기 git diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 음성 대조군 — -C 가 없으면 분리 토큰에도 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+# `/` 없는 맨 이름도 같은 결함의 한 철자다. `..` 는 맨 이름 검사를 늘 통과하지만
+# 등급 기준 디렉터리에서만 절대화됐으므로, `-C` 디렉터리의 부모가 보호 루트일 때
+# 어느 팔에도 걸리지 않았다. 등급 기준은 그 `..` 가 보호 루트 밖으로 풀리는 깊이에
+# 둔다 — 그렇지 않으면 첫째 기준의 조상 팔이 답해 이 행이 공허해진다.
+RR_G_CWD="$WORK/segwt/plugins"
+mkdir -p "$RRP_INST/skills"
+rr_pguard 워크트리쓰기 git -C "$RRP_INST/skills" checkout HEAD -- ..
+check "설치본 가드: -C 디렉터리 기준으로 보호 루트에 닿는 맨 이름 .. 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- ..
+check "배시 가드: -C 디렉터리 기준으로 런 디렉터리 자신에 닿는 맨 이름 .. 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'run directory write'*) ok "배시 가드: 맨 이름 .. 의 거부가 허용 목록 팔의 것이다" ;;
+  *) bad "배시 가드: 맨 이름 .. 의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+# 음성 대조군 — `-C` 디렉터리가 허용된 하위 트리이고 맨 이름이 그 안에 머물면 지난다.
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- .
+check "배시 가드: 음성 대조군 — 허용된 하위 트리 안에 머무는 맨 이름은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 7. 래퍼와 두 토큰 전역 옵션 뒤의 `-C` -----------------------
+# 둘째 기준은 argv0 의 basename 이 정확히 `git` 일 때만, 그리고 `-C`·`-c`·`--work-tree=`
+# 밖의 모든 `-*` 를 값 없는 옵션으로 읽는 접기로만 섰다. 등급표는 `nohup`·`timeout`·
+# `env`·`nice` 를 벗겨 안쪽 git 의 등급을 그대로 돌려주고 `--namespace <값>`·`--git-dir
+# <값>`·`--work-tree <값>` 을 두 토큰으로 건너뛰므로, 일곱 형태 전부 정직한 `트리밖쓰기`
+# 로 게이트를 지나면서 둘째 기준은 서지 않았다 — 이미 닫힌 `--output=<상대>` 철자까지
+# 다시 열렸다(실측). 앞 절과 독립된 결함이다: 여기서는 피연산자 철자가 닫힌 `=` 형태인데
+# 기준 자체가 없다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 래퍼 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: timeout 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: env 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nice 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 둘 — 래퍼가 있어도 보호 루트 밖이면 지나고, 두 토큰 전역 옵션만으로는
+# 둘째 기준이 서지 않는다(`-C` 가 없다).
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 트리밖쓰기 git --namespace x diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+# `--output=<상대>` 는 `=` 를 가진 복합 토큰이라 단어 팔이 답한다 — 앞 절의 같은 철자와
+# 같은 팔이고, 그 문구가 묻힌 경로 문구다.
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 래퍼 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: timeout 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: env 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nice 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 트리밖쓰기 git --namespace x diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
 # 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
 # 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어진다.
@@ -6657,6 +6792,83 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
   ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
 else
   bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
+fi
+
+# --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
+# 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
+# 두 줄을 파일로 세운다. 단언 대상은 「행이 그 파일을 읽어 싣는가」와 「파일이 없을
+# 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
+# 소스 핀이 잡는다.
+REC_RSID="S5R:segR:0"
+printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+rm -f "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
+  ok ".window 가 없으면 행이 압축 창=(미상) 을 싣고 그대로 쓰인다"
+else
+  bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
+fi
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
+  ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
+else
+  bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
+fi
+
+# --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
+WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
+check "세 층이 전부 비면 -" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "-"
+printf '{"autoCompactWindow": 100000}\n' > "$WR/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{"autoCompactWindow": 150000}\n' > "$WR/proj/.claude/settings.json"
+check "프로젝트 층이 레인을 이긴다" "$(stage_window_read "$WR/none.json" "$WR/proj" "$WR/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 200000}\n' > "$WR/run.json"
+check "런설정 층이 프로젝트를 이긴다" "$(stage_window_read "$WR/run.json" "$WR/proj" "$WR/cfg")" "200000(런설정)"
+printf '{"autoCompactEnabled": false}\n' > "$WR/off.json"
+check "가장 앞선 층이 끄면 (꺼짐)" "$(stage_window_read "$WR/off.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+# 키 단위 병합 — 두 키는 각각 자기를 정의한 가장 앞선 층에서 온다.
+printf '{"autoCompactWindow": 150000}\n' > "$WR/win.json"
+printf '{"autoCompactEnabled": false}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 창 150000 위에 프로젝트로컬 enabled:false 는 (꺼짐)" "$(stage_window_read "$WR/win.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+printf '{"autoCompactEnabled": true}\n' > "$WR/on.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 90000}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 enabled:true 위에 프로젝트로컬 false+90000 은 90000(프로젝트)" "$(stage_window_read "$WR/on.json" "$WR/proj" "$WR/cfg")" "90000(프로젝트)"
+rm -f "$WR/proj/.claude/settings.local.json"
+printf '{"autoCompactWindow": "300k"}\n' > "$WR/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛴다" "$(stage_window_read "$WR/fmt.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{not json\n' > "$WR/broken.json"
+check "깨진 JSON 은 (미상)" "$(stage_window_read "$WR/broken.json" "$WR/proj" "$WR/cfg")" "(미상)"
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" "$(lane_label_of "$HOME/.claude-x")" "~/.claude-x"
+check "HOME 밖의 레인은 그대로다" "$(lane_label_of "$WR/cfg")" "$WR/cfg"
+check "드라이버의 판독은 (argv) 를 낼 수 없다 (argv 층이 없다)" \
+  "$(sed -n '/^stage_window_read()/,/^}/p' "$DRIVER" | grep -c 'argv' || true)" "0"
+
+# --- (4) 기동이 `.window` 를 쓴다 — 소스 핀 --------------------------------------
+# 이 스위트는 진짜 CLI 를 띄우지 않으므로 기동 본문의 두 줄을 문면으로 잡는다:
+# 기동 직전에 두 줄 파일을 쓰고, 다음 기동이 앞의 것을 `.rc` 와 함께 지운다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '> "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 .window 를 쓴다"
+else
+  bad "stage_spawn" ".window 를 쓰는 줄이 없다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 앞 기동의 .window 를 .rc 와 함께 지운다 (수집이 아니라 다음 기동에서)"
+else
+  bad "stage_spawn" ".window 를 .rc 옆에서 지우는 줄이 없다"
+fi
+if sed -n '/^stage_collect()/,/^}/p' "$DRIVER" | grep_all_q -F '.window'; then
+  bad "stage_collect" "수집이 .window 를 지운다 — stage-result 행은 수집 뒤에 쓰이므로 값이 사라진다"
+else
+  ok "stage_collect 는 .window 를 건드리지 않는다 (행이 수집 뒤에 읽는다)"
 fi
 if kill_permitted "S5R:segR:0"; then
   ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"

@@ -8317,6 +8317,152 @@ gate_settings_file() {
   printf '%s/%s.json' "$(gate_settings_dir)" "$k"
 }
 
+# --- compaction window: what the stage will run under, and where it came from
+#
+# The CLI compacts a session's context when it nears a window, and that window
+# can be set in four places that the supervisor does not otherwise look at. A
+# stage-result row that says only "rc=0" cannot tell a reader whether the
+# stage ran under the lane's window, the run settings' window, or a flag the
+# gate itself passed — so the effective value AND its source are recorded on
+# the row, in one closed grammar:
+#
+#   `-`                        no layer sets a window
+#   `(꺼짐)`                   the highest layer that says anything about
+#                              `autoCompactEnabled` says false
+#   `(미상)`                   a layer's file exists but could not be read
+#   `<정수>(argv|런설정|프로젝트|레인)`  the window and the layer that won
+#
+# The layers, highest priority first: the argv the gate injects, the run's
+# per-kind settings file, the stage cwd's project settings
+# (`.claude/settings.local.json`, then `.claude/settings.json`), the lane's
+# `<config home>/settings.json`. The two keys are resolved per key across the
+# layers, the way the CLI merges settings, not per layer. THIS ORDER IS THE
+# CLI'S DOCUMENTED ORDER AND NOT YET A MEASURED ONE — which is why argv
+# injection is switched on for one stage kind only and carries a kill switch.
+
+gate_autocompact_argv_value() {
+  # gate_autocompact_argv_value <stage-kind> — the window the gate injects on
+  # the wrapper's argv for this kind, or nothing. `CC_ORCH_STAGE_AUTOCOMPACT=off`
+  # injects nothing for any kind; it does not touch the settings layers.
+  local kind="$1"
+  [ "${CC_ORCH_STAGE_AUTOCOMPACT:-}" = "off" ] && return 0
+  case "$kind" in
+    review) printf '300000' ;;
+    *) : ;;
+  esac
+}
+
+gate_lane_dir() {
+  # The CLI config home the stage will read: the explicit env var, then the
+  # run's recorded lane, then the default. The same order the driver's account
+  # resolution walks, so both writers name one lane.
+  local d=""
+  d="${CLAUDE_CONFIG_DIR:-}"
+  if [ -z "$d" ] && [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/config-dir" ]; then
+    d=$(sed -n '1p' "$RUN_DIR/config-dir" 2>/dev/null || true)
+  fi
+  [ -n "$d" ] || d="${HOME:-}${HOME:+/.claude}"
+  printf '%s' "${d%/}"
+}
+
+gate_lane_label() {
+  # The lane in tilde form — a `$HOME` prefix becomes `~`, anything else is
+  # printed as is — so a row does not spell the account's home directory.
+  local d
+  d=$(gate_lane_dir)
+  case "$d" in
+    "${HOME:-/nonexistent}") printf '~' ;;
+    "${HOME:-/nonexistent}"/*) printf '~%s' "${d#"$HOME"}" ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
+gate_autocompact_layer() {
+  # gate_autocompact_layer <settings-file> — one layer's reading, as
+  # `<enabled>\t<window>`: each side is the key's value or empty when absent.
+  # Prints nothing for a missing file; returns 1 when the file exists and
+  # cannot be read (jq missing or the JSON refuses to parse), which the caller
+  # turns into `(미상)` rather than into "no value here".
+  local f="$1" out
+  [ -f "$f" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 1
+  # `has(…)` and not `//`: a `false` on the right of `//` reads as absent, and
+  # an explicit "disabled" is the one value this layer must not lose.
+  out=$(jq -r '[(if has("autoCompactEnabled") then .autoCompactEnabled | tostring else "" end), (if has("autoCompactWindow") then .autoCompactWindow | tostring else "" end)] | join("\t")' "$f" 2>/dev/null) || return 1
+  printf '%s\n' "$out"
+}
+
+gate_autocompact_effective() {
+  # gate_autocompact_effective <argv-value> <settings-file> <project-dir>
+  # The effective window in the grammar above. THE TWO KEYS ARE MERGED PER KEY,
+  # NOT PER LAYER: `autoCompactEnabled` is taken from the highest layer that
+  # defines it and `autoCompactWindow` from the highest layer that holds a
+  # plain integer, each on its own — a layer that only disables does not hide
+  # a window below it, and a layer that only sets a window does not hide a
+  # disable below it. Every layer is read before anything is decided, so an
+  # unreadable file anywhere is `(미상)` and the argv value never stands in
+  # for a reading that failed. Then: disabled wins over everything, argv
+  # included, since a flag on a disabled session is a value the CLI throws
+  # away and the row must not claim it; otherwise the argv layer exists only
+  # when <argv-value> is non-empty and beats the settings window; a window
+  # that is not a plain integer is "this layer sets none" (a format the CLI
+  # may accept is not a read failure).
+  local argv_val="$1" settings="$2" proj="$3"
+  local f tok reading layer_enabled layer_window
+  local enabled="" window="" window_tok=""
+  for tok in 런설정 프로젝트로컬 프로젝트 레인; do
+    case "$tok" in
+      런설정) f="$settings" ;;
+      프로젝트로컬) f="$proj/.claude/settings.local.json"; tok=프로젝트 ;;
+      프로젝트) f="$proj/.claude/settings.json" ;;
+      레인) f="$(gate_lane_dir)/settings.json" ;;
+    esac
+    [ -n "$f" ] || continue
+    reading=$(gate_autocompact_layer "$f") || { printf '(미상)'; return 0; }
+    [ -n "$reading" ] || continue
+    layer_enabled="${reading%%	*}"
+    layer_window="${reading#*	}"
+    [ -n "$enabled" ] || enabled="$layer_enabled"
+    if [ -z "$window_tok" ]; then
+      case "$layer_window" in
+        ''|*[!0-9]*) : ;;
+        *) window="$layer_window"; window_tok="$tok" ;;
+      esac
+    fi
+  done
+  if [ "$enabled" = "false" ]; then
+    printf '(꺼짐)'
+    return 0
+  fi
+  if [ -n "$argv_val" ]; then
+    printf '%s(argv)' "$argv_val"
+    return 0
+  fi
+  if [ -n "$window_tok" ]; then
+    printf '%s(%s)' "$window" "$window_tok"
+    return 0
+  fi
+  printf '%s' '-'
+}
+
+gate_window_sidecar_read() {
+  # gate_window_sidecar_read <segment> — line 1 of `<seg>.window`, or `(미상)`.
+  # The sidecar is a record of what the launch read, never a precondition:
+  # a row is written whether or not it is there.
+  local f="$RUN_DIR/$1.window" v=""
+  [ -f "$f" ] && v=$(sed -n '1p' "$f" 2>/dev/null || true)
+  printf '%s' "${v:-(미상)}"
+}
+
+gate_lane_sidecar_read() {
+  # gate_lane_sidecar_read <segment> — line 2 of `<seg>.window`, or the lane
+  # this process resolves.
+  local f="$RUN_DIR/$1.window" v=""
+  [ -f "$f" ] && v=$(sed -n '2p' "$f" 2>/dev/null || true)
+  [ -n "$v" ] || v=$(gate_lane_label)
+  printf '%s' "$v"
+}
+
 gate_settings_key() {
   # A digest of everything `gate_write_settings` renders FROM. When it has not
   # moved, that function cannot produce different bytes, so the probe render and
@@ -11706,9 +11852,11 @@ gate_word_is_at_or_above() {
 }
 
 gate_arg_bare_name() {
-  # gate_arg_bare_name <arg> — rc 0 when an argument without a `/` still names a
-  # directory the act can write into: `.`, `..`, or a name that exists (or is a
-  # link) in the grading directory.
+  # gate_arg_bare_name <arg> [<base>] — rc 0 when an argument without a `/`
+  # still names a directory the act can write into: `.`, `..`, or a name that
+  # exists (or is a link) in the grading directory — or in <base> when one is
+  # given, which is the directory the command itself resolves from when that is
+  # not the grading one (`gate_argv_chdir_base`).
   #
   # THE `/` FILTER AT THE TOP OF BOTH GUARD LOOPS DROPPED THESE, and from a
   # segment worktree that sits beside the installed checkout `..` IS an
@@ -11722,7 +11870,7 @@ gate_arg_bare_name() {
     ''|-*) return 1 ;;
     .|..) return 0 ;;
   esac
-  b=$(gate_grade_cwd)
+  b=${2:-$(gate_grade_cwd)}
   [ -e "$b/$1" ] || [ -L "$b/$1" ]
 }
 
@@ -11771,8 +11919,14 @@ gate_argv_chdir_base() {
   # option that `surface_of_git` steps over in two tokens and `diff --output=`
   # is graded `트리밖쓰기`, so the declaration is honest and the grade is right —
   # it is the BASE that was wrong. The bypass needs a sibling directory and a
-  # relative path and no wrapper at all, which is why the declared residual
-  # about a `cd` inside a wrapper does not cover it.
+  # relative path, and nothing more: a wrapper in front of `git` does not stop
+  # it, because the grading table unwraps `nohup`, `timeout`, `nice`, `stdbuf`,
+  # `env`, `command` and `time` and grades the inner `git` exactly as it grades
+  # a bare one. Measured: `nohup git -C <sibling> diff --output=<relative path>`
+  # was graded `트리밖쓰기`, honestly, and this function answered "no base"
+  # because argv0 was `nohup` — so the second base has to be computed after the
+  # same unwrap the table applies. The declared residual about a `cd` INSIDE a
+  # wrapper's program text is a different shape and still does not cover it.
   #
   # ONLY `git`, AND ONLY BEFORE THE SUBCOMMAND. `make -C` and `--directory=`
   # carry the same mechanism and `tar -C` does too, but `tar` is graded 미상 and
@@ -11784,9 +11938,38 @@ gate_argv_chdir_base() {
   # `--work-tree=` IS TAKEN CONSERVATIVELY. It does not chdir the process, so a
   # relative operand does not always resolve from it; including it can only
   # refuse an act git would have landed elsewhere, never miss one.
+  local b
+  b=$(gate_argv_chdir_base_of "$@")
+  [ -n "$b" ] || return 1
+  printf '%s' "$b"
+}
+
+gate_argv_chdir_base_of() {
+  # gate_argv_chdir_base_of <argv...> — the body of `gate_argv_chdir_base`, with
+  # the answer on standard output and nothing there when there is no base.
+  # Always rc 0, because the unwrap helpers hand their remainder to a resolver
+  # whose output they print through, and a non-zero return from inside a
+  # command substitution is what an inherited `set -e` turns into an exit.
+  #
+  # THE WRAPPERS ARE PEELED WITH THE TABLE'S OWN HELPERS rather than a second
+  # list: `gate_unwrap_wrapper`, `gate_unwrap_env`, `gate_unwrap_command` and
+  # `gate_unwrap_time` each consume exactly the options the table consumes and
+  # stop at one they do not know, so this function sees `git` as argv0 in
+  # precisely the cases the table grades it as `git`. The two empty terminal
+  # answers mean "no command" and "unknown option" both come back as no base,
+  # which is the same discipline the table keeps — a guess about whether an
+  # option eats the next word is a guess about where the operands land.
   local argv0="$1" base d
   shift
-  [ "${argv0##*/}" = git ] || return 1
+  case "${argv0##*/}" in
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "${argv0##*/}" gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    command) gate_unwrap_command gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    git) ;;
+    *) return 0 ;;
+  esac
   base=$(gate_grade_cwd)
   d=$base
   while [ "$#" -ge 1 ]; do
@@ -11796,15 +11979,22 @@ gate_argv_chdir_base() {
       -C) shift; [ "$#" -ge 1 ] || break; d=$(gate_lexical_abs "$1" "$d") ;;
       -C?*) d=$(gate_lexical_abs "${1#-C}" "$d") ;;
       --work-tree=*) d=$(gate_lexical_abs "${1#--work-tree=}" "$d") ;;
-      # `-c <name>=<value>` takes its value as a separate token; every other
-      # global option either carries its value with `=` or takes none.
-      -c) shift ;;
+      --work-tree) shift; [ "$#" -ge 1 ] || break; d=$(gate_lexical_abs "$1" "$d") ;;
+      # `-c <name>=<value>`, `--git-dir <dir>` and `--namespace <name>` take
+      # their value as a separate token — the same list `surface_of_git` steps
+      # over in two tokens, minus `--work-tree`, which is folded above. Reading
+      # that value as the subcommand ended the fold one word early, so
+      # `git --namespace x -C <sibling> …` had no base. Every other global
+      # option carries its value with `=` or takes none; `--exec-path` and
+      # `--config-env` never arrive here because the table refuses them as a
+      # form.
+      -c|--git-dir|--namespace) [ "$#" -ge 2 ] || break; shift ;;
       -*) ;;
       *) break ;;
     esac
     shift
   done
-  [ -n "$d" ] && [ "$d" != "$base" ] || return 1
+  [ -n "$d" ] && [ "$d" != "$base" ] || return 0
   printf '%s' "$(gate_path_spelling "$(gate_real_prefix "$d")")"
 }
 
@@ -11975,7 +12165,7 @@ gate_rundir_write_guard() {
   # reason: `../../.local/state/…/run/<id>/surface-digest` from the worktree is
   # one more spelling of the same file.
   local a rdp rdn rdln an ap al ar sp rel root rootp r matched argi w wn wp wl i
-  local ov ovrc wraps mode cb ov2 ovw wn2 wp2 wl2
+  local ov ovrc wraps mode cb ov2 ovw wn2 wp2 wl2 an2 ap2 al2
   argi=0
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
@@ -12009,16 +12199,40 @@ gate_rundir_write_guard() {
     case "$a" in
       */*|"$RUN_DIR"|"$rdp") ;;
       *) if [ "$argi" = 1 ]; then continue; fi
-         gate_arg_is_compound "$a" || gate_arg_bare_name "$a" || continue ;;
+         # A bare name is also looked up in the second base: a name that exists
+         # only in the `-C` directory is one the command will find there.
+         gate_arg_is_compound "$a" || gate_arg_bare_name "$a" \
+           || { [ -n "$cb" ] && gate_arg_bare_name "$a" "$cb"; } || continue ;;
     esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
     al=$(gate_leaf_spelling "$ap") || { gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+    # THE WHOLE-PATH ARGUMENT FROM THE SECOND BASE TOO. The three spellings above
+    # absolutize against the grading directory only, and `gate_second_base_spelling`
+    # was applied to an option's `=`-value and to the words of a compound token
+    # and nowhere else — so `git -C <sibling> diff --output <relative>` (two
+    # tokens), `archive -o <relative> HEAD` and `checkout HEAD -- <relative>`
+    # carried the very path the `=` spelling was refused for, as a plain
+    # argument, past every arm. The guard has no option table, so it cannot tell
+    # `--output`'s operand from a pathspec; it does not need to — both are
+    # resolved by git from the `-C` directory, and both are measured from it
+    # here. A compound token is not a path and gets no second spelling of its
+    # own; its words already do. An absolute argument, and one that resolves to
+    # the same place from either base, come back empty and add nothing. argv0
+    # names what runs and is looked up in `PATH`, not in the `-C` directory.
+    an2=""; ap2=""; al2=""
+    if [ "$argi" != 1 ] && ! gate_arg_is_compound "$a"; then
+      an2=$(gate_second_base_spelling "$a" "$cb") || an2=""
+      if [ -n "$an2" ]; then
+        ap2=$(gate_path_spelling "$(gate_real_prefix "$an2")")
+        al2=$(gate_leaf_spelling "$ap2") || { gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      fi
+    fi
     # OWN IS STILL TESTED FIRST, AND IT IS TESTED PER SPELLING. Deciding "is this
     # mine" from the lexical spelling and "is this a sibling's" from the physical
     # one would read a symlink pointing at THIS run as a foreign run, so each
     # spelling goes through the whole predicate and keeps its own exemption.
-    for sp in "$an" "$ap" "$al"; do
+    for sp in "$an" "$ap" "$al" "$an2" "$ap2" "$al2"; do
       [ -n "$sp" ] || continue
       if gate_rundir_is_foreign_run "$sp" "$root" "$rootp" "$rdn" "$rdln"; then
         warn "rule refused: this is another run directory — there is no legitimate case for a stage writing into the directory of a run that is not its own (the pinned copy and the baseline of that run sit there): $a"
@@ -12060,7 +12274,7 @@ gate_rundir_write_guard() {
     # `/` — it is a plain over-refusal. The paths INSIDE the token are not exempt
     # for that: the option value is tested above and the words below.
     if ! gate_arg_is_compound "$a"; then
-    for sp in "$an" "$ap" "$al"; do
+    for sp in "$an" "$ap" "$al" "$an2" "$ap2" "$al2"; do
       [ -n "$sp" ] || continue
       rel=""
       case "$sp" in
@@ -12166,7 +12380,7 @@ gate_rundir_write_guard() {
     if ! gate_arg_is_compound "$a"; then
       for r in "$root" "$rootp"; do
         [ -n "$r" ] || continue
-        for sp in "$an" "$ap" "$al"; do
+        for sp in "$an" "$ap" "$al" "$an2" "$ap2" "$al2"; do
           [ -n "$sp" ] || continue
           if gate_path_is_at_or_above "$sp" "$r"; then
             warn "rule refused: an ancestor directory of the run root is named as a write destination — a verb that takes a directory as its destination creates or merges the source's own name underneath it, so it reaches the whole run root: $a"
@@ -12203,7 +12417,7 @@ gate_rundir_write_guard() {
     ar=$(gate_path_spelling "$a")
     for r in "$root" "$rootp"; do
       [ -n "$r" ] || continue
-      for sp in "$an" "$ap" "$al" "$ar"; do
+      for sp in "$an" "$ap" "$al" "$ar" "$an2" "$ap2" "$al2"; do
         [ -n "$sp" ] || continue
         case "$sp" in
           *"$r"*)
@@ -12341,7 +12555,7 @@ gate_plugin_root_write_guard() {
   # this check and the act — the same closure and residual the run directory
   # guard states.
   local a an ap al ar sp r rl rp hl hp first w wn wp wl i ov ovrc wraps mode
-  local cb ov2 ovw wn2 wp2 wl2
+  local cb ov2 ovw wn2 wp2 wl2 an2 ap2 al2
   gate_plugin_roots
   rl=$GATE_PR_RL; rp=$GATE_PR_RP; hl=$GATE_PR_HL; hp=$GATE_PR_HP
   wraps=0
@@ -12379,11 +12593,24 @@ gate_plugin_root_write_guard() {
     # arm.
     case "$a" in
       */*) ;;
-      *) gate_arg_is_compound "$a" || gate_arg_bare_name "$a" || continue ;;
+      *) gate_arg_is_compound "$a" || gate_arg_bare_name "$a" \
+           || { [ -n "$cb" ] && gate_arg_bare_name "$a" "$cb"; } || continue ;;
     esac
     an=$(gate_path_spelling "$(gate_lexical_abs "$a")")
     ap=$(gate_path_spelling "$(gate_real_prefix "$an")")
     al=$(gate_leaf_spelling "$ap") || { gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+    # The whole-path argument from the second base, as the run directory guard
+    # states at the same place. A bare argv0 was dropped above; one spelled as
+    # a path is measured like any operand, and an absolute one gets no second
+    # spelling.
+    an2=""; ap2=""; al2=""
+    if ! gate_arg_is_compound "$a"; then
+      an2=$(gate_second_base_spelling "$a" "$cb") || an2=""
+      if [ -n "$an2" ]; then
+        ap2=$(gate_path_spelling "$(gate_real_prefix "$an2")")
+        al2=$(gate_leaf_spelling "$ap2") || { gate_leaf_unresolved_refuse "$a"; return "$GATE_EXIT_RULE"; }
+      fi
+    fi
     ar=$(gate_path_spelling "$a")
     for r in "$rl" "$rp" "$hl" "$hp"; do
       [ -n "$r" ] || continue
@@ -12401,7 +12628,7 @@ gate_plugin_root_write_guard() {
       # the main worktree is refused; naming the paths to add is the way
       # through. From a segment worktree `.` is not an ancestor and passes.
       if ! gate_arg_is_compound "$a"; then
-        for sp in "$an" "$ap" "$al"; do
+        for sp in "$an" "$ap" "$al" "$an2" "$ap2" "$al2"; do
           [ -n "$sp" ] || continue
           if gate_path_is_at_or_above "$sp" "$r"; then
             warn "rule refused: this is an orchestrator or hook script of the installed plugin — these bytes perform every gate entry, so writing here is a run editing the code that enforces it. Edit them in a worktree and apply the change by deploying: $a"
@@ -12411,7 +12638,7 @@ gate_plugin_root_write_guard() {
       fi
       # `ar` is the argument before `..` is rewound — the spelling in which a
       # program string's trailing `: /../../..` has not yet erased the root.
-      for sp in "$an" "$ap" "$al" "$ar"; do
+      for sp in "$an" "$ap" "$al" "$ar" "$an2" "$ap2" "$al2"; do
         [ -n "$sp" ] || continue
         # THE NEEDLE IS THE DIRECTORY, NOT THE WHOLE ARGUMENT, for the reason the
         # run directory guard's last arm gives: an option token and an interpreter
@@ -12450,7 +12677,7 @@ gate_plugin_root_write_guard() {
       # needles above, which are byte tests. Only the absolutized spellings are
       # walked — `ar` is the argument as written and may be relative, and
       # climbing a relative path would climb from the gate's own directory.
-      for sp in "$an" "$ap" "$al"; do
+      for sp in "$an" "$ap" "$al" "$an2" "$ap2" "$al2"; do
         [ -n "$sp" ] || continue
         case "$sp" in /*) ;; *) continue ;; esac
         if gate_path_ident_prefix "$sp" "$r/orchestrator" \
@@ -17566,6 +17793,22 @@ gate_verb_supervise_stage() {
                    | { grep -F 'kind=skill ' || true; } | { grep -F '결정=act' || true; } \
                    | { grep -F "세그먼트=$rowseg " || true; } | tail -1 | cut -d: -f1)
 
+  # THE COMPACTION WINDOW IS READ ONCE AND USED TWICE. The flag on the argv and
+  # the `압축 창` value on the row are both derived from `$window`, so the row
+  # cannot claim `(argv)` when no flag went out, nor the reverse. Injection
+  # happens only when the reading itself says `(argv)`; `(꺼짐)` and `(미상)`
+  # inject nothing — the window is an optimisation, and an uncertain reading
+  # must not stop a launch. The project layer is read from this process's cwd,
+  # which the act put at the segment worktree before starting the supervisor.
+  # A `--resume` re-attachment passes through here too, so the same flag rides
+  # beside `-r`. The flag goes to the WRAPPER, before `--`: the wrapper refuses
+  # a caller's `--autocompact` after `--` as a reserved flag, and it puts the
+  # gate's own copy on the CLI argv itself.
+  local window ac_val ac_flags=""
+  ac_val=$(gate_autocompact_argv_value "$kind")
+  window=$(gate_autocompact_effective "$ac_val" "$(gate_settings_file "$kind")" "$PWD")
+  case "$window" in *"(argv)") ac_flags="--autocompact ${window%(argv)}" ;; esac
+
   local rc=0 spid
   # THE STAGE IS HANDED WHAT THE HOOK WILL DEMAND OF IT. Layer 1 routes every
   # Bash line, Write and Edit through the gate, and the gate's argv needs a
@@ -17615,6 +17858,7 @@ gate_verb_supervise_stage() {
     --plugin-dir "$plugin_dir" \
     ${instr:+--instructions "$instr"} \
     $id_flag \
+    $ac_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
   # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
   # the wrapper `exec`s into the CLI, so this pid is the stage's own. This is
@@ -17638,6 +17882,11 @@ gate_verb_supervise_stage() {
   printf '%s\n' "$spid" > "$RUN_DIR/$seg.pid"
   printf '%s\n' "$kind" > "$RUN_DIR/$seg.kind"
   cc_proc_fingerprint "$spid" > "$RUN_DIR/$seg.start"
+  # `.window` IS A RECORD, NOT A LIVENESS INPUT. Two lines — the effective
+  # window and the lane — kept beside the three above so a settlement that runs
+  # after this process is gone can still put them on the row. No reader makes
+  # its presence a precondition: absent, the row says `(미상)`.
+  printf '%s\n%s\n' "$window" "$(gate_lane_label)" > "$RUN_DIR/$seg.window"
 
   # THE TERM TRAP, NEW WITH THE SUPERVISOR. A person who wants a detached stage
   # to stop kills the CLI pid; a TERM that reaches the supervisor instead is
@@ -17668,7 +17917,7 @@ gate_verb_supervise_stage() {
   # recorder the power to end the supervisor before the row. `|| rec_rc=$?`
   # restores that posture for the whole body and keeps the status for the log.
   local rec_rc=0
-  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" || rec_rc=$?
+  gate_record_stage_outcome "$alias" "$seg" "$kind" "$attempt" "$rc" "$dispatch_line" "$out" "$window" || rec_rc=$?
   [ "$rec_rc" = "0" ] || warn "the stage result recorder ended non-zero ($seg#$attempt rc=$rec_rc)"
   # THE SAME SET THE SETTLEMENT PATH REMOVES, including the three files the
   # dispatch act wrote hours ago — that act returned long since, so this is the
@@ -17682,7 +17931,8 @@ gate_verb_supervise_stage() {
   if [ -n "$( gate_stage_result_rows_of "$seg" \
               | { grep -F "실행 버전=$attempt " || true; } )" ]; then
     rm -f "$RUN_DIR/$seg.pid" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
-          "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+          "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" \
+          "$RUN_DIR/$seg.window"
   else
     warn "there is no \`stage-result\` row for this attempt, so a segment file is left behind ($seg#$attempt) — the prelude settlement picks it up"
   fi
@@ -17715,7 +17965,7 @@ gate_settle_lost_dispatches() {
   # append; (4) append; (5) remove the same file set the supervisor's normal
   # path removes. No `cost` row — there is no envelope to read a cost from, and
   # the morning report counts these as `정산됨(비용 불명)` instead.
-  local seg src kind attempt marker sid
+  local seg src kind attempt marker sid window lane
   for seg in $( { cc_orphan_stages "$RUN_DIR" || true; } | sort -u); do
     [ -n "$seg" ] || continue
     [ -f "$RUN_DIR/$seg.kind" ] || continue
@@ -17732,11 +17982,16 @@ gate_settle_lost_dispatches() {
     fi
     kind=$( { cat "$RUN_DIR/$seg.kind" 2>/dev/null || true; } | tr -d '[:space:]')
     attempt=$( { cat "$RUN_DIR/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
+    # The window and lane the launch recorded, if the record survived; neither
+    # is a condition of settling, only a value on the row.
+    window=$(gate_window_sidecar_read "$seg")
+    lane=$(gate_lane_sidecar_read "$seg")
     if [ -z "$( gate_stage_result_rows_of "$seg" \
                 | { grep -F "실행 버전=$attempt " || true; } )" ]; then
       sid=$(stage_session_id "$seg")
       gate_append 'stage-result' "세그먼트=$(gate_stage_row_segment "$seg" "${kind:-}")" "스테이지=$seg" "종류=${kind:-미상}" \
         "종료 코드=-" "실행 버전=$attempt" "세션 id=${sid:-미상}" "부모=-" \
+        "압축 창=$window" "레인=$lane" "기록자=게이트" \
         "종단 부류=외부 종료" \
         "관측=파견 기록이 프로세스보다 오래 살았고 종단 result 줄이 없다 — 정산 시각 $(now_iso)"
       log "잃어버린 파견 정산 — $seg#$attempt (외부 종료)"
@@ -17744,7 +17999,8 @@ gate_settle_lost_dispatches() {
       log "잃어버린 파견 정리 — $seg#$attempt (행은 이미 있음)"
     fi
     rm -f "$marker" "$RUN_DIR/$seg.start" "$RUN_DIR/$seg.kind" \
-          "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+          "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" \
+          "$RUN_DIR/$seg.window"
     GATE_SETTLED_SEGMENTS="$GATE_SETTLED_SEGMENTS $seg"
   done
   return 0
@@ -17841,7 +18097,7 @@ gate_verb_wait() {
 }
 
 gate_record_stage_outcome() {
-  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream]
+  # gate_record_stage_outcome <alias> <segment> <kind> <attempt> <rc> <dispatch-line> [stream] [window]
   #
   # Two of the five row kinds that had no writer at all. Their absence was not
   # bookkeeping: `cost` is the only input `gate_b4_cost` has, so the cost
@@ -17863,6 +18119,11 @@ gate_record_stage_outcome() {
   # unsuffixed name stays as the fallback for a caller that predates the argument.
   local out="${7:-}" res cost subtype sid klass after denials n_stage psha iserr
   [ -n "$out" ] || out="$RUN_DIR/log/$seg.json"
+  # THE WINDOW THE LAUNCH READ, handed down by the supervisor that also put it
+  # on the argv; a caller without it falls back to the `.window` record, and
+  # with neither the row says `(미상)` rather than guessing a layer.
+  local window="${8:-}"
+  [ -n "$window" ] || window=$(gate_window_sidecar_read "$seg")
 
   res=$( { grep '"type":"result"' "$out" 2>/dev/null || true; } | tail -1)
   # A launch that never STARTED is reported as such. With no result line the
@@ -18030,11 +18291,15 @@ gate_record_stage_outcome() {
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
-      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "plan_sha256=$psha" "종단 부류=$klass"
+      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
+      "압축 창=$window" "레인=$(gate_lane_label)" "기록자=게이트" \
+      "plan_sha256=$psha" "종단 부류=$klass"
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
-      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" "종단 부류=$klass"
+      "부모=${CLAUDE_CODE_SESSION_ID:-미상}" \
+      "압축 창=$window" "레인=$(gate_lane_label)" "기록자=게이트" \
+      "종단 부류=$klass"
   fi
 
   # A TERMINAL CLASS THAT LEFT EVIDENCE OF REACHING A POINT NEEDING A PERSON is
@@ -19740,7 +20005,15 @@ gate_launch_shift() {
   # would suppress that stamp on the one row whose whole purpose is to carry an
   # ordinal — and the two numbers are different quantities: the seat is who
   # launched this shift, the ordinal is which shift was launched.
-  gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)"
+  #
+  # THE SHIFT'S WINDOW IS RECORDED AND NOT INJECTED. A routing session gets no
+  # argv window — the injection table is per stage kind and the shift is not
+  # one — so the reading below has no argv layer, and the row carries what the
+  # settings and lane give the successor, with the session id to join on.
+  local window
+  window=$(gate_autocompact_effective "" "$(gate_settings_file shift)" "$PWD")
+  gate_append '교대 기동' "서수=$n" "사유=$reason" "대상=$alias" "기록 시각=$(now_iso)" \
+    "세션 id=$(session_uuid "shift" "$n")" "레인=$(gate_lane_label)" "압축 창=$window"
   log "교대 $n 시작 — 사유 $reason"
   # THE SUCCESSOR'S SEAT IS THIS LAUNCHER'S PROPERTY, NOT ITS CALLER'S AMBIENT
   # ENVIRONMENT. A prefix assignment adds and overwrites; it never unsets. So a
