@@ -1261,6 +1261,33 @@ gate_surface_max() {
   printf '%s' "$b"
 }
 
+# The other two ways an unwrap folds several answers into one. A `find` with more
+# than one primary asks its resolver once per primary, and the resolvers do not
+# all speak the same type — the grading table answers an effect surface, the
+# second base answers a DIRECTORY and the history predicate answers `0`/`1`. So
+# the fold is a parameter of the unwrap rather than one fixed rule, and each
+# consumer names the one that fits its own answers.
+gate_answer_first() {
+  # The first of two answers that is not empty.
+  #
+  # `gate_surface_max` MUST NOT BE USED FOR A PATH. A directory is not in
+  # `surface_index`, so that routine falls through to "the unrecognized one
+  # loses" and hands back its SECOND argument unconditionally — a later primary
+  # that establishes no base would then erase the base an earlier one did
+  # establish. An answer already found is kept for the same reason the second
+  # base exists at all: losing it puts the guard back on the grading directory.
+  [ -n "$1" ] && { printf '%s' "$1"; return 0; }
+  printf '%s' "$2"
+}
+
+gate_answer_or() {
+  # `1` when either side says `1`. The history predicate's fold: its answers
+  # point the over-checking way by design, so a primary that integrates history
+  # is not cancelled by one beside it that does not.
+  { [ "$1" = "1" ] || [ "$2" = "1" ]; } && { printf '1'; return 0; }
+  printf '0'
+}
+
 reach_index() {
   local want="$1" i=0 r
   for r in $REACHES; do
@@ -3899,6 +3926,13 @@ surface_of_argv0() {
     # grade is the WRAPPED command's, exactly as `git` and `gh` delegate to
     # their subcommand. The digest-tool comment above records the first instance
     # of this shape; this is the second.
+    #
+    # THE SAME LAUNDERING RAN FOR A WHILE ON A DIFFERENT AXIS. This row held it
+    # shut while the opacity axis, which decides whether the floor and the mark
+    # are computed at all, asked argv0 once and answered 0 for anything wrapped —
+    # so `lockf … sh -c 'curl …'` kept an honest-looking `워크트리쓰기` that its
+    # bare spelling could not. A refusal on one axis is not a refusal until the
+    # axes that gate the other checks peel the same word.
     lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
@@ -4067,8 +4101,47 @@ gate_unwrap_command() {
   "$resolver" "$@"
 }
 
+gate_call_prefix() {
+  # gate_call_prefix <n> <resolver> <args...> — call <resolver> with the FIRST
+  # <n> of <args> and with NOTHING that stood behind them.
+  #
+  # Rotating the list left by <n> moves that prefix to the end, so dropping the
+  # words that were behind it leaves exactly the prefix. Positional rather than
+  # an array because every other loop in this file is positional, and because an
+  # empty array under `set -u` is a second idiom that fails differently on
+  # bash 3.2 than on 5.
+  local n="$1" resolver="$2" i=0 rest; shift 2
+  rest=$(( $# - n ))
+  while [ "$i" -lt "$n" ]; do
+    set -- "$@" "$1"; shift
+    i=$((i + 1))
+  done
+  shift "$rest"
+  "$resolver" "$@"
+}
+
 gate_unwrap_find() {
-  # gate_unwrap_find <resolver> <walk-only> <writes> <find's args after argv0...>
+  # gate_unwrap_find <resolver> <walk-only> <writes> <form-unknown> <combiner> <find's args after argv0...>
+  #
+  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. `;` and `+` terminate an `-exec`,
+  # and what follows one is the NEXT primary rather than a further argument of
+  # the inner command. Handing the whole remainder to the resolver and returning
+  # read `find <d> -name f -exec cat {} ';' -delete` as the inner command
+  # `[cat {} ; -delete]`, so the deletion was graded as an argument of `cat`:
+  # argv came back `읽기` and both write guards returned on their first line.
+  # The scan now consumes one primary at a time and folds the answers with
+  # <combiner>, which each consumer supplies because their answers are of
+  # different types.
+  #
+  # `-execdir` AND `-okdir` ANSWER <form-unknown> AND STOP. They run the inner
+  # command from EACH MATCH's directory, which the gate does not know and cannot
+  # enumerate without walking the tree itself, so every base a resolver could
+  # compute from the grading directory is the wrong one. Measured before this
+  # arm existed: with no `-C`, with `-C .`, under `-okdir`, and with a bare name
+  # operand, the second base came back EMPTY and both write guards passed the
+  # act at rc 0. Empty means "no base" and no base is the allowing direction, so
+  # the residual was not an under-read — it was a hole. The third answer refuses
+  # instead, and unlike `등급 미상` no declaration lifts it.
   #
   # Two ways a `find` writes. Four primaries hand the match to another command,
   # and five act on their own — `-delete` removes the match, while `-fprintf`,
@@ -4088,18 +4161,37 @@ gate_unwrap_find() {
   # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
   # states that cost in place: without it every read that walks the manifest's
   # directory becomes a refusal.
-  local resolver="$1" walk_only="$2" writes="$3"; shift 3
+  local resolver="$1" walk_only="$2" writes="$3" form_unknown="$4" combiner="$5"; shift 5
+  local acc="" seen=0 ans="" n term a
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -exec|-execdir|-ok|-okdir)
+      -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
+      -exec|-ok)
         shift
-        [ "$#" -ge 1 ] || { printf '%s' "$writes"; return 0; }
-        "$resolver" "$@"
-        return 0 ;;
-      -delete|-fprintf|-fprint|-fprint0|-fls) printf '%s' "$writes"; return 0 ;;
-      *) shift ;;
+        # The inner command is the words up to `;` or `+`. A `-exec` with
+        # nothing behind it has no command to defer to, which is the shape the
+        # old early return already answered `writes`.
+        n=0; term=0
+        for a in "$@"; do
+          case "$a" in ';'|'+') term=1; break ;; esac
+          n=$((n + 1))
+        done
+        if [ "$n" -eq 0 ]; then
+          ans="$writes"
+        else
+          ans=$(gate_call_prefix "$n" "$resolver" "$@")
+        fi
+        shift "$n"
+        if [ "$term" = 1 ]; then shift; fi ;;
+      # NOT A RETURN ANY MORE. A higher-graded primary can stand behind this
+      # one, and the operands these take are consumed by the arm below as
+      # ordinary words — reading one of them as a primary can only over-grade.
+      -delete|-fprintf|-fprint|-fprint0|-fls) ans="$writes"; shift ;;
+      *) shift; continue ;;
     esac
+    if [ "$seen" = 0 ]; then acc="$ans"; seen=1; else acc=$("$combiner" "$acc" "$ans"); fi
   done
+  [ "$seen" = 1 ] && { printf '%s' "$acc"; return 0; }
   printf '%s' "$walk_only"
 }
 
@@ -4132,7 +4224,7 @@ gate_unwrap_rg() {
 # understand and the gate refuses, while the predicate answers `1` and keeps the
 # act under the check.
 surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
-surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$@"; }
+surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$GATE_FORM_UNKNOWN" gate_surface_max "$@"; }
 surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
 
 gate_history_integration() {
@@ -4207,7 +4299,9 @@ gate_history_integration() {
       return 0 ;;
     find)
       shift
-      gate_unwrap_find gate_history_integration '0' '1' "$@"
+      # `1` for the unreadable shape as well, which is this predicate's own
+      # discipline stated above: where it cannot read, it over-checks.
+      gate_unwrap_find gate_history_integration '0' '1' '1' gate_answer_or "$@"
       return 0 ;;
     rg)
       shift
@@ -5243,8 +5337,32 @@ gate_act_mark() {
 # `워크트리쓰기`, plus the docker forms that start a container; an interpreter
 # the table has never listed (`dash`, `python`, `perl`) is not opaque, it is
 # unknown, and it keeps taking the unknown path in both modes.
+#
+# THE REGISTERED WRAPPERS ARE PEELED FIRST, with the table's own helpers. This
+# axis asked `case "${1##*/}"` once and stopped, so a wrapper in front of an
+# interpreter answered 0 — and 0 is not a small error here: the floor and the
+# mark are computed only when this answers 1, so `lockf -k -t 0 <lock> sh -c
+# 'curl …'` lost the `외부상태변경` floor its bare spelling gets and a declared
+# `워크트리쓰기` was accepted for a network act. With `aws … --with-decryption`
+# inside, the `비밀출력` mark went with it, and that mark is a value the
+# pre-authorization reads. The grading table's own `lockf` row already refuses
+# this laundering in so many words; this axis was the one seam it was still open
+# at. `xargs` and `sudo` stay unpeeled here for the reason the table gives: what
+# they run is not a word this file can honestly read.
 gate_argv_opaque() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    command) gate_unwrap_command gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    rg)      gate_unwrap_rg      gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    # A shape that cannot be read is opaque rather than transparent, which is
+    # why `find`'s unreadable answer here is `1` and not the table's token.
+    find)    gate_unwrap_find    gate_argv_opaque '0' '0' '1' gate_answer_or "$@"; return 0 ;;
+  esac
   case "$cmd" in
     bash|sh|zsh|python3|node|make|npm|npx|yarn|pnpm|pytest|go|cargo)
       # The named arms are not opaque: `npm publish` and `go version` say what
@@ -5287,8 +5405,50 @@ gate_argv_opaque() {
 #
 # Output is `<하한>\t<표지>\t<트리거>`.
 # ---------------------------------------------------------------------------
+
+# That shape with nothing in it. Built with `printf` rather than written with
+# two literal tabs so the two empty fields stay visible to a reader.
+GATE_FLOOR_NONE=$(printf '읽기\t\t')
+readonly GATE_FLOOR_NONE
+
+gate_answer_floor_max() {
+  # The fold for two `<하한>\t<표지>\t<트리거>` triples: the higher floor and the
+  # stronger mark. `비밀출력` outranks `파괴` for the reason this function's
+  # caller gives — a disclosure cannot be taken back once printed.
+  local ar="${1#*	}" br="${2#*	}"
+  local f m t bm bt
+  f=$(gate_surface_max "${1%%	*}" "${2%%	*}")
+  m="${ar%%	*}"; t="${ar#*	}"
+  bm="${br%%	*}"; bt="${br#*	}"
+  case "$bm" in
+    비밀출력) m="$bm"; t="$bt" ;;
+    파괴) [ "$m" = "비밀출력" ] || { m="$bm"; t="$bt"; } ;;
+  esac
+  printf '%s\t%s\t%s' "$f" "$m" "$t"
+}
+
 gate_opaque_floor() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
+  # THE SAME PEEL THE OPAQUE AXIS APPLIES, and it has to be here rather than
+  # only there. `lockf -k -t 0 <lock> sh -c 'curl …'` has `-k` in the first word
+  # position of the payload below, and the scanner skips a line whose first word
+  # is an option — so even with the axis repaired the floor came back `읽기`.
+  # What raises it is reaching `sh` as argv0, because only then is the `-c`
+  # STRING read instead of the whole argument list. Both terminal answers are
+  # "nothing readable", which is what the `*)` arm already answered for these
+  # shapes.
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    command) gate_unwrap_command gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    find)
+      gate_unwrap_find gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" \
+        gate_answer_floor_max "$@"; return 0 ;;
+  esac
   local payload="" a next_is_c=0
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
@@ -5473,7 +5633,7 @@ ladder_of_argv0() {
     # asserts nothing, the same as any other name with no row.
     lockf)   gate_unwrap_lockf   ladder_of_argv0 '' '' "$@" ;;
     command) gate_unwrap_command ladder_of_argv0 '' '' "$@" ;;
-    find)    gate_unwrap_find    ladder_of_argv0 '' '' "$@" ;;
+    find)    gate_unwrap_find    ladder_of_argv0 '' '' '' gate_answer_first "$@" ;;
     rg)      gate_unwrap_rg      ladder_of_argv0 '' '' "$@" ;;
     env)     gate_unwrap_env     ladder_of_argv0 '' '' "$@" ;;
     timeout) gate_unwrap_wrapper timeout ladder_of_argv0 '' '' "$@" ;;
@@ -11922,11 +12082,16 @@ gate_argv_chdir_base() {
   # relative path, and nothing more: a wrapper in front of `git` does not stop
   # it, because the grading table unwraps `nohup`, `timeout`, `nice`, `stdbuf`,
   # `env`, `command`, `time`, `lockf` and `find -exec` and grades the inner
-  # `git` exactly as it grades a bare one. `find -execdir` and `-okdir` run the
-  # inner `git` from each match's directory rather than the grading one, so an
-  # absolute `-C` is still the right base there while a relative `-C` resolves
-  # from the wrong directory and may be under-read; that spelling is left as a
-  # residual until it is measured, as below. Measured:
+  # `git` as it grades a bare one. FOR `find` THAT HOLDS PRIMARY BY PRIMARY, not
+  # for the argv as a whole: every primary is resolved and the answers are folded,
+  # so `-exec true {} ';' -exec git … {} ';'` is read as the `git` and not as a
+  # tail of `true`. `find -execdir` and `-okdir` run the inner `git` from each
+  # match's directory rather than the grading one. An absolute `-C` would still
+  # be the right base there, but with no `-C`, with `-C .`, under `-okdir` and
+  # with a bare name operand no base stood at all and both write guards passed
+  # the act at rc 0 — measured, which is what that spelling was waiting on. It
+  # is no longer a residual: the unwrap answers `형태 미상` for those two
+  # primaries and the act is refused before a base is needed. Measured:
   # `nohup git -C <sibling> diff --output=<relative path>` was graded
   # `트리밖쓰기`, honestly, and this function answered "no base" because argv0
   # was `nohup` — so the second base has to be computed after the
@@ -11967,8 +12132,10 @@ gate_argv_chdir_base_of() {
   # already delegated them, so `lockf -k -t 0 <lock> git -C <sibling> diff
   # --output=<relative path>` — the lock the unattended skills require around
   # every document write — was graded as the inner `git` and passed both write
-  # guards with no second base. `test-run.sh` compares the two name sets, so a
-  # name added to one side only turns the suite red. The two empty terminal
+  # guards with no second base. `test-run.sh` checks that every name the GRADING
+  # TABLE delegates to an unwrap has an arm here, which is a containment in one
+  # direction and not a comparison of two sets: a name added to the table turns
+  # the suite red, a name added only here is caught by no assertion. The two empty terminal
   # answers mean "no command" and "unknown option" both come back as no base,
   # which is the same discipline the table keeps — a guess about whether an
   # option eats the next word is a guess about where the operands land.
@@ -11981,7 +12148,7 @@ gate_argv_chdir_base_of() {
     command) gate_unwrap_command gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     time)    gate_unwrap_time    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     lockf)   gate_unwrap_lockf   gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$GATE_FORM_UNKNOWN" gate_answer_first "$@"; return 0 ;;
     git) ;;
     *) return 0 ;;
   esac
@@ -12195,6 +12362,17 @@ gate_rundir_write_guard() {
   # `gate_argv_chdir_base` states the defect; every relative option value and
   # word below is measured from this base as well as from the grading one.
   cb=$(gate_argv_chdir_base "$@") || cb=""
+  # "THE BASE CANNOT BE COMPUTED" IS NOT "THERE IS NO BASE". Both arrived here as
+  # the empty string, and empty is the allowing direction — so a shape the unwrap
+  # could not read passed this guard for the same reason a plain `cp` does. The
+  # unwrap now answers `형태 미상` for those, and it is refused rather than
+  # treated as an absent base. The `exec` path refuses this argv one step earlier
+  # on the grade, so what this arm covers is a caller whose grade came from
+  # elsewhere and a fixture that calls the guard directly.
+  if [ "$cb" = "$GATE_FORM_UNKNOWN" ]; then
+    warn "rule refused: this shape runs its inner command from a directory the gate cannot name — each match's own directory rather than this one — so where a relative destination inside it lands cannot be judged. Respell it with \`-exec\` and an absolute destination: $1"
+    return "$GATE_EXIT_RULE"
+  fi
   argi=0
   for a in "$@"; do
     argi=$((argi + 1))
@@ -12588,6 +12766,11 @@ gate_plugin_root_write_guard() {
   # The directory the command itself resolves from, as the run directory guard
   # states at the same place.
   cb=$(gate_argv_chdir_base "$@") || cb=""
+  # The unreadable-shape arm, as the run directory guard states at the same place.
+  if [ "$cb" = "$GATE_FORM_UNKNOWN" ]; then
+    warn "rule refused: this shape runs its inner command from a directory the gate cannot name — each match's own directory rather than this one — so where a relative destination inside it lands cannot be judged. Respell it with \`-exec\` and an absolute destination: $1"
+    return "$GATE_EXIT_RULE"
+  fi
   first=1
   for a in "$@"; do
     if [ "$first" = 1 ]; then
@@ -17074,6 +17257,28 @@ gate_approval_keyed_on_design_step() {
   [ "$(gate_row_field "$first" '막는 세그먼트')" = "$dstep" ]
 }
 
+gate_design_step_has_open_approval() {
+  # 0 when some PENDING approval is a question about the run-scope design step.
+  #
+  # This is what separates the two ways a design stage exits 0 with nothing at
+  # the document path. One reached a point it could not decide for the person,
+  # emitted a judgment, and the absorber opened an approval keyed on the step —
+  # that stage did its job and the run is waiting on a person, so dispatching it
+  # again would ask the same question and bill for it a second time. The other
+  # simply stopped producing: a team member ended its turn without a witness, a
+  # save never happened before the turn boundary, a wait ceiling cut the
+  # discussion. Nothing is waiting on a person there, and the work is lost
+  # unless the step is dispatched again.
+  #
+  # Both are written `공허한 성공`, so the class cannot tell them apart and the
+  # open approval is the fact that can.
+  local id
+  for id in $(gate_pending_approval_ids); do
+    gate_approval_keyed_on_design_step "$id" && return 0
+  done
+  return 1
+}
+
 gate_clause_settled() {
   # A clause is settled when a `종료 절` row in the LEDGER names it — written by
   # the router through `act --kind clause` with its evidence, or marked
@@ -17858,15 +18063,33 @@ gate_verb_supervise_stage() {
   # THE BACKGROUND WAIT CEILING, because a fan-out stage does not fit under the
   # default one. Measured: a dispatched audit stage was killed at exactly 600s
   # with "Background tasks still running after 600s; terminating", reported
-  # `subtype: success` and exit 0, and published nothing. Raised to an hour
-  # rather than removed: `0` waits forever, and a hung stage under a live pid
-  # reads as a heartbeat, so the run sits until the person comes back. A finite
-  # ceiling still kills, and a kill is classified.
+  # `subtype: success` and exit 0, and published nothing. Raised rather than
+  # removed: `0` waits forever, and a hung stage under a live pid reads as a
+  # heartbeat, so the run sits until the person comes back. A finite ceiling
+  # still kills.
+  #
+  # AN HOUR WAS NOT ENOUGH FOR A TEAM-TIER STAGE, so it is four. Measured: an
+  # unattended design stage spawned its four roster members into the background
+  # and was terminated at the 3600 s mark while waiting on the fourth witness —
+  # three had published, the fourth had been killed by the system — after 1 h
+  # 55 m and 20.57 USD, leaving the spawn-time stub on disk and nothing else.
+  # The discussion itself is what sits in the background here, so the ceiling is
+  # a cap on how long a team may talk, not on how long a wedge may last. Four
+  # hours also stays above the liveness watcher's stage-age arm, which names a
+  # stage older than two hours without ending it — so a wedged stage is reported
+  # first and killed second.
+  #
+  # WHAT THE KILL DOES NOT BUY IS A CLASSIFICATION. The terminated process still
+  # returns rc=0 with `subtype: success`, `terminal_reason: completed` and
+  # `is_error: false`, so the terminal class reads 정상 완료 and the design arm
+  # skips redispatch on it. Raising the ceiling makes that outcome rarer; it does
+  # not make the kill visible, and the document is the only place the difference
+  # survives.
   #
   # `bash`, not `/bin/sh`: the wrapper uses `set -o pipefail`, and naming an
   # interpreter on the command line overrides the shebang — on a distribution
   # whose `/bin/sh` is dash the wrapper died at its second line.
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -18223,6 +18446,25 @@ gate_record_stage_outcome() {
     klass='의도된 park'
   elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
+  # A DESIGN STAGE IS ASKED FOR ITS ARTIFACT, because the row-count arm below
+  # accepts a ledger row as proof of production and a design stage writes rows
+  # all through its discussion. The driver's own arm has always crossed the two
+  # authored facts — the freeze literal in the stage's stream and the frozen
+  # status line in the document — but only the driver did; this side never
+  # looked at the document at all, so the same stage was `정상 완료` here and a
+  # hollow success there. Measured three times: a stage whose team member ended
+  # its turn without a witness and left the process nothing to wait for; a stage
+  # that said what it would sweep next and ended at that turn boundary with the
+  # body still in its draft; and a stage killed at the background-wait ceiling
+  # mid-discussion. All three returned rc=0 with `subtype: success`, all three
+  # had written rows, and all three left a document nobody could use.
+  #
+  # `공허한 성공` rather than a new class: the vocabulary already names a stage
+  # that terminated cleanly and produced nothing, and the redispatch window is
+  # keyed on that name plus an absent-or-stub document.
+  elif [ "$kind" = "design" ] \
+       && ! { grep -qF "$LIT_DESIGN_TERMINAL" "$out" 2>/dev/null && doc_is_frozen "${DOC:-}"; }; then
+    klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'
   else
@@ -19208,9 +19450,11 @@ gate_done_conditions() {
   # segments come from the frozen document's slicing, and the design step is not
   # a segment, so a run whose design never froze has no segments and never will.
   # Such a run is not "not begun": its design step will not be dispatched again,
-  # because its last `stage-result` row is of any class but `외부 종료`, or a
-  # document already sits at the path (a document that exists is not dispatched
-  # over), or the manifest names no document (the dispatch refuses that value).
+  # because its last `stage-result` row is of any class but `외부 종료` and it
+  # is not a crash that saved nothing, or a SAVED document already sits at the
+  # path (a saved document is not dispatched over, while the stage's own
+  # spawn-time stub is), or the manifest names no document (the dispatch
+  # refuses that value).
   # Any of the three prints a different line with its own fixed head, and
   # `gate_done_disposition` drops that head the way it drops condition 5's — the
   # run may then record its end, as invalidated and never as satisfied.
@@ -19221,9 +19465,27 @@ gate_done_conditions() {
   # so a stage ended before its team placed a file at the path lands here having
   # written nothing. Reading that row as "not dispatched again" dropped this line
   # in the one window where a retry was safe, and the run closed as invalidated
-  # instead of retrying. A file at the path still names the design step through
-  # the second reason. The LAST row decides because a step dispatched again
-  # carries one row per attempt, and only the latest says how it stands now.
+  # instead of retrying. A saved file at the path still names the design step
+  # through the second reason. The LAST row decides because a step dispatched
+  # again carries one row per attempt, and only the latest says how it stands
+  # now.
+  #
+  # A CRASH THAT SAVED NOTHING IS LEFT OUT FOR THE SAME REASON. Every non-zero
+  # exit is classified `크래시`, so an API usage limit — which resets on its own
+  # — lands in the same bucket as a stage that is genuinely broken, and this
+  # line then declares the run dead minutes after a transient error. Measured:
+  # a design stage died on HTTP 429 with the limit's own reset time in the
+  # result envelope, and the next router settled all five termination clauses
+  # as `불가능` on that one row, three minutes later, with the limit already
+  # due to clear. What actually bars a retry is a document a retry would write
+  # over; the stage's spawn-time stub is not one, and the stage's own
+  # target-document guard passes that stub rather than parking on it. So the
+  # class is not read alone — it is read together with what sits at the path.
+  #
+  # THE RETRY BUDGET IS NOT HERE. This function reports whether the run can
+  # still produce a segment; how many times the step is dispatched is the
+  # router's ladder, which has its own declared depth. Putting a cap here would
+  # give one run two of them that cannot see each other.
   #
   # This does not open an empty end. The line only decides the disposition when
   # it is the last one left: condition 7 still holds the run while the design
@@ -19239,12 +19501,30 @@ gate_done_conditions() {
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
       dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
-      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ]; then
+      # `공허한 성공` joins `크래시` in the redispatch window. The two names
+      # describe one situation — the stage is over and carried nothing off — and
+      # which of them is written depends only on whether the process died or
+      # returned zero, which says nothing about whether a retry would destroy
+      # work. The document is the discriminator on both, exactly as before.
+      #
+      # WITH ONE EXCEPTION THE CRASH ARM DOES NOT NEED. A stage that emitted a
+      # judgment and opened an approval on this step also exits 0 and also
+      # leaves no document, and it is written `공허한 성공` too — but it stopped
+      # ON PURPOSE and a person owes it an answer. Redispatching that asks the
+      # same question again and bills for it. A crashed stage never emits, so
+      # the arm above cannot reach this state and asks nothing about it.
+      if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
+         && ! { { [ "$dlast" = '크래시' ] \
+                  || { [ "$dlast" = '공허한 성공' ] \
+                       && ! gate_design_step_has_open_approval; }; } \
+                && { [ -z "${DOC:-}" ] || [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; }; then
         dwhy='종단 행 있음'
       else
         case "$dname" in
           '' | '없음' | '(없음)') dwhy='설계 문서 이름 없음' ;;
-          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ]; then dwhy='설계 문서가 이미 있음'; fi ;;
+          *) if [ -n "${DOC:-}" ] && [ -e "$DOC" ] && ! doc_is_early_stub "$DOC"; then
+               dwhy='설계 문서가 이미 있음'
+             fi ;;
         esac
       fi
     fi
@@ -20052,7 +20332,7 @@ gate_launch_shift() {
   # launched" and "a shift a stage launched" carry byte-identical environments
   # and no branch order answers both. `gate_launch_stage` deliberately leaves
   # `CC_PIPELINE_SHIFT_ID` in place for the opposite direction; that stays.
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \

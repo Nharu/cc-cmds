@@ -146,7 +146,7 @@ Step 3 and Step 4 through the save run in a separate headless session, the **leg
     ```bash
     mkdir -p "$STATE"          # leg.json is written here first, so this comes first
     : "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"
-    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000
     CLI=$(type -P claude)      # absolute path: a bare `claude` is intercepted by this machine's shell guard
     PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)}"
     [ -x "$CLI" ]        || { echo "leg: CLI not executable: $CLI" >&2; exit 2; }

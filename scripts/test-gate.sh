@@ -7541,7 +7541,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 15c. The run-scope design step is exempt from the `segment` row, and its row takes the driver's shape
-# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다 ---
+# --- section: 15c | group: base | covers: act, plan, snapshot, gate_main | anchors: 15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견의 plan 이 통과한다, 15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다, 15c: 스냅숏이 design_required 와 단계 그래프를 싣는다, 15c: 설계 문서가 (없음) 인 매니페스트에서는 설계 파견이 거부된다, 15c: id 없는 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: id 가 빈 문자열인 설계 단계를 실은 계획에서는 면제가 서지 않는다, 15c: design 단계가 둘인 계획에서는 면제가 서지 않는다, 15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다, 15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다, 15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다, 15c: 문서 없이 외부 종료한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 외부 종료 뒤 문서가 경로에 있으면 종료 제안은 무효화로 통과한다, 15c: 사람이 쓴 미동결 문서만 있는 0-세그먼트 런의 종료 제안은 무효화로 통과한다, 15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다, 15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다, 15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다, 15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다 ---
 #
 # A design step has no worktree, no predecessor and no declared file set, so a
 # `segment` row for it would be a segment termination condition 1 counts. The
@@ -7706,8 +7706,16 @@ esac
 write15c "$M15C" "$plan15c"
 
 # The launch, through a stub that calls the gate once from the stage seat. That
-# call carries `CC_PIPELINE_SEGMENT`, so the terminal class `정상 완료` is also
-# the proof that the stage's rows and the outcome recorder agree on `-`.
+# call carries `CC_PIPELINE_SEGMENT`, which is what the row assertions below
+# measure; the stage's own view of the pair is read back out of `stub15c-env.txt`.
+#
+# THE CLASS IS NOT THAT PROOF, and it used to be read as one. This stub writes a
+# row and exits 0 with `subtype: success`, and the row-count arm filed that as
+# `정상 완료` — for a design stage, whose artifact is a frozen document it never
+# wrote. Measured three times in production: a team member ended its turn with
+# no witness left to wait for, a stage said what it would sweep next and ended
+# at that turn boundary, and a stage was killed at the background-wait ceiling
+# mid-discussion. All three were `정상 완료`, and the run was closed on it.
 STUB15C="$WORK/bin/claude-stub-15c"
 cat > "$STUB15C" <<'STUB15CEOF'
 #!/usr/bin/env bash
@@ -7733,8 +7741,8 @@ check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=
   "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
 check "15c: 단계 id 를 세그먼트로 쓴 행은 없다" \
   "$(rows15c '세그먼트=D1 ' | grep -c . || true)" "0"
-check "15c: 그 행의 종단 부류가 정상 완료다 (스테이지 행과 기록기가 - 로 맞는다)" \
-  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+check "15c: 행을 쓰고 나갔어도 문서를 동결하지 않은 설계 단계는 공허한 성공이다" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "공허한 성공"
 RD15C="$STATE_LATE/cc-cmds/run/R15C"
 check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 를 받는다" \
   "$(cat "$RD15C/stub15c-env.txt" 2>/dev/null)" "-|D1#1"
@@ -7746,6 +7754,32 @@ check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않�
   "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
 check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$L15C" 2>/dev/null || true; } | grep -c . || true)" "0"
+
+# THE OTHER SIDE OF THE SAME ARM, so the fix is not a blanket downgrade of every
+# design stage. The two authored facts are supplied this time — the freeze
+# literal in the stage's own stream and the frozen status line in the document —
+# and the class is a normal completion again.
+printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/docs/fixture-design.md"
+STUB15CF="$WORK/bin/claude-stub-15cf"
+cat > "$STUB15CF" <<'STUB15CFEOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 동결까지 마친 설계 스테이지의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"s15cf-session","num_turns":1,"result":"설계 문서를 동결했습니다."}\n'
+exit 0
+STUB15CFEOF
+chmod +x "$STUB15CF"
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15CF" \
+  bash "$GATE" act --manifest "$M15C" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(H15C)" --rationale x \
+  -- design -p "$design15c" ) >/dev/null 2>&1
+( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15CF" \
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1
+check "15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다" \
+  "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+rm -f "$WT/docs/fixture-design.md"
 
 # A run whose design is blocked must still be able to record its end — as
 # invalidated, never as satisfied. The two halves above were each green on
@@ -7829,6 +7863,11 @@ check "15c: 설계 단계가 연 승인으로 첫 절을 보류시킨다" "$rc" 
 settle15x "$WORK/plan-R15E.md" K2 보류 "열린 판단 승인 $jid15e"
 check "15c: 설계 단계가 연 승인 하나가 두 절을 보류시킨다" "$rc" "0"
 propose15x plan "$WORK/plan-R15E.md"
+# AND THIS IS THE COUNTERWEIGHT TO R15J. This stage also exits 0 and also leaves
+# no document, so it is `공허한 성공` too — but it emitted a judgment and the
+# absorber opened an approval on the step, so a person owes it an answer and
+# redispatching would ask the same question again. The window stays shut here,
+# and the proposal passes; R15J is the same class with no approval open.
 check "15c: 절을 보류로 정산한 설계 막힘 런의 종료 제안이 통과한다" "$rc" "0"
 case "$msg" in
   *"통과 예상: 무효화 종료"*) ok "15c: 그 종료는 충족이 아니라 무효화로 예상된다" ;;
@@ -7838,6 +7877,14 @@ esac
 # R15G — the design stage crashes. A run that has not begun is measured first,
 # on the same run before the dispatch, so what flips afterwards is condition 1
 # alone: its clause is already settled.
+#
+# A CRASH THAT SAVED NOTHING LEAVES THE RETRY WINDOW OPEN, the same window
+# R15H measures for `외부 종료`. Every non-zero exit is classified `크래시`, so
+# an API usage limit that resets by itself is filed beside a genuinely broken
+# stage; closing the run on that class alone ended a night three minutes after
+# a transient error. What closes the window is a SAVED document at the path,
+# because a retry would write over it — and the stage's own spawn-time stub is
+# not one, which is the arm measured in between.
 STUB15G="$WORK/bin/claude-stub-15g"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB15G"
 chmod +x "$STUB15G"
@@ -7856,9 +7903,21 @@ esac
 launch15x "$WORK/plan-R15G.md" "$STUB15G"
 check "15c: 크래시한 설계 단계의 stage-result 행이 하나 있다" "$(design_rows15x R15G)" "1"
 propose15x plan "$WORK/plan-R15G.md"
-check "15c: 설계 단계가 크래시한 0-세그먼트 런의 종료 제안은 무효화로 통과한다" "$rc" "0"
+check "15c: 아무것도 저장하지 못하고 크래시한 설계 단계의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
 case "$msg" in
-  *"통과 예상: 무효화 종료"*) ok "15c: 크래시 경로의 예상도 무효화 종료다" ;;
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 크래시 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 크래시 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 크래시 재파견 창 문면" "$msg" ;;
+esac
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$WT/docs/fixture-design-15g.md"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 스폰 시점 스텁이 놓여도 크래시의 재파견 창은 열려 있다" "$rc" "3"
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 아키텍처\n\n본문\n' \
+  > "$WT/docs/fixture-design-15g.md"
+propose15x plan "$WORK/plan-R15G.md"
+check "15c: 크래시 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+case "$msg" in
+  *"통과 예상: 무효화 종료"*) ok "15c: 저장된 문서가 놓인 크래시 경로의 예상도 무효화 종료다" ;;
   *) bad "15c 크래시 경로 종료 문면" "$msg" ;;
 esac
 propose15x act "$WORK/plan-R15G.md"
@@ -7868,6 +7927,40 @@ check "15c: 원장에 무효화 종료 행이 하나 남는다" \
       | { grep -F '기준=무효화 종료' || true; } | grep -c . || true)" "1"
 check "15c: done 파일이 런을 무효화로 기록한다" \
   "$( { grep -F '무효화' "$STATE_LATE/cc-cmds/run/R15G/done" 2>/dev/null || true; } | grep -c . || true)" "1"
+rm -f "$WT/docs/fixture-design-15g.md"
+
+# R15J — the design stage EXITS ZERO and produces no document. Every arm on this
+# path so far asked whether the process died; this one did not. It wrote rows all
+# through its discussion, returned `subtype: success`, and left the path empty —
+# and the run was closed on that. The window is R15G's window and it closes the
+# same way, on a saved document rather than on the class.
+dclass15x() {
+  # dclass15x <run id> — the design step's last `stage-result` class.
+  { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+    | { grep -F '| 세그먼트=- | 스테이지=D1 | 종류=design |' || true; } | tail -1 \
+    | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//'
+}
+fresh15x R15J 'docs/fixture-design-15j.md' K1
+settle15x "$WORK/plan-R15J.md" K1 불가능 "설계 문서가 동결되지 않는다"
+check "15c: 공허한 성공 픽스처의 절을 파견 전에 불가능으로 정산한다" "$rc" "0"
+launch15x "$WORK/plan-R15J.md" "$STUB15C"
+check "15c: 행을 쓰고 rc 0 으로 끝났지만 문서가 없는 설계 단계의 종단 부류는 공허한 성공이다" \
+  "$(dclass15x R15J)" "공허한 성공"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 아무것도 저장하지 못한 공허한 성공의 0-세그먼트 런은 무효화로 닫히지 않는다" "$rc" "3"
+case "$msg" in
+  *"세그먼트가 하나도 없고 설계 단계가"*) bad "15c 공허한 성공 재파견 창 문면" "$msg" ;;
+  *"세그먼트가 하나도 없습니다 — 런이 아직"*) ok "15c: 공허한 성공 재파견 창의 기각은 설계 단계를 이름 대지 않는다" ;;
+  *) bad "15c 공허한 성공 재파견 창 문면" "$msg" ;;
+esac
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | running\n-->\n' > "$WT/docs/fixture-design-15j.md"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 스폰 시점 스텁이 놓여도 공허한 성공의 재파견 창은 열려 있다" "$rc" "3"
+printf '# 설계\n\n<!-- cc-design-ledger v3\n- a1 | done\n-->\n\n## 합의된 아키텍처\n\n본문\n' \
+  > "$WT/docs/fixture-design-15j.md"
+propose15x plan "$WORK/plan-R15J.md"
+check "15c: 공허한 성공 뒤 저장된 문서가 있으면 종료 제안은 무효화로 통과한다" "$rc" "0"
+rm -f "$WT/docs/fixture-design-15j.md"
 
 # R15H — the design stage ended unobserved before its team placed a file at the
 # path. The prelude settles such a dispatch as `외부 종료` without looking at the
@@ -8875,6 +8968,40 @@ graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
+# 등급표가 래퍼를 벗겨도 **불투명 축**이 벗기지 않으면 그 수리는 절반이다. 불투명이 0
+# 이면 하한도 표지도 아예 계산되지 않으므로, `lockf` 접두 하나로 `외부상태변경` 하한이
+# 사라져 `워크트리쓰기` 선언이 그대로 수용되고 `비밀출력` 표지까지 함께 없어졌다 —
+# 그 표지는 사전 인가가 읽는 값이다. 무인 스킬이 문서 쓰기마다 `lockf` 를 MUST 로
+# 요구하므로 이 접두는 예외적 형태가 아니라 파이프라인이 능동적으로 만드는 형태다.
+# 맨 철자와 답이 **같다**는 것이 단언의 형태이고, 그래서 각 양성에 맨 판이 짝으로 든다.
+opaque_is() {
+  # opaque_is <불투명>/<하한>/<표지> <label> -- <argv...>
+  #
+  # 등급과 달리 이 셋은 자기 동사가 없다 — `gate_argv_opaque` 는 술어이고 하한·표지는
+  # 그 술어가 1 일 때만 도는 블록 안에 있다. 그래서 30c 의 `hist_is` 와 같은 소싱
+  # 시임으로 잰다.
+  local want="$1" label="$2"; shift 3
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    o=$(gate_argv_opaque "$@")
+    f=$(gate_opaque_floor "$@")
+    r=${f#*	}
+    printf "%s/%s/%s" "$o" "${f%%	*}" "${r%%	*}"
+  ' _ "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+opaque_is '1/외부상태변경/' '맨 sh -c 의 네트워크 행위는 하한을 얻는다' -- sh -c 'curl -X POST https://x'
+opaque_is '1/외부상태변경/' 'lockf 접두가 그 하한을 벗겨 내지 않는다'   -- lockf -k -t 0 /tmp/l.lock sh -c 'curl -X POST https://x'
+opaque_is '1/읽기/비밀출력' '맨 sh -c 의 비밀 출력은 표지를 얻는다'     -- sh -c 'aws ssm get-parameter --with-decryption'
+opaque_is '1/읽기/비밀출력' 'lockf 접두가 그 표지를 벗겨 내지 않는다'   -- lockf -k -t 0 /tmp/l.lock sh -c 'aws ssm get-parameter --with-decryption'
+opaque_is '1/트리밖쓰기/'   'nohup 접두도 같다'                          -- nohup sh -c 'rm -rf /tmp/zzz'
+opaque_is '1/외부상태변경/' 'find -exec 로 넘긴 인터프리터도 같다'       -- find . -maxdepth 0 -exec sh -c 'curl -X POST https://x' {} ';'
+# 음성 대조군 — 벗기기가 불투명을 만들어 내지는 않는다. 처방된 두 형태가 그 상한이다.
+opaque_is '0/읽기/' '음성 대조군 — lockf 가 감싼 커밋은 불투명이 아니다'   -- lockf -k -t 0 /tmp/l.lock git commit -m x
+opaque_is '0/읽기/' '음성 대조군 — 무인 스킬이 처방하는 잠금 쓰기도 같다' -- lockf -k -t 0 /tmp/l.lock tee /tmp/doc.md
+
 # --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
 # --- section: 30b-1 | group: base | covers: grade ---
 #
@@ -8902,6 +9029,22 @@ graded_as '워크트리쓰기' 'find -fprint 도 같다'                      --
 graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
 graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
 graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
+# `;`/`+` 다음 토큰은 안쪽 명령의 인자가 아니라 **다음 primary** 인데 벗기기가 꼬리로
+# 읽어, 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv 전체가 `읽기` 로
+# 등급됐다 — 그 등급에서 두 쓰기 가드가 첫 줄에 반환하므로 정직한 과잉 선언으로도
+# 닫히지 않았다. 각 양성에 단일 primary 판을 짝으로 두고, 마지막 행이 `-exec` 자체는
+# 여전히 안쪽 명령으로 등급된다는 상한을 고정한다.
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -delete 도 등급된다'     -- find . -name f -exec cat {} \; -delete
+graded_as '워크트리쓰기' '단일 primary 대조군 — -delete 는 그대로다'  -- find . -name f -delete
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -fprintf 도 등급된다'    -- find . -name f -exec cat {} \; -fprintf /tmp/out.md '%p'
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -exec 머지도 등급된다'   -- find . -name f -exec cat {} \; -exec git merge --no-ff seg \;
+graded_as '읽기'         '읽기 primary 만 여럿이면 계속 읽기다'       -- find . -name f -exec cat {} \; -print
+# `-execdir`·`-okdir` 는 안쪽 명령을 매치마다 그 디렉터리에서 돌린다. 어느 기준으로도
+# 상대 경로의 목적지를 읽을 수 없으므로 「표에 있는데 이 모양으로는 읽을 수 없다」로
+# 답한다 — 선언으로 무마되지 않고 등급 계산 직후 거부된다.
+graded_as '형태 미상'    '-execdir 는 기준을 세울 수 없는 모양이다'   -- find . -execdir git diff --output=x {} \;
+graded_as '형태 미상'    '-okdir 도 같다'                             -- find . -okdir rm {} \;
+graded_as '트리밖쓰기'   '음성 대조군 — 같은 자리의 -exec 는 안쪽 명령으로 등급된다' -- find . -exec git diff --output=x {} \;
 # 여섯 래퍼는 이제 자기 옵션만 소비하고 안의 명령을 등급표에 넘긴다 — 등급·표지·
 # 이력 술어·사다리·불투명 판정 다섯이 같은 풀기를 쓴다. 등급만 풀고 이력 술어를 두면
 # `env X=1 git merge seg` 가 워크트리 쓰기로 등급되면서 「이력을 통합하지 않는다」고
@@ -8975,6 +9118,10 @@ hist_is 0 'revert 는 목록에 들어가지 않는다'           -- git revert 
 # 리뷰 룰이 그 칸에서 다시 면제한다.
 hist_is 1 'command 가 감싼 머지도 검사에 남는다'       -- command git merge --no-ff seg
 hist_is 1 'find -exec 로 넘긴 머지도 검사에 남는다'    -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+# 앞에 한 마디만 있으면 술어도 첫 primary 에서 멈췄다 — 등급과 같은 벗기기를 쓰므로
+# 같은 자리에서 같이 눈이 멀었고, 머지가 리뷰 기록 없이 룰을 지났다.
+hist_is 1 '앞선 primary 뒤의 머지도 검사에 남는다'     -- find . -maxdepth 0 -exec true {} \; -exec git merge --no-ff seg \;
+hist_is 0 '음성 대조군 — 읽기 primary 만 여럿이면 이력 통합이 아니다' -- find . -maxdepth 0 -exec true {} \; -exec cat {} \;
 hist_is 1 'lockf 와 command 를 겹쳐도 검사에 남는다'   -- lockf -k -t 0 /tmp/l.lock command git merge seg
 hist_is 0 'command 가 감싼 읽기는 이력 통합이 아니다'  -- command git status
 hist_is 0 '실행 primary 없는 find 도 이력 통합이 아니다' -- find . -name '*.md'
