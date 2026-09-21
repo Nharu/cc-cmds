@@ -2255,6 +2255,18 @@ arm21_case resumed-crash-saved "$MFARM" 사람 '크래시' '정상 완료'
 check "크래시라도 저장된 문서가 남았으면 park 한다" \
   "$(arm21_rc resumed-crash-saved)/$(arm21_disp resumed-crash-saved)/$(grep -c 'S1design run' "$ARM21/resumed-crash-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
 
+# 프로세스가 죽지 않고 rc 0 으로 끝났는데 산출물이 없는 경우도 같은 모양이다 —
+# 팀원이 증인 없이 턴을 끝내 기다릴 작업이 사라졌거나, 저장 직전 턴 경계에서
+# 끝났거나, 토론 중에 대기 천장에 잘렸거나. 죽었는지 아닌지는 재시도가 무엇을
+# 덮어쓸지에 대해 아무것도 말하지 않으므로, 판별자는 크래시 쪽과 같이 문서다.
+arm21_case resumed-hollow "$MFARM" 스텁 '공허한 성공' '정상 완료'
+check "앞선 시도가 공허한 성공으로 끝났고 저장된 문서가 없으면 다시 파견한다" \
+  "$(arm21_rc resumed-hollow)/$(arm21_disp resumed-hollow)/$(grep -c 'S1design run' "$ARM21/resumed-hollow/parked" 2>/dev/null || printf 0)" "0/1/0"
+
+arm21_case resumed-hollow-saved "$MFARM" 사람 '공허한 성공' '정상 완료'
+check "공허한 성공이라도 저장된 문서가 남았으면 park 한다" \
+  "$(arm21_rc resumed-hollow-saved)/$(arm21_disp resumed-hollow-saved)/$(grep -c 'S1design run' "$ARM21/resumed-hollow-saved/parked" 2>/dev/null || printf 0)" "1/0/1"
+
 arm21_case halted "$MFARM" 없음 - '의도된 park'
 check "파견한 스테이지가 중단하면 런을 park 한다" \
   "$(arm21_rc halted)/$(arm21_disp halted)/$(grep -c 'S1design run' "$ARM21/halted/parked" 2>/dev/null || printf 0)" "1/1/1"

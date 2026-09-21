@@ -17257,6 +17257,28 @@ gate_approval_keyed_on_design_step() {
   [ "$(gate_row_field "$first" '막는 세그먼트')" = "$dstep" ]
 }
 
+gate_design_step_has_open_approval() {
+  # 0 when some PENDING approval is a question about the run-scope design step.
+  #
+  # This is what separates the two ways a design stage exits 0 with nothing at
+  # the document path. One reached a point it could not decide for the person,
+  # emitted a judgment, and the absorber opened an approval keyed on the step —
+  # that stage did its job and the run is waiting on a person, so dispatching it
+  # again would ask the same question and bill for it a second time. The other
+  # simply stopped producing: a team member ended its turn without a witness, a
+  # save never happened before the turn boundary, a wait ceiling cut the
+  # discussion. Nothing is waiting on a person there, and the work is lost
+  # unless the step is dispatched again.
+  #
+  # Both are written `공허한 성공`, so the class cannot tell them apart and the
+  # open approval is the fact that can.
+  local id
+  for id in $(gate_pending_approval_ids); do
+    gate_approval_keyed_on_design_step "$id" && return 0
+  done
+  return 1
+}
+
 gate_clause_settled() {
   # A clause is settled when a `종료 절` row in the LEDGER names it — written by
   # the router through `act --kind clause` with its evidence, or marked
@@ -18406,6 +18428,25 @@ gate_record_stage_outcome() {
     klass='의도된 park'
   elif [ "$rc" != "0" ] || [ "${subtype:-}" != "success" ] || [ "${iserr:-false}" = "true" ]; then
     klass='크래시'
+  # A DESIGN STAGE IS ASKED FOR ITS ARTIFACT, because the row-count arm below
+  # accepts a ledger row as proof of production and a design stage writes rows
+  # all through its discussion. The driver's own arm has always crossed the two
+  # authored facts — the freeze literal in the stage's stream and the frozen
+  # status line in the document — but only the driver did; this side never
+  # looked at the document at all, so the same stage was `정상 완료` here and a
+  # hollow success there. Measured three times: a stage whose team member ended
+  # its turn without a witness and left the process nothing to wait for; a stage
+  # that said what it would sweep next and ended at that turn boundary with the
+  # body still in its draft; and a stage killed at the background-wait ceiling
+  # mid-discussion. All three returned rc=0 with `subtype: success`, all three
+  # had written rows, and all three left a document nobody could use.
+  #
+  # `공허한 성공` rather than a new class: the vocabulary already names a stage
+  # that terminated cleanly and produced nothing, and the redispatch window is
+  # keyed on that name plus an absent-or-stub document.
+  elif [ "$kind" = "design" ] \
+       && ! { grep -qF "$LIT_DESIGN_TERMINAL" "$out" 2>/dev/null && doc_is_frozen "${DOC:-}"; }; then
+    klass='공허한 성공'
   elif [ "${after:-0}" -ge 1 ]; then
     klass='정상 완료'
   else
@@ -19442,8 +19483,22 @@ gate_done_conditions() {
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
       dlast=$(gate_row_field "$(printf '%s\n' "$drows" | tail -1)" '종단 부류')
+      # `공허한 성공` joins `크래시` in the redispatch window. The two names
+      # describe one situation — the stage is over and carried nothing off — and
+      # which of them is written depends only on whether the process died or
+      # returned zero, which says nothing about whether a retry would destroy
+      # work. The document is the discriminator on both, exactly as before.
+      #
+      # WITH ONE EXCEPTION THE CRASH ARM DOES NOT NEED. A stage that emitted a
+      # judgment and opened an approval on this step also exits 0 and also
+      # leaves no document, and it is written `공허한 성공` too — but it stopped
+      # ON PURPOSE and a person owes it an answer. Redispatching that asks the
+      # same question again and bills for it. A crashed stage never emits, so
+      # the arm above cannot reach this state and asks nothing about it.
       if [ -n "$drows" ] && [ "$dlast" != '외부 종료' ] \
-         && ! { [ "$dlast" = '크래시' ] \
+         && ! { { [ "$dlast" = '크래시' ] \
+                  || { [ "$dlast" = '공허한 성공' ] \
+                       && ! gate_design_step_has_open_approval; }; } \
                 && { [ -z "${DOC:-}" ] || [ ! -e "$DOC" ] || doc_is_early_stub "$DOC"; }; }; then
         dwhy='종단 행 있음'
       else
