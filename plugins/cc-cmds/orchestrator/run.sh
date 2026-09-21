@@ -2285,6 +2285,25 @@ rundir_init() {
   # whole part — a publisher that had to `mkdir -p` its parent would be writing
   # one level above what the run directory guards allow it.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
+  # THE DESIGN-DOCUMENT LOCK IS MINTED HERE, AS A REGULAR FILE, so that no later
+  # writer is the one that creates it. `lockf` creates a missing lockfile and
+  # follows a symlink standing in its place, so whoever gets there first decides
+  # what the name IS — and `with_doc_lock` runs outside the gate, where nothing
+  # else is looking. Minting it at init turns a hostile substitution from "the
+  # lock is now a link to `done`" into "the lock is not the file this run made",
+  # which the check in `with_doc_lock` can see.
+  #
+  # IT IS NOT TRUNCATED. A driver reattaching to a LIVE run directory must not
+  # disturb a lock a running stage is holding, so this creates the file only when
+  # the name is free and otherwise merely judges what is there.
+  if [ -e "$RUN_DIR/designdoc.lock" ] || [ -L "$RUN_DIR/designdoc.lock" ]; then
+    [ -L "$RUN_DIR/designdoc.lock" ] \
+      && die "설계 문서 락 자리가 심링크입니다 — 이 런이 만든 파일이 아닙니다: $RUN_DIR/designdoc.lock"
+    [ -f "$RUN_DIR/designdoc.lock" ] \
+      || die "설계 문서 락 자리가 정규 파일이 아닙니다 — 이 런이 만든 파일이 아닙니다: $RUN_DIR/designdoc.lock"
+  else
+    : > "$RUN_DIR/designdoc.lock"
+  fi
   LOG_FILE="$RUN_DIR/log/driver.log"
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
   # The lane this run opened in, and the orchestrator directory it actually
@@ -2807,8 +2826,27 @@ park() {
 # in ONE segment. What this buys is a loud failure instead of a silent lost
 # update.
 # ---------------------------------------------------------------------------
+doc_lock_nlink() {
+  # doc_lock_nlink <path> — print the link count of <path>, or nothing when it
+  # cannot be measured. Callers treat "nothing" as a refusal, not as 1.
+  #
+  # TWO SPELLINGS BECAUSE `stat(1)` DIVERGES. BSD's `-f` is the format flag while
+  # GNU's `-f` is `--file-system`, so the same letter names two different things;
+  # GNU's format flag is `-c`, and the count is `%l` on BSD and `%h` on GNU.
+  # Writing one spelling only gets a silent wrong reading on the other platform.
+  # `hooks/gate-pretool.sh` carries the same pair for the same reason.
+  local out
+  out=$(stat -L -f '%l' "$1" 2>/dev/null)   # lint-bash-portability: disable=stat -f
+  case "$out" in ''|*[!0-9]*) out="" ;; esac
+  if [ -z "$out" ]; then
+    out=$(stat -L -c '%h' "$1" 2>/dev/null) # lint-bash-portability: disable=stat -c
+    case "$out" in ''|*[!0-9]*) out="" ;; esac
+  fi
+  printf '%s' "$out"
+}
+
 with_doc_lock() {
-  local rc=0 tool
+  local rc=0 tool nl
   tool=$(lock_tool)
   [ -n "$tool" ] || { warn "이 플랫폼에는 선택된 잠금 도구가 없습니다"; return 1; }
   # SELECTION NAMES THE PLATFORM'S LOCK; IT DOES NOT OBSERVE THE FILE. `lock_tool`
@@ -2820,6 +2858,35 @@ with_doc_lock() {
   # "the tool is missing". The ledger writers already make this exact check;
   # this is the same one, so the three places agree.
   [ -x "$tool" ] || { warn "선택된 잠금 도구가 이 호스트에 없습니다: $tool"; return 1; }
+  # THE LOCK PATH IS JUDGED BEFORE THE TOOL FOLLOWS IT. This call runs OUTSIDE the
+  # gate, so the gate's allow-list — which now opens the name only in the operand
+  # position `lockf` locks — is not what stands here; this is. All three shapes
+  # below are ones `lockf` would follow or share, and each turns "take the lock"
+  # into "write, or let someone else write, somewhere else":
+  #   - a symlink: `lockf` creates and locks the TARGET, so a link left pointing
+  #     at `$RUN_DIR/done` gets an empty `done` created on the first dispatch, and
+  #     `gate_end_run` then finds `[ -s done ]` false while its publication fails
+  #     on the existing name — every termination boundary after that is swallowed.
+  #   - not a regular file: a directory or a fifo here is not a lock either, and
+  #     what `lockf` does with it is not a thing this driver should discover at
+  #     run time.
+  #   - more than one link: a second name for the same inode is a second way to
+  #     unlink or replace the file this run is holding.
+  #
+  # AN UNMEASURABLE LINK COUNT IS A REFUSAL, NOT A 1. Reading it back as "fine"
+  # is the one failure mode that would make this whole check decorative on any
+  # host whose `stat` neither spelling fits.
+  #
+  # THE WORDING IS DELIBERATELY UNLIKE THE 75 PATH BELOW. That one says "the plan
+  # was wrong — two writers were composed against the same bytes"; this one says
+  # "the lock is not the file this run made". Spelling them alike sends the
+  # reader to doubt the plan when what changed is the file.
+  nl=$(doc_lock_nlink "$RUN_DIR/designdoc.lock")
+  if [ -L "$RUN_DIR/designdoc.lock" ] || [ ! -f "$RUN_DIR/designdoc.lock" ] \
+     || [ "$nl" != 1 ]; then
+    warn "설계 문서 락 자리가 이 런이 만든 정규 파일이 아닙니다 (심링크·비정규 파일·링크 2개 이상, 또는 링크 수를 잴 수 없음) — 잠금 도구가 그것을 따라가므로 잠그지 않고 멈춥니다: $RUN_DIR/designdoc.lock"
+    return 1
+  fi
   "$tool" -k -t 0 "$RUN_DIR/designdoc.lock" "$@" || rc=$?
   if [ "$rc" = "$LOCK_BUSY_EXIT" ]; then
     # 75 is not "the lock did its job, wait your turn" — it is "the plan was

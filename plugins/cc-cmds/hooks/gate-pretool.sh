@@ -468,12 +468,19 @@ hook_run_dir_verdict() {
     # 오른다. 디렉터리를 허용해도 그 안에서 열리는 것은 `halt/*` 뿐이고 `halt/*/*`
     # 는 위에서 이미 거부된다.
     halt) ;;
-    # 설계 문서 락. 설계 문서를 고치는 스테이지(구현 팔의 토큰 쓰기, 감사의 조정
-    # 패스, 재수렴 패스)가 모두 `lockf -k -t 0 "$RUN_DIR/designdoc.lock"` 으로 쓰기를
-    # 감싸는데 이 목록이 그 이름을 몰라 재수렴 스테이지가 락에서 멈췄다. 위트니스
-    # 예외와 같은 근거로 안전하다 — 런 시작 시점에 없고, 강제 표면 다이제스트가 읽지
-    # 않으며, `lockf -k` 가 남기는 빈 파일이다. 정확히 이 이름 하나만 연다.
-    designdoc.lock) ;;
+    # 설계 문서 락은 `Write`/`Edit` 로는 열리지 않는다. 이 판정은 편집 도구 경로에서만
+    # 돈다(`Bash` 는 게이트로 간다). 설계 문서를 고치는 스테이지(구현 팔의 토큰 쓰기,
+    # 감사의 조정 패스, 재수렴 패스)가 이 이름을 만나는 유일한 형태는
+    # `lockf -k -t 0 "$RUN_DIR/designdoc.lock"` 이고, 그것은 `Bash` 로 간다 — 편집
+    # 도구가 이 파일을 여는 것은 어떤 경우에도 락 획득이 아니다.
+    #
+    # 그래서 게이트 쪽 「`lockf` 가 잡는 그 피연산자 자리에서만」의 이쪽 대응물은
+    # 허용이 아니라 거부다. 두 파일은 같은 이름을 알되 판정이 반대이며,
+    # `scripts/test-gate.sh` 가 그 반대를 핀한다. 허용으로 두면 스테이지가 락 자리의
+    # 바이트를 편집 도구로 직접 바꿀 수 있고, 게이트 밖에서 도는 드라이버의 `lockf`
+    # 가 그 결과를 따라간다.
+    designdoc.lock)
+      deny "$(jstr 'gate: the design-document lock is taken by lockf, not opened by an editing tool — this name is not writable through Write/Edit at all')" ;;
     */*)
       deny "$(jstr 'gate: the only paths in the run directory a stage is declared to write are halt/<stage-id>.md and <segment>.plan.md (the witness directory cc-team-witness-*/ and the shared generation directory shared/<gen>/ excepted; a file directly under shared/ is not) — the rest are the baseline the gate re-reads on every act, so a stage editing them re-baselines the enforcement-surface check against itself')" ;;
     # 허용되는 것은 이름이 아니라 그 자리에 있는 파일이다. 이름만 맞춘 심링크는

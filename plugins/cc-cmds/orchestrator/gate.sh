@@ -4070,6 +4070,37 @@ gate_unwrap_lockf() {
   printf '%s' "$unknown_opt"
 }
 
+gate_lockf_operand_index() {
+  # gate_lockf_operand_index <argv0> [args...] — print the 1-based index, in the
+  # argv handed here, of the word `lockf` takes as its lockfile. Print nothing
+  # when argv0 is not `lockf` and when no such word is reachable.
+  #
+  # IT TAKES THE WHOLE ARGV, WHICH `gate_unwrap_lockf` ABOVE DOES NOT. That one
+  # is called with argv0 already dropped and answers a grade; this one is called
+  # from `gate_rundir_write_guard`, whose loop counts argv0 as element 1, and
+  # answers a position. Keeping the two adjacent is the point: they read the SAME
+  # option table (`-t` takes a value, `-k`/`-s`/`-n` do not, the lockfile is the
+  # first non-option word), and a change to that table in one of them alone would
+  # leave the allow-list opening a position the grader no longer reads as a lock.
+  #
+  # NOTHING PRINTED IS THE REFUSING DIRECTION for the caller, and every way out
+  # of this loop that is not a lockfile takes it: an argv0 that is a wrapper
+  # (`env lockf …`, `bash -c '…'`), an option this table does not know, and a
+  # `lockf` with no operand at all.
+  case "${1##*/}" in lockf) ;; *) return 0 ;; esac
+  local i=2
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -t) shift 2 || return 0; i=$((i + 2)) ;;
+      -t*) shift; i=$((i + 1)) ;;
+      -k|-s|-n) shift; i=$((i + 1)) ;;
+      -*) return 0 ;;
+      *) printf '%s' "$i"; return 0 ;;
+    esac
+  done
+}
+
 surface_of_lockf() {
   # surface_of_lockf <lockf-args-after-argv0...>
   gate_unwrap_lockf surface_of_argv0 '워크트리쓰기' '등급 미상' "$@"
@@ -12347,7 +12378,7 @@ gate_rundir_write_guard() {
   # reason: `../../.local/state/…/run/<id>/surface-digest` from the worktree is
   # one more spelling of the same file.
   local a rdp rdn rdln an ap al ar sp rel root rootp r matched argi w wn wp wl i
-  local ov ovrc wraps mode cb ov2 ovw wn2 wp2 wl2 an2 ap2 al2
+  local ov ovrc wraps mode cb ov2 ovw wn2 wp2 wl2 an2 ap2 al2 lockopi
   argi=0
   rdp=$(cd "$RUN_DIR" 2>/dev/null && pwd -P) || rdp="$RUN_DIR"
   [ -n "$rdp" ] || rdp="$RUN_DIR"
@@ -12362,6 +12393,10 @@ gate_rundir_write_guard() {
   # `gate_argv_chdir_base` states the defect; every relative option value and
   # word below is measured from this base as well as from the grading one.
   cb=$(gate_argv_chdir_base "$@") || cb=""
+  # WHICH POSITION, IF ANY, `lockf` LOCKS. Computed once, before the loop, so the
+  # design-document-lock arm of the allow-list below can ask whether the word it
+  # is looking at IS that operand rather than merely spelling its name.
+  lockopi=$(gate_lockf_operand_index "$@")
   # "THE BASE CANNOT BE COMPUTED" IS NOT "THERE IS NO BASE". Both arrived here as
   # the empty string, and empty is the allowing direction — so a shape the unwrap
   # could not read passed this guard for the same reason a plain `cp` does. The
@@ -12544,16 +12579,41 @@ gate_rundir_write_guard() {
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
         halt) continue ;;
-        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
-        # the implementation arm's token writes, the audit's reconciliation pass
-        # and the re-convergence pass — wraps the write in `lockf -k -t 0
+        # THE DESIGN DOCUMENT LOCK — THE EXACT NAME, IN EXACTLY THE ONE POSITION
+        # `lockf` LOCKS. Every stage that edits the design document — the
+        # implementation arm's token writes, the audit's reconciliation pass and
+        # the re-convergence pass — wraps the write in `lockf -k -t 0
         # "$RUN_DIR/designdoc.lock"`, and this list did not know the name, so a
         # re-convergence stage stopped at the lock before its one edit. Measured:
         # the stage halted `gate-unanswerable` with its edit prepared and unapplied.
-        # Safe on the witness exception's terms: the file does not exist when the
-        # run opens, the enforcement-surface digest does not read it, and `lockf
-        # -k` leaves it empty. The exact name only — nothing beneath it.
-        designdoc.lock) continue ;;
+        #
+        # OPENING THE NAME TO EVERY VERB IS WHAT THE POSITION TEST TAKES BACK, and
+        # the chain it opened was measured rather than imagined. A stage builds a
+        # relative symlink in its worktree (`ln -s done L` — no word of which
+        # resolves under the run root, so nothing here sees it) and then moves it
+        # onto the lock: `mv L "$RUN_DIR/designdoc.lock"`. The source is judged
+        # where it still stands, so it reads as outside the run, and the
+        # destination used to land on this arm. After the rename the lock IS a
+        # dangling link to `$RUN_DIR/done` — and the driver's `with_doc_lock` runs
+        # `lockf -k -t 0` on it OUTSIDE this gate, which follows the link and
+        # creates the target. An empty `done` makes `gate_end_run`'s `[ -s done ]`
+        # false while its `ln` publication fails on the existing name, and that
+        # failure is read as losing a race: no row, no marker, rc 0. Every
+        # termination boundary after it is swallowed in silence.
+        #
+        # So the operand position is the whole of the exception. A word spelling
+        # this name anywhere else — the destination of `mv`, `cp`, `ln`, `rm`,
+        # `touch`, a redirection — is not a lock acquisition and is refused, and
+        # `lockf … <lock> cp x <lock>` is refused on the inner word for the same
+        # reason the argument-wise evaluation already refuses its other operands.
+        # The driver mints the file empty and regular when the run opens, so what
+        # a stage's `lockf` finds there is the driver's file; the
+        # enforcement-surface digest does not read it, and `lockf -k` leaves it
+        # empty. Nothing beneath the name is allowed either.
+        designdoc.lock)
+          if [ -n "$lockopi" ] && [ "$argi" = "$lockopi" ]; then continue; fi
+          warn "rule refused: this name is allowed only as the operand \`lockf\` locks, and this word is not that operand. Opening it to any other verb lets a stage move a symlink onto the lock, and the driver's own \`lockf\` — which runs outside this gate — follows it and creates whatever it points at: $a"
+          return "$GATE_EXIT_RULE" ;;
         */*) ;;
         *.plan.md) continue ;;
       esac
