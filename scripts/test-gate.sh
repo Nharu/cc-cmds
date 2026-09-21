@@ -11623,6 +11623,18 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/settings/impl.json"
 check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
+# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름으로 `lockf` 를 잡는데 목록이
+# 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 가드는 명령이 아니라
+# 경로 인자로 판정하므로, 리눅스 러너에 없는 `lockf` 대신 `touch` 로 같은 이름을 건다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designdoc.lock"
+check "설계 문서 락 파일 쓰기는 통과한다" "$rc" "0"
+# 음성 대조군 — 연 것이 정확히 그 이름 하나임을 고정한다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designdoc.lock.bak"
+check "음성 대조군: 락 이름에 접미사를 붙인 파일은 여전히 거부" "$rc" "3"
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
 # 편집이 여기서 빨개져야 한다. 예외는 둘이고 둘 다 양쪽에 있어야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
@@ -11644,6 +11656,12 @@ if grep -qF 'design|design/*|preimage|preimage/*' "$GATE" \
   ok "게이트와 훅이 같은 설계 상태·사전 이미지 예외를 싣는다"
 else
   bad "가드·훅 불일치" "설계 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+if grep -qE '^[[:space:]]*designdoc\.lock\)' "$GATE" \
+   && grep -qE '^[[:space:]]*designdoc\.lock\)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 설계 문서 락 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
