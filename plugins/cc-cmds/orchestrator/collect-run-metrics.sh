@@ -323,7 +323,7 @@ cm_collect_run() {
   local rid="$1" ledger="$2" rd="$3" state="$4" out="$5"
   local tmp row seg st kind ver attempt sid class win has_win lane wint wsrc stream_f stream
   local sess_dir seen_sids seen_streams="" sess_json dup an rejected=0 unemp=0 unk=0 sw p0 mism="" wins_seen
-  local rowidx odup
+  local rowidx odup okey kind0 class0 lane0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-run.XXXXXX") || return 1
   sess_dir="$tmp/sess"; mkdir -p "$sess_dir"
   : > "$tmp/stages.jsonl"; : > "$tmp/shifts.jsonl"; : > "$tmp/p0.tsv"
@@ -348,7 +348,7 @@ ROWS
   # 스트림 봉투와 귀속 여부는 호출자가 정해 넘긴다 — 한 세션의 자료를 어느 시도가 갖는지는
   # 행 하나만 보고는 정할 수 없고, 다섯째 인자가 비면 등장 순서로 정한다(교대 행).
   cm_row_emit() {
-    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" seen_dup=false
+    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" owner_key="$6" seen_dup=false
     seg=$(cm_field "$row" '세그먼트'); st=$(cm_field "$row" '스테이지')
     if [ -n "$kind_override" ]; then kind="$kind_override"; else kind=$(cm_field "$row" '종류'); fi
     [ -n "$kind" ] || kind="-"
@@ -415,8 +415,14 @@ ROWS
     p0=$(awk -F'\t' -v s="$seg" 'BEGIN { n = 0; u = 0 } $1 == s { n++; if ($2 == "unknown") u = 1; else t += $2 } END { if (n == 0 || u) print "unknown"; else print t }' "$tmp/p0.tsv")
     jq -cn --arg seg "$seg" --arg st "$st" --arg kind "$kind" --arg attempt "$attempt" --arg sid "$sid" \
       --arg class "$class" --arg win "$win" --argjson has_win "$has_win" --arg wint "$wint" --arg wsrc "$wsrc" \
-      --arg lane "$lane" --argjson stream "$stream" --argjson an "$an" --arg p0 "$p0" --argjson dup "$dup" '
-      {segment: $seg, stage: $st, kind: $kind,
+      --arg lane "$lane" --argjson stream "$stream" --argjson an "$an" --arg p0 "$p0" --argjson dup "$dup" \
+      --arg okey "$owner_key" '
+      ($kind + "|" + $class + "|" + $lane) as $self_key
+      # 벽시계 귀속을 누르는 것은 「같은 세션」이 아니라 「같은 층의 같은 세션」이다. 같은
+      # 층이면 전사 구간이 이미 두 시도를 덮고 있어 같은 초가 두 번 세어지지만, 다른 층이면
+      # 이 행의 스트림 소요는 그 층에 대한 독립 관측이라 누르면 그 층이 잴 것을 잃는다.
+      | ($dup and $an.owner_wall and $okey == $self_key) as $owned_here
+      | {segment: $seg, stage: $st, kind: $kind,
        attempt: (if $attempt == "" then null else ($attempt | tonumber) end),
        session_id: $sid, session_unknown: ($sid == "미상"), session_dup: $dup,
        class: $class,
@@ -424,14 +430,19 @@ ROWS
        window_int: (if $wint == "" then null else ($wint | tonumber) end), window_source: $wsrc,
        lane: $lane,
        complete: $stream.complete, truncated: $stream.truncated,
-       # 자료를 갖지 않는 시도는 스트림 소요로 벽시계를 채우지 않는다 — 그 세션의 전사
-       # 구간이 이미 두 시도를 모두 덮고 있어 같은 초가 두 번 세어진다.
+       # 같은 층에서 자료를 빼앗긴 시도는 스트림 소요로 벽시계를 채우지 않는다 — 그 세션의
+       # 전사 구간이 이미 두 시도를 모두 덮고 있어 같은 초가 두 번 세어진다. 그때 비는 것은
+       # 「0 초」가 아니라 「여기서 재지 않음」이므로 출처에 그렇게 적고 어느 층이 재는지를
+       # 함께 남긴다 — 0 으로 접히면 그 층은 잰 적 없는 0 과 구별되지 않는다.
        wall_ms: (if $an.wall_ms != null then $an.wall_ms
-                 elif ($dup and $an.owner_wall) then null
+                 elif $owned_here then null
                  else ($stream.duration_ms // null) end),
        wall_source: (if $an.wall_ms != null then "transcript"
-                     elif ($dup and $an.owner_wall) then "none"
-                     elif $stream.duration_ms != null then "stream" else "none" end),
+                     elif $owned_here then "owned_elsewhere"
+                     elif $stream.duration_ms != null then "stream"
+                     elif ($dup and $an.owner_wall) then "owned_elsewhere"
+                     else "none" end),
+       wall_owner: (if ($dup and $an.owner_wall and $okey != "") then $okey else null end),
        cost_usd: $stream.cost_usd,
        requests: $an.requests, requests_included: $an.requests_included,
        ctx: $an.ctx, ctx_values: $an.ctx_values, cache: $an.cache,
@@ -442,13 +453,18 @@ ROWS
   }
 
   # 1차 — 행마다 스트림 봉투를 한 번만 읽어 둔다. 종단 줄의 유무가 귀속을 정하므로 귀속
-  # 판정보다 먼저 읽어야 한다.
+  # 판정보다 먼저 읽어야 한다. 층 키도 여기서 적어 둔다 — 한 세션을 나눠 갖는 두 행이
+  # 같은 층에 드는지 다른 층에 드는지가 아래 벽시계 귀속을 가른다.
   rowidx=0
-  : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"
+  : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"; : > "$tmp/key.tsv"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     rowidx=$((rowidx + 1))
     printf '%s\n' "$row" >> "$tmp/rows.txt"
+    kind0=$(cm_field "$row" '종류'); [ -n "$kind0" ] || kind0="-"
+    class0=$(cm_field "$row" '종단 부류'); [ -n "$class0" ] || class0="-"
+    lane0=$(cm_field "$row" '레인'); [ -n "$lane0" ] || lane0="-"
+    printf '%s\t%s|%s|%s\n' "$rowidx" "$kind0" "$class0" "$lane0" >> "$tmp/key.tsv"
     st=$(cm_field "$row" '스테이지'); [ -n "$st" ] || st=$(cm_field "$row" '세그먼트')
     ver=$(cm_field "$row" '실행 버전')
     case "$ver" in ''|*[!0-9]*) attempt="" ;; *) attempt="$ver" ;; esac
@@ -482,17 +498,21 @@ ROWS
     [ -n "$row" ] || continue
     rowidx=$((rowidx + 1))
     sid=$(cm_field "$row" '세션 id')
-    odup=true
+    odup=true; okey=""
     if [ -z "$sid" ] || [ "$sid" = "미상" ]; then
       odup=false
     elif [ "$(awk -F'\t' -v s="$sid" '$2 == s { print $1 }' "$tmp/owner.tsv")" = "$rowidx" ]; then
       odup=false
+    else
+      # 자료를 가진 행의 층 키 — 비운 행이 「여기서 재지 않음」 을 어디로 가리키는지 적는다.
+      okey=$(awk -F'\t' -v s="$sid" '$2 == s { print $1 }' "$tmp/owner.tsv")
+      okey=$(awk -F'\t' -v r="$okey" '$1 == r { print $2 }' "$tmp/key.tsv")
     fi
-    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup"
+    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup" "$okey"
   done < "$tmp/rows.txt"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" ""
+    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" "" ""
   done <<ROWS
 $(cm_ledger_rows "$ledger" '교대 기동')
 ROWS
@@ -558,7 +578,14 @@ cm_aggregate() {
                          shadow: ([$g[].excluded.shadow] | add // 0), manual: ([$g[].excluded.manual] | add // 0),
                          switch_window: ([$g[].boundaries[] | select(.in_switch_window)] | length)},
                     A4: {usd: ([$g[].cost_usd | select(. != null)] | add // 0), stages: ($g | length)},
-                    A5: {p0: ([$g[].p0] | p0sum), wall_ms: ([$g[].wall_ms | select(. != null)] | add // 0)},
+                    # 잰 행이 하나도 없으면 합이 0 이 아니라 null 이다 — 「재서 0 이었다」와
+                    # 「여기서 재지 않았다」를 같은 수로 적으면 층이 조용히 사라진다. 자료를
+                    # 가진 층의 키를 함께 실어 읽는 사람이 어디서 재는지 따라갈 수 있게 한다.
+                    A5: {p0: ([$g[].p0] | p0sum),
+                         wall_ms: ([$g[].wall_ms | select(. != null)] as $ws
+                                   | if ($ws | length) == 0 then null else ($ws | add) end),
+                         wall_owned_elsewhere: ([$g[] | select(.wall_source == "owned_elsewhere")] | length),
+                         owner_strata: ([$g[] | select(.wall_source == "owned_elsewhere") | .wall_owner | select(. != null)] | unique)},
                     net: {token: ([$g[].net_token] | add // 0),
                           time: (([$g[].wall_ms | select(. != null)] | add // 0) as $w | if $w == 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end)}})})
         | from_entries),
@@ -604,7 +631,13 @@ cm_triggers() {
          | ($hist | map(.token | numbers)) as $ht
          | ($hist | map(.time | numbers)) as $htime
          | ($hist | map(.p0 | numbers)) as $hp0
-         | ([$g[].wall_ms | select(. != null)] | add // 0) as $w
+         | ([$g[].wall_ms | select(. != null)]) as $ws
+         | ($ws | add // 0) as $w
+         # 이 층의 자료를 다른 층이 갖고 있는가. 그렇다면 이 층이 평가되지 않는 것은 표본이
+         # 없어서가 아니라 다른 키로 재고 있어서이며, 그 둘은 같은 침묵이 아니다 — 앞의 것은
+         # 기다리면 차고 뒤의 것은 영영 차지 않으므로 이유를 적어 구별한다.
+         | ([$g[] | select(.wall_source == "owned_elsewhere") | .wall_owner | select(. != null)] | unique) as $owner_strata
+         | (($ws | length) == 0 and ($owner_strata | length) > 0) as $owned_elsewhere
          # 토큰 항과 P0 는 그 층의 행당 값이다. 회차 합계로 두면 한 회차에 몇 개의 런이
          # 들어왔는지가 부호를 정해, 조용한 회차가 「절감이 적고 P0 가 적다」로 읽힌다.
          | ($g | length) as $n
@@ -627,7 +660,16 @@ cm_triggers() {
                     p0: (if $untrusted then null else $p0 end),
                     consecutive_bad: (if $skip then ($prev.consecutive_bad // 0) elif ($bad or $veto) then (($prev.consecutive_bad // 0) + 1) else 0 end),
                     consecutive_good: (if $skip then ($prev.consecutive_good // 0) elif ($good and ($veto | not)) then (($prev.consecutive_good // 0) + 1) else 0 end),
-                    warmup: $warmup, evaluated: ($skip | not), veto: $veto}})
+                    warmup: $warmup, evaluated: ($skip | not), veto: $veto,
+                    unevaluable: (if ($skip | not) then null
+                                  elif $owned_elsewhere then "owned_elsewhere"
+                                  elif $blocked then "차단"
+                                  elif $probe_fail then "프로브 실패"
+                                  elif $mixed[$g[0].kind] then "창 섞임"
+                                  elif $thin then "표본 없음"
+                                  elif $warmup then "워밍업"
+                                  else "기준선 없음" end),
+                    owner_strata: $owner_strata}})
        | from_entries) as $strata
     | (if $blocked then [] else
         # T1 은 델타가 아니라 전수 위의 모순이라 셸 쪽(cm_main)이 건다.
@@ -661,7 +703,16 @@ cm_triggers() {
     # 이유는 닫기가 열기보다 잡음에 약해지면 같은 이슈가 열렸다 닫혔다 하기 때문이고,
     # 평가되지 않은 회차(델타 없음·차단·프로브 실패)는 어느 방향의 증거도 아니라 세지 않는다.
     # 이 경로가 없으면 한 번 열린 결함 이슈가 전역 열림 상한 한 자리를 영구히 차지한다.
-    | ($J | map({f: [((.fired // [])[]).signature], c: (.close // []),
+    #
+    # 닫기는 사건이 아니라 매 회차 다시 내는 상태 진술이다 — 한 번 낸 닫기를 「이미 냈음」
+    # 으로 억제하면, 그 닫기를 받은 쪽이 처리하지 못했을 때(설정 부재·자격 없음·조회 실패·
+    # mktemp 실패·닫기 호출 자체의 실패) 다시 제안할 기회가 영영 오지 않는다. 수집기는
+    # 받는 쪽의 성패가 돌아올 입력을 갖지 않으므로 성공을 가정할 수 없고, 조건이 사라진
+    # 뒤에는 그 서명이 다시 발화하지도 않아 억제가 풀리지 않는다. 그래서 회복 불가능한
+    # 경우가 하필 수정이 통한 경우가 된다. 중복 제안은 무해하다 — 받는 쪽의 닫기 루프는
+    # 열린 이슈 목록에서 제목을 찾지 못하면 아무것도 하지 않는다. T6 계열이 매 회차 살아
+    # 있는 층 상태에서 재계산되는 것과 같은 모양이며, 두 계열이 같은 회복력을 갖는다.
+    | ($J | map({f: [((.fired // [])[]).signature],
                  ev: (((.new_runs // []) | length) > 0 and (.probe // "") == "ok")})) as $H
     | ((($all | length) > 0) and ($blocked | not) and ($probe_fail | not)) as $round_eval
     | ([$fired[].signature]) as $now_sigs
@@ -669,15 +720,14 @@ cm_triggers() {
        | map(select((startswith("T6/") | not) and ((. as $s | $now_sigs | index($s)) | not)))
        | map(. as $s
              | ([range(0; $H | length) | select($H[.].f | index($s))] | last) as $lf
-             | ([range(0; $H | length) | select($H[.].c | index($s))] | last) as $lc
-             | select($lf != null and ($lc == null or $lc < $lf))
+             | select($lf != null)
              | select((([range($lf + 1; $H | length) | select($H[.].ev)] | length)
                        + (if $round_eval then 1 else 0 end)) >= 3)
              | $s)) as $close_defect
     | (($close_t6 + $close_defect) | unique) as $close
     | {probe: (if $blocked then "차단" elif $probe_fail then "프로브 실패" else "ok" end),
        mixed_window: $mixed_any,
-       strata: ($strata | with_entries(.value |= {token, time, p0, consecutive_bad, consecutive_good, warmup})),
+       strata: ($strata | with_entries(.value |= {token, time, p0, consecutive_bad, consecutive_good, warmup, unevaluable, owner_strata})),
        fired: $fired, close: (if $blocked then [] else $close end),
        excluded: {manual: ([$all[].excluded.manual] | add // 0), shadow: ([$all[].excluded.shadow] | add // 0),
                   switch_window: ([$all[].excluded.switch_window] | add // 0),

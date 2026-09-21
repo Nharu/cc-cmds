@@ -298,6 +298,34 @@ check "7: 결함 부류 닫힘 행의 되돌리는 법도 다시 여는 명령�
 check "7: 결함 부류 닫힘 행의 근거는 재관측 없음이다" "$(field "$fr" '근거')" \
   "그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다"
 
+# 게이트가 닫기를 처리하지 못하는 회차. 수집기에는 게이트의 성패가 돌아올 입력이 없고,
+# 조건이 사라진 뒤에는 그 서명이 다시 발화하지도 않는다 — 그래서 흘린 닫기를 다시 내지
+# 않으면 전역 열림 상한 한 자리가 영구히 막힌다. 닫기가 매 회차 다시 오는 상태 진술이라야
+# 회복되며, 같은 닫기가 두 번 와도 제목 조회가 없는 것을 무동작으로 흘린다.
+fresh; round - T2/review
+printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+: > "$WORK/gh-fail/issue-close"
+snap
+check "7: 닫기 호출이 실패하면 닫힘 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
+check "7: 닫기 호출이 실패해도 건너뜀 행으로 오분류하지 않는다" "$(nrows "$(skip_rows)")" "0"
+rm -f "$WORK/gh-fail/issue-close" "$STATE_ROOT/metrics.stamp"
+snap
+check "7: 다시 온 같은 닫기가 다음 회차에 이슈를 닫는다" "$(ghcount '| issue close 11')" "2"
+check "7: 그 회차는 닫힘 필링 행을 남긴다" "$(field "$(file_rows)" '결정')" "닫힘"
+# 이미 닫힌 이슈에 대한 중복 제안은 무해하다 — 열린 목록에 제목이 없으면 아무것도 안 한다.
+printf '[]\n' > "$WORK/gh-script/issue-list"
+rm -f "$STATE_ROOT/metrics.stamp"; : > "$GH_LOG"
+snap
+check "7: 열린 목록에 없는 서명의 닫기 제안은 무동작이다" "$(ghcount '| issue close ')" "0"
+
+# 조기 반환 경로는 닫기 루프에 이르지도 못한다 — 그 회차의 닫기는 통째로 흘러간다.
+fresh; round - T2/review
+printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+printf 'account\ttester\n' > "$WORK/metrics-filing"
+snap
+check "7: Project 번호가 없으면 닫기도 부르지 않는다" "$(ghcount '| issue close ')" "0"
+check "7: 그 회차는 번호 없음 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "번호 없음"
+
 # 수집기가 rc 0 으로 끝났는데 회차 줄이 비었거나 JSON 이 아니면 회차가 없는 것이다 —
 # 번호 없음 설정에서도 건너뜀 행이 남으면 발화하지 않은 트리거를 적은 셈이 된다.
 fresh; : > "$WORK/round.json"

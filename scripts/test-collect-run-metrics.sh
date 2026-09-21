@@ -171,6 +171,12 @@ tl_boundary 27 sid-a ag9 auto 100000 20000 1000 80000 | mk_transcript "$WORK/hom
 # 교대 세션의 전사 — 다른 홈에 있다.
 { tl_assist 100 sm1 100 100 100; tl_boundary 110 sid-shift "" auto 150000 30000 500 120000; tl_assist 111 sm2 100 100 100; } \
   | mk_transcript "$HOME_B" -repo sid-shift
+# S3 의 두 시도는 한 세션을 나눠 갖고 종단 부류가 서로 달라 다른 층에 든다 — 그 세션의
+# 자료가 어느 시도에 떨어지는지 단언하려면 전사가 있어야 한다.
+{ tl_assist 200 c1 1000 1000 1000
+  tl_boundary 205 sid-c "" auto 120000 30000 2000 90000
+  tl_assist 210 c2 1000 1000 1000
+} | mk_transcript "$HOME_A" -repo sid-c
 collect
 check "1: 수집기가 회차를 기록한다(exit 0)" "$rc" "0"
 check "1: 시도 스코프 이름과 평문 폴백이 섞여도 스테이지 수가 정확하다" "$(jrec "$R1" '.stages | length')" "8"
@@ -208,6 +214,15 @@ check "1: 시간 항 = 압축 소요 합 ÷ 벽시계" "$(jsum '.strata["impleme
 check "1: 캐시 적중률은 토큰 가중 비율이다" "$(jsum '.strata["implement|정상 완료|~/.claude"].A1 * 1000 | round')" "440"
 check "1: 요청당 컨텍스트는 중앙값·p90·최댓값을 함께 낸다" "$(jsum '.strata["implement|정상 완료|~/.claude"].A2 | [.median, .p90, .max] | join(",")')" "9000,10000,10000"
 check "1: 전사 없는 스테이지의 벽시계는 스트림 소요 합이고 출처가 stream 이다" "$(jrec "$R1" '.stages[1] | [.wall_ms, .wall_source] | join(",")')" "3000,stream"
+# 한 세션을 나눠 갖는 두 시도 — 자료가 어디에 떨어지고 빈 쪽이 어디를 가리키는지.
+check "1: 세션 자료는 종단 줄이 있는 첫 시도에 떨어진다" \
+  "$(jrec "$R1" '[.stages[2], .stages[3]] | map(.boundaries | length) | join(",")')" "1,0"
+check "1: 자료를 가진 시도의 벽시계는 전사 구간이다" \
+  "$(jrec "$R1" '.stages[2] | [.wall_ms, .wall_source] | join(",")')" "10000,transcript"
+check "1: 자료를 잃은 형제 행은 0 이 아니라 여기서 재지 않음으로 적힌다" \
+  "$(jrec "$R1" '.stages[3].wall_source')" "owned_elsewhere"
+check "1: 자료를 잃은 형제 행은 어느 층이 재는지 가리킨다" \
+  "$(jrec "$R1" '.stages[3].wall_owner')" "review|크래시|~/.claude"
 # 회차 저널.
 check "1: 저널 줄이 stdout 에 그대로 난다" "$(jline '.round')" "1"
 check "1: 이 회차의 새 런이 new_runs 에 실린다" "$(jline '.new_runs | join(",")')" "$R1"
@@ -271,7 +286,9 @@ check "2: 재부착 세션의 압축 기록이 집계에 남는다" \
 check "2: 재부착 세션의 요청이 집계에 남는다" \
   "$(jsum '.strata["review|정상 완료|~/.claude"].A2.max')" "3000"
 check "2: 자료를 갖지 않는 시도는 벽시계를 다시 싣지 않는다" \
-  "$(jrec "$R2" '.stages[0] | [.wall_ms, .wall_source] | join(",")')" ",none"
+  "$(jrec "$R2" '.stages[0] | [.wall_ms, .wall_source] | join(",")')" ",owned_elsewhere"
+check "2: 비운 행은 자료를 가진 층의 키를 지닌다" \
+  "$(jrec "$R2" '.stages[0].wall_owner')" "review|정상 완료|~/.claude"
 check "2: 같은 세션 두 행의 압축 창이 다르면 창 불일치 세션으로 보고된다" "$(jsum '.window_mismatch_sessions | join(",")')" "sid-x"
 check "2: 미종단 런은 미수집이 아니라 넷째 수다" "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "1,0,1,1"
 check "2: 미종단이 있어도 판정은 막히지 않는다" "$(jline '.probe')" "ok"
@@ -488,8 +505,11 @@ check "5: 한 항만 나쁜 회차는 발화하지 않는다" "$(fire_ids)" ""
 t6_run 20260905-aaaaaa11 300000 200000 1000 10 2000 5
 check "5: 두 항이 좋은 회차 하나로는 닫히지 않는다" "$(jline '.close | length')" "0"
 t6_run 20260905-aaaaaa12 300000 200000 1000 10 2000 5
+# 앞서 프로브 실패 회차 둘에서 T7/review 가 발화했고 그 뒤로 조용한 평가 회차가 셋을 채웠다 —
+# 결함 계열이므로 여기서부터 닫기가 제안되고, 한 번 제안했다고 다음 회차에 빠지지 않는다.
+check "5: 조용해진 결함 서명은 T6 보다 먼저 닫기로 실린다" "$(jline '.close | join(",")')" "T7/review"
 t6_run 20260905-aaaaaa13 300000 200000 1000 10 2000 5
-check "5: 두 항이 좋은 회차 연속 3 에서 닫기 서명이 실린다" "$(jline '.close | join(",")')" "T6/review"
+check "5: 두 항이 좋은 회차 연속 3 에서 닫기 서명이 실린다" "$(jline '.close | join(",")')" "T6/review,T7/review"
 # P0 거부권 — 두 항이 좋아도 P0 가 기준 중앙값보다 줄면 나쁜 회차다.
 t6_run 20260905-aaaaaa14 300000 200000 1000 10 2000 1
 check "5: 두 항이 좋아도 P0 가 기준 대비 줄면 거부권이 발화 방향으로 센다" "$(strat 300000 consecutive_bad)" "1"
@@ -576,8 +596,15 @@ check "7: 델타가 없는 회차는 조용한 연속에 들지 않는다" "$(jl
 h_run 20260907-aaaaaa04
 check "7: 평가된 회차 연속 3 에서 결함 형태 서명이 닫힌다" "$(jline '.close | join(",")')" "T2/review"
 h_run 20260907-aaaaaa05
-check "7: 한 번 닫은 서명을 다시 닫지 않는다" "$(jline '.close | length')" "0"
-d_run 20260907-aaaaaa06
+# 닫기는 사건이 아니라 상태 진술이다 — 받는 쪽이 처리하지 못했을 수 있고 그 성패가 수집기로
+# 돌아올 입력이 없으므로, 조건이 사라져 있는 한 매 회차 다시 낸다. 억제하면 회복 불가능한
+# 경우가 하필 수정이 통한 경우가 된다(그 서명은 다시 발화하지 않아 억제가 풀리지 않는다).
+check "7: 이미 한 번 낸 닫기를 다음 회차에도 다시 낸다" "$(jline '.close | join(",")')" "T2/review"
+collect
+check "7: 델타가 없는 회차에도 닫기 주장은 유지된다" "$(jline '.close | join(",")')" "T2/review"
+h_run 20260907-aaaaaa06
+check "7: 회차가 더 흘러도 닫기 주장이 사라지지 않는다" "$(jline '.close | join(",")')" "T2/review"
+d_run 20260907-aaaaaa07
 check "7: 닫힌 뒤 조건이 다시 서면 새로 발화한다" "$(fire_ids)" "T2/review"
 check "7: 다시 발화한 회차는 그 서명을 닫지 않는다" "$(jline '.close | length')" "0"
 
@@ -615,6 +642,54 @@ collect
 check "8: 스키마 이전 줄은 기준선에 들지 않아 층이 워밍업으로 남는다" "$(strat 300000 warmup)" "true"
 check "8: 스키마 이전 줄의 연속 계수는 이어지지 않는다" "$(strat 300000 consecutive_bad)" "0"
 check "8: 회차 수는 옛 줄까지 센 줄 수다" "$(jline '.round')" "4"
+
+# --- 9. 한 세션을 나눠 갖는 형제 시도의 층 귀속 ---------------------------------------------
+# 재부착된 스테이지의 두 시도는 세션을 공유하지만 종단 부류가 달라 서로 다른 층에 든다.
+# 전사 구간은 두 시도를 모두 덮으므로 같은 층의 형제에게 다시 실으면 같은 초를 두 번 세지만,
+# 다른 층의 형제에게서 그 행 자신의 스트림 소요까지 빼앗으면 그 층이 잴 것을 잃는다 — 그러면
+# 층의 벽시계가 0 으로 접혀 T6 이 발화도 닫기도 할 수 없는 상태로 영영 남는다. 누르는 기준은
+# 「같은 세션」이 아니라 「같은 층의 같은 세션」이다.
+reset_all
+R9=20260909-aaaaaa01
+mk_rundir "$R9"
+mk_stream "$STATE/run/$R9/log/S1#1.json" 1 - 0.5 1000
+mk_stream "$STATE/run/$R9/log/S1#2.json" 1 - 0.5 2000
+mk_stream "$STATE/run/$R9/log/S2#1.json" 1 - 0.5 5000
+mk_stream "$STATE/run/$R9/log/S2#2.json" 1 - 0.5 7000
+# S3 의 두 시도는 시도별 로그가 없어 평문 폴백 하나로 접힌다 — 둘째 행은 자기 소요를 갖지 않는다.
+mk_stream "$STATE/run/$R9/log/S3.json" 1 - 0.5 9000
+mk_ledger "$R9" \
+  "$(sr_row S1 S1 review 1 sid-p '정상 완료' '300000(argv)' 'laneA')" \
+  "$(sr_row S1 S1 review 2 sid-p '정상 완료' '300000(argv)' 'laneA')" \
+  "$(sr_row S2 S2 review 1 sid-q '크래시' '300000(argv)' 'laneB')" \
+  "$(sr_row S2 S2 review 2 sid-q '정상 완료' '300000(argv)' 'laneB')" \
+  "$(sr_row S3 S3 audit 1 sid-r '크래시' '300000(argv)' 'laneC')" \
+  "$(sr_row S3 S3 audit 2 sid-r '정상 완료' '250000(레인)' 'laneC')" \
+  "$(cycle_row S1 1 0)" "$(cycle_row S2 1 0)" "$(cycle_row S3 1 0)"
+{ tl_assist 300 p1 1000 1000 1000; tl_assist 310 p2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-p
+{ tl_assist 400 q1 1000 1000 1000; tl_assist 420 q2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-q
+{ tl_assist 500 r1 1000 1000 1000; tl_assist 530 r2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-r
+collect
+check "9: 같은 층의 형제는 벽시계를 다시 싣지 않는다" \
+  "$(jrec "$R9" '.stages[1] | [.wall_ms, .wall_source] | join(",")')" ",owned_elsewhere"
+check "9: 같은 층에 형제가 있어도 층의 벽시계는 소유자 것 하나다" \
+  "$(jsum '.strata["review|정상 완료|laneA"].A5.wall_ms')" "10000"
+check "9: 다른 층의 형제는 자기 스트림 소요를 지킨다" \
+  "$(jrec "$R9" '.stages[3] | [.wall_ms, .wall_source] | join(",")')" "7000,stream"
+check "9: 그 층의 벽시계가 0 으로 접히지 않는다" \
+  "$(jsum '.strata["review|정상 완료|laneB"].A5.wall_ms')" "7000"
+check "9: 전사도 자기 스트림도 없는 형제는 0 이 아니라 여기서 재지 않음이다" \
+  "$(jrec "$R9" '.stages[5] | [.wall_ms, .wall_source] | join(",")')" ",owned_elsewhere"
+check "9: 잰 행이 하나도 없는 층의 A5 벽시계는 0 이 아니라 null 이다" \
+  "$(jsum '.strata["audit|정상 완료|laneC"].A5.wall_ms')" "null"
+check "9: 그 층은 자료를 가진 층의 키를 가리킨다" \
+  "$(jsum '.strata["audit|정상 완료|laneC"].A5.owner_strata | join(",")')" "audit|크래시|laneC"
+check "9: 비운 행의 수를 따로 인쇄한다" \
+  "$(jsum '.strata["audit|정상 완료|laneC"].A5.wall_owned_elsewhere')" "1"
+check "9: 자료가 다른 층에 있는 층은 표본 없음이 아니라 그 사유로 적힌다" \
+  "$(jline '.strata["audit|250000"].unevaluable')" "owned_elsewhere"
+check "9: 잴 것이 있는 층은 평가되고 사유가 비어 있다" \
+  "$(jline '.strata["review|300000"] | [.evaluated // false, (.unevaluable // "null")] | join(",")')" "false,워밍업"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
