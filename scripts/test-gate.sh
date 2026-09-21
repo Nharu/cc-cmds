@@ -17753,6 +17753,28 @@ case "$msg" in
   *"의 워크트리가 아닙니다"*) bad "6b: 미선언 대상 디스패치 예보도 세그먼트 행으로 거부되지 않는다" "$msg" ;;
   *) ok "6b: 미선언 대상 디스패치 예보도 세그먼트 행으로 거부되지 않는다" ;;
 esac
+# 등급 베이스도 같은 해소를 받는다. 행위 cwd 만 고쳐져 있던 동안 등급 블록은
+# 미선언을 제외했고, 그래서 `GATE_GRADE_CWD` 가 빈 채로 남아 `gate_grade_cwd()`
+# 의 `$PWD` 로 떨어지고 `gate_tree_root` 가 그것을 베이스로 삼았다 — 행위는
+# 세그먼트 트리에서 도는데 트리 루트는 게이트를 부른 트리를 가리켰다.
+#
+# `mv` 로 잰다. 등급표에서 경로로 등급되는 행은 `mv` 와 `rm` 뿐이고 `touch`·`cp`
+# 는 이름으로 `워크트리쓰기` 상수를 받으므로, 그것으로 재면 베이스가 어디를
+# 가리키든 같은 답이 나와 이 단언이 공허해진다. 두 트리가 서로의 밖이라는 것은
+# 바로 위 `seg_pwd != SA_WT` 단언이 이미 고정한다.
+: >"$SA_SEGWT/in-tree-a.txt"
+sag exec --manifest "$SA_MANIFEST" --target 미선언 --segment SB6W --cutpoint 커밋 \
+    --surface 워크트리쓰기 --reach 런로컬 --worktree "$SA_SEGWT" \
+    --snapshot-digest "$(SAH)" --rationale x -- mv "$SA_SEGWT/in-tree-a.txt" "$SA_SEGWT/in-tree-b.txt"
+check "6b: 미선언 갈래의 등급 베이스가 그 워크트리다 (트리 안 mv 가 워크트리쓰기 다)" "$rc" "0"
+# 음성 대조 — 루트가 「무엇이든 트리 안」으로 넓어진 것이 아니다. 목적지를 형제
+# 워크트리에 두면 트리밖쓰기 로 등급돼 워크트리쓰기 신고가 저신고로 거부된다.
+# 거부는 실행 전이라 파일은 움직이지 않는다.
+sag exec --manifest "$SA_MANIFEST" --target 미선언 --segment SB6W --cutpoint 커밋 \
+    --surface 워크트리쓰기 --reach 런로컬 --worktree "$SA_SEGWT" \
+    --snapshot-digest "$(SAH)" --rationale x -- mv "$SA_SEGWT/in-tree-b.txt" "$SA_WT/out-of-tree.txt"
+check "6b: 그 트리 밖으로의 mv 는 저신고로 거부된다" "$rc" "6"
+rm -f "$SA_SEGWT/in-tree-a.txt" "$SA_SEGWT/in-tree-b.txt"
 
 # --- 38-7. 말단 행위 상한의 계수가 접두 일치로 부풀지 않는다 ---------------------
 # --- section: 38-7 | group: sb | covers: act, plan, exec | anchors: 7: 그 머지가 절단점=머지 로 기록된다 ---

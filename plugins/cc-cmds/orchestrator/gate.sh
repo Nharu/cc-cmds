@@ -1529,6 +1529,20 @@ GATE_GRADE_CWD=''
 # freezing it would break undeclared-target registration itself.
 GATE_UNDECLARED=0
 
+# The worktree an undeclared target's acts run in, set beside the flag above by
+# `gate_undeclared_target` and read only by `gate_act_worktree`. An undeclared
+# alias has no target row, so `target_field` answers empty for it and the
+# resolver had nothing to return — which is why the act cwd was assigned from
+# `$worktree` at one call site while the grading base, the tree root, the
+# approval id's fourth field and the freeze/staleness probe all resolved
+# somewhere else.
+#
+# DELIBERATELY NOT EXPORTED. Exporting it would make it the very inheritance
+# channel the declared arm just closed: a child gate would read its parent's
+# tree instead of resolving its own. The `GATE_*` row in `_gp_env_assign`
+# refuses the argv spelling of the same injection.
+GATE_UNDECLARED_WT=''
+
 surface_of_mv() {
   # surface_of_mv [options] <source>... <dest>   (argv0 already dropped)
   #
@@ -15327,8 +15341,8 @@ gate_act_worktree() {
   # or branch anchor those are never the same directory — git refuses to check a
   # branch out twice.
   #
-  # ONE RESOLUTION FOR THREE READERS, and that is the whole reason this is a
-  # function. Each of the three read the field itself, and they disagreed: the
+  # ONE RESOLUTION FOR FOUR READERS, and that is the whole reason this is a
+  # function. Each of them read the field itself, and they disagreed: the
   # act ran in the execution worktree while its approval's binding tuple was
   # frozen against the MAIN worktree's head and compared against that same head
   # later. So an answer given at 22:00 stayed "fresh" through a night of commits
@@ -15336,8 +15350,24 @@ gate_act_worktree() {
   # the main worktree expired approvals about a tree that had not moved. Freezing
   # and comparing must resolve identically or every approval already issued goes
   # stale at once and a person is asked the same question all over again. The
-  # segment argument is part of that one resolution: all three readers pass it,
+  # segment argument is part of that one resolution: all four readers pass it,
   # and one that did not would bind an approval to a different tree.
+  #
+  # The four are: the act's own cwd (`GATE_ACT_CWD`), the grading base
+  # (`GATE_GRADE_CWD`, and `gate_tree_root` on top of it), the approval id's
+  # fourth field, and the freeze/staleness head probe.
+  #
+  # THE UNDECLARED ARM RESOLVES HERE TOO, and it reads its own variable rather
+  # than `GATE_ACT_CWD`. An undeclared alias has no target row, so both
+  # `target_field` lookups below answer empty and every reader that was not the
+  # one call site assigning `GATE_ACT_CWD` got that empty string: the grading
+  # base fell through to `$PWD`, the tree root followed it, the approval id
+  # carried `""` in its fourth field, and the two `cd "$(…)"` readers ran a
+  # successful no-op `cd ""` that read the GATE'S OWN head instead of the
+  # target's. Reading `GATE_ACT_CWD` here instead would make the declared arm
+  # pick up a parent gate's exported value, which is the inheritance defect the
+  # assignment site below was moved up to close — so the undeclared arm gets a
+  # variable of its own, set where the flag is set and never exported.
   #
   # A PREDICATE FAILURE FALLS BACK HERE AND IS REFUSED BY THE CALLER. Returning
   # non-zero instead would read better and cannot be done: two of the three
@@ -15348,6 +15378,7 @@ gate_act_worktree() {
   # two must stay in step: a caller that resolves through here without that
   # pre-check in front of it gets the silent fallback back.
   local wt
+  [ "${GATE_UNDECLARED:-0}" = "1" ] && { printf '%s' "$GATE_UNDECLARED_WT"; return 0; }
   case "${2:-}" in
     ''|-) : ;;
     *) if wt=$(gate_segment_worktree_of_target "$2" "$1"); then
@@ -15692,19 +15723,15 @@ gate_verb_act() {
   # and paths inside it graded `트리밖쓰기`, so the axis that decides which rules
   # apply was answering about a directory the act does not enter.
   #
-  # THE UNDECLARED ARM ASSIGNS TOO, and leaving it out was not a smaller version
-  # of the same thing. With no assignment the variable keeps whatever a parent
-  # gate exported — the parent's tree, never this act's — and both readers below
-  # take it, so "skip the resolution" quietly became "use the parent's tree". An
-  # undeclared alias has no row to resolve, so the `--worktree` the caller named
-  # is the only answer there is; the registration above already required it to be
-  # a directory holding a git tree, and checking that twice would only let the
-  # two spellings drift apart.
-  if [ "${GATE_UNDECLARED:-0}" != "1" ]; then
-    GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
-  else
-    GATE_ACT_CWD="$worktree"
-  fi
+  # THE UNDECLARED ARM RESOLVES THROUGH THE SAME CALL, and that is what makes
+  # this one line rather than two branches. The undeclared arm used to assign
+  # `$worktree` here directly, which fixed the act's own cwd and nothing else:
+  # `gate_act_worktree` still answered empty for an alias with no target row, so
+  # the grading base, the tree root, the approval id's fourth field and the
+  # freeze/staleness probe each resolved somewhere the act was not. Registration
+  # now records that worktree beside the undeclared flag and the resolver
+  # returns it, so all four readers and this assignment take one value.
+  GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
   export GATE_ACT_CWD
 
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
@@ -15886,13 +15913,22 @@ gate_verb_act() {
   # disagree — `gate_act_worktree` is a pure resolver and `gate_act_worktree`'s own
   # comment requires its three readers to resolve identically.
   #
-  # `grade` AND AN UNDECLARED TARGET KEEP TODAY'S BEHAVIOUR, and that is the
-  # correct base for both rather than a fallback failure. `grade` answers about
-  # the caller, and an undeclared target's act stays in the caller's directory
-  # because there is no row to read — both leave `GATE_GRADE_CWD` empty and fall
-  # to `$PWD` in `gate_grade_cwd()`. Refusing when the value is absent would refuse
-  # every undeclared act instead, which is a different decision than this one.
-  if [ "$verb" != "grade" ] && [ "${GATE_UNDECLARED:-0}" != "1" ]; then
+  # `grade` KEEPS TODAY'S BEHAVIOUR, and that is the correct base for it rather
+  # than a fallback failure. `grade` answers about the caller, so it leaves
+  # `GATE_GRADE_CWD` empty and falls to `$PWD` in `gate_grade_cwd()`. Refusing
+  # when the value is absent would refuse every `grade` instead, which is a
+  # different decision than this one.
+  #
+  # AN UNDECLARED TARGET IS NO LONGER EXCLUDED. It was, on the reasoning that
+  # its act "stays in the caller's directory because there is no row to read" —
+  # but the act did not stay there: the assignment above put it in the
+  # `--worktree` the caller named, while this block left the base empty and
+  # `gate_grade_cwd()` fell to `$PWD`. So the base and the tree root answered
+  # about the gate's own directory while the act ran elsewhere, and a relative
+  # write under an undeclared target graded `워크트리쓰기` wherever it landed.
+  # `gate_act_worktree` now answers for the undeclared arm too, so the base
+  # takes the same value the act runs in.
+  if [ "$verb" != "grade" ]; then
     local actwt
     actwt=$(gate_act_worktree "$alias" "$segment")
     if [ -n "$actwt" ]; then
@@ -17033,6 +17069,11 @@ gate_undeclared_target() {
   GATE_MERGE_INDEX=$(cutpoint_index '머지') || return "$GATE_EXIT_VOCAB"
   export GATE_TARGET_CUTPOINT GATE_TARGET_INDEX GATE_ACT_INDEX GATE_MERGE_INDEX
   GATE_UNDECLARED=1
+  # The tree this alias's acts run in, recorded where the flag is set so that
+  # `gate_act_worktree` can answer for an alias that has no target row. `$wt`
+  # is already known to be a directory holding a git tree — the layer-0 checks
+  # above required it and `gate_common_git_of_dir` read it.
+  GATE_UNDECLARED_WT="$wt"
   return 0
 }
 
@@ -17132,10 +17173,21 @@ gate_act_approval_fresh() {
   # THE TREE IT NAMED IS THE ONE THE ACT RUNS IN, resolved through
   # gate_act_worktree — the same call the issuer freezes through, so the two
   # sides cannot drift apart.
-  local frag cur
+  # AN UNRESOLVED TREE FALLS TO THE UNMEASURABLE ARM, it does not `cd` into
+  # nothing. `cd ""` SUCCEEDS and leaves the shell where it was, so an empty
+  # resolution used to read the GATE'S OWN head and compare a stranger's sha
+  # against this approval's fragment — a silently wrong answer in both
+  # directions. An empty result is strictly better: it says so and is taken as
+  # fresh, which is what the paragraph above already prescribes.
+  local frag cur wt
   frag=$(gate_act_tuple_head "$1")
   [ -n "$frag" ] || return 0
-  cur=$(cd "$(gate_act_worktree "$2" "${3:-}")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  wt=$(gate_act_worktree "$2" "${3:-}")
+  if [ -n "$wt" ]; then
+    cur=$(cd "$wt" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  else
+    cur=''
+  fi
   [ -n "$cur" ] || {
     warn "could not read a HEAD to check the binding tuple of approval $1 against — this is not a tree that moved, so it is taken as fresh"
     return 0
@@ -17150,9 +17202,12 @@ gate_issue_act_approval() {
   # act-shaped, so staleness is re-derived against the tree it named. The id is
   # derived from the act rather than random, so the same blocked act asked twice
   # produces one pending approval instead of a queue of duplicates.
-  local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head st
+  local alias="$1" seg="$2" cut="$3" grade="$4" argv="$5" id ad base head st wt
   ad=$(printf '%s' "$argv" | shasum -a 256 | cut -d' ' -f1)
-  id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$seg")")
+  # Resolved ONCE and used by both the id and the head below, so the two cannot
+  # answer about different trees.
+  wt=$(gate_act_worktree "$alias" "$seg")
+  id=$(gate_act_approval_id "$alias" "$argv" "$wt")
   # PRESENCE WAS THE WRONG GUARD ONCE THE TUPLE GOT A READER. The id is derived
   # from the alias and the argv and holds no sha, so an approval that has gone
   # stale keeps its id — and a presence check then refused to issue the very
@@ -17170,7 +17225,14 @@ gate_issue_act_approval() {
     *) return 0 ;;
   esac
   base=$(target_field "$alias" '베이스 브랜치')
-  head=$(cd "$(gate_act_worktree "$alias" "$seg")" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  # An unresolved tree leaves the head EMPTY rather than `cd ""`-ing into the
+  # gate's own directory and freezing a stranger's sha into the binding tuple.
+  # `gate_act_approval_fresh` already treats a tuple with no head as fresh.
+  if [ -n "$wt" ]; then
+    head=$(cd "$wt" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
+  else
+    head=''
+  fi
   # THE QUESTION IS A FIXED LITERAL AND THE BLOCK IS STILL WRITTEN: the anchor on
   # the row has to name something, and the close path fills the answer region
   # of this block the same way it does a judgment's.
