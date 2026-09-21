@@ -144,7 +144,9 @@ ORCH_TESTS := \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \
 	scripts/test-stage-supervisor.sh \
-	scripts/test-design-brief.sh
+	scripts/test-design-brief.sh \
+	scripts/test-collect-run-metrics.sh \
+	scripts/test-run-issue-filing.sh
 
 DARWIN_TESTS := \
 	scripts/test-notify-title-oracle.sh

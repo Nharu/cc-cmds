@@ -1158,6 +1158,23 @@ export CC_CLAUDE_BIN="$WORK/bin/claude-noop"
 # that test the map name their own fixture map on the call, which wins over this.
 export CC_GATE_STAGE_POLICY_SOURCES="$WORK/no-such-map"
 
+# THE METRICS ROUND IS INERT FOR THIS WHOLE PROCESS, for the same two reasons.
+# Every verb but `plan` runs the collector from the prelude once the stamp is
+# stale, so without this the first gate call of each state root would run the
+# real collector over a fixture ledger directory and could append a filing row
+# into a ledger whose rows another section counts. And the filing settings file
+# lives under the developer's `~/.config`: a Project number there would send a
+# unit suite to real `gh`. Section 60 names its own collector and settings file
+# on the call, which wins over this; the collector and the filing are measured
+# by their own suites.
+cat > "$WORK/bin/metrics-noop" <<'METRICSNOOP'
+#!/bin/sh
+printf '%s\n' '{"fired":[],"close":[]}'
+METRICSNOOP
+chmod +x "$WORK/bin/metrics-noop"
+export CC_METRICS_COLLECTOR="$WORK/bin/metrics-noop"
+export CC_METRICS_FILING_FILE="$WORK/no-such-metrics-filing"
+
 # `grep -q` on the right of a pipe exits as soon as it matches, which kills the
 # writer with SIGPIPE — and under `pipefail` the whole pipeline then reports
 # failure even though the match was found. GNU sed makes it loud ("couldn't
@@ -18960,6 +18977,103 @@ if [ -n "$p59_shift_settings" ]; then
 else
   bad "59: 교대 설정 변형" "settings/ 아래에 shift 변형이 없다 — 위 단언이 공허하다"
 fi
+
+# ---------------------------------------------------------------------------
+# 60. 계측 필링 관문 — 케이던스·잠금·좌석·plan
+# --- section: 60 | group: base | covers: snapshot, plan | anchors: 60: 첫 진입은 수집기를 부른다, 60: 스탬프 안의 재진입은 부르지 않는다, 60: 잠금이 살아 있으면 부르지 않는다, 60: 스테이지 좌석은 부르지 않는다, 60: plan 은 부르지 않는다, 60: 번호 없음 행이 남는다 ---
+#
+# 게이트 프렐류드가 계측 수집기를 언제 부르고 언제 부르지 않는지를 잰다. 수집기와 그
+# 트리거는 `scripts/test-collect-run-metrics.sh` 가, gh 를 부르는 필링 본체는
+# `scripts/test-run-issue-filing.sh` 가 잰다 — 여기서는 수집기를 호출 수만 세는 스텁으로
+# 바꾸고, 설정 파일에 Project 번호를 두지 않아 gh 에 닿지 않게 한다. 번호가 없을 때
+# 이슈를 만들지 않고 건너뜀 행만 남기는 분기가 곧 이 절의 마지막 단언이다.
+#
+# 이 절은 픽스처를 자기가 만든다(절 59 와 같은 이유 — `--sections 60` 으로 잘라 돌릴 때
+# 앞 절의 변수가 없다).
+# ---------------------------------------------------------------------------
+P60ROOT=$(mktemp -d "$WORK/m60.XXXXXX")
+P60_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P60_PREV" ]; then
+  printf '60: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P60_RID=R60
+P60_MAN="$P60ROOT/$P60_RID.plan.md"
+P60_GRANT="$WT/docs/pipeline-grant/$P60_RID.md"
+P60_LEDGER="$WT/docs/pipeline-run/$P60_RID.md"
+P60_STATE="$P60ROOT/state"
+P60_SROOT="$P60_STATE/cc-cmds"
+P60_STAMP="$P60_SROOT/metrics.stamp"
+P60_LOCK="$P60_SROOT/.metrics.lock"
+P60_CALLS="$P60ROOT/calls"
+P60_COLLECTOR="$P60ROOT/collector-stub"
+P60_CONF="$P60ROOT/metrics-filing"
+sed -e "s/run-id=$P60_PREV;/run-id=$P60_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P60_PREV\$/**런 id**: $P60_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P60_MAN"
+sed "s/R1/$P60_RID/g" "$GBAK" > "$P60_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P60_RID"
+  printf '런 id %s · 계측 필링 관문 픽스처\n' "$P60_RID"
+} > "$P60_LEDGER"
+rm -rf "$P60_STATE"
+mkdir -p "$P60_STATE"
+cat > "$P60_COLLECTOR" <<P60EOF
+#!/usr/bin/env bash
+printf '1\n' >> "$P60_CALLS"
+printf '%s\n' '{"round":1,"at":"2026-01-01T00:00:00Z","repo":"-x","counts":{},"new_runs":[],"probe":"ok","mixed_window":false,"strata":{},"fired":[{"id":"T3","kind":"review","signature":"T3/review","body":"x"}],"close":[],"excluded":{}}'
+P60EOF
+chmod +x "$P60_COLLECTOR"
+printf 'account\ttester\n' > "$P60_CONF"
+
+p60_gate() {
+  # 인프로세스 호출. 수집기·설정 경로는 게이트가 호출 시점에 읽으므로 소싱 시점 입력
+  # 검사에 걸리지 않는다.
+  ( cd "$WT" && XDG_STATE_HOME="$P60_STATE" CC_METRICS_COLLECTOR="$P60_COLLECTOR" \
+      CC_METRICS_FILING_FILE="$P60_CONF" gate_inproc "$@" >/dev/null 2>&1 )
+}
+p60_calls() { if [ -f "$P60_CALLS" ]; then grep -c '' "$P60_CALLS"; else printf 0; fi; }
+p60_rows() { { grep -cF "\`계측 필링 건너뜀\`" "$P60_LEDGER" || true; }; }
+p60_old_stamp() { printf '%s\n' "$(( $(date -u +%s) - 86400 ))" > "$P60_STAMP"; }
+
+# A — 첫 진입.
+p60_gate snapshot --manifest "$P60_MAN"
+check "60: 첫 진입은 수집기를 부른다" "$(p60_calls)" "1"
+check "60: 첫 진입은 스탬프를 쓴다" "$([ -f "$P60_STAMP" ] && printf 있음 || printf 없음)" "있음"
+check "60: 첫 진입이 끝나면 잠금이 풀려 있다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
+check "60: 번호 없음 행이 남는다" "$(p60_rows)" "1"
+check "60: 그 행의 사유는 번호 없음이다" \
+  "$({ grep -F "\`계측 필링 건너뜀\`" "$P60_LEDGER" || true; } | tail -1 | tr '|' '\n' | sed -n 's/^ *사유=//p' | sed 's/[[:space:]]*$//')" "번호 없음"
+
+# B — 스탬프 안의 재진입.
+p60_gate snapshot --manifest "$P60_MAN"
+check "60: 스탬프 안의 재진입은 부르지 않는다" "$(p60_calls)" "1"
+check "60: 부르지 않은 재진입은 행을 남기지 않는다" "$(p60_rows)" "1"
+
+# C — 스탬프는 만료됐지만 잠금이 살아 있다(소유자 줄 없이 방금 만든 디렉터리 — 나이는
+# 디렉터리 mtime 으로 잰다).
+p60_old_stamp
+mkdir -p "$P60_LOCK"
+p60_gate snapshot --manifest "$P60_MAN"
+check "60: 잠금이 살아 있으면 부르지 않는다" "$(p60_calls)" "1"
+
+# D — 잠금이 만료 시간(900초)을 넘겼다.
+fx_age_file "$P60_LOCK" 1800
+p60_gate snapshot --manifest "$P60_MAN"
+check "60: 만료된 잠금은 깨고 부른다" "$(p60_calls)" "2"
+check "60: 깨고 잡은 잠금도 끝에 풀린다" "$([ -d "$P60_LOCK" ] && printf 있음 || printf 없음)" "없음"
+
+# E — 스테이지 좌석.
+p60_old_stamp
+p60_stamp_before=$(cat "$P60_STAMP")
+( CC_PIPELINE_STAGE_ID="$P60_RID#1" CC_PIPELINE_SEGMENT=S60 p60_gate snapshot --manifest "$P60_MAN" )
+check "60: 스테이지 좌석은 부르지 않는다" "$(p60_calls)" "2"
+check "60: 스테이지 좌석은 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" "$p60_stamp_before"
+
+# F — plan.
+p60_gate plan --manifest "$P60_MAN" --kind x --target infra --cutpoint 커밋 -- ls
+check "60: plan 은 부르지 않는다" "$(p60_calls)" "2"
+check "60: plan 은 스탬프를 쓰지 않는다" "$(cat "$P60_STAMP")" "$p60_stamp_before"
 
 # --- epilogue-begin ---
 #

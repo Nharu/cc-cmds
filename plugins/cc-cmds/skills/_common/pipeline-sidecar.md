@@ -636,9 +636,9 @@ Values containing `|` or a newline are fenced per `sidecar.md` §2.5 and the row
 
 Two consequences the schema carries rather than leaving to callers. Long values — a declared file set, a question text, an answer text — are fenced per `sidecar.md` §2.5 or moved to a sidecar, never inlined. And the `prev=` chain field of §3.4a spends roughly 70 of those bytes, so the budget a writer actually has is smaller than the cap suggests.
 
-### 3.2 The row series is closed at twenty
+### 3.2 The row series is closed at twenty-one
 
-> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen`, then `### 3.2 The row series is closed at seventeen`, then `### 3.2 The row series is closed at eighteen` and `### 3.2 The row series is closed at nineteen` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, `교대 기동` as the eighteenth, `경계 억제` as the nineteenth and `pace` as the twentieth. A heading that states a count states a falsehood the moment the count moves, and it has moved six times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
+> **Former heading** (kept here so existing citations still land): `### 3.2 The row series is closed at fourteen`, then `### 3.2 The row series is closed at fifteen`, then `### 3.2 The row series is closed at sixteen`, then `### 3.2 The row series is closed at seventeen`, then `### 3.2 The row series is closed at eighteen`, `### 3.2 The row series is closed at nineteen` and `### 3.2 The row series is closed at twenty` — `handoff` arrived as the fifteenth kind, `의무 종결`·`의무 포기` as the sixteenth and seventeenth, `교대 기동` as the eighteenth, `경계 억제` as the nineteenth, `pace` as the twentieth and `계측 필링 건너뜀` as the twenty-first. A heading that states a count states a falsehood the moment the count moves, and it has moved seven times; every one of those spellings is kept here rather than replaced so a citation written against any of them still lands.
 
 **A writer that needs a kind not on this list extends this definition; it does not improvise one.** The absence of that rule is what produced a ledger whose own sections disagreed about who wrote what.
 
@@ -677,6 +677,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `의무 포기` | `의무 id`(`PO-<8 hex>`) · `표시 동일성`(잘린 라벨, 술어가 읽지 않음) · `처분`(`포기`) · `세그먼트`(닫히는 행에서 승계) · `근거` · `처분 시각` |
 | `교대 기동` | `서수` · `사유` · `대상` · `기록 시각` · `세션 id` · `레인` · `압축 창` |
 | `경계 억제` | `경계` · `사유` · `크레딧 잔량` · `기록 시각` |
+| `계측 필링 건너뜀` | `사유` · `세그먼트` · `트리거` · `기록 시각` |
 | `pace` | `판정` · `이전` · `기준 틱` · `관측` · `사유` |
 
 **The `run` row's three version fields say what code JUDGED the run, and the two beside them say what code was being judged.** `판본` is the pinned commit (`<40hex>` \| `(미상)` \| `(고정 안 함)`), `판본 트리` the pinned plugin subtree's git tree (`<40hex>` \| `(미커밋)` \| `(미상)` \| `(고정 안 함)`), and `판본 다이제스트` the content digest of the copy itself (`<sha256>` \| `(고정 안 함)`). `(고정 안 함)` is not a failure: a run opened before pinning existed, or one opened under the test seam, is deliberately left unpinned, and a reader has to be able to tell that apart from a pin whose value could not be determined. `(미커밋)` means the plugin subtree was dirty when the copy was taken, so no tree object names those bytes.
@@ -761,6 +762,8 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`handoff` is the fifteenth because nothing in the first fourteen can hold an abandoned alternative.** When the routing loop runs as a headless shift rather than as the lead's own session, a shift ends and a successor starts from the snapshot alone — and the snapshot carries progress, not deliberation. `자율 승인` records the decision that was taken and `blocked` records a stop; neither has a place for *what was tried and dropped, and on seeing what*. The morning report asks for exactly that, so without this series the value exists only if a router happens to write it into free-text rationale, where no reader can find it. The row takes `키=값` fields after `--` like `segment` and `cycle` do, grades `읽기`, and — like `blocked`, `종료 절` and a judgment `자율 승인` — does **not** require `--segment`: a shift is an event of the whole run rather than of one segment. Each of the three free-text fields is clipped to 300 characters, which is what keeps the row inside the cap of §3.1a.
 
+**`계측 필링 건너뜀` is the twenty-first because a filing that did not happen has to be told apart from a round with nothing to file.** The gate runs the metrics collector from its prelude (§3.6) and turns what fired into at most one GitHub issue; when it cannot — no observation Project number configured, no write-scoped credential, a GitHub call that failed or an identity that is not the configured account, an instrument issue already open — the trigger would otherwise vanish, and silence reads in the morning as "nothing was wrong". The filings that DID happen go on `자율 승인` rows with `kind=metrics-filing` and `절단점=필링`, because they are decisions the run took. Both rows carry `세그먼트=-` and **no `행위자` field**: a metrics round is an event of the machine's runs rather than of any one segment, and the terminal classifier's fourth condition reads `행위자=스테이지` together with the segment, so a filing row spelled with a stage actor would be counted as a stage's own act on a segment that does not exist. `트리거` is the fired signatures (`<id>/<종류>`, comma separated), clipped like any free text.
+
 ### 3.3 Closed vocabularies
 
 | Field | Values |
@@ -772,6 +775,9 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `자율 승인.자격` | `분리` \| `주변` |
 | `자율 승인.행위자` | `리드` \| `교대` \| `스테이지` |
 | `승인.절단점` | a `CUTPOINTS` token \| `판단` \| `경계` |
+| `계측 필링 건너뜀.사유` | `자격 없음` \| `상한 도달` \| `번호 없음` \| `조회 실패` |
+| `자율 승인.절단점`(filing row) | `필링` — a marker outside the ladder, on the same layer as `판단` and `경계` of `승인.절단점` |
+| `자율 승인.결정`(filing row) | `등록` \| `코멘트` \| `닫힘` |
 | `리뷰 의무.상태` | `미이행` \| `이행` |
 | `리뷰 의무.이행 판정` | `착지·포함` \| `미착지` \| `앵커 없음` |
 | `segment.리뷰 정책` | `선리뷰후머지` \| `선머지후리뷰` \| `리뷰없음` (optional; omission on a later row inherits) |
@@ -898,8 +904,34 @@ The report lives at `<base>/docs/pipeline-run/{runId}.md` — the same `<kind>` 
 - **It must be durable independently of any banner**, because the notification seat's contract does not include delivery confirmation. The report is the source of truth; the banner is a courtesy. Every event writes the report **first** and attempts the banner second — the immediate-notification events included — since a seat with no delivery confirmation can otherwise leave a banner as the only record of something nobody saw.
 - **Two seats raise banners and neither is an agent — the liveness watcher and the adjudication gate.** The prohibition is on a *spawned stage* deciding whether a banner reaches the user, and neither seat is spawned: the watcher is a shell script orphaned to init that outlives the session, and the gate is a shell script the router calls from the session it is already in. What is still not promised is **delivery**. This notifier holds no permission to override a focus mode, and an ordinary focus or sleep schedule suppresses banners and their sounds together; those two facts together — not either one alone — are why **the run may not reach a sleeping user at all**. Nothing downstream may assume it does; the morning report is the whole of the guarantee.
 - **It enumerates every autonomous decision the run RECORDED** — the heading is `기록된 자율 결정`, and the qualifier is measured rather than modest: a stage that improvises and produces output lands as `정상 완료` and writes no row, so a heading promising "every" decision would be false — all `자율 승인` rows grouped by `kind` with decision, rejected alternative and rationale carried verbatim; every fix the ladder auto-adopted; every parked item with its `사유`; and each stage's `종단 부류`.
+- **It also enumerates every `계측 필링 건너뜀` row** with its `사유` and `트리거`, beside the `자율 승인` rows with `절단점=필링` — the ninth item of the rendering enumeration in `autopilot`'s morning report. Where there is none, the report says so: an absent row is "nothing was due or everything was filed", never "the collector found nothing", and the report has to keep those apart.
 
 **The limit is stated with the control.** The report is itself authored by the run, so it is powerless against a run that improvises a decision **and also** omits it from its own report. The conjunction being rarer than either part is the whole of this control's value — it is not a gate, and **the real protection against an irreversible autonomous act remains the permission cutpoint of §2.3.**
+
+### 3.6 The metrics summary beside the ledger
+
+The run metrics collector (`orchestrator/collect-run-metrics.sh`) is run by the gate from its prelude — every verb but `plan`, never from a stage seat, at most once per six hours per state root (stamp `<state root>/metrics.stamp`, one-attempt lock `<state root>/.metrics.lock` with a fifteen-minute expiry). It is the only writer of the five files below; the gate reads its stdout and nothing else.
+
+| File | Where | What |
+| --- | --- | --- |
+| summary | `<base>/docs/pipeline-run/metrics.json` | the aggregate over every collected run, keys sorted, **no timestamps** |
+| start marker | `<base>/docs/pipeline-run/metrics.json.pending` | created empty when a round starts, removed after the summary is renamed into place; one left behind is a round that died |
+| per-run record | `<base>/docs/pipeline-run/metrics/<run-id>.json` | one per collected run, written once and not rewritten |
+| unfiled | `<base>/docs/pipeline-run/metrics.unfiled/<issue number>.md` | an issue that was created but could not be added to the Project, with the command that adds it |
+| round journal | `<state root>/metrics/<repo-key>/rounds.jsonl` | append-only, one line per round; `repo-key` is the repo base's absolute path with `/` turned into `-` |
+
+**The summary carries no timestamps so that the same input gives the same bytes.** Two rounds over the same runs then leave the file byte-identical, and a changed summary always means changed input. **Round numbers, consecutive counts and times live only in the journal**, and the journal is the only source the trend trigger reads for its baseline and its run of bad or good rounds — a counter kept anywhere else could disagree with the lines it summarises. The stamp, the lock and the journal sit beside the reaper's root but are not reaped: the reaper walks `run/` only.
+
+The population is every ledger in the directory whose run is `종단` or `버려짐` by the same state function the snapshot uses; a round with a run in that population that could not be collected judges nothing.
+
+**The filing settings file is `~/.config/cc-cmds/metrics-filing`** (`${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/metrics-filing`). Lines are `key<TAB>value`, read with `awk` and never sourced, and two keys are recognised:
+
+- `project` — the number of the observation-only GitHub Project that instrument issues are added to. Anything but digits reads as absent. **While it is absent no issue is created at all** and the round writes `계측 필링 건너뜀 | 사유=번호 없음` instead.
+- `account` — the GitHub login the write-scoped credential must resolve to. A credential that resolves to anything else is `사유=조회 실패`, not a filing under the wrong name.
+
+The file holds no credential; the token comes from `credentials.sh` as it does for every other write.
+
+**Instrument issues are an exception to the repository's autopilot tracking rule, and the exception is deliberate.** Issues labelled `cc-metrics` are added to the observation-only Project named by `project` and **not** to the autopilot Project the repository instructions say every autopilot defect goes to. They are measurements of the compaction window and of the collector itself, filed by a machine at most once per round; putting them on the work queue would bury the human-filed items that queue exists for. A later session must not "fix" this by moving them onto the autopilot Project.
 
 ---
 

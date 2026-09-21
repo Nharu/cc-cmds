@@ -7536,9 +7536,52 @@ readonly GATE_REAP_RETENTION=2592000
 readonly GATE_REAP_MAX=20
 readonly GATE_REAP_BUDGET_S=12
 readonly GATE_REAP_INTERVAL=21600
+# The metrics collector shares the reaper's cadence and lock SHAPE, not its
+# state: a separate stamp, a separate lock directory, so neither cycle can
+# switch the other off. Same interval because both are "once in a while, from
+# whichever gate call happens to be first", and the same expiry because a
+# collector that died mid-round is the same kind of stale holder.
+readonly GATE_METRICS_INTERVAL=21600
+readonly GATE_METRICS_LOCK_TTL=900
 
 gate_reap_root() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
+}
+
+gate_metrics_stamp() {
+  printf '%s' "$(gate_reap_root)/metrics.stamp"
+}
+
+gate_metrics_lockdir() {
+  printf '%s' "$(gate_reap_root)/.metrics.lock"
+}
+
+gate_metrics_config_file() {
+  printf '%s' "${CC_METRICS_FILING_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/metrics-filing}"
+}
+
+gate_metrics_config() {
+  # gate_metrics_config <key> — one value from the filing settings file, or
+  # empty. `키<TAB>값` lines, the same shape as `plugin-pin`, and READ WITH awk
+  # RATHER THAN SOURCED: the file sits in the user's config directory beside
+  # credential files, and sourcing would execute whatever is there. Only the
+  # two known keys are answered; `project` must be all digits or it reads as
+  # absent, because a Project number is the only thing it can be.
+  local f v
+  f=$(gate_metrics_config_file)
+  [ -f "$f" ] || return 0
+  case "$1" in project|account) ;; *) return 0 ;; esac
+  v=$(awk -F'\t' -v k="$1" '$1 == k { v = $2 } END { printf "%s", v }' "$f" 2>/dev/null || true)
+  if [ "$1" = "project" ]; then
+    printf '%s' "$v" | grep -Eq '^[0-9]+$' || v=""
+  fi
+  printf '%s' "$v"
+}
+
+gate_metrics_collector() {
+  # Resolved at CALL time, not at source time, so a test that sources this file
+  # in-process can still point it at a stub.
+  printf '%s' "${CC_METRICS_COLLECTOR:-$GATE_DIR/collect-run-metrics.sh}"
 }
 
 gate_reap_day_epoch() {
@@ -9835,6 +9878,10 @@ gate_main() {
   # no cleanup, and it cannot go stale because it cannot outlive the call.
   GATE_SETTLED_SEGMENTS=""
   [ "$verb" = "plan" ] || gate_settle_lost_dispatches
+  # The metrics round rides the same prelude for the same reason and is kept
+  # out of `plan` by the same contract; it is stamped, so almost every call
+  # stops at one read.
+  [ "$verb" = "plan" ] || gate_metrics_cycle
 
   case "$verb" in
     digest-path)
@@ -17542,6 +17589,239 @@ gate_settle_lost_dispatches() {
           "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken" \
           "$RUN_DIR/$seg.window"
     GATE_SETTLED_SEGMENTS="$GATE_SETTLED_SEGMENTS $seg"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Run metrics — the collector round and the filing it feeds.
+#
+# The collector (`collect-run-metrics.sh`) reads every finished run's ledger,
+# stream logs and transcripts and prints one journal line per round; the
+# trigger predicates are ITS output. This side only decides whether a round is
+# due, runs it as a separate process, and turns what fired into at most one
+# GitHub issue per round. Nothing here reads a transcript or computes a number.
+# ---------------------------------------------------------------------------
+
+gate_metrics_lock() {
+  # gate_metrics_lock <root> — one attempt, no waiting, the reaper's lock shape
+  # (owner line straight after the `mkdir`, the directory's mtime when the line
+  # is unreadable, broken after `GATE_METRICS_LOCK_TTL`). Its own directory, so
+  # a stuck collector cannot switch the reaper off or the other way round.
+  local root="$1" lock owner ots now
+  lock="$root/.metrics.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+    return 0
+  fi
+  owner=$(cat "$lock/owner" 2>/dev/null || true)
+  ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+  [ -n "$ots" ] || ots=$(gate_mtime "$lock")
+  [ -n "$ots" ] || return 1
+  now=$(date -u +%s)
+  [ $((now - ots)) -ge "$GATE_METRICS_LOCK_TTL" ] || return 1
+  rm -rf "$lock" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lock/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_metrics_unlock() {
+  # One rename, then the removal — the same release as the reaper's, so no
+  # moment exists in which the lock stands without its owner line.
+  local lock dead
+  lock="$1/.metrics.lock"
+  dead="$lock.dead.$$"
+  if mv "$lock" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
+  return 0
+}
+
+gate_metrics_cycle() {
+  # Called from the prelude on every verb but `plan`. Always returns 0: a
+  # metrics round is never a reason for the verb the caller asked for to fail.
+  #
+  # THE ORDER IS FIXED. (1) A stage seat does nothing, not even the stamp — a
+  # stage has no business spending its turn on a collector round, and a stamp it
+  # wrote would silence the router's round for six hours. (2) The cadence stamp
+  # is one cheap read. (3) The lock is one attempt. (4) The stamp is written
+  # BEFORE the collector runs, so a collector that dies does not make every
+  # following gate call retry it; the leftover `.pending` beside the summary is
+  # the evidence. (5) Nothing fired and nothing to close is the end, with no
+  # row.
+  local root stampf stamp now ledger_dir collector out rc line
+  cc_caller_is_stage && return 0
+  [ -n "${LEDGER:-}" ] || return 0
+  ledger_dir=$(dirname "$LEDGER")
+  [ -d "$ledger_dir" ] || return 0
+  root=$(gate_reap_root)
+  stampf=$(gate_metrics_stamp)
+  now=$(date -u +%s)
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    return 0
+  fi
+  mkdir -p "$root" 2>/dev/null || return 0
+  gate_metrics_lock "$root" || return 0
+  # Read again inside the lock: two gates that both saw an expired stamp would
+  # otherwise run the round one after the other, and file twice.
+  stamp=$(sed -n '1s/^\([0-9][0-9]*\)$/\1/p' "$stampf" 2>/dev/null || true)
+  if [ -n "$stamp" ] && [ $((now - stamp)) -lt "$GATE_METRICS_INTERVAL" ]; then
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  printf '%s\n' "$now" > "$stampf" 2>/dev/null || true
+  collector=$(gate_metrics_collector)
+  out=$(bash "$collector" --ledger-dir "$ledger_dir" --state-root "$root" 2>/dev/null); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "계측 회차 실패 — 수집기 rc=$rc (다음 회차에 다시 센다)"
+    gate_metrics_unlock "$root"
+    return 0
+  fi
+  line=$(printf '%s\n' "$out" | sed -n '$p')
+  gate_metrics_file "$line" "$ledger_dir" || true
+  gate_metrics_unlock "$root"
+  return 0
+}
+
+gate_metrics_skip() {
+  # gate_metrics_skip <사유> <signatures> — the row that says filing did not
+  # happen. Without it an unfiled trigger and a round with nothing to file read
+  # the same in the morning.
+  gate_append '계측 필링 건너뜀' "사유=$1" "세그먼트=-" \
+    "트리거=$(gate_row_safe "${2:--}" 240)" "기록 시각=$(now_iso)" || true
+}
+
+gate_metrics_gh_write() {
+  # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
+  # WRITE-scoped credential, exported inside a subshell only, so the token
+  # neither outlives the call nor appears on any argv. `gh auth switch` is never
+  # the answer: it changes the machine's account for every other process.
+  local base="$1" tok="$2"; shift 2
+  (
+    export GH_TOKEN="$tok"
+    export GITHUB_TOKEN=""
+    cd "$base" 2>/dev/null || exit 1
+    gh "$@"
+  )
+}
+
+gate_metrics_row() {
+  # gate_metrics_row <결정> <issue number> <signatures> <revert verb> <reason>
+  gate_append '자율 승인' "kind=metrics-filing" "결정=$1" "대상=${alias:--}" "세그먼트=-" \
+    "절단점=필링" "유도 절단점=-" "등급=1" "기준=계측 트리거 $(gate_row_safe "$3" 200)" \
+    "되돌리는 법=gh issue $4 $2" "근거=$(gate_row_safe "$5" 240)" || true
+}
+
+gate_metrics_file() {
+  # gate_metrics_file <journal line> <ledger dir> — what fired becomes at most
+  # one issue; what the collector judged recovered is closed.
+  #
+  # THE SKIP REASONS ARE FOUR AND CLOSED: `번호 없음` (no observation Project
+  # number configured, so no issue is created at all — an issue that lands in
+  # no Project is invisible to the triage it exists for), `자격 없음` (no
+  # write-scoped credential), `조회 실패` (the write credential's identity is
+  # not the configured account, or a GitHub call failed), `상한 도달` (an
+  # instrument issue is already open). A failure to add a created issue to the
+  # Project is NOT a skip: the issue stands, the missing step is written beside
+  # the ledger as a command, and the filing row is still written.
+  #
+  # `gh issue reopen` is not called anywhere — a closed instrument issue that
+  # fires again is a new issue, and reopening is a human's call.
+  local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
+  local list nopen open_t6 others tmp url num sig round body_lines title
+  base=$(dirname "$(dirname "$ledger_dir")")
+  # A line that is not one JSON object is no round at all. Without this an
+  # empty line reads as an empty count, the zero test below fails as an error
+  # rather than as false, and a skip row would name a trigger that never fired.
+  printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || return 0
+  fired=$(printf '%s' "$line" | jq -c '.fired // []' 2>/dev/null) || return 0
+  close=$(printf '%s' "$line" | jq -c '.close // []' 2>/dev/null) || return 0
+  nf=$(printf '%s' "$fired" | jq 'length')
+  nc=$(printf '%s' "$close" | jq 'length')
+  [ "$nf" -eq 0 ] && [ "$nc" -eq 0 ] && return 0
+  sigs=$(printf '%s' "$fired" | jq -r '[.[].signature] | join(",")')
+  [ -n "$sigs" ] || sigs=$(printf '%s' "$close" | jq -r 'join(",")')
+  round=$(printf '%s' "$line" | jq -r '.round // "-"')
+  project=$(gate_metrics_config project)
+  if [ -z "$project" ]; then gate_metrics_skip '번호 없음' "$sigs"; return 0; fi
+  tok=$(cred_write_token 2>/dev/null) || tok=""
+  if [ -z "$tok" ]; then gate_metrics_skip '자격 없음' "$sigs"; return 0; fi
+  account=$(gate_metrics_config account)
+  login=$(gate_metrics_gh_write "$base" "$tok" api user --jq .login 2>/dev/null) || login=""
+  if [ -z "$login" ] || [ "$login" != "$account" ]; then
+    gate_metrics_skip '조회 실패' "$sigs"; return 0
+  fi
+  list=$(GATE_ACT_CWD="$base" gate_run_readonly gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
+    || { gate_metrics_skip '조회 실패' "$sigs"; return 0; }
+  nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_skip '조회 실패' "$sigs"; return 0; }
+
+  body_lines=$(printf '%s' "$fired" | jq -r '.[] | "- `\(.signature)` — \(.body)"')
+  tmp=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-issue.XXXXXX") || return 0
+  if [ "$nf" -gt 0 ]; then
+    {
+      printf '런 계측 수집기의 회차 %s 에서 다음 트리거가 발화했다.\n\n' "$round"
+      printf '%s\n\n' "$body_lines"
+      printf -- '- 이 회차에 새로 수집된 런: %s\n' "$(printf '%s' "$line" | jq -r '.new_runs | join(", ")')"
+      printf -- '- 수집 수: %s\n' "$(printf '%s' "$line" | jq -c '.counts')"
+      printf -- '- 요약 파일: `%s/metrics.json`\n' "$ledger_dir"
+    } > "$tmp"
+    if [ "$nopen" -gt 0 ]; then
+      # An open T6 issue takes the other triggers as a comment: T6 is the slow
+      # verdict about the window value, and a defect-shaped trigger arriving
+      # while it is open is evidence about the same instrument, not a second
+      # thread. Anything else open is the cap.
+      open_t6=$(printf '%s' "$list" | jq -r '[.[] | select(.title | startswith("[cc-metrics] T6/"))][0].number // empty')
+      others=""
+      if [ -n "$open_t6" ]; then
+        others=$(printf '%s' "$list" | jq -r --argjson f "$fired" --argjson n "$open_t6" \
+          '(.[] | select(.number == $n) | .title | ltrimstr("[cc-metrics] ")) as $t
+           | [$f[].signature | select(. != $t)] | join(",")')
+      fi
+      if [ -n "$open_t6" ] && [ -n "$others" ]; then
+        if gate_metrics_gh_write "$base" "$tok" issue comment "$open_t6" --body-file "$tmp" >/dev/null 2>&1; then
+          gate_metrics_row '코멘트' "$open_t6" "$others" close "$body_lines"
+        else
+          gate_metrics_skip '조회 실패' "$sigs"
+        fi
+      else
+        gate_metrics_skip '상한 도달' "$sigs"
+      fi
+    else
+      sig=$(printf '%s' "$fired" | jq -r '.[0].signature')
+      title="[cc-metrics] $sig"
+      url=$(gate_metrics_gh_write "$base" "$tok" issue create --title "$title" \
+              --label cc-metrics --body-file "$tmp" 2>/dev/null | sed -n '$p') || url=""
+      num=$(printf '%s' "$url" | sed -n 's#.*/issues/\([0-9][0-9]*\)$#\1#p')
+      if [ -z "$num" ]; then
+        gate_metrics_skip '조회 실패' "$sigs"
+      else
+        if ! gate_metrics_gh_write "$base" "$tok" project item-add "$project" --owner "$account" --url "$url" >/dev/null 2>&1; then
+          mkdir -p "$ledger_dir/metrics.unfiled" 2>/dev/null || true
+          {
+            printf '# 이슈 #%s 를 관측 Project 에 담지 못했다\n\n' "$num"
+            printf '이슈는 만들어졌고 Project 담기만 실패했다. 아래 명령으로 담는다.\n\n'
+            printf '```\ngh project item-add %s --owner %s --url %s\n```\n' "$project" "$account" "$url"
+          } > "$ledger_dir/metrics.unfiled/$num.md" 2>/dev/null || true
+        fi
+        gate_metrics_row '등록' "$num" "$sigs" close "$body_lines"
+      fi
+    fi
+  fi
+  rm -f "$tmp"
+
+  # Closing uses the list read above. A signature is closed only when the
+  # collector put it in `close` (three consecutive good rounds from the
+  # journal) — one good round never closes anything.
+  for sig in $(printf '%s' "$close" | jq -r '.[]'); do
+    num=$(printf '%s' "$list" | jq -r --arg t "[cc-metrics] $sig" '[.[] | select(.title == $t)][0].number // empty')
+    [ -n "$num" ] || continue
+    if gate_metrics_gh_write "$base" "$tok" issue close "$num" >/dev/null 2>&1; then
+      gate_metrics_row '닫힘' "$num" "$sig" reopen "같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다"
+    else
+      log "계측 이슈 #$num 닫기 실패 — 다음 회차에 다시 본다"
+    fi
   done
   return 0
 }
