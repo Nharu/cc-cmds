@@ -12351,6 +12351,16 @@ gate_rundir_write_guard() {
         # an argument. Allowing the directory opens nothing beyond `halt/*`, which
         # is already allowed, and `halt/*/*` is refused above.
         halt) continue ;;
+        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
+        # the implementation arm's token writes, the audit's reconciliation pass
+        # and the re-convergence pass — wraps the write in `lockf -k -t 0
+        # "$RUN_DIR/designdoc.lock"`, and this list did not know the name, so a
+        # re-convergence stage stopped at the lock before its one edit. Measured:
+        # the stage halted `gate-unanswerable` with its edit prepared and unapplied.
+        # Safe on the witness exception's terms: the file does not exist when the
+        # run opens, the enforcement-surface digest does not read it, and `lockf
+        # -k` leaves it empty. The exact name only — nothing beneath it.
+        designdoc.lock) continue ;;
         */*) ;;
         *.plan.md) continue ;;
       esac
