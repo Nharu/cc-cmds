@@ -318,13 +318,32 @@ rm -f "$STATE_ROOT/metrics.stamp"; : > "$GH_LOG"
 snap
 check "7: 열린 목록에 없는 서명의 닫기 제안은 무동작이다" "$(ghcount '| issue close ')" "0"
 
-# 조기 반환 경로는 닫기 루프에 이르지도 못한다 — 그 회차의 닫기는 통째로 흘러간다.
+# 조기 반환 경로는 닫기 루프에 이르지도 못한다 — 그 회차의 닫기는 통째로 흘러간다. 그러나
+# 건너뜀 행은 남기지 않는다: 그 행의 뜻은 「등록하지 못했다」인데 닫기만 있는 회차에는
+# 등록할 것이 없고, 닫기가 매 회차 다시 오는 상태 진술이라 이 행을 남기면 Project 번호가
+# 없는 동안 6시간마다 영구히 쌓여 진짜 미등록 신호와 구별되지 않는다.
 fresh; round - T2/review
 printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
 printf 'account\ttester\n' > "$WORK/metrics-filing"
 snap
 check "7: Project 번호가 없으면 닫기도 부르지 않는다" "$(ghcount '| issue close ')" "0"
-check "7: 그 회차는 번호 없음 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "번호 없음"
+check "7: 닫기만 있는 회차는 번호 없음 건너뜀 행을 남기지 않는다" "$(nrows "$(skip_rows)")" "0"
+check "7: 닫기만 있는 회차는 필링 행도 남기지 않는다" "$(nrows "$(file_rows)")" "0"
+fresh; round - T2/review
+( export CC_GATE_TOKEN_RW="" CC_GATE_KEYCHAIN="cc-cmds-no-such-keychain-$$"; snap )
+check "7: 닫기만 있는 회차는 자격 없음 건너뜀 행도 남기지 않는다" "$(nrows "$(skip_rows)")" "0"
+fresh; round - T2/review
+: > "$WORK/gh-fail/issue-list"
+snap
+check "7: 닫기만 있는 회차는 조회 실패 건너뜀 행도 남기지 않는다" "$(nrows "$(skip_rows)")" "0"
+# 발화와 닫기가 한 회차에 함께 오면 건너뜀 행은 남되, 트리거 필드는 발화한 서명만 나른다 —
+# 닫기 목록은 수집기가 사라졌다고 판정한 것이지 발화한 것이 아니다.
+fresh; round T3/review T2/review
+printf 'account\ttester\n' > "$WORK/metrics-filing"
+snap
+sr=$(skip_rows)
+check "7: 발화가 함께 있는 회차는 번호 없음 건너뜀 행을 남긴다" "$(field "$sr" '사유')" "번호 없음"
+check "7: 그 행의 트리거는 발화한 서명만 나르고 닫기 서명은 싣지 않는다" "$(field "$sr" '트리거')" "T3/review"
 
 # 수집기가 rc 0 으로 끝났는데 회차 줄이 비었거나 JSON 이 아니면 회차가 없는 것이다 —
 # 번호 없음 설정에서도 건너뜀 행이 남으면 발화하지 않은 트리거를 적은 셈이 된다.

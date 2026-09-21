@@ -323,7 +323,7 @@ cm_collect_run() {
   local rid="$1" ledger="$2" rd="$3" state="$4" out="$5"
   local tmp row seg st kind ver attempt sid class win has_win lane wint wsrc stream_f stream
   local sess_dir seen_sids seen_streams="" sess_json dup an rejected=0 unemp=0 unk=0 sw p0 mism="" wins_seen
-  local rowidx odup okey kind0 class0 lane0
+  local rowidx odup okey okey_t6 kind0 class0 lane0 win0 wint0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-run.XXXXXX") || return 1
   sess_dir="$tmp/sess"; mkdir -p "$sess_dir"
   : > "$tmp/stages.jsonl"; : > "$tmp/shifts.jsonl"; : > "$tmp/p0.tsv"
@@ -343,12 +343,14 @@ ROWS
 
   seen_sids=""
   wins_seen=""
-  # cm_row_emit <행> <종류 덮어쓰기> <출력 파일> <스트림 JSON> <귀속 dup> — stage-result 와
-  # 교대 기동 행의 공통 경로. 교대 행은 종류 `shift` 로 들어오고 스트림 로그를 읽지 않는다.
-  # 스트림 봉투와 귀속 여부는 호출자가 정해 넘긴다 — 한 세션의 자료를 어느 시도가 갖는지는
-  # 행 하나만 보고는 정할 수 없고, 다섯째 인자가 비면 등장 순서로 정한다(교대 행).
+  # cm_row_emit <행> <종류 덮어쓰기> <출력 파일> <스트림 JSON> <귀속 dup> <소유자 A 키>
+  # <소유자 T6 키> — stage-result 와 교대 기동 행의 공통 경로. 교대 행은 종류 `shift` 로
+  # 들어오고 스트림 로그를 읽지 않는다. 스트림 봉투와 귀속 여부는 호출자가 정해 넘긴다 —
+  # 한 세션의 자료를 어느 시도가 갖는지는 행 하나만 보고는 정할 수 없고, 다섯째 인자가
+  # 비면 등장 순서로 정한다(교대 행). 뒤의 두 키는 자료를 가진 행의 층 키이며 이 행이
+  # 어느 소비자의 층에서 그 행과 겹치는지를 가른다.
   cm_row_emit() {
-    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" owner_key="$6" seen_dup=false
+    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" owner_key="$6" owner_key_t6="$7" seen_dup=false
     seg=$(cm_field "$row" '세그먼트'); st=$(cm_field "$row" '스테이지')
     if [ -n "$kind_override" ]; then kind="$kind_override"; else kind=$(cm_field "$row" '종류'); fi
     [ -n "$kind" ] || kind="-"
@@ -416,12 +418,21 @@ ROWS
     jq -cn --arg seg "$seg" --arg st "$st" --arg kind "$kind" --arg attempt "$attempt" --arg sid "$sid" \
       --arg class "$class" --arg win "$win" --argjson has_win "$has_win" --arg wint "$wint" --arg wsrc "$wsrc" \
       --arg lane "$lane" --argjson stream "$stream" --argjson an "$an" --arg p0 "$p0" --argjson dup "$dup" \
-      --arg okey "$owner_key" '
+      --arg okey "$owner_key" --arg okeyt6 "$owner_key_t6" '
       ($kind + "|" + $class + "|" + $lane) as $self_key
+      | (if $wint == "" then "" else ($kind + "|" + $wint) end) as $self_key_t6
       # 벽시계 귀속을 누르는 것은 「같은 세션」이 아니라 「같은 층의 같은 세션」이다. 같은
       # 층이면 전사 구간이 이미 두 시도를 덮고 있어 같은 초가 두 번 세어지지만, 다른 층이면
       # 이 행의 스트림 소요는 그 층에 대한 독립 관측이라 누르면 그 층이 잴 것을 잃는다.
+      #
+      # 그런데 「같은 층」은 소비자마다 다른 키 공간이다 — A 집계는 (종류, 종단 부류, 레인)
+      # 으로 묶고 T6 은 (종류, 실효 창) 으로 묶으므로, A 집계에 다른 층인 두 행이 T6 에는
+      # 같은 층일 수 있다. 그 경우 A 축에서 누르면 A 층이 잴 것을 잃고, 누르지 않으면 T6 층
+      # 분모가 같은 초를 두 번 센다. 그래서 두 축을 따로 판정하고 어느 축에서 눌렸는지를
+      # 출처에 적는다 — T6 축에서만 눌린 행은 값을 그대로 들고 T6 의 분모에서만 빠진다.
       | ($dup and $an.owner_wall and $okey == $self_key) as $owned_here
+      | ($dup and $an.owner_wall and ($owned_here | not)
+         and $okeyt6 != "" and $okeyt6 == $self_key_t6) as $owned_here_t6
       | {segment: $seg, stage: $st, kind: $kind,
        attempt: (if $attempt == "" then null else ($attempt | tonumber) end),
        session_id: $sid, session_unknown: ($sid == "미상"), session_dup: $dup,
@@ -437,9 +448,11 @@ ROWS
        wall_ms: (if $an.wall_ms != null then $an.wall_ms
                  elif $owned_here then null
                  else ($stream.duration_ms // null) end),
+       # `stream:owned_t6` 는 값이 스트림 소요이되 T6 층에서는 소유자의 전사 구간이 이미
+       # 덮은 초라는 뜻이다 — A 층은 이 값을 합하고 T6 층은 뺀다.
        wall_source: (if $an.wall_ms != null then "transcript"
                      elif $owned_here then "owned_elsewhere"
-                     elif $stream.duration_ms != null then "stream"
+                     elif $stream.duration_ms != null then (if $owned_here_t6 then "stream:owned_t6" else "stream" end)
                      elif ($dup and $an.owner_wall) then "owned_elsewhere"
                      else "none" end),
        wall_owner: (if ($dup and $an.owner_wall and $okey != "") then $okey else null end),
@@ -454,7 +467,9 @@ ROWS
 
   # 1차 — 행마다 스트림 봉투를 한 번만 읽어 둔다. 종단 줄의 유무가 귀속을 정하므로 귀속
   # 판정보다 먼저 읽어야 한다. 층 키도 여기서 적어 둔다 — 한 세션을 나눠 갖는 두 행이
-  # 같은 층에 드는지 다른 층에 드는지가 아래 벽시계 귀속을 가른다.
+  # 같은 층에 드는지 다른 층에 드는지가 아래 벽시계 귀속을 가른다. 키는 소비자마다 하나씩
+  # 둘이다: A 집계의 (종류, 종단 부류, 레인) 과 T6 의 (종류, 실효 창). 실효 창이 없는 행은
+  # T6 층에 들지 않으므로 그 키를 비운다.
   rowidx=0
   : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"; : > "$tmp/key.tsv"
   while IFS= read -r row; do
@@ -464,7 +479,13 @@ ROWS
     kind0=$(cm_field "$row" '종류'); [ -n "$kind0" ] || kind0="-"
     class0=$(cm_field "$row" '종단 부류'); [ -n "$class0" ] || class0="-"
     lane0=$(cm_field "$row" '레인'); [ -n "$lane0" ] || lane0="-"
-    printf '%s\t%s|%s|%s\n' "$rowidx" "$kind0" "$class0" "$lane0" >> "$tmp/key.tsv"
+    wint0=""
+    if cm_has_field "$row" '압축 창'; then
+      win0=$(cm_field "$row" '압축 창')
+      if cm_window_ok "$win0"; then wint0=$(cm_window_int "$win0"); fi
+    fi
+    printf '%s\t%s|%s|%s\t%s\n' "$rowidx" "$kind0" "$class0" "$lane0" \
+      "$([ -n "$wint0" ] && printf '%s|%s' "$kind0" "$wint0")" >> "$tmp/key.tsv"
     st=$(cm_field "$row" '스테이지'); [ -n "$st" ] || st=$(cm_field "$row" '세그먼트')
     ver=$(cm_field "$row" '실행 버전')
     case "$ver" in ''|*[!0-9]*) attempt="" ;; *) attempt="$ver" ;; esac
@@ -498,21 +519,23 @@ ROWS
     [ -n "$row" ] || continue
     rowidx=$((rowidx + 1))
     sid=$(cm_field "$row" '세션 id')
-    odup=true; okey=""
+    odup=true; okey=""; okey_t6=""
     if [ -z "$sid" ] || [ "$sid" = "미상" ]; then
       odup=false
     elif [ "$(awk -F'\t' -v s="$sid" '$2 == s { print $1 }' "$tmp/owner.tsv")" = "$rowidx" ]; then
       odup=false
     else
-      # 자료를 가진 행의 층 키 — 비운 행이 「여기서 재지 않음」 을 어디로 가리키는지 적는다.
+      # 자료를 가진 행의 층 키 둘 — 비운 행이 「여기서 재지 않음」 을 어디로 가리키는지 적고,
+      # 어느 소비자의 층에서 겹치는지를 판정한다.
       okey=$(awk -F'\t' -v s="$sid" '$2 == s { print $1 }' "$tmp/owner.tsv")
+      okey_t6=$(awk -F'\t' -v r="$okey" '$1 == r { print $3 }' "$tmp/key.tsv")
       okey=$(awk -F'\t' -v r="$okey" '$1 == r { print $2 }' "$tmp/key.tsv")
     fi
-    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup" "$okey"
+    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup" "$okey" "$okey_t6"
   done < "$tmp/rows.txt"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" "" ""
+    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" "" "" ""
   done <<ROWS
 $(cm_ledger_rows "$ledger" '교대 기동')
 ROWS
@@ -631,7 +654,10 @@ cm_triggers() {
          | ($hist | map(.token | numbers)) as $ht
          | ($hist | map(.time | numbers)) as $htime
          | ($hist | map(.p0 | numbers)) as $hp0
-         | ([$g[].wall_ms | select(. != null)]) as $ws
+         # 이 층의 분모. 소유자와 같은 T6 층에 든 형제의 스트림 소요는 소유자의 전사 구간이
+         # 이미 덮은 초라 여기서 빼고, A 집계에서는 그대로 합한다 — 두 소비자의 층 키가
+         # 달라서 같은 행이 한쪽에서는 독립 관측이고 다른 쪽에서는 중복이다.
+         | ([$g[] | select(.wall_source != "stream:owned_t6") | .wall_ms | select(. != null)]) as $ws
          | ($ws | add // 0) as $w
          # 이 층의 자료를 다른 층이 갖고 있는가. 그렇다면 이 층이 평가되지 않는 것은 표본이
          # 없어서가 아니라 다른 키로 재고 있어서이며, 그 둘은 같은 침묵이 아니다 — 앞의 것은

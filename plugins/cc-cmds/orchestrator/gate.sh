@@ -17693,6 +17693,20 @@ gate_metrics_skip() {
     "트리거=$(gate_row_safe "${2:--}" 240)" "기록 시각=$(now_iso)" || true
 }
 
+gate_metrics_absent() {
+  # gate_metrics_absent <사유> <fired count> <fired signatures> — a missing
+  # prerequisite becomes a skip row only when the round fired something. A
+  # close-only round has nothing to file, so "could not file" is not true of
+  # it; and because the collector restates a close every round for as long as
+  # the condition stays gone, writing the row here made it permanent,
+  # six-hourly, and byte-identical to the real signal it exists to carry.
+  if [ "${2:-0}" -gt 0 ]; then
+    gate_metrics_skip "$1" "$3"
+  else
+    log "계측 필링 전제 부재($1) — 이 회차는 닫기만 있어 행을 남기지 않는다"
+  fi
+}
+
 gate_metrics_gh_write() {
   # gate_metrics_gh_write <base> <token> <gh-args>... — `gh` under the
   # WRITE-scoped credential, exported inside a subshell only, so the token
@@ -17741,21 +17755,22 @@ gate_metrics_file() {
   nf=$(printf '%s' "$fired" | jq 'length')
   nc=$(printf '%s' "$close" | jq 'length')
   [ "$nf" -eq 0 ] && [ "$nc" -eq 0 ] && return 0
+  # `트리거` carries the fired signatures and nothing else — never the close
+  # list, which is what the collector judged gone, not what fired.
   sigs=$(printf '%s' "$fired" | jq -r '[.[].signature] | join(",")')
-  [ -n "$sigs" ] || sigs=$(printf '%s' "$close" | jq -r 'join(",")')
   round=$(printf '%s' "$line" | jq -r '.round // "-"')
   project=$(gate_metrics_config project)
-  if [ -z "$project" ]; then gate_metrics_skip '번호 없음' "$sigs"; return 0; fi
+  if [ -z "$project" ]; then gate_metrics_absent '번호 없음' "$nf" "$sigs"; return 0; fi
   tok=$(cred_write_token 2>/dev/null) || tok=""
-  if [ -z "$tok" ]; then gate_metrics_skip '자격 없음' "$sigs"; return 0; fi
+  if [ -z "$tok" ]; then gate_metrics_absent '자격 없음' "$nf" "$sigs"; return 0; fi
   account=$(gate_metrics_config account)
   login=$(gate_metrics_gh_write "$base" "$tok" api user --jq .login 2>/dev/null) || login=""
   if [ -z "$login" ] || [ "$login" != "$account" ]; then
-    gate_metrics_skip '조회 실패' "$sigs"; return 0
+    gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0
   fi
   list=$(GATE_ACT_CWD="$base" gate_run_readonly gh issue list --label cc-metrics --state open --json number,title 2>/dev/null) \
-    || { gate_metrics_skip '조회 실패' "$sigs"; return 0; }
-  nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_skip '조회 실패' "$sigs"; return 0; }
+    || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
+  nopen=$(printf '%s' "$list" | jq 'length' 2>/dev/null) || { gate_metrics_absent '조회 실패' "$nf" "$sigs"; return 0; }
 
   body_lines=$(printf '%s' "$fired" | jq -r '.[] | "- `\(.signature)` — \(.body)"')
   tmp=$(mktemp "${TMPDIR:-/tmp}/cc-metrics-issue.XXXXXX") || return 0

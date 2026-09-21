@@ -649,35 +649,58 @@ check "8: 회차 수는 옛 줄까지 센 줄 수다" "$(jline '.round')" "4"
 # 다른 층의 형제에게서 그 행 자신의 스트림 소요까지 빼앗으면 그 층이 잴 것을 잃는다 — 그러면
 # 층의 벽시계가 0 으로 접혀 T6 이 발화도 닫기도 할 수 없는 상태로 영영 남는다. 누르는 기준은
 # 「같은 세션」이 아니라 「같은 층의 같은 세션」이다.
+#
+# 그리고 「같은 층」은 소비자마다 다르다. A 집계는 (종류, 종단 부류, 레인) 으로 묶지만 T6 은
+# (종류, 실효 창) 으로 묶으므로, 종단 부류만 다른 형제는 A 집계에는 다른 층이고 T6 에는 같은
+# 층이다. A 축에서만 판정하면 그 형제의 스트림 소요가 T6 분모에 소유자의 전사 구간 위로 한 번
+# 더 더해져 시간 항이 내려간다 — 층의 순 토큰이 양수면 발화와 닫기가 함께 지워지고, 0 이하면
+# 토큰 항은 올라가고 시간 항은 내려가 근거 없는 닫기가 도달 가능해진다.
+r9_run() {
+  # r9_run <run-id> — 형제 시도 셋을 가진 런 하나로 한 회차를 돈다. sid-q 의 전사에 압축
+  # 기록 하나(소요 1000ms)를 두어 T6 시간 항이 0 이 아니게 한다.
+  local rid="$1"
+  mk_rundir "$rid"
+  mk_stream "$STATE/run/$rid/log/S1#1.json" 1 - 0.5 1000
+  mk_stream "$STATE/run/$rid/log/S1#2.json" 1 - 0.5 2000
+  mk_stream "$STATE/run/$rid/log/S2#1.json" 1 - 0.5 5000
+  mk_stream "$STATE/run/$rid/log/S2#2.json" 1 - 0.5 7000
+  # S3 의 두 시도는 시도별 로그가 없어 평문 폴백 하나로 접힌다 — 둘째 행은 자기 소요를 갖지 않는다.
+  mk_stream "$STATE/run/$rid/log/S3.json" 1 - 0.5 9000
+  mk_ledger "$rid" \
+    "$(sr_row S1 S1 review 1 "sid-p-$rid" '정상 완료' '300000(argv)' 'laneA')" \
+    "$(sr_row S1 S1 review 2 "sid-p-$rid" '정상 완료' '300000(argv)' 'laneA')" \
+    "$(sr_row S2 S2 review 1 "sid-q-$rid" '크래시' '300000(argv)' 'laneB')" \
+    "$(sr_row S2 S2 review 2 "sid-q-$rid" '정상 완료' '300000(argv)' 'laneB')" \
+    "$(sr_row S3 S3 audit 1 "sid-r-$rid" '크래시' '300000(argv)' 'laneC')" \
+    "$(sr_row S3 S3 audit 2 "sid-r-$rid" '정상 완료' '250000(레인)' 'laneC')" \
+    "$(cycle_row S1 1 0)" "$(cycle_row S2 1 0)" "$(cycle_row S3 1 0)"
+  { tl_assist 300 p1 1000 1000 1000; tl_assist 310 p2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo "sid-p-$rid"
+  { tl_assist 400 q1 1000 1000 1000
+    tl_boundary 405 "sid-q-$rid" "" auto 267000 167000 1000 100000
+    tl_assist 406 q2 1000 1000 1000
+    tl_assist 420 q3 1000 1000 1000
+  } | mk_transcript "$HOME_A" -repo "sid-q-$rid"
+  { tl_assist 500 r1 1000 1000 1000; tl_assist 530 r2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo "sid-r-$rid"
+  collect
+}
 reset_all
 R9=20260909-aaaaaa01
-mk_rundir "$R9"
-mk_stream "$STATE/run/$R9/log/S1#1.json" 1 - 0.5 1000
-mk_stream "$STATE/run/$R9/log/S1#2.json" 1 - 0.5 2000
-mk_stream "$STATE/run/$R9/log/S2#1.json" 1 - 0.5 5000
-mk_stream "$STATE/run/$R9/log/S2#2.json" 1 - 0.5 7000
-# S3 의 두 시도는 시도별 로그가 없어 평문 폴백 하나로 접힌다 — 둘째 행은 자기 소요를 갖지 않는다.
-mk_stream "$STATE/run/$R9/log/S3.json" 1 - 0.5 9000
-mk_ledger "$R9" \
-  "$(sr_row S1 S1 review 1 sid-p '정상 완료' '300000(argv)' 'laneA')" \
-  "$(sr_row S1 S1 review 2 sid-p '정상 완료' '300000(argv)' 'laneA')" \
-  "$(sr_row S2 S2 review 1 sid-q '크래시' '300000(argv)' 'laneB')" \
-  "$(sr_row S2 S2 review 2 sid-q '정상 완료' '300000(argv)' 'laneB')" \
-  "$(sr_row S3 S3 audit 1 sid-r '크래시' '300000(argv)' 'laneC')" \
-  "$(sr_row S3 S3 audit 2 sid-r '정상 완료' '250000(레인)' 'laneC')" \
-  "$(cycle_row S1 1 0)" "$(cycle_row S2 1 0)" "$(cycle_row S3 1 0)"
-{ tl_assist 300 p1 1000 1000 1000; tl_assist 310 p2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-p
-{ tl_assist 400 q1 1000 1000 1000; tl_assist 420 q2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-q
-{ tl_assist 500 r1 1000 1000 1000; tl_assist 530 r2 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-r
-collect
+r9_run "$R9"
 check "9: 같은 층의 형제는 벽시계를 다시 싣지 않는다" \
   "$(jrec "$R9" '.stages[1] | [.wall_ms, .wall_source] | join(",")')" ",owned_elsewhere"
 check "9: 같은 층에 형제가 있어도 층의 벽시계는 소유자 것 하나다" \
   "$(jsum '.strata["review|정상 완료|laneA"].A5.wall_ms')" "10000"
-check "9: 다른 층의 형제는 자기 스트림 소요를 지킨다" \
-  "$(jrec "$R9" '.stages[3] | [.wall_ms, .wall_source] | join(",")')" "7000,stream"
+check "9: A 집계에 다른 층인 형제는 자기 스트림 소요를 지키되 T6 축에서 눌린 것을 출처에 적는다" \
+  "$(jrec "$R9" '.stages[3] | [.wall_ms, .wall_source, .wall_owner] | join(",")')" "7000,stream:owned_t6,review|크래시|laneB"
 check "9: 그 층의 벽시계가 0 으로 접히지 않는다" \
   "$(jsum '.strata["review|정상 완료|laneB"].A5.wall_ms')" "7000"
+check "9: T6 축에서 눌린 행은 A 집계의 비운 행 수에 들지 않는다" \
+  "$(jsum '.strata["review|정상 완료|laneB"].A5.wall_owned_elsewhere')" "0"
+# T6 층 review|300000 의 분모는 sid-p 전사 10000 + sid-q 전사 20000 = 30000 이고, sid-q 형제의
+# 스트림 소요 7000 은 그 전사 구간이 이미 덮은 초라 들지 않는다. 시간 항은 1000/30000 이다 —
+# 형제가 더해지면 1000/37000 이 되어 18.9% 과소가 된다.
+check "9: T6 층의 시간 항 분모는 소유자 전사 구간 합이고 형제의 스트림 소요를 다시 더하지 않는다" \
+  "$(jline '.strata["review|300000"].time * 1000000 | round')" "33333"
 check "9: 전사도 자기 스트림도 없는 형제는 0 이 아니라 여기서 재지 않음이다" \
   "$(jrec "$R9" '.stages[5] | [.wall_ms, .wall_source] | join(",")')" ",owned_elsewhere"
 check "9: 잰 행이 하나도 없는 층의 A5 벽시계는 0 이 아니라 null 이다" \
@@ -688,8 +711,21 @@ check "9: 비운 행의 수를 따로 인쇄한다" \
   "$(jsum '.strata["audit|정상 완료|laneC"].A5.wall_owned_elsewhere')" "1"
 check "9: 자료가 다른 층에 있는 층은 표본 없음이 아니라 그 사유로 적힌다" \
   "$(jline '.strata["audit|250000"].unevaluable')" "owned_elsewhere"
-check "9: 잴 것이 있는 층은 평가되고 사유가 비어 있다" \
-  "$(jline '.strata["review|300000"] | [.evaluated // false, (.unevaluable // "null")] | join(",")')" "false,워밍업"
+check "9: 워밍업 층은 아직 평가되지 않고 사유가 워밍업이다" \
+  "$(jline '.strata["review|300000"].unevaluable')" "워밍업"
+# 저널 층에는 evaluated 가 실리지 않으므로 「평가됨」의 관측 가능한 대리는 unevaluable == null
+# 뿐이다. 같은 형제 구성으로 회차를 셋 더 돌려 워밍업을 벗어나게 한 뒤 그것을 잰다 — 형제만
+# 남은 층이 영영 평가되지 못하던 증상은 이 단언에서만 실패한다.
+r9_run 20260909-aaaaaa02
+r9_run 20260909-aaaaaa03
+check "9: (선행) 선행 회차 둘까지는 워밍업이다" "$(jline '.strata["review|300000"].unevaluable')" "워밍업"
+r9_run 20260909-aaaaaa04
+check "9: 형제 행을 포함한 층이 워밍업을 벗어나면 평가되고 사유가 비어 있다" \
+  "$(jline '.strata["review|300000"].unevaluable')" "null"
+check "9: 그 회차에도 T6 분모는 형제의 스트림 소요를 다시 더하지 않는다" \
+  "$(jline '.strata["review|300000"].time * 1000000 | round')" "33333"
+check "9: 형제 행만 남은 층은 여전히 다른 층이 재는 것으로 적힌다" \
+  "$(jline '.strata["audit|250000"].unevaluable')" "owned_elsewhere"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
