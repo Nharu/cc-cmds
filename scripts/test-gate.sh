@@ -8875,6 +8875,40 @@ graded_as '읽기'         '선행 옵션 없는 lockf 도 감싼 것을 본다'
 graded_as '외부상태변경' '옵션 없는 lockf 도 외부 행위를 세탁하지 않는다' -- lockf /tmp/l.lock curl -X POST https://x
 graded_as '워크트리쓰기' '-t 만 앞선 lockf 의 락파일이 명령으로 읽히지 않는다' -- lockf -t 5 /tmp/l.lock git commit -m x
 
+# 등급표가 래퍼를 벗겨도 **불투명 축**이 벗기지 않으면 그 수리는 절반이다. 불투명이 0
+# 이면 하한도 표지도 아예 계산되지 않으므로, `lockf` 접두 하나로 `외부상태변경` 하한이
+# 사라져 `워크트리쓰기` 선언이 그대로 수용되고 `비밀출력` 표지까지 함께 없어졌다 —
+# 그 표지는 사전 인가가 읽는 값이다. 무인 스킬이 문서 쓰기마다 `lockf` 를 MUST 로
+# 요구하므로 이 접두는 예외적 형태가 아니라 파이프라인이 능동적으로 만드는 형태다.
+# 맨 철자와 답이 **같다**는 것이 단언의 형태이고, 그래서 각 양성에 맨 판이 짝으로 든다.
+opaque_is() {
+  # opaque_is <불투명>/<하한>/<표지> <label> -- <argv...>
+  #
+  # 등급과 달리 이 셋은 자기 동사가 없다 — `gate_argv_opaque` 는 술어이고 하한·표지는
+  # 그 술어가 1 일 때만 도는 블록 안에 있다. 그래서 30c 의 `hist_is` 와 같은 소싱
+  # 시임으로 잰다.
+  local want="$1" label="$2"; shift 3
+  local got
+  got=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    o=$(gate_argv_opaque "$@")
+    f=$(gate_opaque_floor "$@")
+    r=${f#*	}
+    printf "%s/%s/%s" "$o" "${f%%	*}" "${r%%	*}"
+  ' _ "$@" 2>/dev/null)
+  check "$label" "$got" "$want"
+}
+
+opaque_is '1/외부상태변경/' '맨 sh -c 의 네트워크 행위는 하한을 얻는다' -- sh -c 'curl -X POST https://x'
+opaque_is '1/외부상태변경/' 'lockf 접두가 그 하한을 벗겨 내지 않는다'   -- lockf -k -t 0 /tmp/l.lock sh -c 'curl -X POST https://x'
+opaque_is '1/읽기/비밀출력' '맨 sh -c 의 비밀 출력은 표지를 얻는다'     -- sh -c 'aws ssm get-parameter --with-decryption'
+opaque_is '1/읽기/비밀출력' 'lockf 접두가 그 표지를 벗겨 내지 않는다'   -- lockf -k -t 0 /tmp/l.lock sh -c 'aws ssm get-parameter --with-decryption'
+opaque_is '1/트리밖쓰기/'   'nohup 접두도 같다'                          -- nohup sh -c 'rm -rf /tmp/zzz'
+opaque_is '1/외부상태변경/' 'find -exec 로 넘긴 인터프리터도 같다'       -- find . -maxdepth 0 -exec sh -c 'curl -X POST https://x' {} ';'
+# 음성 대조군 — 벗기기가 불투명을 만들어 내지는 않는다. 처방된 두 형태가 그 상한이다.
+opaque_is '0/읽기/' '음성 대조군 — lockf 가 감싼 커밋은 불투명이 아니다'   -- lockf -k -t 0 /tmp/l.lock git commit -m x
+opaque_is '0/읽기/' '음성 대조군 — 무인 스킬이 처방하는 잠금 쓰기도 같다' -- lockf -k -t 0 /tmp/l.lock tee /tmp/doc.md
+
 # --- 30b-1. `command`, `find`, `rg` — 이름이 아니라 감싼 것이 등급을 정한다 ---
 # --- section: 30b-1 | group: base | covers: grade ---
 #
@@ -8902,6 +8936,22 @@ graded_as '워크트리쓰기' 'find -fprint 도 같다'                      --
 graded_as '워크트리쓰기' 'find -fprint0 도 같다'                     -- find . -fprint0 /tmp/out.md
 graded_as '워크트리쓰기' 'find -fls 도 같다'                         -- find . -fls /tmp/out.md
 graded_as '읽기'         '-print 는 표준출력이라 읽기로 남는다'       -- find . -name '*.md' -print
+# `;`/`+` 다음 토큰은 안쪽 명령의 인자가 아니라 **다음 primary** 인데 벗기기가 꼬리로
+# 읽어, 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv 전체가 `읽기` 로
+# 등급됐다 — 그 등급에서 두 쓰기 가드가 첫 줄에 반환하므로 정직한 과잉 선언으로도
+# 닫히지 않았다. 각 양성에 단일 primary 판을 짝으로 두고, 마지막 행이 `-exec` 자체는
+# 여전히 안쪽 명령으로 등급된다는 상한을 고정한다.
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -delete 도 등급된다'     -- find . -name f -exec cat {} \; -delete
+graded_as '워크트리쓰기' '단일 primary 대조군 — -delete 는 그대로다'  -- find . -name f -delete
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -fprintf 도 등급된다'    -- find . -name f -exec cat {} \; -fprintf /tmp/out.md '%p'
+graded_as '워크트리쓰기' '첫 primary 뒤에 온 -exec 머지도 등급된다'   -- find . -name f -exec cat {} \; -exec git merge --no-ff seg \;
+graded_as '읽기'         '읽기 primary 만 여럿이면 계속 읽기다'       -- find . -name f -exec cat {} \; -print
+# `-execdir`·`-okdir` 는 안쪽 명령을 매치마다 그 디렉터리에서 돌린다. 어느 기준으로도
+# 상대 경로의 목적지를 읽을 수 없으므로 「표에 있는데 이 모양으로는 읽을 수 없다」로
+# 답한다 — 선언으로 무마되지 않고 등급 계산 직후 거부된다.
+graded_as '형태 미상'    '-execdir 는 기준을 세울 수 없는 모양이다'   -- find . -execdir git diff --output=x {} \;
+graded_as '형태 미상'    '-okdir 도 같다'                             -- find . -okdir rm {} \;
+graded_as '트리밖쓰기'   '음성 대조군 — 같은 자리의 -exec 는 안쪽 명령으로 등급된다' -- find . -exec git diff --output=x {} \;
 # 여섯 래퍼는 이제 자기 옵션만 소비하고 안의 명령을 등급표에 넘긴다 — 등급·표지·
 # 이력 술어·사다리·불투명 판정 다섯이 같은 풀기를 쓴다. 등급만 풀고 이력 술어를 두면
 # `env X=1 git merge seg` 가 워크트리 쓰기로 등급되면서 「이력을 통합하지 않는다」고
@@ -8975,6 +9025,10 @@ hist_is 0 'revert 는 목록에 들어가지 않는다'           -- git revert 
 # 리뷰 룰이 그 칸에서 다시 면제한다.
 hist_is 1 'command 가 감싼 머지도 검사에 남는다'       -- command git merge --no-ff seg
 hist_is 1 'find -exec 로 넘긴 머지도 검사에 남는다'    -- find . -maxdepth 0 -exec git merge --no-ff seg \;
+# 앞에 한 마디만 있으면 술어도 첫 primary 에서 멈췄다 — 등급과 같은 벗기기를 쓰므로
+# 같은 자리에서 같이 눈이 멀었고, 머지가 리뷰 기록 없이 룰을 지났다.
+hist_is 1 '앞선 primary 뒤의 머지도 검사에 남는다'     -- find . -maxdepth 0 -exec true {} \; -exec git merge --no-ff seg \;
+hist_is 0 '음성 대조군 — 읽기 primary 만 여럿이면 이력 통합이 아니다' -- find . -maxdepth 0 -exec true {} \; -exec cat {} \;
 hist_is 1 'lockf 와 command 를 겹쳐도 검사에 남는다'   -- lockf -k -t 0 /tmp/l.lock command git merge seg
 hist_is 0 'command 가 감싼 읽기는 이력 통합이 아니다'  -- command git status
 hist_is 0 '실행 primary 없는 find 도 이력 통합이 아니다' -- find . -name '*.md'

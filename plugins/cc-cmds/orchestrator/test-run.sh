@@ -5905,6 +5905,67 @@ case "$rr_guard_msg" in
 esac
 rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
 check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+
+# --- 사후 리뷰 수리 8. find 의 primary 는 하나가 아니다 -------------------------
+# 벗기기가 `-exec` 계열을 만나면 **그 뒤 전부**를 안쪽 명령으로 보고 즉시 반환했다.
+# `find` 문법에서 `;`/`+` 다음 토큰은 그 명령의 인자가 아니라 **다음 primary** 인데
+# 꼬리로 읽혔다 — 그래서 쓰기 primary 앞에 `-exec cat {} ';'` 한 마디만 붙이면 argv
+# 전체가 `읽기` 로 등급되고 네 가드가 전부 첫 줄에서 반환했다(실측, 세 리뷰어 독립
+# 재현). 아래 넷은 부류를 둘로 나눈다. 앞 둘은 목적지를 argv 에 **평문 절대 경로**로
+# 적으므로 등급만 넘기면 가드의 전체 경로 팔이 잡고, 뒤 둘은 목적지가 `-C` 기준
+# 상대 경로라 **둘째 기준이 다중 primary 를 지나 서야만** 닫힌다 — 그래서 등급표만
+# 고친 절반 수리는 뒤 둘에서 rc 0 을 남긴다. 등급 쪽 짝은 `scripts/test-gate.sh`
+# 절 30b-1 에 있다. 각 양성 바로 아래에 같은 argv 의 단일 primary 판을 둬, 양성의
+# rc 3 이 「`find` 를 통째로 거부한다」와 구별되게 한다.
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -exec cat {} ';' -delete
+check "설치본 가드: 첫 primary 뒤에 온 -delete 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$RRP_INST/orchestrator" -name nonexistent-9x7 -delete
+check "설치본 가드: 단일 primary 대조군 — 같은 -delete 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -exec cat {} ';' -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 첫 primary 뒤에 온 -fprintf 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -name nonexistent-9x7 -fprintf "$RRP_INST/orchestrator/gate.sh" x
+check "설치본 가드: 단일 primary 대조군 — 같은 -fprintf 는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec true {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 다중 primary 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec echo {} ';' -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 앞선 primary 가 있어도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 다중 primary 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 다중 primary 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: 단일 primary 대조군 — 같은 철자는 그대로 rc 3" "$rr_guard_rc" "3"
+
+# --- 사후 리뷰 수리 9. 기준을 세울 수 없는 모양은 기준이 없는 모양이 아니다 ------
+# `-execdir`·`-okdir` 는 안쪽 명령을 **매치마다 그 디렉터리에서** 돌린다. 벗기기의
+# 계약이 「빈 문자열 = 기준 없음」이고 기준 없음은 허용 방향이라, `-C` 가 없거나
+# `-C .` 이거나 `-okdir` 이거나 맨 이름 피연산자이면 `cb` 가 아예 서지 않아 두 가드가
+# rc 0 으로 통과시켰다(실측). 이제 벗기기가 거부 방향의 제3상태를 답하고 가드가 그것을
+# 「기준 없음」이 아니라 거부로 읽는다. `exec` 경로는 이 argv 를 등급에서 한 걸음 먼저
+# 거부하므로, 아래 행이 재는 것은 가드를 직접 무는 경로다.
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C 없는 -execdir 는 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'each match'"'"'s own directory'*) ok "설치본 가드: -execdir 거부가 기준 불가 팔의 것이다" ;;
+  *) bad "설치본 가드: -execdir 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git -C . diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: -C . 인 -execdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 find "$WORK/other/deep" -maxdepth 0 -okdir rm x {} ';'
+check "설치본 가드: -okdir 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -execdir git diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: -C 없는 -execdir 는 rc 3" "$rr_guard_rc" "3"
+# 음성 대조군 — 같은 자리의 `-exec` 는 기준을 세울 수 있으므로 보호 루트 밖이면 지난다.
+# 없으면 위 넷의 rc 3 이 「`find` 를 통째로 거부한다」와 구별되지 않는다.
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../elsewhere/x" {} ';'
+check "배시 가드: 음성 대조군 — -exec 는 기준이 서고 보호 루트 밖이면 rc 0" "$rr_guard_rc" "0"
 unset RR_G_CWD
 
 # 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.

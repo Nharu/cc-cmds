@@ -1261,6 +1261,33 @@ gate_surface_max() {
   printf '%s' "$b"
 }
 
+# The other two ways an unwrap folds several answers into one. A `find` with more
+# than one primary asks its resolver once per primary, and the resolvers do not
+# all speak the same type — the grading table answers an effect surface, the
+# second base answers a DIRECTORY and the history predicate answers `0`/`1`. So
+# the fold is a parameter of the unwrap rather than one fixed rule, and each
+# consumer names the one that fits its own answers.
+gate_answer_first() {
+  # The first of two answers that is not empty.
+  #
+  # `gate_surface_max` MUST NOT BE USED FOR A PATH. A directory is not in
+  # `surface_index`, so that routine falls through to "the unrecognized one
+  # loses" and hands back its SECOND argument unconditionally — a later primary
+  # that establishes no base would then erase the base an earlier one did
+  # establish. An answer already found is kept for the same reason the second
+  # base exists at all: losing it puts the guard back on the grading directory.
+  [ -n "$1" ] && { printf '%s' "$1"; return 0; }
+  printf '%s' "$2"
+}
+
+gate_answer_or() {
+  # `1` when either side says `1`. The history predicate's fold: its answers
+  # point the over-checking way by design, so a primary that integrates history
+  # is not cancelled by one beside it that does not.
+  { [ "$1" = "1" ] || [ "$2" = "1" ]; } && { printf '1'; return 0; }
+  printf '0'
+}
+
 reach_index() {
   local want="$1" i=0 r
   for r in $REACHES; do
@@ -3899,6 +3926,13 @@ surface_of_argv0() {
     # grade is the WRAPPED command's, exactly as `git` and `gh` delegate to
     # their subcommand. The digest-tool comment above records the first instance
     # of this shape; this is the second.
+    #
+    # THE SAME LAUNDERING RAN FOR A WHILE ON A DIFFERENT AXIS. This row held it
+    # shut while the opacity axis, which decides whether the floor and the mark
+    # are computed at all, asked argv0 once and answered 0 for anything wrapped —
+    # so `lockf … sh -c 'curl …'` kept an honest-looking `워크트리쓰기` that its
+    # bare spelling could not. A refusal on one axis is not a refusal until the
+    # axes that gate the other checks peel the same word.
     lockf) surface_of_lockf "$@" ;;
     make|npm|npx|yarn|pnpm|pytest|go|cargo|bash|sh|zsh|python3|node)
       printf '워크트리쓰기' ;;
@@ -4067,8 +4101,47 @@ gate_unwrap_command() {
   "$resolver" "$@"
 }
 
+gate_call_prefix() {
+  # gate_call_prefix <n> <resolver> <args...> — call <resolver> with the FIRST
+  # <n> of <args> and with NOTHING that stood behind them.
+  #
+  # Rotating the list left by <n> moves that prefix to the end, so dropping the
+  # words that were behind it leaves exactly the prefix. Positional rather than
+  # an array because every other loop in this file is positional, and because an
+  # empty array under `set -u` is a second idiom that fails differently on
+  # bash 3.2 than on 5.
+  local n="$1" resolver="$2" i=0 rest; shift 2
+  rest=$(( $# - n ))
+  while [ "$i" -lt "$n" ]; do
+    set -- "$@" "$1"; shift
+    i=$((i + 1))
+  done
+  shift "$rest"
+  "$resolver" "$@"
+}
+
 gate_unwrap_find() {
-  # gate_unwrap_find <resolver> <walk-only> <writes> <find's args after argv0...>
+  # gate_unwrap_find <resolver> <walk-only> <writes> <form-unknown> <combiner> <find's args after argv0...>
+  #
+  # EVERY PRIMARY IS READ, NOT JUST THE FIRST. `;` and `+` terminate an `-exec`,
+  # and what follows one is the NEXT primary rather than a further argument of
+  # the inner command. Handing the whole remainder to the resolver and returning
+  # read `find <d> -name f -exec cat {} ';' -delete` as the inner command
+  # `[cat {} ; -delete]`, so the deletion was graded as an argument of `cat`:
+  # argv came back `읽기` and both write guards returned on their first line.
+  # The scan now consumes one primary at a time and folds the answers with
+  # <combiner>, which each consumer supplies because their answers are of
+  # different types.
+  #
+  # `-execdir` AND `-okdir` ANSWER <form-unknown> AND STOP. They run the inner
+  # command from EACH MATCH's directory, which the gate does not know and cannot
+  # enumerate without walking the tree itself, so every base a resolver could
+  # compute from the grading directory is the wrong one. Measured before this
+  # arm existed: with no `-C`, with `-C .`, under `-okdir`, and with a bare name
+  # operand, the second base came back EMPTY and both write guards passed the
+  # act at rc 0. Empty means "no base" and no base is the allowing direction, so
+  # the residual was not an under-read — it was a hole. The third answer refuses
+  # instead, and unlike `등급 미상` no declaration lifts it.
   #
   # Two ways a `find` writes. Four primaries hand the match to another command,
   # and five act on their own — `-delete` removes the match, while `-fprintf`,
@@ -4088,18 +4161,37 @@ gate_unwrap_find() {
   # A PLAIN `find` WITH NO PRIMARY KEEPS COMING BACK `읽기`. The manifest guard
   # states that cost in place: without it every read that walks the manifest's
   # directory becomes a refusal.
-  local resolver="$1" walk_only="$2" writes="$3"; shift 3
+  local resolver="$1" walk_only="$2" writes="$3" form_unknown="$4" combiner="$5"; shift 5
+  local acc="" seen=0 ans="" n term a
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      -exec|-execdir|-ok|-okdir)
+      -execdir|-okdir) printf '%s' "$form_unknown"; return 0 ;;
+      -exec|-ok)
         shift
-        [ "$#" -ge 1 ] || { printf '%s' "$writes"; return 0; }
-        "$resolver" "$@"
-        return 0 ;;
-      -delete|-fprintf|-fprint|-fprint0|-fls) printf '%s' "$writes"; return 0 ;;
-      *) shift ;;
+        # The inner command is the words up to `;` or `+`. A `-exec` with
+        # nothing behind it has no command to defer to, which is the shape the
+        # old early return already answered `writes`.
+        n=0; term=0
+        for a in "$@"; do
+          case "$a" in ';'|'+') term=1; break ;; esac
+          n=$((n + 1))
+        done
+        if [ "$n" -eq 0 ]; then
+          ans="$writes"
+        else
+          ans=$(gate_call_prefix "$n" "$resolver" "$@")
+        fi
+        shift "$n"
+        if [ "$term" = 1 ]; then shift; fi ;;
+      # NOT A RETURN ANY MORE. A higher-graded primary can stand behind this
+      # one, and the operands these take are consumed by the arm below as
+      # ordinary words — reading one of them as a primary can only over-grade.
+      -delete|-fprintf|-fprint|-fprint0|-fls) ans="$writes"; shift ;;
+      *) shift; continue ;;
     esac
+    if [ "$seen" = 0 ]; then acc="$ans"; seen=1; else acc=$("$combiner" "$acc" "$ans"); fi
   done
+  [ "$seen" = 1 ] && { printf '%s' "$acc"; return 0; }
   printf '%s' "$walk_only"
 }
 
@@ -4132,7 +4224,7 @@ gate_unwrap_rg() {
 # understand and the gate refuses, while the predicate answers `1` and keeps the
 # act under the check.
 surface_of_command() { gate_unwrap_command surface_of_argv0 '읽기' '등급 미상' "$@"; }
-surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$@"; }
+surface_of_find()    { gate_unwrap_find    surface_of_argv0 '읽기' '워크트리쓰기' "$GATE_FORM_UNKNOWN" gate_surface_max "$@"; }
 surface_of_rg()      { gate_unwrap_rg      surface_of_argv0 '읽기' '등급 미상' "$@"; }
 
 gate_history_integration() {
@@ -4207,7 +4299,9 @@ gate_history_integration() {
       return 0 ;;
     find)
       shift
-      gate_unwrap_find gate_history_integration '0' '1' "$@"
+      # `1` for the unreadable shape as well, which is this predicate's own
+      # discipline stated above: where it cannot read, it over-checks.
+      gate_unwrap_find gate_history_integration '0' '1' '1' gate_answer_or "$@"
       return 0 ;;
     rg)
       shift
@@ -5243,8 +5337,32 @@ gate_act_mark() {
 # `워크트리쓰기`, plus the docker forms that start a container; an interpreter
 # the table has never listed (`dash`, `python`, `perl`) is not opaque, it is
 # unknown, and it keeps taking the unknown path in both modes.
+#
+# THE REGISTERED WRAPPERS ARE PEELED FIRST, with the table's own helpers. This
+# axis asked `case "${1##*/}"` once and stopped, so a wrapper in front of an
+# interpreter answered 0 — and 0 is not a small error here: the floor and the
+# mark are computed only when this answers 1, so `lockf -k -t 0 <lock> sh -c
+# 'curl …'` lost the `외부상태변경` floor its bare spelling gets and a declared
+# `워크트리쓰기` was accepted for a network act. With `aws … --with-decryption`
+# inside, the `비밀출력` mark went with it, and that mark is a value the
+# pre-authorization reads. The grading table's own `lockf` row already refuses
+# this laundering in so many words; this axis was the one seam it was still open
+# at. `xargs` and `sudo` stay unpeeled here for the reason the table gives: what
+# they run is not a word this file can honestly read.
 gate_argv_opaque() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    command) gate_unwrap_command gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    rg)      gate_unwrap_rg      gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_argv_opaque '0' '1' "$@"; return 0 ;;
+    # A shape that cannot be read is opaque rather than transparent, which is
+    # why `find`'s unreadable answer here is `1` and not the table's token.
+    find)    gate_unwrap_find    gate_argv_opaque '0' '0' '1' gate_answer_or "$@"; return 0 ;;
+  esac
   case "$cmd" in
     bash|sh|zsh|python3|node|make|npm|npx|yarn|pnpm|pytest|go|cargo)
       # The named arms are not opaque: `npm publish` and `go version` say what
@@ -5287,8 +5405,50 @@ gate_argv_opaque() {
 #
 # Output is `<하한>\t<표지>\t<트리거>`.
 # ---------------------------------------------------------------------------
+
+# That shape with nothing in it. Built with `printf` rather than written with
+# two literal tabs so the two empty fields stay visible to a reader.
+GATE_FLOOR_NONE=$(printf '읽기\t\t')
+readonly GATE_FLOOR_NONE
+
+gate_answer_floor_max() {
+  # The fold for two `<하한>\t<표지>\t<트리거>` triples: the higher floor and the
+  # stronger mark. `비밀출력` outranks `파괴` for the reason this function's
+  # caller gives — a disclosure cannot be taken back once printed.
+  local ar="${1#*	}" br="${2#*	}"
+  local f m t bm bt
+  f=$(gate_surface_max "${1%%	*}" "${2%%	*}")
+  m="${ar%%	*}"; t="${ar#*	}"
+  bm="${br%%	*}"; bt="${br#*	}"
+  case "$bm" in
+    비밀출력) m="$bm"; t="$bt" ;;
+    파괴) [ "$m" = "비밀출력" ] || { m="$bm"; t="$bt"; } ;;
+  esac
+  printf '%s\t%s\t%s' "$f" "$m" "$t"
+}
+
 gate_opaque_floor() {
   local cmd="${1##*/}"; shift 2>/dev/null || true
+  # THE SAME PEEL THE OPAQUE AXIS APPLIES, and it has to be here rather than
+  # only there. `lockf -k -t 0 <lock> sh -c 'curl …'` has `-k` in the first word
+  # position of the payload below, and the scanner skips a line whose first word
+  # is an option — so even with the axis repaired the floor came back `읽기`.
+  # What raises it is reaching `sh` as argv0, because only then is the `-c`
+  # STRING read instead of the whole argument list. Both terminal answers are
+  # "nothing readable", which is what the `*)` arm already answered for these
+  # shapes.
+  case "$cmd" in
+    lockf)   gate_unwrap_lockf   gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    command) gate_unwrap_command gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    rg)      gate_unwrap_rg      gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    env)     gate_unwrap_env     gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    time)    gate_unwrap_time    gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    timeout|nice|nohup|stdbuf)
+      gate_unwrap_wrapper "$cmd" gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$@"; return 0 ;;
+    find)
+      gate_unwrap_find gate_opaque_floor "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" "$GATE_FLOOR_NONE" \
+        gate_answer_floor_max "$@"; return 0 ;;
+  esac
   local payload="" a next_is_c=0
   case "$cmd" in
     bash|sh|zsh|dash|ksh)
@@ -5473,7 +5633,7 @@ ladder_of_argv0() {
     # asserts nothing, the same as any other name with no row.
     lockf)   gate_unwrap_lockf   ladder_of_argv0 '' '' "$@" ;;
     command) gate_unwrap_command ladder_of_argv0 '' '' "$@" ;;
-    find)    gate_unwrap_find    ladder_of_argv0 '' '' "$@" ;;
+    find)    gate_unwrap_find    ladder_of_argv0 '' '' '' gate_answer_first "$@" ;;
     rg)      gate_unwrap_rg      ladder_of_argv0 '' '' "$@" ;;
     env)     gate_unwrap_env     ladder_of_argv0 '' '' "$@" ;;
     timeout) gate_unwrap_wrapper timeout ladder_of_argv0 '' '' "$@" ;;
@@ -11922,11 +12082,16 @@ gate_argv_chdir_base() {
   # relative path, and nothing more: a wrapper in front of `git` does not stop
   # it, because the grading table unwraps `nohup`, `timeout`, `nice`, `stdbuf`,
   # `env`, `command`, `time`, `lockf` and `find -exec` and grades the inner
-  # `git` exactly as it grades a bare one. `find -execdir` and `-okdir` run the
-  # inner `git` from each match's directory rather than the grading one, so an
-  # absolute `-C` is still the right base there while a relative `-C` resolves
-  # from the wrong directory and may be under-read; that spelling is left as a
-  # residual until it is measured, as below. Measured:
+  # `git` as it grades a bare one. FOR `find` THAT HOLDS PRIMARY BY PRIMARY, not
+  # for the argv as a whole: every primary is resolved and the answers are folded,
+  # so `-exec true {} ';' -exec git … {} ';'` is read as the `git` and not as a
+  # tail of `true`. `find -execdir` and `-okdir` run the inner `git` from each
+  # match's directory rather than the grading one. An absolute `-C` would still
+  # be the right base there, but with no `-C`, with `-C .`, under `-okdir` and
+  # with a bare name operand no base stood at all and both write guards passed
+  # the act at rc 0 — measured, which is what that spelling was waiting on. It
+  # is no longer a residual: the unwrap answers `형태 미상` for those two
+  # primaries and the act is refused before a base is needed. Measured:
   # `nohup git -C <sibling> diff --output=<relative path>` was graded
   # `트리밖쓰기`, honestly, and this function answered "no base" because argv0
   # was `nohup` — so the second base has to be computed after the
@@ -11967,8 +12132,10 @@ gate_argv_chdir_base_of() {
   # already delegated them, so `lockf -k -t 0 <lock> git -C <sibling> diff
   # --output=<relative path>` — the lock the unattended skills require around
   # every document write — was graded as the inner `git` and passed both write
-  # guards with no second base. `test-run.sh` compares the two name sets, so a
-  # name added to one side only turns the suite red. The two empty terminal
+  # guards with no second base. `test-run.sh` checks that every name the GRADING
+  # TABLE delegates to an unwrap has an arm here, which is a containment in one
+  # direction and not a comparison of two sets: a name added to the table turns
+  # the suite red, a name added only here is caught by no assertion. The two empty terminal
   # answers mean "no command" and "unknown option" both come back as no base,
   # which is the same discipline the table keeps — a guess about whether an
   # option eats the next word is a guess about where the operands land.
@@ -11981,7 +12148,7 @@ gate_argv_chdir_base_of() {
     command) gate_unwrap_command gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     time)    gate_unwrap_time    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     lockf)   gate_unwrap_lockf   gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
-    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$GATE_FORM_UNKNOWN" gate_answer_first "$@"; return 0 ;;
     git) ;;
     *) return 0 ;;
   esac
@@ -12195,6 +12362,17 @@ gate_rundir_write_guard() {
   # `gate_argv_chdir_base` states the defect; every relative option value and
   # word below is measured from this base as well as from the grading one.
   cb=$(gate_argv_chdir_base "$@") || cb=""
+  # "THE BASE CANNOT BE COMPUTED" IS NOT "THERE IS NO BASE". Both arrived here as
+  # the empty string, and empty is the allowing direction — so a shape the unwrap
+  # could not read passed this guard for the same reason a plain `cp` does. The
+  # unwrap now answers `형태 미상` for those, and it is refused rather than
+  # treated as an absent base. The `exec` path refuses this argv one step earlier
+  # on the grade, so what this arm covers is a caller whose grade came from
+  # elsewhere and a fixture that calls the guard directly.
+  if [ "$cb" = "$GATE_FORM_UNKNOWN" ]; then
+    warn "rule refused: this shape runs its inner command from a directory the gate cannot name — each match's own directory rather than this one — so where a relative destination inside it lands cannot be judged. Respell it with \`-exec\` and an absolute destination: $1"
+    return "$GATE_EXIT_RULE"
+  fi
   argi=0
   for a in "$@"; do
     argi=$((argi + 1))
@@ -12588,6 +12766,11 @@ gate_plugin_root_write_guard() {
   # The directory the command itself resolves from, as the run directory guard
   # states at the same place.
   cb=$(gate_argv_chdir_base "$@") || cb=""
+  # The unreadable-shape arm, as the run directory guard states at the same place.
+  if [ "$cb" = "$GATE_FORM_UNKNOWN" ]; then
+    warn "rule refused: this shape runs its inner command from a directory the gate cannot name — each match's own directory rather than this one — so where a relative destination inside it lands cannot be judged. Respell it with \`-exec\` and an absolute destination: $1"
+    return "$GATE_EXIT_RULE"
+  fi
   first=1
   for a in "$@"; do
     if [ "$first" = 1 ]; then
