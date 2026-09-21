@@ -19978,6 +19978,17 @@ check "58: GIT_COMMON_DIR=·GIT_WORK_TREE= 도 form 이다" \
 form|env:repo-selector:GIT_WORK_TREE"
 check "58: bash -c 본문의 GIT_DIR= 접두도 form 이다" "$(s57 "S bash -c 'GIT_DIR=/x/.git git status'")" "form|env:repo-selector:GIT_DIR"
 check "58: env -u GIT_DIR 은 form 이 아니다" "$(s57 'S env -u GIT_DIR git status')" "ok|"
+# 게이트 자신의 결정 변수. `GATE_UNDECLARED=1` 하나가 행위 cwd·등급 블록·디스패치
+# 사전 검사·머지 앵커 넷째/다섯째 문장을 한꺼번에 끈다 — 일곱 독자가 모두
+# `${GATE_UNDECLARED:-0} != 1` 로 읽어 주입된 값과 제 값을 구별하지 못한다.
+check "58: GATE_UNDECLARED= 는 게이트 상태라 form 이다" \
+  "$(s57 'S env GATE_UNDECLARED=1 git status')" "form|env:gate-state:GATE_UNDECLARED"
+check "58: GATE_ 접두 전체가 form 이다" \
+  "$(s57 'S env GATE_GRADE_CWD=/x git status; S env GATE_TREE_ROOT=/x git status')" "form|env:gate-state:GATE_GRADE_CWD
+form|env:gate-state:GATE_TREE_ROOT"
+check "58: bash -c 본문의 GATE_ 접두도 form 이다" \
+  "$(s57 "S bash -c 'GATE_UNDECLARED=1 git status'")" "form|env:gate-state:GATE_UNDECLARED"
+check "58: env -u GATE_UNDECLARED 은 form 이 아니다" "$(s57 'S env -u GATE_UNDECLARED git status')" "ok|"
 check "58: GIT_SSH_COMMAND 의 값이 조각으로 실린다" \
   "$(s57 "gp_parse env GIT_SSH_COMMAND='ssh -i k' git fetch; printf '%s|' \"\$GP_STATUS\"; gp_each_sub W")" "ok|ssh/-i/k"
 check "58: 읽을 수 없는 명령 값은 form 이다" "$(s57 "S env GIT_SSH_COMMAND='\$(rm x)' git fetch")" "form|sh:non-literal-command-word"

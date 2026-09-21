@@ -1514,6 +1514,21 @@ gate_argv_has_opt() {
 GATE_TREE_ROOT=''
 GATE_GRADE_CWD=''
 
+# `GATE_UNDECLARED` is written in exactly one place — `gate_undeclared_target`
+# — and read in seven, every one of them as `${GATE_UNDECLARED:-0} != 1`. The
+# `:-0` default makes an unset name read as "declared", so the flag only ever
+# had one safe value on entry and none of the seven readers could tell an unset
+# name from an inherited `1`. An environment that arrives carrying
+# `GATE_UNDECLARED=1` therefore turns off five checks at once: the act-cwd
+# branch, the grade block, the dispatch pre-check, and the merge anchor's
+# fourth and fifth sentences. Initialising it here is the half that clears an
+# inherited value; the `GATE_*` row in `_gp_env_assign` is the half that
+# catches it on the way in.
+#
+# NOT `readonly` — `gate_undeclared_target` assigns `1` to this very name, and
+# freezing it would break undeclared-target registration itself.
+GATE_UNDECLARED=0
+
 surface_of_mv() {
   # surface_of_mv [options] <source>... <dest>   (argv0 already dropped)
   #
@@ -2299,6 +2314,16 @@ _gp_env_unset() {
 #                        (`gate_common_git_of_dir`), so this row is the half
 #                        that names the act for the ledger rather than the
 #                        half that keeps the root off the list.
+#   gate state           GATE_* — the gate's own decision variables, so an
+#                        assignment sets the verdict instead of describing the
+#                        act. `GATE_UNDECLARED=1` alone turns off five checks
+#                        (act cwd, grade block, dispatch pre-check, and the
+#                        merge anchor's fourth and fifth sentences), each of
+#                        which reads the name as `${GATE_UNDECLARED:-0} != 1`
+#                        and cannot tell an injected value from its own. This
+#                        row catches the prefix on the way in; the global
+#                        initialisation next to `GATE_GRADE_CWD` is the other
+#                        half, clearing whatever the environment carried.
 #   target selector      GH_REPO, GH_HOST, GH_ENTERPRISE_TOKEN, GH_TOKEN —
 #                        recorded; `gp_gh_repo` reads GH_REPO and GH_HOST
 #                        from the recorded chain
@@ -2312,6 +2337,8 @@ _gp_env_assign() {
       _gp_form "env:exec-identity:$name" ;;
     GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE)
       _gp_form "env:repo-selector:$name" ;;
+    GATE_*)
+      _gp_form "env:gate-state:$name" ;;
     GIT_SSH_COMMAND|GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS)
       _gp_body "$value"
       if [ "$_GP_BODY_ST" != list ]; then _gp_form "$_GP_BODY_RS"; fi ;;
