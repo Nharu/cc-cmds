@@ -35,8 +35,20 @@ jobs:
             exit 1
           fi
 
-      # -j is what makes the suite's list-of-prerequisites form pay off; without
-      # it make still walks the scripts one at a time and the step stays at the
-      # half hour it used to take.
-      - name: Run tests
-        run: make -j"$(nproc)" test
+  # THE GATE SUITE IS NOT HERE. It runs sharded in `gate.yml`, and running it in
+  # both places would put back the forty minutes the sharding removes. What is
+  # left is everything else `make test` covers, which is minutes rather than an
+  # hour.
+  #
+  # -j is what makes the suite's list-of-prerequisites form pay off; without it
+  # make still walks the scripts one at a time.
+  rest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mikefarah/yq
+        uses: mikefarah/yq@v4
+
+      - name: Run tests except the gate suite
+        run: make -j"$(nproc)" test-rest

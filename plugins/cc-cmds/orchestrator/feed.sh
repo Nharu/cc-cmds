@@ -86,6 +86,7 @@ feed_hop_t=$(pin_hop_target "$RUN_DIR" "$FEED_DIR") || feed_hop_rc=$?
 case "$feed_hop_rc" in
   0) exec "${BASH:-/bin/bash}" "$feed_hop_t/feed.sh" ${FEED_ARGV[@]+"${FEED_ARGV[@]}"} ;;
   2) printf 'feed: plugin-pin 은 있는데 사본이 없습니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
+  3) printf 'feed: plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
 esac
 
 CURSOR="$RUN_DIR/feed.cursor"
