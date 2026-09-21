@@ -64,7 +64,7 @@ fi
 # 나가므로 되돌리는 값이 다르고, 면제할 이유가 없다.
 
 [ -n "$GATE_REVIEW_POLICY_INDEX" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 정책을 받지 못해 판정할 수 없습니다" >&2
+  echo "rule refused: 리뷰-후-머지 — no review policy was passed, so this cannot be judged" >&2
   exit 1
 }
 
@@ -77,27 +77,27 @@ fi
 # 있는가」의 사본이 게이트·종료 조건과 함께 셋이 되고, 셋은 갈라진다.
 if [ "$GATE_REVIEW_POLICY_INDEX" = "1" ]; then
   [ -z "$GATE_SEGMENT_OPEN_OBLIGATIONS" ] && exit 0
-  echo "룰 거부: 리뷰-후-머지 — 이 세그먼트에 미이행 리뷰 의무가 있습니다 ($GATE_SEGMENT_OPEN_OBLIGATIONS)" >&2
+  echo "rule refused: 리뷰-후-머지 — this segment has unmet review obligations ($GATE_SEGMENT_OPEN_OBLIGATIONS)" >&2
   exit 1
 fi
 
 # 그 밖은 거절한다. 판정 불가는 통과가 아니다.
 [ "$GATE_REVIEW_POLICY_INDEX" = "0" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 해소된 리뷰 정책 지수를 알 수 없습니다 ($GATE_REVIEW_POLICY_INDEX)" >&2
+  echo "rule refused: 리뷰-후-머지 — the resolved review policy index is unknown ($GATE_REVIEW_POLICY_INDEX)" >&2
   exit 1
 }
 
 # 리뷰 먼저 — 아래는 신선도 사다리다. 「리뷰가 있었다」와 「리뷰가 지금 머지될
 # 것을 덮는다」는 다른 명제이고, 이 사다리가 재는 것은 뒤쪽이다.
-[ -f "$GATE_LEDGER" ] || { echo "룰 거부: 리뷰-후-머지 — 원장을 읽을 수 없습니다" >&2; exit 1; }
+[ -f "$GATE_LEDGER" ] || { echo "rule refused: 리뷰-후-머지 — cannot read the ledger" >&2; exit 1; }
 [ -n "$GATE_SEGMENT" ] && [ "$GATE_SEGMENT" != "-" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 머지 행위에 세그먼트가 지정되지 않았습니다" >&2
+  echo "rule refused: 리뷰-후-머지 — no 세그먼트 was given for the merge act" >&2
   exit 1
 }
 
 row=$(grep -E '^- `cycle`' "$GATE_LEDGER" | grep -F "세그먼트=$GATE_SEGMENT " | tail -1)
 [ -n "$row" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 세그먼트 '$GATE_SEGMENT' 의 리뷰 기록이 없습니다" >&2
+  echo "rule refused: 리뷰-후-머지 — no review record for 세그먼트 '$GATE_SEGMENT'" >&2
   exit 1
 }
 
@@ -108,12 +108,12 @@ p0=$(field 'P0'); p1=$(field 'P1'); reviewed=$(field '리뷰 HEAD')
 [ -n "$p1" ] || p1=0
 
 if [ "$p0" != "0" ] || [ "$p1" != "0" ]; then
-  echo "룰 거부: 리뷰-후-머지 — 미해결 지적이 남아 있습니다 (P0=$p0 P1=$p1)" >&2
+  echo "rule refused: 리뷰-후-머지 — unresolved findings remain (P0=$p0 P1=$p1)" >&2
   exit 1
 fi
 
 [ -n "$reviewed" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 기록에 HEAD 가 없어 신선도를 판정할 수 없습니다" >&2
+  echo "rule refused: 리뷰-후-머지 — the review record has no HEAD, so freshness cannot be judged" >&2
   exit 1
 }
 
@@ -137,7 +137,7 @@ fi
 # argues against a few lines above. The repair is one field on the next row.
 report=$(field '리포트 경로')
 [ -n "$report" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 기록에 「리포트 경로」가 없어 그 행을 뒷받침하는 것을 찾을 수 없습니다" >&2
+  echo "rule refused: 리뷰-후-머지 — the review record has no 「리포트 경로」, so nothing backing that row can be found" >&2
   exit 1
 }
 # A relative path is resolved against the BASE, and the base is derived from the
@@ -151,23 +151,23 @@ case "$report" in
   *)  report_abs="$(cd "$(dirname "$GATE_MANIFEST")/../.." 2>/dev/null && pwd)/$report" ;;
 esac
 [ -f "$report_abs" ] || {
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 기록이 가리키는 리포트가 없습니다: $report" >&2
+  echo "rule refused: 리뷰-후-머지 — the report the review record points at does not exist: $report" >&2
   exit 1
 }
 # `발견 요약` is what every finished report of this pipeline carries, and a stub
 # carries a single `(작성 중 …)` line instead. Anchored to the line so a mention
 # inside prose does not satisfy it.
 grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$report_abs" || {
-  echo "룰 거부: 리뷰-후-머지 — 리포트에 「발견 요약」이 없습니다 (미완 리포트로 보입니다): $report" >&2
+  echo "rule refused: 리뷰-후-머지 — the report has no 「발견 요약」 (it looks unfinished): $report" >&2
   exit 1
 }
 
 seg_row=$(grep -E '^- `segment`' "$GATE_LEDGER" | grep -F "id=$GATE_SEGMENT " | tail -1)
 wt=$(printf '%s' "$seg_row" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//' | tail -1)
-[ -d "$wt" ] || { echo "룰 거부: 리뷰-후-머지 — 세그먼트 워크트리가 없습니다: $wt" >&2; exit 1; }
+[ -d "$wt" ] || { echo "rule refused: 리뷰-후-머지 — the segment worktree does not exist: $wt" >&2; exit 1; }
 
 now=$(cd "$wt" && git rev-parse HEAD 2>/dev/null)
-[ -n "$now" ] || { echo "룰 거부: 리뷰-후-머지 — 현재 HEAD 를 읽을 수 없습니다" >&2; exit 1; }
+[ -n "$now" ] || { echo "rule refused: 리뷰-후-머지 — cannot read the current HEAD" >&2; exit 1; }
 
 # 등급 1 — 무이동
 [ "$now" = "$reviewed" ] && exit 0
@@ -181,8 +181,8 @@ fi
 
 # 등급 3~5 — 전부 거부이며, 어느 것인지만 다르게 보고한다.
 if (cd "$wt" && git merge-base --is-ancestor "$reviewed" "$now" 2>/dev/null); then
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 이후 커밋이 추가됐습니다 (리뷰 ${reviewed} → 현재 ${now})" >&2
+  echo "rule refused: 리뷰-후-머지 — commits were added after the review (reviewed ${reviewed} → now ${now})" >&2
 else
-  echo "룰 거부: 리뷰-후-머지 — 리뷰 HEAD 가 현재 HEAD 의 조상이 아닙니다 (리뷰 ${reviewed}, 현재 ${now})" >&2
+  echo "rule refused: 리뷰-후-머지 — the reviewed HEAD is not an ancestor of the current HEAD (reviewed ${reviewed}, now ${now})" >&2
 fi
 exit 1

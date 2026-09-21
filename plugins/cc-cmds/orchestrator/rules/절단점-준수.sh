@@ -5,11 +5,11 @@
 # 어휘를 다시 해소하면 run.sh 의 사다리 사본이 하나 더 생기고, 그 사본은
 # lint-cutpoint-vocabulary.sh 가 보지 않는 자리에 있다.
 [ -n "$GATE_ACT_INDEX" ] && [ -n "$GATE_TARGET_INDEX" ] || {
-  echo "절단점-준수: 게이트가 등급을 넘겨주지 않았습니다" >&2
+  echo "절단점-준수: the gate did not pass the grades" >&2
   exit 1
 }
 if [ "$GATE_ACT_INDEX" -le "$GATE_TARGET_INDEX" ]; then
   exit 0
 fi
-echo "절단점-준수: 행위 '$GATE_ACT' 가 대상 '$GATE_ALIAS' 의 절단점 '$GATE_TARGET_CUTPOINT' 를 넘습니다" >&2
+echo "절단점-준수: act '$GATE_ACT' exceeds the cutpoint '$GATE_TARGET_CUTPOINT' of target '$GATE_ALIAS'" >&2
 exit 1

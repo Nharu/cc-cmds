@@ -46,12 +46,21 @@
 #
 # Phases run in order solo → diff → iterate → write. The work directory keeps a
 # completion mark per phase and every suite invocation's transcript, so calling
-# again with the same `--work` resumes where a killed session stopped.
+# again with the same `--work` resumes where a killed session stopped — BUT ONLY
+# AGAINST THE SAME SOURCE. A transcript is reused on its argv alone, and an argv
+# carries neither the suite nor the commit: narrow a banner's `needs:` and the
+# same `--run-one X` runs a different closure under the same argv. So the first
+# call records a fingerprint of what is measured — the suite's sha256, HEAD, and
+# whether the tree was clean (the output file and the work directory excluded) —
+# and a later call whose fingerprint differs is refused, not silently
+# invalidated: throwing an hour of transcripts away is the caller's decision.
+# The written header names that recorded source, not the HEAD at write time.
 #
 # Exit codes: 0 written (differences found are a report, not a failure),
-# 2 usage, 3 a check failed and nothing was written — the instrument changed the
-# suite, the rows are not the `--list` set, the partition would not settle, or
-# the suite could not be listed.
+# 2 usage, 3 a check failed and nothing was written — the work directory was
+# made from a different source (or carries no fingerprint), the instrument
+# changed the suite, the rows are not the `--list` set, the partition would not
+# settle, or the suite could not be listed.
 
 set -uo pipefail
 
@@ -374,15 +383,77 @@ census_banner_of() {
   awk -F '\t' -v id="$1" '$1 == id { print $2 "\t" $3; exit }' "$W/banners.tsv"
 }
 
-census_prepare() {
-  mkdir -p "$W"
-  if [ ! -f "$W/ids.txt" ]; then
-    if ! ( unset CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT; bash "$SUITE" --list < /dev/null ) > "$W/list.txt" 2> "$W/list.err"; then
-      census_log "절 목록을 얻지 못했습니다 ($SUITE --list)"
-      sed 's/^/  /' "$W/list.err" >&2
+# `<key>=<value>` lines naming what a work directory measures. The tree state
+# is `clean`, or `dirty-<sha256>` over the porcelain listing and the diff against
+# HEAD, so a dirty tree that changes again is a different source too. The output
+# file and the work directory are excluded when they sit inside the repository:
+# writing the census, or keeping the work directory there, is not a change to
+# what was measured.
+census_fingerprint() {
+  local h st rel
+  local -a ps
+  printf 'suite=%s\n' "$(census_sha256 < "$SUITE")"
+  if ! h=$(cd "$REPO" && git rev-parse HEAD 2>/dev/null) || [ -z "$h" ]; then
+    printf 'head=unknown\ntree=unknown\n'
+    return 0
+  fi
+  printf 'head=%s\n' "$h"
+  ps=(.)
+  for rel in "$OUT" "$W"; do
+    case "$rel" in "$REPO"/*) ps+=(":(exclude)${rel#"$REPO"/}") ;; esac
+  done
+  st=$(cd "$REPO" && git status --porcelain --untracked-files=all -- "${ps[@]}" 2>/dev/null)
+  if [ -z "$st" ]; then
+    printf 'tree=clean\n'
+  else
+    printf 'tree=dirty-%s\n' "$({ printf '%s\n' "$st"; cd "$REPO" && git diff HEAD -- "${ps[@]}" 2>/dev/null; } | census_sha256)"
+  fi
+}
+
+# Refuse a work directory made from another source. A directory with no
+# fingerprint but with anything else in it cannot be judged, and is refused too.
+census_check_fingerprint() {
+  local what
+  census_fingerprint > "$W/fingerprint.now"
+  if [ -f "$W/fingerprint" ]; then
+    if ! cmp -s "$W/fingerprint" "$W/fingerprint.now"; then
+      what=$(awk -F '=' '
+        NR == FNR { old[$1] = substr($0, length($1) + 2); next }
+        old[$1] != substr($0, length($1) + 2) {
+          name = ($1 == "suite") ? "스위트 sha256" : ($1 == "head") ? "HEAD" : ($1 == "tree") ? "트리 청결" : $1
+          printf "%s%s", sep, name; sep = ", "
+        }' "$W/fingerprint" "$W/fingerprint.now")
+      census_log "작업 디렉터리 $W 는 다른 측정 원본에서 만들어졌습니다 (달라진 것: ${what:-?}) — 낡은 전사를 재사용하지 않습니다. 새 --work 로 다시 돌리세요"
+      rm -f "$W/fingerprint.now"
       return 3
     fi
-    awk '{ print $1 }' "$W/list.txt" > "$W/ids.tmp" && mv "$W/ids.tmp" "$W/ids.txt"
+    rm -f "$W/fingerprint.now"
+  elif [ -n "$(ls -A "$W" | grep -vx 'fingerprint.now')" ]; then
+    census_log "작업 디렉터리 $W 에 측정 원본 지문이 없어 전사를 재사용해도 되는지 판정할 수 없습니다 — 새 --work 로 다시 돌리세요"
+    rm -f "$W/fingerprint.now"
+    return 3
+  else
+    mv "$W/fingerprint.now" "$W/fingerprint"
+  fi
+  return 0
+}
+
+# `--list` into <list> and its ids into <ids>.
+census_list_ids() {
+  local list="$1" ids="$2"
+  if ! ( unset CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT; bash "$SUITE" --list < /dev/null ) > "$list" 2> "$list.err"; then
+    census_log "절 목록을 얻지 못했습니다 ($SUITE --list)"
+    sed 's/^/  /' "$list.err" >&2
+    return 3
+  fi
+  awk '{ print $1 }' "$list" > "$ids.tmp" && mv "$ids.tmp" "$ids"
+}
+
+census_prepare() {
+  mkdir -p "$W"
+  census_check_fingerprint || return 3
+  if [ ! -f "$W/ids.txt" ]; then
+    census_list_ids "$W/list.txt" "$W/ids.txt" || return 3
   fi
   if [ ! -s "$W/ids.txt" ]; then census_log "절 목록이 비었습니다"; return 3; fi
   awk '
@@ -631,6 +702,16 @@ census_final_rows() {
   ' "$W/records.tsv"
 }
 
+# The measured source for the header: the short HEAD recorded in the
+# fingerprint, with `-dirty` when the tree was not clean then.
+census_source_of() {
+  awk -F '=' '
+    $1 == "head" { h = ($2 == "unknown") ? "unknown" : substr($2, 1, 7) }
+    $1 == "tree" { t = $2 }
+    END { printf "%s%s\n", (h == "" ? "unknown" : h), (t != "clean" && t != "unknown" && t != "") ? "-dirty" : "" }
+  ' "$1"
+}
+
 census_write_tsv() {
   # <out> <ids> <rows> <shard-rows> <header lines...>
   local out="$1" ids="$2" rows="$3" srows="$4"
@@ -680,10 +761,14 @@ census_phase_write() {
     printf '%s\n' "$rec" >> "$W/shard-rows.tsv"
     k=$((k + 1))
   done
-  rev=$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
-  census_write_tsv "$OUT" "$W/ids.txt" "$W/rows.tsv" "$W/shard-rows.tsv" \
+  # The set check compares with `--list` taken now, not with the cached ids: the
+  # fingerprint already refuses a changed suite, and the two guards do not
+  # stand in for each other.
+  census_list_ids "$W/list.now" "$W/ids.now" || return 3
+  rev=$(census_source_of "$W/fingerprint")
+  census_write_tsv "$OUT" "$W/ids.now" "$W/rows.tsv" "$W/shard-rows.tsv" \
     "# gate-census v1 — generated by scripts/gate-census.sh; do not edit by hand" \
-    "# source: $rev host: $(uname -sm) jobs: $JOBS generated: $(census_now)" \
+    "# source: $rev host: $(uname -sm) jobs: $JOBS generated: $(census_now) suite: $(sed -n 's/^suite=//p' "$W/fingerprint")" \
     "# shard-partition: N=$SHARDS sha256=$digest_new" || return 3
   census_report "$dir" > "$W/report.txt"
   cat "$W/report.txt"
@@ -864,10 +949,55 @@ SUITE
   census_write_tsv "$T/out3.tsv" "$T/ids3" "$T/rows" "$T/srows" "# x" 2>/dev/null; got=$?
   if [ "$got" = "3" ] && [ ! -e "$T/out3.tsv" ]; then ok "(h) --list 집합과 다르면 쓰지 않는다"; else bad "(h) --list 집합과 다르면 쓰지 않는다" "rc=$got"; fi
 
+  # (i) resuming a work directory is bound to the source it measured
+  local R="$T/repo" calls="$T/calls" rc
+  mkdir -p "$R/scripts"
+  cat > "$R/scripts/test-gate.sh" <<SUITE
+#!/usr/bin/env bash
+case "\${1:-}" in
+  --list) printf 'a\tg\n' ;;
+  --run-one) printf '%s\n' "\$2" >> "$calls"; printf 'PASS: a\n\ntest-gate: 1 passed, 0 failed\n'; printf 'test-gate: 판정=pass 범위=좁힌 실행 — x\n' >&2 ;;
+esac
+SUITE
+  : > "$calls"
+  gitq() { ( cd "$R" && git -c user.name=census -c user.email=census@example.invalid -c commit.gpgsign=false "$@" ) > /dev/null 2>&1; }
+  gitq init -q && gitq add -A && gitq commit -q -m one
+  solo() { bash "$0" --repo "$R" --work "$1" --phase solo --jobs 1 --timeout 60 2> "$T/solo.err"; }
+  solo "$T/w1"; rc=$?
+  check "(i) 첫 실행은 지문을 남기고 스위트를 부른다" "$rc:$(grep -c . "$calls"):$(grep -c '^suite=' "$T/w1/fingerprint")" "0:1:1"
+  solo "$T/w1"; rc=$?
+  check "(i) 지문이 같은 재개는 전사를 재사용한다" "$rc:$(grep -c . "$calls")" "0:1"
+  : > "$R/scripts/gate-census.tsv"
+  solo "$T/w1"; rc=$?
+  check "(i) 출력 파일이 생긴 것은 측정 원본의 변화가 아니다" "$rc:$(grep -c . "$calls")" "0:1"
+  : > "$R/stray"
+  solo "$T/w1"; rc=$?
+  check "(i) 트리가 더러워진 재개는 exit 3 이고 스위트를 부르지 않는다" "$rc:$(grep -c . "$calls"):$(grep -c '트리 청결' "$T/solo.err")" "3:1:1"
+  rm -f "$R/stray" "$R/scripts/gate-census.tsv"
+  printf '# changed\n' >> "$R/scripts/test-gate.sh"
+  gitq add -A && gitq commit -q -m two
+  solo "$T/w1"; rc=$?
+  check "(i) 스위트와 HEAD 가 바뀐 재개는 exit 3 이고 스위트를 부르지 않는다" "$rc:$(grep -c . "$calls"):$(grep -c '스위트 sha256, HEAD' "$T/solo.err")" "3:1:1"
+  mkdir -p "$T/w2"; : > "$T/w2/ids.txt"
+  solo "$T/w2"; rc=$?
+  check "(i) 지문 없이 내용이 있는 작업 디렉터리는 거절한다" "$rc:$(grep -c . "$calls")" "3:1"
+  printf 'head=0123456789abcdef\ntree=dirty-ff\n' > "$T/fp"
+  check "(i) 머리 source 는 지문의 짧은 HEAD 와 -dirty" "$(census_source_of "$T/fp")" "0123456-dirty"
+
+  # (j) the write-time set check lists the suite again instead of trusting the cache
+  printf '#!/usr/bin/env bash\nprintf "a\\tg\\nb\\tg\\n"\n' > "$T/suite-ab.sh"
+  SUITE="$T/suite-ab.sh"; W="$T/w3"; mkdir -p "$W"
+  printf 'a\n' > "$W/ids.txt"
+  printf 'a\tg\tok\t3\t1\t0\t-\t-\n' > "$T/rows-a"
+  census_list_ids "$W/list.now" "$W/ids.now"
+  census_write_tsv "$T/out-a.tsv" "$W/ids.now" "$T/rows-a" "$T/srows" "# x" 2>/dev/null; got=$?
+  check "(j) 새로 뽑은 목록에 행이 없는 절이 있으면 캐시가 같아도 쓰지 않는다" "$got:$(tr '\n' ',' < "$W/ids.now")" "3:a,b,"
+  SUITE=""; W=""
+
   rm -rf "$T"
   printf 'gate-census self-test: %d passed, %d failed\n' "$passed" "$failed"
-  if [ "$passed" -lt 40 ]; then
-    printf 'gate-census self-test: 통과 수 %d 가 하한 40 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 48 ]; then
+    printf 'gate-census self-test: 통과 수 %d 가 하한 48 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

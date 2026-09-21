@@ -56,7 +56,7 @@ scan_admin() {
   for _a in $1; do
     case "$_a" in
       --admin|--admin=*)
-        echo "인가-자기확장-금지: --admin 은 어떤 절단점에서도 인가되지 않습니다 — 보호 규칙에 막힌 머지는 park 합니다" >&2
+        echo "인가-자기확장-금지: --admin is authorized at no cutpoint — a merge blocked by a protection rule is parked" >&2
         exit 1 ;;
     esac
   done
@@ -79,7 +79,7 @@ scan_grant() {
     case "$GATE_SURFACE" in
       읽기) exit 0 ;;
     esac
-    echo "인가-자기확장-금지: 인가 기록에 쓰려 합니다 — 이 파일은 킥오프만 씁니다: $GATE_GRANT" >&2
+    echo "인가-자기확장-금지: this act writes to the grant record — only the kickoff writes that file: $GATE_GRANT" >&2
     exit 1
   done
 }
