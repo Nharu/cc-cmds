@@ -4055,11 +4055,14 @@ fi
 #   - `gh` as a word, or the repo flag `-R`. TWO RECOGNITION TOKENS, because the
 #     command word is the part an indirect call hides and the repo flag is the
 #     part it cannot: `"$GH" -R "$slug" pr merge` has no `gh` on it anywhere;
-#   - a `pr <verb>` behind a quote or a `)` — argument position, which is where a
-#     subcommand goes. This catches `"$GH" pr merge "$n"`, which carries neither
-#     token. The preceding quote is what keeps it off `local ts seg pr sha st`
-#     and `read -r ts seg pr sha st`, where `pr` is a variable name in a bare
-#     identifier run;
+#   - a `pr <verb>` behind anything that is NOT A BARE IDENTIFIER — a quote, a
+#     `)`, a `}`, a `]`, or a `$name` expansion. That is argument position, where
+#     a subcommand goes, and it catches `"$GH" pr merge "$n"`, `$GH pr merge "$n"`
+#     and `${GH:-gh} pr merge "$n"`, none of which carries a recognition token.
+#     What keeps it off `local ts seg pr sha st` and `read -r ts seg pr sha st` is
+#     that there `pr` follows a bare identifier run — a variable name. The first
+#     version demanded a quote or a `)` in front, so the unquoted and the
+#     braced expansions walked through;
 #   - `eval`, or a `command -v`/`which`/`type` resolution of the binary, because
 #     indirection defeats any line-based rule and banning it is cheaper than
 #     parsing it.
@@ -4073,8 +4076,10 @@ fi
 # those letters — `through`, `high` — so the character before `gh` must be a
 # non-word one, which is what `$(gh`, `(gh`, `"gh` and a line-leading `gh` are.
 GH_FORM_RE='(^|[^A-Za-z0-9_-])gh -R "\$slug" pr [a-z][a-z-]*'
-GH_WORD_RE='(^|[^A-Za-z0-9_-])(gh|-R)([^A-Za-z0-9_-]|$)'
-GH_PR_RE="[\"')][[:space:]]+pr[[:space:]]+[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
+# `:-` is let in front of `gh` because `${GH:-gh}` spells the binary's name as a
+# default, and `-` alone stays out so a hyphenated name ending in `gh` does not.
+GH_WORD_RE='(^|[^A-Za-z0-9_-]|:-)(gh|-R)([^A-Za-z0-9_-]|$)'
+GH_PR_RE="([\"')}]|\\]|\\\$[A-Za-z_][A-Za-z0-9_]*)[[:space:]]+pr[[:space:]]+[a-z][a-z-]*([^A-Za-z0-9_-]|\$)"
 GH_INDIRECT_RE='(^|[^A-Za-z0-9_-])(eval|command[[:space:]]+-v|which|type)[[:space:]]+[^[:space:]]*gh([^A-Za-z0-9_-]|$)'
 GH_EVAL_RE='(^|[^A-Za-z0-9_-])eval([^A-Za-z0-9_-]|$)'
 
@@ -4132,6 +4137,8 @@ if [ -f "$CHECKS_SH" ]; then
     '  GH_BIN=$(command -v gh); "$GH_BIN" -R "$slug" pr merge "$n"' \
     '  eval "$cmd -R \"$slug\" pr merge \"$n\""' \
     '  "$GH" pr merge "$n" --squash' \
+    '  ${GH:-gh} pr merge "$n"' \
+    '  $GH pr merge "$n"' \
     '  out=$(gh -R "$slug" pr checks "$n"); gh -R "$slug" pr merge "$n"'
   do
     GH_FX=$(mktemp "${TMPDIR:-/tmp}/cc-checks-gh.XXXXXX") \
@@ -4192,8 +4199,9 @@ rm -rf "$ORPH_RD"
 # `--once` runs exactly one pass, so the loop's own exits are not exercised here
 # — what is exercised is every judgment inside a pass: deriving the branch from
 # the worktree, skipping a detached HEAD, writing nothing when there is no PR,
-# writing only on a transition, surviving a restart without duplicating, and
-# keeping a broken call out of `미등록`.
+# writing only on a transition, surviving a restart without duplicating,
+# keeping a broken call out of `미등록`, and holding back a `실패` until its
+# `필수 집합` question settles.
 # ---------------------------------------------------------------------------
 if [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
   CK_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-checks-run.XXXXXX")
@@ -4223,6 +4231,11 @@ case "$verb" in
     for a in "$@"; do [ "$a" = "--required" ] && req=1; done
     if [ "$mode" = "broken" ]; then
       printf 'HTTP 502\n' >&2; exit 4
+    fi
+    # Only the SECOND question breaks: the status call answers `실패`.
+    if [ "$mode" = "reqbroken" ]; then
+      [ "$req" = "1" ] && { printf 'HTTP 502\n' >&2; exit 4; }
+      printf 'lint\tfail\t1s\thttp://x\n'; exit 1
     fi
     if [ "$req" = "1" ]; then
       printf 'no required checks reported on the branch\n' >&2; exit 1
@@ -4331,6 +4344,26 @@ GHSTUB
     ok "깨진 호출이 미등록이 아니라 판정 불가로 떨어진다"
   else
     bad "폴러 패스" "깨진 호출의 상태가 판정 불가가 아니다: $(cat "$CK_OB" 2>/dev/null)"
+  fi
+
+  # A `실패` WHOSE `필수 집합` QUESTION BROKE IS NOT COMMITTED. Written, it read
+  # as `실패 | 필수 집합=판정 불가`, the gate did not refuse on it, and the
+  # transition key — `상태` alone — skipped every later pass, so the correcting
+  # row never came. The pass after the question settles has to be the one that
+  # writes, and it has to write the settled value.
+  ck_before=$(ck_lines)
+  ck_run reqbroken
+  if [ "$(ck_lines)" = "$ck_before" ]; then
+    ok "필수 집합 조회만 깨진 실패는 기록하지 않고 다음 패스로 미룬다"
+  else
+    bad "폴러 패스" "필수 집합이 판정 불가인 실패가 그대로 기록됐다 — 그 헤드의 머지 거절이 영구히 꺼진다: $(cat "$CK_OB")"
+  fi
+  ck_run fail
+  if [ "$(ck_lines)" = "$((ck_before + 1))" ] \
+     && [ "$(tail -1 "$CK_OB" | LC_ALL=C awk -F'\t' '{ print $5 "|" $6 }')" = "실패|없음" ]; then
+    ok "필수 집합이 정착한 다음 패스가 실패를 정착된 값으로 기록한다"
+  else
+    bad "폴러 패스" "미뤄진 실패가 정착된 쌍으로 기록되지 않았다: $(cat "$CK_OB" 2>/dev/null)"
   fi
 
   # DETACHED HEAD. `git rev-parse --abbrev-ref HEAD` prints `HEAD` and exits 0,

@@ -15144,7 +15144,25 @@ gate_drain_checks() {
   # times. A single-segment run cannot reach the window; THREE OR MORE SEGMENTS
   # TRANSITIONING INSIDE ONE WINDOW CAN, and that exposure grows with the
   # concurrent-stage cap rather than with anything here.
-  local f="$RUN_DIR/checks.observed" t
+  #
+  # THE SWEEP, THE RENAME AND THE TRANSCRIPTION RUN UNDER ONE LOCK, and without it
+  # the sweep undid the ordering it was written to keep. `gate_verb_act` holds no
+  # lock of its own and `ledger.lock` is taken and dropped per row, so two acts
+  # draining at once interleave row by row: one picks up a stranded `통과` and
+  # blocks on the ledger lock, the other transcribes the same file, removes it and
+  # appends the poller's newer `실패`, and then the first lands its `통과` last.
+  # `ls -tr` orders FILES; it cannot order two processes' appends. The same lock
+  # also keeps the sweep off a sibling's file while that sibling is still reading
+  # it, so every `draining.*` its holder sees really is stranded.
+  local f="$RUN_DIR/checks.observed" t lk="$RUN_DIR/checks.drain.lock" held=1
+  [ -d "$RUN_DIR" ] || return 0
+  # A lock that cannot be MADE — as opposed to one somebody holds — falls back to
+  # the unlocked drain rather than to no drain: skipping would hand the merge
+  # check below a ledger without the poller's newest observation.
+  gate_checks_drain_lock "$lk" || {
+    held=0
+    warn "could not create the \`checks\` drain lock and drains without it: $lk"
+  }
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     gate_drain_checks_file "$t"
@@ -15152,11 +15170,74 @@ gate_drain_checks() {
   done <<EOF
 $( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
 EOF
-  [ -s "$f" ] || return 0
-  t="$f.draining.$$"
-  mv "$f" "$t" 2>/dev/null || return 0
-  gate_drain_checks_file "$t"
-  rm -f "$t"
+  if [ -s "$f" ]; then
+    t="$f.draining.$$"
+    if mv "$f" "$t" 2>/dev/null; then
+      gate_drain_checks_file "$t"
+      rm -f "$t"
+    fi
+  fi
+  [ "$held" = "0" ] || gate_checks_drain_unlock "$lk"
+}
+
+gate_checks_drain_lock() {
+  # gate_checks_drain_lock <lockdir> — the drain's own mutex. NOT `ledger.lock`:
+  # that one is held per row by `gate_append`, which this section calls, so taking
+  # it here would wait on itself.
+  #
+  # IT IS RELEASED BY THE HOLDER'S DEATH, and that is the property it needs. The
+  # very case the sweep exists for is a drain that died mid-way — `gate_append`
+  # calls `die` — and a plain `mkdir` lock left behind by that death would stop
+  # every later drain for the rest of the run. So the owner line carries the pid,
+  # and a waiter that finds that pid gone takes the lock over. The rename is what
+  # names one winner when two waiters find it gone together, the shape
+  # `gate_index_lock` already arrived at.
+  #
+  # IT WAITS RATHER THAN GIVES UP. A drain that skipped would let the merge check
+  # a few lines later read a ledger missing the poller's newest `실패`. A live
+  # holder's section is a handful of appends; the only way to wait long is a
+  # holder whose pid has been recycled by an unrelated process, and the owner
+  # line's own timestamp — or the directory's mtime when that line cannot be read
+  # — bounds that at the same sixty seconds `gate_index_lock` uses.
+  local lockdir="$1" owner opid ots now dead undated=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    owner=$(cat "$lockdir/owner" 2>/dev/null || true)
+    opid=$(printf '%s' "$owner" | sed -n 's/^\([0-9][0-9]*\)[[:space:]][[:space:]]*[0-9][0-9]*$/\1/p')
+    ots=$(printf '%s' "$owner" | sed -n 's/^[0-9][0-9]*[[:space:]][[:space:]]*\([0-9][0-9]*\)$/\1/p')
+    [ -n "$ots" ] || ots=$(gate_mtime "$lockdir")
+    if [ -z "$ots" ]; then
+      # "THE LOCK IS GONE" AND "THE LOCK CANNOT BE MADE" read the same from here,
+      # and only the first may loop. One more attempt separates them, and a lock
+      # that stays present yet undateable gives up after a bounded number of
+      # looks rather than spinning.
+      mkdir "$lockdir" 2>/dev/null && break
+      [ -d "$lockdir" ] || return 1
+      undated=$(( undated + 1 ))
+      [ "$undated" -gt 20 ] && return 1
+      sleep 0.05
+      continue
+    fi
+    now=$(date -u +%s)
+    if { [ -n "$opid" ] && ! kill -0 "$opid" 2>/dev/null; } || [ $((now - ots)) -ge 60 ]; then
+      dead="$lockdir.dead.$$.$now"
+      if mv "$lockdir" "$dead" 2>/dev/null; then
+        rm -rf "$dead" 2>/dev/null || true
+      fi
+      continue
+    fi
+    sleep 0.05
+  done
+  printf '%s %s\n' "$$" "$(date -u +%s)" > "$lockdir/owner" 2>/dev/null || true
+  return 0
+}
+
+gate_checks_drain_unlock() {
+  # One rename, for the reason `gate_index_unlock` gives: `rm -rf` unlinks the
+  # owner line first and passes through an owner-less lock on every release.
+  local dead="$1.dead.$$.$(date -u +%s)"
+  if mv "$1" "$dead" 2>/dev/null; then
+    rm -rf "$dead" 2>/dev/null || true
+  fi
 }
 
 gate_drain_checks_file() {

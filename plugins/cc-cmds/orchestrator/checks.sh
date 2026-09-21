@@ -445,6 +445,25 @@ pass_once() {
 
     prev=$(tbl_get "$slug#$n" "$sha")
     [ "$prev" = "$status" ] && continue
+    # A `실패` IS COMMITTED ONLY WITH A SETTLED `필수 집합`. The two columns come
+    # from two different `gh` calls, and the transition key is `상태` alone — so a
+    # `실패` whose second call broke once was written as `필수 집합=판정 불가`,
+    # every later pass then matched `prev` and skipped, and a restart re-seeded
+    # the same `실패` from the ledger. The gate reads that pair as "no answer" and
+    # does not refuse, which is right for a question that broke at the moment it
+    # was asked and wrong for one that is never asked again: the refusal stayed off
+    # for the rest of that head's life, with no row saying so.
+    #
+    # So the pair is left unrecorded and the next pass asks both questions again.
+    # The retry spacing is the pass itself, which is why no count or delay of this
+    # script's own appears here. Until it settles the ledger keeps the previous
+    # state, and the gate does with that exactly what it did with the broken pair
+    # — nothing — so the deferral opens no window the old row had closed. Only
+    # `실패` waits: it is the one state whose verdict reads `필수 집합`.
+    if [ "$status" = "실패" ] && [ "$req" = "판정 불가" ]; then
+      printf 'checks: %s 의 필수 집합 조회가 깨져 실패 전이를 다음 패스로 미룹니다\n' "$slug#$n" >&2
+      continue
+    fi
     tbl_put "$slug#$n" "$sha" "$status"
     # ONE LINE, ONE `>>`. The free-text columns go last and the longer of the two
     # goes last of all, because `read -r a b c` piles every remaining tab into
