@@ -1,14 +1,14 @@
 ---
 name: design-reconverge
 description: 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인)
-when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
+when_to_use: 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 또는 라우터 교대가 구현 전 잔여 항목 반증(implement-unattended Step 1.5d 중단)을 재수렴으로 파견할 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것
 disable-model-invocation: true
 usage: "/cc-cmds:design-reconverge <design-doc-path> <scope>"
 options:
     - name: "<design-doc-path>"
       kind: positional
       required: true
-      summary: "재수렴 대상 설계 문서 경로 (`.md`). 드라이버가 메인 워크트리 절대 경로로 넘긴다."
+      summary: "재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다."
       parse_note: "`$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석."
     - name: "<scope>"
       kind: positional
@@ -21,7 +21,7 @@ notes: "전면 재수렴이 아니다. 넘겨받은 스코프 하나만 고치�
 Re-converge a design document against **one** scoped defect, then stop — **without ever asking a human**.
 Internal agent communication is in English to optimize token usage. Saved documentation is in Korean.
 
-This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, it touches only what the scope names, and its terminal verdict routes the run back to segment planning.
+This is a **scoped repair, not a re-run of design.** It is entered from the escalation ladder's redesign rung, or from the routing shift when an implement stage's Step 1.5d refuted a residual item before implementing; it touches only what the scope names, and its terminal verdict routes the run back to segment planning — inside the same run.
 
 ## What this skill is, and what it is not
 
@@ -113,7 +113,7 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 ### Step 1: Resolve, read, hash
 
-1. **Parse** `$ARGUMENTS`: the first `.md` token is the document path (used as given — the driver passes a main-worktree absolute path because `docs/` may be untracked and absent from a segment worktree); the remainder is the scope. A missing document, a non-`.md` target, an unreadable or empty document, or an empty scope is a **halt** with `분류: precondition-failed`.
+1. **Parse** `$ARGUMENTS`: the first `.md` token is the document path (used as given — the driver and the routing shift pass a main-worktree absolute path because `docs/` may be untracked and absent from a segment worktree, which is where a shift-dispatched stage runs); the remainder is the scope. A missing document, a non-`.md` target, an unreadable or empty document, or an empty scope is a **halt** with `분류: precondition-failed`.
 2. **Read `${CLAUDE_SKILL_DIR}/../_common/sidecar.md` `## 1` and `## 2`** — `## 1` for path/slug derivation, the provenance guard, and the atomic compare-and-swap; `## 2` for the carrier's block grammar, its nineteen fields, its frozen tail, its two write forms and their diff gates, and its file terminator. Derive `{slug}` and the document key **from the document's own directory**, never the cwd.
 3. **Read the whole design document** and record `사전 sha256` (`shasum -a 256`).
 4. **Read `${CLAUDE_SKILL_DIR}/../_common/verification.md`** for the binding-tier partition and the frozen verification vocabulary — this skill rewrites binding-tier material, so it must know exactly which sections that is.
@@ -122,7 +122,7 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 Two entry shapes, and the difference decides whether the carrier has a block to close:
 
-- **`R<n>` — a refuted or drift-graded verification item.** Read `docs/design-reconverge/{slug}.md` after the `sidecar.md` §1.2 read guard passes. Apply §2.5's **truncation check** first: a file whose last non-empty line outside an open fence is not `<!-- cc-design-reconverge: end -->` is truncated — fail closed, surface it, **do not write to it**, and halt. Then find the `## 회차 <N>` block whose `대상 항목` names this `R<n>` and whose `상태` is `대기`. Its frozen tail (fields 3–19) is the evidence: `주장`, `기대 결과`, `관측 요지`, `관측 결과`, `실행된 레시피`, `치환 맵`, `실패 시 영향`. **Use those bytes rather than re-running anything** — the block exists precisely so the observation survives the process that made it.
+- **`R<n>` — a refuted or drift-graded verification item.** Read `<base>/docs/design-reconverge/{slug}.md` (`<base>` and `{slug}` per `sidecar.md` §1.1 — from the document's own directory, never the cwd) after the `sidecar.md` §1.2 read guard passes. Apply §2.5's **truncation check** first: a file whose last non-empty line outside an open fence is not `<!-- cc-design-reconverge: end -->` is truncated — fail closed, surface it, **do not write to it**, and halt. Then find the `## 회차 <N>` block whose `대상 항목` names this `R<n>` and whose `상태` is `대기`. Its frozen tail (fields 3–19) is the evidence: `주장`, `기대 결과`, `관측 요지`, `관측 결과`, `실행된 레시피`, `치환 맵`, `실패 시 영향`. **Use those bytes rather than re-running anything** — the block exists precisely so the observation survives the process that made it.
 - **A problem identity `(정규화 파일 경로, 카테고리 태그)` — a review finding routed to the redesign rung.** There is no carrier block, because the carrier's append form belongs to the implementation arm and its field set is shaped for a refuted verification item. Work from the review report the driver names in the scope. **The carrier is not written on this path**, and the terminal predicate rests on the fixed literal of Step 5 plus this skill's structured verdict.
 
 Either way, **read the design document sections the scope reaches** and identify which binding-tier material the defect actually falsifies. If nothing in the binding tier is implicated, that is a legitimate and common outcome — the verdict is `불필요`.

@@ -90,7 +90,21 @@ printf '%s\n' "$$" > "$RD/SD.pid"
 printf '%s\n' "$DEAD" > "$RD/watch.pid"
 printf 'Fri Sep 4 00:00:00 2026\n'  > "$RD/watch.start"
 
+# (w) THE WINDOW RECORD IS NOT A LIVENESS INPUT. The launcher writes
+#     `<seg>.window` (effective compaction window, lane) beside the pid record,
+#     and the recorder reads it back for the outcome row. It says nothing about
+#     whether the process is running, so its presence beside a live and a reused
+#     pid must change neither verdict, and a segment that has ONLY this file —
+#     a launch that never got as far as the pid — is not a stage at all.
+printf '300000(argv)\n~\n' > "$RD/SB.window"
+printf '300000(argv)\n~\n' > "$RD/SC.window"
+printf '300000(argv)\n~\n' > "$RD/SE.window"
+
 check "죽은 프로세스와 pid 재사용만 고아로 잡힌다" "$(orphans_of "$RD")" "SA,SC"
+case "$(orphans_of "$RD")" in
+  *SE*) bad "창 기록만 있는 세그먼트" "SE 가 고아로 보고됐다 — .window 는 생존 판정의 입력이 아니다" ;;
+  *)    ok ".window 만 있고 .pid 가 없는 세그먼트는 고아가 아니다" ;;
+esac
 
 # --- the supervisor condition -----------------------------------------------
 #
@@ -182,6 +196,7 @@ esac
 RD_OK="$WORK/run-clean"; mkdir -p "$RD_OK"
 printf '%s\n' "$$" > "$RD_OK/SB.pid"
 cc_proc_fingerprint "$$"           > "$RD_OK/SB.start"
+printf '300000(argv)\n~\n'          > "$RD_OK/SB.window"
 check "깨끗한 런에는 고아가 없다"          "$(orphans_of "$RD_OK")" ""
 check "그 런에 살아 있는 스테이지가 실제로 있다" "$(cc_live_stages "$RD_OK")" "1"
 

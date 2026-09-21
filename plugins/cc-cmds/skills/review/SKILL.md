@@ -72,6 +72,8 @@ Load deferred tools via ToolSearch before any other step (`Agent` is built-in �
 
 **Before calling AskUserQuestion, Read `${CLAUDE_SKILL_DIR}/../_common/askuserquestion.md`.** Apply the hard constraints from that file to every AskUserQuestion call in this skill.
 
+**Read `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` here too.** It owns the seat class table, the promotion triggers and the record syntax, and Step 3 is where a seat's model is chosen — so it is read in the same place and for the same reason as the dispatch contract below.
+
 **Read `${CLAUDE_SKILL_DIR}/../_common/agent-team-protocol.md` here, not at Step 4.** It carries the spawn / ledger / resume+convergence / escalation contract, the task-assignment header, and the `### Team size budget` ceiling. The ceiling is what makes the placement wrong where it was: Step 3 reads that budget to decide how many reviewers to propose, and Step 4 is two steps later — so the shipped text had a step depending on a file a later step was told to open. Reading the dispatch contract in the same place as the tools it governs removes that inversion. This is a placement change and not a scope change: nothing about what the file says or when it binds is different.
 
 ---
@@ -98,7 +100,7 @@ Parse `$ARGUMENTS`:
 - **`--base-sha <sha>` and `--declared-files <csv>`** → scope hints from a caller that already knows both. Each takes the **next token** as its value, and both the flag and its value are removed from the argument string **before** the directive is extracted. `--base-sha` names the commit the change branched from — verify it in 1b rather than trusting it. `--declared-files` is the comma-separated set the change was supposed to touch; quote it, since it contains commas and may contain spaces. Both are optional and a human invocation normally supplies neither. A flag whose value is missing is dropped along with the flag: consuming the following token would silently swallow the next flag or the directive.
 - **Any other token beginning with `--`** → **not** a directive. Emit one Korean warning naming the token, discard it, and do not propagate it to team composition, the context package, or the report. Absorbing an unrecognized flag into the directive is the failure this bullet exists to prevent: the directive reaches the reviewers as a review-perspective instruction, so a mistyped or newly-added flag arrives as a weighting hint nobody wrote and nothing reports.
 - **Mixed input** (target + directive, e.g., "PR #42 보안 중심으로") → extract target + propagate directive to:
-    - Step 3: prioritize directive in team composition (e.g., "보안 중심" → elevate security reviewer model or add extra security focus)
+    - Step 3: prioritize directive in team composition (e.g., "보안 중심" → the tier file's `directive` promotion trigger fires on the security seat, and extra security focus may be added)
     - Step 4: add "User directive: [directive]" to reviewer context package. Directive influences review depth and coverage; severity is assessed independently on technical criteria.
     - Step 5: add "Review focus: [directive]" field to report overview
 - `등급 2` **Ambiguous input** → clarify with AskUserQuestion
@@ -269,7 +271,7 @@ A small, single-concern change does not need a full review team. Evaluate this b
 | **Small patch** (<30 lines, single concern) | Logic reviewer + Code quality reviewer |
 | **Large refactoring** (many files, no new features) | Code quality reviewer + Performance reviewer + Security reviewer |
 
-Each reviewer's model (`opus`/`sonnet`/`haiku`) is dynamically proposed based on PR size, complexity, and the depth of analysis required for that role. Do not fix defaults — justify model choices with rationale in the Step 3 proposal.
+Each reviewer's model comes from `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md`, read in Step 0: assign the seat exactly one class id and pass that class's model as the `Agent()` call's `model`. Evaluate that file's promotion triggers here too — once per seat, from what Steps 1–2 already collected — and the rules for classes, promotion, demotion and the limit-error exception stay in the tier file rather than being restated here.
 
 The table above is the **default composition**. Roles can be added/changed based on PR characteristics. For example, a "data-centric" PR with concurrency issues should add a concurrency reviewer. Team composition is dynamically adjusted based on risk indicator analysis, with rationale presented during user approval.
 
@@ -302,6 +304,8 @@ Present to user in Korean:
 이 팀 구성으로 진행할까요?
 ```
 
+The `모델` column holds the value the tier file's table (promotion included) chose for that seat, as a bare lowercase alias. A user who lowers a seat's model when approving overrides the table — follow it, and record that seat with `출처=사용자` in Step 5.
+
 Branch on user response:
 - **Approve** → create team, proceed to Step 4
 - **Modification request** → reflect feedback, re-propose (repeat)
@@ -320,7 +324,7 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
   - Local diff: `review-{branch-name}` (e.g., `review-feat-auth`)
   - File path: `review-{short-slug}` (e.g., `review-auth-module`)
 - **Early-stub the review-report doc** at spawn time (the report doc does not exist until Step 5, so pre-create the stub so the ledger has a home — no TMPDIR fallback). Write `docs/reviews/{slug}.md` as: an H1 title, then a `<!-- cc-design-ledger v3 … -->` HTML-comment block (after the H1, before the first `##`). Entry schema — the column list, the `state` domain, the per-row transient set and its terminal-strip rule (including the `epoch` exemption) — is defined once in `_common/agent-team-protocol.md`'s Role↔agentId ledger v3 and is not restated here. `scratchDir` = the reviewer's out-of-tree witness dir, recorded at spawn.
-- **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). **Stamp `epoch`** (`max(disk epoch, 0)+1`, re-derived from the on-disk `docs/reviews/{slug}.md` ledger — never an in-context counter; this Step-4 review team is the first team → `epoch 1`) **and the round-1 `witnessNonce`** on every one of its rows in the same at-spawn recording window as `agentId`/`scratchDir`, per the protocol Spawn section. Update the ledger on every state change.
+- **Spawn each approved reviewer** as a nameless background task. Embed the **task-assignment header** (from the protocol) verbatim atop each spawn prompt, followed by the reviewer's self-contained context package. Record each returned `agentId` in the ledger immediately (`state=running`, round 1). **Stamp `epoch`** (`max(disk epoch, 0)+1`, re-derived from the on-disk `docs/reviews/{slug}.md` ledger — never an in-context counter; this Step-4 review team is the first team → `epoch 1`) **and the round-1 `witnessNonce`** on every one of its rows in the same at-spawn recording window as `agentId`/`scratchDir`, per the protocol Spawn section. **Write each row's `role/scope` so that it begins with that seat's `{role-slug}` — the same slug the witness filenames use — followed by a space and then the prose.** The after-the-fact join from the report's `모델 티어` row to the ledger row of the same seat reads that leading slug and has nothing else to read: a row written in any other shape leaves the requested model with no ledger row to pair it with. Update the ledger on every state change.
 - **Witness scratch dir (parameters for `_common/agent-team-protocol.md`)**: before the first spawn, run the protocol's `## Spawn` command — `<plugin root>/orchestrator/cc-team-witness-init.sh <this review's slug>` (no `bash` in front — see the protocol's note) — and record the **printed path, literally** (not `$WITNESS_DIR`) as each reviewer's `scratchDir` (same immediacy as `agentId`). Every Step-4 review round is witnessed (`{role-slug}.round-N.md`, sentinel/nonce per the protocol); a Step-6 follow-up **fresh** team gets its **own** nested run of that command. The witness dir is out-of-tree under either root, leaving the two-command boundary gate untouched.
 - **Progress checkpoint — this skill opts in.** Append the protocol's checkpoint clause verbatim after the task-assignment header in every reviewer spawn and resume prompt (`## Per-skill parameter seam` → **Parameter — progress checkpoint**), substituting the same four tokens the header already substitutes. Reviewers publish to `${scratchDir}/partial/`; the lead reads no checkpoint in a live run.
 - All inter-reviewer discussion in English
@@ -336,6 +340,8 @@ The spawn / ledger / resume+convergence / escalation contract and the task-assig
 **Before synthesizing review results, Read `${CLAUDE_SKILL_DIR}/references/02-review-report-template.md`** for the severity system (P0~P3), merge rules, document structure template, file naming/version conventions, and paste-ready comment generation (its "Paste-Ready Comment Blockquote" section).
 
 The lead synthesizes all review results into a Korean document at `docs/reviews/{slug}.md` (the early stub created at spawn time) following the template. Leave the `<!-- cc-design-ledger v3 … -->` block in place (it renders invisibly and carries the agentId ledger). Re-read the ledger from disk before any resume phase.
+
+**Fill the report's model record.** Write each seat's `리뷰 팀 구성` parenthesis as one bare lowercase alias, and fill the `모델 티어` block directly after it with one row per seat. The row syntax belongs to `${CLAUDE_SKILL_DIR}/../_common/team-model-tier.md` and is not restated here.
 
 #### Paste-ready comments (lead-authored)
 

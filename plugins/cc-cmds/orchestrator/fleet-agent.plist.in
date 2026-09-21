@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  fleet-agent.plist.in — the one LaunchAgent template `fleet.sh agent install`
+  renders three times: the sensor label and one dispatch label per lane.
+
+  Placeholders, substituted by `fleet.sh` with sed and by nothing else:
+    @LABEL@              com.nharu.cc-cmds.fleet.sensor | .dispatch.<lane>
+    @FLEET_SH@           absolute path of fleet.sh
+    @SUBCOMMAND@         sensor | dispatch
+    @LANE@               the lane argument (line deleted for the sensor)
+    @CLAUDE_CONFIG_DIR@  the lane's seat home (line deleted for the sensor)
+    @START_INTERVAL@     FLEET_START_INTERVAL for the sensor,
+                         FLEET_DISPATCH_START_INTERVAL for a dispatch label —
+                         the numbers live in fleet.sh, never here
+    @LOG_DIR@            PACE_ROOT/log
+    @PATH@               the installing shell's PATH; launchd hands a minimal
+                         one and without jq on it every tick fails quietly
+
+  Deliberately ABSENT keys, and each absence is a decision:
+    KeepAlive            StartInterval is the restart policy; a tick that dies
+                         deterministically must not become a hot loop
+    AbandonProcessGroup  the dispatch job's watcher is cleaned up with the job
+    ProcessType          Background merges timers and blurs the period
+  `scripts/lint-fleet-agent-pins.sh` refuses this file if any of the three
+  appears or if a StartInterval literal replaces the placeholder.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@FLEET_SH@</string>
+    <string>@SUBCOMMAND@</string>
+    <string>@LANE@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+    <key>CLAUDE_CONFIG_DIR</key><string>@CLAUDE_CONFIG_DIR@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>@START_INTERVAL@</integer>
+  <key>StandardOutPath</key>
+  <string>@LOG_DIR@/@LABEL@.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG_DIR@/@LABEL@.log</string>
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+    <string>LoginWindow</string>
+    <string>StandardIO</string>
+    <string>System</string>
+  </array>
+</dict>
+</plist>

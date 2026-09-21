@@ -1842,6 +1842,35 @@ pre_base() {
     gateM act --manifest "$FX_MANIFEST" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
       --surface 읽기 --snapshot-digest "$(HM)" --rationale x -- 상태="${3:-계획됨}" 워크트리="$2" 선행=없음
   }
+  # seg_last <id> — the last `segment` row of that id on the main ledger, and
+  # seg_field <row> <키> — one field of a row. The re-derivation sections (14l,
+  # 14m, 14n, 14o, 14p, 14q) read the `인가면` field off the row that caused a
+  # widening, so the readers are definitions and live here.
+  seg_last() {
+    { grep -E '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true; } | grep -F "| id=$1 " | tail -1
+  }
+  seg_field() {
+    printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+  }
+  # in_dirs <settings.json> <dir> — 0 when <dir> is in `additionalDirectories`.
+  in_dirs() {
+    jq -e --arg d "$2" '.permissions.additionalDirectories | index($d)' "$1" >/dev/null 2>&1
+  }
+  # seg_wt_bytes <id> <settings.json> <label> — the `워크트리` the last row of
+  # <id> CARRIES is, byte for byte, an entry of that file's list. Every accepted
+  # non-terminal row is asserted through this rather than through the value
+  # the fixture passed in: the row grammar maps bytes (`|` to `/`, a newline
+  # to a space), so a row that recorded a different directory from the one the
+  # renderer admitted would pass a check on the input and fail only here.
+  seg_wt_bytes() {
+    local row wt_row
+    row=$(seg_last "$1"); wt_row=$(seg_field "$row" '워크트리')
+    if [ -n "$wt_row" ] && in_dirs "$2" "$wt_row"; then
+      ok "$3"
+    else
+      bad "$3" "행의 워크트리 '$wt_row' 가 인가 목록의 어느 항목과도 바이트 단위로 같지 않다: $(jq -c '.permissions.additionalDirectories' "$2" 2>/dev/null)"
+    fi
+  }
   cp "$FX_MANIFEST" "$WORK/manifest-clean.md"
   # THE LATE HOME'S RUN DIRECTORY IS DERIVED, NEVER SPELLED. `$FX_MANIFEST`
   # moves from `plan.md` (run id `R1`) to `plan2.md` (`R2`) partway through the
@@ -2178,6 +2207,18 @@ pre_cone() {
     local id="$1" wt="$2"; shift 2
     gateN act --manifest "$NM" --kind segment --target infra --segment "$id" --cutpoint 커밋 \
           --surface 읽기 --snapshot-digest "$(HN)" --rationale x -- 워크트리="$wt" "$@"
+  }
+  plant_seg_row() {
+    # plant_seg_row <id> <worktree> <필드>… — a `segment` row written PAST the
+    # gate, for what a ledger can carry that the gate no longer writes: a
+    # non-terminal row naming a worktree of another repository is refused at
+    # write time, and the cone reader still has to settle such a row when an
+    # older or hand-edited ledger carries one. Two cone sections plant one, so
+    # the writer is a definition and lives here.
+    local id="$1" wt="$2"; shift 2
+    local f fields=""
+    for f in "$@"; do fields="$fields | $f"; done
+    printf -- '- `segment` | 교대=0 | id=%s | 워크트리=%s%s | prev=x\n' "$id" "$wt" "$fields" >> "$LEDGER2"
   }
   CONE_OF_FAILURES="$WORK/cone-of-failures"
   : > "$CONE_OF_FAILURES"
@@ -2772,6 +2813,19 @@ while IFS= read -r f; do
     if grep -qE "^$name\(\) *\{" "$GATE"; then
       continue
     fi
+    # THE SAME HOLDS FOR THE SCRIPT A SUITE SOURCES INSTEAD OF THE GATE. The
+    # driver suite binds every driver name at its `. "$DRIVER"` line before its
+    # first assertion, so a column-zero shadow of a driver function written
+    # below a column-zero call is the fixture shape the paragraph above
+    # describes — the call above ran the real one — and not the vanishing call.
+    # Wiring the exemption to the gate alone made the check push that suite
+    # toward exactly the indentation the paragraph refuses.
+    case "$f" in
+      */orchestrator/test-run.sh)
+        if grep -qE "^$name\(\) *\{" "$RUNSH"; then
+          continue
+        fi ;;
+    esac
     if [ "$callline" -lt "$defline" ]; then
       offenders="$offenders $name(호출 $callline < 정의 $defline)"
     fi
@@ -4411,9 +4465,9 @@ case "$msg" in
 esac
 
 # I — AND NOT ONLY THE APPROVAL SERIES. A count of ALL rows is unusable here: the
-# prelude appends a `run` row on a run's first call and a `대상 추가` row whenever
-# the authorization directory is re-derived, so the total moves for reasons that
-# have nothing to do with the verb. Filtering by series is what makes this an
+# prelude appends a `run` row on a run's first call, and the layer-1 enrolment
+# appends a `대상 추가` row of its own, so the total moves for reasons that have
+# nothing to do with the verb. Filtering by series is what makes this an
 # assertion about the dry run rather than about the prelude.
 n_auto=$(grep -c '^- `자율 승인`' "$FX_LEDGER" || true)
 n_appr=$(grep -c '^- `승인`' "$FX_LEDGER" || true)
@@ -5166,6 +5220,93 @@ case "$row" in
   *) bad "종단 부류" "$row" ;;
 esac
 
+# --- THE WINDOW FIELDS on the row, and the reading they come from -------------
+#
+# The six-argument call above hands the recorder no window, so it falls back to
+# the `.window` record the launch would have left; planted, the row carries the
+# planted values verbatim, and absent, the row says `(미상)` and is still
+# written — the record is never a precondition.
+printf '%s\n%s\n' '300000(argv)' '~/x' > "$RD/SP.window"
+outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"압축 창=300000(argv) "*) ok ".window 1행이 압축 창으로 행에 옮겨진다" ;;
+  *) bad "압축 창" "$row" ;;
+esac
+case "$row" in
+  *"레인=~"*) ok "행의 레인이 물결 표기다" ;;
+  *) bad "레인" "$row" ;;
+esac
+case "$row" in
+  *"기록자=게이트 "*) ok "게이트의 기록기는 기록자=게이트 를 적는다" ;;
+  *) bad "기록자" "$row" ;;
+esac
+rm -f "$RD/SP.window"
+outcome_probe 0 success 0.01 ''
+row=$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)
+case "$row" in
+  *"압축 창=(미상) "*) ok ".window 가 없으면 압축 창=(미상) 이고 행은 그대로 쓰인다" ;;
+  *) bad "압축 창 부재" "$row" ;;
+esac
+
+# The effective reading itself, in-process, one layer at a time. Each fixture
+# stands one layer up alone under a temporary directory — the run's settings
+# directory and the target's `.claude/` are inputs of the enforcement-surface
+# digest, so neither is touched after run open.
+ac_probe() {
+  # ac_probe <argv-val> <settings-file> <project-dir> <config-dir>
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 CLAUDE_CONFIG_DIR="$4" bash -c '
+    . "'"$GATE"'"
+    RUN_DIR="'"$RD"'"
+    gate_autocompact_effective "$1" "$2" "$3"
+  ' _ "$1" "$2" "$3"
+}
+AC="$WORK/ac"; rm -rf "$AC"; mkdir -p "$AC/proj/.claude" "$AC/cfg" "$AC/empty"
+check "네 층이 전부 비면 -" "$(ac_probe '' "$AC/none.json" "$AC/empty" "$AC/cfg")" "-"
+check "argv 층만 서면 <n>(argv)" "$(ac_probe 300000 "$AC/none.json" "$AC/empty" "$AC/cfg")" "300000(argv)"
+printf '{"autoCompactWindow": 200000}\n' > "$AC/run.json"
+check "런설정 층만 서면 <n>(런설정)" "$(ac_probe '' "$AC/run.json" "$AC/empty" "$AC/cfg")" "200000(런설정)"
+printf '{"autoCompactWindow": 150000}\n' > "$AC/proj/.claude/settings.json"
+check "프로젝트 층만 서면 <n>(프로젝트)" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 100000}\n' > "$AC/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(ac_probe '' "$AC/none.json" "$AC/empty" "$AC/cfg")" "100000(레인)"
+check "네 층이 다 서면 argv 가 이긴다" "$(ac_probe 300000 "$AC/run.json" "$AC/proj" "$AC/cfg")" "300000(argv)"
+check "argv 없이 셋이 서면 런설정이 이긴다" "$(ac_probe '' "$AC/run.json" "$AC/proj" "$AC/cfg")" "200000(런설정)"
+check "런설정 없이 둘이 서면 프로젝트가 레인을 이긴다" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 120000}\n' > "$AC/proj/.claude/settings.local.json"
+check "프로젝트 로컬 파일이 프로젝트 파일보다 앞선다" "$(ac_probe '' "$AC/none.json" "$AC/proj" "$AC/cfg")" "120000(프로젝트)"
+rm -f "$AC/proj/.claude/settings.local.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 300000}\n' > "$AC/off.json"
+check "가장 앞선 층이 끄면 (꺼짐) 이고 값을 남기지 않는다" "$(ac_probe '' "$AC/off.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+check "끄는 층 위에서는 argv 값이 있어도 (꺼짐) 이고 300000(argv) 로 남지 않는다" "$(ac_probe 300000 "$AC/off.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+# Per-key merge: `autoCompactEnabled` and `autoCompactWindow` are each taken
+# from the highest layer that defines them, so a layer that only sets a window
+# does not hide a disable below it, and a layer that only enables does not hide
+# a window below it.
+printf '{"autoCompactWindow": 150000}\n' > "$AC/win.json"
+printf '{"autoCompactEnabled": false}\n' > "$AC/proj/.claude/settings.local.json"
+check "런설정 창 150000 위에 프로젝트로컬 enabled:false 는 (꺼짐) 이다 (150000(런설정) 이 아니다)" "$(ac_probe '' "$AC/win.json" "$AC/proj" "$AC/cfg")" "(꺼짐)"
+printf '{"autoCompactEnabled": true}\n' > "$AC/on.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 90000}\n' > "$AC/proj/.claude/settings.local.json"
+check "런설정 enabled:true 위에 프로젝트로컬 false+90000 은 90000(프로젝트) 다 ((꺼짐) 이 아니다)" "$(ac_probe '' "$AC/on.json" "$AC/proj" "$AC/cfg")" "90000(프로젝트)"
+rm -f "$AC/proj/.claude/settings.local.json"
+printf '{"autoCompactWindow": "300k"}\n' > "$AC/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛰고 다음 층을 읽는다 ((미상) 이 아니다)" "$(ac_probe '' "$AC/fmt.json" "$AC/empty" "$AC/cfg")" "100000(레인)"
+printf '{not json\n' > "$AC/broken.json"
+check "깨진 JSON 은 (미상) 이고 - 로 접히지 않는다" "$(ac_probe '' "$AC/broken.json" "$AC/proj" "$AC/cfg")" "(미상)"
+check "argv 층은 설정 층을 다 읽은 뒤에야 답한다 (깨진 파일 위에서는 (미상) 이고 (argv) 가 아니다)" "$(ac_probe 300000 "$AC/broken.json" "$AC/proj" "$AC/cfg")" "(미상)"
+# The injection table and its kill switch.
+ac_kind() {
+  cd "$WT" && CC_GATE_SOURCE_ONLY=1 env "$@" bash -c '. "'"$GATE"'"; gate_autocompact_argv_value "$AC_KIND"' _
+}
+check "review 는 300000 을 낸다" "$(ac_kind AC_KIND=review)" "300000"
+check "표 밖 종류는 빈 값을 낸다" "$(ac_kind AC_KIND=implement):$(ac_kind AC_KIND=generic):$(ac_kind AC_KIND=shift)" "::"
+check "끄기 스위치는 review 도 빈 값으로 만든다" "$(ac_kind AC_KIND=review CC_ORCH_STAGE_AUTOCOMPACT=off)" ""
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "~/cfg"
+check "HOME 밖의 레인은 그대로 적는다" \
+  "$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 HOME="$AC/empty" CLAUDE_CONFIG_DIR="$AC/cfg" bash -c '. "'"$GATE"'"; gate_lane_label')" "$AC/cfg"
+
 # `plan_sha256` — the implement arm splits into two processes and process B
 # enters ONLY when this field is on the row; its admission predicate says so and
 # forbids re-deriving a plan instead. Nothing wrote it, so every dispatch
@@ -5369,6 +5510,10 @@ check "재개 argv 가 -r 로 그 세션을 잇는다" "$(si_argv_value "$WORK/s
 check "기록 있는 세션의 재개는 append 플래그를 받는다 — 기록된 파일로" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-system-prompt-file)" "$sg_f0"
 check "서브에이전트 append 도 같은 파일이다" "$(si_argv_value "$WORK/sg-argv-1.txt" --append-subagent-system-prompt-file)" "$sg_f0"
 check "재개 환경에도 끄기 변수가 서 있다" "$(sed -n 's/^MDS=//p' "$WORK/sg-env-1.txt")" "1"
+# The re-attachment passes through the same injection block as a fresh launch,
+# so a `review` resume carries the window beside `-r` — read anew, not copied.
+check "재개 argv 에 -r 와 --autocompact 300000 이 함께 있다" \
+  "$(si_argv_value "$WORK/sg-argv-1.txt" -r):$(si_argv_value "$WORK/sg-argv-1.txt" --autocompact)" "$sg_sid:300000"
 # The synthesis moved since the session was born: the resume still carries the
 # RECORDED file, and says so beside the per-launch digest line.
 printf 'a rule added after the session was born\n' >> "$WT/CLAUDE.md"
@@ -5499,10 +5644,10 @@ fi
 # ended, so the supervisor is the only process that can remove them; a set
 # that survives here is a set that survives every night.
 sl_left=""
-for sl_f in SL.sup SL.sup.start SL.kind SL.start SL.launch SL.launch.taken; do
+for sl_f in SL.sup SL.sup.start SL.kind SL.start SL.launch SL.launch.taken SL.window; do
   [ -e "$(dirname "$SETTINGS_DIR")/$sl_f" ] && sl_left="$sl_left $sl_f"
 done
-check "스테이지가 끝나면 감독자·기동 토큰·종류 기록도 함께 지워진다" "$sl_left" ""
+check "스테이지가 끝나면 감독자·기동 토큰·종류·창 기록도 함께 지워진다" "$sl_left" ""
 # THE PIN AND THE TRANSCRIPT NAME, measured from what the launcher left on disk.
 #
 # The seam between `gate_launch_stage` and the two functions it derives those
@@ -5531,6 +5676,69 @@ case "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" in
   *"세션 id=stub-session"*) ok "결과 기록기가 이 파견이 실제로 쓴 전사에서 세션 id 를 읽는다" ;;
   *) bad "종단 기록" "$(grep '^- `stage-result` ' "$FX_LEDGER" | tail -1)" ;;
 esac
+
+# --- THE COMPACTION WINDOW: injected for one kind, recorded on every row -----
+#
+# The launch above was a `review` stage, the one kind the gate hands a window
+# on the argv today. The flag and the row's `압축 창` come from one variable in
+# the supervisor, so the argv the stub recorded and the row must agree: the flag
+# is there exactly once with the table's value, and the row says `(argv)`.
+check "review 기동의 argv 에 --autocompact 300000 이 있다" "$(si_argv_value "$WORK/stub-argv.txt" --autocompact)" "300000"
+check "--autocompact 는 argv 에 한 번만 있다 (래퍼가 넘긴 것 하나)" "$(si_argv_has "$WORK/stub-argv.txt" --autocompact)" "1"
+sl_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL ' | tail -1)
+case "$sl_row" in
+  *"압축 창=300000(argv) "*) ok "그 행의 압축 창이 300000(argv) 다 — argv 와 행이 한 판독에서 나온다" ;;
+  *) bad "압축 창 기록" "$sl_row" ;;
+esac
+case "$sl_row" in
+  *"레인=~"*|*"레인=/"*) ok "행의 레인이 물결 표기 또는 절대 경로다" ;;
+  *) bad "레인 기록" "$sl_row" ;;
+esac
+case "$sl_row" in
+  *"기록자=게이트 "*) ok "게이트가 쓴 행은 기록자=게이트 다" ;;
+  *) bad "기록자 기록" "$sl_row" ;;
+esac
+# A kind outside the injection table gets no flag, and the same `review` kind
+# under the kill switch gets none either — and its row then says so, because
+# the row is derived from the same reading rather than from the table.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL4 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl4.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl4.txt" \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL4 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- generic "/cc-cmds:x" 2>&1); rc=$?
+check "표 밖 종류(generic)의 기동도 끝까지 간다" "$rc" "0"
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL4 --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "표 밖 종류의 argv 에는 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl4.txt" --autocompact)" "0"
+sl4_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL4 ' | tail -1)
+case "$sl4_row" in
+  *"압축 창="*"(argv)"*) bad "압축 창 기록" "플래그가 나가지 않았는데 (argv) 를 적었다: $sl4_row" ;;
+  *"압축 창="*) ok "표 밖 종류의 행도 압축 창을 싣되 (argv) 가 아니다" ;;
+  *) bad "압축 창 기록" "$sl4_row" ;;
+esac
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL5 --cutpoint 커밋 \
+     --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$WT" 선행=없음
+rm -f "$WORK/stub-argv-sl5.txt"
+out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl5.txt" CC_ORCH_STAGE_AUTOCOMPACT=off \
+      bash "$GATE" act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SL5 \
+      --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x \
+      -- review "/cc-cmds:review-unattended x" 2>&1); rc=$?
+check "끄기 스위치 아래의 review 기동도 끝까지 간다" "$rc" "0"
+wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL5 --interval 1 --timeout 60 2>&1); wait_rc=$?
+check "CC_ORCH_STAGE_AUTOCOMPACT=off 면 review 의 argv 에도 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl5.txt" --autocompact)" "0"
+sl5_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL5 ' | tail -1)
+case "$sl5_row" in
+  *"압축 창="*"(argv)"*) bad "압축 창 기록" "끄기 스위치 아래에서 (argv) 를 적었다: $sl5_row" ;;
+  *"압축 창="*"기록자=게이트 "*) ok "끄기 스위치 아래의 행은 (argv) 가 아닌 압축 창을 싣는다" ;;
+  *) bad "압축 창 기록" "$sl5_row" ;;
+esac
+check "두 review 기동의 압축 창 값이 스위치에서 갈린다" \
+  "$( [ "$(printf '%s' "$sl_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" != "$(printf '%s' "$sl5_row" | sed -n 's/.*압축 창=\([^|]*\) |.*/\1/p')" ] && printf differ || printf same )" "differ"
 
 # --- STAGE INSTRUCTIONS: what the launch injected in place of CLAUDE.md -------
 #
@@ -5774,13 +5982,13 @@ si_wrap() {
 si_reserved_ok=0; si_reserved_bad=""
 for si_flag in --append-system-prompt --append-system-prompt-file --append-subagent-system-prompt \
                --append-subagent-system-prompt-file --system-prompt --system-prompt-file \
-               --setting-sources --bare --exclude-dynamic-system-prompt-sections; do
+               --setting-sources --bare --exclude-dynamic-system-prompt-sections --autocompact; do
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag" y; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag=$si_rc"
   si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --instructions "$SI_F" -- -p "$si_flag=z"; si_rc=$?
   [ "$si_rc" = 2 ] && si_reserved_ok=$((si_reserved_ok + 1)) || si_reserved_bad="$si_reserved_bad $si_flag==$si_rc"
 done
-check "래퍼는 --instructions 와 함께 온 예약 플래그 9종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "18:"
+check "래퍼는 --instructions 와 함께 온 예약 플래그 10종(= 형 포함)을 모두 exit 2 로 거부한다" "$si_reserved_ok:$si_reserved_bad" "20:"
 case "$(cat "$WORK/wrap-err.txt")" in
   *"reserved flag after --"*) ok "거부가 예약 플래그라고 말한다" ;;
   *) bad "예약 플래그 거부 문면" "$(tr '\n' ' ' < "$WORK/wrap-err.txt")" ;;
@@ -5799,6 +6007,14 @@ check "--instructions 가 있으면 두 append 와 동적 절 제외가 --strict
 si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --instructions "$SI_F" -- -p a; si_rc=$?
 check "재개 분기도 같은 플래그를 받는다" "$(cat "$WORK/wrap-argv.txt")" \
   "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+# The wrapper's own `--autocompact <n>` lands on the CLI argv after
+# `--strict-mcp-config`, on both id branches, and only when given.
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --session-id x --autocompact 300000 --instructions "$SI_F" -- -p a; si_rc=$?
+check "래퍼의 --autocompact 는 --strict-mcp-config 뒤, append 앞에 놓인다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK --session-id x --strict-mcp-config --autocompact 300000 --append-system-prompt-file $SI_F --append-subagent-system-prompt-file $SI_F --exclude-dynamic-system-prompt-sections -p a"
+si_wrap --settings "$SI_SET" --plugin-dir "$WORK" --resume r1 --autocompact 300000 -- -p a; si_rc=$?
+check "재개·지침 없는 분기도 --autocompact 를 같은 자리에 받는다" "$(cat "$WORK/wrap-argv.txt")" \
+  "--output-format stream-json --verbose --settings $SI_SET --plugin-dir $WORK -r r1 --strict-mcp-config --autocompact 300000 -p a"
 # Source order in the launcher: the synthesis sits before the attempt pin, so a
 # refusal consumes no attempt number.
 ord_synth=$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -n 'gate_stage_instructions_for_launch' | sed 's/:.*//' | tail -1)
@@ -6159,7 +6375,7 @@ gate plan --manifest "$FX_MANIFEST" --kind skill --target infra --segment SD --c
 check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 
 # ---------------------------------------------------------------------------
-# 14l. The authorization list can grow, and only through the gate
+# 14l. The authorization list can grow, and only through a segment row
 # --- section: 14l | group: base | covers: snapshot, act, exec | needs: 14c | anchors: 유도의 입력이 움직이면 인가 목록이 자란다 ---
 #
 # It used to be written once and never again, so a directory kickoff could not
@@ -6168,17 +6384,57 @@ check "마감이 미래면 디스패치가 통과한다" "$rc" "0"
 # Measured: a run produced its review and then could not remediate, because the
 # only writable tree in its list was the live plugin checkout.
 #
+# THE TRIGGER IS THE SEGMENT ROW, NOT THE NEXT CALL. The re-derivation used to
+# run in every call's prelude, so the row naming a worktree landed BEFORE the
+# settings that admit it, and the call that widened invalidated its own
+# caller's snapshot digest. Now a non-terminal `segment` row re-derives as it
+# is written and records the move on itself as `인가면=<before>→<after>`; a
+# manifest edit alone moves nothing until such a row is written, and a call
+# that writes no such row writes no `대상 추가` row either.
+#
 # What keeps the surface comparison meaningful is not that it never moves, but
-# that it moves only through THIS writer and leaves a row. Both halves are
-# asserted here — the growth, and the refusal to repair somebody else's edit.
+# that it moves only through THIS writer and leaves a field. All three halves
+# are asserted here — the growth, the silence of everything else, and the
+# refusal to repair somebody else's edit.
 # ---------------------------------------------------------------------------
-# `RD_L` is set in `pre_base`, in the head.
+# `RD_L`, `LINKED`, `set_exec_wt`, `seg_last` and `seg_field` are set in
+# `pre_base`, in the head; the linked worktree is made by 14c.
+# A non-terminal row on the main worktree first: whatever the sections before
+# left in the list (14j declares and then withdraws an execution worktree), this
+# row's re-derivation settles it to the manifest as it stands now, so the
+# assertions below start from a list that does not carry `LINKED`.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=계획됨 워크트리="$WT" 선행=없음
+check "메인 워크트리를 실은 비종단 세그먼트 행이 기록된다" "$rc" "0"
+if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  bad "14l 전제" "행을 쓰기 전부터 LINKED 가 목록에 있다 — 아래 성장 단언이 공허하다"
+else
+  ok "매니페스트가 더 이상 선언하지 않는 워크트리는 비종단 행의 재유도에서 빠진다"
+fi
 n_before=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")
 n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
+d0=$(cat "$RD_L/surface-digest")
 
-# Declaring an execution worktree is a change to what the settings derive FROM.
+# THE NEGATIVE HALF. Declaring an execution worktree is a change to what the
+# settings derive FROM, and the next call still moves nothing: the prelude
+# re-derivation is gone, and the manifest is read again only when a segment
+# row is written.
 set_exec_wt "$LINKED"
 ( cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" >/dev/null 2>&1 )
+check "매니페스트만 움직인 뒤의 호출은 인가 목록을 다시 쓰지 않는다 (프렐류드 재유도는 없다)" \
+      "$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")" "$n_before"
+check "그때 표면 기준선도 그대로다" "$(cat "$RD_L/surface-digest")" "$d0"
+check "그 호출은 대상 추가 행도 쓰지 않는다" \
+      "$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_rows_before"
+
+# THE POSITIVE HALF. A non-terminal segment row naming the linked worktree is
+# the input that moves, and it re-derives as it is written.
+H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=계획됨 워크트리="$LINKED" 선행=없음
+check "새 워크트리를 실은 비종단 세그먼트 행이 기록된다" "$rc" "0"
 n_after=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_DIR/generic.json")
 if [ "${n_after:-0}" -gt "${n_before:-0}" ]; then
   ok "유도의 입력이 움직이면 인가 목록이 자란다"
@@ -6187,26 +6443,60 @@ else
 fi
 if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
      "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
-  ok "새로 선언된 워크트리가 그 안에 있다"
+  ok "새로 실린 워크트리가 그 안에 있다"
 else
   bad "인가 목록 재유도" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
 fi
-n_rows_after=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
-if [ "${n_rows_after:-0}" -gt "${n_rows_before:-0}" ]; then
-  ok "그 확장이 원장에 행으로 남는다 (조용히 넓히지 않는다)"
+linked_p=$(cd "$LINKED" && pwd -P)
+if jq -e --arg d "$linked_p" '.permissions.additionalDirectories | index($d)' \
+     "$SETTINGS_DIR/generic.json" >/dev/null 2>&1; then
+  ok "그 워크트리의 물리 경로도 함께 들어간다"
 else
-  bad "확장 기록" "행이 늘지 않았다"
+  bad "물리 경로 인가" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")"
 fi
+sl_row=$(seg_last SL)
+sl_surf=$(seg_field "$sl_row" 인가면)
+d1=$(cat "$RD_L/surface-digest")
+if [[ "$sl_surf" =~ ^[0-9a-f]{64}→[0-9a-f]{64}$ ]]; then
+  ok "그 확장이 원인이 된 세그먼트 행의 인가면 필드로 남는다 (조용히 넓히지 않는다)"
+else
+  bad "확장 기록" "인가면 필드가 없거나 형태가 다르다: '$sl_surf' — $sl_row"
+fi
+check "인가면의 앞 값은 그 전의 표면 기준선이다" "${sl_surf%%→*}" "$d0"
+check "인가면의 뒤 값은 새 표면 기준선이다" "${sl_surf##*→}" "$d1"
+check "확장은 대상 추가 행을 쓰지 않는다" \
+      "$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_rows_before"
 # The baseline moved with it, so the next act does not read as tampering.
 H=$(cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H)
 gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SR --cutpoint 커밋 \
      --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
 check "확장 뒤의 행위가 표면 이동으로 읽히지 않는다" "$rc" "0"
-# And a second call changes nothing — the derivation is a function, so it is
-# stable when its inputs are.
-d1=$(cat "$RD_L/surface-digest")
-( cd "$WT" && gate_inproc snapshot --manifest "$FX_MANIFEST" >/dev/null 2>&1 )
+# And the same row again changes nothing — the derivation is a function, so it
+# is stable when its inputs are, and the row says so by carrying no field.
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$LINKED" 선행=없음
+check "같은 워크트리를 다시 실은 행이 기록된다" "$rc" "0"
 check "입력이 그대로면 다시 쓰지 않는다" "$(cat "$RD_L/surface-digest")" "$d1"
+case "$(seg_last SL)" in
+  *"| 인가면="*) bad "인가면 부재" "넓힌 것이 없는 행에 인가면이 붙었다: $(seg_last SL)" ;;
+  *) ok "넓힌 것이 없는 행에는 인가면 필드가 없다 (부재가 「이 행은 넓히지 않았다」다)" ;;
+esac
+# A caller cannot write the field: it is the gate's measurement.
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=실행중 워크트리="$LINKED" 선행=없음 "인가면=${d0}→${d1}"
+check "호출자가 넘긴 인가면은 거절된다" "$rc" "2"
+case "$msg" in
+  *"인가면"*) ok "그 거절이 필드 이름을 든다" ;;
+  *) bad "인가면 거절 문면" "$msg" ;;
+esac
+# The section leaves SL terminal and back on the main worktree, and the
+# manifest as it found it. A terminal row re-derives nothing (D5), so the list
+# keeps `LINKED` until the next non-terminal row — asserted in 14n.
+gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SL --cutpoint 커밋 \
+     --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
+check "SL 을 종단으로 되돌리는 행이 기록된다" "$rc" "0"
+check "종단 행은 재유도하지 않는다 — 표면 기준선이 그대로다" "$(cat "$RD_L/surface-digest")" "$d1"
+set_exec_wt ""
 
 # LOST SIGNAL IS NOT A PASS. The surface here has NOT moved — every assertion
 # above just established that — so anything but a clean pass below comes from the
@@ -6250,7 +6540,6 @@ cp "$WORK/14l-generic.before" "$SETTINGS_DIR/generic.json"
 out=$(cd "$WT" && gate_inproc exec --manifest "$FX_MANIFEST" --target infra --segment SR \
       --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(HH)" --rationale x -- ls 2>&1); rc=$?
 check "위조를 되돌리면 같은 행위가 다시 통과한다 (이 절은 홈을 깨진 채 남기지 않는다)" "$rc" "0"
-set_exec_wt ""
 
 # ---------------------------------------------------------------------------
 # 14m. A segment's own worktree reaches the settings and the act's directory
@@ -6278,6 +6567,9 @@ if [ -d "$LINKED" ]; then
   n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
   seg_wt_row SM "$LINKED"
   check "세그먼트 행이 기록된다" "$rc" "0"
+  # THE ROW IS THE TRIGGER, so the list already carries the worktree by the
+  # time the next call reads it — the anchor's "next call" is where it is
+  # observed, not where it is derived.
   HM >/dev/null
   if jq -e --arg d "$LINKED" '.permissions.additionalDirectories | index($d)' \
        "$SETTINGS_SEG/generic.json" >/dev/null 2>&1; then
@@ -6287,31 +6579,55 @@ if [ -d "$LINKED" ]; then
   fi
   check "라우팅 좌석의 목록은 여전히 비어 있다" \
         "$(jq '.permissions.additionalDirectories | length' "$SETTINGS_SEG/shift.json")" "0"
-  n_rows_after=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
-  if [ "${n_rows_after:-0}" -gt "${n_rows_before:-0}" ]; then
-    ok "세그먼트 워크트리로 넓힌 것이 원장에 행으로 남는다"
-  else
-    bad "세그먼트 워크트리 확장 기록" "행이 늘지 않았다: $n_rows_before → $n_rows_after"
-  fi
-  # The key reads the segment worktree SET, not the ledger: a row that names no
-  # new worktree must not re-derive.
-  d_seg=$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")
-  n_rows_before=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
-  seg_wt_row SM "$LINKED" 실행중
-  HM >/dev/null
-  check "새 워크트리가 없는 세그먼트 행은 목록을 다시 쓰지 않는다" \
+  sm_last=$( { grep -E '^- `segment` ' "$FX_LEDGER" || true; } | grep -F '| id=SM ' | tail -1)
+  case "$sm_last" in
+    *"| 인가면="*) ok "세그먼트 워크트리로 넓힌 것이 그 행의 인가면 필드로 남는다" ;;
+    *) bad "세그먼트 워크트리 확장 기록" "인가면 필드가 없다: $sm_last" ;;
+  esac
+  check "넓힌 것은 대상 추가 행으로 남지 않는다" \
         "$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_rows_before"
+  # The key reads the segment worktree SET, not the ledger: a row that names no
+  # new worktree must not re-derive, and says so by carrying no field.
+  d_seg=$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")
+  seg_wt_row SM "$LINKED" 실행중
+  check "같은 워크트리를 다시 실은 세그먼트 행이 기록된다" "$rc" "0"
+  HM >/dev/null
+  case "$( { grep -E '^- `segment` ' "$FX_LEDGER" || true; } | grep -F '| id=SM ' | tail -1)" in
+    *"| 인가면="*) bad "인가면 부재" "새 워크트리가 없는 행에 인가면이 붙었다" ;;
+    *) ok "새 워크트리가 없는 세그먼트 행은 목록을 다시 쓰지 않는다 (인가면 없음)" ;;
+  esac
   check "그때 표면 기준선도 그대로다" "$(cat "$STATE_SEG/cc-cmds/run/R1/surface-digest")" "$d_seg"
 
   # NOT A WORKTREE OF THE TARGET: another repository, and a path that does not
-  # exist. Neither widens anything, and a dispatch into either is refused before
-  # the stage starts rather than falling back to the target's own tree.
+  # exist. A non-terminal row naming either is REFUSED AT WRITE TIME — the
+  # boundary is the declared targets' common git directory, and a row that
+  # fails it would put the segment's acts in a tree the settings could not
+  # admit. Nothing widens, and the refusal names which condition failed.
   OTHER_SEG="$WORK/other-seg"
   ( git init -q "$OTHER_SEG" && cd "$OTHER_SEG" \
     && git -c user.email=t@example.invalid -c user.name=T commit -q --allow-empty -m one ) >/dev/null 2>&1
   NOWHERE_SEG="$WORK/nowhere"
+  n_seg_before=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
   seg_wt_row SO "$OTHER_SEG"
+  check "다른 레포의 워크트리를 실은 비종단 세그먼트 행은 exit 2 로 거절된다" "$rc" "2"
+  case "$msg" in
+    *"공통 git 디렉터리"*) ok "그 거절이 공통 git 디렉터리를 이유로 든다" ;;
+    *) bad "경계 거절 문면 (SO)" "$msg" ;;
+  esac
   seg_wt_row SN "$NOWHERE_SEG"
+  check "없는 경로를 실은 비종단 세그먼트 행은 exit 2 로 거절된다" "$rc" "2"
+  case "$msg" in
+    *"존재하지 않음"*) ok "그 거절이 경로의 부재를 이유로 든다" ;;
+    *) bad "경계 거절 문면 (SN)" "$msg" ;;
+  esac
+  seg_wt_row SQ "relative/path"
+  check "상대 경로를 실은 비종단 세그먼트 행은 exit 2 로 거절된다" "$rc" "2"
+  case "$msg" in
+    *"절대 경로"*) ok "그 거절이 절대 경로 요구를 이유로 든다" ;;
+    *) bad "경계 거절 문면 (SQ)" "$msg" ;;
+  esac
+  check "거절된 행은 원장에 남지 않는다" \
+        "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg_before"
   HM >/dev/null
   for d in "$OTHER_SEG" "$NOWHERE_SEG"; do
     if jq -e --arg d "$d" '.permissions.additionalDirectories | index($d)' \
@@ -6321,6 +6637,17 @@ if [ -d "$LINKED" ]; then
       ok "대상의 워크트리가 아닌 세그먼트 워크트리는 목록에 들지 않는다 ($(basename "$d"))"
     fi
   done
+  # ROWS THE GATE DID NOT WRITE, AND PLANTING THEM IS THE ONLY WAY TO REACH THE
+  # DISPATCH REFUSAL. The two checks are layered, not redundant, and the order
+  # between them is fixed by the gate rather than chosen here: the write-time
+  # boundary asserted just above answers first for every row the gate itself
+  # writes, and the dispatch pre-check below never sees those values through
+  # that route. What it does stand for is the rows the write path never saw — a
+  # ledger written before the boundary existed, or one edited by hand, or a
+  # worktree removed after a good row landed. So the rows are planted directly,
+  # bypassing the write-time check, and the refusal is asserted on them.
+  printf -- '- `segment` | 교대=0 | id=SO | 상태=계획됨 | 워크트리=%s | 선행=없음 | prev=x\n' "$OTHER_SEG" >> "$FX_LEDGER"
+  printf -- '- `segment` | 교대=0 | id=SN | 상태=계획됨 | 워크트리=%s | 선행=없음 | prev=x\n' "$NOWHERE_SEG" >> "$FX_LEDGER"
   # A KIND THE LEDGER DOES NOT RECORD GETS THE SAME REFUSAL. The predicate used to
   # name `skill` and `exec`, while the dispatch switch sends every other kind to
   # the read-only runner, which enters the SAME resolved tree — so those kinds used
@@ -6413,6 +6740,730 @@ if [ -d "$LINKED" ]; then
   done
 else
   bad "픽스처 전제" "14c 의 링크된 워크트리가 없다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14n. The state decides: terminal rows are exempt, non-terminal rows are bound
+# --- section: 14n | group: base | covers: act, snapshot | anchors: 실재하는 워크트리를 실은 비종단 행이 기록된다 ---
+#
+# THE PAIR CASE, BOTH WAYS. One worktree, two states: while it exists, a
+# non-terminal row widens the settings and a terminal row does not; once it is
+# gone, a terminal row still lands and a non-terminal row is refused. All seven
+# states of the closed vocabulary are driven so none is left to the code to
+# decide — `완료`, `머지됨` and `park` are exempt from the boundary check, the
+# re-derivation and the field alike; `계획됨`, `실행중`, `리뷰중` and `적용 준비`
+# are bound by all three. A segment's worktree is routinely removed by the
+# merge that lands it, so refusing the row that says so would leave the
+# segment live on the ledger forever — and a terminal row re-deriving nothing
+# means a vanished path stays in the list until the NEXT non-terminal row,
+# which is the direction that does not widen anything (the directory is gone).
+#
+# THE BOUNDARY IS A CHECK ON A DIRECTORY, so what it does not cover is pinned
+# here beside it: a subdirectory of an admitted worktree passes all three
+# conditions, and a name carrying a newline, a double quote or a backslash
+# would then reach the settings file as list syntax rather than as one entry,
+# while a name carrying a pipe would reach the settings file whole and the
+# ROW as a different directory (the row grammar maps `|` to `/`). Four
+# spellings are driven, the list is compared byte for byte across them, the
+# shape of the whole list — every entry a directory that exists — is asserted
+# once after a widening, and every accepted non-terminal row is checked for
+# byte-identity between the `워크트리` it carries and the entry the list
+# admits (`seg_wt_bytes`), so a pin on a message is not the only thing
+# standing between an admitted name and an invented one.
+#
+# `STATE_SEG`, `seg_wt_row`, `seg_last`, `seg_field`, `in_dirs` and
+# `seg_wt_bytes` are set in `pre_base`, in the head.
+# ---------------------------------------------------------------------------
+PAIR_WT="$WORK/pair-wt"
+( cd "$WT" && git worktree add -q -b pairbr "$PAIR_WT" ) >/dev/null 2>&1
+if [ -d "$PAIR_WT" ]; then
+  HM >/dev/null
+  RD_SEG="$STATE_SEG/cc-cmds/run/R1"
+  # WHILE IT EXISTS: non-terminal widens, terminal does not.
+  seg_wt_row SP "$PAIR_WT" 계획됨
+  check "실재하는 워크트리를 실은 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$PAIR_WT"; then
+    ok "그 행이 워크트리를 인가 목록에 넣는다"
+  else
+    bad "짝 사례 (비종단·실재)" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  case "$(seg_last SP)" in
+    *"| 인가면="*) ok "넓힌 행이 인가면을 싣는다" ;;
+    *) bad "짝 사례 (비종단·실재)" "인가면이 없다: $(seg_last SP)" ;;
+  esac
+  seg_wt_bytes SP "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SP)"
+  # EVERY ENTRY OF THE LIST IS A DIRECTORY THAT EXISTS. The list is the stage's
+  # whole read and write authorization, so an entry that is not a directory is
+  # either a path the derivation invented or a fragment of one that was split;
+  # asserting the shape once, right after a widening, is what makes the two
+  # injection pins below more than pins on their own messages.
+  n_bad=0
+  while IFS= read -r ad; do
+    [ -d "$ad" ] || { n_bad=$((n_bad + 1)); bad "인가 목록의 항목" "디렉터리가 아니다: '$ad'"; }
+  done <<EOF
+$(jq -r '.permissions.additionalDirectories[]' "$SETTINGS_SEG/generic.json")
+EOF
+  [ "$n_bad" = "0" ] && ok "인가 목록의 모든 항목이 실재하는 디렉터리다"
+
+  # A NAME THE ROW AND THE SETTINGS FILE CANNOT CARRY IS REFUSED AT THE ROW.
+  # These subdirectories sit INSIDE the admitted worktree, so the three
+  # boundary conditions (absolute, exists, same common git directory) all hold
+  # — only the byte check stands between them and the list. Four spellings,
+  # four different ways they would have broken something downstream: a newline
+  # becomes a list separator in the renderer's line-delimited input, a double
+  # quote closes the JSON string and opens a second entry, a backslash makes a
+  # string no JSON parser accepts, and a pipe passes the renderer whole while
+  # the row records it as a slash — so the ledger names a directory the
+  # settings never admitted and the next re-derivation reads that one back.
+  # `generic.json` is compared BYTE FOR BYTE rather than by list length,
+  # because an entry substituted for another keeps the length and changes the
+  # authorization.
+  q_sha=$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)
+  q_len=$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_SEG/generic.json")
+  n_seg_q=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+  HOSTILE_NL="$PAIR_WT/nl
+$WORK"
+  HOSTILE_DQ="$PAIR_WT/dq\", \"$WORK"
+  HOSTILE_BS="$PAIR_WT/bs\\dir"
+  HOSTILE_PIPE="$PAIR_WT/pi|pe"
+  mkdir -p "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS" "$HOSTILE_PIPE" 2>/dev/null || true
+  if [ -d "$HOSTILE_NL" ] && [ -d "$HOSTILE_DQ" ] && [ -d "$HOSTILE_BS" ] && [ -d "$HOSTILE_PIPE" ]; then
+    i_h=0
+    for h in "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS" "$HOSTILE_PIPE"; do
+      i_h=$((i_h + 1))
+      seg_wt_row "SQ$i_h" "$h" 계획됨
+      check "인가된 워크트리 안이어도 위험 바이트를 담은 비종단 행은 exit 2 다 (#$i_h)" "$rc" "2"
+      case "$msg" in
+        *"큰따옴표·백슬래시·파이프·제어 문자"*) ok "그 거절이 바이트를 이유로 든다 (#$i_h)" ;;
+        *) bad "주입 거부 문면 (#$i_h)" "$msg" ;;
+      esac
+    done
+    check "그 거절들은 인가 목록을 바이트 하나도 바꾸지 않는다" \
+          "$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)" "$q_sha"
+    check "그 거절들은 항목 수를 바꾸지 않는다" \
+          "$(jq -r '.permissions.additionalDirectories | length' "$SETTINGS_SEG/generic.json")" "$q_len"
+    check "거절된 네 행은 원장에 남지 않는다" \
+          "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg_q"
+    # THE PIPE IS THE SPELLING THE LIST WOULD HAVE ADMITTED: the slash-mapped
+    # name the row would have carried is not a directory, so had the row
+    # landed, the row and the list would have disagreed about which directory
+    # this segment lives in. Both spellings are asserted absent.
+    if in_dirs "$SETTINGS_SEG/generic.json" "$HOSTILE_PIPE" \
+       || in_dirs "$SETTINGS_SEG/generic.json" "$PAIR_WT/pi/pe"; then
+      bad "파이프 철자" "거절된 파이프 경로가 어느 철자로든 목록에 있다"
+    else
+      ok "파이프 경로는 원시 철자로도 슬래시 철자로도 목록에 없다"
+    fi
+  else
+    bad "픽스처 전제" "주입 시험용 하위 디렉터리를 만들지 못했다"
+  fi
+  rm -rf "$HOSTILE_NL" "$HOSTILE_DQ" "$HOSTILE_BS" "$HOSTILE_PIPE"
+
+  # THE RENDERER ESCAPES ON ITS OWN, and that half is pinned separately from
+  # the row's refusal. The list also carries paths that never pass through a
+  # `segment` row — the manifest's directory, the design document's, the run
+  # directory — so a renderer that is safe only because the row arm checked
+  # first is safe for one of its inputs. Two pins: the escaper round-trips the
+  # hostile spelling through `jq`, and the list construction is the caller.
+  ESC_DIR="$WORK/esc\\d\"ir"
+  esc_out=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c \
+    '. "$1" >/dev/null 2>&1; gate_json_escape "$2"' _ "$GATE" "$ESC_DIR" 2>/dev/null)
+  check "이스케이프가 큰따옴표와 백슬래시를 지나 원문으로 되돌아온다" \
+        "$(printf '{"d":"%s"}' "$esc_out" | jq -r .d)" "$ESC_DIR"
+  # The count is taken over the list-building expression ALONE, not over the
+  # whole file: `sed 's/.*/"&"/'` has another caller that quotes stage ids for
+  # the snapshot, and a file-wide count would read that one as this defect.
+  esc_block=$(awk '/extra_dirs=\$\(printf/,/tr .\\n. .,./' "$GATE")
+  check "인가 목록을 조립하는 자리가 그 이스케이프를 부르고 맨 감싸기는 남지 않았다" \
+        "$({ printf '%s\n' "$esc_block" | grep -c 'gate_json_escape' || true; }):$({ printf '%s\n' "$esc_block" | grep -cF "sed 's/.*/\"&\"/'" || true; })" \
+        "1:0"
+
+  d_pair=$(cat "$RD_SEG/surface-digest")
+  seg_wt_row SP "$PAIR_WT" 완료
+  check "같은 워크트리를 실은 종단 행이 기록된다" "$rc" "0"
+  case "$(seg_last SP)" in
+    *"| 인가면="*) bad "짝 사례 (종단·실재)" "종단 행에 인가면이 붙었다: $(seg_last SP)" ;;
+    *) ok "종단 행은 인가면을 싣지 않는다" ;;
+  esac
+  check "종단 행은 재유도하지 않는다 — 표면 기준선이 그대로다" "$(cat "$RD_SEG/surface-digest")" "$d_pair"
+
+  # ONCE IT IS GONE: terminal lands, non-terminal is refused. Removed with `rm`
+  # and not `git worktree remove`, because that is how a segment's tree
+  # actually disappears — git still lists it, and the directory is not there.
+  rm -rf "$PAIR_WT"
+  n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+  for st in 완료 머지됨 park; do
+    seg_wt_row SP "$PAIR_WT" "$st"
+    check "종단 행은 사라진 워크트리를 실어도 기록된다 ($st)" "$rc" "0"
+    case "$(seg_last SP)" in
+      *"| 인가면="*) bad "짝 사례 (종단·부재)" "종단 행에 인가면이 붙었다 ($st)" ;;
+      *) ok "그 행에 인가면이 없다 ($st)" ;;
+    esac
+  done
+  check "종단 행 셋이 원장에 늘었다" \
+        "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$((n_seg + 3))"
+  check "종단 행은 사라진 경로를 목록에서 빼지 않는다 — 기준선이 그대로다" "$(cat "$RD_SEG/surface-digest")" "$d_pair"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$PAIR_WT"; then
+    ok "사라진 경로는 다음 비종단 행까지 목록에 남는다 (넓히는 방향이 아니다)"
+  else
+    bad "짝 사례 (종단·부재)" "종단 행이 목록을 다시 썼다"
+  fi
+  n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+  for st in 계획됨 실행중 리뷰중 '적용 준비'; do
+    seg_wt_row SP "$PAIR_WT" "$st"
+    check "비종단 행은 사라진 워크트리를 실으면 exit 2 다 ($st)" "$rc" "2"
+    case "$msg" in
+      *"존재하지 않음"*) ok "그 거절이 경로의 부재를 이유로 든다 ($st)" ;;
+      *) bad "짝 사례 (비종단·부재) 문면" "$msg" ;;
+    esac
+  done
+  check "거절된 비종단 행은 원장에 남지 않는다" \
+        "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg"
+
+  # THE NEXT NON-TERMINAL ROW IS WHERE THE VANISHED PATH LEAVES THE LIST. Its
+  # own worktree is one the list already carries, so the only input that moved
+  # is the set losing a directory that no longer exists.
+  seg_wt_row SPV "$WT" 실행중
+  check "다른 세그먼트의 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$PAIR_WT"; then
+    bad "사라진 경로 정리" "다음 비종단 행의 재유도가 사라진 경로를 빼지 않았다"
+  else
+    ok "사라진 경로는 다음 비종단 행의 재유도에서 빠진다"
+  fi
+  case "$(seg_last SPV)" in
+    *"| 인가면="*) ok "그 축소도 그 행의 인가면으로 남는다 (재유도는 방향을 가리지 않는다)" ;;
+    *) bad "사라진 경로 정리" "목록이 줄었는데 행에 인가면이 없다: $(seg_last SPV)" ;;
+  esac
+  seg_wt_bytes SPV "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SPV)"
+  seg_wt_row SPV "$WT" park
+  ( cd "$WT" && git worktree prune ) >/dev/null 2>&1
+else
+  bad "픽스처 전제" "짝 사례용 워크트리를 만들지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14o. The prelude's two calls diverge: the first renders, the second re-derives nothing
+# --- section: 14o | group: base | covers: snapshot, act | anchors: 첫 호출은 인가 디렉터리를 만들고 run 행 하나를 쓴다 ---
+#
+# The prelude had TWO calls that made authorization directories: the `if`
+# branch, which renders once at run open and carries the credential warning,
+# the `run` row and the reap; and the `else` branch, which re-derived on every
+# later call. Only the second is gone. Removing the first would have made the
+# guard permanently true and repeated the run row on every call; keeping the
+# second would have kept the ordering defect the move exists to close. So the
+# two calls are asserted apart: a fresh home's first call creates the directory
+# and writes one `run` row, and its second call — with a new worktree already
+# on the ledger — rewrites nothing, writes no row, and the worktree reaches the
+# list only through a row written by the gate.
+# ---------------------------------------------------------------------------
+STATE_PRE="$WORK/state-pre"
+SETTINGS_PRE="$STATE_PRE/cc-cmds/run/R1/settings"
+gateP() {
+  local out
+  out=$(cd "$WT" && XDG_STATE_HOME="$STATE_PRE" gate_inproc "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+HP() { cd "$WT" && XDG_STATE_HOME="$STATE_PRE" gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null | jq -r .H; }
+PRE_WT="$WORK/pre-wt"
+( cd "$WT" && git worktree add -q -b prebr "$PRE_WT" ) >/dev/null 2>&1
+if [ -d "$PRE_WT" ]; then
+  n_run0=$(grep -c '^- `run` ' "$FX_LEDGER" 2>/dev/null || true)
+  n_add0=$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)
+  HP >/dev/null
+  if [ -f "$SETTINGS_PRE/generic.json" ] \
+     && [ "$(grep -c '^- `run` ' "$FX_LEDGER" 2>/dev/null || true)" = "$((n_run0 + 1))" ]; then
+    ok "첫 호출은 인가 디렉터리를 만들고 run 행 하나를 쓴다"
+  else
+    bad "프렐류드 첫 호출" "설정 $( [ -f "$SETTINGS_PRE/generic.json" ] && printf 있음 || printf 없음 ) · run 행 $n_run0 → $(grep -c '^- `run` ' "$FX_LEDGER" 2>/dev/null || true)"
+  fi
+  if in_dirs "$SETTINGS_PRE/generic.json" "$PRE_WT"; then
+    bad "14o 전제" "행을 쓰기 전부터 목록에 있다 — 아래 단언이 공허하다"
+  else
+    ok "첫 세그먼트 행 전의 인가면에는 세그먼트 워크트리가 없다"
+  fi
+  # A row the gate did not write, naming a worktree the list does not carry:
+  # the one input the old `else` branch would have picked up on the next call.
+  printf -- '- `segment` | 교대=0 | id=SPRE | 상태=계획됨 | 워크트리=%s | 선행=없음 | prev=x\n' "$PRE_WT" >> "$FX_LEDGER"
+  pre_sha=$(shasum -a 256 "$SETTINGS_PRE/generic.json" | cut -d' ' -f1)
+  pre_d=$(cat "$STATE_PRE/cc-cmds/run/R1/surface-digest")
+  n_run1=$(grep -c '^- `run` ' "$FX_LEDGER" 2>/dev/null || true)
+  HP >/dev/null
+  check "둘째 호출은 인가 디렉터리를 다시 쓰지 않는다 (프렐류드 재유도는 없다)" \
+        "$(shasum -a 256 "$SETTINGS_PRE/generic.json" | cut -d' ' -f1)" "$pre_sha"
+  check "둘째 호출은 표면 기준선을 옮기지 않는다" "$(cat "$STATE_PRE/cc-cmds/run/R1/surface-digest")" "$pre_d"
+  check "둘째 호출은 run 행을 쓰지 않는다" "$(grep -c '^- `run` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_run1"
+  check "둘째 호출은 대상 추가 행을 쓰지 않는다" "$(grep -c '^- `대상 추가` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_add0"
+  if in_dirs "$SETTINGS_PRE/generic.json" "$PRE_WT"; then
+    bad "프렐류드 둘째 호출" "게이트가 쓰지 않은 행의 워크트리가 호출만으로 목록에 들어갔다"
+  else
+    ok "원장에 있는 것만으로는 목록에 들지 않는다 — 넓히는 것은 게이트가 쓰는 행뿐이다"
+  fi
+  # And an act on that segment does not widen either: the trigger is the row.
+  gateP exec --manifest "$FX_MANIFEST" --target infra --segment SPRE --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(HP)" --rationale x -- ls
+  check "그 세그먼트의 행위도 목록을 넓히지 않는다 (트리거는 행이다)" \
+        "$(shasum -a 256 "$SETTINGS_PRE/generic.json" | cut -d' ' -f1)" "$pre_sha"
+  gateP act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SPRE --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HP)" --rationale x -- 상태=실행중 워크트리="$PRE_WT" 선행=없음
+  check "게이트를 지나는 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_PRE/generic.json" "$PRE_WT"; then
+    ok "그 행이 워크트리를 목록에 넣는다"
+  else
+    bad "행 시점 재유도" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_PRE/generic.json")"
+  fi
+  case "$(seg_last SPRE)" in
+    *"| 인가면="*) ok "넓힌 것이 그 행의 인가면으로 남는다" ;;
+    *) bad "행 시점 재유도" "인가면이 없다: $(seg_last SPRE)" ;;
+  esac
+  seg_wt_bytes SPRE "$SETTINGS_PRE/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SPRE)"
+  gateP act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SPRE --cutpoint 커밋 \
+        --surface 읽기 --snapshot-digest "$(HP)" --rationale x -- 상태=park 워크트리="$WT" 선행=없음
+  ( cd "$WT" && git worktree remove -f "$PRE_WT" ) >/dev/null 2>&1
+else
+  bad "픽스처 전제" "프렐류드 갈림용 워크트리를 만들지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14p. The field never costs the row: over the cap it degrades, and the ruler is shared
+# --- section: 14p | group: base | covers: act | anchors: 인가면이 상한을 넘기는 행은 인가면=생략(행 길이) 로 남는다 ---
+#
+# `인가면=<before>→<after>` is 144 bytes on the row — 3 for the separator, 9
+# for the name, 1 for `=`, two sha256 hexes and 3 for `→`. The cap is
+# `GATE_ROW_MAX` in BYTES, by `wc -c`, and the longest segment rows are
+# planning rows with several paths in `선언 파일 집합` — so the worst row and
+# the new field meet on the same row. Refusing it would leave that segment
+# unable to record even its plan; the disposition is to drop the field and
+# keep the row, with `인가면=생략(행 길이)` saying so, and to drop even that
+# when it does not fit. The settings are still rewritten in every case: what
+# degrades is the record, never the widening.
+#
+# The relaxation is this field's alone. The general cap in `gate_append` is
+# unchanged and asserted so: a row that crosses it with the caller's own
+# fields still dies, at exactly the byte the projection says it will.
+#
+# Calibrated, not spelled: the row's fixed part is measured from a row the
+# gate actually wrote, so the lengths below stay right when a field is
+# renamed or the shift number grows a digit.
+# ---------------------------------------------------------------------------
+OV1="$WORK/ov-1"; OV2="$WORK/ov-2"; OV3="$WORK/ov-3"
+for d in "$OV1" "$OV2" "$OV3"; do
+  ( cd "$WT" && git worktree add -q -b "ovbr-$(basename "$d")" "$d" ) >/dev/null 2>&1
+done
+row_max=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+pad() { printf '%*s' "$1" '' | tr ' ' a; }
+seg_ov() {
+  # seg_ov <id> <worktree> <state> <선언 파일 집합 length>
+  gateM act --manifest "$FX_MANIFEST" --kind segment --target infra --segment "$1" --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(HM)" --rationale x \
+    -- 상태="$3" 워크트리="$2" 선행=없음 "선언 파일 집합=$(pad "$4")"
+}
+row_bytes() { printf '%s\n' "$1" | wc -c | tr -d ' '; }
+if [ -d "$OV1" ] && [ -d "$OV2" ] && [ -d "$OV3" ] && [ -n "$row_max" ]; then
+  HM >/dev/null
+  RD_SEG="$STATE_SEG/cc-cmds/run/R1"
+  # THE FIELD'S SIZE, MEASURED. A widening row with a 100-byte declaration.
+  seg_ov SOV1 "$OV1" 계획됨 100
+  check "보정용 행이 기록된다" "$rc" "0"
+  ov1_row=$(seg_last SOV1)
+  ov1_surf=$(seg_field "$ov1_row" 인가면)
+  if [[ "$ov1_surf" =~ ^[0-9a-f]{64}→[0-9a-f]{64}$ ]]; then
+    ok "보정용 행이 인가면을 싣는다"
+  else
+    bad "14p 전제" "인가면이 없다: $ov1_row"
+  fi
+  field_bytes=$(printf ' | 인가면=%s' "$ov1_surf" | wc -c | tr -d ' ')
+  check "인가면 필드는 행에서 정확히 144 바이트다" "$field_bytes" "144"
+  seg_wt_bytes SOV1 "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SOV1)"
+  # bytes of a widening row with an EMPTY declaration and no field.
+  ov_base=$(( $(row_bytes "$ov1_row") - 144 - 100 ))
+  # The shift number as the gate stamps it here, for the projection below.
+  ov_shift=$(seg_field "$ov1_row" 교대)
+
+  # OVER THE CAP WITH THE FIELD, UNDER IT WITHOUT: the row lands, the field
+  # degrades to `생략(행 길이)`, and the settings are rewritten anyway.
+  d_ov=$(cat "$RD_SEG/surface-digest")
+  seg_ov SOV2 "$OV2" 계획됨 $((row_max - 143 - ov_base))
+  check "인가면을 붙이면 상한을 1 바이트 넘기는 행이 기록된다" "$rc" "0"
+  ov2_row=$(seg_last SOV2)
+  check "인가면이 상한을 넘기는 행은 인가면=생략(행 길이) 로 남는다" "$(seg_field "$ov2_row" 인가면)" "생략(행 길이)"
+  if [ "$(row_bytes "$ov2_row")" -le "$row_max" ]; then
+    ok "그 행은 상한 아래다 ($(row_bytes "$ov2_row")B ≤ ${row_max})"
+  else
+    bad "생략 행 길이" "$(row_bytes "$ov2_row")B > $row_max"
+  fi
+  if in_dirs "$SETTINGS_SEG/generic.json" "$OV2"; then
+    ok "필드가 생략돼도 인가 목록은 넓혀진다 (떨어지는 것은 기록이지 확장이 아니다)"
+  else
+    bad "생략 행의 확장" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  seg_wt_bytes SOV2 "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SOV2)"
+  if [ "$(cat "$RD_SEG/surface-digest")" != "$d_ov" ]; then
+    ok "그때 표면 기준선도 옮겨진다"
+  else
+    bad "생략 행의 기준선" "기준선이 그대로다"
+  fi
+
+  # EVEN `생략(행 길이)` DOES NOT FIT: no field at all, and still the widening.
+  d_ov=$(cat "$RD_SEG/surface-digest")
+  seg_ov SOV3 "$OV3" 계획됨 $((row_max - 20 - ov_base))
+  check "생략 표기조차 들어가지 않는 행도 기록된다" "$rc" "0"
+  ov3_row=$(seg_last SOV3)
+  case "$ov3_row" in
+    *"| 인가면="*) bad "인가면 전면 생략" "생략 표기가 상한을 넘기는데 필드가 붙었다: $(row_bytes "$ov3_row")B" ;;
+    *) ok "생략 표기도 상한을 넘기면 필드를 아예 붙이지 않는다" ;;
+  esac
+  if [ "$(row_bytes "$ov3_row")" -le "$row_max" ]; then
+    ok "그 행도 상한 아래다 ($(row_bytes "$ov3_row")B ≤ ${row_max})"
+  else
+    bad "무필드 행 길이" "$(row_bytes "$ov3_row")B > $row_max"
+  fi
+  if in_dirs "$SETTINGS_SEG/generic.json" "$OV3"; then
+    ok "필드가 없어도 인가 목록은 넓혀진다"
+  else
+    bad "무필드 행의 확장" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  seg_wt_bytes SOV3 "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SOV3)"
+  if [ "$(cat "$RD_SEG/surface-digest")" != "$d_ov" ]; then
+    ok "그때도 표면 기준선이 옮겨진다"
+  else
+    bad "무필드 행의 기준선" "기준선이 그대로다"
+  fi
+
+  # THE RULER IS SHARED. The projection the segment arm decides by and the
+  # measurement `gate_append` refuses by are one function, so a row the
+  # projection puts AT the cap lands and one byte over dies — asserted on
+  # terminal rows, where no field can interfere with the caller's own length.
+  proj() {
+    ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_row_projected_bytes "$@"' _ "$GATE" "$@" )
+  }
+  with=$(proj segment "교대=$ov_shift" id=SOV1 상태=계획됨 "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad 100)" "인가면=$ov1_surf")
+  without=$(proj segment "교대=$ov_shift" id=SOV1 상태=계획됨 "워크트리=$OV1" 선행=없음 "선언 파일 집합=$(pad 100)")
+  check "투영도 인가면을 정확히 144 바이트로 잰다" "$((with - without))" "144"
+  check "투영이 게이트가 실제로 쓴 행의 길이와 같다" "$with" "$(row_bytes "$ov1_row")"
+  seg_ov SOV1 "$WT" park 100
+  check "보정용 종단 행이 기록된다" "$rc" "0"
+  park_base=$(( $(row_bytes "$(seg_last SOV1)") - 100 ))
+  seg_ov SOV1 "$WT" park $((row_max - park_base))
+  check "투영이 상한에 딱 맞는 행은 기록된다" "$rc" "0"
+  check "그 행의 길이가 상한과 같다" "$(row_bytes "$(seg_last SOV1)")" "$row_max"
+  check "투영이 그 행을 상한으로 잰다" \
+        "$(proj segment "교대=$ov_shift" id=SOV1 상태=park "워크트리=$WT" 선행=없음 "선언 파일 집합=$(pad $((row_max - park_base)))")" "$row_max"
+  n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+  seg_ov SOV1 "$WT" park $((row_max - park_base + 1))
+  if [ "$rc" != "0" ]; then
+    ok "호출자의 필드로 상한을 1 바이트 넘기는 행은 여전히 죽는다 (완화는 인가면 한정이다)"
+  else
+    bad "일반 상한" "상한을 넘기는 행이 기록됐다"
+  fi
+  case "$msg" in
+    *"over the cap"*) ok "그 거절이 상한을 이유로 든다" ;;
+    *) bad "일반 상한 문면" "$msg" ;;
+  esac
+  check "죽은 행은 원장에 남지 않는다" "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg"
+
+  # THE MARGIN, MEASURED HERE RATHER THAN QUOTED. The design's worst row was an
+  # observation and observations grow; what this suite can hold is that the
+  # longest segment row any fixture ledger under `$WORK` carries, plus the
+  # field, is at most the cap — read as "at most this much, and shrinking".
+  # This section's own `SOV` rows are built to sit at the cap and are left out;
+  # rows already carrying the field are measured without it. The calibration
+  # row's own length is the floor, so a narrowed run that wrote nothing else
+  # still measures a row rather than nothing.
+  worst="$without"
+  for l in "$WORK"/*/docs/pipeline-run/*.md "$WORK"/*/repo/docs/pipeline-run/*.md "$WORK"/*.md; do
+    [ -f "$l" ] || continue
+    # BYTES: `length` counts characters under a UTF-8 locale, and these rows
+    # are Korean, so the count is pinned to C.
+    n=$( { grep -E '^- `segment` ' "$l" 2>/dev/null || true; } | grep -vE '\| id=SOV[0-9] ' \
+         | sed 's/ | 인가면=[^|]*//' \
+         | LC_ALL=C awk '{ n = length($0) + 1; if (n > m) m = n } END { print m + 0 }' )
+    [ "${n:-0}" -gt "$worst" ] && worst="$n"
+  done
+  if [ "$worst" -gt 0 ] && [ $((worst + 144)) -le "$row_max" ]; then
+    ok "픽스처 원장의 최장 세그먼트 행(${worst}B)에 인가면을 붙여도 상한 아래다 (여유 $((row_max - 144 - worst))B, 줄어드는 값)"
+  else
+    bad "최악 행 여유" "최장 ${worst}B + 144 > ${row_max} — 상한 처분이 실제로 발동하는 폭이다"
+  fi
+  for s in SOV2 SOV3; do seg_wt_row "$s" "$WT" park; done
+  for d in "$OV1" "$OV2" "$OV3"; do ( cd "$WT" && git worktree remove -f "$d" ) >/dev/null 2>&1; done
+else
+  bad "픽스처 전제" "오버플로용 워크트리를 만들지 못했거나 GATE_ROW_MAX 를 읽지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14q. A worktree reached through a symlink is admitted in both spellings, and only those
+# --- section: 14q | group: base | covers: act, snapshot | anchors: 링크 철자로 실은 워크트리가 그 철자로 목록에 든다 ---
+#
+# The harness compares the directory a tool touches against the list as
+# strings, and a tree reached through a link is touched by its resolved path
+# as often as by the link. So a row that spells the link admits the link AND
+# what `pwd -P` resolves it to. The other direction is not invented: a row
+# that spells the physical path admits that and its own resolution, and no
+# link that happens to point at it — the gate cannot know one exists, and
+# guessing would be a widening nobody wrote down.
+#
+# The boundary check compares the common git directory in both spellings for
+# the same reason: git prints the path it stored when the worktree was added,
+# which for a linked tree is the physical one, and a target declared by its
+# link spelling would otherwise never match its own worktrees.
+# ---------------------------------------------------------------------------
+LNK_REAL="$WORK/lnk-real"; LNK="$WORK/lnk"
+LNK2_REAL="$WORK/lnk2-real"; LNK2="$WORK/lnk2"
+( cd "$WT" && git worktree add -q -b lnkbr "$LNK_REAL" && git worktree add -q -b lnk2br "$LNK2_REAL" ) >/dev/null 2>&1
+ln -s "$LNK_REAL" "$LNK" 2>/dev/null
+ln -s "$LNK2_REAL" "$LNK2" 2>/dev/null
+if [ -d "$LNK" ] && [ -d "$LNK2" ]; then
+  HM >/dev/null
+  seg_wt_row SLK "$LNK" 계획됨
+  check "링크 철자로 워크트리를 실은 비종단 행이 기록된다 (경계 검사가 링크를 통과시킨다)" "$rc" "0"
+  lnk_p=$(cd "$LNK" && pwd -P)
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LNK"; then
+    ok "링크 철자로 실은 워크트리가 그 철자로 목록에 든다"
+  else
+    bad "링크 철자" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  if in_dirs "$SETTINGS_SEG/generic.json" "$lnk_p"; then
+    ok "그 링크가 해소되는 물리 경로도 함께 든다"
+  else
+    bad "물리 경로" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  check "두 철자가 다르다 (위 두 단언이 같은 것을 두 번 잰 것이 아니다)" \
+        "$( [ "$LNK" != "$lnk_p" ] && printf 다름 || printf 같음 )" "다름"
+  seg_wt_bytes SLK "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLK)"
+  # THE CONTROL: the physical spelling admits itself and nothing a link adds.
+  seg_wt_row SLK2 "$LNK2_REAL" 계획됨
+  check "물리 철자로 워크트리를 실은 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LNK2_REAL"; then
+    ok "물리 철자로 실은 워크트리가 그 철자로 목록에 든다"
+  else
+    bad "물리 철자" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LNK2"; then
+    bad "링크 발명" "행이 적지 않은 링크 철자가 목록에 들어갔다: $LNK2"
+  else
+    ok "행이 적지 않은 링크 철자는 발명되지 않는다"
+  fi
+  seg_wt_bytes SLK2 "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLK2)"
+  for s in SLK SLK2; do seg_wt_row "$s" "$WT" park; done
+  rm -f "$LNK" "$LNK2"
+  for d in "$LNK_REAL" "$LNK2_REAL"; do ( cd "$WT" && git worktree remove -f "$d" ) >/dev/null 2>&1; done
+else
+  bad "픽스처 전제" "심링크 워크트리를 만들지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14r. A re-derivation that does not land says so on the row, and the lock outlives the append
+# --- section: 14r | group: base | covers: act, snapshot | anchors: 락을 잡지 못한 재유도는 인가면=실패(락 대기 초과) 로 남는다 ---
+#
+# THE FAILURE ARMS USED TO BE SILENT. Every one of them printed nothing and
+# the row landed without the field — the same shape as "this row widened
+# nothing" — so a lock a sibling held or a render that failed left a segment
+# unadmitted for its whole life with nothing on the ledger saying so. Two arms
+# are driven here, the two a fixture can reach from outside the gate: a lock
+# directory left by someone else, and a settings file the render cannot
+# truncate. Each lands the row (a refusal would lose the state transition),
+# carries a marker naming itself, leaves the worktree OFF the list, and — the
+# part that makes the marker a repair path rather than a label — leaves the
+# settled key unrecorded, so the next non-terminal row from any segment
+# re-derives and admits it.
+#
+# THE LOCK OUTLIVES THE APPEND. The function used to take and drop
+# `settings.lock` around the render alone, which left the row's append
+# outside it: two segments writing their first non-terminal rows at once
+# could interleave so that the second's render read the ledger without the
+# first's row, and the first's worktree fell off the list the second wrote.
+# Driven as two background writers on fresh worktrees; pre-seeded rows in the
+# same state keep the progress vector still so both snapshot digests stay
+# valid, and the final list must carry both. The surface check reads the
+# baseline and the digest under one hold of the same lock for the same
+# reason, so the second writer is not refused with exit 7 for a re-derivation
+# the first one did between its two reads.
+# ---------------------------------------------------------------------------
+LKA="$WORK/lk-a"; LKB="$WORK/lk-b"; LKC="$WORK/lk-c"; LKD="$WORK/lk-d"
+LKE="$WORK/lk-e"; LKF="$WORK/lk-f"
+for d in "$LKA" "$LKB" "$LKC" "$LKD" "$LKE" "$LKF"; do
+  ( cd "$WT" && git worktree add -q -b "lkbr-$(basename "$d")" "$d" ) >/dev/null 2>&1
+done
+if [ -d "$LKA" ] && [ -d "$LKB" ] && [ -d "$LKC" ] && [ -d "$LKD" ] && [ -d "$LKE" ] && [ -d "$LKF" ]; then
+  HM >/dev/null
+  RD_SEG="$STATE_SEG/cc-cmds/run/R1"
+  seg_count() { grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true; }
+
+  # (1) THE LOCK IS HELD BY SOMEONE ELSE. Slow by construction — the writer
+  # waits out the lock's full timeout before it gives up — and the lock is a
+  # bare `mkdir` here because that is what a dead holder leaves behind.
+  mkdir "$RD_SEG/settings.lock"
+  n_seg=$(seg_count)
+  d_lk=$(cat "$RD_SEG/surface-digest")
+  seg_wt_row SLA "$LKA" 계획됨
+  check "락을 잡지 못해도 비종단 행은 기록된다" "$rc" "0"
+  check "락을 잡지 못한 재유도는 인가면=실패(락 대기 초과) 로 남는다" \
+        "$(seg_field "$(seg_last SLA)" 인가면)" "실패(락 대기 초과)"
+  case "$msg" in
+    *"락 대기 초과"*) ok "그 실패가 warn 으로도 남는다" ;;
+    *) bad "락 실패 문면" "$msg" ;;
+  esac
+  check "그 행은 원장에 늘었다" "$(seg_count)" "$((n_seg + 1))"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LKA"; then
+    bad "락 실패 행의 목록" "락을 잡지 못했는데 워크트리가 목록에 올랐다"
+  else
+    ok "락을 잡지 못한 행의 워크트리는 목록에 오르지 않는다"
+  fi
+  check "락을 잡지 못한 재유도는 표면 기준선을 옮기지 않는다" "$(cat "$RD_SEG/surface-digest")" "$d_lk"
+  if [ -d "$RD_SEG/settings.lock" ]; then
+    ok "남이 쥔 락은 건드리지 않는다"
+  else
+    bad "남의 락" "잡지 못한 락 디렉터리가 사라졌다"
+  fi
+  rmdir "$RD_SEG/settings.lock"
+  # THE NEXT NON-TERMINAL ROW HEALS IT, from another segment, naming another
+  # worktree: the failed row's worktree comes in with it because the key was
+  # never recorded.
+  seg_wt_row SLB "$LKB" 실행중
+  check "락이 풀린 뒤의 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LKA"; then
+    ok "다음 비종단 행이 락 실패 행의 워크트리를 다시 유도한다 (실패 팔은 키를 기록하지 않는다)"
+  else
+    bad "락 실패 회복" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  seg_wt_bytes SLB "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLB)"
+  if [[ "$(seg_field "$(seg_last SLB)" 인가면)" =~ ^[0-9a-f]{64}→[0-9a-f]{64}$ ]]; then
+    ok "회복한 행은 두 다이제스트를 싣는다"
+  else
+    bad "회복 행의 인가면" "$(seg_last SLB)"
+  fi
+  if [ -d "$RD_SEG/settings.lock" ]; then
+    bad "락 해제" "행을 쓴 뒤에도 settings.lock 이 남아 있다"
+  else
+    ok "행을 쓴 뒤 락은 풀려 있다 (append 뒤에 놓는다)"
+  fi
+
+  # (2) THE RENDER FAILS. The renderer truncates each file in place and
+  # `design.json` is the first it writes, so a read-only `design.json` fails
+  # the real render before any byte lands — the probe rendered into its own
+  # directory and passed. The baseline must not move: nothing was written.
+  d_lk=$(cat "$RD_SEG/surface-digest")
+  chmod 444 "$SETTINGS_SEG/design.json"
+  seg_wt_row SLC "$LKC" 계획됨
+  chmod 644 "$SETTINGS_SEG/design.json"
+  check "렌더가 실패해도 비종단 행은 기록된다" "$rc" "0"
+  check "실패한 렌더는 인가면=실패(렌더) 로 남는다" "$(seg_field "$(seg_last SLC)" 인가면)" "실패(렌더)"
+  case "$msg" in
+    *"실제 렌더가 실패"*) ok "그 실패가 warn 으로도 남는다 (렌더)" ;;
+    *) bad "렌더 실패 문면" "$msg" ;;
+  esac
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LKC"; then
+    bad "렌더 실패 행의 목록" "렌더가 실패했는데 워크트리가 목록에 올랐다"
+  else
+    ok "렌더가 실패한 행의 워크트리는 목록에 오르지 않는다"
+  fi
+  check "실패한 렌더는 표면 기준선을 옮기지 않는다" "$(cat "$RD_SEG/surface-digest")" "$d_lk"
+  seg_wt_row SLD "$LKD" 계획됨
+  check "렌더가 다시 되는 뒤의 비종단 행이 기록된다" "$rc" "0"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LKC" && in_dirs "$SETTINGS_SEG/generic.json" "$LKD"; then
+    ok "다음 비종단 행이 렌더 실패 행의 워크트리를 함께 유도한다"
+  else
+    bad "렌더 실패 회복" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json")"
+  fi
+  seg_wt_bytes SLD "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLD)"
+
+  # (3) TWO SEGMENTS WRITE NON-TERMINAL ROWS AT ONCE. Seeded first in the
+  # state they will write, on a worktree the list already carries, so the
+  # rows below move neither the progress vector nor the list on their own
+  # account — what moves is exactly the two new worktrees, one per writer.
+  seg_wt_row SLE "$WT" 계획됨
+  seg_wt_row SLF "$WT" 계획됨
+  n_seg=$(seg_count)
+  n_blk=$( { grep -E '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; } | grep -c . || true)
+  h_par=$(HM)
+  par_out="$WORK/par-out"; rm -rf "$par_out"; mkdir -p "$par_out"
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc act --manifest "$FX_MANIFEST" --kind segment \
+      --target infra --segment SLE --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h_par" --rationale x \
+      -- 상태=계획됨 워크트리="$LKE" 선행=없음 >"$par_out/e.out" 2>&1; printf '%s' "$?" >"$par_out/e.rc" ) &
+  par_e=$!
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_SEG" gate_inproc act --manifest "$FX_MANIFEST" --kind segment \
+      --target infra --segment SLF --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h_par" --rationale x \
+      -- 상태=계획됨 워크트리="$LKF" 선행=없음 >"$par_out/f.out" 2>&1; printf '%s' "$?" >"$par_out/f.rc" ) &
+  par_f=$!
+  wait "$par_e" 2>/dev/null || true
+  wait "$par_f" 2>/dev/null || true
+  check "동시에 쓴 두 비종단 행이 둘 다 기록된다" "$(cat "$par_out/e.rc" 2>/dev/null)/$(cat "$par_out/f.rc" 2>/dev/null)" "0/0"
+  check "두 행이 원장에 늘었다" "$(seg_count)" "$((n_seg + 2))"
+  if in_dirs "$SETTINGS_SEG/generic.json" "$LKE" && in_dirs "$SETTINGS_SEG/generic.json" "$LKF"; then
+    ok "동시에 쓴 두 행의 워크트리가 둘 다 최종 목록에 있다 (락이 append 까지 산다)"
+  else
+    bad "동시 쓰기" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_SEG/generic.json") — e: $(cat "$par_out/e.out" 2>/dev/null | grep -v '\[run\] ' | tr '\n' ' ') f: $(cat "$par_out/f.out" 2>/dev/null | grep -v '\[run\] ' | tr '\n' ' ')"
+  fi
+  seg_wt_bytes SLE "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLE)"
+  seg_wt_bytes SLF "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SLF)"
+  for s in SLE SLF; do
+    case "$(seg_field "$(seg_last "$s")" 인가면)" in
+      "실패("*) bad "동시 쓰기의 인가면 ($s)" "$(seg_last "$s")" ;;
+      *) ok "동시에 쓴 행은 실패 마커를 싣지 않는다 ($s)" ;;
+    esac
+  done
+  if [ -d "$RD_SEG/settings.lock" ]; then
+    bad "동시 쓰기 뒤의 락" "settings.lock 이 남아 있다"
+  else
+    ok "동시 쓰기 뒤에도 락은 풀려 있다"
+  fi
+  check "동시 쓰기는 표면 검사에 걸리지 않는다 (blocked 행이 늘지 않는다)" \
+        "$( { grep -E '^- `blocked` ' "$FX_LEDGER" 2>/dev/null || true; } | grep -c . || true)" "$n_blk"
+
+  for s in SLA SLB SLC SLD SLE SLF; do seg_wt_row "$s" "$WT" park; done
+  for d in "$LKA" "$LKB" "$LKC" "$LKD" "$LKE" "$LKF"; do ( cd "$WT" && git worktree remove -f "$d" ) >/dev/null 2>&1; done
+else
+  bad "픽스처 전제" "실패 팔·동시 쓰기용 워크트리를 만들지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 14s. The worktree boundary asks git from the directory alone, not from the caller's GIT_DIR
+# --- section: 14s | group: base | covers: act | anchors: 루트는 어느 철자로도 목록에 없다 ---
+#
+# `git rev-parse --git-common-dir` honours `GIT_DIR` over the working
+# directory, and the gate runs with the caller's environment. Measured: with
+# `GIT_DIR` pointing at a declared target's common directory, the boundary
+# answered that directory for `/`, and a non-terminal row naming `워크트리=/`
+# landed and put the root on the stage's list. The boundary now asks with
+# `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE` and `GIT_CEILING_DIRECTORIES`
+# unset, so the answer is the directory's own. The parser half — the
+# assignment as an exec form — is in section 58.
+# ---------------------------------------------------------------------------
+HM >/dev/null
+cg_gd=$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+n_seg=$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)
+q_gd=$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)
+for nm in GIT_DIR GIT_COMMON_DIR; do
+  ( export "$nm=$cg_gd"; seg_wt_row SGD / 실행중; printf '%s\n%s' "$rc" "$msg" >"$WORK/gd-out" )
+  check "$nm 을 세운 채 / 를 실은 비종단 행은 exit 2 다" "$(sed -n 1p "$WORK/gd-out")" "2"
+  case "$(sed -n 2p "$WORK/gd-out")" in
+    *"어느 선언 대상의 워크트리도 아닙니다"*) ok "그 거절이 경계를 이유로 든다 ($nm)" ;;
+    *) bad "GIT_DIR 경계 문면 ($nm)" "$(sed -n 2p "$WORK/gd-out")" ;;
+  esac
+done
+( export GIT_WORK_TREE="$WT"; seg_wt_row SGD / 실행중; printf '%s\n%s' "$rc" "$msg" >"$WORK/gd-out" )
+check "GIT_WORK_TREE 를 세운 채 / 를 실은 비종단 행도 exit 2 다" "$(sed -n 1p "$WORK/gd-out")" "2"
+check "거절된 행들은 원장에 남지 않는다" "$(grep -c '^- `segment` ' "$FX_LEDGER" 2>/dev/null || true)" "$n_seg"
+check "거절된 행들은 인가 목록을 바이트 하나도 바꾸지 않는다" \
+      "$(shasum -a 256 "$SETTINGS_SEG/generic.json" | cut -d' ' -f1)" "$q_gd"
+if in_dirs "$SETTINGS_SEG/generic.json" /; then
+  bad "루트 인가" "/ 가 인가 목록에 있다"
+else
+  ok "루트는 어느 철자로도 목록에 없다"
+fi
+# THE CONTROL: the same variable does not break the honest case. A row naming
+# a real worktree of the target still lands with `GIT_DIR` set, because the
+# boundary reads the directory either way.
+GD_WT="$WORK/gd-wt"
+( cd "$WT" && git worktree add -q -b gdbr "$GD_WT" ) >/dev/null 2>&1
+if [ -d "$GD_WT" ]; then
+  ( export GIT_DIR="$cg_gd"; seg_wt_row SGD "$GD_WT" 실행중; printf '%s' "$rc" >"$WORK/gd-out" )
+  check "GIT_DIR 을 세운 채라도 실재하는 워크트리의 행은 기록된다 (경계는 디렉터리만 본다)" "$(cat "$WORK/gd-out")" "0"
+  seg_wt_bytes SGD "$SETTINGS_SEG/generic.json" "행이 실은 워크트리와 목록의 항목이 바이트 단위로 같다 (SGD)"
+  seg_wt_row SGD "$WT" park
+  ( cd "$WT" && git worktree remove -f "$GD_WT" ) >/dev/null 2>&1
+else
+  bad "픽스처 전제" "GIT_DIR 대조용 워크트리를 만들지 못했다"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6715,7 +7766,7 @@ write15c "$M15C" "$plan15c"
 STUB15C="$WORK/bin/claude-stub-15c"
 cat > "$STUB15C" <<'STUB15CEOF'
 #!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 설계 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
@@ -7299,11 +8350,27 @@ fi
 # 23. The settings directory is serialized for readers and writers alike
 # --- section: 23 | group: base | covers: - | anchors: 재유도가 락 안에서 돈다 ---
 # ---------------------------------------------------------------------------
-if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'gate_settings_lock "$lk" || return 0'; then
+# The lock is the CALLER's, taken in the `segment` arm before the re-derivation
+# and released after the row's append — the function itself never takes it,
+# because a lock dropped before the append let a sibling render from a ledger
+# without this row (section 14r drives that). Three literals pin the shape:
+# the arm takes the lock and records the hold, the re-derivation runs under
+# it, and the hold is released after `gate_append`.
+if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'if gate_settings_lock "$surf_lk"; then' \
+   && grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'GATE_SETTINGS_LOCK_HELD="$surf_lk"' \
+   && grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'surf_field=$(gate_resettle_settings_for_segment "$seg" "$wt")' \
+   && ! grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'gate_settings_lock "$lk" || { GATE_SEGMENT_WT_PENDING=""; return 0; }'; then
   ok "재유도가 락 안에서 돈다"
 else
   bad "재유도 락" "병렬 스테이지가 기준선을 서로 되돌린다"
 fi
+# The release after the append, pinned as ORDER: the `gate_append 'segment'`
+# call comes before `gate_settings_lock_release` in the arm, and nothing
+# releases between the lock and the append.
+seg_arm_23=$(awk '/if gate_settings_lock "\$surf_lk"; then/{p=1} p{print} /gate_settings_lock_release$/{if(p){exit}}' "$GATE")
+check "락은 segment 행의 append 뒤에 놓는다 (append 가 해제보다 앞선다)" \
+      "$(printf '%s\n' "$seg_arm_23" | grep -c "gate_append 'segment'" || true):$(printf '%s\n' "$seg_arm_23" | grep -c 'gate_settings_lock_release$' || true)" \
+      "2:1"
 if grep -vE '^[[:space:]]*#' "$GATE" | grep_all_q -F 'out=$(gate_surface_digest_raw)'; then
   ok "표면 다이제스트도 같은 락을 잡는다 (반쯤 쓰인 디렉터리를 해싱하지 않는다)"
 else
@@ -9193,8 +10260,19 @@ seg_row SB "$CONE_B" 상태=실행중 선행=없음
 check "「없음」은 독립성의 적극적 진술로 받는다" "$rc" "0"
 seg_row SC "$CONE_C" 상태=실행중 선행=없음
 check "무관한 베이스의 세그먼트 행도 기록된다" "$rc" "0"
+# A ROW NAMING ANOTHER REPOSITORY IS REFUSED AT WRITE TIME — its worktree
+# shares no declared target's common git directory, so the settings could
+# never admit it. The cone reader still has to settle such a row, because a
+# ledger written before the boundary existed, or edited by hand, can carry
+# one; so the refusal is asserted and the row the cross-repository assertions
+# below stand on is planted directly.
 seg_row SX "$REPO2" 상태=실행중 선행=없음
-check "다른 레포의 세그먼트 행도 기록된다" "$rc" "0"
+check "다른 레포의 워크트리를 실은 비종단 세그먼트 행은 쓰기 시점에 거절된다" "$rc" "2"
+case "$msg" in
+  *"공통 git 디렉터리"*) ok "그 거절이 공통 git 디렉터리를 이유로 든다" ;;
+  *) bad "경계 거절 문면 (SX)" "$msg" ;;
+esac
+plant_seg_row SX "$REPO2" 상태=실행중 선행=없음
 
 # --- 31c. The cone's two axes cover different windows ----------------------
 # --- section: 31c | group: cone | covers: act | needs: 31b | anchors: 앵커는 무조건 원뿔에 든다 ---
@@ -10514,6 +11592,68 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/team-witness/r1.md"
 check "아무도 만들지 않는 team-witness/ 철자도 예외가 아니다" "$rc" "3"
+# 공유 세대 디렉터리는 둘째 예외이고, 한 단계 아래만이다. 교대가 산출물을 발행하는
+# 자리는 `shared/<gen>/` 이며 `shared/` 바로 아래의 파일은 세대가 없으므로 `*/*`
+# 거절로 떨어진다 — 예외를 `shared/*` 로 넓게 적으면 그 한 층이 조용히 열린다.
+mkdir -p "$RD3/shared/1"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/snapshot.json"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 통과한다" "$rc" "0"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/loose.json"
+check "shared/ 바로 아래의 파일은 예외가 아니다" "$rc" "3"
+case "$msg" in
+  *"a file directly under shared/ is not"*) ok "거절 문면이 shared/ 바로 아래를 예외 밖으로 지목한다" ;;
+  *) bad "shared/ 거절 문면" "$msg" ;;
+esac
+# `..` 은 예외 팔에 닿기 전에 접힌다. bash `case` 의 `*` 는 `/` 와 `..` 을 가리지 않고
+# 매치하므로 접지 않은 `shared/../surface-digest` 는 `shared/*/*` 를 만족하면서 게이트가
+# 매 행위마다 다시 읽는 기준선 파일을 이름 댄다 — 훅은 접은 뒤 판정하므로 같은 철자가
+# `Write` 로는 거절되고 `Bash` 로는 통과했다. 세 철자를 잰다: 예외 디렉터리 둘을 각각
+# 거쳐 되돌아가는 절대 경로와, 세대 디렉터리 아래에서 두 단계 되돌아가는 절대 경로.
+mkdir -p "$RD3/cc-team-witness-x"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/../surface-digest"
+check "shared/ 를 거쳐 되돌아가는 기준선 파일 쓰기는 거절된다 (.. 을 접은 뒤 판정한다)" "$rc" "3"
+case "$msg" in
+  *"run directory write"*) ok "그 거절이 런 디렉터리 쓰기 가드의 것이다 (커널 실패가 아니다)" ;;
+  *) bad "shared/.. 거절 문면" "$msg" ;;
+esac
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/cc-team-witness-x/../surface-digest"
+check "위트니스 디렉터리를 거쳐 되돌아가는 기준선 파일 쓰기도 거절된다" "$rc" "3"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/../../surface-digest"
+check "shared/<gen>/ 아래에서 두 단계 되돌아가는 철자도 거절된다" "$rc" "3"
+# 효과까지 잰다 — 그런데 `surface-digest` 는 게이트 자신이 런 개시에 쓰는 파일이라
+# 이미 있고, `touch` 는 바이트를 바꾸지 않으므로 그 이름으로는 「거절이 실제로 아무
+# 것도 하지 않았다」를 구별할 수 없다. 그래서 같은 세 철자를 아무도 만들지 않는
+# 이름에 대고 한 번 더 걸어 파일이 생기지 않았음을 본다. 가드에 닿는 판정은 동일하고
+# (런 루트 바로 아래의 이름), 달라지는 것은 관측 가능성뿐이다.
+fold_n=0
+for fold_spell in "$RD3/shared/../fold-probe" "$RD3/cc-team-witness-x/../fold-probe" "$RD3/shared/1/../../fold-probe"; do
+  fold_n=$(( fold_n + 1 ))
+  rm -f "$RD3/fold-probe"
+  gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+        --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+        -- touch "$fold_spell"
+  check "접힌 철자 ${fold_n} 은 런 루트 바로 아래 새 이름에도 거절된다" "$rc" "3"
+  if [ ! -e "$RD3/fold-probe" ]; then
+    ok "접힌 철자 ${fold_n} 의 거절이 파일을 만들지 않았다"
+  else
+    bad "접힌 철자 ${fold_n}" "거절된 쓰기가 실제로 파일을 만들었다: $RD3/fold-probe"
+  fi
+done
+# 접은 뒤에도 선언된 이름은 그대로 통과한다 — 접기는 예외를 좁히지 않는다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/shared/1/./snapshot.json"
+check "(대조) /./ 를 낀 shared/<gen>/ 철자는 접힌 뒤 예외로 통과한다" "$rc" "0"
 # 무인 설계 스테이지의 상태 루트와 사전 이미지. 스킬이 자기 쓰기로 선언한 두 경로를
 # 이 목록이 몰라서 설계 스테이지가 팀을 하나도 못 띄우고 멈췄다.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
@@ -10538,13 +11678,31 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/settings/impl.json"
 check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
+# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름으로 `lockf` 를 잡는데 목록이
+# 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 가드는 명령이 아니라
+# 경로 인자로 판정하므로, 리눅스 러너에 없는 `lockf` 대신 `touch` 로 같은 이름을 건다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designdoc.lock"
+check "설계 문서 락 파일 쓰기는 통과한다" "$rc" "0"
+# 음성 대조군 — 연 것이 정확히 그 이름 하나임을 고정한다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$RD3/designdoc.lock.bak"
+check "음성 대조군: 락 이름에 접미사를 붙인 파일은 여전히 거부" "$rc" "3"
 # 두 목록이 같은 말을 한다. 가드 주석이 「훅에서 베꼈다」고 적으므로, 한쪽만 고치는
-# 편집이 여기서 빨개져야 한다.
+# 편집이 여기서 빨개져야 한다. 예외는 둘이고 둘 다 양쪽에 있어야 한다.
 if grep -qF 'cc-team-witness-*/*' "$GATE" \
    && grep -qF 'cc-team-witness-*/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
   ok "게이트와 훅이 같은 위트니스 예외를 싣는다"
 else
   bad "가드·훅 불일치" "위트니스 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+if grep -qF 'shared/*/*' "$GATE" \
+   && grep -qF 'shared/*/*' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 shared/<gen>/ 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "shared/<gen>/ 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 # 같은 이유로 설계 예외도 양쪽에 있어야 한다. 위 단언들은 게이트만 물리므로, 훅만
 # 빠진 편집은 그 초록에 가려 보이지 않는다.
@@ -10553,6 +11711,12 @@ if grep -qF 'design|design/*|preimage|preimage/*' "$GATE" \
   ok "게이트와 훅이 같은 설계 상태·사전 이미지 예외를 싣는다"
 else
   bad "가드·훅 불일치" "설계 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
+fi
+if grep -qE '^[[:space:]]*designdoc\.lock\)' "$GATE" \
+   && grep -qE '^[[:space:]]*designdoc\.lock\)' "$repo_root/plugins/cc-cmds/hooks/gate-pretool.sh"; then
+  ok "게이트와 훅이 같은 설계 문서 락 예외를 싣는다"
+else
+  bad "가드·훅 불일치" "설계 문서 락 예외가 한쪽에만 있다 — Bash 와 Write 가 같은 경로를 다르게 판정한다"
 fi
 
 # --- 31ad. The declared axis answers BEFORE anything reads a repository -----
@@ -10576,8 +11740,11 @@ CONE_H="$WORK/cone-h"
   && cd "$CONE_H" && echo h1 > h1.txt && git add -A && git commit -qm h1 ) >/dev/null 2>&1
 seg_row SH "$CONE_H" 상태=실행중 선행=SG
 check "워크트리가 사라진 멤버를 선행으로 적은 세그먼트 행이 기록된다" "$rc" "0"
+# The gate refuses a non-terminal row naming another repository's worktree at
+# write time (31b), so the row this case reads is planted past it, as SX was.
 seg_row SY "$REPO2" 상태=실행중 선행=SA
-check "다른 레포에서 선행을 적은 세그먼트 행이 기록된다" "$rc" "0"
+check "다른 레포에서 선행을 적은 세그먼트 행도 쓰기 시점에 거절된다" "$rc" "2"
+plant_seg_row SY "$REPO2" 상태=실행중 선행=SA
 cone7=$(cone_of SA "선언 축이 레포 경계와 판독 불가보다 먼저 답한다")
 case ",$cone7," in
   *,SY,*) ok "레포를 건너는 선행이 원뿔에 든다 (선언은 git 에 대한 주장이 아니다)" ;;
@@ -13161,8 +14328,13 @@ check "F4 — 무효화 종료의 done 표시가 발사한다" \
 # arm sits fifteen lines past the `done` write that names it.
 check "F4 — 충족 종료의 done 표시가 발사한다" \
   "$(fires_at '종단 — 종료 조건 성립' 20)" "fires"
+# The window is 10 rather than 6. The `segment` arm releases `settings.lock`
+# between its append and its notify call — one call and the three lines that
+# say why it sits there — so the firing arm moved four lines past the old
+# window and this assertion read `silent` while the arm was still there. As
+# with F1 below, the window measures nothing about the property.
 check "F2 — 세그먼트 행 기록 자리가 발사한다" \
-  "$(fires_at "gate_append 'segment' \"id=\$seg\" \"\$@\"" 6)" "fires"
+  "$(fires_at "gate_append 'segment' \"id=\$seg\" \"\$@\"" 10)" "fires"
 # The window is 80 rather than 60. Removing the class that fired on no evidence
 # meant rewriting the rationale beside it — the reasoning for staying silent is
 # longer than the reasoning for firing was — so the surviving firing arms moved
@@ -14758,20 +15930,24 @@ esac
 # 것은 리뷰 룰이고 코드는 3 이다. 이 항목이 막으려던 것(닫을 수 없는 의무)은
 # 그래도 그대로 막힌다 — 오히려 더 위에서, 발행 지점에 닿기도 전에.
 #
-# 그 결과 (i) 의 문면은 룰의 것이라 「룰」이라는 낱말을 싣는다. 아래 음성 단언은
-# 그래서 (ii)·(iii) 두 문면에만 건다 — 그 둘이 카탈로그로 접혀 `끔` 의 사정거리에
-# 들어가는 것을 막는 것이 그 단언의 일이고, (i) 은 애초에 룰이다.
+# (ii)·(iii) 는 그보다도 상류, 세그먼트 행의 쓰기 시점에서 산다. 비종단 행의
+# 워크트리는 경계 검사를 받으므로 없는 디렉터리도 git 이 아닌 디렉터리도 행이
+# 되지 못하고, 그 뒤의 머지는 (i) 과 같은 자리 — 행이 없는 머지 — 로 떨어진다.
+# 앵커 검사가 그 두 경우를 만날 일은 이제 없다.
 #
-# (ii)·(iii) 이 받는 것은 **더 이상 앵커 문면이 아니다.** 디스패치 사전 검사가
-# `gate_act_enters_resolved_tree` 로 정의역을 잡아 `--kind merge` 까지 덮고 앵커
-# 검사보다 위에서 돌므로, 디렉터리가 없는 값도 git 트리가 아닌 값도 거기서 먼저
-# exit 10 을 받는다. 두 거절의 종료 코드가 같고 문면도 서로 구별되므로 이 절은
-# 초록인 채 측정 대상만 조용히 바뀌었고, 앵커 검사의 그 두 문장을 지워도 초록이
-# 유지됐다. 그래서 아래 (ii)·(iii) 에 **지금 실제로 서는 문면**을 함께 단언한다 —
-# 사전 검사가 빠지거나 정의역에서 `merge` 가 빠지면 그 줄들이 빨개진다. 앵커 검사
-# 둘째 문장에 남은 정의역(`-`·`(없음)` 두 철자)은 항목 35-13c 가 따로 잰다.
-# 음성 단언은 그대로 유효하다 — 사전 검사의 문면도 「룰」이라는 낱말을 쓰지 않고,
-# 그 성질을 지키는 것이 문면이 어느 자리에서 오든 이 단언의 일이다.
+# 그 결과 (i) 의 문면은 룰의 것이라 「룰」이라는 낱말을 싣는다. 아래 음성 단언은
+# 그래서 (ii)·(iii) 두 경계 문면에만 건다 — 그 둘이 카탈로그로 접혀 `끔` 의
+# 사정거리에 들어가는 것을 막는 것이 그 단언의 일이고, (i) 은 애초에 룰이다.
+#
+# 디스패치 사전 검사(`gate_act_enters_resolved_tree` 가 정의역을 잡아 `--kind
+# merge` 까지 덮는다)는 그대로 살아 있고, 여기서 서지 않을 뿐이다. 두 검사의
+# 순서를 정하는 것은 그 정의역이다 — 기록 종류(`--kind segment`)가 거기서 빠져
+# 있으므로 세그먼트 행을 쓰는 행위는 사전 검사를 지나지 않고 쓰기 시점 경계
+# 검사를 먼저 만난다. 그래서 (ii)·(iii) 의 입력은 행이 되기 전에 exit 2 로
+# 거절되고, 사전 검사가 그 값을 볼 수 있는 경로는 게이트가 쓰지 않은 행뿐이다.
+# 그 경로의 exit 10 과 두 문면(「디렉터리가 없습니다」·「공통 git 디렉터리와
+# 다릅니다」)은 세그먼트 워크트리 한정 절이 행을 원장에 직접 심어 따로 잰다.
+# 여기서 그것을 단언하면 쓰기 시점 검사가 먼저 답해 측정 대상이 어긋난다.
 sa_new '앵커 불가 셋' 선머지후리뷰
 # (i) 세그먼트 행이 아예 없다 — 정책이 해소될 곳이 없어 엄격으로 떨어진다.
 nb=$(sa_base)
@@ -14786,41 +15962,40 @@ esac
 check "13(i): 거절이 발행보다 상류라 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
 check "13(i): 닫을 수 없는 의무가 서지 않는다" "$(sa_ob_count)" "$nob"
 
-# (ii) 행은 있으나 워크트리 디렉터리가 없다.
-sa_seg_row S13B 선머지후리뷰 "$SA_ROOT/없는디렉터리"
-check "13: 없는 디렉터리를 실은 행 자체는 기록된다" "$rc" "0"
+# (ii)·(iii) 는 이제 행이 서지도 않는다. 비종단 `segment` 행의 워크트리는 쓰기
+# 시점에 경계 검사를 받는다 — 절대 경로·실재하는 디렉터리·선언된 대상의 공통 git
+# 디렉터리 — 그래서 없는 디렉터리를 실은 행과 git 이 아닌 디렉터리를 실은 행은
+# 원장에 오르기 전에 거절되고, 닫을 수 없는 의무는 그보다 더 상류에서 막힌다.
+# 그 뒤의 머지는 (i) 과 같은 자리에 떨어진다: 행이 없으므로 정책이 엄격으로
+# 떨어지고, 세우는 것은 리뷰 룰이다.
+# (ii) 워크트리 디렉터리가 없다.
 nb=$(sa_rows)
-sa_merge S13B
-check "13(ii): 워크트리 디렉터리가 없는 머지는 exit 10 이다" "$rc" "10"
+sa_seg_row S13B 선머지후리뷰 "$SA_ROOT/없는디렉터리"
+check "13(ii): 없는 디렉터리를 실은 비종단 행은 exit 2 로 거절된다" "$rc" "2"
 m13b="$msg"
 case "$m13b" in
-  *"이 행위가 어디서 도는지 말할 수 없어"*)
-    ok "13(ii): 이 10 을 내는 것은 앵커 검사가 아니라 디스패치 사전 검사다" ;;
-  *) bad "13(ii) 서는 자리" "$m13b" ;;
-esac
-case "$m13b" in
-  *"디렉터리가 없습니다"*) ok "13(ii): 그 문면이 실패한 조건을 이름 짓는다" ;;
+  *"존재하지 않음"*) ok "13(ii): 그 거절이 실패한 조건을 이름 짓는다 (쓰기 시점 경계 검사)" ;;
   *) bad "13(ii) 실패 조건 문면" "$m13b" ;;
 esac
-check "13(ii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+check "13(ii): 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+sa_merge S13B
+check "13(ii): 그 세그먼트의 머지는 행이 없는 머지로 거절된다" "$rc" "3"
+check "13(ii): 닫을 수 없는 의무가 서지 않는다" "$(sa_ob_count)" "$nob"
 
-# (iii) 디렉터리는 있으나 그 안에서 HEAD 가 해소되지 않는다.
+# (iii) 디렉터리는 있으나 어느 대상의 워크트리도 아니다.
 mkdir -p "$SA_ROOT/git아님"
-sa_seg_row S13C 선머지후리뷰 "$SA_ROOT/git아님"
 nb=$(sa_rows)
-sa_merge S13C
-check "13(iii): HEAD 를 해소하지 못하는 머지는 exit 10 이다" "$rc" "10"
+sa_seg_row S13C 선머지후리뷰 "$SA_ROOT/git아님"
+check "13(iii): git 이 아닌 디렉터리를 실은 비종단 행은 exit 2 로 거절된다" "$rc" "2"
 m13c="$msg"
 case "$m13c" in
-  *"이 행위가 어디서 도는지 말할 수 없어"*)
-    ok "13(iii): 이 10 을 내는 것도 앵커 검사가 아니라 디스패치 사전 검사다" ;;
-  *) bad "13(iii) 서는 자리" "$m13c" ;;
-esac
-case "$m13c" in
-  *"공통 git 디렉터리와 다릅니다"*) ok "13(iii): 그 문면이 실패한 조건을 이름 짓는다" ;;
+  *"공통 git 디렉터리"*) ok "13(iii): 그 거절이 실패한 조건을 이름 짓는다 (쓰기 시점 경계 검사)" ;;
   *) bad "13(iii) 실패 조건 문면" "$m13c" ;;
 esac
-check "13(iii): 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+check "13(iii): 거절이므로 원장 행이 늘지 않는다" "$(sa_rows)" "$nb"
+sa_merge S13C
+check "13(iii): 그 세그먼트의 머지도 행이 없는 머지로 거절된다" "$rc" "3"
+check "13(iii): 닫을 수 없는 의무가 서지 않는다" "$(sa_ob_count)" "$nob"
 
 if [ "$m13a" != "$m13b" ] && [ "$m13b" != "$m13c" ] && [ "$m13a" != "$m13c" ]; then
   ok "13: 셋의 문면이 서로 구별된다"
@@ -14828,15 +16003,15 @@ else
   bad "13 문면 구별" "$m13a / $m13b / $m13c"
 fi
 # 음성 단언. 이 거절을 룰 카탈로그로 접어 넣으면 `끔` 의 사정거리 안으로 끌려온다.
-# 두 앵커 문면에만 건다 — (i) 은 위 주석대로 애초에 룰의 거절이다.
+# 두 경계 문면에만 건다 — (i) 은 위 주석대로 애초에 룰의 거절이다.
 if case "$m13b$m13c" in *룰*) false ;; *) true ;; esac; then
-  ok "13: 두 앵커 문면이 「룰」이라는 낱말을 쓰지 않는다"
+  ok "13: 두 경계 문면이 「룰」이라는 낱말을 쓰지 않는다"
 else
   bad "13 낱말" "거절 문면이 룰을 자칭한다 — 카탈로그로 접히면 끔 이 이것까지 끈다"
 fi
 sag plan --manifest "$SA_MANIFEST" --kind merge --target main --segment S13B --cutpoint 머지 \
     -- git push origin "$SA_SEGBR:$SA_BASE"
-check "13: plan 도 같은 코드를 낸다 (「통과 예상」이라 답하지 않는다)" "$rc" "10"
+check "13: plan 도 같은 코드를 낸다 (「통과 예상」이라 답하지 않는다)" "$rc" "3"
 
 # --- 35-13a. 9 는 종료 코드가 아니며, 양방향으로 고정한다 ------------------------
 # --- section: 35-13a | group: sa | covers: - | anchors: 13a: 9 는 어떤 GATE_EXIT_ 상수의 값도 아니다 ---
@@ -14870,13 +16045,18 @@ check "13b: 앵커 불가 를 실은 리뷰 의무 행이 어디에도 없다" "
 # --- 35-13c. 앵커 검사 둘째 문장의 실제 정의역은 `-` 와 `(없음)` 두 철자다 -------
 # --- section: 35-13c | group: sa | covers: act | needs: 35-13 | anchors: 13c: 앵커 검사 둘째 문장의 남은 정의역 두 철자를 모두 쟀다, 13c: 그 두 철자 모두에서 사전 검사가 아니라 앵커 검사가 답했다 ---
 #
-# 항목 13 의 (ii)·(iii) 은 이제 디스패치 사전 검사가 먼저 답한다. 그 사전 검사의
+# 항목 13 의 (ii)·(iii) 은 쓰기 시점 경계 검사가 먼저 답하고, 디스패치 사전 검사의
 # `case` 첫 팔이 `''|-|'(없음)'` 을 무동작으로 건너뛰므로, **그 두 철자만이** 앵커
 # 검사의 둘째 문장(워크트리 디렉터리 부재)에 도달한다 — 곧 이 절이 그 문장에 남은
 # 정의역 전부다. 정의역이 좁아졌다는 사실 자체에 하중이 걸리므로, 두 자리가 서로
 # 다른 문면으로 구별된다는 것까지 함께 잰다. 구별을 재지 않으면 사전 검사가 이
 # 문장을 통째로 삼켜도 이 절이 초록으로 남는다 — 항목 13 에서 실제로 일어난 일이
 # 정확히 그것이다.
+#
+# 그 두 철자는 쓰기 시점 경계 검사도 통과하지 못한다 — 절대 경로가 아니므로 행이
+# 되기 전에 exit 2 로 거절된다. 그래서 이 정의역에 닿는 유일한 경로는 게이트가
+# 쓰지 않은 행이고, 여기서는 항목 14m 과 같은 기법으로 행을 원장에 직접 심는다.
+# 거절 자체도 함께 단언해 두 검사의 순서를 이 절 안에서도 못박는다.
 #
 # `-` 는 이 원장이 미설정 필드에 관용적으로 쓰는 값이고 `(없음)` 은 워크트리 해소가
 # 스스로 쓰는 폴백 어휘라, 둘 다 라우터가 실제로 쓸 법한 철자다.
@@ -14892,8 +16072,10 @@ sa13c_anchored=0
 for sa13c in - '(없음)'; do
   case "$sa13c" in -) sa13cid=S13D ;; *) sa13cid=S13E ;; esac
   sa_seg_row "$sa13cid" 선머지후리뷰 "$sa13c"
-  check "13c: 워크트리를 '$sa13c' 로 적은 행 자체는 기록된다" "$rc" "0"
-  # 방금 쓴 행은 술어를 통과하지 못해 설정을 넓히지 않지만, 재유도 프리앰블을
+  check "13c: 그 철자를 실은 비종단 행은 쓰기 시점에 거절된다 ('$sa13c')" "$rc" "2"
+  printf -- '- `segment` | 교대=0 | id=%s | 상태=실행중 | 워크트리=%s | 선행=없음 | 리뷰 정책=선머지후리뷰 | prev=x\n' \
+    "$sa13cid" "$sa13c" >> "$SA_LEDGER"
+  # 심은 행은 술어를 통과하지 못해 설정을 넓히지 않지만, 재유도 프리앰블을
   # 거절과 같은 호출에서 세지 않도록 기준값은 한 번 진입한 뒤에 찍는다.
   SAH >/dev/null
   nb=$(sa_rows)
@@ -14933,9 +16115,9 @@ check "14: 워크트리 없는 segment 행은 exit 2 로 거절된다" "$rc" "2"
 check "14: 거절이므로 원장이 늘지 않는다" "$(sa_rows)" "$nb"
 sa_seg_row S14 선머지후리뷰
 check "14: 완전한 행을 먼저 쓴 뒤에도" "$rc" "0"
-# The row just written names a worktree, so the NEXT gate call widens the stage
-# settings and appends a `대상 추가` row in its preamble. That row belongs to
-# the re-derivation, not to the refusal below, so the count is taken after it.
+# The row just written names a worktree and widened the stage settings as it
+# was written — the record is a field on that row, not a row of its own, so
+# the next call appends nothing and the count below is the refusal's alone.
 SAH >/dev/null
 nb=$(sa_rows)
 sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S14 \
@@ -16011,6 +17193,24 @@ check "(a) 인가 행이 원장에 있다" \
 # only honest answers, so it could neither pass nor fail for the right reason.
 check "(a) 그리고 기동 행도 남는다 — 보류가 사라졌으므로 인가와 기동이 일치한다" \
   "$( { grep -cF '`교대 기동`' "$LEDGER5" || true; } )" "1"
+# THE LAUNCH ROW CARRIES THE SUCCESSOR'S SESSION ID, LANE AND WINDOW. The
+# session id is the derived uuid the wrapper was handed; the lane is the config
+# home in tilde form; the window is the reading with no argv layer — a shift is
+# not a stage kind — so it can never say `(argv)`.
+a_shift_row=$( { grep -F '`교대 기동`' "$LEDGER5" || true; } | tail -1)
+case "$a_shift_row" in
+  *"세션 id="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*) ok "(a) 기동 행이 uuid 꼴의 세션 id 를 싣는다" ;;
+  *) bad "(a) 교대 기동 세션 id" "$a_shift_row" ;;
+esac
+case "$a_shift_row" in
+  *"레인=~"*|*"레인=/"*) ok "(a) 기동 행이 레인을 싣는다" ;;
+  *) bad "(a) 교대 기동 레인" "$a_shift_row" ;;
+esac
+case "$a_shift_row" in
+  *"압축 창="*"(argv)"*) bad "(a) 교대 기동 압축 창" "교대에는 argv 층이 없는데 (argv) 를 적었다: $a_shift_row" ;;
+  *"압축 창="*) ok "(a) 기동 행이 (argv) 아닌 압축 창을 싣는다" ;;
+  *) bad "(a) 교대 기동 압축 창" "$a_shift_row" ;;
+esac
 # THE LIVE STAGE IS STILL THERE AFTERWARDS. The launch did not touch it — the
 # stage's liveness is the supervisor's business, not the shift launcher's.
 check "(a) 기동이 살아 있는 스테이지를 건드리지 않는다" \
@@ -16122,7 +17322,7 @@ check "(b) 바닥 초과로 돌아선 호출도 기동 행을 남기지 않는�
 cat > "$WORK/bin/claude-envstub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${CC_PIPELINE_SEGMENT:-}" "${CC_PIPELINE_STAGE_ID:-}" "${CC_PIPELINE_SHIFT_ID:-}" > "$CC_TEST_SHIFT_ENV"
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind segment --target infra \
   --segment SS4 --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 후속 교대 자신이 쓰는 행" \
@@ -17416,6 +18616,19 @@ case "$row41a" in
 esac
 check "A 정산 행의 실행 버전은 .attempt 의 값이다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')" "1"
 check "A 정산 행의 세션 id 는 스트림의 init 줄에서 읽는다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')" "S41A-session"
+# `plant41` plants no `.window`, so the settlement above ran WITHOUT the record
+# and still settled: its absence is not a precondition, and the row says so.
+check "A .window 없는 정산 행의 압축 창은 (미상) 이고 정산은 정상 진행했다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "(미상)"
+check "A 정산 행의 기록자는 게이트다" "$(printf '%s' "$row41a" | tr '|' '\n' | sed -n 's/^ *기록자=//p' | sed 's/[[:space:]]*$//')" "게이트"
+# A2. THE SAME SHAPE WITH THE RECORD PLANTED: the two lines are copied onto the
+# row verbatim, and the record is removed with the rest.
+plant41 S41A2
+printf '%s\n%s\n' '300000(레인)' '~/lane41' > "$RD40/S41A2.window"
+snap41 >/dev/null
+row41a2=$( { grep -F '`stage-result`' "$FX_LEDGER" || true; } | grep -F '세그먼트=S41A2 ' | tail -1)
+check "A2 .window 가 있으면 그 1행이 정산 행의 압축 창이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *압축 창=//p' | sed 's/[[:space:]]*$//')" "300000(레인)"
+check "A2 그 2행이 정산 행의 레인이다" "$(printf '%s' "$row41a2" | tr '|' '\n' | sed -n 's/^ *레인=//p' | sed 's/[[:space:]]*$//')" "~/lane41"
+check "A2 정산 뒤 .window 도 사라진다" "$( [ -e "$RD40/S41A2.window" ] && printf 'left' || printf 'gone' )" "gone"
 
 # B. NO FINGERPRINT — enumerated by the alarm, settled by nobody.
 pos41 S41BP
@@ -17506,7 +18719,7 @@ chmod +x "$STUB42A"
 STUB42B="$WORK/bin/claude-stub-42b"
 cat > "$STUB42B" <<'STUB42BEOF'
 #!/usr/bin/env bash
-h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" 2>/dev/null | jq -r .H)
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
 bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
   --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
   --rationale "픽스처 — 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
@@ -17636,7 +18849,7 @@ b56_fixture() {
   printf '## 인가\n- **종료 지점**: 테스트\n- **비용 천장**: 없음\n' > "$B56_MAN"
   printf -- '- `자율 승인` | 교대=0 | kind=router-shift | 결정=act | 대상=t | 세그먼트=- | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=첫 교대\n' \
     > "$B56_LEDGER"
-  printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z\n' \
+  printf -- '- `교대 기동` | 교대=0 | 서수=1 | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z | 세션 id=00000000-0000-0000-0000-000000000001 | 레인=~/.claude | 압축 창=300000(레인)\n' \
     >> "$B56_LEDGER"
   local i=1 gf="${2-축2=읽기}" nfail="${3:-0}"
   while [ "$i" -le "$1" ]; do
@@ -17666,8 +18879,8 @@ b56_launch_rows() {
     "$(($1 - 1))" >> "$B56_LEDGER"
   printf -- '- `자율 승인` | 교대=0 | kind=router-shift | 결정=act | 대상=t | 세그먼트=- | 절단점=커밋 | 유도 절단점=- | 축2=워크트리쓰기 | 자격=주변 | 근거=라우팅 재개\n' \
     >> "$B56_LEDGER"
-  printf -- '- `교대 기동` | 교대=0 | 서수=%s | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z\n' \
-    "$1" >> "$B56_LEDGER"
+  printf -- '- `교대 기동` | 교대=0 | 서수=%s | 사유=상한 | 대상=t | 기록 시각=2026-09-12T00:00:00Z | 세션 id=00000000-0000-0000-0000-00000000000%s | 레인=~/.claude | 압축 창=300000(레인)\n' \
+    "$1" "$1" >> "$B56_LEDGER"
 }
 
 b56_judgment_rows() {
@@ -18757,6 +19970,14 @@ B57
 # (7) env 변수 표. 대입 꼴만 등급에 닿고, 지움 꼴은 기록으로 족하다.
 check "58: PATH= 는 실행 정체성이라 form 이다" "$(s57 'S env PATH=/x gh pr view 1')" "form|env:exec-identity:PATH"
 check "58: GIT_CONFIG_COUNT= 는 form 이다" "$(s57 'S env GIT_CONFIG_COUNT=1 git status')" "form|env:exec-identity:GIT_CONFIG_COUNT"
+# 저장소 선택자 셋. `bash -c` 본문의 `GIT_DIR=` 접두가 워크트리 경계의 git 질의를
+# 다른 저장소로 돌린 것이 실측이라, 대입 꼴은 form 이고 지움 꼴은 기록으로 족하다.
+check "58: GIT_DIR= 는 저장소 선택자라 form 이다" "$(s57 'S env GIT_DIR=/x/.git git status')" "form|env:repo-selector:GIT_DIR"
+check "58: GIT_COMMON_DIR=·GIT_WORK_TREE= 도 form 이다" \
+  "$(s57 'S env GIT_COMMON_DIR=/x git status; S env GIT_WORK_TREE=/x git status')" "form|env:repo-selector:GIT_COMMON_DIR
+form|env:repo-selector:GIT_WORK_TREE"
+check "58: bash -c 본문의 GIT_DIR= 접두도 form 이다" "$(s57 "S bash -c 'GIT_DIR=/x/.git git status'")" "form|env:repo-selector:GIT_DIR"
+check "58: env -u GIT_DIR 은 form 이 아니다" "$(s57 'S env -u GIT_DIR git status')" "ok|"
 check "58: GIT_SSH_COMMAND 의 값이 조각으로 실린다" \
   "$(s57 "gp_parse env GIT_SSH_COMMAND='ssh -i k' git fetch; printf '%s|' \"\$GP_STATUS\"; gp_each_sub W")" "ok|ssh/-i/k"
 check "58: 읽을 수 없는 명령 값은 form 이다" "$(s57 "S env GIT_SSH_COMMAND='\$(rm x)' git fetch")" "form|sh:non-literal-command-word"
@@ -18873,6 +20094,290 @@ check "58: gate_main 다음 줄이 exit 다" \
   "$(awk '/^[[:space:]]*$/ || /^[[:space:]]*#/ { next } { a = b; b = c; c = $0 } END { print a "|" b "|" c }' "$GATE")" 'fi|gate_main "$@"|exit'
 check "58: 소스 전용 가드는 gate_main 앞에 있다" \
   "$(awk '/CC_GATE_SOURCE_ONLY:-0/ { g = NR } /^gate_main "\$@"$/ { m = NR } END { print (g > 0 && g < m) ? "앞" : "아님" }' "$GATE")" "앞"
+
+# ---------------------------------------------------------------------------
+# 59. 페이싱 이음매 — pace 블록·pace 행·--fields·근거 예산·라우팅 좌석의 shared/ 울타리
+# --- section: 59 | group: base | covers: snapshot, act, exec | anchors: 59: pace 블록이 shift 바로 뒤에 온다, 59: pace 가 있든 없든 H 는 같다, 59: 첫 act 가 (미상) 판정의 pace 행 하나를 남긴다, 59: --fields H 가 값 하나를 한 줄로 낸다, 59: 교대의 exec 는 절대 경로로 shared/ 를 이름 대면 거절된다 ---
+#
+# 센서(`fleet.sh sensor`)가 발행한 `pace/state.json` 을 게이트가 어떻게 읽는지 —
+# 스냅숏의 `pace` 블록, 원장의 `pace` 행, `--fields` 투영 — 와, 같은 변경에 함께
+# 들어온 두 이음매(자유 문면의 행 예산, 라우팅 좌석의 shared/ 울타리)를 잰다. 센서
+# 자체는 여기서 돌리지 않는다: 이 절이 재는 것은 읽는 쪽이므로 state.json 은 손으로
+# 쓰고, 센서 쪽은 `scripts/test-fleet.sh` 가 잰다.
+#
+# 이 절은 픽스처를 자기가 만든다 — run-id R59 의 매니페스트·인가·원장·상태 루트·
+# pace 루트를 새로 뜬다. 앞 절의 것을 물려받으면 `--sections 59` 로 잘라 돌릴 때
+# 그 변수가 없다.
+# ---------------------------------------------------------------------------
+P59ROOT=$(mktemp -d "$WORK/pace59.XXXXXX")
+P59_PREV=$(sed -n 's/^\*\*런 id\*\*: //p' "$FX_MANIFEST" | tail -1)
+if [ -z "$P59_PREV" ]; then
+  printf '59: 앞 절의 런 id 를 매니페스트에서 읽지 못했다\n' >&2
+  exit 1
+fi
+P59_RID=R59
+P59_MAN="$P59ROOT/$P59_RID.plan.md"
+P59_GRANT="$WT/docs/pipeline-grant/$P59_RID.md"
+P59_LEDGER="$WT/docs/pipeline-run/$P59_RID.md"
+P59_STATE="$P59ROOT/state"
+P59_RD="$P59_STATE/cc-cmds/run/$P59_RID"
+P59_PACE="$P59ROOT/pace"
+if [ "$P59_MAN" = "$FX_MANIFEST" ] || [ "$P59_GRANT" = "$FX_GRANT" ] || [ "$P59_LEDGER" = "$FX_LEDGER" ]; then
+  printf '59: 이 절이 만드는 파일이 앞 절의 것과 같은 경로다 (%s · %s · %s)\n' \
+    "$P59_MAN" "$P59_GRANT" "$P59_LEDGER" >&2
+  exit 1
+fi
+# 매니페스트는 앞 절의 것에서 id 만 바꾸고 구속 다이제스트는 지운다(그 검사는 여기서
+# 재는 대상이 아니다).
+sed -e "s/run-id=$P59_PREV;/run-id=$P59_RID;/" \
+    -e "s/^\*\*런 id\*\*: $P59_PREV\$/**런 id**: $P59_RID/" "$FX_MANIFEST" \
+  | { grep -v '^\*\*구속 다이제스트\*\*' || true; } > "$P59_MAN"
+sed "s/R1/$P59_RID/g" "$GBAK" > "$P59_GRANT"
+{
+  printf '# 파이프라인 런 보고서 — %s\n\n' "$P59_RID"
+  printf '런 id %s · 페이싱 이음매 픽스처\n' "$P59_RID"
+} > "$P59_LEDGER"
+rm -rf "$P59_STATE" "$P59_PACE"
+mkdir -p "$P59_STATE" "$P59_PACE"
+
+p59_gate() {
+  # 인프로세스 호출. pace 루트는 환경으로 넘긴다 — 게이트는 `GATE_PACE_ROOT` 를
+  # 호출 시점에 읽으므로 소싱 시점 입력 검사에 걸리지 않는다.
+  local out
+  out=$( cd "$WT" && XDG_STATE_HOME="$P59_STATE" GATE_PACE_ROOT="$P59_PACE" gate_inproc "$@" 2>&1 ); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+p59_snap() {
+  # p59_snap [스냅숏 인자…] — stdout 만.
+  ( cd "$WT" && XDG_STATE_HOME="$P59_STATE" GATE_PACE_ROOT="$P59_PACE" \
+    gate_inproc snapshot --manifest "$P59_MAN" "$@" 2>/dev/null )
+}
+p59_h() { p59_snap | jq -r .H; }
+p59_state() {
+  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] — 센서가 쓰는
+  # 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만 채운다.
+  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" now
+  now=$(( $(date -u +%s) - off ))
+  jq -cn --arg schema "$schema" --arg v "$verdict" --arg r "$reason" --arg t "$tracker" \
+     --argjson now "$now" \
+     '{schema: $schema, tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
+       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}' > "$P59_PACE/state.json"
+}
+p59_rows() { { grep -cF "\`$1\`" "$P59_LEDGER" || true; }; }
+p59_last() { { grep -F "\`$1\`" "$P59_LEDGER" || true; } | tail -1; }
+p59_field() {
+  # p59_field <행> <키> — 파이프 필드 분해로 그 행의 값 하나.
+  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+p59_act() {
+  # p59_act [근거] — 읽기 등급의 대조 act 하나. pace 행은 승인 행에 올라타므로 이것이
+  # 원장에 판정을 싣는 유일한 길이다.
+  p59_gate act --manifest "$P59_MAN" --kind x --target infra --cutpoint 배포 \
+    --snapshot-digest "$(p59_h)" --rationale "${1:-x}" -- cat "$P59_MAN"
+}
+
+# (1) 스냅숏의 모양 — pace 는 shift 바로 뒤, H 는 마지막 ----------------------------
+p59_snap0=$(p59_snap); p59_rc=$?
+check "59: 픽스처 런의 첫 스냅숏이 답한다" "$p59_rc" "0"
+check "59: pace 블록이 shift 바로 뒤에 온다" \
+  "$(printf '%s' "$p59_snap0" | jq -r 'keys_unsorted | (index("pace") - index("shift"))')" "1"
+check "59: H 는 마지막 키다" "$(printf '%s' "$p59_snap0" | jq -r 'keys_unsorted | last')" "H"
+# 부재의 세 상태는 하트비트 파일만으로 갈린다 — launchctl 은 부르지 않는다.
+check "59: state.json 이 없으면 pace 는 null 이다" "$(printf '%s' "$p59_snap0" | jq -c .pace)" "null"
+check "59: 하트비트도 없으면 부재 사유는 센서 미등록이다" \
+  "$(printf '%s' "$p59_snap0" | jq -r .pace_absent_reason)" "센서 미등록"
+touch -t 202001010000 "$P59_PACE/sensor.heartbeat"
+check "59: 하트비트가 세 주기보다 오래됐으면 센서 정지다" \
+  "$(p59_snap | jq -r .pace_absent_reason)" "센서 정지"
+touch "$P59_PACE/sensor.heartbeat"
+check "59: 하트비트는 신선한데 state.json 이 없으면 센서 기동 실패다" \
+  "$(p59_snap | jq -r .pace_absent_reason)" "센서 기동 실패"
+# 낡은 state.json 과 다른 판본의 state.json 은 둘 다 부재다 — 판본은 등호로 비교한다.
+p59_state 가속 idle 400
+check "59: 세 주기보다 오래된 state.json 은 부재로 읽힌다" "$(p59_snap | jq -c .pace)" "null"
+p59_state 가속 idle 0 'cc-pace-state v2'
+check "59: 판본이 다른 state.json 은 부재로 읽힌다 (더 새롭다고 읽지 않는다)" \
+  "$(p59_snap | jq -c .pace)" "null"
+p59_state 가속 idle
+check "59: 신선한 state.json 의 판정이 pace 블록에 실린다" "$(p59_snap | jq -r .pace.verdict)" "가속"
+check "59: 판정 사유도 함께 실린다" "$(p59_snap | jq -r .pace.verdict_reason)" "idle"
+check "59: pace 가 있으면 부재 사유 키는 없다" \
+  "$(p59_snap | jq -r 'has("pace_absent_reason")')" "false"
+# 트래커 부재는 센서가 판정 안에 적는 상태이지 state.json 의 부재가 아니다 — 게이트는
+# 그것을 접지 않고 그대로 싣는다.
+p59_state 유지 tracker-skip 0 'cc-pace-state v1' unavailable
+check "59: tracker=unavailable 인 틱도 그대로 실린다 (부재로 접지 않는다)" \
+  "$(p59_snap | jq -r '.pace.tracker + "/" + .pace.verdict + "/" + .pace.verdict_reason')" \
+  "unavailable/유지/tracker-skip"
+
+# (2) 다이제스트 중립 — pace 는 H 를 움직이지 않는다 ---------------------------------
+p59_state 가속 idle
+p59_h_with=$(p59_h)
+rm -f "$P59_PACE/state.json"
+p59_h_without=$(p59_h)
+check "59: pace 가 있든 없든 H 는 같다" "$p59_h_without" "$p59_h_with"
+p59_state 제동 brake
+check "59: 판정이 바뀌어도 H 는 같다" "$(p59_h)" "$p59_h_with"
+rm -f "$P59_PACE/state.json"
+
+# (3) `--fields` 투영 --------------------------------------------------------------
+p59_hf=$(p59_snap --fields H)
+check "59: --fields H 가 값 하나를 한 줄로 낸다" "$(printf '%s\n' "$p59_hf" | grep -c '' || true)" "1"
+check "59: 그 값은 스냅숏의 H 와 같다" "$p59_hf" "$(p59_h)"
+check "59: 필드 하나는 JSON 이 아니라 날값이다" "$(printf '%s' "$p59_hf" | grep -c '"' || true)" "0"
+check "59: 맨 --fields 는 기본 목록을 그 순서대로 낸다" \
+  "$(p59_snap --fields | jq -r 'keys_unsorted | join(",")')" \
+  "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,shift,pace"
+check "59: 필드 둘 이상은 요청한 순서의 JSON 객체다" \
+  "$(p59_snap --fields pace,H | jq -r 'keys_unsorted | join(",")')" "pace,H"
+check "59: 그 객체의 pace 는 스냅숏과 같은 값이다 (부재면 null)" \
+  "$(p59_snap --fields pace,H | jq -c .pace)" "null"
+p59_gate snapshot --manifest "$P59_MAN" --fields 없는필드
+check "59: 모르는 필드는 null 이 아니라 exit 2 다" "$rc" "2"
+case "$msg" in
+  *"알 수 없는 필드 없는필드"*) ok "59: 그 거절이 필드 이름을 든다" ;;
+  *) bad "59: --fields 거절 문면" "$msg" ;;
+esac
+p59_gate exec --manifest "$P59_MAN" --target infra --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(p59_h)" --rationale x --fields H -- ls
+check "59: --fields 는 snapshot 에만 붙는다 (exec 에 주면 exit 2)" "$rc" "2"
+
+# (4) pace 행 — 승인 행에 올라타고, 판정이 바뀔 때만, 이 런의 원장을 기준으로 -------
+check "59: (선행) 아직 pace 행이 없다" "$(p59_rows pace)" "0"
+p59_act
+check "59: 대조 act 가 통과한다" "$rc" "0"
+check "59: 첫 act 가 (미상) 판정의 pace 행 하나를 남긴다" "$(p59_rows pace)" "1"
+p59_row=$(p59_last pace)
+check "59: 부재는 판정=(미상) 으로 적힌다" "$(p59_field "$p59_row" 판정)" "(미상)"
+check "59: 첫 행의 이전도 (미상) 이다" "$(p59_field "$p59_row" 이전)" "(미상)"
+check "59: 부재 행의 기준 틱은 - 다" "$(p59_field "$p59_row" '기준 틱')" "-"
+check "59: 부재 행의 관측도 - 다" "$(p59_field "$p59_row" 관측)" "-"
+check "59: 부재 행의 사유는 (미상) 이다" "$(p59_field "$p59_row" 사유)" "(미상)"
+p59_act
+check "59: 판정이 그대로면(여전히 부재) 행이 늘지 않는다" "$(p59_rows pace)" "1"
+p59_state 가속 idle
+p59_act
+check "59: 판정이 움직이면 행이 하나 는다" "$(p59_rows pace)" "2"
+p59_row=$(p59_last pace)
+check "59: 새 행의 판정이 센서의 것이다" "$(p59_field "$p59_row" 판정)" "가속"
+check "59: 새 행의 이전은 앞 행의 판정이다" "$(p59_field "$p59_row" 이전)" "(미상)"
+check "59: 기준 틱은 센서의 tick_seq 다" "$(p59_field "$p59_row" '기준 틱')" "7"
+check "59: 관측은 센서의 computed_at 이다" \
+  "$(p59_field "$p59_row" 관측)" "$(jq -r .computed_at "$P59_PACE/state.json")"
+check "59: 사유는 센서의 verdict_reason 이다" "$(p59_field "$p59_row" 사유)" "idle"
+# 비교 기준은 판정 하나다 — 사유만 바뀐 틱은 행을 만들지 않는다.
+p59_state 가속 lanes-below-target
+p59_act
+check "59: 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
+# snapshot 은 읽기이므로 판정이 바뀌어도 쓰지 않는다 — 다음 act 가 쓴다.
+p59_state 제동 brake
+p59_snap >/dev/null
+check "59: snapshot 은 판정이 바뀌어도 pace 행을 쓰지 않는다" "$(p59_rows pace)" "2"
+p59_act
+check "59: 그다음 act 가 그 변화를 쓴다" "$(p59_rows pace)" "3"
+check "59: 이전 필드가 직전 행의 판정을 잇는다" "$(p59_field "$(p59_last pace)" 이전)" "가속"
+# 낡음도 변화다 — 센서가 멈추면 다음 act 가 (미상) 으로 돌아간 것을 적는다.
+p59_state 제동 brake 400
+p59_act
+check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "4"
+check "59: 그 행의 판정은 (미상) 이고 이전은 제동이다" \
+  "$(p59_field "$(p59_last pace)" 판정)/$(p59_field "$(p59_last pace)" 이전)" "(미상)/제동"
+rm -f "$P59_PACE/state.json"
+
+# (5) 자유 문면의 행 예산 — 근거가 길어도 행은 상한 아래고 잘림 표지가 남는다 ---------
+p59_long=$(LC_ALL=C awk 'BEGIN { while (n++ < 1500) printf "a" }')
+p59_act "$p59_long"
+check "59: 1500 바이트 근거의 act 가 행 상한에 막히지 않고 통과한다" "$rc" "0"
+p59_row=$(p59_last '자율 승인')
+p59_cap=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+p59_len=$(printf '%s\n' "$p59_row" | wc -c | tr -d ' ')
+if [ -n "$p59_cap" ] && [ "$p59_len" -le "$p59_cap" ]; then
+  ok "59: 그 승인 행이 GATE_ROW_MAX 아래다 (${p59_len}B <= ${p59_cap})"
+else
+  bad "59: 승인 행 길이" "행 ${p59_len}B · 상한 '${p59_cap}'"
+fi
+case "$(p59_field "$p59_row" 근거)" in
+  *'…(잘림)') ok "59: 근거가 잘림 표지로 끝난다" ;;
+  *) bad "59: 근거 잘림" "$(p59_field "$p59_row" 근거 | LC_ALL=C cut -c1-40)…" ;;
+esac
+# 셋 다 같은 예산을 쓴다 — 자유 문면을 싣는 세 자리(act 승인·무효화 종단·경계 종단)의
+# 근거는 전부 `gate_free_budget` 이 잰 값으로 잘린다. 리터럴 240 으로 되돌아간 자리가
+# 생기면 여기서 잡힌다.
+check "59: 자유 문면 예산으로 잘리는 근거 자리가 셋이다" \
+  "$(grep -c 'gate_row_safe "\$[a-z]*" "\$_[a-z]*_free"' "$GATE" || true)" "3"
+check "59: 그 셋의 예산이 전부 gate_free_budget 에서 온다" \
+  "$(grep -c '_free=\$(gate_free_budget ' "$GATE" || true)" "3"
+
+# (6) 라우팅 좌석의 shared/ 울타리 — 네 철자, 그리고 두 대조군 ------------------------
+#
+# 교대 설정 변형에는 `additionalDirectories` 가 없어 `Read` 로는 샤드에 닿지 못하지만,
+# 명령은 전부 이 게이트를 지나므로 `cat "$RUN_DIR/shared/1/…"` 는 그 층이 보지 못하는
+# 읽기다. 울타리는 argv 를 수행하는 경로에 있고 — `exec` 과 일반 kind 의 `act` 둘 다 —
+# 행위자가 스테이지가 아니면서 교대 표지를 들 때만 선다. 스테이지는 교대가 띄웠더라도
+# 스테이지가 먼저다.
+mkdir -p "$P59_RD/shared/1" "$P59ROOT/shared/1"
+printf '{}\n' > "$P59_RD/shared/1/snapshot.json"
+printf '{}\n' > "$P59ROOT/shared/1/decoy.json"
+ln -sf "$P59_RD/shared/1/snapshot.json" "$P59ROOT/alias.json"
+p59_exec() {
+  # p59_exec <경로> — 읽기 등급 exec 하나. 표지는 호출자가 환경으로 얹는다.
+  p59_gate exec --manifest "$P59_MAN" --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(p59_h)" --rationale x -- cat "$1"
+}
+p59_fenced() {
+  # p59_fenced <경로> — 교대 표지 아래의 같은 exec. 스테이지 표지는 프리앰블이 비웠다.
+  CC_PIPELINE_SHIFT_ID="$P59_RID#1" p59_exec "$1"
+}
+p59_exec "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 리드 좌석의 shared/<gen>/ 읽기는 통과한다" "$rc" "0"
+p59_fenced "$P59_RD/shared/1/snapshot.json"
+check "59: 교대의 exec 는 절대 경로로 shared/ 를 이름 대면 거절된다" "$rc" "3"
+case "$msg" in
+  *"the routing seat does not reach the shard directory"*) ok "59: 거절 문면이 라우팅 좌석과 샤드 디렉터리를 든다" ;;
+  *) bad "59: 샤드 거절 문면" "$msg" ;;
+esac
+p59_fenced "../${P59ROOT##*/}/state/cc-cmds/run/$P59_RID/shared/1/snapshot.json"
+check "59: 행위 디렉터리 기준 상대 경로도 거절된다" "$rc" "3"
+p59_fenced "$P59ROOT/alias.json"
+check "59: 울타리 밖 이름의 심링크 잎도 따라가 거절된다" "$rc" "3"
+p59_fenced "$P59_RD/shared/9/not-yet.json"
+check "59: 아직 없는 이름도 어휘적으로 풀어 거절된다" "$rc" "3"
+p59_fenced "$P59ROOT/shared/1/decoy.json"
+check "59: (대조) 런 디렉터리 밖의 shared/ 라는 이름은 거절되지 않는다" "$rc" "0"
+p59_fenced "$P59_MAN"
+check "59: (대조) 교대의 다른 읽기는 그대로 통과한다" "$rc" "0"
+CC_PIPELINE_SHIFT_ID="$P59_RID#1" CC_PIPELINE_STAGE_ID="S59#1" p59_exec "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 교대가 띄운 스테이지는 스테이지가 먼저라 샤드를 읽는다" "$rc" "0"
+# 동사가 울타리를 가르지 않는다. 일반 kind 의 `act` 는 `exec` 과 같은 경로로 argv 를
+# 수행하므로, 교대 표지 아래의 `act --kind x -- cat <샤드>` 도 같은 문면으로 거절된다 —
+# 동사 조건이 붙어 있던 동안 이 철자는 펜스를 지나지 않았고 남는 승인 행도 샤드를
+# 읽었다고 적지 않았다.
+p59_act_on() {
+  # p59_act_on <경로> — p59_act 와 같은 act 인데 argv 만 그 경로를 읽는다.
+  p59_gate act --manifest "$P59_MAN" --kind x --target infra --cutpoint 배포 \
+    --snapshot-digest "$(p59_h)" --rationale x -- cat "$1"
+}
+p59_act_rows_before=$(p59_rows '자율 승인')
+CC_PIPELINE_SHIFT_ID="$P59_RID#1" p59_act_on "$P59_RD/shared/1/snapshot.json"
+check "59: 교대의 act 도 shared/<gen>/ 를 이름 대면 거절된다 (동사 조건 없음)" "$rc" "3"
+case "$msg" in
+  *"the routing seat does not reach the shard directory"*) ok "59: act 거절 문면도 같은 펜스의 것이다" ;;
+  *) bad "59: act 샤드 거절 문면" "$msg" ;;
+esac
+check "59: 거절된 act 는 승인 행을 남기지 않는다" "$(p59_rows '자율 승인')" "$p59_act_rows_before"
+p59_act_on "$P59_RD/shared/1/snapshot.json"
+check "59: (대조) 리드 좌석의 act 는 같은 샤드를 읽는다" "$rc" "0"
+# 울타리는 `additionalDirectories` 를 넓히지 않는다 — 교대 변형은 그대로 비어 있다.
+# The variant file is `settings/<kind>.json` and the shift kind is one name, so
+# the path is written out rather than globbed through a pipe.
+p59_shift_settings="$P59_RD/settings/shift.json"
+[ -f "$p59_shift_settings" ] || p59_shift_settings=""
+if [ -n "$p59_shift_settings" ]; then
+  check "59: 교대 설정 변형의 additionalDirectories 는 여전히 비어 있다" \
+    "$(jq -c '.permissions.additionalDirectories // []' "$p59_shift_settings")" "[]"
+else
+  bad "59: 교대 설정 변형" "settings/ 아래에 shift 변형이 없다 — 위 단언이 공허하다"
+fi
 
 # --- epilogue-begin ---
 #

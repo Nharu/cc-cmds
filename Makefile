@@ -10,6 +10,7 @@ lint:
 	bash scripts/lint-verification-literals.sh
 	bash scripts/lint-design-audit-pins.sh
 	bash scripts/lint-team-budget-pins.sh
+	bash scripts/lint-team-model-tier-pins.sh
 	bash scripts/lint-unattended-surfaces.sh
 	bash scripts/lint-cutpoint-vocabulary.sh
 	bash scripts/lint-autoadopt-vocabulary.sh
@@ -19,6 +20,8 @@ lint:
 	bash scripts/lint-notify-title-render.sh
 	bash scripts/lint-notify-fire-sites.sh
 	bash scripts/lint-watch-threshold-pins.sh
+	bash scripts/lint-pace-threshold-pins.sh
+	bash scripts/lint-fleet-agent-pins.sh
 	bash scripts/lint-statusline-token-arms.sh
 	bash scripts/lint-approval-state-vocabulary.sh
 	bash scripts/lint-sidecar-field-table.sh
@@ -99,6 +102,7 @@ LINT_TESTS := \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
 	scripts/test-lint-team-budget-pins.sh \
+	scripts/test-lint-team-model-tier-pins.sh \
 	scripts/test-lint-unattended-surfaces.sh \
 	scripts/test-lint-cutpoint-vocabulary.sh \
 	scripts/test-lint-autoadopt-vocabulary.sh \
@@ -108,6 +112,7 @@ LINT_TESTS := \
 	scripts/test-lint-notify-title-render.sh \
 	scripts/test-lint-notify-fire-sites.sh \
 	scripts/test-lint-watch-threshold-pins.sh \
+	scripts/test-lint-pace-threshold-pins.sh \
 	scripts/test-lint-statusline-token-arms.sh \
 	scripts/test-lint-approval-state-vocabulary.sh \
 	scripts/test-lint-sidecar-field-table.sh \
@@ -134,6 +139,7 @@ ORCH_TESTS := \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-watch.sh \
+	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-lost-dispatch.sh \

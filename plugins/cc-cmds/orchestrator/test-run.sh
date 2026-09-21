@@ -1753,6 +1753,159 @@ else
   bad "kill 가드" "경계 멱등 스테이지까지 막았다 — 가드가 과도하다"
 fi
 
+# (5) 여유 좌석 판정 — 센서가 발행한 상태를 읽을 뿐 여기서 계산하지 않는다.
+# 모름은 「여유 없음」이다: 상태가 없거나, 오래됐거나, 스키마가 다르거나, 이 좌석
+# 항목이 없으면 1 — 센서 없는 기기가 이 함수를 두기 전과 같은 답을 받는다. 좌석은
+# 호출마다 다시 풀리므로 1층(환경)으로 고정해 어느 항목과 결합하는지를 정한다.
+ACC_PACE="$ACC_DIR/pace"; mkdir -p "$ACC_PACE"
+acc_state() {  # acc_state <오프셋 초> <allow> <session_pct> [schema] [home]
+  jq -cn --arg schema "${4:-cc-pace-state v1}" --arg home "${5:-$ACC_DIR/seat}" \
+     --argjson now "$(( $(date -u +%s) - $1 ))" --argjson allow "$2" --argjson pct "$3" \
+     '{schema: $schema, computed_at_epoch: $now, burn_per_stage_4h: 0.5,
+       seats: [{home: $home, allow: $allow, session_pct: $pct}]}' > "$ACC_PACE/state.json"
+}
+acc_room() {
+  ( CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" account_has_headroom; printf '%s' "$?" )
+}
+rm -f "$ACC_PACE/state.json"
+check "센서 상태가 없으면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 400 1 10
+check "세 주기(180초)보다 오래된 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10
+check "신선한 상태에서 allow 가 한 스테이지 소모 이상이고 창이 80% 미만이면 여유(0)" "$(acc_room)" "0"
+acc_state 0 1 80
+check "세션 창이 80% 에 닿으면 allow 가 남아도 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 0.1 10
+check "allow 가 한 스테이지 소모(0.5)에 못 미치면 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v1' "$ACC_DIR/other-seat"
+check "이 좌석 항목이 없는 상태는 여유 없음(1)" "$(acc_room)" "1"
+acc_state 0 1 10 'cc-pace-state v2'
+check "다른 스키마의 상태는 여유 없음(1)" "$(acc_room)" "1"
+check "정지 임계가 센서의 것과 같은 값으로 박혀 있다" "$RUN_PACE_STALE_SECONDS" "180"
+
+# (6) 조인이 성립하는 상태에서 `stage_wait_all` 을 실제로 지난다 — 센서는 사다리를
+#     줄일 수 있을 뿐 0 으로 만들지 못한다.
+# 위 (5) 는 술어만 잰다. 술어가 참을 내는 순간 회수 갈래가 살아나므로, 여기서는
+# 좌석 조인(`CLAUDE_CONFIG_DIR` = `seats[].home`)과 여유 있는 상태를 그대로 두고
+# 대기 루프를 돌린다. `resume_verdict` 는 「한도-형상」 만 내고, `stage_alive` 는
+# 정해진 횟수만 살아 있다고 답하며, `sleep` 은 함수로 가려 백오프 단이 벽시계를
+# 쓰지 않게 한다. `reap_orphan` 은 (2) 의 감시 스텁이 그대로 관측한다.
+eval "swa_real_backoff_wait() $(declare -f backoff_wait | sed 1d)"
+SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=0
+backoff_wait()    { SWA_BW=$(( SWA_BW + 1 )); swa_real_backoff_wait "$@"; }
+resume_verdict()  { printf '한도-형상'; }
+stage_alive()     { SWA_POLLS=$(( SWA_POLLS + 1 )); [ "$SWA_POLLS" -le "$SWA_ALIVE_FOR" ]; }
+stage_collect()   { SWA_COLLECTED="$SWA_COLLECTED $1"; rm -f "$RUN_DIR/$1.pid"; }
+sleep()           { :; }
+swa_run() {  # swa_run <stage> <살아 있는 폴 수>
+  REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR="$2"; SWA_COLLECTED=""
+  rm -f "$RUN_DIR/$1.backoff" "$RUN_DIR/$1.reap-cause" "$RUN_DIR/$1.reaped"
+  printf '99999\n' > "$RUN_DIR/$1.pid"
+  CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$1" 2>/dev/null
+}
+SWA_STAGE="S4:acc:1"
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+if kill_permitted "$SWA_STAGE"; then ok "전제: $SWA_STAGE 는 경계 멱등이라 회수 대상이다"; else bad "전제" "$SWA_STAGE 가 회수 대상이 아니다"; fi
+
+# 첫 관측: 여유가 있어도 죽이지 않고 백오프 한 단을 잔다.
+swa_run "$SWA_STAGE" 1
+check "첫 한도-형상 관측은 여유 계정이라도 회수하지 않는다" "$REAPED" ""
+check "대신 백오프 한 단을 잔다" "$SWA_BW" "1"
+check "그 뒤 스테이지가 스스로 끝나면 수거된다" "$SWA_COLLECTED" " $SWA_STAGE"
+if [ -e "$RUN_DIR/$SWA_STAGE.reap-cause" ]; then bad "회수 표시" "회수하지 않았는데 reap-cause 가 있다"; else ok "회수하지 않은 스테이지에는 reap-cause 가 없다"; fi
+
+# 둘째 관측: 한 단을 지속한 뒤에야 여유 계정이 회수 근거가 된다.
+swa_run "$SWA_STAGE" 2
+check "백오프 한 단을 넘겨 지속된 한도-형상은 여유 계정에서 회수된다" "$REAPED" " $SWA_STAGE"
+check "회수는 둘째 단을 자기 전에 일어난다" "$SWA_BW" "1"
+check "회수 사유가 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "여유 계정"
+check "회수된 스테이지의 종단 부류는 크래시가 아니다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+check "회수는 백오프 누산기를 비운다" "$(ls "$RUN_DIR/$SWA_STAGE.backoff" 2>/dev/null)" ""
+if [ -e "$RUN_DIR/$SWA_STAGE.rc" ]; then bad "rc" "회수 경로가 .rc 를 썼다"; else ok "회수 경로는 .rc 를 쓰지 않는다 — 부류는 표시 파일이 진다"; fi
+
+# 대조군: 여유가 없으면 한 단을 넘겨도 사다리를 계속 오른다.
+acc_state 0 1 80
+check "전제: 세션 창이 80% 라 여유 없음" "$(acc_room)" "1"
+swa_run "$SWA_STAGE" 2
+check "여유 없는 좌석은 한 단을 넘겨도 회수하지 않는다" "$REAPED" ""
+check "사다리는 둘째 단으로 오른다" "$SWA_BW" "2"
+check "회수하지 않은 스테이지는 종단 부류가 rc 로 정해진다" "$(classify_termination "$SWA_STAGE" 1 1)" "크래시"
+
+# 대조군: 상한 갈래도 같은 표시를 남긴다 — 누산기를 상한에 두고 여유 없는 상태로 한 번 관측.
+printf '%s 1\n' "$BACKOFF_WALLCLOCK_CAP_SECONDS" > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "백오프 상한에서는 경계 멱등 스테이지를 회수한다" "$REAPED" " $SWA_STAGE"
+check "상한 회수의 사유도 파일로 남는다" "$(cat "$RUN_DIR/$SWA_STAGE.reap-cause")" "백오프 상한"
+check "상한 회수의 종단 부류도 한도-형상 회수다" "$(classify_termination "$SWA_STAGE" 1 1)" "한도-형상 회수"
+
+# 대조군: 비멱등 스테이지는 여유가 있고 한 단을 넘겨도 회수되지 않는다.
+acc_state 0 1 10
+swa_run "$ACC_STAGE" 3
+check "비멱등 스테이지는 여유 계정에서도 회수되지 않는다" "$REAPED" ""
+check "비멱등 스테이지는 사다리만 오른다" "$SWA_BW" "3"
+
+# 재기동은 앞 점유자의 표시를 물려받지 않는다.
+printf '%s\n' '여유 계정' > "$RUN_DIR/$SWA_STAGE.reap-cause"
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '.reap-cause'; then
+  ok "stage_spawn 이 .rc 와 함께 .reap-cause 를 지운다"
+else
+  bad "표시 상속" "stage_spawn 이 .reap-cause 를 지우지 않는다 — 같은 id 의 재기동이 앞 회수로 분류된다"
+fi
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 파견 경계의 한 단 보장 — 「첫 한도-형상 관측은 언제나 한 단을 기다린다」가 두
+# 번째 파견에서도 성립한다.
+#
+# 위 (6) 의 단언들은 이것을 재지 못한다. `swa_run` 이 자기 전제로 `.backoff` 를
+# 지우므로 거기서 성립하는 한 단 보장은 **단일 파견 수명 안**의 것이고, 실제로
+# 깨지는 자리는 파견 경계다. 앞 파견이 누산기를 남기는 경로는 실재한다 — 비멱등
+# 갈래(`human_reconcile`)는 신호를 보내지 않고 빠지면서 누산기를 지우지 않는다.
+# 그래서 여기서는 그 잔여를 전제로 두고, 대조군으로 빨간불을 먼저 확인한 뒤,
+# `stage_spawn` 이 실제로 선적한 청소 줄만 돌려 보장이 회복되는지 잰다.
+acc_state 0 1 10
+check "전제: 조인이 성립하고 여유가 있다" "$(acc_room)" "0"
+
+# 대조군 — 누산기가 남아 있으면 첫 관측이 한 단도 자지 않고 곧바로 회수된다.
+# 이 블록이 없으면 아래 단언이 「청소가 듣는다」가 아니라 「원래 회수되지
+# 않는다」로도 통과해 공허해진다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "대조군: 앞 파견의 누산기가 남으면 첫 관측이 곧바로 회수된다" "$REAPED" " $SWA_STAGE"
+check "대조군: 그때는 한 단도 자지 않는다" "$SWA_BW" "0"
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.backoff"
+
+# 같은 잔여를 다시 두고, 이번에는 그 사이에 파견이 일어난다. 선적된 청소 줄을
+# 원문에서 뽑아 그대로 돌리므로 이 단언은 소스 문자열 대조가 아니라 그 줄의
+# 효과를 잰다 — 목록에서 `.backoff` 가 빠지면 뽑힌 줄이 그것을 남기고 아래 둘이
+# 함께 뒤집힌다.
+printf '60 2\n' > "$RUN_DIR/$SWA_STAGE.backoff"
+spawn_cleanup=$(sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep -E '^[[:space:]]*rm -f "\$RUN_DIR/\$stage\.rc"')
+check "stage_spawn 의 청소 줄을 정확히 하나 뽑았다" "$(printf '%s' "$spawn_cleanup" | grep -c .)" "1"
+( stage="$SWA_STAGE"; eval "$spawn_cleanup" )
+if backoff_served "$SWA_STAGE"; then
+  bad "파견 경계" "stage_spawn 청소가 .backoff 를 남긴다 — 두 번째 파견의 첫 관측이 앞 파견의 사다리 위에서 판정된다"
+else
+  ok "stage_spawn 이 파견마다 .backoff 를 비운다"
+fi
+
+REAPED=""; SWA_BW=0; SWA_POLLS=0; SWA_ALIVE_FOR=1; SWA_COLLECTED=""
+printf '99999\n' > "$RUN_DIR/$SWA_STAGE.pid"
+CLAUDE_CONFIG_DIR="$ACC_DIR/seat" RUN_PACE_ROOT="$ACC_PACE" stage_wait_all "$SWA_STAGE" 2>/dev/null
+check "두 번째 파견의 첫 한도-형상 관측도 회수하지 않는다" "$REAPED" ""
+check "두 번째 파견의 첫 관측도 백오프 한 단을 잔다" "$SWA_BW" "1"
+
+unset spawn_cleanup
+rm -f "$RUN_DIR/$SWA_STAGE.reap-cause" "$RUN_DIR/$SWA_STAGE.reaped" "$RUN_DIR/$SWA_STAGE.pid" "$RUN_DIR/$SWA_STAGE.backoff" "$RUN_DIR/$ACC_STAGE.pid" "$RUN_DIR/$ACC_STAGE.backoff"
+unset -f swa_run backoff_wait resume_verdict stage_alive stage_collect sleep
+eval "backoff_wait() $(declare -f swa_real_backoff_wait | sed 1d)"
+unset -f swa_real_backoff_wait
+unset -f acc_state acc_room
+
 # `unset -f` REMOVES the watcher rather than restoring the driver's definition —
 # bash has no function shadowing, so the original is gone for the rest of this
 # process. That is why this block sits last: a later assertion calling it would
@@ -2200,6 +2353,21 @@ check "파견 팔의 stage-result 행 자리가 다섯이다 (아래 단언이 �
   "$(printf '%s\n' "$AB21_SITES" | sed -n 's/^N //p')" "5"
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
+
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷을 포함해 아홉)가 압축 창·레인·기록자
+# 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 아홉의 방어는
+# 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
+  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
+  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  END { print "N " n+0 }
+' "$DRIVER")
+check "드라이버의 stage-result 호출부가 아홉이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "9"
+check "아홉 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+  "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
+check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
+  "$(grep -c '"기록자=드라이버"' "$DRIVER" || true)" "9"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -4030,10 +4198,18 @@ if printf '%s' "$crash_arm" | grep_all_q '크래시 2회'; then
 else
   bad "park 사유" "크래시 2회의 park 사유가 첫 실패와 구별되지 않는다"
 fi
-# 재시도는 정확히 1회다. 두 갈래가 각각 하나씩이라 드라이버 전체에서 `.retry`
-# 스폰은 둘이어야 하고, 셋이 되면 어느 갈래가 예산을 넘긴 것이다.
-check "재시도 스폰은 갈래당 1회 (전체 2회)" \
-  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "2"
+# 재시도는 갈래당 정확히 1회다. 갈래마다 하나씩 세고 총합도 함께 재는 이유는,
+# 총합만 재면 한 갈래가 둘을 갖고 다른 갈래가 0 을 갖는 배분도 통과하기 때문이다.
+# 갈래는 셋이다 — 「공허한 성공」·「크래시」·「한도-형상 회수」. 셋째는 드라이버
+# 자신이 신호를 보낸 스테이지의 갈래이고, 크래시 예산과 별도로 1회를 갖는다.
+for retry_arm in '공허한 성공' '크래시' '한도-형상 회수'; do
+  # `${...}` 를 쓰는 것은 취향이 아니다 — 뒤따르는 닫는 낫표가 ASCII 가 아니라서
+  # 하한 인터프리터가 그 바이트를 이름에 붙여 읽고 unbound variable 로 죽는다.
+  check "재시도 스폰이 「${retry_arm}」 갈래에 정확히 1회" \
+    "$( { sed -n "/^      '$retry_arm')/,/;;/p" "$DRIVER" | grep -c 'stage_spawn "\$sid\.retry"'; } || printf '0')" "1"
+done
+check "재시도 스폰은 드라이버 전체에서 갈래 수와 같다 (전체 3회)" \
+  "$(grep -c 'stage_spawn "\$sid\.retry"' "$DRIVER")" "3"
 
 # ---------------------------------------------------------------------------
 # 리뷰 정책 축 — 어휘, 조기 진단, 전파
@@ -4460,6 +4636,11 @@ RUN_ID="lane-init"
 RI="$LD/state/cc-cmds/run/lane-init"
 check "rundir_init 이 레인을 기록한다" "$(cat "$RI/config-dir" 2>/dev/null)" "$LD/homerec"
 check "rundir_init 이 오케스트레이터 디렉터리를 기록한다" "$(cat "$RI/orchestrator-dir" 2>/dev/null)" "$ORCH_DIR"
+# 공유 세대 디렉터리는 런 개시에 리드 좌석이 빈 채로 만든다 — 교대는 그 아래
+# `shared/<gen>/` 에만 쓸 수 있고 `shared/` 자체를 만들 권한이 없으므로, 여기서
+# 만들어 두지 않으면 첫 교대의 첫 발행이 그 자리에서 거부된다.
+check "rundir_init 이 공유 세대 디렉터리 shared/ 를 빈 채로 만든다" \
+  "$( [ -d "$RI/shared" ] && printf '%s' "$(ls -A "$RI/shared" | grep -c . || true)" )" "0"
 # 재기동한 드라이버가 살아 있는 스테이지의 레인을 옮기면 안 된다.
 printf '%s\n' "$LD/runrec" > "$RI/config-dir"
 ( unset CLAUDE_CONFIG_DIR
@@ -4917,6 +5098,15 @@ check "런 매니페스트 plan.md 는 계획 파일이 아니다" \
   "$(hook_decide_rd "$FRD" "$FRD/plan.md")" "deny"
 check "하위 디렉터리의 계획 파일은 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/sub/x.plan.md")" "deny"
+# 공유 세대 디렉터리는 둘째 예외이고 한 단계 아래만이다 — 교대의 산출물이 놓이는
+# `shared/<gen>/` 이 예외이고, 세대 없이 `shared/` 바로 아래 놓인 파일은 `*/*` 거부로
+# 떨어진다. 게이트의 Bash 가드가 같은 두 갈래를 싣고, `scripts/test-gate.sh` 가
+# 두 파일의 리터럴이 같은지를 핀한다.
+mkdir -p "$FRD/shared/1"
+check "shared/<gen>/ 아래 한 단계의 쓰기는 허용" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/1/snapshot.json")" "allow"
+check "shared/ 바로 아래의 파일은 예외가 아니다" \
+  "$(hook_decide_rd "$FRD" "$FRD/shared/loose.json")" "deny"
 check "상위 참조를 낀 런 디렉터리 철자도 거부" \
   "$(hook_decide_rd "$FRD" "$FRD/../fixrun/surface-digest")" "deny"
 if [ -d "$WORK/rd-link" ]; then
@@ -5561,6 +5751,190 @@ rr_guard 워크트리쓰기 git diff "--output=../../runroot/cc-cmds/run/victim/
 check "배시 가드: 음성 대조군 — -C 가 없으면 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
 unset RR_G_CWD
 
+# --- 사후 리뷰 수리 6. 분리 토큰과 전체 경로 피연산자도 둘째 기준에서 잰다 --------
+# 위 절은 `--output=<상대>` 한 철자만 닫았다. 둘째 기준은 옵션의 `=` 값과 복합
+# 토큰의 단어에만 적용됐고, 전체 인수는 등급 기준 디렉터리에서만 절대화됐다 — 그래서
+# 같은 경로를 `--output <상대>`(두 토큰), `archive -o <상대>`, `checkout HEAD -- <상대>`
+# 로 적으면 두 가드를 그대로 지났다(실측, 세 리뷰어 독립 재현). 가드에는 옵션 표가
+# 없어 `--output` 의 피연산자와 경로 지정을 가르지 못하지만 가를 필요도 없다 — git 은
+# 둘 다 `-C` 디렉터리에서 푼다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 분리 토큰 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../installed/plugins/cc-cmds/orchestrator/gate.sh HEAD
+check "설치본 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" restore --source=HEAD~3 ../../installed/plugins/cc-cmds/orchestrator/gate.sh
+check "설치본 가드: restore 의 상대 경로 지정도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 — 같은 모양인데 보호 루트 밖을 가리키면 지난다.
+rr_pguard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "설치본 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 분리 토큰 --output 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'this is another run directory'*) ok "배시 가드: 분리 토큰 거부가 형제 런 팔의 것이다" ;;
+  *) bad "배시 가드: 분리 토큰 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" archive -o ../../runroot/cc-cmds/run/victim/settings/x.json HEAD
+check "배시 가드: archive -o 의 상대 피연산자도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" checkout HEAD -- ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: checkout 의 상대 경로 지정도 rc 3" "$rr_guard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$WORK/other/deep" diff --output ../../elsewhere/x
+check "배시 가드: 음성 대조군 — 분리 토큰이라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+# `-C` 가 없으면 분리 토큰에도 둘째 기준이 서지 않는다 — 위 절의 마지막 행과 같은
+# 이유로, 둘째 기준이 `-C` 와 무관하게 늘 서는 변경을 막는다.
+rr_guard 워크트리쓰기 git diff --output ../../runroot/cc-cmds/run/victim/settings/x.json
+check "배시 가드: 음성 대조군 — -C 가 없으면 분리 토큰에도 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+# `/` 없는 맨 이름도 같은 결함의 한 철자다. `..` 는 맨 이름 검사를 늘 통과하지만
+# 등급 기준 디렉터리에서만 절대화됐으므로, `-C` 디렉터리의 부모가 보호 루트일 때
+# 어느 팔에도 걸리지 않았다. 등급 기준은 그 `..` 가 보호 루트 밖으로 풀리는 깊이에
+# 둔다 — 그렇지 않으면 첫째 기준의 조상 팔이 답해 이 행이 공허해진다.
+RR_G_CWD="$WORK/segwt/plugins"
+mkdir -p "$RRP_INST/skills"
+rr_pguard 워크트리쓰기 git -C "$RRP_INST/skills" checkout HEAD -- ..
+check "설치본 가드: -C 디렉터리 기준으로 보호 루트에 닿는 맨 이름 .. 도 rc 3" "$rr_pguard_rc" "3"
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- ..
+check "배시 가드: -C 디렉터리 기준으로 런 디렉터리 자신에 닿는 맨 이름 .. 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'run directory write'*) ok "배시 가드: 맨 이름 .. 의 거부가 허용 목록 팔의 것이다" ;;
+  *) bad "배시 가드: 맨 이름 .. 의 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+# 음성 대조군 — `-C` 디렉터리가 허용된 하위 트리이고 맨 이름이 그 안에 머물면 지난다.
+rr_guard 워크트리쓰기 git -C "$MYRUN/halt" checkout HEAD -- .
+check "배시 가드: 음성 대조군 — 허용된 하위 트리 안에 머무는 맨 이름은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
+# --- 사후 리뷰 수리 7. 래퍼와 두 토큰 전역 옵션 뒤의 `-C` -----------------------
+# 둘째 기준은 argv0 의 basename 이 정확히 `git` 일 때만, 그리고 `-C`·`-c`·`--work-tree=`
+# 밖의 모든 `-*` 를 값 없는 옵션으로 읽는 접기로만 섰다. 등급표는 `nohup`·`timeout`·
+# `env`·`nice` 를 벗겨 안쪽 git 의 등급을 그대로 돌려주고 `--namespace <값>`·`--git-dir
+# <값>`·`--work-tree <값>` 을 두 토큰으로 건너뛰므로, 일곱 형태 전부 정직한 `트리밖쓰기`
+# 로 게이트를 지나면서 둘째 기준은 서지 않았다 — 이미 닫힌 `--output=<상대>` 철자까지
+# 다시 열렸다(실측). 앞 절과 독립된 결함이다: 여기서는 피연산자 철자가 닫힌 `=` 형태인데
+# 기준 자체가 없다.
+RR_G_CWD="$WORK/segwt"
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: 래퍼 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: timeout 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: env 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: nice 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_pguard_rc" "3"
+# 음성 대조군 둘 — 래퍼가 있어도 보호 루트 밖이면 지나고, 두 토큰 전역 옵션만으로는
+# 둘째 기준이 서지 않는다(`-C` 가 없다).
+rr_pguard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_pguard 트리밖쓰기 git --namespace x diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nohup 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+# `--output=<상대>` 는 `=` 를 가진 복합 토큰이라 단어 팔이 답한다 — 앞 절의 같은 철자와
+# 같은 팔이고, 그 문구가 묻힌 경로 문구다.
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: 래퍼 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: 래퍼 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 timeout 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: timeout 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 env GIT_X=1 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: env 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nice -n 5 git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: nice 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --namespace x -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --namespace <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --git-dir "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --git-dir <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 git --work-tree "$WORK/other" -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: --work-tree <값> 뒤의 -C 도 rc 3" "$rr_guard_rc" "3"
+rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+rr_guard 트리밖쓰기 git --namespace x diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+
+# 같은 결함의 두 철자가 더 있었다. 등급표는 `lockf` 와 `find -exec` 도 벗겨 안쪽 git 으로
+# 등급하는데 둘째 기준을 세우는 벗기기에는 두 이름이 없어, `lockf -k -t 0 <잠금> git -C
+# <형제> diff --output=<상대>` 와 `find <d> -exec git -C <형제> … {} ;` 가 정직한
+# `트리밖쓰기` 로 두 가드를 지났다(실측). `lockf` 는 무인 스킬이 설계 문서 쓰기마다
+# 요구하는 래퍼라 파이프라인이 실제로 만드는 형태다. 잠금 파일은 두 보호 루트 밖에 둔다.
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: lockf 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: find -exec 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: lockf 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: find -exec 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
+unset RR_G_CWD
+
+# 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
+# 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
+# 으로 보내고 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름은 전부, 둘째 기준의
+# 벗기기에도 팔이 있어야 한다. `rg` 만 이름 붙여 뺀다 — `--pre` 뒤 한 단어만 넘기므로
+# `-C <디렉터리>` 와 피연산자를 함께 실을 수 없다. 모은 집합이 비면 추출이 깨진 것이라
+# 그것도 실패로 센다 — 그렇지 않으면 이 대조는 아무것도 비교하지 않고 초록이 된다.
+rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  table=$(declare -f surface_of_argv0)
+  peel=$(declare -f gate_argv_chdir_base_of)
+  n=0; missing=""
+  for f in $(declare -F | sed -n "s/^declare -f surface_of_//p"); do
+    [ "$f" = argv0 ] && continue
+    case "$(declare -f "surface_of_$f")" in *gate_unwrap_*) ;; *) continue ;; esac
+    case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$f" = rg ] && continue
+    grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" <<<"$peel" || missing="$missing $f"
+  done
+  [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
+  echo "n=$n missing=[${missing# }]"
+' )
+case "$rr_unwrap_parity" in
+  *'missing=[]') ok "둘째 기준의 벗기기가 등급표의 위임 이름을 rg 말고 모두 덮는다 ($rr_unwrap_parity)" ;;
+  *) bad "둘째 기준 벗기기와 등급표 위임 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+esac
+
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
 # 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
 # 스크립트를 규약이 정한 경로로 부르면 argv0 자신이 런 디렉터리 아래로 떨어진다.
@@ -5962,23 +6336,37 @@ hook_decide_bash() {
 BNL='
 '
 check "맨 게이트 호출은 허용" "$(hook_decide_bash "$GATEP snapshot --manifest m")" "allow"
-# 특례는 하나뿐이고 꼬리에서만 성립한다. 거부 문면이 처방하는 1번 명령이 이
-# 파이프를 쓰므로, 전면 거부하면 허용 목록이 자기 처방을 다시 거부한다.
-check "특례 파이프 '| jq -r .H' 는 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "allow"
-check "특례 파이프의 후행 공백도 허용" \
-  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "allow"
+# 파이프 특례는 없다. 예전에는 `| jq -r .H` 꼬리 하나를 허용했는데, 그 처방이 필요로
+# 하던 값은 이제 `snapshot --fields H` 가 파이프 없이 한 줄로 내므로 허용 목록이
+# 자기 처방을 거부하는 일이 없고, 특례의 자리는 모든 파이프 거부로 닫힌다.
+check "옛 특례 파이프 '| jq -r .H' 도 이제 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H")" "deny"
+check "후행 공백을 붙인 옛 특례도 거부" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m | jq -r .H  ")" "deny"
+check "특례를 대신하는 --fields H 는 맨 게이트 호출이라 허용" \
+  "$(hook_decide_bash "$GATEP snapshot --manifest m --fields H")" "allow"
 check "세미콜론 체인은 거부" "$(hook_decide_bash "$GATEP snapshot; touch $WORK/rider")" "deny"
 check "AND 체인은 거부" "$(hook_decide_bash "$GATEP snapshot && touch $WORK/rider")" "deny"
 check "백그라운드+체인은 거부" "$(hook_decide_bash "$GATEP snapshot & touch $WORK/rider")" "deny"
 check "개행 체인은 거부" "$(hook_decide_bash "$GATEP snapshot${BNL}touch $WORK/rider")" "deny"
 check "명령 치환 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \$(whoami) -- ls")" "deny"
 check "백틱 인자는 거부" "$(hook_decide_bash "$GATEP exec --rationale \`whoami\` -- ls")" "deny"
-check "특례가 아닌 파이프는 거부" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
+check "모든 파이프 거부 — grep 꼬리" "$(hook_decide_bash "$GATEP snapshot | grep x")" "deny"
 check "리다이렉션도 거부 (원장 없이 셸이 파일을 여는 자리다)" \
   "$(hook_decide_bash "$GATEP snapshot > $WORK/rider")" "deny"
-check "특례 뒤에 이어 붙인 체인은 거부 (특례는 꼬리에서 한 번뿐이다)" \
+check "모든 파이프 거부 — 옛 특례 뒤에 체인을 이어 붙인 형태" \
   "$(hook_decide_bash "$GATEP snapshot | jq -r .H; touch $WORK/rider")" "deny"
+# 거부 문면이 처방하는 대체 명령은 파이프가 아니라 `--fields H` 다 — 처방이 옛 특례로
+# 되돌아가면 훅이 자기 처방을 거부하는 모양이 다시 생기므로 문면을 함께 고정한다.
+case "$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+          "$(printf '%s' "$GATEP snapshot --manifest m | jq -r .H" | jq -Rs .)" \
+        | HOME="$HH" CLAUDE_CONFIG_DIR="$HH/.claude-x" \
+          XDG_CONFIG_HOME="$HH/.config" XDG_STATE_HOME="$HH/.local/state" \
+          bash "$HOOK" --run-dir "$RUN_DIR" --gate "$GATEP" \
+        | jq -r '.hookSpecificOutput.permissionDecisionReason')" in
+  *'--fields H'*) ok "파이프 거부 문면이 --fields H 를 처방한다" ;;
+  *) bad "파이프 거부 문면" "대체 명령 --fields H 를 처방하지 않는다" ;;
+esac
 # 인용된 제어 문자는 게이트의 정당한 인자다. 이 둘이 없으면 위 거부들의 통과가
 # 「세미콜론을 통째로 거부한다」와 구별되지 않고, 통째 거부는 이 훅이 처방하는
 # `--rationale` 을 스테이지가 쓸 수 없게 만든다.
@@ -6468,6 +6856,83 @@ if printf '%s' "$REC_ROWS" | grep_all_q -F -- '원회수=미상'; then
   ok "회수 스탬프가 없으면 행이 미상 을 싣는다"
 else
   bad "stage-result 행" "스탬프 부재인데 미상 이 없다: $REC_ROWS"
+fi
+
+# --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
+# 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
+# 두 줄을 파일로 세운다. 단언 대상은 「행이 그 파일을 읽어 싣는가」와 「파일이 없을
+# 때 (미상) 으로 쓰되 행을 막지 않는가」다. 기동이 그 파일을 쓰는 것은 아래 (4) 의
+# 소스 핀이 잡는다.
+REC_RSID="S5R:segR:0"
+printf '%s\n%s\n' '200000(런설정)' '~/lane30' > "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버'; do
+  if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
+    ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
+  else
+    bad "stage-result 행" "$want 가 없다: $REC_ROWS"
+  fi
+done
+rm -f "$RUN_DIR/$REC_RSID.window"
+rec_reset
+review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '압축 창=(미상)'; then
+  ok ".window 가 없으면 행이 압축 창=(미상) 을 싣고 그대로 쓰인다"
+else
+  bad "stage-result 행" ".window 부재인데 (미상) 이 없다: $REC_ROWS"
+fi
+if printf '%s' "$REC_ROWS" | grep_all_q -F -- '레인=~'; then
+  ok ".window 가 없으면 레인은 이 드라이버가 해소한 레인의 물결 표기다"
+else
+  bad "stage-result 행" ".window 부재인데 레인 물결 표기가 없다: $REC_ROWS"
+fi
+
+# --- (3c) stage_window_read — 세 층, (꺼짐), (미상), - ------------------------
+WR="$WORK/window-read"; rm -rf "$WR"; mkdir -p "$WR/proj/.claude" "$WR/cfg" "$WR/empty"
+check "세 층이 전부 비면 -" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "-"
+printf '{"autoCompactWindow": 100000}\n' > "$WR/cfg/settings.json"
+check "레인 층만 서면 <n>(레인)" "$(stage_window_read "$WR/none.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{"autoCompactWindow": 150000}\n' > "$WR/proj/.claude/settings.json"
+check "프로젝트 층이 레인을 이긴다" "$(stage_window_read "$WR/none.json" "$WR/proj" "$WR/cfg")" "150000(프로젝트)"
+printf '{"autoCompactWindow": 200000}\n' > "$WR/run.json"
+check "런설정 층이 프로젝트를 이긴다" "$(stage_window_read "$WR/run.json" "$WR/proj" "$WR/cfg")" "200000(런설정)"
+printf '{"autoCompactEnabled": false}\n' > "$WR/off.json"
+check "가장 앞선 층이 끄면 (꺼짐)" "$(stage_window_read "$WR/off.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+# 키 단위 병합 — 두 키는 각각 자기를 정의한 가장 앞선 층에서 온다.
+printf '{"autoCompactWindow": 150000}\n' > "$WR/win.json"
+printf '{"autoCompactEnabled": false}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 창 150000 위에 프로젝트로컬 enabled:false 는 (꺼짐)" "$(stage_window_read "$WR/win.json" "$WR/proj" "$WR/cfg")" "(꺼짐)"
+printf '{"autoCompactEnabled": true}\n' > "$WR/on.json"
+printf '{"autoCompactEnabled": false, "autoCompactWindow": 90000}\n' > "$WR/proj/.claude/settings.local.json"
+check "런설정 enabled:true 위에 프로젝트로컬 false+90000 은 90000(프로젝트)" "$(stage_window_read "$WR/on.json" "$WR/proj" "$WR/cfg")" "90000(프로젝트)"
+rm -f "$WR/proj/.claude/settings.local.json"
+printf '{"autoCompactWindow": "300k"}\n' > "$WR/fmt.json"
+check "정수 아닌 창은 그 층을 건너뛴다" "$(stage_window_read "$WR/fmt.json" "$WR/empty" "$WR/cfg")" "100000(레인)"
+printf '{not json\n' > "$WR/broken.json"
+check "깨진 JSON 은 (미상)" "$(stage_window_read "$WR/broken.json" "$WR/proj" "$WR/cfg")" "(미상)"
+check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" "$(lane_label_of "$HOME/.claude-x")" "~/.claude-x"
+check "HOME 밖의 레인은 그대로다" "$(lane_label_of "$WR/cfg")" "$WR/cfg"
+check "드라이버의 판독은 (argv) 를 낼 수 없다 (argv 층이 없다)" \
+  "$(sed -n '/^stage_window_read()/,/^}/p' "$DRIVER" | grep -c 'argv' || true)" "0"
+
+# --- (4) 기동이 `.window` 를 쓴다 — 소스 핀 --------------------------------------
+# 이 스위트는 진짜 CLI 를 띄우지 않으므로 기동 본문의 두 줄을 문면으로 잡는다:
+# 기동 직전에 두 줄 파일을 쓰고, 다음 기동이 앞의 것을 `.rc` 와 함께 지운다.
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F '> "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 .window 를 쓴다"
+else
+  bad "stage_spawn" ".window 를 쓰는 줄이 없다"
+fi
+if sed -n '/^stage_spawn()/,/^}/p' "$DRIVER" | grep_all_q -F 'rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window"'; then
+  ok "stage_spawn 이 앞 기동의 .window 를 .rc 와 함께 지운다 (수집이 아니라 다음 기동에서)"
+else
+  bad "stage_spawn" ".window 를 .rc 옆에서 지우는 줄이 없다"
+fi
+if sed -n '/^stage_collect()/,/^}/p' "$DRIVER" | grep_all_q -F '.window'; then
+  bad "stage_collect" "수집이 .window 를 지운다 — stage-result 행은 수집 뒤에 쓰이므로 값이 사라진다"
+else
+  ok "stage_collect 는 .window 를 건드리지 않는다 (행이 수집 뒤에 읽는다)"
 fi
 if kill_permitted "S5R:segR:0"; then
   ok "복구 파견 id 가 경계 멱등으로 인정된다 (정체하면 신호를 받는다)"
