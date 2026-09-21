@@ -2513,6 +2513,24 @@ SAGEOF
     fi
   }
 
+  sa_seg_row_at() {
+    # sa_seg_row_at <절단점> <id> <정책|""> [워크트리] — segment 행 하나를 고른
+    # 절단점으로 쓴다. `sa_seg_row` 가 `커밋` 을 고정하므로 `머지` 로 라벨된
+    # 기록 행위는 그것으로 잴 수 없다. 라우터는 행위를 **대상의** 절단점으로
+    # 라벨하고 높은 쪽 신고는 거절되지 않으므로, `머지` 대상에서는 이쪽이
+    # 평범한 철자다.
+    local cut="$1" sid="$2" pol="$3" wt="${4:-$SA_SEGWT}"
+    if [ -n "$pol" ]; then
+      sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+          --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x \
+          -- 상태=실행중 워크트리="$wt" 선행=없음 "리뷰 정책=$pol"
+    else
+      sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment "$sid" \
+          --cutpoint "$cut" --snapshot-digest "$(SAH)" --rationale x \
+          -- 상태=실행중 워크트리="$wt" 선행=없음
+    fi
+  }
+
   sa_merge() {
     # sa_merge <세그먼트> [refspec] — 머지 등급 행위. argv 는 `gh pr merge` 가
     # 아니라 `git push` 다: 픽스처의 유일한 원격은 로컬 베어 경로라 `gh` 는
@@ -16205,6 +16223,30 @@ case "$msg" in
   *) bad "15b 앵커 거절 문면" "$msg" ;;
 esac
 check "15b: 앵커를 싣기 전에 거절하므로 리뷰 의무가 발행되지 않는다" "$(sa_ob_count)" "$nb15b"
+# 그 거절의 처방은 「세그먼트 행을 고쳐 같은 argv 로 다시 부르세요」이고, 그 수리
+# 자체가 `act --kind segment` 다. 넷째 문장은 행을 **있는 그대로** 읽으므로,
+# 머지 대상에서 `머지` 로 라벨된 그 수리 행위를 옛 행을 근거로 거절했다 — 처방이
+# 자기 자신을 막아 라우터에 출구가 없었다. 소유 질문이 사라진 것이 아니라 옳은
+# 행에 물어진다: 행 기록자가 다른 저장소의 워크트리를 실은 비종단 행을 쓰기 전에
+# 거절한다(14m).
+nb15br=$(sa_ob_count)
+sa_seg_row_at 머지 S15B 선머지후리뷰
+check "15b: 그 행을 고쳐 쓰는 segment 행위는 머지 절단점에서도 거절되지 않는다" "$rc" "0"
+case "$msg" in
+  *"의 워크트리가 아닙니다"*)
+    bad "15b: segment 행위가 옛 행을 근거로 거절되지 않는다" "$msg" ;;
+  *) ok "15b: segment 행위가 옛 행을 근거로 거절되지 않는다" ;;
+esac
+# 그 행위가 의무를 발행했다면 앵커는 **새 행**의 팁이어야 한다. 옛 행의 팁을
+# 그대로 실으면 다른 저장소의 커밋이 의무의 앵커가 되어, 넷째 문장이 막으려던
+# 바로 그 해가 예외를 통해 되돌아온다.
+if [ "$(sa_ob_count)" != "$nb15br" ]; then
+  sa15br_anchor=$(sa_field "$(sa_ob_rows | tail -1)" '머지 커밋')
+  check "15b: 그 의무의 앵커가 새 행의 팁이다 (옛 행의 팁이 아니다)" \
+        "$sa15br_anchor" "$(cd "$SA_SEGWT" && git rev-parse HEAD)"
+else
+  ok "15b: 그 segment 행위는 리뷰 의무를 발행하지 않았다"
+fi
 # 원장은 덧붙이기만 하므로, 다음 항목이 이 행을 물려받지 않도록 자기 대상의
 # 워크트리로 되돌린다.
 sa_seg_row S15B 선머지후리뷰
