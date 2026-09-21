@@ -11613,10 +11613,15 @@ gate_argv_chdir_base() {
   # it is the BASE that was wrong. The bypass needs a sibling directory and a
   # relative path, and nothing more: a wrapper in front of `git` does not stop
   # it, because the grading table unwraps `nohup`, `timeout`, `nice`, `stdbuf`,
-  # `env`, `command` and `time` and grades the inner `git` exactly as it grades
-  # a bare one. Measured: `nohup git -C <sibling> diff --output=<relative path>`
-  # was graded `트리밖쓰기`, honestly, and this function answered "no base"
-  # because argv0 was `nohup` — so the second base has to be computed after the
+  # `env`, `command`, `time`, `lockf` and `find -exec` and grades the inner
+  # `git` exactly as it grades a bare one. `find -execdir` and `-okdir` run the
+  # inner `git` from each match's directory rather than the grading one, so an
+  # absolute `-C` is still the right base there while a relative `-C` resolves
+  # from the wrong directory and may be under-read; that spelling is left as a
+  # residual until it is measured, as below. Measured:
+  # `nohup git -C <sibling> diff --output=<relative path>` was graded
+  # `트리밖쓰기`, honestly, and this function answered "no base" because argv0
+  # was `nohup` — so the second base has to be computed after the
   # same unwrap the table applies. The declared residual about a `cd` INSIDE a
   # wrapper's program text is a different shape and still does not cover it.
   #
@@ -11644,10 +11649,18 @@ gate_argv_chdir_base_of() {
   # command substitution is what an inherited `set -e` turns into an exit.
   #
   # THE WRAPPERS ARE PEELED WITH THE TABLE'S OWN HELPERS rather than a second
-  # list: `gate_unwrap_wrapper`, `gate_unwrap_env`, `gate_unwrap_command` and
-  # `gate_unwrap_time` each consume exactly the options the table consumes and
-  # stop at one they do not know, so this function sees `git` as argv0 in
-  # precisely the cases the table grades it as `git`. The two empty terminal
+  # list: `gate_unwrap_wrapper`, `gate_unwrap_env`, `gate_unwrap_command`,
+  # `gate_unwrap_time`, `gate_unwrap_lockf` and `gate_unwrap_find` each consume
+  # exactly the options the table consumes and stop at one they do not know.
+  # The parity holds for every name `surface_of_argv0` delegates to an unwrap
+  # helper EXCEPT `rg`: `gate_unwrap_rg` hands on the one word after `--pre`, and
+  # a single word cannot carry `-C <dir>` and an operand, so it has no base to
+  # compute. `lockf` and `find` were missing from this case while the table
+  # already delegated them, so `lockf -k -t 0 <lock> git -C <sibling> diff
+  # --output=<relative path>` — the lock the unattended skills require around
+  # every document write — was graded as the inner `git` and passed both write
+  # guards with no second base. `test-run.sh` compares the two name sets, so a
+  # name added to one side only turns the suite red. The two empty terminal
   # answers mean "no command" and "unknown option" both come back as no base,
   # which is the same discipline the table keeps — a guess about whether an
   # option eats the next word is a guess about where the operands land.
@@ -11659,6 +11672,8 @@ gate_argv_chdir_base_of() {
     env)     gate_unwrap_env     gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     command) gate_unwrap_command gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     time)    gate_unwrap_time    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    lockf)   gate_unwrap_lockf   gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
+    find)    gate_unwrap_find    gate_argv_chdir_base_of '' '' "$@"; return 0 ;;
     git) ;;
     *) return 0 ;;
   esac

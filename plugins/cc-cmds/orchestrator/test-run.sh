@@ -5869,7 +5869,71 @@ rr_guard 트리밖쓰기 nohup git -C "$WORK/other/deep" diff "--output=../../el
 check "배시 가드: 음성 대조군 — 래퍼 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
 rr_guard 트리밖쓰기 git --namespace x diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
 check "배시 가드: 음성 대조군 — -C 없는 --namespace 만으로는 둘째 기준이 서지 않아 rc 0" "$rr_guard_rc" "0"
+
+# 같은 결함의 두 철자가 더 있었다. 등급표는 `lockf` 와 `find -exec` 도 벗겨 안쪽 git 으로
+# 등급하는데 둘째 기준을 세우는 벗기기에는 두 이름이 없어, `lockf -k -t 0 <잠금> git -C
+# <형제> diff --output=<상대>` 와 `find <d> -exec git -C <형제> … {} ;` 가 정직한
+# `트리밖쓰기` 로 두 가드를 지났다(실측). `lockf` 는 무인 스킬이 설계 문서 쓰기마다
+# 요구하는 래퍼라 파이프라인이 실제로 만드는 형태다. 잠금 파일은 두 보호 루트 밖에 둔다.
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh"
+check "설치본 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: lockf 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../installed/plugins/cc-cmds/orchestrator/gate.sh" {} ';'
+check "설치본 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_pguard_rc" "3"
+case "$rr_pguard_msg" in
+  *'orchestrator or hook script of the installed plugin'*)
+    ok "설치본 가드: find -exec 뒤 거부가 설치본 팔의 것이다" ;;
+  *) bad "설치본 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_pguard_msg" ;;
+esac
+rr_pguard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "설치본 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_pguard_rc" "0"
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json"
+check "배시 가드: lockf 뒤의 git -C 도 둘째 기준이 서서 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: lockf 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: lockf 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 find "$WORK/other/deep" -maxdepth 0 -exec git -C "$WORK/other/deep" diff "--output=../../runroot/cc-cmds/run/victim/settings/x.json" {} ';'
+check "배시 가드: find -exec 뒤의 git -C 도 rc 3" "$rr_guard_rc" "3"
+case "$rr_guard_msg" in
+  *'buried inside an argument'*) ok "배시 가드: find -exec 뒤 거부가 둘째 기준 단어 팔의 것이다" ;;
+  *) bad "배시 가드: find -exec 뒤 거부 사유" "다른 팔이 답했다 — 이 단언이 공허하다: $rr_guard_msg" ;;
+esac
+rr_guard 트리밖쓰기 lockf -k -t 0 "$WORK/lk.lock" git -C "$WORK/other/deep" diff "--output=../../elsewhere/x"
+check "배시 가드: 음성 대조군 — lockf 뒤라도 보호 루트 밖은 rc 0" "$rr_guard_rc" "0"
 unset RR_G_CWD
+
+# 두 이름이 빠진 원인은 벗기기 목록이 등급표의 위임 목록과 따로 적혀 있다는 것이다.
+# 그래서 이름을 하나씩 고정하는 대신 두 집합을 대조한다: 등급표가 `surface_of_<이름>`
+# 으로 보내고 그 함수가 `gate_unwrap_*` 로 안쪽 명령을 푸는 이름은 전부, 둘째 기준의
+# 벗기기에도 팔이 있어야 한다. `rg` 만 이름 붙여 뺀다 — `--pre` 뒤 한 단어만 넘기므로
+# `-C <디렉터리>` 와 피연산자를 함께 실을 수 없다. 모은 집합이 비면 추출이 깨진 것이라
+# 그것도 실패로 센다 — 그렇지 않으면 이 대조는 아무것도 비교하지 않고 초록이 된다.
+rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
+  CC_GATE_SOURCE_ONLY=1; export CC_GATE_SOURCE_ONLY
+  . "$RR_G_GATE" >/dev/null 2>&1 || { echo "소싱 실패"; exit 0; }
+  table=$(declare -f surface_of_argv0)
+  peel=$(declare -f gate_argv_chdir_base_of)
+  n=0; missing=""
+  for f in $(declare -F | sed -n "s/^declare -f surface_of_//p"); do
+    [ "$f" = argv0 ] && continue
+    case "$(declare -f "surface_of_$f")" in *gate_unwrap_*) ;; *) continue ;; esac
+    case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$f" = rg ] && continue
+    printf "%s\n" "$peel" | grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" || missing="$missing $f"
+  done
+  [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
+  echo "n=$n missing=[${missing# }]"
+' )
+case "$rr_unwrap_parity" in
+  *'missing=[]') ok "둘째 기준의 벗기기가 등급표의 위임 이름을 rg 말고 모두 덮는다 ($rr_unwrap_parity)" ;;
+  *) bad "둘째 기준 벗기기와 등급표 위임 목록의 대조" "어긋났다: $rr_unwrap_parity" ;;
+esac
 
 # --- argv0 은 쓰기 대상이 아니다 ---------------------------------------------
 # 고정 사본이 `<RUN_DIR>/plugin/cc-cmds/` 에 있으므로, 스테이지가 그 사본의
