@@ -5925,7 +5925,7 @@ rr_unwrap_parity=$( RR_G_GATE="$script_dir/gate.sh" bash -c '
     case "$table" in *"surface_of_$f "*) ;; *) continue ;; esac
     n=$((n + 1))
     [ "$f" = rg ] && continue
-    printf "%s\n" "$peel" | grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" || missing="$missing $f"
+    grep -Eq "(^|[[:space:]|])$f([[:space:]]*[|)])" <<<"$peel" || missing="$missing $f"
   done
   [ "$n" -gt 0 ] || { echo "위임 이름을 하나도 모으지 못했다"; exit 0; }
   echo "n=$n missing=[${missing# }]"
