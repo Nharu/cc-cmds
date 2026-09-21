@@ -17730,7 +17730,7 @@ gate_metrics_file() {
   # `gh issue reopen` is not called anywhere — a closed instrument issue that
   # fires again is a new issue, and reopening is a human's call.
   local line="$1" ledger_dir="$2" base fired close nf nc sigs project account tok login
-  local list nopen open_t6 others tmp url num sig round body_lines title
+  local list nopen open_t6 others tmp url num sig round body_lines title why
   base=$(dirname "$(dirname "$ledger_dir")")
   # A line that is not one JSON object is no round at all. Without this an
   # empty line reads as an empty count, the zero test below fails as an error
@@ -17812,13 +17812,19 @@ gate_metrics_file() {
   rm -f "$tmp"
 
   # Closing uses the list read above. A signature is closed only when the
-  # collector put it in `close` (three consecutive good rounds from the
-  # journal) — one good round never closes anything.
+  # collector put it in `close` — three consecutive rounds from the journal in
+  # either family, so one round never closes anything. The two families reach it
+  # by different evidence, and the row says which: the threshold trigger by its
+  # two signs turning good, a defect-shaped one by not being observed again.
   for sig in $(printf '%s' "$close" | jq -r '.[]'); do
     num=$(printf '%s' "$list" | jq -r --arg t "[cc-metrics] $sig" '[.[] | select(.title == $t)][0].number // empty')
     [ -n "$num" ] || continue
+    case "$sig" in
+      T6/*) why="같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다" ;;
+      *)    why="그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다" ;;
+    esac
     if gate_metrics_gh_write "$base" "$tok" issue close "$num" >/dev/null 2>&1; then
-      gate_metrics_row '닫힘' "$num" "$sig" reopen "같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다"
+      gate_metrics_row '닫힘' "$num" "$sig" reopen "$why"
     else
       log "계측 이슈 #$num 닫기 실패 — 다음 회차에 다시 본다"
     fi

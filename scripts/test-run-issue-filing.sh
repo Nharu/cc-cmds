@@ -283,6 +283,20 @@ fr=$(file_rows)
 check "7: 닫기는 결정=닫힘 필링 행을 남긴다" "$(field "$fr" '결정')" "닫힘"
 check "7: 닫힘 행의 되돌리는 법은 다시 여는 명령(기록만, 실행 안 함)이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 9"
 check "7: 닫기만 있는 회차는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
+check "7: T6 닫힘 행의 근거는 두 항 술어를 말한다" "$(field "$fr" '근거')" \
+  "같은 층의 두 항이 선행 회차 중앙값 대비 좋은 쪽인 회차가 연속 3회다"
+
+# 결함 부류(T6 이외)도 닫히며, 그 근거는 T6 의 두 항 술어가 아니라 「다시 관측되지
+# 않았다」다 — 근거를 한 문장으로 묶으면 닫은 이유가 아닌 술어를 원장에 적게 된다.
+fresh; round - T2/review
+printf '[{"number":11,"title":"[cc-metrics] T2/review"}]\n' > "$WORK/gh-script/issue-list"
+snap
+check "7: 결함 부류 서명도 같은 열린 이슈를 닫는다" "$(ghcount '| issue close 11')" "1"
+fr=$(file_rows)
+check "7: 결함 부류 닫기도 결정=닫힘 행을 남긴다" "$(field "$fr" '결정')" "닫힘"
+check "7: 결함 부류 닫힘 행의 되돌리는 법도 다시 여는 명령이다" "$(field "$fr" '되돌리는 법')" "gh issue reopen 11"
+check "7: 결함 부류 닫힘 행의 근거는 재관측 없음이다" "$(field "$fr" '근거')" \
+  "그 조건이 평가된 회차 연속 3회 동안 다시 관측되지 않았다"
 
 # 수집기가 rc 0 으로 끝났는데 회차 줄이 비었거나 JSON 이 아니면 회차가 없는 것이다 —
 # 번호 없음 설정에서도 건너뜀 행이 남으면 발화하지 않은 트리거를 적은 셈이 된다.

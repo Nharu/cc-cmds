@@ -213,7 +213,8 @@ check "1: 저널 줄이 stdout 에 그대로 난다" "$(jline '.round')" "1"
 check "1: 이 회차의 새 런이 new_runs 에 실린다" "$(jline '.new_runs | join(",")')" "$R1"
 check "1: 넷의 수가 실린다" "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "1,0,0,0"
 check "1: 프로브가 성립한 회차는 ok 다" "$(jline '.probe')" "ok"
-check "1: 저널 줄의 키가 고정돼 있다" "$(jline 'keys_unsorted | join(",")')" "round,at,repo,counts,new_runs,probe,mixed_window,strata,fired,close,excluded"
+check "1: 저널 줄의 키가 고정돼 있다" "$(jline 'keys_unsorted | join(",")')" "schema,round,at,repo,counts,new_runs,probe,mixed_window,strata,fired,close,excluded"
+check "1: 저널 줄이 층 값의 단위를 스키마로 밝힌다" "$(jline '.schema')" "2"
 check "1: 저널의 at 은 --now 로 주입한 시각이다" "$(jline '.at')" "$(jq -rn --argjson n "$NOW" '$n | todate')"
 check "1: 요약은 시각을 담지 않는다" "$(jsum 'tostring | test("2026-")')" "false"
 check "1: .pending 표지는 정상 종료가 지운다" "$([ -e "$LEDGER_DIR/metrics.json.pending" ] && printf 있음 || printf 없음)" "없음"
@@ -232,7 +233,9 @@ check "1: 저널이 세 줄이다" "$(grep -c '' "$JOURNAL")" "3"
 reset_all
 R2=20260902-aaaaaaa2; R2B=20260902-aaaaaab2; R2C=20260902-aaaaaac2; R2D=20260902-aaaaaad2
 mk_rundir "$R2"
-mk_stream "$STATE/run/$R2/log/S1#1.json" 1
+# 재부착된 스테이지의 죽은 첫 시도 — 종단 result 줄이 없는 봉투다. 여기에 성공 줄을 넣으면
+# 그 시도가 집계에 들어가 버려 귀속 결함이 픽스처에 가려진다.
+mk_stream "$STATE/run/$R2/log/S1#1.json" 0
 mk_stream "$STATE/run/$R2/log/S1#2.json" 1
 mk_stream "$STATE/run/$R2/log/S2#1.json" 1
 mk_ledger "$R2" \
@@ -260,7 +263,15 @@ collect
 check "2: 증분 항등은 증분형이고 첫 기록의 절대형은 통과한다" "$(jline '.probe')" "ok"
 check "2: agentId 가 섞여도 누적이 역행하지 않는다(계열 단위)" "$(jrec "$R2" '.stages[0].probe_fail')" "false"
 check "2: 같은 세션의 두 행은 전사를 한 번만 열어 압축 기록이 중복되지 않는다" \
-  "$(jrec "$R2" '[.stages[] | .boundaries | length] | join(",")')" "3,0,0"
+  "$(jrec "$R2" '[.stages[] | .boundaries | length] | join(",")')" "0,3,0"
+check "2: 세션 자료는 죽은 첫 시도가 아니라 종단 줄이 있는 시도에 귀속된다" \
+  "$(jrec "$R2" '[.stages[] | .session_dup] | join(",")')" "true,false,false"
+check "2: 재부착 세션의 압축 기록이 집계에 남는다" \
+  "$(jsum '.strata["review|정상 완료|~/.claude"].A3.count')" "3"
+check "2: 재부착 세션의 요청이 집계에 남는다" \
+  "$(jsum '.strata["review|정상 완료|~/.claude"].A2.max')" "3000"
+check "2: 자료를 갖지 않는 시도는 벽시계를 다시 싣지 않는다" \
+  "$(jrec "$R2" '.stages[0] | [.wall_ms, .wall_source] | join(",")')" ",none"
 check "2: 같은 세션 두 행의 압축 창이 다르면 창 불일치 세션으로 보고된다" "$(jsum '.window_mismatch_sessions | join(",")')" "sid-x"
 check "2: 미종단 런은 미수집이 아니라 넷째 수다" "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "1,0,1,1"
 check "2: 미종단이 있어도 판정은 막히지 않는다" "$(jline '.probe')" "ok"
@@ -506,6 +517,104 @@ collect
 # 직전 300000 층의 연속 2(회차 16·17)가 그대로 넘어온다.
 check "5: 전환 창을 빼고 표본이 없는 회차는 연속을 건드리지 않는다" "$(strat 300000 consecutive_bad)" "2"
 check "5: 그 회차는 T6 을 발화하지 않는다" "$(fire_ids)" ""
+
+# --- 6. 모집단 — 레인 기록이 없는 과거 런 ------------------------------------------------
+reset_all
+R8=20260906-aaaaaaa8
+mk_rundir "$R8"; mk_stream "$STATE/run/$R8/log/S1#1.json" 1
+# 레인·압축 창 키가 한 행에도 없는 런(실험 이전의 원장 꼴).
+mk_ledger "$R8" \
+  "- \`stage-result\` | 세그먼트=S1 | 스테이지=S1 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=sid-old | 부모=- | 종단 부류=정상 완료 | 교대=0 | prev=abc" \
+  "$(cycle_row S1 1 0)"
+collect
+check "6: 레인 기록이 없는 과거 런은 델타에 들지 않는다" "$(jline '.new_runs | length')" "0"
+check "6: 그 런은 사라짐으로 세어진다" \
+  "$(jline '.counts | [.["수집됨"], .["미수집"], .["사라짐"], .["미종단"]] | join(",")')" "0,0,1,0"
+check "6: 그 런은 판정을 막지 않는다" "$(jline '.probe')" "ok"
+check "6: 과거 런만 있는 첫 회차는 아무 트리거도 내지 않는다" "$(jline '.fired | length')" "0"
+check "6: 그 런의 기록 파일은 만들어지지 않는다" \
+  "$([ -e "$LEDGER_DIR/metrics/$R8.json" ] && printf 있음 || printf 없음)" "없음"
+# 레인 키는 있고 압축 창 키만 빠진 런은 스키마 드리프트이므로 판정 대상이고, T3 이 잡는다.
+reset_all
+mk_rundir "$R8"; mk_stream "$STATE/run/$R8/log/S1#1.json" 1
+mk_ledger "$R8" "$(sr_row S1 S1 review 1 sid-old '정상 완료' __none__ '~/.claude')" "$(cycle_row S1 1 0)"
+{ tl_assist 10 o1 1000 1000 1000; } | mk_transcript "$HOME_A" -repo sid-old
+collect
+check "6: 레인은 있고 창 키만 빠진 런은 여전히 판정 대상이다" "$(jline '.new_runs | length')" "1"
+check "6: 그 런에서 T3 이 발화한다(드리프트가 가려지지 않는다)" "$(fire_ids)" "T3/review"
+
+# --- 7. 결함 형태 트리거의 자동 닫기 ------------------------------------------------------
+# T6 만 닫히면 결함 형태 이슈 하나가 전역 열림 상한을 영구히 차지한다.
+h_run() {
+  # h_run <run-id> — 결함 조건이 없는 건강한 런 하나로 한 회차를 돈다.
+  local rid="$1" sid="sid-$1"
+  mk_rundir "$rid"; mk_stream "$STATE/run/$rid/log/S1#1.json" 1
+  mk_ledger "$rid" "$(sr_row S1 S1 review 1 "$sid" '정상 완료' '300000(argv)' '~/.claude')" "$(cycle_row S1 1 0)"
+  { tl_assist 10 h1 1000 1000 1000; tl_boundary 20 "$sid" "" auto 267000 50000 100 217000; tl_assist 21 h2 1 1 1; } \
+    | mk_transcript "$HOME_A" -repo "$sid"
+  collect
+}
+d_run() {
+  # d_run <run-id> — 종단 줄이 없는 정상 완료 스테이지 하나로 T2 를 발화시킨다.
+  local rid="$1" sid="sid-$1"
+  mk_rundir "$rid"
+  mk_ledger "$rid" "$(sr_row S1 S1 review 1 "$sid" '정상 완료' '300000(argv)' '~/.claude')" "$(cycle_row S1 1 0)"
+  { tl_assist 10 d1 1000 1000 1000; tl_boundary 20 "$sid" "" auto 267000 50000 100 217000; tl_assist 21 d2 1 1 1; } \
+    | mk_transcript "$HOME_A" -repo "$sid"
+  collect
+}
+reset_all
+d_run 20260907-aaaaaa01
+check "7: 결함 형태 트리거가 발화한다" "$(fire_ids)" "T2/review"
+check "7: 발화한 회차는 그 서명을 닫지 않는다" "$(jline '.close | length')" "0"
+h_run 20260907-aaaaaa02
+check "7: 조용한 회차 하나로는 닫히지 않는다" "$(jline '.close | length')" "0"
+h_run 20260907-aaaaaa03
+check "7: 조용한 회차 둘로도 닫히지 않는다" "$(jline '.close | length')" "0"
+collect
+check "7: 델타가 없는 회차는 조용한 연속에 들지 않는다" "$(jline '.close | length')" "0"
+h_run 20260907-aaaaaa04
+check "7: 평가된 회차 연속 3 에서 결함 형태 서명이 닫힌다" "$(jline '.close | join(",")')" "T2/review"
+h_run 20260907-aaaaaa05
+check "7: 한 번 닫은 서명을 다시 닫지 않는다" "$(jline '.close | length')" "0"
+d_run 20260907-aaaaaa06
+check "7: 닫힌 뒤 조건이 다시 서면 새로 발화한다" "$(fire_ids)" "T2/review"
+check "7: 다시 발화한 회차는 그 서명을 닫지 않는다" "$(jline '.close | length')" "0"
+
+# --- 8. 층 값의 단위 — 행당 값과 저널 스키마 ----------------------------------------------
+n_run() {
+  # n_run <run-id> <버린 토큰> — 회차를 돌리지 않고 같은 층(창 300000)의 런 하나만 만든다.
+  local rid="$1" dropped="$2" sid="sid-$1"
+  mk_rundir "$rid"; mk_stream "$STATE/run/$rid/log/S1#1.json" 1
+  mk_ledger "$rid" "$(sr_row S1 S1 review 1 "$sid" '정상 완료' '300000(argv)' '~/.claude')" "$(cycle_row S1 1 4)"
+  { tl_assist 10 n1 1000 1000 1000
+    tl_boundary 20 "$sid" "" auto 267000 $((267000 - $2)) 100 "$2"
+    tl_assist 21 n2 1000 0 0
+    tl_assist 30 n3 1 1 1
+  } | mk_transcript "$HOME_A" -repo "$sid"
+}
+reset_all
+n_run 20260908-aaaaaa01 100000
+n_run 20260908-aaaaaa02 200000
+collect
+check "8: 한 회차에 같은 층 런이 둘이면 토큰 항은 행당 값이다(합계가 아니다)" \
+  "$(strat 300000 token)" "150000"
+check "8: P0 도 행당 값이라 회차 크기에 비례하지 않는다" "$(strat 300000 p0)" "4"
+# 옛 단위로 쓰인 저널 줄은 기준선에도 연속 계수에도 들지 않는다.
+reset_all
+i=0
+while [ "$i" -lt 3 ]; do
+  i=$((i + 1))
+  jq -cn --argjson r "$i" '{round: $r, at: "2026-01-01T00:00:00Z", repo: "x", counts: {},
+    new_runs: ["old"], probe: "ok", mixed_window: false,
+    strata: {"review|300000": {token: 1, time: 1, p0: 1, consecutive_bad: 2, consecutive_good: 0, warmup: false}},
+    fired: [], close: [], excluded: {}}' >> "$JOURNAL"
+done
+n_run 20260908-aaaaaa03 100000
+collect
+check "8: 스키마 이전 줄은 기준선에 들지 않아 층이 워밍업으로 남는다" "$(strat 300000 warmup)" "true"
+check "8: 스키마 이전 줄의 연속 계수는 이어지지 않는다" "$(strat 300000 consecutive_bad)" "0"
+check "8: 회차 수는 옛 줄까지 센 줄 수다" "$(jline '.round')" "4"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

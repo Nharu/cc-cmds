@@ -30,10 +30,16 @@
 #   <ledger-dir>/metrics.json.pending      회차 시작 표지. 정상 종료가 지운다.
 #   <ledger-dir>/metrics/<run-id>.json     런별 수집 기록(멱등 — 있으면 다시 만들지 않는다)
 #   <저널>                                 회차마다 한 줄 JSON 추가. 회차 수·연속 수·시각은
-#                                          여기에만 있다.
+#                                          여기에만 있다. 첫 키 `schema` 는 층 값의 단위이고,
+#                                          앞선 단위의 줄은 기준선·연속 계수에서 빠진다.
 #   stdout                                 그 회차의 저널 줄 한 줄. stderr 에는 진단만.
 #
 # 종료 코드. 0 회차 기록됨 · 2 인자 오류 · 3 입력 디렉터리 없음.
+#
+# 모집단 판독. 레인 기록(`레인`·`압축 창` 키)을 한 행도 갖지 않은 런은 실효 창을 복원할 수
+# 없어 판정 대상이 아니라 `사라짐` 으로 센다 — 거르지 않으면 실험 이전의 원장 전체가 첫
+# 회차의 델타가 된다. 한 세션의 자료는 종단 줄이 있는 시도에 귀속하고, 같은 세션의 다른
+# 시도는 그 자료도 벽시계도 다시 싣지 않는다.
 #
 # 판독 규칙. 성공·실패는 원장의 `종단 부류` 로만 판정한다 — 스트림 result 줄의
 # `subtype`·`is_error` 는 전수가 성공이라고 말하면서 그중 일부가 오류 플래그를 다는
@@ -121,6 +127,15 @@ cm_field() {
 cm_has_field() {
   # cm_has_field <행> <키> — 키의 존재. 값이 `-` 인 것과 키 자체가 없는 것은 다른 관측이다.
   printf '%s' "$1" | tr '|' '\n' | grep -c "^ *$2=" >/dev/null 2>&1
+}
+
+cm_has_lane_record() {
+  # cm_has_lane_record <원장> — 이 런의 행 가운데 레인 기록(`레인` 또는 `압축 창` 키)을 가진
+  # 것이 하나라도 있는가. 하나도 없으면 실효 창을 복원할 방법이 없어 판정 대상이 아니다.
+  # 두 키의 합집합으로 보는 이유: `압축 창` 만으로 거르면 기록자가 그 키를 흘린 드리프트 런도
+  # 함께 사라져, 바로 그 드리프트를 지목하는 트리거가 영원히 발화하지 못한다.
+  { cm_ledger_rows "$1" 'stage-result'; cm_ledger_rows "$1" '교대 기동'; } \
+    | grep -qE '(레인|압축 창)='
 }
 
 cm_window_ok() {
@@ -252,7 +267,8 @@ def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso86
 def median: if length == 0 then null else (sort | if length % 2 == 1 then .[((length - 1) / 2)] else ((.[length / 2 - 1] + .[length / 2]) / 2) end) end;
 def pct($q): if length == 0 then null else (sort | .[(((length * $q) | ceil) - 1) | if . < 0 then 0 else . end]) end;
 def in_switch($t): ($t != null) and any($sw[]; $t >= .[0] and $t < .[1]);
-(if $dup then {b: [], r: [], tmin: null, tmax: null} else . end) as $s
+. as $s0
+| (if $dup then {b: [], r: [], tmin: null, tmax: null} else . end) as $s
 | ($s.r | sort_by(.ts)) as $reqs
 | ($s.b | sort_by(.ts)) as $bs
 | ($reqs | map({ts, epoch: (.ts | ep), ctx: (.input + .creation + .read), input, creation, read, sw: in_switch((.ts | ep))})) as $R
@@ -289,6 +305,7 @@ def in_switch($t): ($t != null) and any($sw[]; $t >= .[0] and $t < .[1]);
    ctx_values: ([$R[].ctx] | sort),
    cache: {read: ([$R[].read] | add // 0), creation: ([$R[].creation] | add // 0), input: ([$R[].input] | add // 0)},
    wall_ms: (if ($s.tmin | ep) != null and ($s.tmax | ep) != null then ((($s.tmax | ep) - ($s.tmin | ep)) * 1000) else null end),
+   owner_wall: (($s0.tmin | ep) != null and ($s0.tmax | ep) != null),
    excluded: {manual: ([$B.out[] | select((.missing | not) and .trigger != "auto")] | length),
               shadow: ([$B.out[] | select(.shadow)] | length),
               switch_window: ([$R[] | select(.sw)] | length)},
@@ -306,6 +323,7 @@ cm_collect_run() {
   local rid="$1" ledger="$2" rd="$3" state="$4" out="$5"
   local tmp row seg st kind ver attempt sid class win has_win lane wint wsrc stream_f stream
   local sess_dir seen_sids seen_streams="" sess_json dup an rejected=0 unemp=0 unk=0 sw p0 mism="" wins_seen
+  local rowidx odup
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-metrics-run.XXXXXX") || return 1
   sess_dir="$tmp/sess"; mkdir -p "$sess_dir"
   : > "$tmp/stages.jsonl"; : > "$tmp/shifts.jsonl"; : > "$tmp/p0.tsv"
@@ -325,10 +343,12 @@ ROWS
 
   seen_sids=""
   wins_seen=""
-  # cm_row_emit <행> <종류 덮어쓰기> <출력 파일> — stage-result 와 교대 기동 행의 공통
-  # 경로. 교대 행은 종류 `shift` 로 들어오고 스트림 로그를 읽지 않는다.
+  # cm_row_emit <행> <종류 덮어쓰기> <출력 파일> <스트림 JSON> <귀속 dup> — stage-result 와
+  # 교대 기동 행의 공통 경로. 교대 행은 종류 `shift` 로 들어오고 스트림 로그를 읽지 않는다.
+  # 스트림 봉투와 귀속 여부는 호출자가 정해 넘긴다 — 한 세션의 자료를 어느 시도가 갖는지는
+  # 행 하나만 보고는 정할 수 없고, 다섯째 인자가 비면 등장 순서로 정한다(교대 행).
   cm_row_emit() {
-    local row="$1" kind_override="$2" sink="$3"
+    local row="$1" kind_override="$2" sink="$3" stream_in="$4" dup_in="$5" seen_dup=false
     seg=$(cm_field "$row" '세그먼트'); st=$(cm_field "$row" '스테이지')
     if [ -n "$kind_override" ]; then kind="$kind_override"; else kind=$(cm_field "$row" '종류'); fi
     [ -n "$kind" ] || kind="-"
@@ -350,16 +370,7 @@ ROWS
     if [ -n "$kind_override" ]; then
       stream='{"complete":true,"truncated":false,"cost_usd":null,"duration_ms":null,"session_id":""}'
     else
-      stream_f=$(cm_stream_of "$rd" "$st" "$attempt")
-      case "$seen_streams" in
-        *" $stream_f "*)
-          # 여러 시도가 평문 폴백 하나로 접혔다 — 파일은 한 번만 열고, 두 번째 행은 그 봉투의
-          # 비용·소요를 다시 싣지 않는다(A4 가 한 봉투를 두 번 세지 않도록).
-          stream=$(cm_stream_result "$stream_f" | jq -c '.cost_usd = null | .duration_ms = null | .shared = true') ;;
-        *)
-          [ -z "$stream_f" ] || seen_streams="$seen_streams $stream_f "
-          stream=$(cm_stream_result "$stream_f") ;;
-      esac
+      stream="$stream_in"
     fi
     # 세션 귀속. 빈 값과 미상은 다른 관측이며 둘 다 조인 모집단에서만 빠진다.
     dup=false
@@ -370,7 +381,7 @@ ROWS
     else
       case "$seen_sids" in
         *" $sid "*)
-          dup=true
+          seen_dup=true
           # 한 묶음 안에서 압축 창 값이 다르면 두 팔에 걸친 세션 — 보고하고 버리지 않는다.
           case "$wins_seen" in
             *" $sid=$win "*) : ;;
@@ -397,9 +408,10 @@ ROWS
           fi ;;
       esac
       sess_json=$(cat "$sess_dir/$sid.json")
+      if [ -n "$dup_in" ]; then dup="$dup_in"; else dup="$seen_dup"; fi
     fi
     an=$(printf '%s' "$sess_json" | jq -c --argjson win "${wint:-null}" --argjson sw "$sw" --argjson dup "$dup" "$CM_JQ_STAGE" 2>/dev/null) \
-      || an='{"boundaries":[],"probe_fail":true,"requests":0,"requests_included":0,"ctx":{"median":null,"p90":null,"max":null},"ctx_values":[],"cache":{"read":0,"creation":0,"input":0},"wall_ms":null,"excluded":{"manual":0,"shadow":0,"switch_window":0},"net_token":0,"compaction_ms":0,"auto_count":0,"included_count":0,"pre_auto":[]}'
+      || an='{"boundaries":[],"probe_fail":true,"requests":0,"requests_included":0,"ctx":{"median":null,"p90":null,"max":null},"ctx_values":[],"cache":{"read":0,"creation":0,"input":0},"wall_ms":null,"owner_wall":false,"excluded":{"manual":0,"shadow":0,"switch_window":0},"net_token":0,"compaction_ms":0,"auto_count":0,"included_count":0,"pre_auto":[]}'
     p0=$(awk -F'\t' -v s="$seg" 'BEGIN { n = 0; u = 0 } $1 == s { n++; if ($2 == "unknown") u = 1; else t += $2 } END { if (n == 0 || u) print "unknown"; else print t }' "$tmp/p0.tsv")
     jq -cn --arg seg "$seg" --arg st "$st" --arg kind "$kind" --arg attempt "$attempt" --arg sid "$sid" \
       --arg class "$class" --arg win "$win" --argjson has_win "$has_win" --arg wint "$wint" --arg wsrc "$wsrc" \
@@ -412,8 +424,14 @@ ROWS
        window_int: (if $wint == "" then null else ($wint | tonumber) end), window_source: $wsrc,
        lane: $lane,
        complete: $stream.complete, truncated: $stream.truncated,
-       wall_ms: (if $an.wall_ms != null then $an.wall_ms else ($stream.duration_ms // null) end),
-       wall_source: (if $an.wall_ms != null then "transcript" elif $stream.duration_ms != null then "stream" else "none" end),
+       # 자료를 갖지 않는 시도는 스트림 소요로 벽시계를 채우지 않는다 — 그 세션의 전사
+       # 구간이 이미 두 시도를 모두 덮고 있어 같은 초가 두 번 세어진다.
+       wall_ms: (if $an.wall_ms != null then $an.wall_ms
+                 elif ($dup and $an.owner_wall) then null
+                 else ($stream.duration_ms // null) end),
+       wall_source: (if $an.wall_ms != null then "transcript"
+                     elif ($dup and $an.owner_wall) then "none"
+                     elif $stream.duration_ms != null then "stream" else "none" end),
        cost_usd: $stream.cost_usd,
        requests: $an.requests, requests_included: $an.requests_included,
        ctx: $an.ctx, ctx_values: $an.ctx_values, cache: $an.cache,
@@ -423,15 +441,58 @@ ROWS
        p0: (if $p0 == "unknown" then "unknown" else ($p0 | tonumber) end)}' >> "$sink"
   }
 
+  # 1차 — 행마다 스트림 봉투를 한 번만 읽어 둔다. 종단 줄의 유무가 귀속을 정하므로 귀속
+  # 판정보다 먼저 읽어야 한다.
+  rowidx=0
+  : > "$tmp/rows.txt"; : > "$tmp/sid.tsv"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    cm_row_emit "$row" "" "$tmp/stages.jsonl"
+    rowidx=$((rowidx + 1))
+    printf '%s\n' "$row" >> "$tmp/rows.txt"
+    st=$(cm_field "$row" '스테이지'); [ -n "$st" ] || st=$(cm_field "$row" '세그먼트')
+    ver=$(cm_field "$row" '실행 버전')
+    case "$ver" in ''|*[!0-9]*) attempt="" ;; *) attempt="$ver" ;; esac
+    stream_f=$(cm_stream_of "$rd" "$st" "$attempt")
+    case "$seen_streams" in
+      *" $stream_f "*)
+        # 여러 시도가 평문 폴백 하나로 접혔다 — 파일은 한 번만 열고, 두 번째 행은 그 봉투의
+        # 비용·소요를 다시 싣지 않는다(A4 가 한 봉투를 두 번 세지 않도록).
+        stream=$(cm_stream_result "$stream_f" | jq -c '.cost_usd = null | .duration_ms = null | .shared = true') ;;
+      *)
+        [ -z "$stream_f" ] || seen_streams="$seen_streams $stream_f "
+        stream=$(cm_stream_result "$stream_f") ;;
+    esac
+    printf '%s' "$stream" > "$tmp/stream.$rowidx.json"
+    printf '%s\t%s\t%s\n' "$rowidx" "$(cm_field "$row" '세션 id')" \
+      "$(printf '%s' "$stream" | jq -r '.complete')" >> "$tmp/sid.tsv"
   done <<ROWS
 $(cm_ledger_rows "$ledger" 'stage-result')
 ROWS
+  # 한 세션의 자료를 갖는 시도는 종단 줄이 있는 첫 시도이고, 없으면 첫 행이다. 재부착된
+  # 스테이지는 죽은 첫 시도와 살아난 시도가 세션 id 를 공유하는데, 자료를 첫 행에 붙이면
+  # 그 행이 종단 줄이 없어 집계에서 빠지면서 세션 전체가 함께 사라진다.
+  awk -F'\t' '$2 != "" && $2 != "미상" {
+      if (!($2 in first)) first[$2] = $1
+      if ($3 == "true" && !($2 in live)) live[$2] = $1
+    } END { for (s in first) printf "%s\t%s\n", (s in live ? live[s] : first[s]), s }' \
+    "$tmp/sid.tsv" > "$tmp/owner.tsv"
+
+  rowidx=0
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl"
+    rowidx=$((rowidx + 1))
+    sid=$(cm_field "$row" '세션 id')
+    odup=true
+    if [ -z "$sid" ] || [ "$sid" = "미상" ]; then
+      odup=false
+    elif [ "$(awk -F'\t' -v s="$sid" '$2 == s { print $1 }' "$tmp/owner.tsv")" = "$rowidx" ]; then
+      odup=false
+    fi
+    cm_row_emit "$row" "" "$tmp/stages.jsonl" "$(cat "$tmp/stream.$rowidx.json")" "$odup"
+  done < "$tmp/rows.txt"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    cm_row_emit "$row" "shift" "$tmp/shifts.jsonl" "" ""
   done <<ROWS
 $(cm_ledger_rows "$ledger" '교대 기동')
 ROWS
@@ -527,6 +588,9 @@ cm_triggers() {
   # (probe · mixed_window · strata · fired · close · excluded). 트리거는 델타에만 건다.
   jq -c --slurpfile prior "$2" --argjson blocked "$3" "$CM_JQ_DEFS"'
     ($prior[0]) as $J
+    # 층 값의 단위가 바뀐 회차 앞의 줄은 기준선에도 연속 계수에도 들지 않는다 — 회차 합계와
+    # 행당 값을 같은 중앙값에 섞으면 판정이 옛 단위를 따라간다.
+    | ($J | map(select((.schema? // 1) >= 2))) as $Jv
     | (rows) as $all
     | (included_rows) as $inc
     | ([.[] | select(.probe_fail)] | length > 0) as $probe_fail
@@ -536,14 +600,17 @@ cm_triggers() {
     # T6 층: (종류, 실효 창) — 이 회차 델타의 두 항과 P0.
     | ($inc | map(select(.window_int != null)) | group_by(.kind + "|" + (.window_int | tostring))
        | map(. as $g | (.[0].kind + "|" + (.[0].window_int | tostring)) as $key
-         | ($J | map(.strata[$key]? // empty)) as $hist
+         | ($Jv | map(.strata[$key]? // empty)) as $hist
          | ($hist | map(.token | numbers)) as $ht
          | ($hist | map(.time | numbers)) as $htime
          | ($hist | map(.p0 | numbers)) as $hp0
          | ([$g[].wall_ms | select(. != null)] | add // 0) as $w
-         | ([$g[].net_token] | add // 0) as $token
+         # 토큰 항과 P0 는 그 층의 행당 값이다. 회차 합계로 두면 한 회차에 몇 개의 런이
+         # 들어왔는지가 부호를 정해, 조용한 회차가 「절감이 적고 P0 가 적다」로 읽힌다.
+         | ($g | length) as $n
+         | (if $n == 0 then 0 else (([$g[].net_token] | add // 0) / $n) end) as $token
          | (if $w == 0 then null else (([$g[].compaction_ms] | add // 0) / $w) end) as $time
-         | ([$g[].p0] | p0sum) as $p0
+         | (([$g[].p0] | p0sum) as $psum | if $psum == "unknown" or $n == 0 then $psum else ($psum / $n) end) as $p0
          | (($hist | length) < 3) as $warmup
          | (([$g[].included_count] | add // 0) + ([$g[].requests_included] | add // 0) == 0) as $thin
          | ($hist | last // {consecutive_bad: 0, consecutive_good: 0}) as $prev
@@ -588,7 +655,26 @@ cm_triggers() {
            | map(.[0].kind) | unique
            | map({id: "T7", kind: ., signature: ("T7/" + .), body: "기록된 실효 창에서 유도한 절단 지점과 관측된 auto 압축 preTokens 하위 5% 분위가 ±5% 대역 밖으로 어긋난다 — 기록된 창과 실제로 적용된 창이 다르다"}))
       end) as $fired
-    | ($strata | to_entries | map(select(.value.evaluated and .value.consecutive_good >= 3)) | map("T6/" + (.key | split("|")[0])) | unique) as $close
+    | ($strata | to_entries | map(select(.value.evaluated and .value.consecutive_good >= 3)) | map("T6/" + (.key | split("|")[0])) | unique) as $close_t6
+    # 결함 형태 트리거(T1~T5·T7)의 해소. 마지막으로 발화한 뒤 평가된 회차 셋 동안 다시
+    # 발화하지 않으면 그 조건은 사라진 것으로 보고 닫는다. 열 때와 같은 연속 셋을 요구하는
+    # 이유는 닫기가 열기보다 잡음에 약해지면 같은 이슈가 열렸다 닫혔다 하기 때문이고,
+    # 평가되지 않은 회차(델타 없음·차단·프로브 실패)는 어느 방향의 증거도 아니라 세지 않는다.
+    # 이 경로가 없으면 한 번 열린 결함 이슈가 전역 열림 상한 한 자리를 영구히 차지한다.
+    | ($J | map({f: [((.fired // [])[]).signature], c: (.close // []),
+                 ev: (((.new_runs // []) | length) > 0 and (.probe // "") == "ok")})) as $H
+    | ((($all | length) > 0) and ($blocked | not) and ($probe_fail | not)) as $round_eval
+    | ([$fired[].signature]) as $now_sigs
+    | ([$H[].f[]] | unique
+       | map(select((startswith("T6/") | not) and ((. as $s | $now_sigs | index($s)) | not)))
+       | map(. as $s
+             | ([range(0; $H | length) | select($H[.].f | index($s))] | last) as $lf
+             | ([range(0; $H | length) | select($H[.].c | index($s))] | last) as $lc
+             | select($lf != null and ($lc == null or $lc < $lf))
+             | select((([range($lf + 1; $H | length) | select($H[.].ev)] | length)
+                       + (if $round_eval then 1 else 0 end)) >= 3)
+             | $s)) as $close_defect
+    | (($close_t6 + $close_defect) | unique) as $close
     | {probe: (if $blocked then "차단" elif $probe_fail then "프로브 실패" else "ok" end),
        mixed_window: $mixed_any,
        strata: ($strata | with_entries(.value |= {token, time, p0, consecutive_bad, consecutive_good, warmup})),
@@ -642,6 +728,12 @@ cm_main() {
     if [ ! -d "$rd/log" ]; then
       n_gone=$((n_gone + 1)); continue
     fi
+    # 레인 기록이 한 행에도 없는 런은 실효 창이 복원되지 않으므로 판정 대상이 아니라
+    # 사라짐 쪽이다. 걸러 내지 않으면 실험 이전의 원장 전체가 첫 회차의 델타로 들어와
+    # 트리거가 한꺼번에 발화한다.
+    if ! cm_has_lane_record "$ledger"; then
+      n_gone=$((n_gone + 1)); continue
+    fi
     if cm_collect_run "$rid" "$ledger" "$rd" "$state" "$rec"; then
       n_collected=$((n_collected + 1))
       printf '%s\n' "$rid" >> "$tmp/delta.list"
@@ -679,13 +771,17 @@ POP
   # 여기서 건다(전수가 비어 있지 않다는 것은 옛 기록이 남아 있다는 뜻이다).
   if [ "$input_files" -eq 0 ] && [ "$blocked" = false ] \
      && [ "$(printf '%s' "$summary" | jq -r '.strata | length')" != "0" ]; then
-    body=$(printf '%s' "$body" | jq -c '.fired = ([{id: "T1", kind: "-", signature: "T1/-", body: "입력 파일 0건 위에서 집계가 계산됐는데 결과가 비어 있지 않다 — 수집기의 입력 경로 해소가 틀렸다"}] + .fired)')
+    # T1 이 이 회차에 발화했으므로 그 서명은 닫기 대상이 아니다 — 닫기 목록은 이 술어를
+    # 보지 못한 채 만들어진다.
+    body=$(printf '%s' "$body" | jq -c '
+      .fired = ([{id: "T1", kind: "-", signature: "T1/-", body: "입력 파일 0건 위에서 집계가 계산됐는데 결과가 비어 있지 않다 — 수집기의 입력 경로 해소가 틀렸다"}] + .fired)
+      | .close = (.close - ["T1/-"])')
   fi
   round=$(( $(jq -r 'length' "$prior_f") + 1 ))
   at=$(jq -rn --argjson n "$CM_NOW" '$n | todate')
   journal_line=$(printf '%s' "$body" | jq -c --argjson round "$round" --arg at "$at" --arg repo "$CM_REPO" \
     --argjson counts "$counts" --arg new "$new_runs" '
-    {round: $round, at: $at, repo: $repo, counts: $counts,
+    {schema: 2, round: $round, at: $at, repo: $repo, counts: $counts,
      new_runs: ($new | split(" ") | map(select(length > 0))),
      probe: .probe, mixed_window: .mixed_window, strata: .strata, fired: .fired, close: .close, excluded: .excluded}')
   rm -rf "$tmp"
