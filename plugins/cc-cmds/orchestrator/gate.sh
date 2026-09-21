@@ -968,8 +968,18 @@ gate_collaboration_surface() {
           esac ;;
       esac ;;
     git)
-      case "${1:-}" in
-        push) [ "$rd" != "배포트리거" ] && return 0 ;;
+      # THE SUBCOMMAND IS NOT NECESSARILY THE FIRST WORD. This arm read `$1`,
+      # so `git -C <wt> push` and `git --git-dir=… push` presented `-C` and
+      # `--git-dir=…` as the subcommand and fell out of the cell — the stage
+      # that had to push from a linked worktree had no spelling that worked.
+      _gp_git_scan "$@"
+      [ -z "$_GP_GIT_BAD" ] || return 1
+      case "$_GP_GIT_SUB" in
+        # `pull` and `fetch` join `push`. A declared application point of
+        # `git pull --ff-only` graded `외부상태변경` and then contradicted every
+        # reach it could be declared with, because this cell recognized only the
+        # direction that sends.
+        push|pull|fetch) [ "$rd" != "배포트리거" ] && return 0 ;;
       esac ;;
   esac
   return 1
@@ -1150,6 +1160,23 @@ gate_push_remote_match() {
   # this check may pass.
   gate_peel_argv "$@" || return 1
   set -- ${GATE_PEELED[@]+"${GATE_PEELED[@]}"}
+  # THE REMOTE IS RESOLVED WHERE THE PUSH RUNS, not where the gate stands. A
+  # stage pushing from a linked worktree writes `git -C <wt> push origin …`,
+  # and `origin` was looked up in the gate's own directory — a different
+  # repository, whose `origin` answered for a push it had nothing to do with.
+  local _dir="${GATE_ACT_CWD:-.}" _gd=''
+  case "${1##*/}" in
+    git)
+      shift
+      _gp_git_scan "$@"
+      [ -z "$_GP_GIT_BAD" ] || return 1
+      [ -z "$_GP_GIT_C" ] || _dir="$_GP_GIT_C"
+      _gd="$_GP_GIT_GITDIR"
+      shift "$_GP_GIT_NSKIP" ;;
+  esac
+  # A `cd` the parser saw in the body puts the push somewhere this check cannot
+  # resolve a remote from, so it is not a push this check may pass.
+  [ -z "${GP_CWD:-}" ] || return 1
   local a rname="" seen_push=0 url=""
   for a in "$@"; do
     case "$a" in
@@ -1162,9 +1189,14 @@ gate_push_remote_match() {
   [ -n "$rname" ] || return 0
   case "$rname" in
     *://*|*@*:*) url="$rname" ;;
-    *) url=$( { cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git remote get-url --push "$rname" 2>/dev/null; } || true) ;;
+    *) url=$( { cd "$_dir" 2>/dev/null \
+                && git ${_gd:+--git-dir="$_gd"} remote get-url --push "$rname" 2>/dev/null; } || true) ;;
   esac
-  [ -n "$url" ] || return 0
+  # AN UNRESOLVABLE REMOTE IS A MISMATCH, NOT A PASS. This returned 0 on an
+  # empty URL, so a remote name the repository does not know — or a directory
+  # the gate could not enter — read as "the remote is the target's". The one
+  # case where nothing is named at all is handled above and still passes.
+  [ -n "$url" ] || return 1
   local slug
   slug=$(printf '%s' "$url" \
     | sed -e 's#\.git$##' -e 's#^[a-zA-Z0-9+.-]*://##' -e 's#^[^@/]*@##' -e 's#^www\.##' \
@@ -3815,6 +3847,15 @@ gp_canon() {
   line="$_GP_ESC"
   if [ "$GP_FAMILY" = raw ]; then
     k=1
+    # git's GLOBALS ARE NOT PART OF THE SHAPE. `--git-dir=…` already fell out
+    # here because it carries an `=`, but `-C <wt>` is two plain words and
+    # stayed, so the same push from a linked worktree could match no shape a
+    # manifest had written — and the only spelling that did match was the one
+    # that changed the gate's own directory.
+    if [ "$GP_ARGV0" = git ]; then
+      _gp_git_scan ${GP_INNER[@]+"${GP_INNER[@]:1}"}
+      [ -n "$_GP_GIT_BAD" ] || k=$((1 + _GP_GIT_NSKIP))
+    fi
     while [ "$k" -lt "${#GP_INNER[@]}" ]; do
       case "${GP_INNER[$k]}" in
         -*=*) ;;
@@ -4628,6 +4669,82 @@ gate_git_config_key_execs() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# git's GLOBAL OPTIONS, SCANNED IN ONE PLACE. Four readers used to find git's
+# subcommand and each did it differently: the grading table walked a loop of
+# its own, the collaboration cell read `$1` and therefore called `-C` the
+# subcommand, the push-remote check skipped every `-*` word and took the first
+# operand after `push`, and the canonical form kept the globals in the shape it
+# compared. So `git -C <wt> push` was a push to the grader, not a push to the
+# collaboration cell, a push to an undeclared remote for the remote check, and
+# a shape no manifest could authorize.
+#
+# THE ATTACHED SPELLINGS ARE NOT GIT'S. Real git rejects `-C/tmp` and
+# `-cfoo=bar` outright, so accepting them here would be inventing a grammar and
+# grading argv nobody can run — `_GP_GIT_BAD` says `form` for them, the same as
+# for an option this scanner does not know.
+# ---------------------------------------------------------------------------
+_GP_GIT_SUB=''
+_GP_GIT_NSKIP=0
+_GP_GIT_C=''
+_GP_GIT_GITDIR=''
+_GP_GIT_BAD=''
+_GP_GIT_CKEY=''
+_gp_git_scan() {
+  # _gp_git_scan <git's args after argv0...>
+  _GP_GIT_SUB=''; _GP_GIT_NSKIP=0; _GP_GIT_C=''; _GP_GIT_GITDIR=''
+  _GP_GIT_BAD=''; _GP_GIT_CKEY=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -C)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_C="$2"; _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      -c)
+        # EVERY key, not the last one. A second `-c` used to overwrite the
+        # first, so an exec key could be hidden behind a harmless one standing
+        # after it.
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_CKEY="$_GP_GIT_CKEY${2%%=*}$_GP_LF"
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      # `--exec-path` moves the directory git runs its own subcommands from and
+      # `--config-env` names an environment variable holding one of the same
+      # keys `-c` carries; neither is readable here.
+      --exec-path|--exec-path=*|--config-env|--config-env=*)
+        _GP_GIT_BAD=form; return 0 ;;
+      --git-dir)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_GITDIR="$2"; _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      --git-dir=*)
+        _GP_GIT_GITDIR="${1#*=}"; _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      --work-tree|--namespace|--attr-source)
+        [ $# -ge 2 ] || { _GP_GIT_BAD=unknown; return 0; }
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 2)); shift 2 ;;
+      --work-tree=*|--namespace=*|--attr-source=*|--list-cmds=*)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--no-advice|--no-lazy-fetch)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
+        _GP_GIT_NSKIP=$((_GP_GIT_NSKIP + 1)); shift ;;
+      -*) _GP_GIT_BAD=form; return 0 ;;
+      *)  _GP_GIT_SUB="$1"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# `_gp_git_key_redirects <key>` — 0 when this `-c` key changes WHERE a push
+# goes. It is separate from the exec predicate because the two say different
+# things: one names a program git will run, this one names a destination. Real
+# git honours `-c remote.origin.pushurl=<other>` and pushes there, and the
+# remote check resolved `origin` from the repository on disk and reported a
+# match for a push that never went near it.
+_gp_git_key_redirects() {
+  case "$1" in
+    remote.*.url|remote.*.pushurl|url.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 surface_of_git_fetch() {
   # A fetch that only moves REMOTE-TRACKING refs changes nothing a later act
   # reads as its own state, so it is a read — and it is the single most common
@@ -4669,37 +4786,30 @@ surface_of_git() {
   # next word. Guessing wrong would shift the subcommand out of view and grade a
   # `push` by whatever word landed in its place — a wrong grade is worse here
   # than no grade, because `등급 미상` refuses and a wrong grade performs.
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      # `-c <key>=<value>` CAN NAME A PROGRAM. A dozen git configuration keys are
-      # command lines git runs itself — a pager, an ssh command, a credential
-      # helper, a filter driver — so `git -c core.sshCommand=… fetch` is not the
-      # fetch its verb says it is. The keys are refused as a FORM rather than
-      # graded, because what they run is arbitrary and invisible to this table.
-      -c)
-        [ $# -ge 2 ] || { printf '등급 미상'; return 0; }
-        if gate_git_config_key_execs "${2%%=*}"; then
-          printf '%s' "$GATE_FORM_UNKNOWN"; return 0
-        fi
-        shift 2 ;;
-      # `--exec-path` moves the directory git runs its own subcommands from and
-      # `--config-env` names an environment variable holding one of those same
-      # keys; neither is readable here.
-      --exec-path|--exec-path=*|--config-env|--config-env=*)
-        printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
-      -C|--git-dir|--work-tree|--namespace)
-        [ $# -ge 2 ] || { printf '등급 미상'; return 0; }
-        shift 2 ;;
-      --git-dir=*|--work-tree=*|--namespace=*)
-        shift ;;
-      -p|-P|--paginate|--no-pager|--bare|--no-replace-objects)
-        shift ;;
-      --literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
-        shift ;;
-      -*) printf '등급 미상'; return 0 ;;
-      *)  break ;;
-    esac
-  done
+  _gp_git_scan "$@"
+  case "$_GP_GIT_BAD" in
+    form)    printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+    unknown) printf '등급 미상'; return 0 ;;
+  esac
+  # `-c <key>=<value>` CAN NAME A PROGRAM. A dozen git configuration keys are
+  # command lines git runs itself — a pager, an ssh command, a credential
+  # helper, a filter driver — so `git -c core.sshCommand=… fetch` is not the
+  # fetch its verb says it is. The keys are refused as a FORM rather than
+  # graded, because what they run is arbitrary and invisible to this table. A
+  # key that redirects the remote is refused the same way and for the same
+  # reason: what it reaches is not what the verb says it reaches.
+  if [ -n "$_GP_GIT_CKEY" ]; then
+    local _k
+    while IFS= read -r _k; do
+      [ -n "$_k" ] || continue
+      if gate_git_config_key_execs "$_k" || _gp_git_key_redirects "$_k"; then
+        printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+      fi
+    done <<EOF
+$_GP_GIT_CKEY
+EOF
+  fi
+  shift "$_GP_GIT_NSKIP"
   case "${1:-}" in
     status|log|show|diff|rev-parse|rev-list|merge-base|blame|cat-file|ls-files|ls-tree|check-ignore|check-attr|for-each-ref|show-ref|diff-tree|describe|name-rev|shortlog|count-objects|cherry|range-diff|version|merge-tree|grep|ls-remote)
       # These print and do not change a ref — EXCEPT where an option turns one

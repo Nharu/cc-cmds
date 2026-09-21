@@ -6211,9 +6211,12 @@ graded_as '읽기'         '경로로 부른 git 읽기도 같다'              
 graded_as '워크트리쓰기' 'git -C 의 하위 명령을 찾아낸다'   -- git -C /tmp commit -m x
 graded_as '외부상태변경' 'git -c 의 하위 명령도 찾아낸다'   -- git -c user.name=x push
 graded_as '읽기'         '값이 붙은 전역 옵션도 건너뛴다'   -- git --git-dir=/tmp/.git log
-# An unrecognized global stops the scan as UNKNOWN rather than guessing whether
-# it eats the next word — guessing wrong grades a `push` by the wrong token.
-graded_as '등급 미상'    '모르는 전역 옵션은 추측하지 않는다' -- git --not-a-real-global push
+# An unrecognized global stops the scan rather than guessing whether it eats the
+# next word — guessing wrong grades a `push` by the wrong token. It stops as a
+# FORM, not as an unknown grade: git itself refuses an option it does not know,
+# so this is argv nobody can run, and a declaration may not carry it through the
+# way it carries a tool the table never listed.
+graded_as '형태 미상'    '모르는 전역 옵션은 추측하지 않는다' -- git --not-a-real-global push
 
 graded_as '읽기'         'gh api 의 기본은 GET 이라 읽기다'  -- gh api repos/o/r/pulls/1/reviews
 graded_as '외부상태변경' '명시된 POST 는 외부 상태 변경이다' -- gh api --method POST repos/o/r/pulls/1/reviews
@@ -16223,6 +16226,115 @@ m=$(grep 'argv=cat base.txt' "$FX_LEDGER" 2>/dev/null | grep -c '하한=' || tru
 [ "${n:-0}" -ge 1 ] && [ "${m:-0}" = "0" ] \
   && ok "62: 조각 없는 행위의 행에는 하한 필드가 없다" \
   || bad "62: 조각 없는 행위의 행에는 하한 필드가 없다" "n=$n m=$m"
+
+# ---------------------------------------------------------------------------
+# 63. git 전역 문법과 push 원격 결속
+# --- section: 63 | group: reach | covers: grade, exec | anchors: 63: -C 뒤의 부명령이 등급을 정한다, 63: remote 재지정 -c 는 형태 미상이다, 63: 협업 팔이 push·pull·fetch 를 인정한다, 63: 전역 옵션은 사전 인가 형태에서 빠진다, 63: 원격은 -C 디렉터리에서 해소된다, 63: 빈 URL 은 통과가 아니라 불일치다 ---
+#
+# 한 워크트리에서 다른 워크트리로 push 하는 철자 — `git -C <wt> push` — 는
+# 등급에서 읽히지 않고, 읽히더라도 원격이 게이트가 선 디렉터리에서 해소됐다.
+# 그래서 같은 이름의 `origin` 을 가진 다른 저장소가 대상 행의 슬러그로 대답했다.
+# 이 절은 그 철자가 지나는 네 자리 — 등급표, 협업 팔, 사전 인가 형태, push
+# 원격 — 를 각각 못박고, 문법을 넓힌 대가로 열릴 뻔한 자리(`-c` 로 원격 자체를
+# 재지정하는 것)가 닫혀 있는지 함께 본다.
+# ---------------------------------------------------------------------------
+s63() {
+  # s63 <본문> — 절 62 와 같은 틀. `target_field` 는 대상 행 없이 슬러그만
+  # 필요한 자리이므로 소싱 뒤에 덮어쓴다.
+  ( cd "$repo_root" && CC_GATE_SOURCE_ONLY=1 S63_GATE="$GATE" S63_BODY="$1" \
+      /bin/bash -c '
+      . "$S63_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      set -u
+      target_field() { printf o/r; }
+      G() { printf "%s\n" "$(surface_of_argv0 "$@")"; }
+      B() { GATE_GRADE_SOURCE=표; gp_parse "$@"
+            if gate_collaboration_surface tgt 협업 "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      C() { gp_parse "$@"; gp_canon; }
+      P() { local d="$1"; shift; GATE_ACT_CWD="$d"; gp_parse "$@"
+            if gate_push_remote_match tgt "$@"; then printf "1\n"; else printf "0\n"; fi; }
+      eval "$S63_BODY"' 2>/dev/null )
+}
+
+# (1) 등급표. 전역 옵션은 건너뛰고 부명령이 등급을 정한다 — 건너뛰지 못하면
+# 첫 단어가 `-C` 라서 행이 없고, 행이 없는 git 은 선언으로 구제되는 `등급 미상`
+# 이 됐다.
+check "63: -C 뒤의 부명령이 등급을 정한다" \
+  "$(s63 'G git -C /w push -u origin b:b')" "외부상태변경"
+check "63: --git-dir 과 --work-tree 뒤에서도 부명령을 읽는다" \
+  "$(s63 'G git --git-dir=/m/.git --work-tree=/w push origin HEAD')" "외부상태변경"
+check "63: git pull 은 외부 상태 변경이고 fetch 는 읽기다" \
+  "$(s63 'G git pull --ff-only origin master; G git fetch origin master')" "외부상태변경
+읽기"
+# `-c` 로 원격 URL 을 갈아끼우면 push 는 대상 저장소의 이름을 그대로 달고
+# 전혀 다른 곳으로 나간다 — 등급도 결속도 그 argv 를 보고는 알 수 없으므로,
+# 문법을 넓히면서 이 두 키만은 인가 전에 거절한다.
+check "63: remote 재지정 -c 는 형태 미상이다" \
+  "$(s63 'G git -c remote.origin.pushurl=git@evil:x push origin HEAD
+          G git -c remote.origin.url=git@evil:x push origin HEAD')" "형태 미상
+형태 미상"
+check "63: 무해한 -c 는 부명령을 그대로 읽는다" \
+  "$(s63 'G git -c color.ui=false status')" "읽기"
+# 실물 git 은 붙임 꼴을 rc 129 로 거절한다. 게이트가 그것을 읽어 주면 실물이
+# 돌지 않을 철자에 등급이 서고, 그 등급이 선언 대조의 근거가 된다.
+check "63: 붙임 꼴 전역 옵션은 형태 미상이다" \
+  "$(s63 'G git -C/tmp status; G git -cfoo=bar status')" "형태 미상
+형태 미상"
+graded_as 외부상태변경 '63: grade 동사도 -C 뒤의 부명령을 읽는다' \
+  -- git -C /w push -u origin b:b
+
+# (2) 협업 팔. `git pull` 은 선언할 수 있는 어느 도달로도 통과하지 못했다 —
+# 등급을 로컬 쓰기로 다시 적는 대신 팔이 그 단어를 인정한다.
+check "63: 협업 팔이 push·pull·fetch 를 인정한다" \
+  "$(s63 'B git push origin HEAD; B git pull --ff-only origin master; B git fetch origin master')" \
+  "1
+1
+1"
+check "63: 전역 옵션이 앞서도 협업 팔이 부명령을 찾는다" \
+  "$(s63 'B git -C /w push -u origin b:b')" "1"
+check "63: git status 는 협업 팔이 아니다" "$(s63 'B git status')" "0"
+
+# (3) 사전 인가 형태. 인가 목록은 `git push` 라고 적히고 스테이지는 워크트리를
+# 가리키며 부른다 — 정규화가 전역 옵션을 남기면 그 둘은 영원히 다른 형태다.
+check "63: 전역 옵션은 사전 인가 형태에서 빠진다" \
+  "$(s63 'C git -C /w push -u origin b:b
+          C git --git-dir=/m/.git push origin HEAD
+          C git push origin HEAD')" \
+  "git push -u origin b:b
+git push origin HEAD
+git push origin HEAD"
+
+# (4) push 원격. 실제 저장소 둘 — 대상 슬러그의 `origin` 을 가진 것과 원격이
+# 없는 것 — 을 두고, 어느 디렉터리에서 해소되는지 본다.
+G63=$(mktemp -d "$WORK/g63.XXXXXX")
+git init -q "$G63/good" && ( cd "$G63/good" && git remote add origin git@github.com:o/r.git )
+git init -q "$G63/lone"
+check "63: 원격은 -C 디렉터리에서 해소된다" \
+  "$(s63 "P $G63/lone git -C $G63/good push origin HEAD")" "1"
+# 빈 URL 은 「대상의 원격이다」가 아니라 「모른다」이다. 통과로 읽던 자리가
+# 이름만 같고 실체가 다른 `origin` 을 대상 행의 슬러그로 대답하게 했다.
+check "63: 빈 URL 은 통과가 아니라 불일치다" \
+  "$(s63 "P $G63/good git -C $G63/lone push origin HEAD; P $G63/lone git push origin HEAD")" \
+  "0
+0"
+check "63: 원격이 있는 디렉터리의 맨 push 는 통과한다" \
+  "$(s63 "P $G63/good git push origin HEAD")" "1"
+check "63: --git-dir 도 실효 디렉터리를 정한다" \
+  "$(s63 "P $G63/lone git --git-dir=$G63/good/.git push origin HEAD")" "1"
+# 몸통에서 옮긴 행위는 어디서 해소해야 하는지 이 자리에서 알 수 없다.
+check "63: 몸통에서 옮긴 행위는 원격을 해소할 수 없다" \
+  "$(s63 "P $G63/good env --chdir=/x git push origin HEAD")" "0"
+check "63: 직접 적은 URL 은 슬러그로 대조한다" \
+  "$(s63 "P $G63/lone git push git@github.com:o/r.git HEAD
+          P $G63/lone git push git@github.com:other/x.git HEAD")" \
+  "1
+0"
+check "63: 원격을 적지 않은 push 는 그대로 통과한다" \
+  "$(s63 "P $G63/lone git push")" "1"
+check "63: 읽을 수 없는 전역 문법은 push 결속도 통과하지 못한다" \
+  "$(s63 "P $G63/good git -cfoo=bar push origin HEAD")" "0"
 
 # ---------------------------------------------------------------------------
 # 40. `wait` 의 종료 코드와 무행·무경계 성질
