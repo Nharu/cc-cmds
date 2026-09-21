@@ -18041,15 +18041,33 @@ gate_verb_supervise_stage() {
   # THE BACKGROUND WAIT CEILING, because a fan-out stage does not fit under the
   # default one. Measured: a dispatched audit stage was killed at exactly 600s
   # with "Background tasks still running after 600s; terminating", reported
-  # `subtype: success` and exit 0, and published nothing. Raised to an hour
-  # rather than removed: `0` waits forever, and a hung stage under a live pid
-  # reads as a heartbeat, so the run sits until the person comes back. A finite
-  # ceiling still kills, and a kill is classified.
+  # `subtype: success` and exit 0, and published nothing. Raised rather than
+  # removed: `0` waits forever, and a hung stage under a live pid reads as a
+  # heartbeat, so the run sits until the person comes back. A finite ceiling
+  # still kills.
+  #
+  # AN HOUR WAS NOT ENOUGH FOR A TEAM-TIER STAGE, so it is four. Measured: an
+  # unattended design stage spawned its four roster members into the background
+  # and was terminated at the 3600 s mark while waiting on the fourth witness —
+  # three had published, the fourth had been killed by the system — after 1 h
+  # 55 m and 20.57 USD, leaving the spawn-time stub on disk and nothing else.
+  # The discussion itself is what sits in the background here, so the ceiling is
+  # a cap on how long a team may talk, not on how long a wedge may last. Four
+  # hours also stays above the liveness watcher's stage-age arm, which names a
+  # stage older than two hours without ending it — so a wedged stage is reported
+  # first and killed second.
+  #
+  # WHAT THE KILL DOES NOT BUY IS A CLASSIFICATION. The terminated process still
+  # returns rc=0 with `subtype: success`, `terminal_reason: completed` and
+  # `is_error: false`, so the terminal class reads 정상 완료 and the design arm
+  # skips redispatch on it. Raising the ceiling makes that outcome rarer; it does
+  # not make the kill visible, and the document is the only place the difference
+  # survives.
   #
   # `bash`, not `/bin/sh`: the wrapper uses `set -o pipefail`, and naming an
   # interpreter on the command line overrides the shebang — on a distribution
   # whose `/bin/sh` is dash the wrapper died at its second line.
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \
@@ -20259,7 +20277,7 @@ gate_launch_shift() {
   # launched" and "a shift a stage launched" carry byte-identical environments
   # and no branch order answers both. `gate_launch_stage` deliberately leaves
   # `CC_PIPELINE_SHIFT_ID` in place for the opposite direction; that stays.
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-3600000}" \
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
   CC_PIPELINE_RUN_ID="$RUN_ID" \
   CC_PIPELINE_RUN_DIR="$RUN_DIR" \

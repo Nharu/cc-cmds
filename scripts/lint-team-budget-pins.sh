@@ -271,7 +271,7 @@ if [[ -f "$LEG" ]]; then
       # the preflight assertion — an empty config dir lands the leg in an account-less config
       ': "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR is unset - refusing to launch the leg}"'
       # the wait ceiling — without it print-mode wind-down kills the team at 600 s and exits 0
-      'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000'
+      'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=14400000'
       # the resume message form — read from a file, never inlined into a double-quoted argument
       '-p "$(cat "$RESUME_MSG")"'
     )
